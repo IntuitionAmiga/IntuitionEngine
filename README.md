@@ -1085,3 +1085,159 @@ The interface architecture supports:
 - Extended capabilities
 - Platform-specific optimizations
 - Platform-specific GUIs
+
+# 12. Testing & Demonstration Framework
+
+The Intuition Engine includes a comprehensive testing and demonstration framework that verifies system functionality while showcasing its capabilities through interactive demos and visual effects.
+
+## 12.1 Testing Architecture
+
+The testing framework is built on Go's native testing package and provides:
+
+- Automated functional verification of all subsystems
+- Real-time audio synthesis demonstrations
+- Interactive visual effect demonstrations
+- Performance benchmarking capabilities
+- Cross-platform compatibility testing
+
+## 12.2 Audio Synthesis Testing
+
+### 12.2.1 Basic Waveform Tests
+The system verifies the accuracy and quality of fundamental waveform generation:
+
+- Square wave synthesis with variable duty cycle control
+- Triangle wave generation with pristine harmonic content
+- Pure sine wave generation with perfect frequency accuracy
+- Multiple noise generation algorithms (white, periodic, metallic)
+
+### 12.2.2 Advanced Synthesis Features
+Comprehensive testing of advanced sound synthesis capabilities:
+
+- PWM (Pulse Width Modulation) with dynamic width control
+- Frequency sweep effects with configurable parameters
+- Ring modulation between multiple oscillators
+- Hard sync effects across oscillator channels
+- Complex noise shaping and filtering
+
+### 12.2.3 Envelope System
+Verification of the ADSR (Attack, Decay, Sustain, Release) envelope system:
+
+- Precise timing accuracy for all envelope stages
+- Linear and exponential envelope shapes
+- Complex envelope interactions with modulation
+- Multi-channel envelope synchronization
+
+### 12.2.4 Audio Effects Processing
+Testing of the global audio effects processing chain:
+
+- Multi-mode filter system with resonance control
+- Overdrive and saturation effects
+- Stereo reverb processing
+- Cross-modulation effects between channels
+
+## 12.3 Visual System Testing
+
+### 12.3.1 Fundamental Operations
+Basic video system functionality verification:
+
+- Resolution mode switching (640x480, 800x600, 1024x768)
+- Frame buffer operations and memory access
+- Color depth and format handling
+- VSync and timing verification
+
+### 12.3.2 Visual Effect Demonstrations
+The test suite includes several real-time visual demonstrations:
+
+1. **Color Palette Test**
+    - Full RGB color space visualization
+    - Color gradient accuracy verification
+    - Alpha channel blending tests
+
+2. **3D Graphics**
+    - Rotating wireframe cube demonstration
+    - 3D perspective projection
+    - Real-time rotation and transformation
+
+3. **Particle Systems**
+    - Dynamic particle emission and physics
+    - Color and alpha blending
+    - Performance optimization testing
+
+4. **Special Effects**
+    - Fire simulation using cellular automata
+    - Plasma wave generation
+    - Metaball rendering system
+    - Scrolling sine-wave text effects
+    - Real-time tunnel effect
+    - Rotozoom transformation
+    - 3D starfield simulation
+    - Mandelbrot set visualization
+
+### 12.3.3 Performance Testing
+- Frame rate monitoring and performance profiling
+- Memory bandwidth utilization measurement
+- CPU load analysis during complex effects
+- Optimization verification for critical paths
+
+## 12.4 Integration Testing
+
+The framework includes tests that verify the interaction between different subsystems:
+
+- Audio-visual synchronization
+- Interrupt handling and timing accuracy
+- Memory access patterns and conflicts
+- Resource sharing and management
+
+## 12.5 Technical Demonstrations
+
+The system uses Go's testing framework as a convenient way to organise and run technical demonstrations. These are not traditional unit tests, but rather interactive demonstrations that showcase the system's capabilities.
+
+To run the demonstrations:
+
+```bash
+go test -v
+```
+
+To run a specific demonstration:
+
+```bash
+go test -v -run TestNameOfDemo
+```
+
+For example:
+
+###Demonstrate pure sine wave generation with zero harmonic distortion
+
+- `go test -v -run TestSineWave_BasicWaveforms`
+
+###Show dynamic fire simulation using cellular automata
+
+- `go test -v -run TestFireEffect`
+
+###Show real-time plasma wave generation with dynamic colour patterns
+
+- `go test -v -run TestPlasmaWaves`
+
+Each demonstration includes thorough logging output that explains what is being demonstrated and what effects or sounds you should observe. The demonstrations typically run for a set duration (ranging from 2 to 10 seconds) before automatically proceeding to the next test.
+
+## 12.6 Demonstration Development
+
+When creating new demonstrations:
+
+1. Use descriptive names that indicate what capability is being showcased. The demonstration should tell a story about the system's capabilities.
+
+2. Include detailed logging that explains:
+    - What effects or sounds the user should expect
+    - The technical aspects being demonstrated
+    - Any interesting parameters or variations being shown
+
+3. Structure demonstrations to:
+    - Start with basic capabilities
+    - Progress to more complex effects
+    - Show interesting combinations of features
+    - Clean up resources properly when complete
+
+4. Add informative comments that explain:
+    - How the effects are achieved
+    - Key algorithms and techniques being used
+    - Important implementation details
