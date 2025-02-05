@@ -1207,16 +1207,18 @@ go test -v -run TestNameOfDemo
 For example:
 
 ###Demonstrate pure sine wave generation with zero harmonic distortion
-
-- `go test -v -run TestSineWave_BasicWaveforms`
-
+```bash
+go test -v -run TestSineWave_BasicWaveforms
+```
 ###Show dynamic fire simulation using cellular automata
 
-- `go test -v -run TestFireEffect`
-
+```bash
+go test -v -run TestFireEffect
+```
 ###Show real-time plasma wave generation with dynamic colour patterns
-
-- `go test -v -run TestPlasmaWaves`
+```bash
+go test -v -run TestPlasmaWaves
+```
 
 Each demonstration includes thorough logging output that explains what is being demonstrated and what effects or sounds you should observe. The demonstrations typically run for a set duration (ranging from 2 to 10 seconds) before automatically proceeding to the next test.
 
