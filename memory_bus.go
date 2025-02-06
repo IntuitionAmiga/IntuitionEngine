@@ -50,14 +50,19 @@ func NewSystemBus() *SystemBus {
 }
 
 func (bus *SystemBus) MapIO(start, end uint32, onRead func(addr uint32) uint32, onWrite func(addr uint32, value uint32)) {
-	page := start & 0xFFF00
 	region := IORegion{
 		start:   start,
 		end:     end,
 		onRead:  onRead,
 		onWrite: onWrite,
 	}
-	bus.mapping[page] = append(bus.mapping[page], region)
+	// Calculate the first and last page keys that the region spans.
+	// Our page size is 0x100 (masking with 0xFFF00 zeroes the lower 8 bits).
+	firstPage := start & 0xFFF00
+	lastPage := end & 0xFFF00
+	for page := firstPage; page <= lastPage; page += 0x100 {
+		bus.mapping[page] = append(bus.mapping[page], region)
+	}
 }
 
 func (bus *SystemBus) Write32(addr uint32, value uint32) {

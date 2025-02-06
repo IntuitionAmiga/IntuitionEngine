@@ -496,7 +496,7 @@ func (cpu *CPU) Execute() {
 
 		case STORE:
 			if addrMode == ADDR_REG_IND {
-				addr := *cpu.getRegister(byte(operand & 0x03))
+				addr := *cpu.getRegister(byte(operand & 0x03)) + (operand & 0xFFFFFFFC)
 				cpu.Write32(addr, *cpu.getRegister(reg))
 			} else if addrMode == ADDR_MEM_IND {
 				addr := cpu.Read32(operand)
@@ -544,7 +544,7 @@ func (cpu *CPU) Execute() {
 			}
 
 			if addrMode == ADDR_REG_IND {
-				addr := *cpu.getRegister(byte(operand & 0x03))
+				addr := *cpu.getRegister(byte(operand & 0x03)) + (operand & 0xFFFFFFFC)
 				cpu.Write32(addr, value)
 			} else if addrMode == ADDR_MEM_IND {
 				addr := cpu.Read32(operand)
@@ -738,7 +738,7 @@ func (cpu *CPU) Execute() {
 				reg := cpu.getRegister(byte(operand & 0x03))
 				*reg++
 			} else if addrMode == ADDR_REG_IND {
-				addr := *cpu.getRegister(byte(operand & 0x03))
+				addr := *cpu.getRegister(byte(operand & 0x03)) + (operand & 0xFFFFFFFC)
 				val := cpu.Read32(addr)
 				cpu.Write32(addr, val+1)
 			} else if addrMode == ADDR_MEM_IND {
@@ -756,7 +756,7 @@ func (cpu *CPU) Execute() {
 				reg := cpu.getRegister(byte(operand & 0x03))
 				*reg--
 			} else if addrMode == ADDR_REG_IND {
-				addr := *cpu.getRegister(byte(operand & 0x03))
+				addr := *cpu.getRegister(byte(operand & 0x03)) + (operand & 0xFFFFFFFC)
 				val := cpu.Read32(addr)
 				cpu.Write32(addr, val-1)
 			} else if addrMode == ADDR_MEM_IND {

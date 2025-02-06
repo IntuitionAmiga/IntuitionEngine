@@ -49,12 +49,12 @@ func main() {
 	}
 
 	// Map sound registers
-	sysBus.MapIO(0xF900, 0xF97C,
+	sysBus.MapIO(AUDIO_CTRL, REVERB_DECAY,
 		nil, // No read handler needed
 		soundChip.HandleRegisterWrite)
 
 	// Map video registers and VRAM
-	sysBus.MapIO(0xF000, 0xF008,
+	sysBus.MapIO(VIDEO_CTRL, VIDEO_STATUS,
 		videoChip.HandleRead,
 		videoChip.HandleWrite)
 	sysBus.MapIO(VRAM_START, VRAM_START+VRAM_SIZE-1,
