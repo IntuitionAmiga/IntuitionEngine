@@ -736,7 +736,7 @@ func (cpu *CPU) Execute() {
 		case INC:
 			if addrMode == ADDR_REGISTER {
 				reg := cpu.getRegister(byte(operand & 0x03))
-				*reg++
+				(*reg)++
 			} else if addrMode == ADDR_REG_IND {
 				addr := *cpu.getRegister(byte(operand & 0x03)) + (operand & 0xFFFFFFFC)
 				val := cpu.Read32(addr)
@@ -754,7 +754,7 @@ func (cpu *CPU) Execute() {
 		case DEC:
 			if addrMode == ADDR_REGISTER {
 				reg := cpu.getRegister(byte(operand & 0x03))
-				*reg--
+				(*reg)--
 			} else if addrMode == ADDR_REG_IND {
 				addr := *cpu.getRegister(byte(operand & 0x03)) + (operand & 0xFFFFFFFC)
 				val := cpu.Read32(addr)
