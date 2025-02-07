@@ -36,7 +36,7 @@ This virtual machine implements a complete computer system with a custom CPU arc
 ## Key Features
 
 - 32-bit RISC-like CPU architecture
-- 16 general-purpose registers (A through H and S through W)
+- 16 general-purpose registers (A through H and S through Y)
 - Memory-mapped I/O for peripherals
 - Four-channel sound synthesis with advanced features:
     - Multiple waveform types (square, triangle, sine, noise)
