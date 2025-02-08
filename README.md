@@ -65,10 +65,12 @@ The VM is implemented in Go and requires:
     - All platforms: Oto audio library (primary backend)
 - For video output:
     - Ebiten graphics library (primary backend)
+    - X11 client-side library (development headers)
+    - X11 XFree86 video mode extension library (development headers)
     - OpenGL development libraries (optional/in development)
 - For building the system:
-    - UPX compression utility (optional) ftp://ftp.madore.org/pub/madore/misc/superstrip.c
-    - SuperStrip utility (optional) ftp://ftp.madore.org/pub/madore/misc/superstrip.c
+    - UPX compression utility (optional) https://github.com/upx/upx
+    - SuperStrip utility (optional) https://github.com/aunali1/super-strip
 
 # 2. Architecture Design
 
