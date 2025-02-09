@@ -14,6 +14,7 @@
 ## (c) 2024 - 2025 Zayn Otley
 ## https://github.com/intuitionamiga/IntuitionEngine
 ## License: GPLv3 or later
+## https://www.youtube.com/@IntuitionAmiga/
 
 # Table of Contents
 
