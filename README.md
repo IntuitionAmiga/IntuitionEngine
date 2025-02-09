@@ -815,16 +815,30 @@ The build process uses the provided build script:
 
 ```bash
 # Build both VM and assembler
-./build.sh
-
-# This creates:
+make
+make install
+```
+This creates:
+```
 bin/IntuitionEngine   # The virtual machine
 bin/ie32asm           # The assembler
 ```
 
-The build script handles all necessary compilation flags and optimizations automatically. It uses:
+Available make targets:
+```
+all              - Build both Intuition Engine and ie32asm (default)
+intuition-engine - Build only the Intuition Engine VM
+ie32asm          - Build only the IE32 assembler
+install          - Install binaries to $(INSTALL_BIN_DIR)
+uninstall        - Remove installed binaries from $(INSTALL_BIN_DIR)
+clean            - Remove all build artifacts
+list             - List compiled binaries with sizes
+help             - Show this help message
+```
+
+The Makefile handles all necessary compilation flags and optimizations automatically. It uses:
 - Compiler optimization flags for performance
-- Strip and UPX compression for binary size reduction
+- SuperStrip and UPX LZMA compression for binary size reduction
 - Parallel compilation where possible
 
 ## 8.3 Development Workflow
