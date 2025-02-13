@@ -816,12 +816,29 @@ The build process uses the provided build script:
 ```bash
 # Build both VM and assembler
 make
+```
+This creates:
+```
+./bin/IntuitionEngine   # The virtual machine
+./bin/ie32asm           # The assembler
+```
+```bash
+# Build and install both VM and assembler
+make
 make install
 ```
 This creates:
 ```
-bin/IntuitionEngine   # The virtual machine
-bin/ie32asm           # The assembler
+/usr/local/bin/IntuitionEngine   # The virtual machine
+/usr/local/bin/ie32asm           # The assembler
+```
+```bash
+# Build AppImage package
+make appimage
+```
+This creates:
+```
+./IntuitionEngine-1.0.0-<CPU_ARCH>.AppImage
 ```
 
 Available make targets:
@@ -829,6 +846,7 @@ Available make targets:
 all              - Build both Intuition Engine and ie32asm (default)
 intuition-engine - Build only the Intuition Engine VM
 ie32asm          - Build only the IE32 assembler
+appimage         - Build AppImage package for Linux distributions
 install          - Install binaries to $(INSTALL_BIN_DIR)
 uninstall        - Remove installed binaries from $(INSTALL_BIN_DIR)
 clean            - Remove all build artifacts
@@ -840,6 +858,7 @@ The Makefile handles all necessary compilation flags and optimizations automatic
 - Compiler optimization flags for performance
 - SuperStrip and UPX LZMA compression for binary size reduction
 - Parallel compilation where possible
+- AppImage packaging for Linux distribution
 
 ## 8.3 Development Workflow
 

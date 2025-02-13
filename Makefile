@@ -122,3 +122,115 @@ help:
 	@echo "Installation paths:"
 	@echo "  PREFIX        = $(PREFIX)"
 	@echo "  INSTALL_BIN_DIR = $(INSTALL_BIN_DIR)"
+
+# AppImage related directories and files
+APPIMAGE_DIR := ./AppDir
+APPIMAGE_BIN_DIR := $(APPIMAGE_DIR)/usr/bin
+APPIMAGE_DESKTOP_DIR := $(APPIMAGE_DIR)/usr/share/applications
+APPIMAGE_ICON_DIR := $(APPIMAGE_DIR)/usr/share/icons/hicolor/256x256/apps
+APPIMAGE_TOOL := appimagetool-x86_64.AppImage
+
+# Application metadata
+APP_NAME := IntuitionEngine
+APP_VERSION := 1.0.0
+
+# Add these new targets to your Makefile
+
+# Download AppImage Tool if not present
+$(APPIMAGE_TOOL):
+	@echo "Downloading AppImage Tool..."
+	@wget https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+	@chmod +x $(APPIMAGE_TOOL)
+
+# Create AppImage directory structure
+appimage-structure: setup
+	@echo "Creating AppImage directory structure..."
+	@$(MKDIR) -p $(APPIMAGE_BIN_DIR)
+	@$(MKDIR) -p $(APPIMAGE_DESKTOP_DIR)
+	@$(MKDIR) -p $(APPIMAGE_ICON_DIR)
+
+# Create desktop entry file
+.PHONY: desktop-entry
+desktop-entry: appimage-structure
+	@echo "Creating desktop entry..."
+	@# Create symlink in AppDir root
+	@ln -sf usr/share/applications/$(APP_NAME).desktop $(APPIMAGE_DIR)/$(APP_NAME).desktop
+	@echo "Desktop entry path: $(APPIMAGE_DESKTOP_DIR)/$(APP_NAME).desktop"
+	@echo "[Desktop Entry]" > $(APPIMAGE_DESKTOP_DIR)/$(APP_NAME).desktop
+	@echo "Name=$(APP_NAME)" >> $(APPIMAGE_DESKTOP_DIR)/$(APP_NAME).desktop
+	@echo "Exec=IntuitionEngine" >> $(APPIMAGE_DESKTOP_DIR)/$(APP_NAME).desktop
+	@echo "Icon=$(APP_NAME)" >> $(APPIMAGE_DESKTOP_DIR)/$(APP_NAME).desktop
+	@echo "Type=Application" >> $(APPIMAGE_DESKTOP_DIR)/$(APP_NAME).desktop
+	@echo "Categories=Development;" >> $(APPIMAGE_DESKTOP_DIR)/$(APP_NAME).desktop
+	@echo "Version=1.0" >> $(APPIMAGE_DESKTOP_DIR)/$(APP_NAME).desktop
+	@echo "Terminal=false" >> $(APPIMAGE_DESKTOP_DIR)/$(APP_NAME).desktop
+	@# Verify the desktop file was created
+	@if [ ! -f "$(APPIMAGE_DESKTOP_DIR)/$(APP_NAME).desktop" ]; then \
+		echo "Error: Desktop file was not created successfully"; \
+		exit 1; \
+	fi
+	@echo "Desktop entry file contents:"
+	@cat $(APPIMAGE_DESKTOP_DIR)/$(APP_NAME).desktop
+
+# Copy binaries and resources to AppImage structure
+.PHONY: copy-binaries
+copy-binaries: intuition-engine ie32asm appimage-structure
+	@echo "Copying binaries and resources to AppImage structure..."
+	@cp $(BIN_DIR)/IntuitionEngine $(APPIMAGE_BIN_DIR)/
+	@cp $(BIN_DIR)/ie32asm $(APPIMAGE_BIN_DIR)/
+	@cp IntuitionEngine.png $(APPIMAGE_ICON_DIR)/$(APP_NAME).png
+	@cp IntuitionEngine.png $(APPIMAGE_DIR)/$(APP_NAME).png
+
+# Create AppRun script
+.PHONY: apprun
+apprun: appimage-structure
+	@echo "Creating AppRun script..."
+	@echo '#!/bin/bash' > $(APPIMAGE_DIR)/AppRun
+	@echo 'SELF="$$(dirname "$$(readlink -f "$$0")")"' >> $(APPIMAGE_DIR)/AppRun
+	@echo 'export PATH="$$SELF/usr/bin:$$PATH"' >> $(APPIMAGE_DIR)/AppRun
+	@echo 'exec "$$SELF/usr/bin/IntuitionEngine" "$$@"' >> $(APPIMAGE_DIR)/AppRun
+	@chmod +x $(APPIMAGE_DIR)/AppRun
+
+# Build AppImage package
+.PHONY: appimage
+appimage: $(APPIMAGE_TOOL) copy-binaries desktop-entry apprun
+	@echo "Building AppImage package..."
+	@echo "Verifying AppDir structure..."
+	@# Check required files
+	@if [ ! -f "$(APPIMAGE_DIR)/AppRun" ]; then \
+		echo "Error: AppRun file missing"; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(APPIMAGE_DESKTOP_DIR)/$(APP_NAME).desktop" ]; then \
+		echo "Error: Desktop file missing"; \
+		ls -la $(APPIMAGE_DESKTOP_DIR); \
+		exit 1; \
+	fi
+	@if [ ! -f "$(APPIMAGE_BIN_DIR)/IntuitionEngine" ]; then \
+		echo "Error: Main binary missing"; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(APPIMAGE_ICON_DIR)/$(APP_NAME).png" ]; then \
+		echo "Error: Application icon missing"; \
+		exit 1; \
+	fi
+	@echo "AppDir structure verified"
+	@# Show directory structure for debugging
+	@echo "AppDir contents:"
+	@find $(APPIMAGE_DIR) -type f
+	@# Ensure all files have correct permissions
+	@chmod -R u+w $(APPIMAGE_DIR)
+	@# Create the AppImage
+	@ARCH=x86_64 ./$(APPIMAGE_TOOL) $(APPIMAGE_DIR) $(APP_NAME)-$(APP_VERSION)-x86_64.AppImage
+	@echo "AppImage created: $(APP_NAME)-$(APP_VERSION)-x86_64.AppImage"
+
+# Add appimage to clean target
+clean: clean-appimage
+
+# Clean AppImage artifacts
+.PHONY: clean-appimage
+clean-appimage:
+	@echo "Cleaning AppImage artifacts..."
+	@rm -rf $(APPIMAGE_DIR)
+	@rm -f $(APP_NAME)-$(APP_VERSION)-x86_64.AppImage
+	@rm -f $(APPIMAGE_TOOL)
