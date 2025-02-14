@@ -26,6 +26,7 @@ import (
 	"image"
 	"image/draw"
 	_ "image/png"
+	"math"
 	"sync"
 	"time"
 )
@@ -192,14 +193,14 @@ func (chip *VideoChip) scaleImageToMode(imgData []byte, srcWidth, srcHeight int,
 			r11, g11, b11, a11 := imgData[idx11], imgData[idx11+1], imgData[idx11+2], imgData[idx11+3]
 
 			// Bilinear interpolation
-			scaled[dstIdx] = byte(float64(r00)*(1-fx)*(1-fy) + float64(r10)*fx*(1-fy) +
-				float64(r01)*(1-fx)*fy + float64(r11)*fx*fy)
-			scaled[dstIdx+1] = byte(float64(g00)*(1-fx)*(1-fy) + float64(g10)*fx*(1-fy) +
-				float64(g01)*(1-fx)*fy + float64(g11)*fx*fy)
-			scaled[dstIdx+2] = byte(float64(b00)*(1-fx)*(1-fy) + float64(b10)*fx*(1-fy) +
-				float64(b01)*(1-fx)*fy + float64(b11)*fx*fy)
-			scaled[dstIdx+3] = byte(float64(a00)*(1-fx)*(1-fy) + float64(a10)*fx*(1-fy) +
-				float64(a01)*(1-fx)*fy + float64(a11)*fx*fy)
+			scaled[dstIdx] = byte(math.Max(0, math.Min(255, float64(r00)*(1-fx)*(1-fy)+float64(r10)*fx*(1-fy)+
+				float64(r01)*(1-fx)*fy+float64(r11)*fx*fy)))
+			scaled[dstIdx+1] = byte(math.Max(0, math.Min(255, float64(g00)*(1-fx)*(1-fy)+float64(g10)*fx*(1-fy)+
+				float64(g01)*(1-fx)*fy+float64(g11)*fx*fy)))
+			scaled[dstIdx+2] = byte(math.Max(0, math.Min(255, float64(b00)*(1-fx)*(1-fy)+float64(b10)*fx*(1-fy)+
+				float64(b01)*(1-fx)*fy+float64(b11)*fx*fy)))
+			scaled[dstIdx+3] = byte(math.Max(0, math.Min(255, float64(a00)*(1-fx)*(1-fy)+float64(a10)*fx*(1-fy)+
+				float64(a01)*(1-fx)*fy+float64(a11)*fx*fy)))
 		}
 	}
 	return scaled
@@ -215,17 +216,15 @@ func (chip *VideoChip) Start() error {
 	return nil
 }
 
-func (chip *VideoChip) Stop() {
+func (chip *VideoChip) Stop() error {
 	chip.mutex.Lock()
 	defer chip.mutex.Unlock()
 
 	chip.enabled = false
 	if chip.output != nil {
-		err := chip.output.Stop()
-		if err != nil {
-			return
-		}
+		return chip.output.Stop()
 	}
+	return nil
 }
 
 func (chip *VideoChip) initializeDirtyGrid(mode VideoMode) {
