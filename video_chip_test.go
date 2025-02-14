@@ -582,10 +582,10 @@ func TestRotozoomer(t *testing.T) {
 
 	startTime := time.Now()
 	for time.Since(startTime) < 10*time.Second {
-		timeVal := float64(time.Since(startTime).Milliseconds()) / 1000.0
+		timeVal := float64(time.Since(startTime).Milliseconds()) / 500.0
 
 		// Calculate transformation parameters
-		scale := 1.0 + math.Sin(timeVal*0.5)*0.5
+		scale := 0.80 + math.Sin(timeVal*0.5)*0.5
 		angle := timeVal * 0.5
 
 		sinA := math.Sin(angle)
