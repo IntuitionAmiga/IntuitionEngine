@@ -160,7 +160,6 @@ type Channel struct {
 	syncSource   *Channel // Master oscillator to sync to
 	phaseWrapped bool     // Flag for phase reset tracking
 }
-
 type SoundChip struct {
 	channels [4]*Channel
 	enabled  bool
@@ -275,13 +274,13 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 		}
 		ch.gate = newGate
 	case SQUARE_ATK, TRI_ATK, SINE_ATK, NOISE_ATK:
-		ch.attackTime = int(value * SAMPLE_RATE / 1000)
+		ch.attackTime = max(int(value*SAMPLE_RATE/1000), 1)
 	case SQUARE_DEC, TRI_DEC, SINE_DEC, NOISE_DEC:
-		ch.decayTime = int(value * SAMPLE_RATE / 1000)
+		ch.decayTime = max(int(value*SAMPLE_RATE/1000), 1)
 	case SQUARE_SUS, TRI_SUS, SINE_SUS, NOISE_SUS:
 		ch.sustainLevel = float32(value) / 256.0
 	case SQUARE_REL, TRI_REL, SINE_REL, NOISE_REL:
-		ch.releaseTime = int(value * SAMPLE_RATE / 1000)
+		ch.releaseTime = max(int(value*SAMPLE_RATE/1000), 1)
 	case NOISE_MODE:
 		ch.noiseMode = int(value % 3) // 0=white, 1=periodic, 2=metallic
 	case ENV_SHAPE:
