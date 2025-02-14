@@ -648,6 +648,20 @@ func (chip *SoundChip) GenerateSample() float32 {
 	return sample
 }
 func (chip *SoundChip) applyReverb(input float32) float32 {
+	// Reverb configuration:
+	// - Uses 4 parallel comb filters with prime-length delays (1687,1601,2053,2251)
+	//   to create dense, natural-sounding echoes without metallic resonances
+	// - Each comb has scaled decay (0.97,0.95,0.93,0.91) for smooth high-frequency damping
+	// - Two allpass filters (389,307 samples) with different coefficients (0.7,0.5)
+	//   provide additional diffusion without coloring the sound
+	// - Delay lengths chosen to avoid arithmetic relationships that cause
+	//   artificial-sounding periodicity
+
+	// Reverb stages:
+	// 1. Input splits to parallel comb filters
+	// 2. Comb outputs sum and feed into series allpass filters
+	// 3. Final mix between dry/wet signals
+
 	var out float32
 	// Comb filters
 	for i := 0; i < 4; i++ {
