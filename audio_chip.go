@@ -254,7 +254,7 @@ func NewSoundChip(backend int) (*SoundChip, error) {
 	for i := range chip.combFilters {
 		chip.combFilters[i] = CombFilter{
 			buffer: make([]float32, combLengths[i]),
-			decay:  []float32{COMB_DECAY_1, COMB_DECAY_2, COMB_DECAY_3, COMB_DECAY_4}[i] * 0.5,
+			decay:  []float32{COMB_DECAY_1, COMB_DECAY_2, COMB_DECAY_3, COMB_DECAY_4}[i],
 		}
 	}
 
