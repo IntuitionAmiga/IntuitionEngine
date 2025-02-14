@@ -210,6 +210,11 @@ const (
 	COMB_DECAY_4 = 0.91
 )
 
+const (
+	NOISE_LFSR_SEED = 0x7FFFFF // 23-bit LFSR seed
+	NOISE_LFSR_MASK = 0x7FFFFF // 23-bit mask
+)
+
 func NewSoundChip(backend int) (*SoundChip, error) {
 	// Initialize sound chip with default settings
 	chip := &SoundChip{
@@ -227,7 +232,7 @@ func NewSoundChip(backend int) (*SoundChip, error) {
 			sustainLevel:  1.0,
 			releaseTime:   44,
 			envelopePhase: ENV_ATTACK,
-			noiseSR:       0xACE1, // Initial seed for noise
+			noiseSR:       NOISE_LFSR_SEED, // Initial seed for noise
 			dutyCycle:     0.5,
 		}
 	}
@@ -515,16 +520,16 @@ func (ch *Channel) generateSample() float32 {
 		for i := 0; i < steps; i++ {
 			switch ch.noiseMode {
 			case NOISE_MODE_WHITE:
-				// XOR bits 0 and 3 (Galois LFSR)
-				newBit := ((ch.noiseSR & 1) ^ ((ch.noiseSR >> 3) & 1)) & 1
-				ch.noiseSR = (ch.noiseSR >> 1) | (newBit << 16)
+				// XOR bits 0 and 5 (23-bit Galois LFSR)
+				newBit := ((ch.noiseSR & 1) ^ ((ch.noiseSR >> 5) & 1)) & 1
+				ch.noiseSR = (ch.noiseSR >> 1) | (newBit<<22)&NOISE_LFSR_MASK
 			case NOISE_MODE_PERIODIC:
 				// Rotate bits (periodic noise)
-				ch.noiseSR = (ch.noiseSR >> 1) | ((ch.noiseSR & 1) << 16)
+				ch.noiseSR = ((ch.noiseSR >> 1) | ((ch.noiseSR & 1) << 22)) & NOISE_LFSR_MASK
 			case NOISE_MODE_METALLIC:
 				// XOR bits 0 and 2 (metallic noise)
 				newBit := ((ch.noiseSR & 1) ^ ((ch.noiseSR >> 2) & 1)) & 1
-				ch.noiseSR = (ch.noiseSR >> 1) | (newBit << 16)
+				ch.noiseSR = (ch.noiseSR >> 1) | (newBit<<22)&NOISE_LFSR_MASK
 			}
 		}
 
