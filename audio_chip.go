@@ -215,6 +215,8 @@ const (
 	ALLPASS_COEF_2  = 0.5
 )
 
+const ALLPASS_COEF = 0.5 // Standard allpass coefficient for optimal diffusion
+
 const (
 	NOISE_LFSR_SEED = 0x7FFFFF // 23-bit LFSR seed
 	NOISE_LFSR_MASK = 0x7FFFFF // 23-bit mask
@@ -650,7 +652,7 @@ func (chip *SoundChip) applyReverb(input float32) float32 {
 	// - Uses 4 parallel comb filters with prime-length delays (1687,1601,2053,2251)
 	//   to create dense, natural-sounding echoes without metallic resonances
 	// - Each comb has scaled decay (0.97,0.95,0.93,0.91) for smooth high-frequency damping
-	// - Two allpass filters (389,307 samples) with different coefficients (0.7,0.5)
+	// - Two allpass filters (389,307 samples) with coefficient 0.5
 	//   provide additional diffusion without coloring the sound
 	// - Delay lengths chosen to avoid arithmetic relationships that cause
 	//   artificial-sounding periodicity
@@ -674,9 +676,8 @@ func (chip *SoundChip) applyReverb(input float32) float32 {
 	for i := 0; i < 2; i++ {
 		pos := chip.allpassPos[i]
 		buf := chip.allpassBuf[i]
-		coef := []float32{ALLPASS_COEF_1, ALLPASS_COEF_2}[i]
 		delayed := buf[pos]
-		buf[pos] = out + delayed*coef
+		buf[pos] = out + delayed*ALLPASS_COEF
 		out = delayed - out
 		chip.allpassPos[i] = (pos + 1) % len(buf)
 	}
