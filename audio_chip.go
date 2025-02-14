@@ -587,8 +587,8 @@ func (chip *SoundChip) GenerateSample() float32 {
 		modulatedCutoff := chip.filterCutoff
 		// Apply modulation if enabled
 		if chip.filterModSource != nil {
-			modSignal := chip.filterModSource.prevRawSample * chip.filterModAmount * 2.0
-			const MAX_CUTOFF = 0.95 // Stay below Nyquist
+			modSignal := chip.filterModSource.prevRawSample * chip.filterModAmount
+			const MAX_CUTOFF = 0.95
 			modulatedCutoff = chip.filterCutoff + modSignal
 			modulatedCutoff = float32(math.Max(math.Min(float64(modulatedCutoff), MAX_CUTOFF), 0.0))
 		}
