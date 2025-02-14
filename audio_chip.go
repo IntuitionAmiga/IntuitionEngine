@@ -484,9 +484,7 @@ func (ch *Channel) generateSample() float32 {
 		currentDuty := ch.dutyCycle
 		if ch.pwmEnabled {
 			ch.pwmPhase += ch.pwmRate * (2 * math.Pi / SAMPLE_RATE)
-			if ch.pwmPhase >= 2*math.Pi {
-				ch.pwmPhase -= 2 * math.Pi
-			}
+			ch.pwmPhase = float32(math.Mod(float64(ch.pwmPhase), 2*math.Pi))
 			lfo := float32(math.Abs(float64(2*(ch.pwmPhase/(2*math.Pi))-1)))*2 - 1
 			currentDuty = ch.dutyCycle + lfo*ch.pwmDepth
 			if currentDuty < 0 {
