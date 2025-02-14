@@ -203,6 +203,13 @@ const (
 	ALLPASS_DELAY = 389
 )
 
+const (
+	COMB_DECAY_1 = 0.97
+	COMB_DECAY_2 = 0.95
+	COMB_DECAY_3 = 0.93
+	COMB_DECAY_4 = 0.91
+)
+
 func NewSoundChip(backend int) (*SoundChip, error) {
 	// Initialize sound chip with default settings
 	chip := &SoundChip{
@@ -237,7 +244,7 @@ func NewSoundChip(backend int) (*SoundChip, error) {
 	for i := range chip.combFilters {
 		chip.combFilters[i] = CombFilter{
 			buffer: make([]float32, combLengths[i]),
-			decay:  0.95,
+			decay:  []float32{COMB_DECAY_1, COMB_DECAY_2, COMB_DECAY_3, COMB_DECAY_4}[i] * 0.5,
 		}
 	}
 
