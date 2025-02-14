@@ -636,7 +636,7 @@ func (chip *SoundChip) GenerateSample() float32 {
 
 	// Apply overdrive after filter
 	if chip.overdriveLevel > 0 {
-		driven := sample * chip.overdriveLevel * 2.0
+		driven := sample * chip.overdriveLevel
 		sample = float32(math.Tanh(float64(driven)))
 	}
 
