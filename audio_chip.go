@@ -525,9 +525,9 @@ func (ch *Channel) generateSample() float32 {
 		for i := 0; i < steps; i++ {
 			switch ch.noiseMode {
 			case NOISE_MODE_WHITE:
-				// XOR bits 0 and 5 (23-bit Galois LFSR)
-				newBit := ((ch.noiseSR & 1) ^ ((ch.noiseSR >> 5) & 1)) & 1
-				ch.noiseSR = (ch.noiseSR >> 1) | (newBit<<22)&NOISE_LFSR_MASK
+				// White noise mode - maximal length sequence using taps 23,18
+				newBit := ((ch.noiseSR >> 22) ^ (ch.noiseSR >> 17)) & 1
+				ch.noiseSR = ((ch.noiseSR << 1) | newBit) & NOISE_LFSR_MASK
 			case NOISE_MODE_PERIODIC:
 				// Rotate bits (periodic noise)
 				ch.noiseSR = ((ch.noiseSR >> 1) | ((ch.noiseSR & 1) << 22)) & NOISE_LFSR_MASK
@@ -644,8 +644,6 @@ func (chip *SoundChip) GenerateSample() float32 {
 
 	// Clamp final output
 	return float32(math.Max(math.Min(float64(sample), 1.0), -1.0))
-
-	return sample
 }
 func (chip *SoundChip) applyReverb(input float32) float32 {
 	// Reverb configuration:
