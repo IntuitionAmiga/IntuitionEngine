@@ -150,51 +150,69 @@ func NewVideoChip(backend int) (*VideoChip, error) {
 	return chip, nil
 }
 
-func (chip *VideoChip) scaleImageToMode(imgData []byte, width, height int, mode VideoMode) []byte {
-	if width == mode.width && height == mode.height {
-		return imgData
-	}
-
+func (chip *VideoChip) scaleImageToMode(imgData []byte, srcWidth, srcHeight int, mode VideoMode) []byte {
 	scaled := make([]byte, mode.totalSize)
-	scaleX := float64(width) / float64(mode.width)
-
-	// Calculate vertical centering offset
-	yOffset := (mode.height - height) / 2
+	scaleX := float64(srcWidth) / float64(mode.width)
+	yOffset := (mode.height - srcHeight) / 2
 
 	for y := 0; y < mode.height; y++ {
-		srcY := y - yOffset
-
-		// Skip rows outside source image bounds
-		if srcY < 0 || srcY >= height {
+		srcY := float64(y - yOffset)
+		if srcY < 0 || srcY >= float64(srcHeight-1) {
 			continue
 		}
 
 		for x := 0; x < mode.width; x++ {
-			srcX := int(float64(x) * scaleX)
-			if srcX >= width {
+			srcX := float64(x) * scaleX
+			if srcX >= float64(srcWidth-1) {
 				continue
 			}
 
-			srcIdx := (srcY*width + srcX) * 4
+			// Get surrounding pixels
+			x0, y0 := int(srcX), int(srcY)
+			x1, y1 := min(x0+1, srcWidth-1), min(y0+1, srcHeight-1)
+			fx, fy := srcX-float64(x0), srcY-float64(y0)
+
+			// Sample four corners
 			dstIdx := (y*mode.width + x) * 4
-			copy(scaled[dstIdx:dstIdx+4], imgData[srcIdx:srcIdx+4])
+
+			// Top-left
+			idx00 := (y0*srcWidth + x0) * 4
+			r00, g00, b00, a00 := imgData[idx00], imgData[idx00+1], imgData[idx00+2], imgData[idx00+3]
+
+			// Top-right
+			idx10 := (y0*srcWidth + x1) * 4
+			r10, g10, b10, a10 := imgData[idx10], imgData[idx10+1], imgData[idx10+2], imgData[idx10+3]
+
+			// Bottom-left
+			idx01 := (y1*srcWidth + x0) * 4
+			r01, g01, b01, a01 := imgData[idx01], imgData[idx01+1], imgData[idx01+2], imgData[idx01+3]
+
+			// Bottom-right
+			idx11 := (y1*srcWidth + x1) * 4
+			r11, g11, b11, a11 := imgData[idx11], imgData[idx11+1], imgData[idx11+2], imgData[idx11+3]
+
+			// Bilinear interpolation
+			scaled[dstIdx] = byte(float64(r00)*(1-fx)*(1-fy) + float64(r10)*fx*(1-fy) +
+				float64(r01)*(1-fx)*fy + float64(r11)*fx*fy)
+			scaled[dstIdx+1] = byte(float64(g00)*(1-fx)*(1-fy) + float64(g10)*fx*(1-fy) +
+				float64(g01)*(1-fx)*fy + float64(g11)*fx*fy)
+			scaled[dstIdx+2] = byte(float64(b00)*(1-fx)*(1-fy) + float64(b10)*fx*(1-fy) +
+				float64(b01)*(1-fx)*fy + float64(b11)*fx*fy)
+			scaled[dstIdx+3] = byte(float64(a00)*(1-fx)*(1-fy) + float64(a10)*fx*(1-fy) +
+				float64(a01)*(1-fx)*fy + float64(a11)*fx*fy)
 		}
 	}
-
 	return scaled
 }
 
-func (chip *VideoChip) Start() {
+func (chip *VideoChip) Start() error {
 	chip.mutex.Lock()
 	defer chip.mutex.Unlock()
-
 	chip.enabled = true
 	if chip.output != nil {
-		err := chip.output.Start()
-		if err != nil {
-			return
-		}
+		return chip.output.Start()
 	}
+	return nil
 }
 
 func (chip *VideoChip) Stop() {
@@ -219,10 +237,10 @@ func (chip *VideoChip) initializeDirtyGrid(mode VideoMode) {
 func (chip *VideoChip) markRegionDirty(x, y int) {
 	regionX := x / DIRTY_REGION_SIZE
 	regionY := y / DIRTY_REGION_SIZE
-	regionIdx := regionY*chip.dirtyRowStride + regionX
+	regionKey := (regionY << 16) | regionX // Unique key using bit shifting
 
-	if region, exists := chip.dirtyRegions[regionIdx]; !exists || region.lastUpdated != chip.frameCounter {
-		chip.dirtyRegions[regionIdx] = DirtyRegion{
+	if region, exists := chip.dirtyRegions[regionKey]; !exists || region.lastUpdated != chip.frameCounter {
+		chip.dirtyRegions[regionKey] = DirtyRegion{
 			x:           regionX * DIRTY_REGION_SIZE,
 			y:           regionY * DIRTY_REGION_SIZE,
 			width:       DIRTY_REGION_SIZE,
@@ -233,21 +251,33 @@ func (chip *VideoChip) markRegionDirty(x, y int) {
 }
 
 func (chip *VideoChip) refreshLoop() {
+	ticker := time.NewTicker(time.Second / 60)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case <-chip.done:
 			return
-
-		default:
+		case <-ticker.C:
 			if !chip.enabled {
-				time.Sleep(time.Millisecond * 16)
 				continue
 			}
 
 			chip.mutex.Lock()
 			if chip.hasContent {
 				if len(chip.dirtyRegions) > 0 {
-					copy(chip.backBuffer, chip.frontBuffer)
+					mode := VideoModes[chip.currentMode]
+					// Only copy dirty regions
+					for _, region := range chip.dirtyRegions {
+						for y := 0; y < region.height; y++ {
+							srcOffset := ((region.y + y) * mode.bytesPerRow) + (region.x * 4)
+							copyLen := region.width * 4
+							if srcOffset+copyLen <= len(chip.frontBuffer) {
+								copy(chip.backBuffer[srcOffset:srcOffset+copyLen],
+									chip.frontBuffer[srcOffset:srcOffset+copyLen])
+							}
+						}
+					}
 					chip.dirtyRegions = make(map[int]DirtyRegion)
 					chip.frontBuffer, chip.backBuffer = chip.backBuffer, chip.frontBuffer
 					chip.frameCounter++
@@ -264,18 +294,9 @@ func (chip *VideoChip) refreshLoop() {
 				}
 			}
 			chip.mutex.Unlock()
-			time.Sleep(time.Millisecond)
 		}
 	}
 }
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 func (chip *VideoChip) HandleRead(addr uint32) uint32 {
 	chip.mutex.RLock()
 	defer chip.mutex.RUnlock()
@@ -288,10 +309,12 @@ func (chip *VideoChip) HandleRead(addr uint32) uint32 {
 	case VIDEO_STATUS:
 		return btou32(chip.hasContent)
 	default:
-		// Handle VRAM reads
 		if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
 			offset := addr - VRAM_START
-			return binary.LittleEndian.Uint32(chip.frontBuffer[offset : offset+4])
+			if offset+4 > uint32(len(chip.frontBuffer)) || offset%4 != 0 {
+				return 0
+			}
+			return binary.LittleEndian.Uint32(chip.frontBuffer[offset:])
 		}
 	}
 	return 0
@@ -345,20 +368,14 @@ func (chip *VideoChip) HandleWrite(addr uint32, value uint32) {
 			chip.initializeDirtyGrid(mode)
 		}
 	default:
-		// Handle VRAM writes
 		if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
 			offset := addr - VRAM_START
+			if offset+4 > uint32(len(chip.frontBuffer)) || offset%4 != 0 {
+				return
+			}
 			mode := VideoModes[chip.currentMode]
+			binary.LittleEndian.PutUint32(chip.frontBuffer[offset:], value)
 
-			// Convert RGBA value and update buffers
-			r := byte(value >> 24)
-			g := byte(value >> 16)
-			b := byte(value >> 8)
-			a := byte(value)
-			screenValue := uint32(r) | uint32(g)<<8 | uint32(b)<<16 | uint32(a)<<24
-			binary.LittleEndian.PutUint32(chip.frontBuffer[offset:offset+4], screenValue)
-
-			// Mark region as dirty
 			startPixel := offset / 4
 			startX := int(startPixel) % mode.width
 			startY := int(startPixel) / mode.width
