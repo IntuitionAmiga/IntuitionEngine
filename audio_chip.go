@@ -538,7 +538,7 @@ func (chip *SoundChip) GenerateSample() float32 {
 	var sample float32
 
 	// Generate raw samples from each channel
-	for i := 3; i >= 0; i-- {
+	for i := 0; i < 4; i++ { // Process channels 0, 1, 2, 3
 		ch := chip.channels[i]
 		if ch.enabled {
 			sample += ch.generateSample() * 0.25
