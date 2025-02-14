@@ -160,6 +160,13 @@ type Channel struct {
 	syncSource   *Channel // Master oscillator to sync to
 	phaseWrapped bool     // Flag for phase reset tracking
 }
+
+type CombFilter struct {
+	buffer []float32
+	pos    int
+	decay  float32
+}
+
 type SoundChip struct {
 	channels [4]*Channel
 	enabled  bool
@@ -183,20 +190,28 @@ type SoundChip struct {
 
 	// Reverb effect
 	reverbMix   float32
-	reverbDecay float32
-	reverbBuf   [4][]float32 // 4 comb filters
-	reverbPos   [4]int       // Buffer positions
-	allpassBuf  [2][]float32 // 2 allpass filters
+	combFilters [4]CombFilter
+	allpassBuf  [2][]float32
 	allpassPos  [2]int
 }
 
+const (
+	COMB_DELAY_1  = 1687
+	COMB_DELAY_2  = 1601
+	COMB_DELAY_3  = 2053
+	COMB_DELAY_4  = 2251
+	ALLPASS_DELAY = 389
+)
+
 func NewSoundChip(backend int) (*SoundChip, error) {
+	// Initialize sound chip with default settings
 	chip := &SoundChip{
 		filterLP: 0.0,
 		filterBP: 0.0,
 		filterHP: 0.0,
 	}
 
+	// Initialize channels
 	for i := 0; i < 4; i++ {
 		chip.channels[i] = &Channel{
 			waveType:      i,
@@ -210,18 +225,25 @@ func NewSoundChip(backend int) (*SoundChip, error) {
 		}
 	}
 
+	// Initialize audio output
 	output, err := NewAudioOutput(backend, SAMPLE_RATE, chip)
 	if err != nil {
 		return nil, err
 	}
 	chip.output = output
 
-	// Initialize reverb buffers (prime lengths for diffusion)
-	for i := range chip.reverbBuf {
-		chip.reverbBuf[i] = make([]float32, []int{1687, 1601, 2053, 2251}[i])
+	// Initialize comb filters
+	combLengths := []int{COMB_DELAY_1, COMB_DELAY_2, COMB_DELAY_3, COMB_DELAY_4}
+	for i := range chip.combFilters {
+		chip.combFilters[i] = CombFilter{
+			buffer: make([]float32, combLengths[i]),
+			decay:  0.95,
+		}
 	}
+
+	// Initialize allpass filters
 	for i := range chip.allpassBuf {
-		chip.allpassBuf[i] = make([]float32, 389)
+		chip.allpassBuf[i] = make([]float32, ALLPASS_DELAY)
 	}
 
 	return chip, nil
@@ -326,7 +348,11 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 	case REVERB_MIX:
 		chip.reverbMix = float32(value) / 256.0
 	case REVERB_DECAY:
-		chip.reverbDecay = 0.1 + (float32(value)/256.0)*0.89 // 0.1-0.99 decay
+		baseDecay := 0.1 + (float32(value)/256.0)*0.89
+		chip.combFilters[0].decay = baseDecay * 0.97
+		chip.combFilters[1].decay = baseDecay * 0.95
+		chip.combFilters[2].decay = baseDecay * 0.93
+		chip.combFilters[3].decay = baseDecay * 0.91
 	}
 }
 
@@ -604,18 +630,16 @@ func (chip *SoundChip) GenerateSample() float32 {
 	return sample
 }
 func (chip *SoundChip) applyReverb(input float32) float32 {
-	// Comb filters
 	var out float32
 	for i := 0; i < 4; i++ {
-		pos := chip.reverbPos[i]
-		buf := chip.reverbBuf[i]
-		delayed := buf[pos]
-		buf[pos] = input + delayed*chip.reverbDecay
+		comb := &chip.combFilters[i]
+		delayed := comb.buffer[comb.pos]
+		comb.buffer[comb.pos] = input + delayed*comb.decay
 		out += delayed
-		chip.reverbPos[i] = (pos + 1) % len(buf)
+		comb.pos = (comb.pos + 1) % len(comb.buffer)
 	}
 
-	// Allpass filters
+	// Allpass filters remain unchanged
 	for i := 0; i < 2; i++ {
 		pos := chip.allpassPos[i]
 		buf := chip.allpassBuf[i]
@@ -625,7 +649,7 @@ func (chip *SoundChip) applyReverb(input float32) float32 {
 		chip.allpassPos[i] = (pos + 1) % len(buf)
 	}
 
-	return out * 0.3 // Attenuate to prevent overflow
+	return out * 0.3
 }
 
 func (chip *SoundChip) ReadSample() float32 {
