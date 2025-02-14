@@ -527,78 +527,6 @@ func (ch *Channel) generateSample() float32 {
 	return rawSample * ch.volume * ch.envelopeLevel
 }
 
-//	func (chip *SoundChip) GenerateSample() float32 {
-//		chip.mutex.RLock()
-//		defer chip.mutex.RUnlock()
-//
-//		if !chip.enabled {
-//			return 0
-//		}
-//
-//		var sample float32
-//
-//		for i := 3; i >= 0; i-- { // Process channels 3, 2, 1, 0
-//			ch := chip.channels[i]
-//			if ch.enabled {
-//				sample += ch.generateSample() * 0.25
-//			}
-//		}
-//
-//		// Apply global filter with modulation
-//		if chip.filterType != 0 && chip.filterCutoff > 0 {
-//			// Modulate cutoff using the assigned source channel
-//			modulatedCutoff := chip.filterCutoff
-//			if chip.filterModSource != nil {
-//				// Use the modulation source's raw waveform (pre-envelope/volume)
-//				modSignal := chip.filterModSource.prevRawSample * chip.filterModAmount
-//				modulatedCutoff += modSignal
-//				// Clamp to valid range
-//				modulatedCutoff = float32(math.Max(float64(modulatedCutoff), 0.0))
-//				modulatedCutoff = float32(math.Min(float64(modulatedCutoff), 1.0))
-//			}
-//
-//			cutoff := float32(2.0*math.Pi) * modulatedCutoff * 20000.0 / SAMPLE_RATE
-//			resonance := chip.filterResonance * 4.0
-//
-//			// State-variable filter math
-//			lp := chip.filterLP + cutoff*chip.filterBP
-//			hp := (sample - lp) - resonance*chip.filterBP
-//			bp := chip.filterBP + cutoff*hp
-//
-//			// Clamp using math.Max/Math.Min with float64 conversions
-//			lp = float32(math.Max(float64(lp), -1.0))
-//			lp = float32(math.Min(float64(lp), 1.0))
-//			bp = float32(math.Max(float64(bp), -1.0))
-//			bp = float32(math.Min(float64(bp), 1.0))
-//			hp = float32(math.Max(float64(hp), -1.0))
-//			hp = float32(math.Min(float64(hp), 1.0))
-//
-//			chip.filterLP = lp
-//			chip.filterBP = bp
-//			chip.filterHP = hp
-//
-//			switch chip.filterType {
-//			case 1:
-//				sample = chip.filterLP
-//			case 2:
-//				sample = chip.filterHP
-//			case 3:
-//				sample = chip.filterBP
-//			}
-//		}
-//
-//		// Apply overdrive
-//		if chip.overdriveLevel > 0 {
-//			driven := sample * chip.overdriveLevel
-//			sample = float32(math.Tanh(float64(driven))) // Soft clipping
-//		}
-//
-//		// Apply reverb
-//		wet := chip.applyReverb(sample)
-//		sample = sample*(1-chip.reverbMix) + wet*chip.reverbMix
-//
-//		return sample
-//	}
 func (chip *SoundChip) GenerateSample() float32 {
 	chip.mutex.RLock()
 	defer chip.mutex.RUnlock()
@@ -628,9 +556,9 @@ func (chip *SoundChip) GenerateSample() float32 {
 		modulatedCutoff := chip.filterCutoff
 		if chip.filterModSource != nil {
 			modSignal := chip.filterModSource.prevRawSample * chip.filterModAmount * 2.0
+			const MAX_CUTOFF = 0.95 // Stay below Nyquist
 			modulatedCutoff = chip.filterCutoff + modSignal
-			modulatedCutoff = float32(math.Max(float64(modulatedCutoff), 0.0))
-			modulatedCutoff = float32(math.Min(float64(modulatedCutoff), 2.0))
+			modulatedCutoff = float32(math.Max(math.Min(float64(modulatedCutoff), MAX_CUTOFF), 0.0))
 		}
 
 		cutoff := float32(2.0*math.Pi) * modulatedCutoff * 20000.0 / SAMPLE_RATE
