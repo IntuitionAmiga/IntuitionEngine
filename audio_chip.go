@@ -193,7 +193,11 @@ type SoundChip struct {
 	combFilters [4]CombFilter
 	allpassBuf  [2][]float32
 	allpassPos  [2]int
+	preDelayBuf []float32
+	preDelayPos int
 }
+
+const PRE_DELAY_MS = 8 // 8ms pre-delay
 
 const (
 	COMB_DELAY_1 = 1687
@@ -225,9 +229,10 @@ const (
 func NewSoundChip(backend int) (*SoundChip, error) {
 	// Initialize sound chip with default settings
 	chip := &SoundChip{
-		filterLP: 0.0,
-		filterBP: 0.0,
-		filterHP: 0.0,
+		filterLP:    0.0,
+		filterBP:    0.0,
+		filterHP:    0.0,
+		preDelayBuf: make([]float32, PRE_DELAY_MS*SAMPLE_RATE/1000),
 	}
 
 	// Initialize channels
@@ -654,35 +659,42 @@ func (chip *SoundChip) applyReverb(input float32) float32 {
 	// - Each comb has scaled decay (0.97,0.95,0.93,0.91) for smooth high-frequency damping
 	// - Two allpass filters (389,307 samples) with coefficient 0.5
 	//   provide additional diffusion without coloring the sound
+	// - 8ms pre-delay separates direct sound from early reflections
 	// - Delay lengths chosen to avoid arithmetic relationships that cause
 	//   artificial-sounding periodicity
-
+	//
 	// Reverb stages:
-	// 1. Input splits to parallel comb filters
-	// 2. Comb outputs sum and feed into series allpass filters
-	// 3. Final mix between dry/wet signals
+	// 1. Input pre-delayed for spatial separation
+	// 2. Pre-delayed signal splits to parallel comb filters
+	// 3. Comb outputs sum and feed into series allpass filters
+	// 4. Final mix between dry/wet signals
 
+	// Apply pre-delay
+	delayed := chip.preDelayBuf[chip.preDelayPos]
+	chip.preDelayBuf[chip.preDelayPos] = input
+	chip.preDelayPos = (chip.preDelayPos + 1) % len(chip.preDelayBuf)
+
+	// Process comb filters
 	var out float32
-	// Comb filters
 	for i := 0; i < 4; i++ {
 		comb := &chip.combFilters[i]
-		delayed := comb.buffer[comb.pos]
-		comb.buffer[comb.pos] = input + delayed*comb.decay
-		out += delayed
+		cDelay := comb.buffer[comb.pos]
+		comb.buffer[comb.pos] = delayed + cDelay*comb.decay
+		out += cDelay
 		comb.pos = (comb.pos + 1) % len(comb.buffer)
 	}
 
-	// Allpass filters
+	// Process allpass filters
 	for i := 0; i < 2; i++ {
 		pos := chip.allpassPos[i]
 		buf := chip.allpassBuf[i]
-		delayed := buf[pos]
-		buf[pos] = out + delayed*ALLPASS_COEF
-		out = delayed - out
+		aDelay := buf[pos]
+		buf[pos] = out + aDelay*ALLPASS_COEF
+		out = aDelay - out
 		chip.allpassPos[i] = (pos + 1) % len(buf)
 	}
 
-	return out * 0.3
+	return out * 0.3 // Attenuate to prevent overflow
 }
 
 func (chip *SoundChip) ReadSample() float32 {
