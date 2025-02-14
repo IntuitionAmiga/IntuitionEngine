@@ -642,6 +642,9 @@ func (chip *SoundChip) GenerateSample() float32 {
 	wet := chip.applyReverb(sample)
 	sample = sample*(1-chip.reverbMix) + wet*chip.reverbMix
 
+	// Clamp final output
+	return float32(math.Max(math.Min(float64(sample), 1.0), -1.0))
+
 	return sample
 }
 func (chip *SoundChip) applyReverb(input float32) float32 {
