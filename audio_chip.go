@@ -527,14 +527,14 @@ func (ch *Channel) generateSample() float32 {
 		for i := 0; i < steps; i++ {
 			switch ch.noiseMode {
 			case NOISE_MODE_WHITE:
-				// White noise mode - maximal length sequence using taps 23,18
+				// Using taps 23,18 for maximal-length sequence (period: 2^23-1)
 				newBit := ((ch.noiseSR >> 22) ^ (ch.noiseSR >> 17)) & 1
 				ch.noiseSR = ((ch.noiseSR << 1) | newBit) & NOISE_LFSR_MASK
 			case NOISE_MODE_PERIODIC:
-				// Rotate bits (periodic noise)
+				// Simple bit rotation for repeating patterns
 				ch.noiseSR = ((ch.noiseSR >> 1) | ((ch.noiseSR & 1) << 22)) & NOISE_LFSR_MASK
 			case NOISE_MODE_METALLIC:
-				// XOR bits 0 and 2 (metallic noise)
+				// XOR taps 3,1 for harsher, metallic tone
 				newBit := ((ch.noiseSR & 1) ^ ((ch.noiseSR >> 2) & 1)) & 1
 				ch.noiseSR = (ch.noiseSR >> 1) | (newBit<<22)&NOISE_LFSR_MASK
 			}
