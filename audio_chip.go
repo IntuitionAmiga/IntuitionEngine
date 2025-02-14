@@ -251,11 +251,9 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 
 	switch addr {
 	case SQUARE_PWM_CTRL:
-		ch := chip.channels[0]                 // Square wave is channel 0
 		ch.pwmEnabled = (value & 0x80) != 0    // Bit 7 = enable
 		ch.pwmRate = float32(value&0x7F) * 0.1 // Rate: 0–12.7 Hz (7 bits)
 	case SQUARE_DUTY:
-		ch := chip.channels[0]
 		value16 := uint16(value & 0xFFFF) // Ensure 16-bit value
 		ch.dutyCycle = float32(value16&0xFF) / 256.0
 		ch.pwmDepth = float32((value16>>8)&0xFF) / 256.0
