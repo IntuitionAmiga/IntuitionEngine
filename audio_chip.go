@@ -545,13 +545,7 @@ func (chip *SoundChip) GenerateSample() float32 {
 		}
 	}
 
-	// Apply overdrive before filter
-	if chip.overdriveLevel > 0 {
-		driven := sample * chip.overdriveLevel * 2.0
-		sample = float32(math.Tanh(float64(driven)))
-	}
-
-	// Apply global filter with modulation
+	// Apply global filter first
 	if chip.filterType != 0 && chip.filterCutoff > 0 {
 		// Default to no modulation
 		modulatedCutoff := chip.filterCutoff
@@ -597,13 +591,18 @@ func (chip *SoundChip) GenerateSample() float32 {
 		}
 	}
 
+	// Apply overdrive after filter
+	if chip.overdriveLevel > 0 {
+		driven := sample * chip.overdriveLevel * 2.0
+		sample = float32(math.Tanh(float64(driven)))
+	}
+
 	// Apply reverb
 	wet := chip.applyReverb(sample)
 	sample = sample*(1-chip.reverbMix) + wet*chip.reverbMix
 
 	return sample
 }
-
 func (chip *SoundChip) applyReverb(input float32) float32 {
 	// Comb filters
 	var out float32
