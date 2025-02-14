@@ -553,7 +553,9 @@ func (chip *SoundChip) GenerateSample() float32 {
 
 	// Apply global filter with modulation
 	if chip.filterType != 0 && chip.filterCutoff > 0 {
+		// Default to no modulation
 		modulatedCutoff := chip.filterCutoff
+		// Apply modulation if enabled
 		if chip.filterModSource != nil {
 			modSignal := chip.filterModSource.prevRawSample * chip.filterModAmount * 2.0
 			const MAX_CUTOFF = 0.95 // Stay below Nyquist
@@ -561,13 +563,17 @@ func (chip *SoundChip) GenerateSample() float32 {
 			modulatedCutoff = float32(math.Max(math.Min(float64(modulatedCutoff), MAX_CUTOFF), 0.0))
 		}
 
+		// Convert cutoff to Hz and apply resonance
 		cutoff := float32(2.0*math.Pi) * modulatedCutoff * 20000.0 / SAMPLE_RATE
-		resonance := chip.filterResonance * 8.0
+		const MAX_RESONANCE = 4.0
+		resonance := chip.filterResonance * MAX_RESONANCE
 
+		// 2-pole resonant filter (state variable)
 		lp := chip.filterLP + cutoff*chip.filterBP
 		hp := (sample - lp) - resonance*chip.filterBP
 		bp := chip.filterBP + cutoff*hp
 
+		// Clamp to prevent overflow
 		lp = float32(math.Max(float64(lp), -1.0))
 		lp = float32(math.Min(float64(lp), 1.0))
 		bp = float32(math.Max(float64(bp), -1.0))
@@ -575,10 +581,12 @@ func (chip *SoundChip) GenerateSample() float32 {
 		hp = float32(math.Max(float64(hp), -1.0))
 		hp = float32(math.Min(float64(hp), 1.0))
 
+		// Update filter states
 		chip.filterLP = lp
 		chip.filterBP = bp
 		chip.filterHP = hp
 
+		// Output based on filter type
 		switch chip.filterType {
 		case 1:
 			sample = chip.filterLP
