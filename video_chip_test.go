@@ -57,7 +57,7 @@ func TestDrawColourPalette(t *testing.T) {
 			}
 
 			// Create RGBA value (full opacity)
-			color := (r << 24) | (g << 16) | (b << 8) | 0xFF
+			color := (0xFF << 24) | (b << 16) | (g << 8) | r
 
 			// Calculate memory address for this pixel
 			addr := VRAM_START + uint32(pixelIndex*4)
@@ -128,7 +128,7 @@ func TestRotatingCube(t *testing.T) {
 	startTime := time.Now()
 
 	// Animate for 5 seconds
-	for time.Since(startTime) < 5*time.Second {
+	for time.Since(startTime) < 10*time.Second {
 		// Clear screen
 		clearScreen(videoChip, mode)
 
@@ -183,11 +183,11 @@ func TestFireEffect(t *testing.T) {
 		r := min(255, i*2)
 		g := max(0, min(255, (i-64)*4))
 		b := max(0, min(255, (i-128)*4))
-		palette[i] = (uint32(r) << 24) | (uint32(g) << 16) | (uint32(b) << 8) | 0xFF
+		palette[i] = (0xFF << 24) | (uint32(b) << 16) | (uint32(g) << 8) | uint32(r)
 	}
 
 	startTime := time.Now()
-	for time.Since(startTime) < 5*time.Second {
+	for time.Since(startTime) < 10*time.Second {
 		// Random noise at bottom
 		for x := 0; x < mode.width; x++ {
 			buffer[mode.height-1][x] = uint8(rand.Intn(256))
@@ -488,7 +488,8 @@ func TestSineScroller(t *testing.T) {
 								r := uint32((math.Sin(hue) + 1.0) * 127)
 								g := uint32((math.Sin(hue+2.0*math.Pi/3.0) + 1.0) * 127)
 								b := uint32((math.Sin(hue+4.0*math.Pi/3.0) + 1.0) * 127)
-								color := (r << 24) | (g << 16) | (b << 8) | 0xFF
+								color := (0xFF << 24) | (b << 16) | (g << 8) | r
+
 								videoChip.HandleWrite(addr, color)
 							}
 						}
@@ -526,7 +527,7 @@ func TestTunnelEffect(t *testing.T) {
 	}
 
 	startTime := time.Now()
-	for time.Since(startTime) < 5*time.Second {
+	for time.Since(startTime) < 10*time.Second {
 		timeVal := float64(time.Since(startTime).Milliseconds()) / 1000.0
 
 		for y := 0; y < mode.height; y++ {
@@ -553,8 +554,7 @@ func TestTunnelEffect(t *testing.T) {
 				r := uint32(intensity * 255)
 				g := uint32(intensity * 128)
 				b := uint32(intensity * 255)
-
-				color := (r << 24) | (g << 16) | (b << 8) | 0xFF
+				color := (0xFF << 24) | (b << 16) | (g << 8) | r
 				addr := VRAM_START + uint32((y*mode.width+x)*4)
 				videoChip.HandleWrite(addr, color)
 			}
@@ -572,16 +572,16 @@ func TestRotozoomer(t *testing.T) {
 	texture := make([]uint32, texSize*texSize)
 	for y := 0; y < texSize; y++ {
 		for x := 0; x < texSize; x++ {
-			if ((x ^ y) & 16) == 0 {
+			if ((x ^ y) & 128) == 0 {
 				texture[y*texSize+x] = 0xFFFFFFFF
 			} else {
-				texture[y*texSize+x] = 0x000000FF
+				texture[y*texSize+x] = 0xFF000000
 			}
 		}
 	}
 
 	startTime := time.Now()
-	for time.Since(startTime) < 5*time.Second {
+	for time.Since(startTime) < 10*time.Second {
 		timeVal := float64(time.Since(startTime).Milliseconds()) / 1000.0
 
 		// Calculate transformation parameters
@@ -634,12 +634,12 @@ func TestStarfield(t *testing.T) {
 	}
 
 	startTime := time.Now()
-	for time.Since(startTime) < 5*time.Second {
+	for time.Since(startTime) < 10*time.Second {
 		// Clear screen
 		for y := 0; y < mode.height; y++ {
 			for x := 0; x < mode.width; x++ {
 				addr := VRAM_START + uint32((y*mode.width+x)*4)
-				videoChip.HandleWrite(addr, 0x000000FF)
+				videoChip.HandleWrite(addr, 0xFF000000)
 			}
 		}
 
@@ -666,7 +666,7 @@ func TestStarfield(t *testing.T) {
 			// Draw star if in bounds
 			if sx >= 0 && sx < mode.width && sy >= 0 && sy < mode.height {
 				intensity := uint32((1.0 - stars[i].z) * 255.0)
-				color := (intensity << 24) | (intensity << 16) | (intensity << 8) | 0xFF
+				color := (0xFF << 24) | (intensity << 16) | (intensity << 8) | intensity
 				addr := VRAM_START + uint32((sy*mode.width+sx)*4)
 				videoChip.HandleWrite(addr, color)
 			}
@@ -679,7 +679,7 @@ func TestPlasmaWaves(t *testing.T) {
 	mode := VideoModes[MODE_640x480]
 	startTime := time.Now()
 
-	for time.Since(startTime) < 5*time.Second {
+	for time.Since(startTime) < 10*time.Second {
 		timeVal := float64(time.Since(startTime).Milliseconds()) / 1000.0
 
 		for y := 0; y < mode.height; y++ {
@@ -716,7 +716,7 @@ func TestPlasmaWaves(t *testing.T) {
 					r, g, b = 1, 0, 1-frac
 				}
 
-				color := (uint32(r*255) << 24) | (uint32(g*255) << 16) | (uint32(b*255) << 8) | 0xFF
+				color := (0xFF << 24) | (uint32(b*255) << 16) | (uint32(g*255) << 8) | uint32(r*255)
 				addr := VRAM_START + uint32((y*mode.width+x)*4)
 				videoChip.HandleWrite(addr, color)
 			}
@@ -748,7 +748,7 @@ func TestMetaballs(t *testing.T) {
 	}
 
 	startTime := time.Now()
-	for time.Since(startTime) < 5*time.Second {
+	for time.Since(startTime) < 10*time.Second {
 		// Update ball positions
 		for i := range balls {
 			balls[i].x += balls[i].dx
@@ -784,7 +784,7 @@ func TestMetaballs(t *testing.T) {
 					b = uint32(v * 255)
 				}
 
-				color := (r << 24) | (g << 16) | (b << 8) | 0xFF
+				color := (0xFF << 24) | (b << 16) | (g << 8) | r
 				addr := VRAM_START + uint32((y*mode.width+x)*4)
 				videoChip.HandleWrite(addr, color)
 			}
@@ -826,12 +826,11 @@ func TestParticles(t *testing.T) {
 	}
 
 	startTime := time.Now()
-	for time.Since(startTime) < 5*time.Second {
-		// Clear screen
+	for time.Since(startTime) < 10*time.Second {
 		for y := 0; y < mode.height; y++ {
 			for x := 0; x < mode.width; x++ {
 				addr := VRAM_START + uint32((y*mode.width+x)*4)
-				videoChip.HandleWrite(addr, 0x000000FF)
+				videoChip.HandleWrite(addr, 0xFF000000) // Black
 			}
 		}
 
@@ -862,8 +861,8 @@ func TestParticles(t *testing.T) {
 			// Draw particle if in bounds
 			if sx >= 0 && sx < mode.width && sy >= 0 && sy < mode.height {
 				intensity := uint32(particles[i].life * 255.0)
-				halfIntensity := uint32(particles[i].life * 127.5) // half brightness for green
-				color := (intensity << 24) | (halfIntensity << 16) | 0x0000FF
+				halfIntensity := uint32(particles[i].life * 127.5)
+				color := (0xFF << 24) | (0 << 16) | (halfIntensity << 8) | intensity
 				addr := VRAM_START + uint32((sy*mode.width+sx)*4)
 				videoChip.HandleWrite(addr, color)
 			}
@@ -880,7 +879,7 @@ func TestMandelbrot(t *testing.T) {
 	centerX := -0.5
 	centerY := 0.0
 
-	for time.Since(startTime) < 5*time.Second {
+	for time.Since(startTime) < 10*time.Second {
 		timeVal := float64(time.Since(startTime).Milliseconds()) / 1000.0
 		zoom := math.Pow(2, timeVal*0.5)
 
@@ -912,7 +911,7 @@ func TestMandelbrot(t *testing.T) {
 				if iter == maxIter {
 					// Point is in set
 					addr := VRAM_START + uint32((y*mode.width+x)*4)
-					videoChip.HandleWrite(addr, 0x000000FF)
+					videoChip.HandleWrite(addr, 0xFF000000) // Black
 				} else {
 					// Smooth coloring
 					v := float64(iter) + 1 - math.Log(math.Log(math.Sqrt(zr*zr+zi*zi)))/math.Log(2)
@@ -939,7 +938,7 @@ func TestMandelbrot(t *testing.T) {
 						r, g, b = 1, 0, 1-frac
 					}
 
-					color := (uint32(r*255) << 24) | (uint32(g*255) << 16) | (uint32(b*255) << 8) | 0xFF
+					color := (0xFF << 24) | (uint32(b*255) << 16) | (uint32(g*255) << 8) | uint32(r*255)
 					addr := VRAM_START + uint32((y*mode.width+x)*4)
 					videoChip.HandleWrite(addr, color)
 				}
@@ -969,7 +968,7 @@ func clearScreen(vc *VideoChip, mode VideoMode) {
 	for y := 0; y < mode.height; y++ {
 		for x := 0; x < mode.width; x++ {
 			addr := VRAM_START + uint32((y*mode.width+x)*4)
-			vc.HandleWrite(addr, 0x000000FF)
+			vc.HandleWrite(addr, 0xFF000000) // Opaque black
 		}
 	}
 }
