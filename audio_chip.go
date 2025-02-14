@@ -534,9 +534,9 @@ func (ch *Channel) generateSample() float32 {
 				// Simple bit rotation for repeating patterns
 				ch.noiseSR = ((ch.noiseSR >> 1) | ((ch.noiseSR & 1) << 22)) & NOISE_LFSR_MASK
 			case NOISE_MODE_METALLIC:
-				// XOR taps 3,1 for harsher, metallic tone
-				newBit := ((ch.noiseSR & 1) ^ ((ch.noiseSR >> 2) & 1)) & 1
-				ch.noiseSR = (ch.noiseSR >> 1) | (newBit<<22)&NOISE_LFSR_MASK
+				// XOR taps 23,15 for metallic tone with longer period
+				newBit := ((ch.noiseSR >> 22) ^ (ch.noiseSR >> 14)) & 1
+				ch.noiseSR = ((ch.noiseSR << 1) | newBit) & NOISE_LFSR_MASK
 			}
 		}
 
