@@ -196,11 +196,10 @@ type SoundChip struct {
 }
 
 const (
-	COMB_DELAY_1  = 1687
-	COMB_DELAY_2  = 1601
-	COMB_DELAY_3  = 2053
-	COMB_DELAY_4  = 2251
-	ALLPASS_DELAY = 389
+	COMB_DELAY_1 = 1687
+	COMB_DELAY_2 = 1601
+	COMB_DELAY_3 = 2053
+	COMB_DELAY_4 = 2251
 )
 
 const (
@@ -208,6 +207,12 @@ const (
 	COMB_DECAY_2 = 0.95
 	COMB_DECAY_3 = 0.93
 	COMB_DECAY_4 = 0.91
+)
+const (
+	ALLPASS_DELAY_1 = 389
+	ALLPASS_DELAY_2 = 307
+	ALLPASS_COEF_1  = 0.7
+	ALLPASS_COEF_2  = 0.5
 )
 
 const (
@@ -255,7 +260,7 @@ func NewSoundChip(backend int) (*SoundChip, error) {
 
 	// Initialize allpass filters
 	for i := range chip.allpassBuf {
-		chip.allpassBuf[i] = make([]float32, ALLPASS_DELAY)
+		chip.allpassBuf[i] = make([]float32, []int{ALLPASS_DELAY_1, ALLPASS_DELAY_2}[i])
 	}
 
 	return chip, nil
@@ -641,6 +646,7 @@ func (chip *SoundChip) GenerateSample() float32 {
 }
 func (chip *SoundChip) applyReverb(input float32) float32 {
 	var out float32
+	// Comb filters
 	for i := 0; i < 4; i++ {
 		comb := &chip.combFilters[i]
 		delayed := comb.buffer[comb.pos]
@@ -649,12 +655,13 @@ func (chip *SoundChip) applyReverb(input float32) float32 {
 		comb.pos = (comb.pos + 1) % len(comb.buffer)
 	}
 
-	// Allpass filters remain unchanged
+	// Allpass filters
 	for i := 0; i < 2; i++ {
 		pos := chip.allpassPos[i]
 		buf := chip.allpassBuf[i]
+		coef := []float32{ALLPASS_COEF_1, ALLPASS_COEF_2}[i]
 		delayed := buf[pos]
-		buf[pos] = out + delayed*0.5
+		buf[pos] = out + delayed*coef
 		out = delayed - out
 		chip.allpassPos[i] = (pos + 1) % len(buf)
 	}
