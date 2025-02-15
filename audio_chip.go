@@ -109,92 +109,88 @@ const (
 )
 
 type Channel struct {
-	waveType   int
-	frequency  float32
-	volume     float32
-	enabled    bool
-	phase      float32
-	noiseValue float32
+	// Hot fields accessed every sample generation (cache line 1)
+	// These fields are read/written on each output sample
+	frequency        float32 // Base frequency of oscillator
+	phase            float32 // Current phase position in waveform
+	volume           float32 // Channel volume (0.0-1.0)
+	envelopeLevel    float32 // Current envelope amplitude
+	prevRawSample    float32 // Previous output (needed for ring modulation)
+	dutyCycle        float32 // Square wave duty cycle (0.0-1.0)
+	noisePhase       float32 // Phase accumulator for noise timing
+	noiseValue       float32 // Current noise generator output
+	noiseFilter      float32 // Noise filter coefficient
+	noiseFilterState float32 // Noise filter state variable
+	noiseSR          uint32  // Noise shift register state
 
-	// Noise generation
-	noiseSR     uint32
-	noisePhase  float32
-	noiseFilter float32
+	// Envelope and modulation parameters (cache line 2)
+	// Accessed during envelope and modulation updates
+	sustainLevel float32 // Envelope sustain level (0.0-1.0)
+	pwmRate      float32 // PWM modulation rate (Hz)
+	pwmDepth     float32 // PWM modulation depth (0.0-1.0)
+	pwmPhase     float32 // Current PWM LFO phase
 
-	// Envelope
-	envelopePhase  int
-	attackTime     int
-	decayTime      int
-	sustainLevel   float32
-	releaseTime    int
-	envelopeSample int
-	envelopeLevel  float32
-	gate           bool
-	envelopeShape  int
+	// Integer state fields (cache line 3)
+	// Configuration and timing parameters
+	waveType       int  // Oscillator type (0=square, 1=triangle, etc)
+	noiseMode      int  // Noise generation mode
+	attackTime     int  // Attack time in samples
+	decayTime      int  // Decay time in samples
+	releaseTime    int  // Release time in samples
+	envelopeSample int  // Current position in envelope
+	envelopePhase  int  // Current envelope stage (attack/decay/etc)
+	envelopeShape  int  // Envelope shape selection
+	sweepPeriod    int  // Sweep update period
+	sweepCounter   int  // Current sweep timing counter
+	sweepShift     uint // Sweep shift amount
 
-	// PWM control (square wave only)
-	dutyCycle  float32
-	pwmEnabled bool    // PWM modulation on/off
-	pwmRate    float32 // LFO frequency (Hz)
-	pwmDepth   float32 // Modulation depth (0.0–1.0)
-	pwmPhase   float32 // LFO phase accumulator
+	// Pointer fields (cache line 4)
+	ringModSource *Channel // Source channel for ring modulation
+	syncSource    *Channel // Source channel for hard sync
 
-	// Filter states
-	noiseFilterState float32
-
-	// Noise type
-	noiseMode int
-
-	// Sweep control
-	sweepEnabled   bool
-	sweepPeriod    int
-	sweepShift     uint
-	sweepDirection bool // True = up, false = down
-	sweepCounter   int  // Tracks sweep timing
-
-	// Modulation
-	ringModulate  bool
-	ringModSource *Channel // Pointer to the modulating channel
-	prevRawSample float32  // Stores last raw waveform for modulation
-
-	syncSource   *Channel // Master oscillator to sync to
-	phaseWrapped bool     // Flag for phase reset tracking
+	// Boolean state flags (packed together to minimize padding)
+	enabled        bool    // Channel enabled flag
+	gate           bool    // Gate/trigger state
+	sweepEnabled   bool    // Frequency sweep enabled
+	sweepDirection bool    // Sweep direction (up/down)
+	pwmEnabled     bool    // PWM enabled flag
+	phaseWrapped   bool    // Phase wrap indicator
+	_pad           [2]byte // Padding for alignment
 }
-
 type CombFilter struct {
-	buffer []float32
-	pos    int
-	decay  float32
+	buffer []float32 // Delay line buffer
+	decay  float32   // Decay coefficient
+	pos    int       // Current buffer position
+	_pad   [4]byte   // Align to 8-byte boundary
 }
 
 type SoundChip struct {
-	channels [4]*Channel
-	enabled  bool
-	mutex    sync.RWMutex
-	output   AudioOutput
+	// Cache line 1 - Hot path DSP state (64 bytes)
+	filterLP        float32 // Current low-pass filter state
+	filterBP        float32 // Current band-pass filter state
+	filterHP        float32 // Current high-pass filter state
+	filterCutoff    float32 // Normalized filter cutoff frequency (0-1)
+	filterResonance float32 // Filter resonance/Q factor (0-1)
+	filterModAmount float32 // Filter modulation depth (0-1)
+	overdriveLevel  float32 // Overdrive distortion amount (0-4)
+	reverbMix       float32 // Reverb wet/dry mix ratio (0-1)
+	filterType      int     // Filter mode (0=off, 1=LP, 2=HP, 3=BP)
+	enabled         bool    // Global chip enable flag
+	_pad1           [7]byte // Align to 64-byte cache line boundary
 
-	// Global filter settings
-	filterCutoff    float32 // 0–1 (normalized)
-	filterResonance float32 // 0–1 (normalized)
-	filterType      int     // 0=off, 1=low-pass, 2=high-pass, 3=band-pass
-	filterLP        float32 // Low-pass state
-	filterBP        float32 // Band-pass state
-	filterHP        float32 // High-pass state
+	// Cache line 2 - Channel references and thread safety (64 bytes)
+	channels        [4]*Channel  // Array of 4 audio channel pointers
+	filterModSource *Channel     // Channel modulating the filter cutoff
+	mutex           sync.RWMutex // Concurrency control for parameter updates
+	_pad2           [8]byte      // Align to 64-byte cache line boundary
 
-	// Filter modulation
-	filterModSource *Channel // Channel modulating the filter cutoff
-	filterModAmount float32  // Modulation depth (0.0–1.0)
-
-	// TB-303 style Overdrive control
-	overdriveLevel float32
-
-	// Reverb effect
-	reverbMix   float32
-	combFilters [4]CombFilter
-	allpassBuf  [2][]float32
-	allpassPos  [2]int
-	preDelayBuf []float32
-	preDelayPos int
+	// Cache line 3+ - Reverb state (cold path)
+	preDelayPos int           // Current position in pre-delay buffer
+	allpassPos  [2]int        // Current positions in allpass buffers
+	combFilters [4]CombFilter // Parallel comb filter bank for reverb
+	allpassBuf  [2][]float32  // Allpass diffusion filters
+	preDelayBuf []float32     // 8ms pre-delay buffer
+	output      AudioOutput   // Audio backend interface
 }
 
 const PRE_DELAY_MS = 8 // 8ms pre-delay
@@ -715,3 +711,26 @@ func (chip *SoundChip) Stop() {
 	chip.output.Stop()
 	chip.output.Close()
 }
+
+//func init() {
+// Uncomment to run alignment checks
+//	// Verify struct alignments
+//	channelAlign := unsafe.Alignof(Channel{})
+//	combFilterAlign := unsafe.Alignof(CombFilter{})
+//	soundChipAlign := unsafe.Alignof(SoundChip{})
+//
+//	// Verify struct sizes
+//	channelSize := unsafe.Sizeof(Channel{})
+//	combFilterSize := unsafe.Sizeof(CombFilter{})
+//	soundChipSize := unsafe.Sizeof(SoundChip{})
+//
+//	// Print alignment info
+//	fmt.Printf("Channel: align=%d size=%d\n", channelAlign, channelSize)
+//	fmt.Printf("CombFilter: align=%d size=%d\n", combFilterAlign, combFilterSize)
+//	fmt.Printf("SoundChip: align=%d size=%d\n", soundChipAlign, soundChipSize)
+//
+//	var chip SoundChip
+//	mutexOffset := unsafe.Offsetof(chip.mutex)
+//	fmt.Printf("Mutex offset: %d bytes\n", mutexOffset)
+//	fmt.Printf("Mutex is 8-byte aligned: %v\n", mutexOffset%8 == 0)
+//}
