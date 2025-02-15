@@ -490,7 +490,8 @@ func (ch *Channel) generateSample() float32 {
 	}
 
 	var rawSample float32
-	phaseInc := ch.frequency * (2 * math.Pi / SAMPLE_RATE)
+	referenceFreq := float32(ch.frequency) * 440.0 / 256.0 // Map register value to Hz
+	phaseInc := referenceFreq * (2 * math.Pi / SAMPLE_RATE)
 
 	switch ch.waveType {
 	case 0: // Square wave
