@@ -15,6 +15,7 @@
 ## https://github.com/intuitionamiga/IntuitionEngine
 ## License: GPLv3 or later
 ## https://www.youtube.com/@IntuitionAmiga/
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/M4M61AHEFR)
 
 # Table of Contents
 
