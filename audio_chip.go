@@ -95,7 +95,6 @@ const (
 
 	SAMPLE_RATE = 44100
 )
-
 const (
 	ENV_ATTACK = iota
 	ENV_DECAY
@@ -106,6 +105,11 @@ const (
 	ENV_SHAPE_SAW_UP   = 1 // Linear rise to 1.0, then hold
 	ENV_SHAPE_SAW_DOWN = 2 // Linear fall to 0.0, then hold
 	ENV_SHAPE_LOOP     = 3 // ADSR but loops after release
+)
+const (
+	NORMALIZE_8BIT = 255.0 // For 8-bit value normalization (0-255)
+	PWM_RANGE      = 256.0 // Keep 256 for duty cycle since it's used as a power of 2
+	FREQ_REF       = 256.0 // Keep 256 for frequency reference
 )
 
 type Channel struct {
@@ -296,12 +300,12 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 		ch.pwmRate = float32(value&0x7F) * 0.1 // Rate: 0–12.7 Hz (7 bits)
 	case SQUARE_DUTY:
 		value16 := uint16(value & 0xFFFF) // Ensure 16-bit value
-		ch.dutyCycle = float32(value16&0xFF) / 256.0
-		ch.pwmDepth = float32((value16>>8)&0xFF) / 256.0
+		ch.dutyCycle = float32(value16&0xFF) / PWM_RANGE
+		ch.pwmDepth = float32((value16>>8)&0xFF) / PWM_RANGE
 	case SQUARE_FREQ, TRI_FREQ, SINE_FREQ, NOISE_FREQ:
 		ch.frequency = float32(value)
 	case SQUARE_VOL, TRI_VOL, SINE_VOL, NOISE_VOL:
-		ch.volume = float32(value&0xFF) / 256.0 // Mask to 8 bits
+		ch.volume = float32(value&0xFF) / NORMALIZE_8BIT
 	case SQUARE_CTRL, TRI_CTRL, SINE_CTRL, NOISE_CTRL:
 		ch.enabled = value != 0
 		newGate := value&0x02 != 0
@@ -320,7 +324,7 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 	case SQUARE_DEC, TRI_DEC, SINE_DEC, NOISE_DEC:
 		ch.decayTime = max(int(value*SAMPLE_RATE/1000), 1)
 	case SQUARE_SUS, TRI_SUS, SINE_SUS, NOISE_SUS:
-		ch.sustainLevel = float32(value) / 256.0
+		ch.sustainLevel = float32(value) / NORMALIZE_8BIT
 	case SQUARE_REL, TRI_REL, SINE_REL, NOISE_REL:
 		ch.releaseTime = max(int(value*SAMPLE_RATE/1000), 1)
 	case NOISE_MODE:
@@ -351,7 +355,7 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 		masterIndex := int(value % 4)
 		ch.ringModSource = chip.channels[masterIndex]
 	case FILTER_CUTOFF:
-		chip.filterCutoff = float32(value) / 256.0
+		chip.filterCutoff = float32(value) / NORMALIZE_8BIT
 	case FILTER_RESONANCE:
 		chip.filterResonance = float32(value) / 256.0
 	case FILTER_TYPE:
@@ -362,13 +366,13 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 		chip.filterModSource = chip.channels[sourceIndex]
 	case FILTER_MOD_AMOUNT:
 		// Normalize modulation depth to 0.0–1.0
-		chip.filterModAmount = float32(value) / 256.0
+		chip.filterModAmount = float32(value) / NORMALIZE_8BIT
 	case OVERDRIVE_CTRL:
 		chip.overdriveLevel = float32(value) / 256.0 * 4.0 // 0.0-4.0 gain
 	case REVERB_MIX:
-		chip.reverbMix = float32(value) / 256.0
+		chip.reverbMix = float32(value) / NORMALIZE_8BIT
 	case REVERB_DECAY:
-		baseDecay := 0.1 + (float32(value)/256.0)*0.89
+		baseDecay := 0.1 + (float32(value)/NORMALIZE_8BIT)*0.89
 		chip.combFilters[0].decay = baseDecay * 0.97
 		chip.combFilters[1].decay = baseDecay * 0.95
 		chip.combFilters[2].decay = baseDecay * 0.93
@@ -490,7 +494,7 @@ func (ch *Channel) generateSample() float32 {
 	}
 
 	var rawSample float32
-	referenceFreq := float32(ch.frequency) * 440.0 / 256.0 // Map register value to Hz
+	referenceFreq := float32(ch.frequency) * 440.0 / FREQ_REF // Map register value to Hz
 	phaseInc := referenceFreq * (2 * math.Pi / SAMPLE_RATE)
 
 	switch ch.waveType {
