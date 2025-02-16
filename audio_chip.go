@@ -50,6 +50,7 @@ control from external threads while audio processing continues.
 package main
 
 import (
+	"log"
 	"math"
 	"sync"
 )
@@ -201,6 +202,8 @@ const (
 // ------------------------------------------------------------------------------
 const (
 	MAX_FILTER_CUTOFF = 0.95  // Maximum filter cutoff frequency
+	MIN_FILTER_CUTOFF = 0.0   // Minimum filter cutoff frequency
+	MIN_FILTER_FREQ   = 20.0  // Minimum filter frequency in Hz
 	MAX_RESONANCE     = 4.0   // Maximum filter resonance
 	MAX_FREQ          = 20000 // Maximum frequency in Hz
 )
@@ -211,6 +214,8 @@ const (
 const (
 	MAX_SAMPLE = 1.0
 	MIN_SAMPLE = -1.0
+	MIN_PHASE  = 0.0
+	MIN_VOLUME = 0.0
 )
 
 // ------------------------------------------------------------------------------
@@ -434,6 +439,7 @@ const (
 )
 
 type Channel struct {
+	// ------------------------------------------------------------------------------
 	// Channel represents a single audio generation channel that can produce
 	// square, triangle, sine or noise waveforms with envelope control and
 	// modulation capabilities.
@@ -454,6 +460,7 @@ type Channel struct {
 	// Cache line 4 (64 bytes): References and flags
 	//   - Pointers to other channels for modulation
 	//   - Boolean state flags
+	// ------------------------------------------------------------------------------
 
 	// Hot fields accessed every sample generation (cache line 1)
 	// These fields are read/written on each output sample
@@ -540,10 +547,12 @@ type SoundChip struct {
 }
 
 func NewSoundChip(backend int) (*SoundChip, error) {
+	// ------------------------------------------------------------------------------
 	// NewSoundChip creates and initialises a new SoundChip instance.
 	// It sets default filter parameters, initialises the channels with default envelope and oscillator settings,
 	// and configures the comb and allpass filters used for the reverb effect.
 	// It also initialises the audio backend and returns any error encountered.
+	// ------------------------------------------------------------------------------
 
 	// Initialise sound chip with default settings
 	chip := &SoundChip{
@@ -565,6 +574,8 @@ func NewSoundChip(backend int) (*SoundChip, error) {
 			envelopePhase: ENV_ATTACK,
 			noiseSR:       NOISE_LFSR_SEED, // Initial seed for noise
 			dutyCycle:     DEFAULT_DUTY_CYCLE,
+			phase:         MIN_PHASE,
+			volume:        MIN_VOLUME,
 		}
 	}
 
@@ -596,6 +607,7 @@ func NewSoundChip(backend int) (*SoundChip, error) {
 }
 
 func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
+	// ------------------------------------------------------------------------------
 	// HandleRegisterWrite processes a write to a hardware register address.
 	// Register map overview:
 	//
@@ -613,8 +625,9 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 	//   FA10-FA1C: Ring modulation sources
 	//   FA40-FA54: Global effect parameters
 	//
-	// Thread safety: This method holds the chip mutex during execution.
+	// ------------------------------------------------------------------------------
 
+	// Thread safety: This method holds the chip mutex during execution.
 	chip.mutex.Lock()
 	defer chip.mutex.Unlock()
 
@@ -718,13 +731,13 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 		for i, decayFactor := range combDecays {
 			chip.combFilters[i].decay = baseDecay * decayFactor
 		}
-
 	default:
-		panic("unhandled default case")
+		log.Printf("invalid register address: 0x%X", addr)
 	}
 }
 
 func (ch *Channel) updateEnvelope() {
+	// ------------------------------------------------------------------------------
 	// updateEnvelope advances the envelope generator state and updates the envelope level.
 	// The envelope can operate in several modes:
 	//
@@ -740,6 +753,7 @@ func (ch *Channel) updateEnvelope() {
 	//   Loop     - Continuously cycle through stages
 	//
 	// All timing parameters are in samples at the system sample rate.
+	// ------------------------------------------------------------------------------
 
 	switch ch.envelopePhase {
 	case ENV_ATTACK:
@@ -827,6 +841,7 @@ func (ch *Channel) updateEnvelope() {
 	}
 }
 func (ch *Channel) generateSample() float32 {
+	// ------------------------------------------------------------------------------
 	// generateSample computes and returns the next output sample for this channel.
 	// The generation process follows these steps:
 	//
@@ -863,7 +878,9 @@ func (ch *Channel) generateSample() float32 {
 					ch.frequency -= delta
 				}
 			}
-			if ch.frequency > MAX_FREQ {
+			if ch.frequency < MIN_FILTER_FREQ {
+				ch.frequency = MIN_FILTER_FREQ
+			} else if ch.frequency > MAX_FREQ {
 				ch.frequency = MAX_FREQ
 			}
 			ch.sweepCounter = 0
@@ -953,78 +970,126 @@ func (ch *Channel) generateSample() float32 {
 }
 
 func (chip *SoundChip) GenerateSample() float32 {
-	chip.mutex.RLock()
-	defer chip.mutex.RUnlock()
+	// ------------------------------------------------------------------------------
+	// GenerateSample generates a single audio sample by processing all active channels
+	// through the following signal chain:
+	//
+	// 1. Channel Generation and Mixing
+	//    - Each enabled channel generates its raw waveform (square/triangle/sine/noise)
+	//    - Channel outputs are summed with equal mixing weights
+	//    - Per-channel envelope and modulation effects are applied
+	//
+	// 2. Global Filter Processing
+	//    - State variable filter provides LP/HP/BP modes
+	//    - Cutoff frequency can be modulated by a selected channel
+	//    - Resonance control for additional timbral shaping
+	//    - Filter coefficients are updated per-sample
+	//
+	// 3. Effects Processing
+	//    - Overdrive effect for harmonic enhancement
+	//    - Reverb effect for spatial enhancement
+	//    - Wet/dry mixing for effect balance
+	//
+	// Thread Safety:
+	// The function uses read/write locks to safely access shared state:
+	//   - Initial state capture under read lock
+	//   - Channel array copied for thread safety
+	//   - Filter state updates under write lock
+	//   - All other processing lock-free
+	//
+	// Returns a stereo sample pair in the range [-1.0, 1.0]
+	// ------------------------------------------------------------------------------
 
-	if !chip.enabled {
+	// Take read lock and capture all state needed for sample generation to ensure consistency and thread safety
+	chip.mutex.RLock()
+	enabled := chip.enabled
+	filterType := chip.filterType
+	filterCutoff := chip.filterCutoff
+	filterModSource := chip.filterModSource
+	filterModAmount := chip.filterModAmount
+	filterResonance := chip.filterResonance
+	overdriveLevel := chip.overdriveLevel
+	reverbMix := chip.reverbMix
+	filterLP := chip.filterLP
+	filterBP := chip.filterBP
+
+	// Make thread-safe copy of channel array
+	channels := [NUM_CHANNELS]*Channel{}
+	for i := 0; i < NUM_CHANNELS; i++ {
+		channels[i] = chip.channels[i]
+	}
+	chip.mutex.RUnlock()
+
+	if !enabled {
 		return 0
 	}
 
+	// Mix samples from all active channels
 	var sample float32
-
-	// Generate raw samples from each channel
-	for i := 0; i < NUM_CHANNELS; i++ { // Process channels 0, 1, 2, 3
-		ch := chip.channels[i]
+	for i := 0; i < NUM_CHANNELS; i++ {
+		ch := channels[i]
 		if ch.enabled {
 			sample += ch.generateSample() * CHANNEL_MIX_LEVEL
 		}
 	}
 
-	// Apply global filter first
-	if chip.filterType != 0 && chip.filterCutoff > 0 {
-		// Default to no modulation
-		modulatedCutoff := chip.filterCutoff
-		// Apply modulation if enabled
-		if chip.filterModSource != nil {
-			modSignal := chip.filterModSource.prevRawSample * chip.filterModAmount
-			modulatedCutoff = chip.filterCutoff + modSignal
-			modulatedCutoff = float32(math.Max(math.Min(float64(modulatedCutoff), MAX_FILTER_CUTOFF), 0.0))
+	// Apply global filter processing
+	if filterType != 0 && filterCutoff > 0 {
+		// Calculate modulated cutoff frequency
+		modulatedCutoff := filterCutoff
+		if filterModSource != nil {
+			modSignal := filterModSource.prevRawSample * filterModAmount
+			modulatedCutoff = filterCutoff + modSignal
+			modulatedCutoff = float32(math.Max(math.Min(float64(modulatedCutoff), MAX_FILTER_CUTOFF), MIN_FILTER_CUTOFF))
 		}
 
-		// Convert cutoff to Hz and apply resonance
+		// Apply 2-pole state variable filter
 		cutoff := modulatedCutoff * CUTOFF_FACTOR
-		resonance := chip.filterResonance * MAX_RESONANCE
+		resonance := filterResonance * MAX_RESONANCE
 
-		// 2-pole resonant filter (state variable)
-		lp := chip.filterLP + cutoff*chip.filterBP
-		hp := (sample - lp) - resonance*chip.filterBP
-		bp := chip.filterBP + cutoff*hp
+		lp := filterLP + cutoff*filterBP
+		hp := (sample - lp) - resonance*filterBP
+		bp := filterBP + cutoff*hp
 
-		// Clamp to prevent overflow
+		// Clamp filter outputs
 		lp = float32(math.Max(math.Min(float64(lp), MAX_SAMPLE), MIN_SAMPLE))
 		bp = float32(math.Max(math.Min(float64(bp), MAX_SAMPLE), MIN_SAMPLE))
 		hp = float32(math.Max(math.Min(float64(hp), MAX_SAMPLE), MIN_SAMPLE))
 
-		// Update filter states
+		// Update filter state under lock
+		chip.mutex.Lock()
 		chip.filterLP = lp
 		chip.filterBP = bp
 		chip.filterHP = hp
+		chip.mutex.Unlock()
 
-		// Output based on filter type
-		switch chip.filterType {
+		// Select filter output
+		switch filterType {
 		case 1:
-			sample = chip.filterLP
+			sample = lp
 		case 2:
-			sample = chip.filterHP
+			sample = hp
 		case 3:
-			sample = chip.filterBP
+			sample = bp
 		}
 	}
 
-	// Apply overdrive after filter
-	if chip.overdriveLevel > 0 {
-		driven := sample * chip.overdriveLevel
+	// Apply overdrive effect
+	if overdriveLevel > 0 {
+		driven := sample * overdriveLevel
 		sample = float32(math.Tanh(float64(driven)))
 	}
 
-	// Apply reverb
+	// Apply reverb effect and final mix
 	wet := chip.applyReverb(sample)
-	sample = sample*(1-chip.reverbMix) + wet*chip.reverbMix
+	sample = sample*(1-reverbMix) + wet*reverbMix
 
 	// Clamp final output
 	return float32(math.Max(math.Min(float64(sample), MAX_SAMPLE), MIN_SAMPLE))
 }
+
 func (chip *SoundChip) applyReverb(input float32) float32 {
+	// ------------------------------------------------------------------------------
 	// applyReverb implements a classic Schroeder reverberator with the following stages:
 	//
 	// 1. Pre-delay (8ms) - Separates direct sound from reflections
@@ -1058,6 +1123,7 @@ func (chip *SoundChip) applyReverb(input float32) float32 {
 	// 2. Pre-delayed signal splits to parallel comb filters
 	// 3. Comb outputs sum and feed into series allpass filters
 	// 4. Final mix between dry/wet signals
+	// ------------------------------------------------------------------------------
 
 	// Apply pre-delay
 	delayed := chip.preDelayBuf[chip.preDelayPos]
@@ -1101,9 +1167,26 @@ func (chip *SoundChip) Start() {
 func (chip *SoundChip) Stop() {
 	chip.mutex.Lock()
 	defer chip.mutex.Unlock()
+
+	if !chip.enabled {
+		return
+	}
+
 	chip.enabled = false
-	chip.output.Stop()
-	chip.output.Close()
+	if chip.output != nil {
+		chip.output.Stop()
+		chip.output.Close()
+	}
+}
+
+func clampF32(value, min, max float32) float32 {
+	if value < min {
+		return min
+	}
+	if value > max {
+		return max
+	}
+	return value
 }
 
 //func init() {
