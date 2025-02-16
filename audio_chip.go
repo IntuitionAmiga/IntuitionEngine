@@ -509,9 +509,9 @@ func (ch *Channel) generateSample() float32 {
 		}
 		threshold := 2 * math.Pi * currentDuty
 		if ch.phase < threshold {
-			rawSample = 1.0
+			rawSample = 4.0
 		} else {
-			rawSample = -1.0
+			rawSample = -4.0
 		}
 
 	case 1: // Triangle
