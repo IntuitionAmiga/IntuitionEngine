@@ -111,6 +111,24 @@ const (
 	PWM_RANGE      = 256.0 // Keep 256 for duty cycle since it's used as a power of 2
 	FREQ_REF       = 256.0 // Keep 256 for frequency reference
 )
+const (
+	MS_TO_SAMPLES = SAMPLE_RATE / 1000 // Convert milliseconds to samples
+	MIN_ENV_TIME  = 1                  // Minimum envelope time
+)
+const (
+	MAX_FILTER_CUTOFF = 0.95  // Maximum filter cutoff frequency
+	MAX_RESONANCE     = 4.0   // Maximum filter resonance
+	MAX_FREQ          = 20000 // Maximum frequency in Hz
+)
+const (
+	MAX_SAMPLE = 1.0
+	MIN_SAMPLE = -1.0
+)
+const (
+	CHANNEL_MIX_LEVEL  = 0.25 // 1/4 for 4 channels
+	REVERB_ATTENUATION = 0.3  // Reverb output scaling
+)
+const PWM_RATE_SCALE = 0.1 // Convert 7-bit value to Hz range 0-12.7
 
 type Channel struct {
 	// Hot fields accessed every sample generation (cache line 1)
@@ -296,8 +314,8 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 
 	switch addr {
 	case SQUARE_PWM_CTRL:
-		ch.pwmEnabled = (value & 0x80) != 0    // Bit 7 = enable
-		ch.pwmRate = float32(value&0x7F) * 0.1 // Rate: 0–12.7 Hz (7 bits)
+		ch.pwmEnabled = (value & 0x80) != 0               // Bit 7 = enable
+		ch.pwmRate = float32(value&0x7F) * PWM_RATE_SCALE // Rate: 0–12.7 Hz (7 bits)
 	case SQUARE_DUTY:
 		value16 := uint16(value & 0xFFFF) // Ensure 16-bit value
 		ch.dutyCycle = float32(value16&0xFF) / PWM_RANGE
@@ -320,13 +338,13 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 		}
 		ch.gate = newGate
 	case SQUARE_ATK, TRI_ATK, SINE_ATK, NOISE_ATK:
-		ch.attackTime = max(int(value*SAMPLE_RATE/1000), 1)
+		ch.attackTime = max(int(value*MS_TO_SAMPLES), MIN_ENV_TIME)
 	case SQUARE_DEC, TRI_DEC, SINE_DEC, NOISE_DEC:
-		ch.decayTime = max(int(value*SAMPLE_RATE/1000), 1)
+		ch.decayTime = max(int(value*MS_TO_SAMPLES), MIN_ENV_TIME)
 	case SQUARE_SUS, TRI_SUS, SINE_SUS, NOISE_SUS:
 		ch.sustainLevel = float32(value) / NORMALIZE_8BIT
 	case SQUARE_REL, TRI_REL, SINE_REL, NOISE_REL:
-		ch.releaseTime = max(int(value*SAMPLE_RATE/1000), 1)
+		ch.releaseTime = max(int(value*MS_TO_SAMPLES), MIN_ENV_TIME)
 	case NOISE_MODE:
 		ch.noiseMode = int(value % 3) // 0=white, 1=periodic, 2=metallic
 	case ENV_SHAPE:
@@ -486,8 +504,8 @@ func (ch *Channel) generateSample() float32 {
 					ch.frequency -= delta
 				}
 			}
-			if ch.frequency > 20000 {
-				ch.frequency = 20000
+			if ch.frequency > MAX_FREQ {
+				ch.frequency = MAX_FREQ
 			}
 			ch.sweepCounter = 0
 		}
@@ -590,7 +608,7 @@ func (chip *SoundChip) GenerateSample() float32 {
 	for i := 0; i < 4; i++ { // Process channels 0, 1, 2, 3
 		ch := chip.channels[i]
 		if ch.enabled {
-			sample += ch.generateSample() * 0.25
+			sample += ch.generateSample() * CHANNEL_MIX_LEVEL
 		}
 	}
 
@@ -601,14 +619,12 @@ func (chip *SoundChip) GenerateSample() float32 {
 		// Apply modulation if enabled
 		if chip.filterModSource != nil {
 			modSignal := chip.filterModSource.prevRawSample * chip.filterModAmount
-			const MAX_CUTOFF = 0.95
 			modulatedCutoff = chip.filterCutoff + modSignal
-			modulatedCutoff = float32(math.Max(math.Min(float64(modulatedCutoff), MAX_CUTOFF), 0.0))
+			modulatedCutoff = float32(math.Max(math.Min(float64(modulatedCutoff), MAX_FILTER_CUTOFF), 0.0))
 		}
 
 		// Convert cutoff to Hz and apply resonance
 		cutoff := float32(2.0*math.Pi) * modulatedCutoff * 20000.0 / SAMPLE_RATE
-		const MAX_RESONANCE = 4.0
 		resonance := chip.filterResonance * MAX_RESONANCE
 
 		// 2-pole resonant filter (state variable)
@@ -617,12 +633,9 @@ func (chip *SoundChip) GenerateSample() float32 {
 		bp := chip.filterBP + cutoff*hp
 
 		// Clamp to prevent overflow
-		lp = float32(math.Max(float64(lp), -1.0))
-		lp = float32(math.Min(float64(lp), 1.0))
-		bp = float32(math.Max(float64(bp), -1.0))
-		bp = float32(math.Min(float64(bp), 1.0))
-		hp = float32(math.Max(float64(hp), -1.0))
-		hp = float32(math.Min(float64(hp), 1.0))
+		lp = float32(math.Max(math.Min(float64(lp), MAX_SAMPLE), MIN_SAMPLE))
+		bp = float32(math.Max(math.Min(float64(bp), MAX_SAMPLE), MIN_SAMPLE))
+		hp = float32(math.Max(math.Min(float64(hp), MAX_SAMPLE), MIN_SAMPLE))
 
 		// Update filter states
 		chip.filterLP = lp
@@ -695,7 +708,7 @@ func (chip *SoundChip) applyReverb(input float32) float32 {
 		chip.allpassPos[i] = (pos + 1) % len(buf)
 	}
 
-	return out * 0.3 // Attenuate to prevent overflow
+	return out * REVERB_ATTENUATION // Attenuate to prevent overflow
 }
 
 func (chip *SoundChip) ReadSample() float32 {
