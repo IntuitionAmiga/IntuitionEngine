@@ -20,7 +20,7 @@ package main
 
 /*
 #cgo pkg-config: gtk4
-#cgo CFLAGS: -Os -march=native -mtune=native -flto
+#cgo CFLAGS: -w -Os -march=native -mtune=native -flto
 #include <gtk/gtk.h>
 #include <stdlib.h>
 extern void gtk_create_window();

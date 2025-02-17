@@ -21,7 +21,7 @@ package main
 /*
 #cgo CXXFLAGS: -I/usr/include/FL -Ofast -march=native -mtune=native
 #cgo LDFLAGS: -lfltk -lstdc++
-#cgo CFLAGS: -Os -march=native -mtune=native -flto
+#cgo CFLAGS: -w -Os -march=native -mtune=native -flto
 #include <stdlib.h>
 extern void create_window();
 extern void show_window();
