@@ -19,7 +19,7 @@ License: GPLv3 or later
 */
 
 /*
-audio_chip.go - Audio Synthesis Engine for the Intuition Platform
+audio_chip.go - Audio Synthesis Chip for the Intuition Engine
 
 This module implements a complete audio synthesis system with:
 - 4 independent channels (Square, Triangle, Sine, and Noise)
