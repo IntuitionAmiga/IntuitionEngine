@@ -60,10 +60,23 @@ import (
 // ------------------------------------------------------------------------------
 // F800-F8FF: Global control and effects
 // F900-F93F: Square wave channel
-// F940-F97F: Triangle wave channel
-// F980-F9BF: Sine wave channel
-// F9C0-F9FF: Noise channel
+// F914-F97F: Triangle wave channel
+// F918-F9BF: Sine wave channel
+// F91C-F9FF: Noise channel
 // FA00-FAFF: Modulation control
+const (
+	SQUARE_REG_START = 0xF900
+	SQUARE_REG_END   = 0xF93F
+
+	TRIANGLE_REG_START = 0xF914 // Lowest among TRI_SWEEP (0xF914) and TRI_FREQ (0xF940)
+	TRIANGLE_REG_END   = 0xF97F
+
+	SINE_REG_START = 0xF918 // Lowest among SINE_SWEEP (0xF918) and SINE_FREQ (0xF980)
+	SINE_REG_END   = 0xF9BF
+
+	NOISE_REG_START = 0xF91C // Lowest among NOISE_SWEEP (0xF91C) and NOISE_FREQ (0xF9C0)
+	NOISE_REG_END   = 0xF9FF
+)
 
 // ------------------------------------------------------------------------------
 // Square Wave Control Registers (F900-F93F)
@@ -638,22 +651,22 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 
 	var ch *Channel
 	switch {
-	case addr >= SQUARE_FREQ && addr <= SQUARE_REL:
+	case addr >= SQUARE_REG_START && addr <= SQUARE_REG_END:
 		ch = chip.channels[0]
-	case addr >= TRI_FREQ && addr <= TRI_REL:
+	case addr >= TRIANGLE_REG_START && addr <= TRIANGLE_REG_END:
 		ch = chip.channels[1]
-	case addr >= SINE_FREQ && addr <= SINE_REL:
+	case addr >= SINE_REG_START && addr <= SINE_REG_END:
 		ch = chip.channels[2]
-	case addr >= NOISE_FREQ && addr <= NOISE_REL:
+	case addr >= NOISE_REG_START && addr <= NOISE_REG_END:
 		ch = chip.channels[3]
 	}
 
 	switch addr {
 	case SQUARE_PWM_CTRL:
-		ch.pwmEnabled = (value & PWM_ENABLE_MASK) != 0             // Bit 7 = enable
-		ch.pwmRate = float32(value&PWM_RATE_MASK) * PWM_RATE_SCALE // Rate: 0–12.7 Hz (7 bits)
+		ch.pwmEnabled = (value & PWM_ENABLE_MASK) != 0             // Bit 7: enable
+		ch.pwmRate = float32(value&PWM_RATE_MASK) * PWM_RATE_SCALE // Rate: 0–12.7 Hz
 	case SQUARE_DUTY:
-		value16 := uint16(value & WORD_MASK) // Ensure 16-bit value
+		value16 := uint16(value & WORD_MASK)
 		ch.dutyCycle = float32(value16&BYTE_MASK) / PWM_RANGE
 		ch.pwmDepth = float32((value16>>PWM_DEPTH_SHIFT)&BYTE_MASK) / PWM_RANGE
 	case SQUARE_FREQ, TRI_FREQ, SINE_FREQ, NOISE_FREQ:
@@ -663,7 +676,6 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 	case SQUARE_CTRL, TRI_CTRL, SINE_CTRL, NOISE_CTRL:
 		ch.enabled = value != 0
 		newGate := value&GATE_MASK != 0
-
 		if newGate && !ch.gate {
 			ch.envelopePhase = ENV_ATTACK
 			ch.envelopeSample = 0
@@ -683,12 +695,20 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 		ch.releaseTime = max(int(value*MS_TO_SAMPLES), MIN_ENV_TIME)
 	case NOISE_MODE:
 		ch.noiseMode = int(value % NUM_NOISE_MODES) // 0=white, 1=periodic, 2=metallic
+	case NOISE_SWEEP:
+		ch.sweepEnabled = (value & SWEEP_ENABLE_MASK) != 0
+		ch.sweepPeriod = int((value >> SWEEP_PERIOD_SHIFT) & SWEEP_PERIOD_MASK)
+		ch.sweepShift = uint(value & SWEEP_SHIFT_MASK)
+		if ch.sweepShift == 0 {
+			ch.sweepShift = MIN_SWEEP_SHIFT
+		}
+		ch.sweepDirection = (value & SWEEP_DIR_MASK) != 0
 	case ENV_SHAPE:
 		ch.envelopeShape = int(value % NUM_ENVELOPE_SHAPES) // 0=ADSR, 1=SawUp, 2=SawDown, 3=Loop
 		// Reset envelope state
 		ch.envelopePhase = ENV_ATTACK
 		ch.envelopeSample = 0
-	case SQUARE_SWEEP, TRI_SWEEP, SINE_SWEEP, NOISE_SWEEP:
+	case SQUARE_SWEEP, TRI_SWEEP, SINE_SWEEP:
 		ch.sweepEnabled = (value & SWEEP_ENABLE_MASK) != 0
 		ch.sweepPeriod = int((value >> SWEEP_PERIOD_SHIFT) & SWEEP_PERIOD_MASK) // Extract bits 4-6
 		ch.sweepShift = uint(value & SWEEP_SHIFT_MASK)                          // Extract bits 0-2 for shift
