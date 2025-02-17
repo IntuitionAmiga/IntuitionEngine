@@ -19,7 +19,7 @@ License: GPLv3 or later
 */
 
 /*
-video_chip.go - Graphics Display Engine for the Intuition Platform
+video_chip.go - Graphics Display Chip for the Intuition Engine
 
 This module implements a complete video display system with:
 - Multiple resolution modes (640x480, 800x600, 1024x768)
@@ -27,23 +27,17 @@ This module implements a complete video display system with:
 - Dirty region tracking for efficient updates
 - Splash screen support with bilinear scaling
 - Memory-mapped register interface
-- Hardware synchronization support
+- Hardware synchronisation support
 
-The architecture follows classic video chip design while adding
-modern features like RGBA color and dirty region optimization.
-Frame updates happen at 60Hz with all processing done in 32-bit
-color space for maximum visual quality.
-
-Signal flow:
-1. Memory-mapped register writes
-2. Dirty region tracking
-3. Double buffer management
-4. Frame synchronization
-5. Display output
+Signal Flow:
+1. Memory-mapped register writes.
+2. Dirty region tracking.
+3. Double buffer management.
+4. Frame synchronisation.
+5. Display output.
 
 Thread Safety:
-All parameter updates are protected by a mutex, allowing real-time
-control from external threads while video processing continues.
+All parameter updates are protected by a mutex, allowing real-time control from external threads while video processing continues.
 */
 
 package main
@@ -61,7 +55,9 @@ import (
 	"time"
 )
 
-// -------------------- Memory and Address Constants --------------------
+// ------------------------------------------------------------------------------
+// Memory and Address Constants
+// ------------------------------------------------------------------------------
 const (
 	BYTES_PER_KB = 1024                        // Size of a kilobyte in bytes
 	BYTES_PER_MB = BYTES_PER_KB * BYTES_PER_KB // Size of a megabyte in bytes
@@ -81,7 +77,9 @@ const (
 	VRAM_SIZE     = VRAM_SIZE_MB * BYTES_PER_MB
 )
 
-// ----------------------- Video Mode Constants -------------------------
+// ------------------------------------------------------------------------------
+// Video Mode Constants
+// ------------------------------------------------------------------------------
 const (
 	MODE_640x480  = 0x00
 	MODE_800x600  = 0x01
@@ -95,7 +93,9 @@ const (
 	RESOLUTION_1024x768_HEIGHT = 768
 )
 
-// --------------------- Pixel/Color Constants --------------------------
+// ------------------------------------------------------------------------------
+// Pixel/Colour Constants
+// ------------------------------------------------------------------------------
 const (
 	BYTES_PER_PIXEL  = 4 // RGBA format
 	PIXEL_ALIGNMENT  = BYTES_PER_PIXEL
@@ -110,7 +110,9 @@ const (
 	RGBA_A = 3
 )
 
-// -------------------- Dirty Region Tracking ---------------------------
+// ------------------------------------------------------------------------------
+// Dirty Region Tracking Constants
+// ------------------------------------------------------------------------------
 const (
 	DIRTY_REGION_SIZE = 32 // Pixel dimensions per region block
 	DIRTY_REGION_MIN  = 0
@@ -123,19 +125,25 @@ const (
 	INVALID_REGION         = -1
 )
 
-// --------------------- Timing/Refresh Constants -----------------------
+// ------------------------------------------------------------------------------
+// Timing/Refresh Constants
+// ------------------------------------------------------------------------------
 const (
 	REFRESH_RATE_HZ  = 60
 	REFRESH_INTERVAL = time.Second / REFRESH_RATE_HZ
 )
 
-// -------------------- Buffer/Channel Constants ------------------------
+// ------------------------------------------------------------------------------
+// Buffer/Channel Constants
+// ------------------------------------------------------------------------------
 const (
 	BUFFER_OFFSET    = VRAM_START // Offset for VRAM access in HandleWrite
 	BUFFER_REMAINDER = 0          // Required alignment remainder for pixel writes
 )
 
-// ------------------- Control States/Flags -----------------------------
+// ------------------------------------------------------------------------------
+// Control States/Flag Constants
+// ------------------------------------------------------------------------------
 const (
 	CTRL_DISABLE_FLAG = 0 // Writing 0 to CTRL enables video
 	ENABLED_STATE     = true
@@ -143,13 +151,17 @@ const (
 	VSYNC_ON          = true // Enable vertical synchronization in display config
 )
 
-// -------------------- Initial State Constants -------------------------
+// ------------------------------------------------------------------------------
+// Initial State Constants
+// ------------------------------------------------------------------------------
 const (
 	INITIAL_HAS_CONTENT = false
 	INITIAL_MAP_SIZE    = 0
 )
 
-// --------------------- Image Processing -------------------------------
+// ------------------------------------------------------------------------------
+// Image Processing Constants
+// ------------------------------------------------------------------------------
 const (
 	DRAW_SOURCE_OFFSET    = 0 // bounds.Min in draw.Draw
 	DRAW_MODE_SOURCE      = draw.Src
@@ -157,13 +169,17 @@ const (
 	NEXT_PIXEL_OFFSET     = 1
 )
 
-// ----------------------- Error Messages -------------------------------
+// ------------------------------------------------------------------------------
+// Error Message Constants
+// ------------------------------------------------------------------------------
 const (
 	ERROR_FRAME_MSG  = "Error updating frame: %v\n"  // Shown when frame rendering fails
 	ERROR_SPLASH_MSG = "Error updating splash: %v\n" // Shown when splash image fails to load
 )
 
-// ---------------------- Miscellaneous --------------------------------
+// ------------------------------------------------------------------------------
+// Miscellaneous Constants
+// ------------------------------------------------------------------------------
 const (
 	DEFAULT_DISPLAY_SCALE = 1
 	DEFAULT_RETURN        = 0
@@ -171,7 +187,9 @@ const (
 	FRAME_INCREMENT       = 1
 )
 
-// --------------------- Video Mode Configuration ----------------------
+// ------------------------------------------------------------------------------
+// Video Mode Configuration
+// ------------------------------------------------------------------------------
 var VideoModes = map[uint32]VideoMode{
 	MODE_640x480: {
 		width:       RESOLUTION_640x480_WIDTH,
@@ -199,7 +217,7 @@ var splashData embed.FS
 // VideoChip represents an Intuition Engine video chip with memory-mapped registers
 type VideoChip struct {
 	/*
-	   Optimized Memory Layout Analysis (64-bit system):
+	   Optimised Memory Layout Analysis (64-bit system):
 
 	   Cache Line 0 (64 bytes):
 	   - frameCounter   : offset 0,  size 8  - Hot path counter
@@ -325,6 +343,28 @@ type DirtyRegion struct {
 }
 
 func NewVideoChip(backend int) (*VideoChip, error) {
+	/*
+		NewVideoChip creates and initialises a new VideoChip instance.
+
+		It performs the following tasks:
+		1. Initialises the video output using the supplied backend.
+		2. Sets the default video mode and allocates the front/back buffers.
+		3. Loads and decodes the splash image (if available), converting it to an RGBA buffer.
+		4. Scales the splash image to the current video mode.
+		5. Initialises the dirty region grid for efficient partial updates.
+		6. Spawns a goroutine to run the refresh loop at the configured refresh rate.
+
+		Parameters:
+		 - backend: Identifier for the video backend.
+
+		Returns:
+		 - *VideoChip: Pointer to the new VideoChip instance.
+		 - error: Non-nil if an error occurs during initialisation.
+
+		Thread Safety:
+		State modifications are protected by a mutex where appropriate.
+	*/
+
 	output, err := NewVideoOutput(backend)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create video output: %w", err)
@@ -332,7 +372,7 @@ func NewVideoChip(backend int) (*VideoChip, error) {
 
 	chip := &VideoChip{
 		output:       output,
-		currentMode:  MODE_640x480, // Using renamed constant
+		currentMode:  MODE_640x480, // Default video mode
 		vsyncChan:    make(chan struct{}),
 		done:         make(chan struct{}),
 		dirtyRegions: make(map[int]DirtyRegion),
@@ -359,23 +399,31 @@ func NewVideoChip(backend int) (*VideoChip, error) {
 			chip.splashBuffer = make([]byte, len(rgbaImg.Pix))
 			copy(chip.splashBuffer, rgbaImg.Pix)
 
-			// Scale the splash image if needed
+			// Scale the splash image to the current video mode
 			chip.splashBuffer = chip.scaleImageToMode(chip.splashBuffer,
 				bounds.Dx(), bounds.Dy(), mode)
 		}
 	}
 
-	chip.initializeDirtyGrid(mode)
+	chip.initialiseDirtyGrid(mode)
 	go chip.refreshLoop()
 
 	return chip, nil
 }
 
 func (chip *VideoChip) scaleImageToMode(imgData []byte, srcWidth, srcHeight int, mode VideoMode) []byte {
-	// scaleImageToMode resizes an image to fit the current video mode using bilinear interpolation.
-	// - imgData: Source image pixels in RGBA format
-	// - srcWidth/srcHeight: Dimensions of the source image
-	// - mode: Target video mode configuration
+	/*
+	   scaleImageToMode resizes an image from its source dimensions to fit the target video mode using bilinear interpolation.
+
+	   Parameters:
+	    - imgData: Source image pixels in RGBA format.
+	    - srcWidth, srcHeight: Dimensions of the source image.
+	    - mode: Target video mode configuration (defines width, height and totalSize).
+
+	   Returns:
+	    - []byte: Rescaled image pixel data, conforming to mode.totalSize.
+	*/
+
 	scaled := make([]byte, mode.totalSize)
 	scaleX := float64(srcWidth) / float64(mode.width)
 	yOffset := (mode.height - srcHeight) / CENTER_OFFSET_DIVISOR // Center the image
@@ -446,7 +494,18 @@ func (chip *VideoChip) scaleImageToMode(imgData []byte, srcWidth, srcHeight int,
 	}
 	return scaled
 }
+
 func (chip *VideoChip) Start() error {
+	/*
+		Start enables the VideoChip and initiates the display output.
+
+		This method sets the chip's enabled state to true and, if a video output interface is available,
+		it calls the Start method on that interface. The operation is performed under a mutex lock to ensure
+		thread safety during the state update.
+
+		Returns:
+		  - error: Any error encountered when starting the video output, or nil if the operation succeeds.
+	*/
 	chip.mutex.Lock()
 	defer chip.mutex.Unlock()
 	chip.enabled = ENABLED_STATE
@@ -457,6 +516,16 @@ func (chip *VideoChip) Start() error {
 }
 
 func (chip *VideoChip) Stop() error {
+	/*
+		Stop disables the VideoChip and halts the display output.
+
+		This method sets the chip's enabled state to false and, if a video output interface is available,
+		it calls the Stop method on that interface. The operation is performed under a mutex lock to ensure
+		thread safety during the state update.
+
+		Returns:
+		  - error: Any error encountered when stopping the video output, or nil if the operation succeeds.
+	*/
 	chip.mutex.Lock()
 	defer chip.mutex.Unlock()
 	chip.enabled = DISABLED_STATE
@@ -466,23 +535,58 @@ func (chip *VideoChip) Stop() error {
 	return nil
 }
 
-func (chip *VideoChip) initializeDirtyGrid(mode VideoMode) {
+func (chip *VideoChip) initialiseDirtyGrid(mode VideoMode) {
+	/*
+		initialiseDirtyGrid configures the dirty region grid based on the current video mode.
+
+		This function calculates the row and column strides used to index the grid of 32x32 pixel regions.
+		It uses the video mode's width and height along with the DIRTY_REGION_SIZE and REGION_ADJUSTMENT constant
+		to determine how many regions span the screen. The dirtyRegions map is then reinitialised to track any
+		modified regions for efficient screen updates.
+
+		Parameters:
+		  - mode: The current VideoMode configuration, providing the resolution (width and height).
+
+		Notes:
+		  - DIRTY_REGION_SIZE defines the dimension of each region (32 pixels).
+		  - REGION_ADJUSTMENT is used to correctly account for edge cases in the calculation.
+	*/
+
 	chip.dirtyRowStride = int32((mode.width + DIRTY_REGION_SIZE - REGION_ADJUSTMENT) / DIRTY_REGION_SIZE)
 	chip.dirtyColStride = int32((mode.height + DIRTY_REGION_SIZE - REGION_ADJUSTMENT) / DIRTY_REGION_SIZE)
 	chip.dirtyRegions = make(map[int]DirtyRegion)
 }
 
 func (chip *VideoChip) markRegionDirty(x, y int) {
-	// markRegionDirty marks a 32x32 pixel region as modified.
-	// - x/y: Pixel coordinates that triggered the dirty region
+	/*
+	   markRegionDirty identifies and marks a 32x32 pixel region as modified.
+
+	   This function calculates the region that encompasses the given pixel coordinate (x, y). The region
+	   is determined by dividing the coordinates by DIRTY_REGION_SIZE. A unique key is then generated for the
+	   region using makeRegionKey. If the key is valid and the region has not been updated in the current frame,
+	   the region is added to the chip.dirtyRegions map for later refresh processing.
+
+	   Parameters:
+	     - x: The x-coordinate (in pixels) that triggered the dirty region.
+	     - y: The y-coordinate (in pixels) that triggered the dirty region.
+
+	   Notes:
+	     - Regions are 32x32 pixels in size.
+	     - The function only marks a region as dirty if it is new or if it has not been updated during the current frame.
+	     - An invalid region key (i.e. less than INVALID_REGION) results in no action.
+	*/
+
+	// Calculate the region indices based on pixel coordinates
 	regionX := x / DIRTY_REGION_SIZE
 	regionY := y / DIRTY_REGION_SIZE
 
+	// Generate a unique key for the region
 	regionKey := makeRegionKey(regionX, regionY)
 	if regionKey < INVALID_REGION {
 		return
 	}
 
+	// Mark the region as dirty if it is new or not updated in the current frame
 	if region, exists := chip.dirtyRegions[regionKey]; !exists || region.lastUpdated != chip.frameCounter {
 		chip.dirtyRegions[regionKey] = DirtyRegion{
 			x:           regionX * DIRTY_REGION_SIZE,
@@ -495,9 +599,20 @@ func (chip *VideoChip) markRegionDirty(x, y int) {
 }
 
 func (chip *VideoChip) refreshLoop() {
-	// refreshLoop handles periodic screen updates at the refresh rate.
-	// - Copies dirty regions from front to back buffer
-	// - Swaps buffers and sends the updated frame to the output
+	/*
+	   refreshLoop handles periodic display updates at the configured refresh rate.
+
+	   Every tick it:
+	   1. Checks if the video output is enabled.
+	   2. If content is present, copies only the dirty regions from the front buffer to the back buffer.
+	   3. Swaps the front and back buffers and increments the frame counter.
+	   4. Sends the updated frame to the display output.
+	   5. If no content exists but a splash image is available, it displays the splash image.
+
+	   Thread Safety:
+	   A full mutex lock is acquired while updating buffers and state.
+	*/
+
 	ticker := time.NewTicker(REFRESH_INTERVAL)
 	defer ticker.Stop()
 
@@ -514,7 +629,7 @@ func (chip *VideoChip) refreshLoop() {
 			if chip.hasContent {
 				if len(chip.dirtyRegions) > INITIAL_MAP_SIZE {
 					mode := VideoModes[chip.currentMode]
-					// Only copy dirty regions
+					// Copy only the modified (dirty) regions
 					for _, region := range chip.dirtyRegions {
 						for y := DIRTY_REGION_MIN; y < region.height; y++ {
 							srcOffset := ((region.y + y) * mode.bytesPerRow) + (region.x * BYTES_PER_PIXEL)
@@ -546,6 +661,20 @@ func (chip *VideoChip) refreshLoop() {
 }
 
 func (chip *VideoChip) HandleRead(addr uint32) uint32 {
+	/*
+		HandleRead processes a read request from the memory-mapped register interface.
+
+		Parameters:
+		 - addr: The memory address to read from.
+
+		Returns:
+		 - uint32: The value found at the specified address (register or VRAM).
+
+		The function performs boundary and alignment checks to ensure valid memory access.
+		Thread Safety:
+		A read-lock is acquired during the operation.
+	*/
+
 	chip.mutex.RLock()
 	defer chip.mutex.RUnlock()
 
@@ -569,6 +698,19 @@ func (chip *VideoChip) HandleRead(addr uint32) uint32 {
 }
 
 func (chip *VideoChip) HandleWrite(addr uint32, value uint32) {
+	/*
+		HandleWrite processes a write request to the memory-mapped register interface.
+
+		Parameters:
+		 - addr: The memory address to write to.
+		 - value: The value to be written.
+
+		Depending on the address, this function updates control registers, video mode,
+		or writes to VRAM. It performs alignment and bounds checks before writing.
+		Thread Safety:
+		A full mutex lock is acquired during the write operation.
+	*/
+
 	chip.mutex.Lock()
 	defer chip.mutex.Unlock()
 
@@ -613,7 +755,7 @@ func (chip *VideoChip) HandleWrite(addr uint32, value uint32) {
 			if err != nil {
 				return
 			}
-			chip.initializeDirtyGrid(mode)
+			chip.initialiseDirtyGrid(mode)
 		}
 	default:
 		if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
@@ -637,10 +779,33 @@ func (chip *VideoChip) HandleWrite(addr uint32, value uint32) {
 }
 
 func GetSplashImageData() ([]byte, error) {
+	/*
+		GetSplashImageData retrieves the splash image data from the embedded file system.
+
+		 It reads the "splash.png" file and returns its contents as a byte slice.
+
+		 Returns:
+		   []byte - The raw PNG file data.
+		   error  - An error if the file cannot be read.
+	*/
 	return splashData.ReadFile("splash.png")
 }
 
 func makeRegionKey(x, y int) int {
+	/* makeRegionKey computes a unique key for a given dirty region based on its (x, y) coordinates.
+
+	This key is used for tracking modified screen regions. The x-coordinate is masked and the y-coordinate
+	is shifted before being combined. If either coordinate is out of the acceptable bounds (0 to REGION_MAX_COORDINATE),
+	the function returns INVALID_REGION.
+
+	Parameters:
+	  x - The x-coordinate (in region units).
+	  y - The y-coordinate (in region units).
+
+	Returns:
+	  int - A unique key representing the dirty region, or INVALID_REGION if the coordinates are invalid.
+	*/
+
 	if x < 0 || x > REGION_MAX_COORDINATE || y < 0 || y > REGION_MAX_COORDINATE {
 		return INVALID_REGION
 	}
