@@ -402,7 +402,6 @@ const (
 // ------------------------------------------------------------------------------
 const REF_FREQ = 440.0 // Standard A4 pitch
 const LSB_MASK = 1
-const PHASE_INC_FACTOR = TWO_PI / SAMPLE_RATE
 
 // ------------------------------------------------------------------------------
 // Normalisation Scaling for LFO and Other Calculations
@@ -522,6 +521,7 @@ type Channel struct {
 	pwmEnabled     bool                   // PWM enabled flag
 	phaseWrapped   bool                   // Phase wrap indicator
 	_pad           [CHANNEL_PAD_SIZE]byte // Padding for alignment
+	sampleCount    int                    // Track number of samples generated
 }
 type CombFilter struct {
 	buffer []float32                 // Delay line buffer
@@ -908,11 +908,11 @@ func (ch *Channel) generateSample() float32 {
 	}
 
 	var rawSample float32
-	referenceFreq := float32(ch.frequency) * REF_FREQ / FREQ_REF // Map register value to Hz
-	phaseInc := referenceFreq * PHASE_INC_FACTOR
+	phaseInc := TWO_PI * float32(ch.frequency) / float32(SAMPLE_RATE)
 
 	switch ch.waveType {
 	case WAVE_SQUARE:
+		// Determine the effective duty cycle (in the [0,1] range), applying PWM if enabled.
 		currentDuty := ch.dutyCycle
 		if ch.pwmEnabled {
 			ch.pwmPhase += ch.pwmRate * (TWO_PI / SAMPLE_RATE)
@@ -926,12 +926,15 @@ func (ch *Channel) generateSample() float32 {
 				currentDuty = 1
 			}
 		}
-		threshold := TWO_PI * currentDuty
-		if ch.phase < threshold {
+		// Convert the current phase (which is in radians, [0, TWO_PI]) into a normalized value [0,1]
+		normalizedPhase := ch.phase / TWO_PI
+		// Use the normalized phase for the duty cycle comparison.
+		if normalizedPhase < currentDuty {
 			rawSample = SQUARE_AMPLITUDE
 		} else {
 			rawSample = -SQUARE_AMPLITUDE
 		}
+
 	case WAVE_TRIANGLE:
 		rawSample = TRIANGLE_SCALE*float32(math.Abs(float64(TRIANGLE_PHASE_MULTIPLIER*(ch.phase/TWO_PI)-TRIANGLE_PHASE_SUBTRACT))) - TRIANGLE_OUTPUT_OFFSET
 	case WAVE_SINE:
@@ -986,7 +989,9 @@ func (ch *Channel) generateSample() float32 {
 		ch.phase = 0
 	}
 
-	return rawSample * ch.volume * ch.envelopeLevel
+	scaledSample := rawSample * ch.volume * ch.envelopeLevel
+	// Clamp before returning
+	return clampF32(scaledSample, MIN_SAMPLE, MAX_SAMPLE)
 }
 
 func (chip *SoundChip) GenerateSample() float32 {
@@ -1045,12 +1050,25 @@ func (chip *SoundChip) GenerateSample() float32 {
 	}
 
 	// Mix samples from all active channels
-	var sample float32
+	var sum float32
+	activeCount := 0
 	for i := 0; i < NUM_CHANNELS; i++ {
 		ch := channels[i]
 		if ch.enabled {
-			sample += ch.generateSample() * CHANNEL_MIX_LEVEL
+			sum += ch.generateSample()
+			activeCount++
 		}
+	}
+
+	var sample float32
+	if activeCount == 0 {
+		sample = 0
+	} else if activeCount == 1 {
+		// When only one channel is active, use its sample without attenuation.
+		sample = sum
+	} else {
+		// When multiple channels are active, average their samples.
+		sample = sum / float32(activeCount)
 	}
 
 	// Apply global filter processing
