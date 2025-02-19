@@ -28,6 +28,8 @@ func boilerPlate() {
 	fmt.Println("\nA modern 32-bit reimagining of the Commodore, Atari and Sinclair 8-bit home computers.")
 	fmt.Println("(c) 2024 - 2025 Zayn Otley")
 	fmt.Println("https://github.com/IntuitionAmiga/IntuitionEngine")
+	fmt.Println("Buy me a coffee: https://ko-fi.com/intuition/tip")
+	fmt.Println("License: GPLv3 or later")
 }
 
 func main() {

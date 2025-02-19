@@ -668,7 +668,7 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 	case SQUARE_DUTY:
 		value16 := uint16(value & WORD_MASK)
 		ch.dutyCycle = float32(value16&BYTE_MASK) / PWM_RANGE
-		ch.pwmDepth = float32((value16>>PWM_DEPTH_SHIFT)&BYTE_MASK) / PWM_RANGE
+		ch.pwmDepth = float32((value16>>PWM_DEPTH_SHIFT)&BYTE_MASK) / (PWM_RANGE * 2.0)
 	case SQUARE_FREQ, TRI_FREQ, SINE_FREQ, NOISE_FREQ:
 		ch.frequency = float32(value)
 	case SQUARE_VOL, TRI_VOL, SINE_VOL, NOISE_VOL:
@@ -716,6 +716,7 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 			ch.sweepShift = MIN_SWEEP_SHIFT // Prevent divide by zero
 		}
 		ch.sweepDirection = (value & SWEEP_DIR_MASK) != 0
+
 	case SYNC_SOURCE_CH0, SYNC_SOURCE_CH1, SYNC_SOURCE_CH2, SYNC_SOURCE_CH3:
 		// Determine target channel (e.g., SYNC_SOURCE_CH0 → channel 0)
 		chIndex := (addr - SYNC_SOURCE_CH0) / SYNC_REG_SPACING
@@ -916,7 +917,7 @@ func (ch *Channel) generateSample() float32 {
 		currentDuty := ch.dutyCycle
 		if ch.pwmEnabled {
 			ch.pwmPhase += ch.pwmRate * (TWO_PI / SAMPLE_RATE)
-			ch.pwmPhase = float32(math.Mod(float64(ch.pwmPhase), 2*math.Pi))
+			ch.pwmPhase = float32(math.Mod(float64(ch.pwmPhase+ch.pwmRate*(TWO_PI/SAMPLE_RATE)), TWO_PI))
 			normalisedPhase := ch.pwmPhase / TWO_PI // yields a [0,1] value
 			lfo := float32(math.Abs(float64(normalisedPhase*NORMALISE_SCALE-NORMALISE_OFFSET)))*NORMALISE_SCALE - NORMALISE_OFFSET
 			currentDuty = ch.dutyCycle + lfo*ch.pwmDepth
