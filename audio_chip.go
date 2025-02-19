@@ -937,7 +937,14 @@ func (ch *Channel) generateSample() float32 {
 		}
 
 	case WAVE_TRIANGLE:
-		rawSample = TRIANGLE_SCALE*float32(math.Abs(float64(TRIANGLE_PHASE_MULTIPLIER*(ch.phase/TWO_PI)-TRIANGLE_PHASE_SUBTRACT))) - TRIANGLE_OUTPUT_OFFSET
+		//rawSample = TRIANGLE_SCALE*float32(math.Abs(float64(TRIANGLE_PHASE_MULTIPLIER*(ch.phase/TWO_PI)-TRIANGLE_PHASE_SUBTRACT))) - TRIANGLE_OUTPUT_OFFSET
+		phaseNorm := ch.phase / TWO_PI
+		if phaseNorm < 0.5 {
+			rawSample = 4*phaseNorm - 1.0
+		} else {
+			rawSample = 3.0 - 4*phaseNorm
+		}
+
 	case WAVE_SINE:
 		rawSample = float32(math.Sin(float64(ch.phase)))
 	case WAVE_NOISE:
