@@ -245,10 +245,12 @@ const PWM_RATE_SCALE = 0.1 // Convert 7-bit value to Hz range 0-12.7
 // ------------------------------------------------------------------------------
 const (
 	TWO_PI           = 2 * math.Pi
-	SQUARE_AMPLITUDE = 4.0  // Square wave peak amplitude
-	TRIANGLE_SCALE   = 2.0  // Triangle wave scaling factor
-	NOISE_FILTER_OLD = 0.95 // Noise filter old sample weight
-	NOISE_FILTER_NEW = 0.05 // Noise filter new sample weight
+	SQUARE_AMPLITUDE = 4.0 // Square wave peak amplitude
+	TRIANGLE_SCALE   = 2.0 // Triangle wave scaling factor
+	HALF_CYCLE       = 0.5
+	TRIANGLE_SLOPE   = TRIANGLE_SCALE / HALF_CYCLE // equals 4.0 if TRIANGLE_SCALE is 2.0
+	NOISE_FILTER_OLD = 0.95                        // Noise filter old sample weight
+	NOISE_FILTER_NEW = 0.05                        // Noise filter new sample weight
 )
 
 // ------------------------------------------------------------------------------
@@ -473,7 +475,7 @@ type Channel struct {
 	//   - Pointers to other channels for modulation
 	//   - Boolean state flags
 	// ------------------------------------------------------------------------------
-
+	mutex sync.RWMutex
 	// Hot fields accessed every sample generation (cache line 1)
 	// These fields are read/written on each output sample
 	frequency        float32 // Base frequency of oscillator
@@ -522,6 +524,8 @@ type Channel struct {
 	phaseWrapped   bool                   // Phase wrap indicator
 	_pad           [CHANNEL_PAD_SIZE]byte // Padding for alignment
 	sampleCount    int                    // Track number of samples generated
+
+	releaseStartLevel float32 // Level when release phase began
 }
 type CombFilter struct {
 	buffer []float32                 // Delay line buffer
@@ -676,11 +680,15 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 	case SQUARE_CTRL, TRI_CTRL, SINE_CTRL, NOISE_CTRL:
 		ch.enabled = value != 0
 		newGate := value&GATE_MASK != 0
+
 		if newGate && !ch.gate {
 			ch.envelopePhase = ENV_ATTACK
 			ch.envelopeSample = 0
+			ch.envelopeLevel = 0
 		}
+
 		if !newGate && ch.gate && ch.envelopePhase == ENV_SUSTAIN {
+			ch.releaseStartLevel = ch.envelopeLevel
 			ch.envelopePhase = ENV_RELEASE
 			ch.envelopeSample = 0
 		}
@@ -776,6 +784,10 @@ func (ch *Channel) updateEnvelope() {
 	// All timing parameters are in samples at the system sample rate.
 	// ------------------------------------------------------------------------------
 
+	ch.mutex.Lock()
+	defer ch.mutex.Unlock()
+	//fmt.Printf("phase=%d sample=%d level=%.2f\n", ch.envelopePhase, ch.envelopeSample, ch.envelopeLevel)
+
 	switch ch.envelopePhase {
 	case ENV_ATTACK:
 		switch ch.envelopeShape {
@@ -807,11 +819,14 @@ func (ch *Channel) updateEnvelope() {
 			if ch.attackTime <= 0 {
 				ch.envelopeLevel = MAX_LEVEL
 				ch.envelopePhase = ENV_DECAY
+				ch.envelopeSample = 0
 			} else {
-				ch.envelopeLevel += MAX_LEVEL / float32(ch.attackTime)
-				if ch.envelopeLevel >= MAX_LEVEL {
+				ch.envelopeLevel = float32(ch.envelopeSample) / float32(ch.attackTime)
+				ch.envelopeSample++
+				if ch.envelopeSample >= ch.attackTime {
 					ch.envelopeLevel = MAX_LEVEL
 					ch.envelopePhase = ENV_DECAY
+					ch.envelopeSample = 0
 				}
 			}
 		}
@@ -838,7 +853,9 @@ func (ch *Channel) updateEnvelope() {
 	case ENV_RELEASE:
 		switch ch.envelopeShape {
 		case ENV_SHAPE_LOOP:
-			ch.envelopeLevel *= MAX_LEVEL - float32(ch.envelopeSample)/float32(ch.releaseTime)
+			// Linear interpolation from release start level to zero
+			remaining := 1.0 - float32(ch.envelopeSample)/float32(ch.releaseTime)
+			ch.envelopeLevel = ch.releaseStartLevel * remaining
 			ch.envelopeSample++
 			if ch.envelopeSample >= ch.releaseTime {
 				ch.envelopePhase = ENV_ATTACK // Loop back to attack
@@ -849,16 +866,16 @@ func (ch *Channel) updateEnvelope() {
 				ch.envelopeLevel = 0
 				ch.enabled = false
 			} else {
-				ch.envelopeLevel *= MAX_LEVEL - float32(ch.envelopeSample)/float32(ch.releaseTime)
+				//decay := float32(math.Pow(0.001, 1.0/float64(ch.releaseTime)))
+				decay := float32(math.Pow(0.01, 1.0/float64(ch.releaseTime)))
+				ch.envelopeLevel *= decay
 				ch.envelopeSample++
-				if ch.envelopeSample >= ch.releaseTime {
+				if ch.envelopeSample >= ch.releaseTime || ch.envelopeLevel <= 0.001 {
 					ch.envelopeLevel = 0
 					ch.enabled = false
 				}
 			}
 		}
-	default:
-		panic("unhandled default case")
 	}
 }
 func (ch *Channel) generateSample() float32 {
@@ -939,10 +956,10 @@ func (ch *Channel) generateSample() float32 {
 	case WAVE_TRIANGLE:
 		//rawSample = TRIANGLE_SCALE*float32(math.Abs(float64(TRIANGLE_PHASE_MULTIPLIER*(ch.phase/TWO_PI)-TRIANGLE_PHASE_SUBTRACT))) - TRIANGLE_OUTPUT_OFFSET
 		phaseNorm := ch.phase / TWO_PI
-		if phaseNorm < 0.5 {
-			rawSample = 4*phaseNorm - 1.0
+		if phaseNorm < HALF_CYCLE {
+			rawSample = TRIANGLE_SLOPE*phaseNorm - TRIANGLE_PHASE_SUBTRACT
 		} else {
-			rawSample = 3.0 - 4*phaseNorm
+			rawSample = (TRIANGLE_SLOPE - TRIANGLE_PHASE_SUBTRACT) - TRIANGLE_SLOPE*phaseNorm
 		}
 
 	case WAVE_SINE:
@@ -997,7 +1014,12 @@ func (ch *Channel) generateSample() float32 {
 		ch.phase = 0
 	}
 
-	scaledSample := rawSample * ch.volume * ch.envelopeLevel
+	//scaledSample := rawSample * ch.volume * ch.envelopeLevel
+	ch.mutex.Lock()
+	envLevel := ch.envelopeLevel
+	ch.mutex.Unlock()
+	scaledSample := rawSample * ch.volume * envLevel
+
 	// Clamp before returning
 	return clampF32(scaledSample, MIN_SAMPLE, MAX_SAMPLE)
 }
