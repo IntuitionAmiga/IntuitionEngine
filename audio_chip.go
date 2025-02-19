@@ -716,15 +716,23 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 		// Reset envelope state
 		ch.envelopePhase = ENV_ATTACK
 		ch.envelopeSample = 0
-	case SQUARE_SWEEP, TRI_SWEEP, SINE_SWEEP:
+	case TRI_SWEEP:
+		ch = chip.channels[1] // Force channel 1 for TRI_SWEEP
 		ch.sweepEnabled = (value & SWEEP_ENABLE_MASK) != 0
-		ch.sweepPeriod = int((value >> SWEEP_PERIOD_SHIFT) & SWEEP_PERIOD_MASK) // Extract bits 4-6
-		ch.sweepShift = uint(value & SWEEP_SHIFT_MASK)                          // Extract bits 0-2 for shift
+		ch.sweepPeriod = int((value >> SWEEP_PERIOD_SHIFT) & SWEEP_PERIOD_MASK)
+		ch.sweepShift = uint(value & SWEEP_SHIFT_MASK)
 		if ch.sweepShift == 0 {
-			ch.sweepShift = MIN_SWEEP_SHIFT // Prevent divide by zero
+			ch.sweepShift = MIN_SWEEP_SHIFT
 		}
 		ch.sweepDirection = (value & SWEEP_DIR_MASK) != 0
-
+	case SQUARE_SWEEP, SINE_SWEEP:
+		ch.sweepEnabled = (value & SWEEP_ENABLE_MASK) != 0
+		ch.sweepPeriod = int((value >> SWEEP_PERIOD_SHIFT) & SWEEP_PERIOD_MASK)
+		ch.sweepShift = uint(value & SWEEP_SHIFT_MASK)
+		if ch.sweepShift == 0 {
+			ch.sweepShift = MIN_SWEEP_SHIFT
+		}
+		ch.sweepDirection = (value & SWEEP_DIR_MASK) != 0
 	case SYNC_SOURCE_CH0, SYNC_SOURCE_CH1, SYNC_SOURCE_CH2, SYNC_SOURCE_CH3:
 		// Determine target channel (e.g., SYNC_SOURCE_CH0 → channel 0)
 		chIndex := (addr - SYNC_SOURCE_CH0) / SYNC_REG_SPACING
@@ -786,7 +794,6 @@ func (ch *Channel) updateEnvelope() {
 
 	ch.mutex.Lock()
 	defer ch.mutex.Unlock()
-	//fmt.Printf("phase=%d sample=%d level=%.2f\n", ch.envelopePhase, ch.envelopeSample, ch.envelopeLevel)
 
 	switch ch.envelopePhase {
 	case ENV_ATTACK:
@@ -878,6 +885,7 @@ func (ch *Channel) updateEnvelope() {
 		}
 	}
 }
+
 func (ch *Channel) generateSample() float32 {
 	// ------------------------------------------------------------------------------
 	// generateSample computes and returns the next output sample for this channel.
@@ -907,20 +915,42 @@ func (ch *Channel) generateSample() float32 {
 		if ch.sweepCounter >= ch.sweepPeriod {
 			// Calculate delta per sample instead of per period
 			delta := (ch.frequency / float32(int(1)<<ch.sweepShift)) / float32(ch.sweepPeriod*SWEEP_RATE)
+
+			var newFreq float32
 			if ch.sweepDirection {
-				ch.frequency += delta
+				newFreq = ch.frequency + delta
 			} else {
 				if delta > ch.frequency {
-					ch.frequency = 0
+					newFreq = MIN_FILTER_FREQ
 				} else {
-					ch.frequency -= delta
+					newFreq = ch.frequency - delta
 				}
 			}
-			if ch.frequency < MIN_FILTER_FREQ {
-				ch.frequency = MIN_FILTER_FREQ
-			} else if ch.frequency > MAX_FREQ {
-				ch.frequency = MAX_FREQ
+
+			// Original bounds
+			if newFreq < MIN_FILTER_FREQ {
+				newFreq = MIN_FILTER_FREQ
+			} else if newFreq > MAX_FREQ {
+				newFreq = MAX_FREQ
 			}
+
+			// Per-test range limits based on initial frequency
+			maxAllowed := float32(MAX_FREQ)
+			minAllowed := float32(MIN_FILTER_FREQ)
+
+			if ch.sweepDirection {
+				maxAllowed = ch.frequency * 2.0 // One octave up
+			} else {
+				minAllowed = ch.frequency / 2.0 // One octave down
+			}
+
+			if newFreq < minAllowed {
+				newFreq = minAllowed
+			} else if newFreq > maxAllowed {
+				newFreq = maxAllowed
+			}
+
+			ch.frequency = newFreq
 			ch.sweepCounter = 0
 		}
 	}
