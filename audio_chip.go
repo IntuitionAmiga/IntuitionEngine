@@ -74,7 +74,7 @@ const (
 	SINE_REG_START = 0xF918 // Lowest among SINE_SWEEP (0xF918) and SINE_FREQ (0xF980)
 	SINE_REG_END   = 0xF9BF
 
-	NOISE_REG_START = 0xF91C // Lowest among NOISE_SWEEP (0xF91C) and NOISE_FREQ (0xF9C0)
+	NOISE_REG_START = 0xF9C0 // Lowest is NOISE_FREQ (0xF9C0)
 	NOISE_REG_END   = 0xF9FF
 )
 
@@ -139,7 +139,6 @@ const (
 	NOISE_SUS           = 0xF9D8
 	NOISE_REL           = 0xF9DC
 	NOISE_MODE          = 0xF9E0
-	NOISE_SWEEP         = 0xF91C
 	NOISE_MODE_WHITE    = 0 // Default (existing LFSR)
 	NOISE_MODE_PERIODIC = 1 // Periodic/loop
 	NOISE_MODE_METALLIC = 2 // "Metal" noise
@@ -730,14 +729,6 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 		ch.sweepPeriod = int((value >> SWEEP_PERIOD_SHIFT) & SWEEP_PERIOD_MASK)
 		ch.sweepShift = 1 // Force minimum shift value for largest frequency changes
 		ch.sweepDirection = (value & SWEEP_DIR_MASK) != 0
-	case NOISE_SWEEP:
-		ch.sweepEnabled = (value & SWEEP_ENABLE_MASK) != 0
-		ch.sweepPeriod = int((value >> SWEEP_PERIOD_SHIFT) & SWEEP_PERIOD_MASK)
-		ch.sweepShift = uint(value & SWEEP_SHIFT_MASK)
-		if ch.sweepShift == 0 {
-			ch.sweepShift = MIN_SWEEP_SHIFT
-		}
-		ch.sweepDirection = (value & SWEEP_DIR_MASK) != 0
 	case SYNC_SOURCE_CH0, SYNC_SOURCE_CH1, SYNC_SOURCE_CH2, SYNC_SOURCE_CH3:
 		// Determine target channel (e.g., SYNC_SOURCE_CH0 → channel 0)
 		chIndex := (addr - SYNC_SOURCE_CH0) / SYNC_REG_SPACING
@@ -915,7 +906,7 @@ func (ch *Channel) generateSample() float32 {
 	ch.updateEnvelope()
 
 	// Frequency sweep logic
-	if ch.sweepEnabled {
+	if ch.sweepEnabled && ch.waveType != WAVE_NOISE {
 		ch.sweepCounter++
 		if ch.sweepCounter >= ch.sweepPeriod {
 			// Calculate delta per sample instead of per period

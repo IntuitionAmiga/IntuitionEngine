@@ -319,52 +319,7 @@ func TestNoise_AdvancedFeatures(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	// 2. Sweep with Different Noise Types
-	sweepTests := []struct {
-		mode     int
-		freq     uint32
-		dir      uint32
-		period   uint32
-		shift    uint32
-		duration int
-		desc     string
-		effect   string
-	}{
-		{NOISE_MODE_WHITE, 8000, 0x08, 0x03 << 4, 2, 3000,
-			"Swept White Noise",
-			"rising frequency sweep through noise spectrum"},
-		{NOISE_MODE_PERIODIC, 4000, 0x08, 0x04 << 4, 3, 3000,
-			"Rising Pitched Noise",
-			"ascending tonal noise with clear pitch movement"},
-		{NOISE_MODE_METALLIC, 12000, 0x00, 0x02 << 4, 4, 3000,
-			"Falling Metallic",
-			"descending cascade of metallic resonance"},
-	}
-
-	for _, test := range sweepTests {
-		chip.HandleRegisterWrite(NOISE_MODE, uint32(test.mode))
-		time.Sleep(50 * time.Millisecond)
-		chip.HandleRegisterWrite(NOISE_FREQ, test.freq)
-		time.Sleep(50 * time.Millisecond)
-		chip.HandleRegisterWrite(NOISE_SWEEP, 0x80|test.period|test.dir|test.shift)
-		time.Sleep(50 * time.Millisecond)
-
-		t.Logf("\n=== %s ===", test.desc)
-		t.Logf("Configuration:")
-		t.Logf("- Base Frequency: %dHz", test.freq)
-		t.Logf("- Sweep: Period %d, Direction %s, Shift %d",
-			test.period>>4,
-			map[uint32]string{0: "Down", 0x08: "Up"}[test.dir],
-			test.shift)
-		t.Logf("Character: %s", test.effect)
-
-		chip.HandleRegisterWrite(NOISE_CTRL, 3)
-		time.Sleep(time.Duration(test.duration) * time.Millisecond)
-		chip.HandleRegisterWrite(NOISE_CTRL, 1)
-		time.Sleep(300 * time.Millisecond)
-	}
-
-	// 3. Ring Modulation with Noise
+	// 2. Ring Modulation with Noise
 	modTests := []struct {
 		noiseFreq  uint32
 		targetFreq uint32
@@ -448,7 +403,6 @@ func TestNoise_AdvancedFeatures(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 		chip.HandleRegisterWrite(NOISE_FREQ, test.freq)
 		time.Sleep(50 * time.Millisecond)
-		chip.HandleRegisterWrite(NOISE_SWEEP, test.sweep)
 		chip.HandleRegisterWrite(NOISE_ATK, test.envAtk)
 		chip.HandleRegisterWrite(NOISE_DEC, test.envDec)
 		chip.HandleRegisterWrite(NOISE_SUS, test.envSus)
@@ -479,7 +433,6 @@ func TestNoise_AdvancedFeatures(t *testing.T) {
 	chip.HandleRegisterWrite(NOISE_DEC, 0)
 	chip.HandleRegisterWrite(NOISE_SUS, 0)
 	chip.HandleRegisterWrite(NOISE_REL, 0)
-	chip.HandleRegisterWrite(NOISE_SWEEP, 0)
 	chip.HandleRegisterWrite(RING_MOD_SOURCE_CH2, 0)
 	chip.HandleRegisterWrite(AUDIO_CTRL, 0)
 }
