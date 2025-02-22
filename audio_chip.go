@@ -703,7 +703,12 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 		ch.releaseTime = max(int(value*MS_TO_SAMPLES), MIN_ENV_TIME)
 	case NOISE_MODE:
 		ch.noiseMode = int(value % NUM_NOISE_MODES) // 0=white, 1=periodic, 2=metallic
-	case NOISE_SWEEP:
+	case ENV_SHAPE:
+		ch.envelopeShape = int(value % NUM_ENVELOPE_SHAPES) // 0=ADSR, 1=SawUp, 2=SawDown, 3=Loop
+		// Reset envelope state
+		ch.envelopePhase = ENV_ATTACK
+		ch.envelopeSample = 0
+	case SQUARE_SWEEP:
 		ch.sweepEnabled = (value & SWEEP_ENABLE_MASK) != 0
 		ch.sweepPeriod = int((value >> SWEEP_PERIOD_SHIFT) & SWEEP_PERIOD_MASK)
 		ch.sweepShift = uint(value & SWEEP_SHIFT_MASK)
@@ -711,11 +716,6 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 			ch.sweepShift = MIN_SWEEP_SHIFT
 		}
 		ch.sweepDirection = (value & SWEEP_DIR_MASK) != 0
-	case ENV_SHAPE:
-		ch.envelopeShape = int(value % NUM_ENVELOPE_SHAPES) // 0=ADSR, 1=SawUp, 2=SawDown, 3=Loop
-		// Reset envelope state
-		ch.envelopePhase = ENV_ATTACK
-		ch.envelopeSample = 0
 	case TRI_SWEEP:
 		ch = chip.channels[1] // Force channel 1 for TRI_SWEEP
 		ch.sweepEnabled = (value & SWEEP_ENABLE_MASK) != 0
@@ -725,7 +725,12 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 			ch.sweepShift = MIN_SWEEP_SHIFT
 		}
 		ch.sweepDirection = (value & SWEEP_DIR_MASK) != 0
-	case SQUARE_SWEEP, SINE_SWEEP:
+	case SINE_SWEEP:
+		ch.sweepEnabled = (value & SWEEP_ENABLE_MASK) != 0
+		ch.sweepPeriod = int((value >> SWEEP_PERIOD_SHIFT) & SWEEP_PERIOD_MASK)
+		ch.sweepShift = 1 // Force minimum shift value for largest frequency changes
+		ch.sweepDirection = (value & SWEEP_DIR_MASK) != 0
+	case NOISE_SWEEP:
 		ch.sweepEnabled = (value & SWEEP_ENABLE_MASK) != 0
 		ch.sweepPeriod = int((value >> SWEEP_PERIOD_SHIFT) & SWEEP_PERIOD_MASK)
 		ch.sweepShift = uint(value & SWEEP_SHIFT_MASK)
@@ -984,7 +989,6 @@ func (ch *Channel) generateSample() float32 {
 		}
 
 	case WAVE_TRIANGLE:
-		//rawSample = TRIANGLE_SCALE*float32(math.Abs(float64(TRIANGLE_PHASE_MULTIPLIER*(ch.phase/TWO_PI)-TRIANGLE_PHASE_SUBTRACT))) - TRIANGLE_OUTPUT_OFFSET
 		phaseNorm := ch.phase / TWO_PI
 		if phaseNorm < HALF_CYCLE {
 			rawSample = TRIANGLE_SLOPE*phaseNorm - TRIANGLE_PHASE_SUBTRACT
