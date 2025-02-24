@@ -199,6 +199,10 @@ const (
 	NORMALISE_8BIT = 255.0 // For 8-bit value normalisation (0-255)
 	PWM_RANGE      = 256.0 // Keep 256 for duty cycle since it's used as a power of 2
 	FREQ_REF       = 256.0 // Keep 256 for frequency reference
+	SQUARE_NORM    = 1.0   // Keep square wave at full amplitude
+	TRIANGLE_NORM  = 1.0   // Keep triangle at full amplitude
+	SINE_NORM      = 1.0   // Keep sine at full amplitude
+	NOISE_NORM     = 0.7   // Only normalize noise slightly
 )
 
 // ------------------------------------------------------------------------------
@@ -978,6 +982,7 @@ func (ch *Channel) generateSample() float32 {
 		} else {
 			rawSample = -SQUARE_AMPLITUDE
 		}
+		rawSample *= SQUARE_NORM // Normalise amplitude
 
 	case WAVE_TRIANGLE:
 		phaseNorm := ch.phase / TWO_PI
@@ -986,9 +991,11 @@ func (ch *Channel) generateSample() float32 {
 		} else {
 			rawSample = (TRIANGLE_SLOPE - TRIANGLE_PHASE_SUBTRACT) - TRIANGLE_SLOPE*phaseNorm
 		}
+		rawSample *= TRIANGLE_NORM // Normalise amplitude
 
 	case WAVE_SINE:
 		rawSample = float32(math.Sin(float64(ch.phase)))
+		rawSample *= SINE_NORM // Normalise amplitude
 	case WAVE_NOISE:
 		noisePhaseInc := ch.frequency / SAMPLE_RATE
 		ch.noisePhase += noisePhaseInc
@@ -1015,6 +1022,7 @@ func (ch *Channel) generateSample() float32 {
 		ch.noiseValue = float32(ch.noiseSR&LSB_MASK)*NOISE_BIT_SCALE - NOISE_BIAS
 		ch.noiseFilterState = NOISE_FILTER_OLD*ch.noiseFilterState + NOISE_FILTER_NEW*ch.noiseValue
 		rawSample = ch.noiseFilterState
+		rawSample *= NOISE_NORM // Normalise amplitude
 	}
 
 	// Ring modulation
@@ -1044,6 +1052,14 @@ func (ch *Channel) generateSample() float32 {
 	envLevel := ch.envelopeLevel
 	ch.mutex.Unlock()
 	scaledSample := rawSample * ch.volume * envLevel
+
+	//if ch.waveType == WAVE_SINE {
+	//	fmt.Printf("Raw sample: %.2f, After volume: %.2f\n", rawSample, scaledSample)
+	//}
+	//if ch.waveType == WAVE_SINE {
+	//	log.Printf("vol: %.2f env: %.2f raw: %.2f scaled: %.2f",
+	//		ch.volume, ch.envelopeLevel, rawSample, scaledSample)
+	//}
 
 	// Clamp before returning
 	return clampF32(scaledSample, MIN_SAMPLE, MAX_SAMPLE)
@@ -1107,6 +1123,7 @@ func (chip *SoundChip) GenerateSample() float32 {
 	// Mix samples from all active channels
 	var sum float32
 	activeCount := 0
+	var primaryType uint32 = 0 // Store the wave type of first active channel
 	for i := 0; i < NUM_CHANNELS; i++ {
 		ch := channels[i]
 		if ch.enabled {
@@ -1124,6 +1141,25 @@ func (chip *SoundChip) GenerateSample() float32 {
 	} else {
 		// When multiple channels are active, average their samples.
 		sample = sum / float32(activeCount)
+	}
+
+	// Apply overdrive effect with waveform-specific processing
+	if overdriveLevel > 0 {
+		// More aggressive gain calculation
+		gain := 1.0 + (float32(overdriveLevel) / 10.0)
+
+		// Apply waveform-specific gain scaling for better effect
+		switch primaryType {
+		case WAVE_NOISE:
+			gain *= 1.5
+		case WAVE_SINE:
+			gain *= 1.2
+		case WAVE_TRIANGLE:
+			gain *= 1.2
+		}
+
+		// Apply overdrive with tanh for soft clipping
+		sample = float32(math.Tanh(float64(sample * gain)))
 	}
 
 	// Apply global filter processing
@@ -1165,12 +1201,6 @@ func (chip *SoundChip) GenerateSample() float32 {
 		case 3:
 			sample = bp
 		}
-	}
-
-	// Apply overdrive effect
-	if overdriveLevel > 0 {
-		driven := sample * overdriveLevel
-		sample = float32(math.Tanh(float64(driven)))
 	}
 
 	// Apply reverb effect and final mix
