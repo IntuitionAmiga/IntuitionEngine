@@ -706,7 +706,17 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 		ch.releaseTime = max(int(value*MS_TO_SAMPLES), MIN_ENV_TIME)
 	case NOISE_MODE:
 		ch.noiseMode = int(value % NUM_NOISE_MODES) // 0=white, 1=periodic, 2=metallic
+	//case ENV_SHAPE:
+	//	ch.envelopeShape = int(value % NUM_ENVELOPE_SHAPES) // 0=ADSR, 1=SawUp, 2=SawDown, 3=Loop
+	//	// Reset envelope state
+	//	ch.envelopePhase = ENV_ATTACK
+	//	ch.envelopeSample = 0
 	case ENV_SHAPE:
+		// Before accessing ch directly, first make sure it's not nil
+		// If it's nil, we'll use the first channel as default
+		if ch == nil {
+			ch = chip.channels[0] // Default to first channel if none selected
+		}
 		ch.envelopeShape = int(value % NUM_ENVELOPE_SHAPES) // 0=ADSR, 1=SawUp, 2=SawDown, 3=Loop
 		// Reset envelope state
 		ch.envelopePhase = ENV_ATTACK
