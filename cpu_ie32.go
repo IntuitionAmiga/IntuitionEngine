@@ -113,7 +113,7 @@ const (
 // ------------------------------------------------------------------------------
 const (
 	REG_INDEX_MASK    = 0x0F       // Mask for register index
-	REG_INDIRECT_MASK = 0x03       // Mask for indirect addressing
+	REG_INDIRECT_MASK = 0x0F       // Mask for indirect addressing
 	OFFSET_MASK       = 0xFFFFFFFC // Mask for word-aligned offsets
 )
 
