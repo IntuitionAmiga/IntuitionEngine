@@ -38,7 +38,7 @@ Core Features:
 Signal Flow:
 1. Fetch instruction components from memory
 2. Decode addressing mode and operands
-3. Execute operation with bounds checking
+3. ExecuteInstruction operation with bounds checking
 4. Update program counter
 5. Process any pending interrupts
 6. Update timer state and counters
@@ -834,7 +834,7 @@ func (cpu *CPU) Reset() {
 
 func (cpu *CPU) Execute() {
 	/*
-	   Execute runs the main CPU instruction cycle.
+	   ExecuteInstruction runs the main CPU instruction cycle.
 
 	   Execution Flow:
 	   1. Validate initial PC value
@@ -842,7 +842,7 @@ func (cpu *CPU) Execute() {
 	      - Cache frequently accessed values
 	      - Fetch instruction components
 	      - Process timer updates
-	      - Execute instruction based on opcode
+	      - ExecuteInstruction instruction based on opcode
 	      - Update program counter
 	      - Handle interrupts
 
@@ -1345,7 +1345,7 @@ func (cpu *CPU) Execute() {
 			   Wait specified cycles.
 			   Operation:
 			   1. Get delay count from operand
-			   2. Execute delay loop
+			   2. ExecuteInstruction delay loop
 			   3. Advance PC by INSTRUCTION_SIZE
 			*/
 			targetTime := resolvedOperand

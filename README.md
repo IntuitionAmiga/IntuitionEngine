@@ -22,14 +22,15 @@
 1. System Overview
 2. Architecture Design
 3. Memory Map & Hardware Registers
-4. CPU Architecture
-5. Assembly Language Reference
-6. Sound System
-7. Video System
-8. Developer's Guide
-9. Implementation Details
-10. Platform Support & Backend Systems
-11. Hardware Interface Architecture
+4. CPU Architecture (IE32)
+5. Motorola 68020 CPU with FPU
+6. Assembly Language Reference
+7. Sound System
+8. Video System
+9. Developer's Guide
+10. Implementation Details
+11. Platform Support & Backend Systems
+12. Hardware Interface Architecture
 
 # 1. System Overview
 
@@ -37,8 +38,12 @@ This virtual machine implements a complete computer system with a custom CPU arc
 
 ## Key Features
 
-- 32-bit RISC-like CPU architecture
-- 16 general-purpose registers (A through H and S through Y)
+### CPU Options:
+- **IE32**: 32-bit RISC-like CPU architecture with 16 general-purpose registers
+- **Motorola 68020**: Full 32-bit CISC emulation with 95%+ instruction coverage
+- **68881/68882 FPU**: Complete floating-point coprocessor with transcendental functions
+
+### Core Features:
 - Memory-mapped I/O for peripherals
 - Four-channel sound synthesis with advanced features:
     - Multiple waveform types (square, triangle, sine, noise)
@@ -50,7 +55,7 @@ This virtual machine implements a complete computer system with a custom CPU arc
 - Configurable video output:
     - Multiple resolution support (640x480, 800x600, 1024x768)
     - Double-buffered output with dirty rectangle tracking
-    - 32-bit RGBA color support
+    - 32-bit RGBA colour support
 - Hardware timer with interrupt support
 - Dual GUI frontend support (GTK4 and FLTK)
 
@@ -84,7 +89,7 @@ The system consists of five main subsystems that work together:
     - Implements the IE32 instruction set
     - Manages program execution
     - Hardware interrupt support via vector table
-    - Timer system synchronized to audio rate
+    - Timer system synchronised to audio rate
     - 16 general-purpose registers
 
 2. Sound System
@@ -107,7 +112,7 @@ The system consists of five main subsystems that work together:
         - 1024x768
     - Double-buffered framebuffer
     - 32x32 pixel dirty rectangle tracking
-    - 32-bit RGBA color depth
+    - 32-bit RGBA colour depth
     - Ebiten primary backend
     - OpenGL backend in development
 
@@ -127,15 +132,15 @@ The system consists of five main subsystems that work together:
 
 ## Memory Map
 
-The system's memory is organized as follows:
+The system's memory is organised as follows:
 
 ```
 0x000000 - 0x000FFF: System vectors (including interrupt vector)
 0x001000 - 0x001FFF: Program start
 0x100000 - 0x4FFFFF: Video RAM (VRAM_START to VRAM_START + VRAM_SIZE)
 0x00F000 - 0x00F008: Video registers
-0x00F800 - 0x00F80C: Timer registers
-0x00F900 - 0x00F97C: Sound registers
+0x00F800 - 0x00F808: Timer registers
+0x00F900 - 0x00FA54: Sound registers
 ```
 Key memory-mapped hardware registers are logically grouped to facilitate system programming and hardware access. Each subsystem has a dedicated register block for configuration and control.
 
@@ -150,7 +155,7 @@ The first 4KB of memory is reserved for system vectors. The most important vecto
 0x0000 - 0x0003: Interrupt Service Routine (ISR) vector
 ```
 
-When interrupts are enabled via the SEI instruction, the CPU reads this vector to determine the ISR address. Programs must initialize this vector before enabling interrupts:
+When interrupts are enabled via the SEI instruction, the CPU reads this vector to determine the ISR address. Programs must initialise this vector before enabling interrupts:
 
 ```assembly
 .org 0x0000
@@ -178,7 +183,7 @@ MODE_800x600  = 0x01
 MODE_1024x768 = 0x02
 ```
 
-### Timer Registers (0xF800 - 0xF80C)
+### Timer Registers (0xF800 - 0xF808)
 ```
 0xF800: TIMER_CTRL   - Timer control (0 = disabled, 1 = enabled)
 0xF804: TIMER_COUNT  - Current timer value (decrements automatically)
@@ -239,7 +244,6 @@ Each sound channel has its own register block. Here's the layout for each channe
 0xF9D8: NOISE_SUS   - Sustain level
 0xF9DC: NOISE_REL   - Release time
 0xF9E0: NOISE_MODE  - Noise generation mode
-0xF91C: NOISE_SWEEP - Frequency sweep control
 
 Noise Modes:
 NOISE_MODE_WHITE    = 0 // Standard LFSR noise
@@ -279,7 +283,7 @@ The CPU implements a 32-bit RISC-like architecture with fixed-width instructions
 
 ## 4.1 Register Set
 
-The CPU provides 16 general-purpose 32-bit registers organized in two logical banks:
+The CPU provides 16 general-purpose 32-bit registers organised in two logical banks:
 
 First Bank (A-H):
 
@@ -458,7 +462,7 @@ The system implements a simple but effective interrupt system:
 1. **Interrupt Vector**
     - Located at address 0x0000
     - Contains the address of the interrupt service routine (ISR)
-    - Must be initialized before enabling interrupts
+    - Must be initialised before enabling interrupts
 
 2. **Interrupt Control**
     - SEI enables interrupts
@@ -483,11 +487,109 @@ The system implements a simple but effective interrupt system:
    SEI                ; Enable interrupts
    ```
 
-# 5. Assembly Language Reference
+# 5. Motorola 68020 CPU with FPU
+
+In addition to the IE32 instruction set, the Intuition Engine includes a complete Motorola 68020 CPU emulator with 68881/68882 FPU (Floating Point Unit) support.
+
+## 5.1 M68K CPU Features
+
+The 68020 emulator provides:
+
+- **32-bit architecture** with 8 data registers (D0-D7) and 8 address registers (A0-A7)
+- **95%+ instruction coverage** including all common 68020 operations
+- **Full addressing mode support** (16 addressing modes)
+- **Supervisor/user mode** privilege separation
+- **Exception handling** with vector table support
+
+### Instruction Categories Supported:
+- Data movement (MOVE, MOVEA, MOVEM, MOVEQ, MOVEP, LEA, PEA)
+- Arithmetic (ADD, SUB, MUL, DIV, NEG, CMP, ADDX, SUBX)
+- Logical (AND, OR, EOR, NOT)
+- Shift and rotate (ASL, ASR, LSL, LSR, ROL, ROR, ROXL, ROXR)
+- Bit manipulation (BTST, BCHG, BCLR, BSET)
+- Bit field operations (BFTST, BFEXTU, BFEXTS, BFCHG, BFCLR, BFSET, BFFFO, BFINS)
+- BCD arithmetic (ABCD, SBCD, NBCD, PACK, UNPK)
+- Program control (Bcc, DBcc, Scc, JMP, JSR, RTS, RTE, TRAP)
+- System control (MOVE SR, MOVE USP, MOVEC, MOVES, RESET, STOP)
+- Atomic operations (TAS, CAS, CAS2)
+- Bounds checking (CHK, CHK2, CMP2)
+
+## 5.2 FPU (68881/68882) Features
+
+The FPU coprocessor provides full floating-point support:
+
+### Data Types:
+- **80-bit extended precision** (IEEE 754 compliant)
+- 8 floating-point registers (FP0-FP7)
+- Control registers: FPCR, FPSR, FPIAR
+
+### Basic Operations:
+| Instruction | Description |
+|-------------|-------------|
+| FMOVE | Move floating-point data |
+| FADD | Add |
+| FSUB | Subtract |
+| FMUL | Multiply |
+| FDIV | Divide |
+| FNEG | Negate |
+| FABS | Absolute value |
+| FCMP | Compare |
+| FTST | Test |
+
+### Transcendental Functions:
+| Instruction | Description |
+|-------------|-------------|
+| FSIN | Sine |
+| FCOS | Cosine |
+| FTAN | Tangent |
+| FASIN | Arc sine |
+| FACOS | Arc cosine |
+| FATAN | Arc tangent |
+| FSINH | Hyperbolic sine |
+| FCOSH | Hyperbolic cosine |
+| FTANH | Hyperbolic tangent |
+| FSQRT | Square root |
+| FLOG10 | Base-10 logarithm |
+| FLOGN | Natural logarithm |
+| FLOG2 | Base-2 logarithm |
+| FETOX | e^x |
+| FTWOTOX | 2^x |
+| FTENTOX | 10^x |
+
+### ROM Constants (FMOVECR):
+The FPU provides built-in constants:
+- Pi (π)
+- e (Euler's number)
+- log₂(e), log₁₀(e)
+- ln(2), ln(10)
+- Powers of 10 (10⁰ through 10⁴)
+
+### Condition Codes:
+- N (Negative) - Result is negative
+- Z (Zero) - Result is zero
+- I (Infinity) - Result is infinite
+- NAN - Result is Not a Number
+
+## 5.3 F-Line Instruction Decoding
+
+FPU instructions use F-line opcodes (0xF000-0xFFFF):
+- Coprocessor ID in bits 11-9 (001 for FPU)
+- Automatic routing to FPU when present
+- Line-F exception when FPU not available
+
+## 5.4 Test Coverage
+
+The M68K implementation includes comprehensive testing:
+- 127 FPU unit tests covering all operations
+- CPU integration tests for F-line decoder
+- Special value handling (NaN, Infinity, denormals)
+- Condition code verification
+
+# 6. Assembly Language Reference
 
 The Intuition Engine assembly language provides a straightforward way to program the system while maintaining access to all hardware features.
 
-## 5.1 Basic Program Structure
+## 6.1 Basic Program Structure
 
 Every assembly program follows this basic structure:
 
@@ -498,7 +600,7 @@ Every assembly program follows this basic structure:
 .equ TIMER_PERIOD, 0xF808  ; using symbolic names
 
 start:                     ; Main entry point
-    LOAD A, #0             ; Initialize counter
+    LOAD A, #0             ; Initialise counter
     JSR setup_timer        ; Call timer setup
 main_loop:
     JSR check_timer        ; Check timer status
@@ -513,7 +615,7 @@ setup_timer:
     RTS
 ```
 
-## 5.2 Assembler Directives
+## 6.2 Assembler Directives
 
 The assembler supports these directives:
 
@@ -528,7 +630,7 @@ The assembler supports these directives:
 The .org directive provides control over code placement:
 
 ```assembly
-; Example memory organization
+; Example memory organisation
 .org 0x0000               ; Start at vector table
     .word isr_handler     ; Set up interrupt vector
 
@@ -539,7 +641,7 @@ start:
     JMP main
 ```
 
-## 5.3 Memory Access Patterns
+## 6.3 Memory Access Patterns
 
 When working with memory, consider alignment and efficiency:
 
@@ -559,7 +661,7 @@ copy_loop:
     RTS
 ```
 
-## 5.4 Stack Usage
+## 6.4 Stack Usage
 
 The stack is essential for subroutines and temporary storage:
 
@@ -577,7 +679,7 @@ calculate:
     RTS
 ```
 
-## 5.5 Interrupt Handlers
+## 6.5 Interrupt Handlers
 
 Interrupt handlers must preserve register state:
 
@@ -594,11 +696,11 @@ isr_handler:
     RTI                ; Return from interrupt
 ```
 
-# 6. Sound System
+# 7. Sound System
 
 The sound system provides sophisticated synthesis capabilities through four independent channels and global effects processing.
 
-## 6.1 Sound Channel Types
+## 7.1 Sound Channel Types
 
 Each channel offers different synthesis capabilities:
 
@@ -666,7 +768,7 @@ Features:
 - Frequency sweep
 - ADSR envelope
 
-## 6.2 Modulation System
+## 7.2 Modulation System
 
 The sound system supports complex modulation:
 
@@ -688,7 +790,7 @@ LOAD A, #0x87          ; Enable sweep up
 STORE A, @SQUARE_SWEEP
 ```
 
-## 6.3 Global Effects
+## 7.3 Global Effects
 
 The system provides global audio processing:
 
@@ -724,11 +826,11 @@ LOAD A, #192           ; Long decay
 STORE A, @REVERB_DECAY
 ```
 
-# 7. Video System
+# 8. Video System
 
 The video system provides flexible graphics output through a memory-mapped framebuffer design.
 
-## 7.1 Display Modes
+## 8.1 Display Modes
 
 Three resolution modes are available:
 - 640x480 (MODE_640x480)
@@ -746,9 +848,9 @@ init_display:
     RTS
 ```
 
-## 7.2 Framebuffer Organization
+## 8.2 Framebuffer Organisation
 
-The framebuffer uses 32-bit RGBA color format:
+The framebuffer uses 32-bit RGBA colour format:
 - Start address: 0x100000 (VRAM_START)
 - Each pixel: 4 bytes (R,G,B,A)
 - Linear layout: y * width + x
@@ -759,14 +861,14 @@ The framebuffer uses 32-bit RGBA color format:
 Address = 0x100000 + (y * width + x) * 4
 ```
 
-## 7.3 Dirty Rectangle Tracking
+## 8.3 Dirty Rectangle Tracking
 
 The system tracks changes in 32x32 pixel blocks:
 - Automatically marks modified regions
 - Updates only changed areas
 - Improves rendering performance
 
-## 7.4 Double Buffering
+## 8.4 Double Buffering
 
 Video output uses double buffering to prevent tearing:
 - Write to back buffer
@@ -789,9 +891,9 @@ wait_vsync:
     RTS
 ```
 
-# 8. Developer's Guide
+# 9. Developer's Guide
 
-## 8.1 Development Environment Setup
+## 9.1 Development Environment Setup
 
 To develop for the Intuition Engine, you'll need to set up your development environment with several components:
 
@@ -810,7 +912,7 @@ my_project/
 └── tools/           # Development tools
 ```
 
-## 8.2 Building the System
+## 9.2 Building the System
 
 The build process uses the provided build script:
 
@@ -855,13 +957,13 @@ list             - List compiled binaries with sizes
 help             - Show this help message
 ```
 
-The Makefile handles all necessary compilation flags and optimizations automatically. It uses:
-- Compiler optimization flags for performance
+The Makefile handles all necessary compilation flags and optimisations automatically. It uses:
+- Compiler optimisation flags for performance
 - SuperStrip and UPX LZMA compression for binary size reduction
 - Parallel compilation where possible
 - AppImage packaging for Linux distribution
 
-## 8.3 Development Workflow
+## 9.3 Development Workflow
 
 A typical development cycle involves:
 
@@ -872,7 +974,11 @@ A typical development cycle involves:
 ```
 3. Run the resulting program:
 ```bash
-./bin/IntuitionEngine program.iex
+./bin/IntuitionEngine -ie32 program.iex
+```
+For M68K programs:
+```bash
+./bin/IntuitionEngine -m68k program.ie68
 ```
 
 The assembler provides error messages for common issues like:
@@ -881,7 +987,7 @@ The assembler provides error messages for common issues like:
 - Misaligned memory access
 - Invalid instruction formats
 
-## 8.4 Debugging Techniques
+## 9.4 Debugging Techniques
 
 The system provides several debugging methods:
 
@@ -905,9 +1011,9 @@ debug_point:
     - Audio channel states
     - Timer operation
 
-# 9. Implementation Details
+# 10. Implementation Details
 
-## 9.1 CPU Implementation
+## 10.1 CPU Implementation
 
 The CPU implementation prioritizes clarity and correctness:
 
@@ -942,7 +1048,7 @@ The instruction execution cycle:
 4. Update program counter
 5. Check for interrupts
 
-## 9.2 Memory Bus Architecture
+## 10.2 Memory Bus Architecture
 
 The memory bus provides a flexible interface for memory access:
 
@@ -961,7 +1067,7 @@ Memory operations handle:
 - Access protection
 - Multiple device mappings
 
-## 9.3 Sound System Implementation
+## 10.3 Sound System Implementation
 
 The sound system uses a sophisticated multi-channel architecture:
 
@@ -996,9 +1102,9 @@ Audio processing occurs in real-time at 44.1kHz, with features like:
 - Real-time parameter updates
 - Multiple effect processors
 
-# 10. Platform Support & Backend Systems
+# 11. Platform Support & Backend Systems
 
-## 10.1 Graphics Backend Architecture
+## 11.1 Graphics Backend Architecture
 
 The system supports multiple graphics backends through a common interface:
 
@@ -1014,7 +1120,7 @@ type VideoOutput interface {
 }
 ```
 
-### 10.1.1 Ebiten Backend
+### 11.1.1 Ebiten Backend
 
 The primary graphics backend uses Ebiten for:
 
@@ -1023,20 +1129,20 @@ The primary graphics backend uses Ebiten for:
 - Automatic scaling
 - VSync support
 
-### 10.1.2 OpenGL Backend (In Development)
+### 11.1.2 OpenGL Backend (In Development)
 
 The OpenGL backend (when completed) will provide:
 
 - Direct hardware access
 - Custom shader support
 - Additional texture features
-- Platform-specific optimizations
+- Platform-specific optimisations
 
-## 10.2 Audio Backend Systems
+## 11.2 Audio Backend Systems
 
 Audio output supports two backends:
 
-### 10.2.1 Oto Backend
+### 11.2.1 Oto Backend
 
 The primary audio backend uses Oto for:
 
@@ -1045,7 +1151,7 @@ The primary audio backend uses Oto for:
 - Automatic buffer management
 - Sample-accurate timing
 
-### 10.2.2 ALSA Backend
+### 11.2.2 ALSA Backend
 
 On Linux systems, ALSA provides:
 
@@ -1054,11 +1160,11 @@ On Linux systems, ALSA provides:
 - Direct hardware access
 - Better integration with system audio
 
-## 10.3 GUI Backend Systems
+## 11.3 GUI Backend Systems
 
 Two GUI implementations are available:
 
-### 10.3.1 GTK4 Frontend
+### 11.3.1 GTK4 Frontend
 
 The GTK4 implementation provides:
 
@@ -1067,7 +1173,7 @@ The GTK4 implementation provides:
 - File dialogs
 - Debug interface
 
-### 10.3.2 FLTK Frontend
+### 11.3.2 FLTK Frontend
 
 The FLTK implementation offers:
 
@@ -1076,9 +1182,9 @@ The FLTK implementation offers:
 - Basic UI functionality
 - Simple file selection
 
-# 11. Hardware Interface Architecture
+# 12. Hardware Interface Architecture
 
-## 11.1 Interface Design
+## 12.1 Interface Design
 
 The system uses a layered interface approach:
 
@@ -1095,7 +1201,7 @@ type TextureCapable interface { ... }
 type SpriteCapable interface { ... }
 ```
 
-## 11.2 Hardware Abstraction
+## 12.2 Hardware Abstraction
 
 Each hardware component provides:
 
@@ -1104,7 +1210,7 @@ Each hardware component provides:
 - Configuration interface
 - Event handling
 
-## 11.3 Device Communication
+## 12.3 Device Communication
 
 Hardware interaction occurs through:
 
@@ -1113,21 +1219,21 @@ Hardware interaction occurs through:
 - Interrupt system
 - Status polling
 
-## 11.4 Future Extensibility
+## 12.4 Future Extensibility
 
 The interface architecture supports:
 
 - New hardware features
 - Additional backends
 - Extended capabilities
-- Platform-specific optimizations
+- Platform-specific optimisations
 - Platform-specific GUIs
 
-# 12. Testing & Demonstration Framework
+# 13. Testing & Demonstration Framework
 
 The Intuition Engine includes a comprehensive testing and demonstration framework that verifies system functionality while showcasing its capabilities through interactive demos and visual effects.
 
-## 12.1 Testing Architecture
+## 13.1 Testing Architecture
 
 The testing framework is built on Go's native testing package and provides:
 
@@ -1137,9 +1243,9 @@ The testing framework is built on Go's native testing package and provides:
 - Performance benchmarking capabilities
 - Cross-platform compatibility testing
 
-## 12.2 Audio Synthesis Testing
+## 13.2 Audio Synthesis Testing
 
-### 12.2.1 Basic Waveform Tests
+### 13.2.1 Basic Waveform Tests
 The system verifies the accuracy and quality of fundamental waveform generation:
 
 - Square wave synthesis with variable duty cycle control
@@ -1147,7 +1253,7 @@ The system verifies the accuracy and quality of fundamental waveform generation:
 - Pure sine wave generation with perfect frequency accuracy
 - Multiple noise generation algorithms (white, periodic, metallic)
 
-### 12.2.2 Advanced Synthesis Features
+### 13.2.2 Advanced Synthesis Features
 Comprehensive testing of advanced sound synthesis capabilities:
 
 - PWM (Pulse Width Modulation) with dynamic width control
@@ -1156,15 +1262,15 @@ Comprehensive testing of advanced sound synthesis capabilities:
 - Hard sync effects across oscillator channels
 - Complex noise shaping and filtering
 
-### 12.2.3 Envelope System
+### 13.2.3 Envelope System
 Verification of the ADSR (Attack, Decay, Sustain, Release) envelope system:
 
 - Precise timing accuracy for all envelope stages
 - Linear and exponential envelope shapes
 - Complex envelope interactions with modulation
-- Multi-channel envelope synchronization
+- Multi-channel envelope synchronisation
 
-### 12.2.4 Audio Effects Processing
+### 13.2.4 Audio Effects Processing
 Testing of the global audio effects processing chain:
 
 - Multi-mode filter system with resonance control
@@ -1172,22 +1278,22 @@ Testing of the global audio effects processing chain:
 - Stereo reverb processing
 - Cross-modulation effects between channels
 
-## 12.3 Visual System Testing
+## 13.3 Visual System Testing
 
-### 12.3.1 Fundamental Operations
+### 13.3.1 Fundamental Operations
 Basic video system functionality verification:
 
 - Resolution mode switching (640x480, 800x600, 1024x768)
 - Frame buffer operations and memory access
-- Color depth and format handling
+- Colour depth and format handling
 - VSync and timing verification
 
-### 12.3.2 Visual Effect Demonstrations
+### 13.3.2 Visual Effect Demonstrations
 The test suite includes several real-time visual demonstrations:
 
-1. **Color Palette Test**
-    - Full RGB color space visualization
-    - Color gradient accuracy verification
+1. **Colour Palette Test**
+    - Full RGB colour space visualisation
+    - Colour gradient accuracy verification
     - Alpha channel blending tests
 
 2. **3D Graphics**
@@ -1197,8 +1303,8 @@ The test suite includes several real-time visual demonstrations:
 
 3. **Particle Systems**
     - Dynamic particle emission and physics
-    - Color and alpha blending
-    - Performance optimization testing
+    - Colour and alpha blending
+    - Performance optimisation testing
 
 4. **Special Effects**
     - Fire simulation using cellular automata
@@ -1208,24 +1314,24 @@ The test suite includes several real-time visual demonstrations:
     - Real-time tunnel effect
     - Rotozoom transformation
     - 3D starfield simulation
-    - Mandelbrot set visualization
+    - Mandelbrot set visualisation
 
-### 12.3.3 Performance Testing
+### 13.3.3 Performance Testing
 - Frame rate monitoring and performance profiling
-- Memory bandwidth utilization measurement
+- Memory bandwidth utilisation measurement
 - CPU load analysis during complex effects
-- Optimization verification for critical paths
+- Optimisation verification for critical paths
 
-## 12.4 Integration Testing
+## 13.4 Integration Testing
 
 The framework includes tests that verify the interaction between different subsystems:
 
-- Audio-visual synchronization
+- Audio-visual synchronisation
 - Interrupt handling and timing accuracy
 - Memory access patterns and conflicts
 - Resource sharing and management
 
-## 12.5 Technical Demonstrations
+## 13.5 Technical Demonstrations
 
 The system uses Go's testing framework as a convenient way to organise and run technical demonstrations. These are not traditional unit tests, but rather interactive demonstrations that showcase the system's capabilities.
 
@@ -1259,7 +1365,7 @@ go test -v -run TestPlasmaWaves
 
 Each demonstration includes thorough logging output that explains what is being demonstrated and what effects or sounds you should observe. The demonstrations typically run for a set duration (ranging from 2 to 10 seconds) before automatically proceeding to the next test.
 
-## 12.6 Demonstration Development
+## 13.6 Demonstration Development
 
 When creating new demonstrations:
 
