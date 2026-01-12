@@ -22,11 +22,12 @@ License: GPLv3 or later
 audio_chip.go - Audio Synthesis Chip for the Intuition Engine
 
 This module implements a complete audio synthesis system with:
-- 4 independent channels (Square, Triangle, Sine, and Noise)
+- 5 independent channels (Square, Triangle, Sine, Noise, and Sawtooth)
 - Per-channel envelope generation with multiple envelope shapes
 - Frequency modulation capabilities (sweep, sync, ring modulation)
 - Global effects processing (filter, overdrive, reverb)
 - Real-time parameter control via memory-mapped registers
+- polyBLEP anti-aliasing for cleaner high-frequency output on square and sawtooth waves
 
 The architecture follows classic synthesis chip design while adding
 modern features like floating-point processing and advanced effects.
@@ -160,6 +161,28 @@ const (
 	RING_MOD_SOURCE_CH3 = 0xFA1C // Channel 3
 )
 
+// ------------------------------------------------------------------------------
+// Sawtooth Wave Control Registers (FA20-FA5F)
+// ------------------------------------------------------------------------------
+const (
+	SAW_FREQ  = 0xFA20
+	SAW_VOL   = 0xFA24
+	SAW_CTRL  = 0xFA28
+	SAW_SWEEP = 0xFA2C
+	SAW_ATK   = 0xFA30
+	SAW_DEC   = 0xFA34
+	SAW_SUS   = 0xFA38
+	SAW_REL   = 0xFA3C
+
+	// Sync and ring mod for sawtooth channel
+	SYNC_SOURCE_CH4     = 0xFA60
+	RING_MOD_SOURCE_CH4 = 0xFA64
+
+	// Sawtooth register range
+	SAW_REG_START = 0xFA20
+	SAW_REG_END   = 0xFA6F
+)
+
 // Filter, Overdrive, Reverb, and Audio Control registers
 const (
 	FILTER_CUTOFF     = 0xF820 // Filter cutoff (0–255 → 0.0–1.0)
@@ -282,7 +305,7 @@ const (
 // ------------------------------------------------------------------------------
 // Hardware Configuration
 // ------------------------------------------------------------------------------
-const NUM_CHANNELS = 4 // Number of audio channels
+const NUM_CHANNELS = 5 // Number of audio channels (Square, Triangle, Sine, Noise, Sawtooth)
 
 // ------------------------------------------------------------------------------
 // Noise Generator Tap Positions
@@ -360,6 +383,8 @@ const PRE_DELAY_MS = 8 // 8ms pre-delay
 // ------------------------------------------------------------------------------
 // Comb Filter Constants
 // ------------------------------------------------------------------------------
+const NUM_COMB_FILTERS = 4 // Number of comb filters for reverb (independent of audio channels)
+
 const (
 	COMB_DELAY_1 = 1687
 	COMB_DELAY_2 = 1601
@@ -400,6 +425,7 @@ const (
 	WAVE_TRIANGLE
 	WAVE_SINE
 	WAVE_NOISE
+	WAVE_SAWTOOTH // 5th wave type with polyBLEP anti-aliasing
 )
 
 // ------------------------------------------------------------------------------
@@ -552,7 +578,7 @@ type SoundChip struct {
 	_pad1           [SOUNDCHIP_PAD1_SIZE]byte // Align to 64-byte cache line boundary
 
 	// Cache line 2 - Channel references and thread safety (64 bytes)
-	channels        [NUM_CHANNELS]*Channel    // Array of 4 audio channel pointers
+	channels        [NUM_CHANNELS]*Channel    // Array of 5 audio channel pointers
 	filterModSource *Channel                  // Channel modulating the filter cutoff
 	mutex           sync.RWMutex              // Concurrency control for parameter updates
 	_pad2           [SOUNDCHIP_PAD2_SIZE]byte // Align to 64-byte cache line boundary
@@ -560,7 +586,7 @@ type SoundChip struct {
 	// Cache line 3+ - Reverb state (cold path)
 	preDelayPos int                            // Current position in pre-delay buffer
 	allpassPos  [NUM_ALLPASS_FILTERS]int       // Current positions in allpass buffers
-	combFilters [NUM_CHANNELS]CombFilter       // Parallel comb filter bank for reverb
+	combFilters [NUM_COMB_FILTERS]CombFilter   // Parallel comb filter bank for reverb
 	allpassBuf  [NUM_ALLPASS_FILTERS][]float32 // Allpass diffusion filters
 	preDelayBuf []float32                      // 8ms pre-delay buffer
 	output      AudioOutput                    // Audio backend interface
@@ -583,7 +609,7 @@ func NewSoundChip(backend int) (*SoundChip, error) {
 	}
 
 	// Initialise channels
-	waveTypes := []int{WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE, WAVE_NOISE}
+	waveTypes := []int{WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE, WAVE_NOISE, WAVE_SAWTOOTH}
 	for i := 0; i < NUM_CHANNELS; i++ {
 		chip.channels[i] = &Channel{
 			waveType:      waveTypes[i],
@@ -666,6 +692,8 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 		ch = chip.channels[2]
 	case addr >= NOISE_REG_START && addr <= NOISE_REG_END:
 		ch = chip.channels[3]
+	case addr >= SAW_REG_START && addr <= SAW_REG_END:
+		ch = chip.channels[4]
 	}
 
 	switch addr {
@@ -676,11 +704,11 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 		value16 := uint16(value & WORD_MASK)
 		ch.dutyCycle = float32(value16&BYTE_MASK) / PWM_RANGE
 		ch.pwmDepth = float32((value16>>PWM_DEPTH_SHIFT)&BYTE_MASK) / (PWM_RANGE * 2.0)
-	case SQUARE_FREQ, TRI_FREQ, SINE_FREQ, NOISE_FREQ:
+	case SQUARE_FREQ, TRI_FREQ, SINE_FREQ, NOISE_FREQ, SAW_FREQ:
 		ch.frequency = float32(value)
-	case SQUARE_VOL, TRI_VOL, SINE_VOL, NOISE_VOL:
+	case SQUARE_VOL, TRI_VOL, SINE_VOL, NOISE_VOL, SAW_VOL:
 		ch.volume = float32(value&BYTE_MASK) / NORMALISE_8BIT
-	case SQUARE_CTRL, TRI_CTRL, SINE_CTRL, NOISE_CTRL:
+	case SQUARE_CTRL, TRI_CTRL, SINE_CTRL, NOISE_CTRL, SAW_CTRL:
 		ch.enabled = value != 0
 		newGate := value&GATE_MASK != 0
 
@@ -696,13 +724,13 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 			ch.envelopeSample = 0
 		}
 		ch.gate = newGate
-	case SQUARE_ATK, TRI_ATK, SINE_ATK, NOISE_ATK:
+	case SQUARE_ATK, TRI_ATK, SINE_ATK, NOISE_ATK, SAW_ATK:
 		ch.attackTime = max(int(value*MS_TO_SAMPLES), MIN_ENV_TIME)
-	case SQUARE_DEC, TRI_DEC, SINE_DEC, NOISE_DEC:
+	case SQUARE_DEC, TRI_DEC, SINE_DEC, NOISE_DEC, SAW_DEC:
 		ch.decayTime = max(int(value*MS_TO_SAMPLES), MIN_ENV_TIME)
-	case SQUARE_SUS, TRI_SUS, SINE_SUS, NOISE_SUS:
+	case SQUARE_SUS, TRI_SUS, SINE_SUS, NOISE_SUS, SAW_SUS:
 		ch.sustainLevel = float32(value) / NORMALISE_8BIT
-	case SQUARE_REL, TRI_REL, SINE_REL, NOISE_REL:
+	case SQUARE_REL, TRI_REL, SINE_REL, NOISE_REL, SAW_REL:
 		ch.releaseTime = max(int(value*MS_TO_SAMPLES), MIN_ENV_TIME)
 	case NOISE_MODE:
 		ch.noiseMode = int(value % NUM_NOISE_MODES) // 0=white, 1=periodic, 2=metallic
@@ -743,14 +771,22 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 		ch.sweepPeriod = int((value >> SWEEP_PERIOD_SHIFT) & SWEEP_PERIOD_MASK)
 		ch.sweepShift = 1 // Force minimum shift value for largest frequency changes
 		ch.sweepDirection = (value & SWEEP_DIR_MASK) != 0
-	case SYNC_SOURCE_CH0, SYNC_SOURCE_CH1, SYNC_SOURCE_CH2, SYNC_SOURCE_CH3:
+	case SAW_SWEEP:
+		ch.sweepEnabled = (value & SWEEP_ENABLE_MASK) != 0
+		ch.sweepPeriod = int((value >> SWEEP_PERIOD_SHIFT) & SWEEP_PERIOD_MASK)
+		ch.sweepShift = uint(value & SWEEP_SHIFT_MASK)
+		if ch.sweepShift == 0 {
+			ch.sweepShift = MIN_SWEEP_SHIFT
+		}
+		ch.sweepDirection = (value & SWEEP_DIR_MASK) != 0
+	case SYNC_SOURCE_CH0, SYNC_SOURCE_CH1, SYNC_SOURCE_CH2, SYNC_SOURCE_CH3, SYNC_SOURCE_CH4:
 		// Determine target channel (e.g., SYNC_SOURCE_CH0 → channel 0)
 		chIndex := (addr - SYNC_SOURCE_CH0) / SYNC_REG_SPACING
 		ch := chip.channels[chIndex]
 		// Set sync source to another channel (0–3)
 		masterIndex := int(value % NUM_CHANNELS)
 		ch.syncSource = chip.channels[masterIndex]
-	case RING_MOD_SOURCE_CH0, RING_MOD_SOURCE_CH1, RING_MOD_SOURCE_CH2, RING_MOD_SOURCE_CH3:
+	case RING_MOD_SOURCE_CH0, RING_MOD_SOURCE_CH1, RING_MOD_SOURCE_CH2, RING_MOD_SOURCE_CH3, RING_MOD_SOURCE_CH4:
 		chIndex := (addr - RING_MOD_SOURCE_CH0) / RINGMOD_REG_SPACING
 		ch := chip.channels[chIndex]
 		masterIndex := int(value % NUM_CHANNELS)
@@ -986,12 +1022,23 @@ func (ch *Channel) generateSample() float32 {
 		}
 		// Convert the current phase (which is in radians, [0, TWO_PI]) into a normalized value [0,1]
 		normalizedPhase := ch.phase / TWO_PI
+		dt := float64(ch.frequency) / float64(SAMPLE_RATE)
+
 		// Use the normalized phase for the duty cycle comparison.
 		if normalizedPhase < currentDuty {
 			rawSample = SQUARE_AMPLITUDE
 		} else {
 			rawSample = -SQUARE_AMPLITUDE
 		}
+
+		// Apply polyBLEP anti-aliasing at both edges for cleaner high-frequency output
+		phaseNorm64 := float64(normalizedPhase)
+		dutyNorm64 := float64(currentDuty)
+		// Correction at rising edge (phase = 0)
+		rawSample += float32(polyBLEP(phaseNorm64, dt)) * SQUARE_AMPLITUDE
+		// Correction at falling edge (phase = duty cycle)
+		rawSample -= float32(polyBLEP(math.Mod(phaseNorm64-dutyNorm64+1.0, 1.0), dt)) * SQUARE_AMPLITUDE
+
 		rawSample *= SQUARE_NORM // Normalise amplitude
 
 	case WAVE_TRIANGLE:
@@ -1033,6 +1080,18 @@ func (ch *Channel) generateSample() float32 {
 		ch.noiseFilterState = NOISE_FILTER_OLD*ch.noiseFilterState + NOISE_FILTER_NEW*ch.noiseValue
 		rawSample = ch.noiseFilterState
 		rawSample *= NOISE_NORM // Normalise amplitude
+
+	case WAVE_SAWTOOTH:
+		// Sawtooth wave: ramps from -1 to +1, then resets
+		// Apply polyBLEP anti-aliasing for cleaner high-frequency output
+		phaseNorm := float64(ch.phase / TWO_PI)
+		dt := float64(ch.frequency) / float64(SAMPLE_RATE)
+
+		// Basic sawtooth: 2*phase - 1 gives range [-1, +1]
+		rawSample = float32(2.0*phaseNorm - 1.0)
+
+		// Apply polyBLEP correction at the discontinuity (phase reset)
+		rawSample -= float32(polyBLEP(phaseNorm, dt))
 	}
 
 	// Ring modulation
@@ -1195,6 +1254,11 @@ func (chip *SoundChip) GenerateSample() float32 {
 		bp = float32(math.Max(math.Min(float64(bp), MAX_SAMPLE), MIN_SAMPLE))
 		hp = float32(math.Max(math.Min(float64(hp), MAX_SAMPLE), MIN_SAMPLE))
 
+		// Flush denormals to prevent CPU stalls
+		lp = flushDenormal(lp)
+		bp = flushDenormal(bp)
+		hp = flushDenormal(hp)
+
 		// Update filter state under lock
 		chip.mutex.Lock()
 		chip.filterLP = lp
@@ -1320,6 +1384,36 @@ func clampF32(value, min, max float32) float32 {
 		return max
 	}
 	return value
+}
+
+// polyBLEP applies polynomial band-limited step correction to reduce aliasing
+// at waveform discontinuities. This produces cleaner high-frequency output
+// for square and sawtooth waves.
+//
+// t is the normalized phase position (0.0-1.0)
+// dt is the phase increment per sample (frequency/sampleRate)
+func polyBLEP(t, dt float64) float64 {
+	if t < dt {
+		// Leading edge correction
+		t /= dt
+		return t + t - t*t - 1.0
+	} else if t > 1.0-dt {
+		// Trailing edge correction
+		t = (t - 1.0) / dt
+		return t*t + t + t + 1.0
+	}
+	return 0.0
+}
+
+// flushDenormal prevents CPU stalls from subnormal float values
+// by flushing very small numbers to zero.
+const denormalThreshold = 1e-15
+
+func flushDenormal(v float32) float32 {
+	if v > -denormalThreshold && v < denormalThreshold {
+		return 0.0
+	}
+	return v
 }
 
 //func init() {
