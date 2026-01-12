@@ -52,6 +52,7 @@ import (
 	_ "image/png"
 	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -123,6 +124,17 @@ const (
 	REGION_MASK            = (1 << REGION_COORDINATE_BITS) - 1
 	REGION_MAX_COORDINATE  = REGION_MASK
 	INVALID_REGION         = -1
+)
+
+// ------------------------------------------------------------------------------
+// Lock-Free Dirty Tracking Constants
+// ------------------------------------------------------------------------------
+const (
+	// Atomic dirty grid: 16x16 tiles = 256 bits = 4 uint64s
+	DIRTY_GRID_COLS     = 16 // Number of tile columns
+	DIRTY_GRID_ROWS     = 16 // Number of tile rows
+	DIRTY_GRID_SIZE     = 4  // Number of atomic.Uint64 needed (256 bits / 64)
+	DIRTY_BITS_PER_WORD = 64 // Bits per atomic.Uint64
 )
 
 // ------------------------------------------------------------------------------
@@ -273,8 +285,12 @@ type VideoChip struct {
 	vsyncChan chan struct{} // 8 bytes
 	done      chan struct{} // 8 bytes
 
-	// Dirty region tracking (Cache Line 3)
-	dirtyRegions map[int]DirtyRegion // 8 bytes
+	// Lock-free dirty tracking (Cache Line 3)
+	// Atomic bitmap: 256 tiles (16x16 grid), 4 uint64s
+	dirtyBitmap  [DIRTY_GRID_SIZE]atomic.Uint64 // 32 bytes - lock-free dirty bits
+	tileWidth    int32                          // 4 bytes - tile width in pixels (mode-dependent)
+	tileHeight   int32                          // 4 bytes - tile height in pixels (mode-dependent)
+	dirtyRegions map[int]DirtyRegion            // 8 bytes - legacy (kept for compatibility)
 
 	// Fixed-size buffers (Cache Lines 4+)
 	// Note: These will be converted to fixed arrays in next iteration
@@ -545,49 +561,116 @@ func (chip *VideoChip) initialiseDirtyGrid(mode VideoMode) {
 		to determine how many regions span the screen. The dirtyRegions map is then reinitialised to track any
 		modified regions for efficient screen updates.
 
+		It also initialises the lock-free atomic dirty bitmap with tile dimensions calculated
+		from the current video mode to cover a 16x16 grid.
+
 		Parameters:
 		  - mode: The current VideoMode configuration, providing the resolution (width and height).
 
 		Notes:
 		  - DIRTY_REGION_SIZE defines the dimension of each region (32 pixels).
 		  - REGION_ADJUSTMENT is used to correctly account for edge cases in the calculation.
+		  - Lock-free bitmap uses 16x16 tiles with mode-dependent pixel dimensions.
 	*/
 
+	// Legacy dirty region tracking
 	chip.dirtyRowStride = int32((mode.width + DIRTY_REGION_SIZE - REGION_ADJUSTMENT) / DIRTY_REGION_SIZE)
 	chip.dirtyColStride = int32((mode.height + DIRTY_REGION_SIZE - REGION_ADJUSTMENT) / DIRTY_REGION_SIZE)
 	chip.dirtyRegions = make(map[int]DirtyRegion)
+
+	// Lock-free atomic bitmap: calculate tile dimensions for 16x16 grid
+	chip.tileWidth = int32((mode.width + DIRTY_GRID_COLS - 1) / DIRTY_GRID_COLS)
+	chip.tileHeight = int32((mode.height + DIRTY_GRID_ROWS - 1) / DIRTY_GRID_ROWS)
+
+	// Clear atomic dirty bitmap
+	for i := range chip.dirtyBitmap {
+		chip.dirtyBitmap[i].Store(0)
+	}
+}
+
+// markTileDirtyAtomic marks a tile as dirty using lock-free atomic operations.
+// This is the fast path for dirty tracking, using a CAS loop to set a bit
+// in the atomic bitmap without requiring any mutex locks.
+//
+// Parameters:
+//   - x: The x-coordinate (in pixels) that triggered the dirty tile.
+//   - y: The y-coordinate (in pixels) that triggered the dirty tile.
+func (chip *VideoChip) markTileDirtyAtomic(x, y int) {
+	// Calculate tile indices (16x16 grid)
+	tileX := x / int(chip.tileWidth)
+	tileY := y / int(chip.tileHeight)
+
+	// Clamp to valid range
+	if tileX < 0 || tileX >= DIRTY_GRID_COLS || tileY < 0 || tileY >= DIRTY_GRID_ROWS {
+		return
+	}
+
+	// Calculate bit position: tileY * 16 + tileX = 0-255
+	bitIndex := tileY*DIRTY_GRID_COLS + tileX
+
+	// Determine which uint64 and which bit within it
+	wordIndex := bitIndex / DIRTY_BITS_PER_WORD
+	bitOffset := uint(bitIndex % DIRTY_BITS_PER_WORD)
+
+	// Lock-free CAS loop to set the bit
+	for {
+		old := chip.dirtyBitmap[wordIndex].Load()
+		new := old | (1 << bitOffset)
+		if old == new || chip.dirtyBitmap[wordIndex].CompareAndSwap(old, new) {
+			break
+		}
+	}
+}
+
+// hasDirtyTiles returns true if any tiles are marked dirty in the atomic bitmap.
+func (chip *VideoChip) hasDirtyTiles() bool {
+	for i := range chip.dirtyBitmap {
+		if chip.dirtyBitmap[i].Load() != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// clearDirtyBitmap atomically clears all dirty bits and returns the previous state.
+// Returns an array of the dirty bitmap values before clearing.
+func (chip *VideoChip) clearDirtyBitmap() [DIRTY_GRID_SIZE]uint64 {
+	var snapshot [DIRTY_GRID_SIZE]uint64
+	for i := range chip.dirtyBitmap {
+		snapshot[i] = chip.dirtyBitmap[i].Swap(0)
+	}
+	return snapshot
 }
 
 func (chip *VideoChip) markRegionDirty(x, y int) {
 	/*
-	   markRegionDirty identifies and marks a 32x32 pixel region as modified.
+	   markRegionDirty identifies and marks a pixel region as modified.
 
-	   This function calculates the region that encompasses the given pixel coordinate (x, y). The region
-	   is determined by dividing the coordinates by DIRTY_REGION_SIZE. A unique key is then generated for the
-	   region using makeRegionKey. If the key is valid and the region has not been updated in the current frame,
-	   the region is added to the chip.dirtyRegions map for later refresh processing.
+	   This function uses lock-free atomic operations to mark the tile containing
+	   the given pixel coordinate (x, y) as dirty. It also maintains the legacy
+	   map-based dirty region tracking for compatibility.
 
 	   Parameters:
 	     - x: The x-coordinate (in pixels) that triggered the dirty region.
 	     - y: The y-coordinate (in pixels) that triggered the dirty region.
 
 	   Notes:
-	     - Regions are 32x32 pixels in size.
-	     - The function only marks a region as dirty if it is new or if it has not been updated during the current frame.
-	     - An invalid region key (i.e. less than INVALID_REGION) results in no action.
+	     - Uses lock-free atomic bitmap for the primary dirty tracking.
+	     - Legacy map-based tracking is also maintained for compatibility.
 	*/
 
-	// Calculate the region indices based on pixel coordinates
+	// Lock-free atomic bitmap update (fast path)
+	chip.markTileDirtyAtomic(x, y)
+
+	// Legacy map-based tracking (for compatibility)
 	regionX := x / DIRTY_REGION_SIZE
 	regionY := y / DIRTY_REGION_SIZE
 
-	// Generate a unique key for the region
 	regionKey := makeRegionKey(regionX, regionY)
 	if regionKey < INVALID_REGION {
 		return
 	}
 
-	// Mark the region as dirty if it is new or not updated in the current frame
 	if region, exists := chip.dirtyRegions[regionKey]; !exists || region.lastUpdated != chip.frameCounter {
 		chip.dirtyRegions[regionKey] = DirtyRegion{
 			x:           regionX * DIRTY_REGION_SIZE,
@@ -605,13 +688,15 @@ func (chip *VideoChip) refreshLoop() {
 
 	   Every tick it:
 	   1. Checks if the video output is enabled.
-	   2. If content is present, copies only the dirty regions from the front buffer to the back buffer.
-	   3. Swaps the front and back buffers and increments the frame counter.
-	   4. Sends the updated frame to the display output.
-	   5. If no content exists but a splash image is available, it displays the splash image.
+	   2. Uses lock-free atomic check to see if any tiles are dirty.
+	   3. If content is present, copies dirty tiles from front buffer to back buffer.
+	   4. Swaps the front and back buffers and increments the frame counter.
+	   5. Sends the updated frame to the display output.
+	   6. If no content exists but a splash image is available, it displays the splash image.
 
 	   Thread Safety:
-	   A full mutex lock is acquired while updating buffers and state.
+	   Uses lock-free atomic bitmap for dirty checking. Mutex is only acquired
+	   when buffer operations are needed.
 	*/
 
 	ticker := time.NewTicker(REFRESH_INTERVAL)
@@ -626,21 +711,60 @@ func (chip *VideoChip) refreshLoop() {
 				continue
 			}
 
+			// Lock-free check: skip mutex if no dirty tiles
+			hasDirty := chip.hasDirtyTiles()
+
 			chip.mutex.Lock()
 			if chip.hasContent {
-				if len(chip.dirtyRegions) > INITIAL_MAP_SIZE {
+				if hasDirty {
 					mode := VideoModes[chip.currentMode]
-					// Copy only the modified (dirty) regions
-					for _, region := range chip.dirtyRegions {
-						for y := DIRTY_REGION_MIN; y < region.height; y++ {
-							srcOffset := ((region.y + y) * mode.bytesPerRow) + (region.x * BYTES_PER_PIXEL)
-							copyLen := region.width * BYTES_PER_PIXEL
-							if srcOffset+copyLen <= len(chip.frontBuffer) {
-								copy(chip.backBuffer[srcOffset:srcOffset+copyLen],
-									chip.frontBuffer[srcOffset:srcOffset+copyLen])
+					tileW := int(chip.tileWidth)
+					tileH := int(chip.tileHeight)
+
+					// Atomically get and clear dirty bitmap
+					dirtySnapshot := chip.clearDirtyBitmap()
+
+					// Process dirty tiles from atomic bitmap
+					for wordIdx, bits := range dirtySnapshot {
+						if bits == 0 {
+							continue
+						}
+						for bitIdx := 0; bitIdx < DIRTY_BITS_PER_WORD; bitIdx++ {
+							if bits&(1<<uint(bitIdx)) == 0 {
+								continue
+							}
+							// Calculate tile coordinates
+							tileIndex := wordIdx*DIRTY_BITS_PER_WORD + bitIdx
+							tileX := tileIndex % DIRTY_GRID_COLS
+							tileY := tileIndex / DIRTY_GRID_COLS
+
+							// Calculate pixel coordinates
+							startX := tileX * tileW
+							startY := tileY * tileH
+							endX := startX + tileW
+							endY := startY + tileH
+
+							// Clamp to screen bounds
+							if endX > mode.width {
+								endX = mode.width
+							}
+							if endY > mode.height {
+								endY = mode.height
+							}
+
+							// Copy tile from front to back buffer
+							for y := startY; y < endY; y++ {
+								srcOffset := (y * mode.bytesPerRow) + (startX * BYTES_PER_PIXEL)
+								copyLen := (endX - startX) * BYTES_PER_PIXEL
+								if srcOffset+copyLen <= len(chip.frontBuffer) {
+									copy(chip.backBuffer[srcOffset:srcOffset+copyLen],
+										chip.frontBuffer[srcOffset:srcOffset+copyLen])
+								}
 							}
 						}
 					}
+
+					// Clear legacy map as well
 					chip.dirtyRegions = make(map[int]DirtyRegion)
 					chip.frontBuffer, chip.backBuffer = chip.backBuffer, chip.frontBuffer
 					chip.frameCounter += FRAME_INCREMENT
