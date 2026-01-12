@@ -11,7 +11,7 @@
 ```
 # Intuition Engine System Documentation
 ## Complete Technical Reference & User Guide
-## (c) 2024 - 2025 Zayn Otley
+## (c) 2024 - 2026 Zayn Otley
 ## https://github.com/intuitionamiga/IntuitionEngine
 ## License: GPLv3 or later
 ## https://www.youtube.com/@IntuitionAmiga/
