@@ -707,18 +707,19 @@ func (cpu *CPU) resolveOperand(addrMode byte, operand uint32) uint32 {
 	   Protected by memory read mutex during resolution.
 	*/
 
-	if operand >= IO_BASE && operand <= IO_LIMIT {
-		return cpu.Read32(operand)
-	}
-
 	switch addrMode {
 	case ADDR_IMMEDIATE:
+		// CRITICAL FIX: Immediate values should NOT be treated as I/O addresses!
+		// Return the value directly without I/O check
 		return operand
 	case ADDR_REGISTER:
 		return *cpu.getRegister(byte(operand & REG_INDIRECT_MASK))
 	case ADDR_REG_IND:
 		reg := byte(operand & REG_INDIRECT_MASK)
-		offset := operand & OFFSET_MASK
+		// CRITICAL FIX: Exclude register bits (low 4 bits) from offset calculation
+		// For [B] (operand=0x04): offset should be 0, not 4
+		// For [B+8] (operand=0x0C): offset should be 8, not 12
+		offset := operand & ^uint32(REG_INDIRECT_MASK)
 		addr := *cpu.getRegister(reg) + offset
 		return cpu.Read32(addr)
 	case ADDR_MEM_IND:
@@ -982,7 +983,8 @@ func (cpu *CPU) Execute() {
 			   3. Advances PC by INSTRUCTION_SIZE
 			*/
 			if addrMode == ADDR_REG_IND {
-				addr := *cpu.getRegister(byte(operand & REG_INDIRECT_MASK)) + (operand & OFFSET_MASK)
+				// CRITICAL FIX: Exclude register bits from offset
+				addr := *cpu.getRegister(byte(operand & REG_INDIRECT_MASK)) + (operand & ^uint32(REG_INDIRECT_MASK))
 				cpu.Write32(addr, *cpu.getRegister(reg))
 			} else if addrMode == ADDR_MEM_IND {
 				addr := cpu.Read32(operand)
@@ -1042,7 +1044,8 @@ func (cpu *CPU) Execute() {
 			}
 
 			if addrMode == ADDR_REG_IND {
-				addr := *cpu.getRegister(byte(operand & REG_INDIRECT_MASK)) + (operand & OFFSET_MASK)
+				// CRITICAL FIX: Exclude register bits from offset
+				addr := *cpu.getRegister(byte(operand & REG_INDIRECT_MASK)) + (operand & ^uint32(REG_INDIRECT_MASK))
 				cpu.Write32(addr, value)
 			} else if addrMode == ADDR_MEM_IND {
 				addr := cpu.Read32(operand)
@@ -1432,7 +1435,8 @@ func (cpu *CPU) Execute() {
 				reg := cpu.getRegister(byte(operand & REG_INDIRECT_MASK))
 				(*reg)++
 			} else if addrMode == ADDR_REG_IND {
-				addr := *cpu.getRegister(byte(operand & REG_INDIRECT_MASK)) + (operand & OFFSET_MASK)
+				// CRITICAL FIX: Exclude register bits from offset
+				addr := *cpu.getRegister(byte(operand & REG_INDIRECT_MASK)) + (operand & ^uint32(REG_INDIRECT_MASK))
 				val := cpu.Read32(addr)
 				cpu.Write32(addr, val+1)
 			} else if addrMode == ADDR_MEM_IND {
@@ -1461,7 +1465,8 @@ func (cpu *CPU) Execute() {
 				reg := cpu.getRegister(byte(operand & REG_INDIRECT_MASK))
 				(*reg)--
 			} else if addrMode == ADDR_REG_IND {
-				addr := *cpu.getRegister(byte(operand & REG_INDIRECT_MASK)) + (operand & OFFSET_MASK)
+				// CRITICAL FIX: Exclude register bits from offset
+				addr := *cpu.getRegister(byte(operand & REG_INDIRECT_MASK)) + (operand & ^uint32(REG_INDIRECT_MASK))
 				val := cpu.Read32(addr)
 				cpu.Write32(addr, val-1)
 			} else if addrMode == ADDR_MEM_IND {
