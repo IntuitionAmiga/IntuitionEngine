@@ -45,12 +45,13 @@ This virtual machine implements a complete computer system with a custom CPU arc
 
 ### Core Features:
 - Memory-mapped I/O for peripherals
-- Four-channel sound synthesis with advanced features:
-    - Multiple waveform types (square, triangle, sine, noise)
+- Five-channel sound synthesis with advanced features:
+    - Multiple waveform types (square, triangle, sine, noise, sawtooth)
+    - polyBLEP anti-aliasing for cleaner high-frequency output
     - ADSR envelope system with multiple envelope shapes
     - Ring modulation capabilities
     - PWM for square waves
-    - Global filter system with resonance
+    - Global filter system with exponential cutoff mapping (20Hz-20kHz) and resonance
     - Reverb effects processing
 - Configurable video output:
     - Multiple resolution support (640x480, 800x600, 1024x768)
@@ -93,15 +94,16 @@ The system consists of five main subsystems that work together:
     - 16 general-purpose registers
 
 2. Sound System
-    - Four independent synthesis channels
+    - Five independent synthesis channels
     - Multiple waveform generators:
-        - Square wave with PWM capability
+        - Square wave with PWM capability and polyBLEP anti-aliasing
         - Triangle wave
         - Sine wave
         - Noise generator with multiple modes
+        - Sawtooth wave with polyBLEP anti-aliasing
     - ADSR envelope system with multiple envelope shapes
     - Ring modulation between channels
-    - Global filter system with resonance control
+    - Global filter system with exponential cutoff mapping and resonance control
     - Reverb effects processing
     - 44.1kHz sample rate
 
@@ -262,6 +264,21 @@ NOISE_MODE_METALLIC = 2 // "Metallic" noise variant
 0xFA14: RING_MOD_SOURCE_CH1 - Ring mod source for channel 1
 0xFA18: RING_MOD_SOURCE_CH2 - Ring mod source for channel 2
 0xFA1C: RING_MOD_SOURCE_CH3 - Ring mod source for channel 3
+```
+
+#### Sawtooth Wave Channel (0xFA20 - 0xFA6F)
+```
+0xFA20: SAW_FREQ  - Frequency control
+0xFA24: SAW_VOL   - Volume control
+0xFA28: SAW_CTRL  - Channel control
+0xFA2C: SAW_SWEEP - Frequency sweep control
+0xFA30: SAW_ATK   - Attack time
+0xFA34: SAW_DEC   - Decay time
+0xFA38: SAW_SUS   - Sustain level
+0xFA3C: SAW_REL   - Release time
+
+0xFA60: SYNC_SOURCE_CH4     - Sync source for sawtooth channel
+0xFA64: RING_MOD_SOURCE_CH4 - Ring mod source for sawtooth channel
 ```
 
 #### Global Sound Effects (0xFA40 - 0xFA54)
@@ -768,6 +785,44 @@ Features:
 - Frequency sweep
 - ADSR envelope
 
+### Sawtooth Wave Channel
+
+Features:
+
+- Classic sawtooth waveform (ramps from -1 to +1)
+- polyBLEP anti-aliasing for cleaner high-frequency output
+- Frequency sweep
+- Ring modulation support
+- ADSR envelope
+
+Configuration example:
+
+```assembly
+setup_sawtooth:
+    ; Set frequency
+    LOAD A, #440        ; Base frequency
+    STORE A, @SAW_FREQ
+
+    ; Set volume
+    LOAD A, #192        ; 75% volume
+    STORE A, @SAW_VOL
+
+    ; Set envelope
+    LOAD A, #10         ; 10ms attack
+    STORE A, @SAW_ATK
+    LOAD A, #20         ; 20ms decay
+    STORE A, @SAW_DEC
+    LOAD A, #192        ; 75% sustain
+    STORE A, @SAW_SUS
+    LOAD A, #100        ; 100ms release
+    STORE A, @SAW_REL
+
+    ; Enable channel
+    LOAD A, #1
+    STORE A, @SAW_CTRL
+    RTS
+```
+
 ## 7.2 Modulation System
 
 The sound system supports complex modulation:
@@ -795,13 +850,15 @@ STORE A, @SQUARE_SWEEP
 The system provides global audio processing:
 
 ### Filter System
-- Variable cutoff frequency
+- Variable cutoff frequency with exponential mapping (20Hz-20kHz)
 - Resonance control
 - Multiple filter types:
     - Low-pass
     - High-pass
     - Band-pass
 - Modulation support
+
+The filter cutoff uses exponential mapping for more musical control, as human hearing is logarithmic. A cutoff value of 0 maps to 20Hz, while 255 maps to 20kHz.
 
 ```assembly
 ; Configure filter
