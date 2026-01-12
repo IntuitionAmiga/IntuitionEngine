@@ -51,7 +51,7 @@ func boilerPlate() {
 //	}
 //
 //	// Map sound registers
-//	sysBus.MapIO(AUDIO_CTRL, REVERB_DECAY,
+//	sysBus.MapIO(AUDIO_CTRL, AUDIO_REG_END,
 //		nil, // No read handler needed
 //		soundChip.HandleRegisterWrite)
 //
@@ -143,7 +143,7 @@ func main() {
 	termOut := NewTerminalOutput()
 
 	// Map I/O regions for peripherals
-	sysBus.MapIO(AUDIO_CTRL, REVERB_DECAY,
+	sysBus.MapIO(AUDIO_CTRL, AUDIO_REG_END,
 		nil,
 		soundChip.HandleRegisterWrite)
 

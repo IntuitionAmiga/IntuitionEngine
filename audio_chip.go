@@ -22,7 +22,7 @@ License: GPLv3 or later
 audio_chip.go - Audio Synthesis Chip for the Intuition Engine
 
 This module implements a complete audio synthesis system with:
-- 5 independent channels (Square, Triangle, Sine, Noise, and Sawtooth)
+- 4 independent channels (each selectable as square, triangle, sine, noise, or sawtooth)
 - Per-channel envelope generation with multiple envelope shapes
 - Frequency modulation capabilities (sweep, sync, ring modulation)
 - Global effects processing (filter, overdrive, reverb)
@@ -60,11 +60,12 @@ import (
 // Register Address Ranges
 // ------------------------------------------------------------------------------
 // F800-F8FF: Global control and effects
-// F900-F93F: Square wave channel
-// F914-F97F: Triangle wave channel
-// F918-F9BF: Sine wave channel
-// F91C-F9FF: Noise channel
-// FA00-FAFF: Modulation control
+// F900-F93F: Channel 0 legacy registers (square defaults)
+// F940-F97F: Channel 1 legacy registers (triangle defaults)
+// F980-F9BF: Channel 2 legacy registers (sine defaults)
+// F9C0-F9FF: Channel 3 legacy registers (noise defaults)
+// FA00-FA6F: Modulation/effects legacy registers
+// FA80-FB3F: Flexible 4-channel register block (preferred)
 const (
 	SQUARE_REG_START = 0xF900
 	SQUARE_REG_END   = 0xF93F
@@ -77,6 +78,33 @@ const (
 
 	NOISE_REG_START = 0xF9C0 // Lowest is NOISE_FREQ (0xF9C0)
 	NOISE_REG_END   = 0xF9FF
+)
+
+// -------------------------------------------------------------------------------
+// Flexible 4-channel register block (FA80-FB3F)
+// -------------------------------------------------------------------------------
+const (
+	FLEX_CH_BASE   = 0xFA80
+	FLEX_CH_STRIDE = 0x30
+	FLEX_CH_END    = FLEX_CH_BASE + (FLEX_CH_STRIDE * NUM_CHANNELS) - 1
+
+	FLEX_CH0_BASE = FLEX_CH_BASE
+	FLEX_CH1_BASE = FLEX_CH_BASE + FLEX_CH_STRIDE
+	FLEX_CH2_BASE = FLEX_CH_BASE + (FLEX_CH_STRIDE * 2)
+	FLEX_CH3_BASE = FLEX_CH_BASE + (FLEX_CH_STRIDE * 3)
+
+	FLEX_OFF_FREQ      = 0x00
+	FLEX_OFF_VOL       = 0x04
+	FLEX_OFF_CTRL      = 0x08
+	FLEX_OFF_DUTY      = 0x0C
+	FLEX_OFF_SWEEP     = 0x10
+	FLEX_OFF_ATK       = 0x14
+	FLEX_OFF_DEC       = 0x18
+	FLEX_OFF_SUS       = 0x1C
+	FLEX_OFF_REL       = 0x20
+	FLEX_OFF_WAVE_TYPE = 0x24
+	FLEX_OFF_PWM_CTRL  = 0x28
+	FLEX_OFF_NOISEMODE = 0x2C
 )
 
 // ------------------------------------------------------------------------------
@@ -163,6 +191,7 @@ const (
 
 // ------------------------------------------------------------------------------
 // Sawtooth Wave Control Registers (FA20-FA5F)
+// Legacy aliases that apply to channel 0 with wave type set to sawtooth.
 // ------------------------------------------------------------------------------
 const (
 	SAW_FREQ  = 0xFA20
@@ -196,7 +225,8 @@ const (
 	REVERB_MIX   = 0xFA50 // 0-255 → 0.0-1.0 (dry/wet)
 	REVERB_DECAY = 0xFA54 // 0-255 → 0.1-0.99 (tail length)
 
-	AUDIO_CTRL = 0xF800 // Audio control register
+	AUDIO_CTRL    = 0xF800 // Audio control register
+	AUDIO_REG_END = FLEX_CH_END
 
 	SAMPLE_RATE = 44100 // Audio sample rate
 )
@@ -305,7 +335,8 @@ const (
 // ------------------------------------------------------------------------------
 // Hardware Configuration
 // ------------------------------------------------------------------------------
-const NUM_CHANNELS = 5 // Number of audio channels (Square, Triangle, Sine, Noise, Sawtooth)
+const NUM_CHANNELS = 4 // Number of audio channels (each can be any waveform)
+const NUM_WAVE_TYPES = 5
 
 // ------------------------------------------------------------------------------
 // Noise Generator Tap Positions
@@ -425,7 +456,7 @@ const (
 	WAVE_TRIANGLE
 	WAVE_SINE
 	WAVE_NOISE
-	WAVE_SAWTOOTH // 5th wave type with polyBLEP anti-aliasing
+	WAVE_SAWTOOTH // Sawtooth wave type with polyBLEP anti-aliasing
 )
 
 // ------------------------------------------------------------------------------
@@ -458,7 +489,7 @@ const (
 	NUM_ENVELOPE_SHAPES = 4
 	NUM_NOISE_MODES     = 3
 	NUM_FILTER_TYPES    = 4
-	NUM_MOD_SOURCES     = 4
+	NUM_MOD_SOURCES     = NUM_CHANNELS
 	NUM_ALLPASS_FILTERS = 2
 )
 
@@ -488,7 +519,7 @@ const (
 type Channel struct {
 	// ------------------------------------------------------------------------------
 	// Channel represents a single audio generation channel that can produce
-	// square, triangle, sine or noise waveforms with envelope control and
+	// square, triangle, sine, noise, or sawtooth waveforms with envelope control and
 	// modulation capabilities.
 	//
 	// Memory layout is optimised for cache efficiency:
@@ -582,7 +613,7 @@ type SoundChip struct {
 	_pad1           [SOUNDCHIP_PAD1_SIZE]byte // Align to 64-byte cache line boundary
 
 	// Cache line 2 - Channel references and thread safety (64 bytes)
-	channels        [NUM_CHANNELS]*Channel    // Array of 5 audio channel pointers
+	channels        [NUM_CHANNELS]*Channel    // Array of audio channel pointers
 	filterModSource *Channel                  // Channel modulating the filter cutoff
 	mutex           sync.RWMutex              // Concurrency control for parameter updates
 	_pad2           [SOUNDCHIP_PAD2_SIZE]byte // Align to 64-byte cache line boundary
@@ -613,7 +644,7 @@ func NewSoundChip(backend int) (*SoundChip, error) {
 	}
 
 	// Initialise channels
-	waveTypes := []int{WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE, WAVE_NOISE, WAVE_SAWTOOTH}
+	waveTypes := []int{WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE, WAVE_NOISE}
 	for i := 0; i < NUM_CHANNELS; i++ {
 		chip.channels[i] = &Channel{
 			waveType:      waveTypes[i],
@@ -667,8 +698,10 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 	//   F840-F850: Effect controls
 	//
 	// Channel Registers (F900-F9FF):
-	//   Each channel has 64 bytes of register space
+	//   Legacy per-channel register space
 	//   Base addresses: F900, F940, F980, F9C0
+	// Flexible Registers (FA80-FB3F):
+	//   Preferred 4-channel register block with consistent offsets
 	//
 	// Modulation Registers (FA00-FAFF):
 	//   FA00-FA0C: Sync sources
@@ -686,6 +719,68 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 		return
 	}
 
+	if addr >= FLEX_CH_BASE && addr <= FLEX_CH_END {
+		chIndex := (addr - FLEX_CH_BASE) / FLEX_CH_STRIDE
+		if chIndex >= NUM_CHANNELS {
+			log.Printf("invalid channel index: %d", chIndex)
+			return
+		}
+		ch := chip.channels[chIndex]
+		offset := (addr - FLEX_CH_BASE) % FLEX_CH_STRIDE
+		switch offset {
+		case FLEX_OFF_FREQ:
+			ch.frequency = float32(value)
+		case FLEX_OFF_VOL:
+			ch.volume = float32(value&BYTE_MASK) / NORMALISE_8BIT
+		case FLEX_OFF_CTRL:
+			ch.enabled = value != 0
+			newGate := value&GATE_MASK != 0
+
+			if newGate && !ch.gate {
+				ch.envelopePhase = ENV_ATTACK
+				ch.envelopeSample = 0
+				ch.envelopeLevel = 0
+			}
+
+			if !newGate && ch.gate && ch.envelopePhase == ENV_SUSTAIN {
+				ch.releaseStartLevel = ch.envelopeLevel
+				ch.envelopePhase = ENV_RELEASE
+				ch.envelopeSample = 0
+			}
+			ch.gate = newGate
+		case FLEX_OFF_DUTY:
+			value16 := uint16(value & WORD_MASK)
+			ch.dutyCycle = float32(value16&BYTE_MASK) / PWM_RANGE
+			ch.pwmDepth = float32((value16>>PWM_DEPTH_SHIFT)&BYTE_MASK) / (PWM_RANGE * 2.0)
+		case FLEX_OFF_SWEEP:
+			ch.sweepEnabled = (value & SWEEP_ENABLE_MASK) != 0
+			ch.sweepPeriod = int((value >> SWEEP_PERIOD_SHIFT) & SWEEP_PERIOD_MASK)
+			ch.sweepShift = uint(value & SWEEP_SHIFT_MASK)
+			if ch.sweepShift == 0 {
+				ch.sweepShift = MIN_SWEEP_SHIFT
+			}
+			ch.sweepDirection = (value & SWEEP_DIR_MASK) != 0
+		case FLEX_OFF_ATK:
+			ch.attackTime = max(int(value*MS_TO_SAMPLES), MIN_ENV_TIME)
+		case FLEX_OFF_DEC:
+			ch.decayTime = max(int(value*MS_TO_SAMPLES), MIN_ENV_TIME)
+		case FLEX_OFF_SUS:
+			ch.sustainLevel = float32(value) / NORMALISE_8BIT
+		case FLEX_OFF_REL:
+			ch.releaseTime = max(int(value*MS_TO_SAMPLES), MIN_ENV_TIME)
+		case FLEX_OFF_WAVE_TYPE:
+			ch.waveType = int(value % NUM_WAVE_TYPES)
+		case FLEX_OFF_PWM_CTRL:
+			ch.pwmEnabled = (value & PWM_ENABLE_MASK) != 0
+			ch.pwmRate = float32(value&PWM_RATE_MASK) * PWM_RATE_SCALE
+		case FLEX_OFF_NOISEMODE:
+			ch.noiseMode = int(value % NUM_NOISE_MODES)
+		default:
+			log.Printf("invalid flex register offset: 0x%X", offset)
+		}
+		return
+	}
+
 	var ch *Channel
 	switch {
 	case addr >= SQUARE_REG_START && addr <= SQUARE_REG_END:
@@ -697,7 +792,7 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 	case addr >= NOISE_REG_START && addr <= NOISE_REG_END:
 		ch = chip.channels[3]
 	case addr >= SAW_REG_START && addr <= SAW_REG_END:
-		ch = chip.channels[4]
+		ch = chip.channels[0]
 	}
 
 	switch addr {
@@ -709,10 +804,19 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 		ch.dutyCycle = float32(value16&BYTE_MASK) / PWM_RANGE
 		ch.pwmDepth = float32((value16>>PWM_DEPTH_SHIFT)&BYTE_MASK) / (PWM_RANGE * 2.0)
 	case SQUARE_FREQ, TRI_FREQ, SINE_FREQ, NOISE_FREQ, SAW_FREQ:
+		if addr == SAW_FREQ {
+			ch.waveType = WAVE_SAWTOOTH
+		}
 		ch.frequency = float32(value)
 	case SQUARE_VOL, TRI_VOL, SINE_VOL, NOISE_VOL, SAW_VOL:
+		if addr == SAW_VOL {
+			ch.waveType = WAVE_SAWTOOTH
+		}
 		ch.volume = float32(value&BYTE_MASK) / NORMALISE_8BIT
 	case SQUARE_CTRL, TRI_CTRL, SINE_CTRL, NOISE_CTRL, SAW_CTRL:
+		if addr == SAW_CTRL {
+			ch.waveType = WAVE_SAWTOOTH
+		}
 		ch.enabled = value != 0
 		newGate := value&GATE_MASK != 0
 
@@ -729,14 +833,27 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 		}
 		ch.gate = newGate
 	case SQUARE_ATK, TRI_ATK, SINE_ATK, NOISE_ATK, SAW_ATK:
+		if addr == SAW_ATK {
+			ch.waveType = WAVE_SAWTOOTH
+		}
 		ch.attackTime = max(int(value*MS_TO_SAMPLES), MIN_ENV_TIME)
 	case SQUARE_DEC, TRI_DEC, SINE_DEC, NOISE_DEC, SAW_DEC:
+		if addr == SAW_DEC {
+			ch.waveType = WAVE_SAWTOOTH
+		}
 		ch.decayTime = max(int(value*MS_TO_SAMPLES), MIN_ENV_TIME)
 	case SQUARE_SUS, TRI_SUS, SINE_SUS, NOISE_SUS, SAW_SUS:
+		if addr == SAW_SUS {
+			ch.waveType = WAVE_SAWTOOTH
+		}
 		ch.sustainLevel = float32(value) / NORMALISE_8BIT
 	case SQUARE_REL, TRI_REL, SINE_REL, NOISE_REL, SAW_REL:
+		if addr == SAW_REL {
+			ch.waveType = WAVE_SAWTOOTH
+		}
 		ch.releaseTime = max(int(value*MS_TO_SAMPLES), MIN_ENV_TIME)
 	case NOISE_MODE:
+		ch.waveType = WAVE_NOISE
 		ch.noiseMode = int(value % NUM_NOISE_MODES) // 0=white, 1=periodic, 2=metallic
 	//case ENV_SHAPE:
 	//	ch.envelopeShape = int(value % NUM_ENVELOPE_SHAPES) // 0=ADSR, 1=SawUp, 2=SawDown, 3=Loop
@@ -776,6 +893,7 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 		ch.sweepShift = 1 // Force minimum shift value for largest frequency changes
 		ch.sweepDirection = (value & SWEEP_DIR_MASK) != 0
 	case SAW_SWEEP:
+		ch.waveType = WAVE_SAWTOOTH
 		ch.sweepEnabled = (value & SWEEP_ENABLE_MASK) != 0
 		ch.sweepPeriod = int((value >> SWEEP_PERIOD_SHIFT) & SWEEP_PERIOD_MASK)
 		ch.sweepShift = uint(value & SWEEP_SHIFT_MASK)
@@ -783,15 +901,21 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 			ch.sweepShift = MIN_SWEEP_SHIFT
 		}
 		ch.sweepDirection = (value & SWEEP_DIR_MASK) != 0
-	case SYNC_SOURCE_CH0, SYNC_SOURCE_CH1, SYNC_SOURCE_CH2, SYNC_SOURCE_CH3, SYNC_SOURCE_CH4:
+	case SYNC_SOURCE_CH0, SYNC_SOURCE_CH1, SYNC_SOURCE_CH2, SYNC_SOURCE_CH3:
 		// Determine target channel (e.g., SYNC_SOURCE_CH0 → channel 0)
 		chIndex := (addr - SYNC_SOURCE_CH0) / SYNC_REG_SPACING
+		if chIndex >= NUM_CHANNELS {
+			return
+		}
 		ch := chip.channels[chIndex]
 		// Set sync source to another channel (0–3)
 		masterIndex := int(value % NUM_CHANNELS)
 		ch.syncSource = chip.channels[masterIndex]
-	case RING_MOD_SOURCE_CH0, RING_MOD_SOURCE_CH1, RING_MOD_SOURCE_CH2, RING_MOD_SOURCE_CH3, RING_MOD_SOURCE_CH4:
+	case RING_MOD_SOURCE_CH0, RING_MOD_SOURCE_CH1, RING_MOD_SOURCE_CH2, RING_MOD_SOURCE_CH3:
 		chIndex := (addr - RING_MOD_SOURCE_CH0) / RINGMOD_REG_SPACING
+		if chIndex >= NUM_CHANNELS {
+			return
+		}
 		ch := chip.channels[chIndex]
 		masterIndex := int(value % NUM_CHANNELS)
 		ch.ringModSource = chip.channels[masterIndex]
@@ -1144,7 +1268,7 @@ func (chip *SoundChip) GenerateSample() float32 {
 	// through the following signal chain:
 	//
 	// 1. Channel Generation and Mixing
-	//    - Each enabled channel generates its raw waveform (square/triangle/sine/noise)
+	//    - Each enabled channel generates its raw waveform (square/triangle/sine/noise/saw)
 	//    - Channel outputs are summed with equal mixing weights
 	//    - Per-channel envelope and modulation effects are applied
 	//

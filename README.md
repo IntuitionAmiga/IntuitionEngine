@@ -45,7 +45,7 @@ This virtual machine implements a complete computer system with a custom CPU arc
 
 ### Core Features:
 - Memory-mapped I/O for peripherals
-- Five-channel sound synthesis with advanced features:
+- Four-channel sound synthesis with advanced features:
     - Multiple waveform types (square, triangle, sine, noise, sawtooth)
     - polyBLEP anti-aliasing for cleaner high-frequency output
     - ADSR envelope system with multiple envelope shapes
@@ -94,7 +94,7 @@ The system consists of five main subsystems that work together:
     - 16 general-purpose registers
 
 2. Sound System
-    - Five independent synthesis channels
+    - Four independent synthesis channels
     - Multiple waveform generators:
         - Square wave with PWM capability and polyBLEP anti-aliasing
         - Triangle wave
