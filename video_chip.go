@@ -257,10 +257,11 @@ type VideoChip struct {
 	dirtyColStride int32  // 4 bytes - Changed from int to int32 for alignment
 
 	// Status flags packed together (part of Cache Line 0)
-	enabled    bool // 1 byte
-	hasContent bool // 1 byte
-	resetting  bool // 1 byte
-	_padding   byte // 1 byte - Explicit padding for alignment
+	enabled         bool // 1 byte
+	hasContent      bool // 1 byte
+	resetting       bool // 1 byte
+	directMode      bool // 1 byte - Direct VRAM mode (bypasses dirty tracking)
+	fullScreenDirty bool // 1 byte - Mark entire screen dirty for next refresh
 
 	// Synchronization (Cache Line 1)
 	mutex sync.RWMutex // 8 bytes - Keep mutex at cache line boundary
@@ -776,6 +777,53 @@ func (chip *VideoChip) HandleWrite(addr uint32, value uint32) {
 			}
 		}
 	}
+}
+
+// EnableDirectMode enables direct VRAM access mode and returns the framebuffer.
+// In this mode, dirty region tracking is bypassed and the entire screen is
+// refreshed each frame. This is optimal for fullscreen effects like plasma,
+// fire, etc. where every pixel changes every frame.
+//
+// The returned buffer can be written to directly without mutex locks.
+// Call MarkFullScreenDirty() after writing a frame to trigger refresh.
+func (chip *VideoChip) EnableDirectMode() []byte {
+	chip.mutex.Lock()
+	defer chip.mutex.Unlock()
+
+	chip.directMode = true
+	chip.hasContent = true
+
+	// Ensure buffer is allocated
+	if chip.frontBuffer == nil {
+		mode := VideoModes[chip.currentMode]
+		chip.frontBuffer = make([]byte, mode.totalSize)
+	}
+
+	return chip.frontBuffer
+}
+
+// DisableDirectMode returns to normal dirty-region-tracked VRAM mode.
+func (chip *VideoChip) DisableDirectMode() {
+	chip.mutex.Lock()
+	defer chip.mutex.Unlock()
+	chip.directMode = false
+}
+
+// MarkFullScreenDirty signals that the entire framebuffer has been updated.
+// Use this after writing a frame in direct mode to trigger display refresh.
+func (chip *VideoChip) MarkFullScreenDirty() {
+	chip.fullScreenDirty = true
+}
+
+// IsDirectMode returns true if direct VRAM mode is enabled.
+func (chip *VideoChip) IsDirectMode() bool {
+	return chip.directMode
+}
+
+// GetFrontBuffer returns a direct reference to the front buffer for reading.
+// This is useful for tests and debugging.
+func (chip *VideoChip) GetFrontBuffer() []byte {
+	return chip.frontBuffer
 }
 
 func GetSplashImageData() ([]byte, error) {

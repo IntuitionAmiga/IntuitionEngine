@@ -124,7 +124,8 @@ const (
 	ADDR_IMMEDIATE = 0x00 // Immediate value
 	ADDR_REGISTER  = 0x01 // Register direct
 	ADDR_REG_IND   = 0x02 // Register indirect
-	ADDR_MEM_IND   = 0x03 // Memory indirect
+	ADDR_MEM_IND   = 0x03 // Memory indirect (double indirection)
+	ADDR_DIRECT    = 0x04 // Direct memory addressing (operand is the address)
 )
 
 // ------------------------------------------------------------------------------
@@ -369,6 +370,12 @@ type CPU struct {
 	Screen [25][80]byte // Display buffer
 	Memory []byte       // Main memory
 	bus    MemoryBus    // Memory interface
+
+	// Direct VRAM access (bypasses bus for video writes)
+	vramDirect     []byte // Direct pointer to video framebuffer
+	vramStart      uint32 // Cached VRAM start address
+	vramEnd        uint32 // Cached VRAM end address
+	VRAMWriteCount uint64 // Counter for direct VRAM writes (for benchmarking)
 }
 
 func NewCPU(bus MemoryBus) *CPU {
@@ -442,11 +449,36 @@ func (cpu *CPU) Write32(addr uint32, value uint32) {
 
 	   Thread Safety:
 	   Full mutex lock during write operation to prevent concurrent access.
+	   VRAM fast path bypasses mutex for maximum throughput.
 	*/
+
+	// VRAM fast path - direct write, no mutex, no bus overhead
+	if cpu.vramDirect != nil && addr >= cpu.vramStart && addr < cpu.vramEnd {
+		offset := addr - cpu.vramStart
+		if offset+4 <= uint32(len(cpu.vramDirect)) {
+			binary.LittleEndian.PutUint32(cpu.vramDirect[offset:], value)
+			cpu.VRAMWriteCount++
+			return
+		}
+	}
 
 	cpu.mutex.Lock()
 	defer cpu.mutex.Unlock()
 	cpu.bus.Write32(addr, value)
+}
+
+// AttachDirectVRAM enables direct VRAM access mode for maximum video throughput.
+// The buffer should be obtained from VideoChip.EnableDirectMode().
+// This bypasses the memory bus and mutex for VRAM writes.
+func (cpu *CPU) AttachDirectVRAM(buffer []byte, start, end uint32) {
+	cpu.vramDirect = buffer
+	cpu.vramStart = start
+	cpu.vramEnd = end
+}
+
+// DetachDirectVRAM disables direct VRAM access, returning to bus-based writes.
+func (cpu *CPU) DetachDirectVRAM() {
+	cpu.vramDirect = nil
 }
 
 func (cpu *CPU) Read32(addr uint32) uint32 {
@@ -723,6 +755,9 @@ func (cpu *CPU) resolveOperand(addrMode byte, operand uint32) uint32 {
 		addr := *cpu.getRegister(reg) + offset
 		return cpu.Read32(addr)
 	case ADDR_MEM_IND:
+		return cpu.Read32(operand)
+	case ADDR_DIRECT:
+		// Direct memory addressing - read from operand address
 		return cpu.Read32(operand)
 	}
 	return 0

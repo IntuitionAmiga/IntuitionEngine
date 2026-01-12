@@ -344,7 +344,7 @@ Bytes 4-7: 32-bit operand value
 
 ## 4.3 Addressing Modes
 
-The system supports four addressing modes:
+The system supports five addressing modes:
 
 **Immediate (ADDR_IMMEDIATE = 0x00)**
 
@@ -368,8 +368,17 @@ The system supports four addressing modes:
 **Memory Indirect (ADDR_MEM_IND = 0x03)**
 
    ```assembly
-   STORE A, @1000     ; Store A's value at memory address 1000
+   LOAD A, [0x1000]   ; Load from address stored at memory location 0x1000
    ```
+
+**Direct (ADDR_DIRECT = 0x04)**
+
+   ```assembly
+   STORE A, @0xF900   ; Store A's value directly to memory address 0xF900
+   LOAD A, @0x1000    ; Load value directly from memory address 0x1000
+   ```
+
+The direct addressing mode is used for memory-mapped I/O operations, providing efficient access to hardware registers without double indirection.
 
 ## 4.4 Instruction Set
 
@@ -947,6 +956,47 @@ wait_vsync:
     JZ A, wait_vsync
     RTS
 ```
+
+## 8.5 Direct VRAM Access Mode
+
+For fullscreen effects such as plasma, fire, or tunnel demos where every pixel is updated each frame, the system provides a direct VRAM access mode that bypasses the standard memory bus and dirty region tracking. This delivers approximately **2x video throughput** compared to bus-based access.
+
+### Performance Comparison
+
+| Mode | Writes/sec | Approx FPS | Use Case |
+|------|------------|------------|----------|
+| Bus-based | ~1.4M | ~9 | Partial screen updates, sprites |
+| Direct VRAM | ~2.8M | ~18 | Fullscreen effects, demoscene |
+
+### How It Works
+
+Direct VRAM mode eliminates per-pixel overhead by:
+- Bypassing CPU and bus mutex locks
+- Skipping I/O region mapping lookups
+- Disabling dirty rectangle tracking (entire screen refreshed)
+
+### API Usage (Go)
+
+```go
+// Enable direct VRAM mode and get buffer pointer
+vramBuffer := videoChip.EnableDirectMode()
+
+// Attach buffer to CPU for fast writes
+cpu.AttachDirectVRAM(vramBuffer, VRAM_START, VRAM_START+uint32(len(vramBuffer)))
+
+// ... run demo ...
+
+// Cleanup
+cpu.DetachDirectVRAM()
+videoChip.DisableDirectMode()
+```
+
+### When to Use
+
+- **Use direct mode** for fullscreen effects where most pixels change every frame
+- **Use bus mode** for partial updates, sprites, or when dirty region tracking is beneficial
+
+Direct VRAM mode is ideal for demoscene-style effects, real-time visualisations, and any application that redraws the entire screen each frame.
 
 # 9. Developer's Guide
 

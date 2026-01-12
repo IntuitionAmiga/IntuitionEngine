@@ -102,6 +102,7 @@ const (
 	ADDR_REGISTER  = 0x01
 	ADDR_REG_IND   = 0x02
 	ADDR_MEM_IND   = 0x03
+	ADDR_DIRECT    = 0x04 // Direct memory addressing (write to operand address)
 
 	// Memory Map
 	PROG_START = 0x1000
@@ -247,15 +248,15 @@ func (a *Assembler) parseOperand(operand string, lineNum int) (byte, uint32, err
 		return 0, 0, fmt.Errorf("invalid register in indirect addressing: %s", reg)
 	}
 
-	// Memory-indirect addressing @addr
+	// Direct memory addressing @addr (write/read directly to/from this address)
 	if strings.HasPrefix(operand, "@") {
 		addr := strings.TrimPrefix(operand, "@")
-		fmt.Printf("  Memory indirect: addr='%s'\n", addr)
+		fmt.Printf("  Direct memory: addr='%s'\n", addr)
 
 		// Handle equate
 		if val, ok := a.equates[addr]; ok {
 			fmt.Printf("    Found equate: val=0x%x\n", val)
-			return ADDR_MEM_IND, val, nil
+			return ADDR_DIRECT, val, nil
 		}
 
 		// Handle hex address
@@ -265,13 +266,13 @@ func (a *Assembler) parseOperand(operand string, lineNum int) (byte, uint32, err
 				return 0, 0, fmt.Errorf("invalid hex address: %s", addr)
 			}
 			fmt.Printf("    Parsed hex: val=0x%x\n", val)
-			return ADDR_MEM_IND, uint32(val), nil
+			return ADDR_DIRECT, uint32(val), nil
 		}
 
 		// Handle label
 		if labelAddr, ok := a.labels[addr]; ok {
 			fmt.Printf("    Found label: addr=0x%x\n", labelAddr)
-			return ADDR_MEM_IND, labelAddr, nil
+			return ADDR_DIRECT, labelAddr, nil
 		}
 		return 0, 0, fmt.Errorf("undefined label or invalid address: %s", addr)
 	}
