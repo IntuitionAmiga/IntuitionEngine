@@ -445,7 +445,11 @@ const (
 // ------------------------------------------------------------------------------
 // Filter Cutoff Conversion Factor
 // ------------------------------------------------------------------------------
-const CUTOFF_FACTOR = TWO_PI * MAX_FILTER_FREQ / SAMPLE_RATE
+// Exponential cutoff mapping: maps 0-1 to 20Hz-20kHz logarithmically
+// This provides more musical control as human hearing is logarithmic
+const FILTER_CUTOFF_LN_RATIO = float32(6.907755279) // ln(20000/20)
+const FILTER_MIN_FREQ = 20.0                        // Minimum filter frequency (Hz)
+const TWO_PI_OVER_SR = TWO_PI / SAMPLE_RATE         // Pre-computed for efficiency
 
 // ------------------------------------------------------------------------------
 // Mode and Count Constants
@@ -1241,8 +1245,8 @@ func (chip *SoundChip) GenerateSample() float32 {
 			modulatedCutoff = float32(math.Max(math.Min(float64(modulatedCutoff), MAX_FILTER_CUTOFF), MIN_FILTER_CUTOFF))
 		}
 
-		// Apply 2-pole state variable filter
-		cutoff := modulatedCutoff * CUTOFF_FACTOR
+		// Apply 2-pole state variable filter with exponential cutoff mapping
+		cutoff := calculateFilterCutoff(modulatedCutoff)
 		resonance := filterResonance * MAX_RESONANCE
 
 		lp := filterLP + cutoff*filterBP
@@ -1414,6 +1418,60 @@ func flushDenormal(v float32) float32 {
 		return 0.0
 	}
 	return v
+}
+
+// fastExp computes an approximation of exp(x) using range reduction and Taylor series.
+// This is much faster than math.Exp while maintaining sufficient accuracy for audio DSP.
+//
+// Uses the mathematical property: exp(x) = exp(r) * 2^n where r = x - n*ln(2)
+// This reduces x to the range [-ln(2)/2, +ln(2)/2] where Taylor series is most accurate.
+//
+//go:inline
+func fastExp(x float32) float32 {
+	if x > 10.0 {
+		return 22026.465 // exp(10)
+	}
+	if x < -10.0 {
+		return 0.0000454 // exp(-10)
+	}
+
+	// Range reduction: exp(x) = exp(r) * 2^n where r = x - n*ln(2)
+	const LN2 = 0.693147180559945309417232121458    // ln(2)
+	const INV_LN2 = 1.44269504088896340735992468100 // 1/ln(2)
+
+	// Calculate integer n such that r = x - n*ln(2) is in [-ln(2)/2, +ln(2)/2]
+	n := int(float32(float64(x)*INV_LN2 + 0.5))
+	r := x - float32(float64(n)*LN2)
+
+	// 4th-order Taylor series on reduced range
+	r2 := r * r
+	r3 := r2 * r
+	r4 := r2 * r2
+	expR := 1.0 + r + r2*0.5 + r3*0.166667 + r4*0.041667
+
+	// Scale by 2^n using bit manipulation
+	if n >= 0 {
+		return expR * float32(uint32(1)<<uint(n))
+	}
+	return expR / float32(uint32(1)<<uint(-n))
+}
+
+// calculateFilterCutoff computes normalized filter frequency from cutoff value (0-1)
+// using exponential mapping for more musical control.
+// Maps 0-1 to 20Hz-20kHz logarithmically (human hearing is logarithmic).
+//
+//go:inline
+func calculateFilterCutoff(cutoffValue float32) float32 {
+	if cutoffValue <= 0.0 {
+		return FILTER_MIN_FREQ * TWO_PI_OVER_SR
+	}
+	if cutoffValue >= 1.0 {
+		return 20000.0 * TWO_PI_OVER_SR
+	}
+
+	// Exponential mapping: freq = 20 * exp(ln(20000/20) * cutoff)
+	freqHz := FILTER_MIN_FREQ * fastExp(FILTER_CUTOFF_LN_RATIO*cutoffValue)
+	return freqHz * TWO_PI_OVER_SR
 }
 
 //func init() {
