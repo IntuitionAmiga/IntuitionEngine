@@ -268,12 +268,12 @@ type VideoChip struct {
 	dirtyRowStride int32  // 4 bytes - Changed from int to int32 for alignment
 	dirtyColStride int32  // 4 bytes - Changed from int to int32 for alignment
 
-	// Status flags packed together (part of Cache Line 0)
-	enabled         bool // 1 byte
-	hasContent      bool // 1 byte
-	resetting       bool // 1 byte
-	directMode      bool // 1 byte - Direct VRAM mode (bypasses dirty tracking)
-	fullScreenDirty bool // 1 byte - Mark entire screen dirty for next refresh
+	// Status flags - atomic for lock-free access (part of Cache Line 0)
+	enabled         atomic.Bool // Lock-free enable status
+	hasContent      atomic.Bool // Lock-free content flag
+	resetting       bool        // 1 byte - still needs mutex for multi-field operations
+	directMode      atomic.Bool // Lock-free direct VRAM mode flag
+	fullScreenDirty atomic.Bool // Lock-free full-screen dirty flag
 
 	// Synchronization (Cache Line 1)
 	mutex sync.RWMutex // 8 bytes - Keep mutex at cache line boundary
@@ -393,10 +393,10 @@ func NewVideoChip(backend int) (*VideoChip, error) {
 		vsyncChan:    make(chan struct{}),
 		done:         make(chan struct{}),
 		dirtyRegions: make(map[int]DirtyRegion),
-		hasContent:   INITIAL_HAS_CONTENT,
 		frameCounter: 0,
 		prevVRAM:     make([]byte, VRAM_SIZE),
 	}
+	// Atomic fields default to false - no explicit init needed
 
 	mode := VideoModes[chip.currentMode]
 	chip.frontBuffer = make([]byte, mode.totalSize)
@@ -525,7 +525,7 @@ func (chip *VideoChip) Start() error {
 	*/
 	chip.mutex.Lock()
 	defer chip.mutex.Unlock()
-	chip.enabled = ENABLED_STATE
+	chip.enabled.Store(true)
 	if chip.output != nil {
 		return chip.output.Start()
 	}
@@ -545,7 +545,7 @@ func (chip *VideoChip) Stop() error {
 	*/
 	chip.mutex.Lock()
 	defer chip.mutex.Unlock()
-	chip.enabled = DISABLED_STATE
+	chip.enabled.Store(false)
 	if chip.output != nil {
 		return chip.output.Stop()
 	}
@@ -707,7 +707,7 @@ func (chip *VideoChip) refreshLoop() {
 		case <-chip.done:
 			return
 		case <-ticker.C:
-			if !chip.enabled {
+			if !chip.enabled.Load() {
 				continue
 			}
 
@@ -715,7 +715,7 @@ func (chip *VideoChip) refreshLoop() {
 			hasDirty := chip.hasDirtyTiles()
 
 			chip.mutex.Lock()
-			if chip.hasContent {
+			if chip.hasContent.Load() {
 				if hasDirty {
 					mode := VideoModes[chip.currentMode]
 					tileW := int(chip.tileWidth)
@@ -805,11 +805,11 @@ func (chip *VideoChip) HandleRead(addr uint32) uint32 {
 
 	switch addr {
 	case VIDEO_CTRL:
-		return btou32(chip.enabled)
+		return btou32(chip.enabled.Load())
 	case VIDEO_MODE:
 		return chip.currentMode
 	case VIDEO_STATUS:
-		return btou32(chip.hasContent)
+		return btou32(chip.hasContent.Load())
 	default:
 		if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
 			offset := addr - ADDR_OFFSET
@@ -841,9 +841,9 @@ func (chip *VideoChip) HandleWrite(addr uint32, value uint32) {
 
 	switch addr {
 	case VIDEO_CTRL:
-		wasEnabled := chip.enabled
-		chip.enabled = value != CTRL_DISABLE_FLAG
-		if !wasEnabled && chip.enabled {
+		wasEnabled := chip.enabled.Load()
+		chip.enabled.Store(value != CTRL_DISABLE_FLAG)
+		if !wasEnabled && chip.enabled.Load() {
 			mode := VideoModes[chip.currentMode]
 			config := DisplayConfig{
 				Width:       mode.width,
@@ -896,8 +896,8 @@ func (chip *VideoChip) HandleWrite(addr uint32, value uint32) {
 			startY := int(startPixel) / mode.width
 			chip.markRegionDirty(startX, startY)
 
-			if !chip.resetting && !chip.hasContent {
-				chip.hasContent = ENABLED_STATE
+			if !chip.resetting && !chip.hasContent.Load() {
+				chip.hasContent.Store(true)
 			}
 		}
 	}
@@ -914,8 +914,8 @@ func (chip *VideoChip) EnableDirectMode() []byte {
 	chip.mutex.Lock()
 	defer chip.mutex.Unlock()
 
-	chip.directMode = true
-	chip.hasContent = true
+	chip.directMode.Store(true)
+	chip.hasContent.Store(true)
 
 	// Ensure buffer is allocated
 	if chip.frontBuffer == nil {
@@ -930,18 +930,18 @@ func (chip *VideoChip) EnableDirectMode() []byte {
 func (chip *VideoChip) DisableDirectMode() {
 	chip.mutex.Lock()
 	defer chip.mutex.Unlock()
-	chip.directMode = false
+	chip.directMode.Store(false)
 }
 
 // MarkFullScreenDirty signals that the entire framebuffer has been updated.
 // Use this after writing a frame in direct mode to trigger display refresh.
 func (chip *VideoChip) MarkFullScreenDirty() {
-	chip.fullScreenDirty = true
+	chip.fullScreenDirty.Store(true)
 }
 
 // IsDirectMode returns true if direct VRAM mode is enabled.
 func (chip *VideoChip) IsDirectMode() bool {
-	return chip.directMode
+	return chip.directMode.Load()
 }
 
 // GetFrontBuffer returns a direct reference to the front buffer for reading.

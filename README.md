@@ -959,21 +959,22 @@ wait_vsync:
 
 ## 8.5 Direct VRAM Access Mode
 
-For fullscreen effects such as plasma, fire, or tunnel demos where every pixel is updated each frame, the system provides a direct VRAM access mode that bypasses the standard memory bus and dirty region tracking. This delivers approximately **2x video throughput** compared to bus-based access.
+For fullscreen effects such as plasma, fire, or tunnel demos where every pixel is updated each frame, the system provides a direct VRAM access mode with lock-free dirty tracking that bypasses the standard memory bus. This delivers approximately **4.5x video throughput** compared to bus-based access.
 
 ### Performance Comparison
 
 | Mode | Writes/sec | Approx FPS | Use Case |
 |------|------------|------------|----------|
 | Bus-based | ~1.4M | ~9 | Partial screen updates, sprites |
-| Direct VRAM | ~2.8M | ~18 | Fullscreen effects, demoscene |
+| Direct VRAM + Lock-free | ~6.3M | ~41 | Fullscreen effects, demoscene |
 
 ### How It Works
 
 Direct VRAM mode eliminates per-pixel overhead by:
 - Bypassing CPU and bus mutex locks
 - Skipping I/O region mapping lookups
-- Disabling dirty rectangle tracking (entire screen refreshed)
+- Using lock-free atomic bitmap for dirty tile tracking
+- Employing compare-and-swap operations instead of mutex locks
 
 ### API Usage (Go)
 
@@ -1122,7 +1123,7 @@ debug_point:
 
 ## 10.1 CPU Implementation
 
-The CPU implementation prioritizes clarity and correctness:
+The CPU implementation prioritises clarity and correctness:
 
 ```go
 type CPU struct {

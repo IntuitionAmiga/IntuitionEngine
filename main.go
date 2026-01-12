@@ -190,7 +190,7 @@ func main() {
 	} else { // cpuMode == "-m68k"
 		// Initialize M68K CPU
 		m68kCPU := NewM68KCPU(sysBus)
-		m68kCPU.Debug = false
+		// debug defaults to false (atomic.Bool), no need to set
 
 		// Load program
 		if err := m68kCPU.LoadProgram(filename); err != nil {

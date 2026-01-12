@@ -346,15 +346,14 @@ type CPU struct {
 	_padding0 [8]byte // Alignment padding
 
 	// Secondary registers (Cache Line 1)
-	T            uint32   // General purpose T
-	U            uint32   // General purpose U
-	V            uint32   // General purpose V
-	W            uint32   // General purpose W
-	Running      bool     // Execution state
-	Debug        bool     // Debug enabled
-	_padding1    [2]byte  // Alignment padding
-	cycleCounter uint32   // Performance counter
-	_padding2    [48]byte // Cache line padding
+	T            uint32      // General purpose T
+	U            uint32      // General purpose U
+	V            uint32      // General purpose V
+	W            uint32      // General purpose W
+	running      atomic.Bool // Execution state (atomic for lock-free access)
+	debug        atomic.Bool // Debug enabled (atomic for lock-free access)
+	cycleCounter uint32      // Performance counter
+	_padding2    [46]byte    // Cache line padding
 
 	// Timer state - atomic for lock-free access (Cache Line 2)
 	timerCount   atomic.Uint32 // Timer counter (atomic)
@@ -364,9 +363,8 @@ type CPU struct {
 
 	// Interrupt control (Cache Line 3)
 	InterruptVector  uint32       // Interrupt handler
-	InterruptEnabled bool         // Interrupts allowed
-	InInterrupt      bool         // In handler
-	_padding3        [2]byte      // Alignment padding
+	interruptEnabled atomic.Bool  // Interrupts allowed (atomic for lock-free access)
+	inInterrupt      atomic.Bool  // In handler (atomic for lock-free access)
 	mutex            sync.RWMutex // Memory lock (I/O only)
 
 	// Large buffers (Cache Lines 3+)
@@ -403,16 +401,13 @@ func NewCPU(bus MemoryBus) *CPU {
 	*/
 
 	cpu := &CPU{
-		Memory:           make([]byte, MEMORY_SIZE),
-		Running:          true,
-		Debug:            false,
-		SP:               STACK_START,
-		PC:               PROG_START,
-		InterruptEnabled: false,
-		InInterrupt:      false,
-		bus:              bus,
+		Memory: make([]byte, MEMORY_SIZE),
+		SP:     STACK_START,
+		PC:     PROG_START,
+		bus:    bus,
 	}
-	// Atomic fields start as zero/false by default
+	// Atomic fields default to zero/false - set running to true
+	cpu.running.Store(true)
 	return cpu
 }
 
@@ -670,12 +665,12 @@ func (cpu *CPU) Push(value uint32) bool {
 	if cpu.SP <= STACK_BOTTOM {
 		fmt.Printf("%s cpu.Push\tStack overflow error at PC=%08x (SP=%08x)\n",
 			time.Now().Format("15:04:05.000"), cpu.PC, cpu.SP)
-		cpu.Running = false
+		cpu.running.Store(false)
 		return false
 	}
 	cpu.SP -= WORD_SIZE
 	cpu.Write32(cpu.SP, value)
-	if cpu.Debug {
+	if cpu.debug.Load() {
 		fmt.Printf("PUSH: %08x to SP=%08x\n", value, cpu.SP)
 	}
 	return true
@@ -701,11 +696,11 @@ func (cpu *CPU) Pop() (uint32, bool) {
 
 	if cpu.SP >= STACK_START {
 		fmt.Printf("Stack underflow error at PC=%08x (SP=%08x)\n", cpu.PC, cpu.SP)
-		cpu.Running = false
+		cpu.running.Store(false)
 		return 0, false
 	}
 	value := cpu.Read32(cpu.SP)
-	if cpu.Debug {
+	if cpu.debug.Load() {
 		fmt.Printf("POP: %08x from SP=%08x\n", value, cpu.SP)
 	}
 	cpu.SP += WORD_SIZE
@@ -801,7 +796,7 @@ func (cpu *CPU) checkInterrupts() bool {
 	   Uses atomic operations for timer state checks.
 	*/
 
-	if cpu.timerEnabled.Load() && cpu.InterruptEnabled && !cpu.InInterrupt {
+	if cpu.timerEnabled.Load() && cpu.interruptEnabled.Load() && !cpu.inInterrupt.Load() {
 		return cpu.timerCount.Load() == 0
 	}
 	return false
@@ -822,10 +817,10 @@ func (cpu *CPU) handleInterrupt() {
 	   Protected by main CPU mutex during processing.
 	*/
 
-	if !cpu.InterruptEnabled || cpu.InInterrupt {
+	if !cpu.interruptEnabled.Load() || cpu.inInterrupt.Load() {
 		return
 	}
-	cpu.InInterrupt = true
+	cpu.inInterrupt.Store(true)
 	if !cpu.Push(cpu.PC) {
 		return
 	}
@@ -850,13 +845,13 @@ func (cpu *CPU) Reset() {
 	*/
 
 	cpu.mutex.Lock()
-	cpu.Running = false
+	cpu.running.Store(false)
 
 	if activeFrontend != nil && activeFrontend.video != nil {
 		video := activeFrontend.video
 		video.mutex.Lock()
-		video.enabled = false
-		video.hasContent = false
+		video.enabled.Store(false)
+		video.hasContent.Store(false)
 		video.mutex.Unlock()
 	}
 	cpu.mutex.Unlock()
@@ -881,11 +876,11 @@ func (cpu *CPU) Reset() {
 		for i := range video.prevVRAM {
 			video.prevVRAM[i] = 0
 		}
-		video.enabled = true
+		video.enabled.Store(true)
 		video.mutex.Unlock()
 	}
 
-	cpu.Running = true
+	cpu.running.Store(true)
 	cpu.mutex.Unlock()
 }
 
@@ -923,11 +918,11 @@ func (cpu *CPU) Execute() {
 
 	if cpu.PC < PROG_START || cpu.PC >= STACK_START {
 		fmt.Printf("Error: Invalid initial PC value: 0x%08x\n", cpu.PC)
-		cpu.Running = false
+		cpu.running.Store(false)
 		return
 	}
 
-	for cpu.Running {
+	for cpu.running.Load() {
 		// Cache frequently accessed values
 		currentPC := cpu.PC
 		mem := cpu.Memory
@@ -951,7 +946,7 @@ func (cpu *CPU) Execute() {
 					cpu.timerCount.Store(newCount)
 					if newCount == 0 {
 						cpu.timerState.Store(TIMER_EXPIRED)
-						if cpu.InterruptEnabled && !cpu.InInterrupt {
+						if cpu.interruptEnabled.Load() && !cpu.inInterrupt.Load() {
 							cpu.handleInterrupt()
 						}
 						if cpu.timerEnabled.Load() {
@@ -1375,7 +1370,7 @@ func (cpu *CPU) Execute() {
 			targetReg := cpu.getRegister(reg)
 			if resolvedOperand == 0 {
 				fmt.Printf("Division by zero error at PC=%08x\n", cpu.PC)
-				cpu.Running = false
+				cpu.running.Store(false)
 				break
 			}
 			*targetReg /= resolvedOperand
@@ -1393,7 +1388,7 @@ func (cpu *CPU) Execute() {
 			targetReg := cpu.getRegister(reg)
 			if resolvedOperand == 0 {
 				fmt.Printf("Division by zero error at PC=%08x\n", cpu.PC)
-				cpu.Running = false
+				cpu.running.Store(false)
 				break
 			}
 			*targetReg %= resolvedOperand
@@ -1447,7 +1442,7 @@ func (cpu *CPU) Execute() {
 			   1. Enable interrupts
 			   2. Advance PC by INSTRUCTION_SIZE
 			*/
-			cpu.InterruptEnabled = true
+			cpu.interruptEnabled.Store(true)
 			cpu.PC += INSTRUCTION_SIZE
 
 		case CLI:
@@ -1457,7 +1452,7 @@ func (cpu *CPU) Execute() {
 			   1. Disable interrupts
 			   2. Advance PC by INSTRUCTION_SIZE
 			*/
-			cpu.InterruptEnabled = false
+			cpu.interruptEnabled.Store(false)
 			cpu.PC += INSTRUCTION_SIZE
 
 		case RTI:
@@ -1473,7 +1468,7 @@ func (cpu *CPU) Execute() {
 				return
 			}
 			cpu.PC = returnPC
-			cpu.InInterrupt = false
+			cpu.inInterrupt.Store(false)
 
 		case INC:
 			/*
@@ -1548,14 +1543,14 @@ func (cpu *CPU) Execute() {
 			   Halt CPU execution.
 			   Operation:
 			   1. Log halt with PC
-			   2. Set Running to false
+			   2. Set running to false
 			*/
 			fmt.Printf("HALT executed at PC=%08x\n", cpu.PC)
-			cpu.Running = false
+			cpu.running.Store(false)
 
 		default:
 			fmt.Printf("Invalid opcode: %02x at PC=%08x\n", opcode, cpu.PC)
-			cpu.Running = false
+			cpu.running.Store(false)
 		}
 	}
 
