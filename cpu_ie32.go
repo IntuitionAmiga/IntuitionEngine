@@ -84,6 +84,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -132,12 +133,13 @@ const (
 // Memory Map Boundaries
 // ------------------------------------------------------------------------------
 const (
-	VECTOR_TABLE = 0x0000 // Interrupt vector table
-	PROG_START   = 0x1000 // Program code start
-	STACK_BOTTOM = 0x2000 // Stack bottom boundary
-	STACK_START  = 0xE000 // Initial stack pointer
-	IO_BASE      = 0xF800 // I/O register base
-	IO_LIMIT     = 0xFFFF // I/O register limit
+	VECTOR_TABLE    = 0x0000  // Interrupt vector table
+	PROG_START      = 0x1000  // Program code start
+	STACK_BOTTOM    = 0x2000  // Stack bottom boundary
+	STACK_START     = 0xE000  // Initial stack pointer
+	IO_REGION_START = 0x0F000 // Start of I/O mapped region (needs mutex)
+	IO_BASE         = 0xF800  // I/O register base
+	IO_LIMIT        = 0xFFFF  // I/O register limit
 )
 
 // ------------------------------------------------------------------------------
@@ -350,21 +352,22 @@ type CPU struct {
 	W            uint32   // General purpose W
 	Running      bool     // Execution state
 	Debug        bool     // Debug enabled
-	timerState   uint8    // Timer state
-	_padding1    byte     // Alignment padding
+	_padding1    [2]byte  // Alignment padding
 	cycleCounter uint32   // Performance counter
-	timerCount   uint32   // Timer counter
-	timerPeriod  uint32   // Timer period
-	_padding2    [32]byte // Cache line padding
+	_padding2    [48]byte // Cache line padding
 
-	// Interrupt control (Cache Line 2)
+	// Timer state - atomic for lock-free access (Cache Line 2)
+	timerCount   atomic.Uint32 // Timer counter (atomic)
+	timerPeriod  atomic.Uint32 // Timer period (atomic)
+	timerState   atomic.Uint32 // Timer state (atomic)
+	timerEnabled atomic.Bool   // Timer active (atomic)
+
+	// Interrupt control (Cache Line 3)
 	InterruptVector  uint32       // Interrupt handler
 	InterruptEnabled bool         // Interrupts allowed
 	InInterrupt      bool         // In handler
-	timerEnabled     bool         // Timer active
-	_padding3        byte         // Alignment padding
-	mutex            sync.RWMutex // Memory lock
-	timerMutex       sync.Mutex   // Timer lock
+	_padding3        [2]byte      // Alignment padding
+	mutex            sync.RWMutex // Memory lock (I/O only)
 
 	// Large buffers (Cache Lines 3+)
 	Screen [25][80]byte // Display buffer
@@ -407,9 +410,9 @@ func NewCPU(bus MemoryBus) *CPU {
 		PC:               PROG_START,
 		InterruptEnabled: false,
 		InInterrupt:      false,
-		timerEnabled:     false,
 		bus:              bus,
 	}
+	// Atomic fields start as zero/false by default
 	return cpu
 }
 
@@ -448,8 +451,9 @@ func (cpu *CPU) Write32(addr uint32, value uint32) {
 	   - value: Value to write
 
 	   Thread Safety:
-	   Full mutex lock during write operation to prevent concurrent access.
+	   Lock-free for non-I/O addresses (CPU is sole writer).
 	   VRAM fast path bypasses mutex for maximum throughput.
+	   I/O region uses mutex for callback coordination.
 	*/
 
 	// VRAM fast path - direct write, no mutex, no bus overhead
@@ -462,6 +466,14 @@ func (cpu *CPU) Write32(addr uint32, value uint32) {
 		}
 	}
 
+	// Non-I/O fast path - direct memory write, no mutex
+	// CPU is the sole writer, so no synchronisation needed
+	if addr < IO_REGION_START && addr+4 <= uint32(len(cpu.Memory)) {
+		binary.LittleEndian.PutUint32(cpu.Memory[addr:], value)
+		return
+	}
+
+	// I/O path - use mutex for callback coordination
 	cpu.mutex.Lock()
 	defer cpu.mutex.Unlock()
 	cpu.bus.Write32(addr, value)
@@ -492,8 +504,17 @@ func (cpu *CPU) Read32(addr uint32) uint32 {
 	   - uint32: Value read from memory
 
 	   Thread Safety:
-	   Full mutex lock during read operation to prevent concurrent access.
+	   Lock-free for non-I/O addresses (safe for concurrent readers).
+	   I/O region uses mutex for callback coordination.
 	*/
+
+	// Non-I/O fast path - direct memory read, no mutex
+	// CPU writes are the only mutations; readers see consistent data
+	if addr < IO_REGION_START && addr+4 <= uint32(len(cpu.Memory)) {
+		return binary.LittleEndian.Uint32(cpu.Memory[addr:])
+	}
+
+	// I/O path - use mutex for callback coordination
 	cpu.mutex.Lock()
 	defer cpu.mutex.Unlock()
 	return cpu.bus.Read32(addr)
@@ -780,8 +801,8 @@ func (cpu *CPU) checkInterrupts() bool {
 	   Uses atomic operations for timer state checks.
 	*/
 
-	if cpu.timerEnabled && cpu.InterruptEnabled && !cpu.InInterrupt {
-		return cpu.timerCount == 0
+	if cpu.timerEnabled.Load() && cpu.InterruptEnabled && !cpu.InInterrupt {
+		return cpu.timerCount.Load() == 0
 	}
 	return false
 }
@@ -918,30 +939,30 @@ func (cpu *CPU) Execute() {
 		operand := binary.LittleEndian.Uint32(mem[currentPC+OPERAND_OFFSET : currentPC+INSTRUCTION_SIZE])
 		resolvedOperand := cpu.resolveOperand(addrMode, operand)
 
-		// Timer handling with atomic operations
-		if cpu.timerEnabled {
+		// Timer handling with lock-free atomics
+		if cpu.timerEnabled.Load() {
 			cpu.cycleCounter++
 			if cpu.cycleCounter >= SAMPLE_RATE {
 				cpu.cycleCounter = 0
 
-				cpu.timerMutex.Lock()
-				if cpu.timerCount > 0 {
-					cpu.timerCount--
-					if cpu.timerCount == 0 {
-						cpu.timerState = TIMER_EXPIRED
+				count := cpu.timerCount.Load()
+				if count > 0 {
+					newCount := count - 1
+					cpu.timerCount.Store(newCount)
+					if newCount == 0 {
+						cpu.timerState.Store(TIMER_EXPIRED)
 						if cpu.InterruptEnabled && !cpu.InInterrupt {
 							cpu.handleInterrupt()
 						}
-						if cpu.timerEnabled {
-							cpu.timerCount = cpu.Read32(TIMER_PERIOD)
+						if cpu.timerEnabled.Load() {
+							cpu.timerCount.Store(cpu.timerPeriod.Load())
 						}
 					}
 				}
-				cpu.timerMutex.Unlock()
 
 				binary.LittleEndian.PutUint32(
 					cpu.Memory[TIMER_COUNT:TIMER_COUNT+WORD_SIZE],
-					cpu.timerCount)
+					cpu.timerCount.Load())
 			}
 		}
 
