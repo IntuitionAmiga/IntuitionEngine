@@ -47,9 +47,9 @@ type GTKFrontend struct {
 	mutex     sync.Mutex
 }
 
-func NewGTKFrontend(cpu *CPU, video *VideoChip, sound *SoundChip) (GUIFrontend, error) {
+func NewGTKFrontend(cpu *CPU, video *VideoChip, sound *SoundChip, psg *PSGPlayer) (GUIFrontend, error) {
 	frontend := &GTKFrontend{
-		actions: NewGUIActions(cpu, video, sound),
+		actions: NewGUIActions(cpu, video, sound, psg),
 		cpu:     cpu,
 		video:   video,
 		sound:   sound,
@@ -84,9 +84,9 @@ func (f *GTKFrontend) eventLoop() {
 			shouldExec := int(C.gtk_get_should_execute())
 			if shouldExec != 0 {
 				filename := C.GoString(C.gtk_get_selected_file())
-				fmt.Printf("Loading program: %s\n", filename)
-				if err := f.actions.LoadProgram(filename); err != nil {
-					fmt.Printf("Error loading program: %v\n", err)
+				fmt.Printf("Loading file: %s\n", filename)
+				if err := f.actions.LoadFile(filename); err != nil {
+					fmt.Printf("Error loading file: %v\n", err)
 					f.lastError = err
 				}
 			}

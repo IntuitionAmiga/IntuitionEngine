@@ -54,6 +54,7 @@ import (
 	"log"
 	"math"
 	"sync"
+	"sync/atomic"
 )
 
 // ------------------------------------------------------------------------------
@@ -591,6 +592,15 @@ type Channel struct {
 
 	releaseStartLevel float32 // Level when release phase began
 }
+
+// SampleTicker allows external systems to advance state per output sample.
+type SampleTicker interface {
+	TickSample()
+}
+
+type sampleTickerHolder struct {
+	ticker SampleTicker
+}
 type CombFilter struct {
 	buffer []float32                 // Delay line buffer
 	decay  float32                   // Decay coefficient
@@ -618,6 +628,8 @@ type SoundChip struct {
 	mutex           sync.RWMutex              // Concurrency control for parameter updates
 	_pad2           [SOUNDCHIP_PAD2_SIZE]byte // Align to 64-byte cache line boundary
 
+	sampleTicker atomic.Value // Optional per-sample ticker (SampleTicker)
+
 	// Cache line 3+ - Reverb state (cold path)
 	preDelayPos int                            // Current position in pre-delay buffer
 	allpassPos  [NUM_ALLPASS_FILTERS]int       // Current positions in allpass buffers
@@ -642,6 +654,7 @@ func NewSoundChip(backend int) (*SoundChip, error) {
 		filterHP:    DEFAULT_FILTER_HP,
 		preDelayBuf: make([]float32, PRE_DELAY_MS*MS_TO_SAMPLES),
 	}
+	chip.sampleTicker.Store(&sampleTickerHolder{})
 
 	// Initialise channels
 	waveTypes := []int{WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE, WAVE_NOISE}
@@ -1479,7 +1492,16 @@ func (chip *SoundChip) applyReverb(input float32) float32 {
 }
 
 func (chip *SoundChip) ReadSample() float32 {
+	if holder, ok := chip.sampleTicker.Load().(*sampleTickerHolder); ok {
+		if holder.ticker != nil {
+			holder.ticker.TickSample()
+		}
+	}
 	return chip.GenerateSample()
+}
+
+func (chip *SoundChip) SetSampleTicker(ticker SampleTicker) {
+	chip.sampleTicker.Store(&sampleTickerHolder{ticker: ticker})
 }
 
 func (chip *SoundChip) Start() {

@@ -39,15 +39,17 @@ type FLTKFrontend struct {
 	cpu       *CPU
 	video     *VideoChip
 	sound     *SoundChip
+	actions   *GUIActions
 	lastError error
 	visible   bool
 }
 
-func NewFLTKFrontend(cpu *CPU, video *VideoChip, sound *SoundChip) (GUIFrontend, error) {
+func NewFLTKFrontend(cpu *CPU, video *VideoChip, sound *SoundChip, psg *PSGPlayer) (GUIFrontend, error) {
 	return &FLTKFrontend{
-		cpu:   cpu,
-		video: video,
-		sound: sound,
+		cpu:     cpu,
+		video:   video,
+		sound:   sound,
+		actions: NewGUIActions(cpu, video, sound, psg),
 	}, nil
 }
 
@@ -91,13 +93,7 @@ func (f *FLTKFrontend) eventLoop() {
 		if shouldExec != 0 {
 			filename := C.GoString(C.get_selected_file())
 			fmt.Printf("Selected file: %s\n", filename)
-			if err := f.cpu.LoadProgram(filename); err == nil {
-				fmt.Printf("Starting video and sound\n")
-				f.video.Start()
-				f.sound.Start()
-				fmt.Printf("Starting CPU\n")
-				f.cpu.Execute()
-			} else {
+			if err := f.actions.LoadFile(filename); err != nil {
 				fmt.Printf("Error: %v\n", err)
 				f.lastError = err
 			}

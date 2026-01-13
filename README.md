@@ -1089,6 +1089,17 @@ For M68K programs:
 ./bin/IntuitionEngine -m68k program.ie68
 ```
 
+For PSG music playback:
+```bash
+./bin/IntuitionEngine -psg track.ym
+./bin/IntuitionEngine -psg track.ay
+./bin/IntuitionEngine -psg track.vgm
+```
+Note: `.ay` playback expects raw register frame data (player-based AY files are not supported yet).
+
+When running in CPU modes, PSG registers are available at `0xFC00-0xFC0D`
+for direct AY/YM register writes.
+
 The assembler provides error messages for common issues like:
 - Undefined labels
 - Invalid addressing modes

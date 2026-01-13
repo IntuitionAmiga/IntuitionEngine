@@ -58,6 +58,7 @@ type GUIActions struct {
 	cpu   *CPU
 	video *VideoChip
 	sound *SoundChip
+	psg   *PSGPlayer
 }
 
 type GUIFrontend interface {
@@ -76,11 +77,12 @@ const (
 	GUI_FRONTEND_GTK4
 )
 
-func NewGUIActions(cpu *CPU, video *VideoChip, sound *SoundChip) *GUIActions {
+func NewGUIActions(cpu *CPU, video *VideoChip, sound *SoundChip, psg *PSGPlayer) *GUIActions {
 	return &GUIActions{
 		cpu:   cpu,
 		video: video,
 		sound: sound,
+		psg:   psg,
 	}
 }
 
@@ -89,6 +91,9 @@ func (a *GUIActions) LoadProgram(filename string) error {
 	a.Reset()
 
 	// Load and start the new program
+	if a.cpu == nil {
+		return fmt.Errorf("CPU mode is not available in this session")
+	}
 	if err := a.cpu.LoadProgram(filename); err != nil {
 		return fmt.Errorf("failed to load program: %v", err)
 	}
@@ -99,8 +104,33 @@ func (a *GUIActions) LoadProgram(filename string) error {
 	return nil
 }
 
+func (a *GUIActions) LoadPSG(filename string) error {
+	if a.psg == nil {
+		return fmt.Errorf("PSG playback is not available")
+	}
+	if a.cpu != nil {
+		return fmt.Errorf("PSG playback is disabled while CPU mode is active")
+	}
+	a.psg.Stop()
+	if err := a.psg.Load(filename); err != nil {
+		return err
+	}
+	a.sound.Start()
+	a.psg.Play()
+	return nil
+}
+
+func (a *GUIActions) LoadFile(filename string) error {
+	if isPSGExtension(filename) {
+		return a.LoadPSG(filename)
+	}
+	return a.LoadProgram(filename)
+}
+
 func (a *GUIActions) Reset() {
-	a.cpu.Reset()
+	if a.cpu != nil {
+		a.cpu.Reset()
+	}
 }
 
 func (a *GUIActions) About() string {
@@ -116,12 +146,12 @@ func (a *GUIActions) Debug() error {
 	return fmt.Errorf("debugging not yet implemented")
 }
 
-func NewGUIFrontend(backend int, cpu *CPU, video *VideoChip, sound *SoundChip) (GUIFrontend, error) {
+func NewGUIFrontend(backend int, cpu *CPU, video *VideoChip, sound *SoundChip, psg *PSGPlayer) (GUIFrontend, error) {
 	switch backend {
 	case GUI_FRONTEND_FLTK:
-		return NewFLTKFrontend(cpu, video, sound)
+		return NewFLTKFrontend(cpu, video, sound, psg)
 	case GUI_FRONTEND_GTK4:
-		return NewGTKFrontend(cpu, video, sound)
+		return NewGTKFrontend(cpu, video, sound, psg)
 	}
 	return nil, fmt.Errorf("unknown backend: %d", backend)
 }

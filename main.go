@@ -110,28 +110,47 @@ func main() {
 
 	// Check command line arguments
 	if len(os.Args) != 3 {
-		fmt.Println("Usage: ./intuition_engine [-ie32|-m68k] filename")
+		fmt.Println("Usage: ./intuition_engine [-ie32|-m68k|-psg] filename")
 		os.Exit(1)
 	}
 
 	cpuMode := os.Args[1]
 	filename := os.Args[2]
 
-	// Validate CPU mode
-	if cpuMode != "-ie32" && cpuMode != "-m68k" {
-		fmt.Println("Invalid CPU mode. Use -ie32 or -m68k")
+	// Validate mode
+	if cpuMode != "-ie32" && cpuMode != "-m68k" && cpuMode != "-psg" {
+		fmt.Println("Invalid mode. Use -ie32, -m68k, or -psg")
 		os.Exit(1)
 	}
 
-	// Create system bus
-	sysBus := NewSystemBus()
-
-	// Initialize peripherals
+	// Initialize sound first (used by all modes)
 	soundChip, err := NewSoundChip(AUDIO_BACKEND_OTO)
 	if err != nil {
 		fmt.Printf("Failed to initialize sound: %v\n", err)
 		os.Exit(1)
 	}
+
+	psgEngine := NewPSGEngine(soundChip, SAMPLE_RATE)
+	psgPlayer := NewPSGPlayer(psgEngine)
+
+	if cpuMode == "-psg" {
+		if err := psgPlayer.Load(filename); err != nil {
+			fmt.Printf("Error loading PSG file: %v\n", err)
+			os.Exit(1)
+		}
+		meta := psgPlayer.Metadata()
+		if meta.Title != "" || meta.Author != "" {
+			fmt.Printf("Playing PSG: %s - %s\n", meta.Title, meta.Author)
+		} else {
+			fmt.Printf("Playing PSG file: %s\n", filename)
+		}
+		soundChip.Start()
+		psgPlayer.Play()
+		select {}
+	}
+
+	// Create system bus
+	sysBus := NewSystemBus()
 
 	videoChip, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
 	if err != nil {
@@ -159,6 +178,11 @@ func main() {
 		nil,
 		termOut.HandleWrite)
 
+	// Map PSG registers (CPU modes only)
+	sysBus.MapIO(PSG_BASE, PSG_END,
+		psgEngine.HandleRead,
+		psgEngine.HandleWrite)
+
 	// Initialize the selected CPU and load program
 	var gui GUIFrontend
 
@@ -173,7 +197,7 @@ func main() {
 		}
 
 		// Initialize GUI with IE32 CPU
-		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, ie32CPU, videoChip, soundChip)
+		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, ie32CPU, videoChip, soundChip, psgPlayer)
 		if err != nil {
 			fmt.Printf("Failed to initialize GUI: %v\n", err)
 			os.Exit(1)
@@ -205,7 +229,7 @@ func main() {
 
 		// Initialize GUI with M68K CPU
 		// Note: The GUI might need modifications to properly support M68K CPU
-		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, nil, videoChip, soundChip)
+		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, nil, videoChip, soundChip, psgPlayer)
 		if err != nil {
 			fmt.Printf("Failed to initialize GUI: %v\n", err)
 			os.Exit(1)
