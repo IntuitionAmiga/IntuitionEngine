@@ -23,14 +23,16 @@
 2. Architecture Design
 3. Memory Map & Hardware Registers
 4. CPU Architecture (IE32)
-5. Motorola 68020 CPU with FPU
-6. Assembly Language Reference
-7. Sound System
-8. Video System
-9. Developer's Guide
-10. Implementation Details
-11. Platform Support & Backend Systems
-12. Hardware Interface Architecture
+5. MOS 6502 CPU
+6. Motorola 68020 CPU with FPU
+7. Assembly Language Reference
+8. Sound System
+9. Video System
+10. Developer's Guide
+11. Implementation Details
+12. Platform Support & Backend Systems
+13. Hardware Interface Architecture
+14. Testing & Demonstration Framework
 
 # 1. System Overview
 
@@ -41,6 +43,7 @@ This virtual machine implements a complete computer system with a custom CPU arc
 ### CPU Options:
 - **IE32**: 32-bit RISC-like CPU architecture with 16 general-purpose registers
 - **Motorola 68020**: Full 32-bit CISC emulation with 95%+ instruction coverage
+- **MOS 6502 (NMOS)**: 8-bit CPU emulator for raw binaries (no 65C02 opcodes)
 - **68881/68882 FPU**: Complete floating-point coprocessor with transcendental functions
 
 ### Core Features:
@@ -76,6 +79,8 @@ The VM is implemented in Go and requires:
     - X11 client-side library (development headers)
     - X11 XFree86 video mode extension library (development headers)
     - OpenGL development libraries (optional/in development)
+- For LHA archive support (Linux):
+    - lhasa development libraries
 - For building the system:
     - UPX compression utility (optional) https://github.com/upx/upx
     - SuperStrip utility (optional) https://github.com/aunali1/super-strip
@@ -513,11 +518,58 @@ The system implements a simple but effective interrupt system:
    SEI                ; Enable interrupts
    ```
 
-# 5. Motorola 68020 CPU with FPU
+
+# 5. MOS 6502 CPU
+
+# 5. MOS 6502 CPU
+
+The Intuition Engine includes an NMOS 6502 core for running raw 8-bit binaries. The 6502 shares the same memory-mapped I/O and device map as IE32 and M68K, so hardware registers behave identically across CPU modes.
+
+## 5.1 Register Set
+The 6502 core exposes the classic NMOS register file:
+- **A** (Accumulator) for arithmetic and logic.
+- **X** and **Y** index registers.
+- **SP** (Stack Pointer), 8-bit, stack page fixed at `0x0100-0x01FF`.
+- **PC** (Program Counter), 16-bit.
+- **SR** (Status Register), 8-bit flags.
+
+## 5.2 Status Flags
+The status register follows NMOS 6502 semantics:
+- **N** (Negative), **V** (Overflow), **B** (Break), **D** (Decimal), **I** (IRQ Disable), **Z** (Zero), **C** (Carry).
+- The unused flag bit behaves like the original NMOS (set when pushed to stack).
+
+## 5.3 Addressing Modes
+Supported addressing modes match the NMOS 6502 set used by common assemblers:
+- Immediate, Zero Page, Zero Page,X, Zero Page,Y
+- Absolute, Absolute,X, Absolute,Y
+- Indirect, (Indirect,X), (Indirect),Y
+- Relative (branch), Accumulator, Implied
+
+## 5.4 Loading and Entry
+- Use `-m6502` to run a raw binary.
+- `--load-addr` sets the load address (default `0x0600`).
+- `--entry` sets the entry address (defaults to the load address).
+- The loader sets the RESET/IRQ/NMI vectors to the entry address for raw binaries.
+
+## 5.5 Memory and I/O Integration
+- The 6502 uses the shared system bus and all memory-mapped devices (video, audio, PSG, terminal).
+- The VRAM window is banked at `0x8000-0xBFFF`, with the bank select register at `0xF7F0`.
+- VRAM banking is disabled until the first write to the bank register.
+- Memory-mapped I/O ranges remain identical across CPU modes.
+
+## 5.6 Interrupts and Vectors
+- Vector locations follow standard 6502 layout: `NMI` at `0xFFFA/0xFFFB`, `RESET` at `0xFFFC/0xFFFD`, `IRQ/BRK` at `0xFFFE/0xFFFF`.
+- The loader seeds these vectors for raw binaries; custom binaries may overwrite them.
+
+## 5.7 Compatibility Notes
+- The core targets NMOS 6502 behavior and is cycle-accurate; 65C02 opcodes are not supported.
+- Decimal mode is implemented; use Klaus tests to validate D-flag behavior.
+
+# 6. Motorola 68020 CPU with FPU
 
 In addition to the IE32 instruction set, the Intuition Engine includes a complete Motorola 68020 CPU emulator with 68881/68882 FPU (Floating Point Unit) support.
 
-## 5.1 M68K CPU Features
+## 6.1 M68K CPU Features
 
 The 68020 emulator provides:
 
@@ -540,7 +592,7 @@ The 68020 emulator provides:
 - Atomic operations (TAS, CAS, CAS2)
 - Bounds checking (CHK, CHK2, CMP2)
 
-## 5.2 FPU (68881/68882) Features
+## 6.2 FPU (68881/68882) Features
 
 The FPU coprocessor provides full floating-point support:
 
@@ -596,14 +648,14 @@ The FPU provides built-in constants:
 - I (Infinity) - Result is infinite
 - NAN - Result is Not a Number
 
-## 5.3 F-Line Instruction Decoding
+## 6.3 F-Line Instruction Decoding
 
 FPU instructions use F-line opcodes (0xF000-0xFFFF):
 - Coprocessor ID in bits 11-9 (001 for FPU)
 - Automatic routing to FPU when present
 - Line-F exception when FPU not available
 
-## 5.4 Test Coverage
+## 6.4 Test Coverage
 
 The M68K implementation includes comprehensive testing:
 - 127 FPU unit tests covering all operations
@@ -611,11 +663,11 @@ The M68K implementation includes comprehensive testing:
 - Special value handling (NaN, Infinity, denormals)
 - Condition code verification
 
-# 6. Assembly Language Reference
+# 7. Assembly Language Reference
 
 The Intuition Engine assembly language provides a straightforward way to program the system while maintaining access to all hardware features.
 
-## 6.1 Basic Program Structure
+## 7.1 Basic Program Structure
 
 Every assembly program follows this basic structure:
 
@@ -641,7 +693,7 @@ setup_timer:
     RTS
 ```
 
-## 6.2 Assembler Directives
+## 7.2 Assembler Directives
 
 The assembler supports these directives:
 
@@ -667,7 +719,7 @@ start:
     JMP main
 ```
 
-## 6.3 Memory Access Patterns
+## 7.3 Memory Access Patterns
 
 When working with memory, consider alignment and efficiency:
 
@@ -687,7 +739,7 @@ copy_loop:
     RTS
 ```
 
-## 6.4 Stack Usage
+## 7.4 Stack Usage
 
 The stack is essential for subroutines and temporary storage:
 
@@ -705,7 +757,7 @@ calculate:
     RTS
 ```
 
-## 6.5 Interrupt Handlers
+## 7.5 Interrupt Handlers
 
 Interrupt handlers must preserve register state:
 
@@ -722,11 +774,11 @@ isr_handler:
     RTI                ; Return from interrupt
 ```
 
-# 7. Sound System
+# 8. Sound System
 
 The sound system provides sophisticated synthesis capabilities through four independent channels and global effects processing.
 
-## 7.1 Sound Channel Types
+## 8.1 Sound Channel Types
 
 Each channel offers different synthesis capabilities:
 
@@ -832,7 +884,7 @@ setup_sawtooth:
     RTS
 ```
 
-## 7.2 Modulation System
+## 8.2 Modulation System
 
 The sound system supports complex modulation:
 
@@ -854,7 +906,7 @@ LOAD A, #0x87          ; Enable sweep up
 STORE A, @SQUARE_SWEEP
 ```
 
-## 7.3 Global Effects
+## 8.3 Global Effects
 
 The system provides global audio processing:
 
@@ -892,11 +944,11 @@ LOAD A, #192           ; Long decay
 STORE A, @REVERB_DECAY
 ```
 
-# 8. Video System
+# 9. Video System
 
 The video system provides flexible graphics output through a memory-mapped framebuffer design.
 
-## 8.1 Display Modes
+## 9.1 Display Modes
 
 Three resolution modes are available:
 - 640x480 (MODE_640x480)
@@ -914,7 +966,7 @@ init_display:
     RTS
 ```
 
-## 8.2 Framebuffer Organisation
+## 9.2 Framebuffer Organisation
 
 The framebuffer uses 32-bit RGBA colour format:
 - Start address: 0x100000 (VRAM_START)
@@ -927,14 +979,14 @@ The framebuffer uses 32-bit RGBA colour format:
 Address = 0x100000 + (y * width + x) * 4
 ```
 
-## 8.3 Dirty Rectangle Tracking
+## 9.3 Dirty Rectangle Tracking
 
 The system tracks changes in 32x32 pixel blocks:
 - Automatically marks modified regions
 - Updates only changed areas
 - Improves rendering performance
 
-## 8.4 Double Buffering
+## 9.4 Double Buffering
 
 Video output uses double buffering to prevent tearing:
 - Write to back buffer
@@ -957,7 +1009,7 @@ wait_vsync:
     RTS
 ```
 
-## 8.5 Direct VRAM Access Mode
+## 9.5 Direct VRAM Access Mode
 
 For fullscreen effects such as plasma, fire, or tunnel demos where every pixel is updated each frame, the system provides a direct VRAM access mode with lock-free dirty tracking that bypasses the standard memory bus. This delivers approximately **4.5x video throughput** compared to bus-based access.
 
@@ -999,9 +1051,9 @@ videoChip.DisableDirectMode()
 
 Direct VRAM mode is ideal for demoscene-style effects, real-time visualisations, and any application that redraws the entire screen each frame.
 
-# 9. Developer's Guide
+# 10. Developer's Guide
 
-## 9.1 Development Environment Setup
+## 10.1 Development Environment Setup
 
 To develop for the Intuition Engine, you'll need to set up your development environment with several components:
 
@@ -1020,7 +1072,7 @@ my_project/
 └── tools/           # Development tools
 ```
 
-## 9.2 Building the System
+## 10.2 Building the System
 
 The build process uses the provided build script:
 
@@ -1071,7 +1123,7 @@ The Makefile handles all necessary compilation flags and optimisations automatic
 - Parallel compilation where possible
 - AppImage packaging for Linux distribution
 
-## 9.3 Development Workflow
+## 10.3 Development Workflow
 
 A typical development cycle involves:
 
@@ -1088,6 +1140,13 @@ For M68K programs:
 ```bash
 ./bin/IntuitionEngine -m68k program.ie68
 ```
+
+For 6502 programs:
+```bash
+./bin/IntuitionEngine -m6502 program.bin
+./bin/IntuitionEngine -m6502 --load-addr 0x0600 --entry 0x0600 program.bin
+```
+Note: the current 6502 core is NMOS 6502 only (no 65C02 opcodes).
 
 For PSG music playback:
 ```bash
@@ -1106,7 +1165,7 @@ The assembler provides error messages for common issues like:
 - Misaligned memory access
 - Invalid instruction formats
 
-## 9.4 Debugging Techniques
+## 10.4 Debugging Techniques
 
 The system provides several debugging methods:
 
@@ -1130,9 +1189,9 @@ debug_point:
     - Audio channel states
     - Timer operation
 
-# 10. Implementation Details
+# 11. Implementation Details
 
-## 10.1 CPU Implementation
+## 11.1 CPU Implementation
 
 The CPU implementation prioritises clarity and correctness:
 
@@ -1167,7 +1226,7 @@ The instruction execution cycle:
 4. Update program counter
 5. Check for interrupts
 
-## 10.2 Memory Bus Architecture
+## 11.2 Memory Bus Architecture
 
 The memory bus provides a flexible interface for memory access:
 
@@ -1186,7 +1245,7 @@ Memory operations handle:
 - Access protection
 - Multiple device mappings
 
-## 10.3 Sound System Implementation
+## 11.3 Sound System Implementation
 
 The sound system uses a sophisticated multi-channel architecture:
 
@@ -1221,9 +1280,9 @@ Audio processing occurs in real-time at 44.1kHz, with features like:
 - Real-time parameter updates
 - Multiple effect processors
 
-# 11. Platform Support & Backend Systems
+# 12. Platform Support & Backend Systems
 
-## 11.1 Graphics Backend Architecture
+## 12.1 Graphics Backend Architecture
 
 The system supports multiple graphics backends through a common interface:
 
@@ -1239,7 +1298,7 @@ type VideoOutput interface {
 }
 ```
 
-### 11.1.1 Ebiten Backend
+### 12.1.1 Ebiten Backend
 
 The primary graphics backend uses Ebiten for:
 
@@ -1248,7 +1307,7 @@ The primary graphics backend uses Ebiten for:
 - Automatic scaling
 - VSync support
 
-### 11.1.2 OpenGL Backend (In Development)
+### 12.1.2 OpenGL Backend (In Development)
 
 The OpenGL backend (when completed) will provide:
 
@@ -1257,11 +1316,11 @@ The OpenGL backend (when completed) will provide:
 - Additional texture features
 - Platform-specific optimisations
 
-## 11.2 Audio Backend Systems
+## 12.2 Audio Backend Systems
 
 Audio output supports two backends:
 
-### 11.2.1 Oto Backend
+### 12.2.1 Oto Backend
 
 The primary audio backend uses Oto for:
 
@@ -1270,7 +1329,7 @@ The primary audio backend uses Oto for:
 - Automatic buffer management
 - Sample-accurate timing
 
-### 11.2.2 ALSA Backend
+### 12.2.2 ALSA Backend
 
 On Linux systems, ALSA provides:
 
@@ -1279,11 +1338,11 @@ On Linux systems, ALSA provides:
 - Direct hardware access
 - Better integration with system audio
 
-## 11.3 GUI Backend Systems
+## 12.3 GUI Backend Systems
 
 Two GUI implementations are available:
 
-### 11.3.1 GTK4 Frontend
+### 12.3.1 GTK4 Frontend
 
 The GTK4 implementation provides:
 
@@ -1292,7 +1351,7 @@ The GTK4 implementation provides:
 - File dialogs
 - Debug interface
 
-### 11.3.2 FLTK Frontend
+### 12.3.2 FLTK Frontend
 
 The FLTK implementation offers:
 
@@ -1301,9 +1360,9 @@ The FLTK implementation offers:
 - Basic UI functionality
 - Simple file selection
 
-# 12. Hardware Interface Architecture
+# 13. Hardware Interface Architecture
 
-## 12.1 Interface Design
+## 13.1 Interface Design
 
 The system uses a layered interface approach:
 
@@ -1320,7 +1379,7 @@ type TextureCapable interface { ... }
 type SpriteCapable interface { ... }
 ```
 
-## 12.2 Hardware Abstraction
+## 13.2 Hardware Abstraction
 
 Each hardware component provides:
 
@@ -1329,7 +1388,7 @@ Each hardware component provides:
 - Configuration interface
 - Event handling
 
-## 12.3 Device Communication
+## 13.3 Device Communication
 
 Hardware interaction occurs through:
 
@@ -1338,7 +1397,7 @@ Hardware interaction occurs through:
 - Interrupt system
 - Status polling
 
-## 12.4 Future Extensibility
+## 13.4 Future Extensibility
 
 The interface architecture supports:
 
@@ -1348,11 +1407,11 @@ The interface architecture supports:
 - Platform-specific optimisations
 - Platform-specific GUIs
 
-# 13. Testing & Demonstration Framework
+# 14. Testing & Demonstration Framework
 
 The Intuition Engine includes a comprehensive testing and demonstration framework that verifies system functionality while showcasing its capabilities through interactive demos and visual effects.
 
-## 13.1 Testing Architecture
+## 14.1 Testing Architecture
 
 The testing framework is built on Go's native testing package and provides:
 
@@ -1362,9 +1421,9 @@ The testing framework is built on Go's native testing package and provides:
 - Performance benchmarking capabilities
 - Cross-platform compatibility testing
 
-## 13.2 Audio Synthesis Testing
+## 14.2 Audio Synthesis Testing
 
-### 13.2.1 Basic Waveform Tests
+### 14.2.1 Basic Waveform Tests
 The system verifies the accuracy and quality of fundamental waveform generation:
 
 - Square wave synthesis with variable duty cycle control
@@ -1372,7 +1431,7 @@ The system verifies the accuracy and quality of fundamental waveform generation:
 - Pure sine wave generation with perfect frequency accuracy
 - Multiple noise generation algorithms (white, periodic, metallic)
 
-### 13.2.2 Advanced Synthesis Features
+### 14.2.2 Advanced Synthesis Features
 Comprehensive testing of advanced sound synthesis capabilities:
 
 - PWM (Pulse Width Modulation) with dynamic width control
@@ -1381,7 +1440,7 @@ Comprehensive testing of advanced sound synthesis capabilities:
 - Hard sync effects across oscillator channels
 - Complex noise shaping and filtering
 
-### 13.2.3 Envelope System
+### 14.2.3 Envelope System
 Verification of the ADSR (Attack, Decay, Sustain, Release) envelope system:
 
 - Precise timing accuracy for all envelope stages
@@ -1389,7 +1448,7 @@ Verification of the ADSR (Attack, Decay, Sustain, Release) envelope system:
 - Complex envelope interactions with modulation
 - Multi-channel envelope synchronisation
 
-### 13.2.4 Audio Effects Processing
+### 14.2.4 Audio Effects Processing
 Testing of the global audio effects processing chain:
 
 - Multi-mode filter system with resonance control
@@ -1397,9 +1456,9 @@ Testing of the global audio effects processing chain:
 - Stereo reverb processing
 - Cross-modulation effects between channels
 
-## 13.3 Visual System Testing
+## 14.3 Visual System Testing
 
-### 13.3.1 Fundamental Operations
+### 14.3.1 Fundamental Operations
 Basic video system functionality verification:
 
 - Resolution mode switching (640x480, 800x600, 1024x768)
@@ -1407,7 +1466,7 @@ Basic video system functionality verification:
 - Colour depth and format handling
 - VSync and timing verification
 
-### 13.3.2 Visual Effect Demonstrations
+### 14.3.2 Visual Effect Demonstrations
 The test suite includes several real-time visual demonstrations:
 
 1. **Colour Palette Test**
@@ -1435,13 +1494,13 @@ The test suite includes several real-time visual demonstrations:
     - 3D starfield simulation
     - Mandelbrot set visualisation
 
-### 13.3.3 Performance Testing
+### 14.3.3 Performance Testing
 - Frame rate monitoring and performance profiling
 - Memory bandwidth utilisation measurement
 - CPU load analysis during complex effects
 - Optimisation verification for critical paths
 
-## 13.4 Integration Testing
+## 14.4 Integration Testing
 
 The framework includes tests that verify the interaction between different subsystems:
 
@@ -1450,41 +1509,55 @@ The framework includes tests that verify the interaction between different subsy
 - Memory access patterns and conflicts
 - Resource sharing and management
 
-## 13.5 Technical Demonstrations
+## 14.5 Technical Demonstrations
 
-The system uses Go's testing framework as a convenient way to organise and run technical demonstrations. These are not traditional unit tests, but rather interactive demonstrations that showcase the system's capabilities.
+The system uses Go's testing framework as a convenient way to organise and run technical demonstrations. Some tests are short unit/integration checks, while long-running audio/video demos are gated by build tags.
 
-To run the demonstrations:
+To run the default test suite:
 
 ```bash
 go test -v
 ```
 
-To run a specific demonstration:
+To run a specific audio demonstration (long-running):
 
 ```bash
-go test -v -run TestNameOfDemo
+go test -v -tags audiolong -run TestNameOfDemo
 ```
 
 For example:
 
-###Demonstrate pure sine wave generation with zero harmonic distortion
+### Demonstrate pure sine wave generation with zero harmonic distortion
 ```bash
-go test -v -run TestSineWave_BasicWaveforms
+go test -v -tags audiolong -run TestSineWave_BasicWaveforms
 ```
-###Show dynamic fire simulation using cellular automata
+### Show dynamic fire simulation using cellular automata
 
 ```bash
-go test -v -run TestFireEffect
+go test -v -tags videolong -run TestFireEffect
 ```
-###Show real-time plasma wave generation with dynamic colour patterns
+### Show real-time plasma wave generation with dynamic colour patterns
 ```bash
-go test -v -run TestPlasmaWaves
+go test -v -tags videolong -run TestPlasmaWaves
 ```
 
 Each demonstration includes thorough logging output that explains what is being demonstrated and what effects or sounds you should observe. The demonstrations typically run for a set duration (ranging from 2 to 10 seconds) before automatically proceeding to the next test.
 
-## 13.6 Demonstration Development
+To run the M68K test suite:
+
+```bash
+go test -v -tags m68k ./...
+```
+
+To run the 6502 Klaus test suite:
+
+```bash
+KLAUS_FUNCTIONAL=1 KLAUS_INTERRUPT_SUCCESS_PC=0x06F5 go test -v -run '^Test6502'
+```
+
+Use `-tags headless` to skip GUI/audio/video backends when you only need CPU tests or do not have native dependencies installed.
+
+## 14.6 Demonstration Development
 
 When creating new demonstrations:
 

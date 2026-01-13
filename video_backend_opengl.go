@@ -1,3 +1,5 @@
+//go:build !headless
+
 // video_backend_opengl.go - OpenGL video backend for IntuitionEngine
 
 /*
@@ -11,7 +13,7 @@
  ▒ ░   ░   ░ ░   ░       ░░░ ░ ░  ▒ ░  ░       ▒ ░░ ░ ░ ▒     ░   ░ ░       ░      ░   ░ ░ ░ ░   ░  ▒ ░   ░   ░ ░    ░
  ░           ░             ░      ░            ░      ░ ░           ░       ░  ░         ░       ░  ░           ░    ░  ░
 
-(c) 2024 - 2025 Zayn Otley
+(c) 2024 - 2026 Zayn Otley
 https://github.com/IntuitionAmiga/IntuitionEngine
 License: GPLv3 or later
 */

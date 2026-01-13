@@ -1,3 +1,5 @@
+//go:build !headless
+
 // gui_frontend_fltk.go - GUI frontend for Intuition Engine using FLTK
 
 /*
@@ -11,7 +13,7 @@
  ▒ ░   ░   ░ ░   ░       ░░░ ░ ░  ▒ ░  ░       ▒ ░░ ░ ░ ▒     ░   ░ ░       ░      ░   ░ ░ ░ ░   ░  ▒ ░   ░   ░ ░    ░
  ░           ░             ░      ░            ░      ░ ░           ░       ░  ░         ░       ░  ░           ░    ░  ░
 
-(c) 2024 - 2025 Zayn Otley
+(c) 2024 - 2026 Zayn Otley
 https://github.com/IntuitionAmiga/IntuitionEngine
 License: GPLv3 or later
 */
@@ -36,7 +38,7 @@ import (
 
 type FLTKFrontend struct {
 	config    GUIConfig
-	cpu       *CPU
+	cpu       EmulatorCPU
 	video     *VideoChip
 	sound     *SoundChip
 	actions   *GUIActions
@@ -44,7 +46,7 @@ type FLTKFrontend struct {
 	visible   bool
 }
 
-func NewFLTKFrontend(cpu *CPU, video *VideoChip, sound *SoundChip, psg *PSGPlayer) (GUIFrontend, error) {
+func NewFLTKFrontend(cpu EmulatorCPU, video *VideoChip, sound *SoundChip, psg *PSGPlayer) (GUIFrontend, error) {
 	return &FLTKFrontend{
 		cpu:     cpu,
 		video:   video,

@@ -1,3 +1,5 @@
+//go:build m68k
+
 package main
 
 import (

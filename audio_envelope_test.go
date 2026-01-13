@@ -1,5 +1,7 @@
 // audio_envelope_test.go - Comprehensive test suite for the envelope system
 
+//go:build audiolong
+
 /*
  ██▓ ███▄    █ ▄▄▄█████▓ █    ██  ██▓▄▄▄█████▓ ██▓ ▒█████   ███▄    █    ▓█████  ███▄    █   ▄████  ██▓ ███▄    █ ▓█████
 ▓██▒ ██ ▀█   █ ▓  ██▒ ▓▒ ██  ▓██▒▓██▒▓  ██▒ ▓▒▓██▒▒██▒  ██▒ ██ ▀█   █    ▓█   ▀  ██ ▀█   █  ██▒ ▀█▒▓██▒ ██ ▀█   █ ▓█   ▀
@@ -11,7 +13,7 @@
  ▒ ░   ░   ░ ░   ░       ░░░ ░ ░  ▒ ░  ░       ▒ ░░ ░ ░ ▒     ░   ░ ░       ░      ░   ░ ░ ░ ░   ░  ▒ ░   ░   ░ ░    ░
  ░           ░             ░      ░            ░      ░ ░           ░       ░  ░         ░       ░  ░           ░    ░  ░
 
-(c) 2024 - 2025 Zayn Otley
+(c) 2024 - 2026 Zayn Otley
 https://github.com/IntuitionAmiga/IntuitionEngine
 License: GPLv3 or later
 */

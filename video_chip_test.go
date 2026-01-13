@@ -1,5 +1,7 @@
 // video_chip_test.go - Video chip test suite/tech demos for Intuition Engine
 
+//go:build videolong
+
 /*
  ██▓ ███▄    █ ▄▄▄█████▓ █    ██  ██▓▄▄▄█████▓ ██▓ ▒█████   ███▄    █    ▓█████  ███▄    █   ▄████  ██▓ ███▄    █ ▓█████
 ▓██▒ ██ ▀█   █ ▓  ██▒ ▓▒ ██  ▓██▒▓██▒▓  ██▒ ▓▒▓██▒▒██▒  ██▒ ██ ▀█   █    ▓█   ▀  ██ ▀█   █  ██▒ ▀█▒▓██▒ ██ ▀█   █ ▓█   ▀
@@ -11,7 +13,7 @@
  ▒ ░   ░   ░ ░   ░       ░░░ ░ ░  ▒ ░  ░       ▒ ░░ ░ ░ ▒     ░   ░ ░       ░      ░   ░ ░ ░ ░   ░  ▒ ░   ░   ░ ░    ░
  ░           ░             ░      ░            ░      ░ ░           ░       ░  ░         ░       ░  ░           ░    ░  ░
 
-(c) 2024 - 2025 Zayn Otley
+(c) 2024 - 2026 Zayn Otley
 https://github.com/IntuitionAmiga/IntuitionEngine
 License: GPLv3 or later
 */

@@ -1,3 +1,5 @@
+//go:build !headless
+
 // gui_frontend_gtk4.c - GUI frontend for the Intuition Engine using GTK4
 
 /*
@@ -11,7 +13,7 @@
  ▒ ░   ░   ░ ░   ░       ░░░ ░ ░  ▒ ░  ░       ▒ ░░ ░ ░ ▒     ░   ░ ░       ░      ░   ░ ░ ░ ░   ░  ▒ ░   ░   ░ ░    ░
  ░           ░             ░      ░            ░      ░ ░           ░       ░  ░         ░       ░  ░           ░    ░  ░
 
-(c) 2024 - 2025 Zayn Otley
+(c) 2024 - 2026 Zayn Otley
 https://github.com/IntuitionAmiga/IntuitionEngine
 License: GPLv3 or later
 */
@@ -52,7 +54,9 @@ static void load_cb(GtkWidget *widget, gpointer data) {
     GtkFileDialog *dialog = gtk_file_dialog_new();
     GtkFileFilter *filter = gtk_file_filter_new();
     gtk_file_filter_add_pattern(filter, "*.iex");
-    gtk_file_filter_set_name(filter, "Intuition Engine Executables (*.iex)");
+    gtk_file_filter_add_pattern(filter, "*.ie68");
+    gtk_file_filter_add_pattern(filter, "*.ie6502");
+    gtk_file_filter_set_name(filter, "Intuition Engine Executables (*.iex, *.ie68, *.ie6502)");
 
     GListStore *filters = g_list_store_new(GTK_TYPE_FILE_FILTER);
     g_list_store_append(filters, filter);
@@ -95,7 +99,7 @@ int gtk_get_should_execute(void) {
 
 static void activate(GtkApplication *app, gpointer data) {
     window = gtk_application_window_new(app);
-    gtk_window_set_title(GTK_WINDOW(window), "Intuition Engine - (c) 2024 - 2025 Zayn Otley");
+    gtk_window_set_title(GTK_WINDOW(window), "Intuition Engine - (c) 2024 - 2026 Zayn Otley");
     gtk_window_set_default_size(GTK_WINDOW(window), 400, 100);
 
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);

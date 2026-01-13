@@ -1,3 +1,5 @@
+//go:build !headless
+
 //gui_frontend_gtk4.go - GUI frontend for the Intuition Engine using GTK4
 
 /*
@@ -11,7 +13,7 @@
  ▒ ░   ░   ░ ░   ░       ░░░ ░ ░  ▒ ░  ░       ▒ ░░ ░ ░ ▒     ░   ░ ░       ░      ░   ░ ░ ░ ░   ░  ▒ ░   ░   ░ ░    ░
  ░           ░             ░      ░            ░      ░ ░           ░       ░  ░         ░       ░  ░           ░    ░  ░
 
-(c) 2024 - 2025 Zayn Otley
+(c) 2024 - 2026 Zayn Otley
 https://github.com/IntuitionAmiga/IntuitionEngine
 License: GPLv3 or later
 */
@@ -39,7 +41,7 @@ import (
 type GTKFrontend struct {
 	config    GUIConfig
 	actions   *GUIActions
-	cpu       *CPU
+	cpu       EmulatorCPU
 	video     *VideoChip
 	sound     *SoundChip
 	lastError error
@@ -47,7 +49,7 @@ type GTKFrontend struct {
 	mutex     sync.Mutex
 }
 
-func NewGTKFrontend(cpu *CPU, video *VideoChip, sound *SoundChip, psg *PSGPlayer) (GUIFrontend, error) {
+func NewGTKFrontend(cpu EmulatorCPU, video *VideoChip, sound *SoundChip, psg *PSGPlayer) (GUIFrontend, error) {
 	frontend := &GTKFrontend{
 		actions: NewGUIActions(cpu, video, sound, psg),
 		cpu:     cpu,

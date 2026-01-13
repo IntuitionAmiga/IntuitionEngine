@@ -1,3 +1,5 @@
+//go:build !headless
+
 // video_backend_ebiten.go - Ebiten video backend for IntuitionEngine
 
 /*
@@ -11,7 +13,7 @@
  ▒ ░   ░   ░ ░   ░       ░░░ ░ ░  ▒ ░  ░       ▒ ░░ ░ ░ ▒     ░   ░ ░       ░      ░   ░ ░ ░ ░   ░  ▒ ░   ░   ░ ░    ░
  ░           ░             ░      ░            ░      ░ ░           ░       ░  ░         ░       ░  ░           ░    ░  ░
 
-(c) 2024 - 2025 Zayn Otley
+(c) 2024 - 2026 Zayn Otley
 https://github.com/IntuitionAmiga/IntuitionEngine
 License: GPLv3 or later
 */
@@ -55,7 +57,7 @@ func (eo *EbitenOutput) Start() error {
 	}
 	eo.running = true
 	ebiten.SetWindowSize(eo.width, eo.height)
-	ebiten.SetWindowTitle("Intuition Engine (c) 2024 - 2025 Zayn Otley")
+	ebiten.SetWindowTitle("Intuition Engine (c) 2024 - 2026 Zayn Otley")
 	ebiten.SetWindowResizable(false)
 	ebiten.SetRunnableOnUnfocused(true)
 	ebiten.SetVsyncEnabled(true)

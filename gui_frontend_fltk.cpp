@@ -1,3 +1,5 @@
+//go:build !headless
+
 // gui_frontend_fltk.cpp - FLTK GUI frontend for Intuition Engine
 
 /*
@@ -11,7 +13,7 @@
  ▒ ░   ░   ░ ░   ░       ░░░ ░ ░  ▒ ░  ░       ▒ ░░ ░ ░ ▒     ░   ░ ░       ░      ░   ░ ░ ░ ░   ░  ▒ ░   ░   ░ ░    ░
  ░           ░             ░      ░            ░      ░ ░           ░       ░  ░         ░       ░  ░           ░    ░  ░
 
-(c) 2024 - 2025 Zayn Otley
+(c) 2024 - 2026 Zayn Otley
 https://github.com/IntuitionAmiga/IntuitionEngine
 License: GPLv3 or later
 */
@@ -29,7 +31,7 @@ static const char* selected_file = nullptr;
 static bool should_execute = false;
 
 void load_cb(Fl_Widget*, void*) {
-    Fl_File_Chooser chooser(".", "Intuition Engine Executables (*.iex)", Fl_File_Chooser::SINGLE, "Load Program");
+    Fl_File_Chooser chooser(".", "Intuition Engine Executables (*.iex,*.ie68,*.ie6502)", Fl_File_Chooser::SINGLE, "Load Program");
     chooser.show();
     while(chooser.shown()) { Fl::wait(); }
     if(chooser.value()) {
@@ -45,7 +47,7 @@ void about_cb(Fl_Widget*, void*) {
         Fl_Text_Buffer* buff = new Fl_Text_Buffer();
         text->buffer(buff);
         buff->text("Intuition Engine\n"
-                   "(c) 2024 - 2025 Zayn Otley\n\n"
+                   "(c) 2024 - 2026 Zayn Otley\n\n"
                    "https://github.com/intuitionamiga/IntuitionEngine\n\n"
                    "A modern 32-bit reimagining of the Commodore, Atari and Sinclair 8-bit home computers.");
         about_window->end();
@@ -65,7 +67,7 @@ extern "C" {
     }
 
     void create_window() {
-        window = new Fl_Window(400, 100, "Intuition Engine - (c) 2024 - 2025 Zayn Otley");
+        window = new Fl_Window(400, 100, "Intuition Engine - (c) 2024 - 2026 Zayn Otley");
         Fl_Button* load = new Fl_Button(10, 10, 70, 25, "Load");
         load->callback(load_cb);
         new Fl_Button(90, 10, 70, 25, "Reset");

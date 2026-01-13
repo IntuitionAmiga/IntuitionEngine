@@ -11,7 +11,7 @@
  ▒ ░   ░   ░ ░   ░       ░░░ ░ ░  ▒ ░  ░       ▒ ░░ ░ ░ ▒     ░   ░ ░       ░      ░   ░ ░ ░ ░   ░  ▒ ░   ░   ░ ░    ░
  ░           ░             ░      ░            ░      ░ ░           ░       ░  ░         ░       ░  ░           ░    ░  ░
 
-(c) 2024 - 2025 Zayn Otley
+(c) 2024 - 2026 Zayn Otley
 https://github.com/IntuitionAmiga/IntuitionEngine
 License: GPLv3 or later
 */
@@ -19,14 +19,17 @@ License: GPLv3 or later
 package main
 
 import (
+	"flag"
 	"fmt"
+	"io"
 	"os"
+	"strconv"
 )
 
 func boilerPlate() {
 	fmt.Println("\n\033[38;2;255;20;147m ██▓ ███▄    █ ▄▄▄█████▓ █    ██  ██▓▄▄▄█████▓ ██▓ ▒█████   ███▄    █    ▓█████  ███▄    █   ▄████  ██▓ ███▄    █ ▓█████\033[0m\n\033[38;2;255;50;147m▓██▒ ██ ▀█   █ ▓  ██▒ ▓▒ ██  ▓██▒▓██▒▓  ██▒ ▓▒▓██▒▒██▒  ██▒ ██ ▀█   █    ▓█   ▀  ██ ▀█   █  ██▒ ▀█▒▓██▒ ██ ▀█   █ ▓█   ▀\033[0m\n\033[38;2;255;80;147m▒██▒▓██  ▀█ ██▒▒ ▓██░ ▒░▓██  ▒██░▒██▒▒ ▓██░ ▒░▒██▒▒██░  ██▒▓██  ▀█ ██▒   ▒███   ▓██  ▀█ ██▒▒██░▄▄▄░▒██▒▓██  ▀█ ██▒▒███\033[0m\n\033[38;2;255;110;147m░██░▓██▒  ▐▌██▒░ ▓██▓ ░ ▓▓█  ░██░░██░░ ▓██▓ ░ ░██░▒██   ██░▓██▒  ▐▌██▒   ▒▓█  ▄ ▓██▒  ▐▌██▒░▓█  ██▓░██░▓██▒  ▐▌██▒▒▓█  ▄\033[0m\n\033[38;2;255;140;147m░██░▒██░   ▓██░  ▒██▒ ░ ▒▒█████▓ ░██░  ▒██▒ ░ ░██░░ ████▓▒░▒██░   ▓██░   ░▒████▒▒██░   ▓██░░▒▓███▀▒░██░▒██░   ▓██░░▒████▒\033[0m\n\033[38;2;255;170;147m░▓  ░ ▒░   ▒ ▒   ▒ ░░   ░▒▓▒ ▒ ▒ ░▓    ▒ ░░   ░▓  ░ ▒░▒░▒░ ░ ▒░   ▒ ▒    ░░ ▒░ ░░ ▒░   ▒ ▒  ░▒   ▒ ░▓  ░ ▒░   ▒ ▒ ░░ ▒░ ░\033[0m\n\033[38;2;255;200;147m ▒ ░░ ░░   ░ ▒░    ░    ░░▒░ ░ ░  ▒ ░    ░     ▒ ░  ░ ▒ ▒░ ░ ░░   ░ ▒░    ░ ░  ░░ ░░   ░ ▒░  ░   ░  ▒ ░░ ░░   ░ ▒░ ░ ░  ░\033[0m\n\033[38;2;255;230;147m ▒ ░   ░   ░ ░   ░       ░░░ ░ ░  ▒ ░  ░       ▒ ░░ ░ ░ ▒     ░   ░ ░       ░      ░   ░ ░ ░ ░   ░  ▒ ░   ░   ░ ░    ░\033[0m\n\033[38;2;255;255;147m ░           ░             ░      ░            ░      ░ ░           ░       ░  ░         ░       ░  ░           ░    ░  ░\033[0m")
 	fmt.Println("\nA modern 32-bit reimagining of the Commodore, Atari and Sinclair 8-bit home computers.")
-	fmt.Println("(c) 2024 - 2025 Zayn Otley")
+	fmt.Println("(c) 2024 - 2026 Zayn Otley")
 	fmt.Println("https://github.com/IntuitionAmiga/IntuitionEngine")
 	fmt.Println("Buy me a coffee: https://ko-fi.com/intuition/tip")
 	fmt.Println("License: GPLv3 or later")
@@ -108,18 +111,63 @@ func boilerPlate() {
 func main() {
 	boilerPlate()
 
-	// Check command line arguments
-	if len(os.Args) != 3 {
-		fmt.Println("Usage: ./intuition_engine [-ie32|-m68k|-psg] filename")
+	var (
+		modeIE32  bool
+		modeM68K  bool
+		modeM6502 bool
+		modePSG   bool
+		loadAddr  string
+		entryAddr string
+	)
+
+	flagSet := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
+	flagSet.SetOutput(io.Discard)
+	flagSet.BoolVar(&modeIE32, "ie32", false, "Run IE32 CPU mode")
+	flagSet.BoolVar(&modeM68K, "m68k", false, "Run M68K CPU mode")
+	flagSet.BoolVar(&modeM6502, "m6502", false, "Run 6502 CPU mode")
+	flagSet.BoolVar(&modePSG, "psg", false, "Play PSG file")
+	flagSet.StringVar(&loadAddr, "load-addr", "0x0600", "6502 load address (hex or decimal)")
+	flagSet.StringVar(&entryAddr, "entry", "", "6502 entry address (hex or decimal)")
+
+	flagSet.Usage = func() {
+		flagSet.SetOutput(os.Stdout)
+		fmt.Println("Usage: ./intuition_engine -ie32|-m68k|-m6502|-psg [--load-addr 0x0600] [--entry 0x0600] filename")
+		flagSet.PrintDefaults()
+	}
+
+	if err := flagSet.Parse(os.Args[1:]); err != nil {
+		if err == flag.ErrHelp {
+			os.Exit(0)
+		}
+		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	cpuMode := os.Args[1]
-	filename := os.Args[2]
+	filename := flagSet.Arg(0)
 
-	// Validate mode
-	if cpuMode != "-ie32" && cpuMode != "-m68k" && cpuMode != "-psg" {
-		fmt.Println("Invalid mode. Use -ie32, -m68k, or -psg")
+	modeCount := 0
+	if modeIE32 {
+		modeCount++
+	}
+	if modeM68K {
+		modeCount++
+	}
+	if modeM6502 {
+		modeCount++
+	}
+	if modePSG {
+		modeCount++
+	}
+	if modeCount == 0 && filename == "" {
+		modeIE32 = true
+		modeCount = 1
+	}
+	if modeCount != 1 {
+		fmt.Println("Error: select exactly one mode flag: -ie32, -m68k, -m6502, or -psg")
+		os.Exit(1)
+	}
+	if filename == "" && modePSG {
+		fmt.Println("Error: PSG mode requires a filename")
 		os.Exit(1)
 	}
 
@@ -133,7 +181,11 @@ func main() {
 	psgEngine := NewPSGEngine(soundChip, SAMPLE_RATE)
 	psgPlayer := NewPSGPlayer(psgEngine)
 
-	if cpuMode == "-psg" {
+	if modePSG {
+		if filename == "" {
+			fmt.Println("Error: PSG mode requires a filename")
+			os.Exit(1)
+		}
 		if err := psgPlayer.Load(filename); err != nil {
 			fmt.Printf("Error loading PSG file: %v\n", err)
 			os.Exit(1)
@@ -183,17 +235,21 @@ func main() {
 		psgEngine.HandleRead,
 		psgEngine.HandleWrite)
 
-	// Initialize the selected CPU and load program
+	// Initialize the selected CPU and optionally load program
 	var gui GUIFrontend
+	var startExecution bool
 
-	if cpuMode == "-ie32" {
+	if modeIE32 {
 		// Initialize IE32 CPU
 		ie32CPU := NewCPU(sysBus)
 
 		// Load program
-		if err := ie32CPU.LoadProgram(filename); err != nil {
-			fmt.Printf("Error loading IE32 program: %v\n", err)
-			os.Exit(1)
+		if filename != "" {
+			if err := ie32CPU.LoadProgram(filename); err != nil {
+				fmt.Printf("Error loading IE32 program: %v\n", err)
+				os.Exit(1)
+			}
+			startExecution = true
 		}
 
 		// Initialize GUI with IE32 CPU
@@ -203,23 +259,28 @@ func main() {
 			os.Exit(1)
 		}
 
-		// Start peripherals
-		videoChip.Start()
-		soundChip.Start()
+		if startExecution {
+			// Start peripherals
+			videoChip.Start()
+			soundChip.Start()
 
-		// Start CPU execution
-		fmt.Printf("Starting IE32 CPU with program: %s\n", filename)
-		go ie32CPU.Execute()
+			// Start CPU execution
+			fmt.Printf("Starting IE32 CPU with program: %s\n", filename)
+			go ie32CPU.Execute()
+		}
 
-	} else { // cpuMode == "-m68k"
+	} else if modeM68K {
 		// Initialize M68K CPU
 		m68kCPU := NewM68KCPU(sysBus)
 		// debug defaults to false (atomic.Bool), no need to set
 
 		// Load program
-		if err := m68kCPU.LoadProgram(filename); err != nil {
-			fmt.Printf("Error loading M68K program: %v\n", err)
-			os.Exit(1)
+		if filename != "" {
+			if err := m68kCPU.LoadProgram(filename); err != nil {
+				fmt.Printf("Error loading M68K program: %v\n", err)
+				os.Exit(1)
+			}
+			startExecution = true
 		}
 		//fmt.Println("Memory after program load:")
 		//for i := 0x1000; i < 0x1020; i += 2 {
@@ -229,19 +290,67 @@ func main() {
 
 		// Initialize GUI with M68K CPU
 		// Note: The GUI might need modifications to properly support M68K CPU
-		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, nil, videoChip, soundChip, psgPlayer)
+		m68kRunner := NewM68KRunner(m68kCPU)
+		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, m68kRunner, videoChip, soundChip, psgPlayer)
 		if err != nil {
 			fmt.Printf("Failed to initialize GUI: %v\n", err)
 			os.Exit(1)
 		}
 
-		// Start peripherals
-		videoChip.Start()
-		soundChip.Start()
+		if startExecution {
+			// Start peripherals
+			videoChip.Start()
+			soundChip.Start()
 
-		// Start CPU execution
-		fmt.Printf("Starting M68K CPU with program: %s\n\n", filename)
-		go m68kCPU.ExecuteInstruction()
+			// Start CPU execution
+			fmt.Printf("Starting M68K CPU with program: %s\n\n", filename)
+			go m68kRunner.Execute()
+		}
+	} else {
+		parsedLoadAddr, err := parseUint16Flag(loadAddr)
+		if err != nil {
+			fmt.Printf("Invalid --load-addr: %v\n", err)
+			os.Exit(1)
+		}
+		var parsedEntry uint16
+		if entryAddr != "" {
+			parsedEntry, err = parseUint16Flag(entryAddr)
+			if err != nil {
+				fmt.Printf("Invalid --entry: %v\n", err)
+				os.Exit(1)
+			}
+		}
+
+		// Initialize 6502 CPU
+		cpu6502 := NewCPU6502Runner(sysBus, CPU6502Config{
+			LoadAddr: parsedLoadAddr,
+			Entry:    parsedEntry,
+		})
+
+		// Load program
+		if filename != "" {
+			if err := cpu6502.LoadProgram(filename); err != nil {
+				fmt.Printf("Error loading 6502 program: %v\n", err)
+				os.Exit(1)
+			}
+			startExecution = true
+		}
+
+		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, cpu6502, videoChip, soundChip, psgPlayer)
+		if err != nil {
+			fmt.Printf("Failed to initialize GUI: %v\n", err)
+			os.Exit(1)
+		}
+
+		if startExecution {
+			// Start peripherals
+			videoChip.Start()
+			soundChip.Start()
+
+			// Start CPU execution
+			fmt.Printf("Starting 6502 CPU with program: %s\n\n", filename)
+			go cpu6502.Execute()
+		}
 	}
 
 	// Configure and show GUI
@@ -262,4 +371,15 @@ func main() {
 	if err != nil {
 		return
 	}
+}
+
+func parseUint16Flag(value string) (uint16, error) {
+	parsed, err := strconv.ParseUint(value, 0, 16)
+	if err != nil {
+		return 0, err
+	}
+	if parsed > 0xFFFF {
+		return 0, fmt.Errorf("value out of range: 0x%X", parsed)
+	}
+	return uint16(parsed), nil
 }

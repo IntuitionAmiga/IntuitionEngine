@@ -72,9 +72,9 @@ func TestParseYMFileBasic(t *testing.T) {
 	buf := make([]byte, 4)
 	binary.BigEndian.PutUint32(buf, 1) // frames
 	data = append(data, buf...)
+	binary.BigEndian.PutUint32(buf, 0) // attrs
+	data = append(data, buf...)
 	buf2 := make([]byte, 2)
-	binary.BigEndian.PutUint16(buf2, 0) // attrs
-	data = append(data, buf2...)
 	binary.BigEndian.PutUint16(buf2, 0) // drums
 	data = append(data, buf2...)
 	binary.BigEndian.PutUint32(buf, PSG_CLOCK_ATARI_ST)

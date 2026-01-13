@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux && !headless
 
 // lhasa_linux.go - LHA decompression using system liblhasa (Linux only).
 
