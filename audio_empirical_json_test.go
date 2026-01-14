@@ -1,5 +1,7 @@
 // audio_empirical_json_test.go - JSON test framework for audio unit tests
 
+//go:build empiricaljson
+
 /*
 ██▓ ███▄    █ ▄▄▄█████▓ █    ██  ██▓▄▄▄█████▓ ██▓ ▒█████   ███▄    █    ▓█████  ███▄    █   ▄████  ██▓ ███▄    █ ▓█████
 ▓██▒ ██ ▀█   █ ▓  ██▒ ▓▒ ██  ▓██▒▓██▒▓  ██▒ ▓▒▓██▒▒██▒  ██▒ ██ ▀█   █    ▓█   ▀  ██ ▀█   █  ██▒ ▀█▒▓██▒ ██ ▀█   █ ▓█   ▀
@@ -17,8 +19,6 @@ Buy me a coffee: https://ko-fi.com/intuition/tip
 
 License: GPLv3 or later
 */
-
-//go:build empiricaljson
 
 package main
 

@@ -1153,11 +1153,15 @@ For PSG music playback:
 ./bin/IntuitionEngine -psg track.ym
 ./bin/IntuitionEngine -psg track.ay
 ./bin/IntuitionEngine -psg track.vgm
+./bin/IntuitionEngine -psg+ track.ym
 ```
 Note: `.ay` playback expects raw register frame data (player-based AY files are not supported yet).
+PSG+ enables enhanced audio processing for PSG sources (oversampling, gentle low-pass smoothing,
+subtle saturation, and a tiny room/width effect) for a richer sound while preserving pitch and timing.
 
 When running in CPU modes, PSG registers are available at `0xFC00-0xFC0D`
-for direct AY/YM register writes.
+for direct AY/YM register writes. PSG+ can be toggled via `PSG_PLUS_CTRL` at `0xFC0E`
+(`bit 0 = 1` enables PSG+), and is disabled by default.
 
 The assembler provides error messages for common issues like:
 - Undefined labels

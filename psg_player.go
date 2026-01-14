@@ -57,8 +57,8 @@ func (p *PSGPlayer) Load(path string) error {
 		p.metadata = PSGMetadata{Title: "", Author: "", System: "VGM"}
 		p.frameRate = 0
 		p.clockHz = file.ClockHz
-		p.loop = file.LoopSamples > 0
-		p.loopSample = 0
+		p.loop = file.LoopSample > 0
+		p.loopSample = file.LoopSample
 		p.engine.SetClockHz(file.ClockHz)
 		p.engine.SetEvents(file.Events, file.TotalSamples, p.loop, p.loopSample)
 		return nil

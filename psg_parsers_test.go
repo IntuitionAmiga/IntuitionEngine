@@ -40,6 +40,72 @@ func TestParseVGMFileBasic(t *testing.T) {
 	}
 }
 
+func TestParseVGMWaitsAndLoop(t *testing.T) {
+	data := make([]byte, 0x40)
+	copy(data[0:4], []byte("Vgm "))
+	binary.LittleEndian.PutUint32(data[0x34:0x38], 0)
+
+	commands := []byte{
+		0xA0, 0x00, 0x01,
+		0x61, 0x02, 0x00,
+		0xA0, 0x00, 0x02,
+		0x70, // wait 1 sample
+		0xA0, 0x00, 0x03,
+		0x66,
+	}
+	data = append(data, commands...)
+
+	loopOffset := uint32(0x40 + 6) // loop starts at second write
+	binary.LittleEndian.PutUint32(data[0x1C:0x20], loopOffset-0x1C)
+
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "test_wait.vgm")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write vgm: %v", err)
+	}
+
+	vgm, err := ParseVGMFile(path)
+	if err != nil {
+		t.Fatalf("parse vgm: %v", err)
+	}
+	if len(vgm.Events) != 3 {
+		t.Fatalf("expected 3 events, got %d", len(vgm.Events))
+	}
+	if vgm.Events[0].Sample != 0 || vgm.Events[1].Sample != 2 || vgm.Events[2].Sample != 3 {
+		t.Fatalf("unexpected event samples: %+v", vgm.Events)
+	}
+	if vgm.LoopSample != 2 {
+		t.Fatalf("expected loop sample 2, got %d", vgm.LoopSample)
+	}
+}
+
+func TestParseVGMPSGSkip(t *testing.T) {
+	data := make([]byte, 0x40)
+	copy(data[0:4], []byte("Vgm "))
+	binary.LittleEndian.PutUint32(data[0x34:0x38], 0)
+
+	commands := []byte{
+		0x50, 0xFF, // SN76489 PSG write (unsupported, should skip)
+		0xA0, 0x00, 0x01,
+		0x66,
+	}
+	data = append(data, commands...)
+
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "test_skip.vgm")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write vgm: %v", err)
+	}
+
+	vgm, err := ParseVGMFile(path)
+	if err != nil {
+		t.Fatalf("parse vgm: %v", err)
+	}
+	if len(vgm.Events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(vgm.Events))
+	}
+}
+
 func TestParseAYRawFrames(t *testing.T) {
 	frame := make([]byte, PSG_REG_COUNT)
 	frame[0] = 0xAA

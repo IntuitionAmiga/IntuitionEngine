@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 const (
 	PSG_BASE      = 0xFC00
 	PSG_END       = 0xFC0D
+	PSG_PLUS_CTRL = 0xFC0E
 	PSG_REG_COUNT = 14
 
 	PSG_CLOCK_ATARI_ST    = 2000000
@@ -38,7 +40,11 @@ type PSGEngine struct {
 	envSampleCounter float64
 	envLevel         int
 	envDirection     int
-	envHold          bool
+	envContinue      bool
+	envAlternate     bool
+	envAttack        bool
+	envHoldRequest   bool
+	envHoldActive    bool
 
 	events         []PSGEvent
 	eventIndex     int
@@ -49,6 +55,7 @@ type PSGEngine struct {
 	loopEventIndex int
 	playing        bool
 	enabled        bool
+	psgPlusEnabled bool
 
 	channelsInit bool
 }
@@ -66,6 +73,39 @@ func NewPSGEngine(sound *SoundChip, sampleRate int) *PSGEngine {
 		sound.SetSampleTicker(engine)
 	}
 	return engine
+}
+
+func (e *PSGEngine) SetPSGPlusEnabled(enabled bool) {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+	e.psgPlusEnabled = enabled
+	if e.sound != nil {
+		e.sound.SetPSGPlusEnabled(enabled)
+		e.syncToChip()
+	}
+}
+
+func (e *PSGEngine) PSGPlusEnabled() bool {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+	return e.psgPlusEnabled
+}
+
+func (e *PSGEngine) HandlePSGPlusWrite(addr uint32, value uint32) {
+	if addr != PSG_PLUS_CTRL {
+		return
+	}
+	e.SetPSGPlusEnabled(value&1 != 0)
+}
+
+func (e *PSGEngine) HandlePSGPlusRead(addr uint32) uint32 {
+	if addr != PSG_PLUS_CTRL {
+		return 0
+	}
+	if e.PSGPlusEnabled() {
+		return 1
+	}
+	return 0
 }
 
 func (e *PSGEngine) SetClockHz(clock uint32) {
@@ -223,15 +263,18 @@ func (e *PSGEngine) updateEnvPeriodSamples() {
 
 func (e *PSGEngine) resetEnvelope() {
 	shape := e.regs[13] & 0x0F
-	attack := (shape & 0x04) != 0
-	if attack {
+	e.envContinue = (shape & 0x08) != 0
+	e.envAttack = (shape & 0x04) != 0
+	e.envAlternate = (shape & 0x02) != 0
+	e.envHoldRequest = (shape & 0x01) != 0
+	e.envHoldActive = false
+	if e.envAttack {
 		e.envLevel = 0
 		e.envDirection = 1
 	} else {
 		e.envLevel = 15
 		e.envDirection = -1
 	}
-	e.envHold = false
 }
 
 func (e *PSGEngine) advanceEnvelope() {
@@ -244,7 +287,7 @@ func (e *PSGEngine) advanceEnvelope() {
 	e.envSampleCounter -= float64(steps) * e.envPeriodSamples
 
 	for i := 0; i < steps; i++ {
-		if e.envHold {
+		if e.envHoldActive {
 			break
 		}
 
@@ -257,22 +300,29 @@ func (e *PSGEngine) advanceEnvelope() {
 		}
 
 		if e.envLevel == 0 || e.envLevel == 15 {
-			shape := e.regs[13] & 0x0F
-			cont := (shape & 0x08) != 0
-			hold := (shape & 0x02) != 0
-			alt := (shape & 0x01) != 0
-
-			if !cont {
+			if !e.envContinue {
 				e.envLevel = 0
-				e.envHold = true
+				e.envHoldActive = true
 				break
 			}
-			if hold {
-				e.envHold = true
+			if e.envHoldRequest {
+				e.envHoldActive = true
+				if e.envAlternate {
+					if e.envDirection > 0 {
+						e.envLevel = 0
+					} else {
+						e.envLevel = 15
+					}
+				}
 				break
 			}
-			if alt {
+			if e.envAlternate {
 				e.envDirection = -e.envDirection
+			}
+			if e.envDirection > 0 {
+				e.envLevel = 0
+			} else {
+				e.envLevel = 15
 			}
 		}
 	}
@@ -297,7 +347,7 @@ func (e *PSGEngine) ensureChannelsInitialized() {
 	}
 
 	e.writeChannel(3, FLEX_OFF_WAVE_TYPE, WAVE_NOISE)
-	e.writeChannel(3, FLEX_OFF_NOISEMODE, NOISE_MODE_WHITE)
+	e.writeChannel(3, FLEX_OFF_NOISEMODE, NOISE_MODE_PSG)
 	e.writeChannel(3, FLEX_OFF_ATK, 0)
 	e.writeChannel(3, FLEX_OFF_DEC, 0)
 	e.writeChannel(3, FLEX_OFF_SUS, 255)
@@ -355,7 +405,7 @@ func (e *PSGEngine) applyVolumes() {
 		(mixer & 0x20) == 0,
 	}
 
-	noiseVolume := uint8(0)
+	var noiseSum float32
 	for ch := 0; ch < 3; ch++ {
 		vol := e.regs[8+ch]
 		useEnv := (vol & 0x10) != 0
@@ -367,27 +417,68 @@ func (e *PSGEngine) applyVolumes() {
 		if !toneEnable[ch] {
 			toneLevel = 0
 		}
-		e.writeChannel(ch, FLEX_OFF_VOL, uint32(toneLevel)*17)
+		toneGain := psgVolumeGain(toneLevel, e.psgPlusEnabled)
+		e.writeChannel(ch, FLEX_OFF_VOL, uint32(psgGainToDAC(toneGain)))
 
 		noiseLevel := level
 		if !noiseEnable[ch] {
 			noiseLevel = 0
 		}
-		if noiseLevel > noiseVolume {
-			noiseVolume = noiseLevel
+		if noiseLevel > 0 {
+			noiseSum += psgVolumeGain(noiseLevel, e.psgPlusEnabled)
 		}
 	}
 
-	if noiseVolume == 0 {
+	if noiseSum <= 0 {
 		e.writeChannel(3, FLEX_OFF_VOL, 0)
 		return
 	}
-	e.writeChannel(3, FLEX_OFF_VOL, uint32(noiseVolume)*17)
+	if noiseSum > 1.0 {
+		noiseSum = 1.0
+	}
+	e.writeChannel(3, FLEX_OFF_VOL, uint32(psgGainToDAC(noiseSum)))
 }
 
 func (e *PSGEngine) writeChannel(ch int, offset uint32, value uint32) {
 	base := FLEX_CH_BASE + uint32(ch)*FLEX_CH_STRIDE
 	e.sound.HandleRegisterWrite(base+offset, value)
+}
+
+var psgPlusMixGain = [3]float32{1.05, 1.0, 0.95}
+
+var psgPlusVolumeCurve = func() [16]float32 {
+	var curve [16]float32
+	curve[0] = 0
+	for i := 1; i < len(curve); i++ {
+		db := float64(i-15) * 2.0
+		curve[i] = float32(math.Pow(10.0, db/20.0))
+	}
+	curve[15] = 1.0
+	return curve
+}()
+
+func psgVolumeGain(level uint8, psgPlus bool) float32 {
+	if level > 15 {
+		level = 15
+	}
+	if psgPlus {
+		return psgPlusVolumeCurve[level]
+	}
+	return float32(level) / 15.0
+}
+
+func psgGainToDAC(gain float32) uint8 {
+	if gain <= 0 {
+		return 0
+	}
+	if gain >= 1.0 {
+		return 255
+	}
+	return uint8(math.Round(float64(gain * 255.0)))
+}
+
+func psgVolumeToDAC(level uint8, psgPlus bool) uint8 {
+	return psgGainToDAC(psgVolumeGain(level, psgPlus))
 }
 
 type PSGMetadata struct {

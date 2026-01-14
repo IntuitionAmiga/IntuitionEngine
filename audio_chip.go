@@ -172,6 +172,7 @@ const (
 	NOISE_MODE_WHITE    = 0 // Default (existing LFSR)
 	NOISE_MODE_PERIODIC = 1 // Periodic/loop
 	NOISE_MODE_METALLIC = 2 // "Metal" noise
+	NOISE_MODE_PSG      = 3 // AY/YM PSG-style LFSR
 )
 
 // Sync source registers
@@ -449,6 +450,12 @@ const (
 )
 const NOISE_LFSR_BITS = 23 // Noise LFSR bit width
 
+const (
+	PSG_NOISE_LFSR_BITS = 17
+	PSG_NOISE_LFSR_MASK = (1 << PSG_NOISE_LFSR_BITS) - 1
+	PSG_NOISE_LFSR_SEED = PSG_NOISE_LFSR_MASK
+)
+
 // ------------------------------------------------------------------------------
 // Wave Types
 // ------------------------------------------------------------------------------
@@ -488,7 +495,7 @@ const TWO_PI_OVER_SR = TWO_PI / SAMPLE_RATE         // Pre-computed for efficien
 // ------------------------------------------------------------------------------
 const (
 	NUM_ENVELOPE_SHAPES = 4
-	NUM_NOISE_MODES     = 3
+	NUM_NOISE_MODES     = 4
 	NUM_FILTER_TYPES    = 4
 	NUM_MOD_SOURCES     = NUM_CHANNELS
 	NUM_ALLPASS_FILTERS = 2
@@ -515,6 +522,12 @@ const (
 	DEFAULT_FILTER_HP  = 0.0
 	DEFAULT_SUSTAIN    = 1.0
 	DEFAULT_DECAY_TIME = 0
+
+	PSG_PLUS_OVERSAMPLE    = 4
+	PSG_PLUS_LOWPASS_ALPHA = 0.12
+	PSG_PLUS_DRIVE         = 0.18
+	PSG_PLUS_ROOM_MIX      = 0.08
+	PSG_PLUS_ROOM_DELAY    = 128
 )
 
 type Channel struct {
@@ -543,17 +556,21 @@ type Channel struct {
 	mutex sync.RWMutex
 	// Hot fields accessed every sample generation (cache line 1)
 	// These fields are read/written on each output sample
-	frequency        float32 // Base frequency of oscillator
-	phase            float32 // Current phase position in waveform
-	volume           float32 // Channel volume (0.0-1.0)
-	envelopeLevel    float32 // Current envelope amplitude
-	prevRawSample    float32 // Previous output (needed for ring modulation)
-	dutyCycle        float32 // Square wave duty cycle (0.0-1.0)
-	noisePhase       float32 // Phase accumulator for noise timing
-	noiseValue       float32 // Current noise generator output
-	noiseFilter      float32 // Noise filter coefficient
-	noiseFilterState float32 // Noise filter state variable
-	noiseSR          uint32  // Noise shift register state
+	frequency           float32 // Base frequency of oscillator
+	phase               float32 // Current phase position in waveform
+	volume              float32 // Channel volume (0.0-1.0)
+	envelopeLevel       float32 // Current envelope amplitude
+	prevRawSample       float32 // Previous output (needed for ring modulation)
+	dutyCycle           float32 // Square wave duty cycle (0.0-1.0)
+	noisePhase          float32 // Phase accumulator for noise timing
+	noiseValue          float32 // Current noise generator output
+	noiseFilter         float32 // Noise filter coefficient
+	noiseFilterState    float32 // Noise filter state variable
+	noiseSR             uint32  // Noise shift register state
+	psgPlusLowpassState float32 // PSG+ low-pass filter state
+	psgPlusDrive        float32 // PSG+ saturation drive
+	psgPlusRoomMix      float32 // PSG+ room mix
+	psgPlusGain         float32 // PSG+ per-channel gain
 
 	// Envelope and modulation parameters (cache line 2)
 	// Accessed during envelope and modulation updates
@@ -564,21 +581,25 @@ type Channel struct {
 
 	// Integer state fields (cache line 3)
 	// Configuration and timing parameters
-	waveType       int  // Oscillator type (WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE, WAVE_NOISE)
-	noiseMode      int  // Noise generation mode
-	attackTime     int  // Attack time in samples
-	decayTime      int  // Decay time in samples
-	releaseTime    int  // Release time in samples
-	envelopeSample int  // Current position in envelope
-	envelopePhase  int  // Current envelope stage (attack/decay/etc)
-	envelopeShape  int  // Envelope shape selection
-	sweepPeriod    int  // Sweep update period
-	sweepCounter   int  // Current sweep timing counter
-	sweepShift     uint // Sweep shift amount
+	waveType          int  // Oscillator type (WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE, WAVE_NOISE)
+	noiseMode         int  // Noise generation mode
+	attackTime        int  // Attack time in samples
+	decayTime         int  // Decay time in samples
+	releaseTime       int  // Release time in samples
+	envelopeSample    int  // Current position in envelope
+	envelopePhase     int  // Current envelope stage (attack/decay/etc)
+	envelopeShape     int  // Envelope shape selection
+	sweepPeriod       int  // Sweep update period
+	sweepCounter      int  // Current sweep timing counter
+	sweepShift        uint // Sweep shift amount
+	psgPlusOversample int  // PSG+ oversample factor
+	psgPlusRoomDelay  int  // PSG+ room delay length (samples)
+	psgPlusRoomPos    int  // PSG+ room delay index
 
 	// Pointer fields (cache line 4)
-	ringModSource *Channel // Source channel for ring modulation
-	syncSource    *Channel // Source channel for hard sync
+	ringModSource  *Channel  // Source channel for ring modulation
+	syncSource     *Channel  // Source channel for hard sync
+	psgPlusRoomBuf []float32 // PSG+ room delay buffer
 
 	// Boolean state flags (packed together to minimise padding)
 	enabled        bool                   // Channel enabled flag
@@ -587,6 +608,7 @@ type Channel struct {
 	sweepDirection bool                   // Sweep direction (up/down)
 	pwmEnabled     bool                   // PWM enabled flag
 	phaseWrapped   bool                   // Phase wrap indicator
+	psgPlusEnabled bool                   // PSG+ processing flag
 	_pad           [CHANNEL_PAD_SIZE]byte // Padding for alignment
 	sampleCount    int                    // Track number of samples generated
 
@@ -660,16 +682,18 @@ func NewSoundChip(backend int) (*SoundChip, error) {
 	waveTypes := []int{WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE, WAVE_NOISE}
 	for i := 0; i < NUM_CHANNELS; i++ {
 		chip.channels[i] = &Channel{
-			waveType:      waveTypes[i],
-			attackTime:    DEFAULT_ATTACK_TIME,
-			decayTime:     DEFAULT_DECAY_TIME,
-			sustainLevel:  DEFAULT_SUSTAIN,
-			releaseTime:   DEFAULT_RELEASE_TIME,
-			envelopePhase: ENV_ATTACK,
-			noiseSR:       NOISE_LFSR_SEED, // Initial seed for noise
-			dutyCycle:     DEFAULT_DUTY_CYCLE,
-			phase:         MIN_PHASE,
-			volume:        MIN_VOLUME,
+			waveType:          waveTypes[i],
+			attackTime:        DEFAULT_ATTACK_TIME,
+			decayTime:         DEFAULT_DECAY_TIME,
+			sustainLevel:      DEFAULT_SUSTAIN,
+			releaseTime:       DEFAULT_RELEASE_TIME,
+			envelopePhase:     ENV_ATTACK,
+			noiseSR:           NOISE_LFSR_SEED, // Initial seed for noise
+			dutyCycle:         DEFAULT_DUTY_CYCLE,
+			phase:             MIN_PHASE,
+			volume:            MIN_VOLUME,
+			psgPlusGain:       1.0,
+			psgPlusOversample: 1,
 		}
 	}
 
@@ -867,7 +891,7 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 		ch.releaseTime = max(int(value*MS_TO_SAMPLES), MIN_ENV_TIME)
 	case NOISE_MODE:
 		ch.waveType = WAVE_NOISE
-		ch.noiseMode = int(value % NUM_NOISE_MODES) // 0=white, 1=periodic, 2=metallic
+		ch.noiseMode = int(value % NUM_NOISE_MODES) // 0=white, 1=periodic, 2=metallic, 3=psg
 	//case ENV_SHAPE:
 	//	ch.envelopeShape = int(value % NUM_ENVELOPE_SHAPES) // 0=ADSR, 1=SawUp, 2=SawDown, 3=Loop
 	//	// Reset envelope state
@@ -1073,6 +1097,110 @@ func (ch *Channel) updateEnvelope() {
 	}
 }
 
+func (ch *Channel) generateWaveSample(sampleRate float32) float32 {
+	var rawSample float32
+	phaseInc := TWO_PI * float32(ch.frequency) / sampleRate
+
+	switch ch.waveType {
+	case WAVE_SQUARE:
+		currentDuty := ch.dutyCycle
+		if ch.pwmEnabled {
+			ch.pwmPhase += ch.pwmRate * (TWO_PI / sampleRate)
+			ch.pwmPhase = float32(math.Mod(float64(ch.pwmPhase+ch.pwmRate*(TWO_PI/sampleRate)), TWO_PI))
+			normalisedPhase := ch.pwmPhase / TWO_PI
+			lfo := float32(math.Abs(float64(normalisedPhase*NORMALISE_SCALE-NORMALISE_OFFSET)))*NORMALISE_SCALE - NORMALISE_OFFSET
+			currentDuty = ch.dutyCycle + lfo*ch.pwmDepth
+			if currentDuty < 0 {
+				currentDuty = 0
+			} else if currentDuty > 1 {
+				currentDuty = 1
+			}
+		}
+		normalizedPhase := ch.phase / TWO_PI
+		dt := float64(ch.frequency) / float64(sampleRate)
+
+		if normalizedPhase < currentDuty {
+			rawSample = SQUARE_AMPLITUDE
+		} else {
+			rawSample = -SQUARE_AMPLITUDE
+		}
+
+		phaseNorm64 := float64(normalizedPhase)
+		dutyNorm64 := float64(currentDuty)
+		rawSample += float32(polyBLEP(phaseNorm64, dt)) * SQUARE_AMPLITUDE
+		rawSample -= float32(polyBLEP(math.Mod(phaseNorm64-dutyNorm64+1.0, 1.0), dt)) * SQUARE_AMPLITUDE
+
+		rawSample *= SQUARE_NORM
+
+	case WAVE_TRIANGLE:
+		phaseNorm := ch.phase / TWO_PI
+		if phaseNorm < HALF_CYCLE {
+			rawSample = TRIANGLE_SLOPE*phaseNorm - TRIANGLE_PHASE_SUBTRACT
+		} else {
+			rawSample = (TRIANGLE_SLOPE - TRIANGLE_PHASE_SUBTRACT) - TRIANGLE_SLOPE*phaseNorm
+		}
+		rawSample *= TRIANGLE_NORM
+
+	case WAVE_SINE:
+		rawSample = float32(math.Sin(float64(ch.phase)))
+		rawSample *= SINE_NORM
+
+	case WAVE_NOISE:
+		noisePhaseInc := ch.frequency / sampleRate
+		ch.noisePhase += noisePhaseInc
+		steps := int(ch.noisePhase)
+		ch.noisePhase -= float32(steps)
+
+		for i := 0; i < steps; i++ {
+			switch ch.noiseMode {
+			case NOISE_MODE_WHITE:
+				newBit := ((ch.noiseSR >> NOISE_TAP1) ^ (ch.noiseSR >> NOISE_TAP2)) & 1
+				ch.noiseSR = ((ch.noiseSR << LSB_MASK) | newBit) & NOISE_LFSR_MASK
+			case NOISE_MODE_PERIODIC:
+				ch.noiseSR = ((ch.noiseSR >> LSB_MASK) | ((ch.noiseSR & 1) << (NOISE_LFSR_BITS - 1))) & NOISE_LFSR_MASK
+			case NOISE_MODE_METALLIC:
+				newBit := ((ch.noiseSR >> METAL_TAP1) ^ (ch.noiseSR >> METAL_TAP2)) & 1
+				ch.noiseSR = ((ch.noiseSR << LSB_MASK) | newBit) & NOISE_LFSR_MASK
+			case NOISE_MODE_PSG:
+				newBit := ((ch.noiseSR >> 0) ^ (ch.noiseSR >> 3)) & 1
+				ch.noiseSR = ((ch.noiseSR << LSB_MASK) | newBit) & PSG_NOISE_LFSR_MASK
+			}
+		}
+
+		ch.noiseValue = float32(ch.noiseSR&LSB_MASK)*NOISE_BIT_SCALE - NOISE_BIAS
+		ch.noiseFilterState = NOISE_FILTER_OLD*ch.noiseFilterState + NOISE_FILTER_NEW*ch.noiseValue
+		rawSample = ch.noiseFilterState
+		rawSample *= NOISE_NORM
+
+	case WAVE_SAWTOOTH:
+		phaseNorm := float64(ch.phase / TWO_PI)
+		dt := float64(ch.frequency) / float64(sampleRate)
+		rawSample = float32(2.0*phaseNorm - 1.0)
+		rawSample -= float32(polyBLEP(phaseNorm, dt))
+	}
+
+	if ch.ringModSource != nil {
+		rawSample *= ch.ringModSource.prevRawSample
+	}
+	ch.prevRawSample = rawSample
+
+	if ch.waveType != WAVE_NOISE {
+		ch.phase += phaseInc
+		if ch.phase >= TWO_PI {
+			ch.phase -= TWO_PI
+			ch.phaseWrapped = true
+		} else {
+			ch.phaseWrapped = false
+		}
+	}
+
+	if ch.syncSource != nil && ch.syncSource.phaseWrapped && ch.waveType != WAVE_NOISE {
+		ch.phase = 0
+	}
+
+	return rawSample
+}
+
 func (ch *Channel) generateSample() float32 {
 	// ------------------------------------------------------------------------------
 	// generateSample computes and returns the next output sample for this channel.
@@ -1095,6 +1223,10 @@ func (ch *Channel) generateSample() float32 {
 	}
 
 	ch.updateEnvelope()
+
+	ch.mutex.Lock()
+	envLevel := ch.envelopeLevel
+	ch.mutex.Unlock()
 
 	// Frequency sweep logic
 	if ch.sweepEnabled && ch.waveType != WAVE_NOISE {
@@ -1142,125 +1274,34 @@ func (ch *Channel) generateSample() float32 {
 		}
 	}
 
-	var rawSample float32
-	phaseInc := TWO_PI * float32(ch.frequency) / float32(SAMPLE_RATE)
-
-	switch ch.waveType {
-	case WAVE_SQUARE:
-		// Determine the effective duty cycle (in the [0,1] range), applying PWM if enabled.
-		currentDuty := ch.dutyCycle
-		if ch.pwmEnabled {
-			ch.pwmPhase += ch.pwmRate * (TWO_PI / SAMPLE_RATE)
-			ch.pwmPhase = float32(math.Mod(float64(ch.pwmPhase+ch.pwmRate*(TWO_PI/SAMPLE_RATE)), TWO_PI))
-			normalisedPhase := ch.pwmPhase / TWO_PI // yields a [0,1] value
-			lfo := float32(math.Abs(float64(normalisedPhase*NORMALISE_SCALE-NORMALISE_OFFSET)))*NORMALISE_SCALE - NORMALISE_OFFSET
-			currentDuty = ch.dutyCycle + lfo*ch.pwmDepth
-			if currentDuty < 0 {
-				currentDuty = 0
-			} else if currentDuty > 1 {
-				currentDuty = 1
-			}
+	if ch.psgPlusEnabled && ch.psgPlusOversample > 1 {
+		oversample := ch.psgPlusOversample
+		sampleRate := float32(SAMPLE_RATE) * float32(oversample)
+		var sum float32
+		for i := 0; i < oversample; i++ {
+			sum += ch.generateWaveSample(sampleRate)
 		}
-		// Convert the current phase (which is in radians, [0, TWO_PI]) into a normalized value [0,1]
-		normalizedPhase := ch.phase / TWO_PI
-		dt := float64(ch.frequency) / float64(SAMPLE_RATE)
-
-		// Use the normalized phase for the duty cycle comparison.
-		if normalizedPhase < currentDuty {
-			rawSample = SQUARE_AMPLITUDE
-		} else {
-			rawSample = -SQUARE_AMPLITUDE
+		rawSample := sum / float32(oversample)
+		alpha := float32(PSG_PLUS_LOWPASS_ALPHA)
+		if alpha > 0 {
+			ch.psgPlusLowpassState = ch.psgPlusLowpassState*(1-alpha) + rawSample*alpha
+			rawSample = ch.psgPlusLowpassState
 		}
-
-		// Apply polyBLEP anti-aliasing at both edges for cleaner high-frequency output
-		phaseNorm64 := float64(normalizedPhase)
-		dutyNorm64 := float64(currentDuty)
-		// Correction at rising edge (phase = 0)
-		rawSample += float32(polyBLEP(phaseNorm64, dt)) * SQUARE_AMPLITUDE
-		// Correction at falling edge (phase = duty cycle)
-		rawSample -= float32(polyBLEP(math.Mod(phaseNorm64-dutyNorm64+1.0, 1.0), dt)) * SQUARE_AMPLITUDE
-
-		rawSample *= SQUARE_NORM // Normalise amplitude
-
-	case WAVE_TRIANGLE:
-		phaseNorm := ch.phase / TWO_PI
-		if phaseNorm < HALF_CYCLE {
-			rawSample = TRIANGLE_SLOPE*phaseNorm - TRIANGLE_PHASE_SUBTRACT
-		} else {
-			rawSample = (TRIANGLE_SLOPE - TRIANGLE_PHASE_SUBTRACT) - TRIANGLE_SLOPE*phaseNorm
+		if ch.psgPlusRoomMix > 0 && len(ch.psgPlusRoomBuf) > 0 {
+			delayed := ch.psgPlusRoomBuf[ch.psgPlusRoomPos]
+			ch.psgPlusRoomBuf[ch.psgPlusRoomPos] = rawSample
+			ch.psgPlusRoomPos = (ch.psgPlusRoomPos + 1) % len(ch.psgPlusRoomBuf)
+			rawSample = rawSample*(1-ch.psgPlusRoomMix) + delayed*ch.psgPlusRoomMix
 		}
-		rawSample *= TRIANGLE_NORM // Normalise amplitude
-
-	case WAVE_SINE:
-		rawSample = float32(math.Sin(float64(ch.phase)))
-		rawSample *= SINE_NORM // Normalise amplitude
-	case WAVE_NOISE:
-		noisePhaseInc := ch.frequency / SAMPLE_RATE
-		ch.noisePhase += noisePhaseInc
-		steps := int(ch.noisePhase)
-		ch.noisePhase -= float32(steps)
-
-		// Process multiple LFSR steps if needed (for high frequencies)
-		for i := 0; i < steps; i++ {
-			switch ch.noiseMode {
-			case NOISE_MODE_WHITE:
-				// Using taps 23,18 for maximal-length sequence (period: 2^23-1)
-				newBit := ((ch.noiseSR >> NOISE_TAP1) ^ (ch.noiseSR >> NOISE_TAP2)) & 1
-				ch.noiseSR = ((ch.noiseSR << LSB_MASK) | newBit) & NOISE_LFSR_MASK
-			case NOISE_MODE_PERIODIC:
-				// Simple bit rotation for repeating patterns
-				ch.noiseSR = ((ch.noiseSR >> LSB_MASK) | ((ch.noiseSR & 1) << (NOISE_LFSR_BITS - 1))) & NOISE_LFSR_MASK
-			case NOISE_MODE_METALLIC:
-				// XOR taps 23,15 for metallic tone with longer period
-				newBit := ((ch.noiseSR >> METAL_TAP1) ^ (ch.noiseSR >> METAL_TAP2)) & 1
-				ch.noiseSR = ((ch.noiseSR << LSB_MASK) | newBit) & NOISE_LFSR_MASK
-			}
+		scaledSample := rawSample * ch.volume * envLevel * ch.psgPlusGain
+		if ch.psgPlusDrive > 0 {
+			gain := 1.0 + ch.psgPlusDrive
+			scaledSample = float32(math.Tanh(float64(scaledSample * gain)))
 		}
-
-		ch.noiseValue = float32(ch.noiseSR&LSB_MASK)*NOISE_BIT_SCALE - NOISE_BIAS
-		ch.noiseFilterState = NOISE_FILTER_OLD*ch.noiseFilterState + NOISE_FILTER_NEW*ch.noiseValue
-		rawSample = ch.noiseFilterState
-		rawSample *= NOISE_NORM // Normalise amplitude
-
-	case WAVE_SAWTOOTH:
-		// Sawtooth wave: ramps from -1 to +1, then resets
-		// Apply polyBLEP anti-aliasing for cleaner high-frequency output
-		phaseNorm := float64(ch.phase / TWO_PI)
-		dt := float64(ch.frequency) / float64(SAMPLE_RATE)
-
-		// Basic sawtooth: 2*phase - 1 gives range [-1, +1]
-		rawSample = float32(2.0*phaseNorm - 1.0)
-
-		// Apply polyBLEP correction at the discontinuity (phase reset)
-		rawSample -= float32(polyBLEP(phaseNorm, dt))
+		return clampF32(scaledSample, MIN_SAMPLE, MAX_SAMPLE)
 	}
 
-	// Ring modulation
-	if ch.ringModSource != nil {
-		rawSample *= ch.ringModSource.prevRawSample
-	}
-	ch.prevRawSample = rawSample
-
-	// Phase update (skip for noise)
-	if ch.waveType != 3 {
-		ch.phase += phaseInc
-		if ch.phase >= TWO_PI {
-			ch.phase -= TWO_PI
-			ch.phaseWrapped = true
-		} else {
-			ch.phaseWrapped = false
-		}
-	}
-
-	// Oscillator sync
-	if ch.syncSource != nil && ch.syncSource.phaseWrapped && ch.waveType != 3 {
-		ch.phase = 0
-	}
-
-	//scaledSample := rawSample * ch.volume * ch.envelopeLevel
-	ch.mutex.Lock()
-	envLevel := ch.envelopeLevel
-	ch.mutex.Unlock()
+	rawSample := ch.generateWaveSample(float32(SAMPLE_RATE))
 	scaledSample := rawSample * ch.volume * envLevel
 
 	//if ch.waveType == WAVE_SINE {
@@ -1502,6 +1543,48 @@ func (chip *SoundChip) ReadSample() float32 {
 
 func (chip *SoundChip) SetSampleTicker(ticker SampleTicker) {
 	chip.sampleTicker.Store(&sampleTickerHolder{ticker: ticker})
+}
+
+func (chip *SoundChip) SetPSGPlusEnabled(enabled bool) {
+	chip.mutex.Lock()
+	defer chip.mutex.Unlock()
+
+	for i := 0; i < NUM_CHANNELS; i++ {
+		ch := chip.channels[i]
+		if ch == nil {
+			continue
+		}
+		ch.psgPlusEnabled = enabled
+		if enabled {
+			ch.psgPlusOversample = PSG_PLUS_OVERSAMPLE
+			ch.psgPlusLowpassState = 0
+			ch.psgPlusDrive = PSG_PLUS_DRIVE
+			ch.psgPlusRoomMix = PSG_PLUS_ROOM_MIX
+			ch.psgPlusRoomDelay = PSG_PLUS_ROOM_DELAY
+			ch.psgPlusRoomPos = 0
+			if ch.psgPlusRoomBuf == nil || len(ch.psgPlusRoomBuf) != PSG_PLUS_ROOM_DELAY {
+				ch.psgPlusRoomBuf = make([]float32, PSG_PLUS_ROOM_DELAY)
+			} else {
+				for i := range ch.psgPlusRoomBuf {
+					ch.psgPlusRoomBuf[i] = 0
+				}
+			}
+			if i < 3 {
+				ch.psgPlusGain = psgPlusMixGain[i]
+			} else {
+				ch.psgPlusGain = 1.0
+			}
+		} else {
+			ch.psgPlusOversample = 1
+			ch.psgPlusLowpassState = 0
+			ch.psgPlusDrive = 0
+			ch.psgPlusRoomMix = 0
+			ch.psgPlusRoomDelay = 0
+			ch.psgPlusRoomPos = 0
+			ch.psgPlusRoomBuf = nil
+			ch.psgPlusGain = 1.0
+		}
+	}
 }
 
 func (chip *SoundChip) Start() {

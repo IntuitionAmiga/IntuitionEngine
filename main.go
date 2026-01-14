@@ -116,6 +116,7 @@ func main() {
 		modeM68K  bool
 		modeM6502 bool
 		modePSG   bool
+		psgPlus   bool
 		loadAddr  string
 		entryAddr string
 	)
@@ -126,12 +127,13 @@ func main() {
 	flagSet.BoolVar(&modeM68K, "m68k", false, "Run M68K CPU mode")
 	flagSet.BoolVar(&modeM6502, "m6502", false, "Run 6502 CPU mode")
 	flagSet.BoolVar(&modePSG, "psg", false, "Play PSG file")
+	flagSet.BoolVar(&psgPlus, "psg+", false, "Enable PSG+ enhancements")
 	flagSet.StringVar(&loadAddr, "load-addr", "0x0600", "6502 load address (hex or decimal)")
 	flagSet.StringVar(&entryAddr, "entry", "", "6502 entry address (hex or decimal)")
 
 	flagSet.Usage = func() {
 		flagSet.SetOutput(os.Stdout)
-		fmt.Println("Usage: ./intuition_engine -ie32|-m68k|-m6502|-psg [--load-addr 0x0600] [--entry 0x0600] filename")
+		fmt.Println("Usage: ./intuition_engine -ie32|-m68k|-m6502|-psg|-psg+ [--load-addr 0x0600] [--entry 0x0600] filename")
 		flagSet.PrintDefaults()
 	}
 
@@ -144,6 +146,10 @@ func main() {
 	}
 
 	filename := flagSet.Arg(0)
+
+	if psgPlus && !modePSG {
+		modePSG = true
+	}
 
 	modeCount := 0
 	if modeIE32 {
@@ -163,7 +169,7 @@ func main() {
 		modeCount = 1
 	}
 	if modeCount != 1 {
-		fmt.Println("Error: select exactly one mode flag: -ie32, -m68k, -m6502, or -psg")
+		fmt.Println("Error: select exactly one mode flag: -ie32, -m68k, -m6502, -psg, or -psg+")
 		os.Exit(1)
 	}
 	if filename == "" && modePSG {
@@ -180,6 +186,9 @@ func main() {
 
 	psgEngine := NewPSGEngine(soundChip, SAMPLE_RATE)
 	psgPlayer := NewPSGPlayer(psgEngine)
+	if psgPlus {
+		psgEngine.SetPSGPlusEnabled(true)
+	}
 
 	if modePSG {
 		if filename == "" {
@@ -234,6 +243,9 @@ func main() {
 	sysBus.MapIO(PSG_BASE, PSG_END,
 		psgEngine.HandleRead,
 		psgEngine.HandleWrite)
+	sysBus.MapIO(PSG_PLUS_CTRL, PSG_PLUS_CTRL,
+		psgEngine.HandlePSGPlusRead,
+		psgEngine.HandlePSGPlusWrite)
 
 	// Initialize the selected CPU and optionally load program
 	var gui GUIFrontend

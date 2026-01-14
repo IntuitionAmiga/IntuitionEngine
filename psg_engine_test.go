@@ -46,6 +46,46 @@ func TestPSGEngineEventsApply(t *testing.T) {
 	}
 }
 
+func TestPSGFrameTimingFractional(t *testing.T) {
+	engine, _ := newTestPSGEngine(100)
+	player := NewPSGPlayer(engine)
+
+	frames := [][]uint8{
+		make([]uint8, PSG_REG_COUNT),
+		make([]uint8, PSG_REG_COUNT),
+		make([]uint8, PSG_REG_COUNT),
+		make([]uint8, PSG_REG_COUNT),
+	}
+	if err := player.loadFrames(frames, 60, PSG_CLOCK_ATARI_ST, 0); err != nil {
+		t.Fatalf("loadFrames failed: %v", err)
+	}
+
+	if len(engine.events) < PSG_REG_COUNT*len(frames) {
+		t.Fatalf("expected %d events, got %d", PSG_REG_COUNT*len(frames), len(engine.events))
+	}
+
+	wantSamples := []uint64{0, 1, 3, 5}
+	for i, want := range wantSamples {
+		ev := engine.events[i*PSG_REG_COUNT]
+		if ev.Sample != want {
+			t.Fatalf("frame %d sample = %d, want %d", i, ev.Sample, want)
+		}
+	}
+}
+
+func TestPSGEventOrderingSameSample(t *testing.T) {
+	engine := NewPSGEngine(nil, SAMPLE_RATE)
+	engine.SetEvents([]PSGEvent{
+		{Sample: 0, Reg: 8, Value: 0x01},
+		{Sample: 0, Reg: 8, Value: 0x02},
+	}, 1, false, 0)
+
+	engine.TickSample()
+	if engine.regs[8] != 0x02 {
+		t.Fatalf("expected last write to win, got 0x%02X", engine.regs[8])
+	}
+}
+
 func TestIsPSGExtension(t *testing.T) {
 	cases := map[string]bool{
 		"track.ym":  true,

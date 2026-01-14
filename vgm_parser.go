@@ -16,6 +16,7 @@ type VGMFile struct {
 	ClockHz      uint32
 	TotalSamples uint64
 	LoopSamples  uint64
+	LoopSample   uint64
 }
 
 func ParseVGMFile(path string) (*VGMFile, error) {
@@ -35,6 +36,7 @@ func ParseVGMFile(path string) (*VGMFile, error) {
 
 	totalSamples := binary.LittleEndian.Uint32(data[0x18:0x1C])
 	loopSamples := binary.LittleEndian.Uint32(data[0x20:0x24])
+	loopOffset := binary.LittleEndian.Uint32(data[0x1C:0x20])
 
 	dataOffset := binary.LittleEndian.Uint32(data[0x34:0x38])
 	dataStart := uint32(0x40)
@@ -52,8 +54,16 @@ func ParseVGMFile(path string) (*VGMFile, error) {
 
 	events := make([]PSGEvent, 0, 1024)
 	samplePos := uint64(0)
+	loopSample := uint64(0)
+	loopStart := uint32(0)
+	if loopOffset != 0 {
+		loopStart = 0x1C + loopOffset
+	}
 
 	for i := int(dataStart); i < len(data); {
+		if loopStart != 0 && loopSample == 0 && uint32(i) == loopStart {
+			loopSample = samplePos
+		}
 		cmd := data[i]
 		switch {
 		case cmd == 0x66:
@@ -75,6 +85,12 @@ func ParseVGMFile(path string) (*VGMFile, error) {
 			wait := binary.LittleEndian.Uint16(data[i+1 : i+3])
 			samplePos += uint64(wait)
 			i += 3
+			continue
+		case cmd == 0x50:
+			if i+1 >= len(data) {
+				return nil, fmt.Errorf("vgm truncated psg write")
+			}
+			i += 2
 			continue
 		case cmd == 0x62:
 			samplePos += 735
@@ -110,12 +126,16 @@ func ParseVGMFile(path string) (*VGMFile, error) {
 		}
 		totalSamples = uint32(last)
 	}
+	if loopSample == 0 && loopSamples > 0 && uint64(totalSamples) >= uint64(loopSamples) {
+		loopSample = uint64(totalSamples) - uint64(loopSamples)
+	}
 
 	return &VGMFile{
 		Events:       events,
 		ClockHz:      clockHz,
 		TotalSamples: uint64(totalSamples),
 		LoopSamples:  uint64(loopSamples),
+		LoopSample:   loopSample,
 	}, nil
 }
 
