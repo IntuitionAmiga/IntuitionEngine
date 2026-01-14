@@ -122,6 +122,7 @@ The system consists of five main subsystems that work together:
     - Double-buffered framebuffer
     - 32x32 pixel dirty rectangle tracking
     - 32-bit RGBA colour depth
+    - Copper list executor for mid-frame register updates
     - Ebiten primary backend
     - OpenGL backend in development
 
@@ -147,7 +148,7 @@ The system's memory is organised as follows:
 0x000000 - 0x000FFF: System vectors (including interrupt vector)
 0x001000 - 0x001FFF: Program start
 0x100000 - 0x4FFFFF: Video RAM (VRAM_START to VRAM_START + VRAM_SIZE)
-0x00F000 - 0x00F008: Video registers
+0x00F000 - 0x00F018: Video registers (incl. copper control)
 0x00F800 - 0x00F808: Timer registers
 0x00F900 - 0x00FA54: Sound registers
 ```
@@ -180,16 +181,37 @@ Programs begin loading at 0x1000, providing:
 
 ## Hardware Registers (0xF000 - 0xF9FF)
 
-### Video Registers (0xF000 - 0xF008)
+### Video Registers (0xF000 - 0xF018)
 ```
 0xF000: VIDEO_CTRL   - Video system control (0 = disabled, 1 = enabled)
 0xF004: VIDEO_MODE   - Display mode selection
 0xF008: VIDEO_STATUS - Current video status (read-only)
+0xF00C: COPPER_CTRL  - Copper control (bit0=enable, bit1=reset/rewind)
+0xF010: COPPER_PTR   - Copper list base address (32-bit)
+0xF014: COPPER_PC    - Copper program counter (read-only)
+0xF018: COPPER_STATUS- Copper status (bit0=running, bit1=waiting, bit2=halted)
 
 Available Video Modes:
 MODE_640x480  = 0x00
 MODE_800x600  = 0x01
 MODE_1024x768 = 0x02
+```
+
+Copper lists are stored as little-endian 32-bit words in RAM. The list format is:
+- `WAIT`: `(0<<30) | (y<<12) | x` (wait until raster Y/X reached)
+- `MOVE`: `(1<<30) | (regIndex<<20)` followed by a 32-bit value word
+- `END`: `(3<<30)`
+
+`regIndex` is `(register_address - VIDEO_REG_BASE) / 4`.
+`COPPER_PTR` is latched on enable/reset; 8-bit CPUs should write bytes to `COPPER_PTR+0..3`.
+
+Example (mid-frame mode switch):
+```assembly
+; Copper list in RAM
+    .long (0 << 30) | (100 << 12) | 0          ; WAIT y=100, x=0
+    .long (1 << 30) | (1 << 20)                ; MOVE VIDEO_MODE (index 1)
+    .long 0x01                                 ; MODE_800x600
+    .long (3 << 30)                            ; END
 ```
 
 ### Timer Registers (0xF800 - 0xF808)
@@ -1058,6 +1080,21 @@ cpu.AttachDirectVRAM(vramBuffer, VRAM_START, VRAM_START+uint32(len(vramBuffer)))
 cpu.DetachDirectVRAM()
 videoChip.DisableDirectMode()
 ```
+
+## 9.6 Copper List Executor
+
+The video subsystem includes a simple copper-like list executor for mid-frame register updates. Copper lists are stored in RAM as little-endian 32-bit words and can WAIT on raster positions, MOVE values into video registers, and END the list. The copper restarts each frame while enabled.
+
+Registers:
+- `COPPER_CTRL` (0xF00C): bit0=enable, bit1=reset/rewind
+- `COPPER_PTR`  (0xF010): list base address (latched on enable/reset)
+- `COPPER_PC`   (0xF014): current list address (read-only)
+- `COPPER_STATUS` (0xF018): bit0=running, bit1=waiting, bit2=halted
+
+List words:
+- `WAIT`: `(0<<30) | (y<<12) | x`
+- `MOVE`: `(1<<30) | (regIndex<<20)` followed by a 32-bit value
+- `END`: `(3<<30)`
 
 ### When to Use
 

@@ -239,6 +239,7 @@ func main() {
 		fmt.Printf("Failed to initialize video: %v\n", err)
 		os.Exit(1)
 	}
+	videoChip.AttachBus(sysBus)
 
 	// Setup terminal output
 	termOut := NewTerminalOutput()
@@ -413,6 +414,31 @@ func main() {
 			LoadAddr: parsedLoadAddr,
 			Entry:    parsedEntry,
 		})
+
+		// Load program
+		if filename != "" {
+			if err := cpu6502.LoadProgram(filename); err != nil {
+				fmt.Printf("Error loading 6502 program: %v\n", err)
+				os.Exit(1)
+			}
+			startExecution = true
+		}
+
+		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, cpu6502, videoChip, soundChip, psgPlayer)
+		if err != nil {
+			fmt.Printf("Failed to initialize GUI: %v\n", err)
+			os.Exit(1)
+		}
+
+		if startExecution {
+			// Start peripherals
+			videoChip.Start()
+			soundChip.Start()
+
+			// Start CPU execution
+			fmt.Printf("Starting 6502 CPU with program: %s\n\n", filename)
+			go cpu6502.Execute()
+		}
 	}
 
 	// Configure and show GUI

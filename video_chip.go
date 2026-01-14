@@ -65,17 +65,50 @@ const (
 
 	VIDEO_REG_BASE = 0xF000 // Base address for memory-mapped registers
 	// Register offsets for control, mode, and status
-	VIDEO_REG_OFFSET_CTRL   = 0x000
-	VIDEO_REG_OFFSET_MODE   = 0x004
-	VIDEO_REG_OFFSET_STATUS = 0x008
-	VIDEO_CTRL              = VIDEO_REG_BASE + VIDEO_REG_OFFSET_CTRL
-	VIDEO_MODE              = VIDEO_REG_BASE + VIDEO_REG_OFFSET_MODE
-	VIDEO_STATUS            = VIDEO_REG_BASE + VIDEO_REG_OFFSET_STATUS
+	VIDEO_REG_OFFSET_CTRL          = 0x000
+	VIDEO_REG_OFFSET_MODE          = 0x004
+	VIDEO_REG_OFFSET_STATUS        = 0x008
+	VIDEO_REG_OFFSET_COPPER_CTRL   = 0x00C
+	VIDEO_REG_OFFSET_COPPER_PTR    = 0x010
+	VIDEO_REG_OFFSET_COPPER_PC     = 0x014
+	VIDEO_REG_OFFSET_COPPER_STATUS = 0x018
+	VIDEO_CTRL                     = VIDEO_REG_BASE + VIDEO_REG_OFFSET_CTRL
+	VIDEO_MODE                     = VIDEO_REG_BASE + VIDEO_REG_OFFSET_MODE
+	VIDEO_STATUS                   = VIDEO_REG_BASE + VIDEO_REG_OFFSET_STATUS
+	COPPER_CTRL                    = VIDEO_REG_BASE + VIDEO_REG_OFFSET_COPPER_CTRL
+	COPPER_PTR                     = VIDEO_REG_BASE + VIDEO_REG_OFFSET_COPPER_PTR
+	COPPER_PC                      = VIDEO_REG_BASE + VIDEO_REG_OFFSET_COPPER_PC
+	COPPER_STATUS                  = VIDEO_REG_BASE + VIDEO_REG_OFFSET_COPPER_STATUS
 
 	VRAM_START_MB = 1 // VRAM starts at 1MB offset
 	VRAM_SIZE_MB  = 4 // 4MB of video memory
 	VRAM_START    = VRAM_START_MB * BYTES_PER_MB
 	VRAM_SIZE     = VRAM_SIZE_MB * BYTES_PER_MB
+)
+
+const (
+	copperCtrlEnable = 1 << 0
+	copperCtrlReset  = 1 << 1
+)
+
+const (
+	copperStatusRunning = 1 << 0
+	copperStatusWaiting = 1 << 1
+	copperStatusHalted  = 1 << 2
+)
+
+const (
+	copperOpcodeWait = 0
+	copperOpcodeMove = 1
+	copperOpcodeEnd  = 3
+)
+
+const (
+	copperOpcodeShift = 30
+	copperYShift      = 12
+	copperCoordMask   = 0x0FFF
+	copperRegShift    = 20
+	copperRegMask     = 0x03FF
 )
 
 // ------------------------------------------------------------------------------
@@ -298,6 +331,19 @@ type VideoChip struct {
 	backBuffer   []byte // 24 bytes
 	splashBuffer []byte // 24 bytes
 	prevVRAM     []byte // 24 bytes
+
+	// Copper state
+	bus             MemoryBus
+	copperEnabled   bool
+	copperPtrStaged uint32
+	copperPtr       uint32
+	copperPC        uint32
+	copperWaiting   bool
+	copperHalted    bool
+	copperWaitX     uint16
+	copperWaitY     uint16
+	copperRasterX   uint16
+	copperRasterY   uint16
 }
 
 // VideoMode defines resolution and buffer parameters for a display mode
@@ -426,6 +472,12 @@ func NewVideoChip(backend int) (*VideoChip, error) {
 	go chip.refreshLoop()
 
 	return chip, nil
+}
+
+func (chip *VideoChip) AttachBus(bus MemoryBus) {
+	chip.mutex.Lock()
+	defer chip.mutex.Unlock()
+	chip.bus = bus
 }
 
 func (chip *VideoChip) scaleImageToMode(imgData []byte, srcWidth, srcHeight int, mode VideoMode) []byte {
@@ -711,13 +763,14 @@ func (chip *VideoChip) refreshLoop() {
 				continue
 			}
 
+			chip.mutex.Lock()
+			mode := VideoModes[chip.currentMode]
+			chip.advanceCopperFrameLocked(mode)
+
 			// Lock-free check: skip mutex if no dirty tiles
 			hasDirty := chip.hasDirtyTiles()
-
-			chip.mutex.Lock()
 			if chip.hasContent.Load() {
 				if hasDirty {
-					mode := VideoModes[chip.currentMode]
 					tileW := int(chip.tileWidth)
 					tileH := int(chip.tileHeight)
 
@@ -785,6 +838,112 @@ func (chip *VideoChip) refreshLoop() {
 	}
 }
 
+func (chip *VideoChip) advanceCopperFrameLocked(mode VideoMode) {
+	if !chip.copperEnabled || chip.bus == nil {
+		return
+	}
+
+	chip.copperStartFrameLocked()
+
+	for y := 0; y < mode.height; y++ {
+		chip.copperAdvanceRasterLocked(y, 0)
+		if chip.copperHalted {
+			return
+		}
+		if chip.copperWaiting && chip.copperWaitY == uint16(y) && chip.copperWaitX < uint16(mode.width) {
+			chip.copperAdvanceRasterLocked(y, int(chip.copperWaitX))
+			if chip.copperHalted {
+				return
+			}
+		}
+	}
+}
+
+func (chip *VideoChip) copperStartFrameLocked() {
+	chip.copperPC = chip.copperPtr
+	chip.copperWaiting = false
+	chip.copperHalted = false
+	chip.copperRasterX = 0
+	chip.copperRasterY = 0
+}
+
+func (chip *VideoChip) copperAdvanceRasterLocked(y, x int) {
+	if chip.copperHalted {
+		return
+	}
+
+	chip.copperRasterY = uint16(y)
+	chip.copperRasterX = uint16(x)
+
+	if chip.copperWaiting {
+		if !chip.copperWaitSatisfied() {
+			return
+		}
+		chip.copperWaiting = false
+	}
+
+	chip.copperRunLocked()
+}
+
+func (chip *VideoChip) copperWaitSatisfied() bool {
+	if chip.copperRasterY > chip.copperWaitY {
+		return true
+	}
+	if chip.copperRasterY < chip.copperWaitY {
+		return false
+	}
+	return chip.copperRasterX >= chip.copperWaitX
+}
+
+func (chip *VideoChip) copperRunLocked() {
+	const maxOps = 0x10000
+	ops := 0
+
+	for !chip.copperWaiting && !chip.copperHalted && ops < maxOps {
+		ops++
+		word := chip.bus.Read32(chip.copperPC)
+		opcode := word >> copperOpcodeShift
+
+		switch opcode {
+		case copperOpcodeWait:
+			waitY := uint16((word >> copperYShift) & copperCoordMask)
+			waitX := uint16(word & copperCoordMask)
+			chip.copperPC += 4
+			chip.copperWaitY = waitY
+			chip.copperWaitX = waitX
+			if chip.copperWaitSatisfied() {
+				continue
+			}
+			chip.copperWaiting = true
+			return
+		case copperOpcodeMove:
+			regIndex := (word >> copperRegShift) & copperRegMask
+			value := chip.bus.Read32(chip.copperPC + 4)
+			chip.copperPC += 8
+			regAddr := VIDEO_REG_BASE + (regIndex * 4)
+			chip.handleWriteLocked(regAddr, value)
+		case copperOpcodeEnd:
+			chip.copperPC += 4
+			chip.copperHalted = true
+		default:
+			chip.copperHalted = true
+		}
+	}
+}
+
+func (chip *VideoChip) RunCopperFrameForTest() {
+	chip.mutex.Lock()
+	defer chip.mutex.Unlock()
+	mode := VideoModes[chip.currentMode]
+	chip.advanceCopperFrameLocked(mode)
+}
+
+func (chip *VideoChip) StepCopperRasterForTest(y, x int) {
+	chip.mutex.Lock()
+	defer chip.mutex.Unlock()
+	chip.copperAdvanceRasterLocked(y, x)
+}
+
 func (chip *VideoChip) HandleRead(addr uint32) uint32 {
 	/*
 		HandleRead processes a read request from the memory-mapped register interface.
@@ -810,6 +969,22 @@ func (chip *VideoChip) HandleRead(addr uint32) uint32 {
 		return chip.currentMode
 	case VIDEO_STATUS:
 		return btou32(chip.hasContent.Load())
+	case COPPER_PC:
+		return chip.copperPC
+	case COPPER_STATUS:
+		return chip.copperStatusLocked()
+	case COPPER_PC + 1:
+		return readUint32Byte(chip.copperPC, 1)
+	case COPPER_PC + 2:
+		return readUint32Byte(chip.copperPC, 2)
+	case COPPER_PC + 3:
+		return readUint32Byte(chip.copperPC, 3)
+	case COPPER_STATUS + 1:
+		return readUint32Byte(chip.copperStatusLocked(), 1)
+	case COPPER_STATUS + 2:
+		return readUint32Byte(chip.copperStatusLocked(), 2)
+	case COPPER_STATUS + 3:
+		return readUint32Byte(chip.copperStatusLocked(), 3)
 	default:
 		if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
 			offset := addr - ADDR_OFFSET
@@ -820,6 +995,20 @@ func (chip *VideoChip) HandleRead(addr uint32) uint32 {
 		}
 	}
 	return DEFAULT_RETURN
+}
+
+func (chip *VideoChip) copperStatusLocked() uint32 {
+	status := uint32(0)
+	if chip.copperEnabled && !chip.copperHalted {
+		status |= copperStatusRunning
+	}
+	if chip.copperWaiting {
+		status |= copperStatusWaiting
+	}
+	if chip.copperHalted {
+		status |= copperStatusHalted
+	}
+	return status
 }
 
 func (chip *VideoChip) HandleWrite(addr uint32, value uint32) {
@@ -838,7 +1027,10 @@ func (chip *VideoChip) HandleWrite(addr uint32, value uint32) {
 
 	chip.mutex.Lock()
 	defer chip.mutex.Unlock()
+	chip.handleWriteLocked(addr, value)
+}
 
+func (chip *VideoChip) handleWriteLocked(addr uint32, value uint32) {
 	switch addr {
 	case VIDEO_CTRL:
 		wasEnabled := chip.enabled.Load()
@@ -852,16 +1044,13 @@ func (chip *VideoChip) HandleWrite(addr uint32, value uint32) {
 				PixelFormat: PixelFormatRGBA,
 				VSync:       VSYNC_ON,
 			}
-			err := chip.output.SetDisplayConfig(config)
-			if err != nil {
+			if err := chip.output.SetDisplayConfig(config); err != nil {
 				return
 			}
-			err = chip.output.Start()
-			if err != nil {
+			if err := chip.output.Start(); err != nil {
 				return
 			}
 		}
-
 	case VIDEO_MODE:
 		if mode, ok := VideoModes[value]; ok {
 			chip.currentMode = value
@@ -876,12 +1065,38 @@ func (chip *VideoChip) HandleWrite(addr uint32, value uint32) {
 				PixelFormat: PixelFormatRGBA,
 				VSync:       VSYNC_ON,
 			}
-			err := chip.output.SetDisplayConfig(config)
-			if err != nil {
+			if err := chip.output.SetDisplayConfig(config); err != nil {
 				return
 			}
 			chip.initialiseDirtyGrid(mode)
 		}
+	case COPPER_CTRL:
+		prevEnabled := chip.copperEnabled
+		enable := value&copperCtrlEnable != 0
+		reset := value&copperCtrlReset != 0
+		if reset || (enable && !prevEnabled) {
+			chip.copperPtr = chip.copperPtrStaged
+			chip.copperPC = chip.copperPtr
+			chip.copperWaiting = false
+			chip.copperHalted = false
+		}
+		chip.copperEnabled = enable
+		if !enable {
+			chip.copperWaiting = false
+		}
+	case COPPER_PTR:
+		chip.copperPtrStaged = value
+	case COPPER_PTR + 1:
+		chip.copperPtrStaged = writeUint32Byte(chip.copperPtrStaged, value, 1)
+	case COPPER_PTR + 2:
+		if value > 0xFF {
+			chip.copperPtrStaged = writeUint32Byte(chip.copperPtrStaged, value, 2)
+			chip.copperPtrStaged = writeUint32Byte(chip.copperPtrStaged, value>>8, 3)
+		} else {
+			chip.copperPtrStaged = writeUint32Byte(chip.copperPtrStaged, value, 2)
+		}
+	case COPPER_PTR + 3:
+		chip.copperPtrStaged = writeUint32Byte(chip.copperPtrStaged, value, 3)
 	default:
 		if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
 			offset := addr - BUFFER_OFFSET
@@ -961,6 +1176,17 @@ func GetSplashImageData() ([]byte, error) {
 		   error  - An error if the file cannot be read.
 	*/
 	return splashData.ReadFile("splash.png")
+}
+
+func writeUint32Byte(current uint32, value uint32, byteIndex uint32) uint32 {
+	shift := byteIndex * 8
+	mask := uint32(0xFF) << shift
+	return (current & ^mask) | ((value & 0xFF) << shift)
+}
+
+func readUint32Byte(value uint32, byteIndex uint32) uint32 {
+	shift := byteIndex * 8
+	return (value >> shift) & 0xFF
 }
 
 func makeRegionKey(x, y int) int {
