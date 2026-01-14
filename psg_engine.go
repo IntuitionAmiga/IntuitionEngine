@@ -10,24 +10,6 @@ import (
 	"sync"
 )
 
-const (
-	PSG_BASE      = 0xFC00
-	PSG_END       = 0xFC0D
-	PSG_PLUS_CTRL = 0xFC0E
-	PSG_REG_COUNT = 14
-
-	PSG_CLOCK_ATARI_ST    = 2000000
-	PSG_CLOCK_ZX_SPECTRUM = 1773400
-	PSG_CLOCK_CPC         = 1000000
-	PSG_CLOCK_MSX         = 1789773
-)
-
-type PSGEvent struct {
-	Sample uint64
-	Reg    uint8
-	Value  uint8
-}
-
 type PSGEngine struct {
 	mutex      sync.Mutex
 	sound      *SoundChip
@@ -479,12 +461,6 @@ func psgGainToDAC(gain float32) uint8 {
 
 func psgVolumeToDAC(level uint8, psgPlus bool) uint8 {
 	return psgGainToDAC(psgVolumeGain(level, psgPlus))
-}
-
-type PSGMetadata struct {
-	Title  string
-	Author string
-	System string
 }
 
 func isPSGExtension(path string) bool {

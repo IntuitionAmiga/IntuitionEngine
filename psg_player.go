@@ -38,6 +38,27 @@ func (p *PSGPlayer) Load(path string) error {
 		p.clockHz = file.ClockHz
 		return p.loadFrames(file.Frames, file.FrameRate, file.ClockHz, file.LoopFrame)
 	case ".ay":
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if isZXAYEMUL(data) {
+			if p.engine == nil {
+				return fmt.Errorf("psg engine not configured")
+			}
+			meta, events, total, clockHz, frameRate, loop, loopSample, err := renderAYZ80(data, p.engine.sampleRate)
+			if err != nil {
+				return err
+			}
+			p.metadata = meta
+			p.frameRate = frameRate
+			p.clockHz = clockHz
+			p.loop = loop
+			p.loopSample = loopSample
+			p.engine.SetClockHz(clockHz)
+			p.engine.SetEvents(events, total, loop, loopSample)
+			return nil
+		}
 		file, err := ParseAYFile(path)
 		if err != nil {
 			return err
