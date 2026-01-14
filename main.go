@@ -233,6 +233,7 @@ func main() {
 
 	// Create system bus
 	sysBus := NewSystemBus()
+	psgPlayer.AttachBus(sysBus)
 
 	videoChip, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
 	if err != nil {
@@ -268,6 +269,9 @@ func main() {
 	sysBus.MapIO(PSG_PLUS_CTRL, PSG_PLUS_CTRL,
 		psgEngine.HandlePSGPlusRead,
 		psgEngine.HandlePSGPlusWrite)
+	sysBus.MapIO(PSG_PLAY_PTR, PSG_PLAY_STATUS+3,
+		psgPlayer.HandlePlayRead,
+		psgPlayer.HandlePlayWrite)
 
 	// Initialize the selected CPU and optionally load program
 	var gui GUIFrontend

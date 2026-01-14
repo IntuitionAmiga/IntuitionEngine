@@ -196,6 +196,36 @@ func (a *Assembler) handleDirective(line string, lineNum int) error {
 		a.data = append(a.data, byte(value))
 		a.dataOffset++
 
+	case ".incbin":
+		path := strings.Trim(parts[1], "\"")
+		payload, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("incbin read failed: %s", path)
+		}
+		offset := uint64(0)
+		length := uint64(len(payload))
+		if len(parts) >= 3 {
+			offset, err = strconv.ParseUint(parts[2], 0, 32)
+			if err != nil {
+				return fmt.Errorf("invalid incbin offset: %s", parts[2])
+			}
+			if offset > uint64(len(payload)) {
+				return fmt.Errorf("incbin offset out of range: %d", offset)
+			}
+			length = uint64(len(payload)) - offset
+		}
+		if len(parts) >= 4 {
+			length, err = strconv.ParseUint(parts[3], 0, 32)
+			if err != nil {
+				return fmt.Errorf("invalid incbin length: %s", parts[3])
+			}
+		}
+		if offset+length > uint64(len(payload)) {
+			return fmt.Errorf("incbin range out of bounds: %d..%d", offset, offset+length)
+		}
+		a.data = append(a.data, payload[offset:offset+length]...)
+		a.dataOffset += uint32(length)
+
 	case ".space":
 		size, err := strconv.ParseUint(parts[1], 0, 32)
 		if err != nil {

@@ -22,6 +22,10 @@ func ParseAYFile(path string) (*AYFile, error) {
 		return nil, err
 	}
 
+	return ParseAYData(data)
+}
+
+func ParseAYData(data []byte) (*AYFile, error) {
 	if bytes.HasPrefix(data, []byte("ZXAYEMUL")) {
 		return nil, fmt.Errorf("ay file uses Z80 player code; raw frames required")
 	}

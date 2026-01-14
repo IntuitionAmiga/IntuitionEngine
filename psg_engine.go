@@ -183,6 +183,12 @@ func (e *PSGEngine) SetPlaying(playing bool) {
 	}
 }
 
+func (e *PSGEngine) IsPlaying() bool {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+	return e.playing
+}
+
 func (e *PSGEngine) StopPlayback() {
 	e.mutex.Lock()
 	defer e.mutex.Unlock()

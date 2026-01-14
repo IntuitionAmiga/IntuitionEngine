@@ -24,6 +24,24 @@ func ParseVGMFile(path string) (*VGMFile, error) {
 	if err != nil {
 		return nil, err
 	}
+	return ParseVGMData(data)
+}
+
+func ParseVGMData(data []byte) (*VGMFile, error) {
+	if len(data) < 2 {
+		return nil, fmt.Errorf("vgm too short")
+	}
+	if data[0] == 0x1F && data[1] == 0x8B {
+		gz, err := gzip.NewReader(bytes.NewReader(data))
+		if err != nil {
+			return nil, err
+		}
+		defer gz.Close()
+		data, err = io.ReadAll(gz)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if len(data) < 0x40 {
 		return nil, fmt.Errorf("vgm too short")
 	}

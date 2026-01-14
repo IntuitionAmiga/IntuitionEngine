@@ -1262,6 +1262,12 @@ When running in CPU modes, PSG registers are available at `0xFC00-0xFC0D`
 for direct AY/YM register writes. PSG+ can be toggled via `PSG_PLUS_CTRL` at `0xFC0E`
 (`bit 0 = 1` enables PSG+), and is disabled by default.
 
+To start AY/YM/VGM playback from CPU code, use the PSG playback control registers:
+- `PSG_PLAY_PTR` (`0xFC10`): pointer to PSG data in RAM (binary blob)
+- `PSG_PLAY_LEN` (`0xFC14`): length in bytes
+- `PSG_PLAY_CTRL` (`0xFC18`): bit0=start, bit1=stop
+- `PSG_PLAY_STATUS` (`0xFC1C`): bit0=busy, bit1=error
+
 The assembler provides error messages for common issues like:
 - Undefined labels
 - Invalid addressing modes
