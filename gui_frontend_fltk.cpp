@@ -31,7 +31,7 @@ static const char* selected_file = nullptr;
 static bool should_execute = false;
 
 void load_cb(Fl_Widget*, void*) {
-    Fl_File_Chooser chooser(".", "Intuition Engine Executables (*.iex,*.ie68,*.ie6502)", Fl_File_Chooser::SINGLE, "Load Program");
+    Fl_File_Chooser chooser(".", "Intuition Engine Executables (*.iex,*.ie68,*.ie6502,*.ie80)", Fl_File_Chooser::SINGLE, "Load Program");
     chooser.show();
     while(chooser.shown()) { Fl::wait(); }
     if(chooser.value()) {

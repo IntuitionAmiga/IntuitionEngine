@@ -24,6 +24,7 @@
 3. Memory Map & Hardware Registers
 4. CPU Architecture (IE32)
 5. MOS 6502 CPU
+5.8 Zilog Z80 CPU
 6. Motorola 68020 CPU with FPU
 7. Assembly Language Reference
 8. Sound System
@@ -44,6 +45,7 @@ This virtual machine implements a complete computer system with a custom CPU arc
 - **IE32**: 32-bit RISC-like CPU architecture with 16 general-purpose registers
 - **Motorola 68020**: Full 32-bit CISC emulation with 95%+ instruction coverage
 - **MOS 6502 (NMOS)**: 8-bit CPU emulator for raw binaries (no 65C02 opcodes)
+- **Zilog Z80**: 8-bit CPU core for raw binaries
 - **68881/68882 FPU**: Complete floating-point coprocessor with transcendental functions
 
 ### Core Features:
@@ -564,6 +566,19 @@ Supported addressing modes match the NMOS 6502 set used by common assemblers:
 ## 5.7 Compatibility Notes
 - The core targets NMOS 6502 behavior and is cycle-accurate; 65C02 opcodes are not supported.
 - Decimal mode is implemented; use Klaus tests to validate D-flag behavior.
+
+# 5.8 Zilog Z80 CPU
+
+The Intuition Engine also includes a Z80 core for running raw 8-bit binaries. It shares the same memory map and device registers as the other CPU modes.
+
+## 5.8.1 Loading and Entry
+- Use `-z80` to run a raw Z80 binary.
+- `--load-addr` sets the load address (default `0x0000`).
+- `--entry` sets the entry address (defaults to the load address).
+
+## 5.8.2 Memory and I/O Integration
+- The Z80 uses the shared system bus and all memory-mapped devices (video, audio, PSG, terminal).
+- Z80 `IN/OUT` ports map to the same 16-bit address space as the memory-mapped registers.
 
 # 6. Motorola 68020 CPU with FPU
 
@@ -1141,6 +1156,11 @@ For M68K programs:
 ./bin/IntuitionEngine -m68k program.ie68
 ```
 
+For Z80 programs:
+```bash
+./bin/IntuitionEngine -z80 program.ie80
+```
+
 For 6502 programs:
 ```bash
 ./bin/IntuitionEngine -m6502 program.bin
@@ -1153,9 +1173,10 @@ For PSG music playback:
 ./bin/IntuitionEngine -psg track.ym
 ./bin/IntuitionEngine -psg track.ay
 ./bin/IntuitionEngine -psg track.vgm
+./bin/IntuitionEngine -psg track.vgz
 ./bin/IntuitionEngine -psg+ track.ym
 ```
-Note: `.ay` playback expects raw register frame data (player-based AY files are not supported yet).
+Note: `.ym` files are Atari ST YM, `.vgm/.vgz` are VGM streams (including MSX PSG logs), and `.ay` ZXAYEMUL files with embedded Z80 players are supported (Spectrum/CPC/MSX), along with raw AY register streams.
 PSG+ enables enhanced audio processing for PSG sources (oversampling, gentle low-pass smoothing,
 subtle saturation, and a tiny room/width effect) for a richer sound while preserving pitch and timing.
 

@@ -26,6 +26,21 @@ import (
 	"strconv"
 )
 
+type optionalStringFlag struct {
+	value string
+	set   bool
+}
+
+func (f *optionalStringFlag) String() string {
+	return f.value
+}
+
+func (f *optionalStringFlag) Set(value string) error {
+	f.value = value
+	f.set = true
+	return nil
+}
+
 func boilerPlate() {
 	fmt.Println("\n\033[38;2;255;20;147m ██▓ ███▄    █ ▄▄▄█████▓ █    ██  ██▓▄▄▄█████▓ ██▓ ▒█████   ███▄    █    ▓█████  ███▄    █   ▄████  ██▓ ███▄    █ ▓█████\033[0m\n\033[38;2;255;50;147m▓██▒ ██ ▀█   █ ▓  ██▒ ▓▒ ██  ▓██▒▓██▒▓  ██▒ ▓▒▓██▒▒██▒  ██▒ ██ ▀█   █    ▓█   ▀  ██ ▀█   █  ██▒ ▀█▒▓██▒ ██ ▀█   █ ▓█   ▀\033[0m\n\033[38;2;255;80;147m▒██▒▓██  ▀█ ██▒▒ ▓██░ ▒░▓██  ▒██░▒██▒▒ ▓██░ ▒░▒██▒▒██░  ██▒▓██  ▀█ ██▒   ▒███   ▓██  ▀█ ██▒▒██░▄▄▄░▒██▒▓██  ▀█ ██▒▒███\033[0m\n\033[38;2;255;110;147m░██░▓██▒  ▐▌██▒░ ▓██▓ ░ ▓▓█  ░██░░██░░ ▓██▓ ░ ░██░▒██   ██░▓██▒  ▐▌██▒   ▒▓█  ▄ ▓██▒  ▐▌██▒░▓█  ██▓░██░▓██▒  ▐▌██▒▒▓█  ▄\033[0m\n\033[38;2;255;140;147m░██░▒██░   ▓██░  ▒██▒ ░ ▒▒█████▓ ░██░  ▒██▒ ░ ░██░░ ████▓▒░▒██░   ▓██░   ░▒████▒▒██░   ▓██░░▒▓███▀▒░██░▒██░   ▓██░░▒████▒\033[0m\n\033[38;2;255;170;147m░▓  ░ ▒░   ▒ ▒   ▒ ░░   ░▒▓▒ ▒ ▒ ░▓    ▒ ░░   ░▓  ░ ▒░▒░▒░ ░ ▒░   ▒ ▒    ░░ ▒░ ░░ ▒░   ▒ ▒  ░▒   ▒ ░▓  ░ ▒░   ▒ ▒ ░░ ▒░ ░\033[0m\n\033[38;2;255;200;147m ▒ ░░ ░░   ░ ▒░    ░    ░░▒░ ░ ░  ▒ ░    ░     ▒ ░  ░ ▒ ▒░ ░ ░░   ░ ▒░    ░ ░  ░░ ░░   ░ ▒░  ░   ░  ▒ ░░ ░░   ░ ▒░ ░ ░  ░\033[0m\n\033[38;2;255;230;147m ▒ ░   ░   ░ ░   ░       ░░░ ░ ░  ▒ ░  ░       ▒ ░░ ░ ░ ▒     ░   ░ ░       ░      ░   ░ ░ ░ ░   ░  ▒ ░   ░   ░ ░    ░\033[0m\n\033[38;2;255;255;147m ░           ░             ░      ░            ░      ░ ░           ░       ░  ░         ░       ░  ░           ░    ░  ░\033[0m")
 	fmt.Println("\nA modern 32-bit reimagining of the Commodore, Atari and Sinclair 8-bit home computers.")
@@ -115,10 +130,11 @@ func main() {
 		modeIE32  bool
 		modeM68K  bool
 		modeM6502 bool
+		modeZ80   bool
 		modePSG   bool
 		psgPlus   bool
-		loadAddr  string
-		entryAddr string
+		loadAddr  optionalStringFlag
+		entryAddr optionalStringFlag
 	)
 
 	flagSet := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
@@ -126,14 +142,16 @@ func main() {
 	flagSet.BoolVar(&modeIE32, "ie32", false, "Run IE32 CPU mode")
 	flagSet.BoolVar(&modeM68K, "m68k", false, "Run M68K CPU mode")
 	flagSet.BoolVar(&modeM6502, "m6502", false, "Run 6502 CPU mode")
+	flagSet.BoolVar(&modeZ80, "z80", false, "Run Z80 CPU mode")
 	flagSet.BoolVar(&modePSG, "psg", false, "Play PSG file")
 	flagSet.BoolVar(&psgPlus, "psg+", false, "Enable PSG+ enhancements")
-	flagSet.StringVar(&loadAddr, "load-addr", "0x0600", "6502 load address (hex or decimal)")
-	flagSet.StringVar(&entryAddr, "entry", "", "6502 entry address (hex or decimal)")
+	loadAddr.value = "0x0600"
+	flagSet.Var(&loadAddr, "load-addr", "6502/Z80 load address (hex or decimal, defaults: 6502=0x0600, Z80=0x0000)")
+	flagSet.Var(&entryAddr, "entry", "6502/Z80 entry address (hex or decimal, defaults to load address)")
 
 	flagSet.Usage = func() {
 		flagSet.SetOutput(os.Stdout)
-		fmt.Println("Usage: ./intuition_engine -ie32|-m68k|-m6502|-psg|-psg+ [--load-addr 0x0600] [--entry 0x0600] filename")
+		fmt.Println("Usage: ./intuition_engine -ie32|-m68k|-m6502|-z80|-psg|-psg+ [--load-addr addr] [--entry addr] filename")
 		flagSet.PrintDefaults()
 	}
 
@@ -161,6 +179,9 @@ func main() {
 	if modeM6502 {
 		modeCount++
 	}
+	if modeZ80 {
+		modeCount++
+	}
 	if modePSG {
 		modeCount++
 	}
@@ -169,7 +190,7 @@ func main() {
 		modeCount = 1
 	}
 	if modeCount != 1 {
-		fmt.Println("Error: select exactly one mode flag: -ie32, -m68k, -m6502, -psg, or -psg+")
+		fmt.Println("Error: select exactly one mode flag: -ie32, -m68k, -m6502, -z80, -psg, or -psg+")
 		os.Exit(1)
 	}
 	if filename == "" && modePSG {
@@ -318,37 +339,41 @@ func main() {
 			fmt.Printf("Starting M68K CPU with program: %s\n\n", filename)
 			go m68kRunner.Execute()
 		}
-	} else {
-		parsedLoadAddr, err := parseUint16Flag(loadAddr)
-		if err != nil {
-			fmt.Printf("Invalid --load-addr: %v\n", err)
-			os.Exit(1)
+	} else if modeZ80 {
+		var parsedLoadAddr uint16
+		if loadAddr.set {
+			parsed, err := parseUint16Flag(loadAddr.value)
+			if err != nil {
+				fmt.Printf("Invalid --load-addr: %v\n", err)
+				os.Exit(1)
+			}
+			parsedLoadAddr = parsed
 		}
 		var parsedEntry uint16
-		if entryAddr != "" {
-			parsedEntry, err = parseUint16Flag(entryAddr)
+		if entryAddr.set {
+			parsed, err := parseUint16Flag(entryAddr.value)
 			if err != nil {
 				fmt.Printf("Invalid --entry: %v\n", err)
 				os.Exit(1)
 			}
+			parsedEntry = parsed
 		}
 
-		// Initialize 6502 CPU
-		cpu6502 := NewCPU6502Runner(sysBus, CPU6502Config{
+		z80CPU := NewCPUZ80Runner(sysBus, CPUZ80Config{
 			LoadAddr: parsedLoadAddr,
 			Entry:    parsedEntry,
 		})
 
 		// Load program
 		if filename != "" {
-			if err := cpu6502.LoadProgram(filename); err != nil {
-				fmt.Printf("Error loading 6502 program: %v\n", err)
+			if err := z80CPU.LoadProgram(filename); err != nil {
+				fmt.Printf("Error loading Z80 program: %v\n", err)
 				os.Exit(1)
 			}
 			startExecution = true
 		}
 
-		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, cpu6502, videoChip, soundChip, psgPlayer)
+		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, z80CPU, videoChip, soundChip, psgPlayer)
 		if err != nil {
 			fmt.Printf("Failed to initialize GUI: %v\n", err)
 			os.Exit(1)
@@ -360,9 +385,34 @@ func main() {
 			soundChip.Start()
 
 			// Start CPU execution
-			fmt.Printf("Starting 6502 CPU with program: %s\n\n", filename)
-			go cpu6502.Execute()
+			fmt.Printf("Starting Z80 CPU with program: %s\n\n", filename)
+			go z80CPU.Execute()
 		}
+	} else {
+		var parsedLoadAddr uint16
+		if loadAddr.set {
+			parsed, err := parseUint16Flag(loadAddr.value)
+			if err != nil {
+				fmt.Printf("Invalid --load-addr: %v\n", err)
+				os.Exit(1)
+			}
+			parsedLoadAddr = parsed
+		}
+		var parsedEntry uint16
+		if entryAddr.set {
+			parsed, err := parseUint16Flag(entryAddr.value)
+			if err != nil {
+				fmt.Printf("Invalid --entry: %v\n", err)
+				os.Exit(1)
+			}
+			parsedEntry = parsed
+		}
+
+		// Initialize 6502 CPU
+		cpu6502 := NewCPU6502Runner(sysBus, CPU6502Config{
+			LoadAddr: parsedLoadAddr,
+			Entry:    parsedEntry,
+		})
 	}
 
 	// Configure and show GUI
