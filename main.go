@@ -249,7 +249,7 @@ func main() {
 		nil,
 		soundChip.HandleRegisterWrite)
 
-	sysBus.MapIO(VIDEO_CTRL, VIDEO_STATUS,
+	sysBus.MapIO(VIDEO_CTRL, VIDEO_REG_END,
 		videoChip.HandleRead,
 		videoChip.HandleWrite)
 

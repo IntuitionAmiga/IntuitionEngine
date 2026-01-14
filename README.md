@@ -123,6 +123,7 @@ The system consists of five main subsystems that work together:
     - 32x32 pixel dirty rectangle tracking
     - 32-bit RGBA colour depth
     - Copper list executor for mid-frame register updates
+    - DMA blitter for copy/fill/line operations
     - Ebiten primary backend
     - OpenGL backend in development
 
@@ -148,7 +149,7 @@ The system's memory is organised as follows:
 0x000000 - 0x000FFF: System vectors (including interrupt vector)
 0x001000 - 0x001FFF: Program start
 0x100000 - 0x4FFFFF: Video RAM (VRAM_START to VRAM_START + VRAM_SIZE)
-0x00F000 - 0x00F018: Video registers (incl. copper control)
+0x00F000 - 0x00F040: Video registers (incl. copper + blitter control)
 0x00F800 - 0x00F808: Timer registers
 0x00F900 - 0x00FA54: Sound registers
 ```
@@ -181,7 +182,7 @@ Programs begin loading at 0x1000, providing:
 
 ## Hardware Registers (0xF000 - 0xF9FF)
 
-### Video Registers (0xF000 - 0xF018)
+### Video Registers (0xF000 - 0xF040)
 ```
 0xF000: VIDEO_CTRL   - Video system control (0 = disabled, 1 = enabled)
 0xF004: VIDEO_MODE   - Display mode selection
@@ -190,6 +191,16 @@ Programs begin loading at 0x1000, providing:
 0xF010: COPPER_PTR   - Copper list base address (32-bit)
 0xF014: COPPER_PC    - Copper program counter (read-only)
 0xF018: COPPER_STATUS- Copper status (bit0=running, bit1=waiting, bit2=halted)
+0xF01C: BLT_CTRL     - Blitter control (bit0=start, bit1=busy, bit2=irq enable)
+0xF020: BLT_OP       - Blitter op (copy/fill/line/masked copy)
+0xF024: BLT_SRC      - Blitter source address (32-bit)
+0xF028: BLT_DST      - Blitter dest address (32-bit)
+0xF02C: BLT_WIDTH    - Blit width (pixels)
+0xF030: BLT_HEIGHT   - Blit height (pixels)
+0xF034: BLT_SRC_STRIDE - Source stride (bytes/row)
+0xF038: BLT_DST_STRIDE - Dest stride (bytes/row)
+0xF03C: BLT_COLOR    - Fill/line color (RGBA)
+0xF040: BLT_MASK     - Mask address for masked copy (1-bit/pixel)
 
 Available Video Modes:
 MODE_640x480  = 0x00
@@ -1095,6 +1106,36 @@ List words:
 - `WAIT`: `(0<<30) | (y<<12) | x`
 - `MOVE`: `(1<<30) | (regIndex<<20)` followed by a 32-bit value
 - `END`: `(3<<30)`
+
+## 9.7 DMA Blitter
+
+The DMA blitter performs rectangle copy/fill and line drawing in the video thread. Registers are written via memory-mapped I/O, and the blitter operates on VRAM addresses (RGBA, 4 bytes/pixel).
+
+Ops (`BLT_OP`):
+- `0`: COPY
+- `1`: FILL
+- `2`: LINE (coordinates packed into `BLT_SRC`/`BLT_DST`)
+- `3`: MASKED COPY (1-bit mask, LSB-first per byte)
+
+Line coordinates:
+- `BLT_SRC`: x0 (low 16 bits), y0 (high 16 bits)
+- `BLT_DST`: x1 (low 16 bits), y1 (high 16 bits)
+
+Example (fill a 16x16 block):
+```assembly
+    LOAD A, #1              ; BLT_OP_FILL
+    STORE A, @BLT_OP
+    LOAD A, #0x100000        ; VRAM_START
+    STORE A, @BLT_DST
+    LOAD A, #16
+    STORE A, @BLT_WIDTH
+    LOAD A, #16
+    STORE A, @BLT_HEIGHT
+    LOAD A, #0xFF00FF00      ; green
+    STORE A, @BLT_COLOR
+    LOAD A, #1
+    STORE A, @BLT_CTRL       ; start
+```
 
 ### When to Use
 

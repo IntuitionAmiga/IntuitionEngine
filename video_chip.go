@@ -65,20 +65,41 @@ const (
 
 	VIDEO_REG_BASE = 0xF000 // Base address for memory-mapped registers
 	// Register offsets for control, mode, and status
-	VIDEO_REG_OFFSET_CTRL          = 0x000
-	VIDEO_REG_OFFSET_MODE          = 0x004
-	VIDEO_REG_OFFSET_STATUS        = 0x008
-	VIDEO_REG_OFFSET_COPPER_CTRL   = 0x00C
-	VIDEO_REG_OFFSET_COPPER_PTR    = 0x010
-	VIDEO_REG_OFFSET_COPPER_PC     = 0x014
-	VIDEO_REG_OFFSET_COPPER_STATUS = 0x018
-	VIDEO_CTRL                     = VIDEO_REG_BASE + VIDEO_REG_OFFSET_CTRL
-	VIDEO_MODE                     = VIDEO_REG_BASE + VIDEO_REG_OFFSET_MODE
-	VIDEO_STATUS                   = VIDEO_REG_BASE + VIDEO_REG_OFFSET_STATUS
-	COPPER_CTRL                    = VIDEO_REG_BASE + VIDEO_REG_OFFSET_COPPER_CTRL
-	COPPER_PTR                     = VIDEO_REG_BASE + VIDEO_REG_OFFSET_COPPER_PTR
-	COPPER_PC                      = VIDEO_REG_BASE + VIDEO_REG_OFFSET_COPPER_PC
-	COPPER_STATUS                  = VIDEO_REG_BASE + VIDEO_REG_OFFSET_COPPER_STATUS
+	VIDEO_REG_OFFSET_CTRL           = 0x000
+	VIDEO_REG_OFFSET_MODE           = 0x004
+	VIDEO_REG_OFFSET_STATUS         = 0x008
+	VIDEO_REG_OFFSET_COPPER_CTRL    = 0x00C
+	VIDEO_REG_OFFSET_COPPER_PTR     = 0x010
+	VIDEO_REG_OFFSET_COPPER_PC      = 0x014
+	VIDEO_REG_OFFSET_COPPER_STATUS  = 0x018
+	VIDEO_REG_OFFSET_BLT_CTRL       = 0x01C
+	VIDEO_REG_OFFSET_BLT_OP         = 0x020
+	VIDEO_REG_OFFSET_BLT_SRC        = 0x024
+	VIDEO_REG_OFFSET_BLT_DST        = 0x028
+	VIDEO_REG_OFFSET_BLT_WIDTH      = 0x02C
+	VIDEO_REG_OFFSET_BLT_HEIGHT     = 0x030
+	VIDEO_REG_OFFSET_BLT_SRC_STRIDE = 0x034
+	VIDEO_REG_OFFSET_BLT_DST_STRIDE = 0x038
+	VIDEO_REG_OFFSET_BLT_COLOR      = 0x03C
+	VIDEO_REG_OFFSET_BLT_MASK       = 0x040
+	VIDEO_CTRL                      = VIDEO_REG_BASE + VIDEO_REG_OFFSET_CTRL
+	VIDEO_MODE                      = VIDEO_REG_BASE + VIDEO_REG_OFFSET_MODE
+	VIDEO_STATUS                    = VIDEO_REG_BASE + VIDEO_REG_OFFSET_STATUS
+	COPPER_CTRL                     = VIDEO_REG_BASE + VIDEO_REG_OFFSET_COPPER_CTRL
+	COPPER_PTR                      = VIDEO_REG_BASE + VIDEO_REG_OFFSET_COPPER_PTR
+	COPPER_PC                       = VIDEO_REG_BASE + VIDEO_REG_OFFSET_COPPER_PC
+	COPPER_STATUS                   = VIDEO_REG_BASE + VIDEO_REG_OFFSET_COPPER_STATUS
+	BLT_CTRL                        = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_CTRL
+	BLT_OP                          = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_OP
+	BLT_SRC                         = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_SRC
+	BLT_DST                         = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_DST
+	BLT_WIDTH                       = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_WIDTH
+	BLT_HEIGHT                      = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_HEIGHT
+	BLT_SRC_STRIDE                  = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_SRC_STRIDE
+	BLT_DST_STRIDE                  = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_DST_STRIDE
+	BLT_COLOR                       = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_COLOR
+	BLT_MASK                        = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_MASK
+	VIDEO_REG_END                   = BLT_MASK + 3
 
 	VRAM_START_MB = 1 // VRAM starts at 1MB offset
 	VRAM_SIZE_MB  = 4 // 4MB of video memory
@@ -109,6 +130,19 @@ const (
 	copperCoordMask   = 0x0FFF
 	copperRegShift    = 20
 	copperRegMask     = 0x03FF
+)
+
+const (
+	bltCtrlStart = 1 << 0
+	bltCtrlBusy  = 1 << 1
+	bltCtrlIRQ   = 1 << 2
+)
+
+const (
+	bltOpCopy = iota
+	bltOpFill
+	bltOpLine
+	bltOpMaskedCopy
 )
 
 // ------------------------------------------------------------------------------
@@ -344,6 +378,29 @@ type VideoChip struct {
 	copperWaitY     uint16
 	copperRasterX   uint16
 	copperRasterY   uint16
+
+	// Blitter state
+	bltIrqEnabled   bool
+	bltBusy         bool
+	bltOpStaged     uint32
+	bltSrcStaged    uint32
+	bltDstStaged    uint32
+	bltWidthStaged  uint32
+	bltHeightStaged uint32
+	bltSrcStride    uint32
+	bltDstStride    uint32
+	bltColorStaged  uint32
+	bltMaskStaged   uint32
+	bltOp           uint32
+	bltSrc          uint32
+	bltDst          uint32
+	bltWidth        uint32
+	bltHeight       uint32
+	bltSrcStrideRun uint32
+	bltDstStrideRun uint32
+	bltColor        uint32
+	bltMask         uint32
+	bltPending      bool
 }
 
 // VideoMode defines resolution and buffer parameters for a display mode
@@ -766,6 +823,7 @@ func (chip *VideoChip) refreshLoop() {
 			chip.mutex.Lock()
 			mode := VideoModes[chip.currentMode]
 			chip.advanceCopperFrameLocked(mode)
+			chip.runBlitterLocked(mode)
 
 			// Lock-free check: skip mutex if no dirty tiles
 			hasDirty := chip.hasDirtyTiles()
@@ -836,6 +894,191 @@ func (chip *VideoChip) refreshLoop() {
 			chip.mutex.Unlock()
 		}
 	}
+}
+
+func (chip *VideoChip) runBlitterLocked(mode VideoMode) {
+	if !chip.bltPending || chip.bus == nil {
+		return
+	}
+
+	chip.bltPending = false
+	chip.executeBlitterLocked(mode)
+	chip.bltBusy = false
+}
+
+func (chip *VideoChip) executeBlitterLocked(mode VideoMode) {
+	switch chip.bltOp {
+	case bltOpFill:
+		chip.blitFillLocked(mode)
+	case bltOpLine:
+		chip.blitLineLocked(mode)
+	case bltOpMaskedCopy:
+		chip.blitMaskedCopyLocked(mode)
+	default:
+		chip.blitCopyLocked(mode)
+	}
+}
+
+func (chip *VideoChip) blitFillLocked(mode VideoMode) {
+	width := int(chip.bltWidth)
+	height := int(chip.bltHeight)
+	if width <= 0 || height <= 0 {
+		return
+	}
+	stride := chip.bltDstStrideRun
+	if stride == 0 {
+		stride = uint32(width * BYTES_PER_PIXEL)
+	}
+
+	rowAddr := chip.bltDst
+	for y := 0; y < height; y++ {
+		addr := rowAddr
+		for x := 0; x < width; x++ {
+			chip.blitWritePixelLocked(addr, chip.bltColor, mode)
+			addr += BYTES_PER_PIXEL
+		}
+		rowAddr += stride
+	}
+}
+
+func (chip *VideoChip) blitCopyLocked(mode VideoMode) {
+	width := int(chip.bltWidth)
+	height := int(chip.bltHeight)
+	if width <= 0 || height <= 0 {
+		return
+	}
+	srcStride := chip.bltSrcStrideRun
+	if srcStride == 0 {
+		srcStride = uint32(width * BYTES_PER_PIXEL)
+	}
+	dstStride := chip.bltDstStrideRun
+	if dstStride == 0 {
+		dstStride = uint32(width * BYTES_PER_PIXEL)
+	}
+
+	srcRow := chip.bltSrc
+	dstRow := chip.bltDst
+	for y := 0; y < height; y++ {
+		srcAddr := srcRow
+		dstAddr := dstRow
+		for x := 0; x < width; x++ {
+			value := chip.blitReadPixelLocked(srcAddr)
+			chip.blitWritePixelLocked(dstAddr, value, mode)
+			srcAddr += BYTES_PER_PIXEL
+			dstAddr += BYTES_PER_PIXEL
+		}
+		srcRow += srcStride
+		dstRow += dstStride
+	}
+}
+
+func (chip *VideoChip) blitMaskedCopyLocked(mode VideoMode) {
+	width := int(chip.bltWidth)
+	height := int(chip.bltHeight)
+	if width <= 0 || height <= 0 {
+		return
+	}
+	srcStride := chip.bltSrcStrideRun
+	if srcStride == 0 {
+		srcStride = uint32(width * BYTES_PER_PIXEL)
+	}
+	dstStride := chip.bltDstStrideRun
+	if dstStride == 0 {
+		dstStride = uint32(width * BYTES_PER_PIXEL)
+	}
+	maskStride := uint32((width + 7) / 8)
+
+	srcRow := chip.bltSrc
+	dstRow := chip.bltDst
+	maskRow := chip.bltMask
+	for y := 0; y < height; y++ {
+		srcAddr := srcRow
+		dstAddr := dstRow
+		maskAddr := maskRow
+		for x := 0; x < width; x++ {
+			maskByte := chip.bus.Read8(maskAddr + uint32(x/8))
+			if (maskByte>>uint(x%8))&1 == 0 {
+				srcAddr += BYTES_PER_PIXEL
+				dstAddr += BYTES_PER_PIXEL
+				continue
+			}
+			value := chip.blitReadPixelLocked(srcAddr)
+			chip.blitWritePixelLocked(dstAddr, value, mode)
+			srcAddr += BYTES_PER_PIXEL
+			dstAddr += BYTES_PER_PIXEL
+		}
+		srcRow += srcStride
+		dstRow += dstStride
+		maskRow += maskStride
+	}
+}
+
+func (chip *VideoChip) blitLineLocked(mode VideoMode) {
+	x0 := int(uint16(chip.bltSrc & 0xFFFF))
+	y0 := int(uint16((chip.bltSrc >> 16) & 0xFFFF))
+	x1 := int(uint16(chip.bltDst & 0xFFFF))
+	y1 := int(uint16((chip.bltDst >> 16) & 0xFFFF))
+
+	dx := absInt(x1 - x0)
+	dy := absInt(y1 - y0)
+	sx := -1
+	if x0 < x1 {
+		sx = 1
+	}
+	sy := -1
+	if y0 < y1 {
+		sy = 1
+	}
+	err := dx - dy
+
+	for {
+		if x0 >= 0 && x0 < mode.width && y0 >= 0 && y0 < mode.height {
+			addr := VRAM_START + uint32((y0*mode.width+x0)*BYTES_PER_PIXEL)
+			chip.blitWritePixelLocked(addr, chip.bltColor, mode)
+		}
+		if x0 == x1 && y0 == y1 {
+			break
+		}
+		e2 := 2 * err
+		if e2 > -dy {
+			err -= dy
+			x0 += sx
+		}
+		if e2 < dx {
+			err += dx
+			y0 += sy
+		}
+	}
+}
+
+func (chip *VideoChip) blitReadPixelLocked(addr uint32) uint32 {
+	if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
+		offset := addr - BUFFER_OFFSET
+		if offset+BYTES_PER_PIXEL > uint32(len(chip.frontBuffer)) || offset%BYTES_PER_PIXEL != BUFFER_REMAINDER {
+			return 0
+		}
+		return binary.LittleEndian.Uint32(chip.frontBuffer[offset:])
+	}
+	return chip.bus.Read32(addr)
+}
+
+func (chip *VideoChip) blitWritePixelLocked(addr uint32, value uint32, mode VideoMode) {
+	if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
+		offset := addr - BUFFER_OFFSET
+		if offset+BYTES_PER_PIXEL > uint32(len(chip.frontBuffer)) || offset%BYTES_PER_PIXEL != BUFFER_REMAINDER {
+			return
+		}
+		binary.LittleEndian.PutUint32(chip.frontBuffer[offset:], value)
+		startPixel := offset / BYTES_PER_PIXEL
+		startX := int(startPixel) % mode.width
+		startY := int(startPixel) / mode.width
+		chip.markRegionDirty(startX, startY)
+		if !chip.resetting && !chip.hasContent.Load() {
+			chip.hasContent.Store(true)
+		}
+		return
+	}
+	chip.bus.Write32(addr, value)
 }
 
 func (chip *VideoChip) advanceCopperFrameLocked(mode VideoMode) {
@@ -944,6 +1187,13 @@ func (chip *VideoChip) StepCopperRasterForTest(y, x int) {
 	chip.copperAdvanceRasterLocked(y, x)
 }
 
+func (chip *VideoChip) RunBlitterForTest() {
+	chip.mutex.Lock()
+	defer chip.mutex.Unlock()
+	mode := VideoModes[chip.currentMode]
+	chip.runBlitterLocked(mode)
+}
+
 func (chip *VideoChip) HandleRead(addr uint32) uint32 {
 	/*
 		HandleRead processes a read request from the memory-mapped register interface.
@@ -973,6 +1223,26 @@ func (chip *VideoChip) HandleRead(addr uint32) uint32 {
 		return chip.copperPC
 	case COPPER_STATUS:
 		return chip.copperStatusLocked()
+	case BLT_CTRL:
+		return chip.blitterCtrlValueLocked()
+	case BLT_OP:
+		return chip.bltOpStaged
+	case BLT_SRC:
+		return chip.bltSrcStaged
+	case BLT_DST:
+		return chip.bltDstStaged
+	case BLT_WIDTH:
+		return chip.bltWidthStaged
+	case BLT_HEIGHT:
+		return chip.bltHeightStaged
+	case BLT_SRC_STRIDE:
+		return chip.bltSrcStride
+	case BLT_DST_STRIDE:
+		return chip.bltDstStride
+	case BLT_COLOR:
+		return chip.bltColorStaged
+	case BLT_MASK:
+		return chip.bltMaskStaged
 	case COPPER_PC + 1:
 		return readUint32Byte(chip.copperPC, 1)
 	case COPPER_PC + 2:
@@ -985,6 +1255,66 @@ func (chip *VideoChip) HandleRead(addr uint32) uint32 {
 		return readUint32Byte(chip.copperStatusLocked(), 2)
 	case COPPER_STATUS + 3:
 		return readUint32Byte(chip.copperStatusLocked(), 3)
+	case BLT_CTRL + 1:
+		return readUint32Byte(chip.blitterCtrlValueLocked(), 1)
+	case BLT_CTRL + 2:
+		return readUint32Byte(chip.blitterCtrlValueLocked(), 2)
+	case BLT_CTRL + 3:
+		return readUint32Byte(chip.blitterCtrlValueLocked(), 3)
+	case BLT_OP + 1:
+		return readUint32Byte(chip.bltOpStaged, 1)
+	case BLT_OP + 2:
+		return readUint32Byte(chip.bltOpStaged, 2)
+	case BLT_OP + 3:
+		return readUint32Byte(chip.bltOpStaged, 3)
+	case BLT_SRC + 1:
+		return readUint32Byte(chip.bltSrcStaged, 1)
+	case BLT_SRC + 2:
+		return readUint32Byte(chip.bltSrcStaged, 2)
+	case BLT_SRC + 3:
+		return readUint32Byte(chip.bltSrcStaged, 3)
+	case BLT_DST + 1:
+		return readUint32Byte(chip.bltDstStaged, 1)
+	case BLT_DST + 2:
+		return readUint32Byte(chip.bltDstStaged, 2)
+	case BLT_DST + 3:
+		return readUint32Byte(chip.bltDstStaged, 3)
+	case BLT_WIDTH + 1:
+		return readUint32Byte(chip.bltWidthStaged, 1)
+	case BLT_WIDTH + 2:
+		return readUint32Byte(chip.bltWidthStaged, 2)
+	case BLT_WIDTH + 3:
+		return readUint32Byte(chip.bltWidthStaged, 3)
+	case BLT_HEIGHT + 1:
+		return readUint32Byte(chip.bltHeightStaged, 1)
+	case BLT_HEIGHT + 2:
+		return readUint32Byte(chip.bltHeightStaged, 2)
+	case BLT_HEIGHT + 3:
+		return readUint32Byte(chip.bltHeightStaged, 3)
+	case BLT_SRC_STRIDE + 1:
+		return readUint32Byte(chip.bltSrcStride, 1)
+	case BLT_SRC_STRIDE + 2:
+		return readUint32Byte(chip.bltSrcStride, 2)
+	case BLT_SRC_STRIDE + 3:
+		return readUint32Byte(chip.bltSrcStride, 3)
+	case BLT_DST_STRIDE + 1:
+		return readUint32Byte(chip.bltDstStride, 1)
+	case BLT_DST_STRIDE + 2:
+		return readUint32Byte(chip.bltDstStride, 2)
+	case BLT_DST_STRIDE + 3:
+		return readUint32Byte(chip.bltDstStride, 3)
+	case BLT_COLOR + 1:
+		return readUint32Byte(chip.bltColorStaged, 1)
+	case BLT_COLOR + 2:
+		return readUint32Byte(chip.bltColorStaged, 2)
+	case BLT_COLOR + 3:
+		return readUint32Byte(chip.bltColorStaged, 3)
+	case BLT_MASK + 1:
+		return readUint32Byte(chip.bltMaskStaged, 1)
+	case BLT_MASK + 2:
+		return readUint32Byte(chip.bltMaskStaged, 2)
+	case BLT_MASK + 3:
+		return readUint32Byte(chip.bltMaskStaged, 3)
 	default:
 		if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
 			offset := addr - ADDR_OFFSET
@@ -1009,6 +1339,17 @@ func (chip *VideoChip) copperStatusLocked() uint32 {
 		status |= copperStatusHalted
 	}
 	return status
+}
+
+func (chip *VideoChip) blitterCtrlValueLocked() uint32 {
+	ctrl := uint32(0)
+	if chip.bltBusy {
+		ctrl |= bltCtrlBusy
+	}
+	if chip.bltIrqEnabled {
+		ctrl |= bltCtrlIRQ
+	}
+	return ctrl
 }
 
 func (chip *VideoChip) HandleWrite(addr uint32, value uint32) {
@@ -1098,6 +1439,9 @@ func (chip *VideoChip) handleWriteLocked(addr uint32, value uint32) {
 	case COPPER_PTR + 3:
 		chip.copperPtrStaged = writeUint32Byte(chip.copperPtrStaged, value, 3)
 	default:
+		if chip.handleBlitterWriteLocked(addr, value) {
+			return
+		}
 		if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
 			offset := addr - BUFFER_OFFSET
 			if offset+BYTES_PER_PIXEL > uint32(len(chip.frontBuffer)) || offset%BYTES_PER_PIXEL != BUFFER_REMAINDER {
@@ -1115,6 +1459,145 @@ func (chip *VideoChip) handleWriteLocked(addr uint32, value uint32) {
 				chip.hasContent.Store(true)
 			}
 		}
+	}
+}
+
+func (chip *VideoChip) handleBlitterWriteLocked(addr uint32, value uint32) bool {
+	switch addr {
+	case BLT_CTRL:
+		if value&bltCtrlIRQ != 0 {
+			chip.bltIrqEnabled = true
+		} else {
+			chip.bltIrqEnabled = false
+		}
+		if value&bltCtrlStart == 0 {
+			return true
+		}
+		if chip.bltBusy {
+			return true
+		}
+		chip.bltBusy = true
+		chip.bltOp = chip.bltOpStaged
+		chip.bltSrc = chip.bltSrcStaged
+		chip.bltDst = chip.bltDstStaged
+		chip.bltWidth = chip.bltWidthStaged
+		chip.bltHeight = chip.bltHeightStaged
+		chip.bltSrcStrideRun = chip.bltSrcStride
+		chip.bltDstStrideRun = chip.bltDstStride
+		chip.bltColor = chip.bltColorStaged
+		chip.bltMask = chip.bltMaskStaged
+		chip.bltPending = true
+		return true
+	case BLT_OP:
+		chip.bltOpStaged = value
+		return true
+	case BLT_OP + 1:
+		chip.bltOpStaged = writeUint32Byte(chip.bltOpStaged, value, 1)
+		return true
+	case BLT_OP + 2:
+		chip.bltOpStaged = writeUint32Word(chip.bltOpStaged, value, 2)
+		return true
+	case BLT_OP + 3:
+		chip.bltOpStaged = writeUint32Byte(chip.bltOpStaged, value, 3)
+		return true
+	case BLT_SRC:
+		chip.bltSrcStaged = value
+		return true
+	case BLT_SRC + 1:
+		chip.bltSrcStaged = writeUint32Byte(chip.bltSrcStaged, value, 1)
+		return true
+	case BLT_SRC + 2:
+		chip.bltSrcStaged = writeUint32Word(chip.bltSrcStaged, value, 2)
+		return true
+	case BLT_SRC + 3:
+		chip.bltSrcStaged = writeUint32Byte(chip.bltSrcStaged, value, 3)
+		return true
+	case BLT_DST:
+		chip.bltDstStaged = value
+		return true
+	case BLT_DST + 1:
+		chip.bltDstStaged = writeUint32Byte(chip.bltDstStaged, value, 1)
+		return true
+	case BLT_DST + 2:
+		chip.bltDstStaged = writeUint32Word(chip.bltDstStaged, value, 2)
+		return true
+	case BLT_DST + 3:
+		chip.bltDstStaged = writeUint32Byte(chip.bltDstStaged, value, 3)
+		return true
+	case BLT_WIDTH:
+		chip.bltWidthStaged = value
+		return true
+	case BLT_WIDTH + 1:
+		chip.bltWidthStaged = writeUint32Byte(chip.bltWidthStaged, value, 1)
+		return true
+	case BLT_WIDTH + 2:
+		chip.bltWidthStaged = writeUint32Word(chip.bltWidthStaged, value, 2)
+		return true
+	case BLT_WIDTH + 3:
+		chip.bltWidthStaged = writeUint32Byte(chip.bltWidthStaged, value, 3)
+		return true
+	case BLT_HEIGHT:
+		chip.bltHeightStaged = value
+		return true
+	case BLT_HEIGHT + 1:
+		chip.bltHeightStaged = writeUint32Byte(chip.bltHeightStaged, value, 1)
+		return true
+	case BLT_HEIGHT + 2:
+		chip.bltHeightStaged = writeUint32Word(chip.bltHeightStaged, value, 2)
+		return true
+	case BLT_HEIGHT + 3:
+		chip.bltHeightStaged = writeUint32Byte(chip.bltHeightStaged, value, 3)
+		return true
+	case BLT_SRC_STRIDE:
+		chip.bltSrcStride = value
+		return true
+	case BLT_SRC_STRIDE + 1:
+		chip.bltSrcStride = writeUint32Byte(chip.bltSrcStride, value, 1)
+		return true
+	case BLT_SRC_STRIDE + 2:
+		chip.bltSrcStride = writeUint32Word(chip.bltSrcStride, value, 2)
+		return true
+	case BLT_SRC_STRIDE + 3:
+		chip.bltSrcStride = writeUint32Byte(chip.bltSrcStride, value, 3)
+		return true
+	case BLT_DST_STRIDE:
+		chip.bltDstStride = value
+		return true
+	case BLT_DST_STRIDE + 1:
+		chip.bltDstStride = writeUint32Byte(chip.bltDstStride, value, 1)
+		return true
+	case BLT_DST_STRIDE + 2:
+		chip.bltDstStride = writeUint32Word(chip.bltDstStride, value, 2)
+		return true
+	case BLT_DST_STRIDE + 3:
+		chip.bltDstStride = writeUint32Byte(chip.bltDstStride, value, 3)
+		return true
+	case BLT_COLOR:
+		chip.bltColorStaged = value
+		return true
+	case BLT_COLOR + 1:
+		chip.bltColorStaged = writeUint32Byte(chip.bltColorStaged, value, 1)
+		return true
+	case BLT_COLOR + 2:
+		chip.bltColorStaged = writeUint32Word(chip.bltColorStaged, value, 2)
+		return true
+	case BLT_COLOR + 3:
+		chip.bltColorStaged = writeUint32Byte(chip.bltColorStaged, value, 3)
+		return true
+	case BLT_MASK:
+		chip.bltMaskStaged = value
+		return true
+	case BLT_MASK + 1:
+		chip.bltMaskStaged = writeUint32Byte(chip.bltMaskStaged, value, 1)
+		return true
+	case BLT_MASK + 2:
+		chip.bltMaskStaged = writeUint32Word(chip.bltMaskStaged, value, 2)
+		return true
+	case BLT_MASK + 3:
+		chip.bltMaskStaged = writeUint32Byte(chip.bltMaskStaged, value, 3)
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1187,6 +1670,21 @@ func writeUint32Byte(current uint32, value uint32, byteIndex uint32) uint32 {
 func readUint32Byte(value uint32, byteIndex uint32) uint32 {
 	shift := byteIndex * 8
 	return (value >> shift) & 0xFF
+}
+
+func writeUint32Word(current uint32, value uint32, byteIndex uint32) uint32 {
+	current = writeUint32Byte(current, value, byteIndex)
+	if value > 0xFF {
+		current = writeUint32Byte(current, value>>8, byteIndex+1)
+	}
+	return current
+}
+
+func absInt(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 func makeRegionKey(x, y int) int {
