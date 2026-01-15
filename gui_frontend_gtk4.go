@@ -29,6 +29,7 @@ extern void gtk_create_window();
 extern void gtk_show_window();
 extern const char* gtk_get_selected_file();
 extern int gtk_get_should_execute();
+extern void gtk_set_start_minimized(int minimized);
 */
 import "C"
 import (
@@ -64,6 +65,14 @@ func (f *GTKFrontend) Initialize(config GUIConfig) error {
 	f.config = config
 	C.gtk_create_window()
 	return nil
+}
+
+func (f *GTKFrontend) SetStartMinimized(minimized bool) {
+	if minimized {
+		C.gtk_set_start_minimized(1)
+	} else {
+		C.gtk_set_start_minimized(0)
+	}
 }
 
 func (f *GTKFrontend) Show() error {

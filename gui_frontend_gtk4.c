@@ -31,6 +31,7 @@ static GtkWidget *window = NULL;
 static GtkApplication *app = NULL;
 static const char* selected_file = NULL;
 static int should_execute = 0;
+static int start_minimized = 0;
 
 static void file_chosen_cb(GObject *source_object, GAsyncResult *res, gpointer user_data) {
     GtkFileDialog *dialog = GTK_FILE_DIALOG(source_object);
@@ -98,16 +99,21 @@ int gtk_get_should_execute(void) {
     return tmp;
 }
 
+void gtk_set_start_minimized(int minimized) {
+    start_minimized = minimized;
+}
+
 static void activate(GtkApplication *app, gpointer data) {
     window = gtk_application_window_new(app);
-    gtk_window_set_title(GTK_WINDOW(window), "Intuition Engine - (c) 2024 - 2026 Zayn Otley");
-    gtk_window_set_default_size(GTK_WINDOW(window), 400, 100);
+    gtk_window_set_title(GTK_WINDOW(window), "Intuition Engine");
+    gtk_window_set_default_size(GTK_WINDOW(window), -1, -1);  // Shrink to fit content
+    gtk_window_set_resizable(GTK_WINDOW(window), FALSE);       // Fixed size toolbar
 
-    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
-    gtk_widget_set_margin_start(box, 10);
-    gtk_widget_set_margin_end(box, 10);
-    gtk_widget_set_margin_top(box, 10);
-    gtk_widget_set_margin_bottom(box, 10);
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+    gtk_widget_set_margin_start(box, 6);
+    gtk_widget_set_margin_end(box, 6);
+    gtk_widget_set_margin_top(box, 6);
+    gtk_widget_set_margin_bottom(box, 6);
 
     GtkWidget *load = gtk_button_new_with_label("Load");
     g_signal_connect(load, "clicked", G_CALLBACK(load_cb), NULL);
@@ -128,6 +134,12 @@ static void activate(GtkApplication *app, gpointer data) {
 
     gtk_window_set_child(GTK_WINDOW(window), box);
     gtk_window_present(GTK_WINDOW(window));
+
+    // If running with a file argument, minimize the control window so it
+    // doesn't obscure the display (Wayland doesn't allow window positioning)
+    if (start_minimized) {
+        gtk_window_minimize(GTK_WINDOW(window));
+    }
 }
 
 void gtk_create_window(void) {

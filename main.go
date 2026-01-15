@@ -468,6 +468,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	// If running with a file argument, minimize control window so it doesn't
+	// obscure the display (Wayland doesn't allow apps to position windows)
+	if startExecution {
+		if gtkFrontend, ok := gui.(*GTKFrontend); ok {
+			gtkFrontend.SetStartMinimized(true)
+		}
+	}
+
 	// Show the GUI and run the main event loop
 	err = gui.Show()
 	if err != nil {
