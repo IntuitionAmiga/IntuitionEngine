@@ -183,6 +183,18 @@ func (e *PSGEngine) SetPlaying(playing bool) {
 	}
 }
 
+// SetForceLoop enables looping from the start of the track, even if
+// the file has no native loop point. This overrides the file's loop setting.
+func (e *PSGEngine) SetForceLoop(enable bool) {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+	if enable {
+		e.loop = true
+		e.loopSample = 0
+		e.loopEventIndex = 0
+	}
+}
+
 func (e *PSGEngine) IsPlaying() bool {
 	e.mutex.Lock()
 	defer e.mutex.Unlock()

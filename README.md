@@ -1364,8 +1364,11 @@ for direct AY/YM register writes. PSG+ can be toggled via `PSG_PLUS_CTRL` at `0x
 To start AY/YM/VGM playback from CPU code, use the PSG playback control registers:
 - `PSG_PLAY_PTR` (`0xF0C10`): pointer to PSG data in RAM (binary blob)
 - `PSG_PLAY_LEN` (`0xF0C14`): length in bytes
-- `PSG_PLAY_CTRL` (`0xF0C18`): bit0=start, bit1=stop
+- `PSG_PLAY_CTRL` (`0xF0C18`): bit0=start, bit1=stop, bit2=loop
 - `PSG_PLAY_STATUS` (`0xF0C1C`): bit0=busy, bit1=error
+
+When bit2 (loop) is set in `PSG_PLAY_CTRL`, the track will restart from the
+beginning when it reaches the end, enabling continuous background music playback.
 
 The assembler provides error messages for common issues like:
 - Undefined labels

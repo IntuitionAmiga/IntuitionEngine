@@ -25,6 +25,7 @@ type PSGPlayer struct {
 	playLen       uint32
 	playBusy      bool
 	playErr       bool
+	forceLoop     bool // When true, loop from start even if file has no loop point
 }
 
 func NewPSGPlayer(engine *PSGEngine) *PSGPlayer {
@@ -293,6 +294,7 @@ func (p *PSGPlayer) HandlePlayWrite(addr uint32, value uint32) {
 		}
 		p.playPtr = p.playPtrStaged
 		p.playLen = p.playLenStaged
+		p.forceLoop = (value & 0x4) != 0 // bit 2 = enable looping
 		p.playErr = false
 		if p.bus == nil {
 			p.playErr = true
@@ -316,6 +318,10 @@ func (p *PSGPlayer) HandlePlayWrite(addr uint32, value uint32) {
 			p.playErr = true
 			p.playBusy = false
 			return
+		}
+		// If forceLoop is set, enable looping from the start
+		if p.forceLoop && p.engine != nil {
+			p.engine.SetForceLoop(true)
 		}
 		p.Play()
 	default:

@@ -109,14 +109,14 @@ start:
     STA @BLT_CTRL
     JSR wait_blit
 
-    ; Enable PSG+ and start AY playback
+    ; Enable PSG+ and start AY playback with looping
     LDA #1
     STA @PSG_PLUS_CTRL
     LDA #ROBOCOP_AY_ADDR
     STA @PSG_PLAY_PTR
     LDA #ROBOCOP_AY_LEN
     STA @PSG_PLAY_LEN
-    LDA #1
+    LDA #5                          ; bit0=start, bit2=loop
     STA @PSG_PLAY_CTRL
 
     ; Setup copper list
