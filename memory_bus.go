@@ -79,6 +79,7 @@ type MemoryBus interface {
 	Read32(addr uint32) uint32
 	Write32(addr uint32, value uint32)
 	Reset()
+	GetMemory() []byte
 }
 
 type SystemBus struct {
@@ -124,6 +125,17 @@ func NewSystemBus() *SystemBus {
 		memory:  make([]byte, DEFAULT_MEMORY_SIZE),
 		mapping: make(map[uint32][]IORegion),
 	}
+}
+
+func (bus *SystemBus) GetMemory() []byte {
+	/*
+		GetMemory returns a direct reference to the underlying memory slice.
+
+		This allows CPU cores to cache the memory reference for fast access
+		while maintaining visibility to peripherals that read through the bus.
+		CPUs should use this for non-I/O memory operations.
+	*/
+	return bus.memory
 }
 
 func (bus *SystemBus) MapIO(start, end uint32, onRead func(addr uint32) uint32, onWrite func(addr uint32, value uint32)) {

@@ -221,3 +221,27 @@ func TestCopperM68KListExecution(t *testing.T) {
 		t.Fatalf("expected VIDEO_MODE=MODE_800x600, got %d", got)
 	}
 }
+
+// TestCopperCanReadCPULoadedList verifies that the copper can read a copper list
+// that was loaded by the CPU (simulating embedded program data).
+func TestCopperCanReadCPULoadedList(t *testing.T) {
+	video, bus := newCopperTestRig(t)
+
+	cpu := NewCPU(bus)
+
+	// CPU writes copper list to 0x2000 (simulating loaded program data)
+	listAddr := uint32(0x2000)
+	cpu.Write32(listAddr, copperEndWord()) // Simple END instruction
+
+	// Point copper to the list and enable
+	bus.Write32(COPPER_PTR, listAddr)
+	bus.Write32(COPPER_CTRL, copperCtrlEnable)
+
+	video.RunCopperFrameForTest()
+
+	// Verify copper executed (PC should have advanced past END)
+	pc := video.HandleRead(COPPER_PC)
+	if pc != listAddr+4 {
+		t.Fatalf("Copper PC=0x%X, expected 0x%X - copper couldn't read list from CPU memory", pc, listAddr+4)
+	}
+}

@@ -324,7 +324,7 @@ type CPU struct {
 	   Cache Lines 3+ - System Memory:
 	   Bulk storage areas:
 	   - Screen          : Display buffer [25][80]byte
-	   - Memory          : Main memory []byte
+	   - memory          : Cached reference to bus.memory (shared with peripherals)
 	   - bus             : Memory interface
 	*/
 
@@ -369,7 +369,7 @@ type CPU struct {
 
 	// Large buffers (Cache Lines 3+)
 	Screen [25][80]byte // Display buffer
-	Memory []byte       // Main memory
+	memory []byte       // Cached reference to bus.memory (shared, not private)
 	bus    MemoryBus    // Memory interface
 
 	// Direct VRAM access (bypasses bus for video writes)
@@ -401,10 +401,10 @@ func NewCPU(bus MemoryBus) *CPU {
 	*/
 
 	cpu := &CPU{
-		Memory: make([]byte, MEMORY_SIZE),
 		SP:     STACK_START,
 		PC:     PROG_START,
 		bus:    bus,
+		memory: bus.GetMemory(), // Use shared bus memory
 	}
 	// Atomic fields default to zero/false - set running to true
 	cpu.running.Store(true)
@@ -429,10 +429,10 @@ func (cpu *CPU) LoadProgram(filename string) error {
 		return err
 	}
 	// Clear program area with bounds check
-	for i := PROG_START; i < len(cpu.Memory) && i < STACK_START; i++ {
-		cpu.Memory[i] = 0
+	for i := PROG_START; i < len(cpu.memory) && i < STACK_START; i++ {
+		cpu.memory[i] = 0
 	}
-	copy(cpu.Memory[PROG_START:], program)
+	copy(cpu.memory[PROG_START:], program)
 	cpu.PC = PROG_START
 	return nil
 }
@@ -463,8 +463,8 @@ func (cpu *CPU) Write32(addr uint32, value uint32) {
 
 	// Non-I/O fast path - direct memory write, no mutex
 	// CPU is the sole writer, so no synchronisation needed
-	if addr < IO_REGION_START && addr+4 <= uint32(len(cpu.Memory)) {
-		binary.LittleEndian.PutUint32(cpu.Memory[addr:], value)
+	if addr < IO_REGION_START && addr+4 <= uint32(len(cpu.memory)) {
+		binary.LittleEndian.PutUint32(cpu.memory[addr:], value)
 		return
 	}
 
@@ -505,8 +505,8 @@ func (cpu *CPU) Read32(addr uint32) uint32 {
 
 	// Non-I/O fast path - direct memory read, no mutex
 	// CPU writes are the only mutations; readers see consistent data
-	if addr < IO_REGION_START && addr+4 <= uint32(len(cpu.Memory)) {
-		return binary.LittleEndian.Uint32(cpu.Memory[addr:])
+	if addr < IO_REGION_START && addr+4 <= uint32(len(cpu.memory)) {
+		return binary.LittleEndian.Uint32(cpu.memory[addr:])
 	}
 
 	// I/O path - use mutex for callback coordination
@@ -860,13 +860,13 @@ func (cpu *CPU) Reset() {
 
 	cpu.mutex.Lock()
 	// Clear memory in chunks for better cache utilization
-	for i := PROG_START; i < len(cpu.Memory); i += CACHE_LINE_SIZE {
+	for i := PROG_START; i < len(cpu.memory); i += CACHE_LINE_SIZE {
 		end := i + CACHE_LINE_SIZE
-		if end > len(cpu.Memory) {
-			end = len(cpu.Memory)
+		if end > len(cpu.memory) {
+			end = len(cpu.memory)
 		}
 		for j := i; j < end; j++ {
-			cpu.Memory[j] = 0
+			cpu.memory[j] = 0
 		}
 	}
 
@@ -925,7 +925,7 @@ func (cpu *CPU) Execute() {
 	for cpu.running.Load() {
 		// Cache frequently accessed values
 		currentPC := cpu.PC
-		mem := cpu.Memory
+		mem := cpu.memory
 
 		// Fetch instruction components
 		opcode := mem[currentPC+OPCODE_OFFSET]
@@ -956,7 +956,7 @@ func (cpu *CPU) Execute() {
 				}
 
 				binary.LittleEndian.PutUint32(
-					cpu.Memory[TIMER_COUNT:TIMER_COUNT+WORD_SIZE],
+					cpu.memory[TIMER_COUNT:TIMER_COUNT+WORD_SIZE],
 					cpu.timerCount.Load())
 			}
 		}
@@ -1226,8 +1226,8 @@ func (cpu *CPU) Execute() {
 			   3. If register != 0, set PC to target
 			   4. Else advance PC by INSTRUCTION_SIZE
 			*/
-			reg := cpu.Memory[currentPC+1]
-			targetAddr := binary.LittleEndian.Uint32(cpu.Memory[currentPC+WORD_SIZE : currentPC+INSTRUCTION_SIZE])
+			reg := cpu.memory[currentPC+1]
+			targetAddr := binary.LittleEndian.Uint32(cpu.memory[currentPC+WORD_SIZE : currentPC+INSTRUCTION_SIZE])
 			if *cpu.getRegister(reg) != 0 {
 				cpu.PC = targetAddr
 			} else {
@@ -1243,8 +1243,8 @@ func (cpu *CPU) Execute() {
 			   3. If register == 0, set PC to target
 			   4. Else advance PC by INSTRUCTION_SIZE
 			*/
-			reg := cpu.Memory[currentPC+1]
-			targetAddr := binary.LittleEndian.Uint32(cpu.Memory[currentPC+WORD_SIZE : currentPC+INSTRUCTION_SIZE])
+			reg := cpu.memory[currentPC+1]
+			targetAddr := binary.LittleEndian.Uint32(cpu.memory[currentPC+WORD_SIZE : currentPC+INSTRUCTION_SIZE])
 			if *cpu.getRegister(reg) == 0 {
 				cpu.PC = targetAddr
 			} else {
@@ -1259,8 +1259,8 @@ func (cpu *CPU) Execute() {
 			   2. If value > 0, set PC to target
 			   3. Else advance PC by INSTRUCTION_SIZE
 			*/
-			reg := cpu.Memory[currentPC+1]
-			targetAddr := binary.LittleEndian.Uint32(cpu.Memory[currentPC+WORD_SIZE : currentPC+INSTRUCTION_SIZE])
+			reg := cpu.memory[currentPC+1]
+			targetAddr := binary.LittleEndian.Uint32(cpu.memory[currentPC+WORD_SIZE : currentPC+INSTRUCTION_SIZE])
 			if int32(*cpu.getRegister(reg)) > 0 {
 				cpu.PC = targetAddr
 			} else {
@@ -1275,8 +1275,8 @@ func (cpu *CPU) Execute() {
 			   2. If value >= 0, set PC to target
 			   3. Else advance PC by INSTRUCTION_SIZE
 			*/
-			reg := cpu.Memory[currentPC+1]
-			targetAddr := binary.LittleEndian.Uint32(cpu.Memory[currentPC+WORD_SIZE : currentPC+INSTRUCTION_SIZE])
+			reg := cpu.memory[currentPC+1]
+			targetAddr := binary.LittleEndian.Uint32(cpu.memory[currentPC+WORD_SIZE : currentPC+INSTRUCTION_SIZE])
 			if int32(*cpu.getRegister(reg)) >= 0 {
 				cpu.PC = targetAddr
 			} else {
@@ -1291,8 +1291,8 @@ func (cpu *CPU) Execute() {
 			   2. If value < 0, set PC to target
 			   3. Else advance PC by INSTRUCTION_SIZE
 			*/
-			reg := cpu.Memory[currentPC+1]
-			targetAddr := binary.LittleEndian.Uint32(cpu.Memory[currentPC+WORD_SIZE : currentPC+INSTRUCTION_SIZE])
+			reg := cpu.memory[currentPC+1]
+			targetAddr := binary.LittleEndian.Uint32(cpu.memory[currentPC+WORD_SIZE : currentPC+INSTRUCTION_SIZE])
 			if int32(*cpu.getRegister(reg)) < 0 {
 				cpu.PC = targetAddr
 			} else {
@@ -1307,8 +1307,8 @@ func (cpu *CPU) Execute() {
 			   2. If value <= 0, set PC to target
 			   3. Else advance PC by INSTRUCTION_SIZE
 			*/
-			reg := cpu.Memory[currentPC+1]
-			targetAddr := binary.LittleEndian.Uint32(cpu.Memory[currentPC+WORD_SIZE : currentPC+INSTRUCTION_SIZE])
+			reg := cpu.memory[currentPC+1]
+			targetAddr := binary.LittleEndian.Uint32(cpu.memory[currentPC+WORD_SIZE : currentPC+INSTRUCTION_SIZE])
 			if int32(*cpu.getRegister(reg)) <= 0 {
 				cpu.PC = targetAddr
 			} else {

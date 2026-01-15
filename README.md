@@ -141,6 +141,42 @@ The system consists of five main subsystems that work together:
     - Protected memory regions
     - Double-buffered video memory
 
+6. Unified Memory Architecture
+    - All CPU cores share the same memory space via SystemBus
+    - Program data loaded by CPUs is visible to all peripherals
+    - DMA operations (blitter, copper, PSG) can access any memory location
+
+## Unified Memory Architecture
+
+All CPU cores (IE32, M68K, Z80, 6502) share the same memory space through the
+SystemBus. This unified architecture ensures that:
+
+- **Program data** loaded by any CPU is immediately visible to all peripherals
+- **DMA operations** (blitter, copper, PSG streaming) can access any memory location
+- **Memory-mapped I/O** works consistently across all CPU types
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        SystemBus Memory                          │
+│                         (16MB Shared)                            │
+├─────────────────────────────────────────────────────────────────┤
+│  0x000000 - 0x000FFF  │  System Vectors                         │
+│  0x001000 - 0x00EFFF  │  Program Space (code + data)            │
+│  0x00F000 - 0x00FFFF  │  Hardware I/O Registers                 │
+│  0x100000 - 0x4FFFFF  │  Video RAM (VRAM)                       │
+└─────────────────────────────────────────────────────────────────┘
+        │                       │                      │
+        ▼                       ▼                      ▼
+   ┌─────────┐            ┌──────────┐           ┌──────────┐
+   │   CPU   │            │  Blitter │           │   PSG    │
+   │ (IE32/  │            │  Copper  │           │  Player  │
+   │  M68K)  │            │          │           │          │
+   └─────────┘            └──────────┘           └──────────┘
+```
+
+When a program is loaded, its embedded data (sprites, copper lists, audio files)
+is placed in shared memory and immediately accessible to hardware DMA engines.
+
 ## Memory Map
 
 The system's memory is organised as follows:

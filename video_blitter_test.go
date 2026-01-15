@@ -364,3 +364,37 @@ func TestBlitterM68K(t *testing.T) {
 		t.Fatalf("expected M68K fill pixel, got 0x%X", got)
 	}
 }
+
+// TestBlitterCanReadCPULoadedData verifies that the blitter can read sprite data
+// that was loaded by the CPU (simulating embedded program data like sprites).
+func TestBlitterCanReadCPULoadedData(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	mode := VideoModes[video.currentMode]
+
+	cpu := NewCPU(bus)
+
+	// CPU writes sprite data to address 0x2000 (simulating loaded program data)
+	// 4 pixels of red (RGBA little-endian: 0xFF0000FF)
+	for i := uint32(0); i < 4; i++ {
+		cpu.Write32(0x2000+i*4, 0xFF0000FF)
+	}
+
+	// Setup blitter to copy from 0x2000 to VRAM
+	dst := vramAddr(mode, 100, 0) // Arbitrary VRAM location
+	bus.Write32(BLT_OP, bltOpCopy)
+	bus.Write32(BLT_SRC, 0x2000)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 4)
+	bus.Write32(BLT_HEIGHT, 1)
+	bus.Write32(BLT_SRC_STRIDE, 16)
+	bus.Write32(BLT_DST_STRIDE, uint32(mode.bytesPerRow))
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+
+	video.RunBlitterForTest()
+
+	// Verify VRAM has the copied data
+	got := video.HandleRead(dst)
+	if got != 0xFF0000FF {
+		t.Fatalf("Blitter read 0x%08X from CPU memory, expected 0xFF0000FF - CPU memory not visible to blitter", got)
+	}
+}
