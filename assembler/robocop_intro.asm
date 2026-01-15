@@ -51,6 +51,7 @@
 .equ BLT_OP_FILL       1
 .equ BLT_OP_LINE       2
 .equ BLT_OP_MASKED     3
+.equ BLT_OP_ALPHA      4
 
 .equ BAR_COUNT         16
 .equ BAR_STRIDE        36
@@ -64,8 +65,22 @@
 .equ VAR_FRAME_ADDR    0x8800
 .equ VAR_PREV_X_ADDR   0x8804
 .equ VAR_PREV_Y_ADDR   0x8808
+.equ VAR_SCROLL_X      0x880C
 
 .equ ROBOCOP_AY_LEN    24525
+
+; Scrolltext constants
+.equ SCROLL_Y          430
+.equ SCROLL_SPEED      4
+.equ CHAR_WIDTH        32
+.equ CHAR_HEIGHT       32
+.equ FONT_STRIDE       1280
+
+; Scrolltext data addresses (calculated: AY ends at 0x34269)
+.equ SCROLL_SINE_ADDR  0x34269
+.equ SCROLL_CHAR_ADDR  0x34669
+.equ SCROLL_FONT_ADDR  0x34869
+.equ SCROLL_MSG_ADDR   0x73069
 
 ; Data layout (DATA_START = 0x2000)
 .equ SIN_X_ADDR        0x2000
@@ -134,6 +149,10 @@ start:
     JSR compute_xy
     STC @VAR_PREV_X_ADDR
     STD @VAR_PREV_Y_ADDR
+
+    ; Init scrolltext
+    LDA #0
+    STA @VAR_SCROLL_X
 
 main_loop:
     ; Advance frame
@@ -213,6 +232,13 @@ main_loop:
     STA @BLT_DST_STRIDE
     LDA #1
     STA @BLT_CTRL
+
+    ; Scrolltext
+    JSR clear_scroll_area
+    JSR draw_scrolltext
+    LDA @VAR_SCROLL_X
+    ADD A, #SCROLL_SPEED
+    STA @VAR_SCROLL_X
 
     JMP main_loop
 
@@ -305,6 +331,133 @@ compute_xy:
     LDE #CENTER_Y
     ADD D, E
     RTS
+
+; ----------------------------------------------------------------------------
+; clear_scroll_area - Clear bottom of screen for scrolltext
+; ----------------------------------------------------------------------------
+clear_scroll_area:
+    JSR wait_blit
+    LDA #BLT_OP_FILL
+    STA @BLT_OP
+    LDA #390
+    MUL A, #LINE_BYTES
+    ADD A, #VRAM_START
+    STA @BLT_DST
+    LDA #SCREEN_W
+    STA @BLT_WIDTH
+    LDA #90
+    STA @BLT_HEIGHT
+    LDA #LINE_BYTES
+    STA @BLT_DST_STRIDE
+    LDA #BACKGROUND
+    STA @BLT_COLOR
+    LDA #1
+    STA @BLT_CTRL
+    RTS
+
+; ----------------------------------------------------------------------------
+; draw_scrolltext - Render sine wave scrolling text using labels
+; ----------------------------------------------------------------------------
+draw_scrolltext:
+    LDB @VAR_SCROLL_X
+    LDC B
+    SHR C, #5
+    LDD B
+    AND D, #0x1F
+    LDF #0
+    SUB F, D
+    LDD F
+    LDE #0
+
+.scroll_loop:
+    LDF #SCROLL_MSG_ADDR
+    ADD F, C
+    LDT [F]
+    AND T, #0xFF
+    JZ T, .scroll_wrap
+
+    ; Skip if off-screen left
+    LDA D
+    AND A, #0x80000000
+    JNZ A, .scroll_next
+
+    ; Skip if off-screen right
+    LDA #608
+    SUB A, D
+    AND A, #0x80000000
+    JNZ A, .scroll_done
+
+    ; Save registers
+    PUSH C
+    PUSH D
+    PUSH E
+
+    ; Look up char in table
+    LDF #SCROLL_CHAR_ADDR
+    LDA T
+    SHL A, #2
+    ADD F, A
+    LDA [F]
+    ADD A, #SCROLL_FONT_ADDR
+    LDF A
+
+    ; Calculate Y with sine (pre-calculated offsets, no division needed)
+    LDA D
+    ADD A, @VAR_SCROLL_X
+    AND A, #0xFF
+    SHL A, #2
+    ADD A, #SCROLL_SINE_ADDR
+    LDU [A]
+    ADD U, #SCROLL_Y
+
+    ; Calculate dest
+    LDT U
+    MUL T, #LINE_BYTES
+    ADD T, #VRAM_START
+    LDA D
+    SHL A, #2
+    ADD T, A
+
+    ; Blit char
+    JSR wait_blit
+    LDA #BLT_OP_ALPHA
+    STA @BLT_OP
+    LDA F
+    STA @BLT_SRC
+    LDA T
+    STA @BLT_DST
+    LDA #CHAR_WIDTH
+    STA @BLT_WIDTH
+    LDA #CHAR_HEIGHT
+    STA @BLT_HEIGHT
+    LDA #FONT_STRIDE
+    STA @BLT_SRC_STRIDE
+    LDA #LINE_BYTES
+    STA @BLT_DST_STRIDE
+    LDA #1
+    STA @BLT_CTRL
+
+    POP E
+    POP D
+    POP C
+
+.scroll_next:
+    ADD C, #1
+    ADD D, #CHAR_WIDTH
+    ADD E, #1
+    LDA #21
+    SUB A, E
+    JNZ A, .scroll_loop
+
+.scroll_done:
+    RTS
+
+.scroll_wrap:
+    LDA @VAR_SCROLL_X
+    AND A, #0x1F
+    STA @VAR_SCROLL_X
+    LDC #0
+    JMP .scroll_loop
 
 ; ----------------------------------------------------------------------------
 ; PAD CODE TO 0x2000 SO DATA_ LABELS MATCH LOAD ADDRESS
@@ -1006,3 +1159,404 @@ data_robocop_mask:
 
 data_robocop_ay:
 .incbin "Robocop1.ay"
+
+; ============================================================================
+; SCROLLTEXT DATA (using labels)
+; ============================================================================
+
+; Pre-calculated Y offsets: sin(i * 2π / 256) * 20, range -20 to +20
+; No runtime division needed - smoother sine motion
+scroll_sine_table:
+.word 0x00000000
+.word 0x00000000
+.word 0x00000001
+.word 0x00000001
+.word 0x00000002
+.word 0x00000002
+.word 0x00000003
+.word 0x00000003
+.word 0x00000004
+.word 0x00000004
+.word 0x00000005
+.word 0x00000005
+.word 0x00000006
+.word 0x00000006
+.word 0x00000006
+.word 0x00000007
+.word 0x00000007
+.word 0x00000008
+.word 0x00000008
+.word 0x00000009
+.word 0x00000009
+.word 0x00000009
+.word 0x0000000A
+.word 0x0000000A
+.word 0x0000000A
+.word 0x0000000B
+.word 0x0000000B
+.word 0x0000000B
+.word 0x0000000C
+.word 0x0000000C
+.word 0x0000000C
+.word 0x0000000D
+.word 0x0000000D
+.word 0x0000000D
+.word 0x0000000D
+.word 0x0000000E
+.word 0x0000000E
+.word 0x0000000E
+.word 0x0000000E
+.word 0x0000000F
+.word 0x0000000F
+.word 0x0000000F
+.word 0x0000000F
+.word 0x0000000F
+.word 0x00000010
+.word 0x00000010
+.word 0x00000010
+.word 0x00000010
+.word 0x00000010
+.word 0x00000011
+.word 0x00000011
+.word 0x00000011
+.word 0x00000011
+.word 0x00000011
+.word 0x00000011
+.word 0x00000011
+.word 0x00000011
+.word 0x00000012
+.word 0x00000012
+.word 0x00000012
+.word 0x00000012
+.word 0x00000012
+.word 0x00000012
+.word 0x00000012
+.word 0x00000012
+.word 0x00000012
+.word 0x00000012
+.word 0x00000012
+.word 0x00000012
+.word 0x00000012
+.word 0x00000012
+.word 0x00000012
+.word 0x00000012
+.word 0x00000011
+.word 0x00000011
+.word 0x00000011
+.word 0x00000011
+.word 0x00000011
+.word 0x00000011
+.word 0x00000011
+.word 0x00000011
+.word 0x00000010
+.word 0x00000010
+.word 0x00000010
+.word 0x00000010
+.word 0x00000010
+.word 0x0000000F
+.word 0x0000000F
+.word 0x0000000F
+.word 0x0000000F
+.word 0x0000000F
+.word 0x0000000E
+.word 0x0000000E
+.word 0x0000000E
+.word 0x0000000E
+.word 0x0000000D
+.word 0x0000000D
+.word 0x0000000D
+.word 0x0000000D
+.word 0x0000000C
+.word 0x0000000C
+.word 0x0000000C
+.word 0x0000000B
+.word 0x0000000B
+.word 0x0000000B
+.word 0x0000000A
+.word 0x0000000A
+.word 0x0000000A
+.word 0x00000009
+.word 0x00000009
+.word 0x00000009
+.word 0x00000008
+.word 0x00000008
+.word 0x00000007
+.word 0x00000007
+.word 0x00000006
+.word 0x00000006
+.word 0x00000006
+.word 0x00000005
+.word 0x00000005
+.word 0x00000004
+.word 0x00000004
+.word 0x00000003
+.word 0x00000003
+.word 0x00000002
+.word 0x00000002
+.word 0x00000001
+.word 0x00000001
+.word 0x00000000
+.word 0x00000000
+.word 0xFFFFFFFF
+.word 0xFFFFFFFF
+.word 0xFFFFFFFE
+.word 0xFFFFFFFE
+.word 0xFFFFFFFD
+.word 0xFFFFFFFD
+.word 0xFFFFFFFC
+.word 0xFFFFFFFC
+.word 0xFFFFFFFB
+.word 0xFFFFFFFB
+.word 0xFFFFFFFA
+.word 0xFFFFFFFA
+.word 0xFFFFFFFA
+.word 0xFFFFFFF9
+.word 0xFFFFFFF9
+.word 0xFFFFFFF8
+.word 0xFFFFFFF8
+.word 0xFFFFFFF7
+.word 0xFFFFFFF7
+.word 0xFFFFFFF7
+.word 0xFFFFFFF6
+.word 0xFFFFFFF6
+.word 0xFFFFFFF6
+.word 0xFFFFFFF5
+.word 0xFFFFFFF5
+.word 0xFFFFFFF5
+.word 0xFFFFFFF4
+.word 0xFFFFFFF4
+.word 0xFFFFFFF4
+.word 0xFFFFFFF3
+.word 0xFFFFFFF3
+.word 0xFFFFFFF3
+.word 0xFFFFFFF3
+.word 0xFFFFFFF2
+.word 0xFFFFFFF2
+.word 0xFFFFFFF2
+.word 0xFFFFFFF2
+.word 0xFFFFFFF1
+.word 0xFFFFFFF1
+.word 0xFFFFFFF1
+.word 0xFFFFFFF1
+.word 0xFFFFFFF1
+.word 0xFFFFFFF0
+.word 0xFFFFFFF0
+.word 0xFFFFFFF0
+.word 0xFFFFFFF0
+.word 0xFFFFFFF0
+.word 0xFFFFFFEF
+.word 0xFFFFFFEF
+.word 0xFFFFFFEF
+.word 0xFFFFFFEF
+.word 0xFFFFFFEF
+.word 0xFFFFFFEF
+.word 0xFFFFFFEF
+.word 0xFFFFFFEF
+.word 0xFFFFFFEE
+.word 0xFFFFFFEE
+.word 0xFFFFFFEE
+.word 0xFFFFFFEE
+.word 0xFFFFFFEE
+.word 0xFFFFFFEE
+.word 0xFFFFFFEE
+.word 0xFFFFFFEE
+.word 0xFFFFFFEE
+.word 0xFFFFFFEE
+.word 0xFFFFFFEE
+.word 0xFFFFFFEE
+.word 0xFFFFFFEE
+.word 0xFFFFFFEE
+.word 0xFFFFFFEE
+.word 0xFFFFFFEE
+.word 0xFFFFFFEF
+.word 0xFFFFFFEF
+.word 0xFFFFFFEF
+.word 0xFFFFFFEF
+.word 0xFFFFFFEF
+.word 0xFFFFFFEF
+.word 0xFFFFFFEF
+.word 0xFFFFFFEF
+.word 0xFFFFFFF0
+.word 0xFFFFFFF0
+.word 0xFFFFFFF0
+.word 0xFFFFFFF0
+.word 0xFFFFFFF0
+.word 0xFFFFFFF1
+.word 0xFFFFFFF1
+.word 0xFFFFFFF1
+.word 0xFFFFFFF1
+.word 0xFFFFFFF1
+.word 0xFFFFFFF2
+.word 0xFFFFFFF2
+.word 0xFFFFFFF2
+.word 0xFFFFFFF2
+.word 0xFFFFFFF3
+.word 0xFFFFFFF3
+.word 0xFFFFFFF3
+.word 0xFFFFFFF3
+.word 0xFFFFFFF4
+.word 0xFFFFFFF4
+.word 0xFFFFFFF4
+.word 0xFFFFFFF5
+.word 0xFFFFFFF5
+.word 0xFFFFFFF5
+.word 0xFFFFFFF6
+.word 0xFFFFFFF6
+.word 0xFFFFFFF6
+.word 0xFFFFFFF7
+.word 0xFFFFFFF7
+.word 0xFFFFFFF7
+.word 0xFFFFFFF8
+.word 0xFFFFFFF8
+.word 0xFFFFFFF9
+.word 0xFFFFFFF9
+.word 0xFFFFFFFA
+.word 0xFFFFFFFA
+.word 0xFFFFFFFA
+.word 0xFFFFFFFB
+.word 0xFFFFFFFB
+.word 0xFFFFFFFC
+.word 0xFFFFFFFC
+.word 0xFFFFFFFD
+.word 0xFFFFFFFD
+.word 0xFFFFFFFE
+.word 0xFFFFFFFE
+.word 0xFFFFFFFF
+.word 0xFFFFFFFF
+
+scroll_char_table:
+.word 0
+.word 0
+.word 0
+.word 0
+.word 0
+.word 0
+.word 0
+.word 0
+.word 0
+.word 0
+.word 0
+.word 0
+.word 0
+.word 0
+.word 0
+.word 0
+.word 0
+.word 0
+.word 0
+.word 0
+.word 0
+.word 0
+.word 0
+.word 0
+.word 0
+.word 0
+.word 0
+.word 0
+.word 0
+.word 0
+.word 0
+.word 0
+.word 0
+.word 128
+.word 256
+.word 0
+.word 0
+.word 0
+.word 40960
+.word 896
+.word 1024
+.word 1152
+.word 512
+.word 41600
+.word 41216
+.word 41344
+.word 41472
+.word 0
+.word 41728
+.word 41856
+.word 41984
+.word 42112
+.word 81920
+.word 82048
+.word 82176
+.word 82304
+.word 82432
+.word 82560
+.word 82688
+.word 82816
+.word 0
+.word 82944
+.word 0
+.word 122880
+.word 384
+.word 123264
+.word 123392
+.word 123520
+.word 123648
+.word 123776
+.word 123904
+.word 124032
+.word 163840
+.word 163968
+.word 164096
+.word 164224
+.word 164352
+.word 164480
+.word 164608
+.word 164736
+.word 164864
+.word 164992
+.word 204800
+.word 204928
+.word 205056
+.word 205184
+.word 205312
+.word 205440
+.word 205568
+.word 205696
+.word 205824
+.word 83072
+.word 0
+.word 122752
+.word 768
+.word 0
+.word 205952
+.word 123264
+.word 123392
+.word 123520
+.word 123648
+.word 123776
+.word 123904
+.word 124032
+.word 163840
+.word 163968
+.word 164096
+.word 164224
+.word 164352
+.word 164480
+.word 164608
+.word 164736
+.word 164864
+.word 164992
+.word 204800
+.word 204928
+.word 205056
+.word 205184
+.word 205312
+.word 205440
+.word 205568
+.word 205696
+.word 205824
+.word 123008
+.word 0
+.word 0
+.word 41088
+.word 0
+
+scroll_font_data:
+.incbin "font_rgba.bin"
+
+scroll_message:
+.ascii "    ...ROBOCOP DUAL CPU IE32 AND Z80 INTRO FOR THE INTUITION ENGINE... ...100 PERCENT ASM CODE... ...IE32 ASM FOR DEMO EFFECTS... ...Z80 ASM FOR MUSIC REPLAY ROUTINE... ...ALL CODE BY INTUITON...  MUSIC BY JONATHAN DUNN FROM THE 1987 ZX SPECTRUM GAME ROBOCOP BY OCEAN SOFTWARE... ...AY REGISTERS ARE REMAPPED TO THE INTUITON ENGINE SYNTH FOR SUPERIOR SOUND QUALITY... ...GREETS TO ...GADGETMASTER... ...KARLOS... ...BLOODLINE... ...VISIT INTUITIONSUBSYNTH.COM......................."
+.byte 0

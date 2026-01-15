@@ -153,6 +153,7 @@ const (
 	bltOpFill
 	bltOpLine
 	bltOpMaskedCopy
+	bltOpAlphaCopy // Copy only pixels with alpha > 0 (for transparency)
 )
 
 const (
@@ -949,6 +950,8 @@ func (chip *VideoChip) executeBlitterLocked(mode VideoMode) {
 		chip.blitLineLocked(mode)
 	case bltOpMaskedCopy:
 		chip.blitMaskedCopyLocked(mode)
+	case bltOpAlphaCopy:
+		chip.blitAlphaCopyLocked(mode)
 	default:
 		chip.blitCopyLocked(mode)
 	}
@@ -1045,6 +1048,41 @@ func (chip *VideoChip) blitMaskedCopyLocked(mode VideoMode) {
 		srcRow += srcStride
 		dstRow += dstStride
 		maskRow += maskStride
+	}
+}
+
+func (chip *VideoChip) blitAlphaCopyLocked(mode VideoMode) {
+	width := int(chip.bltWidth)
+	height := int(chip.bltHeight)
+	if width <= 0 || height <= 0 {
+		return
+	}
+	srcStride := chip.bltSrcStrideRun
+	if srcStride == 0 {
+		srcStride = chip.defaultStride(chip.bltSrc, width, mode)
+	}
+	dstStride := chip.bltDstStrideRun
+	if dstStride == 0 {
+		dstStride = chip.defaultStride(chip.bltDst, width, mode)
+	}
+
+	srcRow := chip.bltSrc
+	dstRow := chip.bltDst
+	for y := 0; y < height; y++ {
+		srcAddr := srcRow
+		dstAddr := dstRow
+		for x := 0; x < width; x++ {
+			value := chip.blitReadPixelLocked(srcAddr)
+			// Only copy if alpha (lowest byte in our BGRA format) is non-zero
+			alpha := value & 0xFF
+			if alpha > 0 {
+				chip.blitWritePixelLocked(dstAddr, value, mode)
+			}
+			srcAddr += BYTES_PER_PIXEL
+			dstAddr += BYTES_PER_PIXEL
+		}
+		srcRow += srcStride
+		dstRow += dstStride
 	}
 }
 

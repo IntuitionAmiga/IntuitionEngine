@@ -234,6 +234,20 @@ func (a *Assembler) handleDirective(line string, lineNum int) error {
 		a.data = append(a.data, make([]byte, size)...)
 		a.dataOffset += uint32(size)
 
+	case ".ascii":
+		// Find the quoted string in the line
+		start := strings.Index(line, "\"")
+		if start == -1 {
+			return fmt.Errorf("invalid ascii format: missing opening quote")
+		}
+		end := strings.LastIndex(line, "\"")
+		if end == start {
+			return fmt.Errorf("invalid ascii format: missing closing quote")
+		}
+		str := line[start+1 : end]
+		a.data = append(a.data, []byte(str)...)
+		a.dataOffset += uint32(len(str))
+
 	case ".org":
 		if len(parts) < 2 {
 			return fmt.Errorf("invalid org format")
