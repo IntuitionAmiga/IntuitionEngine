@@ -356,6 +356,7 @@ type VideoChip struct {
 	// Status flags - atomic for lock-free access (part of Cache Line 0)
 	enabled         atomic.Bool // Lock-free enable status
 	hasContent      atomic.Bool // Lock-free content flag
+	inVBlank        atomic.Bool // Lock-free VBlank status for CPU polling
 	resetting       bool        // 1 byte - still needs mutex for multi-field operations
 	directMode      atomic.Bool // Lock-free direct VRAM mode flag
 	fullScreenDirty atomic.Bool // Lock-free full-screen dirty flag
@@ -841,7 +842,12 @@ func (chip *VideoChip) refreshLoop() {
 		case <-chip.done:
 			return
 		case <-ticker.C:
+			// VBlank ends when frame processing starts (simulates active display scan)
+			chip.inVBlank.Store(false)
+
 			if !chip.enabled.Load() {
+				// Set VBlank true so programs waiting for it don't hang
+				chip.inVBlank.Store(true)
 				continue
 			}
 
@@ -917,6 +923,10 @@ func (chip *VideoChip) refreshLoop() {
 				}
 			}
 			chip.mutex.Unlock()
+
+			// VBlank starts after frame is sent - CPU can now safely draw
+			// VBlank stays true until the next tick (next frame starts)
+			chip.inVBlank.Store(true)
 		}
 	}
 }
@@ -1262,7 +1272,21 @@ func (chip *VideoChip) HandleRead(addr uint32) uint32 {
 		The function performs boundary and alignment checks to ensure valid memory access.
 		Thread Safety:
 		A read-lock is acquired during the operation.
+		VIDEO_STATUS is read lock-free to allow VBlank polling during refresh.
 	*/
+
+	// Lock-free read for VIDEO_STATUS to allow VBlank polling without blocking
+	// during the refresh loop (which holds the write lock)
+	if addr == VIDEO_STATUS {
+		status := uint32(0)
+		if chip.hasContent.Load() {
+			status |= 1 // bit 0: has content
+		}
+		if chip.inVBlank.Load() {
+			status |= 2 // bit 1: in VBlank
+		}
+		return status
+	}
 
 	chip.mutex.RLock()
 	defer chip.mutex.RUnlock()
@@ -1272,8 +1296,6 @@ func (chip *VideoChip) HandleRead(addr uint32) uint32 {
 		return btou32(chip.enabled.Load())
 	case VIDEO_MODE:
 		return chip.currentMode
-	case VIDEO_STATUS:
-		return btou32(chip.hasContent.Load())
 	case COPPER_PC:
 		return chip.copperPC
 	case COPPER_STATUS:
@@ -1613,6 +1635,9 @@ func (chip *VideoChip) handleBlitterWriteLocked(addr uint32, value uint32) bool 
 		chip.bltColor = chip.bltColorStaged
 		chip.bltMask = chip.bltMaskStaged
 		chip.bltPending = true
+		// Run blitter immediately (synchronous) so CPU doesn't wait for next frame
+		mode := VideoModes[chip.currentMode]
+		chip.runBlitterLocked(mode)
 		return true
 	case BLT_OP:
 		chip.bltOpStaged = value

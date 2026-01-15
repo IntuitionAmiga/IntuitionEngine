@@ -8,6 +8,8 @@
 ; ----------------------------------------------------------------------------
 .equ VIDEO_CTRL        0xF0000
 .equ VIDEO_MODE        0xF0004
+.equ VIDEO_STATUS      0xF0008
+.equ STATUS_VBLANK     2
 .equ COPPER_CTRL       0xF000C
 .equ COPPER_PTR        0xF0010
 .equ BLT_CTRL          0xF001C
@@ -171,6 +173,9 @@ main_loop:
     STC @VAR_PREV_X_ADDR
     STD @VAR_PREV_Y_ADDR
 
+    ; Wait for next frame (VBlank transition) before drawing
+    JSR wait_frame
+
     ; Clear previous sprite rect
     JSR wait_blit
     LDA #BLT_OP_FILL
@@ -209,7 +214,6 @@ main_loop:
     LDA #1
     STA @BLT_CTRL
 
-    WAIT #2000
     JMP main_loop
 
 ; ----------------------------------------------------------------------------
@@ -219,6 +223,30 @@ wait_blit:
     LDA @BLT_CTRL
     AND A, #2
     JNZ A, wait_blit
+    RTS
+
+wait_vblank:
+    ; Wait for VBlank to start (bit 1 of VIDEO_STATUS)
+    ; This synchronizes drawing to the vertical blank period
+    ; to prevent screen tearing and flicker
+    LDA @VIDEO_STATUS
+    AND A, #STATUS_VBLANK
+    JZ A, wait_vblank
+    RTS
+
+wait_frame:
+    ; Wait for a complete frame boundary (VBlank transition)
+    ; First wait for VBlank to END (active scan period)
+    ; Then wait for VBlank to START (new frame)
+    ; This ensures exactly one frame per iteration
+.wait_not_vblank:
+    LDA @VIDEO_STATUS
+    AND A, #STATUS_VBLANK
+    JNZ A, .wait_not_vblank
+.wait_vblank_start:
+    LDA @VIDEO_STATUS
+    AND A, #STATUS_VBLANK
+    JZ A, .wait_vblank_start
     RTS
 
 update_bars:

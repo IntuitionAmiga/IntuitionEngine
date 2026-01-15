@@ -162,7 +162,7 @@ SystemBus. This unified architecture ensures that:
 ├─────────────────────────────────────────────────────────────────┤
 │  0x000000 - 0x000FFF  │  System Vectors                         │
 │  0x001000 - 0x00EFFF  │  Program Space (code + data)            │
-│  0x00F000 - 0x00FFFF  │  Hardware I/O Registers                 │
+│  0x0F0000 - 0x0FFFFF  │  Hardware I/O Registers                 │
 │  0x100000 - 0x4FFFFF  │  Video RAM (VRAM)                       │
 └─────────────────────────────────────────────────────────────────┘
         │                       │                      │
@@ -185,9 +185,9 @@ The system's memory is organised as follows:
 0x000000 - 0x000FFF: System vectors (including interrupt vector)
 0x001000 - 0x001FFF: Program start
 0x100000 - 0x4FFFFF: Video RAM (VRAM_START to VRAM_START + VRAM_SIZE)
-0x00F000 - 0x00F054: Video registers (incl. copper + blitter + raster control)
-0x00F800 - 0x00F808: Timer registers
-0x00F900 - 0x00FA54: Sound registers
+0x0F0000 - 0x0F0058: Video registers (incl. copper + blitter + raster control)
+0x0F0800 - 0x0F0808: Timer registers
+0x0F0900 - 0x0F0A54: Sound registers
 ```
 Key memory-mapped hardware registers are logically grouped to facilitate system programming and hardware access. Each subsystem has a dedicated register block for configuration and control.
 
@@ -216,32 +216,34 @@ Programs begin loading at 0x1000, providing:
 - Clear separation from system areas
 - Space for program code and data
 
-## Hardware Registers (0xF000 - 0xF9FF)
+## Hardware Registers (0xF0000 - 0xF09FF)
 
-### Video Registers (0xF000 - 0xF054)
+### Video Registers (0xF0000 - 0xF0058)
 ```
-0xF000: VIDEO_CTRL   - Video system control (0 = disabled, 1 = enabled)
-0xF004: VIDEO_MODE   - Display mode selection
-0xF008: VIDEO_STATUS - Current video status (read-only)
-0xF00C: COPPER_CTRL  - Copper control (bit0=enable, bit1=reset/rewind)
-0xF010: COPPER_PTR   - Copper list base address (32-bit)
-0xF014: COPPER_PC    - Copper program counter (read-only)
-0xF018: COPPER_STATUS- Copper status (bit0=running, bit1=waiting, bit2=halted)
-0xF01C: BLT_CTRL     - Blitter control (bit0=start, bit1=busy, bit2=irq enable)
-0xF020: BLT_OP       - Blitter op (copy/fill/line/masked copy)
-0xF024: BLT_SRC      - Blitter source address (32-bit)
-0xF028: BLT_DST      - Blitter dest address (32-bit)
-0xF02C: BLT_WIDTH    - Blit width (pixels)
-0xF030: BLT_HEIGHT   - Blit height (pixels)
-0xF034: BLT_SRC_STRIDE - Source stride (bytes/row)
-0xF038: BLT_DST_STRIDE - Dest stride (bytes/row)
-0xF03C: BLT_COLOR    - Fill/line color (RGBA)
-0xF040: BLT_MASK     - Mask address for masked copy (1-bit/pixel)
-0xF044: BLT_STATUS   - Blitter status (bit0=error)
-0xF048: VIDEO_RASTER_Y - Raster band start Y
-0xF04C: VIDEO_RASTER_HEIGHT - Raster band height (pixels)
-0xF050: VIDEO_RASTER_COLOR - Raster band color (RGBA)
-0xF054: VIDEO_RASTER_CTRL - Raster band control (bit0=draw)
+0xF0000: VIDEO_CTRL   - Video system control (0 = disabled, 1 = enabled)
+0xF0004: VIDEO_MODE   - Display mode selection
+0xF0008: VIDEO_STATUS - Video status (read-only, lock-free)
+                        bit0 = hasContent (frame has been drawn to)
+                        bit1 = inVBlank (safe to draw without flicker)
+0xF000C: COPPER_CTRL  - Copper control (bit0=enable, bit1=reset/rewind)
+0xF0010: COPPER_PTR   - Copper list base address (32-bit)
+0xF0014: COPPER_PC    - Copper program counter (read-only)
+0xF0018: COPPER_STATUS- Copper status (bit0=running, bit1=waiting, bit2=halted)
+0xF001C: BLT_CTRL     - Blitter control (bit0=start, bit1=busy, bit2=irq enable)
+0xF0020: BLT_OP       - Blitter op (copy/fill/line/masked copy)
+0xF0024: BLT_SRC      - Blitter source address (32-bit)
+0xF0028: BLT_DST      - Blitter dest address (32-bit)
+0xF002C: BLT_WIDTH    - Blit width (pixels)
+0xF0030: BLT_HEIGHT   - Blit height (pixels)
+0xF0034: BLT_SRC_STRIDE - Source stride (bytes/row)
+0xF0038: BLT_DST_STRIDE - Dest stride (bytes/row)
+0xF003C: BLT_COLOR    - Fill/line color (RGBA)
+0xF0040: BLT_MASK     - Mask address for masked copy (1-bit/pixel)
+0xF0044: BLT_STATUS   - Blitter status (bit0=error)
+0xF0048: VIDEO_RASTER_Y - Raster band start Y
+0xF004C: VIDEO_RASTER_HEIGHT - Raster band height (pixels)
+0xF0050: VIDEO_RASTER_COLOR - Raster band color (RGBA)
+0xF0054: VIDEO_RASTER_CTRL - Raster band control (bit0=draw)
 
 Available Video Modes:
 MODE_640x480  = 0x00
@@ -251,82 +253,82 @@ MODE_1024x768 = 0x02
 
 Copper lists are stored as little-endian 32-bit words in RAM. The list format is:
 - `WAIT`: `(0<<30) | (y<<12) | x` (wait until raster Y/X reached)
-- `MOVE`: `(1<<30) | (regIndex<<20)` followed by a 32-bit value word
+- `MOVE`: `(1<<30) | (regIndex<<16)` followed by a 32-bit value word
 - `END`: `(3<<30)`
 
-`regIndex` is `(register_address - VIDEO_REG_BASE) / 4`.
+`regIndex` is `(register_address - VIDEO_REG_BASE) / 4`, where `VIDEO_REG_BASE = 0xF0000`.
 `COPPER_PTR` is latched on enable/reset; 8-bit CPUs should write bytes to `COPPER_PTR+0..3`.
 
 Example (mid-frame mode switch):
 ```assembly
 ; Copper list in RAM
     .long (0 << 30) | (100 << 12) | 0          ; WAIT y=100, x=0
-    .long (1 << 30) | (1 << 20)                ; MOVE VIDEO_MODE (index 1)
+    .long (1 << 30) | (1 << 16)                ; MOVE VIDEO_MODE (index 1)
     .long 0x01                                 ; MODE_800x600
     .long (3 << 30)                            ; END
 ```
 
-### Timer Registers (0xF800 - 0xF808)
+### Timer Registers (0xF0800 - 0xF0808)
 ```
-0xF800: TIMER_CTRL   - Timer control (0 = disabled, 1 = enabled)
-0xF804: TIMER_COUNT  - Current timer value (decrements automatically)
-0xF808: TIMER_PERIOD - Timer reload value
+0xF0800: TIMER_CTRL   - Timer control (0 = disabled, 1 = enabled)
+0xF0804: TIMER_COUNT  - Current timer value (decrements automatically)
+0xF0808: TIMER_PERIOD - Timer reload value
 ```
 
 The timer generates an interrupt when TIMER_COUNT reaches zero and automatically reloads from TIMER_PERIOD.
 
-### Sound Registers (0xF900 - 0xF97C)
+### Sound Registers (0xF0900 - 0xF097C)
 
 Each sound channel has its own register block. Here's the layout for each channel type:
 
-#### Square Wave Channel (0xF900 - 0xF93F)
+#### Square Wave Channel (0xF0900 - 0xF093F)
 ```
-0xF900: SQUARE_FREQ     - Frequency control
-0xF904: SQUARE_VOL      - Volume (0-255)
-0xF908: SQUARE_CTRL     - Channel control
-0xF90C: SQUARE_DUTY     - Duty cycle control
-0xF910: SQUARE_SWEEP    - Frequency sweep control
-0xF922: SQUARE_PWM_CTRL - PWM modulation control
-0xF930: SQUARE_ATK      - Attack time (ms)
-0xF934: SQUARE_DEC      - Decay time (ms)
-0xF938: SQUARE_SUS      - Sustain level (0-255)
-0xF93C: SQUARE_REL      - Release time (ms)
-```
-
-#### Triangle Wave Channel (0xF940 - 0xF97F)
-```
-0xF940: TRI_FREQ  - Frequency control
-0xF944: TRI_VOL   - Volume control
-0xF948: TRI_CTRL  - Channel control
-0xF960: TRI_ATK   - Attack time
-0xF964: TRI_DEC   - Decay time
-0xF968: TRI_SUS   - Sustain level
-0xF96C: TRI_REL   - Release time
-0xF914: TRI_SWEEP - Frequency sweep control
+0xF0900: SQUARE_FREQ     - Frequency control
+0xF0904: SQUARE_VOL      - Volume (0-255)
+0xF0908: SQUARE_CTRL     - Channel control
+0xF090C: SQUARE_DUTY     - Duty cycle control
+0xF0910: SQUARE_SWEEP    - Frequency sweep control
+0xF0922: SQUARE_PWM_CTRL - PWM modulation control
+0xF0930: SQUARE_ATK      - Attack time (ms)
+0xF0934: SQUARE_DEC      - Decay time (ms)
+0xF0938: SQUARE_SUS      - Sustain level (0-255)
+0xF093C: SQUARE_REL      - Release time (ms)
 ```
 
-#### Sine Wave Channel (0xF980 - 0xF9BF)
+#### Triangle Wave Channel (0xF0940 - 0xF097F)
 ```
-0xF980: SINE_FREQ  - Frequency control
-0xF984: SINE_VOL   - Volume control
-0xF988: SINE_CTRL  - Channel control
-0xF990: SINE_ATK   - Attack time
-0xF994: SINE_DEC   - Decay time
-0xF998: SINE_SUS   - Sustain level
-0xF99C: SINE_REL   - Release time
-0xF918: SINE_SWEEP - Frequency sweep control
+0xF0940: TRI_FREQ  - Frequency control
+0xF0944: TRI_VOL   - Volume control
+0xF0948: TRI_CTRL  - Channel control
+0xF0960: TRI_ATK   - Attack time
+0xF0964: TRI_DEC   - Decay time
+0xF0968: TRI_SUS   - Sustain level
+0xF096C: TRI_REL   - Release time
+0xF0914: TRI_SWEEP - Frequency sweep control
 ```
 
-#### Noise Channel (0xF9C0 - 0xF9FF)
+#### Sine Wave Channel (0xF0980 - 0xF09BF)
 ```
-0xF9C0: NOISE_FREQ  - Frequency control
-0xF9C4: NOISE_VOL   - Volume control
-0xF9C8: NOISE_CTRL  - Channel control
-0xF9D0: NOISE_ATK   - Attack time
-0xF9D4: NOISE_DEC   - Decay time
-0xF9D8: NOISE_SUS   - Sustain level
-0xF9DC: NOISE_REL   - Release time
-0xF9E0: NOISE_MODE  - Noise generation mode
+0xF0980: SINE_FREQ  - Frequency control
+0xF0984: SINE_VOL   - Volume control
+0xF0988: SINE_CTRL  - Channel control
+0xF0990: SINE_ATK   - Attack time
+0xF0994: SINE_DEC   - Decay time
+0xF0998: SINE_SUS   - Sustain level
+0xF099C: SINE_REL   - Release time
+0xF0918: SINE_SWEEP - Frequency sweep control
+```
+
+#### Noise Channel (0xF09C0 - 0xF09FF)
+```
+0xF09C0: NOISE_FREQ  - Frequency control
+0xF09C4: NOISE_VOL   - Volume control
+0xF09C8: NOISE_CTRL  - Channel control
+0xF09D0: NOISE_ATK   - Attack time
+0xF09D4: NOISE_DEC   - Decay time
+0xF09D8: NOISE_SUS   - Sustain level
+0xF09DC: NOISE_REL   - Release time
+0xF09E0: NOISE_MODE  - Noise generation mode
 
 Noise Modes:
 NOISE_MODE_WHITE    = 0 // Standard LFSR noise
@@ -334,45 +336,45 @@ NOISE_MODE_PERIODIC = 1 // Periodic/looping noise
 NOISE_MODE_METALLIC = 2 // "Metallic" noise variant
 ```
 
-#### Channel Modulation Controls (0xFA00 - 0xFA1C)
+#### Channel Modulation Controls (0xF0A00 - 0xF0A1C)
 ```
-0xFA00: SYNC_SOURCE_CH0 - Sync source for channel 0
-0xFA04: SYNC_SOURCE_CH1 - Sync source for channel 1
-0xFA08: SYNC_SOURCE_CH2 - Sync source for channel 2
-0xFA0C: SYNC_SOURCE_CH3 - Sync source for channel 3
+0xF0A00: SYNC_SOURCE_CH0 - Sync source for channel 0
+0xF0A04: SYNC_SOURCE_CH1 - Sync source for channel 1
+0xF0A08: SYNC_SOURCE_CH2 - Sync source for channel 2
+0xF0A0C: SYNC_SOURCE_CH3 - Sync source for channel 3
 
-0xFA10: RING_MOD_SOURCE_CH0 - Ring mod source for channel 0
-0xFA14: RING_MOD_SOURCE_CH1 - Ring mod source for channel 1
-0xFA18: RING_MOD_SOURCE_CH2 - Ring mod source for channel 2
-0xFA1C: RING_MOD_SOURCE_CH3 - Ring mod source for channel 3
-```
-
-#### Sawtooth Wave Channel (0xFA20 - 0xFA6F)
-```
-0xFA20: SAW_FREQ  - Frequency control
-0xFA24: SAW_VOL   - Volume control
-0xFA28: SAW_CTRL  - Channel control
-0xFA2C: SAW_SWEEP - Frequency sweep control
-0xFA30: SAW_ATK   - Attack time
-0xFA34: SAW_DEC   - Decay time
-0xFA38: SAW_SUS   - Sustain level
-0xFA3C: SAW_REL   - Release time
-
-0xFA60: SYNC_SOURCE_CH4     - Sync source for sawtooth channel
-0xFA64: RING_MOD_SOURCE_CH4 - Ring mod source for sawtooth channel
+0xF0A10: RING_MOD_SOURCE_CH0 - Ring mod source for channel 0
+0xF0A14: RING_MOD_SOURCE_CH1 - Ring mod source for channel 1
+0xF0A18: RING_MOD_SOURCE_CH2 - Ring mod source for channel 2
+0xF0A1C: RING_MOD_SOURCE_CH3 - Ring mod source for channel 3
 ```
 
-#### Global Sound Effects (0xFA40 - 0xFA54)
+#### Sawtooth Wave Channel (0xF0A20 - 0xF0A6F)
 ```
-0xF820: FILTER_CUTOFF     - Filter cutoff frequency (0-255)
-0xF824: FILTER_RESONANCE  - Filter resonance (0-255)
-0xF828: FILTER_TYPE       - Filter type selection
-0xF82C: FILTER_MOD_SOURCE - Filter modulation source
-0xF830: FILTER_MOD_AMOUNT - Modulation depth (0-255)
+0xF0A20: SAW_FREQ  - Frequency control
+0xF0A24: SAW_VOL   - Volume control
+0xF0A28: SAW_CTRL  - Channel control
+0xF0A2C: SAW_SWEEP - Frequency sweep control
+0xF0A30: SAW_ATK   - Attack time
+0xF0A34: SAW_DEC   - Decay time
+0xF0A38: SAW_SUS   - Sustain level
+0xF0A3C: SAW_REL   - Release time
 
-0xFA40: OVERDRIVE_CTRL - Drive amount (0-255)
-0xFA50: REVERB_MIX     - Dry/wet mix (0-255)
-0xFA54: REVERB_DECAY   - Decay time (0-255)
+0xF0A60: SYNC_SOURCE_CH4     - Sync source for sawtooth channel
+0xF0A64: RING_MOD_SOURCE_CH4 - Ring mod source for sawtooth channel
+```
+
+#### Global Sound Effects (0xF0A40 - 0xF0A54)
+```
+0xF0820: FILTER_CUTOFF     - Filter cutoff frequency (0-255)
+0xF0824: FILTER_RESONANCE  - Filter resonance (0-255)
+0xF0828: FILTER_TYPE       - Filter type selection
+0xF082C: FILTER_MOD_SOURCE - Filter modulation source
+0xF0830: FILTER_MOD_AMOUNT - Modulation depth (0-255)
+
+0xF0A40: OVERDRIVE_CTRL - Drive amount (0-255)
+0xF0A50: REVERB_MIX     - Dry/wet mix (0-255)
+0xF0A54: REVERB_DECAY   - Decay time (0-255)
 ```
 
 # 4. CPU Architecture
@@ -455,7 +457,7 @@ The system supports five addressing modes:
 **Direct (ADDR_DIRECT = 0x04)**
 
    ```assembly
-   STORE A, @0xF900   ; Store A's value directly to memory address 0xF900
+   STORE A, @0xF0900  ; Store A's value directly to memory address 0xF0900
    LOAD A, @0x1000    ; Load value directly from memory address 0x1000
    ```
 
@@ -588,9 +590,9 @@ The system implements a simple but effective interrupt system:
    ```assembly
    ; Configure timer interrupt
    LOAD A, #44100     ; Set period (1 second at 44.1kHz)
-   STORE A, @0xF808   ; Write to TIMER_PERIOD
+   STORE A, @0xF0808  ; Write to TIMER_PERIOD
    LOAD A, #1
-   STORE A, @0xF800   ; Enable timer
+   STORE A, @0xF0800  ; Enable timer
    SEI                ; Enable interrupts
    ```
 
@@ -763,8 +765,8 @@ Every assembly program follows this basic structure:
 ```assembly
 ; Program header with description
 ; Example: Simple counter program
-.equ TIMER_CTRL, 0xF800    ; Define hardware constants
-.equ TIMER_PERIOD, 0xF808  ; using symbolic names
+.equ TIMER_CTRL, 0xF0800    ; Define hardware constants
+.equ TIMER_PERIOD, 0xF0808  ; using symbolic names
 
 start:                     ; Main entry point
     LOAD A, #0             ; Initialise counter
@@ -1075,28 +1077,64 @@ The system tracks changes in 32x32 pixel blocks:
 - Updates only changed areas
 - Improves rendering performance
 
-## 9.4 Double Buffering
+## 9.4 Double Buffering and VBlank Synchronization
 
-Video output uses double buffering to prevent tearing:
-- Write to back buffer
-- Wait for VSync
+Video output uses double buffering to prevent tearing. The system provides a VBlank status bit for flicker-free animation:
+
+- `VIDEO_STATUS` (0xF0008) bit 1 indicates VBlank period (safe to draw)
+- VBlank is read lock-free - no mutex contention during polling
+- Write to back buffer during VBlank to avoid screen flicker
 - Buffers swap automatically
 
-Example frame rendering:
+### VBlank Timing
+
+The VBlank flag follows this timing:
+1. `inVBlank = false` when frame processing starts (active scan)
+2. `inVBlank = true` after frame is sent to display (CPU can safely draw)
+
+### Frame Synchronization Pattern
+
+For smooth animation, wait for a complete frame boundary (VBlank transition):
 
 ```assembly
-draw_frame:
-    JSR clear_buffer    ; Clear back buffer
-    JSR draw_graphics   ; Draw new frame
-    JSR wait_vsync      ; Wait for sync
+.equ VIDEO_STATUS   0xF0008
+.equ STATUS_VBLANK  2           ; bit 1
+
+; Wait for exactly one frame - prevents animation running too fast
+wait_frame:
+    ; First wait for VBlank to END (active scan period)
+.wait_not_vblank:
+    LDA @VIDEO_STATUS
+    AND A, #STATUS_VBLANK
+    JNZ A, .wait_not_vblank
+
+    ; Then wait for VBlank to START (new frame)
+.wait_vblank_start:
+    LDA @VIDEO_STATUS
+    AND A, #STATUS_VBLANK
+    JZ A, .wait_vblank_start
     RTS
 
-wait_vsync:
-    LOAD A, @VIDEO_STATUS
-    AND A, #1           ; Check vsync bit
-    JZ A, wait_vsync
+; Simple VBlank wait (use when not already in VBlank)
+wait_vblank:
+    LDA @VIDEO_STATUS
+    AND A, #STATUS_VBLANK
+    JZ A, wait_vblank
     RTS
 ```
+
+### Animation Loop Example
+
+```assembly
+main_loop:
+    JSR wait_frame      ; Wait for frame boundary (60 FPS)
+    JSR erase_sprite    ; Erase old sprite position
+    JSR update_position ; Calculate new position
+    JSR draw_sprite     ; Draw at new position
+    JMP main_loop
+```
+
+The `wait_frame` pattern ensures exactly one frame per loop iteration, giving smooth 60 FPS animation regardless of how fast the CPU runs.
 
 ## 9.5 Direct VRAM Access Mode
 
@@ -1138,19 +1176,21 @@ videoChip.DisableDirectMode()
 The video subsystem includes a simple copper-like list executor for mid-frame register updates. Copper lists are stored in RAM as little-endian 32-bit words and can WAIT on raster positions, MOVE values into video registers, and END the list. The copper restarts each frame while enabled.
 
 Registers:
-- `COPPER_CTRL` (0xF00C): bit0=enable, bit1=reset/rewind
-- `COPPER_PTR`  (0xF010): list base address (latched on enable/reset)
-- `COPPER_PC`   (0xF014): current list address (read-only)
-- `COPPER_STATUS` (0xF018): bit0=running, bit1=waiting, bit2=halted
+- `COPPER_CTRL` (0xF000C): bit0=enable, bit1=reset/rewind
+- `COPPER_PTR`  (0xF0010): list base address (latched on enable/reset)
+- `COPPER_PC`   (0xF0014): current list address (read-only)
+- `COPPER_STATUS` (0xF0018): bit0=running, bit1=waiting, bit2=halted
 
 List words:
 - `WAIT`: `(0<<30) | (y<<12) | x`
-- `MOVE`: `(1<<30) | (regIndex<<20)` followed by a 32-bit value
+- `MOVE`: `(1<<30) | (regIndex<<16)` followed by a 32-bit value
 - `END`: `(3<<30)`
 
 ## 9.7 DMA Blitter
 
-The DMA blitter performs rectangle copy/fill and line drawing in the video thread. Registers are written via memory-mapped I/O, and the blitter operates on VRAM addresses (RGBA, 4 bytes/pixel).
+The DMA blitter performs rectangle copy/fill and line drawing. Registers are written via memory-mapped I/O, and the blitter operates on VRAM addresses (RGBA, 4 bytes/pixel).
+
+**Synchronous Execution**: The blitter runs immediately when `BLT_CTRL` is written with bit0 set. This ensures blitter operations complete before the CPU continues, allowing safe drawing during VBlank without race conditions.
 
 Ops (`BLT_OP`):
 - `0`: COPY
@@ -1317,15 +1357,15 @@ Note: `.ym` files are Atari ST YM, `.vgm/.vgz` are VGM streams (including MSX PS
 PSG+ enables enhanced audio processing for PSG sources (oversampling, gentle low-pass smoothing,
 subtle saturation, and a tiny room/width effect) for a richer sound while preserving pitch and timing.
 
-When running in CPU modes, PSG registers are available at `0xFC00-0xFC0D`
-for direct AY/YM register writes. PSG+ can be toggled via `PSG_PLUS_CTRL` at `0xFC0E`
+When running in CPU modes, PSG registers are available at `0xF0C00-0xF0C0D`
+for direct AY/YM register writes. PSG+ can be toggled via `PSG_PLUS_CTRL` at `0xF0C0E`
 (`bit 0 = 1` enables PSG+), and is disabled by default.
 
 To start AY/YM/VGM playback from CPU code, use the PSG playback control registers:
-- `PSG_PLAY_PTR` (`0xFC10`): pointer to PSG data in RAM (binary blob)
-- `PSG_PLAY_LEN` (`0xFC14`): length in bytes
-- `PSG_PLAY_CTRL` (`0xFC18`): bit0=start, bit1=stop
-- `PSG_PLAY_STATUS` (`0xFC1C`): bit0=busy, bit1=error
+- `PSG_PLAY_PTR` (`0xF0C10`): pointer to PSG data in RAM (binary blob)
+- `PSG_PLAY_LEN` (`0xF0C14`): length in bytes
+- `PSG_PLAY_CTRL` (`0xF0C18`): bit0=start, bit1=stop
+- `PSG_PLAY_STATUS` (`0xF0C1C`): bit0=busy, bit1=error
 
 The assembler provides error messages for common issues like:
 - Undefined labels
@@ -1342,7 +1382,7 @@ The system provides several debugging methods:
 ```assembly
 debug_point:
     PUSH A
-    STORE A, @0xF700    ; Debug output register
+    STORE A, @0xF0700   ; Debug output register
     POP A
     RTS
 ```
