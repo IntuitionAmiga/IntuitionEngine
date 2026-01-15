@@ -246,7 +246,17 @@ func (e *PSGEngine) TickSample() {
 			e.eventIndex = e.loopEventIndex
 		} else {
 			e.playing = false
+			e.silenceChannels()
 		}
+	}
+}
+
+func (e *PSGEngine) silenceChannels() {
+	if e.sound == nil {
+		return
+	}
+	for ch := 0; ch < 4; ch++ {
+		e.writeChannel(ch, FLEX_OFF_VOL, 0)
 	}
 }
 

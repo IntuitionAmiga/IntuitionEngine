@@ -24,6 +24,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"time"
 )
 
 type optionalStringFlag struct {
@@ -222,13 +223,22 @@ func main() {
 		}
 		meta := psgPlayer.Metadata()
 		if meta.Title != "" || meta.Author != "" {
-			fmt.Printf("Playing PSG: %s - %s\n", meta.Title, meta.Author)
+			fmt.Printf("Playing: %s - %s", meta.Title, meta.Author)
 		} else {
-			fmt.Printf("Playing PSG file: %s\n", filename)
+			fmt.Printf("Playing: %s", filename)
 		}
+		if dur := psgPlayer.DurationText(); dur != "" {
+			fmt.Printf(" (%s)", dur)
+		}
+		fmt.Println()
 		soundChip.Start()
 		psgPlayer.Play()
-		select {}
+		// Wait for playback to complete, then exit
+		for psgEngine.IsPlaying() {
+			time.Sleep(100 * time.Millisecond)
+		}
+		soundChip.Stop()
+		os.Exit(0)
 	}
 
 	// Create system bus
