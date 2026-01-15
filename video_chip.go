@@ -82,6 +82,11 @@ const (
 	VIDEO_REG_OFFSET_BLT_DST_STRIDE = 0x038
 	VIDEO_REG_OFFSET_BLT_COLOR      = 0x03C
 	VIDEO_REG_OFFSET_BLT_MASK       = 0x040
+	VIDEO_REG_OFFSET_BLT_STATUS     = 0x044
+	VIDEO_REG_OFFSET_RASTER_Y       = 0x048
+	VIDEO_REG_OFFSET_RASTER_HEIGHT  = 0x04C
+	VIDEO_REG_OFFSET_RASTER_COLOR   = 0x050
+	VIDEO_REG_OFFSET_RASTER_CTRL    = 0x054
 	VIDEO_CTRL                      = VIDEO_REG_BASE + VIDEO_REG_OFFSET_CTRL
 	VIDEO_MODE                      = VIDEO_REG_BASE + VIDEO_REG_OFFSET_MODE
 	VIDEO_STATUS                    = VIDEO_REG_BASE + VIDEO_REG_OFFSET_STATUS
@@ -99,7 +104,12 @@ const (
 	BLT_DST_STRIDE                  = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_DST_STRIDE
 	BLT_COLOR                       = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_COLOR
 	BLT_MASK                        = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_MASK
-	VIDEO_REG_END                   = BLT_MASK + 3
+	BLT_STATUS                      = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_STATUS
+	VIDEO_RASTER_Y                  = VIDEO_REG_BASE + VIDEO_REG_OFFSET_RASTER_Y
+	VIDEO_RASTER_HEIGHT             = VIDEO_REG_BASE + VIDEO_REG_OFFSET_RASTER_HEIGHT
+	VIDEO_RASTER_COLOR              = VIDEO_REG_BASE + VIDEO_REG_OFFSET_RASTER_COLOR
+	VIDEO_RASTER_CTRL               = VIDEO_REG_BASE + VIDEO_REG_OFFSET_RASTER_CTRL
+	VIDEO_REG_END                   = VIDEO_RASTER_CTRL + 3
 
 	VRAM_START_MB = 1 // VRAM starts at 1MB offset
 	VRAM_SIZE_MB  = 4 // 4MB of video memory
@@ -143,6 +153,14 @@ const (
 	bltOpFill
 	bltOpLine
 	bltOpMaskedCopy
+)
+
+const (
+	bltStatusErr = 1 << 0
+)
+
+const (
+	rasterCtrlStart = 1 << 0
 )
 
 // ------------------------------------------------------------------------------
@@ -401,6 +419,11 @@ type VideoChip struct {
 	bltColor        uint32
 	bltMask         uint32
 	bltPending      bool
+	bltErr          bool
+
+	rasterY      uint32
+	rasterHeight uint32
+	rasterColor  uint32
 }
 
 // VideoMode defines resolution and buffer parameters for a display mode
@@ -927,7 +950,7 @@ func (chip *VideoChip) blitFillLocked(mode VideoMode) {
 	}
 	stride := chip.bltDstStrideRun
 	if stride == 0 {
-		stride = uint32(width * BYTES_PER_PIXEL)
+		stride = chip.defaultStride(chip.bltDst, width, mode)
 	}
 
 	rowAddr := chip.bltDst
@@ -949,11 +972,11 @@ func (chip *VideoChip) blitCopyLocked(mode VideoMode) {
 	}
 	srcStride := chip.bltSrcStrideRun
 	if srcStride == 0 {
-		srcStride = uint32(width * BYTES_PER_PIXEL)
+		srcStride = chip.defaultStride(chip.bltSrc, width, mode)
 	}
 	dstStride := chip.bltDstStrideRun
 	if dstStride == 0 {
-		dstStride = uint32(width * BYTES_PER_PIXEL)
+		dstStride = chip.defaultStride(chip.bltDst, width, mode)
 	}
 
 	srcRow := chip.bltSrc
@@ -980,11 +1003,11 @@ func (chip *VideoChip) blitMaskedCopyLocked(mode VideoMode) {
 	}
 	srcStride := chip.bltSrcStrideRun
 	if srcStride == 0 {
-		srcStride = uint32(width * BYTES_PER_PIXEL)
+		srcStride = chip.defaultStride(chip.bltSrc, width, mode)
 	}
 	dstStride := chip.bltDstStrideRun
 	if dstStride == 0 {
-		dstStride = uint32(width * BYTES_PER_PIXEL)
+		dstStride = chip.defaultStride(chip.bltDst, width, mode)
 	}
 	maskStride := uint32((width + 7) / 8)
 
@@ -1055,6 +1078,7 @@ func (chip *VideoChip) blitReadPixelLocked(addr uint32) uint32 {
 	if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
 		offset := addr - BUFFER_OFFSET
 		if offset+BYTES_PER_PIXEL > uint32(len(chip.frontBuffer)) || offset%BYTES_PER_PIXEL != BUFFER_REMAINDER {
+			chip.bltErr = true
 			return 0
 		}
 		return binary.LittleEndian.Uint32(chip.frontBuffer[offset:])
@@ -1066,6 +1090,7 @@ func (chip *VideoChip) blitWritePixelLocked(addr uint32, value uint32, mode Vide
 	if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
 		offset := addr - BUFFER_OFFSET
 		if offset+BYTES_PER_PIXEL > uint32(len(chip.frontBuffer)) || offset%BYTES_PER_PIXEL != BUFFER_REMAINDER {
+			chip.bltErr = true
 			return
 		}
 		binary.LittleEndian.PutUint32(chip.frontBuffer[offset:], value)
@@ -1079,6 +1104,13 @@ func (chip *VideoChip) blitWritePixelLocked(addr uint32, value uint32, mode Vide
 		return
 	}
 	chip.bus.Write32(addr, value)
+}
+
+func (chip *VideoChip) defaultStride(addr uint32, width int, mode VideoMode) uint32 {
+	if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
+		return uint32(mode.bytesPerRow)
+	}
+	return uint32(width * BYTES_PER_PIXEL)
 }
 
 func (chip *VideoChip) advanceCopperFrameLocked(mode VideoMode) {
@@ -1243,6 +1275,16 @@ func (chip *VideoChip) HandleRead(addr uint32) uint32 {
 		return chip.bltColorStaged
 	case BLT_MASK:
 		return chip.bltMaskStaged
+	case BLT_STATUS:
+		return chip.blitterStatusLocked()
+	case VIDEO_RASTER_Y:
+		return chip.rasterY
+	case VIDEO_RASTER_HEIGHT:
+		return chip.rasterHeight
+	case VIDEO_RASTER_COLOR:
+		return chip.rasterColor
+	case VIDEO_RASTER_CTRL:
+		return 0
 	case COPPER_PC + 1:
 		return readUint32Byte(chip.copperPC, 1)
 	case COPPER_PC + 2:
@@ -1315,6 +1357,30 @@ func (chip *VideoChip) HandleRead(addr uint32) uint32 {
 		return readUint32Byte(chip.bltMaskStaged, 2)
 	case BLT_MASK + 3:
 		return readUint32Byte(chip.bltMaskStaged, 3)
+	case BLT_STATUS + 1:
+		return readUint32Byte(chip.blitterStatusLocked(), 1)
+	case BLT_STATUS + 2:
+		return readUint32Byte(chip.blitterStatusLocked(), 2)
+	case BLT_STATUS + 3:
+		return readUint32Byte(chip.blitterStatusLocked(), 3)
+	case VIDEO_RASTER_Y + 1:
+		return readUint32Byte(chip.rasterY, 1)
+	case VIDEO_RASTER_Y + 2:
+		return readUint32Byte(chip.rasterY, 2)
+	case VIDEO_RASTER_Y + 3:
+		return readUint32Byte(chip.rasterY, 3)
+	case VIDEO_RASTER_HEIGHT + 1:
+		return readUint32Byte(chip.rasterHeight, 1)
+	case VIDEO_RASTER_HEIGHT + 2:
+		return readUint32Byte(chip.rasterHeight, 2)
+	case VIDEO_RASTER_HEIGHT + 3:
+		return readUint32Byte(chip.rasterHeight, 3)
+	case VIDEO_RASTER_COLOR + 1:
+		return readUint32Byte(chip.rasterColor, 1)
+	case VIDEO_RASTER_COLOR + 2:
+		return readUint32Byte(chip.rasterColor, 2)
+	case VIDEO_RASTER_COLOR + 3:
+		return readUint32Byte(chip.rasterColor, 3)
 	default:
 		if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
 			offset := addr - ADDR_OFFSET
@@ -1350,6 +1416,14 @@ func (chip *VideoChip) blitterCtrlValueLocked() uint32 {
 		ctrl |= bltCtrlIRQ
 	}
 	return ctrl
+}
+
+func (chip *VideoChip) blitterStatusLocked() uint32 {
+	status := uint32(0)
+	if chip.bltErr {
+		status |= bltStatusErr
+	}
+	return status
 }
 
 func (chip *VideoChip) HandleWrite(addr uint32, value uint32) {
@@ -1438,6 +1512,34 @@ func (chip *VideoChip) handleWriteLocked(addr uint32, value uint32) {
 		}
 	case COPPER_PTR + 3:
 		chip.copperPtrStaged = writeUint32Byte(chip.copperPtrStaged, value, 3)
+	case VIDEO_RASTER_Y:
+		chip.rasterY = value
+	case VIDEO_RASTER_Y + 1:
+		chip.rasterY = writeUint32Byte(chip.rasterY, value, 1)
+	case VIDEO_RASTER_Y + 2:
+		chip.rasterY = writeUint32Word(chip.rasterY, value, 2)
+	case VIDEO_RASTER_Y + 3:
+		chip.rasterY = writeUint32Byte(chip.rasterY, value, 3)
+	case VIDEO_RASTER_HEIGHT:
+		chip.rasterHeight = value
+	case VIDEO_RASTER_HEIGHT + 1:
+		chip.rasterHeight = writeUint32Byte(chip.rasterHeight, value, 1)
+	case VIDEO_RASTER_HEIGHT + 2:
+		chip.rasterHeight = writeUint32Word(chip.rasterHeight, value, 2)
+	case VIDEO_RASTER_HEIGHT + 3:
+		chip.rasterHeight = writeUint32Byte(chip.rasterHeight, value, 3)
+	case VIDEO_RASTER_COLOR:
+		chip.rasterColor = value
+	case VIDEO_RASTER_COLOR + 1:
+		chip.rasterColor = writeUint32Byte(chip.rasterColor, value, 1)
+	case VIDEO_RASTER_COLOR + 2:
+		chip.rasterColor = writeUint32Word(chip.rasterColor, value, 2)
+	case VIDEO_RASTER_COLOR + 3:
+		chip.rasterColor = writeUint32Byte(chip.rasterColor, value, 3)
+	case VIDEO_RASTER_CTRL:
+		if value&rasterCtrlStart != 0 {
+			chip.drawRasterBandLocked()
+		}
 	default:
 		if chip.handleBlitterWriteLocked(addr, value) {
 			return
@@ -1477,6 +1579,7 @@ func (chip *VideoChip) handleBlitterWriteLocked(addr uint32, value uint32) bool 
 			return true
 		}
 		chip.bltBusy = true
+		chip.bltErr = false
 		chip.bltOp = chip.bltOpStaged
 		chip.bltSrc = chip.bltSrcStaged
 		chip.bltDst = chip.bltDstStaged
@@ -1598,6 +1701,37 @@ func (chip *VideoChip) handleBlitterWriteLocked(addr uint32, value uint32) bool 
 		return true
 	default:
 		return false
+	}
+}
+
+func (chip *VideoChip) drawRasterBandLocked() {
+	mode := VideoModes[chip.currentMode]
+	startY := int(chip.rasterY)
+	height := int(chip.rasterHeight)
+	if height <= 0 {
+		height = 1
+	}
+	if startY < 0 || startY >= mode.height {
+		return
+	}
+	endY := startY + height
+	if endY > mode.height {
+		endY = mode.height
+	}
+
+	for y := startY; y < endY; y++ {
+		rowOffset := uint32(y * mode.bytesPerRow)
+		for x := 0; x < mode.width; x++ {
+			offset := rowOffset + uint32(x*BYTES_PER_PIXEL)
+			if offset+BYTES_PER_PIXEL > uint32(len(chip.frontBuffer)) {
+				break
+			}
+			binary.LittleEndian.PutUint32(chip.frontBuffer[offset:], chip.rasterColor)
+		}
+		chip.markRegionDirty(0, y)
+	}
+	if !chip.resetting && !chip.hasContent.Load() {
+		chip.hasContent.Store(true)
 	}
 }
 

@@ -122,8 +122,6 @@ func TestBlitterCopy(t *testing.T) {
 	bus.Write32(BLT_DST, dst)
 	bus.Write32(BLT_WIDTH, 2)
 	bus.Write32(BLT_HEIGHT, 2)
-	bus.Write32(BLT_SRC_STRIDE, uint32(mode.bytesPerRow))
-	bus.Write32(BLT_DST_STRIDE, uint32(mode.bytesPerRow))
 	bus.Write32(BLT_CTRL, bltCtrlStart)
 
 	video.RunBlitterForTest()
@@ -139,6 +137,59 @@ func TestBlitterCopy(t *testing.T) {
 	}
 	if got := video.HandleRead(dst + uint32(mode.bytesPerRow) + 4); got != 0x55667788 {
 		t.Fatalf("expected copy pixel 3, got 0x%X", got)
+	}
+}
+
+func TestBlitterDefaultStrideVRAM(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	mode := VideoModes[video.currentMode]
+
+	src := vramAddr(mode, 0, 30)
+	dst := vramAddr(mode, 10, 30)
+	video.HandleWrite(src, 0x01020304)
+	video.HandleWrite(src+4, 0x05060708)
+	video.HandleWrite(src+uint32(mode.bytesPerRow), 0x11121314)
+	video.HandleWrite(src+uint32(mode.bytesPerRow)+4, 0x15161718)
+
+	bus.Write32(BLT_OP, bltOpCopy)
+	bus.Write32(BLT_SRC, src)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 2)
+	bus.Write32(BLT_HEIGHT, 2)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+
+	video.RunBlitterForTest()
+
+	if got := video.HandleRead(dst); got != 0x01020304 {
+		t.Fatalf("expected default stride copy pixel 0, got 0x%X", got)
+	}
+	if got := video.HandleRead(dst + 4); got != 0x05060708 {
+		t.Fatalf("expected default stride copy pixel 1, got 0x%X", got)
+	}
+	if got := video.HandleRead(dst + uint32(mode.bytesPerRow)); got != 0x11121314 {
+		t.Fatalf("expected default stride copy pixel 2, got 0x%X", got)
+	}
+	if got := video.HandleRead(dst + uint32(mode.bytesPerRow) + 4); got != 0x15161718 {
+		t.Fatalf("expected default stride copy pixel 3, got 0x%X", got)
+	}
+}
+
+func TestBlitterStatusErrorOnMisalign(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	mode := VideoModes[video.currentMode]
+	dst := vramAddr(mode, 5, 5) + 1
+
+	bus.Write32(BLT_OP, bltOpFill)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 1)
+	bus.Write32(BLT_HEIGHT, 1)
+	bus.Write32(BLT_COLOR, 0x12345678)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+
+	video.RunBlitterForTest()
+
+	if got := video.HandleRead(BLT_STATUS); got&bltStatusErr == 0 {
+		t.Fatalf("expected BLT_STATUS err set, got 0x%X", got)
 	}
 }
 

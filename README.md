@@ -149,7 +149,7 @@ The system's memory is organised as follows:
 0x000000 - 0x000FFF: System vectors (including interrupt vector)
 0x001000 - 0x001FFF: Program start
 0x100000 - 0x4FFFFF: Video RAM (VRAM_START to VRAM_START + VRAM_SIZE)
-0x00F000 - 0x00F040: Video registers (incl. copper + blitter control)
+0x00F000 - 0x00F054: Video registers (incl. copper + blitter + raster control)
 0x00F800 - 0x00F808: Timer registers
 0x00F900 - 0x00FA54: Sound registers
 ```
@@ -182,7 +182,7 @@ Programs begin loading at 0x1000, providing:
 
 ## Hardware Registers (0xF000 - 0xF9FF)
 
-### Video Registers (0xF000 - 0xF040)
+### Video Registers (0xF000 - 0xF054)
 ```
 0xF000: VIDEO_CTRL   - Video system control (0 = disabled, 1 = enabled)
 0xF004: VIDEO_MODE   - Display mode selection
@@ -201,6 +201,11 @@ Programs begin loading at 0x1000, providing:
 0xF038: BLT_DST_STRIDE - Dest stride (bytes/row)
 0xF03C: BLT_COLOR    - Fill/line color (RGBA)
 0xF040: BLT_MASK     - Mask address for masked copy (1-bit/pixel)
+0xF044: BLT_STATUS   - Blitter status (bit0=error)
+0xF048: VIDEO_RASTER_Y - Raster band start Y
+0xF04C: VIDEO_RASTER_HEIGHT - Raster band height (pixels)
+0xF050: VIDEO_RASTER_COLOR - Raster band color (RGBA)
+0xF054: VIDEO_RASTER_CTRL - Raster band control (bit0=draw)
 
 Available Video Modes:
 MODE_640x480  = 0x00
@@ -1135,6 +1140,24 @@ Example (fill a 16x16 block):
     STORE A, @BLT_COLOR
     LOAD A, #1
     STORE A, @BLT_CTRL       ; start
+```
+
+The blitter defaults `BLT_SRC_STRIDE`/`BLT_DST_STRIDE` to the current mode row bytes when the address is in VRAM, otherwise it uses `width*4`. If an unaligned VRAM address is used, `BLT_STATUS.bit0` is set.
+
+## 9.8 Raster Band Fill
+
+`VIDEO_RASTER_*` registers draw a full-width horizontal band directly into the framebuffer. This is useful for copper-driven raster bars without adding a palette system.
+
+Example (draw 4-pixel band at Y=100):
+```assembly
+    LOAD A, #100
+    STORE A, @VIDEO_RASTER_Y
+    LOAD A, #4
+    STORE A, @VIDEO_RASTER_HEIGHT
+    LOAD A, #0xFF0000FF
+    STORE A, @VIDEO_RASTER_COLOR
+    LOAD A, #1
+    STORE A, @VIDEO_RASTER_CTRL
 ```
 
 ### When to Use
