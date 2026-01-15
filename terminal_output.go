@@ -9,8 +9,8 @@ import (
 
 // Constants for terminal output
 const (
-	TERM_OUT = 0xF900 // Memory-mapped terminal output register
-	MAX_LINE = 1024   // Maximum line length
+	TERM_OUT = 0xF0900 // Memory-mapped terminal output register
+	MAX_LINE = 1024    // Maximum line length
 )
 
 // TerminalOutput implements a simple terminal output device

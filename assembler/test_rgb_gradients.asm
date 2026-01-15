@@ -1,8 +1,8 @@
 ; test_rgb_gradients.asm
 ; Video demonstration https://youtu.be/GcP03aN4kbQ
 
-.equ VIDEO_MODE  0xF004
-.equ VIDEO_CTRL  0xF000
+.equ VIDEO_MODE  0xF0004
+.equ VIDEO_CTRL  0xF0000
 .equ VRAM_START  0x100000
 .equ VRAM_END    0x22C000
 

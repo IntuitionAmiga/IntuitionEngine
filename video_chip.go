@@ -63,7 +63,7 @@ const (
 	BYTES_PER_KB = 1024                        // Size of a kilobyte in bytes
 	BYTES_PER_MB = BYTES_PER_KB * BYTES_PER_KB // Size of a megabyte in bytes
 
-	VIDEO_REG_BASE = 0xF000 // Base address for memory-mapped registers
+	VIDEO_REG_BASE = 0xF0000 // Base address for memory-mapped registers
 	// Register offsets for control, mode, and status
 	VIDEO_REG_OFFSET_CTRL           = 0x000
 	VIDEO_REG_OFFSET_MODE           = 0x004
@@ -138,8 +138,8 @@ const (
 	copperOpcodeShift = 30
 	copperYShift      = 12
 	copperCoordMask   = 0x0FFF
-	copperRegShift    = 20
-	copperRegMask     = 0x03FF
+	copperRegShift    = 16   // Register index is in bits 16-23
+	copperRegMask     = 0xFF // 8-bit register index
 )
 
 const (
@@ -386,6 +386,7 @@ type VideoChip struct {
 
 	// Copper state
 	bus             MemoryBus
+	busMemory       []byte // Cached reference to bus memory for lock-free reads
 	copperEnabled   bool
 	copperPtrStaged uint32
 	copperPtr       uint32
@@ -558,6 +559,7 @@ func (chip *VideoChip) AttachBus(bus MemoryBus) {
 	chip.mutex.Lock()
 	defer chip.mutex.Unlock()
 	chip.bus = bus
+	chip.busMemory = bus.GetMemory() // Cache for lock-free reads
 }
 
 func (chip *VideoChip) scaleImageToMode(imgData []byte, srcWidth, srcHeight int, mode VideoMode) []byte {
@@ -1019,7 +1021,7 @@ func (chip *VideoChip) blitMaskedCopyLocked(mode VideoMode) {
 		dstAddr := dstRow
 		maskAddr := maskRow
 		for x := 0; x < width; x++ {
-			maskByte := chip.bus.Read8(maskAddr + uint32(x/8))
+			maskByte := chip.busRead8Locked(maskAddr + uint32(x/8))
 			if (maskByte>>uint(x%8))&1 == 0 {
 				srcAddr += BYTES_PER_PIXEL
 				dstAddr += BYTES_PER_PIXEL
@@ -1083,7 +1085,28 @@ func (chip *VideoChip) blitReadPixelLocked(addr uint32) uint32 {
 		}
 		return binary.LittleEndian.Uint32(chip.frontBuffer[offset:])
 	}
-	return chip.bus.Read32(addr)
+	// Read directly from cached bus memory to avoid mutex deadlock
+	if chip.busMemory != nil && addr+4 <= uint32(len(chip.busMemory)) {
+		return binary.LittleEndian.Uint32(chip.busMemory[addr : addr+4])
+	}
+	return 0
+}
+
+// busRead32Locked reads a 32-bit value directly from cached bus memory without mutex.
+// This avoids deadlock when the video chip holds its mutex and needs to read from memory.
+func (chip *VideoChip) busRead32Locked(addr uint32) uint32 {
+	if chip.busMemory != nil && addr+4 <= uint32(len(chip.busMemory)) {
+		return binary.LittleEndian.Uint32(chip.busMemory[addr : addr+4])
+	}
+	return 0
+}
+
+// busRead8Locked reads an 8-bit value directly from cached bus memory without mutex.
+func (chip *VideoChip) busRead8Locked(addr uint32) uint8 {
+	if chip.busMemory != nil && addr < uint32(len(chip.busMemory)) {
+		return chip.busMemory[addr]
+	}
+	return 0
 }
 
 func (chip *VideoChip) blitWritePixelLocked(addr uint32, value uint32, mode VideoMode) {
@@ -1176,7 +1199,7 @@ func (chip *VideoChip) copperRunLocked() {
 
 	for !chip.copperWaiting && !chip.copperHalted && ops < maxOps {
 		ops++
-		word := chip.bus.Read32(chip.copperPC)
+		word := chip.busRead32Locked(chip.copperPC)
 		opcode := word >> copperOpcodeShift
 
 		switch opcode {
@@ -1193,7 +1216,7 @@ func (chip *VideoChip) copperRunLocked() {
 			return
 		case copperOpcodeMove:
 			regIndex := (word >> copperRegShift) & copperRegMask
-			value := chip.bus.Read32(chip.copperPC + 4)
+			value := chip.busRead32Locked(chip.copperPC + 4)
 			chip.copperPC += 8
 			regAddr := VIDEO_REG_BASE + (regIndex * 4)
 			chip.handleWriteLocked(regAddr, value)

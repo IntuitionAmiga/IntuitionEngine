@@ -60,32 +60,32 @@ import (
 // ------------------------------------------------------------------------------
 // Register Address Ranges
 // ------------------------------------------------------------------------------
-// F800-F8FF: Global control and effects
-// F900-F93F: Channel 0 legacy registers (square defaults)
-// F940-F97F: Channel 1 legacy registers (triangle defaults)
-// F980-F9BF: Channel 2 legacy registers (sine defaults)
-// F9C0-F9FF: Channel 3 legacy registers (noise defaults)
-// FA00-FA6F: Modulation/effects legacy registers
-// FA80-FB3F: Flexible 4-channel register block (preferred)
+// F0800-F08FF: Global control and effects
+// F0900-F093F: Channel 0 legacy registers (square defaults)
+// F0940-F097F: Channel 1 legacy registers (triangle defaults)
+// F0980-F09BF: Channel 2 legacy registers (sine defaults)
+// F09C0-F09FF: Channel 3 legacy registers (noise defaults)
+// F0A00-F0A6F: Modulation/effects legacy registers
+// F0A80-F0B3F: Flexible 4-channel register block (preferred)
 const (
-	SQUARE_REG_START = 0xF900
-	SQUARE_REG_END   = 0xF93F
+	SQUARE_REG_START = 0xF0900
+	SQUARE_REG_END   = 0xF093F
 
-	TRIANGLE_REG_START = 0xF914 // Lowest among TRI_SWEEP (0xF914) and TRI_FREQ (0xF940)
-	TRIANGLE_REG_END   = 0xF97F
+	TRIANGLE_REG_START = 0xF0914 // Lowest among TRI_SWEEP (0xF0914) and TRI_FREQ (0xF0940)
+	TRIANGLE_REG_END   = 0xF097F
 
-	SINE_REG_START = 0xF918 // Lowest among SINE_SWEEP (0xF918) and SINE_FREQ (0xF980)
-	SINE_REG_END   = 0xF9BF
+	SINE_REG_START = 0xF0918 // Lowest among SINE_SWEEP (0xF0918) and SINE_FREQ (0xF0980)
+	SINE_REG_END   = 0xF09BF
 
-	NOISE_REG_START = 0xF9C0 // Lowest is NOISE_FREQ (0xF9C0)
-	NOISE_REG_END   = 0xF9FF
+	NOISE_REG_START = 0xF09C0 // Lowest is NOISE_FREQ (0xF09C0)
+	NOISE_REG_END   = 0xF09FF
 )
 
 // -------------------------------------------------------------------------------
-// Flexible 4-channel register block (FA80-FB3F)
+// Flexible 4-channel register block (F0A80-F0B3F)
 // -------------------------------------------------------------------------------
 const (
-	FLEX_CH_BASE   = 0xFA80
+	FLEX_CH_BASE   = 0xF0A80
 	FLEX_CH_STRIDE = 0x30
 	FLEX_CH_END    = FLEX_CH_BASE + (FLEX_CH_STRIDE * NUM_CHANNELS) - 1
 
@@ -109,66 +109,66 @@ const (
 )
 
 // ------------------------------------------------------------------------------
-// Square Wave Control Registers (F900-F93F)
+// Square Wave Control Registers (F0900-F093F)
 // ------------------------------------------------------------------------------
 // Basic oscillator control
 const (
-	SQUARE_FREQ     = 0xF900
-	SQUARE_VOL      = 0xF904
-	SQUARE_CTRL     = 0xF908
-	SQUARE_ATK      = 0xF930
-	SQUARE_DEC      = 0xF934
-	SQUARE_SUS      = 0xF938
-	SQUARE_REL      = 0xF93C
-	SQUARE_DUTY     = 0xF90C
-	SQUARE_SWEEP    = 0xF910
-	SQUARE_PWM_CTRL = 0xF922
+	SQUARE_FREQ     = 0xF0900
+	SQUARE_VOL      = 0xF0904
+	SQUARE_CTRL     = 0xF0908
+	SQUARE_ATK      = 0xF0930
+	SQUARE_DEC      = 0xF0934
+	SQUARE_SUS      = 0xF0938
+	SQUARE_REL      = 0xF093C
+	SQUARE_DUTY     = 0xF090C
+	SQUARE_SWEEP    = 0xF0910
+	SQUARE_PWM_CTRL = 0xF0922
 )
 
 // ------------------------------------------------------------------------------
-// Triangle Wave Control Registers (F940-F97F)
+// Triangle Wave Control Registers (F0940-F097F)
 // ------------------------------------------------------------------------------
 // Basic oscillator control
 
 const (
-	TRI_FREQ  = 0xF940
-	TRI_VOL   = 0xF944
-	TRI_CTRL  = 0xF948
-	TRI_ATK   = 0xF960
-	TRI_DEC   = 0xF964
-	TRI_SUS   = 0xF968
-	TRI_REL   = 0xF96C
-	TRI_SWEEP = 0xF914
+	TRI_FREQ  = 0xF0940
+	TRI_VOL   = 0xF0944
+	TRI_CTRL  = 0xF0948
+	TRI_ATK   = 0xF0960
+	TRI_DEC   = 0xF0964
+	TRI_SUS   = 0xF0968
+	TRI_REL   = 0xF096C
+	TRI_SWEEP = 0xF0914
 )
 
 // ------------------------------------------------------------------------------
-// Sine Wave Control Registers (F980-F9BF)
+// Sine Wave Control Registers (F0980-F09BF)
 // ------------------------------------------------------------------------------
 // Basic oscillator control
 const (
-	SINE_FREQ  = 0xF980
-	SINE_VOL   = 0xF984
-	SINE_CTRL  = 0xF988
-	SINE_ATK   = 0xF990
-	SINE_DEC   = 0xF994
-	SINE_SUS   = 0xF998
-	SINE_REL   = 0xF99C
-	SINE_SWEEP = 0xF918
+	SINE_FREQ  = 0xF0980
+	SINE_VOL   = 0xF0984
+	SINE_CTRL  = 0xF0988
+	SINE_ATK   = 0xF0990
+	SINE_DEC   = 0xF0994
+	SINE_SUS   = 0xF0998
+	SINE_REL   = 0xF099C
+	SINE_SWEEP = 0xF0918
 )
 
 // ------------------------------------------------------------------------------
-// Noise Control Registers (F9C0-F9FF)
+// Noise Control Registers (F09C0-F09FF)
 // ------------------------------------------------------------------------------
 // Basic oscillator control
 const (
-	NOISE_FREQ          = 0xF9C0
-	NOISE_VOL           = 0xF9C4
-	NOISE_CTRL          = 0xF9C8
-	NOISE_ATK           = 0xF9D0
-	NOISE_DEC           = 0xF9D4
-	NOISE_SUS           = 0xF9D8
-	NOISE_REL           = 0xF9DC
-	NOISE_MODE          = 0xF9E0
+	NOISE_FREQ          = 0xF09C0
+	NOISE_VOL           = 0xF09C4
+	NOISE_CTRL          = 0xF09C8
+	NOISE_ATK           = 0xF09D0
+	NOISE_DEC           = 0xF09D4
+	NOISE_SUS           = 0xF09D8
+	NOISE_REL           = 0xF09DC
+	NOISE_MODE          = 0xF09E0
 	NOISE_MODE_WHITE    = 0 // Default (existing LFSR)
 	NOISE_MODE_PERIODIC = 1 // Periodic/loop
 	NOISE_MODE_METALLIC = 2 // "Metal" noise
@@ -177,57 +177,57 @@ const (
 
 // Sync source registers
 const (
-	SYNC_SOURCE_CH0 = 0xFA00 // Sync source for channel 0
-	SYNC_SOURCE_CH1 = 0xFA04 // Sync source for channel 1
-	SYNC_SOURCE_CH2 = 0xFA08 // Sync source for channel 2
-	SYNC_SOURCE_CH3 = 0xFA0C // Sync source for channel 3
+	SYNC_SOURCE_CH0 = 0xF0A00 // Sync source for channel 0
+	SYNC_SOURCE_CH1 = 0xF0A04 // Sync source for channel 1
+	SYNC_SOURCE_CH2 = 0xF0A08 // Sync source for channel 2
+	SYNC_SOURCE_CH3 = 0xF0A0C // Sync source for channel 3
 )
 
 // Ring modulation source registers
 const (
-	RING_MOD_SOURCE_CH0 = 0xFA10 // Ring mod source for channel 0
-	RING_MOD_SOURCE_CH1 = 0xFA14 // Channel 1
-	RING_MOD_SOURCE_CH2 = 0xFA18 // Channel 2
-	RING_MOD_SOURCE_CH3 = 0xFA1C // Channel 3
+	RING_MOD_SOURCE_CH0 = 0xF0A10 // Ring mod source for channel 0
+	RING_MOD_SOURCE_CH1 = 0xF0A14 // Channel 1
+	RING_MOD_SOURCE_CH2 = 0xF0A18 // Channel 2
+	RING_MOD_SOURCE_CH3 = 0xF0A1C // Channel 3
 )
 
 // ------------------------------------------------------------------------------
-// Sawtooth Wave Control Registers (FA20-FA5F)
+// Sawtooth Wave Control Registers (F0A20-F0A5F)
 // Legacy aliases that apply to channel 0 with wave type set to sawtooth.
 // ------------------------------------------------------------------------------
 const (
-	SAW_FREQ  = 0xFA20
-	SAW_VOL   = 0xFA24
-	SAW_CTRL  = 0xFA28
-	SAW_SWEEP = 0xFA2C
-	SAW_ATK   = 0xFA30
-	SAW_DEC   = 0xFA34
-	SAW_SUS   = 0xFA38
-	SAW_REL   = 0xFA3C
+	SAW_FREQ  = 0xF0A20
+	SAW_VOL   = 0xF0A24
+	SAW_CTRL  = 0xF0A28
+	SAW_SWEEP = 0xF0A2C
+	SAW_ATK   = 0xF0A30
+	SAW_DEC   = 0xF0A34
+	SAW_SUS   = 0xF0A38
+	SAW_REL   = 0xF0A3C
 
 	// Sync and ring mod for sawtooth channel
-	SYNC_SOURCE_CH4     = 0xFA60
-	RING_MOD_SOURCE_CH4 = 0xFA64
+	SYNC_SOURCE_CH4     = 0xF0A60
+	RING_MOD_SOURCE_CH4 = 0xF0A64
 
 	// Sawtooth register range
-	SAW_REG_START = 0xFA20
-	SAW_REG_END   = 0xFA6F
+	SAW_REG_START = 0xF0A20
+	SAW_REG_END   = 0xF0A6F
 )
 
 // Filter, Overdrive, Reverb, and Audio Control registers
 const (
-	FILTER_CUTOFF     = 0xF820 // Filter cutoff (0–255 → 0.0–1.0)
-	FILTER_RESONANCE  = 0xF824 // Filter resonance/Q (0–255 → 0.0–1.0)
-	FILTER_TYPE       = 0xF828 // 0=off, 1=low-pass, 2=high-pass, 3=band-pass
-	FILTER_MOD_SOURCE = 0xF82C // Register to set modulation source (channel 0–3)
-	FILTER_MOD_AMOUNT = 0xF830 // Register to set modulation depth (0–255 → 0.0–1.0)
+	FILTER_CUTOFF     = 0xF0820 // Filter cutoff (0–255 → 0.0–1.0)
+	FILTER_RESONANCE  = 0xF0824 // Filter resonance/Q (0–255 → 0.0–1.0)
+	FILTER_TYPE       = 0xF0828 // 0=off, 1=low-pass, 2=high-pass, 3=band-pass
+	FILTER_MOD_SOURCE = 0xF082C // Register to set modulation source (channel 0–3)
+	FILTER_MOD_AMOUNT = 0xF0830 // Register to set modulation depth (0–255 → 0.0–1.0)
 
-	OVERDRIVE_CTRL = 0xFA40 // Drive amount (0-255 → 0.0-4.0)
+	OVERDRIVE_CTRL = 0xF0A40 // Drive amount (0-255 → 0.0-4.0)
 
-	REVERB_MIX   = 0xFA50 // 0-255 → 0.0-1.0 (dry/wet)
-	REVERB_DECAY = 0xFA54 // 0-255 → 0.1-0.99 (tail length)
+	REVERB_MIX   = 0xF0A50 // 0-255 → 0.0-1.0 (dry/wet)
+	REVERB_DECAY = 0xF0A54 // 0-255 → 0.1-0.99 (tail length)
 
-	AUDIO_CTRL    = 0xF800 // Audio control register
+	AUDIO_CTRL    = 0xF0800 // Audio control register
 	AUDIO_REG_END = FLEX_CH_END
 
 	SAMPLE_RATE = 44100 // Audio sample rate
@@ -241,7 +241,7 @@ const (
 	ENV_DECAY
 	ENV_SUSTAIN
 	ENV_RELEASE
-	ENV_SHAPE          = 0xF804
+	ENV_SHAPE          = 0xF0804
 	ENV_SHAPE_SAW_UP   = 1 // Linear rise to 1.0, then hold
 	ENV_SHAPE_SAW_DOWN = 2 // Linear fall to 0.0, then hold
 	ENV_SHAPE_LOOP     = 3 // ADSR but loops after release

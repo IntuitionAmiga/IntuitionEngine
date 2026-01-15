@@ -2641,6 +2641,16 @@ func (cpu_6502 *CPU_6502) Execute() {
 	}
 }
 
+// translateIO8Bit_6502 converts 16-bit I/O addresses (0xF000-0xFFFF) to
+// 32-bit addresses (0xF0000-0xF0FFF) for 6502 compatibility.
+// Non-I/O addresses pass through unchanged.
+func translateIO8Bit_6502(addr uint16) uint32 {
+	if addr >= 0xF000 {
+		return 0xF0000 + uint32(addr-0xF000)
+	}
+	return uint32(addr)
+}
+
 func (adapter *MemoryBusAdapter_6502) Read(addr uint16) byte {
 	/*
 	   Read performs 8-bit memory read.
@@ -2668,7 +2678,7 @@ func (adapter *MemoryBusAdapter_6502) Read(addr uint16) byte {
 		return adapter.bus.Read8(translated)
 	}
 
-	return adapter.bus.Read8(uint32(addr))
+	return adapter.bus.Read8(translateIO8Bit_6502(addr))
 }
 func (adapter *MemoryBusAdapter_6502) Write(addr uint16, value byte) {
 	/*
@@ -2699,7 +2709,7 @@ func (adapter *MemoryBusAdapter_6502) Write(addr uint16, value byte) {
 		return
 	}
 
-	adapter.bus.Write8(uint32(addr), value)
+	adapter.bus.Write8(translateIO8Bit_6502(addr), value)
 }
 
 func (adapter *MemoryBusAdapter_6502) ResetBank() {

@@ -303,10 +303,15 @@ func (p *PSGPlayer) HandlePlayWrite(addr uint32, value uint32) {
 			return
 		}
 		p.playBusy = true
-		data := make([]byte, p.playLen)
-		for i := uint32(0); i < p.playLen; i++ {
-			data[i] = p.bus.Read8(p.playPtr + i)
+		// Read directly from bus memory to avoid deadlock (bus.Read8 would try to lock bus.mutex)
+		mem := p.bus.GetMemory()
+		if int(p.playPtr)+int(p.playLen) > len(mem) {
+			p.playErr = true
+			p.playBusy = false
+			return
 		}
+		data := make([]byte, p.playLen)
+		copy(data, mem[p.playPtr:p.playPtr+p.playLen])
 		if err := p.LoadData(data); err != nil {
 			p.playErr = true
 			p.playBusy = false

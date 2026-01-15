@@ -133,13 +133,13 @@ const (
 // Memory Map Boundaries
 // ------------------------------------------------------------------------------
 const (
-	VECTOR_TABLE    = 0x0000  // Interrupt vector table
-	PROG_START      = 0x1000  // Program code start
-	STACK_BOTTOM    = 0x2000  // Stack bottom boundary
-	STACK_START     = 0xE000  // Initial stack pointer
-	IO_REGION_START = 0x0F000 // Start of I/O mapped region (needs mutex)
-	IO_BASE         = 0xF800  // I/O register base
-	IO_LIMIT        = 0xFFFF  // I/O register limit
+	VECTOR_TABLE    = 0x0000   // Interrupt vector table
+	PROG_START      = 0x1000   // Program code start
+	STACK_BOTTOM    = 0x2000   // Stack bottom boundary
+	STACK_START     = 0xE0000  // Initial stack pointer (below I/O region)
+	IO_REGION_START = 0x0F0000 // Start of I/O mapped region (needs mutex)
+	IO_BASE         = 0xF0800  // I/O register base
+	IO_LIMIT        = 0xFFFFF  // I/O register limit
 )
 
 // ------------------------------------------------------------------------------
