@@ -123,7 +123,7 @@ import (
 	"math"
 	"math/bits"
 	"os"
-	"sync"
+	"runtime"
 	"sync/atomic"
 	"time"
 )
@@ -602,16 +602,14 @@ type M68KCPU struct {
 	prefetchQueue    [4]uint16 // Real hardware hides memory latency with prefetch
 	prefetchSize     uint8
 	currentIR        uint16
-	pendingInterrupt uint8    // Set by external hardware; checked each instruction
-	inException      bool     // Prevents double-fault situations
-	stackLowerBound  uint32   // Detects stack corruption early
-	stackUpperBound  uint32   // Detects stack corruption early
-	_padding2        [33]byte // Cache line alignment reduces false sharing
+	pendingInterrupt atomic.Uint32 // Set by external hardware; checked each instruction (atomic for lock-free access)
+	inException      atomic.Bool   // Prevents double-fault situations (atomic for lock-free access)
+	stackLowerBound  uint32        // Detects stack corruption early
+	stackUpperBound  uint32        // Detects stack corruption early
+	_padding2        [33]byte      // Cache line alignment reduces false sharing
 
-	// Cache Lines 3+ - Synchronisation and Control
-	mutex          sync.RWMutex // Read/write locks optimise concurrent access patterns
-	interruptMutex sync.Mutex   // Prevents race conditions on interrupt state
-	bus            MemoryBus
+	// Cache Lines 3+ - Bus Interface (lock-free design like IE32)
+	bus MemoryBus
 
 	// FPU Coprocessor (68881/68882)
 	FPU *M68881FPU // Optional FPU - nil if not present
@@ -621,13 +619,20 @@ type M68KCPU struct {
 	vramStart      uint32 // Cached VRAM start address
 	vramEnd        uint32 // Cached VRAM end address
 	VRAMWriteCount uint64 // Counter for direct VRAM writes (for benchmarking)
+
+	// Debug counters
+	debugIOReadCount int // Counter for I/O read debug output
+
+	// Direct memory access for lock-free instruction fetches
+	memory []byte // Direct pointer to main memory (bypasses mutex for non-I/O reads)
 }
 
 func NewM68KCPU(bus MemoryBus) *M68KCPU {
 	cpu := &M68KCPU{
 		SR:              M68K_SR_S, // Hardware powers up in supervisor mode
 		bus:             bus,
-		stackLowerBound: 0x00002000, // Reserves space for exception vectors
+		memory:          bus.GetMemory(), // Direct memory access for lock-free reads
+		stackLowerBound: 0x00002000,      // Reserves space for exception vectors
 		stackUpperBound: M68K_MEMORY_SIZE,
 		FPU:             NewM68881FPU(), // Initialize 68881 FPU coprocessor
 	}
@@ -661,13 +666,10 @@ func NewM68KCPU(bus MemoryBus) *M68KCPU {
 	return cpu
 }
 func (cpu *M68KCPU) Reset() {
-	cpu.mutex.Lock()
+	// Lock-free reset like IE32
 	cpu.running.Store(false)
-	cpu.mutex.Unlock()
 
 	time.Sleep(M68K_RESET_DELAY)
-
-	cpu.mutex.Lock()
 
 	// Flush prefetch queue to prevent executing stale instructions
 	for i := range cpu.prefetchQueue {
@@ -693,7 +695,6 @@ func (cpu *M68KCPU) Reset() {
 	}
 
 	cpu.running.Store(true)
-	cpu.mutex.Unlock()
 }
 func (cpu *M68KCPU) LoadProgram(filename string) error {
 	program, err := os.ReadFile(filename)
@@ -1051,7 +1052,11 @@ func (cpu *M68KCPU) FetchAndDecodeInstruction() {
 	//   - 0xD148 & 0xF000 = 0xD000 (ADD - incorrect)
 	// Checking the more specific pattern first ensures extended arithmetic operations
 	// are correctly identified before falling through to regular arithmetic.
-	if (opcode & 0xF130) == M68K_ADDX {
+	//
+	// IMPORTANT: ADDX must NOT match ADDA! ADDA has opmode 3 (011) or 7 (111), which
+	// means bits 7-6 = 11. ADDX has size field in bits 7-6 which is never 11 (only 00/01/10).
+	// So we add a check that bits 7-6 != 11 to exclude ADDA.
+	if (opcode&0xF130) == M68K_ADDX && (opcode&0x00C0) != 0x00C0 {
 		regMode := (opcode >> 3) & 0x1
 		rx := opcode & 0x7
 		ry := (opcode >> 9) & 0x7
@@ -1074,7 +1079,8 @@ func (cpu *M68KCPU) FetchAndDecodeInstruction() {
 		return
 	}
 
-	if (opcode & 0xF130) == M68K_SUBX {
+	// Same fix for SUBX - exclude SUBA by checking bits 7-6 != 11
+	if (opcode&0xF130) == M68K_SUBX && (opcode&0x00C0) != 0x00C0 {
 		regMode := (opcode >> 3) & 0x1
 		rx := opcode & 0x7
 		ry := (opcode >> 9) & 0x7
@@ -1103,6 +1109,12 @@ func (cpu *M68KCPU) FetchAndDecodeInstruction() {
 		mode := (opcode >> 3) & 0x7
 		xreg := opcode & 0x7
 
+		// ADDA: Add Address - opmode 011 (word) or 111 (long)
+		if opmode == 3 || opmode == 7 {
+			cpu.ExecAdda(reg, opmode, mode, xreg)
+			return
+		}
+
 		cpu.ExecAdd(reg, opmode, mode, xreg)
 		return
 	}
@@ -1112,6 +1124,12 @@ func (cpu *M68KCPU) FetchAndDecodeInstruction() {
 		opmode := (opcode >> 6) & 0x7
 		mode := (opcode >> 3) & 0x7
 		xreg := opcode & 0x7
+
+		// SUBA: Subtract Address - opmode 011 (word) or 111 (long)
+		if opmode == 3 || opmode == 7 {
+			cpu.ExecSuba(reg, opmode, mode, xreg)
+			return
+		}
 
 		cpu.ExecSub(reg, opmode, mode, xreg)
 		return
@@ -1620,7 +1638,7 @@ func (cpu *M68KCPU) FetchAndDecodeInstruction() {
 func (cpu *M68KCPU) ExecuteInstruction() {
 	fmt.Printf("M68K: Starting execution at PC=%08x\n", cpu.PC)
 
-	instructionLimit := uint32(100000)
+	instructionLimit := uint32(0) // No limit for continuous execution
 	instructionCount := uint32(0)
 	lastPC := uint32(0)
 	stuckCounter := 0
@@ -1658,18 +1676,24 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 			lastPC = cpu.PC
 		}
 
-		// Process interrupts
-		cpu.interruptMutex.Lock()
-		ipl := uint8((cpu.SR & M68K_SR_IPL) >> M68K_SR_SHIFT)
-		if cpu.pendingInterrupt > ipl && !cpu.inException {
-			cpu.ProcessInterrupt(cpu.pendingInterrupt)
-			cpu.pendingInterrupt = 0
+		// Process interrupts (lock-free with atomic operations)
+		ipl := uint32((cpu.SR & M68K_SR_IPL) >> M68K_SR_SHIFT)
+		pending := cpu.pendingInterrupt.Load()
+		if pending > ipl && !cpu.inException.Load() {
+			cpu.ProcessInterrupt(uint8(pending))
+			cpu.pendingInterrupt.Store(0)
 		}
-		cpu.interruptMutex.Unlock()
 
-		// Check for runaway execution
+		// Check for runaway execution (only if limit is set)
 		instructionCount++
-		if instructionCount >= instructionLimit {
+
+		// Yield to scheduler periodically to allow other goroutines to run
+		// (especially the video chip refresh loop for VBlank timing)
+		if instructionCount&0x3F == 0 { // Every 64 instructions
+			runtime.Gosched()
+		}
+
+		if instructionLimit > 0 && instructionCount >= instructionLimit {
 			fmt.Printf("Warning: Instruction limit (%d) reached, stopping execution\n", instructionLimit)
 			cpu.running.Store(false)
 			break
@@ -1761,8 +1785,10 @@ func (cpu *M68KCPU) DumpRegisters() {
 }
 
 func (cpu *M68KCPU) Read8(addr uint32) uint8 {
-	cpu.mutex.Lock()
-	defer cpu.mutex.Unlock()
+	// Lock-free fast path for non-I/O addresses
+	if addr < 0xF0000 && addr < uint32(len(cpu.memory)) {
+		return cpu.memory[addr]
+	}
 
 	// Terminal device always returns zero to indicate ready state
 	if addr == TERM_OUT || addr == 0xFFFFF900 {
@@ -1774,15 +1800,21 @@ func (cpu *M68KCPU) Read8(addr uint32) uint8 {
 		return 0
 	}
 
+	// Lock-free I/O path - bus handles its own synchronisation
 	return cpu.bus.Read8(addr)
 }
 func (cpu *M68KCPU) Read16(addr uint32) uint16 {
-	cpu.mutex.Lock()
-	defer cpu.mutex.Unlock()
-
 	if (addr & M68K_BYTE_SIZE) != 0 {
 		cpu.ProcessException(M68K_VEC_ADDRESS_ERROR)
 		return 0
+	}
+
+	// Lock-free fast path for non-I/O addresses (instruction fetches, data reads)
+	// This matches IE32 CPU behaviour where main memory reads bypass the mutex
+	if addr < 0xF0000 && addr+2 <= uint32(len(cpu.memory)) {
+		// Direct memory read with endian conversion (M68K is big-endian)
+		leValue := binary.LittleEndian.Uint16(cpu.memory[addr:])
+		return ((leValue & 0xFF) << M68K_BYTE_SIZE_BITS) | ((leValue & 0xFF00) >> M68K_BYTE_SIZE_BITS)
 	}
 
 	if addr >= M68K_MEMORY_SIZE-M68K_BYTE_SIZE {
@@ -1790,18 +1822,34 @@ func (cpu *M68KCPU) Read16(addr uint32) uint16 {
 		return 0
 	}
 
+	// Lock-free I/O path - bus handles its own synchronisation
 	leValue := cpu.bus.Read16(addr)
 
 	// Endian conversion required because host bus is little-endian
 	return ((leValue & 0xFF) << M68K_BYTE_SIZE_BITS) | ((leValue & 0xFF00) >> M68K_BYTE_SIZE_BITS)
 }
 func (cpu *M68KCPU) Read32(addr uint32) uint32 {
-	cpu.mutex.Lock()
-	defer cpu.mutex.Unlock()
-
 	if (addr & M68K_BYTE_SIZE) != 0 {
 		cpu.ProcessException(M68K_VEC_ADDRESS_ERROR)
 		return 0
+	}
+
+	// Lock-free fast path for non-I/O addresses (data reads from main memory)
+	// This matches IE32 CPU behaviour where main memory reads bypass the mutex
+	if addr < 0xF0000 && addr+4 <= uint32(len(cpu.memory)) {
+		// Direct memory read with endian conversion (M68K is big-endian)
+		leValue := binary.LittleEndian.Uint32(cpu.memory[addr:])
+		return ((leValue & 0xFF) << (M68K_BYTE_SIZE_BITS * 3)) |
+			((leValue & 0xFF00) << M68K_BYTE_SIZE_BITS) |
+			((leValue & 0xFF0000) >> M68K_BYTE_SIZE_BITS) |
+			((leValue & 0xFF000000) >> (M68K_BYTE_SIZE_BITS * 3))
+	}
+
+	// I/O register path - return value directly (no byte-swap)
+	// Hardware handlers return numeric values, not memory byte order
+	// Lock-free - bus handles its own synchronisation
+	if addr >= 0xF0000 && addr < 0x100000 {
+		return cpu.bus.Read32(addr)
 	}
 
 	leValue := cpu.bus.Read32(addr)
@@ -1820,20 +1868,15 @@ func (cpu *M68KCPU) Write8(addr uint32, value uint8) {
 		return
 	}
 
-	cpu.mutex.Lock()
-	defer cpu.mutex.Unlock()
-
 	if addr >= M68K_MEMORY_SIZE {
 		fmt.Printf("Warning: Write to out-of-bounds address 0x%08X\n", addr)
 		return
 	}
 
+	// Lock-free - bus handles its own synchronisation
 	cpu.bus.Write8(addr, value)
 }
 func (cpu *M68KCPU) Write16(addr uint32, value uint16) {
-	cpu.mutex.Lock()
-	defer cpu.mutex.Unlock()
-
 	if (addr & M68K_BYTE_SIZE) != 0 {
 		cpu.ProcessException(M68K_VEC_ADDRESS_ERROR)
 		return
@@ -1847,6 +1890,7 @@ func (cpu *M68KCPU) Write16(addr uint32, value uint16) {
 	// Endian conversion required because host bus is little-endian
 	leValue := ((value & 0xFF) << M68K_BYTE_SIZE_BITS) | ((value & 0xFF00) >> M68K_BYTE_SIZE_BITS)
 
+	// Lock-free - bus handles its own synchronisation
 	cpu.bus.Write16(addr, leValue)
 }
 func (cpu *M68KCPU) Write32(addr uint32, value uint32) {
@@ -1871,16 +1915,16 @@ func (cpu *M68KCPU) Write32(addr uint32, value uint32) {
 		}
 	}
 
-	// Non-I/O fast path - direct memory write, no mutex
-	// CPU is the sole writer, so no synchronisation needed
-	if addr < M68K_IO_BASE {
-		cpu.bus.Write32(addr, leValue)
+	// I/O register path - pass original value (not byte-swapped) for hardware registers
+	// Hardware handlers expect numeric values, not memory byte order
+	if addr >= 0xF0000 && addr < 0x100000 {
+		cpu.bus.Write32(addr, value)
 		return
 	}
 
-	// I/O path - use mutex for callback coordination
-	cpu.mutex.Lock()
-	defer cpu.mutex.Unlock()
+	// Non-I/O fast path - direct memory write with endian conversion
+	// CPU is the sole writer, so no synchronisation needed
+	// Lock-free - bus handles its own synchronisation
 	cpu.bus.Write32(addr, leValue)
 }
 
@@ -2480,20 +2524,20 @@ func (cpu *M68KCPU) SetCCR(value uint8) {
 
 func (cpu *M68KCPU) ProcessException(vector uint8) {
 	// Double fault halts CPU to prevent infinite recursion
-	if cpu.inException && (vector == M68K_VEC_BUS_ERROR || vector == M68K_VEC_ADDRESS_ERROR) {
+	if cpu.inException.Load() && (vector == M68K_VEC_BUS_ERROR || vector == M68K_VEC_ADDRESS_ERROR) {
 		fmt.Printf("M68K: Double fault (exception %d during exception handling), halting CPU\n", vector)
 		cpu.running.Store(false)
 		return
 	}
 
 	// Defer non-critical exceptions to prevent stack corruption
-	if cpu.inException && vector != M68K_VEC_RESET {
+	if cpu.inException.Load() && vector != M68K_VEC_RESET {
 		fmt.Printf("M68K: Exception %d during exception handling, deferring\n", vector)
-		cpu.pendingInterrupt = vector
+		cpu.pendingInterrupt.Store(uint32(vector))
 		return
 	}
 
-	cpu.inException = true
+	cpu.inException.Store(true)
 
 	oldSR := cpu.SR
 	oldPC := cpu.PC
@@ -2506,7 +2550,7 @@ func (cpu *M68KCPU) ProcessException(vector uint8) {
 		cpu.AddrRegs[7] = cpu.Read32(0)
 		cpu.PC = cpu.Read32(M68K_RESET_VECTOR)
 
-		cpu.inException = false
+		cpu.inException.Store(false)
 		return
 	}
 
@@ -2520,19 +2564,21 @@ func (cpu *M68KCPU) ProcessException(vector uint8) {
 	vecAddr := uint32(vector) * M68K_LONG_SIZE
 	newPC := cpu.Read32(vecAddr)
 
-	// Uninitialised vectors halt because no handler exists
+	// Uninitialised vectors: restore state and continue (ignore exception)
+	// This matches IE32 behaviour where missing handlers don't halt execution
 	if newPC == 0 {
-		if cpu.debug.Load() {
-			fmt.Printf("M68K: Uninitialised vector %d, using default handler\n", vector)
-		}
-		cpu.running.Store(false)
-		cpu.inException = false
+		// Restore stack and continue from where we were
+		cpu.Pop16() // discard saved SR
+		cpu.Pop32() // discard saved PC
+		cpu.SR = oldSR
+		cpu.PC = oldPC
+		cpu.inException.Store(false)
 		return
 	}
 
 	cpu.PC = newPC
 	cpu.cycleCounter += M68K_CYCLE_EXCEPTION
-	cpu.inException = false
+	cpu.inException.Store(false)
 }
 func (cpu *M68KCPU) ProcessInterrupt(level uint8) {
 	// Ignore if current interrupt mask is higher
@@ -2567,7 +2613,7 @@ func (cpu *M68KCPU) ProcessInterrupt(level uint8) {
 		// Disable tracing during exception handling
 		cpu.SR &= ^uint16(M68K_SR_T0 | M68K_SR_T1)
 
-		cpu.inException = true
+		cpu.inException.Store(true)
 
 		if cpu.debug.Load() {
 			fmt.Printf("M68K: Interrupt level %d at PC=%08x\n", level, cpu.PC)
@@ -4262,6 +4308,155 @@ func (cpu *M68KCPU) ExecAdd(reg, opmode, mode, xreg uint16) {
 		}
 	}
 }
+
+// ExecAdda - Add Address
+// ADDA adds an effective address operand to an address register
+// For .W (opmode 011): source is sign-extended to 32 bits before addition
+// For .L (opmode 111): full 32-bit addition
+// ADDA does NOT affect condition codes
+func (cpu *M68KCPU) ExecAdda(reg, opmode, mode, xreg uint16) {
+	var source uint32
+	var isLong bool
+
+	// Determine operation size
+	if opmode == 7 {
+		isLong = true
+	} else {
+		isLong = false // Word, source sign-extended to 32-bit
+	}
+
+	// Get source operand
+	if mode == M68K_AM_DR {
+		// Data register direct
+		if isLong {
+			source = cpu.DataRegs[xreg]
+		} else {
+			// Sign extend word to long
+			source = uint32(int32(int16(cpu.DataRegs[xreg] & 0xFFFF)))
+		}
+		cpu.cycleCounter += M68K_CYCLE_REG
+	} else if mode == M68K_AM_AR {
+		// Address register direct
+		if isLong {
+			source = cpu.AddrRegs[xreg]
+		} else {
+			// Sign extend word to long
+			source = uint32(int32(int16(cpu.AddrRegs[xreg] & 0xFFFF)))
+		}
+		cpu.cycleCounter += M68K_CYCLE_REG
+	} else if mode == M68K_AM_AR_IND {
+		// Address register indirect
+		addr := cpu.AddrRegs[xreg]
+		if isLong {
+			source = cpu.Read32(addr)
+		} else {
+			source = uint32(int32(int16(cpu.Read16(addr))))
+		}
+		cpu.cycleCounter += M68K_CYCLE_MEM_READ
+	} else if mode == M68K_AM_AR_POST {
+		// Address register indirect with postincrement
+		addr := cpu.AddrRegs[xreg]
+		if isLong {
+			source = cpu.Read32(addr)
+			cpu.AddrRegs[xreg] += M68K_LONG_SIZE
+		} else {
+			source = uint32(int32(int16(cpu.Read16(addr))))
+			cpu.AddrRegs[xreg] += M68K_WORD_SIZE
+		}
+		cpu.cycleCounter += M68K_CYCLE_MEM_READ
+	} else if mode == M68K_AM_AR_PRE {
+		// Address register indirect with predecrement
+		if isLong {
+			cpu.AddrRegs[xreg] -= M68K_LONG_SIZE
+			addr := cpu.AddrRegs[xreg]
+			source = cpu.Read32(addr)
+		} else {
+			cpu.AddrRegs[xreg] -= M68K_WORD_SIZE
+			addr := cpu.AddrRegs[xreg]
+			source = uint32(int32(int16(cpu.Read16(addr))))
+		}
+		cpu.cycleCounter += M68K_CYCLE_MEM_READ
+	} else if mode == M68K_AM_AR_DISP {
+		// Address register indirect with displacement
+		disp := int16(cpu.Fetch16())
+		addr := uint32(int32(cpu.AddrRegs[xreg]) + int32(disp))
+		if isLong {
+			source = cpu.Read32(addr)
+		} else {
+			source = uint32(int32(int16(cpu.Read16(addr))))
+		}
+		cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_EA_DI
+	} else if mode == M68K_AM_AR_INDEX {
+		// Address register indirect with index
+		extWord := cpu.Fetch16()
+		addr := cpu.GetIndexWithExtWords(extWord, cpu.AddrRegs[xreg], false)
+		if isLong {
+			source = cpu.Read32(addr)
+		} else {
+			source = uint32(int32(int16(cpu.Read16(addr))))
+		}
+		cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_EA_IX
+	} else if mode == 7 {
+		// Extended addressing modes
+		switch xreg {
+		case 0: // Absolute Short
+			addr := uint32(int16(cpu.Fetch16()))
+			if isLong {
+				source = cpu.Read32(addr)
+			} else {
+				source = uint32(int32(int16(cpu.Read16(addr))))
+			}
+			cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_EA_AW
+		case 1: // Absolute Long
+			addr := cpu.Fetch32()
+			if isLong {
+				source = cpu.Read32(addr)
+			} else {
+				source = uint32(int32(int16(cpu.Read16(addr))))
+			}
+			cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_EA_AL
+		case 2: // PC with Displacement
+			disp := int16(cpu.Fetch16())
+			addr := cpu.PC - M68K_WORD_SIZE + uint32(disp)
+			if isLong {
+				source = cpu.Read32(addr)
+			} else {
+				source = uint32(int32(int16(cpu.Read16(addr))))
+			}
+			cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_EA_PCDI
+		case 3: // PC with Index
+			extWord := cpu.Fetch16()
+			addr := cpu.GetIndexWithExtWords(extWord, cpu.PC-M68K_WORD_SIZE, false)
+			if isLong {
+				source = cpu.Read32(addr)
+			} else {
+				source = uint32(int32(int16(cpu.Read16(addr))))
+			}
+			cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_EA_PCIX
+		case 4: // Immediate
+			if isLong {
+				source = cpu.Fetch32()
+			} else {
+				source = uint32(int32(int16(cpu.Fetch16())))
+			}
+			cpu.cycleCounter += M68K_CYCLE_FETCH
+		default:
+			fmt.Printf("M68K: Unimplemented extended addressing mode %d for ADDA at PC=%08x\n", xreg, cpu.PC-M68K_WORD_SIZE)
+			cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
+			return
+		}
+	} else {
+		fmt.Printf("M68K: Unimplemented source mode %d for ADDA at PC=%08x\n", mode, cpu.PC-M68K_WORD_SIZE)
+		cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
+		return
+	}
+
+	// Add to address register (full 32-bit, no condition code changes)
+	cpu.AddrRegs[reg] += source
+
+	cpu.cycleCounter += M68K_CYCLE_EXECUTE
+}
+
 func (cpu *M68KCPU) ExecAddq(data uint32, size uint16, mode, reg uint16) {
 	var dest, result uint32
 	var effectiveSize int
@@ -5011,6 +5206,155 @@ func (cpu *M68KCPU) ExecSub(reg, opmode, mode, xreg uint16) {
 		}
 	}
 }
+
+// ExecSuba - Subtract Address
+// SUBA subtracts an effective address operand from an address register
+// For .W (opmode 011): source is sign-extended to 32 bits before subtraction
+// For .L (opmode 111): full 32-bit subtraction
+// SUBA does NOT affect condition codes
+func (cpu *M68KCPU) ExecSuba(reg, opmode, mode, xreg uint16) {
+	var source uint32
+	var isLong bool
+
+	// Determine operation size
+	if opmode == 7 {
+		isLong = true
+	} else {
+		isLong = false // Word, source sign-extended to 32-bit
+	}
+
+	// Get source operand
+	if mode == M68K_AM_DR {
+		// Data register direct
+		if isLong {
+			source = cpu.DataRegs[xreg]
+		} else {
+			// Sign extend word to long
+			source = uint32(int32(int16(cpu.DataRegs[xreg] & 0xFFFF)))
+		}
+		cpu.cycleCounter += M68K_CYCLE_REG
+	} else if mode == M68K_AM_AR {
+		// Address register direct
+		if isLong {
+			source = cpu.AddrRegs[xreg]
+		} else {
+			// Sign extend word to long
+			source = uint32(int32(int16(cpu.AddrRegs[xreg] & 0xFFFF)))
+		}
+		cpu.cycleCounter += M68K_CYCLE_REG
+	} else if mode == M68K_AM_AR_IND {
+		// Address register indirect
+		addr := cpu.AddrRegs[xreg]
+		if isLong {
+			source = cpu.Read32(addr)
+		} else {
+			source = uint32(int32(int16(cpu.Read16(addr))))
+		}
+		cpu.cycleCounter += M68K_CYCLE_MEM_READ
+	} else if mode == M68K_AM_AR_POST {
+		// Address register indirect with postincrement
+		addr := cpu.AddrRegs[xreg]
+		if isLong {
+			source = cpu.Read32(addr)
+			cpu.AddrRegs[xreg] += M68K_LONG_SIZE
+		} else {
+			source = uint32(int32(int16(cpu.Read16(addr))))
+			cpu.AddrRegs[xreg] += M68K_WORD_SIZE
+		}
+		cpu.cycleCounter += M68K_CYCLE_MEM_READ
+	} else if mode == M68K_AM_AR_PRE {
+		// Address register indirect with predecrement
+		if isLong {
+			cpu.AddrRegs[xreg] -= M68K_LONG_SIZE
+			addr := cpu.AddrRegs[xreg]
+			source = cpu.Read32(addr)
+		} else {
+			cpu.AddrRegs[xreg] -= M68K_WORD_SIZE
+			addr := cpu.AddrRegs[xreg]
+			source = uint32(int32(int16(cpu.Read16(addr))))
+		}
+		cpu.cycleCounter += M68K_CYCLE_MEM_READ
+	} else if mode == M68K_AM_AR_DISP {
+		// Address register indirect with displacement
+		disp := int16(cpu.Fetch16())
+		addr := uint32(int32(cpu.AddrRegs[xreg]) + int32(disp))
+		if isLong {
+			source = cpu.Read32(addr)
+		} else {
+			source = uint32(int32(int16(cpu.Read16(addr))))
+		}
+		cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_EA_DI
+	} else if mode == M68K_AM_AR_INDEX {
+		// Address register indirect with index
+		extWord := cpu.Fetch16()
+		addr := cpu.GetIndexWithExtWords(extWord, cpu.AddrRegs[xreg], false)
+		if isLong {
+			source = cpu.Read32(addr)
+		} else {
+			source = uint32(int32(int16(cpu.Read16(addr))))
+		}
+		cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_EA_IX
+	} else if mode == 7 {
+		// Extended addressing modes
+		switch xreg {
+		case 0: // Absolute Short
+			addr := uint32(int16(cpu.Fetch16()))
+			if isLong {
+				source = cpu.Read32(addr)
+			} else {
+				source = uint32(int32(int16(cpu.Read16(addr))))
+			}
+			cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_EA_AW
+		case 1: // Absolute Long
+			addr := cpu.Fetch32()
+			if isLong {
+				source = cpu.Read32(addr)
+			} else {
+				source = uint32(int32(int16(cpu.Read16(addr))))
+			}
+			cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_EA_AL
+		case 2: // PC with Displacement
+			disp := int16(cpu.Fetch16())
+			addr := cpu.PC - M68K_WORD_SIZE + uint32(disp)
+			if isLong {
+				source = cpu.Read32(addr)
+			} else {
+				source = uint32(int32(int16(cpu.Read16(addr))))
+			}
+			cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_EA_PCDI
+		case 3: // PC with Index
+			extWord := cpu.Fetch16()
+			addr := cpu.GetIndexWithExtWords(extWord, cpu.PC-M68K_WORD_SIZE, false)
+			if isLong {
+				source = cpu.Read32(addr)
+			} else {
+				source = uint32(int32(int16(cpu.Read16(addr))))
+			}
+			cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_EA_PCIX
+		case 4: // Immediate
+			if isLong {
+				source = cpu.Fetch32()
+			} else {
+				source = uint32(int32(int16(cpu.Fetch16())))
+			}
+			cpu.cycleCounter += M68K_CYCLE_FETCH
+		default:
+			fmt.Printf("M68K: Unimplemented extended addressing mode %d for SUBA at PC=%08x\n", xreg, cpu.PC-M68K_WORD_SIZE)
+			cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
+			return
+		}
+	} else {
+		fmt.Printf("M68K: Unimplemented source mode %d for SUBA at PC=%08x\n", mode, cpu.PC-M68K_WORD_SIZE)
+		cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
+		return
+	}
+
+	// Subtract from address register (full 32-bit, no condition code changes)
+	cpu.AddrRegs[reg] -= source
+
+	cpu.cycleCounter += M68K_CYCLE_EXECUTE
+}
+
 func (cpu *M68KCPU) ExecSubq(data uint32, size uint16, mode, reg uint16) {
 	var dest, result uint32
 	var effectiveSize int
@@ -5943,6 +6287,10 @@ func (cpu *M68KCPU) ExecMulu(reg, mode, xreg uint16) {
 	if mode == M68K_AM_DR {
 		source = cpu.DataRegs[xreg] & 0xFFFF
 		cpu.cycleCounter += M68K_CYCLE_REG
+	} else if mode == 7 && xreg == 4 {
+		// Immediate mode - fetch the value directly
+		source = uint32(cpu.Fetch16())
+		cpu.cycleCounter += M68K_CYCLE_FETCH
 	} else {
 		addr := cpu.GetEffectiveAddress(mode, xreg)
 		source = uint32(cpu.Read16(addr))
@@ -5983,6 +6331,10 @@ func (cpu *M68KCPU) ExecMuls(reg, mode, xreg uint16) {
 			source |= 0xFFFF0000
 		}
 		cpu.cycleCounter += M68K_CYCLE_REG
+	} else if mode == 7 && xreg == 4 {
+		// Immediate mode - fetch the value directly and sign extend
+		source = uint32(int32(int16(cpu.Fetch16())))
+		cpu.cycleCounter += M68K_CYCLE_FETCH
 	} else {
 		addr := cpu.GetEffectiveAddress(mode, xreg)
 		source = uint32(int32(int16(cpu.Read16(addr))))
@@ -7486,16 +7838,17 @@ func (cpu *M68KCPU) ExecShiftRotate(operation ShiftRotateOperation, reg, count u
 		return
 	}
 
+	// Initial setup for specific operations
+	// IMPORTANT: Read X flag BEFORE clearing flags, as ROXL/ROXR need the original value
+	msb := (value & msbMask) != 0
+	xFlag := (cpu.SR & M68K_SR_X) != 0
+
 	// Clear flags based on operation
 	if operation == ROL || operation == ROR {
 		cpu.SR &= ^uint16(M68K_SR_N | M68K_SR_Z | M68K_SR_V | M68K_SR_C)
 	} else {
 		cpu.SR &= ^uint16(M68K_SR_N | M68K_SR_Z | M68K_SR_V | M68K_SR_C | M68K_SR_X)
 	}
-
-	// Initial setup for specific operations
-	msb := (value & msbMask) != 0
-	xFlag := (cpu.SR & M68K_SR_X) != 0
 	var vFlag, cFlag bool
 
 	// Perform the specific shift/rotate operation
@@ -7845,7 +8198,7 @@ func (cpu *M68KCPU) ExecBset(reg, mode, xreg uint16) {
 
 // BCD operations
 func (cpu *M68KCPU) ExecAbcd(rm, rx, ry uint16) {
-	var src, dst, result uint8
+	var src, dst uint8
 
 	// Get operands
 	if rm == 0 {
@@ -7864,36 +8217,38 @@ func (cpu *M68KCPU) ExecAbcd(rm, rx, ry uint16) {
 	}
 
 	// Get extend bit
-	x := (cpu.SR & M68K_SR_X) != 0
-
-	// Perform BCD addition
-	lowNibble := (src & 0x0F) + (dst & 0x0F)
-	if x {
-		lowNibble++
+	xBit := uint16(0)
+	if cpu.SR&M68K_SR_X != 0 {
+		xBit = 1
 	}
 
-	// Adjust low nibble if needed
-	if lowNibble > 9 {
-		lowNibble += 6
+	// Perform BCD addition using the correct M68000 algorithm:
+	// 1. Add low nibbles + X
+	// 2. If > 9, add 6 (low nibble correction)
+	// 3. Add high nibbles to the running result
+	// 4. If > 0x99, add 0x60 (high nibble correction) and set carry
+
+	res := uint16(src&0x0F) + uint16(dst&0x0F) + xBit
+	if res > 9 {
+		res += 6
 	}
+	res += uint16(src&0xF0) + uint16(dst&0xF0)
 
-	// Compute high nibble
-	highNibble := ((src >> 4) & 0x0F) + ((dst >> 4) & 0x0F)
-	if lowNibble > 0x0F {
-		highNibble++
-	}
+	// Clear X, C, N, and V flags (N and V are technically undefined but tests expect them cleared/set)
+	cpu.SR &= ^uint16(M68K_SR_X | M68K_SR_C | M68K_SR_N | M68K_SR_V)
 
-	// Set flags
-	cpu.SR &= ^uint16(M68K_SR_X | M68K_SR_C)
-
-	// Adjust high nibble if needed
-	if highNibble > 9 {
-		highNibble += 6
+	// If result > 0x99, adjust and set carry
+	if res > 0x99 {
+		res += 0x60
 		cpu.SR |= M68K_SR_X | M68K_SR_C
 	}
 
-	// Combine nibbles
-	result = ((highNibble & 0x0F) << 4) | (lowNibble & 0x0F)
+	result := uint8(res)
+
+	// Set N based on MSB of result
+	if result&0x80 != 0 {
+		cpu.SR |= M68K_SR_N
+	}
 
 	// Update Z flag - cleared if result is non-zero, unchanged otherwise
 	if result != 0 {
@@ -7911,7 +8266,7 @@ func (cpu *M68KCPU) ExecAbcd(rm, rx, ry uint16) {
 	}
 }
 func (cpu *M68KCPU) ExecSbcd(rm, rx, ry uint16) {
-	var src, dst, result uint8
+	var src, dst uint8
 
 	// Get operands
 	if rm == 0 {
@@ -7930,49 +8285,37 @@ func (cpu *M68KCPU) ExecSbcd(rm, rx, ry uint16) {
 	}
 
 	// Get extend bit
-	x := (cpu.SR & M68K_SR_X) != 0
-
-	// Perform BCD subtraction
-	borrow := x
-
-	// Process low nibble
-	var lowResult int
-	lowResult = int(dst&0xF) - int(src&0xF)
-	if borrow {
-		lowResult--
+	xBit := int16(0)
+	if cpu.SR&M68K_SR_X != 0 {
+		xBit = 1
 	}
 
-	// Adjust low nibble if needed
-	if lowResult < 0 {
-		lowResult -= 6
-		borrow = true
-	} else {
-		borrow = false
+	// Perform BCD subtraction using the correct M68000 algorithm:
+	// 1. Subtract low nibbles (dst - src - X)
+	// 2. If < 0, subtract 6 (low nibble correction)
+	// 3. Subtract high nibbles from running result
+	// 4. If < 0, add 0xA0 (high nibble correction) and set carry
+
+	res := int16(dst&0x0F) - int16(src&0x0F) - xBit
+	if res < 0 {
+		res -= 6
 	}
+	res += int16(dst&0xF0) - int16(src&0xF0)
 
-	// Process high nibble
-	var highResult int
-	highResult = int((dst>>4)&0xF) - int((src>>4)&0xF)
-	if borrow {
-		highResult--
-	}
+	// Clear X, C, N, and V flags (N and V are technically undefined but tests expect them cleared/set)
+	cpu.SR &= ^uint16(M68K_SR_X | M68K_SR_C | M68K_SR_N | M68K_SR_V)
 
-	// Adjust high nibble if needed
-	if highResult < 0 {
-		highResult -= 6
-		borrow = true
-	} else {
-		borrow = false
-	}
-
-	// Combine nibbles
-	result = uint8(((highResult & 0xF) << 4) | (lowResult & 0xF))
-
-	// Set flags
-	if borrow {
+	// If result < 0, adjust and set carry
+	if res < 0 {
+		res += 0xA0
 		cpu.SR |= M68K_SR_X | M68K_SR_C
-	} else {
-		cpu.SR &= ^uint16(M68K_SR_X | M68K_SR_C)
+	}
+
+	result := uint8(res)
+
+	// Set N based on MSB of result
+	if result&0x80 != 0 {
+		cpu.SR |= M68K_SR_N
 	}
 
 	// Update Z flag - cleared if result is non-zero, unchanged otherwise
@@ -7991,7 +8334,8 @@ func (cpu *M68KCPU) ExecSbcd(rm, rx, ry uint16) {
 	}
 }
 func (cpu *M68KCPU) ExecNbcd(mode, reg uint16) {
-	var src, result uint8
+	var src uint8
+	var addr uint32
 
 	// Get operand
 	if mode == M68K_AM_DR {
@@ -8000,56 +8344,44 @@ func (cpu *M68KCPU) ExecNbcd(mode, reg uint16) {
 		cpu.cycleCounter += M68K_CYCLE_REG
 	} else {
 		// Memory operand
-		addr := cpu.GetEffectiveAddress(mode, reg)
+		addr = cpu.GetEffectiveAddress(mode, reg)
 		src = cpu.Read8(addr)
 		cpu.cycleCounter += M68K_CYCLE_MEM_READ
 	}
 
 	// Get extend bit
-	x := (cpu.SR & M68K_SR_X) != 0
+	xBit := int16(0)
+	if cpu.SR&M68K_SR_X != 0 {
+		xBit = 1
+	}
 
 	// NBCD computes: 0 - source - X (BCD subtraction)
-	// This is equivalent to SBCD with destination = 0
-	borrow := x
+	// Using the same algorithm as SBCD with dst = 0:
+	// 1. res = (0 & 0x0F) - (src & 0x0F) - X
+	// 2. If < 0, subtract 6
+	// 3. res += (0 & 0xF0) - (src & 0xF0)
+	// 4. If < 0, add 0xA0 and set carry
 
-	// Process low nibble: 0 - (src & 0xF) - borrow
-	var lowResult int
-	lowResult = 0 - int(src&0xF)
-	if borrow {
-		lowResult--
+	res := -int16(src&0x0F) - xBit
+	if res < 0 {
+		res -= 6
 	}
+	res -= int16(src & 0xF0)
 
-	// Adjust low nibble if needed
-	if lowResult < 0 {
-		lowResult -= 6
-		borrow = true
-	} else {
-		borrow = false
-	}
+	// Clear X, C, N, and V flags (N and V are technically undefined but tests expect them cleared/set)
+	cpu.SR &= ^uint16(M68K_SR_X | M68K_SR_C | M68K_SR_N | M68K_SR_V)
 
-	// Process high nibble: 0 - (src >> 4) - borrow
-	var highResult int
-	highResult = 0 - int((src>>4)&0xF)
-	if borrow {
-		highResult--
-	}
-
-	// Adjust high nibble if needed
-	if highResult < 0 {
-		highResult -= 6
-		borrow = true
-	} else {
-		borrow = false
-	}
-
-	// Combine nibbles
-	result = uint8(((highResult & 0xF) << 4) | (lowResult & 0xF))
-
-	// Set flags
-	if borrow {
+	// If result < 0, adjust and set carry
+	if res < 0 {
+		res += 0xA0
 		cpu.SR |= M68K_SR_X | M68K_SR_C
-	} else {
-		cpu.SR &= ^uint16(M68K_SR_X | M68K_SR_C)
+	}
+
+	result := uint8(res)
+
+	// Set N based on MSB of result
+	if result&0x80 != 0 {
+		cpu.SR |= M68K_SR_N
 	}
 
 	// Update Z flag - cleared if result is non-zero, unchanged otherwise
@@ -8062,8 +8394,7 @@ func (cpu *M68KCPU) ExecNbcd(mode, reg uint16) {
 		// Data register
 		cpu.DataRegs[reg] = (cpu.DataRegs[reg] & 0xFFFFFF00) | uint32(result)
 	} else {
-		// Memory
-		addr := cpu.GetEffectiveAddress(mode, reg)
+		// Memory - use the address we computed earlier
 		cpu.Write8(addr, result)
 		cpu.cycleCounter += M68K_CYCLE_MEM_WRITE
 	}
@@ -8429,7 +8760,7 @@ func (cpu *M68KCPU) ExecRTE() {
 	}
 	cpu.SR = cpu.Pop16()
 	cpu.PC = cpu.Pop32()
-	cpu.inException = false
+	cpu.inException.Store(false)
 	cpu.cycleCounter += M68K_CYCLE_RTE
 }
 func (cpu *M68KCPU) ExecSTOP() {
@@ -8498,7 +8829,9 @@ func (cpu *M68KCPU) ExecBRA(opcode uint16) {
 				cpu.PC, M68K_WORD_SIZE, effectiveDisplacement, targetPC)
 		}
 
-		if targetPC < M68K_ENTRY_POINT || targetPC >= M68K_MEMORY_SIZE-M68K_WORD_SIZE {
+		// Only halt on truly out-of-bounds addresses (above memory size)
+		// Branches to low memory (vector table area) are valid on real hardware
+		if targetPC >= M68K_MEMORY_SIZE-M68K_WORD_SIZE {
 			if cpu.debug.Load() {
 				fmt.Printf("Error: Branch to invalid address 0x%08X\n", targetPC)
 			}

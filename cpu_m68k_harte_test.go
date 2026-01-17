@@ -69,27 +69,27 @@ type HarteTestCase struct {
 // HarteState represents CPU and memory state
 // The JSON uses lowercase register names (d0, d1, a0, etc.)
 type HarteState struct {
-	D0       uint32   `json:"d0"`
-	D1       uint32   `json:"d1"`
-	D2       uint32   `json:"d2"`
-	D3       uint32   `json:"d3"`
-	D4       uint32   `json:"d4"`
-	D5       uint32   `json:"d5"`
-	D6       uint32   `json:"d6"`
-	D7       uint32   `json:"d7"`
-	A0       uint32   `json:"a0"`
-	A1       uint32   `json:"a1"`
-	A2       uint32   `json:"a2"`
-	A3       uint32   `json:"a3"`
-	A4       uint32   `json:"a4"`
-	A5       uint32   `json:"a5"`
-	A6       uint32   `json:"a6"`
-	USP      uint32   `json:"usp"`
-	SSP      uint32   `json:"ssp"`
-	SR       uint32   `json:"sr"`
-	PC       uint32   `json:"pc"`
-	Prefetch []uint32 `json:"prefetch"` // Instruction words at PC
-	RAM      [][]uint32 `json:"ram"`    // [[address, value], ...]
+	D0       uint32     `json:"d0"`
+	D1       uint32     `json:"d1"`
+	D2       uint32     `json:"d2"`
+	D3       uint32     `json:"d3"`
+	D4       uint32     `json:"d4"`
+	D5       uint32     `json:"d5"`
+	D6       uint32     `json:"d6"`
+	D7       uint32     `json:"d7"`
+	A0       uint32     `json:"a0"`
+	A1       uint32     `json:"a1"`
+	A2       uint32     `json:"a2"`
+	A3       uint32     `json:"a3"`
+	A4       uint32     `json:"a4"`
+	A5       uint32     `json:"a5"`
+	A6       uint32     `json:"a6"`
+	USP      uint32     `json:"usp"`
+	SSP      uint32     `json:"ssp"`
+	SR       uint32     `json:"sr"`
+	PC       uint32     `json:"pc"`
+	Prefetch []uint32   `json:"prefetch"` // Instruction words at PC
+	RAM      [][]uint32 `json:"ram"`      // [[address, value], ...]
 }
 
 // -----------------------------------------------------------------------------
@@ -228,17 +228,23 @@ func SetupHarteCPUState(cpu *M68KCPU, state HarteState) {
 
 	// Setup prefetch queue - write instruction words to memory at PC
 	// The prefetch contains the instruction word(s) that should be at PC
+	// Write directly in big-endian format (don't use cpu.Write16 which does endian swap)
 	for i, word := range state.Prefetch {
 		addr := state.PC + uint32(i*2)
-		cpu.Write16(addr, uint16(word))
+		// Write big-endian: high byte first, then low byte
+		cpu.memory[addr] = uint8(word >> 8)     // High byte
+		cpu.memory[addr+1] = uint8(word & 0xFF) // Low byte
 	}
 
 	// Setup RAM contents - each entry is [address, byte_value]
+	// Write directly to memory to avoid any endian conversion
 	for _, entry := range state.RAM {
 		if len(entry) >= 2 {
 			addr := entry[0]
 			value := uint8(entry[1])
-			cpu.Write8(addr, value)
+			if addr < uint32(len(cpu.memory)) {
+				cpu.memory[addr] = value
+			}
 		}
 	}
 }
@@ -313,12 +319,15 @@ func VerifyHarteFinalState(cpu *M68KCPU, expected HarteState, testName string) H
 		mismatch("PC: got 0x%08X, want 0x%08X", cpu.PC, expected.PC)
 	}
 
-	// Check RAM contents
+	// Check RAM contents - read directly from memory to avoid endian conversion
 	for _, entry := range expected.RAM {
 		if len(entry) >= 2 {
 			addr := entry[0]
 			expectedVal := uint8(entry[1])
-			actualVal := cpu.Read8(addr)
+			var actualVal uint8
+			if addr < uint32(len(cpu.memory)) {
+				actualVal = cpu.memory[addr]
+			}
 			if actualVal != expectedVal {
 				mismatch("RAM[0x%06X]: got 0x%02X, want 0x%02X", addr, actualVal, expectedVal)
 			}
@@ -332,21 +341,55 @@ func VerifyHarteFinalState(cpu *M68KCPU, expected HarteState, testName string) H
 // Test Runner
 // -----------------------------------------------------------------------------
 
-// RunHarteTest executes a single test case and returns the result
-func RunHarteTest(tc HarteTestCase) HarteTestResult {
-	// Create fresh CPU with minimal bus
-	bus := NewSystemBus()
-	cpu := &M68KCPU{
-		SR:              M68K_SR_S,     // Start in supervisor mode
-		bus:             bus,
-		memory:          bus.GetMemory(),
-		stackLowerBound: 0,            // Disable stack bounds for tests
-		stackUpperBound: 0xFFFFFFFF,   // Disable stack bounds for tests
+// Reusable test harness to avoid allocating 16MB per test case
+var harteTestBus *SystemBus
+var harteTestCPU *M68KCPU
+
+func getHarteTestCPU() *M68KCPU {
+	if harteTestBus == nil {
+		harteTestBus = NewSystemBus()
+		harteTestCPU = &M68KCPU{
+			SR:              M68K_SR_S,
+			bus:             harteTestBus,
+			memory:          harteTestBus.GetMemory(),
+			stackLowerBound: 0,
+			stackUpperBound: 0xFFFFFFFF,
+		}
+	}
+	return harteTestCPU
+}
+
+func resetHarteTestCPU(cpu *M68KCPU) {
+	// Clear memory (only the parts we use - first 2MB should be enough for tests)
+	mem := cpu.memory
+	for i := 0; i < 2*1024*1024 && i < len(mem); i++ {
+		mem[i] = 0
+	}
+	// Reset CPU state
+	cpu.PC = 0
+	cpu.SR = M68K_SR_S
+	cpu.USP = 0
+	for i := range cpu.DataRegs {
+		cpu.DataRegs[i] = 0
+	}
+	for i := range cpu.AddrRegs {
+		cpu.AddrRegs[i] = 0
 	}
 	cpu.running.Store(true)
+}
+
+// RunHarteTest executes a single test case and returns the result
+func RunHarteTest(tc HarteTestCase) HarteTestResult {
+	// Get reusable CPU and reset it
+	cpu := getHarteTestCPU()
+	resetHarteTestCPU(cpu)
 
 	// Setup initial state
 	SetupHarteCPUState(cpu, tc.Initial)
+
+	// Capture initial A7 for debugging
+	initialA7 := cpu.AddrRegs[7]
+	initialPC := cpu.PC
 
 	// Execute single instruction
 	// The prefetch is already written to memory, fetch and decode it
@@ -354,7 +397,23 @@ func RunHarteTest(tc HarteTestCase) HarteTestResult {
 	cpu.FetchAndDecodeInstruction()
 
 	// Verify final state
-	return VerifyHarteFinalState(cpu, tc.Final, tc.Name)
+	result := VerifyHarteFinalState(cpu, tc.Final, tc.Name)
+
+	// Debug output for failing tests
+	if !result.Passed && *harteVerbose {
+		fmt.Printf("DEBUG %s: initial A7=0x%08X, initial PC=0x%08X, currentIR=0x%04X\n",
+			tc.Name, initialA7, initialPC, cpu.currentIR)
+		fmt.Printf("DEBUG %s: initial state: A0=0x%08X A1=0x%08X A2=0x%08X A3=0x%08X A4=0x%08X A5=0x%08X A6=0x%08X\n",
+			tc.Name, tc.Initial.A0, tc.Initial.A1, tc.Initial.A2, tc.Initial.A3, tc.Initial.A4, tc.Initial.A5, tc.Initial.A6)
+		fmt.Printf("DEBUG %s: initial state: D0=0x%08X D1=0x%08X D2=0x%08X D3=0x%08X D4=0x%08X D5=0x%08X D6=0x%08X D7=0x%08X\n",
+			tc.Name, tc.Initial.D0, tc.Initial.D1, tc.Initial.D2, tc.Initial.D3, tc.Initial.D4, tc.Initial.D5, tc.Initial.D6, tc.Initial.D7)
+		fmt.Printf("DEBUG %s: initial SSP=0x%08X USP=0x%08X SR=0x%04X\n",
+			tc.Name, tc.Initial.SSP, tc.Initial.USP, tc.Initial.SR)
+		fmt.Printf("DEBUG %s: final A7=0x%08X, final PC=0x%08X\n",
+			tc.Name, cpu.AddrRegs[7], cpu.PC)
+	}
+
+	return result
 }
 
 // RunHarteTestT runs a test case using Go's testing framework
@@ -445,9 +504,7 @@ func TestHarte68000(t *testing.T) {
 	for _, file := range files {
 		name := strings.TrimSuffix(filepath.Base(file), ".json.gz")
 		t.Run(name, func(t *testing.T) {
-			if testing.Short() {
-				t.Parallel() // Run in parallel in short mode
-			}
+			// Don't run in parallel - causes memory exhaustion and crashes
 			RunHarteTestFile(t, file)
 		})
 	}
