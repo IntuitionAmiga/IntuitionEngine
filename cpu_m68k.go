@@ -3575,26 +3575,33 @@ func (cpu *M68KCPU) ExecMovem(direction, size, mode, reg uint16) {
 		// MOVEM operations can be correctly nested (for context switching and subroutine calls).
 
 		if mode == M68K_AM_AR_PRE {
-			// Predecrement mode: iterate in reverse order and decrement before each write
-			for i := 15; i >= 0; i-- {
+			// Predecrement mode: stores registers in order from A7 down to D0 (highest to lowest).
+			// IMPORTANT: For predecrement mode, the register list mask is in REVERSED format:
+			//   - Bits 0-7 = A7-A0 (bit 0 = A7, bit 7 = A0)
+			//   - Bits 8-15 = D7-D0 (bit 8 = D7, bit 15 = D0)
+			// We iterate from bit 0 to bit 15, which processes registers in order A7,A6,...,A0,D7,...,D0.
+			// This ensures the stack order matches what postincrement mode expects when restoring.
+			for i := 0; i < 16; i++ {
 				if (mask & (1 << uint(i))) != 0 {
 					// Decrement address register BEFORE writing
 					cpu.AddrRegs[reg] -= operandSize
 					addr := cpu.AddrRegs[reg]
 
 					if i < 8 {
-						// Data registers
+						// Bits 0-7: Address registers A7-A0 (bit 0=A7, bit 7=A0)
+						regNum := 7 - i
 						if size == 1 { // Long
-							cpu.Write32(addr, cpu.DataRegs[i])
+							cpu.Write32(addr, cpu.AddrRegs[regNum])
 						} else { // Word
-							cpu.Write16(addr, uint16(cpu.DataRegs[i]))
+							cpu.Write16(addr, uint16(cpu.AddrRegs[regNum]))
 						}
 					} else {
-						// Address registers
+						// Bits 8-15: Data registers D7-D0 (bit 8=D7, bit 15=D0)
+						regNum := 15 - i
 						if size == 1 { // Long
-							cpu.Write32(addr, cpu.AddrRegs[i-8])
+							cpu.Write32(addr, cpu.DataRegs[regNum])
 						} else { // Word
-							cpu.Write16(addr, uint16(cpu.AddrRegs[i-8]))
+							cpu.Write16(addr, uint16(cpu.DataRegs[regNum]))
 						}
 					}
 				}
@@ -8809,25 +8816,36 @@ func (cpu *M68KCPU) ExecBRA(opcode uint16) {
 	}
 
 	// Calculate effective displacement.
+	// The 68K branch displacement is calculated relative to (instruction_addr + 2).
+	// After fetching the instruction word, PC = instruction_addr + 2.
+	// For word/long displacements, extra words are fetched which advance PC further.
 	var effectiveDisplacement int32
+	var pcAdjust uint32 = 0 // Bytes to subtract from current PC to get base for displacement
+
 	if displacement == 0 {
+		// Word displacement: PC advanced by 2 for the displacement word
 		effectiveDisplacement = int32(int16(cpu.Fetch16()))
+		pcAdjust = M68K_WORD_SIZE
 	} else if displacement == -1 {
+		// Long displacement: PC advanced by 4 for the displacement long
 		effectiveDisplacement = int32(cpu.Fetch32())
+		pcAdjust = M68K_LONG_SIZE
 	} else {
+		// Byte displacement: no extra fetch, PC is already at instruction_addr + 2
 		effectiveDisplacement = int32(displacement)
+		pcAdjust = 0
 	}
 
 	// If branch condition is met, update PC.
 	if takeBranch {
 		if cpu.debug.Load() {
-			fmt.Printf("Original BRA: PC=0x%08X, displacement=%d\n", cpu.PC, effectiveDisplacement)
+			fmt.Printf("Original BRA: PC=0x%08X, displacement=%d, pcAdjust=%d\n", cpu.PC, effectiveDisplacement, pcAdjust)
 		}
-		targetPC := cpu.PC - M68K_WORD_SIZE + uint32(effectiveDisplacement)
+		targetPC := cpu.PC - pcAdjust + uint32(effectiveDisplacement)
 
 		if cpu.debug.Load() {
 			fmt.Printf("Target PC calculation: 0x%08X - %d + %d = 0x%08X\n",
-				cpu.PC, M68K_WORD_SIZE, effectiveDisplacement, targetPC)
+				cpu.PC, pcAdjust, effectiveDisplacement, targetPC)
 		}
 
 		// Only halt on truly out-of-bounds addresses (above memory size)
