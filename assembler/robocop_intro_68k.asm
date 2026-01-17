@@ -390,7 +390,7 @@ draw_scrolltext:
 
     ; Calculate Y with sine (pre-calculated offsets)
     move.l  d3,d0
-    add.l   d1,d0                       ; + scroll_x for phase
+    add.l   VAR_FRAME_ADDR,d0           ; + frame counter for animated wave
     andi.l  #$FF,d0
     lsl.l   #2,d0
     lea     scroll_sine_table,a2
@@ -1143,6 +1143,8 @@ data_robocop_ay:
 ; ============================================================================
 ; SCROLLTEXT DATA
 ; ============================================================================
+
+    even                ; Ensure proper alignment for 32-bit table access
 
 ; Pre-calculated Y offsets: sin(i * 2pi / 256) * 20, range -20 to +20
 scroll_sine_table:
