@@ -210,6 +210,49 @@ uninstall:
 	@sudo rm -f $(INSTALL_BIN_DIR)/ie32asm
 	@echo "Uninstallation complete"
 
+# Test data directories
+TESTDATA_DIR := testdata
+HARTE_TEST_DIR := $(TESTDATA_DIR)/68000/v1
+HARTE_REPO_URL := https://github.com/SingleStepTests/680x0
+
+# Download Tom Harte 68000 test files
+.PHONY: testdata-harte
+testdata-harte:
+	@echo "Downloading Tom Harte 68000 test files..."
+	@$(MKDIR) -p $(HARTE_TEST_DIR)
+	@if command -v git >/dev/null 2>&1; then \
+		if [ ! -d "$(TESTDATA_DIR)/680x0" ]; then \
+			echo "Cloning 680x0 test repository (this may take a while)..."; \
+			git clone --depth 1 $(HARTE_REPO_URL) $(TESTDATA_DIR)/680x0; \
+		fi; \
+		echo "Copying 68000 v1 test files..."; \
+		cp $(TESTDATA_DIR)/680x0/68000/v1/*.json.gz $(HARTE_TEST_DIR)/ 2>/dev/null || true; \
+	else \
+		echo "Git not found. Please install git and try again."; \
+		exit 1; \
+	fi
+	@echo "Test files downloaded to $(HARTE_TEST_DIR)/"
+	@ls -1 $(HARTE_TEST_DIR)/*.json.gz 2>/dev/null | wc -l | xargs echo "Total test files:"
+
+# Clean test data
+.PHONY: clean-testdata
+clean-testdata:
+	@echo "Cleaning test data..."
+	@rm -rf $(TESTDATA_DIR)
+	@echo "Test data cleaned"
+
+# Run M68K tests with Tom Harte test suite
+.PHONY: test-harte
+test-harte: testdata-harte
+	@echo "Running Tom Harte 68000 tests..."
+	@$(GO) test -v -run TestHarte68000 -timeout 30m
+
+# Run M68K tests in short mode (sampling)
+.PHONY: test-harte-short
+test-harte-short: testdata-harte
+	@echo "Running Tom Harte 68000 tests (short mode)..."
+	@$(GO) test -v -short -run TestHarte68000 -timeout 5m
+
 # Help target
 help:
 	@echo "Intuition Engine Build System"
@@ -224,6 +267,12 @@ help:
 	@echo "  clean          - Remove all build artifacts"
 	@echo "  list           - List compiled binaries with sizes"
 	@echo "  help           - Show this help message"
+	@echo ""
+	@echo "Test targets:"
+	@echo "  testdata-harte   - Download Tom Harte 68000 test files"
+	@echo "  test-harte       - Run full Tom Harte test suite"
+	@echo "  test-harte-short - Run Tom Harte tests (sampling mode)"
+	@echo "  clean-testdata   - Remove downloaded test data"
 	@echo ""
 	@echo "Build flags:"
 	@echo "  GO_FLAGS       = $(GO_FLAGS)"
