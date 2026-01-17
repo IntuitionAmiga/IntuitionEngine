@@ -154,6 +154,7 @@ const (
 	M68K_ENTRY_POINT  = 0x00001000 // Avoids collision with exception vector table
 	M68K_IO_BASE      = 0x00F00000 // Memory-mapped I/O begins here
 	M68K_IO_LIMIT     = 0x00FFFFFF // Last accessible I/O address
+	M68K_ADDRESS_MASK = 0x00FFFFFF // 68000/68EC020 has 24-bit address bus
 )
 
 // ------------------------------------------------------------------------------
