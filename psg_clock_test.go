@@ -8,10 +8,13 @@ func TestPSGClockAffectsToneFrequency(t *testing.T) {
 	engine, chip := newTestPSGEngine(SAMPLE_RATE)
 	engine.SetClockHz(PSG_CLOCK_ATARI_ST)
 
-	engine.WriteRegister(0, 0x01)
-	engine.WriteRegister(1, 0x00)
+	// Use period 100 (0x64) to get an audible frequency
+	// Period 1 would give 125kHz which is ultrasonic and correctly muted
+	engine.WriteRegister(0, 0x64) // Low byte of period
+	engine.WriteRegister(1, 0x00) // High byte of period
 
-	want := float32(PSG_CLOCK_ATARI_ST) / 16.0
+	// freq = clock / (16 * period) = 2,000,000 / (16 * 100) = 1250 Hz
+	want := float32(PSG_CLOCK_ATARI_ST) / 16.0 / 100.0
 	got := chip.channels[0].frequency
 	if got != want {
 		t.Fatalf("tone freq = %.2f, want %.2f", got, want)

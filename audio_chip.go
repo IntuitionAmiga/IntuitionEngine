@@ -766,7 +766,13 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 		offset := (addr - FLEX_CH_BASE) % FLEX_CH_STRIDE
 		switch offset {
 		case FLEX_OFF_FREQ:
-			ch.frequency = float32(value)
+			// Clamp frequency to prevent ultrasonic aliasing
+			// Frequencies above Nyquist (sampleRate/2) cause severe aliasing artifacts
+			freq := float32(value)
+			if freq > MAX_FREQ {
+				freq = 0 // Mute ultrasonic frequencies (as real YM2149 would be inaudible)
+			}
+			ch.frequency = freq
 		case FLEX_OFF_VOL:
 			ch.volume = float32(value&BYTE_MASK) / NORMALISE_8BIT
 		case FLEX_OFF_CTRL:
@@ -844,7 +850,12 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 		if addr == SAW_FREQ {
 			ch.waveType = WAVE_SAWTOOTH
 		}
-		ch.frequency = float32(value)
+		// Clamp frequency to prevent ultrasonic aliasing
+		freq := float32(value)
+		if freq > MAX_FREQ {
+			freq = 0 // Mute ultrasonic frequencies
+		}
+		ch.frequency = freq
 	case SQUARE_VOL, TRI_VOL, SINE_VOL, NOISE_VOL, SAW_VOL:
 		if addr == SAW_VOL {
 			ch.waveType = WAVE_SAWTOOTH
