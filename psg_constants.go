@@ -17,4 +17,15 @@ const (
 	PSG_CLOCK_MSX         = 1789773
 
 	Z80_CLOCK_ZX_SPECTRUM = 3494400
+
+	// Z80 PSG port I/O mapping for standalone Z80 programs
+	// Use: OUT ($F0),A to select register, OUT ($F1),A to write data
+	//      IN A,($F0) to read selected register number, IN A,($F1) to read data
+	Z80_PSG_PORT_SELECT = 0xF0
+	Z80_PSG_PORT_DATA   = 0xF1
+
+	// 6502 PSG memory mapping (C64 SID-style address range)
+	// Maps $D400-$D40D to PSG registers 0-13
+	C6502_PSG_BASE = 0xD400
+	C6502_PSG_END  = 0xD40D
 )

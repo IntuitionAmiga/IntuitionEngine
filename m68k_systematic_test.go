@@ -1,4 +1,4 @@
-//go:build m68k
+//go:build m68k_test
 
 package main
 

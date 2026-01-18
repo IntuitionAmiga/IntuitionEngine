@@ -283,6 +283,7 @@ const (
 	M68K_VEC_TRACE         = 9
 	M68K_VEC_LINE_A        = 10 // Operating system trap mechanism
 	M68K_VEC_LINE_F        = 11 // FPU/coprocessor trap mechanism
+	M68K_VEC_FORMAT_ERROR  = 14 // Exception stack frame format error
 	M68K_VEC_SPURIOUS      = 24 // Hardware acknowledged interrupt but no device responded
 	M68K_VEC_LEVEL1        = 25
 	M68K_VEC_LEVEL2        = 26
@@ -526,6 +527,16 @@ const (
 	M68K_CAS2        = 0x0CFC // Lock-free double-word synchronisation
 )
 
+// Exception frame format codes (68020)
+const (
+	M68K_FRAME_FMT_0 = 0x0
+	M68K_FRAME_FMT_1 = 0x1
+	M68K_FRAME_FMT_2 = 0x2
+	M68K_FRAME_FMT_9 = 0x9
+	M68K_FRAME_FMT_A = 0xA
+	M68K_FRAME_FMT_B = 0xB
+)
+
 // ------------------------------------------------------------------------------
 // Instruction Opcodes - Privileged and Miscellaneous
 // ------------------------------------------------------------------------------
@@ -587,7 +598,9 @@ type M68KCPU struct {
 	// Cache Line 1 (64 bytes) - Address Registers and Execution State
 	AddrRegs  [8]uint32   // A7 switches between SSP and USP based on SR.S bit
 	USP       uint32      // Hardware preserves this across supervisor mode transitions
+	SSP       uint32      // Supervisor stack pointer (A7 when SR.S is set)
 	running   atomic.Bool // Execution state (atomic for lock-free access)
+	stopped   atomic.Bool // STOP state; resumes on interrupt
 	debug     atomic.Bool // Debug mode flag (atomic for lock-free access)
 	_padding1 [18]byte    // Cache line alignment reduces false sharing
 
@@ -604,6 +617,7 @@ type M68KCPU struct {
 	prefetchSize     uint8
 	currentIR        uint16
 	pendingInterrupt atomic.Uint32 // Set by external hardware; checked each instruction (atomic for lock-free access)
+	pendingException atomic.Uint32 // Deferred exceptions (atomic for lock-free access)
 	inException      atomic.Bool   // Prevents double-fault situations (atomic for lock-free access)
 	stackLowerBound  uint32        // Detects stack corruption early
 	stackUpperBound  uint32        // Detects stack corruption early
@@ -626,6 +640,23 @@ type M68KCPU struct {
 
 	// Direct memory access for lock-free instruction fetches
 	memory []byte // Direct pointer to main memory (bypasses mutex for non-I/O reads)
+
+	// Fault tracking for bus/address errors (format $A frames)
+	accessIsInstruction    bool
+	lastFaultAddr          uint32
+	lastFaultSize          uint8
+	lastFaultWrite         bool
+	lastFaultData          uint32
+	lastFaultIsInstruction bool
+}
+
+type faultingBus interface {
+	Read8WithFault(addr uint32) (uint8, bool)
+	Read16WithFault(addr uint32) (uint16, bool)
+	Read32WithFault(addr uint32) (uint32, bool)
+	Write8WithFault(addr uint32, value uint8) bool
+	Write16WithFault(addr uint32, value uint16) bool
+	Write32WithFault(addr uint32, value uint32) bool
 }
 
 func NewM68KCPU(bus MemoryBus) *M68KCPU {
@@ -656,6 +687,7 @@ func NewM68KCPU(bus MemoryBus) *M68KCPU {
 			}
 		}
 	}
+	cpu.SSP = cpu.AddrRegs[7]
 
 	pc := cpu.Read32(M68K_RESET_VECTOR)
 	if pc == 0 {
@@ -687,6 +719,7 @@ func (cpu *M68KCPU) Reset() {
 	} else {
 		cpu.AddrRegs[7] = sp
 	}
+	cpu.SSP = cpu.AddrRegs[7]
 
 	pc := cpu.Read32(M68K_RESET_VECTOR)
 	if pc == 0 {
@@ -1647,11 +1680,24 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 	for cpu.running.Load() {
 		originalPC := cpu.PC
 
-		// Check for out-of-bounds PC
-		if cpu.PC >= M68K_MEMORY_SIZE-M68K_LONG_SIZE {
-			fmt.Printf("Error: Programme counter out of bounds: PC=0x%08X\n", cpu.PC)
-			cpu.running.Store(false)
-			break
+		// STOP state: only interrupts can resume execution
+		if cpu.stopped.Load() {
+			pendingException := cpu.pendingException.Load()
+			if pendingException != 0 && !cpu.inException.Load() {
+				cpu.pendingException.Store(0)
+				cpu.ProcessException(uint8(pendingException))
+			}
+
+			ipl := uint32((cpu.SR & M68K_SR_IPL) >> M68K_SR_SHIFT)
+			pending := cpu.pendingInterrupt.Load()
+			if pending > ipl && !cpu.inException.Load() {
+				cpu.stopped.Store(false)
+				cpu.ProcessInterrupt(uint8(pending))
+				cpu.pendingInterrupt.Store(0)
+			}
+
+			runtime.Gosched()
+			continue
 		}
 
 		// Fetch and execute instruction
@@ -1678,6 +1724,12 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 		}
 
 		// Process interrupts (lock-free with atomic operations)
+		pendingException := cpu.pendingException.Load()
+		if pendingException != 0 && !cpu.inException.Load() {
+			cpu.pendingException.Store(0)
+			cpu.ProcessException(uint8(pendingException))
+		}
+
 		ipl := uint32((cpu.SR & M68K_SR_IPL) >> M68K_SR_SHIFT)
 		pending := cpu.pendingInterrupt.Load()
 		if pending > ipl && !cpu.inException.Load() {
@@ -1796,18 +1848,24 @@ func (cpu *M68KCPU) Read8(addr uint32) uint8 {
 		return 0
 	}
 
-	if addr >= M68K_MEMORY_SIZE {
-		fmt.Printf("Warning: Read from out-of-bounds address 0x%08X\n", addr)
-		return 0
-	}
-
+	// For addresses >= M68K_MEMORY_SIZE, let bus handle (Atari ST hardware registers)
 	// Lock-free I/O path - bus handles its own synchronisation
+	if fb, ok := cpu.bus.(faultingBus); ok {
+		value, ok := fb.Read8WithFault(addr)
+		if !ok {
+			cpu.recordFault(addr, 1, false, 0)
+			cpu.ProcessException(M68K_VEC_BUS_ERROR)
+			return 0
+		}
+		return value
+	}
 	return cpu.bus.Read8(addr)
 }
 func (cpu *M68KCPU) Read16(addr uint32) uint16 {
 	if (addr & M68K_BYTE_SIZE) != 0 {
-		cpu.ProcessException(M68K_VEC_ADDRESS_ERROR)
-		return 0
+		hi := uint16(cpu.Read8(addr))
+		lo := uint16(cpu.Read8(addr + 1))
+		return (hi << 8) | lo
 	}
 
 	// Lock-free fast path for non-I/O addresses (instruction fetches, data reads)
@@ -1818,21 +1876,31 @@ func (cpu *M68KCPU) Read16(addr uint32) uint16 {
 		return ((leValue & 0xFF) << M68K_BYTE_SIZE_BITS) | ((leValue & 0xFF00) >> M68K_BYTE_SIZE_BITS)
 	}
 
-	if addr >= M68K_MEMORY_SIZE-M68K_BYTE_SIZE {
-		fmt.Printf("Warning: Read16 from out-of-bounds address 0x%08X\n", addr)
-		return 0
-	}
+	// For addresses >= M68K_MEMORY_SIZE, let bus handle (Atari ST hardware registers)
 
 	// Lock-free I/O path - bus handles its own synchronisation
-	leValue := cpu.bus.Read16(addr)
+	var leValue uint16
+	if fb, ok := cpu.bus.(faultingBus); ok {
+		value, ok := fb.Read16WithFault(addr)
+		if !ok {
+			cpu.ProcessException(M68K_VEC_BUS_ERROR)
+			return 0
+		}
+		leValue = value
+	} else {
+		leValue = cpu.bus.Read16(addr)
+	}
 
 	// Endian conversion required because host bus is little-endian
 	return ((leValue & 0xFF) << M68K_BYTE_SIZE_BITS) | ((leValue & 0xFF00) >> M68K_BYTE_SIZE_BITS)
 }
 func (cpu *M68KCPU) Read32(addr uint32) uint32 {
 	if (addr & M68K_BYTE_SIZE) != 0 {
-		cpu.ProcessException(M68K_VEC_ADDRESS_ERROR)
-		return 0
+		b0 := uint32(cpu.Read8(addr))
+		b1 := uint32(cpu.Read8(addr + 1))
+		b2 := uint32(cpu.Read8(addr + 2))
+		b3 := uint32(cpu.Read8(addr + 3))
+		return (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
 	}
 
 	// Lock-free fast path for non-I/O addresses (data reads from main memory)
@@ -1850,10 +1918,28 @@ func (cpu *M68KCPU) Read32(addr uint32) uint32 {
 	// Hardware handlers return numeric values, not memory byte order
 	// Lock-free - bus handles its own synchronisation
 	if addr >= 0xF0000 && addr < 0x100000 {
+		if fb, ok := cpu.bus.(faultingBus); ok {
+			value, ok := fb.Read32WithFault(addr)
+			if !ok {
+				cpu.ProcessException(M68K_VEC_BUS_ERROR)
+				return 0
+			}
+			return value
+		}
 		return cpu.bus.Read32(addr)
 	}
 
-	leValue := cpu.bus.Read32(addr)
+	var leValue uint32
+	if fb, ok := cpu.bus.(faultingBus); ok {
+		value, ok := fb.Read32WithFault(addr)
+		if !ok {
+			cpu.ProcessException(M68K_VEC_BUS_ERROR)
+			return 0
+		}
+		leValue = value
+	} else {
+		leValue = cpu.bus.Read32(addr)
+	}
 
 	// Endian conversion required because host bus is little-endian
 	return ((leValue & 0xFF) << (M68K_BYTE_SIZE_BITS * 3)) |
@@ -1869,34 +1955,43 @@ func (cpu *M68KCPU) Write8(addr uint32, value uint8) {
 		return
 	}
 
-	if addr >= M68K_MEMORY_SIZE {
-		fmt.Printf("Warning: Write to out-of-bounds address 0x%08X\n", addr)
+	// For addresses >= M68K_MEMORY_SIZE, let bus handle (Atari ST hardware registers)
+	// Lock-free - bus handles its own synchronisation
+	if fb, ok := cpu.bus.(faultingBus); ok {
+		if !fb.Write8WithFault(addr, value) {
+			cpu.ProcessException(M68K_VEC_BUS_ERROR)
+		}
 		return
 	}
-
-	// Lock-free - bus handles its own synchronisation
 	cpu.bus.Write8(addr, value)
 }
 func (cpu *M68KCPU) Write16(addr uint32, value uint16) {
 	if (addr & M68K_BYTE_SIZE) != 0 {
-		cpu.ProcessException(M68K_VEC_ADDRESS_ERROR)
+		cpu.Write8(addr, uint8(value>>8))
+		cpu.Write8(addr+1, uint8(value))
 		return
 	}
 
-	if addr >= M68K_MEMORY_SIZE-M68K_BYTE_SIZE {
-		fmt.Printf("Warning: Write16 to out-of-bounds address 0x%08X\n", addr)
-		return
-	}
+	// For addresses >= M68K_MEMORY_SIZE, let bus handle (Atari ST hardware registers)
 
 	// Endian conversion required because host bus is little-endian
 	leValue := ((value & 0xFF) << M68K_BYTE_SIZE_BITS) | ((value & 0xFF00) >> M68K_BYTE_SIZE_BITS)
 
 	// Lock-free - bus handles its own synchronisation
+	if fb, ok := cpu.bus.(faultingBus); ok {
+		if !fb.Write16WithFault(addr, leValue) {
+			cpu.ProcessException(M68K_VEC_BUS_ERROR)
+		}
+		return
+	}
 	cpu.bus.Write16(addr, leValue)
 }
 func (cpu *M68KCPU) Write32(addr uint32, value uint32) {
 	if (addr & M68K_BYTE_SIZE) != 0 {
-		cpu.ProcessException(M68K_VEC_ADDRESS_ERROR)
+		cpu.Write8(addr, uint8(value>>24))
+		cpu.Write8(addr+1, uint8(value>>16))
+		cpu.Write8(addr+2, uint8(value>>8))
+		cpu.Write8(addr+3, uint8(value))
 		return
 	}
 
@@ -1919,6 +2014,12 @@ func (cpu *M68KCPU) Write32(addr uint32, value uint32) {
 	// I/O register path - pass original value (not byte-swapped) for hardware registers
 	// Hardware handlers expect numeric values, not memory byte order
 	if addr >= 0xF0000 && addr < 0x100000 {
+		if fb, ok := cpu.bus.(faultingBus); ok {
+			if !fb.Write32WithFault(addr, value) {
+				cpu.ProcessException(M68K_VEC_BUS_ERROR)
+			}
+			return
+		}
 		cpu.bus.Write32(addr, value)
 		return
 	}
@@ -1926,6 +2027,12 @@ func (cpu *M68KCPU) Write32(addr uint32, value uint32) {
 	// Non-I/O fast path - direct memory write with endian conversion
 	// CPU is the sole writer, so no synchronisation needed
 	// Lock-free - bus handles its own synchronisation
+	if fb, ok := cpu.bus.(faultingBus); ok {
+		if !fb.Write32WithFault(addr, leValue) {
+			cpu.ProcessException(M68K_VEC_BUS_ERROR)
+		}
+		return
+	}
 	cpu.bus.Write32(addr, leValue)
 }
 
@@ -2001,6 +2108,10 @@ func (cpu *M68KCPU) Pop32() uint32 {
 
 // Instruction fetching
 func (cpu *M68KCPU) Fetch16() uint16 {
+	if (cpu.PC & M68K_BYTE_SIZE) != 0 {
+		cpu.ProcessException(M68K_VEC_ADDRESS_ERROR)
+		return 0
+	}
 	addr := cpu.PC
 	if cpu.debug.Load() {
 		fmt.Printf("Fetch16: addr=0x%08X\n", addr)
@@ -2014,6 +2125,10 @@ func (cpu *M68KCPU) Fetch16() uint16 {
 	return value
 }
 func (cpu *M68KCPU) Fetch32() uint32 {
+	if (cpu.PC & M68K_BYTE_SIZE) != 0 {
+		cpu.ProcessException(M68K_VEC_ADDRESS_ERROR)
+		return 0
+	}
 	high := uint32(cpu.Read16(cpu.PC)) << 16
 	cpu.PC += 2 // Advance PC after reading high word
 	low := uint32(cpu.Read16(cpu.PC))
@@ -2523,6 +2638,116 @@ func (cpu *M68KCPU) SetCCR(value uint8) {
 	cpu.SR = (cpu.SR & ^uint16(M68K_SR_CCR)) | uint16(value&M68K_SR_CCR)
 }
 
+func (cpu *M68KCPU) recordFault(addr uint32, size uint8, write bool, data uint32) {
+	cpu.lastFaultAddr = addr
+	cpu.lastFaultSize = size
+	cpu.lastFaultWrite = write
+	cpu.lastFaultData = data
+	cpu.lastFaultIsInstruction = cpu.accessIsInstruction
+}
+
+func (cpu *M68KCPU) faultFunctionCode() uint16 {
+	supervisor := (cpu.SR & M68K_SR_S) != 0
+	if cpu.lastFaultIsInstruction {
+		if supervisor {
+			return 0x6
+		}
+		return 0x2
+	}
+	if supervisor {
+		return 0x5
+	}
+	return 0x1
+}
+
+func (cpu *M68KCPU) buildSSW() uint16 {
+	var ssw uint16
+	if cpu.lastFaultIsInstruction {
+		ssw |= 1 << 15 // FC
+		ssw |= 1 << 13 // RC
+	} else {
+		ssw |= 1 << 8 // DF
+	}
+
+	if cpu.lastFaultWrite {
+		ssw |= 1 << 6 // RW
+	}
+
+	sizeBits := uint16(0)
+	switch cpu.lastFaultSize {
+	case 1:
+		sizeBits = 0
+	case 2:
+		sizeBits = 1
+	case 4:
+		sizeBits = 2
+	}
+	ssw |= (sizeBits & 0x3) << 4
+	ssw |= cpu.faultFunctionCode() & 0x7
+	return ssw
+}
+
+func (cpu *M68KCPU) exceptionFrameWords(format uint16) int {
+	switch format {
+	case M68K_FRAME_FMT_0, M68K_FRAME_FMT_1:
+		return 4
+	case M68K_FRAME_FMT_2:
+		return 6
+	case M68K_FRAME_FMT_9:
+		return 10
+	case M68K_FRAME_FMT_A:
+		return 16
+	case M68K_FRAME_FMT_B:
+		return 46
+	default:
+		return 0
+	}
+}
+
+func (cpu *M68KCPU) pushExceptionFrame(oldSR uint16, oldPC uint32, vector uint8, format uint16) {
+	words := cpu.exceptionFrameWords(format)
+	if words == 0 {
+		format = M68K_FRAME_FMT_0
+		words = cpu.exceptionFrameWords(format)
+	}
+
+	extraWords := words - 4
+	extra := make([]uint16, extraWords)
+	if format == M68K_FRAME_FMT_A && extraWords >= 12 {
+		extra[0] = 0
+		extra[1] = cpu.buildSSW()
+		extra[2] = 0
+		extra[3] = 0
+		extra[4] = uint16(cpu.lastFaultAddr >> 16)
+		extra[5] = uint16(cpu.lastFaultAddr)
+		extra[6] = 0
+		extra[7] = 0
+		extra[8] = uint16(cpu.lastFaultData >> 16)
+		extra[9] = uint16(cpu.lastFaultData)
+		extra[10] = 0
+		extra[11] = 0
+	}
+
+	formatWord := (format << 12) | (uint16(vector) << 2)
+	for i := extraWords - 1; i >= 0; i-- {
+		cpu.Push16(extra[i])
+	}
+
+	cpu.Push16(formatWord)
+	cpu.Push32(oldPC)
+	cpu.Push16(oldSR)
+}
+
+func (cpu *M68KCPU) swapStacksForMode(newSupervisor bool) {
+	if newSupervisor {
+		cpu.USP = cpu.AddrRegs[7]
+		cpu.AddrRegs[7] = cpu.SSP
+	} else {
+		cpu.SSP = cpu.AddrRegs[7]
+		cpu.AddrRegs[7] = cpu.USP
+	}
+}
+
 func (cpu *M68KCPU) ProcessException(vector uint8) {
 	// Double fault halts CPU to prevent infinite recursion
 	if cpu.inException.Load() && (vector == M68K_VEC_BUS_ERROR || vector == M68K_VEC_ADDRESS_ERROR) {
@@ -2534,7 +2759,7 @@ func (cpu *M68KCPU) ProcessException(vector uint8) {
 	// Defer non-critical exceptions to prevent stack corruption
 	if cpu.inException.Load() && vector != M68K_VEC_RESET {
 		fmt.Printf("M68K: Exception %d during exception handling, deferring\n", vector)
-		cpu.pendingInterrupt.Store(uint32(vector))
+		cpu.pendingException.Store(uint32(vector))
 		return
 	}
 
@@ -2556,13 +2781,19 @@ func (cpu *M68KCPU) ProcessException(vector uint8) {
 	}
 
 	// Hardware automatically enters supervisor mode during exceptions
+	if (cpu.SR & M68K_SR_S) == 0 {
+		cpu.swapStacksForMode(true)
+	}
 	cpu.SR |= M68K_SR_S
 	cpu.SR &= ^uint16(M68K_SR_T0 | M68K_SR_T1)
 
-	cpu.Push32(oldPC)
-	cpu.Push16(oldSR)
+	frameFormat := uint16(M68K_FRAME_FMT_0)
+	if vector == M68K_VEC_BUS_ERROR || vector == M68K_VEC_ADDRESS_ERROR {
+		frameFormat = M68K_FRAME_FMT_A
+	}
+	cpu.pushExceptionFrame(oldSR, oldPC, vector, frameFormat)
 
-	vecAddr := uint32(vector) * M68K_LONG_SIZE
+	vecAddr := cpu.VBR + uint32(vector)*M68K_LONG_SIZE
 	newPC := cpu.Read32(vecAddr)
 
 	// Uninitialised vectors: restore state and continue (ignore exception)
@@ -2601,11 +2832,13 @@ func (cpu *M68KCPU) ProcessInterrupt(level uint8) {
 		vector := M68K_VEC_LEVEL1 + level - 1
 
 		// Save PC and SR
-		cpu.Push32(cpu.PC)
-		cpu.Push16(oldSR)
+		if (cpu.SR & M68K_SR_S) == 0 {
+			cpu.swapStacksForMode(true)
+		}
+		cpu.pushExceptionFrame(oldSR, cpu.PC, uint8(vector), M68K_FRAME_FMT_0)
 
 		// Get new PC from vector table
-		vecAddr := uint32(vector) * M68K_LONG_SIZE
+		vecAddr := cpu.VBR + uint32(vector)*M68K_LONG_SIZE
 		cpu.PC = cpu.Read32(vecAddr)
 
 		// Set supervisor mode
@@ -3128,12 +3361,23 @@ func (cpu *M68KCPU) ExecMoveFromSR(mode, reg uint16) {
 	}
 
 	// Write SR to destination
-	if mode == M68K_AM_DR {
-		// Data register - store as word in low 16 bits
+	if mode == 0 {
+		// Data register direct (mode=0) - store as word in low 16 bits
 		cpu.DataRegs[reg] = (cpu.DataRegs[reg] & 0xFFFF0000) | uint32(cpu.SR)
 		cpu.cycleCounter += M68K_CYCLE_REG
+	} else if mode == M68K_AM_AR_PRE {
+		// Address register indirect with predecrement
+		cpu.AddrRegs[reg] -= M68K_WORD_SIZE
+		cpu.Write16(cpu.AddrRegs[reg], cpu.SR)
+		cpu.cycleCounter += M68K_CYCLE_MEM_WRITE
+	} else if mode == M68K_AM_AR_POST {
+		// Address register indirect with postincrement
+		addr := cpu.AddrRegs[reg]
+		cpu.Write16(addr, cpu.SR)
+		cpu.AddrRegs[reg] += M68K_WORD_SIZE
+		cpu.cycleCounter += M68K_CYCLE_MEM_WRITE
 	} else {
-		// Memory destination
+		// Other memory destinations - convert raw mode/reg to effective address
 		addr := cpu.GetEffectiveAddress(mode, reg)
 		cpu.Write16(addr, cpu.SR)
 		cpu.cycleCounter += M68K_CYCLE_MEM_WRITE
@@ -3151,23 +3395,39 @@ func (cpu *M68KCPU) ExecMoveToSR(mode, reg uint16) {
 	var newSR uint16
 
 	// Read source operand
-	if mode == M68K_AM_DR {
-		// Data register
+	if mode == 0 {
+		// Data register direct (mode=0)
 		newSR = uint16(cpu.DataRegs[reg] & 0xFFFF)
 		cpu.cycleCounter += M68K_CYCLE_REG
-	} else if mode == M68K_AM_IMM {
-		// Immediate
+	} else if mode == 7 && reg == 4 {
+		// Immediate (mode=7, reg=4)
 		newSR = cpu.Fetch16()
 		cpu.cycleCounter += M68K_CYCLE_FETCH
+	} else if mode == M68K_AM_AR_POST {
+		// Address register indirect with postincrement
+		addr := cpu.AddrRegs[reg]
+		newSR = cpu.Read16(addr)
+		cpu.AddrRegs[reg] += M68K_WORD_SIZE
+		cpu.cycleCounter += M68K_CYCLE_MEM_READ
+	} else if mode == M68K_AM_AR_PRE {
+		// Address register indirect with predecrement
+		cpu.AddrRegs[reg] -= M68K_WORD_SIZE
+		newSR = cpu.Read16(cpu.AddrRegs[reg])
+		cpu.cycleCounter += M68K_CYCLE_MEM_READ
 	} else {
-		// Memory source
+		// Other memory sources - convert raw mode/reg to effective address
 		addr := cpu.GetEffectiveAddress(mode, reg)
 		newSR = cpu.Read16(addr)
 		cpu.cycleCounter += M68K_CYCLE_MEM_READ
 	}
 
 	// Update status register
+	oldSupervisor := (cpu.SR & M68K_SR_S) != 0
+	newSupervisor := (newSR & M68K_SR_S) != 0
 	cpu.SR = newSR
+	if oldSupervisor != newSupervisor {
+		cpu.swapStacksForMode(newSupervisor)
+	}
 }
 
 // ExecMovec - Move Control Register
@@ -4023,7 +4283,8 @@ func (cpu *M68KCPU) ExecAdd(reg, opmode, mode, xreg uint16) {
 			dest &= 0xFFFF
 		}
 	} else {
-		// Memory is destination
+		// Memory is destination - compute effective address ONCE and reuse for write
+		var effectiveAddr uint32
 		source = cpu.DataRegs[reg]
 		if size == M68K_SIZE_BYTE {
 			source &= 0xFF
@@ -4032,7 +4293,7 @@ func (cpu *M68KCPU) ExecAdd(reg, opmode, mode, xreg uint16) {
 		}
 
 		if mode == M68K_AM_DR {
-			// Data register direct
+			// Data register direct - handle separately (no memory address)
 			dest = cpu.DataRegs[xreg]
 			if size == M68K_SIZE_BYTE {
 				dest &= 0xFF
@@ -4040,31 +4301,78 @@ func (cpu *M68KCPU) ExecAdd(reg, opmode, mode, xreg uint16) {
 				dest &= 0xFFFF
 			}
 			cpu.cycleCounter += M68K_CYCLE_REG
+
+			// Perform addition
+			result = dest + source
+
+			// Write result back to data register
+			if size == M68K_SIZE_BYTE {
+				cpu.DataRegs[xreg] = (cpu.DataRegs[xreg] & 0xFFFFFF00) | (result & 0xFF)
+			} else if size == M68K_SIZE_WORD {
+				cpu.DataRegs[xreg] = (cpu.DataRegs[xreg] & 0xFFFF0000) | (result & 0xFFFF)
+			} else {
+				cpu.DataRegs[xreg] = result
+			}
+
+			// Set condition codes and return
+			cpu.SR &= ^uint16(M68K_SR_N | M68K_SR_Z | M68K_SR_V | M68K_SR_C | M68K_SR_X)
+			if size == M68K_SIZE_BYTE {
+				if result > 0xFF {
+					cpu.SR |= M68K_SR_C | M68K_SR_X
+				}
+				if ((dest & 0x80) == (source & 0x80)) && ((result & 0x80) != (dest & 0x80)) {
+					cpu.SR |= M68K_SR_V
+				}
+				if (result & 0xFF) == 0 {
+					cpu.SR |= M68K_SR_Z
+				}
+				if (result & 0x80) != 0 {
+					cpu.SR |= M68K_SR_N
+				}
+			} else if size == M68K_SIZE_WORD {
+				if result > 0xFFFF {
+					cpu.SR |= M68K_SR_C | M68K_SR_X
+				}
+				if ((dest & 0x8000) == (source & 0x8000)) && ((result & 0x8000) != (dest & 0x8000)) {
+					cpu.SR |= M68K_SR_V
+				}
+				if (result & 0xFFFF) == 0 {
+					cpu.SR |= M68K_SR_Z
+				}
+				if (result & 0x8000) != 0 {
+					cpu.SR |= M68K_SR_N
+				}
+			} else {
+				if ((dest & 0x80000000) == (source & 0x80000000)) &&
+					((result & 0x80000000) != (dest & 0x80000000)) {
+					cpu.SR |= M68K_SR_V
+				}
+				if result < dest || result < source {
+					cpu.SR |= M68K_SR_C | M68K_SR_X
+				}
+				if result == 0 {
+					cpu.SR |= M68K_SR_Z
+				}
+				if (result & 0x80000000) != 0 {
+					cpu.SR |= M68K_SR_N
+				}
+			}
+			return
 		} else if mode == M68K_AM_AR_IND {
 			// Address register indirect
-			addr := cpu.AddrRegs[xreg]
-			if size == M68K_SIZE_BYTE {
-				dest = uint32(cpu.Read8(addr))
-			} else if size == M68K_SIZE_WORD {
-				dest = uint32(cpu.Read16(addr))
-			} else {
-				dest = cpu.Read32(addr)
-			}
+			effectiveAddr = cpu.AddrRegs[xreg]
 			cpu.cycleCounter += M68K_CYCLE_MEM_READ
 		} else if mode == M68K_AM_AR_POST {
 			// Address register indirect with postincrement
-			addr := cpu.AddrRegs[xreg]
+			effectiveAddr = cpu.AddrRegs[xreg]
 			if size == M68K_SIZE_BYTE {
-				dest = uint32(cpu.Read8(addr))
 				cpu.AddrRegs[xreg] += M68K_BYTE_SIZE
 				if xreg == 7 {
 					cpu.AddrRegs[xreg] += M68K_BYTE_SIZE // Extra for stack pointer
 				}
 			} else if size == M68K_SIZE_WORD {
-				dest = uint32(cpu.Read16(addr))
 				cpu.AddrRegs[xreg] += M68K_WORD_SIZE
 			} else {
-				dest = cpu.Read32(addr)
 				cpu.AddrRegs[xreg] += M68K_LONG_SIZE
 			}
 			cpu.cycleCounter += M68K_CYCLE_MEM_READ
@@ -4080,61 +4388,26 @@ func (cpu *M68KCPU) ExecAdd(reg, opmode, mode, xreg uint16) {
 			} else {
 				cpu.AddrRegs[xreg] -= M68K_LONG_SIZE
 			}
-			addr := cpu.AddrRegs[xreg]
-			if size == M68K_SIZE_BYTE {
-				dest = uint32(cpu.Read8(addr))
-			} else if size == M68K_SIZE_WORD {
-				dest = uint32(cpu.Read16(addr))
-			} else {
-				dest = cpu.Read32(addr)
-			}
+			effectiveAddr = cpu.AddrRegs[xreg]
 			cpu.cycleCounter += M68K_CYCLE_MEM_READ
 		} else if mode == M68K_AM_AR_DISP {
-			// Address register indirect with displacement
+			// Address register indirect with displacement - fetch ONCE
 			disp := int16(cpu.Fetch16())
-			addr := cpu.AddrRegs[xreg] + uint32(disp)
-			if size == M68K_SIZE_BYTE {
-				dest = uint32(cpu.Read8(addr))
-			} else if size == M68K_SIZE_WORD {
-				dest = uint32(cpu.Read16(addr))
-			} else {
-				dest = cpu.Read32(addr)
-			}
+			effectiveAddr = cpu.AddrRegs[xreg] + uint32(disp)
 			cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_EA_DI
 		} else if mode == M68K_AM_AR_INDEX {
-			// Address register indirect with index
+			// Address register indirect with index - fetch extension word ONCE
 			extWord := cpu.Fetch16()
-			addr := cpu.GetIndexWithExtWords(extWord, cpu.AddrRegs[xreg], true)
-			if size == M68K_SIZE_BYTE {
-				dest = uint32(cpu.Read8(addr))
-			} else if size == M68K_SIZE_WORD {
-				dest = uint32(cpu.Read16(addr))
-			} else {
-				dest = cpu.Read32(addr)
-			}
+			effectiveAddr = cpu.GetIndexWithExtWords(extWord, cpu.AddrRegs[xreg], true)
 			cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_EA_IX
 		} else if mode == 7 {
 			// Extended addressing modes
 			switch xreg {
-			case 0: // Absolute Short
-				addr := uint32(int16(cpu.Fetch16()))
-				if size == M68K_SIZE_BYTE {
-					dest = uint32(cpu.Read8(addr))
-				} else if size == M68K_SIZE_WORD {
-					dest = uint32(cpu.Read16(addr))
-				} else {
-					dest = cpu.Read32(addr)
-				}
+			case 0: // Absolute Short - fetch address ONCE
+				effectiveAddr = uint32(int16(cpu.Fetch16()))
 				cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_EA_AW
-			case 1: // Absolute Long
-				addr := cpu.Fetch32()
-				if size == M68K_SIZE_BYTE {
-					dest = uint32(cpu.Read8(addr))
-				} else if size == M68K_SIZE_WORD {
-					dest = uint32(cpu.Read16(addr))
-				} else {
-					dest = cpu.Read32(addr)
-				}
+			case 1: // Absolute Long - fetch address ONCE
+				effectiveAddr = cpu.Fetch32()
 				cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_EA_AL
 			default:
 				fmt.Printf("M68K: Unimplemented destination mode %d for ADD at PC=%08x\n", mode, cpu.PC-M68K_WORD_SIZE)
@@ -4146,128 +4419,87 @@ func (cpu *M68KCPU) ExecAdd(reg, opmode, mode, xreg uint16) {
 			cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
 			return
 		}
+
+		// Read destination from memory using computed address
+		if size == M68K_SIZE_BYTE {
+			dest = uint32(cpu.Read8(effectiveAddr))
+		} else if size == M68K_SIZE_WORD {
+			dest = uint32(cpu.Read16(effectiveAddr))
+		} else {
+			dest = cpu.Read32(effectiveAddr)
+		}
+
+		// Perform addition
+		result = dest + source
+
+		// Write result back to memory using SAME address (no re-fetch!)
+		if size == M68K_SIZE_BYTE {
+			cpu.Write8(effectiveAddr, uint8(result))
+		} else if size == M68K_SIZE_WORD {
+			cpu.Write16(effectiveAddr, uint16(result))
+		} else {
+			cpu.Write32(effectiveAddr, result)
+		}
+		cpu.cycleCounter += M68K_CYCLE_MEM_WRITE
+
+		// Set condition codes and return
+		cpu.SR &= ^uint16(M68K_SR_N | M68K_SR_Z | M68K_SR_V | M68K_SR_C | M68K_SR_X)
+		if size == M68K_SIZE_BYTE {
+			if result > 0xFF {
+				cpu.SR |= M68K_SR_C | M68K_SR_X
+			}
+			if ((dest & 0x80) == (source & 0x80)) && ((result & 0x80) != (dest & 0x80)) {
+				cpu.SR |= M68K_SR_V
+			}
+			if (result & 0xFF) == 0 {
+				cpu.SR |= M68K_SR_Z
+			}
+			if (result & 0x80) != 0 {
+				cpu.SR |= M68K_SR_N
+			}
+		} else if size == M68K_SIZE_WORD {
+			if result > 0xFFFF {
+				cpu.SR |= M68K_SR_C | M68K_SR_X
+			}
+			if ((dest & 0x8000) == (source & 0x8000)) && ((result & 0x8000) != (dest & 0x8000)) {
+				cpu.SR |= M68K_SR_V
+			}
+			if (result & 0xFFFF) == 0 {
+				cpu.SR |= M68K_SR_Z
+			}
+			if (result & 0x8000) != 0 {
+				cpu.SR |= M68K_SR_N
+			}
+		} else {
+			if ((dest & 0x80000000) == (source & 0x80000000)) &&
+				((result & 0x80000000) != (dest & 0x80000000)) {
+				cpu.SR |= M68K_SR_V
+			}
+			if result < dest || result < source {
+				cpu.SR |= M68K_SR_C | M68K_SR_X
+			}
+			if result == 0 {
+				cpu.SR |= M68K_SR_Z
+			}
+			if (result & 0x80000000) != 0 {
+				cpu.SR |= M68K_SR_N
+			}
+		}
+		return
 	}
 
-	// Perform addition
+	// Perform addition (for direction == M68K_DIRECTION_REG_TO_EA case)
 	result = dest + source
 
-	// Write result
-	if direction == M68K_DIRECTION_REG_TO_EA {
-		// Data register is destination
-		if size == M68K_SIZE_BYTE {
-			cpu.DataRegs[reg] = (cpu.DataRegs[reg] & 0xFFFFFF00) | (result & 0xFF)
-		} else if size == M68K_SIZE_WORD {
-			cpu.DataRegs[reg] = (cpu.DataRegs[reg] & 0xFFFF0000) | (result & 0xFFFF)
-		} else {
-			cpu.DataRegs[reg] = result
-		}
-		cpu.cycleCounter += M68K_CYCLE_REG
+	// Write result to data register (only reached when direction == M68K_DIRECTION_REG_TO_EA)
+	if size == M68K_SIZE_BYTE {
+		cpu.DataRegs[reg] = (cpu.DataRegs[reg] & 0xFFFFFF00) | (result & 0xFF)
+	} else if size == M68K_SIZE_WORD {
+		cpu.DataRegs[reg] = (cpu.DataRegs[reg] & 0xFFFF0000) | (result & 0xFFFF)
 	} else {
-		// Memory is destination
-		if mode == M68K_AM_DR {
-			// Data register
-			if size == M68K_SIZE_BYTE {
-				cpu.DataRegs[xreg] = (cpu.DataRegs[xreg] & 0xFFFFFF00) | (result & 0xFF)
-			} else if size == M68K_SIZE_WORD {
-				cpu.DataRegs[xreg] = (cpu.DataRegs[xreg] & 0xFFFF0000) | (result & 0xFFFF)
-			} else {
-				cpu.DataRegs[xreg] = result
-			}
-			cpu.cycleCounter += M68K_CYCLE_REG
-		} else if mode == M68K_AM_AR_IND {
-			// Address register indirect
-			addr := cpu.AddrRegs[xreg]
-			if size == M68K_SIZE_BYTE {
-				cpu.Write8(addr, uint8(result))
-			} else if size == M68K_SIZE_WORD {
-				cpu.Write16(addr, uint16(result))
-			} else {
-				cpu.Write32(addr, result)
-			}
-			cpu.cycleCounter += M68K_CYCLE_MEM_WRITE
-		} else if mode == M68K_AM_AR_POST {
-			// Postincrement - address was already incremented during read
-			var adjustSize uint32
-			if size == M68K_SIZE_BYTE {
-				adjustSize = M68K_BYTE_SIZE
-				if xreg == 7 {
-					adjustSize = M68K_WORD_SIZE
-				}
-			} else if size == M68K_SIZE_WORD {
-				adjustSize = M68K_WORD_SIZE
-			} else {
-				adjustSize = M68K_LONG_SIZE
-			}
-			addr := cpu.AddrRegs[xreg] - adjustSize
-			if size == M68K_SIZE_BYTE {
-				cpu.Write8(addr, uint8(result))
-			} else if size == M68K_SIZE_WORD {
-				cpu.Write16(addr, uint16(result))
-			} else {
-				cpu.Write32(addr, result)
-			}
-			cpu.cycleCounter += M68K_CYCLE_MEM_WRITE
-		} else if mode == M68K_AM_AR_PRE {
-			// Predecrement - address was already decremented
-			addr := cpu.AddrRegs[xreg]
-			if size == M68K_SIZE_BYTE {
-				cpu.Write8(addr, uint8(result))
-			} else if size == M68K_SIZE_WORD {
-				cpu.Write16(addr, uint16(result))
-			} else {
-				cpu.Write32(addr, result)
-			}
-			cpu.cycleCounter += M68K_CYCLE_MEM_WRITE
-		} else if mode == M68K_AM_AR_DISP {
-			// Displacement - recompute address
-			disp := int16(cpu.Fetch16())
-			addr := cpu.AddrRegs[xreg] + uint32(disp)
-			if size == M68K_SIZE_BYTE {
-				cpu.Write8(addr, uint8(result))
-			} else if size == M68K_SIZE_WORD {
-				cpu.Write16(addr, uint16(result))
-			} else {
-				cpu.Write32(addr, result)
-			}
-			cpu.cycleCounter += M68K_CYCLE_MEM_WRITE
-		} else if mode == M68K_AM_AR_INDEX {
-			// Index - recompute address
-			extWord := cpu.Fetch16()
-			addr := cpu.GetIndexWithExtWords(extWord, cpu.AddrRegs[xreg], true)
-			if size == M68K_SIZE_BYTE {
-				cpu.Write8(addr, uint8(result))
-			} else if size == M68K_SIZE_WORD {
-				cpu.Write16(addr, uint16(result))
-			} else {
-				cpu.Write32(addr, result)
-			}
-			cpu.cycleCounter += M68K_CYCLE_MEM_WRITE
-		} else if mode == 7 {
-			// Extended modes
-			switch xreg {
-			case 0: // Absolute Short
-				addr := uint32(int16(cpu.Fetch16()))
-				if size == M68K_SIZE_BYTE {
-					cpu.Write8(addr, uint8(result))
-				} else if size == M68K_SIZE_WORD {
-					cpu.Write16(addr, uint16(result))
-				} else {
-					cpu.Write32(addr, result)
-				}
-				cpu.cycleCounter += M68K_CYCLE_MEM_WRITE
-			case 1: // Absolute Long
-				addr := cpu.Fetch32()
-				if size == M68K_SIZE_BYTE {
-					cpu.Write8(addr, uint8(result))
-				} else if size == M68K_SIZE_WORD {
-					cpu.Write16(addr, uint16(result))
-				} else {
-					cpu.Write32(addr, result)
-				}
-				cpu.cycleCounter += M68K_CYCLE_MEM_WRITE
-			}
-		}
+		cpu.DataRegs[reg] = result
 	}
+	cpu.cycleCounter += M68K_CYCLE_REG
 
 	// Set condition codes
 	cpu.SR &= ^uint16(M68K_SR_N | M68K_SR_Z | M68K_SR_V | M68K_SR_C | M68K_SR_X)
@@ -4648,8 +4880,80 @@ func (cpu *M68KCPU) ExecAddq(data uint32, size uint16, mode, reg uint16) {
 		}
 
 		cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_MEM_WRITE
+	} else if mode >= M68K_AM_AR_POST && mode <= 7 {
+		// Other memory addressing modes (3-7): use GetEffectiveAddress
+		addr := cpu.GetEffectiveAddress(mode, reg)
+
+		if effectiveSize == M68K_SIZE_BYTE {
+			dest = uint32(cpu.Read8(addr))
+			result = dest + data
+			cpu.Write8(addr, uint8(result))
+		} else if effectiveSize == M68K_SIZE_WORD {
+			dest = uint32(cpu.Read16(addr))
+			result = dest + data
+			cpu.Write16(addr, uint16(result))
+		} else {
+			dest = cpu.Read32(addr)
+			result = dest + data
+			cpu.Write32(addr, result)
+		}
+
+		// Set condition codes
+		cpu.SR &= ^uint16(M68K_SR_N | M68K_SR_Z | M68K_SR_V | M68K_SR_C | M68K_SR_X)
+
+		if effectiveSize == M68K_SIZE_BYTE {
+			if result > 0xFF {
+				cpu.SR |= M68K_SR_C | M68K_SR_X
+			}
+			signDest := (dest & 0x80) != 0
+			signData := (data & 0x80) != 0
+			signResult := (result & 0x80) != 0
+			if (signDest == signData) && (signDest != signResult) {
+				cpu.SR |= M68K_SR_V
+			}
+			if (result & 0xFF) == 0 {
+				cpu.SR |= M68K_SR_Z
+			}
+			if (result & 0x80) != 0 {
+				cpu.SR |= M68K_SR_N
+			}
+		} else if effectiveSize == M68K_SIZE_WORD {
+			if result > 0xFFFF {
+				cpu.SR |= M68K_SR_C | M68K_SR_X
+			}
+			signDest := (dest & 0x8000) != 0
+			signData := (data & 0x8000) != 0
+			signResult := (result & 0x8000) != 0
+			if (signDest == signData) && (signDest != signResult) {
+				cpu.SR |= M68K_SR_V
+			}
+			if (result & 0xFFFF) == 0 {
+				cpu.SR |= M68K_SR_Z
+			}
+			if (result & 0x8000) != 0 {
+				cpu.SR |= M68K_SR_N
+			}
+		} else {
+			if result < dest {
+				cpu.SR |= M68K_SR_C | M68K_SR_X
+			}
+			signDest := (dest & 0x80000000) != 0
+			signData := (data & 0x80000000) != 0
+			signResult := (result & 0x80000000) != 0
+			if (signDest == signData) && (signDest != signResult) {
+				cpu.SR |= M68K_SR_V
+			}
+			if result == 0 {
+				cpu.SR |= M68K_SR_Z
+			}
+			if (result & 0x80000000) != 0 {
+				cpu.SR |= M68K_SR_N
+			}
+		}
+
+		cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_MEM_WRITE
 	} else {
-		// Other addressing modes
+		// Invalid mode
 		fmt.Printf("M68K: Unimplemented mode %d for ADDQ at PC=%08x\n", mode, cpu.PC-M68K_WORD_SIZE)
 		cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
 	}
@@ -5088,22 +5392,57 @@ func (cpu *M68KCPU) ExecSub(reg, opmode, mode, xreg uint16) {
 	}
 
 	// Get operands based on direction
+	var destAddr uint32
+	destIsMem := false
+
 	if direction == M68K_DIRECTION_REG_TO_EA {
-		// Data register is destination
+		// Data register is destination - source from EA
 		if mode == M68K_AM_DR {
 			// Data register direct
 			source = cpu.DataRegs[xreg]
-			if size == M68K_SIZE_BYTE {
-				source &= 0xFF
-			} else if size == M68K_SIZE_WORD {
-				source &= 0xFFFF
-			}
 			cpu.cycleCounter += M68K_CYCLE_REG
+		} else if mode == M68K_AM_AR {
+			// Address register direct (for word/long only)
+			source = cpu.AddrRegs[xreg]
+			cpu.cycleCounter += M68K_CYCLE_REG
+		} else if mode >= M68K_AM_AR_IND && mode <= M68K_AM_AR_INDEX {
+			// Memory addressing modes 2-6
+			addr := cpu.GetEffectiveAddress(mode, xreg)
+			if mode == M68K_AM_AR_POST {
+				cpu.AddrRegs[xreg] += uint32([]int{1, 2, 4}[opmode&3])
+				if xreg == 7 && size == M68K_SIZE_BYTE {
+					cpu.AddrRegs[xreg]++
+				}
+			}
+			if size == M68K_SIZE_BYTE {
+				source = uint32(cpu.Read8(addr))
+			} else if size == M68K_SIZE_WORD {
+				source = uint32(cpu.Read16(addr))
+			} else {
+				source = cpu.Read32(addr)
+			}
+			cpu.cycleCounter += M68K_CYCLE_MEM_READ
+		} else if mode == 7 {
+			// Extended addressing modes
+			addr := cpu.GetEffectiveAddress(mode, xreg)
+			if size == M68K_SIZE_BYTE {
+				source = uint32(cpu.Read8(addr))
+			} else if size == M68K_SIZE_WORD {
+				source = uint32(cpu.Read16(addr))
+			} else {
+				source = cpu.Read32(addr)
+			}
+			cpu.cycleCounter += M68K_CYCLE_MEM_READ
 		} else {
-			// Other addressing modes
 			fmt.Printf("M68K: Unimplemented source mode %d for SUB at PC=%08x\n", mode, cpu.PC-M68K_WORD_SIZE)
 			cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
 			return
+		}
+
+		if size == M68K_SIZE_BYTE {
+			source &= 0xFF
+		} else if size == M68K_SIZE_WORD {
+			source &= 0xFFFF
 		}
 
 		dest = cpu.DataRegs[reg]
@@ -5121,19 +5460,29 @@ func (cpu *M68KCPU) ExecSub(reg, opmode, mode, xreg uint16) {
 			source &= 0xFFFF
 		}
 
-		if mode == M68K_AM_AR_IND {
-			// Address register indirect
-			addr := cpu.AddrRegs[xreg]
+		destIsMem = true
+		if mode >= M68K_AM_AR_IND && mode <= M68K_AM_AR_INDEX {
+			destAddr = cpu.GetEffectiveAddress(mode, xreg)
+			// Handle pre-decrement (mode 4) - already handled in GetEffectiveAddress
 			if size == M68K_SIZE_BYTE {
-				dest = uint32(cpu.Read8(addr))
+				dest = uint32(cpu.Read8(destAddr))
 			} else if size == M68K_SIZE_WORD {
-				dest = uint32(cpu.Read16(addr))
+				dest = uint32(cpu.Read16(destAddr))
 			} else {
-				dest = cpu.Read32(addr)
+				dest = cpu.Read32(destAddr)
+			}
+			cpu.cycleCounter += M68K_CYCLE_MEM_READ
+		} else if mode == 7 {
+			destAddr = cpu.GetEffectiveAddress(mode, xreg)
+			if size == M68K_SIZE_BYTE {
+				dest = uint32(cpu.Read8(destAddr))
+			} else if size == M68K_SIZE_WORD {
+				dest = uint32(cpu.Read16(destAddr))
+			} else {
+				dest = cpu.Read32(destAddr)
 			}
 			cpu.cycleCounter += M68K_CYCLE_MEM_READ
 		} else {
-			// Other addressing modes
 			fmt.Printf("M68K: Unimplemented destination mode %d for SUB at PC=%08x\n", mode, cpu.PC-M68K_WORD_SIZE)
 			cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
 			return
@@ -5154,18 +5503,23 @@ func (cpu *M68KCPU) ExecSub(reg, opmode, mode, xreg uint16) {
 			cpu.DataRegs[reg] = result
 		}
 		cpu.cycleCounter += M68K_CYCLE_REG
-	} else {
-		// Memory is destination
-		if mode == M68K_AM_AR_IND {
-			addr := cpu.AddrRegs[xreg]
-			if size == M68K_SIZE_BYTE {
-				cpu.Write8(addr, uint8(result))
-			} else if size == M68K_SIZE_WORD {
-				cpu.Write16(addr, uint16(result))
-			} else {
-				cpu.Write32(addr, result)
+	} else if destIsMem {
+		// Memory is destination - use pre-calculated destAddr
+		if size == M68K_SIZE_BYTE {
+			cpu.Write8(destAddr, uint8(result))
+		} else if size == M68K_SIZE_WORD {
+			cpu.Write16(destAddr, uint16(result))
+		} else {
+			cpu.Write32(destAddr, result)
+		}
+		cpu.cycleCounter += M68K_CYCLE_MEM_WRITE
+
+		// Handle post-increment for destination
+		if mode == M68K_AM_AR_POST {
+			cpu.AddrRegs[xreg] += uint32([]int{1, 2, 4}[opmode&3])
+			if xreg == 7 && size == M68K_SIZE_BYTE {
+				cpu.AddrRegs[xreg]++
 			}
-			cpu.cycleCounter += M68K_CYCLE_MEM_WRITE
 		}
 	}
 
@@ -5514,10 +5868,153 @@ func (cpu *M68KCPU) ExecSubq(data uint32, size uint16, mode, reg uint16) {
 		}
 
 		cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_MEM_WRITE
+	} else if mode == M68K_AM_AR_POST {
+		// Address register indirect with postincrement
+		addr := cpu.AddrRegs[reg]
+		if effectiveSize == M68K_SIZE_BYTE {
+			dest = uint32(cpu.Read8(addr))
+			result = dest - data
+			cpu.Write8(addr, uint8(result))
+			cpu.AddrRegs[reg] += 1
+			if reg == 7 {
+				cpu.AddrRegs[reg]++ // Stack pointer always word-aligned
+			}
+		} else if effectiveSize == M68K_SIZE_WORD {
+			dest = uint32(cpu.Read16(addr))
+			result = dest - data
+			cpu.Write16(addr, uint16(result))
+			cpu.AddrRegs[reg] += 2
+		} else {
+			dest = cpu.Read32(addr)
+			result = dest - data
+			cpu.Write32(addr, result)
+			cpu.AddrRegs[reg] += 4
+		}
+
+		// Set condition codes
+		cpu.setSubqFlags(dest, data, result, effectiveSize)
+		cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_MEM_WRITE
+	} else if mode == M68K_AM_AR_PRE {
+		// Address register indirect with predecrement
+		if effectiveSize == M68K_SIZE_BYTE {
+			cpu.AddrRegs[reg] -= 1
+			if reg == 7 {
+				cpu.AddrRegs[reg]-- // Stack pointer always word-aligned
+			}
+			addr := cpu.AddrRegs[reg]
+			dest = uint32(cpu.Read8(addr))
+			result = dest - data
+			cpu.Write8(addr, uint8(result))
+		} else if effectiveSize == M68K_SIZE_WORD {
+			cpu.AddrRegs[reg] -= 2
+			addr := cpu.AddrRegs[reg]
+			dest = uint32(cpu.Read16(addr))
+			result = dest - data
+			cpu.Write16(addr, uint16(result))
+		} else {
+			cpu.AddrRegs[reg] -= 4
+			addr := cpu.AddrRegs[reg]
+			dest = cpu.Read32(addr)
+			result = dest - data
+			cpu.Write32(addr, result)
+		}
+
+		// Set condition codes
+		cpu.setSubqFlags(dest, data, result, effectiveSize)
+		cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_MEM_WRITE
+	} else if mode == M68K_AM_AR_DISP {
+		// Address register indirect with displacement
+		disp := int16(cpu.Fetch16())
+		addr := uint32(int32(cpu.AddrRegs[reg]) + int32(disp))
+
+		if effectiveSize == M68K_SIZE_BYTE {
+			dest = uint32(cpu.Read8(addr))
+			result = dest - data
+			cpu.Write8(addr, uint8(result))
+		} else if effectiveSize == M68K_SIZE_WORD {
+			dest = uint32(cpu.Read16(addr))
+			result = dest - data
+			cpu.Write16(addr, uint16(result))
+		} else {
+			dest = cpu.Read32(addr)
+			result = dest - data
+			cpu.Write32(addr, result)
+		}
+
+		// Set condition codes
+		cpu.setSubqFlags(dest, data, result, effectiveSize)
+		cpu.cycleCounter += M68K_CYCLE_FETCH + M68K_CYCLE_MEM_READ + M68K_CYCLE_MEM_WRITE
+	} else if mode == M68K_AM_AR_INDEX || mode == 7 {
+		// Index and absolute modes - use GetEffectiveAddress
+		addr := cpu.GetEffectiveAddress(mode, reg)
+
+		if effectiveSize == M68K_SIZE_BYTE {
+			dest = uint32(cpu.Read8(addr))
+			result = dest - data
+			cpu.Write8(addr, uint8(result))
+		} else if effectiveSize == M68K_SIZE_WORD {
+			dest = uint32(cpu.Read16(addr))
+			result = dest - data
+			cpu.Write16(addr, uint16(result))
+		} else {
+			dest = cpu.Read32(addr)
+			result = dest - data
+			cpu.Write32(addr, result)
+		}
+
+		// Set condition codes
+		cpu.setSubqFlags(dest, data, result, effectiveSize)
+		cpu.cycleCounter += M68K_CYCLE_FETCH + M68K_CYCLE_MEM_READ + M68K_CYCLE_MEM_WRITE
 	} else {
-		// Other addressing modes
+		// Invalid mode
 		fmt.Printf("M68K: Unimplemented mode %d for SUBQ at PC=%08x\n", mode, cpu.PC-M68K_WORD_SIZE)
 		cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
+	}
+}
+
+// setSubqFlags sets condition codes for SUBQ operations
+func (cpu *M68KCPU) setSubqFlags(dest, data, result uint32, size int) {
+	cpu.SR &= ^uint16(M68K_SR_N | M68K_SR_Z | M68K_SR_V | M68K_SR_C | M68K_SR_X)
+
+	if size == M68K_SIZE_BYTE {
+		if dest < data {
+			cpu.SR |= M68K_SR_C | M68K_SR_X
+		}
+		if ((dest & 0x80) != 0) && ((result & 0x80) == 0) {
+			cpu.SR |= M68K_SR_V
+		}
+		if (result & 0xFF) == 0 {
+			cpu.SR |= M68K_SR_Z
+		}
+		if (result & 0x80) != 0 {
+			cpu.SR |= M68K_SR_N
+		}
+	} else if size == M68K_SIZE_WORD {
+		if dest < data {
+			cpu.SR |= M68K_SR_C | M68K_SR_X
+		}
+		if ((dest & 0x8000) != 0) && ((result & 0x8000) == 0) {
+			cpu.SR |= M68K_SR_V
+		}
+		if (result & 0xFFFF) == 0 {
+			cpu.SR |= M68K_SR_Z
+		}
+		if (result & 0x8000) != 0 {
+			cpu.SR |= M68K_SR_N
+		}
+	} else {
+		if dest < data {
+			cpu.SR |= M68K_SR_C | M68K_SR_X
+		}
+		if ((dest & 0x80000000) != 0) && ((result & 0x80000000) == 0) {
+			cpu.SR |= M68K_SR_V
+		}
+		if result == 0 {
+			cpu.SR |= M68K_SR_Z
+		}
+		if (result & 0x80000000) != 0 {
+			cpu.SR |= M68K_SR_N
+		}
 	}
 }
 func (cpu *M68KCPU) ExecSubi() {
@@ -5695,9 +6192,18 @@ func (cpu *M68KCPU) ExecCmp(reg, opmode, mode, xreg uint16) {
 			source &= 0xFFFF
 		}
 		cpu.cycleCounter += M68K_CYCLE_REG
-	} else if mode == M68K_AM_AR_IND {
-		// Address register indirect
-		addr := cpu.AddrRegs[xreg]
+	} else if mode >= M68K_AM_AR_IND && mode <= M68K_AM_AR_INDEX {
+		// Memory addressing modes 2-6: use GetEffectiveAddress
+		addr := cpu.GetEffectiveAddress(mode, xreg)
+
+		// Handle post-increment
+		if mode == M68K_AM_AR_POST {
+			cpu.AddrRegs[xreg] += uint32([]int{1, 2, 4}[opmode&3])
+			if xreg == 7 && size == M68K_SIZE_BYTE {
+				cpu.AddrRegs[xreg]++ // Keep A7 word-aligned
+			}
+		}
+
 		if size == M68K_SIZE_BYTE {
 			source = uint32(cpu.Read8(addr))
 		} else if size == M68K_SIZE_WORD {
@@ -6850,7 +7356,8 @@ func (cpu *M68KCPU) ExecAnd(reg, opmode, mode, xreg uint16) {
 			dest &= 0xFFFF
 		}
 	} else {
-		// Memory is destination
+		// Memory is destination - compute effective address ONCE and reuse for write
+		var effectiveAddr uint32
 		source = cpu.DataRegs[reg]
 		if size == M68K_SIZE_BYTE {
 			source &= 0xFF
@@ -6859,7 +7366,7 @@ func (cpu *M68KCPU) ExecAnd(reg, opmode, mode, xreg uint16) {
 		}
 
 		if mode == M68K_AM_DR {
-			// Data register direct
+			// Data register direct - handle separately (no memory address)
 			dest = cpu.DataRegs[xreg]
 			if size == M68K_SIZE_BYTE {
 				dest &= 0xFF
@@ -6867,101 +7374,63 @@ func (cpu *M68KCPU) ExecAnd(reg, opmode, mode, xreg uint16) {
 				dest &= 0xFFFF
 			}
 			cpu.cycleCounter += M68K_CYCLE_REG
-		} else if mode == M68K_AM_AR_IND {
-			// Address register indirect
-			addr := cpu.AddrRegs[xreg]
+
+			// Perform AND and write back to register
+			result = dest & source
 			if size == M68K_SIZE_BYTE {
-				dest = uint32(cpu.Read8(addr))
+				cpu.DataRegs[xreg] = (cpu.DataRegs[xreg] & 0xFFFFFF00) | (result & 0xFF)
 			} else if size == M68K_SIZE_WORD {
-				dest = uint32(cpu.Read16(addr))
+				cpu.DataRegs[xreg] = (cpu.DataRegs[xreg] & 0xFFFF0000) | (result & 0xFFFF)
 			} else {
-				dest = cpu.Read32(addr)
+				cpu.DataRegs[xreg] = result
 			}
+			cpu.cycleCounter += M68K_CYCLE_REG
+			cpu.SetFlagsNZ(result, size)
+			return
+		} else if mode == M68K_AM_AR_IND {
+			effectiveAddr = cpu.AddrRegs[xreg]
 			cpu.cycleCounter += M68K_CYCLE_MEM_READ
 		} else if mode == M68K_AM_AR_POST {
-			// Address register indirect with postincrement
-			addr := cpu.AddrRegs[xreg]
+			effectiveAddr = cpu.AddrRegs[xreg]
 			if size == M68K_SIZE_BYTE {
-				dest = uint32(cpu.Read8(addr))
 				cpu.AddrRegs[xreg] += M68K_BYTE_SIZE
 				if xreg == 7 {
-					cpu.AddrRegs[xreg] += M68K_BYTE_SIZE // Extra for stack pointer
+					cpu.AddrRegs[xreg] += M68K_BYTE_SIZE
 				}
 			} else if size == M68K_SIZE_WORD {
-				dest = uint32(cpu.Read16(addr))
 				cpu.AddrRegs[xreg] += M68K_WORD_SIZE
 			} else {
-				dest = cpu.Read32(addr)
 				cpu.AddrRegs[xreg] += M68K_LONG_SIZE
 			}
 			cpu.cycleCounter += M68K_CYCLE_MEM_READ
 		} else if mode == M68K_AM_AR_PRE {
-			// Address register indirect with predecrement
 			if size == M68K_SIZE_BYTE {
 				cpu.AddrRegs[xreg] -= M68K_BYTE_SIZE
 				if xreg == 7 {
-					cpu.AddrRegs[xreg] -= M68K_BYTE_SIZE // Extra for stack pointer
+					cpu.AddrRegs[xreg] -= M68K_BYTE_SIZE
 				}
 			} else if size == M68K_SIZE_WORD {
 				cpu.AddrRegs[xreg] -= M68K_WORD_SIZE
 			} else {
 				cpu.AddrRegs[xreg] -= M68K_LONG_SIZE
 			}
-			addr := cpu.AddrRegs[xreg]
-			if size == M68K_SIZE_BYTE {
-				dest = uint32(cpu.Read8(addr))
-			} else if size == M68K_SIZE_WORD {
-				dest = uint32(cpu.Read16(addr))
-			} else {
-				dest = cpu.Read32(addr)
-			}
+			effectiveAddr = cpu.AddrRegs[xreg]
 			cpu.cycleCounter += M68K_CYCLE_MEM_READ
 		} else if mode == M68K_AM_AR_DISP {
-			// Address register indirect with displacement
 			disp := int16(cpu.Fetch16())
-			addr := cpu.AddrRegs[xreg] + uint32(disp)
-			if size == M68K_SIZE_BYTE {
-				dest = uint32(cpu.Read8(addr))
-			} else if size == M68K_SIZE_WORD {
-				dest = uint32(cpu.Read16(addr))
-			} else {
-				dest = cpu.Read32(addr)
-			}
+			effectiveAddr = cpu.AddrRegs[xreg] + uint32(disp)
 			cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_EA_DI
 		} else if mode == M68K_AM_AR_INDEX {
-			// Address register indirect with index
 			extWord := cpu.Fetch16()
-			addr := cpu.GetIndexWithExtWords(extWord, cpu.AddrRegs[xreg], true)
-			if size == M68K_SIZE_BYTE {
-				dest = uint32(cpu.Read8(addr))
-			} else if size == M68K_SIZE_WORD {
-				dest = uint32(cpu.Read16(addr))
-			} else {
-				dest = cpu.Read32(addr)
-			}
+			effectiveAddr = cpu.GetIndexWithExtWords(extWord, cpu.AddrRegs[xreg], true)
 			cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_EA_IX
 		} else if mode == 7 {
-			// Extended addressing modes
 			switch xreg {
 			case 0: // Absolute Short
-				addr := uint32(int16(cpu.Fetch16()))
-				if size == M68K_SIZE_BYTE {
-					dest = uint32(cpu.Read8(addr))
-				} else if size == M68K_SIZE_WORD {
-					dest = uint32(cpu.Read16(addr))
-				} else {
-					dest = cpu.Read32(addr)
-				}
+				effectiveAddr = uint32(int16(cpu.Fetch16()))
 				cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_EA_AW
 			case 1: // Absolute Long
-				addr := cpu.Fetch32()
-				if size == M68K_SIZE_BYTE {
-					dest = uint32(cpu.Read8(addr))
-				} else if size == M68K_SIZE_WORD {
-					dest = uint32(cpu.Read16(addr))
-				} else {
-					dest = cpu.Read32(addr)
-				}
+				effectiveAddr = cpu.Fetch32()
 				cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_EA_AL
 			default:
 				fmt.Printf("M68K: Unimplemented destination mode %d,%d for AND at PC=%08x\n", mode, xreg, cpu.PC-M68K_WORD_SIZE)
@@ -6973,133 +7442,65 @@ func (cpu *M68KCPU) ExecAnd(reg, opmode, mode, xreg uint16) {
 			cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
 			return
 		}
+
+		// Read destination from memory using computed address
+		if size == M68K_SIZE_BYTE {
+			dest = uint32(cpu.Read8(effectiveAddr))
+		} else if size == M68K_SIZE_WORD {
+			dest = uint32(cpu.Read16(effectiveAddr))
+		} else {
+			dest = cpu.Read32(effectiveAddr)
+		}
+
+		// Perform AND operation
+		result = dest & source
+
+		// Write result back to memory using SAME address (no re-fetch!)
+		if size == M68K_SIZE_BYTE {
+			cpu.Write8(effectiveAddr, uint8(result))
+		} else if size == M68K_SIZE_WORD {
+			cpu.Write16(effectiveAddr, uint16(result))
+		} else {
+			cpu.Write32(effectiveAddr, result)
+		}
+		cpu.cycleCounter += M68K_CYCLE_MEM_WRITE
+
+		cpu.SetFlagsNZ(result, size)
+		return
 	}
 
-	// Perform AND operation
+	// Perform AND operation (for direction == M68K_DIRECTION_REG_TO_EA case)
 	result = dest & source
 
-	// Write result
-	if direction == M68K_DIRECTION_REG_TO_EA {
-		// Data register is destination
-		if size == M68K_SIZE_BYTE {
-			cpu.DataRegs[reg] = (cpu.DataRegs[reg] & 0xFFFFFF00) | (result & 0xFF)
-		} else if size == M68K_SIZE_WORD {
-			cpu.DataRegs[reg] = (cpu.DataRegs[reg] & 0xFFFF0000) | (result & 0xFFFF)
-		} else {
-			cpu.DataRegs[reg] = result
-		}
-		cpu.cycleCounter += M68K_CYCLE_REG
+	// Write result to data register
+	if size == M68K_SIZE_BYTE {
+		cpu.DataRegs[reg] = (cpu.DataRegs[reg] & 0xFFFFFF00) | (result & 0xFF)
+	} else if size == M68K_SIZE_WORD {
+		cpu.DataRegs[reg] = (cpu.DataRegs[reg] & 0xFFFF0000) | (result & 0xFFFF)
 	} else {
-		// Memory is destination
-		if mode == M68K_AM_DR {
-			// Data register
-			if size == M68K_SIZE_BYTE {
-				cpu.DataRegs[xreg] = (cpu.DataRegs[xreg] & 0xFFFFFF00) | (result & 0xFF)
-			} else if size == M68K_SIZE_WORD {
-				cpu.DataRegs[xreg] = (cpu.DataRegs[xreg] & 0xFFFF0000) | (result & 0xFFFF)
-			} else {
-				cpu.DataRegs[xreg] = result
-			}
-			cpu.cycleCounter += M68K_CYCLE_REG
-		} else if mode == M68K_AM_AR_IND {
-			// Address register indirect
-			addr := cpu.AddrRegs[xreg]
-			if size == M68K_SIZE_BYTE {
-				cpu.Write8(addr, uint8(result))
-			} else if size == M68K_SIZE_WORD {
-				cpu.Write16(addr, uint16(result))
-			} else {
-				cpu.Write32(addr, result)
-			}
-			cpu.cycleCounter += M68K_CYCLE_MEM_WRITE
-		} else if mode == M68K_AM_AR_POST {
-			// Postincrement - address was already incremented during read
-			addr := cpu.AddrRegs[xreg] - (M68K_BYTE_SIZE * uint32(1<<size))
-			if size == M68K_SIZE_BYTE {
-				cpu.Write8(addr, uint8(result))
-			} else if size == M68K_SIZE_WORD {
-				cpu.Write16(addr, uint16(result))
-			} else {
-				cpu.Write32(addr, result)
-			}
-			cpu.cycleCounter += M68K_CYCLE_MEM_WRITE
-		} else if mode == M68K_AM_AR_PRE {
-			// Predecrement - address was already decremented
-			addr := cpu.AddrRegs[xreg]
-			if size == M68K_SIZE_BYTE {
-				cpu.Write8(addr, uint8(result))
-			} else if size == M68K_SIZE_WORD {
-				cpu.Write16(addr, uint16(result))
-			} else {
-				cpu.Write32(addr, result)
-			}
-			cpu.cycleCounter += M68K_CYCLE_MEM_WRITE
-		} else if mode == M68K_AM_AR_DISP {
-			// Displacement - recompute address
-			disp := int16(cpu.Fetch16())
-			addr := cpu.AddrRegs[xreg] + uint32(disp)
-			if size == M68K_SIZE_BYTE {
-				cpu.Write8(addr, uint8(result))
-			} else if size == M68K_SIZE_WORD {
-				cpu.Write16(addr, uint16(result))
-			} else {
-				cpu.Write32(addr, result)
-			}
-			cpu.cycleCounter += M68K_CYCLE_MEM_WRITE
-		} else if mode == M68K_AM_AR_INDEX {
-			// Index - recompute address
-			extWord := cpu.Fetch16()
-			addr := cpu.GetIndexWithExtWords(extWord, cpu.AddrRegs[xreg], true)
-			if size == M68K_SIZE_BYTE {
-				cpu.Write8(addr, uint8(result))
-			} else if size == M68K_SIZE_WORD {
-				cpu.Write16(addr, uint16(result))
-			} else {
-				cpu.Write32(addr, result)
-			}
-			cpu.cycleCounter += M68K_CYCLE_MEM_WRITE
-		} else if mode == 7 {
-			// Extended modes
-			switch xreg {
-			case 0: // Absolute Short
-				addr := uint32(int16(cpu.Fetch16()))
-				if size == M68K_SIZE_BYTE {
-					cpu.Write8(addr, uint8(result))
-				} else if size == M68K_SIZE_WORD {
-					cpu.Write16(addr, uint16(result))
-				} else {
-					cpu.Write32(addr, result)
-				}
-				cpu.cycleCounter += M68K_CYCLE_MEM_WRITE
-			case 1: // Absolute Long
-				addr := cpu.Fetch32()
-				if size == M68K_SIZE_BYTE {
-					cpu.Write8(addr, uint8(result))
-				} else if size == M68K_SIZE_WORD {
-					cpu.Write16(addr, uint16(result))
-				} else {
-					cpu.Write32(addr, result)
-				}
-				cpu.cycleCounter += M68K_CYCLE_MEM_WRITE
-			}
-		}
+		cpu.DataRegs[reg] = result
 	}
+	cpu.cycleCounter += M68K_CYCLE_REG
 
 	// Set condition codes
 	cpu.SetFlagsNZ(result, size)
 }
 func (cpu *M68KCPU) ExecAndi() {
+	// Check for special CCR/SR variants first by full instruction word
+	// ANDI to CCR: 0000 0010 0011 1100 = 0x023C
+	// ANDI to SR:  0000 0010 0111 1100 = 0x027C
+	if cpu.currentIR == 0x023C {
+		cpu.ExecAndiCcr()
+		return
+	}
+	if cpu.currentIR == 0x027C {
+		cpu.ExecAndiSr()
+		return
+	}
+
 	size := (cpu.currentIR >> 6) & 0x3
 	mode := (cpu.currentIR >> 3) & 0x7
 	reg := cpu.currentIR & 0x7
-
-	// Skip CCR/SR variants as they're already implemented
-	if mode == 0 && reg == 4 {
-		return // ANDI to CCR
-	}
-	if mode == 0 && reg == 6 {
-		return // ANDI to SR
-	}
 
 	var effSize int
 	var mask uint32
@@ -7178,6 +7579,8 @@ func (cpu *M68KCPU) ExecAndi() {
 func (cpu *M68KCPU) ExecOr(reg, opmode, mode, xreg uint16) {
 	var source, dest, result uint32
 	var size int
+	var destAddr uint32
+	destIsMem := false
 
 	// Determine operation size and direction
 	direction := (opmode >> 2) & 1
@@ -7195,21 +7598,28 @@ func (cpu *M68KCPU) ExecOr(reg, opmode, mode, xreg uint16) {
 
 	// Get operands based on direction
 	if direction == M68K_DIRECTION_REG_TO_EA {
-		// Data register is destination
+		// EA is source, data register is destination
 		if mode == M68K_AM_DR {
 			// Data register direct
 			source = cpu.DataRegs[xreg]
-			if size == M68K_SIZE_BYTE {
-				source &= 0xFF
-			} else if size == M68K_SIZE_WORD {
-				source &= 0xFFFF
-			}
 			cpu.cycleCounter += M68K_CYCLE_REG
 		} else {
-			// Other addressing modes
-			fmt.Printf("M68K: Unimplemented source mode %d for OR at PC=%08x\n", mode, cpu.PC-M68K_WORD_SIZE)
-			cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
-			return
+			// Memory source - use GetEffectiveAddress
+			addr := cpu.GetEffectiveAddress(mode, xreg)
+			if size == M68K_SIZE_BYTE {
+				source = uint32(cpu.Read8(addr))
+			} else if size == M68K_SIZE_WORD {
+				source = uint32(cpu.Read16(addr))
+			} else {
+				source = cpu.Read32(addr)
+			}
+			cpu.cycleCounter += M68K_CYCLE_MEM_READ
+		}
+
+		if size == M68K_SIZE_BYTE {
+			source &= 0xFF
+		} else if size == M68K_SIZE_WORD {
+			source &= 0xFFFF
 		}
 
 		dest = cpu.DataRegs[reg]
@@ -7219,7 +7629,8 @@ func (cpu *M68KCPU) ExecOr(reg, opmode, mode, xreg uint16) {
 			dest &= 0xFFFF
 		}
 	} else {
-		// Memory is destination
+		// Data register is source, EA is destination (memory)
+		destIsMem = true
 		source = cpu.DataRegs[reg]
 		if size == M68K_SIZE_BYTE {
 			source &= 0xFF
@@ -7227,30 +7638,23 @@ func (cpu *M68KCPU) ExecOr(reg, opmode, mode, xreg uint16) {
 			source &= 0xFFFF
 		}
 
-		if mode == M68K_AM_AR_IND {
-			// Address register indirect
-			addr := cpu.AddrRegs[xreg]
-			if size == M68K_SIZE_BYTE {
-				dest = uint32(cpu.Read8(addr))
-			} else if size == M68K_SIZE_WORD {
-				dest = uint32(cpu.Read16(addr))
-			} else {
-				dest = cpu.Read32(addr)
-			}
-			cpu.cycleCounter += M68K_CYCLE_MEM_READ
+		// Memory destination - use GetEffectiveAddress
+		destAddr = cpu.GetEffectiveAddress(mode, xreg)
+		if size == M68K_SIZE_BYTE {
+			dest = uint32(cpu.Read8(destAddr))
+		} else if size == M68K_SIZE_WORD {
+			dest = uint32(cpu.Read16(destAddr))
 		} else {
-			// Other addressing modes
-			fmt.Printf("M68K: Unimplemented destination mode %d for OR at PC=%08x\n", mode, cpu.PC-M68K_WORD_SIZE)
-			cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
-			return
+			dest = cpu.Read32(destAddr)
 		}
+		cpu.cycleCounter += M68K_CYCLE_MEM_READ
 	}
 
 	// Perform OR operation
 	result = dest | source
 
 	// Write result
-	if direction == M68K_DIRECTION_REG_TO_EA {
+	if !destIsMem {
 		// Data register is destination
 		if size == M68K_SIZE_BYTE {
 			cpu.DataRegs[reg] = (cpu.DataRegs[reg] & 0xFFFFFF00) | (result & 0xFF)
@@ -7261,35 +7665,36 @@ func (cpu *M68KCPU) ExecOr(reg, opmode, mode, xreg uint16) {
 		}
 		cpu.cycleCounter += M68K_CYCLE_REG
 	} else {
-		// Memory is destination
-		if mode == M68K_AM_AR_IND {
-			addr := cpu.AddrRegs[xreg]
-			if size == M68K_SIZE_BYTE {
-				cpu.Write8(addr, uint8(result))
-			} else if size == M68K_SIZE_WORD {
-				cpu.Write16(addr, uint16(result))
-			} else {
-				cpu.Write32(addr, result)
-			}
-			cpu.cycleCounter += M68K_CYCLE_MEM_WRITE
+		// Memory is destination - use stored destAddr
+		if size == M68K_SIZE_BYTE {
+			cpu.Write8(destAddr, uint8(result))
+		} else if size == M68K_SIZE_WORD {
+			cpu.Write16(destAddr, uint16(result))
+		} else {
+			cpu.Write32(destAddr, result)
 		}
+		cpu.cycleCounter += M68K_CYCLE_MEM_WRITE
 	}
 
 	// Set condition codes
 	cpu.SetFlagsNZ(result, size)
 }
 func (cpu *M68KCPU) ExecOri() {
+	// Check for special CCR/SR variants first by full instruction word
+	// ORI to CCR: 0000 0000 0011 1100 = 0x003C
+	// ORI to SR:  0000 0000 0111 1100 = 0x007C
+	if cpu.currentIR == 0x003C {
+		cpu.ExecOriCcr()
+		return
+	}
+	if cpu.currentIR == 0x007C {
+		cpu.ExecOriSr()
+		return
+	}
+
 	size := (cpu.currentIR >> 6) & 0x3
 	mode := (cpu.currentIR >> 3) & 0x7
 	reg := cpu.currentIR & 0x7
-
-	// Skip CCR/SR variants as they're already implemented
-	if mode == 0 && reg == 4 {
-		return // ORI to CCR
-	}
-	if mode == 0 && reg == 6 {
-		return // ORI to SR
-	}
 
 	var effSize int
 	var mask uint32
@@ -7436,17 +7841,21 @@ func (cpu *M68KCPU) ExecEor(reg, opmode, mode, xreg uint16) {
 	cpu.SetFlagsNZ(result, size)
 }
 func (cpu *M68KCPU) ExecEori() {
+	// Check for special CCR/SR variants first by full instruction word
+	// EORI to CCR: 0000 1010 0011 1100 = 0x0A3C
+	// EORI to SR:  0000 1010 0111 1100 = 0x0A7C
+	if cpu.currentIR == 0x0A3C {
+		cpu.ExecEoriCcr()
+		return
+	}
+	if cpu.currentIR == 0x0A7C {
+		cpu.ExecEoriSr()
+		return
+	}
+
 	size := (cpu.currentIR >> 6) & 0x3
 	mode := (cpu.currentIR >> 3) & 0x7
 	reg := cpu.currentIR & 0x7
-
-	// Skip CCR/SR variants as they're already implemented
-	if mode == 0 && reg == 4 {
-		return // EORI to CCR
-	}
-	if mode == 0 && reg == 6 {
-		return // EORI to SR
-	}
 
 	var effSize int
 	var mask uint32
@@ -8766,8 +9175,25 @@ func (cpu *M68KCPU) ExecRTE() {
 		cpu.ProcessException(M68K_VEC_PRIVILEGE)
 		return
 	}
-	cpu.SR = cpu.Pop16()
+	newSR := cpu.Pop16()
 	cpu.PC = cpu.Pop32()
+	formatWord := cpu.Pop16()
+	format := (formatWord >> 12) & 0xF
+	words := cpu.exceptionFrameWords(format)
+	if words == 0 {
+		cpu.ProcessException(M68K_VEC_FORMAT_ERROR)
+		return
+	}
+	remainingWords := words - 4
+	for i := 0; i < remainingWords; i++ {
+		cpu.Pop16()
+	}
+	oldSupervisor := (cpu.SR & M68K_SR_S) != 0
+	newSupervisor := (newSR & M68K_SR_S) != 0
+	cpu.SR = newSR
+	if oldSupervisor != newSupervisor {
+		cpu.swapStacksForMode(newSupervisor)
+	}
 	cpu.inException.Store(false)
 	cpu.cycleCounter += M68K_CYCLE_RTE
 }
@@ -8777,7 +9203,7 @@ func (cpu *M68KCPU) ExecSTOP() {
 		return
 	}
 	cpu.SR = cpu.Fetch16()
-	cpu.running.Store(false)
+	cpu.stopped.Store(true)
 	if cpu.debug.Load() {
 		fmt.Printf("M68K: STOP encountered. Halting execution at PC=0x%08X\n", cpu.PC)
 	}
@@ -8803,13 +9229,14 @@ func (cpu *M68KCPU) ExecBRA(opcode uint16) {
 	// Extract branch condition and displacement from the opcode.
 	condition := (opcode >> 8) & 0xF
 	displacement := int8(opcode & 0xFF)
+	isBSR := condition == 1
 
 	// Determine if the branch should be taken.
 	var takeBranch bool
 	if condition == 0 { // BRA always branches.
 		takeBranch = true
-	} else if condition == 1 { // BSR: Branch to subroutine.
-		cpu.Push32(cpu.PC)
+	} else if isBSR { // BSR: Branch to subroutine.
+		// Note: Push return address AFTER fetching displacement (below)
 		takeBranch = true
 	} else {
 		takeBranch = cpu.CheckCondition(uint8(condition))
@@ -8834,6 +9261,12 @@ func (cpu *M68KCPU) ExecBRA(opcode uint16) {
 		// Byte displacement: no extra fetch, PC is already at instruction_addr + 2
 		effectiveDisplacement = int32(displacement)
 		pcAdjust = 0
+	}
+
+	// For BSR, push return address AFTER fetching displacement
+	// The return address is PC pointing to the instruction after the entire BSR instruction
+	if isBSR {
+		cpu.Push32(cpu.PC)
 	}
 
 	// If branch condition is met, update PC.

@@ -493,7 +493,7 @@ func psgVolumeToDAC(level uint8, psgPlus bool) uint8 {
 
 func isPSGExtension(path string) bool {
 	switch strings.ToLower(filepath.Ext(path)) {
-	case ".ym", ".ay", ".vgm", ".vgz":
+	case ".ym", ".ay", ".vgm", ".vgz", ".snd", ".sndh":
 		return true
 	default:
 		return false

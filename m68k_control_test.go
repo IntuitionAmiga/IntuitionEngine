@@ -1,4 +1,4 @@
-//go:build m68k
+//go:build m68k_test
 
 package main
 
@@ -631,7 +631,9 @@ func TestRteSystematic(t *testing.T) {
 			}
 			cpu.AddrRegs[7] = tc.initialSP
 
-			// Push exception frame: SR then PC
+			// Push exception frame: SR, PC, format/offset word
+			cpu.AddrRegs[7] -= 2
+			cpu.Write16(cpu.AddrRegs[7], 0) // Format 0, vector offset 0
 			cpu.AddrRegs[7] -= 4
 			cpu.Write32(cpu.AddrRegs[7], tc.savedPC)
 			cpu.AddrRegs[7] -= 2
@@ -655,8 +657,8 @@ func TestRteSystematic(t *testing.T) {
 				if cpu.PC != tc.savedPC {
 					t.Errorf("Expected PC=0x%08X, got PC=0x%08X", tc.savedPC, cpu.PC)
 				}
-				// Check SP restored (popped 6 bytes: 2 for SR, 4 for PC)
-				expectedSP := stackBeforeRTE + 6
+				// Check SP restored (popped 8 bytes: SR, PC, format/offset)
+				expectedSP := stackBeforeRTE + 8
 				if cpu.AddrRegs[7] != expectedSP {
 					t.Errorf("Expected SP=0x%08X, got SP=0x%08X", expectedSP, cpu.AddrRegs[7])
 				}
@@ -759,8 +761,8 @@ func TestTrapSystematic(t *testing.T) {
 			cpu.FetchAndDecodeInstruction()
 
 			// Check exception frame was pushed
-			// Stack should have: SR (2 bytes), PC (4 bytes)
-			expectedSP := initialSP - 6
+			// Stack should have: SR (2 bytes), PC (4 bytes), format/offset (2 bytes)
+			expectedSP := initialSP - 8
 			if cpu.AddrRegs[7] != expectedSP {
 				t.Errorf("Expected SP=0x%08X after exception, got SP=0x%08X", expectedSP, cpu.AddrRegs[7])
 			}
@@ -825,7 +827,7 @@ func TestTrapvSystematic(t *testing.T) {
 					t.Errorf("Expected PC=0x%08X (TRAPV handler), got PC=0x%08X", handlerAddr, cpu.PC)
 				}
 				// Check stack was pushed
-				expectedSP := initialSP - 6
+				expectedSP := initialSP - 8
 				if cpu.AddrRegs[7] != expectedSP {
 					t.Errorf("Expected SP=0x%08X, got SP=0x%08X", expectedSP, cpu.AddrRegs[7])
 				}

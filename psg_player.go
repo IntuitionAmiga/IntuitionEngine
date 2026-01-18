@@ -96,6 +96,12 @@ func (p *PSGPlayer) Load(path string) error {
 		p.engine.SetClockHz(file.ClockHz)
 		p.engine.SetEvents(file.Events, file.TotalSamples, p.loop, p.loopSample)
 		return nil
+	case ".snd", ".sndh":
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return p.loadSNDH(data)
 	default:
 		return fmt.Errorf("unsupported PSG file type: %s", ext)
 	}
@@ -166,6 +172,9 @@ func (p *PSGPlayer) LoadData(data []byte) error {
 		p.engine.SetEvents(events, total, loop, loopSample)
 		return nil
 	}
+	if isSNDHData(data) {
+		return p.loadSNDH(data)
+	}
 	file, err := ParseAYData(data)
 	if err != nil {
 		return err
@@ -193,6 +202,24 @@ func (p *PSGPlayer) Stop() {
 
 func (p *PSGPlayer) Metadata() PSGMetadata {
 	return p.metadata
+}
+
+func (p *PSGPlayer) loadSNDH(data []byte) error {
+	if p.engine == nil {
+		return fmt.Errorf("psg engine not configured")
+	}
+	meta, events, total, clockHz, frameRate, loop, loopSample, err := renderSNDH(data, p.engine.sampleRate)
+	if err != nil {
+		return err
+	}
+	p.metadata = meta
+	p.frameRate = frameRate
+	p.clockHz = clockHz
+	p.loop = loop
+	p.loopSample = loopSample
+	p.engine.SetClockHz(clockHz)
+	p.engine.SetEvents(events, total, loop, loopSample)
+	return nil
 }
 
 func (p *PSGPlayer) loadFrames(frames [][]uint8, frameRate uint16, clockHz uint32, loopFrame uint32) error {
