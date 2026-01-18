@@ -96,6 +96,9 @@ type SystemBus struct {
 	memory  []byte
 	mutex   sync.RWMutex
 	mapping map[uint32][]IORegion
+
+	// Lock-free fast path for VIDEO_STATUS (allows VBlank polling without blocking)
+	videoStatusReader func(addr uint32) uint32
 }
 
 type IORegion struct {
@@ -136,6 +139,12 @@ func (bus *SystemBus) GetMemory() []byte {
 		CPUs should use this for non-I/O memory operations.
 	*/
 	return bus.memory
+}
+
+// SetVideoStatusReader registers a lock-free callback for VIDEO_STATUS reads.
+// This allows VBlank polling without blocking on the bus mutex.
+func (bus *SystemBus) SetVideoStatusReader(reader func(addr uint32) uint32) {
+	bus.videoStatusReader = reader
 }
 
 func (bus *SystemBus) MapIO(start, end uint32, onRead func(addr uint32) uint32, onWrite func(addr uint32, value uint32)) {
@@ -244,6 +253,11 @@ func (bus *SystemBus) Write32(addr uint32, value uint32) {
 }
 
 func (bus *SystemBus) Read32(addr uint32) uint32 {
+	// Lock-free fast path for VIDEO_STATUS (VBlank polling)
+	if addr == 0xF0008 && bus.videoStatusReader != nil {
+		return bus.videoStatusReader(addr)
+	}
+
 	bus.mutex.Lock()
 	defer bus.mutex.Unlock()
 

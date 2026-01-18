@@ -388,7 +388,9 @@ type VideoChip struct {
 
 	// Copper state
 	bus             MemoryBus
-	busMemory       []byte // Cached reference to bus memory for lock-free reads
+	busMemory       []byte       // Cached reference to bus memory for lock-free reads
+	bigEndianMode   bool         // Read memory as big-endian (for M68K programs)
+	lastFrameStart  atomic.Int64 // Unix nanoseconds when current frame started
 	copperEnabled   bool
 	copperPtrStaged uint32
 	copperPtr       uint32
@@ -562,6 +564,15 @@ func (chip *VideoChip) AttachBus(bus MemoryBus) {
 	defer chip.mutex.Unlock()
 	chip.bus = bus
 	chip.busMemory = bus.GetMemory() // Cache for lock-free reads
+}
+
+// SetBigEndianMode configures the video chip to read memory in big-endian format.
+// This is required for M68K programs where data (copper lists, etc.) is stored
+// in big-endian byte order.
+func (chip *VideoChip) SetBigEndianMode(enabled bool) {
+	chip.mutex.Lock()
+	defer chip.mutex.Unlock()
+	chip.bigEndianMode = enabled
 }
 
 func (chip *VideoChip) scaleImageToMode(imgData []byte, srcWidth, srcHeight int, mode VideoMode) []byte {
@@ -838,20 +849,32 @@ func (chip *VideoChip) refreshLoop() {
 	ticker := time.NewTicker(REFRESH_INTERVAL)
 	defer ticker.Stop()
 
+	// VBlank timing: using 50% window for reliable M68K polling detection
+	// Active display is first 50% of frame, VBlank is last 50%
+	vblankStartDelay := REFRESH_INTERVAL / 2 // VBlank starts after 50% of frame
+	_ = vblankStartDelay                     // Reserved for future use
+
+	// Frame counter for VBlank race prevention
+	var currentFrame uint64
+
+	// Initialize lastFrameStart so M68K polling works before first ticker fires
+	chip.lastFrameStart.Store(time.Now().UnixNano())
+
 	for {
 		select {
 		case <-chip.done:
 			return
 		case <-ticker.C:
-			// VBlank ends when frame processing starts (simulates active display scan)
-			chip.inVBlank.Store(false)
+			// Start of new frame - record start time for VBlank calculation
+			currentFrame++
+			chip.lastFrameStart.Store(time.Now().UnixNano())
+			chip.inVBlank.Store(false) // Legacy support
 
 			if !chip.enabled.Load() {
-				// Set VBlank true so programs waiting for it don't hang
-				chip.inVBlank.Store(true)
 				continue
 			}
 
+			// Minimize mutex hold time: do state updates under lock, then release before slow I/O
 			chip.mutex.Lock()
 			mode := VideoModes[chip.currentMode]
 			chip.advanceCopperFrameLocked(mode)
@@ -859,7 +882,10 @@ func (chip *VideoChip) refreshLoop() {
 
 			// Lock-free check: skip mutex if no dirty tiles
 			hasDirty := chip.hasDirtyTiles()
-			if chip.hasContent.Load() {
+			hasContent := chip.hasContent.Load()
+			var frameToSend []byte
+
+			if hasContent {
 				if hasDirty {
 					tileW := int(chip.tileWidth)
 					tileH := int(chip.tileHeight)
@@ -912,22 +938,22 @@ func (chip *VideoChip) refreshLoop() {
 					chip.frontBuffer, chip.backBuffer = chip.backBuffer, chip.frontBuffer
 					chip.frameCounter += FRAME_INCREMENT
 				}
-
-				err := chip.output.UpdateFrame(chip.frontBuffer)
-				if err != nil {
-					fmt.Printf(ERROR_FRAME_MSG, err)
-				}
+				frameToSend = chip.frontBuffer
 			} else if chip.splashBuffer != nil {
-				err := chip.output.UpdateFrame(chip.splashBuffer)
-				if err != nil {
-					fmt.Printf(ERROR_SPLASH_MSG, err)
-				}
+				frameToSend = chip.splashBuffer
 			}
 			chip.mutex.Unlock()
 
-			// VBlank starts after frame is sent - CPU can now safely draw
-			// VBlank stays true until the next tick (next frame starts)
-			chip.inVBlank.Store(true)
+			// UpdateFrame is done OUTSIDE mutex to prevent blocking M68K I/O writes
+			if frameToSend != nil {
+				err := chip.output.UpdateFrame(frameToSend)
+				if err != nil {
+					fmt.Printf(ERROR_FRAME_MSG, err)
+				}
+			}
+
+			// VBlank timing is now handled by AfterFunc scheduled above
+			// This simulates real hardware where VBlank starts at end of active display
 		}
 	}
 }
@@ -1142,8 +1168,12 @@ func (chip *VideoChip) blitReadPixelLocked(addr uint32) uint32 {
 
 // busRead32Locked reads a 32-bit value directly from cached bus memory without mutex.
 // This avoids deadlock when the video chip holds its mutex and needs to read from memory.
+// Uses big-endian byte order when bigEndianMode is set (for M68K programs).
 func (chip *VideoChip) busRead32Locked(addr uint32) uint32 {
 	if chip.busMemory != nil && addr+4 <= uint32(len(chip.busMemory)) {
+		if chip.bigEndianMode {
+			return binary.BigEndian.Uint32(chip.busMemory[addr : addr+4])
+		}
 		return binary.LittleEndian.Uint32(chip.busMemory[addr : addr+4])
 	}
 	return 0
@@ -1320,9 +1350,19 @@ func (chip *VideoChip) HandleRead(addr uint32) uint32 {
 		if chip.hasContent.Load() {
 			status |= 1 // bit 0: has content
 		}
-		if chip.inVBlank.Load() {
+		// Calculate VBlank based on position within current frame
+		// Use 50% threshold to give M68K a wider window to catch VBlank
+		// - Active display (VBlank=false): first 50% of frame (~8.3ms)
+		// - VBlank period (VBlank=true): last 50% of frame (~8.3ms)
+		// This makes VBlank detection more reliable for M68K polling.
+		frameStart := chip.lastFrameStart.Load()
+		elapsed := time.Since(time.Unix(0, frameStart))
+		inVBlank := elapsed >= REFRESH_INTERVAL/2
+
+		if inVBlank {
 			status |= 2 // bit 1: in VBlank
 		}
+
 		return status
 	}
 

@@ -90,6 +90,76 @@ ie32asm: setup
 	@mv ie32asm $(BIN_DIR)/
 	@echo "IE32 assembler build complete"
 
+# Build the IE65 data generator tool
+gen-65-data: setup
+	@echo "Building IE65 data generator..."
+	@$(GO) build $(GO_FLAGS) -o $(BIN_DIR)/gen_65_data ./tools/gen_65_data
+	@echo "IE65 data generator build complete"
+
+# Assemble an IE65 (6502) program using ca65/ld65
+# Usage: make ie65asm SRC=assembler/robocop_intro_65.asm
+ie65asm:
+	@if [ -z "$(SRC)" ]; then \
+		echo "Usage: make ie65asm SRC=<source.asm>"; \
+		exit 1; \
+	fi
+	@echo "Assembling IE65 program: $(SRC)..."
+	@BASENAME=$$(basename $(SRC) .asm); \
+	SRCDIR=$$(dirname $(SRC)); \
+	ca65 -I assembler -o $${SRCDIR}/$${BASENAME}.o $(SRC) && \
+	ld65 -C assembler/ie65.cfg -o $${SRCDIR}/$${BASENAME}.ie65 $${SRCDIR}/$${BASENAME}.o && \
+	rm -f $${SRCDIR}/$${BASENAME}.o && \
+	echo "Output: $${SRCDIR}/$${BASENAME}.ie65"
+
+# Build the Robocop IE65 (6502) demo (requires ca65/ld65 from cc65 suite)
+.PHONY: robocop-65
+robocop-65:
+	@echo "Building Robocop 6502 demo..."
+	@if ! command -v ca65 >/dev/null 2>&1; then \
+		echo "Error: ca65 not found. Please install the cc65 toolchain."; \
+		echo "  Ubuntu/Debian: sudo apt install cc65"; \
+		echo "  macOS: brew install cc65"; \
+		exit 1; \
+	fi
+	@cd assembler && ca65 -o robocop_intro_65.o robocop_intro_65.asm
+	@cd assembler && ld65 -C ie65.cfg -o robocop_intro_65.ie65 robocop_intro_65.o
+	@rm -f assembler/robocop_intro_65.o
+	@echo "Output: assembler/robocop_intro_65.ie65"
+	@ls -lh assembler/robocop_intro_65.ie65
+
+# Build the Robocop IE32 demo (requires ImageMagick for asset conversion)
+.PHONY: robocop-32
+robocop-32:
+	@echo "Building Robocop IE32 demo..."
+	@if [ ! -f "robocop.png" ]; then \
+		echo "Error: robocop.png not found"; \
+		exit 1; \
+	fi
+	@if ! command -v convert >/dev/null 2>&1; then \
+		echo "Error: ImageMagick not found. Please install it."; \
+		echo "  Ubuntu/Debian: sudo apt install imagemagick"; \
+		echo "  macOS: brew install imagemagick"; \
+		exit 1; \
+	fi
+	@./robocop.sh
+	@ls -lh assembler/robocop_intro.iex
+
+# Build the Robocop M68K demo (requires vasmm68k_mot from VASM)
+.PHONY: robocop-68k
+robocop-68k:
+	@echo "Building Robocop M68K demo..."
+	@if ! command -v vasmm68k_mot >/dev/null 2>&1; then \
+		echo "Error: vasmm68k_mot not found. Please install VASM."; \
+		echo "  Download from: http://sun.hasenbraten.de/vasm/"; \
+		echo "  Build with: make CPU=m68k SYNTAX=mot"; \
+		exit 1; \
+	fi
+	@vasmm68k_mot -Fbin -m68020 -devpac \
+		-o assembler/robocop_intro_68k.ie68 \
+		assembler/robocop_intro_68k.asm
+	@echo "Output: assembler/robocop_intro_68k.ie68"
+	@ls -lh assembler/robocop_intro_68k.ie68
+
 # Download AppImage Tool if not present
 $(APPIMAGE_TOOL):
 	@echo "Downloading AppImage Tool for $(ARCH)..."
@@ -267,6 +337,15 @@ help:
 	@echo "  clean          - Remove all build artifacts"
 	@echo "  list           - List compiled binaries with sizes"
 	@echo "  help           - Show this help message"
+	@echo ""
+	@echo "Demo targets:"
+	@echo "  robocop-32     - Build the Robocop IE32 demo (requires ImageMagick)"
+	@echo "  robocop-65     - Build the Robocop 6502 demo (requires cc65)"
+	@echo "  robocop-68k    - Build the Robocop M68K demo (requires vasm)"
+	@echo ""
+	@echo "IE65 (6502) targets:"
+	@echo "  gen-65-data    - Build the IE65 data generator tool"
+	@echo "  ie65asm        - Assemble an IE65 program (SRC=file.asm)"
 	@echo ""
 	@echo "Test targets:"
 	@echo "  testdata-harte   - Download Tom Harte 68000 test files"

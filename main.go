@@ -24,6 +24,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -264,6 +265,9 @@ func main() {
 		videoChip.HandleRead,
 		videoChip.HandleWrite)
 
+	// Register lock-free VIDEO_STATUS reader for fast VBlank polling
+	sysBus.SetVideoStatusReader(videoChip.HandleRead)
+
 	sysBus.MapIO(VRAM_START, VRAM_START+VRAM_SIZE-1,
 		videoChip.HandleRead,
 		videoChip.HandleWrite)
@@ -321,6 +325,9 @@ func main() {
 		// Initialize M68K CPU
 		m68kCPU := NewM68KCPU(sysBus)
 		// debug defaults to false (atomic.Bool), no need to set
+
+		// Configure video chip for M68K (big-endian data format)
+		videoChip.SetBigEndianMode(true)
 
 		// Load program
 		if filename != "" {
@@ -412,6 +419,9 @@ func main() {
 				os.Exit(1)
 			}
 			parsedLoadAddr = parsed
+		} else if strings.HasSuffix(strings.ToLower(filename), ".ie65") {
+			// Auto-detect IE65 files and default to $0800 load address
+			parsedLoadAddr = 0x0800
 		}
 		var parsedEntry uint16
 		if entryAddr.set {
@@ -471,8 +481,8 @@ func main() {
 	// If running with a file argument, minimize control window so it doesn't
 	// obscure the display (Wayland doesn't allow apps to position windows)
 	if startExecution {
-		if gtkFrontend, ok := gui.(*GTKFrontend); ok {
-			gtkFrontend.SetStartMinimized(true)
+		if minimizable, ok := gui.(interface{ SetStartMinimized(bool) }); ok {
+			minimizable.SetStartMinimized(true)
 		}
 	}
 

@@ -93,6 +93,21 @@ const (
 	VRAM_BANK_WINDOW_SIZE = 0x4000
 	VRAM_BANK_REG         = 0xF7F0
 	VRAM_BANK_REG_RSVD    = 0xF7F1
+
+	// 6502 Extended Bank Windows for IE65 (8KB each)
+	// These allow 6502 programs to access >64KB data through banking
+	BANK1_WINDOW_BASE = 0x2000 // Sprite data bank
+	BANK2_WINDOW_BASE = 0x4000 // Font data bank
+	BANK3_WINDOW_BASE = 0x6000 // General data/AY bank
+	BANK_WINDOW_SIZE  = 0x2000 // 8KB per bank window
+
+	// Bank control registers (16-bit bank number each)
+	BANK1_REG_LO = 0xF700 // Sprite bank select (low byte)
+	BANK1_REG_HI = 0xF701 // Sprite bank select (high byte)
+	BANK2_REG_LO = 0xF702 // Font bank select (low byte)
+	BANK2_REG_HI = 0xF703 // Font bank select (high byte)
+	BANK3_REG_LO = 0xF704 // General bank select (low byte)
+	BANK3_REG_HI = 0xF705 // General bank select (high byte)
 )
 
 const (
@@ -234,14 +249,25 @@ type MemoryBusAdapter_6502 struct {
 	   Structure:
 	   - bus: Reference to 32-bit system bus
 	   - vramBank: Active VRAM bank for 6502 window access
+	   - bank1/2/3: Extended bank windows for IE65 support
 
 	   Purpose:
-	   Provides translation layer between 8-bit 6502 and 32-bit memory system
+	   Provides translation layer between 8-bit 6502 and 32-bit memory system.
+	   Extended banking allows 6502 programs to access the full 16MB address
+	   space through three additional 8KB bank windows at $2000, $4000, $6000.
 	*/
 
 	bus         MemoryBus
 	vramBank    uint32
 	vramEnabled bool
+
+	// Extended bank windows for IE65 support
+	bank1       uint32 // Bank number for $2000-$3FFF window
+	bank2       uint32 // Bank number for $4000-$5FFF window
+	bank3       uint32 // Bank number for $6000-$7FFF window
+	bank1Enable bool   // Bank 1 enabled
+	bank2Enable bool   // Bank 2 enabled
+	bank3Enable bool   // Bank 3 enabled
 }
 
 func NewCPU_6502(bus MemoryBus) *CPU_6502 {
@@ -2643,8 +2669,16 @@ func (cpu_6502 *CPU_6502) Execute() {
 
 // translateIO8Bit_6502 converts 16-bit I/O addresses (0xF000-0xFFFF) to
 // 32-bit addresses (0xF0000-0xF0FFF) for 6502 compatibility.
-// Non-I/O addresses pass through unchanged.
+// translateIO8Bit_6502 converts 16-bit I/O addresses (0xF000-0xFFF9) to
+// 32-bit addresses (0xF0000-0xF0FF9) for 6502 compatibility.
+// Vector addresses (0xFFFA-0xFFFF) are NOT translated to preserve
+// the 6502's standard NMI/RESET/IRQ vector locations.
 func translateIO8Bit_6502(addr uint16) uint32 {
+	// Don't translate vector area - preserve standard 6502 vectors
+	if addr >= 0xFFFA {
+		return uint32(addr)
+	}
+	// Translate I/O region to 32-bit space
 	if addr >= 0xF000 {
 		return 0xF0000 + uint32(addr-0xF000)
 	}
@@ -2662,18 +2696,41 @@ func (adapter *MemoryBusAdapter_6502) Read(addr uint16) byte {
 	   - byte: Value at address
 
 	   Operation:
-	   1. Reads 32-bit word
-	   2. Extracts correct byte
+	   1. Check for bank register reads
+	   2. Check for banked memory access
+	   3. Fall back to direct memory access
 	*/
 
+	// Handle VRAM bank register reads
 	if addr == VRAM_BANK_REG {
 		return byte(adapter.vramBank & 0xFF)
 	}
-
 	if addr == VRAM_BANK_REG_RSVD {
 		return 0
 	}
 
+	// Handle extended bank register reads
+	switch addr {
+	case BANK1_REG_LO:
+		return byte(adapter.bank1 & 0xFF)
+	case BANK1_REG_HI:
+		return byte((adapter.bank1 >> 8) & 0xFF)
+	case BANK2_REG_LO:
+		return byte(adapter.bank2 & 0xFF)
+	case BANK2_REG_HI:
+		return byte((adapter.bank2 >> 8) & 0xFF)
+	case BANK3_REG_LO:
+		return byte(adapter.bank3 & 0xFF)
+	case BANK3_REG_HI:
+		return byte((adapter.bank3 >> 8) & 0xFF)
+	}
+
+	// Handle extended bank window reads (IE65 mode)
+	if translated, ok := adapter.translateExtendedBank(addr); ok {
+		return adapter.bus.Read8(translated)
+	}
+
+	// Handle VRAM bank window reads
 	if translated, ok := adapter.translateVRAM(addr); ok {
 		return adapter.bus.Read8(translated)
 	}
@@ -2689,21 +2746,56 @@ func (adapter *MemoryBusAdapter_6502) Write(addr uint16, value byte) {
 	   - value: Byte to write
 
 	   Operation:
-	   1. Reads existing 32-bit word
-	   2. Modifies correct byte
-	   3. Writes back full word
+	   1. Check for bank register writes
+	   2. Check for banked memory access
+	   3. Fall back to direct memory access
 	*/
 
+	// Handle VRAM bank register writes
 	if addr == VRAM_BANK_REG {
 		adapter.vramBank = uint32(value)
 		adapter.vramEnabled = true
 		return
 	}
-
 	if addr == VRAM_BANK_REG_RSVD {
 		return
 	}
 
+	// Handle extended bank register writes
+	switch addr {
+	case BANK1_REG_LO:
+		adapter.bank1 = (adapter.bank1 & 0xFF00) | uint32(value)
+		adapter.bank1Enable = true
+		return
+	case BANK1_REG_HI:
+		adapter.bank1 = (adapter.bank1 & 0x00FF) | (uint32(value) << 8)
+		adapter.bank1Enable = true
+		return
+	case BANK2_REG_LO:
+		adapter.bank2 = (adapter.bank2 & 0xFF00) | uint32(value)
+		adapter.bank2Enable = true
+		return
+	case BANK2_REG_HI:
+		adapter.bank2 = (adapter.bank2 & 0x00FF) | (uint32(value) << 8)
+		adapter.bank2Enable = true
+		return
+	case BANK3_REG_LO:
+		adapter.bank3 = (adapter.bank3 & 0xFF00) | uint32(value)
+		adapter.bank3Enable = true
+		return
+	case BANK3_REG_HI:
+		adapter.bank3 = (adapter.bank3 & 0x00FF) | (uint32(value) << 8)
+		adapter.bank3Enable = true
+		return
+	}
+
+	// Handle extended bank window writes (IE65 mode)
+	if translated, ok := adapter.translateExtendedBank(addr); ok {
+		adapter.bus.Write8(translated, value)
+		return
+	}
+
+	// Handle VRAM bank window writes
 	if translated, ok := adapter.translateVRAM(addr); ok {
 		adapter.bus.Write8(translated, value)
 		return
@@ -2715,6 +2807,57 @@ func (adapter *MemoryBusAdapter_6502) Write(addr uint16, value byte) {
 func (adapter *MemoryBusAdapter_6502) ResetBank() {
 	adapter.vramBank = 0
 	adapter.vramEnabled = false
+	adapter.bank1 = 0
+	adapter.bank2 = 0
+	adapter.bank3 = 0
+	adapter.bank1Enable = false
+	adapter.bank2Enable = false
+	adapter.bank3Enable = false
+}
+
+func (adapter *MemoryBusAdapter_6502) translateExtendedBank(addr uint16) (uint32, bool) {
+	/*
+	   translateExtendedBank translates addresses in the extended bank windows
+	   to their actual 32-bit addresses.
+
+	   Bank window layout:
+	   - $2000-$3FFF: Bank 1 (sprite data)
+	   - $4000-$5FFF: Bank 2 (font data)
+	   - $6000-$7FFF: Bank 3 (general data)
+
+	   Each bank window maps to:
+	   base_address = bank_number * 8KB
+	   actual_address = base_address + (addr - window_base)
+	*/
+
+	// Check Bank 1 window ($2000-$3FFF)
+	if adapter.bank1Enable && addr >= BANK1_WINDOW_BASE && addr < BANK1_WINDOW_BASE+BANK_WINDOW_SIZE {
+		offset := uint32(addr - BANK1_WINDOW_BASE)
+		translated := (adapter.bank1 * BANK_WINDOW_SIZE) + offset
+		if translated < DEFAULT_MEMORY_SIZE {
+			return translated, true
+		}
+	}
+
+	// Check Bank 2 window ($4000-$5FFF)
+	if adapter.bank2Enable && addr >= BANK2_WINDOW_BASE && addr < BANK2_WINDOW_BASE+BANK_WINDOW_SIZE {
+		offset := uint32(addr - BANK2_WINDOW_BASE)
+		translated := (adapter.bank2 * BANK_WINDOW_SIZE) + offset
+		if translated < DEFAULT_MEMORY_SIZE {
+			return translated, true
+		}
+	}
+
+	// Check Bank 3 window ($6000-$7FFF)
+	if adapter.bank3Enable && addr >= BANK3_WINDOW_BASE && addr < BANK3_WINDOW_BASE+BANK_WINDOW_SIZE {
+		offset := uint32(addr - BANK3_WINDOW_BASE)
+		translated := (adapter.bank3 * BANK_WINDOW_SIZE) + offset
+		if translated < DEFAULT_MEMORY_SIZE {
+			return translated, true
+		}
+	}
+
+	return 0, false
 }
 
 func (adapter *MemoryBusAdapter_6502) translateVRAM(addr uint16) (uint32, bool) {
