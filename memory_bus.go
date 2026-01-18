@@ -58,7 +58,7 @@ import (
 )
 
 const (
-	DEFAULT_MEMORY_SIZE = 16 * 1024 * 1024
+	DEFAULT_MEMORY_SIZE = 32 * 1024 * 1024
 	PAGE_SIZE           = 0x100
 	PAGE_MASK           = 0xFFF00
 )

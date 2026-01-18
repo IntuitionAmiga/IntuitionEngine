@@ -139,7 +139,7 @@ const (
 	M68K_WORD_SIZE_BITS = 16
 	M68K_LONG_SIZE_BITS = 32
 	M68K_CACHE_LINE     = 64                    // Optimises struct layout for modern CPU cache architecture
-	M68K_MEMORY_SIZE    = 16 * 1024 * 1024      // Matches address space of 68EC020 without MMU
+	M68K_MEMORY_SIZE    = DEFAULT_MEMORY_SIZE   // Use unified memory size from memory_bus.go
 	M68K_RESET_DELAY    = 50 * time.Millisecond // Hardware requires stabilisation time before resuming
 	M68K_PREFETCH_SIZE  = 4                     // Balances fetch overhead with branch misprediction cost
 )
@@ -3622,15 +3622,15 @@ func (cpu *M68KCPU) ExecMovep() {
 	reg := (cpu.currentIR >> 9) & 0x7
 	areg := cpu.currentIR & 0x7
 
-	// MOVEP opmode encoding (bits 8-6):
-	// 100 (4) = word, memory to register
-	// 101 (5) = word, register to memory
-	// 110 (6) = long, memory to register
-	// 111 (7) = long, register to memory
-	// Bit 0 determines direction: 0=mem2reg, 1=reg2mem (inverted for M68K_DIRECTION constants)
-	// Bit 1 determines size: 0=word, 1=long
-	direction := 1 - (opmode & 0x01)   // Invert bit 0: 0=reg2mem, 1=mem2reg
-	size := ((opmode >> 1) & 0x01) + 1 // Bit 1: 0=word(1), 1=long(2)
+	// MOVEP opmode encoding (bits 8-6 of opcode):
+	// 100 (4) = word, memory to register (read)
+	// 101 (5) = long, memory to register (read)
+	// 110 (6) = word, register to memory (write)
+	// 111 (7) = long, register to memory (write)
+	// Bit 1 (of opmode) determines direction: 0=mem→reg (EA_TO_REG), 1=reg→mem (REG_TO_EA)
+	// Bit 0 (of opmode) determines size: 0=word, 1=long
+	direction := 1 - ((opmode >> 1) & 0x01) // Bit 1: 0→1(EA_TO_REG), 1→0(REG_TO_EA)
+	size := (opmode & 0x01) + 1             // Bit 0: 0=word(1), 1=long(2)
 
 	// Get displacement
 	displacement := int16(cpu.Fetch16())

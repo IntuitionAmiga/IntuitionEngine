@@ -421,7 +421,15 @@ func (e *PSGEngine) applyVolumes() {
 		useEnv := (vol & 0x10) != 0
 		level := vol & 0x0F
 		if useEnv {
-			level = uint8(e.envLevel)
+			// For SID emulation: upper nibble often contains the actual volume
+			// when bit 4 is set. Check if upper nibble is non-zero before
+			// falling back to envelope generator.
+			upperNibble := vol >> 4
+			if upperNibble > 0 {
+				level = upperNibble
+			} else {
+				level = uint8(e.envLevel)
+			}
 		}
 		toneLevel := level
 		if !toneEnable[ch] {
