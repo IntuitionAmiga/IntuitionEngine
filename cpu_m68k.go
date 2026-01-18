@@ -6544,8 +6544,54 @@ func (cpu *M68KCPU) ExecCmpi() {
 		// Data register direct
 		dest = cpu.DataRegs[reg] & mask
 		cpu.cycleCounter += M68K_CYCLE_REG
+	} else if mode == M68K_AM_AR_POST {
+		// Address register indirect with postincrement
+		addr := cpu.AddrRegs[reg]
+		if effSize == M68K_SIZE_BYTE {
+			dest = uint32(cpu.Read8(addr))
+			// Increment by 1 for byte access
+			cpu.AddrRegs[reg] += M68K_BYTE_SIZE
+			// Special case for A7 (SP) - always increment by 2 for byte operations
+			if reg == 7 {
+				cpu.AddrRegs[reg] += M68K_BYTE_SIZE
+			}
+		} else if effSize == M68K_SIZE_WORD {
+			dest = uint32(cpu.Read16(addr))
+			cpu.AddrRegs[reg] += M68K_WORD_SIZE
+		} else {
+			dest = cpu.Read32(addr)
+			cpu.AddrRegs[reg] += M68K_LONG_SIZE
+		}
+		cpu.cycleCounter += M68K_CYCLE_REG + cpu.GetEACycles(mode, reg)
+	} else if mode == M68K_AM_AR_PRE {
+		// Address register indirect with predecrement
+		var decrementSize uint32
+		if effSize == M68K_SIZE_BYTE {
+			decrementSize = M68K_BYTE_SIZE
+			// Special case for A7 (SP) - always decrement by 2 for byte operations
+			if reg == 7 {
+				decrementSize = M68K_WORD_SIZE
+			}
+		} else if effSize == M68K_SIZE_WORD {
+			decrementSize = M68K_WORD_SIZE
+		} else {
+			decrementSize = M68K_LONG_SIZE
+		}
+
+		// Decrement first, then read
+		cpu.AddrRegs[reg] -= decrementSize
+		addr := cpu.AddrRegs[reg]
+
+		if effSize == M68K_SIZE_BYTE {
+			dest = uint32(cpu.Read8(addr))
+		} else if effSize == M68K_SIZE_WORD {
+			dest = uint32(cpu.Read16(addr))
+		} else {
+			dest = cpu.Read32(addr)
+		}
+		cpu.cycleCounter += M68K_CYCLE_REG + cpu.GetEACycles(mode, reg)
 	} else {
-		// Memory operand
+		// Other memory operand modes
 		addr := cpu.GetEffectiveAddress(mode, reg)
 
 		if effSize == M68K_SIZE_BYTE {
