@@ -160,6 +160,43 @@ robocop-68k:
 	@echo "Output: assembler/robocop_intro_68k.ie68"
 	@ls -lh assembler/robocop_intro_68k.ie68
 
+# Build the Robocop Z80 demo (requires vasmz80 from VASM)
+.PHONY: robocop-z80
+robocop-z80:
+	@echo "Building Robocop Z80 demo..."
+	@if ! command -v vasmz80_std >/dev/null 2>&1; then \
+		echo "Error: vasmz80_std not found. Please install VASM."; \
+		echo "  Download from: http://sun.hasenbraten.de/vasm/"; \
+		echo "  Build with: make CPU=z80 SYNTAX=std"; \
+		exit 1; \
+	fi
+	@vasmz80_std -Fbin \
+		-I assembler \
+		-o assembler/robocop_intro_z80.ie80 \
+		assembler/robocop_intro_z80.asm
+	@echo "Output: assembler/robocop_intro_z80.ie80"
+	@ls -lh assembler/robocop_intro_z80.ie80
+
+# Assemble an IE80 (Z80) program using vasmz80
+# Usage: make ie80asm SRC=assembler/program.asm
+.PHONY: ie80asm
+ie80asm:
+	@if [ -z "$(SRC)" ]; then \
+		echo "Usage: make ie80asm SRC=<source.asm>"; \
+		exit 1; \
+	fi
+	@echo "Assembling IE80 program: $(SRC)..."
+	@if ! command -v vasmz80_std >/dev/null 2>&1; then \
+		echo "Error: vasmz80_std not found. Please install VASM."; \
+		echo "  Download from: http://sun.hasenbraten.de/vasm/"; \
+		echo "  Build with: make CPU=z80 SYNTAX=std"; \
+		exit 1; \
+	fi
+	@BASENAME=$$(basename $(SRC) .asm); \
+	SRCDIR=$$(dirname $(SRC)); \
+	vasmz80_std -Fbin -I assembler -o $${SRCDIR}/$${BASENAME}.ie80 $(SRC) && \
+	echo "Output: $${SRCDIR}/$${BASENAME}.ie80"
+
 # Download AppImage Tool if not present
 $(APPIMAGE_TOOL):
 	@echo "Downloading AppImage Tool for $(ARCH)..."
@@ -342,10 +379,14 @@ help:
 	@echo "  robocop-32     - Build the Robocop IE32 demo (requires ImageMagick)"
 	@echo "  robocop-65     - Build the Robocop 6502 demo (requires cc65)"
 	@echo "  robocop-68k    - Build the Robocop M68K demo (requires vasm)"
+	@echo "  robocop-z80    - Build the Robocop Z80 demo (requires vasm)"
 	@echo ""
 	@echo "IE65 (6502) targets:"
 	@echo "  gen-65-data    - Build the IE65 data generator tool"
 	@echo "  ie65asm        - Assemble an IE65 program (SRC=file.asm)"
+	@echo ""
+	@echo "IE80 (Z80) targets:"
+	@echo "  ie80asm        - Assemble an IE80 program (SRC=file.asm)"
 	@echo ""
 	@echo "Test targets:"
 	@echo "  testdata-harte   - Download Tom Harte 68000 test files"
