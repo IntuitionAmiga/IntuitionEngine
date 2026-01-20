@@ -129,45 +129,76 @@
 .set PSG_PORT_DATA,0xF1
 
 ; ============================================================================
-; POKEY AUDIO REGISTERS
+; POKEY AUDIO REGISTERS (Atari-style addresses $D200-$D209)
 ; ============================================================================
+; For SAP file playback and Atari 8-bit sound emulation
 
-; POKEY memory-mapped registers
-.set POKEY_BASE,0xFD00
-.set POKEY_AUDF1,0xFD00      ; Channel 1 frequency divider
-.set POKEY_AUDC1,0xFD01      ; Channel 1 control (distortion + volume)
-.set POKEY_AUDF2,0xFD02      ; Channel 2 frequency divider
-.set POKEY_AUDC2,0xFD03      ; Channel 2 control
-.set POKEY_AUDF3,0xFD04      ; Channel 3 frequency divider
-.set POKEY_AUDC3,0xFD05      ; Channel 3 control
-.set POKEY_AUDF4,0xFD06      ; Channel 4 frequency divider
-.set POKEY_AUDC4,0xFD07      ; Channel 4 control
-.set POKEY_AUDCTL,0xFD08     ; Master audio control
-.set POKEY_PLUS_CTRL,0xFD09  ; POKEY+ mode (0=standard, 1=enhanced)
-
-; POKEY I/O port mapping for Z80
-.set POKEY_PORT_SELECT,0xD0
-.set POKEY_PORT_DATA,0xD1
+.set POKEY_BASE,0xD200
+.set POKEY_AUDF1,0xD200
+.set POKEY_AUDC1,0xD201
+.set POKEY_AUDF2,0xD202
+.set POKEY_AUDC2,0xD203
+.set POKEY_AUDF3,0xD204
+.set POKEY_AUDC3,0xD205
+.set POKEY_AUDF4,0xD206
+.set POKEY_AUDC4,0xD207
+.set POKEY_AUDCTL,0xD208
+.set POKEY_PLUS_CTRL,0xD209
 
 ; AUDCTL bit masks
-.set AUDCTL_CLOCK_15KHZ,0x01 ; Use 15kHz base clock (else 64kHz)
-.set AUDCTL_HIPASS_CH1,0x02  ; High-pass filter ch1 by ch3
-.set AUDCTL_HIPASS_CH2,0x04  ; High-pass filter ch2 by ch4
-.set AUDCTL_CH4_BY_CH3,0x08  ; Ch4 clocked by ch3 (16-bit mode)
-.set AUDCTL_CH2_BY_CH1,0x10  ; Ch2 clocked by ch1 (16-bit mode)
-.set AUDCTL_CH3_179MHZ,0x20  ; Ch3 uses 1.79MHz clock
-.set AUDCTL_CH1_179MHZ,0x40  ; Ch1 uses 1.79MHz clock
-.set AUDCTL_POLY9,0x80       ; Use 9-bit poly instead of 17-bit
+.set AUDCTL_CLOCK_15KHZ,0x01
+.set AUDCTL_HIPASS_CH1,0x02
+.set AUDCTL_HIPASS_CH2,0x04
+.set AUDCTL_CH4_BY_CH3,0x08
+.set AUDCTL_CH2_BY_CH1,0x10
+.set AUDCTL_CH3_179MHZ,0x20
+.set AUDCTL_CH1_179MHZ,0x40
+.set AUDCTL_POLY9,0x80
 
 ; AUDC distortion modes (bits 5-7)
-.set POKEY_DIST_POLY17_POLY5,0x00  ; 17-bit + 5-bit poly
-.set POKEY_DIST_POLY5,0x20         ; 5-bit poly only
-.set POKEY_DIST_POLY17_POLY4,0x40  ; 17-bit + 4-bit poly
-.set POKEY_DIST_POLY5_POLY4,0x60   ; 5-bit + 4-bit poly
-.set POKEY_DIST_POLY17,0x80        ; 17-bit poly only
-.set POKEY_DIST_PURE_TONE,0xA0     ; Pure square wave
-.set POKEY_DIST_POLY4,0xC0         ; 4-bit poly only
-.set POKEY_DIST_POLY17_PULSE,0xE0  ; 17-bit + pulse
+.set POKEY_DIST_POLY17_POLY5,0x00
+.set POKEY_DIST_POLY5,0x20
+.set POKEY_DIST_POLY17_POLY4,0x40
+.set POKEY_DIST_POLY5_POLY4,0x60
+.set POKEY_DIST_POLY17,0x80
+.set POKEY_DIST_PURE_TONE,0xA0
+.set POKEY_DIST_POLY4,0xC0
+.set POKEY_DIST_POLY17_PULSE,0xE0
+
+; ----------------------------------------------------------------------------
+; SAP Player Registers
+;
+; The SAP player handles Atari 8-bit music files (.sap) which contain
+; embedded 6502 code that drives the POKEY sound chip. Supports TYPE B files
+; where INIT is called once and PLAYER is called each frame.
+;
+; Usage:
+;   1. Embed SAP data in your program using incbin
+;   2. Set SAP_PLAY_PTR bytes to the address of the SAP data (little-endian)
+;   3. Set SAP_PLAY_LEN bytes to the size of the SAP data (little-endian)
+;   4. Optionally set SAP_SUBSONG to select a subsong (default 0)
+;   5. Write to SAP_PLAY_CTRL to start/stop playback
+;
+; SAP_PLAY_CTRL bits:
+;   bit 0 (0x01) - Start playback (write 1 to begin)
+;   bit 1 (0x02) - Stop playback (write 1 to stop)
+;   bit 2 (0x04) - Enable looping (set before starting)
+;
+; SAP_PLAY_STATUS bits:
+;   bit 0 (0x01) - Busy (1 = playing, 0 = stopped)
+;   bit 1 (0x02) - Error (1 = load/parse error)
+; ----------------------------------------------------------------------------
+.set SAP_PLAY_PTR_0,0xF0D10
+.set SAP_PLAY_PTR_1,0xF0D11
+.set SAP_PLAY_PTR_2,0xF0D12
+.set SAP_PLAY_PTR_3,0xF0D13
+.set SAP_PLAY_LEN_0,0xF0D14
+.set SAP_PLAY_LEN_1,0xF0D15
+.set SAP_PLAY_LEN_2,0xF0D16
+.set SAP_PLAY_LEN_3,0xF0D17
+.set SAP_PLAY_CTRL,0xF0D18
+.set SAP_PLAY_STATUS,0xF0D1C
+.set SAP_SUBSONG,0xF0D1D
 
 ; ============================================================================
 ; VIDEO CONSTANTS
@@ -402,6 +433,30 @@
     ld (PSG_PLAY_LEN_2),a
     ld a,((\len)>>24)&0xFF
     ld (PSG_PLAY_LEN_3),a
+.endm
+
+; Set SAP play pointer (32-bit)
+.macro SET_SAP_PTR addr
+    ld a,(\addr)&0xFF
+    ld (SAP_PLAY_PTR_0),a
+    ld a,((\addr)>>8)&0xFF
+    ld (SAP_PLAY_PTR_1),a
+    ld a,((\addr)>>16)&0xFF
+    ld (SAP_PLAY_PTR_2),a
+    ld a,((\addr)>>24)&0xFF
+    ld (SAP_PLAY_PTR_3),a
+.endm
+
+; Set SAP play length (32-bit)
+.macro SET_SAP_LEN len
+    ld a,(\len)&0xFF
+    ld (SAP_PLAY_LEN_0),a
+    ld a,((\len)>>8)&0xFF
+    ld (SAP_PLAY_LEN_1),a
+    ld a,((\len)>>16)&0xFF
+    ld (SAP_PLAY_LEN_2),a
+    ld a,((\len)>>24)&0xFF
+    ld (SAP_PLAY_LEN_3),a
 .endm
 
 ; ============================================================================

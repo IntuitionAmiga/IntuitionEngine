@@ -46,6 +46,15 @@ type POKEYEngine struct {
 	enabled          bool
 	pokeyPlusEnabled bool
 	channelsInit     bool
+
+	// Event-based playback (for SAP files)
+	events        []SAPPOKEYEvent
+	eventIndex    int
+	currentSample uint64
+	totalSamples  uint64
+	playing       bool
+	loop          bool
+	loopSample    uint64
 }
 
 // POKEY+ logarithmic volume curve (2dB per step, more accurate to hardware DAC)
@@ -439,4 +448,94 @@ func (e *POKEYEngine) Reset() {
 
 	e.enabled = false
 	e.channelsInit = false
+
+	// Reset playback state
+	e.eventIndex = 0
+	e.currentSample = 0
+}
+
+// SetEvents sets the POKEY events for playback (from SAP rendering)
+func (e *POKEYEngine) SetEvents(events []SAPPOKEYEvent, totalSamples uint64, loop bool, loopSample uint64) {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+
+	e.events = events
+	e.eventIndex = 0
+	e.totalSamples = totalSamples
+	e.currentSample = 0
+	e.loop = loop
+	e.loopSample = loopSample
+	e.playing = false
+}
+
+// SetPlaying starts or stops event-based playback
+func (e *POKEYEngine) SetPlaying(playing bool) {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+	e.playing = playing
+	if playing {
+		e.ensureChannelsInitialized()
+	}
+}
+
+// IsPlaying returns true if event-based playback is active
+func (e *POKEYEngine) IsPlaying() bool {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+	return e.playing
+}
+
+// StopPlayback stops playback and clears events
+func (e *POKEYEngine) StopPlayback() {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+	e.playing = false
+	e.events = nil
+	e.eventIndex = 0
+	e.currentSample = 0
+}
+
+// TickSample processes one sample of event-based playback
+// Implements SampleTicker interface for SoundChip integration
+func (e *POKEYEngine) TickSample() {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+
+	if !e.playing || len(e.events) == 0 {
+		return
+	}
+
+	// Process all events at current sample position
+	for e.eventIndex < len(e.events) && e.events[e.eventIndex].Sample <= e.currentSample {
+		ev := e.events[e.eventIndex]
+		// Apply POKEY register write (without locking - we already hold the lock)
+		e.writeRegisterLocked(ev.Reg, ev.Value)
+		e.eventIndex++
+	}
+
+	// Advance sample counter
+	e.currentSample++
+
+	// Check for end of playback
+	if e.totalSamples > 0 && e.currentSample >= e.totalSamples {
+		if e.loop {
+			e.currentSample = e.loopSample
+			// Find event index for loop position
+			e.eventIndex = 0
+			for e.eventIndex < len(e.events) && e.events[e.eventIndex].Sample < e.loopSample {
+				e.eventIndex++
+			}
+		} else {
+			e.playing = false
+		}
+	}
+}
+
+// writeRegisterLocked writes a register without acquiring the lock (caller must hold lock)
+func (e *POKEYEngine) writeRegisterLocked(reg uint8, value uint8) {
+	if int(reg) >= len(e.regs) {
+		return
+	}
+	e.regs[reg] = value
+	e.syncToChip() // Apply changes to SoundChip
 }

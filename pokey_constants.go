@@ -77,3 +77,13 @@ const (
 	C6502_POKEY_BASE = 0xD200
 	C6502_POKEY_END  = 0xD209
 )
+
+// SAP Player registers (memory-mapped at 0xF0D10-0xF0D1C)
+// Used to load and play .sap files with embedded 6502 code
+const (
+	SAP_PLAY_PTR    = 0xF0D10 // 32-bit pointer to SAP data (little-endian)
+	SAP_PLAY_LEN    = 0xF0D14 // 32-bit length of SAP data (little-endian)
+	SAP_PLAY_CTRL   = 0xF0D18 // Control: bit 0=start, bit 1=stop, bit 2=loop
+	SAP_PLAY_STATUS = 0xF0D1C // Status: bit 0=busy, bit 1=error
+	SAP_SUBSONG     = 0xF0D1D // Subsong selection (0-255)
+)

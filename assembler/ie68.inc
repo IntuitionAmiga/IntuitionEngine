@@ -140,6 +140,35 @@ POKEY_DIST_PURE_TONE    equ $A0         ; Pure square wave
 POKEY_DIST_POLY4        equ $C0         ; 4-bit poly only
 POKEY_DIST_POLY17_PULSE equ $E0         ; 17-bit + pulse
 
+; ----------------------------------------------------------------------------
+; SAP Player Registers
+;
+; The SAP player handles Atari 8-bit music files (.sap) which contain
+; embedded 6502 code that drives the POKEY sound chip. Supports TYPE B files
+; where INIT is called once and PLAYER is called each frame.
+;
+; Usage:
+;   1. Embed SAP data in your program using incbin
+;   2. Set SAP_PLAY_PTR to the address of the SAP data
+;   3. Set SAP_PLAY_LEN to the size of the SAP data in bytes
+;   4. Optionally set SAP_SUBSONG to select a subsong (default 0)
+;   5. Write to SAP_PLAY_CTRL to start/stop playback
+;
+; SAP_PLAY_CTRL bits:
+;   bit 0 ($01) - Start playback (write 1 to begin)
+;   bit 1 ($02) - Stop playback (write 1 to stop)
+;   bit 2 ($04) - Enable looping (set before starting)
+;
+; SAP_PLAY_STATUS bits:
+;   bit 0 ($01) - Busy (1 = playing, 0 = stopped)
+;   bit 1 ($02) - Error (1 = load/parse error)
+; ----------------------------------------------------------------------------
+SAP_PLAY_PTR    equ $F0D10              ; Play pointer (32-bit)
+SAP_PLAY_LEN    equ $F0D14              ; Play length (32-bit)
+SAP_PLAY_CTRL   equ $F0D18              ; Play control
+SAP_PLAY_STATUS equ $F0D1C              ; Play status
+SAP_SUBSONG     equ $F0D1D              ; Subsong selection (0-255)
+
 ; ============================================================================
 ; VIDEO CONSTANTS
 ; ============================================================================
@@ -290,6 +319,32 @@ enable_pokey_plus macro
 ; Set POKEY master control
 set_pokey_audctl macro val
     move.b  #\val,POKEY_AUDCTL
+    endm
+
+; Set SAP play pointer and length
+set_sap_play macro ptr,len
+    move.l  #\ptr,SAP_PLAY_PTR
+    move.l  #\len,SAP_PLAY_LEN
+    endm
+
+; Set SAP subsong
+set_sap_subsong macro num
+    move.b  #\num,SAP_SUBSONG
+    endm
+
+; Start SAP playback
+start_sap_play macro
+    move.l  #1,SAP_PLAY_CTRL
+    endm
+
+; Start SAP playback with looping
+start_sap_loop macro
+    move.l  #5,SAP_PLAY_CTRL
+    endm
+
+; Stop SAP playback
+stop_sap_play macro
+    move.l  #2,SAP_PLAY_CTRL
     endm
 
 ; ============================================================================

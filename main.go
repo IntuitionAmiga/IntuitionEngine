@@ -135,6 +135,8 @@ func main() {
 		modeZ80   bool
 		modePSG   bool
 		psgPlus   bool
+		modePOKEY bool
+		pokeyPlus bool
 		loadAddr  optionalStringFlag
 		entryAddr optionalStringFlag
 	)
@@ -147,13 +149,15 @@ func main() {
 	flagSet.BoolVar(&modeZ80, "z80", false, "Run Z80 CPU mode")
 	flagSet.BoolVar(&modePSG, "psg", false, "Play PSG file")
 	flagSet.BoolVar(&psgPlus, "psg+", false, "Enable PSG+ enhancements")
+	flagSet.BoolVar(&modePOKEY, "pokey", false, "Play SAP file (POKEY emulation)")
+	flagSet.BoolVar(&pokeyPlus, "pokey+", false, "Enable POKEY+ enhancements")
 	loadAddr.value = "0x0600"
 	flagSet.Var(&loadAddr, "load-addr", "6502/Z80 load address (hex or decimal, defaults: 6502=0x0600, Z80=0x0000)")
 	flagSet.Var(&entryAddr, "entry", "6502/Z80 entry address (hex or decimal, defaults to load address)")
 
 	flagSet.Usage = func() {
 		flagSet.SetOutput(os.Stdout)
-		fmt.Println("Usage: ./intuition_engine -ie32|-m68k|-m6502|-z80|-psg|-psg+ [--load-addr addr] [--entry addr] filename")
+		fmt.Println("Usage: ./intuition_engine -ie32|-m68k|-m6502|-z80|-psg|-psg+|-pokey|-pokey+ [--load-addr addr] [--entry addr] filename")
 		flagSet.PrintDefaults()
 	}
 
@@ -169,6 +173,9 @@ func main() {
 
 	if psgPlus && !modePSG {
 		modePSG = true
+	}
+	if pokeyPlus && !modePOKEY {
+		modePOKEY = true
 	}
 
 	modeCount := 0
@@ -187,12 +194,15 @@ func main() {
 	if modePSG {
 		modeCount++
 	}
+	if modePOKEY {
+		modeCount++
+	}
 	if modeCount == 0 && filename == "" {
 		modeIE32 = true
 		modeCount = 1
 	}
 	if modeCount != 1 {
-		fmt.Println("Error: select exactly one mode flag: -ie32, -m68k, -m6502, -z80, -psg, or -psg+")
+		fmt.Println("Error: select exactly one mode flag: -ie32, -m68k, -m6502, -z80, -psg, -psg+, -pokey, or -pokey+")
 		os.Exit(1)
 	}
 	if filename == "" && modePSG {
@@ -236,6 +246,42 @@ func main() {
 		psgPlayer.Play()
 		// Wait for playback to complete, then exit
 		for psgEngine.IsPlaying() {
+			time.Sleep(100 * time.Millisecond)
+		}
+		soundChip.Stop()
+		os.Exit(0)
+	}
+
+	// POKEY/SAP playback mode
+	if modePOKEY {
+		if filename == "" {
+			fmt.Println("Error: POKEY mode requires a SAP filename")
+			os.Exit(1)
+		}
+		pokeyEngine := NewPOKEYEngine(soundChip, SAMPLE_RATE)
+		soundChip.SetSampleTicker(pokeyEngine) // Register for sample-accurate event processing
+		pokeyPlayer := NewPOKEYPlayer(pokeyEngine)
+		if pokeyPlus {
+			pokeyEngine.SetPOKEYPlusEnabled(true)
+		}
+		if err := pokeyPlayer.Load(filename); err != nil {
+			fmt.Printf("Error loading SAP file: %v\n", err)
+			os.Exit(1)
+		}
+		meta := pokeyPlayer.Metadata()
+		if meta.Title != "" || meta.Author != "" {
+			fmt.Printf("Playing: %s - %s", meta.Title, meta.Author)
+		} else {
+			fmt.Printf("Playing: %s", filename)
+		}
+		if dur := pokeyPlayer.DurationText(); dur != "" {
+			fmt.Printf(" (%s)", dur)
+		}
+		fmt.Println()
+		soundChip.Start()
+		pokeyPlayer.Play()
+		// Wait for playback to complete
+		for pokeyPlayer.IsPlaying() {
 			time.Sleep(100 * time.Millisecond)
 		}
 		soundChip.Stop()
@@ -286,15 +332,6 @@ func main() {
 	sysBus.MapIO(PSG_PLAY_PTR, PSG_PLAY_STATUS+3,
 		psgPlayer.HandlePlayRead,
 		psgPlayer.HandlePlayWrite)
-
-	// Initialize and map POKEY registers
-	pokeyEngine := NewPOKEYEngine(soundChip, SAMPLE_RATE)
-	sysBus.MapIO(POKEY_BASE, POKEY_END,
-		pokeyEngine.HandleRead,
-		pokeyEngine.HandleWrite)
-
-	// Silence unused variable warning until POKEY is fully integrated
-	_ = pokeyEngine
 
 	// Initialize the selected CPU and optionally load program
 	var gui GUIFrontend

@@ -160,6 +160,41 @@ POKEY_DIST_PURE_TONE    = $A0   ; Pure square wave
 POKEY_DIST_POLY4        = $C0   ; 4-bit poly only
 POKEY_DIST_POLY17_PULSE = $E0   ; 17-bit + pulse
 
+; ----------------------------------------------------------------------------
+; SAP Player Registers
+;
+; The SAP player handles Atari 8-bit music files (.sap) which contain
+; embedded 6502 code that drives the POKEY sound chip. Supports TYPE B files
+; where INIT is called once and PLAYER is called each frame.
+;
+; Usage:
+;   1. Embed SAP data in your program using .incbin
+;   2. Set SAP_PLAY_PTR bytes to the address of the SAP data (little-endian)
+;   3. Set SAP_PLAY_LEN bytes to the size of the SAP data (little-endian)
+;   4. Optionally set SAP_SUBSONG to select a subsong (default 0)
+;   5. Write to SAP_PLAY_CTRL to start/stop playback
+;
+; SAP_PLAY_CTRL bits:
+;   bit 0 ($01) - Start playback (write 1 to begin)
+;   bit 1 ($02) - Stop playback (write 1 to stop)
+;   bit 2 ($04) - Enable looping (set before starting)
+;
+; SAP_PLAY_STATUS bits:
+;   bit 0 ($01) - Busy (1 = playing, 0 = stopped)
+;   bit 1 ($02) - Error (1 = load/parse error)
+; ----------------------------------------------------------------------------
+SAP_PLAY_PTR_0  = $FD10         ; Play pointer byte 0 (IE32 $F0D10)
+SAP_PLAY_PTR_1  = $FD11         ; Play pointer byte 1
+SAP_PLAY_PTR_2  = $FD12         ; Play pointer byte 2
+SAP_PLAY_PTR_3  = $FD13         ; Play pointer byte 3
+SAP_PLAY_LEN_0  = $FD14         ; Play length byte 0 (IE32 $F0D14)
+SAP_PLAY_LEN_1  = $FD15         ; Play length byte 1
+SAP_PLAY_LEN_2  = $FD16         ; Play length byte 2
+SAP_PLAY_LEN_3  = $FD17         ; Play length byte 3
+SAP_PLAY_CTRL   = $FD18         ; Play control (IE32 $F0D18)
+SAP_PLAY_STATUS = $FD1C         ; Play status (IE32 $F0D1C)
+SAP_SUBSONG     = $FD1D         ; Subsong selection (0-255)
+
 ; ============================================================================
 ; VIDEO CONSTANTS
 ; ============================================================================

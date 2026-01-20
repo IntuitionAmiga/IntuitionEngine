@@ -139,6 +139,35 @@
 .equ POKEY_DIST_POLY4         0xC0      ; 4-bit poly only
 .equ POKEY_DIST_POLY17_PULSE  0xE0      ; 17-bit + pulse
 
+; ----------------------------------------------------------------------------
+; SAP Player Registers
+;
+; The SAP player handles Atari 8-bit music files (.sap) which contain
+; embedded 6502 code that drives the POKEY sound chip. Supports TYPE B files
+; where INIT is called once and PLAYER is called each frame.
+;
+; Usage:
+;   1. Embed SAP data in your program using .incbin
+;   2. Set SAP_PLAY_PTR to the address of the SAP data
+;   3. Set SAP_PLAY_LEN to the size of the SAP data in bytes
+;   4. Optionally set SAP_SUBSONG to select a subsong (default 0)
+;   5. Write to SAP_PLAY_CTRL to start/stop playback
+;
+; SAP_PLAY_CTRL bits:
+;   bit 0 (0x01) - Start playback (write 1 to begin)
+;   bit 1 (0x02) - Stop playback (write 1 to stop)
+;   bit 2 (0x04) - Enable looping (set before starting)
+;
+; SAP_PLAY_STATUS bits:
+;   bit 0 (0x01) - Busy (1 = playing, 0 = stopped)
+;   bit 1 (0x02) - Error (1 = load/parse error)
+; ----------------------------------------------------------------------------
+.equ SAP_PLAY_PTR      0xF0D10          ; Play pointer (32-bit)
+.equ SAP_PLAY_LEN      0xF0D14          ; Play length (32-bit)
+.equ SAP_PLAY_CTRL     0xF0D18          ; Play control
+.equ SAP_PLAY_STATUS   0xF0D1C          ; Play status
+.equ SAP_SUBSONG       0xF0D1D          ; Subsong selection (0-255)
+
 ; ============================================================================
 ; VIDEO CONSTANTS
 ; ============================================================================
