@@ -287,6 +287,15 @@ func main() {
 		psgPlayer.HandlePlayRead,
 		psgPlayer.HandlePlayWrite)
 
+	// Initialize and map POKEY registers
+	pokeyEngine := NewPOKEYEngine(soundChip, SAMPLE_RATE)
+	sysBus.MapIO(POKEY_BASE, POKEY_END,
+		pokeyEngine.HandleRead,
+		pokeyEngine.HandleWrite)
+
+	// Silence unused variable warning until POKEY is fully integrated
+	_ = pokeyEngine
+
 	// Initialize the selected CPU and optionally load program
 	var gui GUIFrontend
 	var startExecution bool
