@@ -28,8 +28,12 @@
 6. Motorola 68020 CPU with FPU
 7. Assembly Language Reference
 8. Sound System
+   - 8.1-8.3 PSG Synthesis Channels
+   - 8.4 POKEY Sound Chip
 9. Video System
+   - 9.7 DMA Blitter (with alpha blending)
 10. Developer's Guide
+    - 10.3.1 Assembler Include Files
 11. Implementation Details
 12. Platform Support & Backend Systems
 13. Hardware Interface Architecture
@@ -47,6 +51,10 @@ This virtual machine implements a complete computer system with a custom CPU arc
 - **MOS 6502 (NMOS)**: 8-bit CPU emulator for raw binaries (no 65C02 opcodes)
 - **Zilog Z80**: 8-bit CPU core for raw binaries
 - **68881/68882 FPU**: Complete floating-point coprocessor with transcendental functions
+
+### Audio Chip Emulation:
+- **AY-3-8910/YM2149**: PSG sound chip with PSG+ enhanced audio mode
+- **POKEY**: Atari 8-bit sound chip with POKEY+ enhanced audio mode
 
 ### Core Features:
 - Memory-mapped I/O for peripherals
@@ -187,7 +195,9 @@ The system's memory is organised as follows:
 0x100000 - 0x4FFFFF: Video RAM (VRAM_START to VRAM_START + VRAM_SIZE)
 0x0F0000 - 0x0F0058: Video registers (incl. copper + blitter + raster control)
 0x0F0800 - 0x0F0808: Timer registers
-0x0F0900 - 0x0F0A54: Sound registers
+0x0F0900 - 0x0F0A54: Sound registers (PSG synthesis)
+0x0F0C00 - 0x0F0C1C: PSG player registers (AY/YM/VGM/SNDH playback)
+0x0F0D00 - 0x0F0D1D: POKEY registers (Atari 8-bit audio + SAP playback)
 ```
 Key memory-mapped hardware registers are logically grouped to facilitate system programming and hardware access. Each subsystem has a dedicated register block for configuration and control.
 
@@ -375,6 +385,49 @@ NOISE_MODE_METALLIC = 2 // "Metallic" noise variant
 0xF0A40: OVERDRIVE_CTRL - Drive amount (0-255)
 0xF0A50: REVERB_MIX     - Dry/wet mix (0-255)
 0xF0A54: REVERB_DECAY   - Decay time (0-255)
+```
+
+#### POKEY Sound Chip Registers (0xF0D00 - 0xF0D09)
+```
+0xF0D00: POKEY_AUDF1    - Channel 1 frequency divider
+0xF0D01: POKEY_AUDC1    - Channel 1 control (distortion + volume)
+0xF0D02: POKEY_AUDF2    - Channel 2 frequency divider
+0xF0D03: POKEY_AUDC2    - Channel 2 control
+0xF0D04: POKEY_AUDF3    - Channel 3 frequency divider
+0xF0D05: POKEY_AUDC3    - Channel 3 control
+0xF0D06: POKEY_AUDF4    - Channel 4 frequency divider
+0xF0D07: POKEY_AUDC4    - Channel 4 control
+0xF0D08: POKEY_AUDCTL   - Master audio control
+0xF0D09: POKEY_PLUS_CTRL - POKEY+ mode (0=standard, 1=enhanced)
+
+AUDCTL Bit Masks:
+bit 0: Use 15kHz base clock (else 64kHz)
+bit 1: High-pass filter ch1 by ch3
+bit 2: High-pass filter ch2 by ch4
+bit 3: Ch4 clocked by ch3 (16-bit mode)
+bit 4: Ch2 clocked by ch1 (16-bit mode)
+bit 5: Ch3 uses 1.79MHz clock
+bit 6: Ch1 uses 1.79MHz clock
+bit 7: Use 9-bit poly instead of 17-bit
+
+AUDC Distortion Modes (bits 5-7):
+0x00: 17-bit + 5-bit poly
+0x20: 5-bit poly only
+0x40: 17-bit + 4-bit poly (most metallic)
+0x60: 5-bit + 4-bit poly
+0x80: 17-bit poly only (white noise)
+0xA0: Pure square wave
+0xC0: 4-bit poly only (buzzy)
+0xE0: 17-bit + pulse
+```
+
+#### SAP Player Registers (0xF0D10 - 0xF0D1D)
+```
+0xF0D10: SAP_PLAY_PTR    - Pointer to SAP data (32-bit)
+0xF0D14: SAP_PLAY_LEN    - Length of SAP data (32-bit)
+0xF0D18: SAP_PLAY_CTRL   - Control (bit0=start, bit1=stop, bit2=loop)
+0xF0D1C: SAP_PLAY_STATUS - Status (bit0=busy, bit1=error)
+0xF0D1D: SAP_SUBSONG     - Subsong selection (0-255)
 ```
 
 # 4. CPU Architecture
@@ -1035,6 +1088,40 @@ LOAD A, #192           ; Long decay
 STORE A, @REVERB_DECAY
 ```
 
+## 8.4 POKEY Sound Chip
+
+The POKEY chip emulates the Atari 8-bit computer's sound hardware, providing four channels of distinctive 8-bit audio with polynomial-based distortion.
+
+### Features:
+- Four independent frequency channels
+- Multiple distortion modes using polynomial counters (4-bit, 5-bit, 9-bit, 17-bit)
+- 16-bit channel linking for extended frequency range
+- High-pass filter clocking between channels
+- Volume-only mode for sample playback
+- POKEY+ enhanced audio processing mode
+
+### Distortion Modes:
+The POKEY's signature sound comes from its polynomial-based distortion:
+- **Pure Tone (0xA0)**: Clean square wave
+- **Poly5 (0x20)**: 5-bit polynomial for buzzy tones
+- **Poly4 (0xC0)**: 4-bit polynomial for harsh buzzy sounds
+- **Poly17/Poly5 (0x00)**: Combined for complex timbres
+- **Poly17 (0x80)**: White noise
+
+### 16-bit Mode:
+For higher frequency resolution, channels can be linked:
+- Ch1+Ch2 linked via AUDCTL bit 4
+- Ch3+Ch4 linked via AUDCTL bit 3
+
+Configuration example:
+```assembly
+; Configure POKEY for pure tone on channel 1
+LOAD A, #0x50          ; Frequency divider
+STORE A, @0xF0D00      ; AUDF1
+LOAD A, #0xAF          ; Pure tone + volume 15
+STORE A, @0xF0D01      ; AUDC1
+```
+
 # 9. Video System
 
 The video system provides flexible graphics output through a memory-mapped framebuffer design.
@@ -1197,6 +1284,7 @@ Ops (`BLT_OP`):
 - `1`: FILL
 - `2`: LINE (coordinates packed into `BLT_SRC`/`BLT_DST`)
 - `3`: MASKED COPY (1-bit mask, LSB-first per byte)
+- `4`: ALPHA (alpha-aware copy with source alpha blending)
 
 Line coordinates:
 - `BLT_SRC`: x0 (low 16 bits), y0 (high 16 bits)
@@ -1351,11 +1439,20 @@ For PSG music playback:
 ./bin/IntuitionEngine -psg track.ay
 ./bin/IntuitionEngine -psg track.vgm
 ./bin/IntuitionEngine -psg track.vgz
+./bin/IntuitionEngine -psg track.sndh
 ./bin/IntuitionEngine -psg+ track.ym
 ```
-Note: `.ym` files are Atari ST YM, `.vgm/.vgz` are VGM streams (including MSX PSG logs), and `.ay` ZXAYEMUL files with embedded Z80 players are supported (Spectrum/CPC/MSX), along with raw AY register streams.
+Note: `.ym` files are Atari ST YM, `.vgm/.vgz` are VGM streams (including MSX PSG logs), `.ay` ZXAYEMUL files with embedded Z80 players are supported (Spectrum/CPC/MSX), and `.sndh` files are Atari ST SNDH format with embedded M68K code (executed by the internal 68020 emulator).
 PSG+ enables enhanced audio processing for PSG sources (oversampling, gentle low-pass smoothing,
 subtle saturation, and a tiny room/width effect) for a richer sound while preserving pitch and timing.
+
+For POKEY/SAP music playback (Atari 8-bit):
+```bash
+./bin/IntuitionEngine -pokey track.sap
+./bin/IntuitionEngine -pokey+ track.sap
+```
+Note: `.sap` files are Atari 8-bit SAP format containing embedded 6502 code that drives the POKEY sound chip. The internal 6502 emulator executes the player code at the correct frame rate.
+POKEY+ enables enhanced audio processing similar to PSG+ for a richer, smoother sound.
 
 When running in CPU modes, PSG registers are available at `0xF0C00-0xF0C0D`
 for direct AY/YM register writes. PSG+ can be toggled via `PSG_PLUS_CTRL` at `0xF0C0E`
@@ -1369,6 +1466,43 @@ To start AY/YM/VGM playback from CPU code, use the PSG playback control register
 
 When bit2 (loop) is set in `PSG_PLAY_CTRL`, the track will restart from the
 beginning when it reaches the end, enabling continuous background music playback.
+
+## 10.3.1 Assembler Include Files
+
+The `assembler/` directory provides hardware definition include files for each CPU architecture:
+
+| File | CPU | Assembler | Description |
+|------|-----|-----------|-------------|
+| `ie32.inc` | IE32 | ie32asm | All hardware constants for IE32 assembly |
+| `ie68.inc` | M68K | vasmm68k_mot | All hardware constants for 68020 assembly |
+| `ie65.inc` | 6502 | ca65 | All hardware constants for 6502 assembly |
+| `ie80.inc` | Z80 | z80asm | All hardware constants for Z80 assembly |
+
+These files define:
+- Memory map addresses (VRAM, bank windows, I/O regions)
+- Video registers (VIDEO_CTRL, VIDEO_MODE, VIDEO_STATUS, blitter, copper, raster)
+- Audio registers (PSG, POKEY, SAP player)
+- Timer registers
+- Blitter operations (BLT_OP_COPY, BLT_OP_FILL, BLT_OP_LINE, BLT_OP_MASKED, BLT_OP_ALPHA)
+- Copper opcodes (COP_WAIT, COP_MOVE, COP_END)
+
+Usage example (IE32):
+```assembly
+.include "ie32.inc"
+
+    LDA #1
+    STA @VIDEO_CTRL         ; Enable video using defined constant
+    LDA #BLT_OP_FILL
+    STA @BLT_OP             ; Set blitter to fill mode
+```
+
+Usage example (M68K with vasm):
+```assembly
+    include "ie68.inc"
+
+    move.l  #1,VIDEO_CTRL   ; Enable video
+    move.l  #BLT_OP_ALPHA,BLT_OP
+```
 
 The assembler provides error messages for common issues like:
 - Undefined labels
