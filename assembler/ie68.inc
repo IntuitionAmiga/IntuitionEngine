@@ -74,6 +74,31 @@ VIDEO_RASTER_CTRL    equ $F0054         ; Raster control
 ; ============================================================================
 
 PSG_PLUS_CTRL   equ $F0C0E              ; PSG+ mode control
+
+; ----------------------------------------------------------------------------
+; PSG Player Registers
+;
+; The PSG player supports multiple music formats with automatic detection:
+;   .ay   - ZX Spectrum format with embedded Z80 code (executed by emulator)
+;   .sndh - Atari ST format with embedded M68K code (executed by emulator)
+;   .ym   - YM2149 register dump frames (50Hz playback)
+;   .vgm  - Video Game Music format with timed PSG events
+;
+; Usage:
+;   1. Embed music data in your program using incbin
+;   2. Set PSG_PLAY_PTR to the address of the music data
+;   3. Set PSG_PLAY_LEN to the size of the music data in bytes
+;   4. Write to PSG_PLAY_CTRL to start/stop playback
+;
+; PSG_PLAY_CTRL bits:
+;   bit 0 ($01) - Start playback (write 1 to begin)
+;   bit 1 ($02) - Stop playback (write 1 to stop)
+;   bit 2 ($04) - Enable looping (set before starting)
+;
+; PSG_PLAY_STATUS bits:
+;   bit 0 ($01) - Busy (1 = playing, 0 = stopped)
+;   bit 1 ($02) - Error (1 = load/parse error)
+; ----------------------------------------------------------------------------
 PSG_PLAY_PTR    equ $F0C10              ; Play pointer (32-bit)
 PSG_PLAY_LEN    equ $F0C14              ; Play length (32-bit)
 PSG_PLAY_CTRL   equ $F0C18              ; Play control

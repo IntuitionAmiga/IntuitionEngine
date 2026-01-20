@@ -89,6 +89,31 @@
 ; ============================================================================
 
 .set PSG_PLUS_CTRL,0xFC0E
+
+; ----------------------------------------------------------------------------
+; PSG Player Registers
+;
+; The PSG player supports multiple music formats with automatic detection:
+;   .ay   - ZX Spectrum format with embedded Z80 code (executed by emulator)
+;   .sndh - Atari ST format with embedded M68K code (executed by emulator)
+;   .ym   - YM2149 register dump frames (50Hz playback)
+;   .vgm  - Video Game Music format with timed PSG events
+;
+; Usage:
+;   1. Embed music data in your program using incbin
+;   2. Set PSG_PLAY_PTR bytes to the address of the music data (little-endian)
+;   3. Set PSG_PLAY_LEN bytes to the size of the music data (little-endian)
+;   4. Write to PSG_PLAY_CTRL to start/stop playback
+;
+; PSG_PLAY_CTRL bits:
+;   bit 0 (0x01) - Start playback (write 1 to begin)
+;   bit 1 (0x02) - Stop playback (write 1 to stop)
+;   bit 2 (0x04) - Enable looping (set before starting)
+;
+; PSG_PLAY_STATUS bits:
+;   bit 0 (0x01) - Busy (1 = playing, 0 = stopped)
+;   bit 1 (0x02) - Error (1 = load/parse error)
+; ----------------------------------------------------------------------------
 .set PSG_PLAY_PTR_0,0xFC10
 .set PSG_PLAY_PTR_1,0xFC11
 .set PSG_PLAY_PTR_2,0xFC12
