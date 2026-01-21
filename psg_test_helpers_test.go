@@ -14,18 +14,20 @@ func newTestSoundChip() *SoundChip {
 	waveTypes := []int{WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE, WAVE_NOISE}
 	for i := 0; i < NUM_CHANNELS; i++ {
 		chip.channels[i] = &Channel{
-			waveType:          waveTypes[i],
-			attackTime:        DEFAULT_ATTACK_TIME,
-			decayTime:         DEFAULT_DECAY_TIME,
-			sustainLevel:      DEFAULT_SUSTAIN,
-			releaseTime:       DEFAULT_RELEASE_TIME,
-			envelopePhase:     ENV_ATTACK,
-			noiseSR:           NOISE_LFSR_SEED,
-			dutyCycle:         DEFAULT_DUTY_CYCLE,
-			phase:             MIN_PHASE,
-			volume:            MIN_VOLUME,
-			psgPlusGain:       1.0,
-			psgPlusOversample: 1,
+			waveType:            waveTypes[i],
+			attackTime:          DEFAULT_ATTACK_TIME,
+			decayTime:           DEFAULT_DECAY_TIME,
+			sustainLevel:        DEFAULT_SUSTAIN,
+			releaseTime:         DEFAULT_RELEASE_TIME,
+			envelopePhase:       ENV_ATTACK,
+			noiseSR:             NOISE_LFSR_SEED,
+			dutyCycle:           DEFAULT_DUTY_CYCLE,
+			phase:               MIN_PHASE,
+			volume:              MIN_VOLUME,
+			psgPlusGain:         1.0,
+			psgPlusOversample:   1,
+			pokeyPlusGain:       1.0,
+			pokeyPlusOversample: 1,
 		}
 	}
 

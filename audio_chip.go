@@ -528,6 +528,13 @@ const (
 	PSG_PLUS_DRIVE         = 0.18
 	PSG_PLUS_ROOM_MIX      = 0.08
 	PSG_PLUS_ROOM_DELAY    = 128
+
+	// POKEY+ enhanced mode parameters
+	POKEY_PLUS_OVERSAMPLE    = 4
+	POKEY_PLUS_LOWPASS_ALPHA = 0.15 // Slightly more filtering for POKEY's harsher tones
+	POKEY_PLUS_DRIVE         = 0.12 // Less drive than PSG (POKEY is already gritty)
+	POKEY_PLUS_ROOM_MIX      = 0.06 // Subtle room ambience
+	POKEY_PLUS_ROOM_DELAY    = 96   // Shorter delay for tighter sound
 )
 
 type Channel struct {
@@ -556,21 +563,25 @@ type Channel struct {
 	mutex sync.RWMutex
 	// Hot fields accessed every sample generation (cache line 1)
 	// These fields are read/written on each output sample
-	frequency           float32 // Base frequency of oscillator
-	phase               float32 // Current phase position in waveform
-	volume              float32 // Channel volume (0.0-1.0)
-	envelopeLevel       float32 // Current envelope amplitude
-	prevRawSample       float32 // Previous output (needed for ring modulation)
-	dutyCycle           float32 // Square wave duty cycle (0.0-1.0)
-	noisePhase          float32 // Phase accumulator for noise timing
-	noiseValue          float32 // Current noise generator output
-	noiseFilter         float32 // Noise filter coefficient
-	noiseFilterState    float32 // Noise filter state variable
-	noiseSR             uint32  // Noise shift register state
-	psgPlusLowpassState float32 // PSG+ low-pass filter state
-	psgPlusDrive        float32 // PSG+ saturation drive
-	psgPlusRoomMix      float32 // PSG+ room mix
-	psgPlusGain         float32 // PSG+ per-channel gain
+	frequency             float32 // Base frequency of oscillator
+	phase                 float32 // Current phase position in waveform
+	volume                float32 // Channel volume (0.0-1.0)
+	envelopeLevel         float32 // Current envelope amplitude
+	prevRawSample         float32 // Previous output (needed for ring modulation)
+	dutyCycle             float32 // Square wave duty cycle (0.0-1.0)
+	noisePhase            float32 // Phase accumulator for noise timing
+	noiseValue            float32 // Current noise generator output
+	noiseFilter           float32 // Noise filter coefficient
+	noiseFilterState      float32 // Noise filter state variable
+	noiseSR               uint32  // Noise shift register state
+	psgPlusLowpassState   float32 // PSG+ low-pass filter state
+	psgPlusDrive          float32 // PSG+ saturation drive
+	psgPlusRoomMix        float32 // PSG+ room mix
+	psgPlusGain           float32 // PSG+ per-channel gain
+	pokeyPlusLowpassState float32 // POKEY+ low-pass filter state
+	pokeyPlusDrive        float32 // POKEY+ saturation drive
+	pokeyPlusRoomMix      float32 // POKEY+ room mix
+	pokeyPlusGain         float32 // POKEY+ per-channel gain
 
 	// Envelope and modulation parameters (cache line 2)
 	// Accessed during envelope and modulation updates
@@ -581,36 +592,41 @@ type Channel struct {
 
 	// Integer state fields (cache line 3)
 	// Configuration and timing parameters
-	waveType          int  // Oscillator type (WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE, WAVE_NOISE)
-	noiseMode         int  // Noise generation mode
-	attackTime        int  // Attack time in samples
-	decayTime         int  // Decay time in samples
-	releaseTime       int  // Release time in samples
-	envelopeSample    int  // Current position in envelope
-	envelopePhase     int  // Current envelope stage (attack/decay/etc)
-	envelopeShape     int  // Envelope shape selection
-	sweepPeriod       int  // Sweep update period
-	sweepCounter      int  // Current sweep timing counter
-	sweepShift        uint // Sweep shift amount
-	psgPlusOversample int  // PSG+ oversample factor
-	psgPlusRoomDelay  int  // PSG+ room delay length (samples)
-	psgPlusRoomPos    int  // PSG+ room delay index
+	waveType            int  // Oscillator type (WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE, WAVE_NOISE)
+	noiseMode           int  // Noise generation mode
+	attackTime          int  // Attack time in samples
+	decayTime           int  // Decay time in samples
+	releaseTime         int  // Release time in samples
+	envelopeSample      int  // Current position in envelope
+	envelopePhase       int  // Current envelope stage (attack/decay/etc)
+	envelopeShape       int  // Envelope shape selection
+	sweepPeriod         int  // Sweep update period
+	sweepCounter        int  // Current sweep timing counter
+	sweepShift          uint // Sweep shift amount
+	psgPlusOversample   int  // PSG+ oversample factor
+	psgPlusRoomDelay    int  // PSG+ room delay length (samples)
+	psgPlusRoomPos      int  // PSG+ room delay index
+	pokeyPlusOversample int  // POKEY+ oversample factor
+	pokeyPlusRoomDelay  int  // POKEY+ room delay length (samples)
+	pokeyPlusRoomPos    int  // POKEY+ room delay index
 
 	// Pointer fields (cache line 4)
-	ringModSource  *Channel  // Source channel for ring modulation
-	syncSource     *Channel  // Source channel for hard sync
-	psgPlusRoomBuf []float32 // PSG+ room delay buffer
+	ringModSource    *Channel  // Source channel for ring modulation
+	syncSource       *Channel  // Source channel for hard sync
+	psgPlusRoomBuf   []float32 // PSG+ room delay buffer
+	pokeyPlusRoomBuf []float32 // POKEY+ room delay buffer
 
 	// Boolean state flags (packed together to minimise padding)
-	enabled        bool                   // Channel enabled flag
-	gate           bool                   // Gate/trigger state
-	sweepEnabled   bool                   // Frequency sweep enabled
-	sweepDirection bool                   // Sweep direction (up/down)
-	pwmEnabled     bool                   // PWM enabled flag
-	phaseWrapped   bool                   // Phase wrap indicator
-	psgPlusEnabled bool                   // PSG+ processing flag
-	_pad           [CHANNEL_PAD_SIZE]byte // Padding for alignment
-	sampleCount    int                    // Track number of samples generated
+	enabled          bool                   // Channel enabled flag
+	gate             bool                   // Gate/trigger state
+	sweepEnabled     bool                   // Frequency sweep enabled
+	sweepDirection   bool                   // Sweep direction (up/down)
+	pwmEnabled       bool                   // PWM enabled flag
+	phaseWrapped     bool                   // Phase wrap indicator
+	psgPlusEnabled   bool                   // PSG+ processing flag
+	pokeyPlusEnabled bool                   // POKEY+ processing flag
+	_pad             [CHANNEL_PAD_SIZE]byte // Padding for alignment
+	sampleCount      int                    // Track number of samples generated
 
 	releaseStartLevel float32 // Level when release phase began
 }
@@ -682,18 +698,20 @@ func NewSoundChip(backend int) (*SoundChip, error) {
 	waveTypes := []int{WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE, WAVE_NOISE}
 	for i := 0; i < NUM_CHANNELS; i++ {
 		chip.channels[i] = &Channel{
-			waveType:          waveTypes[i],
-			attackTime:        DEFAULT_ATTACK_TIME,
-			decayTime:         DEFAULT_DECAY_TIME,
-			sustainLevel:      DEFAULT_SUSTAIN,
-			releaseTime:       DEFAULT_RELEASE_TIME,
-			envelopePhase:     ENV_ATTACK,
-			noiseSR:           NOISE_LFSR_SEED, // Initial seed for noise
-			dutyCycle:         DEFAULT_DUTY_CYCLE,
-			phase:             MIN_PHASE,
-			volume:            MIN_VOLUME,
-			psgPlusGain:       1.0,
-			psgPlusOversample: 1,
+			waveType:            waveTypes[i],
+			attackTime:          DEFAULT_ATTACK_TIME,
+			decayTime:           DEFAULT_DECAY_TIME,
+			sustainLevel:        DEFAULT_SUSTAIN,
+			releaseTime:         DEFAULT_RELEASE_TIME,
+			envelopePhase:       ENV_ATTACK,
+			noiseSR:             NOISE_LFSR_SEED, // Initial seed for noise
+			dutyCycle:           DEFAULT_DUTY_CYCLE,
+			phase:               MIN_PHASE,
+			volume:              MIN_VOLUME,
+			psgPlusGain:         1.0,
+			psgPlusOversample:   1,
+			pokeyPlusGain:       1.0,
+			pokeyPlusOversample: 1,
 		}
 	}
 
@@ -1312,6 +1330,33 @@ func (ch *Channel) generateSample() float32 {
 		return clampF32(scaledSample, MIN_SAMPLE, MAX_SAMPLE)
 	}
 
+	if ch.pokeyPlusEnabled && ch.pokeyPlusOversample > 1 {
+		oversample := ch.pokeyPlusOversample
+		sampleRate := float32(SAMPLE_RATE) * float32(oversample)
+		var sum float32
+		for i := 0; i < oversample; i++ {
+			sum += ch.generateWaveSample(sampleRate)
+		}
+		rawSample := sum / float32(oversample)
+		alpha := float32(POKEY_PLUS_LOWPASS_ALPHA)
+		if alpha > 0 {
+			ch.pokeyPlusLowpassState = ch.pokeyPlusLowpassState*(1-alpha) + rawSample*alpha
+			rawSample = ch.pokeyPlusLowpassState
+		}
+		if ch.pokeyPlusRoomMix > 0 && len(ch.pokeyPlusRoomBuf) > 0 {
+			delayed := ch.pokeyPlusRoomBuf[ch.pokeyPlusRoomPos]
+			ch.pokeyPlusRoomBuf[ch.pokeyPlusRoomPos] = rawSample
+			ch.pokeyPlusRoomPos = (ch.pokeyPlusRoomPos + 1) % len(ch.pokeyPlusRoomBuf)
+			rawSample = rawSample*(1-ch.pokeyPlusRoomMix) + delayed*ch.pokeyPlusRoomMix
+		}
+		scaledSample := rawSample * ch.volume * envLevel * ch.pokeyPlusGain
+		if ch.pokeyPlusDrive > 0 {
+			gain := 1.0 + ch.pokeyPlusDrive
+			scaledSample = float32(math.Tanh(float64(scaledSample * gain)))
+		}
+		return clampF32(scaledSample, MIN_SAMPLE, MAX_SAMPLE)
+	}
+
 	rawSample := ch.generateWaveSample(float32(SAMPLE_RATE))
 	scaledSample := rawSample * ch.volume * envLevel
 
@@ -1594,6 +1639,44 @@ func (chip *SoundChip) SetPSGPlusEnabled(enabled bool) {
 			ch.psgPlusRoomPos = 0
 			ch.psgPlusRoomBuf = nil
 			ch.psgPlusGain = 1.0
+		}
+	}
+}
+
+func (chip *SoundChip) SetPOKEYPlusEnabled(enabled bool) {
+	chip.mutex.Lock()
+	defer chip.mutex.Unlock()
+
+	for i := 0; i < NUM_CHANNELS; i++ {
+		ch := chip.channels[i]
+		if ch == nil {
+			continue
+		}
+		ch.pokeyPlusEnabled = enabled
+		if enabled {
+			ch.pokeyPlusOversample = POKEY_PLUS_OVERSAMPLE
+			ch.pokeyPlusLowpassState = 0
+			ch.pokeyPlusDrive = POKEY_PLUS_DRIVE
+			ch.pokeyPlusRoomMix = POKEY_PLUS_ROOM_MIX
+			ch.pokeyPlusRoomDelay = POKEY_PLUS_ROOM_DELAY
+			ch.pokeyPlusRoomPos = 0
+			if ch.pokeyPlusRoomBuf == nil || len(ch.pokeyPlusRoomBuf) != POKEY_PLUS_ROOM_DELAY {
+				ch.pokeyPlusRoomBuf = make([]float32, POKEY_PLUS_ROOM_DELAY)
+			} else {
+				for j := range ch.pokeyPlusRoomBuf {
+					ch.pokeyPlusRoomBuf[j] = 0
+				}
+			}
+			ch.pokeyPlusGain = pokeyPlusMixGain[i]
+		} else {
+			ch.pokeyPlusOversample = 1
+			ch.pokeyPlusLowpassState = 0
+			ch.pokeyPlusDrive = 0
+			ch.pokeyPlusRoomMix = 0
+			ch.pokeyPlusRoomDelay = 0
+			ch.pokeyPlusRoomPos = 0
+			ch.pokeyPlusRoomBuf = nil
+			ch.pokeyPlusGain = 1.0
 		}
 	}
 }

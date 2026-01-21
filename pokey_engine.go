@@ -59,6 +59,10 @@ var pokeyPlusVolumeCurve = func() [16]float32 {
 	return curve
 }()
 
+// pokeyPlusMixGain provides per-channel gain adjustment for POKEY+ mode
+// POKEY has 4 channels, slight variation adds stereo-like width
+var pokeyPlusMixGain = [4]float32{1.03, 0.98, 1.02, 0.97}
+
 // NewPOKEYEngine creates a new POKEY emulation engine
 func NewPOKEYEngine(sound *SoundChip, sampleRate int) *POKEYEngine {
 	return &POKEYEngine{
@@ -113,16 +117,28 @@ func (e *POKEYEngine) WriteRegister(reg uint8, value uint8) {
 	// Handle POKEY+ control register
 	if reg == 9 { // POKEY_PLUS_CTRL offset
 		e.pokeyPlusEnabled = (value & 1) != 0
+		if e.sound != nil {
+			e.sound.SetPOKEYPlusEnabled(e.pokeyPlusEnabled)
+		}
 	}
 
 	e.syncToChip()
 }
 
 // SetPOKEYPlusEnabled enables/disables POKEY+ enhanced mode
+// When enabled, activates automatic audio enhancements:
+// - Oversampling (4x) for cleaner waveforms
+// - Low-pass filtering to smooth harsh edges
+// - Soft saturation for warm analog-style sound
+// - Subtle room ambience
+// - Logarithmic volume curve
 func (e *POKEYEngine) SetPOKEYPlusEnabled(enabled bool) {
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
 	e.pokeyPlusEnabled = enabled
+	if e.sound != nil {
+		e.sound.SetPOKEYPlusEnabled(enabled)
+	}
 	e.syncToChip()
 }
 
