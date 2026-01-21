@@ -161,6 +161,80 @@ POKEY_DIST_POLY4        = $C0   ; 4-bit poly only
 POKEY_DIST_POLY17_PULSE = $E0   ; 17-bit + pulse
 
 ; ----------------------------------------------------------------------------
+; SID AUDIO REGISTERS (MOS 6581/8580 style)
+;
+; The SID chip provides 3 voices with analog-style synthesis:
+; - 16-bit frequency control per voice
+; - 12-bit pulse width for duty cycle
+; - 4 waveforms: triangle, sawtooth, pulse, noise
+; - ADSR envelope per voice
+; - Ring modulation and hard sync
+; - Programmable resonant filter (LP/BP/HP)
+;
+; For 6502: SID is memory-mapped at $D500-$D51C
+; Note: C64's original SID was at $D400, but PSG uses that range.
+;
+; SID+ mode (write 1 to SID_PLUS_CTRL) enables enhanced audio
+; ----------------------------------------------------------------------------
+SID_BASE        = $D500         ; SID base address
+
+; Voice 1 registers
+SID_V1_FREQ_LO  = $D500         ; Voice 1 frequency low byte
+SID_V1_FREQ_HI  = $D501         ; Voice 1 frequency high byte
+SID_V1_PW_LO    = $D502         ; Voice 1 pulse width low byte
+SID_V1_PW_HI    = $D503         ; Voice 1 pulse width high (bits 0-3)
+SID_V1_CTRL     = $D504         ; Voice 1 control register
+SID_V1_AD       = $D505         ; Voice 1 attack/decay
+SID_V1_SR       = $D506         ; Voice 1 sustain/release
+
+; Voice 2 registers
+SID_V2_FREQ_LO  = $D507         ; Voice 2 frequency low byte
+SID_V2_FREQ_HI  = $D508         ; Voice 2 frequency high byte
+SID_V2_PW_LO    = $D509         ; Voice 2 pulse width low byte
+SID_V2_PW_HI    = $D50A         ; Voice 2 pulse width high
+SID_V2_CTRL     = $D50B         ; Voice 2 control register
+SID_V2_AD       = $D50C         ; Voice 2 attack/decay
+SID_V2_SR       = $D50D         ; Voice 2 sustain/release
+
+; Voice 3 registers
+SID_V3_FREQ_LO  = $D50E         ; Voice 3 frequency low byte
+SID_V3_FREQ_HI  = $D50F         ; Voice 3 frequency high byte
+SID_V3_PW_LO    = $D510         ; Voice 3 pulse width low byte
+SID_V3_PW_HI    = $D511         ; Voice 3 pulse width high
+SID_V3_CTRL     = $D512         ; Voice 3 control register
+SID_V3_AD       = $D513         ; Voice 3 attack/decay
+SID_V3_SR       = $D514         ; Voice 3 sustain/release
+
+; Filter and volume registers
+SID_FC_LO       = $D515         ; Filter cutoff low (bits 0-2)
+SID_FC_HI       = $D516         ; Filter cutoff high byte
+SID_RES_FILT    = $D517         ; Resonance (bits 4-7) + routing (bits 0-3)
+SID_MODE_VOL    = $D518         ; Volume (bits 0-3) + filter mode (bits 4-7)
+SID_PLUS_CTRL   = $D519         ; SID+ mode (0=standard, 1=enhanced)
+
+; Voice control register bits (SID_Vx_CTRL)
+SID_CTRL_GATE     = $01         ; Gate bit (trigger envelope)
+SID_CTRL_SYNC     = $02         ; Sync with previous voice
+SID_CTRL_RINGMOD  = $04         ; Ring modulation
+SID_CTRL_TEST     = $08         ; Test bit (resets oscillator)
+SID_CTRL_TRIANGLE = $10         ; Triangle waveform
+SID_CTRL_SAWTOOTH = $20         ; Sawtooth waveform
+SID_CTRL_PULSE    = $40         ; Pulse/square waveform
+SID_CTRL_NOISE    = $80         ; Noise waveform
+
+; Filter routing bits (SID_RES_FILT bits 0-3)
+SID_FILT_V1       = $01         ; Route voice 1 through filter
+SID_FILT_V2       = $02         ; Route voice 2 through filter
+SID_FILT_V3       = $04         ; Route voice 3 through filter
+SID_FILT_EXT      = $08         ; Route external input through filter
+
+; Filter mode bits (SID_MODE_VOL bits 4-7)
+SID_MODE_LP       = $10         ; Low-pass filter
+SID_MODE_BP       = $20         ; Band-pass filter
+SID_MODE_HP       = $40         ; High-pass filter
+SID_MODE_3OFF     = $80         ; Disconnect voice 3 from output
+
+; ----------------------------------------------------------------------------
 ; SAP Player Registers
 ;
 ; The SAP player handles Atari 8-bit music files (.sap) which contain

@@ -166,6 +166,84 @@
 .set POKEY_DIST_POLY17_PULSE,0xE0
 
 ; ----------------------------------------------------------------------------
+; SID AUDIO REGISTERS (MOS 6581/8580 style)
+;
+; The SID chip provides 3 voices with analog-style synthesis:
+; - 16-bit frequency control per voice
+; - 12-bit pulse width for duty cycle
+; - 4 waveforms: triangle, sawtooth, pulse, noise
+; - ADSR envelope per voice
+; - Ring modulation and hard sync
+; - Programmable resonant filter (LP/BP/HP)
+;
+; For Z80: Use OUT (SID_PORT_SELECT),A to select register index,
+;          then OUT (SID_PORT_DATA),A to write data
+;
+; SID+ mode (write 1 to register $19) enables enhanced audio
+; ----------------------------------------------------------------------------
+
+; Z80 port I/O for SID access
+.set SID_PORT_SELECT,0xE0               ; Port to select SID register
+.set SID_PORT_DATA,0xE1                 ; Port to read/write SID data
+
+; SID register indices (for port I/O)
+; Voice 1 registers (0x00-0x06)
+.set SID_V1_FREQ_LO,0x00                ; Voice 1 frequency low byte
+.set SID_V1_FREQ_HI,0x01                ; Voice 1 frequency high byte
+.set SID_V1_PW_LO,0x02                  ; Voice 1 pulse width low byte
+.set SID_V1_PW_HI,0x03                  ; Voice 1 pulse width high (bits 0-3)
+.set SID_V1_CTRL,0x04                   ; Voice 1 control register
+.set SID_V1_AD,0x05                     ; Voice 1 attack/decay
+.set SID_V1_SR,0x06                     ; Voice 1 sustain/release
+
+; Voice 2 registers (0x07-0x0D)
+.set SID_V2_FREQ_LO,0x07                ; Voice 2 frequency low byte
+.set SID_V2_FREQ_HI,0x08                ; Voice 2 frequency high byte
+.set SID_V2_PW_LO,0x09                  ; Voice 2 pulse width low byte
+.set SID_V2_PW_HI,0x0A                  ; Voice 2 pulse width high
+.set SID_V2_CTRL,0x0B                   ; Voice 2 control register
+.set SID_V2_AD,0x0C                     ; Voice 2 attack/decay
+.set SID_V2_SR,0x0D                     ; Voice 2 sustain/release
+
+; Voice 3 registers (0x0E-0x14)
+.set SID_V3_FREQ_LO,0x0E                ; Voice 3 frequency low byte
+.set SID_V3_FREQ_HI,0x0F                ; Voice 3 frequency high byte
+.set SID_V3_PW_LO,0x10                  ; Voice 3 pulse width low byte
+.set SID_V3_PW_HI,0x11                  ; Voice 3 pulse width high
+.set SID_V3_CTRL,0x12                   ; Voice 3 control register
+.set SID_V3_AD,0x13                     ; Voice 3 attack/decay
+.set SID_V3_SR,0x14                     ; Voice 3 sustain/release
+
+; Filter and volume registers
+.set SID_FC_LO,0x15                     ; Filter cutoff low (bits 0-2)
+.set SID_FC_HI,0x16                     ; Filter cutoff high byte
+.set SID_RES_FILT,0x17                  ; Resonance (bits 4-7) + routing (bits 0-3)
+.set SID_MODE_VOL,0x18                  ; Volume (bits 0-3) + filter mode (bits 4-7)
+.set SID_PLUS_CTRL,0x19                 ; SID+ mode (0=standard, 1=enhanced)
+
+; Voice control register bits (SID_Vx_CTRL)
+.set SID_CTRL_GATE,0x01                 ; Gate bit (trigger envelope)
+.set SID_CTRL_SYNC,0x02                 ; Sync with previous voice
+.set SID_CTRL_RINGMOD,0x04              ; Ring modulation
+.set SID_CTRL_TEST,0x08                 ; Test bit (resets oscillator)
+.set SID_CTRL_TRIANGLE,0x10             ; Triangle waveform
+.set SID_CTRL_SAWTOOTH,0x20             ; Sawtooth waveform
+.set SID_CTRL_PULSE,0x40                ; Pulse/square waveform
+.set SID_CTRL_NOISE,0x80                ; Noise waveform
+
+; Filter routing bits (SID_RES_FILT bits 0-3)
+.set SID_FILT_V1,0x01                   ; Route voice 1 through filter
+.set SID_FILT_V2,0x02                   ; Route voice 2 through filter
+.set SID_FILT_V3,0x04                   ; Route voice 3 through filter
+.set SID_FILT_EXT,0x08                  ; Route external input through filter
+
+; Filter mode bits (SID_MODE_VOL bits 4-7)
+.set SID_MODE_LP,0x10                   ; Low-pass filter
+.set SID_MODE_BP,0x20                   ; Band-pass filter
+.set SID_MODE_HP,0x40                   ; High-pass filter
+.set SID_MODE_3OFF,0x80                 ; Disconnect voice 3 from output
+
+; ----------------------------------------------------------------------------
 ; SAP Player Registers
 ;
 ; The SAP player handles Atari 8-bit music files (.sap) which contain

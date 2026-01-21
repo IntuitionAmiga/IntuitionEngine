@@ -108,9 +108,10 @@ const (
 	Z80_SID_PORT_DATA   = 0xE1
 )
 
-// 6502 memory mapping for SID (C64-style address range)
-// Maps $D400-$D41C to SID registers 0-28
+// 6502 memory mapping for SID
+// Note: C64's original SID was at $D400, but that conflicts with PSG mapping.
+// For Intuition Engine 6502 mode, SID is mapped at $D500-$D51C
 const (
-	C6502_SID_BASE = 0xD400
-	C6502_SID_END  = 0xD41C
+	C6502_SID_BASE = 0xD500
+	C6502_SID_END  = 0xD51C
 )

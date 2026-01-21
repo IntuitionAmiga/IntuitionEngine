@@ -2682,6 +2682,12 @@ func (adapter *MemoryBusAdapter_6502) Read(addr uint16) byte {
 		return adapter.bus.Read8(PSG_BASE + psgReg)
 	}
 
+	// Handle SID register reads ($D500-$D51C)
+	if addr >= C6502_SID_BASE && addr <= C6502_SID_END {
+		sidReg := uint32(addr - C6502_SID_BASE)
+		return adapter.bus.Read8(SID_BASE + sidReg)
+	}
+
 	// Handle extended bank window reads (IE65 mode)
 	if translated, ok := adapter.translateExtendedBank(addr); ok {
 		return adapter.bus.Read8(translated)
@@ -2750,6 +2756,13 @@ func (adapter *MemoryBusAdapter_6502) Write(addr uint16, value byte) {
 	if addr >= C6502_PSG_BASE && addr <= C6502_PSG_END {
 		psgReg := uint32(addr - C6502_PSG_BASE)
 		adapter.bus.Write8(PSG_BASE+psgReg, value)
+		return
+	}
+
+	// Handle SID register writes ($D500-$D51C)
+	if addr >= C6502_SID_BASE && addr <= C6502_SID_END {
+		sidReg := uint32(addr - C6502_SID_BASE)
+		adapter.bus.Write8(SID_BASE+sidReg, value)
 		return
 	}
 
