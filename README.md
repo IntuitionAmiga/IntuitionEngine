@@ -55,6 +55,7 @@ This virtual machine implements a complete computer system with a custom CPU arc
 ### Audio Chip Emulation:
 - **AY-3-8910/YM2149**: PSG sound chip with PSG+ enhanced audio mode
 - **POKEY**: Atari 8-bit sound chip with POKEY+ enhanced audio mode
+- **SID (MOS 6581/8580)**: Commodore 64 sound chip with SID+ enhanced audio mode
 
 ### Core Features:
 - Memory-mapped I/O for peripherals
@@ -198,6 +199,7 @@ The system's memory is organised as follows:
 0x0F0900 - 0x0F0A54: Sound registers (PSG synthesis)
 0x0F0C00 - 0x0F0C1C: PSG player registers (AY/YM/VGM/SNDH playback)
 0x0F0D00 - 0x0F0D1D: POKEY registers (Atari 8-bit audio + SAP playback)
+0x0F0E00 - 0x0F0E1C: SID registers (C64 audio synthesis)
 ```
 Key memory-mapped hardware registers are logically grouped to facilitate system programming and hardware access. Each subsystem has a dedicated register block for configuration and control.
 
@@ -428,6 +430,47 @@ AUDC Distortion Modes (bits 5-7):
 0xF0D18: SAP_PLAY_CTRL   - Control (bit0=start, bit1=stop, bit2=loop)
 0xF0D1C: SAP_PLAY_STATUS - Status (bit0=busy, bit1=error)
 0xF0D1D: SAP_SUBSONG     - Subsong selection (0-255)
+```
+
+#### SID Sound Chip Registers (0xF0E00 - 0xF0E19)
+```
+Voice 1 (0xF0E00 - 0xF0E06):
+0xF0E00: SID_V1_FREQ_LO  - Frequency low byte
+0xF0E01: SID_V1_FREQ_HI  - Frequency high byte
+0xF0E02: SID_V1_PW_LO    - Pulse width low byte
+0xF0E03: SID_V1_PW_HI    - Pulse width high (bits 0-3)
+0xF0E04: SID_V1_CTRL     - Control register
+0xF0E05: SID_V1_AD       - Attack/Decay
+0xF0E06: SID_V1_SR       - Sustain/Release
+
+Voice 2 (0xF0E07 - 0xF0E0D):
+0xF0E07-0xF0E0D: Same layout as Voice 1
+
+Voice 3 (0xF0E0E - 0xF0E14):
+0xF0E0E-0xF0E14: Same layout as Voice 1
+
+Filter and Volume:
+0xF0E15: SID_FC_LO       - Filter cutoff low (bits 0-2)
+0xF0E16: SID_FC_HI       - Filter cutoff high byte
+0xF0E17: SID_RES_FILT    - Resonance (bits 4-7) + routing (bits 0-3)
+0xF0E18: SID_MODE_VOL    - Volume (bits 0-3) + filter mode (bits 4-7)
+0xF0E19: SID_PLUS_CTRL   - SID+ mode (0=standard, 1=enhanced)
+
+Voice Control Register Bits:
+bit 0: Gate (trigger envelope)
+bit 1: Sync with previous voice
+bit 2: Ring modulation
+bit 3: Test bit (resets oscillator)
+bit 4: Triangle waveform
+bit 5: Sawtooth waveform
+bit 6: Pulse waveform
+bit 7: Noise waveform
+
+Filter Mode Bits (SID_MODE_VOL bits 4-7):
+bit 4: Low-pass filter
+bit 5: Band-pass filter
+bit 6: High-pass filter
+bit 7: Disconnect voice 3 from output
 ```
 
 # 4. CPU Architecture
@@ -1122,6 +1165,59 @@ LOAD A, #0xAF          ; Pure tone + volume 15
 STORE A, @0xF0D01      ; AUDC1
 ```
 
+## 8.5 SID Sound Chip
+
+The SID chip emulates the legendary MOS 6581/8580 from the Commodore 64, providing three voices of analog-style synthesis with the distinctive warm sound that defined a generation of computer music.
+
+### Features:
+- Three independent voices with full ADSR envelopes
+- Four waveforms per voice: triangle, sawtooth, pulse (with variable width), noise
+- Ring modulation between voices
+- Hard sync for complex timbres
+- Programmable resonant filter (low-pass, band-pass, high-pass, notch)
+- SID+ enhanced audio processing mode
+
+### Waveform Selection:
+Each voice can output one waveform at a time via the control register:
+- **Triangle (0x10)**: Smooth, flute-like tone
+- **Sawtooth (0x20)**: Bright, brassy tone with rich harmonics
+- **Pulse (0x40)**: Square wave with variable duty cycle (PWM capable)
+- **Noise (0x80)**: White noise for percussion and effects
+
+### ADSR Envelope:
+Each voice has a dedicated ADSR envelope generator:
+- Attack: 2ms to 8 seconds (16 rates)
+- Decay: 6ms to 24 seconds (16 rates)
+- Sustain: 16 levels (0-15)
+- Release: 6ms to 24 seconds (16 rates)
+
+### Filter:
+The SID's resonant filter can process any combination of voices:
+- 11-bit cutoff frequency control
+- 4-bit resonance control
+- Selectable low-pass, band-pass, high-pass modes (combinable for notch)
+
+Configuration example:
+```assembly
+; Configure SID voice 1 for a pulse wave with filter
+LOAD A, #0x00
+STORE A, @0xF0E00      ; Freq low
+LOAD A, #0x1C          ; ~440Hz (A4)
+STORE A, @0xF0E01      ; Freq high
+LOAD A, #0x00
+STORE A, @0xF0E02      ; Pulse width low
+LOAD A, #0x08          ; 50% duty
+STORE A, @0xF0E03      ; Pulse width high
+LOAD A, #0x41          ; Pulse waveform + gate
+STORE A, @0xF0E04      ; Control
+LOAD A, #0x00          ; Fast attack, no decay
+STORE A, @0xF0E05      ; Attack/Decay
+LOAD A, #0xF0          ; Full sustain, no release
+STORE A, @0xF0E06      ; Sustain/Release
+LOAD A, #0x1F          ; Max volume + low-pass
+STORE A, @0xF0E18      ; Mode/Volume
+```
+
 # 9. Video System
 
 The video system provides flexible graphics output through a memory-mapped framebuffer design.
@@ -1453,6 +1549,14 @@ For POKEY/SAP music playback (Atari 8-bit):
 ```
 Note: `.sap` files are Atari 8-bit SAP format containing embedded 6502 code that drives the POKEY sound chip. The internal 6502 emulator executes the player code at the correct frame rate.
 POKEY+ enables enhanced audio processing similar to PSG+ for a richer, smoother sound.
+
+When running in CPU modes, all three sound chips are available:
+- PSG registers at `0xF0C00-0xF0C0D` (PSG+ toggle at `0xF0C0E`)
+- POKEY registers at `0xF0D00-0xF0D09` (POKEY+ toggle at `0xF0D09`)
+- SID registers at `0xF0E00-0xF0E19` (SID+ toggle at `0xF0E19`)
+
+SID+ enables enhanced audio processing (oversampling, filtering, saturation, room effect)
+similar to PSG+ and POKEY+ for warmer, smoother C64-style audio.
 
 When running in CPU modes, PSG registers are available at `0xF0C00-0xF0C0D`
 for direct AY/YM register writes. PSG+ can be toggled via `PSG_PLUS_CTRL` at `0xF0C0E`
