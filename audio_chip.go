@@ -106,6 +106,9 @@ const (
 	FLEX_OFF_WAVE_TYPE = 0x24
 	FLEX_OFF_PWM_CTRL  = 0x28
 	FLEX_OFF_NOISEMODE = 0x2C
+	FLEX_OFF_PHASE     = 0x30 // Reset phase position
+	FLEX_OFF_RINGMOD   = 0x34 // Ring modulation source (bit 7=enable, bits 0-2=source channel)
+	FLEX_OFF_SYNC      = 0x38 // Hard sync source (bit 7=enable, bits 0-2=source channel)
 )
 
 // ------------------------------------------------------------------------------
@@ -535,7 +538,17 @@ const (
 	POKEY_PLUS_DRIVE         = 0.12 // Less drive than PSG (POKEY is already gritty)
 	POKEY_PLUS_ROOM_MIX      = 0.06 // Subtle room ambience
 	POKEY_PLUS_ROOM_DELAY    = 96   // Shorter delay for tighter sound
+
+	// SID+ enhanced mode parameters
+	SID_PLUS_OVERSAMPLE    = 4
+	SID_PLUS_LOWPASS_ALPHA = 0.10 // Smoother filtering for SID's warm character
+	SID_PLUS_DRIVE         = 0.15 // Moderate saturation for analog warmth
+	SID_PLUS_ROOM_MIX      = 0.07 // Subtle room ambience
+	SID_PLUS_ROOM_DELAY    = 112  // Medium delay for spacious sound
 )
+
+// sidPlusMixGain provides per-voice gain adjustment for SID+ mode (3 voices)
+var sidPlusMixGain = [3]float32{1.02, 1.0, 0.98}
 
 type Channel struct {
 	// ------------------------------------------------------------------------------
@@ -582,6 +595,10 @@ type Channel struct {
 	pokeyPlusDrive        float32 // POKEY+ saturation drive
 	pokeyPlusRoomMix      float32 // POKEY+ room mix
 	pokeyPlusGain         float32 // POKEY+ per-channel gain
+	sidPlusLowpassState   float32 // SID+ low-pass filter state
+	sidPlusDrive          float32 // SID+ saturation drive
+	sidPlusRoomMix        float32 // SID+ room mix
+	sidPlusGain           float32 // SID+ per-channel gain
 
 	// Envelope and modulation parameters (cache line 2)
 	// Accessed during envelope and modulation updates
@@ -609,12 +626,16 @@ type Channel struct {
 	pokeyPlusOversample int  // POKEY+ oversample factor
 	pokeyPlusRoomDelay  int  // POKEY+ room delay length (samples)
 	pokeyPlusRoomPos    int  // POKEY+ room delay index
+	sidPlusOversample   int  // SID+ oversample factor
+	sidPlusRoomDelay    int  // SID+ room delay length (samples)
+	sidPlusRoomPos      int  // SID+ room delay index
 
 	// Pointer fields (cache line 4)
 	ringModSource    *Channel  // Source channel for ring modulation
 	syncSource       *Channel  // Source channel for hard sync
 	psgPlusRoomBuf   []float32 // PSG+ room delay buffer
 	pokeyPlusRoomBuf []float32 // POKEY+ room delay buffer
+	sidPlusRoomBuf   []float32 // SID+ room delay buffer
 
 	// Boolean state flags (packed together to minimise padding)
 	enabled          bool                   // Channel enabled flag
@@ -625,6 +646,7 @@ type Channel struct {
 	phaseWrapped     bool                   // Phase wrap indicator
 	psgPlusEnabled   bool                   // PSG+ processing flag
 	pokeyPlusEnabled bool                   // POKEY+ processing flag
+	sidPlusEnabled   bool                   // SID+ processing flag
 	_pad             [CHANNEL_PAD_SIZE]byte // Padding for alignment
 	sampleCount      int                    // Track number of samples generated
 
@@ -836,6 +858,26 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 			ch.pwmRate = float32(value&PWM_RATE_MASK) * PWM_RATE_SCALE
 		case FLEX_OFF_NOISEMODE:
 			ch.noiseMode = int(value % NUM_NOISE_MODES)
+		case FLEX_OFF_PHASE:
+			ch.phase = 0 // Reset phase to start of waveform
+		case FLEX_OFF_RINGMOD:
+			if value&0x80 != 0 {
+				srcCh := int(value & 0x03)
+				if srcCh < NUM_CHANNELS && srcCh != int(chIndex) {
+					ch.ringModSource = chip.channels[srcCh]
+				}
+			} else {
+				ch.ringModSource = nil
+			}
+		case FLEX_OFF_SYNC:
+			if value&0x80 != 0 {
+				srcCh := int(value & 0x03)
+				if srcCh < NUM_CHANNELS && srcCh != int(chIndex) {
+					ch.syncSource = chip.channels[srcCh]
+				}
+			} else {
+				ch.syncSource = nil
+			}
 		default:
 			log.Printf("invalid flex register offset: 0x%X", offset)
 		}
@@ -1357,6 +1399,33 @@ func (ch *Channel) generateSample() float32 {
 		return clampF32(scaledSample, MIN_SAMPLE, MAX_SAMPLE)
 	}
 
+	if ch.sidPlusEnabled && ch.sidPlusOversample > 1 {
+		oversample := ch.sidPlusOversample
+		sampleRate := float32(SAMPLE_RATE) * float32(oversample)
+		var sum float32
+		for i := 0; i < oversample; i++ {
+			sum += ch.generateWaveSample(sampleRate)
+		}
+		rawSample := sum / float32(oversample)
+		alpha := float32(SID_PLUS_LOWPASS_ALPHA)
+		if alpha > 0 {
+			ch.sidPlusLowpassState = ch.sidPlusLowpassState*(1-alpha) + rawSample*alpha
+			rawSample = ch.sidPlusLowpassState
+		}
+		if ch.sidPlusRoomMix > 0 && len(ch.sidPlusRoomBuf) > 0 {
+			delayed := ch.sidPlusRoomBuf[ch.sidPlusRoomPos]
+			ch.sidPlusRoomBuf[ch.sidPlusRoomPos] = rawSample
+			ch.sidPlusRoomPos = (ch.sidPlusRoomPos + 1) % len(ch.sidPlusRoomBuf)
+			rawSample = rawSample*(1-ch.sidPlusRoomMix) + delayed*ch.sidPlusRoomMix
+		}
+		scaledSample := rawSample * ch.volume * envLevel * ch.sidPlusGain
+		if ch.sidPlusDrive > 0 {
+			gain := 1.0 + ch.sidPlusDrive
+			scaledSample = float32(math.Tanh(float64(scaledSample * gain)))
+		}
+		return clampF32(scaledSample, MIN_SAMPLE, MAX_SAMPLE)
+	}
+
 	rawSample := ch.generateWaveSample(float32(SAMPLE_RATE))
 	scaledSample := rawSample * ch.volume * envLevel
 
@@ -1677,6 +1746,44 @@ func (chip *SoundChip) SetPOKEYPlusEnabled(enabled bool) {
 			ch.pokeyPlusRoomPos = 0
 			ch.pokeyPlusRoomBuf = nil
 			ch.pokeyPlusGain = 1.0
+		}
+	}
+}
+
+func (chip *SoundChip) SetSIDPlusEnabled(enabled bool) {
+	chip.mutex.Lock()
+	defer chip.mutex.Unlock()
+
+	for i := 0; i < NUM_CHANNELS; i++ {
+		ch := chip.channels[i]
+		if ch == nil {
+			continue
+		}
+		ch.sidPlusEnabled = enabled
+		if enabled {
+			ch.sidPlusOversample = SID_PLUS_OVERSAMPLE
+			ch.sidPlusLowpassState = 0
+			ch.sidPlusDrive = SID_PLUS_DRIVE
+			ch.sidPlusRoomMix = SID_PLUS_ROOM_MIX
+			ch.sidPlusRoomDelay = SID_PLUS_ROOM_DELAY
+			ch.sidPlusRoomPos = 0
+			if ch.sidPlusRoomBuf == nil || len(ch.sidPlusRoomBuf) != SID_PLUS_ROOM_DELAY {
+				ch.sidPlusRoomBuf = make([]float32, SID_PLUS_ROOM_DELAY)
+			} else {
+				for j := range ch.sidPlusRoomBuf {
+					ch.sidPlusRoomBuf[j] = 0
+				}
+			}
+			ch.sidPlusGain = sidPlusMixGain[i%3]
+		} else {
+			ch.sidPlusOversample = 1
+			ch.sidPlusLowpassState = 0
+			ch.sidPlusDrive = 0
+			ch.sidPlusRoomMix = 0
+			ch.sidPlusRoomDelay = 0
+			ch.sidPlusRoomPos = 0
+			ch.sidPlusRoomBuf = nil
+			ch.sidPlusGain = 1.0
 		}
 	}
 }

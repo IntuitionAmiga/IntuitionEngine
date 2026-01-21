@@ -223,6 +223,8 @@ func main() {
 		psgEngine.SetPSGPlusEnabled(true)
 	}
 
+	sidEngine := NewSIDEngine(soundChip, SAMPLE_RATE)
+
 	if modePSG {
 		if filename == "" {
 			fmt.Println("Error: PSG mode requires a filename")
@@ -332,6 +334,11 @@ func main() {
 	sysBus.MapIO(PSG_PLAY_PTR, PSG_PLAY_STATUS+3,
 		psgPlayer.HandlePlayRead,
 		psgPlayer.HandlePlayWrite)
+
+	// Map SID registers
+	sysBus.MapIO(SID_BASE, SID_END,
+		sidEngine.HandleRead,
+		sidEngine.HandleWrite)
 
 	// Initialize the selected CPU and optionally load program
 	var gui GUIFrontend

@@ -28,6 +28,8 @@ func newTestSoundChip() *SoundChip {
 			psgPlusOversample:   1,
 			pokeyPlusGain:       1.0,
 			pokeyPlusOversample: 1,
+			sidPlusGain:         1.0,
+			sidPlusOversample:   1,
 		}
 	}
 
