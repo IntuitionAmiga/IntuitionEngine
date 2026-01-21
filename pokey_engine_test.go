@@ -234,53 +234,6 @@ func TestPOKEYEngine_GainToDAC(t *testing.T) {
 	}
 }
 
-func TestPOKEYEngine_PolynomialCounters(t *testing.T) {
-	engine := NewPOKEYEngine(nil, 44100)
-
-	// Test 17-bit poly generates changing values
-	seen := make(map[uint8]bool)
-	for i := 0; i < 100; i++ {
-		bit := engine.tick17()
-		seen[bit] = true
-	}
-	if len(seen) < 2 {
-		t.Error("17-bit poly should generate both 0 and 1 bits")
-	}
-
-	// Test 9-bit poly
-	engine.poly9 = 0x1FF
-	seen = make(map[uint8]bool)
-	for i := 0; i < 50; i++ {
-		bit := engine.tick9()
-		seen[bit] = true
-	}
-	if len(seen) < 2 {
-		t.Error("9-bit poly should generate both 0 and 1 bits")
-	}
-
-	// Test 5-bit poly for channel 0
-	engine.poly5[0] = 0x1F
-	seen = make(map[uint8]bool)
-	for i := 0; i < 32; i++ {
-		bit := engine.tick5(0)
-		seen[bit] = true
-	}
-	if len(seen) < 2 {
-		t.Error("5-bit poly should generate both 0 and 1 bits")
-	}
-
-	// Test 4-bit counter
-	engine.poly4[0] = 0
-	results := make([]uint8, 16)
-	for i := 0; i < 16; i++ {
-		results[i] = engine.tick4(0)
-	}
-	// Should cycle through pattern
-	if results[0] == results[8] && results[1] == results[9] {
-		// Pattern repeats as expected
-	}
-}
-
 func TestPOKEYEngine_Reset(t *testing.T) {
 	engine := NewPOKEYEngine(nil, 44100)
 
@@ -298,9 +251,6 @@ func TestPOKEYEngine_Reset(t *testing.T) {
 	}
 	if engine.enabled {
 		t.Error("engine should be disabled after reset")
-	}
-	if engine.poly17 != 0x1FFFF {
-		t.Error("poly17 should be reset to seed value")
 	}
 }
 

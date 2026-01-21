@@ -1,19 +1,20 @@
-// pokey_engine.go - POKEY sound chip emulation for the Intuition Engine
+// pokey_engine.go - POKEY sound chip register mapping for the Intuition Engine
 
 /*
 POKEY (Pot Keyboard Integrated Circuit) was the audio chip used in Atari 8-bit
-computers and the Atari 5200. This implementation provides register-level
-emulation accessible from all CPUs (M68K, IE32, Z80, 6502).
+computers and the Atari 5200. This implementation provides pure register mapping
+to the SoundChip for audio synthesis, accessible from all CPUs (M68K, IE32, Z80, 6502).
 
 Features:
-- 4 audio channels with independent frequency and volume control
-- 8 distortion modes using polynomial counters (17/9/5/4-bit)
-- 16-bit channel linking for extended frequency range
-- High-pass filter emulation between channel pairs
+- 4 audio channels mapped to SoundChip channels 0-3
+- AUDF/AUDC register translation to frequency/volume/waveform
+- 16-bit channel linking (Ch1+Ch2, Ch3+Ch4) for extended frequency range
+- Distortion modes mapped to SoundChip waveform types (square/noise)
 - POKEY+ enhanced mode with logarithmic volume curve
+- Event-based playback for SAP file rendering
 
-The engine translates POKEY register writes to SoundChip channel parameters,
-using the noise channel modes to approximate POKEY's polynomial distortion.
+The engine translates POKEY register writes to SoundChip channel parameters.
+Synthesis is performed by SoundChip - this module handles only the mapping.
 */
 
 package main
@@ -23,7 +24,7 @@ import (
 	"sync"
 )
 
-// POKEYEngine emulates the POKEY sound chip
+// POKEYEngine emulates the POKEY sound chip via register mapping to SoundChip
 type POKEYEngine struct {
 	mutex      sync.Mutex
 	sound      *SoundChip
@@ -31,17 +32,6 @@ type POKEYEngine struct {
 	clockHz    uint32
 
 	regs [POKEY_REG_COUNT]uint8
-
-	// Polynomial counter state
-	poly17 uint32
-	poly9  uint16
-	poly5  [4]uint8 // Per-channel 5-bit poly
-	poly4  [4]uint8 // Per-channel 4-bit counter
-
-	// Channel state
-	chanPhase   [4]float64 // Phase accumulators
-	chanOutput  [4]float32 // Current output values
-	hipassState [2]float32 // High-pass filter state (ch1, ch2)
 
 	enabled          bool
 	pokeyPlusEnabled bool
@@ -71,21 +61,11 @@ var pokeyPlusVolumeCurve = func() [16]float32 {
 
 // NewPOKEYEngine creates a new POKEY emulation engine
 func NewPOKEYEngine(sound *SoundChip, sampleRate int) *POKEYEngine {
-	engine := &POKEYEngine{
+	return &POKEYEngine{
 		sound:      sound,
 		sampleRate: sampleRate,
 		clockHz:    POKEY_CLOCK_NTSC,
-		poly17:     0x1FFFF, // 17-bit LFSR seed (all 1s)
-		poly9:      0x1FF,   // 9-bit LFSR seed
 	}
-
-	// Initialize per-channel poly counters
-	for i := 0; i < 4; i++ {
-		engine.poly5[i] = 0x1F // 5-bit seed
-		engine.poly4[i] = 0x0F // 4-bit seed
-	}
-
-	return engine
 }
 
 // SetClockHz sets the POKEY master clock frequency
@@ -388,44 +368,6 @@ func pokeyGainToDAC(gain float32) uint8 {
 	return uint8(math.Round(float64(gain * 255.0)))
 }
 
-// Polynomial counter operations for accurate POKEY emulation
-
-// tick17 advances the 17-bit polynomial counter
-func (e *POKEYEngine) tick17() uint8 {
-	// 17-bit LFSR with taps at bits 0 and 5
-	bit := (e.poly17 ^ (e.poly17 >> 5)) & 1
-	e.poly17 = (e.poly17 >> 1) | (bit << 16)
-	return uint8(e.poly17 & 1)
-}
-
-// tick9 advances the 9-bit polynomial counter
-func (e *POKEYEngine) tick9() uint8 {
-	// 9-bit LFSR with taps at bits 0 and 5
-	bit := (e.poly9 ^ (e.poly9 >> 5)) & 1
-	e.poly9 = (e.poly9 >> 1) | (uint16(bit) << 8)
-	return uint8(e.poly9 & 1)
-}
-
-// tick5 advances a 5-bit polynomial counter for a channel
-func (e *POKEYEngine) tick5(ch int) uint8 {
-	if ch < 0 || ch > 3 {
-		return 0
-	}
-	// 5-bit LFSR with taps at bits 0 and 2
-	bit := (e.poly5[ch] ^ (e.poly5[ch] >> 2)) & 1
-	e.poly5[ch] = (e.poly5[ch] >> 1) | (bit << 4)
-	return e.poly5[ch] & 1
-}
-
-// tick4 advances a 4-bit counter for a channel
-func (e *POKEYEngine) tick4(ch int) uint8 {
-	if ch < 0 || ch > 3 {
-		return 0
-	}
-	e.poly4[ch] = (e.poly4[ch] + 1) & 0x0F
-	return e.poly4[ch] & 1
-}
-
 // Reset resets all POKEY state
 func (e *POKEYEngine) Reset() {
 	e.mutex.Lock()
@@ -434,17 +376,6 @@ func (e *POKEYEngine) Reset() {
 	for i := range e.regs {
 		e.regs[i] = 0
 	}
-
-	e.poly17 = 0x1FFFF
-	e.poly9 = 0x1FF
-	for i := 0; i < 4; i++ {
-		e.poly5[i] = 0x1F
-		e.poly4[i] = 0x0F
-		e.chanPhase[i] = 0
-		e.chanOutput[i] = 0
-	}
-	e.hipassState[0] = 0
-	e.hipassState[1] = 0
 
 	e.enabled = false
 	e.channelsInit = false
