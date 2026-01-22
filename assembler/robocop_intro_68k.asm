@@ -3,58 +3,19 @@
 ; Moves robocop sprite with the blitter, animated copper RGB bars, PSG+ AY.
 ; Port from IE32 assembly to Motorola 68020
 ; ============================================================================
-; Assemble with: vasmm68k_mot -Fbin -m68020 -devpac -o robocop_intro_68k.ie68 robocop_intro_68k.asm
+; Assemble with: vasmm68k_mot -Fbin -m68020 -I. -o robocop_intro_68k.ie68 robocop_intro_68k.asm
 ; Run with: ./IntuitionEngine -m68k robocop_intro_68k.ie68
 
-; ----------------------------------------------------------------------------
-; HARDWARE REGISTERS (I/O region at $F0000)
-; ----------------------------------------------------------------------------
-VIDEO_CTRL      equ $F0000
-VIDEO_MODE      equ $F0004
-VIDEO_STATUS    equ $F0008
-STATUS_VBLANK   equ 2
-COPPER_CTRL     equ $F000C
-COPPER_PTR      equ $F0010
-BLT_CTRL        equ $F001C
-BLT_OP          equ $F0020
-BLT_SRC         equ $F0024
-BLT_DST         equ $F0028
-BLT_WIDTH       equ $F002C
-BLT_HEIGHT      equ $F0030
-BLT_SRC_STRIDE  equ $F0034
-BLT_DST_STRIDE  equ $F0038
-BLT_COLOR       equ $F003C
-BLT_MASK        equ $F0040
-BLT_STATUS      equ $F0044
-VIDEO_RASTER_Y      equ $F0048
-VIDEO_RASTER_HEIGHT equ $F004C
-VIDEO_RASTER_COLOR  equ $F0050
-VIDEO_RASTER_CTRL   equ $F0054
-
-PSG_PLUS_CTRL   equ $F0C0E
-PSG_PLAY_PTR    equ $F0C10
-PSG_PLAY_LEN    equ $F0C14
-PSG_PLAY_CTRL   equ $F0C18
+    include "ie68.inc"
 
 ; ----------------------------------------------------------------------------
-; CONSTANTS
+; DEMO-SPECIFIC CONSTANTS
 ; ----------------------------------------------------------------------------
-VRAM_START      equ $100000
-SCREEN_W        equ 640
-SCREEN_H        equ 480
-LINE_BYTES      equ 2560
 SPRITE_W        equ 240
 SPRITE_H        equ 180
 SPRITE_STRIDE   equ 960
 CENTER_X        equ 200
 CENTER_Y        equ 150
-BACKGROUND      equ $FF000000
-
-BLT_OP_COPY     equ 0
-BLT_OP_FILL     equ 1
-BLT_OP_LINE     equ 2
-BLT_OP_MASKED   equ 3
-BLT_OP_ALPHA    equ 4
 
 BAR_COUNT       equ 16
 BAR_STRIDE      equ 36
