@@ -110,9 +110,7 @@ var sidDecayReleaseMs = [16]float32{
 
 // SID ADSR rate counter periods (clock cycles at 985248 Hz PAL)
 // These are the base periods for each ADSR value (0-15)
-// NOTE: These are reference values for cycle-accurate emulation.
-// Currently the envelope uses sidAttackMs/sidDecayReleaseMs time-based tables
-// which provide a good approximation without the complexity of rate counters.
+// Used by the authentic rate counter path in audio_chip.go updateEnvelope()
 var sidADSRRatePeriods = [16]uint32{
 	9, 32, 63, 95, 149, 220, 267, 313,
 	392, 977, 1954, 3126, 3907, 11720, 19532, 31251,
@@ -121,13 +119,11 @@ var sidADSRRatePeriods = [16]uint32{
 // SID envelope exponential decay thresholds
 // When envelope level crosses these thresholds, decay rate changes
 // This creates the characteristic "bent" SID envelope curve
-// NOTE: Reference values - the current implementation approximates this
-// behavior using a simplified 3-region bent curve in audio_chip.go
+// Thresholds: 255-94 (1x), 93-54 (2x), 53-26 (4x), 25-14 (8x), 13-6 (16x), 5-0 (30x)
 var sidEnvExpThresholds = [6]uint8{93, 54, 26, 14, 6, 0}
 
 // SID envelope exponential rate multipliers at each threshold
 // Rate gets progressively slower as level decreases
-// NOTE: Reference values - see sidEnvExpThresholds comment above
 var sidEnvExpMultipliers = [6]uint8{1, 2, 4, 8, 16, 30}
 
 // Z80 port mapping for SID access

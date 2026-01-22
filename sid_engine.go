@@ -190,7 +190,7 @@ func (e *SIDEngine) ensureChannelsInitialized() {
 		e.writeChannel(ch, FLEX_OFF_VOL, 0)
 		e.writeChannel(ch, FLEX_OFF_CTRL, 0) // Start with gate off
 		e.sound.SetChannelEnvelopeMode(ch, true)
-		e.sound.SetChannelSIDFilterMode(ch, true) // Allow filter self-oscillation
+		e.sound.SetChannelSIDFilterMode(ch, false) // Safe filter mode
 	}
 
 	e.channelsInit = true
@@ -344,15 +344,15 @@ func (e *SIDEngine) applyEnvelopes() {
 		sustain := (sr >> 4) & 0x0F
 		release := sr & 0x0F
 
-		// Convert SID ADSR values to SoundChip format
-		// SoundChip uses 8-bit values for time (0-255 maps to ms range)
-		// and 8-bit for sustain level
+		sustainLevel := float32(sustain) / 15.0
 
+		// Use authentic SID rate counter for ADSR timing
+		e.sound.SetChannelSIDRateCounter(voice, false, e.sampleRate, e.clockHz, attack, decay, release)
+
+		// Also set time-based ADSR as fallback and for sustain level
 		attackMs := sidAttackMs[attack]
 		decayMs := sidDecayReleaseMs[decay]
 		releaseMs := sidDecayReleaseMs[release]
-		sustainLevel := float32(sustain) / 15.0
-
 		e.sound.SetChannelADSR(voice, attackMs, decayMs, releaseMs, sustainLevel)
 	}
 }

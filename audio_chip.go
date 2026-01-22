@@ -573,6 +573,20 @@ const (
 // sidPlusMixGain provides per-voice gain adjustment for SID+ mode (3 voices)
 var sidPlusMixGain = [3]float32{1.02, 1.0, 0.98}
 
+// sidGetExpIndex returns the exponential threshold index for a given envelope level.
+// This determines the rate multiplier for decay/release phases.
+// Thresholds: 255-94 (idx 0, 1x), 93-54 (idx 1, 2x), 53-26 (idx 2, 4x),
+//
+//	25-14 (idx 3, 8x), 13-6 (idx 4, 16x), 5-0 (idx 5, 30x)
+func sidGetExpIndex(level uint8) int {
+	for i := 0; i < len(sidEnvExpThresholds); i++ {
+		if level >= sidEnvExpThresholds[i] {
+			return i
+		}
+	}
+	return len(sidEnvExpThresholds) - 1
+}
+
 type Channel struct {
 	// ------------------------------------------------------------------------------
 	// Channel represents a single audio generation channel that can produce
@@ -627,13 +641,15 @@ type Channel struct {
 	sidWaveMask           uint8   // SID waveform mask (combined waves)
 
 	// Per-channel filter state
-	filterLP        float32
-	filterBP        float32
-	filterHP        float32
-	filterCutoff    float32
-	filterResonance float32
-	filterType      int
-	filterModeMask  uint8
+	filterLP              float32
+	filterBP              float32
+	filterHP              float32
+	filterCutoff          float32
+	filterResonance       float32
+	filterCutoffTarget    float32
+	filterResonanceTarget float32
+	filterType            int
+	filterModeMask        uint8
 
 	// Envelope and modulation parameters (cache line 2)
 	// Accessed during envelope and modulation updates
@@ -688,13 +704,15 @@ type Channel struct {
 	sidRateCounter   bool // Use authentic SID rate counter for ADSR
 
 	// SID rate counter state (for authentic ADSR timing)
-	sidEnvLevel   uint8                  // 8-bit envelope level (0-255)
-	sidRateCount  uint32                 // Rate counter (accumulates samples)
-	sidRatePeriod uint32                 // Current rate period in samples
-	sidADSRIndex  uint8                  // Current ADSR value (0-15) for rate lookup
-	sidExpIndex   int                    // Current exponential threshold index (for decay/release)
-	_pad          [CHANNEL_PAD_SIZE]byte // Padding for alignment
-	sampleCount   int                    // Track number of samples generated
+	sidEnvLevel        uint8                  // 8-bit envelope level (0-255)
+	sidCycleAccum      float64                // Fractional cycle accumulator (clock cycles)
+	sidCyclesPerSample float64                // Clock cycles per audio sample (clockHz / sampleRate)
+	sidExpIndex        int                    // Current exponential threshold index (for decay/release)
+	sidAttackIndex     uint8                  // Attack ADSR index (0-15)
+	sidDecayIndex      uint8                  // Decay ADSR index (0-15)
+	sidReleaseIndex    uint8                  // Release ADSR index (0-15)
+	_pad               [CHANNEL_PAD_SIZE]byte // Padding for alignment
+	sampleCount        int                    // Track number of samples generated
 
 	releaseStartLevel float32 // Level when release phase began
 }
@@ -1136,8 +1154,88 @@ func (ch *Channel) updateEnvelope() {
 			ch.releaseStartLevel = ch.envelopeLevel
 			ch.envelopePhase = ENV_RELEASE
 			ch.envelopeSample = 0
+			ch.sidExpIndex = 0 // Reset exponential index for release
 		}
 
+		// Authentic SID rate counter path using fractional cycle accumulator
+		if ch.sidRateCounter && ch.sidCyclesPerSample > 0 {
+			// Accumulate clock cycles (fractional)
+			ch.sidCycleAccum += ch.sidCyclesPerSample
+
+			// Get target period from appropriate ADSR index for current phase
+			var adsrIndex uint8
+			switch ch.envelopePhase {
+			case ENV_ATTACK:
+				adsrIndex = ch.sidAttackIndex
+			case ENV_DECAY:
+				adsrIndex = ch.sidDecayIndex
+			case ENV_RELEASE:
+				adsrIndex = ch.sidReleaseIndex
+			default:
+				adsrIndex = 0
+			}
+			if adsrIndex > 15 {
+				adsrIndex = 15
+			}
+
+			// Target period in clock cycles (from SID tables)
+			targetPeriod := float64(sidADSRRatePeriods[adsrIndex])
+
+			// Apply exponential multiplier for decay/release
+			if ch.envelopePhase == ENV_DECAY || ch.envelopePhase == ENV_RELEASE {
+				targetPeriod *= float64(sidEnvExpMultipliers[ch.sidExpIndex])
+			}
+
+			// Step envelope when accumulator reaches target (at most one step per sample)
+			if ch.sidCycleAccum >= targetPeriod {
+				ch.sidCycleAccum -= targetPeriod
+
+				switch ch.envelopePhase {
+				case ENV_ATTACK:
+					// Attack is linear: increment by 1 until 255
+					if ch.sidEnvLevel < 255 {
+						ch.sidEnvLevel++
+						ch.envelopeLevel = float32(ch.sidEnvLevel) / 255.0
+					}
+					if ch.sidEnvLevel >= 255 {
+						ch.sidEnvLevel = 255
+						ch.envelopeLevel = MAX_LEVEL
+						ch.envelopePhase = ENV_DECAY
+						ch.sidExpIndex = 0
+					}
+
+				case ENV_DECAY:
+					sustainLevel8 := uint8(ch.sustainLevel * 255.0)
+					if ch.sidEnvLevel > sustainLevel8 {
+						ch.sidEnvLevel--
+						ch.envelopeLevel = float32(ch.sidEnvLevel) / 255.0
+						ch.sidExpIndex = sidGetExpIndex(ch.sidEnvLevel)
+					}
+					if ch.sidEnvLevel <= sustainLevel8 {
+						ch.sidEnvLevel = sustainLevel8
+						ch.envelopeLevel = ch.sustainLevel
+						ch.envelopePhase = ENV_SUSTAIN
+					}
+
+				case ENV_SUSTAIN:
+					// Sustain holds - gate off handled above
+
+				case ENV_RELEASE:
+					if ch.sidEnvLevel > 0 {
+						ch.sidEnvLevel--
+						ch.envelopeLevel = float32(ch.sidEnvLevel) / 255.0
+						ch.sidExpIndex = sidGetExpIndex(ch.sidEnvLevel)
+					}
+					if ch.sidEnvLevel == 0 {
+						ch.envelopeLevel = 0
+						ch.enabled = false
+					}
+				}
+			}
+			return
+		}
+
+		// Time-based approximation path (default)
 		switch ch.envelopePhase {
 		case ENV_ATTACK:
 			// Real SID attack is LINEAR (rises in 256 steps)
@@ -1761,6 +1859,11 @@ func (ch *Channel) generateSample() float32 {
 
 	// Per-channel filter (state-variable with multi-mode mix)
 	if ch.filterModeMask != 0 && ch.filterCutoff > 0 {
+		// Smooth cutoff/resonance to avoid zipper noise.
+		const filterSmooth = 0.02
+		ch.filterCutoff += (ch.filterCutoffTarget - ch.filterCutoff) * filterSmooth
+		ch.filterResonance += (ch.filterResonanceTarget - ch.filterResonance) * filterSmooth
+
 		cutoff := calculateFilterCutoff(ch.filterCutoff)
 		resonance := ch.filterResonance * MAX_RESONANCE
 
@@ -2210,10 +2313,8 @@ func (chip *SoundChip) GetChannelOscillatorOutput(ch int) uint8 {
 
 // GetChannelEnvelopeLevel returns the current envelope level as 8-bit value (0-255).
 // This is used for SID ENV3 register readback.
-// NOTE: Returns quantized float envelope, not a true SID 8-bit rate counter.
-// Real SID maintains an 8-bit counter incremented by the rate counter circuit.
-// For most uses this approximation is sufficient, but tunes relying on exact
-// ENV3 timing for synchronization effects may behave slightly differently.
+// When rate counter mode is active, returns the authentic 8-bit envelope counter.
+// Otherwise returns the quantized float envelope level.
 func (chip *SoundChip) GetChannelEnvelopeLevel(ch int) uint8 {
 	chip.mutex.RLock()
 	defer chip.mutex.RUnlock()
@@ -2225,7 +2326,13 @@ func (chip *SoundChip) GetChannelEnvelopeLevel(ch int) uint8 {
 	if channel == nil {
 		return 0
 	}
-	// Convert envelope level (0.0 to 1.0) to 8-bit (0-255)
+
+	// When rate counter is active, return the authentic 8-bit envelope level
+	if channel.sidRateCounter {
+		return channel.sidEnvLevel
+	}
+
+	// Fallback: convert float envelope level to 8-bit
 	level := channel.envelopeLevel
 	if level < 0 {
 		level = 0
@@ -2264,8 +2371,12 @@ func (chip *SoundChip) SetChannelFilter(ch int, modeMask uint8, cutoff, resonanc
 	if modeMask != 0 {
 		channel.filterType = 1
 	}
-	channel.filterCutoff = cutoff
-	channel.filterResonance = resonance
+	channel.filterCutoffTarget = cutoff
+	channel.filterResonanceTarget = resonance
+	if channel.filterType == 0 {
+		channel.filterCutoff = cutoff
+		channel.filterResonance = resonance
+	}
 
 	if channel.filterType == 0 || channel.filterCutoff == 0 {
 		channel.filterLP = 0
@@ -2288,6 +2399,61 @@ func (chip *SoundChip) SetChannelSIDFilterMode(ch int, enabled bool) {
 		return
 	}
 	channel.sidFilterMode = enabled
+}
+
+// SetChannelSIDRateCounter configures authentic SID rate counter ADSR for a channel.
+// When enabled, uses cycle-accurate rate counter instead of time-based approximation.
+// The envelope logic will automatically use the appropriate index for each phase.
+// Parameters:
+//   - enabled: true to use rate counter, false for time-based approximation
+//   - sampleRate: audio sample rate (for converting SID clock cycles to samples)
+//   - clockHz: SID clock frequency (985248 for PAL, 1022727 for NTSC)
+//   - attack, decay, release: ADSR indices (0-15) for each phase
+func (chip *SoundChip) SetChannelSIDRateCounter(ch int, enabled bool, sampleRate int, clockHz uint32, attack, decay, release uint8) {
+	chip.mutex.Lock()
+	defer chip.mutex.Unlock()
+
+	if ch < 0 || ch >= NUM_CHANNELS {
+		return
+	}
+	channel := chip.channels[ch]
+	if channel == nil {
+		return
+	}
+
+	wasEnabled := channel.sidRateCounter
+	channel.sidRateCounter = enabled
+
+	// Calculate clock cycles per audio sample for fractional accumulator
+	if enabled && sampleRate > 0 && clockHz > 0 {
+		channel.sidCyclesPerSample = float64(clockHz) / float64(sampleRate)
+	} else {
+		channel.sidCyclesPerSample = 0
+	}
+
+	if enabled && !wasEnabled {
+		channel.sidCycleAccum = 0
+		level := channel.envelopeLevel
+		if level < 0 {
+			level = 0
+		} else if level > 1.0 {
+			level = 1.0
+		}
+		channel.sidEnvLevel = uint8(level * 255.0)
+	}
+
+	if attack > 15 {
+		attack = 15
+	}
+	if decay > 15 {
+		decay = 15
+	}
+	if release > 15 {
+		release = 15
+	}
+	channel.sidAttackIndex = attack
+	channel.sidDecayIndex = decay
+	channel.sidReleaseIndex = release
 }
 
 func (chip *SoundChip) SetPOKEYPlusEnabled(enabled bool) {
