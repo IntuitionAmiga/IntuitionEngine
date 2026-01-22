@@ -228,6 +228,8 @@ For 8-bit CPUs (Z80, 6502), addresses are mapped to the 16-bit range `$F000-$FFF
 
 The system's memory layout is designed to provide efficient access to both program space and hardware features while maintaining clear separation between different memory regions.
 
+**Address Notation:** This document uses both `0x` prefix (C-style) and `$` prefix (assembly-style) for hexadecimal addresses. The notation varies to match each CPU's assembly dialect: `0x` for IE32/general discussion, `$` for M68K and 6502 assembly examples.
+
 ## Memory Map Overview
 
 ```
@@ -2784,7 +2786,7 @@ Line coordinates:
     STORE A, @BLT_WIDTH
     LOAD A, #16
     STORE A, @BLT_HEIGHT
-    LOAD A, #0xFF00FF00     ; green (BGRA)
+    LOAD A, #0xFF00FF00     ; green (RGBA)
     STORE A, @BLT_COLOR
     LOAD A, #1
     STORE A, @BLT_CTRL      ; start
@@ -2796,7 +2798,7 @@ Line coordinates:
     move.l  #VRAM_START,BLT_DST.l
     move.l  #16,BLT_WIDTH.l
     move.l  #16,BLT_HEIGHT.l
-    move.l  #$FF00FF00,BLT_COLOR.l   ; green (BGRA)
+    move.l  #$FF00FF00,BLT_COLOR.l   ; green (RGBA)
     move.l  #1,BLT_CTRL.l            ; start
 ```
 
@@ -2806,7 +2808,7 @@ Line coordinates:
     SET_BLT_DST VRAM_START
     SET_BLT_WIDTH 16
     SET_BLT_HEIGHT 16
-    SET_BLT_COLOR 0xFF00FF00         ; green (BGRA)
+    SET_BLT_COLOR 0xFF00FF00         ; green (RGBA)
     START_BLIT
 ```
 
@@ -2817,7 +2819,7 @@ Line coordinates:
     STORE32 BLT_DST_0, VRAM_START
     SET_BLT_WIDTH 16
     SET_BLT_HEIGHT 16
-    SET_BLT_COLOR $FF00FF00          ; green (BGRA)
+    SET_BLT_COLOR $FF00FF00          ; green (RGBA)
     START_BLIT
 ```
 
@@ -2835,7 +2837,7 @@ The blitter defaults `BLT_SRC_STRIDE`/`BLT_DST_STRIDE` to the current mode row b
     STORE A, @VIDEO_RASTER_Y
     LOAD A, #4
     STORE A, @VIDEO_RASTER_HEIGHT
-    LOAD A, #0xFF0000FF           ; blue (BGRA)
+    LOAD A, #0xFFFF0000           ; blue (RGBA)
     STORE A, @VIDEO_RASTER_COLOR
     LOAD A, #1
     STORE A, @VIDEO_RASTER_CTRL
@@ -2845,7 +2847,7 @@ The blitter defaults `BLT_SRC_STRIDE`/`BLT_DST_STRIDE` to the current mode row b
 ```assembly
     move.l  #100,VIDEO_RASTER_Y.l
     move.l  #4,VIDEO_RASTER_HEIGHT.l
-    move.l  #$FF0000FF,VIDEO_RASTER_COLOR.l
+    move.l  #$FFFF0000,VIDEO_RASTER_COLOR.l  ; blue (RGBA)
     move.l  #1,VIDEO_RASTER_CTRL.l
 ```
 
@@ -2853,7 +2855,7 @@ The blitter defaults `BLT_SRC_STRIDE`/`BLT_DST_STRIDE` to the current mode row b
 ```assembly
     STORE32 VIDEO_RASTER_Y_LO,100
     STORE32 VIDEO_RASTER_HEIGHT_LO,4
-    STORE32 VIDEO_RASTER_COLOR_0,0xFF0000FF
+    STORE32 VIDEO_RASTER_COLOR_0,0xFFFF0000  ; blue (RGBA)
     ld   a,1
     ld   (VIDEO_RASTER_CTRL),a
 ```
@@ -2862,7 +2864,7 @@ The blitter defaults `BLT_SRC_STRIDE`/`BLT_DST_STRIDE` to the current mode row b
 ```assembly
     STORE32 VIDEO_RASTER_Y_LO, 100
     STORE32 VIDEO_RASTER_HEIGHT_LO, 4
-    STORE32 VIDEO_RASTER_COLOR_0, $FF0000FF
+    STORE32 VIDEO_RASTER_COLOR_0, $FFFF0000  ; blue (RGBA)
     lda  #1
     sta  VIDEO_RASTER_CTRL
 ```
@@ -3196,15 +3198,15 @@ Dump a range of memory to inspect state:
 
 **IE32:**
 ```assembly
-; Dump 16 bytes starting at address in B
+; Dump 4 words (16 bytes) starting at address in B
 dump_memory:
-    LOAD C, #16             ; Counter
+    LOAD C, #4              ; Counter (4 words = 16 bytes)
 .loop:
-    LOADB A, @B             ; Read byte
+    LOAD A, [B]             ; Read 32-bit word
     STORE A, @0xF0700       ; Output to console
-    ADD B, #1               ; Next address
+    ADD B, #4               ; Next word address
     SUB C, #1
-    BNE .loop
+    JNZ C, .loop
     RTS
 ```
 
@@ -3329,7 +3331,7 @@ The IE32 is a custom 32-bit RISC processor designed for simplicity and performan
 - **16 general-purpose registers**: A (accumulator), B-H, S-W, X-Z (all 32-bit, orthogonal access)
 - **Fixed 8-byte instruction format**: Simplifies fetch/decode
 - **Load/store architecture**: Memory access only via LOAD/STORE
-- **Big-endian byte order**: Matches Motorola convention
+- **Little-endian byte order**: Matches system bus convention
 - **Hardware interrupt support**: Single vector at address 0
 
 Execution cycle: Fetch (8 bytes) → Decode → Execute → Update PC → Check interrupts
@@ -3579,6 +3581,7 @@ go test -v -run TestZ80
 
 - Go 1.21 or later
 - C compiler (for CGO dependencies)
+- `sstrip` and `upx` (for binary optimization; modify Makefile to skip if unavailable)
 - Platform-specific libraries:
 
 **Linux (Debian/Ubuntu):**
