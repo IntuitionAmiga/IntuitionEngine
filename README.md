@@ -17,6 +17,8 @@
 ## https://www.youtube.com/@IntuitionAmiga/
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/M4M61AHEFR)
 
+**See also: [TUTORIAL.md](TUTORIAL.md)** - Step-by-step guide to building a complete demoscene intro with all four CPU architectures.
+
 # Table of Contents
 
 1. [System Overview](#1-system-overview)
@@ -3491,6 +3493,8 @@ Lightweight alternative offering:
 # 14. Running Demonstrations
 
 The Intuition Engine includes visual and audio demonstrations that showcase system capabilities.
+
+**Tutorial:** For a hands-on guide to building a complete demoscene-style demo (blitter sprites, copper effects, PSG+ music, scrolltext), see **[TUTORIAL.md](TUTORIAL.md)**. It includes full implementations for all four CPU architectures.
 
 ## 14.1 Quick Start
 
