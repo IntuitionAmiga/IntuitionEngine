@@ -480,7 +480,9 @@
 
 ; Copper WAIT opcode: wait for raster position
 ; Format: 0x0YYY_HHHH where YYY = Y position (0-4095), HHHH = H position
+; Usage: COP_WAIT(y) = y * COP_WAIT_SCALE
 .equ COP_WAIT_MASK         0x00000000
+.equ COP_WAIT_SCALE        0x1000           ; Multiply Y position by this for WAIT
 
 ; Copper MOVE opcodes
 .equ COP_MOVE_RASTER_Y     0x40120000

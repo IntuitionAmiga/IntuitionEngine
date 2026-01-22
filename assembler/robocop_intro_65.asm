@@ -1150,183 +1150,183 @@ palette:
 ; ============================================================================
 copper_list:
     ; Bar 0 at Y=40
-    .dword $00028000            ; WAIT
-    .dword $40120000            ; MOVE RASTER_Y
+    .dword 40*COP_WAIT_SCALE     ; WAIT
+    .dword COP_MOVE_RASTER_Y    ; MOVE RASTER_Y
     .dword 40
-    .dword $40130000            ; MOVE RASTER_H
+    .dword COP_MOVE_RASTER_H    ; MOVE RASTER_H
     .dword 12
-    .dword $40140000            ; MOVE COLOR
+    .dword COP_MOVE_RASTER_COLOR ; MOVE COLOR
     .dword $FF0000FF            ; (will be updated)
-    .dword $40150000            ; MOVE CTRL
+    .dword COP_MOVE_RASTER_CTRL ; MOVE CTRL
     .dword 1
 
     ; Bar 1 at Y=64
-    .dword $00040000
-    .dword $40120000
+    .dword 64*COP_WAIT_SCALE
+    .dword COP_MOVE_RASTER_Y
     .dword 64
-    .dword $40130000
+    .dword COP_MOVE_RASTER_H
     .dword 12
-    .dword $40140000
+    .dword COP_MOVE_RASTER_COLOR
     .dword $FF0040FF
-    .dword $40150000
+    .dword COP_MOVE_RASTER_CTRL
     .dword 1
 
     ; Bar 2 at Y=88
-    .dword $00058000
-    .dword $40120000
+    .dword 88*COP_WAIT_SCALE
+    .dword COP_MOVE_RASTER_Y
     .dword 88
-    .dword $40130000
+    .dword COP_MOVE_RASTER_H
     .dword 12
-    .dword $40140000
+    .dword COP_MOVE_RASTER_COLOR
     .dword $FF0080FF
-    .dword $40150000
+    .dword COP_MOVE_RASTER_CTRL
     .dword 1
 
     ; Bar 3 at Y=112
-    .dword $00070000
-    .dword $40120000
+    .dword 112*COP_WAIT_SCALE
+    .dword COP_MOVE_RASTER_Y
     .dword 112
-    .dword $40130000
+    .dword COP_MOVE_RASTER_H
     .dword 12
-    .dword $40140000
+    .dword COP_MOVE_RASTER_COLOR
     .dword $FF00C0FF
-    .dword $40150000
+    .dword COP_MOVE_RASTER_CTRL
     .dword 1
 
     ; Bar 4 at Y=136
-    .dword $00088000
-    .dword $40120000
+    .dword 136*COP_WAIT_SCALE
+    .dword COP_MOVE_RASTER_Y
     .dword 136
-    .dword $40130000
+    .dword COP_MOVE_RASTER_H
     .dword 12
-    .dword $40140000
+    .dword COP_MOVE_RASTER_COLOR
     .dword $FF00FF80
-    .dword $40150000
+    .dword COP_MOVE_RASTER_CTRL
     .dword 1
 
     ; Bar 5 at Y=160
-    .dword $000A0000
-    .dword $40120000
+    .dword 160*COP_WAIT_SCALE
+    .dword COP_MOVE_RASTER_Y
     .dword 160
-    .dword $40130000
+    .dword COP_MOVE_RASTER_H
     .dword 12
-    .dword $40140000
+    .dword COP_MOVE_RASTER_COLOR
     .dword $FF00FF00
-    .dword $40150000
+    .dword COP_MOVE_RASTER_CTRL
     .dword 1
 
     ; Bar 6 at Y=184
-    .dword $000B8000
-    .dword $40120000
+    .dword 184*COP_WAIT_SCALE
+    .dword COP_MOVE_RASTER_Y
     .dword 184
-    .dword $40130000
+    .dword COP_MOVE_RASTER_H
     .dword 12
-    .dword $40140000
+    .dword COP_MOVE_RASTER_COLOR
     .dword $FF40FF00
-    .dword $40150000
+    .dword COP_MOVE_RASTER_CTRL
     .dword 1
 
     ; Bar 7 at Y=208
-    .dword $000D0000
-    .dword $40120000
+    .dword 208*COP_WAIT_SCALE
+    .dword COP_MOVE_RASTER_Y
     .dword 208
-    .dword $40130000
+    .dword COP_MOVE_RASTER_H
     .dword 12
-    .dword $40140000
+    .dword COP_MOVE_RASTER_COLOR
     .dword $FF80FF00
-    .dword $40150000
+    .dword COP_MOVE_RASTER_CTRL
     .dword 1
 
     ; Bar 8 at Y=232
-    .dword $000E8000
-    .dword $40120000
+    .dword 232*COP_WAIT_SCALE
+    .dword COP_MOVE_RASTER_Y
     .dword 232
-    .dword $40130000
+    .dword COP_MOVE_RASTER_H
     .dword 12
-    .dword $40140000
+    .dword COP_MOVE_RASTER_COLOR
     .dword $FFFFFF00
-    .dword $40150000
+    .dword COP_MOVE_RASTER_CTRL
     .dword 1
 
     ; Bar 9 at Y=256
-    .dword $00100000
-    .dword $40120000
+    .dword 256*COP_WAIT_SCALE
+    .dword COP_MOVE_RASTER_Y
     .dword 256
-    .dword $40130000
+    .dword COP_MOVE_RASTER_H
     .dword 12
-    .dword $40140000
+    .dword COP_MOVE_RASTER_COLOR
     .dword $FFFFC000
-    .dword $40150000
+    .dword COP_MOVE_RASTER_CTRL
     .dword 1
 
     ; Bar 10 at Y=280
-    .dword $00118000
-    .dword $40120000
+    .dword 280*COP_WAIT_SCALE
+    .dword COP_MOVE_RASTER_Y
     .dword 280
-    .dword $40130000
+    .dword COP_MOVE_RASTER_H
     .dword 12
-    .dword $40140000
+    .dword COP_MOVE_RASTER_COLOR
     .dword $FFFF8000
-    .dword $40150000
+    .dword COP_MOVE_RASTER_CTRL
     .dword 1
 
     ; Bar 11 at Y=304
-    .dword $00130000
-    .dword $40120000
+    .dword 304*COP_WAIT_SCALE
+    .dword COP_MOVE_RASTER_Y
     .dword 304
-    .dword $40130000
+    .dword COP_MOVE_RASTER_H
     .dword 12
-    .dword $40140000
+    .dword COP_MOVE_RASTER_COLOR
     .dword $FFFF4000
-    .dword $40150000
+    .dword COP_MOVE_RASTER_CTRL
     .dword 1
 
     ; Bar 12 at Y=328
-    .dword $00148000
-    .dword $40120000
+    .dword 328*COP_WAIT_SCALE
+    .dword COP_MOVE_RASTER_Y
     .dword 328
-    .dword $40130000
+    .dword COP_MOVE_RASTER_H
     .dword 12
-    .dword $40140000
+    .dword COP_MOVE_RASTER_COLOR
     .dword $FFFF0000
-    .dword $40150000
+    .dword COP_MOVE_RASTER_CTRL
     .dword 1
 
     ; Bar 13 at Y=352
-    .dword $00160000
-    .dword $40120000
+    .dword 352*COP_WAIT_SCALE
+    .dword COP_MOVE_RASTER_Y
     .dword 352
-    .dword $40130000
+    .dword COP_MOVE_RASTER_H
     .dword 12
-    .dword $40140000
+    .dword COP_MOVE_RASTER_COLOR
     .dword $FFFF00FF
-    .dword $40150000
+    .dword COP_MOVE_RASTER_CTRL
     .dword 1
 
     ; Bar 14 at Y=376
-    .dword $00178000
-    .dword $40120000
+    .dword 376*COP_WAIT_SCALE
+    .dword COP_MOVE_RASTER_Y
     .dword 376
-    .dword $40130000
+    .dword COP_MOVE_RASTER_H
     .dword 12
-    .dword $40140000
+    .dword COP_MOVE_RASTER_COLOR
     .dword $FF8000FF
-    .dword $40150000
+    .dword COP_MOVE_RASTER_CTRL
     .dword 1
 
     ; Bar 15 at Y=400
-    .dword $00190000
-    .dword $40120000
+    .dword 400*COP_WAIT_SCALE
+    .dword COP_MOVE_RASTER_Y
     .dword 400
-    .dword $40130000
+    .dword COP_MOVE_RASTER_H
     .dword 12
-    .dword $40140000
+    .dword COP_MOVE_RASTER_COLOR
     .dword $FF4000FF
-    .dword $40150000
+    .dword COP_MOVE_RASTER_CTRL
     .dword 1
 
     ; END
-    .dword $C0000000
+    .dword COP_END
 
 ; ----------------------------------------------------------------------------
 ; Scrolltext sine table for Y wave effect (256 entries, range ±20)

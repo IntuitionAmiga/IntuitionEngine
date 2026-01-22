@@ -531,7 +531,9 @@ BACKGROUND      equ $FF000000           ; BGRA: Black, full alpha
 
 ; Copper WAIT opcode: wait for raster position
 ; Format: $0YYY_HHHH where YYY = Y position (0-4095), HHHH = H position
+; Usage: COP_WAIT(y) = y * COP_WAIT_SCALE
 COP_WAIT_MASK        equ $00000000
+COP_WAIT_SCALE       equ $1000              ; Multiply Y position by this for WAIT
 
 ; Copper MOVE opcodes
 COP_MOVE_RASTER_Y     equ $40120000

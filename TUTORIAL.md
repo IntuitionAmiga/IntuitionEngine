@@ -771,16 +771,24 @@ Offset  Size    Contents
 
 Example copper list entry for a bar at Y=40 with height=12:
 ```assembly
-    dc.l    $00028000       ; WAIT for scanline 40 (40 * $1000 / 2)
-    dc.l    $40120000       ; MOVE to RASTER_Y
-    dc.l    40              ; Y = 40
-    dc.l    $40130000       ; MOVE to RASTER_HEIGHT
-    dc.l    12              ; height = 12
-    dc.l    $40140000       ; MOVE to RASTER_COLOR
-    dc.l    $FF0000FF       ; colour = red (RGBA)
-    dc.l    $40150000       ; MOVE to RASTER_CTRL
-    dc.l    1               ; trigger = 1 (draw)
+    dc.l    40*COP_WAIT_SCALE    ; WAIT for scanline 40
+    dc.l    COP_MOVE_RASTER_Y    ; MOVE to RASTER_Y
+    dc.l    40                   ; Y = 40
+    dc.l    COP_MOVE_RASTER_H    ; MOVE to RASTER_HEIGHT
+    dc.l    12                   ; height = 12
+    dc.l    COP_MOVE_RASTER_COLOR ; MOVE to RASTER_COLOR
+    dc.l    $FF0000FF            ; colour = red (RGBA)
+    dc.l    COP_MOVE_RASTER_CTRL ; MOVE to RASTER_CTRL
+    dc.l    1                    ; trigger = 1 (draw)
 ```
+
+The copper opcode constants are defined in the include files (`ie32.inc`, `ie68.inc`, `ie80.inc`, `ie65.inc`):
+- `COP_WAIT_SCALE` = 0x1000 (multiply Y position by this for WAIT)
+- `COP_MOVE_RASTER_Y` = 0x40120000
+- `COP_MOVE_RASTER_H` = 0x40130000
+- `COP_MOVE_RASTER_COLOR` = 0x40140000
+- `COP_MOVE_RASTER_CTRL` = 0x40150000
+- `COP_END` = 0xC0000000
 
 ## Initializing the Copper
 

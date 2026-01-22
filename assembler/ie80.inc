@@ -837,7 +837,9 @@
 ; COPPER OPCODES
 ; ============================================================================
 
+; Copper WAIT: usage is y * COP_WAIT_SCALE
 .set COP_WAIT_MASK,0x00000000
+.set COP_WAIT_SCALE,0x1000
 .set COP_MOVE_RASTER_Y,0x40120000
 .set COP_MOVE_RASTER_H,0x40130000
 .set COP_MOVE_RASTER_COLOR,0x40140000

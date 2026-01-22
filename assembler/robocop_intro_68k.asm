@@ -985,151 +985,152 @@ data_palette:
 
 data_copper_list:
 ; 16 bars: height=12, spacing=24, Y from 40 to 400
-    dc.l    $00028000
-    dc.l    $40120000
+; Each bar: WAIT, MOVE_Y, y_val, MOVE_H, height, MOVE_COLOR, color, MOVE_CTRL, 1
+    dc.l    40*COP_WAIT_SCALE
+    dc.l    COP_MOVE_RASTER_Y
     dc.l    40
-    dc.l    $40130000
+    dc.l    COP_MOVE_RASTER_H
     dc.l    12
-    dc.l    $40140000
+    dc.l    COP_MOVE_RASTER_COLOR
     dc.l    $FF0000FF
-    dc.l    $40150000
+    dc.l    COP_MOVE_RASTER_CTRL
     dc.l    1
-    dc.l    $00040000
-    dc.l    $40120000
+    dc.l    64*COP_WAIT_SCALE
+    dc.l    COP_MOVE_RASTER_Y
     dc.l    64
-    dc.l    $40130000
+    dc.l    COP_MOVE_RASTER_H
     dc.l    12
-    dc.l    $40140000
+    dc.l    COP_MOVE_RASTER_COLOR
     dc.l    $FF0040FF
-    dc.l    $40150000
+    dc.l    COP_MOVE_RASTER_CTRL
     dc.l    1
-    dc.l    $00058000
-    dc.l    $40120000
+    dc.l    88*COP_WAIT_SCALE
+    dc.l    COP_MOVE_RASTER_Y
     dc.l    88
-    dc.l    $40130000
+    dc.l    COP_MOVE_RASTER_H
     dc.l    12
-    dc.l    $40140000
+    dc.l    COP_MOVE_RASTER_COLOR
     dc.l    $FF0080FF
-    dc.l    $40150000
+    dc.l    COP_MOVE_RASTER_CTRL
     dc.l    1
-    dc.l    $00070000
-    dc.l    $40120000
+    dc.l    112*COP_WAIT_SCALE
+    dc.l    COP_MOVE_RASTER_Y
     dc.l    112
-    dc.l    $40130000
+    dc.l    COP_MOVE_RASTER_H
     dc.l    12
-    dc.l    $40140000
+    dc.l    COP_MOVE_RASTER_COLOR
     dc.l    $FF00C0FF
-    dc.l    $40150000
+    dc.l    COP_MOVE_RASTER_CTRL
     dc.l    1
-    dc.l    $00088000
-    dc.l    $40120000
+    dc.l    136*COP_WAIT_SCALE
+    dc.l    COP_MOVE_RASTER_Y
     dc.l    136
-    dc.l    $40130000
+    dc.l    COP_MOVE_RASTER_H
     dc.l    12
-    dc.l    $40140000
+    dc.l    COP_MOVE_RASTER_COLOR
     dc.l    $FF00FF80
-    dc.l    $40150000
+    dc.l    COP_MOVE_RASTER_CTRL
     dc.l    1
-    dc.l    $000A0000
-    dc.l    $40120000
+    dc.l    160*COP_WAIT_SCALE
+    dc.l    COP_MOVE_RASTER_Y
     dc.l    160
-    dc.l    $40130000
+    dc.l    COP_MOVE_RASTER_H
     dc.l    12
-    dc.l    $40140000
+    dc.l    COP_MOVE_RASTER_COLOR
     dc.l    $FF00FF00
-    dc.l    $40150000
+    dc.l    COP_MOVE_RASTER_CTRL
     dc.l    1
-    dc.l    $000B8000
-    dc.l    $40120000
+    dc.l    184*COP_WAIT_SCALE
+    dc.l    COP_MOVE_RASTER_Y
     dc.l    184
-    dc.l    $40130000
+    dc.l    COP_MOVE_RASTER_H
     dc.l    12
-    dc.l    $40140000
+    dc.l    COP_MOVE_RASTER_COLOR
     dc.l    $FF40FF00
-    dc.l    $40150000
+    dc.l    COP_MOVE_RASTER_CTRL
     dc.l    1
-    dc.l    $000D0000
-    dc.l    $40120000
+    dc.l    208*COP_WAIT_SCALE
+    dc.l    COP_MOVE_RASTER_Y
     dc.l    208
-    dc.l    $40130000
+    dc.l    COP_MOVE_RASTER_H
     dc.l    12
-    dc.l    $40140000
+    dc.l    COP_MOVE_RASTER_COLOR
     dc.l    $FF80FF00
-    dc.l    $40150000
+    dc.l    COP_MOVE_RASTER_CTRL
     dc.l    1
-    dc.l    $000E8000
-    dc.l    $40120000
+    dc.l    232*COP_WAIT_SCALE
+    dc.l    COP_MOVE_RASTER_Y
     dc.l    232
-    dc.l    $40130000
+    dc.l    COP_MOVE_RASTER_H
     dc.l    12
-    dc.l    $40140000
+    dc.l    COP_MOVE_RASTER_COLOR
     dc.l    $FFFFFF00
-    dc.l    $40150000
+    dc.l    COP_MOVE_RASTER_CTRL
     dc.l    1
-    dc.l    $00100000
-    dc.l    $40120000
+    dc.l    256*COP_WAIT_SCALE
+    dc.l    COP_MOVE_RASTER_Y
     dc.l    256
-    dc.l    $40130000
+    dc.l    COP_MOVE_RASTER_H
     dc.l    12
-    dc.l    $40140000
+    dc.l    COP_MOVE_RASTER_COLOR
     dc.l    $FFFFC000
-    dc.l    $40150000
+    dc.l    COP_MOVE_RASTER_CTRL
     dc.l    1
-    dc.l    $00118000
-    dc.l    $40120000
+    dc.l    280*COP_WAIT_SCALE
+    dc.l    COP_MOVE_RASTER_Y
     dc.l    280
-    dc.l    $40130000
+    dc.l    COP_MOVE_RASTER_H
     dc.l    12
-    dc.l    $40140000
+    dc.l    COP_MOVE_RASTER_COLOR
     dc.l    $FFFF8000
-    dc.l    $40150000
+    dc.l    COP_MOVE_RASTER_CTRL
     dc.l    1
-    dc.l    $00130000
-    dc.l    $40120000
+    dc.l    304*COP_WAIT_SCALE
+    dc.l    COP_MOVE_RASTER_Y
     dc.l    304
-    dc.l    $40130000
+    dc.l    COP_MOVE_RASTER_H
     dc.l    12
-    dc.l    $40140000
+    dc.l    COP_MOVE_RASTER_COLOR
     dc.l    $FFFF4000
-    dc.l    $40150000
+    dc.l    COP_MOVE_RASTER_CTRL
     dc.l    1
-    dc.l    $00148000
-    dc.l    $40120000
+    dc.l    328*COP_WAIT_SCALE
+    dc.l    COP_MOVE_RASTER_Y
     dc.l    328
-    dc.l    $40130000
+    dc.l    COP_MOVE_RASTER_H
     dc.l    12
-    dc.l    $40140000
+    dc.l    COP_MOVE_RASTER_COLOR
     dc.l    $FFFF0000
-    dc.l    $40150000
+    dc.l    COP_MOVE_RASTER_CTRL
     dc.l    1
-    dc.l    $00160000
-    dc.l    $40120000
+    dc.l    352*COP_WAIT_SCALE
+    dc.l    COP_MOVE_RASTER_Y
     dc.l    352
-    dc.l    $40130000
+    dc.l    COP_MOVE_RASTER_H
     dc.l    12
-    dc.l    $40140000
+    dc.l    COP_MOVE_RASTER_COLOR
     dc.l    $FFFF00FF
-    dc.l    $40150000
+    dc.l    COP_MOVE_RASTER_CTRL
     dc.l    1
-    dc.l    $00178000
-    dc.l    $40120000
+    dc.l    376*COP_WAIT_SCALE
+    dc.l    COP_MOVE_RASTER_Y
     dc.l    376
-    dc.l    $40130000
+    dc.l    COP_MOVE_RASTER_H
     dc.l    12
-    dc.l    $40140000
+    dc.l    COP_MOVE_RASTER_COLOR
     dc.l    $FF8000FF
-    dc.l    $40150000
+    dc.l    COP_MOVE_RASTER_CTRL
     dc.l    1
-    dc.l    $00190000
-    dc.l    $40120000
+    dc.l    400*COP_WAIT_SCALE
+    dc.l    COP_MOVE_RASTER_Y
     dc.l    400
-    dc.l    $40130000
+    dc.l    COP_MOVE_RASTER_H
     dc.l    12
-    dc.l    $40140000
+    dc.l    COP_MOVE_RASTER_COLOR
     dc.l    $FF4000FF
-    dc.l    $40150000
+    dc.l    COP_MOVE_RASTER_CTRL
     dc.l    1
-    dc.l    $C0000000
+    dc.l    COP_END
 
 data_robocop_rgba:
     incbin  "../robocop_rgba.bin"

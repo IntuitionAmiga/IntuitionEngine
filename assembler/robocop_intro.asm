@@ -1005,16 +1005,20 @@ data_palette:
 
 data_copper_list:
 ; 16 bars: height=12, spacing=24, Y from 40 to 400
-.word 0x00028000
-.word 0x40120000
+; Copper opcodes: WAIT=y*0x1000, MOVE_Y=0x40120000, MOVE_H=0x40130000,
+;                 MOVE_COLOR=0x40140000, MOVE_CTRL=0x40150000, END=0xC0000000
+; Bar 1: Y=40
+.word 0x00028000                ; WAIT Y=40 (40*0x1000)
+.word 0x40120000                ; COP_MOVE_RASTER_Y
 .word 40
-.word 0x40130000
+.word 0x40130000                ; COP_MOVE_RASTER_H
 .word 12
-.word 0x40140000
+.word 0x40140000                ; COP_MOVE_RASTER_COLOR
 .word 0xFF0000FF
-.word 0x40150000
+.word 0x40150000                ; COP_MOVE_RASTER_CTRL
 .word 1
-.word 0x00040000
+; Bar 2: Y=64
+.word 0x00040000                ; WAIT Y=64
 .word 0x40120000
 .word 64
 .word 0x40130000
@@ -1023,7 +1027,8 @@ data_copper_list:
 .word 0xFF0040FF
 .word 0x40150000
 .word 1
-.word 0x00058000
+; Bar 3: Y=88
+.word 0x00058000                ; WAIT Y=88
 .word 0x40120000
 .word 88
 .word 0x40130000
@@ -1032,7 +1037,8 @@ data_copper_list:
 .word 0xFF0080FF
 .word 0x40150000
 .word 1
-.word 0x00070000
+; Bar 4: Y=112
+.word 0x00070000                ; WAIT Y=112
 .word 0x40120000
 .word 112
 .word 0x40130000
@@ -1041,7 +1047,8 @@ data_copper_list:
 .word 0xFF00C0FF
 .word 0x40150000
 .word 1
-.word 0x00088000
+; Bar 5: Y=136
+.word 0x00088000                ; WAIT Y=136
 .word 0x40120000
 .word 136
 .word 0x40130000
@@ -1050,7 +1057,8 @@ data_copper_list:
 .word 0xFF00FF80
 .word 0x40150000
 .word 1
-.word 0x000A0000
+; Bar 6: Y=160
+.word 0x000A0000                ; WAIT Y=160
 .word 0x40120000
 .word 160
 .word 0x40130000
@@ -1059,7 +1067,8 @@ data_copper_list:
 .word 0xFF00FF00
 .word 0x40150000
 .word 1
-.word 0x000B8000
+; Bar 7: Y=184
+.word 0x000B8000                ; WAIT Y=184
 .word 0x40120000
 .word 184
 .word 0x40130000
@@ -1068,7 +1077,8 @@ data_copper_list:
 .word 0xFF40FF00
 .word 0x40150000
 .word 1
-.word 0x000D0000
+; Bar 8: Y=208
+.word 0x000D0000                ; WAIT Y=208
 .word 0x40120000
 .word 208
 .word 0x40130000
@@ -1077,7 +1087,8 @@ data_copper_list:
 .word 0xFF80FF00
 .word 0x40150000
 .word 1
-.word 0x000E8000
+; Bar 9: Y=232
+.word 0x000E8000                ; WAIT Y=232
 .word 0x40120000
 .word 232
 .word 0x40130000
@@ -1086,7 +1097,8 @@ data_copper_list:
 .word 0xFFFFFF00
 .word 0x40150000
 .word 1
-.word 0x00100000
+; Bar 10: Y=256
+.word 0x00100000                ; WAIT Y=256
 .word 0x40120000
 .word 256
 .word 0x40130000
@@ -1095,7 +1107,8 @@ data_copper_list:
 .word 0xFFFFC000
 .word 0x40150000
 .word 1
-.word 0x00118000
+; Bar 11: Y=280
+.word 0x00118000                ; WAIT Y=280
 .word 0x40120000
 .word 280
 .word 0x40130000
@@ -1104,7 +1117,8 @@ data_copper_list:
 .word 0xFFFF8000
 .word 0x40150000
 .word 1
-.word 0x00130000
+; Bar 12: Y=304
+.word 0x00130000                ; WAIT Y=304
 .word 0x40120000
 .word 304
 .word 0x40130000
@@ -1113,7 +1127,8 @@ data_copper_list:
 .word 0xFFFF4000
 .word 0x40150000
 .word 1
-.word 0x00148000
+; Bar 13: Y=328
+.word 0x00148000                ; WAIT Y=328
 .word 0x40120000
 .word 328
 .word 0x40130000
@@ -1122,7 +1137,8 @@ data_copper_list:
 .word 0xFFFF0000
 .word 0x40150000
 .word 1
-.word 0x00160000
+; Bar 14: Y=352
+.word 0x00160000                ; WAIT Y=352
 .word 0x40120000
 .word 352
 .word 0x40130000
@@ -1131,7 +1147,8 @@ data_copper_list:
 .word 0xFFFF00FF
 .word 0x40150000
 .word 1
-.word 0x00178000
+; Bar 15: Y=376
+.word 0x00178000                ; WAIT Y=376
 .word 0x40120000
 .word 376
 .word 0x40130000
@@ -1140,7 +1157,8 @@ data_copper_list:
 .word 0xFF8000FF
 .word 0x40150000
 .word 1
-.word 0x00190000
+; Bar 16: Y=400
+.word 0x00190000                ; WAIT Y=400
 .word 0x40120000
 .word 400
 .word 0x40130000
@@ -1149,7 +1167,8 @@ data_copper_list:
 .word 0xFF4000FF
 .word 0x40150000
 .word 1
-.word 0xC0000000
+; End of copper list
+.word 0xC0000000                ; COP_END
 
 data_robocop_rgba:
 .incbin "robocop_rgba.bin"

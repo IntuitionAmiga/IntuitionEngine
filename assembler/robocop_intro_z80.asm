@@ -989,183 +989,183 @@ y_addr_bank:    .space 480      ; Bank number
 
 copper_list:
     ; Bar 0 at Y=40
-    .long 0x00028000            ; WAIT
-    .long 0x40120000            ; MOVE RASTER_Y
+    .long 40*COP_WAIT_SCALE      ; WAIT
+    .long COP_MOVE_RASTER_Y     ; MOVE RASTER_Y
     .long 40
-    .long 0x40130000            ; MOVE RASTER_H
+    .long COP_MOVE_RASTER_H     ; MOVE RASTER_H
     .long 12
-    .long 0x40140000            ; MOVE COLOR
+    .long COP_MOVE_RASTER_COLOR ; MOVE COLOR
     .long 0xFF0000FF            ; (updated dynamically)
-    .long 0x40150000            ; MOVE CTRL
+    .long COP_MOVE_RASTER_CTRL  ; MOVE CTRL
     .long 1
 
     ; Bar 1 at Y=64
-    .long 0x00040000
-    .long 0x40120000
+    .long 64*COP_WAIT_SCALE
+    .long COP_MOVE_RASTER_Y
     .long 64
-    .long 0x40130000
+    .long COP_MOVE_RASTER_H
     .long 12
-    .long 0x40140000
+    .long COP_MOVE_RASTER_COLOR
     .long 0xFF0040FF
-    .long 0x40150000
+    .long COP_MOVE_RASTER_CTRL
     .long 1
 
     ; Bar 2 at Y=88
-    .long 0x00058000
-    .long 0x40120000
+    .long 88*COP_WAIT_SCALE
+    .long COP_MOVE_RASTER_Y
     .long 88
-    .long 0x40130000
+    .long COP_MOVE_RASTER_H
     .long 12
-    .long 0x40140000
+    .long COP_MOVE_RASTER_COLOR
     .long 0xFF0080FF
-    .long 0x40150000
+    .long COP_MOVE_RASTER_CTRL
     .long 1
 
     ; Bar 3 at Y=112
-    .long 0x00070000
-    .long 0x40120000
+    .long 112*COP_WAIT_SCALE
+    .long COP_MOVE_RASTER_Y
     .long 112
-    .long 0x40130000
+    .long COP_MOVE_RASTER_H
     .long 12
-    .long 0x40140000
+    .long COP_MOVE_RASTER_COLOR
     .long 0xFF00C0FF
-    .long 0x40150000
+    .long COP_MOVE_RASTER_CTRL
     .long 1
 
     ; Bar 4 at Y=136
-    .long 0x00088000
-    .long 0x40120000
+    .long 136*COP_WAIT_SCALE
+    .long COP_MOVE_RASTER_Y
     .long 136
-    .long 0x40130000
+    .long COP_MOVE_RASTER_H
     .long 12
-    .long 0x40140000
+    .long COP_MOVE_RASTER_COLOR
     .long 0xFF00FF80
-    .long 0x40150000
+    .long COP_MOVE_RASTER_CTRL
     .long 1
 
     ; Bar 5 at Y=160
-    .long 0x000A0000
-    .long 0x40120000
+    .long 160*COP_WAIT_SCALE
+    .long COP_MOVE_RASTER_Y
     .long 160
-    .long 0x40130000
+    .long COP_MOVE_RASTER_H
     .long 12
-    .long 0x40140000
+    .long COP_MOVE_RASTER_COLOR
     .long 0xFF00FF00
-    .long 0x40150000
+    .long COP_MOVE_RASTER_CTRL
     .long 1
 
     ; Bar 6 at Y=184
-    .long 0x000B8000
-    .long 0x40120000
+    .long 184*COP_WAIT_SCALE
+    .long COP_MOVE_RASTER_Y
     .long 184
-    .long 0x40130000
+    .long COP_MOVE_RASTER_H
     .long 12
-    .long 0x40140000
+    .long COP_MOVE_RASTER_COLOR
     .long 0xFF40FF00
-    .long 0x40150000
+    .long COP_MOVE_RASTER_CTRL
     .long 1
 
     ; Bar 7 at Y=208
-    .long 0x000D0000
-    .long 0x40120000
+    .long 208*COP_WAIT_SCALE
+    .long COP_MOVE_RASTER_Y
     .long 208
-    .long 0x40130000
+    .long COP_MOVE_RASTER_H
     .long 12
-    .long 0x40140000
+    .long COP_MOVE_RASTER_COLOR
     .long 0xFF80FF00
-    .long 0x40150000
+    .long COP_MOVE_RASTER_CTRL
     .long 1
 
     ; Bar 8 at Y=232
-    .long 0x000E8000
-    .long 0x40120000
+    .long 232*COP_WAIT_SCALE
+    .long COP_MOVE_RASTER_Y
     .long 232
-    .long 0x40130000
+    .long COP_MOVE_RASTER_H
     .long 12
-    .long 0x40140000
+    .long COP_MOVE_RASTER_COLOR
     .long 0xFFFFFF00
-    .long 0x40150000
+    .long COP_MOVE_RASTER_CTRL
     .long 1
 
     ; Bar 9 at Y=256
-    .long 0x00100000
-    .long 0x40120000
+    .long 256*COP_WAIT_SCALE
+    .long COP_MOVE_RASTER_Y
     .long 256
-    .long 0x40130000
+    .long COP_MOVE_RASTER_H
     .long 12
-    .long 0x40140000
+    .long COP_MOVE_RASTER_COLOR
     .long 0xFFFFC000
-    .long 0x40150000
+    .long COP_MOVE_RASTER_CTRL
     .long 1
 
     ; Bar 10 at Y=280
-    .long 0x00118000
-    .long 0x40120000
+    .long 280*COP_WAIT_SCALE
+    .long COP_MOVE_RASTER_Y
     .long 280
-    .long 0x40130000
+    .long COP_MOVE_RASTER_H
     .long 12
-    .long 0x40140000
+    .long COP_MOVE_RASTER_COLOR
     .long 0xFFFF8000
-    .long 0x40150000
+    .long COP_MOVE_RASTER_CTRL
     .long 1
 
     ; Bar 11 at Y=304
-    .long 0x00130000
-    .long 0x40120000
+    .long 304*COP_WAIT_SCALE
+    .long COP_MOVE_RASTER_Y
     .long 304
-    .long 0x40130000
+    .long COP_MOVE_RASTER_H
     .long 12
-    .long 0x40140000
+    .long COP_MOVE_RASTER_COLOR
     .long 0xFFFF4000
-    .long 0x40150000
+    .long COP_MOVE_RASTER_CTRL
     .long 1
 
     ; Bar 12 at Y=328
-    .long 0x00148000
-    .long 0x40120000
+    .long 328*COP_WAIT_SCALE
+    .long COP_MOVE_RASTER_Y
     .long 328
-    .long 0x40130000
+    .long COP_MOVE_RASTER_H
     .long 12
-    .long 0x40140000
+    .long COP_MOVE_RASTER_COLOR
     .long 0xFFFF0000
-    .long 0x40150000
+    .long COP_MOVE_RASTER_CTRL
     .long 1
 
     ; Bar 13 at Y=352
-    .long 0x00160000
-    .long 0x40120000
+    .long 352*COP_WAIT_SCALE
+    .long COP_MOVE_RASTER_Y
     .long 352
-    .long 0x40130000
+    .long COP_MOVE_RASTER_H
     .long 12
-    .long 0x40140000
+    .long COP_MOVE_RASTER_COLOR
     .long 0xFFFF00FF
-    .long 0x40150000
+    .long COP_MOVE_RASTER_CTRL
     .long 1
 
     ; Bar 14 at Y=376
-    .long 0x00178000
-    .long 0x40120000
+    .long 376*COP_WAIT_SCALE
+    .long COP_MOVE_RASTER_Y
     .long 376
-    .long 0x40130000
+    .long COP_MOVE_RASTER_H
     .long 12
-    .long 0x40140000
+    .long COP_MOVE_RASTER_COLOR
     .long 0xFF8000FF
-    .long 0x40150000
+    .long COP_MOVE_RASTER_CTRL
     .long 1
 
     ; Bar 15 at Y=400
-    .long 0x00190000
-    .long 0x40120000
+    .long 400*COP_WAIT_SCALE
+    .long COP_MOVE_RASTER_Y
     .long 400
-    .long 0x40130000
+    .long COP_MOVE_RASTER_H
     .long 12
-    .long 0x40140000
+    .long COP_MOVE_RASTER_COLOR
     .long 0xFF4000FF
-    .long 0x40150000
+    .long COP_MOVE_RASTER_CTRL
     .long 1
 
     ; END
-    .long 0xC0000000
+    .long COP_END
 
 ; ============================================================================
 ; READ-ONLY DATA - Sine/Cosine Tables (page-aligned for fast lookup)
