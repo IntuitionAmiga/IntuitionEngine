@@ -273,6 +273,189 @@
 .equ SAP_SUBSONG       0xF0D1D          ; Subsong selection (0-255)
 
 ; ============================================================================
+; CUSTOM AUDIO CHIP REGISTERS
+; ============================================================================
+;
+; The custom audio chip provides 4-channel synthesis with modern features:
+; - 5 waveform types: square, triangle, sine, noise, sawtooth
+; - Per-channel ADSR envelopes with multiple envelope shapes
+; - PWM for square waves with automatic modulation
+; - Frequency sweep for pitch effects
+; - Hard sync and ring modulation between channels
+; - Global filter (low-pass, high-pass, band-pass) with resonance
+; - Overdrive and reverb effects
+; - polyBLEP anti-aliasing for clean high-frequency output
+;
+; Signal flow: Oscillators -> Envelopes -> Mix -> Filter -> Overdrive -> Reverb
+; Sample rate: 44.1kHz, 32-bit floating point internal processing
+; ============================================================================
+
+; ----------------------------------------------------------------------------
+; Global Audio Control (0xF0800-0xF083F)
+; ----------------------------------------------------------------------------
+.equ AUDIO_CTRL        0xF0800          ; Master audio control
+.equ ENV_SHAPE         0xF0804          ; Global envelope shape
+
+; Filter registers
+.equ FILTER_CUTOFF     0xF0820          ; Cutoff frequency (0-255, exponential 20Hz-20kHz)
+.equ FILTER_RESONANCE  0xF0824          ; Resonance/Q (0-255)
+.equ FILTER_TYPE       0xF0828          ; Filter type (0=off, 1=LP, 2=HP, 3=BP)
+.equ FILTER_MOD_SOURCE 0xF082C          ; Modulation source channel (0-3)
+.equ FILTER_MOD_AMOUNT 0xF0830          ; Modulation depth (0-255)
+
+; Filter type constants
+.equ FILTER_OFF        0                ; Filter bypassed
+.equ FILTER_LOWPASS    1                ; Low-pass filter
+.equ FILTER_HIGHPASS   2                ; High-pass filter
+.equ FILTER_BANDPASS   3                ; Band-pass filter
+
+; Envelope shape constants
+.equ ENV_SHAPE_ADSR      0              ; Standard ADSR
+.equ ENV_SHAPE_SAW_UP    1              ; Linear rise to max, then hold
+.equ ENV_SHAPE_SAW_DOWN  2              ; Linear fall to zero, then hold
+.equ ENV_SHAPE_LOOP      3              ; ADSR but loops after release
+.equ ENV_SHAPE_SID       4              ; SID-style exponential ADSR
+
+; ----------------------------------------------------------------------------
+; Square Wave Channel (0xF0900-0xF093F)
+; ----------------------------------------------------------------------------
+.equ SQUARE_FREQ       0xF0900          ; Frequency (Hz)
+.equ SQUARE_VOL        0xF0904          ; Volume (0-255)
+.equ SQUARE_CTRL       0xF0908          ; Control (bit 1 = gate)
+.equ SQUARE_DUTY       0xF090C          ; Duty cycle (0-255, 128 = 50%)
+.equ SQUARE_SWEEP      0xF0910          ; Sweep control
+.equ SQUARE_PWM_CTRL   0xF0922          ; PWM control (bit 7 = enable, bits 0-6 = rate)
+.equ SQUARE_ATK        0xF0930          ; Attack time (ms)
+.equ SQUARE_DEC        0xF0934          ; Decay time (ms)
+.equ SQUARE_SUS        0xF0938          ; Sustain level (0-255)
+.equ SQUARE_REL        0xF093C          ; Release time (ms)
+
+; ----------------------------------------------------------------------------
+; Triangle Wave Channel (0xF0940-0xF097F)
+; ----------------------------------------------------------------------------
+.equ TRI_FREQ          0xF0940          ; Frequency (Hz)
+.equ TRI_VOL           0xF0944          ; Volume (0-255)
+.equ TRI_CTRL          0xF0948          ; Control (bit 1 = gate)
+.equ TRI_SWEEP         0xF0914          ; Sweep control
+.equ TRI_ATK           0xF0960          ; Attack time (ms)
+.equ TRI_DEC           0xF0964          ; Decay time (ms)
+.equ TRI_SUS           0xF0968          ; Sustain level (0-255)
+.equ TRI_REL           0xF096C          ; Release time (ms)
+
+; ----------------------------------------------------------------------------
+; Sine Wave Channel (0xF0980-0xF09BF)
+; ----------------------------------------------------------------------------
+.equ SINE_FREQ         0xF0980          ; Frequency (Hz)
+.equ SINE_VOL          0xF0984          ; Volume (0-255)
+.equ SINE_CTRL         0xF0988          ; Control (bit 1 = gate)
+.equ SINE_SWEEP        0xF0918          ; Sweep control
+.equ SINE_ATK          0xF0990          ; Attack time (ms)
+.equ SINE_DEC          0xF0994          ; Decay time (ms)
+.equ SINE_SUS          0xF0998          ; Sustain level (0-255)
+.equ SINE_REL          0xF099C          ; Release time (ms)
+
+; ----------------------------------------------------------------------------
+; Noise Channel (0xF09C0-0xF09FF)
+; ----------------------------------------------------------------------------
+.equ NOISE_FREQ        0xF09C0          ; Frequency/pitch (Hz)
+.equ NOISE_VOL         0xF09C4          ; Volume (0-255)
+.equ NOISE_CTRL        0xF09C8          ; Control (bit 1 = gate)
+.equ NOISE_ATK         0xF09D0          ; Attack time (ms)
+.equ NOISE_DEC         0xF09D4          ; Decay time (ms)
+.equ NOISE_SUS         0xF09D8          ; Sustain level (0-255)
+.equ NOISE_REL         0xF09DC          ; Release time (ms)
+.equ NOISE_MODE        0xF09E0          ; Noise type
+
+; Noise mode constants
+.equ NOISE_MODE_WHITE    0              ; White noise (LFSR)
+.equ NOISE_MODE_PERIODIC 1              ; Periodic/looping noise
+.equ NOISE_MODE_METALLIC 2              ; Metallic noise
+.equ NOISE_MODE_PSG      3              ; PSG-style (AY/YM) LFSR
+
+; ----------------------------------------------------------------------------
+; Modulation Registers (0xF0A00-0xF0A1F)
+; ----------------------------------------------------------------------------
+; Hard sync: slave channel resets phase when master completes a cycle
+.equ SYNC_SOURCE_CH0   0xF0A00          ; Sync source for channel 0 (0-3, or 0xFF=off)
+.equ SYNC_SOURCE_CH1   0xF0A04          ; Sync source for channel 1
+.equ SYNC_SOURCE_CH2   0xF0A08          ; Sync source for channel 2
+.equ SYNC_SOURCE_CH3   0xF0A0C          ; Sync source for channel 3
+
+; Ring modulation: output = ch * source (creates harmonic sidebands)
+.equ RING_MOD_SOURCE_CH0 0xF0A10        ; Ring mod source for channel 0
+.equ RING_MOD_SOURCE_CH1 0xF0A14        ; Ring mod source for channel 1
+.equ RING_MOD_SOURCE_CH2 0xF0A18        ; Ring mod source for channel 2
+.equ RING_MOD_SOURCE_CH3 0xF0A1C        ; Ring mod source for channel 3
+
+; ----------------------------------------------------------------------------
+; Sawtooth Wave Channel (0xF0A20-0xF0A6F)
+; ----------------------------------------------------------------------------
+.equ SAW_FREQ          0xF0A20          ; Frequency (Hz)
+.equ SAW_VOL           0xF0A24          ; Volume (0-255)
+.equ SAW_CTRL          0xF0A28          ; Control (bit 1 = gate)
+.equ SAW_SWEEP         0xF0A2C          ; Sweep control
+.equ SAW_ATK           0xF0A30          ; Attack time (ms)
+.equ SAW_DEC           0xF0A34          ; Decay time (ms)
+.equ SAW_SUS           0xF0A38          ; Sustain level (0-255)
+.equ SAW_REL           0xF0A3C          ; Release time (ms)
+.equ SYNC_SOURCE_CH4   0xF0A60          ; Sync source for sawtooth
+.equ RING_MOD_SOURCE_CH4 0xF0A64        ; Ring mod source for sawtooth
+
+; ----------------------------------------------------------------------------
+; Effects Registers (0xF0A40-0xF0A5F)
+; ----------------------------------------------------------------------------
+.equ OVERDRIVE_CTRL    0xF0A40          ; Drive amount (0-255 -> 0.0-4.0x gain)
+.equ REVERB_MIX        0xF0A50          ; Dry/wet mix (0-255, 0=dry, 255=wet)
+.equ REVERB_DECAY      0xF0A54          ; Decay time (0-255 -> 0.1-0.99)
+
+; ----------------------------------------------------------------------------
+; Flexible 4-Channel Synth Block (0xF0A80-0xF0B3F)
+;
+; Modern unified interface for all 4 channels. Each channel is 0x30 bytes.
+; Any channel can be any waveform type. This is the preferred interface.
+; ----------------------------------------------------------------------------
+.equ FLEX_CH_BASE      0xF0A80          ; Base address of flexible block
+.equ FLEX_CH_STRIDE    0x30             ; Bytes per channel (48)
+
+.equ FLEX_CH0_BASE     0xF0A80          ; Channel 0 base
+.equ FLEX_CH1_BASE     0xF0AB0          ; Channel 1 base
+.equ FLEX_CH2_BASE     0xF0AE0          ; Channel 2 base
+.equ FLEX_CH3_BASE     0xF0B10          ; Channel 3 base
+
+; Register offsets within each flexible channel (add to FLEX_CHx_BASE)
+.equ FLEX_OFF_FREQ       0x00           ; Frequency (Hz)
+.equ FLEX_OFF_VOL        0x04           ; Volume (0-255)
+.equ FLEX_OFF_CTRL       0x08           ; Control (bit 1 = gate)
+.equ FLEX_OFF_DUTY       0x0C           ; Duty cycle for square wave
+.equ FLEX_OFF_SWEEP      0x10           ; Sweep control
+.equ FLEX_OFF_ATK        0x14           ; Attack time (ms)
+.equ FLEX_OFF_DEC        0x18           ; Decay time (ms)
+.equ FLEX_OFF_SUS        0x1C           ; Sustain level (0-255)
+.equ FLEX_OFF_REL        0x20           ; Release time (ms)
+.equ FLEX_OFF_WAVE_TYPE  0x24           ; Waveform type (0-4)
+.equ FLEX_OFF_PWM_CTRL   0x28           ; PWM control
+.equ FLEX_OFF_NOISEMODE  0x2C           ; Noise mode (if wave type is noise)
+
+; Waveform type constants (for FLEX_OFF_WAVE_TYPE)
+.equ WAVE_SQUARE       0                ; Square wave with PWM
+.equ WAVE_TRIANGLE     1                ; Triangle wave
+.equ WAVE_SINE         2                ; Sine wave
+.equ WAVE_NOISE        3                ; Noise
+.equ WAVE_SAWTOOTH     4                ; Sawtooth wave
+
+; ----------------------------------------------------------------------------
+; Control Register Bit Masks
+; ----------------------------------------------------------------------------
+.equ CTRL_GATE         0x02             ; Gate bit (trigger envelope)
+.equ PWM_ENABLE        0x80             ; PWM enable (bit 7)
+.equ PWM_RATE_MASK     0x7F             ; PWM rate (bits 0-6)
+.equ SWEEP_ENABLE      0x80             ; Sweep enable (bit 7)
+.equ SWEEP_DIR_UP      0x00             ; Sweep direction up
+.equ SWEEP_DIR_DOWN    0x08             ; Sweep direction down (bit 3)
+.equ SWEEP_PERIOD_MASK 0x70             ; Sweep period (bits 4-6)
+.equ SWEEP_SHIFT_MASK  0x07             ; Sweep shift (bits 0-2)
+
+; ============================================================================
 ; VIDEO CONSTANTS
 ; ============================================================================
 

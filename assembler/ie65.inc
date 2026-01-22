@@ -305,6 +305,506 @@ SAP_PLAY_STATUS = $FD1C         ; Play status (IE32 $F0D1C)
 SAP_SUBSONG     = $FD1D         ; Subsong selection (0-255)
 
 ; ============================================================================
+; CUSTOM AUDIO CHIP REGISTERS
+; ============================================================================
+;
+; The Intuition Engine features a powerful custom 4-channel audio synthesizer
+; with additional flexible synthesis channels. This chip provides:
+;
+;   - 5 dedicated waveform channels: Square, Triangle, Sine, Noise, Sawtooth
+;   - 4 flexible synthesis channels with selectable waveforms
+;   - Per-voice ADSR envelope generators (16-bit parameters)
+;   - Pulse width modulation with LFO
+;   - Frequency sweep (portamento/pitch bend)
+;   - Hard sync between oscillators
+;   - Ring modulation
+;   - Global resonant filter (low-pass, high-pass, band-pass)
+;   - Effects: overdrive distortion, reverb
+;
+; Memory Map (6502 addresses, mapped from IE32 $F08xx-$F0Bxx to $F8xx-$FBxx):
+;   $F800-$F807   Global audio control
+;   $F820-$F830   Filter parameters
+;   $F900-$F93F   Square wave channel
+;   $F940-$F97F   Triangle wave channel
+;   $F980-$F9BF   Sine wave channel
+;   $F9C0-$F9FF   Noise channel
+;   $FA00-$FA0F   Sync sources (per channel)
+;   $FA10-$FA1F   Ring mod sources (per channel)
+;   $FA20-$FA5F   Sawtooth wave channel
+;   $FA40-$FA5F   Effects (overdrive, reverb)
+;   $FA80-$FB3F   Flexible synth channels (4 channels × $30 bytes each)
+;
+; Note: All 32-bit values are stored in LITTLE-ENDIAN byte order.
+; ----------------------------------------------------------------------------
+
+; ----------------------------------------------------------------------------
+; Global Audio Control
+; ----------------------------------------------------------------------------
+AUDIO_CTRL_0    = $F800         ; Audio control byte 0 (IE32 $F0800)
+AUDIO_CTRL_1    = $F801         ; Audio control byte 1
+AUDIO_CTRL_2    = $F802         ; Audio control byte 2
+AUDIO_CTRL_3    = $F803         ; Audio control byte 3
+ENV_SHAPE_0     = $F804         ; Envelope shape byte 0 (IE32 $F0804)
+ENV_SHAPE_1     = $F805         ; Envelope shape byte 1
+ENV_SHAPE_2     = $F806         ; Envelope shape byte 2
+ENV_SHAPE_3     = $F807         ; Envelope shape byte 3
+
+; ----------------------------------------------------------------------------
+; Global Filter
+; ----------------------------------------------------------------------------
+FILTER_CUTOFF_0   = $F820       ; Filter cutoff byte 0 (IE32 $F0820)
+FILTER_CUTOFF_1   = $F821       ; Filter cutoff byte 1
+FILTER_CUTOFF_2   = $F822       ; Filter cutoff byte 2
+FILTER_CUTOFF_3   = $F823       ; Filter cutoff byte 3
+FILTER_RESONANCE_0 = $F824      ; Filter resonance byte 0 (IE32 $F0824)
+FILTER_RESONANCE_1 = $F825      ; Filter resonance byte 1
+FILTER_RESONANCE_2 = $F826      ; Filter resonance byte 2
+FILTER_RESONANCE_3 = $F827      ; Filter resonance byte 3
+FILTER_TYPE_0     = $F828       ; Filter type byte 0 (IE32 $F0828)
+FILTER_TYPE_1     = $F829       ; Filter type byte 1
+FILTER_TYPE_2     = $F82A       ; Filter type byte 2
+FILTER_TYPE_3     = $F82B       ; Filter type byte 3
+FILTER_MOD_SRC_0  = $F82C       ; Filter mod source byte 0 (IE32 $F082C)
+FILTER_MOD_SRC_1  = $F82D       ; Filter mod source byte 1
+FILTER_MOD_SRC_2  = $F82E       ; Filter mod source byte 2
+FILTER_MOD_SRC_3  = $F82F       ; Filter mod source byte 3
+FILTER_MOD_AMT_0  = $F830       ; Filter mod amount byte 0 (IE32 $F0830)
+FILTER_MOD_AMT_1  = $F831       ; Filter mod amount byte 1
+FILTER_MOD_AMT_2  = $F832       ; Filter mod amount byte 2
+FILTER_MOD_AMT_3  = $F833       ; Filter mod amount byte 3
+
+; Filter type values
+FILT_OFF        = 0             ; Filter disabled
+FILT_LOWPASS    = 1             ; Low-pass filter
+FILT_HIGHPASS   = 2             ; High-pass filter
+FILT_BANDPASS   = 3             ; Band-pass filter
+
+; ----------------------------------------------------------------------------
+; Square Wave Channel ($F900-$F93F, maps from IE32 $F0900)
+; ----------------------------------------------------------------------------
+SQ_FREQ_0       = $F900         ; Square frequency byte 0
+SQ_FREQ_1       = $F901         ; Square frequency byte 1
+SQ_FREQ_2       = $F902         ; Square frequency byte 2
+SQ_FREQ_3       = $F903         ; Square frequency byte 3
+SQ_VOL_0        = $F904         ; Square volume byte 0
+SQ_VOL_1        = $F905         ; Square volume byte 1
+SQ_VOL_2        = $F906         ; Square volume byte 2
+SQ_VOL_3        = $F907         ; Square volume byte 3
+SQ_CTRL_0       = $F908         ; Square control byte 0
+SQ_CTRL_1       = $F909         ; Square control byte 1
+SQ_CTRL_2       = $F90A         ; Square control byte 2
+SQ_CTRL_3       = $F90B         ; Square control byte 3
+SQ_ATTACK_0     = $F90C         ; Square attack byte 0 (ms)
+SQ_ATTACK_1     = $F90D         ; Square attack byte 1
+SQ_DECAY_0      = $F910         ; Square decay byte 0 (ms)
+SQ_DECAY_1      = $F911         ; Square decay byte 1
+SQ_SUSTAIN_0    = $F914         ; Square sustain byte 0 (0-255 level)
+SQ_SUSTAIN_1    = $F915         ; Square sustain byte 1
+SQ_RELEASE_0    = $F918         ; Square release byte 0 (ms)
+SQ_RELEASE_1    = $F919         ; Square release byte 1
+SQ_DUTY_0       = $F91C         ; Square duty cycle byte 0 (0-65535)
+SQ_DUTY_1       = $F91D         ; Square duty cycle byte 1
+SQ_PWM_RATE_0   = $F920         ; Square PWM rate byte 0
+SQ_PWM_RATE_1   = $F921         ; Square PWM rate byte 1
+SQ_PWM_RATE_2   = $F922         ; Square PWM rate byte 2
+SQ_PWM_RATE_3   = $F923         ; Square PWM rate byte 3
+SQ_PWM_DEPTH_0  = $F924         ; Square PWM depth byte 0
+SQ_PWM_DEPTH_1  = $F925         ; Square PWM depth byte 1
+SQ_PWM_DEPTH_2  = $F926         ; Square PWM depth byte 2
+SQ_PWM_DEPTH_3  = $F927         ; Square PWM depth byte 3
+SQ_SWEEP_RATE_0 = $F928         ; Square sweep rate byte 0
+SQ_SWEEP_RATE_1 = $F929         ; Square sweep rate byte 1
+SQ_SWEEP_RATE_2 = $F92A         ; Square sweep rate byte 2
+SQ_SWEEP_RATE_3 = $F92B         ; Square sweep rate byte 3
+SQ_SWEEP_DIR_0  = $F92C         ; Square sweep direction byte 0
+SQ_SWEEP_DIR_1  = $F92D         ; Square sweep direction byte 1
+SQ_SWEEP_DIR_2  = $F92E         ; Square sweep direction byte 2
+SQ_SWEEP_DIR_3  = $F92F         ; Square sweep direction byte 3
+SQ_SWEEP_AMT_0  = $F930         ; Square sweep amount byte 0
+SQ_SWEEP_AMT_1  = $F931         ; Square sweep amount byte 1
+SQ_SWEEP_AMT_2  = $F932         ; Square sweep amount byte 2
+SQ_SWEEP_AMT_3  = $F933         ; Square sweep amount byte 3
+SQ_TARGET_0     = $F934         ; Square target freq byte 0
+SQ_TARGET_1     = $F935         ; Square target freq byte 1
+SQ_TARGET_2     = $F936         ; Square target freq byte 2
+SQ_TARGET_3     = $F937         ; Square target freq byte 3
+
+; ----------------------------------------------------------------------------
+; Triangle Wave Channel ($F940-$F97F, maps from IE32 $F0940)
+; ----------------------------------------------------------------------------
+TRI_FREQ_0      = $F940         ; Triangle frequency byte 0
+TRI_FREQ_1      = $F941         ; Triangle frequency byte 1
+TRI_FREQ_2      = $F942         ; Triangle frequency byte 2
+TRI_FREQ_3      = $F943         ; Triangle frequency byte 3
+TRI_VOL_0       = $F944         ; Triangle volume byte 0
+TRI_VOL_1       = $F945         ; Triangle volume byte 1
+TRI_VOL_2       = $F946         ; Triangle volume byte 2
+TRI_VOL_3       = $F947         ; Triangle volume byte 3
+TRI_CTRL_0      = $F948         ; Triangle control byte 0
+TRI_CTRL_1      = $F949         ; Triangle control byte 1
+TRI_CTRL_2      = $F94A         ; Triangle control byte 2
+TRI_CTRL_3      = $F94B         ; Triangle control byte 3
+TRI_ATTACK_0    = $F94C         ; Triangle attack byte 0 (ms)
+TRI_ATTACK_1    = $F94D         ; Triangle attack byte 1
+TRI_DECAY_0     = $F950         ; Triangle decay byte 0 (ms)
+TRI_DECAY_1     = $F951         ; Triangle decay byte 1
+TRI_SUSTAIN_0   = $F954         ; Triangle sustain byte 0
+TRI_SUSTAIN_1   = $F955         ; Triangle sustain byte 1
+TRI_RELEASE_0   = $F958         ; Triangle release byte 0 (ms)
+TRI_RELEASE_1   = $F959         ; Triangle release byte 1
+TRI_SWEEP_RATE_0 = $F968        ; Triangle sweep rate byte 0
+TRI_SWEEP_RATE_1 = $F969        ; Triangle sweep rate byte 1
+TRI_SWEEP_RATE_2 = $F96A        ; Triangle sweep rate byte 2
+TRI_SWEEP_RATE_3 = $F96B        ; Triangle sweep rate byte 3
+TRI_SWEEP_DIR_0 = $F96C         ; Triangle sweep direction byte 0
+TRI_SWEEP_DIR_1 = $F96D         ; Triangle sweep direction byte 1
+TRI_SWEEP_DIR_2 = $F96E         ; Triangle sweep direction byte 2
+TRI_SWEEP_DIR_3 = $F96F         ; Triangle sweep direction byte 3
+TRI_SWEEP_AMT_0 = $F970         ; Triangle sweep amount byte 0
+TRI_SWEEP_AMT_1 = $F971         ; Triangle sweep amount byte 1
+TRI_SWEEP_AMT_2 = $F972         ; Triangle sweep amount byte 2
+TRI_SWEEP_AMT_3 = $F973         ; Triangle sweep amount byte 3
+TRI_TARGET_0    = $F974         ; Triangle target freq byte 0
+TRI_TARGET_1    = $F975         ; Triangle target freq byte 1
+TRI_TARGET_2    = $F976         ; Triangle target freq byte 2
+TRI_TARGET_3    = $F977         ; Triangle target freq byte 3
+
+; ----------------------------------------------------------------------------
+; Sine Wave Channel ($F980-$F9BF, maps from IE32 $F0980)
+; ----------------------------------------------------------------------------
+SINE_FREQ_0     = $F980         ; Sine frequency byte 0
+SINE_FREQ_1     = $F981         ; Sine frequency byte 1
+SINE_FREQ_2     = $F982         ; Sine frequency byte 2
+SINE_FREQ_3     = $F983         ; Sine frequency byte 3
+SINE_VOL_0      = $F984         ; Sine volume byte 0
+SINE_VOL_1      = $F985         ; Sine volume byte 1
+SINE_VOL_2      = $F986         ; Sine volume byte 2
+SINE_VOL_3      = $F987         ; Sine volume byte 3
+SINE_CTRL_0     = $F988         ; Sine control byte 0
+SINE_CTRL_1     = $F989         ; Sine control byte 1
+SINE_CTRL_2     = $F98A         ; Sine control byte 2
+SINE_CTRL_3     = $F98B         ; Sine control byte 3
+SINE_ATTACK_0   = $F98C         ; Sine attack byte 0 (ms)
+SINE_ATTACK_1   = $F98D         ; Sine attack byte 1
+SINE_DECAY_0    = $F990         ; Sine decay byte 0 (ms)
+SINE_DECAY_1    = $F991         ; Sine decay byte 1
+SINE_SUSTAIN_0  = $F994         ; Sine sustain byte 0
+SINE_SUSTAIN_1  = $F995         ; Sine sustain byte 1
+SINE_RELEASE_0  = $F998         ; Sine release byte 0 (ms)
+SINE_RELEASE_1  = $F999         ; Sine release byte 1
+SINE_SWEEP_RATE_0 = $F9A8       ; Sine sweep rate byte 0
+SINE_SWEEP_RATE_1 = $F9A9       ; Sine sweep rate byte 1
+SINE_SWEEP_RATE_2 = $F9AA       ; Sine sweep rate byte 2
+SINE_SWEEP_RATE_3 = $F9AB       ; Sine sweep rate byte 3
+SINE_SWEEP_DIR_0 = $F9AC        ; Sine sweep direction byte 0
+SINE_SWEEP_DIR_1 = $F9AD        ; Sine sweep direction byte 1
+SINE_SWEEP_DIR_2 = $F9AE        ; Sine sweep direction byte 2
+SINE_SWEEP_DIR_3 = $F9AF        ; Sine sweep direction byte 3
+SINE_SWEEP_AMT_0 = $F9B0        ; Sine sweep amount byte 0
+SINE_SWEEP_AMT_1 = $F9B1        ; Sine sweep amount byte 1
+SINE_SWEEP_AMT_2 = $F9B2        ; Sine sweep amount byte 2
+SINE_SWEEP_AMT_3 = $F9B3        ; Sine sweep amount byte 3
+SINE_TARGET_0   = $F9B4         ; Sine target freq byte 0
+SINE_TARGET_1   = $F9B5         ; Sine target freq byte 1
+SINE_TARGET_2   = $F9B6         ; Sine target freq byte 2
+SINE_TARGET_3   = $F9B7         ; Sine target freq byte 3
+
+; ----------------------------------------------------------------------------
+; Noise Channel ($F9C0-$F9FF, maps from IE32 $F09C0)
+; ----------------------------------------------------------------------------
+NOISE_FREQ_0    = $F9C0         ; Noise frequency byte 0
+NOISE_FREQ_1    = $F9C1         ; Noise frequency byte 1
+NOISE_FREQ_2    = $F9C2         ; Noise frequency byte 2
+NOISE_FREQ_3    = $F9C3         ; Noise frequency byte 3
+NOISE_VOL_0     = $F9C4         ; Noise volume byte 0
+NOISE_VOL_1     = $F9C5         ; Noise volume byte 1
+NOISE_VOL_2     = $F9C6         ; Noise volume byte 2
+NOISE_VOL_3     = $F9C7         ; Noise volume byte 3
+NOISE_CTRL_0    = $F9C8         ; Noise control byte 0
+NOISE_CTRL_1    = $F9C9         ; Noise control byte 1
+NOISE_CTRL_2    = $F9CA         ; Noise control byte 2
+NOISE_CTRL_3    = $F9CB         ; Noise control byte 3
+NOISE_ATTACK_0  = $F9CC         ; Noise attack byte 0 (ms)
+NOISE_ATTACK_1  = $F9CD         ; Noise attack byte 1
+NOISE_DECAY_0   = $F9D0         ; Noise decay byte 0 (ms)
+NOISE_DECAY_1   = $F9D1         ; Noise decay byte 1
+NOISE_SUSTAIN_0 = $F9D4         ; Noise sustain byte 0
+NOISE_SUSTAIN_1 = $F9D5         ; Noise sustain byte 1
+NOISE_RELEASE_0 = $F9D8         ; Noise release byte 0 (ms)
+NOISE_RELEASE_1 = $F9D9         ; Noise release byte 1
+NOISE_MODE_0    = $F9DC         ; Noise mode byte 0
+NOISE_MODE_1    = $F9DD         ; Noise mode byte 1
+NOISE_MODE_2    = $F9DE         ; Noise mode byte 2
+NOISE_MODE_3    = $F9DF         ; Noise mode byte 3
+
+; Noise mode values
+NOISE_WHITE     = 0             ; White noise (random)
+NOISE_PERIODIC  = 1             ; Periodic noise (regular pattern)
+NOISE_METALLIC  = 2             ; Metallic noise (harsh)
+NOISE_PSG       = 3             ; PSG-style noise (AY/SN76489)
+
+; ----------------------------------------------------------------------------
+; Sync and Ring Modulation Sources ($FA00-$FA1F, maps from IE32 $F0A00)
+; ----------------------------------------------------------------------------
+SYNC_SRC_CH0_0  = $FA00         ; Sync source channel 0 byte 0
+SYNC_SRC_CH0_1  = $FA01         ; Sync source channel 0 byte 1
+SYNC_SRC_CH0_2  = $FA02         ; Sync source channel 0 byte 2
+SYNC_SRC_CH0_3  = $FA03         ; Sync source channel 0 byte 3
+SYNC_SRC_CH1_0  = $FA04         ; Sync source channel 1 byte 0
+SYNC_SRC_CH1_1  = $FA05         ; Sync source channel 1 byte 1
+SYNC_SRC_CH1_2  = $FA06         ; Sync source channel 1 byte 2
+SYNC_SRC_CH1_3  = $FA07         ; Sync source channel 1 byte 3
+SYNC_SRC_CH2_0  = $FA08         ; Sync source channel 2 byte 0
+SYNC_SRC_CH2_1  = $FA09         ; Sync source channel 2 byte 1
+SYNC_SRC_CH2_2  = $FA0A         ; Sync source channel 2 byte 2
+SYNC_SRC_CH2_3  = $FA0B         ; Sync source channel 2 byte 3
+SYNC_SRC_CH3_0  = $FA0C         ; Sync source channel 3 byte 0
+SYNC_SRC_CH3_1  = $FA0D         ; Sync source channel 3 byte 1
+SYNC_SRC_CH3_2  = $FA0E         ; Sync source channel 3 byte 2
+SYNC_SRC_CH3_3  = $FA0F         ; Sync source channel 3 byte 3
+
+RING_SRC_CH0_0  = $FA10         ; Ring mod source channel 0 byte 0
+RING_SRC_CH0_1  = $FA11         ; Ring mod source channel 0 byte 1
+RING_SRC_CH0_2  = $FA12         ; Ring mod source channel 0 byte 2
+RING_SRC_CH0_3  = $FA13         ; Ring mod source channel 0 byte 3
+RING_SRC_CH1_0  = $FA14         ; Ring mod source channel 1 byte 0
+RING_SRC_CH1_1  = $FA15         ; Ring mod source channel 1 byte 1
+RING_SRC_CH1_2  = $FA16         ; Ring mod source channel 1 byte 2
+RING_SRC_CH1_3  = $FA17         ; Ring mod source channel 1 byte 3
+RING_SRC_CH2_0  = $FA18         ; Ring mod source channel 2 byte 0
+RING_SRC_CH2_1  = $FA19         ; Ring mod source channel 2 byte 1
+RING_SRC_CH2_2  = $FA1A         ; Ring mod source channel 2 byte 2
+RING_SRC_CH2_3  = $FA1B         ; Ring mod source channel 2 byte 3
+RING_SRC_CH3_0  = $FA1C         ; Ring mod source channel 3 byte 0
+RING_SRC_CH3_1  = $FA1D         ; Ring mod source channel 3 byte 1
+RING_SRC_CH3_2  = $FA1E         ; Ring mod source channel 3 byte 2
+RING_SRC_CH3_3  = $FA1F         ; Ring mod source channel 3 byte 3
+
+; ----------------------------------------------------------------------------
+; Sawtooth Wave Channel ($FA20-$FA5F, maps from IE32 $F0A20)
+; ----------------------------------------------------------------------------
+SAW_FREQ_0      = $FA20         ; Sawtooth frequency byte 0
+SAW_FREQ_1      = $FA21         ; Sawtooth frequency byte 1
+SAW_FREQ_2      = $FA22         ; Sawtooth frequency byte 2
+SAW_FREQ_3      = $FA23         ; Sawtooth frequency byte 3
+SAW_VOL_0       = $FA24         ; Sawtooth volume byte 0
+SAW_VOL_1       = $FA25         ; Sawtooth volume byte 1
+SAW_VOL_2       = $FA26         ; Sawtooth volume byte 2
+SAW_VOL_3       = $FA27         ; Sawtooth volume byte 3
+SAW_CTRL_0      = $FA28         ; Sawtooth control byte 0
+SAW_CTRL_1      = $FA29         ; Sawtooth control byte 1
+SAW_CTRL_2      = $FA2A         ; Sawtooth control byte 2
+SAW_CTRL_3      = $FA2B         ; Sawtooth control byte 3
+SAW_ATTACK_0    = $FA2C         ; Sawtooth attack byte 0 (ms)
+SAW_ATTACK_1    = $FA2D         ; Sawtooth attack byte 1
+SAW_DECAY_0     = $FA30         ; Sawtooth decay byte 0 (ms)
+SAW_DECAY_1     = $FA31         ; Sawtooth decay byte 1
+SAW_SUSTAIN_0   = $FA34         ; Sawtooth sustain byte 0
+SAW_SUSTAIN_1   = $FA35         ; Sawtooth sustain byte 1
+SAW_RELEASE_0   = $FA38         ; Sawtooth release byte 0 (ms)
+SAW_RELEASE_1   = $FA39         ; Sawtooth release byte 1
+SAW_SWEEP_RATE_0 = $FA48        ; Sawtooth sweep rate byte 0
+SAW_SWEEP_RATE_1 = $FA49        ; Sawtooth sweep rate byte 1
+SAW_SWEEP_RATE_2 = $FA4A        ; Sawtooth sweep rate byte 2
+SAW_SWEEP_RATE_3 = $FA4B        ; Sawtooth sweep rate byte 3
+SAW_SWEEP_DIR_0 = $FA4C         ; Sawtooth sweep direction byte 0
+SAW_SWEEP_DIR_1 = $FA4D         ; Sawtooth sweep direction byte 1
+SAW_SWEEP_DIR_2 = $FA4E         ; Sawtooth sweep direction byte 2
+SAW_SWEEP_DIR_3 = $FA4F         ; Sawtooth sweep direction byte 3
+SAW_SWEEP_AMT_0 = $FA50         ; Sawtooth sweep amount byte 0
+SAW_SWEEP_AMT_1 = $FA51         ; Sawtooth sweep amount byte 1
+SAW_SWEEP_AMT_2 = $FA52         ; Sawtooth sweep amount byte 2
+SAW_SWEEP_AMT_3 = $FA53         ; Sawtooth sweep amount byte 3
+SAW_TARGET_0    = $FA54         ; Sawtooth target freq byte 0
+SAW_TARGET_1    = $FA55         ; Sawtooth target freq byte 1
+SAW_TARGET_2    = $FA56         ; Sawtooth target freq byte 2
+SAW_TARGET_3    = $FA57         ; Sawtooth target freq byte 3
+
+; ----------------------------------------------------------------------------
+; Effects ($FA40-$FA5F, maps from IE32 $F0A40)
+; Note: Overlaps with sawtooth sweep - sawtooth sweep addresses above are
+; the actual mappings; these effect registers share space
+; ----------------------------------------------------------------------------
+OVERDRIVE_CTRL_0 = $FA40        ; Overdrive control byte 0 (0=off, 1-255=amount)
+OVERDRIVE_CTRL_1 = $FA41        ; Overdrive control byte 1
+OVERDRIVE_CTRL_2 = $FA42        ; Overdrive control byte 2
+OVERDRIVE_CTRL_3 = $FA43        ; Overdrive control byte 3
+
+REVERB_MIX_0    = $FA50         ; Reverb wet/dry mix byte 0 (0-255)
+REVERB_MIX_1    = $FA51         ; Reverb wet/dry mix byte 1
+REVERB_MIX_2    = $FA52         ; Reverb wet/dry mix byte 2
+REVERB_MIX_3    = $FA53         ; Reverb wet/dry mix byte 3
+REVERB_DECAY_0  = $FA54         ; Reverb decay time byte 0 (0-65535 ms)
+REVERB_DECAY_1  = $FA55         ; Reverb decay time byte 1
+REVERB_DECAY_2  = $FA56         ; Reverb decay time byte 2
+REVERB_DECAY_3  = $FA57         ; Reverb decay time byte 3
+
+; ----------------------------------------------------------------------------
+; Flexible Synth Channels ($FA80-$FB3F, maps from IE32 $F0A80)
+;
+; 4 flexible channels, each with $30 (48) bytes of registers.
+; Each channel can be set to any waveform type and has full ADSR + effects.
+;
+; Channel base addresses:
+;   Flex 0: $FA80
+;   Flex 1: $FAB0
+;   Flex 2: $FAE0
+;   Flex 3: $FB10
+; ----------------------------------------------------------------------------
+FLEX_CH_STRIDE  = $30           ; Bytes per flexible channel (48)
+
+; Flex Channel 0 ($FA80-$FAAF)
+FLEX_CH0_FREQ_0 = $FA80         ; Flex 0 frequency byte 0
+FLEX_CH0_FREQ_1 = $FA81         ; Flex 0 frequency byte 1
+FLEX_CH0_FREQ_2 = $FA82         ; Flex 0 frequency byte 2
+FLEX_CH0_FREQ_3 = $FA83         ; Flex 0 frequency byte 3
+FLEX_CH0_VOL_0  = $FA84         ; Flex 0 volume byte 0
+FLEX_CH0_VOL_1  = $FA85         ; Flex 0 volume byte 1
+FLEX_CH0_VOL_2  = $FA86         ; Flex 0 volume byte 2
+FLEX_CH0_VOL_3  = $FA87         ; Flex 0 volume byte 3
+FLEX_CH0_WAVE_0 = $FA88         ; Flex 0 waveform byte 0
+FLEX_CH0_WAVE_1 = $FA89         ; Flex 0 waveform byte 1
+FLEX_CH0_WAVE_2 = $FA8A         ; Flex 0 waveform byte 2
+FLEX_CH0_WAVE_3 = $FA8B         ; Flex 0 waveform byte 3
+FLEX_CH0_CTRL_0 = $FA8C         ; Flex 0 control byte 0
+FLEX_CH0_CTRL_1 = $FA8D         ; Flex 0 control byte 1
+FLEX_CH0_CTRL_2 = $FA8E         ; Flex 0 control byte 2
+FLEX_CH0_CTRL_3 = $FA8F         ; Flex 0 control byte 3
+FLEX_CH0_ATK_0  = $FA90         ; Flex 0 attack byte 0 (ms)
+FLEX_CH0_ATK_1  = $FA91         ; Flex 0 attack byte 1
+FLEX_CH0_DEC_0  = $FA94         ; Flex 0 decay byte 0 (ms)
+FLEX_CH0_DEC_1  = $FA95         ; Flex 0 decay byte 1
+FLEX_CH0_SUS_0  = $FA98         ; Flex 0 sustain byte 0
+FLEX_CH0_SUS_1  = $FA99         ; Flex 0 sustain byte 1
+FLEX_CH0_REL_0  = $FA9C         ; Flex 0 release byte 0 (ms)
+FLEX_CH0_REL_1  = $FA9D         ; Flex 0 release byte 1
+FLEX_CH0_DUTY_0 = $FAA0         ; Flex 0 duty cycle byte 0
+FLEX_CH0_DUTY_1 = $FAA1         ; Flex 0 duty cycle byte 1
+FLEX_CH0_PAN_0  = $FAA4         ; Flex 0 pan byte 0 (-128 to 127)
+FLEX_CH0_PAN_1  = $FAA5         ; Flex 0 pan byte 1
+FLEX_CH0_PAN_2  = $FAA6         ; Flex 0 pan byte 2
+FLEX_CH0_PAN_3  = $FAA7         ; Flex 0 pan byte 3
+
+; Flex Channel 1 ($FAB0-$FADF)
+FLEX_CH1_FREQ_0 = $FAB0         ; Flex 1 frequency byte 0
+FLEX_CH1_FREQ_1 = $FAB1         ; Flex 1 frequency byte 1
+FLEX_CH1_FREQ_2 = $FAB2         ; Flex 1 frequency byte 2
+FLEX_CH1_FREQ_3 = $FAB3         ; Flex 1 frequency byte 3
+FLEX_CH1_VOL_0  = $FAB4         ; Flex 1 volume byte 0
+FLEX_CH1_VOL_1  = $FAB5         ; Flex 1 volume byte 1
+FLEX_CH1_VOL_2  = $FAB6         ; Flex 1 volume byte 2
+FLEX_CH1_VOL_3  = $FAB7         ; Flex 1 volume byte 3
+FLEX_CH1_WAVE_0 = $FAB8         ; Flex 1 waveform byte 0
+FLEX_CH1_WAVE_1 = $FAB9         ; Flex 1 waveform byte 1
+FLEX_CH1_WAVE_2 = $FABA         ; Flex 1 waveform byte 2
+FLEX_CH1_WAVE_3 = $FABB         ; Flex 1 waveform byte 3
+FLEX_CH1_CTRL_0 = $FABC         ; Flex 1 control byte 0
+FLEX_CH1_CTRL_1 = $FABD         ; Flex 1 control byte 1
+FLEX_CH1_CTRL_2 = $FABE         ; Flex 1 control byte 2
+FLEX_CH1_CTRL_3 = $FABF         ; Flex 1 control byte 3
+FLEX_CH1_ATK_0  = $FAC0         ; Flex 1 attack byte 0 (ms)
+FLEX_CH1_ATK_1  = $FAC1         ; Flex 1 attack byte 1
+FLEX_CH1_DEC_0  = $FAC4         ; Flex 1 decay byte 0 (ms)
+FLEX_CH1_DEC_1  = $FAC5         ; Flex 1 decay byte 1
+FLEX_CH1_SUS_0  = $FAC8         ; Flex 1 sustain byte 0
+FLEX_CH1_SUS_1  = $FAC9         ; Flex 1 sustain byte 1
+FLEX_CH1_REL_0  = $FACC         ; Flex 1 release byte 0 (ms)
+FLEX_CH1_REL_1  = $FACD         ; Flex 1 release byte 1
+FLEX_CH1_DUTY_0 = $FAD0         ; Flex 1 duty cycle byte 0
+FLEX_CH1_DUTY_1 = $FAD1         ; Flex 1 duty cycle byte 1
+FLEX_CH1_PAN_0  = $FAD4         ; Flex 1 pan byte 0
+FLEX_CH1_PAN_1  = $FAD5         ; Flex 1 pan byte 1
+FLEX_CH1_PAN_2  = $FAD6         ; Flex 1 pan byte 2
+FLEX_CH1_PAN_3  = $FAD7         ; Flex 1 pan byte 3
+
+; Flex Channel 2 ($FAE0-$FB0F)
+FLEX_CH2_FREQ_0 = $FAE0         ; Flex 2 frequency byte 0
+FLEX_CH2_FREQ_1 = $FAE1         ; Flex 2 frequency byte 1
+FLEX_CH2_FREQ_2 = $FAE2         ; Flex 2 frequency byte 2
+FLEX_CH2_FREQ_3 = $FAE3         ; Flex 2 frequency byte 3
+FLEX_CH2_VOL_0  = $FAE4         ; Flex 2 volume byte 0
+FLEX_CH2_VOL_1  = $FAE5         ; Flex 2 volume byte 1
+FLEX_CH2_VOL_2  = $FAE6         ; Flex 2 volume byte 2
+FLEX_CH2_VOL_3  = $FAE7         ; Flex 2 volume byte 3
+FLEX_CH2_WAVE_0 = $FAE8         ; Flex 2 waveform byte 0
+FLEX_CH2_WAVE_1 = $FAE9         ; Flex 2 waveform byte 1
+FLEX_CH2_WAVE_2 = $FAEA         ; Flex 2 waveform byte 2
+FLEX_CH2_WAVE_3 = $FAEB         ; Flex 2 waveform byte 3
+FLEX_CH2_CTRL_0 = $FAEC         ; Flex 2 control byte 0
+FLEX_CH2_CTRL_1 = $FAED         ; Flex 2 control byte 1
+FLEX_CH2_CTRL_2 = $FAEE         ; Flex 2 control byte 2
+FLEX_CH2_CTRL_3 = $FAEF         ; Flex 2 control byte 3
+FLEX_CH2_ATK_0  = $FAF0         ; Flex 2 attack byte 0 (ms)
+FLEX_CH2_ATK_1  = $FAF1         ; Flex 2 attack byte 1
+FLEX_CH2_DEC_0  = $FAF4         ; Flex 2 decay byte 0 (ms)
+FLEX_CH2_DEC_1  = $FAF5         ; Flex 2 decay byte 1
+FLEX_CH2_SUS_0  = $FAF8         ; Flex 2 sustain byte 0
+FLEX_CH2_SUS_1  = $FAF9         ; Flex 2 sustain byte 1
+FLEX_CH2_REL_0  = $FAFC         ; Flex 2 release byte 0 (ms)
+FLEX_CH2_REL_1  = $FAFD         ; Flex 2 release byte 1
+FLEX_CH2_DUTY_0 = $FB00         ; Flex 2 duty cycle byte 0
+FLEX_CH2_DUTY_1 = $FB01         ; Flex 2 duty cycle byte 1
+FLEX_CH2_PAN_0  = $FB04         ; Flex 2 pan byte 0
+FLEX_CH2_PAN_1  = $FB05         ; Flex 2 pan byte 1
+FLEX_CH2_PAN_2  = $FB06         ; Flex 2 pan byte 2
+FLEX_CH2_PAN_3  = $FB07         ; Flex 2 pan byte 3
+
+; Flex Channel 3 ($FB10-$FB3F)
+FLEX_CH3_FREQ_0 = $FB10         ; Flex 3 frequency byte 0
+FLEX_CH3_FREQ_1 = $FB11         ; Flex 3 frequency byte 1
+FLEX_CH3_FREQ_2 = $FB12         ; Flex 3 frequency byte 2
+FLEX_CH3_FREQ_3 = $FB13         ; Flex 3 frequency byte 3
+FLEX_CH3_VOL_0  = $FB14         ; Flex 3 volume byte 0
+FLEX_CH3_VOL_1  = $FB15         ; Flex 3 volume byte 1
+FLEX_CH3_VOL_2  = $FB16         ; Flex 3 volume byte 2
+FLEX_CH3_VOL_3  = $FB17         ; Flex 3 volume byte 3
+FLEX_CH3_WAVE_0 = $FB18         ; Flex 3 waveform byte 0
+FLEX_CH3_WAVE_1 = $FB19         ; Flex 3 waveform byte 1
+FLEX_CH3_WAVE_2 = $FB1A         ; Flex 3 waveform byte 2
+FLEX_CH3_WAVE_3 = $FB1B         ; Flex 3 waveform byte 3
+FLEX_CH3_CTRL_0 = $FB1C         ; Flex 3 control byte 0
+FLEX_CH3_CTRL_1 = $FB1D         ; Flex 3 control byte 1
+FLEX_CH3_CTRL_2 = $FB1E         ; Flex 3 control byte 2
+FLEX_CH3_CTRL_3 = $FB1F         ; Flex 3 control byte 3
+FLEX_CH3_ATK_0  = $FB20         ; Flex 3 attack byte 0 (ms)
+FLEX_CH3_ATK_1  = $FB21         ; Flex 3 attack byte 1
+FLEX_CH3_DEC_0  = $FB24         ; Flex 3 decay byte 0 (ms)
+FLEX_CH3_DEC_1  = $FB25         ; Flex 3 decay byte 1
+FLEX_CH3_SUS_0  = $FB28         ; Flex 3 sustain byte 0
+FLEX_CH3_SUS_1  = $FB29         ; Flex 3 sustain byte 1
+FLEX_CH3_REL_0  = $FB2C         ; Flex 3 release byte 0 (ms)
+FLEX_CH3_REL_1  = $FB2D         ; Flex 3 release byte 1
+FLEX_CH3_DUTY_0 = $FB30         ; Flex 3 duty cycle byte 0
+FLEX_CH3_DUTY_1 = $FB31         ; Flex 3 duty cycle byte 1
+FLEX_CH3_PAN_0  = $FB34         ; Flex 3 pan byte 0
+FLEX_CH3_PAN_1  = $FB35         ; Flex 3 pan byte 1
+FLEX_CH3_PAN_2  = $FB36         ; Flex 3 pan byte 2
+FLEX_CH3_PAN_3  = $FB37         ; Flex 3 pan byte 3
+
+; ----------------------------------------------------------------------------
+; Waveform Types (for flexible channels)
+; ----------------------------------------------------------------------------
+WAVE_SQUARE     = 0             ; Square/pulse wave
+WAVE_TRIANGLE   = 1             ; Triangle wave
+WAVE_SINE       = 2             ; Sine wave
+WAVE_NOISE      = 3             ; Noise
+WAVE_SAWTOOTH   = 4             ; Sawtooth wave
+
+; ----------------------------------------------------------------------------
+; Channel Control Bits (for SQ_CTRL, TRI_CTRL, etc.)
+; ----------------------------------------------------------------------------
+CTRL_GATE       = $01           ; Gate on (bit 0) - trigger envelope
+CTRL_PWM_EN     = $02           ; PWM enable (bit 1)
+CTRL_SWEEP_EN   = $04           ; Sweep enable (bit 2)
+CTRL_SYNC_EN    = $08           ; Hard sync enable (bit 3)
+CTRL_RING_EN    = $10           ; Ring modulation enable (bit 4)
+CTRL_FILTER_EN  = $20           ; Route through filter (bit 5)
+
+; Sweep direction values
+SWEEP_DOWN      = 0             ; Sweep frequency down
+SWEEP_UP        = 1             ; Sweep frequency up
+
+; ============================================================================
 ; VIDEO CONSTANTS
 ; ============================================================================
 
@@ -492,6 +992,483 @@ COP_END         = $C0000000
     lda zp_var+1
     adc #>(value)
     sta zp_var+1
+.endmacro
+
+; ============================================================================
+; CUSTOM AUDIO CHIP MACROS
+; ============================================================================
+
+; Set square channel frequency (16-bit, little-endian)
+.macro SET_SQ_FREQ freq
+    lda #<(freq)
+    sta SQ_FREQ_0
+    lda #>(freq)
+    sta SQ_FREQ_1
+    lda #0
+    sta SQ_FREQ_2
+    sta SQ_FREQ_3
+.endmacro
+
+; Set square channel volume (8-bit, 0-255)
+.macro SET_SQ_VOL vol
+    lda #vol
+    sta SQ_VOL_0
+    lda #0
+    sta SQ_VOL_1
+    sta SQ_VOL_2
+    sta SQ_VOL_3
+.endmacro
+
+; Set square channel duty cycle (16-bit, 0-65535; 32768 = 50%)
+.macro SET_SQ_DUTY duty
+    lda #<(duty)
+    sta SQ_DUTY_0
+    lda #>(duty)
+    sta SQ_DUTY_1
+.endmacro
+
+; Set square channel ADSR (all 16-bit ms values except sustain which is 0-255)
+.macro SET_SQ_ADSR atk, dec, sus, rel
+    lda #<(atk)
+    sta SQ_ATTACK_0
+    lda #>(atk)
+    sta SQ_ATTACK_1
+    lda #<(dec)
+    sta SQ_DECAY_0
+    lda #>(dec)
+    sta SQ_DECAY_1
+    lda #<(sus)
+    sta SQ_SUSTAIN_0
+    lda #>(sus)
+    sta SQ_SUSTAIN_1
+    lda #<(rel)
+    sta SQ_RELEASE_0
+    lda #>(rel)
+    sta SQ_RELEASE_1
+.endmacro
+
+; Gate square channel on (trigger envelope)
+.macro GATE_SQ_ON
+    lda SQ_CTRL_0
+    ora #CTRL_GATE
+    sta SQ_CTRL_0
+.endmacro
+
+; Gate square channel off (release envelope)
+.macro GATE_SQ_OFF
+    lda SQ_CTRL_0
+    and #<(~CTRL_GATE)
+    sta SQ_CTRL_0
+.endmacro
+
+; Set triangle channel frequency
+.macro SET_TRI_FREQ freq
+    lda #<(freq)
+    sta TRI_FREQ_0
+    lda #>(freq)
+    sta TRI_FREQ_1
+    lda #0
+    sta TRI_FREQ_2
+    sta TRI_FREQ_3
+.endmacro
+
+; Set triangle channel volume
+.macro SET_TRI_VOL vol
+    lda #vol
+    sta TRI_VOL_0
+    lda #0
+    sta TRI_VOL_1
+    sta TRI_VOL_2
+    sta TRI_VOL_3
+.endmacro
+
+; Set triangle channel ADSR
+.macro SET_TRI_ADSR atk, dec, sus, rel
+    lda #<(atk)
+    sta TRI_ATTACK_0
+    lda #>(atk)
+    sta TRI_ATTACK_1
+    lda #<(dec)
+    sta TRI_DECAY_0
+    lda #>(dec)
+    sta TRI_DECAY_1
+    lda #<(sus)
+    sta TRI_SUSTAIN_0
+    lda #>(sus)
+    sta TRI_SUSTAIN_1
+    lda #<(rel)
+    sta TRI_RELEASE_0
+    lda #>(rel)
+    sta TRI_RELEASE_1
+.endmacro
+
+; Gate triangle channel on
+.macro GATE_TRI_ON
+    lda TRI_CTRL_0
+    ora #CTRL_GATE
+    sta TRI_CTRL_0
+.endmacro
+
+; Gate triangle channel off
+.macro GATE_TRI_OFF
+    lda TRI_CTRL_0
+    and #<(~CTRL_GATE)
+    sta TRI_CTRL_0
+.endmacro
+
+; Set sine channel frequency
+.macro SET_SINE_FREQ freq
+    lda #<(freq)
+    sta SINE_FREQ_0
+    lda #>(freq)
+    sta SINE_FREQ_1
+    lda #0
+    sta SINE_FREQ_2
+    sta SINE_FREQ_3
+.endmacro
+
+; Set sine channel volume
+.macro SET_SINE_VOL vol
+    lda #vol
+    sta SINE_VOL_0
+    lda #0
+    sta SINE_VOL_1
+    sta SINE_VOL_2
+    sta SINE_VOL_3
+.endmacro
+
+; Set sine channel ADSR
+.macro SET_SINE_ADSR atk, dec, sus, rel
+    lda #<(atk)
+    sta SINE_ATTACK_0
+    lda #>(atk)
+    sta SINE_ATTACK_1
+    lda #<(dec)
+    sta SINE_DECAY_0
+    lda #>(dec)
+    sta SINE_DECAY_1
+    lda #<(sus)
+    sta SINE_SUSTAIN_0
+    lda #>(sus)
+    sta SINE_SUSTAIN_1
+    lda #<(rel)
+    sta SINE_RELEASE_0
+    lda #>(rel)
+    sta SINE_RELEASE_1
+.endmacro
+
+; Gate sine channel on
+.macro GATE_SINE_ON
+    lda SINE_CTRL_0
+    ora #CTRL_GATE
+    sta SINE_CTRL_0
+.endmacro
+
+; Gate sine channel off
+.macro GATE_SINE_OFF
+    lda SINE_CTRL_0
+    and #<(~CTRL_GATE)
+    sta SINE_CTRL_0
+.endmacro
+
+; Set noise channel frequency
+.macro SET_NOISE_FREQ freq
+    lda #<(freq)
+    sta NOISE_FREQ_0
+    lda #>(freq)
+    sta NOISE_FREQ_1
+    lda #0
+    sta NOISE_FREQ_2
+    sta NOISE_FREQ_3
+.endmacro
+
+; Set noise channel volume
+.macro SET_NOISE_VOL vol
+    lda #vol
+    sta NOISE_VOL_0
+    lda #0
+    sta NOISE_VOL_1
+    sta NOISE_VOL_2
+    sta NOISE_VOL_3
+.endmacro
+
+; Set noise mode
+.macro SET_NOISE_MODE mode
+    lda #mode
+    sta NOISE_MODE_0
+    lda #0
+    sta NOISE_MODE_1
+    sta NOISE_MODE_2
+    sta NOISE_MODE_3
+.endmacro
+
+; Set noise channel ADSR
+.macro SET_NOISE_ADSR atk, dec, sus, rel
+    lda #<(atk)
+    sta NOISE_ATTACK_0
+    lda #>(atk)
+    sta NOISE_ATTACK_1
+    lda #<(dec)
+    sta NOISE_DECAY_0
+    lda #>(dec)
+    sta NOISE_DECAY_1
+    lda #<(sus)
+    sta NOISE_SUSTAIN_0
+    lda #>(sus)
+    sta NOISE_SUSTAIN_1
+    lda #<(rel)
+    sta NOISE_RELEASE_0
+    lda #>(rel)
+    sta NOISE_RELEASE_1
+.endmacro
+
+; Gate noise channel on
+.macro GATE_NOISE_ON
+    lda NOISE_CTRL_0
+    ora #CTRL_GATE
+    sta NOISE_CTRL_0
+.endmacro
+
+; Gate noise channel off
+.macro GATE_NOISE_OFF
+    lda NOISE_CTRL_0
+    and #<(~CTRL_GATE)
+    sta NOISE_CTRL_0
+.endmacro
+
+; Set sawtooth channel frequency
+.macro SET_SAW_FREQ freq
+    lda #<(freq)
+    sta SAW_FREQ_0
+    lda #>(freq)
+    sta SAW_FREQ_1
+    lda #0
+    sta SAW_FREQ_2
+    sta SAW_FREQ_3
+.endmacro
+
+; Set sawtooth channel volume
+.macro SET_SAW_VOL vol
+    lda #vol
+    sta SAW_VOL_0
+    lda #0
+    sta SAW_VOL_1
+    sta SAW_VOL_2
+    sta SAW_VOL_3
+.endmacro
+
+; Set sawtooth channel ADSR
+.macro SET_SAW_ADSR atk, dec, sus, rel
+    lda #<(atk)
+    sta SAW_ATTACK_0
+    lda #>(atk)
+    sta SAW_ATTACK_1
+    lda #<(dec)
+    sta SAW_DECAY_0
+    lda #>(dec)
+    sta SAW_DECAY_1
+    lda #<(sus)
+    sta SAW_SUSTAIN_0
+    lda #>(sus)
+    sta SAW_SUSTAIN_1
+    lda #<(rel)
+    sta SAW_RELEASE_0
+    lda #>(rel)
+    sta SAW_RELEASE_1
+.endmacro
+
+; Gate sawtooth channel on
+.macro GATE_SAW_ON
+    lda SAW_CTRL_0
+    ora #CTRL_GATE
+    sta SAW_CTRL_0
+.endmacro
+
+; Gate sawtooth channel off
+.macro GATE_SAW_OFF
+    lda SAW_CTRL_0
+    and #<(~CTRL_GATE)
+    sta SAW_CTRL_0
+.endmacro
+
+; Set global filter parameters
+; type: FILT_OFF, FILT_LOWPASS, FILT_HIGHPASS, FILT_BANDPASS
+; cutoff: 0-65535 (maps to 20Hz-20kHz)
+; resonance: 0-255
+.macro SET_FILTER type, cutoff, resonance
+    lda #type
+    sta FILTER_TYPE_0
+    lda #0
+    sta FILTER_TYPE_1
+    sta FILTER_TYPE_2
+    sta FILTER_TYPE_3
+    lda #<(cutoff)
+    sta FILTER_CUTOFF_0
+    lda #>(cutoff)
+    sta FILTER_CUTOFF_1
+    lda #0
+    sta FILTER_CUTOFF_2
+    sta FILTER_CUTOFF_3
+    lda #resonance
+    sta FILTER_RESONANCE_0
+    lda #0
+    sta FILTER_RESONANCE_1
+    sta FILTER_RESONANCE_2
+    sta FILTER_RESONANCE_3
+.endmacro
+
+; Enable filter on square channel
+.macro FILTER_SQ_ON
+    lda SQ_CTRL_0
+    ora #CTRL_FILTER_EN
+    sta SQ_CTRL_0
+.endmacro
+
+; Disable filter on square channel
+.macro FILTER_SQ_OFF
+    lda SQ_CTRL_0
+    and #<(~CTRL_FILTER_EN)
+    sta SQ_CTRL_0
+.endmacro
+
+; Set reverb parameters
+; mix: 0-255 (wet/dry ratio)
+; decay: 0-65535 (decay time in ms)
+.macro SET_REVERB mix, decay
+    lda #mix
+    sta REVERB_MIX_0
+    lda #0
+    sta REVERB_MIX_1
+    sta REVERB_MIX_2
+    sta REVERB_MIX_3
+    lda #<(decay)
+    sta REVERB_DECAY_0
+    lda #>(decay)
+    sta REVERB_DECAY_1
+    lda #0
+    sta REVERB_DECAY_2
+    sta REVERB_DECAY_3
+.endmacro
+
+; Set overdrive amount (0=off, 1-255=distortion amount)
+.macro SET_OVERDRIVE amount
+    lda #amount
+    sta OVERDRIVE_CTRL_0
+    lda #0
+    sta OVERDRIVE_CTRL_1
+    sta OVERDRIVE_CTRL_2
+    sta OVERDRIVE_CTRL_3
+.endmacro
+
+; Set flexible channel 0 parameters
+.macro SET_FLEX0 wave, freq, vol
+    lda #wave
+    sta FLEX_CH0_WAVE_0
+    lda #0
+    sta FLEX_CH0_WAVE_1
+    sta FLEX_CH0_WAVE_2
+    sta FLEX_CH0_WAVE_3
+    lda #<(freq)
+    sta FLEX_CH0_FREQ_0
+    lda #>(freq)
+    sta FLEX_CH0_FREQ_1
+    lda #0
+    sta FLEX_CH0_FREQ_2
+    sta FLEX_CH0_FREQ_3
+    lda #vol
+    sta FLEX_CH0_VOL_0
+    lda #0
+    sta FLEX_CH0_VOL_1
+    sta FLEX_CH0_VOL_2
+    sta FLEX_CH0_VOL_3
+.endmacro
+
+; Gate flexible channel 0 on
+.macro GATE_FLEX0_ON
+    lda FLEX_CH0_CTRL_0
+    ora #CTRL_GATE
+    sta FLEX_CH0_CTRL_0
+.endmacro
+
+; Gate flexible channel 0 off
+.macro GATE_FLEX0_OFF
+    lda FLEX_CH0_CTRL_0
+    and #<(~CTRL_GATE)
+    sta FLEX_CH0_CTRL_0
+.endmacro
+
+; Set flexible channel 0 ADSR
+.macro SET_FLEX0_ADSR atk, dec, sus, rel
+    lda #<(atk)
+    sta FLEX_CH0_ATK_0
+    lda #>(atk)
+    sta FLEX_CH0_ATK_1
+    lda #<(dec)
+    sta FLEX_CH0_DEC_0
+    lda #>(dec)
+    sta FLEX_CH0_DEC_1
+    lda #<(sus)
+    sta FLEX_CH0_SUS_0
+    lda #>(sus)
+    sta FLEX_CH0_SUS_1
+    lda #<(rel)
+    sta FLEX_CH0_REL_0
+    lda #>(rel)
+    sta FLEX_CH0_REL_1
+.endmacro
+
+; Set PWM parameters for square channel
+; rate: PWM oscillation rate (Hz * 256)
+; depth: PWM depth (0-65535)
+.macro SET_SQ_PWM rate, depth
+    lda #<(rate)
+    sta SQ_PWM_RATE_0
+    lda #>(rate)
+    sta SQ_PWM_RATE_1
+    lda #0
+    sta SQ_PWM_RATE_2
+    sta SQ_PWM_RATE_3
+    lda #<(depth)
+    sta SQ_PWM_DEPTH_0
+    lda #>(depth)
+    sta SQ_PWM_DEPTH_1
+    lda #0
+    sta SQ_PWM_DEPTH_2
+    sta SQ_PWM_DEPTH_3
+    ; Enable PWM
+    lda SQ_CTRL_0
+    ora #CTRL_PWM_EN
+    sta SQ_CTRL_0
+.endmacro
+
+; Enable hard sync on square channel (sync to another channel)
+; src: source channel (0-3)
+.macro SET_SQ_SYNC src
+    lda #src
+    sta SYNC_SRC_CH0_0
+    lda #0
+    sta SYNC_SRC_CH0_1
+    sta SYNC_SRC_CH0_2
+    sta SYNC_SRC_CH0_3
+    ; Enable sync
+    lda SQ_CTRL_0
+    ora #CTRL_SYNC_EN
+    sta SQ_CTRL_0
+.endmacro
+
+; Enable ring modulation on square channel
+; src: source channel (0-3)
+.macro SET_SQ_RING src
+    lda #src
+    sta RING_SRC_CH0_0
+    lda #0
+    sta RING_SRC_CH0_1
+    sta RING_SRC_CH0_2
+    sta RING_SRC_CH0_3
+    ; Enable ring mod
+    lda SQ_CTRL_0
+    ora #CTRL_RING_EN
+    sta SQ_CTRL_0
 .endmacro
 
 ; Increment 16-bit zero page variable

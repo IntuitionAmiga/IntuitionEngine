@@ -274,6 +274,239 @@ SAP_PLAY_STATUS equ $F0D1C              ; Play status
 SAP_SUBSONG     equ $F0D1D              ; Subsong selection (0-255)
 
 ; ============================================================================
+; CUSTOM AUDIO CHIP REGISTERS
+; ============================================================================
+;
+; The custom audio chip provides 4-channel synthesis with modern features:
+; - 5 waveform types: square, triangle, sine, noise, sawtooth
+; - Per-channel ADSR envelopes with multiple envelope shapes
+; - PWM for square waves with automatic modulation
+; - Frequency sweep for pitch effects
+; - Hard sync and ring modulation between channels
+; - Global filter (low-pass, high-pass, band-pass) with resonance
+; - Overdrive and reverb effects
+; - polyBLEP anti-aliasing for clean high-frequency output
+;
+; Signal flow: Oscillators -> Envelopes -> Mix -> Filter -> Overdrive -> Reverb
+; Sample rate: 44.1kHz, 32-bit floating point internal processing
+; ============================================================================
+
+; ----------------------------------------------------------------------------
+; Global Audio Control ($F0800-$F083F)
+; ----------------------------------------------------------------------------
+AUDIO_CTRL        equ $F0800            ; Master audio control
+ENV_SHAPE         equ $F0804            ; Global envelope shape
+
+; Filter registers
+FILTER_CUTOFF     equ $F0820            ; Cutoff frequency (0-255, exponential 20Hz-20kHz)
+FILTER_RESONANCE  equ $F0824            ; Resonance/Q (0-255)
+FILTER_TYPE       equ $F0828            ; Filter type (0=off, 1=LP, 2=HP, 3=BP)
+FILTER_MOD_SOURCE equ $F082C            ; Modulation source channel (0-3)
+FILTER_MOD_AMOUNT equ $F0830            ; Modulation depth (0-255)
+
+; Filter type constants
+FILTER_OFF        equ 0                 ; Filter bypassed
+FILTER_LOWPASS    equ 1                 ; Low-pass filter
+FILTER_HIGHPASS   equ 2                 ; High-pass filter
+FILTER_BANDPASS   equ 3                 ; Band-pass filter
+
+; Envelope shape constants
+ENV_SHAPE_ADSR      equ 0               ; Standard ADSR
+ENV_SHAPE_SAW_UP    equ 1               ; Linear rise to max, then hold
+ENV_SHAPE_SAW_DOWN  equ 2               ; Linear fall to zero, then hold
+ENV_SHAPE_LOOP      equ 3               ; ADSR but loops after release
+ENV_SHAPE_SID       equ 4               ; SID-style exponential ADSR
+
+; ----------------------------------------------------------------------------
+; Square Wave Channel ($F0900-$F093F)
+; ----------------------------------------------------------------------------
+SQUARE_FREQ       equ $F0900            ; Frequency (Hz)
+SQUARE_VOL        equ $F0904            ; Volume (0-255)
+SQUARE_CTRL       equ $F0908            ; Control (bit 1 = gate)
+SQUARE_DUTY       equ $F090C            ; Duty cycle (0-255, 128 = 50%)
+SQUARE_SWEEP      equ $F0910            ; Sweep control
+SQUARE_PWM_CTRL   equ $F0922            ; PWM control (bit 7 = enable, bits 0-6 = rate)
+SQUARE_ATK        equ $F0930            ; Attack time (ms)
+SQUARE_DEC        equ $F0934            ; Decay time (ms)
+SQUARE_SUS        equ $F0938            ; Sustain level (0-255)
+SQUARE_REL        equ $F093C            ; Release time (ms)
+
+; ----------------------------------------------------------------------------
+; Triangle Wave Channel ($F0940-$F097F)
+; ----------------------------------------------------------------------------
+TRI_FREQ          equ $F0940            ; Frequency (Hz)
+TRI_VOL           equ $F0944            ; Volume (0-255)
+TRI_CTRL          equ $F0948            ; Control (bit 1 = gate)
+TRI_SWEEP         equ $F0914            ; Sweep control
+TRI_ATK           equ $F0960            ; Attack time (ms)
+TRI_DEC           equ $F0964            ; Decay time (ms)
+TRI_SUS           equ $F0968            ; Sustain level (0-255)
+TRI_REL           equ $F096C            ; Release time (ms)
+
+; ----------------------------------------------------------------------------
+; Sine Wave Channel ($F0980-$F09BF)
+; ----------------------------------------------------------------------------
+SINE_FREQ         equ $F0980            ; Frequency (Hz)
+SINE_VOL          equ $F0984            ; Volume (0-255)
+SINE_CTRL         equ $F0988            ; Control (bit 1 = gate)
+SINE_SWEEP        equ $F0918            ; Sweep control
+SINE_ATK          equ $F0990            ; Attack time (ms)
+SINE_DEC          equ $F0994            ; Decay time (ms)
+SINE_SUS          equ $F0998            ; Sustain level (0-255)
+SINE_REL          equ $F099C            ; Release time (ms)
+
+; ----------------------------------------------------------------------------
+; Noise Channel ($F09C0-$F09FF)
+; ----------------------------------------------------------------------------
+NOISE_FREQ        equ $F09C0            ; Frequency/pitch (Hz)
+NOISE_VOL         equ $F09C4            ; Volume (0-255)
+NOISE_CTRL        equ $F09C8            ; Control (bit 1 = gate)
+NOISE_ATK         equ $F09D0            ; Attack time (ms)
+NOISE_DEC         equ $F09D4            ; Decay time (ms)
+NOISE_SUS         equ $F09D8            ; Sustain level (0-255)
+NOISE_REL         equ $F09DC            ; Release time (ms)
+NOISE_MODE        equ $F09E0            ; Noise type
+
+; Noise mode constants
+NOISE_MODE_WHITE    equ 0               ; White noise (LFSR)
+NOISE_MODE_PERIODIC equ 1               ; Periodic/looping noise
+NOISE_MODE_METALLIC equ 2               ; Metallic noise
+NOISE_MODE_PSG      equ 3               ; PSG-style (AY/YM) LFSR
+
+; ----------------------------------------------------------------------------
+; Modulation Registers ($F0A00-$F0A1F)
+; ----------------------------------------------------------------------------
+; Hard sync: slave channel resets phase when master completes a cycle
+SYNC_SOURCE_CH0   equ $F0A00            ; Sync source for channel 0 (0-3, or $FF=off)
+SYNC_SOURCE_CH1   equ $F0A04            ; Sync source for channel 1
+SYNC_SOURCE_CH2   equ $F0A08            ; Sync source for channel 2
+SYNC_SOURCE_CH3   equ $F0A0C            ; Sync source for channel 3
+
+; Ring modulation: output = ch * source (creates harmonic sidebands)
+RING_MOD_SOURCE_CH0 equ $F0A10          ; Ring mod source for channel 0
+RING_MOD_SOURCE_CH1 equ $F0A14          ; Ring mod source for channel 1
+RING_MOD_SOURCE_CH2 equ $F0A18          ; Ring mod source for channel 2
+RING_MOD_SOURCE_CH3 equ $F0A1C          ; Ring mod source for channel 3
+
+; ----------------------------------------------------------------------------
+; Sawtooth Wave Channel ($F0A20-$F0A6F)
+; ----------------------------------------------------------------------------
+SAW_FREQ          equ $F0A20            ; Frequency (Hz)
+SAW_VOL           equ $F0A24            ; Volume (0-255)
+SAW_CTRL          equ $F0A28            ; Control (bit 1 = gate)
+SAW_SWEEP         equ $F0A2C            ; Sweep control
+SAW_ATK           equ $F0A30            ; Attack time (ms)
+SAW_DEC           equ $F0A34            ; Decay time (ms)
+SAW_SUS           equ $F0A38            ; Sustain level (0-255)
+SAW_REL           equ $F0A3C            ; Release time (ms)
+SYNC_SOURCE_CH4   equ $F0A60            ; Sync source for sawtooth
+RING_MOD_SOURCE_CH4 equ $F0A64          ; Ring mod source for sawtooth
+
+; ----------------------------------------------------------------------------
+; Effects Registers ($F0A40-$F0A5F)
+; ----------------------------------------------------------------------------
+OVERDRIVE_CTRL    equ $F0A40            ; Drive amount (0-255 -> 0.0-4.0x gain)
+REVERB_MIX        equ $F0A50            ; Dry/wet mix (0-255, 0=dry, 255=wet)
+REVERB_DECAY      equ $F0A54            ; Decay time (0-255 -> 0.1-0.99)
+
+; ----------------------------------------------------------------------------
+; Flexible 4-Channel Synth Block ($F0A80-$F0B3F)
+;
+; Modern unified interface for all 4 channels. Each channel is $30 bytes.
+; Any channel can be any waveform type. This is the preferred interface.
+; ----------------------------------------------------------------------------
+FLEX_CH_BASE      equ $F0A80            ; Base address of flexible block
+FLEX_CH_STRIDE    equ $30               ; Bytes per channel (48)
+
+FLEX_CH0_BASE     equ $F0A80            ; Channel 0 base
+FLEX_CH1_BASE     equ $F0AB0            ; Channel 1 base
+FLEX_CH2_BASE     equ $F0AE0            ; Channel 2 base
+FLEX_CH3_BASE     equ $F0B10            ; Channel 3 base
+
+; Register offsets within each flexible channel (add to FLEX_CHx_BASE)
+FLEX_OFF_FREQ       equ $00             ; Frequency (Hz)
+FLEX_OFF_VOL        equ $04             ; Volume (0-255)
+FLEX_OFF_CTRL       equ $08             ; Control (bit 1 = gate)
+FLEX_OFF_DUTY       equ $0C             ; Duty cycle for square wave
+FLEX_OFF_SWEEP      equ $10             ; Sweep control
+FLEX_OFF_ATK        equ $14             ; Attack time (ms)
+FLEX_OFF_DEC        equ $18             ; Decay time (ms)
+FLEX_OFF_SUS        equ $1C             ; Sustain level (0-255)
+FLEX_OFF_REL        equ $20             ; Release time (ms)
+FLEX_OFF_WAVE_TYPE  equ $24             ; Waveform type (0-4)
+FLEX_OFF_PWM_CTRL   equ $28             ; PWM control
+FLEX_OFF_NOISEMODE  equ $2C             ; Noise mode (if wave type is noise)
+
+; Waveform type constants (for FLEX_OFF_WAVE_TYPE)
+WAVE_SQUARE       equ 0                 ; Square wave with PWM
+WAVE_TRIANGLE     equ 1                 ; Triangle wave
+WAVE_SINE         equ 2                 ; Sine wave
+WAVE_NOISE        equ 3                 ; Noise
+WAVE_SAWTOOTH     equ 4                 ; Sawtooth wave
+
+; ----------------------------------------------------------------------------
+; Control Register Bit Masks
+; ----------------------------------------------------------------------------
+CTRL_GATE         equ $02               ; Gate bit (trigger envelope)
+PWM_ENABLE        equ $80               ; PWM enable (bit 7)
+PWM_RATE_MASK     equ $7F               ; PWM rate (bits 0-6)
+SWEEP_ENABLE      equ $80               ; Sweep enable (bit 7)
+SWEEP_DIR_UP      equ $00               ; Sweep direction up
+SWEEP_DIR_DOWN    equ $08               ; Sweep direction down (bit 3)
+SWEEP_PERIOD_MASK equ $70               ; Sweep period (bits 4-6)
+SWEEP_SHIFT_MASK  equ $07               ; Sweep shift (bits 0-2)
+
+; ----------------------------------------------------------------------------
+; Custom Audio Chip Macros
+; ----------------------------------------------------------------------------
+
+; Set channel frequency
+set_ch_freq macro ch,freq
+    move.l  #\freq,FLEX_CH0_BASE+(\ch*FLEX_CH_STRIDE)+FLEX_OFF_FREQ
+    endm
+
+; Set channel volume
+set_ch_vol macro ch,vol
+    move.l  #\vol,FLEX_CH0_BASE+(\ch*FLEX_CH_STRIDE)+FLEX_OFF_VOL
+    endm
+
+; Set channel waveform
+set_ch_wave macro ch,wave
+    move.l  #\wave,FLEX_CH0_BASE+(\ch*FLEX_CH_STRIDE)+FLEX_OFF_WAVE_TYPE
+    endm
+
+; Set channel envelope
+set_ch_env macro ch,atk,dec,sus,rel
+    move.l  #\atk,FLEX_CH0_BASE+(\ch*FLEX_CH_STRIDE)+FLEX_OFF_ATK
+    move.l  #\dec,FLEX_CH0_BASE+(\ch*FLEX_CH_STRIDE)+FLEX_OFF_DEC
+    move.l  #\sus,FLEX_CH0_BASE+(\ch*FLEX_CH_STRIDE)+FLEX_OFF_SUS
+    move.l  #\rel,FLEX_CH0_BASE+(\ch*FLEX_CH_STRIDE)+FLEX_OFF_REL
+    endm
+
+; Gate channel on (trigger envelope attack)
+gate_ch_on macro ch
+    move.l  #CTRL_GATE,FLEX_CH0_BASE+(\ch*FLEX_CH_STRIDE)+FLEX_OFF_CTRL
+    endm
+
+; Gate channel off (trigger envelope release)
+gate_ch_off macro ch
+    move.l  #0,FLEX_CH0_BASE+(\ch*FLEX_CH_STRIDE)+FLEX_OFF_CTRL
+    endm
+
+; Set filter parameters
+set_filter macro cutoff,resonance,type
+    move.l  #\cutoff,FILTER_CUTOFF
+    move.l  #\resonance,FILTER_RESONANCE
+    move.l  #\type,FILTER_TYPE
+    endm
+
+; Set reverb parameters
+set_reverb macro mix,decay
+    move.l  #\mix,REVERB_MIX
+    move.l  #\decay,REVERB_DECAY
+    endm
+
+; ============================================================================
 ; VIDEO CONSTANTS
 ; ============================================================================
 
