@@ -25,7 +25,7 @@ This module implements the memory bus that forms the backbone of the Intuition E
 
 Core Features:
 
-    16MB of main memory allocated as a contiguous block.
+    32MB of main memory allocated as a contiguous block.
     Support for memory-mapped I/O via an I/O region mapping table that uses page masking and fixed page sizes.
     Little-endian read/write operations for 32-bit data.
     Full memory reset capability to clear the entire memory state.
@@ -518,7 +518,7 @@ func NewSystemBus() *SystemBus {
 	/*
 		NewSystemBus initialises and returns a new SystemBus instance.
 
-		The function allocates a 16MB block of main memory and initialises
+		The function allocates a 32MB block of main memory and initialises
 		the I/O mapping table.
 	*/
 

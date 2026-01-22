@@ -92,10 +92,10 @@ import (
 // Memory and Address Space Constants
 // ------------------------------------------------------------------------------
 const (
-	WORD_SIZE       = 4                // Size of a word in bytes
-	WORD_SIZE_BITS  = 32               // Word size in bits
-	CACHE_LINE_SIZE = 64               // Cache line size in bytes
-	MEMORY_SIZE     = 16 * 1024 * 1024 // 16MB total memory
+	WORD_SIZE       = 4  // Size of a word in bytes
+	WORD_SIZE_BITS  = 32 // Word size in bits
+	CACHE_LINE_SIZE = 64 // Cache line size in bytes
+	MEMORY_SIZE     = DEFAULT_MEMORY_SIZE
 )
 
 // ------------------------------------------------------------------------------

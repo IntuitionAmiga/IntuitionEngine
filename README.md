@@ -19,37 +19,114 @@
 
 # Table of Contents
 
-1. System Overview
-2. Architecture Design
-3. Memory Map & Hardware Registers
-4. CPU Architecture (IE32)
-5. MOS 6502 CPU
-5.8 Zilog Z80 CPU
-6. Motorola 68020 CPU with FPU
-7. Assembly Language Reference
-8. Sound System
-   - 8.1-8.3 PSG Synthesis Channels
-   - 8.4 POKEY Sound Chip
-9. Video System
-   - 9.7 DMA Blitter (with alpha blending)
-10. Developer's Guide
-    - 10.3.1 Assembler Include Files
-11. Implementation Details
-12. Platform Support & Backend Systems
-13. Hardware Interface Architecture
-14. Testing & Demonstration Framework
+1. [System Overview](#1-system-overview)
+2. [Architecture Design](#2-architecture-design)
+   - 2.1 Core Components
+   - 2.2 Unified Memory Architecture
+3. [Memory Map & Hardware Registers](#3-memory-map--hardware-registers-detailed)
+   - 3.1 System Vector Table
+   - 3.2 Program Space
+   - 3.3 Video Registers
+   - 3.4 Timer Registers
+   - 3.5 Sound Registers (Legacy and Flexible)
+   - 3.6 PSG Registers
+   - 3.7 POKEY Registers
+   - 3.8 SID Registers
+   - 3.9 Audio Chip Memory Map by CPU
+4. [IE32 CPU Architecture](#4-ie32-cpu-architecture)
+   - 4.1 Register Set
+   - 4.2 Status Flags
+   - 4.3 Addressing Modes
+   - 4.4 Instruction Format
+   - 4.5 Instruction Set
+   - 4.6 Memory and I/O Integration
+   - 4.7 Interrupt Handling
+   - 4.8 Compatibility Notes
+5. [MOS 6502 CPU](#5-mos-6502-cpu)
+   - 5.1 Register Set
+   - 5.2 Status Flags
+   - 5.3 Addressing Modes
+   - 5.4 Instruction Set
+   - 5.5 Memory and I/O Integration
+   - 5.6 Interrupts and Vectors
+   - 5.7 Compatibility Notes
+6. [Zilog Z80 CPU](#6-zilog-z80-cpu)
+   - 6.1 Register Set
+   - 6.2 Status Flags
+   - 6.3 Addressing Modes
+   - 6.4 Instruction Set
+   - 6.5 Memory and I/O Integration
+   - 6.6 Interrupts
+   - 6.7 Compatibility Notes
+7. [Motorola 68020 CPU with FPU](#7-motorola-68020-cpu-with-fpu)
+   - 7.1 Register Set
+   - 7.2 Status Flags
+   - 7.3 Addressing Modes
+   - 7.4 Instruction Set
+   - 7.5 FPU (68881/68882) Features
+   - 7.6 Memory and I/O Integration
+   - 7.7 Interrupts and Exceptions
+   - 7.8 Compatibility Notes
+8. [Assembly Language Reference](#8-assembly-language-reference)
+   - 8.1 Basic Program Structure
+   - 8.2 Assembler Directives
+   - 8.3 Memory Access Patterns
+   - 8.4 Stack Usage
+   - 8.5 Interrupt Handlers
+9. [Sound System](#9-sound-system)
+   - 9.1 Sound Channel Types
+   - 9.2 Modulation System
+   - 9.3 Global Effects
+   - 9.4 PSG Sound Chip (AY-3-8910/YM2149)
+   - 9.5 POKEY Sound Chip
+   - 9.6 SID Sound Chip
+10. [Video System](#10-video-system)
+    - 10.1 Display Modes
+    - 10.2 Framebuffer Organisation
+    - 10.3 Dirty Rectangle Tracking
+    - 10.4 Double Buffering and VBlank Synchronisation
+    - 10.5 Direct VRAM Access Mode
+    - 10.6 Copper List Executor
+    - 10.7 DMA Blitter
+    - 10.8 Raster Band Fill
+11. [Developer's Guide](#11-developers-guide)
+    - 11.1 Development Environment Setup
+    - 11.2 Building the System
+    - 11.3 Development Workflow
+    - 11.4 Assembler Include Files
+    - 11.5 Debugging Techniques
+12. [Implementation Details](#12-implementation-details)
+    - 12.1 CPU Implementation
+    - 12.2 Memory Bus Architecture
+    - 12.3 Sound System Implementation
+13. [Platform Support & Backend Systems](#13-platform-support--backend-systems)
+    - 13.1 Graphics Backend Architecture
+    - 13.2 Audio Backend Systems
+    - 13.3 GUI Backend Systems
+14. [Hardware Interface Architecture](#14-hardware-interface-architecture)
+    - 14.1 Interface Design
+    - 14.2 Hardware Abstraction
+    - 14.3 Device Communication
+    - 14.4 Future Extensibility
+15. [Testing & Demonstration Framework](#15-testing--demonstration-framework)
+    - 15.1 Testing Architecture
+    - 15.2 Audio Synthesis Testing
+    - 15.3 Visual System Testing
+    - 15.4 Integration Testing
+    - 15.5 Technical Demonstrations
+    - 15.6 Demonstration Development
 
 # 1. System Overview
 
-This virtual machine implements a complete computer system with a custom CPU architecture, sound synthesis capabilities, video output, and interrupt handling. The system is designed to be both educational and practical, offering a balance between simplicity and capability.
+This virtual machine implements a complete computer system with multiple CPU architectures, sound synthesis capabilities, video output, and interrupt handling. The system is designed to be both educational and practical, offering a balance between simplicity and capability.
 
 ## Key Features
 
 ### CPU Options:
 - **IE32**: 32-bit RISC-like CPU architecture with 16 general-purpose registers
-- **Motorola 68020**: Full 32-bit CISC emulation with 95%+ instruction coverage
 - **MOS 6502 (NMOS)**: 8-bit CPU emulator for raw binaries (no 65C02 opcodes)
-- **Zilog Z80**: 8-bit CPU core for raw binaries
+- **Zilog Z80**: 8-bit CPU core with full instruction set
+- **Motorola 68020**: Full 32-bit CISC emulation with 95%+ instruction coverage
 - **68881/68882 FPU**: Complete floating-point coprocessor with transcendental functions
 
 ### Audio Chip Emulation:
@@ -98,18 +175,17 @@ The VM is implemented in Go and requires:
 
 # 2. Architecture Design
 
-## Core Components
+## 2.1 Core Components
 
 The system consists of five main subsystems that work together:
 
-1. CPU Core
-    - Implements the IE32 instruction set
+1. **CPU Core**
+    - Supports four CPU architectures (IE32, 6502, Z80, 68020)
     - Manages program execution
     - Hardware interrupt support via vector table
     - Timer system synchronised to audio rate
-    - 16 general-purpose registers
 
-2. Sound System
+2. **Sound System**
     - Four independent synthesis channels
     - Multiple waveform generators:
         - Square wave with PWM capability and polyBLEP anti-aliasing
@@ -123,7 +199,7 @@ The system consists of five main subsystems that work together:
     - Reverb effects processing
     - 44.1kHz sample rate
 
-3. Video System
+3. **Video System**
     - Multiple resolution support:
         - 640x480
         - 800x600
@@ -136,7 +212,7 @@ The system consists of five main subsystems that work together:
     - Ebiten primary backend
     - OpenGL backend in development
 
-4. GUI System
+4. **GUI System**
     - Abstract frontend interface
     - GTK4 implementation
     - FLTK implementation
@@ -144,70 +220,73 @@ The system consists of five main subsystems that work together:
     - File loading dialog support
     - Basic debugging interface
 
-5. Memory Management
-    - 16MB address space
+5. **Memory Management**
+    - 32MB address space
     - Memory-mapped I/O
     - Protected memory regions
     - Double-buffered video memory
 
-6. Unified Memory Architecture
-    - All CPU cores share the same memory space via SystemBus
-    - Program data loaded by CPUs is visible to all peripherals
-    - DMA operations (blitter, copper, PSG) can access any memory location
+## 2.2 Unified Memory Architecture
 
-## Unified Memory Architecture
-
-All CPU cores (IE32, M68K, Z80, 6502) share the same memory space through the
-SystemBus. This unified architecture ensures that:
+All CPU cores (IE32, M68K, Z80, 6502) share the same memory space through the SystemBus. This unified architecture ensures that:
 
 - **Program data** loaded by any CPU is immediately visible to all peripherals
-- **DMA operations** (blitter, copper, PSG streaming) can access any memory location
+- **DMA operations** (blitter, copper, PSG/POKEY/SID streaming) can access any memory location
 - **Memory-mapped I/O** works consistently across all CPU types
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        SystemBus Memory                          │
-│                         (16MB Shared)                            │
+│                        SystemBus Memory                         │
+│                          (32MB Shared)                          │
 ├─────────────────────────────────────────────────────────────────┤
 │  0x000000 - 0x000FFF  │  System Vectors                         │
-│  0x001000 - 0x00EFFF  │  Program Space (code + data)            │
+│  0x001000 - 0x0EFFFF  │  Program Space (code + data)            │
 │  0x0F0000 - 0x0FFFFF  │  Hardware I/O Registers                 │
-│  0x100000 - 0x4FFFFF  │  Video RAM (VRAM)                       │
+│  0x100000 - 0x4FFFFF  │  Video RAM (4MB)                        │
+│  0x500000 - 0x1FFFFFF │  Extended RAM                           │
 └─────────────────────────────────────────────────────────────────┘
         │                       │                      │
         ▼                       ▼                      ▼
-   ┌─────────┐            ┌──────────┐           ┌──────────┐
-   │   CPU   │            │  Blitter │           │   PSG    │
-   │ (IE32/  │            │  Copper  │           │  Player  │
-   │  M68K)  │            │          │           │          │
-   └─────────┘            └──────────┘           └──────────┘
+   ┌─────────┐            ┌──────────┐           ┌────────────────┐
+   │   CPU   │            │  Blitter │           │   Audio DMA    │
+   │ (IE32/  │            │  Copper  │           │ PSG/POKEY/SID  │
+   │  M68K/  │            │          │           │   Players      │
+   │  Z80/   │            └──────────┘           └────────────────┘
+   │  6502)  │
+   └─────────┘
 ```
 
-When a program is loaded, its embedded data (sprites, copper lists, audio files)
-is placed in shared memory and immediately accessible to hardware DMA engines.
-
-## Memory Map
-
-The system's memory is organised as follows:
-
-```
-0x000000 - 0x000FFF: System vectors (including interrupt vector)
-0x001000 - 0x001FFF: Program start
-0x100000 - 0x4FFFFF: Video RAM (VRAM_START to VRAM_START + VRAM_SIZE)
-0x0F0000 - 0x0F0058: Video registers (incl. copper + blitter + raster control)
-0x0F0800 - 0x0F0808: Timer registers
-0x0F0900 - 0x0F0A54: Sound registers (PSG synthesis)
-0x0F0C00 - 0x0F0C1C: PSG player registers (AY/YM/VGM/SNDH playback)
-0x0F0D00 - 0x0F0D1D: POKEY registers (Atari 8-bit audio + SAP playback)
-0x0F0E00 - 0x0F0E1C: SID registers (C64 audio synthesis)
-```
-Key memory-mapped hardware registers are logically grouped to facilitate system programming and hardware access. Each subsystem has a dedicated register block for configuration and control.
+When a program is loaded, its embedded data (sprites, copper lists, audio files) is placed in shared memory and immediately accessible to hardware DMA engines.
 
 # 3. Memory Map & Hardware Registers (Detailed)
 
 The system's memory layout is designed to provide efficient access to both program space and hardware features while maintaining clear separation between different memory regions.
 
-## System Vector Table (0x000000 - 0x000FFF)
+## Memory Map Overview
+
+```
+0x000000 - 0x000FFF: System vectors (including interrupt vector)
+0x001000 - 0x0EFFFF: Program space
+0x0F0000 - 0x0F0058: Video registers (copper, blitter, raster control)
+0x0F0800 - 0x0F080C: Timer registers
+0x0F0820 - 0x0F0834: Filter registers
+0x0F0900 - 0x0F0A6F: Legacy synth registers (square/triangle/sine/noise/saw)
+0x0F0A80 - 0x0F0B3F: Flexible 4-channel synth registers (preferred)
+0x0F0C00 - 0x0F0C0D: PSG registers (AY/YM synthesis)
+0x0F0C0E:            PSG+ control register
+0x0F0C10 - 0x0F0C1C: PSG playback control (AY/YM/VGM/SNDH)
+0x0F0D00 - 0x0F0D08: POKEY registers (Atari 8-bit audio)
+0x0F0D09:            POKEY+ control register
+0x0F0D10 - 0x0F0D1D: SAP playback control
+0x0F0E00 - 0x0F0E18: SID registers (C64 audio synthesis)
+0x0F0E19:            SID+ control register
+0x0F0E1A - 0x0F0E1C: SID read-only registers (OSC3, ENV3)
+0x0F0E20 - 0x0F0E2D: SID playback control (.SID file playback)
+0x100000 - 0x4FFFFF: Video RAM (VRAM_START to VRAM_START + VRAM_SIZE)
+```
+
+## 3.1 System Vector Table (0x000000 - 0x000FFF)
+
 The first 4KB of memory is reserved for system vectors. The most important vector is:
 
 ```
@@ -221,41 +300,41 @@ When interrupts are enabled via the SEI instruction, the CPU reads this vector t
     .word isr_address    ; Store ISR location in vector
 ```
 
-## Program Space (0x001000 - onwards)
+## 3.2 Program Space (0x001000 - onwards)
+
 Programs begin loading at 0x1000, providing:
 
 - Protection of low memory from accidental overwrites
 - Clear separation from system areas
 - Space for program code and data
 
-## Hardware Registers (0xF0000 - 0xF09FF)
+## 3.3 Video Registers (0x0F0000 - 0x0F0058)
 
-### Video Registers (0xF0000 - 0xF0058)
 ```
-0xF0000: VIDEO_CTRL   - Video system control (0 = disabled, 1 = enabled)
-0xF0004: VIDEO_MODE   - Display mode selection
-0xF0008: VIDEO_STATUS - Video status (read-only, lock-free)
-                        bit0 = hasContent (frame has been drawn to)
-                        bit1 = inVBlank (safe to draw without flicker)
-0xF000C: COPPER_CTRL  - Copper control (bit0=enable, bit1=reset/rewind)
-0xF0010: COPPER_PTR   - Copper list base address (32-bit)
-0xF0014: COPPER_PC    - Copper program counter (read-only)
-0xF0018: COPPER_STATUS- Copper status (bit0=running, bit1=waiting, bit2=halted)
-0xF001C: BLT_CTRL     - Blitter control (bit0=start, bit1=busy, bit2=irq enable)
-0xF0020: BLT_OP       - Blitter op (copy/fill/line/masked copy)
-0xF0024: BLT_SRC      - Blitter source address (32-bit)
-0xF0028: BLT_DST      - Blitter dest address (32-bit)
-0xF002C: BLT_WIDTH    - Blit width (pixels)
-0xF0030: BLT_HEIGHT   - Blit height (pixels)
-0xF0034: BLT_SRC_STRIDE - Source stride (bytes/row)
-0xF0038: BLT_DST_STRIDE - Dest stride (bytes/row)
-0xF003C: BLT_COLOR    - Fill/line color (RGBA)
-0xF0040: BLT_MASK     - Mask address for masked copy (1-bit/pixel)
-0xF0044: BLT_STATUS   - Blitter status (bit0=error)
-0xF0048: VIDEO_RASTER_Y - Raster band start Y
-0xF004C: VIDEO_RASTER_HEIGHT - Raster band height (pixels)
-0xF0050: VIDEO_RASTER_COLOR - Raster band color (RGBA)
-0xF0054: VIDEO_RASTER_CTRL - Raster band control (bit0=draw)
+0x0F0000: VIDEO_CTRL   - Video system control (0 = disabled, 1 = enabled)
+0x0F0004: VIDEO_MODE   - Display mode selection
+0x0F0008: VIDEO_STATUS - Video status (read-only, lock-free)
+                         bit0 = hasContent (frame has been drawn to)
+                         bit1 = inVBlank (safe to draw without flicker)
+0x0F000C: COPPER_CTRL  - Copper control (bit0=enable, bit1=reset/rewind)
+0x0F0010: COPPER_PTR   - Copper list base address (32-bit)
+0x0F0014: COPPER_PC    - Copper program counter (read-only)
+0x0F0018: COPPER_STATUS- Copper status (bit0=running, bit1=waiting, bit2=halted)
+0x0F001C: BLT_CTRL     - Blitter control (bit0=start, bit1=busy, bit2=irq enable)
+0x0F0020: BLT_OP       - Blitter op (copy/fill/line/masked copy)
+0x0F0024: BLT_SRC      - Blitter source address (32-bit)
+0x0F0028: BLT_DST      - Blitter dest address (32-bit)
+0x0F002C: BLT_WIDTH    - Blit width (pixels)
+0x0F0030: BLT_HEIGHT   - Blit height (pixels)
+0x0F0034: BLT_SRC_STRIDE - Source stride (bytes/row)
+0x0F0038: BLT_DST_STRIDE - Dest stride (bytes/row)
+0x0F003C: BLT_COLOR    - Fill/line color (RGBA)
+0x0F0040: BLT_MASK     - Mask address for masked copy (1-bit/pixel)
+0x0F0044: BLT_STATUS   - Blitter status (bit0=error)
+0x0F0048: VIDEO_RASTER_Y - Raster band start Y
+0x0F004C: VIDEO_RASTER_HEIGHT - Raster band height (pixels)
+0x0F0050: VIDEO_RASTER_COLOR - Raster band color (RGBA)
+0x0F0054: VIDEO_RASTER_CTRL - Raster band control (bit0=draw)
 
 Available Video Modes:
 MODE_640x480  = 0x00
@@ -268,7 +347,7 @@ Copper lists are stored as little-endian 32-bit words in RAM. The list format is
 - `MOVE`: `(1<<30) | (regIndex<<16)` followed by a 32-bit value word
 - `END`: `(3<<30)`
 
-`regIndex` is `(register_address - VIDEO_REG_BASE) / 4`, where `VIDEO_REG_BASE = 0xF0000`.
+`regIndex` is `(register_address - VIDEO_REG_BASE) / 4`, where `VIDEO_REG_BASE = 0x0F0000`.
 `COPPER_PTR` is latched on enable/reset; 8-bit CPUs should write bytes to `COPPER_PTR+0..3`.
 
 Example (mid-frame mode switch):
@@ -280,67 +359,79 @@ Example (mid-frame mode switch):
     .long (3 << 30)                            ; END
 ```
 
-### Timer Registers (0xF0800 - 0xF0808)
+## 3.4 Timer Registers (0x0F0800 - 0x0F080C)
+
 ```
-0xF0800: TIMER_CTRL   - Timer control (0 = disabled, 1 = enabled)
-0xF0804: TIMER_COUNT  - Current timer value (decrements automatically)
-0xF0808: TIMER_PERIOD - Timer reload value
+0x0F0800: TIMER_CTRL   - Timer control (0 = disabled, 1 = enabled)
+0x0F0804: TIMER_COUNT  - Current timer value (decrements automatically)
+0x0F0808: TIMER_PERIOD - Timer reload value
+0x0F080C: TIMER_STATUS - Timer status (read-only)
 ```
 
 The timer generates an interrupt when TIMER_COUNT reaches zero and automatically reloads from TIMER_PERIOD.
 
-### Sound Registers (0xF0900 - 0xF097C)
+## 3.5 Sound Registers
 
-Each sound channel has its own register block. Here's the layout for each channel type:
+### Filter Registers (0x0F0820 - 0x0F0834)
 
-#### Square Wave Channel (0xF0900 - 0xF093F)
 ```
-0xF0900: SQUARE_FREQ     - Frequency control
-0xF0904: SQUARE_VOL      - Volume (0-255)
-0xF0908: SQUARE_CTRL     - Channel control
-0xF090C: SQUARE_DUTY     - Duty cycle control
-0xF0910: SQUARE_SWEEP    - Frequency sweep control
-0xF0922: SQUARE_PWM_CTRL - PWM modulation control
-0xF0930: SQUARE_ATK      - Attack time (ms)
-0xF0934: SQUARE_DEC      - Decay time (ms)
-0xF0938: SQUARE_SUS      - Sustain level (0-255)
-0xF093C: SQUARE_REL      - Release time (ms)
+0x0F0820: FILTER_CUTOFF     - Filter cutoff frequency (0-255)
+0x0F0824: FILTER_RESONANCE  - Filter resonance (0-255)
+0x0F0828: FILTER_TYPE       - Filter type selection
+0x0F082C: FILTER_MOD_SOURCE - Filter modulation source
+0x0F0830: FILTER_MOD_AMOUNT - Modulation depth (0-255)
 ```
 
-#### Triangle Wave Channel (0xF0940 - 0xF097F)
+### Legacy Synth Block (0x0F0900 - 0x0F0A6F)
+
+#### Square Wave Channel (0x0F0900 - 0x0F093F)
 ```
-0xF0940: TRI_FREQ  - Frequency control
-0xF0944: TRI_VOL   - Volume control
-0xF0948: TRI_CTRL  - Channel control
-0xF0960: TRI_ATK   - Attack time
-0xF0964: TRI_DEC   - Decay time
-0xF0968: TRI_SUS   - Sustain level
-0xF096C: TRI_REL   - Release time
-0xF0914: TRI_SWEEP - Frequency sweep control
+0x0F0900: SQUARE_FREQ     - Frequency control
+0x0F0904: SQUARE_VOL      - Volume (0-255)
+0x0F0908: SQUARE_CTRL     - Channel control
+0x0F090C: SQUARE_DUTY     - Duty cycle control
+0x0F0910: SQUARE_SWEEP    - Frequency sweep control
+0x0F0922: SQUARE_PWM_CTRL - PWM modulation control
+0x0F0930: SQUARE_ATK      - Attack time (ms)
+0x0F0934: SQUARE_DEC      - Decay time (ms)
+0x0F0938: SQUARE_SUS      - Sustain level (0-255)
+0x0F093C: SQUARE_REL      - Release time (ms)
 ```
 
-#### Sine Wave Channel (0xF0980 - 0xF09BF)
+#### Triangle Wave Channel (0x0F0940 - 0x0F097F)
 ```
-0xF0980: SINE_FREQ  - Frequency control
-0xF0984: SINE_VOL   - Volume control
-0xF0988: SINE_CTRL  - Channel control
-0xF0990: SINE_ATK   - Attack time
-0xF0994: SINE_DEC   - Decay time
-0xF0998: SINE_SUS   - Sustain level
-0xF099C: SINE_REL   - Release time
-0xF0918: SINE_SWEEP - Frequency sweep control
+0x0F0940: TRI_FREQ  - Frequency control
+0x0F0944: TRI_VOL   - Volume control
+0x0F0948: TRI_CTRL  - Channel control
+0x0F0914: TRI_SWEEP - Frequency sweep control
+0x0F0960: TRI_ATK   - Attack time
+0x0F0964: TRI_DEC   - Decay time
+0x0F0968: TRI_SUS   - Sustain level
+0x0F096C: TRI_REL   - Release time
 ```
 
-#### Noise Channel (0xF09C0 - 0xF09FF)
+#### Sine Wave Channel (0x0F0980 - 0x0F09BF)
 ```
-0xF09C0: NOISE_FREQ  - Frequency control
-0xF09C4: NOISE_VOL   - Volume control
-0xF09C8: NOISE_CTRL  - Channel control
-0xF09D0: NOISE_ATK   - Attack time
-0xF09D4: NOISE_DEC   - Decay time
-0xF09D8: NOISE_SUS   - Sustain level
-0xF09DC: NOISE_REL   - Release time
-0xF09E0: NOISE_MODE  - Noise generation mode
+0x0F0980: SINE_FREQ  - Frequency control
+0x0F0984: SINE_VOL   - Volume control
+0x0F0988: SINE_CTRL  - Channel control
+0x0F0918: SINE_SWEEP - Frequency sweep control
+0x0F0990: SINE_ATK   - Attack time
+0x0F0994: SINE_DEC   - Decay time
+0x0F0998: SINE_SUS   - Sustain level
+0x0F099C: SINE_REL   - Release time
+```
+
+#### Noise Channel (0x0F09C0 - 0x0F09FF)
+```
+0x0F09C0: NOISE_FREQ  - Frequency control
+0x0F09C4: NOISE_VOL   - Volume control
+0x0F09C8: NOISE_CTRL  - Channel control
+0x0F09D0: NOISE_ATK   - Attack time
+0x0F09D4: NOISE_DEC   - Decay time
+0x0F09D8: NOISE_SUS   - Sustain level
+0x0F09DC: NOISE_REL   - Release time
+0x0F09E0: NOISE_MODE  - Noise generation mode
 
 Noise Modes:
 NOISE_MODE_WHITE    = 0 // Standard LFSR noise
@@ -348,59 +439,111 @@ NOISE_MODE_PERIODIC = 1 // Periodic/looping noise
 NOISE_MODE_METALLIC = 2 // "Metallic" noise variant
 ```
 
-#### Channel Modulation Controls (0xF0A00 - 0xF0A1C)
+#### Sawtooth Wave Channel (0x0F0A20 - 0x0F0A3F)
 ```
-0xF0A00: SYNC_SOURCE_CH0 - Sync source for channel 0
-0xF0A04: SYNC_SOURCE_CH1 - Sync source for channel 1
-0xF0A08: SYNC_SOURCE_CH2 - Sync source for channel 2
-0xF0A0C: SYNC_SOURCE_CH3 - Sync source for channel 3
-
-0xF0A10: RING_MOD_SOURCE_CH0 - Ring mod source for channel 0
-0xF0A14: RING_MOD_SOURCE_CH1 - Ring mod source for channel 1
-0xF0A18: RING_MOD_SOURCE_CH2 - Ring mod source for channel 2
-0xF0A1C: RING_MOD_SOURCE_CH3 - Ring mod source for channel 3
-```
-
-#### Sawtooth Wave Channel (0xF0A20 - 0xF0A6F)
-```
-0xF0A20: SAW_FREQ  - Frequency control
-0xF0A24: SAW_VOL   - Volume control
-0xF0A28: SAW_CTRL  - Channel control
-0xF0A2C: SAW_SWEEP - Frequency sweep control
-0xF0A30: SAW_ATK   - Attack time
-0xF0A34: SAW_DEC   - Decay time
-0xF0A38: SAW_SUS   - Sustain level
-0xF0A3C: SAW_REL   - Release time
-
-0xF0A60: SYNC_SOURCE_CH4     - Sync source for sawtooth channel
-0xF0A64: RING_MOD_SOURCE_CH4 - Ring mod source for sawtooth channel
+0x0F0A20: SAW_FREQ  - Frequency control
+0x0F0A24: SAW_VOL   - Volume control
+0x0F0A28: SAW_CTRL  - Channel control
+0x0F0A2C: SAW_SWEEP - Frequency sweep control
+0x0F0A30: SAW_ATK   - Attack time
+0x0F0A34: SAW_DEC   - Decay time
+0x0F0A38: SAW_SUS   - Sustain level
+0x0F0A3C: SAW_REL   - Release time
 ```
 
-#### Global Sound Effects (0xF0A40 - 0xF0A54)
+#### Channel Modulation Controls (0x0F0A00 - 0x0F0A6F)
 ```
-0xF0820: FILTER_CUTOFF     - Filter cutoff frequency (0-255)
-0xF0824: FILTER_RESONANCE  - Filter resonance (0-255)
-0xF0828: FILTER_TYPE       - Filter type selection
-0xF082C: FILTER_MOD_SOURCE - Filter modulation source
-0xF0830: FILTER_MOD_AMOUNT - Modulation depth (0-255)
+0x0F0A00: SYNC_SOURCE_CH0 - Sync source for channel 0
+0x0F0A04: SYNC_SOURCE_CH1 - Sync source for channel 1
+0x0F0A08: SYNC_SOURCE_CH2 - Sync source for channel 2
+0x0F0A0C: SYNC_SOURCE_CH3 - Sync source for channel 3
 
-0xF0A40: OVERDRIVE_CTRL - Drive amount (0-255)
-0xF0A50: REVERB_MIX     - Dry/wet mix (0-255)
-0xF0A54: REVERB_DECAY   - Decay time (0-255)
+0x0F0A10: RING_MOD_SOURCE_CH0 - Ring mod source for channel 0
+0x0F0A14: RING_MOD_SOURCE_CH1 - Ring mod source for channel 1
+0x0F0A18: RING_MOD_SOURCE_CH2 - Ring mod source for channel 2
+0x0F0A1C: RING_MOD_SOURCE_CH3 - Ring mod source for channel 3
+
+0x0F0A60: SYNC_SOURCE_CH4     - Sync source for sawtooth channel
+0x0F0A64: RING_MOD_SOURCE_CH4 - Ring mod source for sawtooth channel
 ```
 
-#### POKEY Sound Chip Registers (0xF0D00 - 0xF0D09)
+#### Global Sound Effects (0x0F0A40 - 0x0F0A54)
 ```
-0xF0D00: POKEY_AUDF1    - Channel 1 frequency divider
-0xF0D01: POKEY_AUDC1    - Channel 1 control (distortion + volume)
-0xF0D02: POKEY_AUDF2    - Channel 2 frequency divider
-0xF0D03: POKEY_AUDC2    - Channel 2 control
-0xF0D04: POKEY_AUDF3    - Channel 3 frequency divider
-0xF0D05: POKEY_AUDC3    - Channel 3 control
-0xF0D06: POKEY_AUDF4    - Channel 4 frequency divider
-0xF0D07: POKEY_AUDC4    - Channel 4 control
-0xF0D08: POKEY_AUDCTL   - Master audio control
-0xF0D09: POKEY_PLUS_CTRL - POKEY+ mode (0=standard, 1=enhanced)
+0x0F0A40: OVERDRIVE_CTRL - Drive amount (0-255)
+0x0F0A50: REVERB_MIX     - Dry/wet mix (0-255)
+0x0F0A54: REVERB_DECAY   - Decay time (0-255)
+```
+
+### Flexible 4-Channel Synth Block (0x0F0A80 - 0x0F0B3F)
+
+The flexible synth block provides a modern, uniform interface for all four synthesis channels. Each channel occupies 0x30 bytes (48 bytes), supporting any waveform type.
+
+```
+Channel Base Addresses:
+  Channel 0: 0x0F0A80
+  Channel 1: 0x0F0AB0
+  Channel 2: 0x0F0AE0
+  Channel 3: 0x0F0B10
+
+Per-Channel Register Offsets:
+  +0x00: FREQ       - Frequency control (32-bit)
+  +0x04: VOL        - Volume (0-255)
+  +0x08: CTRL       - Channel control (bit0=enable, bit1=gate)
+  +0x0C: DUTY       - Duty cycle for square/pulse waves
+  +0x10: SWEEP      - Frequency sweep control
+  +0x14: ATK        - Attack time (ms)
+  +0x18: DEC        - Decay time (ms)
+  +0x1C: SUS        - Sustain level (0-255)
+  +0x20: REL        - Release time (ms)
+  +0x24: WAVE_TYPE  - Waveform selection (0=square, 1=triangle, 2=sine, 3=noise, 4=saw)
+  +0x28: PWM_CTRL   - PWM modulation control
+  +0x2C: NOISEMODE  - Noise mode (for noise waveform)
+  +0x30: PHASE      - Reset phase position
+  +0x34: RINGMOD    - Ring modulation source (bit7=enable, bits0-2=source channel)
+  +0x38: SYNC       - Hard sync source (bit7=enable, bits0-2=source channel)
+```
+
+Example: Configure channel 1 as a sawtooth wave at 440Hz:
+```assembly
+; Using flexible synth registers
+LOAD A, #440
+STORE A, @0x0F0AB0      ; CH1 FREQ
+LOAD A, #200
+STORE A, @0x0F0AB4      ; CH1 VOL
+LOAD A, #4
+STORE A, @0x0F0AD4      ; CH1 WAVE_TYPE = sawtooth
+LOAD A, #1
+STORE A, @0x0F0AB8      ; CH1 CTRL = enable
+```
+
+## 3.6 PSG Sound Chip Registers (0x0F0C00 - 0x0F0C1C)
+
+```
+0x0F0C00: PSG_REG_SELECT   - Register select
+0x0F0C01: PSG_REG_DATA     - Register data
+0x0F0C02-0x0F0C0D: PSG registers (direct access)
+0x0F0C0E: PSG_PLUS_CTRL    - PSG+ mode (0=standard, 1=enhanced)
+
+PSG Playback Control:
+0x0F0C10: PSG_PLAY_PTR    - Pointer to PSG data (32-bit)
+0x0F0C14: PSG_PLAY_LEN    - Length of PSG data (32-bit)
+0x0F0C18: PSG_PLAY_CTRL   - Control (bit0=start, bit1=stop, bit2=loop)
+0x0F0C1C: PSG_PLAY_STATUS - Status (bit0=busy, bit1=error)
+```
+
+## 3.7 POKEY Sound Chip Registers (0x0F0D00 - 0x0F0D1D)
+
+```
+0x0F0D00: POKEY_AUDF1    - Channel 1 frequency divider
+0x0F0D01: POKEY_AUDC1    - Channel 1 control (distortion + volume)
+0x0F0D02: POKEY_AUDF2    - Channel 2 frequency divider
+0x0F0D03: POKEY_AUDC2    - Channel 2 control
+0x0F0D04: POKEY_AUDF3    - Channel 3 frequency divider
+0x0F0D05: POKEY_AUDC3    - Channel 3 control
+0x0F0D06: POKEY_AUDF4    - Channel 4 frequency divider
+0x0F0D07: POKEY_AUDC4    - Channel 4 control
+0x0F0D08: POKEY_AUDCTL   - Master audio control
+0x0F0D09: POKEY_PLUS_CTRL - POKEY+ mode (0=standard, 1=enhanced)
 
 AUDCTL Bit Masks:
 bit 0: Use 15kHz base clock (else 64kHz)
@@ -421,40 +564,42 @@ AUDC Distortion Modes (bits 5-7):
 0xA0: Pure square wave
 0xC0: 4-bit poly only (buzzy)
 0xE0: 17-bit + pulse
+
+SAP Player Registers (0x0F0D10 - 0x0F0D1D):
+0x0F0D10: SAP_PLAY_PTR    - Pointer to SAP data (32-bit)
+0x0F0D14: SAP_PLAY_LEN    - Length of SAP data (32-bit)
+0x0F0D18: SAP_PLAY_CTRL   - Control (bit0=start, bit1=stop, bit2=loop)
+0x0F0D1C: SAP_PLAY_STATUS - Status (bit0=busy, bit1=error)
+0x0F0D1D: SAP_SUBSONG     - Subsong selection (0-255)
 ```
 
-#### SAP Player Registers (0xF0D10 - 0xF0D1D)
-```
-0xF0D10: SAP_PLAY_PTR    - Pointer to SAP data (32-bit)
-0xF0D14: SAP_PLAY_LEN    - Length of SAP data (32-bit)
-0xF0D18: SAP_PLAY_CTRL   - Control (bit0=start, bit1=stop, bit2=loop)
-0xF0D1C: SAP_PLAY_STATUS - Status (bit0=busy, bit1=error)
-0xF0D1D: SAP_SUBSONG     - Subsong selection (0-255)
-```
+## 3.8 SID Sound Chip Registers (0x0F0E00 - 0x0F0E2D)
 
-#### SID Sound Chip Registers (0xF0E00 - 0xF0E19)
 ```
-Voice 1 (0xF0E00 - 0xF0E06):
-0xF0E00: SID_V1_FREQ_LO  - Frequency low byte
-0xF0E01: SID_V1_FREQ_HI  - Frequency high byte
-0xF0E02: SID_V1_PW_LO    - Pulse width low byte
-0xF0E03: SID_V1_PW_HI    - Pulse width high (bits 0-3)
-0xF0E04: SID_V1_CTRL     - Control register
-0xF0E05: SID_V1_AD       - Attack/Decay
-0xF0E06: SID_V1_SR       - Sustain/Release
+Voice 1 (0x0F0E00 - 0x0F0E06):
+0x0F0E00: SID_V1_FREQ_LO  - Frequency low byte
+0x0F0E01: SID_V1_FREQ_HI  - Frequency high byte
+0x0F0E02: SID_V1_PW_LO    - Pulse width low byte
+0x0F0E03: SID_V1_PW_HI    - Pulse width high (bits 0-3)
+0x0F0E04: SID_V1_CTRL     - Control register
+0x0F0E05: SID_V1_AD       - Attack/Decay
+0x0F0E06: SID_V1_SR       - Sustain/Release
 
-Voice 2 (0xF0E07 - 0xF0E0D):
-0xF0E07-0xF0E0D: Same layout as Voice 1
+Voice 2 (0x0F0E07 - 0x0F0E0D):
+0x0F0E07-0x0F0E0D: Same layout as Voice 1
 
-Voice 3 (0xF0E0E - 0xF0E14):
-0xF0E0E-0xF0E14: Same layout as Voice 1
+Voice 3 (0x0F0E0E - 0x0F0E14):
+0x0F0E0E-0x0F0E14: Same layout as Voice 1
 
 Filter and Volume:
-0xF0E15: SID_FC_LO       - Filter cutoff low (bits 0-2)
-0xF0E16: SID_FC_HI       - Filter cutoff high byte
-0xF0E17: SID_RES_FILT    - Resonance (bits 4-7) + routing (bits 0-3)
-0xF0E18: SID_MODE_VOL    - Volume (bits 0-3) + filter mode (bits 4-7)
-0xF0E19: SID_PLUS_CTRL   - SID+ mode (0=standard, 1=enhanced)
+0x0F0E15: SID_FC_LO       - Filter cutoff low (bits 0-2)
+0x0F0E16: SID_FC_HI       - Filter cutoff high byte
+0x0F0E17: SID_RES_FILT    - Resonance (bits 4-7) + routing (bits 0-3)
+0x0F0E18: SID_MODE_VOL    - Volume (bits 0-3) + filter mode (bits 4-7)
+0x0F0E19: SID_PLUS_CTRL   - SID+ mode (0=standard, 1=enhanced)
+0x0F0E1A: SID_OSC3        - Voice 3 oscillator output (read-only)
+0x0F0E1B: SID_ENV3        - Voice 3 envelope output (read-only)
+0x0F0E1C: (reserved)
 
 Voice Control Register Bits:
 bit 0: Gate (trigger envelope)
@@ -471,18 +616,39 @@ bit 4: Low-pass filter
 bit 5: Band-pass filter
 bit 6: High-pass filter
 bit 7: Disconnect voice 3 from output
+
+SID Player Registers (0x0F0E20 - 0x0F0E2D):
+0x0F0E20: SID_PLAY_PTR    - Pointer to .SID data (32-bit)
+0x0F0E24: SID_PLAY_LEN    - Length of .SID data (32-bit)
+0x0F0E28: SID_PLAY_CTRL   - Control (bit0=start, bit1=stop, bit2=loop)
+0x0F0E2C: SID_PLAY_STATUS - Status (bit0=busy, bit1=error)
+0x0F0E2D: SID_SUBSONG     - Subsong selection (0-255)
 ```
 
-# 4. CPU Architecture
+These registers allow CPU code to trigger .SID file playback from RAM, similar to the PSG and SAP player registers. The embedded 6502 code in the SID file is executed by the internal 6502 emulator at the correct frame rate (50Hz PAL or ~60Hz NTSC).
 
-The CPU implements a 32-bit RISC-like architecture with fixed-width instructions and a clean, orthogonal instruction set.
+## 3.9 Audio Chip Memory Map by CPU
+
+The three sound chips (PSG, POKEY, SID) are accessible from all CPU architectures at different address ranges:
+
+| Chip  | IE32/M68K         | Z80 Ports | 6502        |
+|-------|-------------------|-----------|-------------|
+| PSG   | 0x0F0C00-0x0F0C0D | 0xF0-0xF1 | $D400-$D40D |
+| POKEY | 0x0F0D00-0x0F0D09 | 0xD0-0xD1 | $D200-$D209 |
+| SID   | 0x0F0E00-0x0F0E1C | 0xE0-0xE1 | $D500-$D51C |
+
+Z80 uses port-based I/O: the first port selects the register, the second reads/writes data.
+6502 uses memory-mapped I/O in its native address space, following C64/Atari conventions.
+
+# 4. IE32 CPU Architecture
+
+The IE32 implements a 32-bit RISC-like architecture with fixed-width instructions and a clean, orthogonal instruction set.
 
 ## 4.1 Register Set
 
 The CPU provides 16 general-purpose 32-bit registers organised in two logical banks:
 
-First Bank (A-H):
-
+**First Bank (A-H):**
 ```
 A - Primary accumulator/general purpose
 B - General purpose
@@ -494,8 +660,7 @@ G - General purpose
 H - General purpose
 ```
 
-Second Bank (S-Z):
-
+**Second Bank (S-Z):**
 ```
 S - General purpose/stack operations
 T - General purpose
@@ -509,7 +674,52 @@ Z - General purpose/index
 
 While the register naming suggests traditional roles (like X/Y/Z for indexing), all registers are fully general-purpose and can be used interchangeably.
 
-## 4.2 Instruction Format
+**Special Registers:**
+```
+PC - Program Counter (32-bit)
+SP - Stack Pointer (32-bit, initialised to 0xE0000)
+```
+
+## 4.2 Status Flags
+
+The IE32 uses implicit status flags based on the result of the last operation:
+- Operations that produce a zero result set an internal zero flag
+- Comparison instructions (used by conditional jumps) compare register values directly
+
+## 4.3 Addressing Modes
+
+The system supports five addressing modes:
+
+**Immediate (ADDR_IMMEDIATE = 0x00)**
+```assembly
+LOAD A, #42        ; Load value 42 into register A
+```
+
+**Register (ADDR_REGISTER = 0x01)**
+```assembly
+ADD A, X           ; Add X register to A register
+```
+
+**Register Indirect (ADDR_REG_IND = 0x02)**
+```assembly
+LOAD A, [X]        ; Load from address in X
+LOAD A, [X+4]      ; Load from address in X plus 4
+```
+
+**Memory Indirect (ADDR_MEM_IND = 0x03)**
+```assembly
+LOAD A, [0x1000]   ; Load from address stored at memory location 0x1000
+```
+
+**Direct (ADDR_DIRECT = 0x04)**
+```assembly
+STORE A, @0xF0900  ; Store A's value directly to memory address 0xF0900
+LOAD A, @0x1000    ; Load value directly from memory address 0x1000
+```
+
+The direct addressing mode is used for memory-mapped I/O operations, providing efficient access to hardware registers without double indirection.
+
+## 4.4 Instruction Format
 
 Every instruction is exactly 8 bytes long, providing a consistent and easy-to-decode format:
 
@@ -521,47 +731,7 @@ Byte 3: Reserved (must be 0)
 Bytes 4-7: 32-bit operand value
 ```
 
-## 4.3 Addressing Modes
-
-The system supports five addressing modes:
-
-**Immediate (ADDR_IMMEDIATE = 0x00)**
-
-   ```assembly
-   LOAD A, #42        ; Load value 42 into register A
-   ```
-
-**Register (ADDR_REGISTER = 0x01)**
-
-   ```assembly
-   ADD A, X           ; Add X register to A register
-   ```
-
-**Register Indirect (ADDR_REG_IND = 0x02)**
-
-   ```assembly
-   LOAD A, [X]        ; Load from address in X
-   LOAD A, [X+4]      ; Load from address in X plus 4
-   ```
-
-**Memory Indirect (ADDR_MEM_IND = 0x03)**
-
-   ```assembly
-   LOAD A, [0x1000]   ; Load from address stored at memory location 0x1000
-   ```
-
-**Direct (ADDR_DIRECT = 0x04)**
-
-   ```assembly
-   STORE A, @0xF0900  ; Store A's value directly to memory address 0xF0900
-   LOAD A, @0x1000    ; Load value directly from memory address 0x1000
-   ```
-
-The direct addressing mode is used for memory-mapped I/O operations, providing efficient access to hardware registers without double indirection.
-
-## 4.4 Instruction Set
-
-The CPU provides these instruction categories:
+## 4.5 Instruction Set
 
 ### Data Movement Instructions
 ```assembly
@@ -660,7 +830,15 @@ NOP  (0xEE) ; No operation
 HALT (0xFF) ; Stop execution
 ```
 
-## 4.5 Interrupt Handling
+## 4.6 Memory and I/O Integration
+
+- The IE32 uses the shared 32MB system bus
+- All memory-mapped devices (video, audio, PSG/POKEY/SID, terminal) are accessible
+- I/O region: 0x0F0000 - 0x0FFFFF
+- VRAM access: 0x100000 - 0x4FFFFF (direct 32-bit addressing)
+- Stack grows downward from 0xE0000
+
+## 4.7 Interrupt Handling
 
 The system implements a simple but effective interrupt system:
 
@@ -683,105 +861,377 @@ The system implements a simple but effective interrupt system:
 4. **Timer Interrupts**
    The system timer can generate periodic interrupts:
 
-   ```assembly
-   ; Configure timer interrupt
-   LOAD A, #44100     ; Set period (1 second at 44.1kHz)
-   STORE A, @0xF0808  ; Write to TIMER_PERIOD
-   LOAD A, #1
-   STORE A, @0xF0800  ; Enable timer
-   SEI                ; Enable interrupts
-   ```
+```assembly
+; Configure timer interrupt
+LOAD A, #44100     ; Set period (1 second at 44.1kHz)
+STORE A, @0xF0808  ; Write to TIMER_PERIOD
+LOAD A, #1
+STORE A, @0xF0800  ; Enable timer
+SEI                ; Enable interrupts
+```
 
+## 4.8 Compatibility Notes
 
-# 5. MOS 6502 CPU
+- Little-endian byte order for memory bus operations
+- Fixed 8-byte instruction size
+- All registers are 32-bit
+- Word-aligned memory access recommended for performance
 
 # 5. MOS 6502 CPU
 
 The Intuition Engine includes an NMOS 6502 core for running raw 8-bit binaries. The 6502 shares the same memory-mapped I/O and device map as IE32 and M68K, so hardware registers behave identically across CPU modes.
 
 ## 5.1 Register Set
+
 The 6502 core exposes the classic NMOS register file:
-- **A** (Accumulator) for arithmetic and logic.
-- **X** and **Y** index registers.
-- **SP** (Stack Pointer), 8-bit, stack page fixed at `0x0100-0x01FF`.
-- **PC** (Program Counter), 16-bit.
-- **SR** (Status Register), 8-bit flags.
+
+```
+A  - Accumulator (8-bit) for arithmetic and logic
+X  - Index register X (8-bit)
+Y  - Index register Y (8-bit)
+SP - Stack Pointer (8-bit), stack page fixed at 0x0100-0x01FF
+PC - Program Counter (16-bit)
+SR - Status Register (8-bit flags)
+```
 
 ## 5.2 Status Flags
+
 The status register follows NMOS 6502 semantics:
-- **N** (Negative), **V** (Overflow), **B** (Break), **D** (Decimal), **I** (IRQ Disable), **Z** (Zero), **C** (Carry).
-- The unused flag bit behaves like the original NMOS (set when pushed to stack).
+
+```
+Bit 7: N - Negative flag
+Bit 6: V - Overflow flag
+Bit 5: - - Unused (always 1 when pushed)
+Bit 4: B - Break command
+Bit 3: D - Decimal mode
+Bit 2: I - IRQ Disable
+Bit 1: Z - Zero flag
+Bit 0: C - Carry flag
+```
 
 ## 5.3 Addressing Modes
-Supported addressing modes match the NMOS 6502 set used by common assemblers:
-- Immediate, Zero Page, Zero Page,X, Zero Page,Y
-- Absolute, Absolute,X, Absolute,Y
-- Indirect, (Indirect,X), (Indirect),Y
-- Relative (branch), Accumulator, Implied
 
-## 5.4 Loading and Entry
-- Use `-m6502` to run a raw binary.
-- `--load-addr` sets the load address (default `0x0600`).
-- `--entry` sets the entry address (defaults to the load address).
-- The loader sets the RESET/IRQ/NMI vectors to the entry address for raw binaries.
+Supported addressing modes match the NMOS 6502 set used by common assemblers:
+
+| Mode | Syntax | Description |
+|------|--------|-------------|
+| Immediate | #$nn | Operand is the byte following the opcode |
+| Zero Page | $nn | 8-bit address in page zero |
+| Zero Page,X | $nn,X | Zero page indexed by X |
+| Zero Page,Y | $nn,Y | Zero page indexed by Y |
+| Absolute | $nnnn | 16-bit address |
+| Absolute,X | $nnnn,X | Absolute indexed by X |
+| Absolute,Y | $nnnn,Y | Absolute indexed by Y |
+| Indirect | ($nnnn) | Indirect (JMP only) |
+| (Indirect,X) | ($nn,X) | Indexed indirect |
+| (Indirect),Y | ($nn),Y | Indirect indexed |
+| Relative | $nn | Signed offset for branches |
+| Accumulator | A | Operand is accumulator |
+| Implied | | Operand implied by instruction |
+
+## 5.4 Instruction Set
+
+The 6502 implements all 56 documented NMOS instructions plus unofficial opcodes:
+
+**Load/Store:** LDA, LDX, LDY, STA, STX, STY
+**Transfer:** TAX, TAY, TSX, TXA, TXS, TYA
+**Stack:** PHA, PHP, PLA, PLP
+**Arithmetic:** ADC, SBC, INC, INX, INY, DEC, DEX, DEY
+**Logical:** AND, EOR, ORA, BIT
+**Shift/Rotate:** ASL, LSR, ROL, ROR
+**Compare:** CMP, CPX, CPY
+**Branch:** BCC, BCS, BEQ, BMI, BNE, BPL, BVC, BVS
+**Jump/Return:** JMP, JSR, RTS, RTI, BRK
+**Flags:** CLC, CLD, CLI, CLV, SEC, SED, SEI
+**No-op:** NOP
 
 ## 5.5 Memory and I/O Integration
-- The 6502 uses the shared system bus and all memory-mapped devices (video, audio, PSG, terminal).
-- The VRAM window is banked at `0x8000-0xBFFF`, with the bank select register at `0xF7F0`.
-- VRAM banking is disabled until the first write to the bank register.
-- Memory-mapped I/O ranges remain identical across CPU modes.
+
+- The 6502 uses the shared system bus and all memory-mapped devices
+- Native 16-bit address space (0x0000-0xFFFF)
+- VRAM access via banking at 0x8000-0xBFFF (16KB window)
+- Bank select register at 0xF7F0
+- VRAM banking is disabled until the first write to the bank register
+- Extended bank windows for IE65:
+  - Bank 1: 0x2000-0x3FFF (8KB, sprite data)
+  - Bank 2: 0x4000-0x5FFF (8KB, font data)
+  - Bank 3: 0x6000-0x7FFF (8KB, general/AY data)
+- Bank control registers: 0xF700-0xF705
+
+**Audio Chip Access (6502 native addresses):**
+| Chip  | Address Range |
+|-------|---------------|
+| PSG   | $D400-$D40D   |
+| POKEY | $D200-$D209   |
+| SID   | $D500-$D51C   |
 
 ## 5.6 Interrupts and Vectors
-- Vector locations follow standard 6502 layout: `NMI` at `0xFFFA/0xFFFB`, `RESET` at `0xFFFC/0xFFFD`, `IRQ/BRK` at `0xFFFE/0xFFFF`.
-- The loader seeds these vectors for raw binaries; custom binaries may overwrite them.
+
+Vector locations follow standard 6502 layout:
+```
+0xFFFA-0xFFFB: NMI vector
+0xFFFC-0xFFFD: RESET vector
+0xFFFE-0xFFFF: IRQ/BRK vector
+```
+
+The loader seeds these vectors for raw binaries; custom binaries may overwrite them.
 
 ## 5.7 Compatibility Notes
-- The core targets NMOS 6502 behavior and is cycle-accurate; 65C02 opcodes are not supported.
-- Decimal mode is implemented; use Klaus tests to validate D-flag behavior.
 
-# 5.8 Zilog Z80 CPU
+- **NMOS 6502 only**: 65C02 opcodes are not supported
+- Decimal mode is fully implemented
+- Cycle-accurate instruction timing
+- Use Klaus tests to validate D-flag behavior
+- Use `-m6502` flag to run 6502 binaries
+- `--load-addr` sets the load address (default 0x0600)
+- `--entry` sets the entry address (defaults to load address)
 
-The Intuition Engine also includes a Z80 core for running raw 8-bit binaries. It shares the same memory map and device registers as the other CPU modes.
+# 6. Zilog Z80 CPU
 
-## 5.8.1 Loading and Entry
-- Use `-z80` to run a raw Z80 binary.
-- `--load-addr` sets the load address (default `0x0000`).
-- `--entry` sets the entry address (defaults to the load address).
+The Intuition Engine includes a Z80 core for running raw 8-bit binaries. It shares the same memory map and device registers as the other CPU modes.
 
-## 5.8.2 Memory and I/O Integration
-- The Z80 uses the shared system bus and all memory-mapped devices (video, audio, PSG, terminal).
-- Z80 `IN/OUT` ports map to the same 16-bit address space as the memory-mapped registers.
+## 6.1 Register Set
 
-# 6. Motorola 68020 CPU with FPU
+The Z80 provides a rich register set with shadow registers:
+
+**Main Registers:**
+```
+A  - Accumulator (8-bit)
+F  - Flags (8-bit)
+B, C - General purpose (8-bit each, BC as 16-bit pair)
+D, E - General purpose (8-bit each, DE as 16-bit pair)
+H, L - General purpose (8-bit each, HL as 16-bit pair)
+```
+
+**Shadow Registers:**
+```
+A', F', B', C', D', E', H', L' - Alternate register set
+```
+
+**Index Registers:**
+```
+IX - Index register X (16-bit)
+IY - Index register Y (16-bit)
+```
+
+**Special Registers:**
+```
+SP - Stack Pointer (16-bit)
+PC - Program Counter (16-bit)
+I  - Interrupt Vector (8-bit)
+R  - Refresh Counter (8-bit)
+```
+
+## 6.2 Status Flags
+
+The F register contains:
+```
+Bit 7: S  - Sign flag
+Bit 6: Z  - Zero flag
+Bit 5: Y  - Undocumented (copy of bit 5 of result)
+Bit 4: H  - Half-carry flag
+Bit 3: X  - Undocumented (copy of bit 3 of result)
+Bit 2: P/V - Parity/Overflow flag
+Bit 1: N  - Add/Subtract flag
+Bit 0: C  - Carry flag
+```
+
+## 6.3 Addressing Modes
+
+| Mode | Syntax | Description |
+|------|--------|-------------|
+| Immediate | n | 8-bit immediate value |
+| Immediate Extended | nn | 16-bit immediate value |
+| Register | r | Single register |
+| Register Pair | rr | 16-bit register pair (BC, DE, HL, SP) |
+| Indirect | (HL) | Memory at address in HL |
+| Indexed | (IX+d), (IY+d) | Indexed with signed displacement |
+| Extended | (nn) | Direct 16-bit address |
+| Relative | e | Signed 8-bit offset for jumps |
+| Bit | b | Bit number (0-7) |
+
+## 6.4 Instruction Set
+
+The Z80 implements a comprehensive instruction set including:
+
+**8-bit Load:** LD r,r' / LD r,n / LD r,(HL) / LD (HL),r
+**16-bit Load:** LD rr,nn / LD (nn),HL / LD HL,(nn) / PUSH/POP
+**Exchange:** EX DE,HL / EX AF,AF' / EXX
+**Arithmetic:** ADD, ADC, SUB, SBC, AND, OR, XOR, CP, INC, DEC
+**16-bit Arithmetic:** ADD HL,rr / ADC HL,rr / SBC HL,rr / INC/DEC rr
+**Rotate/Shift:** RLCA, RRCA, RLA, RRA, RLC, RRC, RL, RR, SLA, SRA, SRL
+**Bit Operations:** BIT, SET, RES
+**Jump:** JP, JR, DJNZ
+**Call/Return:** CALL, RET, RETI, RETN, RST
+**Input/Output:** IN, OUT
+**Block Transfer:** LDI, LDIR, LDD, LDDR
+**Block Search:** CPI, CPIR, CPD, CPDR
+**Block I/O:** INI, INIR, IND, INDR, OUTI, OTIR, OUTD, OTDR
+
+## 6.5 Memory and I/O Integration
+
+- The Z80 uses the shared system bus
+- Native 16-bit address space (0x0000-0xFFFF)
+- Z80 `IN/OUT` ports map to the 16-bit address space as memory-mapped registers
+- VRAM access via banking similar to 6502
+
+**Port-Based Audio Chip Access:**
+| Chip  | Ports   |
+|-------|---------|
+| PSG   | 0xF0-0xF1 |
+| POKEY | 0xD0-0xD1 |
+| SID   | 0xE0-0xE1 |
+
+First port selects the register, second port reads/writes data.
+
+## 6.6 Interrupts
+
+The Z80 supports three interrupt modes:
+
+**Mode 0:** External device places instruction on data bus (typically RST)
+**Mode 1:** Jump to fixed address 0x0038
+**Mode 2:** Vectored interrupts using I register as high byte
+
+Interrupt control:
+```assembly
+DI      ; Disable interrupts
+EI      ; Enable interrupts
+IM 0/1/2 ; Set interrupt mode
+```
+
+## 6.7 Compatibility Notes
+
+- Full Z80 instruction set including undocumented opcodes
+- Use `-z80` flag to run Z80 binaries
+- `--load-addr` sets the load address (default 0x0000)
+- `--entry` sets the entry address (defaults to load address)
+- Shadow registers fully implemented
+- Block transfer and search instructions implemented
+- All interrupt modes supported
+
+# 7. Motorola 68020 CPU with FPU
 
 In addition to the IE32 instruction set, the Intuition Engine includes a complete Motorola 68020 CPU emulator with 68881/68882 FPU (Floating Point Unit) support.
 
-## 6.1 M68K CPU Features
+## 7.1 Register Set
 
-The 68020 emulator provides:
+**Data Registers:**
+```
+D0-D7 - Eight 32-bit data registers
+        Can be used as byte (.B), word (.W), or long (.L)
+```
 
-- **32-bit architecture** with 8 data registers (D0-D7) and 8 address registers (A0-A7)
-- **95%+ instruction coverage** including all common 68020 operations
-- **Full addressing mode support** (16 addressing modes)
-- **Supervisor/user mode** privilege separation
-- **Exception handling** with vector table support
+**Address Registers:**
+```
+A0-A6 - Seven 32-bit address registers
+A7    - Stack pointer (SSP in supervisor mode, USP in user mode)
+```
 
-### Instruction Categories Supported:
-- Data movement (MOVE, MOVEA, MOVEM, MOVEQ, MOVEP, LEA, PEA)
-- Arithmetic (ADD, SUB, MUL, DIV, NEG, CMP, ADDX, SUBX)
-- Logical (AND, OR, EOR, NOT)
-- Shift and rotate (ASL, ASR, LSL, LSR, ROL, ROR, ROXL, ROXR)
-- Bit manipulation (BTST, BCHG, BCLR, BSET)
-- Bit field operations (BFTST, BFEXTU, BFEXTS, BFCHG, BFCLR, BFSET, BFFFO, BFINS)
-- BCD arithmetic (ABCD, SBCD, NBCD, PACK, UNPK)
-- Program control (Bcc, DBcc, Scc, JMP, JSR, RTS, RTE, TRAP)
-- System control (MOVE SR, MOVE USP, MOVEC, MOVES, RESET, STOP)
-- Atomic operations (TAS, CAS, CAS2)
-- Bounds checking (CHK, CHK2, CMP2)
+**Special Registers:**
+```
+PC   - Program Counter (32-bit)
+SR   - Status Register (16-bit)
+CCR  - Condition Code Register (low byte of SR)
+USP  - User Stack Pointer
+SSP  - Supervisor Stack Pointer
+VBR  - Vector Base Register
+SFC  - Source Function Code
+DFC  - Destination Function Code
+CACR - Cache Control Register
+CAAR - Cache Address Register
+```
 
-## 6.2 FPU (68881/68882) Features
+**FPU Registers (68881/68882):**
+```
+FP0-FP7 - Eight 80-bit floating-point registers
+FPCR    - Floating-Point Control Register
+FPSR    - Floating-Point Status Register
+FPIAR   - Floating-Point Instruction Address Register
+```
 
-The FPU coprocessor provides full floating-point support:
+## 7.2 Status Flags
+
+**Condition Code Register (CCR):**
+```
+Bit 4: X - Extend (copy of carry for multi-precision)
+Bit 3: N - Negative
+Bit 2: Z - Zero
+Bit 1: V - Overflow
+Bit 0: C - Carry
+```
+
+**System Byte:**
+```
+Bit 15: T1 - Trace enable
+Bit 14: T0 - Trace enable
+Bit 13: S  - Supervisor state
+Bits 10-8: IPL - Interrupt priority level mask
+```
+
+## 7.3 Addressing Modes
+
+The 68020 supports 12 basic addressing modes plus extensions:
+
+| Mode | Syntax | Description |
+|------|--------|-------------|
+| Data Register Direct | Dn | Data in register |
+| Address Register Direct | An | Address in register |
+| Address Register Indirect | (An) | Memory at address in An |
+| Address Indirect Postincrement | (An)+ | Indirect, then increment An |
+| Address Indirect Predecrement | -(An) | Decrement An, then indirect |
+| Address Indirect with Displacement | (d16,An) | An + signed 16-bit offset |
+| Address Indirect with Index | (d8,An,Xn) | An + Xn + signed 8-bit offset |
+| Absolute Short | (xxx).W | 16-bit address, sign-extended |
+| Absolute Long | (xxx).L | Full 32-bit address |
+| PC with Displacement | (d16,PC) | PC + signed 16-bit offset |
+| PC with Index | (d8,PC,Xn) | PC + Xn + signed 8-bit offset |
+| Immediate | #<data> | Immediate value |
+
+**68020-Specific Extensions:**
+| Mode | Syntax | Description |
+|------|--------|-------------|
+| Memory Indirect Preindexed | ([bd,An,Xn],od) | Double indirection with preindex |
+| Memory Indirect Postindexed | ([bd,An],Xn,od) | Double indirection with postindex |
+| PC Memory Indirect | ([bd,PC,Xn],od) | PC-relative indirect |
+| Scaled Indexing | (d8,An,Xn*scale) | Scale factor ×1, ×2, ×4, or ×8 |
+
+## 7.4 Instruction Set
+
+**Data Movement:**
+MOVE, MOVEA, MOVEM, MOVEQ, MOVEP, LEA, PEA, EXG, SWAP, LINK, UNLK
+
+**Arithmetic:**
+ADD, ADDA, ADDI, ADDQ, ADDX
+SUB, SUBA, SUBI, SUBQ, SUBX
+MULU, MULS, DIVU, DIVS, DIVUL, DIVSL
+NEG, NEGX, CLR, CMP, CMPA, CMPI, CMPM
+TST, EXT, EXTB
+
+**Logical:**
+AND, ANDI, OR, ORI, EOR, EORI, NOT
+
+**Shift and Rotate:**
+ASL, ASR, LSL, LSR, ROL, ROR, ROXL, ROXR
+
+**Bit Manipulation:**
+BTST, BCHG, BCLR, BSET
+
+**Bit Field (68020):**
+BFTST, BFEXTU, BFEXTS, BFCHG, BFCLR, BFSET, BFFFO, BFINS
+
+**BCD Arithmetic:**
+ABCD, SBCD, NBCD, PACK, UNPK
+
+**Program Control:**
+Bcc (14 conditions), DBcc, Scc, JMP, JSR, RTS, RTE, RTR, RTD, TRAP, TRAPV, CHK, CHK2, TAS
+
+**System Control:**
+MOVE to/from SR, MOVE USP, MOVEC, MOVES, RESET, STOP, NOP, ILLEGAL, ORI/ANDI/EORI to CCR/SR
+
+**Atomic Operations (68020):**
+CAS, CAS2
+
+## 7.5 FPU (68881/68882) Features
 
 ### Data Types:
 - **80-bit extended precision** (IEEE 754 compliant)
@@ -800,6 +1250,9 @@ The FPU coprocessor provides full floating-point support:
 | FABS | Absolute value |
 | FCMP | Compare |
 | FTST | Test |
+| FSQRT | Square root |
+| FINT | Integer part |
+| FINTRZ | Integer part (round to zero) |
 
 ### Transcendental Functions:
 | Instruction | Description |
@@ -813,7 +1266,6 @@ The FPU coprocessor provides full floating-point support:
 | FSINH | Hyperbolic sine |
 | FCOSH | Hyperbolic cosine |
 | FTANH | Hyperbolic tangent |
-| FSQRT | Square root |
 | FLOG10 | Base-10 logarithm |
 | FLOGN | Natural logarithm |
 | FLOG2 | Base-2 logarithm |
@@ -829,32 +1281,70 @@ The FPU provides built-in constants:
 - ln(2), ln(10)
 - Powers of 10 (10⁰ through 10⁴)
 
-### Condition Codes:
+### FPU Condition Codes:
 - N (Negative) - Result is negative
 - Z (Zero) - Result is zero
 - I (Infinity) - Result is infinite
 - NAN - Result is Not a Number
 
-## 6.3 F-Line Instruction Decoding
+## 7.6 Memory and I/O Integration
 
-FPU instructions use F-line opcodes (0xF000-0xFFFF):
-- Coprocessor ID in bits 11-9 (001 for FPU)
-- Automatic routing to FPU when present
-- Line-F exception when FPU not available
+- Uses shared 32MB system bus
+- 24-bit address mask (16MB accessible via address bus)
+- Big-endian byte order
+- I/O region: 0x00F00000 - 0x00FFFFFF
+- VRAM: 0x00100000 - 0x004FFFFF (direct access)
+- Exception vector table: 0x00000000 (relocatable via VBR)
+- Default stack: 0x00FF0000
 
-## 6.4 Test Coverage
+## 7.7 Interrupts and Exceptions
 
-The M68K implementation includes comprehensive testing:
-- 127 FPU unit tests covering all operations
-- CPU integration tests for F-line decoder
-- Special value handling (NaN, Infinity, denormals)
-- Condition code verification
+**Exception Vector Table (256 vectors):**
+```
+Vector 0: Initial SSP
+Vector 1: Initial PC (reset)
+Vector 2: Bus Error
+Vector 3: Address Error
+Vector 4: Illegal Instruction
+Vector 5: Zero Divide
+Vector 6: CHK/CHK2 Instruction
+Vector 7: TRAPcc, TRAPV, cpTRAPcc
+Vector 8: Privilege Violation
+Vector 9: Trace
+Vector 10: Line-A Emulator
+Vector 11: Line-F Emulator (FPU)
+Vectors 24-31: Spurious + Auto-vectored Interrupts
+Vectors 32-47: TRAP #0-15
+Vectors 48-63: FPU Exceptions
+Vectors 64-255: User Defined
+```
 
-# 7. Assembly Language Reference
+**Interrupt Priorities:**
+- Level 7: Non-maskable
+- Levels 1-6: Maskable (compared against SR IPL)
+- Level 0: No interrupt
+
+## 7.8 Compatibility Notes
+
+- 95%+ instruction coverage (68020 + 68881/68882)
+- 68EC020 variant (no MMU)
+- Big-endian byte order (converted from host)
+- F-line opcodes route to FPU when present
+- Use `-m68k` flag to run M68K binaries
+- File extension: `.ie68`
+
+**Not Implemented:**
+- MMU and address translation
+- Coprocessor interface (beyond FPU)
+- Instruction cache emulation
+- Trace mode (T0/T1 bits defined but not enforced)
+- Dynamic bus sizing
+
+# 8. Assembly Language Reference
 
 The Intuition Engine assembly language provides a straightforward way to program the system while maintaining access to all hardware features.
 
-## 7.1 Basic Program Structure
+## 8.1 Basic Program Structure
 
 Every assembly program follows this basic structure:
 
@@ -880,7 +1370,7 @@ setup_timer:
     RTS
 ```
 
-## 7.2 Assembler Directives
+## 8.2 Assembler Directives
 
 The assembler supports these directives:
 
@@ -906,7 +1396,7 @@ start:
     JMP main
 ```
 
-## 7.3 Memory Access Patterns
+## 8.3 Memory Access Patterns
 
 When working with memory, consider alignment and efficiency:
 
@@ -926,7 +1416,7 @@ copy_loop:
     RTS
 ```
 
-## 7.4 Stack Usage
+## 8.4 Stack Usage
 
 The stack is essential for subroutines and temporary storage:
 
@@ -934,17 +1424,17 @@ The stack is essential for subroutines and temporary storage:
 calculate:
     PUSH A              ; Save registers
     PUSH X
-    
+
     ; Perform calculation
     LOAD X, #0
     ADD X, A
-    
+
     POP X               ; Restore registers
     POP A               ; in reverse order
     RTS
 ```
 
-## 7.5 Interrupt Handlers
+## 8.5 Interrupt Handlers
 
 Interrupt handlers must preserve register state:
 
@@ -952,26 +1442,26 @@ Interrupt handlers must preserve register state:
 isr_handler:
     PUSH A              ; Save registers
     PUSH X
-    
+
     LOAD A, @TIMER_COUNT
     JSR process_timer  ; Handle timer event
-    
+
     POP X              ; Restore registers
     POP A
     RTI                ; Return from interrupt
 ```
 
-# 8. Sound System
+# 9. Sound System
 
 The sound system provides sophisticated synthesis capabilities through four independent channels and global effects processing.
 
-## 8.1 Sound Channel Types
+## 9.1 Sound Channel Types
 
 Each channel offers different synthesis capabilities:
 
 ### Square Wave Channel
-Features:
 
+Features:
 - Variable duty cycle control
 - PWM modulation
 - Frequency sweep
@@ -979,19 +1469,18 @@ Features:
 - ADSR envelope
 
 Configuration example:
-
 ```assembly
 setup_square:
     ; Set frequency
     LOAD A, #440        ; Base frequency
     STORE A, @SQUARE_FREQ
-    
+
     ; Configure PWM
     LOAD A, #128        ; 50% duty cycle
     STORE A, @SQUARE_DUTY
     LOAD A, #1          ; Enable PWM
     STORE A, @SQUARE_PWM_CTRL
-    
+
     ; Set envelope
     LOAD A, #10         ; 10ms attack
     STORE A, @SQUARE_ATK
@@ -1007,7 +1496,6 @@ setup_square:
 ### Triangle Wave Channel
 
 Features:
-
 - Pure harmonic content
 - Frequency sweep
 - Ring modulation support
@@ -1016,7 +1504,6 @@ Features:
 ### Sine Wave Channel
 
 Features:
-
 - Clean tonal output
 - Frequency sweep
 - Ring modulation support
@@ -1025,7 +1512,6 @@ Features:
 ### Noise Channel
 
 Features:
-
 - Three noise types:
     - White noise (LFSR-based)
     - Periodic noise
@@ -1036,7 +1522,6 @@ Features:
 ### Sawtooth Wave Channel
 
 Features:
-
 - Classic sawtooth waveform (ramps from -1 to +1)
 - polyBLEP anti-aliasing for cleaner high-frequency output
 - Frequency sweep
@@ -1044,7 +1529,6 @@ Features:
 - ADSR envelope
 
 Configuration example:
-
 ```assembly
 setup_sawtooth:
     ; Set frequency
@@ -1071,13 +1555,13 @@ setup_sawtooth:
     RTS
 ```
 
-## 8.2 Modulation System
+## 9.2 Modulation System
 
 The sound system supports complex modulation:
 
 ### Ring Modulation
-Connect channels for amplitude modulation:
 
+Connect channels for amplitude modulation:
 ```assembly
 ; Set channel 1 to modulate channel 0
 LOAD A, #1             ; Use channel 1 as source
@@ -1085,19 +1569,20 @@ STORE A, @RING_MOD_SOURCE_CH0
 ```
 
 ### Frequency Sweep
-Configure automatic frequency changes:
 
+Configure automatic frequency changes:
 ```assembly
 ; Set up frequency sweep
 LOAD A, #0x87          ; Enable sweep up
 STORE A, @SQUARE_SWEEP
 ```
 
-## 8.3 Global Effects
+## 9.3 Global Effects
 
 The system provides global audio processing:
 
 ### Filter System
+
 - Variable cutoff frequency with exponential mapping (20Hz-20kHz)
 - Resonance control
 - Multiple filter types:
@@ -1119,6 +1604,7 @@ STORE A, @FILTER_TYPE
 ```
 
 ### Reverb System
+
 - Adjustable mix level
 - Variable decay time
 - Multiple delay lines
@@ -1131,7 +1617,81 @@ LOAD A, #192           ; Long decay
 STORE A, @REVERB_DECAY
 ```
 
-## 8.4 POKEY Sound Chip
+## 9.4 PSG Sound Chip (AY-3-8910/YM2149)
+
+The PSG chip emulates the General Instrument AY-3-8910 and Yamaha YM2149, providing three channels of square wave synthesis with noise and envelope capabilities. This chip powered the sound in countless 8-bit computers including the ZX Spectrum 128, Amstrad CPC, Atari ST, and MSX.
+
+### Features:
+- Three independent square wave tone generators
+- One noise generator (shared across channels)
+- Hardware envelope generator with 8 shape patterns
+- Per-channel mixer control (tone/noise enable)
+- 4-bit volume control per channel (or envelope)
+- PSG+ enhanced audio processing mode
+- Support for .YM, .AY, .VGM, .VGZ, and .SNDH file playback
+
+### Tone Generation:
+Each channel has a 12-bit frequency divider:
+- Frequency = Clock / (16 × TP) where TP is the tone period (1-4095)
+- Channel A: Registers 0-1 (fine/coarse tune)
+- Channel B: Registers 2-3 (fine/coarse tune)
+- Channel C: Registers 4-5 (fine/coarse tune)
+
+### Noise Generator:
+- 5-bit noise period (Register 6)
+- Pseudo-random output from 17-bit LFSR
+- Can be mixed with any tone channel
+
+### Mixer Control (Register 7):
+```
+Bit 0: Channel A tone enable (0=on, 1=off)
+Bit 1: Channel B tone enable
+Bit 2: Channel C tone enable
+Bit 3: Channel A noise enable (0=on, 1=off)
+Bit 4: Channel B noise enable
+Bit 5: Channel C noise enable
+Bits 6-7: I/O port direction (directly mapped only)
+```
+
+### Volume and Envelope:
+- Registers 8-10: Channel A/B/C amplitude (0-15, or bit 4 set for envelope)
+- Registers 11-12: Envelope period (16-bit)
+- Register 13: Envelope shape (8 patterns)
+
+### Envelope Shapes:
+| Value | Shape | Description |
+|-------|-------|-------------|
+| 0-3   | ╲____ | Decay to zero, hold |
+| 4-7   | /‾‾‾‾ | Attack to max, hold |
+| 8     | ╲╲╲╲╲ | Repeating decay (sawtooth down) |
+| 9     | ╲____ | Decay to zero, hold |
+| 10    | ╲/╲/╲ | Repeating decay-attack (triangle) |
+| 11    | ╲‾‾‾‾ | Decay to zero, then hold max |
+| 12    | ///// | Repeating attack (sawtooth up) |
+| 13    | /‾‾‾‾ | Attack to max, hold |
+| 14    | /╲/╲/ | Repeating attack-decay (triangle) |
+| 15    | /_____ | Attack to max, then hold zero |
+
+### Configuration Example:
+```assembly
+; Configure PSG channel A for a 440Hz tone with envelope
+LOAD A, #0xFE          ; Tone period low byte (440Hz approx)
+STORE A, @0x0F0C00     ; Register 0: Channel A fine tune
+LOAD A, #0x00          ; Tone period high byte
+STORE A, @0x0F0C01     ; Register 1: Channel A coarse tune
+LOAD A, #0x3E          ; Enable tone A, disable noise
+STORE A, @0x0F0C07     ; Register 7: Mixer
+LOAD A, #0x10          ; Use envelope for volume
+STORE A, @0x0F0C08     ; Register 8: Channel A amplitude
+LOAD A, #0x00          ; Envelope period low
+STORE A, @0x0F0C0B     ; Register 11: Envelope fine
+LOAD A, #0x10          ; Envelope period high
+STORE A, @0x0F0C0C     ; Register 12: Envelope coarse
+LOAD A, #0x0E          ; Triangle envelope shape
+STORE A, @0x0F0C0D     ; Register 13: Envelope shape
+```
+
+## 9.5 POKEY Sound Chip
 
 The POKEY chip emulates the Atari 8-bit computer's sound hardware, providing four channels of distinctive 8-bit audio with polynomial-based distortion.
 
@@ -1165,17 +1725,22 @@ LOAD A, #0xAF          ; Pure tone + volume 15
 STORE A, @0xF0D01      ; AUDC1
 ```
 
-## 8.5 SID Sound Chip
+## 9.6 SID Sound Chip
 
 The SID chip emulates the legendary MOS 6581/8580 from the Commodore 64, providing three voices of analog-style synthesis with the distinctive warm sound that defined a generation of computer music.
 
 ### Features:
 - Three independent voices with full ADSR envelopes
 - Four waveforms per voice: triangle, sawtooth, pulse (with variable width), noise
+- Combined waveforms (AND-style mixing when multiple waveform bits set)
 - Ring modulation between voices
-- Hard sync for complex timbres
+- Hard sync for complex timbres (accurate sync timing)
+- Test bit support (resets oscillator phase and holds output)
+- OSC3 and ENV3 register readback (oscillator and envelope output)
 - Programmable resonant filter (low-pass, band-pass, high-pass, notch)
+- Rate counter ADSR with exponential decay curve
 - SID+ enhanced audio processing mode
+- .SID file playback with embedded 6502 code execution
 
 ### Waveform Selection:
 Each voice can output one waveform at a time via the control register:
@@ -1218,18 +1783,18 @@ LOAD A, #0x1F          ; Max volume + low-pass
 STORE A, @0xF0E18      ; Mode/Volume
 ```
 
-# 9. Video System
+# 10. Video System
 
 The video system provides flexible graphics output through a memory-mapped framebuffer design.
 
-## 9.1 Display Modes
+## 10.1 Display Modes
 
 Three resolution modes are available:
 - 640x480 (MODE_640x480)
 - 800x600 (MODE_800x600)
 - 1024x768 (MODE_1024x768)
 
-###Setting display mode:
+### Setting display mode:
 
 ```assembly
 init_display:
@@ -1240,31 +1805,31 @@ init_display:
     RTS
 ```
 
-## 9.2 Framebuffer Organisation
+## 10.2 Framebuffer Organisation
 
 The framebuffer uses 32-bit RGBA colour format:
 - Start address: 0x100000 (VRAM_START)
 - Each pixel: 4 bytes (R,G,B,A)
 - Linear layout: y * width + x
 
-###Pixel address calculation:
+### Pixel address calculation:
 
 ```
 Address = 0x100000 + (y * width + x) * 4
 ```
 
-## 9.3 Dirty Rectangle Tracking
+## 10.3 Dirty Rectangle Tracking
 
 The system tracks changes in 32x32 pixel blocks:
 - Automatically marks modified regions
 - Updates only changed areas
 - Improves rendering performance
 
-## 9.4 Double Buffering and VBlank Synchronization
+## 10.4 Double Buffering and VBlank Synchronisation
 
 Video output uses double buffering to prevent tearing. The system provides a VBlank status bit for flicker-free animation:
 
-- `VIDEO_STATUS` (0xF0008) bit 1 indicates VBlank period (safe to draw)
+- `VIDEO_STATUS` (0x0F0008) bit 1 indicates VBlank period (safe to draw)
 - VBlank is read lock-free - no mutex contention during polling
 - Write to back buffer during VBlank to avoid screen flicker
 - Buffers swap automatically
@@ -1275,7 +1840,7 @@ The VBlank flag follows this timing:
 1. `inVBlank = false` when frame processing starts (active scan)
 2. `inVBlank = true` after frame is sent to display (CPU can safely draw)
 
-### Frame Synchronization Pattern
+### Frame Synchronisation Pattern
 
 For smooth animation, wait for a complete frame boundary (VBlank transition):
 
@@ -1319,7 +1884,7 @@ main_loop:
 
 The `wait_frame` pattern ensures exactly one frame per loop iteration, giving smooth 60 FPS animation regardless of how fast the CPU runs.
 
-## 9.5 Direct VRAM Access Mode
+## 10.5 Direct VRAM Access Mode
 
 For fullscreen effects such as plasma, fire, or tunnel demos where every pixel is updated each frame, the system provides a direct VRAM access mode with lock-free dirty tracking that bypasses the standard memory bus. This delivers approximately **4.5x video throughput** compared to bus-based access.
 
@@ -1354,28 +1919,35 @@ cpu.DetachDirectVRAM()
 videoChip.DisableDirectMode()
 ```
 
-## 9.6 Copper List Executor
+### When to Use
+
+- **Use direct mode** for fullscreen effects where most pixels change every frame
+- **Use bus mode** for partial updates, sprites, or when dirty region tracking is beneficial
+
+Direct VRAM mode is ideal for demoscene-style effects, real-time visualisations, and any application that redraws the entire screen each frame.
+
+## 10.6 Copper List Executor
 
 The video subsystem includes a simple copper-like list executor for mid-frame register updates. Copper lists are stored in RAM as little-endian 32-bit words and can WAIT on raster positions, MOVE values into video registers, and END the list. The copper restarts each frame while enabled.
 
 Registers:
-- `COPPER_CTRL` (0xF000C): bit0=enable, bit1=reset/rewind
-- `COPPER_PTR`  (0xF0010): list base address (latched on enable/reset)
-- `COPPER_PC`   (0xF0014): current list address (read-only)
-- `COPPER_STATUS` (0xF0018): bit0=running, bit1=waiting, bit2=halted
+- `COPPER_CTRL` (0x0F000C): bit0=enable, bit1=reset/rewind
+- `COPPER_PTR`  (0x0F0010): list base address (latched on enable/reset)
+- `COPPER_PC`   (0x0F0014): current list address (read-only)
+- `COPPER_STATUS` (0x0F0018): bit0=running, bit1=waiting, bit2=halted
 
 List words:
 - `WAIT`: `(0<<30) | (y<<12) | x`
 - `MOVE`: `(1<<30) | (regIndex<<16)` followed by a 32-bit value
 - `END`: `(3<<30)`
 
-## 9.7 DMA Blitter
+## 10.7 DMA Blitter
 
 The DMA blitter performs rectangle copy/fill and line drawing. Registers are written via memory-mapped I/O, and the blitter operates on VRAM addresses (RGBA, 4 bytes/pixel).
 
 **Synchronous Execution**: The blitter runs immediately when `BLT_CTRL` is written with bit0 set. This ensures blitter operations complete before the CPU continues, allowing safe drawing during VBlank without race conditions.
 
-Ops (`BLT_OP`):
+Operations (`BLT_OP`):
 - `0`: COPY
 - `1`: FILL
 - `2`: LINE (coordinates packed into `BLT_SRC`/`BLT_DST`)
@@ -1404,7 +1976,7 @@ Example (fill a 16x16 block):
 
 The blitter defaults `BLT_SRC_STRIDE`/`BLT_DST_STRIDE` to the current mode row bytes when the address is in VRAM, otherwise it uses `width*4`. If an unaligned VRAM address is used, `BLT_STATUS.bit0` is set.
 
-## 9.8 Raster Band Fill
+## 10.8 Raster Band Fill
 
 `VIDEO_RASTER_*` registers draw a full-width horizontal band directly into the framebuffer. This is useful for copper-driven raster bars without adding a palette system.
 
@@ -1420,16 +1992,9 @@ Example (draw 4-pixel band at Y=100):
     STORE A, @VIDEO_RASTER_CTRL
 ```
 
-### When to Use
+# 11. Developer's Guide
 
-- **Use direct mode** for fullscreen effects where most pixels change every frame
-- **Use bus mode** for partial updates, sprites, or when dirty region tracking is beneficial
-
-Direct VRAM mode is ideal for demoscene-style effects, real-time visualisations, and any application that redraws the entire screen each frame.
-
-# 10. Developer's Guide
-
-## 10.1 Development Environment Setup
+## 11.1 Development Environment Setup
 
 To develop for the Intuition Engine, you'll need to set up your development environment with several components:
 
@@ -1448,36 +2013,34 @@ my_project/
 └── tools/           # Development tools
 ```
 
-## 10.2 Building the System
+## 11.2 Building the System
 
-The build process uses the provided build script:
+The build process uses the provided Makefile:
 
 ```bash
 # Build both VM and assembler
 make
+
+# Build only the VM
+make intuition-engine
+
+# Build only the IE32 assembler
+make ie32asm
+
+# Install to /usr/local/bin
+make install
+
+# Create AppImage package
+make appimage
+
+# Clean build artifacts
+make clean
 ```
+
 This creates:
 ```
 ./bin/IntuitionEngine   # The virtual machine
 ./bin/ie32asm           # The assembler
-```
-```bash
-# Build and install both VM and assembler
-make
-make install
-```
-This creates:
-```
-/usr/local/bin/IntuitionEngine   # The virtual machine
-/usr/local/bin/ie32asm           # The assembler
-```
-```bash
-# Build AppImage package
-make appimage
-```
-This creates:
-```
-./IntuitionEngine-1.0.0-<CPU_ARCH>.AppImage
 ```
 
 Available make targets:
@@ -1493,13 +2056,7 @@ list             - List compiled binaries with sizes
 help             - Show this help message
 ```
 
-The Makefile handles all necessary compilation flags and optimisations automatically. It uses:
-- Compiler optimisation flags for performance
-- SuperStrip and UPX LZMA compression for binary size reduction
-- Parallel compilation where possible
-- AppImage packaging for Linux distribution
-
-## 10.3 Development Workflow
+## 11.3 Development Workflow
 
 A typical development cycle involves:
 
@@ -1509,78 +2066,64 @@ A typical development cycle involves:
 ./bin/ie32asm program.asm
 ```
 3. Run the resulting program:
+
+**IE32 programs:**
 ```bash
 ./bin/IntuitionEngine -ie32 program.iex
 ```
-For M68K programs:
+
+**M68K programs:**
 ```bash
 ./bin/IntuitionEngine -m68k program.ie68
 ```
 
-For Z80 programs:
+**Z80 programs:**
 ```bash
 ./bin/IntuitionEngine -z80 program.ie80
 ```
 
-For 6502 programs:
+**6502 programs:**
 ```bash
 ./bin/IntuitionEngine -m6502 program.bin
 ./bin/IntuitionEngine -m6502 --load-addr 0x0600 --entry 0x0600 program.bin
 ```
-Note: the current 6502 core is NMOS 6502 only (no 65C02 opcodes).
 
-For PSG music playback:
+**PSG music playback:**
 ```bash
 ./bin/IntuitionEngine -psg track.ym
 ./bin/IntuitionEngine -psg track.ay
 ./bin/IntuitionEngine -psg track.vgm
 ./bin/IntuitionEngine -psg track.vgz
 ./bin/IntuitionEngine -psg track.sndh
-./bin/IntuitionEngine -psg+ track.ym
+./bin/IntuitionEngine -psg+ track.ym   # Enhanced audio
 ```
-Note: `.ym` files are Atari ST YM, `.vgm/.vgz` are VGM streams (including MSX PSG logs), `.ay` ZXAYEMUL files with embedded Z80 players are supported (Spectrum/CPC/MSX), and `.sndh` files are Atari ST SNDH format with embedded M68K code (executed by the internal 68020 emulator).
-PSG+ enables enhanced audio processing for PSG sources (oversampling, gentle low-pass smoothing,
-subtle saturation, and a tiny room/width effect) for a richer sound while preserving pitch and timing.
 
-For POKEY/SAP music playback (Atari 8-bit):
+**POKEY/SAP music playback (Atari 8-bit):**
 ```bash
 ./bin/IntuitionEngine -pokey track.sap
-./bin/IntuitionEngine -pokey+ track.sap
+./bin/IntuitionEngine -pokey+ track.sap  # Enhanced audio
 ```
-Note: `.sap` files are Atari 8-bit SAP format containing embedded 6502 code that drives the POKEY sound chip. The internal 6502 emulator executes the player code at the correct frame rate.
-POKEY+ enables enhanced audio processing similar to PSG+ for a richer, smoother sound.
 
-For SID music playback (C64 PSID):
+**SID music playback (C64 PSID):**
 ```bash
 ./bin/IntuitionEngine -sid tune.sid
-./bin/IntuitionEngine -sid+ tune.sid
+./bin/IntuitionEngine -sid+ tune.sid     # Enhanced audio
 ./bin/IntuitionEngine -sid-pal tune.sid
 ./bin/IntuitionEngine -sid-ntsc tune.sid
 ```
-Note: PSID only; RSID is rejected. Single-SID playback at $D400 is supported; multi-SID is not yet implemented.
 
-When running in CPU modes, all three sound chips are available:
-- PSG registers at `0xF0C00-0xF0C0D` (PSG+ toggle at `0xF0C0E`)
-- POKEY registers at `0xF0D00-0xF0D09` (POKEY+ toggle at `0xF0D09`)
-- SID registers at `0xF0E00-0xF0E19` (SID+ toggle at `0xF0E19`)
+**Notes:**
+- `.ym` files are Atari ST YM format
+- `.vgm/.vgz` are VGM streams (including MSX PSG logs)
+- `.ay` ZXAYEMUL files with embedded Z80 players are supported
+- `.sndh` files are Atari ST SNDH format with embedded M68K code
+- PSID only for SID; RSID is rejected
+- Single-SID playback at $D400; multi-SID not yet implemented
 
-SID+ enables enhanced audio processing (oversampling, filtering, saturation, room effect)
-similar to PSG+ and POKEY+ for warmer, smoother C64-style audio.
+**Enhanced Audio Modes (PSG+/POKEY+/SID+):**
+These modes provide oversampling, gentle low-pass smoothing, subtle saturation, and a tiny room/width effect for richer sound while preserving pitch and timing.
 
-When running in CPU modes, PSG registers are available at `0xF0C00-0xF0C0D`
-for direct AY/YM register writes. PSG+ can be toggled via `PSG_PLUS_CTRL` at `0xF0C0E`
-(`bit 0 = 1` enables PSG+), and is disabled by default.
-
-To start AY/YM/VGM playback from CPU code, use the PSG playback control registers:
-- `PSG_PLAY_PTR` (`0xF0C10`): pointer to PSG data in RAM (binary blob)
-- `PSG_PLAY_LEN` (`0xF0C14`): length in bytes
-- `PSG_PLAY_CTRL` (`0xF0C18`): bit0=start, bit1=stop, bit2=loop
-- `PSG_PLAY_STATUS` (`0xF0C1C`): bit0=busy, bit1=error
-
-When bit2 (loop) is set in `PSG_PLAY_CTRL`, the track will restart from the
-beginning when it reaches the end, enabling continuous background music playback.
-
-## 10.3.1 Assembler Include Files
+## 11.4 Assembler Include Files
 
 The `assembler/` directory provides hardware definition include files for each CPU architecture:
 
@@ -1594,7 +2137,7 @@ The `assembler/` directory provides hardware definition include files for each C
 These files define:
 - Memory map addresses (VRAM, bank windows, I/O regions)
 - Video registers (VIDEO_CTRL, VIDEO_MODE, VIDEO_STATUS, blitter, copper, raster)
-- Audio registers (PSG, POKEY, SAP player)
+- Audio registers (PSG, POKEY, SID, and player registers)
 - Timer registers
 - Blitter operations (BLT_OP_COPY, BLT_OP_FILL, BLT_OP_LINE, BLT_OP_MASKED, BLT_OP_ALPHA)
 - Copper opcodes (COP_WAIT, COP_MOVE, COP_END)
@@ -1617,17 +2160,11 @@ Usage example (M68K with vasm):
     move.l  #BLT_OP_ALPHA,BLT_OP
 ```
 
-The assembler provides error messages for common issues like:
-- Undefined labels
-- Invalid addressing modes
-- Misaligned memory access
-- Invalid instruction formats
-
-## 10.4 Debugging Techniques
+## 11.5 Debugging Techniques
 
 The system provides several debugging methods:
 
-###Register State Display
+### Register State Display
 
 ```assembly
 debug_point:
@@ -1637,19 +2174,21 @@ debug_point:
     RTS
 ```
 
-###Memory Inspection
-    - Use the debug interface in the GUI
-    - Monitor memory-mapped registers
-    - Track stack usage
+### Memory Inspection
 
-###Hardware State Monitoring
-    - Video status register
-    - Audio channel states
-    - Timer operation
+- Use the debug interface in the GUI
+- Monitor memory-mapped registers
+- Track stack usage
 
-# 11. Implementation Details
+### Hardware State Monitoring
 
-## 11.1 CPU Implementation
+- Video status register
+- Audio channel states
+- Timer operation
+
+# 12. Implementation Details
+
+## 12.1 CPU Implementation
 
 The CPU implementation prioritises clarity and correctness:
 
@@ -1684,7 +2223,7 @@ The instruction execution cycle:
 4. Update program counter
 5. Check for interrupts
 
-## 11.2 Memory Bus Architecture
+## 12.2 Memory Bus Architecture
 
 The memory bus provides a flexible interface for memory access:
 
@@ -1703,7 +2242,7 @@ Memory operations handle:
 - Access protection
 - Multiple device mappings
 
-## 11.3 Sound System Implementation
+## 12.3 Sound System Implementation
 
 The sound system uses a sophisticated multi-channel architecture:
 
@@ -1738,9 +2277,9 @@ Audio processing occurs in real-time at 44.1kHz, with features like:
 - Real-time parameter updates
 - Multiple effect processors
 
-# 12. Platform Support & Backend Systems
+# 13. Platform Support & Backend Systems
 
-## 12.1 Graphics Backend Architecture
+## 13.1 Graphics Backend Architecture
 
 The system supports multiple graphics backends through a common interface:
 
@@ -1756,7 +2295,7 @@ type VideoOutput interface {
 }
 ```
 
-### 12.1.1 Ebiten Backend
+### Ebiten Backend
 
 The primary graphics backend uses Ebiten for:
 
@@ -1765,7 +2304,7 @@ The primary graphics backend uses Ebiten for:
 - Automatic scaling
 - VSync support
 
-### 12.1.2 OpenGL Backend (In Development)
+### OpenGL Backend (In Development)
 
 The OpenGL backend (when completed) will provide:
 
@@ -1774,11 +2313,11 @@ The OpenGL backend (when completed) will provide:
 - Additional texture features
 - Platform-specific optimisations
 
-## 12.2 Audio Backend Systems
+## 13.2 Audio Backend Systems
 
 Audio output supports two backends:
 
-### 12.2.1 Oto Backend
+### Oto Backend
 
 The primary audio backend uses Oto for:
 
@@ -1787,7 +2326,7 @@ The primary audio backend uses Oto for:
 - Automatic buffer management
 - Sample-accurate timing
 
-### 12.2.2 ALSA Backend
+### ALSA Backend
 
 On Linux systems, ALSA provides:
 
@@ -1796,11 +2335,11 @@ On Linux systems, ALSA provides:
 - Direct hardware access
 - Better integration with system audio
 
-## 12.3 GUI Backend Systems
+## 13.3 GUI Backend Systems
 
 Two GUI implementations are available:
 
-### 12.3.1 GTK4 Frontend
+### GTK4 Frontend
 
 The GTK4 implementation provides:
 
@@ -1809,7 +2348,7 @@ The GTK4 implementation provides:
 - File dialogs
 - Debug interface
 
-### 12.3.2 FLTK Frontend
+### FLTK Frontend
 
 The FLTK implementation offers:
 
@@ -1818,9 +2357,9 @@ The FLTK implementation offers:
 - Basic UI functionality
 - Simple file selection
 
-# 13. Hardware Interface Architecture
+# 14. Hardware Interface Architecture
 
-## 13.1 Interface Design
+## 14.1 Interface Design
 
 The system uses a layered interface approach:
 
@@ -1837,7 +2376,7 @@ type TextureCapable interface { ... }
 type SpriteCapable interface { ... }
 ```
 
-## 13.2 Hardware Abstraction
+## 14.2 Hardware Abstraction
 
 Each hardware component provides:
 
@@ -1846,7 +2385,7 @@ Each hardware component provides:
 - Configuration interface
 - Event handling
 
-## 13.3 Device Communication
+## 14.3 Device Communication
 
 Hardware interaction occurs through:
 
@@ -1855,7 +2394,7 @@ Hardware interaction occurs through:
 - Interrupt system
 - Status polling
 
-## 13.4 Future Extensibility
+## 14.4 Future Extensibility
 
 The interface architecture supports:
 
@@ -1865,11 +2404,11 @@ The interface architecture supports:
 - Platform-specific optimisations
 - Platform-specific GUIs
 
-# 14. Testing & Demonstration Framework
+# 15. Testing & Demonstration Framework
 
 The Intuition Engine includes a comprehensive testing and demonstration framework that verifies system functionality while showcasing its capabilities through interactive demos and visual effects.
 
-## 14.1 Testing Architecture
+## 15.1 Testing Architecture
 
 The testing framework is built on Go's native testing package and provides:
 
@@ -1879,9 +2418,10 @@ The testing framework is built on Go's native testing package and provides:
 - Performance benchmarking capabilities
 - Cross-platform compatibility testing
 
-## 14.2 Audio Synthesis Testing
+## 15.2 Audio Synthesis Testing
 
-### 14.2.1 Basic Waveform Tests
+### Basic Waveform Tests
+
 The system verifies the accuracy and quality of fundamental waveform generation:
 
 - Square wave synthesis with variable duty cycle control
@@ -1889,7 +2429,8 @@ The system verifies the accuracy and quality of fundamental waveform generation:
 - Pure sine wave generation with perfect frequency accuracy
 - Multiple noise generation algorithms (white, periodic, metallic)
 
-### 14.2.2 Advanced Synthesis Features
+### Advanced Synthesis Features
+
 Comprehensive testing of advanced sound synthesis capabilities:
 
 - PWM (Pulse Width Modulation) with dynamic width control
@@ -1898,7 +2439,8 @@ Comprehensive testing of advanced sound synthesis capabilities:
 - Hard sync effects across oscillator channels
 - Complex noise shaping and filtering
 
-### 14.2.3 Envelope System
+### Envelope System
+
 Verification of the ADSR (Attack, Decay, Sustain, Release) envelope system:
 
 - Precise timing accuracy for all envelope stages
@@ -1906,7 +2448,8 @@ Verification of the ADSR (Attack, Decay, Sustain, Release) envelope system:
 - Complex envelope interactions with modulation
 - Multi-channel envelope synchronisation
 
-### 14.2.4 Audio Effects Processing
+### Audio Effects Processing
+
 Testing of the global audio effects processing chain:
 
 - Multi-mode filter system with resonance control
@@ -1914,9 +2457,10 @@ Testing of the global audio effects processing chain:
 - Stereo reverb processing
 - Cross-modulation effects between channels
 
-## 14.3 Visual System Testing
+## 15.3 Visual System Testing
 
-### 14.3.1 Fundamental Operations
+### Fundamental Operations
+
 Basic video system functionality verification:
 
 - Resolution mode switching (640x480, 800x600, 1024x768)
@@ -1924,7 +2468,8 @@ Basic video system functionality verification:
 - Colour depth and format handling
 - VSync and timing verification
 
-### 14.3.2 Visual Effect Demonstrations
+### Visual Effect Demonstrations
+
 The test suite includes several real-time visual demonstrations:
 
 1. **Colour Palette Test**
@@ -1952,13 +2497,14 @@ The test suite includes several real-time visual demonstrations:
     - 3D starfield simulation
     - Mandelbrot set visualisation
 
-### 14.3.3 Performance Testing
+### Performance Testing
+
 - Frame rate monitoring and performance profiling
 - Memory bandwidth utilisation measurement
 - CPU load analysis during complex effects
 - Optimisation verification for critical paths
 
-## 14.4 Integration Testing
+## 15.4 Integration Testing
 
 The framework includes tests that verify the interaction between different subsystems:
 
@@ -1967,7 +2513,7 @@ The framework includes tests that verify the interaction between different subsy
 - Memory access patterns and conflicts
 - Resource sharing and management
 
-## 14.5 Technical Demonstrations
+## 15.5 Technical Demonstrations
 
 The system uses Go's testing framework as a convenient way to organise and run technical demonstrations. Some tests are short unit/integration checks, while long-running audio/video demos are gated by build tags.
 
@@ -1989,11 +2535,12 @@ For example:
 ```bash
 go test -v -tags audiolong -run TestSineWave_BasicWaveforms
 ```
-### Show dynamic fire simulation using cellular automata
 
+### Show dynamic fire simulation using cellular automata
 ```bash
 go test -v -tags videolong -run TestFireEffect
 ```
+
 ### Show real-time plasma wave generation with dynamic colour patterns
 ```bash
 go test -v -tags videolong -run TestPlasmaWaves
@@ -2015,7 +2562,7 @@ KLAUS_FUNCTIONAL=1 KLAUS_INTERRUPT_SUCCESS_PC=0x06F5 go test -v -run '^Test6502'
 
 Use `-tags headless` to skip GUI/audio/video backends when you only need CPU tests or do not have native dependencies installed.
 
-## 14.6 Demonstration Development
+## 15.6 Demonstration Development
 
 When creating new demonstrations:
 
