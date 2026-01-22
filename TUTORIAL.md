@@ -68,7 +68,7 @@ The Robocop Intro demo showcases the Intuition Engine's hardware capabilities th
 | CPU | Assembler | Command |
 |-----|-----------|---------|
 | IE32 | ie32asm | `./bin/ie32asm program.asm` |
-| M68K | vasmm68k_mot | `vasmm68k_mot -Fbin -m68020 -devpac -o out.ie68 program.asm` |
+| M68K | vasmm68k_mot | `vasmm68k_mot -Fbin -m68020 -I. -o out.ie68 program.asm` |
 | Z80 | vasmz80_std | `vasmz80_std -Fbin -o out.ie80 program.asm` |
 | 6502 | ca65/ld65 | `ca65 program.asm && ld65 -C ie65.cfg -o out.bin program.o` |
 
@@ -1421,7 +1421,7 @@ The complete source files are located in the `assembler/` directory:
 ```bash
 # Assemble (requires vasm) - run from assembler directory for incbin paths
 cd assembler
-vasmm68k_mot -Fbin -m68020 -devpac \
+vasmm68k_mot -Fbin -m68020 -I. \
     -o robocop_intro_68k.ie68 \
     robocop_intro_68k.asm
 cd ..
