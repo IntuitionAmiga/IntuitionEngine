@@ -215,6 +215,35 @@
 .equ SID_MODE_3OFF     0x80             ; Disconnect voice 3 from output
 
 ; ----------------------------------------------------------------------------
+; SID Player Registers
+;
+; The SID player handles Commodore 64 music files (.sid) which contain
+; embedded 6502 code that drives the SID sound chip. The player executes
+; the 6502 init routine once, then calls the play routine each frame.
+;
+; Usage:
+;   1. Embed SID data in your program using incbin
+;   2. Set SID_PLAY_PTR to the address of the SID file data
+;   3. Set SID_PLAY_LEN to the size of the SID data in bytes
+;   4. Optionally set SID_SUBSONG to select a subsong (default 0)
+;   5. Write to SID_PLAY_CTRL to start/stop playback
+;
+; SID_PLAY_CTRL bits:
+;   bit 0 (0x01) - Start playback (write 1 to begin)
+;   bit 1 (0x02) - Stop playback (write 1 to stop)
+;   bit 2 (0x04) - Enable looping (set before starting)
+;
+; SID_PLAY_STATUS bits:
+;   bit 0 (0x01) - Busy (1 = playing, 0 = stopped)
+;   bit 1 (0x02) - Error (1 = load/parse error)
+; ----------------------------------------------------------------------------
+.equ SID_PLAY_PTR      0xF0E20          ; Play pointer (32-bit)
+.equ SID_PLAY_LEN      0xF0E24          ; Play length (32-bit)
+.equ SID_PLAY_CTRL     0xF0E28          ; Play control
+.equ SID_PLAY_STATUS   0xF0E2C          ; Play status
+.equ SID_SUBSONG       0xF0E2D          ; Subsong selection (0-255)
+
+; ----------------------------------------------------------------------------
 ; SAP Player Registers
 ;
 ; The SAP player handles Atari 8-bit music files (.sap) which contain

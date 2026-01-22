@@ -234,6 +234,9 @@ func main() {
 		os.Exit(1)
 	}
 	if modeSID && sidFile == "" {
+		sidFile = filename
+	}
+	if modeSID && sidFile == "" {
 		fmt.Println("Error: SID mode requires a filename")
 		os.Exit(1)
 	}
@@ -356,6 +359,7 @@ func main() {
 	// Create system bus
 	sysBus := NewSystemBus()
 	psgPlayer.AttachBus(sysBus)
+	sidPlayer.AttachBus(sysBus)
 
 	videoChip, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
 	if err != nil {
@@ -402,6 +406,9 @@ func main() {
 	sysBus.MapIO(SID_BASE, SID_END,
 		sidEngine.HandleRead,
 		sidEngine.HandleWrite)
+	sysBus.MapIO(SID_PLAY_PTR, SID_SUBSONG,
+		sidPlayer.HandlePlayRead,
+		sidPlayer.HandlePlayWrite)
 
 	// Initialize the selected CPU and optionally load program
 	var gui GUIFrontend

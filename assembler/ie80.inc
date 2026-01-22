@@ -244,6 +244,41 @@
 .set SID_MODE_3OFF,0x80                 ; Disconnect voice 3 from output
 
 ; ----------------------------------------------------------------------------
+; SID Player Registers
+;
+; The SID player handles Commodore 64 music files (.sid) which contain
+; embedded 6502 code that drives the SID sound chip. The player executes
+; the 6502 init routine once, then calls the play routine each frame.
+;
+; Usage:
+;   1. Embed SID data in your program using incbin
+;   2. Set SID_PLAY_PTR bytes to the address of the SID data (little-endian)
+;   3. Set SID_PLAY_LEN bytes to the size of the SID data (little-endian)
+;   4. Optionally set SID_SUBSONG to select a subsong (default 0)
+;   5. Write to SID_PLAY_CTRL to start/stop playback
+;
+; SID_PLAY_CTRL bits:
+;   bit 0 (0x01) - Start playback (write 1 to begin)
+;   bit 1 (0x02) - Stop playback (write 1 to stop)
+;   bit 2 (0x04) - Enable looping (set before starting)
+;
+; SID_PLAY_STATUS bits:
+;   bit 0 (0x01) - Busy (1 = playing, 0 = stopped)
+;   bit 1 (0x02) - Error (1 = load/parse error)
+; ----------------------------------------------------------------------------
+.set SID_PLAY_PTR_0,0xF0E20
+.set SID_PLAY_PTR_1,0xF0E21
+.set SID_PLAY_PTR_2,0xF0E22
+.set SID_PLAY_PTR_3,0xF0E23
+.set SID_PLAY_LEN_0,0xF0E24
+.set SID_PLAY_LEN_1,0xF0E25
+.set SID_PLAY_LEN_2,0xF0E26
+.set SID_PLAY_LEN_3,0xF0E27
+.set SID_PLAY_CTRL,0xF0E28
+.set SID_PLAY_STATUS,0xF0E2C
+.set SID_SUBSONG,0xF0E2D
+
+; ----------------------------------------------------------------------------
 ; SAP Player Registers
 ;
 ; The SAP player handles Atari 8-bit music files (.sap) which contain
@@ -535,6 +570,62 @@
     ld (SAP_PLAY_LEN_2),a
     ld a,((\len)>>24)&0xFF
     ld (SAP_PLAY_LEN_3),a
+.endm
+
+; Set SID play pointer (32-bit)
+.macro SET_SID_PTR addr
+    ld a,(\addr)&0xFF
+    ld (SID_PLAY_PTR_0),a
+    ld a,((\addr)>>8)&0xFF
+    ld (SID_PLAY_PTR_1),a
+    ld a,((\addr)>>16)&0xFF
+    ld (SID_PLAY_PTR_2),a
+    ld a,((\addr)>>24)&0xFF
+    ld (SID_PLAY_PTR_3),a
+.endm
+
+; Set SID play length (32-bit)
+.macro SET_SID_LEN len
+    ld a,(\len)&0xFF
+    ld (SID_PLAY_LEN_0),a
+    ld a,((\len)>>8)&0xFF
+    ld (SID_PLAY_LEN_1),a
+    ld a,((\len)>>16)&0xFF
+    ld (SID_PLAY_LEN_2),a
+    ld a,((\len)>>24)&0xFF
+    ld (SID_PLAY_LEN_3),a
+.endm
+
+; Set SID subsong
+.macro SET_SID_SUBSONG num
+    ld a,\num
+    ld (SID_SUBSONG),a
+.endm
+
+; Start SID playback
+.macro START_SID_PLAY
+    ld a,1
+    ld (SID_PLAY_CTRL),a
+.endm
+
+; Start SID playback with looping
+.macro START_SID_LOOP
+    ld a,5
+    ld (SID_PLAY_CTRL),a
+.endm
+
+; Stop SID playback
+.macro STOP_SID_PLAY
+    ld a,2
+    ld (SID_PLAY_CTRL),a
+.endm
+
+; Write SID register via port I/O (reg in A, value in B)
+.macro SID_WRITE reg,val
+    ld a,\reg
+    out (SID_PORT_SELECT),a
+    ld a,\val
+    out (SID_PORT_DATA),a
 .endm
 
 ; ============================================================================

@@ -235,6 +235,41 @@ SID_MODE_HP       = $40         ; High-pass filter
 SID_MODE_3OFF     = $80         ; Disconnect voice 3 from output
 
 ; ----------------------------------------------------------------------------
+; SID Player Registers
+;
+; The SID player handles Commodore 64 music files (.sid) which contain
+; embedded 6502 code that drives the SID sound chip. The player executes
+; the 6502 init routine once, then calls the play routine each frame.
+;
+; Usage:
+;   1. Embed SID data in your program using .incbin
+;   2. Set SID_PLAY_PTR bytes to the address of the SID data (little-endian)
+;   3. Set SID_PLAY_LEN bytes to the size of the SID data (little-endian)
+;   4. Optionally set SID_SUBSONG to select a subsong (default 0)
+;   5. Write to SID_PLAY_CTRL to start/stop playback
+;
+; SID_PLAY_CTRL bits:
+;   bit 0 ($01) - Start playback (write 1 to begin)
+;   bit 1 ($02) - Stop playback (write 1 to stop)
+;   bit 2 ($04) - Enable looping (set before starting)
+;
+; SID_PLAY_STATUS bits:
+;   bit 0 ($01) - Busy (1 = playing, 0 = stopped)
+;   bit 1 ($02) - Error (1 = load/parse error)
+; ----------------------------------------------------------------------------
+SID_PLAY_PTR_0  = $FE20         ; Play pointer byte 0 (IE32 $F0E20)
+SID_PLAY_PTR_1  = $FE21         ; Play pointer byte 1
+SID_PLAY_PTR_2  = $FE22         ; Play pointer byte 2
+SID_PLAY_PTR_3  = $FE23         ; Play pointer byte 3
+SID_PLAY_LEN_0  = $FE24         ; Play length byte 0 (IE32 $F0E24)
+SID_PLAY_LEN_1  = $FE25         ; Play length byte 1
+SID_PLAY_LEN_2  = $FE26         ; Play length byte 2
+SID_PLAY_LEN_3  = $FE27         ; Play length byte 3
+SID_PLAY_CTRL   = $FE28         ; Play control (IE32 $F0E28)
+SID_PLAY_STATUS = $FE2C         ; Play status (IE32 $F0E2C)
+SID_SUBSONG     = $FE2D         ; Subsong selection (0-255)
+
+; ----------------------------------------------------------------------------
 ; SAP Player Registers
 ;
 ; The SAP player handles Atari 8-bit music files (.sap) which contain

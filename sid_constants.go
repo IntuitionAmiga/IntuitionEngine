@@ -139,3 +139,13 @@ const (
 	C6502_SID_BASE = 0xD500
 	C6502_SID_END  = 0xD51C
 )
+
+// SID Player registers (memory-mapped at 0xF0E20-0xF0E2D)
+// Used to load and play .sid files with embedded 6502 code
+const (
+	SID_PLAY_PTR    = 0xF0E20 // 32-bit pointer to SID data (little-endian)
+	SID_PLAY_LEN    = 0xF0E24 // 32-bit length of SID data (little-endian)
+	SID_PLAY_CTRL   = 0xF0E28 // Control: bit 0=start, bit 1=stop, bit 2=loop
+	SID_PLAY_STATUS = 0xF0E2C // Status: bit 0=busy, bit 1=error
+	SID_SUBSONG     = 0xF0E2D // Subsong selection (0-255)
+)

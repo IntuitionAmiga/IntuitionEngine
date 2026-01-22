@@ -216,6 +216,35 @@ SID_MODE_HP       equ $40               ; High-pass filter
 SID_MODE_3OFF     equ $80               ; Disconnect voice 3 from output
 
 ; ----------------------------------------------------------------------------
+; SID Player Registers
+;
+; The SID player handles Commodore 64 music files (.sid) which contain
+; embedded 6502 code that drives the SID sound chip. The player executes
+; the 6502 init routine once, then calls the play routine each frame.
+;
+; Usage:
+;   1. Embed SID data in your program using incbin
+;   2. Set SID_PLAY_PTR to the address of the SID file data
+;   3. Set SID_PLAY_LEN to the size of the SID data in bytes
+;   4. Optionally set SID_SUBSONG to select a subsong (default 0)
+;   5. Write to SID_PLAY_CTRL to start/stop playback
+;
+; SID_PLAY_CTRL bits:
+;   bit 0 ($01) - Start playback (write 1 to begin)
+;   bit 1 ($02) - Stop playback (write 1 to stop)
+;   bit 2 ($04) - Enable looping (set before starting)
+;
+; SID_PLAY_STATUS bits:
+;   bit 0 ($01) - Busy (1 = playing, 0 = stopped)
+;   bit 1 ($02) - Error (1 = load/parse error)
+; ----------------------------------------------------------------------------
+SID_PLAY_PTR    equ $F0E20              ; Play pointer (32-bit)
+SID_PLAY_LEN    equ $F0E24              ; Play length (32-bit)
+SID_PLAY_CTRL   equ $F0E28              ; Play control
+SID_PLAY_STATUS equ $F0E2C              ; Play status
+SID_SUBSONG     equ $F0E2D              ; Subsong selection (0-255)
+
+; ----------------------------------------------------------------------------
 ; SAP Player Registers
 ;
 ; The SAP player handles Atari 8-bit music files (.sap) which contain
@@ -420,6 +449,37 @@ start_sap_loop macro
 ; Stop SAP playback
 stop_sap_play macro
     move.l  #2,SAP_PLAY_CTRL
+    endm
+
+; Set SID play pointer and length
+set_sid_play macro ptr,len
+    move.l  #\ptr,SID_PLAY_PTR
+    move.l  #\len,SID_PLAY_LEN
+    endm
+
+; Set SID subsong
+set_sid_subsong macro num
+    move.b  #\num,SID_SUBSONG
+    endm
+
+; Start SID playback
+start_sid_play macro
+    move.l  #1,SID_PLAY_CTRL
+    endm
+
+; Start SID playback with looping
+start_sid_loop macro
+    move.l  #5,SID_PLAY_CTRL
+    endm
+
+; Stop SID playback
+stop_sid_play macro
+    move.l  #2,SID_PLAY_CTRL
+    endm
+
+; Enable SID+ enhanced mode
+enable_sid_plus macro
+    move.b  #1,SID_PLUS_CTRL
     endm
 
 ; ============================================================================

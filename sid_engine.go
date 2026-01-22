@@ -58,7 +58,8 @@ type SIDEngine struct {
 	enabled        bool
 	sidPlusEnabled bool
 	channelsInit   bool
-	model          int // SID_MODEL_6581 or SID_MODEL_8580
+	model          int  // SID_MODEL_6581 or SID_MODEL_8580
+	forceLoop      bool // Force looping from start when track ends
 }
 
 // SID+ logarithmic volume curve (2dB per step)
@@ -617,6 +618,19 @@ func (e *SIDEngine) IsPlaying() bool {
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
 	return e.playing
+}
+
+// SetForceLoop enables looping from the start of the track even if the
+// track doesn't have a built-in loop point.
+func (e *SIDEngine) SetForceLoop(enable bool) {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+	e.forceLoop = enable
+	if enable {
+		e.loop = true
+		e.loopSample = 0
+		e.loopEventIndex = 0
+	}
 }
 
 func (e *SIDEngine) StopPlayback() {
