@@ -46,12 +46,12 @@ type FLTKFrontend struct {
 	visible   bool
 }
 
-func NewFLTKFrontend(cpu EmulatorCPU, video *VideoChip, sound *SoundChip, psg *PSGPlayer) (GUIFrontend, error) {
+func NewFLTKFrontend(cpu EmulatorCPU, video *VideoChip, sound *SoundChip, psg *PSGPlayer, sid *SIDPlayer) (GUIFrontend, error) {
 	return &FLTKFrontend{
 		cpu:     cpu,
 		video:   video,
 		sound:   sound,
-		actions: NewGUIActions(cpu, video, sound, psg),
+		actions: NewGUIActions(cpu, video, sound, psg, sid),
 	}, nil
 }
 

@@ -1550,6 +1550,15 @@ For POKEY/SAP music playback (Atari 8-bit):
 Note: `.sap` files are Atari 8-bit SAP format containing embedded 6502 code that drives the POKEY sound chip. The internal 6502 emulator executes the player code at the correct frame rate.
 POKEY+ enables enhanced audio processing similar to PSG+ for a richer, smoother sound.
 
+For SID music playback (C64 PSID):
+```bash
+./bin/IntuitionEngine -sid tune.sid
+./bin/IntuitionEngine -sid+ tune.sid
+./bin/IntuitionEngine -sid-pal tune.sid
+./bin/IntuitionEngine -sid-ntsc tune.sid
+```
+Note: PSID only; RSID is rejected. Single-SID playback at $D400 is supported; multi-SID is not yet implemented.
+
 When running in CPU modes, all three sound chips are available:
 - PSG registers at `0xF0C00-0xF0C0D` (PSG+ toggle at `0xF0C0E`)
 - POKEY registers at `0xF0D00-0xF0D09` (POKEY+ toggle at `0xF0D09`)

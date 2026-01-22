@@ -59,6 +59,7 @@ type GUIActions struct {
 	video *VideoChip
 	sound *SoundChip
 	psg   *PSGPlayer
+	sid   *SIDPlayer
 }
 
 type EmulatorCPU interface {
@@ -83,12 +84,13 @@ const (
 	GUI_FRONTEND_GTK4
 )
 
-func NewGUIActions(cpu EmulatorCPU, video *VideoChip, sound *SoundChip, psg *PSGPlayer) *GUIActions {
+func NewGUIActions(cpu EmulatorCPU, video *VideoChip, sound *SoundChip, psg *PSGPlayer, sid *SIDPlayer) *GUIActions {
 	return &GUIActions{
 		cpu:   cpu,
 		video: video,
 		sound: sound,
 		psg:   psg,
+		sid:   sid,
 	}
 }
 
@@ -126,9 +128,29 @@ func (a *GUIActions) LoadPSG(filename string) error {
 	return nil
 }
 
+func (a *GUIActions) LoadSID(filename string) error {
+	if a.sid == nil {
+		return fmt.Errorf("SID playback is not available")
+	}
+	if a.cpu != nil {
+		return fmt.Errorf("SID playback is disabled while CPU mode is active")
+	}
+	a.sid.Stop()
+	if err := a.sid.Load(filename); err != nil {
+		return err
+	}
+	a.sound.SetSampleTicker(a.sid.engine)
+	a.sound.Start()
+	a.sid.Play()
+	return nil
+}
+
 func (a *GUIActions) LoadFile(filename string) error {
 	if isPSGExtension(filename) {
 		return a.LoadPSG(filename)
+	}
+	if isSIDExtension(filename) {
+		return a.LoadSID(filename)
 	}
 	return a.LoadProgram(filename)
 }
@@ -152,12 +174,12 @@ func (a *GUIActions) Debug() error {
 	return fmt.Errorf("debugging not yet implemented")
 }
 
-func NewGUIFrontend(backend int, cpu EmulatorCPU, video *VideoChip, sound *SoundChip, psg *PSGPlayer) (GUIFrontend, error) {
+func NewGUIFrontend(backend int, cpu EmulatorCPU, video *VideoChip, sound *SoundChip, psg *PSGPlayer, sid *SIDPlayer) (GUIFrontend, error) {
 	switch backend {
 	case GUI_FRONTEND_FLTK:
-		return NewFLTKFrontend(cpu, video, sound, psg)
+		return NewFLTKFrontend(cpu, video, sound, psg, sid)
 	case GUI_FRONTEND_GTK4:
-		return NewGTKFrontend(cpu, video, sound, psg)
+		return NewGTKFrontend(cpu, video, sound, psg, sid)
 	}
 	return nil, fmt.Errorf("unknown backend: %d", backend)
 }

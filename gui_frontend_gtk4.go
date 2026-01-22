@@ -50,9 +50,9 @@ type GTKFrontend struct {
 	mutex     sync.Mutex
 }
 
-func NewGTKFrontend(cpu EmulatorCPU, video *VideoChip, sound *SoundChip, psg *PSGPlayer) (GUIFrontend, error) {
+func NewGTKFrontend(cpu EmulatorCPU, video *VideoChip, sound *SoundChip, psg *PSGPlayer, sid *SIDPlayer) (GUIFrontend, error) {
 	frontend := &GTKFrontend{
-		actions: NewGUIActions(cpu, video, sound, psg),
+		actions: NewGUIActions(cpu, video, sound, psg, sid),
 		cpu:     cpu,
 		video:   video,
 		sound:   sound,

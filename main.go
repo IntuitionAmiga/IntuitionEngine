@@ -134,9 +134,15 @@ func main() {
 		modeM6502 bool
 		modeZ80   bool
 		modePSG   bool
+		modeSID   bool
 		psgPlus   bool
+		sidPlus   bool
 		modePOKEY bool
 		pokeyPlus bool
+		sidFile   string
+		sidDebug  int
+		sidPAL    bool
+		sidNTSC   bool
 		loadAddr  optionalStringFlag
 		entryAddr optionalStringFlag
 	)
@@ -148,7 +154,12 @@ func main() {
 	flagSet.BoolVar(&modeM6502, "m6502", false, "Run 6502 CPU mode")
 	flagSet.BoolVar(&modeZ80, "z80", false, "Run Z80 CPU mode")
 	flagSet.BoolVar(&modePSG, "psg", false, "Play PSG file")
+	flagSet.StringVar(&sidFile, "sid", "", "Play SID file")
+	flagSet.IntVar(&sidDebug, "sid-debug", 0, "Log SID timing and ADSR changes for N seconds")
+	flagSet.BoolVar(&sidPAL, "sid-pal", false, "Force PAL timing for SID playback")
+	flagSet.BoolVar(&sidNTSC, "sid-ntsc", false, "Force NTSC timing for SID playback")
 	flagSet.BoolVar(&psgPlus, "psg+", false, "Enable PSG+ enhancements")
+	flagSet.BoolVar(&sidPlus, "sid+", false, "Enable SID+ enhancements")
 	flagSet.BoolVar(&modePOKEY, "pokey", false, "Play SAP file (POKEY emulation)")
 	flagSet.BoolVar(&pokeyPlus, "pokey+", false, "Enable POKEY+ enhancements")
 	loadAddr.value = "0x0600"
@@ -157,7 +168,7 @@ func main() {
 
 	flagSet.Usage = func() {
 		flagSet.SetOutput(os.Stdout)
-		fmt.Println("Usage: ./intuition_engine -ie32|-m68k|-m6502|-z80|-psg|-psg+|-pokey|-pokey+ [--load-addr addr] [--entry addr] filename")
+		fmt.Println("Usage: ./intuition_engine -ie32|-m68k|-m6502|-z80|-psg|-psg+|-sid|-sid+|-pokey|-pokey+ [--load-addr addr] [--entry addr] filename")
 		flagSet.PrintDefaults()
 	}
 
@@ -171,8 +182,14 @@ func main() {
 
 	filename := flagSet.Arg(0)
 
+	if sidFile != "" {
+		modeSID = true
+	}
 	if psgPlus && !modePSG {
 		modePSG = true
+	}
+	if sidPlus && !modeSID {
+		modeSID = true
 	}
 	if pokeyPlus && !modePOKEY {
 		modePOKEY = true
@@ -194,6 +211,9 @@ func main() {
 	if modePSG {
 		modeCount++
 	}
+	if modeSID {
+		modeCount++
+	}
 	if modePOKEY {
 		modeCount++
 	}
@@ -202,11 +222,19 @@ func main() {
 		modeCount = 1
 	}
 	if modeCount != 1 {
-		fmt.Println("Error: select exactly one mode flag: -ie32, -m68k, -m6502, -z80, -psg, -psg+, -pokey, or -pokey+")
+		fmt.Println("Error: select exactly one mode flag: -ie32, -m68k, -m6502, -z80, -psg, -psg+, -sid, -sid+, -pokey, or -pokey+")
 		os.Exit(1)
 	}
 	if filename == "" && modePSG {
 		fmt.Println("Error: PSG mode requires a filename")
+		os.Exit(1)
+	}
+	if sidPAL && sidNTSC {
+		fmt.Println("Error: choose only one of -sid-pal or -sid-ntsc")
+		os.Exit(1)
+	}
+	if modeSID && sidFile == "" {
+		fmt.Println("Error: SID mode requires a filename")
 		os.Exit(1)
 	}
 
@@ -224,6 +252,10 @@ func main() {
 	}
 
 	sidEngine := NewSIDEngine(soundChip, SAMPLE_RATE)
+	sidPlayer := NewSIDPlayer(sidEngine)
+	if sidPlus {
+		sidEngine.SetSIDPlusEnabled(true)
+	}
 
 	if modePSG {
 		if filename == "" {
@@ -248,6 +280,37 @@ func main() {
 		psgPlayer.Play()
 		// Wait for playback to complete, then exit
 		for psgEngine.IsPlaying() {
+			time.Sleep(100 * time.Millisecond)
+		}
+		soundChip.Stop()
+		os.Exit(0)
+	}
+
+	if modeSID {
+		if err := sidPlayer.LoadWithOptions(sidFile, 0, sidPAL, sidNTSC); err != nil {
+			fmt.Printf("Error loading SID file: %v\n", err)
+			os.Exit(1)
+		}
+		if sidDebug > 0 {
+			sidEngine.EnableDebugLogging(sidDebug)
+		}
+		meta := sidPlayer.Metadata()
+		if meta.Title != "" || meta.Author != "" {
+			fmt.Printf("Playing: %s - %s", meta.Title, meta.Author)
+		} else {
+			fmt.Printf("Playing: %s", sidFile)
+		}
+		if meta.Released != "" {
+			fmt.Printf(" (%s)", meta.Released)
+		}
+		if dur := sidPlayer.DurationText(); dur != "" {
+			fmt.Printf(" [%s]", dur)
+		}
+		fmt.Println()
+		soundChip.SetSampleTicker(sidEngine)
+		soundChip.Start()
+		sidPlayer.Play()
+		for sidPlayer.IsPlaying() {
 			time.Sleep(100 * time.Millisecond)
 		}
 		soundChip.Stop()
@@ -358,7 +421,7 @@ func main() {
 		}
 
 		// Initialize GUI with IE32 CPU
-		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, ie32CPU, videoChip, soundChip, psgPlayer)
+		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, ie32CPU, videoChip, soundChip, psgPlayer, sidPlayer)
 		if err != nil {
 			fmt.Printf("Failed to initialize GUI: %v\n", err)
 			os.Exit(1)
@@ -399,7 +462,7 @@ func main() {
 		// Initialize GUI with M68K CPU
 		// Note: The GUI might need modifications to properly support M68K CPU
 		m68kRunner := NewM68KRunner(m68kCPU)
-		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, m68kRunner, videoChip, soundChip, psgPlayer)
+		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, m68kRunner, videoChip, soundChip, psgPlayer, sidPlayer)
 		if err != nil {
 			fmt.Printf("Failed to initialize GUI: %v\n", err)
 			os.Exit(1)
@@ -448,7 +511,7 @@ func main() {
 			startExecution = true
 		}
 
-		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, z80CPU, videoChip, soundChip, psgPlayer)
+		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, z80CPU, videoChip, soundChip, psgPlayer, sidPlayer)
 		if err != nil {
 			fmt.Printf("Failed to initialize GUI: %v\n", err)
 			os.Exit(1)
@@ -501,7 +564,7 @@ func main() {
 			startExecution = true
 		}
 
-		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, cpu6502, videoChip, soundChip, psgPlayer)
+		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, cpu6502, videoChip, soundChip, psgPlayer, sidPlayer)
 		if err != nil {
 			fmt.Printf("Failed to initialize GUI: %v\n", err)
 			os.Exit(1)

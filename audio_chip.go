@@ -53,6 +53,7 @@ package main
 import (
 	"log"
 	"math"
+	"math/bits"
 	"sync"
 	"sync/atomic"
 )
@@ -248,6 +249,7 @@ const (
 	ENV_SHAPE_SAW_UP   = 1 // Linear rise to 1.0, then hold
 	ENV_SHAPE_SAW_DOWN = 2 // Linear fall to 0.0, then hold
 	ENV_SHAPE_LOOP     = 3 // ADSR but loops after release
+	ENV_SHAPE_SID      = 4 // SID-style exponential ADSR
 )
 
 // ------------------------------------------------------------------------------
@@ -322,6 +324,14 @@ const (
 	SWEEP_RATE      = 4000    // Frequency sweep timing divisor
 	DECAY_BASE      = 0.1     // Base reverb decay time
 	DECAY_RANGE     = 0.89    // Reverb decay time range
+)
+
+// Filter stability constants (ported from IntuitionSubtractor)
+const (
+	FILTER_RESONANCE_CUTOFF_LIMIT = 0.45
+	FILTER_RESONANCE_THRESHOLD    = 2.0
+	FILTER_RESONANCE_SLOPE        = 0.1
+	FILTER_MAX_SAFE_RESONANCE     = 3.8
 )
 
 // ------------------------------------------------------------------------------
@@ -497,7 +507,7 @@ const TWO_PI_OVER_SR = TWO_PI / SAMPLE_RATE         // Pre-computed for efficien
 // Mode and Count Constants
 // ------------------------------------------------------------------------------
 const (
-	NUM_ENVELOPE_SHAPES = 4
+	NUM_ENVELOPE_SHAPES = 5
 	NUM_NOISE_MODES     = 4
 	NUM_FILTER_TYPES    = 4
 	NUM_MOD_SOURCES     = NUM_CHANNELS
@@ -545,6 +555,19 @@ const (
 	SID_PLUS_DRIVE         = 0.15 // Moderate saturation for analog warmth
 	SID_PLUS_ROOM_MIX      = 0.07 // Subtle room ambience
 	SID_PLUS_ROOM_DELAY    = 112  // Medium delay for spacious sound
+
+	SID_COMBINED_LOWPASS_ALPHA = 0.18 // Smooth combined SID waveforms
+
+	SID_WAVE_TRIANGLE = 0x10
+	SID_WAVE_SAW      = 0x20
+	SID_WAVE_PULSE    = 0x40
+	SID_WAVE_NOISE    = 0x80
+
+	// SID oscillator outputs 12-bit values (0-4095)
+	SID_OSC_BITS     = 12
+	SID_OSC_MAX      = (1 << SID_OSC_BITS) - 1 // 4095
+	SID_OSC_MID      = 1 << (SID_OSC_BITS - 1) // 2048
+	SID_OSC_TO_FLOAT = 2.0 / float32(SID_OSC_MAX)
 )
 
 // sidPlusMixGain provides per-voice gain adjustment for SID+ mode (3 voices)
@@ -599,6 +622,18 @@ type Channel struct {
 	sidPlusDrive          float32 // SID+ saturation drive
 	sidPlusRoomMix        float32 // SID+ room mix
 	sidPlusGain           float32 // SID+ per-channel gain
+	sidMixLowpassState    float32 // SID combined waveform smoothing
+	sidOscOutput          float32 // Raw oscillator output (before ring mod, for OSC3 readback)
+	sidWaveMask           uint8   // SID waveform mask (combined waves)
+
+	// Per-channel filter state
+	filterLP        float32
+	filterBP        float32
+	filterHP        float32
+	filterCutoff    float32
+	filterResonance float32
+	filterType      int
+	filterModeMask  uint8
 
 	// Envelope and modulation parameters (cache line 2)
 	// Accessed during envelope and modulation updates
@@ -638,17 +673,28 @@ type Channel struct {
 	sidPlusRoomBuf   []float32 // SID+ room delay buffer
 
 	// Boolean state flags (packed together to minimise padding)
-	enabled          bool                   // Channel enabled flag
-	gate             bool                   // Gate/trigger state
-	sweepEnabled     bool                   // Frequency sweep enabled
-	sweepDirection   bool                   // Sweep direction (up/down)
-	pwmEnabled       bool                   // PWM enabled flag
-	phaseWrapped     bool                   // Phase wrap indicator
-	psgPlusEnabled   bool                   // PSG+ processing flag
-	pokeyPlusEnabled bool                   // POKEY+ processing flag
-	sidPlusEnabled   bool                   // SID+ processing flag
-	_pad             [CHANNEL_PAD_SIZE]byte // Padding for alignment
-	sampleCount      int                    // Track number of samples generated
+	enabled          bool // Channel enabled flag
+	gate             bool // Gate/trigger state
+	sweepEnabled     bool // Frequency sweep enabled
+	sweepDirection   bool // Sweep direction (up/down)
+	pwmEnabled       bool // PWM enabled flag
+	phaseWrapped     bool // Phase wrap indicator
+	psgPlusEnabled   bool // PSG+ processing flag
+	pokeyPlusEnabled bool // POKEY+ processing flag
+	sidPlusEnabled   bool // SID+ processing flag
+	sidEnvelope      bool // SID-style ADSR envelope
+	sidTestBit       bool // SID test bit (mute oscillator)
+	sidFilterMode    bool // SID filter mode (allows self-oscillation)
+	sidRateCounter   bool // Use authentic SID rate counter for ADSR
+
+	// SID rate counter state (for authentic ADSR timing)
+	sidEnvLevel   uint8                  // 8-bit envelope level (0-255)
+	sidRateCount  uint32                 // Rate counter (accumulates samples)
+	sidRatePeriod uint32                 // Current rate period in samples
+	sidADSRIndex  uint8                  // Current ADSR value (0-15) for rate lookup
+	sidExpIndex   int                    // Current exponential threshold index (for decay/release)
+	_pad          [CHANNEL_PAD_SIZE]byte // Padding for alignment
+	sampleCount   int                    // Track number of samples generated
 
 	releaseStartLevel float32 // Level when release phase began
 }
@@ -822,13 +868,17 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 			if newGate && !ch.gate {
 				ch.envelopePhase = ENV_ATTACK
 				ch.envelopeSample = 0
-				ch.envelopeLevel = 0
+				if !ch.sidEnvelope {
+					ch.envelopeLevel = 0
+				}
 			}
 
-			if !newGate && ch.gate && ch.envelopePhase == ENV_SUSTAIN {
-				ch.releaseStartLevel = ch.envelopeLevel
-				ch.envelopePhase = ENV_RELEASE
-				ch.envelopeSample = 0
+			if !newGate && ch.gate {
+				if ch.envelopePhase == ENV_SUSTAIN || ch.sidEnvelope {
+					ch.releaseStartLevel = ch.envelopeLevel
+					ch.envelopePhase = ENV_RELEASE
+					ch.envelopeSample = 0
+				}
 			}
 			ch.gate = newGate
 		case FLEX_OFF_DUTY:
@@ -931,13 +981,17 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 		if newGate && !ch.gate {
 			ch.envelopePhase = ENV_ATTACK
 			ch.envelopeSample = 0
-			ch.envelopeLevel = 0
+			if !ch.sidEnvelope {
+				ch.envelopeLevel = 0
+			}
 		}
 
-		if !newGate && ch.gate && ch.envelopePhase == ENV_SUSTAIN {
-			ch.releaseStartLevel = ch.envelopeLevel
-			ch.envelopePhase = ENV_RELEASE
-			ch.envelopeSample = 0
+		if !newGate && ch.gate {
+			if ch.envelopePhase == ENV_SUSTAIN || ch.sidEnvelope {
+				ch.releaseStartLevel = ch.envelopeLevel
+				ch.envelopePhase = ENV_RELEASE
+				ch.envelopeSample = 0
+			}
 		}
 		ch.gate = newGate
 	case SQUARE_ATK, TRI_ATK, SINE_ATK, NOISE_ATK, SAW_ATK:
@@ -1077,6 +1131,78 @@ func (ch *Channel) updateEnvelope() {
 	ch.mutex.Lock()
 	defer ch.mutex.Unlock()
 
+	if ch.sidEnvelope {
+		if !ch.gate && ch.envelopePhase != ENV_RELEASE {
+			ch.releaseStartLevel = ch.envelopeLevel
+			ch.envelopePhase = ENV_RELEASE
+			ch.envelopeSample = 0
+		}
+
+		switch ch.envelopePhase {
+		case ENV_ATTACK:
+			// Real SID attack is LINEAR (rises in 256 steps)
+			if ch.attackTime <= 0 {
+				ch.envelopeLevel = MAX_LEVEL
+				ch.envelopePhase = ENV_DECAY
+				ch.envelopeSample = 0
+			} else {
+				// Linear attack: increment per sample
+				increment := MAX_LEVEL / float32(ch.attackTime)
+				ch.envelopeLevel += increment
+				if ch.envelopeLevel >= MAX_LEVEL {
+					ch.envelopeLevel = MAX_LEVEL
+					ch.envelopePhase = ENV_DECAY
+					ch.envelopeSample = 0
+				}
+			}
+		case ENV_DECAY:
+			// Real SID decay uses exponential with "bent" curve
+			// Three rate regions: 255-94 (normal), 93-55 (3x faster), 54-0 (normal)
+			target := ch.sustainLevel
+			if ch.decayTime <= 0 {
+				ch.envelopeLevel = target
+				ch.envelopePhase = ENV_SUSTAIN
+			} else {
+				// Calculate rate based on current level (bent curve)
+				rate := 1.0 / float32(ch.decayTime)
+				level255 := ch.envelopeLevel * 255.0
+				if level255 < 94 && level255 >= 55 {
+					rate *= 3.0 // Faster in middle region
+				}
+				ch.envelopeLevel -= ch.envelopeLevel * rate
+				if ch.envelopeLevel <= target+0.001 {
+					ch.envelopeLevel = target
+					ch.envelopePhase = ENV_SUSTAIN
+				}
+			}
+		case ENV_SUSTAIN:
+			if !ch.gate {
+				ch.releaseStartLevel = ch.envelopeLevel
+				ch.envelopePhase = ENV_RELEASE
+				ch.envelopeSample = 0
+			}
+		case ENV_RELEASE:
+			// Real SID release uses same bent exponential curve as decay
+			if ch.releaseTime <= 0 {
+				ch.envelopeLevel = 0
+				ch.enabled = false
+			} else {
+				// Calculate rate based on current level (bent curve)
+				rate := 1.0 / float32(ch.releaseTime)
+				level255 := ch.envelopeLevel * 255.0
+				if level255 < 94 && level255 >= 55 {
+					rate *= 3.0 // Faster in middle region
+				}
+				ch.envelopeLevel -= ch.envelopeLevel * rate
+				if ch.envelopeLevel <= 0.001 {
+					ch.envelopeLevel = 0
+					ch.enabled = false
+				}
+			}
+		}
+		return
+	}
+
 	switch ch.envelopePhase {
 	case ENV_ATTACK:
 		switch ch.envelopeShape {
@@ -1171,6 +1297,196 @@ func (ch *Channel) updateEnvelope() {
 func (ch *Channel) generateWaveSample(sampleRate float32) float32 {
 	var rawSample float32
 	phaseInc := TWO_PI * float32(ch.frequency) / sampleRate
+	waveMask := ch.sidWaveMask
+
+	if waveMask != 0 {
+		squareSample := func() float32 {
+			currentDuty := ch.dutyCycle
+			if ch.pwmEnabled {
+				ch.pwmPhase += ch.pwmRate * (TWO_PI / sampleRate)
+				ch.pwmPhase = float32(math.Mod(float64(ch.pwmPhase+ch.pwmRate*(TWO_PI/sampleRate)), TWO_PI))
+				normalisedPhase := ch.pwmPhase / TWO_PI
+				lfo := float32(math.Abs(float64(normalisedPhase*NORMALISE_SCALE-NORMALISE_OFFSET)))*NORMALISE_SCALE - NORMALISE_OFFSET
+				currentDuty = ch.dutyCycle + lfo*ch.pwmDepth
+				if currentDuty < 0 {
+					currentDuty = 0
+				} else if currentDuty > 1 {
+					currentDuty = 1
+				}
+			}
+			normalizedPhase := ch.phase / TWO_PI
+			dt := float64(ch.frequency) / float64(sampleRate)
+			var sample float32
+			if normalizedPhase < currentDuty {
+				sample = SQUARE_AMPLITUDE
+			} else {
+				sample = -SQUARE_AMPLITUDE
+			}
+
+			phaseNorm64 := float64(normalizedPhase)
+			dutyNorm64 := float64(currentDuty)
+			sample += float32(polyBLEP(phaseNorm64, dt)) * SQUARE_AMPLITUDE
+			sample -= float32(polyBLEP(math.Mod(phaseNorm64-dutyNorm64+1.0, 1.0), dt)) * SQUARE_AMPLITUDE
+			sample *= SQUARE_NORM
+			return sample
+		}
+
+		triangleSample := func() float32 {
+			phaseNorm := ch.phase / TWO_PI
+			if phaseNorm < HALF_CYCLE {
+				rawSample = TRIANGLE_SLOPE*phaseNorm - TRIANGLE_PHASE_SUBTRACT
+			} else {
+				rawSample = (TRIANGLE_SLOPE - TRIANGLE_PHASE_SUBTRACT) - TRIANGLE_SLOPE*phaseNorm
+			}
+			rawSample *= TRIANGLE_NORM
+			return rawSample
+		}
+
+		sawSample := func() float32 {
+			phaseNorm := float64(ch.phase / TWO_PI)
+			dt := float64(ch.frequency) / float64(sampleRate)
+			rawSample = float32(2.0*phaseNorm - 1.0)
+			rawSample -= float32(polyBLEP(phaseNorm, dt))
+			return rawSample
+		}
+
+		noiseSample := func() float32 {
+			noisePhaseInc := ch.frequency / sampleRate
+			ch.noisePhase += noisePhaseInc
+			steps := int(ch.noisePhase)
+			ch.noisePhase -= float32(steps)
+
+			for i := 0; i < steps; i++ {
+				switch ch.noiseMode {
+				case NOISE_MODE_WHITE:
+					newBit := ((ch.noiseSR >> NOISE_TAP1) ^ (ch.noiseSR >> NOISE_TAP2)) & 1
+					ch.noiseSR = ((ch.noiseSR << LSB_MASK) | newBit) & NOISE_LFSR_MASK
+				case NOISE_MODE_PERIODIC:
+					ch.noiseSR = ((ch.noiseSR >> LSB_MASK) | ((ch.noiseSR & 1) << (NOISE_LFSR_BITS - 1))) & NOISE_LFSR_MASK
+				case NOISE_MODE_METALLIC:
+					newBit := ((ch.noiseSR >> METAL_TAP1) ^ (ch.noiseSR >> METAL_TAP2)) & 1
+					ch.noiseSR = ((ch.noiseSR << LSB_MASK) | newBit) & NOISE_LFSR_MASK
+				case NOISE_MODE_PSG:
+					newBit := ((ch.noiseSR >> 0) ^ (ch.noiseSR >> 3)) & 1
+					ch.noiseSR = ((ch.noiseSR << LSB_MASK) | newBit) & PSG_NOISE_LFSR_MASK
+				}
+			}
+
+			ch.noiseValue = float32(ch.noiseSR&LSB_MASK)*NOISE_BIT_SCALE - NOISE_BIAS
+			ch.noiseFilterState = NOISE_FILTER_OLD*ch.noiseFilterState + NOISE_FILTER_NEW*ch.noiseValue
+			rawSample = ch.noiseFilterState
+			rawSample *= NOISE_NORM
+			return rawSample
+		}
+
+		// SID combined waveforms: real SID ANDs the 12-bit digital outputs
+		// This creates the distinctive harsh/metallic sounds of combined waveforms
+		waveCount := bits.OnesCount8(waveMask)
+
+		if waveCount == 1 {
+			// Single waveform - use standard generation
+			if waveMask&SID_WAVE_PULSE != 0 {
+				rawSample = squareSample()
+			} else if waveMask&SID_WAVE_TRIANGLE != 0 {
+				rawSample = triangleSample()
+			} else if waveMask&SID_WAVE_SAW != 0 {
+				rawSample = sawSample()
+			} else if waveMask&SID_WAVE_NOISE != 0 {
+				rawSample = noiseSample()
+			}
+		} else {
+			// Combined waveforms - generate 12-bit values and AND them together
+			// SID oscillator outputs 12-bit unsigned (0-4095)
+			phaseNorm := ch.phase / TWO_PI // 0.0 to 1.0
+			phase12 := uint16(phaseNorm * SID_OSC_MAX)
+
+			// Start with all bits set (0xFFF = 4095)
+			combined := uint16(SID_OSC_MAX)
+
+			if waveMask&SID_WAVE_TRIANGLE != 0 {
+				// Triangle: rises 0->4095 in first half, falls 4095->0 in second half
+				// Uses XOR with MSB to create the fold-back
+				tri12 := phase12 << 1
+				if phase12&0x800 != 0 {
+					tri12 ^= 0xFFF
+				}
+				tri12 &= SID_OSC_MAX
+				combined &= tri12
+			}
+
+			if waveMask&SID_WAVE_SAW != 0 {
+				// Sawtooth: direct phase accumulator output (0 to 4095)
+				saw12 := phase12
+				combined &= saw12
+			}
+
+			if waveMask&SID_WAVE_PULSE != 0 {
+				// Pulse: 0 or 4095 depending on phase vs pulse width
+				pw12 := uint16(ch.dutyCycle * SID_OSC_MAX)
+				var pulse12 uint16
+				if phase12 >= pw12 {
+					pulse12 = 0
+				} else {
+					pulse12 = SID_OSC_MAX
+				}
+				combined &= pulse12
+			}
+
+			if waveMask&SID_WAVE_NOISE != 0 {
+				// Noise: 12-bit LFSR output ANDed with waveform selector bits
+				// When noise is combined with other waveforms, it gates them
+				noisePhaseInc := ch.frequency / sampleRate
+				ch.noisePhase += noisePhaseInc
+				steps := int(ch.noisePhase)
+				ch.noisePhase -= float32(steps)
+				for i := 0; i < steps; i++ {
+					newBit := ((ch.noiseSR >> NOISE_TAP1) ^ (ch.noiseSR >> NOISE_TAP2)) & 1
+					ch.noiseSR = ((ch.noiseSR << 1) | newBit) & NOISE_LFSR_MASK
+				}
+				// Use top 12 bits of LFSR
+				noise12 := uint16((ch.noiseSR >> 11) & SID_OSC_MAX)
+				combined &= noise12
+			}
+
+			// Convert 12-bit unsigned (0-4095) to float (-1.0 to +1.0)
+			rawSample = float32(combined)*SID_OSC_TO_FLOAT - 1.0
+
+			// Apply smoothing to reduce aliasing from the harsh AND operations
+			alpha := float32(SID_COMBINED_LOWPASS_ALPHA)
+			ch.sidMixLowpassState = ch.sidMixLowpassState*(1-alpha) + rawSample*alpha
+			rawSample = ch.sidMixLowpassState
+		}
+
+		// Store raw oscillator output before ring mod (for SID OSC3 readback)
+		ch.sidOscOutput = rawSample
+
+		if ch.ringModSource != nil {
+			rawSample *= ch.ringModSource.prevRawSample
+		}
+		ch.prevRawSample = rawSample
+
+		// Only tonal waveforms (not noise-only) use phase for synthesis
+		hasTonalWave := waveMask&(SID_WAVE_TRIANGLE|SID_WAVE_SAW|SID_WAVE_PULSE) != 0
+
+		// Hard sync: reset phase when sync source oscillator wraps
+		// Only meaningful for tonal waveforms (noise doesn't use phase)
+		if ch.syncSource != nil && ch.syncSource.phaseWrapped && hasTonalWave {
+			ch.phase = 0
+		}
+		if hasTonalWave {
+			ch.phase += phaseInc
+			if ch.phase >= TWO_PI {
+				ch.phase -= TWO_PI
+				ch.phaseWrapped = true
+			} else {
+				ch.phaseWrapped = false
+			}
+		} else {
+			ch.phaseWrapped = false
+		}
+
+		return rawSample
+	}
 
 	switch ch.waveType {
 	case WAVE_SQUARE:
@@ -1250,10 +1566,19 @@ func (ch *Channel) generateWaveSample(sampleRate float32) float32 {
 		rawSample -= float32(polyBLEP(phaseNorm, dt))
 	}
 
+	// Store raw oscillator output before ring mod (for SID OSC3 readback)
+	ch.sidOscOutput = rawSample
+
 	if ch.ringModSource != nil {
 		rawSample *= ch.ringModSource.prevRawSample
 	}
 	ch.prevRawSample = rawSample
+
+	// Hard sync: reset phase when sync source oscillator wraps
+	// (must happen before phase advance for consistent timing with combined waves path)
+	if ch.syncSource != nil && ch.syncSource.phaseWrapped && ch.waveType != WAVE_NOISE {
+		ch.phase = 0
+	}
 
 	if ch.waveType != WAVE_NOISE {
 		ch.phase += phaseInc
@@ -1263,10 +1588,6 @@ func (ch *Channel) generateWaveSample(sampleRate float32) float32 {
 		} else {
 			ch.phaseWrapped = false
 		}
-	}
-
-	if ch.syncSource != nil && ch.syncSource.phaseWrapped && ch.waveType != WAVE_NOISE {
-		ch.phase = 0
 	}
 
 	return rawSample
@@ -1293,7 +1614,16 @@ func (ch *Channel) generateSample() float32 {
 		return 0
 	}
 
+	// Always update envelope - real SID envelope runs even when test bit is set
 	ch.updateEnvelope()
+
+	// SID test bit: hold oscillator phase at 0 and mute output
+	// but envelope continues advancing (important for tunes that toggle TEST)
+	if ch.sidTestBit {
+		ch.phase = 0
+		ch.phaseWrapped = false
+		return 0
+	}
 
 	ch.mutex.Lock()
 	envLevel := ch.envelopeLevel
@@ -1428,6 +1758,60 @@ func (ch *Channel) generateSample() float32 {
 
 	rawSample := ch.generateWaveSample(float32(SAMPLE_RATE))
 	scaledSample := rawSample * ch.volume * envLevel
+
+	// Per-channel filter (state-variable with multi-mode mix)
+	if ch.filterModeMask != 0 && ch.filterCutoff > 0 {
+		cutoff := calculateFilterCutoff(ch.filterCutoff)
+		resonance := ch.filterResonance * MAX_RESONANCE
+
+		// SID filter mode allows self-oscillation at high resonance
+		// Non-SID mode applies safety limiting to prevent instability
+		if !ch.sidFilterMode {
+			if resonance > FILTER_MAX_SAFE_RESONANCE {
+				resonance = FILTER_MAX_SAFE_RESONANCE
+			}
+			if resonance > FILTER_RESONANCE_THRESHOLD {
+				cutoffLimit := FILTER_RESONANCE_CUTOFF_LIMIT - (resonance-FILTER_RESONANCE_THRESHOLD)*FILTER_RESONANCE_SLOPE
+				if cutoff > cutoffLimit {
+					cutoff = cutoffLimit
+				}
+			}
+		}
+
+		lp := ch.filterLP + cutoff*ch.filterBP
+		hp := (scaledSample - lp) - resonance*ch.filterBP
+		bp := ch.filterBP + cutoff*hp
+
+		lp = float32(math.Max(math.Min(float64(lp), MAX_SAMPLE), MIN_SAMPLE))
+		bp = float32(math.Max(math.Min(float64(bp), MAX_SAMPLE), MIN_SAMPLE))
+		hp = float32(math.Max(math.Min(float64(hp), MAX_SAMPLE), MIN_SAMPLE))
+
+		lp = flushDenormal(lp)
+		bp = flushDenormal(bp)
+		hp = flushDenormal(hp)
+
+		ch.filterLP = lp
+		ch.filterBP = bp
+		ch.filterHP = hp
+
+		var out float32
+		count := 0
+		if ch.filterModeMask&0x01 != 0 {
+			out += lp
+			count++
+		}
+		if ch.filterModeMask&0x02 != 0 {
+			out += bp
+			count++
+		}
+		if ch.filterModeMask&0x04 != 0 {
+			out += hp
+			count++
+		}
+		if count > 0 {
+			scaledSample = out / float32(count)
+		}
+	}
 
 	//if ch.waveType == WAVE_SINE {
 	//	fmt.Printf("Raw sample: %.2f, After volume: %.2f\n", rawSample, scaledSample)
@@ -1710,6 +2094,200 @@ func (chip *SoundChip) SetPSGPlusEnabled(enabled bool) {
 			ch.psgPlusGain = 1.0
 		}
 	}
+}
+
+// SetChannelEnvelopeMode toggles SID-style ADSR behavior per channel.
+func (chip *SoundChip) SetChannelEnvelopeMode(ch int, sidEnvelope bool) {
+	chip.mutex.Lock()
+	defer chip.mutex.Unlock()
+
+	if ch < 0 || ch >= NUM_CHANNELS {
+		return
+	}
+	channel := chip.channels[ch]
+	if channel == nil {
+		return
+	}
+	channel.sidEnvelope = sidEnvelope
+}
+
+// SetChannelADSR sets envelope times in milliseconds and sustain level (0.0-1.0).
+func (chip *SoundChip) SetChannelADSR(ch int, attackMs, decayMs, releaseMs, sustainLevel float32) {
+	chip.mutex.Lock()
+	defer chip.mutex.Unlock()
+
+	if ch < 0 || ch >= NUM_CHANNELS {
+		return
+	}
+	channel := chip.channels[ch]
+	if channel == nil {
+		return
+	}
+
+	if attackMs < 0 {
+		attackMs = 0
+	}
+	if decayMs < 0 {
+		decayMs = 0
+	}
+	if releaseMs < 0 {
+		releaseMs = 0
+	}
+	if sustainLevel < 0 {
+		sustainLevel = 0
+	} else if sustainLevel > 1.0 {
+		sustainLevel = 1.0
+	}
+
+	channel.attackTime = max(int(attackMs*MS_TO_SAMPLES), MIN_ENV_TIME)
+	channel.decayTime = max(int(decayMs*MS_TO_SAMPLES), MIN_ENV_TIME)
+	channel.releaseTime = max(int(releaseMs*MS_TO_SAMPLES), MIN_ENV_TIME)
+	channel.sustainLevel = sustainLevel
+}
+
+// SetChannelSIDTest controls the SID test-bit behavior per channel.
+// When enabled: holds oscillator phase at 0 and resets noise LFSR.
+func (chip *SoundChip) SetChannelSIDTest(ch int, enabled bool) {
+	chip.mutex.Lock()
+	defer chip.mutex.Unlock()
+
+	if ch < 0 || ch >= NUM_CHANNELS {
+		return
+	}
+	channel := chip.channels[ch]
+	if channel == nil {
+		return
+	}
+	channel.sidTestBit = enabled
+	if enabled {
+		// Reset noise LFSR to known state (real SID behavior)
+		channel.noiseSR = NOISE_LFSR_SEED
+		channel.noisePhase = 0
+	}
+}
+
+// SetChannelSIDWaveMask configures combined SID waveforms per channel.
+func (chip *SoundChip) SetChannelSIDWaveMask(ch int, mask uint8) {
+	chip.mutex.Lock()
+	defer chip.mutex.Unlock()
+
+	if ch < 0 || ch >= NUM_CHANNELS {
+		return
+	}
+	channel := chip.channels[ch]
+	if channel == nil {
+		return
+	}
+	channel.sidWaveMask = mask
+	if mask == 0 {
+		channel.sidMixLowpassState = 0
+	}
+}
+
+// GetChannelOscillatorOutput returns the current oscillator output as 8-bit value (0-255).
+// This is used for SID OSC3 register readback.
+func (chip *SoundChip) GetChannelOscillatorOutput(ch int) uint8 {
+	chip.mutex.RLock()
+	defer chip.mutex.RUnlock()
+
+	if ch < 0 || ch >= NUM_CHANNELS {
+		return 0
+	}
+	channel := chip.channels[ch]
+	if channel == nil {
+		return 0
+	}
+	// Convert raw oscillator output (-1.0 to 1.0) to 8-bit unsigned (0-255)
+	// Uses pre-ring-mod output for accurate SID OSC3 readback
+	sample := channel.sidOscOutput
+	if sample < -1.0 {
+		sample = -1.0
+	} else if sample > 1.0 {
+		sample = 1.0
+	}
+	return uint8((sample + 1.0) * 127.5)
+}
+
+// GetChannelEnvelopeLevel returns the current envelope level as 8-bit value (0-255).
+// This is used for SID ENV3 register readback.
+// NOTE: Returns quantized float envelope, not a true SID 8-bit rate counter.
+// Real SID maintains an 8-bit counter incremented by the rate counter circuit.
+// For most uses this approximation is sufficient, but tunes relying on exact
+// ENV3 timing for synchronization effects may behave slightly differently.
+func (chip *SoundChip) GetChannelEnvelopeLevel(ch int) uint8 {
+	chip.mutex.RLock()
+	defer chip.mutex.RUnlock()
+
+	if ch < 0 || ch >= NUM_CHANNELS {
+		return 0
+	}
+	channel := chip.channels[ch]
+	if channel == nil {
+		return 0
+	}
+	// Convert envelope level (0.0 to 1.0) to 8-bit (0-255)
+	level := channel.envelopeLevel
+	if level < 0 {
+		level = 0
+	} else if level > 1.0 {
+		level = 1.0
+	}
+	return uint8(level * 255.0)
+}
+
+// SetChannelFilter configures a per-channel filter mask (bit0=LP, bit1=BP, bit2=HP).
+func (chip *SoundChip) SetChannelFilter(ch int, modeMask uint8, cutoff, resonance float32) {
+	chip.mutex.Lock()
+	defer chip.mutex.Unlock()
+
+	if ch < 0 || ch >= NUM_CHANNELS {
+		return
+	}
+	channel := chip.channels[ch]
+	if channel == nil {
+		return
+	}
+
+	if cutoff < 0 {
+		cutoff = 0
+	} else if cutoff > 1.0 {
+		cutoff = 1.0
+	}
+	if resonance < 0 {
+		resonance = 0
+	} else if resonance > 1.0 {
+		resonance = 1.0
+	}
+
+	channel.filterModeMask = modeMask
+	channel.filterType = 0
+	if modeMask != 0 {
+		channel.filterType = 1
+	}
+	channel.filterCutoff = cutoff
+	channel.filterResonance = resonance
+
+	if channel.filterType == 0 || channel.filterCutoff == 0 {
+		channel.filterLP = 0
+		channel.filterBP = 0
+		channel.filterHP = 0
+	}
+}
+
+// SetChannelSIDFilterMode enables/disables SID filter mode for a channel.
+// In SID mode, the filter allows self-oscillation at high resonance.
+func (chip *SoundChip) SetChannelSIDFilterMode(ch int, enabled bool) {
+	chip.mutex.Lock()
+	defer chip.mutex.Unlock()
+
+	if ch < 0 || ch >= NUM_CHANNELS {
+		return
+	}
+	channel := chip.channels[ch]
+	if channel == nil {
+		return
+	}
+	channel.sidFilterMode = enabled
 }
 
 func (chip *SoundChip) SetPOKEYPlusEnabled(enabled bool) {

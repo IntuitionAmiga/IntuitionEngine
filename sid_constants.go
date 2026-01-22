@@ -60,6 +60,12 @@ const (
 	SID_CLOCK_NTSC = 1022727 // NTSC C64 clock (Hz)
 )
 
+// SID chip model types
+const (
+	SID_MODEL_6581 = 0 // Original SID (non-linear filter, warmer sound)
+	SID_MODEL_8580 = 1 // Revised SID (linear filter, cleaner sound)
+)
+
 // Voice control register bits
 const (
 	SID_CTRL_GATE     = 0x01 // Bit 0: Gate (trigger envelope)
@@ -101,6 +107,28 @@ var sidDecayReleaseMs = [16]float32{
 	6, 24, 48, 72, 114, 168, 204, 240,
 	300, 750, 1500, 2400, 3000, 9000, 15000, 24000,
 }
+
+// SID ADSR rate counter periods (clock cycles at 985248 Hz PAL)
+// These are the base periods for each ADSR value (0-15)
+// NOTE: These are reference values for cycle-accurate emulation.
+// Currently the envelope uses sidAttackMs/sidDecayReleaseMs time-based tables
+// which provide a good approximation without the complexity of rate counters.
+var sidADSRRatePeriods = [16]uint32{
+	9, 32, 63, 95, 149, 220, 267, 313,
+	392, 977, 1954, 3126, 3907, 11720, 19532, 31251,
+}
+
+// SID envelope exponential decay thresholds
+// When envelope level crosses these thresholds, decay rate changes
+// This creates the characteristic "bent" SID envelope curve
+// NOTE: Reference values - the current implementation approximates this
+// behavior using a simplified 3-region bent curve in audio_chip.go
+var sidEnvExpThresholds = [6]uint8{93, 54, 26, 14, 6, 0}
+
+// SID envelope exponential rate multipliers at each threshold
+// Rate gets progressively slower as level decreases
+// NOTE: Reference values - see sidEnvExpThresholds comment above
+var sidEnvExpMultipliers = [6]uint8{1, 2, 4, 8, 16, 30}
 
 // Z80 port mapping for SID access
 const (
