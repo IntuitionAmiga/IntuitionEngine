@@ -40,6 +40,7 @@
    - 3.8 SID Registers
    - 3.9 TED Registers
    - 3.10 Audio Chip Memory Map by CPU
+   - 3.11 VGA Video Chip
 4. [IE32 CPU Architecture](#4-ie32-cpu-architecture)
    - 4.1 Register Set
    - 4.2 Status Flags
@@ -644,6 +645,106 @@ The four sound chips (PSG, POKEY, SID, TED) are accessible from all CPU architec
 
 Z80 uses port-based I/O: the first port selects the register, the second reads/writes data.
 6502 uses memory-mapped I/O in its native address space, following C64/Atari/Plus4 conventions.
+
+## 3.11 VGA Video Chip (0x0F1000 - 0x0F13FF)
+
+The VGA chip provides IBM PC-compatible graphics modes, allowing classic PC demo effects and games:
+
+### Supported Modes
+
+| Mode | Resolution | Colors | Type | Description |
+|------|------------|--------|------|-------------|
+| 0x03 | 80×25 | 16 | Text | Standard VGA text mode with 8×16 font |
+| 0x12 | 640×480 | 16 | Planar | High-res 4-plane graphics |
+| 0x13 | 320×200 | 256 | Linear | Classic "Mode 13h" for demos/games |
+| 0x14 | 320×240 | 256 | Mode-X | Unchained planar for page flipping |
+
+### Register Map
+
+```
+VGA Control Registers (0x0F1000 - 0x0F100F):
+0x0F1000: VGA_MODE        - Mode select (0x03/0x12/0x13/0x14)
+0x0F1004: VGA_STATUS      - Status (bit 0=vsync, bit 3=retrace)
+0x0F1008: VGA_CTRL        - Control (bit 0=enable)
+
+Sequencer Registers (0x0F1010 - 0x0F101F):
+0x0F1010: VGA_SEQ_INDEX   - Sequencer register index
+0x0F1014: VGA_SEQ_DATA    - Sequencer register data
+0x0F1018: VGA_SEQ_MAPMASK - Plane write mask (direct access)
+
+CRTC Registers (0x0F1020 - 0x0F102F):
+0x0F1020: VGA_CRTC_INDEX  - CRTC register index
+0x0F1024: VGA_CRTC_DATA   - CRTC register data
+0x0F1028: VGA_CRTC_STARTHI - Display start address high
+0x0F102C: VGA_CRTC_STARTLO - Display start address low
+
+Graphics Controller (0x0F1030 - 0x0F103F):
+0x0F1030: VGA_GC_INDEX    - Graphics controller index
+0x0F1034: VGA_GC_DATA     - Graphics controller data
+0x0F1038: VGA_GC_READMAP  - Read plane select
+0x0F103C: VGA_GC_BITMASK  - Bit mask for write operations
+
+Attribute Controller (0x0F1040 - 0x0F104F):
+0x0F1040: VGA_ATTR_INDEX  - Attribute index/data
+0x0F1044: VGA_ATTR_DATA   - Attribute read
+
+DAC/Palette (0x0F1050 - 0x0F105F):
+0x0F1050: VGA_DAC_MASK    - Pixel mask (default 0xFF)
+0x0F1054: VGA_DAC_RINDEX  - Read index
+0x0F1058: VGA_DAC_WINDEX  - Write index
+0x0F105C: VGA_DAC_DATA    - DAC data (R,G,B sequence, 6-bit values)
+
+Palette RAM (0x0F1100 - 0x0F13FF):
+0x0F1100: VGA_PALETTE     - 256 palette entries × 3 bytes (768 bytes)
+```
+
+### VRAM Windows
+
+```
+0x0A0000 - 0x0AFFFF: VGA VRAM (64KB graphics memory)
+0x0B8000 - 0x0BFFFF: VGA Text Buffer (32KB, char+attr pairs)
+```
+
+### CPU Address Mappings
+
+| CPU | VGA Registers | VGA VRAM | DAC Access |
+|-----|---------------|----------|------------|
+| IE32/M68K | 0x0F1000-0x0F13FF | 0x0A0000-0x0AFFFF | Memory-mapped |
+| Z80 | Ports 0xA0-0xAC | Memory 0xA000 (banked) | Port I/O |
+| 6502 | $D700-$D70D | $A000 (banked) | Memory-mapped |
+
+### Mode 13h Example (M68K)
+
+```asm
+    include "ie68.inc"
+
+    ; Set Mode 13h (320x200x256)
+    vga_setmode VGA_MODE_13H
+
+    ; Set palette entry 1 to bright red
+    move.b  #1,VGA_DAC_WINDEX    ; Select color 1
+    move.b  #63,VGA_DAC_DATA     ; R = 63 (max)
+    move.b  #0,VGA_DAC_DATA      ; G = 0
+    move.b  #0,VGA_DAC_DATA      ; B = 0
+
+    ; Draw pixel at (100, 50) = offset 100 + 50*320 = 16100
+    move.b  #1,$A0000+16100      ; Write color 1
+```
+
+### Mode 12h Planar Example (M68K)
+
+```asm
+    include "ie68.inc"
+
+    ; Set Mode 12h (640x480x16 planar)
+    vga_setmode VGA_MODE_12H
+
+    ; Enable plane 0 only for writing
+    move.b  #1,VGA_SEQ_MAPMASK
+
+    ; Write to VRAM (affects only plane 0)
+    move.b  #$FF,$A0000          ; Set 8 pixels in plane 0
+```
 
 # 4. IE32 CPU Architecture
 

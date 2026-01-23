@@ -330,6 +330,73 @@
 .equ TED_PLAY_STATUS   0xF0F1C          ; Play status
 
 ; ============================================================================
+; VGA VIDEO REGISTERS (IBM VGA compatible)
+;
+; The VGA chip provides IBM PC-compatible graphics modes:
+; - Mode $03: 80x25 text mode, 16 colors
+; - Mode $12: 640x480, 16 colors, planar
+; - Mode $13: 320x200, 256 colors, linear (Mode 13h)
+; - Mode $14: 320x240, 256 colors, planar (Mode X)
+;
+; Features:
+; - Full DAC/palette support (256 colors, 6-bit RGB)
+; - Planar and linear memory modes
+; - VSync status for timing synchronization
+; - Page flipping via CRTC start address
+; ============================================================================
+
+.equ VGA_BASE          0xF1000
+.equ VGA_MODE          0xF1000          ; Mode control
+.equ VGA_STATUS        0xF1004          ; Status register
+.equ VGA_CTRL          0xF1008          ; Control register
+
+; Sequencer (0x3C4/0x3C5 equivalent)
+.equ VGA_SEQ_INDEX     0xF1010          ; Sequencer index
+.equ VGA_SEQ_DATA      0xF1014          ; Sequencer data
+.equ VGA_SEQ_MAPMASK   0xF1018          ; Plane write mask (direct)
+
+; CRTC (0x3D4/0x3D5 equivalent)
+.equ VGA_CRTC_INDEX    0xF1020          ; CRTC index
+.equ VGA_CRTC_DATA     0xF1024          ; CRTC data
+.equ VGA_CRTC_STARTHI  0xF1028          ; Start address high
+.equ VGA_CRTC_STARTLO  0xF102C          ; Start address low
+
+; Graphics Controller (0x3CE/0x3CF equivalent)
+.equ VGA_GC_INDEX      0xF1030          ; GC index
+.equ VGA_GC_DATA       0xF1034          ; GC data
+.equ VGA_GC_READMAP    0xF1038          ; Read plane select (direct)
+.equ VGA_GC_BITMASK    0xF103C          ; Bit mask (direct)
+
+; Attribute Controller
+.equ VGA_ATTR_INDEX    0xF1040          ; Attribute index
+.equ VGA_ATTR_DATA     0xF1044          ; Attribute data
+
+; DAC/Palette (0x3C6-0x3C9 equivalent)
+.equ VGA_DAC_MASK      0xF1050          ; Pixel mask
+.equ VGA_DAC_RINDEX    0xF1054          ; Read index
+.equ VGA_DAC_WINDEX    0xF1058          ; Write index
+.equ VGA_DAC_DATA      0xF105C          ; DAC data (R,G,B sequence)
+
+; Palette RAM (256 x 3 bytes)
+.equ VGA_PALETTE       0xF1100          ; Palette base (768 bytes)
+
+; VGA VRAM (64KB window)
+.equ VGA_VRAM          0xA0000          ; VRAM window (64KB)
+
+; Mode constants
+.equ VGA_MODE_TEXT     0x03             ; 80x25 text mode
+.equ VGA_MODE_12H      0x12             ; 640x480, 16 colors
+.equ VGA_MODE_13H      0x13             ; 320x200, 256 colors
+.equ VGA_MODE_X        0x14             ; 320x240, 256 colors
+
+; Status bits
+.equ VGA_STATUS_VSYNC  0x01             ; VSync active
+.equ VGA_STATUS_RETRACE 0x08            ; Vertical retrace
+
+; Control bits
+.equ VGA_CTRL_ENABLE   0x01             ; VGA enable
+
+; ============================================================================
 ; CUSTOM AUDIO CHIP REGISTERS
 ; ============================================================================
 ;

@@ -374,6 +374,52 @@ SAP_PLAY_STATUS = $FD1C         ; Play status (IE32 $F0D1C)
 SAP_SUBSONG     = $FD1D         ; Subsong selection (0-255)
 
 ; ============================================================================
+; VGA VIDEO REGISTERS (IBM VGA compatible)
+;
+; The VGA chip provides IBM PC-compatible graphics modes:
+; - Mode $03: 80x25 text mode, 16 colors
+; - Mode $12: 640x480, 16 colors, planar
+; - Mode $13: 320x200, 256 colors, linear (Mode 13h)
+; - Mode $14: 320x240, 256 colors, planar (Mode X)
+;
+; For 6502: VGA registers are memory-mapped at $D700-$D70A
+; VGA VRAM is banked at $A000 (use VGA_VRAM_BANK register)
+; ============================================================================
+
+VGA_BASE        = $D700
+VGA_MODE        = $D700         ; Mode control
+VGA_STATUS      = $D701         ; Status register
+VGA_CTRL        = $D702         ; Control register
+VGA_SEQ_IDX     = $D703         ; Sequencer index
+VGA_SEQ_DATA    = $D704         ; Sequencer data
+VGA_CRTC_IDX    = $D705         ; CRTC index
+VGA_CRTC_DATA   = $D706         ; CRTC data
+VGA_GC_IDX      = $D707         ; Graphics controller index
+VGA_GC_DATA     = $D708         ; Graphics controller data
+VGA_DAC_WIDX    = $D709         ; DAC write index
+VGA_DAC_DATA    = $D70A         ; DAC data (R,G,B sequence)
+VGA_DAC_RIDX    = $D70B         ; DAC read index
+VGA_DAC_MASK    = $D70C         ; DAC pixel mask
+VGA_VRAM_BANK   = $D70D         ; VRAM bank select
+
+; VGA VRAM window (banked at $A000)
+VGA_VRAM        = $A000         ; VRAM window (16KB)
+VGA_VRAM_SIZE   = $4000         ; 16KB per bank
+
+; Mode constants
+VGA_MODE_TEXT   = $03           ; 80x25 text mode
+VGA_MODE_12H    = $12           ; 640x480, 16 colors
+VGA_MODE_13H    = $13           ; 320x200, 256 colors
+VGA_MODE_X      = $14           ; 320x240, 256 colors
+
+; Status bits
+VGA_STATUS_VSYNC  = $01         ; VSync active
+VGA_STATUS_RETRACE = $08        ; Vertical retrace
+
+; Control bits
+VGA_CTRL_ENABLE = $01           ; VGA enable
+
+; ============================================================================
 ; CUSTOM AUDIO CHIP REGISTERS
 ; ============================================================================
 ;

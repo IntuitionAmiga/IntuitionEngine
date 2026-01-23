@@ -389,6 +389,100 @@
 .set SAP_SUBSONG,0xF0D1D
 
 ; ============================================================================
+; VGA VIDEO PORTS (IBM VGA compatible via port I/O)
+;
+; The VGA chip provides IBM PC-compatible graphics modes:
+; - Mode 0x03: 80x25 text mode, 16 colors
+; - Mode 0x12: 640x480, 16 colors, planar
+; - Mode 0x13: 320x200, 256 colors, linear (Mode 13h)
+; - Mode 0x14: 320x240, 256 colors, planar (Mode X)
+;
+; For Z80: Use OUT (port),A to write, IN A,(port) to read
+; ============================================================================
+
+; VGA port I/O mapping
+.set VGA_PORT_MODE,0xA0
+.set VGA_PORT_STATUS,0xA1
+.set VGA_PORT_CTRL,0xA2
+.set VGA_PORT_SEQ_IDX,0xA3
+.set VGA_PORT_SEQ_DATA,0xA4
+.set VGA_PORT_CRTC_IDX,0xA5
+.set VGA_PORT_CRTC_DATA,0xA6
+.set VGA_PORT_GC_IDX,0xA7
+.set VGA_PORT_GC_DATA,0xA8
+.set VGA_PORT_DAC_WIDX,0xA9
+.set VGA_PORT_DAC_DATA,0xAA
+.set VGA_PORT_DAC_RIDX,0xAB
+.set VGA_PORT_DAC_MASK,0xAC
+
+; VGA VRAM window (banked at 0xA000 in Z80 address space)
+.set VGA_VRAM_BANK,0xA000
+.set VGA_VRAM_SIZE,0x4000
+
+; Mode constants
+.set VGA_MODE_TEXT,0x03
+.set VGA_MODE_12H,0x12
+.set VGA_MODE_13H,0x13
+.set VGA_MODE_X,0x14
+
+; Status bits
+.set VGA_STATUS_VSYNC,0x01
+.set VGA_STATUS_RETRACE,0x08
+
+; Control bits
+.set VGA_CTRL_ENABLE,0x01
+
+; ----- VGA helper macros -----
+
+; Set VGA mode
+.macro VGA_SETMODE mode
+    ld a,\mode
+    out (VGA_PORT_MODE),a
+.endm
+
+; Enable VGA
+.macro VGA_ENABLE
+    ld a,VGA_CTRL_ENABLE
+    out (VGA_PORT_CTRL),a
+.endm
+
+; Set palette write index
+.macro VGA_SETPAL index
+    ld a,\index
+    out (VGA_PORT_DAC_WIDX),a
+.endm
+
+; Write palette RGB component
+.macro VGA_PALDATA value
+    ld a,\value
+    out (VGA_PORT_DAC_DATA),a
+.endm
+
+; Wait for VSync
+.macro VGA_WAIT_VSYNC
+.wait_vga_vs\@:
+    in a,(VGA_PORT_STATUS)
+    and VGA_STATUS_VSYNC
+    jr z,.wait_vga_vs\@
+.endm
+
+; Set sequencer register
+.macro VGA_SEQ_WRITE idx,val
+    ld a,\idx
+    out (VGA_PORT_SEQ_IDX),a
+    ld a,\val
+    out (VGA_PORT_SEQ_DATA),a
+.endm
+
+; Set graphics controller register
+.macro VGA_GC_WRITE idx,val
+    ld a,\idx
+    out (VGA_PORT_GC_IDX),a
+    ld a,\val
+    out (VGA_PORT_GC_DATA),a
+.endm
+
+; ============================================================================
 ; CUSTOM AUDIO CHIP REGISTERS
 ; ============================================================================
 ;

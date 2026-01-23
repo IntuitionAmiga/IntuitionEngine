@@ -311,6 +311,115 @@ TED_PLAY_CTRL   equ $F0F18              ; Play control
 TED_PLAY_STATUS equ $F0F1C              ; Play status
 
 ; ============================================================================
+; VGA VIDEO REGISTERS (IBM VGA compatible)
+;
+; The VGA chip provides IBM PC-compatible graphics modes:
+; - Mode $03: 80x25 text mode, 16 colors
+; - Mode $12: 640x480, 16 colors, planar
+; - Mode $13: 320x200, 256 colors, linear (Mode 13h)
+; - Mode $14: 320x240, 256 colors, planar (Mode X)
+;
+; Features:
+; - Full DAC/palette support (256 colors, 6-bit RGB)
+; - Planar and linear memory modes
+; - VSync status for timing synchronization
+; - Page flipping via CRTC start address
+; ============================================================================
+
+VGA_BASE        equ $F1000
+VGA_MODE        equ $F1000              ; Mode control
+VGA_STATUS      equ $F1004              ; Status register
+VGA_CTRL        equ $F1008              ; Control register
+
+; Sequencer ($3C4/$3C5 equivalent)
+VGA_SEQ_INDEX   equ $F1010              ; Sequencer index
+VGA_SEQ_DATA    equ $F1014              ; Sequencer data
+VGA_SEQ_MAPMASK equ $F1018              ; Plane write mask (direct)
+
+; CRTC ($3D4/$3D5 equivalent)
+VGA_CRTC_INDEX  equ $F1020              ; CRTC index
+VGA_CRTC_DATA   equ $F1024              ; CRTC data
+VGA_CRTC_STARTHI equ $F1028             ; Start address high
+VGA_CRTC_STARTLO equ $F102C             ; Start address low
+
+; Graphics Controller ($3CE/$3CF equivalent)
+VGA_GC_INDEX    equ $F1030              ; GC index
+VGA_GC_DATA     equ $F1034              ; GC data
+VGA_GC_READMAP  equ $F1038              ; Read plane select (direct)
+VGA_GC_BITMASK  equ $F103C              ; Bit mask (direct)
+
+; Attribute Controller
+VGA_ATTR_INDEX  equ $F1040              ; Attribute index
+VGA_ATTR_DATA   equ $F1044              ; Attribute data
+
+; DAC/Palette ($3C6-$3C9 equivalent)
+VGA_DAC_MASK    equ $F1050              ; Pixel mask
+VGA_DAC_RINDEX  equ $F1054              ; Read index
+VGA_DAC_WINDEX  equ $F1058              ; Write index
+VGA_DAC_DATA    equ $F105C              ; DAC data (R,G,B sequence)
+
+; Palette RAM (256 x 3 bytes)
+VGA_PALETTE     equ $F1100              ; Palette base (768 bytes)
+
+; VGA VRAM (64KB window)
+VGA_VRAM        equ $A0000              ; VRAM window (64KB)
+
+; Mode constants
+VGA_MODE_TEXT   equ $03                 ; 80x25 text mode
+VGA_MODE_12H    equ $12                 ; 640x480, 16 colors
+VGA_MODE_13H    equ $13                 ; 320x200, 256 colors
+VGA_MODE_X      equ $14                 ; 320x240, 256 colors
+
+; Status bits
+VGA_STATUS_VSYNC  equ $01               ; VSync active
+VGA_STATUS_RETRACE equ $08              ; Vertical retrace
+
+; Control bits
+VGA_CTRL_ENABLE equ $01                 ; VGA enable
+
+; ----- VGA helper macros -----
+
+; Set VGA mode
+vga_setmode     macro   mode
+                move.b  #\mode,VGA_MODE
+                endm
+
+; Enable VGA
+vga_enable      macro
+                move.b  #VGA_CTRL_ENABLE,VGA_CTRL
+                endm
+
+; Set palette write index
+vga_setpalette  macro   index
+                move.b  #\index,VGA_DAC_WINDEX
+                endm
+
+; Write palette RGB values
+vga_palette_rgb macro   r,g,b
+                move.b  #\r,VGA_DAC_DATA
+                move.b  #\g,VGA_DAC_DATA
+                move.b  #\b,VGA_DAC_DATA
+                endm
+
+; Wait for VSync
+vga_wait_vsync  macro
+.wait_vga_vs\@:
+                move.b  VGA_STATUS,d0
+                and.b   #VGA_STATUS_VSYNC,d0
+                beq.s   .wait_vga_vs\@
+                endm
+
+; Set map mask (planes to write)
+vga_mapmask     macro   mask
+                move.b  #\mask,VGA_SEQ_MAPMASK
+                endm
+
+; Set read map (plane to read)
+vga_readmap     macro   plane
+                move.b  #\plane,VGA_GC_READMAP
+                endm
+
+; ============================================================================
 ; CUSTOM AUDIO CHIP REGISTERS
 ; ============================================================================
 ;

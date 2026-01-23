@@ -470,6 +470,18 @@ func main() {
 		tedPlayer.HandlePlayRead,
 		tedPlayer.HandlePlayWrite)
 
+	// Map VGA registers
+	vgaEngine := NewVGAEngine(videoChip, sysBus)
+	sysBus.MapIO(VGA_BASE, VGA_REG_END,
+		vgaEngine.HandleRead,
+		vgaEngine.HandleWrite)
+	sysBus.MapIO(VGA_VRAM_WINDOW, VGA_VRAM_WINDOW+VGA_VRAM_SIZE-1,
+		vgaEngine.HandleVRAMRead,
+		vgaEngine.HandleVRAMWrite)
+	sysBus.MapIO(VGA_TEXT_WINDOW, VGA_TEXT_WINDOW+VGA_TEXT_SIZE-1,
+		vgaEngine.HandleTextRead,
+		vgaEngine.HandleTextWrite)
+
 	// Initialize the selected CPU and optionally load program
 	var gui GUIFrontend
 	var startExecution bool
