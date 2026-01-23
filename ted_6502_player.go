@@ -101,19 +101,22 @@ func (p *TED6502Player) LoadFromData(data []byte) error {
 			if err := p.runInitToCompletion(); err != nil {
 				return fmt.Errorf("init failed: %v", err)
 			}
-			// After init, check if we're in a JMP wait loop (IRQ-driven player)
-			irqDrivenPlayer = p.isInWaitLoop()
-			p.continuousMode = irqDrivenPlayer
+			// After init, check what kind of loop we're in:
+			// - JMP-to-self: true IRQ wait, needs raster IRQs
+			// - CMP $FF1D or DEY/BNE: raster polling, continuous mode but NO IRQs
+			irqDrivenPlayer = p.isJMPWaitLoop()
+			p.continuousMode = p.isInWaitLoop()
 		}
 	} else {
 		p.continuousMode = (file.InitAddr == file.PlayAddr) && file.InitAddr != 0
 	}
 
-	// Only enable raster interrupts for IRQ-driven players
-	// (those that end in a JMP wait loop after unpacking/init)
-	// Raster-wait players (JMP to music code) don't need this
+	// For IRQ-driven players (those sitting in a JMP-to-self wait loop),
+	// enable the KERNAL-style timer. Many TED music players assume the
+	// Plus/4 KERNAL has already set up Timer 1 to fire at 50Hz and just
+	// hook their handler via $0314.
 	if irqDrivenPlayer {
-		p.bus.EnableRasterIRQ()
+		p.bus.EnableKERNALTimer()
 	}
 
 	return nil
@@ -145,8 +148,9 @@ func (p *TED6502Player) runInitToCompletion() error {
 	return nil // Ran to completion or timeout
 }
 
-// isInWaitLoop checks if the CPU is in a self-jumping wait loop
-func (p *TED6502Player) isInWaitLoop() bool {
+// isJMPWaitLoop checks if the CPU is in a JMP-to-self wait loop
+// This indicates a true IRQ-driven player that needs raster IRQs
+func (p *TED6502Player) isJMPWaitLoop() bool {
 	pc := p.cpu.PC
 	opcode := p.bus.Read(pc)
 
@@ -154,6 +158,60 @@ func (p *TED6502Player) isInWaitLoop() bool {
 	if opcode == 0x4C { // JMP absolute
 		target := uint16(p.bus.Read(pc+1)) | (uint16(p.bus.Read(pc+2)) << 8)
 		return target == pc
+	}
+	return false
+}
+
+// isInWaitLoop checks if the CPU is in any kind of wait loop pattern
+// This includes:
+// - JMP $xxxx where target == pc (IRQ-driven wait)
+// - CMP $FF1D / BNE pattern (raster polling)
+// - DEY / BNE pattern (timing loop in raster polling)
+func (p *TED6502Player) isInWaitLoop() bool {
+	// JMP-to-self is also a wait loop
+	if p.isJMPWaitLoop() {
+		return true
+	}
+
+	pc := p.cpu.PC
+	opcode := p.bus.Read(pc)
+
+	// Check for BNE that branches backwards (tight loop)
+	if opcode == 0xD0 { // BNE
+		offset := int8(p.bus.Read(pc + 1))
+		if offset < 0 { // Backwards branch = loop
+			// Branch target is PC+2+offset (offset is relative to byte after instruction)
+			branchTarget := uint16(int(pc) + 2 + int(offset))
+			targetOp := p.bus.Read(branchTarget)
+			if targetOp == 0xCD { // CMP absolute at branch target
+				cmpAddr := uint16(p.bus.Read(branchTarget+1)) | (uint16(p.bus.Read(branchTarget+2)) << 8)
+				if cmpAddr == 0xFF1D || cmpAddr == 0xFF1C { // Raster registers
+					return true
+				}
+			}
+			if targetOp == 0x88 || targetOp == 0xCA { // DEY or DEX (timing loop)
+				return true
+			}
+		}
+	}
+
+	// Check if we're at CMP $FF1D (start of raster wait)
+	if opcode == 0xCD { // CMP absolute
+		target := uint16(p.bus.Read(pc+1)) | (uint16(p.bus.Read(pc+2)) << 8)
+		if target == 0xFF1D || target == 0xFF1C {
+			return true
+		}
+	}
+
+	// Check if we're at DEY/DEX with BNE following (timing loop)
+	if opcode == 0x88 || opcode == 0xCA { // DEY or DEX
+		nextOp := p.bus.Read(pc + 1)
+		if nextOp == 0xD0 { // BNE follows
+			nextOffset := int8(p.bus.Read(pc + 2))
+			if nextOffset < 0 { // Backwards branch = loop
+				return true
+			}
+		}
 	}
 
 	return false

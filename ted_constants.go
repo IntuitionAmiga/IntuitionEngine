@@ -30,8 +30,11 @@ const (
 
 // TED clock frequencies
 const (
-	TED_CLOCK_PAL  = 886724 // PAL Plus/4 clock (Hz)
-	TED_CLOCK_NTSC = 894886 // NTSC Plus/4 clock (Hz)
+	TED_CLOCK_PAL        = 886724                               // PAL Plus/4 clock (Hz)
+	TED_CLOCK_NTSC       = 894886                               // NTSC Plus/4 clock (Hz)
+	TED_SOUND_CLOCK_DIV  = 4                                    // Sound clock = main clock / 4
+	TED_SOUND_CLOCK_PAL  = TED_CLOCK_PAL / TED_SOUND_CLOCK_DIV  // 221681 Hz
+	TED_SOUND_CLOCK_NTSC = TED_CLOCK_NTSC / TED_SOUND_CLOCK_DIV // 223721 Hz
 )
 
 // TED control register bits ($FF11)

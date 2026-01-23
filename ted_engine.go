@@ -206,9 +206,9 @@ func (e *TEDEngine) calcFrequency(voice int) float64 {
 }
 
 // tedFrequencyHz calculates the output frequency from a 10-bit register value
-// Formula: freq_hz = clock/4 / (1024 - register_value)
-// The TED sound clock is main_clock/4 = 221680 Hz (PAL)
-// Reference: tedplay uses TED_SOUND_CLOCK = 221680
+// Formula: freq_hz = sound_clock / (1024 - register_value)
+// where sound_clock = main_clock / TED_SOUND_CLOCK_DIV
+// Reference: tedplay uses TED_SOUND_CLOCK = 221680 (PAL)
 func tedFrequencyHz(regValue uint16, clockHz uint32) float64 {
 	if regValue >= 1024 {
 		regValue = 1023
@@ -217,7 +217,7 @@ func tedFrequencyHz(regValue uint16, clockHz uint32) float64 {
 	if divisor <= 0 {
 		divisor = 1
 	}
-	return float64(clockHz) / 4.0 / float64(divisor)
+	return float64(clockHz) / float64(TED_SOUND_CLOCK_DIV) / float64(divisor)
 }
 
 // applyFrequencies updates SoundChip frequencies from TED registers

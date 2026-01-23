@@ -156,24 +156,31 @@ func TestTEDSoundChipMapping(t *testing.T) {
 	// Use nil SoundChip to test calculation without audio output
 	engine := NewTEDEngine(nil, SAMPLE_RATE)
 
-	// Write typical TED values for voice 1 at 440Hz
-	// Freq = 886724/8 / (1024 - regValue) = 440
-	// regValue = 1024 - 886724/8/440 = 1024 - 252 = 772 = 0x304
-	engine.WriteRegister(TED_REG_FREQ1_LO, 0x04) // Low byte
-	engine.WriteRegister(TED_REG_FREQ1_HI, 0x03) // High byte (bits 0-1)
-	engine.WriteRegister(TED_REG_SND_CTRL, 0x18) // Volume 8, Voice 1 on
+	// Calculate register value for 440 Hz
+	// Formula: regValue = 1024 - TED_SOUND_CLOCK_PAL/targetFreq
+	targetFreq := 440.0
+	regValue := uint16(1024 - float64(TED_SOUND_CLOCK_PAL)/targetFreq)
+	freqLo := uint8(regValue & 0xFF)
+	freqHi := uint8((regValue >> 8) & 0x03)
 
-	// Calculate expected frequency
-	freqReg := uint16(0x04) | (uint16(0x03&0x03) << 8)
-	expectedFreq := float64(TED_CLOCK_PAL) / 8.0 / float64(1024-int(freqReg))
-	t.Logf("Frequency register: %d (0x%03X)", freqReg, freqReg)
+	// Write TED registers for voice 1 at ~440Hz
+	engine.WriteRegister(TED_REG_FREQ1_LO, freqLo)
+	engine.WriteRegister(TED_REG_FREQ1_HI, freqHi)
+	engine.WriteRegister(TED_REG_SND_CTRL, TED_CTRL_SND1ON|TED_MAX_VOLUME) // Voice 1 on, max volume
+
+	// Calculate expected frequency using constants
+	expectedFreq := float64(TED_SOUND_CLOCK_PAL) / float64(1024-int(regValue))
+	t.Logf("Target frequency: %.0f Hz", targetFreq)
+	t.Logf("Register value: %d (0x%03X)", regValue, regValue)
 	t.Logf("Expected frequency: %.2f Hz", expectedFreq)
 
 	// Verify through engine's internal state
 	calcFreq := engine.calcFrequency(0)
 	t.Logf("Engine calcFrequency(0): %.2f Hz", calcFreq)
 
-	if calcFreq < 400 || calcFreq > 500 {
-		t.Errorf("Frequency calculation seems wrong: got %.2f, expected ~440", calcFreq)
+	// Allow 5% tolerance due to integer register quantization
+	tolerance := targetFreq * 0.05
+	if calcFreq < targetFreq-tolerance || calcFreq > targetFreq+tolerance {
+		t.Errorf("Frequency calculation seems wrong: got %.2f, expected ~%.0f", calcFreq, targetFreq)
 	}
 }

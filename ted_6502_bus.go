@@ -61,6 +61,40 @@ func newTED6502Bus(ntsc bool) *TED6502Bus {
 	return bus
 }
 
+// EnableKERNALTimer sets up Timer 1 like the Plus/4 KERNAL does.
+// Many TED music players assume the KERNAL has already configured the system timer
+// to fire at 50Hz (PAL) / 60Hz (NTSC) and just hook their code via $0314.
+func (b *TED6502Bus) EnableKERNALTimer() {
+	// Plus/4 KERNAL configures Timer 1 to fire at the frame rate
+	// PAL: 886724 Hz / 50 = 17734 cycles per tick
+	// NTSC: 894886 Hz / 60 = 14915 cycles per tick
+	var timerLatch uint16
+	if b.ntsc {
+		timerLatch = 14915
+	} else {
+		timerLatch = 17734
+	}
+
+	b.timer1Latch = timerLatch
+	// Start counter at 1 so the first IRQ fires almost immediately
+	// This simulates the timer already running when the music program starts
+	b.timer1Counter = 1
+	b.timer1Running = true
+
+	// Enable Timer 1 interrupts (bit 3 of IRQ mask)
+	b.irqMask = TED_IRQ_TIMER1
+
+	// Set up default IRQ indirect vector ($0314/$0315)
+	// Point to a minimal RTI stub if not already set by the program
+	// The program will overwrite this with its own handler
+	if b.ram[0x0314] == 0 && b.ram[0x0315] == 0 {
+		// Point to an RTI instruction
+		b.ram[0x0314] = 0x40 // Low byte of $0040
+		b.ram[0x0315] = 0x00 // High byte
+		b.ram[0x0040] = 0x40 // RTI at $0040
+	}
+}
+
 // Read reads a byte from the given address.
 func (b *TED6502Bus) Read(addr uint16) byte {
 	// TED registers at $FF00-$FF3F
@@ -251,22 +285,62 @@ func (b *TED6502Bus) writeTED(addr uint16, value byte) {
 
 // installVectors sets up CPU vectors for IRQ handling
 func (b *TED6502Bus) installVectors() {
-	// IRQ stub: JMP ($0314) - same as C64 pattern
-	b.ram[0xFF00] = 0x6C // JMP ($0314)
-	b.ram[0xFF01] = 0x14
-	b.ram[0xFF02] = 0x03
+	// KERNAL-like IRQ stub that properly saves/restores state
+	// This mimics the Plus/4 KERNAL IRQ handler structure:
+	// 1. Save registers (A, X, Y)
+	// 2. Call user handler via indirect jump with return address on stack
+	// 3. Restore registers
+	// 4. RTI
+	//
+	// NOTE: Stub is placed at $FFC0 to avoid TED registers at $FF00-$FF3F
+	//
+	// Layout at $FFC0:
+	// $FFC0: PHA          ; Save A
+	// $FFC1: TXA
+	// $FFC2: PHA          ; Save X
+	// $FFC3: TYA
+	// $FFC4: PHA          ; Save Y
+	// $FFC5: JSR $FFD0    ; Call helper (pushes return addr $FFC8)
+	// $FFC8: PLA
+	// $FFC9: TAY          ; Restore Y
+	// $FFCA: PLA
+	// $FFCB: TAX          ; Restore X
+	// $FFCC: PLA          ; Restore A
+	// $FFCD: RTI
+	// ...
+	// $FFD0: JMP ($0314)  ; Jump to user handler (handler does RTS to $FFC8)
 
-	// Set up IRQ vector to point to stub
-	b.ram[0xFFFE] = 0x00 // IRQ vector low
-	b.ram[0xFFFF] = 0xFF // IRQ vector high -> $FF00
+	b.ram[0xFFC0] = 0x48 // PHA
+	b.ram[0xFFC1] = 0x8A // TXA
+	b.ram[0xFFC2] = 0x48 // PHA
+	b.ram[0xFFC3] = 0x98 // TYA
+	b.ram[0xFFC4] = 0x48 // PHA
+	b.ram[0xFFC5] = 0x20 // JSR $FFD0
+	b.ram[0xFFC6] = 0xD0
+	b.ram[0xFFC7] = 0xFF
+	b.ram[0xFFC8] = 0x68 // PLA
+	b.ram[0xFFC9] = 0xA8 // TAY
+	b.ram[0xFFCA] = 0x68 // PLA
+	b.ram[0xFFCB] = 0xAA // TAX
+	b.ram[0xFFCC] = 0x68 // PLA
+	b.ram[0xFFCD] = 0x40 // RTI
+	// Helper at $FFD0
+	b.ram[0xFFD0] = 0x6C // JMP ($0314)
+	b.ram[0xFFD1] = 0x14
+	b.ram[0xFFD2] = 0x03
+
+	// Set up IRQ vector to point to stub at $FFC0
+	b.ram[0xFFFE] = 0xC0 // IRQ vector low
+	b.ram[0xFFFF] = 0xFF // IRQ vector high -> $FFC0
 
 	// RESET vector
 	b.ram[0xFFFC] = 0x00
 	b.ram[0xFFFD] = 0x10 // Point to $1000
 
 	// NMI vector (unused but set up)
-	b.ram[0xFFFA] = 0x40 // RTI
+	b.ram[0xFFFA] = 0x40 // RTI at $0040
 	b.ram[0xFFFB] = 0x00
+	b.ram[0x0040] = 0x40 // RTI instruction
 }
 
 // AddCycles advances the bus clock and updates timers
