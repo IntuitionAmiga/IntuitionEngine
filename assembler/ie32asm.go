@@ -21,6 +21,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -160,6 +161,62 @@ func NewAssembler() *Assembler {
 		data:       make([]byte, 0),
 		dataOffset: 0,
 	}
+}
+
+// preprocessIncludes expands .include directives recursively
+func preprocessIncludes(code string, basePath string, included map[string]bool) (string, error) {
+	if included == nil {
+		included = make(map[string]bool)
+	}
+
+	var result strings.Builder
+	lines := strings.Split(code, "\n")
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Check for .include directive
+		if strings.HasPrefix(trimmed, ".include") {
+			parts := strings.Fields(trimmed)
+			if len(parts) < 2 {
+				return "", fmt.Errorf("invalid .include format: %s", line)
+			}
+
+			// Extract filename (remove quotes)
+			filename := strings.Trim(parts[1], "\"'")
+
+			// Resolve path relative to the base file
+			includePath := filepath.Join(basePath, filename)
+
+			// Check for circular includes
+			absPath, _ := filepath.Abs(includePath)
+			if included[absPath] {
+				// Already included, skip
+				continue
+			}
+			included[absPath] = true
+
+			// Read the included file
+			includeContent, err := os.ReadFile(includePath)
+			if err != nil {
+				return "", fmt.Errorf("failed to include %s: %v", includePath, err)
+			}
+
+			// Recursively process includes in the included file
+			processed, err := preprocessIncludes(string(includeContent), filepath.Dir(includePath), included)
+			if err != nil {
+				return "", err
+			}
+
+			result.WriteString(processed)
+			result.WriteString("\n")
+		} else {
+			result.WriteString(line)
+			result.WriteString("\n")
+		}
+	}
+
+	return result.String(), nil
 }
 
 func (a *Assembler) handleDirective(line string, lineNum int) error {
@@ -329,6 +386,11 @@ func (a *Assembler) parseOperand(operand string, lineNum int) (byte, uint32, err
 		if val, ok := a.equates[numStr]; ok {
 			fmt.Printf("    Found equate: val=0x%x\n", val)
 			return ADDR_IMMEDIATE, val, nil
+		}
+		// Handle label
+		if labelAddr, ok := a.labels[numStr]; ok {
+			fmt.Printf("    Found label: addr=0x%x\n", labelAddr)
+			return ADDR_IMMEDIATE, labelAddr, nil
 		}
 		val, err := strconv.ParseUint(numStr, 0, 32)
 		if err != nil {
@@ -814,8 +876,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Preprocess includes
+	basePath := filepath.Dir(os.Args[1])
+	processedCode, err := preprocessIncludes(string(code), basePath, nil)
+	if err != nil {
+		fmt.Printf("Error processing includes: %v\n", err)
+		os.Exit(1)
+	}
+
 	asm := NewAssembler()
-	binary := asm.assemble(string(code))
+	binary := asm.assemble(processedCode)
 
 	outFile := strings.TrimSuffix(os.Args[1], ".asm") + ".iex"
 	if err := os.WriteFile(outFile, binary, 0644); err != nil {
