@@ -274,6 +274,43 @@ SAP_PLAY_STATUS equ $F0D1C              ; Play status
 SAP_SUBSONG     equ $F0D1D              ; Subsong selection (0-255)
 
 ; ============================================================================
+; TED AUDIO REGISTERS (Commodore Plus/4 style)
+;
+; The TED chip provides 2 voices with simple square wave synthesis:
+; - 10-bit frequency control per voice (0-1023)
+; - Voice 2 can optionally produce white noise
+; - Global 4-bit volume (0-8, where 8 is maximum)
+;
+; TED+ mode (write 1 to TED_PLUS_CTRL) enables enhanced audio:
+; - 4x oversampling for cleaner waveforms
+; - Soft low-pass filtering for smoother output
+; - Subtle saturation for analog warmth
+; - Room reverb for spatial depth
+; - Logarithmic volume curve for more musical response
+; - Per-voice stereo separation
+; ============================================================================
+TED_BASE        equ $F0F00              ; TED base address
+TED_FREQ1_LO    equ $F0F00              ; Voice 1 frequency low byte
+TED_FREQ2_LO    equ $F0F01              ; Voice 2 frequency low byte
+TED_FREQ2_HI    equ $F0F02              ; Voice 2 frequency high (bits 0-1)
+TED_SND_CTRL    equ $F0F03              ; Sound control register
+TED_FREQ1_HI    equ $F0F04              ; Voice 1 frequency high (bits 0-1)
+TED_PLUS_CTRL   equ $F0F05              ; TED+ mode (0=standard, 1=enhanced)
+
+; TED Control register bits (TED_SND_CTRL)
+TED_CTRL_SNDDC     equ $80              ; D/A mode (bit 7)
+TED_CTRL_SND2NOISE equ $40              ; Voice 2 noise enable (bit 6)
+TED_CTRL_SND2ON    equ $20              ; Voice 2 enable (bit 5)
+TED_CTRL_SND1ON    equ $10              ; Voice 1 enable (bit 4)
+TED_CTRL_VOLUME    equ $0F              ; Volume mask (bits 0-3, max=8)
+
+; TED Player Registers
+TED_PLAY_PTR    equ $F0F10              ; Play pointer (32-bit)
+TED_PLAY_LEN    equ $F0F14              ; Play length (32-bit)
+TED_PLAY_CTRL   equ $F0F18              ; Play control
+TED_PLAY_STATUS equ $F0F1C              ; Play status
+
+; ============================================================================
 ; CUSTOM AUDIO CHIP REGISTERS
 ; ============================================================================
 ;

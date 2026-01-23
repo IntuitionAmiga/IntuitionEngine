@@ -269,6 +269,75 @@ SID_PLAY_CTRL   = $FE28         ; Play control (IE32 $F0E28)
 SID_PLAY_STATUS = $FE2C         ; Play status (IE32 $F0E2C)
 SID_SUBSONG     = $FE2D         ; Subsong selection (0-255)
 
+; ============================================================================
+; TED AUDIO REGISTERS (Commodore Plus/4 style)
+;
+; The TED chip provides 2 voices with simple square wave synthesis:
+; - 10-bit frequency control per voice (0-1023)
+; - Voice 2 can optionally produce white noise
+; - Global 4-bit volume (0-8, where 8 is maximum)
+;
+; For 6502: TED is memory-mapped at $D600-$D605
+;
+; TED+ mode (write 1 to TED_PLUS_CTRL) enables enhanced audio:
+; - 4x oversampling for cleaner waveforms
+; - Soft low-pass filtering for smoother output
+; - Subtle saturation for analog warmth
+; - Room reverb for spatial depth
+; - Logarithmic volume curve for more musical response
+; - Per-voice stereo separation
+;
+; Frequency formula: freq_hz = clock/8 / (1024 - register_value)
+; Clock: 886724 Hz (PAL), 894886 Hz (NTSC)
+; ============================================================================
+TED_BASE        = $D600         ; TED base address
+TED_FREQ1_LO    = $D600         ; Voice 1 frequency low byte
+TED_FREQ2_LO    = $D601         ; Voice 2 frequency low byte
+TED_FREQ2_HI    = $D602         ; Voice 2 frequency high (bits 0-1)
+TED_SND_CTRL    = $D603         ; Sound control register
+TED_FREQ1_HI    = $D604         ; Voice 1 frequency high (bits 0-1)
+TED_PLUS_CTRL   = $D605         ; TED+ mode (0=standard, 1=enhanced)
+
+; TED Control register bits (TED_SND_CTRL)
+TED_CTRL_SNDDC     = $80        ; D/A mode (bit 7)
+TED_CTRL_SND2NOISE = $40        ; Voice 2 noise enable (bit 6)
+TED_CTRL_SND2ON    = $20        ; Voice 2 enable (bit 5)
+TED_CTRL_SND1ON    = $10        ; Voice 1 enable (bit 4)
+TED_CTRL_VOLUME    = $0F        ; Volume mask (bits 0-3, max=8)
+
+; ----------------------------------------------------------------------------
+; TED Player Registers
+;
+; The TED player handles Commodore Plus/4 music files (.ted) which contain
+; embedded 6502 code that drives the TED sound chip. The player executes
+; the 6502 init routine once, then calls the play routine each frame.
+;
+; Usage:
+;   1. Embed TED data in your program using .incbin
+;   2. Set TED_PLAY_PTR bytes to the address of the TED data (little-endian)
+;   3. Set TED_PLAY_LEN bytes to the size of the TED data (little-endian)
+;   4. Write to TED_PLAY_CTRL to start/stop playback
+;
+; TED_PLAY_CTRL bits:
+;   bit 0 ($01) - Start playback (write 1 to begin)
+;   bit 1 ($02) - Stop playback (write 1 to stop)
+;   bit 2 ($04) - Enable looping (set before starting)
+;
+; TED_PLAY_STATUS bits:
+;   bit 0 ($01) - Busy (1 = playing, 0 = stopped)
+;   bit 1 ($02) - Error (1 = load/parse error)
+; ----------------------------------------------------------------------------
+TED_PLAY_PTR_0  = $FF10         ; Play pointer byte 0 (IE32 $F0F10)
+TED_PLAY_PTR_1  = $FF11         ; Play pointer byte 1
+TED_PLAY_PTR_2  = $FF12         ; Play pointer byte 2
+TED_PLAY_PTR_3  = $FF13         ; Play pointer byte 3
+TED_PLAY_LEN_0  = $FF14         ; Play length byte 0 (IE32 $F0F14)
+TED_PLAY_LEN_1  = $FF15         ; Play length byte 1
+TED_PLAY_LEN_2  = $FF16         ; Play length byte 2
+TED_PLAY_LEN_3  = $FF17         ; Play length byte 3
+TED_PLAY_CTRL   = $FF18         ; Play control (IE32 $F0F18)
+TED_PLAY_STATUS = $FF1C         ; Play status (IE32 $F0F1C)
+
 ; ----------------------------------------------------------------------------
 ; SAP Player Registers
 ;

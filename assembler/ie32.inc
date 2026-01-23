@@ -273,6 +273,63 @@
 .equ SAP_SUBSONG       0xF0D1D          ; Subsong selection (0-255)
 
 ; ============================================================================
+; TED AUDIO REGISTERS (Commodore Plus/4 style)
+;
+; The TED chip provides 2 voices with simple square wave synthesis:
+; - 10-bit frequency control per voice (0-1023)
+; - Voice 2 can optionally produce white noise
+; - Global 4-bit volume (0-8, where 8 is maximum)
+;
+; TED+ mode (write 1 to TED_PLUS_CTRL) enables enhanced audio:
+; - 4x oversampling for cleaner waveforms
+; - Soft low-pass filtering for smoother output
+; - Subtle saturation for analog warmth
+; - Room reverb for spatial depth
+; - Logarithmic volume curve for more musical response
+; - Per-voice stereo separation
+; ============================================================================
+.equ TED_BASE          0xF0F00          ; TED base address
+.equ TED_FREQ1_LO      0xF0F00          ; Voice 1 frequency low byte
+.equ TED_FREQ2_LO      0xF0F01          ; Voice 2 frequency low byte
+.equ TED_FREQ2_HI      0xF0F02          ; Voice 2 frequency high (bits 0-1)
+.equ TED_SND_CTRL      0xF0F03          ; Sound control register
+.equ TED_FREQ1_HI      0xF0F04          ; Voice 1 frequency high (bits 0-1)
+.equ TED_PLUS_CTRL     0xF0F05          ; TED+ mode (0=standard, 1=enhanced)
+
+; TED Control register bits (TED_SND_CTRL)
+.equ TED_CTRL_SNDDC     0x80            ; D/A mode (bit 7)
+.equ TED_CTRL_SND2NOISE 0x40            ; Voice 2 noise enable (bit 6)
+.equ TED_CTRL_SND2ON    0x20            ; Voice 2 enable (bit 5)
+.equ TED_CTRL_SND1ON    0x10            ; Voice 1 enable (bit 4)
+.equ TED_CTRL_VOLUME    0x0F            ; Volume mask (bits 0-3, max=8)
+
+; ----------------------------------------------------------------------------
+; TED Player Registers
+;
+; The TED player handles Commodore Plus/4 music files (.ted) which contain
+; embedded 6502 code that drives the TED sound chip.
+;
+; Usage:
+;   1. Embed TED data in your program using .incbin
+;   2. Set TED_PLAY_PTR to the address of the TED file data
+;   3. Set TED_PLAY_LEN to the size of the TED data in bytes
+;   4. Write to TED_PLAY_CTRL to start/stop playback
+;
+; TED_PLAY_CTRL bits:
+;   bit 0 (0x01) - Start playback (write 1 to begin)
+;   bit 1 (0x02) - Stop playback (write 1 to stop)
+;   bit 2 (0x04) - Enable looping (set before starting)
+;
+; TED_PLAY_STATUS bits:
+;   bit 0 (0x01) - Busy (1 = playing, 0 = stopped)
+;   bit 1 (0x02) - Error (1 = load/parse error)
+; ----------------------------------------------------------------------------
+.equ TED_PLAY_PTR      0xF0F10          ; Play pointer (32-bit)
+.equ TED_PLAY_LEN      0xF0F14          ; Play length (32-bit)
+.equ TED_PLAY_CTRL     0xF0F18          ; Play control
+.equ TED_PLAY_STATUS   0xF0F1C          ; Play status
+
+; ============================================================================
 ; CUSTOM AUDIO CHIP REGISTERS
 ; ============================================================================
 ;

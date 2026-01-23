@@ -38,7 +38,8 @@
    - 3.6 PSG Registers
    - 3.7 POKEY Registers
    - 3.8 SID Registers
-   - 3.9 Audio Chip Memory Map by CPU
+   - 3.9 TED Registers
+   - 3.10 Audio Chip Memory Map by CPU
 4. [IE32 CPU Architecture](#4-ie32-cpu-architecture)
    - 4.1 Register Set
    - 4.2 Status Flags
@@ -87,6 +88,7 @@
    - 9.4 PSG Sound Chip (AY-3-8910/YM2149)
    - 9.5 POKEY Sound Chip
    - 9.6 SID Sound Chip
+   - 9.7 TED Sound Chip
 10. [Video System](#10-video-system)
     - 10.1 Display Modes
     - 10.2 Framebuffer Organisation
@@ -597,18 +599,51 @@ SID Player Registers (0x0F0E20 - 0x0F0E2D):
 
 These registers allow CPU code to trigger .SID file playback from RAM, similar to the PSG and SAP player registers. The embedded 6502 code in the SID file is executed by the internal 6502 emulator at the correct frame rate (50Hz PAL or ~60Hz NTSC).
 
-## 3.9 Audio Chip Memory Map by CPU
+## 3.9 TED Sound Chip Registers (0x0F0F00 - 0x0F0F1F)
 
-The three sound chips (PSG, POKEY, SID) are accessible from all CPU architectures at different address ranges:
+The TED (Text Editing Device) chip from the Commodore Plus/4 provides simple 2-voice square wave synthesis:
+
+```
+TED Sound Registers (0x0F0F00 - 0x0F0F05):
+0x0F0F00: TED_FREQ1_LO   - Voice 1 frequency low byte
+0x0F0F01: TED_FREQ2_LO   - Voice 2 frequency low byte
+0x0F0F02: TED_FREQ2_HI   - Voice 2 frequency high (bits 0-1)
+0x0F0F03: TED_SND_CTRL   - Control (DA/noise/ch2on/ch1on/volume)
+0x0F0F04: TED_FREQ1_HI   - Voice 1 frequency high (bits 0-1)
+0x0F0F05: TED_PLUS_CTRL  - TED+ enhanced audio mode (0=standard, 1=enhanced)
+
+TED_SND_CTRL bits:
+  Bit 7: D/A mode
+  Bit 6: Voice 2 noise enable (replaces square wave with white noise)
+  Bit 5: Voice 2 enable
+  Bit 4: Voice 1 enable
+  Bits 0-3: Volume (0-8, where 8 is maximum)
+
+TED Player Registers (0x0F0F10 - 0x0F0F1C):
+0x0F0F10: TED_PLAY_PTR    - Pointer to .TED data (32-bit)
+0x0F0F14: TED_PLAY_LEN    - Length of .TED data (32-bit)
+0x0F0F18: TED_PLAY_CTRL   - Control (bit0=start, bit1=stop, bit2=loop)
+0x0F0F1C: TED_PLAY_STATUS - Status (bit0=busy, bit1=error)
+```
+
+Frequency formula: `freq_hz = clock/8 / (1024 - register_value)`
+Clock rates: 886724 Hz (PAL), 894886 Hz (NTSC)
+
+These registers allow CPU code to trigger .TED file playback from RAM. The embedded 6502 code in the TED file is executed by the internal 6502 emulator at 50Hz (PAL).
+
+## 3.10 Audio Chip Memory Map by CPU
+
+The four sound chips (PSG, POKEY, SID, TED) are accessible from all CPU architectures at different address ranges:
 
 | Chip  | IE32/M68K         | Z80 Ports | 6502        |
 |-------|-------------------|-----------|-------------|
 | PSG   | 0x0F0C00-0x0F0C0D | 0xF0-0xF1 | $D400-$D40D |
 | POKEY | 0x0F0D00-0x0F0D09 | 0xD0-0xD1 | $D200-$D209 |
 | SID   | 0x0F0E00-0x0F0E1C | 0xE0-0xE1 | $D500-$D51C |
+| TED   | 0x0F0F00-0x0F0F05 | 0xF2-0xF3 | $D600-$D605 |
 
 Z80 uses port-based I/O: the first port selects the register, the second reads/writes data.
-6502 uses memory-mapped I/O in its native address space, following C64/Atari conventions.
+6502 uses memory-mapped I/O in its native address space, following C64/Atari/Plus4 conventions.
 
 # 4. IE32 CPU Architecture
 
@@ -2531,6 +2566,148 @@ sid_data_end:
 - Read SID_PLAY_STATUS for busy/error flags
 - Many SID files contain multiple subsongs (tunes) - check the SID header for count
 
+## 9.7 TED Sound Chip
+
+The TED (Text Editing Device) chip emulates the sound capabilities of the Commodore Plus/4 and C16, providing simple 2-voice square wave synthesis. While simpler than the SID, the TED has a distinctive lo-fi character valued by demoscene musicians.
+
+### Features:
+- Two independent square wave voices
+- 10-bit frequency control per voice (0-1023)
+- Voice 2 can optionally produce white noise
+- Global 4-bit volume control (0-8)
+- TED+ enhanced audio processing mode
+- .TED file playback with embedded 6502 code execution
+
+### Voice Configuration:
+Each voice outputs a square wave with 10-bit frequency resolution:
+- **Frequency range**: ~107 Hz to ~110 kHz (at PAL clock)
+- **Formula**: `freq_hz = clock/8 / (1024 - register_value)`
+- **Clock**: 886724 Hz (PAL), 894886 Hz (NTSC)
+
+### Control Register:
+The TED_SND_CTRL register controls all audio output:
+- **Bit 7**: D/A mode (direct audio output)
+- **Bit 6**: Voice 2 noise enable (white noise instead of square)
+- **Bit 5**: Voice 2 enable
+- **Bit 4**: Voice 1 enable
+- **Bits 0-3**: Volume (0-8, where 8 is maximum)
+
+### Configuration Example:
+
+Configure TED for two square wave voices:
+
+**IE32:**
+```assembly
+; Configure TED voice 1 at ~440Hz (A4)
+LOAD A, #0xE3          ; Low byte of frequency
+STORE A, @0xF0F00      ; TED_FREQ1_LO
+LOAD A, #0x01          ; High byte (bits 0-1)
+STORE A, @0xF0F04      ; TED_FREQ1_HI
+
+; Configure TED voice 2 at ~880Hz (A5)
+LOAD A, #0xF1          ; Low byte of frequency
+STORE A, @0xF0F01      ; TED_FREQ2_LO
+LOAD A, #0x02          ; High byte
+STORE A, @0xF0F02      ; TED_FREQ2_HI
+
+; Enable both voices, volume 8
+LOAD A, #0x38          ; ch1on + ch2on + volume 8
+STORE A, @0xF0F03      ; TED_SND_CTRL
+```
+
+**M68K:**
+```assembly
+; Configure TED voice 1 at ~440Hz
+    move.b  #$E3,$F0F00.l      ; Freq1 low
+    move.b  #$01,$F0F04.l      ; Freq1 high
+
+; Configure TED voice 2 at ~880Hz
+    move.b  #$F1,$F0F01.l      ; Freq2 low
+    move.b  #$02,$F0F02.l      ; Freq2 high
+
+; Enable both voices, volume 8
+    move.b  #$38,$F0F03.l      ; Control: ch1on + ch2on + vol8
+```
+
+**Z80:**
+```assembly
+; Configure TED voice 1 at ~440Hz
+; Z80 uses port I/O: port $F2 = register select, port $F3 = data
+    ld   a,0               ; Select TED_FREQ1_LO
+    out  ($F2),a
+    ld   a,$E3             ; Low byte
+    out  ($F3),a
+    ld   a,4               ; Select TED_FREQ1_HI
+    out  ($F2),a
+    ld   a,$01             ; High byte
+    out  ($F3),a
+
+; Enable both voices
+    ld   a,3               ; Select TED_SND_CTRL
+    out  ($F2),a
+    ld   a,$38             ; ch1on + ch2on + volume 8
+    out  ($F3),a
+```
+
+**6502:**
+```assembly
+; Configure TED voice 1 at ~440Hz
+    lda  #$E3
+    sta  TED_FREQ1_LO
+    lda  #$01
+    sta  TED_FREQ1_HI
+
+; Configure TED voice 2 at ~880Hz
+    lda  #$F1
+    sta  TED_FREQ2_LO
+    lda  #$02
+    sta  TED_FREQ2_HI
+
+; Enable both voices, volume 8
+    lda  #$38              ; ch1on + ch2on + volume 8
+    sta  TED_SND_CTRL
+```
+
+### .TED File Playback:
+
+Play Commodore Plus/4 music files (.ted format from HVTC collection):
+
+**IE32:**
+```assembly
+; Play a .ted file with TED+ enhancement
+LOAD A, #1
+STORE A, @0xF0F05          ; Enable TED+ mode
+LOAD A, @ted_data          ; Point to embedded data
+STORE A, @0xF0F10          ; TED_PLAY_PTR
+LOAD A, @(ted_data_end - ted_data)
+STORE A, @0xF0F14          ; TED_PLAY_LEN
+LOAD A, #5                 ; Start with looping
+STORE A, @0xF0F18          ; TED_PLAY_CTRL
+
+ted_data:
+    INCBIN "music.ted"
+ted_data_end:
+```
+
+**6502:**
+```assembly
+; Play a .ted file with looping
+    lda  #1
+    sta  TED_PLUS_CTRL
+    STORE32 TED_PLAY_PTR_0, ted_data
+    STORE32 TED_PLAY_LEN_0, (ted_data_end-ted_data)
+    lda  #5                      ; bit0=start, bit2=loop
+    sta  TED_PLAY_CTRL
+
+ted_data:
+    .incbin "music.ted"
+ted_data_end:
+```
+
+**Playback Control:**
+- Write `1` to TED_PLAY_CTRL to start, `2` to stop, `5` to start with loop
+- Read TED_PLAY_STATUS for busy/error flags
+
 # 10. Video System
 
 The video system provides flexible graphics output through a memory-mapped framebuffer design.
@@ -2999,7 +3176,7 @@ A typical development cycle involves:
 - PSID only for SID; RSID is rejected
 - Single-SID playback at $D400; multi-SID not yet implemented
 
-**Enhanced Audio Modes (PSG+/POKEY+/SID+):**
+**Enhanced Audio Modes (PSG+/POKEY+/SID+/TED+):**
 These modes provide oversampling, gentle low-pass smoothing, subtle saturation, and a tiny room/width effect for richer sound while preserving pitch and timing.
 
 ## 11.4 Assembler Include Files

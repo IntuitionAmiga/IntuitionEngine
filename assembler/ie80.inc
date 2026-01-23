@@ -278,6 +278,81 @@
 .set SID_PLAY_STATUS,0xF0E2C
 .set SID_SUBSONG,0xF0E2D
 
+; ============================================================================
+; TED AUDIO REGISTERS (Commodore Plus/4 style)
+;
+; The TED chip provides 2 voices with simple square wave synthesis:
+; - 10-bit frequency control per voice (0-1023)
+; - Voice 2 can optionally produce white noise
+; - Global 4-bit volume (0-8, where 8 is maximum)
+;
+; For Z80: Use OUT (TED_PORT_SELECT),A to select register index,
+;          then OUT (TED_PORT_DATA),A to write data
+;
+; TED+ mode (write 1 to register 0x05) enables enhanced audio:
+; - 4x oversampling for cleaner waveforms
+; - Soft low-pass filtering for smoother output
+; - Subtle saturation for analog warmth
+; - Room reverb for spatial depth
+; - Logarithmic volume curve for more musical response
+; - Per-voice stereo separation
+;
+; Frequency formula: freq_hz = clock/8 / (1024 - register_value)
+; Clock: 886724 Hz (PAL), 894886 Hz (NTSC)
+; ============================================================================
+
+; Z80 port I/O for TED access
+.set TED_PORT_SELECT,0xF2               ; Port to select TED register
+.set TED_PORT_DATA,0xF3                 ; Port to read/write TED data
+
+; TED register indices (for port I/O)
+.set TED_FREQ1_LO,0x00                  ; Voice 1 frequency low byte
+.set TED_FREQ2_LO,0x01                  ; Voice 2 frequency low byte
+.set TED_FREQ2_HI,0x02                  ; Voice 2 frequency high (bits 0-1)
+.set TED_SND_CTRL,0x03                  ; Sound control register
+.set TED_FREQ1_HI,0x04                  ; Voice 1 frequency high (bits 0-1)
+.set TED_PLUS_CTRL,0x05                 ; TED+ mode (0=standard, 1=enhanced)
+
+; TED Control register bits (TED_SND_CTRL)
+.set TED_CTRL_SNDDC,0x80                ; D/A mode (bit 7)
+.set TED_CTRL_SND2NOISE,0x40            ; Voice 2 noise enable (bit 6)
+.set TED_CTRL_SND2ON,0x20               ; Voice 2 enable (bit 5)
+.set TED_CTRL_SND1ON,0x10               ; Voice 1 enable (bit 4)
+.set TED_CTRL_VOLUME,0x0F               ; Volume mask (bits 0-3, max=8)
+
+; ----------------------------------------------------------------------------
+; TED Player Registers
+;
+; The TED player handles Commodore Plus/4 music files (.ted) which contain
+; embedded 6502 code that drives the TED sound chip. The player executes
+; the 6502 init routine once, then calls the play routine each frame.
+;
+; Usage:
+;   1. Embed TED data in your program using incbin
+;   2. Set TED_PLAY_PTR bytes to the address of the TED data (little-endian)
+;   3. Set TED_PLAY_LEN bytes to the size of the TED data (little-endian)
+;   4. Write to TED_PLAY_CTRL to start/stop playback
+;
+; TED_PLAY_CTRL bits:
+;   bit 0 (0x01) - Start playback (write 1 to begin)
+;   bit 1 (0x02) - Stop playback (write 1 to stop)
+;   bit 2 (0x04) - Enable looping (set before starting)
+;
+; TED_PLAY_STATUS bits:
+;   bit 0 (0x01) - Busy (1 = playing, 0 = stopped)
+;   bit 1 (0x02) - Error (1 = load/parse error)
+; ----------------------------------------------------------------------------
+.set TED_PLAY_PTR_0,0xF0F10
+.set TED_PLAY_PTR_1,0xF0F11
+.set TED_PLAY_PTR_2,0xF0F12
+.set TED_PLAY_PTR_3,0xF0F13
+.set TED_PLAY_LEN_0,0xF0F14
+.set TED_PLAY_LEN_1,0xF0F15
+.set TED_PLAY_LEN_2,0xF0F16
+.set TED_PLAY_LEN_3,0xF0F17
+.set TED_PLAY_CTRL,0xF0F18
+.set TED_PLAY_STATUS,0xF0F1C
+
 ; ----------------------------------------------------------------------------
 ; SAP Player Registers
 ;
@@ -1126,6 +1201,60 @@
     out (SID_PORT_SELECT),a
     ld a,\val
     out (SID_PORT_DATA),a
+.endm
+
+; ============================================================================
+; TED AUDIO MACROS
+; ============================================================================
+
+; Set TED play pointer (32-bit)
+.macro SET_TED_PTR addr
+    ld a,(\addr)&0xFF
+    ld (TED_PLAY_PTR_0),a
+    ld a,((\addr)>>8)&0xFF
+    ld (TED_PLAY_PTR_1),a
+    ld a,((\addr)>>16)&0xFF
+    ld (TED_PLAY_PTR_2),a
+    ld a,((\addr)>>24)&0xFF
+    ld (TED_PLAY_PTR_3),a
+.endm
+
+; Set TED play length (32-bit)
+.macro SET_TED_LEN len
+    ld a,(\len)&0xFF
+    ld (TED_PLAY_LEN_0),a
+    ld a,((\len)>>8)&0xFF
+    ld (TED_PLAY_LEN_1),a
+    ld a,((\len)>>16)&0xFF
+    ld (TED_PLAY_LEN_2),a
+    ld a,((\len)>>24)&0xFF
+    ld (TED_PLAY_LEN_3),a
+.endm
+
+; Start TED playback
+.macro START_TED_PLAY
+    ld a,1
+    ld (TED_PLAY_CTRL),a
+.endm
+
+; Start TED playback with looping
+.macro START_TED_LOOP
+    ld a,5
+    ld (TED_PLAY_CTRL),a
+.endm
+
+; Stop TED playback
+.macro STOP_TED_PLAY
+    ld a,2
+    ld (TED_PLAY_CTRL),a
+.endm
+
+; Write TED register via port I/O
+.macro TED_WRITE reg,val
+    ld a,\reg
+    out (TED_PORT_SELECT),a
+    ld a,\val
+    out (TED_PORT_DATA),a
 .endm
 
 ; ============================================================================

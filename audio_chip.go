@@ -556,6 +556,13 @@ const (
 	SID_PLUS_ROOM_MIX      = 0.07 // Subtle room ambience
 	SID_PLUS_ROOM_DELAY    = 112  // Medium delay for spacious sound
 
+	// TED+ enhanced mode parameters
+	TED_PLUS_OVERSAMPLE    = 4
+	TED_PLUS_LOWPASS_ALPHA = 0.14 // Smooth filtering for TED's simple square waves
+	TED_PLUS_DRIVE         = 0.20 // Moderate saturation for warmth
+	TED_PLUS_ROOM_MIX      = 0.10 // Room ambience for depth
+	TED_PLUS_ROOM_DELAY    = 144  // Delay for spacious Plus/4 sound
+
 	SID_COMBINED_LOWPASS_ALPHA = 0.18 // Smooth combined SID waveforms
 
 	SID_WAVE_TRIANGLE = 0x10
@@ -572,6 +579,9 @@ const (
 
 // sidPlusMixGain provides per-voice gain adjustment for SID+ mode (3 voices)
 var sidPlusMixGain = [3]float32{1.02, 1.0, 0.98}
+
+// tedPlusMixGain provides per-voice gain adjustment for TED+ mode (2 voices)
+var tedPlusMixGain = [2]float32{1.03, 0.97}
 
 // sidGetExpIndex returns the exponential threshold index for a given envelope level.
 // This determines the rate multiplier for decay/release phases.
@@ -636,6 +646,10 @@ type Channel struct {
 	sidPlusDrive          float32 // SID+ saturation drive
 	sidPlusRoomMix        float32 // SID+ room mix
 	sidPlusGain           float32 // SID+ per-channel gain
+	tedPlusLowpassState   float32 // TED+ low-pass filter state
+	tedPlusDrive          float32 // TED+ saturation drive
+	tedPlusRoomMix        float32 // TED+ room mix
+	tedPlusGain           float32 // TED+ per-channel gain
 	sidMixLowpassState    float32 // SID combined waveform smoothing
 	sidOscOutput          float32 // Raw oscillator output (before ring mod, for OSC3 readback)
 	sidWaveMask           uint8   // SID waveform mask (combined waves)
@@ -680,6 +694,9 @@ type Channel struct {
 	sidPlusOversample   int  // SID+ oversample factor
 	sidPlusRoomDelay    int  // SID+ room delay length (samples)
 	sidPlusRoomPos      int  // SID+ room delay index
+	tedPlusOversample   int  // TED+ oversample factor
+	tedPlusRoomDelay    int  // TED+ room delay length (samples)
+	tedPlusRoomPos      int  // TED+ room delay index
 
 	// Pointer fields (cache line 4)
 	ringModSource    *Channel  // Source channel for ring modulation
@@ -687,6 +704,7 @@ type Channel struct {
 	psgPlusRoomBuf   []float32 // PSG+ room delay buffer
 	pokeyPlusRoomBuf []float32 // POKEY+ room delay buffer
 	sidPlusRoomBuf   []float32 // SID+ room delay buffer
+	tedPlusRoomBuf   []float32 // TED+ room delay buffer
 
 	// Boolean state flags (packed together to minimise padding)
 	enabled          bool // Channel enabled flag
@@ -698,6 +716,7 @@ type Channel struct {
 	psgPlusEnabled   bool // PSG+ processing flag
 	pokeyPlusEnabled bool // POKEY+ processing flag
 	sidPlusEnabled   bool // SID+ processing flag
+	tedPlusEnabled   bool // TED+ processing flag
 	sidEnvelope      bool // SID-style ADSR envelope
 	sidTestBit       bool // SID test bit (mute oscillator)
 	sidFilterMode    bool // SID filter mode (allows self-oscillation)
@@ -1854,6 +1873,33 @@ func (ch *Channel) generateSample() float32 {
 		return clampF32(scaledSample, MIN_SAMPLE, MAX_SAMPLE)
 	}
 
+	if ch.tedPlusEnabled && ch.tedPlusOversample > 1 {
+		oversample := ch.tedPlusOversample
+		sampleRate := float32(SAMPLE_RATE) * float32(oversample)
+		var sum float32
+		for i := 0; i < oversample; i++ {
+			sum += ch.generateWaveSample(sampleRate)
+		}
+		rawSample := sum / float32(oversample)
+		alpha := float32(TED_PLUS_LOWPASS_ALPHA)
+		if alpha > 0 {
+			ch.tedPlusLowpassState = ch.tedPlusLowpassState*(1-alpha) + rawSample*alpha
+			rawSample = ch.tedPlusLowpassState
+		}
+		if ch.tedPlusRoomMix > 0 && len(ch.tedPlusRoomBuf) > 0 {
+			delayed := ch.tedPlusRoomBuf[ch.tedPlusRoomPos]
+			ch.tedPlusRoomBuf[ch.tedPlusRoomPos] = rawSample
+			ch.tedPlusRoomPos = (ch.tedPlusRoomPos + 1) % len(ch.tedPlusRoomBuf)
+			rawSample = rawSample*(1-ch.tedPlusRoomMix) + delayed*ch.tedPlusRoomMix
+		}
+		scaledSample := rawSample * ch.volume * envLevel * ch.tedPlusGain
+		if ch.tedPlusDrive > 0 {
+			gain := 1.0 + ch.tedPlusDrive
+			scaledSample = float32(math.Tanh(float64(scaledSample * gain)))
+		}
+		return clampF32(scaledSample, MIN_SAMPLE, MAX_SAMPLE)
+	}
+
 	rawSample := ch.generateWaveSample(float32(SAMPLE_RATE))
 	scaledSample := rawSample * ch.volume * envLevel
 
@@ -2528,6 +2574,45 @@ func (chip *SoundChip) SetSIDPlusEnabled(enabled bool) {
 			ch.sidPlusRoomPos = 0
 			ch.sidPlusRoomBuf = nil
 			ch.sidPlusGain = 1.0
+		}
+	}
+}
+
+func (chip *SoundChip) SetTEDPlusEnabled(enabled bool) {
+	chip.mutex.Lock()
+	defer chip.mutex.Unlock()
+
+	// TED uses channels 0-1
+	for i := 0; i < 2; i++ {
+		ch := chip.channels[i]
+		if ch == nil {
+			continue
+		}
+		ch.tedPlusEnabled = enabled
+		if enabled {
+			ch.tedPlusOversample = TED_PLUS_OVERSAMPLE
+			ch.tedPlusLowpassState = 0
+			ch.tedPlusDrive = TED_PLUS_DRIVE
+			ch.tedPlusRoomMix = TED_PLUS_ROOM_MIX
+			ch.tedPlusRoomDelay = TED_PLUS_ROOM_DELAY
+			ch.tedPlusRoomPos = 0
+			if ch.tedPlusRoomBuf == nil || len(ch.tedPlusRoomBuf) != TED_PLUS_ROOM_DELAY {
+				ch.tedPlusRoomBuf = make([]float32, TED_PLUS_ROOM_DELAY)
+			} else {
+				for j := range ch.tedPlusRoomBuf {
+					ch.tedPlusRoomBuf[j] = 0
+				}
+			}
+			ch.tedPlusGain = tedPlusMixGain[i]
+		} else {
+			ch.tedPlusOversample = 1
+			ch.tedPlusLowpassState = 0
+			ch.tedPlusDrive = 0
+			ch.tedPlusRoomMix = 0
+			ch.tedPlusRoomDelay = 0
+			ch.tedPlusRoomPos = 0
+			ch.tedPlusRoomBuf = nil
+			ch.tedPlusGain = 1.0
 		}
 	}
 }

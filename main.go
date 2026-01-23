@@ -139,6 +139,8 @@ func main() {
 		sidPlus   bool
 		modePOKEY bool
 		pokeyPlus bool
+		modeTED   bool
+		tedPlus   bool
 		sidFile   string
 		sidDebug  int
 		sidPAL    bool
@@ -162,13 +164,15 @@ func main() {
 	flagSet.BoolVar(&sidPlus, "sid+", false, "Enable SID+ enhancements")
 	flagSet.BoolVar(&modePOKEY, "pokey", false, "Play SAP file (POKEY emulation)")
 	flagSet.BoolVar(&pokeyPlus, "pokey+", false, "Enable POKEY+ enhancements")
+	flagSet.BoolVar(&modeTED, "ted", false, "Play TED file (Plus/4 TED emulation)")
+	flagSet.BoolVar(&tedPlus, "ted+", false, "Enable TED+ enhancements")
 	loadAddr.value = "0x0600"
 	flagSet.Var(&loadAddr, "load-addr", "6502/Z80 load address (hex or decimal, defaults: 6502=0x0600, Z80=0x0000)")
 	flagSet.Var(&entryAddr, "entry", "6502/Z80 entry address (hex or decimal, defaults to load address)")
 
 	flagSet.Usage = func() {
 		flagSet.SetOutput(os.Stdout)
-		fmt.Println("Usage: ./intuition_engine -ie32|-m68k|-m6502|-z80|-psg|-psg+|-sid|-sid+|-pokey|-pokey+ [--load-addr addr] [--entry addr] filename")
+		fmt.Println("Usage: ./intuition_engine -ie32|-m68k|-m6502|-z80|-psg|-psg+|-sid|-sid+|-pokey|-pokey+|-ted|-ted+ [--load-addr addr] [--entry addr] filename")
 		flagSet.PrintDefaults()
 	}
 
@@ -194,6 +198,9 @@ func main() {
 	if pokeyPlus && !modePOKEY {
 		modePOKEY = true
 	}
+	if tedPlus && !modeTED {
+		modeTED = true
+	}
 
 	modeCount := 0
 	if modeIE32 {
@@ -217,12 +224,15 @@ func main() {
 	if modePOKEY {
 		modeCount++
 	}
+	if modeTED {
+		modeCount++
+	}
 	if modeCount == 0 && filename == "" {
 		modeIE32 = true
 		modeCount = 1
 	}
 	if modeCount != 1 {
-		fmt.Println("Error: select exactly one mode flag: -ie32, -m68k, -m6502, -z80, -psg, -psg+, -sid, -sid+, -pokey, or -pokey+")
+		fmt.Println("Error: select exactly one mode flag: -ie32, -m68k, -m6502, -z80, -psg, -psg+, -sid, -sid+, -pokey, -pokey+, -ted, or -ted+")
 		os.Exit(1)
 	}
 	if filename == "" && modePSG {
@@ -356,6 +366,45 @@ func main() {
 		os.Exit(0)
 	}
 
+	// TED playback mode
+	if modeTED {
+		if filename == "" {
+			fmt.Println("Error: TED mode requires a .ted filename")
+			os.Exit(1)
+		}
+		tedEngine := NewTEDEngine(soundChip, SAMPLE_RATE)
+		soundChip.SetSampleTicker(tedEngine) // Register for sample-accurate event processing
+		tedPlayer := NewTEDPlayer(tedEngine)
+		if tedPlus {
+			tedEngine.SetTEDPlusEnabled(true)
+		}
+		if err := tedPlayer.Load(filename); err != nil {
+			fmt.Printf("Error loading TED file: %v\n", err)
+			os.Exit(1)
+		}
+		meta := tedPlayer.Metadata()
+		if meta.Title != "" || meta.Author != "" {
+			fmt.Printf("Playing: %s - %s", meta.Title, meta.Author)
+		} else {
+			fmt.Printf("Playing: %s", filename)
+		}
+		if meta.Date != "" {
+			fmt.Printf(" (%s)", meta.Date)
+		}
+		if dur := tedPlayer.DurationText(); dur != "" {
+			fmt.Printf(" [%s]", dur)
+		}
+		fmt.Println()
+		soundChip.Start()
+		tedPlayer.Play()
+		// Wait for playback to complete
+		for tedPlayer.IsPlaying() {
+			time.Sleep(100 * time.Millisecond)
+		}
+		soundChip.Stop()
+		os.Exit(0)
+	}
+
 	// Create system bus
 	sysBus := NewSystemBus()
 	psgPlayer.AttachBus(sysBus)
@@ -409,6 +458,17 @@ func main() {
 	sysBus.MapIO(SID_PLAY_PTR, SID_SUBSONG,
 		sidPlayer.HandlePlayRead,
 		sidPlayer.HandlePlayWrite)
+
+	// Map TED registers
+	tedEngine := NewTEDEngine(soundChip, SAMPLE_RATE)
+	tedPlayer := NewTEDPlayer(tedEngine)
+	tedPlayer.AttachBus(sysBus)
+	sysBus.MapIO(TED_BASE, TED_END,
+		tedEngine.HandleRead,
+		tedEngine.HandleWrite)
+	sysBus.MapIO(TED_PLAY_PTR, TED_PLAY_STATUS+3,
+		tedPlayer.HandlePlayRead,
+		tedPlayer.HandlePlayWrite)
 
 	// Initialize the selected CPU and optionally load program
 	var gui GUIFrontend
