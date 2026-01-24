@@ -227,9 +227,18 @@ func (a *Assembler) handleDirective(line string, lineNum int) error {
 
 	switch parts[0] {
 	case ".word":
+		// Try to parse as number first
 		value, err := strconv.ParseUint(parts[1], 0, 32)
 		if err != nil {
-			return fmt.Errorf("invalid word value: %s", parts[1])
+			// Not a number, check if it's an equate
+			if val, ok := a.equates[parts[1]]; ok {
+				value = uint64(val)
+			} else if labelAddr, ok := a.labels[parts[1]]; ok {
+				// Check if it's a label
+				value = uint64(labelAddr)
+			} else {
+				return fmt.Errorf("invalid word value or unknown symbol: %s", parts[1])
+			}
 		}
 		a.data = append(a.data, writeLittleEndian(uint32(value))...)
 		a.dataOffset += 4
