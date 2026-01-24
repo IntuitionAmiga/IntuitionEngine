@@ -3033,9 +3033,62 @@ Registers:
 - `COPPER_STATUS` (0x0F0018): bit0=running, bit1=waiting, bit2=halted
 
 List words:
-- `WAIT`: `(0<<30) | (y<<12) | x`
-- `MOVE`: `(1<<30) | (regIndex<<16)` followed by a 32-bit value
-- `END`: `(3<<30)`
+- `WAIT`: `(0<<30) | (y<<12) | x` - Wait until raster reaches Y/X position
+- `MOVE`: `(1<<30) | (regIndex<<16)` followed by a 32-bit value - Write to register
+- `SETBASE`: `(2<<30) | (addr>>2)` - Change base address for MOVE operations
+- `END`: `(3<<30)` - Halt copper for this frame
+
+### SETBASE Instruction
+
+The `SETBASE` instruction allows the copper to write to any memory-mapped I/O device by changing the base address for subsequent MOVE operations. This enables cross-device effects like modifying VGA palette registers from the copper.
+
+**SETBASE Format:**
+- Bits 30-31: Opcode (2)
+- Bits 0-23: Target address right-shifted by 2 (addresses are 4-byte aligned)
+
+**Pre-defined SETBASE values:**
+- `COP_SETBASE_VIDEO` (0x8003C000) - IE video registers (default)
+- `COP_SETBASE_VGA` (0x8003C400) - VGA registers
+- `COP_SETBASE_VGA_DAC` (0x8003C416) - VGA DAC for palette writes
+
+The base is reset to VIDEO_REG_BASE at the start of each frame.
+
+### Cross-Device Copper Example (VGA Palette + IE Raster Bars)
+
+**IE32:**
+```assembly
+.include "ie32.inc"
+
+copper_list:
+    ; Switch to VGA DAC registers
+    .long COP_SETBASE_VGA_DAC
+
+    ; Set palette entry 32 to red
+    .long COP_MOVE_VGA_WINDEX
+    .long 32                          ; Palette index
+    .long COP_MOVE_VGA_DATA
+    .long 63                          ; R (6-bit VGA)
+    .long COP_MOVE_VGA_DATA
+    .long 0                           ; G
+    .long COP_MOVE_VGA_DATA
+    .long 0                           ; B
+
+    ; Switch back to IE video chip
+    .long COP_SETBASE_VIDEO
+
+    ; Draw raster bar at Y=100
+    .long COP_WAIT_MASK | (100 * COP_WAIT_SCALE)
+    .long COP_MOVE_RASTER_Y
+    .long 100
+    .long COP_MOVE_RASTER_H
+    .long 8
+    .long COP_MOVE_RASTER_COLOR
+    .long 0xFF00FFFF                  ; Cyan (RGBA)
+    .long COP_MOVE_RASTER_CTRL
+    .long 1
+
+    .long COP_END
+```
 
 ## 10.7 DMA Blitter
 

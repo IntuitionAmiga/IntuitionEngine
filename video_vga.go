@@ -102,6 +102,9 @@ type VGAEngine struct {
 
 	// VSync state
 	vsync bool
+
+	// Per-scanline render buffer (used by ScanlineAware interface)
+	scanlineFrame []byte
 }
 
 // NewVGAEngine creates a new VGA engine instance as a standalone video device
@@ -569,6 +572,11 @@ func (v *VGAEngine) GetStartAddress() uint32 {
 	v.mutex.RLock()
 	defer v.mutex.RUnlock()
 
+	return v.getStartAddressInternal()
+}
+
+// getStartAddressInternal returns start address without locking (for internal use)
+func (v *VGAEngine) getStartAddressInternal() uint32 {
 	return uint32(v.crtcRegs[VGA_CRTC_START_HI])<<8 | uint32(v.crtcRegs[VGA_CRTC_START_LO])
 }
 
@@ -630,7 +638,7 @@ func (v *VGAEngine) renderMode13h() []uint8 {
 	height := VGA_MODE13H_HEIGHT
 	fb := make([]uint8, width*height*4)
 
-	startAddr := v.GetStartAddress()
+	startAddr := v.getStartAddressInternal()
 
 	for y := 0; y < height; y++ {
 		for x := 0; x < width; x++ {
@@ -715,7 +723,7 @@ func (v *VGAEngine) renderModeX() []uint8 {
 	height := VGA_MODEX_HEIGHT
 	fb := make([]uint8, width*height*4)
 
-	startAddr := v.GetStartAddress()
+	startAddr := v.getStartAddressInternal()
 
 	for y := 0; y < height; y++ {
 		for x := 0; x < width; x++ {
@@ -862,6 +870,221 @@ func (v *VGAEngine) SignalVSync() {
 // GetCurrentFramebuffer returns the current VGA framebuffer for testing
 func (v *VGAEngine) GetCurrentFramebuffer() []uint8 {
 	return v.RenderFrame()
+}
+
+// -----------------------------------------------------------------------------
+// ScanlineAware Interface Implementation
+// -----------------------------------------------------------------------------
+
+// StartFrame prepares for per-scanline rendering
+func (v *VGAEngine) StartFrame() {
+	v.mutex.Lock()
+	defer v.mutex.Unlock()
+
+	// Allocate scanline buffer based on current mode
+	w, h := v.GetModeDimensions()
+	if len(v.scanlineFrame) != w*h*4 {
+		v.scanlineFrame = make([]byte, w*h*4)
+	}
+}
+
+// ProcessScanline renders a single scanline using current palette state
+// This allows copper-driven palette changes to affect specific scanlines
+func (v *VGAEngine) ProcessScanline(y int) {
+	v.mutex.Lock()
+	defer v.mutex.Unlock()
+
+	switch v.mode {
+	case VGA_MODE_13H:
+		v.renderScanlineMode13h(y)
+	case VGA_MODE_12H:
+		v.renderScanlineMode12h(y)
+	case VGA_MODE_TEXT:
+		v.renderScanlineText(y)
+	case VGA_MODE_X:
+		v.renderScanlineModeX(y)
+	default:
+		v.renderScanlineMode13h(y)
+	}
+}
+
+// FinishFrame completes the frame and returns the rendered result
+func (v *VGAEngine) FinishFrame() []byte {
+	// Return the scanline-rendered buffer
+	return v.scanlineFrame
+}
+
+// renderScanlineMode13h renders one scanline in Mode 13h (320x200x256)
+func (v *VGAEngine) renderScanlineMode13h(y int) {
+	width := VGA_MODE13H_WIDTH
+	height := VGA_MODE13H_HEIGHT
+
+	if y < 0 || y >= height {
+		return
+	}
+
+	startAddr := v.getStartAddressInternal()
+
+	for x := 0; x < width; x++ {
+		// Linear addressing with start address offset
+		linearOffset := uint32(y*width+x) + startAddr
+
+		// Chain-4: address bits 0-1 select plane, bits 2+ are VRAM offset
+		plane := linearOffset & 3
+		vramOffset := linearOffset >> 2
+
+		var colorIndex uint8
+		if vramOffset < VGA_PLANE_SIZE {
+			colorIndex = v.vram[plane][vramOffset]
+		}
+
+		// Apply DAC mask
+		colorIndex &= v.dacMask
+
+		// Get expanded color using current palette state
+		r, g, b, a := v.getPaletteRGBAInternal(colorIndex)
+
+		pixelIdx := (y*width + x) * 4
+		if pixelIdx+3 < len(v.scanlineFrame) {
+			v.scanlineFrame[pixelIdx+0] = r
+			v.scanlineFrame[pixelIdx+1] = g
+			v.scanlineFrame[pixelIdx+2] = b
+			v.scanlineFrame[pixelIdx+3] = a
+		}
+	}
+}
+
+// renderScanlineMode12h renders one scanline in Mode 12h (640x480x16)
+func (v *VGAEngine) renderScanlineMode12h(y int) {
+	width := VGA_MODE12H_WIDTH
+	height := VGA_MODE12H_HEIGHT
+
+	if y < 0 || y >= height {
+		return
+	}
+
+	bytesPerLine := width / 8
+
+	for byteX := 0; byteX < bytesPerLine; byteX++ {
+		offset := y*bytesPerLine + byteX
+
+		// Get all 4 planes for this byte
+		var planes [4]uint8
+		for p := 0; p < 4; p++ {
+			if offset < int(VGA_PLANE_SIZE) {
+				planes[p] = v.vram[p][offset]
+			}
+		}
+
+		// Extract 8 pixels from the planes
+		for bit := 7; bit >= 0; bit-- {
+			// Combine bits from all planes to get color index
+			colorIndex := uint8(0)
+			for p := 0; p < 4; p++ {
+				if planes[p]&(1<<bit) != 0 {
+					colorIndex |= 1 << p
+				}
+			}
+
+			colorIndex &= v.dacMask
+			r, g, b, a := v.getPaletteRGBAInternal(colorIndex)
+
+			pixelX := byteX*8 + (7 - bit)
+			pixelIdx := (y*width + pixelX) * 4
+			if pixelIdx+3 < len(v.scanlineFrame) {
+				v.scanlineFrame[pixelIdx+0] = r
+				v.scanlineFrame[pixelIdx+1] = g
+				v.scanlineFrame[pixelIdx+2] = b
+				v.scanlineFrame[pixelIdx+3] = a
+			}
+		}
+	}
+}
+
+// renderScanlineModeX renders one scanline in Mode X (320x240x256)
+func (v *VGAEngine) renderScanlineModeX(y int) {
+	width := VGA_MODEX_WIDTH
+	height := VGA_MODEX_HEIGHT
+
+	if y < 0 || y >= height {
+		return
+	}
+
+	startAddr := v.getStartAddressInternal()
+
+	for x := 0; x < width; x++ {
+		// Unchained: pixel X determines plane, Y*width/4 + X/4 is offset
+		plane := x & 3
+		offset := uint32(y*(width/4)+x/4) + startAddr
+
+		var colorIndex uint8
+		if offset < VGA_PLANE_SIZE {
+			colorIndex = v.vram[plane][offset]
+		}
+
+		colorIndex &= v.dacMask
+		r, g, b, a := v.getPaletteRGBAInternal(colorIndex)
+
+		pixelIdx := (y*width + x) * 4
+		if pixelIdx+3 < len(v.scanlineFrame) {
+			v.scanlineFrame[pixelIdx+0] = r
+			v.scanlineFrame[pixelIdx+1] = g
+			v.scanlineFrame[pixelIdx+2] = b
+			v.scanlineFrame[pixelIdx+3] = a
+		}
+	}
+}
+
+// renderScanlineText renders one scanline in text mode (80x25)
+func (v *VGAEngine) renderScanlineText(y int) {
+	charWidth := VGA_FONT_WIDTH
+	charHeight := VGA_FONT_HEIGHT
+	width := VGA_TEXT_COLS * charWidth
+	totalHeight := VGA_TEXT_ROWS * charHeight
+
+	if y < 0 || y >= totalHeight {
+		return
+	}
+
+	// Determine which character row and which line within the character
+	charRow := y / charHeight
+	charLine := y % charHeight
+
+	for col := 0; col < VGA_TEXT_COLS; col++ {
+		// Get character and attribute from text buffer
+		bufOffset := (charRow*VGA_TEXT_COLS + col) * 2
+		char := v.textBuffer[bufOffset]
+		attr := v.textBuffer[bufOffset+1]
+
+		// Extract foreground/background from attribute
+		fg := attr & 0x0F
+		bg := (attr >> 4) & 0x0F
+
+		// Get font glyph row
+		fontRow := vgaFont8x16[int(char)*charHeight+charLine]
+
+		// Render 8 pixels for this character
+		for cx := 0; cx < charWidth; cx++ {
+			pixelX := col*charWidth + cx
+
+			var colorIndex uint8
+			if fontRow&(0x80>>cx) != 0 {
+				colorIndex = fg
+			} else {
+				colorIndex = bg
+			}
+
+			r, g, b, a := v.getPaletteRGBAInternal(colorIndex)
+
+			pixelIdx := (y*width + pixelX) * 4
+			if pixelIdx+3 < len(v.scanlineFrame) {
+				v.scanlineFrame[pixelIdx+0] = r
+				v.scanlineFrame[pixelIdx+1] = g
+				v.scanlineFrame[pixelIdx+2] = b
+				v.scanlineFrame[pixelIdx+3] = a
+			}
+		}
+	}
 }
 
 // Standard VGA 8x16 font (256 characters)

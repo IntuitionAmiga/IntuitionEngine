@@ -132,9 +132,14 @@ const (
 )
 
 const (
-	copperOpcodeWait = 0
-	copperOpcodeMove = 1
-	copperOpcodeEnd  = 3
+	copperOpcodeWait    = 0
+	copperOpcodeMove    = 1
+	copperOpcodeSetBase = 2
+	copperOpcodeEnd     = 3
+)
+
+const (
+	copperSetBaseMask = 0x00FFFFFF // 24-bit mask for base address (>> 2)
 )
 
 const (
@@ -405,6 +410,7 @@ type VideoChip struct {
 	copperWaitY     uint16
 	copperRasterX   uint16
 	copperRasterY   uint16
+	copperIOBase    uint32 // Base address for MOVE operations (default VIDEO_REG_BASE)
 
 	// Blitter state
 	bltIrqEnabled   bool
@@ -1245,6 +1251,7 @@ func (chip *VideoChip) copperStartFrameLocked() {
 	chip.copperHalted = false
 	chip.copperRasterX = 0
 	chip.copperRasterY = 0
+	chip.copperIOBase = VIDEO_REG_BASE // Reset to default each frame
 }
 
 func (chip *VideoChip) copperAdvanceRasterLocked(y, x int) {
@@ -1300,8 +1307,18 @@ func (chip *VideoChip) copperRunLocked() {
 			regIndex := (word >> copperRegShift) & copperRegMask
 			value := chip.busRead32Locked(chip.copperPC + 4)
 			chip.copperPC += 8
-			regAddr := VIDEO_REG_BASE + (regIndex * 4)
-			chip.handleWriteLocked(regAddr, value)
+			regAddr := chip.copperIOBase + (regIndex * 4)
+			// Route to appropriate device based on address
+			if regAddr >= VIDEO_REG_BASE && regAddr <= VIDEO_REG_END {
+				chip.handleWriteLocked(regAddr, value)
+			} else if chip.bus != nil {
+				chip.bus.Write32(regAddr, value)
+			}
+		case copperOpcodeSetBase:
+			// Base address encoded as (addr >> 2) in bits 0-23
+			baseShifted := word & copperSetBaseMask
+			chip.copperIOBase = baseShifted << 2
+			chip.copperPC += 4
 		case copperOpcodeEnd:
 			chip.copperPC += 4
 			chip.copperHalted = true
@@ -1953,6 +1970,53 @@ func (chip *VideoChip) GetDimensions() (int, int) {
 // SignalVSync implements VideoSource - called by compositor after frame sent
 func (chip *VideoChip) SignalVSync() {
 	chip.inVBlank.Store(true)
+}
+
+// -----------------------------------------------------------------------------
+// ScanlineAware Interface Implementation
+// -----------------------------------------------------------------------------
+
+// StartFrame implements ScanlineAware - prepares for per-scanline copper execution
+func (chip *VideoChip) StartFrame() {
+	chip.mutex.Lock()
+	defer chip.mutex.Unlock()
+
+	if chip.copperEnabled && chip.bus != nil {
+		chip.copperStartFrameLocked()
+	}
+}
+
+// ProcessScanline implements ScanlineAware - advances copper to the given scanline
+func (chip *VideoChip) ProcessScanline(y int) {
+	chip.mutex.Lock()
+	defer chip.mutex.Unlock()
+
+	if !chip.copperEnabled || chip.bus == nil {
+		return
+	}
+
+	mode := VideoModes[chip.currentMode]
+	if y >= mode.height {
+		return
+	}
+
+	// Advance copper to this scanline
+	chip.copperAdvanceRasterLocked(y, 0)
+	if chip.copperHalted {
+		return
+	}
+	if chip.copperWaiting && chip.copperWaitY == uint16(y) && chip.copperWaitX < uint16(mode.width) {
+		chip.copperAdvanceRasterLocked(y, int(chip.copperWaitX))
+	}
+}
+
+// FinishFrame implements ScanlineAware - returns the rendered frame
+func (chip *VideoChip) FinishFrame() []byte {
+	chip.mutex.Lock()
+	defer chip.mutex.Unlock()
+
+	// Return the current front buffer
+	return chip.frontBuffer
 }
 
 func GetSplashImageData() ([]byte, error) {

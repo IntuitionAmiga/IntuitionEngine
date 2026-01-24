@@ -690,6 +690,21 @@ COP_MOVE_RASTER_CTRL  equ $40150000
 ; Copper END opcode
 COP_END              equ $C0000000
 
+; Copper SETBASE opcode - set I/O base for subsequent MOVE operations
+; Format: [10][6-bit unused][24-bit base >> 2]
+; Addresses are 4-byte aligned, so we encode (addr >> 2) in 24 bits
+COP_SETBASE_OP       equ $80000000
+COP_SETBASE_SHIFT    equ 2
+
+; Pre-computed SETBASE instructions for common devices
+COP_SETBASE_VIDEO    equ $8003C000          ; VIDEO_REG_BASE ($F0000 >> 2)
+COP_SETBASE_VGA      equ $8003C400          ; VGA_BASE ($F1000 >> 2)
+COP_SETBASE_VGA_DAC  equ $8003C416          ; VGA_DAC_WINDEX ($F1058 >> 2)
+
+; MOVE register indices after SETBASE to VGA_DAC_WINDEX
+COP_MOVE_VGA_WINDEX  equ $40000000          ; Offset 0: DAC write index
+COP_MOVE_VGA_DATA    equ $40010000          ; Offset 1: DAC data (R,G,B seq)
+
 ; ============================================================================
 ; TIMER REGISTERS
 ; ============================================================================

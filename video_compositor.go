@@ -139,6 +139,112 @@ func (c *VideoCompositor) composite() {
 		c.finalFrame[i] = 0
 	}
 
+	// Check if we can use per-scanline rendering for copper effects
+	// This requires all enabled sources to implement ScanlineAware
+	if c.compositeScanlineAware() {
+		return
+	}
+
+	// Fallback: full-frame compositing (original behavior)
+	c.compositeFullFrame()
+}
+
+// scanlineSourceEntry pairs a VideoSource with its ScanlineAware implementation
+type scanlineSourceEntry struct {
+	source VideoSource
+	sa     ScanlineAware
+	layer  int
+}
+
+// compositeScanlineAware performs per-scanline rendering for copper-style effects
+// Returns true if successful, false if sources don't support it
+func (c *VideoCompositor) compositeScanlineAware() bool {
+	// Collect enabled sources that implement ScanlineAware
+	var entries []scanlineSourceEntry
+	maxSourceHeight := 0
+
+	for _, source := range c.sources {
+		if !source.IsEnabled() {
+			continue
+		}
+
+		sa, ok := source.(ScanlineAware)
+		if !ok {
+			// Not all sources support scanline rendering, fall back to full frame
+			return false
+		}
+
+		_, srcH := source.GetDimensions()
+		if srcH > maxSourceHeight {
+			maxSourceHeight = srcH
+		}
+
+		entries = append(entries, scanlineSourceEntry{
+			source: source,
+			sa:     sa,
+			layer:  source.GetLayer(),
+		})
+	}
+
+	// If no sources, nothing to do
+	if len(entries) == 0 {
+		return false
+	}
+
+	// Sort by layer (lower layers first - VideoChip layer 0 before VGA layer 10)
+	// This ensures copper runs before VGA renders each scanline
+	for i := 0; i < len(entries)-1; i++ {
+		for j := i + 1; j < len(entries); j++ {
+			if entries[j].layer < entries[i].layer {
+				entries[i], entries[j] = entries[j], entries[i]
+			}
+		}
+	}
+
+	// Start frame on all sources
+	for _, e := range entries {
+		e.sa.StartFrame()
+	}
+
+	// Process each scanline
+	// Lower layer sources (VideoChip with copper) process first to update state,
+	// then higher layer sources (VGA) render using the updated palette
+	for y := 0; y < maxSourceHeight; y++ {
+		for _, e := range entries {
+			e.sa.ProcessScanline(y)
+		}
+	}
+
+	// Finish frame and collect results
+	hasContent := false
+	for _, e := range entries {
+		frame := e.sa.FinishFrame()
+		if frame == nil {
+			continue
+		}
+
+		hasContent = true
+		srcW, srcH := e.source.GetDimensions()
+
+		// Blend source frame into final frame
+		c.blendFrame(frame, srcW, srcH)
+
+		// Signal VSync to source
+		e.source.SignalVSync()
+	}
+
+	// Send final frame to output if we have content
+	if hasContent && c.output != nil && c.output.IsStarted() {
+		if err := c.output.UpdateFrame(c.finalFrame); err != nil {
+			fmt.Printf("Compositor: Error updating frame: %v\n", err)
+		}
+	}
+
+	return true
+}
+
+// compositeFullFrame performs traditional full-frame compositing
+func (c *VideoCompositor) compositeFullFrame() {
 	// Track if any source provided content
 	hasContent := false
 

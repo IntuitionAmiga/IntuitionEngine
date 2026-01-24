@@ -94,6 +94,20 @@ type VideoSource interface {
 	SignalVSync()              // Called by compositor after frame sent
 }
 
+// ScanlineAware is implemented by video sources that support per-scanline rendering.
+// This enables copper-style raster effects where register changes take effect
+// at specific scanline positions.
+type ScanlineAware interface {
+	// StartFrame prepares for per-scanline rendering
+	StartFrame()
+	// ProcessScanline advances internal state to the given scanline
+	// For VideoChip: runs copper until it waits past this scanline
+	// For VGA: renders this scanline with current register state
+	ProcessScanline(y int)
+	// FinishFrame completes the frame and returns the rendered result
+	FinishFrame() []byte
+}
+
 // Optional interfaces for enhanced functionality
 type PaletteCapable interface {
 	UpdatePalette(colors []uint32) error
