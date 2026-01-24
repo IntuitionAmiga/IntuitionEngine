@@ -470,8 +470,8 @@ func main() {
 		tedPlayer.HandlePlayRead,
 		tedPlayer.HandlePlayWrite)
 
-	// Map VGA registers
-	vgaEngine := NewVGAEngine(videoChip, sysBus)
+	// Map VGA registers (VGA is a standalone video device)
+	vgaEngine := NewVGAEngine(sysBus)
 	sysBus.MapIO(VGA_BASE, VGA_REG_END,
 		vgaEngine.HandleRead,
 		vgaEngine.HandleWrite)
@@ -481,6 +481,11 @@ func main() {
 	sysBus.MapIO(VGA_TEXT_WINDOW, VGA_TEXT_WINDOW+VGA_TEXT_SIZE-1,
 		vgaEngine.HandleTextRead,
 		vgaEngine.HandleTextWrite)
+
+	// Create video compositor - owns the display output and blends video sources
+	compositor := NewVideoCompositor(videoChip.GetOutput())
+	compositor.RegisterSource(videoChip) // Layer 0 - background
+	compositor.RegisterSource(vgaEngine) // Layer 10 - VGA renders on top
 
 	// Initialize the selected CPU and optionally load program
 	var gui GUIFrontend
@@ -509,6 +514,7 @@ func main() {
 		if startExecution {
 			// Start peripherals
 			videoChip.Start()
+			compositor.Start()
 			soundChip.Start()
 
 			// Start CPU execution
@@ -550,6 +556,7 @@ func main() {
 		if startExecution {
 			// Start peripherals
 			videoChip.Start()
+			compositor.Start()
 			soundChip.Start()
 
 			// Start CPU execution
@@ -599,6 +606,7 @@ func main() {
 		if startExecution {
 			// Start peripherals
 			videoChip.Start()
+			compositor.Start()
 			soundChip.Start()
 
 			// Start CPU execution
@@ -652,6 +660,7 @@ func main() {
 		if startExecution {
 			// Start peripherals
 			videoChip.Start()
+			compositor.Start()
 			soundChip.Start()
 
 			// Start CPU execution

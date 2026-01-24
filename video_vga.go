@@ -1,4 +1,4 @@
-// vga_engine.go - IBM VGA chip emulation for Intuition Engine
+// video_vga.go - IBM VGA chip emulation for Intuition Engine
 
 /*
  ██▓ ███▄    █ ▄▄▄█████▓ █    ██  ██▓▄▄▄█████▓ ██▓ ▒█████   ███▄    █    ▓█████  ███▄    █   ▄████  ██▓ ███▄    █ ▓█████
@@ -18,9 +18,9 @@ License: GPLv3 or later
 */
 
 /*
-vga_engine.go - IBM VGA Video Chip Emulation
+video_vga.go - IBM VGA Video Chip Emulation (Standalone)
 
-This module implements IBM VGA compatible video modes:
+This module implements IBM VGA compatible video modes as a standalone video device:
 - Mode 13h: 320x200, 256 colors, linear memory
 - Mode 12h: 640x480, 16 colors, planar memory
 - Mode 03h: 80x25 text mode, 16 colors
@@ -32,25 +32,32 @@ Features:
 - Text mode with embedded 8x16 VGA font
 - Page flipping via CRTC start address
 - VSync status for timing synchronization
+- Implements VideoSource interface for compositor integration
 
 Signal Flow:
 1. CPU writes to VGA registers (mode, palette, etc.)
 2. CPU writes to VRAM (linear or planar depending on mode)
 3. VGA renders VRAM through palette to framebuffer
-4. Framebuffer transferred to VideoChip for display
+4. Compositor collects frame via GetFrame() and sends to display
 */
 
 package main
 
 import (
+	"fmt"
+	"os"
 	"sync"
 )
 
-// VGAEngine implements IBM VGA compatible video
+// VGA layer constant for compositor
+const VGA_LAYER = 10 // VGA renders on top of VideoChip (layer 0)
+
+// VGAEngine implements IBM VGA compatible video as a standalone device
+// Implements VideoSource interface for compositor integration
 type VGAEngine struct {
-	mutex     sync.RWMutex
-	videoChip *VideoChip
-	bus       *SystemBus
+	mutex sync.RWMutex
+	bus   *SystemBus
+	layer int // Z-order for compositor (higher = on top)
 
 	// Current mode
 	mode    uint8
@@ -97,12 +104,12 @@ type VGAEngine struct {
 	vsync bool
 }
 
-// NewVGAEngine creates a new VGA engine instance
-func NewVGAEngine(videoChip *VideoChip, bus *SystemBus) *VGAEngine {
+// NewVGAEngine creates a new VGA engine instance as a standalone video device
+func NewVGAEngine(bus *SystemBus) *VGAEngine {
 	vga := &VGAEngine{
-		videoChip: videoChip,
-		bus:       bus,
-		dacMask:   0xFF, // Default: all bits enabled
+		bus:     bus,
+		layer:   VGA_LAYER, // VGA renders on top
+		dacMask: 0xFF,      // Default: all bits enabled
 	}
 
 	// Initialize sequencer defaults
@@ -600,8 +607,8 @@ func (v *VGAEngine) GetFontGlyph(char uint8) []uint8 {
 
 // RenderFrame renders the current mode to a framebuffer
 func (v *VGAEngine) RenderFrame() []uint8 {
-	v.mutex.RLock()
-	defer v.mutex.RUnlock()
+	// Note: No lock acquired here - VRAM is fixed-size and minor racing is
+	// acceptable for video rendering (like real VGA hardware behavior)
 
 	switch v.mode {
 	case VGA_MODE_13H:
@@ -794,48 +801,62 @@ func (v *VGAEngine) getPaletteRGBAInternal(index uint8) (uint8, uint8, uint8, ui
 	return r, g, b, 255
 }
 
-// RenderToVideoChip renders VGA output to the VideoChip framebuffer
-func (v *VGAEngine) RenderToVideoChip() {
-	if v.videoChip == nil {
-		return
-	}
+var vgaFrameCount int
+var vgaDebugFile *os.File
 
-	if v.control&VGA_CTRL_ENABLE == 0 {
-		return
-	}
-
-	fb := v.RenderFrame()
-
-	// Get VGA mode dimensions
-	vgaWidth, vgaHeight := v.GetModeDimensions()
-
-	// Get VideoChip dimensions (default to 640x480)
-	vcWidth := RESOLUTION_640x480_WIDTH
-	vcHeight := RESOLUTION_640x480_HEIGHT
-
-	// Get destination framebuffer
-	dstFB := v.videoChip.GetFrontBuffer()
-	if dstFB == nil {
-		return
-	}
-
-	// Scale VGA framebuffer to VideoChip framebuffer
-	for vcY := 0; vcY < vcHeight; vcY++ {
-		srcY := vcY * vgaHeight / vcHeight
-		for vcX := 0; vcX < vcWidth; vcX++ {
-			srcX := vcX * vgaWidth / vcWidth
-
-			srcIdx := (srcY*vgaWidth + srcX) * 4
-			dstIdx := (vcY*vcWidth + vcX) * 4
-
-			if srcIdx+3 < len(fb) && dstIdx+3 < len(dstFB) {
-				dstFB[dstIdx+0] = fb[srcIdx+0]
-				dstFB[dstIdx+1] = fb[srcIdx+1]
-				dstFB[dstIdx+2] = fb[srcIdx+2]
-				dstFB[dstIdx+3] = fb[srcIdx+3]
-			}
+func vgaDebugLog(format string, args ...interface{}) {
+	if vgaDebugFile == nil {
+		var err error
+		vgaDebugFile, err = os.Create("/tmp/vga_debug.log")
+		if err != nil {
+			return
 		}
 	}
+	fmt.Fprintf(vgaDebugFile, format, args...)
+	vgaDebugFile.Sync()
+}
+
+// -----------------------------------------------------------------------------
+// VideoSource Interface Implementation
+// -----------------------------------------------------------------------------
+
+// GetFrame implements VideoSource - returns the current rendered frame
+// Called by compositor each frame to collect video output
+func (v *VGAEngine) GetFrame() []byte {
+	if v.control&VGA_CTRL_ENABLE == 0 {
+		return nil
+	}
+	return v.RenderFrame()
+}
+
+// IsEnabled implements VideoSource - returns whether VGA is enabled
+func (v *VGAEngine) IsEnabled() bool {
+	return v.control&VGA_CTRL_ENABLE != 0
+}
+
+// GetLayer implements VideoSource - returns Z-order for compositing
+func (v *VGAEngine) GetLayer() int {
+	return v.layer
+}
+
+// GetDimensions implements VideoSource - returns frame dimensions
+func (v *VGAEngine) GetDimensions() (int, int) {
+	return v.GetModeDimensions()
+}
+
+// SignalVSync implements VideoSource - called by compositor after frame sent
+func (v *VGAEngine) SignalVSync() {
+	// Toggle VSync status for programs that poll VGA_STATUS
+	// Keep vsync true for one full frame period so tight polling loops can see it
+	// The vsync flag will be cleared when the next frame starts
+	v.mutex.Lock()
+	v.vsync = !v.vsync
+	if v.vsync {
+		v.status |= VGA_STATUS_VSYNC | VGA_STATUS_RETRACE
+	} else {
+		v.status &^= VGA_STATUS_VSYNC | VGA_STATUS_RETRACE
+	}
+	v.mutex.Unlock()
 }
 
 // GetCurrentFramebuffer returns the current VGA framebuffer for testing

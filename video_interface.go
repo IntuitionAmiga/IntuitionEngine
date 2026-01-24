@@ -84,6 +84,16 @@ const (
 	PixelFormatPaletted
 )
 
+// VideoSource represents a video device that can provide frames to the compositor.
+// Both VideoChip and VideoVGA implement this interface.
+type VideoSource interface {
+	GetFrame() []byte          // Returns current rendered frame (nil if disabled)
+	IsEnabled() bool           // Whether this source is active
+	GetLayer() int             // Z-order for compositing (higher = on top)
+	GetDimensions() (w, h int) // Returns the frame dimensions
+	SignalVSync()              // Called by compositor after frame sent
+}
+
 // Optional interfaces for enhanced functionality
 type PaletteCapable interface {
 	UpdatePalette(colors []uint32) error

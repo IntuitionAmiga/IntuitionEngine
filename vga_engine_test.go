@@ -11,7 +11,7 @@ import (
 // =============================================================================
 
 func TestVGA_DAC_WriteIndex(t *testing.T) {
-	vga := NewVGAEngine(nil, nil)
+	vga := NewVGAEngine(nil)
 
 	// Write to DAC write index
 	vga.HandleWrite(VGA_DAC_WINDEX, 42)
@@ -23,7 +23,7 @@ func TestVGA_DAC_WriteIndex(t *testing.T) {
 }
 
 func TestVGA_DAC_WritePalette(t *testing.T) {
-	vga := NewVGAEngine(nil, nil)
+	vga := NewVGAEngine(nil)
 
 	// Set write index to palette entry 10
 	vga.HandleWrite(VGA_DAC_WINDEX, 10)
@@ -51,7 +51,7 @@ func TestVGA_DAC_WritePalette(t *testing.T) {
 }
 
 func TestVGA_DAC_ReadPalette(t *testing.T) {
-	vga := NewVGAEngine(nil, nil)
+	vga := NewVGAEngine(nil)
 
 	// Set up palette entry 5
 	vga.SetPaletteEntry(5, 63, 31, 15)
@@ -80,7 +80,7 @@ func TestVGA_DAC_ReadPalette(t *testing.T) {
 }
 
 func TestVGA_DAC_Mask(t *testing.T) {
-	vga := NewVGAEngine(nil, nil)
+	vga := NewVGAEngine(nil)
 
 	// Default mask should be 0xFF (all bits)
 	mask := vga.HandleRead(VGA_DAC_MASK)
@@ -107,7 +107,7 @@ func TestVGA_DAC_Mask(t *testing.T) {
 }
 
 func TestVGA_DAC_6BitTo8Bit(t *testing.T) {
-	vga := NewVGAEngine(nil, nil)
+	vga := NewVGAEngine(nil)
 
 	// VGA DAC uses 6-bit values (0-63), but we need 8-bit output (0-255)
 	// The conversion is: out = (in << 2) | (in >> 4)
@@ -133,7 +133,7 @@ func TestVGA_DAC_6BitTo8Bit(t *testing.T) {
 }
 
 func TestVGA_DAC_GetRGBA(t *testing.T) {
-	vga := NewVGAEngine(nil, nil)
+	vga := NewVGAEngine(nil)
 
 	// Set palette entry 100 with 6-bit values
 	vga.SetPaletteEntry(100, 63, 0, 32) // Full red, no green, half blue
@@ -161,7 +161,7 @@ func TestVGA_DAC_GetRGBA(t *testing.T) {
 // =============================================================================
 
 func TestVGA_Mode13h_SetMode(t *testing.T) {
-	vga := NewVGAEngine(nil, nil)
+	vga := NewVGAEngine(nil)
 
 	// Set Mode 13h
 	vga.HandleWrite(VGA_MODE, VGA_MODE_13H)
@@ -185,7 +185,7 @@ func TestVGA_Mode13h_SetMode(t *testing.T) {
 }
 
 func TestVGA_Mode13h_WriteVRAM(t *testing.T) {
-	vga := NewVGAEngine(nil, nil)
+	vga := NewVGAEngine(nil)
 	vga.HandleWrite(VGA_MODE, VGA_MODE_13H)
 
 	// Write to VRAM at offset 0
@@ -206,7 +206,7 @@ func TestVGA_Mode13h_WriteVRAM(t *testing.T) {
 }
 
 func TestVGA_Mode13h_ReadVRAM(t *testing.T) {
-	vga := NewVGAEngine(nil, nil)
+	vga := NewVGAEngine(nil)
 	vga.HandleWrite(VGA_MODE, VGA_MODE_13H)
 
 	// Fill a range of VRAM
@@ -224,7 +224,7 @@ func TestVGA_Mode13h_ReadVRAM(t *testing.T) {
 }
 
 func TestVGA_Mode13h_Render(t *testing.T) {
-	vga := NewVGAEngine(nil, nil)
+	vga := NewVGAEngine(nil)
 	vga.HandleWrite(VGA_MODE, VGA_MODE_13H)
 
 	// Set up a simple palette: entry 1 = red, entry 2 = green
@@ -252,7 +252,7 @@ func TestVGA_Mode13h_Render(t *testing.T) {
 }
 
 func TestVGA_Mode13h_PaletteCycle(t *testing.T) {
-	vga := NewVGAEngine(nil, nil)
+	vga := NewVGAEngine(nil)
 	vga.HandleWrite(VGA_MODE, VGA_MODE_13H)
 
 	// Set initial palette
@@ -286,7 +286,7 @@ func TestVGA_Mode13h_PaletteCycle(t *testing.T) {
 // =============================================================================
 
 func TestVGA_Mode12h_SetMode(t *testing.T) {
-	vga := NewVGAEngine(nil, nil)
+	vga := NewVGAEngine(nil)
 
 	// Set Mode 12h
 	vga.HandleWrite(VGA_MODE, VGA_MODE_12H)
@@ -308,7 +308,7 @@ func TestVGA_Mode12h_SetMode(t *testing.T) {
 }
 
 func TestVGA_Mode12h_MapMask(t *testing.T) {
-	vga := NewVGAEngine(nil, nil)
+	vga := NewVGAEngine(nil)
 	vga.HandleWrite(VGA_MODE, VGA_MODE_12H)
 
 	// Set map mask to plane 0 only
@@ -345,7 +345,7 @@ func TestVGA_Mode12h_MapMask(t *testing.T) {
 }
 
 func TestVGA_Mode12h_ReadMap(t *testing.T) {
-	vga := NewVGAEngine(nil, nil)
+	vga := NewVGAEngine(nil)
 	vga.HandleWrite(VGA_MODE, VGA_MODE_12H)
 
 	// Write different values to each plane
@@ -366,7 +366,7 @@ func TestVGA_Mode12h_ReadMap(t *testing.T) {
 }
 
 func TestVGA_Mode12h_BitMask(t *testing.T) {
-	vga := NewVGAEngine(nil, nil)
+	vga := NewVGAEngine(nil)
 	vga.HandleWrite(VGA_MODE, VGA_MODE_12H)
 
 	// Enable all planes
@@ -389,7 +389,7 @@ func TestVGA_Mode12h_BitMask(t *testing.T) {
 }
 
 func TestVGA_Mode12h_Render(t *testing.T) {
-	vga := NewVGAEngine(nil, nil)
+	vga := NewVGAEngine(nil)
 	vga.HandleWrite(VGA_MODE, VGA_MODE_12H)
 
 	// Default EGA/VGA 16-color palette should be set
@@ -423,7 +423,7 @@ func TestVGA_Mode12h_Render(t *testing.T) {
 // =============================================================================
 
 func TestVGA_Text_SetMode(t *testing.T) {
-	vga := NewVGAEngine(nil, nil)
+	vga := NewVGAEngine(nil)
 
 	vga.HandleWrite(VGA_MODE, VGA_MODE_TEXT)
 
@@ -440,7 +440,7 @@ func TestVGA_Text_SetMode(t *testing.T) {
 }
 
 func TestVGA_Text_WriteChar(t *testing.T) {
-	vga := NewVGAEngine(nil, nil)
+	vga := NewVGAEngine(nil)
 	vga.HandleWrite(VGA_MODE, VGA_MODE_TEXT)
 
 	// Write 'A' (0x41) with attribute 0x07 (white on black) at position 0
@@ -461,7 +461,7 @@ func TestVGA_Text_WriteChar(t *testing.T) {
 }
 
 func TestVGA_Text_FontROM(t *testing.T) {
-	vga := NewVGAEngine(nil, nil)
+	vga := NewVGAEngine(nil)
 
 	// Get font data for character 'A' (0x41)
 	fontData := vga.GetFontGlyph(0x41)
@@ -485,7 +485,7 @@ func TestVGA_Text_FontROM(t *testing.T) {
 }
 
 func TestVGA_Text_CursorPos(t *testing.T) {
-	vga := NewVGAEngine(nil, nil)
+	vga := NewVGAEngine(nil)
 	vga.HandleWrite(VGA_MODE, VGA_MODE_TEXT)
 
 	// Set cursor to position (10, 5) = offset 5*80+10 = 410
@@ -503,7 +503,7 @@ func TestVGA_Text_CursorPos(t *testing.T) {
 }
 
 func TestVGA_Text_Render(t *testing.T) {
-	vga := NewVGAEngine(nil, nil)
+	vga := NewVGAEngine(nil)
 	vga.HandleWrite(VGA_MODE, VGA_MODE_TEXT)
 
 	// Write 'X' at position 0 with white on black attribute
@@ -541,7 +541,7 @@ func TestVGA_Text_Render(t *testing.T) {
 // =============================================================================
 
 func TestVGA_ModeX_SetMode(t *testing.T) {
-	vga := NewVGAEngine(nil, nil)
+	vga := NewVGAEngine(nil)
 
 	vga.HandleWrite(VGA_MODE, VGA_MODE_X)
 
@@ -557,7 +557,7 @@ func TestVGA_ModeX_SetMode(t *testing.T) {
 }
 
 func TestVGA_ModeX_Unchained(t *testing.T) {
-	vga := NewVGAEngine(nil, nil)
+	vga := NewVGAEngine(nil)
 	vga.HandleWrite(VGA_MODE, VGA_MODE_X)
 
 	// Mode X is planar (unchained)
@@ -574,7 +574,7 @@ func TestVGA_ModeX_Unchained(t *testing.T) {
 }
 
 func TestVGA_ModeX_PageFlip(t *testing.T) {
-	vga := NewVGAEngine(nil, nil)
+	vga := NewVGAEngine(nil)
 	vga.HandleWrite(VGA_MODE, VGA_MODE_X)
 
 	// Page size in Mode X: 320*240/4 = 19200 bytes per plane
@@ -598,7 +598,7 @@ func TestVGA_ModeX_PageFlip(t *testing.T) {
 
 func TestVGA_Integration_VideoChip(t *testing.T) {
 	// Create VGA engine without video chip for testing
-	vga := NewVGAEngine(nil, nil)
+	vga := NewVGAEngine(nil)
 
 	// Set Mode 13h
 	vga.HandleWrite(VGA_MODE, VGA_MODE_13H)
@@ -628,7 +628,7 @@ func TestVGA_Integration_VideoChip(t *testing.T) {
 }
 
 func TestVGA_Status_VSync(t *testing.T) {
-	vga := NewVGAEngine(nil, nil)
+	vga := NewVGAEngine(nil)
 
 	// VSync flag should toggle based on timing
 	// Simulate waiting for vsync
@@ -646,7 +646,7 @@ func TestVGA_Status_VSync(t *testing.T) {
 }
 
 func TestVGA_Sequencer_Registers(t *testing.T) {
-	vga := NewVGAEngine(nil, nil)
+	vga := NewVGAEngine(nil)
 
 	// Test indexed access to sequencer registers
 	vga.HandleWrite(VGA_SEQ_INDEX, VGA_SEQ_MAPMASK_R)
@@ -660,7 +660,7 @@ func TestVGA_Sequencer_Registers(t *testing.T) {
 }
 
 func TestVGA_GraphicsController_Registers(t *testing.T) {
-	vga := NewVGAEngine(nil, nil)
+	vga := NewVGAEngine(nil)
 
 	// Test indexed access to GC registers
 	vga.HandleWrite(VGA_GC_INDEX, VGA_GC_BITMASK_R)
@@ -674,7 +674,7 @@ func TestVGA_GraphicsController_Registers(t *testing.T) {
 }
 
 func TestVGA_CRTC_Registers(t *testing.T) {
-	vga := NewVGAEngine(nil, nil)
+	vga := NewVGAEngine(nil)
 
 	// Test indexed access to CRTC registers
 	vga.HandleWrite(VGA_CRTC_INDEX, VGA_CRTC_OFFSET)
@@ -688,7 +688,7 @@ func TestVGA_CRTC_Registers(t *testing.T) {
 }
 
 func TestVGA_DefaultPalette(t *testing.T) {
-	vga := NewVGAEngine(nil, nil)
+	vga := NewVGAEngine(nil)
 
 	// VGA should have standard 16-color palette set by default
 	// Color 0 = black, Color 1 = blue, Color 2 = green, etc.

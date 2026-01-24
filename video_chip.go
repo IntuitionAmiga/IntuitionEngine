@@ -56,6 +56,9 @@ import (
 	"time"
 )
 
+// VideoChip layer constant for compositor
+const VIDEOCHIP_LAYER = 0 // VideoChip renders as background
+
 // ------------------------------------------------------------------------------
 // Memory and Address Constants
 // ------------------------------------------------------------------------------
@@ -367,6 +370,7 @@ type VideoChip struct {
 
 	// Display interface (Cache Line 1-2)
 	output VideoOutput // 8 bytes - Interface pointer
+	layer  int         // Z-order for compositor
 
 	// Communication channels (Cache Line 2)
 	vsyncChan chan struct{} // 8 bytes
@@ -521,6 +525,7 @@ func NewVideoChip(backend int) (*VideoChip, error) {
 	chip := &VideoChip{
 		output:       output,
 		currentMode:  MODE_640x480, // Default video mode
+		layer:        VIDEOCHIP_LAYER,
 		vsyncChan:    make(chan struct{}),
 		done:         make(chan struct{}),
 		dirtyRegions: make(map[int]DirtyRegion),
@@ -573,6 +578,12 @@ func (chip *VideoChip) SetBigEndianMode(enabled bool) {
 	chip.mutex.Lock()
 	defer chip.mutex.Unlock()
 	chip.bigEndianMode = enabled
+}
+
+// MarkHasContent signals that the framebuffer contains displayable content.
+// This should be called by external renderers (like VGA) after writing to the buffer.
+func (chip *VideoChip) MarkHasContent() {
+	chip.hasContent.Store(true)
 }
 
 func (chip *VideoChip) scaleImageToMode(imgData []byte, srcWidth, srcHeight int, mode VideoMode) []byte {
@@ -944,16 +955,9 @@ func (chip *VideoChip) refreshLoop() {
 			}
 			chip.mutex.Unlock()
 
-			// UpdateFrame is done OUTSIDE mutex to prevent blocking M68K I/O writes
-			if frameToSend != nil {
-				err := chip.output.UpdateFrame(frameToSend)
-				if err != nil {
-					fmt.Printf(ERROR_FRAME_MSG, err)
-				}
-			}
-
-			// VBlank timing is now handled by AfterFunc scheduled above
-			// This simulates real hardware where VBlank starts at end of active display
+			// Note: Frame output is handled by the compositor, which calls GetFrame()
+			// VideoChip no longer sends directly to output
+			_ = frameToSend // Buffer management still happens, compositor reads via GetFrame()
 		}
 	}
 }
@@ -1906,6 +1910,49 @@ func (chip *VideoChip) IsDirectMode() bool {
 // This is useful for tests and debugging.
 func (chip *VideoChip) GetFrontBuffer() []byte {
 	return chip.frontBuffer
+}
+
+// GetOutput returns the video output interface for sharing with other video devices.
+func (chip *VideoChip) GetOutput() VideoOutput {
+	return chip.output
+}
+
+// -----------------------------------------------------------------------------
+// VideoSource Interface Implementation
+// -----------------------------------------------------------------------------
+
+// GetFrame implements VideoSource - returns the current rendered frame
+// Called by compositor each frame to collect video output
+func (chip *VideoChip) GetFrame() []byte {
+	if !chip.enabled.Load() {
+		return nil
+	}
+	// Return splash screen if no content has been written
+	if !chip.hasContent.Load() {
+		return chip.splashBuffer
+	}
+	return chip.frontBuffer
+}
+
+// IsEnabled implements VideoSource - returns whether VideoChip is enabled
+func (chip *VideoChip) IsEnabled() bool {
+	return chip.enabled.Load()
+}
+
+// GetLayer implements VideoSource - returns Z-order for compositing
+func (chip *VideoChip) GetLayer() int {
+	return chip.layer
+}
+
+// GetDimensions implements VideoSource - returns frame dimensions
+func (chip *VideoChip) GetDimensions() (int, int) {
+	mode := VideoModes[chip.currentMode]
+	return mode.width, mode.height
+}
+
+// SignalVSync implements VideoSource - called by compositor after frame sent
+func (chip *VideoChip) SignalVSync() {
+	chip.inVBlank.Store(true)
 }
 
 func GetSplashImageData() ([]byte, error) {
