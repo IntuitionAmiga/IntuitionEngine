@@ -1,4 +1,4 @@
-; vga_mode13h_fire.asm - VGA Mode 13h Fire Effect Demo (IE32)
+w; vga_mode13h_fire.asm - VGA Mode 13h Fire Effect Demo (IE32)
 ; Classic DOS-style 256-color fire effect
 ;
 ; Assemble: ./bin/ie32asm assembler/vga_mode13h_fire.asm
@@ -18,7 +18,7 @@
 .org 0x1000
 
 start:
-    ; Enable VGA (standalone video device - no VideoChip required)
+    ; Enable VGA
     LDA #VGA_CTRL_ENABLE
     STA @VGA_CTRL
 
