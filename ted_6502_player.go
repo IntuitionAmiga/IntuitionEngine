@@ -40,6 +40,8 @@ type TED6502Player struct {
 	initEvents     []TEDEvent
 	initEmitted    bool
 	continuousMode bool // True if player runs continuously (init==play)
+	realTEDMode    bool // True for RealTED mode (PlayAddr==0, full raster emulation)
+	currentSubtune int  // Currently selected subtune (0-based)
 }
 
 // NewTED6502Player creates a new TED 6502 player
@@ -62,6 +64,8 @@ func (p *TED6502Player) LoadFromData(data []byte) error {
 	}
 
 	p.file = file
+	p.realTEDMode = file.RealTEDMode
+	p.currentSubtune = 0
 
 	// Set clock based on NTSC flag
 	if file.NTSC {
@@ -79,6 +83,11 @@ func (p *TED6502Player) LoadFromData(data []byte) error {
 
 	// Create CPU
 	p.cpu = p.createCPU()
+
+	// Handle RealTED mode (PlayAddr == 0)
+	if p.realTEDMode {
+		return p.initRealTEDMode()
+	}
 
 	// Determine if this is a packed file that needs unpacking
 	// Check the SYS target ($100D for Plus/4 BASIC files):
@@ -430,10 +439,108 @@ func (p *TED6502Player) Reset() {
 		p.cpu = p.createCPU()
 		p.bus.LoadBinary(p.file.LoadAddr, p.file.Data)
 
-		if p.file.InitAddr != 0 {
+		if p.realTEDMode {
+			_ = p.initRealTEDMode()
+		} else if p.file.InitAddr != 0 {
 			p.bus.StartFrame()
 			_ = p.callRoutine(p.file.InitAddr, 0)
 			p.initEvents = p.bus.CollectEvents()
 		}
 	}
+}
+
+// initRealTEDMode initializes the player for RealTED mode
+// RealTED mode is used when PlayAddr==0, requiring full raster-based emulation
+func (p *TED6502Player) initRealTEDMode() error {
+	p.continuousMode = true
+
+	// Enable raster timer IRQ for RealTED mode
+	// This simulates the Plus/4 raster interrupt system
+	p.bus.EnableKERNALTimer()
+
+	// Set the CPU to start execution from InitAddr
+	if p.file.InitAddr != 0 {
+		p.cpu.PC = p.file.InitAddr
+	} else {
+		// Fallback to SYS address if InitAddr not set
+		p.cpu.PC = findSYSAddress(p.file.Data)
+	}
+
+	// In RealTED mode, the init routine doesn't return - it sets up
+	// an infinite loop with raster-synchronized timing. We run it
+	// continuously without expecting a return.
+	p.cpu.A = uint8(p.currentSubtune)
+	p.cpu.X = 0
+	p.cpu.Y = 0
+	p.cpu.SR = UNUSED_FLAG
+	p.cpu.Running = true
+
+	return nil
+}
+
+// SelectSubtune selects a subtune for playback
+// Subtune numbers are 0-based (0 = first subtune)
+func (p *TED6502Player) SelectSubtune(n int) error {
+	if p.file == nil {
+		return fmt.Errorf("no file loaded")
+	}
+
+	if n < 0 || n >= p.file.Subtunes {
+		return fmt.Errorf("subtune %d out of range (0-%d)", n, p.file.Subtunes-1)
+	}
+
+	p.currentSubtune = n
+
+	// Reset CPU state
+	if p.bus != nil {
+		p.bus.Reset()
+	}
+	p.totalCycles = 0
+	p.totalSamples = 0
+	p.initEmitted = false
+
+	// Reload program data
+	p.bus.LoadBinary(p.file.LoadAddr, p.file.Data)
+	p.cpu = p.createCPU()
+
+	if p.realTEDMode {
+		return p.initRealTEDMode()
+	}
+
+	// For standard mode, call init routine with subtune number in A register
+	if p.file.InitAddr != 0 {
+		p.bus.StartFrame()
+		if err := p.callRoutine(p.file.InitAddr, uint8(n)); err != nil {
+			return fmt.Errorf("init routine failed: %v", err)
+		}
+		p.initEvents = p.bus.CollectEvents()
+	}
+
+	return nil
+}
+
+// GetCurrentSubtune returns the currently selected subtune number (0-based)
+func (p *TED6502Player) GetCurrentSubtune() int {
+	return p.currentSubtune
+}
+
+// GetSubtuneCount returns the number of available subtunes
+func (p *TED6502Player) GetSubtuneCount() int {
+	if p.file == nil {
+		return 0
+	}
+	return p.file.Subtunes
+}
+
+// IsRealTEDMode returns true if the player is in RealTED mode
+func (p *TED6502Player) IsRealTEDMode() bool {
+	return p.realTEDMode
+}
+
+// GetFormatType returns the detected format type of the loaded file
+func (p *TED6502Player) GetFormatType() TEDFormat {
+	if p.file == nil {
+		return TEDFormatRaw
+	}
+	return p.file.FormatType
 }

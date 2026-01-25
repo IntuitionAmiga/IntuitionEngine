@@ -79,3 +79,28 @@ const (
 
 // TED max volume (0-8, with 8 being maximum)
 const TED_MAX_VOLUME = 8
+
+// TMF format detection constants
+const (
+	TMF_SIGNATURE_OFFSET = 17   // TEDMUSIC signature at file offset 17 for TMF format
+	TMF_MAX_BASIC_LINE   = 4096 // BASIC line number < 4096 indicates TMF format
+)
+
+// TEDMUSIC header offsets (relative to signature start)
+const (
+	TED_HDR_INIT_LO  = 9  // Init offset low byte
+	TED_HDR_INIT_HI  = 10 // Init offset high byte
+	TED_HDR_PLAY_LO  = 11 // Play address low byte
+	TED_HDR_PLAY_HI  = 12 // Play address high byte
+	TED_HDR_END_LO   = 13 // End address low byte
+	TED_HDR_END_HI   = 14 // End address high byte
+	TED_HDR_RESERVED = 15 // Reserved bytes (2 bytes)
+	TED_HDR_SUBTUNES = 17 // Subtune count (2 bytes, little-endian)
+	TED_HDR_FLAGS    = 19 // FileFlags byte (at offset $27 from header start)
+	TED_HDR_STRINGS  = 48 // Metadata strings start offset
+)
+
+// TEDMUSIC header string sizes
+const (
+	TED_STRING_SIZE = 32 // Size of each metadata string field
+)
