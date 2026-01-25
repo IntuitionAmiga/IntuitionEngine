@@ -99,6 +99,7 @@
     - 10.6 Copper List Executor
     - 10.7 DMA Blitter
     - 10.8 Raster Band Fill
+    - 10.9 Video Compositor
 11. [Developer's Guide](#11-developers-guide)
     - 11.1 Development Environment Setup
     - 11.2 Building the System
@@ -188,6 +189,7 @@ All CPU cores (IE32, M68K, Z80, 6502) share the same memory space through the Sy
 - **Audio synthesis** responds instantly to register writes from any CPU
 - **DMA operations** (blitter, copper, file players) can access any memory location
 - **Memory-mapped I/O** works consistently across all CPU types
+- **Video compositing** blends multiple video sources (VideoChip, VGA) into final output
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -195,21 +197,27 @@ All CPU cores (IE32, M68K, Z80, 6502) share the same memory space through the Sy
 │                          (32MB Shared)                          │
 ├─────────────────────────────────────────────────────────────────┤
 │  0x000000 - 0x000FFF  │  System Vectors                         │
-│  0x001000 - 0x0EFFFF  │  Program Space (code + data)            │
-│  0x0F0000 - 0x0FFFFF  │  Hardware I/O Registers                 │
-│  0x100000 - 0x4FFFFF  │  Video RAM (4MB)                        │
+│  0x001000 - 0x09FFFF  │  Program Space (code + data)            │
+│  0x0A0000 - 0x0AFFFF  │  VGA VRAM Window (64KB)                 │
+│  0x0B8000 - 0x0BFFFF  │  VGA Text Buffer (32KB)                 │
+│  0x0F0000 - 0x0F0FFF  │  Video/Audio I/O Registers              │
+│  0x0F1000 - 0x0F13FF  │  VGA Registers                          │
+│  0x100000 - 0x4FFFFF  │  Video RAM (4MB, chunky RGBA)           │
 │  0x500000 - 0x1FFFFFF │  Extended RAM                           │
 └─────────────────────────────────────────────────────────────────┘
         │                       │                      │
         ▼                       ▼                      ▼
-   ┌─────────┐            ┌────────────────┐           ┌────────────────┐
-   │   CPU   │            │  Chunky Video  │           │  Audio System  │
-   │ (IE32/  │            │  ------------  │           │  ──────────────│
-   │  M68K/  │            │  Blitter       │           │  Custom Synth  │
-   │  Z80/   │            │  Copper        │           │  PSG/POKEY/SID │
-   │  6502)  │            └────────────────┘           │  File Players  │
-   └─────────┘                                         └────────────────┘
+   ┌─────────┐            ┌────────────────┐     ┌────────────────┐
+   │   CPU   │            │  Video System  │     │  Audio System  │
+   │ (IE32/  │            │  ────────────  │     │  ──────────────│
+   │  M68K/  │            │  VideoChip     │     │  Custom Synth  │
+   │  Z80/   │            │  VGA Engine    │     │  PSG/POKEY/SID │
+   │  6502)  │            │  Compositor    │     │  File Players  │
+   └─────────┘            │  Blitter/Copper│     └────────────────┘
+                          └────────────────┘
 ```
+
+The video compositor blends output from the VideoChip (layer 0) and VGA (layer 10) into a single display, enabling mixed-mode effects. The copper coprocessor can target both video systems via SETBASE for per-scanline raster effects.
 
 The custom audio synthesizer is the core of the sound system. PSG, POKEY, and SID registers are mapped to the custom synth, providing authentic register-level compatibility with high-quality 44.1kHz output. File players (.ym, .ay, .vgm/vgz, .sid, .sap, etc.) execute embedded CPU code that writes to these mapped registers.
 
@@ -226,6 +234,11 @@ All hardware is accessed through memory-mapped registers in the `$F0000-$FFFFF` 
 | POKEY | `$F0D00-$F0D1D` | Atari POKEY registers and SAP playback |
 | SID | `$F0E00-$F0E2D` | MOS 6581 registers and SID playback |
 | Banking | `$F700-$F7F0` | Bank window control (Z80/6502 only) |
+| VGA | `$F1000-$F13FF` | VGA mode, DAC, sequencer, CRTC, palette |
+
+Additionally, VGA uses legacy PC-compatible memory windows:
+- `$A0000-$AFFFF`: VGA VRAM (64KB graphics memory)
+- `$B8000-$BFFFF`: VGA Text Buffer (32KB, char+attr pairs)
 
 For 8-bit CPUs (Z80, 6502), addresses are mapped to the 16-bit range `$F000-$FFFF` or accessed via I/O ports.
 
@@ -314,6 +327,8 @@ MODE_640x480  = 0x00
 MODE_800x600  = 0x01
 MODE_1024x768 = 0x02
 ```
+
+**Video Compositor:** These registers control the VideoChip, which renders as layer 0 in the compositor. The VGA chip (section 3.11) renders as layer 10 on top. Both sources are composited together for final display output. The copper coprocessor can write to either device using the SETBASE instruction (see section 10.6).
 
 Copper lists are stored as little-endian 32-bit words in RAM. The list format is:
 - `WAIT`: `(0<<30) | (y<<12) | x` (wait until raster Y/X reached)
@@ -745,6 +760,16 @@ Palette RAM (0x0F1100 - 0x0F13FF):
     ; Write to VRAM (affects only plane 0)
     move.b  #$FF,$A0000          ; Set 8 pixels in plane 0
 ```
+
+### Video Compositor Integration
+
+The VGA chip integrates with the video compositor as a separate layer (layer 10) that renders on top of the VideoChip (layer 0). Both sources are blended together for the final display output.
+
+**Per-Scanline Rendering:** The VGA supports scanline-aware rendering, meaning the copper coprocessor can modify VGA palette registers on a per-scanline basis. When the copper executes a `SETBASE` to target VGA DAC registers followed by palette MOVE operations, those changes affect VGA rendering from that scanline onward. This enables classic PC demo effects like raster bars and gradient backgrounds.
+
+**VSync Timing:** The VGA provides time-based vsync status through `VGA_STATUS`. The status bit automatically calculates whether the display is in vertical retrace based on a 60Hz refresh cycle, requiring no explicit signaling from the compositor.
+
+See section 10.9 (Video Compositor) for details on the compositing architecture and section 10.6 (Copper List Executor) for examples of copper-driven VGA palette manipulation.
 
 # 4. IE32 CPU Architecture
 
@@ -3053,6 +3078,19 @@ The `SETBASE` instruction allows the copper to write to any memory-mapped I/O de
 
 The base is reset to VIDEO_REG_BASE at the start of each frame.
 
+### Per-Scanline Execution
+
+The copper executes synchronously with the video compositor's scanline rendering. When the compositor renders each scanline:
+
+1. The copper advances, executing instructions until it reaches a WAIT for a future scanline
+2. MOVE instructions take effect immediately for the current scanline
+3. VGA renders its scanline using the current palette state
+
+This means copper-driven palette changes affect only the scanlines rendered after the change, enabling classic raster effects like:
+- Gradient backgrounds (changing palette entries per scanline)
+- Split-screen color schemes
+- Plasma and interference patterns
+
 ### Cross-Device Copper Example (VGA Palette + IE Raster Bars)
 
 **IE32:**
@@ -3201,6 +3239,92 @@ The blitter defaults `BLT_SRC_STRIDE`/`BLT_DST_STRIDE` to the current mode row b
     lda  #1
     sta  VIDEO_RASTER_CTRL
 ```
+
+## 10.9 Video Compositor
+
+The Intuition Engine uses a video compositor to blend multiple video sources into a single display output. This architecture enables layered rendering where different video devices (VideoChip, VGA) can contribute to the final frame.
+
+### Architecture
+
+```
+                    +-------------+
+  CPU -> VGA VRAM -> |   VGAEngine | --+
+                    +-------------+   |     +-------------+     +---------+
+                                      +---> | Compositor  | --> | Display |
+                    +-------------+   |     +-------------+     +---------+
+  CPU -> Chip VRAM -> |  VideoChip  | --+
+                    +-------------+
+```
+
+### Layer Ordering
+
+Each video source has a layer number that determines compositing order (higher layers render on top):
+
+| Source | Layer | Description |
+|--------|-------|-------------|
+| VideoChip | 0 | Base layer with copper coprocessor |
+| VGA | 10 | Overlays on top of VideoChip |
+
+### Per-Scanline Rendering
+
+The compositor supports two rendering modes:
+
+**Full-Frame Mode:** Each source renders its complete frame, then frames are composited. Simple but copper effects only affect video registers, not VGA palette.
+
+**Scanline-Aware Mode:** Sources that implement the `ScanlineAware` interface render one scanline at a time. This enables:
+- Copper MOVE operations to affect the current scanline immediately
+- Per-scanline VGA palette changes via SETBASE
+- Classic demoscene raster effects (color cycling, plasma bars)
+
+The compositor automatically uses scanline-aware rendering when all enabled sources support it. The render sequence per scanline is:
+1. VideoChip processes copper list up to current Y position
+2. VideoChip renders its scanline
+3. VGA renders its scanline using current palette state
+4. Scanlines are composited in layer order
+
+### Copper + VGA Integration
+
+The copper's SETBASE instruction enables per-scanline VGA palette manipulation:
+
+```assembly
+; Create a raster bar effect by changing VGA palette per scanline
+copper_list:
+    ; Wait for scanline 50
+    .long COP_WAIT_MASK | (50 * COP_WAIT_SCALE)
+
+    ; Switch to VGA DAC registers
+    .long COP_SETBASE_VGA_DAC
+
+    ; Set color 0 to red for this scanline
+    .long COP_MOVE_VGA_WINDEX
+    .long 0
+    .long COP_MOVE_VGA_DATA
+    .long 63                          ; R
+    .long COP_MOVE_VGA_DATA
+    .long 0                           ; G
+    .long COP_MOVE_VGA_DATA
+    .long 0                           ; B
+
+    ; Wait for scanline 60
+    .long COP_WAIT_MASK | (60 * COP_WAIT_SCALE)
+
+    ; Set color 0 to blue
+    .long COP_MOVE_VGA_WINDEX
+    .long 0
+    .long COP_MOVE_VGA_DATA
+    .long 0                           ; R
+    .long COP_MOVE_VGA_DATA
+    .long 0                           ; G
+    .long COP_MOVE_VGA_DATA
+    .long 63                          ; B
+
+    ; Return to video chip registers
+    .long COP_SETBASE_VIDEO
+
+    .long COP_END
+```
+
+This creates a horizontal band where the VGA background color (palette entry 0) changes from red to blue at specific scanlines.
 
 # 11. Developer's Guide
 

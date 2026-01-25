@@ -557,6 +557,7 @@ func main() {
 			// Start peripherals
 			videoChip.Start()
 			compositor.Start()
+			soundChip.SetSampleTicker(sidEngine)
 			soundChip.Start()
 
 			// Start CPU execution

@@ -1391,14 +1391,15 @@ func (cpu *CPU) Execute() {
 
 		case WAIT:
 			/*
-			   Wait specified cycles.
+			   Wait specified microseconds.
 			   Operation:
-			   1. Get delay count from operand
-			   2. ExecuteInstruction delay loop
+			   1. Get delay count from operand (in microseconds)
+			   2. Sleep for the specified duration
 			   3. Advance PC by INSTRUCTION_SIZE
 			*/
-			targetTime := resolvedOperand
-			for i := uint32(0); i < targetTime; i++ {
+			delayMicros := resolvedOperand
+			if delayMicros > 0 {
+				time.Sleep(time.Duration(delayMicros) * time.Microsecond)
 			}
 			cpu.PC += INSTRUCTION_SIZE
 

@@ -47,6 +47,14 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
+	"time"
+)
+
+// VGA timing constants
+const (
+	VGA_REFRESH_RATE     = 60
+	VGA_REFRESH_INTERVAL = time.Second / VGA_REFRESH_RATE
 )
 
 // VGA layer constant for compositor
@@ -101,7 +109,8 @@ type VGAEngine struct {
 	latch [4]uint8
 
 	// VSync state
-	vsync bool
+	vsync      bool
+	frameStart atomic.Int64 // Unix nano timestamp of frame start for time-based vsync
 
 	// Per-scanline render buffer (used by ScanlineAware interface)
 	scanlineFrame []byte
@@ -188,7 +197,28 @@ func (v *VGAEngine) HandleRead(addr uint32) uint32 {
 	case VGA_MODE:
 		return uint32(v.mode)
 	case VGA_STATUS:
-		return uint32(v.status)
+		// Calculate vsync based on time elapsed since frame start
+		// Self-resetting: automatically starts new frame when period elapses
+		now := time.Now().UnixNano()
+		frameStart := v.frameStart.Load()
+		if frameStart == 0 {
+			// Not initialized yet
+			v.frameStart.Store(now)
+			frameStart = now
+		}
+		elapsed := time.Duration(now - frameStart)
+		// Auto-reset frame timer if we've passed a full frame
+		if elapsed >= VGA_REFRESH_INTERVAL {
+			v.frameStart.Store(now)
+			elapsed = 0
+		}
+		// VSync active during last 10% of frame period (~1.6ms at 60Hz)
+		inVSync := elapsed >= (VGA_REFRESH_INTERVAL * 9 / 10)
+		status := v.status &^ (VGA_STATUS_VSYNC | VGA_STATUS_RETRACE)
+		if inVSync {
+			status |= VGA_STATUS_VSYNC | VGA_STATUS_RETRACE
+		}
+		return uint32(status)
 	case VGA_CTRL:
 		return uint32(v.control)
 
@@ -854,17 +884,9 @@ func (v *VGAEngine) GetDimensions() (int, int) {
 
 // SignalVSync implements VideoSource - called by compositor after frame sent
 func (v *VGAEngine) SignalVSync() {
-	// Toggle VSync status for programs that poll VGA_STATUS
-	// Keep vsync true for one full frame period so tight polling loops can see it
-	// The vsync flag will be cleared when the next frame starts
-	v.mutex.Lock()
-	v.vsync = !v.vsync
-	if v.vsync {
-		v.status |= VGA_STATUS_VSYNC | VGA_STATUS_RETRACE
-	} else {
-		v.status &^= VGA_STATUS_VSYNC | VGA_STATUS_RETRACE
-	}
-	v.mutex.Unlock()
+	// Reset frame start time for time-based vsync calculation
+	// The vsync status is now calculated dynamically in HandleRead
+	v.frameStart.Store(time.Now().UnixNano())
 }
 
 // GetCurrentFramebuffer returns the current VGA framebuffer for testing

@@ -227,21 +227,36 @@ func (a *Assembler) handleDirective(line string, lineNum int) error {
 
 	switch parts[0] {
 	case ".word":
-		// Try to parse as number first
-		value, err := strconv.ParseUint(parts[1], 0, 32)
-		if err != nil {
-			// Not a number, check if it's an equate
-			if val, ok := a.equates[parts[1]]; ok {
-				value = uint64(val)
-			} else if labelAddr, ok := a.labels[parts[1]]; ok {
-				// Check if it's a label
-				value = uint64(labelAddr)
-			} else {
-				return fmt.Errorf("invalid word value or unknown symbol: %s", parts[1])
+		// Handle comma-separated list of word values (supports negative numbers)
+		wordList := strings.Join(parts[1:], " ")
+		wordValues := strings.Split(wordList, ",")
+		for _, wv := range wordValues {
+			wv = strings.TrimSpace(wv)
+			if wv == "" {
+				continue
 			}
+			// Try to parse as signed number first (supports negative values)
+			value, err := strconv.ParseInt(wv, 0, 32)
+			if err != nil {
+				// Try unsigned for large hex values
+				uvalue, uerr := strconv.ParseUint(wv, 0, 32)
+				if uerr != nil {
+					// Not a number, check if it's an equate
+					if val, ok := a.equates[wv]; ok {
+						value = int64(val)
+					} else if labelAddr, ok := a.labels[wv]; ok {
+						// Check if it's a label
+						value = int64(labelAddr)
+					} else {
+						return fmt.Errorf("invalid word value or unknown symbol: %s", wv)
+					}
+				} else {
+					value = int64(uvalue)
+				}
+			}
+			a.data = append(a.data, writeLittleEndian(uint32(value))...)
+			a.dataOffset += 4
 		}
-		a.data = append(a.data, writeLittleEndian(uint32(value))...)
-		a.dataOffset += 4
 
 	case ".equ":
 		if len(parts) < 3 {
@@ -255,12 +270,21 @@ func (a *Assembler) handleDirective(line string, lineNum int) error {
 		fmt.Printf("Added equate: %s = 0x%x\n", parts[1], value)
 
 	case ".byte":
-		value, err := strconv.ParseUint(parts[1], 0, 8)
-		if err != nil {
-			return fmt.Errorf("invalid byte value: %s", parts[1])
+		// Handle comma-separated list of byte values
+		byteList := strings.Join(parts[1:], " ")
+		byteValues := strings.Split(byteList, ",")
+		for _, bv := range byteValues {
+			bv = strings.TrimSpace(bv)
+			if bv == "" {
+				continue
+			}
+			value, err := strconv.ParseUint(bv, 0, 8)
+			if err != nil {
+				return fmt.Errorf("invalid byte value: %s", bv)
+			}
+			a.data = append(a.data, byte(value))
+			a.dataOffset++
 		}
-		a.data = append(a.data, byte(value))
-		a.dataOffset++
 
 	case ".incbin":
 		path := strings.Trim(parts[1], "\"")

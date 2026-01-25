@@ -19,6 +19,7 @@ VECTOR_IRQ      equ $000004
 
 ; Program space
 PROGRAM_START   equ $001000
+STACK_TOP       equ $FF0000             ; Top of stack (grows downward)
 
 ; Bank window addresses (for 8-bit CPU compatibility)
 BANK1_WINDOW    equ $002000             ; Sprite data bank window (8KB)
