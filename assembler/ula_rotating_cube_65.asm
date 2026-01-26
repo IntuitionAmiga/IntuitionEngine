@@ -3,9 +3,13 @@
 ;
 ; Rotating wireframe cube with dual-axis rotation (X and Y).
 ; 32 frames for smooth animation.
+; Plays Platoon.ay music via PSG player.
 ; ============================================================================
 
 .include "ie65.inc"
+
+; Music file size
+MUSIC_SIZE = 8145
 
 ; ============================================================================
 ; ZERO PAGE VARIABLES
@@ -37,6 +41,9 @@ frame_ptr_y:    .res 2
 
     lda #ULA_CTRL_ENABLE
     sta ULA_CTRL
+
+    ; Start music playback
+    jsr init_music
 
     lda #0
     sta curr_frame
@@ -72,6 +79,35 @@ main_loop:
     lda ULA_STATUS
     and #ULA_STATUS_VBLANK
     beq @wait
+    rts
+.endproc
+
+; ----------------------------------------------------------------------------
+; Initialize and start music playback
+; ----------------------------------------------------------------------------
+.proc init_music
+    ; Set pointer to music data (little-endian, 32-bit)
+    lda #<music_data
+    sta PSG_PLAY_PTR_0
+    lda #>music_data
+    sta PSG_PLAY_PTR_1
+    lda #0
+    sta PSG_PLAY_PTR_2
+    sta PSG_PLAY_PTR_3
+
+    ; Set music length (little-endian, 32-bit)
+    lda #<MUSIC_SIZE
+    sta PSG_PLAY_LEN_0
+    lda #>MUSIC_SIZE
+    sta PSG_PLAY_LEN_1
+    lda #0
+    sta PSG_PLAY_LEN_2
+    sta PSG_PLAY_LEN_3
+
+    ; Start playback with looping enabled
+    lda #$05                    ; bit 0 = start, bit 2 = loop
+    sta PSG_PLAY_CTRL
+
     rts
 .endproc
 
@@ -444,3 +480,11 @@ all_vertex_y:
     .byte 131, 118, 41, 54, 150, 137, 60, 73      ; Frame 29
     .byte 131, 125, 46, 52, 145, 139, 60, 66      ; Frame 30
     .byte 132, 131, 51, 53, 140, 138, 59, 60      ; Frame 31
+
+; ============================================================================
+; MUSIC DATA - Platoon.ay
+; ============================================================================
+.segment "BINDATA"
+
+music_data:
+    .incbin "../Platoon.ay"
