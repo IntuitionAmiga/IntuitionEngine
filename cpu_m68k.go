@@ -1844,7 +1844,7 @@ func (cpu *M68KCPU) Read8(addr uint32) uint8 {
 	}
 
 	// Terminal device always returns zero to indicate ready state
-	if addr == TERM_OUT || addr == 0xFFFFF900 {
+	if addr == TERM_OUT || addr == TERM_OUT_SIGNEXT {
 		return 0
 	}
 
@@ -1949,7 +1949,7 @@ func (cpu *M68KCPU) Read32(addr uint32) uint32 {
 }
 func (cpu *M68KCPU) Write8(addr uint32, value uint8) {
 	// Terminal device has no buffer to avoid latency
-	if addr == TERM_OUT || addr == 0xFFFFF900 {
+	if addr == TERM_OUT || addr == TERM_OUT_SIGNEXT {
 		fmt.Printf("%c", value)
 		cpu.bus.Write8(TERM_OUT, value)
 		return

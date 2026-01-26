@@ -1,3 +1,6 @@
+// psg_constants.go - AY-3-8910/YM2149 PSG register addresses and constants
+// See registers.go for the complete I/O memory map reference.
+
 package main
 
 const (

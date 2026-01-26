@@ -131,6 +131,7 @@ const (
 
 // ------------------------------------------------------------------------------
 // Memory Map Boundaries
+// See registers.go for the complete I/O memory map reference.
 // ------------------------------------------------------------------------------
 const (
 	VECTOR_TABLE    = 0x0000  // Interrupt vector table
@@ -138,7 +139,7 @@ const (
 	STACK_BOTTOM    = 0x2000  // Stack bottom boundary
 	STACK_START     = 0x9F000 // Initial stack pointer (below VGA VRAM)
 	IO_REGION_START = 0xA0000 // Start of I/O mapped region (includes VGA VRAM at 0xA0000)
-	IO_BASE         = 0xF0800 // I/O register base
+	IO_BASE         = 0xF0800 // I/O register base (audio chip region)
 	IO_LIMIT        = 0xFFFFF // I/O register limit
 )
 

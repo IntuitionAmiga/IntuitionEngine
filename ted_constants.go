@@ -1,4 +1,5 @@
 // ted_constants.go - MOS 7360/8360 TED sound chip register addresses and constants
+// See registers.go for the complete I/O memory map reference.
 
 package main
 

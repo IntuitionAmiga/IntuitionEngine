@@ -147,7 +147,7 @@ func (bus *SystemBus) Write32WithFault(addr uint32, value uint32) bool {
 		}
 
 		// Special handling for terminal output case
-		if addr == 0xFFFFF900 || addr == 0xF900 {
+		if addr == TERM_OUT_SIGNEXT || addr == TERM_OUT_16BIT {
 			// Call terminal output handler if available
 			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
 				for _, region := range regions {
@@ -218,7 +218,7 @@ func (bus *SystemBus) Read32WithFault(addr uint32) (uint32, bool) {
 		}
 
 		// Special handling for terminal input
-		if addr == 0xFFFFF900 || addr == 0xF900 {
+		if addr == TERM_OUT_SIGNEXT || addr == TERM_OUT_16BIT {
 			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
 				for _, region := range regions {
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onRead != nil {
@@ -283,7 +283,7 @@ func (bus *SystemBus) Write16WithFault(addr uint32, value uint16) bool {
 		}
 
 		// Special handling for terminal output case
-		if addr == 0xFFFFF900 || addr == 0xF900 {
+		if addr == TERM_OUT_SIGNEXT || addr == TERM_OUT_16BIT {
 			// Call terminal output handler if available
 			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
 				for _, region := range regions {
@@ -349,7 +349,7 @@ func (bus *SystemBus) Read16WithFault(addr uint32) (uint16, bool) {
 		}
 
 		// Special handling for terminal input
-		if addr == 0xFFFFF900 || addr == 0xF900 {
+		if addr == TERM_OUT_SIGNEXT || addr == TERM_OUT_16BIT {
 			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
 				for _, region := range regions {
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onRead != nil {
@@ -414,7 +414,7 @@ func (bus *SystemBus) Write8WithFault(addr uint32, value uint8) bool {
 		}
 
 		// Special handling for terminal output case
-		if addr == 0xFFFFF900 || addr == 0xF900 {
+		if addr == TERM_OUT_SIGNEXT || addr == TERM_OUT_16BIT {
 			// Call terminal output handler if available
 			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
 				for _, region := range regions {
@@ -480,7 +480,7 @@ func (bus *SystemBus) Read8WithFault(addr uint32) (uint8, bool) {
 		}
 
 		// Special handling for terminal input
-		if addr == 0xFFFFF900 || addr == 0xF900 {
+		if addr == TERM_OUT_SIGNEXT || addr == TERM_OUT_16BIT {
 			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
 				for _, region := range regions {
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onRead != nil {
@@ -611,7 +611,7 @@ func (bus *SystemBus) Write32(addr uint32, value uint32) {
 		}
 
 		// Special handling for terminal output case
-		if addr == 0xFFFFF900 || addr == 0xF900 {
+		if addr == TERM_OUT_SIGNEXT || addr == TERM_OUT_16BIT {
 			// Call terminal output handler if available
 			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
 				for _, region := range regions {
@@ -684,7 +684,7 @@ func (bus *SystemBus) Read32(addr uint32) uint32 {
 		}
 
 		// Special handling for terminal input
-		if addr == 0xFFFFF900 || addr == 0xF900 {
+		if addr == TERM_OUT_SIGNEXT || addr == TERM_OUT_16BIT {
 			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
 				for _, region := range regions {
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onRead != nil {
@@ -751,7 +751,7 @@ func (bus *SystemBus) Write16(addr uint32, value uint16) {
 		}
 
 		// Special handling for terminal output case
-		if addr == 0xFFFFF900 || addr == 0xF900 {
+		if addr == TERM_OUT_SIGNEXT || addr == TERM_OUT_16BIT {
 			// Call terminal output handler if available
 			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
 				for _, region := range regions {
@@ -819,7 +819,7 @@ func (bus *SystemBus) Read16(addr uint32) uint16 {
 		}
 
 		// Special handling for terminal input
-		if addr == 0xFFFFF900 || addr == 0xF900 {
+		if addr == TERM_OUT_SIGNEXT || addr == TERM_OUT_16BIT {
 			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
 				for _, region := range regions {
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onRead != nil {
@@ -886,7 +886,7 @@ func (bus *SystemBus) Write8(addr uint32, value uint8) {
 		}
 
 		// Special handling for terminal output case
-		if addr == 0xFFFFF900 || addr == 0xF900 {
+		if addr == TERM_OUT_SIGNEXT || addr == TERM_OUT_16BIT {
 			// Call terminal output handler if available
 			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
 				for _, region := range regions {
@@ -954,7 +954,7 @@ func (bus *SystemBus) Read8(addr uint32) uint8 {
 		}
 
 		// Special handling for terminal input
-		if addr == 0xFFFFF900 || addr == 0xF900 {
+		if addr == TERM_OUT_SIGNEXT || addr == TERM_OUT_16BIT {
 			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
 				for _, region := range regions {
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onRead != nil {

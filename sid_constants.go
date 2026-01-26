@@ -1,4 +1,5 @@
 // sid_constants.go - MOS 6581/8580 SID sound chip register addresses and constants
+// See registers.go for the complete I/O memory map reference.
 
 package main
 

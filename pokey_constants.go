@@ -1,4 +1,5 @@
 // pokey_constants.go - POKEY sound chip register addresses and constants
+// See registers.go for the complete I/O memory map reference.
 
 package main
 

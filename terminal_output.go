@@ -8,9 +8,9 @@ import (
 )
 
 // Constants for terminal output
+// Note: TERMINAL_OUT is defined in registers.go (master I/O address map)
 const (
-	TERM_OUT = 0xF0900 // Memory-mapped terminal output register
-	MAX_LINE = 1024    // Maximum line length
+	MAX_LINE = 1024 // Maximum line length
 )
 
 // TerminalOutput implements a simple terminal output device
@@ -23,7 +23,6 @@ type TerminalOutput struct {
 
 // NewTerminalOutput creates a new terminal output device
 func NewTerminalOutput() *TerminalOutput {
-	//fmt.Println("Terminal output device initialized at address 0xFFFFF900")
 	return &TerminalOutput{
 		enabled:    true,
 		maxLineLen: MAX_LINE,
@@ -76,7 +75,7 @@ func NewTerminalOutput() *TerminalOutput {
 // HandleWrite processes writes to the terminal output register
 func (t *TerminalOutput) HandleWrite(addr uint32, value uint32) {
 	// Normalize address to handle both direct and sign-extended forms
-	if addr == 0xF900 || addr == 0xFFFFF900 {
+	if addr == TERM_OUT_16BIT || addr == TERM_OUT_SIGNEXT {
 		t.mutex.Lock()
 		defer t.mutex.Unlock()
 

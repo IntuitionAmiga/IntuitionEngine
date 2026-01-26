@@ -1,4 +1,5 @@
 // vga_constants.go - IBM VGA chip register addresses and constants
+// See registers.go for the complete I/O memory map reference.
 
 package main
 
