@@ -254,6 +254,7 @@ The system's memory layout is designed to provide efficient access to both progr
 0x000000 - 0x000FFF: System vectors (including interrupt vector)
 0x001000 - 0x0EFFFF: Program space
 0x0F0000 - 0x0F0058: Video registers (copper, blitter, raster control)
+0x0F0700 - 0x0F07FF: Terminal/Serial output
 0x0F0800 - 0x0F080C: Timer registers
 0x0F0820 - 0x0F0834: Filter registers
 0x0F0900 - 0x0F0A6F: Legacy synth registers (square/triangle/sine/noise/saw)
@@ -268,6 +269,11 @@ The system's memory layout is designed to provide efficient access to both progr
 0x0F0E19:            SID+ control register
 0x0F0E1A - 0x0F0E1C: SID read-only registers (OSC3, ENV3)
 0x0F0E20 - 0x0F0E2D: SID playback control (.SID file playback)
+0x0F0F00 - 0x0F0F05: TED registers (Plus/4 audio)
+0x0F0F10 - 0x0F0F1C: TED playback control
+0x0F1000 - 0x0F13FF: VGA registers (IBM VGA emulation)
+0x0A0000 - 0x0AFFFF: VGA VRAM window (Mode 13h/12h)
+0x0B8000 - 0x0BFFFF: VGA text buffer
 0x100000 - 0x4FFFFF: Video RAM (VRAM_START to VRAM_START + VRAM_SIZE)
 ```
 
