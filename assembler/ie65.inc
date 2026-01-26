@@ -1636,6 +1636,86 @@ COP_MOVE_VGA_DATA     = $40010000           ; Offset 1: DAC data (R,G,B seq)
 .endmacro
 
 ; ============================================================================
+; ZX SPECTRUM ULA VIDEO REGISTERS
+;
+; The ULA chip provides ZX Spectrum compatible video output:
+; - 256x192 pixel display with 32-pixel border (320x256 total)
+; - Attribute-based coloring: 8x8 pixel cells share INK/PAPER colors
+; - 15 unique colors (8 base + 8 bright, black can't brighten)
+; - FLASH attribute: swaps INK/PAPER at ~1.6Hz
+;
+; For 6502: ULA registers are memory-mapped at $D800-$D80F
+; VRAM is at $4000 (banked, same as authentic ZX Spectrum)
+;
+; Non-linear bitmap addressing formula:
+;   addr = ((y & $C0) << 5) + ((y & $07) << 8) + ((y & $38) << 2) + (x >> 3)
+;
+; Attribute byte format: FBPPPIII
+;   F (bit 7): FLASH - swap INK/PAPER when set
+;   B (bit 6): BRIGHT - intensify both colors
+;   PPP (bits 5-3): PAPER (background) color 0-7
+;   III (bits 2-0): INK (foreground) color 0-7
+;
+; Color palette:
+;   0=Black, 1=Blue, 2=Red, 3=Magenta, 4=Green, 5=Cyan, 6=Yellow, 7=White
+; ============================================================================
+
+ULA_BASE        = $D800         ; ULA register base (6502 mapping)
+ULA_BORDER      = $D800         ; Border color (bits 0-2)
+ULA_CTRL        = $D804         ; Control register
+ULA_STATUS      = $D808         ; Status register
+
+; Control register bits
+ULA_CTRL_ENABLE = $01           ; ULA enable bit
+
+; Status register bits
+ULA_STATUS_VBLANK = $01         ; VBlank active (cleared on read)
+
+; VRAM layout (banked at $4000, same as authentic ZX Spectrum)
+ULA_VRAM        = $4000         ; VRAM base address
+ULA_BITMAP_SIZE = 6144          ; Bitmap: 256x192/8 = 6144 bytes
+ULA_ATTR_OFFSET = $1800         ; Attribute offset from VRAM base
+ULA_ATTR_SIZE   = 768           ; Attributes: 32x24 = 768 bytes
+ULA_VRAM_SIZE   = 6912          ; Total: 6144 + 768 bytes
+
+; Display dimensions
+ULA_DISPLAY_W   = 256           ; Display width in pixels
+ULA_DISPLAY_H   = 192           ; Display height in pixels
+ULA_BORDER_SIZE = 32            ; Border size in pixels
+ULA_FRAME_W     = 320           ; Total frame width (256+64)
+ULA_FRAME_H     = 256           ; Total frame height (192+64)
+ULA_CELLS_X     = 32            ; Character cells horizontally
+ULA_CELLS_Y     = 24            ; Character cells vertically
+
+; ----- ULA helper macros -----
+
+; Set ULA border color (0-7)
+.macro ULA_SET_BORDER color
+    lda #color
+    sta ULA_BORDER
+.endmacro
+
+; Enable ULA
+.macro ULA_ENABLE
+    lda #ULA_CTRL_ENABLE
+    sta ULA_CTRL
+.endmacro
+
+; Disable ULA
+.macro ULA_DISABLE
+    lda #0
+    sta ULA_CTRL
+.endmacro
+
+; Wait for ULA VBlank
+; The status register VBlank bit is cleared on read, so we wait until it's set
+.macro ULA_WAIT_VBLANK
+:   lda ULA_STATUS
+    and #ULA_STATUS_VBLANK
+    beq :-
+.endmacro
+
+; ============================================================================
 ; ZERO PAGE ALLOCATION HELPER
 ; ============================================================================
 

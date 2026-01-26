@@ -1891,6 +1891,65 @@
 .endm
 
 ; ============================================================================
+; ZX SPECTRUM ULA VIDEO REGISTERS
+;
+; The ULA chip provides ZX Spectrum compatible video output:
+; - 256x192 pixel display with 32-pixel border (320x256 total)
+; - Attribute-based coloring: 8x8 pixel cells share INK/PAPER colors
+; - 15 unique colors (8 base + 8 bright, black can't brighten)
+; - FLASH attribute: swaps INK/PAPER at ~1.6Hz
+;
+; For Z80: ULA is accessed via port I/O at port 0xFE (authentic Spectrum)
+; Writing to port 0xFE: bits 0-2 = border color, bit 3 = MIC, bit 4 = EAR
+; VRAM is at 0x4000 (same as authentic ZX Spectrum)
+;
+; Non-linear bitmap addressing formula:
+;   addr = ((y & 0xC0) << 5) + ((y & 0x07) << 8) + ((y & 0x38) << 2) + (x >> 3)
+;
+; Attribute byte format: FBPPPIII
+;   F (bit 7): FLASH - swap INK/PAPER when set
+;   B (bit 6): BRIGHT - intensify both colors
+;   PPP (bits 5-3): PAPER (background) color 0-7
+;   III (bits 2-0): INK (foreground) color 0-7
+;
+; Color palette:
+;   0=Black, 1=Blue, 2=Red, 3=Magenta, 4=Green, 5=Cyan, 6=Yellow, 7=White
+; ============================================================================
+
+; ULA port (authentic ZX Spectrum)
+.set ULA_PORT,0xFE              ; ULA I/O port (border, speaker, etc.)
+
+; VRAM layout (same as authentic ZX Spectrum)
+.set ULA_VRAM,0x4000            ; VRAM base address
+.set ULA_BITMAP_SIZE,6144       ; Bitmap: 256x192/8 = 6144 bytes
+.set ULA_ATTR_OFFSET,0x1800     ; Attribute offset from VRAM base
+.set ULA_ATTR_SIZE,768          ; Attributes: 32x24 = 768 bytes
+.set ULA_VRAM_SIZE,6912         ; Total: 6144 + 768 bytes
+.set ULA_ATTR_BASE,0x5800       ; Attribute start address (0x4000 + 0x1800)
+
+; Display dimensions
+.set ULA_DISPLAY_W,256          ; Display width in pixels
+.set ULA_DISPLAY_H,192          ; Display height in pixels
+.set ULA_BORDER_SIZE,32         ; Border size in pixels
+.set ULA_FRAME_W,320            ; Total frame width (256+64)
+.set ULA_FRAME_H,256            ; Total frame height (192+64)
+.set ULA_CELLS_X,32             ; Character cells horizontally
+.set ULA_CELLS_Y,24             ; Character cells vertically
+
+; ----- ULA helper macros -----
+
+; Set ULA border color (0-7, value in bits 0-2)
+.macro ULA_SET_BORDER color
+    ld a,\color
+    out (ULA_PORT),a
+.endm
+
+; Set border color from A register (bits 0-2)
+.macro ULA_BORDER_A
+    out (ULA_PORT),a
+.endm
+
+; ============================================================================
 ; STACK SETUP
 ; ============================================================================
 

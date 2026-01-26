@@ -2688,6 +2688,12 @@ func (adapter *MemoryBusAdapter_6502) Read(addr uint16) byte {
 		return adapter.bus.Read8(SID_BASE + sidReg)
 	}
 
+	// Handle ULA register reads ($D800-$D80F)
+	if addr >= C6502_ULA_BASE && addr <= C6502_ULA_BASE+0x0F {
+		ulaReg := uint32(addr - C6502_ULA_BASE)
+		return adapter.bus.Read8(ULA_BASE + ulaReg)
+	}
+
 	// Handle extended bank window reads (IE65 mode)
 	if translated, ok := adapter.translateExtendedBank(addr); ok {
 		return adapter.bus.Read8(translated)
@@ -2700,6 +2706,7 @@ func (adapter *MemoryBusAdapter_6502) Read(addr uint16) byte {
 
 	return adapter.bus.Read8(translateIO8Bit_6502(addr))
 }
+
 func (adapter *MemoryBusAdapter_6502) Write(addr uint16, value byte) {
 	/*
 	   Write performs 8-bit memory write.
@@ -2766,6 +2773,13 @@ func (adapter *MemoryBusAdapter_6502) Write(addr uint16, value byte) {
 		return
 	}
 
+	// Handle ULA register writes ($D800-$D80F)
+	if addr >= C6502_ULA_BASE && addr <= C6502_ULA_BASE+0x0F {
+		ulaReg := uint32(addr - C6502_ULA_BASE)
+		adapter.bus.Write8(ULA_BASE+ulaReg, value)
+		return
+	}
+
 	// Handle extended bank window writes (IE65 mode)
 	if translated, ok := adapter.translateExtendedBank(addr); ok {
 		adapter.bus.Write8(translated, value)
@@ -2778,6 +2792,10 @@ func (adapter *MemoryBusAdapter_6502) Write(addr uint16, value byte) {
 		return
 	}
 
+	// Debug: track writes to ULA range even if not matched
+	if addr >= 0xD800 && addr <= 0xD8FF {
+		fmt.Printf("6502 write in ULA range: addr=0x%04X value=0x%02X (NOT handled as ULA)\n", addr, value)
+	}
 	adapter.bus.Write8(translateIO8Bit_6502(addr), value)
 }
 

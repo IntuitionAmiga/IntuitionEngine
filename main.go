@@ -482,10 +482,20 @@ func main() {
 		vgaEngine.HandleTextRead,
 		vgaEngine.HandleTextWrite)
 
+	// Map ULA registers (ZX Spectrum video chip)
+	ulaEngine := NewULAEngine(sysBus)
+	sysBus.MapIO(ULA_BASE, ULA_REG_END,
+		ulaEngine.HandleRead,
+		ulaEngine.HandleWrite)
+	sysBus.MapIO(ULA_VRAM_BASE, ULA_VRAM_BASE+ULA_VRAM_SIZE-1,
+		ulaEngine.HandleBusVRAMRead,
+		ulaEngine.HandleBusVRAMWrite)
+
 	// Create video compositor - owns the display output and blends video sources
 	compositor := NewVideoCompositor(videoChip.GetOutput())
 	compositor.RegisterSource(videoChip) // Layer 0 - background
 	compositor.RegisterSource(vgaEngine) // Layer 10 - VGA renders on top
+	compositor.RegisterSource(ulaEngine) // Layer 15 - ULA renders on top of VGA
 
 	// Initialize the selected CPU and optionally load program
 	var gui GUIFrontend

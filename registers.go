@@ -41,6 +41,7 @@ Address Range       Size    Device              Constants File
 0xF0E00-0xF0E2D     45B     SID (6581/8580)     sid_constants.go
 0xF0F00-0xF0F1F     31B     TED                 ted_constants.go
 0xF1000-0xF13FF     1KB     VGA Registers       vga_constants.go
+0xF2000-0xF200B     12B     ULA (ZX Spectrum)   ula_constants.go
 
 0x100000-0x4FFFFF   4MB     Video RAM           video_chip.go (VRAM_START)
 
@@ -85,16 +86,24 @@ VGA (0xF1000-0xF13FF) - vga_constants.go
   VGA_SEQ_*, VGA_CRTC_*, VGA_GC_*, VGA_ATTR_*
   VGA_DAC_*, VGA_PALETTE
 
+ULA - ZX Spectrum (0xF2000-0xF200B) - ula_constants.go
+  ULA_BORDER (border color, bits 0-2)
+  ULA_CTRL (enable/disable)
+  ULA_STATUS (vblank)
+  VRAM at 0x4000 (6144 bitmap + 768 attribute bytes)
+
 CPU-SPECIFIC I/O MAPPINGS
 =========================
 
 6502 (16-bit address space, directly mapped)
   See cpu_six5go2.go - addresses 0xF000-0xF0FF map to 0xF0000-0xF00FF
   VGA at 0xD700-0xD70A (see vga_constants.go C6502_VGA_*)
+  ULA at 0xD800-0xD80F, VRAM at 0x4000 (see ula_constants.go)
 
 Z80 (16-bit address with bank windows)
   See cpu_z80_runner.go - addresses 0xF000-0xF0FF map to 0xF0000-0xF00FF
   VGA via port I/O 0xA0-0xAA (see vga_constants.go Z80_VGA_PORT_*)
+  ULA via port I/O 0xFE (authentic ZX Spectrum), VRAM at 0x4000
 
 M68K (32-bit address space, direct access)
   Full 32-bit addressing to all I/O regions
@@ -146,6 +155,10 @@ const (
 	// VGA region
 	VGA_REGION_BASE = 0xF1000
 	VGA_REGION_END  = 0xF13FF
+
+	// ULA region (ZX Spectrum video)
+	ULA_REGION_BASE = 0xF2000
+	ULA_REGION_END  = 0xF200B
 )
 
 // =============================================================================
@@ -227,6 +240,8 @@ func GetIORegion(addr uint32) string {
 		return "TED"
 	case addr >= VGA_REGION_BASE && addr <= VGA_REGION_END:
 		return "VGA"
+	case addr >= ULA_REGION_BASE && addr <= ULA_REGION_END:
+		return "ULA"
 	default:
 		return "Unknown"
 	}

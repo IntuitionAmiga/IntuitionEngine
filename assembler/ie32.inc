@@ -641,5 +641,51 @@
 .equ TIMER_RELOAD      0x00F808         ; Timer reload value
 
 ; ============================================================================
+; ZX SPECTRUM ULA VIDEO REGISTERS
+;
+; The ULA chip provides ZX Spectrum compatible video output:
+; - 256x192 pixel display with 32-pixel border (320x256 total)
+; - Attribute-based coloring: 8x8 pixel cells share INK/PAPER colors
+; - 15 unique colors (8 base + 8 bright, black can't brighten)
+; - FLASH attribute: swaps INK/PAPER at ~1.6Hz
+;
+; Non-linear bitmap addressing formula:
+;   addr = ((y & 0xC0) << 5) + ((y & 0x07) << 8) + ((y & 0x38) << 2) + (x >> 3)
+;
+; Attribute byte format: FBPPPIII
+;   F (bit 7): FLASH - swap INK/PAPER when set
+;   B (bit 6): BRIGHT - intensify both colors
+;   PPP (bits 5-3): PAPER (background) color 0-7
+;   III (bits 2-0): INK (foreground) color 0-7
+;
+; Color palette:
+;   0=Black, 1=Blue, 2=Red, 3=Magenta, 4=Green, 5=Cyan, 6=Yellow, 7=White
+; ============================================================================
+
+.equ ULA_BASE          0xF2000          ; ULA register base
+.equ ULA_BORDER        0xF2000          ; Border color (bits 0-2)
+.equ ULA_CTRL          0xF2004          ; Control register
+.equ ULA_STATUS        0xF2008          ; Status register
+
+; Control register bits
+.equ ULA_CTRL_ENABLE   0x01             ; ULA enable bit
+
+; VRAM layout (same as authentic ZX Spectrum)
+.equ ULA_VRAM          0x4000           ; VRAM base address
+.equ ULA_BITMAP_SIZE   6144             ; Bitmap: 256x192/8 = 6144 bytes
+.equ ULA_ATTR_OFFSET   0x1800           ; Attribute offset from VRAM base
+.equ ULA_ATTR_SIZE     768              ; Attributes: 32x24 = 768 bytes
+.equ ULA_VRAM_SIZE     6912             ; Total: 6144 + 768 bytes
+
+; Display dimensions
+.equ ULA_DISPLAY_W     256              ; Display width in pixels
+.equ ULA_DISPLAY_H     192              ; Display height in pixels
+.equ ULA_BORDER_SIZE   32               ; Border size in pixels
+.equ ULA_FRAME_W       320              ; Total frame width (256+64)
+.equ ULA_FRAME_H       256              ; Total frame height (192+64)
+.equ ULA_CELLS_X       32               ; Character cells horizontally
+.equ ULA_CELLS_Y       24               ; Character cells vertically
+
+; ============================================================================
 ; EOF
 ; ============================================================================

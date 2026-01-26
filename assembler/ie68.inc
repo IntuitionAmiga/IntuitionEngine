@@ -880,5 +880,68 @@ enable_sid_plus macro
     endm
 
 ; ============================================================================
+; ZX SPECTRUM ULA VIDEO REGISTERS
+;
+; The ULA chip provides ZX Spectrum compatible video output:
+; - 256x192 pixel display with 32-pixel border (320x256 total)
+; - Attribute-based coloring: 8x8 pixel cells share INK/PAPER colors
+; - 15 unique colors (8 base + 8 bright, black can't brighten)
+; - FLASH attribute: swaps INK/PAPER at ~1.6Hz
+;
+; Non-linear bitmap addressing formula:
+;   addr = ((y & $C0) << 5) + ((y & $07) << 8) + ((y & $38) << 2) + (x >> 3)
+;
+; Attribute byte format: FBPPPIII
+;   F (bit 7): FLASH - swap INK/PAPER when set
+;   B (bit 6): BRIGHT - intensify both colors
+;   PPP (bits 5-3): PAPER (background) color 0-7
+;   III (bits 2-0): INK (foreground) color 0-7
+;
+; Color palette:
+;   0=Black, 1=Blue, 2=Red, 3=Magenta, 4=Green, 5=Cyan, 6=Yellow, 7=White
+; ============================================================================
+
+ULA_BASE        equ $F2000              ; ULA register base
+ULA_BORDER      equ $F2000              ; Border color (bits 0-2)
+ULA_CTRL        equ $F2004              ; Control register
+ULA_STATUS      equ $F2008              ; Status register
+
+; Control register bits
+ULA_CTRL_ENABLE equ $01                 ; ULA enable bit
+
+; VRAM layout (same as authentic ZX Spectrum)
+ULA_VRAM        equ $4000               ; VRAM base address
+ULA_BITMAP_SIZE equ 6144                ; Bitmap: 256x192/8 = 6144 bytes
+ULA_ATTR_OFFSET equ $1800               ; Attribute offset from VRAM base
+ULA_ATTR_SIZE   equ 768                 ; Attributes: 32x24 = 768 bytes
+ULA_VRAM_SIZE   equ 6912                ; Total: 6144 + 768 bytes
+
+; Display dimensions
+ULA_DISPLAY_W   equ 256                 ; Display width in pixels
+ULA_DISPLAY_H   equ 192                 ; Display height in pixels
+ULA_BORDER_SIZE equ 32                  ; Border size in pixels
+ULA_FRAME_W     equ 320                 ; Total frame width (256+64)
+ULA_FRAME_H     equ 256                 ; Total frame height (192+64)
+ULA_CELLS_X     equ 32                  ; Character cells horizontally
+ULA_CELLS_Y     equ 24                  ; Character cells vertically
+
+; ----- ULA helper macros -----
+
+; Set ULA border color (0-7)
+ula_border      macro   color
+                move.b  #\color,ULA_BORDER
+                endm
+
+; Enable ULA
+ula_enable      macro
+                move.b  #ULA_CTRL_ENABLE,ULA_CTRL
+                endm
+
+; Disable ULA
+ula_disable     macro
+                move.b  #0,ULA_CTRL
+                endm
+
+; ============================================================================
 ; EOF
 ; ============================================================================

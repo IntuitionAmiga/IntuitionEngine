@@ -41,6 +41,7 @@
    - 3.9 TED Registers
    - 3.10 Audio Chip Memory Map by CPU
    - 3.11 VGA Video Chip
+   - 3.12 ULA Video Chip (ZX Spectrum)
 4. [IE32 CPU Architecture](#4-ie32-cpu-architecture)
    - 4.1 Register Set
    - 4.2 Status Flags
@@ -777,6 +778,136 @@ The VGA chip integrates with the video compositor as a separate layer (layer 10)
 **VSync Timing:** The VGA provides time-based vsync status through `VGA_STATUS`. The status bit automatically calculates whether the display is in vertical retrace based on a 60Hz refresh cycle, requiring no explicit signaling from the compositor.
 
 See section 10.9 (Video Compositor) for details on the compositing architecture and section 10.6 (Copper List Executor) for examples of copper-driven VGA palette manipulation.
+
+## 3.12 ULA Video Chip - ZX Spectrum (0x0F2000 - 0x0F200B)
+
+The ULA chip provides authentic ZX Spectrum video output, enabling classic Spectrum demos and games:
+
+### Display Specifications
+
+| Feature | Value |
+|---------|-------|
+| Resolution | 256×192 pixels |
+| Border | 32 pixels each side (320×256 total) |
+| Color Cells | 32×24 (8×8 pixels per cell) |
+| Colors | 15 unique (8 base + 8 bright, black can't brighten) |
+| VRAM | 6912 bytes (6144 bitmap + 768 attributes) |
+| Flash Rate | ~1.6Hz (toggle every 32 frames at 50Hz) |
+
+### Register Map
+
+```
+ULA Control Registers (0x0F2000 - 0x0F200B):
+0x0F2000: ULA_BORDER      - Border color (bits 0-2, values 0-7)
+0x0F2004: ULA_CTRL        - Control (bit 0=enable)
+0x0F2008: ULA_STATUS      - Status (bit 0=vblank)
+```
+
+### VRAM Layout
+
+The ULA uses the authentic ZX Spectrum memory layout at 0x4000:
+
+```
+0x4000 - 0x57FF: Bitmap (6144 bytes, non-linear Y addressing)
+0x5800 - 0x5AFF: Attributes (768 bytes, 32×24 cells)
+```
+
+### Non-Linear Bitmap Addressing
+
+The ZX Spectrum uses a peculiar addressing formula for the bitmap. The screen is divided into three 64-line sections, with each section having interleaved line ordering:
+
+```
+Address = ((y & 0xC0) << 5) + ((y & 0x07) << 8) + ((y & 0x38) << 2) + (x >> 3)
+```
+
+| Y Range | Address Range | Description |
+|---------|---------------|-------------|
+| 0-63 | 0x4000-0x47FF | Top third of screen |
+| 64-127 | 0x4800-0x4FFF | Middle third |
+| 128-191 | 0x5000-0x57FF | Bottom third |
+
+### Attribute Format
+
+Each attribute byte controls an 8×8 pixel cell:
+
+```
+Bit 7: FLASH   - Swap INK/PAPER at ~1.6Hz
+Bit 6: BRIGHT  - Intensify both INK and PAPER
+Bits 5-3: PAPER (background color, 0-7)
+Bits 2-0: INK   (foreground color, 0-7)
+```
+
+### Color Palette
+
+| Index | Normal RGB | Bright RGB | Color |
+|-------|-----------|-----------|-------|
+| 0 | (0,0,0) | (0,0,0) | Black |
+| 1 | (0,0,205) | (0,0,255) | Blue |
+| 2 | (205,0,0) | (255,0,0) | Red |
+| 3 | (205,0,205) | (255,0,255) | Magenta |
+| 4 | (0,205,0) | (0,255,0) | Green |
+| 5 | (0,205,205) | (0,255,255) | Cyan |
+| 6 | (205,205,0) | (255,255,0) | Yellow |
+| 7 | (205,205,205) | (255,255,255) | White |
+
+### CPU Address Mappings
+
+| CPU | ULA Registers | ULA VRAM | Notes |
+|-----|---------------|----------|-------|
+| IE32/M68K | 0x0F2000-0x0F200B | 0x4000-0x5AFF | Direct 32-bit |
+| Z80 | Port 0xFE | 0x4000-0x5AFF | Authentic Spectrum |
+| 6502 | $D800-$D80F | $4000 (banked) | Memory-mapped |
+
+### Example: Drawing a Pixel (M68K)
+
+```asm
+    include "ie68.inc"
+
+    ; Draw white pixel at (128, 96) with bright attribute
+    ; First calculate bitmap address for y=96, x=128
+    ; ((96 & $C0) << 5) + ((96 & $07) << 8) + ((96 & $38) << 2) + (128 >> 3)
+    ; = ($40 << 5) + ($00 << 8) + ($00 << 2) + 16
+    ; = $800 + $0 + $0 + $10 = $810
+
+    move.b  #$80,ULA_VRAM+$810   ; Set bit 7 (leftmost pixel in byte)
+
+    ; Set attribute for cell at (16, 12) = offset 12*32+16 = 400 = $190
+    ; Attribute: BRIGHT=1, PAPER=0 (black), INK=7 (white) = $47
+    move.b  #$47,ULA_VRAM+ULA_ATTR_OFFSET+$190
+
+    ; Set border to blue
+    ula_border 1
+```
+
+### Example: Clear Screen (Z80)
+
+```asm
+    include "ie80.inc"
+
+    ; Clear bitmap to zeros (all paper color)
+    ld hl,ULA_VRAM
+    ld de,ULA_VRAM+1
+    ld bc,ULA_BITMAP_SIZE-1
+    ld (hl),0
+    ldir
+
+    ; Set all attributes to white ink on blue paper
+    ; Attribute: BRIGHT=0, PAPER=1 (blue), INK=7 (white) = $0F
+    ld hl,ULA_ATTR_BASE
+    ld de,ULA_ATTR_BASE+1
+    ld bc,ULA_ATTR_SIZE-1
+    ld (hl),$0F
+    ldir
+
+    ; Set border to blue
+    ULA_SET_BORDER 1
+```
+
+### Video Compositor Integration
+
+The ULA integrates with the video compositor as layer 15, rendering above both the VideoChip (layer 0) and VGA (layer 10). This allows ZX Spectrum graphics to overlay other video sources.
+
+The ULA provides its own frame timing through `SignalVSync()`, which handles the FLASH attribute timing (toggling every 32 frames). When disabled via `ULA_CTRL`, the chip returns nil frames to the compositor.
 
 # 4. IE32 CPU Architecture
 
