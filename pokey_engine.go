@@ -287,7 +287,7 @@ func (e *POKEYEngine) applyFrequencies() {
 
 		freq := e.calcFrequency(ch)
 		if freq > 0 && freq <= 20000 {
-			e.writeChannel(ch, FLEX_OFF_FREQ, uint32(freq))
+			e.writeChannel(ch, FLEX_OFF_FREQ, uint32(freq*256)) // 16.8 fixed-point
 		} else {
 			e.writeChannel(ch, FLEX_OFF_FREQ, 0)
 		}
@@ -324,7 +324,7 @@ func (e *POKEYEngine) applyDistortion() {
 			// Volume-only mode: DC output at volume level
 			// Use a very low frequency square wave to approximate DC
 			e.writeChannel(ch, FLEX_OFF_WAVE_TYPE, WAVE_SQUARE)
-			e.writeChannel(ch, FLEX_OFF_FREQ, 1) // Minimal frequency
+			e.writeChannel(ch, FLEX_OFF_FREQ, 256) // 1 Hz in 16.8 fixed-point
 			continue
 		}
 

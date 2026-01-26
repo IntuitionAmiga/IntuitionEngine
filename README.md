@@ -374,7 +374,7 @@ The timer generates an interrupt when TIMER_COUNT reaches zero and automatically
 
 #### Square Wave Channel (0x0F0900 - 0x0F093F)
 ```
-0x0F0900: SQUARE_FREQ     - Frequency control
+0x0F0900: SQUARE_FREQ     - Frequency (16.8 fixed-point Hz, value = Hz * 256)
 0x0F0904: SQUARE_VOL      - Volume (0-255)
 0x0F0908: SQUARE_CTRL     - Channel control
 0x0F090C: SQUARE_DUTY     - Duty cycle control
@@ -388,7 +388,7 @@ The timer generates an interrupt when TIMER_COUNT reaches zero and automatically
 
 #### Triangle Wave Channel (0x0F0940 - 0x0F097F)
 ```
-0x0F0940: TRI_FREQ  - Frequency control
+0x0F0940: TRI_FREQ  - Frequency (16.8 fixed-point Hz, value = Hz * 256)
 0x0F0944: TRI_VOL   - Volume control
 0x0F0948: TRI_CTRL  - Channel control
 0x0F0914: TRI_SWEEP - Frequency sweep control
@@ -400,7 +400,7 @@ The timer generates an interrupt when TIMER_COUNT reaches zero and automatically
 
 #### Sine Wave Channel (0x0F0980 - 0x0F09BF)
 ```
-0x0F0980: SINE_FREQ  - Frequency control
+0x0F0980: SINE_FREQ  - Frequency (16.8 fixed-point Hz, value = Hz * 256)
 0x0F0984: SINE_VOL   - Volume control
 0x0F0988: SINE_CTRL  - Channel control
 0x0F0918: SINE_SWEEP - Frequency sweep control
@@ -412,7 +412,7 @@ The timer generates an interrupt when TIMER_COUNT reaches zero and automatically
 
 #### Noise Channel (0x0F09C0 - 0x0F09FF)
 ```
-0x0F09C0: NOISE_FREQ  - Frequency control
+0x0F09C0: NOISE_FREQ  - Frequency (16.8 fixed-point Hz, value = Hz * 256)
 0x0F09C4: NOISE_VOL   - Volume control
 0x0F09C8: NOISE_CTRL  - Channel control
 0x0F09D0: NOISE_ATK   - Attack time
@@ -429,7 +429,7 @@ NOISE_MODE_METALLIC = 2 // "Metallic" noise variant
 
 #### Sawtooth Wave Channel (0x0F0A20 - 0x0F0A3F)
 ```
-0x0F0A20: SAW_FREQ  - Frequency control
+0x0F0A20: SAW_FREQ  - Frequency (16.8 fixed-point Hz, value = Hz * 256)
 0x0F0A24: SAW_VOL   - Volume control
 0x0F0A28: SAW_CTRL  - Channel control
 0x0F0A2C: SAW_SWEEP - Frequency sweep control
@@ -474,7 +474,7 @@ Channel Base Addresses:
   Channel 3: 0x0F0B10
 
 Per-Channel Register Offsets:
-  +0x00: FREQ       - Frequency control (32-bit)
+  +0x00: FREQ       - Frequency (16.8 fixed-point Hz, value = Hz * 256)
   +0x04: VOL        - Volume (0-255)
   +0x08: CTRL       - Channel control (bit0=enable, bit1=gate)
   +0x0C: DUTY       - Duty cycle for square/pulse waves
@@ -494,7 +494,8 @@ Per-Channel Register Offsets:
 Example: Configure channel 1 as a sawtooth wave at 440Hz:
 ```assembly
 ; Using flexible synth registers
-LOAD A, #440
+; Frequency is 16.8 fixed-point: 440 Hz * 256 = 112640
+LOAD A, #112640
 STORE A, @0x0F0AB0      ; CH1 FREQ
 LOAD A, #200
 STORE A, @0x0F0AB4      ; CH1 VOL
@@ -1655,7 +1656,7 @@ Each dedicated channel has a similar register layout:
 
 | Offset | Name | Description |
 |--------|------|-------------|
-| +$00 | FREQ | Frequency in Hz (32-bit) |
+| +$00 | FREQ | Frequency (16.8 fixed-point Hz, value = Hz * 256) |
 | +$04 | VOL | Volume 0-255 (32-bit, only low byte used) |
 | +$08 | CTRL | Control bits (see below) |
 | +$0C | ATTACK | Attack time in ms (16-bit) |
@@ -1692,7 +1693,7 @@ Each flexible channel is 48 bytes ($30) with full synthesis control:
 
 | Offset | Name | Description |
 |--------|------|-------------|
-| +$00 | FREQ | Frequency in Hz (32-bit) |
+| +$00 | FREQ | Frequency (16.8 fixed-point Hz, value = Hz * 256) |
 | +$04 | VOL | Volume 0-255 (32-bit) |
 | +$08 | WAVE | Waveform type (see below) |
 | +$0C | CTRL | Control bits (same as dedicated channels) |
@@ -1730,7 +1731,7 @@ Features:
 **IE32:**
 ```assembly
 setup_square:
-    LOAD A, #440            ; Base frequency
+    LOAD A, #112640         ; 440 Hz (16.8 fixed-point: 440*256)
     STORE A, @SQUARE_FREQ
     LOAD A, #128            ; 50% duty cycle
     STORE A, @SQUARE_DUTY
@@ -1750,7 +1751,7 @@ setup_square:
 **M68K:**
 ```assembly
 setup_square:
-    move.l  #440,SQUARE_FREQ.l       ; Base frequency
+    move.l  #112640,SQUARE_FREQ.l    ; 440 Hz (16.8 fixed-point: 440*256)
     move.l  #128,SQUARE_DUTY.l       ; 50% duty cycle
     move.l  #1,SQUARE_PWM_CTRL.l     ; Enable PWM
     move.l  #10,SQUARE_ATK.l         ; Attack
@@ -1763,7 +1764,7 @@ setup_square:
 **Z80:**
 ```assembly
 setup_square:
-    STORE32 SQUARE_FREQ,440          ; Base frequency
+    STORE32 SQUARE_FREQ,112640       ; 440 Hz (16.8 fixed-point: 440*256)
     STORE32 SQUARE_DUTY,128          ; 50% duty cycle
     STORE32 SQUARE_PWM_CTRL,1        ; Enable PWM
     STORE32 SQUARE_ATK,10            ; Attack
@@ -1776,7 +1777,7 @@ setup_square:
 **6502:**
 ```assembly
 setup_square:
-    STORE32 SQUARE_FREQ, 440         ; Base frequency
+    STORE32 SQUARE_FREQ, 112640      ; 440 Hz (16.8 fixed-point: 440*256)
     STORE32 SQUARE_DUTY, 128         ; 50% duty cycle
     STORE32 SQUARE_PWM_CTRL, 1       ; Enable PWM
     STORE32 SQUARE_ATK, 10           ; Attack
@@ -1826,7 +1827,7 @@ Features:
 **IE32:**
 ```assembly
 setup_sawtooth:
-    LOAD A, #440            ; Base frequency
+    LOAD A, #112640         ; 440 Hz (16.8 fixed-point: 440*256)
     STORE A, @SAW_FREQ
     LOAD A, #192            ; 75% volume
     STORE A, @SAW_VOL
@@ -1846,7 +1847,7 @@ setup_sawtooth:
 **M68K:**
 ```assembly
 setup_sawtooth:
-    move.l  #440,SAW_FREQ.l
+    move.l  #112640,SAW_FREQ.l        ; 440 Hz (16.8 fixed-point: 440*256)
     move.l  #192,SAW_VOL.l
     move.l  #10,SAW_ATK.l
     move.l  #20,SAW_DEC.l
@@ -1859,7 +1860,7 @@ setup_sawtooth:
 **Z80:**
 ```assembly
 setup_sawtooth:
-    STORE32 SAW_FREQ,440
+    STORE32 SAW_FREQ,112640           ; 440 Hz (16.8 fixed-point: 440*256)
     STORE32 SAW_VOL,192
     STORE32 SAW_ATK,10
     STORE32 SAW_DEC,20
@@ -1872,7 +1873,7 @@ setup_sawtooth:
 **6502:**
 ```assembly
 setup_sawtooth:
-    STORE32 SAW_FREQ, 440
+    STORE32 SAW_FREQ, 112640          ; 440 Hz (16.8 fixed-point: 440*256)
     STORE32 SAW_VOL, 192
     STORE32 SAW_ATK, 10
     STORE32 SAW_DEC, 20

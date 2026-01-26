@@ -830,10 +830,11 @@
 .set FLEX_CH_STRIDE,0x30
 
 ; Flex Channel 0 (0xFA80-0xFAAF)
-.set FLEX_CH0_FREQ_0,0xFA80
-.set FLEX_CH0_FREQ_1,0xFA81
-.set FLEX_CH0_FREQ_2,0xFA82
-.set FLEX_CH0_FREQ_3,0xFA83
+; Frequency is 16.8 fixed-point: value = Hz * 256 (e.g., 440 Hz = 440*256 = 112640)
+.set FLEX_CH0_FREQ_0,0xFA80     ; Flex 0 frequency byte 0 (low byte)
+.set FLEX_CH0_FREQ_1,0xFA81     ; Flex 0 frequency byte 1
+.set FLEX_CH0_FREQ_2,0xFA82     ; Flex 0 frequency byte 2
+.set FLEX_CH0_FREQ_3,0xFA83     ; Flex 0 frequency byte 3 (high byte)
 .set FLEX_CH0_VOL_0,0xFA84
 .set FLEX_CH0_VOL_1,0xFA85
 .set FLEX_CH0_VOL_2,0xFA86
@@ -1370,14 +1371,16 @@
 ; CUSTOM AUDIO CHIP MACROS
 ; ============================================================================
 
-; Set square channel frequency (16-bit value)
+; Set square channel frequency (16.8 fixed-point Hz, macro handles *256)
 .macro SET_SQ_FREQ freq
-    ld a,(\freq)&0xFF
-    ld (SQ_FREQ_0),a
-    ld a,((\freq)>>8)&0xFF
-    ld (SQ_FREQ_1),a
+    ; freq * 256: byte 0 = 0, bytes 1-2 = freq, byte 3 = 0
     xor a
+    ld (SQ_FREQ_0),a
+    ld a,(\freq)&0xFF
+    ld (SQ_FREQ_1),a
+    ld a,((\freq)>>8)&0xFF
     ld (SQ_FREQ_2),a
+    xor a
     ld (SQ_FREQ_3),a
 .endm
 
@@ -1433,14 +1436,16 @@
     ld (SQ_CTRL_0),a
 .endm
 
-; Set triangle channel frequency
+; Set triangle channel frequency (16.8 fixed-point Hz, macro handles *256)
 .macro SET_TRI_FREQ freq
-    ld a,(\freq)&0xFF
-    ld (TRI_FREQ_0),a
-    ld a,((\freq)>>8)&0xFF
-    ld (TRI_FREQ_1),a
+    ; freq * 256: byte 0 = 0, bytes 1-2 = freq, byte 3 = 0
     xor a
+    ld (TRI_FREQ_0),a
+    ld a,(\freq)&0xFF
+    ld (TRI_FREQ_1),a
+    ld a,((\freq)>>8)&0xFF
     ld (TRI_FREQ_2),a
+    xor a
     ld (TRI_FREQ_3),a
 .endm
 
@@ -1488,14 +1493,16 @@
     ld (TRI_CTRL_0),a
 .endm
 
-; Set sine channel frequency
+; Set sine channel frequency (16.8 fixed-point Hz, macro handles *256)
 .macro SET_SINE_FREQ freq
-    ld a,(\freq)&0xFF
-    ld (SINE_FREQ_0),a
-    ld a,((\freq)>>8)&0xFF
-    ld (SINE_FREQ_1),a
+    ; freq * 256: byte 0 = 0, bytes 1-2 = freq, byte 3 = 0
     xor a
+    ld (SINE_FREQ_0),a
+    ld a,(\freq)&0xFF
+    ld (SINE_FREQ_1),a
+    ld a,((\freq)>>8)&0xFF
     ld (SINE_FREQ_2),a
+    xor a
     ld (SINE_FREQ_3),a
 .endm
 
@@ -1543,14 +1550,16 @@
     ld (SINE_CTRL_0),a
 .endm
 
-; Set noise channel frequency
+; Set noise channel frequency (16.8 fixed-point Hz, macro handles *256)
 .macro SET_NOISE_FREQ freq
-    ld a,(\freq)&0xFF
-    ld (NOISE_FREQ_0),a
-    ld a,((\freq)>>8)&0xFF
-    ld (NOISE_FREQ_1),a
+    ; freq * 256: byte 0 = 0, bytes 1-2 = freq, byte 3 = 0
     xor a
+    ld (NOISE_FREQ_0),a
+    ld a,(\freq)&0xFF
+    ld (NOISE_FREQ_1),a
+    ld a,((\freq)>>8)&0xFF
     ld (NOISE_FREQ_2),a
+    xor a
     ld (NOISE_FREQ_3),a
 .endm
 
@@ -1608,14 +1617,16 @@
     ld (NOISE_CTRL_0),a
 .endm
 
-; Set sawtooth channel frequency
+; Set sawtooth channel frequency (16.8 fixed-point Hz, macro handles *256)
 .macro SET_SAW_FREQ freq
-    ld a,(\freq)&0xFF
-    ld (SAW_FREQ_0),a
-    ld a,((\freq)>>8)&0xFF
-    ld (SAW_FREQ_1),a
+    ; freq * 256: byte 0 = 0, bytes 1-2 = freq, byte 3 = 0
     xor a
+    ld (SAW_FREQ_0),a
+    ld a,(\freq)&0xFF
+    ld (SAW_FREQ_1),a
+    ld a,((\freq)>>8)&0xFF
     ld (SAW_FREQ_2),a
+    xor a
     ld (SAW_FREQ_3),a
 .endm
 
@@ -1733,6 +1744,7 @@
 .endm
 
 ; Set flexible channel 0 parameters
+; Frequency is 16.8 fixed-point (Hz * 256), macro handles conversion
 .macro SET_FLEX0 wave,freq,vol
     ld a,\wave
     ld (FLEX_CH0_WAVE_0),a
@@ -1740,12 +1752,14 @@
     ld (FLEX_CH0_WAVE_1),a
     ld (FLEX_CH0_WAVE_2),a
     ld (FLEX_CH0_WAVE_3),a
-    ld a,(\freq)&0xFF
-    ld (FLEX_CH0_FREQ_0),a
-    ld a,((\freq)>>8)&0xFF
-    ld (FLEX_CH0_FREQ_1),a
+    ; freq * 256: byte 0 = 0, bytes 1-2 = freq, byte 3 = 0
     xor a
+    ld (FLEX_CH0_FREQ_0),a
+    ld a,(\freq)&0xFF
+    ld (FLEX_CH0_FREQ_1),a
+    ld a,((\freq)>>8)&0xFF
     ld (FLEX_CH0_FREQ_2),a
+    xor a
     ld (FLEX_CH0_FREQ_3),a
     ld a,\vol
     ld (FLEX_CH0_VOL_0),a

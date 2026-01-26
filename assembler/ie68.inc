@@ -467,7 +467,7 @@ ENV_SHAPE_SID       equ 4               ; SID-style exponential ADSR
 ; ----------------------------------------------------------------------------
 ; Square Wave Channel ($F0900-$F093F)
 ; ----------------------------------------------------------------------------
-SQUARE_FREQ       equ $F0900            ; Frequency (Hz)
+SQUARE_FREQ       equ $F0900            ; Frequency (16.8 fixed-point Hz, value = Hz * 256)
 SQUARE_VOL        equ $F0904            ; Volume (0-255)
 SQUARE_CTRL       equ $F0908            ; Control (bit 1 = gate)
 SQUARE_DUTY       equ $F090C            ; Duty cycle (0-255, 128 = 50%)
@@ -481,7 +481,7 @@ SQUARE_REL        equ $F093C            ; Release time (ms)
 ; ----------------------------------------------------------------------------
 ; Triangle Wave Channel ($F0940-$F097F)
 ; ----------------------------------------------------------------------------
-TRI_FREQ          equ $F0940            ; Frequency (Hz)
+TRI_FREQ          equ $F0940            ; Frequency (16.8 fixed-point Hz, value = Hz * 256)
 TRI_VOL           equ $F0944            ; Volume (0-255)
 TRI_CTRL          equ $F0948            ; Control (bit 1 = gate)
 TRI_SWEEP         equ $F0914            ; Sweep control
@@ -493,7 +493,7 @@ TRI_REL           equ $F096C            ; Release time (ms)
 ; ----------------------------------------------------------------------------
 ; Sine Wave Channel ($F0980-$F09BF)
 ; ----------------------------------------------------------------------------
-SINE_FREQ         equ $F0980            ; Frequency (Hz)
+SINE_FREQ         equ $F0980            ; Frequency (16.8 fixed-point Hz, value = Hz * 256)
 SINE_VOL          equ $F0984            ; Volume (0-255)
 SINE_CTRL         equ $F0988            ; Control (bit 1 = gate)
 SINE_SWEEP        equ $F0918            ; Sweep control
@@ -505,7 +505,7 @@ SINE_REL          equ $F099C            ; Release time (ms)
 ; ----------------------------------------------------------------------------
 ; Noise Channel ($F09C0-$F09FF)
 ; ----------------------------------------------------------------------------
-NOISE_FREQ        equ $F09C0            ; Frequency/pitch (Hz)
+NOISE_FREQ        equ $F09C0            ; Frequency/pitch (16.8 fixed-point Hz, value = Hz * 256)
 NOISE_VOL         equ $F09C4            ; Volume (0-255)
 NOISE_CTRL        equ $F09C8            ; Control (bit 1 = gate)
 NOISE_ATK         equ $F09D0            ; Attack time (ms)
@@ -538,7 +538,7 @@ RING_MOD_SOURCE_CH3 equ $F0A1C          ; Ring mod source for channel 3
 ; ----------------------------------------------------------------------------
 ; Sawtooth Wave Channel ($F0A20-$F0A6F)
 ; ----------------------------------------------------------------------------
-SAW_FREQ          equ $F0A20            ; Frequency (Hz)
+SAW_FREQ          equ $F0A20            ; Frequency (16.8 fixed-point Hz, value = Hz * 256)
 SAW_VOL           equ $F0A24            ; Volume (0-255)
 SAW_CTRL          equ $F0A28            ; Control (bit 1 = gate)
 SAW_SWEEP         equ $F0A2C            ; Sweep control
@@ -571,7 +571,7 @@ FLEX_CH2_BASE     equ $F0AE0            ; Channel 2 base
 FLEX_CH3_BASE     equ $F0B10            ; Channel 3 base
 
 ; Register offsets within each flexible channel (add to FLEX_CHx_BASE)
-FLEX_OFF_FREQ       equ $00             ; Frequency (Hz)
+FLEX_OFF_FREQ       equ $00             ; Frequency (16.8 fixed-point Hz, value = Hz * 256)
 FLEX_OFF_VOL        equ $04             ; Volume (0-255)
 FLEX_OFF_CTRL       equ $08             ; Control (bit 1 = gate)
 FLEX_OFF_DUTY       equ $0C             ; Duty cycle for square wave
@@ -607,9 +607,9 @@ SWEEP_SHIFT_MASK  equ $07               ; Sweep shift (bits 0-2)
 ; Custom Audio Chip Macros
 ; ----------------------------------------------------------------------------
 
-; Set channel frequency
+; Set channel frequency (16.8 fixed-point: Hz * 256)
 set_ch_freq macro ch,freq
-    move.l  #\freq,FLEX_CH0_BASE+(\ch*FLEX_CH_STRIDE)+FLEX_OFF_FREQ
+    move.l  #(\freq)*256,FLEX_CH0_BASE+(\ch*FLEX_CH_STRIDE)+FLEX_OFF_FREQ
     endm
 
 ; Set channel volume

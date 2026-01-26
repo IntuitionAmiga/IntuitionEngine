@@ -443,7 +443,7 @@
 ; ----------------------------------------------------------------------------
 ; Square Wave Channel (0xF0900-0xF093F)
 ; ----------------------------------------------------------------------------
-.equ SQUARE_FREQ       0xF0900          ; Frequency (Hz)
+.equ SQUARE_FREQ       0xF0900          ; Frequency (16.8 fixed-point Hz, value = Hz * 256)
 .equ SQUARE_VOL        0xF0904          ; Volume (0-255)
 .equ SQUARE_CTRL       0xF0908          ; Control (bit 1 = gate)
 .equ SQUARE_DUTY       0xF090C          ; Duty cycle (0-255, 128 = 50%)
@@ -457,7 +457,7 @@
 ; ----------------------------------------------------------------------------
 ; Triangle Wave Channel (0xF0940-0xF097F)
 ; ----------------------------------------------------------------------------
-.equ TRI_FREQ          0xF0940          ; Frequency (Hz)
+.equ TRI_FREQ          0xF0940          ; Frequency (16.8 fixed-point Hz, value = Hz * 256)
 .equ TRI_VOL           0xF0944          ; Volume (0-255)
 .equ TRI_CTRL          0xF0948          ; Control (bit 1 = gate)
 .equ TRI_SWEEP         0xF0914          ; Sweep control
@@ -469,7 +469,7 @@
 ; ----------------------------------------------------------------------------
 ; Sine Wave Channel (0xF0980-0xF09BF)
 ; ----------------------------------------------------------------------------
-.equ SINE_FREQ         0xF0980          ; Frequency (Hz)
+.equ SINE_FREQ         0xF0980          ; Frequency (16.8 fixed-point Hz, value = Hz * 256)
 .equ SINE_VOL          0xF0984          ; Volume (0-255)
 .equ SINE_CTRL         0xF0988          ; Control (bit 1 = gate)
 .equ SINE_SWEEP        0xF0918          ; Sweep control
@@ -481,7 +481,7 @@
 ; ----------------------------------------------------------------------------
 ; Noise Channel (0xF09C0-0xF09FF)
 ; ----------------------------------------------------------------------------
-.equ NOISE_FREQ        0xF09C0          ; Frequency/pitch (Hz)
+.equ NOISE_FREQ        0xF09C0          ; Frequency/pitch (16.8 fixed-point Hz, value = Hz * 256)
 .equ NOISE_VOL         0xF09C4          ; Volume (0-255)
 .equ NOISE_CTRL        0xF09C8          ; Control (bit 1 = gate)
 .equ NOISE_ATK         0xF09D0          ; Attack time (ms)
@@ -514,7 +514,7 @@
 ; ----------------------------------------------------------------------------
 ; Sawtooth Wave Channel (0xF0A20-0xF0A6F)
 ; ----------------------------------------------------------------------------
-.equ SAW_FREQ          0xF0A20          ; Frequency (Hz)
+.equ SAW_FREQ          0xF0A20          ; Frequency (16.8 fixed-point Hz, value = Hz * 256)
 .equ SAW_VOL           0xF0A24          ; Volume (0-255)
 .equ SAW_CTRL          0xF0A28          ; Control (bit 1 = gate)
 .equ SAW_SWEEP         0xF0A2C          ; Sweep control
@@ -547,7 +547,7 @@
 .equ FLEX_CH3_BASE     0xF0B10          ; Channel 3 base
 
 ; Register offsets within each flexible channel (add to FLEX_CHx_BASE)
-.equ FLEX_OFF_FREQ       0x00           ; Frequency (Hz)
+.equ FLEX_OFF_FREQ       0x00           ; Frequency (16.8 fixed-point Hz, value = Hz * 256)
 .equ FLEX_OFF_VOL        0x04           ; Volume (0-255)
 .equ FLEX_OFF_CTRL       0x08           ; Control (bit 1 = gate)
 .equ FLEX_OFF_DUTY       0x0C           ; Duty cycle for square wave

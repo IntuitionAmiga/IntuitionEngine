@@ -387,7 +387,7 @@ func (e *PSGEngine) applyFrequencies() {
 			continue
 		}
 		freq := float64(e.clockHz) / (16.0 * float64(period))
-		e.writeChannel(ch, FLEX_OFF_FREQ, uint32(freq))
+		e.writeChannel(ch, FLEX_OFF_FREQ, uint32(freq*256)) // 16.8 fixed-point
 	}
 
 	noisePeriod := uint16(e.regs[6] & 0x1F)
@@ -395,7 +395,7 @@ func (e *PSGEngine) applyFrequencies() {
 		noisePeriod = 1
 	}
 	noiseFreq := float64(e.clockHz) / (16.0 * float64(noisePeriod))
-	e.writeChannel(3, FLEX_OFF_FREQ, uint32(noiseFreq))
+	e.writeChannel(3, FLEX_OFF_FREQ, uint32(noiseFreq*256)) // 16.8 fixed-point
 }
 
 func (e *PSGEngine) applyVolumes() {

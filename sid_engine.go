@@ -256,7 +256,7 @@ func (e *SIDEngine) applyFrequencies() {
 	for voice := 0; voice < 3; voice++ {
 		freq := e.calcFrequency(voice)
 		if freq > 0 && freq <= 20000 {
-			e.writeChannel(voice, FLEX_OFF_FREQ, uint32(freq))
+			e.writeChannel(voice, FLEX_OFF_FREQ, uint32(freq*256)) // 16.8 fixed-point
 		} else {
 			e.writeChannel(voice, FLEX_OFF_FREQ, 0)
 		}

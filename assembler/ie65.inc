@@ -769,10 +769,11 @@ REVERB_DECAY_3  = $FA57         ; Reverb decay time byte 3
 FLEX_CH_STRIDE  = $30           ; Bytes per flexible channel (48)
 
 ; Flex Channel 0 ($FA80-$FAAF)
-FLEX_CH0_FREQ_0 = $FA80         ; Flex 0 frequency byte 0
+; Frequency is 16.8 fixed-point: value = Hz * 256 (e.g., 440 Hz = 440*256 = 112640)
+FLEX_CH0_FREQ_0 = $FA80         ; Flex 0 frequency byte 0 (low byte)
 FLEX_CH0_FREQ_1 = $FA81         ; Flex 0 frequency byte 1
 FLEX_CH0_FREQ_2 = $FA82         ; Flex 0 frequency byte 2
-FLEX_CH0_FREQ_3 = $FA83         ; Flex 0 frequency byte 3
+FLEX_CH0_FREQ_3 = $FA83         ; Flex 0 frequency byte 3 (high byte)
 FLEX_CH0_VOL_0  = $FA84         ; Flex 0 volume byte 0
 FLEX_CH0_VOL_1  = $FA85         ; Flex 0 volume byte 1
 FLEX_CH0_VOL_2  = $FA86         ; Flex 0 volume byte 2
@@ -1130,14 +1131,16 @@ COP_MOVE_VGA_DATA     = $40010000           ; Offset 1: DAC data (R,G,B seq)
 ; CUSTOM AUDIO CHIP MACROS
 ; ============================================================================
 
-; Set square channel frequency (16-bit, little-endian)
+; Set square channel frequency (16.8 fixed-point Hz, macro handles *256)
 .macro SET_SQ_FREQ freq
-    lda #<(freq)
-    sta SQ_FREQ_0
-    lda #>(freq)
-    sta SQ_FREQ_1
+    ; freq * 256: byte 0 = 0, bytes 1-2 = freq, byte 3 = 0
     lda #0
+    sta SQ_FREQ_0
+    lda #<(freq)
+    sta SQ_FREQ_1
+    lda #>(freq)
     sta SQ_FREQ_2
+    lda #0
     sta SQ_FREQ_3
 .endmacro
 
@@ -1193,14 +1196,16 @@ COP_MOVE_VGA_DATA     = $40010000           ; Offset 1: DAC data (R,G,B seq)
     sta SQ_CTRL_0
 .endmacro
 
-; Set triangle channel frequency
+; Set triangle channel frequency (16.8 fixed-point Hz, macro handles *256)
 .macro SET_TRI_FREQ freq
-    lda #<(freq)
-    sta TRI_FREQ_0
-    lda #>(freq)
-    sta TRI_FREQ_1
+    ; freq * 256: byte 0 = 0, bytes 1-2 = freq, byte 3 = 0
     lda #0
+    sta TRI_FREQ_0
+    lda #<(freq)
+    sta TRI_FREQ_1
+    lda #>(freq)
     sta TRI_FREQ_2
+    lda #0
     sta TRI_FREQ_3
 .endmacro
 
@@ -1248,14 +1253,16 @@ COP_MOVE_VGA_DATA     = $40010000           ; Offset 1: DAC data (R,G,B seq)
     sta TRI_CTRL_0
 .endmacro
 
-; Set sine channel frequency
+; Set sine channel frequency (16.8 fixed-point Hz, macro handles *256)
 .macro SET_SINE_FREQ freq
-    lda #<(freq)
-    sta SINE_FREQ_0
-    lda #>(freq)
-    sta SINE_FREQ_1
+    ; freq * 256: byte 0 = 0, bytes 1-2 = freq, byte 3 = 0
     lda #0
+    sta SINE_FREQ_0
+    lda #<(freq)
+    sta SINE_FREQ_1
+    lda #>(freq)
     sta SINE_FREQ_2
+    lda #0
     sta SINE_FREQ_3
 .endmacro
 
@@ -1303,14 +1310,16 @@ COP_MOVE_VGA_DATA     = $40010000           ; Offset 1: DAC data (R,G,B seq)
     sta SINE_CTRL_0
 .endmacro
 
-; Set noise channel frequency
+; Set noise channel frequency (16.8 fixed-point Hz, macro handles *256)
 .macro SET_NOISE_FREQ freq
-    lda #<(freq)
-    sta NOISE_FREQ_0
-    lda #>(freq)
-    sta NOISE_FREQ_1
+    ; freq * 256: byte 0 = 0, bytes 1-2 = freq, byte 3 = 0
     lda #0
+    sta NOISE_FREQ_0
+    lda #<(freq)
+    sta NOISE_FREQ_1
+    lda #>(freq)
     sta NOISE_FREQ_2
+    lda #0
     sta NOISE_FREQ_3
 .endmacro
 
@@ -1368,14 +1377,16 @@ COP_MOVE_VGA_DATA     = $40010000           ; Offset 1: DAC data (R,G,B seq)
     sta NOISE_CTRL_0
 .endmacro
 
-; Set sawtooth channel frequency
+; Set sawtooth channel frequency (16.8 fixed-point Hz, macro handles *256)
 .macro SET_SAW_FREQ freq
-    lda #<(freq)
-    sta SAW_FREQ_0
-    lda #>(freq)
-    sta SAW_FREQ_1
+    ; freq * 256: byte 0 = 0, bytes 1-2 = freq, byte 3 = 0
     lda #0
+    sta SAW_FREQ_0
+    lda #<(freq)
+    sta SAW_FREQ_1
+    lda #>(freq)
     sta SAW_FREQ_2
+    lda #0
     sta SAW_FREQ_3
 .endmacro
 
@@ -1493,6 +1504,7 @@ COP_MOVE_VGA_DATA     = $40010000           ; Offset 1: DAC data (R,G,B seq)
 .endmacro
 
 ; Set flexible channel 0 parameters
+; Frequency is 16.8 fixed-point (Hz * 256), macro handles conversion
 .macro SET_FLEX0 wave, freq, vol
     lda #wave
     sta FLEX_CH0_WAVE_0
@@ -1500,12 +1512,14 @@ COP_MOVE_VGA_DATA     = $40010000           ; Offset 1: DAC data (R,G,B seq)
     sta FLEX_CH0_WAVE_1
     sta FLEX_CH0_WAVE_2
     sta FLEX_CH0_WAVE_3
-    lda #<(freq)
-    sta FLEX_CH0_FREQ_0
-    lda #>(freq)
-    sta FLEX_CH0_FREQ_1
+    ; freq * 256: byte 0 = 0, bytes 1-2 = freq, byte 3 = 0
     lda #0
+    sta FLEX_CH0_FREQ_0
+    lda #<(freq)
+    sta FLEX_CH0_FREQ_1
+    lda #>(freq)
     sta FLEX_CH0_FREQ_2
+    lda #0
     sta FLEX_CH0_FREQ_3
     lda #vol
     sta FLEX_CH0_VOL_0
