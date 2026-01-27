@@ -2032,25 +2032,6 @@ func GetSplashImageData() ([]byte, error) {
 	return splashData.ReadFile("splash.png")
 }
 
-func writeUint32Byte(current uint32, value uint32, byteIndex uint32) uint32 {
-	shift := byteIndex * 8
-	mask := uint32(0xFF) << shift
-	return (current & ^mask) | ((value & 0xFF) << shift)
-}
-
-func readUint32Byte(value uint32, byteIndex uint32) uint32 {
-	shift := byteIndex * 8
-	return (value >> shift) & 0xFF
-}
-
-func writeUint32Word(current uint32, value uint32, byteIndex uint32) uint32 {
-	current = writeUint32Byte(current, value, byteIndex)
-	if value > 0xFF {
-		current = writeUint32Byte(current, value>>8, byteIndex+1)
-	}
-	return current
-}
-
 func absInt(value int) int {
 	if value < 0 {
 		return -value

@@ -312,19 +312,6 @@ func parseTEDMUSICHeader(data []byte, sigPos int, file *TEDFile) error {
 	return parseTEDMUSICHeaderAt(data, sigPos, file)
 }
 
-// trimString removes trailing spaces and null bytes from a string
-func trimString(data []byte) string {
-	// Find first null byte
-	end := len(data)
-	for i, b := range data {
-		if b == 0 {
-			end = i
-			break
-		}
-	}
-	return strings.TrimRight(string(data[:end]), " ")
-}
-
 // parseMetadataString parses a metadata string with encoding conversion
 // isTMF=true uses Latin-1 encoding, isTMF=false converts from PETSCII
 func parseMetadataString(data []byte, isTMF bool) string {

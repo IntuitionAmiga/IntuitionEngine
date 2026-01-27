@@ -294,19 +294,19 @@ func (p *PSGPlayer) HandlePlayWrite(addr uint32, value uint32) {
 	case PSG_PLAY_PTR:
 		p.playPtrStaged = value
 	case PSG_PLAY_PTR + 1:
-		p.playPtrStaged = writePSGUint32Byte(p.playPtrStaged, value, 1)
+		p.playPtrStaged = writeUint32Byte(p.playPtrStaged, value, 1)
 	case PSG_PLAY_PTR + 2:
-		p.playPtrStaged = writePSGUint32Word(p.playPtrStaged, value, 2)
+		p.playPtrStaged = writeUint32Word(p.playPtrStaged, value, 2)
 	case PSG_PLAY_PTR + 3:
-		p.playPtrStaged = writePSGUint32Byte(p.playPtrStaged, value, 3)
+		p.playPtrStaged = writeUint32Byte(p.playPtrStaged, value, 3)
 	case PSG_PLAY_LEN:
 		p.playLenStaged = value
 	case PSG_PLAY_LEN + 1:
-		p.playLenStaged = writePSGUint32Byte(p.playLenStaged, value, 1)
+		p.playLenStaged = writeUint32Byte(p.playLenStaged, value, 1)
 	case PSG_PLAY_LEN + 2:
-		p.playLenStaged = writePSGUint32Word(p.playLenStaged, value, 2)
+		p.playLenStaged = writeUint32Word(p.playLenStaged, value, 2)
 	case PSG_PLAY_LEN + 3:
-		p.playLenStaged = writePSGUint32Byte(p.playLenStaged, value, 3)
+		p.playLenStaged = writeUint32Byte(p.playLenStaged, value, 3)
 	case PSG_PLAY_CTRL:
 		if value&0x2 != 0 {
 			p.Stop()
@@ -367,29 +367,29 @@ func (p *PSGPlayer) HandlePlayRead(addr uint32) uint32 {
 	case PSG_PLAY_STATUS:
 		return p.playStatus()
 	case PSG_PLAY_PTR + 1:
-		return readPSGUint32Byte(p.playPtrStaged, 1)
+		return readUint32Byte(p.playPtrStaged, 1)
 	case PSG_PLAY_PTR + 2:
-		return readPSGUint32Byte(p.playPtrStaged, 2)
+		return readUint32Byte(p.playPtrStaged, 2)
 	case PSG_PLAY_PTR + 3:
-		return readPSGUint32Byte(p.playPtrStaged, 3)
+		return readUint32Byte(p.playPtrStaged, 3)
 	case PSG_PLAY_LEN + 1:
-		return readPSGUint32Byte(p.playLenStaged, 1)
+		return readUint32Byte(p.playLenStaged, 1)
 	case PSG_PLAY_LEN + 2:
-		return readPSGUint32Byte(p.playLenStaged, 2)
+		return readUint32Byte(p.playLenStaged, 2)
 	case PSG_PLAY_LEN + 3:
-		return readPSGUint32Byte(p.playLenStaged, 3)
+		return readUint32Byte(p.playLenStaged, 3)
 	case PSG_PLAY_CTRL + 1:
-		return readPSGUint32Byte(p.playCtrlStatus(), 1)
+		return readUint32Byte(p.playCtrlStatus(), 1)
 	case PSG_PLAY_CTRL + 2:
-		return readPSGUint32Byte(p.playCtrlStatus(), 2)
+		return readUint32Byte(p.playCtrlStatus(), 2)
 	case PSG_PLAY_CTRL + 3:
-		return readPSGUint32Byte(p.playCtrlStatus(), 3)
+		return readUint32Byte(p.playCtrlStatus(), 3)
 	case PSG_PLAY_STATUS + 1:
-		return readPSGUint32Byte(p.playStatus(), 1)
+		return readUint32Byte(p.playStatus(), 1)
 	case PSG_PLAY_STATUS + 2:
-		return readPSGUint32Byte(p.playStatus(), 2)
+		return readUint32Byte(p.playStatus(), 2)
 	case PSG_PLAY_STATUS + 3:
-		return readPSGUint32Byte(p.playStatus(), 3)
+		return readUint32Byte(p.playStatus(), 3)
 	default:
 		return 0
 	}
@@ -414,23 +414,4 @@ func (p *PSGPlayer) playCtrlStatus() uint32 {
 
 func (p *PSGPlayer) playStatus() uint32 {
 	return p.playCtrlStatus()
-}
-
-func writePSGUint32Byte(current uint32, value uint32, byteIndex uint32) uint32 {
-	shift := byteIndex * 8
-	mask := uint32(0xFF) << shift
-	return (current & ^mask) | ((value & 0xFF) << shift)
-}
-
-func writePSGUint32Word(current uint32, value uint32, byteIndex uint32) uint32 {
-	current = writePSGUint32Byte(current, value, byteIndex)
-	if value > 0xFF {
-		current = writePSGUint32Byte(current, value>>8, byteIndex+1)
-	}
-	return current
-}
-
-func readPSGUint32Byte(value uint32, byteIndex uint32) uint32 {
-	shift := byteIndex * 8
-	return (value >> shift) & 0xFF
 }

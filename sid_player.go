@@ -191,19 +191,19 @@ func (p *SIDPlayer) HandlePlayWrite(addr uint32, value uint32) {
 	case SID_PLAY_PTR:
 		p.playPtrStaged = value
 	case SID_PLAY_PTR + 1:
-		p.playPtrStaged = writeSIDUint32Byte(p.playPtrStaged, value, 1)
+		p.playPtrStaged = writeUint32Byte(p.playPtrStaged, value, 1)
 	case SID_PLAY_PTR + 2:
-		p.playPtrStaged = writeSIDUint32Word(p.playPtrStaged, value, 2)
+		p.playPtrStaged = writeUint32Word(p.playPtrStaged, value, 2)
 	case SID_PLAY_PTR + 3:
-		p.playPtrStaged = writeSIDUint32Byte(p.playPtrStaged, value, 3)
+		p.playPtrStaged = writeUint32Byte(p.playPtrStaged, value, 3)
 	case SID_PLAY_LEN:
 		p.playLenStaged = value
 	case SID_PLAY_LEN + 1:
-		p.playLenStaged = writeSIDUint32Byte(p.playLenStaged, value, 1)
+		p.playLenStaged = writeUint32Byte(p.playLenStaged, value, 1)
 	case SID_PLAY_LEN + 2:
-		p.playLenStaged = writeSIDUint32Word(p.playLenStaged, value, 2)
+		p.playLenStaged = writeUint32Word(p.playLenStaged, value, 2)
 	case SID_PLAY_LEN + 3:
-		p.playLenStaged = writeSIDUint32Byte(p.playLenStaged, value, 3)
+		p.playLenStaged = writeUint32Byte(p.playLenStaged, value, 3)
 	case SID_SUBSONG:
 		p.subsong = uint8(value)
 	case SID_PLAY_CTRL:
@@ -272,23 +272,23 @@ func (p *SIDPlayer) HandlePlayRead(addr uint32) uint32 {
 	case SID_SUBSONG:
 		return uint32(p.subsong)
 	case SID_PLAY_PTR + 1:
-		return readSIDUint32Byte(p.playPtrStaged, 1)
+		return readUint32Byte(p.playPtrStaged, 1)
 	case SID_PLAY_PTR + 2:
-		return readSIDUint32Byte(p.playPtrStaged, 2)
+		return readUint32Byte(p.playPtrStaged, 2)
 	case SID_PLAY_PTR + 3:
-		return readSIDUint32Byte(p.playPtrStaged, 3)
+		return readUint32Byte(p.playPtrStaged, 3)
 	case SID_PLAY_LEN + 1:
-		return readSIDUint32Byte(p.playLenStaged, 1)
+		return readUint32Byte(p.playLenStaged, 1)
 	case SID_PLAY_LEN + 2:
-		return readSIDUint32Byte(p.playLenStaged, 2)
+		return readUint32Byte(p.playLenStaged, 2)
 	case SID_PLAY_LEN + 3:
-		return readSIDUint32Byte(p.playLenStaged, 3)
+		return readUint32Byte(p.playLenStaged, 3)
 	case SID_PLAY_CTRL + 1:
-		return readSIDUint32Byte(p.playCtrlStatus(), 1)
+		return readUint32Byte(p.playCtrlStatus(), 1)
 	case SID_PLAY_CTRL + 2:
-		return readSIDUint32Byte(p.playCtrlStatus(), 2)
+		return readUint32Byte(p.playCtrlStatus(), 2)
 	case SID_PLAY_CTRL + 3:
-		return readSIDUint32Byte(p.playCtrlStatus(), 3)
+		return readUint32Byte(p.playCtrlStatus(), 3)
 	default:
 		return 0
 	}
@@ -313,23 +313,4 @@ func (p *SIDPlayer) playCtrlStatus() uint32 {
 
 func (p *SIDPlayer) playStatus() uint32 {
 	return p.playCtrlStatus()
-}
-
-func writeSIDUint32Byte(current uint32, value uint32, byteIndex uint32) uint32 {
-	shift := byteIndex * 8
-	mask := uint32(0xFF) << shift
-	return (current & ^mask) | ((value & 0xFF) << shift)
-}
-
-func writeSIDUint32Word(current uint32, value uint32, byteIndex uint32) uint32 {
-	current = writeSIDUint32Byte(current, value, byteIndex)
-	if value > 0xFF {
-		current = writeSIDUint32Byte(current, value>>8, byteIndex+1)
-	}
-	return current
-}
-
-func readSIDUint32Byte(value uint32, byteIndex uint32) uint32 {
-	shift := byteIndex * 8
-	return (value >> shift) & 0xFF
 }

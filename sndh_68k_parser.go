@@ -138,15 +138,15 @@ func ParseSNDHData(data []byte) (*SNDHFile, error) {
 
 		switch tag {
 		case "TITL":
-			file.Header.Title, tagOffset = readNullString(data, tagOffset)
+			file.Header.Title, tagOffset = parseNullTerminatedString(data, tagOffset)
 		case "COMM":
-			file.Header.Composer, tagOffset = readNullString(data, tagOffset)
+			file.Header.Composer, tagOffset = parseNullTerminatedString(data, tagOffset)
 		case "RIPP":
-			file.Header.Ripper, tagOffset = readNullString(data, tagOffset)
+			file.Header.Ripper, tagOffset = parseNullTerminatedString(data, tagOffset)
 		case "CONV":
-			file.Header.Converter, tagOffset = readNullString(data, tagOffset)
+			file.Header.Converter, tagOffset = parseNullTerminatedString(data, tagOffset)
 		case "YEAR":
-			file.Header.Year, tagOffset = readNullString(data, tagOffset)
+			file.Header.Year, tagOffset = parseNullTerminatedString(data, tagOffset)
 		default:
 			// Handle special tags
 			if strings.HasPrefix(tag, "##") {
@@ -183,7 +183,7 @@ func ParseSNDHData(data []byte) (*SNDHFile, error) {
 				}
 			} else if tag == "FLAG" {
 				// Hardware flags - read null-terminated strings
-				flagStr, newOffset := readNullString(data, tagOffset)
+				flagStr, newOffset := parseNullTerminatedString(data, tagOffset)
 				if flagStr != "" {
 					file.Header.Flags = append(file.Header.Flags, flagStr)
 				}
@@ -231,18 +231,6 @@ func parseBranchTarget(data []byte, offset int) int {
 	}
 
 	return 0
-}
-
-// readNullString reads a null-terminated string from data
-func readNullString(data []byte, offset int) (string, int) {
-	start := offset
-	for offset < len(data) && data[offset] != 0 {
-		offset++
-	}
-	if offset < len(data) {
-		offset++ // Skip null terminator
-	}
-	return string(data[start : offset-1]), offset
 }
 
 // skipUnknownTag attempts to skip an unknown tag

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 )
 
 type SIDHeader struct {
@@ -70,9 +69,9 @@ func ParseSIDData(data []byte) (*SIDFile, error) {
 	header.Songs = binary.BigEndian.Uint16(data[0x0E:0x10])
 	header.StartSong = binary.BigEndian.Uint16(data[0x10:0x12])
 	header.Speed = binary.BigEndian.Uint32(data[0x12:0x16])
-	header.Name = parsePSIDString(data[0x16:0x36])
-	header.Author = parsePSIDString(data[0x36:0x56])
-	header.Released = parsePSIDString(data[0x56:0x76])
+	header.Name = parsePaddedString(data[0x16:0x36])
+	header.Author = parsePaddedString(data[0x36:0x56])
+	header.Released = parsePaddedString(data[0x56:0x76])
 
 	if header.DataOffset >= 0x78 && len(data) >= 0x78 {
 		header.Flags = binary.BigEndian.Uint16(data[0x76:0x78])
@@ -113,15 +112,4 @@ func ParseSIDData(data []byte) (*SIDFile, error) {
 	}
 
 	return file, nil
-}
-
-func parsePSIDString(data []byte) string {
-	trimmed := data
-	for i, b := range data {
-		if b == 0 {
-			trimmed = data[:i]
-			break
-		}
-	}
-	return strings.TrimRight(string(trimmed), " ")
 }
