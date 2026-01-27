@@ -76,14 +76,6 @@ func sidIsNTSC(header SIDHeader) bool {
 	return video == 0x02
 }
 
-func sidSpeedIsCIA(speed uint32, subsong int) bool {
-	idx := subsong - 1
-	if idx < 0 || idx >= 32 {
-		return false
-	}
-	return (speed>>uint(idx))&1 != 0
-}
-
 func sidCyclesPerTick(clockHz uint32, ntsc bool, interruptMode bool, speed uint32, subsong int) int {
 	tickHz := sidTickHz(clockHz, ntsc, interruptMode, speed, subsong)
 	if tickHz == 0 {
@@ -93,16 +85,24 @@ func sidCyclesPerTick(clockHz uint32, ntsc bool, interruptMode bool, speed uint3
 }
 
 func sidTickHz(clockHz uint32, ntsc bool, interruptMode bool, speed uint32, subsong int) int {
+	// Determine playback rate based on video standard
+	// PAL = 50Hz, NTSC = 60Hz
+	// Note: CIA timing flag just indicates the tune uses CIA timer instead of VBI,
+	// but PSID files don't store the actual timer value, so we use the video standard rate.
 	var tickHz uint32
-	if interruptMode {
-		tickHz = 60
-	} else if sidSpeedIsCIA(speed, subsong) {
-		tickHz = 60
-	} else if ntsc {
+	if ntsc {
 		tickHz = 60
 	} else {
-		tickHz = 50
+		tickHz = 50 // PAL or unknown defaults to 50Hz (most C64 tunes are European)
 	}
+
+	// interruptMode (PlayAddress=0) means the tune handles its own timing via interrupts
+	// For RSID files this might need special handling, but for PSID we use the standard rate
+	if interruptMode {
+		// RSID-style: could potentially need different handling
+		// but for now, use the video standard rate
+	}
+
 	if tickHz == 0 {
 		return 0
 	}

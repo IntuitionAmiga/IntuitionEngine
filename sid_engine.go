@@ -102,6 +102,26 @@ func (e *SIDEngine) SetModel(model int) {
 	defer e.mutex.Unlock()
 	if model == SID_MODEL_6581 || model == SID_MODEL_8580 {
 		e.model = model
+		// Configure all model-specific features
+		if e.sound != nil {
+			for ch := 0; ch < 3; ch++ {
+				if model == SID_MODEL_6581 {
+					e.sound.SetChannelSIDADSRBugs(ch, true)
+					e.sound.SetChannelSID6581FilterDistort(ch, true)
+					e.sound.SetChannelSIDNoisePhaseLocked(ch, true)
+				} else {
+					e.sound.SetChannelSIDADSRBugs(ch, false)
+					e.sound.SetChannelSID6581FilterDistort(ch, false)
+					e.sound.SetChannelSIDNoisePhaseLocked(ch, true) // 8580 also has phase-locked noise
+				}
+			}
+			// Configure mixer mode
+			if model == SID_MODEL_6581 {
+				e.sound.SetSIDMixerMode(true, SID_6581_DC_OFFSET, true)
+			} else {
+				e.sound.SetSIDMixerMode(true, SID_8580_DC_OFFSET, false)
+			}
+		}
 	}
 }
 
@@ -192,6 +212,7 @@ func (e *SIDEngine) ensureChannelsInitialized() {
 		e.writeChannel(ch, FLEX_OFF_CTRL, 0) // Start with gate off
 		e.sound.SetChannelEnvelopeMode(ch, true)
 		e.sound.SetChannelSIDFilterMode(ch, false) // Safe filter mode
+		e.sound.SetChannelSIDDAC(ch, true)         // Enable 12-bit DAC quantization
 	}
 
 	e.channelsInit = true
@@ -481,14 +502,15 @@ func (e *SIDEngine) applyFilter() {
 		cutoffNorm = 1
 	}
 
-	// SID resonance has exponential response - higher values cause self-oscillation
-	// Use a smooth power curve (no discontinuity) that:
-	// - Resonance 0-7: subtle effect
-	// - Resonance 8-12: noticeable
-	// - Resonance 13-15: very pronounced, approaching self-oscillation
-	// Power of 2.2 gives good SID-like response: gentle at low, steep at high
-	resFloat := float64(resonance) / 15.0
-	resNorm := float32(math.Pow(resFloat, 2.2) * 0.95)
+	// SID resonance uses model-specific lookup tables for authentic response
+	// 6581: Non-linear, "wilder" resonance with earlier self-oscillation
+	// 8580: More linear, cleaner and more controlled resonance
+	var resNorm float32
+	if e.model == SID_MODEL_8580 {
+		resNorm = sid8580ResonanceTable[resonance] / 12.0 // Normalize to ~0-0.4 range
+	} else {
+		resNorm = sid6581ResonanceTable[resonance] / 12.0 // Normalize to ~0-1.0 range
+	}
 	modeMask := uint8(0)
 	if lowPass {
 		modeMask |= 0x01

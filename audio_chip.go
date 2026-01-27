@@ -597,6 +597,75 @@ func sidGetExpIndex(level uint8) int {
 	return len(sidEnvExpThresholds) - 1
 }
 
+// sidQuantize12Bit quantizes a sample to 12-bit precision like the real SID DAC.
+// Input: sample in range [-1.0, 1.0]
+// Output: quantized sample in range [-1.0, 1.0] with 4096 possible levels
+func sidQuantize12Bit(sample float32) float32 {
+	// Convert from [-1, 1] to [0, 4095]
+	normalized := (sample + 1.0) * 0.5 * float32(SID_OSC_MAX)
+	// Quantize to integer
+	quantized := float32(int(normalized + 0.5))
+	// Clamp to valid range
+	if quantized < 0 {
+		quantized = 0
+	} else if quantized > float32(SID_OSC_MAX) {
+		quantized = float32(SID_OSC_MAX)
+	}
+	// Convert back to [-1, 1]
+	return quantized*SID_OSC_TO_FLOAT - 1.0
+}
+
+// sidMixerSoftClip applies asymmetric soft saturation like the 6581's analog mixer.
+// The 6581 clips positive and negative peaks slightly differently, creating warmth.
+func sidMixerSoftClip(sample float32) float32 {
+	// Asymmetric soft clipping thresholds (6581 characteristic)
+	const posThreshold float32 = 0.85
+	const negThreshold float32 = 0.80
+
+	if sample > posThreshold {
+		// Soft clip positive peaks
+		excess := sample - posThreshold
+		return posThreshold + excess/(1.0+excess*2.0)
+	} else if sample < -negThreshold {
+		// Soft clip negative peaks (slightly different curve)
+		excess := -sample - negThreshold
+		return -(negThreshold + excess/(1.0+excess*2.5))
+	}
+	return sample
+}
+
+// sid6581FilterDistort applies the characteristic 6581 filter distortion.
+// The 6581 filter adds asymmetric soft clipping at high input levels,
+// creating warmth and the characteristic "squelchy" sound at high resonance.
+func sid6581FilterDistort(sample float32) float32 {
+	if sample > SID_6581_FILTER_THRESHOLD_POS {
+		// Soft clip positive peaks
+		excess := sample - SID_6581_FILTER_THRESHOLD_POS
+		return SID_6581_FILTER_THRESHOLD_POS + excess/(1.0+excess*SID_6581_FILTER_KNEE)
+	} else if sample < -SID_6581_FILTER_THRESHOLD_NEG {
+		// Soft clip negative peaks (different threshold for asymmetry)
+		excess := -sample - SID_6581_FILTER_THRESHOLD_NEG
+		return -(SID_6581_FILTER_THRESHOLD_NEG + excess/(1.0+excess*SID_6581_FILTER_KNEE*1.2))
+	}
+	return sample
+}
+
+// sid8580FilterDistort applies the cleaner 8580 filter behavior.
+// The 8580 has much less distortion than the 6581.
+func sid8580FilterDistort(sample float32) float32 {
+	// 8580 is much cleaner - only clip at extreme levels
+	const threshold float32 = 0.95
+
+	if sample > threshold {
+		excess := sample - threshold
+		return threshold + excess/(1.0+excess*0.5) // Gentler clipping
+	} else if sample < -threshold {
+		excess := -sample - threshold
+		return -(threshold + excess/(1.0+excess*0.5))
+	}
+	return sample
+}
+
 type Channel struct {
 	// ------------------------------------------------------------------------------
 	// Channel represents a single audio generation channel that can produce
@@ -707,32 +776,37 @@ type Channel struct {
 	tedPlusRoomBuf   []float32 // TED+ room delay buffer
 
 	// Boolean state flags (packed together to minimise padding)
-	enabled          bool // Channel enabled flag
-	gate             bool // Gate/trigger state
-	sweepEnabled     bool // Frequency sweep enabled
-	sweepDirection   bool // Sweep direction (up/down)
-	pwmEnabled       bool // PWM enabled flag
-	phaseWrapped     bool // Phase wrap indicator
-	phaseMSB         bool // True when phase >= π (upper half of cycle, for SID ring mod)
-	psgPlusEnabled   bool // PSG+ processing flag
-	pokeyPlusEnabled bool // POKEY+ processing flag
-	sidPlusEnabled   bool // SID+ processing flag
-	tedPlusEnabled   bool // TED+ processing flag
-	sidEnvelope      bool // SID-style ADSR envelope
-	sidTestBit       bool // SID test bit (mute oscillator)
-	sidFilterMode    bool // SID filter mode (allows self-oscillation)
-	sidRateCounter   bool // Use authentic SID rate counter for ADSR
+	enabled              bool // Channel enabled flag
+	gate                 bool // Gate/trigger state
+	sweepEnabled         bool // Frequency sweep enabled
+	sweepDirection       bool // Sweep direction (up/down)
+	pwmEnabled           bool // PWM enabled flag
+	phaseWrapped         bool // Phase wrap indicator
+	phaseMSB             bool // True when phase >= π (upper half of cycle, for SID ring mod)
+	psgPlusEnabled       bool // PSG+ processing flag
+	pokeyPlusEnabled     bool // POKEY+ processing flag
+	sidPlusEnabled       bool // SID+ processing flag
+	tedPlusEnabled       bool // TED+ processing flag
+	sidEnvelope          bool // SID-style ADSR envelope
+	sidTestBit           bool // SID test bit (mute oscillator)
+	sidFilterMode        bool // SID filter mode (allows self-oscillation)
+	sidRateCounter       bool // Use authentic SID rate counter for ADSR
+	sidDACEnabled        bool // Enable 12-bit DAC quantization (authentic SID)
+	sidADSRBugsEnabled   bool // Enable 6581 ADSR bugs (delay bug, counter leak)
+	sidNoisePhaseLocked  bool // Clock noise LFSR on phase wrap (authentic SID timing)
+	sid6581FilterDistort bool // Enable 6581 filter distortion
 
 	// SID rate counter state (for authentic ADSR timing)
-	sidEnvLevel        uint8                  // 8-bit envelope level (0-255)
-	sidCycleAccum      float64                // Fractional cycle accumulator (clock cycles)
-	sidCyclesPerSample float64                // Clock cycles per audio sample (clockHz / sampleRate)
-	sidExpIndex        int                    // Current exponential threshold index (for decay/release)
-	sidAttackIndex     uint8                  // Attack ADSR index (0-15)
-	sidDecayIndex      uint8                  // Decay ADSR index (0-15)
-	sidReleaseIndex    uint8                  // Release ADSR index (0-15)
-	_pad               [CHANNEL_PAD_SIZE]byte // Padding for alignment
-	sampleCount        int                    // Track number of samples generated
+	sidEnvLevel         uint8                  // 8-bit envelope level (0-255)
+	sidADSRDelayCounter uint16                 // ADSR delay bug counter (samples until attack starts)
+	sidCycleAccum       float64                // Fractional cycle accumulator (clock cycles)
+	sidCyclesPerSample  float64                // Clock cycles per audio sample (clockHz / sampleRate)
+	sidExpIndex         int                    // Current exponential threshold index (for decay/release)
+	sidAttackIndex      uint8                  // Attack ADSR index (0-15)
+	sidDecayIndex       uint8                  // Decay ADSR index (0-15)
+	sidReleaseIndex     uint8                  // Release ADSR index (0-15)
+	_pad                [CHANNEL_PAD_SIZE]byte // Padding for alignment
+	sampleCount         int                    // Track number of samples generated
 
 	releaseStartLevel float32 // Level when release phase began
 }
@@ -754,17 +828,20 @@ type CombFilter struct {
 
 type SoundChip struct {
 	// Cache line 1 - Hot path DSP state (64 bytes)
-	filterLP        float32                   // Current low-pass filter state
-	filterBP        float32                   // Current band-pass filter state
-	filterHP        float32                   // Current high-pass filter state
-	filterCutoff    float32                   // Normalised filter cutoff frequency (0-1)
-	filterResonance float32                   // Filter resonance/Q factor (0-1)
-	filterModAmount float32                   // Filter modulation depth (0-1)
-	overdriveLevel  float32                   // Overdrive distortion amount (0-4)
-	reverbMix       float32                   // Reverb wet/dry mix ratio (0-1)
-	filterType      int                       // Filter mode (0=off, 1=LP, 2=HP, 3=BP)
-	enabled         bool                      // Global chip enable flag
-	_pad1           [SOUNDCHIP_PAD1_SIZE]byte // Align to 64-byte cache line boundary
+	filterLP         float32                   // Current low-pass filter state
+	filterBP         float32                   // Current band-pass filter state
+	filterHP         float32                   // Current high-pass filter state
+	filterCutoff     float32                   // Normalised filter cutoff frequency (0-1)
+	filterResonance  float32                   // Filter resonance/Q factor (0-1)
+	filterModAmount  float32                   // Filter modulation depth (0-1)
+	overdriveLevel   float32                   // Overdrive distortion amount (0-4)
+	reverbMix        float32                   // Reverb wet/dry mix ratio (0-1)
+	sidMixerDCOffset float32                   // SID mixer DC offset (model-dependent)
+	filterType       int                       // Filter mode (0=off, 1=LP, 2=HP, 3=BP)
+	enabled          bool                      // Global chip enable flag
+	sidMixerEnabled  bool                      // Enable SID mixer mode (DC offset + saturation)
+	sidMixerSaturate bool                      // Enable soft saturation in mixer
+	_pad1            [SOUNDCHIP_PAD1_SIZE]byte // Align to 64-byte cache line boundary
 
 	// Cache line 2 - Channel references and thread safety (64 bytes)
 	channels        [NUM_CHANNELS]*Channel    // Array of audio channel pointers
@@ -1218,6 +1295,12 @@ func (ch *Channel) updateEnvelope() {
 
 				switch ch.envelopePhase {
 				case ENV_ATTACK:
+					// ADSR delay bug: wait for delay counter to expire before attack
+					if ch.sidADSRBugsEnabled && ch.sidADSRDelayCounter > 0 {
+						ch.sidADSRDelayCounter--
+						break // Skip this rate period, delay attack start
+					}
+
 					// Attack is linear: increment by 1 until 255
 					if ch.sidEnvLevel < 255 {
 						ch.sidEnvLevel++
@@ -1264,6 +1347,12 @@ func (ch *Channel) updateEnvelope() {
 		// Time-based approximation path (default)
 		switch ch.envelopePhase {
 		case ENV_ATTACK:
+			// ADSR delay bug: wait for delay counter to expire before attack
+			if ch.sidADSRBugsEnabled && ch.sidADSRDelayCounter > 0 {
+				ch.sidADSRDelayCounter--
+				return // Skip this sample, delay attack start
+			}
+
 			// Real SID attack is LINEAR (rises in 256 steps)
 			if ch.attackTime <= 0 {
 				ch.envelopeLevel = MAX_LEVEL
@@ -1663,12 +1752,32 @@ func (ch *Channel) generateWaveSample(sampleRate float32) float32 {
 		rawSample *= SINE_NORM
 
 	case WAVE_NOISE:
-		noisePhaseInc := ch.frequency / sampleRate
-		ch.noisePhase += noisePhaseInc
-		steps := int(ch.noisePhase)
-		ch.noisePhase -= float32(steps)
+		// Determine whether to clock the LFSR
+		shouldClock := false
 
-		for i := 0; i < steps; i++ {
+		if ch.sidNoisePhaseLocked {
+			// Phase-locked mode: clock on phase wrap (authentic SID behavior)
+			// Track phase like a tonal oscillator and clock on wrap
+			prevPhase := ch.phase
+			ch.phase += phaseInc
+			if ch.phase >= TWO_PI {
+				ch.phase -= TWO_PI
+				shouldClock = true
+			}
+			// Also clock on MSB transition (low-to-high at PI)
+			if prevPhase < math.Pi && ch.phase >= math.Pi {
+				shouldClock = true
+			}
+		} else {
+			// Traditional frequency-based clocking
+			noisePhaseInc := ch.frequency / sampleRate
+			ch.noisePhase += noisePhaseInc
+			steps := int(ch.noisePhase)
+			ch.noisePhase -= float32(steps)
+			shouldClock = steps > 0
+		}
+
+		if shouldClock {
 			switch ch.noiseMode {
 			case NOISE_MODE_WHITE:
 				newBit := ((ch.noiseSR >> NOISE_TAP1) ^ (ch.noiseSR >> NOISE_TAP2)) & 1
@@ -1725,6 +1834,12 @@ func (ch *Channel) generateWaveSample(sampleRate float32) float32 {
 		ch.phaseMSB = ch.phase >= math.Pi // Track MSB for ring modulation
 	} else {
 		ch.phaseMSB = false
+	}
+
+	// SID DAC quantization: emulate 12-bit DAC in standard waveform path
+	// Combined waveform path already produces 12-bit output
+	if ch.sidDACEnabled && ch.sidWaveMask == 0 {
+		rawSample = sidQuantize12Bit(rawSample)
 	}
 
 	return rawSample
@@ -1925,6 +2040,11 @@ func (ch *Channel) generateSample() float32 {
 
 	// Per-channel filter (state-variable with multi-mode mix)
 	if ch.filterModeMask != 0 && ch.filterCutoff > 0 {
+		// Apply 6581 filter input distortion (before filter processing)
+		if ch.sid6581FilterDistort {
+			scaledSample = sid6581FilterDistort(scaledSample)
+		}
+
 		// Smooth cutoff/resonance to avoid zipper noise.
 		const filterSmooth = 0.02
 		ch.filterCutoff += (ch.filterCutoffTarget - ch.filterCutoff) * filterSmooth
@@ -2037,6 +2157,9 @@ func (chip *SoundChip) GenerateSample() float32 {
 	reverbMix := chip.reverbMix
 	filterLP := chip.filterLP
 	filterBP := chip.filterBP
+	sidMixerEnabled := chip.sidMixerEnabled
+	sidMixerDCOffset := chip.sidMixerDCOffset
+	sidMixerSaturate := chip.sidMixerSaturate
 
 	// Make thread-safe copy of channel array
 	channels := [NUM_CHANNELS]*Channel{}
@@ -2070,6 +2193,17 @@ func (chip *SoundChip) GenerateSample() float32 {
 	} else {
 		// When multiple channels are active, average their samples.
 		sample = sum / float32(activeCount)
+	}
+
+	// Apply SID mixer mode (DC offset and soft saturation)
+	if sidMixerEnabled {
+		// Add DC offset (characteristic of 6581)
+		sample += sidMixerDCOffset
+
+		// Apply soft saturation for authentic voice mixing
+		if sidMixerSaturate {
+			sample = sidMixerSoftClip(sample)
+		}
 	}
 
 	// Apply overdrive effect with waveform-specific processing
@@ -2333,6 +2467,86 @@ func (chip *SoundChip) SetChannelSIDTest(ch int, enabled bool) {
 		channel.noiseSR = NOISE_LFSR_SEED
 		channel.noisePhase = 0
 	}
+}
+
+// SetChannelSIDDAC enables or disables 12-bit DAC quantization for authentic SID output.
+// When enabled, the standard waveform path produces 12-bit quantized output matching
+// the combined waveform path and the real SID's digital-to-analog converter.
+func (chip *SoundChip) SetChannelSIDDAC(ch int, enabled bool) {
+	chip.mutex.Lock()
+	defer chip.mutex.Unlock()
+
+	if ch < 0 || ch >= NUM_CHANNELS {
+		return
+	}
+	channel := chip.channels[ch]
+	if channel == nil {
+		return
+	}
+	channel.sidDACEnabled = enabled
+}
+
+// SetChannelSIDADSRBugs enables or disables authentic 6581 ADSR bugs for a channel.
+// When enabled, simulates the ADSR delay bug (variable delay before attack starts)
+// and envelope counter leak (counter doesn't fully reset, enabling hard restart).
+func (chip *SoundChip) SetChannelSIDADSRBugs(ch int, enabled bool) {
+	chip.mutex.Lock()
+	defer chip.mutex.Unlock()
+
+	if ch < 0 || ch >= NUM_CHANNELS {
+		return
+	}
+	channel := chip.channels[ch]
+	if channel == nil {
+		return
+	}
+	channel.sidADSRBugsEnabled = enabled
+}
+
+// SetChannelSIDNoisePhaseLocked enables phase-locked noise LFSR clocking for a channel.
+// When enabled, noise LFSR clocks on oscillator phase wrap/MSB transition (authentic SID).
+// When disabled, uses traditional frequency-based clocking.
+func (chip *SoundChip) SetChannelSIDNoisePhaseLocked(ch int, enabled bool) {
+	chip.mutex.Lock()
+	defer chip.mutex.Unlock()
+
+	if ch < 0 || ch >= NUM_CHANNELS {
+		return
+	}
+	channel := chip.channels[ch]
+	if channel == nil {
+		return
+	}
+	channel.sidNoisePhaseLocked = enabled
+}
+
+// SetChannelSID6581FilterDistort enables 6581 filter distortion for a channel.
+// When enabled, applies asymmetric soft clipping before filter processing,
+// creating the characteristic warm/squelchy 6581 sound.
+func (chip *SoundChip) SetChannelSID6581FilterDistort(ch int, enabled bool) {
+	chip.mutex.Lock()
+	defer chip.mutex.Unlock()
+
+	if ch < 0 || ch >= NUM_CHANNELS {
+		return
+	}
+	channel := chip.channels[ch]
+	if channel == nil {
+		return
+	}
+	channel.sid6581FilterDistort = enabled
+}
+
+// SetSIDMixerMode configures the SID mixer behavior including DC offset and saturation.
+// dcOffset: DC offset to add to output (typically SID_6581_DC_OFFSET or SID_8580_DC_OFFSET)
+// saturate: Enable soft saturation for authentic 6581 voice mixing
+func (chip *SoundChip) SetSIDMixerMode(enabled bool, dcOffset float32, saturate bool) {
+	chip.mutex.Lock()
+	defer chip.mutex.Unlock()
+
+	chip.sidMixerEnabled = enabled
+	chip.sidMixerDCOffset = dcOffset
+	chip.sidMixerSaturate = saturate
 }
 
 // SetChannelSIDWaveMask configures combined SID waveforms per channel.

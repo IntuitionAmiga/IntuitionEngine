@@ -67,6 +67,69 @@ const (
 	SID_MODEL_8580 = 1 // Revised SID (linear filter, cleaner sound)
 )
 
+// SID DC offset constants (normalized to [-1, 1] output range)
+// The 6581 has significant DC offset that creates characteristic "pumping"
+// when combined with volume modulation. The 8580 is much cleaner.
+const (
+	SID_6581_DC_OFFSET = 0.38 // 6581 DC offset (creates warmth/pumping)
+	SID_8580_DC_OFFSET = 0.0  // 8580 has minimal DC offset
+)
+
+// SID resonance lookup tables (normalized Q values for state-variable filter)
+// These replace the power curve approximation with measured/modeled values.
+// Index 0-15 corresponds to the 4-bit resonance register value.
+
+// sid6581ResonanceTable provides non-linear resonance for the 6581 chip.
+// The 6581 has a "wilder" resonance response with earlier self-oscillation.
+var sid6581ResonanceTable = [16]float32{
+	0.50, // 0: minimal resonance
+	0.55, // 1
+	0.62, // 2
+	0.72, // 3
+	0.85, // 4
+	1.00, // 5
+	1.20, // 6
+	1.50, // 7
+	1.90, // 8: noticeable peak begins
+	2.40, // 9
+	3.00, // 10
+	3.80, // 11
+	4.80, // 12: pronounced resonance
+	6.00, // 13
+	8.00, // 14
+	12.0, // 15: near self-oscillation
+}
+
+// sid8580ResonanceTable provides more linear resonance for the 8580 chip.
+// The 8580 has cleaner, more controlled resonance behavior.
+var sid8580ResonanceTable = [16]float32{
+	0.50, // 0: minimal resonance
+	0.60, // 1
+	0.70, // 2
+	0.82, // 3
+	0.95, // 4
+	1.10, // 5
+	1.30, // 6
+	1.50, // 7
+	1.75, // 8: more gradual increase
+	2.00, // 9
+	2.30, // 10
+	2.65, // 11
+	3.00, // 12
+	3.50, // 13
+	4.20, // 14
+	5.00, // 15: controlled self-oscillation
+}
+
+// SID filter distortion constants
+// The 6581 filter adds asymmetric soft clipping at high input levels,
+// creating the characteristic warm/squelchy sound.
+const (
+	SID_6581_FILTER_THRESHOLD_POS = 0.85 // Positive clipping threshold
+	SID_6581_FILTER_THRESHOLD_NEG = 0.75 // Negative clipping threshold (asymmetric)
+	SID_6581_FILTER_KNEE          = 2.0  // Soft knee factor for smooth transition
+)
+
 // Voice control register bits
 const (
 	SID_CTRL_GATE     = 0x01 // Bit 0: Gate (trigger envelope)
