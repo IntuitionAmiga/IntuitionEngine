@@ -557,18 +557,18 @@ REVERB_MIX        equ $F0A50            ; Dry/wet mix (0-255, 0=dry, 255=wet)
 REVERB_DECAY      equ $F0A54            ; Decay time (0-255 -> 0.1-0.99)
 
 ; ----------------------------------------------------------------------------
-; Flexible 4-Channel Synth Block ($F0A80-$F0B3F)
+; Flexible 4-Channel Synth Block ($F0A80-$F0B7F)
 ;
-; Modern unified interface for all 4 channels. Each channel is $30 bytes.
+; Modern unified interface for all 4 channels. Each channel is $40 bytes.
 ; Any channel can be any waveform type. This is the preferred interface.
 ; ----------------------------------------------------------------------------
 FLEX_CH_BASE      equ $F0A80            ; Base address of flexible block
-FLEX_CH_STRIDE    equ $30               ; Bytes per channel (48)
+FLEX_CH_STRIDE    equ $40               ; Bytes per channel (64)
 
 FLEX_CH0_BASE     equ $F0A80            ; Channel 0 base
-FLEX_CH1_BASE     equ $F0AB0            ; Channel 1 base
-FLEX_CH2_BASE     equ $F0AE0            ; Channel 2 base
-FLEX_CH3_BASE     equ $F0B10            ; Channel 3 base
+FLEX_CH1_BASE     equ $F0AC0            ; Channel 1 base
+FLEX_CH2_BASE     equ $F0B00            ; Channel 2 base
+FLEX_CH3_BASE     equ $F0B40            ; Channel 3 base
 
 ; Register offsets within each flexible channel (add to FLEX_CHx_BASE)
 FLEX_OFF_FREQ       equ $00             ; Frequency (16.8 fixed-point Hz, value = Hz * 256)

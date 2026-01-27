@@ -87,7 +87,7 @@ const (
 // -------------------------------------------------------------------------------
 const (
 	FLEX_CH_BASE   = 0xF0A80
-	FLEX_CH_STRIDE = 0x30
+	FLEX_CH_STRIDE = 0x40 // Must be >= highest offset (FLEX_OFF_SYNC=0x38) + 4
 	FLEX_CH_END    = FLEX_CH_BASE + (FLEX_CH_STRIDE * NUM_CHANNELS) - 1
 
 	FLEX_CH0_BASE = FLEX_CH_BASE
@@ -1109,8 +1109,12 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 			return
 		}
 		ch := chip.channels[chIndex]
-		// Set sync source to another channel (0–3)
+		// Set sync source to another channel (0–3), preventing self-sync
 		masterIndex := int(value % NUM_CHANNELS)
+		if masterIndex == int(chIndex) {
+			ch.syncSource = nil
+			return
+		}
 		ch.syncSource = chip.channels[masterIndex]
 	case RING_MOD_SOURCE_CH0, RING_MOD_SOURCE_CH1, RING_MOD_SOURCE_CH2, RING_MOD_SOURCE_CH3:
 		chIndex := (addr - RING_MOD_SOURCE_CH0) / RINGMOD_REG_SPACING

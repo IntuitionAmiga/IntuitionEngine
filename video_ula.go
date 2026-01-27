@@ -80,8 +80,8 @@ type ULAEngine struct {
 func NewULAEngine(bus *SystemBus) *ULAEngine {
 	ula := &ULAEngine{
 		bus:         bus,
-		border:      0,               // Default: black border
-		control:     ULA_CTRL_ENABLE, // Enabled by default
+		border:      0, // Default: black border
+		control:     0, // Disabled by default - programs must enable explicitly
 		frameBuffer: make([]byte, ULA_FRAME_WIDTH*ULA_FRAME_HEIGHT*4),
 	}
 

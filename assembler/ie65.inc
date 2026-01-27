@@ -755,18 +755,18 @@ REVERB_DECAY_2  = $FA56         ; Reverb decay time byte 2
 REVERB_DECAY_3  = $FA57         ; Reverb decay time byte 3
 
 ; ----------------------------------------------------------------------------
-; Flexible Synth Channels ($FA80-$FB3F, maps from IE32 $F0A80)
+; Flexible Synth Channels ($FA80-$FB7F, maps from IE32 $F0A80)
 ;
-; 4 flexible channels, each with $30 (48) bytes of registers.
+; 4 flexible channels, each with $40 (64) bytes of registers.
 ; Each channel can be set to any waveform type and has full ADSR + effects.
 ;
 ; Channel base addresses:
 ;   Flex 0: $FA80
-;   Flex 1: $FAB0
-;   Flex 2: $FAE0
-;   Flex 3: $FB10
+;   Flex 1: $FAC0
+;   Flex 2: $FB00
+;   Flex 3: $FB40
 ; ----------------------------------------------------------------------------
-FLEX_CH_STRIDE  = $30           ; Bytes per flexible channel (48)
+FLEX_CH_STRIDE  = $40           ; Bytes per flexible channel (64)
 
 ; Flex Channel 0 ($FA80-$FAAF)
 ; Frequency is 16.8 fixed-point: value = Hz * 256 (e.g., 440 Hz = 440*256 = 112640)
@@ -801,101 +801,101 @@ FLEX_CH0_PAN_1  = $FAA5         ; Flex 0 pan byte 1
 FLEX_CH0_PAN_2  = $FAA6         ; Flex 0 pan byte 2
 FLEX_CH0_PAN_3  = $FAA7         ; Flex 0 pan byte 3
 
-; Flex Channel 1 ($FAB0-$FADF)
-FLEX_CH1_FREQ_0 = $FAB0         ; Flex 1 frequency byte 0
-FLEX_CH1_FREQ_1 = $FAB1         ; Flex 1 frequency byte 1
-FLEX_CH1_FREQ_2 = $FAB2         ; Flex 1 frequency byte 2
-FLEX_CH1_FREQ_3 = $FAB3         ; Flex 1 frequency byte 3
-FLEX_CH1_VOL_0  = $FAB4         ; Flex 1 volume byte 0
-FLEX_CH1_VOL_1  = $FAB5         ; Flex 1 volume byte 1
-FLEX_CH1_VOL_2  = $FAB6         ; Flex 1 volume byte 2
-FLEX_CH1_VOL_3  = $FAB7         ; Flex 1 volume byte 3
-FLEX_CH1_WAVE_0 = $FAB8         ; Flex 1 waveform byte 0
-FLEX_CH1_WAVE_1 = $FAB9         ; Flex 1 waveform byte 1
-FLEX_CH1_WAVE_2 = $FABA         ; Flex 1 waveform byte 2
-FLEX_CH1_WAVE_3 = $FABB         ; Flex 1 waveform byte 3
-FLEX_CH1_CTRL_0 = $FABC         ; Flex 1 control byte 0
-FLEX_CH1_CTRL_1 = $FABD         ; Flex 1 control byte 1
-FLEX_CH1_CTRL_2 = $FABE         ; Flex 1 control byte 2
-FLEX_CH1_CTRL_3 = $FABF         ; Flex 1 control byte 3
-FLEX_CH1_ATK_0  = $FAC0         ; Flex 1 attack byte 0 (ms)
-FLEX_CH1_ATK_1  = $FAC1         ; Flex 1 attack byte 1
-FLEX_CH1_DEC_0  = $FAC4         ; Flex 1 decay byte 0 (ms)
-FLEX_CH1_DEC_1  = $FAC5         ; Flex 1 decay byte 1
-FLEX_CH1_SUS_0  = $FAC8         ; Flex 1 sustain byte 0
-FLEX_CH1_SUS_1  = $FAC9         ; Flex 1 sustain byte 1
-FLEX_CH1_REL_0  = $FACC         ; Flex 1 release byte 0 (ms)
-FLEX_CH1_REL_1  = $FACD         ; Flex 1 release byte 1
-FLEX_CH1_DUTY_0 = $FAD0         ; Flex 1 duty cycle byte 0
-FLEX_CH1_DUTY_1 = $FAD1         ; Flex 1 duty cycle byte 1
-FLEX_CH1_PAN_0  = $FAD4         ; Flex 1 pan byte 0
-FLEX_CH1_PAN_1  = $FAD5         ; Flex 1 pan byte 1
-FLEX_CH1_PAN_2  = $FAD6         ; Flex 1 pan byte 2
-FLEX_CH1_PAN_3  = $FAD7         ; Flex 1 pan byte 3
+; Flex Channel 1 ($FAC0-$FAFF)
+FLEX_CH1_FREQ_0 = $FAC0         ; Flex 1 frequency byte 0
+FLEX_CH1_FREQ_1 = $FAC1         ; Flex 1 frequency byte 1
+FLEX_CH1_FREQ_2 = $FAC2         ; Flex 1 frequency byte 2
+FLEX_CH1_FREQ_3 = $FAC3         ; Flex 1 frequency byte 3
+FLEX_CH1_VOL_0  = $FAC4         ; Flex 1 volume byte 0
+FLEX_CH1_VOL_1  = $FAC5         ; Flex 1 volume byte 1
+FLEX_CH1_VOL_2  = $FAC6         ; Flex 1 volume byte 2
+FLEX_CH1_VOL_3  = $FAC7         ; Flex 1 volume byte 3
+FLEX_CH1_WAVE_0 = $FAC8         ; Flex 1 waveform byte 0
+FLEX_CH1_WAVE_1 = $FAC9         ; Flex 1 waveform byte 1
+FLEX_CH1_WAVE_2 = $FACA         ; Flex 1 waveform byte 2
+FLEX_CH1_WAVE_3 = $FACB         ; Flex 1 waveform byte 3
+FLEX_CH1_CTRL_0 = $FACC         ; Flex 1 control byte 0
+FLEX_CH1_CTRL_1 = $FACD         ; Flex 1 control byte 1
+FLEX_CH1_CTRL_2 = $FACE         ; Flex 1 control byte 2
+FLEX_CH1_CTRL_3 = $FACF         ; Flex 1 control byte 3
+FLEX_CH1_ATK_0  = $FAD0         ; Flex 1 attack byte 0 (ms)
+FLEX_CH1_ATK_1  = $FAD1         ; Flex 1 attack byte 1
+FLEX_CH1_DEC_0  = $FAD4         ; Flex 1 decay byte 0 (ms)
+FLEX_CH1_DEC_1  = $FAD5         ; Flex 1 decay byte 1
+FLEX_CH1_SUS_0  = $FAD8         ; Flex 1 sustain byte 0
+FLEX_CH1_SUS_1  = $FAD9         ; Flex 1 sustain byte 1
+FLEX_CH1_REL_0  = $FADC         ; Flex 1 release byte 0 (ms)
+FLEX_CH1_REL_1  = $FADD         ; Flex 1 release byte 1
+FLEX_CH1_DUTY_0 = $FAE0         ; Flex 1 duty cycle byte 0
+FLEX_CH1_DUTY_1 = $FAE1         ; Flex 1 duty cycle byte 1
+FLEX_CH1_PAN_0  = $FAE4         ; Flex 1 pan byte 0
+FLEX_CH1_PAN_1  = $FAE5         ; Flex 1 pan byte 1
+FLEX_CH1_PAN_2  = $FAE6         ; Flex 1 pan byte 2
+FLEX_CH1_PAN_3  = $FAE7         ; Flex 1 pan byte 3
 
-; Flex Channel 2 ($FAE0-$FB0F)
-FLEX_CH2_FREQ_0 = $FAE0         ; Flex 2 frequency byte 0
-FLEX_CH2_FREQ_1 = $FAE1         ; Flex 2 frequency byte 1
-FLEX_CH2_FREQ_2 = $FAE2         ; Flex 2 frequency byte 2
-FLEX_CH2_FREQ_3 = $FAE3         ; Flex 2 frequency byte 3
-FLEX_CH2_VOL_0  = $FAE4         ; Flex 2 volume byte 0
-FLEX_CH2_VOL_1  = $FAE5         ; Flex 2 volume byte 1
-FLEX_CH2_VOL_2  = $FAE6         ; Flex 2 volume byte 2
-FLEX_CH2_VOL_3  = $FAE7         ; Flex 2 volume byte 3
-FLEX_CH2_WAVE_0 = $FAE8         ; Flex 2 waveform byte 0
-FLEX_CH2_WAVE_1 = $FAE9         ; Flex 2 waveform byte 1
-FLEX_CH2_WAVE_2 = $FAEA         ; Flex 2 waveform byte 2
-FLEX_CH2_WAVE_3 = $FAEB         ; Flex 2 waveform byte 3
-FLEX_CH2_CTRL_0 = $FAEC         ; Flex 2 control byte 0
-FLEX_CH2_CTRL_1 = $FAED         ; Flex 2 control byte 1
-FLEX_CH2_CTRL_2 = $FAEE         ; Flex 2 control byte 2
-FLEX_CH2_CTRL_3 = $FAEF         ; Flex 2 control byte 3
-FLEX_CH2_ATK_0  = $FAF0         ; Flex 2 attack byte 0 (ms)
-FLEX_CH2_ATK_1  = $FAF1         ; Flex 2 attack byte 1
-FLEX_CH2_DEC_0  = $FAF4         ; Flex 2 decay byte 0 (ms)
-FLEX_CH2_DEC_1  = $FAF5         ; Flex 2 decay byte 1
-FLEX_CH2_SUS_0  = $FAF8         ; Flex 2 sustain byte 0
-FLEX_CH2_SUS_1  = $FAF9         ; Flex 2 sustain byte 1
-FLEX_CH2_REL_0  = $FAFC         ; Flex 2 release byte 0 (ms)
-FLEX_CH2_REL_1  = $FAFD         ; Flex 2 release byte 1
-FLEX_CH2_DUTY_0 = $FB00         ; Flex 2 duty cycle byte 0
-FLEX_CH2_DUTY_1 = $FB01         ; Flex 2 duty cycle byte 1
-FLEX_CH2_PAN_0  = $FB04         ; Flex 2 pan byte 0
-FLEX_CH2_PAN_1  = $FB05         ; Flex 2 pan byte 1
-FLEX_CH2_PAN_2  = $FB06         ; Flex 2 pan byte 2
-FLEX_CH2_PAN_3  = $FB07         ; Flex 2 pan byte 3
+; Flex Channel 2 ($FB00-$FB3F)
+FLEX_CH2_FREQ_0 = $FB00         ; Flex 2 frequency byte 0
+FLEX_CH2_FREQ_1 = $FB01         ; Flex 2 frequency byte 1
+FLEX_CH2_FREQ_2 = $FB02         ; Flex 2 frequency byte 2
+FLEX_CH2_FREQ_3 = $FB03         ; Flex 2 frequency byte 3
+FLEX_CH2_VOL_0  = $FB04         ; Flex 2 volume byte 0
+FLEX_CH2_VOL_1  = $FB05         ; Flex 2 volume byte 1
+FLEX_CH2_VOL_2  = $FB06         ; Flex 2 volume byte 2
+FLEX_CH2_VOL_3  = $FB07         ; Flex 2 volume byte 3
+FLEX_CH2_WAVE_0 = $FB08         ; Flex 2 waveform byte 0
+FLEX_CH2_WAVE_1 = $FB09         ; Flex 2 waveform byte 1
+FLEX_CH2_WAVE_2 = $FB0A         ; Flex 2 waveform byte 2
+FLEX_CH2_WAVE_3 = $FB0B         ; Flex 2 waveform byte 3
+FLEX_CH2_CTRL_0 = $FB0C         ; Flex 2 control byte 0
+FLEX_CH2_CTRL_1 = $FB0D         ; Flex 2 control byte 1
+FLEX_CH2_CTRL_2 = $FB0E         ; Flex 2 control byte 2
+FLEX_CH2_CTRL_3 = $FB0F         ; Flex 2 control byte 3
+FLEX_CH2_ATK_0  = $FB10         ; Flex 2 attack byte 0 (ms)
+FLEX_CH2_ATK_1  = $FB11         ; Flex 2 attack byte 1
+FLEX_CH2_DEC_0  = $FB14         ; Flex 2 decay byte 0 (ms)
+FLEX_CH2_DEC_1  = $FB15         ; Flex 2 decay byte 1
+FLEX_CH2_SUS_0  = $FB18         ; Flex 2 sustain byte 0
+FLEX_CH2_SUS_1  = $FB19         ; Flex 2 sustain byte 1
+FLEX_CH2_REL_0  = $FB1C         ; Flex 2 release byte 0 (ms)
+FLEX_CH2_REL_1  = $FB1D         ; Flex 2 release byte 1
+FLEX_CH2_DUTY_0 = $FB20         ; Flex 2 duty cycle byte 0
+FLEX_CH2_DUTY_1 = $FB21         ; Flex 2 duty cycle byte 1
+FLEX_CH2_PAN_0  = $FB24         ; Flex 2 pan byte 0
+FLEX_CH2_PAN_1  = $FB25         ; Flex 2 pan byte 1
+FLEX_CH2_PAN_2  = $FB26         ; Flex 2 pan byte 2
+FLEX_CH2_PAN_3  = $FB27         ; Flex 2 pan byte 3
 
-; Flex Channel 3 ($FB10-$FB3F)
-FLEX_CH3_FREQ_0 = $FB10         ; Flex 3 frequency byte 0
-FLEX_CH3_FREQ_1 = $FB11         ; Flex 3 frequency byte 1
-FLEX_CH3_FREQ_2 = $FB12         ; Flex 3 frequency byte 2
-FLEX_CH3_FREQ_3 = $FB13         ; Flex 3 frequency byte 3
-FLEX_CH3_VOL_0  = $FB14         ; Flex 3 volume byte 0
-FLEX_CH3_VOL_1  = $FB15         ; Flex 3 volume byte 1
-FLEX_CH3_VOL_2  = $FB16         ; Flex 3 volume byte 2
-FLEX_CH3_VOL_3  = $FB17         ; Flex 3 volume byte 3
-FLEX_CH3_WAVE_0 = $FB18         ; Flex 3 waveform byte 0
-FLEX_CH3_WAVE_1 = $FB19         ; Flex 3 waveform byte 1
-FLEX_CH3_WAVE_2 = $FB1A         ; Flex 3 waveform byte 2
-FLEX_CH3_WAVE_3 = $FB1B         ; Flex 3 waveform byte 3
-FLEX_CH3_CTRL_0 = $FB1C         ; Flex 3 control byte 0
-FLEX_CH3_CTRL_1 = $FB1D         ; Flex 3 control byte 1
-FLEX_CH3_CTRL_2 = $FB1E         ; Flex 3 control byte 2
-FLEX_CH3_CTRL_3 = $FB1F         ; Flex 3 control byte 3
-FLEX_CH3_ATK_0  = $FB20         ; Flex 3 attack byte 0 (ms)
-FLEX_CH3_ATK_1  = $FB21         ; Flex 3 attack byte 1
-FLEX_CH3_DEC_0  = $FB24         ; Flex 3 decay byte 0 (ms)
-FLEX_CH3_DEC_1  = $FB25         ; Flex 3 decay byte 1
-FLEX_CH3_SUS_0  = $FB28         ; Flex 3 sustain byte 0
-FLEX_CH3_SUS_1  = $FB29         ; Flex 3 sustain byte 1
-FLEX_CH3_REL_0  = $FB2C         ; Flex 3 release byte 0 (ms)
-FLEX_CH3_REL_1  = $FB2D         ; Flex 3 release byte 1
-FLEX_CH3_DUTY_0 = $FB30         ; Flex 3 duty cycle byte 0
-FLEX_CH3_DUTY_1 = $FB31         ; Flex 3 duty cycle byte 1
-FLEX_CH3_PAN_0  = $FB34         ; Flex 3 pan byte 0
-FLEX_CH3_PAN_1  = $FB35         ; Flex 3 pan byte 1
-FLEX_CH3_PAN_2  = $FB36         ; Flex 3 pan byte 2
-FLEX_CH3_PAN_3  = $FB37         ; Flex 3 pan byte 3
+; Flex Channel 3 ($FB40-$FB7F)
+FLEX_CH3_FREQ_0 = $FB40         ; Flex 3 frequency byte 0
+FLEX_CH3_FREQ_1 = $FB41         ; Flex 3 frequency byte 1
+FLEX_CH3_FREQ_2 = $FB42         ; Flex 3 frequency byte 2
+FLEX_CH3_FREQ_3 = $FB43         ; Flex 3 frequency byte 3
+FLEX_CH3_VOL_0  = $FB44         ; Flex 3 volume byte 0
+FLEX_CH3_VOL_1  = $FB45         ; Flex 3 volume byte 1
+FLEX_CH3_VOL_2  = $FB46         ; Flex 3 volume byte 2
+FLEX_CH3_VOL_3  = $FB47         ; Flex 3 volume byte 3
+FLEX_CH3_WAVE_0 = $FB48         ; Flex 3 waveform byte 0
+FLEX_CH3_WAVE_1 = $FB49         ; Flex 3 waveform byte 1
+FLEX_CH3_WAVE_2 = $FB4A         ; Flex 3 waveform byte 2
+FLEX_CH3_WAVE_3 = $FB4B         ; Flex 3 waveform byte 3
+FLEX_CH3_CTRL_0 = $FB4C         ; Flex 3 control byte 0
+FLEX_CH3_CTRL_1 = $FB4D         ; Flex 3 control byte 1
+FLEX_CH3_CTRL_2 = $FB4E         ; Flex 3 control byte 2
+FLEX_CH3_CTRL_3 = $FB4F         ; Flex 3 control byte 3
+FLEX_CH3_ATK_0  = $FB50         ; Flex 3 attack byte 0 (ms)
+FLEX_CH3_ATK_1  = $FB51         ; Flex 3 attack byte 1
+FLEX_CH3_DEC_0  = $FB54         ; Flex 3 decay byte 0 (ms)
+FLEX_CH3_DEC_1  = $FB55         ; Flex 3 decay byte 1
+FLEX_CH3_SUS_0  = $FB58         ; Flex 3 sustain byte 0
+FLEX_CH3_SUS_1  = $FB59         ; Flex 3 sustain byte 1
+FLEX_CH3_REL_0  = $FB5C         ; Flex 3 release byte 0 (ms)
+FLEX_CH3_REL_1  = $FB5D         ; Flex 3 release byte 1
+FLEX_CH3_DUTY_0 = $FB60         ; Flex 3 duty cycle byte 0
+FLEX_CH3_DUTY_1 = $FB61         ; Flex 3 duty cycle byte 1
+FLEX_CH3_PAN_0  = $FB64         ; Flex 3 pan byte 0
+FLEX_CH3_PAN_1  = $FB65         ; Flex 3 pan byte 1
+FLEX_CH3_PAN_2  = $FB66         ; Flex 3 pan byte 2
+FLEX_CH3_PAN_3  = $FB67         ; Flex 3 pan byte 3
 
 ; ----------------------------------------------------------------------------
 ; Waveform Types (for flexible channels)

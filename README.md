@@ -259,7 +259,7 @@ The system's memory layout is designed to provide efficient access to both progr
 0x0F0800 - 0x0F080C: Timer registers
 0x0F0820 - 0x0F0834: Filter registers
 0x0F0900 - 0x0F0A6F: Legacy synth registers (square/triangle/sine/noise/saw)
-0x0F0A80 - 0x0F0B3F: Flexible 4-channel synth registers (preferred)
+0x0F0A80 - 0x0F0B7F: Flexible 4-channel synth registers (preferred)
 0x0F0C00 - 0x0F0C0D: PSG registers (AY/YM synthesis)
 0x0F0C0E:            PSG+ control register
 0x0F0C10 - 0x0F0C1C: PSG playback control (AY/YM/VGM/SNDH)
@@ -469,16 +469,16 @@ NOISE_MODE_METALLIC = 2 // "Metallic" noise variant
 0x0F0A54: REVERB_DECAY   - Decay time (0-255)
 ```
 
-### Flexible 4-Channel Synth Block (0x0F0A80 - 0x0F0B3F)
+### Flexible 4-Channel Synth Block (0x0F0A80 - 0x0F0B7F)
 
-The flexible synth block provides a modern, uniform interface for all four synthesis channels. Each channel occupies 0x30 bytes (48 bytes), supporting any waveform type.
+The flexible synth block provides a modern, uniform interface for all four synthesis channels. Each channel occupies 0x40 bytes (64 bytes), supporting any waveform type.
 
 ```
 Channel Base Addresses:
   Channel 0: 0x0F0A80
-  Channel 1: 0x0F0AB0
-  Channel 2: 0x0F0AE0
-  Channel 3: 0x0F0B10
+  Channel 1: 0x0F0AC0
+  Channel 2: 0x0F0B00
+  Channel 3: 0x0F0B40
 
 Per-Channel Register Offsets:
   +0x00: FREQ       - Frequency (16.8 fixed-point Hz, value = Hz * 256)
@@ -1763,10 +1763,10 @@ Sample rate: 44.1kHz with 32-bit floating-point internal processing
 | Sawtooth Channel | `$F0A20-$F0A5F` | `$FA20-$FA5F` | Frequency, volume, ADSR, sweep |
 | Overdrive | `$F0A40-$F0A43` | `$FA40-$FA43` | Drive amount (0-255) |
 | Reverb | `$F0A50-$F0A57` | `$FA50-$FA57` | Mix level and decay time |
-| Flex Channel 0 | `$F0A80-$F0AAF` | `$FA80-$FAAF` | Configurable waveform channel |
-| Flex Channel 1 | `$F0AB0-$F0ADF` | `$FAB0-$FADF` | Configurable waveform channel |
-| Flex Channel 2 | `$F0AE0-$F0B0F` | `$FAE0-$FB0F` | Configurable waveform channel |
-| Flex Channel 3 | `$F0B10-$F0B3F` | `$FB10-$FB3F` | Configurable waveform channel |
+| Flex Channel 0 | `$F0A80-$F0ABF` | `$FA80-$FABF` | Configurable waveform channel |
+| Flex Channel 1 | `$F0AC0-$F0AFF` | `$FAC0-$FAFF` | Configurable waveform channel |
+| Flex Channel 2 | `$F0B00-$F0B3F` | `$FB00-$FB3F` | Configurable waveform channel |
+| Flex Channel 3 | `$F0B40-$F0B7F` | `$FB40-$FB7F` | Configurable waveform channel |
 
 ### Register Reference
 
