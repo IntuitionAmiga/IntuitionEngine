@@ -713,6 +713,7 @@ type Channel struct {
 	sweepDirection   bool // Sweep direction (up/down)
 	pwmEnabled       bool // PWM enabled flag
 	phaseWrapped     bool // Phase wrap indicator
+	phaseMSB         bool // True when phase >= π (upper half of cycle, for SID ring mod)
 	psgPlusEnabled   bool // PSG+ processing flag
 	pokeyPlusEnabled bool // POKEY+ processing flag
 	sidPlusEnabled   bool // SID+ processing flag
@@ -1583,8 +1584,12 @@ func (ch *Channel) generateWaveSample(sampleRate float32) float32 {
 		// Store raw oscillator output before ring mod (for SID OSC3 readback)
 		ch.sidOscOutput = rawSample
 
-		if ch.ringModSource != nil {
-			rawSample *= ch.ringModSource.prevRawSample
+		// SID ring modulation: invert triangle output when ring mod source MSB is high
+		// Real SID only applies ring mod to triangle waveforms (other waveforms ignore the bit)
+		if ch.ringModSource != nil && ch.ringModSource.phaseMSB {
+			if waveMask&SID_WAVE_TRIANGLE != 0 {
+				rawSample = -rawSample
+			}
 		}
 		ch.prevRawSample = rawSample
 
@@ -1604,8 +1609,10 @@ func (ch *Channel) generateWaveSample(sampleRate float32) float32 {
 			} else {
 				ch.phaseWrapped = false
 			}
+			ch.phaseMSB = ch.phase >= math.Pi // Track MSB for ring modulation
 		} else {
 			ch.phaseWrapped = false
+			ch.phaseMSB = false
 		}
 
 		return rawSample
@@ -1692,8 +1699,12 @@ func (ch *Channel) generateWaveSample(sampleRate float32) float32 {
 	// Store raw oscillator output before ring mod (for SID OSC3 readback)
 	ch.sidOscOutput = rawSample
 
-	if ch.ringModSource != nil {
-		rawSample *= ch.ringModSource.prevRawSample
+	// SID ring modulation: invert triangle output when ring mod source MSB is high
+	// Real SID only applies ring mod to triangle waveforms (other waveforms ignore the bit)
+	if ch.ringModSource != nil && ch.ringModSource.phaseMSB {
+		if ch.waveType == WAVE_TRIANGLE {
+			rawSample = -rawSample
+		}
 	}
 	ch.prevRawSample = rawSample
 
@@ -1711,6 +1722,9 @@ func (ch *Channel) generateWaveSample(sampleRate float32) float32 {
 		} else {
 			ch.phaseWrapped = false
 		}
+		ch.phaseMSB = ch.phase >= math.Pi // Track MSB for ring modulation
+	} else {
+		ch.phaseMSB = false
 	}
 
 	return rawSample

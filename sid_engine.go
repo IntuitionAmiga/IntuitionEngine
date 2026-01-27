@@ -410,14 +410,16 @@ func (e *SIDEngine) applyModulation() {
 		// Source voice for modulation (voice 0 uses voice 2, others use voice-1)
 		srcVoice := (voice + 2) % 3
 
+		// Ring modulation - enable bit 7, source in bits 0-1
 		if ringMod {
-			e.writeChannel(voice, FLEX_OFF_RINGMOD, uint32(srcVoice)|0x80) // Enable + source
+			e.writeChannel(voice, FLEX_OFF_RINGMOD, uint32(0x80|srcVoice))
 		} else {
 			e.writeChannel(voice, FLEX_OFF_RINGMOD, 0)
 		}
 
+		// Hard sync - enable bit 7, source in bits 0-1
 		if sync {
-			e.writeChannel(voice, FLEX_OFF_SYNC, uint32(srcVoice)|0x80) // Enable + source
+			e.writeChannel(voice, FLEX_OFF_SYNC, uint32(0x80|srcVoice))
 		} else {
 			e.writeChannel(voice, FLEX_OFF_SYNC, 0)
 		}
