@@ -374,6 +374,61 @@ SAP_PLAY_STATUS = $FD1C         ; Play status (IE32 $F0D1C)
 SAP_SUBSONG     = $FD1D         ; Subsong selection (0-255)
 
 ; ============================================================================
+; AHX AUDIO REGISTERS (Amiga AHX module player)
+;
+; The AHX engine provides Amiga AHX/THX module playback:
+; - 4 channels with waveform synthesis (triangle, sawtooth, square, noise)
+; - Per-channel filter modulation
+; - Instrument-based sequencing with effects
+;
+; AHX+ mode (write 1 to AHX_PLUS_CTRL) enables enhanced audio:
+; - 4x oversampling for cleaner waveforms
+; - Soft low-pass filtering for smoother output
+; - Subtle saturation for analog warmth
+; - Room reverb for Amiga-style ambience
+; - Authentic stereo panning (L-R-R-L pattern)
+; - Hardware PWM for square wave duty cycle modulation
+;
+; For 6502: AHX registers are at $FB80-$FB91 (IE32 $F0B80-$F0B91)
+; ============================================================================
+AHX_PLUS_CTRL   = $FB80         ; AHX+ mode (0=standard, 1=enhanced)
+
+; ----------------------------------------------------------------------------
+; AHX Player Registers
+;
+; The AHX player handles Amiga AHX/THX modules which contain instrument
+; definitions and pattern data for 4-channel waveform synthesis.
+;
+; Usage:
+;   1. Embed AHX data in your program using .incbin
+;   2. Set AHX_PLAY_PTR bytes to the address of the AHX data (little-endian)
+;   3. Set AHX_PLAY_LEN bytes to the size of the AHX data (little-endian)
+;   4. Optionally set AHX_SUBSONG to select a subsong (default 0)
+;   5. Optionally write 1 to AHX_PLUS_CTRL to enable enhanced mode
+;   6. Write to AHX_PLAY_CTRL to start/stop playback
+;
+; AHX_PLAY_CTRL bits:
+;   bit 0 ($01) - Start playback (write 1 to begin)
+;   bit 1 ($02) - Stop playback (write 1 to stop)
+;   bit 2 ($04) - Enable looping (set before starting)
+;
+; AHX_PLAY_STATUS bits:
+;   bit 0 ($01) - Busy (1 = playing, 0 = stopped)
+;   bit 1 ($02) - Error (1 = load/parse error)
+; ----------------------------------------------------------------------------
+AHX_PLAY_PTR_0  = $FB84         ; Play pointer byte 0 (IE32 $F0B84)
+AHX_PLAY_PTR_1  = $FB85         ; Play pointer byte 1
+AHX_PLAY_PTR_2  = $FB86         ; Play pointer byte 2
+AHX_PLAY_PTR_3  = $FB87         ; Play pointer byte 3
+AHX_PLAY_LEN_0  = $FB88         ; Play length byte 0 (IE32 $F0B88)
+AHX_PLAY_LEN_1  = $FB89         ; Play length byte 1
+AHX_PLAY_LEN_2  = $FB8A         ; Play length byte 2
+AHX_PLAY_LEN_3  = $FB8B         ; Play length byte 3
+AHX_PLAY_CTRL   = $FB8C         ; Play control (IE32 $F0B8C)
+AHX_PLAY_STATUS = $FB90         ; Play status (IE32 $F0B90)
+AHX_SUBSONG     = $FB91         ; Subsong selection (0-255)
+
+; ============================================================================
 ; VGA VIDEO REGISTERS (IBM VGA compatible)
 ;
 ; The VGA chip provides IBM PC-compatible graphics modes:

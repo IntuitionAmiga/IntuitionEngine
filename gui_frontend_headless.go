@@ -14,18 +14,18 @@ type HeadlessFrontend struct {
 
 var activeFrontend *HeadlessFrontend
 
-func NewGTKFrontend(cpu EmulatorCPU, video *VideoChip, sound *SoundChip, psg *PSGPlayer, sid *SIDPlayer) (GUIFrontend, error) {
+func NewGTKFrontend(cpu EmulatorCPU, video *VideoChip, sound *SoundChip, psg *PSGPlayer, sid *SIDPlayer, ahx *AHXPlayer) (GUIFrontend, error) {
 	frontend := &HeadlessFrontend{
-		actions: NewGUIActions(cpu, video, sound, psg, sid),
+		actions: NewGUIActions(cpu, video, sound, psg, sid, ahx),
 		video:   video,
 	}
 	activeFrontend = frontend
 	return frontend, nil
 }
 
-func NewFLTKFrontend(cpu EmulatorCPU, video *VideoChip, sound *SoundChip, psg *PSGPlayer, sid *SIDPlayer) (GUIFrontend, error) {
+func NewFLTKFrontend(cpu EmulatorCPU, video *VideoChip, sound *SoundChip, psg *PSGPlayer, sid *SIDPlayer, ahx *AHXPlayer) (GUIFrontend, error) {
 	frontend := &HeadlessFrontend{
-		actions: NewGUIActions(cpu, video, sound, psg, sid),
+		actions: NewGUIActions(cpu, video, sound, psg, sid, ahx),
 		video:   video,
 	}
 	activeFrontend = frontend

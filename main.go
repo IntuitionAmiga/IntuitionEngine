@@ -521,6 +521,13 @@ func main() {
 		tedPlayer.HandlePlayRead,
 		tedPlayer.HandlePlayWrite)
 
+	// Map AHX registers (Amiga AHX module player)
+	ahxPlayerCPU := NewAHXPlayer(soundChip, SAMPLE_RATE)
+	ahxPlayerCPU.AttachBus(sysBus)
+	sysBus.MapIO(AHX_BASE, AHX_SUBSONG,
+		ahxPlayerCPU.HandlePlayRead,
+		ahxPlayerCPU.HandlePlayWrite)
+
 	// Map VGA registers (VGA is a standalone video device)
 	vgaEngine := NewVGAEngine(sysBus)
 	sysBus.MapIO(VGA_BASE, VGA_REG_END,
@@ -566,7 +573,7 @@ func main() {
 		}
 
 		// Initialize GUI with IE32 CPU
-		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, ie32CPU, videoChip, soundChip, psgPlayer, sidPlayer)
+		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, ie32CPU, videoChip, soundChip, psgPlayer, sidPlayer, ahxPlayerCPU)
 		if err != nil {
 			fmt.Printf("Failed to initialize GUI: %v\n", err)
 			os.Exit(1)
@@ -608,7 +615,7 @@ func main() {
 		// Initialize GUI with M68K CPU
 		// Note: The GUI might need modifications to properly support M68K CPU
 		m68kRunner := NewM68KRunner(m68kCPU)
-		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, m68kRunner, videoChip, soundChip, psgPlayer, sidPlayer)
+		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, m68kRunner, videoChip, soundChip, psgPlayer, sidPlayer, ahxPlayerCPU)
 		if err != nil {
 			fmt.Printf("Failed to initialize GUI: %v\n", err)
 			os.Exit(1)
@@ -659,7 +666,7 @@ func main() {
 			startExecution = true
 		}
 
-		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, z80CPU, videoChip, soundChip, psgPlayer, sidPlayer)
+		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, z80CPU, videoChip, soundChip, psgPlayer, sidPlayer, ahxPlayerCPU)
 		if err != nil {
 			fmt.Printf("Failed to initialize GUI: %v\n", err)
 			os.Exit(1)
@@ -713,7 +720,7 @@ func main() {
 			startExecution = true
 		}
 
-		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, cpu6502, videoChip, soundChip, psgPlayer, sidPlayer)
+		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, cpu6502, videoChip, soundChip, psgPlayer, sidPlayer, ahxPlayerCPU)
 		if err != nil {
 			fmt.Printf("Failed to initialize GUI: %v\n", err)
 			os.Exit(1)

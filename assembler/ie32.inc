@@ -330,6 +330,54 @@
 .equ TED_PLAY_STATUS   0xF0F1C          ; Play status
 
 ; ============================================================================
+; AHX AUDIO REGISTERS (Amiga AHX module player)
+;
+; The AHX engine provides Amiga AHX/THX module playback:
+; - 4 channels with waveform synthesis (triangle, sawtooth, square, noise)
+; - Per-channel filter modulation
+; - Instrument-based sequencing with effects
+;
+; AHX+ mode (write 1 to AHX_PLUS_CTRL) enables enhanced audio:
+; - 4x oversampling for cleaner waveforms
+; - Soft low-pass filtering for smoother output
+; - Subtle saturation for analog warmth
+; - Room reverb for Amiga-style ambience
+; - Authentic stereo panning (L-R-R-L pattern)
+; - Hardware PWM for square wave duty cycle modulation
+; ============================================================================
+.equ AHX_BASE          0xF0B80          ; AHX base address
+.equ AHX_PLUS_CTRL     0xF0B80          ; AHX+ mode (0=standard, 1=enhanced)
+
+; ----------------------------------------------------------------------------
+; AHX Player Registers
+;
+; The AHX player handles Amiga AHX/THX modules which contain instrument
+; definitions and pattern data for 4-channel waveform synthesis.
+;
+; Usage:
+;   1. Embed AHX data in your program using .incbin
+;   2. Set AHX_PLAY_PTR to the address of the AHX file data
+;   3. Set AHX_PLAY_LEN to the size of the AHX data in bytes
+;   4. Optionally set AHX_SUBSONG to select a subsong (default 0)
+;   5. Optionally write 1 to AHX_PLUS_CTRL to enable enhanced mode
+;   6. Write to AHX_PLAY_CTRL to start/stop playback
+;
+; AHX_PLAY_CTRL bits:
+;   bit 0 (0x01) - Start playback (write 1 to begin)
+;   bit 1 (0x02) - Stop playback (write 1 to stop)
+;   bit 2 (0x04) - Enable looping (set before starting)
+;
+; AHX_PLAY_STATUS bits:
+;   bit 0 (0x01) - Busy (1 = playing, 0 = stopped)
+;   bit 1 (0x02) - Error (1 = load/parse error)
+; ----------------------------------------------------------------------------
+.equ AHX_PLAY_PTR      0xF0B84          ; Play pointer (32-bit)
+.equ AHX_PLAY_LEN      0xF0B88          ; Play length (32-bit)
+.equ AHX_PLAY_CTRL     0xF0B8C          ; Play control
+.equ AHX_PLAY_STATUS   0xF0B90          ; Play status
+.equ AHX_SUBSONG       0xF0B91          ; Subsong selection (0-255)
+
+; ============================================================================
 ; VGA VIDEO REGISTERS (IBM VGA compatible)
 ;
 ; The VGA chip provides IBM PC-compatible graphics modes:

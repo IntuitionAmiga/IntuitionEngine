@@ -655,7 +655,31 @@ Clock rates: 886724 Hz (PAL), 894886 Hz (NTSC)
 
 These registers allow CPU code to trigger .TED file playback from RAM. The embedded 6502 code in the TED file is executed by the internal 6502 emulator at 50Hz (PAL).
 
-## 3.10 Audio Chip Memory Map by CPU
+## 3.10 AHX Module Player Registers (0x0F0B80 - 0x0F0B91)
+
+The AHX engine provides Amiga AHX/THX module playback with 4-channel waveform synthesis:
+
+```
+AHX Control Registers (0x0F0B80):
+0x0F0B80: AHX_PLUS_CTRL  - AHX+ enhanced audio mode (0=standard, 1=enhanced)
+
+AHX Player Registers (0x0F0B84 - 0x0F0B91):
+0x0F0B84: AHX_PLAY_PTR    - Pointer to .AHX data (32-bit)
+0x0F0B88: AHX_PLAY_LEN    - Length of .AHX data (32-bit)
+0x0F0B8C: AHX_PLAY_CTRL   - Control (bit0=start, bit1=stop, bit2=loop)
+0x0F0B90: AHX_PLAY_STATUS - Status (bit0=busy, bit1=error)
+0x0F0B91: AHX_SUBSONG     - Subsong selection (0-255)
+```
+
+AHX+ mode provides enhanced audio processing:
+- 4x oversampling for cleaner waveforms
+- Soft low-pass filtering (alpha 0.11)
+- Subtle saturation (drive 0.16) for analog warmth
+- Room reverb (mix 0.09, delay 120 samples)
+- Authentic Amiga stereo panning (L-R-R-L pattern)
+- Hardware PWM mapping SquarePos to duty cycle
+
+## 3.11 Audio Chip Memory Map by CPU
 
 The four sound chips (PSG, POKEY, SID, TED) are accessible from all CPU architectures at different address ranges:
 
@@ -669,7 +693,7 @@ The four sound chips (PSG, POKEY, SID, TED) are accessible from all CPU architec
 Z80 uses port-based I/O: the first port selects the register, the second reads/writes data.
 6502 uses memory-mapped I/O in its native address space, following C64/Atari/Plus4 conventions.
 
-## 3.11 VGA Video Chip (0x0F1000 - 0x0F13FF)
+## 3.12 VGA Video Chip (0x0F1000 - 0x0F13FF)
 
 The VGA chip provides IBM PC-compatible graphics modes, allowing classic PC demo effects and games:
 
@@ -779,7 +803,7 @@ The VGA chip integrates with the video compositor as a separate layer (layer 10)
 
 See section 10.9 (Video Compositor) for details on the compositing architecture and section 10.6 (Copper List Executor) for examples of copper-driven VGA palette manipulation.
 
-## 3.12 ULA Video Chip - ZX Spectrum (0x0F2000 - 0x0F200B)
+## 3.13 ULA Video Chip - ZX Spectrum (0x0F2000 - 0x0F200B)
 
 The ULA chip provides authentic ZX Spectrum video output, enabling classic Spectrum demos and games:
 
@@ -3584,6 +3608,12 @@ A typical development cycle involves:
 ./bin/IntuitionEngine -sid-ntsc tune.sid
 ```
 
+**AHX music playback (Amiga AHX/THX modules):**
+```bash
+./bin/IntuitionEngine -ahx module.ahx
+./bin/IntuitionEngine -ahx+ module.ahx   # Enhanced audio with stereo spread
+```
+
 **Notes:**
 - `.ym` files are Atari ST YM format
 - `.vgm/.vgz` are VGM streams (including MSX PSG logs)
@@ -3592,8 +3622,8 @@ A typical development cycle involves:
 - PSID only for SID; RSID is rejected
 - Single-SID playback at $D400; multi-SID not yet implemented
 
-**Enhanced Audio Modes (PSG+/POKEY+/SID+/TED+):**
-These modes provide oversampling, gentle low-pass smoothing, subtle saturation, and a tiny room/width effect for richer sound while preserving pitch and timing.
+**Enhanced Audio Modes (PSG+/POKEY+/SID+/TED+/AHX+):**
+These modes provide oversampling, gentle low-pass smoothing, subtle saturation, and a tiny room/width effect for richer sound while preserving pitch and timing. AHX+ additionally provides authentic Amiga stereo panning (L-R-R-L pattern) and hardware PWM for square wave modulation.
 
 ## 11.4 Assembler Include Files
 

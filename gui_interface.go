@@ -60,6 +60,7 @@ type GUIActions struct {
 	sound *SoundChip
 	psg   *PSGPlayer
 	sid   *SIDPlayer
+	ahx   *AHXPlayer
 }
 
 type EmulatorCPU interface {
@@ -84,13 +85,14 @@ const (
 	GUI_FRONTEND_GTK4
 )
 
-func NewGUIActions(cpu EmulatorCPU, video *VideoChip, sound *SoundChip, psg *PSGPlayer, sid *SIDPlayer) *GUIActions {
+func NewGUIActions(cpu EmulatorCPU, video *VideoChip, sound *SoundChip, psg *PSGPlayer, sid *SIDPlayer, ahx *AHXPlayer) *GUIActions {
 	return &GUIActions{
 		cpu:   cpu,
 		video: video,
 		sound: sound,
 		psg:   psg,
 		sid:   sid,
+		ahx:   ahx,
 	}
 }
 
@@ -145,12 +147,32 @@ func (a *GUIActions) LoadSID(filename string) error {
 	return nil
 }
 
+func (a *GUIActions) LoadAHX(filename string) error {
+	if a.ahx == nil {
+		return fmt.Errorf("AHX playback is not available")
+	}
+	if a.cpu != nil {
+		return fmt.Errorf("AHX playback is disabled while CPU mode is active")
+	}
+	a.ahx.Stop()
+	if err := a.ahx.LoadFile(filename); err != nil {
+		return err
+	}
+	a.sound.SetSampleTicker(a.ahx.engine)
+	a.sound.Start()
+	a.ahx.Play()
+	return nil
+}
+
 func (a *GUIActions) LoadFile(filename string) error {
 	if isPSGExtension(filename) {
 		return a.LoadPSG(filename)
 	}
 	if isSIDExtension(filename) {
 		return a.LoadSID(filename)
+	}
+	if isAHXExtension(filename) {
+		return a.LoadAHX(filename)
 	}
 	return a.LoadProgram(filename)
 }
@@ -174,12 +196,12 @@ func (a *GUIActions) Debug() error {
 	return fmt.Errorf("debugging not yet implemented")
 }
 
-func NewGUIFrontend(backend int, cpu EmulatorCPU, video *VideoChip, sound *SoundChip, psg *PSGPlayer, sid *SIDPlayer) (GUIFrontend, error) {
+func NewGUIFrontend(backend int, cpu EmulatorCPU, video *VideoChip, sound *SoundChip, psg *PSGPlayer, sid *SIDPlayer, ahx *AHXPlayer) (GUIFrontend, error) {
 	switch backend {
 	case GUI_FRONTEND_FLTK:
-		return NewFLTKFrontend(cpu, video, sound, psg, sid)
+		return NewFLTKFrontend(cpu, video, sound, psg, sid, ahx)
 	case GUI_FRONTEND_GTK4:
-		return NewGTKFrontend(cpu, video, sound, psg, sid)
+		return NewGTKFrontend(cpu, video, sound, psg, sid, ahx)
 	}
 	return nil, fmt.Errorf("unknown backend: %d", backend)
 }

@@ -389,6 +389,59 @@
 .set SAP_SUBSONG,0xF0D1D
 
 ; ============================================================================
+; AHX AUDIO REGISTERS (Amiga AHX module player)
+;
+; The AHX engine provides Amiga AHX/THX module playback:
+; - 4 channels with waveform synthesis (triangle, sawtooth, square, noise)
+; - Per-channel filter modulation
+; - Instrument-based sequencing with effects
+;
+; AHX+ mode (write 1 to AHX_PLUS_CTRL) enables enhanced audio:
+; - 4x oversampling for cleaner waveforms
+; - Soft low-pass filtering for smoother output
+; - Subtle saturation for analog warmth
+; - Room reverb for Amiga-style ambience
+; - Authentic stereo panning (L-R-R-L pattern)
+; - Hardware PWM for square wave duty cycle modulation
+; ============================================================================
+.set AHX_PLUS_CTRL,0xF0B80              ; AHX+ mode (0=standard, 1=enhanced)
+
+; ----------------------------------------------------------------------------
+; AHX Player Registers
+;
+; The AHX player handles Amiga AHX/THX modules which contain instrument
+; definitions and pattern data for 4-channel waveform synthesis.
+;
+; Usage:
+;   1. Embed AHX data in your program using incbin
+;   2. Set AHX_PLAY_PTR bytes to the address of the AHX data (little-endian)
+;   3. Set AHX_PLAY_LEN bytes to the size of the AHX data (little-endian)
+;   4. Optionally set AHX_SUBSONG to select a subsong (default 0)
+;   5. Optionally write 1 to AHX_PLUS_CTRL to enable enhanced mode
+;   6. Write to AHX_PLAY_CTRL to start/stop playback
+;
+; AHX_PLAY_CTRL bits:
+;   bit 0 (0x01) - Start playback (write 1 to begin)
+;   bit 1 (0x02) - Stop playback (write 1 to stop)
+;   bit 2 (0x04) - Enable looping (set before starting)
+;
+; AHX_PLAY_STATUS bits:
+;   bit 0 (0x01) - Busy (1 = playing, 0 = stopped)
+;   bit 1 (0x02) - Error (1 = load/parse error)
+; ----------------------------------------------------------------------------
+.set AHX_PLAY_PTR_0,0xF0B84
+.set AHX_PLAY_PTR_1,0xF0B85
+.set AHX_PLAY_PTR_2,0xF0B86
+.set AHX_PLAY_PTR_3,0xF0B87
+.set AHX_PLAY_LEN_0,0xF0B88
+.set AHX_PLAY_LEN_1,0xF0B89
+.set AHX_PLAY_LEN_2,0xF0B8A
+.set AHX_PLAY_LEN_3,0xF0B8B
+.set AHX_PLAY_CTRL,0xF0B8C
+.set AHX_PLAY_STATUS,0xF0B90
+.set AHX_SUBSONG,0xF0B91
+
+; ============================================================================
 ; VGA VIDEO PORTS (IBM VGA compatible via port I/O)
 ;
 ; The VGA chip provides IBM PC-compatible graphics modes:
