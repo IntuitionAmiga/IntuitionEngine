@@ -473,7 +473,7 @@ func main() {
 
 	// Map I/O regions for peripherals
 	sysBus.MapIO(AUDIO_CTRL, AUDIO_REG_END,
-		nil,
+		soundChip.HandleRegisterRead,
 		soundChip.HandleRegisterWrite)
 
 	sysBus.MapIO(VIDEO_CTRL, VIDEO_REG_END,

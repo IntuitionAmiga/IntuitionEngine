@@ -93,23 +93,6 @@ func (e *AHXEngine) TickSample() {
 	if e.samplesPerTick > 0 && e.currentSample%uint64(e.samplesPerTick) == 0 {
 		e.replayer.PlayIRQ()
 		e.updateChannels()
-
-		// Debug
-		tick := e.currentSample / uint64(e.samplesPerTick)
-		if tick%50 == 0 {
-			println("AHX tick", tick, "pos:", e.replayer.PosNr, "row:", e.replayer.NoteNr)
-			for i := 0; i < 4; i++ {
-				v := &e.replayer.Voices[i]
-				if v.VoiceVolume > 0 {
-					waveLen := 4 * (1 << uint(v.WaveLength))
-					freq := 0.0
-					if v.VoicePeriod > 0 {
-						freq = AHXPeriod2Freq(v.VoicePeriod) / float64(waveLen)
-					}
-					println("  ch", i, ": vol=", v.VoiceVolume, "freq=", int(freq), "Hz wave=", v.Waveform, "flt=", v.FilterPos)
-				}
-			}
-		}
 	}
 
 	e.currentSample++

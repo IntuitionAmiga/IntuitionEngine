@@ -207,6 +207,10 @@ func (p *AHXPlayer) HandlePlayWrite(addr uint32, value uint32) {
 		if p.forceLoop {
 			p.engine.SetLoop(true)
 		}
+		// Register as sample ticker when starting playback via I/O
+		if p.engine.sound != nil {
+			p.engine.sound.SetSampleTicker(p.engine)
+		}
 		p.Play()
 	default:
 		return

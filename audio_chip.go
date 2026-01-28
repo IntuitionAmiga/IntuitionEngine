@@ -948,6 +948,43 @@ func NewSoundChip(backend int) (*SoundChip, error) {
 	return chip, nil
 }
 
+// HandleRegisterRead handles reads from audio registers
+// Primarily used for reading channel volumes for VU meters
+func (chip *SoundChip) HandleRegisterRead(addr uint32) uint32 {
+	chip.mutex.Lock()
+	defer chip.mutex.Unlock()
+
+	// Handle flexible channel reads
+	if addr >= FLEX_CH_BASE && addr <= FLEX_CH_END {
+		chIndex := (addr - FLEX_CH_BASE) / FLEX_CH_STRIDE
+		if chIndex >= NUM_CHANNELS {
+			return 0
+		}
+		ch := chip.channels[chIndex]
+		offset := (addr - FLEX_CH_BASE) % FLEX_CH_STRIDE
+		switch offset {
+		case FLEX_OFF_VOL:
+			return uint32(ch.volume * NORMALISE_8BIT)
+		case FLEX_OFF_FREQ:
+			return uint32(ch.frequency * 256)
+		case FLEX_OFF_CTRL:
+			val := uint32(0)
+			if ch.enabled {
+				val |= 1
+			}
+			if ch.gate {
+				val |= 2
+			}
+			return val
+		case FLEX_OFF_DUTY:
+			return uint32(ch.dutyCycle * PWM_RANGE)
+		case FLEX_OFF_WAVE_TYPE:
+			return uint32(ch.waveType)
+		}
+	}
+	return 0
+}
+
 func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 	// ------------------------------------------------------------------------------
 	// HandleRegisterWrite processes a write to a hardware register address.

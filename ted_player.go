@@ -264,6 +264,10 @@ func (p *TEDPlayer) HandlePlayWrite(addr uint32, value uint32) {
 		if p.forceLoop && p.engine != nil {
 			p.engine.SetForceLoop(true)
 		}
+		// Register as sample ticker when starting playback via I/O
+		if p.engine != nil && p.engine.sound != nil {
+			p.engine.sound.SetSampleTicker(p.engine)
+		}
 		p.Play()
 	default:
 		return
