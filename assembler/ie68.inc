@@ -374,6 +374,17 @@ PLAY_AHX    macro
     move.l  #1,AHX_PLAY_CTRL
     endm
 
+; PLAY_AHX_LOOP - Load and start AHX playback with looping
+; Parameters:
+;   \ptr - Address of AHX data
+;   \len - Length of AHX data in bytes
+; Example: PLAY_AHX_LOOP ahx_data,ahx_data_end-ahx_data
+PLAY_AHX_LOOP    macro
+    move.l  #\1,AHX_PLAY_PTR
+    move.l  #\2,AHX_PLAY_LEN
+    move.l  #5,AHX_PLAY_CTRL
+    endm
+
 ; PLAY_AHX_PLUS - Load and start AHX+ enhanced playback
 ; Parameters:
 ;   \ptr - Address of AHX data
@@ -384,6 +395,18 @@ PLAY_AHX_PLUS    macro
     move.l  #\1,AHX_PLAY_PTR
     move.l  #\2,AHX_PLAY_LEN
     move.l  #1,AHX_PLAY_CTRL
+    endm
+
+; PLAY_AHX_PLUS_LOOP - Load and start AHX+ enhanced playback with looping
+; Parameters:
+;   \ptr - Address of AHX data
+;   \len - Length of AHX data in bytes
+; Example: PLAY_AHX_PLUS_LOOP ahx_data,ahx_data_end-ahx_data
+PLAY_AHX_PLUS_LOOP    macro
+    move.l  #1,AHX_PLUS_CTRL
+    move.l  #\1,AHX_PLAY_PTR
+    move.l  #\2,AHX_PLAY_LEN
+    move.l  #5,AHX_PLAY_CTRL
     endm
 
 ; STOP_AHX - Stop AHX playback

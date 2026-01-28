@@ -428,6 +428,220 @@ AHX_PLAY_CTRL   = $FB8C         ; Play control (IE32 $F0B8C)
 AHX_PLAY_STATUS = $FB90         ; Play status (IE32 $F0B90)
 AHX_SUBSONG     = $FB91         ; Subsong selection (0-255)
 
+; ----------------------------------------------------------------------------
+; AHX Player Macros
+; ----------------------------------------------------------------------------
+
+; Set AHX data pointer (32-bit address)
+.macro SET_AHX_PTR addr
+    lda #<(addr)
+    sta AHX_PLAY_PTR_0
+    lda #>(addr)
+    sta AHX_PLAY_PTR_1
+    lda #^(addr)
+    sta AHX_PLAY_PTR_2
+    lda #.lobyte(.hiword(addr) >> 8)
+    sta AHX_PLAY_PTR_3
+.endmacro
+
+; Set AHX data length (32-bit)
+.macro SET_AHX_LEN len
+    lda #<(len)
+    sta AHX_PLAY_LEN_0
+    lda #>(len)
+    sta AHX_PLAY_LEN_1
+    lda #^(len)
+    sta AHX_PLAY_LEN_2
+    lda #.lobyte(.hiword(len) >> 8)
+    sta AHX_PLAY_LEN_3
+.endmacro
+
+; Start AHX playback (no loop)
+.macro START_AHX_PLAY
+    lda #1
+    sta AHX_PLAY_CTRL
+.endmacro
+
+; Start AHX playback with looping
+.macro START_AHX_LOOP
+    lda #5
+    sta AHX_PLAY_CTRL
+.endmacro
+
+; Stop AHX playback
+.macro STOP_AHX_PLAY
+    lda #2
+    sta AHX_PLAY_CTRL
+.endmacro
+
+; Enable AHX+ enhanced mode
+.macro ENABLE_AHX_PLUS
+    lda #1
+    sta AHX_PLUS_CTRL
+.endmacro
+
+; ----------------------------------------------------------------------------
+; PSG Player Macros
+; ----------------------------------------------------------------------------
+
+; Set PSG play pointer (32-bit address)
+.macro SET_PSG_PTR addr
+    lda #<(addr)
+    sta PSG_PLAY_PTR_0
+    lda #>(addr)
+    sta PSG_PLAY_PTR_1
+    lda #^(addr)
+    sta PSG_PLAY_PTR_2
+    lda #.lobyte(.hiword(addr) >> 8)
+    sta PSG_PLAY_PTR_3
+.endmacro
+
+; Set PSG play length (32-bit)
+.macro SET_PSG_LEN len
+    lda #<(len)
+    sta PSG_PLAY_LEN_0
+    lda #>(len)
+    sta PSG_PLAY_LEN_1
+    lda #^(len)
+    sta PSG_PLAY_LEN_2
+    lda #.lobyte(.hiword(len) >> 8)
+    sta PSG_PLAY_LEN_3
+.endmacro
+
+; Start PSG playback (no loop)
+.macro START_PSG_PLAY
+    lda #1
+    sta PSG_PLAY_CTRL
+.endmacro
+
+; Start PSG playback with looping
+.macro START_PSG_LOOP
+    lda #5
+    sta PSG_PLAY_CTRL
+.endmacro
+
+; Stop PSG playback
+.macro STOP_PSG_PLAY
+    lda #2
+    sta PSG_PLAY_CTRL
+.endmacro
+
+; Enable PSG+ enhanced mode
+.macro ENABLE_PSG_PLUS
+    lda #1
+    sta PSG_PLUS_CTRL
+.endmacro
+
+; ----------------------------------------------------------------------------
+; SID Player Macros
+; ----------------------------------------------------------------------------
+
+; Set SID play pointer (32-bit address)
+.macro SET_SID_PTR addr
+    lda #<(addr)
+    sta SID_PLAY_PTR_0
+    lda #>(addr)
+    sta SID_PLAY_PTR_1
+    lda #^(addr)
+    sta SID_PLAY_PTR_2
+    lda #.lobyte(.hiword(addr) >> 8)
+    sta SID_PLAY_PTR_3
+.endmacro
+
+; Set SID play length (32-bit)
+.macro SET_SID_LEN len
+    lda #<(len)
+    sta SID_PLAY_LEN_0
+    lda #>(len)
+    sta SID_PLAY_LEN_1
+    lda #^(len)
+    sta SID_PLAY_LEN_2
+    lda #.lobyte(.hiword(len) >> 8)
+    sta SID_PLAY_LEN_3
+.endmacro
+
+; Set SID subsong (0-255)
+.macro SET_SID_SUBSONG num
+    lda #num
+    sta SID_SUBSONG
+.endmacro
+
+; Start SID playback (no loop)
+.macro START_SID_PLAY
+    lda #1
+    sta SID_PLAY_CTRL
+.endmacro
+
+; Start SID playback with looping
+.macro START_SID_LOOP
+    lda #5
+    sta SID_PLAY_CTRL
+.endmacro
+
+; Stop SID playback
+.macro STOP_SID_PLAY
+    lda #2
+    sta SID_PLAY_CTRL
+.endmacro
+
+; Enable SID+ enhanced mode
+.macro ENABLE_SID_PLUS
+    lda #1
+    sta SID_PLUS_CTRL
+.endmacro
+
+; ----------------------------------------------------------------------------
+; TED Player Macros
+; ----------------------------------------------------------------------------
+
+; Set TED play pointer (32-bit address)
+.macro SET_TED_PTR addr
+    lda #<(addr)
+    sta TED_PLAY_PTR_0
+    lda #>(addr)
+    sta TED_PLAY_PTR_1
+    lda #^(addr)
+    sta TED_PLAY_PTR_2
+    lda #.lobyte(.hiword(addr) >> 8)
+    sta TED_PLAY_PTR_3
+.endmacro
+
+; Set TED play length (32-bit)
+.macro SET_TED_LEN len
+    lda #<(len)
+    sta TED_PLAY_LEN_0
+    lda #>(len)
+    sta TED_PLAY_LEN_1
+    lda #^(len)
+    sta TED_PLAY_LEN_2
+    lda #.lobyte(.hiword(len) >> 8)
+    sta TED_PLAY_LEN_3
+.endmacro
+
+; Start TED playback (no loop)
+.macro START_TED_PLAY
+    lda #1
+    sta TED_PLAY_CTRL
+.endmacro
+
+; Start TED playback with looping
+.macro START_TED_LOOP
+    lda #5
+    sta TED_PLAY_CTRL
+.endmacro
+
+; Stop TED playback
+.macro STOP_TED_PLAY
+    lda #2
+    sta TED_PLAY_CTRL
+.endmacro
+
+; Enable TED+ enhanced mode
+.macro ENABLE_TED_PLUS
+    lda #1
+    sta TED_PLUS_CTRL
+.endmacro
+
 ; ============================================================================
 ; VGA VIDEO REGISTERS (IBM VGA compatible)
 ;

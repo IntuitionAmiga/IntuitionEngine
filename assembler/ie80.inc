@@ -1286,6 +1286,30 @@
     ld (PSG_PLAY_LEN_3),a
 .endm
 
+; Start PSG playback (no loop)
+.macro START_PSG_PLAY
+    ld a,1
+    ld (PSG_PLAY_CTRL),a
+.endm
+
+; Start PSG playback with looping
+.macro START_PSG_LOOP
+    ld a,5
+    ld (PSG_PLAY_CTRL),a
+.endm
+
+; Stop PSG playback
+.macro STOP_PSG_PLAY
+    ld a,2
+    ld (PSG_PLAY_CTRL),a
+.endm
+
+; Enable PSG+ enhanced mode
+.macro ENABLE_PSG_PLUS
+    ld a,1
+    ld (PSG_PLUS_CTRL),a
+.endm
+
 ; Set SAP play pointer (32-bit)
 .macro SET_SAP_PTR addr
     ld a,(\addr)&0xFF
@@ -1358,6 +1382,12 @@
     ld (SID_PLAY_CTRL),a
 .endm
 
+; Enable SID+ enhanced mode
+.macro ENABLE_SID_PLUS
+    ld a,1
+    ld (SID_PLUS_CTRL),a
+.endm
+
 ; Write SID register via port I/O (reg in A, value in B)
 .macro SID_WRITE reg,val
     ld a,\reg
@@ -1412,12 +1442,62 @@
     ld (TED_PLAY_CTRL),a
 .endm
 
+; Enable TED+ enhanced mode
+.macro ENABLE_TED_PLUS
+    ld a,1
+    ld (TED_PLUS_CTRL),a
+.endm
+
 ; Write TED register via port I/O
 .macro TED_WRITE reg,val
     ld a,\reg
     out (TED_PORT_SELECT),a
     ld a,\val
     out (TED_PORT_DATA),a
+.endm
+
+; ============================================================================
+; AHX PLAYER MACROS
+; ============================================================================
+
+; Set AHX data pointer (32-bit address)
+.macro SET_AHX_PTR addr
+    ld hl,\addr & 0xFFFF
+    ld (AHX_PLAY_PTR_0),hl
+    ld hl,\addr >> 16
+    ld (AHX_PLAY_PTR_2),hl
+.endm
+
+; Set AHX data length (32-bit)
+.macro SET_AHX_LEN len
+    ld hl,\len & 0xFFFF
+    ld (AHX_PLAY_LEN_0),hl
+    ld hl,\len >> 16
+    ld (AHX_PLAY_LEN_2),hl
+.endm
+
+; Start AHX playback (no loop)
+.macro START_AHX_PLAY
+    ld a,1
+    ld (AHX_PLAY_CTRL),a
+.endm
+
+; Start AHX playback with looping
+.macro START_AHX_LOOP
+    ld a,5
+    ld (AHX_PLAY_CTRL),a
+.endm
+
+; Stop AHX playback
+.macro STOP_AHX_PLAY
+    ld a,2
+    ld (AHX_PLAY_CTRL),a
+.endm
+
+; Enable AHX+ enhanced mode
+.macro ENABLE_AHX_PLUS
+    ld a,1
+    ld (AHX_PLUS_CTRL),a
 .endm
 
 ; ============================================================================

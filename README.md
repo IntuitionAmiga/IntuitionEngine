@@ -91,6 +91,7 @@
    - 9.5 POKEY Sound Chip
    - 9.6 SID Sound Chip
    - 9.7 TED Sound Chip
+   - 9.8 AHX Sound Chip
 10. [Video System](#10-video-system)
     - 10.1 Display Modes
     - 10.2 Framebuffer Organisation
@@ -2996,6 +2997,64 @@ ted_data_end:
 - Write `1` to TED_PLAY_CTRL to start, `2` to stop, `5` to start with loop
 - Read TED_PLAY_STATUS for busy/error flags
 
+## 9.8 AHX Sound Chip
+
+The AHX engine provides Amiga AHX/THX module playback with 4-channel waveform synthesis. AHX modules use procedural synthesis rather than samples, creating rich sounds from simple waveforms (triangle, sawtooth, square, noise) with modulation.
+
+### Features:
+- 4-channel synthesis matching original Amiga hardware
+- Triangle, sawtooth, square, and noise waveforms
+- Per-voice filter modulation and square pulse width modulation
+- Vibrato, portamento, and envelope effects
+- AHX+ enhanced mode with stereo spread and audio processing
+- Subsong support for multi-tune modules
+
+### .AHX File Playback:
+
+**M68K:**
+```assembly
+; Play an .ahx file with looping and AHX+ enhancement
+    PLAY_AHX_PLUS_LOOP ahx_data,ahx_data_end-ahx_data
+
+ahx_data:
+    incbin  "music.ahx"
+ahx_data_end:
+```
+
+**Z80:**
+```assembly
+; Play an .ahx file with looping
+    ENABLE_AHX_PLUS              ; Enable enhanced mode
+    SET_AHX_PTR ahx_data
+    SET_AHX_LEN (ahx_data_end-ahx_data)
+    START_AHX_LOOP               ; Start with looping
+
+ahx_data:
+    incbin  "music.ahx"
+ahx_data_end:
+```
+
+**6502:**
+```assembly
+; Play an .ahx file with looping
+    lda  #1
+    sta  AHX_PLUS_CTRL           ; Enable AHX+ mode
+    STORE32 AHX_PLAY_PTR_0, ahx_data
+    STORE32 AHX_PLAY_LEN_0, (ahx_data_end-ahx_data)
+    lda  #5                      ; bit0=start, bit2=loop
+    sta  AHX_PLAY_CTRL
+
+ahx_data:
+    .incbin "music.ahx"
+ahx_data_end:
+```
+
+**Playback Control:**
+- Write `1` to AHX_PLAY_CTRL to start, `2` to stop, `5` to start with loop
+- Set AHX_SUBSONG before starting to select a specific subsong (0-255)
+- Read AHX_PLAY_STATUS for busy/error flags
+- Speed 0 command in the module signals end of song
+
 # 10. Video System
 
 The video system provides flexible graphics output through a memory-mapped framebuffer design.
@@ -3682,8 +3741,9 @@ start:
 - `set_blt_color`, `set_blt_src`, `set_blt_dst`, `set_blt_size`, `set_blt_strides`
 - `set_copper_ptr`, `enable_copper`, `disable_copper`
 - `set_psg_play`, `start_psg_play`, `stop_psg_play`, `enable_psg_plus`
-- `set_sid_play`, `start_sid_play`, `stop_sid_play`, `enable_sid_plus`
+- `set_sid_play`, `start_sid_play`, `start_sid_loop`, `stop_sid_play`, `enable_sid_plus`
 - `set_sap_play`, `start_sap_play`, `stop_sap_play`
+- `PLAY_AHX`, `PLAY_AHX_LOOP`, `PLAY_AHX_PLUS`, `PLAY_AHX_PLUS_LOOP`, `STOP_AHX`
 
 ### ie65.inc (6502 CPU)
 
@@ -3711,6 +3771,7 @@ start:
 - `SET_BLT_OP`, `SET_BLT_WIDTH`, `SET_BLT_HEIGHT`, `SET_BLT_COLOR`
 - `SET_SRC_STRIDE`, `SET_DST_STRIDE`
 - `ADD16`, `INC16`, `CMP16` - 16-bit arithmetic helpers
+- `SET_AHX_PTR`, `SET_AHX_LEN`, `START_AHX_PLAY`, `START_AHX_LOOP`, `STOP_AHX_PLAY`, `ENABLE_AHX_PLUS`
 
 **Zero page allocation:**
 ```assembly
@@ -3752,6 +3813,7 @@ start:
 - `SET_PSG_PTR`, `SET_PSG_LEN` - PSG player setup
 - `SET_SID_PTR`, `SET_SID_LEN`, `SET_SID_SUBSONG`, `START_SID_PLAY`, `START_SID_LOOP`, `STOP_SID_PLAY`
 - `SET_SAP_PTR`, `SET_SAP_LEN` - SAP player setup
+- `SET_AHX_PTR`, `SET_AHX_LEN`, `START_AHX_PLAY`, `START_AHX_LOOP`, `STOP_AHX_PLAY`, `ENABLE_AHX_PLUS`
 - `SID_WRITE reg,val` - Write SID register via port I/O
 - `ADD_HL_IMM`, `CP_HL_IMM`, `INC16` - Utility macros
 
