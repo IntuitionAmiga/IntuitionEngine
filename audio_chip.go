@@ -563,6 +563,13 @@ const (
 	TED_PLUS_ROOM_MIX      = 0.10 // Room ambience for depth
 	TED_PLUS_ROOM_DELAY    = 144  // Delay for spacious Plus/4 sound
 
+	// AHX+ enhanced mode parameters
+	AHX_PLUS_OVERSAMPLE    = 4
+	AHX_PLUS_LOWPASS_ALPHA = 0.11 // Between SID (0.10) and PSG (0.12)
+	AHX_PLUS_DRIVE         = 0.16 // Analog warmth
+	AHX_PLUS_ROOM_MIX      = 0.09 // Spacious ambience
+	AHX_PLUS_ROOM_DELAY    = 120  // Amiga-style room (between SID 112 and PSG 128)
+
 	SID_COMBINED_LOWPASS_ALPHA = 0.18 // Smooth combined SID waveforms
 
 	SID_WAVE_TRIANGLE = 0x10
@@ -582,6 +589,12 @@ var sidPlusMixGain = [3]float32{1.02, 1.0, 0.98}
 
 // tedPlusMixGain provides per-voice gain adjustment for TED+ mode (2 voices)
 var tedPlusMixGain = [2]float32{1.03, 0.97}
+
+// ahxPlusMixGain provides per-voice gain adjustment for AHX+ mode (4 voices, Amiga stereo spread)
+var ahxPlusMixGain = [4]float32{1.08, 0.92, 0.92, 1.08} // Ch 0,3 left boost, Ch 1,2 right
+
+// ahxPlusPan provides per-voice stereo panning for AHX+ mode (L R R L pattern)
+var ahxPlusPan = [4]float32{-0.7, 0.7, 0.7, -0.7}
 
 // sidGetExpIndex returns the exponential threshold index for a given envelope level.
 // This determines the rate multiplier for decay/release phases.
@@ -719,6 +732,11 @@ type Channel struct {
 	tedPlusDrive          float32 // TED+ saturation drive
 	tedPlusRoomMix        float32 // TED+ room mix
 	tedPlusGain           float32 // TED+ per-channel gain
+	ahxPlusLowpassState   float32 // AHX+ low-pass filter state
+	ahxPlusDrive          float32 // AHX+ saturation drive
+	ahxPlusRoomMix        float32 // AHX+ room mix
+	ahxPlusGain           float32 // AHX+ per-channel gain
+	ahxPlusPan            float32 // AHX+ stereo pan (-1.0 left to 1.0 right)
 	sidMixLowpassState    float32 // SID combined waveform smoothing
 	sidOscOutput          float32 // Raw oscillator output (before ring mod, for OSC3 readback)
 	sidWaveMask           uint8   // SID waveform mask (combined waves)
@@ -766,6 +784,9 @@ type Channel struct {
 	tedPlusOversample   int  // TED+ oversample factor
 	tedPlusRoomDelay    int  // TED+ room delay length (samples)
 	tedPlusRoomPos      int  // TED+ room delay index
+	ahxPlusOversample   int  // AHX+ oversample factor
+	ahxPlusRoomDelay    int  // AHX+ room delay length (samples)
+	ahxPlusRoomPos      int  // AHX+ room delay index
 
 	// Pointer fields (cache line 4)
 	ringModSource    *Channel  // Source channel for ring modulation
@@ -774,6 +795,7 @@ type Channel struct {
 	pokeyPlusRoomBuf []float32 // POKEY+ room delay buffer
 	sidPlusRoomBuf   []float32 // SID+ room delay buffer
 	tedPlusRoomBuf   []float32 // TED+ room delay buffer
+	ahxPlusRoomBuf   []float32 // AHX+ room delay buffer
 
 	// Boolean state flags (packed together to minimise padding)
 	enabled              bool // Channel enabled flag
@@ -787,6 +809,7 @@ type Channel struct {
 	pokeyPlusEnabled     bool // POKEY+ processing flag
 	sidPlusEnabled       bool // SID+ processing flag
 	tedPlusEnabled       bool // TED+ processing flag
+	ahxPlusEnabled       bool // AHX+ processing flag
 	sidEnvelope          bool // SID-style ADSR envelope
 	sidTestBit           bool // SID test bit (mute oscillator)
 	sidFilterMode        bool // SID filter mode (allows self-oscillation)
@@ -2035,6 +2058,33 @@ func (ch *Channel) generateSample() float32 {
 		return clampF32(scaledSample, MIN_SAMPLE, MAX_SAMPLE)
 	}
 
+	if ch.ahxPlusEnabled && ch.ahxPlusOversample > 1 {
+		oversample := ch.ahxPlusOversample
+		sampleRate := float32(SAMPLE_RATE) * float32(oversample)
+		var sum float32
+		for i := 0; i < oversample; i++ {
+			sum += ch.generateWaveSample(sampleRate)
+		}
+		rawSample := sum / float32(oversample)
+		alpha := float32(AHX_PLUS_LOWPASS_ALPHA)
+		if alpha > 0 {
+			ch.ahxPlusLowpassState = ch.ahxPlusLowpassState*(1-alpha) + rawSample*alpha
+			rawSample = ch.ahxPlusLowpassState
+		}
+		if ch.ahxPlusRoomMix > 0 && len(ch.ahxPlusRoomBuf) > 0 {
+			delayed := ch.ahxPlusRoomBuf[ch.ahxPlusRoomPos]
+			ch.ahxPlusRoomBuf[ch.ahxPlusRoomPos] = rawSample
+			ch.ahxPlusRoomPos = (ch.ahxPlusRoomPos + 1) % len(ch.ahxPlusRoomBuf)
+			rawSample = rawSample*(1-ch.ahxPlusRoomMix) + delayed*ch.ahxPlusRoomMix
+		}
+		scaledSample := rawSample * ch.volume * envLevel * ch.ahxPlusGain
+		if ch.ahxPlusDrive > 0 {
+			gain := 1.0 + ch.ahxPlusDrive
+			scaledSample = float32(math.Tanh(float64(scaledSample * gain)))
+		}
+		return clampF32(scaledSample, MIN_SAMPLE, MAX_SAMPLE)
+	}
+
 	rawSample := ch.generateWaveSample(float32(SAMPLE_RATE))
 	scaledSample := rawSample * ch.volume * envLevel
 
@@ -2847,6 +2897,47 @@ func (chip *SoundChip) SetTEDPlusEnabled(enabled bool) {
 			ch.tedPlusRoomPos = 0
 			ch.tedPlusRoomBuf = nil
 			ch.tedPlusGain = 1.0
+		}
+	}
+}
+
+func (chip *SoundChip) SetAHXPlusEnabled(enabled bool) {
+	chip.mutex.Lock()
+	defer chip.mutex.Unlock()
+
+	// AHX uses channels 0-3
+	for i := 0; i < 4; i++ {
+		ch := chip.channels[i]
+		if ch == nil {
+			continue
+		}
+		ch.ahxPlusEnabled = enabled
+		if enabled {
+			ch.ahxPlusOversample = AHX_PLUS_OVERSAMPLE
+			ch.ahxPlusLowpassState = 0
+			ch.ahxPlusDrive = AHX_PLUS_DRIVE
+			ch.ahxPlusRoomMix = AHX_PLUS_ROOM_MIX
+			ch.ahxPlusRoomDelay = AHX_PLUS_ROOM_DELAY
+			ch.ahxPlusRoomPos = 0
+			if ch.ahxPlusRoomBuf == nil || len(ch.ahxPlusRoomBuf) != AHX_PLUS_ROOM_DELAY {
+				ch.ahxPlusRoomBuf = make([]float32, AHX_PLUS_ROOM_DELAY)
+			} else {
+				for j := range ch.ahxPlusRoomBuf {
+					ch.ahxPlusRoomBuf[j] = 0
+				}
+			}
+			ch.ahxPlusGain = ahxPlusMixGain[i]
+			ch.ahxPlusPan = ahxPlusPan[i]
+		} else {
+			ch.ahxPlusOversample = 1
+			ch.ahxPlusLowpassState = 0
+			ch.ahxPlusDrive = 0
+			ch.ahxPlusRoomMix = 0
+			ch.ahxPlusRoomDelay = 0
+			ch.ahxPlusRoomPos = 0
+			ch.ahxPlusRoomBuf = nil
+			ch.ahxPlusGain = 1.0
+			ch.ahxPlusPan = 0
 		}
 	}
 }

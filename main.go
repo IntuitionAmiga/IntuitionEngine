@@ -142,6 +142,7 @@ func main() {
 		modeTED   bool
 		tedPlus   bool
 		modeAHX   bool
+		ahxPlus   bool
 		sidFile   string
 		sidDebug  int
 		sidPAL    bool
@@ -168,13 +169,14 @@ func main() {
 	flagSet.BoolVar(&modeTED, "ted", false, "Play TED file (Plus/4 TED emulation)")
 	flagSet.BoolVar(&tedPlus, "ted+", false, "Enable TED+ enhancements")
 	flagSet.BoolVar(&modeAHX, "ahx", false, "Play AHX file (Amiga AHX module)")
+	flagSet.BoolVar(&ahxPlus, "ahx+", false, "Enable AHX+ enhanced mode")
 	loadAddr.value = "0x0600"
 	flagSet.Var(&loadAddr, "load-addr", "6502/Z80 load address (hex or decimal, defaults: 6502=0x0600, Z80=0x0000)")
 	flagSet.Var(&entryAddr, "entry", "6502/Z80 entry address (hex or decimal, defaults to load address)")
 
 	flagSet.Usage = func() {
 		flagSet.SetOutput(os.Stdout)
-		fmt.Println("Usage: ./intuition_engine -ie32|-m68k|-m6502|-z80|-psg|-psg+|-sid|-sid+|-pokey|-pokey+|-ted|-ted+|-ahx [--load-addr addr] [--entry addr] filename")
+		fmt.Println("Usage: ./intuition_engine -ie32|-m68k|-m6502|-z80|-psg|-psg+|-sid|-sid+|-pokey|-pokey+|-ted|-ted+|-ahx|-ahx+ [--load-addr addr] [--entry addr] filename")
 		flagSet.PrintDefaults()
 	}
 
@@ -202,6 +204,9 @@ func main() {
 	}
 	if tedPlus && !modeTED {
 		modeTED = true
+	}
+	if ahxPlus && !modeAHX {
+		modeAHX = true
 	}
 
 	modeCount := 0
@@ -237,7 +242,7 @@ func main() {
 		modeCount = 1
 	}
 	if modeCount != 1 {
-		fmt.Println("Error: select exactly one mode flag: -ie32, -m68k, -m6502, -z80, -psg, -psg+, -sid, -sid+, -pokey, -pokey+, -ted, -ted+, or -ahx")
+		fmt.Println("Error: select exactly one mode flag: -ie32, -m68k, -m6502, -z80, -psg, -psg+, -sid, -sid+, -pokey, -pokey+, -ted, -ted+, -ahx, or -ahx+")
 		os.Exit(1)
 	}
 	if filename == "" && modePSG {
@@ -419,6 +424,9 @@ func main() {
 		ahxPlayer := NewAHXPlayer(soundChip, SAMPLE_RATE)
 		// Register the player's internal engine with SoundChip for sample-accurate ticking
 		soundChip.SetSampleTicker(ahxPlayer.engine)
+		if ahxPlus {
+			ahxPlayer.engine.SetAHXPlusEnabled(true)
+		}
 		data, err := os.ReadFile(filename)
 		if err != nil {
 			fmt.Printf("Error reading AHX file: %v\n", err)
@@ -433,6 +441,9 @@ func main() {
 			fmt.Printf("Playing: %s", meta.Name)
 		} else {
 			fmt.Printf("Playing: %s", filename)
+		}
+		if ahxPlus {
+			fmt.Print(" [AHX+]")
 		}
 		fmt.Println()
 		soundChip.Start()

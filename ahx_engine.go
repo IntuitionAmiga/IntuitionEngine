@@ -19,8 +19,9 @@ type AHXEngine struct {
 	loop           bool
 	samplesPerTick int
 
-	enabled      bool
-	channelsInit bool
+	enabled        bool
+	channelsInit   bool
+	ahxPlusEnabled bool
 }
 
 // NewAHXEngine creates a new AHX engine
@@ -200,6 +201,24 @@ func (e *AHXEngine) updateChannels() {
 		}
 		e.writeChannel(ch, FLEX_OFF_WAVE_TYPE, uint32(waveType))
 
+		// AHX+ hardware PWM: map SquarePos to duty cycle for square waves
+		if e.ahxPlusEnabled && voice.Waveform == 2 {
+			// SquarePos range: 0-63, mirror for symmetric sweep
+			squarePos := voice.SquarePos
+			if squarePos > 0x20 {
+				squarePos = 0x40 - squarePos
+			}
+			// Map to duty cycle range 0x08-0x80 (narrow to 50%)
+			duty := squarePos * 4
+			if duty < 0x08 {
+				duty = 0x08
+			}
+			if duty > 0x80 {
+				duty = 0x80
+			}
+			e.writeChannel(ch, FLEX_OFF_DUTY, uint32(duty))
+		}
+
 		// Keep gate on
 		e.writeChannel(ch, FLEX_OFF_CTRL, 3)
 
@@ -248,6 +267,23 @@ func (e *AHXEngine) Reset() {
 	e.enabled = false
 	e.currentSample = 0
 	e.silenceChannels()
+}
+
+// SetAHXPlusEnabled enables/disables AHX+ enhanced mode
+func (e *AHXEngine) SetAHXPlusEnabled(enabled bool) {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+	e.ahxPlusEnabled = enabled
+	if e.sound != nil {
+		e.sound.SetAHXPlusEnabled(enabled)
+	}
+}
+
+// AHXPlusEnabled returns whether AHX+ mode is enabled
+func (e *AHXEngine) AHXPlusEnabled() bool {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+	return e.ahxPlusEnabled
 }
 
 // GetSongName returns the loaded song name
