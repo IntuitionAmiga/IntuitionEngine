@@ -315,7 +315,12 @@ func (r *AHXReplayer) ProcessStep(v int) {
 			}
 		}
 	case 0xF: // Speed
-		r.Tempo = fxParam
+		if fxParam == 0 {
+			// Speed 0 = halt/end song (used by composers to signal end)
+			r.SongEndReached = true
+		} else {
+			r.Tempo = fxParam
+		}
 	}
 
 	if instrument != 0 && instrument <= r.Song.InstrumentNr {
