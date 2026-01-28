@@ -105,7 +105,7 @@ func (e *AHXEngine) TickSample() {
 					if v.VoicePeriod > 0 {
 						freq = AHXPeriod2Freq(v.VoicePeriod) / float64(waveLen)
 					}
-					println("  ch", i, ": vol=", v.VoiceVolume, "freq=", int(freq), "Hz wave=", v.Waveform, "wlen=", v.WaveLength)
+					println("  ch", i, ": vol=", v.VoiceVolume, "freq=", int(freq), "Hz wave=", v.Waveform, "flt=", v.FilterPos)
 				}
 			}
 		}
@@ -202,6 +202,22 @@ func (e *AHXEngine) updateChannels() {
 
 		// Keep gate on
 		e.writeChannel(ch, FLEX_OFF_CTRL, 3)
+
+		// Filter modulation - map FilterPos to lowpass filter
+		// FilterPos range: 0-63, neutral at 32
+		// Lower values = more filtered (darker sound)
+		filterPos := voice.FilterPos
+		if filterPos < 32 {
+			// Enable lowpass filter, cutoff proportional to FilterPos
+			// FilterPos 0 = very dark (low cutoff), 31 = almost neutral
+			cutoff := float32(filterPos) / 32.0 // 0.0 to ~0.97
+			// Add minimum cutoff to avoid completely muting
+			cutoff = 0.1 + cutoff*0.85                   // Range: 0.1 to 0.95
+			e.sound.SetChannelFilter(ch, 1, cutoff, 0.3) // 1 = lowpass, mild resonance
+		} else {
+			// FilterPos >= 32: disable filter (neutral or bright)
+			e.sound.SetChannelFilter(ch, 0, 1.0, 0) // Filter off
+		}
 	}
 }
 
