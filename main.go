@@ -141,6 +141,7 @@ func main() {
 		pokeyPlus bool
 		modeTED   bool
 		tedPlus   bool
+		modeAHX   bool
 		sidFile   string
 		sidDebug  int
 		sidPAL    bool
@@ -166,13 +167,14 @@ func main() {
 	flagSet.BoolVar(&pokeyPlus, "pokey+", false, "Enable POKEY+ enhancements")
 	flagSet.BoolVar(&modeTED, "ted", false, "Play TED file (Plus/4 TED emulation)")
 	flagSet.BoolVar(&tedPlus, "ted+", false, "Enable TED+ enhancements")
+	flagSet.BoolVar(&modeAHX, "ahx", false, "Play AHX file (Amiga AHX module)")
 	loadAddr.value = "0x0600"
 	flagSet.Var(&loadAddr, "load-addr", "6502/Z80 load address (hex or decimal, defaults: 6502=0x0600, Z80=0x0000)")
 	flagSet.Var(&entryAddr, "entry", "6502/Z80 entry address (hex or decimal, defaults to load address)")
 
 	flagSet.Usage = func() {
 		flagSet.SetOutput(os.Stdout)
-		fmt.Println("Usage: ./intuition_engine -ie32|-m68k|-m6502|-z80|-psg|-psg+|-sid|-sid+|-pokey|-pokey+|-ted|-ted+ [--load-addr addr] [--entry addr] filename")
+		fmt.Println("Usage: ./intuition_engine -ie32|-m68k|-m6502|-z80|-psg|-psg+|-sid|-sid+|-pokey|-pokey+|-ted|-ted+|-ahx [--load-addr addr] [--entry addr] filename")
 		flagSet.PrintDefaults()
 	}
 
@@ -227,12 +229,15 @@ func main() {
 	if modeTED {
 		modeCount++
 	}
+	if modeAHX {
+		modeCount++
+	}
 	if modeCount == 0 && filename == "" {
 		modeIE32 = true
 		modeCount = 1
 	}
 	if modeCount != 1 {
-		fmt.Println("Error: select exactly one mode flag: -ie32, -m68k, -m6502, -z80, -psg, -psg+, -sid, -sid+, -pokey, -pokey+, -ted, or -ted+")
+		fmt.Println("Error: select exactly one mode flag: -ie32, -m68k, -m6502, -z80, -psg, -psg+, -sid, -sid+, -pokey, -pokey+, -ted, -ted+, or -ahx")
 		os.Exit(1)
 	}
 	if filename == "" && modePSG {
@@ -399,6 +404,41 @@ func main() {
 		tedPlayer.Play()
 		// Wait for playback to complete
 		for tedPlayer.IsPlaying() {
+			time.Sleep(100 * time.Millisecond)
+		}
+		soundChip.Stop()
+		os.Exit(0)
+	}
+
+	// AHX playback mode
+	if modeAHX {
+		if filename == "" {
+			fmt.Println("Error: AHX mode requires an AHX filename")
+			os.Exit(1)
+		}
+		ahxPlayer := NewAHXPlayer(soundChip, SAMPLE_RATE)
+		// Register the player's internal engine with SoundChip for sample-accurate ticking
+		soundChip.SetSampleTicker(ahxPlayer.engine)
+		data, err := os.ReadFile(filename)
+		if err != nil {
+			fmt.Printf("Error reading AHX file: %v\n", err)
+			os.Exit(1)
+		}
+		if err := ahxPlayer.Load(data); err != nil {
+			fmt.Printf("Error loading AHX file: %v\n", err)
+			os.Exit(1)
+		}
+		meta := ahxPlayer.Metadata()
+		if meta.Name != "" {
+			fmt.Printf("Playing: %s", meta.Name)
+		} else {
+			fmt.Printf("Playing: %s", filename)
+		}
+		fmt.Println()
+		soundChip.Start()
+		ahxPlayer.Play()
+		// Wait for playback to complete
+		for ahxPlayer.IsPlaying() {
 			time.Sleep(100 * time.Millisecond)
 		}
 		soundChip.Stop()
