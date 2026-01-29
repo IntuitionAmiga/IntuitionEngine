@@ -152,7 +152,7 @@ The Intuition Engine is a virtual machine that emulates a complete retro-style c
 | **M68K** | 32-bit CISC | 8 data (D0-D7), 8 address (A0-A7) | 95%+ instruction coverage, FPU support |
 | **Z80** | 8-bit | AF, BC, DE, HL + alternates, IX, IY | Full instruction set, interrupt modes |
 | **6502** | 8-bit | A, X, Y | NMOS instruction set, zero page optimisation |
-| **x86** | 32-bit | EAX-EDX, ESI, EDI, EBP, ESP | 8086 base + 386 extensions, flat memory model |
+| **x86** | 32-bit | EAX-EDX, ESI, EDI, EBP, ESP | 8086 instructions + 32-bit registers, flat memory model |
 
 ## Audio Capabilities
 
@@ -1720,7 +1720,7 @@ Vectors 64-255: User Defined
 
 # 8. Intel x86 CPU (32-bit)
 
-The Intuition Engine includes an x86 core implementing the 8086 instruction set with 386 32-bit extensions, using a simplified flat memory model.
+The Intuition Engine includes an x86 core implementing the 8086 instruction set with 32-bit register extensions in a flat memory model. This provides 32-bit programming without the complexity of protected mode, segment descriptors, or paging.
 
 ## 8.1 Register Set
 
@@ -1781,7 +1781,7 @@ Bit 11: OF - Overflow flag
 
 ## 8.4 Instruction Set
 
-The x86 core implements the 8086 instruction set plus 386 32-bit extensions:
+The x86 core implements the 8086 instruction set with 32-bit register support:
 
 **Data Transfer:** MOV, PUSH, POP, XCHG, LEA, LES, LDS
 **Arithmetic:** ADD, ADC, SUB, SBB, MUL, IMUL, DIV, IDIV, INC, DEC, CMP, NEG
@@ -1793,15 +1793,17 @@ The x86 core implements the 8086 instruction set plus 386 32-bit extensions:
 **Flag Control:** CLC, STC, CMC, CLD, STD, CLI, STI
 **BCD:** DAA, DAS, AAA, AAS, AAM, AAD
 
-**386 Extensions:**
+**32-bit Register Extensions:**
 - 32-bit register operations (EAX, EBX, etc.)
-- Operand size prefix (0x66)
+- Operand size prefix (0x66) for 16/32-bit switching
 - Address size prefix (0x67)
-- SIB byte addressing
-- MOVZX, MOVSX
-- SETcc instructions
+- SIB byte addressing for complex memory operands
+
+**Additional Instructions:**
+- MOVZX, MOVSX (zero/sign extend)
+- SETcc (conditional byte set)
 - Bit test: BT, BTS, BTR, BTC, BSF, BSR
-- SHLD, SHRD
+- SHLD, SHRD (double-precision shifts)
 
 ## 8.5 Memory and I/O Integration
 
@@ -1841,15 +1843,23 @@ IRET      ; Return from interrupt
 
 - Use `-x86` flag to run x86 binaries
 - File extension: `.ie86`
-- Flat memory model (segments ignored for addressing)
 - Use NASM or FASM for assembly with `ie86.inc` include file
 - `--load-addr` sets the load address (default 0x00000000)
 - `--entry` sets the entry point (defaults to load address)
 
+**Memory Model:**
+
+The x86 core uses a simplified flat memory model:
+- Segment registers exist but are ignored for address calculation
+- All memory accesses use the 32-bit offset directly (no segment:offset)
+- Full 32-bit address space accessible without segment arithmetic
+- This is neither true real mode (1MB limit) nor protected mode
+
 **Not Implemented:**
-- Protected mode
+- Real mode segment:offset addressing
+- Protected mode (descriptor tables, privilege levels)
 - Virtual 8086 mode
-- Paging
+- Paging and virtual memory
 - Task switching
 - x87 FPU
 
