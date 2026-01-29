@@ -560,11 +560,21 @@ func main() {
 		ulaEngine.HandleBusVRAMRead,
 		ulaEngine.HandleBusVRAMWrite)
 
+	// Map TED video registers (Commodore Plus/4 video chip)
+	tedVideoEngine := NewTEDVideoEngine(sysBus)
+	sysBus.MapIO(TED_VIDEO_BASE, TED_VIDEO_END,
+		tedVideoEngine.HandleRead,
+		tedVideoEngine.HandleWrite)
+	sysBus.MapIO(TED_V_VRAM_BASE, TED_V_VRAM_BASE+TED_V_VRAM_SIZE-1,
+		tedVideoEngine.HandleBusVRAMRead,
+		tedVideoEngine.HandleBusVRAMWrite)
+
 	// Create video compositor - owns the display output and blends video sources
 	compositor := NewVideoCompositor(videoChip.GetOutput())
-	compositor.RegisterSource(videoChip) // Layer 0 - background
-	compositor.RegisterSource(vgaEngine) // Layer 10 - VGA renders on top
-	compositor.RegisterSource(ulaEngine) // Layer 15 - ULA renders on top of VGA
+	compositor.RegisterSource(videoChip)      // Layer 0 - background
+	compositor.RegisterSource(vgaEngine)      // Layer 10 - VGA renders on top
+	compositor.RegisterSource(tedVideoEngine) // Layer 12 - TED video between VGA and ULA
+	compositor.RegisterSource(ulaEngine)      // Layer 15 - ULA renders on top of TED
 
 	// Initialize the selected CPU and optionally load program
 	var gui GUIFrontend

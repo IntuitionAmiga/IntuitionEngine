@@ -297,12 +297,18 @@ func (b *Z80SystemBus) In(port uint16) byte {
 	}
 
 	// Handle TED port I/O (0xF2-0xF3)
+	// Register indices 0x00-0x05 = TED audio, 0x20-0x2F = TED video
 	switch lowPort {
 	case Z80_TED_PORT_SELECT:
 		return b.tedRegSelect
 	case Z80_TED_PORT_DATA:
 		if b.tedRegSelect < TED_REG_COUNT {
+			// TED audio registers (0x00-0x05)
 			return b.bus.Read8(TED_BASE + uint32(b.tedRegSelect))
+		} else if b.tedRegSelect >= Z80_TED_V_INDEX_BASE && b.tedRegSelect <= Z80_TED_V_INDEX_END {
+			// TED video registers (0x20-0x2F) - map to 4-byte aligned addresses
+			vidReg := uint32(b.tedRegSelect - Z80_TED_V_INDEX_BASE)
+			return b.bus.Read8(TED_VIDEO_BASE + (vidReg * 4))
 		}
 		return 0
 	}
@@ -386,13 +392,19 @@ func (b *Z80SystemBus) Out(port uint16, value byte) {
 	}
 
 	// Handle TED port I/O (0xF2-0xF3)
+	// Register indices 0x00-0x05 = TED audio, 0x20-0x2F = TED video
 	switch lowPort {
 	case Z80_TED_PORT_SELECT:
-		b.tedRegSelect = value & 0x07 // TED has 6 registers
+		b.tedRegSelect = value & 0x3F // Allow 0x00-0x3F for audio + video indices
 		return
 	case Z80_TED_PORT_DATA:
 		if b.tedRegSelect < TED_REG_COUNT {
+			// TED audio registers (0x00-0x05)
 			b.bus.Write8(TED_BASE+uint32(b.tedRegSelect), value)
+		} else if b.tedRegSelect >= Z80_TED_V_INDEX_BASE && b.tedRegSelect <= Z80_TED_V_INDEX_END {
+			// TED video registers (0x20-0x2F) - map to 4-byte aligned addresses
+			vidReg := uint32(b.tedRegSelect - Z80_TED_V_INDEX_BASE)
+			b.bus.Write8(TED_VIDEO_BASE+(vidReg*4), value)
 		}
 		return
 	}

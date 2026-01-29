@@ -2701,10 +2701,16 @@ func (adapter *MemoryBusAdapter_6502) Read(addr uint16) byte {
 		return adapter.bus.Read8(POKEY_BASE + pokeyReg)
 	}
 
-	// Handle TED register reads ($D600-$D605)
+	// Handle TED audio register reads ($D600-$D605)
 	if addr >= C6502_TED_BASE && addr <= C6502_TED_END {
 		tedReg := uint32(addr - C6502_TED_BASE)
 		return adapter.bus.Read8(TED_BASE + tedReg)
+	}
+
+	// Handle TED video register reads ($D620-$D62F)
+	if addr >= C6502_TED_V_BASE && addr <= C6502_TED_V_END {
+		tedVReg := uint32(addr - C6502_TED_V_BASE)
+		return adapter.bus.Read8(TED_VIDEO_BASE + (tedVReg * 4))
 	}
 
 	// Handle ULA register reads ($D800-$D80F)
@@ -2827,10 +2833,17 @@ func (adapter *MemoryBusAdapter_6502) Write(addr uint16, value byte) {
 		return
 	}
 
-	// Handle TED register writes ($D600-$D605)
+	// Handle TED audio register writes ($D600-$D605)
 	if addr >= C6502_TED_BASE && addr <= C6502_TED_END {
 		tedReg := uint32(addr - C6502_TED_BASE)
 		adapter.bus.Write8(TED_BASE+tedReg, value)
+		return
+	}
+
+	// Handle TED video register writes ($D620-$D62F)
+	if addr >= C6502_TED_V_BASE && addr <= C6502_TED_V_END {
+		tedVReg := uint32(addr - C6502_TED_V_BASE)
+		adapter.bus.Write8(TED_VIDEO_BASE+(tedVReg*4), value)
 		return
 	}
 

@@ -39,7 +39,7 @@ Address Range       Size    Device              Constants File
 0xF0C00-0xF0C1C     28B     PSG (AY-3-8910)     psg_constants.go
 0xF0D00-0xF0D1D     29B     POKEY               pokey_constants.go
 0xF0E00-0xF0E2D     45B     SID (6581/8580)     sid_constants.go
-0xF0F00-0xF0F1F     31B     TED                 ted_constants.go
+0xF0F00-0xF0F5F     96B     TED (audio+video)   ted_constants.go, ted_video_constants.go
 0xF1000-0xF13FF     1KB     VGA Registers       vga_constants.go
 0xF2000-0xF200B     12B     ULA (ZX Spectrum)   ula_constants.go
 
@@ -77,9 +77,10 @@ SID - 6581/8580 (0xF0E00-0xF0E2D) - sid_constants.go
   SID_FC_*, SID_RES_FILT, SID_MODE_VOL (Filter/volume)
   SID_PLAY_* (Player registers)
 
-TED (0xF0F00-0xF0F1F) - ted_constants.go
-  TED_FREQ1_*, TED_FREQ2_*, TED_SND_CTRL
-  TED_PLAY_* (Player registers)
+TED (0xF0F00-0xF0F5F) - ted_constants.go, ted_video_constants.go
+  Audio: TED_FREQ1_*, TED_FREQ2_*, TED_SND_CTRL (0xF0F00-0xF0F05)
+  Player: TED_PLAY_* (0xF0F10-0xF0F1F)
+  Video: TED_V_* (0xF0F20-0xF0F5F) - 40x25 text mode, 121 colors
 
 VGA (0xF1000-0xF13FF) - vga_constants.go
   VGA_MODE, VGA_STATUS, VGA_CTRL
@@ -148,9 +149,9 @@ const (
 	SID_REGION_BASE = 0xF0E00
 	SID_REGION_END  = 0xF0E2D
 
-	// TED region
+	// TED region (audio 0xF0F00-0xF0F1F, video 0xF0F20-0xF0F5F)
 	TED_REGION_BASE = 0xF0F00
-	TED_REGION_END  = 0xF0F1F
+	TED_REGION_END  = 0xF0F5F
 
 	// VGA region
 	VGA_REGION_BASE = 0xF1000

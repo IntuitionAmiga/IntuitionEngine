@@ -1,12 +1,15 @@
 // ted_constants.go - MOS 7360/8360 TED sound chip register addresses and constants
 // See registers.go for the complete I/O memory map reference.
+// See ted_video_constants.go for TED video registers (0xF0F20-0xF0F5F).
 
 package main
 
-// TED register addresses (memory-mapped at 0xF0F00-0xF0F05)
+// TED register addresses (memory-mapped at 0xF0F00-0xF0F1F for audio/player)
+// TED video registers are at 0xF0F20-0xF0F5F (see ted_video_constants.go)
 const (
-	TED_BASE = 0xF0F00
-	TED_END  = 0xF0F05
+	TED_BASE      = 0xF0F00
+	TED_AUDIO_END = 0xF0F05 // End of audio registers
+	TED_END       = 0xF0F05 // Audio region end (video region is separate)
 
 	// Sound registers (matching Plus/4 layout)
 	TED_FREQ1_LO  = 0xF0F00 // Voice 1 frequency low byte ($FF0E on Plus/4)
