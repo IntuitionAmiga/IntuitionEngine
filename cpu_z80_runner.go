@@ -32,8 +32,9 @@ const (
 )
 
 type CPUZ80Config struct {
-	LoadAddr uint16
-	Entry    uint16
+	LoadAddr  uint16
+	Entry     uint16
+	VGAEngine *VGAEngine // Optional VGA engine for port I/O
 }
 
 type CPUZ80Runner struct {
@@ -213,7 +214,8 @@ func (b *Z80SystemBus) translateExtendedBank(addr uint16) (uint32, bool) {
 }
 
 // translateVRAM translates addresses in the VRAM bank window to their
-// actual 32-bit VRAM addresses.
+// actual 32-bit addresses. Supports both VGA text buffer (0xB8000) and
+// main VRAM (0x100000+) depending on bank value.
 func (b *Z80SystemBus) translateVRAM(addr uint16) (uint32, bool) {
 	if !b.vramEnabled {
 		return 0, false
@@ -223,11 +225,18 @@ func (b *Z80SystemBus) translateVRAM(addr uint16) (uint32, bool) {
 		return 0, false
 	}
 
-	translated := uint32(VRAM_START) +
-		(b.vramBank * Z80_VRAM_BANK_WINDOW_SIZE) +
+	// Calculate 32-bit address: bank * 16KB + offset within window
+	// This allows accessing:
+	// - VGA text buffer at 0xB8000 (bank 0x2E = 46)
+	// - Main VRAM at 0x100000+ (bank 0x40+ = 64+)
+	translated := (b.vramBank * Z80_VRAM_BANK_WINDOW_SIZE) +
 		uint32(addr-Z80_VRAM_BANK_WINDOW_BASE)
 
-	if translated >= uint32(VRAM_START+VRAM_SIZE) {
+	// Allow access to VGA text buffer (0xB8000-0xBFFFF) or main VRAM (0x100000+)
+	isVGAText := translated >= VGA_TEXT_WINDOW && translated < VGA_TEXT_WINDOW+VGA_TEXT_SIZE
+	isMainVRAM := translated >= uint32(VRAM_START) && translated < uint32(VRAM_START+VRAM_SIZE)
+
+	if !isVGAText && !isMainVRAM {
 		return 0, false
 	}
 
@@ -360,7 +369,14 @@ func NewCPUZ80Runner(bus *SystemBus, config CPUZ80Config) *CPUZ80Runner {
 		loadAddr = defaultZ80LoadAddr
 	}
 
-	z80Bus := NewZ80SystemBus(bus)
+	// Create Z80 system bus with optional VGA engine for port I/O
+	var z80Bus *Z80SystemBus
+	if config.VGAEngine != nil {
+		z80Bus = NewZ80SystemBusWithVGA(bus, config.VGAEngine)
+	} else {
+		z80Bus = NewZ80SystemBus(bus)
+	}
+
 	return &CPUZ80Runner{
 		cpu:      NewCPU_Z80(z80Bus),
 		bus:      bus,

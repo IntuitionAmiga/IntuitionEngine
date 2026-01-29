@@ -45,6 +45,7 @@ type POKEYEngine struct {
 	playing       bool
 	loop          bool
 	loopSample    uint64
+	forceLoop     bool
 }
 
 // POKEY+ logarithmic volume curve (2dB per step, more accurate to hardware DAC)
@@ -430,6 +431,17 @@ func (e *POKEYEngine) IsPlaying() bool {
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
 	return e.playing
+}
+
+// SetForceLoop enables looping from the start of the track
+func (e *POKEYEngine) SetForceLoop(enable bool) {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+	if enable {
+		e.loop = true
+		e.loopSample = 0
+	}
+	e.forceLoop = enable
 }
 
 // StopPlayback stops playback and clears events

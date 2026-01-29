@@ -14,7 +14,17 @@ import (
 // POKEYPlayer handles SAP file playback
 type POKEYPlayer struct {
 	engine   *POKEYEngine
+	bus      MemoryBus
 	metadata SAPMetadata
+
+	// Playback control state (for CPU-triggered playback)
+	playPtrStaged uint32
+	playLenStaged uint32
+	playPtr       uint32
+	playLen       uint32
+	playBusy      bool
+	playErr       bool
+	forceLoop     bool
 
 	mutex sync.RWMutex
 }
@@ -104,4 +114,135 @@ func (p *POKEYPlayer) DurationText() string {
 	minutes := int(dur) / 60
 	seconds := int(dur) % 60
 	return fmt.Sprintf("%d:%02d", minutes, seconds)
+}
+
+// AttachBus attaches a memory bus for reading embedded SAP data
+func (p *POKEYPlayer) AttachBus(bus MemoryBus) {
+	p.bus = bus
+}
+
+// HandlePlayWrite handles writes to SAP_PLAY_* registers
+func (p *POKEYPlayer) HandlePlayWrite(addr uint32, value uint32) {
+	switch addr {
+	case SAP_PLAY_PTR:
+		p.playPtrStaged = value
+	case SAP_PLAY_PTR + 1:
+		p.playPtrStaged = writeUint32Byte(p.playPtrStaged, value, 1)
+	case SAP_PLAY_PTR + 2:
+		p.playPtrStaged = writeUint32Word(p.playPtrStaged, value, 2)
+	case SAP_PLAY_PTR + 3:
+		p.playPtrStaged = writeUint32Byte(p.playPtrStaged, value, 3)
+	case SAP_PLAY_LEN:
+		p.playLenStaged = value
+	case SAP_PLAY_LEN + 1:
+		p.playLenStaged = writeUint32Byte(p.playLenStaged, value, 1)
+	case SAP_PLAY_LEN + 2:
+		p.playLenStaged = writeUint32Word(p.playLenStaged, value, 2)
+	case SAP_PLAY_LEN + 3:
+		p.playLenStaged = writeUint32Byte(p.playLenStaged, value, 3)
+	case SAP_PLAY_CTRL:
+		if value&0x2 != 0 {
+			p.Stop()
+			p.playErr = false
+			return
+		}
+		if value&0x1 == 0 {
+			return
+		}
+		if p.playBusy {
+			return
+		}
+		p.playPtr = p.playPtrStaged
+		p.playLen = p.playLenStaged
+		p.forceLoop = (value & 0x4) != 0
+		p.playErr = false
+		if p.bus == nil {
+			p.playErr = true
+			return
+		}
+		if p.playLen == 0 {
+			p.playErr = true
+			return
+		}
+		p.playBusy = true
+		// Read directly from bus memory
+		mem := p.bus.GetMemory()
+		if int(p.playPtr)+int(p.playLen) > len(mem) {
+			p.playErr = true
+			p.playBusy = false
+			return
+		}
+		data := make([]byte, p.playLen)
+		copy(data, mem[p.playPtr:p.playPtr+p.playLen])
+		if err := p.LoadData(data); err != nil {
+			p.playErr = true
+			p.playBusy = false
+			return
+		}
+		if p.forceLoop && p.engine != nil {
+			p.engine.SetForceLoop(true)
+		}
+		// Register as sample ticker when starting playback via I/O
+		if p.engine != nil && p.engine.sound != nil {
+			p.engine.sound.SetSampleTicker(p.engine)
+		}
+		p.Play()
+	default:
+		return
+	}
+}
+
+// HandlePlayRead handles reads from SAP_PLAY_* registers
+func (p *POKEYPlayer) HandlePlayRead(addr uint32) uint32 {
+	switch addr {
+	case SAP_PLAY_PTR:
+		return p.playPtrStaged
+	case SAP_PLAY_LEN:
+		return p.playLenStaged
+	case SAP_PLAY_CTRL:
+		return p.playCtrlStatus()
+	case SAP_PLAY_STATUS:
+		return p.playStatus()
+	case SAP_PLAY_PTR + 1:
+		return readUint32Byte(p.playPtrStaged, 1)
+	case SAP_PLAY_PTR + 2:
+		return readUint32Byte(p.playPtrStaged, 2)
+	case SAP_PLAY_PTR + 3:
+		return readUint32Byte(p.playPtrStaged, 3)
+	case SAP_PLAY_LEN + 1:
+		return readUint32Byte(p.playLenStaged, 1)
+	case SAP_PLAY_LEN + 2:
+		return readUint32Byte(p.playLenStaged, 2)
+	case SAP_PLAY_LEN + 3:
+		return readUint32Byte(p.playLenStaged, 3)
+	case SAP_PLAY_CTRL + 1:
+		return readUint32Byte(p.playCtrlStatus(), 1)
+	case SAP_PLAY_CTRL + 2:
+		return readUint32Byte(p.playCtrlStatus(), 2)
+	case SAP_PLAY_CTRL + 3:
+		return readUint32Byte(p.playCtrlStatus(), 3)
+	default:
+		return 0
+	}
+}
+
+func (p *POKEYPlayer) playCtrlStatus() uint32 {
+	ctrl := uint32(0)
+	busy := p.playBusy
+	if p.engine != nil && p.engine.IsPlaying() {
+		busy = true
+	} else if !busy {
+		p.playBusy = false
+	}
+	if busy {
+		ctrl |= 1
+	}
+	if p.playErr {
+		ctrl |= 2
+	}
+	return ctrl
+}
+
+func (p *POKEYPlayer) playStatus() uint32 {
+	return p.playCtrlStatus()
 }

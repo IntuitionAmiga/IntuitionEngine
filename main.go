@@ -528,6 +528,17 @@ func main() {
 		ahxPlayerCPU.HandlePlayRead,
 		ahxPlayerCPU.HandlePlayWrite)
 
+	// Map POKEY registers (Atari POKEY chip for SAP playback in CPU modes)
+	pokeyEngine := NewPOKEYEngine(soundChip, SAMPLE_RATE)
+	pokeyPlayer := NewPOKEYPlayer(pokeyEngine)
+	pokeyPlayer.AttachBus(sysBus)
+	sysBus.MapIO(POKEY_BASE, POKEY_END,
+		pokeyEngine.HandleRead,
+		pokeyEngine.HandleWrite)
+	sysBus.MapIO(SAP_PLAY_PTR, SAP_SUBSONG,
+		pokeyPlayer.HandlePlayRead,
+		pokeyPlayer.HandlePlayWrite)
+
 	// Map VGA registers (VGA is a standalone video device)
 	vgaEngine := NewVGAEngine(sysBus)
 	sysBus.MapIO(VGA_BASE, VGA_REG_END,
@@ -653,8 +664,9 @@ func main() {
 		}
 
 		z80CPU := NewCPUZ80Runner(sysBus, CPUZ80Config{
-			LoadAddr: parsedLoadAddr,
-			Entry:    parsedEntry,
+			LoadAddr:  parsedLoadAddr,
+			Entry:     parsedEntry,
+			VGAEngine: vgaEngine,
 		})
 
 		// Load program
