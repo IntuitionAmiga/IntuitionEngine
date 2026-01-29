@@ -2695,6 +2695,18 @@ func (adapter *MemoryBusAdapter_6502) Read(addr uint16) byte {
 		return adapter.bus.Read8(SID_BASE + sidReg)
 	}
 
+	// Handle POKEY register reads ($D200-$D209)
+	if addr >= C6502_POKEY_BASE && addr <= C6502_POKEY_END {
+		pokeyReg := uint32(addr - C6502_POKEY_BASE)
+		return adapter.bus.Read8(POKEY_BASE + pokeyReg)
+	}
+
+	// Handle TED register reads ($D600-$D605)
+	if addr >= C6502_TED_BASE && addr <= C6502_TED_END {
+		tedReg := uint32(addr - C6502_TED_BASE)
+		return adapter.bus.Read8(TED_BASE + tedReg)
+	}
+
 	// Handle ULA register reads ($D800-$D80F)
 	if addr >= C6502_ULA_BASE && addr <= C6502_ULA_BASE+0x0F {
 		ulaReg := uint32(addr - C6502_ULA_BASE)
@@ -2805,6 +2817,20 @@ func (adapter *MemoryBusAdapter_6502) Write(addr uint16, value byte) {
 	if addr >= C6502_SID_BASE && addr <= C6502_SID_END {
 		sidReg := uint32(addr - C6502_SID_BASE)
 		adapter.bus.Write8(SID_BASE+sidReg, value)
+		return
+	}
+
+	// Handle POKEY register writes ($D200-$D209)
+	if addr >= C6502_POKEY_BASE && addr <= C6502_POKEY_END {
+		pokeyReg := uint32(addr - C6502_POKEY_BASE)
+		adapter.bus.Write8(POKEY_BASE+pokeyReg, value)
+		return
+	}
+
+	// Handle TED register writes ($D600-$D605)
+	if addr >= C6502_TED_BASE && addr <= C6502_TED_END {
+		tedReg := uint32(addr - C6502_TED_BASE)
+		adapter.bus.Write8(TED_BASE+tedReg, value)
 		return
 	}
 

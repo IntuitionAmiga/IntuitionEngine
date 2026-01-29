@@ -39,9 +39,10 @@
    - 3.7 POKEY Registers
    - 3.8 SID Registers
    - 3.9 TED Registers
-   - 3.10 Audio Chip Memory Map by CPU
-   - 3.11 VGA Video Chip
-   - 3.12 ULA Video Chip (ZX Spectrum)
+   - 3.10 AHX Module Player Registers
+   - 3.11 Hardware I/O Memory Map by CPU
+   - 3.12 VGA Video Chip
+   - 3.13 ULA Video Chip (ZX Spectrum)
 4. [IE32 CPU Architecture](#4-ie32-cpu-architecture)
    - 4.1 Register Set
    - 4.2 Status Flags
@@ -680,19 +681,38 @@ AHX+ mode provides enhanced audio processing:
 - Authentic Amiga stereo panning (L-R-R-L pattern)
 - Hardware PWM mapping SquarePos to duty cycle
 
-## 3.11 Audio Chip Memory Map by CPU
+## 3.11 Hardware I/O Memory Map by CPU
 
-The four sound chips (PSG, POKEY, SID, TED) are accessible from all CPU architectures at different address ranges:
+All sound and video chips are accessible from all four CPU architectures at different address ranges:
 
-| Chip  | IE32/M68K         | Z80 Ports | 6502        |
-|-------|-------------------|-----------|-------------|
-| PSG   | 0x0F0C00-0x0F0C0D | 0xF0-0xF1 | $D400-$D40D |
-| POKEY | 0x0F0D00-0x0F0D09 | 0xD0-0xD1 | $D200-$D209 |
-| SID   | 0x0F0E00-0x0F0E1C | 0xE0-0xE1 | $D500-$D51C |
-| TED   | 0x0F0F00-0x0F0F05 | 0xF2-0xF3 | $D600-$D605 |
+### Sound Chips
 
-Z80 uses port-based I/O: the first port selects the register, the second reads/writes data.
-6502 uses memory-mapped I/O in its native address space, following C64/Atari/Plus4 conventions.
+| Chip  | IE32/M68K         | Z80 Ports | 6502        | Notes |
+|-------|-------------------|-----------|-------------|-------|
+| PSG   | 0x0F0C00-0x0F0C0D | 0xF0-0xF1 | $D400-$D40D | AY-3-8910/YM2149 compatible |
+| POKEY | 0x0F0D00-0x0F0D09 | 0xD0-0xD1 | $D200-$D209 | Atari 8-bit compatible |
+| SID   | 0x0F0E00-0x0F0E1C | 0xE0-0xE1 | $D500-$D51C | MOS 6581/8580 compatible |
+| TED   | 0x0F0F00-0x0F0F05 | 0xF2-0xF3 | $D600-$D605 | Plus/4 compatible |
+| AHX   | 0x0F0B80-0x0F0B91 | —         | $FB80-$FB91 | Amiga AHX/THX module player |
+
+### Video Chips
+
+| Chip      | IE32/M68K         | Z80 Ports | 6502        | Notes |
+|-----------|-------------------|-----------|-------------|-------|
+| VideoChip | 0x0F0000-0x0F0058 | 0xF000+   | $F000-$F058 | Custom copper/blitter |
+| VGA       | 0x0F1000-0x0F13FF | 0xA0-0xAC | $D700-$D70A | IBM VGA compatible |
+| ULA       | 0x0F2000-0x0F200B | 0xFE      | $D800-$D80B | ZX Spectrum compatible |
+
+### Access Methods
+
+**Z80 Port I/O:** The first port selects the register index, the second reads/writes data.
+Example: `OUT (0xF0),A` selects PSG register, `OUT (0xF1),A` writes data.
+
+**6502 Memory-Mapped:** Direct memory access following C64/Atari/Plus4 conventions.
+Example: `STA $D400` writes to PSG register 0.
+
+**IE32/M68K Direct:** Full 32-bit address space access.
+Example: `MOVE.B D0,($F0C00).L` writes to PSG register 0.
 
 ## 3.12 VGA Video Chip (0x0F1000 - 0x0F13FF)
 

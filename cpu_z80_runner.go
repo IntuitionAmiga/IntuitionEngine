@@ -45,9 +45,12 @@ type CPUZ80Runner struct {
 }
 
 type Z80SystemBus struct {
-	bus          *SystemBus
-	psgRegSelect byte       // Currently selected PSG register for port I/O
-	vgaEngine    *VGAEngine // VGA engine for port I/O access
+	bus            *SystemBus
+	psgRegSelect   byte       // Currently selected PSG register for port I/O
+	sidRegSelect   byte       // Currently selected SID register for port I/O
+	pokeyRegSelect byte       // Currently selected POKEY register for port I/O
+	tedRegSelect   byte       // Currently selected TED register for port I/O
+	vgaEngine      *VGAEngine // VGA engine for port I/O access
 
 	// Extended bank windows for IE80 support (same layout as 6502)
 	vramBank    uint32
@@ -258,7 +261,7 @@ func (b *Z80SystemBus) ResetBank() {
 func (b *Z80SystemBus) In(port uint16) byte {
 	lowPort := byte(port)
 
-	// Handle PSG port I/O
+	// Handle PSG port I/O (0xF0-0xF1)
 	switch lowPort {
 	case Z80_PSG_PORT_SELECT:
 		// Read returns the currently selected register
@@ -269,6 +272,45 @@ func (b *Z80SystemBus) In(port uint16) byte {
 			return b.bus.Read8(PSG_BASE + uint32(b.psgRegSelect))
 		}
 		return 0
+	}
+
+	// Handle SID port I/O (0xE0-0xE1)
+	switch lowPort {
+	case Z80_SID_PORT_SELECT:
+		return b.sidRegSelect
+	case Z80_SID_PORT_DATA:
+		if b.sidRegSelect < SID_REG_COUNT {
+			return b.bus.Read8(SID_BASE + uint32(b.sidRegSelect))
+		}
+		return 0
+	}
+
+	// Handle POKEY port I/O (0xD0-0xD1)
+	switch lowPort {
+	case Z80_POKEY_PORT_SELECT:
+		return b.pokeyRegSelect
+	case Z80_POKEY_PORT_DATA:
+		if b.pokeyRegSelect < POKEY_REG_COUNT {
+			return b.bus.Read8(POKEY_BASE + uint32(b.pokeyRegSelect))
+		}
+		return 0
+	}
+
+	// Handle TED port I/O (0xF2-0xF3)
+	switch lowPort {
+	case Z80_TED_PORT_SELECT:
+		return b.tedRegSelect
+	case Z80_TED_PORT_DATA:
+		if b.tedRegSelect < TED_REG_COUNT {
+			return b.bus.Read8(TED_BASE + uint32(b.tedRegSelect))
+		}
+		return 0
+	}
+
+	// Handle ULA port I/O (0xFE)
+	if lowPort == Z80_ULA_PORT {
+		// Read returns border color from ULA_BORDER register
+		return b.bus.Read8(ULA_BORDER) & 0x07
 	}
 
 	// Handle VGA port I/O (0xA0-0xAA)
@@ -305,7 +347,7 @@ func (b *Z80SystemBus) In(port uint16) byte {
 func (b *Z80SystemBus) Out(port uint16, value byte) {
 	lowPort := byte(port)
 
-	// Handle PSG port I/O
+	// Handle PSG port I/O (0xF0-0xF1)
 	switch lowPort {
 	case Z80_PSG_PORT_SELECT:
 		// Select PSG register (mask to valid range)
@@ -316,6 +358,49 @@ func (b *Z80SystemBus) Out(port uint16, value byte) {
 		if b.psgRegSelect < PSG_REG_COUNT {
 			b.bus.Write8(PSG_BASE+uint32(b.psgRegSelect), value)
 		}
+		return
+	}
+
+	// Handle SID port I/O (0xE0-0xE1)
+	switch lowPort {
+	case Z80_SID_PORT_SELECT:
+		b.sidRegSelect = value & 0x1F // SID has ~26 registers
+		return
+	case Z80_SID_PORT_DATA:
+		if b.sidRegSelect < SID_REG_COUNT {
+			b.bus.Write8(SID_BASE+uint32(b.sidRegSelect), value)
+		}
+		return
+	}
+
+	// Handle POKEY port I/O (0xD0-0xD1)
+	switch lowPort {
+	case Z80_POKEY_PORT_SELECT:
+		b.pokeyRegSelect = value & 0x0F // POKEY has 10 registers
+		return
+	case Z80_POKEY_PORT_DATA:
+		if b.pokeyRegSelect < POKEY_REG_COUNT {
+			b.bus.Write8(POKEY_BASE+uint32(b.pokeyRegSelect), value)
+		}
+		return
+	}
+
+	// Handle TED port I/O (0xF2-0xF3)
+	switch lowPort {
+	case Z80_TED_PORT_SELECT:
+		b.tedRegSelect = value & 0x07 // TED has 6 registers
+		return
+	case Z80_TED_PORT_DATA:
+		if b.tedRegSelect < TED_REG_COUNT {
+			b.bus.Write8(TED_BASE+uint32(b.tedRegSelect), value)
+		}
+		return
+	}
+
+	// Handle ULA port I/O (0xFE)
+	if lowPort == Z80_ULA_PORT {
+		// Write sets border color (bits 0-2) to ULA_BORDER register
+		b.bus.Write8(ULA_BORDER, value&0x07)
 		return
 	}
 
