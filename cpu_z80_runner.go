@@ -45,7 +45,8 @@ type CPUZ80Runner struct {
 
 type Z80SystemBus struct {
 	bus          *SystemBus
-	psgRegSelect byte // Currently selected PSG register for port I/O
+	psgRegSelect byte       // Currently selected PSG register for port I/O
+	vgaEngine    *VGAEngine // VGA engine for port I/O access
 
 	// Extended bank windows for IE80 support (same layout as 6502)
 	vramBank    uint32
@@ -60,6 +61,11 @@ type Z80SystemBus struct {
 
 func NewZ80SystemBus(bus *SystemBus) *Z80SystemBus {
 	return &Z80SystemBus{bus: bus, psgRegSelect: 0}
+}
+
+// NewZ80SystemBusWithVGA creates a Z80 system bus with VGA engine support
+func NewZ80SystemBusWithVGA(bus *SystemBus, vga *VGAEngine) *Z80SystemBus {
+	return &Z80SystemBus{bus: bus, psgRegSelect: 0, vgaEngine: vga}
 }
 
 // translateIO8Bit converts 16-bit I/O addresses (0xF000-0xFFFF) to
@@ -256,6 +262,34 @@ func (b *Z80SystemBus) In(port uint16) byte {
 		return 0
 	}
 
+	// Handle VGA port I/O (0xA0-0xAA)
+	if b.vgaEngine != nil {
+		switch lowPort {
+		case Z80_VGA_PORT_MODE:
+			return byte(b.vgaEngine.HandleRead(VGA_MODE))
+		case Z80_VGA_PORT_STATUS:
+			return byte(b.vgaEngine.HandleRead(VGA_STATUS))
+		case Z80_VGA_PORT_CTRL:
+			return byte(b.vgaEngine.HandleRead(VGA_CTRL))
+		case Z80_VGA_PORT_SEQ_IDX:
+			return byte(b.vgaEngine.HandleRead(VGA_SEQ_INDEX))
+		case Z80_VGA_PORT_SEQ_DATA:
+			return byte(b.vgaEngine.HandleRead(VGA_SEQ_DATA))
+		case Z80_VGA_PORT_CRTC_IDX:
+			return byte(b.vgaEngine.HandleRead(VGA_CRTC_INDEX))
+		case Z80_VGA_PORT_CRTC_DATA:
+			return byte(b.vgaEngine.HandleRead(VGA_CRTC_DATA))
+		case Z80_VGA_PORT_GC_IDX:
+			return byte(b.vgaEngine.HandleRead(VGA_GC_INDEX))
+		case Z80_VGA_PORT_GC_DATA:
+			return byte(b.vgaEngine.HandleRead(VGA_GC_DATA))
+		case Z80_VGA_PORT_DAC_WIDX:
+			return byte(b.vgaEngine.HandleRead(VGA_DAC_WINDEX))
+		case Z80_VGA_PORT_DAC_DATA:
+			return byte(b.vgaEngine.HandleRead(VGA_DAC_DATA))
+		}
+	}
+
 	return b.bus.Read8(translateIO8Bit(port))
 }
 
@@ -274,6 +308,45 @@ func (b *Z80SystemBus) Out(port uint16, value byte) {
 			b.bus.Write8(PSG_BASE+uint32(b.psgRegSelect), value)
 		}
 		return
+	}
+
+	// Handle VGA port I/O (0xA0-0xAA)
+	if b.vgaEngine != nil {
+		switch lowPort {
+		case Z80_VGA_PORT_MODE:
+			b.vgaEngine.HandleWrite(VGA_MODE, uint32(value))
+			return
+		case Z80_VGA_PORT_STATUS:
+			// Status is read-only, but accept writes silently
+			return
+		case Z80_VGA_PORT_CTRL:
+			b.vgaEngine.HandleWrite(VGA_CTRL, uint32(value))
+			return
+		case Z80_VGA_PORT_SEQ_IDX:
+			b.vgaEngine.HandleWrite(VGA_SEQ_INDEX, uint32(value))
+			return
+		case Z80_VGA_PORT_SEQ_DATA:
+			b.vgaEngine.HandleWrite(VGA_SEQ_DATA, uint32(value))
+			return
+		case Z80_VGA_PORT_CRTC_IDX:
+			b.vgaEngine.HandleWrite(VGA_CRTC_INDEX, uint32(value))
+			return
+		case Z80_VGA_PORT_CRTC_DATA:
+			b.vgaEngine.HandleWrite(VGA_CRTC_DATA, uint32(value))
+			return
+		case Z80_VGA_PORT_GC_IDX:
+			b.vgaEngine.HandleWrite(VGA_GC_INDEX, uint32(value))
+			return
+		case Z80_VGA_PORT_GC_DATA:
+			b.vgaEngine.HandleWrite(VGA_GC_DATA, uint32(value))
+			return
+		case Z80_VGA_PORT_DAC_WIDX:
+			b.vgaEngine.HandleWrite(VGA_DAC_WINDEX, uint32(value))
+			return
+		case Z80_VGA_PORT_DAC_DATA:
+			b.vgaEngine.HandleWrite(VGA_DAC_DATA, uint32(value))
+			return
+		}
 	}
 
 	b.bus.Write8(translateIO8Bit(port), value)

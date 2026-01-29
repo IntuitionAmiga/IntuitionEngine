@@ -250,6 +250,7 @@ type MemoryBusAdapter_6502 struct {
 	   - bus: Reference to 32-bit system bus
 	   - vramBank: Active VRAM bank for 6502 window access
 	   - bank1/2/3: Extended bank windows for IE65 support
+	   - vgaEngine: VGA engine for memory-mapped I/O access
 
 	   Purpose:
 	   Provides translation layer between 8-bit 6502 and 32-bit memory system.
@@ -260,6 +261,7 @@ type MemoryBusAdapter_6502 struct {
 	bus         MemoryBus
 	vramBank    uint32
 	vramEnabled bool
+	vgaEngine   *VGAEngine // VGA engine for memory-mapped I/O access
 
 	// Extended bank windows for IE65 support
 	bank1       uint32 // Bank number for $2000-$3FFF window
@@ -310,6 +312,11 @@ func NewMemoryBusAdapter_6502(bus MemoryBus) *MemoryBusAdapter_6502 {
 	*/
 
 	return &MemoryBusAdapter_6502{bus: bus}
+}
+
+// NewMemoryBusAdapter_6502WithVGA creates a 6502 memory bus adapter with VGA engine support
+func NewMemoryBusAdapter_6502WithVGA(bus MemoryBus, vga *VGAEngine) *MemoryBusAdapter_6502 {
+	return &MemoryBusAdapter_6502{bus: bus, vgaEngine: vga}
 }
 
 func (cpu_6502 *CPU_6502) rmw(addr uint16, operation func(byte) byte) {
@@ -2694,6 +2701,34 @@ func (adapter *MemoryBusAdapter_6502) Read(addr uint16) byte {
 		return adapter.bus.Read8(ULA_BASE + ulaReg)
 	}
 
+	// Handle VGA register reads ($D700-$D70A)
+	if adapter.vgaEngine != nil && addr >= C6502_VGA_BASE && addr <= C6502_VGA_END {
+		switch addr {
+		case C6502_VGA_MODE:
+			return byte(adapter.vgaEngine.HandleRead(VGA_MODE))
+		case C6502_VGA_STATUS:
+			return byte(adapter.vgaEngine.HandleRead(VGA_STATUS))
+		case C6502_VGA_CTRL:
+			return byte(adapter.vgaEngine.HandleRead(VGA_CTRL))
+		case C6502_VGA_SEQ_IDX:
+			return byte(adapter.vgaEngine.HandleRead(VGA_SEQ_INDEX))
+		case C6502_VGA_SEQ_DATA:
+			return byte(adapter.vgaEngine.HandleRead(VGA_SEQ_DATA))
+		case C6502_VGA_CRTC_IDX:
+			return byte(adapter.vgaEngine.HandleRead(VGA_CRTC_INDEX))
+		case C6502_VGA_CRTC_DATA:
+			return byte(adapter.vgaEngine.HandleRead(VGA_CRTC_DATA))
+		case C6502_VGA_GC_IDX:
+			return byte(adapter.vgaEngine.HandleRead(VGA_GC_INDEX))
+		case C6502_VGA_GC_DATA:
+			return byte(adapter.vgaEngine.HandleRead(VGA_GC_DATA))
+		case C6502_VGA_DAC_WIDX:
+			return byte(adapter.vgaEngine.HandleRead(VGA_DAC_WINDEX))
+		case C6502_VGA_DAC_DATA:
+			return byte(adapter.vgaEngine.HandleRead(VGA_DAC_DATA))
+		}
+	}
+
 	// Handle extended bank window reads (IE65 mode)
 	if translated, ok := adapter.translateExtendedBank(addr); ok {
 		return adapter.bus.Read8(translated)
@@ -2778,6 +2813,45 @@ func (adapter *MemoryBusAdapter_6502) Write(addr uint16, value byte) {
 		ulaReg := uint32(addr - C6502_ULA_BASE)
 		adapter.bus.Write8(ULA_BASE+ulaReg, value)
 		return
+	}
+
+	// Handle VGA register writes ($D700-$D70A)
+	if adapter.vgaEngine != nil && addr >= C6502_VGA_BASE && addr <= C6502_VGA_END {
+		switch addr {
+		case C6502_VGA_MODE:
+			adapter.vgaEngine.HandleWrite(VGA_MODE, uint32(value))
+			return
+		case C6502_VGA_STATUS:
+			// Status is read-only, but accept writes silently
+			return
+		case C6502_VGA_CTRL:
+			adapter.vgaEngine.HandleWrite(VGA_CTRL, uint32(value))
+			return
+		case C6502_VGA_SEQ_IDX:
+			adapter.vgaEngine.HandleWrite(VGA_SEQ_INDEX, uint32(value))
+			return
+		case C6502_VGA_SEQ_DATA:
+			adapter.vgaEngine.HandleWrite(VGA_SEQ_DATA, uint32(value))
+			return
+		case C6502_VGA_CRTC_IDX:
+			adapter.vgaEngine.HandleWrite(VGA_CRTC_INDEX, uint32(value))
+			return
+		case C6502_VGA_CRTC_DATA:
+			adapter.vgaEngine.HandleWrite(VGA_CRTC_DATA, uint32(value))
+			return
+		case C6502_VGA_GC_IDX:
+			adapter.vgaEngine.HandleWrite(VGA_GC_INDEX, uint32(value))
+			return
+		case C6502_VGA_GC_DATA:
+			adapter.vgaEngine.HandleWrite(VGA_GC_DATA, uint32(value))
+			return
+		case C6502_VGA_DAC_WIDX:
+			adapter.vgaEngine.HandleWrite(VGA_DAC_WINDEX, uint32(value))
+			return
+		case C6502_VGA_DAC_DATA:
+			adapter.vgaEngine.HandleWrite(VGA_DAC_DATA, uint32(value))
+			return
+		}
 	}
 
 	// Handle extended bank window writes (IE65 mode)
