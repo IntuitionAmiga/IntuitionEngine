@@ -1,0 +1,698 @@
+; ie86.inc - Intuition Engine x86 (32-bit) Macro Library
+;
+; Hardware definitions for writing x86 assembly programs targeting
+; the Intuition Engine virtual machine.
+;
+; For use with NASM or FASM assembler
+; Include with: %include "ie86.inc"
+;
+; (c) 2024-2026 Zayn Otley - GPLv3 or later
+
+; ============================================================================
+; MEMORY MAP CONSTANTS
+; ============================================================================
+
+; System vectors
+VECTOR_BASE     equ 0x000000
+VECTOR_RESET    equ 0x000000
+
+; Program space
+PROGRAM_START   equ 0x001000
+STACK_TOP       equ 0xFF0000             ; Top of stack (grows downward)
+
+; Bank window addresses (for compatibility with 8-bit CPUs)
+BANK1_WINDOW    equ 0x002000             ; Sprite data bank window (8KB)
+BANK2_WINDOW    equ 0x004000             ; Font data bank window (8KB)
+BANK3_WINDOW    equ 0x006000             ; General data bank window (8KB)
+VRAM_WINDOW     equ 0x008000             ; VRAM bank window (16KB)
+BANK_SIZE       equ 0x002000             ; 8KB per extended bank
+VRAM_BANK_SIZE  equ 0x004000             ; 16KB VRAM bank
+
+; Bank control registers (memory-mapped)
+BANK1_REG_LO    equ 0x00F700             ; Bank 1 select (low byte)
+BANK1_REG_HI    equ 0x00F701             ; Bank 1 select (high byte)
+BANK2_REG_LO    equ 0x00F702             ; Bank 2 select (low byte)
+BANK2_REG_HI    equ 0x00F703             ; Bank 2 select (high byte)
+BANK3_REG_LO    equ 0x00F704             ; Bank 3 select (low byte)
+BANK3_REG_HI    equ 0x00F705             ; Bank 3 select (high byte)
+VRAM_BANK_REG   equ 0x00F7F0             ; VRAM bank select
+
+; ============================================================================
+; VIDEO HARDWARE REGISTERS (I/O region at 0xF0000)
+; ============================================================================
+
+VIDEO_CTRL      equ 0xF0000              ; Video control (enable/disable)
+VIDEO_MODE      equ 0xF0004              ; Video mode (resolution)
+VIDEO_STATUS    equ 0xF0008              ; Video status (VBlank flag)
+STATUS_VBLANK   equ 2                    ; VBlank status bit
+
+; Copper coprocessor
+COPPER_CTRL     equ 0xF000C              ; Copper control
+COPPER_PTR      equ 0xF0010              ; Copper list pointer (32-bit)
+
+; Blitter hardware
+BLT_CTRL        equ 0xF001C              ; Blitter control
+BLT_OP          equ 0xF0020              ; Blitter operation
+BLT_SRC         equ 0xF0024              ; Source address (32-bit)
+BLT_DST         equ 0xF0028              ; Dest address (32-bit)
+BLT_WIDTH       equ 0xF002C              ; Blit width (32-bit)
+BLT_HEIGHT      equ 0xF0030              ; Blit height (32-bit)
+BLT_SRC_STRIDE  equ 0xF0034              ; Source stride (32-bit)
+BLT_DST_STRIDE  equ 0xF0038              ; Dest stride (32-bit)
+BLT_COLOR       equ 0xF003C              ; Fill color (32-bit BGRA)
+BLT_MASK        equ 0xF0040              ; Mask address (32-bit)
+BLT_STATUS      equ 0xF0044              ; Blitter status
+
+; Raster registers
+VIDEO_RASTER_Y       equ 0xF0048         ; Raster Y position (32-bit)
+VIDEO_RASTER_HEIGHT  equ 0xF004C         ; Raster height (32-bit)
+VIDEO_RASTER_COLOR   equ 0xF0050         ; Raster color (32-bit BGRA)
+VIDEO_RASTER_CTRL    equ 0xF0054         ; Raster control
+
+; ============================================================================
+; PSG/AUDIO REGISTERS (AY-3-8910 style)
+; ============================================================================
+
+; Port I/O for PSG access (x86 specific)
+PSG_PORT_SELECT equ 0xF0                 ; Port to select PSG register
+PSG_PORT_DATA   equ 0xF1                 ; Port to read/write PSG data
+
+PSG_PLUS_CTRL   equ 0xF0C0E              ; PSG+ mode control
+
+; PSG Player Registers (memory-mapped)
+PSG_PLAY_PTR    equ 0xF0C10              ; Play pointer (32-bit)
+PSG_PLAY_LEN    equ 0xF0C14              ; Play length (32-bit)
+PSG_PLAY_CTRL   equ 0xF0C18              ; Play control
+PSG_PLAY_STATUS equ 0xF0C1C              ; Play status
+
+; ============================================================================
+; POKEY AUDIO REGISTERS (Atari style)
+; ============================================================================
+
+; Port I/O for POKEY access (x86 specific)
+; Ports 0xD0-0xDF map directly to POKEY registers
+POKEY_PORT_BASE     equ 0xD0             ; Base port for POKEY
+
+; Memory-mapped POKEY registers
+POKEY_BASE      equ 0xF0D00              ; POKEY base address
+POKEY_AUDF1     equ 0xF0D00              ; Channel 1 frequency divider
+POKEY_AUDC1     equ 0xF0D01              ; Channel 1 control (distortion + volume)
+POKEY_AUDF2     equ 0xF0D02              ; Channel 2 frequency divider
+POKEY_AUDC2     equ 0xF0D03              ; Channel 2 control
+POKEY_AUDF3     equ 0xF0D04              ; Channel 3 frequency divider
+POKEY_AUDC3     equ 0xF0D05              ; Channel 3 control
+POKEY_AUDF4     equ 0xF0D06              ; Channel 4 frequency divider
+POKEY_AUDC4     equ 0xF0D07              ; Channel 4 control
+POKEY_AUDCTL    equ 0xF0D08              ; Master audio control
+POKEY_PLUS_CTRL equ 0xF0D09              ; POKEY+ mode (0=standard, 1=enhanced)
+
+; AUDCTL bit masks
+AUDCTL_CLOCK_15KHZ  equ 0x01             ; Use 15kHz base clock (else 64kHz)
+AUDCTL_HIPASS_CH1   equ 0x02             ; High-pass filter ch1 by ch3
+AUDCTL_HIPASS_CH2   equ 0x04             ; High-pass filter ch2 by ch4
+AUDCTL_CH4_BY_CH3   equ 0x08             ; Ch4 clocked by ch3 (16-bit mode)
+AUDCTL_CH2_BY_CH1   equ 0x10             ; Ch2 clocked by ch1 (16-bit mode)
+AUDCTL_CH3_179MHZ   equ 0x20             ; Ch3 uses 1.79MHz clock
+AUDCTL_CH1_179MHZ   equ 0x40             ; Ch1 uses 1.79MHz clock
+AUDCTL_POLY9        equ 0x80             ; Use 9-bit poly instead of 17-bit
+
+; AUDC distortion modes (bits 5-7)
+POKEY_DIST_POLY17_POLY5 equ 0x00         ; 17-bit + 5-bit poly
+POKEY_DIST_POLY5        equ 0x20         ; 5-bit poly only
+POKEY_DIST_POLY17_POLY4 equ 0x40         ; 17-bit + 4-bit poly
+POKEY_DIST_POLY5_POLY4  equ 0x60         ; 5-bit + 4-bit poly
+POKEY_DIST_POLY17       equ 0x80         ; 17-bit poly only
+POKEY_DIST_PURE_TONE    equ 0xA0         ; Pure square wave
+POKEY_DIST_POLY4        equ 0xC0         ; 4-bit poly only
+POKEY_DIST_POLY17_PULSE equ 0xE0         ; 17-bit + pulse
+
+; SAP Player Registers
+SAP_PLAY_PTR    equ 0xF0D10              ; Play pointer (32-bit)
+SAP_PLAY_LEN    equ 0xF0D14              ; Play length (32-bit)
+SAP_PLAY_CTRL   equ 0xF0D18              ; Play control
+SAP_PLAY_STATUS equ 0xF0D1C              ; Play status
+SAP_SUBSONG     equ 0xF0D1D              ; Subsong selection (0-255)
+
+; ============================================================================
+; SID AUDIO REGISTERS (MOS 6581/8580 style)
+; ============================================================================
+
+; Port I/O for SID access (x86 specific)
+SID_PORT_SELECT equ 0xE0                 ; Port to select SID register
+SID_PORT_DATA   equ 0xE1                 ; Port to read/write SID data
+
+; Memory-mapped SID registers
+SID_BASE        equ 0xF0E00              ; SID base address
+
+; Voice 1 registers
+SID_V1_FREQ_LO  equ 0xF0E00              ; Voice 1 frequency low byte
+SID_V1_FREQ_HI  equ 0xF0E01              ; Voice 1 frequency high byte
+SID_V1_PW_LO    equ 0xF0E02              ; Voice 1 pulse width low byte
+SID_V1_PW_HI    equ 0xF0E03              ; Voice 1 pulse width high (bits 0-3)
+SID_V1_CTRL     equ 0xF0E04              ; Voice 1 control register
+SID_V1_AD       equ 0xF0E05              ; Voice 1 attack/decay
+SID_V1_SR       equ 0xF0E06              ; Voice 1 sustain/release
+
+; Voice 2 registers
+SID_V2_FREQ_LO  equ 0xF0E07              ; Voice 2 frequency low byte
+SID_V2_FREQ_HI  equ 0xF0E08              ; Voice 2 frequency high byte
+SID_V2_PW_LO    equ 0xF0E09              ; Voice 2 pulse width low byte
+SID_V2_PW_HI    equ 0xF0E0A              ; Voice 2 pulse width high
+SID_V2_CTRL     equ 0xF0E0B              ; Voice 2 control register
+SID_V2_AD       equ 0xF0E0C              ; Voice 2 attack/decay
+SID_V2_SR       equ 0xF0E0D              ; Voice 2 sustain/release
+
+; Voice 3 registers
+SID_V3_FREQ_LO  equ 0xF0E0E              ; Voice 3 frequency low byte
+SID_V3_FREQ_HI  equ 0xF0E0F              ; Voice 3 frequency high byte
+SID_V3_PW_LO    equ 0xF0E10              ; Voice 3 pulse width low byte
+SID_V3_PW_HI    equ 0xF0E11              ; Voice 3 pulse width high
+SID_V3_CTRL     equ 0xF0E12              ; Voice 3 control register
+SID_V3_AD       equ 0xF0E13              ; Voice 3 attack/decay
+SID_V3_SR       equ 0xF0E14              ; Voice 3 sustain/release
+
+; Filter and volume registers
+SID_FC_LO       equ 0xF0E15              ; Filter cutoff low (bits 0-2)
+SID_FC_HI       equ 0xF0E16              ; Filter cutoff high byte
+SID_RES_FILT    equ 0xF0E17              ; Resonance (bits 4-7) + routing (bits 0-3)
+SID_MODE_VOL    equ 0xF0E18              ; Volume (bits 0-3) + filter mode (bits 4-7)
+SID_PLUS_CTRL   equ 0xF0E19              ; SID+ mode (0=standard, 1=enhanced)
+
+; Voice control register bits (SID_Vx_CTRL)
+SID_CTRL_GATE     equ 0x01               ; Gate bit (trigger envelope)
+SID_CTRL_SYNC     equ 0x02               ; Sync with previous voice
+SID_CTRL_RINGMOD  equ 0x04               ; Ring modulation
+SID_CTRL_TEST     equ 0x08               ; Test bit (resets oscillator)
+SID_CTRL_TRIANGLE equ 0x10               ; Triangle waveform
+SID_CTRL_SAWTOOTH equ 0x20               ; Sawtooth waveform
+SID_CTRL_PULSE    equ 0x40               ; Pulse/square waveform
+SID_CTRL_NOISE    equ 0x80               ; Noise waveform
+
+; Filter routing bits (SID_RES_FILT bits 0-3)
+SID_FILT_V1       equ 0x01               ; Route voice 1 through filter
+SID_FILT_V2       equ 0x02               ; Route voice 2 through filter
+SID_FILT_V3       equ 0x04               ; Route voice 3 through filter
+SID_FILT_EXT      equ 0x08               ; Route external input through filter
+
+; Filter mode bits (SID_MODE_VOL bits 4-7)
+SID_MODE_LP       equ 0x10               ; Low-pass filter
+SID_MODE_BP       equ 0x20               ; Band-pass filter
+SID_MODE_HP       equ 0x40               ; High-pass filter
+SID_MODE_3OFF     equ 0x80               ; Disconnect voice 3 from output
+
+; SID Player Registers
+SID_PLAY_PTR    equ 0xF0E20              ; Play pointer (32-bit)
+SID_PLAY_LEN    equ 0xF0E24              ; Play length (32-bit)
+SID_PLAY_CTRL   equ 0xF0E28              ; Play control
+SID_PLAY_STATUS equ 0xF0E2C              ; Play status
+SID_SUBSONG     equ 0xF0E2D              ; Subsong selection (0-255)
+
+; ============================================================================
+; TED AUDIO REGISTERS (Commodore Plus/4 style)
+; ============================================================================
+
+; Port I/O for TED access (x86 specific)
+TED_PORT_SELECT equ 0xF2                 ; Port to select TED register
+TED_PORT_DATA   equ 0xF3                 ; Port to read/write TED data
+
+; TED register indices (for port I/O)
+TED_REG_FREQ1_LO    equ 0x00             ; Voice 1 frequency low byte
+TED_REG_FREQ2_LO    equ 0x01             ; Voice 2 frequency low byte
+TED_REG_FREQ2_HI    equ 0x02             ; Voice 2 frequency high (bits 0-1)
+TED_REG_SND_CTRL    equ 0x03             ; Sound control register
+TED_REG_FREQ1_HI    equ 0x04             ; Voice 1 frequency high (bits 0-1)
+TED_REG_PLUS_CTRL   equ 0x05             ; TED+ mode (0=standard, 1=enhanced)
+
+; Memory-mapped TED audio registers
+TED_BASE        equ 0xF0F00              ; TED base address
+TED_FREQ1_LO    equ 0xF0F00              ; Voice 1 frequency low byte
+TED_FREQ2_LO    equ 0xF0F01              ; Voice 2 frequency low byte
+TED_FREQ2_HI    equ 0xF0F02              ; Voice 2 frequency high (bits 0-1)
+TED_SND_CTRL    equ 0xF0F03              ; Sound control register
+TED_FREQ1_HI    equ 0xF0F04              ; Voice 1 frequency high (bits 0-1)
+TED_PLUS_CTRL   equ 0xF0F05              ; TED+ mode (0=standard, 1=enhanced)
+
+; TED Control register bits (TED_SND_CTRL)
+TED_CTRL_SNDDC     equ 0x80              ; D/A mode (bit 7)
+TED_CTRL_SND2NOISE equ 0x40              ; Voice 2 noise enable (bit 6)
+TED_CTRL_SND2ON    equ 0x20              ; Voice 2 enable (bit 5)
+TED_CTRL_SND1ON    equ 0x10              ; Voice 1 enable (bit 4)
+TED_CTRL_VOLUME    equ 0x0F              ; Volume mask (bits 0-3, max=8)
+
+; TED Player Registers
+TED_PLAY_PTR    equ 0xF0F10              ; Play pointer (32-bit)
+TED_PLAY_LEN    equ 0xF0F14              ; Play length (32-bit)
+TED_PLAY_CTRL   equ 0xF0F18              ; Play control
+TED_PLAY_STATUS equ 0xF0F1C              ; Play status
+
+; ============================================================================
+; TED VIDEO REGISTERS
+; ============================================================================
+
+; TED video register indices (for port I/O, indices 0x20-0x2F)
+TED_V_CTRL1       equ 0x20               ; Control 1 (ECM/BMM/DEN/RSEL/YSCROLL)
+TED_V_CTRL2       equ 0x21               ; Control 2 (RES/MCM/CSEL/XSCROLL)
+TED_V_CHAR_BASE   equ 0x22               ; Character/bitmap base address
+TED_V_VIDEO_BASE  equ 0x23               ; Video matrix base address
+TED_V_BG0         equ 0x24               ; Background color 0
+TED_V_BG1         equ 0x25               ; Background color 1 (multicolor)
+TED_V_BG2         equ 0x26               ; Background color 2 (multicolor)
+TED_V_BG3         equ 0x27               ; Background color 3 (multicolor)
+TED_V_BORDER      equ 0x28               ; Border color
+TED_V_CURSOR_HI   equ 0x29               ; Cursor position high byte
+TED_V_CURSOR_LO   equ 0x2A               ; Cursor position low byte
+TED_V_CURSOR_CLR  equ 0x2B               ; Cursor color
+TED_V_RASTER_LO   equ 0x2C               ; Raster line low (read-only)
+TED_V_RASTER_HI   equ 0x2D               ; Raster line high (read-only)
+TED_V_ENABLE      equ 0x2E               ; Video enable (bit 0)
+TED_V_STATUS      equ 0x2F               ; Status (bit 0 = VBlank)
+
+; Memory-mapped TED video registers (4-byte aligned)
+TED_VIDEO_BASE    equ 0xF0F20            ; TED video register base
+TED_V_CTRL1_MM    equ 0xF0F20            ; Control 1
+TED_V_CTRL2_MM    equ 0xF0F24            ; Control 2
+TED_V_CHAR_BASE_MM equ 0xF0F28           ; Character/bitmap base
+TED_V_VIDEO_BASE_MM equ 0xF0F2C          ; Video matrix base
+TED_V_BG_COLOR0   equ 0xF0F30            ; Background color 0
+TED_V_BG_COLOR1   equ 0xF0F34            ; Background color 1
+TED_V_BG_COLOR2   equ 0xF0F38            ; Background color 2
+TED_V_BG_COLOR3   equ 0xF0F3C            ; Background color 3
+TED_V_BORDER_MM   equ 0xF0F40            ; Border color
+TED_V_ENABLE_MM   equ 0xF0F58            ; Video enable
+TED_V_STATUS_MM   equ 0xF0F5C            ; Status
+
+; TED_V_CTRL1 bits
+TED_V_CTRL1_ECM      equ 0x40            ; Bit 6: Extended Color Mode
+TED_V_CTRL1_BMM      equ 0x20            ; Bit 5: Bitmap Mode
+TED_V_CTRL1_DEN      equ 0x10            ; Bit 4: Display Enable
+TED_V_CTRL1_RSEL     equ 0x08            ; Bit 3: Row Select (0=24, 1=25)
+TED_V_CTRL1_YSCROLL  equ 0x07            ; Bits 0-2: Vertical scroll mask
+
+; ============================================================================
+; AHX AUDIO REGISTERS (Amiga AHX module player)
+; ============================================================================
+
+AHX_BASE        equ 0xF0B80              ; AHX base address
+AHX_PLUS_CTRL   equ 0xF0B80              ; AHX+ mode (0=standard, 1=enhanced)
+AHX_PLAY_PTR    equ 0xF0B84              ; Play pointer (32-bit)
+AHX_PLAY_LEN    equ 0xF0B88              ; Play length (32-bit)
+AHX_PLAY_CTRL   equ 0xF0B8C              ; Play control
+AHX_PLAY_STATUS equ 0xF0B90              ; Play status
+AHX_SUBSONG     equ 0xF0B91              ; Subsong selection (0-255)
+
+; ============================================================================
+; VGA VIDEO REGISTERS (IBM VGA compatible)
+; ============================================================================
+
+; Standard VGA I/O ports (x86 compatible)
+VGA_PORT_SEQ_INDEX   equ 0x3C4           ; Sequencer index
+VGA_PORT_SEQ_DATA    equ 0x3C5           ; Sequencer data
+VGA_PORT_DAC_MASK    equ 0x3C6           ; DAC pixel mask
+VGA_PORT_DAC_RINDEX  equ 0x3C7           ; DAC read index
+VGA_PORT_DAC_WINDEX  equ 0x3C8           ; DAC write index
+VGA_PORT_DAC_DATA    equ 0x3C9           ; DAC data (R,G,B sequence)
+VGA_PORT_GC_INDEX    equ 0x3CE           ; Graphics controller index
+VGA_PORT_GC_DATA     equ 0x3CF           ; Graphics controller data
+VGA_PORT_CRTC_INDEX  equ 0x3D4           ; CRTC index
+VGA_PORT_CRTC_DATA   equ 0x3D5           ; CRTC data
+VGA_PORT_STATUS      equ 0x3DA           ; Input status 1
+
+; Memory-mapped VGA registers
+VGA_BASE        equ 0xF1000
+VGA_MODE        equ 0xF1000              ; Mode control
+VGA_STATUS      equ 0xF1004              ; Status register
+VGA_CTRL        equ 0xF1008              ; Control register
+
+; Sequencer registers
+VGA_SEQ_INDEX   equ 0xF1010              ; Sequencer index
+VGA_SEQ_DATA    equ 0xF1014              ; Sequencer data
+VGA_SEQ_MAPMASK equ 0xF1018              ; Plane write mask (direct)
+
+; CRTC registers
+VGA_CRTC_INDEX  equ 0xF1020              ; CRTC index
+VGA_CRTC_DATA   equ 0xF1024              ; CRTC data
+VGA_CRTC_STARTHI equ 0xF1028             ; Start address high
+VGA_CRTC_STARTLO equ 0xF102C             ; Start address low
+
+; Graphics Controller registers
+VGA_GC_INDEX    equ 0xF1030              ; GC index
+VGA_GC_DATA     equ 0xF1034              ; GC data
+VGA_GC_READMAP  equ 0xF1038              ; Read plane select (direct)
+VGA_GC_BITMASK  equ 0xF103C              ; Bit mask (direct)
+
+; Attribute Controller
+VGA_ATTR_INDEX  equ 0xF1040              ; Attribute index
+VGA_ATTR_DATA   equ 0xF1044              ; Attribute data
+
+; DAC/Palette
+VGA_DAC_MASK    equ 0xF1050              ; Pixel mask
+VGA_DAC_RINDEX  equ 0xF1054              ; Read index
+VGA_DAC_WINDEX  equ 0xF1058              ; Write index
+VGA_DAC_DATA    equ 0xF105C              ; DAC data (R,G,B sequence)
+
+; Palette RAM (256 x 3 bytes)
+VGA_PALETTE     equ 0xF1100              ; Palette base (768 bytes)
+
+; VGA VRAM (64KB window - standard PC location)
+VGA_VRAM        equ 0xA0000              ; VRAM window (64KB)
+
+; Mode constants
+VGA_MODE_TEXT   equ 0x03                 ; 80x25 text mode
+VGA_MODE_12H    equ 0x12                 ; 640x480, 16 colors
+VGA_MODE_13H    equ 0x13                 ; 320x200, 256 colors
+VGA_MODE_X      equ 0x14                 ; 320x240, 256 colors
+
+; Status bits
+VGA_STATUS_VSYNC  equ 0x01               ; VSync active
+VGA_STATUS_RETRACE equ 0x08              ; Vertical retrace
+
+; Control bits
+VGA_CTRL_ENABLE equ 0x01                 ; VGA enable
+
+; ============================================================================
+; CUSTOM AUDIO CHIP REGISTERS
+; ============================================================================
+
+; Global Audio Control
+AUDIO_CTRL        equ 0xF0800            ; Master audio control
+ENV_SHAPE         equ 0xF0804            ; Global envelope shape
+
+; Filter registers
+FILTER_CUTOFF     equ 0xF0820            ; Cutoff frequency (0-255)
+FILTER_RESONANCE  equ 0xF0824            ; Resonance/Q (0-255)
+FILTER_TYPE       equ 0xF0828            ; Filter type (0=off, 1=LP, 2=HP, 3=BP)
+FILTER_MOD_SOURCE equ 0xF082C            ; Modulation source channel (0-3)
+FILTER_MOD_AMOUNT equ 0xF0830            ; Modulation depth (0-255)
+
+; Filter type constants
+FILTER_OFF        equ 0                  ; Filter bypassed
+FILTER_LOWPASS    equ 1                  ; Low-pass filter
+FILTER_HIGHPASS   equ 2                  ; High-pass filter
+FILTER_BANDPASS   equ 3                  ; Band-pass filter
+
+; Envelope shape constants
+ENV_SHAPE_ADSR      equ 0                ; Standard ADSR
+ENV_SHAPE_SAW_UP    equ 1                ; Linear rise to max, then hold
+ENV_SHAPE_SAW_DOWN  equ 2                ; Linear fall to zero, then hold
+ENV_SHAPE_LOOP      equ 3                ; ADSR but loops after release
+ENV_SHAPE_SID       equ 4                ; SID-style exponential ADSR
+
+; Square Wave Channel
+SQUARE_FREQ       equ 0xF0900            ; Frequency (16.8 fixed-point Hz)
+SQUARE_VOL        equ 0xF0904            ; Volume (0-255)
+SQUARE_CTRL       equ 0xF0908            ; Control (bit 1 = gate)
+SQUARE_DUTY       equ 0xF090C            ; Duty cycle (0-255, 128 = 50%)
+SQUARE_ATK        equ 0xF0930            ; Attack time (ms)
+SQUARE_DEC        equ 0xF0934            ; Decay time (ms)
+SQUARE_SUS        equ 0xF0938            ; Sustain level (0-255)
+SQUARE_REL        equ 0xF093C            ; Release time (ms)
+
+; Triangle Wave Channel
+TRI_FREQ          equ 0xF0940            ; Frequency (16.8 fixed-point Hz)
+TRI_VOL           equ 0xF0944            ; Volume (0-255)
+TRI_CTRL          equ 0xF0948            ; Control (bit 1 = gate)
+TRI_ATK           equ 0xF0960            ; Attack time (ms)
+TRI_DEC           equ 0xF0964            ; Decay time (ms)
+TRI_SUS           equ 0xF0968            ; Sustain level (0-255)
+TRI_REL           equ 0xF096C            ; Release time (ms)
+
+; Sine Wave Channel
+SINE_FREQ         equ 0xF0980            ; Frequency (16.8 fixed-point Hz)
+SINE_VOL          equ 0xF0984            ; Volume (0-255)
+SINE_CTRL         equ 0xF0988            ; Control (bit 1 = gate)
+SINE_ATK          equ 0xF0990            ; Attack time (ms)
+SINE_DEC          equ 0xF0994            ; Decay time (ms)
+SINE_SUS          equ 0xF0998            ; Sustain level (0-255)
+SINE_REL          equ 0xF099C            ; Release time (ms)
+
+; Noise Channel
+NOISE_FREQ        equ 0xF09C0            ; Frequency/pitch (16.8 fixed-point Hz)
+NOISE_VOL         equ 0xF09C4            ; Volume (0-255)
+NOISE_CTRL        equ 0xF09C8            ; Control (bit 1 = gate)
+NOISE_ATK         equ 0xF09D0            ; Attack time (ms)
+NOISE_DEC         equ 0xF09D4            ; Decay time (ms)
+NOISE_SUS         equ 0xF09D8            ; Sustain level (0-255)
+NOISE_REL         equ 0xF09DC            ; Release time (ms)
+NOISE_MODE        equ 0xF09E0            ; Noise type
+
+; Noise mode constants
+NOISE_MODE_WHITE    equ 0                ; White noise (LFSR)
+NOISE_MODE_PERIODIC equ 1                ; Periodic/looping noise
+NOISE_MODE_METALLIC equ 2                ; Metallic noise
+NOISE_MODE_PSG      equ 3                ; PSG-style (AY/YM) LFSR
+
+; Sawtooth Wave Channel
+SAW_FREQ          equ 0xF0A20            ; Frequency (16.8 fixed-point Hz)
+SAW_VOL           equ 0xF0A24            ; Volume (0-255)
+SAW_CTRL          equ 0xF0A28            ; Control (bit 1 = gate)
+SAW_ATK           equ 0xF0A30            ; Attack time (ms)
+SAW_DEC           equ 0xF0A34            ; Decay time (ms)
+SAW_SUS           equ 0xF0A38            ; Sustain level (0-255)
+SAW_REL           equ 0xF0A3C            ; Release time (ms)
+
+; Effects Registers
+OVERDRIVE_CTRL    equ 0xF0A40            ; Drive amount (0-255)
+REVERB_MIX        equ 0xF0A50            ; Dry/wet mix (0-255)
+REVERB_DECAY      equ 0xF0A54            ; Decay time (0-255)
+
+; Flexible 4-Channel Synth Block
+FLEX_CH_BASE      equ 0xF0A80            ; Base address of flexible block
+FLEX_CH_STRIDE    equ 0x40               ; Bytes per channel (64)
+
+FLEX_CH0_BASE     equ 0xF0A80            ; Channel 0 base
+FLEX_CH1_BASE     equ 0xF0AC0            ; Channel 1 base
+FLEX_CH2_BASE     equ 0xF0B00            ; Channel 2 base
+FLEX_CH3_BASE     equ 0xF0B40            ; Channel 3 base
+
+; Register offsets within each flexible channel
+FLEX_OFF_FREQ       equ 0x00             ; Frequency (16.8 fixed-point Hz)
+FLEX_OFF_VOL        equ 0x04             ; Volume (0-255)
+FLEX_OFF_CTRL       equ 0x08             ; Control (bit 1 = gate)
+FLEX_OFF_DUTY       equ 0x0C             ; Duty cycle for square wave
+FLEX_OFF_SWEEP      equ 0x10             ; Sweep control
+FLEX_OFF_ATK        equ 0x14             ; Attack time (ms)
+FLEX_OFF_DEC        equ 0x18             ; Decay time (ms)
+FLEX_OFF_SUS        equ 0x1C             ; Sustain level (0-255)
+FLEX_OFF_REL        equ 0x20             ; Release time (ms)
+FLEX_OFF_WAVE_TYPE  equ 0x24             ; Waveform type (0-4)
+FLEX_OFF_PWM_CTRL   equ 0x28             ; PWM control
+FLEX_OFF_NOISEMODE  equ 0x2C             ; Noise mode (if wave type is noise)
+
+; Waveform type constants
+WAVE_SQUARE       equ 0                  ; Square wave with PWM
+WAVE_TRIANGLE     equ 1                  ; Triangle wave
+WAVE_SINE         equ 2                  ; Sine wave
+WAVE_NOISE        equ 3                  ; Noise
+WAVE_SAWTOOTH     equ 4                  ; Sawtooth wave
+
+; Control Register Bit Masks
+CTRL_GATE         equ 0x02               ; Gate bit (trigger envelope)
+PWM_ENABLE        equ 0x80               ; PWM enable (bit 7)
+
+; ============================================================================
+; VIDEO CONSTANTS
+; ============================================================================
+
+VRAM_START      equ 0x100000             ; VRAM starts at 1MB
+SCREEN_W        equ 640                  ; Default screen width
+SCREEN_H        equ 480                  ; Default screen height
+LINE_BYTES      equ 2560                 ; Bytes per scanline (640 * 4)
+
+; Blitter operations
+BLT_OP_COPY     equ 0                    ; Copy source to dest
+BLT_OP_FILL     equ 1                    ; Fill rect with color
+BLT_OP_LINE     equ 2                    ; Draw line
+BLT_OP_MASKED   equ 3                    ; Copy with mask
+BLT_OP_ALPHA    equ 4                    ; Alpha blending
+
+; Background color (black with alpha)
+BACKGROUND      equ 0xFF000000           ; BGRA: Black, full alpha
+
+; ============================================================================
+; COPPER OPCODES
+; ============================================================================
+
+COP_WAIT_MASK        equ 0x00000000
+COP_WAIT_SCALE       equ 0x1000          ; Multiply Y position by this for WAIT
+
+; Copper MOVE opcodes
+COP_MOVE_RASTER_Y     equ 0x40120000
+COP_MOVE_RASTER_H     equ 0x40130000
+COP_MOVE_RASTER_COLOR equ 0x40140000
+COP_MOVE_RASTER_CTRL  equ 0x40150000
+
+; Copper END opcode
+COP_END              equ 0xC0000000
+
+; Copper SETBASE opcode
+COP_SETBASE_OP       equ 0x80000000
+COP_SETBASE_SHIFT    equ 2
+
+; Pre-computed SETBASE instructions
+COP_SETBASE_VIDEO    equ 0x8003C000      ; VIDEO_REG_BASE (0xF0000 >> 2)
+COP_SETBASE_VGA      equ 0x8003C400      ; VGA_BASE (0xF1000 >> 2)
+COP_SETBASE_VGA_DAC  equ 0x8003C416      ; VGA_DAC_WINDEX (0xF1058 >> 2)
+
+; ============================================================================
+; ZX SPECTRUM ULA VIDEO REGISTERS
+; ============================================================================
+
+ULA_BASE        equ 0xF2000              ; ULA register base
+ULA_BORDER      equ 0xF2000              ; Border color (bits 0-2)
+ULA_CTRL        equ 0xF2004              ; Control register
+ULA_STATUS      equ 0xF2008              ; Status register
+
+; Control register bits
+ULA_CTRL_ENABLE equ 0x01                 ; ULA enable bit
+
+; VRAM layout
+ULA_VRAM        equ 0x4000               ; VRAM base address
+ULA_BITMAP_SIZE equ 6144                 ; Bitmap: 256x192/8 = 6144 bytes
+ULA_ATTR_OFFSET equ 0x1800               ; Attribute offset from VRAM base
+ULA_ATTR_SIZE   equ 768                  ; Attributes: 32x24 = 768 bytes
+ULA_VRAM_SIZE   equ 6912                 ; Total: 6144 + 768 bytes
+
+; Display dimensions
+ULA_DISPLAY_W   equ 256                  ; Display width in pixels
+ULA_DISPLAY_H   equ 192                  ; Display height in pixels
+ULA_BORDER_SIZE equ 32                   ; Border size in pixels
+ULA_FRAME_W     equ 320                  ; Total frame width (256+64)
+ULA_FRAME_H     equ 256                  ; Total frame height (192+64)
+ULA_CELLS_X     equ 32                   ; Character cells horizontally
+ULA_CELLS_Y     equ 24                   ; Character cells vertically
+
+; ============================================================================
+; TIMER REGISTERS
+; ============================================================================
+
+TIMER_CTRL      equ 0x00F800             ; Timer control
+TIMER_COUNT     equ 0x00F804             ; Timer count
+TIMER_RELOAD    equ 0x00F808             ; Timer reload value
+
+; ============================================================================
+; MACROS (NASM syntax)
+; ============================================================================
+
+; Wait for VBlank
+%macro wait_vblank 0
+%%wait_not_vblank:
+    mov eax, [VIDEO_STATUS]
+    test eax, STATUS_VBLANK
+    jnz %%wait_not_vblank
+%%wait_vblank:
+    mov eax, [VIDEO_STATUS]
+    test eax, STATUS_VBLANK
+    jz %%wait_vblank
+%endmacro
+
+; Wait for VGA VSync (using port I/O)
+%macro vga_wait_vsync 0
+%%wait_retrace:
+    mov dx, VGA_PORT_STATUS
+    in al, dx
+    test al, VGA_STATUS_RETRACE
+    jz %%wait_retrace
+%endmacro
+
+; Wait for blitter to finish
+%macro wait_blit 0
+%%wait_blit:
+    mov eax, [BLT_CTRL]
+    test eax, 2
+    jnz %%wait_blit
+%endmacro
+
+; Start a blitter operation
+%macro start_blit 0
+    mov dword [BLT_CTRL], 1
+%endmacro
+
+; Set blitter fill color (32-bit BGRA)
+%macro set_blt_color 1
+    mov dword [BLT_COLOR], %1
+%endmacro
+
+; Set blitter dimensions
+%macro set_blt_size 2
+    mov dword [BLT_WIDTH], %1
+    mov dword [BLT_HEIGHT], %2
+%endmacro
+
+; Set VGA mode
+%macro vga_setmode 1
+    mov byte [VGA_MODE], %1
+%endmacro
+
+; Enable VGA
+%macro vga_enable 0
+    mov byte [VGA_CTRL], VGA_CTRL_ENABLE
+%endmacro
+
+; Set VGA palette entry (using ports)
+; Arguments: index, r, g, b
+%macro vga_setpalette 4
+    mov dx, VGA_PORT_DAC_WINDEX
+    mov al, %1
+    out dx, al
+    mov dx, VGA_PORT_DAC_DATA
+    mov al, %2
+    out dx, al
+    mov al, %3
+    out dx, al
+    mov al, %4
+    out dx, al
+%endmacro
+
+; Set copper list pointer
+%macro set_copper_ptr 1
+    mov dword [COPPER_PTR], %1
+%endmacro
+
+; Enable copper
+%macro enable_copper 0
+    mov dword [COPPER_CTRL], 1
+%endmacro
+
+; Disable copper
+%macro disable_copper 0
+    mov dword [COPPER_CTRL], 0
+%endmacro
+
+; Write PSG register via port I/O
+; Arguments: register, value
+%macro psg_write 2
+    mov al, %1
+    out PSG_PORT_SELECT, al
+    mov al, %2
+    out PSG_PORT_DATA, al
+%endmacro
+
+; Write SID register via port I/O
+; Arguments: register, value
+%macro sid_write 2
+    mov al, %1
+    out SID_PORT_SELECT, al
+    mov al, %2
+    out SID_PORT_DATA, al
+%endmacro
+
+; Write POKEY register via port I/O
+; Arguments: register offset (0-15), value
+%macro pokey_write 2
+    mov dx, POKEY_PORT_BASE + %1
+    mov al, %2
+    out dx, al
+%endmacro
+
+; Write TED register via port I/O
+; Arguments: register, value
+%macro ted_write 2
+    mov al, %1
+    out TED_PORT_SELECT, al
+    mov al, %2
+    out TED_PORT_DATA, al
+%endmacro
+
+; ============================================================================
+; EOF
+; ============================================================================

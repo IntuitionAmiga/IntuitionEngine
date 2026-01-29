@@ -78,59 +78,67 @@
    - 7.6 Memory and I/O Integration
    - 7.7 Interrupts and Exceptions
    - 7.8 Compatibility Notes
-8. [Assembly Language Reference](#8-assembly-language-reference)
-   - 8.1 Basic Program Structure
-   - 8.2 Assembler Directives
-   - 8.3 Memory Access Patterns
-   - 8.4 Stack Usage
-   - 8.5 Interrupt Handlers
-9. [Sound System](#9-sound-system)
-   - Custom Audio Chip Overview
-   - 9.1 Sound Channel Types
-   - 9.2 Modulation System
-   - 9.3 Global Effects
-   - 9.4 PSG Sound Chip (AY-3-8910/YM2149)
-   - 9.5 POKEY Sound Chip
-   - 9.6 SID Sound Chip
-   - 9.7 TED Sound Chip
-   - 9.8 AHX Sound Chip
-10. [Video System](#10-video-system)
-    - 10.1 Display Modes
-    - 10.2 Framebuffer Organisation
-    - 10.3 Dirty Rectangle Tracking
-    - 10.4 Double Buffering and VBlank Synchronisation
-    - 10.5 Direct VRAM Access Mode
-    - 10.6 Copper List Executor
-    - 10.7 DMA Blitter
-    - 10.8 Raster Band Fill
-    - 10.9 Video Compositor
-11. [Developer's Guide](#11-developers-guide)
-    - 11.1 Development Environment Setup
-    - 11.2 Building the System
-    - 11.3 Development Workflow
-    - 11.4 Assembler Include Files
-    - 11.5 Debugging Techniques
-12. [Implementation Details](#12-implementation-details)
-    - 12.1 CPU Emulation
-    - 12.2 Memory Architecture
-    - 12.3 Audio System Architecture
-13. [Platform Support](#13-platform-support)
-    - 13.1 Supported Platforms
-    - 13.2 Graphics Backends
-    - 13.3 Audio Backends
-    - 13.4 GUI Frontends
-14. [Running Demonstrations](#14-running-demonstrations)
-    - 14.1 Quick Start
-    - 14.2 Audio Demonstrations
-    - 14.3 Visual Demonstrations
-    - 14.4 CPU Test Suites
-    - 14.5 Available Demonstrations
-15. [Building from Source](#15-building-from-source)
-    - 15.1 Prerequisites
-    - 15.2 Build Commands
-    - 15.3 Build Tags
-    - 15.4 Development Workflow
-    - 15.5 Creating New Demonstrations
+8. [Intel x86 CPU (32-bit)](#8-intel-x86-cpu-32-bit)
+   - 8.1 Register Set
+   - 8.2 Status Flags
+   - 8.3 Addressing Modes
+   - 8.4 Instruction Set
+   - 8.5 Memory and I/O Integration
+   - 8.6 Interrupts
+   - 8.7 Compatibility Notes
+9. [Assembly Language Reference](#9-assembly-language-reference)
+   - 9.1 Basic Program Structure
+   - 9.2 Assembler Directives
+   - 9.3 Memory Access Patterns
+   - 9.4 Stack Usage
+   - 9.5 Interrupt Handlers
+10. [Sound System](#10-sound-system)
+    - Custom Audio Chip Overview
+    - 10.1 Sound Channel Types
+    - 10.2 Modulation System
+    - 10.3 Global Effects
+    - 10.4 PSG Sound Chip (AY-3-8910/YM2149)
+    - 10.5 POKEY Sound Chip
+    - 10.6 SID Sound Chip
+    - 10.7 TED Sound Chip
+    - 10.8 AHX Sound Chip
+11. [Video System](#11-video-system)
+    - 11.1 Display Modes
+    - 11.2 Framebuffer Organisation
+    - 11.3 Dirty Rectangle Tracking
+    - 11.4 Double Buffering and VBlank Synchronisation
+    - 11.5 Direct VRAM Access Mode
+    - 11.6 Copper List Executor
+    - 11.7 DMA Blitter
+    - 11.8 Raster Band Fill
+    - 11.9 Video Compositor
+12. [Developer's Guide](#12-developers-guide)
+    - 12.1 Development Environment Setup
+    - 12.2 Building the System
+    - 12.3 Development Workflow
+    - 12.4 Assembler Include Files
+    - 12.5 Debugging Techniques
+13. [Implementation Details](#13-implementation-details)
+    - 13.1 CPU Emulation
+    - 13.2 Memory Architecture
+    - 13.3 Audio System Architecture
+14. [Platform Support](#14-platform-support)
+    - 14.1 Supported Platforms
+    - 14.2 Graphics Backends
+    - 14.3 Audio Backends
+    - 14.4 GUI Frontends
+15. [Running Demonstrations](#15-running-demonstrations)
+    - 15.1 Quick Start
+    - 15.2 Audio Demonstrations
+    - 15.3 Visual Demonstrations
+    - 15.4 CPU Test Suites
+    - 15.5 Available Demonstrations
+16. [Building from Source](#16-building-from-source)
+    - 16.1 Prerequisites
+    - 16.2 Build Commands
+    - 16.3 Build Tags
+    - 16.4 Development Workflow
+    - 16.5 Creating New Demonstrations
 
 # 1. System Overview
 
@@ -144,6 +152,7 @@ The Intuition Engine is a virtual machine that emulates a complete retro-style c
 | **M68K** | 32-bit CISC | 8 data (D0-D7), 8 address (A0-A7) | 95%+ instruction coverage, FPU support |
 | **Z80** | 8-bit | AF, BC, DE, HL + alternates, IX, IY | Full instruction set, interrupt modes |
 | **6502** | 8-bit | A, X, Y | NMOS instruction set, zero page optimisation |
+| **x86** | 32-bit | EAX-EDX, ESI, EDI, EBP, ESP | 8086 base + 386 extensions, flat memory model |
 
 ## Audio Capabilities
 
@@ -175,6 +184,9 @@ The Intuition Engine is a virtual machine that emulates a complete retro-style c
 
 # Run M68K program
 ./bin/IntuitionEngine -m68k program.ie68
+
+# Run x86 program
+./bin/IntuitionEngine -x86 program.ie86
 
 # Play PSG music
 ./bin/IntuitionEngine -psg music.ym
@@ -1706,13 +1718,148 @@ Vectors 64-255: User Defined
 - Trace mode (T0/T1 bits defined but not enforced)
 - Dynamic bus sizing
 
-# 8. Assembly Language Reference
+# 8. Intel x86 CPU (32-bit)
 
-This section documents the IE32 assembly language used with the `ie32asm` assembler. For 6502, Z80, and M68K programming, use their respective standard assemblers (ca65, vasmz80_std, vasmm68k_mot) with the include files documented in Section 11.4.
+The Intuition Engine includes an x86 core implementing the 8086 instruction set with 386 32-bit extensions, using a simplified flat memory model.
+
+## 8.1 Register Set
+
+The x86 provides 32-bit general purpose registers with 16-bit and 8-bit access:
+
+**General Purpose Registers:**
+```
+EAX (AX, AH, AL) - Accumulator
+EBX (BX, BH, BL) - Base
+ECX (CX, CH, CL) - Counter
+EDX (DX, DH, DL) - Data
+ESI (SI)         - Source Index
+EDI (DI)         - Destination Index
+EBP (BP)         - Base Pointer
+ESP (SP)         - Stack Pointer
+```
+
+**Special Registers:**
+```
+EIP - Instruction Pointer (32-bit)
+EFLAGS - Status flags (32-bit)
+```
+
+**Segment Registers (for 8086 compatibility):**
+```
+CS - Code Segment
+DS - Data Segment
+ES - Extra Segment
+SS - Stack Segment
+FS, GS - Additional segments (386+)
+```
+
+## 8.2 Status Flags
+
+The EFLAGS register contains:
+```
+Bit 0:  CF - Carry flag
+Bit 2:  PF - Parity flag
+Bit 4:  AF - Auxiliary carry flag
+Bit 6:  ZF - Zero flag
+Bit 7:  SF - Sign flag
+Bit 8:  TF - Trap flag
+Bit 9:  IF - Interrupt enable flag
+Bit 10: DF - Direction flag
+Bit 11: OF - Overflow flag
+```
+
+## 8.3 Addressing Modes
+
+| Mode | Syntax | Description |
+|------|--------|-------------|
+| Immediate | imm8/imm16/imm32 | Immediate value |
+| Register | reg | Register operand |
+| Direct | [addr] | Direct memory address |
+| Register Indirect | [reg] | Memory at register address |
+| Base+Displacement | [reg+disp] | Base register + offset |
+| SIB | [base+index*scale+disp] | Full 386 addressing |
+
+## 8.4 Instruction Set
+
+The x86 core implements the 8086 instruction set plus 386 32-bit extensions:
+
+**Data Transfer:** MOV, PUSH, POP, XCHG, LEA, LES, LDS
+**Arithmetic:** ADD, ADC, SUB, SBB, MUL, IMUL, DIV, IDIV, INC, DEC, CMP, NEG
+**Logical:** AND, OR, XOR, NOT, TEST
+**Shift/Rotate:** SHL, SHR, SAL, SAR, ROL, ROR, RCL, RCR
+**Control Flow:** JMP, Jcc, CALL, RET, LOOP, LOOPE, LOOPNE
+**String:** MOVS, STOS, LODS, CMPS, SCAS with REP/REPE/REPNE prefixes
+**I/O:** IN, OUT (port-based I/O for audio chips)
+**Flag Control:** CLC, STC, CMC, CLD, STD, CLI, STI
+**BCD:** DAA, DAS, AAA, AAS, AAM, AAD
+
+**386 Extensions:**
+- 32-bit register operations (EAX, EBX, etc.)
+- Operand size prefix (0x66)
+- Address size prefix (0x67)
+- SIB byte addressing
+- MOVZX, MOVSX
+- SETcc instructions
+- Bit test: BT, BTS, BTR, BTC, BSF, BSR
+- SHLD, SHRD
+
+## 8.5 Memory and I/O Integration
+
+- Full 32-bit flat address space (32MB system RAM)
+- VGA VRAM at standard PC address 0xA0000-0xAFFFF
+- Hardware registers memory-mapped at 0xF0000+
+- Separate I/O port space for audio chips
+
+**Port-Based Audio Chip Access:**
+| Chip  | Ports     | Description |
+|-------|-----------|-------------|
+| PSG   | 0xF0-0xF1 | Register select, data |
+| POKEY | 0xD0-0xDF | Direct register access |
+| SID   | 0xE0-0xE1 | Register select, data |
+| TED   | 0xF2-0xF3 | Register select, data |
+
+**Standard VGA Ports:**
+| Port  | Description |
+|-------|-------------|
+| 0x3C4-0x3C5 | Sequencer index/data |
+| 0x3C6-0x3C9 | DAC mask, read/write index, data |
+| 0x3CE-0x3CF | Graphics controller index/data |
+| 0x3D4-0x3D5 | CRTC index/data |
+| 0x3DA | Input status (VSync) |
+
+## 8.6 Interrupts
+
+The x86 supports software interrupts:
+```assembly
+INT n     ; Call interrupt n
+INT 3     ; Breakpoint
+INTO      ; Overflow interrupt
+IRET      ; Return from interrupt
+```
+
+## 8.7 Compatibility Notes
+
+- Use `-x86` flag to run x86 binaries
+- File extension: `.ie86`
+- Flat memory model (segments ignored for addressing)
+- Use NASM or FASM for assembly with `ie86.inc` include file
+- `--load-addr` sets the load address (default 0x00000000)
+- `--entry` sets the entry point (defaults to load address)
+
+**Not Implemented:**
+- Protected mode
+- Virtual 8086 mode
+- Paging
+- Task switching
+- x87 FPU
+
+# 9. Assembly Language Reference
+
+This section documents the IE32 assembly language used with the `ie32asm` assembler. For 6502, Z80, M68K, and x86 programming, use their respective standard assemblers (ca65, vasmz80_std, vasmm68k_mot, NASM/FASM) with the include files documented in Section 12.4.
 
 The Intuition Engine assembly language provides a straightforward way to program the system while maintaining access to all hardware features.
 
-## 8.1 Basic Program Structure
+## 9.1 Basic Program Structure
 
 Every assembly program follows this basic structure:
 
@@ -1738,7 +1885,7 @@ setup_timer:
     RTS
 ```
 
-## 8.2 Assembler Directives
+## 9.2 Assembler Directives
 
 The assembler supports these directives:
 
@@ -1764,7 +1911,7 @@ start:
     JMP main
 ```
 
-## 8.3 Memory Access Patterns
+## 9.3 Memory Access Patterns
 
 When working with memory, consider alignment and efficiency:
 
@@ -1784,7 +1931,7 @@ copy_loop:
     RTS
 ```
 
-## 8.4 Stack Usage
+## 9.4 Stack Usage
 
 The stack is essential for subroutines and temporary storage:
 
@@ -1802,7 +1949,7 @@ calculate:
     RTS
 ```
 
-## 8.5 Interrupt Handlers
+## 9.5 Interrupt Handlers
 
 Interrupt handlers must preserve register state:
 
@@ -1819,7 +1966,7 @@ isr_handler:
     RTI                ; Return from interrupt
 ```
 
-# 9. Sound System
+# 10. Sound System
 
 The Intuition Engine provides a powerful custom audio synthesizer alongside three emulated classic sound chips. The custom audio chip offers modern synthesis capabilities while maintaining the retro aesthetic.
 
@@ -1947,7 +2094,7 @@ Each flexible channel is 48 bytes ($30) with full synthesis control:
 | 3 | WAVE_NOISE | Noise generator |
 | 4 | WAVE_SAWTOOTH | Sawtooth wave |
 
-## 9.1 Sound Channel Types
+## 10.1 Sound Channel Types
 
 Each channel offers different synthesis capabilities:
 
@@ -2117,7 +2264,7 @@ setup_sawtooth:
     rts
 ```
 
-## 9.2 Modulation System
+## 10.2 Modulation System
 
 The sound system supports complex inter-channel modulation for creating rich, evolving timbres.
 
@@ -2221,7 +2368,7 @@ For square wave channels, PWM automatically varies the duty cycle for a rich, an
     STORE A, @SQUARE_CTRL
 ```
 
-## 9.3 Global Effects
+## 10.3 Global Effects
 
 The system provides global audio processing applied after channel mixing.
 
@@ -2347,7 +2494,7 @@ Stereo reverb with adjustable mix and decay time.
     SET_REVERB 128, 2000
 ```
 
-## 9.4 PSG Sound Chip (AY-3-8910/YM2149)
+## 10.4 PSG Sound Chip (AY-3-8910/YM2149)
 
 The PSG chip emulates the General Instrument AY-3-8910 and Yamaha YM2149, providing three channels of square wave synthesis with noise and envelope capabilities. This chip powered the sound in countless 8-bit computers including the ZX Spectrum 128, Amstrad CPC, Atari ST, and MSX.
 
@@ -2570,7 +2717,7 @@ music_data_end:
 - Read PSG_PLAY_STATUS bit 0 to check if playing (1=busy, 0=stopped)
 - Read PSG_PLAY_STATUS bit 1 to check for errors
 
-## 9.5 POKEY Sound Chip
+## 10.5 POKEY Sound Chip
 
 The POKEY chip emulates the Atari 8-bit computer's sound hardware, providing four channels of distinctive 8-bit audio with polynomial-based distortion.
 
@@ -2716,7 +2863,7 @@ sap_data_end:
 - Set SAP_SUBSONG before starting to select a specific subsong (0-255)
 - Read SAP_PLAY_STATUS for busy/error flags
 
-## 9.6 SID Sound Chip
+## 10.6 SID Sound Chip
 
 The SID chip emulates the legendary MOS 6581/8580 from the Commodore 64, providing three voices of analog-style synthesis with the distinctive warm sound that defined a generation of computer music.
 
@@ -2927,7 +3074,7 @@ sid_data_end:
 - Read SID_PLAY_STATUS for busy/error flags
 - Many SID files contain multiple subsongs (tunes) - check the SID header for count
 
-## 9.7 TED Sound Chip
+## 10.7 TED Sound Chip
 
 The TED (Text Editing Device) chip emulates the sound capabilities of the Commodore Plus/4 and C16, providing simple 2-voice square wave synthesis. While simpler than the SID, the TED has a distinctive lo-fi character valued by demoscene musicians.
 
@@ -3069,7 +3216,7 @@ ted_data_end:
 - Write `1` to TED_PLAY_CTRL to start, `2` to stop, `5` to start with loop
 - Read TED_PLAY_STATUS for busy/error flags
 
-## 9.8 AHX Sound Chip
+## 10.8 AHX Sound Chip
 
 The AHX engine provides Amiga AHX/THX module playback with 4-channel waveform synthesis. AHX modules use procedural synthesis rather than samples, creating rich sounds from simple waveforms (triangle, sawtooth, square, noise) with modulation.
 
@@ -3127,11 +3274,11 @@ ahx_data_end:
 - Read AHX_PLAY_STATUS for busy/error flags
 - Speed 0 command in the module signals end of song
 
-# 10. Video System
+# 11. Video System
 
 The video system provides flexible graphics output through a memory-mapped framebuffer design.
 
-## 10.1 Display Modes
+## 11.1 Display Modes
 
 Three resolution modes are available:
 - 640x480 (MODE_640x480)
@@ -3178,7 +3325,7 @@ init_display:
     rts
 ```
 
-## 10.2 Framebuffer Organisation
+## 11.2 Framebuffer Organisation
 
 The framebuffer uses 32-bit RGBA colour format:
 - Start address: 0x100000 (VRAM_START)
@@ -3191,14 +3338,14 @@ The framebuffer uses 32-bit RGBA colour format:
 Address = 0x100000 + (y * width + x) * 4
 ```
 
-## 10.3 Dirty Rectangle Tracking
+## 11.3 Dirty Rectangle Tracking
 
 The system tracks changes in 32x32 pixel blocks:
 - Automatically marks modified regions
 - Updates only changed areas
 - Improves rendering performance
 
-## 10.4 Double Buffering and VBlank Synchronisation
+## 11.4 Double Buffering and VBlank Synchronisation
 
 Video output uses double buffering to prevent tearing. The system provides a VBlank status bit for flicker-free animation:
 
@@ -3298,7 +3445,7 @@ main_loop:
 
 The `wait_frame` pattern ensures exactly one frame per loop iteration, giving smooth 60 FPS animation regardless of how fast the CPU runs.
 
-## 10.5 Direct VRAM Access Mode
+## 11.5 Direct VRAM Access Mode
 
 For fullscreen effects such as plasma, fire, or tunnel demos where every pixel is updated each frame, the system provides a direct VRAM access mode with lock-free dirty tracking that bypasses the standard memory bus. This delivers approximately **4.5x video throughput** compared to bus-based access.
 
@@ -3340,7 +3487,7 @@ videoChip.DisableDirectMode()
 
 Direct VRAM mode is ideal for demoscene-style effects, real-time visualisations, and any application that redraws the entire screen each frame.
 
-## 10.6 Copper List Executor
+## 11.6 Copper List Executor
 
 The video subsystem includes a simple copper-like list executor for mid-frame register updates. Copper lists are stored in RAM as little-endian 32-bit words and can WAIT on raster positions, MOVE values into video registers, and END the list. The copper restarts each frame while enabled.
 
@@ -3421,7 +3568,7 @@ copper_list:
     .long COP_END
 ```
 
-## 10.7 DMA Blitter
+## 11.7 DMA Blitter
 
 The DMA blitter performs rectangle copy/fill and line drawing. Registers are written via memory-mapped I/O, and the blitter operates on VRAM addresses (RGBA, 4 bytes/pixel).
 
@@ -3489,7 +3636,7 @@ Line coordinates:
 
 The blitter defaults `BLT_SRC_STRIDE`/`BLT_DST_STRIDE` to the current mode row bytes when the address is in VRAM, otherwise it uses `width*4`. If an unaligned VRAM address is used, `BLT_STATUS.bit0` is set.
 
-## 10.8 Raster Band Fill
+## 11.8 Raster Band Fill
 
 `VIDEO_RASTER_*` registers draw a full-width horizontal band directly into the framebuffer. This is useful for copper-driven raster bars without adding a palette system.
 
@@ -3533,7 +3680,7 @@ The blitter defaults `BLT_SRC_STRIDE`/`BLT_DST_STRIDE` to the current mode row b
     sta  VIDEO_RASTER_CTRL
 ```
 
-## 10.9 Video Compositor
+## 11.9 Video Compositor
 
 The Intuition Engine uses a video compositor to blend multiple video sources into a single display output. This architecture enables layered rendering where different video devices (VideoChip, VGA) can contribute to the final frame.
 
@@ -3619,9 +3766,9 @@ copper_list:
 
 This creates a horizontal band where the VGA background color (palette entry 0) changes from red to blue at specific scanlines.
 
-# 11. Developer's Guide
+# 12. Developer's Guide
 
-## 11.1 Development Environment Setup
+## 12.1 Development Environment Setup
 
 To develop for the Intuition Engine, you'll need to set up your development environment with several components:
 
@@ -3640,7 +3787,7 @@ my_project/
 └── tools/           # Development tools
 ```
 
-## 11.2 Building the System
+## 12.2 Building the System
 
 The build process uses the provided Makefile:
 
@@ -3683,7 +3830,7 @@ list             - List compiled binaries with sizes
 help             - Show this help message
 ```
 
-## 11.3 Development Workflow
+## 12.3 Development Workflow
 
 A typical development cycle involves:
 
@@ -3756,7 +3903,7 @@ A typical development cycle involves:
 **Enhanced Audio Modes (PSG+/POKEY+/SID+/TED+/AHX+):**
 These modes provide oversampling, gentle low-pass smoothing, subtle saturation, and a tiny room/width effect for richer sound while preserving pitch and timing. AHX+ additionally provides authentic Amiga stereo panning (L-R-R-L pattern) and hardware PWM for square wave modulation.
 
-## 11.4 Assembler Include Files
+## 12.4 Assembler Include Files
 
 The `assembler/` directory provides hardware definition include files for each CPU architecture. These files are essential for writing portable Intuition Engine programs.
 
@@ -3766,6 +3913,7 @@ The `assembler/` directory provides hardware definition include files for each C
 | `ie68.inc` | M68K | vasmm68k_mot | Hardware constants with M68K macros |
 | `ie65.inc` | 6502 | ca65 | Hardware constants, macros, and zero page allocation |
 | `ie80.inc` | Z80 | vasmz80_std | Hardware constants with Z80 macros |
+| `ie86.inc` | x86 | NASM/FASM | Hardware constants, port I/O, VGA registers |
 
 ### Contents Overview
 
@@ -3889,6 +4037,52 @@ start:
 - `SID_WRITE reg,val` - Write SID register via port I/O
 - `ADD_HL_IMM`, `CP_HL_IMM`, `INC16` - Utility macros
 
+### ie86.inc (x86 CPU)
+
+The x86 include file provides constants using `equ` and macros for NASM/FASM:
+
+```assembly
+%include "ie86.inc"
+
+section .text
+start:
+    mov     eax, 1
+    mov     [VIDEO_CTRL], eax
+    wait_vblank                 ; Macro: wait for vertical blank
+
+    ; PSG port I/O
+    psg_write PSG_REG_MIXER, 0x38    ; Enable channels A, B, C
+    psg_write PSG_REG_VOL_A, 15      ; Max volume channel A
+
+    ; VGA port I/O
+    vga_wait_vsync              ; Wait for vertical retrace
+```
+
+**Memory-mapped addresses (32-bit):**
+- Full 32-bit flat address space
+- VGA VRAM at standard PC address 0xA0000-0xAFFFF
+- Hardware I/O at 0xF0000+
+
+**Port I/O for audio chips:**
+- PSG: ports 0xF0-0xF1 (register select, data)
+- POKEY: ports 0xD0-0xDF (direct access)
+- SID: ports 0xE0-0xE1 (register select, data)
+- TED: ports 0xF2-0xF3 (register select, data)
+
+**VGA standard PC ports:**
+- 0x3C4-0x3C5: Sequencer index/data
+- 0x3C6-0x3C9: DAC mask, indices, data
+- 0x3CE-0x3CF: Graphics controller
+- 0x3D4-0x3D5: CRTC index/data
+- 0x3DA: Input status (bit 3 = VSync)
+
+**Macros provided:**
+- `wait_vblank` - Wait for vertical blank via memory-mapped status
+- `vga_wait_vsync` - Wait for VSync via VGA port I/O
+- `psg_write reg, val` - Write PSG register via port I/O
+- `sid_write reg, val` - Write SID register via port I/O
+- `pokey_write reg, val` - Write POKEY register via port I/O
+
 ### 8-Bit CPU Banking System
 
 The 6502 and Z80 use a banking system to access the full 32MB address space:
@@ -3916,7 +4110,7 @@ The 6502 and Z80 use a banking system to access the full 32MB address space:
     ld   a,(BANK1_WINDOW)       ; Read first byte
 ```
 
-## 11.5 Debugging Techniques
+## 12.5 Debugging Techniques
 
 ### Console Output
 
@@ -4077,11 +4271,11 @@ stack_overflow:
 5. **Watch for signed/unsigned issues**: Know when operations treat values as signed
 6. **Trace interrupt handlers**: Ensure registers are saved/restored properly
 
-# 12. Implementation Details
+# 13. Implementation Details
 
 This section describes how the Intuition Engine emulates its hardware components.
 
-## 12.1 CPU Emulation
+## 13.1 CPU Emulation
 
 ### IE32 Custom RISC CPU
 
@@ -4125,7 +4319,7 @@ The 6502 emulation covers the original NMOS instruction set:
 - **Stack at $0100-$01FF**: Hardware stack page
 - **Status flags**: N, V, B, D, I, Z, C
 
-## 12.2 Memory Architecture
+## 13.2 Memory Architecture
 
 ### Unified Memory Bus
 
@@ -4155,7 +4349,7 @@ Z80 and 6502 access the full address space through bank windows:
 | Bank 3 | `$6000` | 8KB | `$F704-$F705` |
 | VRAM | `$8000` | 16KB | `$F7F0` |
 
-## 12.3 Audio System Architecture
+## 13.3 Audio System Architecture
 
 ### Sample Generation
 
@@ -4184,11 +4378,11 @@ This approach provides accurate register-level compatibility while leveraging th
 
 File playback (.ym, .ay, .sndh, .vgm, .sap, .sid) executes embedded CPU code that writes to the mapped registers, driving the synthesis in real-time.
 
-# 13. Platform Support
+# 14. Platform Support
 
 The Intuition Engine supports multiple platforms through abstracted backend systems for graphics, audio, and GUI.
 
-## 13.1 Supported Platforms
+## 14.1 Supported Platforms
 
 | Platform | Graphics | Audio | GUI |
 |----------|----------|-------|-----|
@@ -4196,7 +4390,7 @@ The Intuition Engine supports multiple platforms through abstracted backend syst
 | macOS | Ebiten | Oto | GTK4, FLTK |
 | Windows | Ebiten | Oto | GTK4, FLTK |
 
-## 13.2 Graphics Backends
+## 14.2 Graphics Backends
 
 ### Ebiten (Primary)
 
@@ -4213,7 +4407,7 @@ For testing and batch processing without a display:
 go test -tags headless ./...
 ```
 
-## 13.3 Audio Backends
+## 14.3 Audio Backends
 
 ### Oto (Primary)
 
@@ -4229,7 +4423,7 @@ Native Linux audio for:
 - Direct hardware access
 - System audio integration
 
-## 13.4 GUI Frontends
+## 14.4 GUI Frontends
 
 ### GTK4
 
@@ -4247,13 +4441,13 @@ Lightweight alternative offering:
 - Basic file selection
 - Simple controls
 
-# 14. Running Demonstrations
+# 15. Running Demonstrations
 
 The Intuition Engine includes visual and audio demonstrations that showcase system capabilities.
 
 **Tutorial:** For a hands-on guide to building a complete demoscene-style demo (blitter sprites, copper effects, PSG+ music, scrolltext), see **[TUTORIAL.md](TUTORIAL.md)**. It includes full implementations for all four CPU architectures.
 
-## 14.1 Quick Start
+## 15.1 Quick Start
 
 Run all short tests:
 ```bash
@@ -4265,7 +4459,7 @@ Run with headless mode (no GUI/audio):
 go test -v -tags headless
 ```
 
-## 14.2 Audio Demonstrations
+## 15.2 Audio Demonstrations
 
 Long-running audio demos require the `audiolong` tag:
 
@@ -4280,7 +4474,7 @@ go test -v -tags audiolong -run TestSquareWave_PWM
 go test -v -tags audiolong -run TestFilterSweep
 ```
 
-## 14.3 Visual Demonstrations
+## 15.3 Visual Demonstrations
 
 Long-running visual demos require the `videolong` tag:
 
@@ -4301,7 +4495,7 @@ go test -v -tags videolong -run TestRotatingCube
 go test -v -tags videolong -run TestMandelbrot
 ```
 
-## 14.4 CPU Test Suites
+## 15.4 CPU Test Suites
 
 ### M68K Tests
 ```bash
@@ -4318,7 +4512,7 @@ KLAUS_FUNCTIONAL=1 KLAUS_INTERRUPT_SUCCESS_PC=0x06F5 go test -v -run '^Test6502'
 go test -v -run TestZ80
 ```
 
-## 14.5 Available Demonstrations
+## 15.5 Available Demonstrations
 
 | Category | Test Name | Description |
 |----------|-----------|-------------|
@@ -4336,9 +4530,9 @@ go test -v -run TestZ80
 | Video | TestMandelbrot | Fractal visualisation |
 | Video | TestParticles | Physics-based particles |
 
-# 15. Building from Source
+# 16. Building from Source
 
-## 15.1 Prerequisites
+## 16.1 Prerequisites
 
 - Go 1.21 or later
 - C compiler (for CGO dependencies)
@@ -4360,7 +4554,7 @@ sudo dnf install gtk4-devel alsa-lib-devel mesa-libGL-devel libX11-devel
 brew install gtk4
 ```
 
-## 15.2 Build Commands
+## 16.2 Build Commands
 
 ```bash
 # Build everything (VM and assembler)
@@ -4382,7 +4576,7 @@ make appimage
 make clean
 ```
 
-## 15.3 Build Tags
+## 16.3 Build Tags
 
 | Tag | Effect |
 |-----|--------|
@@ -4391,7 +4585,7 @@ make clean
 | `audiolong` | Enable long-running audio demos |
 | `videolong` | Enable long-running video demos |
 
-## 15.4 Development Workflow
+## 16.4 Development Workflow
 
 1. Edit source files
 2. Run `make` to build
@@ -4399,7 +4593,7 @@ make clean
 4. Run demos to verify changes
 5. Use `./bin/IntuitionEngine -ie32 program.iex` to test programs
 
-## 15.5 Creating New Demonstrations
+## 16.5 Creating New Demonstrations
 
 When adding new test demonstrations:
 

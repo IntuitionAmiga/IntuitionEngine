@@ -1,0 +1,526 @@
+// cpu_x86_runner.go - x86 CPU Program Runner
+//
+// Provides the system bus implementation for running x86 programs with
+// full hardware integration (VGA, audio chips, etc.)
+//
+// (c) 2024-2026 Zayn Otley - GPLv3 or later
+
+package main
+
+import (
+	"fmt"
+	"os"
+)
+
+const (
+	defaultX86LoadAddr = 0x00000000
+	x86AddressSpace    = 0x02000000 // 32MB address space
+
+	// x86 Bank Windows (same as Z80/6502 for compatibility)
+	X86_BANK1_WINDOW_BASE = 0x2000 // Sprite data bank
+	X86_BANK2_WINDOW_BASE = 0x4000 // Font data bank
+	X86_BANK3_WINDOW_BASE = 0x6000 // General data bank
+	X86_BANK_WINDOW_SIZE  = 0x2000 // 8KB per bank window
+
+	// x86 VRAM Bank Window (16KB)
+	X86_VRAM_BANK_WINDOW_BASE = 0x8000
+	X86_VRAM_BANK_WINDOW_SIZE = 0x4000
+
+	// Bank control registers (memory-mapped)
+	X86_BANK1_REG_LO   = 0xF700
+	X86_BANK1_REG_HI   = 0xF701
+	X86_BANK2_REG_LO   = 0xF702
+	X86_BANK2_REG_HI   = 0xF703
+	X86_BANK3_REG_LO   = 0xF704
+	X86_BANK3_REG_HI   = 0xF705
+	X86_VRAM_BANK_REG  = 0xF7F0
+	X86_VRAM_BANK_RSVD = 0xF7F1
+
+	// I/O Port ranges for audio chips
+	X86_PORT_PSG_SELECT = 0xF0
+	X86_PORT_PSG_DATA   = 0xF1
+	X86_PORT_SID_SELECT = 0xE0
+	X86_PORT_SID_DATA   = 0xE1
+	X86_PORT_POKEY_BASE = 0xD0 // 0xD0-0xDF for POKEY
+	X86_PORT_TED_SELECT = 0xF2
+	X86_PORT_TED_DATA   = 0xF3
+
+	// Standard VGA I/O ports
+	X86_PORT_VGA_SEQ_INDEX  = 0x3C4
+	X86_PORT_VGA_SEQ_DATA   = 0x3C5
+	X86_PORT_VGA_DAC_MASK   = 0x3C6
+	X86_PORT_VGA_DAC_RINDEX = 0x3C7
+	X86_PORT_VGA_DAC_WINDEX = 0x3C8
+	X86_PORT_VGA_DAC_DATA   = 0x3C9
+	X86_PORT_VGA_GC_INDEX   = 0x3CE
+	X86_PORT_VGA_GC_DATA    = 0x3CF
+	X86_PORT_VGA_CRTC_INDEX = 0x3D4
+	X86_PORT_VGA_CRTC_DATA  = 0x3D5
+	X86_PORT_VGA_STATUS     = 0x3DA
+)
+
+// CPUX86Config holds configuration for the x86 runner
+type CPUX86Config struct {
+	LoadAddr  uint32
+	Entry     uint32
+	VGAEngine *VGAEngine // Optional VGA engine for port I/O
+}
+
+// CPUX86Runner manages the x86 CPU and system bus
+type CPUX86Runner struct {
+	cpu      *CPU_X86
+	bus      *X86SystemBus
+	loadAddr uint32
+	entry    uint32
+}
+
+// X86SystemBus provides the system bus for x86 with hardware routing
+type X86SystemBus struct {
+	bus            *SystemBus
+	psgRegSelect   byte       // Currently selected PSG register for port I/O
+	sidRegSelect   byte       // Currently selected SID register for port I/O
+	pokeyRegSelect byte       // Currently selected POKEY register for port I/O
+	tedRegSelect   byte       // Currently selected TED register for port I/O
+	vgaEngine      *VGAEngine // VGA engine for port I/O access
+
+	// Extended bank windows (same as Z80/6502)
+	vramBank    uint32
+	vramEnabled bool
+	bank1       uint32
+	bank2       uint32
+	bank3       uint32
+	bank1Enable bool
+	bank2Enable bool
+	bank3Enable bool
+}
+
+// NewX86SystemBus creates a new x86 system bus
+func NewX86SystemBus(bus *SystemBus) *X86SystemBus {
+	return &X86SystemBus{bus: bus, psgRegSelect: 0}
+}
+
+// NewX86SystemBusWithVGA creates an x86 system bus with VGA engine support
+func NewX86SystemBusWithVGA(bus *SystemBus, vga *VGAEngine) *X86SystemBus {
+	return &X86SystemBus{bus: bus, psgRegSelect: 0, vgaEngine: vga}
+}
+
+// translateIO translates I/O addresses for the system bus
+// Non-I/O addresses pass through unchanged
+func (b *X86SystemBus) translateIO(addr uint32) uint32 {
+	// I/O region at 0xF0000
+	if addr >= 0xF000 && addr < 0x10000 {
+		return 0xF0000 + (addr - 0xF000)
+	}
+	return addr
+}
+
+// Read implements X86Bus.Read
+func (b *X86SystemBus) Read(addr uint32) byte {
+	// Handle VRAM bank register reads
+	if addr == X86_VRAM_BANK_REG {
+		return byte(b.vramBank & 0xFF)
+	}
+	if addr == X86_VRAM_BANK_RSVD {
+		return 0
+	}
+
+	// Handle extended bank register reads
+	switch addr {
+	case X86_BANK1_REG_LO:
+		return byte(b.bank1 & 0xFF)
+	case X86_BANK1_REG_HI:
+		return byte((b.bank1 >> 8) & 0xFF)
+	case X86_BANK2_REG_LO:
+		return byte(b.bank2 & 0xFF)
+	case X86_BANK2_REG_HI:
+		return byte((b.bank2 >> 8) & 0xFF)
+	case X86_BANK3_REG_LO:
+		return byte(b.bank3 & 0xFF)
+	case X86_BANK3_REG_HI:
+		return byte((b.bank3 >> 8) & 0xFF)
+	}
+
+	// Handle VGA VRAM at 0xA0000-0xAFFFF (64KB window)
+	if addr >= 0xA0000 && addr < 0xB0000 {
+		return b.bus.Read8(addr)
+	}
+
+	// Handle extended bank window reads
+	if translated, ok := b.translateExtendedBank(addr); ok {
+		return b.bus.Read8(translated)
+	}
+
+	// Handle VRAM bank window reads
+	if translated, ok := b.translateVRAM(addr); ok {
+		return b.bus.Read8(translated)
+	}
+
+	return b.bus.Read8(b.translateIO(addr))
+}
+
+// Write implements X86Bus.Write
+func (b *X86SystemBus) Write(addr uint32, value byte) {
+	// Handle VRAM bank register writes
+	if addr == X86_VRAM_BANK_REG {
+		b.vramBank = uint32(value)
+		b.vramEnabled = true
+		return
+	}
+	if addr == X86_VRAM_BANK_RSVD {
+		return
+	}
+
+	// Handle extended bank register writes
+	switch addr {
+	case X86_BANK1_REG_LO:
+		b.bank1 = (b.bank1 & 0xFF00) | uint32(value)
+		b.bank1Enable = true
+		return
+	case X86_BANK1_REG_HI:
+		b.bank1 = (b.bank1 & 0x00FF) | (uint32(value) << 8)
+		b.bank1Enable = true
+		return
+	case X86_BANK2_REG_LO:
+		b.bank2 = (b.bank2 & 0xFF00) | uint32(value)
+		b.bank2Enable = true
+		return
+	case X86_BANK2_REG_HI:
+		b.bank2 = (b.bank2 & 0x00FF) | (uint32(value) << 8)
+		b.bank2Enable = true
+		return
+	case X86_BANK3_REG_LO:
+		b.bank3 = (b.bank3 & 0xFF00) | uint32(value)
+		b.bank3Enable = true
+		return
+	case X86_BANK3_REG_HI:
+		b.bank3 = (b.bank3 & 0x00FF) | (uint32(value) << 8)
+		b.bank3Enable = true
+		return
+	}
+
+	// Handle VGA VRAM at 0xA0000-0xAFFFF (64KB window)
+	if addr >= 0xA0000 && addr < 0xB0000 {
+		b.bus.Write8(addr, value)
+		return
+	}
+
+	// Handle extended bank window writes
+	if translated, ok := b.translateExtendedBank(addr); ok {
+		b.bus.Write8(translated, value)
+		return
+	}
+
+	// Handle VRAM bank window writes
+	if translated, ok := b.translateVRAM(addr); ok {
+		b.bus.Write8(translated, value)
+		return
+	}
+
+	b.bus.Write8(b.translateIO(addr), value)
+}
+
+// translateExtendedBank translates addresses in extended bank windows
+func (b *X86SystemBus) translateExtendedBank(addr uint32) (uint32, bool) {
+	// Only translate 16-bit addresses for bank windows
+	if addr >= 0x10000 {
+		return 0, false
+	}
+
+	addr16 := uint16(addr)
+
+	// Check Bank 1 window ($2000-$3FFF)
+	if b.bank1Enable && addr16 >= X86_BANK1_WINDOW_BASE && addr16 < X86_BANK1_WINDOW_BASE+X86_BANK_WINDOW_SIZE {
+		offset := uint32(addr16 - X86_BANK1_WINDOW_BASE)
+		translated := (b.bank1 * X86_BANK_WINDOW_SIZE) + offset
+		if translated < DEFAULT_MEMORY_SIZE {
+			return translated, true
+		}
+	}
+
+	// Check Bank 2 window ($4000-$5FFF)
+	if b.bank2Enable && addr16 >= X86_BANK2_WINDOW_BASE && addr16 < X86_BANK2_WINDOW_BASE+X86_BANK_WINDOW_SIZE {
+		offset := uint32(addr16 - X86_BANK2_WINDOW_BASE)
+		translated := (b.bank2 * X86_BANK_WINDOW_SIZE) + offset
+		if translated < DEFAULT_MEMORY_SIZE {
+			return translated, true
+		}
+	}
+
+	// Check Bank 3 window ($6000-$7FFF)
+	if b.bank3Enable && addr16 >= X86_BANK3_WINDOW_BASE && addr16 < X86_BANK3_WINDOW_BASE+X86_BANK_WINDOW_SIZE {
+		offset := uint32(addr16 - X86_BANK3_WINDOW_BASE)
+		translated := (b.bank3 * X86_BANK_WINDOW_SIZE) + offset
+		if translated < DEFAULT_MEMORY_SIZE {
+			return translated, true
+		}
+	}
+
+	return 0, false
+}
+
+// translateVRAM translates addresses in the VRAM bank window
+func (b *X86SystemBus) translateVRAM(addr uint32) (uint32, bool) {
+	if addr >= 0x10000 {
+		return 0, false
+	}
+
+	addr16 := uint16(addr)
+
+	if b.vramEnabled && addr16 >= X86_VRAM_BANK_WINDOW_BASE && addr16 < X86_VRAM_BANK_WINDOW_BASE+X86_VRAM_BANK_WINDOW_SIZE {
+		offset := uint32(addr16 - X86_VRAM_BANK_WINDOW_BASE)
+		translated := MAIN_VRAM_BASE + (b.vramBank * X86_VRAM_BANK_WINDOW_SIZE) + offset
+		if translated < DEFAULT_MEMORY_SIZE {
+			return translated, true
+		}
+	}
+
+	return 0, false
+}
+
+// In implements X86Bus.In for port I/O
+func (b *X86SystemBus) In(port uint16) byte {
+	// PSG port I/O
+	if port == X86_PORT_PSG_SELECT {
+		return b.psgRegSelect
+	}
+	if port == X86_PORT_PSG_DATA {
+		// Read from PSG register
+		return b.bus.Read8(0xF0C00 + uint32(b.psgRegSelect))
+	}
+
+	// SID port I/O
+	if port == X86_PORT_SID_SELECT {
+		return b.sidRegSelect
+	}
+	if port == X86_PORT_SID_DATA {
+		return b.bus.Read8(0xF0E00 + uint32(b.sidRegSelect))
+	}
+
+	// POKEY port I/O (0xD0-0xDF)
+	if port >= X86_PORT_POKEY_BASE && port < X86_PORT_POKEY_BASE+16 {
+		offset := port - X86_PORT_POKEY_BASE
+		return b.bus.Read8(0xF0D00 + uint32(offset))
+	}
+
+	// TED port I/O
+	if port == X86_PORT_TED_SELECT {
+		return b.tedRegSelect
+	}
+	if port == X86_PORT_TED_DATA {
+		// Audio registers 0x00-0x05, video registers 0x20-0x2F
+		if b.tedRegSelect < 0x06 {
+			return b.bus.Read8(0xF0F00 + uint32(b.tedRegSelect))
+		} else if b.tedRegSelect >= 0x20 && b.tedRegSelect < 0x30 {
+			// Video registers at 0xF0F20-0xF0F5F (4-byte aligned)
+			return b.bus.Read8(0xF0F20 + uint32(b.tedRegSelect-0x20)*4)
+		}
+		return 0
+	}
+
+	// Standard VGA ports
+	if b.vgaEngine != nil {
+		switch port {
+		case X86_PORT_VGA_SEQ_INDEX:
+			return b.vgaEngine.seqIndex
+		case X86_PORT_VGA_SEQ_DATA:
+			if b.vgaEngine.seqIndex < 8 {
+				return b.vgaEngine.seqRegs[b.vgaEngine.seqIndex]
+			}
+		case X86_PORT_VGA_DAC_MASK:
+			return b.vgaEngine.dacMask
+		case X86_PORT_VGA_GC_INDEX:
+			return b.vgaEngine.gcIndex
+		case X86_PORT_VGA_GC_DATA:
+			if b.vgaEngine.gcIndex < 16 {
+				return b.vgaEngine.gcRegs[b.vgaEngine.gcIndex]
+			}
+		case X86_PORT_VGA_CRTC_INDEX:
+			return b.vgaEngine.crtcIndex
+		case X86_PORT_VGA_CRTC_DATA:
+			if b.vgaEngine.crtcIndex < 32 {
+				return b.vgaEngine.crtcRegs[b.vgaEngine.crtcIndex]
+			}
+		case X86_PORT_VGA_STATUS:
+			// Return VSync status
+			status := byte(0)
+			if b.vgaEngine.vsync {
+				status |= 0x08 // Vertical retrace
+			}
+			return status
+		}
+	}
+
+	return 0
+}
+
+// Out implements X86Bus.Out for port I/O
+func (b *X86SystemBus) Out(port uint16, value byte) {
+	// PSG port I/O
+	if port == X86_PORT_PSG_SELECT {
+		b.psgRegSelect = value
+		return
+	}
+	if port == X86_PORT_PSG_DATA {
+		b.bus.Write8(0xF0C00+uint32(b.psgRegSelect), value)
+		return
+	}
+
+	// SID port I/O
+	if port == X86_PORT_SID_SELECT {
+		b.sidRegSelect = value
+		return
+	}
+	if port == X86_PORT_SID_DATA {
+		b.bus.Write8(0xF0E00+uint32(b.sidRegSelect), value)
+		return
+	}
+
+	// POKEY port I/O (0xD0-0xDF)
+	if port >= X86_PORT_POKEY_BASE && port < X86_PORT_POKEY_BASE+16 {
+		offset := port - X86_PORT_POKEY_BASE
+		b.bus.Write8(0xF0D00+uint32(offset), value)
+		return
+	}
+
+	// TED port I/O
+	if port == X86_PORT_TED_SELECT {
+		b.tedRegSelect = value
+		return
+	}
+	if port == X86_PORT_TED_DATA {
+		if b.tedRegSelect < 0x06 {
+			b.bus.Write8(0xF0F00+uint32(b.tedRegSelect), value)
+		} else if b.tedRegSelect >= 0x20 && b.tedRegSelect < 0x30 {
+			b.bus.Write8(0xF0F20+uint32(b.tedRegSelect-0x20)*4, value)
+		}
+		return
+	}
+
+	// Standard VGA ports
+	if b.vgaEngine != nil {
+		switch port {
+		case X86_PORT_VGA_SEQ_INDEX:
+			b.vgaEngine.seqIndex = value
+		case X86_PORT_VGA_SEQ_DATA:
+			if b.vgaEngine.seqIndex < 8 {
+				b.vgaEngine.seqRegs[b.vgaEngine.seqIndex] = value
+			}
+		case X86_PORT_VGA_DAC_MASK:
+			b.vgaEngine.dacMask = value
+		case X86_PORT_VGA_DAC_RINDEX:
+			b.vgaEngine.dacReadIndex = value
+			b.vgaEngine.dacReadPhase = 0
+		case X86_PORT_VGA_DAC_WINDEX:
+			b.vgaEngine.dacWriteIndex = value
+			b.vgaEngine.dacWritePhase = 0
+		case X86_PORT_VGA_DAC_DATA:
+			// Write R, G, B in sequence
+			idx := int(b.vgaEngine.dacWriteIndex) * 3
+			if idx+int(b.vgaEngine.dacWritePhase) < len(b.vgaEngine.palette) {
+				b.vgaEngine.palette[idx+int(b.vgaEngine.dacWritePhase)] = value
+			}
+			b.vgaEngine.dacWritePhase++
+			if b.vgaEngine.dacWritePhase >= 3 {
+				b.vgaEngine.dacWritePhase = 0
+				b.vgaEngine.dacWriteIndex++
+			}
+		case X86_PORT_VGA_GC_INDEX:
+			b.vgaEngine.gcIndex = value
+		case X86_PORT_VGA_GC_DATA:
+			if b.vgaEngine.gcIndex < 16 {
+				b.vgaEngine.gcRegs[b.vgaEngine.gcIndex] = value
+			}
+		case X86_PORT_VGA_CRTC_INDEX:
+			b.vgaEngine.crtcIndex = value
+		case X86_PORT_VGA_CRTC_DATA:
+			if b.vgaEngine.crtcIndex < 32 {
+				b.vgaEngine.crtcRegs[b.vgaEngine.crtcIndex] = value
+			}
+		}
+	}
+}
+
+// Tick implements X86Bus.Tick
+func (b *X86SystemBus) Tick(cycles int) {
+	// Could be used for cycle-accurate timing
+}
+
+// NewCPUX86Runner creates a new x86 CPU runner with the given configuration
+func NewCPUX86Runner(bus *SystemBus, config *CPUX86Config) *CPUX86Runner {
+	loadAddr := uint32(defaultX86LoadAddr)
+	entry := uint32(defaultX86LoadAddr)
+
+	if config != nil {
+		if config.LoadAddr != 0 {
+			loadAddr = config.LoadAddr
+		}
+		if config.Entry != 0 {
+			entry = config.Entry
+		}
+	}
+
+	var x86Bus *X86SystemBus
+	if config != nil && config.VGAEngine != nil {
+		x86Bus = NewX86SystemBusWithVGA(bus, config.VGAEngine)
+	} else {
+		x86Bus = NewX86SystemBus(bus)
+	}
+
+	cpu := NewCPU_X86(x86Bus)
+
+	return &CPUX86Runner{
+		cpu:      cpu,
+		bus:      x86Bus,
+		loadAddr: loadAddr,
+		entry:    entry,
+	}
+}
+
+// LoadProgram loads a binary program into memory
+func (r *CPUX86Runner) LoadProgram(data []byte) error {
+	if uint32(len(data))+r.loadAddr > x86AddressSpace {
+		return fmt.Errorf("program too large: %d bytes", len(data))
+	}
+
+	// Load program into memory
+	for i, b := range data {
+		r.bus.bus.Write8(r.loadAddr+uint32(i), b)
+	}
+
+	// Set entry point
+	r.cpu.EIP = r.entry
+
+	return nil
+}
+
+// LoadProgramFromFile loads a binary program from a file
+func (r *CPUX86Runner) LoadProgramFromFile(filename string) error {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return fmt.Errorf("failed to read file: %w", err)
+	}
+	return r.LoadProgram(data)
+}
+
+// Run executes the program until halted
+func (r *CPUX86Runner) Run() {
+	for r.cpu.Running && !r.cpu.Halted {
+		r.cpu.Step()
+	}
+}
+
+// Step executes a single instruction
+func (r *CPUX86Runner) Step() int {
+	return r.cpu.Step()
+}
+
+// GetCPU returns the CPU instance
+func (r *CPUX86Runner) GetCPU() *CPU_X86 {
+	return r.cpu
+}
+
+// Reset resets the CPU
+func (r *CPUX86Runner) Reset() {
+	r.cpu.Reset()
+	r.cpu.EIP = r.entry
+}
