@@ -338,6 +338,62 @@ TED_PLAY_LEN_3  = $FF17         ; Play length byte 3
 TED_PLAY_CTRL   = $FF18         ; Play control (IE32 $F0F18)
 TED_PLAY_STATUS = $FF1C         ; Play status (IE32 $F0F1C)
 
+; ============================================================================
+; TED VIDEO REGISTERS (Commodore Plus/4 style)
+;
+; The TED chip also provides video capabilities:
+; - 40x25 text mode (8x8 character cells)
+; - 320x200 pixel resolution (384x272 with border)
+; - 121 colors (16 hues × 8 luminances)
+; - Hardware cursor support
+; - Compositor layer 12 (between VGA=10 and ULA=15)
+;
+; For 6502: TED video registers are memory-mapped at $D620-$D62F
+; IE32/M68K address: $F0F20-$F0F5F (4-byte aligned)
+; ============================================================================
+TED_V_BASE      = $D620         ; TED video register base
+
+; Control registers
+TED_V_CTRL1     = $D620         ; Control 1 (ECM/BMM/DEN/RSEL/YSCROLL)
+TED_V_CTRL2     = $D621         ; Control 2 (RES/MCM/CSEL/XSCROLL)
+TED_V_CHAR_BASE = $D622         ; Character/bitmap base address
+TED_V_VID_BASE  = $D623         ; Video matrix base address
+
+; Color registers
+TED_V_BG0       = $D624         ; Background color 0
+TED_V_BG1       = $D625         ; Background color 1 (multicolor)
+TED_V_BG2       = $D626         ; Background color 2 (multicolor)
+TED_V_BG3       = $D627         ; Background color 3 (multicolor)
+TED_V_BORDER    = $D628         ; Border color
+
+; Cursor registers
+TED_V_CURSOR_HI = $D629         ; Cursor position high byte
+TED_V_CURSOR_LO = $D62A         ; Cursor position low byte
+TED_V_CURSOR_C  = $D62B         ; Cursor color
+
+; Status registers
+TED_V_RASTER_LO = $D62C         ; Raster line low (read-only)
+TED_V_RASTER_HI = $D62D         ; Raster line high (read-only)
+TED_V_ENABLE    = $D62E         ; Video enable (bit 0)
+TED_V_STATUS    = $D62F         ; Status (bit 0 = VBlank)
+
+; TED_V_CTRL1 bits
+TED_V_CTRL1_ECM     = $40       ; Bit 6: Extended Color Mode
+TED_V_CTRL1_BMM     = $20       ; Bit 5: Bitmap Mode
+TED_V_CTRL1_DEN     = $10       ; Bit 4: Display Enable
+TED_V_CTRL1_RSEL    = $08       ; Bit 3: Row Select (0=24, 1=25)
+TED_V_CTRL1_YSCROLL = $07       ; Bits 0-2: Vertical scroll mask
+
+; TED_V_CTRL2 bits
+TED_V_CTRL2_RES     = $20       ; Bit 5: Reset
+TED_V_CTRL2_MCM     = $10       ; Bit 4: Multicolor Mode
+TED_V_CTRL2_CSEL    = $08       ; Bit 3: Column Select (0=38, 1=40)
+TED_V_CTRL2_XSCROLL = $07       ; Bits 0-2: Horizontal scroll mask
+
+; Enable/Status bits
+TED_V_ENABLE_VIDEO  = $01       ; Bit 0: Video enable
+TED_V_STATUS_VBLANK = $01       ; Bit 0: VBlank active
+
 ; ----------------------------------------------------------------------------
 ; SAP Player Registers
 ;
@@ -640,6 +696,41 @@ AHX_SUBSONG     = $FB91         ; Subsong selection (0-255)
 .macro ENABLE_TED_PLUS
     lda #1
     sta TED_PLUS_CTRL
+.endmacro
+
+; ----------------------------------------------------------------------------
+; TED Video Macros
+; ----------------------------------------------------------------------------
+
+; Enable TED video
+.macro TED_V_ENABLE_ON
+    lda #TED_V_ENABLE_VIDEO
+    sta TED_V_ENABLE
+.endmacro
+
+; Disable TED video
+.macro TED_V_DISABLE
+    lda #0
+    sta TED_V_ENABLE
+.endmacro
+
+; Set TED border color (color byte = (lum<<4)|hue)
+.macro TED_V_SET_BORDER color
+    lda #color
+    sta TED_V_BORDER
+.endmacro
+
+; Set TED background color 0 (color byte = (lum<<4)|hue)
+.macro TED_V_SET_BG0 color
+    lda #color
+    sta TED_V_BG0
+.endmacro
+
+; Wait for TED VBlank
+.macro TED_V_WAIT_VBLANK
+:   lda TED_V_STATUS
+    and #TED_V_STATUS_VBLANK
+    beq :-
 .endmacro
 
 ; ============================================================================

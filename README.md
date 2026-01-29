@@ -39,10 +39,11 @@
    - 3.7 POKEY Registers
    - 3.8 SID Registers
    - 3.9 TED Registers
-   - 3.10 AHX Module Player Registers
-   - 3.11 Hardware I/O Memory Map by CPU
-   - 3.12 VGA Video Chip
-   - 3.13 ULA Video Chip (ZX Spectrum)
+   - 3.10 TED Video Chip Registers
+   - 3.11 AHX Module Player Registers
+   - 3.12 Hardware I/O Memory Map by CPU
+   - 3.13 VGA Video Chip
+   - 3.14 ULA Video Chip (ZX Spectrum)
 4. [IE32 CPU Architecture](#4-ie32-cpu-architecture)
    - 4.1 Register Set
    - 4.2 Status Flags
@@ -657,7 +658,57 @@ Clock rates: 886724 Hz (PAL), 894886 Hz (NTSC)
 
 These registers allow CPU code to trigger .TED file playback from RAM. The embedded 6502 code in the TED file is executed by the internal 6502 emulator at 50Hz (PAL).
 
-## 3.10 AHX Module Player Registers (0x0F0B80 - 0x0F0B91)
+## 3.10 TED Video Chip Registers (0x0F0F20 - 0x0F0F5F)
+
+The TED chip also provides video capabilities from the Commodore Plus/4:
+
+- 40x25 text mode (8x8 character cells)
+- 320x200 pixel resolution (384x272 with border)
+- 121 colors (16 hues × 8 luminances)
+- Hardware cursor support
+- Compositor layer 12 (between VGA=10 and ULA=15)
+
+```
+TED Video Registers (0x0F0F20 - 0x0F0F5F, 4-byte aligned for copper):
+0x0F0F20: TED_V_CTRL1      - Control 1 (ECM/BMM/DEN/RSEL/YSCROLL)
+0x0F0F24: TED_V_CTRL2      - Control 2 (RES/MCM/CSEL/XSCROLL)
+0x0F0F28: TED_V_CHAR_BASE  - Character/bitmap base address
+0x0F0F2C: TED_V_VIDEO_BASE - Video matrix base address
+0x0F0F30: TED_V_BG_COLOR0  - Background color 0
+0x0F0F34: TED_V_BG_COLOR1  - Background color 1 (multicolor)
+0x0F0F38: TED_V_BG_COLOR2  - Background color 2 (multicolor)
+0x0F0F3C: TED_V_BG_COLOR3  - Background color 3 (multicolor)
+0x0F0F40: TED_V_BORDER     - Border color
+0x0F0F44: TED_V_CURSOR_HI  - Cursor position high byte
+0x0F0F48: TED_V_CURSOR_LO  - Cursor position low byte
+0x0F0F4C: TED_V_CURSOR_CLR - Cursor color
+0x0F0F50: TED_V_RASTER_LO  - Raster line low (read-only)
+0x0F0F54: TED_V_RASTER_HI  - Raster line high (read-only)
+0x0F0F58: TED_V_ENABLE     - Video enable (bit 0)
+0x0F0F5C: TED_V_STATUS     - Status (bit 0 = VBlank)
+
+TED_V_CTRL1 bits:
+  Bit 6: ECM - Extended Color Mode
+  Bit 5: BMM - Bitmap Mode
+  Bit 4: DEN - Display Enable
+  Bit 3: RSEL - Row Select (0=24 rows, 1=25 rows)
+  Bits 0-2: YSCROLL - Vertical scroll (0-7)
+
+TED_V_CTRL2 bits:
+  Bit 5: RES - Reset
+  Bit 4: MCM - Multicolor Mode
+  Bit 3: CSEL - Column Select (0=38 cols, 1=40 cols)
+  Bits 0-2: XSCROLL - Horizontal scroll (0-7)
+
+Color byte format: Bits 4-6 = luminance (0-7), Bits 0-3 = hue (0-15)
+```
+
+TED Video CPU Mappings:
+- IE32/M68K: Direct access at 0x0F0F20-0x0F0F5F
+- 6502: Memory-mapped at $D620-$D62F
+- Z80: Port I/O via 0xF2/0xF3, indices 0x20-0x2F
+
+## 3.11 AHX Module Player Registers (0x0F0B80 - 0x0F0B91)
 
 The AHX engine provides Amiga AHX/THX module playback with 4-channel waveform synthesis:
 
@@ -681,7 +732,7 @@ AHX+ mode provides enhanced audio processing:
 - Authentic Amiga stereo panning (L-R-R-L pattern)
 - Hardware PWM mapping SquarePos to duty cycle
 
-## 3.11 Hardware I/O Memory Map by CPU
+## 3.12 Hardware I/O Memory Map by CPU
 
 All sound and video chips are accessible from all four CPU architectures at different address ranges:
 
@@ -700,6 +751,7 @@ All sound and video chips are accessible from all four CPU architectures at diff
 | Chip      | IE32/M68K         | Z80 Ports | 6502        | Notes |
 |-----------|-------------------|-----------|-------------|-------|
 | VideoChip | 0x0F0000-0x0F0058 | 0xF000+   | $F000-$F058 | Custom copper/blitter |
+| TED Video | 0x0F0F20-0x0F0F5F | 0xF2-0xF3 | $D620-$D62F | Plus/4 compatible (idx 0x20-0x2F) |
 | VGA       | 0x0F1000-0x0F13FF | 0xA0-0xAC | $D700-$D70A | IBM VGA compatible |
 | ULA       | 0x0F2000-0x0F200B | 0xFE      | $D800-$D80B | ZX Spectrum compatible |
 
@@ -714,7 +766,7 @@ Example: `STA $D400` writes to PSG register 0.
 **IE32/M68K Direct:** Full 32-bit address space access.
 Example: `MOVE.B D0,($F0C00).L` writes to PSG register 0.
 
-## 3.12 VGA Video Chip (0x0F1000 - 0x0F13FF)
+## 3.13 VGA Video Chip (0x0F1000 - 0x0F13FF)
 
 The VGA chip provides IBM PC-compatible graphics modes, allowing classic PC demo effects and games:
 
@@ -824,7 +876,7 @@ The VGA chip integrates with the video compositor as a separate layer (layer 10)
 
 See section 10.9 (Video Compositor) for details on the compositing architecture and section 10.6 (Copper List Executor) for examples of copper-driven VGA palette manipulation.
 
-## 3.13 ULA Video Chip - ZX Spectrum (0x0F2000 - 0x0F200B)
+## 3.14 ULA Video Chip - ZX Spectrum (0x0F2000 - 0x0F200B)
 
 The ULA chip provides authentic ZX Spectrum video output, enabling classic Spectrum demos and games:
 

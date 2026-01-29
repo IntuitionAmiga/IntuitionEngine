@@ -353,6 +353,57 @@
 .set TED_PLAY_CTRL,0xF0F18
 .set TED_PLAY_STATUS,0xF0F1C
 
+; ============================================================================
+; TED VIDEO REGISTERS (Commodore Plus/4 style)
+;
+; The TED chip also provides video capabilities:
+; - 40x25 text mode (8x8 character cells)
+; - 320x200 pixel resolution (384x272 with border)
+; - 121 colors (16 hues × 8 luminances)
+; - Hardware cursor support
+; - Compositor layer 12 (between VGA=10 and ULA=15)
+;
+; For Z80: Use OUT (TED_PORT_SELECT),A to select video register index (0x20-0x2F),
+;          then OUT (TED_PORT_DATA),A to write data or IN A,(TED_PORT_DATA) to read.
+;
+; IE32/M68K address: 0xF0F20-0xF0F5F (4-byte aligned)
+; ============================================================================
+
+; TED video register indices (for port I/O, indices 0x20-0x2F)
+.set TED_V_CTRL1,0x20                   ; Control 1 (ECM/BMM/DEN/RSEL/YSCROLL)
+.set TED_V_CTRL2,0x21                   ; Control 2 (RES/MCM/CSEL/XSCROLL)
+.set TED_V_CHAR_BASE,0x22               ; Character/bitmap base address
+.set TED_V_VIDEO_BASE,0x23              ; Video matrix base address
+.set TED_V_BG0,0x24                     ; Background color 0
+.set TED_V_BG1,0x25                     ; Background color 1 (multicolor)
+.set TED_V_BG2,0x26                     ; Background color 2 (multicolor)
+.set TED_V_BG3,0x27                     ; Background color 3 (multicolor)
+.set TED_V_BORDER,0x28                  ; Border color
+.set TED_V_CURSOR_HI,0x29               ; Cursor position high byte
+.set TED_V_CURSOR_LO,0x2A               ; Cursor position low byte
+.set TED_V_CURSOR_CLR,0x2B              ; Cursor color
+.set TED_V_RASTER_LO,0x2C               ; Raster line low (read-only)
+.set TED_V_RASTER_HI,0x2D               ; Raster line high (read-only)
+.set TED_V_ENABLE,0x2E                  ; Video enable (bit 0)
+.set TED_V_STATUS,0x2F                  ; Status (bit 0 = VBlank)
+
+; TED_V_CTRL1 bits
+.set TED_V_CTRL1_ECM,0x40               ; Bit 6: Extended Color Mode
+.set TED_V_CTRL1_BMM,0x20               ; Bit 5: Bitmap Mode
+.set TED_V_CTRL1_DEN,0x10               ; Bit 4: Display Enable
+.set TED_V_CTRL1_RSEL,0x08              ; Bit 3: Row Select (0=24, 1=25)
+.set TED_V_CTRL1_YSCROLL,0x07           ; Bits 0-2: Vertical scroll mask
+
+; TED_V_CTRL2 bits
+.set TED_V_CTRL2_RES,0x20               ; Bit 5: Reset
+.set TED_V_CTRL2_MCM,0x10               ; Bit 4: Multicolor Mode
+.set TED_V_CTRL2_CSEL,0x08              ; Bit 3: Column Select (0=38, 1=40)
+.set TED_V_CTRL2_XSCROLL,0x07           ; Bits 0-2: Horizontal scroll mask
+
+; Enable/Status bits
+.set TED_V_ENABLE_VIDEO,0x01            ; Bit 0: Video enable
+.set TED_V_STATUS_VBLANK,0x01           ; Bit 0: VBlank active
+
 ; ----------------------------------------------------------------------------
 ; SAP Player Registers
 ;
@@ -1454,6 +1505,54 @@
     out (TED_PORT_SELECT),a
     ld a,\val
     out (TED_PORT_DATA),a
+.endm
+
+; ============================================================================
+; TED VIDEO MACROS
+; ============================================================================
+
+; Write TED video register via port I/O
+; Note: TED video uses indices 0x20-0x2F on the same port pair as TED audio
+.macro TED_V_WRITE reg,val
+    ld a,\reg
+    out (TED_PORT_SELECT),a
+    ld a,\val
+    out (TED_PORT_DATA),a
+.endm
+
+; Read TED video register via port I/O (result in A)
+.macro TED_V_READ reg
+    ld a,\reg
+    out (TED_PORT_SELECT),a
+    in a,(TED_PORT_DATA)
+.endm
+
+; Enable TED video
+.macro TED_V_ENABLE_ON
+    TED_V_WRITE TED_V_ENABLE,TED_V_ENABLE_VIDEO
+.endm
+
+; Disable TED video
+.macro TED_V_DISABLE
+    TED_V_WRITE TED_V_ENABLE,0
+.endm
+
+; Set TED border color (color byte = (lum<<4)|hue)
+.macro TED_V_SET_BORDER color
+    TED_V_WRITE TED_V_BORDER,\color
+.endm
+
+; Set TED background color 0 (color byte = (lum<<4)|hue)
+.macro TED_V_SET_BG0 color
+    TED_V_WRITE TED_V_BG0,\color
+.endm
+
+; Wait for TED VBlank
+.macro TED_V_WAIT_VBLANK
+.ted_vb_wait\@:
+    TED_V_READ TED_V_STATUS
+    and TED_V_STATUS_VBLANK
+    jr z,.ted_vb_wait\@
 .endm
 
 ; ============================================================================

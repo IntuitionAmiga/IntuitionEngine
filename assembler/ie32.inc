@@ -330,6 +330,72 @@
 .equ TED_PLAY_STATUS   0xF0F1C          ; Play status
 
 ; ============================================================================
+; TED VIDEO REGISTERS (Commodore Plus/4 style)
+;
+; The TED chip also provides video capabilities:
+; - 40x25 text mode (8x8 character cells)
+; - 320x200 pixel resolution (384x272 with border)
+; - 121 colors (16 hues × 8 luminances)
+; - Hardware cursor support
+; - Compositor layer 12 (between VGA=10 and ULA=15)
+;
+; All registers are 4-byte aligned for copper SETBASE compatibility.
+; ============================================================================
+.equ TED_VIDEO_BASE    0xF0F20          ; TED video register base
+
+; Control registers
+.equ TED_V_CTRL1       0xF0F20          ; Control 1 (ECM/BMM/DEN/RSEL/YSCROLL)
+.equ TED_V_CTRL2       0xF0F24          ; Control 2 (RES/MCM/CSEL/XSCROLL)
+.equ TED_V_CHAR_BASE   0xF0F28          ; Character/bitmap base address
+.equ TED_V_VIDEO_BASE  0xF0F2C          ; Video matrix base address
+
+; Color registers
+.equ TED_V_BG_COLOR0   0xF0F30          ; Background color 0
+.equ TED_V_BG_COLOR1   0xF0F34          ; Background color 1 (multicolor)
+.equ TED_V_BG_COLOR2   0xF0F38          ; Background color 2 (multicolor)
+.equ TED_V_BG_COLOR3   0xF0F3C          ; Background color 3 (multicolor)
+.equ TED_V_BORDER      0xF0F40          ; Border color
+
+; Cursor registers
+.equ TED_V_CURSOR_HI   0xF0F44          ; Cursor position high byte
+.equ TED_V_CURSOR_LO   0xF0F48          ; Cursor position low byte
+.equ TED_V_CURSOR_CLR  0xF0F4C          ; Cursor color
+
+; Status registers
+.equ TED_V_RASTER_LO   0xF0F50          ; Raster line low (read-only)
+.equ TED_V_RASTER_HI   0xF0F54          ; Raster line high (read-only)
+.equ TED_V_ENABLE      0xF0F58          ; Video enable (bit 0)
+.equ TED_V_STATUS      0xF0F5C          ; Status (bit 0 = VBlank)
+
+; TED_V_CTRL1 bits
+.equ TED_V_CTRL1_ECM      0x40          ; Bit 6: Extended Color Mode
+.equ TED_V_CTRL1_BMM      0x20          ; Bit 5: Bitmap Mode
+.equ TED_V_CTRL1_DEN      0x10          ; Bit 4: Display Enable
+.equ TED_V_CTRL1_RSEL     0x08          ; Bit 3: Row Select (0=24, 1=25)
+.equ TED_V_CTRL1_YSCROLL  0x07          ; Bits 0-2: Vertical scroll mask
+
+; TED_V_CTRL2 bits
+.equ TED_V_CTRL2_RES      0x20          ; Bit 5: Reset
+.equ TED_V_CTRL2_MCM      0x10          ; Bit 4: Multicolor Mode
+.equ TED_V_CTRL2_CSEL     0x08          ; Bit 3: Column Select (0=38, 1=40)
+.equ TED_V_CTRL2_XSCROLL  0x07          ; Bits 0-2: Horizontal scroll mask
+
+; Enable/Status bits
+.equ TED_V_ENABLE_VIDEO   0x01          ; Bit 0: Video enable
+.equ TED_V_STATUS_VBLANK  0x01          ; Bit 0: VBlank active
+
+; Display dimensions
+.equ TED_V_DISPLAY_W   320              ; Display width in pixels
+.equ TED_V_DISPLAY_H   200              ; Display height in pixels
+.equ TED_V_FRAME_W     384              ; Total frame width (with border)
+.equ TED_V_FRAME_H     272              ; Total frame height (with border)
+.equ TED_V_CELLS_X     40               ; Text columns
+.equ TED_V_CELLS_Y     25               ; Text rows
+
+; Copper SETBASE for TED video
+.equ COP_SETBASE_TED_VIDEO 0x8003C3C8   ; TED_VIDEO_BASE (0xF0F20 >> 2)
+
+; ============================================================================
 ; AHX AUDIO REGISTERS (Amiga AHX module player)
 ;
 ; The AHX engine provides Amiga AHX/THX module playback:
