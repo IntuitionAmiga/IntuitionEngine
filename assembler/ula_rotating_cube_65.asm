@@ -62,20 +62,23 @@
 ; === THE INTUITION ENGINE'S MULTI-CPU ARCHITECTURE ===
 ;
 ; This demo runs on the 6502 CPU core, but the Intuition Engine can
-; also run M68020 and Z80 code. The AHX audio engine is separate from
-; all CPUs - once started, it synthesizes music autonomously.
+; also run M68020, Z80, and IE32 code. The AHX audio engine is separate
+; from all CPUs - once started, it synthesizes music autonomously.
 ;
-;   +----------+     +----------+     +----------+
-;   |  M68020  |     |   6502   |     |   Z80    |
-;   | (unused) |     | (active) |     | (unused) |
-;   +----------+     +----------+     +----------+
-;        |               |                |
-;        +-------+-------+-------+--------+
-;                |               |
-;           +---------+    +-----------+
-;           |   ULA   |    |    AHX    |
-;           | Display |    |  Synth    |
-;           +---------+    +-----------+
+;   +----------+  +----------+  +----------+  +----------+
+;   |  M68020  |  |   6502   |  |   Z80    |  |   IE32   |
+;   | (unused) |  | (active) |  | (unused) |  | (unused) |
+;   +----------+  +----------+  +----------+  +----------+
+;        |             |             |             |
+;        +------+------+------+------+------+------+
+;               |                    |
+;          +---------+         +-----------+
+;          |   ULA   |         |    AHX    |
+;          | Display |         |   Synth   |
+;          +---------+         +-----------+
+;
+; The IE32 is a custom 32-bit RISC CPU designed specifically for the
+; Intuition Engine, offering modern performance with retro aesthetics.
 ;
 ; ============================================================================
 
