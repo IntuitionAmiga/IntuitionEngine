@@ -2406,5 +2406,69 @@
 .set GTIA_GRACTL_LATCH,0x04
 
 ; ============================================================================
+; 3DFX VOODOO GRAPHICS (SST-1) REGISTERS
+; ============================================================================
+; Vulkan-accelerated 3D graphics. See ie68.inc for detailed documentation.
+
+; Base address
+.set VOODOO_BASE,0xF4000
+
+; Status register (read-only)
+.set VOODOO_STATUS,0xF4000
+
+; Vertex coordinate registers (12.4 fixed-point)
+.set VOODOO_VERTEX_AX,0xF4008
+.set VOODOO_VERTEX_AY,0xF400C
+.set VOODOO_VERTEX_BX,0xF4010
+.set VOODOO_VERTEX_BY,0xF4014
+.set VOODOO_VERTEX_CX,0xF4018
+.set VOODOO_VERTEX_CY,0xF401C
+
+; Vertex attribute start values (12.12 fixed-point)
+.set VOODOO_START_R,0xF4020
+.set VOODOO_START_G,0xF4024
+.set VOODOO_START_B,0xF4028
+.set VOODOO_START_Z,0xF402C
+.set VOODOO_START_A,0xF4030
+.set VOODOO_START_S,0xF4034
+.set VOODOO_START_T,0xF4038
+.set VOODOO_START_W,0xF403C
+
+; Command registers
+.set VOODOO_TRIANGLE_CMD,0xF4080
+.set VOODOO_ALPHA_MODE,0xF410C
+.set VOODOO_FBZ_MODE,0xF4110
+.set VOODOO_CLIP_LEFT_RIGHT,0xF4118
+.set VOODOO_CLIP_LOW_Y_HIGH,0xF411C
+.set VOODOO_FAST_FILL_CMD,0xF4124
+.set VOODOO_SWAP_BUFFER_CMD,0xF4128
+
+; Configuration registers
+.set VOODOO_COLOR0,0xF41D8
+.set VOODOO_VIDEO_DIM,0xF4214
+
+; fbzMode bits
+.set VOODOO_FBZ_CLIPPING,0x0001
+.set VOODOO_FBZ_DEPTH_ENABLE,0x0010
+.set VOODOO_FBZ_RGB_WRITE,0x0200
+.set VOODOO_FBZ_DEPTH_WRITE,0x0400
+
+; Depth compare functions (shift left 5)
+.set VOODOO_DEPTH_LESS,1
+.set VOODOO_DEPTH_LESSEQUAL,3
+.set VOODOO_DEPTH_ALWAYS,7
+
+; alphaMode bits
+.set VOODOO_ALPHA_BLEND_EN,0x0010
+
+; Blend factors
+.set VOODOO_BLEND_SRC_ALPHA,1
+.set VOODOO_BLEND_INV_SRC_A,5
+
+; Fixed-point shift amounts
+.set VOODOO_FIXED_12_4,4
+.set VOODOO_FIXED_12_12,12
+
+; ============================================================================
 ; EOF
 ; ============================================================================

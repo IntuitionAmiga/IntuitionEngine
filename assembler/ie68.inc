@@ -1375,5 +1375,184 @@ gtia_setpf3       macro   color
                   endm
 
 ; ============================================================================
+; 3DFX VOODOO GRAPHICS (SST-1) REGISTERS
+; ============================================================================
+;
+; The Voodoo SST-1 is a 3D accelerator using Vulkan HLE (High-Level Emulation).
+; Register writes are translated to GPU draw calls for hardware-accelerated
+; 3D rendering.
+;
+; Programming Model:
+;   1. Write vertex coordinates to VOODOO_VERTEX_* (12.4 fixed-point)
+;   2. Write colors to VOODOO_START_* (12.12 fixed-point for 0.0-1.0 range)
+;   3. Write Z depth to VOODOO_START_Z (20.12 fixed-point)
+;   4. Write to VOODOO_TRIANGLE_CMD to submit triangle
+;   5. Write to VOODOO_SWAP_BUFFER_CMD to present frame
+;
+; Fixed-point formats:
+;   12.4  = 12 integer bits, 4 fractional bits (coordinates)
+;   12.12 = 12 integer bits, 12 fractional bits (colors: 1.0 = $1000)
+;   20.12 = 20 integer bits, 12 fractional bits (Z depth)
+;
+; Example: Draw a red triangle
+;   move.l  #(100<<4),VOODOO_VERTEX_AX    ; Vertex A at (100, 50)
+;   move.l  #(50<<4),VOODOO_VERTEX_AY
+;   move.l  #(200<<4),VOODOO_VERTEX_BX    ; Vertex B at (200, 150)
+;   move.l  #(150<<4),VOODOO_VERTEX_BY
+;   move.l  #(50<<4),VOODOO_VERTEX_CX     ; Vertex C at (50, 150)
+;   move.l  #(150<<4),VOODOO_VERTEX_CY
+;   move.l  #$1000,VOODOO_START_R         ; Red = 1.0
+;   move.l  #0,VOODOO_START_G             ; Green = 0.0
+;   move.l  #0,VOODOO_START_B             ; Blue = 0.0
+;   move.l  #$1000,VOODOO_START_A         ; Alpha = 1.0
+;   move.l  #0,VOODOO_TRIANGLE_CMD        ; Submit triangle
+;   move.l  #0,VOODOO_SWAP_BUFFER_CMD     ; Present frame
+
+; Base address
+VOODOO_BASE           equ $F4000
+
+; Status register (read-only)
+VOODOO_STATUS         equ $F4000            ; Status register
+
+; Status register bits
+VOODOO_STATUS_FBI_BUSY    equ $01           ; FBI (framebuffer) busy
+VOODOO_STATUS_TMU_BUSY    equ $02           ; TMU (texture) busy
+VOODOO_STATUS_SST_BUSY    equ $04           ; Overall chip busy
+VOODOO_STATUS_VRETRACE    equ $40           ; Vertical retrace (VSync)
+VOODOO_STATUS_SWAPBUF     equ $80           ; Swap buffers pending
+
+; Vertex coordinate registers (12.4 fixed-point)
+VOODOO_VERTEX_AX      equ $F4008            ; Vertex A X coordinate
+VOODOO_VERTEX_AY      equ $F400C            ; Vertex A Y coordinate
+VOODOO_VERTEX_BX      equ $F4010            ; Vertex B X coordinate
+VOODOO_VERTEX_BY      equ $F4014            ; Vertex B Y coordinate
+VOODOO_VERTEX_CX      equ $F4018            ; Vertex C X coordinate
+VOODOO_VERTEX_CY      equ $F401C            ; Vertex C Y coordinate
+
+; Vertex attribute start values (12.12 fixed-point, 0.0-1.0 range)
+VOODOO_START_R        equ $F4020            ; Start red
+VOODOO_START_G        equ $F4024            ; Start green
+VOODOO_START_B        equ $F4028            ; Start blue
+VOODOO_START_Z        equ $F402C            ; Start Z (20.12 fixed-point)
+VOODOO_START_A        equ $F4030            ; Start alpha
+VOODOO_START_S        equ $F4034            ; Start S texture coord (14.18)
+VOODOO_START_T        equ $F4038            ; Start T texture coord (14.18)
+VOODOO_START_W        equ $F403C            ; Start W (perspective, 2.30)
+
+; Command registers
+VOODOO_TRIANGLE_CMD   equ $F4080            ; Submit triangle for rendering
+VOODOO_FBZCOLOR_PATH  equ $F4104            ; Framebuffer/color path config
+VOODOO_FOG_MODE       equ $F4108            ; Fog mode
+VOODOO_ALPHA_MODE     equ $F410C            ; Alpha test/blend mode
+VOODOO_FBZ_MODE       equ $F4110            ; Framebuffer Z mode
+VOODOO_LFB_MODE       equ $F4114            ; Linear framebuffer mode
+VOODOO_CLIP_LEFT_RIGHT equ $F4118           ; Clip rectangle left/right
+VOODOO_CLIP_LOW_Y_HIGH equ $F411C           ; Clip rectangle top/bottom
+VOODOO_NOP_CMD        equ $F4120            ; No operation
+VOODOO_FAST_FILL_CMD  equ $F4124            ; Fast fill (clear) command
+VOODOO_SWAP_BUFFER_CMD equ $F4128           ; Swap front/back buffers
+
+; Configuration registers
+VOODOO_FOG_COLOR      equ $F41C4            ; Fog color (RGB)
+VOODOO_ZA_COLOR       equ $F41C8            ; Z/A constant color
+VOODOO_CHROMA_KEY     equ $F41CC            ; Chroma key color
+VOODOO_COLOR0         equ $F41D8            ; Constant color 0 (fill color)
+VOODOO_COLOR1         equ $F41DC            ; Constant color 1
+
+; Framebuffer configuration
+VOODOO_VIDEO_DIM      equ $F4214            ; Video dimensions (width<<16|height)
+
+; Texture registers
+VOODOO_TEXTURE_MODE   equ $F4300            ; Texture mode configuration
+VOODOO_TEX_BASE0      equ $F430C            ; Texture base address (LOD 0)
+
+; fbzMode bits
+VOODOO_FBZ_CLIPPING     equ $0001           ; Enable scissor clipping
+VOODOO_FBZ_CHROMAKEY    equ $0002           ; Enable chroma keying
+VOODOO_FBZ_DEPTH_ENABLE equ $0010           ; Enable depth buffer test
+VOODOO_FBZ_DEPTH_FUNC   equ $00E0           ; Depth compare function (3 bits)
+VOODOO_FBZ_RGB_WRITE    equ $0200           ; Enable RGB buffer write
+VOODOO_FBZ_DEPTH_WRITE  equ $0400           ; Enable depth buffer write
+
+; Depth compare functions (shift left 5 to use in FBZ_MODE)
+VOODOO_DEPTH_NEVER        equ 0
+VOODOO_DEPTH_LESS         equ 1
+VOODOO_DEPTH_EQUAL        equ 2
+VOODOO_DEPTH_LESSEQUAL    equ 3
+VOODOO_DEPTH_GREATER      equ 4
+VOODOO_DEPTH_NOTEQUAL     equ 5
+VOODOO_DEPTH_GREATEREQUAL equ 6
+VOODOO_DEPTH_ALWAYS       equ 7
+
+; alphaMode bits
+VOODOO_ALPHA_TEST_EN    equ $0001           ; Enable alpha test
+VOODOO_ALPHA_BLEND_EN   equ $0010           ; Enable alpha blending
+VOODOO_ALPHA_SRC_RGB    equ $0F00           ; Source RGB blend factor
+VOODOO_ALPHA_DST_RGB    equ $F000           ; Dest RGB blend factor
+
+; Alpha blend factors (for src/dst blend settings)
+VOODOO_BLEND_ZERO       equ 0
+VOODOO_BLEND_SRC_ALPHA  equ 1
+VOODOO_BLEND_ONE        equ 4
+VOODOO_BLEND_INV_SRC_A  equ 5
+
+; swapbufferCMD bits
+VOODOO_SWAP_VSYNC       equ $01             ; Wait for VSync before swap
+VOODOO_SWAP_CLEAR       equ $02             ; Clear buffer after swap
+
+; Clip register packing (for CLIP_LEFT_RIGHT and CLIP_LOW_Y_HIGH)
+; clipLeftRight: bits 0-9 = right, bits 16-25 = left
+; clipLowYHigh: bits 0-9 = bottom, bits 16-25 = top
+VOODOO_CLIP_MASK        equ $3FF            ; 10-bit clip value mask
+
+; Fixed-point conversion helpers (shift amounts)
+VOODOO_FIXED_12_4       equ 4               ; Vertex coordinates
+VOODOO_FIXED_12_12      equ 12              ; Colors (1.0 = $1000)
+
+; ----- Voodoo helper macros -----
+
+; Set vertex A coordinates (x, y as integers)
+voodoo_vertex_a   macro   x,y
+                  move.l  #(\x<<4),VOODOO_VERTEX_AX
+                  move.l  #(\y<<4),VOODOO_VERTEX_AY
+                  endm
+
+; Set vertex B coordinates
+voodoo_vertex_b   macro   x,y
+                  move.l  #(\x<<4),VOODOO_VERTEX_BX
+                  move.l  #(\y<<4),VOODOO_VERTEX_BY
+                  endm
+
+; Set vertex C coordinates
+voodoo_vertex_c   macro   x,y
+                  move.l  #(\x<<4),VOODOO_VERTEX_CX
+                  move.l  #(\y<<4),VOODOO_VERTEX_CY
+                  endm
+
+; Set color (r, g, b as 0-255 values)
+voodoo_color_rgb  macro   r,g,b
+                  move.l  #(\r<<4),VOODOO_START_R
+                  move.l  #(\g<<4),VOODOO_START_G
+                  move.l  #(\b<<4),VOODOO_START_B
+                  move.l  #$1000,VOODOO_START_A
+                  endm
+
+; Submit triangle
+voodoo_triangle   macro
+                  move.l  #0,VOODOO_TRIANGLE_CMD
+                  endm
+
+; Swap buffers
+voodoo_swap       macro
+                  move.l  #0,VOODOO_SWAP_BUFFER_CMD
+                  endm
+
+; Clear framebuffer with color (ARGB)
+voodoo_clear      macro   color
+                  move.l  #\color,VOODOO_COLOR0
+                  move.l  #0,VOODOO_FAST_FILL_CMD
+                  endm
+
+; ============================================================================
 ; EOF
 ; ============================================================================

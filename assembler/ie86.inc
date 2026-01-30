@@ -880,5 +880,87 @@ GTIA_END          equ 0xF216F
 %endmacro
 
 ; ============================================================================
+; 3DFX VOODOO GRAPHICS (SST-1) REGISTERS
+; ============================================================================
+; Vulkan-accelerated 3D graphics. See ie68.inc for detailed documentation.
+
+; Base address
+VOODOO_BASE           equ 0xF4000
+
+; Status register (read-only)
+VOODOO_STATUS         equ 0xF4000
+
+; Vertex coordinate registers (12.4 fixed-point)
+VOODOO_VERTEX_AX      equ 0xF4008
+VOODOO_VERTEX_AY      equ 0xF400C
+VOODOO_VERTEX_BX      equ 0xF4010
+VOODOO_VERTEX_BY      equ 0xF4014
+VOODOO_VERTEX_CX      equ 0xF4018
+VOODOO_VERTEX_CY      equ 0xF401C
+
+; Vertex attribute start values (12.12 fixed-point)
+VOODOO_START_R        equ 0xF4020
+VOODOO_START_G        equ 0xF4024
+VOODOO_START_B        equ 0xF4028
+VOODOO_START_Z        equ 0xF402C
+VOODOO_START_A        equ 0xF4030
+VOODOO_START_S        equ 0xF4034
+VOODOO_START_T        equ 0xF4038
+VOODOO_START_W        equ 0xF403C
+
+; Command registers
+VOODOO_TRIANGLE_CMD   equ 0xF4080
+VOODOO_ALPHA_MODE     equ 0xF410C
+VOODOO_FBZ_MODE       equ 0xF4110
+VOODOO_CLIP_LEFT_RIGHT equ 0xF4118
+VOODOO_CLIP_LOW_Y_HIGH equ 0xF411C
+VOODOO_FAST_FILL_CMD  equ 0xF4124
+VOODOO_SWAP_BUFFER_CMD equ 0xF4128
+
+; Configuration registers
+VOODOO_COLOR0         equ 0xF41D8
+VOODOO_VIDEO_DIM      equ 0xF4214
+
+; fbzMode bits
+VOODOO_FBZ_CLIPPING     equ 0x0001
+VOODOO_FBZ_DEPTH_ENABLE equ 0x0010
+VOODOO_FBZ_RGB_WRITE    equ 0x0200
+VOODOO_FBZ_DEPTH_WRITE  equ 0x0400
+
+; Depth compare functions (shift left 5)
+VOODOO_DEPTH_LESS         equ 1
+VOODOO_DEPTH_LESSEQUAL    equ 3
+VOODOO_DEPTH_ALWAYS       equ 7
+
+; alphaMode bits
+VOODOO_ALPHA_BLEND_EN   equ 0x0010
+
+; Blend factors
+VOODOO_BLEND_SRC_ALPHA  equ 1
+VOODOO_BLEND_INV_SRC_A  equ 5
+
+; Fixed-point shift amounts
+VOODOO_FIXED_12_4       equ 4
+VOODOO_FIXED_12_12      equ 12
+
+; ----- Voodoo helper macros -----
+
+; Submit triangle
+%macro voodoo_triangle 0
+    mov dword [VOODOO_TRIANGLE_CMD], 0
+%endmacro
+
+; Swap buffers
+%macro voodoo_swap 0
+    mov dword [VOODOO_SWAP_BUFFER_CMD], 0
+%endmacro
+
+; Clear framebuffer with color (ARGB)
+%macro voodoo_clear 1
+    mov dword [VOODOO_COLOR0], %1
+    mov dword [VOODOO_FAST_FILL_CMD], 0
+%endmacro
+
+; ============================================================================
 ; EOF
 ; ============================================================================

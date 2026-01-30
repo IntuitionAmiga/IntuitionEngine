@@ -2297,6 +2297,66 @@ GTIA_GRACTL_LATCH  = $04        ; Latch trigger inputs
 .endmacro
 
 ; ============================================================================
+; 3DFX VOODOO GRAPHICS (SST-1) REGISTERS
+; ============================================================================
+; Vulkan-accelerated 3D graphics. See ie68.inc for detailed documentation.
+; Note: 6502 cannot directly address 32-bit registers, use indirect addressing.
+
+; Base address (high byte only for bank switching)
+VOODOO_BASE_HI      = $F4
+
+; Status register (read-only)
+VOODOO_STATUS       = $F400
+
+; Vertex coordinate registers (12.4 fixed-point)
+; For 6502, these require 32-bit writes via indirect addressing
+VOODOO_VERTEX_AX    = $F400         ; Page offset $08
+VOODOO_VERTEX_AY    = $F400         ; Page offset $0C
+VOODOO_VERTEX_BX    = $F401         ; Page offset $10
+VOODOO_VERTEX_BY    = $F401         ; Page offset $14
+VOODOO_VERTEX_CX    = $F401         ; Page offset $18
+VOODOO_VERTEX_CY    = $F401         ; Page offset $1C
+
+; Vertex attribute start values (12.12 fixed-point)
+VOODOO_START_R      = $F402         ; Page offset $20
+VOODOO_START_G      = $F402         ; Page offset $24
+VOODOO_START_B      = $F402         ; Page offset $28
+VOODOO_START_Z      = $F402         ; Page offset $2C
+VOODOO_START_A      = $F403         ; Page offset $30
+VOODOO_START_S      = $F403         ; Page offset $34
+VOODOO_START_T      = $F403         ; Page offset $38
+VOODOO_START_W      = $F403         ; Page offset $3C
+
+; Command registers
+VOODOO_TRIANGLE_CMD = $F408         ; Page offset $80
+VOODOO_ALPHA_MODE   = $F410         ; Page offset $0C
+VOODOO_FBZ_MODE     = $F411         ; Page offset $10
+VOODOO_FAST_FILL_CMD = $F412        ; Page offset $24
+VOODOO_SWAP_BUFFER_CMD = $F412      ; Page offset $28
+
+; Configuration registers
+VOODOO_COLOR0       = $F41D         ; Page offset $D8
+VOODOO_VIDEO_DIM    = $F421         ; Page offset $14
+
+; fbzMode bits
+VOODOO_FBZ_CLIPPING     = $01
+VOODOO_FBZ_DEPTH_ENABLE = $10
+VOODOO_FBZ_RGB_WRITE    = $02       ; Bit 9 in low byte of high word
+VOODOO_FBZ_DEPTH_WRITE  = $04       ; Bit 10 in low byte of high word
+
+; Depth compare functions (shift left 5)
+VOODOO_DEPTH_LESS       = 1
+VOODOO_DEPTH_LESSEQUAL  = 3
+VOODOO_DEPTH_ALWAYS     = 7
+
+; alphaMode bits
+VOODOO_ALPHA_BLEND_EN   = $10
+
+; Fixed-point shift amounts
+VOODOO_FIXED_12_4       = 4
+VOODOO_FIXED_12_12      = 12
+
+; ============================================================================
 ; ZERO PAGE ALLOCATION HELPER
 ; ============================================================================
 

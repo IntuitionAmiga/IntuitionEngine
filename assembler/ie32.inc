@@ -980,5 +980,69 @@
 .equ COP_SETBASE_GTIA  0x8003C850       ; GTIA_BASE (0xF2140 >> 2)
 
 ; ============================================================================
+; 3DFX VOODOO GRAPHICS (SST-1) REGISTERS
+; ============================================================================
+; Vulkan-accelerated 3D graphics. See ie68.inc for detailed documentation.
+
+; Base address
+.equ VOODOO_BASE           0xF4000
+
+; Status register (read-only)
+.equ VOODOO_STATUS         0xF4000
+
+; Vertex coordinate registers (12.4 fixed-point)
+.equ VOODOO_VERTEX_AX      0xF4008
+.equ VOODOO_VERTEX_AY      0xF400C
+.equ VOODOO_VERTEX_BX      0xF4010
+.equ VOODOO_VERTEX_BY      0xF4014
+.equ VOODOO_VERTEX_CX      0xF4018
+.equ VOODOO_VERTEX_CY      0xF401C
+
+; Vertex attribute start values (12.12 fixed-point)
+.equ VOODOO_START_R        0xF4020
+.equ VOODOO_START_G        0xF4024
+.equ VOODOO_START_B        0xF4028
+.equ VOODOO_START_Z        0xF402C
+.equ VOODOO_START_A        0xF4030
+.equ VOODOO_START_S        0xF4034
+.equ VOODOO_START_T        0xF4038
+.equ VOODOO_START_W        0xF403C
+
+; Command registers
+.equ VOODOO_TRIANGLE_CMD   0xF4080
+.equ VOODOO_ALPHA_MODE     0xF410C
+.equ VOODOO_FBZ_MODE       0xF4110
+.equ VOODOO_CLIP_LEFT_RIGHT 0xF4118
+.equ VOODOO_CLIP_LOW_Y_HIGH 0xF411C
+.equ VOODOO_FAST_FILL_CMD  0xF4124
+.equ VOODOO_SWAP_BUFFER_CMD 0xF4128
+
+; Configuration registers
+.equ VOODOO_COLOR0         0xF41D8
+.equ VOODOO_VIDEO_DIM      0xF4214
+
+; fbzMode bits
+.equ VOODOO_FBZ_CLIPPING     0x0001
+.equ VOODOO_FBZ_DEPTH_ENABLE 0x0010
+.equ VOODOO_FBZ_RGB_WRITE    0x0200
+.equ VOODOO_FBZ_DEPTH_WRITE  0x0400
+
+; Depth compare functions (shift left 5)
+.equ VOODOO_DEPTH_LESS         1
+.equ VOODOO_DEPTH_LESSEQUAL    3
+.equ VOODOO_DEPTH_ALWAYS       7
+
+; alphaMode bits
+.equ VOODOO_ALPHA_BLEND_EN   0x0010
+
+; Blend factors
+.equ VOODOO_BLEND_SRC_ALPHA  1
+.equ VOODOO_BLEND_INV_SRC_A  5
+
+; Fixed-point shift amounts
+.equ VOODOO_FIXED_12_4       4
+.equ VOODOO_FIXED_12_12      12
+
+; ============================================================================
 ; EOF
 ; ============================================================================

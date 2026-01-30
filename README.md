@@ -768,6 +768,7 @@ All sound and video chips are accessible from all five CPU architectures at diff
 | VideoChip | 0x0F0000-0x0F0058 | Memory      | Memory        | $F000-$F058 | Custom copper/blitter |
 | TED Video | 0x0F0F20-0x0F0F5F | 0xF2/0xF3   | 0xF2/0xF3     | $D620-$D62F | Plus/4 (idx 0x20-0x2F) |
 | VGA       | 0x0F1000-0x0F13FF | 0xA0-0xAC   | 0x3C4-0x3DA   | $D700-$D70A | IBM VGA compatible |
+| Voodoo    | 0x0F4000-0x0F43FF | Memory      | Memory        | Memory      | 3DFX SST-1 3D accelerator |
 | ANTIC     | 0x0F2100-0x0F213F | 0xD4/0xD5   | 0xD4/0xD5     | $D400-$D40F | Atari 8-bit video |
 | GTIA      | 0x0F2140-0x0F21B7 | 0xD6/0xD7   | 0xD6/0xD7     | $D000-$D01F | Atari 8-bit color + P/M |
 | ULA       | 0x0F2000-0x0F200B | 0xFE        | 0xFE          | $D800-$D80B | ZX Spectrum compatible |
@@ -1314,6 +1315,136 @@ The PRIOR register controls display priority and special GTIA modes:
     move.b  #$C6,GTIA_COLPF2    ; Green
     move.b  #$46,GTIA_COLPF3    ; Red
     move.b  #$00,GTIA_COLBK     ; Black background
+```
+
+## 3.17 Voodoo 3D Graphics (0x0F4000 - 0x0F43FF)
+
+The Voodoo chip emulates a 3DFX SST-1 graphics accelerator using High-Level Emulation (HLE). Instead of software rasterization, register writes are translated to GPU draw calls for hardware-accelerated 3D rendering with Vulkan (or software fallback).
+
+### Features
+
+- Voodoo SST-1 register-compatible interface
+- Gouraud shaded triangles with Z-buffering
+- Alpha blending and alpha test
+- Scissor clipping
+- 640x480 default, up to 800x600
+- Compositor layer 20 (renders on top of all 2D chips)
+
+### Register Map
+
+```
+Status/Control (0x0F4000 - 0x0F4007):
+0x0F4000: VOODOO_STATUS      - Status (busy, vsync, fifo state)
+
+Vertex Coordinates (0x0F4008 - 0x0F401F, 12.4 fixed-point):
+0x0F4008: VOODOO_VERTEX_AX   - Vertex A X coordinate
+0x0F400C: VOODOO_VERTEX_AY   - Vertex A Y coordinate
+0x0F4010: VOODOO_VERTEX_BX   - Vertex B X coordinate
+0x0F4014: VOODOO_VERTEX_BY   - Vertex B Y coordinate
+0x0F4018: VOODOO_VERTEX_CX   - Vertex C X coordinate
+0x0F401C: VOODOO_VERTEX_CY   - Vertex C Y coordinate
+
+Vertex Attributes (0x0F4020 - 0x0F403F, 12.12 fixed-point):
+0x0F4020: VOODOO_START_R     - Start red (1.0 = 0x1000)
+0x0F4024: VOODOO_START_G     - Start green
+0x0F4028: VOODOO_START_B     - Start blue
+0x0F402C: VOODOO_START_Z     - Start Z depth (20.12 fixed-point)
+0x0F4030: VOODOO_START_A     - Start alpha
+0x0F4034: VOODOO_START_S     - Start S texture coord (14.18)
+0x0F4038: VOODOO_START_T     - Start T texture coord (14.18)
+0x0F403C: VOODOO_START_W     - Start W (perspective, 2.30)
+
+Command Registers:
+0x0F4080: VOODOO_TRIANGLE_CMD    - Submit triangle for rendering
+0x0F410C: VOODOO_ALPHA_MODE      - Alpha test/blend configuration
+0x0F4110: VOODOO_FBZ_MODE        - Depth test/write configuration
+0x0F4118: VOODOO_CLIP_LEFT_RIGHT - Scissor rectangle X bounds
+0x0F411C: VOODOO_CLIP_LOW_Y_HIGH - Scissor rectangle Y bounds
+0x0F4124: VOODOO_FAST_FILL_CMD   - Clear framebuffer with COLOR0
+0x0F4128: VOODOO_SWAP_BUFFER_CMD - Swap front/back buffers
+
+Configuration:
+0x0F41D8: VOODOO_COLOR0      - Fill color for FAST_FILL_CMD (ARGB)
+0x0F4214: VOODOO_VIDEO_DIM   - Video dimensions (width<<16 | height)
+```
+
+### Fixed-Point Formats
+
+| Format | Shift | Range | Usage |
+|--------|-------|-------|-------|
+| 12.4 | 4 | -2048.0 to 2047.9375 | Vertex coordinates |
+| 12.12 | 12 | -2048.0 to 2047.999 | Colors (0.0-1.0 range: 0x0000-0x1000) |
+| 20.12 | 12 | Large range | Z depth |
+| 14.18 | 18 | 0.0 to 16383.999 | Texture coordinates |
+
+### fbzMode Bits
+
+| Bit | Name | Description |
+|-----|------|-------------|
+| 0 | CLIPPING | Enable scissor clipping |
+| 4 | DEPTH_ENABLE | Enable depth buffer test |
+| 5-7 | DEPTH_FUNC | Depth compare function (0=never, 1=less, 3=lessequal, 7=always) |
+| 9 | RGB_WRITE | Enable RGB buffer write |
+| 10 | DEPTH_WRITE | Enable depth buffer write |
+
+### Example: Flat Shaded Triangle (M68K)
+
+```asm
+    include "ie68.inc"
+
+    ; Clear screen to black
+    move.l  #$FF000000,VOODOO_COLOR0
+    move.l  #0,VOODOO_FAST_FILL_CMD
+
+    ; Set up depth test (less-than, write enabled)
+    move.l  #(VOODOO_FBZ_DEPTH_ENABLE|VOODOO_FBZ_RGB_WRITE|VOODOO_FBZ_DEPTH_WRITE|(VOODOO_DEPTH_LESS<<5)),VOODOO_FBZ_MODE
+
+    ; Define triangle vertices (12.4 fixed-point: value << 4)
+    move.l  #(320<<4),VOODOO_VERTEX_AX   ; Top center (320, 100)
+    move.l  #(100<<4),VOODOO_VERTEX_AY
+    move.l  #(420<<4),VOODOO_VERTEX_BX   ; Bottom right (420, 300)
+    move.l  #(300<<4),VOODOO_VERTEX_BY
+    move.l  #(220<<4),VOODOO_VERTEX_CX   ; Bottom left (220, 300)
+    move.l  #(300<<4),VOODOO_VERTEX_CY
+
+    ; Set red color (12.12 fixed-point: 1.0 = $1000)
+    move.l  #$1000,VOODOO_START_R        ; R = 1.0
+    move.l  #$0000,VOODOO_START_G        ; G = 0.0
+    move.l  #$0000,VOODOO_START_B        ; B = 0.0
+    move.l  #$1000,VOODOO_START_A        ; A = 1.0 (opaque)
+    move.l  #$800000,VOODOO_START_Z      ; Z = 0.5
+
+    ; Submit triangle
+    move.l  #0,VOODOO_TRIANGLE_CMD
+
+    ; Present frame
+    move.l  #0,VOODOO_SWAP_BUFFER_CMD
+```
+
+### Example: Rotating Cube with Z-Buffer (M68K)
+
+```asm
+    include "ie68.inc"
+
+    ; Main render loop
+.frame_loop:
+    ; Clear framebuffer
+    move.l  #$FF000000,VOODOO_COLOR0
+    move.l  #0,VOODOO_FAST_FILL_CMD
+
+    ; Draw 12 triangles (6 faces x 2 triangles each)
+    ; Front face - red
+    bsr     draw_face_front
+
+    ; Back face - blue (will be Z-rejected when behind front)
+    bsr     draw_face_back
+
+    ; Present frame
+    move.l  #VOODOO_SWAP_VSYNC,VOODOO_SWAP_BUFFER_CMD
+
+    ; Update rotation angle
+    add.w   #2,rotation_angle
+    bra     .frame_loop
 ```
 
 # 4. IE32 CPU Architecture

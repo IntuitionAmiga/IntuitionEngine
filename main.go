@@ -584,6 +584,16 @@ func main() {
 		anticEngine.HandleRead,
 		anticEngine.HandleWrite)
 
+	// Map Voodoo 3D graphics registers (3DFX SST-1 with Vulkan HLE)
+	voodooEngine, err := NewVoodooEngine(sysBus)
+	if err != nil {
+		fmt.Printf("Warning: Voodoo initialization failed: %v\n", err)
+	} else {
+		sysBus.MapIO(VOODOO_BASE, VOODOO_END,
+			voodooEngine.HandleRead,
+			voodooEngine.HandleWrite)
+	}
+
 	// Create video compositor - owns the display output and blends video sources
 	compositor := NewVideoCompositor(videoChip.GetOutput())
 	compositor.RegisterSource(videoChip)      // Layer 0 - background
@@ -591,6 +601,9 @@ func main() {
 	compositor.RegisterSource(tedVideoEngine) // Layer 12 - TED video between VGA and ULA
 	compositor.RegisterSource(anticEngine)    // Layer 13 - ANTIC (Atari 8-bit)
 	compositor.RegisterSource(ulaEngine)      // Layer 15 - ULA renders on top of TED
+	if voodooEngine != nil {
+		compositor.RegisterSource(voodooEngine) // Layer 20 - Voodoo 3D on top
+	}
 
 	// Initialize the selected CPU and optionally load program
 	var gui GUIFrontend
