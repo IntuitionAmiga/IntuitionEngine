@@ -467,6 +467,10 @@ type VulkanBackend struct {
 	alphaMode uint32
 	scissor   vk.Rect2D
 
+	// Clear color (set by ClearFramebuffer, used by FlushTriangles)
+	clearColor [4]float32
+	needsClear bool
+
 	// Output frame for compositor
 	outputFrame []byte
 
@@ -1378,8 +1382,18 @@ func (vb *VulkanBackend) FlushTriangles(triangles []VoodooTriangle) {
 			ndcX := (v.X/float32(vb.width))*2.0 - 1.0
 			ndcY := (v.Y/float32(vb.height))*2.0 - 1.0
 
+			// Normalize Z to Vulkan depth range [0, 1]
+			// Voodoo uses larger Z values; divide by max expected Z to normalize
+			// Use 65536 as max (common depth buffer range)
+			ndcZ := v.Z / 65536.0
+			if ndcZ < 0 {
+				ndcZ = 0
+			} else if ndcZ > 1 {
+				ndcZ = 1
+			}
+
 			vertices = append(vertices, VulkanVertex{
-				Position: [3]float32{ndcX, ndcY, v.Z},
+				Position: [3]float32{ndcX, ndcY, ndcZ},
 				Color:    [4]float32{v.R, v.G, v.B, v.A},
 			})
 		}
@@ -1404,10 +1418,10 @@ func (vb *VulkanBackend) FlushTriangles(triangles []VoodooTriangle) {
 	}
 	vk.BeginCommandBuffer(vb.commandBuffer, &beginInfo)
 
-	// Begin render pass
+	// Begin render pass with stored clear color
 	clearValues := []vk.ClearValue{
-		vk.NewClearValue([]float32{0, 0, 0, 1}), // Color
-		vk.NewClearDepthStencil(1.0, 0),         // Depth
+		vk.NewClearValue([]float32{vb.clearColor[0], vb.clearColor[1], vb.clearColor[2], vb.clearColor[3]}),
+		vk.NewClearDepthStencil(1.0, 0),
 	}
 
 	renderPassBegin := vk.RenderPassBeginInfo{
@@ -1450,7 +1464,12 @@ func (vb *VulkanBackend) ClearFramebuffer(color uint32) {
 
 	vb.software.ClearFramebuffer(color)
 
-	// Vulkan clear is handled in render pass
+	// Store clear color for Vulkan (ARGB format to RGBA floats)
+	vb.clearColor[0] = float32((color>>16)&0xFF) / 255.0 // R
+	vb.clearColor[1] = float32((color>>8)&0xFF) / 255.0  // G
+	vb.clearColor[2] = float32(color&0xFF) / 255.0       // B
+	vb.clearColor[3] = 1.0                               // A (opaque)
+	vb.needsClear = true
 }
 
 // SwapBuffers presents the frame
