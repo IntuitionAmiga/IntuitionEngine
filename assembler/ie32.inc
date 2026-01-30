@@ -801,5 +801,67 @@
 .equ ULA_CELLS_Y       24               ; Character cells vertically
 
 ; ============================================================================
+; ANTIC VIDEO REGISTERS (Atari 8-bit style)
+;
+; The ANTIC chip provides Atari 8-bit compatible video output:
+; - Display list-driven graphics (14 modes)
+; - 320x192 active display (384x240 with borders)
+; - 128 colors (16 hues × 8 luminances)
+; - Hardware fine scrolling
+; - WSYNC for precise raster synchronization
+;
+; Registers are 4-byte aligned for copper compatibility.
+; ============================================================================
+
+.equ ANTIC_BASE        0xF2100          ; ANTIC register base
+.equ ANTIC_DMACTL      0xF2100          ; DMA control
+.equ ANTIC_CHACTL      0xF2104          ; Character control
+.equ ANTIC_DLISTL      0xF2108          ; Display list pointer low
+.equ ANTIC_DLISTH      0xF210C          ; Display list pointer high
+.equ ANTIC_HSCROL      0xF2110          ; Horizontal scroll (0-15)
+.equ ANTIC_VSCROL      0xF2114          ; Vertical scroll (0-15)
+.equ ANTIC_PMBASE      0xF2118          ; Player-missile base address
+.equ ANTIC_CHBASE      0xF211C          ; Character set base address
+.equ ANTIC_WSYNC       0xF2120          ; Wait for sync (write only)
+.equ ANTIC_VCOUNT      0xF2124          ; Vertical counter (read only)
+.equ ANTIC_PENH        0xF2128          ; Light pen H (read only)
+.equ ANTIC_PENV        0xF212C          ; Light pen V (read only)
+.equ ANTIC_NMIEN       0xF2130          ; NMI enable
+.equ ANTIC_NMIST       0xF2134          ; NMI status (read) / NMIRES (write)
+.equ ANTIC_ENABLE      0xF2138          ; Video enable (IE-specific)
+.equ ANTIC_STATUS      0xF213C          ; Status (VBlank flag)
+
+; DMACTL bits
+.equ ANTIC_DMA_NARROW  0x01             ; Narrow playfield
+.equ ANTIC_DMA_NORMAL  0x02             ; Normal playfield
+.equ ANTIC_DMA_WIDE    0x03             ; Wide playfield
+.equ ANTIC_DMA_MISSILE 0x04             ; Enable missile DMA
+.equ ANTIC_DMA_PLAYER  0x08             ; Enable player DMA
+.equ ANTIC_DMA_PMRES   0x10             ; Player/missile resolution
+.equ ANTIC_DMA_DL      0x20             ; Enable display list DMA
+
+; CHACTL bits
+.equ ANTIC_CHACTL_BLANK   0x01          ; Blank instead of inverse
+.equ ANTIC_CHACTL_INVERT  0x02          ; Invert video
+.equ ANTIC_CHACTL_REFLECT 0x04          ; Reflect characters
+
+; NMIEN bits
+.equ ANTIC_NMIEN_DLI   0x80             ; Display list interrupt enable
+.equ ANTIC_NMIEN_VBI   0x40             ; Vertical blank interrupt enable
+
+; Enable/Status bits
+.equ ANTIC_ENABLE_VIDEO   0x01          ; Bit 0: Video enable
+.equ ANTIC_STATUS_VBLANK  0x01          ; Bit 0: VBlank active
+
+; Display dimensions
+.equ ANTIC_DISPLAY_W   320              ; Display width in pixels
+.equ ANTIC_DISPLAY_H   192              ; Display height in pixels
+.equ ANTIC_FRAME_W     384              ; Total frame width (with border)
+.equ ANTIC_FRAME_H     240              ; Total frame height (with border)
+
+; Copper SETBASE for ANTIC video
+.equ COP_SETBASE_ANTIC 0x8003C840       ; ANTIC_BASE (0xF2100 >> 2)
+
+; ============================================================================
 ; EOF
 ; ============================================================================

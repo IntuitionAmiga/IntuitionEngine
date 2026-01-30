@@ -1142,5 +1142,94 @@ ula_disable     macro
                 endm
 
 ; ============================================================================
+; ANTIC VIDEO REGISTERS (Atari 8-bit style)
+;
+; The ANTIC chip provides Atari 8-bit compatible video output:
+; - Display list-driven graphics (14 modes)
+; - 320x192 active display (384x240 with borders)
+; - 128 colors (16 hues × 8 luminances)
+; - Hardware fine scrolling
+; - WSYNC for precise raster synchronization
+;
+; Registers are 4-byte aligned for copper compatibility.
+; ============================================================================
+
+ANTIC_BASE        equ $F2100            ; ANTIC register base
+ANTIC_DMACTL      equ $F2100            ; DMA control
+ANTIC_CHACTL      equ $F2104            ; Character control
+ANTIC_DLISTL      equ $F2108            ; Display list pointer low
+ANTIC_DLISTH      equ $F210C            ; Display list pointer high
+ANTIC_HSCROL      equ $F2110            ; Horizontal scroll (0-15)
+ANTIC_VSCROL      equ $F2114            ; Vertical scroll (0-15)
+ANTIC_PMBASE      equ $F2118            ; Player-missile base address
+ANTIC_CHBASE      equ $F211C            ; Character set base address
+ANTIC_WSYNC       equ $F2120            ; Wait for sync (write only)
+ANTIC_VCOUNT      equ $F2124            ; Vertical counter (read only)
+ANTIC_PENH        equ $F2128            ; Light pen H (read only)
+ANTIC_PENV        equ $F212C            ; Light pen V (read only)
+ANTIC_NMIEN       equ $F2130            ; NMI enable
+ANTIC_NMIST       equ $F2134            ; NMI status (read) / NMIRES (write)
+ANTIC_ENABLE      equ $F2138            ; Video enable (IE-specific)
+ANTIC_STATUS      equ $F213C            ; Status (VBlank flag)
+
+; DMACTL bits
+ANTIC_DMA_NARROW  equ $01               ; Narrow playfield
+ANTIC_DMA_NORMAL  equ $02               ; Normal playfield
+ANTIC_DMA_WIDE    equ $03               ; Wide playfield
+ANTIC_DMA_MISSILE equ $04               ; Enable missile DMA
+ANTIC_DMA_PLAYER  equ $08               ; Enable player DMA
+ANTIC_DMA_PMRES   equ $10               ; Player/missile resolution
+ANTIC_DMA_DL      equ $20               ; Enable display list DMA
+
+; CHACTL bits
+ANTIC_CHACTL_BLANK   equ $01            ; Blank instead of inverse
+ANTIC_CHACTL_INVERT  equ $02            ; Invert video
+ANTIC_CHACTL_REFLECT equ $04            ; Reflect characters
+
+; NMIEN bits
+ANTIC_NMIEN_DLI   equ $80               ; Display list interrupt enable
+ANTIC_NMIEN_VBI   equ $40               ; Vertical blank interrupt enable
+
+; Enable/Status bits
+ANTIC_ENABLE_VIDEO   equ $01            ; Bit 0: Video enable
+ANTIC_STATUS_VBLANK  equ $01            ; Bit 0: VBlank active
+
+; Display dimensions
+ANTIC_DISPLAY_W   equ 320               ; Display width in pixels
+ANTIC_DISPLAY_H   equ 192               ; Display height in pixels
+ANTIC_FRAME_W     equ 384               ; Total frame width (with border)
+ANTIC_FRAME_H     equ 240               ; Total frame height (with border)
+
+; Copper SETBASE for ANTIC video
+COP_SETBASE_ANTIC equ $8003C840         ; ANTIC_BASE ($F2100 >> 2)
+
+; ----- ANTIC helper macros -----
+
+; Enable ANTIC video
+antic_enable      macro
+                  move.b  #ANTIC_ENABLE_VIDEO,ANTIC_ENABLE
+                  endm
+
+; Disable ANTIC video
+antic_disable     macro
+                  move.b  #0,ANTIC_ENABLE
+                  endm
+
+; Wait for VBlank
+antic_wait_vblank macro
+.wvb\@            move.b  ANTIC_STATUS,d0
+                  and.b   #ANTIC_STATUS_VBLANK,d0
+                  beq.s   .wvb\@
+                  endm
+
+; Set display list pointer
+antic_set_dlist   macro   addr
+                  move.w  #(\addr)&$FFFF,d0
+                  move.b  d0,ANTIC_DLISTL
+                  lsr.w   #8,d0
+                  move.b  d0,ANTIC_DLISTH
+                  endm
+
+; ============================================================================
 ; EOF
 ; ============================================================================

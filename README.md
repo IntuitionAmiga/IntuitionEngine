@@ -44,6 +44,7 @@
    - 3.12 Hardware I/O Memory Map by CPU
    - 3.13 VGA Video Chip
    - 3.14 ULA Video Chip (ZX Spectrum)
+   - 3.15 ANTIC Video Chip (Atari 8-bit)
 4. [IE32 CPU Architecture](#4-ie32-cpu-architecture)
    - 4.1 Register Set
    - 4.2 Status Flags
@@ -1017,6 +1018,129 @@ Bits 2-0: INK   (foreground color, 0-7)
 The ULA integrates with the video compositor as layer 15, rendering above both the VideoChip (layer 0) and VGA (layer 10). This allows ZX Spectrum graphics to overlay other video sources.
 
 The ULA provides its own frame timing through `SignalVSync()`, which handles the FLASH attribute timing (toggling every 32 frames). When disabled via `ULA_CTRL`, the chip returns nil frames to the compositor.
+
+## 3.15 ANTIC Video Chip - Atari 8-bit (0x0F2100 - 0x0F213F)
+
+The ANTIC (Alphanumeric Television Interface Controller) provides authentic Atari 8-bit computer video output, enabling classic Atari demos and games:
+
+### Display Specifications
+
+| Feature | Value |
+|---------|-------|
+| Resolution | 320×192 pixels |
+| Border | 32 pixels horizontal, 24 pixels vertical (384×240 total) |
+| Colors | 128 (16 hues × 8 luminances) |
+| Display Modes | 14 (text and graphics modes via display list) |
+| Fine Scrolling | 4-bit horizontal/vertical (0-15 pixels) |
+
+### Register Map (IE32/M68K/x86)
+
+All registers are 4-byte aligned for copper coprocessor compatibility:
+
+```
+ANTIC Registers (0x0F2100 - 0x0F213F):
+0x0F2100: ANTIC_DMACTL    - DMA control (playfield width, DMA enables)
+0x0F2104: ANTIC_CHACTL    - Character control (inverse, reflect)
+0x0F2108: ANTIC_DLISTL    - Display list pointer low byte
+0x0F210C: ANTIC_DLISTH    - Display list pointer high byte
+0x0F2110: ANTIC_HSCROL    - Horizontal scroll (0-15)
+0x0F2114: ANTIC_VSCROL    - Vertical scroll (0-15)
+0x0F2118: ANTIC_PMBASE    - Player-missile base address (high byte)
+0x0F211C: ANTIC_CHBASE    - Character set base address (high byte)
+0x0F2120: ANTIC_WSYNC     - Wait for horizontal sync (write only)
+0x0F2124: ANTIC_VCOUNT    - Vertical line counter (read only, /2)
+0x0F2128: ANTIC_PENH      - Light pen horizontal (read only)
+0x0F212C: ANTIC_PENV      - Light pen vertical (read only)
+0x0F2130: ANTIC_NMIEN     - NMI enable register
+0x0F2134: ANTIC_NMIST     - NMI status (read) / NMIRES (write)
+0x0F2138: ANTIC_ENABLE    - Video enable (IE-specific)
+0x0F213C: ANTIC_STATUS    - Status (VBlank flag, IE-specific)
+```
+
+### 6502 Register Map (Atari Authentic)
+
+For 6502 compatibility, ANTIC uses authentic Atari addresses at 0xD400:
+
+```
+0xD400: DMACTL    0xD401: CHACTL    0xD402: DLISTL    0xD403: DLISTH
+0xD404: HSCROL    0xD405: VSCROL    0xD407: PMBASE    0xD409: CHBASE
+0xD40A: WSYNC     0xD40B: VCOUNT    0xD40C: PENH      0xD40D: PENV
+0xD40E: NMIEN     0xD40F: NMIST
+```
+
+### DMACTL Register Bits
+
+| Bit | Name | Description |
+|-----|------|-------------|
+| 0-1 | Playfield | 00=off, 01=narrow, 10=normal, 11=wide |
+| 2 | Missile DMA | Enable missile graphics DMA |
+| 3 | Player DMA | Enable player graphics DMA |
+| 4 | PM Resolution | 0=double-line, 1=single-line |
+| 5 | DL Enable | Enable display list DMA |
+
+### Color System
+
+ANTIC uses a 128-color palette with 16 hues and 8 luminance levels:
+
+| Hue | Color | Hue | Color |
+|-----|-------|-----|-------|
+| 0 | Gray | 8 | Blue-2 |
+| 1 | Gold | 9 | Light Blue |
+| 2 | Orange | A | Turquoise |
+| 3 | Red-Orange | B | Green-Blue |
+| 4 | Pink | C | Green |
+| 5 | Purple | D | Yellow-Green |
+| 6 | Purple-Blue | E | Orange-Green |
+| 7 | Blue | F | Light Orange |
+
+Color format: `HHHHLLLL` where `HHHH` = hue (0-15), `LLLL` = luminance (0-15, but only 0-F used).
+
+### Display List
+
+ANTIC is driven by a display list - a program that specifies what to render on each scanline. The display list supports:
+
+- **Blank lines** (opcodes 0x00-0x70): 1-8 blank scanlines
+- **Mode lines**: Text and graphics modes with optional LMS, HSCROL, VSCROL
+- **Jump instructions**: JMP (0x01) and JVB (0x41, jump and wait for VBlank)
+
+### Video Compositor Integration
+
+ANTIC integrates with the video compositor as layer 13, positioned between TED (layer 12) and ULA (layer 15). All copper commands can target ANTIC registers via SETBASE for per-scanline effects.
+
+### Example: Basic Setup (M68K)
+
+```asm
+    include "ie68.inc"
+
+    ; Enable ANTIC with normal playfield and display list DMA
+    move.b  #ANTIC_DMA_NORMAL|ANTIC_DMA_DL,ANTIC_DMACTL
+
+    ; Point to display list
+    lea     my_dlist,a0
+    move.b  a0,ANTIC_DLISTL
+    lsr.w   #8,d0
+    move.b  d0,ANTIC_DLISTH
+
+    ; Enable ANTIC video output
+    antic_enable
+
+    ; Wait for VBlank
+    antic_wait_vblank
+```
+
+### Example: WSYNC Raster Effect (6502)
+
+```asm
+    include "ie65.inc"
+
+    ; Create color bars using WSYNC timing
+    ldx #0
+loop:
+    stx $D01A           ; Set COLBK (background color via GTIA)
+    sta ANTIC_WSYNC     ; Wait for horizontal sync
+    inx
+    bne loop
+```
 
 # 4. IE32 CPU Architecture
 

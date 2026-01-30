@@ -2076,6 +2076,86 @@ ULA_CELLS_Y     = 24            ; Character cells vertically
 .endmacro
 
 ; ============================================================================
+; ANTIC VIDEO REGISTERS (Atari 8-bit style)
+;
+; The ANTIC chip uses authentic Atari addresses for 6502 compatibility.
+; This allows running original Atari software with minimal modification.
+;
+; Features:
+; - Display list-driven graphics (14 modes)
+; - 320x192 active display (384x240 with borders)
+; - 128 colors (16 hues × 8 luminances)
+; - Hardware fine scrolling
+; - WSYNC for precise raster synchronization
+; ============================================================================
+
+; ANTIC at authentic Atari addresses
+ANTIC_DMACTL    = $D400         ; DMA control
+ANTIC_CHACTL    = $D401         ; Character control
+ANTIC_DLISTL    = $D402         ; Display list pointer low
+ANTIC_DLISTH    = $D403         ; Display list pointer high
+ANTIC_HSCROL    = $D404         ; Horizontal scroll (0-15)
+ANTIC_VSCROL    = $D405         ; Vertical scroll (0-15)
+ANTIC_PMBASE    = $D407         ; Player-missile base address
+ANTIC_CHBASE    = $D409         ; Character set base address
+ANTIC_WSYNC     = $D40A         ; Wait for sync (write only)
+ANTIC_VCOUNT    = $D40B         ; Vertical counter (read only, /2)
+ANTIC_PENH      = $D40C         ; Light pen H (read only)
+ANTIC_PENV      = $D40D         ; Light pen V (read only)
+ANTIC_NMIEN     = $D40E         ; NMI enable
+ANTIC_NMIST     = $D40F         ; NMI status (read) / NMIRES (write)
+
+; DMACTL bits
+ANTIC_DMA_NARROW  = $01         ; Narrow playfield
+ANTIC_DMA_NORMAL  = $02         ; Normal playfield
+ANTIC_DMA_WIDE    = $03         ; Wide playfield
+ANTIC_DMA_MISSILE = $04         ; Enable missile DMA
+ANTIC_DMA_PLAYER  = $08         ; Enable player DMA
+ANTIC_DMA_PMRES   = $10         ; Player/missile resolution
+ANTIC_DMA_DL      = $20         ; Enable display list DMA
+
+; CHACTL bits
+ANTIC_CHACTL_BLANK   = $01      ; Blank instead of inverse
+ANTIC_CHACTL_INVERT  = $02      ; Invert video
+ANTIC_CHACTL_REFLECT = $04      ; Reflect characters
+
+; NMIEN bits
+ANTIC_NMIEN_DLI   = $80         ; Display list interrupt enable
+ANTIC_NMIEN_VBI   = $40         ; Vertical blank interrupt enable
+
+; NMIST bits
+ANTIC_NMIST_RESET = $20         ; Reset button pressed
+ANTIC_NMIST_DLI   = $80         ; DLI pending
+ANTIC_NMIST_VBI   = $40         ; VBI pending
+
+; ----- ANTIC helper macros -----
+
+; Set display list pointer
+.macro ANTIC_SET_DLIST addr
+    lda #<addr
+    sta ANTIC_DLISTL
+    lda #>addr
+    sta ANTIC_DLISTH
+.endmacro
+
+; Enable display list DMA with normal playfield
+.macro ANTIC_ENABLE_DL
+    lda #ANTIC_DMA_NORMAL | ANTIC_DMA_DL
+    sta ANTIC_DMACTL
+.endmacro
+
+; Disable ANTIC display
+.macro ANTIC_DISABLE
+    lda #0
+    sta ANTIC_DMACTL
+.endmacro
+
+; Wait for horizontal sync
+.macro ANTIC_WAIT_HSYNC
+    sta ANTIC_WSYNC
+.endmacro
+
+; ============================================================================
 ; ZERO PAGE ALLOCATION HELPER
 ; ============================================================================
 

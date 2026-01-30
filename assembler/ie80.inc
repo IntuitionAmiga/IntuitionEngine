@@ -2188,5 +2188,52 @@
 .set STACK_TOP,0xF000
 
 ; ============================================================================
+; ANTIC VIDEO REGISTERS (Atari 8-bit style)
+;
+; The ANTIC chip provides Atari 8-bit compatible video output:
+; - Display list-driven graphics (14 modes)
+; - 320x192 active display (384x240 with borders)
+; - 128 colors (16 hues × 8 luminances)
+; - Hardware fine scrolling
+; - WSYNC for precise raster synchronization
+;
+; For Z80, registers are memory-mapped (same as other video chips).
+; ============================================================================
+
+.set ANTIC_BASE,0xD400
+.set ANTIC_DMACTL,0xD400
+.set ANTIC_CHACTL,0xD401
+.set ANTIC_DLISTL,0xD402
+.set ANTIC_DLISTH,0xD403
+.set ANTIC_HSCROL,0xD404
+.set ANTIC_VSCROL,0xD405
+.set ANTIC_PMBASE,0xD407
+.set ANTIC_CHBASE,0xD409
+.set ANTIC_WSYNC,0xD40A
+.set ANTIC_VCOUNT,0xD40B
+.set ANTIC_PENH,0xD40C
+.set ANTIC_PENV,0xD40D
+.set ANTIC_NMIEN,0xD40E
+.set ANTIC_NMIST,0xD40F
+
+; DMACTL bits
+.set ANTIC_DMA_NARROW,0x01
+.set ANTIC_DMA_NORMAL,0x02
+.set ANTIC_DMA_WIDE,0x03
+.set ANTIC_DMA_MISSILE,0x04
+.set ANTIC_DMA_PLAYER,0x08
+.set ANTIC_DMA_PMRES,0x10
+.set ANTIC_DMA_DL,0x20
+
+; CHACTL bits
+.set ANTIC_CHACTL_BLANK,0x01
+.set ANTIC_CHACTL_INVERT,0x02
+.set ANTIC_CHACTL_REFLECT,0x04
+
+; NMIEN bits
+.set ANTIC_NMIEN_DLI,0x80
+.set ANTIC_NMIEN_VBI,0x40
+
+; ============================================================================
 ; EOF
 ; ============================================================================
