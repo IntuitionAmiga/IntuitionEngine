@@ -2203,8 +2203,9 @@ func (cpu *M68KCPU) GetEffectiveAddress(mode, reg uint16) uint32 {
 			return addr
 
 		case 4: // Immediate
-			// Not valid for addressing
-			fmt.Printf("Immediate addressing not valid for effective address calculation\n")
+			// Not valid for addressing - if this is reached, there's a bug in an instruction decoder
+			// that should handle immediate mode specially
+			fmt.Printf("M68K: BUG - Immediate mode passed to GetEffectiveAddress at PC=0x%08X\n", cpu.PC)
 			cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
 			return 0
 
@@ -5422,8 +5423,18 @@ func (cpu *M68KCPU) ExecSub(reg, opmode, mode, xreg uint16) {
 				source = cpu.Read32(addr)
 			}
 			cpu.cycleCounter += M68K_CYCLE_MEM_READ
+		} else if mode == 7 && xreg == 4 {
+			// Immediate mode - fetch value directly from instruction stream
+			if size == M68K_SIZE_BYTE {
+				source = uint32(cpu.Fetch16() & 0xFF)
+			} else if size == M68K_SIZE_WORD {
+				source = uint32(cpu.Fetch16())
+			} else {
+				source = cpu.Fetch32()
+			}
+			cpu.cycleCounter += M68K_CYCLE_FETCH
 		} else if mode == 7 {
-			// Extended addressing modes
+			// Other extended addressing modes (abs short, abs long, pc relative)
 			addr := cpu.GetEffectiveAddress(mode, xreg)
 			if size == M68K_SIZE_BYTE {
 				source = uint32(cpu.Read8(addr))

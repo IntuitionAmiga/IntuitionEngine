@@ -168,6 +168,37 @@ func TestSubDataRegisterSystematic(t *testing.T) {
 	RunM68KTests(t, tests)
 }
 
+// Test SUB.x #imm,Dn using mode 7, xreg 4 (immediate addressing)
+// This is different from SUBI which has its own opcode (0x04xx)
+// SUB with immediate mode uses the regular SUB opcode (0x9xxx) with mode=7, xreg=4
+func TestSubWithImmediateModeSystematic(t *testing.T) {
+	tests := []M68KTestCase{
+		{
+			Name:          "SUB.W_#$8_D2",
+			DataRegs:      [8]uint32{0, 0, 0x00000100}, // D2 = 256
+			Opcodes:       []uint16{0x947C, 0x0008},    // SUB.W #8,D2 (mode=7, xreg=4)
+			ExpectedRegs:  Reg("D2", 0x000000F8),       // 256 - 8 = 248
+			ExpectedFlags: FlagsNZVC(0, 0, 0, 0),
+		},
+		{
+			Name:          "SUB.W_#$FF_D1",
+			DataRegs:      [8]uint32{0, 0x00000100}, // D1 = 256
+			Opcodes:       []uint16{0x927C, 0x00FF}, // SUB.W #$FF,D1
+			ExpectedRegs:  Reg("D1", 0x00000001),    // 256 - 255 = 1
+			ExpectedFlags: FlagsNZVC(0, 0, 0, 0),
+		},
+		{
+			Name:          "SUB.L_#$1000_D0",
+			DataRegs:      [8]uint32{0x00002000},            // D0 = 0x2000
+			Opcodes:       []uint16{0x90BC, 0x0000, 0x1000}, // SUB.L #$1000,D0 (mode=7, xreg=4)
+			ExpectedRegs:  Reg("D0", 0x00001000),            // 0x2000 - 0x1000 = 0x1000
+			ExpectedFlags: FlagsNZVC(0, 0, 0, 0),
+		},
+	}
+
+	RunM68KTests(t, tests)
+}
+
 func TestSubImmediateSystematic(t *testing.T) {
 	tests := []M68KTestCase{
 		{
@@ -278,6 +309,62 @@ func TestMulsSystematic(t *testing.T) {
 			Opcodes:       []uint16{0xC1C1},                  // MULS.W D1,D0
 			ExpectedRegs:  Reg("D0", 0x00000001),             // 1
 			ExpectedFlags: FlagsNZVC(0, 0, 0, 0),
+		},
+	}
+
+	RunM68KTests(t, tests)
+}
+
+func TestMulsImmediateSystematic(t *testing.T) {
+	tests := []M68KTestCase{
+		{
+			Name:          "MULS.W_#$10_D0_positive",
+			DataRegs:      [8]uint32{0x00000010},    // D0 = 16
+			Opcodes:       []uint16{0xC1FC, 0x0010}, // MULS.W #$10,D0 (16 * 16 = 256)
+			ExpectedRegs:  Reg("D0", 0x00000100),
+			ExpectedFlags: FlagsNZVC(0, 0, 0, 0),
+		},
+		{
+			Name:          "MULS.W_#$FFFF_D0_negative_multiplier",
+			DataRegs:      [8]uint32{0x00000010},    // D0 = 16
+			Opcodes:       []uint16{0xC1FC, 0xFFFF}, // MULS.W #-1,D0 (16 * -1 = -16)
+			ExpectedRegs:  Reg("D0", 0xFFFFFFF0),    // -16
+			ExpectedFlags: FlagsNZVC(1, 0, 0, 0),    // N=1
+		},
+		{
+			Name:          "MULS.W_#100_D1",
+			DataRegs:      [8]uint32{0, 0x00000005}, // D1 = 5
+			Opcodes:       []uint16{0xC3FC, 0x0064}, // MULS.W #100,D1 (5 * 100 = 500)
+			ExpectedRegs:  Reg("D1", 0x000001F4),    // 500
+			ExpectedFlags: FlagsNZVC(0, 0, 0, 0),
+		},
+		{
+			Name:          "MULS.W_#$8000_D0_min_signed",
+			DataRegs:      [8]uint32{0x00000002},    // D0 = 2
+			Opcodes:       []uint16{0xC1FC, 0x8000}, // MULS.W #-32768,D0 (2 * -32768 = -65536)
+			ExpectedRegs:  Reg("D0", 0xFFFF0000),    // -65536
+			ExpectedFlags: FlagsNZVC(1, 0, 0, 0),    // N=1
+		},
+	}
+
+	RunM68KTests(t, tests)
+}
+
+func TestMuluImmediateSystematic(t *testing.T) {
+	tests := []M68KTestCase{
+		{
+			Name:          "MULU.W_#$10_D0",
+			DataRegs:      [8]uint32{0x00000010},    // D0 = 16
+			Opcodes:       []uint16{0xC0FC, 0x0010}, // MULU.W #$10,D0 (16 * 16 = 256)
+			ExpectedRegs:  Reg("D0", 0x00000100),
+			ExpectedFlags: FlagsNZVC(0, 0, 0, 0),
+		},
+		{
+			Name:          "MULU.W_#$FFFF_D0",
+			DataRegs:      [8]uint32{0x0000FFFF},    // D0 = 65535
+			Opcodes:       []uint16{0xC0FC, 0xFFFF}, // MULU.W #65535,D0 (65535 * 65535)
+			ExpectedRegs:  Reg("D0", 0xFFFE0001),    // 4294836225
+			ExpectedFlags: FlagsNZVC(1, 0, 0, 0),    // N=1
 		},
 	}
 
