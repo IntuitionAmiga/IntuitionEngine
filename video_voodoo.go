@@ -151,12 +151,15 @@ func NewVoodooEngine(bus *SystemBus) (*VoodooEngine, error) {
 		clipBottom:    VOODOO_DEFAULT_HEIGHT,
 	}
 
-	// Initialize with software backend by default
-	// Vulkan backend can be attached later
-	v.backend = NewVoodooSoftwareBackend()
-	if err := v.backend.Init(v.width, v.height); err != nil {
+	// Initialize with Vulkan backend (falls back to software internally if Vulkan unavailable)
+	vulkanBackend, err := NewVulkanBackend()
+	if err != nil {
 		return nil, err
 	}
+	if err := vulkanBackend.Init(v.width, v.height); err != nil {
+		return nil, err
+	}
+	v.backend = vulkanBackend
 
 	// Initialize default state
 	v.initDefaultState()
