@@ -81,6 +81,8 @@ type X86SystemBus struct {
 	sidRegSelect   byte       // Currently selected SID register for port I/O
 	pokeyRegSelect byte       // Currently selected POKEY register for port I/O
 	tedRegSelect   byte       // Currently selected TED register for port I/O
+	anticRegSelect byte       // Currently selected ANTIC register for port I/O
+	gtiaRegSelect  byte       // Currently selected GTIA register for port I/O
 	vgaEngine      *VGAEngine // VGA engine for port I/O access
 
 	// Extended bank windows (same as Z80/6502)
@@ -296,10 +298,37 @@ func (b *X86SystemBus) In(port uint16) byte {
 		return b.bus.Read8(0xF0E00 + uint32(b.sidRegSelect))
 	}
 
-	// POKEY port I/O (0xD0-0xDF)
+	// ANTIC port I/O (0xD4-0xD5) - check before POKEY range
+	if port == X86_PORT_ANTIC_SELECT {
+		return b.anticRegSelect
+	}
+	if port == X86_PORT_ANTIC_DATA {
+		if b.anticRegSelect < ANTIC_REG_COUNT {
+			// ANTIC registers are 4-byte aligned
+			return b.bus.Read8(ANTIC_BASE + uint32(b.anticRegSelect)*4)
+		}
+		return 0
+	}
+
+	// GTIA port I/O (0xD6-0xD7) - check before POKEY range
+	if port == X86_PORT_GTIA_SELECT {
+		return b.gtiaRegSelect
+	}
+	if port == X86_PORT_GTIA_DATA {
+		if b.gtiaRegSelect < GTIA_REG_COUNT {
+			// GTIA registers are 4-byte aligned
+			return b.bus.Read8(GTIA_BASE + uint32(b.gtiaRegSelect)*4)
+		}
+		return 0
+	}
+
+	// POKEY port I/O (0xD0-0xD3, 0xD8-0xDF) - excludes ANTIC/GTIA ports
 	if port >= X86_PORT_POKEY_BASE && port < X86_PORT_POKEY_BASE+16 {
-		offset := port - X86_PORT_POKEY_BASE
-		return b.bus.Read8(0xF0D00 + uint32(offset))
+		// Skip ANTIC/GTIA ports (0xD4-0xD7)
+		if port < X86_PORT_ANTIC_SELECT || port > X86_PORT_GTIA_DATA {
+			offset := port - X86_PORT_POKEY_BASE
+			return b.bus.Read8(0xF0D00 + uint32(offset))
+		}
 	}
 
 	// TED port I/O
@@ -315,6 +344,11 @@ func (b *X86SystemBus) In(port uint16) byte {
 			return b.bus.Read8(0xF0F20 + uint32(b.tedRegSelect-0x20)*4)
 		}
 		return 0
+	}
+
+	// ULA port I/O (0xFE - same as Z80 for compatibility)
+	if port == Z80_ULA_PORT {
+		return b.bus.Read8(ULA_BORDER) & 0x07
 	}
 
 	// Standard VGA ports
@@ -375,10 +409,39 @@ func (b *X86SystemBus) Out(port uint16, value byte) {
 		return
 	}
 
-	// POKEY port I/O (0xD0-0xDF)
+	// ANTIC port I/O (0xD4-0xD5) - check before POKEY range
+	if port == X86_PORT_ANTIC_SELECT {
+		b.anticRegSelect = value & 0x0F // 16 ANTIC registers
+		return
+	}
+	if port == X86_PORT_ANTIC_DATA {
+		if b.anticRegSelect < ANTIC_REG_COUNT {
+			// ANTIC registers are 4-byte aligned
+			b.bus.Write8(ANTIC_BASE+uint32(b.anticRegSelect)*4, value)
+		}
+		return
+	}
+
+	// GTIA port I/O (0xD6-0xD7) - check before POKEY range
+	if port == X86_PORT_GTIA_SELECT {
+		b.gtiaRegSelect = value & 0x0F // 12 GTIA registers
+		return
+	}
+	if port == X86_PORT_GTIA_DATA {
+		if b.gtiaRegSelect < GTIA_REG_COUNT {
+			// GTIA registers are 4-byte aligned
+			b.bus.Write8(GTIA_BASE+uint32(b.gtiaRegSelect)*4, value)
+		}
+		return
+	}
+
+	// POKEY port I/O (0xD0-0xD3, 0xD8-0xDF) - excludes ANTIC/GTIA ports
 	if port >= X86_PORT_POKEY_BASE && port < X86_PORT_POKEY_BASE+16 {
-		offset := port - X86_PORT_POKEY_BASE
-		b.bus.Write8(0xF0D00+uint32(offset), value)
+		// Skip ANTIC/GTIA ports (0xD4-0xD7)
+		if port < X86_PORT_ANTIC_SELECT || port > X86_PORT_GTIA_DATA {
+			offset := port - X86_PORT_POKEY_BASE
+			b.bus.Write8(0xF0D00+uint32(offset), value)
+		}
 		return
 	}
 
@@ -393,6 +456,12 @@ func (b *X86SystemBus) Out(port uint16, value byte) {
 		} else if b.tedRegSelect >= 0x20 && b.tedRegSelect < 0x30 {
 			b.bus.Write8(0xF0F20+uint32(b.tedRegSelect-0x20)*4, value)
 		}
+		return
+	}
+
+	// ULA port I/O (0xFE - same as Z80 for compatibility)
+	if port == Z80_ULA_PORT {
+		b.bus.Write8(ULA_BORDER, value&0x07)
 		return
 	}
 
@@ -476,8 +545,8 @@ func NewCPUX86Runner(bus *SystemBus, config *CPUX86Config) *CPUX86Runner {
 	}
 }
 
-// LoadProgram loads a binary program into memory
-func (r *CPUX86Runner) LoadProgram(data []byte) error {
+// LoadProgramData loads a binary program from bytes into memory
+func (r *CPUX86Runner) LoadProgramData(data []byte) error {
 	if uint32(len(data))+r.loadAddr > x86AddressSpace {
 		return fmt.Errorf("program too large: %d bytes", len(data))
 	}
@@ -493,13 +562,18 @@ func (r *CPUX86Runner) LoadProgram(data []byte) error {
 	return nil
 }
 
-// LoadProgramFromFile loads a binary program from a file
-func (r *CPUX86Runner) LoadProgramFromFile(filename string) error {
+// LoadProgram loads a binary program from a file (implements EmulatorCPU interface)
+func (r *CPUX86Runner) LoadProgram(filename string) error {
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return fmt.Errorf("failed to read file: %w", err)
 	}
-	return r.LoadProgram(data)
+	return r.LoadProgramData(data)
+}
+
+// LoadProgramFromFile is an alias for LoadProgram for backwards compatibility
+func (r *CPUX86Runner) LoadProgramFromFile(filename string) error {
+	return r.LoadProgram(filename)
 }
 
 // Run executes the program until halted
@@ -523,4 +597,16 @@ func (r *CPUX86Runner) GetCPU() *CPU_X86 {
 func (r *CPUX86Runner) Reset() {
 	r.cpu.Reset()
 	r.cpu.EIP = r.entry
+}
+
+// Execute runs the CPU in a loop until halted (for GUI integration)
+func (r *CPUX86Runner) Execute() {
+	for r.cpu.Running && !r.cpu.Halted {
+		r.cpu.Step()
+	}
+}
+
+// IsRunning returns whether the CPU is still running
+func (r *CPUX86Runner) IsRunning() bool {
+	return r.cpu.Running && !r.cpu.Halted
 }

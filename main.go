@@ -133,6 +133,7 @@ func main() {
 		modeM68K  bool
 		modeM6502 bool
 		modeZ80   bool
+		modeX86   bool
 		modePSG   bool
 		modeSID   bool
 		psgPlus   bool
@@ -157,6 +158,7 @@ func main() {
 	flagSet.BoolVar(&modeM68K, "m68k", false, "Run M68K CPU mode")
 	flagSet.BoolVar(&modeM6502, "m6502", false, "Run 6502 CPU mode")
 	flagSet.BoolVar(&modeZ80, "z80", false, "Run Z80 CPU mode")
+	flagSet.BoolVar(&modeX86, "x86", false, "Run x86 CPU mode (32-bit flat model)")
 	flagSet.BoolVar(&modePSG, "psg", false, "Play PSG file")
 	flagSet.StringVar(&sidFile, "sid", "", "Play SID file")
 	flagSet.IntVar(&sidDebug, "sid-debug", 0, "Log SID timing and ADSR changes for N seconds")
@@ -176,7 +178,7 @@ func main() {
 
 	flagSet.Usage = func() {
 		flagSet.SetOutput(os.Stdout)
-		fmt.Println("Usage: ./intuition_engine -ie32|-m68k|-m6502|-z80|-psg|-psg+|-sid|-sid+|-pokey|-pokey+|-ted|-ted+|-ahx|-ahx+ [--load-addr addr] [--entry addr] filename")
+		fmt.Println("Usage: ./intuition_engine -ie32|-m68k|-m6502|-z80|-x86|-psg|-psg+|-sid|-sid+|-pokey|-pokey+|-ted|-ted+|-ahx|-ahx+ [--load-addr addr] [--entry addr] filename")
 		flagSet.PrintDefaults()
 	}
 
@@ -222,6 +224,9 @@ func main() {
 	if modeZ80 {
 		modeCount++
 	}
+	if modeX86 {
+		modeCount++
+	}
 	if modePSG {
 		modeCount++
 	}
@@ -242,7 +247,7 @@ func main() {
 		modeCount = 1
 	}
 	if modeCount != 1 {
-		fmt.Println("Error: select exactly one mode flag: -ie32, -m68k, -m6502, -z80, -psg, -psg+, -sid, -sid+, -pokey, -pokey+, -ted, -ted+, -ahx, or -ahx+")
+		fmt.Println("Error: select exactly one mode flag: -ie32, -m68k, -m6502, -z80, -x86, -psg, -psg+, -sid, -sid+, -pokey, -pokey+, -ted, -ted+, -ahx, or -ahx+")
 		os.Exit(1)
 	}
 	if filename == "" && modePSG {
@@ -569,11 +574,22 @@ func main() {
 		tedVideoEngine.HandleBusVRAMRead,
 		tedVideoEngine.HandleBusVRAMWrite)
 
+	// Map ANTIC video registers (Atari 8-bit video chip)
+	anticEngine := NewANTICEngine(sysBus)
+	sysBus.MapIO(ANTIC_BASE, ANTIC_END,
+		anticEngine.HandleRead,
+		anticEngine.HandleWrite)
+	// Map GTIA color registers (ANTIC's companion chip)
+	sysBus.MapIO(GTIA_BASE, GTIA_END,
+		anticEngine.HandleRead,
+		anticEngine.HandleWrite)
+
 	// Create video compositor - owns the display output and blends video sources
 	compositor := NewVideoCompositor(videoChip.GetOutput())
 	compositor.RegisterSource(videoChip)      // Layer 0 - background
 	compositor.RegisterSource(vgaEngine)      // Layer 10 - VGA renders on top
 	compositor.RegisterSource(tedVideoEngine) // Layer 12 - TED video between VGA and ULA
+	compositor.RegisterSource(anticEngine)    // Layer 13 - ANTIC (Atari 8-bit)
 	compositor.RegisterSource(ulaEngine)      // Layer 15 - ULA renders on top of TED
 
 	// Initialize the selected CPU and optionally load program
@@ -703,6 +719,41 @@ func main() {
 			// Start CPU execution
 			fmt.Printf("Starting Z80 CPU with program: %s\n\n", filename)
 			go z80CPU.Execute()
+		}
+	} else if modeX86 {
+		// x86 32-bit flat memory model
+		x86Config := &CPUX86Config{
+			LoadAddr:  0,
+			Entry:     0,
+			VGAEngine: vgaEngine,
+		}
+
+		x86CPU := NewCPUX86Runner(sysBus, x86Config)
+
+		// Load program
+		if filename != "" {
+			if err := x86CPU.LoadProgramFromFile(filename); err != nil {
+				fmt.Printf("Error loading x86 program: %v\n", err)
+				os.Exit(1)
+			}
+			startExecution = true
+		}
+
+		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, x86CPU, videoChip, soundChip, psgPlayer, sidPlayer, ahxPlayerCPU)
+		if err != nil {
+			fmt.Printf("Failed to initialize GUI: %v\n", err)
+			os.Exit(1)
+		}
+
+		if startExecution {
+			// Start peripherals
+			videoChip.Start()
+			compositor.Start()
+			soundChip.Start()
+
+			// Start CPU execution
+			fmt.Printf("Starting x86 CPU with program: %s\n\n", filename)
+			go x86CPU.Execute()
 		}
 	} else {
 		var parsedLoadAddr uint16

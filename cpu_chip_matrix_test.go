@@ -456,3 +456,302 @@ func TestCrossCPU_ULA_Consistency(t *testing.T) {
 		t.Errorf("Cross-CPU ULA: 6502 read got 0x%02X, want 0x07", adapter6502.Read(0xD800))
 	}
 }
+
+// =============================================================================
+// x86 CPU Tests (Port I/O)
+// =============================================================================
+
+func TestX86_PSG_PortIO(t *testing.T) {
+	bus := NewSystemBus()
+	x86Bus := NewX86SystemBus(bus)
+
+	// Select PSG register 0 and write value
+	x86Bus.Out(X86_PORT_PSG_SELECT, 0)
+	x86Bus.Out(X86_PORT_PSG_DATA, 0x9A)
+
+	// Verify value is written to PSG_BASE
+	got := bus.Read8(PSG_BASE)
+	if got != 0x9A {
+		t.Errorf("x86 PSG port write: got 0x%02X, want 0x9A", got)
+	}
+
+	// Test read back via port I/O
+	x86Bus.Out(X86_PORT_PSG_SELECT, 0)
+	if x86Bus.In(X86_PORT_PSG_DATA) != 0x9A {
+		t.Errorf("x86 PSG port read: got 0x%02X, want 0x9A", x86Bus.In(X86_PORT_PSG_DATA))
+	}
+}
+
+func TestX86_SID_PortIO(t *testing.T) {
+	bus := NewSystemBus()
+	x86Bus := NewX86SystemBus(bus)
+
+	// Select SID register 0 and write value
+	x86Bus.Out(X86_PORT_SID_SELECT, 0)
+	x86Bus.Out(X86_PORT_SID_DATA, 0xBC)
+
+	// Verify value is written to SID_BASE
+	got := bus.Read8(SID_BASE)
+	if got != 0xBC {
+		t.Errorf("x86 SID port write: got 0x%02X, want 0xBC", got)
+	}
+
+	// Test read back via port I/O
+	x86Bus.Out(X86_PORT_SID_SELECT, 0)
+	if x86Bus.In(X86_PORT_SID_DATA) != 0xBC {
+		t.Errorf("x86 SID port read: got 0x%02X, want 0xBC", x86Bus.In(X86_PORT_SID_DATA))
+	}
+}
+
+func TestX86_POKEY_PortIO(t *testing.T) {
+	bus := NewSystemBus()
+	x86Bus := NewX86SystemBus(bus)
+
+	// Write to POKEY register 0 via direct port mapping (0xD0 = AUDF1)
+	x86Bus.Out(X86_PORT_POKEY_BASE, 0xDE)
+
+	// Verify value is written to POKEY_BASE
+	got := bus.Read8(POKEY_BASE)
+	if got != 0xDE {
+		t.Errorf("x86 POKEY port write: got 0x%02X, want 0xDE", got)
+	}
+
+	// Test read back via port I/O
+	if x86Bus.In(X86_PORT_POKEY_BASE) != 0xDE {
+		t.Errorf("x86 POKEY port read: got 0x%02X, want 0xDE", x86Bus.In(X86_PORT_POKEY_BASE))
+	}
+}
+
+func TestX86_TED_PortIO(t *testing.T) {
+	bus := NewSystemBus()
+	x86Bus := NewX86SystemBus(bus)
+
+	// Select TED register 0 and write value
+	x86Bus.Out(X86_PORT_TED_SELECT, 0)
+	x86Bus.Out(X86_PORT_TED_DATA, 0xEF)
+
+	// Verify value is written to TED_BASE
+	got := bus.Read8(TED_BASE)
+	if got != 0xEF {
+		t.Errorf("x86 TED port write: got 0x%02X, want 0xEF", got)
+	}
+
+	// Test read back via port I/O
+	x86Bus.Out(X86_PORT_TED_SELECT, 0)
+	if x86Bus.In(X86_PORT_TED_DATA) != 0xEF {
+		t.Errorf("x86 TED port read: got 0x%02X, want 0xEF", x86Bus.In(X86_PORT_TED_DATA))
+	}
+}
+
+func TestX86_ULA_PortIO(t *testing.T) {
+	bus := NewSystemBus()
+	x86Bus := NewX86SystemBus(bus)
+
+	// Write border color via port 0xFE (same as Z80)
+	x86Bus.Out(Z80_ULA_PORT, 0x05)
+
+	// Verify value is written to ULA_BORDER
+	got := bus.Read8(ULA_BORDER)
+	if got != 0x05 {
+		t.Errorf("x86 ULA port write: got 0x%02X, want 0x05", got)
+	}
+
+	// Test read back via port I/O
+	if x86Bus.In(Z80_ULA_PORT) != 0x05 {
+		t.Errorf("x86 ULA port read: got 0x%02X, want 0x05", x86Bus.In(Z80_ULA_PORT))
+	}
+}
+
+func TestX86_ANTIC_PortIO(t *testing.T) {
+	bus := NewSystemBus()
+	x86Bus := NewX86SystemBus(bus)
+
+	// Select ANTIC register 0 (DMACTL) and write value
+	x86Bus.Out(X86_PORT_ANTIC_SELECT, 0)
+	x86Bus.Out(X86_PORT_ANTIC_DATA, 0x22)
+
+	// Verify value is written to ANTIC_BASE (4-byte aligned)
+	got := bus.Read8(ANTIC_BASE)
+	if got != 0x22 {
+		t.Errorf("x86 ANTIC port write: got 0x%02X, want 0x22", got)
+	}
+
+	// Test read back via port I/O
+	x86Bus.Out(X86_PORT_ANTIC_SELECT, 0)
+	if x86Bus.In(X86_PORT_ANTIC_DATA) != 0x22 {
+		t.Errorf("x86 ANTIC port read: got 0x%02X, want 0x22", x86Bus.In(X86_PORT_ANTIC_DATA))
+	}
+}
+
+func TestX86_GTIA_PortIO(t *testing.T) {
+	bus := NewSystemBus()
+	x86Bus := NewX86SystemBus(bus)
+
+	// Select GTIA register 0 (COLPF0) and write value
+	x86Bus.Out(X86_PORT_GTIA_SELECT, 0)
+	x86Bus.Out(X86_PORT_GTIA_DATA, 0x44)
+
+	// Verify value is written to GTIA_BASE (4-byte aligned)
+	got := bus.Read8(GTIA_BASE)
+	if got != 0x44 {
+		t.Errorf("x86 GTIA port write: got 0x%02X, want 0x44", got)
+	}
+
+	// Test read back via port I/O
+	x86Bus.Out(X86_PORT_GTIA_SELECT, 0)
+	if x86Bus.In(X86_PORT_GTIA_DATA) != 0x44 {
+		t.Errorf("x86 GTIA port read: got 0x%02X, want 0x44", x86Bus.In(X86_PORT_GTIA_DATA))
+	}
+}
+
+// =============================================================================
+// Z80 ANTIC/GTIA Tests
+// =============================================================================
+
+func TestZ80_ANTIC_PortIO(t *testing.T) {
+	bus := NewSystemBus()
+	z80Bus := NewZ80SystemBus(bus)
+
+	// Select ANTIC register 0 (DMACTL) and write value
+	z80Bus.Out(Z80_ANTIC_PORT_SELECT, 0)
+	z80Bus.Out(Z80_ANTIC_PORT_DATA, 0x33)
+
+	// Verify value is written to ANTIC_BASE (4-byte aligned)
+	got := bus.Read8(ANTIC_BASE)
+	if got != 0x33 {
+		t.Errorf("Z80 ANTIC port write: got 0x%02X, want 0x33", got)
+	}
+
+	// Test read back via port I/O
+	z80Bus.Out(Z80_ANTIC_PORT_SELECT, 0)
+	if z80Bus.In(Z80_ANTIC_PORT_DATA) != 0x33 {
+		t.Errorf("Z80 ANTIC port read: got 0x%02X, want 0x33", z80Bus.In(Z80_ANTIC_PORT_DATA))
+	}
+}
+
+func TestZ80_GTIA_PortIO(t *testing.T) {
+	bus := NewSystemBus()
+	z80Bus := NewZ80SystemBus(bus)
+
+	// Select GTIA register 0 (COLPF0) and write value
+	z80Bus.Out(Z80_GTIA_PORT_SELECT, 0)
+	z80Bus.Out(Z80_GTIA_PORT_DATA, 0x55)
+
+	// Verify value is written to GTIA_BASE (4-byte aligned)
+	got := bus.Read8(GTIA_BASE)
+	if got != 0x55 {
+		t.Errorf("Z80 GTIA port write: got 0x%02X, want 0x55", got)
+	}
+
+	// Test read back via port I/O
+	z80Bus.Out(Z80_GTIA_PORT_SELECT, 0)
+	if z80Bus.In(Z80_GTIA_PORT_DATA) != 0x55 {
+		t.Errorf("Z80 GTIA port read: got 0x%02X, want 0x55", z80Bus.In(Z80_GTIA_PORT_DATA))
+	}
+}
+
+// =============================================================================
+// Cross-CPU Tests including x86 and ANTIC/GTIA
+// =============================================================================
+
+func TestCrossCPU_PSG_WithX86(t *testing.T) {
+	bus := NewSystemBus()
+	adapter6502 := NewMemoryBusAdapter_6502(bus)
+	z80Bus := NewZ80SystemBus(bus)
+	x86Bus := NewX86SystemBus(bus)
+
+	// Write via x86
+	x86Bus.Out(X86_PORT_PSG_SELECT, 0)
+	x86Bus.Out(X86_PORT_PSG_DATA, 0x77)
+
+	// Read via M68K (direct)
+	if bus.Read8(PSG_BASE) != 0x77 {
+		t.Errorf("Cross-CPU PSG with x86: M68K read got 0x%02X, want 0x77", bus.Read8(PSG_BASE))
+	}
+
+	// Read via 6502
+	if adapter6502.Read(0xD400) != 0x77 {
+		t.Errorf("Cross-CPU PSG with x86: 6502 read got 0x%02X, want 0x77", adapter6502.Read(0xD400))
+	}
+
+	// Read via Z80
+	z80Bus.Out(Z80_PSG_PORT_SELECT, 0)
+	if z80Bus.In(Z80_PSG_PORT_DATA) != 0x77 {
+		t.Errorf("Cross-CPU PSG with x86: Z80 read got 0x%02X, want 0x77", z80Bus.In(Z80_PSG_PORT_DATA))
+	}
+}
+
+func TestCrossCPU_ANTIC_AllCPUs(t *testing.T) {
+	bus := NewSystemBus()
+	z80Bus := NewZ80SystemBus(bus)
+	x86Bus := NewX86SystemBus(bus)
+
+	// Note: 6502 has PSG at $D400 which conflicts with ANTIC's authentic Atari address
+	// So we test cross-CPU with M68K, Z80, and x86 only
+
+	// Write via M68K (direct - 4-byte aligned)
+	bus.Write8(ANTIC_BASE, 0x22)
+
+	// Verify value at ANTIC_BASE
+	if bus.Read8(ANTIC_BASE) != 0x22 {
+		t.Errorf("Cross-CPU ANTIC: M68K read got 0x%02X, want 0x22", bus.Read8(ANTIC_BASE))
+	}
+
+	// Read via Z80
+	z80Bus.Out(Z80_ANTIC_PORT_SELECT, 0)
+	if z80Bus.In(Z80_ANTIC_PORT_DATA) != 0x22 {
+		t.Errorf("Cross-CPU ANTIC: Z80 read got 0x%02X, want 0x22", z80Bus.In(Z80_ANTIC_PORT_DATA))
+	}
+
+	// Read via x86
+	x86Bus.Out(X86_PORT_ANTIC_SELECT, 0)
+	if x86Bus.In(X86_PORT_ANTIC_DATA) != 0x22 {
+		t.Errorf("Cross-CPU ANTIC: x86 read got 0x%02X, want 0x22", x86Bus.In(X86_PORT_ANTIC_DATA))
+	}
+}
+
+func TestCrossCPU_GTIA_AllCPUs(t *testing.T) {
+	bus := NewSystemBus()
+	z80Bus := NewZ80SystemBus(bus)
+	x86Bus := NewX86SystemBus(bus)
+
+	// Write via Z80
+	z80Bus.Out(Z80_GTIA_PORT_SELECT, 0)
+	z80Bus.Out(Z80_GTIA_PORT_DATA, 0x88)
+
+	// Read via M68K (direct - 4-byte aligned)
+	if bus.Read8(GTIA_BASE) != 0x88 {
+		t.Errorf("Cross-CPU GTIA: M68K read got 0x%02X, want 0x88", bus.Read8(GTIA_BASE))
+	}
+
+	// Read via x86
+	x86Bus.Out(X86_PORT_GTIA_SELECT, 0)
+	if x86Bus.In(X86_PORT_GTIA_DATA) != 0x88 {
+		t.Errorf("Cross-CPU GTIA: x86 read got 0x%02X, want 0x88", x86Bus.In(X86_PORT_GTIA_DATA))
+	}
+}
+
+func TestCrossCPU_ULA_WithX86(t *testing.T) {
+	bus := NewSystemBus()
+	adapter6502 := NewMemoryBusAdapter_6502(bus)
+	z80Bus := NewZ80SystemBus(bus)
+	x86Bus := NewX86SystemBus(bus)
+
+	// Write via x86
+	x86Bus.Out(Z80_ULA_PORT, 0x06)
+
+	// Read via M68K (direct)
+	if bus.Read8(ULA_BORDER) != 0x06 {
+		t.Errorf("Cross-CPU ULA with x86: M68K read got 0x%02X, want 0x06", bus.Read8(ULA_BORDER))
+	}
+
+	// Read via 6502
+	if adapter6502.Read(0xD800) != 0x06 {
+		t.Errorf("Cross-CPU ULA with x86: 6502 read got 0x%02X, want 0x06", adapter6502.Read(0xD800))
+	}
+
+	// Read via Z80
+	if z80Bus.In(Z80_ULA_PORT) != 0x06 {
+		t.Errorf("Cross-CPU ULA with x86: Z80 read got 0x%02X, want 0x06", z80Bus.In(Z80_ULA_PORT))
+	}
+}

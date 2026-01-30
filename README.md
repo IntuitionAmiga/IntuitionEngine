@@ -747,26 +747,32 @@ AHX+ mode provides enhanced audio processing:
 
 ## 3.12 Hardware I/O Memory Map by CPU
 
-All sound and video chips are accessible from all four CPU architectures at different address ranges:
+All sound and video chips are accessible from all five CPU architectures at different address ranges:
 
 ### Sound Chips
 
-| Chip  | IE32/M68K         | Z80 Ports | 6502        | Notes |
-|-------|-------------------|-----------|-------------|-------|
-| PSG   | 0x0F0C00-0x0F0C0D | 0xF0-0xF1 | $D400-$D40D | AY-3-8910/YM2149 compatible |
-| POKEY | 0x0F0D00-0x0F0D09 | 0xD0-0xD1 | $D200-$D209 | Atari 8-bit compatible |
-| SID   | 0x0F0E00-0x0F0E1C | 0xE0-0xE1 | $D500-$D51C | MOS 6581/8580 compatible |
-| TED   | 0x0F0F00-0x0F0F05 | 0xF2-0xF3 | $D600-$D605 | Plus/4 compatible |
-| AHX   | 0x0F0B80-0x0F0B91 | —         | $FB80-$FB91 | Amiga AHX/THX module player |
+| Chip  | IE32/M68K         | Z80 Ports | x86 Ports | 6502        | Notes |
+|-------|-------------------|-----------|-----------|-------------|-------|
+| PSG   | 0x0F0C00-0x0F0C0D | 0xF0/0xF1 | 0xF0/0xF1 | $D400-$D40D | AY-3-8910/YM2149 compatible |
+| POKEY | 0x0F0D00-0x0F0D09 | 0xD0/0xD1 | 0xD0-0xD3* | $D200-$D209 | Atari 8-bit compatible |
+| SID   | 0x0F0E00-0x0F0E1C | 0xE0/0xE1 | 0xE0/0xE1 | $D500-$D51C | MOS 6581/8580 compatible |
+| TED   | 0x0F0F00-0x0F0F05 | 0xF2/0xF3 | 0xF2/0xF3 | $D600-$D605 | Plus/4 compatible |
+| AHX   | 0x0F0B80-0x0F0B91 | —         | —         | $FB80-$FB91 | Amiga AHX/THX module player |
+
+\* x86 POKEY uses ports 0xD0-0xD3 and 0xD8-0xDF (0xD4-0xD7 reserved for ANTIC/GTIA)
 
 ### Video Chips
 
-| Chip      | IE32/M68K         | Z80 Ports | 6502        | Notes |
-|-----------|-------------------|-----------|-------------|-------|
-| VideoChip | 0x0F0000-0x0F0058 | 0xF000+   | $F000-$F058 | Custom copper/blitter |
-| TED Video | 0x0F0F20-0x0F0F5F | 0xF2-0xF3 | $D620-$D62F | Plus/4 compatible (idx 0x20-0x2F) |
-| VGA       | 0x0F1000-0x0F13FF | 0xA0-0xAC | $D700-$D70A | IBM VGA compatible |
-| ULA       | 0x0F2000-0x0F200B | 0xFE      | $D800-$D80B | ZX Spectrum compatible |
+| Chip      | IE32/M68K         | Z80 Ports   | x86 Ports     | 6502        | Notes |
+|-----------|-------------------|-------------|---------------|-------------|-------|
+| VideoChip | 0x0F0000-0x0F0058 | Memory      | Memory        | $F000-$F058 | Custom copper/blitter |
+| TED Video | 0x0F0F20-0x0F0F5F | 0xF2/0xF3   | 0xF2/0xF3     | $D620-$D62F | Plus/4 (idx 0x20-0x2F) |
+| VGA       | 0x0F1000-0x0F13FF | 0xA0-0xAC   | 0x3C4-0x3DA   | $D700-$D70A | IBM VGA compatible |
+| ANTIC     | 0x0F2100-0x0F213F | 0xD4/0xD5   | 0xD4/0xD5     | $D400-$D40F | Atari 8-bit video |
+| GTIA      | 0x0F2140-0x0F21B7 | 0xD6/0xD7   | 0xD6/0xD7     | $D000-$D01F | Atari 8-bit color + P/M |
+| ULA       | 0x0F2000-0x0F200B | 0xFE        | 0xFE          | $D800-$D80B | ZX Spectrum compatible |
+
+Note: 6502 has PSG at $D400 which overlaps with ANTIC's authentic Atari address. Use M68K/Z80/x86 for ANTIC access when PSG is in use.
 
 ### Access Methods
 
@@ -1097,11 +1103,69 @@ Color format: `HHHHLLLL` where `HHHH` = hue (0-15), `LLLL` = luminance (0-15, bu
 
 ### Display List
 
-ANTIC is driven by a display list - a program that specifies what to render on each scanline. The display list supports:
+ANTIC is driven by a display list - a program that specifies what to render on each scanline. Similar to the Amiga's copper coprocessor, the display list is a sequence of instructions that control video output.
 
-- **Blank lines** (opcodes 0x00-0x70): 1-8 blank scanlines
-- **Mode lines**: Text and graphics modes with optional LMS, HSCROL, VSCROL
-- **Jump instructions**: JMP (0x01) and JVB (0x41, jump and wait for VBlank)
+#### Blank Line Instructions
+
+| Opcode | Constant | Scanlines |
+|--------|----------|-----------|
+| 0x00 | DL_BLANK1 | 1 blank scanline |
+| 0x10 | DL_BLANK2 | 2 blank scanlines |
+| 0x20 | DL_BLANK3 | 3 blank scanlines |
+| 0x30 | DL_BLANK4 | 4 blank scanlines |
+| 0x40 | DL_BLANK5 | 5 blank scanlines |
+| 0x50 | DL_BLANK6 | 6 blank scanlines |
+| 0x60 | DL_BLANK7 | 7 blank scanlines |
+| 0x70 | DL_BLANK8 | 8 blank scanlines |
+
+#### Jump Instructions
+
+| Opcode | Constant | Description |
+|--------|----------|-------------|
+| 0x01 | DL_JMP | Jump to address (2 bytes follow) |
+| 0x41 | DL_JVB | Jump and wait for Vertical Blank |
+
+#### Graphics Mode Instructions
+
+| Opcode | Constant | Description |
+|--------|----------|-------------|
+| 0x02 | DL_MODE2 | 40 column text, 8 scanlines/row |
+| 0x03 | DL_MODE3 | 40 column text, 10 scanlines/row |
+| 0x04 | DL_MODE4 | 40 column text, 8 scanlines, multicolor |
+| 0x05 | DL_MODE5 | 40 column text, 16 scanlines, multicolor |
+| 0x06 | DL_MODE6 | 20 column text, 8 scanlines |
+| 0x07 | DL_MODE7 | 20 column text, 16 scanlines |
+| 0x08 | DL_MODE8 | 40 pixels, 8 scanlines/row (GRAPHICS 3) |
+| 0x09 | DL_MODE9 | 80 pixels, 4 scanlines (GRAPHICS 4) |
+| 0x0A | DL_MODE10 | 80 pixels, 2 scanlines (GRAPHICS 5) |
+| 0x0B | DL_MODE11 | 160 pixels, 1 scanline (GRAPHICS 6) |
+| 0x0C | DL_MODE12 | 160 pixels, 1 scanline (GRAPHICS 6+) |
+| 0x0D | DL_MODE13 | 160 pixels, 2 scanlines (GRAPHICS 7) |
+| 0x0E | DL_MODE14 | 160 pixels, 1 scanline, 4 colors |
+| 0x0F | DL_MODE15 | 320 pixels, 1 scanline (GRAPHICS 8) |
+
+#### Instruction Modifiers (OR with mode)
+
+| Value | Constant | Description |
+|-------|----------|-------------|
+| 0x40 | DL_LMS | Load Memory Scan (2 address bytes follow) |
+| 0x80 | DL_DLI | Display List Interrupt at end of line |
+| 0x10 | DL_HSCROL | Enable horizontal fine scrolling |
+| 0x20 | DL_VSCROL | Enable vertical fine scrolling |
+
+#### Example Display List (x86)
+
+```asm
+display_list:
+    db DL_BLANK8                    ; 8 blank lines (top border)
+    db DL_BLANK8                    ; 8 more blank lines
+    db DL_BLANK8                    ; 8 more blank lines
+    db DL_MODE2 | DL_LMS            ; Mode 2 text with LMS
+    dw screen_memory                ; Screen memory address
+    times 23 db DL_MODE2            ; 23 more mode 2 lines
+    db DL_JVB                       ; Jump and wait for VBlank
+    dw display_list                 ; Loop back to start
+```
 
 ### Video Compositor Integration
 
@@ -1136,10 +1200,120 @@ ANTIC integrates with the video compositor as layer 13, positioned between TED (
     ; Create color bars using WSYNC timing
     ldx #0
 loop:
-    stx $D01A           ; Set COLBK (background color via GTIA)
+    stx GTIA_COLBK      ; Set background color via GTIA
     sta ANTIC_WSYNC     ; Wait for horizontal sync
     inx
     bne loop
+```
+
+## 3.16 GTIA Color Control (0x0F2140 - 0x0F216F)
+
+The GTIA (Graphics Television Interface Adapter) companion chip handles color generation and player-missile graphics for Atari 8-bit systems. While ANTIC controls display timing and the display list, GTIA controls all color output.
+
+### Register Map (IE32/M68K/x86)
+
+All registers are 4-byte aligned for copper coprocessor compatibility:
+
+```
+GTIA Registers (0x0F2140 - 0x0F21B7):
+0x0F2140: GTIA_COLPF0   - Playfield color 0
+0x0F2144: GTIA_COLPF1   - Playfield color 1
+0x0F2148: GTIA_COLPF2   - Playfield color 2
+0x0F214C: GTIA_COLPF3   - Playfield color 3
+0x0F2150: GTIA_COLBK    - Background/border color
+0x0F2154: GTIA_COLPM0   - Player/missile 0 color
+0x0F2158: GTIA_COLPM1   - Player/missile 1 color
+0x0F215C: GTIA_COLPM2   - Player/missile 2 color
+0x0F2160: GTIA_COLPM3   - Player/missile 3 color
+0x0F2164: GTIA_PRIOR    - Priority and GTIA modes
+0x0F2168: GTIA_GRACTL   - Graphics control (bit 1=players, bit 0=missiles)
+0x0F216C: GTIA_CONSOL   - Console switches (read only)
+0x0F2170: GTIA_HPOSP0   - Player 0 horizontal position
+0x0F2174: GTIA_HPOSP1   - Player 1 horizontal position
+0x0F2178: GTIA_HPOSP2   - Player 2 horizontal position
+0x0F217C: GTIA_HPOSP3   - Player 3 horizontal position
+0x0F2180: GTIA_HPOSM0   - Missile 0 horizontal position
+0x0F2184: GTIA_HPOSM1   - Missile 1 horizontal position
+0x0F2188: GTIA_HPOSM2   - Missile 2 horizontal position
+0x0F218C: GTIA_HPOSM3   - Missile 3 horizontal position
+0x0F2190: GTIA_SIZEP0   - Player 0 size (0=normal, 1=double, 3=quad)
+0x0F2194: GTIA_SIZEP1   - Player 1 size
+0x0F2198: GTIA_SIZEP2   - Player 2 size
+0x0F219C: GTIA_SIZEP3   - Player 3 size
+0x0F21A0: GTIA_SIZEM    - Missile sizes (2 bits each)
+0x0F21A4: GTIA_GRAFP0   - Player 0 graphics (8 pixels)
+0x0F21A8: GTIA_GRAFP1   - Player 1 graphics
+0x0F21AC: GTIA_GRAFP2   - Player 2 graphics
+0x0F21B0: GTIA_GRAFP3   - Player 3 graphics
+0x0F21B4: GTIA_GRAFM    - Missile graphics (2 bits each)
+```
+
+### 6502 Register Map (Atari Authentic)
+
+For 6502 compatibility, GTIA uses authentic Atari addresses at 0xD000:
+
+```
+Player/Missile Position and Size:
+0xD000: HPOSP0    0xD001: HPOSP1    0xD002: HPOSP2    0xD003: HPOSP3
+0xD004: HPOSM0    0xD005: HPOSM1    0xD006: HPOSM2    0xD007: HPOSM3
+0xD008: SIZEP0    0xD009: SIZEP1    0xD00A: SIZEP2    0xD00B: SIZEP3
+0xD00C: SIZEM     0xD00D: GRAFP0    0xD00E: GRAFP1    0xD00F: GRAFP2
+0xD010: GRAFP3    0xD011: GRAFM
+
+Color and Control:
+0xD012: COLPM0    0xD013: COLPM1    0xD014: COLPM2    0xD015: COLPM3
+0xD016: COLPF0    0xD017: COLPF1    0xD018: COLPF2    0xD019: COLPF3
+0xD01A: COLBK     0xD01B: PRIOR     0xD01D: GRACTL    0xD01F: CONSOL
+```
+
+### Color Format
+
+Colors use the ANTIC 128-color palette format:
+
+| Bits | Field | Description |
+|------|-------|-------------|
+| 7-4 | Hue | 16 hues (0=gray, 1-15=chromatic) |
+| 3-0 | Luminance | 8 levels (only even values 0-14 used) |
+
+### PRIOR Register Bits
+
+The PRIOR register controls display priority and special GTIA modes:
+
+| Bit | Name | Description |
+|-----|------|-------------|
+| 0-3 | Priority | Player/playfield priority selection |
+| 4 | Multicolor | Enable 5th player (missiles as single player) |
+| 5 | Fifth | Enable multicolor players |
+| 6-7 | GTIA Mode | 00=normal, 01=16 lum, 10=9 color, 11=16 hue |
+
+### Example: Raster Bars (x86)
+
+```asm
+    %include "ie86.inc"
+
+    ; Create smooth rainbow raster bars
+    mov ecx, 192            ; 192 visible lines
+.raster_loop:
+    mov byte [ANTIC_WSYNC], 0   ; Wait for HSYNC
+    mov eax, ecx
+    shl eax, 4              ; Scale line to hue
+    and eax, 0xF0           ; Mask hue bits
+    or eax, 0x08            ; Medium luminance
+    mov byte [GTIA_COLBK], al
+    loop .raster_loop
+```
+
+### Example: Set Playfield Colors (M68K)
+
+```asm
+    include "ie68.inc"
+
+    ; Set up a typical Atari display palette
+    move.b  #$94,GTIA_COLPF0    ; Light blue
+    move.b  #$0F,GTIA_COLPF1    ; White
+    move.b  #$C6,GTIA_COLPF2    ; Green
+    move.b  #$46,GTIA_COLPF3    ; Red
+    move.b  #$00,GTIA_COLBK     ; Black background
 ```
 
 # 4. IE32 CPU Architecture

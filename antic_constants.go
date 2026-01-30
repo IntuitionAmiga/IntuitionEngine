@@ -195,6 +195,84 @@ const (
 )
 
 // =============================================================================
+// GTIA Register Addresses (IE32/M68K/x86 direct access)
+// =============================================================================
+
+const (
+	// GTIA register base address (follows ANTIC at 0xF2100-0xF213F)
+	GTIA_BASE = 0xF2140
+
+	// Playfield color registers
+	GTIA_COLPF0 = 0xF2140 // Playfield color 0
+	GTIA_COLPF1 = 0xF2144 // Playfield color 1
+	GTIA_COLPF2 = 0xF2148 // Playfield color 2
+	GTIA_COLPF3 = 0xF214C // Playfield color 3
+	GTIA_COLBK  = 0xF2150 // Background/border color
+
+	// Player color registers
+	GTIA_COLPM0 = 0xF2154 // Player/missile 0 color
+	GTIA_COLPM1 = 0xF2158 // Player/missile 1 color
+	GTIA_COLPM2 = 0xF215C // Player/missile 2 color
+	GTIA_COLPM3 = 0xF2160 // Player/missile 3 color
+
+	// GTIA control registers
+	GTIA_PRIOR  = 0xF2164 // Priority and GTIA modes
+	GTIA_GRACTL = 0xF2168 // Graphics control
+	GTIA_CONSOL = 0xF216C // Console switches (read)
+
+	// Player horizontal position registers
+	GTIA_HPOSP0 = 0xF2170 // Player 0 horizontal position
+	GTIA_HPOSP1 = 0xF2174 // Player 1 horizontal position
+	GTIA_HPOSP2 = 0xF2178 // Player 2 horizontal position
+	GTIA_HPOSP3 = 0xF217C // Player 3 horizontal position
+
+	// Missile horizontal position registers
+	GTIA_HPOSM0 = 0xF2180 // Missile 0 horizontal position
+	GTIA_HPOSM1 = 0xF2184 // Missile 1 horizontal position
+	GTIA_HPOSM2 = 0xF2188 // Missile 2 horizontal position
+	GTIA_HPOSM3 = 0xF218C // Missile 3 horizontal position
+
+	// Player/missile size registers
+	GTIA_SIZEP0 = 0xF2190 // Player 0 size (0=normal, 1=double, 3=quad)
+	GTIA_SIZEP1 = 0xF2194 // Player 1 size
+	GTIA_SIZEP2 = 0xF2198 // Player 2 size
+	GTIA_SIZEP3 = 0xF219C // Player 3 size
+	GTIA_SIZEM  = 0xF21A0 // All missile sizes (2 bits each)
+
+	// Player graphics registers (directly writable, alternative to DMA)
+	GTIA_GRAFP0 = 0xF21A4 // Player 0 graphics (8 pixels)
+	GTIA_GRAFP1 = 0xF21A8 // Player 1 graphics
+	GTIA_GRAFP2 = 0xF21AC // Player 2 graphics
+	GTIA_GRAFP3 = 0xF21B0 // Player 3 graphics
+	GTIA_GRAFM  = 0xF21B4 // Missile graphics (2 bits each)
+
+	// GTIA register region end
+	GTIA_END = 0xF21B7
+)
+
+// =============================================================================
+// GTIA Register Bit Masks
+// =============================================================================
+
+// PRIOR register bits
+const (
+	GTIA_PRIOR_P03   = 0x01 // Players 0-3 have priority over playfield
+	GTIA_PRIOR_P01   = 0x02 // Players 0-1 have priority
+	GTIA_PRIOR_P23   = 0x04 // Players 2-3 have priority
+	GTIA_PRIOR_MULTI = 0x10 // Enable multicolor players
+	GTIA_PRIOR_FIFTH = 0x20 // Enable fifth player (missiles as player)
+	GTIA_PRIOR_GTIA1 = 0x40 // GTIA mode bit 0
+	GTIA_PRIOR_GTIA2 = 0x80 // GTIA mode bit 1
+)
+
+// GRACTL register bits
+const (
+	GTIA_GRACTL_MISSILE = 0x01 // Enable missile graphics
+	GTIA_GRACTL_PLAYER  = 0x02 // Enable player graphics
+	GTIA_GRACTL_LATCH   = 0x04 // Latch trigger inputs
+)
+
+// =============================================================================
 // 6502 CPU Mappings (Atari authentic addresses)
 // =============================================================================
 
@@ -216,6 +294,59 @@ const (
 	C6502_ANTIC_NMIEN  = 0xD40E
 	C6502_ANTIC_NMIST  = 0xD40F
 	C6502_ANTIC_END    = 0xD40F
+
+	// 6502: GTIA registers at authentic Atari addresses
+	C6502_GTIA_BASE   = 0xD000
+	C6502_GTIA_HPOSP0 = 0xD000 // Player 0 horizontal position (write)
+	C6502_GTIA_HPOSP1 = 0xD001 // Player 1 horizontal position (write)
+	C6502_GTIA_HPOSP2 = 0xD002 // Player 2 horizontal position (write)
+	C6502_GTIA_HPOSP3 = 0xD003 // Player 3 horizontal position (write)
+	C6502_GTIA_HPOSM0 = 0xD004 // Missile 0 horizontal position (write)
+	C6502_GTIA_HPOSM1 = 0xD005 // Missile 1 horizontal position (write)
+	C6502_GTIA_HPOSM2 = 0xD006 // Missile 2 horizontal position (write)
+	C6502_GTIA_HPOSM3 = 0xD007 // Missile 3 horizontal position (write)
+	C6502_GTIA_SIZEP0 = 0xD008 // Player 0 size (write)
+	C6502_GTIA_SIZEP1 = 0xD009 // Player 1 size (write)
+	C6502_GTIA_SIZEP2 = 0xD00A // Player 2 size (write)
+	C6502_GTIA_SIZEP3 = 0xD00B // Player 3 size (write)
+	C6502_GTIA_SIZEM  = 0xD00C // Missile sizes (write)
+	C6502_GTIA_GRAFP0 = 0xD00D // Player 0 graphics (write)
+	C6502_GTIA_GRAFP1 = 0xD00E // Player 1 graphics (write)
+	C6502_GTIA_GRAFP2 = 0xD00F // Player 2 graphics (write)
+	C6502_GTIA_GRAFP3 = 0xD010 // Player 3 graphics (write)
+	C6502_GTIA_GRAFM  = 0xD011 // Missile graphics (write)
+	C6502_GTIA_COLPM0 = 0xD012 // Player/missile 0 color
+	C6502_GTIA_COLPM1 = 0xD013 // Player/missile 1 color
+	C6502_GTIA_COLPM2 = 0xD014 // Player/missile 2 color
+	C6502_GTIA_COLPM3 = 0xD015 // Player/missile 3 color
+	C6502_GTIA_COLPF0 = 0xD016 // Playfield color 0
+	C6502_GTIA_COLPF1 = 0xD017 // Playfield color 1
+	C6502_GTIA_COLPF2 = 0xD018 // Playfield color 2
+	C6502_GTIA_COLPF3 = 0xD019 // Playfield color 3
+	C6502_GTIA_COLBK  = 0xD01A // Background/border color
+	C6502_GTIA_PRIOR  = 0xD01B // Priority and GTIA modes
+	C6502_GTIA_GRACTL = 0xD01D // Graphics control
+	C6502_GTIA_CONSOL = 0xD01F // Console switches
+	C6502_GTIA_END    = 0xD01F
+
+	// Z80 ANTIC port I/O mapping
+	// Use: OUT ($D4),A to select register, OUT ($D5),A to write data
+	//      IN A,($D4) to read selected register number, IN A,($D5) to read data
+	Z80_ANTIC_PORT_SELECT = 0xD4
+	Z80_ANTIC_PORT_DATA   = 0xD5
+	ANTIC_REG_COUNT       = 16 // Number of ANTIC registers accessible via port I/O
+
+	// Z80 GTIA port I/O mapping
+	// Use: OUT ($D6),A to select register, OUT ($D7),A to write data
+	Z80_GTIA_PORT_SELECT = 0xD6
+	Z80_GTIA_PORT_DATA   = 0xD7
+	GTIA_REG_COUNT       = 12 // Number of GTIA registers accessible via port I/O
+
+	// x86 ANTIC/GTIA port I/O mapping (same as Z80 for compatibility)
+	X86_PORT_ANTIC_SELECT = 0xD4
+	X86_PORT_ANTIC_DATA   = 0xD5
+	X86_PORT_GTIA_SELECT  = 0xD6
+	X86_PORT_GTIA_DATA    = 0xD7
 )
 
 // =============================================================================

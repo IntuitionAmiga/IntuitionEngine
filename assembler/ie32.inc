@@ -849,6 +849,43 @@
 .equ ANTIC_NMIEN_DLI   0x80             ; Display list interrupt enable
 .equ ANTIC_NMIEN_VBI   0x40             ; Vertical blank interrupt enable
 
+; Display List Instructions
+; Blank lines (1-8 scanlines)
+.equ DL_BLANK1         0x00             ; 1 blank scanline
+.equ DL_BLANK2         0x10             ; 2 blank scanlines
+.equ DL_BLANK3         0x20             ; 3 blank scanlines
+.equ DL_BLANK4         0x30             ; 4 blank scanlines
+.equ DL_BLANK5         0x40             ; 5 blank scanlines
+.equ DL_BLANK6         0x50             ; 6 blank scanlines
+.equ DL_BLANK7         0x60             ; 7 blank scanlines
+.equ DL_BLANK8         0x70             ; 8 blank scanlines
+
+; Jump instructions
+.equ DL_JMP            0x01             ; Jump to address (2 bytes follow)
+.equ DL_JVB            0x41             ; Jump and wait for Vertical Blank
+
+; Graphics modes
+.equ DL_MODE2          0x02             ; 40 col text, 8 scanlines/row
+.equ DL_MODE3          0x03             ; 40 col text, 10 scanlines/row
+.equ DL_MODE4          0x04             ; 40 col text, 8 scanlines, multicolor
+.equ DL_MODE5          0x05             ; 40 col text, 16 scanlines, multicolor
+.equ DL_MODE6          0x06             ; 20 col text, 8 scanlines
+.equ DL_MODE7          0x07             ; 20 col text, 16 scanlines
+.equ DL_MODE8          0x08             ; 40 pixels, 8 scanlines/row (GRAPHICS 3)
+.equ DL_MODE9          0x09             ; 80 pixels, 4 scanlines (GRAPHICS 4)
+.equ DL_MODE10         0x0A             ; 80 pixels, 2 scanlines (GRAPHICS 5)
+.equ DL_MODE11         0x0B             ; 160 pixels, 1 scanline (GRAPHICS 6)
+.equ DL_MODE12         0x0C             ; 160 pixels, 1 scanline (GRAPHICS 6+)
+.equ DL_MODE13         0x0D             ; 160 pixels, 2 scanlines (GRAPHICS 7)
+.equ DL_MODE14         0x0E             ; 160 pixels, 1 scanline, 4 colors
+.equ DL_MODE15         0x0F             ; 320 pixels, 1 scanline (GRAPHICS 8)
+
+; Display list modifiers (OR with mode)
+.equ DL_LMS            0x40             ; Load Memory Scan (2 addr bytes follow)
+.equ DL_DLI            0x80             ; Display List Interrupt at end of line
+.equ DL_HSCROL         0x10             ; Horizontal scroll enable
+.equ DL_VSCROL         0x20             ; Vertical scroll enable
+
 ; Enable/Status bits
 .equ ANTIC_ENABLE_VIDEO   0x01          ; Bit 0: Video enable
 .equ ANTIC_STATUS_VBLANK  0x01          ; Bit 0: VBlank active
@@ -861,6 +898,86 @@
 
 ; Copper SETBASE for ANTIC video
 .equ COP_SETBASE_ANTIC 0x8003C840       ; ANTIC_BASE (0xF2100 >> 2)
+
+; ============================================================================
+; GTIA VIDEO REGISTERS (Atari 8-bit color control)
+;
+; GTIA (Graphics Television Interface Adapter) handles color generation
+; and player-missile graphics for Atari 8-bit computers. While ANTIC
+; controls the display list and timing, GTIA controls colors and sprites.
+;
+; Color format: HHHHLLLL (hue in high nibble, luminance in low nibble)
+; - 16 hues (0-15) x 8 luminances (0,2,4,6,8,10,12,14) = 128 colors
+; - Hue 0 = grayscale, others are chromatic
+;
+; Registers are 4-byte aligned for copper coprocessor compatibility.
+; ============================================================================
+
+.equ GTIA_BASE         0xF2140          ; GTIA register base
+
+; Playfield color registers
+.equ GTIA_COLPF0       0xF2140          ; Playfield color 0
+.equ GTIA_COLPF1       0xF2144          ; Playfield color 1
+.equ GTIA_COLPF2       0xF2148          ; Playfield color 2
+.equ GTIA_COLPF3       0xF214C          ; Playfield color 3
+.equ GTIA_COLBK        0xF2150          ; Background/border color
+
+; Player color registers
+.equ GTIA_COLPM0       0xF2154          ; Player/missile 0 color
+.equ GTIA_COLPM1       0xF2158          ; Player/missile 1 color
+.equ GTIA_COLPM2       0xF215C          ; Player/missile 2 color
+.equ GTIA_COLPM3       0xF2160          ; Player/missile 3 color
+
+; GTIA control registers
+.equ GTIA_PRIOR        0xF2164          ; Priority and GTIA modes
+.equ GTIA_GRACTL       0xF2168          ; Graphics control
+.equ GTIA_CONSOL       0xF216C          ; Console switches (read)
+
+; Player horizontal position registers
+.equ GTIA_HPOSP0       0xF2170          ; Player 0 horizontal position
+.equ GTIA_HPOSP1       0xF2174          ; Player 1 horizontal position
+.equ GTIA_HPOSP2       0xF2178          ; Player 2 horizontal position
+.equ GTIA_HPOSP3       0xF217C          ; Player 3 horizontal position
+
+; Missile horizontal position registers
+.equ GTIA_HPOSM0       0xF2180          ; Missile 0 horizontal position
+.equ GTIA_HPOSM1       0xF2184          ; Missile 1 horizontal position
+.equ GTIA_HPOSM2       0xF2188          ; Missile 2 horizontal position
+.equ GTIA_HPOSM3       0xF218C          ; Missile 3 horizontal position
+
+; Player/missile size registers
+.equ GTIA_SIZEP0       0xF2190          ; Player 0 size (0=normal,1=double,3=quad)
+.equ GTIA_SIZEP1       0xF2194          ; Player 1 size
+.equ GTIA_SIZEP2       0xF2198          ; Player 2 size
+.equ GTIA_SIZEP3       0xF219C          ; Player 3 size
+.equ GTIA_SIZEM        0xF21A0          ; All missile sizes (2 bits each)
+
+; Player graphics registers (directly writable)
+.equ GTIA_GRAFP0       0xF21A4          ; Player 0 graphics (8 pixels)
+.equ GTIA_GRAFP1       0xF21A8          ; Player 1 graphics
+.equ GTIA_GRAFP2       0xF21AC          ; Player 2 graphics
+.equ GTIA_GRAFP3       0xF21B0          ; Player 3 graphics
+.equ GTIA_GRAFM        0xF21B4          ; Missile graphics (2 bits each)
+
+; PRIOR register bits
+.equ GTIA_PRIOR_P03    0x01             ; Players 0-3 have priority over PF
+.equ GTIA_PRIOR_P01    0x02             ; Players 0-1 have priority
+.equ GTIA_PRIOR_P23    0x04             ; Players 2-3 have priority
+.equ GTIA_PRIOR_MULTI  0x10             ; Enable multicolor players
+.equ GTIA_PRIOR_FIFTH  0x20             ; Enable fifth player
+.equ GTIA_PRIOR_GTIA1  0x40             ; GTIA mode bit 0
+.equ GTIA_PRIOR_GTIA2  0x80             ; GTIA mode bit 1
+
+; GRACTL register bits
+.equ GTIA_GRACTL_MISSLE 0x01            ; Enable missile graphics
+.equ GTIA_GRACTL_PLAYER 0x02            ; Enable player graphics
+.equ GTIA_GRACTL_LATCH  0x04            ; Latch trigger inputs
+
+; GTIA register end
+.equ GTIA_END          0xF216F
+
+; Copper SETBASE for GTIA
+.equ COP_SETBASE_GTIA  0x8003C850       ; GTIA_BASE (0xF2140 >> 2)
 
 ; ============================================================================
 ; EOF

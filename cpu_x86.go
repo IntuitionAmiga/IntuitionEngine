@@ -10,7 +10,10 @@
 
 package main
 
-import "sync"
+import (
+	"fmt"
+	"sync"
+)
 
 // X86Bus defines the interface for x86 memory and I/O operations
 type X86Bus interface {
@@ -1055,6 +1058,7 @@ func (c *CPU_X86) Step() int {
 				handler(c)
 			} else {
 				// Undefined opcode - halt
+				fmt.Printf("X86: Undefined opcode 0x%02X at EIP=0x%08X, halting\n", c.opcode, c.EIP-1)
 				c.Halted = true
 			}
 			goto done

@@ -1068,16 +1068,38 @@ func (c *CPU_X86) opMOV_r_imm(idx byte) {
 
 func (c *CPU_X86) opMOV_Eb_Ib() {
 	c.fetchModRM()
-	c.writeRM8(c.fetch8())
+	// Must calculate effective address BEFORE fetching immediate
+	// because displacement bytes come before immediate in encoding:
+	// [opcode] [ModR/M] [displacement] [immediate]
+	if c.getModRMMod() == 3 {
+		// Register operand - no displacement
+		c.setReg8(c.getModRMRM(), c.fetch8())
+	} else {
+		addr := c.getEffectiveAddress() // Fetch displacement first
+		imm := c.fetch8()               // Then fetch immediate
+		c.write8(addr, imm)
+	}
 	c.Cycles += 1
 }
 
 func (c *CPU_X86) opMOV_Ev_Iv() {
 	c.fetchModRM()
-	if c.prefixOpSize {
-		c.writeRM16(c.fetch16())
+	// Must calculate effective address BEFORE fetching immediate
+	if c.getModRMMod() == 3 {
+		// Register operand
+		if c.prefixOpSize {
+			c.setReg16(c.getModRMRM(), c.fetch16())
+		} else {
+			c.setReg32(c.getModRMRM(), c.fetch32())
+		}
 	} else {
-		c.writeRM32(c.fetch32())
+		// Memory operand - fetch displacement first, then immediate
+		addr := c.getEffectiveAddress()
+		if c.prefixOpSize {
+			c.write16(addr, c.fetch16())
+		} else {
+			c.write32(addr, c.fetch32())
+		}
 	}
 	c.Cycles += 1
 }

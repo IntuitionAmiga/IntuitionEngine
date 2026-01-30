@@ -976,7 +976,8 @@ func (bus *SystemBus) Read8(addr uint32) uint8 {
 	}
 
 	// Check for I/O regions
-	if regions, exists := bus.mapping[addr&PAGE_MASK]; exists {
+	page := addr & PAGE_MASK
+	if regions, exists := bus.mapping[page]; exists {
 		for _, region := range regions {
 			if addr >= region.start && addr <= region.end && region.onRead != nil {
 				value := region.onRead(addr)

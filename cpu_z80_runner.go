@@ -50,6 +50,8 @@ type Z80SystemBus struct {
 	sidRegSelect   byte       // Currently selected SID register for port I/O
 	pokeyRegSelect byte       // Currently selected POKEY register for port I/O
 	tedRegSelect   byte       // Currently selected TED register for port I/O
+	anticRegSelect byte       // Currently selected ANTIC register for port I/O
+	gtiaRegSelect  byte       // Currently selected GTIA register for port I/O
 	vgaEngine      *VGAEngine // VGA engine for port I/O access
 
 	// Extended bank windows for IE80 support (same layout as 6502)
@@ -313,6 +315,30 @@ func (b *Z80SystemBus) In(port uint16) byte {
 		return 0
 	}
 
+	// Handle ANTIC port I/O (0xD4-0xD5)
+	switch lowPort {
+	case Z80_ANTIC_PORT_SELECT:
+		return b.anticRegSelect
+	case Z80_ANTIC_PORT_DATA:
+		if b.anticRegSelect < ANTIC_REG_COUNT {
+			// ANTIC registers are 4-byte aligned
+			return b.bus.Read8(ANTIC_BASE + uint32(b.anticRegSelect)*4)
+		}
+		return 0
+	}
+
+	// Handle GTIA port I/O (0xD6-0xD7)
+	switch lowPort {
+	case Z80_GTIA_PORT_SELECT:
+		return b.gtiaRegSelect
+	case Z80_GTIA_PORT_DATA:
+		if b.gtiaRegSelect < GTIA_REG_COUNT {
+			// GTIA registers are 4-byte aligned
+			return b.bus.Read8(GTIA_BASE + uint32(b.gtiaRegSelect)*4)
+		}
+		return 0
+	}
+
 	// Handle ULA port I/O (0xFE)
 	if lowPort == Z80_ULA_PORT {
 		// Read returns border color from ULA_BORDER register
@@ -405,6 +431,32 @@ func (b *Z80SystemBus) Out(port uint16, value byte) {
 			// TED video registers (0x20-0x2F) - map to 4-byte aligned addresses
 			vidReg := uint32(b.tedRegSelect - Z80_TED_V_INDEX_BASE)
 			b.bus.Write8(TED_VIDEO_BASE+(vidReg*4), value)
+		}
+		return
+	}
+
+	// Handle ANTIC port I/O (0xD4-0xD5)
+	switch lowPort {
+	case Z80_ANTIC_PORT_SELECT:
+		b.anticRegSelect = value & 0x0F // 16 ANTIC registers
+		return
+	case Z80_ANTIC_PORT_DATA:
+		if b.anticRegSelect < ANTIC_REG_COUNT {
+			// ANTIC registers are 4-byte aligned
+			b.bus.Write8(ANTIC_BASE+uint32(b.anticRegSelect)*4, value)
+		}
+		return
+	}
+
+	// Handle GTIA port I/O (0xD6-0xD7)
+	switch lowPort {
+	case Z80_GTIA_PORT_SELECT:
+		b.gtiaRegSelect = value & 0x0F // 12 GTIA registers
+		return
+	case Z80_GTIA_PORT_DATA:
+		if b.gtiaRegSelect < GTIA_REG_COUNT {
+			// GTIA registers are 4-byte aligned
+			b.bus.Write8(GTIA_BASE+uint32(b.gtiaRegSelect)*4, value)
 		}
 		return
 	}

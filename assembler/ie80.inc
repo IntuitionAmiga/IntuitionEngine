@@ -440,6 +440,68 @@
 .set SAP_SUBSONG,0xF0D1D
 
 ; ============================================================================
+; ANTIC VIDEO REGISTERS (Atari 8-bit style via port I/O)
+;
+; For Z80: Use OUT (port),A to select register, OUT (port+1),A to write data
+;          IN A,(port) to read selected register, IN A,(port+1) to read data
+; ============================================================================
+
+; Z80 ANTIC port I/O mapping
+.set ANTIC_PORT_SELECT,0xD4
+.set ANTIC_PORT_DATA,0xD5
+
+; ANTIC register indices (for port I/O)
+.set ANTIC_REG_DMACTL,0x00
+.set ANTIC_REG_CHACTL,0x01
+.set ANTIC_REG_DLISTL,0x02
+.set ANTIC_REG_DLISTH,0x03
+.set ANTIC_REG_HSCROL,0x04
+.set ANTIC_REG_VSCROL,0x05
+.set ANTIC_REG_PMBASE,0x06
+.set ANTIC_REG_CHBASE,0x07
+.set ANTIC_REG_WSYNC,0x08
+.set ANTIC_REG_VCOUNT,0x09
+.set ANTIC_REG_PENH,0x0A
+.set ANTIC_REG_PENV,0x0B
+.set ANTIC_REG_NMIEN,0x0C
+.set ANTIC_REG_NMIST,0x0D
+.set ANTIC_REG_ENABLE,0x0E
+.set ANTIC_REG_STATUS,0x0F
+
+; ============================================================================
+; GTIA VIDEO REGISTERS (Atari 8-bit color via port I/O)
+; ============================================================================
+
+; Z80 GTIA port I/O mapping
+.set GTIA_PORT_SELECT,0xD6
+.set GTIA_PORT_DATA,0xD7
+
+; GTIA register indices (for port I/O)
+.set GTIA_REG_COLPF0,0x00
+.set GTIA_REG_COLPF1,0x01
+.set GTIA_REG_COLPF2,0x02
+.set GTIA_REG_COLPF3,0x03
+.set GTIA_REG_COLBK,0x04
+.set GTIA_REG_COLPM0,0x05
+.set GTIA_REG_COLPM1,0x06
+.set GTIA_REG_COLPM2,0x07
+.set GTIA_REG_COLPM3,0x08
+.set GTIA_REG_PRIOR,0x09
+.set GTIA_REG_GRACTL,0x0A
+.set GTIA_REG_CONSOL,0x0B
+
+; ============================================================================
+; ULA VIDEO REGISTERS (ZX Spectrum style)
+; ============================================================================
+
+.set ULA_BASE,0xF2000
+.set ULA_BORDER,0xF2000
+.set ULA_CTRL,0xF2004
+.set ULA_STATUS,0xF2008
+.set ULA_CTRL_ENABLE,0x01
+.set ULA_PORT,0xFE
+
+; ============================================================================
 ; AHX AUDIO REGISTERS (Amiga AHX module player)
 ;
 ; The AHX engine provides Amiga AHX/THX module playback:
@@ -2233,6 +2295,115 @@
 ; NMIEN bits
 .set ANTIC_NMIEN_DLI,0x80
 .set ANTIC_NMIEN_VBI,0x40
+
+; Display List Instructions
+; Blank lines (1-8 scanlines)
+.set DL_BLANK1,0x00
+.set DL_BLANK2,0x10
+.set DL_BLANK3,0x20
+.set DL_BLANK4,0x30
+.set DL_BLANK5,0x40
+.set DL_BLANK6,0x50
+.set DL_BLANK7,0x60
+.set DL_BLANK8,0x70
+
+; Jump instructions
+.set DL_JMP,0x01
+.set DL_JVB,0x41
+
+; Graphics modes
+.set DL_MODE2,0x02
+.set DL_MODE3,0x03
+.set DL_MODE4,0x04
+.set DL_MODE5,0x05
+.set DL_MODE6,0x06
+.set DL_MODE7,0x07
+.set DL_MODE8,0x08
+.set DL_MODE9,0x09
+.set DL_MODE10,0x0A
+.set DL_MODE11,0x0B
+.set DL_MODE12,0x0C
+.set DL_MODE13,0x0D
+.set DL_MODE14,0x0E
+.set DL_MODE15,0x0F
+
+; Display list modifiers (OR with mode)
+.set DL_LMS,0x40
+.set DL_DLI,0x80
+.set DL_HSCROL,0x10
+.set DL_VSCROL,0x20
+
+; ============================================================================
+; GTIA VIDEO REGISTERS (Atari 8-bit color control)
+;
+; GTIA (Graphics Television Interface Adapter) handles color generation
+; and player-missile graphics for Atari 8-bit computers. While ANTIC
+; controls the display list and timing, GTIA controls colors and sprites.
+;
+; Color format: HHHHLLLL (hue in high nibble, luminance in low nibble)
+; - 16 hues (0-15) x 8 luminances (0,2,4,6,8,10,12,14) = 128 colors
+; - Hue 0 = grayscale, others are chromatic
+;
+; GTIA uses authentic Atari addresses for Z80 compatibility.
+; ============================================================================
+
+; Playfield color registers
+.set GTIA_COLPF0,0xD016
+.set GTIA_COLPF1,0xD017
+.set GTIA_COLPF2,0xD018
+.set GTIA_COLPF3,0xD019
+.set GTIA_COLBK,0xD01A
+
+; Player color registers
+.set GTIA_COLPM0,0xD012
+.set GTIA_COLPM1,0xD013
+.set GTIA_COLPM2,0xD014
+.set GTIA_COLPM3,0xD015
+
+; GTIA control registers
+.set GTIA_PRIOR,0xD01B
+.set GTIA_GRACTL,0xD01D
+.set GTIA_CONSOL,0xD01F
+
+; Player horizontal position registers (authentic Atari addresses)
+.set GTIA_HPOSP0,0xD000
+.set GTIA_HPOSP1,0xD001
+.set GTIA_HPOSP2,0xD002
+.set GTIA_HPOSP3,0xD003
+
+; Missile horizontal position registers
+.set GTIA_HPOSM0,0xD004
+.set GTIA_HPOSM1,0xD005
+.set GTIA_HPOSM2,0xD006
+.set GTIA_HPOSM3,0xD007
+
+; Player/missile size registers
+.set GTIA_SIZEP0,0xD008
+.set GTIA_SIZEP1,0xD009
+.set GTIA_SIZEP2,0xD00A
+.set GTIA_SIZEP3,0xD00B
+.set GTIA_SIZEM,0xD00C
+
+; Player graphics registers (directly writable)
+.set GTIA_GRAFP0,0xD00D
+.set GTIA_GRAFP1,0xD00E
+.set GTIA_GRAFP2,0xD00F
+.set GTIA_GRAFP3,0xD010
+.set GTIA_GRAFM,0xD011
+
+; PRIOR register bits
+.set GTIA_PRIOR_P03,0x01
+.set GTIA_PRIOR_P01,0x02
+.set GTIA_PRIOR_P23,0x04
+.set GTIA_PRIOR_MULTI,0x10
+.set GTIA_PRIOR_FIFTH,0x20
+.set GTIA_PRIOR_GTIA1,0x40
+.set GTIA_PRIOR_GTIA2,0x80
+
+; GRACTL register bits
+.set GTIA_GRACTL_MISSLE,0x01
+.set GTIA_GRACTL_PLAYER,0x02
+.set GTIA_GRACTL_LATCH,0x04
 
 ; ============================================================================
 ; EOF

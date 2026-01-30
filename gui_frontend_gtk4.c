@@ -56,9 +56,10 @@ static void load_cb(GtkWidget *widget, gpointer data) {
     GtkFileFilter *filter = gtk_file_filter_new();
     gtk_file_filter_add_pattern(filter, "*.iex");
     gtk_file_filter_add_pattern(filter, "*.ie68");
-    gtk_file_filter_add_pattern(filter, "*.ie6502");
+    gtk_file_filter_add_pattern(filter, "*.ie65");
     gtk_file_filter_add_pattern(filter, "*.ie80");
-    gtk_file_filter_set_name(filter, "Intuition Engine Executables (*.iex, *.ie68, *.ie6502, *.ie80)");
+    gtk_file_filter_add_pattern(filter, "*.ie86");
+    gtk_file_filter_set_name(filter, "Intuition Engine Executables (*.iex, *.ie68, *.ie65, *.ie80, *.ie86)");
 
     GListStore *filters = g_list_store_new(GTK_TYPE_FILE_FILTER);
     g_list_store_append(filters, filter);

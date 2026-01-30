@@ -2123,6 +2123,43 @@ ANTIC_CHACTL_REFLECT = $04      ; Reflect characters
 ANTIC_NMIEN_DLI   = $80         ; Display list interrupt enable
 ANTIC_NMIEN_VBI   = $40         ; Vertical blank interrupt enable
 
+; Display List Instructions
+; Blank lines (1-8 scanlines)
+DL_BLANK1         = $00         ; 1 blank scanline
+DL_BLANK2         = $10         ; 2 blank scanlines
+DL_BLANK3         = $20         ; 3 blank scanlines
+DL_BLANK4         = $30         ; 4 blank scanlines
+DL_BLANK5         = $40         ; 5 blank scanlines
+DL_BLANK6         = $50         ; 6 blank scanlines
+DL_BLANK7         = $60         ; 7 blank scanlines
+DL_BLANK8         = $70         ; 8 blank scanlines
+
+; Jump instructions
+DL_JMP            = $01         ; Jump to address (2 bytes follow)
+DL_JVB            = $41         ; Jump and wait for Vertical Blank
+
+; Graphics modes
+DL_MODE2          = $02         ; 40 col text, 8 scanlines/row
+DL_MODE3          = $03         ; 40 col text, 10 scanlines/row
+DL_MODE4          = $04         ; 40 col text, 8 scanlines, multicolor
+DL_MODE5          = $05         ; 40 col text, 16 scanlines, multicolor
+DL_MODE6          = $06         ; 20 col text, 8 scanlines
+DL_MODE7          = $07         ; 20 col text, 16 scanlines
+DL_MODE8          = $08         ; 40 pixels, 8 scanlines/row (GRAPHICS 3)
+DL_MODE9          = $09         ; 80 pixels, 4 scanlines (GRAPHICS 4)
+DL_MODE10         = $0A         ; 80 pixels, 2 scanlines (GRAPHICS 5)
+DL_MODE11         = $0B         ; 160 pixels, 1 scanline (GRAPHICS 6)
+DL_MODE12         = $0C         ; 160 pixels, 1 scanline (GRAPHICS 6+)
+DL_MODE13         = $0D         ; 160 pixels, 2 scanlines (GRAPHICS 7)
+DL_MODE14         = $0E         ; 160 pixels, 1 scanline, 4 colors
+DL_MODE15         = $0F         ; 320 pixels, 1 scanline (GRAPHICS 8)
+
+; Display list modifiers (OR with mode)
+DL_LMS            = $40         ; Load Memory Scan (2 addr bytes follow)
+DL_DLI            = $80         ; Display List Interrupt at end of line
+DL_HSCROL         = $10         ; Horizontal scroll enable
+DL_VSCROL         = $20         ; Vertical scroll enable
+
 ; NMIST bits
 ANTIC_NMIST_RESET = $20         ; Reset button pressed
 ANTIC_NMIST_DLI   = $80         ; DLI pending
@@ -2153,6 +2190,110 @@ ANTIC_NMIST_VBI   = $40         ; VBI pending
 ; Wait for horizontal sync
 .macro ANTIC_WAIT_HSYNC
     sta ANTIC_WSYNC
+.endmacro
+
+; ============================================================================
+; GTIA VIDEO REGISTERS (Atari 8-bit color control)
+;
+; GTIA (Graphics Television Interface Adapter) handles color generation
+; and player-missile graphics for Atari 8-bit computers. While ANTIC
+; controls the display list and timing, GTIA controls colors and sprites.
+;
+; Color format: HHHHLLLL (hue in high nibble, luminance in low nibble)
+; - 16 hues (0-15) x 8 luminances (0,2,4,6,8,10,12,14) = 128 colors
+; - Hue 0 = grayscale, others are chromatic
+;
+; GTIA uses authentic Atari addresses for 6502 compatibility.
+; ============================================================================
+
+; Playfield color registers
+GTIA_COLPF0     = $D016         ; Playfield color 0
+GTIA_COLPF1     = $D017         ; Playfield color 1
+GTIA_COLPF2     = $D018         ; Playfield color 2
+GTIA_COLPF3     = $D019         ; Playfield color 3
+GTIA_COLBK      = $D01A         ; Background/border color
+
+; Player color registers
+GTIA_COLPM0     = $D012         ; Player/missile 0 color
+GTIA_COLPM1     = $D013         ; Player/missile 1 color
+GTIA_COLPM2     = $D014         ; Player/missile 2 color
+GTIA_COLPM3     = $D015         ; Player/missile 3 color
+
+; GTIA control registers
+GTIA_PRIOR      = $D01B         ; Priority and GTIA modes
+GTIA_GRACTL     = $D01D         ; Graphics control
+GTIA_CONSOL     = $D01F         ; Console switches (read)
+
+; Player horizontal position registers (authentic Atari addresses)
+GTIA_HPOSP0     = $D000         ; Player 0 horizontal position
+GTIA_HPOSP1     = $D001         ; Player 1 horizontal position
+GTIA_HPOSP2     = $D002         ; Player 2 horizontal position
+GTIA_HPOSP3     = $D003         ; Player 3 horizontal position
+
+; Missile horizontal position registers
+GTIA_HPOSM0     = $D004         ; Missile 0 horizontal position
+GTIA_HPOSM1     = $D005         ; Missile 1 horizontal position
+GTIA_HPOSM2     = $D006         ; Missile 2 horizontal position
+GTIA_HPOSM3     = $D007         ; Missile 3 horizontal position
+
+; Player/missile size registers
+GTIA_SIZEP0     = $D008         ; Player 0 size (0=normal,1=double,3=quad)
+GTIA_SIZEP1     = $D009         ; Player 1 size
+GTIA_SIZEP2     = $D00A         ; Player 2 size
+GTIA_SIZEP3     = $D00B         ; Player 3 size
+GTIA_SIZEM      = $D00C         ; All missile sizes (2 bits each)
+
+; Player graphics registers (directly writable)
+GTIA_GRAFP0     = $D00D         ; Player 0 graphics (8 pixels)
+GTIA_GRAFP1     = $D00E         ; Player 1 graphics
+GTIA_GRAFP2     = $D00F         ; Player 2 graphics
+GTIA_GRAFP3     = $D010         ; Player 3 graphics
+GTIA_GRAFM      = $D011         ; Missile graphics (2 bits each)
+
+; PRIOR register bits
+GTIA_PRIOR_P03    = $01         ; Players 0-3 have priority over PF
+GTIA_PRIOR_P01    = $02         ; Players 0-1 have priority
+GTIA_PRIOR_P23    = $04         ; Players 2-3 have priority
+GTIA_PRIOR_MULTI  = $10         ; Enable multicolor players
+GTIA_PRIOR_FIFTH  = $20         ; Enable fifth player
+GTIA_PRIOR_GTIA1  = $40         ; GTIA mode bit 0
+GTIA_PRIOR_GTIA2  = $80         ; GTIA mode bit 1
+
+; GRACTL register bits
+GTIA_GRACTL_MISSLE = $01        ; Enable missile graphics
+GTIA_GRACTL_PLAYER = $02        ; Enable player graphics
+GTIA_GRACTL_LATCH  = $04        ; Latch trigger inputs
+
+; ----- GTIA helper macros -----
+
+; Set background color
+.macro GTIA_SET_BK color
+    lda #color
+    sta GTIA_COLBK
+.endmacro
+
+; Set playfield color 0
+.macro GTIA_SET_PF0 color
+    lda #color
+    sta GTIA_COLPF0
+.endmacro
+
+; Set playfield color 1
+.macro GTIA_SET_PF1 color
+    lda #color
+    sta GTIA_COLPF1
+.endmacro
+
+; Set playfield color 2
+.macro GTIA_SET_PF2 color
+    lda #color
+    sta GTIA_COLPF2
+.endmacro
+
+; Set playfield color 3
+.macro GTIA_SET_PF3 color
+    lda #color
+    sta GTIA_COLPF3
 .endmacro
 
 ; ============================================================================
