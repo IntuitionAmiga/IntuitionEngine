@@ -806,6 +806,241 @@ func TestVoodoo_FullRenderLoop(t *testing.T) {
 }
 
 // =============================================================================
+// Phase 1: Gouraud Shading Tests
+// =============================================================================
+
+func TestVoodoo_ColorSelect_Register(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	// Write vertex select values
+	for i := uint32(0); i < 3; i++ {
+		v.HandleWrite(VOODOO_COLOR_SELECT, i)
+		readValue := v.HandleRead(VOODOO_COLOR_SELECT)
+		if readValue != i {
+			t.Errorf("Expected COLOR_SELECT %d, got %d", i, readValue)
+		}
+	}
+}
+
+func TestVoodoo_PerVertexColors_Storage(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	// Set up vertex A position
+	v.HandleWrite(VOODOO_VERTEX_AX, floatToFixed12_4(100))
+	v.HandleWrite(VOODOO_VERTEX_AY, floatToFixed12_4(50))
+	v.HandleWrite(VOODOO_VERTEX_BX, floatToFixed12_4(200))
+	v.HandleWrite(VOODOO_VERTEX_BY, floatToFixed12_4(200))
+	v.HandleWrite(VOODOO_VERTEX_CX, floatToFixed12_4(50))
+	v.HandleWrite(VOODOO_VERTEX_CY, floatToFixed12_4(200))
+
+	// Set RED for vertex A
+	v.HandleWrite(VOODOO_COLOR_SELECT, 0)
+	v.HandleWrite(VOODOO_START_R, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_G, floatToFixed12_12(0.0))
+	v.HandleWrite(VOODOO_START_B, floatToFixed12_12(0.0))
+	v.HandleWrite(VOODOO_START_A, floatToFixed12_12(1.0))
+
+	// Set GREEN for vertex B
+	v.HandleWrite(VOODOO_COLOR_SELECT, 1)
+	v.HandleWrite(VOODOO_START_R, floatToFixed12_12(0.0))
+	v.HandleWrite(VOODOO_START_G, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_B, floatToFixed12_12(0.0))
+	v.HandleWrite(VOODOO_START_A, floatToFixed12_12(1.0))
+
+	// Set BLUE for vertex C
+	v.HandleWrite(VOODOO_COLOR_SELECT, 2)
+	v.HandleWrite(VOODOO_START_R, floatToFixed12_12(0.0))
+	v.HandleWrite(VOODOO_START_G, floatToFixed12_12(0.0))
+	v.HandleWrite(VOODOO_START_B, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_A, floatToFixed12_12(1.0))
+
+	// Submit triangle
+	v.HandleWrite(VOODOO_TRIANGLE_CMD, 0)
+
+	// Verify triangle was batched
+	if v.GetTriangleBatchCount() != 1 {
+		t.Errorf("Expected 1 triangle in batch, got %d", v.GetTriangleBatchCount())
+	}
+}
+
+func TestVoodoo_GouraudShading_Interpolation(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	// Clear to black
+	v.HandleWrite(VOODOO_COLOR0, 0xFF000000)
+	v.HandleWrite(VOODOO_FAST_FILL_CMD, 0)
+
+	// Draw a triangle covering a good portion of the screen
+	// Vertex A at top center (RED)
+	// Vertex B at bottom right (GREEN)
+	// Vertex C at bottom left (BLUE)
+	v.HandleWrite(VOODOO_VERTEX_AX, floatToFixed12_4(320)) // Top
+	v.HandleWrite(VOODOO_VERTEX_AY, floatToFixed12_4(100))
+	v.HandleWrite(VOODOO_VERTEX_BX, floatToFixed12_4(500)) // Bottom right
+	v.HandleWrite(VOODOO_VERTEX_BY, floatToFixed12_4(380))
+	v.HandleWrite(VOODOO_VERTEX_CX, floatToFixed12_4(140)) // Bottom left
+	v.HandleWrite(VOODOO_VERTEX_CY, floatToFixed12_4(380))
+
+	// Set RED for vertex A
+	v.HandleWrite(VOODOO_COLOR_SELECT, 0)
+	v.HandleWrite(VOODOO_START_R, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_G, floatToFixed12_12(0.0))
+	v.HandleWrite(VOODOO_START_B, floatToFixed12_12(0.0))
+	v.HandleWrite(VOODOO_START_A, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_Z, floatToFixed20_12(0.5))
+
+	// Set GREEN for vertex B
+	v.HandleWrite(VOODOO_COLOR_SELECT, 1)
+	v.HandleWrite(VOODOO_START_R, floatToFixed12_12(0.0))
+	v.HandleWrite(VOODOO_START_G, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_B, floatToFixed12_12(0.0))
+	v.HandleWrite(VOODOO_START_A, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_Z, floatToFixed20_12(0.5))
+
+	// Set BLUE for vertex C
+	v.HandleWrite(VOODOO_COLOR_SELECT, 2)
+	v.HandleWrite(VOODOO_START_R, floatToFixed12_12(0.0))
+	v.HandleWrite(VOODOO_START_G, floatToFixed12_12(0.0))
+	v.HandleWrite(VOODOO_START_B, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_A, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_Z, floatToFixed20_12(0.5))
+
+	// Submit and render
+	v.HandleWrite(VOODOO_TRIANGLE_CMD, 0)
+	v.HandleWrite(VOODOO_SWAP_BUFFER_CMD, 0)
+
+	frame := v.GetFrame()
+	if frame == nil {
+		t.Fatal("GetFrame returned nil")
+	}
+
+	// Check pixel near top center (should be mostly red)
+	topX, topY := 320, 150
+	topIdx := (topY*640 + topX) * 4
+	if frame[topIdx] < 150 { // R should be high
+		t.Errorf("Top pixel should be mostly red, got R=%d", frame[topIdx])
+	}
+
+	// Check pixel near bottom right (should be mostly green)
+	brX, brY := 450, 350
+	brIdx := (brY*640 + brX) * 4
+	if frame[brIdx+1] < 100 { // G should be significant
+		t.Errorf("Bottom-right pixel should have significant green, got G=%d", frame[brIdx+1])
+	}
+
+	// Check pixel near bottom left (should be mostly blue)
+	blX, blY := 190, 350
+	blIdx := (blY*640 + blX) * 4
+	if frame[blIdx+2] < 100 { // B should be significant
+		t.Errorf("Bottom-left pixel should have significant blue, got B=%d", frame[blIdx+2])
+	}
+
+	// Check center pixel (should have a mix of all colors)
+	cX, cY := 320, 280
+	cIdx := (cY*640 + cX) * 4
+	r, g, b := frame[cIdx], frame[cIdx+1], frame[cIdx+2]
+	// Center should have some of each color due to interpolation
+	if r == 0 && g == 0 && b == 0 {
+		t.Errorf("Center pixel should have interpolated colors, got R=%d G=%d B=%d", r, g, b)
+	}
+}
+
+func TestVoodoo_FlatShading_BackwardCompatibility(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	// Clear to black
+	v.HandleWrite(VOODOO_COLOR0, 0xFF000000)
+	v.HandleWrite(VOODOO_FAST_FILL_CMD, 0)
+
+	// Draw triangle WITHOUT using COLOR_SELECT (old flat shading behavior)
+	v.HandleWrite(VOODOO_VERTEX_AX, floatToFixed12_4(320))
+	v.HandleWrite(VOODOO_VERTEX_AY, floatToFixed12_4(100))
+	v.HandleWrite(VOODOO_VERTEX_BX, floatToFixed12_4(420))
+	v.HandleWrite(VOODOO_VERTEX_BY, floatToFixed12_4(300))
+	v.HandleWrite(VOODOO_VERTEX_CX, floatToFixed12_4(220))
+	v.HandleWrite(VOODOO_VERTEX_CY, floatToFixed12_4(300))
+
+	// Set color directly (old style - applies to all vertices)
+	v.HandleWrite(VOODOO_START_R, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_G, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_B, floatToFixed12_12(0.0)) // Yellow
+	v.HandleWrite(VOODOO_START_A, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_Z, floatToFixed20_12(0.5))
+
+	// Submit and render
+	v.HandleWrite(VOODOO_TRIANGLE_CMD, 0)
+	v.HandleWrite(VOODOO_SWAP_BUFFER_CMD, 0)
+
+	frame := v.GetFrame()
+	if frame == nil {
+		t.Fatal("GetFrame returned nil")
+	}
+
+	// Check multiple points in the triangle - all should be yellow
+	points := [][2]int{{320, 200}, {350, 250}, {280, 250}}
+	for _, p := range points {
+		idx := (p[1]*640 + p[0]) * 4
+		r, g, b := frame[idx], frame[idx+1], frame[idx+2]
+		// All points should be yellow (R high, G high, B low)
+		if r < 200 || g < 200 || b > 50 {
+			t.Errorf("Point (%d,%d) should be yellow, got R=%d G=%d B=%d", p[0], p[1], r, g, b)
+		}
+	}
+}
+
+func TestVoodoo_GouraudShading_SoftwareBackend(t *testing.T) {
+	// Test Gouraud interpolation directly on software backend
+	backend := NewVoodooSoftwareBackend()
+	backend.Init(640, 480)
+	defer backend.Destroy()
+
+	// Create a triangle with RGB at corners
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 320, Y: 100, Z: 0.5, R: 1.0, G: 0.0, B: 0.0, A: 1.0}, // Red top
+			{X: 500, Y: 380, Z: 0.5, R: 0.0, G: 1.0, B: 0.0, A: 1.0}, // Green bottom-right
+			{X: 140, Y: 380, Z: 0.5, R: 0.0, G: 0.0, B: 1.0, A: 1.0}, // Blue bottom-left
+		},
+	}
+
+	backend.ClearFramebuffer(0xFF000000) // Black
+	backend.FlushTriangles([]VoodooTriangle{tri})
+	backend.SwapBuffers(false)
+
+	frame := backend.GetFrame()
+
+	// Check that barycentric interpolation works
+	// Near vertex A (top) should be mostly red
+	topIdx := (150*640 + 320) * 4
+	if frame[topIdx] < 150 {
+		t.Errorf("Near top vertex should be mostly red, got R=%d", frame[topIdx])
+	}
+
+	// Center should have mixed colors
+	cIdx := (280*640 + 320) * 4
+	r, g, b := frame[cIdx], frame[cIdx+1], frame[cIdx+2]
+	if r == 0 && g == 0 && b == 0 {
+		t.Error("Center should have interpolated colors")
+	}
+}
+
+// =============================================================================
 // Helper Functions for Tests
 // =============================================================================
 

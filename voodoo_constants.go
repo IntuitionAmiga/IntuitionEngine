@@ -112,6 +112,7 @@ const (
 const (
 	VOODOO_TRIANGLE_CMD    = VOODOO_BASE + 0x080 // Submit triangle for rasterization
 	VOODOO_FTRIANGLECMD    = VOODOO_BASE + 0x084 // Fast triangle (strip mode)
+	VOODOO_COLOR_SELECT    = VOODOO_BASE + 0x088 // Select vertex (0/1/2) for color writes (Gouraud)
 	VOODOO_FBZCOLOR_PATH   = VOODOO_BASE + 0x104 // Framebuffer/color path config
 	VOODOO_FOG_MODE        = VOODOO_BASE + 0x108 // Fog mode configuration
 	VOODOO_ALPHA_MODE      = VOODOO_BASE + 0x10C // Alpha test/blend mode

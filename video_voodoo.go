@@ -85,6 +85,11 @@ type VoodooEngine struct {
 	vertexIndex   int
 	vertices      [3]VoodooVertex // Triangle vertices A, B, C
 
+	// Per-vertex colors for Gouraud shading
+	vertexColors       [3]VoodooVertex // Per-vertex attributes (R,G,B,A,Z,S,T,W)
+	currentColorTarget int             // Which vertex (0,1,2) receives color writes
+	gouraudEnabled     bool            // True if COLOR_SELECT was used this triangle
+
 	// Triangle batch (flushed on SWAP_BUFFER_CMD)
 	triangleBatch []VoodooTriangle
 
@@ -239,25 +244,67 @@ func (v *VoodooEngine) HandleWrite(addr uint32, value uint32) {
 	case VOODOO_VERTEX_CY:
 		v.vertices[2].Y = fixed12_4ToFloat(value)
 
-	// Vertex colors (12.12 fixed-point, applied to current vertex)
+	// Vertex color select for Gouraud shading
+	case VOODOO_COLOR_SELECT:
+		target := int(value & 0x03)
+		if target < 3 {
+			v.currentColorTarget = target
+			v.gouraudEnabled = true
+		}
+
+	// Vertex colors (12.12 fixed-point)
+	// When gouraudEnabled, writes go to vertexColors[currentColorTarget]
+	// Otherwise, writes go to currentVertex (flat shading compatibility)
 	case VOODOO_START_R:
-		v.currentVertex.R = fixed12_12ToFloat(value)
+		val := fixed12_12ToFloat(value)
+		v.currentVertex.R = val
+		if v.gouraudEnabled {
+			v.vertexColors[v.currentColorTarget].R = val
+		}
 	case VOODOO_START_G:
-		v.currentVertex.G = fixed12_12ToFloat(value)
+		val := fixed12_12ToFloat(value)
+		v.currentVertex.G = val
+		if v.gouraudEnabled {
+			v.vertexColors[v.currentColorTarget].G = val
+		}
 	case VOODOO_START_B:
-		v.currentVertex.B = fixed12_12ToFloat(value)
+		val := fixed12_12ToFloat(value)
+		v.currentVertex.B = val
+		if v.gouraudEnabled {
+			v.vertexColors[v.currentColorTarget].B = val
+		}
 	case VOODOO_START_A:
-		v.currentVertex.A = fixed12_12ToFloat(value)
+		val := fixed12_12ToFloat(value)
+		v.currentVertex.A = val
+		if v.gouraudEnabled {
+			v.vertexColors[v.currentColorTarget].A = val
+		}
 	case VOODOO_START_Z:
-		v.currentVertex.Z = fixed20_12ToFloat(value)
+		val := fixed20_12ToFloat(value)
+		v.currentVertex.Z = val
+		if v.gouraudEnabled {
+			v.vertexColors[v.currentColorTarget].Z = val
+		}
 
 	// Texture coordinates (14.18 fixed-point)
 	case VOODOO_START_S:
-		v.currentVertex.S = fixed14_18ToFloat(value)
+		val := fixed14_18ToFloat(value)
+		v.currentVertex.S = val
+		if v.gouraudEnabled {
+			v.vertexColors[v.currentColorTarget].S = val
+		}
 	case VOODOO_START_T:
-		v.currentVertex.T = fixed14_18ToFloat(value)
+		val := fixed14_18ToFloat(value)
+		v.currentVertex.T = val
+		if v.gouraudEnabled {
+			v.vertexColors[v.currentColorTarget].T = val
+		}
 	case VOODOO_START_W:
-		v.currentVertex.W = fixed2_30ToFloat(value)
+		val := fixed2_30ToFloat(value)
+		v.currentVertex.W = val
+		if v.gouraudEnabled {
+			v.vertexColors[v.currentColorTarget].W = val
+		}
 
 	// Mode registers
 	case VOODOO_FBZ_MODE:
@@ -330,18 +377,31 @@ func (v *VoodooEngine) HandleWrite(addr uint32, value uint32) {
 
 // executeTriangleCmd adds the current triangle to the batch
 func (v *VoodooEngine) executeTriangleCmd() {
-	// Apply current vertex attributes to all three vertices
-	// In a real Voodoo, Gouraud shading interpolates between vertices
-	// For flat shading, all vertices get the same color
-	for i := 0; i < 3; i++ {
-		v.vertices[i].R = v.currentVertex.R
-		v.vertices[i].G = v.currentVertex.G
-		v.vertices[i].B = v.currentVertex.B
-		v.vertices[i].A = v.currentVertex.A
-		v.vertices[i].Z = v.currentVertex.Z
-		v.vertices[i].S = v.currentVertex.S
-		v.vertices[i].T = v.currentVertex.T
-		v.vertices[i].W = v.currentVertex.W
+	// Apply vertex attributes based on shading mode
+	if v.gouraudEnabled {
+		// Gouraud shading: use per-vertex colors from vertexColors[]
+		for i := 0; i < 3; i++ {
+			v.vertices[i].R = v.vertexColors[i].R
+			v.vertices[i].G = v.vertexColors[i].G
+			v.vertices[i].B = v.vertexColors[i].B
+			v.vertices[i].A = v.vertexColors[i].A
+			v.vertices[i].Z = v.vertexColors[i].Z
+			v.vertices[i].S = v.vertexColors[i].S
+			v.vertices[i].T = v.vertexColors[i].T
+			v.vertices[i].W = v.vertexColors[i].W
+		}
+	} else {
+		// Flat shading: all vertices get the same color from currentVertex
+		for i := 0; i < 3; i++ {
+			v.vertices[i].R = v.currentVertex.R
+			v.vertices[i].G = v.currentVertex.G
+			v.vertices[i].B = v.currentVertex.B
+			v.vertices[i].A = v.currentVertex.A
+			v.vertices[i].Z = v.currentVertex.Z
+			v.vertices[i].S = v.currentVertex.S
+			v.vertices[i].T = v.currentVertex.T
+			v.vertices[i].W = v.currentVertex.W
+		}
 	}
 
 	// Add triangle to batch
@@ -351,6 +411,9 @@ func (v *VoodooEngine) executeTriangleCmd() {
 		}
 		v.triangleBatch = append(v.triangleBatch, tri)
 	}
+
+	// Reset Gouraud state for next triangle (can be re-enabled with COLOR_SELECT)
+	v.gouraudEnabled = false
 }
 
 // executeFastFillCmd clears the framebuffer with color0
