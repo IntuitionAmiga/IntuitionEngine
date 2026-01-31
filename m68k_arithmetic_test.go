@@ -391,6 +391,20 @@ func TestDivuSystematic(t *testing.T) {
 			ExpectedRegs:  Reg("D0", 0x0001000A),             // quotient=10, remainder=1
 			ExpectedFlags: FlagsNZVC(0, 0, 0, 0),
 		},
+		{
+			Name:          "DIVU.W_imm_D0_basic",
+			DataRegs:      [8]uint32{0x00001200},    // 4608 / 1200
+			Opcodes:       []uint16{0x80FC, 0x04B0}, // DIVU.W #$4B0,D0
+			ExpectedRegs:  Reg("D0", 0x03F00003),    // quotient=3, remainder=1008 (0x3F0)
+			ExpectedFlags: FlagsNZVC(0, 0, 0, 0),
+		},
+		{
+			Name:          "DIVU.W_imm_D0_no_remainder",
+			DataRegs:      [8]uint32{0x00000064},    // 100 / 10
+			Opcodes:       []uint16{0x80FC, 0x000A}, // DIVU.W #$A,D0
+			ExpectedRegs:  Reg("D0", 0x0000000A),    // quotient=10, remainder=0
+			ExpectedFlags: FlagsNZVC(0, 0, 0, 0),
+		},
 	}
 
 	RunM68KTests(t, tests)
@@ -411,6 +425,20 @@ func TestDivsSystematic(t *testing.T) {
 			Opcodes:       []uint16{0x81C1},                  // DIVS.W D1,D0
 			ExpectedRegs:  Reg("D0", 0x0000FFF6),             // quotient=-10, remainder=0
 			ExpectedFlags: FlagsNZVC(1, 0, 0, 0),             // N=1
+		},
+		{
+			Name:          "DIVS.W_imm_D0_positive",
+			DataRegs:      [8]uint32{0x00000064},    // 100 / 10
+			Opcodes:       []uint16{0x81FC, 0x000A}, // DIVS.W #$A,D0
+			ExpectedRegs:  Reg("D0", 0x0000000A),    // quotient=10, remainder=0
+			ExpectedFlags: FlagsNZVC(0, 0, 0, 0),
+		},
+		{
+			Name:          "DIVS.W_imm_D0_negative_dividend",
+			DataRegs:      [8]uint32{0xFFFFFF9C},    // -100 / 10
+			Opcodes:       []uint16{0x81FC, 0x000A}, // DIVS.W #$A,D0
+			ExpectedRegs:  Reg("D0", 0x0000FFF6),    // quotient=-10, remainder=0
+			ExpectedFlags: FlagsNZVC(1, 0, 0, 0),    // N=1
 		},
 	}
 

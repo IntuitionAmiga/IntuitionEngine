@@ -737,6 +737,14 @@ func (cpu *M68KCPU) LoadProgram(filename string) error {
 	}
 	fmt.Printf("LoadProgram: Read %d bytes\n", len(program))
 
+	cpu.LoadProgramBytes(program)
+
+	fmt.Printf("LoadProgram: Program loaded at memory address 0x%08X\n", M68K_ENTRY_POINT)
+	return nil
+}
+
+// LoadProgramBytes loads a program from a byte slice into memory at M68K_ENTRY_POINT
+func (cpu *M68KCPU) LoadProgramBytes(program []byte) {
 	entryPoint := uint32(M68K_ENTRY_POINT)
 	for i := 0; i < len(program) && i+(M68K_WORD_SIZE-1) < len(program); i += M68K_WORD_SIZE {
 		addr := entryPoint + uint32(i)
@@ -756,9 +764,6 @@ func (cpu *M68KCPU) LoadProgram(filename string) error {
 	cpu.AddrRegs[7] = M68K_STACK_START
 	cpu.SR = M68K_SR_S
 	cpu.running.Store(true)
-
-	fmt.Printf("LoadProgram: Program loaded at memory address 0x%08X\n", M68K_ENTRY_POINT)
-	return nil
 }
 
 // Main execution loop and control
@@ -7044,6 +7049,10 @@ func (cpu *M68KCPU) ExecDivu(reg, mode, xreg uint16) {
 	if mode == M68K_AM_DR {
 		source = cpu.DataRegs[xreg] & 0xFFFF
 		cpu.cycleCounter += M68K_CYCLE_REG
+	} else if mode == 7 && xreg == 4 {
+		// Immediate mode - fetch directly from instruction stream
+		source = uint32(cpu.Fetch16())
+		cpu.cycleCounter += M68K_CYCLE_MEM_READ
 	} else {
 		addr := cpu.GetEffectiveAddress(mode, xreg)
 		source = uint32(cpu.Read16(addr))
@@ -7105,6 +7114,10 @@ func (cpu *M68KCPU) ExecDivs(reg, mode, xreg uint16) {
 			source = int32(sourceU)
 		}
 		cpu.cycleCounter += M68K_CYCLE_REG
+	} else if mode == 7 && xreg == 4 {
+		// Immediate mode - fetch directly from instruction stream
+		source = int32(int16(cpu.Fetch16()))
+		cpu.cycleCounter += M68K_CYCLE_MEM_READ
 	} else {
 		addr := cpu.GetEffectiveAddress(mode, xreg)
 		source = int32(int16(cpu.Read16(addr)))
@@ -7182,6 +7195,10 @@ func (cpu *M68KCPU) ExecDIVL(reg, mode, xreg uint16) {
 	if mode == M68K_AM_DR {
 		divisor = cpu.DataRegs[xreg]
 		cpu.cycleCounter += M68K_CYCLE_REG
+	} else if mode == 7 && xreg == 4 {
+		// Immediate mode - fetch directly from instruction stream
+		divisor = cpu.Fetch32()
+		cpu.cycleCounter += M68K_CYCLE_MEM_READ
 	} else {
 		addr := cpu.GetEffectiveAddress(mode, xreg)
 		divisor = cpu.Read32(addr)
