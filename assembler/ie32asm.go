@@ -148,8 +148,6 @@ type Assembler struct {
 	equates    map[string]uint32
 	baseAddr   uint32
 	codeOffset uint32
-	data       []byte
-	dataOffset uint32
 }
 
 func NewAssembler() *Assembler {
@@ -158,8 +156,6 @@ func NewAssembler() *Assembler {
 		equates:    make(map[string]uint32),
 		baseAddr:   PROG_START,
 		codeOffset: 0,
-		data:       make([]byte, 0),
-		dataOffset: 0,
 	}
 }
 
@@ -219,9 +215,12 @@ func preprocessIncludes(code string, basePath string, included map[string]bool) 
 	return result.String(), nil
 }
 
-func (a *Assembler) handleDirective(line string, lineNum int) error {
+// handleDirective processes assembler directives and writes data to the program buffer.
+// For pass 2, program should be non-nil and data will be written at codeOffset.
+// For pass 1 (program == nil), only .org and .equ are processed.
+func (a *Assembler) handleDirective(line string, lineNum int, program []byte) error {
 	parts := strings.Fields(line)
-	if len(parts) < 2 {
+	if len(parts) < 2 && parts[0] != ".org" {
 		return fmt.Errorf("invalid directive format")
 	}
 
@@ -254,8 +253,10 @@ func (a *Assembler) handleDirective(line string, lineNum int) error {
 					value = int64(uvalue)
 				}
 			}
-			a.data = append(a.data, writeLittleEndian(uint32(value))...)
-			a.dataOffset += 4
+			if program != nil {
+				copy(program[a.codeOffset:], writeLittleEndian(uint32(value)))
+				a.codeOffset += 4
+			}
 		}
 
 	case ".equ":
@@ -282,8 +283,10 @@ func (a *Assembler) handleDirective(line string, lineNum int) error {
 			if err != nil {
 				return fmt.Errorf("invalid byte value: %s", bv)
 			}
-			a.data = append(a.data, byte(value))
-			a.dataOffset++
+			if program != nil {
+				program[a.codeOffset] = byte(value)
+				a.codeOffset++
+			}
 		}
 
 	case ".incbin":
@@ -313,16 +316,23 @@ func (a *Assembler) handleDirective(line string, lineNum int) error {
 		if offset+length > uint64(len(payload)) {
 			return fmt.Errorf("incbin range out of bounds: %d..%d", offset, offset+length)
 		}
-		a.data = append(a.data, payload[offset:offset+length]...)
-		a.dataOffset += uint32(length)
+		if program != nil {
+			copy(program[a.codeOffset:], payload[offset:offset+length])
+			a.codeOffset += uint32(length)
+		}
 
 	case ".space":
 		size, err := strconv.ParseUint(parts[1], 0, 32)
 		if err != nil {
 			return fmt.Errorf("invalid space size: %s", parts[1])
 		}
-		a.data = append(a.data, make([]byte, size)...)
-		a.dataOffset += uint32(size)
+		if program != nil {
+			// Zero-fill the space (Go slices are already zero-initialized, but be explicit)
+			for i := uint64(0); i < size; i++ {
+				program[a.codeOffset+uint32(i)] = 0
+			}
+			a.codeOffset += uint32(size)
+		}
 
 	case ".ascii":
 		// Find the quoted string in the line
@@ -335,8 +345,10 @@ func (a *Assembler) handleDirective(line string, lineNum int) error {
 			return fmt.Errorf("invalid ascii format: missing closing quote")
 		}
 		str := line[start+1 : end]
-		a.data = append(a.data, []byte(str)...)
-		a.dataOffset += uint32(len(str))
+		if program != nil {
+			copy(program[a.codeOffset:], []byte(str))
+			a.codeOffset += uint32(len(str))
+		}
 
 	case ".org":
 		if len(parts) < 2 {
@@ -464,11 +476,94 @@ func (a *Assembler) parseOperand(operand string, lineNum int) (byte, uint32, err
 	return 0, 0, fmt.Errorf("invalid operand: %s", operand)
 }
 
+// calcDirectiveSize calculates the size in bytes of a data directive for pass 1.
+// Returns 0 for directives that don't emit data (like .equ, .org).
+func (a *Assembler) calcDirectiveSize(line string) uint32 {
+	parts := strings.Fields(line)
+	if len(parts) == 0 {
+		return 0
+	}
+
+	switch parts[0] {
+	case ".word":
+		// Count comma-separated values
+		wordList := strings.Join(parts[1:], " ")
+		wordValues := strings.Split(wordList, ",")
+		count := uint32(0)
+		for _, wv := range wordValues {
+			wv = strings.TrimSpace(wv)
+			if wv != "" {
+				count++
+			}
+		}
+		return count * 4 // 4 bytes per word
+
+	case ".byte":
+		// Count comma-separated values
+		byteList := strings.Join(parts[1:], " ")
+		byteValues := strings.Split(byteList, ",")
+		count := uint32(0)
+		for _, bv := range byteValues {
+			bv = strings.TrimSpace(bv)
+			if bv != "" {
+				count++
+			}
+		}
+		return count // 1 byte per value
+
+	case ".incbin":
+		path := strings.Trim(parts[1], "\"")
+		info, err := os.Stat(path)
+		if err != nil {
+			fmt.Printf("Warning: cannot stat incbin file %s: %v\n", path, err)
+			return 0
+		}
+		length := uint64(info.Size())
+		// Handle optional offset and length parameters
+		if len(parts) >= 3 {
+			offset, err := strconv.ParseUint(parts[2], 0, 32)
+			if err == nil && offset < length {
+				length -= offset
+			}
+		}
+		if len(parts) >= 4 {
+			specLen, err := strconv.ParseUint(parts[3], 0, 32)
+			if err == nil {
+				length = specLen
+			}
+		}
+		return uint32(length)
+
+	case ".space":
+		if len(parts) >= 2 {
+			size, err := strconv.ParseUint(parts[1], 0, 32)
+			if err == nil {
+				return uint32(size)
+			}
+		}
+		return 0
+
+	case ".ascii":
+		// Find the quoted string
+		start := strings.Index(line, "\"")
+		end := strings.LastIndex(line, "\"")
+		if start != -1 && end > start {
+			return uint32(end - start - 1)
+		}
+		return 0
+
+	default:
+		return 0
+	}
+}
+
 func (a *Assembler) assemble(code string) []byte {
 	var program []byte
 	maxAddr := a.baseAddr
 
 	// First pass: collect labels and calculate sizes
+	// We use codeOffset to track the current position in the output,
+	// including both code AND data directives.
 	lines := strings.Split(code, "\n")
 	for _, line := range lines {
 		line = strings.Split(line, ";")[0]
@@ -478,7 +573,7 @@ func (a *Assembler) assemble(code string) []byte {
 		}
 
 		if strings.HasPrefix(line, ".org") {
-			if err := a.handleDirective(line, 0); err != nil {
+			if err := a.handleDirective(line, 0, nil); err != nil {
 				fmt.Printf("Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -487,30 +582,39 @@ func (a *Assembler) assemble(code string) []byte {
 
 		if strings.HasSuffix(line, ":") {
 			label := strings.TrimSuffix(line, ":")
-			if strings.HasPrefix(line, "data_") {
-				a.labels[label] = DATA_START + a.dataOffset
-			} else {
-				a.labels[label] = a.baseAddr + a.codeOffset
-			}
+			// All labels now use the unified codeOffset
+			a.labels[label] = a.baseAddr + a.codeOffset
 			fmt.Printf("Label '%s' at 0x%04x\n", label, a.labels[label])
 			continue
 		}
 
 		if strings.HasPrefix(line, ".equ") {
-			if err := a.handleDirective(line, 0); err != nil {
+			if err := a.handleDirective(line, 0, nil); err != nil {
 				fmt.Printf("Error: %v\n", err)
 				os.Exit(1)
 			}
 			continue
 		}
 
-		if !strings.HasPrefix(line, ".") {
-			nextAddr := a.baseAddr + a.codeOffset + 8
-			if nextAddr > maxAddr {
-				maxAddr = nextAddr
+		// Handle data directives - calculate their size and add to offset
+		if strings.HasPrefix(line, ".") {
+			size := a.calcDirectiveSize(line)
+			if size > 0 {
+				nextAddr := a.baseAddr + a.codeOffset + size
+				if nextAddr > maxAddr {
+					maxAddr = nextAddr
+				}
+				a.codeOffset += size
 			}
-			a.codeOffset += 8
+			continue
 		}
+
+		// Code instruction (8 bytes each)
+		nextAddr := a.baseAddr + a.codeOffset + 8
+		if nextAddr > maxAddr {
+			maxAddr = nextAddr
+		}
+		a.codeOffset += 8
 	}
 
 	// Reset offset for second pass
@@ -526,7 +630,7 @@ func (a *Assembler) assemble(code string) []byte {
 		}
 
 		if strings.HasPrefix(line, ".") {
-			if err := a.handleDirective(line, lineNum); err != nil {
+			if err := a.handleDirective(line, lineNum, program); err != nil {
 				fmt.Printf("Line %d: %v\n", lineNum+1, err)
 				os.Exit(1)
 			}
@@ -893,8 +997,7 @@ func (a *Assembler) assemble(code string) []byte {
 		a.codeOffset += 8
 	}
 
-	// Append data section after program
-	return append(program, a.data...)
+	return program
 }
 
 func main() {
