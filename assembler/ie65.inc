@@ -2299,8 +2299,7 @@ GTIA_GRACTL_LATCH  = $04        ; Latch trigger inputs
 ; ============================================================================
 ; 3DFX VOODOO GRAPHICS (SST-1) REGISTERS
 ; ============================================================================
-; Vulkan-accelerated 3D graphics with Gouraud shading, alpha test, fog,
-; chroma key, color combine, and dithering. See ie68.inc for full documentation.
+; Vulkan-accelerated 3D graphics. See ie68.inc for detailed documentation.
 ; Note: 6502 cannot directly address 32-bit registers, use indirect addressing.
 
 ; Base address (high byte only for bank switching)
@@ -2308,13 +2307,6 @@ VOODOO_BASE_HI      = $F4
 
 ; Status register (read-only)
 VOODOO_STATUS       = $F400
-
-; Status register bits
-VOODOO_STATUS_FBI_BUSY    = $01
-VOODOO_STATUS_TMU_BUSY    = $02
-VOODOO_STATUS_SST_BUSY    = $04
-VOODOO_STATUS_VRETRACE    = $40
-VOODOO_STATUS_SWAPBUF     = $80
 
 ; Vertex coordinate registers (12.4 fixed-point)
 ; For 6502, these require 32-bit writes via indirect addressing
@@ -2335,133 +2327,34 @@ VOODOO_START_S      = $F403         ; Page offset $34
 VOODOO_START_T      = $F403         ; Page offset $38
 VOODOO_START_W      = $F403         ; Page offset $3C
 
-; Delta values for Gouraud shading (via indirect addressing)
-VOODOO_DRDX         = $F404         ; Page offset $40
-VOODOO_DGDX         = $F404         ; Page offset $44
-VOODOO_DBDX         = $F404         ; Page offset $48
-VOODOO_DZDX         = $F404         ; Page offset $4C
-VOODOO_DADX         = $F405         ; Page offset $50
-VOODOO_DRDY         = $F406         ; Page offset $60
-
 ; Command registers
 VOODOO_TRIANGLE_CMD = $F408         ; Page offset $80
-VOODOO_FTRIANGLECMD = $F408         ; Page offset $84
-VOODOO_COLOR_SELECT = $F408         ; Page offset $88
-VOODOO_FBZCOLOR_PATH = $F410        ; Page offset $04
-VOODOO_FOG_MODE     = $F410         ; Page offset $08
 VOODOO_ALPHA_MODE   = $F410         ; Page offset $0C
 VOODOO_FBZ_MODE     = $F411         ; Page offset $10
-VOODOO_LFB_MODE     = $F411         ; Page offset $14
-VOODOO_CLIP_LEFT_RIGHT = $F411      ; Page offset $18
-VOODOO_CLIP_LOW_Y_HIGH = $F411      ; Page offset $1C
-VOODOO_NOP_CMD      = $F412         ; Page offset $20
 VOODOO_FAST_FILL_CMD = $F412        ; Page offset $24
 VOODOO_SWAP_BUFFER_CMD = $F412      ; Page offset $28
 
 ; Configuration registers
-VOODOO_FOG_TABLE    = $F414         ; Page offset $40
-VOODOO_FOG_COLOR    = $F41C         ; Page offset $C4
-VOODOO_ZA_COLOR     = $F41C         ; Page offset $C8
-VOODOO_CHROMA_KEY   = $F41C         ; Page offset $CC
-VOODOO_CHROMA_RANGE = $F41D         ; Page offset $D0
-VOODOO_STIPPLE      = $F41D         ; Page offset $D4
 VOODOO_COLOR0       = $F41D         ; Page offset $D8
-VOODOO_COLOR1       = $F41D         ; Page offset $DC
 VOODOO_VIDEO_DIM    = $F421         ; Page offset $14
 
-; Texture registers
-VOODOO_TEXTURE_MODE = $F430         ; Page offset $00
-VOODOO_TLOD         = $F430         ; Page offset $04
-VOODOO_TEX_BASE0    = $F430         ; Page offset $0C
-VOODOO_PALETTE      = $F440         ; Page offset $00
-
-; fbzMode bits (8-bit accessible)
+; fbzMode bits
 VOODOO_FBZ_CLIPPING     = $01
-VOODOO_FBZ_CHROMAKEY    = $02
-VOODOO_FBZ_STIPPLE      = $04
-VOODOO_FBZ_WBUFFER      = $08
 VOODOO_FBZ_DEPTH_ENABLE = $10
 VOODOO_FBZ_RGB_WRITE    = $02       ; Bit 9 in low byte of high word
 VOODOO_FBZ_DEPTH_WRITE  = $04       ; Bit 10 in low byte of high word
-VOODOO_FBZ_DITHER       = $01       ; Bit 8 in high byte
-VOODOO_FBZ_FOG_ENABLE   = $10
-VOODOO_FBZ_DITHER_ENABLE = $20
 
 ; Depth compare functions (shift left 5)
-VOODOO_DEPTH_NEVER        = 0
-VOODOO_DEPTH_LESS         = 1
-VOODOO_DEPTH_EQUAL        = 2
-VOODOO_DEPTH_LESSEQUAL    = 3
-VOODOO_DEPTH_GREATER      = 4
-VOODOO_DEPTH_NOTEQUAL     = 5
-VOODOO_DEPTH_GREATEREQUAL = 6
-VOODOO_DEPTH_ALWAYS       = 7
+VOODOO_DEPTH_LESS       = 1
+VOODOO_DEPTH_LESSEQUAL  = 3
+VOODOO_DEPTH_ALWAYS     = 7
 
 ; alphaMode bits
-VOODOO_ALPHA_TEST_EN    = $01
 VOODOO_ALPHA_BLEND_EN   = $10
-VOODOO_ALPHA_ANTIALIAS  = $20
-
-; Alpha test functions (shift left 1)
-VOODOO_ALPHA_NEVER        = 0
-VOODOO_ALPHA_LESS         = 1
-VOODOO_ALPHA_EQUAL        = 2
-VOODOO_ALPHA_LESSEQUAL    = 3
-VOODOO_ALPHA_GREATER      = 4
-VOODOO_ALPHA_NOTEQUAL     = 5
-VOODOO_ALPHA_GREATEREQUAL = 6
-VOODOO_ALPHA_ALWAYS       = 7
-
-; Blend factors
-VOODOO_BLEND_ZERO       = 0
-VOODOO_BLEND_SRC_ALPHA  = 1
-VOODOO_BLEND_COLOR      = 2
-VOODOO_BLEND_DST_ALPHA  = 3
-VOODOO_BLEND_ONE        = 4
-VOODOO_BLEND_INV_SRC_A  = 5
-VOODOO_BLEND_INV_COLOR  = 6
-VOODOO_BLEND_INV_DST_A  = 7
-
-; Color combine modes
-VOODOO_CC_ITERATED      = 0
-VOODOO_CC_TEXTURE       = 1
-VOODOO_CC_COLOR1        = 2
-VOODOO_CC_MODULATE      = 3
-VOODOO_CC_ADD           = 4
-VOODOO_CC_SUB           = 5
-VOODOO_CC_BLEND         = 6
-
-; Fog mode bits
-VOODOO_FOG_ENABLE       = $01
-VOODOO_FOG_ADD          = $02
-VOODOO_FOG_MULT         = $04
-VOODOO_FOG_Z            = $08
-VOODOO_FOG_CONSTANT     = $10
-VOODOO_FOG_DITHER       = $20
-
-; Texture mode bits
-VOODOO_TEX_ENABLE       = $01
-VOODOO_TEX_MAGNIFY      = $10
-VOODOO_TEX_CLAMP_S      = $20
-VOODOO_TEX_CLAMP_T      = $40
-
-; swapbufferCMD bits
-VOODOO_SWAP_VSYNC       = $01
-VOODOO_SWAP_CLEAR       = $02
 
 ; Fixed-point shift amounts
 VOODOO_FIXED_12_4       = 4
 VOODOO_FIXED_12_12      = 12
-VOODOO_FIXED_14_18      = 18
-VOODOO_FIXED_20_12      = 12
-
-; Filter modes
-VOODOO_FILTER_POINT     = 0
-VOODOO_FILTER_BILINEAR  = 1
-
-; Display constants
-VOODOO_DEFAULT_WIDTH    = 640
-VOODOO_DEFAULT_HEIGHT   = 480
 
 ; ============================================================================
 ; ZERO PAGE ALLOCATION HELPER

@@ -60,12 +60,6 @@ type VoodooSoftwareBackend struct {
 	// State
 	fbzMode   uint32
 	alphaMode uint32
-	chromaKey uint32 // Chroma key color for transparency
-
-	// Texture
-	textureData   []byte // RGBA texture data
-	textureWidth  int
-	textureHeight int
 
 	// Scissor rectangle
 	scissorLeft, scissorTop     int
@@ -123,13 +117,6 @@ func (b *VoodooSoftwareBackend) UpdatePipelineState(fbzMode, alphaMode uint32) e
 	b.fbzMode = fbzMode
 	b.alphaMode = alphaMode
 	return nil
-}
-
-// SetChromaKey sets the chroma key color for transparency
-func (b *VoodooSoftwareBackend) SetChromaKey(chromaKey uint32) {
-	b.mutex.Lock()
-	defer b.mutex.Unlock()
-	b.chromaKey = chromaKey
 }
 
 // SetScissor sets the scissor rectangle
@@ -278,14 +265,6 @@ func (b *VoodooSoftwareBackend) rasterizeTriangle(tri *VoodooTriangle) {
 	// Check alpha blending
 	alphaBlendEnable := (b.alphaMode & VOODOO_ALPHA_BLEND_EN) != 0
 
-	// Check alpha test
-	alphaTestEnable := (b.alphaMode & VOODOO_ALPHA_TEST_EN) != 0
-	alphaTestFunc := int((b.alphaMode >> 1) & 0x7)
-	alphaRef := float32((b.alphaMode>>24)&0xFF) / 255.0
-
-	// Check chroma key
-	chromaKeyEnable := (b.fbzMode & VOODOO_FBZ_CHROMAKEY) != 0
-
 	// Rasterize
 	for y := minY; y < maxY; y++ {
 		for x := minX; x < maxX; x++ {
@@ -334,20 +313,6 @@ func (b *VoodooSoftwareBackend) rasterizeTriangle(tri *VoodooTriangle) {
 				gByte := byte(g * 255)
 				bByte := byte(bVal * 255)
 				aByte := byte(a * 255)
-
-				// Alpha test - discard pixel if it fails
-				if alphaTestEnable {
-					if !b.alphaTest(a, alphaRef, alphaTestFunc) {
-						continue // Discard this pixel
-					}
-				}
-
-				// Chroma key test - discard pixel if it matches the key
-				if chromaKeyEnable {
-					if b.chromaKeyMatch(rByte, gByte, bByte, b.chromaKey) {
-						continue // Discard this pixel
-					}
-				}
 
 				// Write pixel
 				if rgbWrite {
@@ -400,244 +365,6 @@ func (b *VoodooSoftwareBackend) depthTest(newZ, oldZ float32, depthFunc int) boo
 	return true
 }
 
-// alphaTest performs alpha comparison for fragment discard
-func (b *VoodooSoftwareBackend) alphaTest(srcAlpha, refAlpha float32, alphaFunc int) bool {
-	switch alphaFunc {
-	case VOODOO_ALPHA_NEVER:
-		return false
-	case VOODOO_ALPHA_LESS:
-		return srcAlpha < refAlpha
-	case VOODOO_ALPHA_EQUAL:
-		return srcAlpha == refAlpha
-	case VOODOO_ALPHA_LESSEQUAL:
-		return srcAlpha <= refAlpha
-	case VOODOO_ALPHA_GREATER:
-		return srcAlpha > refAlpha
-	case VOODOO_ALPHA_NOTEQUAL:
-		return srcAlpha != refAlpha
-	case VOODOO_ALPHA_GREATEREQUAL:
-		return srcAlpha >= refAlpha
-	case VOODOO_ALPHA_ALWAYS:
-		return true
-	}
-	return true
-}
-
-// chromaKeyMatch tests if a color matches the chroma key color
-func (b *VoodooSoftwareBackend) chromaKeyMatch(r, g, bVal byte, chromaKey uint32) bool {
-	// chromaKey is in RGB format (0x00RRGGBB)
-	keyR := byte((chromaKey >> 16) & 0xFF)
-	keyG := byte((chromaKey >> 8) & 0xFF)
-	keyB := byte(chromaKey & 0xFF)
-
-	return r == keyR && g == keyG && bVal == keyB
-}
-
-// SetTextureData uploads texture data to the software backend
-func (b *VoodooSoftwareBackend) SetTextureData(data []byte, width, height int) error {
-	b.mutex.Lock()
-	defer b.mutex.Unlock()
-
-	expectedSize := width * height * 4
-	if len(data) != expectedSize {
-		return fmt.Errorf("texture data size mismatch: expected %d, got %d", expectedSize, len(data))
-	}
-
-	b.textureData = make([]byte, len(data))
-	copy(b.textureData, data)
-	b.textureWidth = width
-	b.textureHeight = height
-
-	return nil
-}
-
-// sampleTexture samples the texture at UV coordinates
-// bilinear: if true, use bilinear filtering; if false, use point sampling
-func (b *VoodooSoftwareBackend) sampleTexture(u, v float32, bilinear bool) (r, g, bl, a byte) {
-	if b.textureData == nil || b.textureWidth == 0 || b.textureHeight == 0 {
-		return 255, 255, 255, 255 // Return white if no texture
-	}
-
-	// Wrap UV coordinates to [0, 1)
-	u = u - float32(int(u))
-	v = v - float32(int(v))
-	if u < 0 {
-		u += 1.0
-	}
-	if v < 0 {
-		v += 1.0
-	}
-
-	if bilinear {
-		return b.sampleTextureBilinear(u, v)
-	}
-	return b.sampleTexturePoint(u, v)
-}
-
-// sampleTexturePoint does nearest-neighbor/point sampling
-func (b *VoodooSoftwareBackend) sampleTexturePoint(u, v float32) (r, g, bl, a byte) {
-	x := int(u * float32(b.textureWidth))
-	y := int(v * float32(b.textureHeight))
-
-	// Clamp to texture bounds
-	if x >= b.textureWidth {
-		x = b.textureWidth - 1
-	}
-	if y >= b.textureHeight {
-		y = b.textureHeight - 1
-	}
-
-	idx := (y*b.textureWidth + x) * 4
-	return b.textureData[idx], b.textureData[idx+1], b.textureData[idx+2], b.textureData[idx+3]
-}
-
-// sampleTextureBilinear does bilinear filtering
-func (b *VoodooSoftwareBackend) sampleTextureBilinear(u, v float32) (r, g, bl, a byte) {
-	// Map to texel coordinates
-	fu := u*float32(b.textureWidth) - 0.5
-	fv := v*float32(b.textureHeight) - 0.5
-
-	x0 := int(math.Floor(float64(fu)))
-	y0 := int(math.Floor(float64(fv)))
-	x1 := x0 + 1
-	y1 := y0 + 1
-
-	// Fractional parts
-	fx := fu - float32(x0)
-	fy := fv - float32(y0)
-
-	// Wrap coordinates
-	x0 = ((x0 % b.textureWidth) + b.textureWidth) % b.textureWidth
-	y0 = ((y0 % b.textureHeight) + b.textureHeight) % b.textureHeight
-	x1 = ((x1 % b.textureWidth) + b.textureWidth) % b.textureWidth
-	y1 = ((y1 % b.textureHeight) + b.textureHeight) % b.textureHeight
-
-	// Sample four texels
-	r00, g00, b00, a00 := b.getTexel(x0, y0)
-	r10, g10, b10, a10 := b.getTexel(x1, y0)
-	r01, g01, b01, a01 := b.getTexel(x0, y1)
-	r11, g11, b11, a11 := b.getTexel(x1, y1)
-
-	// Bilinear interpolation
-	invFx := 1.0 - fx
-	invFy := 1.0 - fy
-
-	rVal := float32(r00)*invFx*invFy + float32(r10)*fx*invFy + float32(r01)*invFx*fy + float32(r11)*fx*fy
-	gVal := float32(g00)*invFx*invFy + float32(g10)*fx*invFy + float32(g01)*invFx*fy + float32(g11)*fx*fy
-	bVal := float32(b00)*invFx*invFy + float32(b10)*fx*invFy + float32(b01)*invFx*fy + float32(b11)*fx*fy
-	aVal := float32(a00)*invFx*invFy + float32(a10)*fx*invFy + float32(a01)*invFx*fy + float32(a11)*fx*fy
-
-	return byte(rVal), byte(gVal), byte(bVal), byte(aVal)
-}
-
-// getTexel retrieves a texel at integer coordinates
-func (b *VoodooSoftwareBackend) getTexel(x, y int) (r, g, bl, a byte) {
-	idx := (y*b.textureWidth + x) * 4
-	return b.textureData[idx], b.textureData[idx+1], b.textureData[idx+2], b.textureData[idx+3]
-}
-
-// applyFog applies linear fog to a color component
-func (b *VoodooSoftwareBackend) applyFog(color, fogColor, depth, fogStart, fogEnd float32) float32 {
-	// Linear fog: factor = (end - depth) / (end - start)
-	if fogEnd == fogStart {
-		return color // Avoid division by zero
-	}
-
-	fogFactor := (fogEnd - depth) / (fogEnd - fogStart)
-	fogFactor = clampf(fogFactor, 0, 1)
-
-	// Blend between color and fog color
-	return color*fogFactor + fogColor*(1-fogFactor)
-}
-
-// getBayerValue returns the Bayer dither matrix value at position (x, y)
-// Returns a value in range [-0.5, 0.5] for dithering
-func (b *VoodooSoftwareBackend) getBayerValue(x, y int) float32 {
-	// 4x4 Bayer ordered dither matrix
-	// Values are 0-15, normalized to [-0.5, 0.5]
-	bayer4x4 := [4][4]int{
-		{0, 8, 2, 10},
-		{12, 4, 14, 6},
-		{3, 11, 1, 9},
-		{15, 7, 13, 5},
-	}
-
-	mx := x % 4
-	my := y % 4
-	if mx < 0 {
-		mx += 4
-	}
-	if my < 0 {
-		my += 4
-	}
-
-	// Normalize from [0, 15] to [-0.5, 0.5]
-	return (float32(bayer4x4[my][mx]) - 7.5) / 16.0
-}
-
-// applyDither applies ordered dithering to a color component
-func (b *VoodooSoftwareBackend) applyDither(color float32, x, y int) float32 {
-	threshold := b.getBayerValue(x, y)
-
-	// Add dither offset (scaled for 8-bit quantization)
-	dithered := color + threshold/255.0
-
-	return clampf(dithered, 0, 1)
-}
-
-// combineColors combines texture and vertex colors based on the mode
-func (b *VoodooSoftwareBackend) combineColors(
-	texR, texG, texB, texA float32,
-	vertR, vertG, vertB, vertA float32,
-	mode int,
-) (r, g, bl, a float32) {
-	switch mode {
-	case VOODOO_CC_ITERATED:
-		// Vertex color only
-		return vertR, vertG, vertB, vertA
-
-	case VOODOO_CC_TEXTURE:
-		// Texture color only
-		return texR, texG, texB, texA
-
-	case VOODOO_CC_MODULATE:
-		// Multiply texture * vertex
-		r = texR * vertR
-		g = texG * vertG
-		bl = texB * vertB
-		a = texA * vertA
-		return r, g, bl, a
-
-	case VOODOO_CC_ADD:
-		// Add texture + vertex, clamped to [0, 1]
-		r = clampf(texR+vertR, 0, 1)
-		g = clampf(texG+vertG, 0, 1)
-		bl = clampf(texB+vertB, 0, 1)
-		a = clampf(texA+vertA, 0, 1)
-		return r, g, bl, a
-
-	case VOODOO_CC_SUB:
-		// Subtract texture - vertex, clamped to [0, 1]
-		r = clampf(texR-vertR, 0, 1)
-		g = clampf(texG-vertG, 0, 1)
-		bl = clampf(texB-vertB, 0, 1)
-		a = clampf(texA-vertA, 0, 1)
-		return r, g, bl, a
-
-	case VOODOO_CC_BLEND:
-		// Linear blend based on vertex alpha
-		r = texR*(1-vertA) + vertR*vertA
-		g = texG*(1-vertA) + vertG*vertA
-		bl = texB*(1-vertA) + vertB*vertA
-		a = texA
-		return r, g, bl, a
-
-	default:
-		// Default to vertex color
-		return vertR, vertG, vertB, vertA
-	}
-}
-
 // edgeFunction computes the signed area of a parallelogram
 func edgeFunction(ax, ay, bx, by, cx, cy float32) float32 {
 	return (cx-ax)*(by-ay) - (cy-ay)*(bx-ax)
@@ -688,201 +415,6 @@ func clampf(v, minVal, maxVal float32) float32 {
 type VulkanVertex struct {
 	Position [3]float32 // X, Y, Z
 	Color    [4]float32 // R, G, B, A
-	TexCoord [2]float32 // S, T texture coordinates
-}
-
-// VoodooPushConstants contains per-draw state passed to shaders via push constants
-// Total size: 32 bytes (8 x 4 bytes) - must match shader layout
-type VoodooPushConstants struct {
-	FbzMode       uint32  // Frame buffer Z mode flags
-	AlphaMode     uint32  // Alpha test/blend mode
-	ChromaKey     uint32  // Chroma key color (RGB)
-	FogColor      uint32  // Fog color (RGB)
-	FogStart      float32 // Fog start depth
-	FogEnd        float32 // Fog end depth
-	ColorCombine  uint32  // Color combine mode
-	TextureEnable uint32  // Texture enable flag
-}
-
-// getPushConstantsSize returns the size of push constants in bytes
-func getPushConstantsSize() int {
-	return VOODOO_PUSH_CONSTANTS_SIZE
-}
-
-// buildPushConstantsFromState creates push constants from Voodoo state registers
-func buildPushConstantsFromState(fbzMode, alphaMode, chromaKey, fogColor uint32,
-	fogStart, fogEnd float32, colorCombine int, textureEnable bool) VoodooPushConstants {
-	texEnable := uint32(0)
-	if textureEnable {
-		texEnable = 1
-	}
-	return VoodooPushConstants{
-		FbzMode:       fbzMode,
-		AlphaMode:     alphaMode,
-		ChromaKey:     chromaKey,
-		FogColor:      fogColor,
-		FogStart:      fogStart,
-		FogEnd:        fogEnd,
-		ColorCombine:  uint32(colorCombine),
-		TextureEnable: texEnable,
-	}
-}
-
-// getVulkanVertexSize returns the size of VulkanVertex in bytes
-func getVulkanVertexSize() int {
-	return int(unsafe.Sizeof(VulkanVertex{}))
-}
-
-// VulkanPushConstantRange describes the push constant range for pipeline layout
-type VulkanPushConstantRange struct {
-	StageFlags uint32
-	Offset     uint32
-	Size       uint32
-}
-
-// getVulkanVertexAttributeCount returns the number of vertex attributes
-func getVulkanVertexAttributeCount() int {
-	return 3 // position, color, texcoord
-}
-
-// getVulkanPushConstantRange returns the push constant range configuration
-func getVulkanPushConstantRange() VulkanPushConstantRange {
-	return VulkanPushConstantRange{
-		StageFlags: VOODOO_SHADER_STAGE_FRAGMENT,
-		Offset:     0,
-		Size:       VOODOO_PUSH_CONSTANTS_SIZE,
-	}
-}
-
-// packPushConstants packs push constants into a byte slice for Vulkan
-func packPushConstants(pc VoodooPushConstants) []byte {
-	data := make([]byte, VOODOO_PUSH_CONSTANTS_SIZE)
-
-	// Pack FbzMode (offset 0)
-	data[0] = byte(pc.FbzMode)
-	data[1] = byte(pc.FbzMode >> 8)
-	data[2] = byte(pc.FbzMode >> 16)
-	data[3] = byte(pc.FbzMode >> 24)
-
-	// Pack AlphaMode (offset 4)
-	data[4] = byte(pc.AlphaMode)
-	data[5] = byte(pc.AlphaMode >> 8)
-	data[6] = byte(pc.AlphaMode >> 16)
-	data[7] = byte(pc.AlphaMode >> 24)
-
-	// Pack ChromaKey (offset 8)
-	data[8] = byte(pc.ChromaKey)
-	data[9] = byte(pc.ChromaKey >> 8)
-	data[10] = byte(pc.ChromaKey >> 16)
-	data[11] = byte(pc.ChromaKey >> 24)
-
-	// Pack FogColor (offset 12)
-	data[12] = byte(pc.FogColor)
-	data[13] = byte(pc.FogColor >> 8)
-	data[14] = byte(pc.FogColor >> 16)
-	data[15] = byte(pc.FogColor >> 24)
-
-	// Pack FogStart (offset 16) - float32
-	fogStartBits := math.Float32bits(pc.FogStart)
-	data[16] = byte(fogStartBits)
-	data[17] = byte(fogStartBits >> 8)
-	data[18] = byte(fogStartBits >> 16)
-	data[19] = byte(fogStartBits >> 24)
-
-	// Pack FogEnd (offset 20) - float32
-	fogEndBits := math.Float32bits(pc.FogEnd)
-	data[20] = byte(fogEndBits)
-	data[21] = byte(fogEndBits >> 8)
-	data[22] = byte(fogEndBits >> 16)
-	data[23] = byte(fogEndBits >> 24)
-
-	// Pack ColorCombine (offset 24)
-	data[24] = byte(pc.ColorCombine)
-	data[25] = byte(pc.ColorCombine >> 8)
-	data[26] = byte(pc.ColorCombine >> 16)
-	data[27] = byte(pc.ColorCombine >> 24)
-
-	// Pack TextureEnable (offset 28)
-	data[28] = byte(pc.TextureEnable)
-	data[29] = byte(pc.TextureEnable >> 8)
-	data[30] = byte(pc.TextureEnable >> 16)
-	data[31] = byte(pc.TextureEnable >> 24)
-
-	return data
-}
-
-// PipelineKey uniquely identifies a pipeline configuration
-type PipelineKey struct {
-	DepthTestEnable  bool
-	DepthWriteEnable bool
-	DepthCompareOp   int // vk.CompareOp value
-	BlendEnable      bool
-	SrcBlendFactor   int // vk.BlendFactor value
-	DstBlendFactor   int // vk.BlendFactor value
-}
-
-// voodooDepthFuncToVulkan converts Voodoo depth function to Vulkan compare op
-func voodooDepthFuncToVulkan(voodooFunc int) int {
-	switch voodooFunc {
-	case VOODOO_DEPTH_NEVER:
-		return int(vk.CompareOpNever)
-	case VOODOO_DEPTH_LESS:
-		return int(vk.CompareOpLess)
-	case VOODOO_DEPTH_EQUAL:
-		return int(vk.CompareOpEqual)
-	case VOODOO_DEPTH_LESSEQUAL:
-		return int(vk.CompareOpLessOrEqual)
-	case VOODOO_DEPTH_GREATER:
-		return int(vk.CompareOpGreater)
-	case VOODOO_DEPTH_NOTEQUAL:
-		return int(vk.CompareOpNotEqual)
-	case VOODOO_DEPTH_GREATEREQUAL:
-		return int(vk.CompareOpGreaterOrEqual)
-	case VOODOO_DEPTH_ALWAYS:
-		return int(vk.CompareOpAlways)
-	default:
-		return int(vk.CompareOpLess)
-	}
-}
-
-// voodooBlendFactorToVulkan converts Voodoo blend factor to Vulkan blend factor
-func voodooBlendFactorToVulkan(voodooFactor int) int {
-	switch voodooFactor {
-	case VOODOO_BLEND_ZERO:
-		return int(vk.BlendFactorZero)
-	case VOODOO_BLEND_ONE:
-		return int(vk.BlendFactorOne)
-	case VOODOO_BLEND_SRC_ALPHA:
-		return int(vk.BlendFactorSrcAlpha)
-	case VOODOO_BLEND_INV_SRC_A:
-		return int(vk.BlendFactorOneMinusSrcAlpha)
-	case VOODOO_BLEND_DST_ALPHA:
-		return int(vk.BlendFactorDstAlpha)
-	case VOODOO_BLEND_INV_DST_A:
-		return int(vk.BlendFactorOneMinusDstAlpha)
-	case VOODOO_BLEND_COLOR:
-		return int(vk.BlendFactorConstantColor)
-	case VOODOO_BLEND_INV_COLOR:
-		return int(vk.BlendFactorOneMinusConstantColor)
-	case VOODOO_BLEND_SATURATE:
-		return int(vk.BlendFactorSrcAlphaSaturate)
-	default:
-		return int(vk.BlendFactorOne)
-	}
-}
-
-// buildPipelineKey creates a pipeline key from Voodoo mode registers
-func buildPipelineKey(fbzMode, alphaMode uint32) PipelineKey {
-	depthFunc := int((fbzMode >> 5) & 0x7)
-
-	return PipelineKey{
-		DepthTestEnable:  (fbzMode & VOODOO_FBZ_DEPTH_ENABLE) != 0,
-		DepthWriteEnable: (fbzMode & VOODOO_FBZ_DEPTH_WRITE) != 0,
-		DepthCompareOp:   voodooDepthFuncToVulkan(depthFunc),
-		BlendEnable:      (alphaMode & VOODOO_ALPHA_BLEND_EN) != 0,
-		SrcBlendFactor:   voodooBlendFactorToVulkan(int((alphaMode >> 8) & 0xF)),
-		DstBlendFactor:   voodooBlendFactorToVulkan(int((alphaMode >> 12) & 0xF)),
-	}
 }
 
 // VulkanBackend implements hardware-accelerated rendering using Vulkan
@@ -910,13 +442,9 @@ type VulkanBackend struct {
 	framebuffer vk.Framebuffer
 
 	// Pipeline
-	pipelineLayout  vk.PipelineLayout
-	pipeline        vk.Pipeline
-	vkPipelineCache vk.PipelineCache
-
-	// Pipeline cache for different state combinations
-	pipelineVariants   map[PipelineKey]vk.Pipeline
-	currentPipelineKey PipelineKey
+	pipelineLayout vk.PipelineLayout
+	pipeline       vk.Pipeline
+	pipelineCache  vk.PipelineCache
 
 	// Vertex buffer (dynamic)
 	vertexBuffer       vk.Buffer
@@ -935,14 +463,9 @@ type VulkanBackend struct {
 	fence vk.Fence
 
 	// Current state
-	fbzMode          uint32
-	alphaMode        uint32
-	scissor          vk.Rect2D
-	chromaKey        uint32  // Chroma key color
-	fogColor         uint32  // Fog color
-	fogStart         float32 // Fog start depth
-	fogEnd           float32 // Fog end depth
-	colorCombineMode int     // Color combine mode
+	fbzMode   uint32
+	alphaMode uint32
+	scissor   vk.Rect2D
 
 	// Clear color (set by ClearFramebuffer, used by FlushTriangles)
 	clearColor [4]float32
@@ -950,23 +473,6 @@ type VulkanBackend struct {
 
 	// Output frame for compositor
 	outputFrame []byte
-
-	// Push constants for per-draw state
-	pushConstants VoodooPushConstants
-
-	// Texture resources
-	textureImage       vk.Image
-	textureImageMemory vk.DeviceMemory
-	textureImageView   vk.ImageView
-	textureSampler     vk.Sampler
-	textureWidth       int
-	textureHeight      int
-	textureData        []byte // Cached texture data
-
-	// Descriptor resources for texture
-	descriptorPool      vk.DescriptorPool
-	descriptorSetLayout vk.DescriptorSetLayout
-	descriptorSet       vk.DescriptorSet
 
 	// Shader modules
 	vertShaderModule vk.ShaderModule
@@ -986,8 +492,7 @@ var vulkanInitMutex sync.Mutex
 // NewVulkanBackend creates a new Vulkan backend
 func NewVulkanBackend() (*VulkanBackend, error) {
 	vb := &VulkanBackend{
-		software:         NewVoodooSoftwareBackend(),
-		pipelineVariants: make(map[PipelineKey]vk.Pipeline),
+		software: NewVoodooSoftwareBackend(),
 	}
 	return vb, nil
 }
@@ -1674,232 +1179,7 @@ func (vb *VulkanBackend) createPipeline() error {
 	}
 
 	vb.pipeline = pipelines[0]
-
-	// Store in cache with default key
-	defaultKey := PipelineKey{
-		DepthTestEnable:  true,
-		DepthWriteEnable: true,
-		DepthCompareOp:   int(vk.CompareOpLess),
-		BlendEnable:      false,
-	}
-	vb.pipelineVariants[defaultKey] = pipelines[0]
-	vb.currentPipelineKey = defaultKey
-
 	return nil
-}
-
-// createPipelineVariant creates a pipeline variant with specific depth/blend settings
-func (vb *VulkanBackend) createPipelineVariant(key PipelineKey) (vk.Pipeline, error) {
-	// Check if already cached
-	if pipeline, ok := vb.pipelineVariants[key]; ok {
-		return pipeline, nil
-	}
-
-	// Shader stages (reuse existing shader modules)
-	vertStage := vk.PipelineShaderStageCreateInfo{
-		SType:  vk.StructureTypePipelineShaderStageCreateInfo,
-		Stage:  vk.ShaderStageVertexBit,
-		Module: vb.vertShaderModule,
-		PName:  safeString("main"),
-	}
-
-	fragStage := vk.PipelineShaderStageCreateInfo{
-		SType:  vk.StructureTypePipelineShaderStageCreateInfo,
-		Stage:  vk.ShaderStageFragmentBit,
-		Module: vb.fragShaderModule,
-		PName:  safeString("main"),
-	}
-
-	shaderStages := []vk.PipelineShaderStageCreateInfo{vertStage, fragStage}
-
-	// Vertex input
-	bindingDesc := vk.VertexInputBindingDescription{
-		Binding:   0,
-		Stride:    uint32(unsafe.Sizeof(VulkanVertex{})),
-		InputRate: vk.VertexInputRateVertex,
-	}
-
-	attrDescs := []vk.VertexInputAttributeDescription{
-		{
-			Location: 0,
-			Binding:  0,
-			Format:   vk.FormatR32g32b32Sfloat,
-			Offset:   0,
-		},
-		{
-			Location: 1,
-			Binding:  0,
-			Format:   vk.FormatR32g32b32a32Sfloat,
-			Offset:   uint32(unsafe.Offsetof(VulkanVertex{}.Color)),
-		},
-	}
-
-	vertexInputInfo := vk.PipelineVertexInputStateCreateInfo{
-		SType:                           vk.StructureTypePipelineVertexInputStateCreateInfo,
-		VertexBindingDescriptionCount:   1,
-		PVertexBindingDescriptions:      []vk.VertexInputBindingDescription{bindingDesc},
-		VertexAttributeDescriptionCount: uint32(len(attrDescs)),
-		PVertexAttributeDescriptions:    attrDescs,
-	}
-
-	// Input assembly
-	inputAssembly := vk.PipelineInputAssemblyStateCreateInfo{
-		SType:                  vk.StructureTypePipelineInputAssemblyStateCreateInfo,
-		Topology:               vk.PrimitiveTopologyTriangleList,
-		PrimitiveRestartEnable: vk.False,
-	}
-
-	// Viewport and scissor (dynamic)
-	viewport := vk.Viewport{
-		X:        0,
-		Y:        0,
-		Width:    float32(vb.width),
-		Height:   float32(vb.height),
-		MinDepth: 0,
-		MaxDepth: 1,
-	}
-
-	scissor := vk.Rect2D{
-		Offset: vk.Offset2D{X: 0, Y: 0},
-		Extent: vk.Extent2D{Width: uint32(vb.width), Height: uint32(vb.height)},
-	}
-
-	viewportState := vk.PipelineViewportStateCreateInfo{
-		SType:         vk.StructureTypePipelineViewportStateCreateInfo,
-		ViewportCount: 1,
-		PViewports:    []vk.Viewport{viewport},
-		ScissorCount:  1,
-		PScissors:     []vk.Rect2D{scissor},
-	}
-
-	// Rasterization
-	rasterizer := vk.PipelineRasterizationStateCreateInfo{
-		SType:                   vk.StructureTypePipelineRasterizationStateCreateInfo,
-		DepthClampEnable:        vk.False,
-		RasterizerDiscardEnable: vk.False,
-		PolygonMode:             vk.PolygonModeFill,
-		CullMode:                vk.CullModeFlags(vk.CullModeNone),
-		FrontFace:               vk.FrontFaceCounterClockwise,
-		DepthBiasEnable:         vk.False,
-		LineWidth:               1.0,
-	}
-
-	// Multisampling
-	multisampling := vk.PipelineMultisampleStateCreateInfo{
-		SType:                 vk.StructureTypePipelineMultisampleStateCreateInfo,
-		RasterizationSamples:  vk.SampleCount1Bit,
-		SampleShadingEnable:   vk.False,
-		MinSampleShading:      1.0,
-		AlphaToCoverageEnable: vk.False,
-		AlphaToOneEnable:      vk.False,
-	}
-
-	// Depth/stencil - configured based on key
-	var depthTestEnable vk.Bool32 = vk.False
-	if key.DepthTestEnable {
-		depthTestEnable = vk.True
-	}
-	var depthWriteEnable vk.Bool32 = vk.False
-	if key.DepthWriteEnable {
-		depthWriteEnable = vk.True
-	}
-
-	depthStencil := vk.PipelineDepthStencilStateCreateInfo{
-		SType:                 vk.StructureTypePipelineDepthStencilStateCreateInfo,
-		DepthTestEnable:       depthTestEnable,
-		DepthWriteEnable:      depthWriteEnable,
-		DepthCompareOp:        vk.CompareOp(key.DepthCompareOp),
-		DepthBoundsTestEnable: vk.False,
-		StencilTestEnable:     vk.False,
-	}
-
-	// Color blending - configured based on key
-	var blendEnable vk.Bool32 = vk.False
-	if key.BlendEnable {
-		blendEnable = vk.True
-	}
-
-	colorBlendAttachment := vk.PipelineColorBlendAttachmentState{
-		BlendEnable:         blendEnable,
-		SrcColorBlendFactor: vk.BlendFactor(key.SrcBlendFactor),
-		DstColorBlendFactor: vk.BlendFactor(key.DstBlendFactor),
-		ColorBlendOp:        vk.BlendOpAdd,
-		SrcAlphaBlendFactor: vk.BlendFactor(key.SrcBlendFactor),
-		DstAlphaBlendFactor: vk.BlendFactor(key.DstBlendFactor),
-		AlphaBlendOp:        vk.BlendOpAdd,
-		ColorWriteMask:      vk.ColorComponentFlags(vk.ColorComponentRBit | vk.ColorComponentGBit | vk.ColorComponentBBit | vk.ColorComponentABit),
-	}
-
-	colorBlending := vk.PipelineColorBlendStateCreateInfo{
-		SType:           vk.StructureTypePipelineColorBlendStateCreateInfo,
-		LogicOpEnable:   vk.False,
-		AttachmentCount: 1,
-		PAttachments:    []vk.PipelineColorBlendAttachmentState{colorBlendAttachment},
-	}
-
-	// Dynamic state
-	dynamicStates := []vk.DynamicState{vk.DynamicStateScissor}
-	dynamicState := vk.PipelineDynamicStateCreateInfo{
-		SType:             vk.StructureTypePipelineDynamicStateCreateInfo,
-		DynamicStateCount: uint32(len(dynamicStates)),
-		PDynamicStates:    dynamicStates,
-	}
-
-	// Create pipeline
-	pipelineInfo := vk.GraphicsPipelineCreateInfo{
-		SType:               vk.StructureTypeGraphicsPipelineCreateInfo,
-		StageCount:          uint32(len(shaderStages)),
-		PStages:             shaderStages,
-		PVertexInputState:   &vertexInputInfo,
-		PInputAssemblyState: &inputAssembly,
-		PViewportState:      &viewportState,
-		PRasterizationState: &rasterizer,
-		PMultisampleState:   &multisampling,
-		PDepthStencilState:  &depthStencil,
-		PColorBlendState:    &colorBlending,
-		PDynamicState:       &dynamicState,
-		Layout:              vb.pipelineLayout,
-		RenderPass:          vb.renderPass,
-		Subpass:             0,
-	}
-
-	pipelines := make([]vk.Pipeline, 1)
-	if res := vk.CreateGraphicsPipelines(vb.device, vk.PipelineCache(vk.NullHandle), 1, []vk.GraphicsPipelineCreateInfo{pipelineInfo}, nil, pipelines); res != vk.Success {
-		return vk.NullPipeline, fmt.Errorf("vkCreateGraphicsPipelines failed: %d", res)
-	}
-
-	// Cache the new pipeline
-	vb.pipelineVariants[key] = pipelines[0]
-
-	return pipelines[0], nil
-}
-
-// getPipelineForState returns (or creates) a pipeline for the given state
-func (vb *VulkanBackend) getPipelineForState(fbzMode, alphaMode uint32) vk.Pipeline {
-	key := buildPipelineKey(fbzMode, alphaMode)
-
-	// Check if current pipeline matches
-	if key == vb.currentPipelineKey {
-		return vb.pipeline
-	}
-
-	// Try to get from cache or create new
-	if pipeline, ok := vb.pipelineVariants[key]; ok {
-		vb.currentPipelineKey = key
-		vb.pipeline = pipeline
-		return pipeline
-	}
-
-	// Create new variant
-	pipeline, err := vb.createPipelineVariant(key)
-	if err != nil {
-		// Fall back to current pipeline
-		return vb.pipeline
-	}
-
-	vb.currentPipelineKey = key
-	vb.pipeline = pipeline
-	return pipeline
 }
 
 // createShaderModule creates a shader module from SPIR-V bytecode
@@ -2066,11 +1346,8 @@ func (vb *VulkanBackend) UpdatePipelineState(fbzMode, alphaMode uint32) error {
 	// Update software backend too
 	vb.software.UpdatePipelineState(fbzMode, alphaMode)
 
-	// Update Vulkan pipeline if initialized
-	if vb.initialized {
-		vb.getPipelineForState(fbzMode, alphaMode)
-	}
-
+	// Note: Full implementation would recreate the pipeline with new depth/blend state
+	// For now, we handle most state via dynamic state or per-fragment in shader
 	return nil
 }
 
@@ -2269,116 +1546,6 @@ func (vb *VulkanBackend) GetFrame() []byte {
 		return vb.outputFrame
 	}
 	return vb.software.GetFrame()
-}
-
-// SetPushConstants sets the push constants for the next draw call
-func (vb *VulkanBackend) SetPushConstants(pc VoodooPushConstants) {
-	vb.mutex.Lock()
-	defer vb.mutex.Unlock()
-	vb.pushConstants = pc
-}
-
-// GetPushConstants returns the current push constants
-func (vb *VulkanBackend) GetPushConstants() VoodooPushConstants {
-	vb.mutex.RLock()
-	defer vb.mutex.RUnlock()
-	return vb.pushConstants
-}
-
-// SetTextureData uploads texture data to the Vulkan backend
-func (vb *VulkanBackend) SetTextureData(data []byte, width, height int) error {
-	vb.mutex.Lock()
-	defer vb.mutex.Unlock()
-
-	expectedSize := width * height * 4
-	if len(data) != expectedSize {
-		return fmt.Errorf("texture data size mismatch: expected %d, got %d", expectedSize, len(data))
-	}
-
-	// Store texture dimensions and data
-	vb.textureWidth = width
-	vb.textureHeight = height
-	vb.textureData = make([]byte, len(data))
-	copy(vb.textureData, data)
-
-	// Also update software backend
-	vb.software.SetTextureData(data, width, height)
-
-	// TODO: Upload to Vulkan texture when Vulkan is initialized
-	// For now, texture rendering uses software backend
-
-	return nil
-}
-
-// GetTextureDimensions returns the current texture dimensions
-func (vb *VulkanBackend) GetTextureDimensions() (int, int) {
-	vb.mutex.RLock()
-	defer vb.mutex.RUnlock()
-	return vb.textureWidth, vb.textureHeight
-}
-
-// HasTextureData returns true if texture data has been uploaded
-func (vb *VulkanBackend) HasTextureData() bool {
-	vb.mutex.RLock()
-	defer vb.mutex.RUnlock()
-	return vb.textureData != nil && len(vb.textureData) > 0
-}
-
-// SetChromaKey sets the chroma key color for transparency
-func (vb *VulkanBackend) SetChromaKey(chromaKey uint32) {
-	vb.mutex.Lock()
-	defer vb.mutex.Unlock()
-	vb.chromaKey = chromaKey
-	vb.software.SetChromaKey(chromaKey)
-}
-
-// SetFogParams sets the fog color and depth range
-func (vb *VulkanBackend) SetFogParams(fogColor uint32, fogStart, fogEnd float32) {
-	vb.mutex.Lock()
-	defer vb.mutex.Unlock()
-	vb.fogColor = fogColor
-	vb.fogStart = fogStart
-	vb.fogEnd = fogEnd
-}
-
-// SetColorCombineMode sets the color combine mode
-func (vb *VulkanBackend) SetColorCombineMode(mode int) {
-	vb.mutex.Lock()
-	defer vb.mutex.Unlock()
-	vb.colorCombineMode = mode
-}
-
-// GetFbzMode returns the current FBZ mode
-func (vb *VulkanBackend) GetFbzMode() uint32 {
-	vb.mutex.RLock()
-	defer vb.mutex.RUnlock()
-	return vb.fbzMode
-}
-
-// GetAlphaMode returns the current alpha mode
-func (vb *VulkanBackend) GetAlphaMode() uint32 {
-	vb.mutex.RLock()
-	defer vb.mutex.RUnlock()
-	return vb.alphaMode
-}
-
-// BuildCurrentPushConstants builds push constants from the current state
-func (vb *VulkanBackend) BuildCurrentPushConstants() VoodooPushConstants {
-	vb.mutex.RLock()
-	defer vb.mutex.RUnlock()
-
-	textureEnable := vb.textureData != nil && len(vb.textureData) > 0
-
-	return buildPushConstantsFromState(
-		vb.fbzMode,
-		vb.alphaMode,
-		vb.chromaKey,
-		vb.fogColor,
-		vb.fogStart,
-		vb.fogEnd,
-		vb.colorCombineMode,
-		textureEnable,
-	)
 }
 
 // Destroy cleans up all resources

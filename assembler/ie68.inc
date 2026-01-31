@@ -1382,20 +1382,9 @@ gtia_setpf3       macro   color
 ; Register writes are translated to GPU draw calls for hardware-accelerated
 ; 3D rendering.
 ;
-; Features:
-;   - Gouraud shaded triangles with per-vertex colors
-;   - Z-buffering with 8 compare functions
-;   - Alpha test with 8 compare functions
-;   - Alpha blending with multiple blend factors
-;   - Chroma key (color key) transparency
-;   - Linear fog with configurable color and range
-;   - 6 color combine modes for texture/vertex color mixing
-;   - 4x4 ordered dithering
-;   - Scissor clipping
-;
 ; Programming Model:
 ;   1. Write vertex coordinates to VOODOO_VERTEX_* (12.4 fixed-point)
-;   2. For Gouraud shading: set COLOR_SELECT, write colors, repeat for each vertex
+;   2. Write colors to VOODOO_START_* (12.12 fixed-point for 0.0-1.0 range)
 ;   3. Write Z depth to VOODOO_START_Z (20.12 fixed-point)
 ;   4. Write to VOODOO_TRIANGLE_CMD to submit triangle
 ;   5. Write to VOODOO_SWAP_BUFFER_CMD to present frame
@@ -1404,7 +1393,6 @@ gtia_setpf3       macro   color
 ;   12.4  = 12 integer bits, 4 fractional bits (coordinates)
 ;   12.12 = 12 integer bits, 12 fractional bits (colors: 1.0 = $1000)
 ;   20.12 = 20 integer bits, 12 fractional bits (Z depth)
-;   14.18 = 14 integer bits, 18 fractional bits (texture coords)
 ;
 ; Example: Draw a red triangle
 ;   move.l  #(100<<4),VOODOO_VERTEX_AX    ; Vertex A at (100, 50)
@@ -1422,7 +1410,6 @@ gtia_setpf3       macro   color
 
 ; Base address
 VOODOO_BASE           equ $F4000
-VOODOO_END            equ $F43FF
 
 ; Status register (read-only)
 VOODOO_STATUS         equ $F4000            ; Status register
@@ -1452,28 +1439,8 @@ VOODOO_START_S        equ $F4034            ; Start S texture coord (14.18)
 VOODOO_START_T        equ $F4038            ; Start T texture coord (14.18)
 VOODOO_START_W        equ $F403C            ; Start W (perspective, 2.30)
 
-; Delta values for Gouraud shading interpolation
-VOODOO_DRDX           equ $F4040            ; dR/dX
-VOODOO_DGDX           equ $F4044            ; dG/dX
-VOODOO_DBDX           equ $F4048            ; dB/dX
-VOODOO_DZDX           equ $F404C            ; dZ/dX
-VOODOO_DADX           equ $F4050            ; dA/dX
-VOODOO_DSDX           equ $F4054            ; dS/dX
-VOODOO_DTDX           equ $F4058            ; dT/dX
-VOODOO_DWDX           equ $F405C            ; dW/dX
-VOODOO_DRDY           equ $F4060            ; dR/dY
-VOODOO_DGDY           equ $F4064            ; dG/dY
-VOODOO_DBDY           equ $F4068            ; dB/dY
-VOODOO_DZDY           equ $F406C            ; dZ/dY
-VOODOO_DADY           equ $F4070            ; dA/dY
-VOODOO_DSDY           equ $F4074            ; dS/dY
-VOODOO_DTDY           equ $F4078            ; dT/dY
-VOODOO_DWDY           equ $F407C            ; dW/dY
-
 ; Command registers
 VOODOO_TRIANGLE_CMD   equ $F4080            ; Submit triangle for rendering
-VOODOO_FTRIANGLECMD   equ $F4084            ; Fast triangle (strip mode)
-VOODOO_COLOR_SELECT   equ $F4088            ; Select vertex (0/1/2) for color writes
 VOODOO_FBZCOLOR_PATH  equ $F4104            ; Framebuffer/color path config
 VOODOO_FOG_MODE       equ $F4108            ; Fog mode
 VOODOO_ALPHA_MODE     equ $F410C            ; Alpha test/blend mode
@@ -1486,55 +1453,26 @@ VOODOO_FAST_FILL_CMD  equ $F4124            ; Fast fill (clear) command
 VOODOO_SWAP_BUFFER_CMD equ $F4128           ; Swap front/back buffers
 
 ; Configuration registers
-VOODOO_FOG_TABLE_BASE equ $F4140            ; Fog table (64 entries)
 VOODOO_FOG_COLOR      equ $F41C4            ; Fog color (RGB)
 VOODOO_ZA_COLOR       equ $F41C8            ; Z/A constant color
 VOODOO_CHROMA_KEY     equ $F41CC            ; Chroma key color
-VOODOO_CHROMA_RANGE   equ $F41D0            ; Chroma key range
-VOODOO_STIPPLE        equ $F41D4            ; Stipple pattern
 VOODOO_COLOR0         equ $F41D8            ; Constant color 0 (fill color)
 VOODOO_COLOR1         equ $F41DC            ; Constant color 1
 
 ; Framebuffer configuration
-VOODOO_FBI_INIT0      equ $F4200            ; FBI init register 0
-VOODOO_FBI_INIT1      equ $F4204            ; FBI init register 1
-VOODOO_FBI_INIT2      equ $F4208            ; FBI init register 2
-VOODOO_FBI_INIT3      equ $F420C            ; FBI init register 3
-VOODOO_FBI_INIT4      equ $F4210            ; FBI init register 4
 VOODOO_VIDEO_DIM      equ $F4214            ; Video dimensions (width<<16|height)
-VOODOO_BACK_PORCH     equ $F4218            ; Back porch timing
-VOODOO_VIDEO_DIM_V    equ $F421C            ; Vertical video dimensions
 
 ; Texture registers
 VOODOO_TEXTURE_MODE   equ $F4300            ; Texture mode configuration
-VOODOO_TLOD           equ $F4304            ; Texture LOD control
-VOODOO_TDETAIL        equ $F4308            ; Texture detail control
 VOODOO_TEX_BASE0      equ $F430C            ; Texture base address (LOD 0)
-VOODOO_TEX_BASE1      equ $F4310            ; Texture base address (LOD 1)
-VOODOO_TEX_BASE2      equ $F4314            ; Texture base address (LOD 2)
-VOODOO_TEX_BASE3      equ $F4318            ; Texture base address (LOD 3)
-VOODOO_PALETTE_BASE   equ $F4400            ; Texture palette (256 entries)
-
-; Texture memory
-VOODOO_TEXMEM_BASE    equ $F5000            ; Texture memory base
-VOODOO_TEXMEM_SIZE    equ $10000            ; 64KB texture memory
 
 ; fbzMode bits
 VOODOO_FBZ_CLIPPING     equ $0001           ; Enable scissor clipping
 VOODOO_FBZ_CHROMAKEY    equ $0002           ; Enable chroma keying
-VOODOO_FBZ_STIPPLE      equ $0004           ; Enable stipple pattern
-VOODOO_FBZ_WBUFFER      equ $0008           ; Use W buffer instead of Z
 VOODOO_FBZ_DEPTH_ENABLE equ $0010           ; Enable depth buffer test
 VOODOO_FBZ_DEPTH_FUNC   equ $00E0           ; Depth compare function (3 bits)
-VOODOO_FBZ_DITHER       equ $0100           ; Enable dithering
 VOODOO_FBZ_RGB_WRITE    equ $0200           ; Enable RGB buffer write
 VOODOO_FBZ_DEPTH_WRITE  equ $0400           ; Enable depth buffer write
-VOODOO_FBZ_DITHER_2X2   equ $0800           ; Use 2x2 dither (vs 4x4)
-VOODOO_FBZ_ALPHA_WRITE  equ $1000           ; Enable alpha buffer write
-VOODOO_FBZ_DRAW_FRONT   equ $4000           ; Draw to front buffer
-VOODOO_FBZ_DRAW_BACK    equ $8000           ; Draw to back buffer
-VOODOO_FBZ_FOG_ENABLE   equ $10             ; Fog enable (alias)
-VOODOO_FBZ_DITHER_ENABLE equ $20            ; Dither enable (alias)
 
 ; Depth compare functions (shift left 5 to use in FBZ_MODE)
 VOODOO_DEPTH_NEVER        equ 0
@@ -1548,77 +1486,15 @@ VOODOO_DEPTH_ALWAYS       equ 7
 
 ; alphaMode bits
 VOODOO_ALPHA_TEST_EN    equ $0001           ; Enable alpha test
-VOODOO_ALPHA_TEST_FUNC  equ $000E           ; Alpha test function (3 bits, shift 1)
 VOODOO_ALPHA_BLEND_EN   equ $0010           ; Enable alpha blending
-VOODOO_ALPHA_ANTIALIAS  equ $0020           ; Enable antialiasing
 VOODOO_ALPHA_SRC_RGB    equ $0F00           ; Source RGB blend factor
 VOODOO_ALPHA_DST_RGB    equ $F000           ; Dest RGB blend factor
-VOODOO_ALPHA_SRC_A      equ $000F0000       ; Source alpha blend factor
-VOODOO_ALPHA_DST_A      equ $00F00000       ; Dest alpha blend factor
-VOODOO_ALPHA_REF        equ $FF000000       ; Alpha reference value (8 bits)
-
-; Alpha test functions (shift left 1 to use in ALPHA_MODE)
-VOODOO_ALPHA_NEVER        equ 0
-VOODOO_ALPHA_LESS         equ 1
-VOODOO_ALPHA_EQUAL        equ 2
-VOODOO_ALPHA_LESSEQUAL    equ 3
-VOODOO_ALPHA_GREATER      equ 4
-VOODOO_ALPHA_NOTEQUAL     equ 5
-VOODOO_ALPHA_GREATEREQUAL equ 6
-VOODOO_ALPHA_ALWAYS       equ 7
 
 ; Alpha blend factors (for src/dst blend settings)
-VOODOO_BLEND_ZERO       equ 0               ; 0
-VOODOO_BLEND_SRC_ALPHA  equ 1               ; src.A
-VOODOO_BLEND_COLOR      equ 2               ; constant color
-VOODOO_BLEND_DST_ALPHA  equ 3               ; dst.A
-VOODOO_BLEND_ONE        equ 4               ; 1
-VOODOO_BLEND_INV_SRC_A  equ 5               ; 1 - src.A
-VOODOO_BLEND_INV_COLOR  equ 6               ; 1 - color
-VOODOO_BLEND_INV_DST_A  equ 7               ; 1 - dst.A
-VOODOO_BLEND_SATURATE   equ 15              ; min(src.A, 1-dst.A)
-
-; Color combine modes (for FBZCOLOR_PATH register)
-VOODOO_CC_ITERATED      equ 0               ; Use iterated (vertex) color
-VOODOO_CC_TEXTURE       equ 1               ; Use texture color
-VOODOO_CC_COLOR1        equ 2               ; Use constant color 1
-VOODOO_CC_MODULATE      equ 3               ; Texture * Vertex (multiply)
-VOODOO_CC_ADD           equ 4               ; Texture + Vertex (add)
-VOODOO_CC_SUB           equ 5               ; Texture - Vertex (subtract)
-VOODOO_CC_BLEND         equ 6               ; Blend texture and vertex
-
-; Fog mode bits
-VOODOO_FOG_ENABLE       equ $01             ; Enable fog
-VOODOO_FOG_ADD          equ $02             ; Add fog (vs blend)
-VOODOO_FOG_MULT         equ $04             ; Multiply by fog factor
-VOODOO_FOG_Z            equ $08             ; Use Z for fog (vs W)
-VOODOO_FOG_CONSTANT     equ $10             ; Constant fog
-VOODOO_FOG_DITHER       equ $20             ; Dither fog
-VOODOO_FOG_ZONES        equ $40             ; Use fog zones
-
-; Texture mode bits
-VOODOO_TEX_ENABLE       equ $0001           ; Enable texturing
-VOODOO_TEX_MINIFY       equ $000E           ; Minification filter (3 bits)
-VOODOO_TEX_MAGNIFY      equ $0010           ; Magnification filter (0=point, 1=bilinear)
-VOODOO_TEX_CLAMP_S      equ $0020           ; Clamp S coordinate
-VOODOO_TEX_CLAMP_T      equ $0040           ; Clamp T coordinate
-VOODOO_TEX_FORMAT       equ $0F00           ; Texture format (4 bits)
-VOODOO_TEX_CHROMA       equ $1000           ; Texture chroma key enable
-VOODOO_TEX_TRILINEAR    equ $2000           ; Trilinear filtering
-VOODOO_TEX_PERSPECTIVE  equ $4000           ; Perspective correction
-
-; Texture formats
-VOODOO_TEX_FMT_8BIT     equ 0               ; 8-bit paletted
-VOODOO_TEX_FMT_YIQ      equ 1               ; YIQ compressed
-VOODOO_TEX_FMT_A8       equ 2               ; 8-bit alpha
-VOODOO_TEX_FMT_I8       equ 3               ; 8-bit intensity
-VOODOO_TEX_FMT_AI44     equ 4               ; 4-bit alpha + 4-bit intensity
-VOODOO_TEX_FMT_P8       equ 5               ; 8-bit palette (alternative)
-VOODOO_TEX_FMT_ARGB8332 equ 6               ; ARGB 8332
-VOODOO_TEX_FMT_AI88     equ 7               ; 8-bit alpha + 8-bit intensity
-VOODOO_TEX_FMT_ARGB1555 equ 8               ; ARGB 1555
-VOODOO_TEX_FMT_ARGB4444 equ 9               ; ARGB 4444
-VOODOO_TEX_FMT_ARGB8888 equ 10              ; ARGB 8888
+VOODOO_BLEND_ZERO       equ 0
+VOODOO_BLEND_SRC_ALPHA  equ 1
+VOODOO_BLEND_ONE        equ 4
+VOODOO_BLEND_INV_SRC_A  equ 5
 
 ; swapbufferCMD bits
 VOODOO_SWAP_VSYNC       equ $01             ; Wait for VSync before swap
@@ -1632,19 +1508,6 @@ VOODOO_CLIP_MASK        equ $3FF            ; 10-bit clip value mask
 ; Fixed-point conversion helpers (shift amounts)
 VOODOO_FIXED_12_4       equ 4               ; Vertex coordinates
 VOODOO_FIXED_12_12      equ 12              ; Colors (1.0 = $1000)
-VOODOO_FIXED_14_18      equ 18              ; Texture coordinates
-VOODOO_FIXED_20_12      equ 12              ; Z coordinate
-VOODOO_FIXED_2_30       equ 30              ; W coordinate
-
-; Filter modes
-VOODOO_FILTER_POINT     equ 0               ; Nearest-neighbor
-VOODOO_FILTER_BILINEAR  equ 1               ; Bilinear filtering
-
-; Display constants
-VOODOO_DEFAULT_WIDTH    equ 640
-VOODOO_DEFAULT_HEIGHT   equ 480
-VOODOO_MAX_WIDTH        equ 800
-VOODOO_MAX_HEIGHT       equ 600
 
 ; ----- Voodoo helper macros -----
 
@@ -1666,46 +1529,12 @@ voodoo_vertex_c   macro   x,y
                   move.l  #(\y<<4),VOODOO_VERTEX_CY
                   endm
 
-; Set flat color (r, g, b as 0-255 values)
+; Set color (r, g, b as 0-255 values)
 voodoo_color_rgb  macro   r,g,b
                   move.l  #(\r<<4),VOODOO_START_R
                   move.l  #(\g<<4),VOODOO_START_G
                   move.l  #(\b<<4),VOODOO_START_B
                   move.l  #$1000,VOODOO_START_A
-                  endm
-
-; Set color with alpha (r, g, b, a as 0-255 values)
-voodoo_color_rgba macro   r,g,b,a
-                  move.l  #(\r<<4),VOODOO_START_R
-                  move.l  #(\g<<4),VOODOO_START_G
-                  move.l  #(\b<<4),VOODOO_START_B
-                  move.l  #(\a<<4),VOODOO_START_A
-                  endm
-
-; Select vertex for Gouraud shading color writes (0, 1, or 2)
-voodoo_select_vertex macro vertex
-                  move.l  #\vertex,VOODOO_COLOR_SELECT
-                  endm
-
-; Set fog parameters (color as RGB, start/end as float*4096)
-voodoo_fog_params macro   color,start,end
-                  move.l  #\color,VOODOO_FOG_COLOR
-                  ; Note: fog start/end are set via push constants
-                  endm
-
-; Enable fog mode
-voodoo_fog_enable macro
-                  move.l  #VOODOO_FOG_ENABLE,VOODOO_FOG_MODE
-                  endm
-
-; Set chroma key color (pixels matching this color are discarded)
-voodoo_chroma_key macro   color
-                  move.l  #\color,VOODOO_CHROMA_KEY
-                  endm
-
-; Set alpha test (func = 0-7, ref = 0-255)
-voodoo_alpha_test macro   func,ref
-                  move.l  #(VOODOO_ALPHA_TEST_EN|(\func<<1)|(\ref<<24)),VOODOO_ALPHA_MODE
                   endm
 
 ; Submit triangle
@@ -1718,25 +1547,10 @@ voodoo_swap       macro
                   move.l  #0,VOODOO_SWAP_BUFFER_CMD
                   endm
 
-; Swap buffers with vsync
-voodoo_swap_vsync macro
-                  move.l  #VOODOO_SWAP_VSYNC,VOODOO_SWAP_BUFFER_CMD
-                  endm
-
 ; Clear framebuffer with color (ARGB)
 voodoo_clear      macro   color
                   move.l  #\color,VOODOO_COLOR0
                   move.l  #0,VOODOO_FAST_FILL_CMD
-                  endm
-
-; Set depth test mode (func = 0-7)
-voodoo_depth_mode macro   func
-                  move.l  #(VOODOO_FBZ_DEPTH_ENABLE|VOODOO_FBZ_RGB_WRITE|VOODOO_FBZ_DEPTH_WRITE|(\func<<5)),VOODOO_FBZ_MODE
-                  endm
-
-; Enable dithering
-voodoo_dither_on  macro
-                  or.l    #VOODOO_FBZ_DITHER,VOODOO_FBZ_MODE
                   endm
 
 ; ============================================================================
