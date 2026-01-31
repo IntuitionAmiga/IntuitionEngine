@@ -1324,7 +1324,8 @@ The Voodoo chip emulates a 3DFX SST-1 graphics accelerator using High-Level Emul
 ### Features
 
 - Voodoo SST-1 register-compatible interface
-- Gouraud shaded triangles with Z-buffering
+- Gouraud shaded triangles with per-vertex color interpolation
+- Z-buffering with configurable depth test
 - Alpha blending and alpha test
 - Scissor clipping
 - 640x480 default, up to 800x600
@@ -1356,6 +1357,7 @@ Vertex Attributes (0x0F4020 - 0x0F403F, 12.12 fixed-point):
 
 Command Registers:
 0x0F4080: VOODOO_TRIANGLE_CMD    - Submit triangle for rendering
+0x0F4088: VOODOO_COLOR_SELECT    - Select vertex (0/1/2) for Gouraud shading
 0x0F410C: VOODOO_ALPHA_MODE      - Alpha test/blend configuration
 0x0F4110: VOODOO_FBZ_MODE        - Depth test/write configuration
 0x0F4118: VOODOO_CLIP_LEFT_RIGHT - Scissor rectangle X bounds
@@ -1387,6 +1389,17 @@ Configuration:
 | 9 | RGB_WRITE | Enable RGB buffer write |
 | 10 | DEPTH_WRITE | Enable depth buffer write |
 
+### Gouraud Shading
+
+The Voodoo supports per-vertex colors for smooth Gouraud shading. Use `VOODOO_COLOR_SELECT` to select which vertex (0, 1, or 2 for vertices A, B, C) will receive subsequent writes to the `VOODOO_START_*` attribute registers:
+
+1. Write vertex index (0/1/2) to `VOODOO_COLOR_SELECT`
+2. Write R/G/B/A values to `VOODOO_START_R/G/B/A` - these are stored for the selected vertex
+3. Repeat for each vertex with different colors
+4. Submit triangle - colors will be smoothly interpolated across the surface
+
+When `VOODOO_COLOR_SELECT` is not used (or set to 0), flat shading is applied using the last written color values.
+
 ### Example: Flat Shaded Triangle (M68K)
 
 ```asm
@@ -1415,6 +1428,56 @@ Configuration:
     move.l  #$800000,VOODOO_START_Z      ; Z = 0.5
 
     ; Submit triangle
+    move.l  #0,VOODOO_TRIANGLE_CMD
+
+    ; Present frame
+    move.l  #0,VOODOO_SWAP_BUFFER_CMD
+```
+
+### Example: Gouraud Shaded Triangle (M68K)
+
+Per-vertex colors are set using `VOODOO_COLOR_SELECT` to specify which vertex (0/1/2) receives the subsequent `VOODOO_START_*` writes. The colors are smoothly interpolated across the triangle.
+
+```asm
+    include "ie68.inc"
+
+    ; Clear screen to black
+    move.l  #$FF000000,VOODOO_COLOR0
+    move.l  #0,VOODOO_FAST_FILL_CMD
+
+    ; Enable depth test and RGB write
+    move.l  #(VOODOO_FBZ_DEPTH_ENABLE|VOODOO_FBZ_RGB_WRITE|VOODOO_FBZ_DEPTH_WRITE|(VOODOO_DEPTH_LESS<<5)),VOODOO_FBZ_MODE
+
+    ; Define triangle vertices (12.4 fixed-point)
+    move.l  #(320<<4),VOODOO_VERTEX_AX   ; Top center (320, 100)
+    move.l  #(100<<4),VOODOO_VERTEX_AY
+    move.l  #(420<<4),VOODOO_VERTEX_BX   ; Bottom right (420, 300)
+    move.l  #(300<<4),VOODOO_VERTEX_BY
+    move.l  #(220<<4),VOODOO_VERTEX_CX   ; Bottom left (220, 300)
+    move.l  #(300<<4),VOODOO_VERTEX_CY
+
+    ; Set vertex 0 (A) to RED
+    move.l  #0,VOODOO_COLOR_SELECT       ; Select vertex 0
+    move.l  #$1000,VOODOO_START_R        ; R = 1.0
+    move.l  #$0000,VOODOO_START_G        ; G = 0.0
+    move.l  #$0000,VOODOO_START_B        ; B = 0.0
+    move.l  #$1000,VOODOO_START_A        ; A = 1.0
+
+    ; Set vertex 1 (B) to GREEN
+    move.l  #1,VOODOO_COLOR_SELECT       ; Select vertex 1
+    move.l  #$0000,VOODOO_START_R        ; R = 0.0
+    move.l  #$1000,VOODOO_START_G        ; G = 1.0
+    move.l  #$0000,VOODOO_START_B        ; B = 0.0
+    move.l  #$1000,VOODOO_START_A        ; A = 1.0
+
+    ; Set vertex 2 (C) to BLUE
+    move.l  #2,VOODOO_COLOR_SELECT       ; Select vertex 2
+    move.l  #$0000,VOODOO_START_R        ; R = 0.0
+    move.l  #$0000,VOODOO_START_G        ; G = 0.0
+    move.l  #$1000,VOODOO_START_B        ; B = 1.0
+    move.l  #$1000,VOODOO_START_A        ; A = 1.0
+
+    ; Submit triangle (colors will interpolate smoothly)
     move.l  #0,VOODOO_TRIANGLE_CMD
 
     ; Present frame

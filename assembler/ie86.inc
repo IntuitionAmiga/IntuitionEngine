@@ -910,6 +910,7 @@ VOODOO_START_W        equ 0xF403C
 
 ; Command registers
 VOODOO_TRIANGLE_CMD   equ 0xF4080
+VOODOO_COLOR_SELECT   equ 0xF4088            ; Select vertex (0/1/2) for Gouraud shading
 VOODOO_ALPHA_MODE     equ 0xF410C
 VOODOO_FBZ_MODE       equ 0xF4110
 VOODOO_CLIP_LEFT_RIGHT equ 0xF4118

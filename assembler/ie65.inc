@@ -2329,6 +2329,7 @@ VOODOO_START_W      = $F403         ; Page offset $3C
 
 ; Command registers
 VOODOO_TRIANGLE_CMD = $F408         ; Page offset $80
+VOODOO_COLOR_SELECT = $F408         ; Page offset $88 - Select vertex (0/1/2) for Gouraud shading
 VOODOO_ALPHA_MODE   = $F410         ; Page offset $0C
 VOODOO_FBZ_MODE     = $F411         ; Page offset $10
 VOODOO_FAST_FILL_CMD = $F412        ; Page offset $24

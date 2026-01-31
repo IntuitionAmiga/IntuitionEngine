@@ -1441,6 +1441,7 @@ VOODOO_START_W        equ $F403C            ; Start W (perspective, 2.30)
 
 ; Command registers
 VOODOO_TRIANGLE_CMD   equ $F4080            ; Submit triangle for rendering
+VOODOO_COLOR_SELECT   equ $F4088            ; Select vertex (0/1/2) for Gouraud shading
 VOODOO_FBZCOLOR_PATH  equ $F4104            ; Framebuffer/color path config
 VOODOO_FOG_MODE       equ $F4108            ; Fog mode
 VOODOO_ALPHA_MODE     equ $F410C            ; Alpha test/blend mode
