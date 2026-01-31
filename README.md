@@ -1324,8 +1324,14 @@ The Voodoo chip emulates a 3DFX SST-1 graphics accelerator using High-Level Emul
 ### Features
 
 - Voodoo SST-1 register-compatible interface
-- Gouraud shaded triangles with Z-buffering
-- Alpha blending and alpha test
+- Gouraud shaded triangles with per-vertex colors
+- Z-buffering with 8 depth compare functions
+- Alpha test with 8 compare functions
+- Alpha blending with multiple blend factors
+- Chroma key (color key) transparency
+- Linear fog with configurable color and range
+- 6 color combine modes for texture/vertex mixing
+- 4x4 ordered dithering
 - Scissor clipping
 - 640x480 default, up to 800x600
 - Compositor layer 20 (renders on top of all 2D chips)
@@ -1354,8 +1360,19 @@ Vertex Attributes (0x0F4020 - 0x0F403F, 12.12 fixed-point):
 0x0F4038: VOODOO_START_T     - Start T texture coord (14.18)
 0x0F403C: VOODOO_START_W     - Start W (perspective, 2.30)
 
+Gouraud Delta Registers (0x0F4040 - 0x0F407F):
+0x0F4040: VOODOO_DRDX        - dR/dX for Gouraud interpolation
+0x0F4044: VOODOO_DGDX        - dG/dX
+0x0F4048: VOODOO_DBDX        - dB/dX
+...
+0x0F4060: VOODOO_DRDY        - dR/dY
+...
+
 Command Registers:
 0x0F4080: VOODOO_TRIANGLE_CMD    - Submit triangle for rendering
+0x0F4088: VOODOO_COLOR_SELECT    - Select vertex (0/1/2) for color writes
+0x0F4104: VOODOO_FBZCOLOR_PATH   - Color combine mode configuration
+0x0F4108: VOODOO_FOG_MODE        - Fog mode configuration
 0x0F410C: VOODOO_ALPHA_MODE      - Alpha test/blend configuration
 0x0F4110: VOODOO_FBZ_MODE        - Depth test/write configuration
 0x0F4118: VOODOO_CLIP_LEFT_RIGHT - Scissor rectangle X bounds
@@ -1364,8 +1381,16 @@ Command Registers:
 0x0F4128: VOODOO_SWAP_BUFFER_CMD - Swap front/back buffers
 
 Configuration:
+0x0F41C4: VOODOO_FOG_COLOR   - Fog color (RGB)
+0x0F41CC: VOODOO_CHROMA_KEY  - Chroma key color for transparency
 0x0F41D8: VOODOO_COLOR0      - Fill color for FAST_FILL_CMD (ARGB)
+0x0F41DC: VOODOO_COLOR1      - Constant color 1 (for color combine)
 0x0F4214: VOODOO_VIDEO_DIM   - Video dimensions (width<<16 | height)
+
+Texture Registers:
+0x0F4300: VOODOO_TEXTURE_MODE - Texture enable, filtering, clamping
+0x0F430C: VOODOO_TEX_BASE0    - Texture base address (LOD 0)
+0x0F4400: VOODOO_PALETTE_BASE - Texture palette (256 entries)
 ```
 
 ### Fixed-Point Formats
@@ -1382,10 +1407,52 @@ Configuration:
 | Bit | Name | Description |
 |-----|------|-------------|
 | 0 | CLIPPING | Enable scissor clipping |
+| 1 | CHROMAKEY | Enable chroma key transparency |
+| 2 | STIPPLE | Enable stipple pattern |
+| 3 | WBUFFER | Use W buffer instead of Z |
 | 4 | DEPTH_ENABLE | Enable depth buffer test |
-| 5-7 | DEPTH_FUNC | Depth compare function (0=never, 1=less, 3=lessequal, 7=always) |
+| 5-7 | DEPTH_FUNC | Depth compare function (0-7) |
+| 8 | DITHER | Enable 4x4 ordered dithering |
 | 9 | RGB_WRITE | Enable RGB buffer write |
 | 10 | DEPTH_WRITE | Enable depth buffer write |
+| 11 | DITHER_2X2 | Use 2x2 dither (vs 4x4) |
+| 12 | ALPHA_WRITE | Enable alpha buffer write |
+
+### Depth/Alpha Compare Functions
+
+| Value | Name | Description |
+|-------|------|-------------|
+| 0 | NEVER | Always fail |
+| 1 | LESS | Pass if value < reference |
+| 2 | EQUAL | Pass if value == reference |
+| 3 | LESSEQUAL | Pass if value <= reference |
+| 4 | GREATER | Pass if value > reference |
+| 5 | NOTEQUAL | Pass if value != reference |
+| 6 | GREATEREQUAL | Pass if value >= reference |
+| 7 | ALWAYS | Always pass |
+
+### Color Combine Modes (FBZCOLOR_PATH)
+
+| Value | Name | Description |
+|-------|------|-------------|
+| 0 | CC_ITERATED | Use iterated (vertex) color |
+| 1 | CC_TEXTURE | Use texture color |
+| 2 | CC_COLOR1 | Use constant color 1 |
+| 3 | CC_MODULATE | Texture * Vertex (multiply) |
+| 4 | CC_ADD | Texture + Vertex |
+| 5 | CC_SUB | Texture - Vertex |
+| 6 | CC_BLEND | Blend texture and vertex |
+
+### Fog Mode Bits
+
+| Bit | Name | Description |
+|-----|------|-------------|
+| 0 | FOG_ENABLE | Enable fog |
+| 1 | FOG_ADD | Add fog (vs blend) |
+| 2 | FOG_MULT | Multiply by fog factor |
+| 3 | FOG_Z | Use Z for fog (vs W) |
+| 4 | FOG_CONSTANT | Constant fog level |
+| 5 | FOG_DITHER | Dither fog |
 
 ### Example: Flat Shaded Triangle (M68K)
 
@@ -1419,6 +1486,48 @@ Configuration:
 
     ; Present frame
     move.l  #0,VOODOO_SWAP_BUFFER_CMD
+```
+
+### Example: Gouraud Shaded Triangle (M68K)
+
+```asm
+    include "ie68.inc"
+
+    ; Set vertex A color (red)
+    move.l  #0,VOODOO_COLOR_SELECT       ; Select vertex 0 (A)
+    move.l  #$1000,VOODOO_START_R
+    move.l  #0,VOODOO_START_G
+    move.l  #0,VOODOO_START_B
+
+    ; Set vertex B color (green)
+    move.l  #1,VOODOO_COLOR_SELECT       ; Select vertex 1 (B)
+    move.l  #0,VOODOO_START_R
+    move.l  #$1000,VOODOO_START_G
+    move.l  #0,VOODOO_START_B
+
+    ; Set vertex C color (blue)
+    move.l  #2,VOODOO_COLOR_SELECT       ; Select vertex 2 (C)
+    move.l  #0,VOODOO_START_R
+    move.l  #0,VOODOO_START_G
+    move.l  #$1000,VOODOO_START_B
+
+    ; ... set coordinates and submit triangle
+```
+
+### Example: Alpha Blending with Fog (M68K)
+
+```asm
+    include "ie68.inc"
+
+    ; Enable alpha blending: src*srcAlpha + dst*(1-srcAlpha)
+    move.l  #(VOODOO_ALPHA_BLEND_EN|(VOODOO_BLEND_SRC_ALPHA<<8)|(VOODOO_BLEND_INV_SRC_A<<12)),VOODOO_ALPHA_MODE
+
+    ; Enable fog with linear interpolation
+    move.l  #VOODOO_FOG_ENABLE,VOODOO_FOG_MODE
+    move.l  #$808080,VOODOO_FOG_COLOR    ; Gray fog
+
+    ; Enable dithering for smooth gradients
+    or.l    #VOODOO_FBZ_DITHER,VOODOO_FBZ_MODE
 ```
 
 ### Example: Rotating Cube with Z-Buffer (M68K)

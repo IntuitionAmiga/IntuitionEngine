@@ -982,13 +982,22 @@
 ; ============================================================================
 ; 3DFX VOODOO GRAPHICS (SST-1) REGISTERS
 ; ============================================================================
-; Vulkan-accelerated 3D graphics. See ie68.inc for detailed documentation.
+; Vulkan-accelerated 3D graphics with Gouraud shading, alpha test, fog,
+; chroma key, color combine, and dithering. See ie68.inc for full documentation.
 
 ; Base address
 .equ VOODOO_BASE           0xF4000
+.equ VOODOO_END            0xF43FF
 
 ; Status register (read-only)
 .equ VOODOO_STATUS         0xF4000
+
+; Status register bits
+.equ VOODOO_STATUS_FBI_BUSY    0x01
+.equ VOODOO_STATUS_TMU_BUSY    0x02
+.equ VOODOO_STATUS_SST_BUSY    0x04
+.equ VOODOO_STATUS_VRETRACE    0x40
+.equ VOODOO_STATUS_SWAPBUF     0x80
 
 ; Vertex coordinate registers (12.4 fixed-point)
 .equ VOODOO_VERTEX_AX      0xF4008
@@ -1008,40 +1017,158 @@
 .equ VOODOO_START_T        0xF4038
 .equ VOODOO_START_W        0xF403C
 
+; Delta values for Gouraud shading interpolation
+.equ VOODOO_DRDX           0xF4040
+.equ VOODOO_DGDX           0xF4044
+.equ VOODOO_DBDX           0xF4048
+.equ VOODOO_DZDX           0xF404C
+.equ VOODOO_DADX           0xF4050
+.equ VOODOO_DSDX           0xF4054
+.equ VOODOO_DTDX           0xF4058
+.equ VOODOO_DWDX           0xF405C
+.equ VOODOO_DRDY           0xF4060
+.equ VOODOO_DGDY           0xF4064
+.equ VOODOO_DBDY           0xF4068
+.equ VOODOO_DZDY           0xF406C
+.equ VOODOO_DADY           0xF4070
+.equ VOODOO_DSDY           0xF4074
+.equ VOODOO_DTDY           0xF4078
+.equ VOODOO_DWDY           0xF407C
+
 ; Command registers
 .equ VOODOO_TRIANGLE_CMD   0xF4080
+.equ VOODOO_FTRIANGLECMD   0xF4084
+.equ VOODOO_COLOR_SELECT   0xF4088
+.equ VOODOO_FBZCOLOR_PATH  0xF4104
+.equ VOODOO_FOG_MODE       0xF4108
 .equ VOODOO_ALPHA_MODE     0xF410C
 .equ VOODOO_FBZ_MODE       0xF4110
+.equ VOODOO_LFB_MODE       0xF4114
 .equ VOODOO_CLIP_LEFT_RIGHT 0xF4118
 .equ VOODOO_CLIP_LOW_Y_HIGH 0xF411C
+.equ VOODOO_NOP_CMD        0xF4120
 .equ VOODOO_FAST_FILL_CMD  0xF4124
 .equ VOODOO_SWAP_BUFFER_CMD 0xF4128
 
 ; Configuration registers
+.equ VOODOO_FOG_TABLE_BASE 0xF4140
+.equ VOODOO_FOG_COLOR      0xF41C4
+.equ VOODOO_ZA_COLOR       0xF41C8
+.equ VOODOO_CHROMA_KEY     0xF41CC
+.equ VOODOO_CHROMA_RANGE   0xF41D0
+.equ VOODOO_STIPPLE        0xF41D4
 .equ VOODOO_COLOR0         0xF41D8
+.equ VOODOO_COLOR1         0xF41DC
 .equ VOODOO_VIDEO_DIM      0xF4214
+
+; Texture registers
+.equ VOODOO_TEXTURE_MODE   0xF4300
+.equ VOODOO_TLOD           0xF4304
+.equ VOODOO_TEX_BASE0      0xF430C
+.equ VOODOO_PALETTE_BASE   0xF4400
+.equ VOODOO_TEXMEM_BASE    0xF5000
 
 ; fbzMode bits
 .equ VOODOO_FBZ_CLIPPING     0x0001
+.equ VOODOO_FBZ_CHROMAKEY    0x0002
+.equ VOODOO_FBZ_STIPPLE      0x0004
+.equ VOODOO_FBZ_WBUFFER      0x0008
 .equ VOODOO_FBZ_DEPTH_ENABLE 0x0010
+.equ VOODOO_FBZ_DEPTH_FUNC   0x00E0
+.equ VOODOO_FBZ_DITHER       0x0100
 .equ VOODOO_FBZ_RGB_WRITE    0x0200
 .equ VOODOO_FBZ_DEPTH_WRITE  0x0400
+.equ VOODOO_FBZ_DITHER_2X2   0x0800
+.equ VOODOO_FBZ_ALPHA_WRITE  0x1000
+.equ VOODOO_FBZ_FOG_ENABLE   0x10
+.equ VOODOO_FBZ_DITHER_ENABLE 0x20
 
 ; Depth compare functions (shift left 5)
+.equ VOODOO_DEPTH_NEVER        0
 .equ VOODOO_DEPTH_LESS         1
+.equ VOODOO_DEPTH_EQUAL        2
 .equ VOODOO_DEPTH_LESSEQUAL    3
+.equ VOODOO_DEPTH_GREATER      4
+.equ VOODOO_DEPTH_NOTEQUAL     5
+.equ VOODOO_DEPTH_GREATEREQUAL 6
 .equ VOODOO_DEPTH_ALWAYS       7
 
 ; alphaMode bits
+.equ VOODOO_ALPHA_TEST_EN    0x0001
+.equ VOODOO_ALPHA_TEST_FUNC  0x000E
 .equ VOODOO_ALPHA_BLEND_EN   0x0010
+.equ VOODOO_ALPHA_ANTIALIAS  0x0020
+.equ VOODOO_ALPHA_SRC_RGB    0x0F00
+.equ VOODOO_ALPHA_DST_RGB    0xF000
+.equ VOODOO_ALPHA_REF        0xFF000000
+
+; Alpha test functions (shift left 1)
+.equ VOODOO_ALPHA_NEVER        0
+.equ VOODOO_ALPHA_LESS         1
+.equ VOODOO_ALPHA_EQUAL        2
+.equ VOODOO_ALPHA_LESSEQUAL    3
+.equ VOODOO_ALPHA_GREATER      4
+.equ VOODOO_ALPHA_NOTEQUAL     5
+.equ VOODOO_ALPHA_GREATEREQUAL 6
+.equ VOODOO_ALPHA_ALWAYS       7
 
 ; Blend factors
+.equ VOODOO_BLEND_ZERO       0
 .equ VOODOO_BLEND_SRC_ALPHA  1
+.equ VOODOO_BLEND_COLOR      2
+.equ VOODOO_BLEND_DST_ALPHA  3
+.equ VOODOO_BLEND_ONE        4
 .equ VOODOO_BLEND_INV_SRC_A  5
+.equ VOODOO_BLEND_INV_COLOR  6
+.equ VOODOO_BLEND_INV_DST_A  7
+.equ VOODOO_BLEND_SATURATE   15
+
+; Color combine modes
+.equ VOODOO_CC_ITERATED      0
+.equ VOODOO_CC_TEXTURE       1
+.equ VOODOO_CC_COLOR1        2
+.equ VOODOO_CC_MODULATE      3
+.equ VOODOO_CC_ADD           4
+.equ VOODOO_CC_SUB           5
+.equ VOODOO_CC_BLEND         6
+
+; Fog mode bits
+.equ VOODOO_FOG_ENABLE       0x01
+.equ VOODOO_FOG_ADD          0x02
+.equ VOODOO_FOG_MULT         0x04
+.equ VOODOO_FOG_Z            0x08
+.equ VOODOO_FOG_CONSTANT     0x10
+.equ VOODOO_FOG_DITHER       0x20
+
+; Texture mode bits
+.equ VOODOO_TEX_ENABLE       0x0001
+.equ VOODOO_TEX_MAGNIFY      0x0010
+.equ VOODOO_TEX_CLAMP_S      0x0020
+.equ VOODOO_TEX_CLAMP_T      0x0040
+.equ VOODOO_TEX_PERSPECTIVE  0x4000
+
+; swapbufferCMD bits
+.equ VOODOO_SWAP_VSYNC       0x01
+.equ VOODOO_SWAP_CLEAR       0x02
 
 ; Fixed-point shift amounts
 .equ VOODOO_FIXED_12_4       4
 .equ VOODOO_FIXED_12_12      12
+.equ VOODOO_FIXED_14_18      18
+.equ VOODOO_FIXED_20_12      12
+
+; Clip mask
+.equ VOODOO_CLIP_MASK        0x3FF
+
+; Filter modes
+.equ VOODOO_FILTER_POINT     0
+.equ VOODOO_FILTER_BILINEAR  1
+
+; Display constants
+.equ VOODOO_DEFAULT_WIDTH    640
+.equ VOODOO_DEFAULT_HEIGHT   480
+.equ VOODOO_MAX_WIDTH        800
+.equ VOODOO_MAX_HEIGHT       600
 
 ; ============================================================================
 ; EOF

@@ -108,6 +108,11 @@ const (
 	VOODOO_DWDY = VOODOO_BASE + 0x07C // dW/dY
 )
 
+// Gouraud shading vertex color select (write-only)
+const (
+	VOODOO_COLOR_SELECT = VOODOO_BASE + 0x088 // Select which vertex (0/1/2) receives color writes
+)
+
 // Command registers (write-only)
 const (
 	VOODOO_TRIANGLE_CMD    = VOODOO_BASE + 0x080 // Submit triangle for rasterization
@@ -300,8 +305,57 @@ const (
 
 // fastfillCMD uses COLOR0 register for fill color
 
+// Color combine modes (fbzColorPath register)
+const (
+	VOODOO_CC_ITERATED = 0 // Use iterated (vertex) color
+	VOODOO_CC_TEXTURE  = 1 // Use texture color
+	VOODOO_CC_COLOR1   = 2 // Use constant color 1
+	VOODOO_CC_MODULATE = 3 // Texture * Vertex (multiply)
+	VOODOO_CC_ADD      = 4 // Texture + Vertex (add)
+	VOODOO_CC_SUB      = 5 // Texture - Vertex (subtract)
+	VOODOO_CC_BLEND    = 6 // Blend between texture and vertex
+)
+
+// Fog mode bits
+const (
+	VOODOO_FOG_ENABLE      = 1 << 0 // Enable fog
+	VOODOO_FOG_ADD         = 1 << 1 // Add fog (vs blend)
+	VOODOO_FOG_MULT        = 1 << 2 // Multiply by fog factor
+	VOODOO_FOG_Z           = 1 << 3 // Use Z for fog (vs W)
+	VOODOO_FOG_CONSTANT    = 1 << 4 // Constant fog
+	VOODOO_FOG_DITHER      = 1 << 5 // Dither fog
+	VOODOO_FOG_ZONES       = 1 << 6 // Use fog zones
+	VOODOO_FOG_TABLE_SHIFT = 8      // Fog table select shift
+)
+
 // Triangle batch limits
 const (
 	VOODOO_MAX_BATCH_TRIANGLES = 4096 // Maximum triangles per batch
 	VOODOO_MAX_BATCH_VERTICES  = VOODOO_MAX_BATCH_TRIANGLES * 3
 )
+
+// Vulkan descriptor bindings
+const (
+	VOODOO_DESCRIPTOR_BINDING_TEXTURE = 0 // Texture sampler binding
+)
+
+// Push constants size (8 x 4 bytes = 32 bytes)
+const VOODOO_PUSH_CONSTANTS_SIZE = 32
+
+// Texture filter modes
+const (
+	VOODOO_FILTER_POINT    = 0 // Nearest-neighbor / point sampling
+	VOODOO_FILTER_BILINEAR = 1 // Bilinear filtering
+)
+
+// Vulkan shader stage flags (matching vk.ShaderStageFlags)
+const (
+	VOODOO_SHADER_STAGE_VERTEX   = 0x00000001
+	VOODOO_SHADER_STAGE_FRAGMENT = 0x00000010
+)
+
+// FbzMode fog enable bit (bit 4)
+const VOODOO_FBZ_FOG_ENABLE = 0x10
+
+// FbzMode dither enable bit (bit 5)
+const VOODOO_FBZ_DITHER_ENABLE = 0x20
