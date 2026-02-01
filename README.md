@@ -1326,6 +1326,8 @@ The Voodoo chip emulates a 3DFX SST-1 graphics accelerator using High-Level Emul
 - Voodoo SST-1 register-compatible interface
 - Gouraud shaded triangles with per-vertex color interpolation
 - Z-buffering with all 8 depth compare functions (never, less, equal, lessequal, greater, notequal, greaterequal, always)
+- Alpha testing with 8 comparison functions and configurable reference value
+- Chroma key transparency (discard fragments matching key color)
 - Configurable alpha blending with 9 blend factors per source/dest
 - Dynamic pipeline state with automatic pipeline caching for performance
 - Scissor clipping
@@ -1367,6 +1369,7 @@ Command Registers:
 0x0F4128: VOODOO_SWAP_BUFFER_CMD - Swap front/back buffers
 
 Configuration:
+0x0F41CC: VOODOO_CHROMA_KEY  - Chroma key color (0x00RRGGBB)
 0x0F41D8: VOODOO_COLOR0      - Fill color for FAST_FILL_CMD (ARGB)
 0x0F4214: VOODOO_VIDEO_DIM   - Video dimensions (width<<16 | height)
 ```
@@ -1385,6 +1388,7 @@ Configuration:
 | Bit | Name | Description |
 |-----|------|-------------|
 | 0 | CLIPPING | Enable scissor clipping |
+| 1 | CHROMAKEY | Enable chroma key transparency |
 | 4 | DEPTH_ENABLE | Enable depth buffer test |
 | 5-7 | DEPTH_FUNC | Depth compare function (see table below) |
 | 9 | RGB_WRITE | Enable RGB buffer write |
@@ -1410,9 +1414,32 @@ The depth function (bits 5-7 of fbzMode) controls Z-buffer testing. Shift these 
 | Bit | Name | Description |
 |-----|------|-------------|
 | 0 | ALPHA_TEST_EN | Enable alpha test |
+| 1-3 | ALPHA_FUNC | Alpha test function (see table below) |
 | 4 | ALPHA_BLEND_EN | Enable alpha blending |
 | 8-11 | SRC_BLEND | Source blend factor |
 | 12-15 | DST_BLEND | Destination blend factor |
+| 24-31 | ALPHA_REF | Alpha reference value (0-255) |
+
+### Alpha Test Functions
+
+The alpha test function (bits 1-3 of alphaMode) compares fragment alpha against the reference value (bits 24-31). If the test fails, the fragment is discarded. Shift function values left by 1 to position in alphaMode.
+
+| Value | Name | Description |
+|-------|------|-------------|
+| 0 | NEVER | Never pass (always discard fragment) |
+| 1 | LESS | Pass if alpha < reference |
+| 2 | EQUAL | Pass if alpha == reference |
+| 3 | LESSEQUAL | Pass if alpha <= reference |
+| 4 | GREATER | Pass if alpha > reference |
+| 5 | NOTEQUAL | Pass if alpha != reference |
+| 6 | GREATEREQUAL | Pass if alpha >= reference |
+| 7 | ALWAYS | Always pass (alpha test disabled) |
+
+Example: Discard fragments with alpha < 0.5 (reference=128):
+```asm
+    ; Enable alpha test with LESS function, reference = 128
+    move.l  #(VOODOO_ALPHA_TEST_EN|(VOODOO_ALPHA_GREATER<<1)|(128<<24)),VOODOO_ALPHA_MODE
+```
 
 ### Alpha Blend Factors
 
@@ -1434,6 +1461,25 @@ Common blending modes:
 - **Standard alpha blend**: srcFactor=SRC_ALPHA (1), dstFactor=INV_SRC_A (5)
 - **Additive blend**: srcFactor=ONE (4), dstFactor=ONE (4)
 - **Pre-multiplied alpha**: srcFactor=ONE (4), dstFactor=INV_SRC_A (5)
+
+### Chroma Key
+
+Chroma keying discards fragments that match a specific color, creating transparency without alpha blending. This is useful for sprite-based rendering where a specific color represents "transparent."
+
+To enable chroma keying:
+1. Set the key color in `VOODOO_CHROMA_KEY` (format: 0x00RRGGBB)
+2. Enable chroma keying by setting bit 1 (CHROMAKEY) in `VOODOO_FBZ_MODE`
+
+When enabled, any fragment whose RGB color matches the chroma key color will be discarded.
+
+Example: Use magenta (255, 0, 255) as transparent color:
+```asm
+    ; Set chroma key to magenta
+    move.l  #$00FF00FF,VOODOO_CHROMA_KEY
+
+    ; Enable chroma keying in fbzMode
+    move.l  #(VOODOO_FBZ_CHROMAKEY|VOODOO_FBZ_RGB_WRITE),VOODOO_FBZ_MODE
+```
 
 ### Gouraud Shading
 

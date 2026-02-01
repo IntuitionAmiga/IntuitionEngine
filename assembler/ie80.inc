@@ -2465,10 +2465,30 @@
 .set VOODOO_DEPTH_ALWAYS,7
 
 ; alphaMode bits
+; Bit 0:     ALPHA_TEST_EN - Enable alpha test
+; Bits 1-3:  ALPHA_FUNC - Alpha test function (0-7, same as depth functions)
+; Bit 4:     ALPHA_BLEND_EN - Enable alpha blending
+; Bits 8-11: SRC_BLEND - Source blend factor
+; Bits 12-15: DST_BLEND - Destination blend factor
+; Bits 24-31: ALPHA_REF - Alpha reference value (0-255)
 .set VOODOO_ALPHA_TEST_EN,0x0001
+.set VOODOO_ALPHA_FUNC_MASK,0x000E
+.set VOODOO_ALPHA_FUNC_SHIFT,1
 .set VOODOO_ALPHA_BLEND_EN,0x0010
 .set VOODOO_ALPHA_SRC_RGB,0x0F00
 .set VOODOO_ALPHA_DST_RGB,0xF000
+.set VOODOO_ALPHA_REF_SHIFT,24
+
+; Alpha test functions (shift left 1 to position in alphaMode)
+; Same comparison semantics as depth functions
+.set VOODOO_ALPHA_NEVER,0
+.set VOODOO_ALPHA_LESS,1
+.set VOODOO_ALPHA_EQUAL,2
+.set VOODOO_ALPHA_LESSEQUAL,3
+.set VOODOO_ALPHA_GREATER,4
+.set VOODOO_ALPHA_NOTEQUAL,5
+.set VOODOO_ALPHA_GREATEREQUAL,6
+.set VOODOO_ALPHA_ALWAYS,7
 
 ; Alpha blend factors (for src/dst blend settings)
 ; Use these values shifted to bits 8-11 for source, bits 12-15 for dest
