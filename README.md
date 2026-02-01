@@ -1331,6 +1331,8 @@ The Voodoo chip emulates a 3DFX SST-1 graphics accelerator using High-Level Emul
 - Configurable alpha blending with 9 blend factors per source/dest
 - Texture mapping with per-vertex UV coordinates and color modulation
 - Color combine modes (iterated, texture, modulate, add, decal) via fbzColorPath
+- Depth-based fog with configurable fog color (linear blend based on vertex Z)
+- Ordered dithering with 4x4 or 2x2 Bayer matrices for reduced banding
 - Point sampling with wrap/clamp addressing modes
 - Dynamic pipeline state with automatic pipeline caching for performance
 - Scissor clipping
@@ -1365,8 +1367,9 @@ Command Registers:
 0x0F4080: VOODOO_TRIANGLE_CMD    - Submit triangle for rendering
 0x0F4088: VOODOO_COLOR_SELECT    - Select vertex (0/1/2) for Gouraud shading
 0x0F4104: VOODOO_FBZCOLOR_PATH   - Color combine mode configuration
+0x0F4108: VOODOO_FOG_MODE        - Fog mode configuration
 0x0F410C: VOODOO_ALPHA_MODE      - Alpha test/blend configuration
-0x0F4110: VOODOO_FBZ_MODE        - Depth test/write configuration
+0x0F4110: VOODOO_FBZ_MODE        - Depth test/write/dither configuration
 0x0F4118: VOODOO_CLIP_LEFT_RIGHT - Scissor rectangle X bounds
 0x0F411C: VOODOO_CLIP_LOW_Y_HIGH - Scissor rectangle Y bounds
 0x0F4124: VOODOO_FAST_FILL_CMD   - Clear framebuffer with COLOR0
@@ -1374,6 +1377,7 @@ Command Registers:
 
 Configuration:
 0x0F41CC: VOODOO_CHROMA_KEY  - Chroma key color (0x00RRGGBB)
+0x0F41D0: VOODOO_FOG_COLOR   - Fog color (0x00RRGGBB)
 0x0F41D8: VOODOO_COLOR0      - Fill color for FAST_FILL_CMD (ARGB)
 0x0F4214: VOODOO_VIDEO_DIM   - Video dimensions (width<<16 | height)
 
@@ -1399,8 +1403,10 @@ Texture Mapping (0x0F4300 - 0x0F432F):
 | 1 | CHROMAKEY | Enable chroma key transparency |
 | 4 | DEPTH_ENABLE | Enable depth buffer test |
 | 5-7 | DEPTH_FUNC | Depth compare function (see table below) |
+| 8 | DITHER | Enable ordered dithering (4x4 Bayer matrix) |
 | 9 | RGB_WRITE | Enable RGB buffer write |
 | 10 | DEPTH_WRITE | Enable depth buffer write |
+| 11 | DITHER_2X2 | Use 2x2 Bayer matrix instead of 4x4 |
 
 ### Depth Compare Functions
 
@@ -1567,6 +1573,64 @@ Example: Enable texture modulation (texture color multiplied by vertex color):
 ```asm
     ; Set color combine to MODULATE mode (tex * vert)
     move.l  #VOODOO_COMBINE_MODULATE,VOODOO_FBZCOLOR_PATH
+```
+
+### fogMode (Depth-Based Fog)
+
+The `VOODOO_FOG_MODE` register (0x0F4108) enables depth-based fog blending. When enabled, fragment colors are linearly blended with the fog color based on the vertex Z coordinate (depth). Objects further from the camera appear more "fogged".
+
+#### fogMode Bits
+
+| Bit | Name | Description |
+|-----|------|-------------|
+| 0 | FOG_ENABLE | Enable fog processing |
+| 1 | FOG_ADD | Add fog color to output (vs. blend) |
+| 2 | FOG_MULT | Multiply fog factor by alpha |
+| 3 | FOG_ZALPHA | Use Z alpha for fog (vs. iterated) |
+| 4 | FOG_CONSTANT | Use constant fog alpha |
+| 5 | FOG_DITHER | Apply dithering to fog |
+| 6 | FOG_ZONES | Enable fog zones (table-based fog) |
+
+The fog color is set in `VOODOO_FOG_COLOR` (0x0F41D0) using the format 0x00RRGGBB.
+
+Fog blending formula: `output.rgb = mix(color.rgb, fogColor.rgb, fogFactor)`
+
+Where `fogFactor` is derived from the vertex Z coordinate (0.0 = near/no fog, 1.0 = far/full fog).
+
+Example: Enable gray fog for distance fade effect:
+```asm
+    ; Set fog color to gray
+    move.l  #$00808080,VOODOO_FOG_COLOR
+
+    ; Enable fog
+    move.l  #VOODOO_FOG_ENABLE,VOODOO_FOG_MODE
+```
+
+### Dithering
+
+Ordered dithering reduces color banding artifacts by applying a threshold pattern to pixel colors. The Voodoo supports two dither modes controlled by fbzMode bits:
+
+- **4x4 Bayer matrix** (default): Higher quality, 16 threshold levels
+- **2x2 Bayer matrix**: Faster, 4 threshold levels
+
+Enable dithering by setting bit 8 (DITHER) in `VOODOO_FBZ_MODE`. For 2x2 mode, also set bit 11 (DITHER_2X2).
+
+Example: Enable 4x4 dithering:
+```asm
+    ; Enable depth test, RGB write, and 4x4 dithering
+    move.l  #(VOODOO_FBZ_DEPTH_ENABLE|VOODOO_FBZ_RGB_WRITE|VOODOO_FBZ_DITHER|(VOODOO_DEPTH_LESS<<5)),VOODOO_FBZ_MODE
+```
+
+Example: Fog with dithering for smooth distance fade:
+```asm
+    ; Set fog color
+    move.l  #$00404040,VOODOO_FOG_COLOR
+
+    ; Enable fog
+    move.l  #VOODOO_FOG_ENABLE,VOODOO_FOG_MODE
+
+    ; Enable depth, RGB write, and dithering
+    move.l  #(VOODOO_FBZ_DEPTH_ENABLE|VOODOO_FBZ_RGB_WRITE|VOODOO_FBZ_DITHER|(VOODOO_DEPTH_LESS<<5)),VOODOO_FBZ_MODE
 ```
 
 ### Gouraud Shading
