@@ -1330,6 +1330,7 @@ The Voodoo chip emulates a 3DFX SST-1 graphics accelerator using High-Level Emul
 - Chroma key transparency (discard fragments matching key color)
 - Configurable alpha blending with 9 blend factors per source/dest
 - Texture mapping with per-vertex UV coordinates and color modulation
+- Color combine modes (iterated, texture, modulate, add, decal) via fbzColorPath
 - Point sampling with wrap/clamp addressing modes
 - Dynamic pipeline state with automatic pipeline caching for performance
 - Scissor clipping
@@ -1363,6 +1364,7 @@ Vertex Attributes (0x0F4020 - 0x0F403F, 12.12 fixed-point):
 Command Registers:
 0x0F4080: VOODOO_TRIANGLE_CMD    - Submit triangle for rendering
 0x0F4088: VOODOO_COLOR_SELECT    - Select vertex (0/1/2) for Gouraud shading
+0x0F4104: VOODOO_FBZCOLOR_PATH   - Color combine mode configuration
 0x0F410C: VOODOO_ALPHA_MODE      - Alpha test/blend configuration
 0x0F4110: VOODOO_FBZ_MODE        - Depth test/write configuration
 0x0F4118: VOODOO_CLIP_LEFT_RIGHT - Scissor rectangle X bounds
@@ -1513,6 +1515,59 @@ Example: Use magenta (255, 0, 255) as transparent color:
 Texture coordinates (S and T) use 14.18 fixed-point format. Values represent positions in texture space where 1.0 (0x40000) equals the texture width/height. Coordinates outside 0.0-1.0 wrap or clamp depending on TEX_CLAMP_S/T bits.
 
 Per-vertex texture coordinates work like per-vertex colors: use `VOODOO_COLOR_SELECT` to select the vertex (0/1/2), then write to `VOODOO_START_S` and `VOODOO_START_T`.
+
+### fbzColorPath (Color Combine)
+
+The `VOODOO_FBZCOLOR_PATH` register (0x0F4104) controls how texture and vertex (iterated) colors are combined. This allows for various rendering effects from simple flat colors to complex texture blending.
+
+#### fbzColorPath Bits
+
+| Bit | Name | Description |
+|-----|------|-------------|
+| 0-1 | RGB_SELECT | RGB source select (see table below) |
+| 2-3 | A_SELECT | Alpha source select (see table below) |
+| 4-6 | CC_MSELECT | Color combine function mode |
+| 27 | TEXTURE_ENABLE | Enable texture in color path |
+
+#### Color Source Select Values
+
+| Value | Name | Description |
+|-------|------|-------------|
+| 0 | ITERATED | Use iterated (vertex) color |
+| 1 | TEXTURE | Use texture color |
+| 2 | COLOR1 | Use constant color1 |
+| 3 | LFB | Use linear framebuffer color |
+
+#### Color Combine Functions (CC_MSELECT)
+
+| Value | Name | Description |
+|-------|------|-------------|
+| 0 | ZERO | Output zero (black) |
+| 1 | CSUB_CL | cother - clocal (subtract) |
+| 2 | ALOCAL | clocal * alocal (modulate by local alpha) |
+| 3 | AOTHER | clocal * aother (modulate by other alpha) |
+| 4 | CLOCAL | clocal only (pass through) |
+| 5 | ALOCAL_T | alocal * texture |
+| 6 | CLOC_MUL | clocal * cother (multiply/modulate) |
+| 7 | AOTHER_T | aother * texture |
+
+#### Simplified Combine Modes
+
+For convenience, pre-computed values are provided for common operations:
+
+| Value | Name | Description |
+|-------|------|-------------|
+| 0x00 | COMBINE_ITERATED | Vertex color only (default when no texture) |
+| 0x01 | COMBINE_TEXTURE | Texture color only |
+| 0x61 | COMBINE_MODULATE | Texture × vertex color (most common for textured geometry) |
+| 0x81 | COMBINE_ADD | Texture + vertex color (clamped, for glow effects) |
+| 0x41 | COMBINE_DECAL | Texture with vertex alpha |
+
+Example: Enable texture modulation (texture color multiplied by vertex color):
+```asm
+    ; Set color combine to MODULATE mode (tex * vert)
+    move.l  #VOODOO_COMBINE_MODULATE,VOODOO_FBZCOLOR_PATH
+```
 
 ### Gouraud Shading
 

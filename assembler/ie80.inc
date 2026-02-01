@@ -2529,6 +2529,41 @@
 .set VOODOO_FIXED_12_4,4
 .set VOODOO_FIXED_12_12,12
 
+; fbzColorPath bit fields (Color Combine)
+; The fbzColorPath register controls how texture and iterated (vertex) colors are combined
+.set VOODOO_FCP_RGB_SELECT_MASK,0x03        ; Bits 0-1: RGB source select
+.set VOODOO_FCP_RGB_SELECT_SHIFT,0          ; Shift for RGB select
+.set VOODOO_FCP_A_SELECT_MASK,0x0C          ; Bits 2-3: Alpha source select
+.set VOODOO_FCP_A_SELECT_SHIFT,2            ; Shift for alpha select
+.set VOODOO_FCP_CC_MSELECT_MASK,0x70        ; Bits 4-6: Color combine mode select
+.set VOODOO_FCP_CC_MSELECT_SHIFT,4          ; Shift for CC mode
+.set VOODOO_FCP_TEXTURE_ENABLE,0x08000000   ; Bit 27: Enable texture in color path
+
+; Color source select values (for RGB_SELECT and A_SELECT)
+.set VOODOO_CC_ITERATED,0                   ; Use iterated (vertex) color
+.set VOODOO_CC_TEXTURE,1                    ; Use texture color
+.set VOODOO_CC_COLOR1,2                     ; Use constant color1
+.set VOODOO_CC_LFB,3                        ; Use linear framebuffer color
+
+; Color combine function modes (for CC_MSELECT)
+; These define how the two color sources are combined
+.set VOODOO_CC_ZERO,0                       ; Output zero (black)
+.set VOODOO_CC_CSUB_CL,1                    ; cother - clocal (subtract)
+.set VOODOO_CC_ALOCAL,2                     ; clocal * alocal (modulate by local alpha)
+.set VOODOO_CC_AOTHER,3                     ; clocal * aother (modulate by other alpha)
+.set VOODOO_CC_CLOCAL,4                     ; clocal only (pass through)
+.set VOODOO_CC_ALOCAL_T,5                   ; alocal * texture (alpha * texture)
+.set VOODOO_CC_CLOC_MUL,6                   ; clocal * cother (multiply/modulate)
+.set VOODOO_CC_AOTHER_T,7                   ; aother * texture
+
+; Simplified color combine modes for common operations
+; These are convenience values that combine select + mode bits
+.set VOODOO_COMBINE_ITERATED,0x00           ; Vertex color only (default when no texture)
+.set VOODOO_COMBINE_TEXTURE,0x01            ; Texture color only
+.set VOODOO_COMBINE_MODULATE,0x61           ; tex * vert (texture modulated by vertex color)
+.set VOODOO_COMBINE_ADD,0x81                ; tex + vert (additive blend, clamped)
+.set VOODOO_COMBINE_DECAL,0x41              ; texture with vertex alpha
+
 ; ============================================================================
 ; EOF
 ; ============================================================================
