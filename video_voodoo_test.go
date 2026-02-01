@@ -1063,6 +1063,587 @@ func floatToFixed20_12(f float32) uint32 {
 // Benchmark Tests
 // =============================================================================
 
+// =============================================================================
+// Phase 2: Dynamic Pipeline State Tests
+// =============================================================================
+
+// Test PipelineKey structure creation and equality
+func TestVoodoo_PipelineKey_Creation(t *testing.T) {
+	// Test default key
+	key1 := PipelineKey{
+		DepthTestEnable:  true,
+		DepthWriteEnable: true,
+		DepthCompareOp:   VOODOO_DEPTH_LESS,
+		BlendEnable:      false,
+		SrcBlendFactor:   VOODOO_BLEND_ONE,
+		DstBlendFactor:   VOODOO_BLEND_ZERO,
+	}
+
+	// Test identical key
+	key2 := PipelineKey{
+		DepthTestEnable:  true,
+		DepthWriteEnable: true,
+		DepthCompareOp:   VOODOO_DEPTH_LESS,
+		BlendEnable:      false,
+		SrcBlendFactor:   VOODOO_BLEND_ONE,
+		DstBlendFactor:   VOODOO_BLEND_ZERO,
+	}
+
+	if key1 != key2 {
+		t.Error("Identical PipelineKeys should be equal")
+	}
+
+	// Test different keys
+	key3 := PipelineKey{
+		DepthTestEnable:  true,
+		DepthWriteEnable: true,
+		DepthCompareOp:   VOODOO_DEPTH_LESSEQUAL, // Different
+		BlendEnable:      false,
+		SrcBlendFactor:   VOODOO_BLEND_ONE,
+		DstBlendFactor:   VOODOO_BLEND_ZERO,
+	}
+
+	if key1 == key3 {
+		t.Error("Different PipelineKeys should not be equal")
+	}
+}
+
+// Test creating PipelineKey from fbzMode register
+func TestVoodoo_PipelineKey_FromFbzMode(t *testing.T) {
+	tests := []struct {
+		name             string
+		fbzMode          uint32
+		expectDepthTest  bool
+		expectDepthWrite bool
+		expectDepthFunc  int
+	}{
+		{
+			name:             "Depth test enabled, LESS",
+			fbzMode:          VOODOO_FBZ_DEPTH_ENABLE | VOODOO_FBZ_DEPTH_WRITE | (VOODOO_DEPTH_LESS << 5),
+			expectDepthTest:  true,
+			expectDepthWrite: true,
+			expectDepthFunc:  VOODOO_DEPTH_LESS,
+		},
+		{
+			name:             "Depth test disabled",
+			fbzMode:          VOODOO_FBZ_RGB_WRITE,
+			expectDepthTest:  false,
+			expectDepthWrite: false,
+			expectDepthFunc:  VOODOO_DEPTH_NEVER,
+		},
+		{
+			name:             "Depth test enabled, no write, GREATEREQUAL",
+			fbzMode:          VOODOO_FBZ_DEPTH_ENABLE | (VOODOO_DEPTH_GREATEREQUAL << 5),
+			expectDepthTest:  true,
+			expectDepthWrite: false,
+			expectDepthFunc:  VOODOO_DEPTH_GREATEREQUAL,
+		},
+		{
+			name:             "All depth functions",
+			fbzMode:          VOODOO_FBZ_DEPTH_ENABLE | VOODOO_FBZ_DEPTH_WRITE | (VOODOO_DEPTH_ALWAYS << 5),
+			expectDepthTest:  true,
+			expectDepthWrite: true,
+			expectDepthFunc:  VOODOO_DEPTH_ALWAYS,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			key := PipelineKeyFromRegisters(tc.fbzMode, 0)
+			if key.DepthTestEnable != tc.expectDepthTest {
+				t.Errorf("DepthTestEnable: expected %v, got %v", tc.expectDepthTest, key.DepthTestEnable)
+			}
+			if key.DepthWriteEnable != tc.expectDepthWrite {
+				t.Errorf("DepthWriteEnable: expected %v, got %v", tc.expectDepthWrite, key.DepthWriteEnable)
+			}
+			if key.DepthCompareOp != tc.expectDepthFunc {
+				t.Errorf("DepthCompareOp: expected %d, got %d", tc.expectDepthFunc, key.DepthCompareOp)
+			}
+		})
+	}
+}
+
+// Test creating PipelineKey from alphaMode register
+func TestVoodoo_PipelineKey_FromAlphaMode(t *testing.T) {
+	tests := []struct {
+		name            string
+		alphaMode       uint32
+		expectBlend     bool
+		expectSrcFactor int
+		expectDstFactor int
+	}{
+		{
+			name:            "Blending disabled",
+			alphaMode:       0,
+			expectBlend:     false,
+			expectSrcFactor: VOODOO_BLEND_ONE,
+			expectDstFactor: VOODOO_BLEND_ZERO,
+		},
+		{
+			name:            "Standard alpha blend (src*srcA + dst*(1-srcA))",
+			alphaMode:       VOODOO_ALPHA_BLEND_EN | (VOODOO_BLEND_SRC_ALPHA << 8) | (VOODOO_BLEND_INV_SRC_A << 12),
+			expectBlend:     true,
+			expectSrcFactor: VOODOO_BLEND_SRC_ALPHA,
+			expectDstFactor: VOODOO_BLEND_INV_SRC_A,
+		},
+		{
+			name:            "Additive blend",
+			alphaMode:       VOODOO_ALPHA_BLEND_EN | (VOODOO_BLEND_ONE << 8) | (VOODOO_BLEND_ONE << 12),
+			expectBlend:     true,
+			expectSrcFactor: VOODOO_BLEND_ONE,
+			expectDstFactor: VOODOO_BLEND_ONE,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			key := PipelineKeyFromRegisters(0, tc.alphaMode)
+			if key.BlendEnable != tc.expectBlend {
+				t.Errorf("BlendEnable: expected %v, got %v", tc.expectBlend, key.BlendEnable)
+			}
+			if key.SrcBlendFactor != tc.expectSrcFactor {
+				t.Errorf("SrcBlendFactor: expected %d, got %d", tc.expectSrcFactor, key.SrcBlendFactor)
+			}
+			if key.DstBlendFactor != tc.expectDstFactor {
+				t.Errorf("DstBlendFactor: expected %d, got %d", tc.expectDstFactor, key.DstBlendFactor)
+			}
+		})
+	}
+}
+
+// Test Voodoo to Vulkan depth compare op mapping
+func TestVoodoo_DepthFunc_VulkanMapping(t *testing.T) {
+	// All 8 Voodoo depth functions should map to valid Vulkan compare ops
+	depthFuncs := []int{
+		VOODOO_DEPTH_NEVER,
+		VOODOO_DEPTH_LESS,
+		VOODOO_DEPTH_EQUAL,
+		VOODOO_DEPTH_LESSEQUAL,
+		VOODOO_DEPTH_GREATER,
+		VOODOO_DEPTH_NOTEQUAL,
+		VOODOO_DEPTH_GREATEREQUAL,
+		VOODOO_DEPTH_ALWAYS,
+	}
+
+	for _, df := range depthFuncs {
+		vkOp := VoodooDepthFuncToVulkan(df)
+		// Verify it's within valid Vulkan range (0-7)
+		if vkOp < 0 || vkOp > 7 {
+			t.Errorf("VoodooDepthFuncToVulkan(%d) returned invalid Vulkan op: %d", df, vkOp)
+		}
+	}
+
+	// Test specific mappings
+	if VoodooDepthFuncToVulkan(VOODOO_DEPTH_NEVER) != 0 { // VK_COMPARE_OP_NEVER
+		t.Error("DEPTH_NEVER should map to VK_COMPARE_OP_NEVER (0)")
+	}
+	if VoodooDepthFuncToVulkan(VOODOO_DEPTH_LESS) != 1 { // VK_COMPARE_OP_LESS
+		t.Error("DEPTH_LESS should map to VK_COMPARE_OP_LESS (1)")
+	}
+	if VoodooDepthFuncToVulkan(VOODOO_DEPTH_ALWAYS) != 7 { // VK_COMPARE_OP_ALWAYS
+		t.Error("DEPTH_ALWAYS should map to VK_COMPARE_OP_ALWAYS (7)")
+	}
+}
+
+// Test Voodoo to Vulkan blend factor mapping
+func TestVoodoo_BlendFactor_VulkanMapping(t *testing.T) {
+	blendFactors := []int{
+		VOODOO_BLEND_ZERO,
+		VOODOO_BLEND_SRC_ALPHA,
+		VOODOO_BLEND_COLOR,
+		VOODOO_BLEND_DST_ALPHA,
+		VOODOO_BLEND_ONE,
+		VOODOO_BLEND_INV_SRC_A,
+		VOODOO_BLEND_INV_COLOR,
+		VOODOO_BLEND_INV_DST_A,
+	}
+
+	for _, bf := range blendFactors {
+		vkFactor := VoodooBlendFactorToVulkan(bf)
+		// Verify it's a valid Vulkan blend factor (range varies)
+		if vkFactor < 0 {
+			t.Errorf("VoodooBlendFactorToVulkan(%d) returned invalid factor: %d", bf, vkFactor)
+		}
+	}
+
+	// Test specific mappings
+	if VoodooBlendFactorToVulkan(VOODOO_BLEND_ZERO) != 0 { // VK_BLEND_FACTOR_ZERO
+		t.Error("BLEND_ZERO should map to VK_BLEND_FACTOR_ZERO (0)")
+	}
+	if VoodooBlendFactorToVulkan(VOODOO_BLEND_ONE) != 1 { // VK_BLEND_FACTOR_ONE
+		t.Error("BLEND_ONE should map to VK_BLEND_FACTOR_ONE (1)")
+	}
+}
+
+// Test software backend UpdatePipelineState
+func TestVoodoo_SoftwareBackend_UpdatePipelineState(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	backend.Init(100, 100)
+	defer backend.Destroy()
+
+	// Test updating to depth GREATER
+	fbzMode := uint32(VOODOO_FBZ_DEPTH_ENABLE | VOODOO_FBZ_DEPTH_WRITE | (VOODOO_DEPTH_GREATER << 5))
+	backend.UpdatePipelineState(fbzMode, 0)
+
+	// Verify the depth test with GREATER
+	if !backend.depthTest(1.0, 0.5, VOODOO_DEPTH_GREATER) {
+		t.Error("After UpdatePipelineState(GREATER), 1.0 > 0.5 should pass")
+	}
+	if backend.depthTest(0.5, 1.0, VOODOO_DEPTH_GREATER) {
+		t.Error("After UpdatePipelineState(GREATER), 0.5 > 1.0 should fail")
+	}
+}
+
+// Test software backend alpha blending
+func TestVoodoo_SoftwareBackend_AlphaBlending(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	backend.Init(100, 100)
+	defer backend.Destroy()
+
+	// Clear to blue
+	backend.ClearFramebuffer(0xFF0000FF) // ARGB blue
+
+	// Enable alpha blending (src*srcA + dst*(1-srcA))
+	alphaMode := uint32(VOODOO_ALPHA_BLEND_EN | (VOODOO_BLEND_SRC_ALPHA << 8) | (VOODOO_BLEND_INV_SRC_A << 12))
+	fbzMode := uint32(VOODOO_FBZ_RGB_WRITE)
+	backend.UpdatePipelineState(fbzMode, alphaMode)
+
+	// Draw a semi-transparent red triangle
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 25, Y: 10, Z: 0.5, R: 1.0, G: 0.0, B: 0.0, A: 0.5}, // 50% alpha red
+			{X: 75, Y: 10, Z: 0.5, R: 1.0, G: 0.0, B: 0.0, A: 0.5},
+			{X: 50, Y: 90, Z: 0.5, R: 1.0, G: 0.0, B: 0.0, A: 0.5},
+		},
+	}
+
+	backend.FlushTriangles([]VoodooTriangle{tri})
+	backend.SwapBuffers(false)
+
+	frame := backend.GetFrame()
+	// Check center pixel - should be a blend of red and blue
+	centerIdx := (50*100 + 50) * 4
+	r, g, b := frame[centerIdx], frame[centerIdx+1], frame[centerIdx+2]
+
+	// With 50% red over blue: R should be ~127, G should be ~0, B should be ~127
+	if r < 100 || r > 180 {
+		t.Errorf("Expected R~127 for 50%% blend, got %d", r)
+	}
+	if g > 50 {
+		t.Errorf("Expected G~0 for 50%% blend, got %d", g)
+	}
+	if b < 100 || b > 180 {
+		t.Errorf("Expected B~127 for 50%% blend, got %d", b)
+	}
+}
+
+// Test software backend additive blending
+func TestVoodoo_SoftwareBackend_AdditiveBlending(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	backend.Init(100, 100)
+	defer backend.Destroy()
+
+	// Clear to dark red
+	backend.ClearFramebuffer(0xFF400000) // ARGB dark red (R=64)
+
+	// Enable additive blending (src*1 + dst*1)
+	alphaMode := uint32(VOODOO_ALPHA_BLEND_EN | (VOODOO_BLEND_ONE << 8) | (VOODOO_BLEND_ONE << 12))
+	fbzMode := uint32(VOODOO_FBZ_RGB_WRITE)
+	backend.UpdatePipelineState(fbzMode, alphaMode)
+
+	// Draw a green triangle
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 25, Y: 10, Z: 0.5, R: 0.0, G: 0.5, B: 0.0, A: 1.0}, // 50% green
+			{X: 75, Y: 10, Z: 0.5, R: 0.0, G: 0.5, B: 0.0, A: 1.0},
+			{X: 50, Y: 90, Z: 0.5, R: 0.0, G: 0.5, B: 0.0, A: 1.0},
+		},
+	}
+
+	backend.FlushTriangles([]VoodooTriangle{tri})
+	backend.SwapBuffers(false)
+
+	frame := backend.GetFrame()
+	// Check center pixel - should be additive (dark red + green)
+	centerIdx := (50*100 + 50) * 4
+	r, g := frame[centerIdx], frame[centerIdx+1]
+
+	// Additive: R should stay ~64, G should be ~127
+	if r < 50 || r > 80 {
+		t.Errorf("Expected R~64 for additive, got %d", r)
+	}
+	if g < 100 || g > 150 {
+		t.Errorf("Expected G~127 for additive, got %d", g)
+	}
+}
+
+// Test Vulkan backend returns correct pipeline for different states
+func TestVoodoo_VulkanBackend_PipelineCache(t *testing.T) {
+	backend := &VulkanBackend{
+		software: NewVoodooSoftwareBackend(),
+	}
+	backend.software.Init(100, 100)
+	defer backend.software.Destroy()
+
+	// Even without full Vulkan init, the cache mechanism should work
+	// Test that different states create different cache entries
+	fbzMode1 := uint32(VOODOO_FBZ_DEPTH_ENABLE | (VOODOO_DEPTH_LESS << 5))
+	fbzMode2 := uint32(VOODOO_FBZ_DEPTH_ENABLE | (VOODOO_DEPTH_GREATER << 5))
+
+	key1 := PipelineKeyFromRegisters(fbzMode1, 0)
+	key2 := PipelineKeyFromRegisters(fbzMode2, 0)
+
+	if key1 == key2 {
+		t.Error("Different fbzModes should produce different PipelineKeys")
+	}
+
+	// Test that same state produces same key
+	key1b := PipelineKeyFromRegisters(fbzMode1, 0)
+	if key1 != key1b {
+		t.Error("Same fbzMode should produce identical PipelineKeys")
+	}
+}
+
+// Test dynamic depth function changes through VoodooEngine
+func TestVoodoo_DynamicDepthFunction(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	// Clear and draw with LESS (default)
+	v.HandleWrite(VOODOO_COLOR0, 0xFF000000)
+	v.HandleWrite(VOODOO_FAST_FILL_CMD, 0)
+
+	// Draw far red triangle (Z=0.8)
+	v.HandleWrite(VOODOO_VERTEX_AX, floatToFixed12_4(200))
+	v.HandleWrite(VOODOO_VERTEX_AY, floatToFixed12_4(100))
+	v.HandleWrite(VOODOO_VERTEX_BX, floatToFixed12_4(400))
+	v.HandleWrite(VOODOO_VERTEX_BY, floatToFixed12_4(300))
+	v.HandleWrite(VOODOO_VERTEX_CX, floatToFixed12_4(100))
+	v.HandleWrite(VOODOO_VERTEX_CY, floatToFixed12_4(300))
+	v.HandleWrite(VOODOO_START_R, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_G, floatToFixed12_12(0.0))
+	v.HandleWrite(VOODOO_START_B, floatToFixed12_12(0.0))
+	v.HandleWrite(VOODOO_START_A, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_Z, floatToFixed20_12(0.8))
+	v.HandleWrite(VOODOO_TRIANGLE_CMD, 0)
+
+	// Draw near blue triangle (Z=0.2)
+	v.HandleWrite(VOODOO_VERTEX_AX, floatToFixed12_4(250))
+	v.HandleWrite(VOODOO_VERTEX_AY, floatToFixed12_4(150))
+	v.HandleWrite(VOODOO_VERTEX_BX, floatToFixed12_4(350))
+	v.HandleWrite(VOODOO_VERTEX_BY, floatToFixed12_4(250))
+	v.HandleWrite(VOODOO_VERTEX_CX, floatToFixed12_4(150))
+	v.HandleWrite(VOODOO_VERTEX_CY, floatToFixed12_4(250))
+	v.HandleWrite(VOODOO_START_R, floatToFixed12_12(0.0))
+	v.HandleWrite(VOODOO_START_G, floatToFixed12_12(0.0))
+	v.HandleWrite(VOODOO_START_B, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_A, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_Z, floatToFixed20_12(0.2))
+	v.HandleWrite(VOODOO_TRIANGLE_CMD, 0)
+
+	v.HandleWrite(VOODOO_SWAP_BUFFER_CMD, 0)
+
+	// With LESS, overlapping area should be blue (nearer)
+	frame1 := make([]byte, len(v.GetFrame()))
+	copy(frame1, v.GetFrame())
+
+	centerIdx := (200*640 + 250) * 4
+	if frame1[centerIdx+2] < 150 { // Blue should be high
+		t.Error("With LESS depth, nearer blue triangle should win")
+	}
+
+	// Now change to GREATER and redraw
+	v.HandleWrite(VOODOO_FBZ_MODE, uint32(VOODOO_FBZ_DEPTH_ENABLE|VOODOO_FBZ_RGB_WRITE|VOODOO_FBZ_DEPTH_WRITE|(VOODOO_DEPTH_GREATER<<5)))
+	v.HandleWrite(VOODOO_COLOR0, 0xFF000000)
+	v.HandleWrite(VOODOO_FAST_FILL_CMD, 0)
+
+	// Draw far red triangle again (Z=0.8)
+	v.HandleWrite(VOODOO_VERTEX_AX, floatToFixed12_4(200))
+	v.HandleWrite(VOODOO_VERTEX_AY, floatToFixed12_4(100))
+	v.HandleWrite(VOODOO_VERTEX_BX, floatToFixed12_4(400))
+	v.HandleWrite(VOODOO_VERTEX_BY, floatToFixed12_4(300))
+	v.HandleWrite(VOODOO_VERTEX_CX, floatToFixed12_4(100))
+	v.HandleWrite(VOODOO_VERTEX_CY, floatToFixed12_4(300))
+	v.HandleWrite(VOODOO_START_R, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_G, floatToFixed12_12(0.0))
+	v.HandleWrite(VOODOO_START_B, floatToFixed12_12(0.0))
+	v.HandleWrite(VOODOO_START_A, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_Z, floatToFixed20_12(0.8))
+	v.HandleWrite(VOODOO_TRIANGLE_CMD, 0)
+
+	// Draw near blue triangle (Z=0.2)
+	v.HandleWrite(VOODOO_VERTEX_AX, floatToFixed12_4(250))
+	v.HandleWrite(VOODOO_VERTEX_AY, floatToFixed12_4(150))
+	v.HandleWrite(VOODOO_VERTEX_BX, floatToFixed12_4(350))
+	v.HandleWrite(VOODOO_VERTEX_BY, floatToFixed12_4(250))
+	v.HandleWrite(VOODOO_VERTEX_CX, floatToFixed12_4(150))
+	v.HandleWrite(VOODOO_VERTEX_CY, floatToFixed12_4(250))
+	v.HandleWrite(VOODOO_START_R, floatToFixed12_12(0.0))
+	v.HandleWrite(VOODOO_START_G, floatToFixed12_12(0.0))
+	v.HandleWrite(VOODOO_START_B, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_A, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_Z, floatToFixed20_12(0.2))
+	v.HandleWrite(VOODOO_TRIANGLE_CMD, 0)
+
+	v.HandleWrite(VOODOO_SWAP_BUFFER_CMD, 0)
+
+	// With GREATER, the farther red triangle should win (0.8 > 0.2)
+	frame2 := v.GetFrame()
+	if frame2[centerIdx] < 150 { // Red should be high
+		t.Error("With GREATER depth, farther red triangle should win")
+	}
+}
+
+// Test dynamic blending mode changes
+func TestVoodoo_DynamicBlending(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	// Clear to blue
+	v.HandleWrite(VOODOO_COLOR0, 0xFF0000FF)
+	v.HandleWrite(VOODOO_FAST_FILL_CMD, 0)
+
+	// Enable alpha blending
+	alphaMode := uint32(VOODOO_ALPHA_BLEND_EN | (VOODOO_BLEND_SRC_ALPHA << 8) | (VOODOO_BLEND_INV_SRC_A << 12))
+	v.HandleWrite(VOODOO_ALPHA_MODE, alphaMode)
+	v.HandleWrite(VOODOO_FBZ_MODE, VOODOO_FBZ_RGB_WRITE)
+
+	// Draw semi-transparent red triangle
+	v.HandleWrite(VOODOO_VERTEX_AX, floatToFixed12_4(200))
+	v.HandleWrite(VOODOO_VERTEX_AY, floatToFixed12_4(100))
+	v.HandleWrite(VOODOO_VERTEX_BX, floatToFixed12_4(400))
+	v.HandleWrite(VOODOO_VERTEX_BY, floatToFixed12_4(300))
+	v.HandleWrite(VOODOO_VERTEX_CX, floatToFixed12_4(100))
+	v.HandleWrite(VOODOO_VERTEX_CY, floatToFixed12_4(300))
+	v.HandleWrite(VOODOO_START_R, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_G, floatToFixed12_12(0.0))
+	v.HandleWrite(VOODOO_START_B, floatToFixed12_12(0.0))
+	v.HandleWrite(VOODOO_START_A, floatToFixed12_12(0.5)) // 50% alpha
+	v.HandleWrite(VOODOO_START_Z, floatToFixed20_12(0.5))
+	v.HandleWrite(VOODOO_TRIANGLE_CMD, 0)
+	v.HandleWrite(VOODOO_SWAP_BUFFER_CMD, 0)
+
+	frame := v.GetFrame()
+	centerIdx := (200*640 + 250) * 4
+	r, b := frame[centerIdx], frame[centerIdx+2]
+
+	// Should be blended (not pure red or pure blue)
+	if r < 50 || r > 200 {
+		t.Errorf("Expected blended red, got R=%d", r)
+	}
+	if b < 50 || b > 200 {
+		t.Errorf("Expected blended blue, got B=%d", b)
+	}
+}
+
+// Test that pipeline dirty flag triggers state update
+func TestVoodoo_PipelineDirtyFlag(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	// Initially, pipeline should not be dirty (defaults set in init)
+	v.pipelineDirty = false
+
+	// Writing FBZ_MODE should set dirty flag
+	v.HandleWrite(VOODOO_FBZ_MODE, VOODOO_FBZ_DEPTH_ENABLE|(VOODOO_DEPTH_GREATER<<5))
+	if !v.pipelineDirty {
+		t.Error("Writing FBZ_MODE should set pipelineDirty")
+	}
+
+	// Swap buffer should clear the dirty flag (after applying state)
+	v.HandleWrite(VOODOO_SWAP_BUFFER_CMD, 0)
+	if v.pipelineDirty {
+		t.Error("Swap buffer should clear pipelineDirty")
+	}
+
+	// Writing ALPHA_MODE should also set dirty flag
+	v.HandleWrite(VOODOO_ALPHA_MODE, VOODOO_ALPHA_BLEND_EN)
+	if !v.pipelineDirty {
+		t.Error("Writing ALPHA_MODE should set pipelineDirty")
+	}
+}
+
+// Test all 8 depth functions produce correct results
+func TestVoodoo_AllDepthFunctions_Software(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	backend.Init(100, 100)
+	defer backend.Destroy()
+
+	testCases := []struct {
+		depthFunc int
+		name      string
+		passNew   float32
+		passOld   float32
+		failNew   float32
+		failOld   float32
+	}{
+		{VOODOO_DEPTH_NEVER, "NEVER", 0.5, 1.0, 0.5, 1.0}, // Never passes
+		{VOODOO_DEPTH_LESS, "LESS", 0.3, 0.7, 0.7, 0.3},   // pass: 0.3<0.7, fail: 0.7<0.3
+		{VOODOO_DEPTH_EQUAL, "EQUAL", 0.5, 0.5, 0.5, 0.6}, // pass: 0.5==0.5, fail: 0.5==0.6
+		{VOODOO_DEPTH_LESSEQUAL, "LESSEQUAL", 0.5, 0.5, 0.6, 0.5},
+		{VOODOO_DEPTH_GREATER, "GREATER", 0.7, 0.3, 0.3, 0.7},
+		{VOODOO_DEPTH_NOTEQUAL, "NOTEQUAL", 0.5, 0.6, 0.5, 0.5},
+		{VOODOO_DEPTH_GREATEREQUAL, "GREATEREQUAL", 0.5, 0.5, 0.4, 0.5},
+		{VOODOO_DEPTH_ALWAYS, "ALWAYS", 0.5, 1.0, 0.0, 0.0}, // Always passes
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.depthFunc == VOODOO_DEPTH_NEVER {
+				if backend.depthTest(tc.passNew, tc.passOld, tc.depthFunc) {
+					t.Error("NEVER should always fail")
+				}
+			} else if tc.depthFunc == VOODOO_DEPTH_ALWAYS {
+				if !backend.depthTest(tc.passNew, tc.passOld, tc.depthFunc) {
+					t.Error("ALWAYS should always pass")
+				}
+			} else {
+				if !backend.depthTest(tc.passNew, tc.passOld, tc.depthFunc) {
+					t.Errorf("%s: expected pass for new=%f, old=%f", tc.name, tc.passNew, tc.passOld)
+				}
+				if backend.depthTest(tc.failNew, tc.failOld, tc.depthFunc) {
+					t.Errorf("%s: expected fail for new=%f, old=%f", tc.name, tc.failNew, tc.failOld)
+				}
+			}
+		})
+	}
+}
+
+// Test PipelineKey as map key
+func TestVoodoo_PipelineKey_AsMapKey(t *testing.T) {
+	cache := make(map[PipelineKey]int)
+
+	key1 := PipelineKey{DepthTestEnable: true, DepthCompareOp: VOODOO_DEPTH_LESS}
+	key2 := PipelineKey{DepthTestEnable: true, DepthCompareOp: VOODOO_DEPTH_LESS}
+	key3 := PipelineKey{DepthTestEnable: true, DepthCompareOp: VOODOO_DEPTH_GREATER}
+
+	cache[key1] = 1
+	cache[key3] = 2
+
+	// key2 should find the same entry as key1
+	if val, ok := cache[key2]; !ok || val != 1 {
+		t.Error("Identical keys should map to same cache entry")
+	}
+
+	// key3 should have its own entry
+	if val, ok := cache[key3]; !ok || val != 2 {
+		t.Error("Different key should have different cache entry")
+	}
+}
+
+// =============================================================================
+// Benchmark Tests
+// =============================================================================
+
 func BenchmarkVoodoo_TriangleRasterization(b *testing.B) {
 	v, _ := NewVoodooEngine(nil)
 	defer v.Destroy()

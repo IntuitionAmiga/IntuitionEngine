@@ -48,6 +48,110 @@ import (
 	vk "github.com/goki/vulkan"
 )
 
+// =============================================================================
+// Pipeline Key and Caching (Phase 2: Dynamic Pipeline State)
+// =============================================================================
+
+// PipelineKey uniquely identifies a pipeline configuration for caching
+type PipelineKey struct {
+	DepthTestEnable  bool
+	DepthWriteEnable bool
+	DepthCompareOp   int // Voodoo depth function (0-7)
+	BlendEnable      bool
+	SrcBlendFactor   int // Voodoo source blend factor
+	DstBlendFactor   int // Voodoo destination blend factor
+}
+
+// PipelineKeyFromRegisters creates a PipelineKey from fbzMode and alphaMode registers
+func PipelineKeyFromRegisters(fbzMode, alphaMode uint32) PipelineKey {
+	key := PipelineKey{
+		DepthTestEnable:  (fbzMode & VOODOO_FBZ_DEPTH_ENABLE) != 0,
+		DepthWriteEnable: (fbzMode & VOODOO_FBZ_DEPTH_WRITE) != 0,
+		DepthCompareOp:   int((fbzMode >> 5) & 0x7),
+		BlendEnable:      (alphaMode & VOODOO_ALPHA_BLEND_EN) != 0,
+		SrcBlendFactor:   VOODOO_BLEND_ONE,  // Default
+		DstBlendFactor:   VOODOO_BLEND_ZERO, // Default
+	}
+
+	if key.BlendEnable {
+		key.SrcBlendFactor = int((alphaMode >> 8) & 0xF)
+		key.DstBlendFactor = int((alphaMode >> 12) & 0xF)
+	}
+
+	return key
+}
+
+// VoodooDepthFuncToVulkan maps Voodoo depth function to Vulkan VkCompareOp
+// Voodoo: 0=NEVER, 1=LESS, 2=EQUAL, 3=LESSEQUAL, 4=GREATER, 5=NOTEQUAL, 6=GREATEREQUAL, 7=ALWAYS
+// Vulkan: 0=NEVER, 1=LESS, 2=EQUAL, 3=LESS_OR_EQUAL, 4=GREATER, 5=NOT_EQUAL, 6=GREATER_OR_EQUAL, 7=ALWAYS
+// The mappings are identical!
+func VoodooDepthFuncToVulkan(voodooFunc int) int {
+	// Direct mapping - Voodoo and Vulkan use the same ordering
+	if voodooFunc < 0 || voodooFunc > 7 {
+		return 7 // ALWAYS as fallback
+	}
+	return voodooFunc
+}
+
+// VoodooBlendFactorToVulkan maps Voodoo blend factor to Vulkan VkBlendFactor
+// Voodoo blend factors:
+//
+//	0 = ZERO
+//	1 = SRC_ALPHA
+//	2 = COLOR (constant)
+//	3 = DST_ALPHA
+//	4 = ONE
+//	5 = INV_SRC_ALPHA (1-srcA)
+//	6 = INV_COLOR
+//	7 = INV_DST_ALPHA (1-dstA)
+//	15 = SATURATE
+//
+// Vulkan VkBlendFactor:
+//
+//	0 = ZERO
+//	1 = ONE
+//	2 = SRC_COLOR
+//	3 = ONE_MINUS_SRC_COLOR
+//	4 = DST_COLOR
+//	5 = ONE_MINUS_DST_COLOR
+//	6 = SRC_ALPHA
+//	7 = ONE_MINUS_SRC_ALPHA
+//	8 = DST_ALPHA
+//	9 = ONE_MINUS_DST_ALPHA
+//	10 = CONSTANT_COLOR
+//	11 = ONE_MINUS_CONSTANT_COLOR
+//	12 = CONSTANT_ALPHA
+//	13 = ONE_MINUS_CONSTANT_ALPHA
+//	14 = SRC_ALPHA_SATURATE
+func VoodooBlendFactorToVulkan(voodooFactor int) int {
+	switch voodooFactor {
+	case VOODOO_BLEND_ZERO: // 0
+		return 0 // VK_BLEND_FACTOR_ZERO
+	case VOODOO_BLEND_SRC_ALPHA: // 1
+		return 6 // VK_BLEND_FACTOR_SRC_ALPHA
+	case VOODOO_BLEND_COLOR: // 2
+		return 10 // VK_BLEND_FACTOR_CONSTANT_COLOR
+	case VOODOO_BLEND_DST_ALPHA: // 3
+		return 8 // VK_BLEND_FACTOR_DST_ALPHA
+	case VOODOO_BLEND_ONE: // 4
+		return 1 // VK_BLEND_FACTOR_ONE
+	case VOODOO_BLEND_INV_SRC_A: // 5
+		return 7 // VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA
+	case VOODOO_BLEND_INV_COLOR: // 6
+		return 11 // VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR
+	case VOODOO_BLEND_INV_DST_A: // 7
+		return 9 // VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA
+	case VOODOO_BLEND_SATURATE: // 15
+		return 14 // VK_BLEND_FACTOR_SRC_ALPHA_SATURATE
+	default:
+		return 1 // VK_BLEND_FACTOR_ONE as fallback
+	}
+}
+
+// =============================================================================
+// Software Rasterizer Backend
+// =============================================================================
+
 // VoodooSoftwareBackend implements software rasterization as a fallback
 type VoodooSoftwareBackend struct {
 	mutex sync.RWMutex
@@ -60,6 +164,9 @@ type VoodooSoftwareBackend struct {
 	// State
 	fbzMode   uint32
 	alphaMode uint32
+
+	// Cached pipeline state (parsed from registers)
+	pipelineKey PipelineKey
 
 	// Scissor rectangle
 	scissorLeft, scissorTop     int
@@ -116,6 +223,7 @@ func (b *VoodooSoftwareBackend) UpdatePipelineState(fbzMode, alphaMode uint32) e
 
 	b.fbzMode = fbzMode
 	b.alphaMode = alphaMode
+	b.pipelineKey = PipelineKeyFromRegisters(fbzMode, alphaMode)
 	return nil
 }
 
@@ -162,9 +270,20 @@ func (b *VoodooSoftwareBackend) ClearFramebuffer(color uint32) {
 		b.colorBuffer[i+3] = a
 	}
 
-	// Clear depth buffer
+	// Clear depth buffer based on depth function
+	// For LESS/LESSEQUAL: clear to max (so any fragment closer passes)
+	// For GREATER/GREATEREQUAL: clear to 0 (so any fragment farther passes)
+	depthFunc := b.pipelineKey.DepthCompareOp
+	var depthClearValue float32
+	switch depthFunc {
+	case VOODOO_DEPTH_GREATER, VOODOO_DEPTH_GREATEREQUAL:
+		depthClearValue = 0.0
+	default:
+		depthClearValue = math.MaxFloat32
+	}
+
 	for i := range b.depthBuffer {
-		b.depthBuffer[i] = math.MaxFloat32
+		b.depthBuffer[i] = depthClearValue
 	}
 }
 
@@ -317,14 +436,28 @@ func (b *VoodooSoftwareBackend) rasterizeTriangle(tri *VoodooTriangle) {
 				// Write pixel
 				if rgbWrite {
 					bufIdx := pixelIndex * 4
-					if alphaBlendEnable && aByte < 255 {
-						// Simple alpha blending
-						srcA := float32(aByte) / 255.0
-						dstA := 1.0 - srcA
-						b.colorBuffer[bufIdx+0] = byte(float32(rByte)*srcA + float32(b.colorBuffer[bufIdx+0])*dstA)
-						b.colorBuffer[bufIdx+1] = byte(float32(gByte)*srcA + float32(b.colorBuffer[bufIdx+1])*dstA)
-						b.colorBuffer[bufIdx+2] = byte(float32(bByte)*srcA + float32(b.colorBuffer[bufIdx+2])*dstA)
-						b.colorBuffer[bufIdx+3] = 255
+					if alphaBlendEnable {
+						// Configurable blending using blend factors
+						srcR, srcG, srcB, srcA := r, g, bVal, a
+						dstR := float32(b.colorBuffer[bufIdx+0]) / 255.0
+						dstG := float32(b.colorBuffer[bufIdx+1]) / 255.0
+						dstB := float32(b.colorBuffer[bufIdx+2]) / 255.0
+						dstA := float32(b.colorBuffer[bufIdx+3]) / 255.0
+
+						// Get blend factors
+						srcFactor := b.getBlendFactor(b.pipelineKey.SrcBlendFactor, srcR, srcG, srcB, srcA, dstR, dstG, dstB, dstA)
+						dstFactor := b.getBlendFactor(b.pipelineKey.DstBlendFactor, srcR, srcG, srcB, srcA, dstR, dstG, dstB, dstA)
+
+						// Apply blend equation: result = src * srcFactor + dst * dstFactor
+						outR := clampf(srcR*srcFactor+dstR*dstFactor, 0, 1)
+						outG := clampf(srcG*srcFactor+dstG*dstFactor, 0, 1)
+						outB := clampf(srcB*srcFactor+dstB*dstFactor, 0, 1)
+						outA := clampf(srcA*srcFactor+dstA*dstFactor, 0, 1)
+
+						b.colorBuffer[bufIdx+0] = byte(outR * 255)
+						b.colorBuffer[bufIdx+1] = byte(outG * 255)
+						b.colorBuffer[bufIdx+2] = byte(outB * 255)
+						b.colorBuffer[bufIdx+3] = byte(outA * 255)
 					} else {
 						b.colorBuffer[bufIdx+0] = rByte
 						b.colorBuffer[bufIdx+1] = gByte
@@ -363,6 +496,38 @@ func (b *VoodooSoftwareBackend) depthTest(newZ, oldZ float32, depthFunc int) boo
 		return true
 	}
 	return true
+}
+
+// getBlendFactor calculates the blend factor value based on Voodoo blend mode
+func (b *VoodooSoftwareBackend) getBlendFactor(factor int, srcR, srcG, srcB, srcA, dstR, dstG, dstB, dstA float32) float32 {
+	switch factor {
+	case VOODOO_BLEND_ZERO:
+		return 0.0
+	case VOODOO_BLEND_SRC_ALPHA:
+		return srcA
+	case VOODOO_BLEND_COLOR:
+		// Use average of src color as blend factor (approximation for constant color)
+		return (srcR + srcG + srcB) / 3.0
+	case VOODOO_BLEND_DST_ALPHA:
+		return dstA
+	case VOODOO_BLEND_ONE:
+		return 1.0
+	case VOODOO_BLEND_INV_SRC_A:
+		return 1.0 - srcA
+	case VOODOO_BLEND_INV_COLOR:
+		return 1.0 - (srcR+srcG+srcB)/3.0
+	case VOODOO_BLEND_INV_DST_A:
+		return 1.0 - dstA
+	case VOODOO_BLEND_SATURATE:
+		// min(srcA, 1-dstA)
+		invDstA := 1.0 - dstA
+		if srcA < invDstA {
+			return srcA
+		}
+		return invDstA
+	default:
+		return 1.0 // Default to ONE
+	}
 }
 
 // edgeFunction computes the signed area of a parallelogram
@@ -441,10 +606,12 @@ type VulkanBackend struct {
 	renderPass  vk.RenderPass
 	framebuffer vk.Framebuffer
 
-	// Pipeline
-	pipelineLayout vk.PipelineLayout
-	pipeline       vk.Pipeline
-	pipelineCache  vk.PipelineCache
+	// Pipeline management
+	pipelineLayout     vk.PipelineLayout
+	pipeline           vk.Pipeline // Default/current pipeline
+	vkPipelineCache    vk.PipelineCache
+	pipelineVariants   map[PipelineKey]vk.Pipeline // Pipeline cache for different states
+	currentPipelineKey PipelineKey                 // Currently bound pipeline key
 
 	// Vertex buffer (dynamic)
 	vertexBuffer       vk.Buffer
@@ -471,6 +638,9 @@ type VulkanBackend struct {
 	clearColor [4]float32
 	needsClear bool
 
+	// Depth clear value (depends on depth function)
+	depthClearValue float32
+
 	// Output frame for compositor
 	outputFrame []byte
 
@@ -492,7 +662,9 @@ var vulkanInitMutex sync.Mutex
 // NewVulkanBackend creates a new Vulkan backend
 func NewVulkanBackend() (*VulkanBackend, error) {
 	vb := &VulkanBackend{
-		software: NewVoodooSoftwareBackend(),
+		software:         NewVoodooSoftwareBackend(),
+		pipelineVariants: make(map[PipelineKey]vk.Pipeline),
+		depthClearValue:  1.0, // Default depth clear for LESS comparison
 	}
 	return vb, nil
 }
@@ -992,7 +1164,7 @@ func (vb *VulkanBackend) createFramebuffer() error {
 	return nil
 }
 
-// createPipeline creates the graphics pipeline
+// createPipeline creates the graphics pipeline and initializes the pipeline layout
 func (vb *VulkanBackend) createPipeline() error {
 	// Create shader modules from embedded SPIR-V
 	vertModule, err := vb.createShaderModule(VoodooVertexShaderSPIRV)
@@ -1008,18 +1180,53 @@ func (vb *VulkanBackend) createPipeline() error {
 	}
 	vb.fragShaderModule = fragModule
 
+	// Pipeline layout (shared by all variants)
+	layoutInfo := vk.PipelineLayoutCreateInfo{
+		SType: vk.StructureTypePipelineLayoutCreateInfo,
+	}
+
+	var pipelineLayout vk.PipelineLayout
+	if res := vk.CreatePipelineLayout(vb.device, &layoutInfo, nil, &pipelineLayout); res != vk.Success {
+		return fmt.Errorf("vkCreatePipelineLayout failed: %d", res)
+	}
+	vb.pipelineLayout = pipelineLayout
+
+	// Create the default pipeline (depth LESS, no blending)
+	defaultKey := PipelineKey{
+		DepthTestEnable:  true,
+		DepthWriteEnable: true,
+		DepthCompareOp:   VOODOO_DEPTH_LESS,
+		BlendEnable:      false,
+		SrcBlendFactor:   VOODOO_BLEND_ONE,
+		DstBlendFactor:   VOODOO_BLEND_ZERO,
+	}
+
+	pipeline, err := vb.createPipelineVariant(defaultKey)
+	if err != nil {
+		return err
+	}
+
+	vb.pipeline = pipeline
+	vb.currentPipelineKey = defaultKey
+	vb.pipelineVariants[defaultKey] = pipeline
+
+	return nil
+}
+
+// createPipelineVariant creates a graphics pipeline with specific depth/blend settings
+func (vb *VulkanBackend) createPipelineVariant(key PipelineKey) (vk.Pipeline, error) {
 	// Shader stages
 	vertStage := vk.PipelineShaderStageCreateInfo{
 		SType:  vk.StructureTypePipelineShaderStageCreateInfo,
 		Stage:  vk.ShaderStageVertexBit,
-		Module: vertModule,
+		Module: vb.vertShaderModule,
 		PName:  safeString("main"),
 	}
 
 	fragStage := vk.PipelineShaderStageCreateInfo{
 		SType:  vk.StructureTypePipelineShaderStageCreateInfo,
 		Stage:  vk.ShaderStageFragmentBit,
-		Module: fragModule,
+		Module: vb.fragShaderModule,
 		PName:  safeString("main"),
 	}
 
@@ -1062,7 +1269,7 @@ func (vb *VulkanBackend) createPipeline() error {
 		PrimitiveRestartEnable: vk.False,
 	}
 
-	// Viewport and scissor (dynamic)
+	// Viewport and scissor (scissor is dynamic)
 	viewport := vk.Viewport{
 		X:        0,
 		Y:        0,
@@ -1107,24 +1314,38 @@ func (vb *VulkanBackend) createPipeline() error {
 		AlphaToOneEnable:      vk.False,
 	}
 
-	// Depth/stencil
+	// Depth/stencil - configured based on PipelineKey
+	var depthTestEnable vk.Bool32 = vk.False
+	if key.DepthTestEnable {
+		depthTestEnable = vk.True
+	}
+	var depthWriteEnable vk.Bool32 = vk.False
+	if key.DepthWriteEnable {
+		depthWriteEnable = vk.True
+	}
+
 	depthStencil := vk.PipelineDepthStencilStateCreateInfo{
 		SType:                 vk.StructureTypePipelineDepthStencilStateCreateInfo,
-		DepthTestEnable:       vk.True,
-		DepthWriteEnable:      vk.True,
-		DepthCompareOp:        vk.CompareOpLess,
+		DepthTestEnable:       depthTestEnable,
+		DepthWriteEnable:      depthWriteEnable,
+		DepthCompareOp:        vk.CompareOp(VoodooDepthFuncToVulkan(key.DepthCompareOp)),
 		DepthBoundsTestEnable: vk.False,
 		StencilTestEnable:     vk.False,
 	}
 
-	// Color blending
+	// Color blending - configured based on PipelineKey
+	var blendEnable vk.Bool32 = vk.False
+	if key.BlendEnable {
+		blendEnable = vk.True
+	}
+
 	colorBlendAttachment := vk.PipelineColorBlendAttachmentState{
-		BlendEnable:         vk.False,
-		SrcColorBlendFactor: vk.BlendFactorOne,
-		DstColorBlendFactor: vk.BlendFactorZero,
+		BlendEnable:         blendEnable,
+		SrcColorBlendFactor: vk.BlendFactor(VoodooBlendFactorToVulkan(key.SrcBlendFactor)),
+		DstColorBlendFactor: vk.BlendFactor(VoodooBlendFactorToVulkan(key.DstBlendFactor)),
 		ColorBlendOp:        vk.BlendOpAdd,
-		SrcAlphaBlendFactor: vk.BlendFactorOne,
-		DstAlphaBlendFactor: vk.BlendFactorZero,
+		SrcAlphaBlendFactor: vk.BlendFactor(VoodooBlendFactorToVulkan(key.SrcBlendFactor)),
+		DstAlphaBlendFactor: vk.BlendFactor(VoodooBlendFactorToVulkan(key.DstBlendFactor)),
 		AlphaBlendOp:        vk.BlendOpAdd,
 		ColorWriteMask:      vk.ColorComponentFlags(vk.ColorComponentRBit | vk.ColorComponentGBit | vk.ColorComponentBBit | vk.ColorComponentABit),
 	}
@@ -1144,17 +1365,6 @@ func (vb *VulkanBackend) createPipeline() error {
 		PDynamicStates:    dynamicStates,
 	}
 
-	// Pipeline layout
-	layoutInfo := vk.PipelineLayoutCreateInfo{
-		SType: vk.StructureTypePipelineLayoutCreateInfo,
-	}
-
-	var pipelineLayout vk.PipelineLayout
-	if res := vk.CreatePipelineLayout(vb.device, &layoutInfo, nil, &pipelineLayout); res != vk.Success {
-		return fmt.Errorf("vkCreatePipelineLayout failed: %d", res)
-	}
-	vb.pipelineLayout = pipelineLayout
-
 	// Create pipeline
 	pipelineInfo := vk.GraphicsPipelineCreateInfo{
 		SType:               vk.StructureTypeGraphicsPipelineCreateInfo,
@@ -1168,18 +1378,35 @@ func (vb *VulkanBackend) createPipeline() error {
 		PDepthStencilState:  &depthStencil,
 		PColorBlendState:    &colorBlending,
 		PDynamicState:       &dynamicState,
-		Layout:              pipelineLayout,
+		Layout:              vb.pipelineLayout,
 		RenderPass:          vb.renderPass,
 		Subpass:             0,
 	}
 
 	pipelines := make([]vk.Pipeline, 1)
 	if res := vk.CreateGraphicsPipelines(vb.device, vk.PipelineCache(vk.NullHandle), 1, []vk.GraphicsPipelineCreateInfo{pipelineInfo}, nil, pipelines); res != vk.Success {
-		return fmt.Errorf("vkCreateGraphicsPipelines failed: %d", res)
+		return vk.NullPipeline, fmt.Errorf("vkCreateGraphicsPipelines failed: %d", res)
 	}
 
-	vb.pipeline = pipelines[0]
-	return nil
+	return pipelines[0], nil
+}
+
+// getOrCreatePipeline returns a pipeline for the given key, creating it if necessary
+func (vb *VulkanBackend) getOrCreatePipeline(key PipelineKey) (vk.Pipeline, error) {
+	// Check cache first
+	if pipeline, exists := vb.pipelineVariants[key]; exists {
+		return pipeline, nil
+	}
+
+	// Create new pipeline variant
+	pipeline, err := vb.createPipelineVariant(key)
+	if err != nil {
+		return vk.NullPipeline, err
+	}
+
+	// Store in cache
+	vb.pipelineVariants[key] = pipeline
+	return pipeline, nil
 }
 
 // createShaderModule creates a shader module from SPIR-V bytecode
@@ -1346,8 +1573,30 @@ func (vb *VulkanBackend) UpdatePipelineState(fbzMode, alphaMode uint32) error {
 	// Update software backend too
 	vb.software.UpdatePipelineState(fbzMode, alphaMode)
 
-	// Note: Full implementation would recreate the pipeline with new depth/blend state
-	// For now, we handle most state via dynamic state or per-fragment in shader
+	if !vb.initialized {
+		return nil
+	}
+
+	// Create pipeline key from register values
+	key := PipelineKeyFromRegisters(fbzMode, alphaMode)
+
+	// Get or create the pipeline for this state
+	pipeline, err := vb.getOrCreatePipeline(key)
+	if err != nil {
+		return err
+	}
+
+	vb.pipeline = pipeline
+	vb.currentPipelineKey = key
+
+	// Set depth clear value based on depth function
+	switch key.DepthCompareOp {
+	case VOODOO_DEPTH_GREATER, VOODOO_DEPTH_GREATEREQUAL:
+		vb.depthClearValue = 0.0
+	default:
+		vb.depthClearValue = 1.0
+	}
+
 	return nil
 }
 
@@ -1369,8 +1618,16 @@ func (vb *VulkanBackend) FlushTriangles(triangles []VoodooTriangle) {
 	vb.mutex.Lock()
 	defer vb.mutex.Unlock()
 
-	if !vb.initialized || len(triangles) == 0 {
-		vb.software.FlushTriangles(triangles)
+	// Always update software backend for fallback
+	vb.software.FlushTriangles(triangles)
+
+	if !vb.initialized {
+		return
+	}
+
+	// If no triangles, still need to render an empty frame with clear color
+	if len(triangles) == 0 {
+		vb.renderEmptyFrame()
 		return
 	}
 
@@ -1418,10 +1675,10 @@ func (vb *VulkanBackend) FlushTriangles(triangles []VoodooTriangle) {
 	}
 	vk.BeginCommandBuffer(vb.commandBuffer, &beginInfo)
 
-	// Begin render pass with stored clear color
+	// Begin render pass with stored clear color and depth clear value
 	clearValues := []vk.ClearValue{
 		vk.NewClearValue([]float32{vb.clearColor[0], vb.clearColor[1], vb.clearColor[2], vb.clearColor[3]}),
-		vk.NewClearDepthStencil(1.0, 0),
+		vk.NewClearDepthStencil(vb.depthClearValue, 0),
 	}
 
 	renderPassBegin := vk.RenderPassBeginInfo{
@@ -1444,6 +1701,51 @@ func (vb *VulkanBackend) FlushTriangles(triangles []VoodooTriangle) {
 	vk.CmdBindVertexBuffers(vb.commandBuffer, 0, 1, []vk.Buffer{vb.vertexBuffer}, offsets)
 	vk.CmdDraw(vb.commandBuffer, uint32(len(vertices)), 1, 0, 0)
 
+	vk.CmdEndRenderPass(vb.commandBuffer)
+	vk.EndCommandBuffer(vb.commandBuffer)
+
+	// Submit
+	submitInfo := vk.SubmitInfo{
+		SType:              vk.StructureTypeSubmitInfo,
+		CommandBufferCount: 1,
+		PCommandBuffers:    []vk.CommandBuffer{vb.commandBuffer},
+	}
+
+	vk.QueueSubmit(vb.graphicsQueue, 1, []vk.SubmitInfo{submitInfo}, vb.fence)
+}
+
+// renderEmptyFrame renders a frame with just the clear color (no triangles)
+func (vb *VulkanBackend) renderEmptyFrame() {
+	// Wait for previous frame
+	vk.WaitForFences(vb.device, 1, []vk.Fence{vb.fence}, vk.True, ^uint64(0))
+	vk.ResetFences(vb.device, 1, []vk.Fence{vb.fence})
+
+	// Record command buffer
+	vk.ResetCommandBuffer(vb.commandBuffer, 0)
+
+	beginInfo := vk.CommandBufferBeginInfo{
+		SType: vk.StructureTypeCommandBufferBeginInfo,
+		Flags: vk.CommandBufferUsageFlags(vk.CommandBufferUsageOneTimeSubmitBit),
+	}
+	vk.BeginCommandBuffer(vb.commandBuffer, &beginInfo)
+
+	// Begin render pass with clear values (this will clear the buffer)
+	clearValues := []vk.ClearValue{
+		vk.NewClearValue([]float32{vb.clearColor[0], vb.clearColor[1], vb.clearColor[2], vb.clearColor[3]}),
+		vk.NewClearDepthStencil(vb.depthClearValue, 0),
+	}
+
+	renderPassBegin := vk.RenderPassBeginInfo{
+		SType:           vk.StructureTypeRenderPassBeginInfo,
+		RenderPass:      vb.renderPass,
+		Framebuffer:     vb.framebuffer,
+		RenderArea:      vk.Rect2D{Offset: vk.Offset2D{X: 0, Y: 0}, Extent: vk.Extent2D{Width: uint32(vb.width), Height: uint32(vb.height)}},
+		ClearValueCount: uint32(len(clearValues)),
+		PClearValues:    clearValues,
+	}
+
+	vk.CmdBeginRenderPass(vb.commandBuffer, &renderPassBegin, vk.SubpassContentsInline)
+	// No draw calls - just clear
 	vk.CmdEndRenderPass(vb.commandBuffer)
 	vk.EndCommandBuffer(vb.commandBuffer)
 
@@ -1631,19 +1933,28 @@ func (vb *VulkanBackend) destroyFramebuffer() {
 }
 
 func (vb *VulkanBackend) destroyPipeline() {
-	if vb.pipeline != vk.NullPipeline {
-		vk.DestroyPipeline(vb.device, vb.pipeline, nil)
-		vb.pipeline = vk.NullPipeline
+	// Destroy all pipeline variants in the cache
+	for key, pipeline := range vb.pipelineVariants {
+		if pipeline != vk.NullPipeline {
+			vk.DestroyPipeline(vb.device, pipeline, nil)
+		}
+		delete(vb.pipelineVariants, key)
 	}
+
+	// Clear the current pipeline reference (it was in the cache)
+	vb.pipeline = vk.NullPipeline
+
 	if vb.pipelineLayout != vk.NullPipelineLayout {
 		vk.DestroyPipelineLayout(vb.device, vb.pipelineLayout, nil)
 		vb.pipelineLayout = vk.NullPipelineLayout
 	}
 	if vb.vertShaderModule != vk.NullShaderModule {
 		vk.DestroyShaderModule(vb.device, vb.vertShaderModule, nil)
+		vb.vertShaderModule = vk.NullShaderModule
 	}
 	if vb.fragShaderModule != vk.NullShaderModule {
 		vk.DestroyShaderModule(vb.device, vb.fragShaderModule, nil)
+		vb.fragShaderModule = vk.NullShaderModule
 	}
 }
 

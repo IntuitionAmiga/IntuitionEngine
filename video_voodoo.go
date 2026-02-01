@@ -437,11 +437,9 @@ func (v *VoodooEngine) executeSwapBufferCmd(value uint32) {
 			v.pipelineDirty = false
 		}
 
-		// Flush all batched triangles
-		if len(v.triangleBatch) > 0 {
-			v.backend.FlushTriangles(v.triangleBatch)
-			v.triangleBatch = v.triangleBatch[:0] // Clear batch
-		}
+		// Always flush triangles (even if empty, this triggers the clear)
+		v.backend.FlushTriangles(v.triangleBatch)
+		v.triangleBatch = v.triangleBatch[:0] // Clear batch
 
 		// Swap buffers
 		waitVSync := (value & VOODOO_SWAP_VSYNC) != 0
