@@ -2000,15 +2000,16 @@ func TestVoodoo_AlphaMode_TestParsing(t *testing.T) {
 // Test push constants structure
 func TestVoodoo_PushConstants_Structure(t *testing.T) {
 	pc := VoodooPushConstants{
-		FbzMode:     VOODOO_FBZ_CHROMAKEY | VOODOO_FBZ_RGB_WRITE,
-		AlphaMode:   VOODOO_ALPHA_TEST_EN | (VOODOO_ALPHA_GREATER << 1) | (128 << 24),
-		ChromaKey:   0x00FF00FF,
-		TextureMode: 1, // Phase 4: texture enable flag
+		FbzMode:      VOODOO_FBZ_CHROMAKEY | VOODOO_FBZ_RGB_WRITE,
+		AlphaMode:    VOODOO_ALPHA_TEST_EN | (VOODOO_ALPHA_GREATER << 1) | (128 << 24),
+		ChromaKey:    0x00FF00FF,
+		TextureMode:  1, // Phase 4: texture enable flag
+		FbzColorPath: 0, // Phase 5: color combine mode
 	}
 
-	// Verify structure is 16 bytes (4 x uint32)
-	// Phase 4: Added TextureMode field
-	expectedSize := 16
+	// Verify structure is 20 bytes (5 x uint32)
+	// Phase 5: Added FbzColorPath field
+	expectedSize := 20
 	actualSize := int(unsafe.Sizeof(pc))
 	if actualSize != expectedSize {
 		t.Errorf("PushConstants size: expected %d bytes, got %d", expectedSize, actualSize)
@@ -3129,6 +3130,505 @@ func TestVoodoo_VulkanBackend_DescriptorSetLayout(t *testing.T) {
 	// This tests that the Vulkan initialization properly sets up texture resources
 	if vb.descriptorSetLayout == vk.NullDescriptorSetLayout {
 		t.Error("Descriptor set layout should be created during init")
+	}
+}
+
+// =============================================================================
+// Phase 5: Color Combine (fbzColorPath) Tests
+// =============================================================================
+
+// Test fbzColorPath register read/write
+func TestVoodoo_WriteRead_FbzColorPath(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	// Write fbzColorPath with texture mode
+	testValue := uint32(VOODOO_CC_TEXTURE | (VOODOO_CC_CLOC_MUL << VOODOO_FCP_CC_MSELECT_SHIFT))
+	v.HandleWrite(VOODOO_FBZCOLOR_PATH, testValue)
+
+	readValue := v.HandleRead(VOODOO_FBZCOLOR_PATH)
+	if readValue != testValue {
+		t.Errorf("Expected fbzColorPath 0x%X, got 0x%X", testValue, readValue)
+	}
+
+	// Verify internal state is updated
+	if v.fbzColorPath != testValue {
+		t.Errorf("Internal fbzColorPath not updated: expected 0x%X, got 0x%X", testValue, v.fbzColorPath)
+	}
+}
+
+// Test color combine mode constants are correctly defined
+func TestVoodoo_ColorCombine_Constants(t *testing.T) {
+	// Verify RGB select values
+	if VOODOO_CC_ITERATED != 0 {
+		t.Errorf("VOODOO_CC_ITERATED should be 0, got %d", VOODOO_CC_ITERATED)
+	}
+	if VOODOO_CC_TEXTURE != 1 {
+		t.Errorf("VOODOO_CC_TEXTURE should be 1, got %d", VOODOO_CC_TEXTURE)
+	}
+
+	// Verify combine mode values
+	if VOODOO_CC_ZERO != 0 {
+		t.Errorf("VOODOO_CC_ZERO should be 0, got %d", VOODOO_CC_ZERO)
+	}
+	if VOODOO_CC_CLOC_MUL != 6 {
+		t.Errorf("VOODOO_CC_CLOC_MUL should be 6, got %d", VOODOO_CC_CLOC_MUL)
+	}
+
+	// Verify bit masks and shifts
+	if VOODOO_FCP_RGB_SELECT_MASK != 0x3 {
+		t.Errorf("VOODOO_FCP_RGB_SELECT_MASK should be 0x3, got 0x%X", VOODOO_FCP_RGB_SELECT_MASK)
+	}
+	if VOODOO_FCP_CC_MSELECT_SHIFT != 4 {
+		t.Errorf("VOODOO_FCP_CC_MSELECT_SHIFT should be 4, got %d", VOODOO_FCP_CC_MSELECT_SHIFT)
+	}
+}
+
+// Test push constants structure includes fbzColorPath (Phase 5)
+func TestVoodoo_PushConstants_Phase5_Structure(t *testing.T) {
+	pc := VoodooPushConstants{
+		FbzMode:      VOODOO_FBZ_RGB_WRITE,
+		AlphaMode:    0,
+		ChromaKey:    0,
+		TextureMode:  1,
+		FbzColorPath: VOODOO_COMBINE_MODULATE,
+	}
+
+	// Verify structure is 20 bytes (5 x uint32)
+	expectedSize := 20
+	actualSize := int(unsafe.Sizeof(pc))
+	if actualSize != expectedSize {
+		t.Errorf("PushConstants size: expected %d bytes, got %d", expectedSize, actualSize)
+	}
+
+	// Verify field values
+	if pc.FbzColorPath != VOODOO_COMBINE_MODULATE {
+		t.Errorf("FbzColorPath should be %d, got %d", VOODOO_COMBINE_MODULATE, pc.FbzColorPath)
+	}
+}
+
+// Test software backend color combine: ITERATED mode (vertex color only)
+func TestVoodoo_SoftwareBackend_ColorCombine_Iterated(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	if err := backend.Init(100, 100); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer backend.Destroy()
+
+	// Set up texture (green)
+	texData := make([]byte, 4*4*4) // 4x4 texture
+	for i := 0; i < len(texData); i += 4 {
+		texData[i+0] = 0   // R
+		texData[i+1] = 255 // G
+		texData[i+2] = 0   // B
+		texData[i+3] = 255 // A
+	}
+	backend.SetTextureData(4, 4, texData, VOODOO_TEX_FMT_ARGB8888)
+	backend.SetTextureEnabled(true)
+
+	// Set color combine mode to ITERATED (vertex only - ignore texture)
+	backend.SetColorPath(VOODOO_CC_ITERATED)
+
+	// Clear to black
+	backend.ClearFramebuffer(0xFF000000)
+
+	// Draw a red triangle (vertex color is red, texture is green)
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.5, R: 1, G: 0, B: 0, A: 1, S: 0.5, T: 0.5},
+			{X: 90, Y: 10, Z: 0.5, R: 1, G: 0, B: 0, A: 1, S: 0.5, T: 0.5},
+			{X: 50, Y: 90, Z: 0.5, R: 1, G: 0, B: 0, A: 1, S: 0.5, T: 0.5},
+		},
+	}
+
+	backend.FlushTriangles([]VoodooTriangle{tri})
+	backend.SwapBuffers(false)
+
+	// Check center pixel - should be red (vertex color) not green (texture)
+	frame := backend.GetFrame()
+	centerIdx := (50*100 + 50) * 4
+	r, g, b := frame[centerIdx], frame[centerIdx+1], frame[centerIdx+2]
+
+	if r < 200 || g > 50 || b > 50 {
+		t.Errorf("ITERATED mode: expected red vertex color, got R=%d G=%d B=%d", r, g, b)
+	}
+}
+
+// Test software backend color combine: TEXTURE mode (texture color only)
+func TestVoodoo_SoftwareBackend_ColorCombine_Texture(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	if err := backend.Init(100, 100); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer backend.Destroy()
+
+	// Set up texture (green)
+	texData := make([]byte, 4*4*4)
+	for i := 0; i < len(texData); i += 4 {
+		texData[i+0] = 0   // R
+		texData[i+1] = 255 // G
+		texData[i+2] = 0   // B
+		texData[i+3] = 255 // A
+	}
+	backend.SetTextureData(4, 4, texData, VOODOO_TEX_FMT_ARGB8888)
+	backend.SetTextureEnabled(true)
+
+	// Set color combine mode to TEXTURE (texture only - ignore vertex)
+	backend.SetColorPath(VOODOO_CC_TEXTURE)
+
+	backend.ClearFramebuffer(0xFF000000)
+
+	// Draw a red vertex triangle with green texture
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.5, R: 1, G: 0, B: 0, A: 1, S: 0.5, T: 0.5},
+			{X: 90, Y: 10, Z: 0.5, R: 1, G: 0, B: 0, A: 1, S: 0.5, T: 0.5},
+			{X: 50, Y: 90, Z: 0.5, R: 1, G: 0, B: 0, A: 1, S: 0.5, T: 0.5},
+		},
+	}
+
+	backend.FlushTriangles([]VoodooTriangle{tri})
+	backend.SwapBuffers(false)
+
+	// Check center pixel - should be green (texture) not red (vertex)
+	frame := backend.GetFrame()
+	centerIdx := (50*100 + 50) * 4
+	r, g, b := frame[centerIdx], frame[centerIdx+1], frame[centerIdx+2]
+
+	if r > 50 || g < 200 || b > 50 {
+		t.Errorf("TEXTURE mode: expected green texture color, got R=%d G=%d B=%d", r, g, b)
+	}
+}
+
+// Test software backend color combine: MODULATE mode (tex * vert)
+func TestVoodoo_SoftwareBackend_ColorCombine_Modulate(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	if err := backend.Init(100, 100); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer backend.Destroy()
+
+	// Set up texture (50% gray = 128,128,128)
+	texData := make([]byte, 4*4*4)
+	for i := 0; i < len(texData); i += 4 {
+		texData[i+0] = 128 // R
+		texData[i+1] = 128 // G
+		texData[i+2] = 128 // B
+		texData[i+3] = 255 // A
+	}
+	backend.SetTextureData(4, 4, texData, VOODOO_TEX_FMT_ARGB8888)
+	backend.SetTextureEnabled(true)
+
+	// Set color combine mode to MODULATE (tex * vert)
+	backend.SetColorPath(VOODOO_COMBINE_MODULATE)
+
+	backend.ClearFramebuffer(0xFF000000)
+
+	// Draw a white vertex triangle (1.0, 1.0, 1.0) with 50% gray texture
+	// Result should be ~128,128,128 (0.5 * 1.0 = 0.5)
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 0.5, T: 0.5},
+			{X: 90, Y: 10, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 0.5, T: 0.5},
+			{X: 50, Y: 90, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 0.5, T: 0.5},
+		},
+	}
+
+	backend.FlushTriangles([]VoodooTriangle{tri})
+	backend.SwapBuffers(false)
+
+	// Check center pixel - should be ~128 (modulated result)
+	frame := backend.GetFrame()
+	centerIdx := (50*100 + 50) * 4
+	r, g, b := frame[centerIdx], frame[centerIdx+1], frame[centerIdx+2]
+
+	// Allow some tolerance for rounding
+	if r < 100 || r > 160 || g < 100 || g > 160 || b < 100 || b > 160 {
+		t.Errorf("MODULATE mode: expected ~128,128,128, got R=%d G=%d B=%d", r, g, b)
+	}
+}
+
+// Test software backend color combine: ADD mode (tex + vert clamped)
+func TestVoodoo_SoftwareBackend_ColorCombine_Add(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	if err := backend.Init(100, 100); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer backend.Destroy()
+
+	// Set up texture (blue = 0,0,255)
+	texData := make([]byte, 4*4*4)
+	for i := 0; i < len(texData); i += 4 {
+		texData[i+0] = 0   // R
+		texData[i+1] = 0   // G
+		texData[i+2] = 255 // B
+		texData[i+3] = 255 // A
+	}
+	backend.SetTextureData(4, 4, texData, VOODOO_TEX_FMT_ARGB8888)
+	backend.SetTextureEnabled(true)
+
+	// Set color combine mode to ADD (tex + vert)
+	backend.SetColorPath(VOODOO_COMBINE_ADD)
+
+	backend.ClearFramebuffer(0xFF000000)
+
+	// Draw a red vertex triangle (1.0, 0, 0) with blue texture
+	// Result should be magenta (1.0, 0, 1.0) = (255, 0, 255)
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.5, R: 1, G: 0, B: 0, A: 1, S: 0.5, T: 0.5},
+			{X: 90, Y: 10, Z: 0.5, R: 1, G: 0, B: 0, A: 1, S: 0.5, T: 0.5},
+			{X: 50, Y: 90, Z: 0.5, R: 1, G: 0, B: 0, A: 1, S: 0.5, T: 0.5},
+		},
+	}
+
+	backend.FlushTriangles([]VoodooTriangle{tri})
+	backend.SwapBuffers(false)
+
+	// Check center pixel - should be magenta (red + blue)
+	frame := backend.GetFrame()
+	centerIdx := (50*100 + 50) * 4
+	r, g, b := frame[centerIdx], frame[centerIdx+1], frame[centerIdx+2]
+
+	if r < 200 || g > 50 || b < 200 {
+		t.Errorf("ADD mode: expected magenta (255,0,255), got R=%d G=%d B=%d", r, g, b)
+	}
+}
+
+// Test VoodooEngine SetColorPath integration
+func TestVoodoo_Engine_ColorPath_Integration(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	// Write fbzColorPath via HandleWrite
+	v.HandleWrite(VOODOO_FBZCOLOR_PATH, VOODOO_COMBINE_TEXTURE)
+
+	// Verify the engine state is updated
+	if v.fbzColorPath != VOODOO_COMBINE_TEXTURE {
+		t.Errorf("Engine fbzColorPath not updated: expected %d, got %d",
+			VOODOO_COMBINE_TEXTURE, v.fbzColorPath)
+	}
+}
+
+// Test VoodooBackend SetColorPath method exists in interface
+func TestVoodoo_Backend_SetColorPath_Interface(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	if err := backend.Init(100, 100); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer backend.Destroy()
+
+	// Should not panic - method should exist
+	backend.SetColorPath(VOODOO_CC_ITERATED)
+	backend.SetColorPath(VOODOO_CC_TEXTURE)
+	backend.SetColorPath(VOODOO_COMBINE_MODULATE)
+	backend.SetColorPath(VOODOO_COMBINE_ADD)
+}
+
+// Test backward compatibility: default behavior should be MODULATE when texture enabled
+func TestVoodoo_ColorCombine_DefaultModulate(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	if err := backend.Init(100, 100); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer backend.Destroy()
+
+	// Set up texture (50% gray)
+	texData := make([]byte, 4*4*4)
+	for i := 0; i < len(texData); i += 4 {
+		texData[i+0] = 128
+		texData[i+1] = 128
+		texData[i+2] = 128
+		texData[i+3] = 255
+	}
+	backend.SetTextureData(4, 4, texData, VOODOO_TEX_FMT_ARGB8888)
+	backend.SetTextureEnabled(true)
+
+	// Don't set color path - use default (should be modulate for compatibility)
+
+	backend.ClearFramebuffer(0xFF000000)
+
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 0.5, T: 0.5},
+			{X: 90, Y: 10, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 0.5, T: 0.5},
+			{X: 50, Y: 90, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 0.5, T: 0.5},
+		},
+	}
+
+	backend.FlushTriangles([]VoodooTriangle{tri})
+	backend.SwapBuffers(false)
+
+	frame := backend.GetFrame()
+	centerIdx := (50*100 + 50) * 4
+	r, g, b := frame[centerIdx], frame[centerIdx+1], frame[centerIdx+2]
+
+	// Default should still modulate (backward compatibility)
+	if r < 100 || r > 160 || g < 100 || g > 160 || b < 100 || b > 160 {
+		t.Errorf("Default mode: expected modulate (~128), got R=%d G=%d B=%d", r, g, b)
+	}
+}
+
+// =============================================================================
+// Phase 5: Vulkan GPU Color Combine Tests
+// =============================================================================
+
+// Test Vulkan backend color combine: ITERATED mode
+func TestVoodoo_VulkanBackend_ColorCombine_Iterated(t *testing.T) {
+	vb, err := NewVulkanBackend()
+	if err != nil {
+		t.Fatalf("NewVulkanBackend failed: %v", err)
+	}
+	err = vb.Init(100, 100)
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer vb.Destroy()
+
+	if !vb.initialized {
+		t.Skip("Vulkan not available, skipping GPU color combine test")
+	}
+
+	// Set up green texture
+	texData := make([]byte, 4*4*4)
+	for i := 0; i < len(texData); i += 4 {
+		texData[i+0] = 0
+		texData[i+1] = 255
+		texData[i+2] = 0
+		texData[i+3] = 255
+	}
+	vb.SetTextureData(4, 4, texData, VOODOO_TEX_FMT_ARGB8888)
+	vb.SetTextureEnabled(true)
+	vb.SetColorPath(VOODOO_CC_ITERATED) // Vertex only
+
+	vb.ClearFramebuffer(0xFF000000)
+
+	// Red vertex color, green texture
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.5, R: 1, G: 0, B: 0, A: 1, S: 0.5, T: 0.5},
+			{X: 90, Y: 10, Z: 0.5, R: 1, G: 0, B: 0, A: 1, S: 0.5, T: 0.5},
+			{X: 50, Y: 90, Z: 0.5, R: 1, G: 0, B: 0, A: 1, S: 0.5, T: 0.5},
+		},
+	}
+
+	vb.FlushTriangles([]VoodooTriangle{tri})
+	vb.SwapBuffers(false)
+
+	frame := vb.GetFrame()
+	centerIdx := (50*100 + 50) * 4
+	r, g, b := frame[centerIdx], frame[centerIdx+1], frame[centerIdx+2]
+
+	if r < 200 || g > 50 || b > 50 {
+		t.Errorf("GPU ITERATED mode: expected red, got R=%d G=%d B=%d", r, g, b)
+	}
+}
+
+// Test Vulkan backend color combine: TEXTURE mode
+func TestVoodoo_VulkanBackend_ColorCombine_Texture(t *testing.T) {
+	vb, err := NewVulkanBackend()
+	if err != nil {
+		t.Fatalf("NewVulkanBackend failed: %v", err)
+	}
+	err = vb.Init(100, 100)
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer vb.Destroy()
+
+	if !vb.initialized {
+		t.Skip("Vulkan not available, skipping GPU color combine test")
+	}
+
+	// Set up green texture
+	texData := make([]byte, 4*4*4)
+	for i := 0; i < len(texData); i += 4 {
+		texData[i+0] = 0
+		texData[i+1] = 255
+		texData[i+2] = 0
+		texData[i+3] = 255
+	}
+	vb.SetTextureData(4, 4, texData, VOODOO_TEX_FMT_ARGB8888)
+	vb.SetTextureEnabled(true)
+	vb.SetColorPath(VOODOO_CC_TEXTURE) // Texture only
+
+	vb.ClearFramebuffer(0xFF000000)
+
+	// Red vertex color, green texture
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.5, R: 1, G: 0, B: 0, A: 1, S: 0.5, T: 0.5},
+			{X: 90, Y: 10, Z: 0.5, R: 1, G: 0, B: 0, A: 1, S: 0.5, T: 0.5},
+			{X: 50, Y: 90, Z: 0.5, R: 1, G: 0, B: 0, A: 1, S: 0.5, T: 0.5},
+		},
+	}
+
+	vb.FlushTriangles([]VoodooTriangle{tri})
+	vb.SwapBuffers(false)
+
+	frame := vb.GetFrame()
+	centerIdx := (50*100 + 50) * 4
+	r, g, b := frame[centerIdx], frame[centerIdx+1], frame[centerIdx+2]
+
+	if r > 50 || g < 200 || b > 50 {
+		t.Errorf("GPU TEXTURE mode: expected green, got R=%d G=%d B=%d", r, g, b)
+	}
+}
+
+// Test Vulkan backend color combine: ADD mode
+func TestVoodoo_VulkanBackend_ColorCombine_Add(t *testing.T) {
+	vb, err := NewVulkanBackend()
+	if err != nil {
+		t.Fatalf("NewVulkanBackend failed: %v", err)
+	}
+	err = vb.Init(100, 100)
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer vb.Destroy()
+
+	if !vb.initialized {
+		t.Skip("Vulkan not available, skipping GPU color combine test")
+	}
+
+	// Set up blue texture
+	texData := make([]byte, 4*4*4)
+	for i := 0; i < len(texData); i += 4 {
+		texData[i+0] = 0
+		texData[i+1] = 0
+		texData[i+2] = 255
+		texData[i+3] = 255
+	}
+	vb.SetTextureData(4, 4, texData, VOODOO_TEX_FMT_ARGB8888)
+	vb.SetTextureEnabled(true)
+	vb.SetColorPath(VOODOO_COMBINE_ADD) // Add mode
+
+	vb.ClearFramebuffer(0xFF000000)
+
+	// Red vertex + blue texture = magenta
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.5, R: 1, G: 0, B: 0, A: 1, S: 0.5, T: 0.5},
+			{X: 90, Y: 10, Z: 0.5, R: 1, G: 0, B: 0, A: 1, S: 0.5, T: 0.5},
+			{X: 50, Y: 90, Z: 0.5, R: 1, G: 0, B: 0, A: 1, S: 0.5, T: 0.5},
+		},
+	}
+
+	vb.FlushTriangles([]VoodooTriangle{tri})
+	vb.SwapBuffers(false)
+
+	frame := vb.GetFrame()
+	centerIdx := (50*100 + 50) * 4
+	r, g, b := frame[centerIdx], frame[centerIdx+1], frame[centerIdx+2]
+
+	if r < 200 || g > 50 || b < 200 {
+		t.Errorf("GPU ADD mode: expected magenta, got R=%d G=%d B=%d", r, g, b)
 	}
 }
 

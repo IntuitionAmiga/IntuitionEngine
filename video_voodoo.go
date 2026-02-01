@@ -136,6 +136,9 @@ type VoodooBackend interface {
 	SetTextureEnabled(enabled bool)
 	SetTextureWrapMode(clampS, clampT bool)
 
+	// Phase 5: Color combine (fbzColorPath)
+	SetColorPath(fbzColorPath uint32)
+
 	// Rendering operations
 	FlushTriangles(triangles []VoodooTriangle)
 	ClearFramebuffer(color uint32)

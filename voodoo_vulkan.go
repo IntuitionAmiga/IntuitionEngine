@@ -65,11 +65,13 @@ type PipelineKey struct {
 // VoodooPushConstants contains per-draw state passed to shaders via push constants
 // Phase 3: Alpha Test & Chroma Key support
 // Phase 4: Texture mode support
+// Phase 5: Color combine (fbzColorPath) support
 type VoodooPushConstants struct {
-	FbzMode     uint32 // Framebuffer Z mode (contains chroma key enable flag)
-	AlphaMode   uint32 // Alpha test mode (enable, function, reference value)
-	ChromaKey   uint32 // Chroma key color (RGB packed)
-	TextureMode uint32 // Phase 4: bit 0 = texture enable
+	FbzMode      uint32 // Framebuffer Z mode (contains chroma key enable flag)
+	AlphaMode    uint32 // Alpha test mode (enable, function, reference value)
+	ChromaKey    uint32 // Chroma key color (RGB packed)
+	TextureMode  uint32 // Phase 4: bit 0 = texture enable
+	FbzColorPath uint32 // Phase 5: Color combine mode
 }
 
 // PipelineKeyFromRegisters creates a PipelineKey from fbzMode and alphaMode registers
@@ -172,9 +174,11 @@ type VoodooSoftwareBackend struct {
 	depthBuffer   []float32 // Z values
 
 	// State
-	fbzMode   uint32
-	alphaMode uint32
-	chromaKey uint32 // Phase 3: Chroma key color (RGB packed)
+	fbzMode      uint32
+	alphaMode    uint32
+	chromaKey    uint32 // Phase 3: Chroma key color (RGB packed)
+	fbzColorPath uint32 // Phase 5: Color combine mode
+	colorPathSet bool   // Phase 5: Track if color path was explicitly set
 
 	// Cached pipeline state (parsed from registers)
 	pipelineKey PipelineKey
@@ -298,6 +302,15 @@ func (b *VoodooSoftwareBackend) SetTextureWrapMode(clampS, clampT bool) {
 	b.textureClampT = clampT
 }
 
+// SetColorPath sets the color combine mode from fbzColorPath register
+// Phase 5: Color Combine support
+func (b *VoodooSoftwareBackend) SetColorPath(fbzColorPath uint32) {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	b.fbzColorPath = fbzColorPath
+	b.colorPathSet = true // Mark that color path was explicitly set
+}
+
 // sampleTexture samples the texture at given UV coordinates
 // Phase 4: Texture Mapping support
 func (b *VoodooSoftwareBackend) sampleTexture(s, t float32) (r, g, bVal, a float32) {
@@ -356,6 +369,58 @@ func (b *VoodooSoftwareBackend) sampleTexture(s, t float32) (r, g, bVal, a float
 	}
 
 	return r, g, bVal, a
+}
+
+// combineColors combines vertex and texture colors based on fbzColorPath register
+// Phase 5: Color Combine support
+func (b *VoodooSoftwareBackend) combineColors(vertR, vertG, vertB, vertA, texR, texG, texB, texA float32) (r, g, bVal, a float32) {
+	// Default to modulate for backward compatibility (if color path was never explicitly set)
+	if !b.colorPathSet {
+		// Default behavior: modulate (tex * vert) for backward compatibility
+		return vertR * texR, vertG * texG, vertB * texB, vertA * texA
+	}
+
+	// Handle special convenience modes first (these have specific bit patterns)
+	switch b.fbzColorPath {
+	case VOODOO_COMBINE_ADD:
+		// ADD mode: tex + vert clamped
+		return vertR + texR, vertG + texG, vertB + texB, vertA + texA
+	case VOODOO_COMBINE_MODULATE:
+		// Explicit MODULATE mode
+		return vertR * texR, vertG * texG, vertB * texB, vertA * texA
+	}
+
+	// Extract color combine mode from fbzColorPath
+	rgbSelect := b.fbzColorPath & VOODOO_FCP_RGB_SELECT_MASK
+
+	switch rgbSelect {
+	case VOODOO_CC_ITERATED:
+		// Use vertex color only (ignore texture)
+		return vertR, vertG, vertB, vertA
+	case VOODOO_CC_TEXTURE:
+		// Use texture color only (ignore vertex)
+		return texR, texG, texB, texA
+	default:
+		// Apply combine mode based on CC_MSELECT bits
+		ccMode := (b.fbzColorPath >> VOODOO_FCP_CC_MSELECT_SHIFT) & 0x7
+		switch ccMode {
+		case VOODOO_CC_ZERO:
+			// Output zero (black)
+			return 0, 0, 0, 0
+		case VOODOO_CC_CSUB_CL:
+			// cother - clocal (subtract)
+			return texR - vertR, texG - vertG, texB - vertB, texA - vertA
+		case VOODOO_CC_CLOCAL:
+			// clocal only (pass through vertex)
+			return vertR, vertG, vertB, vertA
+		case VOODOO_CC_CLOC_MUL:
+			// clocal * cother (modulate/multiply)
+			return vertR * texR, vertG * texG, vertB * texB, vertA * texA
+		default:
+			// Default to modulate
+			return vertR * texR, vertG * texG, vertB * texB, vertA * texA
+		}
+	}
 }
 
 // FlushTriangles rasterizes all triangles in the batch
@@ -549,7 +614,7 @@ func (b *VoodooSoftwareBackend) rasterizeTriangle(tri *VoodooTriangle) {
 				bVal := w0*v0.B + w1*v1.B + w2*v2.B
 				a := w0*v0.A + w1*v1.A + w2*v2.A
 
-				// Phase 4: Texture mapping
+				// Phase 4/5: Texture mapping with color combine
 				if b.textureEnabled && b.textureData != nil {
 					// Interpolate texture coordinates
 					s := w0*v0.S + w1*v1.S + w2*v2.S
@@ -558,11 +623,8 @@ func (b *VoodooSoftwareBackend) rasterizeTriangle(tri *VoodooTriangle) {
 					// Sample texture
 					texR, texG, texB, texA := b.sampleTexture(s, t)
 
-					// Modulate texture with vertex color (multiply)
-					r *= texR
-					g *= texG
-					bVal *= texB
-					a *= texA
+					// Phase 5: Apply color combine mode from fbzColorPath
+					r, g, bVal, a = b.combineColors(r, g, bVal, a, texR, texG, texB, texA)
 				}
 
 				// Clamp colors
@@ -833,10 +895,12 @@ type VulkanBackend struct {
 	fence vk.Fence
 
 	// Current state
-	fbzMode   uint32
-	alphaMode uint32
-	chromaKey uint32 // Phase 3: Chroma key color
-	scissor   vk.Rect2D
+	fbzMode      uint32
+	alphaMode    uint32
+	chromaKey    uint32 // Phase 3: Chroma key color
+	fbzColorPath uint32 // Phase 5: Color combine mode
+	colorPathSet bool   // Phase 5: Track if color path was explicitly set
+	scissor      vk.Rect2D
 
 	// Clear color (set by ClearFramebuffer, used by FlushTriangles)
 	clearColor [4]float32
@@ -1467,7 +1531,7 @@ func (vb *VulkanBackend) createPipeline() error {
 	pushConstantRange := vk.PushConstantRange{
 		StageFlags: vk.ShaderStageFlags(vk.ShaderStageFragmentBit),
 		Offset:     0,
-		Size:       16, // VoodooPushConstants: 4 x uint32 = 16 bytes (Phase 4: added TextureMode)
+		Size:       20, // VoodooPushConstants: 5 x uint32 = 20 bytes (Phase 5: added FbzColorPath)
 	}
 
 	// Phase 4: Include descriptor set layout for texture sampling
@@ -2545,6 +2609,17 @@ func (vb *VulkanBackend) SetTextureWrapMode(clampS, clampT bool) {
 	vb.software.SetTextureWrapMode(clampS, clampT)
 }
 
+// SetColorPath sets the color combine mode from fbzColorPath register
+// Phase 5: Color Combine support
+func (vb *VulkanBackend) SetColorPath(fbzColorPath uint32) {
+	vb.mutex.Lock()
+	defer vb.mutex.Unlock()
+
+	vb.fbzColorPath = fbzColorPath
+	vb.colorPathSet = true
+	vb.software.SetColorPath(fbzColorPath)
+}
+
 // FlushTriangles renders all triangles
 func (vb *VulkanBackend) FlushTriangles(triangles []VoodooTriangle) {
 	vb.mutex.Lock()
@@ -2628,19 +2703,24 @@ func (vb *VulkanBackend) FlushTriangles(triangles []VoodooTriangle) {
 	vk.CmdBeginRenderPass(vb.commandBuffer, &renderPassBegin, vk.SubpassContentsInline)
 	vk.CmdBindPipeline(vb.commandBuffer, vk.PipelineBindPointGraphics, vb.pipeline)
 
-	// Push constants for alpha test, chroma key, and texture mode (Phase 3 & 4)
+	// Push constants for alpha test, chroma key, texture mode, and color path (Phase 3-5)
 	var texMode uint32
 	if vb.textureEnabled {
 		texMode = 1
 	}
+	// Phase 5: Set bit 1 of texMode to indicate colorPathSet
+	if vb.colorPathSet {
+		texMode |= 2
+	}
 	pushConstants := VoodooPushConstants{
-		FbzMode:     vb.fbzMode,
-		AlphaMode:   vb.alphaMode,
-		ChromaKey:   vb.chromaKey,
-		TextureMode: texMode,
+		FbzMode:      vb.fbzMode,
+		AlphaMode:    vb.alphaMode,
+		ChromaKey:    vb.chromaKey,
+		TextureMode:  texMode,
+		FbzColorPath: vb.fbzColorPath,
 	}
 	vk.CmdPushConstants(vb.commandBuffer, vb.pipelineLayout,
-		vk.ShaderStageFlags(vk.ShaderStageFragmentBit), 0, 16,
+		vk.ShaderStageFlags(vk.ShaderStageFragmentBit), 0, 20,
 		unsafe.Pointer(&pushConstants))
 
 	// Bind descriptor set for texture sampling (Phase 4)
