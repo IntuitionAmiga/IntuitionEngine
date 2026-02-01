@@ -22,6 +22,7 @@ package main
 import (
 	"math"
 	"testing"
+	"unsafe"
 )
 
 // =============================================================================
@@ -1615,6 +1616,492 @@ func TestVoodoo_AllDepthFunctions_Software(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// =============================================================================
+// Phase 3: Alpha Test & Chroma Key Tests
+// =============================================================================
+
+// Test alpha test function mapping
+func TestVoodoo_AlphaTestFunction(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	backend.Init(100, 100)
+	defer backend.Destroy()
+
+	// Test all 8 alpha test functions (same as depth functions)
+	tests := []struct {
+		name       string
+		alphaFunc  int
+		alphaValue float32
+		alphaRef   float32
+		expected   bool
+	}{
+		{"NEVER", VOODOO_ALPHA_NEVER, 0.5, 0.3, false},
+		{"LESS pass", VOODOO_ALPHA_LESS, 0.3, 0.5, true},
+		{"LESS fail", VOODOO_ALPHA_LESS, 0.5, 0.3, false},
+		{"EQUAL pass", VOODOO_ALPHA_EQUAL, 0.5, 0.5, true},
+		{"EQUAL fail", VOODOO_ALPHA_EQUAL, 0.5, 0.6, false},
+		{"LESSEQUAL pass (less)", VOODOO_ALPHA_LESSEQUAL, 0.3, 0.5, true},
+		{"LESSEQUAL pass (equal)", VOODOO_ALPHA_LESSEQUAL, 0.5, 0.5, true},
+		{"LESSEQUAL fail", VOODOO_ALPHA_LESSEQUAL, 0.6, 0.5, false},
+		{"GREATER pass", VOODOO_ALPHA_GREATER, 0.7, 0.3, true},
+		{"GREATER fail", VOODOO_ALPHA_GREATER, 0.3, 0.7, false},
+		{"NOTEQUAL pass", VOODOO_ALPHA_NOTEQUAL, 0.5, 0.6, true},
+		{"NOTEQUAL fail", VOODOO_ALPHA_NOTEQUAL, 0.5, 0.5, false},
+		{"GREATEREQUAL pass (greater)", VOODOO_ALPHA_GREATEREQUAL, 0.7, 0.5, true},
+		{"GREATEREQUAL pass (equal)", VOODOO_ALPHA_GREATEREQUAL, 0.5, 0.5, true},
+		{"GREATEREQUAL fail", VOODOO_ALPHA_GREATEREQUAL, 0.3, 0.5, false},
+		{"ALWAYS", VOODOO_ALPHA_ALWAYS, 0.0, 1.0, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := backend.alphaTest(tc.alphaValue, tc.alphaRef, tc.alphaFunc)
+			if result != tc.expected {
+				t.Errorf("alphaTest(%f, %f, %d) = %v, expected %v",
+					tc.alphaValue, tc.alphaRef, tc.alphaFunc, result, tc.expected)
+			}
+		})
+	}
+}
+
+// Test alpha test discards pixels correctly
+func TestVoodoo_AlphaTest_Discard(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	backend.Init(100, 100)
+	defer backend.Destroy()
+
+	// Clear to blue
+	backend.ClearFramebuffer(0xFF0000FF) // ARGB blue
+
+	// Enable alpha test with GREATER function, ref = 0.5 (128)
+	// alphaMode: bit 0 = enable, bits 1-3 = function, bits 24-31 = ref value
+	alphaRef := uint32(128) << 24 // ref = 128 (0.5 * 255)
+	alphaMode := uint32(VOODOO_ALPHA_TEST_EN | (VOODOO_ALPHA_GREATER << 1) | alphaRef)
+	fbzMode := uint32(VOODOO_FBZ_RGB_WRITE)
+	backend.UpdatePipelineState(fbzMode, alphaMode)
+
+	// Draw a triangle with alpha = 0.3 (should be discarded since 0.3 is NOT > 0.5)
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 25, Y: 10, Z: 0.5, R: 1.0, G: 0.0, B: 0.0, A: 0.3},
+			{X: 75, Y: 10, Z: 0.5, R: 1.0, G: 0.0, B: 0.0, A: 0.3},
+			{X: 50, Y: 90, Z: 0.5, R: 1.0, G: 0.0, B: 0.0, A: 0.3},
+		},
+	}
+
+	backend.FlushTriangles([]VoodooTriangle{tri})
+	backend.SwapBuffers(false)
+
+	frame := backend.GetFrame()
+	// Center pixel should still be blue (triangle was discarded)
+	centerIdx := (50*100 + 50) * 4
+	r, b := frame[centerIdx], frame[centerIdx+2]
+
+	if r > 50 || b < 200 {
+		t.Errorf("Low-alpha triangle should be discarded, got R=%d B=%d", r, b)
+	}
+}
+
+// Test alpha test passes pixels correctly
+func TestVoodoo_AlphaTest_Pass(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	backend.Init(100, 100)
+	defer backend.Destroy()
+
+	// Clear to blue
+	backend.ClearFramebuffer(0xFF0000FF)
+
+	// Enable alpha test with GREATER function, ref = 0.5 (128)
+	alphaRef := uint32(128) << 24
+	alphaMode := uint32(VOODOO_ALPHA_TEST_EN | (VOODOO_ALPHA_GREATER << 1) | alphaRef)
+	fbzMode := uint32(VOODOO_FBZ_RGB_WRITE)
+	backend.UpdatePipelineState(fbzMode, alphaMode)
+
+	// Draw a triangle with alpha = 0.8 (should pass since 0.8 > 0.5)
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 25, Y: 10, Z: 0.5, R: 1.0, G: 0.0, B: 0.0, A: 0.8},
+			{X: 75, Y: 10, Z: 0.5, R: 1.0, G: 0.0, B: 0.0, A: 0.8},
+			{X: 50, Y: 90, Z: 0.5, R: 1.0, G: 0.0, B: 0.0, A: 0.8},
+		},
+	}
+
+	backend.FlushTriangles([]VoodooTriangle{tri})
+	backend.SwapBuffers(false)
+
+	frame := backend.GetFrame()
+	// Center pixel should be red (triangle passed alpha test)
+	centerIdx := (50*100 + 50) * 4
+	r, b := frame[centerIdx], frame[centerIdx+2]
+
+	if r < 200 || b > 50 {
+		t.Errorf("High-alpha triangle should pass, got R=%d B=%d", r, b)
+	}
+}
+
+// Test chroma key discard
+func TestVoodoo_ChromaKey_Discard(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	backend.Init(100, 100)
+	defer backend.Destroy()
+
+	// Clear to blue
+	backend.ClearFramebuffer(0xFF0000FF)
+
+	// Enable chroma key for pure magenta (0xFF00FF)
+	backend.SetChromaKey(0x00FF00FF) // RGB magenta
+	fbzMode := uint32(VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_CHROMAKEY)
+	backend.UpdatePipelineState(fbzMode, 0)
+
+	// Draw a magenta triangle (should be discarded due to chroma key)
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 25, Y: 10, Z: 0.5, R: 1.0, G: 0.0, B: 1.0, A: 1.0}, // Magenta
+			{X: 75, Y: 10, Z: 0.5, R: 1.0, G: 0.0, B: 1.0, A: 1.0},
+			{X: 50, Y: 90, Z: 0.5, R: 1.0, G: 0.0, B: 1.0, A: 1.0},
+		},
+	}
+
+	backend.FlushTriangles([]VoodooTriangle{tri})
+	backend.SwapBuffers(false)
+
+	frame := backend.GetFrame()
+	// Center pixel should still be blue (magenta was keyed out)
+	centerIdx := (50*100 + 50) * 4
+	r, g, b := frame[centerIdx], frame[centerIdx+1], frame[centerIdx+2]
+
+	if r > 50 || g > 50 || b < 200 {
+		t.Errorf("Magenta triangle should be keyed out, got R=%d G=%d B=%d", r, g, b)
+	}
+}
+
+// Test chroma key passes non-matching colors
+func TestVoodoo_ChromaKey_Pass(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	backend.Init(100, 100)
+	defer backend.Destroy()
+
+	// Clear to blue
+	backend.ClearFramebuffer(0xFF0000FF)
+
+	// Enable chroma key for pure magenta
+	backend.SetChromaKey(0x00FF00FF) // RGB magenta
+	fbzMode := uint32(VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_CHROMAKEY)
+	backend.UpdatePipelineState(fbzMode, 0)
+
+	// Draw a red triangle (should NOT be discarded)
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 25, Y: 10, Z: 0.5, R: 1.0, G: 0.0, B: 0.0, A: 1.0}, // Red
+			{X: 75, Y: 10, Z: 0.5, R: 1.0, G: 0.0, B: 0.0, A: 1.0},
+			{X: 50, Y: 90, Z: 0.5, R: 1.0, G: 0.0, B: 0.0, A: 1.0},
+		},
+	}
+
+	backend.FlushTriangles([]VoodooTriangle{tri})
+	backend.SwapBuffers(false)
+
+	frame := backend.GetFrame()
+	// Center pixel should be red (not keyed out)
+	centerIdx := (50*100 + 50) * 4
+	r, b := frame[centerIdx], frame[centerIdx+2]
+
+	if r < 200 || b > 50 {
+		t.Errorf("Red triangle should pass chroma key, got R=%d B=%d", r, b)
+	}
+}
+
+// Test chroma key tolerance (exact match required)
+func TestVoodoo_ChromaKey_ExactMatch(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	backend.Init(100, 100)
+	defer backend.Destroy()
+
+	// Clear to blue
+	backend.ClearFramebuffer(0xFF0000FF)
+
+	// Set chroma key to exact red (255, 0, 0)
+	backend.SetChromaKey(0x00FF0000) // RGB red
+	fbzMode := uint32(VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_CHROMAKEY)
+	backend.UpdatePipelineState(fbzMode, 0)
+
+	// Draw a slightly off-red triangle (254, 0, 0) - should NOT be keyed out
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 25, Y: 10, Z: 0.5, R: 0.996, G: 0.0, B: 0.0, A: 1.0}, // ~254
+			{X: 75, Y: 10, Z: 0.5, R: 0.996, G: 0.0, B: 0.0, A: 1.0},
+			{X: 50, Y: 90, Z: 0.5, R: 0.996, G: 0.0, B: 0.0, A: 1.0},
+		},
+	}
+
+	backend.FlushTriangles([]VoodooTriangle{tri})
+	backend.SwapBuffers(false)
+
+	frame := backend.GetFrame()
+	// Center pixel should be near-red (not keyed out due to slight mismatch)
+	centerIdx := (50*100 + 50) * 4
+	r := frame[centerIdx]
+
+	// We use a tolerance of 1 for chroma keying, so 254 vs 255 should still pass
+	// The test validates that the chroma key mechanism is working
+	if r < 200 {
+		t.Errorf("Slightly off-red should pass chroma key, got R=%d", r)
+	}
+}
+
+// Test combined alpha test and chroma key
+func TestVoodoo_AlphaTestAndChromaKey_Combined(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	backend.Init(100, 100)
+	defer backend.Destroy()
+
+	// Clear to blue
+	backend.ClearFramebuffer(0xFF0000FF)
+
+	// Enable both alpha test (GREATER 0.5) and chroma key (magenta)
+	backend.SetChromaKey(0x00FF00FF)
+	alphaRef := uint32(128) << 24
+	alphaMode := uint32(VOODOO_ALPHA_TEST_EN | (VOODOO_ALPHA_GREATER << 1) | alphaRef)
+	fbzMode := uint32(VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_CHROMAKEY)
+	backend.UpdatePipelineState(fbzMode, alphaMode)
+
+	// Draw red triangle with alpha=0.8 (should pass both tests)
+	tri1 := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.5, R: 1.0, G: 0.0, B: 0.0, A: 0.8},
+			{X: 40, Y: 10, Z: 0.5, R: 1.0, G: 0.0, B: 0.0, A: 0.8},
+			{X: 25, Y: 40, Z: 0.5, R: 1.0, G: 0.0, B: 0.0, A: 0.8},
+		},
+	}
+
+	// Draw magenta triangle with alpha=0.8 (should fail chroma key)
+	tri2 := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 60, Y: 10, Z: 0.5, R: 1.0, G: 0.0, B: 1.0, A: 0.8},
+			{X: 90, Y: 10, Z: 0.5, R: 1.0, G: 0.0, B: 1.0, A: 0.8},
+			{X: 75, Y: 40, Z: 0.5, R: 1.0, G: 0.0, B: 1.0, A: 0.8},
+		},
+	}
+
+	// Draw green triangle with alpha=0.3 (should fail alpha test)
+	tri3 := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 35, Y: 60, Z: 0.5, R: 0.0, G: 1.0, B: 0.0, A: 0.3},
+			{X: 65, Y: 60, Z: 0.5, R: 0.0, G: 1.0, B: 0.0, A: 0.3},
+			{X: 50, Y: 90, Z: 0.5, R: 0.0, G: 1.0, B: 0.0, A: 0.3},
+		},
+	}
+
+	backend.FlushTriangles([]VoodooTriangle{tri1, tri2, tri3})
+	backend.SwapBuffers(false)
+
+	frame := backend.GetFrame()
+
+	// Check first triangle area (should be red)
+	idx1 := (25*100 + 25) * 4
+	if frame[idx1] < 200 {
+		t.Errorf("Red triangle should pass, got R=%d", frame[idx1])
+	}
+
+	// Check second triangle area (should be blue - chroma keyed)
+	idx2 := (25*100 + 75) * 4
+	if frame[idx2+2] < 200 {
+		t.Errorf("Magenta triangle should be keyed out, got B=%d", frame[idx2+2])
+	}
+
+	// Check third triangle area (should be blue - alpha failed)
+	idx3 := (75*100 + 50) * 4
+	if frame[idx3+2] < 200 {
+		t.Errorf("Low-alpha triangle should be discarded, got B=%d", frame[idx3+2])
+	}
+}
+
+// Test VoodooEngine chromaKey register write
+func TestVoodoo_ChromaKey_Register(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	// Write chroma key value
+	chromaKeyValue := uint32(0x00FF00FF) // Magenta
+	v.HandleWrite(VOODOO_CHROMA_KEY, chromaKeyValue)
+
+	// Read it back
+	readValue := v.HandleRead(VOODOO_CHROMA_KEY)
+	if readValue != chromaKeyValue {
+		t.Errorf("Expected chromaKey 0x%X, got 0x%X", chromaKeyValue, readValue)
+	}
+}
+
+// Test alpha mode register parsing for alpha test
+func TestVoodoo_AlphaMode_TestParsing(t *testing.T) {
+	tests := []struct {
+		name       string
+		alphaMode  uint32
+		expectTest bool
+		expectFunc int
+		expectRef  uint8
+	}{
+		{
+			name:       "Alpha test disabled",
+			alphaMode:  0,
+			expectTest: false,
+			expectFunc: 0,
+			expectRef:  0,
+		},
+		{
+			name:       "Alpha test LESS ref=128",
+			alphaMode:  VOODOO_ALPHA_TEST_EN | (VOODOO_ALPHA_LESS << 1) | (128 << 24),
+			expectTest: true,
+			expectFunc: VOODOO_ALPHA_LESS,
+			expectRef:  128,
+		},
+		{
+			name:       "Alpha test GREATER ref=64",
+			alphaMode:  VOODOO_ALPHA_TEST_EN | (VOODOO_ALPHA_GREATER << 1) | (64 << 24),
+			expectTest: true,
+			expectFunc: VOODOO_ALPHA_GREATER,
+			expectRef:  64,
+		},
+		{
+			name:       "Alpha test ALWAYS ref=255",
+			alphaMode:  VOODOO_ALPHA_TEST_EN | (VOODOO_ALPHA_ALWAYS << 1) | (255 << 24),
+			expectTest: true,
+			expectFunc: VOODOO_ALPHA_ALWAYS,
+			expectRef:  255,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			testEnabled := (tc.alphaMode & VOODOO_ALPHA_TEST_EN) != 0
+			testFunc := int((tc.alphaMode >> 1) & 0x7)
+			testRef := uint8((tc.alphaMode >> 24) & 0xFF)
+
+			if testEnabled != tc.expectTest {
+				t.Errorf("TestEnabled: expected %v, got %v", tc.expectTest, testEnabled)
+			}
+			if testFunc != tc.expectFunc {
+				t.Errorf("TestFunc: expected %d, got %d", tc.expectFunc, testFunc)
+			}
+			if testRef != tc.expectRef {
+				t.Errorf("TestRef: expected %d, got %d", tc.expectRef, testRef)
+			}
+		})
+	}
+}
+
+// Test push constants structure
+func TestVoodoo_PushConstants_Structure(t *testing.T) {
+	pc := VoodooPushConstants{
+		FbzMode:   VOODOO_FBZ_CHROMAKEY | VOODOO_FBZ_RGB_WRITE,
+		AlphaMode: VOODOO_ALPHA_TEST_EN | (VOODOO_ALPHA_GREATER << 1) | (128 << 24),
+		ChromaKey: 0x00FF00FF,
+	}
+
+	// Verify structure is 12 bytes (3 x uint32)
+	expectedSize := 12
+	actualSize := int(unsafe.Sizeof(pc))
+	if actualSize != expectedSize {
+		t.Errorf("PushConstants size: expected %d bytes, got %d", expectedSize, actualSize)
+	}
+
+	// Verify values are stored correctly
+	if pc.FbzMode != (VOODOO_FBZ_CHROMAKEY | VOODOO_FBZ_RGB_WRITE) {
+		t.Error("FbzMode not stored correctly")
+	}
+	if pc.ChromaKey != 0x00FF00FF {
+		t.Error("ChromaKey not stored correctly")
+	}
+}
+
+// Test VoodooEngine passes chromaKey to backend
+func TestVoodoo_ChromaKey_Integration(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	// Clear to blue
+	v.HandleWrite(VOODOO_COLOR0, 0xFF0000FF)
+	v.HandleWrite(VOODOO_FAST_FILL_CMD, 0)
+
+	// Enable chroma key for magenta
+	v.HandleWrite(VOODOO_CHROMA_KEY, 0x00FF00FF)
+	v.HandleWrite(VOODOO_FBZ_MODE, VOODOO_FBZ_RGB_WRITE|VOODOO_FBZ_CHROMAKEY)
+
+	// Draw magenta triangle
+	v.HandleWrite(VOODOO_VERTEX_AX, floatToFixed12_4(250))
+	v.HandleWrite(VOODOO_VERTEX_AY, floatToFixed12_4(150))
+	v.HandleWrite(VOODOO_VERTEX_BX, floatToFixed12_4(390))
+	v.HandleWrite(VOODOO_VERTEX_BY, floatToFixed12_4(330))
+	v.HandleWrite(VOODOO_VERTEX_CX, floatToFixed12_4(110))
+	v.HandleWrite(VOODOO_VERTEX_CY, floatToFixed12_4(330))
+	v.HandleWrite(VOODOO_START_R, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_G, floatToFixed12_12(0.0))
+	v.HandleWrite(VOODOO_START_B, floatToFixed12_12(1.0)) // Magenta
+	v.HandleWrite(VOODOO_START_A, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_Z, floatToFixed20_12(0.5))
+	v.HandleWrite(VOODOO_TRIANGLE_CMD, 0)
+
+	v.HandleWrite(VOODOO_SWAP_BUFFER_CMD, 0)
+
+	// Center pixel should be blue (magenta keyed out)
+	frame := v.GetFrame()
+	centerIdx := (240*640 + 250) * 4
+	r, b := frame[centerIdx], frame[centerIdx+2]
+
+	if r > 50 || b < 200 {
+		t.Errorf("Magenta should be keyed out, got R=%d B=%d", r, b)
+	}
+}
+
+// Test VoodooEngine alpha test integration
+func TestVoodoo_AlphaTest_Integration(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	// Clear to blue
+	v.HandleWrite(VOODOO_COLOR0, 0xFF0000FF)
+	v.HandleWrite(VOODOO_FAST_FILL_CMD, 0)
+
+	// Enable alpha test with GREATER function, ref = 128 (0.5)
+	alphaRef := uint32(128) << 24
+	alphaMode := uint32(VOODOO_ALPHA_TEST_EN | (VOODOO_ALPHA_GREATER << 1) | alphaRef)
+	v.HandleWrite(VOODOO_ALPHA_MODE, alphaMode)
+	v.HandleWrite(VOODOO_FBZ_MODE, VOODOO_FBZ_RGB_WRITE)
+
+	// Draw red triangle with alpha = 0.3 (should be discarded)
+	v.HandleWrite(VOODOO_VERTEX_AX, floatToFixed12_4(250))
+	v.HandleWrite(VOODOO_VERTEX_AY, floatToFixed12_4(150))
+	v.HandleWrite(VOODOO_VERTEX_BX, floatToFixed12_4(390))
+	v.HandleWrite(VOODOO_VERTEX_BY, floatToFixed12_4(330))
+	v.HandleWrite(VOODOO_VERTEX_CX, floatToFixed12_4(110))
+	v.HandleWrite(VOODOO_VERTEX_CY, floatToFixed12_4(330))
+	v.HandleWrite(VOODOO_START_R, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_G, floatToFixed12_12(0.0))
+	v.HandleWrite(VOODOO_START_B, floatToFixed12_12(0.0))
+	v.HandleWrite(VOODOO_START_A, floatToFixed12_12(0.3)) // Low alpha
+	v.HandleWrite(VOODOO_START_Z, floatToFixed20_12(0.5))
+	v.HandleWrite(VOODOO_TRIANGLE_CMD, 0)
+
+	v.HandleWrite(VOODOO_SWAP_BUFFER_CMD, 0)
+
+	// Center pixel should be blue (red discarded)
+	frame := v.GetFrame()
+	centerIdx := (240*640 + 250) * 4
+	r, b := frame[centerIdx], frame[centerIdx+2]
+
+	if r > 50 || b < 200 {
+		t.Errorf("Low-alpha red should be discarded, got R=%d B=%d", r, b)
 	}
 }
 

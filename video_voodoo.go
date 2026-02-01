@@ -129,6 +129,7 @@ type VoodooBackend interface {
 	// Pipeline state
 	UpdatePipelineState(fbzMode, alphaMode uint32) error
 	SetScissor(left, top, right, bottom int)
+	SetChromaKey(chromaKey uint32) // Phase 3: Chroma key support
 
 	// Rendering operations
 	FlushTriangles(triangles []VoodooTriangle)
@@ -349,6 +350,9 @@ func (v *VoodooEngine) HandleWrite(addr uint32, value uint32) {
 		v.zaColor = value
 	case VOODOO_CHROMA_KEY:
 		v.chromaKey = value
+		if v.backend != nil {
+			v.backend.SetChromaKey(value)
+		}
 
 	// Video dimensions
 	case VOODOO_VIDEO_DIM:

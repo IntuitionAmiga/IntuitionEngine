@@ -62,6 +62,14 @@ type PipelineKey struct {
 	DstBlendFactor   int // Voodoo destination blend factor
 }
 
+// VoodooPushConstants contains per-draw state passed to shaders via push constants
+// Phase 3: Alpha Test & Chroma Key support
+type VoodooPushConstants struct {
+	FbzMode   uint32 // Framebuffer Z mode (contains chroma key enable flag)
+	AlphaMode uint32 // Alpha test mode (enable, function, reference value)
+	ChromaKey uint32 // Chroma key color (RGB packed)
+}
+
 // PipelineKeyFromRegisters creates a PipelineKey from fbzMode and alphaMode registers
 func PipelineKeyFromRegisters(fbzMode, alphaMode uint32) PipelineKey {
 	key := PipelineKey{
@@ -164,6 +172,7 @@ type VoodooSoftwareBackend struct {
 	// State
 	fbzMode   uint32
 	alphaMode uint32
+	chromaKey uint32 // Phase 3: Chroma key color (RGB packed)
 
 	// Cached pipeline state (parsed from registers)
 	pipelineKey PipelineKey
@@ -236,6 +245,14 @@ func (b *VoodooSoftwareBackend) SetScissor(left, top, right, bottom int) {
 	b.scissorTop = max(0, top)
 	b.scissorRight = min(b.width, right)
 	b.scissorBottom = min(b.height, bottom)
+}
+
+// SetChromaKey sets the chroma key color for transparency keying
+// Phase 3: Chroma Key support
+func (b *VoodooSoftwareBackend) SetChromaKey(chromaKey uint32) {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	b.chromaKey = chromaKey
 }
 
 // FlushTriangles rasterizes all triangles in the batch
@@ -381,6 +398,14 @@ func (b *VoodooSoftwareBackend) rasterizeTriangle(tri *VoodooTriangle) {
 	rgbWrite := (b.fbzMode & VOODOO_FBZ_RGB_WRITE) != 0
 	depthFunc := int((b.fbzMode >> 5) & 0x7)
 
+	// Phase 3: Check alpha test settings
+	alphaTestEnable := (b.alphaMode & VOODOO_ALPHA_TEST_EN) != 0
+	alphaTestFunc := int((b.alphaMode >> 1) & 0x7)
+	alphaTestRef := float32((b.alphaMode>>24)&0xFF) / 255.0
+
+	// Phase 3: Check chroma key settings
+	chromaKeyEnable := (b.fbzMode & VOODOO_FBZ_CHROMAKEY) != 0
+
 	// Check alpha blending
 	alphaBlendEnable := (b.alphaMode & VOODOO_ALPHA_BLEND_EN) != 0
 
@@ -426,6 +451,20 @@ func (b *VoodooSoftwareBackend) rasterizeTriangle(tri *VoodooTriangle) {
 				g = clampf(g, 0, 1)
 				bVal = clampf(bVal, 0, 1)
 				a = clampf(a, 0, 1)
+
+				// Phase 3: Alpha test (discard if fails)
+				if alphaTestEnable {
+					if !b.alphaTest(a, alphaTestRef, alphaTestFunc) {
+						continue // Discard this fragment
+					}
+				}
+
+				// Phase 3: Chroma key test (discard if matches key color)
+				if chromaKeyEnable {
+					if b.chromaKeyTest(r, g, bVal) {
+						continue // Discard this fragment
+					}
+				}
 
 				// Convert to bytes
 				rByte := byte(r * 255)
@@ -496,6 +535,49 @@ func (b *VoodooSoftwareBackend) depthTest(newZ, oldZ float32, depthFunc int) boo
 		return true
 	}
 	return true
+}
+
+// alphaTest performs alpha comparison (same functions as depth test)
+// Phase 3: Alpha Test support
+func (b *VoodooSoftwareBackend) alphaTest(alphaValue, alphaRef float32, alphaFunc int) bool {
+	switch alphaFunc {
+	case VOODOO_ALPHA_NEVER:
+		return false
+	case VOODOO_ALPHA_LESS:
+		return alphaValue < alphaRef
+	case VOODOO_ALPHA_EQUAL:
+		return alphaValue == alphaRef
+	case VOODOO_ALPHA_LESSEQUAL:
+		return alphaValue <= alphaRef
+	case VOODOO_ALPHA_GREATER:
+		return alphaValue > alphaRef
+	case VOODOO_ALPHA_NOTEQUAL:
+		return alphaValue != alphaRef
+	case VOODOO_ALPHA_GREATEREQUAL:
+		return alphaValue >= alphaRef
+	case VOODOO_ALPHA_ALWAYS:
+		return true
+	}
+	return true
+}
+
+// chromaKeyTest checks if a color matches the chroma key (returns true if should discard)
+// Phase 3: Chroma Key support
+func (b *VoodooSoftwareBackend) chromaKeyTest(r, g, bVal float32) bool {
+	// Extract RGB from chroma key (packed as 0x00RRGGBB)
+	keyR := float32((b.chromaKey>>16)&0xFF) / 255.0
+	keyG := float32((b.chromaKey>>8)&0xFF) / 255.0
+	keyB := float32(b.chromaKey&0xFF) / 255.0
+
+	// Use a small tolerance for floating point comparison
+	const tolerance = 1.0 / 255.0
+
+	// Check if color matches chroma key within tolerance
+	rMatch := math.Abs(float64(r-keyR)) <= float64(tolerance)
+	gMatch := math.Abs(float64(g-keyG)) <= float64(tolerance)
+	bMatch := math.Abs(float64(bVal-keyB)) <= float64(tolerance)
+
+	return rMatch && gMatch && bMatch
 }
 
 // getBlendFactor calculates the blend factor value based on Voodoo blend mode
@@ -632,6 +714,7 @@ type VulkanBackend struct {
 	// Current state
 	fbzMode   uint32
 	alphaMode uint32
+	chromaKey uint32 // Phase 3: Chroma key color
 	scissor   vk.Rect2D
 
 	// Clear color (set by ClearFramebuffer, used by FlushTriangles)
@@ -1181,8 +1264,17 @@ func (vb *VulkanBackend) createPipeline() error {
 	vb.fragShaderModule = fragModule
 
 	// Pipeline layout (shared by all variants)
+	// Phase 3: Add push constant range for alpha test and chroma key
+	pushConstantRange := vk.PushConstantRange{
+		StageFlags: vk.ShaderStageFlags(vk.ShaderStageFragmentBit),
+		Offset:     0,
+		Size:       12, // VoodooPushConstants: 3 x uint32 = 12 bytes
+	}
+
 	layoutInfo := vk.PipelineLayoutCreateInfo{
-		SType: vk.StructureTypePipelineLayoutCreateInfo,
+		SType:                  vk.StructureTypePipelineLayoutCreateInfo,
+		PushConstantRangeCount: 1,
+		PPushConstantRanges:    []vk.PushConstantRange{pushConstantRange},
 	}
 
 	var pipelineLayout vk.PipelineLayout
@@ -1613,6 +1705,16 @@ func (vb *VulkanBackend) SetScissor(left, top, right, bottom int) {
 	vb.software.SetScissor(left, top, right, bottom)
 }
 
+// SetChromaKey sets the chroma key color for transparency keying
+// Phase 3: Chroma Key support
+func (vb *VulkanBackend) SetChromaKey(chromaKey uint32) {
+	vb.mutex.Lock()
+	defer vb.mutex.Unlock()
+
+	vb.chromaKey = chromaKey
+	vb.software.SetChromaKey(chromaKey)
+}
+
 // FlushTriangles renders all triangles
 func (vb *VulkanBackend) FlushTriangles(triangles []VoodooTriangle) {
 	vb.mutex.Lock()
@@ -1692,6 +1794,16 @@ func (vb *VulkanBackend) FlushTriangles(triangles []VoodooTriangle) {
 
 	vk.CmdBeginRenderPass(vb.commandBuffer, &renderPassBegin, vk.SubpassContentsInline)
 	vk.CmdBindPipeline(vb.commandBuffer, vk.PipelineBindPointGraphics, vb.pipeline)
+
+	// Push constants for alpha test and chroma key (Phase 3)
+	pushConstants := VoodooPushConstants{
+		FbzMode:   vb.fbzMode,
+		AlphaMode: vb.alphaMode,
+		ChromaKey: vb.chromaKey,
+	}
+	vk.CmdPushConstants(vb.commandBuffer, vb.pipelineLayout,
+		vk.ShaderStageFlags(vk.ShaderStageFragmentBit), 0, 12,
+		unsafe.Pointer(&pushConstants))
 
 	// Set dynamic scissor
 	vk.CmdSetScissor(vb.commandBuffer, 0, 1, []vk.Rect2D{vb.scissor})
