@@ -417,15 +417,15 @@ start:
     ; ------------------------------------------------------------------------
     ; VOODOO_FBZ_MODE controls depth testing and color writing.
     ;
-    ; Value $0310 sets these bits:
+    ; Value $0630 sets these bits:
     ;   Bit 4 (0x10):  depth_enable    - Enable z-buffer testing
-    ;   Bit 8 (0x100): rgb_write       - Write color to framebuffer
-    ;   Bit 9 (0x200): depth_write     - Write new z-values to z-buffer
-    ;   Bits 5-7:      depth_function  - LESS (new z < stored z passes)
+    ;   Bit 5 (0x20):  depth_function  - LESS (new z < stored z passes)
+    ;   Bit 9 (0x200): rgb_write       - Write color to framebuffer
+    ;   Bit 10(0x400): depth_write     - Write new z-values to z-buffer
     ;
     ; This enables proper hidden surface removal via z-buffering.
     ; ------------------------------------------------------------------------
-    move.l  #$0310,VOODOO_FBZ_MODE  ; depth_enable | rgb_write | depth_write
+    move.l  #$0630,VOODOO_FBZ_MODE  ; depth_enable | depth_less | rgb_write | depth_write
 
     ; ------------------------------------------------------------------------
     ; INITIALIZE ROTATION ANGLES

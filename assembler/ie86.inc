@@ -922,6 +922,26 @@ VOODOO_SWAP_BUFFER_CMD equ 0xF4128
 VOODOO_COLOR0         equ 0xF41D8
 VOODOO_VIDEO_DIM      equ 0xF4214
 
+; Texture registers
+VOODOO_TEXTURE_MODE   equ 0xF4300
+VOODOO_TEX_BASE0      equ 0xF430C
+VOODOO_TEX_WIDTH      equ 0xF4330
+VOODOO_TEX_HEIGHT     equ 0xF4334
+VOODOO_TEX_UPLOAD     equ 0xF4338
+VOODOO_TEXMEM_BASE    equ 0xF5000
+VOODOO_FBZCOLOR_PATH  equ 0xF4104
+
+; x86 I/O ports for Voodoo access (x86 cannot directly address 0xF4xxx in real mode)
+; Usage: Set address offset via ADDR ports, then write 4 data bytes (DATA3 triggers write)
+X86_VOODOO_PORT_ADDR_LO   equ 0xB0    ; Voodoo register offset low byte
+X86_VOODOO_PORT_ADDR_HI   equ 0xB1    ; Voodoo register offset high byte
+X86_VOODOO_PORT_DATA0     equ 0xB2    ; Data byte 0 (bits 0-7)
+X86_VOODOO_PORT_DATA1     equ 0xB3    ; Data byte 1 (bits 8-15)
+X86_VOODOO_PORT_DATA2     equ 0xB4    ; Data byte 2 (bits 16-23)
+X86_VOODOO_PORT_DATA3     equ 0xB5    ; Data byte 3 (bits 24-31) - triggers write
+X86_VOODOO_PORT_TEXSRC_LO equ 0xB6    ; Texture source address low (RAM)
+X86_VOODOO_PORT_TEXSRC_HI equ 0xB7    ; Texture source address high (RAM)
+
 ; fbzMode bits
 VOODOO_FBZ_CLIPPING     equ 0x0001
 VOODOO_FBZ_DEPTH_ENABLE equ 0x0010

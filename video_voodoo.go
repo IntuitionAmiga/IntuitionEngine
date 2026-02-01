@@ -119,6 +119,11 @@ type VoodooEngine struct {
 
 	// Framebuffer for GetFrame() (compositor output)
 	frameBuffer []byte
+
+	// Texture memory for uploads
+	textureMemory []byte
+	textureWidth  int
+	textureHeight int
 }
 
 // VoodooBackend interface for rendering backends
@@ -164,6 +169,7 @@ func NewVoodooEngine(bus *SystemBus) (*VoodooEngine, error) {
 		enabled:       true,
 		triangleBatch: make([]VoodooTriangle, 0, VOODOO_MAX_BATCH_TRIANGLES),
 		frameBuffer:   make([]byte, VOODOO_DEFAULT_WIDTH*VOODOO_DEFAULT_HEIGHT*4),
+		textureMemory: make([]byte, VOODOO_TEXMEM_SIZE),
 		clipRight:     VOODOO_DEFAULT_WIDTH,
 		clipBottom:    VOODOO_DEFAULT_HEIGHT,
 	}
@@ -340,6 +346,20 @@ func (v *VoodooEngine) HandleWrite(addr uint32, value uint32) {
 			clampT := (value & VOODOO_TEX_CLAMP_T) != 0
 			v.backend.SetTextureEnabled(enabled)
 			v.backend.SetTextureWrapMode(clampS, clampT)
+		}
+	case VOODOO_TEX_WIDTH:
+		v.textureWidth = int(value)
+	case VOODOO_TEX_HEIGHT:
+		v.textureHeight = int(value)
+	case VOODOO_TEX_UPLOAD:
+		// Trigger texture upload to backend
+		if v.textureWidth > 0 && v.textureHeight > 0 && v.backend != nil {
+			size := v.textureWidth * v.textureHeight * 4
+			if size <= len(v.textureMemory) {
+				format := int((v.textureMode >> 8) & 0xF)
+				v.backend.SetTextureData(v.textureWidth, v.textureHeight,
+					v.textureMemory[:size], format)
+			}
 		}
 	case VOODOO_FOG_MODE:
 		v.fogMode = value

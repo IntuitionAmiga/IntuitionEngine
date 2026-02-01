@@ -166,6 +166,9 @@ const (
 	VOODOO_TEX_BASE6    = VOODOO_BASE + 0x324 // Texture base address (LOD 6)
 	VOODOO_TEX_BASE7    = VOODOO_BASE + 0x328 // Texture base address (LOD 7)
 	VOODOO_TEX_BASE8    = VOODOO_BASE + 0x32C // Texture base address (LOD 8)
+	VOODOO_TEX_WIDTH    = VOODOO_BASE + 0x330 // Texture width for upload (IE extension)
+	VOODOO_TEX_HEIGHT   = VOODOO_BASE + 0x334 // Texture height for upload (IE extension)
+	VOODOO_TEX_UPLOAD   = VOODOO_BASE + 0x338 // Write to trigger texture upload (IE extension)
 	VOODOO_PALETTE_BASE = VOODOO_BASE + 0x400 // Texture palette (256 entries)
 )
 
@@ -370,4 +373,21 @@ const (
 const (
 	VOODOO_MAX_BATCH_TRIANGLES = 4096 // Maximum triangles per batch
 	VOODOO_MAX_BATCH_VERTICES  = VOODOO_MAX_BATCH_TRIANGLES * 3
+)
+
+// Z80 Voodoo I/O ports (allows 8-bit CPUs to access 32-bit Voodoo registers)
+// The Z80 cannot directly address Voodoo (0xF4000+) due to 16-bit address space.
+// These ports provide an address/data interface with 32-bit accumulation:
+//  1. Write register offset (from VOODOO_BASE) to ADDR_LO/HI ports
+//  2. Write 4 data bytes to DATA0-DATA3 (little-endian)
+//  3. Writing DATA3 triggers the 32-bit write to Voodoo
+const (
+	Z80_VOODOO_PORT_ADDR_LO   = 0xB0 // Voodoo register offset low byte
+	Z80_VOODOO_PORT_ADDR_HI   = 0xB1 // Voodoo register offset high byte
+	Z80_VOODOO_PORT_DATA0     = 0xB2 // Data byte 0 (bits 0-7)
+	Z80_VOODOO_PORT_DATA1     = 0xB3 // Data byte 1 (bits 8-15)
+	Z80_VOODOO_PORT_DATA2     = 0xB4 // Data byte 2 (bits 16-23)
+	Z80_VOODOO_PORT_DATA3     = 0xB5 // Data byte 3 (bits 24-31) - triggers write
+	Z80_VOODOO_PORT_TEXSRC_LO = 0xB6 // Texture source address low byte (Z80 RAM)
+	Z80_VOODOO_PORT_TEXSRC_HI = 0xB7 // Texture source address high byte (Z80 RAM)
 )

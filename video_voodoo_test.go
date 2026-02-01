@@ -4592,3 +4592,365 @@ func BenchmarkVoodoo_FullFrame(b *testing.B) {
 		v.HandleWrite(VOODOO_SWAP_BUFFER_CMD, 0)
 	}
 }
+
+// =============================================================================
+// Texture Memory Upload Tests (TDD for assembly texture upload support)
+// =============================================================================
+
+func TestVoodoo_TextureMemory_Write(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	// Write a 32-bit value to texture memory
+	v.HandleWrite(VOODOO_TEXMEM_BASE, 0xAABBCCDD)
+
+	// Verify bytes were stored correctly (little-endian)
+	if v.textureMemory[0] != 0xDD {
+		t.Errorf("byte 0: expected 0xDD, got 0x%02X", v.textureMemory[0])
+	}
+	if v.textureMemory[1] != 0xCC {
+		t.Errorf("byte 1: expected 0xCC, got 0x%02X", v.textureMemory[1])
+	}
+	if v.textureMemory[2] != 0xBB {
+		t.Errorf("byte 2: expected 0xBB, got 0x%02X", v.textureMemory[2])
+	}
+	if v.textureMemory[3] != 0xAA {
+		t.Errorf("byte 3: expected 0xAA, got 0x%02X", v.textureMemory[3])
+	}
+}
+
+func TestVoodoo_TextureMemory_MultipleWrites(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	// Write pattern to fill 16 bytes (4 x 32-bit writes)
+	v.HandleWrite(VOODOO_TEXMEM_BASE+0, 0x11111111)
+	v.HandleWrite(VOODOO_TEXMEM_BASE+4, 0x22222222)
+	v.HandleWrite(VOODOO_TEXMEM_BASE+8, 0x33333333)
+	v.HandleWrite(VOODOO_TEXMEM_BASE+12, 0x44444444)
+
+	// Verify writes
+	expected := []byte{
+		0x11, 0x11, 0x11, 0x11,
+		0x22, 0x22, 0x22, 0x22,
+		0x33, 0x33, 0x33, 0x33,
+		0x44, 0x44, 0x44, 0x44,
+	}
+	for i, exp := range expected {
+		if v.textureMemory[i] != exp {
+			t.Errorf("byte %d: expected 0x%02X, got 0x%02X", i, exp, v.textureMemory[i])
+		}
+	}
+}
+
+func TestVoodoo_TextureMemory_OffsetWrite(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	// Write at offset 100
+	v.HandleWrite(VOODOO_TEXMEM_BASE+100, 0xDEADBEEF)
+
+	// Verify at correct offset (little-endian)
+	if v.textureMemory[100] != 0xEF {
+		t.Errorf("byte 100: expected 0xEF, got 0x%02X", v.textureMemory[100])
+	}
+	if v.textureMemory[101] != 0xBE {
+		t.Errorf("byte 101: expected 0xBE, got 0x%02X", v.textureMemory[101])
+	}
+	if v.textureMemory[102] != 0xAD {
+		t.Errorf("byte 102: expected 0xAD, got 0x%02X", v.textureMemory[102])
+	}
+	if v.textureMemory[103] != 0xDE {
+		t.Errorf("byte 103: expected 0xDE, got 0x%02X", v.textureMemory[103])
+	}
+}
+
+func TestVoodoo_TextureDimensions_Width(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	v.HandleWrite(VOODOO_TEX_WIDTH, 64)
+
+	if v.textureWidth != 64 {
+		t.Errorf("textureWidth: expected 64, got %d", v.textureWidth)
+	}
+}
+
+func TestVoodoo_TextureDimensions_Height(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	v.HandleWrite(VOODOO_TEX_HEIGHT, 64)
+
+	if v.textureHeight != 64 {
+		t.Errorf("textureHeight: expected 64, got %d", v.textureHeight)
+	}
+}
+
+func TestVoodoo_TextureUpload_Trigger(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	// Set up software backend
+	backend := NewVoodooSoftwareBackend()
+	if err := backend.Init(640, 480); err != nil {
+		t.Fatalf("Backend init failed: %v", err)
+	}
+	v.SetBackend(backend)
+
+	// Set dimensions for 2x2 test texture
+	v.HandleWrite(VOODOO_TEX_WIDTH, 2)
+	v.HandleWrite(VOODOO_TEX_HEIGHT, 2)
+
+	// Write 2x2 RGBA texture (16 bytes)
+	v.HandleWrite(VOODOO_TEXMEM_BASE+0, 0xFF0000FF)  // Red (ABGR)
+	v.HandleWrite(VOODOO_TEXMEM_BASE+4, 0xFF00FF00)  // Green
+	v.HandleWrite(VOODOO_TEXMEM_BASE+8, 0xFFFF0000)  // Blue
+	v.HandleWrite(VOODOO_TEXMEM_BASE+12, 0xFFFFFFFF) // White
+
+	// Enable texture mode
+	v.HandleWrite(VOODOO_TEXTURE_MODE, VOODOO_TEX_ENABLE|(VOODOO_TEX_FMT_ARGB8888<<8))
+
+	// Trigger upload - should not panic
+	v.HandleWrite(VOODOO_TEX_UPLOAD, 1)
+
+	// If we got here without panicking, the upload mechanism works
+}
+
+func TestVoodoo_TextureMemory_BoundsCheck(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	// Write at end of texture memory should work
+	v.HandleWrite(VOODOO_TEXMEM_BASE+VOODOO_TEXMEM_SIZE-4, 0x12345678)
+
+	// Verify the write worked
+	offset := VOODOO_TEXMEM_SIZE - 4
+	if v.textureMemory[offset] != 0x78 {
+		t.Errorf("end boundary write failed")
+	}
+
+	// Write beyond should be ignored (no panic)
+	// This tests that out-of-bounds writes don't crash
+	v.HandleWrite(VOODOO_TEXMEM_BASE+VOODOO_TEXMEM_SIZE, 0xDEADBEEF)
+	v.HandleWrite(VOODOO_TEXMEM_BASE+VOODOO_TEXMEM_SIZE+100, 0xDEADBEEF)
+}
+
+func TestVoodoo_TextureMemory_64x64Upload(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	// Set up software backend
+	backend := NewVoodooSoftwareBackend()
+	if err := backend.Init(640, 480); err != nil {
+		t.Fatalf("Backend init failed: %v", err)
+	}
+	v.SetBackend(backend)
+
+	// Set dimensions for 64x64 texture
+	v.HandleWrite(VOODOO_TEX_WIDTH, 64)
+	v.HandleWrite(VOODOO_TEX_HEIGHT, 64)
+
+	// Fill texture memory with a pattern (64x64x4 = 16384 bytes = 4096 dwords)
+	for i := uint32(0); i < 4096; i++ {
+		// Create a gradient pattern
+		v.HandleWrite(VOODOO_TEXMEM_BASE+i*4, 0xFF000000|i)
+	}
+
+	// Enable texture mode
+	v.HandleWrite(VOODOO_TEXTURE_MODE, VOODOO_TEX_ENABLE|(VOODOO_TEX_FMT_ARGB8888<<8))
+
+	// Trigger upload
+	v.HandleWrite(VOODOO_TEX_UPLOAD, 1)
+
+	// Verify dimensions were set correctly
+	if v.textureWidth != 64 {
+		t.Errorf("textureWidth: expected 64, got %d", v.textureWidth)
+	}
+	if v.textureHeight != 64 {
+		t.Errorf("textureHeight: expected 64, got %d", v.textureHeight)
+	}
+}
+
+// TestZ80_VoodooPort_Triangle simulates Z80 I/O port writes for a simple triangle
+func TestZ80_VoodooPort_Triangle(t *testing.T) {
+	// Create a Voodoo engine
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	// Simulate Z80 I/O port writes by calling HandleWrite directly with offsets
+
+	// Set video dimensions (640x480)
+	v.HandleWrite(VOODOO_VIDEO_DIM, (640<<16)|480)
+
+	// Set FBZ mode
+	v.HandleWrite(VOODOO_FBZ_MODE, 0x0310)
+
+	// Clear screen with blue
+	v.HandleWrite(VOODOO_COLOR0, 0xFF000088)
+	v.HandleWrite(VOODOO_FAST_FILL_CMD, 0)
+
+	// Set vertex A: (320, 100) in 12.4 format
+	v.HandleWrite(VOODOO_VERTEX_AX, 320<<4)
+	v.HandleWrite(VOODOO_VERTEX_AY, 100<<4)
+
+	// Set vertex B: (500, 380) in 12.4 format
+	v.HandleWrite(VOODOO_VERTEX_BX, 500<<4)
+	v.HandleWrite(VOODOO_VERTEX_BY, 380<<4)
+
+	// Set vertex C: (140, 380) in 12.4 format
+	v.HandleWrite(VOODOO_VERTEX_CX, 140<<4)
+	v.HandleWrite(VOODOO_VERTEX_CY, 380<<4)
+
+	// Set white color (R=G=B=A=1.0 in 12.12 format = 0x1000)
+	v.HandleWrite(VOODOO_START_R, 0x1000)
+	v.HandleWrite(VOODOO_START_G, 0x1000)
+	v.HandleWrite(VOODOO_START_B, 0x1000)
+	v.HandleWrite(VOODOO_START_A, 0x1000)
+
+	// Submit triangle
+	v.HandleWrite(VOODOO_TRIANGLE_CMD, 0)
+
+	// Verify triangle was added to batch
+	if len(v.triangleBatch) != 1 {
+		t.Fatalf("Expected 1 triangle in batch, got %d", len(v.triangleBatch))
+	}
+
+	// Check vertex coordinates
+	tri := v.triangleBatch[0]
+	if tri.Vertices[0].X != 320.0 {
+		t.Errorf("Vertex A X: expected 320.0, got %f", tri.Vertices[0].X)
+	}
+	if tri.Vertices[0].Y != 100.0 {
+		t.Errorf("Vertex A Y: expected 100.0, got %f", tri.Vertices[0].Y)
+	}
+
+	// Check vertex colors (should be white)
+	if tri.Vertices[0].R < 0.9 || tri.Vertices[0].G < 0.9 || tri.Vertices[0].B < 0.9 {
+		t.Errorf("Vertex A color: expected white (1,1,1), got (%f,%f,%f)",
+			tri.Vertices[0].R, tri.Vertices[0].G, tri.Vertices[0].B)
+	}
+
+	// Swap buffers (renders the triangle)
+	v.HandleWrite(VOODOO_SWAP_BUFFER_CMD, 1)
+
+	// Verify batch was cleared
+	if len(v.triangleBatch) != 0 {
+		t.Errorf("Expected empty batch after swap, got %d triangles", len(v.triangleBatch))
+	}
+
+	t.Log("Z80 I/O port triangle test passed!")
+}
+
+// TestZ80_VoodooPort_Triangle_PixelCheck verifies triangle actually renders pixels
+func TestZ80_VoodooPort_Triangle_PixelCheck(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	// Set video dimensions
+	v.HandleWrite(VOODOO_VIDEO_DIM, (640<<16)|480)
+
+	// Disable texture, use vertex color only
+	v.HandleWrite(VOODOO_TEXTURE_MODE, 0)
+	v.HandleWrite(VOODOO_FBZCOLOR_PATH, 0) // VOODOO_CC_ITERATED
+
+	// Clear screen with blue (0xFF0000FF = ARGB blue)
+	v.HandleWrite(VOODOO_COLOR0, 0xFF0000FF)
+	v.HandleWrite(VOODOO_FAST_FILL_CMD, 0)
+
+	// Log triangle batch before
+	t.Logf("Before triangle: batch size = %d", len(v.triangleBatch))
+
+	// Set vertex A: (320, 100)
+	v.HandleWrite(VOODOO_VERTEX_AX, 320<<4)
+	v.HandleWrite(VOODOO_VERTEX_AY, 100<<4)
+	t.Logf("Vertex A: X=%f, Y=%f", v.vertices[0].X, v.vertices[0].Y)
+
+	// Set vertex B: (500, 380)
+	v.HandleWrite(VOODOO_VERTEX_BX, 500<<4)
+	v.HandleWrite(VOODOO_VERTEX_BY, 380<<4)
+	t.Logf("Vertex B: X=%f, Y=%f", v.vertices[1].X, v.vertices[1].Y)
+
+	// Set vertex C: (140, 380)
+	v.HandleWrite(VOODOO_VERTEX_CX, 140<<4)
+	v.HandleWrite(VOODOO_VERTEX_CY, 380<<4)
+	t.Logf("Vertex C: X=%f, Y=%f", v.vertices[2].X, v.vertices[2].Y)
+
+	// Set white color
+	v.HandleWrite(VOODOO_START_R, 0x1000)
+	v.HandleWrite(VOODOO_START_G, 0x1000)
+	v.HandleWrite(VOODOO_START_B, 0x1000)
+	v.HandleWrite(VOODOO_START_A, 0x1000)
+	t.Logf("Color: R=%f, G=%f, B=%f, A=%f",
+		v.currentVertex.R, v.currentVertex.G, v.currentVertex.B, v.currentVertex.A)
+
+	// Submit triangle
+	v.HandleWrite(VOODOO_TRIANGLE_CMD, 0)
+	t.Logf("After triangle cmd: batch size = %d", len(v.triangleBatch))
+
+	if len(v.triangleBatch) != 1 {
+		t.Fatalf("Triangle not added to batch!")
+	}
+
+	// Log triangle details
+	tri := v.triangleBatch[0]
+	for i, vtx := range tri.Vertices {
+		t.Logf("Triangle vertex %d: X=%f, Y=%f, R=%f, G=%f, B=%f, A=%f",
+			i, vtx.X, vtx.Y, vtx.R, vtx.G, vtx.B, vtx.A)
+	}
+
+	// Swap buffers
+	v.HandleWrite(VOODOO_SWAP_BUFFER_CMD, 1)
+
+	// Get the frame
+	frame := v.GetFrame()
+	t.Logf("Frame size: %d bytes", len(frame))
+
+	// Check pixel at triangle center (approximately 320, 250)
+	centerX, centerY := 320, 250
+	idx := (centerY*640 + centerX) * 4
+	r, g, b, a := frame[idx], frame[idx+1], frame[idx+2], frame[idx+3]
+	t.Logf("Center pixel (%d,%d): R=%d, G=%d, B=%d, A=%d", centerX, centerY, r, g, b, a)
+
+	// Check a corner pixel (should be blue from clear)
+	cornerX, cornerY := 10, 10
+	idx = (cornerY*640 + cornerX) * 4
+	r, g, b, a = frame[idx], frame[idx+1], frame[idx+2], frame[idx+3]
+	t.Logf("Corner pixel (%d,%d): R=%d, G=%d, B=%d, A=%d", cornerX, cornerY, r, g, b, a)
+
+	// The center should NOT be blue if triangle rendered
+	centerIdx := (250*640 + 320) * 4
+	if frame[centerIdx] == 0 && frame[centerIdx+1] == 0 && frame[centerIdx+2] == 255 {
+		t.Errorf("Triangle did not render - center pixel is still blue!")
+	}
+}

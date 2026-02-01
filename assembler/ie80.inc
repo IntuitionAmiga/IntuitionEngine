@@ -129,7 +129,7 @@
 .set PSG_PORT_DATA,0xF1
 
 ; ============================================================================
-; POKEY AUDIO REGISTERS (Atari-style addresses $D200-$D209)
+; POKEY AUDIO REGISTERS (Atari-style addresses 0xD200-0xD209)
 ; ============================================================================
 ; For SAP file playback and Atari 8-bit sound emulation
 
@@ -179,7 +179,7 @@
 ; For Z80: Use OUT (SID_PORT_SELECT),A to select register index,
 ;          then OUT (SID_PORT_DATA),A to write data
 ;
-; SID+ mode (write 1 to register $19) enables enhanced audio
+; SID+ mode (write 1 to register 0x19) enables enhanced audio
 ; ----------------------------------------------------------------------------
 
 ; Z80 port I/O for SID access
@@ -2413,6 +2413,17 @@
 ; Base address
 .set VOODOO_BASE,0xF4000
 
+; Z80 I/O ports for Voodoo access (Z80 cannot directly address 0xF4xxx)
+; Usage: Set address offset via ADDR ports, then write 4 data bytes (DATA3 triggers write)
+.set Z80_VOODOO_PORT_ADDR_LO,0xB0    ; Voodoo register offset low byte
+.set Z80_VOODOO_PORT_ADDR_HI,0xB1    ; Voodoo register offset high byte
+.set Z80_VOODOO_PORT_DATA0,0xB2      ; Data byte 0 (bits 0-7)
+.set Z80_VOODOO_PORT_DATA1,0xB3      ; Data byte 1 (bits 8-15)
+.set Z80_VOODOO_PORT_DATA2,0xB4      ; Data byte 2 (bits 16-23)
+.set Z80_VOODOO_PORT_DATA3,0xB5      ; Data byte 3 (bits 24-31) - triggers write
+.set Z80_VOODOO_PORT_TEXSRC_LO,0xB6  ; Texture source address low (Z80 RAM)
+.set Z80_VOODOO_PORT_TEXSRC_HI,0xB7  ; Texture source address high (Z80 RAM)
+
 ; Status register (read-only)
 .set VOODOO_STATUS,0xF4000
 
@@ -2447,6 +2458,15 @@
 ; Configuration registers
 .set VOODOO_COLOR0,0xF41D8
 .set VOODOO_VIDEO_DIM,0xF4214
+
+; Texture registers
+.set VOODOO_TEXTURE_MODE,0xF4300
+.set VOODOO_TEX_BASE0,0xF430C
+.set VOODOO_TEX_WIDTH,0xF4330
+.set VOODOO_TEX_HEIGHT,0xF4334
+.set VOODOO_TEX_UPLOAD,0xF4338
+.set VOODOO_TEXMEM_BASE,0xF5000
+.set VOODOO_FBZCOLOR_PATH,0xF4104
 
 ; fbzMode bits
 .set VOODOO_FBZ_CLIPPING,0x0001
@@ -2510,12 +2530,12 @@
 ;   Bit 5:     TEX_CLAMP_S - Clamp S coordinate (vs wrap)
 ;   Bit 6:     TEX_CLAMP_T - Clamp T coordinate (vs wrap)
 ;   Bits 8-11: TEX_FORMAT - Texture format
-.set VOODOO_TEX_ENABLE,$0001
-.set VOODOO_TEX_MINIFY,$000E
-.set VOODOO_TEX_MAGNIFY,$0010
-.set VOODOO_TEX_CLAMP_S,$0020
-.set VOODOO_TEX_CLAMP_T,$0040
-.set VOODOO_TEX_FORMAT,$0F00
+.set VOODOO_TEX_ENABLE,0x0001
+.set VOODOO_TEX_MINIFY,0x000E
+.set VOODOO_TEX_MAGNIFY,0x0010
+.set VOODOO_TEX_CLAMP_S,0x0020
+.set VOODOO_TEX_CLAMP_T,0x0040
+.set VOODOO_TEX_FORMAT,0x0F00
 .set VOODOO_TEX_FORMAT_SHIFT,8
 
 ; Texture format constants (for TEX_FORMAT field)

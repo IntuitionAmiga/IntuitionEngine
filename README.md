@@ -1381,9 +1381,66 @@ Configuration:
 0x0F41D8: VOODOO_COLOR0      - Fill color for FAST_FILL_CMD (ARGB)
 0x0F4214: VOODOO_VIDEO_DIM   - Video dimensions (width<<16 | height)
 
-Texture Mapping (0x0F4300 - 0x0F432F):
+Texture Mapping (0x0F4300 - 0x0F433F):
 0x0F4300: VOODOO_TEXTURE_MODE - Texture mode configuration
 0x0F430C: VOODOO_TEX_BASE0    - Texture base address (LOD 0)
+0x0F4330: VOODOO_TEX_WIDTH    - Texture width for upload (IE extension)
+0x0F4334: VOODOO_TEX_HEIGHT   - Texture height for upload (IE extension)
+0x0F4338: VOODOO_TEX_UPLOAD   - Write to trigger texture upload (IE extension)
+
+Texture Memory (0x0F5000 - 0x0F5FFF):
+0x0F5000: VOODOO_TEXMEM_BASE  - Texture memory base (64KB)
+                              Write RGBA pixel data here, then trigger upload
+```
+
+### Voodoo Access by CPU Type
+
+**x86 32-bit flat mode:** Direct memory access to 0xF4000-0xF43FF works:
+
+```nasm
+; x86 32-bit - direct access to Voodoo registers
+mov dword [0xF4100], (640 << 16) | 480    ; VOODOO_VIDEO_DIM
+mov dword [0xF4110], 0x0310               ; VOODOO_FBZ_MODE
+mov dword [0xF4080], 0                    ; VOODOO_TRIANGLE_CMD
+```
+
+**Z80 / x86 real mode:** Cannot directly address 0xF4xxx. Use I/O ports 0xB0-0xB7:
+
+| Port | Name | Description |
+|------|------|-------------|
+| 0xB0 | ADDR_LO | Register offset low byte (from VOODOO_BASE) |
+| 0xB1 | ADDR_HI | Register offset high byte |
+| 0xB2 | DATA0 | Data byte 0 (bits 0-7) |
+| 0xB3 | DATA1 | Data byte 1 (bits 8-15) |
+| 0xB4 | DATA2 | Data byte 2 (bits 16-23) |
+| 0xB5 | DATA3 | Data byte 3 (bits 24-31) - triggers 32-bit write |
+| 0xB6 | TEXSRC_LO | Texture source address low (RAM) |
+| 0xB7 | TEXSRC_HI | Texture source address high (RAM) |
+
+**I/O Port Usage:**
+1. Set register offset (from 0xF4000) via ports 0xB0-0xB1
+2. Write 4 data bytes to ports 0xB2-0xB5 (little-endian)
+3. Writing to port 0xB5 triggers the 32-bit write to Voodoo
+
+**Texture Upload via I/O Ports:**
+1. Set texture dimensions via TEX_WIDTH/TEX_HEIGHT registers
+2. Set source address in RAM via ports 0xB6-0xB7
+3. Trigger upload via TEX_UPLOAD register - emulator copies from CPU RAM
+
+```z80
+; Z80 Example: Write 640x480 to VOODOO_VIDEO_DIM (offset 0x100)
+    ld a, 0x00
+    out (0xB0), a           ; Offset low = 0x00
+    ld a, 0x01
+    out (0xB1), a           ; Offset high = 0x01 (offset = 0x100)
+    ld a, 0xE0
+    out (0xB2), a           ; Height low (480 & 0xFF)
+    ld a, 0x01
+    out (0xB3), a           ; Height high (480 >> 8)
+    ld a, 0x80
+    out (0xB4), a           ; Width low (640 & 0xFF)
+    ld a, 0x02
+    out (0xB5), a           ; Width high - triggers write
 ```
 
 ### Fixed-Point Formats

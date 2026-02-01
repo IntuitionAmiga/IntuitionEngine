@@ -2339,6 +2339,15 @@ VOODOO_SWAP_BUFFER_CMD = $F412      ; Page offset $28
 VOODOO_COLOR0       = $F41D         ; Page offset $D8
 VOODOO_VIDEO_DIM    = $F421         ; Page offset $14
 
+; Texture registers
+VOODOO_TEXTURE_MODE = $F430         ; Texture mode configuration
+VOODOO_TEX_BASE0    = $F430         ; Page offset $0C - Texture base address
+VOODOO_TEX_WIDTH    = $F433         ; Page offset $30 - Texture width for upload (IE extension)
+VOODOO_TEX_HEIGHT   = $F433         ; Page offset $34 - Texture height for upload (IE extension)
+VOODOO_TEX_UPLOAD   = $F433         ; Page offset $38 - Write to trigger texture upload (IE extension)
+VOODOO_TEXMEM_BASE  = $F500         ; Texture memory base (64KB)
+VOODOO_FBZCOLOR_PATH = $F410        ; Page offset $04 - Color combine mode
+
 ; fbzMode bits
 VOODOO_FBZ_CLIPPING     = $01
 VOODOO_FBZ_DEPTH_ENABLE = $10

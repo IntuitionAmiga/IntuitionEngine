@@ -61,9 +61,10 @@ const (
 
 // CPUX86Config holds configuration for the x86 runner
 type CPUX86Config struct {
-	LoadAddr  uint32
-	Entry     uint32
-	VGAEngine *VGAEngine // Optional VGA engine for port I/O
+	LoadAddr     uint32
+	Entry        uint32
+	VGAEngine    *VGAEngine    // Optional VGA engine for port I/O
+	VoodooEngine *VoodooEngine // Optional Voodoo engine for port I/O
 }
 
 // CPUX86Runner manages the x86 CPU and system bus
@@ -85,6 +86,12 @@ type X86SystemBus struct {
 	gtiaRegSelect  byte       // Currently selected GTIA register for port I/O
 	vgaEngine      *VGAEngine // VGA engine for port I/O access
 
+	// Voodoo 32-bit register access via 8-bit ports
+	voodooAddr   uint16        // Target register offset from VOODOO_BASE
+	voodooData   [4]byte       // 32-bit data accumulator (little-endian)
+	voodooTexSrc uint16        // Texture source address in RAM
+	voodooEngine *VoodooEngine // Voodoo engine for port I/O access
+
 	// Extended bank windows (same as Z80/6502)
 	vramBank    uint32
 	vramEnabled bool
@@ -104,6 +111,11 @@ func NewX86SystemBus(bus *SystemBus) *X86SystemBus {
 // NewX86SystemBusWithVGA creates an x86 system bus with VGA engine support
 func NewX86SystemBusWithVGA(bus *SystemBus, vga *VGAEngine) *X86SystemBus {
 	return &X86SystemBus{bus: bus, psgRegSelect: 0, vgaEngine: vga}
+}
+
+// NewX86SystemBusWithVoodoo creates an x86 system bus with VGA and Voodoo engine support
+func NewX86SystemBusWithVoodoo(bus *SystemBus, vga *VGAEngine, voodoo *VoodooEngine) *X86SystemBus {
+	return &X86SystemBus{bus: bus, psgRegSelect: 0, vgaEngine: vga, voodooEngine: voodoo}
 }
 
 // translateIO translates I/O addresses for the system bus
@@ -384,6 +396,28 @@ func (b *X86SystemBus) In(port uint16) byte {
 		}
 	}
 
+	// Voodoo port I/O (0xB0-0xB7)
+	if b.voodooEngine != nil {
+		switch port {
+		case Z80_VOODOO_PORT_ADDR_LO:
+			return byte(b.voodooAddr & 0xFF)
+		case Z80_VOODOO_PORT_ADDR_HI:
+			return byte(b.voodooAddr >> 8)
+		case Z80_VOODOO_PORT_DATA0:
+			return b.voodooData[0]
+		case Z80_VOODOO_PORT_DATA1:
+			return b.voodooData[1]
+		case Z80_VOODOO_PORT_DATA2:
+			return b.voodooData[2]
+		case Z80_VOODOO_PORT_DATA3:
+			return b.voodooData[3]
+		case Z80_VOODOO_PORT_TEXSRC_LO:
+			return byte(b.voodooTexSrc & 0xFF)
+		case Z80_VOODOO_PORT_TEXSRC_HI:
+			return byte(b.voodooTexSrc >> 8)
+		}
+	}
+
 	return 0
 }
 
@@ -507,6 +541,50 @@ func (b *X86SystemBus) Out(port uint16, value byte) {
 			}
 		}
 	}
+
+	// Voodoo port I/O (0xB0-0xB7)
+	if b.voodooEngine != nil {
+		switch port {
+		case Z80_VOODOO_PORT_ADDR_LO:
+			b.voodooAddr = (b.voodooAddr & 0xFF00) | uint16(value)
+			return
+		case Z80_VOODOO_PORT_ADDR_HI:
+			b.voodooAddr = (b.voodooAddr & 0x00FF) | (uint16(value) << 8)
+			return
+		case Z80_VOODOO_PORT_DATA0:
+			b.voodooData[0] = value
+			return
+		case Z80_VOODOO_PORT_DATA1:
+			b.voodooData[1] = value
+			return
+		case Z80_VOODOO_PORT_DATA2:
+			b.voodooData[2] = value
+			return
+		case Z80_VOODOO_PORT_DATA3:
+			b.voodooData[3] = value
+			data32 := uint32(b.voodooData[0]) |
+				(uint32(b.voodooData[1]) << 8) |
+				(uint32(b.voodooData[2]) << 16) |
+				(uint32(b.voodooData[3]) << 24)
+			addr := VOODOO_BASE + uint32(b.voodooAddr)
+			if addr == VOODOO_TEX_UPLOAD && b.voodooTexSrc != 0 {
+				texSize := b.voodooEngine.textureWidth * b.voodooEngine.textureHeight * 4
+				if texSize > 0 && texSize <= VOODOO_TEXMEM_SIZE {
+					for i := 0; i < texSize; i++ {
+						b.voodooEngine.textureMemory[i] = b.bus.Read8(uint32(b.voodooTexSrc) + uint32(i))
+					}
+				}
+			}
+			b.voodooEngine.HandleWrite(addr, data32)
+			return
+		case Z80_VOODOO_PORT_TEXSRC_LO:
+			b.voodooTexSrc = (b.voodooTexSrc & 0xFF00) | uint16(value)
+			return
+		case Z80_VOODOO_PORT_TEXSRC_HI:
+			b.voodooTexSrc = (b.voodooTexSrc & 0x00FF) | (uint16(value) << 8)
+			return
+		}
+	}
 }
 
 // Tick implements X86Bus.Tick
@@ -529,7 +607,9 @@ func NewCPUX86Runner(bus *SystemBus, config *CPUX86Config) *CPUX86Runner {
 	}
 
 	var x86Bus *X86SystemBus
-	if config != nil && config.VGAEngine != nil {
+	if config != nil && config.VoodooEngine != nil {
+		x86Bus = NewX86SystemBusWithVoodoo(bus, config.VGAEngine, config.VoodooEngine)
+	} else if config != nil && config.VGAEngine != nil {
 		x86Bus = NewX86SystemBusWithVGA(bus, config.VGAEngine)
 	} else {
 		x86Bus = NewX86SystemBus(bus)

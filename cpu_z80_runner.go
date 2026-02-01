@@ -32,9 +32,10 @@ const (
 )
 
 type CPUZ80Config struct {
-	LoadAddr  uint16
-	Entry     uint16
-	VGAEngine *VGAEngine // Optional VGA engine for port I/O
+	LoadAddr     uint16
+	Entry        uint16
+	VGAEngine    *VGAEngine    // Optional VGA engine for port I/O
+	VoodooEngine *VoodooEngine // Optional Voodoo engine for port I/O
 }
 
 type CPUZ80Runner struct {
@@ -54,6 +55,12 @@ type Z80SystemBus struct {
 	gtiaRegSelect  byte       // Currently selected GTIA register for port I/O
 	vgaEngine      *VGAEngine // VGA engine for port I/O access
 
+	// Voodoo 32-bit register access via 8-bit ports
+	voodooAddr   uint16        // Target register offset from VOODOO_BASE
+	voodooData   [4]byte       // 32-bit data accumulator (little-endian)
+	voodooTexSrc uint16        // Texture source address in Z80 RAM
+	voodooEngine *VoodooEngine // Voodoo engine for port I/O access
+
 	// Extended bank windows for IE80 support (same layout as 6502)
 	vramBank    uint32
 	vramEnabled bool
@@ -72,6 +79,11 @@ func NewZ80SystemBus(bus *SystemBus) *Z80SystemBus {
 // NewZ80SystemBusWithVGA creates a Z80 system bus with VGA engine support
 func NewZ80SystemBusWithVGA(bus *SystemBus, vga *VGAEngine) *Z80SystemBus {
 	return &Z80SystemBus{bus: bus, psgRegSelect: 0, vgaEngine: vga}
+}
+
+// NewZ80SystemBusWithVoodoo creates a Z80 system bus with VGA and Voodoo engine support
+func NewZ80SystemBusWithVoodoo(bus *SystemBus, vga *VGAEngine, voodoo *VoodooEngine) *Z80SystemBus {
+	return &Z80SystemBus{bus: bus, psgRegSelect: 0, vgaEngine: vga, voodooEngine: voodoo}
 }
 
 // translateIO8Bit converts 16-bit I/O addresses (0xF000-0xFFFF) to
@@ -373,6 +385,28 @@ func (b *Z80SystemBus) In(port uint16) byte {
 		}
 	}
 
+	// Handle Voodoo port I/O (0xB0-0xB7)
+	if b.voodooEngine != nil {
+		switch lowPort {
+		case Z80_VOODOO_PORT_ADDR_LO:
+			return byte(b.voodooAddr & 0xFF)
+		case Z80_VOODOO_PORT_ADDR_HI:
+			return byte(b.voodooAddr >> 8)
+		case Z80_VOODOO_PORT_DATA0:
+			return b.voodooData[0]
+		case Z80_VOODOO_PORT_DATA1:
+			return b.voodooData[1]
+		case Z80_VOODOO_PORT_DATA2:
+			return b.voodooData[2]
+		case Z80_VOODOO_PORT_DATA3:
+			return b.voodooData[3]
+		case Z80_VOODOO_PORT_TEXSRC_LO:
+			return byte(b.voodooTexSrc & 0xFF)
+		case Z80_VOODOO_PORT_TEXSRC_HI:
+			return byte(b.voodooTexSrc >> 8)
+		}
+	}
+
 	return b.bus.Read8(translateIO8Bit(port))
 }
 
@@ -507,6 +541,55 @@ func (b *Z80SystemBus) Out(port uint16, value byte) {
 		}
 	}
 
+	// Handle Voodoo port I/O (0xB0-0xB7)
+	// Allows Z80 to write 32-bit values to Voodoo registers via 8-bit port interface
+	if b.voodooEngine != nil {
+		switch lowPort {
+		case Z80_VOODOO_PORT_ADDR_LO:
+			b.voodooAddr = (b.voodooAddr & 0xFF00) | uint16(value)
+			return
+		case Z80_VOODOO_PORT_ADDR_HI:
+			b.voodooAddr = (b.voodooAddr & 0x00FF) | (uint16(value) << 8)
+			return
+		case Z80_VOODOO_PORT_DATA0:
+			b.voodooData[0] = value
+			return
+		case Z80_VOODOO_PORT_DATA1:
+			b.voodooData[1] = value
+			return
+		case Z80_VOODOO_PORT_DATA2:
+			b.voodooData[2] = value
+			return
+		case Z80_VOODOO_PORT_DATA3:
+			// Writing DATA3 triggers the 32-bit write to Voodoo
+			b.voodooData[3] = value
+			data32 := uint32(b.voodooData[0]) |
+				(uint32(b.voodooData[1]) << 8) |
+				(uint32(b.voodooData[2]) << 16) |
+				(uint32(b.voodooData[3]) << 24)
+			addr := VOODOO_BASE + uint32(b.voodooAddr)
+
+			// Special handling for texture upload - copy from Z80 RAM to texture memory
+			if addr == VOODOO_TEX_UPLOAD && b.voodooTexSrc != 0 {
+				// Copy texture data from Z80 RAM to Voodoo texture memory
+				texSize := b.voodooEngine.textureWidth * b.voodooEngine.textureHeight * 4
+				if texSize > 0 && texSize <= VOODOO_TEXMEM_SIZE {
+					for i := 0; i < texSize; i++ {
+						b.voodooEngine.textureMemory[i] = b.bus.Read8(uint32(b.voodooTexSrc) + uint32(i))
+					}
+				}
+			}
+			b.voodooEngine.HandleWrite(addr, data32)
+			return
+		case Z80_VOODOO_PORT_TEXSRC_LO:
+			b.voodooTexSrc = (b.voodooTexSrc & 0xFF00) | uint16(value)
+			return
+		case Z80_VOODOO_PORT_TEXSRC_HI:
+			b.voodooTexSrc = (b.voodooTexSrc & 0x00FF) | (uint16(value) << 8)
+			return
+		}
+	}
+
 	b.bus.Write8(translateIO8Bit(port), value)
 }
 
@@ -518,9 +601,11 @@ func NewCPUZ80Runner(bus *SystemBus, config CPUZ80Config) *CPUZ80Runner {
 		loadAddr = defaultZ80LoadAddr
 	}
 
-	// Create Z80 system bus with optional VGA engine for port I/O
+	// Create Z80 system bus with optional VGA and Voodoo engine for port I/O
 	var z80Bus *Z80SystemBus
-	if config.VGAEngine != nil {
+	if config.VoodooEngine != nil {
+		z80Bus = NewZ80SystemBusWithVoodoo(bus, config.VGAEngine, config.VoodooEngine)
+	} else if config.VGAEngine != nil {
 		z80Bus = NewZ80SystemBusWithVGA(bus, config.VGAEngine)
 	} else {
 		z80Bus = NewZ80SystemBus(bus)

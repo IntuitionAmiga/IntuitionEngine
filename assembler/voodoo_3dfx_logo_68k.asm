@@ -351,8 +351,8 @@ start:
     move.l  #(SCREEN_W<<16)|SCREEN_H,VOODOO_VIDEO_DIM
 
     ; Enable depth test and RGB write
-    ; $0310 = depth_enable | rgb_write | depth_write | depth_less
-    move.l  #$0310,VOODOO_FBZ_MODE
+    ; $0630 = depth_enable(0x10) | depth_less(0x20) | rgb_write(0x200) | depth_write(0x400)
+    move.l  #$0630,VOODOO_FBZ_MODE
 
     ; ------------------------------------------------------------------------
     ; INITIALIZE ANIMATION STATE

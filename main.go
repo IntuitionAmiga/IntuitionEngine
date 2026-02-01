@@ -703,9 +703,10 @@ func main() {
 		}
 
 		z80CPU := NewCPUZ80Runner(sysBus, CPUZ80Config{
-			LoadAddr:  parsedLoadAddr,
-			Entry:     parsedEntry,
-			VGAEngine: vgaEngine,
+			LoadAddr:     parsedLoadAddr,
+			Entry:        parsedEntry,
+			VGAEngine:    vgaEngine,
+			VoodooEngine: voodooEngine,
 		})
 
 		// Load program
@@ -736,9 +737,10 @@ func main() {
 	} else if modeX86 {
 		// x86 32-bit flat memory model
 		x86Config := &CPUX86Config{
-			LoadAddr:  0,
-			Entry:     0,
-			VGAEngine: vgaEngine,
+			LoadAddr:     0,
+			Entry:        0,
+			VGAEngine:    vgaEngine,
+			VoodooEngine: voodooEngine,
 		}
 
 		x86CPU := NewCPUX86Runner(sysBus, x86Config)

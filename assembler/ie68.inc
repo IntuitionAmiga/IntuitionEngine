@@ -1466,6 +1466,10 @@ VOODOO_VIDEO_DIM      equ $F4214            ; Video dimensions (width<<16|height
 ; Texture registers
 VOODOO_TEXTURE_MODE   equ $F4300            ; Texture mode configuration
 VOODOO_TEX_BASE0      equ $F430C            ; Texture base address (LOD 0)
+VOODOO_TEX_WIDTH      equ $F4330            ; Texture width for upload (IE extension)
+VOODOO_TEX_HEIGHT     equ $F4334            ; Texture height for upload (IE extension)
+VOODOO_TEX_UPLOAD     equ $F4338            ; Write to trigger texture upload (IE extension)
+VOODOO_TEXMEM_BASE    equ $F5000            ; Texture memory base (64KB)
 
 ; fbzMode bits
 VOODOO_FBZ_CLIPPING     equ $0001           ; Enable scissor clipping
