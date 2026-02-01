@@ -139,6 +139,9 @@ type VoodooBackend interface {
 	// Phase 5: Color combine (fbzColorPath)
 	SetColorPath(fbzColorPath uint32)
 
+	// Phase 6: Fog and dithering
+	SetFogState(fogMode, fogColor uint32)
+
 	// Rendering operations
 	FlushTriangles(triangles []VoodooTriangle)
 	ClearFramebuffer(color uint32)

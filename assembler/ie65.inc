@@ -2447,11 +2447,32 @@ VOODOO_CC_AOTHER_T      = 7                 ; aother * texture
 
 ; Simplified color combine modes for common operations
 ; These are convenience values that combine select + mode bits
+VOODOO_COMBINE_UNSET    = $FFFFFFFF         ; Not explicitly set (use defaults)
 VOODOO_COMBINE_ITERATED = $00               ; Vertex color only (default when no texture)
 VOODOO_COMBINE_TEXTURE  = $01               ; Texture color only
 VOODOO_COMBINE_MODULATE = $61               ; tex * vert (texture modulated by vertex color)
 VOODOO_COMBINE_ADD      = $81               ; tex + vert (additive blend, clamped)
 VOODOO_COMBINE_DECAL    = $41               ; texture with vertex alpha
+
+; Phase 6: fogMode bit fields
+; The fogMode register controls depth-based fog blending
+VOODOO_FOG_ENABLE       = $0001             ; Enable fog processing
+VOODOO_FOG_ADD          = $0002             ; Add fog color to output (vs blend)
+VOODOO_FOG_MULT         = $0004             ; Multiply fog factor by alpha
+VOODOO_FOG_ZALPHA       = $0008             ; Use Z alpha for fog (vs iterated)
+VOODOO_FOG_CONSTANT     = $0010             ; Use constant fog alpha
+VOODOO_FOG_DITHER       = $0020             ; Apply dithering to fog
+VOODOO_FOG_ZONES        = $0040             ; Enable fog zones (table-based fog)
+VOODOO_FOG_TABLE_SHIFT  = 8                 ; Shift for fog table index
+VOODOO_FOG_TABLE_MASK   = $3F               ; 6-bit fog table index mask
+
+; Phase 6: Fog table constants
+VOODOO_FOG_TABLE_BASE   = $F4140            ; Fog table base address (64 entries)
+VOODOO_FOG_TABLE_SIZE   = 64                ; Number of fog table entries
+
+; Phase 6: fbzMode dithering bits (add to fbzMode)
+VOODOO_FBZ_DITHER       = $0100             ; Enable 4x4 ordered dithering
+VOODOO_FBZ_DITHER_2X2   = $0800             ; Use 2x2 dither pattern (vs 4x4)
 
 ; ============================================================================
 ; ZERO PAGE ALLOCATION HELPER

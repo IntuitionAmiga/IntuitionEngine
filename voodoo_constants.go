@@ -313,11 +313,33 @@ const (
 // Simplified color combine modes for common operations
 // These are convenience values that combine select + mode bits
 const (
+	VOODOO_COMBINE_UNSET    = 0xFFFFFFFF                                                              // Not explicitly set (use defaults)
 	VOODOO_COMBINE_ITERATED = 0                                                                       // Vertex color only (default when no texture)
 	VOODOO_COMBINE_TEXTURE  = VOODOO_CC_TEXTURE                                                       // Texture color only
 	VOODOO_COMBINE_MODULATE = VOODOO_CC_TEXTURE | (VOODOO_CC_CLOC_MUL << VOODOO_FCP_CC_MSELECT_SHIFT) // tex * vert
 	VOODOO_COMBINE_ADD      = VOODOO_CC_TEXTURE | (0x08 << 4)                                         // tex + vert (extended)
 	VOODOO_COMBINE_DECAL    = VOODOO_CC_TEXTURE | (VOODOO_CC_CLOCAL << VOODOO_FCP_CC_MSELECT_SHIFT)   // texture with vertex alpha
+)
+
+// Phase 6: fogMode bit fields
+// The fogMode register controls depth-based fog blending
+const (
+	VOODOO_FOG_ENABLE      = 1 << 0 // Enable fog processing
+	VOODOO_FOG_ADD         = 1 << 1 // Add fog color to output (vs. blend)
+	VOODOO_FOG_MULT        = 1 << 2 // Multiply fog factor by alpha
+	VOODOO_FOG_ZALPHA      = 1 << 3 // Use Z alpha for fog (vs. iterated)
+	VOODOO_FOG_CONSTANT    = 1 << 4 // Use constant fog alpha
+	VOODOO_FOG_DITHER      = 1 << 5 // Apply dithering to fog
+	VOODOO_FOG_ZONES       = 1 << 6 // Enable fog zones (table-based fog)
+	VOODOO_FOG_TABLE_SHIFT = 8      // Shift for fog table index
+	VOODOO_FOG_TABLE_MASK  = 0x3F   // 6-bit fog table index mask
+)
+
+// Phase 6: Fog table constants
+const (
+	VOODOO_FOG_TABLE_SIZE   = 64 // Number of fog table entries
+	VOODOO_FOG_TABLE_STRIDE = 4  // Bytes per fog table entry
+	VOODOO_FOG_TABLE_END    = VOODOO_FOG_TABLE_BASE + (VOODOO_FOG_TABLE_SIZE * VOODOO_FOG_TABLE_STRIDE)
 )
 
 // Fixed-point format constants

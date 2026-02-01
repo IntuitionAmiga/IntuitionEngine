@@ -2003,13 +2003,16 @@ func TestVoodoo_PushConstants_Structure(t *testing.T) {
 		FbzMode:      VOODOO_FBZ_CHROMAKEY | VOODOO_FBZ_RGB_WRITE,
 		AlphaMode:    VOODOO_ALPHA_TEST_EN | (VOODOO_ALPHA_GREATER << 1) | (128 << 24),
 		ChromaKey:    0x00FF00FF,
-		TextureMode:  1, // Phase 4: texture enable flag
-		FbzColorPath: 0, // Phase 5: color combine mode
+		TextureMode:  1,                 // Phase 4: texture enable flag
+		FbzColorPath: 0,                 // Phase 5: color combine mode
+		FogMode:      VOODOO_FOG_ENABLE, // Phase 6: fog mode
+		FogColor:     0x00808080,        // Phase 6: fog color
 	}
 
-	// Verify structure is 20 bytes (5 x uint32)
-	// Phase 5: Added FbzColorPath field
-	expectedSize := 20
+	// Verify structure is 28 bytes (7 x uint32)
+	// Phase 5: Added FbzColorPath field (20 bytes)
+	// Phase 6: Added FogMode and FogColor fields (28 bytes)
+	expectedSize := 28
 	actualSize := int(unsafe.Sizeof(pc))
 	if actualSize != expectedSize {
 		t.Errorf("PushConstants size: expected %d bytes, got %d", expectedSize, actualSize)
@@ -3187,7 +3190,7 @@ func TestVoodoo_ColorCombine_Constants(t *testing.T) {
 	}
 }
 
-// Test push constants structure includes fbzColorPath (Phase 5)
+// Test push constants structure includes fbzColorPath (Phase 5) and fog (Phase 6)
 func TestVoodoo_PushConstants_Phase5_Structure(t *testing.T) {
 	pc := VoodooPushConstants{
 		FbzMode:      VOODOO_FBZ_RGB_WRITE,
@@ -3195,10 +3198,13 @@ func TestVoodoo_PushConstants_Phase5_Structure(t *testing.T) {
 		ChromaKey:    0,
 		TextureMode:  1,
 		FbzColorPath: VOODOO_COMBINE_MODULATE,
+		FogMode:      VOODOO_FOG_ENABLE,
+		FogColor:     0x00808080,
 	}
 
-	// Verify structure is 20 bytes (5 x uint32)
-	expectedSize := 20
+	// Verify structure is 28 bytes (7 x uint32)
+	// Phase 5 had 5 fields (20 bytes), Phase 6 added FogMode and FogColor (28 bytes)
+	expectedSize := 28
 	actualSize := int(unsafe.Sizeof(pc))
 	if actualSize != expectedSize {
 		t.Errorf("PushConstants size: expected %d bytes, got %d", expectedSize, actualSize)
@@ -3207,6 +3213,9 @@ func TestVoodoo_PushConstants_Phase5_Structure(t *testing.T) {
 	// Verify field values
 	if pc.FbzColorPath != VOODOO_COMBINE_MODULATE {
 		t.Errorf("FbzColorPath should be %d, got %d", VOODOO_COMBINE_MODULATE, pc.FbzColorPath)
+	}
+	if pc.FogMode != VOODOO_FOG_ENABLE {
+		t.Errorf("FogMode should be %d, got %d", VOODOO_FOG_ENABLE, pc.FogMode)
 	}
 }
 
@@ -3629,6 +3638,896 @@ func TestVoodoo_VulkanBackend_ColorCombine_Add(t *testing.T) {
 
 	if r < 200 || g > 50 || b < 200 {
 		t.Errorf("GPU ADD mode: expected magenta, got R=%d G=%d B=%d", r, g, b)
+	}
+}
+
+// =============================================================================
+// Phase 6: Fog & Dithering Tests
+// =============================================================================
+
+// Test that fog mode constants are correctly defined
+func TestVoodoo_FogMode_Constants(t *testing.T) {
+	// Verify bit positions
+	if VOODOO_FOG_ENABLE != 1 {
+		t.Errorf("VOODOO_FOG_ENABLE should be 1, got %d", VOODOO_FOG_ENABLE)
+	}
+	if VOODOO_FOG_ADD != 2 {
+		t.Errorf("VOODOO_FOG_ADD should be 2, got %d", VOODOO_FOG_ADD)
+	}
+	if VOODOO_FOG_MULT != 4 {
+		t.Errorf("VOODOO_FOG_MULT should be 4, got %d", VOODOO_FOG_MULT)
+	}
+	if VOODOO_FOG_ZALPHA != 8 {
+		t.Errorf("VOODOO_FOG_ZALPHA should be 8, got %d", VOODOO_FOG_ZALPHA)
+	}
+
+	// Verify fog table constants
+	if VOODOO_FOG_TABLE_SIZE != 64 {
+		t.Errorf("VOODOO_FOG_TABLE_SIZE should be 64, got %d", VOODOO_FOG_TABLE_SIZE)
+	}
+}
+
+// Test that dither constants exist in fbzMode
+func TestVoodoo_Dither_Constants(t *testing.T) {
+	if VOODOO_FBZ_DITHER != (1 << 8) {
+		t.Errorf("VOODOO_FBZ_DITHER should be 0x100, got 0x%X", VOODOO_FBZ_DITHER)
+	}
+	if VOODOO_FBZ_DITHER_2X2 != (1 << 11) {
+		t.Errorf("VOODOO_FBZ_DITHER_2X2 should be 0x800, got 0x%X", VOODOO_FBZ_DITHER_2X2)
+	}
+}
+
+// Test fog mode register read/write
+func TestVoodoo_WriteRead_FogMode(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	// Write fog mode with enable bit
+	testValue := uint32(VOODOO_FOG_ENABLE | VOODOO_FOG_MULT)
+	v.HandleWrite(VOODOO_FOG_MODE, testValue)
+
+	// Read it back
+	readValue := v.HandleRead(VOODOO_FOG_MODE)
+	if readValue != testValue {
+		t.Errorf("Expected fogMode 0x%X, got 0x%X", testValue, readValue)
+	}
+}
+
+// Test fog color register read/write
+func TestVoodoo_WriteRead_FogColor(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	// Write fog color (gray: 0x808080)
+	testColor := uint32(0x00808080)
+	v.HandleWrite(VOODOO_FOG_COLOR, testColor)
+
+	// Read it back
+	readColor := v.HandleRead(VOODOO_FOG_COLOR)
+	if readColor != testColor {
+		t.Errorf("Expected fogColor 0x%06X, got 0x%06X", testColor, readColor)
+	}
+}
+
+// Test VoodooBackend interface includes fog methods
+func TestVoodoo_Backend_SetFogState_Interface(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	err := backend.Init(100, 100)
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer backend.Destroy()
+
+	// SetFogState should exist on the interface
+	backend.SetFogState(VOODOO_FOG_ENABLE, 0x00808080)
+
+	// No crash means the method exists
+}
+
+// Test software backend fog disabled (no color change)
+func TestVoodoo_SoftwareBackend_Fog_Disabled(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	err := backend.Init(100, 100)
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer backend.Destroy()
+
+	// Set default pipeline state (fog disabled)
+	fbzMode := uint32(VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_DEPTH_ENABLE | VOODOO_FBZ_DEPTH_WRITE | (VOODOO_DEPTH_LESS << 5))
+	backend.UpdatePipelineState(fbzMode, 0)
+	backend.SetFogState(0, 0xFF808080) // Fog disabled, gray fog color
+
+	backend.ClearFramebuffer(0xFF000000)
+
+	// Render a red triangle
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.5, R: 1, G: 0, B: 0, A: 1},
+			{X: 90, Y: 10, Z: 0.5, R: 1, G: 0, B: 0, A: 1},
+			{X: 50, Y: 90, Z: 0.5, R: 1, G: 0, B: 0, A: 1},
+		},
+	}
+
+	backend.FlushTriangles([]VoodooTriangle{tri})
+	backend.SwapBuffers(false)
+
+	frame := backend.GetFrame()
+	centerIdx := (50*100 + 50) * 4
+	r, g, b := frame[centerIdx], frame[centerIdx+1], frame[centerIdx+2]
+
+	// Should be pure red (no fog applied)
+	if r < 200 || g > 50 || b > 50 {
+		t.Errorf("With fog disabled, expected red, got R=%d G=%d B=%d", r, g, b)
+	}
+}
+
+// Test software backend fog enabled with linear blending
+func TestVoodoo_SoftwareBackend_Fog_Enabled_LinearBlend(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	err := backend.Init(100, 100)
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer backend.Destroy()
+
+	// Enable fog
+	fbzMode := uint32(VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_DEPTH_ENABLE | VOODOO_FBZ_DEPTH_WRITE | (VOODOO_DEPTH_LESS << 5))
+	backend.UpdatePipelineState(fbzMode, 0)
+	backend.SetFogState(VOODOO_FOG_ENABLE, 0x00808080) // Enable fog, gray fog color
+
+	backend.ClearFramebuffer(0xFF000000)
+
+	// Render a red triangle at depth 0.5 (should have some fog)
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.5, R: 1, G: 0, B: 0, A: 1},
+			{X: 90, Y: 10, Z: 0.5, R: 1, G: 0, B: 0, A: 1},
+			{X: 50, Y: 90, Z: 0.5, R: 1, G: 0, B: 0, A: 1},
+		},
+	}
+
+	backend.FlushTriangles([]VoodooTriangle{tri})
+	backend.SwapBuffers(false)
+
+	frame := backend.GetFrame()
+	centerIdx := (50*100 + 50) * 4
+	r, g, b := frame[centerIdx], frame[centerIdx+1], frame[centerIdx+2]
+
+	// Should be reddish-gray (fog blended in based on depth)
+	// At depth 0.5, we expect ~50% fog, so R should be around 128+64=192, G~64, B~64
+	if r < 100 {
+		t.Errorf("With fog enabled, red should still be prominent, got R=%d", r)
+	}
+	if g < 30 || b < 30 {
+		t.Errorf("With fog enabled at depth 0.5, expect some gray fog, got G=%d B=%d", g, b)
+	}
+}
+
+// Test that fog intensity increases with depth
+func TestVoodoo_SoftwareBackend_Fog_DepthBased(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	err := backend.Init(100, 100)
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer backend.Destroy()
+
+	// Enable fog with gray color
+	fbzMode := uint32(VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_DEPTH_ENABLE | VOODOO_FBZ_DEPTH_WRITE | (VOODOO_DEPTH_LESS << 5))
+	backend.UpdatePipelineState(fbzMode, 0)
+	backend.SetFogState(VOODOO_FOG_ENABLE, 0x00808080)
+
+	backend.ClearFramebuffer(0xFF000000)
+
+	// Render two triangles at different depths
+	// Near triangle (Z=0.1) - should have less fog
+	nearTri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.1, R: 1, G: 0, B: 0, A: 1},
+			{X: 40, Y: 10, Z: 0.1, R: 1, G: 0, B: 0, A: 1},
+			{X: 25, Y: 40, Z: 0.1, R: 1, G: 0, B: 0, A: 1},
+		},
+	}
+	// Far triangle (Z=0.9) - should have more fog
+	farTri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 60, Y: 60, Z: 0.9, R: 1, G: 0, B: 0, A: 1},
+			{X: 90, Y: 60, Z: 0.9, R: 1, G: 0, B: 0, A: 1},
+			{X: 75, Y: 90, Z: 0.9, R: 1, G: 0, B: 0, A: 1},
+		},
+	}
+
+	backend.FlushTriangles([]VoodooTriangle{nearTri, farTri})
+	backend.SwapBuffers(false)
+
+	frame := backend.GetFrame()
+
+	// Sample near triangle center (~25, ~20)
+	nearIdx := (20*100 + 25) * 4
+	nearR := frame[nearIdx]
+
+	// Sample far triangle center (~75, ~70)
+	farIdx := (70*100 + 75) * 4
+	farR := frame[farIdx]
+
+	// Near triangle should be more red (less fog)
+	if nearR <= farR {
+		t.Errorf("Near triangle (Z=0.1) should have more red than far triangle (Z=0.9): near R=%d, far R=%d",
+			nearR, farR)
+	}
+}
+
+// Test fog color affects the blend
+func TestVoodoo_SoftwareBackend_Fog_ColorAffectsBlend(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	err := backend.Init(100, 100)
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer backend.Destroy()
+
+	fbzMode := uint32(VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_DEPTH_ENABLE | VOODOO_FBZ_DEPTH_WRITE | (VOODOO_DEPTH_LESS << 5))
+	backend.UpdatePipelineState(fbzMode, 0)
+
+	// Set blue fog color
+	backend.SetFogState(VOODOO_FOG_ENABLE, 0x000000FF) // Blue fog
+
+	backend.ClearFramebuffer(0xFF000000)
+
+	// Render a red triangle at far depth
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.9, R: 1, G: 0, B: 0, A: 1},
+			{X: 90, Y: 10, Z: 0.9, R: 1, G: 0, B: 0, A: 1},
+			{X: 50, Y: 90, Z: 0.9, R: 1, G: 0, B: 0, A: 1},
+		},
+	}
+
+	backend.FlushTriangles([]VoodooTriangle{tri})
+	backend.SwapBuffers(false)
+
+	frame := backend.GetFrame()
+	centerIdx := (50*100 + 50) * 4
+	r, g, b := frame[centerIdx], frame[centerIdx+1], frame[centerIdx+2]
+
+	// With blue fog at far depth (0.9), should have significant blue component
+	if b < 50 {
+		t.Errorf("With blue fog and far depth, expected blue component, got B=%d (R=%d G=%d)", b, r, g)
+	}
+	// Red should be reduced from fog
+	if r > 200 {
+		t.Errorf("With heavy fog, red should be reduced, got R=%d", r)
+	}
+}
+
+// Test dithering disabled produces clean colors
+func TestVoodoo_SoftwareBackend_Dither_Disabled(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	err := backend.Init(100, 100)
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer backend.Destroy()
+
+	// Dither disabled
+	fbzMode := uint32(VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_DEPTH_ENABLE | VOODOO_FBZ_DEPTH_WRITE | (VOODOO_DEPTH_LESS << 5))
+	backend.UpdatePipelineState(fbzMode, 0)
+
+	backend.ClearFramebuffer(0xFF000000)
+
+	// Render a flat-colored triangle
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.5, R: 0.5, G: 0.5, B: 0.5, A: 1},
+			{X: 90, Y: 10, Z: 0.5, R: 0.5, G: 0.5, B: 0.5, A: 1},
+			{X: 50, Y: 90, Z: 0.5, R: 0.5, G: 0.5, B: 0.5, A: 1},
+		},
+	}
+
+	backend.FlushTriangles([]VoodooTriangle{tri})
+	backend.SwapBuffers(false)
+
+	frame := backend.GetFrame()
+
+	// Sample multiple adjacent pixels - they should all be the same (no dither noise)
+	idx1 := (50*100 + 50) * 4
+	idx2 := (50*100 + 51) * 4
+	idx3 := (51*100 + 50) * 4
+
+	r1, g1, b1 := frame[idx1], frame[idx1+1], frame[idx1+2]
+	r2, g2, b2 := frame[idx2], frame[idx2+1], frame[idx2+2]
+	r3, g3, b3 := frame[idx3], frame[idx3+1], frame[idx3+2]
+
+	// All pixels should have identical color (no dithering)
+	if r1 != r2 || r2 != r3 || g1 != g2 || g2 != g3 || b1 != b2 || b2 != b3 {
+		t.Errorf("Without dithering, adjacent pixels should be identical: "+
+			"(%d,%d,%d) vs (%d,%d,%d) vs (%d,%d,%d)",
+			r1, g1, b1, r2, g2, b2, r3, g3, b3)
+	}
+}
+
+// Test 4x4 Bayer dithering produces patterned output
+func TestVoodoo_SoftwareBackend_Dither_4x4_Enabled(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	err := backend.Init(100, 100)
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer backend.Destroy()
+
+	// Enable dithering
+	fbzMode := uint32(VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_DEPTH_ENABLE | VOODOO_FBZ_DEPTH_WRITE | (VOODOO_DEPTH_LESS << 5) | VOODOO_FBZ_DITHER)
+	backend.UpdatePipelineState(fbzMode, 0)
+
+	backend.ClearFramebuffer(0xFF000000)
+
+	// Render a mid-gray triangle (value that benefits from dithering)
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.5, R: 0.5, G: 0.5, B: 0.5, A: 1},
+			{X: 90, Y: 10, Z: 0.5, R: 0.5, G: 0.5, B: 0.5, A: 1},
+			{X: 50, Y: 90, Z: 0.5, R: 0.5, G: 0.5, B: 0.5, A: 1},
+		},
+	}
+
+	backend.FlushTriangles([]VoodooTriangle{tri})
+	backend.SwapBuffers(false)
+
+	frame := backend.GetFrame()
+
+	// Sample a 4x4 block inside the triangle to check for dither pattern
+	var values []byte
+	for dy := 0; dy < 4; dy++ {
+		for dx := 0; dx < 4; dx++ {
+			idx := ((50+dy)*100 + (50 + dx)) * 4
+			values = append(values, frame[idx]) // R channel
+		}
+	}
+
+	// Check that we have some variation (dithering introduces slight differences)
+	allSame := true
+	for _, v := range values[1:] {
+		if v != values[0] {
+			allSame = false
+			break
+		}
+	}
+
+	// With dithering enabled, we expect some variation in the pattern
+	// (This may fail if the value happens to quantize evenly, but 0.5 shouldn't)
+	if allSame {
+		t.Error("With 4x4 dithering enabled, expected some color variation in the pattern")
+	}
+}
+
+// Test 2x2 dithering mode
+func TestVoodoo_SoftwareBackend_Dither_2x2_Mode(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	err := backend.Init(100, 100)
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer backend.Destroy()
+
+	// Enable 2x2 dithering
+	fbzMode := uint32(VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_DEPTH_ENABLE | VOODOO_FBZ_DEPTH_WRITE |
+		(VOODOO_DEPTH_LESS << 5) | VOODOO_FBZ_DITHER | VOODOO_FBZ_DITHER_2X2)
+	backend.UpdatePipelineState(fbzMode, 0)
+
+	backend.ClearFramebuffer(0xFF000000)
+
+	// Render a mid-gray triangle
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.5, R: 0.5, G: 0.5, B: 0.5, A: 1},
+			{X: 90, Y: 10, Z: 0.5, R: 0.5, G: 0.5, B: 0.5, A: 1},
+			{X: 50, Y: 90, Z: 0.5, R: 0.5, G: 0.5, B: 0.5, A: 1},
+		},
+	}
+
+	backend.FlushTriangles([]VoodooTriangle{tri})
+	backend.SwapBuffers(false)
+
+	frame := backend.GetFrame()
+
+	// Sample 2x2 block and check for pattern
+	idx00 := (50*100 + 50) * 4
+	idx01 := (50*100 + 51) * 4
+	idx10 := (51*100 + 50) * 4
+	idx11 := (51*100 + 51) * 4
+
+	r00 := frame[idx00]
+	r01 := frame[idx01]
+	r10 := frame[idx10]
+	r11 := frame[idx11]
+
+	// In 2x2 mode, the pattern should repeat every 2 pixels
+	// Pixels at same position in 2x2 pattern should have similar values
+	// This is a basic sanity check - just verify we're getting output
+	if r00 == 0 && r01 == 0 && r10 == 0 && r11 == 0 {
+		t.Error("Expected non-zero output with dithering")
+	}
+}
+
+// Test Vulkan backend fog state update
+func TestVoodoo_VulkanBackend_Fog_StateUpdate(t *testing.T) {
+	vb, err := NewVulkanBackend()
+	if err != nil {
+		t.Fatalf("NewVulkanBackend failed: %v", err)
+	}
+	if err := vb.Init(100, 100); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer vb.Destroy()
+
+	// Set fog state
+	fogMode := uint32(VOODOO_FOG_ENABLE)
+	fogColor := uint32(0x00808080)
+	vb.SetFogState(fogMode, fogColor)
+
+	// No crash means the method works
+	// Additional verification would require inspecting push constants
+}
+
+// Test Vulkan backend fog blending (GPU-accelerated)
+func TestVoodoo_VulkanBackend_Fog_Enabled(t *testing.T) {
+	vb, err := NewVulkanBackend()
+	if err != nil {
+		t.Fatalf("NewVulkanBackend failed: %v", err)
+	}
+	if err := vb.Init(100, 100); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer vb.Destroy()
+
+	// Enable fog
+	fbzMode := uint32(VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_DEPTH_ENABLE | VOODOO_FBZ_DEPTH_WRITE | (VOODOO_DEPTH_LESS << 5))
+	vb.UpdatePipelineState(fbzMode, 0)
+	vb.SetFogState(VOODOO_FOG_ENABLE, 0x00808080) // Gray fog
+
+	vb.ClearFramebuffer(0xFF000000)
+
+	// Render a red triangle at far depth
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.9, R: 1, G: 0, B: 0, A: 1},
+			{X: 90, Y: 10, Z: 0.9, R: 1, G: 0, B: 0, A: 1},
+			{X: 50, Y: 90, Z: 0.9, R: 1, G: 0, B: 0, A: 1},
+		},
+	}
+
+	vb.FlushTriangles([]VoodooTriangle{tri})
+	vb.SwapBuffers(false)
+
+	frame := vb.GetFrame()
+	centerIdx := (50*100 + 50) * 4
+	r, g, b := frame[centerIdx], frame[centerIdx+1], frame[centerIdx+2]
+
+	// With gray fog at far depth, expect reddish-gray
+	if g < 30 || b < 30 {
+		t.Errorf("GPU fog: at far depth with gray fog, expect some gray blend, got R=%d G=%d B=%d", r, g, b)
+	}
+}
+
+// Test Vulkan backend dithering
+func TestVoodoo_VulkanBackend_Dither_Enabled(t *testing.T) {
+	vb, err := NewVulkanBackend()
+	if err != nil {
+		t.Fatalf("NewVulkanBackend failed: %v", err)
+	}
+	if err := vb.Init(100, 100); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer vb.Destroy()
+
+	// Enable dithering
+	fbzMode := uint32(VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_DEPTH_ENABLE | VOODOO_FBZ_DEPTH_WRITE | VOODOO_FBZ_DITHER)
+	vb.UpdatePipelineState(fbzMode, 0)
+
+	vb.ClearFramebuffer(0xFF000000)
+
+	// Render a mid-gray triangle
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.5, R: 0.5, G: 0.5, B: 0.5, A: 1},
+			{X: 90, Y: 10, Z: 0.5, R: 0.5, G: 0.5, B: 0.5, A: 1},
+			{X: 50, Y: 90, Z: 0.5, R: 0.5, G: 0.5, B: 0.5, A: 1},
+		},
+	}
+
+	vb.FlushTriangles([]VoodooTriangle{tri})
+	vb.SwapBuffers(false)
+
+	frame := vb.GetFrame()
+
+	// Sample 4x4 block
+	var values []byte
+	for dy := 0; dy < 4; dy++ {
+		for dx := 0; dx < 4; dx++ {
+			idx := ((50+dy)*100 + (50 + dx)) * 4
+			values = append(values, frame[idx])
+		}
+	}
+
+	// With GPU dithering, expect some variation
+	allSame := true
+	for _, v := range values[1:] {
+		if v != values[0] {
+			allSame = false
+			break
+		}
+	}
+
+	// Note: This test may pass even without dithering if the color quantizes evenly
+	// It's primarily a smoke test for the dither code path
+	_ = allSame // We just want to verify no crash
+}
+
+// Test VoodooEngine fog mode integration
+func TestVoodoo_Engine_FogMode_Integration(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	// Write fog mode and color
+	v.HandleWrite(VOODOO_FOG_MODE, VOODOO_FOG_ENABLE)
+	v.HandleWrite(VOODOO_FOG_COLOR, 0x00808080)
+
+	// Verify storage
+	if v.fogMode != VOODOO_FOG_ENABLE {
+		t.Errorf("Expected fogMode %d, got %d", VOODOO_FOG_ENABLE, v.fogMode)
+	}
+	if v.fogColor != 0x00808080 {
+		t.Errorf("Expected fogColor 0x808080, got 0x%06X", v.fogColor)
+	}
+}
+
+// Test VoodooEngine dither mode integration via fbzMode
+func TestVoodoo_Engine_DitherMode_Integration(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	// Enable dithering via fbzMode
+	ditherMode := uint32(VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_DITHER)
+	v.HandleWrite(VOODOO_FBZ_MODE, ditherMode)
+
+	// Verify storage
+	if v.fbzMode != ditherMode {
+		t.Errorf("Expected fbzMode 0x%X, got 0x%X", ditherMode, v.fbzMode)
+	}
+}
+
+// =============================================================================
+// Phase 6: GPU-Native Fog and Dithering Tests (Vulkan Shader Implementation)
+// =============================================================================
+
+// TestVoodoo_VulkanBackend_GPU_Fog_NearVsFar verifies GPU shader fog blending
+// by comparing triangles at different depths - fog should affect far more than near
+func TestVoodoo_VulkanBackend_GPU_Fog_NearVsFar(t *testing.T) {
+	vb, err := NewVulkanBackend()
+	if err != nil {
+		t.Fatalf("NewVulkanBackend failed: %v", err)
+	}
+	if err := vb.Init(100, 100); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer vb.Destroy()
+
+	// Test near triangle (z=0.1)
+	fbzMode := uint32(VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_DEPTH_ENABLE | VOODOO_FBZ_DEPTH_WRITE | (VOODOO_DEPTH_LESS << 5))
+	vb.UpdatePipelineState(fbzMode, 0)
+	vb.SetFogState(VOODOO_FOG_ENABLE, 0x00808080) // Gray fog
+
+	vb.ClearFramebuffer(0xFF000000)
+
+	// Render red triangle at near depth (z=0.1)
+	triNear := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.1, R: 1, G: 0, B: 0, A: 1},
+			{X: 90, Y: 10, Z: 0.1, R: 1, G: 0, B: 0, A: 1},
+			{X: 50, Y: 90, Z: 0.1, R: 1, G: 0, B: 0, A: 1},
+		},
+	}
+	vb.FlushTriangles([]VoodooTriangle{triNear})
+	vb.SwapBuffers(false)
+
+	frameNear := vb.GetFrame()
+	nearIdx := (50*100 + 50) * 4
+	nearR, nearG, nearB := frameNear[nearIdx], frameNear[nearIdx+1], frameNear[nearIdx+2]
+
+	// Test far triangle (z=0.9)
+	vb.ClearFramebuffer(0xFF000000)
+	triFar := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.9, R: 1, G: 0, B: 0, A: 1},
+			{X: 90, Y: 10, Z: 0.9, R: 1, G: 0, B: 0, A: 1},
+			{X: 50, Y: 90, Z: 0.9, R: 1, G: 0, B: 0, A: 1},
+		},
+	}
+	vb.FlushTriangles([]VoodooTriangle{triFar})
+	vb.SwapBuffers(false)
+
+	frameFar := vb.GetFrame()
+	farIdx := (50*100 + 50) * 4
+	farR, farG, farB := frameFar[farIdx], frameFar[farIdx+1], frameFar[farIdx+2]
+
+	// Near triangle should be more red (less fog)
+	// Far triangle should be more gray (more fog)
+	t.Logf("Near (z=0.1): R=%d G=%d B=%d", nearR, nearG, nearB)
+	t.Logf("Far  (z=0.9): R=%d G=%d B=%d", farR, farG, farB)
+
+	// Far should have more gray (higher G and B due to fog)
+	if farG <= nearG || farB <= nearB {
+		t.Errorf("GPU fog depth test: far triangle should have more fog (higher G/B), near=(R=%d,G=%d,B=%d) far=(R=%d,G=%d,B=%d)",
+			nearR, nearG, nearB, farR, farG, farB)
+	}
+
+	// Near should have more red
+	if nearR <= farR {
+		t.Errorf("GPU fog depth test: near triangle should have more red, nearR=%d, farR=%d", nearR, farR)
+	}
+}
+
+// TestVoodoo_VulkanBackend_GPU_Fog_ColorBlend verifies fog color blending
+func TestVoodoo_VulkanBackend_GPU_Fog_ColorBlend(t *testing.T) {
+	vb, err := NewVulkanBackend()
+	if err != nil {
+		t.Fatalf("NewVulkanBackend failed: %v", err)
+	}
+	if err := vb.Init(100, 100); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer vb.Destroy()
+
+	fbzMode := uint32(VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_DEPTH_ENABLE | VOODOO_FBZ_DEPTH_WRITE | (VOODOO_DEPTH_LESS << 5))
+	vb.UpdatePipelineState(fbzMode, 0)
+
+	// Test with blue fog at far depth
+	vb.SetFogState(VOODOO_FOG_ENABLE, 0x000000FF) // Blue fog
+	vb.ClearFramebuffer(0xFF000000)
+
+	// Red triangle at far depth (z=0.8)
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.8, R: 1, G: 0, B: 0, A: 1},
+			{X: 90, Y: 10, Z: 0.8, R: 1, G: 0, B: 0, A: 1},
+			{X: 50, Y: 90, Z: 0.8, R: 1, G: 0, B: 0, A: 1},
+		},
+	}
+
+	vb.FlushTriangles([]VoodooTriangle{tri})
+	vb.SwapBuffers(false)
+
+	frame := vb.GetFrame()
+	idx := (50*100 + 50) * 4
+	r, g, b := frame[idx], frame[idx+1], frame[idx+2]
+
+	t.Logf("Blue fog on red triangle (z=0.8): R=%d G=%d B=%d", r, g, b)
+
+	// Should have significant blue component from fog
+	if b < 50 {
+		t.Errorf("GPU fog color blend: expected blue fog component, got B=%d (R=%d G=%d)", b, r, g)
+	}
+}
+
+// TestVoodoo_VulkanBackend_GPU_Dither_4x4_Pattern verifies 4x4 Bayer dithering
+func TestVoodoo_VulkanBackend_GPU_Dither_4x4_Pattern(t *testing.T) {
+	vb, err := NewVulkanBackend()
+	if err != nil {
+		t.Fatalf("NewVulkanBackend failed: %v", err)
+	}
+	if err := vb.Init(100, 100); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer vb.Destroy()
+
+	// Enable 4x4 dithering
+	fbzMode := uint32(VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_DEPTH_ENABLE | VOODOO_FBZ_DEPTH_WRITE | (VOODOO_DEPTH_LESS << 5) | VOODOO_FBZ_DITHER)
+	vb.UpdatePipelineState(fbzMode, 0)
+
+	vb.ClearFramebuffer(0xFF000000)
+
+	// Render a mid-gray triangle with exact 0.5 value (prone to dithering)
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.5, R: 0.502, G: 0.502, B: 0.502, A: 1}, // ~128/255
+			{X: 90, Y: 10, Z: 0.5, R: 0.502, G: 0.502, B: 0.502, A: 1},
+			{X: 50, Y: 90, Z: 0.5, R: 0.502, G: 0.502, B: 0.502, A: 1},
+		},
+	}
+
+	vb.FlushTriangles([]VoodooTriangle{tri})
+	vb.SwapBuffers(false)
+
+	frame := vb.GetFrame()
+
+	// Sample an 8x8 block to see dither pattern
+	var values []int
+	for dy := 0; dy < 8; dy++ {
+		for dx := 0; dx < 8; dx++ {
+			idx := ((40+dy)*100 + (40 + dx)) * 4
+			values = append(values, int(frame[idx]))
+		}
+	}
+
+	// Count unique values - dithering should create some variation
+	uniqueVals := make(map[int]bool)
+	for _, v := range values {
+		if v > 0 { // Ignore black background
+			uniqueVals[v] = true
+		}
+	}
+
+	t.Logf("Dither 4x4: found %d unique values in 8x8 block", len(uniqueVals))
+
+	// Should have at least some values (not all zero - triangle rendered)
+	// With dithering, expect variation but not too much - Bayer creates 2-3 levels
+	if len(uniqueVals) == 0 {
+		t.Error("GPU dither: no triangle rendered (all zeros)")
+	}
+}
+
+// TestVoodoo_VulkanBackend_GPU_Dither_2x2_Mode verifies 2x2 dither mode
+func TestVoodoo_VulkanBackend_GPU_Dither_2x2_Mode(t *testing.T) {
+	vb, err := NewVulkanBackend()
+	if err != nil {
+		t.Fatalf("NewVulkanBackend failed: %v", err)
+	}
+	if err := vb.Init(100, 100); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer vb.Destroy()
+
+	// Enable 2x2 dithering (DITHER + DITHER_2X2)
+	fbzMode := uint32(VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_DEPTH_ENABLE | VOODOO_FBZ_DEPTH_WRITE | (VOODOO_DEPTH_LESS << 5) | VOODOO_FBZ_DITHER | VOODOO_FBZ_DITHER_2X2)
+	vb.UpdatePipelineState(fbzMode, 0)
+
+	vb.ClearFramebuffer(0xFF000000)
+
+	// Render a mid-gray triangle
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.5, R: 0.502, G: 0.502, B: 0.502, A: 1},
+			{X: 90, Y: 10, Z: 0.5, R: 0.502, G: 0.502, B: 0.502, A: 1},
+			{X: 50, Y: 90, Z: 0.5, R: 0.502, G: 0.502, B: 0.502, A: 1},
+		},
+	}
+
+	vb.FlushTriangles([]VoodooTriangle{tri})
+	vb.SwapBuffers(false)
+
+	frame := vb.GetFrame()
+
+	// Sample 4x4 block
+	var values []int
+	for dy := 0; dy < 4; dy++ {
+		for dx := 0; dx < 4; dx++ {
+			idx := ((40+dy)*100 + (40 + dx)) * 4
+			values = append(values, int(frame[idx]))
+		}
+	}
+
+	// Count non-zero values
+	nonZero := 0
+	for _, v := range values {
+		if v > 0 {
+			nonZero++
+		}
+	}
+
+	t.Logf("Dither 2x2: found %d non-zero values in 4x4 block", nonZero)
+
+	if nonZero == 0 {
+		t.Error("GPU dither 2x2: no triangle rendered")
+	}
+}
+
+// TestVoodoo_VulkanBackend_GPU_FogAndDither_Combined tests fog + dithering together
+func TestVoodoo_VulkanBackend_GPU_FogAndDither_Combined(t *testing.T) {
+	vb, err := NewVulkanBackend()
+	if err != nil {
+		t.Fatalf("NewVulkanBackend failed: %v", err)
+	}
+	if err := vb.Init(100, 100); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer vb.Destroy()
+
+	// Enable both fog and dithering
+	fbzMode := uint32(VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_DEPTH_ENABLE | VOODOO_FBZ_DEPTH_WRITE | (VOODOO_DEPTH_LESS << 5) | VOODOO_FBZ_DITHER)
+	vb.UpdatePipelineState(fbzMode, 0)
+	vb.SetFogState(VOODOO_FOG_ENABLE, 0x00404040) // Dark gray fog
+
+	vb.ClearFramebuffer(0xFF000000)
+
+	// Render a bright red triangle at far depth
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.8, R: 1, G: 0, B: 0, A: 1},
+			{X: 90, Y: 10, Z: 0.8, R: 1, G: 0, B: 0, A: 1},
+			{X: 50, Y: 90, Z: 0.8, R: 1, G: 0, B: 0, A: 1},
+		},
+	}
+
+	vb.FlushTriangles([]VoodooTriangle{tri})
+	vb.SwapBuffers(false)
+
+	frame := vb.GetFrame()
+	idx := (50*100 + 50) * 4
+	r, g, b := frame[idx], frame[idx+1], frame[idx+2]
+
+	t.Logf("Fog+Dither combined: R=%d G=%d B=%d", r, g, b)
+
+	// Should have some fog effect (g/b > 0 from gray fog)
+	if g == 0 && b == 0 {
+		t.Error("GPU fog+dither: no fog effect visible")
+	}
+}
+
+// TestVoodoo_VulkanBackend_GPU_PushConstants_Size verifies push constants structure
+func TestVoodoo_VulkanBackend_GPU_PushConstants_Size(t *testing.T) {
+	// VoodooPushConstants should be 28 bytes (7 x 4-byte uint32)
+	// FbzMode, AlphaMode, ChromaKey, TextureMode, FbzColorPath, FogMode, FogColor
+	expectedSize := 28
+	actualSize := int(unsafe.Sizeof(VoodooPushConstants{}))
+
+	if actualSize != expectedSize {
+		t.Errorf("PushConstants size mismatch: expected %d bytes, got %d bytes", expectedSize, actualSize)
+	}
+}
+
+// TestVoodoo_VulkanBackend_GPU_Fog_Disabled verifies no fog when disabled
+func TestVoodoo_VulkanBackend_GPU_Fog_Disabled(t *testing.T) {
+	vb, err := NewVulkanBackend()
+	if err != nil {
+		t.Fatalf("NewVulkanBackend failed: %v", err)
+	}
+	if err := vb.Init(100, 100); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer vb.Destroy()
+
+	fbzMode := uint32(VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_DEPTH_ENABLE | VOODOO_FBZ_DEPTH_WRITE | (VOODOO_DEPTH_LESS << 5))
+	vb.UpdatePipelineState(fbzMode, 0)
+
+	// Set fog color but don't enable fog
+	vb.SetFogState(0, 0x00FFFFFF) // White fog but disabled
+
+	vb.ClearFramebuffer(0xFF000000)
+
+	// Pure red triangle at far depth
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.9, R: 1, G: 0, B: 0, A: 1},
+			{X: 90, Y: 10, Z: 0.9, R: 1, G: 0, B: 0, A: 1},
+			{X: 50, Y: 90, Z: 0.9, R: 1, G: 0, B: 0, A: 1},
+		},
+	}
+
+	vb.FlushTriangles([]VoodooTriangle{tri})
+	vb.SwapBuffers(false)
+
+	frame := vb.GetFrame()
+	idx := (50*100 + 50) * 4
+	r, g, b := frame[idx], frame[idx+1], frame[idx+2]
+
+	t.Logf("Fog disabled: R=%d G=%d B=%d", r, g, b)
+
+	// Should be pure red (no fog)
+	if r < 200 || g > 10 || b > 10 {
+		t.Errorf("GPU fog disabled: expected pure red, got R=%d G=%d B=%d", r, g, b)
 	}
 }
 

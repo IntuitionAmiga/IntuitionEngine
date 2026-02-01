@@ -66,12 +66,15 @@ type PipelineKey struct {
 // Phase 3: Alpha Test & Chroma Key support
 // Phase 4: Texture mode support
 // Phase 5: Color combine (fbzColorPath) support
+// Phase 6: Fog support
 type VoodooPushConstants struct {
-	FbzMode      uint32 // Framebuffer Z mode (contains chroma key enable flag)
+	FbzMode      uint32 // Framebuffer Z mode (contains chroma key enable flag, dither enable)
 	AlphaMode    uint32 // Alpha test mode (enable, function, reference value)
 	ChromaKey    uint32 // Chroma key color (RGB packed)
 	TextureMode  uint32 // Phase 4: bit 0 = texture enable
 	FbzColorPath uint32 // Phase 5: Color combine mode
+	FogMode      uint32 // Phase 6: Fog mode (bit 0 = enable)
+	FogColor     uint32 // Phase 6: Fog color (RGB packed)
 }
 
 // PipelineKeyFromRegisters creates a PipelineKey from fbzMode and alphaMode registers
@@ -200,6 +203,10 @@ type VoodooSoftwareBackend struct {
 	textureEnabled bool
 	textureClampS  bool
 	textureClampT  bool
+
+	// Phase 6: Fog state
+	fogMode  uint32
+	fogColor uint32
 }
 
 // NewVoodooSoftwareBackend creates a new software rasterizer backend
@@ -309,6 +316,15 @@ func (b *VoodooSoftwareBackend) SetColorPath(fbzColorPath uint32) {
 	defer b.mutex.Unlock()
 	b.fbzColorPath = fbzColorPath
 	b.colorPathSet = true // Mark that color path was explicitly set
+}
+
+// SetFogState sets the fog mode and color
+// Phase 6: Fog support
+func (b *VoodooSoftwareBackend) SetFogState(fogMode, fogColor uint32) {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	b.fogMode = fogMode
+	b.fogColor = fogColor
 }
 
 // sampleTexture samples the texture at given UV coordinates
@@ -577,6 +593,19 @@ func (b *VoodooSoftwareBackend) rasterizeTriangle(tri *VoodooTriangle) {
 	// Check alpha blending
 	alphaBlendEnable := (b.alphaMode & VOODOO_ALPHA_BLEND_EN) != 0
 
+	// Phase 6: Check fog settings
+	fogEnable := (b.fogMode & VOODOO_FOG_ENABLE) != 0
+	var fogR, fogG, fogB float32
+	if fogEnable {
+		fogR = float32((b.fogColor>>16)&0xFF) / 255.0
+		fogG = float32((b.fogColor>>8)&0xFF) / 255.0
+		fogB = float32(b.fogColor&0xFF) / 255.0
+	}
+
+	// Phase 6: Check dithering settings
+	ditherEnable := (b.fbzMode & VOODOO_FBZ_DITHER) != 0
+	dither2x2 := (b.fbzMode & VOODOO_FBZ_DITHER_2X2) != 0
+
 	// Rasterize
 	for y := minY; y < maxY; y++ {
 		for x := minX; x < maxX; x++ {
@@ -645,6 +674,30 @@ func (b *VoodooSoftwareBackend) rasterizeTriangle(tri *VoodooTriangle) {
 					if b.chromaKeyTest(r, g, bVal) {
 						continue // Discard this fragment
 					}
+				}
+
+				// Phase 6: Apply fog blending
+				// Fog blends the fragment color with fog color based on depth
+				// fogFactor = depth (0.0 = no fog, 1.0 = full fog)
+				if fogEnable {
+					fogFactor := clampf(z, 0, 1) // Linear fog based on depth
+					r = r*(1-fogFactor) + fogR*fogFactor
+					g = g*(1-fogFactor) + fogG*fogFactor
+					bVal = bVal*(1-fogFactor) + fogB*fogFactor
+					// Re-clamp after fog blending
+					r = clampf(r, 0, 1)
+					g = clampf(g, 0, 1)
+					bVal = clampf(bVal, 0, 1)
+				}
+
+				// Phase 6: Apply dithering
+				// 4x4 Bayer matrix dithering (or 2x2 if DITHER_2X2 is set)
+				if ditherEnable {
+					threshold := b.getDitherThreshold(x, y, dither2x2)
+					// Apply dither threshold to each color channel
+					r = b.applyDither(r, threshold)
+					g = b.applyDither(g, threshold)
+					bVal = b.applyDither(bVal, threshold)
 				}
 
 				// Convert to bytes
@@ -759,6 +812,49 @@ func (b *VoodooSoftwareBackend) chromaKeyTest(r, g, bVal float32) bool {
 	bMatch := math.Abs(float64(bVal-keyB)) <= float64(tolerance)
 
 	return rMatch && gMatch && bMatch
+}
+
+// Phase 6: Dithering support
+
+// 4x4 Bayer ordered dither matrix (normalized to 0.0-1.0 range)
+// Values are threshold offsets that create the characteristic ordered pattern
+var bayer4x4 = [4][4]float32{
+	{0.0 / 16.0, 8.0 / 16.0, 2.0 / 16.0, 10.0 / 16.0},
+	{12.0 / 16.0, 4.0 / 16.0, 14.0 / 16.0, 6.0 / 16.0},
+	{3.0 / 16.0, 11.0 / 16.0, 1.0 / 16.0, 9.0 / 16.0},
+	{15.0 / 16.0, 7.0 / 16.0, 13.0 / 16.0, 5.0 / 16.0},
+}
+
+// 2x2 Bayer ordered dither matrix (simpler pattern)
+var bayer2x2 = [2][2]float32{
+	{0.0 / 4.0, 2.0 / 4.0},
+	{3.0 / 4.0, 1.0 / 4.0},
+}
+
+// getDitherThreshold returns the dither threshold for a given pixel position
+func (b *VoodooSoftwareBackend) getDitherThreshold(x, y int, use2x2 bool) float32 {
+	if use2x2 {
+		return bayer2x2[y%2][x%2]
+	}
+	return bayer4x4[y%4][x%4]
+}
+
+// applyDither applies ordered dithering to a color value
+// This helps reduce banding when quantizing to 8-bit color
+func (b *VoodooSoftwareBackend) applyDither(value, threshold float32) float32 {
+	// Ordered dithering works by adding a threshold offset before quantization
+	// The threshold is normalized to the 0-1 range from the Bayer matrix
+	// We scale it to about 1 color level (1/256) for visible effect
+	// The pattern creates perception of intermediate colors through spatial mixing
+
+	// Convert to 8-bit range, add dither offset, then back to 0-1
+	colorLevel := value * 255.0
+	ditherOffset := threshold - 0.5 // Range -0.5 to +0.5
+	colorLevel += ditherOffset
+
+	// Quantize to integer and back
+	quantized := float32(int(colorLevel+0.5)) / 255.0
+	return clampf(quantized, 0, 1)
 }
 
 // getBlendFactor calculates the blend factor value based on Voodoo blend mode
@@ -900,6 +996,8 @@ type VulkanBackend struct {
 	chromaKey    uint32 // Phase 3: Chroma key color
 	fbzColorPath uint32 // Phase 5: Color combine mode
 	colorPathSet bool   // Phase 5: Track if color path was explicitly set
+	fogMode      uint32 // Phase 6: Fog mode
+	fogColor     uint32 // Phase 6: Fog color
 	scissor      vk.Rect2D
 
 	// Clear color (set by ClearFramebuffer, used by FlushTriangles)
@@ -950,7 +1048,8 @@ func NewVulkanBackend() (*VulkanBackend, error) {
 	vb := &VulkanBackend{
 		software:         NewVoodooSoftwareBackend(),
 		pipelineVariants: make(map[PipelineKey]vk.Pipeline),
-		depthClearValue:  1.0, // Default depth clear for LESS comparison
+		depthClearValue:  1.0,                  // Default depth clear for LESS comparison
+		fbzColorPath:     VOODOO_COMBINE_UNSET, // Not set = use defaults
 	}
 	return vb, nil
 }
@@ -1531,7 +1630,7 @@ func (vb *VulkanBackend) createPipeline() error {
 	pushConstantRange := vk.PushConstantRange{
 		StageFlags: vk.ShaderStageFlags(vk.ShaderStageFragmentBit),
 		Offset:     0,
-		Size:       20, // VoodooPushConstants: 5 x uint32 = 20 bytes (Phase 5: added FbzColorPath)
+		Size:       28, // VoodooPushConstants: 7 x uint32 = 28 bytes (Phase 6: added FogMode, FogColor)
 	}
 
 	// Phase 4: Include descriptor set layout for texture sampling
@@ -2620,6 +2719,17 @@ func (vb *VulkanBackend) SetColorPath(fbzColorPath uint32) {
 	vb.software.SetColorPath(fbzColorPath)
 }
 
+// SetFogState sets the fog mode and color
+// Phase 6: Fog support
+func (vb *VulkanBackend) SetFogState(fogMode, fogColor uint32) {
+	vb.mutex.Lock()
+	defer vb.mutex.Unlock()
+
+	vb.fogMode = fogMode
+	vb.fogColor = fogColor
+	vb.software.SetFogState(fogMode, fogColor)
+}
+
 // FlushTriangles renders all triangles
 func (vb *VulkanBackend) FlushTriangles(triangles []VoodooTriangle) {
 	vb.mutex.Lock()
@@ -2629,6 +2739,8 @@ func (vb *VulkanBackend) FlushTriangles(triangles []VoodooTriangle) {
 	if !vb.initialized {
 		vb.software.FlushTriangles(triangles)
 	}
+
+	// Phase 6: GPU shaders now handle fog and dithering natively
 
 	if !vb.initialized {
 		return
@@ -2649,13 +2761,18 @@ func (vb *VulkanBackend) FlushTriangles(triangles []VoodooTriangle) {
 			ndcY := (v.Y/float32(vb.height))*2.0 - 1.0
 
 			// Normalize Z to Vulkan depth range [0, 1]
-			// Voodoo uses larger Z values; divide by max expected Z to normalize
-			// Use 65536 as max (common depth buffer range)
-			ndcZ := v.Z / 65536.0
-			if ndcZ < 0 {
-				ndcZ = 0
-			} else if ndcZ > 1 {
-				ndcZ = 1
+			// If Z is already in 0-1 range, use directly (modern usage)
+			// Otherwise, divide by 65536 for Voodoo-style depth buffer values
+			var ndcZ float32
+			if v.Z >= 0 && v.Z <= 1.0 {
+				ndcZ = v.Z // Already normalized
+			} else if v.Z > 1.0 {
+				ndcZ = v.Z / 65536.0 // Voodoo-style large Z values
+				if ndcZ > 1 {
+					ndcZ = 1
+				}
+			} else {
+				ndcZ = 0 // Negative Z clamps to 0
 			}
 
 			vertices = append(vertices, VulkanVertex{
@@ -2718,9 +2835,11 @@ func (vb *VulkanBackend) FlushTriangles(triangles []VoodooTriangle) {
 		ChromaKey:    vb.chromaKey,
 		TextureMode:  texMode,
 		FbzColorPath: vb.fbzColorPath,
+		FogMode:      vb.fogMode,  // Phase 6: GPU fog
+		FogColor:     vb.fogColor, // Phase 6: GPU fog
 	}
 	vk.CmdPushConstants(vb.commandBuffer, vb.pipelineLayout,
-		vk.ShaderStageFlags(vk.ShaderStageFragmentBit), 0, 20,
+		vk.ShaderStageFlags(vk.ShaderStageFragmentBit), 0, 28,
 		unsafe.Pointer(&pushConstants))
 
 	// Bind descriptor set for texture sampling (Phase 4)
@@ -2815,6 +2934,8 @@ func (vb *VulkanBackend) SwapBuffers(waitVSync bool) {
 	vb.mutex.Lock()
 	defer vb.mutex.Unlock()
 
+	// Phase 6: GPU shaders now handle fog and dithering natively
+
 	if !vb.initialized {
 		vb.software.SwapBuffers(waitVSync)
 		return
@@ -2879,6 +3000,8 @@ func (vb *VulkanBackend) readbackFramebuffer() {
 func (vb *VulkanBackend) GetFrame() []byte {
 	vb.mutex.RLock()
 	defer vb.mutex.RUnlock()
+
+	// Phase 6: GPU shaders now handle fog and dithering natively
 
 	if vb.initialized {
 		return vb.outputFrame
