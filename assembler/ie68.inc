@@ -1527,6 +1527,29 @@ VOODOO_BLEND_SATURATE   equ 15              ; min(src.A, 1-dst.A)
 VOODOO_SWAP_VSYNC       equ $01             ; Wait for VSync before swap
 VOODOO_SWAP_CLEAR       equ $02             ; Clear buffer after swap
 
+; textureMode bits
+; Bit layout:
+;   Bit 0:     TEX_ENABLE - Enable texture mapping
+;   Bits 1-3:  TEX_MINIFY - Minification filter (0=point)
+;   Bit 4:     TEX_MAGNIFY - Magnification filter (0=point, 1=bilinear)
+;   Bit 5:     TEX_CLAMP_S - Clamp S coordinate (vs wrap)
+;   Bit 6:     TEX_CLAMP_T - Clamp T coordinate (vs wrap)
+;   Bits 8-11: TEX_FORMAT - Texture format
+VOODOO_TEX_ENABLE       equ $0001           ; Enable texture mapping
+VOODOO_TEX_MINIFY       equ $000E           ; Minification filter mask (bits 1-3)
+VOODOO_TEX_MAGNIFY      equ $0010           ; Magnification filter (0=point, 1=bilinear)
+VOODOO_TEX_CLAMP_S      equ $0020           ; Clamp S coordinate
+VOODOO_TEX_CLAMP_T      equ $0040           ; Clamp T coordinate
+VOODOO_TEX_FORMAT       equ $0F00           ; Texture format mask (bits 8-11)
+VOODOO_TEX_FORMAT_SHIFT equ 8               ; Shift for texture format
+
+; Texture format constants (for TEX_FORMAT field)
+VOODOO_TEX_FMT_PALETTE  equ 0               ; 8-bit paletted
+VOODOO_TEX_FMT_P8       equ 5               ; 8-bit palette (alternative)
+VOODOO_TEX_FMT_ARGB1555 equ 8               ; ARGB 1555
+VOODOO_TEX_FMT_ARGB4444 equ 9               ; ARGB 4444
+VOODOO_TEX_FMT_ARGB8888 equ 10              ; ARGB 8888 (default)
+
 ; Clip register packing (for CLIP_LEFT_RIGHT and CLIP_LOW_Y_HIGH)
 ; clipLeftRight: bits 0-9 = right, bits 16-25 = left
 ; clipLowYHigh: bits 0-9 = bottom, bits 16-25 = top

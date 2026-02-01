@@ -2391,6 +2391,29 @@ VOODOO_BLEND_INV_COLOR  = 6             ; 1 - constant color
 VOODOO_BLEND_INV_DST_A  = 7             ; 1 - dst.A
 VOODOO_BLEND_SATURATE   = 15            ; min(src.A, 1-dst.A)
 
+; textureMode bits
+; Bit layout:
+;   Bit 0:     TEX_ENABLE - Enable texture mapping
+;   Bits 1-3:  TEX_MINIFY - Minification filter (0=point)
+;   Bit 4:     TEX_MAGNIFY - Magnification filter (0=point, 1=bilinear)
+;   Bit 5:     TEX_CLAMP_S - Clamp S coordinate (vs wrap)
+;   Bit 6:     TEX_CLAMP_T - Clamp T coordinate (vs wrap)
+;   Bits 8-11: TEX_FORMAT - Texture format
+VOODOO_TEX_ENABLE       = $0001         ; Enable texture mapping
+VOODOO_TEX_MINIFY       = $000E         ; Minification filter mask (bits 1-3)
+VOODOO_TEX_MAGNIFY      = $0010         ; Magnification filter (0=point, 1=bilinear)
+VOODOO_TEX_CLAMP_S      = $0020         ; Clamp S coordinate
+VOODOO_TEX_CLAMP_T      = $0040         ; Clamp T coordinate
+VOODOO_TEX_FORMAT       = $0F00         ; Texture format mask (bits 8-11)
+VOODOO_TEX_FORMAT_SHIFT = 8             ; Shift for texture format
+
+; Texture format constants (for TEX_FORMAT field)
+VOODOO_TEX_FMT_PALETTE  = 0             ; 8-bit paletted
+VOODOO_TEX_FMT_P8       = 5             ; 8-bit palette (alternative)
+VOODOO_TEX_FMT_ARGB1555 = 8             ; ARGB 1555
+VOODOO_TEX_FMT_ARGB4444 = 9             ; ARGB 4444
+VOODOO_TEX_FMT_ARGB8888 = 10            ; ARGB 8888 (default)
+
 ; Fixed-point shift amounts
 VOODOO_FIXED_12_4       = 4
 VOODOO_FIXED_12_12      = 12

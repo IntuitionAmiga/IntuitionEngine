@@ -2502,6 +2502,29 @@
 .set VOODOO_BLEND_INV_DST_A,7
 .set VOODOO_BLEND_SATURATE,15
 
+; textureMode bits
+; Bit layout:
+;   Bit 0:     TEX_ENABLE - Enable texture mapping
+;   Bits 1-3:  TEX_MINIFY - Minification filter (0=point)
+;   Bit 4:     TEX_MAGNIFY - Magnification filter (0=point, 1=bilinear)
+;   Bit 5:     TEX_CLAMP_S - Clamp S coordinate (vs wrap)
+;   Bit 6:     TEX_CLAMP_T - Clamp T coordinate (vs wrap)
+;   Bits 8-11: TEX_FORMAT - Texture format
+.set VOODOO_TEX_ENABLE,$0001
+.set VOODOO_TEX_MINIFY,$000E
+.set VOODOO_TEX_MAGNIFY,$0010
+.set VOODOO_TEX_CLAMP_S,$0020
+.set VOODOO_TEX_CLAMP_T,$0040
+.set VOODOO_TEX_FORMAT,$0F00
+.set VOODOO_TEX_FORMAT_SHIFT,8
+
+; Texture format constants (for TEX_FORMAT field)
+.set VOODOO_TEX_FMT_PALETTE,0
+.set VOODOO_TEX_FMT_P8,5
+.set VOODOO_TEX_FMT_ARGB1555,8
+.set VOODOO_TEX_FMT_ARGB4444,9
+.set VOODOO_TEX_FMT_ARGB8888,10
+
 ; Fixed-point shift amounts
 .set VOODOO_FIXED_12_4,4
 .set VOODOO_FIXED_12_12,12

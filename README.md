@@ -1329,6 +1329,8 @@ The Voodoo chip emulates a 3DFX SST-1 graphics accelerator using High-Level Emul
 - Alpha testing with 8 comparison functions and configurable reference value
 - Chroma key transparency (discard fragments matching key color)
 - Configurable alpha blending with 9 blend factors per source/dest
+- Texture mapping with per-vertex UV coordinates and color modulation
+- Point sampling with wrap/clamp addressing modes
 - Dynamic pipeline state with automatic pipeline caching for performance
 - Scissor clipping
 - 640x480 default, up to 800x600
@@ -1372,6 +1374,10 @@ Configuration:
 0x0F41CC: VOODOO_CHROMA_KEY  - Chroma key color (0x00RRGGBB)
 0x0F41D8: VOODOO_COLOR0      - Fill color for FAST_FILL_CMD (ARGB)
 0x0F4214: VOODOO_VIDEO_DIM   - Video dimensions (width<<16 | height)
+
+Texture Mapping (0x0F4300 - 0x0F432F):
+0x0F4300: VOODOO_TEXTURE_MODE - Texture mode configuration
+0x0F430C: VOODOO_TEX_BASE0    - Texture base address (LOD 0)
 ```
 
 ### Fixed-Point Formats
@@ -1480,6 +1486,33 @@ Example: Use magenta (255, 0, 255) as transparent color:
     ; Enable chroma keying in fbzMode
     move.l  #(VOODOO_FBZ_CHROMAKEY|VOODOO_FBZ_RGB_WRITE),VOODOO_FBZ_MODE
 ```
+
+### textureMode Bits
+
+| Bit | Name | Description |
+|-----|------|-------------|
+| 0 | TEX_ENABLE | Enable texture mapping |
+| 1-3 | TEX_MINIFY | Minification filter (0=point) |
+| 4 | TEX_MAGNIFY | Magnification filter (0=point, 1=bilinear) |
+| 5 | TEX_CLAMP_S | Clamp S (U) coordinate (vs wrap) |
+| 6 | TEX_CLAMP_T | Clamp T (V) coordinate (vs wrap) |
+| 8-11 | TEX_FORMAT | Texture format (see table below) |
+
+### Texture Formats
+
+| Value | Name | Description |
+|-------|------|-------------|
+| 0 | 8BIT_PALETTE | 8-bit paletted texture |
+| 5 | P8 | 8-bit palette (alternative) |
+| 8 | ARGB1555 | 16-bit ARGB 1555 |
+| 9 | ARGB4444 | 16-bit ARGB 4444 |
+| 10 | ARGB8888 | 32-bit ARGB 8888 (default) |
+
+### Texture Coordinates
+
+Texture coordinates (S and T) use 14.18 fixed-point format. Values represent positions in texture space where 1.0 (0x40000) equals the texture width/height. Coordinates outside 0.0-1.0 wrap or clamp depending on TEX_CLAMP_S/T bits.
+
+Per-vertex texture coordinates work like per-vertex colors: use `VOODOO_COLOR_SELECT` to select the vertex (0/1/2), then write to `VOODOO_START_S` and `VOODOO_START_T`.
 
 ### Gouraud Shading
 
@@ -1626,6 +1659,61 @@ This example demonstrates configuring alpha blending with source alpha and inver
     ; Update rotation angle
     add.w   #2,rotation_angle
     bra     .frame_loop
+```
+
+### Example: Textured Triangle (M68K)
+
+This example demonstrates texture-mapped rendering with per-vertex UV coordinates.
+
+```asm
+    include "ie68.inc"
+
+    ; Enable texturing with point sampling and wrap mode
+    move.l  #VOODOO_TEX_ENABLE,VOODOO_TEXTURE_MODE
+
+    ; Set up depth test and RGB write
+    move.l  #(VOODOO_FBZ_DEPTH_ENABLE|VOODOO_FBZ_RGB_WRITE|VOODOO_FBZ_DEPTH_WRITE|(VOODOO_DEPTH_LESS<<5)),VOODOO_FBZ_MODE
+
+    ; Define triangle vertices (12.4 fixed-point)
+    move.l  #(320<<4),VOODOO_VERTEX_AX   ; Top center
+    move.l  #(100<<4),VOODOO_VERTEX_AY
+    move.l  #(420<<4),VOODOO_VERTEX_BX   ; Bottom right
+    move.l  #(300<<4),VOODOO_VERTEX_BY
+    move.l  #(220<<4),VOODOO_VERTEX_CX   ; Bottom left
+    move.l  #(300<<4),VOODOO_VERTEX_CY
+
+    ; Vertex 0 (A): UV = (0.5, 0.0) - top center of texture
+    move.l  #0,VOODOO_COLOR_SELECT
+    move.l  #$1000,VOODOO_START_R        ; White color modulation
+    move.l  #$1000,VOODOO_START_G
+    move.l  #$1000,VOODOO_START_B
+    move.l  #$1000,VOODOO_START_A
+    move.l  #$20000,VOODOO_START_S       ; S = 0.5 (14.18 format: 0.5 * 0x40000)
+    move.l  #$00000,VOODOO_START_T       ; T = 0.0
+
+    ; Vertex 1 (B): UV = (1.0, 1.0) - bottom right
+    move.l  #1,VOODOO_COLOR_SELECT
+    move.l  #$1000,VOODOO_START_R
+    move.l  #$1000,VOODOO_START_G
+    move.l  #$1000,VOODOO_START_B
+    move.l  #$1000,VOODOO_START_A
+    move.l  #$40000,VOODOO_START_S       ; S = 1.0
+    move.l  #$40000,VOODOO_START_T       ; T = 1.0
+
+    ; Vertex 2 (C): UV = (0.0, 1.0) - bottom left
+    move.l  #2,VOODOO_COLOR_SELECT
+    move.l  #$1000,VOODOO_START_R
+    move.l  #$1000,VOODOO_START_G
+    move.l  #$1000,VOODOO_START_B
+    move.l  #$1000,VOODOO_START_A
+    move.l  #$00000,VOODOO_START_S       ; S = 0.0
+    move.l  #$40000,VOODOO_START_T       ; T = 1.0
+
+    ; Submit triangle
+    move.l  #0,VOODOO_TRIANGLE_CMD
+
+    ; Present frame
+    move.l  #0,VOODOO_SWAP_BUFFER_CMD
 ```
 
 # 4. IE32 CPU Architecture
