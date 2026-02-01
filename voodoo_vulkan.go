@@ -64,10 +64,12 @@ type PipelineKey struct {
 
 // VoodooPushConstants contains per-draw state passed to shaders via push constants
 // Phase 3: Alpha Test & Chroma Key support
+// Phase 4: Texture mode support
 type VoodooPushConstants struct {
-	FbzMode   uint32 // Framebuffer Z mode (contains chroma key enable flag)
-	AlphaMode uint32 // Alpha test mode (enable, function, reference value)
-	ChromaKey uint32 // Chroma key color (RGB packed)
+	FbzMode     uint32 // Framebuffer Z mode (contains chroma key enable flag)
+	AlphaMode   uint32 // Alpha test mode (enable, function, reference value)
+	ChromaKey   uint32 // Chroma key color (RGB packed)
+	TextureMode uint32 // Phase 4: bit 0 = texture enable
 }
 
 // PipelineKeyFromRegisters creates a PipelineKey from fbzMode and alphaMode registers
@@ -185,6 +187,15 @@ type VoodooSoftwareBackend struct {
 	frontBuffer []byte
 	backBuffer  []byte
 	isBackBuf   bool
+
+	// Phase 4: Texture mapping
+	textureData    []byte // RGBA texture data
+	textureWidth   int
+	textureHeight  int
+	textureFormat  int
+	textureEnabled bool
+	textureClampS  bool
+	textureClampT  bool
 }
 
 // NewVoodooSoftwareBackend creates a new software rasterizer backend
@@ -253,6 +264,98 @@ func (b *VoodooSoftwareBackend) SetChromaKey(chromaKey uint32) {
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
 	b.chromaKey = chromaKey
+}
+
+// SetTextureData uploads texture data for texture mapping
+// Phase 4: Texture Mapping support
+func (b *VoodooSoftwareBackend) SetTextureData(width, height int, data []byte, format int) {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+
+	b.textureWidth = width
+	b.textureHeight = height
+	b.textureFormat = format
+
+	// Copy texture data (assuming ARGB8888 format for now)
+	b.textureData = make([]byte, len(data))
+	copy(b.textureData, data)
+}
+
+// SetTextureEnabled enables or disables texture mapping
+// Phase 4: Texture Mapping support
+func (b *VoodooSoftwareBackend) SetTextureEnabled(enabled bool) {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	b.textureEnabled = enabled
+}
+
+// SetTextureWrapMode sets texture coordinate wrap/clamp mode
+// Phase 4: Texture Mapping support
+func (b *VoodooSoftwareBackend) SetTextureWrapMode(clampS, clampT bool) {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	b.textureClampS = clampS
+	b.textureClampT = clampT
+}
+
+// sampleTexture samples the texture at given UV coordinates
+// Phase 4: Texture Mapping support
+func (b *VoodooSoftwareBackend) sampleTexture(s, t float32) (r, g, bVal, a float32) {
+	if b.textureData == nil || b.textureWidth == 0 || b.textureHeight == 0 {
+		return 1.0, 1.0, 1.0, 1.0 // White if no texture
+	}
+
+	// Apply wrap/clamp mode
+	if b.textureClampS {
+		s = clampf(s, 0, 1)
+	} else {
+		// Wrap (repeat) mode - use fmod
+		s = s - float32(math.Floor(float64(s)))
+		if s < 0 {
+			s += 1.0
+		}
+	}
+
+	if b.textureClampT {
+		t = clampf(t, 0, 1)
+	} else {
+		// Wrap (repeat) mode
+		t = t - float32(math.Floor(float64(t)))
+		if t < 0 {
+			t += 1.0
+		}
+	}
+
+	// Point sampling (nearest neighbor)
+	texX := int(s * float32(b.textureWidth))
+	texY := int(t * float32(b.textureHeight))
+
+	// Clamp to texture bounds
+	if texX >= b.textureWidth {
+		texX = b.textureWidth - 1
+	}
+	if texY >= b.textureHeight {
+		texY = b.textureHeight - 1
+	}
+	if texX < 0 {
+		texX = 0
+	}
+	if texY < 0 {
+		texY = 0
+	}
+
+	// Sample texel (assuming RGBA format)
+	idx := (texY*b.textureWidth + texX) * 4
+	if idx+3 < len(b.textureData) {
+		r = float32(b.textureData[idx+0]) / 255.0
+		g = float32(b.textureData[idx+1]) / 255.0
+		bVal = float32(b.textureData[idx+2]) / 255.0
+		a = float32(b.textureData[idx+3]) / 255.0
+	} else {
+		r, g, bVal, a = 1.0, 1.0, 1.0, 1.0
+	}
+
+	return r, g, bVal, a
 }
 
 // FlushTriangles rasterizes all triangles in the batch
@@ -445,6 +548,22 @@ func (b *VoodooSoftwareBackend) rasterizeTriangle(tri *VoodooTriangle) {
 				g := w0*v0.G + w1*v1.G + w2*v2.G
 				bVal := w0*v0.B + w1*v1.B + w2*v2.B
 				a := w0*v0.A + w1*v1.A + w2*v2.A
+
+				// Phase 4: Texture mapping
+				if b.textureEnabled && b.textureData != nil {
+					// Interpolate texture coordinates
+					s := w0*v0.S + w1*v1.S + w2*v2.S
+					t := w0*v0.T + w1*v1.T + w2*v2.T
+
+					// Sample texture
+					texR, texG, texB, texA := b.sampleTexture(s, t)
+
+					// Modulate texture with vertex color (multiply)
+					r *= texR
+					g *= texG
+					bVal *= texB
+					a *= texA
+				}
 
 				// Clamp colors
 				r = clampf(r, 0, 1)
@@ -659,9 +778,11 @@ func clampf(v, minVal, maxVal float32) float32 {
 // =============================================================================
 
 // VulkanVertex is the vertex format for the Vulkan pipeline
+// Phase 4: Added texture coordinates
 type VulkanVertex struct {
 	Position [3]float32 // X, Y, Z
 	Color    [4]float32 // R, G, B, A
+	TexCoord [2]float32 // S, T (texture coordinates)
 }
 
 // VulkanBackend implements hardware-accelerated rendering using Vulkan
@@ -736,6 +857,24 @@ type VulkanBackend struct {
 
 	// Software fallback (used if Vulkan init fails)
 	software *VoodooSoftwareBackend
+
+	// Phase 4: Texture resources
+	textureImage       vk.Image
+	textureImageMemory vk.DeviceMemory
+	textureImageView   vk.ImageView
+	textureSampler     vk.Sampler
+	textureWidth       int
+	textureHeight      int
+	textureEnabled     bool
+	textureClampS      bool
+	textureClampT      bool
+
+	// Descriptor set for texture
+	descriptorPool      vk.DescriptorPool
+	descriptorSetLayout vk.DescriptorSetLayout
+	descriptorSet       vk.DescriptorSet
+	textureStaging      vk.Buffer
+	textureStagingMem   vk.DeviceMemory
 }
 
 // Global Vulkan initialization flag
@@ -846,8 +985,68 @@ func (vb *VulkanBackend) initVulkan() error {
 		return fmt.Errorf("failed to create framebuffer: %w", err)
 	}
 
+	// Phase 4: Create descriptor set layout for textures
+	if err := vb.createDescriptorSetLayout(); err != nil {
+		vb.destroyFramebuffer()
+		vb.destroyRenderPass()
+		vb.destroyOffscreenImages()
+		vb.destroyCommandPool()
+		vb.destroyDevice()
+		vb.destroyInstance()
+		return fmt.Errorf("failed to create descriptor set layout: %w", err)
+	}
+
+	// Phase 4: Create descriptor pool
+	if err := vb.createDescriptorPool(); err != nil {
+		vb.destroyTextureResources()
+		vb.destroyFramebuffer()
+		vb.destroyRenderPass()
+		vb.destroyOffscreenImages()
+		vb.destroyCommandPool()
+		vb.destroyDevice()
+		vb.destroyInstance()
+		return fmt.Errorf("failed to create descriptor pool: %w", err)
+	}
+
+	// Phase 4: Create texture sampler
+	if err := vb.createTextureSampler(); err != nil {
+		vb.destroyTextureResources()
+		vb.destroyFramebuffer()
+		vb.destroyRenderPass()
+		vb.destroyOffscreenImages()
+		vb.destroyCommandPool()
+		vb.destroyDevice()
+		vb.destroyInstance()
+		return fmt.Errorf("failed to create texture sampler: %w", err)
+	}
+
+	// Phase 4: Create default texture (1x1 white)
+	if err := vb.createDefaultTexture(); err != nil {
+		vb.destroyTextureResources()
+		vb.destroyFramebuffer()
+		vb.destroyRenderPass()
+		vb.destroyOffscreenImages()
+		vb.destroyCommandPool()
+		vb.destroyDevice()
+		vb.destroyInstance()
+		return fmt.Errorf("failed to create default texture: %w", err)
+	}
+
+	// Phase 4: Allocate descriptor set
+	if err := vb.allocateDescriptorSet(); err != nil {
+		vb.destroyTextureResources()
+		vb.destroyFramebuffer()
+		vb.destroyRenderPass()
+		vb.destroyOffscreenImages()
+		vb.destroyCommandPool()
+		vb.destroyDevice()
+		vb.destroyInstance()
+		return fmt.Errorf("failed to allocate descriptor set: %w", err)
+	}
+
 	// Create pipeline
 	if err := vb.createPipeline(); err != nil {
+		vb.destroyTextureResources()
 		vb.destroyFramebuffer()
 		vb.destroyRenderPass()
 		vb.destroyOffscreenImages()
@@ -1268,11 +1467,14 @@ func (vb *VulkanBackend) createPipeline() error {
 	pushConstantRange := vk.PushConstantRange{
 		StageFlags: vk.ShaderStageFlags(vk.ShaderStageFragmentBit),
 		Offset:     0,
-		Size:       12, // VoodooPushConstants: 3 x uint32 = 12 bytes
+		Size:       16, // VoodooPushConstants: 4 x uint32 = 16 bytes (Phase 4: added TextureMode)
 	}
 
+	// Phase 4: Include descriptor set layout for texture sampling
 	layoutInfo := vk.PipelineLayoutCreateInfo{
 		SType:                  vk.StructureTypePipelineLayoutCreateInfo,
+		SetLayoutCount:         1,
+		PSetLayouts:            []vk.DescriptorSetLayout{vb.descriptorSetLayout},
 		PushConstantRangeCount: 1,
 		PPushConstantRanges:    []vk.PushConstantRange{pushConstantRange},
 	}
@@ -1343,6 +1545,13 @@ func (vb *VulkanBackend) createPipelineVariant(key PipelineKey) (vk.Pipeline, er
 			Binding:  0,
 			Format:   vk.FormatR32g32b32a32Sfloat,
 			Offset:   uint32(unsafe.Offsetof(VulkanVertex{}.Color)),
+		},
+		{
+			// Phase 4: Texture coordinates
+			Location: 2,
+			Binding:  0,
+			Format:   vk.FormatR32g32Sfloat,
+			Offset:   uint32(unsafe.Offsetof(VulkanVertex{}.TexCoord)),
 		},
 	}
 
@@ -1638,6 +1847,572 @@ func (vb *VulkanBackend) createFence() error {
 	return nil
 }
 
+// =============================================================================
+// Phase 4: Texture Resources
+// =============================================================================
+
+// createDescriptorSetLayout creates the descriptor set layout for texture sampling
+func (vb *VulkanBackend) createDescriptorSetLayout() error {
+	// Binding 0: Combined image sampler for texture
+	binding := vk.DescriptorSetLayoutBinding{
+		Binding:            0,
+		DescriptorType:     vk.DescriptorTypeCombinedImageSampler,
+		DescriptorCount:    1,
+		StageFlags:         vk.ShaderStageFlags(vk.ShaderStageFragmentBit),
+		PImmutableSamplers: nil,
+	}
+
+	layoutInfo := vk.DescriptorSetLayoutCreateInfo{
+		SType:        vk.StructureTypeDescriptorSetLayoutCreateInfo,
+		BindingCount: 1,
+		PBindings:    []vk.DescriptorSetLayoutBinding{binding},
+	}
+
+	var layout vk.DescriptorSetLayout
+	if res := vk.CreateDescriptorSetLayout(vb.device, &layoutInfo, nil, &layout); res != vk.Success {
+		return fmt.Errorf("vkCreateDescriptorSetLayout failed: %d", res)
+	}
+
+	vb.descriptorSetLayout = layout
+	return nil
+}
+
+// createDescriptorPool creates the descriptor pool for texture descriptors
+func (vb *VulkanBackend) createDescriptorPool() error {
+	poolSize := vk.DescriptorPoolSize{
+		Type:            vk.DescriptorTypeCombinedImageSampler,
+		DescriptorCount: 1,
+	}
+
+	poolInfo := vk.DescriptorPoolCreateInfo{
+		SType:         vk.StructureTypeDescriptorPoolCreateInfo,
+		MaxSets:       1,
+		PoolSizeCount: 1,
+		PPoolSizes:    []vk.DescriptorPoolSize{poolSize},
+	}
+
+	var pool vk.DescriptorPool
+	if res := vk.CreateDescriptorPool(vb.device, &poolInfo, nil, &pool); res != vk.Success {
+		return fmt.Errorf("vkCreateDescriptorPool failed: %d", res)
+	}
+
+	vb.descriptorPool = pool
+	return nil
+}
+
+// createTextureSampler creates the texture sampler
+func (vb *VulkanBackend) createTextureSampler() error {
+	samplerInfo := vk.SamplerCreateInfo{
+		SType:                   vk.StructureTypeSamplerCreateInfo,
+		MagFilter:               vk.FilterNearest, // Point sampling for now
+		MinFilter:               vk.FilterNearest,
+		AddressModeU:            vk.SamplerAddressModeRepeat,
+		AddressModeV:            vk.SamplerAddressModeRepeat,
+		AddressModeW:            vk.SamplerAddressModeRepeat,
+		AnisotropyEnable:        vk.False,
+		MaxAnisotropy:           1.0,
+		BorderColor:             vk.BorderColorFloatOpaqueBlack,
+		UnnormalizedCoordinates: vk.False,
+		CompareEnable:           vk.False,
+		MipmapMode:              vk.SamplerMipmapModeNearest,
+		MipLodBias:              0.0,
+		MinLod:                  0.0,
+		MaxLod:                  0.0,
+	}
+
+	var sampler vk.Sampler
+	if res := vk.CreateSampler(vb.device, &samplerInfo, nil, &sampler); res != vk.Success {
+		return fmt.Errorf("vkCreateSampler failed: %d", res)
+	}
+
+	vb.textureSampler = sampler
+	return nil
+}
+
+// createDefaultTexture creates a 1x1 white texture as default
+func (vb *VulkanBackend) createDefaultTexture() error {
+	vb.textureWidth = 1
+	vb.textureHeight = 1
+
+	// Create the texture image
+	imageInfo := vk.ImageCreateInfo{
+		SType:     vk.StructureTypeImageCreateInfo,
+		ImageType: vk.ImageType2d,
+		Format:    vk.FormatR8g8b8a8Unorm,
+		Extent: vk.Extent3D{
+			Width:  1,
+			Height: 1,
+			Depth:  1,
+		},
+		MipLevels:     1,
+		ArrayLayers:   1,
+		Samples:       vk.SampleCount1Bit,
+		Tiling:        vk.ImageTilingOptimal,
+		Usage:         vk.ImageUsageFlags(vk.ImageUsageTransferDstBit | vk.ImageUsageSampledBit),
+		SharingMode:   vk.SharingModeExclusive,
+		InitialLayout: vk.ImageLayoutUndefined,
+	}
+
+	var image vk.Image
+	if res := vk.CreateImage(vb.device, &imageInfo, nil, &image); res != vk.Success {
+		return fmt.Errorf("vkCreateImage failed: %d", res)
+	}
+	vb.textureImage = image
+
+	// Get memory requirements
+	var memReqs vk.MemoryRequirements
+	vk.GetImageMemoryRequirements(vb.device, image, &memReqs)
+	memReqs.Deref()
+
+	// Allocate memory
+	memTypeIndex, err := vb.findMemoryType(memReqs.MemoryTypeBits, vk.MemoryPropertyFlags(vk.MemoryPropertyDeviceLocalBit))
+	if err != nil {
+		vk.DestroyImage(vb.device, image, nil)
+		return fmt.Errorf("failed to find memory type for texture: %w", err)
+	}
+
+	allocInfo := vk.MemoryAllocateInfo{
+		SType:           vk.StructureTypeMemoryAllocateInfo,
+		AllocationSize:  memReqs.Size,
+		MemoryTypeIndex: memTypeIndex,
+	}
+
+	var memory vk.DeviceMemory
+	if res := vk.AllocateMemory(vb.device, &allocInfo, nil, &memory); res != vk.Success {
+		vk.DestroyImage(vb.device, image, nil)
+		return fmt.Errorf("vkAllocateMemory failed: %d", res)
+	}
+	vb.textureImageMemory = memory
+
+	vk.BindImageMemory(vb.device, image, memory, 0)
+
+	// Create image view
+	viewInfo := vk.ImageViewCreateInfo{
+		SType:    vk.StructureTypeImageViewCreateInfo,
+		Image:    image,
+		ViewType: vk.ImageViewType2d,
+		Format:   vk.FormatR8g8b8a8Unorm,
+		SubresourceRange: vk.ImageSubresourceRange{
+			AspectMask:     vk.ImageAspectFlags(vk.ImageAspectColorBit),
+			BaseMipLevel:   0,
+			LevelCount:     1,
+			BaseArrayLayer: 0,
+			LayerCount:     1,
+		},
+	}
+
+	var imageView vk.ImageView
+	if res := vk.CreateImageView(vb.device, &viewInfo, nil, &imageView); res != vk.Success {
+		vk.FreeMemory(vb.device, memory, nil)
+		vk.DestroyImage(vb.device, image, nil)
+		return fmt.Errorf("vkCreateImageView failed: %d", res)
+	}
+	vb.textureImageView = imageView
+
+	// Create staging buffer for texture upload
+	stagingSize := vk.DeviceSize(4) // 1x1 RGBA
+	stagingInfo := vk.BufferCreateInfo{
+		SType:       vk.StructureTypeBufferCreateInfo,
+		Size:        stagingSize,
+		Usage:       vk.BufferUsageFlags(vk.BufferUsageTransferSrcBit),
+		SharingMode: vk.SharingModeExclusive,
+	}
+
+	var stagingBuffer vk.Buffer
+	if res := vk.CreateBuffer(vb.device, &stagingInfo, nil, &stagingBuffer); res != vk.Success {
+		vk.DestroyImageView(vb.device, imageView, nil)
+		vk.FreeMemory(vb.device, memory, nil)
+		vk.DestroyImage(vb.device, image, nil)
+		return fmt.Errorf("vkCreateBuffer (staging) failed: %d", res)
+	}
+	vb.textureStaging = stagingBuffer
+
+	var stagingMemReqs vk.MemoryRequirements
+	vk.GetBufferMemoryRequirements(vb.device, stagingBuffer, &stagingMemReqs)
+	stagingMemReqs.Deref()
+
+	stagingMemType, err := vb.findMemoryType(stagingMemReqs.MemoryTypeBits,
+		vk.MemoryPropertyFlags(vk.MemoryPropertyHostVisibleBit|vk.MemoryPropertyHostCoherentBit))
+	if err != nil {
+		vk.DestroyBuffer(vb.device, stagingBuffer, nil)
+		vk.DestroyImageView(vb.device, imageView, nil)
+		vk.FreeMemory(vb.device, memory, nil)
+		vk.DestroyImage(vb.device, image, nil)
+		return fmt.Errorf("failed to find staging memory type: %w", err)
+	}
+
+	stagingAllocInfo := vk.MemoryAllocateInfo{
+		SType:           vk.StructureTypeMemoryAllocateInfo,
+		AllocationSize:  stagingMemReqs.Size,
+		MemoryTypeIndex: stagingMemType,
+	}
+
+	var stagingMem vk.DeviceMemory
+	if res := vk.AllocateMemory(vb.device, &stagingAllocInfo, nil, &stagingMem); res != vk.Success {
+		vk.DestroyBuffer(vb.device, stagingBuffer, nil)
+		vk.DestroyImageView(vb.device, imageView, nil)
+		vk.FreeMemory(vb.device, memory, nil)
+		vk.DestroyImage(vb.device, image, nil)
+		return fmt.Errorf("vkAllocateMemory (staging) failed: %d", res)
+	}
+	vb.textureStagingMem = stagingMem
+
+	vk.BindBufferMemory(vb.device, stagingBuffer, stagingMem, 0)
+
+	// Upload white pixel to staging buffer
+	var data unsafe.Pointer
+	vk.MapMemory(vb.device, stagingMem, 0, stagingSize, 0, &data)
+	whitePixel := []byte{255, 255, 255, 255}
+	copy((*[4]byte)(data)[:], whitePixel)
+	vk.UnmapMemory(vb.device, stagingMem)
+
+	// Copy staging buffer to image
+	if err := vb.copyBufferToImage(stagingBuffer, image, 1, 1); err != nil {
+		return fmt.Errorf("failed to copy buffer to image: %w", err)
+	}
+
+	return nil
+}
+
+// destroyTextureImage destroys just the texture image resources (not sampler or descriptor set)
+func (vb *VulkanBackend) destroyTextureImage() {
+	if vb.textureImageView != vk.NullImageView {
+		vk.DestroyImageView(vb.device, vb.textureImageView, nil)
+		vb.textureImageView = vk.NullImageView
+	}
+	if vb.textureImage != vk.NullImage {
+		vk.DestroyImage(vb.device, vb.textureImage, nil)
+		vb.textureImage = vk.NullImage
+	}
+	if vb.textureImageMemory != vk.NullDeviceMemory {
+		vk.FreeMemory(vb.device, vb.textureImageMemory, nil)
+		vb.textureImageMemory = vk.NullDeviceMemory
+	}
+	if vb.textureStaging != vk.NullBuffer {
+		vk.DestroyBuffer(vb.device, vb.textureStaging, nil)
+		vb.textureStaging = vk.NullBuffer
+	}
+	if vb.textureStagingMem != vk.NullDeviceMemory {
+		vk.FreeMemory(vb.device, vb.textureStagingMem, nil)
+		vb.textureStagingMem = vk.NullDeviceMemory
+	}
+}
+
+// createTextureImage creates texture image resources for the given dimensions
+func (vb *VulkanBackend) createTextureImage(width, height int) error {
+	// Create the texture image
+	imageInfo := vk.ImageCreateInfo{
+		SType:     vk.StructureTypeImageCreateInfo,
+		ImageType: vk.ImageType2d,
+		Format:    vk.FormatR8g8b8a8Unorm,
+		Extent: vk.Extent3D{
+			Width:  uint32(width),
+			Height: uint32(height),
+			Depth:  1,
+		},
+		MipLevels:     1,
+		ArrayLayers:   1,
+		Samples:       vk.SampleCount1Bit,
+		Tiling:        vk.ImageTilingOptimal,
+		Usage:         vk.ImageUsageFlags(vk.ImageUsageTransferDstBit | vk.ImageUsageSampledBit),
+		SharingMode:   vk.SharingModeExclusive,
+		InitialLayout: vk.ImageLayoutUndefined,
+	}
+
+	var image vk.Image
+	if res := vk.CreateImage(vb.device, &imageInfo, nil, &image); res != vk.Success {
+		return fmt.Errorf("vkCreateImage failed: %d", res)
+	}
+	vb.textureImage = image
+
+	// Get memory requirements
+	var memReqs vk.MemoryRequirements
+	vk.GetImageMemoryRequirements(vb.device, image, &memReqs)
+	memReqs.Deref()
+
+	// Allocate memory
+	memTypeIndex, err := vb.findMemoryType(memReqs.MemoryTypeBits, vk.MemoryPropertyFlags(vk.MemoryPropertyDeviceLocalBit))
+	if err != nil {
+		vk.DestroyImage(vb.device, image, nil)
+		vb.textureImage = vk.NullImage
+		return fmt.Errorf("failed to find memory type for texture: %w", err)
+	}
+
+	allocInfo := vk.MemoryAllocateInfo{
+		SType:           vk.StructureTypeMemoryAllocateInfo,
+		AllocationSize:  memReqs.Size,
+		MemoryTypeIndex: memTypeIndex,
+	}
+
+	var memory vk.DeviceMemory
+	if res := vk.AllocateMemory(vb.device, &allocInfo, nil, &memory); res != vk.Success {
+		vk.DestroyImage(vb.device, image, nil)
+		vb.textureImage = vk.NullImage
+		return fmt.Errorf("vkAllocateMemory failed: %d", res)
+	}
+	vb.textureImageMemory = memory
+
+	vk.BindImageMemory(vb.device, image, memory, 0)
+
+	// Create image view
+	viewInfo := vk.ImageViewCreateInfo{
+		SType:    vk.StructureTypeImageViewCreateInfo,
+		Image:    image,
+		ViewType: vk.ImageViewType2d,
+		Format:   vk.FormatR8g8b8a8Unorm,
+		SubresourceRange: vk.ImageSubresourceRange{
+			AspectMask:     vk.ImageAspectFlags(vk.ImageAspectColorBit),
+			BaseMipLevel:   0,
+			LevelCount:     1,
+			BaseArrayLayer: 0,
+			LayerCount:     1,
+		},
+	}
+
+	var imageView vk.ImageView
+	if res := vk.CreateImageView(vb.device, &viewInfo, nil, &imageView); res != vk.Success {
+		vb.destroyTextureImage()
+		return fmt.Errorf("vkCreateImageView failed: %d", res)
+	}
+	vb.textureImageView = imageView
+
+	// Create staging buffer for texture upload
+	stagingSize := vk.DeviceSize(width * height * 4)
+	stagingInfo := vk.BufferCreateInfo{
+		SType:       vk.StructureTypeBufferCreateInfo,
+		Size:        stagingSize,
+		Usage:       vk.BufferUsageFlags(vk.BufferUsageTransferSrcBit),
+		SharingMode: vk.SharingModeExclusive,
+	}
+
+	var stagingBuffer vk.Buffer
+	if res := vk.CreateBuffer(vb.device, &stagingInfo, nil, &stagingBuffer); res != vk.Success {
+		vb.destroyTextureImage()
+		return fmt.Errorf("vkCreateBuffer (staging) failed: %d", res)
+	}
+	vb.textureStaging = stagingBuffer
+
+	var stagingMemReqs vk.MemoryRequirements
+	vk.GetBufferMemoryRequirements(vb.device, stagingBuffer, &stagingMemReqs)
+	stagingMemReqs.Deref()
+
+	stagingMemType, err := vb.findMemoryType(stagingMemReqs.MemoryTypeBits,
+		vk.MemoryPropertyFlags(vk.MemoryPropertyHostVisibleBit|vk.MemoryPropertyHostCoherentBit))
+	if err != nil {
+		vb.destroyTextureImage()
+		return fmt.Errorf("failed to find staging memory type: %w", err)
+	}
+
+	stagingAllocInfo := vk.MemoryAllocateInfo{
+		SType:           vk.StructureTypeMemoryAllocateInfo,
+		AllocationSize:  stagingMemReqs.Size,
+		MemoryTypeIndex: stagingMemType,
+	}
+
+	var stagingMem vk.DeviceMemory
+	if res := vk.AllocateMemory(vb.device, &stagingAllocInfo, nil, &stagingMem); res != vk.Success {
+		vb.destroyTextureImage()
+		return fmt.Errorf("vkAllocateMemory (staging) failed: %d", res)
+	}
+	vb.textureStagingMem = stagingMem
+
+	vk.BindBufferMemory(vb.device, stagingBuffer, stagingMem, 0)
+
+	return nil
+}
+
+// uploadTextureData uploads texture data to the GPU via staging buffer
+func (vb *VulkanBackend) uploadTextureData(data []byte, width, height int) error {
+	if vb.textureStaging == vk.NullBuffer {
+		return fmt.Errorf("staging buffer not created")
+	}
+
+	stagingSize := vk.DeviceSize(width * height * 4)
+
+	// Upload data to staging buffer
+	var ptr unsafe.Pointer
+	vk.MapMemory(vb.device, vb.textureStagingMem, 0, stagingSize, 0, &ptr)
+	copy((*[1 << 30]byte)(ptr)[:len(data)], data)
+	vk.UnmapMemory(vb.device, vb.textureStagingMem)
+
+	// Copy staging buffer to image
+	if err := vb.copyBufferToImage(vb.textureStaging, vb.textureImage, width, height); err != nil {
+		return fmt.Errorf("failed to copy buffer to image: %w", err)
+	}
+
+	return nil
+}
+
+// copyBufferToImage copies a buffer to an image with proper layout transitions
+func (vb *VulkanBackend) copyBufferToImage(buffer vk.Buffer, image vk.Image, width, height int) error {
+	// Use a one-time command buffer
+	allocInfo := vk.CommandBufferAllocateInfo{
+		SType:              vk.StructureTypeCommandBufferAllocateInfo,
+		CommandPool:        vb.commandPool,
+		Level:              vk.CommandBufferLevelPrimary,
+		CommandBufferCount: 1,
+	}
+
+	cmdBuffers := make([]vk.CommandBuffer, 1)
+	if res := vk.AllocateCommandBuffers(vb.device, &allocInfo, cmdBuffers); res != vk.Success {
+		return fmt.Errorf("vkAllocateCommandBuffers failed: %d", res)
+	}
+	cmdBuffer := cmdBuffers[0]
+
+	beginInfo := vk.CommandBufferBeginInfo{
+		SType: vk.StructureTypeCommandBufferBeginInfo,
+		Flags: vk.CommandBufferUsageFlags(vk.CommandBufferUsageOneTimeSubmitBit),
+	}
+	vk.BeginCommandBuffer(cmdBuffer, &beginInfo)
+
+	// Transition image layout from undefined to transfer dst
+	barrier := vk.ImageMemoryBarrier{
+		SType:               vk.StructureTypeImageMemoryBarrier,
+		OldLayout:           vk.ImageLayoutUndefined,
+		NewLayout:           vk.ImageLayoutTransferDstOptimal,
+		SrcQueueFamilyIndex: vk.QueueFamilyIgnored,
+		DstQueueFamilyIndex: vk.QueueFamilyIgnored,
+		Image:               image,
+		SubresourceRange: vk.ImageSubresourceRange{
+			AspectMask:     vk.ImageAspectFlags(vk.ImageAspectColorBit),
+			BaseMipLevel:   0,
+			LevelCount:     1,
+			BaseArrayLayer: 0,
+			LayerCount:     1,
+		},
+		SrcAccessMask: 0,
+		DstAccessMask: vk.AccessFlags(vk.AccessTransferWriteBit),
+	}
+
+	vk.CmdPipelineBarrier(cmdBuffer,
+		vk.PipelineStageFlags(vk.PipelineStageTopOfPipeBit),
+		vk.PipelineStageFlags(vk.PipelineStageTransferBit),
+		0, 0, nil, 0, nil, 1, []vk.ImageMemoryBarrier{barrier})
+
+	// Copy buffer to image
+	region := vk.BufferImageCopy{
+		BufferOffset:      0,
+		BufferRowLength:   0,
+		BufferImageHeight: 0,
+		ImageSubresource: vk.ImageSubresourceLayers{
+			AspectMask:     vk.ImageAspectFlags(vk.ImageAspectColorBit),
+			MipLevel:       0,
+			BaseArrayLayer: 0,
+			LayerCount:     1,
+		},
+		ImageOffset: vk.Offset3D{X: 0, Y: 0, Z: 0},
+		ImageExtent: vk.Extent3D{Width: uint32(width), Height: uint32(height), Depth: 1},
+	}
+
+	vk.CmdCopyBufferToImage(cmdBuffer, buffer, image,
+		vk.ImageLayoutTransferDstOptimal, 1, []vk.BufferImageCopy{region})
+
+	// Transition image layout to shader read optimal
+	barrier.OldLayout = vk.ImageLayoutTransferDstOptimal
+	barrier.NewLayout = vk.ImageLayoutShaderReadOnlyOptimal
+	barrier.SrcAccessMask = vk.AccessFlags(vk.AccessTransferWriteBit)
+	barrier.DstAccessMask = vk.AccessFlags(vk.AccessShaderReadBit)
+
+	vk.CmdPipelineBarrier(cmdBuffer,
+		vk.PipelineStageFlags(vk.PipelineStageTransferBit),
+		vk.PipelineStageFlags(vk.PipelineStageFragmentShaderBit),
+		0, 0, nil, 0, nil, 1, []vk.ImageMemoryBarrier{barrier})
+
+	vk.EndCommandBuffer(cmdBuffer)
+
+	// Submit and wait
+	submitInfo := vk.SubmitInfo{
+		SType:              vk.StructureTypeSubmitInfo,
+		CommandBufferCount: 1,
+		PCommandBuffers:    []vk.CommandBuffer{cmdBuffer},
+	}
+
+	vk.QueueSubmit(vb.graphicsQueue, 1, []vk.SubmitInfo{submitInfo}, vk.NullFence)
+	vk.QueueWaitIdle(vb.graphicsQueue)
+
+	vk.FreeCommandBuffers(vb.device, vb.commandPool, 1, cmdBuffers)
+
+	return nil
+}
+
+// allocateDescriptorSet allocates and updates the descriptor set
+func (vb *VulkanBackend) allocateDescriptorSet() error {
+	allocInfo := vk.DescriptorSetAllocateInfo{
+		SType:              vk.StructureTypeDescriptorSetAllocateInfo,
+		DescriptorPool:     vb.descriptorPool,
+		DescriptorSetCount: 1,
+		PSetLayouts:        []vk.DescriptorSetLayout{vb.descriptorSetLayout},
+	}
+
+	var descriptorSet vk.DescriptorSet
+	if res := vk.AllocateDescriptorSets(vb.device, &allocInfo, &descriptorSet); res != vk.Success {
+		return fmt.Errorf("vkAllocateDescriptorSets failed: %d", res)
+	}
+	vb.descriptorSet = descriptorSet
+
+	// Update descriptor set with the default texture
+	vb.updateDescriptorSet()
+
+	return nil
+}
+
+// updateDescriptorSet updates the descriptor set with the current texture
+func (vb *VulkanBackend) updateDescriptorSet() {
+	imageInfo := vk.DescriptorImageInfo{
+		Sampler:     vb.textureSampler,
+		ImageView:   vb.textureImageView,
+		ImageLayout: vk.ImageLayoutShaderReadOnlyOptimal,
+	}
+
+	writeDescriptor := vk.WriteDescriptorSet{
+		SType:           vk.StructureTypeWriteDescriptorSet,
+		DstSet:          vb.descriptorSet,
+		DstBinding:      0,
+		DstArrayElement: 0,
+		DescriptorCount: 1,
+		DescriptorType:  vk.DescriptorTypeCombinedImageSampler,
+		PImageInfo:      []vk.DescriptorImageInfo{imageInfo},
+	}
+
+	vk.UpdateDescriptorSets(vb.device, 1, []vk.WriteDescriptorSet{writeDescriptor}, 0, nil)
+}
+
+// destroyTextureResources cleans up texture-related Vulkan resources
+func (vb *VulkanBackend) destroyTextureResources() {
+	if vb.descriptorPool != vk.NullDescriptorPool {
+		vk.DestroyDescriptorPool(vb.device, vb.descriptorPool, nil)
+		vb.descriptorPool = vk.NullDescriptorPool
+	}
+	if vb.descriptorSetLayout != vk.NullDescriptorSetLayout {
+		vk.DestroyDescriptorSetLayout(vb.device, vb.descriptorSetLayout, nil)
+		vb.descriptorSetLayout = vk.NullDescriptorSetLayout
+	}
+	if vb.textureSampler != vk.NullSampler {
+		vk.DestroySampler(vb.device, vb.textureSampler, nil)
+		vb.textureSampler = vk.NullSampler
+	}
+	if vb.textureImageView != vk.NullImageView {
+		vk.DestroyImageView(vb.device, vb.textureImageView, nil)
+		vb.textureImageView = vk.NullImageView
+	}
+	if vb.textureImage != vk.NullImage {
+		vk.DestroyImage(vb.device, vb.textureImage, nil)
+		vb.textureImage = vk.NullImage
+	}
+	if vb.textureImageMemory != vk.NullDeviceMemory {
+		vk.FreeMemory(vb.device, vb.textureImageMemory, nil)
+		vb.textureImageMemory = vk.NullDeviceMemory
+	}
+	if vb.textureStaging != vk.NullBuffer {
+		vk.DestroyBuffer(vb.device, vb.textureStaging, nil)
+		vb.textureStaging = vk.NullBuffer
+	}
+	if vb.textureStagingMem != vk.NullDeviceMemory {
+		vk.FreeMemory(vb.device, vb.textureStagingMem, nil)
+		vb.textureStagingMem = vk.NullDeviceMemory
+	}
+}
+
 // findMemoryType finds a suitable memory type
 func (vb *VulkanBackend) findMemoryType(typeFilter uint32, properties vk.MemoryPropertyFlags) (uint32, error) {
 	var memProps vk.PhysicalDeviceMemoryProperties
@@ -1715,13 +2490,70 @@ func (vb *VulkanBackend) SetChromaKey(chromaKey uint32) {
 	vb.software.SetChromaKey(chromaKey)
 }
 
+// SetTextureData uploads texture data for texture mapping
+// Phase 4: Texture Mapping support
+func (vb *VulkanBackend) SetTextureData(width, height int, data []byte, format int) {
+	vb.mutex.Lock()
+	defer vb.mutex.Unlock()
+
+	// Update software backend
+	vb.software.SetTextureData(width, height, data, format)
+
+	// Upload to Vulkan if initialized
+	if !vb.initialized {
+		return
+	}
+
+	// Check if we need to recreate texture resources (size changed)
+	if width != vb.textureWidth || height != vb.textureHeight {
+		vb.destroyTextureImage()
+		if err := vb.createTextureImage(width, height); err != nil {
+			return
+		}
+	}
+
+	vb.textureWidth = width
+	vb.textureHeight = height
+
+	// Upload texture data via staging buffer
+	if err := vb.uploadTextureData(data, width, height); err != nil {
+		return
+	}
+
+	// Update descriptor set with new texture
+	vb.updateDescriptorSet()
+}
+
+// SetTextureEnabled enables or disables texture mapping
+// Phase 4: Texture Mapping support
+func (vb *VulkanBackend) SetTextureEnabled(enabled bool) {
+	vb.mutex.Lock()
+	defer vb.mutex.Unlock()
+
+	vb.textureEnabled = enabled
+	vb.software.SetTextureEnabled(enabled)
+}
+
+// SetTextureWrapMode sets texture coordinate wrap/clamp mode
+// Phase 4: Texture Mapping support
+func (vb *VulkanBackend) SetTextureWrapMode(clampS, clampT bool) {
+	vb.mutex.Lock()
+	defer vb.mutex.Unlock()
+
+	vb.textureClampS = clampS
+	vb.textureClampT = clampT
+	vb.software.SetTextureWrapMode(clampS, clampT)
+}
+
 // FlushTriangles renders all triangles
 func (vb *VulkanBackend) FlushTriangles(triangles []VoodooTriangle) {
 	vb.mutex.Lock()
 	defer vb.mutex.Unlock()
 
-	// Always update software backend for fallback
-	vb.software.FlushTriangles(triangles)
+	// Update software backend for fallback when Vulkan not initialized
+	if !vb.initialized {
+		vb.software.FlushTriangles(triangles)
+	}
 
 	if !vb.initialized {
 		return
@@ -1754,6 +2586,7 @@ func (vb *VulkanBackend) FlushTriangles(triangles []VoodooTriangle) {
 			vertices = append(vertices, VulkanVertex{
 				Position: [3]float32{ndcX, ndcY, ndcZ},
 				Color:    [4]float32{v.R, v.G, v.B, v.A},
+				TexCoord: [2]float32{v.S, v.T}, // Phase 4: Texture coordinates
 			})
 		}
 	}
@@ -1795,15 +2628,26 @@ func (vb *VulkanBackend) FlushTriangles(triangles []VoodooTriangle) {
 	vk.CmdBeginRenderPass(vb.commandBuffer, &renderPassBegin, vk.SubpassContentsInline)
 	vk.CmdBindPipeline(vb.commandBuffer, vk.PipelineBindPointGraphics, vb.pipeline)
 
-	// Push constants for alpha test and chroma key (Phase 3)
+	// Push constants for alpha test, chroma key, and texture mode (Phase 3 & 4)
+	var texMode uint32
+	if vb.textureEnabled {
+		texMode = 1
+	}
 	pushConstants := VoodooPushConstants{
-		FbzMode:   vb.fbzMode,
-		AlphaMode: vb.alphaMode,
-		ChromaKey: vb.chromaKey,
+		FbzMode:     vb.fbzMode,
+		AlphaMode:   vb.alphaMode,
+		ChromaKey:   vb.chromaKey,
+		TextureMode: texMode,
 	}
 	vk.CmdPushConstants(vb.commandBuffer, vb.pipelineLayout,
-		vk.ShaderStageFlags(vk.ShaderStageFragmentBit), 0, 12,
+		vk.ShaderStageFlags(vk.ShaderStageFragmentBit), 0, 16,
 		unsafe.Pointer(&pushConstants))
+
+	// Bind descriptor set for texture sampling (Phase 4)
+	if vb.descriptorSet != vk.NullDescriptorSet {
+		vk.CmdBindDescriptorSets(vb.commandBuffer, vk.PipelineBindPointGraphics,
+			vb.pipelineLayout, 0, 1, []vk.DescriptorSet{vb.descriptorSet}, 0, nil)
+	}
 
 	// Set dynamic scissor
 	vk.CmdSetScissor(vb.commandBuffer, 0, 1, []vk.Rect2D{vb.scissor})
@@ -1974,6 +2818,7 @@ func (vb *VulkanBackend) Destroy() {
 		vb.destroyStagingBuffer()
 		vb.destroyVertexBuffer()
 		vb.destroyPipeline()
+		vb.destroyTextureResources() // Phase 4: Clean up texture resources
 		vb.destroyFramebuffer()
 		vb.destroyRenderPass()
 		vb.destroyOffscreenImages()

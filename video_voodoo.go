@@ -131,6 +131,11 @@ type VoodooBackend interface {
 	SetScissor(left, top, right, bottom int)
 	SetChromaKey(chromaKey uint32) // Phase 3: Chroma key support
 
+	// Phase 4: Texture mapping
+	SetTextureData(width, height int, data []byte, format int)
+	SetTextureEnabled(enabled bool)
+	SetTextureWrapMode(clampS, clampT bool)
+
 	// Rendering operations
 	FlushTriangles(triangles []VoodooTriangle)
 	ClearFramebuffer(color uint32)
@@ -322,6 +327,14 @@ func (v *VoodooEngine) HandleWrite(addr uint32, value uint32) {
 		v.fbzColorPath = value
 	case VOODOO_TEXTURE_MODE:
 		v.textureMode = value
+		// Phase 4: Update backend texture state
+		if v.backend != nil {
+			enabled := (value & VOODOO_TEX_ENABLE) != 0
+			clampS := (value & VOODOO_TEX_CLAMP_S) != 0
+			clampT := (value & VOODOO_TEX_CLAMP_T) != 0
+			v.backend.SetTextureEnabled(enabled)
+			v.backend.SetTextureWrapMode(clampS, clampT)
+		}
 	case VOODOO_FOG_MODE:
 		v.fogMode = value
 
@@ -590,6 +603,19 @@ func (v *VoodooEngine) GetTriangleBatchCount() int {
 	v.mutex.RLock()
 	defer v.mutex.RUnlock()
 	return len(v.triangleBatch)
+}
+
+// SetTextureData uploads texture data to the backend
+// Phase 4: Texture mapping support
+func (v *VoodooEngine) SetTextureData(width, height int, data []byte) {
+	v.mutex.Lock()
+	defer v.mutex.Unlock()
+
+	if v.backend != nil {
+		// Get format from textureMode register
+		format := int((v.textureMode >> 8) & 0xF)
+		v.backend.SetTextureData(width, height, data, format)
+	}
 }
 
 // Destroy cleans up resources

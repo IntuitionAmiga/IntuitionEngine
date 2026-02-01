@@ -23,6 +23,8 @@ import (
 	"math"
 	"testing"
 	"unsafe"
+
+	vk "github.com/goki/vulkan"
 )
 
 // =============================================================================
@@ -1998,13 +2000,15 @@ func TestVoodoo_AlphaMode_TestParsing(t *testing.T) {
 // Test push constants structure
 func TestVoodoo_PushConstants_Structure(t *testing.T) {
 	pc := VoodooPushConstants{
-		FbzMode:   VOODOO_FBZ_CHROMAKEY | VOODOO_FBZ_RGB_WRITE,
-		AlphaMode: VOODOO_ALPHA_TEST_EN | (VOODOO_ALPHA_GREATER << 1) | (128 << 24),
-		ChromaKey: 0x00FF00FF,
+		FbzMode:     VOODOO_FBZ_CHROMAKEY | VOODOO_FBZ_RGB_WRITE,
+		AlphaMode:   VOODOO_ALPHA_TEST_EN | (VOODOO_ALPHA_GREATER << 1) | (128 << 24),
+		ChromaKey:   0x00FF00FF,
+		TextureMode: 1, // Phase 4: texture enable flag
 	}
 
-	// Verify structure is 12 bytes (3 x uint32)
-	expectedSize := 12
+	// Verify structure is 16 bytes (4 x uint32)
+	// Phase 4: Added TextureMode field
+	expectedSize := 16
 	actualSize := int(unsafe.Sizeof(pc))
 	if actualSize != expectedSize {
 		t.Errorf("PushConstants size: expected %d bytes, got %d", expectedSize, actualSize)
@@ -2016,6 +2020,9 @@ func TestVoodoo_PushConstants_Structure(t *testing.T) {
 	}
 	if pc.ChromaKey != 0x00FF00FF {
 		t.Error("ChromaKey not stored correctly")
+	}
+	if pc.TextureMode != 1 {
+		t.Error("TextureMode not stored correctly")
 	}
 }
 
@@ -2124,6 +2131,1004 @@ func TestVoodoo_PipelineKey_AsMapKey(t *testing.T) {
 	// key3 should have its own entry
 	if val, ok := cache[key3]; !ok || val != 2 {
 		t.Error("Different key should have different cache entry")
+	}
+}
+
+// =============================================================================
+// Phase 4: Texture Mapping Tests
+// =============================================================================
+
+// Test texture mode register parsing
+func TestVoodoo_TextureMode_RegisterBits(t *testing.T) {
+	tests := []struct {
+		name          string
+		textureMode   uint32
+		expectEnabled bool
+		expectClampS  bool
+		expectClampT  bool
+		expectMagnify bool
+		expectFormat  int
+	}{
+		{
+			name:          "Texturing disabled",
+			textureMode:   0,
+			expectEnabled: false,
+			expectClampS:  false,
+			expectClampT:  false,
+			expectMagnify: false,
+			expectFormat:  0,
+		},
+		{
+			name:          "Basic texturing enabled",
+			textureMode:   VOODOO_TEX_ENABLE,
+			expectEnabled: true,
+			expectClampS:  false,
+			expectClampT:  false,
+			expectMagnify: false,
+			expectFormat:  0,
+		},
+		{
+			name:          "Texturing with clamp S and T",
+			textureMode:   VOODOO_TEX_ENABLE | VOODOO_TEX_CLAMP_S | VOODOO_TEX_CLAMP_T,
+			expectEnabled: true,
+			expectClampS:  true,
+			expectClampT:  true,
+			expectMagnify: false,
+			expectFormat:  0,
+		},
+		{
+			name:          "Texturing with bilinear filter",
+			textureMode:   VOODOO_TEX_ENABLE | VOODOO_TEX_MAGNIFY,
+			expectEnabled: true,
+			expectClampS:  false,
+			expectClampT:  false,
+			expectMagnify: true,
+			expectFormat:  0,
+		},
+		{
+			name:          "Texturing with ARGB8888 format",
+			textureMode:   VOODOO_TEX_ENABLE | (VOODOO_TEX_FMT_ARGB8888 << 8),
+			expectEnabled: true,
+			expectClampS:  false,
+			expectClampT:  false,
+			expectMagnify: false,
+			expectFormat:  VOODOO_TEX_FMT_ARGB8888,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			enabled := (tc.textureMode & VOODOO_TEX_ENABLE) != 0
+			clampS := (tc.textureMode & VOODOO_TEX_CLAMP_S) != 0
+			clampT := (tc.textureMode & VOODOO_TEX_CLAMP_T) != 0
+			magnify := (tc.textureMode & VOODOO_TEX_MAGNIFY) != 0
+			format := int((tc.textureMode >> 8) & 0xF)
+
+			if enabled != tc.expectEnabled {
+				t.Errorf("Enabled: expected %v, got %v", tc.expectEnabled, enabled)
+			}
+			if clampS != tc.expectClampS {
+				t.Errorf("ClampS: expected %v, got %v", tc.expectClampS, clampS)
+			}
+			if clampT != tc.expectClampT {
+				t.Errorf("ClampT: expected %v, got %v", tc.expectClampT, clampT)
+			}
+			if magnify != tc.expectMagnify {
+				t.Errorf("Magnify: expected %v, got %v", tc.expectMagnify, magnify)
+			}
+			if format != tc.expectFormat {
+				t.Errorf("Format: expected %d, got %d", tc.expectFormat, format)
+			}
+		})
+	}
+}
+
+// Test texture mode register write and read
+func TestVoodoo_TextureMode_Register(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	// Write texture mode value
+	texModeValue := uint32(VOODOO_TEX_ENABLE | VOODOO_TEX_CLAMP_S | VOODOO_TEX_CLAMP_T | VOODOO_TEX_MAGNIFY | (VOODOO_TEX_FMT_ARGB8888 << 8))
+	v.HandleWrite(VOODOO_TEXTURE_MODE, texModeValue)
+
+	// Read it back
+	readValue := v.HandleRead(VOODOO_TEXTURE_MODE)
+	if readValue != texModeValue {
+		t.Errorf("Expected textureMode 0x%X, got 0x%X", texModeValue, readValue)
+	}
+}
+
+// Test per-vertex texture coordinate storage (Gouraud mode)
+func TestVoodoo_PerVertexTextureCoords_Storage(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	// Enable Gouraud mode and set vertex 0 texture coords
+	v.HandleWrite(VOODOO_COLOR_SELECT, 0) // Target vertex 0
+	v.HandleWrite(VOODOO_START_S, floatToFixed14_18(0.0))
+	v.HandleWrite(VOODOO_START_T, floatToFixed14_18(0.0))
+	v.HandleWrite(VOODOO_START_W, floatToFixed2_30(1.0))
+
+	// Vertex 1
+	v.HandleWrite(VOODOO_COLOR_SELECT, 1)
+	v.HandleWrite(VOODOO_START_S, floatToFixed14_18(1.0))
+	v.HandleWrite(VOODOO_START_T, floatToFixed14_18(0.0))
+	v.HandleWrite(VOODOO_START_W, floatToFixed2_30(1.0))
+
+	// Vertex 2
+	v.HandleWrite(VOODOO_COLOR_SELECT, 2)
+	v.HandleWrite(VOODOO_START_S, floatToFixed14_18(0.5))
+	v.HandleWrite(VOODOO_START_T, floatToFixed14_18(1.0))
+	v.HandleWrite(VOODOO_START_W, floatToFixed2_30(1.0))
+
+	// Verify that gouraud mode is enabled
+	if !v.gouraudEnabled {
+		t.Error("Gouraud mode should be enabled after COLOR_SELECT writes")
+	}
+}
+
+// Test VoodooBackend interface includes texture methods
+func TestVoodoo_Backend_HasTextureInterface(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	if backend == nil {
+		t.Fatal("NewVoodooSoftwareBackend returned nil")
+	}
+
+	err := backend.Init(256, 256)
+	if err != nil {
+		t.Fatalf("Backend Init failed: %v", err)
+	}
+	defer backend.Destroy()
+
+	// Verify SetTextureData exists and works
+	texWidth, texHeight := 4, 4
+	texData := make([]byte, texWidth*texHeight*4) // ARGB8888
+
+	// Create a simple 2x2 checkerboard pattern
+	for y := 0; y < texHeight; y++ {
+		for x := 0; x < texWidth; x++ {
+			idx := (y*texWidth + x) * 4
+			if (x+y)%2 == 0 {
+				texData[idx+0] = 255 // R
+				texData[idx+1] = 255 // G
+				texData[idx+2] = 255 // B
+				texData[idx+3] = 255 // A
+			} else {
+				texData[idx+0] = 0   // R
+				texData[idx+1] = 0   // G
+				texData[idx+2] = 0   // B
+				texData[idx+3] = 255 // A
+			}
+		}
+	}
+
+	// This should not panic
+	backend.SetTextureData(texWidth, texHeight, texData, VOODOO_TEX_FMT_ARGB8888)
+}
+
+// Test software backend texture sampling - point sampling
+func TestVoodoo_SoftwareBackend_TextureSampling_Point(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	err := backend.Init(100, 100)
+	if err != nil {
+		t.Fatalf("Backend Init failed: %v", err)
+	}
+	defer backend.Destroy()
+
+	// Create a 2x2 texture: red, green, blue, white
+	texData := []byte{
+		255, 0, 0, 255, // Red (0,0)
+		0, 255, 0, 255, // Green (1,0)
+		0, 0, 255, 255, // Blue (0,1)
+		255, 255, 255, 255, // White (1,1)
+	}
+	backend.SetTextureData(2, 2, texData, VOODOO_TEX_FMT_ARGB8888)
+
+	// Enable texturing in fbzMode simulation
+	backend.SetTextureEnabled(true)
+
+	// Clear to black
+	backend.ClearFramebuffer(0xFF000000)
+
+	// Draw a textured triangle covering most of the screen
+	// UV coords at each vertex should sample from the texture
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 0.0, T: 0.0, W: 1.0}, // Top-left, UV=(0,0) -> red
+			{X: 90, Y: 10, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 1.0, T: 0.0, W: 1.0}, // Top-right, UV=(1,0) -> green
+			{X: 50, Y: 90, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 0.5, T: 1.0, W: 1.0}, // Bottom-center, UV=(0.5,1) -> blend of blue/white
+		},
+	}
+
+	backend.FlushTriangles([]VoodooTriangle{tri})
+	backend.SwapBuffers(false)
+
+	frame := backend.GetFrame()
+
+	// Check top-left area should be reddish
+	topLeftIdx := (15*100 + 20) * 4
+	if frame[topLeftIdx] < 100 {
+		t.Errorf("Top-left should be reddish, got R=%d", frame[topLeftIdx])
+	}
+
+	// Check top-right area should be greenish
+	topRightIdx := (15*100 + 80) * 4
+	if frame[topRightIdx+1] < 100 {
+		t.Errorf("Top-right should be greenish, got G=%d", frame[topRightIdx+1])
+	}
+}
+
+// Test software backend texture wrap mode
+func TestVoodoo_SoftwareBackend_TextureWrap(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	err := backend.Init(100, 100)
+	if err != nil {
+		t.Fatalf("Backend Init failed: %v", err)
+	}
+	defer backend.Destroy()
+
+	// Create a 2x2 red/blue checkerboard texture
+	texData := []byte{
+		255, 0, 0, 255, // Red
+		0, 0, 255, 255, // Blue
+		0, 0, 255, 255, // Blue
+		255, 0, 0, 255, // Red
+	}
+	backend.SetTextureData(2, 2, texData, VOODOO_TEX_FMT_ARGB8888)
+	backend.SetTextureEnabled(true)
+	backend.SetTextureWrapMode(false, false) // Repeat mode
+
+	backend.ClearFramebuffer(0xFF000000)
+
+	// Draw triangle with UVs > 1.0 to test wrapping
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 0.0, T: 0.0, W: 1.0},
+			{X: 90, Y: 10, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 2.0, T: 0.0, W: 1.0}, // S > 1 should wrap
+			{X: 50, Y: 90, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 1.0, T: 2.0, W: 1.0}, // T > 1 should wrap
+		},
+	}
+
+	backend.FlushTriangles([]VoodooTriangle{tri})
+	backend.SwapBuffers(false)
+
+	// Just verify no crash and we get some output
+	frame := backend.GetFrame()
+	if frame == nil {
+		t.Error("GetFrame returned nil after textured render")
+	}
+}
+
+// Test software backend texture clamp mode
+func TestVoodoo_SoftwareBackend_TextureClamp(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	err := backend.Init(100, 100)
+	if err != nil {
+		t.Fatalf("Backend Init failed: %v", err)
+	}
+	defer backend.Destroy()
+
+	// Create a 2x2 texture with distinct corners
+	texData := []byte{
+		255, 0, 0, 255, // Red (0,0)
+		0, 255, 0, 255, // Green (1,0)
+		0, 0, 255, 255, // Blue (0,1)
+		255, 255, 0, 255, // Yellow (1,1)
+	}
+	backend.SetTextureData(2, 2, texData, VOODOO_TEX_FMT_ARGB8888)
+	backend.SetTextureEnabled(true)
+	backend.SetTextureWrapMode(true, true) // Clamp mode
+
+	backend.ClearFramebuffer(0xFF000000)
+
+	// Draw triangle with UVs > 1.0 to test clamping
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 0.0, T: 0.0, W: 1.0},
+			{X: 90, Y: 10, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 2.0, T: 0.0, W: 1.0}, // Should clamp to 1.0 -> green
+			{X: 50, Y: 90, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 1.0, T: 2.0, W: 1.0}, // Should clamp to 1.0 -> yellow
+		},
+	}
+
+	backend.FlushTriangles([]VoodooTriangle{tri})
+	backend.SwapBuffers(false)
+
+	frame := backend.GetFrame()
+	if frame == nil {
+		t.Error("GetFrame returned nil after textured render")
+	}
+}
+
+// Test texture color modulation with vertex color
+func TestVoodoo_SoftwareBackend_TextureModulation(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	err := backend.Init(100, 100)
+	if err != nil {
+		t.Fatalf("Backend Init failed: %v", err)
+	}
+	defer backend.Destroy()
+
+	// Create a pure white 2x2 texture
+	texData := []byte{
+		255, 255, 255, 255,
+		255, 255, 255, 255,
+		255, 255, 255, 255,
+		255, 255, 255, 255,
+	}
+	backend.SetTextureData(2, 2, texData, VOODOO_TEX_FMT_ARGB8888)
+	backend.SetTextureEnabled(true)
+
+	backend.ClearFramebuffer(0xFF000000)
+
+	// Draw triangle with red vertex color - result should be red (white tex * red vert)
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.5, R: 1, G: 0, B: 0, A: 1, S: 0.0, T: 0.0, W: 1.0},
+			{X: 90, Y: 10, Z: 0.5, R: 1, G: 0, B: 0, A: 1, S: 1.0, T: 0.0, W: 1.0},
+			{X: 50, Y: 90, Z: 0.5, R: 1, G: 0, B: 0, A: 1, S: 0.5, T: 1.0, W: 1.0},
+		},
+	}
+
+	backend.FlushTriangles([]VoodooTriangle{tri})
+	backend.SwapBuffers(false)
+
+	frame := backend.GetFrame()
+
+	// Center of triangle should be red (white * red = red)
+	centerIdx := (50*100 + 50) * 4
+	r, g, b := frame[centerIdx], frame[centerIdx+1], frame[centerIdx+2]
+
+	if r < 200 || g > 50 || b > 50 {
+		t.Errorf("Modulated color should be red, got R=%d G=%d B=%d", r, g, b)
+	}
+}
+
+// Test VoodooEngine texture coordinate writes
+func TestVoodoo_TextureCoord_Writes(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	// Write texture coordinates (14.18 fixed-point)
+	// 0.5 in 14.18 = 0.5 * 262144 = 131072 = 0x20000
+	v.HandleWrite(VOODOO_START_S, 0x20000)
+	v.HandleWrite(VOODOO_START_T, 0x40000) // 1.0 in 14.18
+
+	// Verify shadow registers store the raw values
+	sRaw := v.HandleRead(VOODOO_START_S)
+	tRaw := v.HandleRead(VOODOO_START_T)
+
+	if sRaw != 0x20000 {
+		t.Errorf("Expected START_S raw 0x20000, got 0x%X", sRaw)
+	}
+	if tRaw != 0x40000 {
+		t.Errorf("Expected START_T raw 0x40000, got 0x%X", tRaw)
+	}
+}
+
+// Test VulkanVertex struct size with texture coordinates
+func TestVoodoo_VulkanVertex_TextureCoords(t *testing.T) {
+	// VulkanVertex should now have:
+	// Position [3]float32 = 12 bytes
+	// Color [4]float32 = 16 bytes
+	// TexCoord [2]float32 = 8 bytes
+	// Total = 36 bytes
+	expectedSize := 36
+	actualSize := int(unsafe.Sizeof(VulkanVertex{}))
+
+	if actualSize != expectedSize {
+		t.Errorf("VulkanVertex size: expected %d bytes, got %d", expectedSize, actualSize)
+	}
+}
+
+// Test texture data upload to VoodooEngine
+func TestVoodoo_TextureUpload(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	// Create a simple 4x4 texture
+	texWidth, texHeight := 4, 4
+	texData := make([]byte, texWidth*texHeight*4)
+	for i := 0; i < len(texData); i += 4 {
+		texData[i+0] = 128 // R
+		texData[i+1] = 64  // G
+		texData[i+2] = 255 // B
+		texData[i+3] = 255 // A
+	}
+
+	// Set texture mode enabled
+	v.HandleWrite(VOODOO_TEXTURE_MODE, VOODOO_TEX_ENABLE|(VOODOO_TEX_FMT_ARGB8888<<8))
+
+	// Upload texture data - this exercises the SetTextureData path
+	v.SetTextureData(texWidth, texHeight, texData)
+
+	// Verify texture mode is stored
+	if v.HandleRead(VOODOO_TEXTURE_MODE) != (VOODOO_TEX_ENABLE | (VOODOO_TEX_FMT_ARGB8888 << 8)) {
+		t.Error("Texture mode not stored correctly")
+	}
+}
+
+// Test that texture coordinates are passed correctly to triangles
+func TestVoodoo_TextureCoords_InTriangle(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	// Set up a triangle with specific texture coords
+	v.HandleWrite(VOODOO_COLOR_SELECT, 0)
+	v.HandleWrite(VOODOO_VERTEX_AX, floatToFixed12_4(100))
+	v.HandleWrite(VOODOO_VERTEX_AY, floatToFixed12_4(100))
+	v.HandleWrite(VOODOO_START_R, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_G, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_B, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_A, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_S, floatToFixed14_18(0.0))
+	v.HandleWrite(VOODOO_START_T, floatToFixed14_18(0.0))
+	v.HandleWrite(VOODOO_START_Z, floatToFixed20_12(0.5))
+
+	v.HandleWrite(VOODOO_COLOR_SELECT, 1)
+	v.HandleWrite(VOODOO_VERTEX_BX, floatToFixed12_4(200))
+	v.HandleWrite(VOODOO_VERTEX_BY, floatToFixed12_4(100))
+	v.HandleWrite(VOODOO_START_R, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_G, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_B, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_A, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_S, floatToFixed14_18(1.0))
+	v.HandleWrite(VOODOO_START_T, floatToFixed14_18(0.0))
+	v.HandleWrite(VOODOO_START_Z, floatToFixed20_12(0.5))
+
+	v.HandleWrite(VOODOO_COLOR_SELECT, 2)
+	v.HandleWrite(VOODOO_VERTEX_CX, floatToFixed12_4(150))
+	v.HandleWrite(VOODOO_VERTEX_CY, floatToFixed12_4(200))
+	v.HandleWrite(VOODOO_START_R, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_G, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_B, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_A, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_S, floatToFixed14_18(0.5))
+	v.HandleWrite(VOODOO_START_T, floatToFixed14_18(1.0))
+	v.HandleWrite(VOODOO_START_Z, floatToFixed20_12(0.5))
+
+	// Submit triangle
+	v.HandleWrite(VOODOO_TRIANGLE_CMD, 0)
+
+	// Check that we have 1 triangle
+	if v.GetTriangleBatchCount() != 1 {
+		t.Fatalf("Expected 1 triangle, got %d", v.GetTriangleBatchCount())
+	}
+
+	// Access the triangle batch directly to check texture coords
+	v.mutex.RLock()
+	tri := v.triangleBatch[0]
+	v.mutex.RUnlock()
+
+	// Verify texture coordinates for each vertex
+	const tolerance = 0.01
+	if math.Abs(float64(tri.Vertices[0].S-0.0)) > tolerance {
+		t.Errorf("Vertex 0 S: expected 0.0, got %f", tri.Vertices[0].S)
+	}
+	if math.Abs(float64(tri.Vertices[0].T-0.0)) > tolerance {
+		t.Errorf("Vertex 0 T: expected 0.0, got %f", tri.Vertices[0].T)
+	}
+	if math.Abs(float64(tri.Vertices[1].S-1.0)) > tolerance {
+		t.Errorf("Vertex 1 S: expected 1.0, got %f", tri.Vertices[1].S)
+	}
+	if math.Abs(float64(tri.Vertices[1].T-0.0)) > tolerance {
+		t.Errorf("Vertex 1 T: expected 0.0, got %f", tri.Vertices[1].T)
+	}
+	if math.Abs(float64(tri.Vertices[2].S-0.5)) > tolerance {
+		t.Errorf("Vertex 2 S: expected 0.5, got %f", tri.Vertices[2].S)
+	}
+	if math.Abs(float64(tri.Vertices[2].T-1.0)) > tolerance {
+		t.Errorf("Vertex 2 T: expected 1.0, got %f", tri.Vertices[2].T)
+	}
+}
+
+// Test that texture state is passed correctly to backend
+func TestVoodoo_TextureState_InBackend(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	// Create a red texture
+	texData := []byte{
+		255, 0, 0, 255,
+		255, 0, 0, 255,
+		255, 0, 0, 255,
+		255, 0, 0, 255,
+	}
+	v.SetTextureData(2, 2, texData)
+
+	// Enable texturing
+	v.HandleWrite(VOODOO_TEXTURE_MODE, VOODOO_TEX_ENABLE|(VOODOO_TEX_FMT_ARGB8888<<8))
+
+	// Access the backend (which is a VulkanBackend with software fallback)
+	vb := v.backend.(*VulkanBackend)
+	sb := vb.software
+
+	// Check that texture is enabled in software backend
+	if !sb.textureEnabled {
+		t.Error("Texture should be enabled in software backend")
+	}
+
+	// Check that texture data exists
+	if sb.textureData == nil {
+		t.Error("Texture data should exist in software backend")
+	}
+
+	// Check texture dimensions
+	if sb.textureWidth != 2 || sb.textureHeight != 2 {
+		t.Errorf("Texture dimensions: expected 2x2, got %dx%d", sb.textureWidth, sb.textureHeight)
+	}
+}
+
+// Test full textured triangle rendering through VoodooEngine
+func TestVoodoo_TexturedTriangle_Integration(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	// Enable texturing FIRST (so format is set when we upload)
+	v.HandleWrite(VOODOO_TEXTURE_MODE, VOODOO_TEX_ENABLE|(VOODOO_TEX_FMT_ARGB8888<<8))
+
+	// Create a red 2x2 texture
+	texData := []byte{
+		255, 0, 0, 255,
+		255, 0, 0, 255,
+		255, 0, 0, 255,
+		255, 0, 0, 255,
+	}
+	v.SetTextureData(2, 2, texData)
+
+	// Clear to blue
+	v.HandleWrite(VOODOO_COLOR0, 0xFF0000FF)
+	v.HandleWrite(VOODOO_FAST_FILL_CMD, 0)
+
+	// Draw a textured triangle with white vertex color
+	// Vertex A - top center
+	v.HandleWrite(VOODOO_COLOR_SELECT, 0)
+	v.HandleWrite(VOODOO_VERTEX_AX, floatToFixed12_4(320))
+	v.HandleWrite(VOODOO_VERTEX_AY, floatToFixed12_4(100))
+	v.HandleWrite(VOODOO_START_R, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_G, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_B, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_A, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_S, floatToFixed14_18(0.5))
+	v.HandleWrite(VOODOO_START_T, floatToFixed14_18(0.0))
+	v.HandleWrite(VOODOO_START_Z, floatToFixed20_12(0.5))
+
+	// Vertex B - bottom right
+	v.HandleWrite(VOODOO_COLOR_SELECT, 1)
+	v.HandleWrite(VOODOO_VERTEX_BX, floatToFixed12_4(420))
+	v.HandleWrite(VOODOO_VERTEX_BY, floatToFixed12_4(300))
+	v.HandleWrite(VOODOO_START_R, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_G, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_B, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_A, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_S, floatToFixed14_18(1.0))
+	v.HandleWrite(VOODOO_START_T, floatToFixed14_18(1.0))
+	v.HandleWrite(VOODOO_START_Z, floatToFixed20_12(0.5))
+
+	// Vertex C - bottom left
+	v.HandleWrite(VOODOO_COLOR_SELECT, 2)
+	v.HandleWrite(VOODOO_VERTEX_CX, floatToFixed12_4(220))
+	v.HandleWrite(VOODOO_VERTEX_CY, floatToFixed12_4(300))
+	v.HandleWrite(VOODOO_START_R, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_G, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_B, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_A, floatToFixed12_12(1.0))
+	v.HandleWrite(VOODOO_START_S, floatToFixed14_18(0.0))
+	v.HandleWrite(VOODOO_START_T, floatToFixed14_18(1.0))
+	v.HandleWrite(VOODOO_START_Z, floatToFixed20_12(0.5))
+
+	// Submit and swap
+	v.HandleWrite(VOODOO_TRIANGLE_CMD, 0)
+	v.HandleWrite(VOODOO_SWAP_BUFFER_CMD, 0)
+
+	// Verify software backend state after flush
+	vb := v.backend.(*VulkanBackend)
+	sb := vb.software
+
+	// Debug: check texture state
+	if !sb.textureEnabled {
+		t.Errorf("Texture should be enabled, but it's not")
+	}
+	if sb.textureData == nil {
+		t.Errorf("Texture data should exist, but it's nil")
+	}
+
+	// Check center of triangle - should be red from texture
+	frame := v.GetFrame()
+	centerIdx := (200*640 + 320) * 4
+	r, g, b := frame[centerIdx], frame[centerIdx+1], frame[centerIdx+2]
+
+	if r < 200 || g > 50 || b > 50 {
+		t.Errorf("Textured triangle center should be red, got R=%d G=%d B=%d", r, g, b)
+	}
+}
+
+// Helper function for 14.18 fixed-point conversion
+func floatToFixed14_18(f float32) uint32 {
+	return uint32(f * float32(1<<18))
+}
+
+// Helper function for 2.30 fixed-point conversion
+func floatToFixed2_30(f float32) uint32 {
+	return uint32(f * float32(1<<30))
+}
+
+// Test texture sampling edge cases
+func TestVoodoo_TextureSampling_EdgeCases(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	err := backend.Init(100, 100)
+	if err != nil {
+		t.Fatalf("Backend Init failed: %v", err)
+	}
+	defer backend.Destroy()
+
+	// Test with 1x1 texture
+	texData := []byte{255, 128, 64, 255}
+	backend.SetTextureData(1, 1, texData, VOODOO_TEX_FMT_ARGB8888)
+	backend.SetTextureEnabled(true)
+
+	backend.ClearFramebuffer(0xFF000000)
+
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 0.5, T: 0.5, W: 1.0},
+			{X: 90, Y: 10, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 0.5, T: 0.5, W: 1.0},
+			{X: 50, Y: 90, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 0.5, T: 0.5, W: 1.0},
+		},
+	}
+
+	backend.FlushTriangles([]VoodooTriangle{tri})
+	backend.SwapBuffers(false)
+
+	frame := backend.GetFrame()
+	centerIdx := (50*100 + 50) * 4
+	r, g, b := frame[centerIdx], frame[centerIdx+1], frame[centerIdx+2]
+
+	// Should match the single texel color modulated by white vertex color
+	if r < 250 || g < 120 || g > 135 || b < 60 || b > 70 {
+		t.Errorf("1x1 texture should produce R=255 G=128 B=64, got R=%d G=%d B=%d", r, g, b)
+	}
+}
+
+// Test texture with alpha channel
+func TestVoodoo_TextureAlpha_Modulation(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	err := backend.Init(100, 100)
+	if err != nil {
+		t.Fatalf("Backend Init failed: %v", err)
+	}
+	defer backend.Destroy()
+
+	// Create texture with 50% alpha
+	texData := []byte{
+		255, 0, 0, 128, // 50% alpha red
+		255, 0, 0, 128,
+		255, 0, 0, 128,
+		255, 0, 0, 128,
+	}
+	backend.SetTextureData(2, 2, texData, VOODOO_TEX_FMT_ARGB8888)
+	backend.SetTextureEnabled(true)
+
+	// Enable alpha blending
+	backend.UpdatePipelineState(
+		VOODOO_FBZ_RGB_WRITE,
+		VOODOO_ALPHA_BLEND_EN|(VOODOO_BLEND_SRC_ALPHA<<8)|(VOODOO_BLEND_INV_SRC_A<<12),
+	)
+
+	// Clear to blue
+	backend.ClearFramebuffer(0xFF0000FF)
+
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 0.0, T: 0.0, W: 1.0},
+			{X: 90, Y: 10, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 1.0, T: 0.0, W: 1.0},
+			{X: 50, Y: 90, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 0.5, T: 1.0, W: 1.0},
+		},
+	}
+
+	backend.FlushTriangles([]VoodooTriangle{tri})
+	backend.SwapBuffers(false)
+
+	frame := backend.GetFrame()
+	centerIdx := (50*100 + 50) * 4
+	r, b := frame[centerIdx], frame[centerIdx+2]
+
+	// Should be blend of red (texture) and blue (background)
+	// 50% red + 50% blue = purple-ish
+	if r < 100 || r > 180 || b < 100 || b > 180 {
+		t.Errorf("Blended texture should be purple-ish, got R=%d B=%d", r, b)
+	}
+}
+
+// Test texture through VulkanBackend (not through VoodooEngine)
+func TestVoodoo_VulkanBackend_TexturedTriangle(t *testing.T) {
+	vb, err := NewVulkanBackend()
+	if err != nil {
+		t.Fatalf("NewVulkanBackend failed: %v", err)
+	}
+	err = vb.Init(100, 100)
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer vb.Destroy()
+
+	// Create red texture
+	texData := []byte{
+		255, 0, 0, 255,
+		255, 0, 0, 255,
+		255, 0, 0, 255,
+		255, 0, 0, 255,
+	}
+	vb.SetTextureData(2, 2, texData, VOODOO_TEX_FMT_ARGB8888)
+	vb.SetTextureEnabled(true)
+
+	// Check that state is set in software backend
+	sb := vb.software
+	if !sb.textureEnabled {
+		t.Error("software backend textureEnabled should be true")
+	}
+	if sb.textureData == nil {
+		t.Error("software backend textureData should not be nil")
+	}
+
+	// Clear to blue
+	vb.ClearFramebuffer(0xFF0000FF)
+
+	// Draw a textured triangle with white vertex color
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 0.5, T: 0.5, W: 1.0},
+			{X: 90, Y: 10, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 0.5, T: 0.5, W: 1.0},
+			{X: 50, Y: 90, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 0.5, T: 0.5, W: 1.0},
+		},
+	}
+
+	vb.FlushTriangles([]VoodooTriangle{tri})
+	vb.SwapBuffers(false)
+
+	// Check center pixel - should be red (texture) modulated by white (vertex) = red
+	frame := vb.GetFrame()
+	centerIdx := (50*100 + 50) * 4
+	r, g, b := frame[centerIdx], frame[centerIdx+1], frame[centerIdx+2]
+
+	if r < 200 || g > 50 || b > 50 {
+		t.Errorf("Textured triangle center should be red, got R=%d G=%d B=%d", r, g, b)
+	}
+}
+
+// =============================================================================
+// Phase 4: Vulkan GPU Texture Tests
+// =============================================================================
+
+// Test that Vulkan texture resources can be created
+func TestVoodoo_VulkanBackend_TextureResourceCreation(t *testing.T) {
+	vb, err := NewVulkanBackend()
+	if err != nil {
+		t.Fatalf("NewVulkanBackend failed: %v", err)
+	}
+	err = vb.Init(100, 100)
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer vb.Destroy()
+
+	// Skip if Vulkan is not initialized (headless environment)
+	if !vb.initialized {
+		t.Skip("Vulkan not available, skipping GPU texture test")
+	}
+
+	// Create a 4x4 texture
+	texData := make([]byte, 4*4*4)
+	for i := 0; i < len(texData); i += 4 {
+		texData[i+0] = 255 // R
+		texData[i+1] = 0   // G
+		texData[i+2] = 0   // B
+		texData[i+3] = 255 // A
+	}
+
+	vb.SetTextureData(4, 4, texData, VOODOO_TEX_FMT_ARGB8888)
+	vb.SetTextureEnabled(true)
+
+	// Check that texture dimensions are stored
+	if vb.textureWidth != 4 || vb.textureHeight != 4 {
+		t.Errorf("Texture dimensions should be 4x4, got %dx%d", vb.textureWidth, vb.textureHeight)
+	}
+
+	// Check that texture is marked as enabled
+	if !vb.textureEnabled {
+		t.Error("Texture should be enabled")
+	}
+}
+
+// Test that Vulkan uses GPU path when textures are enabled (not software fallback)
+func TestVoodoo_VulkanBackend_GPUTextureRendering(t *testing.T) {
+	vb, err := NewVulkanBackend()
+	if err != nil {
+		t.Fatalf("NewVulkanBackend failed: %v", err)
+	}
+	err = vb.Init(100, 100)
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer vb.Destroy()
+
+	// Skip if Vulkan is not initialized
+	if !vb.initialized {
+		t.Skip("Vulkan not available, skipping GPU texture test")
+	}
+
+	// Create a solid red texture
+	texData := make([]byte, 2*2*4)
+	for i := 0; i < len(texData); i += 4 {
+		texData[i+0] = 255 // R
+		texData[i+1] = 0   // G
+		texData[i+2] = 0   // B
+		texData[i+3] = 255 // A
+	}
+
+	vb.SetTextureData(2, 2, texData, VOODOO_TEX_FMT_ARGB8888)
+	vb.SetTextureEnabled(true)
+
+	// Clear to blue
+	vb.ClearFramebuffer(0xFF0000FF)
+
+	// Draw a textured triangle with white vertex color
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 10, Y: 10, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 0.5, T: 0.5, W: 1.0},
+			{X: 90, Y: 10, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 0.5, T: 0.5, W: 1.0},
+			{X: 50, Y: 90, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 0.5, T: 0.5, W: 1.0},
+		},
+	}
+
+	vb.FlushTriangles([]VoodooTriangle{tri})
+	vb.SwapBuffers(false)
+
+	// Get the frame - should be GPU-rendered with texture
+	frame := vb.GetFrame()
+	centerIdx := (50*100 + 50) * 4
+	r, g, b := frame[centerIdx], frame[centerIdx+1], frame[centerIdx+2]
+
+	// Center should be red (from texture modulated by white vertex color)
+	if r < 200 || g > 50 || b > 50 {
+		t.Errorf("GPU textured triangle center should be red, got R=%d G=%d B=%d", r, g, b)
+	}
+}
+
+// Test texture coordinate interpolation in Vulkan
+func TestVoodoo_VulkanBackend_TextureCoordInterpolation(t *testing.T) {
+	vb, err := NewVulkanBackend()
+	if err != nil {
+		t.Fatalf("NewVulkanBackend failed: %v", err)
+	}
+	err = vb.Init(100, 100)
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer vb.Destroy()
+
+	if !vb.initialized {
+		t.Skip("Vulkan not available, skipping GPU texture test")
+	}
+
+	// Create a 2x2 checkerboard texture: red/green on top, blue/white on bottom
+	texData := []byte{
+		255, 0, 0, 255, // Red (0,0)
+		0, 255, 0, 255, // Green (1,0)
+		0, 0, 255, 255, // Blue (0,1)
+		255, 255, 255, 255, // White (1,1)
+	}
+
+	vb.SetTextureData(2, 2, texData, VOODOO_TEX_FMT_ARGB8888)
+	vb.SetTextureEnabled(true)
+
+	// Clear to black
+	vb.ClearFramebuffer(0xFF000000)
+
+	// Draw a full-screen quad (two triangles) with proper UV mapping
+	tri1 := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 0, Y: 0, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 0.0, T: 0.0, W: 1.0},
+			{X: 100, Y: 0, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 1.0, T: 0.0, W: 1.0},
+			{X: 100, Y: 100, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 1.0, T: 1.0, W: 1.0},
+		},
+	}
+	tri2 := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 0, Y: 0, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 0.0, T: 0.0, W: 1.0},
+			{X: 100, Y: 100, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 1.0, T: 1.0, W: 1.0},
+			{X: 0, Y: 100, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 0.0, T: 1.0, W: 1.0},
+		},
+	}
+
+	vb.FlushTriangles([]VoodooTriangle{tri1, tri2})
+	vb.SwapBuffers(false)
+
+	frame := vb.GetFrame()
+
+	// Check corners - they should match the texture colors
+	// Top-left (0,0) should be red
+	idx := (10*100 + 10) * 4
+	if frame[idx] < 200 {
+		t.Errorf("Top-left should be red, got R=%d G=%d B=%d", frame[idx], frame[idx+1], frame[idx+2])
+	}
+}
+
+// Test texture wrap mode
+func TestVoodoo_VulkanBackend_TextureWrapMode(t *testing.T) {
+	vb, err := NewVulkanBackend()
+	if err != nil {
+		t.Fatalf("NewVulkanBackend failed: %v", err)
+	}
+	err = vb.Init(100, 100)
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer vb.Destroy()
+
+	if !vb.initialized {
+		t.Skip("Vulkan not available, skipping GPU texture test")
+	}
+
+	// Create a simple texture
+	texData := []byte{255, 0, 0, 255}
+	vb.SetTextureData(1, 1, texData, VOODOO_TEX_FMT_ARGB8888)
+	vb.SetTextureEnabled(true)
+
+	// Test clamp mode
+	vb.SetTextureWrapMode(true, true)
+	if !vb.textureClampS || !vb.textureClampT {
+		t.Error("Texture clamp mode should be enabled")
+	}
+
+	// Test wrap mode
+	vb.SetTextureWrapMode(false, false)
+	if vb.textureClampS || vb.textureClampT {
+		t.Error("Texture wrap mode should be enabled (clamp disabled)")
+	}
+}
+
+// Test descriptor set layout creation
+func TestVoodoo_VulkanBackend_DescriptorSetLayout(t *testing.T) {
+	vb, err := NewVulkanBackend()
+	if err != nil {
+		t.Fatalf("NewVulkanBackend failed: %v", err)
+	}
+	err = vb.Init(100, 100)
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer vb.Destroy()
+
+	if !vb.initialized {
+		t.Skip("Vulkan not available")
+	}
+
+	// After initialization with texture support, descriptor set layout should exist
+	// This tests that the Vulkan initialization properly sets up texture resources
+	if vb.descriptorSetLayout == vk.NullDescriptorSetLayout {
+		t.Error("Descriptor set layout should be created during init")
 	}
 }
 
