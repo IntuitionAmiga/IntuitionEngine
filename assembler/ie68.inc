@@ -1492,10 +1492,16 @@ VOODOO_ALPHA_SRC_RGB    equ $0F00           ; Source RGB blend factor
 VOODOO_ALPHA_DST_RGB    equ $F000           ; Dest RGB blend factor
 
 ; Alpha blend factors (for src/dst blend settings)
-VOODOO_BLEND_ZERO       equ 0
-VOODOO_BLEND_SRC_ALPHA  equ 1
-VOODOO_BLEND_ONE        equ 4
-VOODOO_BLEND_INV_SRC_A  equ 5
+; Use these values shifted to bits 8-11 for source, bits 12-15 for dest
+VOODOO_BLEND_ZERO       equ 0               ; 0
+VOODOO_BLEND_SRC_ALPHA  equ 1               ; src.A
+VOODOO_BLEND_COLOR      equ 2               ; constant color
+VOODOO_BLEND_DST_ALPHA  equ 3               ; dst.A
+VOODOO_BLEND_ONE        equ 4               ; 1
+VOODOO_BLEND_INV_SRC_A  equ 5               ; 1 - src.A
+VOODOO_BLEND_INV_COLOR  equ 6               ; 1 - constant color
+VOODOO_BLEND_INV_DST_A  equ 7               ; 1 - dst.A
+VOODOO_BLEND_SATURATE   equ 15              ; min(src.A, 1-dst.A)
 
 ; swapbufferCMD bits
 VOODOO_SWAP_VSYNC       equ $01             ; Wait for VSync before swap

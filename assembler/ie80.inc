@@ -2454,17 +2454,33 @@
 .set VOODOO_FBZ_RGB_WRITE,0x0200
 .set VOODOO_FBZ_DEPTH_WRITE,0x0400
 
-; Depth compare functions (shift left 5)
+; Depth compare functions (shift left 5 to use in FBZ_MODE)
+.set VOODOO_DEPTH_NEVER,0
 .set VOODOO_DEPTH_LESS,1
+.set VOODOO_DEPTH_EQUAL,2
 .set VOODOO_DEPTH_LESSEQUAL,3
+.set VOODOO_DEPTH_GREATER,4
+.set VOODOO_DEPTH_NOTEQUAL,5
+.set VOODOO_DEPTH_GREATEREQUAL,6
 .set VOODOO_DEPTH_ALWAYS,7
 
 ; alphaMode bits
+.set VOODOO_ALPHA_TEST_EN,0x0001
 .set VOODOO_ALPHA_BLEND_EN,0x0010
+.set VOODOO_ALPHA_SRC_RGB,0x0F00
+.set VOODOO_ALPHA_DST_RGB,0xF000
 
-; Blend factors
+; Alpha blend factors (for src/dst blend settings)
+; Use these values shifted to bits 8-11 for source, bits 12-15 for dest
+.set VOODOO_BLEND_ZERO,0
 .set VOODOO_BLEND_SRC_ALPHA,1
+.set VOODOO_BLEND_COLOR,2
+.set VOODOO_BLEND_DST_ALPHA,3
+.set VOODOO_BLEND_ONE,4
 .set VOODOO_BLEND_INV_SRC_A,5
+.set VOODOO_BLEND_INV_COLOR,6
+.set VOODOO_BLEND_INV_DST_A,7
+.set VOODOO_BLEND_SATURATE,15
 
 ; Fixed-point shift amounts
 .set VOODOO_FIXED_12_4,4

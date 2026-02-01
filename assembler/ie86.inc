@@ -928,17 +928,33 @@ VOODOO_FBZ_DEPTH_ENABLE equ 0x0010
 VOODOO_FBZ_RGB_WRITE    equ 0x0200
 VOODOO_FBZ_DEPTH_WRITE  equ 0x0400
 
-; Depth compare functions (shift left 5)
+; Depth compare functions (shift left 5 to use in FBZ_MODE)
+VOODOO_DEPTH_NEVER        equ 0
 VOODOO_DEPTH_LESS         equ 1
+VOODOO_DEPTH_EQUAL        equ 2
 VOODOO_DEPTH_LESSEQUAL    equ 3
+VOODOO_DEPTH_GREATER      equ 4
+VOODOO_DEPTH_NOTEQUAL     equ 5
+VOODOO_DEPTH_GREATEREQUAL equ 6
 VOODOO_DEPTH_ALWAYS       equ 7
 
 ; alphaMode bits
-VOODOO_ALPHA_BLEND_EN   equ 0x0010
+VOODOO_ALPHA_TEST_EN    equ 0x0001          ; Enable alpha test
+VOODOO_ALPHA_BLEND_EN   equ 0x0010          ; Enable alpha blending
+VOODOO_ALPHA_SRC_RGB    equ 0x0F00          ; Source RGB blend factor (bits 8-11)
+VOODOO_ALPHA_DST_RGB    equ 0xF000          ; Dest RGB blend factor (bits 12-15)
 
-; Blend factors
-VOODOO_BLEND_SRC_ALPHA  equ 1
-VOODOO_BLEND_INV_SRC_A  equ 5
+; Alpha blend factors (for src/dst blend settings)
+; Use these values shifted to bits 8-11 for source, bits 12-15 for dest
+VOODOO_BLEND_ZERO       equ 0               ; 0
+VOODOO_BLEND_SRC_ALPHA  equ 1               ; src.A
+VOODOO_BLEND_COLOR      equ 2               ; constant color
+VOODOO_BLEND_DST_ALPHA  equ 3               ; dst.A
+VOODOO_BLEND_ONE        equ 4               ; 1
+VOODOO_BLEND_INV_SRC_A  equ 5               ; 1 - src.A
+VOODOO_BLEND_INV_COLOR  equ 6               ; 1 - constant color
+VOODOO_BLEND_INV_DST_A  equ 7               ; 1 - dst.A
+VOODOO_BLEND_SATURATE   equ 15              ; min(src.A, 1-dst.A)
 
 ; Fixed-point shift amounts
 VOODOO_FIXED_12_4       equ 4

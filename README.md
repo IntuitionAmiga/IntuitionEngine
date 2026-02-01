@@ -1325,8 +1325,9 @@ The Voodoo chip emulates a 3DFX SST-1 graphics accelerator using High-Level Emul
 
 - Voodoo SST-1 register-compatible interface
 - Gouraud shaded triangles with per-vertex color interpolation
-- Z-buffering with configurable depth test
-- Alpha blending and alpha test
+- Z-buffering with all 8 depth compare functions (never, less, equal, lessequal, greater, notequal, greaterequal, always)
+- Configurable alpha blending with 9 blend factors per source/dest
+- Dynamic pipeline state with automatic pipeline caching for performance
 - Scissor clipping
 - 640x480 default, up to 800x600
 - Compositor layer 20 (renders on top of all 2D chips)
@@ -1385,9 +1386,54 @@ Configuration:
 |-----|------|-------------|
 | 0 | CLIPPING | Enable scissor clipping |
 | 4 | DEPTH_ENABLE | Enable depth buffer test |
-| 5-7 | DEPTH_FUNC | Depth compare function (0=never, 1=less, 3=lessequal, 7=always) |
+| 5-7 | DEPTH_FUNC | Depth compare function (see table below) |
 | 9 | RGB_WRITE | Enable RGB buffer write |
 | 10 | DEPTH_WRITE | Enable depth buffer write |
+
+### Depth Compare Functions
+
+The depth function (bits 5-7 of fbzMode) controls Z-buffer testing. Shift these values left by 5 to position in fbzMode.
+
+| Value | Name | Description |
+|-------|------|-------------|
+| 0 | NEVER | Never pass (always discard fragment) |
+| 1 | LESS | Pass if new Z < buffer Z |
+| 2 | EQUAL | Pass if new Z == buffer Z |
+| 3 | LESSEQUAL | Pass if new Z <= buffer Z |
+| 4 | GREATER | Pass if new Z > buffer Z |
+| 5 | NOTEQUAL | Pass if new Z != buffer Z |
+| 6 | GREATEREQUAL | Pass if new Z >= buffer Z |
+| 7 | ALWAYS | Always pass (disable depth test) |
+
+### alphaMode Bits
+
+| Bit | Name | Description |
+|-----|------|-------------|
+| 0 | ALPHA_TEST_EN | Enable alpha test |
+| 4 | ALPHA_BLEND_EN | Enable alpha blending |
+| 8-11 | SRC_BLEND | Source blend factor |
+| 12-15 | DST_BLEND | Destination blend factor |
+
+### Alpha Blend Factors
+
+Use these values in bits 8-11 (source) and 12-15 (destination) of alphaMode. The final color is computed as: `result = src * srcFactor + dst * dstFactor`
+
+| Value | Name | Description |
+|-------|------|-------------|
+| 0 | ZERO | Factor = 0 |
+| 1 | SRC_ALPHA | Factor = source alpha |
+| 2 | COLOR | Factor = constant color |
+| 3 | DST_ALPHA | Factor = destination alpha |
+| 4 | ONE | Factor = 1 |
+| 5 | INV_SRC_A | Factor = 1 - source alpha |
+| 6 | INV_COLOR | Factor = 1 - constant color |
+| 7 | INV_DST_A | Factor = 1 - destination alpha |
+| 15 | SATURATE | Factor = min(srcA, 1-dstA) |
+
+Common blending modes:
+- **Standard alpha blend**: srcFactor=SRC_ALPHA (1), dstFactor=INV_SRC_A (5)
+- **Additive blend**: srcFactor=ONE (4), dstFactor=ONE (4)
+- **Pre-multiplied alpha**: srcFactor=ONE (4), dstFactor=INV_SRC_A (5)
 
 ### Gouraud Shading
 
@@ -1478,6 +1524,32 @@ Per-vertex colors are set using `VOODOO_COLOR_SELECT` to specify which vertex (0
     move.l  #$1000,VOODOO_START_A        ; A = 1.0
 
     ; Submit triangle (colors will interpolate smoothly)
+    move.l  #0,VOODOO_TRIANGLE_CMD
+
+    ; Present frame
+    move.l  #0,VOODOO_SWAP_BUFFER_CMD
+```
+
+### Example: Alpha Blending (M68K)
+
+This example demonstrates configuring alpha blending with source alpha and inverse source alpha factors (standard transparency).
+
+```asm
+    include "ie68.inc"
+
+    ; Enable alpha blending: src*srcA + dst*(1-srcA)
+    move.l  #(VOODOO_ALPHA_BLEND_EN|(VOODOO_BLEND_SRC_ALPHA<<8)|(VOODOO_BLEND_INV_SRC_A<<12)),VOODOO_ALPHA_MODE
+
+    ; Draw opaque background triangle first
+    ; ... (set vertices and full alpha color)
+    move.l  #$1000,VOODOO_START_A        ; Alpha = 1.0 (opaque)
+    move.l  #0,VOODOO_TRIANGLE_CMD
+
+    ; Draw semi-transparent overlay triangle
+    move.l  #$0800,VOODOO_START_A        ; Alpha = 0.5 (50% transparent)
+    move.l  #$1000,VOODOO_START_R        ; Red
+    move.l  #0,VOODOO_START_G
+    move.l  #0,VOODOO_START_B
     move.l  #0,VOODOO_TRIANGLE_CMD
 
     ; Present frame
