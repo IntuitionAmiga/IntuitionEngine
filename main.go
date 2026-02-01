@@ -144,6 +144,7 @@ func main() {
 		tedPlus   bool
 		modeAHX   bool
 		ahxPlus   bool
+		perfMode  bool
 		sidFile   string
 		sidDebug  int
 		sidPAL    bool
@@ -172,6 +173,7 @@ func main() {
 	flagSet.BoolVar(&tedPlus, "ted+", false, "Enable TED+ enhancements")
 	flagSet.BoolVar(&modeAHX, "ahx", false, "Play AHX file (Amiga AHX module)")
 	flagSet.BoolVar(&ahxPlus, "ahx+", false, "Enable AHX+ enhanced mode")
+	flagSet.BoolVar(&perfMode, "perf", false, "Enable performance measurement (MIPS reporting)")
 	loadAddr.value = "0x0600"
 	flagSet.Var(&loadAddr, "load-addr", "6502/Z80 load address (hex or decimal, defaults: 6502=0x0600, Z80=0x0000)")
 	flagSet.Var(&entryAddr, "entry", "6502/Z80 entry address (hex or decimal, defaults to load address)")
@@ -612,6 +614,7 @@ func main() {
 	if modeIE32 {
 		// Initialize IE32 CPU
 		ie32CPU := NewCPU(sysBus)
+		ie32CPU.PerfEnabled = perfMode
 
 		// Load program
 		if filename != "" {

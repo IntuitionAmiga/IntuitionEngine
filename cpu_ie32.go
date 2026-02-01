@@ -378,6 +378,12 @@ type CPU struct {
 	vramStart      uint32 // Cached VRAM start address
 	vramEnd        uint32 // Cached VRAM end address
 	VRAMWriteCount uint64 // Counter for direct VRAM writes (for benchmarking)
+
+	// Performance measurement
+	PerfEnabled      bool      // Enable MIPS reporting
+	InstructionCount uint64    // Total instructions executed
+	perfStartTime    time.Time // When execution started
+	lastPerfReport   time.Time // Last time we printed stats
 }
 
 func NewCPU(bus MemoryBus) *CPU {
@@ -923,7 +929,27 @@ func (cpu *CPU) Execute() {
 		return
 	}
 
+	// Initialize performance measurement
+	cpu.perfStartTime = time.Now()
+	cpu.lastPerfReport = cpu.perfStartTime
+	cpu.InstructionCount = 0
+
 	for cpu.running.Load() {
+		// Performance measurement: count instructions and report periodically
+		if cpu.PerfEnabled {
+			cpu.InstructionCount++
+			if cpu.InstructionCount&0xFFFFFF == 0 { // Every ~16M instructions
+				now := time.Now()
+				if now.Sub(cpu.lastPerfReport) >= time.Second {
+					elapsed := now.Sub(cpu.perfStartTime).Seconds()
+					ips := float64(cpu.InstructionCount) / elapsed
+					mips := ips / 1_000_000
+					fmt.Printf("IE32: %.2f MIPS (%.0f instructions in %.1fs)\n", mips, float64(cpu.InstructionCount), elapsed)
+					cpu.lastPerfReport = now
+				}
+			}
+		}
+
 		// Cache frequently accessed values
 		currentPC := cpu.PC
 		mem := cpu.memory

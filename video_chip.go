@@ -1163,11 +1163,16 @@ func (chip *VideoChip) blitLineLocked(mode VideoMode) {
 func (chip *VideoChip) blitReadPixelLocked(addr uint32) uint32 {
 	if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
 		offset := addr - BUFFER_OFFSET
-		if offset+BYTES_PER_PIXEL > uint32(len(chip.frontBuffer)) || offset%BYTES_PER_PIXEL != BUFFER_REMAINDER {
-			chip.bltErr = true
-			return 0
+		// Read from frontBuffer if within display area
+		if offset+BYTES_PER_PIXEL <= uint32(len(chip.frontBuffer)) && offset%BYTES_PER_PIXEL == BUFFER_REMAINDER {
+			return binary.LittleEndian.Uint32(chip.frontBuffer[offset:])
 		}
-		return binary.LittleEndian.Uint32(chip.frontBuffer[offset:])
+		// For VRAM addresses beyond frontBuffer, fall back to busMemory
+		// This enables double-buffering by rendering to VRAM offset > one frame
+		if chip.busMemory != nil && addr+4 <= uint32(len(chip.busMemory)) {
+			return binary.LittleEndian.Uint32(chip.busMemory[addr : addr+4])
+		}
+		return 0
 	}
 	// Read directly from cached bus memory to avoid mutex deadlock
 	if chip.busMemory != nil && addr+4 <= uint32(len(chip.busMemory)) {
@@ -1690,19 +1695,23 @@ func (chip *VideoChip) handleWriteLocked(addr uint32, value uint32) {
 		}
 		if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
 			offset := addr - BUFFER_OFFSET
-			if offset+BYTES_PER_PIXEL > uint32(len(chip.frontBuffer)) || offset%BYTES_PER_PIXEL != BUFFER_REMAINDER {
-				return
-			}
-			mode := VideoModes[chip.currentMode]
-			binary.LittleEndian.PutUint32(chip.frontBuffer[offset:], value)
+			// Write to frontBuffer if within display area
+			if offset+BYTES_PER_PIXEL <= uint32(len(chip.frontBuffer)) && offset%BYTES_PER_PIXEL == BUFFER_REMAINDER {
+				mode := VideoModes[chip.currentMode]
+				binary.LittleEndian.PutUint32(chip.frontBuffer[offset:], value)
 
-			startPixel := offset / BYTES_PER_PIXEL
-			startX := int(startPixel) % mode.width
-			startY := int(startPixel) / mode.width
-			chip.markRegionDirty(startX, startY)
+				startPixel := offset / BYTES_PER_PIXEL
+				startX := int(startPixel) % mode.width
+				startY := int(startPixel) / mode.width
+				chip.markRegionDirty(startX, startY)
 
-			if !chip.resetting && !chip.hasContent.Load() {
-				chip.hasContent.Store(true)
+				if !chip.resetting && !chip.hasContent.Load() {
+					chip.hasContent.Store(true)
+				}
+			} else if chip.busMemory != nil && addr+4 <= uint32(len(chip.busMemory)) {
+				// For VRAM addresses beyond frontBuffer, write directly to bus memory
+				// This enables double-buffering by rendering to VRAM offset > one frame
+				binary.LittleEndian.PutUint32(chip.busMemory[addr:addr+4], value)
 			}
 		}
 	}
