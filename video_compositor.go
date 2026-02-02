@@ -48,6 +48,7 @@ import (
 	"fmt"
 	"sync"
 	"time"
+	"unsafe"
 )
 
 // Compositor constants
@@ -284,26 +285,78 @@ func (c *VideoCompositor) blendFrame(srcFrame []byte, srcW, srcH int) {
 	dstW := c.frameWidth
 	dstH := c.frameHeight
 
-	// Scale source to destination dimensions
-	for dstY := 0; dstY < dstH; dstY++ {
-		srcY := dstY * srcH / dstH
-		for dstX := 0; dstX < dstW; dstX++ {
-			srcX := dstX * srcW / dstW
+	// Early bounds check
+	if srcW <= 0 || srcH <= 0 || len(srcFrame) < srcW*srcH*BYTES_PER_PIXEL {
+		return
+	}
+	if dstW <= 0 || dstH <= 0 || len(c.finalFrame) < dstW*dstH*BYTES_PER_PIXEL {
+		return
+	}
 
-			srcIdx := (srcY*srcW + srcX) * BYTES_PER_PIXEL
-			dstIdx := (dstY*dstW + dstX) * BYTES_PER_PIXEL
+	// Fast path: 1:1 scaling (most common case)
+	if srcW == dstW && srcH == dstH {
+		c.blendFrame1to1(srcFrame, srcW, srcH)
+		return
+	}
 
-			if srcIdx+3 < len(srcFrame) && dstIdx+3 < len(c.finalFrame) {
-				// Simple copy (opaque blend) - source replaces destination
-				// Alpha blending can be added here for transparency support
-				srcAlpha := srcFrame[srcIdx+3]
-				if srcAlpha > 0 {
-					c.finalFrame[dstIdx+0] = srcFrame[srcIdx+0] // R
-					c.finalFrame[dstIdx+1] = srcFrame[srcIdx+1] // G
-					c.finalFrame[dstIdx+2] = srcFrame[srcIdx+2] // B
-					c.finalFrame[dstIdx+3] = srcFrame[srcIdx+3] // A
-				}
+	// Scaled path using Bresenham-style integer arithmetic
+	c.blendFrameScaled(srcFrame, srcW, srcH)
+}
+
+// blendFrame1to1 is the optimized fast path for same-size source and destination
+func (c *VideoCompositor) blendFrame1to1(srcFrame []byte, width, height int) {
+	rowBytes := width * BYTES_PER_PIXEL
+	srcOffset := 0
+	dstOffset := 0
+
+	for y := 0; y < height; y++ {
+		// Process row in uint32 chunks for faster memory access
+		for x := 0; x < rowBytes; x += BYTES_PER_PIXEL {
+			srcIdx := srcOffset + x
+			dstIdx := dstOffset + x
+			// Read uint32 directly using unsafe pointer
+			srcPixel := *(*uint32)(unsafe.Pointer(&srcFrame[srcIdx]))
+			// Check alpha (high byte in little-endian RGBA)
+			if srcPixel&0xFF000000 != 0 {
+				// Write uint32 directly
+				*(*uint32)(unsafe.Pointer(&c.finalFrame[dstIdx])) = srcPixel
 			}
 		}
+		srcOffset += rowBytes
+		dstOffset += rowBytes
+	}
+}
+
+// blendFrameScaled handles scaling using optimized integer arithmetic
+// This matches the original dstX * srcW / dstW calculation exactly
+func (c *VideoCompositor) blendFrameScaled(srcFrame []byte, srcW, srcH int) {
+	dstW := c.frameWidth
+	dstH := c.frameHeight
+
+	srcRowBytes := srcW * BYTES_PER_PIXEL
+	dstRowBytes := dstW * BYTES_PER_PIXEL
+
+	dstOffset := 0
+
+	for dstY := 0; dstY < dstH; dstY++ {
+		// Calculate srcY once per row (matches original: dstY * srcH / dstH)
+		srcY := dstY * srcH / dstH
+		srcRowOffset := srcY * srcRowBytes
+
+		for dstX := 0; dstX < dstW; dstX++ {
+			srcX := dstX * srcW / dstW
+			srcIdx := srcRowOffset + srcX*BYTES_PER_PIXEL
+			dstIdx := dstOffset + dstX*BYTES_PER_PIXEL
+
+			// Read uint32 directly using unsafe pointer
+			srcPixel := *(*uint32)(unsafe.Pointer(&srcFrame[srcIdx]))
+			// Check alpha (high byte in little-endian RGBA)
+			if srcPixel&0xFF000000 != 0 {
+				// Write uint32 directly
+				*(*uint32)(unsafe.Pointer(&c.finalFrame[dstIdx])) = srcPixel
+			}
+		}
+
+		dstOffset += dstRowBytes
 	}
 }

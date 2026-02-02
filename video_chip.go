@@ -54,6 +54,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 )
 
 // VideoChip layer constant for compositor
@@ -383,10 +384,9 @@ type VideoChip struct {
 
 	// Lock-free dirty tracking (Cache Line 3)
 	// Atomic bitmap: 256 tiles (16x16 grid), 4 uint64s
-	dirtyBitmap  [DIRTY_GRID_SIZE]atomic.Uint64 // 32 bytes - lock-free dirty bits
-	tileWidth    int32                          // 4 bytes - tile width in pixels (mode-dependent)
-	tileHeight   int32                          // 4 bytes - tile height in pixels (mode-dependent)
-	dirtyRegions map[int]DirtyRegion            // 8 bytes - legacy (kept for compatibility)
+	dirtyBitmap [DIRTY_GRID_SIZE]atomic.Uint64 // 32 bytes - lock-free dirty bits
+	tileWidth   int32                          // 4 bytes - tile width in pixels (mode-dependent)
+	tileHeight  int32                          // 4 bytes - tile height in pixels (mode-dependent)
 
 	// Fixed-size buffers (Cache Lines 4+)
 	// Note: These will be converted to fixed arrays in next iteration
@@ -534,7 +534,6 @@ func NewVideoChip(backend int) (*VideoChip, error) {
 		layer:        VIDEOCHIP_LAYER,
 		vsyncChan:    make(chan struct{}),
 		done:         make(chan struct{}),
-		dirtyRegions: make(map[int]DirtyRegion),
 		frameCounter: 0,
 		prevVRAM:     make([]byte, VRAM_SIZE),
 	}
@@ -720,27 +719,15 @@ func (chip *VideoChip) initialiseDirtyGrid(mode VideoMode) {
 	/*
 		initialiseDirtyGrid configures the dirty region grid based on the current video mode.
 
-		This function calculates the row and column strides used to index the grid of 32x32 pixel regions.
-		It uses the video mode's width and height along with the DIRTY_REGION_SIZE and REGION_ADJUSTMENT constant
-		to determine how many regions span the screen. The dirtyRegions map is then reinitialised to track any
-		modified regions for efficient screen updates.
-
-		It also initialises the lock-free atomic dirty bitmap with tile dimensions calculated
-		from the current video mode to cover a 16x16 grid.
+		This function initialises the lock-free atomic dirty bitmap with tile dimensions
+		calculated from the current video mode to cover a 16x16 grid.
 
 		Parameters:
 		  - mode: The current VideoMode configuration, providing the resolution (width and height).
 
 		Notes:
-		  - DIRTY_REGION_SIZE defines the dimension of each region (32 pixels).
-		  - REGION_ADJUSTMENT is used to correctly account for edge cases in the calculation.
 		  - Lock-free bitmap uses 16x16 tiles with mode-dependent pixel dimensions.
 	*/
-
-	// Legacy dirty region tracking
-	chip.dirtyRowStride = int32((mode.width + DIRTY_REGION_SIZE - REGION_ADJUSTMENT) / DIRTY_REGION_SIZE)
-	chip.dirtyColStride = int32((mode.height + DIRTY_REGION_SIZE - REGION_ADJUSTMENT) / DIRTY_REGION_SIZE)
-	chip.dirtyRegions = make(map[int]DirtyRegion)
 
 	// Lock-free atomic bitmap: calculate tile dimensions for 16x16 grid
 	chip.tileWidth = int32((mode.width + DIRTY_GRID_COLS - 1) / DIRTY_GRID_COLS)
@@ -811,39 +798,15 @@ func (chip *VideoChip) markRegionDirty(x, y int) {
 	   markRegionDirty identifies and marks a pixel region as modified.
 
 	   This function uses lock-free atomic operations to mark the tile containing
-	   the given pixel coordinate (x, y) as dirty. It also maintains the legacy
-	   map-based dirty region tracking for compatibility.
+	   the given pixel coordinate (x, y) as dirty.
 
 	   Parameters:
 	     - x: The x-coordinate (in pixels) that triggered the dirty region.
 	     - y: The y-coordinate (in pixels) that triggered the dirty region.
-
-	   Notes:
-	     - Uses lock-free atomic bitmap for the primary dirty tracking.
-	     - Legacy map-based tracking is also maintained for compatibility.
 	*/
 
-	// Lock-free atomic bitmap update (fast path)
+	// Lock-free atomic bitmap update
 	chip.markTileDirtyAtomic(x, y)
-
-	// Legacy map-based tracking (for compatibility)
-	regionX := x / DIRTY_REGION_SIZE
-	regionY := y / DIRTY_REGION_SIZE
-
-	regionKey := makeRegionKey(regionX, regionY)
-	if regionKey < INVALID_REGION {
-		return
-	}
-
-	if region, exists := chip.dirtyRegions[regionKey]; !exists || region.lastUpdated != chip.frameCounter {
-		chip.dirtyRegions[regionKey] = DirtyRegion{
-			x:           regionX * DIRTY_REGION_SIZE,
-			y:           regionY * DIRTY_REGION_SIZE,
-			width:       DIRTY_REGION_SIZE,
-			height:      DIRTY_REGION_SIZE,
-			lastUpdated: chip.frameCounter,
-		}
-	}
 }
 
 func (chip *VideoChip) refreshLoop() {
@@ -939,19 +902,22 @@ func (chip *VideoChip) refreshLoop() {
 							}
 
 							// Copy tile from front to back buffer
-							for y := startY; y < endY; y++ {
-								srcOffset := (y * mode.bytesPerRow) + (startX * BYTES_PER_PIXEL)
-								copyLen := (endX - startX) * BYTES_PER_PIXEL
-								if srcOffset+copyLen <= len(chip.frontBuffer) {
+							// Pre-compute copyLen (constant for this tile)
+							copyLen := (endX - startX) * BYTES_PER_PIXEL
+							// Pre-compute initial offset and stride
+							srcOffset := (startY * mode.bytesPerRow) + (startX * BYTES_PER_PIXEL)
+							// Validate bounds once before the loop
+							maxOffset := srcOffset + (endY-startY-1)*mode.bytesPerRow + copyLen
+							if maxOffset <= len(chip.frontBuffer) {
+								for y := startY; y < endY; y++ {
 									copy(chip.backBuffer[srcOffset:srcOffset+copyLen],
 										chip.frontBuffer[srcOffset:srcOffset+copyLen])
+									srcOffset += mode.bytesPerRow
 								}
 							}
 						}
 					}
 
-					// Clear legacy map as well
-					chip.dirtyRegions = make(map[int]DirtyRegion)
 					chip.frontBuffer, chip.backBuffer = chip.backBuffer, chip.frontBuffer
 					chip.frameCounter += FRAME_INCREMENT
 				}
@@ -1165,18 +1131,19 @@ func (chip *VideoChip) blitReadPixelLocked(addr uint32) uint32 {
 		offset := addr - BUFFER_OFFSET
 		// Read from frontBuffer if within display area
 		if offset+BYTES_PER_PIXEL <= uint32(len(chip.frontBuffer)) && offset%BYTES_PER_PIXEL == BUFFER_REMAINDER {
-			return binary.LittleEndian.Uint32(chip.frontBuffer[offset:])
+			// Direct pointer access for performance
+			return *(*uint32)(unsafe.Pointer(&chip.frontBuffer[offset]))
 		}
 		// For VRAM addresses beyond frontBuffer, fall back to busMemory
 		// This enables double-buffering by rendering to VRAM offset > one frame
 		if chip.busMemory != nil && addr+4 <= uint32(len(chip.busMemory)) {
-			return binary.LittleEndian.Uint32(chip.busMemory[addr : addr+4])
+			return *(*uint32)(unsafe.Pointer(&chip.busMemory[addr]))
 		}
 		return 0
 	}
 	// Read directly from cached bus memory to avoid mutex deadlock
 	if chip.busMemory != nil && addr+4 <= uint32(len(chip.busMemory)) {
-		return binary.LittleEndian.Uint32(chip.busMemory[addr : addr+4])
+		return *(*uint32)(unsafe.Pointer(&chip.busMemory[addr]))
 	}
 	return 0
 }
@@ -1209,7 +1176,8 @@ func (chip *VideoChip) blitWritePixelLocked(addr uint32, value uint32, mode Vide
 			chip.bltErr = true
 			return
 		}
-		binary.LittleEndian.PutUint32(chip.frontBuffer[offset:], value)
+		// Direct pointer access for performance
+		*(*uint32)(unsafe.Pointer(&chip.frontBuffer[offset])) = value
 		startPixel := offset / BYTES_PER_PIXEL
 		startX := int(startPixel) % mode.width
 		startY := int(startPixel) / mode.width
@@ -1381,11 +1349,11 @@ func (chip *VideoChip) HandleRead(addr uint32) uint32 {
 		// - Active display (VBlank=false): first 50% of frame (~8.3ms)
 		// - VBlank period (VBlank=true): last 50% of frame (~8.3ms)
 		// This makes VBlank detection more reliable for M68K polling.
+		// Optimized: direct int64 comparison avoids time.Unix() allocation
 		frameStart := chip.lastFrameStart.Load()
-		elapsed := time.Since(time.Unix(0, frameStart))
-		inVBlank := elapsed >= REFRESH_INTERVAL/2
-
-		if inVBlank {
+		now := time.Now().UnixNano()
+		vblankThresholdNs := int64(REFRESH_INTERVAL / 2)
+		if now-frameStart >= vblankThresholdNs {
 			status |= 2 // bit 1: in VBlank
 		}
 
