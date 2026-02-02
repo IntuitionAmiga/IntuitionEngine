@@ -1685,9 +1685,7 @@ func (cpu *M68KCPU) FetchAndDecodeInstruction() {
 	}
 
 	// Default: Unimplemented opcode
-	if cpu.debug.Load() {
-		fmt.Printf("M68K: Unimplemented opcode %04x at PC=%08x\n", opcode, cpu.PC-M68K_WORD_SIZE)
-	}
+	fmt.Printf("M68K: Unimplemented opcode %04x at PC=%08x\n", opcode, cpu.PC-M68K_WORD_SIZE)
 	cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
 }
 func (cpu *M68KCPU) ExecuteInstruction() {
@@ -4318,6 +4316,20 @@ func (cpu *M68KCPU) ExecAdd(reg, opmode, mode, xreg uint16) {
 				source = cpu.Read32(addr)
 			}
 			cpu.cycleCounter += M68K_CYCLE_MEM_READ + cpu.GetEACycles(mode, xreg)
+
+			// Handle postincrement - increment address register AFTER read
+			if mode == M68K_AM_AR_POST {
+				if size == M68K_SIZE_BYTE {
+					cpu.AddrRegs[xreg] += M68K_BYTE_SIZE
+					if xreg == 7 { // SP always increments by 2 for bytes
+						cpu.AddrRegs[xreg] += M68K_BYTE_SIZE
+					}
+				} else if size == M68K_SIZE_WORD {
+					cpu.AddrRegs[xreg] += M68K_WORD_SIZE
+				} else {
+					cpu.AddrRegs[xreg] += M68K_LONG_SIZE
+				}
+			}
 		}
 
 		dest = cpu.DataRegs[reg]
