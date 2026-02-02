@@ -10,6 +10,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"time"
 )
 
 const (
@@ -73,6 +74,12 @@ type CPUX86Runner struct {
 	bus      *X86SystemBus
 	loadAddr uint32
 	entry    uint32
+
+	// Performance monitoring (matching IE32 pattern)
+	PerfEnabled      bool      // Enable MIPS reporting
+	InstructionCount uint64    // Total instructions executed
+	perfStartTime    time.Time // When execution started
+	lastPerfReport   time.Time // Last time we printed stats
 }
 
 // X86SystemBus provides the system bus for x86 with hardware routing
@@ -658,8 +665,30 @@ func (r *CPUX86Runner) LoadProgramFromFile(filename string) error {
 
 // Run executes the program until halted
 func (r *CPUX86Runner) Run() {
-	for r.cpu.Running && !r.cpu.Halted {
+	// Initialize perf counters if enabled
+	if r.PerfEnabled {
+		r.perfStartTime = time.Now()
+		r.lastPerfReport = r.perfStartTime
+		r.InstructionCount = 0
+	}
+
+	for r.cpu.Running() && !r.cpu.Halted {
 		r.cpu.Step()
+
+		// Performance monitoring (matching IE32 pattern)
+		if r.PerfEnabled {
+			r.InstructionCount++
+			if r.InstructionCount&0xFFFFFF == 0 { // Every ~16M instructions
+				now := time.Now()
+				if now.Sub(r.lastPerfReport) >= time.Second {
+					elapsed := now.Sub(r.perfStartTime).Seconds()
+					ips := float64(r.InstructionCount) / elapsed
+					mips := ips / 1_000_000
+					fmt.Printf("x86: %.2f MIPS (%.0f instructions in %.1fs)\n", mips, float64(r.InstructionCount), elapsed)
+					r.lastPerfReport = now
+				}
+			}
+		}
 	}
 }
 
@@ -681,12 +710,12 @@ func (r *CPUX86Runner) Reset() {
 
 // Execute runs the CPU in a loop until halted (for GUI integration)
 func (r *CPUX86Runner) Execute() {
-	for r.cpu.Running && !r.cpu.Halted {
+	for r.cpu.Running() && !r.cpu.Halted {
 		r.cpu.Step()
 	}
 }
 
 // IsRunning returns whether the CPU is still running
 func (r *CPUX86Runner) IsRunning() bool {
-	return r.cpu.Running && !r.cpu.Halted
+	return r.cpu.Running() && !r.cpu.Halted
 }

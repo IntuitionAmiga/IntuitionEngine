@@ -96,11 +96,11 @@ func (p *SAP6502Player) createCPU() *CPU_6502 {
 		memory:        &sapBusAdapter{p.bus},
 		SP:            0xFF,
 		SR:            UNUSED_FLAG,
-		Running:       true,
 		rdyLine:       true, // RDY line must be high for CPU to run
 		breakpoints:   make(map[uint16]bool),
 		breakpointHit: make(chan uint16, 1),
 	}
+	cpu.running.Store(true)
 	return cpu
 }
 
@@ -124,7 +124,7 @@ func (p *SAP6502Player) callRoutine(addr uint16, aReg uint8) error {
 	p.cpu.X = 0
 	p.cpu.Y = 0
 	p.cpu.SR = UNUSED_FLAG
-	p.cpu.Running = true
+	p.cpu.SetRunning(true)
 
 	// Create a JSR/RTS stub at a safe location
 	// We'll use $FFF0-$FFF5 as our stub area
@@ -146,7 +146,7 @@ func (p *SAP6502Player) callRoutine(addr uint16, aReg uint8) error {
 	maxCycles := uint64(1000000) // Safety limit
 	startCycles := p.cpu.Cycles
 
-	for p.cpu.Running && (p.cpu.Cycles-startCycles) < maxCycles {
+	for p.cpu.Running() && (p.cpu.Cycles-startCycles) < maxCycles {
 		// Check if we've returned to the sentinel loop BEFORE executing
 		if p.cpu.PC == returnAddr {
 			break

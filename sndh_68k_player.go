@@ -361,7 +361,7 @@ var debugSNDH = false
 // runUntilReturnOrRTE executes instructions until RTS/RTE returns to sentinel
 func (p *sndh68KPlayer) runUntilReturnOrRTE() error {
 	instructions := 0
-	p.cpu.running.Store(true)
+	p.cpu.SetRunning(true)
 	startPC := p.cpu.PC
 
 	if debugSNDH {
@@ -411,7 +411,7 @@ func (p *sndh68KPlayer) runUntilReturnOrRTE() error {
 // runUntilReturn executes instructions until RTS returns to sentinel
 func (p *sndh68KPlayer) runUntilReturn() error {
 	instructions := 0
-	p.cpu.running.Store(true)
+	p.cpu.SetRunning(true)
 
 	for instructions < SNDH_MAX_INSTRUCTIONS_PER_FRAME {
 		// Check if we've returned to sentinel

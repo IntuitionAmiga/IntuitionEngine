@@ -87,7 +87,7 @@ func TestZ80ResetDefaults(t *testing.T) {
 	if cpu.Cycles != 0 {
 		t.Fatalf("Cycles = %d, want 0", cpu.Cycles)
 	}
-	if !cpu.Running {
+	if !cpu.Running() {
 		t.Fatalf("Running should be true after reset")
 	}
 }

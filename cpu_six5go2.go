@@ -76,6 +76,8 @@ package main
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 const (
@@ -205,14 +207,14 @@ type CPU_6502 struct {
 	SR byte   // Status Register
 
 	// Cache Line 1 - Interrupt Control
-	Running      bool // Execution state
-	irqPending   bool // IRQ signal
-	resetPending bool // Reset signal
-	InInterrupt  bool // In handler
-	nmiLine      bool // NMI signal
-	nmiPending   bool // NMI detected
-	nmiPrevious  bool // NMI previous
-	_padding0    byte // Alignment
+	running      atomic.Bool // Execution state (atomic for lock-free access)
+	irqPending   bool        // IRQ signal
+	resetPending bool        // Reset signal
+	InInterrupt  bool        // In handler
+	nmiLine      bool        // NMI signal
+	nmiPending   bool        // NMI detected
+	nmiPrevious  bool        // NMI previous
+	_padding0    byte        // Alignment
 
 	// Cache Line 2 - System Control
 	Cycles        uint64          // Cycle counter
@@ -223,6 +225,22 @@ type CPU_6502 struct {
 	mutex         sync.RWMutex    // State protection
 	breakpoints   map[uint16]bool // Debug points
 	breakpointHit chan uint16     // Debug channel
+
+	// Performance monitoring (matching IE32 pattern)
+	PerfEnabled      bool      // Enable MIPS reporting
+	InstructionCount uint64    // Total instructions executed
+	perfStartTime    time.Time // When execution started
+	lastPerfReport   time.Time // Last time we printed stats
+}
+
+// Running returns the execution state (thread-safe)
+func (cpu_6502 *CPU_6502) Running() bool {
+	return cpu_6502.running.Load()
+}
+
+// SetRunning sets the execution state (thread-safe)
+func (cpu_6502 *CPU_6502) SetRunning(state bool) {
+	cpu_6502.running.Store(state)
 }
 
 type MemoryBus_6502 interface {
@@ -291,14 +309,15 @@ func NewCPU_6502(bus MemoryBus) *CPU_6502 {
 	   Initial state setup requires no locks as object is not yet shared.
 	*/
 	adapter := NewMemoryBusAdapter_6502(bus)
-	return &CPU_6502{
+	cpu := &CPU_6502{
 		memory:        adapter,
 		SP:            0xFF,
 		SR:            UNUSED_FLAG,
-		Running:       true,
 		breakpoints:   make(map[uint16]bool),
 		breakpointHit: make(chan uint16, 1),
 	}
+	cpu.running.Store(true)
+	return cpu
 }
 func NewMemoryBusAdapter_6502(bus MemoryBus) *MemoryBusAdapter_6502 {
 	/*
@@ -1133,7 +1152,7 @@ func (cpu_6502 *CPU_6502) Reset() {
 	cpu_6502.SR = UNUSED_FLAG | INTERRUPT_FLAG
 	cpu_6502.PC = cpu_6502.read16(RESET_VECTOR)
 	cpu_6502.Cycles = 0
-	cpu_6502.Running = true
+	cpu_6502.running.Store(true)
 	cpu_6502.InInterrupt = false
 
 	//NMI
@@ -1182,7 +1201,14 @@ func (cpu_6502 *CPU_6502) Execute() {
 	   - Breakpoints use channel sync
 	*/
 
-	for cpu_6502.Running {
+	// Initialize perf counters if enabled
+	if cpu_6502.PerfEnabled {
+		cpu_6502.perfStartTime = time.Now()
+		cpu_6502.lastPerfReport = cpu_6502.perfStartTime
+		cpu_6502.InstructionCount = 0
+	}
+
+	for cpu_6502.running.Load() {
 		cpu_6502.mutex.Lock()
 
 		// Check for RDY line hold
@@ -1216,13 +1242,28 @@ func (cpu_6502 *CPU_6502) Execute() {
 		cpu_6502.executeOpcodeInternal(opcode)
 
 		cpu_6502.mutex.Unlock()
+
+		// Performance monitoring (matching IE32 pattern)
+		if cpu_6502.PerfEnabled {
+			cpu_6502.InstructionCount++
+			if cpu_6502.InstructionCount&0xFFFFFF == 0 { // Every ~16M instructions
+				now := time.Now()
+				if now.Sub(cpu_6502.lastPerfReport) >= time.Second {
+					elapsed := now.Sub(cpu_6502.perfStartTime).Seconds()
+					ips := float64(cpu_6502.InstructionCount) / elapsed
+					mips := ips / 1_000_000
+					fmt.Printf("6502: %.2f MIPS (%.0f instructions in %.1fs)\n", mips, float64(cpu_6502.InstructionCount), elapsed)
+					cpu_6502.lastPerfReport = now
+				}
+			}
+		}
 	}
 }
 
 // Step executes a single instruction and returns the number of cycles consumed.
 // This is useful for embedding the CPU in other systems that need precise control.
 func (cpu_6502 *CPU_6502) Step() int {
-	if !cpu_6502.Running {
+	if !cpu_6502.running.Load() {
 		return 0
 	}
 
@@ -2617,11 +2658,11 @@ func (cpu_6502 *CPU_6502) executeOpcodeInternal(opcode byte) {
 		cpu_6502.Cycles += 2
 
 	case 0x02, 0x12, 0x22, 0x32, 0x42, 0x52, 0x62, 0x72, 0x92, 0xB2, 0xD2, 0xF2: // KIL (halt)
-		cpu_6502.Running = false
+		cpu_6502.running.Store(false)
 
 	default:
 		fmt.Printf("Unknown opcode: %02X at PC=%04X\n", opcode, cpu_6502.PC-1)
-		cpu_6502.Running = false
+		cpu_6502.running.Store(false)
 	}
 }
 

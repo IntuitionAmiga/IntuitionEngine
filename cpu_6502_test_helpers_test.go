@@ -42,6 +42,9 @@ func (r *cpu6502TestRig) setVectors(entry uint16) {
 func runSingleInstruction(t *testing.T, cpu *CPU_6502, start uint16) {
 	t.Helper()
 
+	// Ensure CPU is running (may have been stopped from previous instruction)
+	cpu.SetRunning(true)
+
 	done := make(chan struct{})
 	go func() {
 		cpu.Execute()
@@ -66,6 +69,9 @@ func runSingleInstruction(t *testing.T, cpu *CPU_6502, start uint16) {
 
 func runUntilPC(t *testing.T, cpu *CPU_6502, target uint16, timeout time.Duration) {
 	t.Helper()
+
+	// Ensure CPU is running (may have been stopped from previous call)
+	cpu.SetRunning(true)
 
 	done := make(chan struct{})
 	go func() {
@@ -97,6 +103,9 @@ func runUntilPC(t *testing.T, cpu *CPU_6502, target uint16, timeout time.Duratio
 func runUntilCondition(t *testing.T, cpu *CPU_6502, timeout time.Duration, condition func() bool) {
 	t.Helper()
 
+	// Ensure CPU is running (may have been stopped from previous call)
+	cpu.SetRunning(true)
+
 	done := make(chan struct{})
 	go func() {
 		cpu.Execute()
@@ -124,9 +133,7 @@ func runUntilCondition(t *testing.T, cpu *CPU_6502, timeout time.Duration, condi
 }
 
 func stop6502CPU(cpu *CPU_6502) {
-	cpu.mutex.Lock()
-	cpu.Running = false
-	cpu.mutex.Unlock()
+	cpu.SetRunning(false)
 }
 
 func read6502PC(cpu *CPU_6502) uint16 {
@@ -142,9 +149,7 @@ func read6502Cycles(cpu *CPU_6502) uint64 {
 }
 
 func read6502Running(cpu *CPU_6502) bool {
-	cpu.mutex.RLock()
-	defer cpu.mutex.RUnlock()
-	return cpu.Running
+	return cpu.Running()
 }
 
 func requireTestFile(t *testing.T, path string) []byte {

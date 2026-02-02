@@ -1,6 +1,11 @@
 package main
 
-import "sync"
+import (
+	"fmt"
+	"sync"
+	"sync/atomic"
+	"time"
+)
 
 type Z80Bus interface {
 	Read(addr uint16) byte
@@ -11,6 +16,7 @@ type Z80Bus interface {
 }
 
 type CPU_Z80 struct {
+	// Hot path registers (most frequently accessed)
 	A  byte
 	F  byte
 	B  byte
@@ -42,7 +48,7 @@ type CPU_Z80 struct {
 	IFF2 bool
 
 	Halted  bool
-	Running bool
+	running atomic.Bool // Atomic for lock-free access (was: Running bool)
 	Cycles  uint64
 
 	irqLine    bool
@@ -63,6 +69,25 @@ type CPU_Z80 struct {
 
 	prefixMode   byte
 	prefixOpcode byte
+
+	// Register pointer array for O(1) lookup (8-bit registers)
+	regs8 [8]*byte // B, C, D, E, H, L, (HL), A - index matches Z80 encoding
+
+	// Performance monitoring (matching IE32 pattern)
+	PerfEnabled      bool      // Enable MIPS reporting
+	InstructionCount uint64    // Total instructions executed
+	perfStartTime    time.Time // When execution started
+	lastPerfReport   time.Time // Last time we printed stats
+}
+
+// Running returns the execution state (thread-safe)
+func (c *CPU_Z80) Running() bool {
+	return c.running.Load()
+}
+
+// SetRunning sets the execution state (thread-safe)
+func (c *CPU_Z80) SetRunning(state bool) {
+	c.running.Store(state)
 }
 
 const (
@@ -134,8 +159,12 @@ func (c *CPU_Z80) Reset() {
 	c.iffDelay = 0
 	c.irqVector = 0xFF
 	c.Halted = false
-	c.Running = true
+	c.running.Store(true)
 	c.Cycles = 0
+
+	// Initialize register pointer array for O(1) lookup
+	// Index matches Z80 encoding: B=0, C=1, D=2, E=3, H=4, L=5, (HL)=6 (nil), A=7
+	c.regs8 = [8]*byte{&c.B, &c.C, &c.D, &c.E, &c.H, &c.L, nil, &c.A}
 }
 
 func (c *CPU_Z80) AF() uint16 {
@@ -237,10 +266,11 @@ func (c *CPU_Z80) Exx() {
 }
 
 func (c *CPU_Z80) Step() {
+	// Lock only for state that could be modified externally
 	c.mutex.Lock()
-	defer c.mutex.Unlock()
 
-	if !c.Running {
+	if !c.running.Load() {
+		c.mutex.Unlock()
 		return
 	}
 
@@ -251,18 +281,24 @@ func (c *CPU_Z80) Step() {
 
 	if c.nmiPending {
 		c.serviceNMI()
+		c.mutex.Unlock()
 		return
 	}
 
 	if c.irqLine && c.IFF1 {
 		c.serviceIRQ()
+		c.mutex.Unlock()
 		return
 	}
 
 	if c.Halted {
 		c.tick(4)
+		c.mutex.Unlock()
 		return
 	}
+
+	// Release mutex before instruction execution (bus calls may need it)
+	c.mutex.Unlock()
 
 	opcode := c.fetchOpcode()
 	c.baseOps[opcode](c)
@@ -270,14 +306,30 @@ func (c *CPU_Z80) Step() {
 }
 
 func (c *CPU_Z80) Execute() {
-	for {
-		c.mutex.RLock()
-		running := c.Running
-		c.mutex.RUnlock()
-		if !running {
-			return
-		}
+	// Initialize perf counters if enabled
+	if c.PerfEnabled {
+		c.perfStartTime = time.Now()
+		c.lastPerfReport = c.perfStartTime
+		c.InstructionCount = 0
+	}
+
+	for c.running.Load() {
 		c.Step()
+
+		// Performance monitoring (matching IE32 pattern)
+		if c.PerfEnabled {
+			c.InstructionCount++
+			if c.InstructionCount&0xFFFFFF == 0 { // Every ~16M instructions
+				now := time.Now()
+				if now.Sub(c.lastPerfReport) >= time.Second {
+					elapsed := now.Sub(c.perfStartTime).Seconds()
+					ips := float64(c.InstructionCount) / elapsed
+					mips := ips / 1_000_000
+					fmt.Printf("Z80: %.2f MIPS (%.0f instructions in %.1fs)\n", mips, float64(c.InstructionCount), elapsed)
+					c.lastPerfReport = now
+				}
+			}
+		}
 	}
 }
 

@@ -138,7 +138,7 @@ func (p *TED6502Player) runInitToCompletion() error {
 	lastPC := uint16(0)
 	sameCount := 0
 
-	for p.cpu.Running && (p.cpu.Cycles-startCycles) < maxCycles {
+	for p.cpu.Running() && (p.cpu.Cycles-startCycles) < maxCycles {
 		// Detect stable wait loop (same PC for 100+ iterations)
 		if p.cpu.PC == lastPC {
 			sameCount++
@@ -320,15 +320,16 @@ func (p *TED6502Player) RenderFrame() ([]TEDEvent, error) {
 
 // createCPU creates a 6502 CPU for this player
 func (p *TED6502Player) createCPU() *CPU_6502 {
-	return &CPU_6502{
+	cpu := &CPU_6502{
 		memory:        p.bus,
 		SP:            0xFF,
 		SR:            UNUSED_FLAG,
-		Running:       true,
 		rdyLine:       true,
 		breakpoints:   make(map[uint16]bool),
 		breakpointHit: make(chan uint16, 1),
 	}
+	cpu.running.Store(true)
+	return cpu
 }
 
 // runContinuous runs the CPU for one frame's worth of cycles without resetting PC
@@ -337,7 +338,7 @@ func (p *TED6502Player) runContinuous() error {
 	maxCycles := p.cyclesPerFrame
 	startCycles := p.cpu.Cycles
 
-	for p.cpu.Running && (p.cpu.Cycles-startCycles) < maxCycles {
+	for p.cpu.Running() && (p.cpu.Cycles-startCycles) < maxCycles {
 		// Check for pending IRQ from TED timer
 		if p.bus.CheckIRQ() {
 			p.cpu.irqPending = true
@@ -357,7 +358,7 @@ func (p *TED6502Player) callRoutine(addr uint16, aReg uint8) error {
 	p.cpu.X = 0
 	p.cpu.Y = 0
 	p.cpu.SR = UNUSED_FLAG
-	p.cpu.Running = true
+	p.cpu.SetRunning(true)
 
 	// Set up stub: JSR addr; JMP (infinite loop)
 	stubAddr := uint16(0xFFF0)
@@ -379,7 +380,7 @@ func (p *TED6502Player) callRoutine(addr uint16, aReg uint8) error {
 	}
 	startCycles := p.cpu.Cycles
 
-	for p.cpu.Running && (p.cpu.Cycles-startCycles) < maxCycles {
+	for p.cpu.Running() && (p.cpu.Cycles-startCycles) < maxCycles {
 		if p.cpu.PC == returnAddr {
 			break
 		}
@@ -473,7 +474,7 @@ func (p *TED6502Player) initRealTEDMode() error {
 	p.cpu.X = 0
 	p.cpu.Y = 0
 	p.cpu.SR = UNUSED_FLAG
-	p.cpu.Running = true
+	p.cpu.SetRunning(true)
 
 	return nil
 }

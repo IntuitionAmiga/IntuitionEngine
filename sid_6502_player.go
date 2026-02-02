@@ -114,11 +114,11 @@ func (p *SID6502Player) createCPU() *CPU_6502 {
 		memory:        p.bus,
 		SP:            0xFF,
 		SR:            UNUSED_FLAG,
-		Running:       true,
 		rdyLine:       true,
 		breakpoints:   make(map[uint16]bool),
 		breakpointHit: make(chan uint16, 1),
 	}
+	cpu.running.Store(true)
 	return cpu
 }
 
@@ -127,7 +127,7 @@ func (p *SID6502Player) callRoutine(addr uint16, aReg uint8) error {
 	p.cpu.X = 0
 	p.cpu.Y = 0
 	p.cpu.SR = UNUSED_FLAG
-	p.cpu.Running = true
+	p.cpu.SetRunning(true)
 
 	stubAddr := uint16(0xFFF0)
 	returnAddr := stubAddr + 3
@@ -143,7 +143,7 @@ func (p *SID6502Player) callRoutine(addr uint16, aReg uint8) error {
 	maxCycles := uint64(1000000)
 	startCycles := p.cpu.Cycles
 
-	for p.cpu.Running && (p.cpu.Cycles-startCycles) < maxCycles {
+	for p.cpu.Running() && (p.cpu.Cycles-startCycles) < maxCycles {
 		if p.cpu.PC == returnAddr {
 			break
 		}
@@ -208,7 +208,7 @@ func (p *SID6502Player) RenderFrames(numFrames int) ([]SIDEvent, uint64) {
 }
 
 func (p *SID6502Player) runForCycles(target uint64) {
-	for p.bus.GetFrameCycles() < target && p.cpu.Running {
+	for p.bus.GetFrameCycles() < target && p.cpu.Running() {
 		p.executeInstruction()
 	}
 }

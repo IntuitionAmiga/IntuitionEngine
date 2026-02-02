@@ -223,7 +223,7 @@ func SetupX86HarteCPUState(cpu *CPU_X86, bus *X86HarteBus, state X86HarteState) 
 
 	// Reset CPU execution state
 	cpu.Halted = false
-	cpu.Running = true
+	cpu.SetRunning(true)
 	cpu.Cycles = 0
 }
 

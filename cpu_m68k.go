@@ -648,6 +648,22 @@ type M68KCPU struct {
 	lastFaultWrite         bool
 	lastFaultData          uint32
 	lastFaultIsInstruction bool
+
+	// Performance monitoring (matching IE32 pattern)
+	PerfEnabled      bool      // Enable MIPS reporting
+	InstructionCount uint64    // Total instructions executed
+	perfStartTime    time.Time // When execution started
+	lastPerfReport   time.Time // Last time we printed stats
+}
+
+// Running returns the execution state (thread-safe)
+func (cpu *M68KCPU) Running() bool {
+	return cpu.running.Load()
+}
+
+// SetRunning sets the execution state (thread-safe)
+func (cpu *M68KCPU) SetRunning(state bool) {
+	cpu.running.Store(state)
 }
 
 type faultingBus interface {
@@ -1682,6 +1698,13 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 	lastPC := uint32(0)
 	stuckCounter := 0
 
+	// Initialize perf counters if enabled
+	if cpu.PerfEnabled {
+		cpu.perfStartTime = time.Now()
+		cpu.lastPerfReport = cpu.perfStartTime
+		cpu.InstructionCount = 0
+	}
+
 	for cpu.running.Load() {
 		originalPC := cpu.PC
 
@@ -1755,6 +1778,21 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 			fmt.Printf("Warning: Instruction limit (%d) reached, stopping execution\n", instructionLimit)
 			cpu.running.Store(false)
 			break
+		}
+
+		// Performance monitoring (matching IE32 pattern)
+		if cpu.PerfEnabled {
+			cpu.InstructionCount++
+			if cpu.InstructionCount&0xFFFFFF == 0 { // Every ~16M instructions
+				now := time.Now()
+				if now.Sub(cpu.lastPerfReport) >= time.Second {
+					elapsed := now.Sub(cpu.perfStartTime).Seconds()
+					ips := float64(cpu.InstructionCount) / elapsed
+					mips := ips / 1_000_000
+					fmt.Printf("M68K: %.2f MIPS (%.0f instructions in %.1fs)\n", mips, float64(cpu.InstructionCount), elapsed)
+					cpu.lastPerfReport = now
+				}
+			}
 		}
 	}
 

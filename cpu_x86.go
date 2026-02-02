@@ -13,6 +13,7 @@ package main
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 )
 
 // X86Bus defines the interface for x86 memory and I/O operations
@@ -52,7 +53,7 @@ type CPU_X86 struct {
 
 	// Execution state
 	Halted  bool
-	Running bool
+	running atomic.Bool // Atomic for lock-free access (was: Running bool)
 	Cycles  uint64
 
 	// Interrupt state
@@ -78,6 +79,10 @@ type CPU_X86 struct {
 	// Instruction dispatch tables
 	baseOps     [256]func(*CPU_X86)
 	extendedOps [256]func(*CPU_X86) // 0x0F prefix opcodes
+
+	// Register pointer array for O(1) lookup (avoids switch overhead)
+	// Order: EAX, ECX, EDX, EBX, ESP, EBP, ESI, EDI
+	regs32 [8]*uint32
 }
 
 // Flag bit positions
@@ -121,6 +126,11 @@ const (
 func NewCPU_X86(bus X86Bus) *CPU_X86 {
 	cpu := &CPU_X86{
 		bus: bus,
+	}
+	// Initialize register pointer array for O(1) lookup
+	cpu.regs32 = [8]*uint32{
+		&cpu.EAX, &cpu.ECX, &cpu.EDX, &cpu.EBX,
+		&cpu.ESP, &cpu.EBP, &cpu.ESI, &cpu.EDI,
 	}
 	cpu.initBaseOps()
 	cpu.initExtendedOps()
@@ -175,8 +185,18 @@ func (c *CPU_X86) Reset() {
 
 	// Set execution state
 	c.Halted = false
-	c.Running = true
+	c.running.Store(true)
 	c.Cycles = 0
+}
+
+// Running returns the execution state (thread-safe)
+func (c *CPU_X86) Running() bool {
+	return c.running.Load()
+}
+
+// SetRunning sets the execution state (thread-safe)
+func (c *CPU_X86) SetRunning(state bool) {
+	c.running.Store(state)
 }
 
 // -----------------------------------------------------------------------------
@@ -448,48 +468,15 @@ func (c *CPU_X86) setReg16(idx byte, v uint16) {
 }
 
 // getReg32 returns a 32-bit register value by index (0-7: EAX, ECX, EDX, EBX, ESP, EBP, ESI, EDI)
+// Uses pointer array for O(1) lookup instead of switch statement
 func (c *CPU_X86) getReg32(idx byte) uint32 {
-	switch idx & 7 {
-	case 0:
-		return c.EAX
-	case 1:
-		return c.ECX
-	case 2:
-		return c.EDX
-	case 3:
-		return c.EBX
-	case 4:
-		return c.ESP
-	case 5:
-		return c.EBP
-	case 6:
-		return c.ESI
-	case 7:
-		return c.EDI
-	}
-	return 0
+	return *c.regs32[idx&7]
 }
 
 // setReg32 sets a 32-bit register value by index
+// Uses pointer array for O(1) lookup instead of switch statement
 func (c *CPU_X86) setReg32(idx byte, v uint32) {
-	switch idx & 7 {
-	case 0:
-		c.EAX = v
-	case 1:
-		c.ECX = v
-	case 2:
-		c.EDX = v
-	case 3:
-		c.EBX = v
-	case 4:
-		c.ESP = v
-	case 5:
-		c.EBP = v
-	case 6:
-		c.ESI = v
-	case 7:
-		c.EDI = v
-	}
+	*c.regs32[idx&7] = v
 }
 
 // getSeg returns a segment register value by index
@@ -1005,7 +992,7 @@ func (c *CPU_X86) writeRM32(v uint32) {
 
 // Step executes a single instruction
 func (c *CPU_X86) Step() int {
-	if c.Halted || !c.Running {
+	if c.Halted || !c.running.Load() {
 		return 0
 	}
 
