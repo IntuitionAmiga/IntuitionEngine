@@ -668,6 +668,7 @@ func main() {
 		// Initialize GUI with M68K CPU
 		// Note: The GUI might need modifications to properly support M68K CPU
 		m68kRunner := NewM68KRunner(m68kCPU)
+		m68kRunner.PerfEnabled = perfMode
 		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, m68kRunner, videoChip, soundChip, psgPlayer, sidPlayer, ahxPlayerCPU)
 		if err != nil {
 			fmt.Printf("Failed to initialize GUI: %v\n", err)
@@ -711,6 +712,7 @@ func main() {
 			VGAEngine:    vgaEngine,
 			VoodooEngine: voodooEngine,
 		})
+		z80CPU.PerfEnabled = perfMode
 
 		// Load program
 		if filename != "" {
@@ -747,6 +749,7 @@ func main() {
 		}
 
 		x86CPU := NewCPUX86Runner(sysBus, x86Config)
+		x86CPU.PerfEnabled = perfMode
 
 		// Load program
 		if filename != "" {
@@ -801,6 +804,7 @@ func main() {
 			LoadAddr: parsedLoadAddr,
 			Entry:    parsedEntry,
 		})
+		cpu6502.PerfEnabled = perfMode
 
 		// Load program
 		if filename != "" {

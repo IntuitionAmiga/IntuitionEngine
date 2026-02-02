@@ -39,10 +39,11 @@ type CPUZ80Config struct {
 }
 
 type CPUZ80Runner struct {
-	cpu      *CPU_Z80
-	bus      *SystemBus
-	loadAddr uint16
-	entry    uint16
+	cpu         *CPU_Z80
+	bus         *SystemBus
+	loadAddr    uint16
+	entry       uint16
+	PerfEnabled bool
 }
 
 type Z80SystemBus struct {
@@ -655,6 +656,7 @@ func (r *CPUZ80Runner) Reset() {
 }
 
 func (r *CPUZ80Runner) Execute() {
+	r.cpu.PerfEnabled = r.PerfEnabled
 	r.cpu.Execute()
 }
 

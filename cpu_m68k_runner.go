@@ -1,7 +1,8 @@
 package main
 
 type M68KRunner struct {
-	cpu *M68KCPU
+	cpu         *M68KCPU
+	PerfEnabled bool
 }
 
 func NewM68KRunner(cpu *M68KCPU) *M68KRunner {
@@ -17,6 +18,7 @@ func (r *M68KRunner) Reset() {
 }
 
 func (r *M68KRunner) Execute() {
+	r.cpu.PerfEnabled = r.PerfEnabled
 	r.cpu.ExecuteInstruction()
 }
 

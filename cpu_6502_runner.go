@@ -15,10 +15,11 @@ type CPU6502Config struct {
 }
 
 type CPU6502Runner struct {
-	cpu      *CPU_6502
-	bus      *SystemBus
-	loadAddr uint16
-	entry    uint16
+	cpu         *CPU_6502
+	bus         *SystemBus
+	loadAddr    uint16
+	entry       uint16
+	PerfEnabled bool
 }
 
 func NewCPU6502Runner(bus *SystemBus, config CPU6502Config) *CPU6502Runner {
@@ -76,6 +77,7 @@ func (r *CPU6502Runner) Reset() {
 }
 
 func (r *CPU6502Runner) Execute() {
+	r.cpu.PerfEnabled = r.PerfEnabled
 	r.cpu.Execute()
 }
 
