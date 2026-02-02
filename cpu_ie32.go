@@ -81,11 +81,13 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
+	"math/bits"
 	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 )
 
 // ------------------------------------------------------------------------------
@@ -384,6 +386,13 @@ type CPU struct {
 	InstructionCount uint64    // Total instructions executed
 	perfStartTime    time.Time // When execution started
 	lastPerfReport   time.Time // Last time we printed stats
+
+	// Register pointer array for fast register lookup by index
+	// Avoids switch statement overhead in getRegister
+	regs [16]*uint32
+
+	// Unsafe memory base pointer for bounds-check-free access
+	memBase unsafe.Pointer
 }
 
 func NewCPU(bus MemoryBus) *CPU {
@@ -413,6 +422,15 @@ func NewCPU(bus MemoryBus) *CPU {
 		bus:    bus,
 		memory: bus.GetMemory(), // Use shared bus memory
 	}
+	// Initialize register pointer array for fast lookup
+	cpu.regs = [16]*uint32{
+		&cpu.A, &cpu.X, &cpu.Y, &cpu.Z,
+		&cpu.B, &cpu.C, &cpu.D, &cpu.E,
+		&cpu.F, &cpu.G, &cpu.H, &cpu.S,
+		&cpu.T, &cpu.U, &cpu.V, &cpu.W,
+	}
+	// Initialize unsafe memory base pointer for bounds-check-free access
+	cpu.memBase = unsafe.Pointer(&cpu.memory[0])
 	// Atomic fields default to zero/false - set running to true
 	cpu.running.Store(true)
 	return cpu
@@ -468,10 +486,10 @@ func (cpu *CPU) Write32(addr uint32, value uint32) {
 		}
 	}
 
-	// Non-I/O fast path - direct memory write, no mutex
+	// Non-I/O fast path - direct memory write, no mutex, no bounds check
 	// CPU is the sole writer, so no synchronisation needed
-	if addr < IO_REGION_START && addr+4 <= uint32(len(cpu.memory)) {
-		binary.LittleEndian.PutUint32(cpu.memory[addr:], value)
+	if addr < IO_REGION_START {
+		*(*uint32)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr))) = value
 		return
 	}
 
@@ -510,10 +528,10 @@ func (cpu *CPU) Read32(addr uint32) uint32 {
 	   I/O region uses mutex for callback coordination.
 	*/
 
-	// Non-I/O fast path - direct memory read, no mutex
+	// Non-I/O fast path - direct memory read, no mutex, no bounds check
 	// CPU writes are the only mutations; readers see consistent data
-	if addr < IO_REGION_START && addr+4 <= uint32(len(cpu.memory)) {
-		return binary.LittleEndian.Uint32(cpu.memory[addr:])
+	if addr < IO_REGION_START {
+		return *(*uint32)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr)))
 	}
 
 	// I/O path - use mutex for callback coordination
@@ -585,24 +603,11 @@ func (cpu *CPU) DisplayScreen() {
 func (cpu *CPU) getRegister(reg byte) *uint32 {
 	/*
 	   getRegister retrieves a pointer to the CPU register specified by the given index.
-	   The lower four bits of the supplied byte are used to determine the register as follows:
-	     0  → A
-	     1  → X
-	     2  → Y
-	     3  → Z
-	     4  → B
-	     5  → C
-	     6  → D
-	     7  → E
-	     8  → F
-	     9  → G
-	     10 → H
-	     11 → S
-	     12 → T
-	     13 → U
-	     14 → V
-	     15 → W
-	   If no valid register is determined, a pointer to A is returned by default.
+	   Uses pre-initialized register pointer array for O(1) lookup.
+
+	   Register mapping (lower 4 bits of reg):
+	     0→A, 1→X, 2→Y, 3→Z, 4→B, 5→C, 6→D, 7→E,
+	     8→F, 9→G, 10→H, 11→S, 12→T, 13→U, 14→V, 15→W
 
 	   Parameters:
 	   - reg: A byte whose lower four bits indicate the desired register.
@@ -610,43 +615,7 @@ func (cpu *CPU) getRegister(reg byte) *uint32 {
 	   Returns:
 	   - *uint32: A pointer to the corresponding register.
 	*/
-
-	switch reg & REG_INDEX_MASK {
-
-	case 0:
-		return &cpu.A
-	case 1:
-		return &cpu.X
-	case 2:
-		return &cpu.Y
-	case 3:
-		return &cpu.Z
-	case 4:
-		return &cpu.B
-	case 5:
-		return &cpu.C
-	case 6:
-		return &cpu.D
-	case 7:
-		return &cpu.E
-	case 8:
-		return &cpu.F
-	case 9:
-		return &cpu.G
-	case 10:
-		return &cpu.H
-	case 11:
-		return &cpu.S
-	case 12:
-		return &cpu.T
-	case 13:
-		return &cpu.U
-	case 14:
-		return &cpu.V
-	case 15:
-		return &cpu.W
-	}
-	return &cpu.A
+	return cpu.regs[reg&REG_INDEX_MASK]
 }
 
 func (cpu *CPU) Push(value uint32) bool {
@@ -784,6 +753,20 @@ func (cpu *CPU) resolveOperand(addrMode byte, operand uint32) uint32 {
 		return cpu.Read32(operand)
 	}
 	return 0
+}
+
+// storeRegister writes a register value to memory using the given addressing mode.
+// This is an inlined helper to avoid the overhead of a nested switch in the store cases.
+func (cpu *CPU) storeRegister(value uint32, addrMode byte, operand uint32) {
+	if addrMode == ADDR_REG_IND {
+		addr := *cpu.getRegister(byte(operand & REG_INDIRECT_MASK)) + (operand & ^uint32(REG_INDIRECT_MASK))
+		cpu.Write32(addr, value)
+	} else if addrMode == ADDR_MEM_IND {
+		addr := cpu.Read32(operand)
+		cpu.Write32(addr, value)
+	} else {
+		cpu.Write32(operand, value)
+	}
 }
 
 func (cpu *CPU) checkInterrupts() bool {
@@ -934,7 +917,21 @@ func (cpu *CPU) Execute() {
 	cpu.lastPerfReport = cpu.perfStartTime
 	cpu.InstructionCount = 0
 
-	for cpu.running.Load() {
+	// Use local running flag to avoid atomic load every iteration
+	// Check external stop signal every 4096 instructions
+	running := true
+	checkCounter := uint32(0)
+
+	// Unsafe base pointer for bounds-check-free memory access
+	memBase := unsafe.Pointer(&cpu.memory[0])
+
+	for running {
+		// Periodic check of external stop signal (every 4096 instructions)
+		checkCounter++
+		if checkCounter&0xFFF == 0 && !cpu.running.Load() {
+			break
+		}
+
 		// Performance measurement: count instructions and report periodically
 		if cpu.PerfEnabled {
 			cpu.InstructionCount++
@@ -952,14 +949,28 @@ func (cpu *CPU) Execute() {
 
 		// Cache frequently accessed values
 		currentPC := cpu.PC
-		mem := cpu.memory
 
-		// Fetch instruction components
-		opcode := mem[currentPC+OPCODE_OFFSET]
-		reg := mem[currentPC+REG_OFFSET]
-		addrMode := mem[currentPC+ADDRMODE_OFFSET]
-		operand := binary.LittleEndian.Uint32(mem[currentPC+OPERAND_OFFSET : currentPC+INSTRUCTION_SIZE])
-		resolvedOperand := cpu.resolveOperand(addrMode, operand)
+		// Fetch instruction components using unsafe pointer (no bounds checking)
+		instrPtr := unsafe.Pointer(uintptr(memBase) + uintptr(currentPC))
+		opcode := *(*byte)(instrPtr)
+		reg := *(*byte)(unsafe.Pointer(uintptr(instrPtr) + 1))
+		addrMode := *(*byte)(unsafe.Pointer(uintptr(instrPtr) + 2))
+		operand := *(*uint32)(unsafe.Pointer(uintptr(instrPtr) + 4))
+
+		// Fully inlined operand resolution - avoids function call overhead
+		var resolvedOperand uint32
+		switch addrMode {
+		case ADDR_IMMEDIATE:
+			resolvedOperand = operand
+		case ADDR_REGISTER:
+			resolvedOperand = *cpu.regs[operand&REG_INDEX_MASK]
+		case ADDR_REG_IND:
+			regIdx := operand & REG_INDEX_MASK
+			offset := operand & ^uint32(REG_INDEX_MASK)
+			resolvedOperand = cpu.Read32(*cpu.regs[regIdx] + offset)
+		case ADDR_MEM_IND, ADDR_DIRECT:
+			resolvedOperand = cpu.Read32(operand)
+		}
 
 		// Timer handling with lock-free atomics
 		if cpu.timerEnabled.Load() {
@@ -1001,51 +1012,53 @@ func (cpu *CPU) Execute() {
 			*cpu.getRegister(reg) = resolvedOperand
 			cpu.PC += INSTRUCTION_SIZE
 
-		case LDA, LDB, LDC, LDD, LDE, LDF, LDG, LDH, LDS, LDT, LDU, LDV, LDW, LDX, LDY, LDZ:
-			/*
-			   Load specific register with resolved operand.
-
-			   Operation:
-			   1. Selects destination register based on opcode
-			   2. Loads resolved operand value
-			   3. Advances PC by INSTRUCTION_SIZE
-			*/
-			var dst *uint32
-			switch opcode {
-			case LDA:
-				dst = &cpu.A
-			case LDB:
-				dst = &cpu.B
-			case LDC:
-				dst = &cpu.C
-			case LDD:
-				dst = &cpu.D
-			case LDE:
-				dst = &cpu.E
-			case LDF:
-				dst = &cpu.F
-			case LDG:
-				dst = &cpu.G
-			case LDH:
-				dst = &cpu.H
-			case LDS:
-				dst = &cpu.S
-			case LDT:
-				dst = &cpu.T
-			case LDU:
-				dst = &cpu.U
-			case LDV:
-				dst = &cpu.V
-			case LDW:
-				dst = &cpu.W
-			case LDX:
-				dst = &cpu.X
-			case LDY:
-				dst = &cpu.Y
-			case LDZ:
-				dst = &cpu.Z
-			}
-			*dst = resolvedOperand
+		case LDA:
+			cpu.A = resolvedOperand
+			cpu.PC += INSTRUCTION_SIZE
+		case LDB:
+			cpu.B = resolvedOperand
+			cpu.PC += INSTRUCTION_SIZE
+		case LDC:
+			cpu.C = resolvedOperand
+			cpu.PC += INSTRUCTION_SIZE
+		case LDD:
+			cpu.D = resolvedOperand
+			cpu.PC += INSTRUCTION_SIZE
+		case LDE:
+			cpu.E = resolvedOperand
+			cpu.PC += INSTRUCTION_SIZE
+		case LDF:
+			cpu.F = resolvedOperand
+			cpu.PC += INSTRUCTION_SIZE
+		case LDG:
+			cpu.G = resolvedOperand
+			cpu.PC += INSTRUCTION_SIZE
+		case LDH:
+			cpu.H = resolvedOperand
+			cpu.PC += INSTRUCTION_SIZE
+		case LDS:
+			cpu.S = resolvedOperand
+			cpu.PC += INSTRUCTION_SIZE
+		case LDT:
+			cpu.T = resolvedOperand
+			cpu.PC += INSTRUCTION_SIZE
+		case LDU:
+			cpu.U = resolvedOperand
+			cpu.PC += INSTRUCTION_SIZE
+		case LDV:
+			cpu.V = resolvedOperand
+			cpu.PC += INSTRUCTION_SIZE
+		case LDW:
+			cpu.W = resolvedOperand
+			cpu.PC += INSTRUCTION_SIZE
+		case LDX:
+			cpu.X = resolvedOperand
+			cpu.PC += INSTRUCTION_SIZE
+		case LDY:
+			cpu.Y = resolvedOperand
+			cpu.PC += INSTRUCTION_SIZE
+		case LDZ:
+			cpu.Z = resolvedOperand
 			cpu.PC += INSTRUCTION_SIZE
 
 		case STORE:
@@ -1072,186 +1085,200 @@ func (cpu *CPU) Execute() {
 			}
 			cpu.PC += INSTRUCTION_SIZE
 
-		case STA, STB, STC, STD, STE, STF, STG, STH, STS, STT, STU, STV, STW, STX, STY, STZ:
-			/*
-			   Store specific register to memory.
-
-			   Operation:
-			   1. Select source register based on opcode
-			   2. Resolve target address based on mode:
-			      - Register indirect: Base + offset
-			      - Memory indirect: Indirect address
-			      - Direct: Operand address
-			   3. Write register value to memory
-			   4. Advance PC by INSTRUCTION_SIZE
-			*/
-			var value uint32
-			switch opcode {
-			case STA:
-				value = cpu.A
-			case STB:
-				value = cpu.B
-			case STC:
-				value = cpu.C
-			case STD:
-				value = cpu.D
-			case STE:
-				value = cpu.E
-			case STF:
-				value = cpu.F
-			case STG:
-				value = cpu.G
-			case STH:
-				value = cpu.H
-			case STS:
-				value = cpu.S
-			case STT:
-				value = cpu.T
-			case STU:
-				value = cpu.U
-			case STV:
-				value = cpu.V
-			case STW:
-				value = cpu.W
-			case STX:
-				value = cpu.X
-			case STY:
-				value = cpu.Y
-			case STZ:
-				value = cpu.Z
-			}
-
+		case STA:
 			if addrMode == ADDR_REG_IND {
-				// CRITICAL FIX: Exclude register bits from offset
-				addr := *cpu.getRegister(byte(operand & REG_INDIRECT_MASK)) + (operand & ^uint32(REG_INDIRECT_MASK))
-				cpu.Write32(addr, value)
+				cpu.Write32(*cpu.regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), cpu.A)
 			} else if addrMode == ADDR_MEM_IND {
-				addr := cpu.Read32(operand)
-				cpu.Write32(addr, value)
+				cpu.Write32(cpu.Read32(operand), cpu.A)
 			} else {
-				cpu.Write32(operand, value)
+				cpu.Write32(operand, cpu.A)
+			}
+			cpu.PC += INSTRUCTION_SIZE
+		case STB:
+			if addrMode == ADDR_REG_IND {
+				cpu.Write32(*cpu.regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), cpu.B)
+			} else if addrMode == ADDR_MEM_IND {
+				cpu.Write32(cpu.Read32(operand), cpu.B)
+			} else {
+				cpu.Write32(operand, cpu.B)
+			}
+			cpu.PC += INSTRUCTION_SIZE
+		case STC:
+			if addrMode == ADDR_REG_IND {
+				cpu.Write32(*cpu.regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), cpu.C)
+			} else if addrMode == ADDR_MEM_IND {
+				cpu.Write32(cpu.Read32(operand), cpu.C)
+			} else {
+				cpu.Write32(operand, cpu.C)
+			}
+			cpu.PC += INSTRUCTION_SIZE
+		case STD:
+			if addrMode == ADDR_REG_IND {
+				cpu.Write32(*cpu.regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), cpu.D)
+			} else if addrMode == ADDR_MEM_IND {
+				cpu.Write32(cpu.Read32(operand), cpu.D)
+			} else {
+				cpu.Write32(operand, cpu.D)
+			}
+			cpu.PC += INSTRUCTION_SIZE
+		case STE:
+			if addrMode == ADDR_REG_IND {
+				cpu.Write32(*cpu.regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), cpu.E)
+			} else if addrMode == ADDR_MEM_IND {
+				cpu.Write32(cpu.Read32(operand), cpu.E)
+			} else {
+				cpu.Write32(operand, cpu.E)
+			}
+			cpu.PC += INSTRUCTION_SIZE
+		case STF:
+			if addrMode == ADDR_REG_IND {
+				cpu.Write32(*cpu.regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), cpu.F)
+			} else if addrMode == ADDR_MEM_IND {
+				cpu.Write32(cpu.Read32(operand), cpu.F)
+			} else {
+				cpu.Write32(operand, cpu.F)
+			}
+			cpu.PC += INSTRUCTION_SIZE
+		case STG:
+			if addrMode == ADDR_REG_IND {
+				cpu.Write32(*cpu.regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), cpu.G)
+			} else if addrMode == ADDR_MEM_IND {
+				cpu.Write32(cpu.Read32(operand), cpu.G)
+			} else {
+				cpu.Write32(operand, cpu.G)
+			}
+			cpu.PC += INSTRUCTION_SIZE
+		case STH:
+			if addrMode == ADDR_REG_IND {
+				cpu.Write32(*cpu.regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), cpu.H)
+			} else if addrMode == ADDR_MEM_IND {
+				cpu.Write32(cpu.Read32(operand), cpu.H)
+			} else {
+				cpu.Write32(operand, cpu.H)
+			}
+			cpu.PC += INSTRUCTION_SIZE
+		case STS:
+			if addrMode == ADDR_REG_IND {
+				cpu.Write32(*cpu.regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), cpu.S)
+			} else if addrMode == ADDR_MEM_IND {
+				cpu.Write32(cpu.Read32(operand), cpu.S)
+			} else {
+				cpu.Write32(operand, cpu.S)
+			}
+			cpu.PC += INSTRUCTION_SIZE
+		case STT:
+			if addrMode == ADDR_REG_IND {
+				cpu.Write32(*cpu.regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), cpu.T)
+			} else if addrMode == ADDR_MEM_IND {
+				cpu.Write32(cpu.Read32(operand), cpu.T)
+			} else {
+				cpu.Write32(operand, cpu.T)
+			}
+			cpu.PC += INSTRUCTION_SIZE
+		case STU:
+			if addrMode == ADDR_REG_IND {
+				cpu.Write32(*cpu.regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), cpu.U)
+			} else if addrMode == ADDR_MEM_IND {
+				cpu.Write32(cpu.Read32(operand), cpu.U)
+			} else {
+				cpu.Write32(operand, cpu.U)
+			}
+			cpu.PC += INSTRUCTION_SIZE
+		case STV:
+			if addrMode == ADDR_REG_IND {
+				cpu.Write32(*cpu.regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), cpu.V)
+			} else if addrMode == ADDR_MEM_IND {
+				cpu.Write32(cpu.Read32(operand), cpu.V)
+			} else {
+				cpu.Write32(operand, cpu.V)
+			}
+			cpu.PC += INSTRUCTION_SIZE
+		case STW:
+			if addrMode == ADDR_REG_IND {
+				cpu.Write32(*cpu.regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), cpu.W)
+			} else if addrMode == ADDR_MEM_IND {
+				cpu.Write32(cpu.Read32(operand), cpu.W)
+			} else {
+				cpu.Write32(operand, cpu.W)
+			}
+			cpu.PC += INSTRUCTION_SIZE
+		case STX:
+			if addrMode == ADDR_REG_IND {
+				cpu.Write32(*cpu.regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), cpu.X)
+			} else if addrMode == ADDR_MEM_IND {
+				cpu.Write32(cpu.Read32(operand), cpu.X)
+			} else {
+				cpu.Write32(operand, cpu.X)
+			}
+			cpu.PC += INSTRUCTION_SIZE
+		case STY:
+			if addrMode == ADDR_REG_IND {
+				cpu.Write32(*cpu.regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), cpu.Y)
+			} else if addrMode == ADDR_MEM_IND {
+				cpu.Write32(cpu.Read32(operand), cpu.Y)
+			} else {
+				cpu.Write32(operand, cpu.Y)
+			}
+			cpu.PC += INSTRUCTION_SIZE
+		case STZ:
+			if addrMode == ADDR_REG_IND {
+				cpu.Write32(*cpu.regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), cpu.Z)
+			} else if addrMode == ADDR_MEM_IND {
+				cpu.Write32(cpu.Read32(operand), cpu.Z)
+			} else {
+				cpu.Write32(operand, cpu.Z)
 			}
 			cpu.PC += INSTRUCTION_SIZE
 
 		case ADD:
-			/*
-			   Add resolved operand to target register.
-
-			   Operation:
-			   1. Get target register from instruction
-			   2. Add resolved operand to register value
-			   3. Advance PC by INSTRUCTION_SIZE
-			*/
-			targetReg := cpu.getRegister(reg)
-			*targetReg += resolvedOperand
+			// Add resolved operand to target register (inlined for speed)
+			*cpu.regs[reg&REG_INDEX_MASK] += resolvedOperand
 			cpu.PC += INSTRUCTION_SIZE
 
 		case SUB:
-			/*
-			   Subtract resolved operand from target register.
-
-			   Operation:
-			   1. Get target register from instruction
-			   2. Subtract operand from register (two's complement wrap)
-			   3. Advance PC by INSTRUCTION_SIZE
-			*/
-			targetReg := cpu.getRegister(reg)
-			*targetReg -= resolvedOperand
+			// Subtract resolved operand from target register (inlined for speed)
+			*cpu.regs[reg&REG_INDEX_MASK] -= resolvedOperand
 			cpu.PC += INSTRUCTION_SIZE
 
 		case AND:
-			/*
-			   Logical AND on target register.
-			   Operation:
-			   1. Get target register
-			   2. AND with resolved operand
-			   3. Advance PC by INSTRUCTION_SIZE
-			*/
-			targetReg := cpu.getRegister(reg)
-			*targetReg &= resolvedOperand
+			// Logical AND (inlined for speed)
+			*cpu.regs[reg&REG_INDEX_MASK] &= resolvedOperand
 			cpu.PC += INSTRUCTION_SIZE
 
 		case OR:
-			/*
-			   Logical OR on target register.
-			   Operation:
-			   1. Get target register
-			   2. OR with resolved operand
-			   3. Advance PC by INSTRUCTION_SIZE
-			*/
-			targetReg := cpu.getRegister(reg)
-			*targetReg |= resolvedOperand
+			// Logical OR (inlined for speed)
+			*cpu.regs[reg&REG_INDEX_MASK] |= resolvedOperand
 			cpu.PC += INSTRUCTION_SIZE
 
 		case XOR:
-			/*
-			   Logical XOR on target register.
-			   Operation:
-			   1. Get target register
-			   2. XOR with resolved operand
-			   3. Advance PC by INSTRUCTION_SIZE
-			*/
-			targetReg := cpu.getRegister(reg)
-			*targetReg ^= resolvedOperand
+			// Logical XOR (inlined for speed)
+			*cpu.regs[reg&REG_INDEX_MASK] ^= resolvedOperand
 			cpu.PC += INSTRUCTION_SIZE
 
 		case SHL:
-			/*
-			   Shift left target register.
-			   Operation:
-			   1. Get target register
-			   2. Shift left by operand bits
-			   3. Advance PC by INSTRUCTION_SIZE
-			*/
-			targetReg := cpu.getRegister(reg)
-			*targetReg <<= resolvedOperand
+			// Shift left (inlined for speed)
+			*cpu.regs[reg&REG_INDEX_MASK] <<= resolvedOperand
 			cpu.PC += INSTRUCTION_SIZE
 
 		case SHR:
-			/*
-			   Shift right target register.
-			   Operation:
-			   1. Get target register
-			   2. Shift right by operand bits
-			   3. Advance PC by INSTRUCTION_SIZE
-			*/
-			targetReg := cpu.getRegister(reg)
-			*targetReg >>= resolvedOperand
+			// Shift right (inlined for speed)
+			*cpu.regs[reg&REG_INDEX_MASK] >>= resolvedOperand
 			cpu.PC += INSTRUCTION_SIZE
 
 		case NOT:
-			/*
-			   Logical NOT on target register.
-			   Operation:
-			   1. Get target register
-			   2. Perform bitwise NOT
-			   3. Advance PC by INSTRUCTION_SIZE
-			*/
-			targetReg := cpu.getRegister(reg)
-			*targetReg = ^(*targetReg)
+			// Logical NOT (inlined for speed)
+			r := cpu.regs[reg&REG_INDEX_MASK]
+			*r = ^(*r)
 			cpu.PC += INSTRUCTION_SIZE
 
 		case JMP:
-			/*
-			   Unconditional jump to operand address.
-			   Operation:
-			   Sets PC directly to operand value
-			*/
+			// Unconditional jump
 			cpu.PC = operand
 
 		case JNZ:
-			/*
-			   Jump if register not zero.
-			   Operation:
-			   1. Get source register
-			   2. Get target address
-			   3. If register != 0, set PC to target
-			   4. Else advance PC by INSTRUCTION_SIZE
-			*/
-			reg := cpu.memory[currentPC+1]
-			targetAddr := binary.LittleEndian.Uint32(cpu.memory[currentPC+WORD_SIZE : currentPC+INSTRUCTION_SIZE])
-			if *cpu.getRegister(reg) != 0 {
-				cpu.PC = targetAddr
+			// Jump if register not zero (inlined for speed)
+			if *cpu.regs[reg&REG_INDEX_MASK] != 0 {
+				cpu.PC = operand
 			} else {
 				cpu.PC += INSTRUCTION_SIZE
 			}
@@ -1259,161 +1286,102 @@ func (cpu *CPU) Execute() {
 		case JZ:
 			/*
 			   Jump if register zero.
-			   Operation:
-			   1. Get source register
-			   2. Get target address
-			   3. If register == 0, set PC to target
-			   4. Else advance PC by INSTRUCTION_SIZE
+			   Uses pre-decoded reg and operand (target address).
 			*/
-			reg := cpu.memory[currentPC+1]
-			targetAddr := binary.LittleEndian.Uint32(cpu.memory[currentPC+WORD_SIZE : currentPC+INSTRUCTION_SIZE])
-			if *cpu.getRegister(reg) == 0 {
-				cpu.PC = targetAddr
+			if *cpu.regs[reg&REG_INDEX_MASK] == 0 {
+				cpu.PC = operand
 			} else {
 				cpu.PC += INSTRUCTION_SIZE
 			}
 
 		case JGT:
-			/*
-			   Jump if register greater than zero.
-			   Operation:
-			   1. Get signed register value
-			   2. If value > 0, set PC to target
-			   3. Else advance PC by INSTRUCTION_SIZE
-			*/
-			reg := cpu.memory[currentPC+1]
-			targetAddr := binary.LittleEndian.Uint32(cpu.memory[currentPC+WORD_SIZE : currentPC+INSTRUCTION_SIZE])
-			if int32(*cpu.getRegister(reg)) > 0 {
-				cpu.PC = targetAddr
+			// Jump if register > 0 (signed, inlined)
+			if int32(*cpu.regs[reg&REG_INDEX_MASK]) > 0 {
+				cpu.PC = operand
 			} else {
 				cpu.PC += INSTRUCTION_SIZE
 			}
 
 		case JGE:
-			/*
-			   Jump if register greater/equal zero.
-			   Operation:
-			   1. Get signed register value
-			   2. If value >= 0, set PC to target
-			   3. Else advance PC by INSTRUCTION_SIZE
-			*/
-			reg := cpu.memory[currentPC+1]
-			targetAddr := binary.LittleEndian.Uint32(cpu.memory[currentPC+WORD_SIZE : currentPC+INSTRUCTION_SIZE])
-			if int32(*cpu.getRegister(reg)) >= 0 {
-				cpu.PC = targetAddr
+			// Jump if register >= 0 (signed, inlined)
+			if int32(*cpu.regs[reg&REG_INDEX_MASK]) >= 0 {
+				cpu.PC = operand
 			} else {
 				cpu.PC += INSTRUCTION_SIZE
 			}
 
 		case JLT:
-			/*
-			   Jump if register less than zero.
-			   Operation:
-			   1. Get signed register value
-			   2. If value < 0, set PC to target
-			   3. Else advance PC by INSTRUCTION_SIZE
-			*/
-			reg := cpu.memory[currentPC+1]
-			targetAddr := binary.LittleEndian.Uint32(cpu.memory[currentPC+WORD_SIZE : currentPC+INSTRUCTION_SIZE])
-			if int32(*cpu.getRegister(reg)) < 0 {
-				cpu.PC = targetAddr
+			// Jump if register < 0 (signed, inlined)
+			if int32(*cpu.regs[reg&REG_INDEX_MASK]) < 0 {
+				cpu.PC = operand
 			} else {
 				cpu.PC += INSTRUCTION_SIZE
 			}
 
 		case JLE:
-			/*
-			   Jump if register less/equal zero.
-			   Operation:
-			   1. Get signed register value
-			   2. If value <= 0, set PC to target
-			   3. Else advance PC by INSTRUCTION_SIZE
-			*/
-			reg := cpu.memory[currentPC+1]
-			targetAddr := binary.LittleEndian.Uint32(cpu.memory[currentPC+WORD_SIZE : currentPC+INSTRUCTION_SIZE])
-			if int32(*cpu.getRegister(reg)) <= 0 {
-				cpu.PC = targetAddr
+			// Jump if register <= 0 (signed, inlined)
+			if int32(*cpu.regs[reg&REG_INDEX_MASK]) <= 0 {
+				cpu.PC = operand
 			} else {
 				cpu.PC += INSTRUCTION_SIZE
 			}
 
 		case PUSH:
-			/*
-			   Push register value to stack.
-			   Operation:
-			   1. Get register value
-			   2. Push to stack, check for overflow
-			   3. Return if stack overflow
-			   4. Advance PC by INSTRUCTION_SIZE
-			*/
-			value := *cpu.getRegister(reg)
-			if !cpu.Push(value) {
+			// Push register to stack (inlined)
+			if !cpu.Push(*cpu.regs[reg&REG_INDEX_MASK]) {
 				return
 			}
 			cpu.PC += INSTRUCTION_SIZE
 
 		case POP:
-			/*
-			   Pop stack value to register.
-			   Operation:
-			   1. Pop value, check for underflow
-			   2. Return if stack underflow
-			   3. Store to target register
-			   4. Advance PC by INSTRUCTION_SIZE
-			*/
+			// Pop from stack to register (inlined)
 			value, ok := cpu.Pop()
 			if !ok {
 				return
 			}
-			*cpu.getRegister(reg) = value
+			*cpu.regs[reg&REG_INDEX_MASK] = value
 			cpu.PC += INSTRUCTION_SIZE
 
 		case MUL:
-			/*
-			   Multiply register by operand.
-			   Operation:
-			   1. Get target register
-			   2. Multiply by resolved operand
-			   3. Advance PC by INSTRUCTION_SIZE
-			*/
-			targetReg := cpu.getRegister(reg)
-			*targetReg *= resolvedOperand
+			// Multiply with power-of-2 fast path (shift instead of multiply)
+			if resolvedOperand != 0 && (resolvedOperand&(resolvedOperand-1)) == 0 {
+				// Power of 2: use left shift
+				*cpu.regs[reg&REG_INDEX_MASK] <<= bits.TrailingZeros32(resolvedOperand)
+			} else {
+				*cpu.regs[reg&REG_INDEX_MASK] *= resolvedOperand
+			}
 			cpu.PC += INSTRUCTION_SIZE
 
 		case DIV:
-			/*
-			   Divide register by operand.
-			   Operation:
-			   1. Check for divide by zero
-			   2. If zero, halt CPU with error
-			   3. Else perform division
-			   4. Advance PC by INSTRUCTION_SIZE
-			*/
-			targetReg := cpu.getRegister(reg)
+			// Division with power-of-2 fast path (shift instead of divide)
 			if resolvedOperand == 0 {
 				fmt.Printf("Division by zero error at PC=%08x\n", cpu.PC)
 				cpu.running.Store(false)
+				running = false
 				break
 			}
-			*targetReg /= resolvedOperand
+			if (resolvedOperand & (resolvedOperand - 1)) == 0 {
+				// Power of 2: use right shift
+				*cpu.regs[reg&REG_INDEX_MASK] >>= bits.TrailingZeros32(resolvedOperand)
+			} else {
+				*cpu.regs[reg&REG_INDEX_MASK] /= resolvedOperand
+			}
 			cpu.PC += INSTRUCTION_SIZE
 
 		case MOD:
-			/*
-			   Modulo operation on register.
-			   Operation:
-			   1. Check for zero operand
-			   2. If zero, halt CPU with error
-			   3. Else compute modulo
-			   4. Advance PC by INSTRUCTION_SIZE
-			*/
-			targetReg := cpu.getRegister(reg)
+			// Modulo with power-of-2 fast path (AND instead of modulo)
 			if resolvedOperand == 0 {
 				fmt.Printf("Division by zero error at PC=%08x\n", cpu.PC)
 				cpu.running.Store(false)
+				running = false
 				break
 			}
-			*targetReg %= resolvedOperand
+			if (resolvedOperand & (resolvedOperand - 1)) == 0 {
+				// Power of 2: x % n == x & (n-1)
+				*cpu.regs[reg&REG_INDEX_MASK] &= resolvedOperand - 1
+			} else {
+				*cpu.regs[reg&REG_INDEX_MASK] %= resolvedOperand
+			}
 			cpu.PC += INSTRUCTION_SIZE
 
 		case WAIT:
@@ -1570,10 +1538,12 @@ func (cpu *CPU) Execute() {
 			*/
 			fmt.Printf("HALT executed at PC=%08x\n", cpu.PC)
 			cpu.running.Store(false)
+			running = false
 
 		default:
 			fmt.Printf("Invalid opcode: %02x at PC=%08x\n", opcode, cpu.PC)
 			cpu.running.Store(false)
+			running = false
 		}
 	}
 
