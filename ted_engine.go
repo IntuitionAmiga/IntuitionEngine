@@ -57,6 +57,9 @@ type TEDEngine struct {
 	enabled        bool
 	tedPlusEnabled bool
 	channelsInit   bool
+
+	// Pre-computed sound clock for fast frequency calculation
+	soundClock float64 // clockHz / TED_SOUND_CLOCK_DIV
 }
 
 // TED+ logarithmic volume curve (2dB per step)
@@ -71,13 +74,28 @@ var tedPlusVolumeCurve = func() [9]float32 {
 	return curve
 }()
 
+// TED linear volume curve - pre-computed lookup table (0-8 range)
+var tedLinearVolumeCurve = [9]float32{
+	0.0 / 8.0, // 0
+	1.0 / 8.0, // 1
+	2.0 / 8.0, // 2
+	3.0 / 8.0, // 3
+	4.0 / 8.0, // 4
+	5.0 / 8.0, // 5
+	6.0 / 8.0, // 6
+	7.0 / 8.0, // 7
+	8.0 / 8.0, // 8 (max)
+}
+
 // NewTEDEngine creates a new TED emulation engine
 func NewTEDEngine(sound *SoundChip, sampleRate int) *TEDEngine {
-	return &TEDEngine{
+	e := &TEDEngine{
 		sound:      sound,
 		sampleRate: sampleRate,
 		clockHz:    TED_CLOCK_PAL,
 	}
+	e.updateSoundClock()
+	return e
 }
 
 // SetClockHz sets the TED master clock frequency
@@ -88,6 +106,12 @@ func (e *TEDEngine) SetClockHz(clock uint32) {
 		return
 	}
 	e.clockHz = clock
+	e.updateSoundClock()
+}
+
+// updateSoundClock pre-computes the sound clock for fast frequency calculation
+func (e *TEDEngine) updateSoundClock() {
+	e.soundClock = float64(e.clockHz) / float64(TED_SOUND_CLOCK_DIV)
 }
 
 // HandleWrite processes a write to a TED register via memory-mapped I/O
@@ -189,6 +213,7 @@ func (e *TEDEngine) syncToChip() {
 }
 
 // calcFrequency calculates the output frequency for a voice
+// Uses pre-computed soundClock for optimal performance.
 func (e *TEDEngine) calcFrequency(voice int) float64 {
 	if voice < 0 || voice > 1 {
 		return 0
@@ -203,14 +228,15 @@ func (e *TEDEngine) calcFrequency(voice int) float64 {
 		freqReg = uint16(e.regs[TED_REG_FREQ2_LO]) | (uint16(e.regs[TED_REG_FREQ2_HI]&0x03) << 8)
 	}
 
-	return tedFrequencyHz(freqReg, e.clockHz)
+	// Fast path using pre-computed sound clock
+	return e.tedFrequencyHz(freqReg)
 }
 
 // tedFrequencyHz calculates the output frequency from a 10-bit register value
 // Formula: freq_hz = sound_clock / (1024 - register_value)
-// where sound_clock = main_clock / TED_SOUND_CLOCK_DIV
+// where sound_clock = main_clock / TED_SOUND_CLOCK_DIV (pre-computed)
 // Reference: tedplay uses TED_SOUND_CLOCK = 221680 (PAL)
-func tedFrequencyHz(regValue uint16, clockHz uint32) float64 {
+func (e *TEDEngine) tedFrequencyHz(regValue uint16) float64 {
 	if regValue >= 1024 {
 		regValue = 1023
 	}
@@ -218,7 +244,8 @@ func tedFrequencyHz(regValue uint16, clockHz uint32) float64 {
 	if divisor <= 0 {
 		divisor = 1
 	}
-	return float64(clockHz) / float64(TED_SOUND_CLOCK_DIV) / float64(divisor)
+	// Use pre-computed soundClock instead of computing clockHz / TED_SOUND_CLOCK_DIV
+	return e.soundClock / float64(divisor)
 }
 
 // applyFrequencies updates SoundChip frequencies from TED registers
@@ -305,6 +332,7 @@ func (e *TEDEngine) writeChannel(ch int, offset uint32, value uint32) {
 
 // tedVolumeGain converts a 4-bit TED volume level to a gain value
 // TED volume is 0-8 (values above 8 are clamped to max)
+// Uses pre-computed lookup tables for optimal performance.
 func tedVolumeGain(level uint8, tedPlus bool) float32 {
 	if level > TED_MAX_VOLUME {
 		level = TED_MAX_VOLUME
@@ -312,8 +340,8 @@ func tedVolumeGain(level uint8, tedPlus bool) float32 {
 	if tedPlus {
 		return tedPlusVolumeCurve[level]
 	}
-	// Linear volume curve for standard TED
-	return float32(level) / float32(TED_MAX_VOLUME)
+	// Linear volume curve from lookup table
+	return tedLinearVolumeCurve[level]
 }
 
 // tedGainToDAC converts a gain value to an 8-bit DAC value

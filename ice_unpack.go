@@ -15,14 +15,32 @@ const (
 	iceHeaderSize = 12
 )
 
+// Pre-computed lookup tables for faster decoding
+var (
+	// iceGetDepackLength lookup tables
+	iceDepackBitsToGet   = [5]int{0, 0, 1, 2, 10}
+	iceDepackNumberToAdd = [5]int{2, 3, 4, 6, 10}
+
+	// iceGetDepackOffset lookup tables (length != 2 case)
+	iceOffsetBitsToGet   = [3]int{8, 5, 12}
+	iceOffsetNumberToAdd = [3]int{31, -1, 287}
+
+	// iceGetDirectLength lookup tables
+	iceDirectBitsToGet   = [6]int{1, 2, 2, 3, 8, 15}
+	iceDirectAllOnes     = [6]int{1, 3, 3, 7, 0xff, 0x7fff}
+	iceDirectNumberToAdd = [7]int{1, 2, 5, 8, 15, 270, 270}
+)
+
 // iceState holds the decompression state
 type iceState struct {
 	unpackedStop int    // destination start position
 	unpacked     int    // current write position (works backwards)
 	packed       int    // current read position (works backwards)
-	bits         int    // bit buffer
+	bits         int    // bit buffer (8-bit with marker bit)
 	data         []byte // packed data
 	output       []byte // output buffer
+	dataLen      int    // cached length of data for bounds check
+	outputLen    int    // cached length of output for bounds check
 }
 
 // isICE checks if data starts with ICE! magic
@@ -75,6 +93,8 @@ func UnpackICE(data []byte) ([]byte, error) {
 		unpacked:     decrunchedLen,
 		data:         data,
 		output:       output,
+		dataLen:      len(data),
+		outputLen:    decrunchedLen,
 	}
 
 	// Initialize bit buffer from last byte of packed data
@@ -127,28 +147,22 @@ func iceGetBits(state *iceState, n int) int {
 }
 
 // iceGetDepackLength decodes the match length
+// Uses pre-computed lookup tables for faster decoding.
 func iceGetDepackLength(state *iceState) int {
-	bitsToGet := []int{0, 0, 1, 2, 10}
-	numberToAdd := []int{2, 3, 4, 6, 10}
-
 	i := 0
-	for i < 4 {
-		if iceGetBit(state) == 0 {
-			break
-		}
+	for i < 4 && iceGetBit(state) != 0 {
 		i++
 	}
 
 	length := 0
-	if bitsToGet[i] > 0 {
-		length = iceGetBits(state, bitsToGet[i])
+	if bits := iceDepackBitsToGet[i]; bits > 0 {
+		length = iceGetBits(state, bits)
 	}
-	length += numberToAdd[i]
-
-	return length
+	return length + iceDepackNumberToAdd[i]
 }
 
 // iceGetDepackOffset decodes the match offset
+// Uses pre-computed lookup tables for faster decoding.
 func iceGetDepackOffset(state *iceState, length int) int {
 	var offset, bits, add int
 
@@ -162,19 +176,13 @@ func iceGetDepackOffset(state *iceState, length int) int {
 		}
 		offset = iceGetBits(state, bits) + add
 	} else {
-		bitsToGet := []int{8, 5, 12}
-		numberToAdd := []int{31, -1, 287}
-
 		i := 0
-		for i < 2 {
-			if iceGetBit(state) == 0 {
-				break
-			}
+		for i < 2 && iceGetBit(state) != 0 {
 			i++
 		}
 
-		bits = bitsToGet[i]
-		add = numberToAdd[i]
+		bits = iceOffsetBitsToGet[i]
+		add = iceOffsetNumberToAdd[i]
 		offset = iceGetBits(state, bits) + add
 		if offset < 0 {
 			offset -= length - 2
@@ -185,36 +193,45 @@ func iceGetDepackOffset(state *iceState, length int) int {
 }
 
 // iceGetDirectLength decodes the literal copy length
+// Uses pre-computed lookup tables for faster decoding.
 func iceGetDirectLength(state *iceState) int {
-	bitsToGet := []int{1, 2, 2, 3, 8, 15}
-	allOnes := []int{1, 3, 3, 7, 0xff, 0x7fff}
-	numberToAdd := []int{1, 2, 5, 8, 15, 270, 270}
-
 	i := 0
 	n := 0
 	for i < 6 {
-		n = iceGetBits(state, bitsToGet[i])
-		if n != allOnes[i] {
+		n = iceGetBits(state, iceDirectBitsToGet[i])
+		if n != iceDirectAllOnes[i] {
 			break
 		}
 		i++
 	}
-	n += numberToAdd[i]
-
-	return n
+	return n + iceDirectNumberToAdd[i]
 }
 
 // iceMemcpyBwd copies n bytes backwards (for overlapping regions)
+// Caller must ensure all indices are within bounds.
 func iceMemcpyBwd(output []byte, to, from, n int) {
-	to += n
-	from += n
-	for n > 0 {
-		to--
-		from--
-		if to >= 0 && to < len(output) && from >= 0 && from < len(output) {
-			output[to] = output[from]
+	// Fast path: validate bounds once, then copy without per-byte checks
+	outLen := len(output)
+	toEnd := to + n
+	fromEnd := from + n
+
+	// Bounds validation (single check)
+	if to < 0 || toEnd > outLen || from < 0 || fromEnd > outLen {
+		// Fallback to safe byte-by-byte copy for edge cases
+		for i := n - 1; i >= 0; i-- {
+			toIdx := to + i
+			fromIdx := from + i
+			if toIdx >= 0 && toIdx < outLen && fromIdx >= 0 && fromIdx < outLen {
+				output[toIdx] = output[fromIdx]
+			}
 		}
-		n--
+		return
+	}
+
+	// Optimized path: copy backwards without bounds checks
+	// This handles overlapping regions correctly
+	for i := n - 1; i >= 0; i-- {
+		output[to+i] = output[from+i]
 	}
 }
 

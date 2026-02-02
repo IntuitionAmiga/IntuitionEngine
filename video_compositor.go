@@ -135,7 +135,7 @@ func (c *VideoCompositor) composite() {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	// Clear final frame
+	// Clear final frame (Go compiler optimizes this to memset)
 	for i := range c.finalFrame {
 		c.finalFrame[i] = 0
 	}

@@ -529,3 +529,107 @@ func BenchmarkGenerateSample_1Second(b *testing.B) {
 
 	b.ReportMetric(float64(samples*b.N)/b.Elapsed().Seconds(), "samples/sec")
 }
+
+// BenchmarkPSG_VolumeGain benchmarks PSG volume gain lookup table
+func BenchmarkPSG_VolumeGain(b *testing.B) {
+	levels := []uint8{0, 4, 8, 12, 15}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		level := levels[i%len(levels)]
+		_ = psgVolumeGain(level, false)
+	}
+}
+
+// BenchmarkPSG_VolumeGain_Plus benchmarks PSG+ logarithmic volume curve
+func BenchmarkPSG_VolumeGain_Plus(b *testing.B) {
+	levels := []uint8{0, 4, 8, 12, 15}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		level := levels[i%len(levels)]
+		_ = psgVolumeGain(level, true)
+	}
+}
+
+// BenchmarkSID_VolumeGain benchmarks SID volume gain lookup table
+func BenchmarkSID_VolumeGain(b *testing.B) {
+	levels := []uint8{0, 4, 8, 12, 15}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		level := levels[i%len(levels)]
+		_ = sidVolumeGain(level, false)
+	}
+}
+
+// BenchmarkSID_VolumeGain_Plus benchmarks SID+ logarithmic volume curve
+func BenchmarkSID_VolumeGain_Plus(b *testing.B) {
+	levels := []uint8{0, 4, 8, 12, 15}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		level := levels[i%len(levels)]
+		_ = sidVolumeGain(level, true)
+	}
+}
+
+// BenchmarkTED_VolumeGain benchmarks TED volume gain lookup table
+func BenchmarkTED_VolumeGain(b *testing.B) {
+	levels := []uint8{0, 2, 4, 6, 8}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		level := levels[i%len(levels)]
+		_ = tedVolumeGain(level, false)
+	}
+}
+
+// BenchmarkTED_VolumeGain_Plus benchmarks TED+ logarithmic volume curve
+func BenchmarkTED_VolumeGain_Plus(b *testing.B) {
+	levels := []uint8{0, 2, 4, 6, 8}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		level := levels[i%len(levels)]
+		_ = tedVolumeGain(level, true)
+	}
+}
+
+// BenchmarkPOKEY_VolumeGain benchmarks POKEY volume gain lookup table
+func BenchmarkPOKEY_VolumeGain(b *testing.B) {
+	levels := []uint8{0, 4, 8, 12, 15}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		level := levels[i%len(levels)]
+		_ = pokeyVolumeGain(level, false)
+	}
+}
+
+// BenchmarkPOKEY_VolumeGain_Plus benchmarks POKEY+ logarithmic volume curve
+func BenchmarkPOKEY_VolumeGain_Plus(b *testing.B) {
+	levels := []uint8{0, 4, 8, 12, 15}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		level := levels[i%len(levels)]
+		_ = pokeyVolumeGain(level, true)
+	}
+}

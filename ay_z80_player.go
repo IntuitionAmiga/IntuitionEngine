@@ -5,19 +5,24 @@ package main
 import "fmt"
 
 type ayZ80Player struct {
-	cpu            *CPU_Z80
-	bus            *ayZ80Bus
-	song           AYZ80Song
-	header         AYZ80Header
-	clockHz        uint32
-	frameRate      uint16
-	sampleRate     int
-	cyclesPerFrame uint64
-	useIRQ         bool
-	frameAcc       uint64
-	currentSample  uint64
-	initDone       bool
+	cpu              *CPU_Z80
+	bus              *ayZ80Bus
+	song             AYZ80Song
+	header           AYZ80Header
+	clockHz          uint32
+	frameRate        uint16
+	sampleRate       int
+	cyclesPerFrame   uint64
+	useIRQ           bool
+	frameAcc         uint64
+	currentSample    uint64
+	initDone         bool
+	sampleMultiplier uint64     // Pre-computed: (sampleRate << 32) / clockHz for fast conversion
+	eventBuffer      []PSGEvent // Pre-allocated buffer for events (zero-allocation path)
 }
+
+// maxAYEventsPerFrame is the initial capacity for the event buffer.
+const maxAYEventsPerFrame = 512
 
 func newAYZ80Player(file *AYZ80File, songIndex int, sampleRate int, clockHz uint32, frameRate uint16, writer ayZ80PSGWriter) (*ayZ80Player, error) {
 	if file == nil {
@@ -45,16 +50,22 @@ func newAYZ80Player(file *AYZ80File, songIndex int, sampleRate int, clockHz uint
 	cpu := NewCPU_Z80(bus)
 	applyAYZ80Registers(cpu, songIndex, song.Data)
 
+	// Pre-compute sample multiplier for fast cycle-to-sample conversion
+	// Using 32.32 fixed-point: (sampleRate << 32) / clockHz
+	sampleMultiplier := (uint64(sampleRate) << 32) / uint64(clockHz)
+
 	return &ayZ80Player{
-		cpu:            cpu,
-		bus:            bus,
-		song:           song,
-		header:         file.Header,
-		clockHz:        clockHz,
-		frameRate:      frameRate,
-		sampleRate:     sampleRate,
-		cyclesPerFrame: uint64(clockHz) / uint64(frameRate),
-		useIRQ:         true,
+		cpu:              cpu,
+		bus:              bus,
+		song:             song,
+		header:           file.Header,
+		clockHz:          clockHz,
+		frameRate:        frameRate,
+		sampleRate:       sampleRate,
+		cyclesPerFrame:   uint64(clockHz) / uint64(frameRate),
+		useIRQ:           true,
+		sampleMultiplier: sampleMultiplier,
+		eventBuffer:      make([]PSGEvent, 0, maxAYEventsPerFrame),
 	}, nil
 }
 
@@ -62,7 +73,9 @@ func (p *ayZ80Player) RenderFrames(frameCount int) ([]PSGEvent, uint64) {
 	if frameCount <= 0 {
 		return nil, 0
 	}
-	events := make([]PSGEvent, 0)
+
+	// Reuse pre-allocated buffer, reset length but keep capacity
+	p.eventBuffer = p.eventBuffer[:0]
 
 	if !p.initDone {
 		p.cpu.PC = 0x0000
@@ -78,7 +91,7 @@ func (p *ayZ80Player) RenderFrames(frameCount int) ([]PSGEvent, uint64) {
 		startCycle := p.bus.cycles
 		startIndex := len(p.bus.writes)
 		p.runIRQFrame(p.cyclesPerFrame)
-		events = append(events, p.collectEvents(samplePos, startCycle, startIndex)...)
+		p.collectEventsInto(&p.eventBuffer, samplePos, startCycle, startIndex)
 
 		acc += samplesPerFrameNum
 		step := acc / samplesPerFrameDen
@@ -88,7 +101,7 @@ func (p *ayZ80Player) RenderFrames(frameCount int) ([]PSGEvent, uint64) {
 
 	p.frameAcc = acc
 	p.currentSample = samplePos
-	return events, samplePos
+	return p.eventBuffer, samplePos
 }
 
 func (p *ayZ80Player) runIRQFrame(budget uint64) {
@@ -122,6 +135,8 @@ func (p *ayZ80Player) runIRQFrame(budget uint64) {
 	}
 }
 
+// collectEvents returns events for this frame (allocates new slice).
+// DEPRECATED: Use collectEventsInto for zero-allocation path.
 func (p *ayZ80Player) collectEvents(frameBaseSample uint64, startCycle uint64, startIndex int) []PSGEvent {
 	if startIndex >= len(p.bus.writes) {
 		return nil
@@ -129,7 +144,8 @@ func (p *ayZ80Player) collectEvents(frameBaseSample uint64, startCycle uint64, s
 	events := make([]PSGEvent, 0, len(p.bus.writes)-startIndex)
 	for _, write := range p.bus.writes[startIndex:] {
 		cycleDelta := write.Cycle - startCycle
-		sampleOffset := (cycleDelta * uint64(p.sampleRate)) / uint64(p.clockHz)
+		// Fast conversion using pre-computed 32.32 fixed-point multiplier
+		sampleOffset := (cycleDelta * p.sampleMultiplier) >> 32
 		events = append(events, PSGEvent{
 			Sample: frameBaseSample + sampleOffset,
 			Reg:    write.Reg,
@@ -137,6 +153,23 @@ func (p *ayZ80Player) collectEvents(frameBaseSample uint64, startCycle uint64, s
 		})
 	}
 	return events
+}
+
+// collectEventsInto appends events directly to the provided slice (zero-allocation path).
+func (p *ayZ80Player) collectEventsInto(buf *[]PSGEvent, frameBaseSample uint64, startCycle uint64, startIndex int) {
+	if startIndex >= len(p.bus.writes) {
+		return
+	}
+	for _, write := range p.bus.writes[startIndex:] {
+		cycleDelta := write.Cycle - startCycle
+		// Fast conversion using pre-computed 32.32 fixed-point multiplier
+		sampleOffset := (cycleDelta * p.sampleMultiplier) >> 32
+		*buf = append(*buf, PSGEvent{
+			Sample: frameBaseSample + sampleOffset,
+			Reg:    write.Reg,
+			Value:  write.Value,
+		})
+	}
 }
 
 func buildAYZ80RAM(header AYZ80Header, song AYZ80SongData) ([0x10000]byte, error) {

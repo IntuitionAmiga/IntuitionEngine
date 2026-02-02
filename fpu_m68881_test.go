@@ -1119,3 +1119,34 @@ func BenchmarkExtendedRealConversion(b *testing.B) {
 		}
 	})
 }
+
+// BenchmarkFMOVECR benchmarks the FMOVECR instruction using lookup table
+func BenchmarkFMOVECR(b *testing.B) {
+	fpu := NewM68881FPU()
+
+	// Test with various ROM addresses
+	romAddrs := []uint8{0x00, 0x0B, 0x0C, 0x30, 0x32, 0x35}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		addr := romAddrs[i%len(romAddrs)]
+		fpu.FMOVECR(addr, 0)
+	}
+}
+
+// BenchmarkFMOVECR_AllConstants benchmarks loading all known ROM constants
+func BenchmarkFMOVECR_AllConstants(b *testing.B) {
+	fpu := NewM68881FPU()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		fpu.FMOVECR(0x00, 0) // Pi
+		fpu.FMOVECR(0x0C, 1) // e
+		fpu.FMOVECR(0x30, 2) // ln(2)
+		fpu.FMOVECR(0x32, 3) // 1.0
+	}
+}

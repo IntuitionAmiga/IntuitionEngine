@@ -283,3 +283,78 @@ func TestPOKEYEngine_DistortionModes(t *testing.T) {
 		}
 	}
 }
+
+// BenchmarkPOKEY_CalcFrequency benchmarks the optimized frequency calculation
+func BenchmarkPOKEY_CalcFrequency(b *testing.B) {
+	engine := NewPOKEYEngine(nil, 44100)
+	engine.SetClockHz(POKEY_CLOCK_NTSC)
+
+	// Set up some typical register values
+	engine.regs[0] = 0x50 // AUDF1
+	engine.regs[2] = 0x80 // AUDF2
+	engine.regs[4] = 0x40 // AUDF3
+	engine.regs[6] = 0x60 // AUDF4
+	engine.regs[8] = 0x00 // AUDCTL (64kHz mode)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		_ = engine.calcFrequency(i % 4)
+	}
+}
+
+// BenchmarkPOKEY_CalcFrequency_16Bit benchmarks 16-bit mode frequency calculation
+func BenchmarkPOKEY_CalcFrequency_16Bit(b *testing.B) {
+	engine := NewPOKEYEngine(nil, 44100)
+	engine.SetClockHz(POKEY_CLOCK_NTSC)
+
+	// Set up 16-bit mode (ch1+ch2 linked)
+	engine.regs[0] = 0x50              // AUDF1 (low byte)
+	engine.regs[2] = 0x01              // AUDF2 (high byte)
+	engine.regs[8] = AUDCTL_CH2_BY_CH1 // 16-bit mode
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		_ = engine.calcFrequency(1) // Channel 2 in 16-bit mode
+	}
+}
+
+// TestPOKEY_ClockDivisors verifies pre-computed clock divisors are correct
+func TestPOKEY_ClockDivisors(t *testing.T) {
+	engine := NewPOKEYEngine(nil, 44100)
+
+	// Test NTSC clock
+	engine.SetClockHz(POKEY_CLOCK_NTSC)
+	expectedNTSC179 := float64(POKEY_CLOCK_NTSC)
+	expected64K := float64(POKEY_CLOCK_NTSC) / float64(POKEY_DIV_64KHZ)
+	expected15K := float64(POKEY_CLOCK_NTSC) / float64(POKEY_DIV_15KHZ)
+
+	if engine.clock179MHz != expectedNTSC179 {
+		t.Errorf("NTSC 179MHz clock: expected %f, got %f", expectedNTSC179, engine.clock179MHz)
+	}
+	if engine.clock64KHz != expected64K {
+		t.Errorf("NTSC 64kHz clock: expected %f, got %f", expected64K, engine.clock64KHz)
+	}
+	if engine.clock15KHz != expected15K {
+		t.Errorf("NTSC 15kHz clock: expected %f, got %f", expected15K, engine.clock15KHz)
+	}
+
+	// Test PAL clock
+	engine.SetClockHz(POKEY_CLOCK_PAL)
+	expectedPAL179 := float64(POKEY_CLOCK_PAL)
+	expectedPAL64K := float64(POKEY_CLOCK_PAL) / float64(POKEY_DIV_64KHZ)
+	expectedPAL15K := float64(POKEY_CLOCK_PAL) / float64(POKEY_DIV_15KHZ)
+
+	if engine.clock179MHz != expectedPAL179 {
+		t.Errorf("PAL 179MHz clock: expected %f, got %f", expectedPAL179, engine.clock179MHz)
+	}
+	if engine.clock64KHz != expectedPAL64K {
+		t.Errorf("PAL 64kHz clock: expected %f, got %f", expectedPAL64K, engine.clock64KHz)
+	}
+	if engine.clock15KHz != expectedPAL15K {
+		t.Errorf("PAL 15kHz clock: expected %f, got %f", expectedPAL15K, engine.clock15KHz)
+	}
+}

@@ -3,6 +3,8 @@
 
 package main
 
+import "math"
+
 // SID register addresses (memory-mapped at 0xF0E00-0xF0E1C)
 const (
 	SID_BASE = 0xF0E00
@@ -195,6 +197,98 @@ const (
 	Z80_SID_PORT_SELECT = 0xE0
 	Z80_SID_PORT_DATA   = 0xE1
 )
+
+// SID filter cutoff lookup table size (11-bit cutoff register)
+const (
+	sidFilterCutoffTableSize = 2048 // 2^11 entries for full cutoff range
+	sidFilterMaxCutoff6581   = 12000.0
+	sidFilterMaxCutoff8580   = 18000.0
+	sidFilterMinCutoff       = 30.0
+)
+
+// Pre-computed inverse log constants for normalized cutoff calculation
+var (
+	sidInvLogMaxCutoff6581 = 1.0 / math.Log(sidFilterMaxCutoff6581/sidFilterMinCutoff)
+	sidInvLogMaxCutoff8580 = 1.0 / math.Log(sidFilterMaxCutoff8580/sidFilterMinCutoff)
+)
+
+// sidFilterCutoff6581Table provides pre-computed cutoff frequencies for 6581.
+// Index is the 11-bit cutoff register value (0-2047).
+// Value is the cutoff frequency in Hz using the non-linear 6581 curve.
+var sidFilterCutoff6581Table [sidFilterCutoffTableSize]float32
+
+// sidFilterCutoff8580Table provides pre-computed cutoff frequencies for 8580.
+// Index is the 11-bit cutoff register value (0-2047).
+// Value is the cutoff frequency in Hz using the linear 8580 curve.
+var sidFilterCutoff8580Table [sidFilterCutoffTableSize]float32
+
+// sidFilterNorm6581Table provides pre-computed normalized cutoff values for 6581.
+// Index is the 11-bit cutoff register value (0-2047).
+// Value is the normalized cutoff (0.0-1.0) using log scale.
+var sidFilterNorm6581Table [sidFilterCutoffTableSize]float32
+
+// sidFilterNorm8580Table provides pre-computed normalized cutoff values for 8580.
+// Index is the 11-bit cutoff register value (0-2047).
+// Value is the normalized cutoff (0.0-1.0) using log scale.
+var sidFilterNorm8580Table [sidFilterCutoffTableSize]float32
+
+func init() {
+	// Initialize 6581 filter cutoff tables
+	for i := 0; i < sidFilterCutoffTableSize; i++ {
+		var cutoffHz float64
+		if i == 0 {
+			cutoffHz = sidFilterMinCutoff
+		} else {
+			// 6581: Non-linear response Fc = 30 + cutoff^1.35 * 0.22
+			cutoffHz = sidFilterMinCutoff + math.Pow(float64(i), 1.35)*0.22
+		}
+		if cutoffHz > sidFilterMaxCutoff6581 {
+			cutoffHz = sidFilterMaxCutoff6581
+		}
+		sidFilterCutoff6581Table[i] = float32(cutoffHz)
+
+		// Normalized cutoff using log scale: log(hz/30) / log(maxHz/30)
+		if cutoffHz <= sidFilterMinCutoff {
+			sidFilterNorm6581Table[i] = 0
+		} else {
+			norm := math.Log(cutoffHz/sidFilterMinCutoff) * sidInvLogMaxCutoff6581
+			if norm < 0 {
+				norm = 0
+			} else if norm > 1 {
+				norm = 1
+			}
+			sidFilterNorm6581Table[i] = float32(norm)
+		}
+	}
+
+	// Initialize 8580 filter cutoff tables
+	for i := 0; i < sidFilterCutoffTableSize; i++ {
+		var cutoffHz float64
+		if i == 0 {
+			cutoffHz = sidFilterMinCutoff
+		} else {
+			// 8580: Linear response Fc = 30 + cutoff * 5.8
+			cutoffHz = sidFilterMinCutoff + float64(i)*5.8
+		}
+		if cutoffHz > sidFilterMaxCutoff8580 {
+			cutoffHz = sidFilterMaxCutoff8580
+		}
+		sidFilterCutoff8580Table[i] = float32(cutoffHz)
+
+		// Normalized cutoff using log scale
+		if cutoffHz <= sidFilterMinCutoff {
+			sidFilterNorm8580Table[i] = 0
+		} else {
+			norm := math.Log(cutoffHz/sidFilterMinCutoff) * sidInvLogMaxCutoff8580
+			if norm < 0 {
+				norm = 0
+			} else if norm > 1 {
+				norm = 1
+			}
+			sidFilterNorm8580Table[i] = float32(norm)
+		}
+	}
+}
 
 // 6502 memory mapping for SID
 // Note: C64's original SID was at $D400, but that conflicts with PSG mapping.

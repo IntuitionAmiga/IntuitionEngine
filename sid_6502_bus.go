@@ -258,6 +258,8 @@ func (b *SID6502Bus) StartFrame() {
 	b.events = b.events[:0]
 }
 
+// CollectEvents returns the events captured this frame.
+// DEPRECATED: Use GetEvents() for zero-allocation access.
 func (b *SID6502Bus) CollectEvents() []SIDEvent {
 	if len(b.events) == 0 {
 		return nil
@@ -266,6 +268,24 @@ func (b *SID6502Bus) CollectEvents() []SIDEvent {
 	copy(events, b.events)
 	b.events = b.events[:0]
 	return events
+}
+
+// GetEvents returns a direct reference to the internal events slice.
+// The caller must not retain this slice after the next StartFrame call.
+// This is the zero-allocation path for performance-critical code.
+func (b *SID6502Bus) GetEvents() []SIDEvent {
+	return b.events
+}
+
+// ClearEvents clears the internal events buffer without allocation.
+// Call this after processing events from GetEvents().
+func (b *SID6502Bus) ClearEvents() {
+	b.events = b.events[:0]
+}
+
+// GetFrameCycleStart returns the cycle count at the start of the current frame.
+func (b *SID6502Bus) GetFrameCycleStart() uint64 {
+	return b.frameCycle
 }
 
 func (b *SID6502Bus) LoadBinary(addr uint16, data []byte) {

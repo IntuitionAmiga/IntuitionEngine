@@ -20,13 +20,45 @@ type ayZ80Bus struct {
 	regs      [PSG_REG_COUNT]byte
 	writes    []ayZ80Write
 	cycles    uint64
+
+	// Pre-computed port matching for fast dispatch
+	selectPortMask uint16 // Mask for port matching
+	selectPortVal  uint16 // Value after masking for select port
+	dataPortMask   uint16 // Mask for port matching
+	dataPortVal    uint16 // Value after masking for data port
+	useByteMatch   bool   // True if matching on low byte only
 }
 
 func newAYZ80Bus(ram *[0x10000]byte, system byte, engine ayZ80PSGWriter) *ayZ80Bus {
-	return &ayZ80Bus{
+	b := &ayZ80Bus{
 		ram:    ram,
 		system: system,
 		engine: engine,
+	}
+	b.updatePortMatching()
+	return b
+}
+
+// updatePortMatching pre-computes port matching values based on system type
+func (b *ayZ80Bus) updatePortMatching() {
+	switch b.system {
+	case ayZXSystemCPC:
+		// CPC: low byte match F4/F6
+		b.useByteMatch = true
+		b.selectPortVal = 0xF4
+		b.dataPortVal = 0xF6
+	case ayZXSystemMSX:
+		// MSX: low byte match A0/A1
+		b.useByteMatch = true
+		b.selectPortVal = 0xA0
+		b.dataPortVal = 0xA1
+	default:
+		// ZX128/Spectrum: mask-based matching
+		b.useByteMatch = false
+		b.selectPortMask = 0xC002
+		b.selectPortVal = 0xC000
+		b.dataPortMask = 0xC002
+		b.dataPortVal = 0x8000
 	}
 }
 
@@ -67,24 +99,20 @@ func (b *ayZ80Bus) Tick(cycles int) {
 	b.cycles += uint64(cycles)
 }
 
+// isAYSelectPort checks if the port is the AY register select port
+// Uses pre-computed values for fast matching without branching.
 func (b *ayZ80Bus) isAYSelectPort(port uint16) bool {
-	switch b.system {
-	case ayZXSystemCPC:
-		return byte(port) == 0xF4
-	case ayZXSystemMSX:
-		return byte(port) == 0xA0
-	default:
-		return port&0xC002 == 0xC000
+	if b.useByteMatch {
+		return byte(port) == byte(b.selectPortVal)
 	}
+	return port&b.selectPortMask == b.selectPortVal
 }
 
+// isAYDataPort checks if the port is the AY data port
+// Uses pre-computed values for fast matching without branching.
 func (b *ayZ80Bus) isAYDataPort(port uint16) bool {
-	switch b.system {
-	case ayZXSystemCPC:
-		return byte(port) == 0xF6
-	case ayZXSystemMSX:
-		return byte(port) == 0xA1
-	default:
-		return port&0xC002 == 0x8000
+	if b.useByteMatch {
+		return byte(port) == byte(b.dataPortVal)
 	}
+	return port&b.dataPortMask == b.dataPortVal
 }

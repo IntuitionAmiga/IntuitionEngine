@@ -53,7 +53,7 @@ func TestTEDFrequencyCalculation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			freq := tedFrequencyHz(tt.regValue, TED_CLOCK_PAL)
+			freq := engine.tedFrequencyHz(tt.regValue)
 			expected := float64(TED_SOUND_CLOCK_PAL) / float64(1024-int(tt.regValue))
 			// Allow 1% tolerance for rounding
 			tolerance := expected * 0.01
@@ -329,5 +329,59 @@ func TestTEDReset(t *testing.T) {
 	}
 	if engine.enabled {
 		t.Error("enabled should be false after reset")
+	}
+}
+
+// BenchmarkTED_FrequencyHz benchmarks the optimized frequency calculation
+func BenchmarkTED_FrequencyHz(b *testing.B) {
+	engine := NewTEDEngine(nil, SAMPLE_RATE)
+	engine.SetClockHz(TED_CLOCK_PAL)
+
+	regValues := []uint16{0, 256, 512, 768, 1023}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		regValue := regValues[i%len(regValues)]
+		_ = engine.tedFrequencyHz(regValue)
+	}
+}
+
+// BenchmarkTED_CalcFrequency benchmarks the full frequency calculation path
+func BenchmarkTED_CalcFrequency(b *testing.B) {
+	engine := NewTEDEngine(nil, SAMPLE_RATE)
+	engine.SetClockHz(TED_CLOCK_PAL)
+
+	// Set up typical register values
+	engine.regs[TED_REG_FREQ1_LO] = 0x80
+	engine.regs[TED_REG_FREQ1_HI] = 0x01
+	engine.regs[TED_REG_FREQ2_LO] = 0xC0
+	engine.regs[TED_REG_FREQ2_HI] = 0x02
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		_ = engine.calcFrequency(i % 2)
+	}
+}
+
+// TestTED_SoundClock verifies pre-computed sound clock is correct
+func TestTED_SoundClock(t *testing.T) {
+	engine := NewTEDEngine(nil, SAMPLE_RATE)
+
+	// Test PAL clock
+	engine.SetClockHz(TED_CLOCK_PAL)
+	expectedPAL := float64(TED_CLOCK_PAL) / float64(TED_SOUND_CLOCK_DIV)
+	if engine.soundClock != expectedPAL {
+		t.Errorf("PAL sound clock: expected %f, got %f", expectedPAL, engine.soundClock)
+	}
+
+	// Test NTSC clock
+	engine.SetClockHz(TED_CLOCK_NTSC)
+	expectedNTSC := float64(TED_CLOCK_NTSC) / float64(TED_SOUND_CLOCK_DIV)
+	if engine.soundClock != expectedNTSC {
+		t.Errorf("NTSC sound clock: expected %f, got %f", expectedNTSC, engine.soundClock)
 	}
 }

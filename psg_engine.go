@@ -474,6 +474,28 @@ var psgPlusVolumeCurve = func() [16]float32 {
 	return curve
 }()
 
+// PSG linear volume curve - pre-computed lookup table (0-15 range)
+var psgLinearVolumeCurve = [16]float32{
+	0.0 / 15.0,  // 0
+	1.0 / 15.0,  // 1
+	2.0 / 15.0,  // 2
+	3.0 / 15.0,  // 3
+	4.0 / 15.0,  // 4
+	5.0 / 15.0,  // 5
+	6.0 / 15.0,  // 6
+	7.0 / 15.0,  // 7
+	8.0 / 15.0,  // 8
+	9.0 / 15.0,  // 9
+	10.0 / 15.0, // 10
+	11.0 / 15.0, // 11
+	12.0 / 15.0, // 12
+	13.0 / 15.0, // 13
+	14.0 / 15.0, // 14
+	15.0 / 15.0, // 15 (max)
+}
+
+// psgVolumeGain converts a 4-bit PSG volume level to a gain value
+// Uses pre-computed lookup tables for optimal performance.
 func psgVolumeGain(level uint8, psgPlus bool) float32 {
 	if level > 15 {
 		level = 15
@@ -481,7 +503,8 @@ func psgVolumeGain(level uint8, psgPlus bool) float32 {
 	if psgPlus {
 		return psgPlusVolumeCurve[level]
 	}
-	return float32(level) / 15.0
+	// Linear volume curve from lookup table
+	return psgLinearVolumeCurve[level]
 }
 
 func psgGainToDAC(gain float32) uint8 {

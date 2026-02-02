@@ -2,7 +2,10 @@
 
 package main
 
-import "strings"
+import (
+	"bytes"
+	"strings"
+)
 
 // writeUint32Byte writes a single byte to a uint32 at the given byte index (0-3)
 // Used by register-mapped players for byte-at-a-time register writes
@@ -32,34 +35,36 @@ func readUint32Byte(value uint32, byteIndex uint32) uint32 {
 // parseNullTerminatedString extracts a string up to the first null byte
 // Returns the string and the new offset (after the null terminator)
 // Used by SNDH and other formats that use null-terminated strings
+// Uses bytes.IndexByte for optimized null byte search.
 func parseNullTerminatedString(data []byte, offset int) (string, int) {
-	start := offset
-	for offset < len(data) && data[offset] != 0 {
-		offset++
-	}
-	end := offset
-	if offset < len(data) {
-		offset++ // Skip null terminator
-	}
-	if end <= start {
+	if offset >= len(data) {
 		return "", offset
 	}
-	return string(data[start:end]), offset
+
+	// Use bytes.IndexByte for optimized search
+	remaining := data[offset:]
+	nullPos := bytes.IndexByte(remaining, 0)
+
+	if nullPos == -1 {
+		// No null terminator found, return rest of data
+		return string(remaining), len(data)
+	}
+
+	// Found null terminator
+	return string(remaining[:nullPos]), offset + nullPos + 1
 }
 
 // parsePaddedString extracts a string from a fixed-size field,
 // trimming trailing null bytes and spaces
 // Used by SID, TED, and other formats with fixed-width string fields
+// Uses bytes.IndexByte for optimized null byte search.
 func parsePaddedString(data []byte) string {
-	// Find first null byte
-	end := len(data)
-	for i, b := range data {
-		if b == 0 {
-			end = i
-			break
-		}
+	// Use bytes.IndexByte for optimized search
+	nullPos := bytes.IndexByte(data, 0)
+	if nullPos == -1 {
+		return strings.TrimRight(string(data), " ")
 	}
-	return strings.TrimRight(string(data[:end]), " ")
+	return strings.TrimRight(string(data[:nullPos]), " ")
 }
 
 // MusicMetadata contains common metadata fields across all music formats

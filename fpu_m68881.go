@@ -38,6 +38,38 @@ const (
 	extMantMSB uint64 = 1 << 63 // Explicit integer bit
 )
 
+// fmovecrROMTable contains pre-computed FPU ROM constants for FMOVECR instruction.
+// Indexed by ROM address (0x00-0x3F). Unknown addresses return zero.
+// Pre-computing these values avoids switch dispatch and ExtendedRealFromFloat64
+// conversion at runtime.
+var fmovecrROMTable = func() [64]ExtendedReal {
+	var table [64]ExtendedReal
+	// Initialize all entries to zero
+	zeroVal := ExtendedRealFromFloat64(0.0)
+	for i := range table {
+		table[i] = zeroVal
+	}
+	// Populate known constants
+	table[0x00] = ExtendedRealFromFloat64(math.Pi)       // Pi
+	table[0x0B] = ExtendedRealFromFloat64(math.Log10(2)) // log10(2)
+	table[0x0C] = ExtendedRealFromFloat64(math.E)        // e
+	table[0x0D] = ExtendedRealFromFloat64(math.Log2E)    // log2(e)
+	table[0x0E] = ExtendedRealFromFloat64(math.Log10E)   // log10(e)
+	table[0x0F] = zeroVal                                // 0.0
+	table[0x30] = ExtendedRealFromFloat64(math.Ln2)      // ln(2)
+	table[0x31] = ExtendedRealFromFloat64(math.Ln10)     // ln(10)
+	table[0x32] = ExtendedRealFromFloat64(1.0)           // 10^0
+	table[0x33] = ExtendedRealFromFloat64(10.0)          // 10^1
+	table[0x34] = ExtendedRealFromFloat64(100.0)         // 10^2
+	table[0x35] = ExtendedRealFromFloat64(1000.0)        // 10^3
+	table[0x36] = ExtendedRealFromFloat64(10000.0)       // 10^4
+	table[0x37] = ExtendedRealFromFloat64(100000.0)      // 10^5
+	table[0x38] = ExtendedRealFromFloat64(1000000.0)     // 10^6
+	table[0x39] = ExtendedRealFromFloat64(10000000.0)    // 10^7
+	table[0x3A] = ExtendedRealFromFloat64(100000000.0)   // 10^8
+	return table
+}()
+
 // =============================================================================
 // ExtendedReal - 80-bit Extended Precision Floating Point
 // =============================================================================
@@ -544,50 +576,11 @@ func (fpu *M68881FPU) FINTRZ(src, dst int) {
 // =============================================================================
 
 // FMOVECR loads a constant from the FPU ROM into FPdst
+// Uses pre-computed lookup table for optimal performance.
 func (fpu *M68881FPU) FMOVECR(romAddr uint8, dst int) {
-	var value float64
-
-	switch romAddr {
-	case 0x00:
-		value = math.Pi
-	case 0x0B:
-		value = math.Log10(2) // log10(2)
-	case 0x0C:
-		value = math.E
-	case 0x0D:
-		value = math.Log2E // log2(e)
-	case 0x0E:
-		value = math.Log10E // log10(e)
-	case 0x0F:
-		value = 0.0
-	case 0x30:
-		value = math.Ln2 // ln(2)
-	case 0x31:
-		value = math.Ln10 // ln(10)
-	case 0x32:
-		value = 1.0 // 10^0
-	case 0x33:
-		value = 10.0 // 10^1
-	case 0x34:
-		value = 100.0 // 10^2
-	case 0x35:
-		value = 1000.0 // 10^3
-	case 0x36:
-		value = 10000.0 // 10^4
-	case 0x37:
-		value = 100000.0 // 10^5
-	case 0x38:
-		value = 1000000.0 // 10^6
-	case 0x39:
-		value = 10000000.0 // 10^7
-	case 0x3A:
-		value = 100000000.0 // 10^8
-	default:
-		// Unknown constant - return zero
-		value = 0.0
-	}
-
-	fpu.FPRegs[dst] = ExtendedRealFromFloat64(value)
+	// Mask to 6 bits (ROM addresses 0x00-0x3F)
+	idx := romAddr & 0x3F
+	fpu.FPRegs[dst] = fmovecrROMTable[idx]
 	fpu.SetConditionCodes(fpu.FPRegs[dst])
 }
 

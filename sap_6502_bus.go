@@ -225,11 +225,30 @@ func (b *SAP6502Bus) StartFrame() {
 }
 
 // CollectEvents returns and clears the captured POKEY events
+// CollectEvents returns events captured this frame (allocates new slice).
+// DEPRECATED: Use GetEvents() for zero-allocation access.
 func (b *SAP6502Bus) CollectEvents() []SAPPOKEYEvent {
 	events := make([]SAPPOKEYEvent, len(b.events))
 	copy(events, b.events)
 	b.events = b.events[:0]
 	return events
+}
+
+// GetEvents returns a direct reference to the internal events slice.
+// The caller must not retain this slice after the next StartFrame call.
+// This is the zero-allocation path for performance-critical code.
+func (b *SAP6502Bus) GetEvents() []SAPPOKEYEvent {
+	return b.events
+}
+
+// ClearEvents clears the internal events buffer without allocation.
+func (b *SAP6502Bus) ClearEvents() {
+	b.events = b.events[:0]
+}
+
+// GetFrameCycleStart returns the cycle count at the start of the current frame.
+func (b *SAP6502Bus) GetFrameCycleStart() uint64 {
+	return b.frameCycle
 }
 
 // LoadBlocks loads SAP binary blocks into RAM

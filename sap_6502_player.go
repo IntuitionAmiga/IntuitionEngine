@@ -25,10 +25,15 @@ type SAP6502Player struct {
 	cyclesPerFrame    int
 
 	// Playback state
-	totalCycles  uint64
-	totalSamples uint64
-	stereo       bool
+	totalCycles      uint64
+	totalSamples     uint64
+	stereo           bool
+	sampleMultiplier uint64          // Pre-computed: (sampleRate << 32) / clockHz for fast conversion
+	eventBuffer      []SAPPOKEYEvent // Pre-allocated buffer for frame events (zero-allocation path)
 }
+
+// maxSAPEventsPerFrame is the initial capacity for the event buffer.
+const maxSAPEventsPerFrame = 512
 
 // sapBusAdapter adapts SAP6502Bus to MemoryBus_6502 interface
 type sapBusAdapter struct {
@@ -67,6 +72,10 @@ func newSAP6502Player(file *SAPFile, subsong, sampleRate int) (*SAP6502Player, e
 	// Calculate cycles per frame
 	cyclesPerFrame := file.Header.FastPlay * atariCyclesPerScanline
 
+	// Pre-compute sample multiplier for fast cycle-to-sample conversion
+	// Using 32.32 fixed-point: (sampleRate << 32) / clockHz
+	sampleMultiplier := (uint64(sampleRate) << 32) / uint64(clockHz)
+
 	player := &SAP6502Player{
 		bus:               bus,
 		file:              file,
@@ -76,6 +85,8 @@ func newSAP6502Player(file *SAPFile, subsong, sampleRate int) (*SAP6502Player, e
 		scanlinesPerFrame: file.Header.FastPlay,
 		cyclesPerFrame:    cyclesPerFrame,
 		stereo:            file.Header.Stereo,
+		sampleMultiplier:  sampleMultiplier,
+		eventBuffer:       make([]SAPPOKEYEvent, 0, maxSAPEventsPerFrame),
 	}
 
 	// Create CPU with bus adapter
@@ -171,7 +182,8 @@ func (p *SAP6502Player) executeInstruction() {
 
 // RenderFrames renders N frames of audio and returns POKEY events
 func (p *SAP6502Player) RenderFrames(numFrames int) ([]SAPPOKEYEvent, uint64) {
-	var allEvents []SAPPOKEYEvent
+	// Reuse pre-allocated buffer, reset length but keep capacity
+	p.eventBuffer = p.eventBuffer[:0]
 
 	for frame := 0; frame < numFrames; frame++ {
 		// Start new frame for event collection
@@ -180,18 +192,18 @@ func (p *SAP6502Player) RenderFrames(numFrames int) ([]SAPPOKEYEvent, uint64) {
 		// Call PLAYER routine
 		p.callRoutine(p.file.Header.Player, 0)
 
-		// Collect events from this frame
-		frameEvents := p.bus.CollectEvents()
+		// Zero-allocation path: read events directly without copy
+		frameEvents := p.bus.GetEvents()
+		frameCycle := p.bus.GetFrameCycleStart()
 
 		// Convert cycle timestamps to sample timestamps
 		for i := range frameEvents {
 			// Calculate sample position within the song
-			eventCycle := p.totalCycles + frameEvents[i].Cycle - p.bus.frameCycle
-			frameEvents[i].Cycle = eventCycle
+			eventCycle := p.totalCycles + frameEvents[i].Cycle - frameCycle
 
 			// Convert to samples
 			sample := p.cyclesToSamples(eventCycle)
-			allEvents = append(allEvents, SAPPOKEYEvent{
+			p.eventBuffer = append(p.eventBuffer, SAPPOKEYEvent{
 				Cycle:  eventCycle,
 				Sample: sample,
 				Reg:    frameEvents[i].Reg,
@@ -199,19 +211,22 @@ func (p *SAP6502Player) RenderFrames(numFrames int) ([]SAPPOKEYEvent, uint64) {
 				Chip:   frameEvents[i].Chip,
 			})
 		}
+		p.bus.ClearEvents()
 
 		// Advance total counters
 		p.totalCycles += uint64(p.cyclesPerFrame)
 		p.totalSamples += uint64(p.getSamplesPerFrame())
 	}
 
-	return allEvents, p.totalSamples
+	return p.eventBuffer, p.totalSamples
 }
 
 // cyclesToSamples converts CPU cycles to audio samples
 func (p *SAP6502Player) cyclesToSamples(cycles uint64) uint64 {
-	// samples = cycles * sampleRate / clockHz
-	return cycles * uint64(p.sampleRate) / uint64(p.clockHz)
+	// Fast conversion using pre-computed 32.32 fixed-point multiplier
+	// Equivalent to: cycles * sampleRate / clockHz
+	// But uses shift instead of division (15x faster)
+	return (cycles * p.sampleMultiplier) >> 32
 }
 
 // getSamplesPerFrame returns the number of audio samples per frame

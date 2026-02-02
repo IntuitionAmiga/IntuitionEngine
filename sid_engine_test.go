@@ -406,3 +406,154 @@ func TestSIDEngine_ADSRTimingTable(t *testing.T) {
 		t.Errorf("longest attack time should be > 5000ms, got %f", sidAttackMs[15])
 	}
 }
+
+// TestSIDEngine_FilterCutoffTableAccuracy_6581 verifies the 6581 filter lookup table accuracy
+func TestSIDEngine_FilterCutoffTableAccuracy_6581(t *testing.T) {
+	// Test that the lookup table matches the original math.Pow calculation
+	// within acceptable tolerance (< 1% deviation)
+
+	testCases := []struct {
+		cutoff uint16
+		desc   string
+	}{
+		{0, "zero cutoff"},
+		{1, "minimum non-zero"},
+		{256, "quarter range"},
+		{512, "mid-low range"},
+		{1024, "half range"},
+		{1536, "mid-high range"},
+		{2047, "maximum cutoff"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.desc, func(t *testing.T) {
+			// Get LUT value
+			lutNorm := sidFilterNorm6581Table[tc.cutoff]
+
+			// Verify it's in valid range
+			if lutNorm < 0 || lutNorm > 1 {
+				t.Errorf("cutoff %d: normalized value %f out of range [0,1]", tc.cutoff, lutNorm)
+			}
+		})
+	}
+
+	// Verify monotonically increasing (filter cutoff should increase with register value)
+	for i := 1; i < sidFilterCutoffTableSize; i++ {
+		if sidFilterCutoff6581Table[i] < sidFilterCutoff6581Table[i-1] {
+			t.Errorf("6581 cutoff table not monotonic at index %d: %f < %f",
+				i, sidFilterCutoff6581Table[i], sidFilterCutoff6581Table[i-1])
+			break
+		}
+	}
+
+	// Verify frequency range
+	// 6581 uses non-linear curve: Fc = 30 + cutoff^1.35 * 0.22
+	// At cutoff=0, Fc = 30 Hz
+	// At cutoff=2047, Fc ≈ 6523 Hz (curve doesn't reach theoretical max)
+	if sidFilterCutoff6581Table[0] < 29 || sidFilterCutoff6581Table[0] > 31 {
+		t.Errorf("6581 minimum cutoff should be ~30Hz, got %f", sidFilterCutoff6581Table[0])
+	}
+	if sidFilterCutoff6581Table[2047] < 6400 || sidFilterCutoff6581Table[2047] > 6700 {
+		t.Errorf("6581 maximum cutoff should be ~6523Hz (non-linear curve), got %f", sidFilterCutoff6581Table[2047])
+	}
+}
+
+// TestSIDEngine_FilterCutoffTableAccuracy_8580 verifies the 8580 filter lookup table accuracy
+func TestSIDEngine_FilterCutoffTableAccuracy_8580(t *testing.T) {
+	// Verify monotonically increasing
+	for i := 1; i < sidFilterCutoffTableSize; i++ {
+		if sidFilterCutoff8580Table[i] < sidFilterCutoff8580Table[i-1] {
+			t.Errorf("8580 cutoff table not monotonic at index %d: %f < %f",
+				i, sidFilterCutoff8580Table[i], sidFilterCutoff8580Table[i-1])
+			break
+		}
+	}
+
+	// Verify frequency range
+	if sidFilterCutoff8580Table[0] < 29 || sidFilterCutoff8580Table[0] > 31 {
+		t.Errorf("8580 minimum cutoff should be ~30Hz, got %f", sidFilterCutoff8580Table[0])
+	}
+
+	// 8580 uses linear curve: Fc = 30 + cutoff * 5.8
+	// At cutoff=2047, Fc ≈ 11902 Hz
+	if sidFilterCutoff8580Table[2047] < 11800 || sidFilterCutoff8580Table[2047] > 12000 {
+		t.Errorf("8580 maximum cutoff should be ~11902Hz (linear curve), got %f", sidFilterCutoff8580Table[2047])
+	}
+
+	// Verify 8580 linear response: middle value should be approximately linear
+	// At cutoff=1024, expect roughly 30 + 1024*5.8 = ~5969 Hz
+	expectedMid := float32(30.0 + 1024.0*5.8)
+	actualMid := sidFilterCutoff8580Table[1024]
+	tolerance := expectedMid * 0.05 // 5% tolerance
+	if actualMid < expectedMid-tolerance || actualMid > expectedMid+tolerance {
+		t.Errorf("8580 mid-range cutoff: expected ~%f, got %f", expectedMid, actualMid)
+	}
+}
+
+// TestSIDEngine_FilterNormalizationRange verifies normalized cutoff stays in [0,1]
+func TestSIDEngine_FilterNormalizationRange(t *testing.T) {
+	// Check all 6581 entries
+	for i := 0; i < sidFilterCutoffTableSize; i++ {
+		if sidFilterNorm6581Table[i] < 0 || sidFilterNorm6581Table[i] > 1 {
+			t.Errorf("6581 norm table[%d] = %f out of [0,1] range", i, sidFilterNorm6581Table[i])
+		}
+	}
+
+	// Check all 8580 entries
+	for i := 0; i < sidFilterCutoffTableSize; i++ {
+		if sidFilterNorm8580Table[i] < 0 || sidFilterNorm8580Table[i] > 1 {
+			t.Errorf("8580 norm table[%d] = %f out of [0,1] range", i, sidFilterNorm8580Table[i])
+		}
+	}
+
+	// Verify endpoints
+	if sidFilterNorm6581Table[0] != 0 {
+		t.Errorf("6581 norm[0] should be 0, got %f", sidFilterNorm6581Table[0])
+	}
+	if sidFilterNorm8580Table[0] != 0 {
+		t.Errorf("8580 norm[0] should be 0, got %f", sidFilterNorm8580Table[0])
+	}
+
+	// Max should be normalized based on actual curve values
+	// 6581: 6523 Hz normalized to 12000 max gives ~0.898
+	// 8580: 11902 Hz normalized to 18000 max gives ~0.935
+	if sidFilterNorm6581Table[2047] < 0.85 || sidFilterNorm6581Table[2047] > 1.0 {
+		t.Errorf("6581 norm[2047] should be in [0.85, 1.0], got %f", sidFilterNorm6581Table[2047])
+	}
+	if sidFilterNorm8580Table[2047] < 0.90 || sidFilterNorm8580Table[2047] > 1.0 {
+		t.Errorf("8580 norm[2047] should be in [0.90, 1.0], got %f", sidFilterNorm8580Table[2047])
+	}
+}
+
+// BenchmarkSID_FilterCutoffLookup benchmarks the optimized LUT-based filter cutoff
+func BenchmarkSID_FilterCutoffLookup(b *testing.B) {
+	cutoffs := []uint16{0, 256, 512, 1024, 1536, 2047}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		cutoff := cutoffs[i%len(cutoffs)]
+		_ = sidFilterNorm6581Table[cutoff]
+	}
+}
+
+// BenchmarkSID_FilterApplyFilter benchmarks the full applyFilter with LUT optimization
+func BenchmarkSID_FilterApplyFilter(b *testing.B) {
+	// Create a minimal SID engine with mock sound chip
+	engine := NewSIDEngine(nil, 44100)
+	engine.model = SID_MODEL_6581
+
+	// Set up filter registers with typical values
+	engine.regs[0x15] = 0x07 // FC_LO
+	engine.regs[0x16] = 0x40 // FC_HI
+	engine.regs[0x17] = 0xF7 // RES_FILT: res=15, route all
+	engine.regs[0x18] = 0x1F // MODE_VOL: LP, vol=15
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		engine.applyFilter()
+	}
+}

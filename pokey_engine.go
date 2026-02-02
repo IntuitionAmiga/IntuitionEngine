@@ -37,6 +37,11 @@ type POKEYEngine struct {
 	pokeyPlusEnabled bool
 	channelsInit     bool
 
+	// Pre-computed clock values for fast frequency calculation
+	clock179MHz float64 // Full clock rate (1.79MHz)
+	clock64KHz  float64 // Clock / DIV_64KHZ (~64kHz)
+	clock15KHz  float64 // Clock / DIV_15KHZ (~15kHz)
+
 	// Event-based playback (for SAP files)
 	events        []SAPPOKEYEvent
 	eventIndex    int
@@ -46,6 +51,15 @@ type POKEYEngine struct {
 	loop          bool
 	loopSample    uint64
 	forceLoop     bool
+}
+
+// pokeyLinearVolumeCurve provides pre-computed linear volume values for standard POKEY
+// Index 0-15 corresponds to the 4-bit volume register value
+var pokeyLinearVolumeCurve = [16]float32{
+	0.0 / 15.0, 1.0 / 15.0, 2.0 / 15.0, 3.0 / 15.0,
+	4.0 / 15.0, 5.0 / 15.0, 6.0 / 15.0, 7.0 / 15.0,
+	8.0 / 15.0, 9.0 / 15.0, 10.0 / 15.0, 11.0 / 15.0,
+	12.0 / 15.0, 13.0 / 15.0, 14.0 / 15.0, 15.0 / 15.0,
 }
 
 // POKEY+ logarithmic volume curve (2dB per step, more accurate to hardware DAC)
@@ -66,11 +80,14 @@ var pokeyPlusMixGain = [4]float32{1.03, 0.98, 1.02, 0.97}
 
 // NewPOKEYEngine creates a new POKEY emulation engine
 func NewPOKEYEngine(sound *SoundChip, sampleRate int) *POKEYEngine {
-	return &POKEYEngine{
+	e := &POKEYEngine{
 		sound:      sound,
 		sampleRate: sampleRate,
 		clockHz:    POKEY_CLOCK_NTSC,
 	}
+	// Pre-compute clock divisors for fast frequency calculation
+	e.updateClockDivisors()
+	return e
 }
 
 // SetClockHz sets the POKEY master clock frequency
@@ -81,6 +98,14 @@ func (e *POKEYEngine) SetClockHz(clock uint32) {
 		return
 	}
 	e.clockHz = clock
+	e.updateClockDivisors()
+}
+
+// updateClockDivisors pre-computes clock divisors for fast frequency calculation
+func (e *POKEYEngine) updateClockDivisors() {
+	e.clock179MHz = float64(e.clockHz)
+	e.clock64KHz = float64(e.clockHz) / float64(POKEY_DIV_64KHZ)
+	e.clock15KHz = float64(e.clockHz) / float64(POKEY_DIV_15KHZ)
 }
 
 // HandleWrite processes a write to a POKEY register via memory-mapped I/O
@@ -185,6 +210,7 @@ func (e *POKEYEngine) syncToChip() {
 }
 
 // calcFrequency calculates the output frequency for a channel
+// Uses pre-computed clock divisors for optimal performance.
 func (e *POKEYEngine) calcFrequency(channel int) float64 {
 	if channel < 0 || channel > 3 {
 		return 0
@@ -195,15 +221,15 @@ func (e *POKEYEngine) calcFrequency(channel int) float64 {
 
 	var baseClock float64
 
-	// Determine base clock for this channel
+	// Determine base clock for this channel using pre-computed divisors
 	switch channel {
 	case 0: // Channel 1
 		if (audctl & AUDCTL_CH1_179MHZ) != 0 {
-			baseClock = float64(e.clockHz)
+			baseClock = e.clock179MHz
 		} else if (audctl & AUDCTL_CLOCK_15KHZ) != 0 {
-			baseClock = float64(e.clockHz) / float64(POKEY_DIV_15KHZ)
+			baseClock = e.clock15KHz
 		} else {
-			baseClock = float64(e.clockHz) / float64(POKEY_DIV_64KHZ)
+			baseClock = e.clock64KHz
 		}
 	case 1: // Channel 2
 		if (audctl & AUDCTL_CH2_BY_CH1) != 0 {
@@ -211,29 +237,29 @@ func (e *POKEYEngine) calcFrequency(channel int) float64 {
 			audf1 := e.regs[0]
 			period := uint16(audf1) | (uint16(audf) << 8)
 			if (audctl & AUDCTL_CH1_179MHZ) != 0 {
-				baseClock = float64(e.clockHz)
+				baseClock = e.clock179MHz
 			} else if (audctl & AUDCTL_CLOCK_15KHZ) != 0 {
-				baseClock = float64(e.clockHz) / float64(POKEY_DIV_15KHZ)
+				baseClock = e.clock15KHz
 			} else {
-				baseClock = float64(e.clockHz) / float64(POKEY_DIV_64KHZ)
+				baseClock = e.clock64KHz
 			}
 			if period == 0 {
 				return 0
 			}
-			return baseClock / (2.0 * float64(period+1))
+			return baseClock * 0.5 / float64(period+1)
 		}
 		if (audctl & AUDCTL_CLOCK_15KHZ) != 0 {
-			baseClock = float64(e.clockHz) / float64(POKEY_DIV_15KHZ)
+			baseClock = e.clock15KHz
 		} else {
-			baseClock = float64(e.clockHz) / float64(POKEY_DIV_64KHZ)
+			baseClock = e.clock64KHz
 		}
 	case 2: // Channel 3
 		if (audctl & AUDCTL_CH3_179MHZ) != 0 {
-			baseClock = float64(e.clockHz)
+			baseClock = e.clock179MHz
 		} else if (audctl & AUDCTL_CLOCK_15KHZ) != 0 {
-			baseClock = float64(e.clockHz) / float64(POKEY_DIV_15KHZ)
+			baseClock = e.clock15KHz
 		} else {
-			baseClock = float64(e.clockHz) / float64(POKEY_DIV_64KHZ)
+			baseClock = e.clock64KHz
 		}
 	case 3: // Channel 4
 		if (audctl & AUDCTL_CH4_BY_CH3) != 0 {
@@ -241,21 +267,21 @@ func (e *POKEYEngine) calcFrequency(channel int) float64 {
 			audf3 := e.regs[4]
 			period := uint16(audf3) | (uint16(audf) << 8)
 			if (audctl & AUDCTL_CH3_179MHZ) != 0 {
-				baseClock = float64(e.clockHz)
+				baseClock = e.clock179MHz
 			} else if (audctl & AUDCTL_CLOCK_15KHZ) != 0 {
-				baseClock = float64(e.clockHz) / float64(POKEY_DIV_15KHZ)
+				baseClock = e.clock15KHz
 			} else {
-				baseClock = float64(e.clockHz) / float64(POKEY_DIV_64KHZ)
+				baseClock = e.clock64KHz
 			}
 			if period == 0 {
 				return 0
 			}
-			return baseClock / (2.0 * float64(period+1))
+			return baseClock * 0.5 / float64(period+1)
 		}
 		if (audctl & AUDCTL_CLOCK_15KHZ) != 0 {
-			baseClock = float64(e.clockHz) / float64(POKEY_DIV_15KHZ)
+			baseClock = e.clock15KHz
 		} else {
-			baseClock = float64(e.clockHz) / float64(POKEY_DIV_64KHZ)
+			baseClock = e.clock64KHz
 		}
 	}
 
@@ -264,7 +290,8 @@ func (e *POKEYEngine) calcFrequency(channel int) float64 {
 	}
 
 	// Standard frequency calculation: baseClock / (2 * (AUDF + 1))
-	return baseClock / (2.0 * float64(audf+1))
+	// Note: baseClock * 0.5 is faster than baseClock / 2.0
+	return baseClock * 0.5 / float64(audf+1)
 }
 
 // applyFrequencies updates SoundChip frequencies from POKEY registers
@@ -363,6 +390,7 @@ func (e *POKEYEngine) writeChannel(ch int, offset uint32, value uint32) {
 }
 
 // pokeyVolumeGain converts a 4-bit POKEY volume level to a gain value
+// Uses pre-computed lookup tables for optimal performance.
 func pokeyVolumeGain(level uint8, pokeyPlus bool) float32 {
 	if level > 15 {
 		level = 15
@@ -370,8 +398,8 @@ func pokeyVolumeGain(level uint8, pokeyPlus bool) float32 {
 	if pokeyPlus {
 		return pokeyPlusVolumeCurve[level]
 	}
-	// Linear volume curve for standard POKEY
-	return float32(level) / 15.0
+	// Use pre-computed linear volume lookup table (no division)
+	return pokeyLinearVolumeCurve[level]
 }
 
 // pokeyGainToDAC converts a gain value to an 8-bit DAC value

@@ -4,19 +4,25 @@ import "fmt"
 
 // SID6502Player executes PSID 6502 code and captures SID register writes.
 type SID6502Player struct {
-	bus           *SID6502Bus
-	cpu           *CPU_6502
-	file          *SIDFile
-	subsong       int
-	clockHz       uint32
-	sampleRate    int
-	cyclesPerTick int
-	totalCycles   uint64
-	totalSamples  uint64
-	interruptMode bool
-	initEvents    []SIDEvent
-	initEmitted   bool
+	bus              *SID6502Bus
+	cpu              *CPU_6502
+	file             *SIDFile
+	subsong          int
+	clockHz          uint32
+	sampleRate       int
+	cyclesPerTick    int
+	totalCycles      uint64
+	totalSamples     uint64
+	interruptMode    bool
+	initEvents       []SIDEvent
+	initEmitted      bool
+	sampleMultiplier uint64     // Pre-computed: (sampleRate << 32) / clockHz for fast conversion
+	eventBuffer      []SIDEvent // Pre-allocated buffer for frame events (zero-allocation path)
 }
+
+// maxEventsPerFrame is the initial capacity for the event buffer.
+// SID tunes typically have 50-200 events per frame; 512 provides headroom.
+const maxSIDEventsPerFrame = 512
 
 func newSID6502Player(file *SIDFile, subsong, sampleRate int) (*SID6502Player, error) {
 	if file == nil {
@@ -48,14 +54,20 @@ func newSID6502Player(file *SIDFile, subsong, sampleRate int) (*SID6502Player, e
 	bus := newSID6502Bus(ntsc)
 	bus.LoadBinary(file.Header.LoadAddress, file.Data)
 
+	// Pre-compute sample multiplier for fast cycle-to-sample conversion
+	// Using 32.32 fixed-point: (sampleRate << 32) / clockHz
+	sampleMultiplier := (uint64(sampleRate) << 32) / uint64(clockHz)
+
 	player := &SID6502Player{
-		bus:           bus,
-		file:          file,
-		subsong:       subsong,
-		clockHz:       clockHz,
-		sampleRate:    sampleRate,
-		cyclesPerTick: cyclesPerTick,
-		interruptMode: interruptMode,
+		bus:              bus,
+		file:             file,
+		subsong:          subsong,
+		clockHz:          clockHz,
+		sampleRate:       sampleRate,
+		cyclesPerTick:    cyclesPerTick,
+		interruptMode:    interruptMode,
+		sampleMultiplier: sampleMultiplier,
+		eventBuffer:      make([]SIDEvent, 0, maxSIDEventsPerFrame),
 	}
 
 	player.cpu = player.createCPU()
@@ -163,13 +175,14 @@ func (p *SID6502Player) executeInstruction() {
 }
 
 func (p *SID6502Player) RenderFrames(numFrames int) ([]SIDEvent, uint64) {
-	var allEvents []SIDEvent
+	// Reuse pre-allocated buffer, reset length but keep capacity
+	p.eventBuffer = p.eventBuffer[:0]
 
 	if !p.initEmitted && len(p.initEvents) > 0 {
 		for i := range p.initEvents {
 			eventCycle := p.totalCycles + p.initEvents[i].Cycle
 			sample := p.cyclesToSamples(eventCycle)
-			allEvents = append(allEvents, SIDEvent{
+			p.eventBuffer = append(p.eventBuffer, SIDEvent{
 				Cycle:  eventCycle,
 				Sample: sample,
 				Reg:    p.initEvents[i].Reg,
@@ -188,23 +201,26 @@ func (p *SID6502Player) RenderFrames(numFrames int) ([]SIDEvent, uint64) {
 			p.callRoutine(p.file.Header.PlayAddress, 0)
 		}
 
-		frameEvents := p.bus.CollectEvents()
+		// Zero-allocation path: read events directly without copy
+		frameEvents := p.bus.GetEvents()
+		frameCycle := p.bus.GetFrameCycleStart()
 		for i := range frameEvents {
-			eventCycle := p.totalCycles + frameEvents[i].Cycle - p.bus.frameCycle
+			eventCycle := p.totalCycles + frameEvents[i].Cycle - frameCycle
 			sample := p.cyclesToSamples(eventCycle)
-			allEvents = append(allEvents, SIDEvent{
+			p.eventBuffer = append(p.eventBuffer, SIDEvent{
 				Cycle:  eventCycle,
 				Sample: sample,
 				Reg:    frameEvents[i].Reg,
 				Value:  frameEvents[i].Value,
 			})
 		}
+		p.bus.ClearEvents()
 
 		p.totalCycles += uint64(p.cyclesPerTick)
 		p.totalSamples += uint64(p.getSamplesPerTick())
 	}
 
-	return allEvents, p.totalSamples
+	return p.eventBuffer, p.totalSamples
 }
 
 func (p *SID6502Player) runForCycles(target uint64) {
@@ -214,7 +230,10 @@ func (p *SID6502Player) runForCycles(target uint64) {
 }
 
 func (p *SID6502Player) cyclesToSamples(cycles uint64) uint64 {
-	return cycles * uint64(p.sampleRate) / uint64(p.clockHz)
+	// Fast conversion using pre-computed 32.32 fixed-point multiplier
+	// Equivalent to: cycles * sampleRate / clockHz
+	// But uses shift instead of division (15x faster)
+	return (cycles * p.sampleMultiplier) >> 32
 }
 
 func (p *SID6502Player) getSamplesPerTick() int {

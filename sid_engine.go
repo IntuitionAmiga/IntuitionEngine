@@ -75,6 +75,26 @@ var sidPlusVolumeCurve = func() [16]float32 {
 	return curve
 }()
 
+// SID linear volume curve - pre-computed lookup table (0-15 range)
+var sidLinearVolumeCurve = [16]float32{
+	0.0 / 15.0,  // 0
+	1.0 / 15.0,  // 1
+	2.0 / 15.0,  // 2
+	3.0 / 15.0,  // 3
+	4.0 / 15.0,  // 4
+	5.0 / 15.0,  // 5
+	6.0 / 15.0,  // 6
+	7.0 / 15.0,  // 7
+	8.0 / 15.0,  // 8
+	9.0 / 15.0,  // 9
+	10.0 / 15.0, // 10
+	11.0 / 15.0, // 11
+	12.0 / 15.0, // 12
+	13.0 / 15.0, // 13
+	14.0 / 15.0, // 14
+	15.0 / 15.0, // 15 (max)
+}
+
 // sidPlusMixGain is defined in audio_chip.go
 
 // NewSIDEngine creates a new SID emulation engine
@@ -470,37 +490,14 @@ func (e *SIDEngine) applyFilter() {
 	bandPass := (modeVol & SID_MODE_BP) != 0
 	highPass := (modeVol & SID_MODE_HP) != 0
 
-	// Convert SID filter cutoff (0-2047) to frequency
-	// Different curves for 6581 vs 8580 chip models
-	var cutoffHz float64
-	if cutoff == 0 {
-		cutoffHz = 30
-	} else if e.model == SID_MODEL_8580 {
-		// 8580: More linear response, cleaner sound
-		// Fc ≈ 30 + cutoff * 5.8 (approximately)
-		cutoffHz = 30 + float64(cutoff)*5.8
-	} else {
-		// 6581 (default): Non-linear response, warmer sound
-		// Characteristic curve: compressed at low values, expands at high
-		// Approximation: Fc = 30 + cutoff^1.35 * 0.22
-		cutoffHz = 30 + math.Pow(float64(cutoff), 1.35)*0.22
-	}
-	// 8580 can reach higher frequencies than 6581
-	maxCutoff := 12000.0
+	// Convert SID filter cutoff (0-2047) to normalized frequency
+	// Use pre-computed lookup tables for optimal performance
+	// Tables are initialized in sid_constants.go init()
+	var cutoffNorm float32
 	if e.model == SID_MODEL_8580 {
-		maxCutoff = 18000.0
-	}
-	if cutoffHz > maxCutoff {
-		cutoffHz = maxCutoff
-	}
-
-	// Map cutoff to normalized 0-1 range using log scale for musical response
-	// 30Hz -> 0.0, maxCutoff -> 1.0
-	cutoffNorm := float32(math.Log(cutoffHz/30) / math.Log(maxCutoff/30))
-	if cutoffNorm < 0 {
-		cutoffNorm = 0
-	} else if cutoffNorm > 1 {
-		cutoffNorm = 1
+		cutoffNorm = sidFilterNorm8580Table[cutoff]
+	} else {
+		cutoffNorm = sidFilterNorm6581Table[cutoff]
 	}
 
 	// SID resonance uses model-specific lookup tables for authentic response
@@ -543,6 +540,7 @@ func (e *SIDEngine) writeChannel(ch int, offset uint32, value uint32) {
 }
 
 // sidVolumeGain converts a 4-bit SID volume level to a gain value
+// Uses pre-computed lookup tables for optimal performance.
 func sidVolumeGain(level uint8, sidPlus bool) float32 {
 	if level > 15 {
 		level = 15
@@ -550,8 +548,8 @@ func sidVolumeGain(level uint8, sidPlus bool) float32 {
 	if sidPlus {
 		return sidPlusVolumeCurve[level]
 	}
-	// Linear volume curve for standard SID
-	return float32(level) / 15.0
+	// Linear volume curve from lookup table
+	return sidLinearVolumeCurve[level]
 }
 
 // sidGainToDAC converts a gain value to an 8-bit DAC value
