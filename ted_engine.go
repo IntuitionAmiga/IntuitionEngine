@@ -24,6 +24,7 @@ package main
 
 import (
 	"math"
+	"sort"
 	"sync"
 )
 
@@ -361,15 +362,10 @@ func (e *TEDEngine) SetEvents(events []TEDEvent, totalSamples uint64, loop bool,
 	e.totalSamples = totalSamples
 	e.loop = loop
 	e.loopSample = loopSample
-	e.loopEventIndex = 0
-
-	// Find loop event index
-	for i, ev := range e.events {
-		if ev.Sample >= loopSample {
-			e.loopEventIndex = i
-			break
-		}
-	}
+	// Binary search for loop event index - O(log n) instead of O(n)
+	e.loopEventIndex = sort.Search(len(e.events), func(i int) bool {
+		return e.events[i].Sample >= loopSample
+	})
 
 	e.playing = true
 	e.enabled = true

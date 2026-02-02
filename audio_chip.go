@@ -1577,9 +1577,16 @@ func (ch *Channel) generateWaveSample(sampleRate float32) float32 {
 			currentDuty := ch.dutyCycle
 			if ch.pwmEnabled {
 				ch.pwmPhase += ch.pwmRate * (TWO_PI / sampleRate)
-				ch.pwmPhase = float32(math.Mod(float64(ch.pwmPhase+ch.pwmRate*(TWO_PI/sampleRate)), TWO_PI))
+				if ch.pwmPhase >= TWO_PI {
+					ch.pwmPhase -= TWO_PI
+				}
 				normalisedPhase := ch.pwmPhase / TWO_PI
-				lfo := float32(math.Abs(float64(normalisedPhase*NORMALISE_SCALE-NORMALISE_OFFSET)))*NORMALISE_SCALE - NORMALISE_OFFSET
+				// Triangle LFO: abs(2*phase - 1) * 2 - 1 gives triangle wave from -1 to 1
+				lfo := normalisedPhase*NORMALISE_SCALE - NORMALISE_OFFSET
+				if lfo < 0 {
+					lfo = -lfo
+				}
+				lfo = lfo*NORMALISE_SCALE - NORMALISE_OFFSET
 				currentDuty = ch.dutyCycle + lfo*ch.pwmDepth
 				if currentDuty < 0 {
 					currentDuty = 0
@@ -1588,7 +1595,7 @@ func (ch *Channel) generateWaveSample(sampleRate float32) float32 {
 				}
 			}
 			normalizedPhase := ch.phase / TWO_PI
-			dt := float64(ch.frequency) / float64(sampleRate)
+			dt := ch.frequency / sampleRate
 			var sample float32
 			if normalizedPhase < currentDuty {
 				sample = SQUARE_AMPLITUDE
@@ -1596,10 +1603,13 @@ func (ch *Channel) generateWaveSample(sampleRate float32) float32 {
 				sample = -SQUARE_AMPLITUDE
 			}
 
-			phaseNorm64 := float64(normalizedPhase)
-			dutyNorm64 := float64(currentDuty)
-			sample += float32(polyBLEP(phaseNorm64, dt)) * SQUARE_AMPLITUDE
-			sample -= float32(polyBLEP(math.Mod(phaseNorm64-dutyNorm64+1.0, 1.0), dt)) * SQUARE_AMPLITUDE
+			// polyBLEP32 anti-aliasing (float32 throughout)
+			sample += polyBLEP32(normalizedPhase, dt) * SQUARE_AMPLITUDE
+			dutyPhase := normalizedPhase - currentDuty + 1.0
+			if dutyPhase >= 1.0 {
+				dutyPhase -= 1.0
+			}
+			sample -= polyBLEP32(dutyPhase, dt) * SQUARE_AMPLITUDE
 			sample *= SQUARE_NORM
 			return sample
 		}
@@ -1616,10 +1626,10 @@ func (ch *Channel) generateWaveSample(sampleRate float32) float32 {
 		}
 
 		sawSample := func() float32 {
-			phaseNorm := float64(ch.phase / TWO_PI)
-			dt := float64(ch.frequency) / float64(sampleRate)
-			rawSample = float32(2.0*phaseNorm - 1.0)
-			rawSample -= float32(polyBLEP(phaseNorm, dt))
+			phaseNorm := ch.phase / TWO_PI
+			dt := ch.frequency / sampleRate
+			rawSample = 2.0*phaseNorm - 1.0
+			rawSample -= polyBLEP32(phaseNorm, dt)
 			return rawSample
 		}
 
@@ -1772,9 +1782,16 @@ func (ch *Channel) generateWaveSample(sampleRate float32) float32 {
 		currentDuty := ch.dutyCycle
 		if ch.pwmEnabled {
 			ch.pwmPhase += ch.pwmRate * (TWO_PI / sampleRate)
-			ch.pwmPhase = float32(math.Mod(float64(ch.pwmPhase+ch.pwmRate*(TWO_PI/sampleRate)), TWO_PI))
+			if ch.pwmPhase >= TWO_PI {
+				ch.pwmPhase -= TWO_PI
+			}
 			normalisedPhase := ch.pwmPhase / TWO_PI
-			lfo := float32(math.Abs(float64(normalisedPhase*NORMALISE_SCALE-NORMALISE_OFFSET)))*NORMALISE_SCALE - NORMALISE_OFFSET
+			// Triangle LFO: abs(2*phase - 1) * 2 - 1 gives triangle wave from -1 to 1
+			lfo := normalisedPhase*NORMALISE_SCALE - NORMALISE_OFFSET
+			if lfo < 0 {
+				lfo = -lfo
+			}
+			lfo = lfo*NORMALISE_SCALE - NORMALISE_OFFSET
 			currentDuty = ch.dutyCycle + lfo*ch.pwmDepth
 			if currentDuty < 0 {
 				currentDuty = 0
@@ -1783,7 +1800,7 @@ func (ch *Channel) generateWaveSample(sampleRate float32) float32 {
 			}
 		}
 		normalizedPhase := ch.phase / TWO_PI
-		dt := float64(ch.frequency) / float64(sampleRate)
+		dt := ch.frequency / sampleRate
 
 		if normalizedPhase < currentDuty {
 			rawSample = SQUARE_AMPLITUDE
@@ -1791,10 +1808,13 @@ func (ch *Channel) generateWaveSample(sampleRate float32) float32 {
 			rawSample = -SQUARE_AMPLITUDE
 		}
 
-		phaseNorm64 := float64(normalizedPhase)
-		dutyNorm64 := float64(currentDuty)
-		rawSample += float32(polyBLEP(phaseNorm64, dt)) * SQUARE_AMPLITUDE
-		rawSample -= float32(polyBLEP(math.Mod(phaseNorm64-dutyNorm64+1.0, 1.0), dt)) * SQUARE_AMPLITUDE
+		// polyBLEP32 anti-aliasing (float32 throughout)
+		rawSample += polyBLEP32(normalizedPhase, dt) * SQUARE_AMPLITUDE
+		dutyPhase := normalizedPhase - currentDuty + 1.0
+		if dutyPhase >= 1.0 {
+			dutyPhase -= 1.0
+		}
+		rawSample -= polyBLEP32(dutyPhase, dt) * SQUARE_AMPLITUDE
 
 		rawSample *= SQUARE_NORM
 
@@ -1808,7 +1828,7 @@ func (ch *Channel) generateWaveSample(sampleRate float32) float32 {
 		rawSample *= TRIANGLE_NORM
 
 	case WAVE_SINE:
-		rawSample = float32(math.Sin(float64(ch.phase)))
+		rawSample = fastSin(ch.phase)
 		rawSample *= SINE_NORM
 
 	case WAVE_NOISE:
@@ -1859,10 +1879,10 @@ func (ch *Channel) generateWaveSample(sampleRate float32) float32 {
 		rawSample *= NOISE_NORM
 
 	case WAVE_SAWTOOTH:
-		phaseNorm := float64(ch.phase / TWO_PI)
-		dt := float64(ch.frequency) / float64(sampleRate)
-		rawSample = float32(2.0*phaseNorm - 1.0)
-		rawSample -= float32(polyBLEP(phaseNorm, dt))
+		phaseNorm := ch.phase / TWO_PI
+		dt := ch.frequency / sampleRate
+		rawSample = 2.0*phaseNorm - 1.0
+		rawSample -= polyBLEP32(phaseNorm, dt)
 	}
 
 	// Store raw oscillator output before ring mod (for SID OSC3 readback)
@@ -1905,6 +1925,53 @@ func (ch *Channel) generateWaveSample(sampleRate float32) float32 {
 	return rawSample
 }
 
+// processEnhancedSample handles oversampling, lowpass filtering, room delay,
+// and drive processing for enhanced audio modes (PSG+, POKEY+, SID+, TED+, AHX+).
+// This consolidates the common processing logic shared by all enhanced modes.
+func (ch *Channel) processEnhancedSample(
+	oversample int,
+	lowpassAlpha float32,
+	lowpassState *float32,
+	roomBuf []float32,
+	roomPos *int,
+	roomMix float32,
+	gain float32,
+	drive float32,
+	envLevel float32,
+) float32 {
+	// Oversampling: generate multiple samples at higher rate and average
+	sampleRate := float32(SAMPLE_RATE) * float32(oversample)
+	var sum float32
+	for i := 0; i < oversample; i++ {
+		sum += ch.generateWaveSample(sampleRate)
+	}
+	rawSample := sum / float32(oversample)
+
+	// Lowpass filtering to smooth oversampled output
+	if lowpassAlpha > 0 {
+		*lowpassState = *lowpassState*(1-lowpassAlpha) + rawSample*lowpassAlpha
+		rawSample = *lowpassState
+	}
+
+	// Room delay effect (simple comb filter)
+	if roomMix > 0 && len(roomBuf) > 0 {
+		delayed := roomBuf[*roomPos]
+		roomBuf[*roomPos] = rawSample
+		*roomPos = (*roomPos + 1) % len(roomBuf)
+		rawSample = rawSample*(1-roomMix) + delayed*roomMix
+	}
+
+	// Apply volume, envelope, and gain
+	scaledSample := rawSample * ch.volume * envLevel * gain
+
+	// Drive/saturation effect using fast tanh
+	if drive > 0 {
+		scaledSample = fastTanh(scaledSample * (1.0 + drive))
+	}
+
+	return clampF32(scaledSample, MIN_SAMPLE, MAX_SAMPLE)
+}
+
 func (ch *Channel) generateSample() float32 {
 	// ------------------------------------------------------------------------------
 	// generateSample computes and returns the next output sample for this channel.
@@ -1937,9 +2004,9 @@ func (ch *Channel) generateSample() float32 {
 		return 0
 	}
 
-	ch.mutex.Lock()
+	// Read envelope level directly - updateEnvelope just set it under its own lock,
+	// and float32 reads are atomic on modern architectures
 	envLevel := ch.envelopeLevel
-	ch.mutex.Unlock()
 
 	// Frequency sweep logic
 	if ch.sweepEnabled && ch.waveType != WAVE_NOISE {
@@ -1987,139 +2054,41 @@ func (ch *Channel) generateSample() float32 {
 		}
 	}
 
+	// Enhanced mode processing (PSG+, POKEY+, SID+, TED+, AHX+)
 	if ch.psgPlusEnabled && ch.psgPlusOversample > 1 {
-		oversample := ch.psgPlusOversample
-		sampleRate := float32(SAMPLE_RATE) * float32(oversample)
-		var sum float32
-		for i := 0; i < oversample; i++ {
-			sum += ch.generateWaveSample(sampleRate)
-		}
-		rawSample := sum / float32(oversample)
-		alpha := float32(PSG_PLUS_LOWPASS_ALPHA)
-		if alpha > 0 {
-			ch.psgPlusLowpassState = ch.psgPlusLowpassState*(1-alpha) + rawSample*alpha
-			rawSample = ch.psgPlusLowpassState
-		}
-		if ch.psgPlusRoomMix > 0 && len(ch.psgPlusRoomBuf) > 0 {
-			delayed := ch.psgPlusRoomBuf[ch.psgPlusRoomPos]
-			ch.psgPlusRoomBuf[ch.psgPlusRoomPos] = rawSample
-			ch.psgPlusRoomPos = (ch.psgPlusRoomPos + 1) % len(ch.psgPlusRoomBuf)
-			rawSample = rawSample*(1-ch.psgPlusRoomMix) + delayed*ch.psgPlusRoomMix
-		}
-		scaledSample := rawSample * ch.volume * envLevel * ch.psgPlusGain
-		if ch.psgPlusDrive > 0 {
-			gain := 1.0 + ch.psgPlusDrive
-			scaledSample = float32(math.Tanh(float64(scaledSample * gain)))
-		}
-		return clampF32(scaledSample, MIN_SAMPLE, MAX_SAMPLE)
+		return ch.processEnhancedSample(
+			ch.psgPlusOversample, PSG_PLUS_LOWPASS_ALPHA,
+			&ch.psgPlusLowpassState, ch.psgPlusRoomBuf, &ch.psgPlusRoomPos,
+			ch.psgPlusRoomMix, ch.psgPlusGain, ch.psgPlusDrive, envLevel,
+		)
 	}
-
 	if ch.pokeyPlusEnabled && ch.pokeyPlusOversample > 1 {
-		oversample := ch.pokeyPlusOversample
-		sampleRate := float32(SAMPLE_RATE) * float32(oversample)
-		var sum float32
-		for i := 0; i < oversample; i++ {
-			sum += ch.generateWaveSample(sampleRate)
-		}
-		rawSample := sum / float32(oversample)
-		alpha := float32(POKEY_PLUS_LOWPASS_ALPHA)
-		if alpha > 0 {
-			ch.pokeyPlusLowpassState = ch.pokeyPlusLowpassState*(1-alpha) + rawSample*alpha
-			rawSample = ch.pokeyPlusLowpassState
-		}
-		if ch.pokeyPlusRoomMix > 0 && len(ch.pokeyPlusRoomBuf) > 0 {
-			delayed := ch.pokeyPlusRoomBuf[ch.pokeyPlusRoomPos]
-			ch.pokeyPlusRoomBuf[ch.pokeyPlusRoomPos] = rawSample
-			ch.pokeyPlusRoomPos = (ch.pokeyPlusRoomPos + 1) % len(ch.pokeyPlusRoomBuf)
-			rawSample = rawSample*(1-ch.pokeyPlusRoomMix) + delayed*ch.pokeyPlusRoomMix
-		}
-		scaledSample := rawSample * ch.volume * envLevel * ch.pokeyPlusGain
-		if ch.pokeyPlusDrive > 0 {
-			gain := 1.0 + ch.pokeyPlusDrive
-			scaledSample = float32(math.Tanh(float64(scaledSample * gain)))
-		}
-		return clampF32(scaledSample, MIN_SAMPLE, MAX_SAMPLE)
+		return ch.processEnhancedSample(
+			ch.pokeyPlusOversample, POKEY_PLUS_LOWPASS_ALPHA,
+			&ch.pokeyPlusLowpassState, ch.pokeyPlusRoomBuf, &ch.pokeyPlusRoomPos,
+			ch.pokeyPlusRoomMix, ch.pokeyPlusGain, ch.pokeyPlusDrive, envLevel,
+		)
 	}
-
 	if ch.sidPlusEnabled && ch.sidPlusOversample > 1 {
-		oversample := ch.sidPlusOversample
-		sampleRate := float32(SAMPLE_RATE) * float32(oversample)
-		var sum float32
-		for i := 0; i < oversample; i++ {
-			sum += ch.generateWaveSample(sampleRate)
-		}
-		rawSample := sum / float32(oversample)
-		alpha := float32(SID_PLUS_LOWPASS_ALPHA)
-		if alpha > 0 {
-			ch.sidPlusLowpassState = ch.sidPlusLowpassState*(1-alpha) + rawSample*alpha
-			rawSample = ch.sidPlusLowpassState
-		}
-		if ch.sidPlusRoomMix > 0 && len(ch.sidPlusRoomBuf) > 0 {
-			delayed := ch.sidPlusRoomBuf[ch.sidPlusRoomPos]
-			ch.sidPlusRoomBuf[ch.sidPlusRoomPos] = rawSample
-			ch.sidPlusRoomPos = (ch.sidPlusRoomPos + 1) % len(ch.sidPlusRoomBuf)
-			rawSample = rawSample*(1-ch.sidPlusRoomMix) + delayed*ch.sidPlusRoomMix
-		}
-		scaledSample := rawSample * ch.volume * envLevel * ch.sidPlusGain
-		if ch.sidPlusDrive > 0 {
-			gain := 1.0 + ch.sidPlusDrive
-			scaledSample = float32(math.Tanh(float64(scaledSample * gain)))
-		}
-		return clampF32(scaledSample, MIN_SAMPLE, MAX_SAMPLE)
+		return ch.processEnhancedSample(
+			ch.sidPlusOversample, SID_PLUS_LOWPASS_ALPHA,
+			&ch.sidPlusLowpassState, ch.sidPlusRoomBuf, &ch.sidPlusRoomPos,
+			ch.sidPlusRoomMix, ch.sidPlusGain, ch.sidPlusDrive, envLevel,
+		)
 	}
-
 	if ch.tedPlusEnabled && ch.tedPlusOversample > 1 {
-		oversample := ch.tedPlusOversample
-		sampleRate := float32(SAMPLE_RATE) * float32(oversample)
-		var sum float32
-		for i := 0; i < oversample; i++ {
-			sum += ch.generateWaveSample(sampleRate)
-		}
-		rawSample := sum / float32(oversample)
-		alpha := float32(TED_PLUS_LOWPASS_ALPHA)
-		if alpha > 0 {
-			ch.tedPlusLowpassState = ch.tedPlusLowpassState*(1-alpha) + rawSample*alpha
-			rawSample = ch.tedPlusLowpassState
-		}
-		if ch.tedPlusRoomMix > 0 && len(ch.tedPlusRoomBuf) > 0 {
-			delayed := ch.tedPlusRoomBuf[ch.tedPlusRoomPos]
-			ch.tedPlusRoomBuf[ch.tedPlusRoomPos] = rawSample
-			ch.tedPlusRoomPos = (ch.tedPlusRoomPos + 1) % len(ch.tedPlusRoomBuf)
-			rawSample = rawSample*(1-ch.tedPlusRoomMix) + delayed*ch.tedPlusRoomMix
-		}
-		scaledSample := rawSample * ch.volume * envLevel * ch.tedPlusGain
-		if ch.tedPlusDrive > 0 {
-			gain := 1.0 + ch.tedPlusDrive
-			scaledSample = float32(math.Tanh(float64(scaledSample * gain)))
-		}
-		return clampF32(scaledSample, MIN_SAMPLE, MAX_SAMPLE)
+		return ch.processEnhancedSample(
+			ch.tedPlusOversample, TED_PLUS_LOWPASS_ALPHA,
+			&ch.tedPlusLowpassState, ch.tedPlusRoomBuf, &ch.tedPlusRoomPos,
+			ch.tedPlusRoomMix, ch.tedPlusGain, ch.tedPlusDrive, envLevel,
+		)
 	}
-
 	if ch.ahxPlusEnabled && ch.ahxPlusOversample > 1 {
-		oversample := ch.ahxPlusOversample
-		sampleRate := float32(SAMPLE_RATE) * float32(oversample)
-		var sum float32
-		for i := 0; i < oversample; i++ {
-			sum += ch.generateWaveSample(sampleRate)
-		}
-		rawSample := sum / float32(oversample)
-		alpha := float32(AHX_PLUS_LOWPASS_ALPHA)
-		if alpha > 0 {
-			ch.ahxPlusLowpassState = ch.ahxPlusLowpassState*(1-alpha) + rawSample*alpha
-			rawSample = ch.ahxPlusLowpassState
-		}
-		if ch.ahxPlusRoomMix > 0 && len(ch.ahxPlusRoomBuf) > 0 {
-			delayed := ch.ahxPlusRoomBuf[ch.ahxPlusRoomPos]
-			ch.ahxPlusRoomBuf[ch.ahxPlusRoomPos] = rawSample
-			ch.ahxPlusRoomPos = (ch.ahxPlusRoomPos + 1) % len(ch.ahxPlusRoomBuf)
-			rawSample = rawSample*(1-ch.ahxPlusRoomMix) + delayed*ch.ahxPlusRoomMix
-		}
-		scaledSample := rawSample * ch.volume * envLevel * ch.ahxPlusGain
-		if ch.ahxPlusDrive > 0 {
-			gain := 1.0 + ch.ahxPlusDrive
-			scaledSample = float32(math.Tanh(float64(scaledSample * gain)))
-		}
-		return clampF32(scaledSample, MIN_SAMPLE, MAX_SAMPLE)
+		return ch.processEnhancedSample(
+			ch.ahxPlusOversample, AHX_PLUS_LOWPASS_ALPHA,
+			&ch.ahxPlusLowpassState, ch.ahxPlusRoomBuf, &ch.ahxPlusRoomPos,
+			ch.ahxPlusRoomMix, ch.ahxPlusGain, ch.ahxPlusDrive, envLevel,
+		)
 	}
 
 	rawSample := ch.generateWaveSample(float32(SAMPLE_RATE))
@@ -2248,11 +2217,9 @@ func (chip *SoundChip) GenerateSample() float32 {
 	sidMixerDCOffset := chip.sidMixerDCOffset
 	sidMixerSaturate := chip.sidMixerSaturate
 
-	// Make thread-safe copy of channel array
-	channels := [NUM_CHANNELS]*Channel{}
-	for i := 0; i < NUM_CHANNELS; i++ {
-		channels[i] = chip.channels[i]
-	}
+	// Channel pointers are fixed at init time and never change, so we can
+	// access them directly without copying. Only the channel state is mutable.
+	channels := &chip.channels
 	chip.mutex.RUnlock()
 
 	if !enabled {
@@ -2309,7 +2276,7 @@ func (chip *SoundChip) GenerateSample() float32 {
 		}
 
 		// Apply overdrive with tanh for soft clipping
-		sample = float32(math.Tanh(float64(sample * gain)))
+		sample = fastTanh(sample * gain)
 	}
 
 	// Apply global filter processing
@@ -2340,12 +2307,11 @@ func (chip *SoundChip) GenerateSample() float32 {
 		bp = flushDenormal(bp)
 		hp = flushDenormal(hp)
 
-		// Update filter state under lock
-		chip.mutex.Lock()
+		// Update filter state directly - audio thread is single-threaded and
+		// these values are only read by this same thread in subsequent iterations
 		chip.filterLP = lp
 		chip.filterBP = bp
 		chip.filterHP = hp
-		chip.mutex.Unlock()
 
 		// Select filter output
 		switch filterType {

@@ -24,6 +24,7 @@ package main
 import (
 	"fmt"
 	"math"
+	"sort"
 	"sync"
 )
 
@@ -599,13 +600,10 @@ func (e *SIDEngine) SetEvents(events []SIDEvent, totalSamples uint64, loop bool,
 	e.totalSamples = totalSamples
 	e.loop = loop
 	e.loopSample = loopSample
-	e.loopEventIndex = 0
-	for i, ev := range e.events {
-		if ev.Sample >= loopSample {
-			e.loopEventIndex = i
-			break
-		}
-	}
+	// Binary search for loop event index - O(log n) instead of O(n)
+	e.loopEventIndex = sort.Search(len(e.events), func(i int) bool {
+		return e.events[i].Sample >= loopSample
+	})
 	e.enabled = true
 }
 

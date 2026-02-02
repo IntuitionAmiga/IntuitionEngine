@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -165,12 +166,10 @@ func (e *PSGEngine) SetEvents(events []PSGEvent, totalSamples uint64, loop bool,
 	e.enabled = true
 
 	if loop {
-		for i, ev := range events {
-			if ev.Sample >= loopSample {
-				e.loopEventIndex = i
-				break
-			}
-		}
+		// Binary search for loop event index - O(log n) instead of O(n)
+		e.loopEventIndex = sort.Search(len(events), func(i int) bool {
+			return events[i].Sample >= loopSample
+		})
 	}
 }
 

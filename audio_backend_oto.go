@@ -23,15 +23,17 @@ package main
 import (
 	"github.com/ebitengine/oto/v3"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 )
 
 type OtoPlayer struct {
-	ctx     *oto.Context
-	player  *oto.Player
-	chip    *SoundChip
-	started bool
-	mutex   sync.Mutex
+	ctx       *oto.Context
+	player    *oto.Player
+	chip      atomic.Pointer[SoundChip] // Atomic for lock-free Read()
+	sampleBuf []float32                 // Pre-allocated sample buffer
+	started   bool
+	mutex     sync.Mutex // Only for setup/control operations
 }
 
 func NewOtoPlayer(sampleRate int) (*OtoPlayer, error) {
@@ -58,30 +60,33 @@ func (op *OtoPlayer) SetupPlayer(chip *SoundChip) {
 	op.mutex.Lock()
 	defer op.mutex.Unlock()
 
-	op.chip = chip
+	op.chip.Store(chip)
 	op.player = op.ctx.NewPlayer(op)
+	// Pre-allocate buffer for typical oto buffer sizes (4096 bytes = 1024 float32 samples)
+	op.sampleBuf = make([]float32, 4096)
 }
 
 func (op *OtoPlayer) Read(p []byte) (n int, err error) {
-	op.mutex.Lock()
-	defer op.mutex.Unlock()
-
-	if op.chip == nil {
+	// Load chip pointer atomically - no lock needed for the hot path
+	chip := op.chip.Load()
+	if chip == nil {
 		for i := range p {
 			p[i] = 0
 		}
 		return len(p), nil
 	}
 
-	if !op.started {
-		op.Start() // Ensure started before first read
-	}
-
 	numSamples := len(p) / 4
-	samples := make([]float32, numSamples)
+
+	// Ensure our pre-allocated buffer is large enough
+	// This should rarely happen after initial SetupPlayer
+	if len(op.sampleBuf) < numSamples {
+		op.sampleBuf = make([]float32, numSamples)
+	}
+	samples := op.sampleBuf[:numSamples]
 
 	for i := 0; i < numSamples; i++ {
-		samples[i] = op.chip.ReadSample()
+		samples[i] = chip.ReadSample()
 	}
 
 	copy(p, (*[1 << 30]byte)(unsafe.Pointer(&samples[0]))[:len(p)])
