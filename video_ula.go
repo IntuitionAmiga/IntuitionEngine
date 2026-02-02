@@ -72,6 +72,10 @@ type ULAEngine struct {
 	flashState   bool
 	flashCounter int
 
+	// Pre-computed row start addresses for the non-linear ZX Spectrum addressing
+	// Computed once at init, indexed by Y coordinate (0-191)
+	rowStartAddr [ULA_DISPLAY_HEIGHT]uint16
+
 	// Pre-allocated frame buffer (320x256 RGBA)
 	frameBuffer []byte
 }
@@ -88,6 +92,15 @@ func NewULAEngine(bus *SystemBus) *ULAEngine {
 	// Initialize VRAM to zero
 	for i := range ula.vram {
 		ula.vram[i] = 0
+	}
+
+	// Pre-compute row start addresses for the non-linear ZX Spectrum addressing
+	// This avoids recalculating the complex formula on every pixel
+	for y := 0; y < ULA_DISPLAY_HEIGHT; y++ {
+		highY := (y & 0xC0) << 5 // Top 2 bits of Y * 32
+		lowY := (y & 0x07) << 8  // Bottom 3 bits of Y * 256
+		midY := (y & 0x38) << 2  // Middle 3 bits of Y * 4
+		ula.rowStartAddr[y] = uint16(highY + lowY + midY)
 	}
 
 	return ula
@@ -209,21 +222,34 @@ func (u *ULAEngine) RenderFrame() []byte {
 
 	// Render the 256x192 display area
 	for screenY := 0; screenY < ULA_DISPLAY_HEIGHT; screenY++ {
+		// Use pre-computed row start address instead of calling GetBitmapAddress per pixel
+		rowAddr := u.rowStartAddr[screenY]
+
+		// Pre-compute attribute row address base
+		cellY := screenY >> 3
+		attrRowBase := uint16(ULA_ATTR_OFFSET + cellY*ULA_CELLS_X)
+
+		// Frame buffer offset for this row
+		frameY := ULA_BORDER_TOP + screenY
+		frameRowBase := frameY * ULA_FRAME_WIDTH * 4
+
 		for screenX := 0; screenX < ULA_DISPLAY_WIDTH; screenX++ {
 			// Get bitmap byte and bit within it
-			bitmapAddr := u.GetBitmapAddress(screenY, screenX)
+			xByte := screenX >> 3
+			bitmapAddr := rowAddr + uint16(xByte)
 			bitmapByte := u.vram[bitmapAddr]
 			bitPosition := 7 - (screenX & 0x07) // MSB is leftmost pixel
 			pixelSet := (bitmapByte >> bitPosition) & 1
 
 			// Get attribute for this character cell
-			cellX := screenX >> 3 // screenX / 8
-			cellY := screenY >> 3 // screenY / 8
-			attrAddr := u.GetAttributeAddress(cellY, cellX)
-			attr := u.vram[attrAddr]
+			cellX := screenX >> 3
+			attr := u.vram[attrRowBase+uint16(cellX)]
 
-			// Parse attribute
-			ink, paper, bright, flash := ParseAttribute(attr)
+			// Parse attribute inline for speed
+			ink := attr & 0x07
+			paper := (attr >> 3) & 0x07
+			bright := (attr & 0x40) != 0
+			flash := (attr & 0x80) != 0
 
 			// Determine actual foreground/background based on FLASH state
 			fgColor := ink
@@ -243,8 +269,7 @@ func (u *ULAEngine) RenderFrame() []byte {
 
 			// Calculate frame buffer position (add border offset)
 			frameX := ULA_BORDER_LEFT + screenX
-			frameY := ULA_BORDER_TOP + screenY
-			offset := (frameY*ULA_FRAME_WIDTH + frameX) * 4
+			offset := frameRowBase + frameX*4
 
 			u.frameBuffer[offset] = r
 			u.frameBuffer[offset+1] = g

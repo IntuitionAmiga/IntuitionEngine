@@ -674,3 +674,16 @@ var ANTICPalette = [256][3]uint8{
 func GetANTICColor(colorValue uint8) (r, g, b uint8) {
 	return ANTICPalette[colorValue][0], ANTICPalette[colorValue][1], ANTICPalette[colorValue][2]
 }
+
+// ANTICPaletteRGBA is a pre-packed RGBA version of the ANTIC palette for fast copy operations
+var ANTICPaletteRGBA [256][4]uint8
+
+func init() {
+	// Pre-pack the palette with alpha = 255
+	for i := 0; i < 256; i++ {
+		ANTICPaletteRGBA[i][0] = ANTICPalette[i][0]
+		ANTICPaletteRGBA[i][1] = ANTICPalette[i][1]
+		ANTICPaletteRGBA[i][2] = ANTICPalette[i][2]
+		ANTICPaletteRGBA[i][3] = 255
+	}
+}

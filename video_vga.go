@@ -108,6 +108,17 @@ type VGAEngine struct {
 	// Latches for planar reads
 	latch [4]uint8
 
+	// Pre-expanded RGBA palette cache (256 entries, 4 bytes each: R, G, B, A)
+	// Invalidated on any palette write, rebuilt on first read after invalidation
+	paletteRGBA  [256][4]uint8
+	paletteDirty bool // True when palette cache needs rebuilding
+
+	// Pre-allocated framebuffers for each mode to avoid per-frame allocation
+	frameBuffer13h []uint8 // 320x200x4 = 256,000 bytes
+	frameBuffer12h []uint8 // 640x480x4 = 1,228,800 bytes
+	frameBufferX   []uint8 // 320x240x4 = 307,200 bytes
+	frameBufferTxt []uint8 // 640x400x4 = 1,024,000 bytes
+
 	// VSync state
 	vsync      bool
 	frameStart atomic.Int64 // Unix nano timestamp of frame start for time-based vsync
@@ -119,9 +130,10 @@ type VGAEngine struct {
 // NewVGAEngine creates a new VGA engine instance as a standalone video device
 func NewVGAEngine(bus *SystemBus) *VGAEngine {
 	vga := &VGAEngine{
-		bus:     bus,
-		layer:   VGA_LAYER, // VGA renders on top
-		dacMask: 0xFF,      // Default: all bits enabled
+		bus:          bus,
+		layer:        VGA_LAYER, // VGA renders on top
+		dacMask:      0xFF,      // Default: all bits enabled
+		paletteDirty: true,      // Force initial cache build
 	}
 
 	// Initialize sequencer defaults
@@ -186,6 +198,9 @@ func (v *VGAEngine) initDefaultPalette() {
 		v.palette[idx*3+2] = gray
 		idx++
 	}
+
+	// Mark palette cache as dirty to force rebuild on first use
+	v.paletteDirty = true
 }
 
 // HandleRead handles register reads
@@ -363,6 +378,7 @@ func (v *VGAEngine) HandleWrite(addr uint32, value uint32) {
 		offset := addr - VGA_PALETTE
 		if offset < VGA_PALETTE_BYTES {
 			v.palette[offset] = uint8(value)
+			v.paletteDirty = true // Invalidate cache on any palette write
 		}
 	}
 }
@@ -401,6 +417,7 @@ func (v *VGAEngine) writeDACData(value uint8) {
 	idx := int(v.dacWriteIndex)*3 + int(v.dacWritePhase)
 	if idx < len(v.palette) {
 		v.palette[idx] = value
+		v.paletteDirty = true // Invalidate cache on any palette write
 	}
 
 	v.dacWritePhase++
@@ -567,6 +584,7 @@ func (v *VGAEngine) SetPaletteEntry(index uint8, r, g, b uint8) {
 	v.palette[idx] = r & 0x3F
 	v.palette[idx+1] = g & 0x3F
 	v.palette[idx+2] = b & 0x3F
+	v.paletteDirty = true // Invalidate cache
 }
 
 // ApplyDACMask applies the DAC pixel mask to an index
@@ -666,9 +684,20 @@ func (v *VGAEngine) RenderFrame() []uint8 {
 func (v *VGAEngine) renderMode13h() []uint8 {
 	width := VGA_MODE13H_WIDTH
 	height := VGA_MODE13H_HEIGHT
-	fb := make([]uint8, width*height*4)
+
+	// Allocate framebuffer once, reuse on subsequent frames
+	if v.frameBuffer13h == nil {
+		v.frameBuffer13h = make([]uint8, width*height*4)
+	}
+	fb := v.frameBuffer13h
+
+	// Rebuild palette cache once at frame start if dirty
+	if v.paletteDirty {
+		v.rebuildPaletteCache()
+	}
 
 	startAddr := v.getStartAddressInternal()
+	dacMask := v.dacMask
 
 	for y := 0; y < height; y++ {
 		for x := 0; x < width; x++ {
@@ -684,17 +713,11 @@ func (v *VGAEngine) renderMode13h() []uint8 {
 				colorIndex = v.vram[plane][vramOffset]
 			}
 
-			// Apply DAC mask
-			colorIndex &= v.dacMask
-
-			// Get expanded color
-			r, g, b, a := v.getPaletteRGBAInternal(colorIndex)
+			// Apply DAC mask and get color from cache
+			colorIndex &= dacMask
 
 			pixelIdx := (y*width + x) * 4
-			fb[pixelIdx+0] = r
-			fb[pixelIdx+1] = g
-			fb[pixelIdx+2] = b
-			fb[pixelIdx+3] = a
+			copy(fb[pixelIdx:pixelIdx+4], v.paletteRGBA[colorIndex][:])
 		}
 	}
 
@@ -705,41 +728,58 @@ func (v *VGAEngine) renderMode13h() []uint8 {
 func (v *VGAEngine) renderMode12h() []uint8 {
 	width := VGA_MODE12H_WIDTH
 	height := VGA_MODE12H_HEIGHT
-	fb := make([]uint8, width*height*4)
+
+	// Allocate framebuffer once, reuse on subsequent frames
+	if v.frameBuffer12h == nil {
+		v.frameBuffer12h = make([]uint8, width*height*4)
+	}
+	fb := v.frameBuffer12h
+
+	// Rebuild palette cache once at frame start if dirty
+	if v.paletteDirty {
+		v.rebuildPaletteCache()
+	}
 
 	bytesPerLine := width / 8
+	dacMask := v.dacMask
 
 	for y := 0; y < height; y++ {
+		rowBase := y * width * 4
 		for byteX := 0; byteX < bytesPerLine; byteX++ {
 			offset := y*bytesPerLine + byteX
 
 			// Get all 4 planes for this byte
 			var planes [4]uint8
-			for p := 0; p < 4; p++ {
-				if offset < int(VGA_PLANE_SIZE) {
-					planes[p] = v.vram[p][offset]
-				}
+			if offset < int(VGA_PLANE_SIZE) {
+				planes[0] = v.vram[0][offset]
+				planes[1] = v.vram[1][offset]
+				planes[2] = v.vram[2][offset]
+				planes[3] = v.vram[3][offset]
 			}
 
 			// Extract 8 pixels from the planes
+			baseX := byteX * 8
 			for bit := 7; bit >= 0; bit-- {
 				// Combine bits from all planes to get color index
 				colorIndex := uint8(0)
-				for p := 0; p < 4; p++ {
-					if planes[p]&(1<<bit) != 0 {
-						colorIndex |= 1 << p
-					}
+				mask := uint8(1 << bit)
+				if planes[0]&mask != 0 {
+					colorIndex |= 1
+				}
+				if planes[1]&mask != 0 {
+					colorIndex |= 2
+				}
+				if planes[2]&mask != 0 {
+					colorIndex |= 4
+				}
+				if planes[3]&mask != 0 {
+					colorIndex |= 8
 				}
 
-				colorIndex &= v.dacMask
-				r, g, b, a := v.getPaletteRGBAInternal(colorIndex)
-
-				pixelX := byteX*8 + (7 - bit)
-				pixelIdx := (y*width + pixelX) * 4
-				fb[pixelIdx+0] = r
-				fb[pixelIdx+1] = g
-				fb[pixelIdx+2] = b
-				fb[pixelIdx+3] = a
+				colorIndex &= dacMask
+				pixelX := baseX + (7 - bit)
+				pixelIdx := rowBase + pixelX*4
+				copy(fb[pixelIdx:pixelIdx+4], v.paletteRGBA[colorIndex][:])
 			}
 		}
 	}
@@ -751,29 +791,38 @@ func (v *VGAEngine) renderMode12h() []uint8 {
 func (v *VGAEngine) renderModeX() []uint8 {
 	width := VGA_MODEX_WIDTH
 	height := VGA_MODEX_HEIGHT
-	fb := make([]uint8, width*height*4)
+
+	// Allocate framebuffer once, reuse on subsequent frames
+	if v.frameBufferX == nil {
+		v.frameBufferX = make([]uint8, width*height*4)
+	}
+	fb := v.frameBufferX
+
+	// Rebuild palette cache once at frame start if dirty
+	if v.paletteDirty {
+		v.rebuildPaletteCache()
+	}
 
 	startAddr := v.getStartAddressInternal()
+	dacMask := v.dacMask
+	widthDiv4 := width / 4
 
 	for y := 0; y < height; y++ {
+		rowStart := y * width
+		yOffset := uint32(y * widthDiv4)
 		for x := 0; x < width; x++ {
 			// Unchained: pixel X determines plane, Y*width/4 + X/4 is offset
 			plane := x & 3
-			offset := uint32(y*(width/4)+x/4) + startAddr
+			offset := yOffset + uint32(x/4) + startAddr
 
 			var colorIndex uint8
 			if offset < VGA_PLANE_SIZE {
 				colorIndex = v.vram[plane][offset]
 			}
 
-			colorIndex &= v.dacMask
-			r, g, b, a := v.getPaletteRGBAInternal(colorIndex)
-
-			pixelIdx := (y*width + x) * 4
-			fb[pixelIdx+0] = r
-			fb[pixelIdx+1] = g
-			fb[pixelIdx+2] = b
-			fb[pixelIdx+3] = a
+			colorIndex &= dacMask
+			pixelIdx := (rowStart + x) * 4
+			copy(fb[pixelIdx:pixelIdx+4], v.paletteRGBA[colorIndex][:])
 		}
 	}
 
@@ -786,7 +835,17 @@ func (v *VGAEngine) renderTextMode() []uint8 {
 	charHeight := VGA_FONT_HEIGHT
 	width := VGA_TEXT_COLS * charWidth
 	height := VGA_TEXT_ROWS * charHeight
-	fb := make([]uint8, width*height*4)
+
+	// Allocate framebuffer once, reuse on subsequent frames
+	if v.frameBufferTxt == nil {
+		v.frameBufferTxt = make([]uint8, width*height*4)
+	}
+	fb := v.frameBufferTxt
+
+	// Rebuild palette cache once at frame start if dirty
+	if v.paletteDirty {
+		v.rebuildPaletteCache()
+	}
 
 	for row := 0; row < VGA_TEXT_ROWS; row++ {
 		for col := 0; col < VGA_TEXT_COLS; col++ {
@@ -800,28 +859,25 @@ func (v *VGAEngine) renderTextMode() []uint8 {
 			bg := (attr >> 4) & 0x0F
 
 			// Get font glyph
-			glyph := vgaFont8x16[int(char)*charHeight : int(char)*charHeight+charHeight]
+			glyphOffset := int(char) * charHeight
+			charBaseX := col * charWidth
+			charBaseY := row * charHeight
 
 			// Render character
 			for cy := 0; cy < charHeight; cy++ {
-				fontRow := glyph[cy]
+				fontRow := vgaFont8x16[glyphOffset+cy]
+				pixelY := charBaseY + cy
+				rowBase := pixelY * width * 4
+
 				for cx := 0; cx < charWidth; cx++ {
-					pixelX := col*charWidth + cx
-					pixelY := row*charHeight + cy
-					pixelIdx := (pixelY*width + pixelX) * 4
+					pixelX := charBaseX + cx
+					pixelIdx := rowBase + pixelX*4
 
-					var colorIndex uint8
 					if fontRow&(0x80>>cx) != 0 {
-						colorIndex = fg
+						copy(fb[pixelIdx:pixelIdx+4], v.paletteRGBA[fg][:])
 					} else {
-						colorIndex = bg
+						copy(fb[pixelIdx:pixelIdx+4], v.paletteRGBA[bg][:])
 					}
-
-					r, g, b, a := v.getPaletteRGBAInternal(colorIndex)
-					fb[pixelIdx+0] = r
-					fb[pixelIdx+1] = g
-					fb[pixelIdx+2] = b
-					fb[pixelIdx+3] = a
 				}
 			}
 		}
@@ -830,13 +886,26 @@ func (v *VGAEngine) renderTextMode() []uint8 {
 	return fb
 }
 
+// rebuildPaletteCache rebuilds the pre-expanded RGBA palette cache
+func (v *VGAEngine) rebuildPaletteCache() {
+	for i := 0; i < 256; i++ {
+		idx := i * 3
+		v.paletteRGBA[i][0] = v.Expand6BitTo8Bit(v.palette[idx])
+		v.paletteRGBA[i][1] = v.Expand6BitTo8Bit(v.palette[idx+1])
+		v.paletteRGBA[i][2] = v.Expand6BitTo8Bit(v.palette[idx+2])
+		v.paletteRGBA[i][3] = 255
+	}
+	v.paletteDirty = false
+}
+
 // getPaletteRGBAInternal returns expanded 8-bit RGBA (internal, no lock)
+// Uses pre-computed cache for fast palette lookups during rendering
 func (v *VGAEngine) getPaletteRGBAInternal(index uint8) (uint8, uint8, uint8, uint8) {
-	idx := int(index) * 3
-	r := v.Expand6BitTo8Bit(v.palette[idx])
-	g := v.Expand6BitTo8Bit(v.palette[idx+1])
-	b := v.Expand6BitTo8Bit(v.palette[idx+2])
-	return r, g, b, 255
+	if v.paletteDirty {
+		v.rebuildPaletteCache()
+	}
+	c := v.paletteRGBA[index]
+	return c[0], c[1], c[2], c[3]
 }
 
 var vgaFrameCount int

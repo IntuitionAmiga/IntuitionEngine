@@ -641,17 +641,13 @@ func (a *ANTICEngine) RenderFrame() []byte {
 		virtualScanline = virtualScanline % ANTIC_DISPLAY_HEIGHT
 
 		color := a.scanlineColors[readBuffer][virtualScanline]
-
-		r, g, b := GetANTICColor(color)
 		rowStart := y * ANTIC_FRAME_WIDTH * 4
 
-		// Fill entire row with this color
+		// Fill entire row with this color using pre-packed RGBA
+		colorRGBA := ANTICPaletteRGBA[color][:]
 		for x := 0; x < ANTIC_FRAME_WIDTH; x++ {
 			offset := rowStart + x*4
-			a.frameBuffer[offset] = r
-			a.frameBuffer[offset+1] = g
-			a.frameBuffer[offset+2] = b
-			a.frameBuffer[offset+3] = 255 // Alpha
+			copy(a.frameBuffer[offset:offset+4], colorRGBA)
 		}
 	}
 
@@ -667,7 +663,6 @@ func (a *ANTICEngine) RenderFrame() []byte {
 			rowStart := y * ANTIC_FRAME_WIDTH * 4
 
 			// Draw each player (0-3) - read from display buffer (opposite of write buffer)
-			readBuffer := 1 - a.writeBuffer
 			for p := 0; p < 4; p++ {
 				gfx := a.playerGfx[readBuffer][p][scanline]
 				if gfx == 0 {
@@ -677,7 +672,7 @@ func (a *ANTICEngine) RenderFrame() []byte {
 				// Use per-scanline position for authentic multiplexing
 				hpos := int(a.playerPos[readBuffer][p][scanline])
 				size := a.sizep[p]
-				pr, pg, pb := GetANTICColor(a.colpm[p])
+				playerColor := ANTICPaletteRGBA[a.colpm[p]][:]
 
 				// Width multiplier based on size
 				widthMult := 1
@@ -700,10 +695,7 @@ func (a *ANTICEngine) RenderFrame() []byte {
 							screenX := baseX + w
 							if screenX >= 0 && screenX < ANTIC_FRAME_WIDTH {
 								offset := rowStart + screenX*4
-								a.frameBuffer[offset] = pr
-								a.frameBuffer[offset+1] = pg
-								a.frameBuffer[offset+2] = pb
-								a.frameBuffer[offset+3] = 255
+								copy(a.frameBuffer[offset:offset+4], playerColor)
 							}
 						}
 					}

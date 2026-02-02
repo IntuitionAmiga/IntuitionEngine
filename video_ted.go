@@ -283,10 +283,64 @@ func (t *TEDVideoEngine) RenderFrame() []byte {
 	// Get background color
 	bgR, bgG, bgB := GetTEDColor(t.bgColor[0])
 
+	// Pre-compute address offsets for character rendering
+	charsetBase := TED_V_MATRIX_SIZE + TED_V_COLOR_SIZE
+
 	// Render the 320x200 display area (40x25 characters)
 	for cellY := 0; cellY < TED_V_CELLS_Y; cellY++ {
+		// Pre-compute row base addresses
+		matrixRowBase := cellY * TED_V_CELLS_X
+		colorRowBase := TED_V_MATRIX_SIZE + cellY*TED_V_CELLS_X
+
+		// Pre-compute frame buffer base for this character row
+		screenYBase := cellY * TED_V_CELL_HEIGHT
+		frameYBase := (TED_V_BORDER_TOP + screenYBase) * TED_V_FRAME_WIDTH
+
 		for cellX := 0; cellX < TED_V_CELLS_X; cellX++ {
-			t.renderCharacter(cellX, cellY, bgR, bgG, bgB)
+			// Get character code from video matrix
+			charCode := t.vram[matrixRowBase+cellX]
+
+			// Get foreground color from color RAM
+			fgColorByte := t.vram[colorRowBase+cellX]
+			fgR, fgG, fgB := GetTEDColor(fgColorByte)
+
+			// Get character bitmap offset
+			charsetOffset := charsetBase + int(charCode)*8
+
+			// Pre-compute X base for frame buffer
+			screenXBase := cellX * TED_V_CELL_WIDTH
+			frameXBase := TED_V_BORDER_LEFT + screenXBase
+
+			// Render 8x8 pixel character
+			for row := 0; row < TED_V_CELL_HEIGHT; row++ {
+				// Get bitmap row (if charset offset is valid)
+				var bitmapByte uint8
+				if charsetOffset+row < len(t.vram) {
+					bitmapByte = t.vram[charsetOffset+row]
+				}
+
+				// Frame buffer row offset
+				frameRowOffset := (frameYBase + row*TED_V_FRAME_WIDTH + frameXBase) * 4
+
+				// Render 8 pixels
+				for col := 0; col < TED_V_CELL_WIDTH; col++ {
+					// Check if pixel is set (MSB = leftmost)
+					pixelSet := (bitmapByte >> (7 - col)) & 1
+					offset := frameRowOffset + col*4
+
+					// Set pixel color
+					if pixelSet != 0 {
+						t.frameBuffer[offset] = fgR
+						t.frameBuffer[offset+1] = fgG
+						t.frameBuffer[offset+2] = fgB
+					} else {
+						t.frameBuffer[offset] = bgR
+						t.frameBuffer[offset+1] = bgG
+						t.frameBuffer[offset+2] = bgB
+					}
+					t.frameBuffer[offset+3] = 255 // Alpha
+				}
+			}
 		}
 	}
 
@@ -298,7 +352,7 @@ func (t *TEDVideoEngine) RenderFrame() []byte {
 	return t.frameBuffer
 }
 
-// renderCharacter renders a single character cell
+// renderCharacter renders a single character cell (legacy function for compatibility)
 func (t *TEDVideoEngine) renderCharacter(cellX, cellY int, bgR, bgG, bgB uint8) {
 	// Get character code from video matrix
 	matrixOffset := t.GetVideoMatrixAddress(cellX, cellY)
