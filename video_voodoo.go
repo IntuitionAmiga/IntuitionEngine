@@ -166,7 +166,7 @@ func NewVoodooEngine(bus *SystemBus) (*VoodooEngine, error) {
 		width:         VOODOO_DEFAULT_WIDTH,
 		height:        VOODOO_DEFAULT_HEIGHT,
 		layer:         VOODOO_LAYER,
-		enabled:       true,
+		enabled:       false,
 		triangleBatch: make([]VoodooTriangle, 0, VOODOO_MAX_BATCH_TRIANGLES),
 		frameBuffer:   make([]byte, VOODOO_DEFAULT_WIDTH*VOODOO_DEFAULT_HEIGHT*4),
 		textureMemory: make([]byte, VOODOO_TEXMEM_SIZE),
@@ -262,6 +262,10 @@ func (v *VoodooEngine) HandleWrite(addr uint32, value uint32) {
 
 	// Process the write
 	switch addr {
+	// Enable/disable the Voodoo engine
+	case VOODOO_ENABLE:
+		v.enabled = value != 0
+
 	// Vertex coordinates (12.4 fixed-point)
 	case VOODOO_VERTEX_AX:
 		v.vertices[0].X = fixed12_4ToFloat(value)

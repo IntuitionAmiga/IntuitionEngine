@@ -55,6 +55,11 @@ const (
 	VOODOO_STATUS = VOODOO_BASE + 0x000 // Status register
 )
 
+// Enable register (write-only) - enables the Voodoo engine for rendering
+const (
+	VOODOO_ENABLE = VOODOO_BASE + 0x004 // Write 1 to enable, 0 to disable
+)
+
 // Status register bits
 const (
 	VOODOO_STATUS_FBI_BUSY = 1 << 0     // FBI (framebuffer interface) busy

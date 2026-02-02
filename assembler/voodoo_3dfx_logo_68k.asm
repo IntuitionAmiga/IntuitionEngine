@@ -347,6 +347,9 @@ start:
     ; ------------------------------------------------------------------------
     lea     $FF0000,sp                  ; Stack at high memory
 
+    ; Enable the Voodoo graphics card (disabled by default)
+    move.l  #1,VOODOO_ENABLE
+
     ; Set video dimensions: (640 << 16) | 480
     move.l  #(SCREEN_W<<16)|SCREEN_H,VOODOO_VIDEO_DIM
 

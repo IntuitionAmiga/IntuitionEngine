@@ -2308,6 +2308,9 @@ VOODOO_BASE_HI      = $F4
 ; Status register (read-only)
 VOODOO_STATUS       = $F400
 
+; Enable register (write-only) - enables the Voodoo engine for rendering
+VOODOO_ENABLE       = $F400         ; Page offset $04 - Write 1 to enable, 0 to disable
+
 ; Vertex coordinate registers (12.4 fixed-point)
 ; For 6502, these require 32-bit writes via indirect addressing
 VOODOO_VERTEX_AX    = $F400         ; Page offset $08

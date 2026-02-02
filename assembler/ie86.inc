@@ -890,6 +890,9 @@ VOODOO_BASE           equ 0xF4000
 ; Status register (read-only)
 VOODOO_STATUS         equ 0xF4000
 
+; Enable register (write-only) - enables the Voodoo engine for rendering
+VOODOO_ENABLE         equ 0xF4004   ; Write 1 to enable, 0 to disable
+
 ; Vertex coordinate registers (12.4 fixed-point)
 VOODOO_VERTEX_AX      equ 0xF4008
 VOODOO_VERTEX_AY      equ 0xF400C

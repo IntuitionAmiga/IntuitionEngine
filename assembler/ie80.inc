@@ -2427,6 +2427,9 @@
 ; Status register (read-only)
 .set VOODOO_STATUS,0xF4000
 
+; Enable register (write-only) - enables the Voodoo engine for rendering
+.set VOODOO_ENABLE,0xF4004                  ; Write 1 to enable, 0 to disable
+
 ; Vertex coordinate registers (12.4 fixed-point)
 .set VOODOO_VERTEX_AX,0xF4008
 .set VOODOO_VERTEX_AY,0xF400C

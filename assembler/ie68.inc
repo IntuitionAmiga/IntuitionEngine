@@ -1414,6 +1414,9 @@ VOODOO_BASE           equ $F4000
 ; Status register (read-only)
 VOODOO_STATUS         equ $F4000            ; Status register
 
+; Enable register (write-only) - enables the Voodoo engine for rendering
+VOODOO_ENABLE         equ $F4004            ; Write 1 to enable, 0 to disable
+
 ; Status register bits
 VOODOO_STATUS_FBI_BUSY    equ $01           ; FBI (framebuffer) busy
 VOODOO_STATUS_TMU_BUSY    equ $02           ; TMU (texture) busy

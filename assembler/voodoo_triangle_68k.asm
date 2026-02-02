@@ -17,6 +17,9 @@ start:
     ; Initialize stack
     lea     $FF0000,sp
 
+    ; Enable the Voodoo graphics card
+    move.l  #1,VOODOO_ENABLE
+
     ; Set video dimensions (640x480)
     move.l  #(640<<16)|480,VOODOO_VIDEO_DIM
 

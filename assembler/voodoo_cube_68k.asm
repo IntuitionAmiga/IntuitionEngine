@@ -404,6 +404,13 @@ start:
     lea     $FF0000,sp              ; Stack at high memory
 
     ; ------------------------------------------------------------------------
+    ; ENABLE VOODOO GRAPHICS CARD
+    ; ------------------------------------------------------------------------
+    ; The Voodoo is disabled by default - we must enable it before use.
+    ; ------------------------------------------------------------------------
+    move.l  #1,VOODOO_ENABLE
+
+    ; ------------------------------------------------------------------------
     ; CONFIGURE VOODOO VIDEO DIMENSIONS
     ; ------------------------------------------------------------------------
     ; VOODOO_VIDEO_DIM expects (width << 16) | height in one 32-bit value.

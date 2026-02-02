@@ -1321,6 +1321,8 @@ The PRIOR register controls display priority and special GTIA modes:
 
 The Voodoo chip emulates a 3DFX SST-1 graphics accelerator using High-Level Emulation (HLE). Instead of software rasterization, register writes are translated to GPU draw calls for hardware-accelerated 3D rendering with Vulkan (or software fallback).
 
+**Important:** The Voodoo is disabled by default to allow per-scanline rendering for copper effects. Programs must explicitly enable it by writing 1 to `VOODOO_ENABLE` (0x0F4004) before using the 3D accelerator.
+
 ### Features
 
 - Voodoo SST-1 register-compatible interface
@@ -1343,7 +1345,8 @@ The Voodoo chip emulates a 3DFX SST-1 graphics accelerator using High-Level Emul
 
 ```
 Status/Control (0x0F4000 - 0x0F4007):
-0x0F4000: VOODOO_STATUS      - Status (busy, vsync, fifo state)
+0x0F4000: VOODOO_STATUS      - Status (busy, vsync, fifo state) [read-only]
+0x0F4004: VOODOO_ENABLE      - Write 1 to enable, 0 to disable (disabled by default)
 
 Vertex Coordinates (0x0F4008 - 0x0F401F, 12.4 fixed-point):
 0x0F4008: VOODOO_VERTEX_AX   - Vertex A X coordinate
@@ -1706,6 +1709,9 @@ When `VOODOO_COLOR_SELECT` is not used (or set to 0), flat shading is applied us
 ```asm
     include "ie68.inc"
 
+    ; Enable the Voodoo graphics card (disabled by default)
+    move.l  #1,VOODOO_ENABLE
+
     ; Clear screen to black
     move.l  #$FF000000,VOODOO_COLOR0
     move.l  #0,VOODOO_FAST_FILL_CMD
@@ -1741,6 +1747,9 @@ Per-vertex colors are set using `VOODOO_COLOR_SELECT` to specify which vertex (0
 
 ```asm
     include "ie68.inc"
+
+    ; Enable the Voodoo graphics card (disabled by default)
+    move.l  #1,VOODOO_ENABLE
 
     ; Clear screen to black
     move.l  #$FF000000,VOODOO_COLOR0

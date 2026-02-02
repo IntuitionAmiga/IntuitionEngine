@@ -707,6 +707,8 @@ start:
     ; ========================================================================
     ; The Voodoo requires configuration before rendering.
     ;
+    ; VOODOO_ENABLE: Enable the Voodoo card (disabled by default)
+    ;
     ; VOODOO_VIDEO_DIM: Sets resolution as (width << 20) | height
     ;   640 << 20 = 0x02800000
     ;   0x02800000 | 480 = 0x028001E0
@@ -714,6 +716,9 @@ start:
     ; VOODOO_FBZ_MODE: Configures framebuffer/Z-buffer behavior
     ;   0x0670 enables RGB write, depth test, and double buffering
     ; ========================================================================
+    LDA #1                          ; Enable value
+    STA @VOODOO_ENABLE              ; Turn on the Voodoo graphics card
+
     LDA #0x02800000                 ; Width 640 in upper bits
     OR A, #0x1E0                    ; Height 480 (0x1E0) in lower bits
     STA @VOODOO_VIDEO_DIM           ; Configure display dimensions

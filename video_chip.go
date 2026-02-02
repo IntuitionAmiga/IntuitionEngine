@@ -396,21 +396,22 @@ type VideoChip struct {
 	prevVRAM     []byte // 24 bytes
 
 	// Copper state
-	bus             MemoryBus
-	busMemory       []byte       // Cached reference to bus memory for lock-free reads
-	bigEndianMode   bool         // Read memory as big-endian (for M68K programs)
-	lastFrameStart  atomic.Int64 // Unix nanoseconds when current frame started
-	copperEnabled   bool
-	copperPtrStaged uint32
-	copperPtr       uint32
-	copperPC        uint32
-	copperWaiting   bool
-	copperHalted    bool
-	copperWaitX     uint16
-	copperWaitY     uint16
-	copperRasterX   uint16
-	copperRasterY   uint16
-	copperIOBase    uint32 // Base address for MOVE operations (default VIDEO_REG_BASE)
+	bus                       MemoryBus
+	busMemory                 []byte       // Cached reference to bus memory for lock-free reads
+	bigEndianMode             bool         // Read memory as big-endian (for M68K programs)
+	lastFrameStart            atomic.Int64 // Unix nanoseconds when current frame started
+	copperEnabled             bool
+	copperPtrStaged           uint32
+	copperPtr                 uint32
+	copperPC                  uint32
+	copperWaiting             bool
+	copperHalted              bool
+	copperWaitX               uint16
+	copperWaitY               uint16
+	copperRasterX             uint16
+	copperRasterY             uint16
+	copperIOBase              uint32 // Base address for MOVE operations (default VIDEO_REG_BASE)
+	copperManagedByCompositor bool   // true when compositor handles copper per-scanline
 
 	// Blitter state
 	bltIrqEnabled   bool
@@ -857,7 +858,10 @@ func (chip *VideoChip) refreshLoop() {
 			// Minimize mutex hold time: do state updates under lock, then release before slow I/O
 			chip.mutex.Lock()
 			mode := VideoModes[chip.currentMode]
-			chip.advanceCopperFrameLocked(mode)
+			// Only run copper if compositor isn't managing it per-scanline
+			if !chip.copperManagedByCompositor {
+				chip.advanceCopperFrameLocked(mode)
+			}
 			chip.runBlitterLocked(mode)
 
 			// Lock-free check: skip mutex if no dirty tiles
@@ -1958,6 +1962,8 @@ func (chip *VideoChip) StartFrame() {
 	chip.mutex.Lock()
 	defer chip.mutex.Unlock()
 
+	chip.copperManagedByCompositor = true // Signal that compositor is managing copper
+
 	if chip.copperEnabled && chip.bus != nil {
 		chip.copperStartFrameLocked()
 	}
@@ -1991,6 +1997,8 @@ func (chip *VideoChip) ProcessScanline(y int) {
 func (chip *VideoChip) FinishFrame() []byte {
 	chip.mutex.Lock()
 	defer chip.mutex.Unlock()
+
+	chip.copperManagedByCompositor = false // Release copper management back to refreshLoop
 
 	// Return the current front buffer
 	return chip.frontBuffer
