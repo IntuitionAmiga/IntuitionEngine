@@ -606,12 +606,15 @@ func (b *VoodooSoftwareBackend) rasterizeTriangle(tri *VoodooTriangle) {
 	ditherEnable := (b.fbzMode & VOODOO_FBZ_DITHER) != 0
 	dither2x2 := (b.fbzMode & VOODOO_FBZ_DITHER_2X2) != 0
 
-	// Rasterize
+	// Rasterize - optimized with row base precomputation
 	for y := minY; y < maxY; y++ {
+		// Pre-compute row base offset (avoids y*width multiplication per pixel)
+		rowBase := y * b.width
+		py := float32(y) + 0.5
+
 		for x := minX; x < maxX; x++ {
 			// Sample at pixel center
 			px := float32(x) + 0.5
-			py := float32(y) + 0.5
 
 			// Compute barycentric coordinates
 			w0 := edgeFunction(v1.X, v1.Y, v2.X, v2.Y, px, py)
@@ -628,8 +631,8 @@ func (b *VoodooSoftwareBackend) rasterizeTriangle(tri *VoodooTriangle) {
 				// Interpolate Z
 				z := w0*v0.Z + w1*v1.Z + w2*v2.Z
 
-				// Depth test
-				pixelIndex := y*b.width + x
+				// Depth test - use precomputed row base
+				pixelIndex := rowBase + x
 				if depthEnable {
 					oldZ := b.depthBuffer[pixelIndex]
 					if !b.depthTest(z, oldZ, depthFunc) {
@@ -700,22 +703,17 @@ func (b *VoodooSoftwareBackend) rasterizeTriangle(tri *VoodooTriangle) {
 					bVal = b.applyDither(bVal, threshold)
 				}
 
-				// Convert to bytes
-				rByte := byte(r * 255)
-				gByte := byte(g * 255)
-				bByte := byte(bVal * 255)
-				aByte := byte(a * 255)
-
 				// Write pixel
 				if rgbWrite {
 					bufIdx := pixelIndex * 4
 					if alphaBlendEnable {
 						// Configurable blending using blend factors
 						srcR, srcG, srcB, srcA := r, g, bVal, a
-						dstR := float32(b.colorBuffer[bufIdx+0]) / 255.0
-						dstG := float32(b.colorBuffer[bufIdx+1]) / 255.0
-						dstB := float32(b.colorBuffer[bufIdx+2]) / 255.0
-						dstA := float32(b.colorBuffer[bufIdx+3]) / 255.0
+						const inv255 = float32(1.0 / 255.0)
+						dstR := float32(b.colorBuffer[bufIdx+0]) * inv255
+						dstG := float32(b.colorBuffer[bufIdx+1]) * inv255
+						dstB := float32(b.colorBuffer[bufIdx+2]) * inv255
+						dstA := float32(b.colorBuffer[bufIdx+3]) * inv255
 
 						// Get blend factors
 						srcFactor := b.getBlendFactor(b.pipelineKey.SrcBlendFactor, srcR, srcG, srcB, srcA, dstR, dstG, dstB, dstA)
@@ -727,15 +725,13 @@ func (b *VoodooSoftwareBackend) rasterizeTriangle(tri *VoodooTriangle) {
 						outB := clampf(srcB*srcFactor+dstB*dstFactor, 0, 1)
 						outA := clampf(srcA*srcFactor+dstA*dstFactor, 0, 1)
 
-						b.colorBuffer[bufIdx+0] = byte(outR * 255)
-						b.colorBuffer[bufIdx+1] = byte(outG * 255)
-						b.colorBuffer[bufIdx+2] = byte(outB * 255)
-						b.colorBuffer[bufIdx+3] = byte(outA * 255)
+						// Write blended pixel as packed uint32 (RGBA)
+						packed := uint32(outR*255) | uint32(outG*255)<<8 | uint32(outB*255)<<16 | uint32(outA*255)<<24
+						*(*uint32)(unsafe.Pointer(&b.colorBuffer[bufIdx])) = packed
 					} else {
-						b.colorBuffer[bufIdx+0] = rByte
-						b.colorBuffer[bufIdx+1] = gByte
-						b.colorBuffer[bufIdx+2] = bByte
-						b.colorBuffer[bufIdx+3] = aByte
+						// Write non-blended pixel as packed uint32 (RGBA) - single memory write
+						packed := uint32(r*255) | uint32(g*255)<<8 | uint32(bVal*255)<<16 | uint32(a*255)<<24
+						*(*uint32)(unsafe.Pointer(&b.colorBuffer[bufIdx])) = packed
 					}
 				}
 
@@ -795,48 +791,60 @@ func (b *VoodooSoftwareBackend) alphaTest(alphaValue, alphaRef float32, alphaFun
 	return true
 }
 
+// abs32 returns absolute value of float32 without float64 conversion
+func abs32(x float32) float32 {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
 // chromaKeyTest checks if a color matches the chroma key (returns true if should discard)
 // Phase 3: Chroma Key support
+// Optimized: uses pure float32 arithmetic instead of math.Abs with float64 conversion
 func (b *VoodooSoftwareBackend) chromaKeyTest(r, g, bVal float32) bool {
 	// Extract RGB from chroma key (packed as 0x00RRGGBB)
-	keyR := float32((b.chromaKey>>16)&0xFF) / 255.0
-	keyG := float32((b.chromaKey>>8)&0xFF) / 255.0
-	keyB := float32(b.chromaKey&0xFF) / 255.0
+	const inv255 = float32(1.0 / 255.0)
+	keyR := float32((b.chromaKey>>16)&0xFF) * inv255
+	keyG := float32((b.chromaKey>>8)&0xFF) * inv255
+	keyB := float32(b.chromaKey&0xFF) * inv255
 
 	// Use a small tolerance for floating point comparison
-	const tolerance = 1.0 / 255.0
+	const tolerance = inv255
 
-	// Check if color matches chroma key within tolerance
-	rMatch := math.Abs(float64(r-keyR)) <= float64(tolerance)
-	gMatch := math.Abs(float64(g-keyG)) <= float64(tolerance)
-	bMatch := math.Abs(float64(bVal-keyB)) <= float64(tolerance)
+	// Check if color matches chroma key within tolerance (pure float32)
+	rMatch := abs32(r-keyR) <= tolerance
+	gMatch := abs32(g-keyG) <= tolerance
+	bMatch := abs32(bVal-keyB) <= tolerance
 
 	return rMatch && gMatch && bMatch
 }
 
 // Phase 6: Dithering support
 
-// 4x4 Bayer ordered dither matrix (normalized to 0.0-1.0 range)
-// Values are threshold offsets that create the characteristic ordered pattern
-var bayer4x4 = [4][4]float32{
-	{0.0 / 16.0, 8.0 / 16.0, 2.0 / 16.0, 10.0 / 16.0},
-	{12.0 / 16.0, 4.0 / 16.0, 14.0 / 16.0, 6.0 / 16.0},
-	{3.0 / 16.0, 11.0 / 16.0, 1.0 / 16.0, 9.0 / 16.0},
-	{15.0 / 16.0, 7.0 / 16.0, 13.0 / 16.0, 5.0 / 16.0},
+// bayer4x4Flat is a flattened 4x4 Bayer ordered dither matrix (normalized 0.0-1.0)
+// Indexed as: bayer4x4Flat[(y&3)<<2 | (x&3)] for O(1) lookup with bitmask
+var bayer4x4Flat = [16]float32{
+	0.0 / 16.0, 8.0 / 16.0, 2.0 / 16.0, 10.0 / 16.0, // y=0
+	12.0 / 16.0, 4.0 / 16.0, 14.0 / 16.0, 6.0 / 16.0, // y=1
+	3.0 / 16.0, 11.0 / 16.0, 1.0 / 16.0, 9.0 / 16.0, // y=2
+	15.0 / 16.0, 7.0 / 16.0, 13.0 / 16.0, 5.0 / 16.0, // y=3
 }
 
-// 2x2 Bayer ordered dither matrix (simpler pattern)
-var bayer2x2 = [2][2]float32{
-	{0.0 / 4.0, 2.0 / 4.0},
-	{3.0 / 4.0, 1.0 / 4.0},
+// bayer2x2Flat is a flattened 2x2 Bayer ordered dither matrix
+// Indexed as: bayer2x2Flat[(y&1)<<1 | (x&1)]
+var bayer2x2Flat = [4]float32{
+	0.0 / 4.0, 2.0 / 4.0, // y=0
+	3.0 / 4.0, 1.0 / 4.0, // y=1
 }
 
 // getDitherThreshold returns the dither threshold for a given pixel position
+// Optimized: uses flattened arrays with bitmask indexing instead of modulo
 func (b *VoodooSoftwareBackend) getDitherThreshold(x, y int, use2x2 bool) float32 {
 	if use2x2 {
-		return bayer2x2[y%2][x%2]
+		return bayer2x2Flat[(y&1)<<1|(x&1)]
 	}
-	return bayer4x4[y%4][x%4]
+	return bayer4x4Flat[(y&3)<<2|(x&3)]
 }
 
 // applyDither applies ordered dithering to a color value
@@ -857,6 +865,9 @@ func (b *VoodooSoftwareBackend) applyDither(value, threshold float32) float32 {
 	return clampf(quantized, 0, 1)
 }
 
+// inv3 is precomputed 1/3 to avoid division in getBlendFactor
+const inv3 = float32(1.0 / 3.0)
+
 // getBlendFactor calculates the blend factor value based on Voodoo blend mode
 func (b *VoodooSoftwareBackend) getBlendFactor(factor int, srcR, srcG, srcB, srcA, dstR, dstG, dstB, dstA float32) float32 {
 	switch factor {
@@ -865,8 +876,8 @@ func (b *VoodooSoftwareBackend) getBlendFactor(factor int, srcR, srcG, srcB, src
 	case VOODOO_BLEND_SRC_ALPHA:
 		return srcA
 	case VOODOO_BLEND_COLOR:
-		// Use average of src color as blend factor (approximation for constant color)
-		return (srcR + srcG + srcB) / 3.0
+		// Use precomputed 1/3 instead of division
+		return (srcR + srcG + srcB) * inv3
 	case VOODOO_BLEND_DST_ALPHA:
 		return dstA
 	case VOODOO_BLEND_ONE:
@@ -874,7 +885,7 @@ func (b *VoodooSoftwareBackend) getBlendFactor(factor int, srcR, srcG, srcB, src
 	case VOODOO_BLEND_INV_SRC_A:
 		return 1.0 - srcA
 	case VOODOO_BLEND_INV_COLOR:
-		return 1.0 - (srcR+srcG+srcB)/3.0
+		return 1.0 - (srcR+srcG+srcB)*inv3
 	case VOODOO_BLEND_INV_DST_A:
 		return 1.0 - dstA
 	case VOODOO_BLEND_SATURATE:
@@ -884,9 +895,8 @@ func (b *VoodooSoftwareBackend) getBlendFactor(factor int, srcR, srcG, srcB, src
 			return srcA
 		}
 		return invDstA
-	default:
-		return 1.0 // Default to ONE
 	}
+	return 1.0 // Default to ONE
 }
 
 // edgeFunction computes the signed area of a parallelogram

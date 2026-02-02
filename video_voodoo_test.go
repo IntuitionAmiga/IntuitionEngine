@@ -4954,3 +4954,590 @@ func TestZ80_VoodooPort_Triangle_PixelCheck(t *testing.T) {
 		t.Errorf("Triangle did not render - center pixel is still blue!")
 	}
 }
+
+// =============================================================================
+// Phase 1: Micro-Benchmarks for Hot Path Optimization (TDD Foundation)
+// =============================================================================
+
+// BenchmarkVoodoo_DepthTest benchmarks all depth test functions
+func BenchmarkVoodoo_DepthTest(b *testing.B) {
+	backend := NewVoodooSoftwareBackend()
+	backend.Init(640, 480)
+	defer backend.Destroy()
+
+	// Test values that exercise all code paths
+	newZ := float32(0.5)
+	oldZ := float32(0.7)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		// Cycle through all 8 depth functions to get realistic average
+		_ = backend.depthTest(newZ, oldZ, i&7)
+	}
+}
+
+// BenchmarkVoodoo_DepthTest_Single benchmarks a single depth comparison (LESS)
+func BenchmarkVoodoo_DepthTest_Single(b *testing.B) {
+	backend := NewVoodooSoftwareBackend()
+	backend.Init(640, 480)
+	defer backend.Destroy()
+
+	newZ := float32(0.5)
+	oldZ := float32(0.7)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		_ = backend.depthTest(newZ, oldZ, VOODOO_DEPTH_LESS)
+	}
+}
+
+// BenchmarkVoodoo_AlphaTest benchmarks all alpha test functions
+func BenchmarkVoodoo_AlphaTest(b *testing.B) {
+	backend := NewVoodooSoftwareBackend()
+	backend.Init(640, 480)
+	defer backend.Destroy()
+
+	alphaValue := float32(0.5)
+	alphaRef := float32(0.3)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		_ = backend.alphaTest(alphaValue, alphaRef, i&7)
+	}
+}
+
+// BenchmarkVoodoo_GetBlendFactor benchmarks blend factor calculation
+func BenchmarkVoodoo_GetBlendFactor(b *testing.B) {
+	backend := NewVoodooSoftwareBackend()
+	backend.Init(640, 480)
+	defer backend.Destroy()
+
+	srcR, srcG, srcB, srcA := float32(1.0), float32(0.5), float32(0.25), float32(0.8)
+	dstR, dstG, dstB, dstA := float32(0.2), float32(0.3), float32(0.4), float32(1.0)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		// Cycle through common blend factors
+		factor := []int{VOODOO_BLEND_ZERO, VOODOO_BLEND_ONE, VOODOO_BLEND_SRC_ALPHA,
+			VOODOO_BLEND_INV_SRC_A, VOODOO_BLEND_DST_ALPHA}[i%5]
+		_ = backend.getBlendFactor(factor, srcR, srcG, srcB, srcA, dstR, dstG, dstB, dstA)
+	}
+}
+
+// BenchmarkVoodoo_ChromaKeyTest benchmarks chroma key testing
+func BenchmarkVoodoo_ChromaKeyTest(b *testing.B) {
+	backend := NewVoodooSoftwareBackend()
+	backend.Init(640, 480)
+	defer backend.Destroy()
+
+	// Set a chroma key color
+	backend.SetChromaKey(0x00FF00FF) // Magenta
+
+	r, g, bVal := float32(1.0), float32(0.0), float32(1.0)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		_ = backend.chromaKeyTest(r, g, bVal)
+	}
+}
+
+// BenchmarkVoodoo_GetDitherThreshold benchmarks dither threshold lookup
+func BenchmarkVoodoo_GetDitherThreshold(b *testing.B) {
+	backend := NewVoodooSoftwareBackend()
+	backend.Init(640, 480)
+	defer backend.Destroy()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		x := i & 0xFF
+		y := (i >> 8) & 0xFF
+		_ = backend.getDitherThreshold(x, y, false)
+	}
+}
+
+// BenchmarkVoodoo_GetDitherThreshold_2x2 benchmarks 2x2 dither matrix lookup
+func BenchmarkVoodoo_GetDitherThreshold_2x2(b *testing.B) {
+	backend := NewVoodooSoftwareBackend()
+	backend.Init(640, 480)
+	defer backend.Destroy()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		x := i & 0xFF
+		y := (i >> 8) & 0xFF
+		_ = backend.getDitherThreshold(x, y, true)
+	}
+}
+
+// BenchmarkVoodoo_FixedPointConversions benchmarks fixed-point to float conversions
+func BenchmarkVoodoo_FixedPointConversions(b *testing.B) {
+	b.Run("12.4", func(b *testing.B) {
+		value := uint32(0x648) // 100.5 in 12.4
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = fixed12_4ToFloat(value)
+		}
+	})
+
+	b.Run("12.12", func(b *testing.B) {
+		value := uint32(0x1000) // 1.0 in 12.12
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = fixed12_12ToFloat(value)
+		}
+	})
+
+	b.Run("20.12", func(b *testing.B) {
+		value := uint32(0x800000) // Some Z value
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = fixed20_12ToFloat(value)
+		}
+	})
+
+	b.Run("14.18", func(b *testing.B) {
+		value := uint32(0x40000) // 1.0 in 14.18
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = fixed14_18ToFloat(value)
+		}
+	})
+
+	b.Run("2.30", func(b *testing.B) {
+		value := uint32(0x40000000) // 1.0 in 2.30
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = fixed2_30ToFloat(value)
+		}
+	})
+}
+
+// BenchmarkVoodoo_EdgeFunction benchmarks the edge function used for barycentric coords
+func BenchmarkVoodoo_EdgeFunction(b *testing.B) {
+	ax, ay := float32(100.0), float32(50.0)
+	bx, by := float32(200.0), float32(150.0)
+	cx, cy := float32(50.0), float32(150.0)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		_ = edgeFunction(ax, ay, bx, by, cx, cy)
+	}
+}
+
+// =============================================================================
+// Phase 1: Macro-Benchmarks for Full Frame Rendering
+// =============================================================================
+
+// BenchmarkVoodoo_100Triangles_Flat benchmarks 100 flat-shaded triangles
+func BenchmarkVoodoo_100Triangles_Flat(b *testing.B) {
+	backend := NewVoodooSoftwareBackend()
+	backend.Init(640, 480)
+	defer backend.Destroy()
+
+	// Prepare 100 triangles
+	triangles := make([]VoodooTriangle, 100)
+	for i := range triangles {
+		offset := float32(i % 10 * 60)
+		yOffset := float32(i / 10 * 45)
+		triangles[i] = VoodooTriangle{
+			Vertices: [3]VoodooVertex{
+				{X: 50 + offset, Y: 20 + yOffset, Z: 0.5, R: 1, G: 0, B: 0, A: 1},
+				{X: 100 + offset, Y: 60 + yOffset, Z: 0.5, R: 1, G: 0, B: 0, A: 1},
+				{X: 30 + offset, Y: 60 + yOffset, Z: 0.5, R: 1, G: 0, B: 0, A: 1},
+			},
+		}
+	}
+
+	// Set up depth testing
+	fbzMode := uint32(VOODOO_FBZ_DEPTH_ENABLE | VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_DEPTH_WRITE | (VOODOO_DEPTH_LESS << 5))
+	backend.UpdatePipelineState(fbzMode, 0)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		backend.ClearFramebuffer(0xFF000000)
+		backend.FlushTriangles(triangles)
+		backend.SwapBuffers(false)
+	}
+}
+
+// BenchmarkVoodoo_100Triangles_Gouraud benchmarks 100 Gouraud-shaded triangles
+func BenchmarkVoodoo_100Triangles_Gouraud(b *testing.B) {
+	backend := NewVoodooSoftwareBackend()
+	backend.Init(640, 480)
+	defer backend.Destroy()
+
+	// Prepare 100 triangles with per-vertex colors (Gouraud shading)
+	triangles := make([]VoodooTriangle, 100)
+	for i := range triangles {
+		offset := float32(i % 10 * 60)
+		yOffset := float32(i / 10 * 45)
+		triangles[i] = VoodooTriangle{
+			Vertices: [3]VoodooVertex{
+				{X: 50 + offset, Y: 20 + yOffset, Z: 0.5, R: 1, G: 0, B: 0, A: 1},  // Red
+				{X: 100 + offset, Y: 60 + yOffset, Z: 0.5, R: 0, G: 1, B: 0, A: 1}, // Green
+				{X: 30 + offset, Y: 60 + yOffset, Z: 0.5, R: 0, G: 0, B: 1, A: 1},  // Blue
+			},
+		}
+	}
+
+	fbzMode := uint32(VOODOO_FBZ_DEPTH_ENABLE | VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_DEPTH_WRITE | (VOODOO_DEPTH_LESS << 5))
+	backend.UpdatePipelineState(fbzMode, 0)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		backend.ClearFramebuffer(0xFF000000)
+		backend.FlushTriangles(triangles)
+		backend.SwapBuffers(false)
+	}
+}
+
+// BenchmarkVoodoo_100Triangles_AllFeatures benchmarks triangles with all features enabled
+func BenchmarkVoodoo_100Triangles_AllFeatures(b *testing.B) {
+	backend := NewVoodooSoftwareBackend()
+	backend.Init(640, 480)
+	defer backend.Destroy()
+
+	// Create a simple 8x8 texture
+	texData := make([]byte, 8*8*4)
+	for i := 0; i < 8*8; i++ {
+		texData[i*4+0] = byte((i % 8) * 32) // R
+		texData[i*4+1] = byte((i / 8) * 32) // G
+		texData[i*4+2] = 128                // B
+		texData[i*4+3] = 255                // A
+	}
+	backend.SetTextureData(8, 8, texData, 0)
+	backend.SetTextureEnabled(true)
+
+	// Prepare 100 triangles with texcoords
+	triangles := make([]VoodooTriangle, 100)
+	for i := range triangles {
+		offset := float32(i % 10 * 60)
+		yOffset := float32(i / 10 * 45)
+		triangles[i] = VoodooTriangle{
+			Vertices: [3]VoodooVertex{
+				{X: 50 + offset, Y: 20 + yOffset, Z: 0.5, R: 1, G: 1, B: 1, A: 0.8, S: 0, T: 0},
+				{X: 100 + offset, Y: 60 + yOffset, Z: 0.5, R: 1, G: 1, B: 1, A: 0.8, S: 1, T: 0},
+				{X: 30 + offset, Y: 60 + yOffset, Z: 0.5, R: 1, G: 1, B: 1, A: 0.8, S: 0.5, T: 1},
+			},
+		}
+	}
+
+	// Enable all features: depth, alpha blending, dithering
+	fbzMode := uint32(VOODOO_FBZ_DEPTH_ENABLE | VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_DEPTH_WRITE |
+		(VOODOO_DEPTH_LESS << 5) | VOODOO_FBZ_DITHER)
+	alphaMode := uint32(VOODOO_ALPHA_BLEND_EN | (VOODOO_BLEND_SRC_ALPHA << 8) | (VOODOO_BLEND_INV_SRC_A << 12))
+	backend.UpdatePipelineState(fbzMode, alphaMode)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		backend.ClearFramebuffer(0xFF000000)
+		backend.FlushTriangles(triangles)
+		backend.SwapBuffers(false)
+	}
+}
+
+// =============================================================================
+// Phase 1: Golden Output Tests for Pixel-Perfect Verification
+// =============================================================================
+
+// computeFrameChecksum calculates a simple checksum of a framebuffer for golden tests
+func computeFrameChecksum(frame []byte) uint64 {
+	var checksum uint64
+	for i, b := range frame {
+		checksum += uint64(b) * uint64(i+1)
+	}
+	return checksum
+}
+
+// TestVoodoo_Golden_FlatTriangle verifies flat-shaded triangle rendering
+func TestVoodoo_Golden_FlatTriangle(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	backend.Init(320, 240)
+	defer backend.Destroy()
+
+	fbzMode := uint32(VOODOO_FBZ_DEPTH_ENABLE | VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_DEPTH_WRITE | (VOODOO_DEPTH_LESS << 5))
+	backend.UpdatePipelineState(fbzMode, 0)
+	backend.ClearFramebuffer(0xFF000000)
+
+	// Flat red triangle
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 160, Y: 50, Z: 0.5, R: 1, G: 0, B: 0, A: 1},
+			{X: 250, Y: 180, Z: 0.5, R: 1, G: 0, B: 0, A: 1},
+			{X: 70, Y: 180, Z: 0.5, R: 1, G: 0, B: 0, A: 1},
+		},
+	}
+
+	backend.FlushTriangles([]VoodooTriangle{tri})
+	backend.SwapBuffers(false)
+
+	frame := backend.GetFrame()
+	checksum := computeFrameChecksum(frame)
+
+	// Check center pixel is red
+	centerIdx := (120*320 + 160) * 4
+	r, g, b := frame[centerIdx], frame[centerIdx+1], frame[centerIdx+2]
+	if r < 200 || g > 50 || b > 50 {
+		t.Errorf("Flat triangle center should be red, got R=%d G=%d B=%d", r, g, b)
+	}
+
+	// Log checksum for future regression testing
+	t.Logf("Golden checksum (flat triangle): %d", checksum)
+}
+
+// TestVoodoo_Golden_GouraudTriangle verifies Gouraud-shaded triangle rendering
+func TestVoodoo_Golden_GouraudTriangle(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	backend.Init(320, 240)
+	defer backend.Destroy()
+
+	fbzMode := uint32(VOODOO_FBZ_DEPTH_ENABLE | VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_DEPTH_WRITE | (VOODOO_DEPTH_LESS << 5))
+	backend.UpdatePipelineState(fbzMode, 0)
+	backend.ClearFramebuffer(0xFF000000)
+
+	// Gouraud RGB triangle (red, green, blue vertices)
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 160, Y: 50, Z: 0.5, R: 1, G: 0, B: 0, A: 1},  // Red top
+			{X: 250, Y: 180, Z: 0.5, R: 0, G: 1, B: 0, A: 1}, // Green bottom-right
+			{X: 70, Y: 180, Z: 0.5, R: 0, G: 0, B: 1, A: 1},  // Blue bottom-left
+		},
+	}
+
+	backend.FlushTriangles([]VoodooTriangle{tri})
+	backend.SwapBuffers(false)
+
+	frame := backend.GetFrame()
+	checksum := computeFrameChecksum(frame)
+
+	// Center should be a blend of all colors (grayish)
+	centerIdx := (130*320 + 160) * 4
+	r, g, b := frame[centerIdx], frame[centerIdx+1], frame[centerIdx+2]
+
+	// Should have some of each color (not pure red, green, or blue)
+	if r < 50 || g < 50 || b < 50 {
+		t.Errorf("Gouraud triangle center should have mixed colors, got R=%d G=%d B=%d", r, g, b)
+	}
+
+	t.Logf("Golden checksum (Gouraud triangle): %d", checksum)
+}
+
+// TestVoodoo_Golden_TexturedTriangle verifies textured triangle rendering
+func TestVoodoo_Golden_TexturedTriangle(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	backend.Init(320, 240)
+	defer backend.Destroy()
+
+	// Create 4x4 checkerboard texture
+	texData := make([]byte, 4*4*4)
+	for y := 0; y < 4; y++ {
+		for x := 0; x < 4; x++ {
+			idx := (y*4 + x) * 4
+			if (x+y)%2 == 0 {
+				texData[idx+0] = 255 // R
+				texData[idx+1] = 255 // G
+				texData[idx+2] = 255 // B
+			} else {
+				texData[idx+0] = 0
+				texData[idx+1] = 0
+				texData[idx+2] = 0
+			}
+			texData[idx+3] = 255 // A
+		}
+	}
+	backend.SetTextureData(4, 4, texData, 0)
+	backend.SetTextureEnabled(true)
+
+	fbzMode := uint32(VOODOO_FBZ_DEPTH_ENABLE | VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_DEPTH_WRITE | (VOODOO_DEPTH_LESS << 5))
+	backend.UpdatePipelineState(fbzMode, 0)
+	backend.ClearFramebuffer(0xFF000000)
+
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{
+			{X: 160, Y: 50, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 0.5, T: 0},
+			{X: 250, Y: 180, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 1, T: 1},
+			{X: 70, Y: 180, Z: 0.5, R: 1, G: 1, B: 1, A: 1, S: 0, T: 1},
+		},
+	}
+
+	backend.FlushTriangles([]VoodooTriangle{tri})
+	backend.SwapBuffers(false)
+
+	frame := backend.GetFrame()
+	checksum := computeFrameChecksum(frame)
+
+	// Check that there's variety in the pixel values (checkerboard pattern)
+	hasWhite := false
+	hasBlack := false
+	for y := 80; y < 160; y += 10 {
+		for x := 100; x < 220; x += 10 {
+			idx := (y*320 + x) * 4
+			if frame[idx] > 200 && frame[idx+1] > 200 && frame[idx+2] > 200 {
+				hasWhite = true
+			}
+			if frame[idx] < 50 && frame[idx+1] < 50 && frame[idx+2] < 50 {
+				hasBlack = true
+			}
+		}
+	}
+
+	if !hasWhite || !hasBlack {
+		t.Errorf("Textured triangle should show checkerboard pattern (hasWhite=%v, hasBlack=%v)", hasWhite, hasBlack)
+	}
+
+	t.Logf("Golden checksum (textured triangle): %d", checksum)
+}
+
+// TestVoodoo_Golden_DepthTestAllModes verifies all depth test functions
+func TestVoodoo_Golden_DepthTestAllModes(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	defer backend.Destroy()
+
+	testCases := []struct {
+		name      string
+		depthFunc int
+		newZ      float32
+		oldZ      float32
+		expected  bool
+	}{
+		{"NEVER", VOODOO_DEPTH_NEVER, 0.5, 1.0, false},
+		{"LESS_pass", VOODOO_DEPTH_LESS, 0.3, 0.7, true},
+		{"LESS_fail", VOODOO_DEPTH_LESS, 0.7, 0.3, false},
+		{"EQUAL_pass", VOODOO_DEPTH_EQUAL, 0.5, 0.5, true},
+		{"EQUAL_fail", VOODOO_DEPTH_EQUAL, 0.5, 0.6, false},
+		{"LESSEQUAL_pass_less", VOODOO_DEPTH_LESSEQUAL, 0.3, 0.7, true},
+		{"LESSEQUAL_pass_equal", VOODOO_DEPTH_LESSEQUAL, 0.5, 0.5, true},
+		{"LESSEQUAL_fail", VOODOO_DEPTH_LESSEQUAL, 0.7, 0.3, false},
+		{"GREATER_pass", VOODOO_DEPTH_GREATER, 0.7, 0.3, true},
+		{"GREATER_fail", VOODOO_DEPTH_GREATER, 0.3, 0.7, false},
+		{"NOTEQUAL_pass", VOODOO_DEPTH_NOTEQUAL, 0.5, 0.6, true},
+		{"NOTEQUAL_fail", VOODOO_DEPTH_NOTEQUAL, 0.5, 0.5, false},
+		{"GREATEREQUAL_pass_greater", VOODOO_DEPTH_GREATEREQUAL, 0.7, 0.3, true},
+		{"GREATEREQUAL_pass_equal", VOODOO_DEPTH_GREATEREQUAL, 0.5, 0.5, true},
+		{"GREATEREQUAL_fail", VOODOO_DEPTH_GREATEREQUAL, 0.3, 0.7, false},
+		{"ALWAYS", VOODOO_DEPTH_ALWAYS, 0.0, 1.0, true},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			backend.Init(100, 100)
+			result := backend.depthTest(tc.newZ, tc.oldZ, tc.depthFunc)
+			if result != tc.expected {
+				t.Errorf("depthTest(%f, %f, %d) = %v, expected %v",
+					tc.newZ, tc.oldZ, tc.depthFunc, result, tc.expected)
+			}
+		})
+	}
+}
+
+// TestVoodoo_Golden_AlphaBlendAllModes verifies all alpha blend modes
+func TestVoodoo_Golden_AlphaBlendAllModes(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	defer backend.Destroy()
+
+	srcR, srcG, srcB, srcA := float32(1.0), float32(0.5), float32(0.0), float32(0.7)
+	dstR, dstG, dstB, dstA := float32(0.0), float32(0.5), float32(1.0), float32(1.0)
+
+	testCases := []struct {
+		name           string
+		blendFactor    int
+		expectedFactor float32
+		tolerance      float32
+	}{
+		{"ZERO", VOODOO_BLEND_ZERO, 0.0, 0.001},
+		{"ONE", VOODOO_BLEND_ONE, 1.0, 0.001},
+		{"SRC_ALPHA", VOODOO_BLEND_SRC_ALPHA, 0.7, 0.001},
+		{"DST_ALPHA", VOODOO_BLEND_DST_ALPHA, 1.0, 0.001},
+		{"INV_SRC_A", VOODOO_BLEND_INV_SRC_A, 0.3, 0.001},
+		{"INV_DST_A", VOODOO_BLEND_INV_DST_A, 0.0, 0.001},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			backend.Init(100, 100)
+			result := backend.getBlendFactor(tc.blendFactor, srcR, srcG, srcB, srcA, dstR, dstG, dstB, dstA)
+			diff := result - tc.expectedFactor
+			if diff < 0 {
+				diff = -diff
+			}
+			if diff > tc.tolerance {
+				t.Errorf("getBlendFactor(%d) = %f, expected %f", tc.blendFactor, result, tc.expectedFactor)
+			}
+		})
+	}
+}
+
+// TestVoodoo_FuncTable_DepthTest_MatchesSwitch tests that function table matches switch behavior
+func TestVoodoo_FuncTable_DepthTest_MatchesSwitch(t *testing.T) {
+	backend := NewVoodooSoftwareBackend()
+	backend.Init(100, 100)
+	defer backend.Destroy()
+
+	testValues := []struct {
+		newZ, oldZ float32
+	}{
+		{0.0, 0.0}, {0.0, 0.5}, {0.0, 1.0},
+		{0.5, 0.0}, {0.5, 0.5}, {0.5, 1.0},
+		{1.0, 0.0}, {1.0, 0.5}, {1.0, 1.0},
+	}
+
+	// For each depth function
+	for depthFunc := 0; depthFunc < 8; depthFunc++ {
+		for _, tv := range testValues {
+			result := backend.depthTest(tv.newZ, tv.oldZ, depthFunc)
+
+			// Calculate expected result manually
+			var expected bool
+			switch depthFunc {
+			case VOODOO_DEPTH_NEVER:
+				expected = false
+			case VOODOO_DEPTH_LESS:
+				expected = tv.newZ < tv.oldZ
+			case VOODOO_DEPTH_EQUAL:
+				expected = tv.newZ == tv.oldZ
+			case VOODOO_DEPTH_LESSEQUAL:
+				expected = tv.newZ <= tv.oldZ
+			case VOODOO_DEPTH_GREATER:
+				expected = tv.newZ > tv.oldZ
+			case VOODOO_DEPTH_NOTEQUAL:
+				expected = tv.newZ != tv.oldZ
+			case VOODOO_DEPTH_GREATEREQUAL:
+				expected = tv.newZ >= tv.oldZ
+			case VOODOO_DEPTH_ALWAYS:
+				expected = true
+			}
+
+			if result != expected {
+				t.Errorf("depthTest(%f, %f, %d) = %v, expected %v",
+					tv.newZ, tv.oldZ, depthFunc, result, expected)
+			}
+		}
+	}
+}

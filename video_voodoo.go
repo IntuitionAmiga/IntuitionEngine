@@ -240,6 +240,20 @@ func (v *VoodooEngine) HandleWrite(addr uint32, value uint32) {
 	v.mutex.Lock()
 	defer v.mutex.Unlock()
 
+	// Handle texture memory writes (separate address range)
+	if addr >= VOODOO_TEXMEM_BASE && addr < VOODOO_TEXMEM_BASE+VOODOO_TEXMEM_SIZE {
+		offset := addr - VOODOO_TEXMEM_BASE
+		// Bounds check for 4-byte write
+		if offset+4 <= VOODOO_TEXMEM_SIZE {
+			// Store as little-endian
+			v.textureMemory[offset] = byte(value)
+			v.textureMemory[offset+1] = byte(value >> 8)
+			v.textureMemory[offset+2] = byte(value >> 16)
+			v.textureMemory[offset+3] = byte(value >> 24)
+		}
+		return
+	}
+
 	// Store in shadow register
 	regIndex := (addr - VOODOO_BASE) / 4
 	if regIndex < 256 {
@@ -520,19 +534,27 @@ func (v *VoodooEngine) getStatus() uint32 {
 }
 
 // Fixed-point conversion functions
+// Pre-computed inverse constants for multiplication (faster than division)
+const (
+	inv12_4  = float32(1.0) / float32(1<<VOODOO_FIXED_12_4_SHIFT)  // 1/16 = 0.0625
+	inv12_12 = float32(1.0) / float32(1<<VOODOO_FIXED_12_12_SHIFT) // 1/4096
+	inv20_12 = float32(1.0) / float32(1<<VOODOO_FIXED_20_12_SHIFT) // 1/4096
+	inv14_18 = float32(1.0) / float32(1<<VOODOO_FIXED_14_18_SHIFT) // 1/262144
+	inv2_30  = float32(1.0) / float32(1<<VOODOO_FIXED_2_30_SHIFT)  // 1/1073741824
+)
 
 // fixed12_4ToFloat converts 12.4 fixed-point to float32 (vertex coords)
 func fixed12_4ToFloat(value uint32) float32 {
 	// Sign-extend from 16 bits
 	signed := int32(int16(value & 0xFFFF))
-	return float32(signed) / float32(1<<VOODOO_FIXED_12_4_SHIFT)
+	return float32(signed) * inv12_4
 }
 
 // fixed12_12ToFloat converts 12.12 fixed-point to float32 (colors)
 // Result is in 0.0-1.0 range for colors (assuming max input is 255.0)
 func fixed12_12ToFloat(value uint32) float32 {
 	signed := int32(value)
-	f := float32(signed) / float32(1<<VOODOO_FIXED_12_12_SHIFT)
+	f := float32(signed) * inv12_12
 	// Clamp to 0.0-1.0 range for colors
 	if f < 0 {
 		return 0
@@ -546,19 +568,19 @@ func fixed12_12ToFloat(value uint32) float32 {
 // fixed20_12ToFloat converts 20.12 fixed-point to float32 (Z coordinate)
 func fixed20_12ToFloat(value uint32) float32 {
 	signed := int32(value)
-	return float32(signed) / float32(1<<VOODOO_FIXED_20_12_SHIFT)
+	return float32(signed) * inv20_12
 }
 
 // fixed14_18ToFloat converts 14.18 fixed-point to float32 (texture coords)
 func fixed14_18ToFloat(value uint32) float32 {
 	signed := int32(value)
-	return float32(signed) / float32(1<<VOODOO_FIXED_14_18_SHIFT)
+	return float32(signed) * inv14_18
 }
 
 // fixed2_30ToFloat converts 2.30 fixed-point to float32 (W coordinate)
 func fixed2_30ToFloat(value uint32) float32 {
 	signed := int32(value)
-	return float32(signed) / float32(1<<VOODOO_FIXED_2_30_SHIFT)
+	return float32(signed) * inv2_30
 }
 
 // VideoSource interface implementation
