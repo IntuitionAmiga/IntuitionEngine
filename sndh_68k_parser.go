@@ -65,14 +65,12 @@ func isSNDH(data []byte) bool {
 	return false
 }
 
+// sndhMagic is the pre-allocated magic signature to avoid per-call allocation
+var sndhMagic = []byte("SNDH")
+
 // findSNDHMagic locates the "SNDH" magic in the data
 func findSNDHMagic(data []byte) int {
-	for i := 0; i < len(data)-4; i++ {
-		if bytes.Equal(data[i:i+4], []byte("SNDH")) {
-			return i
-		}
-	}
-	return -1
+	return bytes.Index(data, sndhMagic)
 }
 
 // ParseSNDHData parses SNDH data (handles ICE decompression if needed)

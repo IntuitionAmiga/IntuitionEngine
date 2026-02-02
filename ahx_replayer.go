@@ -3,6 +3,25 @@
 
 package main
 
+// Pre-computed constants for AHX waveform processing
+const (
+	// filterBlockSize is the stride between filter positions in the waveform buffer
+	// Formula: 0xfc + 0xfc + 0x80*0x1f + 0x80 + 0x280*3 = 252 + 252 + 3968 + 128 + 1920 = 6520
+	ahxFilterBlockSize = 0xfc + 0xfc + 0x80*0x1f + 0x80 + 0x280*3
+)
+
+// ahxWaveLengthOffsets maps WaveLength (0-5) to cumulative offsets within a filter block
+// These are the byte offsets for triangle/sawtooth waveforms of different lengths:
+// WaveLength 0 = 4 bytes, 1 = 8 bytes, 2 = 16 bytes, 3 = 32 bytes, 4 = 64 bytes, 5 = 128 bytes
+var ahxWaveLengthOffsets = [6]int{
+	0x00,                             // WaveLength 0: offset 0
+	0x04,                             // WaveLength 1: offset 4
+	0x04 + 0x08,                      // WaveLength 2: offset 12
+	0x04 + 0x08 + 0x10,               // WaveLength 3: offset 28
+	0x04 + 0x08 + 0x10 + 0x20,        // WaveLength 4: offset 60
+	0x04 + 0x08 + 0x10 + 0x20 + 0x40, // WaveLength 5: offset 124
+}
+
 // AHXVoice represents the state of a single AHX voice
 type AHXVoice struct {
 	// Output (read by mixer)
@@ -729,7 +748,7 @@ func (r *AHXReplayer) ProcessFrame(v int) {
 	// Calculate square waveform
 	if voice.Waveform == 3-1 || voice.PlantSquare != 0 {
 		// Get base square from filter position
-		squareOffset := (voice.FilterPos - 0x20) * (0xfc + 0xfc + 0x80*0x1f + 0x80 + 0x280*3)
+		squareOffset := (voice.FilterPos - 0x20) * ahxFilterBlockSize
 		x := voice.SquarePos << (5 - voice.WaveLength)
 		if x > 0x20 {
 			x = 0x40 - x
@@ -763,13 +782,12 @@ func (r *AHXReplayer) ProcessFrame(v int) {
 		audioSource := r.WaveformTab[voice.Waveform]
 		if voice.Waveform != 3-1 {
 			// Apply filter offset
-			filterOffset := (voice.FilterPos - 0x20) * (0xfc + 0xfc + 0x80*0x1f + 0x80 + 0x280*3)
+			filterOffset := (voice.FilterPos - 0x20) * ahxFilterBlockSize
 			if filterOffset >= 0 && filterOffset < len(r.Waves.LowPasses) {
 				if voice.Waveform < 3-1 {
 					// Triangle or sawtooth - get from lowpass buffer
-					offsets := []int{0x00, 0x04, 0x04 + 0x08, 0x04 + 0x08 + 0x10, 0x04 + 0x08 + 0x10 + 0x20, 0x04 + 0x08 + 0x10 + 0x20 + 0x40}
-					if voice.WaveLength < len(offsets) {
-						filterOffset += offsets[voice.WaveLength]
+					if voice.WaveLength < len(ahxWaveLengthOffsets) {
+						filterOffset += ahxWaveLengthOffsets[voice.WaveLength]
 					}
 				}
 			}

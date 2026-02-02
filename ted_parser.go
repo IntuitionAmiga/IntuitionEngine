@@ -119,10 +119,9 @@ func detectTEDFormat(data []byte) (TEDFormat, int) {
 	}
 
 	// Search for TEDMUSIC signature anywhere (HVTC/Legacy format)
-	for i := 0; i <= len(data)-len(sig); i++ {
-		if bytes.Equal(data[i:i+len(sig)], sig) {
-			return TEDFormatHVTC, i
-		}
+	// Use bytes.Index for O(n) search instead of manual O(n*m) loop
+	if idx := bytes.Index(data, sig); idx >= 0 {
+		return TEDFormatHVTC, idx
 	}
 
 	// No signature found - raw PRG format
@@ -315,27 +314,24 @@ func parseTEDMUSICHeader(data []byte, sigPos int, file *TEDFile) error {
 // parseMetadataString parses a metadata string with encoding conversion
 // isTMF=true uses Latin-1 encoding, isTMF=false converts from PETSCII
 func parseMetadataString(data []byte, isTMF bool) string {
-	// Find first null byte
-	end := len(data)
-	for i, b := range data {
-		if b == 0 {
-			end = i
-			break
-		}
+	// Find first null byte using bytes.IndexByte
+	end := bytes.IndexByte(data, 0)
+	if end < 0 {
+		end = len(data)
 	}
 
 	if isTMF {
 		// TMF format uses Latin-1 (ISO-8859-1) encoding
-		// Convert Latin-1 to UTF-8
-		result := make([]rune, 0, end)
+		// Convert Latin-1 to UTF-8 - pre-allocate exact size
+		result := make([]rune, end)
 		for i := 0; i < end; i++ {
-			result = append(result, rune(data[i]))
+			result[i] = rune(data[i])
 		}
 		return strings.TrimRight(string(result), " ")
 	}
 
 	// HVTC/Legacy format may use PETSCII
-	// Convert PETSCII to ASCII/UTF-8
+	// Convert PETSCII to ASCII/UTF-8 - pre-allocate buffer
 	result := make([]byte, 0, end)
 	for i := 0; i < end; i++ {
 		b := data[i]
@@ -355,15 +351,11 @@ func parseMetadataString(data []byte, isTMF bool) string {
 		case b == 0x0D:
 			// Carriage return -> space
 			result = append(result, ' ')
-		default:
-			// Skip non-printable characters
-			if b >= 0x80 {
-				// Try to map high characters to printable equivalents
-				if b >= 0xA0 && b <= 0xBF {
-					result = append(result, b-0x80)
-				}
-			}
+		case b >= 0xA0 && b <= 0xBF:
+			// High characters to printable equivalents
+			result = append(result, b-0x80)
 		}
+		// Skip other non-printable characters
 	}
 	return strings.TrimRight(string(result), " ")
 }

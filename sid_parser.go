@@ -106,9 +106,13 @@ func ParseSIDData(data []byte) (*SIDFile, error) {
 		return nil, errors.New("SID data offset beyond file length")
 	}
 
+	// Allocate exact size instead of using append idiom
+	sidData := make([]byte, len(data)-dataStart)
+	copy(sidData, data[dataStart:])
+
 	file := &SIDFile{
 		Header: header,
-		Data:   append([]byte(nil), data[dataStart:]...),
+		Data:   sidData,
 	}
 
 	return file, nil

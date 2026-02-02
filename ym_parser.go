@@ -47,9 +47,14 @@ func ParseYMFile(path string) (*YMFile, error) {
 	return ym, nil
 }
 
-func psgDebugEnabledYM() bool {
+// ymPsgDebugEnabled caches the PSG_DEBUG environment variable at init time
+var ymPsgDebugEnabled = func() bool {
 	value := strings.ToLower(os.Getenv("PSG_DEBUG"))
 	return value == "1" || value == "true" || value == "yes"
+}()
+
+func psgDebugEnabledYM() bool {
+	return ymPsgDebugEnabled
 }
 
 func parseYMData(data []byte) (*YMFile, error) {
@@ -165,15 +170,11 @@ func parseYMData(data []byte) (*YMFile, error) {
 	if frameCount < 0 {
 		return nil, fmt.Errorf("invalid frame count")
 	}
-	frames := make([][]uint8, frameCount)
-	for i := range frames {
-		frames[i] = make([]uint8, PSG_REG_COUNT)
-	}
 
 	frameDataStart := off
 	remaining := data[frameDataStart:]
-	expected16 := int(nbFrames) * ymFrameRegisters
-	expected14 := int(nbFrames) * ymLegacyRegisters
+	expected16 := frameCount * ymFrameRegisters
+	expected14 := frameCount * ymLegacyRegisters
 	frameRegCount := ymFrameRegisters
 	expected := expected16
 
@@ -186,17 +187,23 @@ func parseYMData(data []byte) (*YMFile, error) {
 		}
 	}
 
+	// Allocate single contiguous buffer for all frames
+	buffer := make([]uint8, frameCount*PSG_REG_COUNT)
+	frames := make([][]uint8, frameCount)
+	for i := 0; i < frameCount; i++ {
+		start := i * PSG_REG_COUNT
+		frames[i] = buffer[start : start+PSG_REG_COUNT : start+PSG_REG_COUNT]
+	}
+
 	if interleaved {
-		for reg := 0; reg < frameRegCount; reg++ {
-			base := reg * int(nbFrames)
-			for frame := 0; frame < int(nbFrames); frame++ {
-				if reg < PSG_REG_COUNT {
-					frames[frame][reg] = remaining[base+frame]
-				}
+		for reg := 0; reg < frameRegCount && reg < PSG_REG_COUNT; reg++ {
+			base := reg * frameCount
+			for frame := 0; frame < frameCount; frame++ {
+				frames[frame][reg] = remaining[base+frame]
 			}
 		}
 	} else {
-		for frame := 0; frame < int(nbFrames); frame++ {
+		for frame := 0; frame < frameCount; frame++ {
 			start := frame * frameRegCount
 			copy(frames[frame], remaining[start:start+PSG_REG_COUNT])
 		}

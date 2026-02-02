@@ -35,11 +35,16 @@ func ParseAYData(data []byte) (*AYFile, error) {
 	}
 
 	frameCount := len(data) / PSG_REG_COUNT
+
+	// Allocate single contiguous buffer for all frames
+	buffer := make([]uint8, len(data))
+	copy(buffer, data)
+
+	// Create slice headers pointing into the contiguous buffer
 	frames := make([][]uint8, frameCount)
 	for i := 0; i < frameCount; i++ {
 		start := i * PSG_REG_COUNT
-		frames[i] = make([]uint8, PSG_REG_COUNT)
-		copy(frames[i], data[start:start+PSG_REG_COUNT])
+		frames[i] = buffer[start : start+PSG_REG_COUNT : start+PSG_REG_COUNT]
 	}
 
 	return &AYFile{

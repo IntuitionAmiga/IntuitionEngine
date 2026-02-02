@@ -111,39 +111,59 @@ func ParseSAPData(data []byte) (*SAPFile, error) {
 
 // parseHeader parses the text header portion of a SAP file
 func parseHeader(data []byte, header *SAPHeader) error {
-	// Normalize line endings
-	text := string(data)
-	text = strings.ReplaceAll(text, "\r\n", "\n")
-	lines := strings.Split(text, "\n")
+	// Process line by line without allocating entire slice
+	pos := 0
+	for pos < len(data) {
+		// Find end of line
+		lineEnd := pos
+		for lineEnd < len(data) && data[lineEnd] != '\n' {
+			lineEnd++
+		}
 
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || line == "SAP" {
+		// Get line, trimming \r if present
+		line := data[pos:lineEnd]
+		if len(line) > 0 && line[len(line)-1] == '\r' {
+			line = line[:len(line)-1]
+		}
+
+		// Trim leading/trailing spaces
+		line = bytes.TrimSpace(line)
+
+		// Skip empty lines and SAP marker
+		if len(line) == 0 || bytes.Equal(line, []byte("SAP")) {
+			pos = lineEnd + 1
 			continue
 		}
 
-		// Split tag and value
-		parts := strings.SplitN(line, " ", 2)
-		tag := parts[0]
-		value := ""
-		if len(parts) > 1 {
-			value = strings.TrimSpace(parts[1])
+		// Find tag/value separator (first space)
+		spaceIdx := bytes.IndexByte(line, ' ')
+		var tag, value []byte
+		if spaceIdx >= 0 {
+			tag = line[:spaceIdx]
+			value = bytes.TrimSpace(line[spaceIdx+1:])
+		} else {
+			tag = line
+			value = nil
 		}
 
-		switch tag {
+		// Convert tag to string for switch (small allocation, unavoidable for now)
+		tagStr := string(tag)
+		valueStr := string(value)
+
+		switch tagStr {
 		case "AUTHOR":
-			header.Author = parseQuotedString(value)
+			header.Author = parseQuotedString(valueStr)
 		case "NAME":
-			header.Name = parseQuotedString(value)
+			header.Name = parseQuotedString(valueStr)
 		case "DATE":
-			header.Date = parseQuotedString(value)
+			header.Date = parseQuotedString(valueStr)
 		case "SONGS":
-			n, _ := strconv.Atoi(value)
+			n, _ := strconv.Atoi(valueStr)
 			if n > 0 {
 				header.Songs = n
 			}
 		case "DEFSONG":
-			n, _ := strconv.Atoi(value)
+			n, _ := strconv.Atoi(valueStr)
 			header.DefSong = n
 		case "STEREO":
 			header.Stereo = true
@@ -154,24 +174,26 @@ func parseHeader(data []byte, header *SAPHeader) error {
 				header.Type = value[0]
 			}
 		case "FASTPLAY":
-			n, _ := strconv.Atoi(value)
+			n, _ := strconv.Atoi(valueStr)
 			if n > 0 {
 				header.FastPlay = n
 			}
 		case "INIT":
-			addr, _ := strconv.ParseUint(value, 16, 16)
+			addr, _ := strconv.ParseUint(valueStr, 16, 16)
 			header.Init = uint16(addr)
 		case "PLAYER":
-			addr, _ := strconv.ParseUint(value, 16, 16)
+			addr, _ := strconv.ParseUint(valueStr, 16, 16)
 			header.Player = uint16(addr)
 		case "MUSIC":
-			addr, _ := strconv.ParseUint(value, 16, 16)
+			addr, _ := strconv.ParseUint(valueStr, 16, 16)
 			header.Music = uint16(addr)
 		case "TIME":
-			duration, hasLoop := parseTime(value)
+			duration, hasLoop := parseTime(valueStr)
 			header.Durations = append(header.Durations, duration)
 			header.LoopFlags = append(header.LoopFlags, hasLoop)
 		}
+
+		pos = lineEnd + 1
 	}
 
 	return nil
@@ -206,11 +228,19 @@ func parseTime(value string) (float64, bool) {
 		if dotIdx := strings.Index(secPart, "."); dotIdx > 0 {
 			seconds, _ = strconv.ParseFloat(secPart[:dotIdx], 64)
 			millisStr := secPart[dotIdx+1:]
-			// Normalize milliseconds (could be 1, 2, or 3 digits)
-			for len(millisStr) < 3 {
-				millisStr += "0"
+			// Normalize milliseconds (could be 1, 2, or 3 digits) without allocation
+			switch len(millisStr) {
+			case 0:
+				millis = 0
+			case 1:
+				millis, _ = strconv.ParseFloat(millisStr, 64)
+				millis *= 100 // "5" -> 500
+			case 2:
+				millis, _ = strconv.ParseFloat(millisStr, 64)
+				millis *= 10 // "50" -> 500
+			default:
+				millis, _ = strconv.ParseFloat(millisStr[:3], 64)
 			}
-			millis, _ = strconv.ParseFloat(millisStr[:3], 64)
 		} else {
 			seconds, _ = strconv.ParseFloat(secPart, 64)
 		}

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 )
@@ -313,12 +314,11 @@ func (p *ayZ80Parser) readNTString(start int) (string, error) {
 	if start < 0 || start >= len(p.data) {
 		return "", fmt.Errorf("ay z80 string offset out of range")
 	}
-	end := start
-	for end < len(p.data) && p.data[end] != 0 {
-		end++
-	}
-	if end >= len(p.data) {
+	// Use bytes.IndexByte for faster null-terminator search
+	remaining := p.data[start:]
+	nullIdx := bytes.IndexByte(remaining, 0)
+	if nullIdx < 0 {
 		return "", fmt.Errorf("ay z80 unterminated string")
 	}
-	return string(p.data[start:end]), nil
+	return string(remaining[:nullIdx]), nil
 }
