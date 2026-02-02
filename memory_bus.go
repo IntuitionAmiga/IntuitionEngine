@@ -55,6 +55,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"sync"
+	"unsafe"
 )
 
 const (
@@ -118,7 +119,6 @@ type IORegion struct {
 
 func (bus *SystemBus) Write32WithFault(addr uint32, value uint32) bool {
 	bus.mutex.Lock()
-	defer bus.mutex.Unlock()
 
 	// Check if the address is in the upper memory region (potentially sign-extended)
 	if addr >= 0xFFFF0000 {
@@ -134,6 +134,7 @@ func (bus *SystemBus) Write32WithFault(addr uint32, value uint32) bool {
 						if mapped+4 <= uint32(len(bus.memory)) {
 							binary.LittleEndian.PutUint32(bus.memory[mapped:mapped+4], value)
 						}
+						bus.mutex.Unlock()
 						return true
 					}
 				}
@@ -142,6 +143,7 @@ func (bus *SystemBus) Write32WithFault(addr uint32, value uint32) bool {
 			// Proceed with writing to the mapped address if in bounds
 			if mapped+4 <= uint32(len(bus.memory)) {
 				binary.LittleEndian.PutUint32(bus.memory[mapped:mapped+4], value)
+				bus.mutex.Unlock()
 				return true
 			}
 		}
@@ -153,18 +155,22 @@ func (bus *SystemBus) Write32WithFault(addr uint32, value uint32) bool {
 				for _, region := range regions {
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onWrite != nil {
 						region.onWrite(TERM_OUT, value)
+						bus.mutex.Unlock()
 						return true
 					}
 				}
 			}
+			bus.mutex.Unlock()
 			return true
 		}
 
+		bus.mutex.Unlock()
 		return false
 	}
 
 	// Normal bounds check for regular memory
 	if addr+4 > uint32(len(bus.memory)) {
+		bus.mutex.Unlock()
 		return false
 	}
 
@@ -174,6 +180,7 @@ func (bus *SystemBus) Write32WithFault(addr uint32, value uint32) bool {
 			if addr >= region.start && addr <= region.end && region.onWrite != nil {
 				region.onWrite(addr, value)
 				binary.LittleEndian.PutUint32(bus.memory[addr:addr+4], value)
+				bus.mutex.Unlock()
 				return true
 			}
 		}
@@ -181,6 +188,7 @@ func (bus *SystemBus) Write32WithFault(addr uint32, value uint32) bool {
 
 	// Regular memory write
 	binary.LittleEndian.PutUint32(bus.memory[addr:addr+4], value)
+	bus.mutex.Unlock()
 	return true
 }
 
@@ -191,7 +199,6 @@ func (bus *SystemBus) Read32WithFault(addr uint32) (uint32, bool) {
 	}
 
 	bus.mutex.Lock()
-	defer bus.mutex.Unlock()
 
 	// Check if the address is in the upper memory region (potentially sign-extended)
 	if addr >= 0xFFFF0000 {
@@ -206,6 +213,7 @@ func (bus *SystemBus) Read32WithFault(addr uint32) (uint32, bool) {
 						if mapped+4 <= uint32(len(bus.memory)) {
 							binary.LittleEndian.PutUint32(bus.memory[mapped:mapped+4], value)
 						}
+						bus.mutex.Unlock()
 						return value, true
 					}
 				}
@@ -213,7 +221,9 @@ func (bus *SystemBus) Read32WithFault(addr uint32) (uint32, bool) {
 
 			// Regular memory read with mapped address if in bounds
 			if mapped+4 <= uint32(len(bus.memory)) {
-				return binary.LittleEndian.Uint32(bus.memory[mapped : mapped+4]), true
+				result := binary.LittleEndian.Uint32(bus.memory[mapped : mapped+4])
+				bus.mutex.Unlock()
+				return result, true
 			}
 		}
 
@@ -222,18 +232,23 @@ func (bus *SystemBus) Read32WithFault(addr uint32) (uint32, bool) {
 			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
 				for _, region := range regions {
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onRead != nil {
-						return region.onRead(TERM_OUT), true
+						result := region.onRead(TERM_OUT)
+						bus.mutex.Unlock()
+						return result, true
 					}
 				}
 			}
+			bus.mutex.Unlock()
 			return 0, true
 		}
 
+		bus.mutex.Unlock()
 		return 0, false
 	}
 
 	// Check for out-of-bounds access
 	if addr+4 > uint32(len(bus.memory)) {
+		bus.mutex.Unlock()
 		return 0, false
 	}
 
@@ -243,18 +258,20 @@ func (bus *SystemBus) Read32WithFault(addr uint32) (uint32, bool) {
 			if addr >= region.start && addr <= region.end && region.onRead != nil {
 				value := region.onRead(addr)
 				binary.LittleEndian.PutUint32(bus.memory[addr:addr+4], value)
+				bus.mutex.Unlock()
 				return value, true
 			}
 		}
 	}
 
 	// Regular memory read
-	return binary.LittleEndian.Uint32(bus.memory[addr : addr+4]), true
+	result := binary.LittleEndian.Uint32(bus.memory[addr : addr+4])
+	bus.mutex.Unlock()
+	return result, true
 }
 
 func (bus *SystemBus) Write16WithFault(addr uint32, value uint16) bool {
 	bus.mutex.Lock()
-	defer bus.mutex.Unlock()
 
 	// Check if the address is in the upper memory region (potentially sign-extended)
 	if addr >= 0xFFFF0000 {
@@ -270,6 +287,7 @@ func (bus *SystemBus) Write16WithFault(addr uint32, value uint16) bool {
 						if mapped+2 <= uint32(len(bus.memory)) {
 							binary.LittleEndian.PutUint16(bus.memory[mapped:mapped+2], value)
 						}
+						bus.mutex.Unlock()
 						return true
 					}
 				}
@@ -278,6 +296,7 @@ func (bus *SystemBus) Write16WithFault(addr uint32, value uint16) bool {
 			// Proceed with writing to the mapped address if in bounds
 			if mapped+2 <= uint32(len(bus.memory)) {
 				binary.LittleEndian.PutUint16(bus.memory[mapped:mapped+2], value)
+				bus.mutex.Unlock()
 				return true
 			}
 		}
@@ -289,18 +308,22 @@ func (bus *SystemBus) Write16WithFault(addr uint32, value uint16) bool {
 				for _, region := range regions {
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onWrite != nil {
 						region.onWrite(TERM_OUT, uint32(value))
+						bus.mutex.Unlock()
 						return true
 					}
 				}
 			}
+			bus.mutex.Unlock()
 			return true
 		}
 
+		bus.mutex.Unlock()
 		return false
 	}
 
 	// Normal bounds check for regular memory
 	if addr+2 > uint32(len(bus.memory)) {
+		bus.mutex.Unlock()
 		return false
 	}
 
@@ -310,6 +333,7 @@ func (bus *SystemBus) Write16WithFault(addr uint32, value uint16) bool {
 			if addr >= region.start && addr <= region.end && region.onWrite != nil {
 				region.onWrite(addr, uint32(value))
 				binary.LittleEndian.PutUint16(bus.memory[addr:addr+2], value)
+				bus.mutex.Unlock()
 				return true
 			}
 		}
@@ -317,12 +341,12 @@ func (bus *SystemBus) Write16WithFault(addr uint32, value uint16) bool {
 
 	// Regular memory write
 	binary.LittleEndian.PutUint16(bus.memory[addr:addr+2], value)
+	bus.mutex.Unlock()
 	return true
 }
 
 func (bus *SystemBus) Read16WithFault(addr uint32) (uint16, bool) {
 	bus.mutex.Lock()
-	defer bus.mutex.Unlock()
 
 	// Check if the address is in the upper memory region (potentially sign-extended)
 	if addr >= 0xFFFF0000 {
@@ -337,6 +361,7 @@ func (bus *SystemBus) Read16WithFault(addr uint32) (uint16, bool) {
 						if mapped+2 <= uint32(len(bus.memory)) {
 							binary.LittleEndian.PutUint16(bus.memory[mapped:mapped+2], uint16(value))
 						}
+						bus.mutex.Unlock()
 						return uint16(value), true
 					}
 				}
@@ -344,7 +369,9 @@ func (bus *SystemBus) Read16WithFault(addr uint32) (uint16, bool) {
 
 			// Regular memory read with mapped address if in bounds
 			if mapped+2 <= uint32(len(bus.memory)) {
-				return binary.LittleEndian.Uint16(bus.memory[mapped : mapped+2]), true
+				result := binary.LittleEndian.Uint16(bus.memory[mapped : mapped+2])
+				bus.mutex.Unlock()
+				return result, true
 			}
 		}
 
@@ -353,18 +380,23 @@ func (bus *SystemBus) Read16WithFault(addr uint32) (uint16, bool) {
 			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
 				for _, region := range regions {
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onRead != nil {
-						return uint16(region.onRead(TERM_OUT)), true
+						result := uint16(region.onRead(TERM_OUT))
+						bus.mutex.Unlock()
+						return result, true
 					}
 				}
 			}
+			bus.mutex.Unlock()
 			return 0, true
 		}
 
+		bus.mutex.Unlock()
 		return 0, false
 	}
 
 	// Check for out-of-bounds access
 	if addr+2 > uint32(len(bus.memory)) {
+		bus.mutex.Unlock()
 		return 0, false
 	}
 
@@ -374,18 +406,20 @@ func (bus *SystemBus) Read16WithFault(addr uint32) (uint16, bool) {
 			if addr >= region.start && addr <= region.end && region.onRead != nil {
 				value := region.onRead(addr)
 				binary.LittleEndian.PutUint16(bus.memory[addr:addr+2], uint16(value))
+				bus.mutex.Unlock()
 				return uint16(value), true
 			}
 		}
 	}
 
 	// Regular memory read
-	return binary.LittleEndian.Uint16(bus.memory[addr : addr+2]), true
+	result := binary.LittleEndian.Uint16(bus.memory[addr : addr+2])
+	bus.mutex.Unlock()
+	return result, true
 }
 
 func (bus *SystemBus) Write8WithFault(addr uint32, value uint8) bool {
 	bus.mutex.Lock()
-	defer bus.mutex.Unlock()
 
 	// Check if the address is in the upper memory region (potentially sign-extended)
 	if addr >= 0xFFFF0000 {
@@ -401,6 +435,7 @@ func (bus *SystemBus) Write8WithFault(addr uint32, value uint8) bool {
 						if mapped < uint32(len(bus.memory)) {
 							bus.memory[mapped] = value
 						}
+						bus.mutex.Unlock()
 						return true
 					}
 				}
@@ -409,6 +444,7 @@ func (bus *SystemBus) Write8WithFault(addr uint32, value uint8) bool {
 			// Proceed with writing to the mapped address if in bounds
 			if mapped < uint32(len(bus.memory)) {
 				bus.memory[mapped] = value
+				bus.mutex.Unlock()
 				return true
 			}
 		}
@@ -420,18 +456,22 @@ func (bus *SystemBus) Write8WithFault(addr uint32, value uint8) bool {
 				for _, region := range regions {
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onWrite != nil {
 						region.onWrite(TERM_OUT, uint32(value))
+						bus.mutex.Unlock()
 						return true
 					}
 				}
 			}
+			bus.mutex.Unlock()
 			return true
 		}
 
+		bus.mutex.Unlock()
 		return false
 	}
 
 	// Normal bounds check for regular memory
 	if addr >= uint32(len(bus.memory)) {
+		bus.mutex.Unlock()
 		return false
 	}
 
@@ -441,6 +481,7 @@ func (bus *SystemBus) Write8WithFault(addr uint32, value uint8) bool {
 			if addr >= region.start && addr <= region.end && region.onWrite != nil {
 				region.onWrite(addr, uint32(value))
 				bus.memory[addr] = value
+				bus.mutex.Unlock()
 				return true
 			}
 		}
@@ -448,12 +489,12 @@ func (bus *SystemBus) Write8WithFault(addr uint32, value uint8) bool {
 
 	// Regular memory write
 	bus.memory[addr] = value
+	bus.mutex.Unlock()
 	return true
 }
 
 func (bus *SystemBus) Read8WithFault(addr uint32) (uint8, bool) {
 	bus.mutex.Lock()
-	defer bus.mutex.Unlock()
 
 	// Check if the address is in the upper memory region (potentially sign-extended)
 	if addr >= 0xFFFF0000 {
@@ -468,6 +509,7 @@ func (bus *SystemBus) Read8WithFault(addr uint32) (uint8, bool) {
 						if mapped < uint32(len(bus.memory)) {
 							bus.memory[mapped] = uint8(value)
 						}
+						bus.mutex.Unlock()
 						return uint8(value), true
 					}
 				}
@@ -475,7 +517,9 @@ func (bus *SystemBus) Read8WithFault(addr uint32) (uint8, bool) {
 
 			// Regular memory read with mapped address if in bounds
 			if mapped < uint32(len(bus.memory)) {
-				return bus.memory[mapped], true
+				result := bus.memory[mapped]
+				bus.mutex.Unlock()
+				return result, true
 			}
 		}
 
@@ -484,18 +528,23 @@ func (bus *SystemBus) Read8WithFault(addr uint32) (uint8, bool) {
 			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
 				for _, region := range regions {
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onRead != nil {
-						return uint8(region.onRead(TERM_OUT)), true
+						result := uint8(region.onRead(TERM_OUT))
+						bus.mutex.Unlock()
+						return result, true
 					}
 				}
 			}
+			bus.mutex.Unlock()
 			return 0, true
 		}
 
+		bus.mutex.Unlock()
 		return 0, false
 	}
 
 	// Check for out-of-bounds access
 	if addr >= uint32(len(bus.memory)) {
+		bus.mutex.Unlock()
 		return 0, false
 	}
 
@@ -505,13 +554,16 @@ func (bus *SystemBus) Read8WithFault(addr uint32) (uint8, bool) {
 			if addr >= region.start && addr <= region.end && region.onRead != nil {
 				value := region.onRead(addr)
 				bus.memory[addr] = uint8(value)
+				bus.mutex.Unlock()
 				return uint8(value), true
 			}
 		}
 	}
 
 	// Regular memory read
-	return bus.memory[addr], true
+	result := bus.memory[addr]
+	bus.mutex.Unlock()
+	return result, true
 }
 
 func NewSystemBus() *SystemBus {
@@ -581,8 +633,32 @@ func (bus *SystemBus) MapIO(start, end uint32, onRead func(addr uint32) uint32, 
 }
 
 func (bus *SystemBus) Write32(addr uint32, value uint32) {
+	// Skip sign-extended addresses (rare, use slow path)
+	if addr >= 0xFFFF0000 {
+		bus.write32Slow(addr, value)
+		return
+	}
+
+	// Bounds check
+	if addr+4 > uint32(len(bus.memory)) {
+		fmt.Printf("Warning: Write32 to out-of-bounds address 0x%08X\n", addr)
+		return
+	}
+
+	// Lock-free fast path: check if this page has ANY I/O mappings
+	page := addr & PAGE_MASK
+	if _, hasIO := bus.mapping[page]; !hasIO {
+		// No I/O on this page - lock-free write using unsafe pointer
+		*(*uint32)(unsafe.Pointer(&bus.memory[addr])) = value
+		return
+	}
+
+	// Has I/O mappings - use slow path with mutex
+	bus.write32Slow(addr, value)
+}
+
+func (bus *SystemBus) write32Slow(addr uint32, value uint32) {
 	bus.mutex.Lock()
-	defer bus.mutex.Unlock()
 
 	// Check if the address is in the upper memory region (potentially sign-extended)
 	if addr >= 0xFFFF0000 {
@@ -598,6 +674,7 @@ func (bus *SystemBus) Write32(addr uint32, value uint32) {
 						if mapped+4 <= uint32(len(bus.memory)) {
 							binary.LittleEndian.PutUint32(bus.memory[mapped:mapped+4], value)
 						}
+						bus.mutex.Unlock()
 						return
 					}
 				}
@@ -606,6 +683,7 @@ func (bus *SystemBus) Write32(addr uint32, value uint32) {
 			// Proceed with writing to the mapped address if in bounds
 			if mapped+4 <= uint32(len(bus.memory)) {
 				binary.LittleEndian.PutUint32(bus.memory[mapped:mapped+4], value)
+				bus.mutex.Unlock()
 				return
 			}
 		}
@@ -617,20 +695,24 @@ func (bus *SystemBus) Write32(addr uint32, value uint32) {
 				for _, region := range regions {
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onWrite != nil {
 						region.onWrite(TERM_OUT, value)
+						bus.mutex.Unlock()
 						return
 					}
 				}
 			}
+			bus.mutex.Unlock()
 			return
 		}
 
 		// For other high addresses, just log and return safely
+		bus.mutex.Unlock()
 		fmt.Printf("Warning: Write32 to unmapped high address 0x%08X\n", addr)
 		return
 	}
 
 	// Normal bounds check for regular memory
 	if addr+4 > uint32(len(bus.memory)) {
+		bus.mutex.Unlock()
 		fmt.Printf("Warning: Write32 to out-of-bounds address 0x%08X\n", addr)
 		return
 	}
@@ -641,6 +723,7 @@ func (bus *SystemBus) Write32(addr uint32, value uint32) {
 			if addr >= region.start && addr <= region.end && region.onWrite != nil {
 				region.onWrite(addr, value)
 				binary.LittleEndian.PutUint32(bus.memory[addr:addr+4], value)
+				bus.mutex.Unlock()
 				return
 			}
 		}
@@ -648,6 +731,7 @@ func (bus *SystemBus) Write32(addr uint32, value uint32) {
 
 	// Regular memory write
 	binary.LittleEndian.PutUint32(bus.memory[addr:addr+4], value)
+	bus.mutex.Unlock()
 }
 
 func (bus *SystemBus) Read32(addr uint32) uint32 {
@@ -656,8 +740,30 @@ func (bus *SystemBus) Read32(addr uint32) uint32 {
 		return bus.videoStatusReader(addr)
 	}
 
+	// Skip sign-extended addresses (rare, use slow path)
+	if addr >= 0xFFFF0000 {
+		return bus.read32Slow(addr)
+	}
+
+	// Bounds check
+	if addr+4 > uint32(len(bus.memory)) {
+		fmt.Printf("Warning: Read32 from out-of-bounds address 0x%08X\n", addr)
+		return 0
+	}
+
+	// Lock-free fast path: check if this page has ANY I/O mappings
+	page := addr & PAGE_MASK
+	if _, hasIO := bus.mapping[page]; !hasIO {
+		// No I/O on this page - lock-free read using unsafe pointer
+		return *(*uint32)(unsafe.Pointer(&bus.memory[addr]))
+	}
+
+	// Has I/O mappings - use slow path with mutex
+	return bus.read32Slow(addr)
+}
+
+func (bus *SystemBus) read32Slow(addr uint32) uint32 {
 	bus.mutex.Lock()
-	defer bus.mutex.Unlock()
 
 	// Check if the address is in the upper memory region (potentially sign-extended)
 	if addr >= 0xFFFF0000 {
@@ -672,6 +778,7 @@ func (bus *SystemBus) Read32(addr uint32) uint32 {
 						if mapped+4 <= uint32(len(bus.memory)) {
 							binary.LittleEndian.PutUint32(bus.memory[mapped:mapped+4], value)
 						}
+						bus.mutex.Unlock()
 						return value
 					}
 				}
@@ -679,7 +786,9 @@ func (bus *SystemBus) Read32(addr uint32) uint32 {
 
 			// Regular memory read with mapped address if in bounds
 			if mapped+4 <= uint32(len(bus.memory)) {
-				return binary.LittleEndian.Uint32(bus.memory[mapped : mapped+4])
+				result := binary.LittleEndian.Uint32(bus.memory[mapped : mapped+4])
+				bus.mutex.Unlock()
+				return result
 			}
 		}
 
@@ -688,19 +797,24 @@ func (bus *SystemBus) Read32(addr uint32) uint32 {
 			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
 				for _, region := range regions {
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onRead != nil {
-						return region.onRead(TERM_OUT)
+						result := region.onRead(TERM_OUT)
+						bus.mutex.Unlock()
+						return result
 					}
 				}
 			}
+			bus.mutex.Unlock()
 			return 0
 		}
 
+		bus.mutex.Unlock()
 		fmt.Printf("Warning: Read32 from unmapped high address 0x%08X\n", addr)
 		return 0
 	}
 
 	// Check for out-of-bounds access
 	if addr+4 > uint32(len(bus.memory)) {
+		bus.mutex.Unlock()
 		fmt.Printf("Warning: Read32 from out-of-bounds address 0x%08X\n", addr)
 		return 0
 	}
@@ -711,18 +825,45 @@ func (bus *SystemBus) Read32(addr uint32) uint32 {
 			if addr >= region.start && addr <= region.end && region.onRead != nil {
 				value := region.onRead(addr)
 				binary.LittleEndian.PutUint32(bus.memory[addr:addr+4], value)
+				bus.mutex.Unlock()
 				return value
 			}
 		}
 	}
 
 	// Regular memory read
-	return binary.LittleEndian.Uint32(bus.memory[addr : addr+4])
+	result := binary.LittleEndian.Uint32(bus.memory[addr : addr+4])
+	bus.mutex.Unlock()
+	return result
 }
 
 func (bus *SystemBus) Write16(addr uint32, value uint16) {
+	// Skip sign-extended addresses (rare, use slow path)
+	if addr >= 0xFFFF0000 {
+		bus.write16Slow(addr, value)
+		return
+	}
+
+	// Bounds check
+	if addr+2 > uint32(len(bus.memory)) {
+		fmt.Printf("Warning: Write16 to out-of-bounds address 0x%08X\n", addr)
+		return
+	}
+
+	// Lock-free fast path: check if this page has ANY I/O mappings
+	page := addr & PAGE_MASK
+	if _, hasIO := bus.mapping[page]; !hasIO {
+		// No I/O on this page - lock-free write using unsafe pointer
+		*(*uint16)(unsafe.Pointer(&bus.memory[addr])) = value
+		return
+	}
+
+	// Has I/O mappings - use slow path with mutex
+	bus.write16Slow(addr, value)
+}
+
+func (bus *SystemBus) write16Slow(addr uint32, value uint16) {
 	bus.mutex.Lock()
-	defer bus.mutex.Unlock()
 
 	// Check if the address is in the upper memory region (potentially sign-extended)
 	if addr >= 0xFFFF0000 {
@@ -738,6 +879,7 @@ func (bus *SystemBus) Write16(addr uint32, value uint16) {
 						if mapped+2 <= uint32(len(bus.memory)) {
 							binary.LittleEndian.PutUint16(bus.memory[mapped:mapped+2], value)
 						}
+						bus.mutex.Unlock()
 						return
 					}
 				}
@@ -746,6 +888,7 @@ func (bus *SystemBus) Write16(addr uint32, value uint16) {
 			// Proceed with writing to the mapped address if in bounds
 			if mapped+2 <= uint32(len(bus.memory)) {
 				binary.LittleEndian.PutUint16(bus.memory[mapped:mapped+2], value)
+				bus.mutex.Unlock()
 				return
 			}
 		}
@@ -757,20 +900,24 @@ func (bus *SystemBus) Write16(addr uint32, value uint16) {
 				for _, region := range regions {
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onWrite != nil {
 						region.onWrite(TERM_OUT, uint32(value))
+						bus.mutex.Unlock()
 						return
 					}
 				}
 			}
+			bus.mutex.Unlock()
 			return
 		}
 
 		// For other high addresses, just log and return safely
+		bus.mutex.Unlock()
 		fmt.Printf("Warning: Write16 to unmapped high address 0x%08X\n", addr)
 		return
 	}
 
 	// Normal bounds check for regular memory
 	if addr+2 > uint32(len(bus.memory)) {
+		bus.mutex.Unlock()
 		fmt.Printf("Warning: Write16 to out-of-bounds address 0x%08X\n", addr)
 		return
 	}
@@ -781,6 +928,7 @@ func (bus *SystemBus) Write16(addr uint32, value uint16) {
 			if addr >= region.start && addr <= region.end && region.onWrite != nil {
 				region.onWrite(addr, uint32(value))
 				binary.LittleEndian.PutUint16(bus.memory[addr:addr+2], value)
+				bus.mutex.Unlock()
 				return
 			}
 		}
@@ -788,11 +936,34 @@ func (bus *SystemBus) Write16(addr uint32, value uint16) {
 
 	// Regular memory write
 	binary.LittleEndian.PutUint16(bus.memory[addr:addr+2], value)
+	bus.mutex.Unlock()
 }
 
 func (bus *SystemBus) Read16(addr uint32) uint16 {
+	// Skip sign-extended addresses (rare, use slow path)
+	if addr >= 0xFFFF0000 {
+		return bus.read16Slow(addr)
+	}
+
+	// Bounds check
+	if addr+2 > uint32(len(bus.memory)) {
+		fmt.Printf("Warning: Read16 from out-of-bounds address 0x%08X\n", addr)
+		return 0
+	}
+
+	// Lock-free fast path: check if this page has ANY I/O mappings
+	page := addr & PAGE_MASK
+	if _, hasIO := bus.mapping[page]; !hasIO {
+		// No I/O on this page - lock-free read using unsafe pointer
+		return *(*uint16)(unsafe.Pointer(&bus.memory[addr]))
+	}
+
+	// Has I/O mappings - use slow path with mutex
+	return bus.read16Slow(addr)
+}
+
+func (bus *SystemBus) read16Slow(addr uint32) uint16 {
 	bus.mutex.Lock()
-	defer bus.mutex.Unlock()
 
 	// Check if the address is in the upper memory region (potentially sign-extended)
 	if addr >= 0xFFFF0000 {
@@ -807,6 +978,7 @@ func (bus *SystemBus) Read16(addr uint32) uint16 {
 						if mapped+2 <= uint32(len(bus.memory)) {
 							binary.LittleEndian.PutUint16(bus.memory[mapped:mapped+2], uint16(value))
 						}
+						bus.mutex.Unlock()
 						return uint16(value)
 					}
 				}
@@ -814,7 +986,9 @@ func (bus *SystemBus) Read16(addr uint32) uint16 {
 
 			// Regular memory read with mapped address if in bounds
 			if mapped+2 <= uint32(len(bus.memory)) {
-				return binary.LittleEndian.Uint16(bus.memory[mapped : mapped+2])
+				result := binary.LittleEndian.Uint16(bus.memory[mapped : mapped+2])
+				bus.mutex.Unlock()
+				return result
 			}
 		}
 
@@ -823,19 +997,24 @@ func (bus *SystemBus) Read16(addr uint32) uint16 {
 			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
 				for _, region := range regions {
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onRead != nil {
-						return uint16(region.onRead(TERM_OUT))
+						result := uint16(region.onRead(TERM_OUT))
+						bus.mutex.Unlock()
+						return result
 					}
 				}
 			}
+			bus.mutex.Unlock()
 			return 0
 		}
 
+		bus.mutex.Unlock()
 		fmt.Printf("Warning: Read16 from unmapped high address 0x%08X\n", addr)
 		return 0
 	}
 
 	// Check for out-of-bounds access
 	if addr+2 > uint32(len(bus.memory)) {
+		bus.mutex.Unlock()
 		fmt.Printf("Warning: Read16 from out-of-bounds address 0x%08X\n", addr)
 		return 0
 	}
@@ -846,18 +1025,45 @@ func (bus *SystemBus) Read16(addr uint32) uint16 {
 			if addr >= region.start && addr <= region.end && region.onRead != nil {
 				value := region.onRead(addr)
 				binary.LittleEndian.PutUint16(bus.memory[addr:addr+2], uint16(value))
+				bus.mutex.Unlock()
 				return uint16(value)
 			}
 		}
 	}
 
 	// Regular memory read
-	return binary.LittleEndian.Uint16(bus.memory[addr : addr+2])
+	result := binary.LittleEndian.Uint16(bus.memory[addr : addr+2])
+	bus.mutex.Unlock()
+	return result
 }
 
 func (bus *SystemBus) Write8(addr uint32, value uint8) {
+	// Skip sign-extended addresses (rare, use slow path)
+	if addr >= 0xFFFF0000 {
+		bus.write8Slow(addr, value)
+		return
+	}
+
+	// Bounds check
+	if addr >= uint32(len(bus.memory)) {
+		fmt.Printf("Warning: Write8 to out-of-bounds address 0x%08X\n", addr)
+		return
+	}
+
+	// Lock-free fast path: check if this page has ANY I/O mappings
+	page := addr & PAGE_MASK
+	if _, hasIO := bus.mapping[page]; !hasIO {
+		// No I/O on this page - lock-free write
+		bus.memory[addr] = value
+		return
+	}
+
+	// Has I/O mappings - use slow path with mutex
+	bus.write8Slow(addr, value)
+}
+
+func (bus *SystemBus) write8Slow(addr uint32, value uint8) {
 	bus.mutex.Lock()
-	defer bus.mutex.Unlock()
 
 	// Check if the address is in the upper memory region (potentially sign-extended)
 	if addr >= 0xFFFF0000 {
@@ -873,6 +1079,7 @@ func (bus *SystemBus) Write8(addr uint32, value uint8) {
 						if mapped < uint32(len(bus.memory)) {
 							bus.memory[mapped] = value
 						}
+						bus.mutex.Unlock()
 						return
 					}
 				}
@@ -881,6 +1088,7 @@ func (bus *SystemBus) Write8(addr uint32, value uint8) {
 			// Proceed with writing to the mapped address if in bounds
 			if mapped < uint32(len(bus.memory)) {
 				bus.memory[mapped] = value
+				bus.mutex.Unlock()
 				return
 			}
 		}
@@ -892,20 +1100,24 @@ func (bus *SystemBus) Write8(addr uint32, value uint8) {
 				for _, region := range regions {
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onWrite != nil {
 						region.onWrite(TERM_OUT, uint32(value))
+						bus.mutex.Unlock()
 						return
 					}
 				}
 			}
+			bus.mutex.Unlock()
 			return
 		}
 
 		// For other high addresses, just log and return safely
+		bus.mutex.Unlock()
 		fmt.Printf("Warning: Write8 to unmapped high address 0x%08X\n", addr)
 		return
 	}
 
 	// Normal bounds check for regular memory
 	if addr >= uint32(len(bus.memory)) {
+		bus.mutex.Unlock()
 		fmt.Printf("Warning: Write8 to out-of-bounds address 0x%08X\n", addr)
 		return
 	}
@@ -916,6 +1128,7 @@ func (bus *SystemBus) Write8(addr uint32, value uint8) {
 			if addr >= region.start && addr <= region.end && region.onWrite != nil {
 				region.onWrite(addr, uint32(value))
 				bus.memory[addr] = value
+				bus.mutex.Unlock()
 				return
 			}
 		}
@@ -923,11 +1136,34 @@ func (bus *SystemBus) Write8(addr uint32, value uint8) {
 
 	// Regular memory write
 	bus.memory[addr] = value
+	bus.mutex.Unlock()
 }
 
 func (bus *SystemBus) Read8(addr uint32) uint8 {
+	// Skip sign-extended addresses (rare, use slow path)
+	if addr >= 0xFFFF0000 {
+		return bus.read8Slow(addr)
+	}
+
+	// Bounds check
+	if addr >= uint32(len(bus.memory)) {
+		fmt.Printf("Warning: Read8 from out-of-bounds address 0x%08X\n", addr)
+		return 0
+	}
+
+	// Lock-free fast path: check if this page has ANY I/O mappings
+	page := addr & PAGE_MASK
+	if _, hasIO := bus.mapping[page]; !hasIO {
+		// No I/O on this page - lock-free read
+		return bus.memory[addr]
+	}
+
+	// Has I/O mappings - use slow path with mutex
+	return bus.read8Slow(addr)
+}
+
+func (bus *SystemBus) read8Slow(addr uint32) uint8 {
 	bus.mutex.Lock()
-	defer bus.mutex.Unlock()
 
 	// Check if the address is in the upper memory region (potentially sign-extended)
 	if addr >= 0xFFFF0000 {
@@ -942,6 +1178,7 @@ func (bus *SystemBus) Read8(addr uint32) uint8 {
 						if mapped < uint32(len(bus.memory)) {
 							bus.memory[mapped] = uint8(value)
 						}
+						bus.mutex.Unlock()
 						return uint8(value)
 					}
 				}
@@ -949,7 +1186,9 @@ func (bus *SystemBus) Read8(addr uint32) uint8 {
 
 			// Regular memory read with mapped address if in bounds
 			if mapped < uint32(len(bus.memory)) {
-				return bus.memory[mapped]
+				result := bus.memory[mapped]
+				bus.mutex.Unlock()
+				return result
 			}
 		}
 
@@ -958,19 +1197,24 @@ func (bus *SystemBus) Read8(addr uint32) uint8 {
 			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
 				for _, region := range regions {
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onRead != nil {
-						return uint8(region.onRead(TERM_OUT))
+						result := uint8(region.onRead(TERM_OUT))
+						bus.mutex.Unlock()
+						return result
 					}
 				}
 			}
+			bus.mutex.Unlock()
 			return 0
 		}
 
+		bus.mutex.Unlock()
 		fmt.Printf("Warning: Read8 from unmapped high address 0x%08X\n", addr)
 		return 0
 	}
 
 	// Check for out-of-bounds access
 	if addr >= uint32(len(bus.memory)) {
+		bus.mutex.Unlock()
 		fmt.Printf("Warning: Read8 from out-of-bounds address 0x%08X\n", addr)
 		return 0
 	}
@@ -982,13 +1226,16 @@ func (bus *SystemBus) Read8(addr uint32) uint8 {
 			if addr >= region.start && addr <= region.end && region.onRead != nil {
 				value := region.onRead(addr)
 				bus.memory[addr] = uint8(value)
+				bus.mutex.Unlock()
 				return uint8(value)
 			}
 		}
 	}
 
 	// Regular memory read
-	return bus.memory[addr]
+	result := bus.memory[addr]
+	bus.mutex.Unlock()
+	return result
 }
 
 func (bus *SystemBus) Reset() {
@@ -1001,9 +1248,8 @@ func (bus *SystemBus) Reset() {
 	*/
 
 	bus.mutex.Lock()
-	defer bus.mutex.Unlock()
-
 	for i := range bus.memory {
 		bus.memory[i] = 0
 	}
+	bus.mutex.Unlock()
 }
