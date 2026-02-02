@@ -10,7 +10,7 @@
 package main
 
 import (
-	"encoding/binary"
+	"unsafe"
 )
 
 const (
@@ -431,7 +431,7 @@ func (b *sndh68KBus) Read16(addr uint32) uint16 {
 	if addr+1 >= SNDH_BUS_SIZE {
 		return uint16(b.memory[addr])
 	}
-	return binary.LittleEndian.Uint16(b.memory[addr : addr+2])
+	return *(*uint16)(unsafe.Pointer(&b.memory[addr]))
 }
 
 // Write16 writes a word to memory
@@ -463,7 +463,7 @@ func (b *sndh68KBus) Write16(addr uint32, value uint16) {
 		b.memory[addr] = uint8(value)
 		return
 	}
-	binary.LittleEndian.PutUint16(b.memory[addr:addr+2], value)
+	*(*uint16)(unsafe.Pointer(&b.memory[addr])) = value
 }
 
 // Read32 reads a long from memory
@@ -474,7 +474,7 @@ func (b *sndh68KBus) Read32(addr uint32) uint32 {
 	if addr+3 >= SNDH_BUS_SIZE {
 		return 0
 	}
-	return binary.LittleEndian.Uint32(b.memory[addr : addr+4])
+	return *(*uint32)(unsafe.Pointer(&b.memory[addr]))
 }
 
 // Write32 writes a long to memory
@@ -518,7 +518,7 @@ func (b *sndh68KBus) Write32(addr uint32, value uint32) {
 	if addr+3 >= SNDH_BUS_SIZE {
 		return
 	}
-	binary.LittleEndian.PutUint32(b.memory[addr:addr+4], value)
+	*(*uint32)(unsafe.Pointer(&b.memory[addr])) = value
 }
 
 // LoadSNDH loads SNDH data into the bus memory
