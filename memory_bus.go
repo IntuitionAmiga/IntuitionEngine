@@ -1062,6 +1062,16 @@ func (bus *SystemBus) Write8(addr uint32, value uint8) {
 	bus.write8Slow(addr, value)
 }
 
+// WriteMemoryDirect writes a single byte directly to memory,
+// bypassing I/O handlers. Used for 8-bit CPU VRAM bank writes
+// where the VideoChip handler would corrupt adjacent bytes
+// (it does 32-bit writes even for single-byte values).
+func (bus *SystemBus) WriteMemoryDirect(addr uint32, value uint8) {
+	if addr < uint32(len(bus.memory)) {
+		bus.memory[addr] = value
+	}
+}
+
 func (bus *SystemBus) write8Slow(addr uint32, value uint8) {
 	bus.mutex.Lock()
 

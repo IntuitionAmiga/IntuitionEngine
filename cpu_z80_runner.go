@@ -181,8 +181,10 @@ func (b *Z80SystemBus) Write(addr uint16, value byte) {
 	}
 
 	// Handle VRAM bank window writes
+	// Use WriteMemoryDirect to bypass VideoChip handler, which does
+	// 32-bit writes even for single bytes (corrupting adjacent bytes)
 	if translated, ok := b.translateVRAM(addr); ok {
-		b.bus.Write8(translated, value)
+		b.bus.WriteMemoryDirect(translated, value)
 		return
 	}
 
