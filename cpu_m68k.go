@@ -1998,7 +1998,8 @@ func (cpu *M68KCPU) DumpRegisters() {
 
 func (cpu *M68KCPU) Read8(addr uint32) uint8 {
 	// Lock-free fast path for non-I/O addresses using unsafe pointer
-	if addr < 0xF0000 {
+	// EXCLUDE VGA windows (0xA0000-0xBFFFF) which need bus routing
+	if addr < 0xA0000 {
 		return *(*byte)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr)))
 	}
 
@@ -2029,7 +2030,8 @@ func (cpu *M68KCPU) Read16(addr uint32) uint16 {
 
 	// Lock-free fast path for non-I/O addresses using unsafe pointer
 	// Read as little-endian uint16, then byte-swap to big-endian
-	if addr < 0xF0000 {
+	// EXCLUDE VGA windows (0xA0000-0xBFFFF) which need bus routing
+	if addr < 0xA0000 {
 		leValue := *(*uint16)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr)))
 		return bits.ReverseBytes16(leValue)
 	}
@@ -2063,7 +2065,8 @@ func (cpu *M68KCPU) Read32(addr uint32) uint32 {
 
 	// Lock-free fast path for non-I/O addresses using unsafe pointer
 	// Read as little-endian uint32, then byte-swap to big-endian
-	if addr < 0xF0000 {
+	// EXCLUDE VGA windows (0xA0000-0xBFFFF) which need bus routing
+	if addr < 0xA0000 {
 		leValue := *(*uint32)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr)))
 		return bits.ReverseBytes32(leValue)
 	}
@@ -2107,7 +2110,8 @@ func (cpu *M68KCPU) Write8(addr uint32, value uint8) {
 	}
 
 	// Fast path: non-I/O memory using unsafe pointer
-	if addr < 0xF0000 {
+	// EXCLUDE VGA windows (0xA0000-0xBFFFF) which need bus routing
+	if addr < 0xA0000 {
 		*(*byte)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr))) = value
 		return
 	}
@@ -2131,7 +2135,8 @@ func (cpu *M68KCPU) Write16(addr uint32, value uint16) {
 
 	// Fast path: non-I/O memory using unsafe pointer
 	// Byte-swap from big-endian to little-endian and write as uint16
-	if addr < 0xF0000 {
+	// EXCLUDE VGA windows (0xA0000-0xBFFFF) which need bus routing
+	if addr < 0xA0000 {
 		*(*uint16)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr))) = bits.ReverseBytes16(value)
 		return
 	}
@@ -2161,7 +2166,8 @@ func (cpu *M68KCPU) Write32(addr uint32, value uint32) {
 
 	// Fast path: non-I/O memory using unsafe pointer
 	// Byte-swap from big-endian to little-endian and write as uint32
-	if addr < 0xF0000 {
+	// EXCLUDE VGA windows (0xA0000-0xBFFFF) which need bus routing
+	if addr < 0xA0000 {
 		*(*uint32)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr))) = bits.ReverseBytes32(value)
 		return
 	}
