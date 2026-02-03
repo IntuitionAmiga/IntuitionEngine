@@ -4246,6 +4246,14 @@ func (cpu *M68KCPU) ExecAdd(reg, opmode, mode, xreg uint16) {
 				source &= 0xFFFF
 			}
 			cpu.cycleCounter += M68K_CYCLE_REG
+		} else if mode == M68K_AM_AR {
+			// Address register direct (word/long only - byte not allowed)
+			source = cpu.AddrRegs[xreg]
+			if size == M68K_SIZE_WORD {
+				source &= 0xFFFF
+			}
+			// Note: byte size is illegal for address register but we don't enforce here
+			cpu.cycleCounter += M68K_CYCLE_REG
 		} else if mode == 7 {
 			// Extended addressing modes
 			switch xreg {

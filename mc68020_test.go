@@ -42,11 +42,23 @@ func setupTestCPU() *M68KCPU {
 	termOut := NewTerminalOutput()
 	bus.MapIO(TERM_OUT, TERM_OUT, nil, termOut.HandleWrite)
 
-	// Initialize stack pointer and program counter in memory
-	bus.Write32(0, M68K_STACK_START)
-	bus.Write32(M68K_RESET_VECTOR, M68K_ENTRY_POINT)
+	// Create CPU first
+	cpu := NewM68KCPU(bus)
 
-	return NewM68KCPU(bus)
+	// Initialize vector table using CPU's Write32 to handle M68K endianness correctly
+	// The M68K reads vectors 0 (initial SP) and 1 (initial PC) during reset
+	cpu.Write32(0, M68K_STACK_START)
+	cpu.Write32(M68K_RESET_VECTOR, M68K_ENTRY_POINT)
+
+	// Re-initialize the CPU to read the corrected vectors
+	// Set PC and SP directly since vectors are now correct
+	cpu.PC = M68K_ENTRY_POINT
+	cpu.AddrRegs[7] = M68K_STACK_START
+	cpu.SSP = M68K_STACK_START
+	cpu.stackUpperBound = M68K_STACK_START + 0x10000
+	cpu.stackLowerBound = M68K_STACK_START - 0x10000
+
+	return cpu
 }
 
 // Helper function for detailed output
