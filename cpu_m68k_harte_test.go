@@ -51,6 +51,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unsafe"
 )
 
 // -----------------------------------------------------------------------------
@@ -360,10 +361,12 @@ var harteTestCPU *M68KCPU
 func getHarteTestCPU() *M68KCPU {
 	if harteTestBus == nil {
 		harteTestBus = NewSystemBus()
+		mem := harteTestBus.GetMemory()
 		harteTestCPU = &M68KCPU{
 			SR:              M68K_SR_S,
 			bus:             harteTestBus,
-			memory:          harteTestBus.GetMemory(),
+			memory:          mem,
+			memBase:         unsafe.Pointer(&mem[0]),
 			stackLowerBound: 0,
 			stackUpperBound: 0xFFFFFFFF,
 		}

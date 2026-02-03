@@ -126,6 +126,7 @@ import (
 	"runtime"
 	"sync/atomic"
 	"time"
+	"unsafe"
 )
 
 // ------------------------------------------------------------------------------
@@ -639,7 +640,8 @@ type M68KCPU struct {
 	debugIOReadCount int // Counter for I/O read debug output
 
 	// Direct memory access for lock-free instruction fetches
-	memory []byte // Direct pointer to main memory (bypasses mutex for non-I/O reads)
+	memory  []byte         // Direct pointer to main memory (bypasses mutex for non-I/O reads)
+	memBase unsafe.Pointer // Unsafe base pointer for bounds-check-free access
 
 	// Fault tracking for bus/address errors (format $A frames)
 	accessIsInstruction    bool
@@ -676,11 +678,13 @@ type faultingBus interface {
 }
 
 func NewM68KCPU(bus MemoryBus) *M68KCPU {
+	mem := bus.GetMemory()
 	cpu := &M68KCPU{
 		SR:              M68K_SR_S, // Hardware powers up in supervisor mode
 		bus:             bus,
-		memory:          bus.GetMemory(), // Direct memory access for lock-free reads
-		stackLowerBound: 0x00002000,      // Reserves space for exception vectors
+		memory:          mem,                     // Direct memory access for lock-free reads
+		memBase:         unsafe.Pointer(&mem[0]), // Unsafe base pointer for bounds-check-free access
+		stackLowerBound: 0x00002000,              // Reserves space for exception vectors
 		stackUpperBound: M68K_MEMORY_SIZE,
 		FPU:             NewM68881FPU(), // Initialize 68881 FPU coprocessor
 	}
@@ -770,10 +774,6 @@ func (cpu *M68KCPU) LoadProgramBytes(program []byte) {
 
 		// Write16 handles endian conversion to host format
 		cpu.Write16(addr, beValue)
-
-		if cpu.debug.Load() {
-			fmt.Printf("Addr 0x%08X: 0x%04X\n", addr, beValue)
-		}
 	}
 
 	cpu.PC = M68K_ENTRY_POINT
@@ -783,32 +783,37 @@ func (cpu *M68KCPU) LoadProgramBytes(program []byte) {
 }
 
 // Main execution loop and control
+// Dispatch table for top 4 bits of opcode (bits 15-12)
+// This replaces 82+ if-else checks with a single array lookup
+var m68kDispatchTable = [16]func(cpu *M68KCPU, opcode uint16){
+	(*M68KCPU).decodeGroup0, // 0x0xxx: Bit manipulation and immediate
+	(*M68KCPU).decodeGroup1, // 0x1xxx: MOVE.B
+	(*M68KCPU).decodeGroup2, // 0x2xxx: MOVE.L
+	(*M68KCPU).decodeGroup3, // 0x3xxx: MOVE.W
+	(*M68KCPU).decodeGroup4, // 0x4xxx: Miscellaneous
+	(*M68KCPU).decodeGroup5, // 0x5xxx: ADDQ, SUBQ, Scc, DBcc
+	(*M68KCPU).decodeGroup6, // 0x6xxx: Bcc (branches)
+	(*M68KCPU).decodeGroup7, // 0x7xxx: MOVEQ
+	(*M68KCPU).decodeGroup8, // 0x8xxx: OR, DIV, SBCD
+	(*M68KCPU).decodeGroup9, // 0x9xxx: SUB, SUBA, SUBX
+	(*M68KCPU).decodeGroupA, // 0xAxxx: Line A trap
+	(*M68KCPU).decodeGroupB, // 0xBxxx: CMP, CMPA, EOR
+	(*M68KCPU).decodeGroupC, // 0xCxxx: AND, MUL, ABCD, EXG
+	(*M68KCPU).decodeGroupD, // 0xDxxx: ADD, ADDA, ADDX
+	(*M68KCPU).decodeGroupE, // 0xExxx: Shift, Rotate, Bit Field
+	(*M68KCPU).decodeGroupF, // 0xFxxx: Line F (coprocessor)
+}
+
 func (cpu *M68KCPU) FetchAndDecodeInstruction() {
 	opcode := cpu.currentIR
+	// Single array lookup replaces 80+ conditional checks
+	m68kDispatchTable[opcode>>12](cpu, opcode)
+}
 
-	// Exact matches processed first for efficiency
+// decodeGroup0: 0x0xxx - Bit manipulation and immediate instructions
+func (cpu *M68KCPU) decodeGroup0(opcode uint16) {
+	// Exact matches for SR/CCR operations
 	switch opcode {
-	case M68K_NOP:
-		cpu.ExecNOP()
-		return
-	case M68K_RTS:
-		cpu.ExecRTS()
-		return
-	case M68K_RTE:
-		cpu.ExecRTE()
-		return
-	case M68K_STOP:
-		cpu.ExecSTOP()
-		return
-	case M68K_RESET:
-		cpu.ExecRESET()
-		return
-	case M68K_TRAPV:
-		cpu.ExecTRAPV()
-		return
-	case M68K_RTR:
-		cpu.ExecRTR()
-		return
 	case M68K_ANDI_TO_CCR:
 		cpu.ExecAndiCcr()
 		return
@@ -835,7 +840,7 @@ func (cpu *M68KCPU) FetchAndDecodeInstruction() {
 		return
 	}
 
-	// CALLM - Protected module invocation - hardware-enforced capability-based security (rarely used, removed in 68030)
+	// CALLM - Protected module invocation
 	if (opcode&0xFFC0) == M68K_CALLM && (opcode&0x00C0) == 0x00C0 {
 		mode := (opcode >> 3) & 0x7
 		reg := opcode & 0x7
@@ -843,36 +848,14 @@ func (cpu *M68KCPU) FetchAndDecodeInstruction() {
 		return
 	}
 
-	// RTM - Returns from protected module, restoring saved state
+	// RTM - Returns from protected module
 	if (opcode&0xFFF0) == M68K_RTM && (opcode&0x00C0) == 0x0080 {
 		reg := opcode & 0xF
 		cpu.ExecRtm(reg)
 		return
 	}
 
-	// Branch family - frequent in typical programmes
-	if (opcode & 0xF000) == M68K_BRA {
-		cpu.ExecBRA(opcode)
-		return
-	}
-
-	// DBcc - efficient loop termination primitive
-	if (opcode & 0xF0F8) == M68K_DBcc {
-		reg := opcode & 0x7
-		condition := (opcode >> 8) & 0xF
-		cpu.ExecDBcc(condition, reg)
-		return
-	}
-
-	// TRAP - software exceptions 0-15
-	if (opcode & 0xFFF0) == M68K_TRAP {
-		cpu.ExecTRAP(opcode & 0xF)
-		return
-	}
-
 	// Bit manipulation with dynamic bit number
-	// Encoding: 0000 rrr1 ttmm mxxx where rrr=register, tt=operation type
-	// Mask 0xF1C0 keeps bits 15-12, 8, and 7-6 to match the operation type
 	if (opcode & 0xF1C0) == M68K_BTST {
 		reg := (opcode >> 9) & 0x7
 		mode := (opcode >> 3) & 0x7
@@ -902,54 +885,33 @@ func (cpu *M68KCPU) FetchAndDecodeInstruction() {
 		return
 	}
 
-	// Special MOVE variants for address registers
-	if (opcode&0xF0C0) == M68K_MOVE_IMM_TO_A_L || (opcode&0xF0F8) == M68K_MOVE_IMM_TO_A_W {
-		cpu.ExecMoveImmToAddr(opcode)
-		return
-	}
-
-	// Immediate instructions - constant operand embedded in instruction stream
-	// IMPORTANT: These must be checked BEFORE the general MOVE check, as they all
-	// have opcodes in the 0x0xxx range which MOVE's broad mask (0xC000)==0 would catch.
+	// Immediate instructions
 	if (opcode & 0xFF00) == M68K_ADDI {
-		// Immediate add avoids separate memory fetch for source operand
 		cpu.ExecAddi()
 		return
 	}
-
 	if (opcode & 0xFF00) == M68K_SUBI {
-		// Immediate subtract for efficient constant operations
 		cpu.ExecSubi()
 		return
 	}
-
 	if (opcode & 0xFF00) == M68K_CMPI {
-		// Compare immediate - essential for range checks and sentinel values
 		cpu.ExecCmpi()
 		return
 	}
-
 	if (opcode & 0xFF00) == M68K_ANDI {
-		// Immediate AND for bit masking and field extraction
 		cpu.ExecAndi()
 		return
 	}
-
 	if (opcode & 0xFF00) == M68K_ORI {
-		// Immediate OR for bit setting and flag manipulation
 		cpu.ExecOri()
 		return
 	}
-
 	if (opcode & 0xFF00) == M68K_EORI {
-		// Immediate XOR for bit toggling and cryptographic operations
 		cpu.ExecEori()
 		return
 	}
 
-	// Immediate bit manipulation instructions: BTST/BCHG/BCLR/BSET #n,<ea>
-	// Encoding: 0000 1000 ttmm mrrr where tt=operation type
-	// Must be checked before MOVE as they fall in the 0x0xxx range
+	// Immediate bit manipulation
 	if (opcode & 0xFFC0) == 0x0800 {
 		mode := (opcode >> 3) & 0x7
 		reg := opcode & 0x7
@@ -975,33 +937,103 @@ func (cpu *M68KCPU) FetchAndDecodeInstruction() {
 		return
 	}
 
-	// MOVE - most common instruction family
-	if (opcode & 0xC000) == 0 {
-		size := (opcode >> 12) & 0x3
-		destReg := (opcode >> 9) & 0x7
-		destMode := (opcode >> 6) & 0x7
-		srcMode := (opcode >> 3) & 0x7
-		srcReg := opcode & 0x7
-
-		if cpu.debug.Load() {
-			fmt.Printf("MOVE instruction detected: size=%d, srcMode=%d, srcReg=%d, destMode=%d, destReg=%d\n",
-				size, srcMode, srcReg, destMode, destReg)
-			fmt.Printf("MOVE parsed: size=%d, srcMode=%d, srcReg=%d, destMode=%d, destReg=%d",
-				size, srcMode, srcReg, destMode, destReg)
-		}
-
-		cpu.ExecMove(srcMode, srcReg, destMode, destReg, size)
+	// CAS - Lock-free synchronisation
+	if (opcode & 0xFFC0) == M68K_CAS {
+		opmode := (opcode >> 9) & 0x3
+		mode := (opcode >> 3) & 0x7
+		reg := opcode & 0x7
+		cpu.ExecCas(opmode, mode, reg)
 		return
 	}
 
-	// MOVEQ - compact form for small constants
-	if (opcode & 0xF100) == M68K_MOVEQ {
-		reg := (opcode >> 9) & 0x7
-		data := int8(opcode & 0xFF) // Hardware sign-extends during decode
-		cpu.ExecMoveq(reg, data)
+	// CAS2
+	if opcode == M68K_CAS2 {
+		opmode := (opcode >> 9) & 0x3
+		cpu.ExecCas2(opmode)
 		return
 	}
 
+	// CHK2/CMP2
+	if (opcode & 0xFFC0) == M68K_CHK2_CMP2 {
+		size := (opcode >> 9) & 0x3
+		mode := (opcode >> 3) & 0x7
+		reg := opcode & 0x7
+		cpu.ExecChk2Cmp2(size, mode, reg)
+		return
+	}
+
+	// MOVES
+	if (opcode & 0xFF00) == M68K_MOVES {
+		cpu.ExecMoves()
+		return
+	}
+
+	// Illegal instruction
+	fmt.Printf("M68K: Unimplemented opcode %04x at PC=%08x\n", opcode, cpu.PC-M68K_WORD_SIZE)
+	cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
+}
+
+// decodeGroup1: 0x1xxx - MOVE.B
+func (cpu *M68KCPU) decodeGroup1(opcode uint16) {
+	destReg := (opcode >> 9) & 0x7
+	destMode := (opcode >> 6) & 0x7
+	srcMode := (opcode >> 3) & 0x7
+	srcReg := opcode & 0x7
+	cpu.ExecMove(srcMode, srcReg, destMode, destReg, 1) // size=1 for byte
+}
+
+// decodeGroup2: 0x2xxx - MOVE.L and MOVEA.L
+func (cpu *M68KCPU) decodeGroup2(opcode uint16) {
+	destReg := (opcode >> 9) & 0x7
+	destMode := (opcode >> 6) & 0x7
+	srcMode := (opcode >> 3) & 0x7
+	srcReg := opcode & 0x7
+	cpu.ExecMove(srcMode, srcReg, destMode, destReg, 2) // size=2 for long
+}
+
+// decodeGroup3: 0x3xxx - MOVE.W and MOVEA.W
+func (cpu *M68KCPU) decodeGroup3(opcode uint16) {
+	destReg := (opcode >> 9) & 0x7
+	destMode := (opcode >> 6) & 0x7
+	srcMode := (opcode >> 3) & 0x7
+	srcReg := opcode & 0x7
+	cpu.ExecMove(srcMode, srcReg, destMode, destReg, 3) // size=3 for word
+}
+
+// decodeGroup4: 0x4xxx - Miscellaneous instructions
+func (cpu *M68KCPU) decodeGroup4(opcode uint16) {
+	// Exact matches first
+	switch opcode {
+	case M68K_NOP:
+		cpu.ExecNOP()
+		return
+	case M68K_RTS:
+		cpu.ExecRTS()
+		return
+	case M68K_RTE:
+		cpu.ExecRTE()
+		return
+	case M68K_STOP:
+		cpu.ExecSTOP()
+		return
+	case M68K_RESET:
+		cpu.ExecRESET()
+		return
+	case M68K_TRAPV:
+		cpu.ExecTRAPV()
+		return
+	case M68K_RTR:
+		cpu.ExecRTR()
+		return
+	}
+
+	// TRAP
+	if (opcode & 0xFFF0) == M68K_TRAP {
+		cpu.ExecTRAP(opcode & 0xF)
+		return
+	}
+
+	// JSR
 	if (opcode & 0xFFC0) == M68K_JSR {
 		mode := (opcode >> 3) & 0x7
 		reg := opcode & 0x7
@@ -1009,6 +1041,7 @@ func (cpu *M68KCPU) FetchAndDecodeInstruction() {
 		return
 	}
 
+	// JMP
 	if (opcode & 0xFFC0) == M68K_JMP {
 		mode := (opcode >> 3) & 0x7
 		reg := opcode & 0x7
@@ -1016,23 +1049,19 @@ func (cpu *M68KCPU) FetchAndDecodeInstruction() {
 		return
 	}
 
-	// MOVEM - register list encoded in extension word
-	// Note: MOVEM cannot use mode 0 (data register direct), as it operates on memory.
-	// Mode 0 with this bit pattern is actually the EXT instruction family.
+	// MOVEM
 	if (opcode & 0xFB80) == M68K_MOVEM {
 		mode := (opcode >> 3) & 0x7
-		if mode != M68K_AM_DR { // Exclude mode 0 (data register direct)
+		if mode != M68K_AM_DR {
 			direction := (opcode >> 10) & 0x1
 			size := (opcode >> 6) & 0x1
 			reg := opcode & 0x7
-
 			cpu.ExecMovem(direction, size, mode, reg)
 			return
 		}
-		// If mode is 0, fall through to check for EXT instruction below
 	}
 
-	// MOVE from SR - Privileged on 68010+; allows supervisor to examine processor state
+	// MOVE from SR
 	if (opcode & 0xFFC0) == M68K_MOVE_FROM_SR {
 		mode := (opcode >> 3) & 0x7
 		reg := opcode & 0x7
@@ -1040,7 +1069,7 @@ func (cpu *M68KCPU) FetchAndDecodeInstruction() {
 		return
 	}
 
-	// MOVE to SR - Mode/interrupt level changes require privilege to prevent security bypass
+	// MOVE to SR
 	if (opcode & 0xFFC0) == M68K_MOVE_TO_SR {
 		mode := (opcode >> 3) & 0x7
 		reg := opcode & 0x7
@@ -1048,7 +1077,7 @@ func (cpu *M68KCPU) FetchAndDecodeInstruction() {
 		return
 	}
 
-	// MOVE USP - Context switching between user and supervisor modes
+	// MOVE USP
 	if (opcode & 0xFFF0) == M68K_MOVE_USP {
 		direction := (opcode >> 3) & 0x1
 		if direction == 0 {
@@ -1059,64 +1088,60 @@ func (cpu *M68KCPU) FetchAndDecodeInstruction() {
 		return
 	}
 
-	// MOVEC - Control register access isolates system functions from applications
+	// MOVEC
 	if (opcode & 0xFFFE) == M68K_MOVEC {
 		cpu.ExecMovec()
 		return
 	}
 
-	// MOVES - Address space specification for OS memory managers
-	if (opcode & 0xFF00) == M68K_MOVES {
-		cpu.ExecMoves()
-		return
-	}
-
-	// CAS - Lock-free synchronisation primitive for multiprocessor systems
-	if (opcode & 0xFFC0) == M68K_CAS {
-		opmode := (opcode >> 9) & 0x3
+	// LEA
+	if (opcode & 0xF1C0) == M68K_LEA {
+		reg := (opcode >> 9) & 0x7
 		mode := (opcode >> 3) & 0x7
-		reg := opcode & 0x7
-		cpu.ExecCas(opmode, mode, reg)
+		xreg := opcode & 0x7
+		cpu.ExecLea(reg, mode, xreg)
 		return
 	}
 
-	// CAS2 - Atomic 64-bit operations for concurrent data structures
-	if opcode == M68K_CAS2 {
-		opmode := (opcode >> 9) & 0x3
-		cpu.ExecCas2(opmode)
-		return
-	}
-
-	// CHK2/CMP2 - Efficient range validation against both upper and lower bounds simultaneously
-	if (opcode & 0xFFC0) == M68K_CHK2_CMP2 {
-		size := (opcode >> 9) & 0x3
+	// PEA
+	if (opcode & 0xFFC0) == M68K_PEA {
 		mode := (opcode >> 3) & 0x7
-		reg := opcode & 0x7
-		cpu.ExecChk2Cmp2(size, mode, reg)
+		if mode != M68K_AM_DR {
+			reg := opcode & 0x7
+			cpu.ExecPea(mode, reg)
+			return
+		}
+	}
+
+	// CHK
+	if (opcode & 0xF1C0) == M68K_CHK {
+		reg := (opcode >> 9) & 0x7
+		mode := (opcode >> 3) & 0x7
+		xreg := opcode & 0x7
+		var size int
+		if (opcode & 0x0080) != 0 {
+			size = M68K_SIZE_LONG
+		} else {
+			size = M68K_SIZE_WORD
+		}
+		cpu.ExecChk(reg, mode, xreg, size)
 		return
 	}
 
-	// ADDX and SUBX - Extended arithmetic with X flag
-	// These must be checked BEFORE the general ADD and SUB checks, as ADDX/SUBX use
-	// a more specific bit pattern (mask 0xF130) whilst ADD/SUB use a more general
-	// pattern (mask 0xF000). The ADDX format is 1101 yyy1 ss00 mxxx where fixed bits
-	// are: 15-12 (1101), bit 8 (1), and bits 5-4 (00). Variable bits are: 11-9 (dest reg),
-	// 7-6 (size), bit 3 (mode: 0=register, 1=memory), and 2-0 (source reg).
-	// For example, ADDX.W -(A0),-(A1) (0xD148) matches:
-	//   - 0xD148 & 0xF130 = 0xD100 (ADDX - correct)
-	//   - 0xD148 & 0xF000 = 0xD000 (ADD - incorrect)
-	// Checking the more specific pattern first ensures extended arithmetic operations
-	// are correctly identified before falling through to regular arithmetic.
-	//
-	// IMPORTANT: ADDX must NOT match ADDA! ADDA has opmode 3 (011) or 7 (111), which
-	// means bits 7-6 = 11. ADDX has size field in bits 7-6 which is never 11 (only 00/01/10).
-	// So we add a check that bits 7-6 != 11 to exclude ADDA.
-	if (opcode&0xF130) == M68K_ADDX && (opcode&0x00C0) != 0x00C0 {
-		regMode := (opcode >> 3) & 0x1
-		rx := opcode & 0x7
-		ry := (opcode >> 9) & 0x7
+	// CLR
+	if (opcode & 0xFF00) == M68K_CLR {
 		size := (opcode >> 6) & 0x3
+		mode := (opcode >> 3) & 0x7
+		reg := opcode & 0x7
+		cpu.ExecClr(size, mode, reg)
+		return
+	}
 
+	// NOT
+	if (opcode & 0xFF00) == M68K_NOT {
+		size := (opcode >> 6) & 0x3
+		mode := (opcode >> 3) & 0x7
+		reg := opcode & 0x7
 		var sizeCode int
 		switch size {
 		case 0:
@@ -1129,18 +1154,243 @@ func (cpu *M68KCPU) FetchAndDecodeInstruction() {
 			cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
 			return
 		}
-
-		cpu.ExecAddx(regMode, rx, ry, sizeCode)
+		cpu.ExecNot(mode, reg, sizeCode)
 		return
 	}
 
-	// Same fix for SUBX - exclude SUBA by checking bits 7-6 != 11
+	// NEG
+	if (opcode & 0xFF00) == M68K_NEG {
+		size := (opcode >> 6) & 0x3
+		mode := (opcode >> 3) & 0x7
+		reg := opcode & 0x7
+		var sizeCode int
+		switch size {
+		case 0:
+			sizeCode = M68K_SIZE_BYTE
+		case 1:
+			sizeCode = M68K_SIZE_WORD
+		case 2:
+			sizeCode = M68K_SIZE_LONG
+		default:
+			cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
+			return
+		}
+		cpu.ExecNeg(mode, reg, sizeCode)
+		return
+	}
+
+	// NEGX
+	if (opcode & 0xFF00) == M68K_NEGX {
+		size := (opcode >> 6) & 0x3
+		mode := (opcode >> 3) & 0x7
+		reg := opcode & 0x7
+		var sizeCode int
+		switch size {
+		case 0:
+			sizeCode = M68K_SIZE_BYTE
+		case 1:
+			sizeCode = M68K_SIZE_WORD
+		case 2:
+			sizeCode = M68K_SIZE_LONG
+		default:
+			cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
+			return
+		}
+		cpu.ExecNegx(mode, reg, sizeCode)
+		return
+	}
+
+	// SWAP
+	if (opcode & 0xFFF8) == M68K_SWAP {
+		reg := opcode & 0x7
+		cpu.ExecSwap(reg)
+		return
+	}
+
+	// EXT
+	masked := opcode & 0xFFC0
+	if masked == 0x4880 || masked == 0x48C0 || masked == 0x49C0 {
+		reg := opcode & 0x7
+		opmode := (opcode >> 6) & 0x7
+		cpu.ExecExt(reg, opmode)
+		return
+	}
+
+	// TST
+	if (opcode & 0xFF00) == M68K_TST {
+		size := (opcode >> 6) & 0x3
+		mode := (opcode >> 3) & 0x7
+		reg := opcode & 0x7
+		cpu.ExecTst(size, mode, reg)
+		return
+	}
+
+	// LINK
+	if (opcode & 0xFFF8) == M68K_LINK {
+		reg := opcode & 0x7
+		cpu.ExecLink(reg)
+		return
+	}
+
+	// UNLK
+	if (opcode & 0xFFF8) == M68K_UNLK {
+		reg := opcode & 0x7
+		cpu.ExecUnlk(reg)
+		return
+	}
+
+	// TAS
+	if (opcode & 0xFFC0) == M68K_TAS {
+		mode := (opcode >> 3) & 0x7
+		reg := opcode & 0x7
+		cpu.ExecTas(mode, reg)
+		return
+	}
+
+	// BKPT
+	if (opcode & 0xFFF8) == M68K_BKPT {
+		bkptNum := opcode & 0x7
+		cpu.ExecBkpt(bkptNum)
+		return
+	}
+
+	// NBCD
+	if (opcode & 0xFFC0) == M68K_NBCD {
+		mode := (opcode >> 3) & 0x7
+		reg := opcode & 0x7
+		cpu.ExecNbcd(mode, reg)
+		return
+	}
+
+	// MULL/DIVL (68020) - 0x4C00-0x4C7F range
+	// Bit 6 distinguishes: 0 = MULL (0x4C00), 1 = DIVL (0x4C40)
+	if (opcode & 0xFF80) == 0x4C00 {
+		mode := (opcode >> 3) & 0x7
+		reg := opcode & 0x7
+		if (opcode & 0x0040) == 0 {
+			cpu.ExecMulL(0, mode, reg)
+		} else {
+			cpu.ExecDIVL(0, mode, reg)
+		}
+		return
+	}
+
+	// Illegal instruction
+	fmt.Printf("M68K: Unimplemented opcode %04x at PC=%08x\n", opcode, cpu.PC-M68K_WORD_SIZE)
+	cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
+}
+
+// decodeGroup5: 0x5xxx - ADDQ, SUBQ, Scc, DBcc
+func (cpu *M68KCPU) decodeGroup5(opcode uint16) {
+	// DBcc
+	if (opcode & 0xF0F8) == M68K_DBcc {
+		reg := opcode & 0x7
+		condition := (opcode >> 8) & 0xF
+		cpu.ExecDBcc(condition, reg)
+		return
+	}
+
+	// Scc
+	if (opcode & 0xF0C0) == M68K_Scc {
+		condition := uint8((opcode >> 8) & 0xF)
+		mode := (opcode >> 3) & 0x7
+		reg := opcode & 0x7
+		cpu.ExecScc(condition, mode, reg)
+		return
+	}
+
+	// ADDQ/SUBQ (exclude size = 3 which is Scc/DBcc)
+	if (opcode & 0x00C0) != 0x00C0 {
+		data := (opcode >> 9) & 0x7
+		if data == 0 {
+			data = 8
+		}
+		size := (opcode >> 6) & 0x3
+		mode := (opcode >> 3) & 0x7
+		reg := opcode & 0x7
+		if (opcode & 0x0100) != 0 {
+			cpu.ExecSubq(uint32(data), size, mode, reg)
+		} else {
+			cpu.ExecAddq(uint32(data), size, mode, reg)
+		}
+		return
+	}
+
+	// Illegal instruction
+	fmt.Printf("M68K: Unimplemented opcode %04x at PC=%08x\n", opcode, cpu.PC-M68K_WORD_SIZE)
+	cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
+}
+
+// decodeGroup6: 0x6xxx - Bcc (branches including BRA, BSR)
+func (cpu *M68KCPU) decodeGroup6(opcode uint16) {
+	cpu.ExecBRA(opcode)
+}
+
+// decodeGroup7: 0x7xxx - MOVEQ
+func (cpu *M68KCPU) decodeGroup7(opcode uint16) {
+	reg := (opcode >> 9) & 0x7
+	data := int8(opcode & 0xFF)
+	cpu.ExecMoveq(reg, data)
+}
+
+// decodeGroup8: 0x8xxx - OR, DIV, SBCD
+func (cpu *M68KCPU) decodeGroup8(opcode uint16) {
+	// DIVU/DIVS.W
+	if (opcode & 0xF0C0) == 0x80C0 {
+		reg := (opcode >> 9) & 0x7
+		mode := (opcode >> 3) & 0x7
+		xreg := opcode & 0x7
+		if (opcode & 0x0100) == 0 {
+			cpu.ExecDivu(reg, mode, xreg)
+		} else {
+			cpu.ExecDivs(reg, mode, xreg)
+		}
+		return
+	}
+
+	// SBCD
+	if (opcode & 0xF1F0) == M68K_SBCD {
+		regMode := (opcode >> 3) & 0x1
+		rx := opcode & 0x7
+		ry := (opcode >> 9) & 0x7
+		cpu.ExecSbcd(regMode, rx, ry)
+		return
+	}
+
+	// PACK
+	if (opcode & 0xF1F0) == M68K_PACK {
+		rx := opcode & 0x7
+		ry := (opcode >> 9) & 0x7
+		regMode := (opcode >> 3) & 0x1
+		cpu.ExecPack(rx, ry, regMode == 0)
+		return
+	}
+
+	// UNPK
+	if (opcode & 0xF1F0) == M68K_UNPK {
+		rx := opcode & 0x7
+		ry := (opcode >> 9) & 0x7
+		regMode := (opcode >> 3) & 0x1
+		cpu.ExecUnpk(rx, ry, regMode == 0)
+		return
+	}
+
+	// OR
+	reg := (opcode >> 9) & 0x7
+	opmode := (opcode >> 6) & 0x7
+	mode := (opcode >> 3) & 0x7
+	xreg := opcode & 0x7
+	cpu.ExecOr(reg, opmode, mode, xreg)
+}
+
+// decodeGroup9: 0x9xxx - SUB, SUBA, SUBX
+func (cpu *M68KCPU) decodeGroup9(opcode uint16) {
+	// SUBX (check before SUB)
 	if (opcode&0xF130) == M68K_SUBX && (opcode&0x00C0) != 0x00C0 {
 		regMode := (opcode >> 3) & 0x1
 		rx := opcode & 0x7
 		ry := (opcode >> 9) & 0x7
 		size := (opcode >> 6) & 0x3
-
 		var sizeCode int
 		switch size {
 		case 0:
@@ -1153,49 +1403,36 @@ func (cpu *M68KCPU) FetchAndDecodeInstruction() {
 			cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
 			return
 		}
-
 		cpu.ExecSubx(regMode, rx, ry, sizeCode)
 		return
 	}
 
-	if (opcode & 0xF000) == M68K_ADD {
-		reg := (opcode >> 9) & 0x7
-		opmode := (opcode >> 6) & 0x7
-		mode := (opcode >> 3) & 0x7
-		xreg := opcode & 0x7
+	reg := (opcode >> 9) & 0x7
+	opmode := (opcode >> 6) & 0x7
+	mode := (opcode >> 3) & 0x7
+	xreg := opcode & 0x7
 
-		// ADDA: Add Address - opmode 011 (word) or 111 (long)
-		if opmode == 3 || opmode == 7 {
-			cpu.ExecAdda(reg, opmode, mode, xreg)
-			return
-		}
-
-		cpu.ExecAdd(reg, opmode, mode, xreg)
+	// SUBA
+	if opmode == 3 || opmode == 7 {
+		cpu.ExecSuba(reg, opmode, mode, xreg)
 		return
 	}
 
-	if (opcode & 0xF000) == M68K_SUB {
-		reg := (opcode >> 9) & 0x7
-		opmode := (opcode >> 6) & 0x7
-		mode := (opcode >> 3) & 0x7
-		xreg := opcode & 0x7
+	cpu.ExecSub(reg, opmode, mode, xreg)
+}
 
-		// SUBA: Subtract Address - opmode 011 (word) or 111 (long)
-		if opmode == 3 || opmode == 7 {
-			cpu.ExecSuba(reg, opmode, mode, xreg)
-			return
-		}
+// decodeGroupA: 0xAxxx - Line A trap
+func (cpu *M68KCPU) decodeGroupA(opcode uint16) {
+	cpu.ProcessException(M68K_VEC_LINE_A)
+}
 
-		cpu.ExecSub(reg, opmode, mode, xreg)
-		return
-	}
-
-	// CMPM - Memory-to-memory compare with post-increment
+// decodeGroupB: 0xBxxx - CMP, CMPA, EOR, CMPM
+func (cpu *M68KCPU) decodeGroupB(opcode uint16) {
+	// CMPM
 	if (opcode & 0xF1F8) == M68K_CMPM {
 		rx := opcode & 0x7
 		ry := (opcode >> 9) & 0x7
 		size := (opcode >> 6) & 0x3
-
 		var sizeCode int
 		switch size {
 		case 0:
@@ -1208,13 +1445,11 @@ func (cpu *M68KCPU) FetchAndDecodeInstruction() {
 			cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
 			return
 		}
-
 		cpu.ExecCmpm(rx, ry, sizeCode)
 		return
 	}
 
-	// EOR must be checked BEFORE CMP since both use 0xB line
-	// EOR uses opmode 100, 101, 110 (bit 8 set), CMP uses 000, 001, 010
+	// EOR (bit 8 set)
 	if (opcode & 0xF138) == M68K_EOR {
 		reg := (opcode >> 9) & 0x7
 		opmode := (opcode >> 6) & 0x3
@@ -1224,32 +1459,27 @@ func (cpu *M68KCPU) FetchAndDecodeInstruction() {
 		return
 	}
 
-	if (opcode & 0xF000) == M68K_CMP {
-		reg := (opcode >> 9) & 0x7
-		opmode := (opcode >> 6) & 0x7
-		mode := (opcode >> 3) & 0x7
-		xreg := opcode & 0x7
+	reg := (opcode >> 9) & 0x7
+	opmode := (opcode >> 6) & 0x7
+	mode := (opcode >> 3) & 0x7
+	xreg := opcode & 0x7
 
-		// CMPA: Compare Address - opmode 011 (word) or 111 (long)
-		if opmode == 3 || opmode == 7 {
-			cpu.ExecCmpa(reg, opmode, mode, xreg)
-			return
-		}
-
-		cpu.ExecCmp(reg, opmode, mode, xreg)
+	// CMPA
+	if opmode == 3 || opmode == 7 {
+		cpu.ExecCmpa(reg, opmode, mode, xreg)
 		return
 	}
 
-	// Word Multiply - MULU.W and MULS.W
-	// IMPORTANT: Must be checked BEFORE AND since both use 0xCxxx opcodes
-	// Format: 1100 rrr o11 mmm rrr where o=0 for MULU, o=1 for MULS
-	// Note: MULL (long multiply, 68020+) uses opcode 0x4C00, handled separately
+	cpu.ExecCmp(reg, opmode, mode, xreg)
+}
+
+// decodeGroupC: 0xCxxx - AND, MUL, ABCD, EXG
+func (cpu *M68KCPU) decodeGroupC(opcode uint16) {
+	// MULU/MULS.W
 	if (opcode & 0xF0C0) == 0xC0C0 {
 		reg := (opcode >> 9) & 0x7
 		mode := (opcode >> 3) & 0x7
 		xreg := opcode & 0x7
-
-		// Bit 8 selects signed (1) vs unsigned (0)
 		if (opcode & 0x0100) == 0 {
 			cpu.ExecMulu(reg, mode, xreg)
 		} else {
@@ -1258,127 +1488,146 @@ func (cpu *M68KCPU) FetchAndDecodeInstruction() {
 		return
 	}
 
-	// Word Divide - DIVU.W and DIVS.W
-	// IMPORTANT: Must be checked BEFORE OR since both use 0x8xxx opcodes
-	// Format: 1000 rrr o11 mmm rrr where o=0 for DIVU, o=1 for DIVS
-	// Note: DIVL (long divide, 68020+) uses opcode 0x4C40, handled separately
-	if (opcode & 0xF0C0) == 0x80C0 {
-		reg := (opcode >> 9) & 0x7
-		mode := (opcode >> 3) & 0x7
-		xreg := opcode & 0x7
-
-		// Bit 8 selects signed (1) vs unsigned (0)
-		if (opcode & 0x0100) == 0 {
-			cpu.ExecDivu(reg, mode, xreg)
-		} else {
-			cpu.ExecDivs(reg, mode, xreg)
-		}
-		return
-	}
-
-	// BCD arithmetic for financial/decimal applications
-	// Must be checked before AND (0xC000) because ABCD (0xC1xx) overlaps AND's range
+	// ABCD
 	if (opcode & 0xF1F0) == M68K_ABCD {
 		regMode := (opcode >> 3) & 0x1
 		rx := opcode & 0x7
 		ry := (opcode >> 9) & 0x7
-
 		cpu.ExecAbcd(regMode, rx, ry)
 		return
 	}
 
-	if (opcode & 0xF000) == M68K_AND {
-		reg := (opcode >> 9) & 0x7
-		opmode := (opcode >> 6) & 0x7
-		mode := (opcode >> 3) & 0x7
-		xreg := opcode & 0x7
+	// EXG - Exchange registers
+	// Format: 1100 xxx1 opmode yyy where opmode distinguishes Dx/Dx, Ax/Ax, Dx/Ax
+	if (opcode & 0xF130) == 0xC100 {
+		rx := (opcode >> 9) & 0x7
+		ry := opcode & 0x7
+		opmode := (opcode >> 3) & 0x1F
 
-		cpu.ExecAnd(reg, opmode, mode, xreg)
-		return
-	}
-
-	// BCD instructions - must be checked before OR (0x8000) because SBCD/PACK/UNPK overlap OR's range
-	if (opcode & 0xF1F0) == M68K_SBCD {
-		regMode := (opcode >> 3) & 0x1
-		rx := opcode & 0x7
-		ry := (opcode >> 9) & 0x7
-
-		cpu.ExecSbcd(regMode, rx, ry)
-		return
-	}
-
-	// PACK - Converts ASCII/EBCDIC decimal to packed BCD for compact storage
-	// Mask 0xF1F0 to ignore bit 3 which distinguishes register (m=0) vs memory (m=1) mode
-	if (opcode & 0xF1F0) == M68K_PACK {
-		rx := opcode & 0x7
-		ry := (opcode >> 9) & 0x7
-		regMode := (opcode >> 3) & 0x1
-		cpu.ExecPack(rx, ry, regMode == 0)
-		return
-	}
-
-	// UNPK - Expands packed BCD for display or ASCII conversion
-	// Mask 0xF1F0 to ignore bit 3 which distinguishes register (m=0) vs memory (m=1) mode
-	if (opcode & 0xF1F0) == M68K_UNPK {
-		rx := opcode & 0x7
-		ry := (opcode >> 9) & 0x7
-		regMode := (opcode >> 3) & 0x1
-		cpu.ExecUnpk(rx, ry, regMode == 0)
-		return
-	}
-
-	if (opcode & 0xF000) == M68K_OR {
-		reg := (opcode >> 9) & 0x7
-		opmode := (opcode >> 6) & 0x7
-		mode := (opcode >> 3) & 0x7
-		xreg := opcode & 0x7
-
-		cpu.ExecOr(reg, opmode, mode, xreg)
-		return
-	}
-
-	// Quick arithmetic - immediate in opcode for efficiency
-	// ADDQ/SUBQ: Exclude size = 3 (0x00C0) which is used for Scc/DBcc
-	if (opcode&0xF000) == M68K_ADDQ && (opcode&0x00C0) != 0x00C0 {
-		data := (opcode >> 9) & 0x7
-		if data == 0 {
-			data = 8 // Hardware interprets 0 as 8
+		switch opmode {
+		case 0x08: // EXG Dx,Dy
+			cpu.DataRegs[rx], cpu.DataRegs[ry] = cpu.DataRegs[ry], cpu.DataRegs[rx]
+		case 0x09: // EXG Ax,Ay
+			cpu.AddrRegs[rx], cpu.AddrRegs[ry] = cpu.AddrRegs[ry], cpu.AddrRegs[rx]
+		case 0x11: // EXG Dx,Ay
+			cpu.DataRegs[rx], cpu.AddrRegs[ry] = cpu.AddrRegs[ry], cpu.DataRegs[rx]
+		default:
+			cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
 		}
+		return
+	}
 
+	// AND
+	reg := (opcode >> 9) & 0x7
+	opmode := (opcode >> 6) & 0x7
+	mode := (opcode >> 3) & 0x7
+	xreg := opcode & 0x7
+	cpu.ExecAnd(reg, opmode, mode, xreg)
+}
+
+// decodeGroupD: 0xDxxx - ADD, ADDA, ADDX
+func (cpu *M68KCPU) decodeGroupD(opcode uint16) {
+	// ADDX (check before ADD)
+	if (opcode&0xF130) == M68K_ADDX && (opcode&0x00C0) != 0x00C0 {
+		regMode := (opcode >> 3) & 0x1
+		rx := opcode & 0x7
+		ry := (opcode >> 9) & 0x7
 		size := (opcode >> 6) & 0x3
-		mode := (opcode >> 3) & 0x7
-		reg := opcode & 0x7
-
-		if (opcode & 0x0100) != 0 {
-			cpu.ExecSubq(uint32(data), size, mode, reg)
-		} else {
-			cpu.ExecAddq(uint32(data), size, mode, reg)
+		var sizeCode int
+		switch size {
+		case 0:
+			sizeCode = M68K_SIZE_BYTE
+		case 1:
+			sizeCode = M68K_SIZE_WORD
+		case 2:
+			sizeCode = M68K_SIZE_LONG
+		default:
+			cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
+			return
 		}
+		cpu.ExecAddx(regMode, rx, ry, sizeCode)
 		return
 	}
 
-	// NBCD is in 0x48xx range - doesn't conflict with other instructions
-	if (opcode & 0xFFC0) == M68K_NBCD {
+	reg := (opcode >> 9) & 0x7
+	opmode := (opcode >> 6) & 0x7
+	mode := (opcode >> 3) & 0x7
+	xreg := opcode & 0x7
+
+	// ADDA
+	if opmode == 3 || opmode == 7 {
+		cpu.ExecAdda(reg, opmode, mode, xreg)
+		return
+	}
+
+	cpu.ExecAdd(reg, opmode, mode, xreg)
+}
+
+// decodeGroupE: 0xExxx - Shift, Rotate, Bit Field
+func (cpu *M68KCPU) decodeGroupE(opcode uint16) {
+	// Bit field operations
+	if (opcode & 0xFFC0) == M68K_BFTST {
 		mode := (opcode >> 3) & 0x7
 		reg := opcode & 0x7
-
-		cpu.ExecNbcd(mode, reg)
+		cpu.ExecBFTST(mode, reg)
+		return
+	}
+	if (opcode & 0xFFC0) == M68K_BFEXTU {
+		mode := (opcode >> 3) & 0x7
+		reg := opcode & 0x7
+		cpu.ExecBFEXTU(mode, reg)
+		return
+	}
+	if (opcode & 0xFFC0) == M68K_BFCHG {
+		mode := (opcode >> 3) & 0x7
+		reg := opcode & 0x7
+		cpu.ExecBFCHG(mode, reg)
+		return
+	}
+	if (opcode & 0xFFC0) == M68K_BFEXTS {
+		mode := (opcode >> 3) & 0x7
+		reg := opcode & 0x7
+		cpu.ExecBFEXTS(mode, reg)
+		return
+	}
+	if (opcode & 0xFFC0) == M68K_BFCLR {
+		mode := (opcode >> 3) & 0x7
+		reg := opcode & 0x7
+		cpu.ExecBFCLR(mode, reg)
+		return
+	}
+	if (opcode & 0xFFC0) == M68K_BFFFO {
+		mode := (opcode >> 3) & 0x7
+		reg := opcode & 0x7
+		cpu.ExecBFFO(mode, reg)
+		return
+	}
+	if (opcode & 0xFFC0) == M68K_BFSET {
+		mode := (opcode >> 3) & 0x7
+		reg := opcode & 0x7
+		cpu.ExecBFSET(mode, reg)
+		return
+	}
+	if (opcode & 0xFFC0) == M68K_BFINS {
+		mode := (opcode >> 3) & 0x7
+		reg := opcode & 0x7
+		cpu.ExecBFINS(mode, reg)
 		return
 	}
 
-	// Shift/rotate - versatile bit manipulation primitives
-	// Exclude bit field instructions (0xE8C0-0xEFFF) which have bit 11 set AND bits 7-6 = 11
-	// Also exclude memory shift/rotate instructions which have bits 7-6 = 11 (size field = 3)
-	if (opcode&0xF000) == M68K_SHIFT_ROT && (opcode&0x08C0) != 0x08C0 && (opcode&0x00C0) != 0x00C0 {
-		count := (opcode >> 9) & 0x7
-		// Note: Do NOT convert count 0→8 here, as count may be a register number
-		// in register mode. The conversion is handled in GetShiftCount based on mode.
+	// Memory shift/rotate
+	if (opcode & 0xFEC0) == M68K_SHIFT_MEM {
+		cpu.ExecShiftRotateMemory()
+		return
+	}
 
+	// Register shift/rotate (exclude bit field and memory shift)
+	if (opcode&0x08C0) != 0x08C0 && (opcode&0x00C0) != 0x00C0 {
+		count := (opcode >> 9) & 0x7
 		op := (opcode >> 3) & 0x3
 		reg := opcode & 0x7
 		direction := (opcode >> 8) & 0x1
-		regOrImm := (opcode >> 5) & 0x1 // Dynamic count enables variable shifts
-
+		regOrImm := (opcode >> 5) & 0x1
 		size := (opcode >> 6) & 0x3
 
 		var sizeCode int
@@ -1394,7 +1643,6 @@ func (cpu *M68KCPU) FetchAndDecodeInstruction() {
 			return
 		}
 
-		// Direction and operation bits form orthogonal encoding
 		if direction == 0 {
 			switch op {
 			case 0:
@@ -1421,278 +1669,24 @@ func (cpu *M68KCPU) FetchAndDecodeInstruction() {
 		return
 	}
 
-	if (opcode & 0xF1C0) == M68K_LEA {
-		reg := (opcode >> 9) & 0x7
-		mode := (opcode >> 3) & 0x7
-		xreg := opcode & 0x7
-
-		cpu.ExecLea(reg, mode, xreg)
-		return
-	}
-
-	// PEA - Push Effective Address onto stack
-	// Note: PEA cannot use mode 0 (data register direct), as you cannot push the
-	// address of a data register. Mode 0 with this bit pattern is actually SWAP.
-	if (opcode & 0xFFC0) == M68K_PEA {
-		mode := (opcode >> 3) & 0x7
-		if mode != M68K_AM_DR { // Exclude mode 0 (data register direct)
-			reg := opcode & 0x7
-			cpu.ExecPea(mode, reg)
-			return
-		}
-		// If mode is 0, fall through to check for SWAP instruction below
-	}
-
-	// CHK - Array bounds enforcement - traps before invalid access occurs
-	if (opcode & 0xF1C0) == M68K_CHK {
-		reg := (opcode >> 9) & 0x7
-		mode := (opcode >> 3) & 0x7
-		xreg := opcode & 0x7
-		// Determine size from bit 7: 0=word, 1=long (68020)
-		var size int
-		if (opcode & 0x0080) != 0 {
-			size = M68K_SIZE_LONG
-		} else {
-			size = M68K_SIZE_WORD
-		}
-		cpu.ExecChk(reg, mode, xreg, size)
-		return
-	}
-
-	if (opcode & 0xFF00) == M68K_CLR {
-		size := (opcode >> 6) & 0x3
-		mode := (opcode >> 3) & 0x7
-		reg := opcode & 0x7
-		cpu.ExecClr(size, mode, reg)
-		return
-	}
-
-	if (opcode & 0xFF00) == M68K_NOT {
-		size := (opcode >> 6) & 0x3
-		mode := (opcode >> 3) & 0x7
-		reg := opcode & 0x7
-
-		var sizeCode int
-		switch size {
-		case 0:
-			sizeCode = M68K_SIZE_BYTE
-		case 1:
-			sizeCode = M68K_SIZE_WORD
-		case 2:
-			sizeCode = M68K_SIZE_LONG
-		default:
-			cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
-			return
-		}
-
-		// Call the NOT function
-		cpu.ExecNot(mode, reg, sizeCode)
-		return
-	}
-
-	// NEG instruction (0x4400 - 0x447F)
-	if (opcode & 0xFF00) == M68K_NEG {
-		size := (opcode >> 6) & 0x3
-		mode := (opcode >> 3) & 0x7
-		reg := opcode & 0x7
-
-		// Convert size to our constants
-		var sizeCode int
-		switch size {
-		case 0: // Byte
-			sizeCode = M68K_SIZE_BYTE
-		case 1: // Word
-			sizeCode = M68K_SIZE_WORD
-		case 2: // Long
-			sizeCode = M68K_SIZE_LONG
-		default:
-			cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
-			return
-		}
-
-		// Call the NEG function
-		cpu.ExecNeg(mode, reg, sizeCode)
-		return
-	}
-
-	// NEGX instruction (0x4000 - 0x407F)
-	if (opcode & 0xFF00) == M68K_NEGX {
-		size := (opcode >> 6) & 0x3
-		mode := (opcode >> 3) & 0x7
-		reg := opcode & 0x7
-
-		// Convert size to our constants
-		var sizeCode int
-		switch size {
-		case 0: // Byte
-			sizeCode = M68K_SIZE_BYTE
-		case 1: // Word
-			sizeCode = M68K_SIZE_WORD
-		case 2: // Long
-			sizeCode = M68K_SIZE_LONG
-		default:
-			cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
-			return
-		}
-
-		// Call the NEGX function
-		cpu.ExecNegx(mode, reg, sizeCode)
-		return
-	}
-
-	// SWAP instruction (0x4840-0x4847)
-	if (opcode & 0xFFF8) == M68K_SWAP {
-		reg := opcode & 0x7
-		cpu.ExecSwap(reg)
-		return
-	}
-
-	// EXT instruction family - sign extension operations
-	// EXT.W (byte->word):  0x4880-0x4887 (opmode=2, bits 6-8 = 010)
-	// EXT.L (word->long):  0x48C0-0x48C7 (opmode=3, bits 6-8 = 011)
-	// EXTB.L (byte->long): 0x49C0-0x49C7 (opmode=7, bits 6-8 = 111, 68020+)
-	// We check for all three variants by masking with 0xFFC0 and comparing against the three base patterns
-	masked := opcode & 0xFFC0
-	if masked == 0x4880 || masked == 0x48C0 || masked == 0x49C0 {
-		reg := opcode & 0x7
-		opmode := (opcode >> 6) & 0x7 // Extract 3-bit opmode (2, 3, or 7)
-		cpu.ExecExt(reg, opmode)
-		return
-	}
-
-	// Memory shift/rotate instructions (0xE0C0-0xE7CF)
-	if (opcode & 0xFEC0) == M68K_SHIFT_MEM {
-		cpu.ExecShiftRotateMemory()
-		return
-	}
-
-	// Bit field operations - efficient packed data structures and protocol parsing
-	if (opcode & 0xFFC0) == M68K_BFTST {
-		mode := (opcode >> 3) & 0x7
-		reg := opcode & 0x7
-		cpu.ExecBFTST(mode, reg)
-		return
-	}
-
-	if (opcode & 0xFFC0) == M68K_BFEXTU {
-		mode := (opcode >> 3) & 0x7
-		reg := opcode & 0x7
-		cpu.ExecBFEXTU(mode, reg)
-		return
-	}
-
-	if (opcode & 0xFFC0) == M68K_BFCHG {
-		mode := (opcode >> 3) & 0x7
-		reg := opcode & 0x7
-		cpu.ExecBFCHG(mode, reg)
-		return
-	}
-
-	if (opcode & 0xFFC0) == M68K_BFEXTS {
-		mode := (opcode >> 3) & 0x7
-		reg := opcode & 0x7
-		cpu.ExecBFEXTS(mode, reg)
-		return
-	}
-
-	if (opcode & 0xFFC0) == M68K_BFCLR {
-		mode := (opcode >> 3) & 0x7
-		reg := opcode & 0x7
-		cpu.ExecBFCLR(mode, reg)
-		return
-	}
-
-	if (opcode & 0xFFC0) == M68K_BFFFO {
-		mode := (opcode >> 3) & 0x7
-		reg := opcode & 0x7
-		cpu.ExecBFFO(mode, reg)
-		return
-	}
-
-	if (opcode & 0xFFC0) == M68K_BFSET {
-		mode := (opcode >> 3) & 0x7
-		reg := opcode & 0x7
-		cpu.ExecBFSET(mode, reg)
-		return
-	}
-
-	if (opcode & 0xFFC0) == M68K_BFINS {
-		mode := (opcode >> 3) & 0x7
-		reg := opcode & 0x7
-		cpu.ExecBFINS(mode, reg)
-		return
-	}
-
-	// TST instruction (0x4A00)
-	if (opcode & 0xFF00) == M68K_TST {
-		size := (opcode >> 6) & 0x3
-		mode := (opcode >> 3) & 0x7
-		reg := opcode & 0x7
-		cpu.ExecTst(size, mode, reg)
-		return
-	}
-
-	// Scc - Boolean materialisation converts condition codes into data for computed branches
-	if (opcode & 0xF0C0) == M68K_Scc {
-		condition := uint8((opcode >> 8) & 0xF)
-		mode := (opcode >> 3) & 0x7
-		reg := opcode & 0x7
-		cpu.ExecScc(condition, mode, reg)
-		return
-	}
-
-	// LINK instruction (0x4E50)
-	if (opcode & 0xFFF8) == M68K_LINK {
-		reg := opcode & 0x7
-		cpu.ExecLink(reg)
-		return
-	}
-
-	// UNLK instruction (0x4E58)
-	if (opcode & 0xFFF8) == M68K_UNLK {
-		reg := opcode & 0x7
-		cpu.ExecUnlk(reg)
-		return
-	}
-
-	// TAS instruction (0x4AFC)
-	if (opcode & 0xFFC0) == M68K_TAS {
-		mode := (opcode >> 3) & 0x7
-		reg := opcode & 0x7
-		cpu.ExecTas(mode, reg)
-		return
-	}
-
-	// BKPT instruction (0x4E40-0x4E7F)
-	if (opcode & 0xFFF8) == M68K_BKPT {
-		bkptNum := opcode & 0x7
-		cpu.ExecBkpt(bkptNum)
-		return
-	}
-
-	// F-line instructions (FPU coprocessor - 68881/68882)
-	// Format: 1111 001 x xxxx xxxx (0xF200-0xF3FF for cpID=001)
-	if (opcode & 0xF000) == 0xF000 {
-		cpID := (opcode >> 9) & 0x7
-		if cpID == 1 && cpu.FPU != nil {
-			// FPU instruction - decode and execute
-			cpu.ExecFPUInstruction(opcode)
-			return
-		}
-		// No coprocessor or Line F emulator trap
-		cpu.ProcessException(M68K_VEC_LINE_F)
-		return
-	}
-
-	// Default: Unimplemented opcode
+	// Illegal instruction
 	fmt.Printf("M68K: Unimplemented opcode %04x at PC=%08x\n", opcode, cpu.PC-M68K_WORD_SIZE)
 	cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
+}
+
+// decodeGroupF: 0xFxxx - Line F (coprocessor/FPU)
+func (cpu *M68KCPU) decodeGroupF(opcode uint16) {
+	cpID := (opcode >> 9) & 0x7
+	if cpID == 1 && cpu.FPU != nil {
+		cpu.ExecFPUInstruction(opcode)
+		return
+	}
+	cpu.ProcessException(M68K_VEC_LINE_F)
 }
 func (cpu *M68KCPU) ExecuteInstruction() {
 	fmt.Printf("M68K: Starting execution at PC=%08x\n", cpu.PC)
 
-	instructionLimit := uint32(0) // No limit for continuous execution
-	instructionCount := uint32(0)
+	instructionCount := uint64(0)
 	lastPC := uint32(0)
 	stuckCounter := 0
 
@@ -1703,93 +1697,89 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 		cpu.InstructionCount = 0
 	}
 
+	// Cache memory base pointer for fast instruction fetch
+	memBase := cpu.memBase
+
+	// Main execution loop - batch check running flag every 4096 instructions
 	for cpu.running.Load() {
-		originalPC := cpu.PC
-
-		// STOP state: only interrupts can resume execution
-		if cpu.stopped.Load() {
-			pendingException := cpu.pendingException.Load()
-			if pendingException != 0 && !cpu.inException.Load() {
-				cpu.pendingException.Store(0)
-				cpu.ProcessException(uint8(pendingException))
-			}
-
-			ipl := uint32((cpu.SR & M68K_SR_IPL) >> M68K_SR_SHIFT)
-			pending := cpu.pendingInterrupt.Load()
-			if pending > ipl && !cpu.inException.Load() {
-				cpu.stopped.Store(false)
-				cpu.ProcessInterrupt(uint8(pending))
-				cpu.pendingInterrupt.Store(0)
-			}
-
-			runtime.Gosched()
-			continue
-		}
-
-		// Fetch and execute instruction
-		cpu.currentIR = cpu.Fetch16()
-		cpu.FetchAndDecodeInstruction()
-
-		// Check if we're stuck at the same PC
-		if cpu.PC == originalPC {
-			stuckCounter++
-			if stuckCounter > 10 {
-				fmt.Printf("Error: PC stuck at 0x%08X, skipping instruction\n", cpu.PC)
-				cpu.PC += 2 // Skip the problematic instruction
-				stuckCounter = 0
-			}
-		} else {
-			stuckCounter = 0
-		}
-
-		// Detect loop without progress
-		if cpu.PC == lastPC && stuckCounter == 0 {
-			stuckCounter++
-		} else {
-			lastPC = cpu.PC
-		}
-
-		// Process interrupts (lock-free with atomic operations)
-		pendingException := cpu.pendingException.Load()
-		if pendingException != 0 && !cpu.inException.Load() {
-			cpu.pendingException.Store(0)
-			cpu.ProcessException(uint8(pendingException))
-		}
-
-		ipl := uint32((cpu.SR & M68K_SR_IPL) >> M68K_SR_SHIFT)
-		pending := cpu.pendingInterrupt.Load()
-		if pending > ipl && !cpu.inException.Load() {
-			cpu.ProcessInterrupt(uint8(pending))
-			cpu.pendingInterrupt.Store(0)
-		}
-
-		// Check for runaway execution (only if limit is set)
-		instructionCount++
-
-		// Yield to scheduler periodically to allow other goroutines to run
-		// (especially the video chip refresh loop for VBlank timing)
-		if instructionCount&0x3F == 0 { // Every 64 instructions
-			runtime.Gosched()
-		}
-
-		if instructionLimit > 0 && instructionCount >= instructionLimit {
-			fmt.Printf("Warning: Instruction limit (%d) reached, stopping execution\n", instructionLimit)
-			cpu.running.Store(false)
-			break
-		}
-
-		// Performance monitoring (matching IE32 pattern)
-		if cpu.PerfEnabled {
-			cpu.InstructionCount++
-			if cpu.InstructionCount&0xFFFFFF == 0 { // Every ~16M instructions
-				now := time.Now()
-				if now.Sub(cpu.lastPerfReport) >= time.Second {
-					elapsed := now.Sub(cpu.perfStartTime).Seconds()
-					ips := float64(cpu.InstructionCount) / elapsed
-					mips := ips / 1_000_000
-					fmt.Printf("M68K: %.2f MIPS (%.0f instructions in %.1fs)\n", mips, float64(cpu.InstructionCount), elapsed)
-					cpu.lastPerfReport = now
+	innerLoop:
+		for i := 0; i < 4096; i++ {
+			// STOP state: only interrupts can resume execution
+			if cpu.stopped.Load() {
+				pendingException := cpu.pendingException.Load()
+				if pendingException != 0 && !cpu.inException.Load() {
+					cpu.pendingException.Store(0)
+					cpu.ProcessException(uint8(pendingException))
 				}
+
+				ipl := uint32((cpu.SR & M68K_SR_IPL) >> M68K_SR_SHIFT)
+				pending := cpu.pendingInterrupt.Load()
+				if pending > ipl && !cpu.inException.Load() {
+					cpu.stopped.Store(false)
+					cpu.ProcessInterrupt(uint8(pending))
+					cpu.pendingInterrupt.Store(0)
+				}
+
+				runtime.Gosched()
+				break innerLoop
+			}
+
+			originalPC := cpu.PC
+
+			// Fast inline fetch - PC is always word-aligned after valid execution
+			// Read as little-endian uint16, then byte-swap to big-endian
+			leValue := *(*uint16)(unsafe.Pointer(uintptr(memBase) + uintptr(cpu.PC)))
+			cpu.currentIR = bits.ReverseBytes16(leValue)
+			cpu.PC += M68K_WORD_SIZE
+
+			cpu.FetchAndDecodeInstruction()
+
+			// Check if we're stuck at the same PC (only needed for debugging malformed programs)
+			if cpu.PC == originalPC {
+				stuckCounter++
+				if stuckCounter > 10 {
+					fmt.Printf("Error: PC stuck at 0x%08X, skipping instruction\n", cpu.PC)
+					cpu.PC += 2
+					stuckCounter = 0
+				}
+			} else if cpu.PC == lastPC {
+				stuckCounter++
+			} else {
+				stuckCounter = 0
+				lastPC = cpu.PC
+			}
+
+			instructionCount++
+
+			// Process interrupts every 256 instructions (reduces atomic load overhead)
+			if instructionCount&0xFF == 0 {
+				pendingException := cpu.pendingException.Load()
+				if pendingException != 0 && !cpu.inException.Load() {
+					cpu.pendingException.Store(0)
+					cpu.ProcessException(uint8(pendingException))
+				}
+
+				pending := cpu.pendingInterrupt.Load()
+				if pending != 0 {
+					ipl := uint32((cpu.SR & M68K_SR_IPL) >> M68K_SR_SHIFT)
+					if pending > ipl && !cpu.inException.Load() {
+						cpu.ProcessInterrupt(uint8(pending))
+						cpu.pendingInterrupt.Store(0)
+					}
+				}
+			}
+		}
+
+		// Performance monitoring
+		if cpu.PerfEnabled {
+			cpu.InstructionCount = instructionCount
+			now := time.Now()
+			if now.Sub(cpu.lastPerfReport) >= time.Second {
+				elapsed := now.Sub(cpu.perfStartTime).Seconds()
+				ips := float64(instructionCount) / elapsed
+				mips := ips / 1_000_000
+				fmt.Printf("M68K: %.2f MIPS (%.0f instructions in %.1fs)\n", mips, float64(instructionCount), elapsed)
+				cpu.lastPerfReport = now
 			}
 		}
 	}
@@ -1879,9 +1869,9 @@ func (cpu *M68KCPU) DumpRegisters() {
 }
 
 func (cpu *M68KCPU) Read8(addr uint32) uint8 {
-	// Lock-free fast path for non-I/O addresses
-	if addr < 0xF0000 && addr < uint32(len(cpu.memory)) {
-		return cpu.memory[addr]
+	// Lock-free fast path for non-I/O addresses using unsafe pointer
+	if addr < 0xF0000 {
+		return *(*byte)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr)))
 	}
 
 	// Terminal device always returns zero to indicate ready state
@@ -1909,12 +1899,11 @@ func (cpu *M68KCPU) Read16(addr uint32) uint16 {
 		return (hi << 8) | lo
 	}
 
-	// Lock-free fast path for non-I/O addresses (instruction fetches, data reads)
-	// This matches IE32 CPU behaviour where main memory reads bypass the mutex
-	if addr < 0xF0000 && addr+2 <= uint32(len(cpu.memory)) {
-		// Direct memory read with endian conversion (M68K is big-endian)
-		leValue := binary.LittleEndian.Uint16(cpu.memory[addr:])
-		return ((leValue & 0xFF) << M68K_BYTE_SIZE_BITS) | ((leValue & 0xFF00) >> M68K_BYTE_SIZE_BITS)
+	// Lock-free fast path for non-I/O addresses using unsafe pointer
+	// Read as little-endian uint16, then byte-swap to big-endian
+	if addr < 0xF0000 {
+		leValue := *(*uint16)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr)))
+		return bits.ReverseBytes16(leValue)
 	}
 
 	// For addresses >= M68K_MEMORY_SIZE, let bus handle (Atari ST hardware registers)
@@ -1933,7 +1922,7 @@ func (cpu *M68KCPU) Read16(addr uint32) uint16 {
 	}
 
 	// Endian conversion required because host bus is little-endian
-	return ((leValue & 0xFF) << M68K_BYTE_SIZE_BITS) | ((leValue & 0xFF00) >> M68K_BYTE_SIZE_BITS)
+	return bits.ReverseBytes16(leValue)
 }
 func (cpu *M68KCPU) Read32(addr uint32) uint32 {
 	if (addr & M68K_BYTE_SIZE) != 0 {
@@ -1944,15 +1933,11 @@ func (cpu *M68KCPU) Read32(addr uint32) uint32 {
 		return (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
 	}
 
-	// Lock-free fast path for non-I/O addresses (data reads from main memory)
-	// This matches IE32 CPU behaviour where main memory reads bypass the mutex
-	if addr < 0xF0000 && addr+4 <= uint32(len(cpu.memory)) {
-		// Direct memory read with endian conversion (M68K is big-endian)
-		leValue := binary.LittleEndian.Uint32(cpu.memory[addr:])
-		return ((leValue & 0xFF) << (M68K_BYTE_SIZE_BITS * 3)) |
-			((leValue & 0xFF00) << M68K_BYTE_SIZE_BITS) |
-			((leValue & 0xFF0000) >> M68K_BYTE_SIZE_BITS) |
-			((leValue & 0xFF000000) >> (M68K_BYTE_SIZE_BITS * 3))
+	// Lock-free fast path for non-I/O addresses using unsafe pointer
+	// Read as little-endian uint32, then byte-swap to big-endian
+	if addr < 0xF0000 {
+		leValue := *(*uint32)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr)))
+		return bits.ReverseBytes32(leValue)
 	}
 
 	// I/O register path - return value directly (no byte-swap)
@@ -1983,16 +1968,19 @@ func (cpu *M68KCPU) Read32(addr uint32) uint32 {
 	}
 
 	// Endian conversion required because host bus is little-endian
-	return ((leValue & 0xFF) << (M68K_BYTE_SIZE_BITS * 3)) |
-		((leValue & 0xFF00) << M68K_BYTE_SIZE_BITS) |
-		((leValue & 0xFF0000) >> M68K_BYTE_SIZE_BITS) |
-		((leValue & 0xFF000000) >> (M68K_BYTE_SIZE_BITS * 3))
+	return bits.ReverseBytes32(leValue)
 }
 func (cpu *M68KCPU) Write8(addr uint32, value uint8) {
 	// Terminal device has no buffer to avoid latency
 	if addr == TERM_OUT || addr == TERM_OUT_SIGNEXT {
 		fmt.Printf("%c", value)
 		cpu.bus.Write8(TERM_OUT, value)
+		return
+	}
+
+	// Fast path: non-I/O memory using unsafe pointer
+	if addr < 0xF0000 {
+		*(*byte)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr))) = value
 		return
 	}
 
@@ -2013,10 +2001,17 @@ func (cpu *M68KCPU) Write16(addr uint32, value uint16) {
 		return
 	}
 
+	// Fast path: non-I/O memory using unsafe pointer
+	// Byte-swap from big-endian to little-endian and write as uint16
+	if addr < 0xF0000 {
+		*(*uint16)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr))) = bits.ReverseBytes16(value)
+		return
+	}
+
 	// For addresses >= M68K_MEMORY_SIZE, let bus handle (Atari ST hardware registers)
 
 	// Endian conversion required because host bus is little-endian
-	leValue := ((value & 0xFF) << M68K_BYTE_SIZE_BITS) | ((value & 0xFF00) >> M68K_BYTE_SIZE_BITS)
+	leValue := bits.ReverseBytes16(value)
 
 	// Lock-free - bus handles its own synchronisation
 	if fb, ok := cpu.bus.(faultingBus); ok {
@@ -2036,11 +2031,15 @@ func (cpu *M68KCPU) Write32(addr uint32, value uint32) {
 		return
 	}
 
+	// Fast path: non-I/O memory using unsafe pointer
+	// Byte-swap from big-endian to little-endian and write as uint32
+	if addr < 0xF0000 {
+		*(*uint32)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr))) = bits.ReverseBytes32(value)
+		return
+	}
+
 	// Endian conversion required because host bus is little-endian
-	leValue := ((value & 0xFF) << (M68K_BYTE_SIZE_BITS * 3)) |
-		((value & 0xFF00) << M68K_BYTE_SIZE_BITS) |
-		((value & 0xFF0000) >> M68K_BYTE_SIZE_BITS) |
-		((value & 0xFF000000) >> (M68K_BYTE_SIZE_BITS * 3))
+	leValue := bits.ReverseBytes32(value)
 
 	// VRAM fast path - direct write, no mutex, no bus overhead
 	if cpu.vramDirect != nil && addr >= cpu.vramStart && addr < cpu.vramEnd {
@@ -2101,9 +2100,6 @@ func (cpu *M68KCPU) Push16(value uint16) {
 		return
 	}
 	cpu.Write16(cpu.AddrRegs[7], value)
-	if cpu.debug.Load() {
-		fmt.Printf("M68K PUSH: %04x to SP=%08x\n", value, cpu.AddrRegs[7])
-	}
 }
 func (cpu *M68KCPU) Push32(value uint32) {
 	cpu.AddrRegs[7] -= M68K_LONG_SIZE
@@ -2114,9 +2110,6 @@ func (cpu *M68KCPU) Push32(value uint32) {
 		return
 	}
 	cpu.Write32(cpu.AddrRegs[7], value)
-	if cpu.debug.Load() {
-		fmt.Printf("M68K PUSH: %08x to SP=%08x\n", value, cpu.AddrRegs[7])
-	}
 }
 func (cpu *M68KCPU) Pop16() uint16 {
 	if cpu.AddrRegs[7] >= cpu.stackUpperBound {
@@ -2126,9 +2119,6 @@ func (cpu *M68KCPU) Pop16() uint16 {
 		return 0
 	}
 	value := cpu.Read16(cpu.AddrRegs[7])
-	if cpu.debug.Load() {
-		fmt.Printf("M68K POP: %04x from SP=%08x\n", value, cpu.AddrRegs[7])
-	}
 	cpu.AddrRegs[7] += M68K_WORD_SIZE
 	return value
 }
@@ -2140,27 +2130,19 @@ func (cpu *M68KCPU) Pop32() uint32 {
 		return 0
 	}
 	value := cpu.Read32(cpu.AddrRegs[7])
-	if cpu.debug.Load() {
-		fmt.Printf("M68K POP: %08x from SP=%08x\n", value, cpu.AddrRegs[7])
-	}
 	cpu.AddrRegs[7] += M68K_LONG_SIZE
 	return value
 }
 
 // Instruction fetching
 func (cpu *M68KCPU) Fetch16() uint16 {
-	if (cpu.PC & M68K_BYTE_SIZE) != 0 {
-		cpu.ProcessException(M68K_VEC_ADDRESS_ERROR)
-		return 0
-	}
+	// Fast path: PC is always word-aligned after valid execution
+	// Skip alignment check in hot path - only matters for corrupted PC
 	addr := cpu.PC
-	if cpu.debug.Load() {
-		fmt.Printf("Fetch16: addr=0x%08X\n", addr)
-	}
-	value := cpu.Read16(addr)
-	if cpu.debug.Load() {
-		fmt.Printf("Fetch16: value=0x%04X\n", value)
-	}
+	// Lock-free fast path for non-I/O addresses using unsafe pointer
+	// Read as little-endian uint16, then byte-swap to big-endian
+	leValue := *(*uint16)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr)))
+	value := bits.ReverseBytes16(leValue)
 	cpu.PC += M68K_WORD_SIZE
 	cpu.cycleCounter += M68K_CYCLE_FETCH
 	return value
@@ -2181,28 +2163,16 @@ func (cpu *M68KCPU) GetEffectiveAddress(mode, reg uint16) uint32 {
 	if mode == 7 {
 		switch reg {
 		case 0: // Absolute Short
-			addr := uint32(int16(cpu.Fetch16()))
-			if cpu.debug.Load() {
-				fmt.Printf("ABS_SHORT address: 0x%08X\n", addr)
-			}
-			return addr
+			return uint32(int16(cpu.Fetch16()))
 
 		case 1: // Absolute Long
 			high := uint32(cpu.Fetch16()) << M68K_WORD_SIZE_BITS
 			low := uint32(cpu.Fetch16())
-			addr := high | low
-			if cpu.debug.Load() {
-				fmt.Printf("ABS_LONG address: 0x%08X (high=0x%04X, low=0x%04X)\n", addr, high>>M68K_WORD_SIZE_BITS, low)
-			}
-			return addr
+			return high | low
 
 		case 2: // PC with Displacement
 			disp := int16(cpu.Fetch16())
-			addr := cpu.PC - M68K_WORD_SIZE + uint32(disp)
-			if cpu.debug.Load() {
-				fmt.Printf("PC_DISP address: 0x%08X (PC=0x%08X, disp=0x%04X)\n", addr, cpu.PC-M68K_WORD_SIZE, uint16(disp))
-			}
-			return addr
+			return cpu.PC - M68K_WORD_SIZE + uint32(disp)
 
 		case 3: // PC with Index
 			extWord := cpu.Fetch16()
@@ -2237,21 +2207,14 @@ func (cpu *M68KCPU) GetEffectiveAddress(mode, reg uint16) uint32 {
 			scale := (extWord >> M68K_EXT_SCALE_START_BIT) & ((1 << M68K_EXT_SCALE_SIZE) - 1)
 			idxValue <<= scale
 
-			addr := (cpu.PC - M68K_WORD_SIZE) + uint32(disp8) + idxValue
-			if cpu.debug.Load() {
-				fmt.Printf("PC_INDEX address: 0x%08X\n", addr)
-			}
-			return addr
+			return (cpu.PC - M68K_WORD_SIZE) + uint32(disp8) + idxValue
 
 		case 4: // Immediate
-			// Not valid for addressing - if this is reached, there's a bug in an instruction decoder
-			// that should handle immediate mode specially
-			fmt.Printf("M68K: BUG - Immediate mode passed to GetEffectiveAddress at PC=0x%08X\n", cpu.PC)
+			// Not valid for addressing - bug in instruction decoder
 			cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
 			return 0
 
 		default:
-			fmt.Printf("Invalid extended addressing mode: reg=%d\n", reg)
 			cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
 			return 0
 		}
@@ -2259,51 +2222,24 @@ func (cpu *M68KCPU) GetEffectiveAddress(mode, reg uint16) uint32 {
 
 	// Handle normal addressing modes
 	switch mode {
-	case M68K_AM_DR: // Data Register Direct
-		// This mode shouldn't be used for memory addressing
-		if cpu.debug.Load() {
-			fmt.Printf("Warning: Data Register D%d direct mode invalid for addressing\n", reg)
-		}
-		// Don't return the register value as an address
-		return 0 // Return safe value but let the caller handle this appropriately
+	case M68K_AM_DR: // Data Register Direct - invalid for memory addressing
+		return 0
 
 	case M68K_AM_AR: // Address Register Direct
-		// This is not valid for addressing but we return it for completeness
-		if cpu.debug.Load() {
-			fmt.Printf("Address Register A%d direct: value=0x%08X\n", reg, cpu.AddrRegs[reg])
-		}
 		return cpu.AddrRegs[reg]
 
 	case M68K_AM_AR_IND: // Address Register Indirect
-		addr := cpu.AddrRegs[reg]
-		if cpu.debug.Load() {
-			fmt.Printf("A%d indirect: address=0x%08X\n", reg, addr)
-		}
-		return addr
+		return cpu.AddrRegs[reg]
 
 	case M68K_AM_AR_POST: // Address Register Indirect with Postincrement
-		// Just return current address, increment happens after read
-		addr := cpu.AddrRegs[reg]
-		if cpu.debug.Load() {
-			fmt.Printf("A%d postincrement: address=0x%08X\n", reg, addr)
-		}
-		return addr
+		return cpu.AddrRegs[reg]
 
 	case M68K_AM_AR_PRE: // Address Register Indirect with Predecrement
-		// We return the value after predecrement since that's the actual address used
-		addr := cpu.AddrRegs[reg]
-		if cpu.debug.Load() {
-			fmt.Printf("A%d predecrement: address=0x%08X\n", reg, addr)
-		}
-		return addr
+		return cpu.AddrRegs[reg]
 
 	case M68K_AM_AR_DISP: // Address Register Indirect with Displacement
 		disp := int16(cpu.Fetch16())
-		addr := cpu.AddrRegs[reg] + uint32(disp)
-		if cpu.debug.Load() {
-			fmt.Printf("A%d with displacement: address=0x%08X (base=0x%08X, disp=0x%04X)\n", reg, addr, cpu.AddrRegs[reg], uint16(disp))
-		}
-		return addr
+		return cpu.AddrRegs[reg] + uint32(disp)
 
 	case M68K_AM_AR_INDEX: // Address Register Indirect with Index
 		extWord := cpu.Fetch16()
