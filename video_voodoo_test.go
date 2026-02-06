@@ -57,9 +57,9 @@ func TestVoodoo_DefaultState(t *testing.T) {
 			VOODOO_DEFAULT_WIDTH, VOODOO_DEFAULT_HEIGHT, w, h)
 	}
 
-	// Check enabled by default
-	if !v.IsEnabled() {
-		t.Error("Expected Voodoo to be enabled by default")
+	// Disabled by default — programs enable via VOODOO_ENABLE write
+	if v.IsEnabled() {
+		t.Error("Expected Voodoo to be disabled by default")
 	}
 
 	// Check layer
@@ -78,8 +78,16 @@ func TestVoodoo_Implements_VideoSource(t *testing.T) {
 	// This test verifies interface compliance at compile time
 	var _ VideoSource = v
 
-	// Test each method
+	// GetFrame returns nil when disabled
 	frame := v.GetFrame()
+	if frame != nil {
+		t.Error("GetFrame should return nil when disabled")
+	}
+
+	// Enable and test each method
+	v.HandleWrite(VOODOO_ENABLE, 1)
+
+	frame = v.GetFrame()
 	if frame == nil {
 		t.Error("GetFrame returned nil for enabled Voodoo")
 	}
@@ -450,6 +458,8 @@ func TestVoodoo_Render_FlatTriangle(t *testing.T) {
 	}
 	defer v.Destroy()
 
+	v.HandleWrite(VOODOO_ENABLE, 1)
+
 	// Clear to black
 	v.HandleWrite(VOODOO_COLOR0, 0xFF000000) // ARGB black
 	v.HandleWrite(VOODOO_FAST_FILL_CMD, 0)
@@ -494,6 +504,8 @@ func TestVoodoo_Render_MultipleTriangles(t *testing.T) {
 		t.Fatalf("NewVoodooEngine failed: %v", err)
 	}
 	defer v.Destroy()
+
+	v.HandleWrite(VOODOO_ENABLE, 1)
 
 	// Clear to black
 	v.HandleWrite(VOODOO_COLOR0, 0xFF000000)
@@ -546,6 +558,8 @@ func TestVoodoo_Render_ZBuffer(t *testing.T) {
 		t.Fatalf("NewVoodooEngine failed: %v", err)
 	}
 	defer v.Destroy()
+
+	v.HandleWrite(VOODOO_ENABLE, 1)
 
 	// Enable depth testing
 	fbzMode := uint32(VOODOO_FBZ_DEPTH_ENABLE | VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_DEPTH_WRITE |
@@ -610,6 +624,8 @@ func TestVoodoo_FastFill_ClearsBuffer(t *testing.T) {
 	}
 	defer v.Destroy()
 
+	v.HandleWrite(VOODOO_ENABLE, 1)
+
 	// Set fill color to bright green
 	v.HandleWrite(VOODOO_COLOR0, 0xFF00FF00) // ARGB green
 
@@ -645,6 +661,8 @@ func TestVoodoo_SwapBuffer_PresentsFrame(t *testing.T) {
 		t.Fatalf("NewVoodooEngine failed: %v", err)
 	}
 	defer v.Destroy()
+
+	v.HandleWrite(VOODOO_ENABLE, 1)
 
 	// Clear to red
 	v.HandleWrite(VOODOO_COLOR0, 0xFFFF0000)
@@ -717,6 +735,8 @@ func TestVoodoo_VideoDimensions_Change(t *testing.T) {
 	}
 	defer v.Destroy()
 
+	v.HandleWrite(VOODOO_ENABLE, 1)
+
 	// Change to 800x600
 	v.HandleWrite(VOODOO_VIDEO_DIM, (800<<16)|600)
 
@@ -739,14 +759,9 @@ func TestVoodoo_Enable_Disable(t *testing.T) {
 	}
 	defer v.Destroy()
 
-	if !v.IsEnabled() {
-		t.Error("Expected Voodoo to be enabled by default")
-	}
-
-	v.SetEnabled(false)
-
+	// Voodoo starts disabled — programs must enable via VOODOO_ENABLE write
 	if v.IsEnabled() {
-		t.Error("Expected Voodoo to be disabled")
+		t.Error("Expected Voodoo to be disabled by default")
 	}
 
 	// GetFrame should return nil when disabled
@@ -755,10 +770,23 @@ func TestVoodoo_Enable_Disable(t *testing.T) {
 		t.Error("Expected nil frame when disabled")
 	}
 
-	v.SetEnabled(true)
+	// Enable via register write (matches real usage)
+	v.HandleWrite(VOODOO_ENABLE, 1)
+
+	if !v.IsEnabled() {
+		t.Error("Expected Voodoo to be enabled after VOODOO_ENABLE write")
+	}
+
 	frame = v.GetFrame()
 	if frame == nil {
-		t.Error("Expected non-nil frame when re-enabled")
+		t.Error("Expected non-nil frame when enabled")
+	}
+
+	// Disable
+	v.HandleWrite(VOODOO_ENABLE, 0)
+
+	if v.IsEnabled() {
+		t.Error("Expected Voodoo to be disabled after VOODOO_ENABLE=0")
 	}
 }
 
@@ -772,6 +800,8 @@ func TestVoodoo_FullRenderLoop(t *testing.T) {
 		t.Fatalf("NewVoodooEngine failed: %v", err)
 	}
 	defer v.Destroy()
+
+	v.HandleWrite(VOODOO_ENABLE, 1)
 
 	// Simulate a typical frame:
 	// 1. Clear
@@ -882,6 +912,8 @@ func TestVoodoo_GouraudShading_Interpolation(t *testing.T) {
 	}
 	defer v.Destroy()
 
+	v.HandleWrite(VOODOO_ENABLE, 1)
+
 	// Clear to black
 	v.HandleWrite(VOODOO_COLOR0, 0xFF000000)
 	v.HandleWrite(VOODOO_FAST_FILL_CMD, 0)
@@ -967,6 +999,8 @@ func TestVoodoo_FlatShading_BackwardCompatibility(t *testing.T) {
 		t.Fatalf("NewVoodooEngine failed: %v", err)
 	}
 	defer v.Destroy()
+
+	v.HandleWrite(VOODOO_ENABLE, 1)
 
 	// Clear to black
 	v.HandleWrite(VOODOO_COLOR0, 0xFF000000)
@@ -1416,6 +1450,8 @@ func TestVoodoo_DynamicDepthFunction(t *testing.T) {
 	}
 	defer v.Destroy()
 
+	v.HandleWrite(VOODOO_ENABLE, 1)
+
 	// Clear and draw with LESS (default)
 	v.HandleWrite(VOODOO_COLOR0, 0xFF000000)
 	v.HandleWrite(VOODOO_FAST_FILL_CMD, 0)
@@ -1509,6 +1545,8 @@ func TestVoodoo_DynamicBlending(t *testing.T) {
 		t.Fatalf("NewVoodooEngine failed: %v", err)
 	}
 	defer v.Destroy()
+
+	v.HandleWrite(VOODOO_ENABLE, 1)
 
 	// Clear to blue
 	v.HandleWrite(VOODOO_COLOR0, 0xFF0000FF)
@@ -2040,6 +2078,8 @@ func TestVoodoo_ChromaKey_Integration(t *testing.T) {
 	}
 	defer v.Destroy()
 
+	v.HandleWrite(VOODOO_ENABLE, 1)
+
 	// Clear to blue
 	v.HandleWrite(VOODOO_COLOR0, 0xFF0000FF)
 	v.HandleWrite(VOODOO_FAST_FILL_CMD, 0)
@@ -2081,6 +2121,8 @@ func TestVoodoo_AlphaTest_Integration(t *testing.T) {
 		t.Fatalf("NewVoodooEngine failed: %v", err)
 	}
 	defer v.Destroy()
+
+	v.HandleWrite(VOODOO_ENABLE, 1)
 
 	// Clear to blue
 	v.HandleWrite(VOODOO_COLOR0, 0xFF0000FF)
@@ -2690,6 +2732,8 @@ func TestVoodoo_TexturedTriangle_Integration(t *testing.T) {
 		t.Fatalf("NewVoodooEngine failed: %v", err)
 	}
 	defer v.Destroy()
+
+	v.HandleWrite(VOODOO_ENABLE, 1)
 
 	// Enable texturing FIRST (so format is set when we upload)
 	v.HandleWrite(VOODOO_TEXTURE_MODE, VOODOO_TEX_ENABLE|(VOODOO_TEX_FMT_ARGB8888<<8))
@@ -4878,6 +4922,8 @@ func TestZ80_VoodooPort_Triangle_PixelCheck(t *testing.T) {
 		t.Fatalf("NewVoodooEngine failed: %v", err)
 	}
 	defer v.Destroy()
+
+	v.HandleWrite(VOODOO_ENABLE, 1)
 
 	// Set video dimensions
 	v.HandleWrite(VOODOO_VIDEO_DIM, (640<<16)|480)

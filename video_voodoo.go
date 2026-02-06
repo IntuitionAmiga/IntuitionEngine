@@ -178,7 +178,7 @@ func NewVoodooEngine(bus *SystemBus) (*VoodooEngine, error) {
 	}
 	v.width.Store(int32(VOODOO_DEFAULT_WIDTH))
 	v.height.Store(int32(VOODOO_DEFAULT_HEIGHT))
-	v.enabled.Store(true) // Enabled by default
+	// enabled defaults to false (atomic.Bool zero value) — programs enable via VOODOO_ENABLE write
 
 	// Initialize triple-buffer: producer owns buf 0, shared holds buf 1,
 	// consumer owns buf 2. All buffers start zeroed (black frame).
