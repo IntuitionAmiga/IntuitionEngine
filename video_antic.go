@@ -47,14 +47,15 @@ package main
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 // ANTICEngine implements ANTIC video chip as a standalone device.
 // Implements VideoSource interface for compositor integration.
 type ANTICEngine struct {
-	mutex sync.RWMutex
-	bus   *SystemBus
+	mu  sync.Mutex
+	bus *SystemBus
 
 	// DMA and control registers
 	dmactl uint8 // DMA control (playfield width, DMA enables)
@@ -85,9 +86,9 @@ type ANTICEngine struct {
 	penv uint8
 
 	// IE-specific extensions
-	enabled        bool  // Video output enabled
-	vblankActive   bool  // VBlank flag (legacy)
-	lastFrameStart int64 // Timestamp of last SignalVSync (for time-based VBlank)
+	enabled        atomic.Bool // Video output enabled (lock-free)
+	vblankActive   atomic.Bool // VBlank flag (lock-free)
+	lastFrameStart int64       // Timestamp of last SignalVSync (for time-based VBlank)
 
 	// GTIA color registers
 	colpf [4]uint8 // Playfield colors 0-3
@@ -131,9 +132,9 @@ type ANTICEngine struct {
 func NewANTICEngine(bus *SystemBus) *ANTICEngine {
 	antic := &ANTICEngine{
 		bus:         bus,
-		enabled:     false, // Disabled by default
 		frameBuffer: make([]byte, ANTIC_FRAME_WIDTH*ANTIC_FRAME_HEIGHT*4),
 	}
+	// enabled defaults to false (atomic.Bool zero value)
 
 	// Initialize to safe defaults
 	antic.dmactl = 0
@@ -160,8 +161,8 @@ func NewANTICEngine(bus *SystemBus) *ANTICEngine {
 
 // HandleRead handles register reads
 func (a *ANTICEngine) HandleRead(addr uint32) uint32 {
-	a.mutex.Lock()
-	defer a.mutex.Unlock()
+	a.mu.Lock()
+	defer a.mu.Unlock()
 
 	switch addr {
 	case ANTIC_DMACTL:
@@ -195,7 +196,7 @@ func (a *ANTICEngine) HandleRead(addr uint32) uint32 {
 	case ANTIC_NMIST:
 		return uint32(a.nmist)
 	case ANTIC_ENABLE:
-		if a.enabled {
+		if a.enabled.Load() {
 			return ANTIC_ENABLE_VIDEO
 		}
 		return 0
@@ -225,8 +226,8 @@ func (a *ANTICEngine) HandleRead(addr uint32) uint32 {
 		inVBlank := elapsed >= (refreshInterval * 80 / 100)
 
 		// Track VBlank transitions for WSYNC scanline reset
-		wasInVBlank := a.vblankActive
-		a.vblankActive = inVBlank
+		wasInVBlank := a.vblankActive.Load()
+		a.vblankActive.Store(inVBlank)
 
 		// When transitioning from VBlank to active display, mark for scanline reset
 		if wasInVBlank && !inVBlank {
@@ -315,8 +316,8 @@ func (a *ANTICEngine) HandleRead(addr uint32) uint32 {
 
 // HandleWrite handles register writes
 func (a *ANTICEngine) HandleWrite(addr uint32, value uint32) {
-	a.mutex.Lock()
-	defer a.mutex.Unlock()
+	a.mu.Lock()
+	defer a.mu.Unlock()
 
 	switch addr {
 	case ANTIC_DMACTL:
@@ -364,10 +365,10 @@ func (a *ANTICEngine) HandleWrite(addr uint32, value uint32) {
 		// Writing to NMIST (NMIRES) clears the status
 		a.nmist = 0
 	case ANTIC_ENABLE:
-		wasEnabled := a.enabled
-		a.enabled = (value & ANTIC_ENABLE_VIDEO) != 0
+		wasEnabled := a.enabled.Load()
+		a.enabled.Store((value & ANTIC_ENABLE_VIDEO) != 0)
 		// When first enabled, initialize frame timing so VBlank works immediately
-		if !wasEnabled && a.enabled {
+		if !wasEnabled && a.enabled.Load() {
 			a.lastFrameStart = time.Now().UnixNano()
 		}
 		// Note: VCOUNT, PENH, PENV are read-only
@@ -461,8 +462,8 @@ func (a *ANTICEngine) HandleWrite(addr uint32, value uint32) {
 
 // Handle6502Read handles register reads from 6502-style addresses
 func (a *ANTICEngine) Handle6502Read(addr uint16) uint8 {
-	a.mutex.Lock()
-	defer a.mutex.Unlock()
+	a.mu.Lock()
+	defer a.mu.Unlock()
 
 	reg := addr & 0x0F
 	switch reg {
@@ -501,8 +502,8 @@ func (a *ANTICEngine) Handle6502Read(addr uint16) uint8 {
 
 // Handle6502Write handles register writes from 6502-style addresses
 func (a *ANTICEngine) Handle6502Write(addr uint16, value uint8) {
-	a.mutex.Lock()
-	defer a.mutex.Unlock()
+	a.mu.Lock()
+	defer a.mu.Unlock()
 
 	reg := addr & 0x0F
 	switch reg {
@@ -542,8 +543,8 @@ func (a *ANTICEngine) advanceToNextScanline() {
 
 // Handle6502GTIARead handles GTIA register reads from 6502-style addresses (0xD0xx)
 func (a *ANTICEngine) Handle6502GTIARead(addr uint16) uint8 {
-	a.mutex.Lock()
-	defer a.mutex.Unlock()
+	a.mu.Lock()
+	defer a.mu.Unlock()
 
 	reg := addr & 0x1F
 	switch reg {
@@ -578,8 +579,8 @@ func (a *ANTICEngine) Handle6502GTIARead(addr uint16) uint8 {
 
 // Handle6502GTIAWrite handles GTIA register writes from 6502-style addresses (0xD0xx)
 func (a *ANTICEngine) Handle6502GTIAWrite(addr uint16, value uint8) {
-	a.mutex.Lock()
-	defer a.mutex.Unlock()
+	a.mu.Lock()
+	defer a.mu.Unlock()
 
 	reg := addr & 0x1F
 	switch reg {
@@ -619,11 +620,16 @@ func (a *ANTICEngine) Handle6502GTIAWrite(addr uint16, value uint8) {
 
 // RenderFrame renders the complete display including border
 func (a *ANTICEngine) RenderFrame() []byte {
-	a.mutex.RLock()
-	defer a.mutex.RUnlock()
-
-	// Read from the buffer that's NOT being written to (double-buffering)
+	// Snapshot state under lock, then render lock-free
+	a.mu.Lock()
 	readBuffer := 1 - a.writeBuffer
+	snapScanlineColors := a.scanlineColors[readBuffer]
+	snapPlayerGfx := a.playerGfx[readBuffer]
+	snapPlayerPos := a.playerPos[readBuffer]
+	snapGractl := a.gractl
+	snapSizep := a.sizep
+	snapColpm := a.colpm
+	a.mu.Unlock()
 
 	// Render per-scanline colors for raster bar effects
 	// The frame is ANTIC_FRAME_WIDTH x ANTIC_FRAME_HEIGHT (384x240)
@@ -640,7 +646,7 @@ func (a *ANTICEngine) RenderFrame() []byte {
 		}
 		virtualScanline = virtualScanline % ANTIC_DISPLAY_HEIGHT
 
-		color := a.scanlineColors[readBuffer][virtualScanline]
+		color := snapScanlineColors[virtualScanline]
 		rowStart := y * ANTIC_FRAME_WIDTH * 4
 
 		// Fill entire row with this color using pre-packed RGBA
@@ -653,7 +659,7 @@ func (a *ANTICEngine) RenderFrame() []byte {
 
 	// Render Player/Missile graphics on top of background
 	// Only render in active display area
-	if a.gractl&GTIA_GRACTL_PLAYER != 0 {
+	if snapGractl&GTIA_GRACTL_PLAYER != 0 {
 		for y := ANTIC_BORDER_TOP; y < ANTIC_FRAME_HEIGHT-ANTIC_BORDER_BOTTOM; y++ {
 			scanline := y - ANTIC_BORDER_TOP
 			if scanline >= ANTIC_DISPLAY_HEIGHT {
@@ -664,15 +670,15 @@ func (a *ANTICEngine) RenderFrame() []byte {
 
 			// Draw each player (0-3) - read from display buffer (opposite of write buffer)
 			for p := 0; p < 4; p++ {
-				gfx := a.playerGfx[readBuffer][p][scanline]
+				gfx := snapPlayerGfx[p][scanline]
 				if gfx == 0 {
 					continue // No pixels set
 				}
 
 				// Use per-scanline position for authentic multiplexing
-				hpos := int(a.playerPos[readBuffer][p][scanline])
-				size := a.sizep[p]
-				playerColor := ANTICPaletteRGBA[a.colpm[p]][:]
+				hpos := int(snapPlayerPos[p][scanline])
+				size := snapSizep[p]
+				playerColor := ANTICPaletteRGBA[snapColpm[p]][:]
 
 				// Width multiplier based on size
 				widthMult := 1
@@ -866,11 +872,9 @@ func (a *ANTICEngine) GetFrame() []byte {
 	return frame
 }
 
-// IsEnabled returns whether ANTIC video is active
+// IsEnabled returns whether ANTIC video is active (lock-free)
 func (a *ANTICEngine) IsEnabled() bool {
-	a.mutex.RLock()
-	defer a.mutex.RUnlock()
-	return a.enabled
+	return a.enabled.Load()
 }
 
 // GetLayer returns the Z-order for compositing (higher = on top)
@@ -886,12 +890,14 @@ func (a *ANTICEngine) GetDimensions() (w, h int) {
 // SignalVSync is called by compositor after frame sent
 // Sets VBlank flag and handles NMI timing
 func (a *ANTICEngine) SignalVSync() {
-	a.mutex.Lock()
-	defer a.mutex.Unlock()
+	// Set VBlank flag — lock-free
+	a.vblankActive.Store(true)
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
 
 	// Record frame start time for time-based VBlank calculation
 	a.lastFrameStart = time.Now().UnixNano()
-	a.vblankActive = true // Legacy support
 
 	// Set VBI flag in NMIST if VBI is enabled in NMIEN
 	if a.nmien&ANTIC_NMIEN_VBI != 0 {

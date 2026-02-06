@@ -59,7 +59,7 @@ const (
 
 // VideoCompositor blends multiple video sources into a single output
 type VideoCompositor struct {
-	mutex       sync.RWMutex
+	mu          sync.Mutex
 	output      VideoOutput
 	sources     []VideoSource
 	finalFrame  []byte
@@ -81,15 +81,15 @@ func NewVideoCompositor(output VideoOutput) *VideoCompositor {
 
 // RegisterSource adds a video source to the compositor
 func (c *VideoCompositor) RegisterSource(source VideoSource) {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.sources = append(c.sources, source)
 }
 
 // SetDimensions sets the output frame dimensions
 func (c *VideoCompositor) SetDimensions(width, height int) {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.frameWidth = width
 	c.frameHeight = height
 	c.finalFrame = make([]byte, width*height*BYTES_PER_PIXEL)
@@ -98,11 +98,11 @@ func (c *VideoCompositor) SetDimensions(width, height int) {
 // Start begins the compositor refresh loop
 func (c *VideoCompositor) Start() error {
 	// Initialize final frame buffer
-	c.mutex.Lock()
+	c.mu.Lock()
 	if c.finalFrame == nil {
 		c.finalFrame = make([]byte, c.frameWidth*c.frameHeight*BYTES_PER_PIXEL)
 	}
-	c.mutex.Unlock()
+	c.mu.Unlock()
 
 	// Start refresh loop
 	go c.refreshLoop()
@@ -132,8 +132,8 @@ func (c *VideoCompositor) refreshLoop() {
 
 // composite collects and blends frames from all enabled sources
 func (c *VideoCompositor) composite() {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	// Clear final frame (Go compiler optimizes this to memset)
 	for i := range c.finalFrame {

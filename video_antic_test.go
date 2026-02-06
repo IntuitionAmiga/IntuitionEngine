@@ -54,7 +54,7 @@ func TestANTIC_DefaultState(t *testing.T) {
 	}
 
 	// VBlank should be inactive
-	if antic.vblankActive {
+	if antic.vblankActive.Load() {
 		t.Error("Expected vblankActive to be false initially")
 	}
 
@@ -256,7 +256,7 @@ func TestANTIC_SignalVSync(t *testing.T) {
 	antic := NewANTICEngine(nil)
 
 	// Initial state
-	if antic.vblankActive {
+	if antic.vblankActive.Load() {
 		t.Error("VBlank should be inactive initially")
 	}
 
@@ -267,7 +267,7 @@ func TestANTIC_SignalVSync(t *testing.T) {
 	antic.SignalVSync()
 
 	// VBlank should be active
-	if !antic.vblankActive {
+	if !antic.vblankActive.Load() {
 		t.Error("VBlank should be active after SignalVSync")
 	}
 

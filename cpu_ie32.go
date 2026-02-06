@@ -832,10 +832,10 @@ func (cpu *CPU) Reset() {
 
 	if activeFrontend != nil && activeFrontend.video != nil {
 		video := activeFrontend.video
-		video.mutex.Lock()
+		video.mu.Lock()
 		video.enabled.Store(false)
 		video.hasContent.Store(false)
-		video.mutex.Unlock()
+		video.mu.Unlock()
 	}
 
 	time.Sleep(RESET_DELAY)
@@ -853,12 +853,12 @@ func (cpu *CPU) Reset() {
 
 	if activeFrontend != nil && activeFrontend.video != nil {
 		video := activeFrontend.video
-		video.mutex.Lock()
+		video.mu.Lock()
 		for i := range video.prevVRAM {
 			video.prevVRAM[i] = 0
 		}
 		video.enabled.Store(true)
-		video.mutex.Unlock()
+		video.mu.Unlock()
 	}
 
 	cpu.running.Store(true)

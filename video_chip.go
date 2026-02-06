@@ -372,7 +372,7 @@ type VideoChip struct {
 	fullScreenDirty atomic.Bool // Lock-free full-screen dirty flag
 
 	// Synchronization (Cache Line 1)
-	mutex sync.RWMutex // 8 bytes - Keep mutex at cache line boundary
+	mu sync.Mutex // 8 bytes - Keep mutex at cache line boundary
 
 	// Display interface (Cache Line 1-2)
 	output VideoOutput // 8 bytes - Interface pointer
@@ -571,8 +571,8 @@ func NewVideoChip(backend int) (*VideoChip, error) {
 }
 
 func (chip *VideoChip) AttachBus(bus MemoryBus) {
-	chip.mutex.Lock()
-	defer chip.mutex.Unlock()
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
 	chip.bus = bus
 	chip.busMemory = bus.GetMemory() // Cache for lock-free reads
 }
@@ -581,8 +581,8 @@ func (chip *VideoChip) AttachBus(bus MemoryBus) {
 // This is required for M68K programs where data (copper lists, etc.) is stored
 // in big-endian byte order.
 func (chip *VideoChip) SetBigEndianMode(enabled bool) {
-	chip.mutex.Lock()
-	defer chip.mutex.Unlock()
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
 	chip.bigEndianMode = enabled
 }
 
@@ -687,8 +687,8 @@ func (chip *VideoChip) Start() error {
 		Returns:
 		  - error: Any error encountered when starting the video output, or nil if the operation succeeds.
 	*/
-	chip.mutex.Lock()
-	defer chip.mutex.Unlock()
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
 	chip.enabled.Store(true)
 	if chip.output != nil {
 		return chip.output.Start()
@@ -707,8 +707,8 @@ func (chip *VideoChip) Stop() error {
 		Returns:
 		  - error: Any error encountered when stopping the video output, or nil if the operation succeeds.
 	*/
-	chip.mutex.Lock()
-	defer chip.mutex.Unlock()
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
 	chip.enabled.Store(false)
 	if chip.output != nil {
 		return chip.output.Stop()
@@ -856,7 +856,7 @@ func (chip *VideoChip) refreshLoop() {
 			}
 
 			// Minimize mutex hold time: do state updates under lock, then release before slow I/O
-			chip.mutex.Lock()
+			chip.mu.Lock()
 			mode := VideoModes[chip.currentMode]
 			// Only run copper if compositor isn't managing it per-scanline
 			if !chip.copperManagedByCompositor {
@@ -929,7 +929,7 @@ func (chip *VideoChip) refreshLoop() {
 			} else if chip.splashBuffer != nil {
 				frameToSend = chip.splashBuffer
 			}
-			chip.mutex.Unlock()
+			chip.mu.Unlock()
 
 			// Note: Frame output is handled by the compositor, which calls GetFrame()
 			// VideoChip no longer sends directly to output
@@ -1313,21 +1313,21 @@ func (chip *VideoChip) copperRunLocked() {
 }
 
 func (chip *VideoChip) RunCopperFrameForTest() {
-	chip.mutex.Lock()
-	defer chip.mutex.Unlock()
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
 	mode := VideoModes[chip.currentMode]
 	chip.advanceCopperFrameLocked(mode)
 }
 
 func (chip *VideoChip) StepCopperRasterForTest(y, x int) {
-	chip.mutex.Lock()
-	defer chip.mutex.Unlock()
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
 	chip.copperAdvanceRasterLocked(y, x)
 }
 
 func (chip *VideoChip) RunBlitterForTest() {
-	chip.mutex.Lock()
-	defer chip.mutex.Unlock()
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
 	mode := VideoModes[chip.currentMode]
 	chip.runBlitterLocked(mode)
 }
@@ -1371,8 +1371,8 @@ func (chip *VideoChip) HandleRead(addr uint32) uint32 {
 		return status
 	}
 
-	chip.mutex.RLock()
-	defer chip.mutex.RUnlock()
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
 
 	switch addr {
 	case VIDEO_CTRL:
@@ -1568,8 +1568,8 @@ func (chip *VideoChip) HandleWrite(addr uint32, value uint32) {
 		A full mutex lock is acquired during the write operation.
 	*/
 
-	chip.mutex.Lock()
-	defer chip.mutex.Unlock()
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
 	chip.handleWriteLocked(addr, value)
 }
 
@@ -1878,8 +1878,8 @@ func (chip *VideoChip) drawRasterBandLocked() {
 // The returned buffer can be written to directly without mutex locks.
 // Call MarkFullScreenDirty() after writing a frame to trigger refresh.
 func (chip *VideoChip) EnableDirectMode() []byte {
-	chip.mutex.Lock()
-	defer chip.mutex.Unlock()
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
 
 	chip.directMode.Store(true)
 	chip.hasContent.Store(true)
@@ -1895,8 +1895,8 @@ func (chip *VideoChip) EnableDirectMode() []byte {
 
 // DisableDirectMode returns to normal dirty-region-tracked VRAM mode.
 func (chip *VideoChip) DisableDirectMode() {
-	chip.mutex.Lock()
-	defer chip.mutex.Unlock()
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
 	chip.directMode.Store(false)
 }
 
@@ -1966,8 +1966,8 @@ func (chip *VideoChip) SignalVSync() {
 
 // StartFrame implements ScanlineAware - prepares for per-scanline copper execution
 func (chip *VideoChip) StartFrame() {
-	chip.mutex.Lock()
-	defer chip.mutex.Unlock()
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
 
 	chip.copperManagedByCompositor = true // Signal that compositor is managing copper
 
@@ -1978,8 +1978,8 @@ func (chip *VideoChip) StartFrame() {
 
 // ProcessScanline implements ScanlineAware - advances copper to the given scanline
 func (chip *VideoChip) ProcessScanline(y int) {
-	chip.mutex.Lock()
-	defer chip.mutex.Unlock()
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
 
 	if !chip.copperEnabled || chip.bus == nil {
 		return
@@ -2002,8 +2002,8 @@ func (chip *VideoChip) ProcessScanline(y int) {
 
 // FinishFrame implements ScanlineAware - returns the rendered frame
 func (chip *VideoChip) FinishFrame() []byte {
-	chip.mutex.Lock()
-	defer chip.mutex.Unlock()
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
 
 	chip.copperManagedByCompositor = false // Release copper management back to refreshLoop
 

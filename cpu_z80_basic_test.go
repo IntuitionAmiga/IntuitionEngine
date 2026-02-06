@@ -206,7 +206,7 @@ func TestZ80_Voodoo_FullTriangle_IOPort(t *testing.T) {
 
 	// 1. Set video dimensions (640x480)
 	write32(0x214, (640<<16)|480)
-	t.Logf("After VIDEO_DIM: width=%d, height=%d", voodoo.width, voodoo.height)
+	t.Logf("After VIDEO_DIM: width=%d, height=%d", voodoo.width.Load(), voodoo.height.Load())
 
 	// 2. Disable texture
 	write32(0x300, 0) // TEXTURE_MODE = 0

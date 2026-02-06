@@ -396,7 +396,7 @@ func (b *X86SystemBus) In(port uint16) byte {
 		case X86_PORT_VGA_STATUS:
 			// Return VSync status
 			status := byte(0)
-			if b.vgaEngine.vsync {
+			if b.vgaEngine.vsync.Load() {
 				status |= 0x08 // Vertical retrace
 			}
 			return status

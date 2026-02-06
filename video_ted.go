@@ -46,13 +46,14 @@ package main
 
 import (
 	"sync"
+	"sync/atomic"
 )
 
 // TEDVideoEngine implements TED video chip as a standalone device.
 // Implements VideoSource interface for compositor integration.
 type TEDVideoEngine struct {
-	mutex sync.RWMutex
-	bus   *SystemBus
+	mu  sync.Mutex
+	bus *SystemBus
 
 	// Control registers
 	ctrl1     uint8 // Control register 1 (DEN, BMM, ECM, RSEL, YSCROLL)
@@ -68,9 +69,9 @@ type TEDVideoEngine struct {
 	cursorPos   uint16 // Cursor position (0-999)
 	cursorColor uint8  // Cursor color
 
-	// Enable/status
-	enabled      bool // Video output enabled
-	vblankActive bool // VBlank flag
+	// Lock-free flags
+	enabled      atomic.Bool // Video output enabled
+	vblankActive atomic.Bool // VBlank flag
 
 	// Current raster line (for copper/raster effects)
 	rasterLine uint16
@@ -82,6 +83,11 @@ type TEDVideoEngine struct {
 	// VRAM: video matrix + color RAM + character set
 	vram [TED_V_VRAM_SIZE]uint8
 
+	// Snapshot fields for lock-free rendering
+	snapVram    [TED_V_VRAM_SIZE]uint8
+	snapBgColor [4]uint8
+	snapBorder  uint8
+
 	// Pre-allocated frame buffer (384x272 RGBA)
 	frameBuffer []byte
 }
@@ -90,10 +96,10 @@ type TEDVideoEngine struct {
 func NewTEDVideoEngine(bus *SystemBus) *TEDVideoEngine {
 	ted := &TEDVideoEngine{
 		bus:           bus,
-		enabled:       false, // Disabled by default
-		cursorVisible: true,  // Cursor starts visible
+		cursorVisible: true, // Cursor starts visible
 		frameBuffer:   make([]byte, TED_V_FRAME_WIDTH*TED_V_FRAME_HEIGHT*4),
 	}
+	// enabled defaults to false (atomic.Bool zero value)
 
 	// Initialize VRAM to zero
 	for i := range ted.vram {
@@ -117,8 +123,8 @@ func NewTEDVideoEngine(bus *SystemBus) *TEDVideoEngine {
 
 // HandleRead handles register reads
 func (t *TEDVideoEngine) HandleRead(addr uint32) uint32 {
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
+	t.mu.Lock()
+	defer t.mu.Unlock()
 
 	switch addr {
 	case TED_V_CTRL1:
@@ -150,18 +156,16 @@ func (t *TEDVideoEngine) HandleRead(addr uint32) uint32 {
 	case TED_V_RASTER_HI:
 		return uint32((t.rasterLine >> 8) & 0x01)
 	case TED_V_ENABLE:
-		if t.enabled {
+		if t.enabled.Load() {
 			return TED_V_ENABLE_VIDEO
 		}
 		return 0
 	case TED_V_STATUS:
-		// Return and clear vblank flag
-		status := uint32(0)
-		if t.vblankActive {
-			status = TED_V_STATUS_VBLANK
-			t.vblankActive = false
+		// Return and clear vblank flag — atomic swap
+		if t.vblankActive.Swap(false) {
+			return TED_V_STATUS_VBLANK
 		}
-		return status
+		return 0
 	default:
 		return 0
 	}
@@ -169,8 +173,8 @@ func (t *TEDVideoEngine) HandleRead(addr uint32) uint32 {
 
 // HandleWrite handles register writes
 func (t *TEDVideoEngine) HandleWrite(addr uint32, value uint32) {
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
+	t.mu.Lock()
+	defer t.mu.Unlock()
 
 	switch addr {
 	case TED_V_CTRL1:
@@ -198,7 +202,7 @@ func (t *TEDVideoEngine) HandleWrite(addr uint32, value uint32) {
 	case TED_V_CURSOR_CLR:
 		t.cursorColor = uint8(value)
 	case TED_V_ENABLE:
-		t.enabled = (value & TED_V_ENABLE_VIDEO) != 0
+		t.enabled.Store((value & TED_V_ENABLE_VIDEO) != 0)
 		// Note: RASTER registers are read-only, writes are ignored
 	}
 }
@@ -209,8 +213,8 @@ func (t *TEDVideoEngine) HandleWrite(addr uint32, value uint32) {
 
 // HandleVRAMRead reads from TED VRAM
 func (t *TEDVideoEngine) HandleVRAMRead(offset uint16) uint8 {
-	t.mutex.RLock()
-	defer t.mutex.RUnlock()
+	t.mu.Lock()
+	defer t.mu.Unlock()
 
 	if int(offset) >= len(t.vram) {
 		return 0
@@ -220,8 +224,8 @@ func (t *TEDVideoEngine) HandleVRAMRead(offset uint16) uint8 {
 
 // HandleVRAMWrite writes to TED VRAM
 func (t *TEDVideoEngine) HandleVRAMWrite(offset uint16, value uint8) {
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
+	t.mu.Lock()
+	defer t.mu.Unlock()
 
 	if int(offset) >= len(t.vram) {
 		return
@@ -266,11 +270,18 @@ func (t *TEDVideoEngine) GetCharsetAddress(charCode uint8) int {
 
 // RenderFrame renders the complete display including border
 func (t *TEDVideoEngine) RenderFrame() []byte {
-	t.mutex.RLock()
-	defer t.mutex.RUnlock()
+	// Snapshot VRAM and registers under lock, then render lock-free
+	t.mu.Lock()
+	t.snapVram = t.vram
+	t.snapBorder = t.border
+	t.snapBgColor = t.bgColor
+	snapCursorVisible := t.cursorVisible
+	snapCursorPos := t.cursorPos
+	snapCursorColor := t.cursorColor
+	t.mu.Unlock()
 
 	// Get border color
-	borderR, borderG, borderB := GetTEDColor(t.border)
+	borderR, borderG, borderB := GetTEDColor(t.snapBorder)
 
 	// Fill entire frame with border color first
 	for i := 0; i < len(t.frameBuffer); i += 4 {
@@ -281,7 +292,7 @@ func (t *TEDVideoEngine) RenderFrame() []byte {
 	}
 
 	// Get background color
-	bgR, bgG, bgB := GetTEDColor(t.bgColor[0])
+	bgR, bgG, bgB := GetTEDColor(t.snapBgColor[0])
 
 	// Pre-compute address offsets for character rendering
 	charsetBase := TED_V_MATRIX_SIZE + TED_V_COLOR_SIZE
@@ -298,10 +309,10 @@ func (t *TEDVideoEngine) RenderFrame() []byte {
 
 		for cellX := 0; cellX < TED_V_CELLS_X; cellX++ {
 			// Get character code from video matrix
-			charCode := t.vram[matrixRowBase+cellX]
+			charCode := t.snapVram[matrixRowBase+cellX]
 
 			// Get foreground color from color RAM
-			fgColorByte := t.vram[colorRowBase+cellX]
+			fgColorByte := t.snapVram[colorRowBase+cellX]
 			fgR, fgG, fgB := GetTEDColor(fgColorByte)
 
 			// Get character bitmap offset
@@ -315,8 +326,8 @@ func (t *TEDVideoEngine) RenderFrame() []byte {
 			for row := 0; row < TED_V_CELL_HEIGHT; row++ {
 				// Get bitmap row (if charset offset is valid)
 				var bitmapByte uint8
-				if charsetOffset+row < len(t.vram) {
-					bitmapByte = t.vram[charsetOffset+row]
+				if charsetOffset+row < len(t.snapVram) {
+					bitmapByte = t.snapVram[charsetOffset+row]
 				}
 
 				// Frame buffer row offset
@@ -344,9 +355,9 @@ func (t *TEDVideoEngine) RenderFrame() []byte {
 		}
 	}
 
-	// Render cursor if visible
-	if t.cursorVisible && t.cursorPos < TED_V_CELLS_X*TED_V_CELLS_Y {
-		t.renderCursor()
+	// Render cursor if visible (using snapshot)
+	if snapCursorVisible && snapCursorPos < TED_V_CELLS_X*TED_V_CELLS_Y {
+		t.renderCursorSnapshot(snapCursorPos, snapCursorColor)
 	}
 
 	return t.frameBuffer
@@ -401,14 +412,19 @@ func (t *TEDVideoEngine) renderCharacter(cellX, cellY int, bgR, bgG, bgB uint8) 
 	}
 }
 
-// renderCursor renders the hardware cursor
+// renderCursor renders the hardware cursor (uses live state, requires lock held)
 func (t *TEDVideoEngine) renderCursor() {
+	t.renderCursorSnapshot(t.cursorPos, t.cursorColor)
+}
+
+// renderCursorSnapshot renders the hardware cursor using snapshot values (lock-free)
+func (t *TEDVideoEngine) renderCursorSnapshot(cursorPos uint16, cursorColor uint8) {
 	// Calculate cursor cell position
-	cellX := int(t.cursorPos) % TED_V_CELLS_X
-	cellY := int(t.cursorPos) / TED_V_CELLS_X
+	cellX := int(cursorPos) % TED_V_CELLS_X
+	cellY := int(cursorPos) / TED_V_CELLS_X
 
 	// Get cursor color
-	cursorR, cursorG, cursorB := GetTEDColor(t.cursorColor)
+	cursorR, cursorG, cursorB := GetTEDColor(cursorColor)
 
 	// Render cursor as underline (bottom row of character cell)
 	screenY := cellY*TED_V_CELL_HEIGHT + (TED_V_CELL_HEIGHT - 1)
@@ -438,11 +454,9 @@ func (t *TEDVideoEngine) GetFrame() []byte {
 	return t.RenderFrame()
 }
 
-// IsEnabled returns whether the TED video is active
+// IsEnabled returns whether the TED video is active (lock-free)
 func (t *TEDVideoEngine) IsEnabled() bool {
-	t.mutex.RLock()
-	defer t.mutex.RUnlock()
-	return t.enabled
+	return t.enabled.Load()
 }
 
 // GetLayer returns the Z-order for compositing (higher = on top)
@@ -456,15 +470,12 @@ func (t *TEDVideoEngine) GetDimensions() (w, h int) {
 }
 
 // SignalVSync is called by compositor after frame sent
-// Sets VBlank flag and handles cursor blink timing
+// Sets VBlank flag (lock-free) and handles cursor blink timing
 func (t *TEDVideoEngine) SignalVSync() {
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
+	// Set VBlank flag — lock-free
+	t.vblankActive.Store(true)
 
-	// Set VBlank flag - will be cleared when status register is read
-	t.vblankActive = true
-
-	// Handle cursor blink timing
+	// Cursor blink and raster line are compositor-only state
 	t.cursorCounter++
 	if t.cursorCounter >= TED_V_CURSOR_FRAMES {
 		t.cursorCounter = 0

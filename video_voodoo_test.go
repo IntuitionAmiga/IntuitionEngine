@@ -651,8 +651,9 @@ func TestVoodoo_SwapBuffer_PresentsFrame(t *testing.T) {
 	v.HandleWrite(VOODOO_FAST_FILL_CMD, 0)
 	v.HandleWrite(VOODOO_SWAP_BUFFER_CMD, 0)
 
-	frame1 := make([]byte, len(v.GetFrame()))
-	copy(frame1, v.GetFrame())
+	got := v.GetFrame()
+	frame1 := make([]byte, len(got))
+	copy(frame1, got)
 
 	// Clear to blue
 	v.HandleWrite(VOODOO_COLOR0, 0xFF0000FF)
@@ -1450,8 +1451,9 @@ func TestVoodoo_DynamicDepthFunction(t *testing.T) {
 	v.HandleWrite(VOODOO_SWAP_BUFFER_CMD, 0)
 
 	// With LESS, overlapping area should be blue (nearer)
-	frame1 := make([]byte, len(v.GetFrame()))
-	copy(frame1, v.GetFrame())
+	got := v.GetFrame()
+	frame1 := make([]byte, len(got))
+	copy(frame1, got)
 
 	centerIdx := (200*640 + 250) * 4
 	if frame1[centerIdx+2] < 150 { // Blue should be high
@@ -2615,9 +2617,9 @@ func TestVoodoo_TextureCoords_InTriangle(t *testing.T) {
 	}
 
 	// Access the triangle batch directly to check texture coords
-	v.mutex.RLock()
+	v.mu.Lock()
 	tri := v.triangleBatch[0]
-	v.mutex.RUnlock()
+	v.mu.Unlock()
 
 	// Verify texture coordinates for each vertex
 	const tolerance = 0.01
@@ -5537,6 +5539,83 @@ func TestVoodoo_FuncTable_DepthTest_MatchesSwitch(t *testing.T) {
 			if result != expected {
 				t.Errorf("depthTest(%f, %f, %d) = %v, expected %v",
 					tv.newZ, tv.oldZ, depthFunc, result, expected)
+			}
+		}
+	}
+}
+
+// TestVoodooTripleBufferConcurrent is a stress test for the lock-free triple-buffer
+// frame handoff between the producer (HandleWrite/SWAP_BUFFER_CMD) and the consumer
+// (GetFrame). Run with -race to verify no data races.
+func TestVoodooTripleBufferConcurrent(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	// Enable the engine and set dimensions
+	v.enabled.Store(true)
+	w, h := 64, 64
+	v.width.Store(int32(w))
+	v.height.Store(int32(h))
+	bufSize := w * h * 4
+	for i := 0; i < 3; i++ {
+		v.frameBufs[i] = make([]byte, bufSize)
+	}
+	v.writeIdx = 0        // Producer owns buffer 0
+	v.sharedIdx.Store(1)  // Buffer 1 in shared slot
+	v.readingIdx.Store(2) // Consumer owns buffer 2
+
+	const iterations = 10000
+	done := make(chan struct{})
+
+	// Producer: simulate SWAP_BUFFER_CMD publishing frames
+	go func() {
+		defer close(done)
+		for i := 0; i < iterations; i++ {
+			// Write a marker byte to the current write buffer
+			marker := byte(i & 0xFF)
+			buf := v.frameBufs[v.writeIdx]
+			for j := range buf {
+				buf[j] = marker
+			}
+
+			// Publish via triple-buffer protocol: swap write buffer into shared slot
+			v.writeIdx = int(v.sharedIdx.Swap(int32(v.writeIdx)))
+		}
+	}()
+
+	// Consumer: call GetFrame concurrently
+	readCount := 0
+	for {
+		select {
+		case <-done:
+			// Producer finished — do one final GetFrame
+			frame := v.GetFrame()
+			if frame != nil {
+				readCount++
+				// Verify the frame is self-consistent (all bytes same marker)
+				marker := frame[0]
+				for j := 1; j < len(frame); j++ {
+					if frame[j] != marker {
+						t.Fatalf("Frame torn at byte %d: expected %d, got %d", j, marker, frame[j])
+					}
+				}
+			}
+			t.Logf("Consumer read %d frames out of %d published", readCount, iterations)
+			return
+		default:
+			frame := v.GetFrame()
+			if frame != nil {
+				readCount++
+				// Verify self-consistency
+				marker := frame[0]
+				for j := 1; j < len(frame); j++ {
+					if frame[j] != marker {
+						t.Fatalf("Frame torn at byte %d: expected %d, got %d", j, marker, frame[j])
+					}
+				}
 			}
 		}
 	}

@@ -54,7 +54,7 @@ func TestTEDVideo_DefaultState(t *testing.T) {
 	}
 
 	// VBlank should be inactive
-	if ted.vblankActive {
+	if ted.vblankActive.Load() {
 		t.Error("Expected vblankActive to be false initially")
 	}
 
@@ -735,7 +735,7 @@ func TestTEDVideo_SignalVSync(t *testing.T) {
 	ted := NewTEDVideoEngine(nil)
 
 	// Initial state
-	if ted.vblankActive {
+	if ted.vblankActive.Load() {
 		t.Error("VBlank should be inactive initially")
 	}
 
@@ -743,13 +743,13 @@ func TestTEDVideo_SignalVSync(t *testing.T) {
 	ted.SignalVSync()
 
 	// VBlank should now be active
-	if !ted.vblankActive {
+	if !ted.vblankActive.Load() {
 		t.Error("VBlank should be active after SignalVSync")
 	}
 
 	// Reading status should acknowledge (clear) VBlank
 	ted.HandleRead(TED_V_STATUS)
-	if ted.vblankActive {
+	if ted.vblankActive.Load() {
 		t.Error("VBlank should be cleared after status read")
 	}
 }

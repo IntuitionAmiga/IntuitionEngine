@@ -63,7 +63,7 @@ const VGA_LAYER = 10 // VGA renders on top of VideoChip (layer 0)
 // VGAEngine implements IBM VGA compatible video as a standalone device
 // Implements VideoSource interface for compositor integration
 type VGAEngine struct {
-	mutex sync.RWMutex
+	mu    sync.Mutex
 	bus   *SystemBus
 	layer int // Z-order for compositor (higher = on top)
 
@@ -120,8 +120,11 @@ type VGAEngine struct {
 	frameBufferTxt []uint8 // 640x400x4 = 1,024,000 bytes
 
 	// VSync state
-	vsync      bool
+	vsync      atomic.Bool
 	frameStart atomic.Int64 // Unix nano timestamp of frame start for time-based vsync
+
+	// Lock-free enable flag
+	enabled atomic.Bool
 
 	// Per-scanline render buffer (used by ScanlineAware interface)
 	scanlineFrame []byte
@@ -205,8 +208,8 @@ func (v *VGAEngine) initDefaultPalette() {
 
 // HandleRead handles register reads
 func (v *VGAEngine) HandleRead(addr uint32) uint32 {
-	v.mutex.RLock()
-	defer v.mutex.RUnlock()
+	v.mu.Lock()
+	defer v.mu.Unlock()
 
 	switch addr {
 	case VGA_MODE:
@@ -307,8 +310,8 @@ func (v *VGAEngine) HandleRead(addr uint32) uint32 {
 
 // HandleWrite handles register writes
 func (v *VGAEngine) HandleWrite(addr uint32, value uint32) {
-	v.mutex.Lock()
-	defer v.mutex.Unlock()
+	v.mu.Lock()
+	defer v.mu.Unlock()
 
 	switch addr {
 	case VGA_MODE:
@@ -317,6 +320,7 @@ func (v *VGAEngine) HandleWrite(addr uint32, value uint32) {
 		// Status is read-only
 	case VGA_CTRL:
 		v.control = uint8(value)
+		v.enabled.Store(v.control&VGA_CTRL_ENABLE != 0)
 
 	// Sequencer
 	case VGA_SEQ_INDEX:
@@ -446,8 +450,8 @@ func (v *VGAEngine) readDACData() uint32 {
 
 // HandleVRAMRead handles reads from VRAM window
 func (v *VGAEngine) HandleVRAMRead(addr uint32) uint32 {
-	v.mutex.RLock()
-	defer v.mutex.RUnlock()
+	v.mu.Lock()
+	defer v.mu.Unlock()
 
 	offset := addr - VGA_VRAM_WINDOW
 	if offset >= VGA_VRAM_SIZE {
@@ -482,8 +486,8 @@ func (v *VGAEngine) HandleVRAMRead(addr uint32) uint32 {
 
 // HandleVRAMWrite handles writes to VRAM window
 func (v *VGAEngine) HandleVRAMWrite(addr uint32, value uint32) {
-	v.mutex.Lock()
-	defer v.mutex.Unlock()
+	v.mu.Lock()
+	defer v.mu.Unlock()
 
 	offset := addr - VGA_VRAM_WINDOW
 	if offset >= VGA_VRAM_SIZE {
@@ -519,8 +523,8 @@ func (v *VGAEngine) HandleVRAMWrite(addr uint32, value uint32) {
 
 // HandleTextRead handles reads from text buffer
 func (v *VGAEngine) HandleTextRead(addr uint32) uint32 {
-	v.mutex.RLock()
-	defer v.mutex.RUnlock()
+	v.mu.Lock()
+	defer v.mu.Unlock()
 
 	offset := addr - VGA_TEXT_WINDOW
 	if offset < VGA_TEXT_SIZE {
@@ -531,8 +535,8 @@ func (v *VGAEngine) HandleTextRead(addr uint32) uint32 {
 
 // HandleTextWrite handles writes to text buffer
 func (v *VGAEngine) HandleTextWrite(addr uint32, value uint32) {
-	v.mutex.Lock()
-	defer v.mutex.Unlock()
+	v.mu.Lock()
+	defer v.mu.Unlock()
 
 	offset := addr - VGA_TEXT_WINDOW
 	if offset < VGA_TEXT_SIZE {
@@ -568,8 +572,8 @@ func (v *VGAEngine) GetTextDimensions() (int, int) {
 
 // GetPaletteEntry returns RGB values for a palette entry (6-bit values)
 func (v *VGAEngine) GetPaletteEntry(index uint8) (uint8, uint8, uint8) {
-	v.mutex.RLock()
-	defer v.mutex.RUnlock()
+	v.mu.Lock()
+	defer v.mu.Unlock()
 
 	idx := int(index) * 3
 	return v.palette[idx], v.palette[idx+1], v.palette[idx+2]
@@ -577,8 +581,8 @@ func (v *VGAEngine) GetPaletteEntry(index uint8) (uint8, uint8, uint8) {
 
 // SetPaletteEntry sets RGB values for a palette entry (6-bit values)
 func (v *VGAEngine) SetPaletteEntry(index uint8, r, g, b uint8) {
-	v.mutex.Lock()
-	defer v.mutex.Unlock()
+	v.mu.Lock()
+	defer v.mu.Unlock()
 
 	idx := int(index) * 3
 	v.palette[idx] = r & 0x3F
@@ -606,8 +610,8 @@ func (v *VGAEngine) GetPaletteRGBA(index uint8) (uint8, uint8, uint8, uint8) {
 
 // ReadPlane reads a byte from a specific plane at an offset
 func (v *VGAEngine) ReadPlane(offset uint32, plane int) uint8 {
-	v.mutex.RLock()
-	defer v.mutex.RUnlock()
+	v.mu.Lock()
+	defer v.mu.Unlock()
 
 	if plane >= 0 && plane < 4 && offset < VGA_PLANE_SIZE {
 		return v.vram[plane][offset]
@@ -617,8 +621,8 @@ func (v *VGAEngine) ReadPlane(offset uint32, plane int) uint8 {
 
 // GetStartAddress returns the display start address from CRTC
 func (v *VGAEngine) GetStartAddress() uint32 {
-	v.mutex.RLock()
-	defer v.mutex.RUnlock()
+	v.mu.Lock()
+	defer v.mu.Unlock()
 
 	return v.getStartAddressInternal()
 }
@@ -630,8 +634,8 @@ func (v *VGAEngine) getStartAddressInternal() uint32 {
 
 // GetCursorPosition returns cursor column and row
 func (v *VGAEngine) GetCursorPosition() (int, int) {
-	v.mutex.RLock()
-	defer v.mutex.RUnlock()
+	v.mu.Lock()
+	defer v.mu.Unlock()
 
 	offset := uint16(v.crtcRegs[VGA_CRTC_CURSOR_HI])<<8 | uint16(v.crtcRegs[VGA_CRTC_CURSOR_LO])
 	col := int(offset % VGA_TEXT_COLS)
@@ -641,10 +645,11 @@ func (v *VGAEngine) GetCursorPosition() (int, int) {
 
 // SetVSync sets the vsync status flag
 func (v *VGAEngine) SetVSync(active bool) {
-	v.mutex.Lock()
-	defer v.mutex.Unlock()
+	v.vsync.Store(active)
 
-	v.vsync = active
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
 	if active {
 		v.status |= VGA_STATUS_VSYNC | VGA_STATUS_RETRACE
 	} else {
@@ -930,15 +935,15 @@ func vgaDebugLog(format string, args ...interface{}) {
 // GetFrame implements VideoSource - returns the current rendered frame
 // Called by compositor each frame to collect video output
 func (v *VGAEngine) GetFrame() []byte {
-	if v.control&VGA_CTRL_ENABLE == 0 {
+	if !v.enabled.Load() {
 		return nil
 	}
 	return v.RenderFrame()
 }
 
-// IsEnabled implements VideoSource - returns whether VGA is enabled
+// IsEnabled implements VideoSource - returns whether VGA is enabled (lock-free)
 func (v *VGAEngine) IsEnabled() bool {
-	return v.control&VGA_CTRL_ENABLE != 0
+	return v.enabled.Load()
 }
 
 // GetLayer implements VideoSource - returns Z-order for compositing
@@ -948,13 +953,14 @@ func (v *VGAEngine) GetLayer() int {
 
 // GetDimensions implements VideoSource - returns frame dimensions
 func (v *VGAEngine) GetDimensions() (int, int) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
 	return v.GetModeDimensions()
 }
 
-// SignalVSync implements VideoSource - called by compositor after frame sent
+// SignalVSync implements VideoSource - called by compositor after frame sent (lock-free)
 func (v *VGAEngine) SignalVSync() {
-	// Reset frame start time for time-based vsync calculation
-	// The vsync status is now calculated dynamically in HandleRead
+	v.vsync.Store(true)
 	v.frameStart.Store(time.Now().UnixNano())
 }
 
@@ -969,8 +975,8 @@ func (v *VGAEngine) GetCurrentFramebuffer() []uint8 {
 
 // StartFrame prepares for per-scanline rendering
 func (v *VGAEngine) StartFrame() {
-	v.mutex.Lock()
-	defer v.mutex.Unlock()
+	v.mu.Lock()
+	defer v.mu.Unlock()
 
 	// Allocate scanline buffer based on current mode
 	w, h := v.GetModeDimensions()
@@ -982,8 +988,8 @@ func (v *VGAEngine) StartFrame() {
 // ProcessScanline renders a single scanline using current palette state
 // This allows copper-driven palette changes to affect specific scanlines
 func (v *VGAEngine) ProcessScanline(y int) {
-	v.mutex.Lock()
-	defer v.mutex.Unlock()
+	v.mu.Lock()
+	defer v.mu.Unlock()
 
 	switch v.mode {
 	case VGA_MODE_13H:

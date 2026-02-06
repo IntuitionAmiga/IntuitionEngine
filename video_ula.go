@@ -48,13 +48,14 @@ package main
 
 import (
 	"sync"
+	"sync/atomic"
 )
 
 // ULAEngine implements ZX Spectrum ULA video as a standalone device.
 // Implements VideoSource interface for compositor integration.
 type ULAEngine struct {
-	mutex sync.RWMutex
-	bus   *SystemBus
+	mu  sync.Mutex
+	bus *SystemBus
 
 	// Border color (0-7)
 	border uint8
@@ -62,8 +63,9 @@ type ULAEngine struct {
 	// Control register
 	control uint8
 
-	// Status register - VBlank flag
-	vblankActive bool
+	// Lock-free flags
+	enabled      atomic.Bool // Set by HandleWrite when control changes
+	vblankActive atomic.Bool // Set by SignalVSync, cleared by HandleRead(ULA_STATUS)
 
 	// VRAM (6144 bitmap + 768 attributes = 6912 bytes)
 	vram [ULA_VRAM_SIZE]uint8
@@ -75,6 +77,11 @@ type ULAEngine struct {
 	// Pre-computed row start addresses for the non-linear ZX Spectrum addressing
 	// Computed once at init, indexed by Y coordinate (0-191)
 	rowStartAddr [ULA_DISPLAY_HEIGHT]uint16
+
+	// Snapshot fields for lock-free rendering
+	snapVram    [ULA_VRAM_SIZE]uint8
+	snapBorder  uint8
+	snapControl uint8
 
 	// Pre-allocated frame buffer (320x256 RGBA)
 	frameBuffer []byte
@@ -108,8 +115,8 @@ func NewULAEngine(bus *SystemBus) *ULAEngine {
 
 // HandleRead handles register reads
 func (u *ULAEngine) HandleRead(addr uint32) uint32 {
-	u.mutex.Lock()
-	defer u.mutex.Unlock()
+	u.mu.Lock()
+	defer u.mu.Unlock()
 
 	switch addr {
 	case ULA_BORDER:
@@ -117,13 +124,11 @@ func (u *ULAEngine) HandleRead(addr uint32) uint32 {
 	case ULA_CTRL:
 		return uint32(u.control)
 	case ULA_STATUS:
-		// Return vblank status and clear it (acknowledge)
-		status := uint32(0)
-		if u.vblankActive {
-			status = ULA_STATUS_VBLANK
-			u.vblankActive = false // Clear on read
+		// Return vblank status and clear it (acknowledge) — atomic swap
+		if u.vblankActive.Swap(false) {
+			return ULA_STATUS_VBLANK
 		}
-		return status
+		return 0
 	default:
 		return 0
 	}
@@ -131,8 +136,8 @@ func (u *ULAEngine) HandleRead(addr uint32) uint32 {
 
 // HandleWrite handles register writes
 func (u *ULAEngine) HandleWrite(addr uint32, value uint32) {
-	u.mutex.Lock()
-	defer u.mutex.Unlock()
+	u.mu.Lock()
+	defer u.mu.Unlock()
 
 	switch addr {
 	case ULA_BORDER:
@@ -140,13 +145,14 @@ func (u *ULAEngine) HandleWrite(addr uint32, value uint32) {
 		u.border = uint8(value & 0x07)
 	case ULA_CTRL:
 		u.control = uint8(value)
+		u.enabled.Store(u.control&ULA_CTRL_ENABLE != 0)
 	}
 }
 
 // HandleVRAMRead reads from ULA VRAM
 func (u *ULAEngine) HandleVRAMRead(offset uint16) uint8 {
-	u.mutex.RLock()
-	defer u.mutex.RUnlock()
+	u.mu.Lock()
+	defer u.mu.Unlock()
 
 	if int(offset) >= len(u.vram) {
 		return 0
@@ -156,8 +162,8 @@ func (u *ULAEngine) HandleVRAMRead(offset uint16) uint8 {
 
 // HandleVRAMWrite writes to ULA VRAM
 func (u *ULAEngine) HandleVRAMWrite(offset uint16, value uint8) {
-	u.mutex.Lock()
-	defer u.mutex.Unlock()
+	u.mu.Lock()
+	defer u.mu.Unlock()
 
 	if int(offset) >= len(u.vram) {
 		return
@@ -206,11 +212,16 @@ func (u *ULAEngine) GetColor(colorIndex uint8, bright bool) (r, g, b uint8) {
 
 // RenderFrame renders the complete display including border.
 func (u *ULAEngine) RenderFrame() []byte {
-	u.mutex.RLock()
-	defer u.mutex.RUnlock()
+	// Snapshot VRAM and registers under lock, then render lock-free
+	u.mu.Lock()
+	u.snapVram = u.vram
+	u.snapBorder = u.border
+	u.snapControl = u.control
+	snapFlashState := u.flashState
+	u.mu.Unlock()
 
 	// Get border color
-	borderR, borderG, borderB := u.GetColor(u.border, false)
+	borderR, borderG, borderB := u.GetColor(u.snapBorder, false)
 
 	// Fill entire frame with border color first
 	for i := 0; i < len(u.frameBuffer); i += 4 {
@@ -237,13 +248,13 @@ func (u *ULAEngine) RenderFrame() []byte {
 			// Get bitmap byte and bit within it
 			xByte := screenX >> 3
 			bitmapAddr := rowAddr + uint16(xByte)
-			bitmapByte := u.vram[bitmapAddr]
+			bitmapByte := u.snapVram[bitmapAddr]
 			bitPosition := 7 - (screenX & 0x07) // MSB is leftmost pixel
 			pixelSet := (bitmapByte >> bitPosition) & 1
 
 			// Get attribute for this character cell
 			cellX := screenX >> 3
-			attr := u.vram[attrRowBase+uint16(cellX)]
+			attr := u.snapVram[attrRowBase+uint16(cellX)]
 
 			// Parse attribute inline for speed
 			ink := attr & 0x07
@@ -254,7 +265,7 @@ func (u *ULAEngine) RenderFrame() []byte {
 			// Determine actual foreground/background based on FLASH state
 			fgColor := ink
 			bgColor := paper
-			if flash && u.flashState {
+			if flash && snapFlashState {
 				// Swap ink and paper when flashing
 				fgColor, bgColor = bgColor, fgColor
 			}
@@ -293,11 +304,9 @@ func (u *ULAEngine) GetFrame() []byte {
 	return u.RenderFrame()
 }
 
-// IsEnabled returns whether the ULA is active.
+// IsEnabled returns whether the ULA is active (lock-free).
 func (u *ULAEngine) IsEnabled() bool {
-	u.mutex.RLock()
-	defer u.mutex.RUnlock()
-	return (u.control & ULA_CTRL_ENABLE) != 0
+	return u.enabled.Load()
 }
 
 // GetLayer returns the Z-order for compositing (higher = on top).
@@ -311,15 +320,12 @@ func (u *ULAEngine) GetDimensions() (w, h int) {
 }
 
 // SignalVSync is called by compositor after frame sent.
-// Sets VBlank flag and handles flash timing (toggle every 32 frames).
+// Sets VBlank flag (lock-free) and handles flash timing.
 func (u *ULAEngine) SignalVSync() {
-	u.mutex.Lock()
-	defer u.mutex.Unlock()
+	// Set VBlank flag — lock-free
+	u.vblankActive.Store(true)
 
-	// Set VBlank flag - will be cleared when status register is read
-	u.vblankActive = true
-
-	// Handle flash timing
+	// Flash state is compositor-only, no lock needed
 	u.flashCounter++
 	if u.flashCounter >= ULA_FLASH_FRAMES {
 		u.flashCounter = 0

@@ -39,9 +39,9 @@ func writeWord8(bus *SystemBus, addr uint32, value uint32) {
 }
 
 func startCopperFrame(video *VideoChip) {
-	video.mutex.Lock()
+	video.mu.Lock()
 	video.copperStartFrameLocked()
-	video.mutex.Unlock()
+	video.mu.Unlock()
 }
 
 func TestCopperEndStops(t *testing.T) {

@@ -143,7 +143,7 @@ func BenchmarkULA_GetColor(b *testing.B) {
 func BenchmarkTED_RenderFrame(b *testing.B) {
 	bus := NewSystemBus()
 	ted := NewTEDVideoEngine(bus)
-	ted.enabled = true
+	ted.enabled.Store(true)
 
 	// Fill video matrix and color RAM with pattern
 	for y := 0; y < TED_V_CELLS_Y; y++ {
@@ -171,7 +171,7 @@ func BenchmarkTED_GetTEDColor(b *testing.B) {
 func BenchmarkTED_RenderCharacter(b *testing.B) {
 	bus := NewSystemBus()
 	ted := NewTEDVideoEngine(bus)
-	ted.enabled = true
+	ted.enabled.Store(true)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -186,7 +186,7 @@ func BenchmarkTED_RenderCharacter(b *testing.B) {
 func BenchmarkANTIC_RenderFrame(b *testing.B) {
 	bus := NewSystemBus()
 	antic := NewANTICEngine(bus)
-	antic.enabled = true
+	antic.enabled.Store(true)
 
 	// Fill scanline colors with pattern
 	for y := 0; y < ANTIC_DISPLAY_HEIGHT; y++ {
@@ -210,7 +210,7 @@ func BenchmarkANTIC_GetANTICColor(b *testing.B) {
 func BenchmarkANTIC_RenderFrameWithPlayers(b *testing.B) {
 	bus := NewSystemBus()
 	antic := NewANTICEngine(bus)
-	antic.enabled = true
+	antic.enabled.Store(true)
 	antic.gractl = GTIA_GRACTL_PLAYER // Enable players
 
 	// Set up players with graphics
@@ -272,7 +272,7 @@ func BenchmarkAllEngines_ULA(b *testing.B) {
 func BenchmarkAllEngines_TED(b *testing.B) {
 	bus := NewSystemBus()
 	ted := NewTEDVideoEngine(bus)
-	ted.enabled = true
+	ted.enabled.Store(true)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -283,7 +283,7 @@ func BenchmarkAllEngines_TED(b *testing.B) {
 func BenchmarkAllEngines_ANTIC(b *testing.B) {
 	bus := NewSystemBus()
 	antic := NewANTICEngine(bus)
-	antic.enabled = true
+	antic.enabled.Store(true)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

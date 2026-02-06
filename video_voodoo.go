@@ -50,6 +50,7 @@ package main
 
 import (
 	"sync"
+	"sync/atomic"
 )
 
 // VoodooVertex represents a single vertex with all attributes
@@ -66,16 +67,17 @@ type VoodooTriangle struct {
 
 // VoodooEngine implements 3DFX Voodoo SST-1 graphics emulation
 type VoodooEngine struct {
-	mutex sync.RWMutex
-	bus   *SystemBus
+	mu  sync.Mutex
+	bus *SystemBus
 
 	// Rendering backend (Vulkan or software fallback)
 	backend VoodooBackend
 
-	// Display configuration
-	width, height int
-	layer         int
-	enabled       bool
+	// Display configuration — lock-free for compositor reads
+	width   atomic.Int32
+	height  atomic.Int32
+	layer   int
+	enabled atomic.Bool
 
 	// Shadow registers (CPU-written values)
 	regs [256]uint32
@@ -114,11 +116,16 @@ type VoodooEngine struct {
 
 	// Status
 	busy        bool
-	vretrace    bool
+	vretrace    atomic.Bool
 	swapPending bool
 
-	// Framebuffer for GetFrame() (compositor output)
-	frameBuffer []byte
+	// Triple-buffered frame output for lock-free GetFrame()
+	// Protocol: producer owns writeIdx, consumer owns readIdx (via readingIdx),
+	// sharedIdx holds the buffer in transit. Both sides use Swap to exchange.
+	frameBufs  [3][]byte    // Pre-allocated framebuffers
+	sharedIdx  atomic.Int32 // Buffer in shared slot (exchanged via Swap)
+	readingIdx atomic.Int32 // Consumer's currently-owned buffer index
+	writeIdx   int          // Producer's write buffer (not shared)
 
 	// Texture memory for uploads
 	textureMemory []byte
@@ -163,23 +170,32 @@ type VoodooBackend interface {
 func NewVoodooEngine(bus *SystemBus) (*VoodooEngine, error) {
 	v := &VoodooEngine{
 		bus:           bus,
-		width:         VOODOO_DEFAULT_WIDTH,
-		height:        VOODOO_DEFAULT_HEIGHT,
 		layer:         VOODOO_LAYER,
-		enabled:       false,
 		triangleBatch: make([]VoodooTriangle, 0, VOODOO_MAX_BATCH_TRIANGLES),
-		frameBuffer:   make([]byte, VOODOO_DEFAULT_WIDTH*VOODOO_DEFAULT_HEIGHT*4),
 		textureMemory: make([]byte, VOODOO_TEXMEM_SIZE),
 		clipRight:     VOODOO_DEFAULT_WIDTH,
 		clipBottom:    VOODOO_DEFAULT_HEIGHT,
 	}
+	v.width.Store(int32(VOODOO_DEFAULT_WIDTH))
+	v.height.Store(int32(VOODOO_DEFAULT_HEIGHT))
+	v.enabled.Store(true) // Enabled by default
+
+	// Initialize triple-buffer: producer owns buf 0, shared holds buf 1,
+	// consumer owns buf 2. All buffers start zeroed (black frame).
+	bufSize := VOODOO_DEFAULT_WIDTH * VOODOO_DEFAULT_HEIGHT * 4
+	for i := range v.frameBufs {
+		v.frameBufs[i] = make([]byte, bufSize)
+	}
+	v.writeIdx = 0        // Producer starts writing to buffer 0
+	v.sharedIdx.Store(1)  // Buffer 1 in shared slot
+	v.readingIdx.Store(2) // Consumer starts with buffer 2
 
 	// Initialize with Vulkan backend (falls back to software internally if Vulkan unavailable)
 	vulkanBackend, err := NewVulkanBackend()
 	if err != nil {
 		return nil, err
 	}
-	if err := vulkanBackend.Init(v.width, v.height); err != nil {
+	if err := vulkanBackend.Init(int(v.width.Load()), int(v.height.Load())); err != nil {
 		return nil, err
 	}
 	v.backend = vulkanBackend
@@ -202,15 +218,17 @@ func (v *VoodooEngine) initDefaultState() {
 	v.regs[(VOODOO_ALPHA_MODE-VOODOO_BASE)/4] = v.alphaMode
 
 	// Default clip rectangle: full screen
+	w := int(v.width.Load())
+	h := int(v.height.Load())
 	v.clipLeft = 0
 	v.clipTop = 0
-	v.clipRight = v.width
-	v.clipBottom = v.height
+	v.clipRight = w
+	v.clipBottom = h
 	v.regs[(VOODOO_CLIP_LEFT_RIGHT-VOODOO_BASE)/4] = uint32(v.clipRight) | (uint32(v.clipLeft) << 16)
 	v.regs[(VOODOO_CLIP_LOW_Y_HIGH-VOODOO_BASE)/4] = uint32(v.clipBottom) | (uint32(v.clipTop) << 16)
 
 	// Default video dimensions
-	v.regs[(VOODOO_VIDEO_DIM-VOODOO_BASE)/4] = uint32(v.width)<<16 | uint32(v.height)
+	v.regs[(VOODOO_VIDEO_DIM-VOODOO_BASE)/4] = uint32(w)<<16 | uint32(h)
 
 	// Default colors
 	v.color0 = 0x00000000 // Black
@@ -219,8 +237,8 @@ func (v *VoodooEngine) initDefaultState() {
 
 // HandleRead handles register reads from the CPU
 func (v *VoodooEngine) HandleRead(addr uint32) uint32 {
-	v.mutex.RLock()
-	defer v.mutex.RUnlock()
+	v.mu.Lock()
+	defer v.mu.Unlock()
 
 	switch addr {
 	case VOODOO_STATUS:
@@ -237,8 +255,8 @@ func (v *VoodooEngine) HandleRead(addr uint32) uint32 {
 
 // HandleWrite handles register writes from the CPU
 func (v *VoodooEngine) HandleWrite(addr uint32, value uint32) {
-	v.mutex.Lock()
-	defer v.mutex.Unlock()
+	v.mu.Lock()
+	defer v.mu.Unlock()
 
 	// Handle texture memory writes (separate address range)
 	if addr >= VOODOO_TEXMEM_BASE && addr < VOODOO_TEXMEM_BASE+VOODOO_TEXMEM_SIZE {
@@ -264,7 +282,7 @@ func (v *VoodooEngine) HandleWrite(addr uint32, value uint32) {
 	switch addr {
 	// Enable/disable the Voodoo engine
 	case VOODOO_ENABLE:
-		v.enabled = value != 0
+		v.enabled.Store(value != 0)
 
 	// Vertex coordinates (12.4 fixed-point)
 	case VOODOO_VERTEX_AX:
@@ -416,11 +434,18 @@ func (v *VoodooEngine) HandleWrite(addr uint32, value uint32) {
 		newWidth := int((value >> 16) & 0xFFFF)
 		newHeight := int(value & 0xFFFF)
 		if newWidth > 0 && newHeight > 0 && newWidth <= VOODOO_MAX_WIDTH && newHeight <= VOODOO_MAX_HEIGHT {
-			v.width = newWidth
-			v.height = newHeight
-			v.frameBuffer = make([]byte, v.width*v.height*4)
+			v.width.Store(int32(newWidth))
+			v.height.Store(int32(newHeight))
+			// Reallocate triple-buffer for new dimensions
+			bufSize := newWidth * newHeight * 4
+			for i := range v.frameBufs {
+				v.frameBufs[i] = make([]byte, bufSize)
+			}
+			v.writeIdx = 0        // Producer takes buffer 0
+			v.sharedIdx.Store(1)  // Buffer 1 in shared slot
+			v.readingIdx.Store(2) // Consumer takes buffer 2
 			if v.backend != nil {
-				v.backend.Init(v.width, v.height)
+				v.backend.Init(newWidth, newHeight)
 			}
 		}
 
@@ -506,11 +531,16 @@ func (v *VoodooEngine) executeSwapBufferCmd(value uint32) {
 		waitVSync := (value & VOODOO_SWAP_VSYNC) != 0
 		v.backend.SwapBuffers(waitVSync)
 
-		// Copy rendered frame for compositor
+		// Copy rendered frame to write buffer for triple-buffer publish
 		frame := v.backend.GetFrame()
-		if frame != nil && len(frame) == len(v.frameBuffer) {
-			copy(v.frameBuffer, frame)
+		if frame != nil && len(frame) == len(v.frameBufs[v.writeIdx]) {
+			copy(v.frameBufs[v.writeIdx], frame)
 		}
+
+		// Publish completed frame via triple-buffer:
+		// Swap our write buffer into the shared slot, get back the old shared buffer.
+		// The old shared buffer is now ours to write to next frame.
+		v.writeIdx = int(v.sharedIdx.Swap(int32(v.writeIdx)))
 	}
 
 	v.swapPending = false
@@ -523,7 +553,7 @@ func (v *VoodooEngine) getStatus() uint32 {
 	if v.busy {
 		status |= VOODOO_STATUS_FBI_BUSY | VOODOO_STATUS_SST_BUSY
 	}
-	if v.vretrace {
+	if v.vretrace.Load() {
 		status |= VOODOO_STATUS_VRETRACE
 	}
 	if v.swapPending {
@@ -589,22 +619,22 @@ func fixed2_30ToFloat(value uint32) float32 {
 
 // VideoSource interface implementation
 
-// GetFrame returns the current rendered frame for the compositor
+// GetFrame returns the current rendered frame for the compositor (lock-free triple-buffer read)
 func (v *VoodooEngine) GetFrame() []byte {
-	v.mutex.RLock()
-	defer v.mutex.RUnlock()
-
-	if !v.enabled {
+	if !v.enabled.Load() {
 		return nil
 	}
-	return v.frameBuffer
+	// Swap our read buffer into the shared slot, get back the latest frame.
+	// This is lock-free: single atomic Swap ensures no tearing.
+	oldRead := v.readingIdx.Load()
+	newRead := v.sharedIdx.Swap(oldRead)
+	v.readingIdx.Store(newRead)
+	return v.frameBufs[newRead]
 }
 
-// IsEnabled returns whether the Voodoo is active
+// IsEnabled returns whether the Voodoo is active (lock-free)
 func (v *VoodooEngine) IsEnabled() bool {
-	v.mutex.RLock()
-	defer v.mutex.RUnlock()
-	return v.enabled
+	return v.enabled.Load()
 }
 
 // GetLayer returns the compositor layer for the Voodoo
@@ -612,31 +642,25 @@ func (v *VoodooEngine) GetLayer() int {
 	return v.layer
 }
 
-// GetDimensions returns the current framebuffer dimensions
+// GetDimensions returns the current framebuffer dimensions (lock-free)
 func (v *VoodooEngine) GetDimensions() (int, int) {
-	v.mutex.RLock()
-	defer v.mutex.RUnlock()
-	return v.width, v.height
+	return int(v.width.Load()), int(v.height.Load())
 }
 
-// SignalVSync signals vertical retrace to the Voodoo
+// SignalVSync signals vertical retrace to the Voodoo (lock-free)
 func (v *VoodooEngine) SignalVSync() {
-	v.mutex.Lock()
-	defer v.mutex.Unlock()
-	v.vretrace = true
+	v.vretrace.Store(true)
 }
 
-// SetEnabled enables or disables the Voodoo
+// SetEnabled enables or disables the Voodoo (lock-free)
 func (v *VoodooEngine) SetEnabled(enabled bool) {
-	v.mutex.Lock()
-	defer v.mutex.Unlock()
-	v.enabled = enabled
+	v.enabled.Store(enabled)
 }
 
 // SetBackend sets the rendering backend (Vulkan or software)
 func (v *VoodooEngine) SetBackend(backend VoodooBackend) error {
-	v.mutex.Lock()
-	defer v.mutex.Unlock()
+	v.mu.Lock()
+	defer v.mu.Unlock()
 
 	// Destroy old backend
 	if v.backend != nil {
@@ -645,23 +669,23 @@ func (v *VoodooEngine) SetBackend(backend VoodooBackend) error {
 
 	v.backend = backend
 	if v.backend != nil {
-		return v.backend.Init(v.width, v.height)
+		return v.backend.Init(int(v.width.Load()), int(v.height.Load()))
 	}
 	return nil
 }
 
 // GetTriangleBatchCount returns the number of triangles in the current batch
 func (v *VoodooEngine) GetTriangleBatchCount() int {
-	v.mutex.RLock()
-	defer v.mutex.RUnlock()
+	v.mu.Lock()
+	defer v.mu.Unlock()
 	return len(v.triangleBatch)
 }
 
 // SetTextureData uploads texture data to the backend
 // Phase 4: Texture mapping support
 func (v *VoodooEngine) SetTextureData(width, height int, data []byte) {
-	v.mutex.Lock()
-	defer v.mutex.Unlock()
+	v.mu.Lock()
+	defer v.mu.Unlock()
 
 	if v.backend != nil {
 		// Get format from textureMode register
@@ -672,8 +696,8 @@ func (v *VoodooEngine) SetTextureData(width, height int, data []byte) {
 
 // Destroy cleans up resources
 func (v *VoodooEngine) Destroy() {
-	v.mutex.Lock()
-	defer v.mutex.Unlock()
+	v.mu.Lock()
+	defer v.mu.Unlock()
 
 	if v.backend != nil {
 		v.backend.Destroy()
