@@ -84,7 +84,6 @@ import (
 	"math/bits"
 	"os"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -365,10 +364,9 @@ type CPU struct {
 	timerEnabled atomic.Bool   // Timer active (atomic)
 
 	// Interrupt control (Cache Line 3)
-	InterruptVector  uint32       // Interrupt handler
-	interruptEnabled atomic.Bool  // Interrupts allowed (atomic for lock-free access)
-	inInterrupt      atomic.Bool  // In handler (atomic for lock-free access)
-	mutex            sync.RWMutex // Memory lock (I/O only)
+	InterruptVector  uint32      // Interrupt handler
+	interruptEnabled atomic.Bool // Interrupts allowed (atomic for lock-free access)
+	inInterrupt      atomic.Bool // In handler (atomic for lock-free access)
 
 	// Large buffers (Cache Lines 3+)
 	Screen [25][80]byte // Display buffer
@@ -493,9 +491,7 @@ func (cpu *CPU) Write32(addr uint32, value uint32) {
 		return
 	}
 
-	// I/O path - use mutex for callback coordination
-	cpu.mutex.Lock()
-	defer cpu.mutex.Unlock()
+	// I/O path - callbacks protect their own state
 	cpu.bus.Write32(addr, value)
 }
 
@@ -534,9 +530,7 @@ func (cpu *CPU) Read32(addr uint32) uint32 {
 		return *(*uint32)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr)))
 	}
 
-	// I/O path - use mutex for callback coordination
-	cpu.mutex.Lock()
-	defer cpu.mutex.Unlock()
+	// I/O path - callbacks protect their own state
 	return cpu.bus.Read32(addr)
 }
 
@@ -834,7 +828,6 @@ func (cpu *CPU) Reset() {
 	   Full mutex protection during entire reset sequence.
 	*/
 
-	cpu.mutex.Lock()
 	cpu.running.Store(false)
 
 	if activeFrontend != nil && activeFrontend.video != nil {
@@ -844,11 +837,9 @@ func (cpu *CPU) Reset() {
 		video.hasContent.Store(false)
 		video.mutex.Unlock()
 	}
-	cpu.mutex.Unlock()
 
 	time.Sleep(RESET_DELAY)
 
-	cpu.mutex.Lock()
 	// Clear memory in chunks for better cache utilization
 	for i := PROG_START; i < len(cpu.memory); i += CACHE_LINE_SIZE {
 		end := i + CACHE_LINE_SIZE
@@ -871,7 +862,6 @@ func (cpu *CPU) Reset() {
 	}
 
 	cpu.running.Store(true)
-	cpu.mutex.Unlock()
 }
 
 func (cpu *CPU) Execute() {

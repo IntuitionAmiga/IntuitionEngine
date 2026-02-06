@@ -126,10 +126,10 @@ func (p *SID6502Player) createCPU() *CPU_6502 {
 		memory:        p.bus,
 		SP:            0xFF,
 		SR:            UNUSED_FLAG,
-		rdyLine:       true,
 		breakpoints:   make(map[uint16]bool),
 		breakpointHit: make(chan uint16, 1),
 	}
+	cpu.rdyLine.Store(true)
 	cpu.running.Store(true)
 	return cpu
 }
@@ -169,7 +169,7 @@ func (p *SID6502Player) executeInstruction() {
 	cycles := p.cpu.Step()
 	p.bus.AddCycles(cycles)
 	if p.bus.irqPending {
-		p.cpu.irqPending = true
+		p.cpu.irqPending.Store(true)
 		p.bus.irqPending = false
 	}
 }

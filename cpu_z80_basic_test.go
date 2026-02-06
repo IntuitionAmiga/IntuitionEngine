@@ -32,12 +32,11 @@ func TestZ80ResetDefaults(t *testing.T) {
 	cpu.WZ = 0x2222
 	cpu.IFF1 = true
 	cpu.IFF2 = true
-	cpu.irqLine = true
-	cpu.nmiLine = true
-	cpu.nmiPending = true
-	cpu.nmiPrev = true
+	cpu.irqLine.Store(true)
+	cpu.nmiLine.Store(true)
+	cpu.nmiPending.Store(true)
 	cpu.iffDelay = 1
-	cpu.irqVector = 0x00
+	cpu.irqVector.Store(0x00)
 	cpu.Halted = true
 	cpu.Cycles = 999
 
@@ -69,14 +68,14 @@ func TestZ80ResetDefaults(t *testing.T) {
 	if cpu.IFF1 || cpu.IFF2 {
 		t.Fatalf("IFF1/IFF2 should be cleared on reset")
 	}
-	if cpu.irqLine || cpu.nmiLine || cpu.nmiPending || cpu.nmiPrev {
+	if cpu.irqLine.Load() || cpu.nmiLine.Load() || cpu.nmiPending.Load() {
 		t.Fatalf("interrupt lines should be cleared on reset")
 	}
 	if cpu.iffDelay != 0 {
 		t.Fatalf("iffDelay should be cleared on reset")
 	}
-	if cpu.irqVector != 0xFF {
-		t.Fatalf("irqVector = 0x%02X, want 0xFF", cpu.irqVector)
+	if cpu.irqVector.Load() != 0xFF {
+		t.Fatalf("irqVector = 0x%02X, want 0xFF", cpu.irqVector.Load())
 	}
 	if cpu.IM != 0 {
 		t.Fatalf("IM = %d, want 0", cpu.IM)

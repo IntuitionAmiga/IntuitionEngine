@@ -324,10 +324,10 @@ func (p *TED6502Player) createCPU() *CPU_6502 {
 		memory:        p.bus,
 		SP:            0xFF,
 		SR:            UNUSED_FLAG,
-		rdyLine:       true,
 		breakpoints:   make(map[uint16]bool),
 		breakpointHit: make(chan uint16, 1),
 	}
+	cpu.rdyLine.Store(true)
 	cpu.running.Store(true)
 	return cpu
 }
@@ -341,7 +341,7 @@ func (p *TED6502Player) runContinuous() error {
 	for p.cpu.Running() && (p.cpu.Cycles-startCycles) < maxCycles {
 		// Check for pending IRQ from TED timer
 		if p.bus.CheckIRQ() {
-			p.cpu.irqPending = true
+			p.cpu.irqPending.Store(true)
 		}
 
 		cycles := p.cpu.Step()
@@ -387,7 +387,7 @@ func (p *TED6502Player) callRoutine(addr uint16, aReg uint8) error {
 
 		// Check for pending IRQ from TED timer
 		if p.bus.CheckIRQ() {
-			p.cpu.irqPending = true
+			p.cpu.irqPending.Store(true)
 		}
 
 		cycles := p.cpu.Step()

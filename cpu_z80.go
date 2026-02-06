@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -51,15 +50,13 @@ type CPU_Z80 struct {
 	running atomic.Bool // Atomic for lock-free access (was: Running bool)
 	Cycles  uint64
 
-	irqLine    bool
-	nmiLine    bool
-	nmiPending bool
-	nmiPrev    bool
+	irqLine    atomic.Bool
+	nmiLine    atomic.Bool
+	nmiPending atomic.Bool
 	iffDelay   int
-	irqVector  byte
+	irqVector  atomic.Uint32
 
-	bus   Z80Bus
-	mutex sync.RWMutex
+	bus Z80Bus
 
 	baseOps [256]func(*CPU_Z80)
 	cbOps   [256]func(*CPU_Z80)
@@ -121,9 +118,6 @@ func NewCPU_Z80(bus Z80Bus) *CPU_Z80 {
 }
 
 func (c *CPU_Z80) Reset() {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
 	c.A = 0
 	c.F = 0
 	c.B = 0
@@ -152,12 +146,11 @@ func (c *CPU_Z80) Reset() {
 	c.prefixOpcode = 0
 	c.IFF1 = false
 	c.IFF2 = false
-	c.irqLine = false
-	c.nmiLine = false
-	c.nmiPending = false
-	c.nmiPrev = false
+	c.irqLine.Store(false)
+	c.nmiLine.Store(false)
+	c.nmiPending.Store(false)
 	c.iffDelay = 0
-	c.irqVector = 0xFF
+	c.irqVector.Store(0xFF)
 	c.Halted = false
 	c.running.Store(true)
 	c.Cycles = 0
@@ -266,39 +259,24 @@ func (c *CPU_Z80) Exx() {
 }
 
 func (c *CPU_Z80) Step() {
-	// Lock only for state that could be modified externally
-	c.mutex.Lock()
-
 	if !c.running.Load() {
-		c.mutex.Unlock()
 		return
 	}
 
-	if c.nmiLine && !c.nmiPrev {
-		c.nmiPending = true
-	}
-	c.nmiPrev = c.nmiLine
-
-	if c.nmiPending {
+	if c.nmiPending.Load() {
 		c.serviceNMI()
-		c.mutex.Unlock()
 		return
 	}
 
-	if c.irqLine && c.IFF1 {
+	if c.irqLine.Load() && c.IFF1 {
 		c.serviceIRQ()
-		c.mutex.Unlock()
 		return
 	}
 
 	if c.Halted {
 		c.tick(4)
-		c.mutex.Unlock()
 		return
 	}
-
-	// Release mutex before instruction execution (bus calls may need it)
-	c.mutex.Unlock()
 
 	opcode := c.fetchOpcode()
 	c.baseOps[opcode](c)
@@ -334,21 +312,18 @@ func (c *CPU_Z80) Execute() {
 }
 
 func (c *CPU_Z80) SetIRQLine(assert bool) {
-	c.mutex.Lock()
-	c.irqLine = assert
-	c.mutex.Unlock()
+	c.irqLine.Store(assert)
 }
 
 func (c *CPU_Z80) SetNMILine(assert bool) {
-	c.mutex.Lock()
-	c.nmiLine = assert
-	c.mutex.Unlock()
+	old := c.nmiLine.Swap(assert)
+	if assert && !old {
+		c.nmiPending.Store(true)
+	}
 }
 
 func (c *CPU_Z80) SetIRQVector(vector byte) {
-	c.mutex.Lock()
-	c.irqVector = vector
-	c.mutex.Unlock()
+	c.irqVector.Store(uint32(vector))
 }
 
 func (c *CPU_Z80) incrementR() {
@@ -1281,7 +1256,7 @@ func (c *CPU_Z80) opEDPrefix() {
 }
 
 func (c *CPU_Z80) serviceNMI() {
-	c.nmiPending = false
+	c.nmiPending.Store(false)
 	c.Halted = false
 	c.incrementR()
 	c.pushWord(c.PC)
@@ -1302,7 +1277,7 @@ func (c *CPU_Z80) serviceIRQ() {
 		c.WZ = c.PC
 		c.tick(13)
 	case 2:
-		vector := uint16(c.I)<<8 | uint16(c.irqVector)
+		vector := uint16(c.I)<<8 | uint16(c.irqVector.Load())
 		low := c.read(vector)
 		high := c.read(vector + 1)
 		c.pushWord(c.PC)
@@ -1318,7 +1293,7 @@ func (c *CPU_Z80) serviceIRQ() {
 }
 
 func (c *CPU_Z80) im0Vector() uint16 {
-	vector := c.irqVector
+	vector := byte(c.irqVector.Load())
 	if vector&0xC7 == 0xC7 {
 		return uint16(vector & 0x38)
 	}

@@ -75,7 +75,7 @@ package main
 
 import (
 	"fmt"
-	"sync"
+	"runtime"
 	"sync/atomic"
 	"time"
 )
@@ -208,21 +208,21 @@ type CPU_6502 struct {
 
 	// Cache Line 1 - Interrupt Control
 	running      atomic.Bool // Execution state (atomic for lock-free access)
-	irqPending   bool        // IRQ signal
+	irqPending   atomic.Bool // IRQ signal
 	resetPending bool        // Reset signal
 	InInterrupt  bool        // In handler
-	nmiLine      bool        // NMI signal
-	nmiPending   bool        // NMI detected
-	nmiPrevious  bool        // NMI previous
-	_padding0    byte        // Alignment
+	nmiLine      atomic.Bool // NMI signal
+	nmiPending   atomic.Bool // NMI detected
+	resetting    atomic.Bool // Set during Reset() to pause Execute() at instruction boundary
+	resetAck     atomic.Bool // Execute() signals it has paused for reset
+	executing    atomic.Bool // True while Execute() is in its main loop
 
 	// Cache Line 2 - System Control
 	Cycles        uint64          // Cycle counter
-	rdyLine       bool            // RDY signal
+	rdyLine       atomic.Bool     // RDY signal
 	rdyHold       bool            // RDY active
 	Debug         bool            // Debug mode
 	memory        MemoryBus_6502  // Memory interface
-	mutex         sync.RWMutex    // State protection
 	breakpoints   map[uint16]bool // Debug points
 	breakpointHit chan uint16     // Debug channel
 
@@ -316,6 +316,7 @@ func NewCPU_6502(bus MemoryBus) *CPU_6502 {
 		breakpoints:   make(map[uint16]bool),
 		breakpointHit: make(chan uint16, 1),
 	}
+	cpu.rdyLine.Store(true)
 	cpu.running.Store(true)
 	return cpu
 }
@@ -1093,19 +1094,15 @@ func (cpu_6502 *CPU_6502) SetNMILine(state bool) {
 
 	   Operation:
 	   1. Updates NMI line state
-	   2. Detects falling edge
+	   2. Detects falling edge via atomic Swap
 	   3. Sets NMI pending on edge
 	*/
 
-	cpu_6502.mutex.Lock()
-	defer cpu_6502.mutex.Unlock()
-
-	cpu_6502.nmiLine = state
+	old := cpu_6502.nmiLine.Swap(state)
 	// Detect falling edge (1->0 transition)
-	if cpu_6502.nmiPrevious && !state {
-		cpu_6502.nmiPending = true
+	if old && !state {
+		cpu_6502.nmiPending.Store(true)
 	}
-	cpu_6502.nmiPrevious = state
 }
 func (cpu_6502 *CPU_6502) SetRDYLine(state bool) {
 	/*
@@ -1115,13 +1112,10 @@ func (cpu_6502 *CPU_6502) SetRDYLine(state bool) {
 	   - state: New RDY line state
 
 	   Operation:
-	   1. Acquires mutex
-	   2. Updates RDY state
+	   1. Updates RDY state atomically
 	*/
 
-	cpu_6502.mutex.Lock()
-	defer cpu_6502.mutex.Unlock()
-	cpu_6502.rdyLine = state
+	cpu_6502.rdyLine.Store(state)
 }
 
 func (cpu_6502 *CPU_6502) Reset() {
@@ -1139,12 +1133,22 @@ func (cpu_6502 *CPU_6502) Reset() {
 	   8. Resets NMI edge detection
 
 	   Thread Safety:
-	   Full mutex protection during reset sequence
+	   Uses resetting/resetAck handshake to pause Execute() at an
+	   instruction boundary before modifying registers.
 	*/
 
-	cpu_6502.mutex.Lock()
-	defer cpu_6502.mutex.Unlock()
+	// Signal Execute() to pause at the next instruction boundary
+	cpu_6502.resetting.Store(true)
+	if cpu_6502.executing.Load() {
+		for !cpu_6502.resetAck.Load() {
+			if !cpu_6502.executing.Load() {
+				break
+			}
+			runtime.Gosched()
+		}
+	}
 
+	// Execute() is now paused — safe to modify all registers
 	cpu_6502.A = 0
 	cpu_6502.X = 0
 	cpu_6502.Y = 0
@@ -1156,15 +1160,17 @@ func (cpu_6502 *CPU_6502) Reset() {
 	cpu_6502.InInterrupt = false
 
 	//NMI
-	cpu_6502.nmiLine = false
-	cpu_6502.nmiPending = false
-	cpu_6502.nmiPrevious = false
-	cpu_6502.irqPending = false
+	cpu_6502.nmiLine.Store(false)
+	cpu_6502.nmiPending.Store(false)
+	cpu_6502.irqPending.Store(false)
 	cpu_6502.resetPending = false
 
 	if adapter, ok := cpu_6502.memory.(*MemoryBusAdapter_6502); ok {
 		adapter.ResetBank()
 	}
+
+	// Resume Execute()
+	cpu_6502.resetting.Store(false)
 }
 
 func (cpu_6502 *CPU_6502) Execute() {
@@ -1208,24 +1214,34 @@ func (cpu_6502 *CPU_6502) Execute() {
 		cpu_6502.InstructionCount = 0
 	}
 
+	cpu_6502.executing.Store(true)
+	defer cpu_6502.executing.Store(false)
+
 	for cpu_6502.running.Load() {
-		cpu_6502.mutex.Lock()
+		// Pause at instruction boundary if Reset() or external observer requests it
+		if cpu_6502.resetting.Load() {
+			cpu_6502.resetAck.Store(true)
+			for cpu_6502.resetting.Load() {
+				runtime.Gosched()
+			}
+			cpu_6502.resetAck.Store(false)
+			continue
+		}
 
 		// Check for RDY line hold
-		if !cpu_6502.rdyLine {
+		if !cpu_6502.rdyLine.Load() {
 			cpu_6502.rdyHold = true
-			cpu_6502.mutex.Unlock()
 			continue
 		}
 		cpu_6502.rdyHold = false
 
 		// Check for interrupts
-		if cpu_6502.nmiPending {
+		if cpu_6502.nmiPending.Load() {
 			cpu_6502.handleInterrupt(NMI_VECTOR, true)
-			cpu_6502.nmiPending = false
-		} else if cpu_6502.irqPending && !cpu_6502.getFlag(INTERRUPT_FLAG) {
+			cpu_6502.nmiPending.Store(false)
+		} else if cpu_6502.irqPending.Load() && !cpu_6502.getFlag(INTERRUPT_FLAG) {
 			cpu_6502.handleInterrupt(IRQ_VECTOR, false)
-			cpu_6502.irqPending = false
+			cpu_6502.irqPending.Store(false)
 		}
 
 		// Fetch and execute instruction
@@ -1240,8 +1256,6 @@ func (cpu_6502 *CPU_6502) Execute() {
 
 		// Execute the opcode using shared implementation
 		cpu_6502.executeOpcodeInternal(opcode)
-
-		cpu_6502.mutex.Unlock()
 
 		// Performance monitoring (matching IE32 pattern)
 		if cpu_6502.PerfEnabled {
@@ -1263,27 +1277,24 @@ func (cpu_6502 *CPU_6502) Execute() {
 // Step executes a single instruction and returns the number of cycles consumed.
 // This is useful for embedding the CPU in other systems that need precise control.
 func (cpu_6502 *CPU_6502) Step() int {
-	if !cpu_6502.running.Load() {
+	if !cpu_6502.running.Load() || cpu_6502.resetting.Load() {
 		return 0
 	}
 
-	cpu_6502.mutex.Lock()
-	defer cpu_6502.mutex.Unlock()
-
 	// Check for RDY line hold
-	if !cpu_6502.rdyLine {
+	if !cpu_6502.rdyLine.Load() {
 		cpu_6502.rdyHold = true
 		return 0
 	}
 	cpu_6502.rdyHold = false
 
 	// Check for interrupts
-	if cpu_6502.nmiPending {
+	if cpu_6502.nmiPending.Load() {
 		cpu_6502.handleInterrupt(NMI_VECTOR, true)
-		cpu_6502.nmiPending = false
-	} else if cpu_6502.irqPending && !cpu_6502.getFlag(INTERRUPT_FLAG) {
+		cpu_6502.nmiPending.Store(false)
+	} else if cpu_6502.irqPending.Load() && !cpu_6502.getFlag(INTERRUPT_FLAG) {
 		cpu_6502.handleInterrupt(IRQ_VECTOR, false)
-		cpu_6502.irqPending = false
+		cpu_6502.irqPending.Store(false)
 	}
 
 	startCycles := cpu_6502.Cycles

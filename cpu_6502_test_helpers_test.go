@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -64,6 +65,7 @@ func runSingleInstruction(t *testing.T, cpu *CPU_6502, start uint16) {
 			<-done
 			t.Fatalf("timeout waiting for instruction at PC=0x%04X", start)
 		}
+		runtime.Gosched()
 	}
 }
 
@@ -97,6 +99,7 @@ func runUntilPC(t *testing.T, cpu *CPU_6502, target uint16, timeout time.Duratio
 			<-done
 			t.Fatalf("timeout waiting for PC=0x%04X (current PC=0x%04X, cycles=%d)", target, pc, read6502Cycles(cpu))
 		}
+		runtime.Gosched()
 	}
 }
 
@@ -129,6 +132,7 @@ func runUntilCondition(t *testing.T, cpu *CPU_6502, timeout time.Duration, condi
 			<-done
 			t.Fatalf("timeout waiting for condition (PC=0x%04X, cycles=%d)", read6502PC(cpu), read6502Cycles(cpu))
 		}
+		runtime.Gosched()
 	}
 }
 
@@ -136,16 +140,44 @@ func stop6502CPU(cpu *CPU_6502) {
 	cpu.SetRunning(false)
 }
 
+// read6502PC pauses Execute() at an instruction boundary via the
+// resetting/resetAck handshake, reads PC, then resumes execution.
+// Safe for cross-goroutine observation. Must not overlap with Reset().
 func read6502PC(cpu *CPU_6502) uint16 {
-	cpu.mutex.RLock()
-	defer cpu.mutex.RUnlock()
-	return cpu.PC
+	if !cpu.executing.Load() {
+		return cpu.PC
+	}
+	cpu.resetting.Store(true)
+	for !cpu.resetAck.Load() {
+		if !cpu.executing.Load() {
+			cpu.resetting.Store(false)
+			return cpu.PC
+		}
+		runtime.Gosched()
+	}
+	pc := cpu.PC
+	cpu.resetting.Store(false)
+	return pc
 }
 
+// read6502Cycles pauses Execute() at an instruction boundary via the
+// resetting/resetAck handshake, reads Cycles, then resumes execution.
+// Safe for cross-goroutine observation. Must not overlap with Reset().
 func read6502Cycles(cpu *CPU_6502) uint64 {
-	cpu.mutex.RLock()
-	defer cpu.mutex.RUnlock()
-	return cpu.Cycles
+	if !cpu.executing.Load() {
+		return cpu.Cycles
+	}
+	cpu.resetting.Store(true)
+	for !cpu.resetAck.Load() {
+		if !cpu.executing.Load() {
+			cpu.resetting.Store(false)
+			return cpu.Cycles
+		}
+		runtime.Gosched()
+	}
+	cycles := cpu.Cycles
+	cpu.resetting.Store(false)
+	return cycles
 }
 
 func read6502Running(cpu *CPU_6502) bool {

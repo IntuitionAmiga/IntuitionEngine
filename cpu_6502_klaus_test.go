@@ -137,9 +137,9 @@ func (p *klausInterruptPort) Write(value uint8) {
 	irqLine := (p.value & (1 << klausInterruptIRQBit)) != 0
 	nmiLine := (p.value & (1 << klausInterruptNMIBit)) != 0
 
-	p.cpu.irqPending = irqLine
+	p.cpu.irqPending.Store(irqLine)
 	if nmiLine && (prev&(1<<klausInterruptNMIBit)) == 0 {
-		p.cpu.nmiPending = true
+		p.cpu.nmiPending.Store(true)
 	}
 }
 

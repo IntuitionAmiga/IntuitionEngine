@@ -107,10 +107,10 @@ func (p *SAP6502Player) createCPU() *CPU_6502 {
 		memory:        &sapBusAdapter{p.bus},
 		SP:            0xFF,
 		SR:            UNUSED_FLAG,
-		rdyLine:       true, // RDY line must be high for CPU to run
 		breakpoints:   make(map[uint16]bool),
 		breakpointHit: make(chan uint16, 1),
 	}
+	cpu.rdyLine.Store(true) // RDY line must be high for CPU to run
 	cpu.running.Store(true)
 	return cpu
 }
