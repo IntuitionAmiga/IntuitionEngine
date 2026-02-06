@@ -12,7 +12,6 @@ package main
 
 import (
 	"fmt"
-	"sync"
 	"sync/atomic"
 )
 
@@ -58,8 +57,8 @@ type CPU_X86 struct {
 
 	// Interrupt state
 	irqLine    bool
-	irqPending bool
-	irqVector  byte
+	irqPending atomic.Bool
+	irqVector  atomic.Uint32
 
 	// Current instruction state
 	prefixSeg      int  // Segment override (-1 = none, 0-5 = ES/CS/SS/DS/FS/GS)
@@ -73,8 +72,7 @@ type CPU_X86 struct {
 	sibLoaded      bool // SIB already fetched
 
 	// Bus interface
-	bus   X86Bus
-	mutex sync.RWMutex
+	bus X86Bus
 
 	// Instruction dispatch tables
 	baseOps     [256]func(*CPU_X86)
@@ -140,9 +138,6 @@ func NewCPU_X86(bus X86Bus) *CPU_X86 {
 
 // Reset initializes the CPU to its power-on state
 func (c *CPU_X86) Reset() {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
 	// Clear general purpose registers
 	c.EAX = 0
 	c.EBX = 0
@@ -180,8 +175,8 @@ func (c *CPU_X86) Reset() {
 
 	// Clear interrupt state
 	c.irqLine = false
-	c.irqPending = false
-	c.irqVector = 0
+	c.irqPending.Store(false)
+	c.irqVector.Store(0)
 
 	// Set execution state
 	c.Halted = false
@@ -997,9 +992,9 @@ func (c *CPU_X86) Step() int {
 	}
 
 	// Check for pending interrupt
-	if c.irqPending && c.IF() {
-		c.handleInterrupt(c.irqVector)
-		c.irqPending = false
+	if c.irqPending.Load() && c.IF() {
+		c.handleInterrupt(byte(c.irqVector.Load()))
+		c.irqPending.Store(false)
 	}
 
 	// Reset prefix state
@@ -1086,8 +1081,8 @@ func (c *CPU_X86) handleInterrupt(vector byte) {
 func (c *CPU_X86) SetIRQ(active bool, vector byte) {
 	c.irqLine = active
 	if active {
-		c.irqPending = true
-		c.irqVector = vector
+		c.irqPending.Store(true)
+		c.irqVector.Store(uint32(vector))
 	}
 }
 

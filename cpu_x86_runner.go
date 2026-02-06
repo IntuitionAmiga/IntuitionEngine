@@ -710,8 +710,28 @@ func (r *CPUX86Runner) Reset() {
 
 // Execute runs the CPU in a loop until halted (for GUI integration)
 func (r *CPUX86Runner) Execute() {
+	if r.PerfEnabled {
+		r.perfStartTime = time.Now()
+		r.lastPerfReport = r.perfStartTime
+		r.InstructionCount = 0
+	}
+
 	for r.cpu.Running() && !r.cpu.Halted {
 		r.cpu.Step()
+
+		if r.PerfEnabled {
+			r.InstructionCount++
+			if r.InstructionCount&0xFFFFFF == 0 {
+				now := time.Now()
+				if now.Sub(r.lastPerfReport) >= time.Second {
+					elapsed := now.Sub(r.perfStartTime).Seconds()
+					ips := float64(r.InstructionCount) / elapsed
+					mips := ips / 1_000_000
+					fmt.Printf("x86: %.2f MIPS (%.0f instructions in %.1fs)\n", mips, float64(r.InstructionCount), elapsed)
+					r.lastPerfReport = now
+				}
+			}
+		}
 	}
 }
 
