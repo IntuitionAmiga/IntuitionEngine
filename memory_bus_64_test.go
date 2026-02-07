@@ -565,6 +565,48 @@ func TestBusRead64Write64_MixedSpan_Native64_Legacy(t *testing.T) {
 	}
 }
 
+// TestBusSplitWrite_Native64_NoReadSideEffect verifies that a split write to a
+// native-64 MMIO region does NOT invoke onRead64. This locks in the design
+// decision that write32Half reads from backing memory (not the device) to
+// avoid side effects such as clear-on-read or FIFO pop.
+func TestBusSplitWrite_Native64_NoReadSideEffect(t *testing.T) {
+	bus := NewSystemBus()
+	bus.SetLegacyMMIO64Policy(MMIO64PolicySplit)
+
+	readCalled := false
+	var lastWriteVal uint64
+
+	// Native 64-bit region at 0x7000-0x70FF
+	bus.MapIO64(0x7000, 0x70FF,
+		func(addr uint32) uint64 {
+			readCalled = true
+			return 0xDEADBEEFCAFEBABE
+		},
+		func(addr uint32, value uint64) {
+			lastWriteVal = value
+		},
+	)
+
+	// Legacy region at 0x7100-0x71FF to force a split
+	bus.MapIO(0x7100, 0x71FF,
+		func(addr uint32) uint32 { return 0 },
+		func(addr uint32, value uint32) {},
+	)
+
+	// Write64 at 0x70FC spans native64 [0x70FC..0x70FF] + legacy [0x7100..0x7103]
+	// This forces write32Half for the native64 half
+	bus.Write64(0x70FC, 0x1111111122222222)
+
+	if readCalled {
+		t.Error("write32Half must not call onRead64 — device reads may have side effects")
+	}
+
+	// The write handler should still have been called
+	if lastWriteVal == 0 {
+		t.Error("onWrite64 was not called for the native64 half")
+	}
+}
+
 // TestBusMapIO64_SignExtension verifies that MapIO64 for a region in the
 // 0x8000-0xFFFF range is accessible via the sign-extended address
 // (0xFFFF0000 | addr), matching the existing MapIO sign-extension behavior.
