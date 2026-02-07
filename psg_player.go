@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 type PSGPlayer struct {
@@ -26,6 +27,9 @@ type PSGPlayer struct {
 	playBusy      bool
 	playErr       bool
 	forceLoop     bool // When true, loop from start even if file has no loop point
+	playGen       uint64
+
+	mu sync.Mutex
 
 	renderInstructions uint64
 	renderCPU          string
@@ -209,11 +213,15 @@ func (p *PSGPlayer) Play() {
 }
 
 func (p *PSGPlayer) Stop() {
+	p.mu.Lock()
+	p.playGen++
+	p.playBusy = false
+	p.mu.Unlock()
+
 	if p.engine == nil {
 		return
 	}
 	p.engine.StopPlayback()
-	p.playBusy = false
 }
 
 func (p *PSGPlayer) Metadata() PSGMetadata {
@@ -312,7 +320,209 @@ func psgDebugEnabled() bool {
 	return value == "1" || value == "true" || value == "yes"
 }
 
+type psgRenderResult struct {
+	metadata           PSGMetadata
+	frameRate          uint16
+	clockHz            uint32
+	loop               bool
+	loopSample         uint64
+	events             []PSGEvent
+	totalSamples       uint64
+	renderInstructions uint64
+	renderCPU          string
+	renderExecNanos    uint64
+}
+
+func buildPSGEventsFromFrames(frames [][]uint8, frameRate uint16, sampleRate int, loopFrame uint32) ([]PSGEvent, uint64, bool, uint64, error) {
+	if frameRate == 0 {
+		return nil, 0, false, 0, fmt.Errorf("invalid frame rate")
+	}
+	samplesPerFrameNum := uint64(sampleRate)
+	samplesPerFrameDen := uint64(frameRate)
+	acc := uint64(0)
+	samplePos := uint64(0)
+
+	events := make([]PSGEvent, 0, len(frames)*PSG_REG_COUNT)
+	loopSample := uint64(0)
+	for frameIndex, frame := range frames {
+		if uint32(frameIndex) == loopFrame {
+			loopSample = samplePos
+		}
+		for reg := 0; reg < PSG_REG_COUNT; reg++ {
+			events = append(events, PSGEvent{
+				Sample: samplePos,
+				Reg:    uint8(reg),
+				Value:  frame[reg],
+			})
+		}
+		acc += samplesPerFrameNum
+		step := acc / samplesPerFrameDen
+		samplePos += step
+		acc -= step * samplesPerFrameDen
+	}
+
+	loop := loopFrame > 0 && loopFrame < uint32(len(frames))
+	return events, samplePos, loop, loopSample, nil
+}
+
+func renderPSGData(data []byte, sampleRate int) (psgRenderResult, error) {
+	var res psgRenderResult
+
+	if len(data) == 0 {
+		return res, fmt.Errorf("psg data empty")
+	}
+	if len(data) >= 4 && string(data[:4]) == "Vgm " {
+		file, err := ParseVGMData(data)
+		if err != nil {
+			return res, err
+		}
+		if file.ClockHz == 0 {
+			file.ClockHz = PSG_CLOCK_MSX
+		}
+		res.metadata = PSGMetadata{Title: "", Author: "", System: "VGM"}
+		res.clockHz = file.ClockHz
+		res.loop = file.LoopSample > 0
+		res.loopSample = file.LoopSample
+		res.events = file.Events
+		res.totalSamples = file.TotalSamples
+		return res, nil
+	}
+	if len(data) >= 2 && data[0] == 0x1F && data[1] == 0x8B {
+		file, err := ParseVGMData(data)
+		if err != nil {
+			return res, err
+		}
+		if file.ClockHz == 0 {
+			file.ClockHz = PSG_CLOCK_MSX
+		}
+		res.metadata = PSGMetadata{Title: "", Author: "", System: "VGM"}
+		res.clockHz = file.ClockHz
+		res.loop = file.LoopSample > 0
+		res.loopSample = file.LoopSample
+		res.events = file.Events
+		res.totalSamples = file.TotalSamples
+		return res, nil
+	}
+	if len(data) >= 4 && (string(data[:4]) == "YM5!" || string(data[:4]) == "YM6!") {
+		file, err := parseYMData(data)
+		if err != nil {
+			return res, err
+		}
+		events, total, loop, loopSample, err := buildPSGEventsFromFrames(file.Frames, file.FrameRate, sampleRate, file.LoopFrame)
+		if err != nil {
+			return res, err
+		}
+		res.metadata = PSGMetadata{Title: file.Title, Author: file.Author, System: "Atari ST"}
+		res.frameRate = file.FrameRate
+		res.clockHz = file.ClockHz
+		res.loop = loop
+		res.loopSample = loopSample
+		res.events = events
+		res.totalSamples = total
+		return res, nil
+	}
+	if isZXAYEMUL(data) {
+		meta, events, total, clockHz, frameRate, loop, loopSample, instrCount, execNanos, err := renderAYZ80(data, sampleRate)
+		if err != nil {
+			return res, err
+		}
+		res.metadata = meta
+		res.frameRate = frameRate
+		res.clockHz = clockHz
+		res.loop = loop
+		res.loopSample = loopSample
+		res.events = events
+		res.totalSamples = total
+		res.renderInstructions = instrCount
+		res.renderCPU = "Z80"
+		res.renderExecNanos = execNanos
+		return res, nil
+	}
+	if isSNDHData(data) {
+		meta, events, total, clockHz, frameRate, loop, loopSample, instrCount, execNanos, err := renderSNDH(data, sampleRate)
+		if err != nil {
+			return res, err
+		}
+		res.metadata = meta
+		res.frameRate = frameRate
+		res.clockHz = clockHz
+		res.loop = loop
+		res.loopSample = loopSample
+		res.events = events
+		res.totalSamples = total
+		res.renderInstructions = instrCount
+		res.renderCPU = "68K"
+		res.renderExecNanos = execNanos
+		return res, nil
+	}
+
+	file, err := ParseAYData(data)
+	if err != nil {
+		return res, err
+	}
+	events, total, loop, loopSample, err := buildPSGEventsFromFrames(file.Frames, file.FrameRate, sampleRate, 0)
+	if err != nil {
+		return res, err
+	}
+	res.metadata = PSGMetadata{Title: file.Title, Author: file.Author, System: "ZX Spectrum"}
+	res.frameRate = file.FrameRate
+	res.clockHz = file.ClockHz
+	res.loop = loop
+	res.loopSample = loopSample
+	res.events = events
+	res.totalSamples = total
+	return res, nil
+}
+
+func (p *PSGPlayer) applyRenderResult(res psgRenderResult) {
+	p.metadata = res.metadata
+	p.frameRate = res.frameRate
+	p.clockHz = res.clockHz
+	p.loop = res.loop
+	p.loopSample = res.loopSample
+	p.renderInstructions = res.renderInstructions
+	p.renderCPU = res.renderCPU
+	p.renderExecNanos = res.renderExecNanos
+	p.engine.SetClockHz(res.clockHz)
+	p.engine.SetEvents(res.events, res.totalSamples, res.loop, res.loopSample)
+}
+
+type psgAsyncStartRequest struct {
+	gen       uint64
+	data      []byte
+	forceLoop bool
+}
+
+func (p *PSGPlayer) startAsync(req psgAsyncStartRequest) {
+	res, err := renderPSGData(req.data, p.engine.sampleRate)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if req.gen != p.playGen {
+		return
+	}
+	if err != nil {
+		p.playErr = true
+		p.playBusy = false
+		return
+	}
+
+	p.engine.StopPlayback()
+	p.applyRenderResult(res)
+	if req.forceLoop {
+		p.engine.SetForceLoop(true)
+	}
+	if p.engine.sound != nil {
+		p.engine.sound.SetSampleTicker(p.engine)
+	}
+	p.engine.SetPlaying(true)
+}
+
 func (p *PSGPlayer) HandlePlayWrite(addr uint32, value uint32) {
+	var stopPlayback bool
+	var startReq *psgAsyncStartRequest
+
+	p.mu.Lock()
 	switch addr {
 	case PSG_PLAY_PTR:
 		p.playPtrStaged = value
@@ -332,15 +542,17 @@ func (p *PSGPlayer) HandlePlayWrite(addr uint32, value uint32) {
 		p.playLenStaged = writeUint32Byte(p.playLenStaged, value, 3)
 	case PSG_PLAY_CTRL:
 		if value&0x2 != 0 {
-			p.Stop()
+			p.playGen++
+			p.playBusy = false
 			p.playErr = false
-			return
+			stopPlayback = true
+			break
 		}
 		if value&0x1 == 0 {
-			return
+			break
 		}
 		if p.playBusy {
-			return
+			break
 		}
 		p.playPtr = p.playPtrStaged
 		p.playLen = p.playLenStaged
@@ -348,42 +560,44 @@ func (p *PSGPlayer) HandlePlayWrite(addr uint32, value uint32) {
 		p.playErr = false
 		if p.bus == nil {
 			p.playErr = true
-			return
+			break
 		}
 		if p.playLen == 0 {
 			p.playErr = true
-			return
+			break
 		}
-		p.playBusy = true
 		// Read directly from bus memory to avoid deadlock (bus.Read8 would try to lock bus.mutex)
 		mem := p.bus.GetMemory()
 		if int(p.playPtr)+int(p.playLen) > len(mem) {
 			p.playErr = true
-			p.playBusy = false
-			return
+			break
 		}
 		data := make([]byte, p.playLen)
 		copy(data, mem[p.playPtr:p.playPtr+p.playLen])
-		if err := p.LoadData(data); err != nil {
-			p.playErr = true
-			p.playBusy = false
-			return
+		p.playBusy = true
+		p.playGen++
+		startReq = &psgAsyncStartRequest{
+			gen:       p.playGen,
+			data:      data,
+			forceLoop: p.forceLoop,
 		}
-		// If forceLoop is set, enable looping from the start
-		if p.forceLoop && p.engine != nil {
-			p.engine.SetForceLoop(true)
-		}
-		// Register as sample ticker when starting playback via I/O
-		if p.engine != nil && p.engine.sound != nil {
-			p.engine.sound.SetSampleTicker(p.engine)
-		}
-		p.Play()
 	default:
-		return
+		break
+	}
+	p.mu.Unlock()
+
+	if stopPlayback && p.engine != nil {
+		p.engine.StopPlayback()
+	}
+	if startReq != nil {
+		go p.startAsync(*startReq)
 	}
 }
 
 func (p *PSGPlayer) HandlePlayRead(addr uint32) uint32 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	switch addr {
 	case PSG_PLAY_PTR:
 		return p.playPtrStaged

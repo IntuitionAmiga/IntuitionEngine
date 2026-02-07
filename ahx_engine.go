@@ -37,16 +37,30 @@ func NewAHXEngine(sound *SoundChip, sampleRate int) *AHXEngine {
 
 // LoadData parses and loads AHX data
 func (e *AHXEngine) LoadData(data []byte) error {
-	e.mutex.Lock()
-	defer e.mutex.Unlock()
-
 	song, err := ParseAHX(data)
 	if err != nil {
 		return err
 	}
 
+	return e.LoadSong(song, 0)
+}
+
+// LoadSong loads a pre-parsed AHX song and initializes the selected subsong.
+func (e *AHXEngine) LoadSong(song *AHXFile, subsong int) error {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+
+	if song == nil {
+		return nil
+	}
+
 	e.replayer.InitSong(song)
-	e.replayer.InitSubsong(0)
+	if subsong < 0 || subsong > song.SubsongNr {
+		subsong = 0
+	}
+	if err := e.replayer.InitSubsong(subsong); err != nil {
+		return err
+	}
 
 	baseHz := 50 * song.SpeedMultiplier
 	e.samplesPerTick = e.sampleRate / baseHz

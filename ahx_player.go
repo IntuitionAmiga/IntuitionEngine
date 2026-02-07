@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // AHXPlayer provides a high-level interface for AHX playback
@@ -22,6 +23,9 @@ type AHXPlayer struct {
 	playBusy      bool
 	playErr       bool
 	forceLoop     bool
+	playGen       uint64
+
+	mu sync.Mutex
 }
 
 // NewAHXPlayer creates a new AHX player
@@ -58,6 +62,10 @@ func (p *AHXPlayer) PlaySubsong(nr int) {
 
 // Stop stops playback
 func (p *AHXPlayer) Stop() {
+	p.mu.Lock()
+	p.playGen++
+	p.playBusy = false
+	p.mu.Unlock()
 	p.engine.SetPlaying(false)
 }
 
@@ -144,6 +152,10 @@ func (p *AHXPlayer) AttachBus(bus MemoryBus) {
 
 // HandlePlayWrite handles writes to AHX_PLAY_* registers
 func (p *AHXPlayer) HandlePlayWrite(addr uint32, value uint32) {
+	var stopPlayback bool
+	var startReq *ahxAsyncStartRequest
+
+	p.mu.Lock()
 	switch addr {
 	case AHX_PLUS_CTRL:
 		p.engine.SetAHXPlusEnabled(value != 0)
@@ -167,16 +179,17 @@ func (p *AHXPlayer) HandlePlayWrite(addr uint32, value uint32) {
 		p.subsong = uint8(value)
 	case AHX_PLAY_CTRL:
 		if value&0x2 != 0 {
-			p.Stop()
+			p.playGen++
 			p.playBusy = false
 			p.playErr = false
-			return
+			stopPlayback = true
+			break
 		}
 		if value&0x1 == 0 {
-			return
+			break
 		}
 		if p.playBusy {
-			return
+			break
 		}
 		p.playPtr = p.playPtrStaged
 		p.playLen = p.playLenStaged
@@ -184,46 +197,80 @@ func (p *AHXPlayer) HandlePlayWrite(addr uint32, value uint32) {
 		p.playErr = false
 		if p.bus == nil {
 			p.playErr = true
-			return
+			break
 		}
 		if p.playLen == 0 {
 			p.playErr = true
-			return
+			break
 		}
-		p.playBusy = true
 		// Read directly from bus memory
 		mem := p.bus.GetMemory()
 		if int(p.playPtr)+int(p.playLen) > len(mem) {
 			p.playErr = true
-			p.playBusy = false
-			return
+			break
 		}
 		data := make([]byte, p.playLen)
 		copy(data, mem[p.playPtr:p.playPtr+p.playLen])
-		if err := p.Load(data); err != nil {
-			p.playErr = true
-			p.playBusy = false
-			return
+		p.playBusy = true
+		p.playGen++
+		startReq = &ahxAsyncStartRequest{
+			gen:       p.playGen,
+			data:      data,
+			subsong:   int(p.subsong),
+			forceLoop: p.forceLoop,
 		}
-		// Set subsong if specified
-		if p.subsong > 0 {
-			p.engine.replayer.InitSubsong(int(p.subsong))
-		}
-		if p.forceLoop {
-			p.engine.SetLoop(true)
-		}
-		// Register as sample ticker when starting playback via I/O
-		if p.engine.sound != nil {
-			p.engine.sound.SetSampleTicker(p.engine)
-		}
-		p.Play()
 	default:
+		break
+	}
+	p.mu.Unlock()
+
+	if stopPlayback {
+		p.engine.SetPlaying(false)
+	}
+	if startReq != nil {
+		go p.startAsync(*startReq)
+	}
+}
+
+type ahxAsyncStartRequest struct {
+	gen       uint64
+	data      []byte
+	subsong   int
+	forceLoop bool
+}
+
+func (p *AHXPlayer) startAsync(req ahxAsyncStartRequest) {
+	song, err := ParseAHX(req.data)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if req.gen != p.playGen {
 		return
 	}
+	if err != nil {
+		p.playErr = true
+		p.playBusy = false
+		return
+	}
+
+	p.engine.SetPlaying(false)
+	if err := p.engine.LoadSong(song, req.subsong); err != nil {
+		p.playErr = true
+		p.playBusy = false
+		return
+	}
+	p.engine.SetLoop(req.forceLoop)
+	if p.engine.sound != nil {
+		p.engine.sound.SetSampleTicker(p.engine)
+	}
+	p.engine.SetPlaying(true)
 }
 
 // HandlePlayRead handles reads from AHX_PLAY_* registers
 func (p *AHXPlayer) HandlePlayRead(addr uint32) uint32 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	switch addr {
 	case AHX_PLUS_CTRL:
 		if p.engine.AHXPlusEnabled() {

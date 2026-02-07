@@ -53,6 +53,7 @@ type TEDPlayer struct {
 	playBusy      bool
 	playErr       bool
 	forceLoop     bool
+	playGen       uint64
 
 	mu sync.Mutex
 
@@ -164,6 +165,10 @@ func (p *TEDPlayer) Play() {
 
 // Stop stops playback
 func (p *TEDPlayer) Stop() {
+	p.mu.Lock()
+	p.playGen++
+	p.playBusy = false
+	p.mu.Unlock()
 	if p.engine != nil {
 		p.engine.StopPlayback()
 	}
@@ -216,6 +221,10 @@ func (p *TEDPlayer) AttachBus(bus MemoryBus) {
 
 // HandlePlayWrite handles writes to TED_PLAY_* registers
 func (p *TEDPlayer) HandlePlayWrite(addr uint32, value uint32) {
+	var stopPlayback bool
+	var startReq *tedAsyncStartRequest
+
+	p.mu.Lock()
 	switch addr {
 	case TED_PLAY_PTR:
 		p.playPtrStaged = value
@@ -235,15 +244,17 @@ func (p *TEDPlayer) HandlePlayWrite(addr uint32, value uint32) {
 		p.playLenStaged = writeUint32Byte(p.playLenStaged, value, 3)
 	case TED_PLAY_CTRL:
 		if value&0x2 != 0 {
-			p.Stop()
+			p.playGen++
+			p.playBusy = false
 			p.playErr = false
-			return
+			stopPlayback = true
+			break
 		}
 		if value&0x1 == 0 {
-			return
+			break
 		}
 		if p.playBusy {
-			return
+			break
 		}
 		p.playPtr = p.playPtrStaged
 		p.playLen = p.playLenStaged
@@ -251,42 +262,90 @@ func (p *TEDPlayer) HandlePlayWrite(addr uint32, value uint32) {
 		p.playErr = false
 		if p.bus == nil {
 			p.playErr = true
-			return
+			break
 		}
 		if p.playLen == 0 {
 			p.playErr = true
-			return
+			break
 		}
-		p.playBusy = true
 		// Read directly from bus memory
 		mem := p.bus.GetMemory()
 		if int(p.playPtr)+int(p.playLen) > len(mem) {
 			p.playErr = true
-			p.playBusy = false
-			return
+			break
 		}
 		data := make([]byte, p.playLen)
 		copy(data, mem[p.playPtr:p.playPtr+p.playLen])
-		if err := p.LoadData(data); err != nil {
-			p.playErr = true
-			p.playBusy = false
-			return
+		p.playBusy = true
+		p.playGen++
+		startReq = &tedAsyncStartRequest{
+			gen:       p.playGen,
+			data:      data,
+			forceLoop: p.forceLoop,
 		}
-		if p.forceLoop && p.engine != nil {
+	default:
+		break
+	}
+	p.mu.Unlock()
+
+	if stopPlayback && p.engine != nil {
+		p.engine.StopPlayback()
+	}
+	if startReq != nil {
+		go p.startAsync(*startReq)
+	}
+}
+
+type tedAsyncStartRequest struct {
+	gen       uint64
+	data      []byte
+	forceLoop bool
+}
+
+func (p *TEDPlayer) startAsync(req tedAsyncStartRequest) {
+	meta, events, totalSamples, clockHz, loop, loopSample, instrCount, execNanos, err := renderTEDWithLimit(
+		req.data, p.engine.sampleRate, 0,
+	)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if req.gen != p.playGen {
+		return
+	}
+
+	if err != nil {
+		p.playErr = true
+		p.playBusy = false
+		return
+	}
+
+	p.metadata = meta
+	p.clockHz = clockHz
+	p.loop = loop
+	p.renderInstructions = instrCount
+	p.renderCPU = "6502"
+	p.renderExecNanos = execNanos
+
+	if p.engine != nil {
+		p.engine.StopPlayback()
+		p.engine.SetClockHz(clockHz)
+		p.engine.SetEvents(events, totalSamples, loop, loopSample)
+		if req.forceLoop {
 			p.engine.SetForceLoop(true)
 		}
-		// Register as sample ticker when starting playback via I/O
-		if p.engine != nil && p.engine.sound != nil {
+		if p.engine.sound != nil {
 			p.engine.sound.SetSampleTicker(p.engine)
 		}
-		p.Play()
-	default:
-		return
+		p.engine.SetPlaying(true)
 	}
 }
 
 // HandlePlayRead handles reads from TED_PLAY_* registers
 func (p *TEDPlayer) HandlePlayRead(addr uint32) uint32 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	switch addr {
 	case TED_PLAY_PTR:
 		return p.playPtrStaged
