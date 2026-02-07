@@ -11,6 +11,9 @@ Assembly uses 68K-flavored lowercase syntax with `.b`/`.w`/`.l`/`.q` size suffix
 
 ## Register Conventions
 
+The following calling/register rules are **project ABI conventions** used by IE64
+examples. They are not enforced by CPU hardware instructions.
+
 | Register | Purpose |
 |----------|---------|
 | `r0` | Hardwired zero (reads always return 0, writes are discarded) |
@@ -160,6 +163,14 @@ Notes:
 The IE64 uses `jsr label` (jump to subroutine) which pushes the return address onto
 the stack, and `rts` (return from subroutine) which pops it. Callee-saved registers
 must be preserved by the called function.
+
+> **Conventions vs ISA guarantees**
+> - **ISA-guaranteed behavior**: `jsr`/`rts`/`push`/`pop` stack mechanics, register
+>   widths, and branch semantics (as defined in `IE64_ISA.md`).
+> - **Project ABI convention (this cookbook)**: which registers are caller-saved vs
+>   callee-saved, argument register assignments, and return-value registers.
+> - You may define a different ABI for a project, but all code in that project must
+>   follow it consistently.
 
 ### Leaf function (no nested calls, no callee-saved registers used)
 
@@ -372,6 +383,10 @@ VRAM_BASE       equ     $A0000
 Notes:
 - `la rd, addr` is a pseudo-op that expands to `lea rd, addr(r0)`. Since `r0` is
   always zero, this loads the absolute address into the register.
+- `la` is lowered textually to `lea rd, expr(r0)`. Address expressions containing
+  inner parentheses can be parsed as addressing syntax and fail to assemble
+  (for example `la r1, BASE+(1*4)`). Prefer flattened expressions like `BASE+4`, or
+  compute complex address math in separate instructions.
 - I/O registers are typically 32-bit (`.l`), while VRAM pixels are byte (`.b`) in
   mode 13h.
 - There is no "volatile" keyword; the load/store instructions access the bus
@@ -692,11 +707,11 @@ the stack.
 ; Returns:   r8 = dot product (sum of a[i]*b[i])
 ;
 ; Local variables on stack:
-;   sp+0  : saved r16 (array a pointer)
-;   sp+8  : saved r17 (array b pointer)
+;   sp+0  : saved r20 (loop index)
+;   sp+8  : saved r19 (accumulator)
 ;   sp+16 : saved r18 (count)
-;   sp+24 : saved r19 (accumulator)
-;   sp+32 : saved r20 (loop index)
+;   sp+24 : saved r17 (array b pointer)
+;   sp+32 : saved r16 (array a pointer)
 
 dot_product:
                 ; -- prologue: save callee-saved registers --
