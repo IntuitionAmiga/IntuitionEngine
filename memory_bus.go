@@ -1398,15 +1398,19 @@ func (bus *SystemBus) write64Slow(addr uint32, value uint64) {
 
 // write32Half writes a 32-bit half for split 64-bit operations.
 // For native-64 regions, performs read-modify-write: reads the current 64-bit
-// value from backing memory, replaces the correct half, then calls onWrite64.
+// value from the device (onRead64) to preserve the untouched half, replaces the
+// target half, then calls onWrite64. Falls back to backing memory only if no
+// onRead64 handler is available.
 func (bus *SystemBus) write32Half(addr uint32, value uint32) {
 	// Check for 64-bit region
 	region64 := bus.findIORegion64(addr)
 	if region64 != nil && region64.onWrite64 != nil {
 		base := addr &^ 7 // align down to 8-byte boundary
-		// Read current 64-bit value from backing memory
+		// Read current 64-bit value — prefer device state over backing memory
 		var current uint64
-		if base+8 <= uint32(len(bus.memory)) {
+		if region64.onRead64 != nil {
+			current = region64.onRead64(base)
+		} else if base+8 <= uint32(len(bus.memory)) {
 			current = *(*uint64)(unsafe.Pointer(&bus.memory[base]))
 		}
 		// Replace the correct 32-bit half
@@ -1453,6 +1457,10 @@ func (bus *SystemBus) write32Half(addr uint32, value uint32) {
 func (bus *SystemBus) Read64WithFault(addr uint32) (uint64, bool) {
 	effectiveAddr := addr
 	if addr >= 0xFFFF0000 {
+		// Reject addresses where raw addr+7 would overflow uint32
+		if uint64(addr)+8 > 0x100000000 {
+			return 0, false
+		}
 		effectiveAddr = addr & 0x0000FFFF
 	}
 
@@ -1484,6 +1492,10 @@ func (bus *SystemBus) Read64WithFault(addr uint32) (uint64, bool) {
 func (bus *SystemBus) Write64WithFault(addr uint32, value uint64) bool {
 	effectiveAddr := addr
 	if addr >= 0xFFFF0000 {
+		// Reject addresses where raw addr+7 would overflow uint32
+		if uint64(addr)+8 > 0x100000000 {
+			return false
+		}
 		effectiveAddr = addr & 0x0000FFFF
 	}
 
