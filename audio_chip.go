@@ -54,7 +54,6 @@ import (
 	"log"
 	"math"
 	"math/bits"
-	"runtime"
 	"sync"
 	"sync/atomic"
 )
@@ -849,47 +848,6 @@ type CombFilter struct {
 	_pad   [COMBFILTER_PAD_SIZE]byte // Align to 8-byte boundary
 }
 
-// sampleRingBuffer is a lock-free single-producer single-consumer ring buffer.
-// The producer goroutine calls Write(), the OTO callback calls Read().
-type sampleRingBuffer struct {
-	buf      []float32
-	mask     int64        // capacity - 1 (power of 2 for fast modulo)
-	writePos atomic.Int64 // Producer increments
-	readPos  atomic.Int64 // Consumer increments
-}
-
-func newSampleRingBuffer(capacity int) *sampleRingBuffer {
-	// Round up to next power of 2
-	cap2 := 1
-	for cap2 < capacity {
-		cap2 <<= 1
-	}
-	return &sampleRingBuffer{
-		buf:  make([]float32, cap2),
-		mask: int64(cap2 - 1),
-	}
-}
-
-func (r *sampleRingBuffer) Write(sample float32) bool {
-	wp := r.writePos.Load()
-	if wp-r.readPos.Load() >= r.mask+1 {
-		return false // full
-	}
-	r.buf[wp&r.mask] = sample
-	r.writePos.Store(wp + 1)
-	return true
-}
-
-func (r *sampleRingBuffer) Read() (float32, bool) {
-	rp := r.readPos.Load()
-	if rp >= r.writePos.Load() {
-		return 0, false // empty
-	}
-	sample := r.buf[rp&r.mask]
-	r.readPos.Store(rp + 1)
-	return sample, true
-}
-
 type SoundChip struct {
 	// Cache line 1 - Hot path DSP state (64 bytes)
 	filterLP         float32                   // Current low-pass filter state
@@ -922,12 +880,6 @@ type SoundChip struct {
 	allpassBuf  [NUM_ALLPASS_FILTERS][]float32 // Allpass diffusion filters
 	preDelayBuf []float32                      // 8ms pre-delay buffer
 	output      AudioOutput                    // Audio backend interface
-
-	// Ring buffer for pre-generated samples (lock-free SPSC)
-	ringBuf     *sampleRingBuffer // Allocated once in NewSoundChip, never nil
-	ringMu      sync.Mutex        // Serializes Start/Stop lifecycle
-	ringDone    chan struct{}     // Created per Start(), closed by producer on exit
-	ringRunning atomic.Bool       // Guards producer lifecycle
 }
 
 func NewSoundChip(backend int) (*SoundChip, error) {
@@ -946,7 +898,6 @@ func NewSoundChip(backend int) (*SoundChip, error) {
 		preDelayBuf: make([]float32, PRE_DELAY_MS*MS_TO_SAMPLES),
 	}
 	chip.sampleTicker.Store(&sampleTickerHolder{})
-	chip.ringBuf = newSampleRingBuffer(1024)
 
 	// Initialise channels
 	waveTypes := []int{WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE, WAVE_NOISE}
@@ -2986,82 +2937,22 @@ func (chip *SoundChip) SetAHXPlusEnabled(enabled bool) {
 	}
 }
 
-// ReadSampleFromRing is called by the OTO callback to read pre-generated
-// samples from the ring buffer. Returns silence on underrun.
-func (chip *SoundChip) ReadSampleFromRing() float32 {
-	sample, ok := chip.ringBuf.Read()
-	if !ok {
-		return 0
-	}
-	return sample
-}
-
-// ringProducerLoop is the producer goroutine that pre-generates samples
-// into the ring buffer. It is the exclusive owner of ReadSample().
-// done is goroutine-local to avoid close-of-closed races on chip.ringDone.
-func (chip *SoundChip) ringProducerLoop(done chan struct{}) {
-	defer close(done)
-	for chip.ringRunning.Load() {
-		if !chip.enabled.Load() {
-			runtime.Gosched()
-			continue
-		}
-		if chip.ringBuf.Write(chip.ReadSample()) {
-			continue
-		}
-		runtime.Gosched()
-	}
-}
-
 func (chip *SoundChip) Start() {
-	chip.ringMu.Lock()
-	defer chip.ringMu.Unlock()
-
-	if chip.ringRunning.Load() {
-		return // already running
-	}
-
-	// Reset ring positions to drain stale samples
-	chip.ringBuf.writePos.Store(0)
-	chip.ringBuf.readPos.Store(0)
-
-	// Create fresh done channel and publish before setting ringRunning
-	done := make(chan struct{})
-	chip.ringDone = done
-	chip.enabled.Store(true)
-	chip.ringRunning.Store(true)
-	go chip.ringProducerLoop(done)
-
-	// Start output after producer — consumer will find valid ring buffer
 	chip.mu.Lock()
+	defer chip.mu.Unlock()
+	chip.enabled.Store(true)
 	chip.output.Start()
-	chip.mu.Unlock()
 }
 
 func (chip *SoundChip) Stop() {
-	chip.ringMu.Lock()
-	if !chip.ringRunning.Swap(false) {
-		chip.ringMu.Unlock()
-		// Not running — still clear enabled and tear down output
-		chip.enabled.Store(false)
-		chip.mu.Lock()
-		defer chip.mu.Unlock()
-		if chip.output != nil {
-			chip.output.Stop()
-			chip.output.Close()
-		}
-		return
-	}
-	chip.enabled.Store(false)
-	done := chip.ringDone
-	chip.ringMu.Unlock()
-
-	// Wait outside lock — producer may need chip.mu during final ReadSample
-	<-done
-
-	// Now safe to tear down output
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
+
+	if !chip.enabled.Load() {
+		return
+	}
+
+	chip.enabled.Store(false)
 	if chip.output != nil {
 		chip.output.Stop()
 		chip.output.Close()

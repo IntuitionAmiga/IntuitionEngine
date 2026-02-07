@@ -86,7 +86,7 @@ func (op *OtoPlayer) Read(p []byte) (n int, err error) {
 	samples := op.sampleBuf[:numSamples]
 
 	for i := 0; i < numSamples; i++ {
-		samples[i] = chip.ReadSampleFromRing()
+		samples[i] = chip.ReadSample()
 	}
 
 	copy(p, (*[1 << 30]byte)(unsafe.Pointer(&samples[0]))[:len(p)])
