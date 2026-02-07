@@ -1004,6 +1004,20 @@ func (cpu *M68KCPU) decodeGroup2(opcode uint16) {
 		return
 	}
 
+	// Fast path: MOVE.L An,Dm
+	if srcMode == M68K_AM_AR && destMode == 0 {
+		value := cpu.AddrRegs[srcReg]
+		cpu.DataRegs[destReg] = value
+		cpu.SR &= ^uint16(M68K_SR_N | M68K_SR_Z | M68K_SR_V | M68K_SR_C)
+		if value == 0 {
+			cpu.SR |= M68K_SR_Z
+		} else if (value & 0x80000000) != 0 {
+			cpu.SR |= M68K_SR_N
+		}
+		cpu.cycleCounter += M68K_CYCLE_REG
+		return
+	}
+
 	// Fast path: MOVE.L #imm,Dn
 	if srcMode == 7 && srcReg == 4 && destMode == 0 {
 		value := cpu.Fetch32()
@@ -1044,6 +1058,77 @@ func (cpu *M68KCPU) decodeGroup2(opcode uint16) {
 		}
 		cpu.cycleCounter += M68K_CYCLE_REG + M68K_CYCLE_MEM_WRITE
 		return
+	}
+
+	// Fast path: MOVE.L with brief-format indexed source
+	if srcMode == M68K_AM_AR_INDEX {
+		extWord := cpu.Fetch16()
+
+		if (extWord & M68K_EXT_FULL_FORMAT) == 0 { // Brief format
+			// Decode index register
+			idxRegNum := (extWord >> 12) & 0x7
+			var idxValue uint32
+			if (extWord & 0x8000) != 0 { // Address register
+				idxValue = cpu.AddrRegs[idxRegNum]
+			} else { // Data register
+				idxValue = cpu.DataRegs[idxRegNum]
+			}
+			// Word index: sign-extend to long
+			if (extWord & 0x0800) == 0 {
+				idxValue = uint32(int32(int16(idxValue & 0xFFFF)))
+			}
+			// Apply scale
+			scale := (extWord >> M68K_EXT_SCALE_START_BIT) & 0x3
+			idxValue <<= scale
+
+			disp8 := int8(extWord & 0xFF)
+			addr := cpu.AddrRegs[srcReg] + idxValue + uint32(int32(disp8))
+			value := cpu.Read32(addr)
+
+			// Inline destination handling for common modes
+			switch destMode {
+			case 0: // MOVE.L (An,Xn),Dm
+				cpu.DataRegs[destReg] = value
+				cpu.SR &= ^uint16(M68K_SR_N | M68K_SR_Z | M68K_SR_V | M68K_SR_C)
+				if value == 0 {
+					cpu.SR |= M68K_SR_Z
+				} else if (value & 0x80000000) != 0 {
+					cpu.SR |= M68K_SR_N
+				}
+				cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_EA_IX + M68K_CYCLE_REG
+				return
+
+			case M68K_AM_AR: // MOVEA.L (An,Xn),Am — no flags
+				cpu.AddrRegs[destReg] = value
+				cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_EA_IX
+				return
+
+			case M68K_AM_AR_IND: // MOVE.L (An,Xn),(Am)
+				cpu.Write32(cpu.AddrRegs[destReg], value)
+				cpu.SR &= ^uint16(M68K_SR_N | M68K_SR_Z | M68K_SR_V | M68K_SR_C)
+				if value == 0 {
+					cpu.SR |= M68K_SR_Z
+				} else if (value & 0x80000000) != 0 {
+					cpu.SR |= M68K_SR_N
+				}
+				cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_EA_IX + M68K_CYCLE_MEM_WRITE
+				return
+
+			case M68K_AM_AR_POST: // MOVE.L (An,Xn),(Am)+
+				cpu.Write32(cpu.AddrRegs[destReg], value)
+				cpu.AddrRegs[destReg] += M68K_LONG_SIZE
+				cpu.SR &= ^uint16(M68K_SR_N | M68K_SR_Z | M68K_SR_V | M68K_SR_C)
+				if value == 0 {
+					cpu.SR |= M68K_SR_Z
+				} else if (value & 0x80000000) != 0 {
+					cpu.SR |= M68K_SR_N
+				}
+				cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_EA_IX + M68K_CYCLE_MEM_WRITE
+				return
+			}
+		}
+		// Full format or unhandled dest: rewind extension word fetch, use slow path
+		cpu.PC -= M68K_WORD_SIZE
 	}
 
 	cpu.ExecMove(srcMode, srcReg, destMode, destReg, 2) // size=2 for long
@@ -1507,7 +1592,39 @@ func (cpu *M68KCPU) decodeGroup6(opcode uint16) {
 		return
 	}
 
-	cpu.ExecBRA(opcode) // Slow path: BRA, BSR, word/long displacement
+	// Fast path: Bcc.W (word displacement, not BRA/BSR)
+	if displacement == 0 && condition >= 2 {
+		effectiveDisp := int32(int16(cpu.Fetch16()))
+		var take bool
+		switch condition {
+		case 6: // BNE
+			take = (cpu.SR & M68K_SR_Z) == 0
+		case 7: // BEQ
+			take = (cpu.SR & M68K_SR_Z) != 0
+		case 4: // BCC
+			take = (cpu.SR & M68K_SR_C) == 0
+		case 5: // BCS
+			take = (cpu.SR & M68K_SR_C) != 0
+		case 10: // BPL
+			take = (cpu.SR & M68K_SR_N) == 0
+		case 11: // BMI
+			take = (cpu.SR & M68K_SR_N) != 0
+		default:
+			take = cpu.CheckCondition(uint8(condition))
+		}
+		if take {
+			targetPC := cpu.PC - M68K_WORD_SIZE + uint32(effectiveDisp)
+			if targetPC >= M68K_MEMORY_SIZE-M68K_WORD_SIZE {
+				cpu.running.Store(false)
+				return
+			}
+			cpu.PC = targetPC
+			cpu.prefetchSize = 0
+		}
+		return
+	}
+
+	cpu.ExecBRA(opcode) // Slow path: BRA, BSR, long displacement
 }
 
 // decodeGroup7: 0x7xxx - MOVEQ (fully inlined — always LONG, no size switch needed)
