@@ -1398,19 +1398,21 @@ func (bus *SystemBus) write64Slow(addr uint32, value uint64) {
 
 // write32Half writes a 32-bit half for split 64-bit operations.
 // For native-64 regions, performs read-modify-write: reads the current 64-bit
-// value from the device (onRead64) to preserve the untouched half, replaces the
-// target half, then calls onWrite64. Falls back to backing memory only if no
-// onRead64 handler is available.
+// value from backing memory to preserve the untouched half, replaces the target
+// half, then calls onWrite64. Backing memory is used (not onRead64) because
+// device read callbacks may have side effects (status clear-on-read, FIFO pop).
+// Backing memory stays in sync because write64Slow updates it after every write,
+// and the two write32Half calls in a split sequence execute in low-then-high
+// order, so the second call sees the first half's update.
 func (bus *SystemBus) write32Half(addr uint32, value uint32) {
 	// Check for 64-bit region
 	region64 := bus.findIORegion64(addr)
 	if region64 != nil && region64.onWrite64 != nil {
 		base := addr &^ 7 // align down to 8-byte boundary
-		// Read current 64-bit value — prefer device state over backing memory
+		// Read current 64-bit value from backing memory (not device — avoids
+		// side effects from onRead64 such as clear-on-read or FIFO pop)
 		var current uint64
-		if region64.onRead64 != nil {
-			current = region64.onRead64(base)
-		} else if base+8 <= uint32(len(bus.memory)) {
+		if base+8 <= uint32(len(bus.memory)) {
 			current = *(*uint64)(unsafe.Pointer(&bus.memory[base]))
 		}
 		// Replace the correct 32-bit half
