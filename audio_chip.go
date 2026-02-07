@@ -916,6 +916,9 @@ func NewSoundChip(backend int) (*SoundChip, error) {
 			decayTime:           DEFAULT_DECAY_TIME,
 			sustainLevel:        DEFAULT_SUSTAIN,
 			releaseTime:         DEFAULT_RELEASE_TIME,
+			attackRecip:         1.0 / float32(DEFAULT_ATTACK_TIME),
+			decayRecip:          0, // DEFAULT_DECAY_TIME is 0
+			releaseRecip:        1.0 / float32(DEFAULT_RELEASE_TIME),
 			envelopePhase:       ENV_ATTACK,
 			noiseSR:             NOISE_LFSR_SEED, // Initial seed for noise
 			dutyCycle:           DEFAULT_DUTY_CYCLE,
@@ -1096,6 +1099,9 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 			ch.releaseTime = max(int(value*MS_TO_SAMPLES), MIN_ENV_TIME)
 			if ch.releaseTime > 0 {
 				ch.releaseRecip = 1.0 / float32(ch.releaseTime)
+				if ch.envelopePhase == ENV_RELEASE {
+					ch.releaseDecay = float32(math.Pow(0.01, 1.0/float64(ch.releaseTime)))
+				}
 			} else {
 				ch.releaseRecip = 0
 			}
@@ -1225,6 +1231,9 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 		ch.releaseTime = max(int(value*MS_TO_SAMPLES), MIN_ENV_TIME)
 		if ch.releaseTime > 0 {
 			ch.releaseRecip = 1.0 / float32(ch.releaseTime)
+			if ch.envelopePhase == ENV_RELEASE {
+				ch.releaseDecay = float32(math.Pow(0.01, 1.0/float64(ch.releaseTime)))
+			}
 		} else {
 			ch.releaseRecip = 0
 		}
@@ -2545,6 +2554,25 @@ func (chip *SoundChip) SetChannelADSR(ch int, attackMs, decayMs, releaseMs, sust
 	channel.decayTime = max(int(decayMs*MS_TO_SAMPLES), MIN_ENV_TIME)
 	channel.releaseTime = max(int(releaseMs*MS_TO_SAMPLES), MIN_ENV_TIME)
 	channel.sustainLevel = sustainLevel
+
+	if channel.attackTime > 0 {
+		channel.attackRecip = 1.0 / float32(channel.attackTime)
+	} else {
+		channel.attackRecip = 0
+	}
+	if channel.decayTime > 0 {
+		channel.decayRecip = 1.0 / float32(channel.decayTime)
+	} else {
+		channel.decayRecip = 0
+	}
+	if channel.releaseTime > 0 {
+		channel.releaseRecip = 1.0 / float32(channel.releaseTime)
+		if channel.envelopePhase == ENV_RELEASE {
+			channel.releaseDecay = float32(math.Pow(0.01, 1.0/float64(channel.releaseTime)))
+		}
+	} else {
+		channel.releaseRecip = 0
+	}
 }
 
 // SetChannelSIDTest controls the SID test-bit behavior per channel.
