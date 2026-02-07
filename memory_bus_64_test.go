@@ -574,7 +574,7 @@ func TestBusSplitWrite_Native64_NoReadSideEffect(t *testing.T) {
 	bus.SetLegacyMMIO64Policy(MMIO64PolicySplit)
 
 	readCalled := false
-	var lastWriteVal uint64
+	writeCount := 0
 
 	// Native 64-bit region at 0x7000-0x70FF
 	bus.MapIO64(0x7000, 0x70FF,
@@ -583,7 +583,7 @@ func TestBusSplitWrite_Native64_NoReadSideEffect(t *testing.T) {
 			return 0xDEADBEEFCAFEBABE
 		},
 		func(addr uint32, value uint64) {
-			lastWriteVal = value
+			writeCount++
 		},
 	)
 
@@ -601,9 +601,9 @@ func TestBusSplitWrite_Native64_NoReadSideEffect(t *testing.T) {
 		t.Error("write32Half must not call onRead64 — device reads may have side effects")
 	}
 
-	// The write handler should still have been called
-	if lastWriteVal == 0 {
-		t.Error("onWrite64 was not called for the native64 half")
+	// The write handler should have been called exactly once (for the native64 half)
+	if writeCount != 1 {
+		t.Errorf("onWrite64 call count = %d, want 1", writeCount)
 	}
 }
 
