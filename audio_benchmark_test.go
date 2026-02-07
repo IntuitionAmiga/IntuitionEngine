@@ -31,8 +31,8 @@ func createBenchmarkChip(t testing.TB) *SoundChip {
 		filterBP:    DEFAULT_FILTER_BP,
 		filterHP:    DEFAULT_FILTER_HP,
 		preDelayBuf: make([]float32, PRE_DELAY_MS*MS_TO_SAMPLES),
-		enabled:     true,
 	}
+	chip.enabled.Store(true)
 	chip.sampleTicker.Store(&sampleTickerHolder{})
 
 	// Initialize channels

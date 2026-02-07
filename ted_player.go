@@ -54,7 +54,7 @@ type TEDPlayer struct {
 	playErr       bool
 	forceLoop     bool
 
-	mutex sync.RWMutex
+	mu sync.Mutex
 }
 
 // NewTEDPlayer creates a new TED player
@@ -73,8 +73,8 @@ func (p *TEDPlayer) Load(path string) error {
 
 // LoadData loads a TED file from raw data
 func (p *TEDPlayer) LoadData(data []byte) error {
-	p.mutex.Lock()
-	defer p.mutex.Unlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
 	if p.engine != nil {
 		p.engine.StopPlayback()
@@ -172,8 +172,8 @@ func (p *TEDPlayer) IsPlaying() bool {
 
 // Metadata returns the loaded file's metadata
 func (p *TEDPlayer) Metadata() TEDPlayerMetadata {
-	p.mutex.RLock()
-	defer p.mutex.RUnlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	return p.metadata
 }
 

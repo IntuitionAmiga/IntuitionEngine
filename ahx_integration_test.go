@@ -218,8 +218,8 @@ func TestAHXIntegration_FullPlayback(t *testing.T) {
 
 	engine.replayer.InitSong(song)
 	engine.replayer.InitSubsong(0)
-	engine.enabled = true
-	engine.playing = true
+	engine.enabled.Store(true)
+	engine.playing.Store(true)
 	engine.replayer.Playing = true
 	engine.samplesPerTick = 44100 / 50
 

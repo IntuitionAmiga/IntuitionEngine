@@ -26,6 +26,7 @@ import (
 	"math"
 	"sort"
 	"sync"
+	"sync/atomic"
 )
 
 // SIDEngine emulates the SID sound chip via register mapping to SoundChip
@@ -56,7 +57,7 @@ type SIDEngine struct {
 	voiceGate [3]bool
 	voiceWave [3]bool
 
-	enabled        bool
+	enabled        atomic.Bool
 	sidPlusEnabled bool
 	channelsInit   bool
 	model          int  // SID_MODEL_6581 or SID_MODEL_8580
@@ -575,7 +576,7 @@ func (e *SIDEngine) Reset() {
 		e.voiceGate[i] = false
 	}
 
-	e.enabled = false
+	e.enabled.Store(false)
 	e.channelsInit = false
 	e.playing = false
 	e.events = nil
@@ -602,7 +603,7 @@ func (e *SIDEngine) SetEvents(events []SIDEvent, totalSamples uint64, loop bool,
 	e.loopEventIndex = sort.Search(len(e.events), func(i int) bool {
 		return e.events[i].Sample >= loopSample
 	})
-	e.enabled = true
+	e.enabled.Store(true)
 }
 
 // EnableDebugLogging logs timing and ADSR/gate changes for the first N seconds.
@@ -668,12 +669,12 @@ func (e *SIDEngine) StopPlayback() {
 }
 
 func (e *SIDEngine) TickSample() {
-	e.mutex.Lock()
-	defer e.mutex.Unlock()
-
-	if !e.enabled {
+	if !e.enabled.Load() {
 		return
 	}
+
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
 
 	if e.playing {
 		for e.eventIndex < len(e.events) && e.events[e.eventIndex].Sample == e.currentSample {
@@ -720,7 +721,7 @@ func (e *SIDEngine) writeRegisterLocked(reg uint8, value uint8) {
 		e.debugRegisterWrite(reg, value)
 	}
 
-	e.enabled = true
+	e.enabled.Store(true)
 	e.regs[reg] = value
 
 	// Handle SID+ control register

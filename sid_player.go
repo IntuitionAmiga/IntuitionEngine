@@ -36,7 +36,7 @@ type SIDPlayer struct {
 	forceLoop     bool
 	subsong       uint8
 
-	mutex sync.RWMutex
+	mu sync.Mutex
 }
 
 func NewSIDPlayer(engine *SIDEngine) *SIDPlayer {
@@ -60,8 +60,8 @@ func (p *SIDPlayer) LoadData(data []byte) error {
 }
 
 func (p *SIDPlayer) LoadDataWithOptions(data []byte, subsong int, forcePAL bool, forceNTSC bool) error {
-	p.mutex.Lock()
-	defer p.mutex.Unlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
 	p.engine.StopPlayback()
 
@@ -93,8 +93,8 @@ func (p *SIDPlayer) IsPlaying() bool {
 }
 
 func (p *SIDPlayer) Metadata() SIDMetadata {
-	p.mutex.RLock()
-	defer p.mutex.RUnlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	return p.metadata
 }
 

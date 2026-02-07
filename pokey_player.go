@@ -26,7 +26,7 @@ type POKEYPlayer struct {
 	playErr       bool
 	forceLoop     bool
 
-	mutex sync.RWMutex
+	mu sync.Mutex
 }
 
 // NewPOKEYPlayer creates a new POKEY player
@@ -52,8 +52,8 @@ func (p *POKEYPlayer) LoadData(data []byte) error {
 
 // LoadDataWithSubsong loads SAP data with a specific subsong
 func (p *POKEYPlayer) LoadDataWithSubsong(data []byte, subsong int) error {
-	p.mutex.Lock()
-	defer p.mutex.Unlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
 	// Stop any current playback
 	p.engine.StopPlayback()
@@ -90,8 +90,8 @@ func (p *POKEYPlayer) IsPlaying() bool {
 
 // Metadata returns the SAP file metadata
 func (p *POKEYPlayer) Metadata() SAPMetadata {
-	p.mutex.RLock()
-	defer p.mutex.RUnlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	return p.metadata
 }
 

@@ -22,6 +22,7 @@ package main
 import (
 	"math"
 	"sync"
+	"sync/atomic"
 )
 
 // POKEYEngine emulates the POKEY sound chip via register mapping to SoundChip
@@ -47,7 +48,7 @@ type POKEYEngine struct {
 	eventIndex    int
 	currentSample uint64
 	totalSamples  uint64
-	playing       bool
+	playing       atomic.Bool
 	loop          bool
 	loopSample    uint64
 	forceLoop     bool
@@ -441,14 +442,14 @@ func (e *POKEYEngine) SetEvents(events []SAPPOKEYEvent, totalSamples uint64, loo
 	e.currentSample = 0
 	e.loop = loop
 	e.loopSample = loopSample
-	e.playing = false
+	e.playing.Store(false)
 }
 
 // SetPlaying starts or stops event-based playback
 func (e *POKEYEngine) SetPlaying(playing bool) {
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
-	e.playing = playing
+	e.playing.Store(playing)
 	if playing {
 		e.ensureChannelsInitialized()
 	}
@@ -456,9 +457,7 @@ func (e *POKEYEngine) SetPlaying(playing bool) {
 
 // IsPlaying returns true if event-based playback is active
 func (e *POKEYEngine) IsPlaying() bool {
-	e.mutex.Lock()
-	defer e.mutex.Unlock()
-	return e.playing
+	return e.playing.Load()
 }
 
 // SetForceLoop enables looping from the start of the track
@@ -476,7 +475,7 @@ func (e *POKEYEngine) SetForceLoop(enable bool) {
 func (e *POKEYEngine) StopPlayback() {
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
-	e.playing = false
+	e.playing.Store(false)
 	e.events = nil
 	e.eventIndex = 0
 	e.currentSample = 0
@@ -485,10 +484,14 @@ func (e *POKEYEngine) StopPlayback() {
 // TickSample processes one sample of event-based playback
 // Implements SampleTicker interface for SoundChip integration
 func (e *POKEYEngine) TickSample() {
+	if !e.playing.Load() {
+		return
+	}
+
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
 
-	if !e.playing || len(e.events) == 0 {
+	if len(e.events) == 0 {
 		return
 	}
 
@@ -513,7 +516,7 @@ func (e *POKEYEngine) TickSample() {
 				e.eventIndex++
 			}
 		} else {
-			e.playing = false
+			e.playing.Store(false)
 		}
 	}
 }

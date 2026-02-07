@@ -26,6 +26,7 @@ import (
 	"math"
 	"sort"
 	"sync"
+	"sync/atomic"
 )
 
 // TEDEvent represents a single TED register write captured during playback.
@@ -54,7 +55,7 @@ type TEDEngine struct {
 	loopEventIndex int
 	playing        bool
 
-	enabled        bool
+	enabled        atomic.Bool
 	tedPlusEnabled bool
 	channelsInit   bool
 
@@ -143,7 +144,7 @@ func (e *TEDEngine) WriteRegister(reg uint8, value uint8) {
 		return
 	}
 
-	e.enabled = true
+	e.enabled.Store(true)
 	e.regs[reg] = value
 
 	// Handle TED+ control register
@@ -364,7 +365,7 @@ func (e *TEDEngine) Reset() {
 		e.regs[i] = 0
 	}
 
-	e.enabled = false
+	e.enabled.Store(false)
 	e.channelsInit = false
 
 	// Reset playback state
@@ -396,7 +397,7 @@ func (e *TEDEngine) SetEvents(events []TEDEvent, totalSamples uint64, loop bool,
 	})
 
 	e.playing = true
-	e.enabled = true
+	e.enabled.Store(true)
 }
 
 // SetPlaying starts or stops event-based playback
@@ -405,7 +406,7 @@ func (e *TEDEngine) SetPlaying(playing bool) {
 	defer e.mutex.Unlock()
 	e.playing = playing
 	if playing {
-		e.enabled = true
+		e.enabled.Store(true)
 		e.ensureChannelsInitialized()
 	}
 }
@@ -443,12 +444,12 @@ func (e *TEDEngine) StopPlayback() {
 // TickSample processes one sample of event-based playback
 // Implements SampleTicker interface for SoundChip integration
 func (e *TEDEngine) TickSample() {
-	e.mutex.Lock()
-	defer e.mutex.Unlock()
-
-	if !e.enabled {
+	if !e.enabled.Load() {
 		return
 	}
+
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
 
 	if e.playing {
 		// Process all events at current sample position

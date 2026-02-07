@@ -4,6 +4,7 @@ package main
 
 import (
 	"sync"
+	"sync/atomic"
 )
 
 // AHXEngine manages AHX playback through the SoundChip
@@ -14,12 +15,12 @@ type AHXEngine struct {
 	channels   [4]int
 	replayer   *AHXReplayer
 
-	playing        bool
+	playing        atomic.Bool
 	currentSample  uint64
 	loop           bool
 	samplesPerTick int
 
-	enabled        bool
+	enabled        atomic.Bool
 	channelsInit   bool
 	ahxPlusEnabled bool
 }
@@ -50,7 +51,7 @@ func (e *AHXEngine) LoadData(data []byte) error {
 	baseHz := 50 * song.SpeedMultiplier
 	e.samplesPerTick = e.sampleRate / baseHz
 
-	e.enabled = true
+	e.enabled.Store(true)
 	e.currentSample = 0
 
 	return nil
@@ -60,7 +61,7 @@ func (e *AHXEngine) LoadData(data []byte) error {
 func (e *AHXEngine) SetPlaying(playing bool) {
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
-	e.playing = playing
+	e.playing.Store(playing)
 	e.replayer.Playing = playing
 	if !playing {
 		e.silenceChannels()
@@ -69,9 +70,7 @@ func (e *AHXEngine) SetPlaying(playing bool) {
 
 // IsPlaying returns current playback state
 func (e *AHXEngine) IsPlaying() bool {
-	e.mutex.Lock()
-	defer e.mutex.Unlock()
-	return e.playing
+	return e.playing.Load()
 }
 
 // SetLoop enables/disables looping
@@ -83,12 +82,12 @@ func (e *AHXEngine) SetLoop(loop bool) {
 
 // TickSample advances playback by one sample
 func (e *AHXEngine) TickSample() {
-	e.mutex.Lock()
-	defer e.mutex.Unlock()
-
-	if !e.enabled || !e.playing {
+	if !e.enabled.Load() || !e.playing.Load() {
 		return
 	}
+
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
 
 	if e.samplesPerTick > 0 && e.currentSample%uint64(e.samplesPerTick) == 0 {
 		e.replayer.PlayIRQ()
@@ -101,7 +100,7 @@ func (e *AHXEngine) TickSample() {
 		if e.loop {
 			e.replayer.SongEndReached = false
 		} else {
-			e.playing = false
+			e.playing.Store(false)
 			e.silenceChannels()
 		}
 	}
@@ -246,8 +245,8 @@ func (e *AHXEngine) silenceChannels() {
 func (e *AHXEngine) Reset() {
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
-	e.playing = false
-	e.enabled = false
+	e.playing.Store(false)
+	e.enabled.Store(false)
 	e.currentSample = 0
 	e.silenceChannels()
 }

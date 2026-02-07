@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 type PSGEngine struct {
@@ -37,7 +38,7 @@ type PSGEngine struct {
 	loopSample     uint64
 	loopEventIndex int
 	playing        bool
-	enabled        bool
+	enabled        atomic.Bool
 	psgPlusEnabled bool
 
 	channelsInit bool
@@ -126,7 +127,7 @@ func (e *PSGEngine) WriteRegister(reg uint8, value uint8) {
 		return
 	}
 
-	e.enabled = true
+	e.enabled.Store(true)
 	e.regs[reg] = value
 	if reg == 11 || reg == 12 {
 		e.updateEnvPeriodSamples()
@@ -144,7 +145,7 @@ func (e *PSGEngine) ApplyFrame(frame []uint8) error {
 	}
 	e.mutex.Lock()
 	copy(e.regs[:], frame[:PSG_REG_COUNT])
-	e.enabled = true
+	e.enabled.Store(true)
 	e.updateEnvPeriodSamples()
 	e.resetEnvelope()
 	e.syncToChip()
@@ -163,7 +164,7 @@ func (e *PSGEngine) SetEvents(events []PSGEvent, totalSamples uint64, loop bool,
 	e.loopSample = loopSample
 	e.loopEventIndex = 0
 	e.playing = true
-	e.enabled = true
+	e.enabled.Store(true)
 
 	if loop {
 		// Binary search for loop event index - O(log n) instead of O(n)
@@ -178,7 +179,7 @@ func (e *PSGEngine) SetPlaying(playing bool) {
 	defer e.mutex.Unlock()
 	e.playing = playing
 	if playing {
-		e.enabled = true
+		e.enabled.Store(true)
 	}
 }
 
@@ -211,12 +212,12 @@ func (e *PSGEngine) StopPlayback() {
 }
 
 func (e *PSGEngine) TickSample() {
-	e.mutex.Lock()
-	defer e.mutex.Unlock()
-
-	if !e.enabled {
+	if !e.enabled.Load() {
 		return
 	}
+
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
 
 	e.advanceEnvelope()
 

@@ -286,7 +286,7 @@ func TestSIDEngine_Reset(t *testing.T) {
 	if engine.regs[0] != 0 || engine.regs[4] != 0 {
 		t.Error("registers should be cleared after reset")
 	}
-	if engine.enabled {
+	if engine.enabled.Load() {
 		t.Error("engine should be disabled after reset")
 	}
 	for i, gate := range engine.voiceGate {

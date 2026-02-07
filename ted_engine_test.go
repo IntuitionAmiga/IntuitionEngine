@@ -319,7 +319,7 @@ func TestTEDReset(t *testing.T) {
 
 	// Set some state
 	engine.WriteRegister(TED_REG_FREQ1_LO, 0xFF)
-	engine.enabled = true
+	engine.enabled.Store(true)
 
 	// Reset
 	engine.Reset()
@@ -327,7 +327,7 @@ func TestTEDReset(t *testing.T) {
 	if engine.regs[TED_REG_FREQ1_LO] != 0 {
 		t.Errorf("FREQ1_LO should be 0 after reset, got 0x%02X", engine.regs[TED_REG_FREQ1_LO])
 	}
-	if engine.enabled {
+	if engine.enabled.Load() {
 		t.Error("enabled should be false after reset")
 	}
 }
