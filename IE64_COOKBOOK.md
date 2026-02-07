@@ -130,7 +130,7 @@ at-or-above-high.
 ; Branch to .not_printable if outside.
 
                 sub.q   r3, r1, #32     ; r3 = x - low
-                move.q  r4, #95         ; r4 = high - low (127 - 32)
+                move.q  r4, #94         ; r4 = high - low - 1 (127 - 32 - 1)
                 bhi     r3, r4, .not_printable ; unsigned: if r3 > 94, out of range
 
 ; Falls through here if 32 <= r1 < 127.
@@ -141,15 +141,15 @@ at-or-above-high.
 ```asm
 ; Test low <= x < high (unsigned range check in 3 instructions):
 ;   sub.q  tmp, x, #low
-;   move.q limit, #(high - low)
+;   move.q limit, #(high - low - 1)
 ;   bhi    tmp, limit, .out_of_range
 ```
 
 Notes:
 - This works because if `x < low`, the subtraction wraps to a very large unsigned
-  value that exceeds `high - low`.
-- For an inclusive upper bound (`low <= x <= high`), use `high - low + 1` as the
-  limit, or use `bhi` with limit = `high - low` (since `bhi` is strictly greater).
+  value that exceeds `high - low - 1`.
+- For an inclusive upper bound (`low <= x <= high`), use `high - low` as the limit.
+- This pattern assumes `high > low`.
 - This technique costs 3 instructions and 2 scratch registers, which is optimal for
   a no-flags architecture.
 
@@ -377,6 +377,9 @@ Notes:
 - There is no "volatile" keyword; the load/store instructions access the bus
   directly. The CPU does not cache memory reads, so repeated loads from I/O
   addresses will always read fresh values.
+- Important for `.q` (64-bit) accesses: bus operations may be split into two 32-bit
+  transactions when touching I/O regions. Treat `.q` MMIO accesses as potentially
+  non-atomic unless a device explicitly documents 64-bit atomic behavior.
 
 ---
 
@@ -445,14 +448,17 @@ Notes:
   `lsr.q r5, r3, #3` gives the quad count; `and.q r6, r3, #7` gives the remainder.
 - Overlapping copies (memmove semantics) require checking whether `dst < src` and
   copying backward if not.
+- Use the quad-word form for RAM/VRAM bulk data paths, not control MMIO registers.
+  `.q` device accesses can split into two 32-bit bus transactions and are not a safe
+  replacement for explicit `.l` register programming sequences.
 
 ---
 
-## 10. Switch/Jump Table
+## 10. Switch/Dispatch Patterns
 
-Computed branches via a table of offsets. Each entry is a relative branch offset
-from the table base. Since IE64 branches are PC-relative, the table stores
-fixed-size entries that are added to a base address and jumped to via `bra`.
+IE64 branch instructions target labels (PC-relative offsets resolved by the
+assembler). There is no native branch-to-register or call-to-register instruction,
+so direct computed-goto jump tables are not available.
 
 ### Dispatch on value 0..3
 
@@ -462,21 +468,6 @@ fixed-size entries that are added to a base address and jumped to via `bra`.
 
                 move.q  r2, #3
                 bhi     r1, r2, .default_case   ; unsigned: if r1 > 3, default
-
-                ; Each case block must be the same size for this to work.
-                ; Use 2 instructions per case (16 bytes each).
-                lsl.q   r3, r1, #4      ; r3 = r1 * 16 (offset into jump table)
-                lea     r4, jump_table(r0)
-                add.q   r4, r4, r3      ; r4 = address of case block
-                ; Load the branch target offset from the table
-                load.l  r5, (r4)        ; load 32-bit relative offset
-                lea     r6, jump_table(r0)
-                add.q   r6, r6, r5      ; compute absolute target
-                ; We cannot bra to a register, so use a different approach:
-                ; Store cases inline after the dispatch code.
-                ; Simpler pattern: cascading branches.
-
-; -- Simpler and recommended: cascading branch pattern --
 dispatch:
                 beqz    r1, case_0              ; r1 == 0?
                 move.q  r2, #1
@@ -504,44 +495,41 @@ case_3:
 .switch_end:
 ```
 
-### Address table with indirect JSR
+### Data-table dispatch (for shared handler logic)
 
-For larger switch statements, use a table of absolute addresses and compute the
-entry.
+For larger switch statements, one practical pattern is a table of constants and a
+single handler path. This keeps dispatch explicit while still using table data.
 
 ```asm
-; Dispatch on r1 (0..N) via address table.
-; Each table entry is a 64-bit address (dc.q).
+; Example: map opcode (0..3) to a mode value via table, then branch on mode.
+; r1 = opcode index
 
-                lsl.q   r2, r1, #3      ; r2 = r1 * 8 (quad-word offset)
-                la      r3, .addr_table
-                add.q   r3, r3, r2
-                load.q  r4, (r3)        ; r4 = target address
-                ; Push return address manually, then branch
-                push    r4              ; save target on stack temporarily
-                pop     r4              ; (in practice, call via jsr to the target)
-                ; Since bra only takes a label, use jsr to each handler:
-                ; Best approach for indirect calls: store in memory and jsr to a
-                ; small trampoline per entry, or use the cascading branch pattern
-                ; above for small switch counts.
+                move.q  r2, #3
+                bhi     r1, r2, .default_case
+                lsl.q   r3, r1, #3              ; index * 8 (dc.q entries)
+                la      r4, .mode_table
+                add.q   r4, r4, r3
+                load.q  r5, (r4)                ; mode value for opcode
 
-                ; For the IE64, the cascading beq pattern is idiomatic.
+                ; Branch based on loaded mode value.
+                beqz    r5, case_0
+                move.q  r6, #1
+                beq     r5, r6, case_1
+                move.q  r6, #2
+                beq     r5, r6, case_2
+                bra     case_3
 
                 align   8
-.addr_table:
-                dc.q    case_0
-                dc.q    case_1
-                dc.q    case_2
-                dc.q    case_3
+.mode_table:
+                dc.q    0, 1, 2, 3
 ```
 
 Notes:
-- The IE64 `bra` instruction takes a label (assembled as PC-relative offset), not a
-  register. True computed indirect branches are not natively supported.
+- The IE64 `bra`/`jsr` instructions take labels, not register targets.
 - For small dispatch tables (up to ~8 cases), the cascading `beq` pattern is clean
   and fast. Each test is 2 instructions (16 bytes).
-- For large dispatch (many cases), consider reorganizing as a binary search tree of
-  comparisons to reduce average branch depth.
+- For larger dispatch sets, use either a binary-search comparison tree or table data
+  feeding a shared handler path (as above).
 
 ---
 
@@ -586,7 +574,7 @@ Any constant can be decomposed as a sum/difference of powers of two. For example
 
 Notes:
 - For constants with more than 3 terms, `mulu rd, rs, #imm` is likely more compact
-  and equally fast.
+  and often simpler; benchmark in hot paths if performance is critical.
 - `lsl.q` by 0 is a no-op (effectively a move), so `N * 1` costs nothing.
 - These patterns work for both signed and unsigned values since bit-level shifts and
   adds produce the same result in two's complement.
