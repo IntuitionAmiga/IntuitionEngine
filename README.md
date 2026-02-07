@@ -17,7 +17,7 @@
 ## https://www.youtube.com/@IntuitionAmiga/
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/M4M61AHEFR)
 
-**See also: [TUTORIAL.md](TUTORIAL.md)** - Step-by-step guide to building a complete demoscene intro with all four CPU architectures.
+**See also: [TUTORIAL.md](TUTORIAL.md)** - Step-by-step guide to building a complete demoscene intro with multiple CPU architectures.
 
 # Table of Contents
 
@@ -87,59 +87,67 @@
    - 8.5 Memory and I/O Integration
    - 8.6 Interrupts
    - 8.7 Compatibility Notes
-9. [Assembly Language Reference](#9-assembly-language-reference)
-   - 9.1 Basic Program Structure
-   - 9.2 Assembler Directives
-   - 9.3 Memory Access Patterns
-   - 9.4 Stack Usage
-   - 9.5 Interrupt Handlers
-10. [Sound System](#10-sound-system)
+9. [IE64 CPU Architecture](#9-ie64-cpu-architecture)
+   - 9.1 Register Set
+   - 9.2 Instruction Format
+   - 9.3 Addressing Modes
+   - 9.4 Instruction Set
+   - 9.5 Memory and I/O Integration
+   - 9.6 Interrupt Handling
+   - 9.7 Compatibility Notes
+10. [Assembly Language Reference](#10-assembly-language-reference)
+    - 10.1 Basic Program Structure
+    - 10.2 Assembler Directives
+    - 10.3 Memory Access Patterns
+    - 10.4 Stack Usage
+    - 10.5 Interrupt Handlers
+11. [Sound System](#11-sound-system)
     - Custom Audio Chip Overview
-    - 10.1 Sound Channel Types
-    - 10.2 Modulation System
-    - 10.3 Global Effects
-    - 10.4 PSG Sound Chip (AY-3-8910/YM2149)
-    - 10.5 POKEY Sound Chip
-    - 10.6 SID Sound Chip
-    - 10.7 TED Sound Chip
-    - 10.8 AHX Sound Chip
-11. [Video System](#11-video-system)
-    - 11.1 Display Modes
-    - 11.2 Framebuffer Organisation
-    - 11.3 Dirty Rectangle Tracking
-    - 11.4 Double Buffering and VBlank Synchronisation
-    - 11.5 Direct VRAM Access Mode
-    - 11.6 Copper List Executor
-    - 11.7 DMA Blitter
-    - 11.8 Raster Band Fill
-    - 11.9 Video Compositor
-12. [Developer's Guide](#12-developers-guide)
-    - 12.1 Development Environment Setup
-    - 12.2 Building the System
-    - 12.3 Development Workflow
-    - 12.4 Assembler Include Files
-    - 12.5 Debugging Techniques
-13. [Implementation Details](#13-implementation-details)
-    - 13.1 CPU Emulation
-    - 13.2 Memory Architecture
-    - 13.3 Audio System Architecture
-14. [Platform Support](#14-platform-support)
-    - 14.1 Supported Platforms
-    - 14.2 Graphics Backends
-    - 14.3 Audio Backends
-    - 14.4 GUI Frontends
-15. [Running Demonstrations](#15-running-demonstrations)
-    - 15.1 Quick Start
-    - 15.2 Audio Demonstrations
-    - 15.3 Visual Demonstrations
-    - 15.4 CPU Test Suites
-    - 15.5 Available Demonstrations
-16. [Building from Source](#16-building-from-source)
-    - 16.1 Prerequisites
-    - 16.2 Build Commands
-    - 16.3 Build Tags
-    - 16.4 Development Workflow
-    - 16.5 Creating New Demonstrations
+    - 11.1 Sound Channel Types
+    - 11.2 Modulation System
+    - 11.3 Global Effects
+    - 11.4 PSG Sound Chip (AY-3-8910/YM2149)
+    - 11.5 POKEY Sound Chip
+    - 11.6 SID Sound Chip
+    - 11.7 TED Sound Chip
+    - 11.8 AHX Sound Chip
+12. [Video System](#12-video-system)
+    - 12.1 Display Modes
+    - 12.2 Framebuffer Organisation
+    - 12.3 Dirty Rectangle Tracking
+    - 12.4 Double Buffering and VBlank Synchronisation
+    - 12.5 Direct VRAM Access Mode
+    - 12.6 Copper List Executor
+    - 12.7 DMA Blitter
+    - 12.8 Raster Band Fill
+    - 12.9 Video Compositor
+13. [Developer's Guide](#13-developers-guide)
+    - 13.1 Development Environment Setup
+    - 13.2 Building the System
+    - 13.3 Development Workflow
+    - 13.4 Assembler Include Files
+    - 13.5 Debugging Techniques
+14. [Implementation Details](#14-implementation-details)
+    - 14.1 CPU Emulation
+    - 14.2 Memory Architecture
+    - 14.3 Audio System Architecture
+15. [Platform Support](#15-platform-support)
+    - 15.1 Supported Platforms
+    - 15.2 Graphics Backends
+    - 15.3 Audio Backends
+    - 15.4 GUI Frontends
+16. [Running Demonstrations](#16-running-demonstrations)
+    - 16.1 Quick Start
+    - 16.2 Audio Demonstrations
+    - 16.3 Visual Demonstrations
+    - 16.4 CPU Test Suites
+    - 16.5 Available Demonstrations
+17. [Building from Source](#17-building-from-source)
+    - 17.1 Prerequisites
+    - 17.2 Build Commands
+    - 17.3 Build Tags
+    - 17.4 Development Workflow
+    - 17.5 Creating New Demonstrations
 
 # 1. System Overview
 
@@ -154,6 +162,7 @@ The Intuition Engine is a virtual machine that emulates a complete retro-style c
 | **Z80** | 8-bit | AF, BC, DE, HL + alternates, IX, IY | Full instruction set, interrupt modes |
 | **6502** | 8-bit | A, X, Y | NMOS instruction set, zero page optimisation |
 | **x86** | 32-bit | EAX-EDX, ESI, EDI, EBP, ESP | 8086 instructions + 32-bit registers, flat memory model |
+| **IE64** | 64-bit RISC | 32 general-purpose (R0=zero, R31=SP) | Fixed 8-byte instructions, compare-and-branch, no flags register |
 
 ## Audio Capabilities
 
@@ -189,6 +198,9 @@ The Intuition Engine is a virtual machine that emulates a complete retro-style c
 # Run x86 program
 ./bin/IntuitionEngine -x86 program.ie86
 
+# Run IE64 program
+./bin/IntuitionEngine -ie64 program.ie64
+
 # Play PSG music
 ./bin/IntuitionEngine -psg music.ym
 
@@ -203,7 +215,7 @@ The Intuition Engine is a virtual machine that emulates a complete retro-style c
 
 ## 2.1 Unified Memory
 
-All CPU cores (IE32, M68K, Z80, 6502, x86) share the same memory space through the SystemBus. This unified architecture ensures that:
+All CPU cores (IE32, IE64, M68K, Z80, 6502, x86) share the same memory space through the SystemBus. This unified architecture ensures that:
 
 - **Program data** loaded by any CPU is immediately visible to all peripherals
 - **Audio synthesis** responds instantly to register writes from any CPU
@@ -230,11 +242,12 @@ All CPU cores (IE32, M68K, Z80, 6502, x86) share the same memory space through t
    ┌─────────┐            ┌────────────────┐     ┌────────────────┐
    │   CPU   │            │  Video System  │     │  Audio System  │
    │ (IE32/  │            │  ────────────  │     │  ──────────────│
-   │  M68K/  │            │  VideoChip     │     │  Custom Synth  │
-   │  Z80/   │            │  VGA Engine    │     │  PSG/POKEY/SID │
-   │  6502)  │            │  Compositor    │     │  File Players  │
-   └─────────┘            │  Blitter/Copper│     └────────────────┘
-                          └────────────────┘
+   │  IE64/  │            │  VideoChip     │     │  Custom Synth  │
+   │  M68K/  │            │  VGA Engine    │     │  PSG/POKEY/SID │
+   │  Z80/   │            │  Compositor    │     │  File Players  │
+   │  6502/  │            │  Blitter/Copper│     └────────────────┘
+   │  x86)   │
+   └─────────┘
 ```
 
 The video compositor blends output from the VideoChip (layer 0) and VGA (layer 10) into a single display, enabling mixed-mode effects. The copper coprocessor can target both video systems via SETBASE for per-scanline raster effects.
@@ -266,7 +279,7 @@ For 8-bit CPUs (Z80, 6502), addresses are mapped to the 16-bit range `$F000-$FFF
 
 The system's memory layout is designed to provide efficient access to both program space and hardware features while maintaining clear separation between different memory regions.
 
-**Address Notation:** This document uses both `0x` prefix (C-style) and `$` prefix (assembly-style) for hexadecimal addresses. The notation varies to match each CPU's assembly dialect: `0x` for IE32/general discussion, `$` for M68K and 6502 assembly examples.
+**Address Notation:** This document uses both `0x` prefix (C-style) and `$` prefix (assembly-style) for hexadecimal addresses. The notation varies to match each CPU's assembly dialect: `0x` for IE32/IE64/general discussion, `$` for M68K and 6502 assembly examples.
 
 ## Memory Map Overview
 
@@ -354,7 +367,7 @@ MODE_800x600  = 0x01
 MODE_1024x768 = 0x02
 ```
 
-**Video Compositor:** These registers control the VideoChip, which renders as layer 0 in the compositor. The VGA chip (section 3.11) renders as layer 10 on top. Both sources are composited together for final display output. The copper coprocessor can write to either device using the SETBASE instruction (see section 10.6).
+**Video Compositor:** These registers control the VideoChip, which renders as layer 0 in the compositor. The VGA chip (section 3.11) renders as layer 10 on top. Both sources are composited together for final display output. The copper coprocessor can write to either device using the SETBASE instruction (see section 12.6).
 
 Copper lists are stored as little-endian 32-bit words in RAM. The list format is:
 - `WAIT`: `(0<<30) | (y<<12) | x` (wait until raster Y/X reached)
@@ -720,7 +733,7 @@ Color byte format: Bits 4-6 = luminance (0-7), Bits 0-3 = hue (0-15)
 ```
 
 TED Video CPU Mappings:
-- IE32/M68K: Direct access at 0x0F0F20-0x0F0F5F
+- IE32/IE64/M68K: Direct access at 0x0F0F20-0x0F0F5F
 - 6502: Memory-mapped at $D620-$D62F
 - Z80: Port I/O via 0xF2/0xF3, indices 0x20-0x2F
 
@@ -750,11 +763,11 @@ AHX+ mode provides enhanced audio processing:
 
 ## 3.12 Hardware I/O Memory Map by CPU
 
-All sound and video chips are accessible from all five CPU architectures at different address ranges:
+All sound and video chips are accessible from all CPU architectures at different address ranges:
 
 ### Sound Chips
 
-| Chip  | IE32/M68K         | Z80 Ports | x86 Ports | 6502        | Notes |
+| Chip  | IE32/IE64/M68K         | Z80 Ports | x86 Ports | 6502        | Notes |
 |-------|-------------------|-----------|-----------|-------------|-------|
 | PSG   | 0x0F0C00-0x0F0C0D | 0xF0/0xF1 | 0xF0/0xF1 | $D400-$D40D | AY-3-8910/YM2149 compatible |
 | POKEY | 0x0F0D00-0x0F0D09 | 0xD0/0xD1 | 0xD0-0xD3* | $D200-$D209 | Atari 8-bit compatible |
@@ -766,7 +779,7 @@ All sound and video chips are accessible from all five CPU architectures at diff
 
 ### Video Chips
 
-| Chip      | IE32/M68K         | Z80 Ports   | x86 Ports     | 6502        | Notes |
+| Chip      | IE32/IE64/M68K         | Z80 Ports   | x86 Ports     | 6502        | Notes |
 |-----------|-------------------|-------------|---------------|-------------|-------|
 | VideoChip | 0x0F0000-0x0F0058 | Memory      | Memory        | $F000-$F058 | Custom copper/blitter |
 | TED Video | 0x0F0F20-0x0F0F5F | 0xF2/0xF3   | 0xF2/0xF3     | $D620-$D62F | Plus/4 (idx 0x20-0x2F) |
@@ -786,7 +799,7 @@ Example: `OUT (0xF0),A` selects PSG register, `OUT (0xF1),A` writes data.
 **6502 Memory-Mapped:** Direct memory access following C64/Atari/Plus4 conventions.
 Example: `STA $D400` writes to PSG register 0.
 
-**IE32/M68K Direct:** Full 32-bit address space access.
+**IE32/IE64/M68K Direct:** Full 32-bit address space access.
 Example: `MOVE.B D0,($F0C00).L` writes to PSG register 0.
 
 ## 3.13 VGA Video Chip (0x0F1000 - 0x0F13FF)
@@ -852,7 +865,7 @@ Palette RAM (0x0F1100 - 0x0F13FF):
 
 | CPU | VGA Registers | VGA VRAM | DAC Access |
 |-----|---------------|----------|------------|
-| IE32/M68K | 0x0F1000-0x0F13FF | 0x0A0000-0x0AFFFF | Memory-mapped |
+| IE32/IE64/M68K | 0x0F1000-0x0F13FF | 0x0A0000-0x0AFFFF | Memory-mapped |
 | Z80 | Ports 0xA0-0xAC | Memory 0xA000 (banked) | Port I/O |
 | 6502 | $D700-$D70D | $A000 (banked) | Memory-mapped |
 
@@ -897,7 +910,7 @@ The VGA chip integrates with the video compositor as a separate layer (layer 10)
 
 **VSync Timing:** The VGA provides time-based vsync status through `VGA_STATUS`. The status bit automatically calculates whether the display is in vertical retrace based on a 60Hz refresh cycle, requiring no explicit signaling from the compositor.
 
-See section 10.9 (Video Compositor) for details on the compositing architecture and section 10.6 (Copper List Executor) for examples of copper-driven VGA palette manipulation.
+See section 12.9 (Video Compositor) for details on the compositing architecture and section 12.6 (Copper List Executor) for examples of copper-driven VGA palette manipulation.
 
 ## 3.14 ULA Video Chip - ZX Spectrum (0x0F2000 - 0x0F200B)
 
@@ -974,7 +987,7 @@ Bits 2-0: INK   (foreground color, 0-7)
 
 | CPU | ULA Registers | ULA VRAM | Notes |
 |-----|---------------|----------|-------|
-| IE32/M68K | 0x0F2000-0x0F200B | 0x4000-0x5AFF | Direct 32-bit |
+| IE32/IE64/M68K | 0x0F2000-0x0F200B | 0x4000-0x5AFF | Direct 32-bit |
 | Z80 | Port 0xFE | 0x4000-0x5AFF | Authentic Spectrum |
 | 6502 | $D800-$D80F | $4000 (banked) | Memory-mapped |
 
@@ -1043,7 +1056,7 @@ The ANTIC (Alphanumeric Television Interface Controller) provides authentic Atar
 | Display Modes | 14 (text and graphics modes via display list) |
 | Fine Scrolling | 4-bit horizontal/vertical (0-15 pixels) |
 
-### Register Map (IE32/M68K/x86)
+### Register Map (IE32/IE64/M68K/x86)
 
 All registers are 4-byte aligned for copper coprocessor compatibility:
 
@@ -1214,7 +1227,7 @@ loop:
 
 The GTIA (Graphics Television Interface Adapter) companion chip handles color generation and player-missile graphics for Atari 8-bit systems. While ANTIC controls display timing and the display list, GTIA controls all color output.
 
-### Register Map (IE32/M68K/x86)
+### Register Map (IE32/IE64/M68K/x86)
 
 All registers are 4-byte aligned for copper coprocessor compatibility:
 
@@ -2749,13 +2762,226 @@ The x86 core uses a simplified flat memory model:
 - Task switching
 - x87 FPU
 
-# 9. Assembly Language Reference
+# 9. IE64 CPU Architecture
 
-This section documents the IE32 assembly language used with the `ie32asm` assembler. For 6502, Z80, M68K, and x86 programming, use their respective standard assemblers (ca65, vasmz80_std, vasmm68k_mot, NASM/FASM) with the include files documented in Section 12.4.
+The IE64 is a custom 64-bit RISC processor designed for the Intuition Engine. It uses a clean load-store architecture with compare-and-branch semantics (no flags register), 32 general-purpose registers, and fixed 8-byte instructions.
+
+## 9.1 Register Set
+
+| Register | Width | Description |
+|----------|-------|-------------|
+| R0 | 64-bit | Hardwired zero (writes ignored) |
+| R1–R30 | 64-bit | General-purpose |
+| R31 (SP) | 64-bit | Stack pointer |
+| PC | 64-bit | Program counter (masked to 25 bits / 32MB) |
+
+**No flags register.** Conditional branches embed a register comparison directly (e.g., `BEQ Rs, Rt, offset`).
+
+**Initial State:**
+- PC = `$1000` (program start)
+- SP (R31) = `$9F000` (top of stack, grows downward)
+- All other registers = 0
+
+## 9.2 Instruction Format
+
+All instructions are 8 bytes (64 bits), little-endian:
+
+```
+Byte 0:   Opcode      (8 bits)
+Byte 1:   Rd[4:0]     (5 bits) | Size[1:0] (2 bits) | X (1 bit)
+Byte 2:   Rs[4:0]     (5 bits) | unused    (3 bits)
+Byte 3:   Rt[4:0]     (5 bits) | unused    (3 bits)
+Bytes 4-7: imm32      (32-bit LE immediate)
+```
+
+**Size codes:** `.B` (8-bit), `.W` (16-bit), `.L` (32-bit), `.Q` (64-bit, default)
+
+**X bit:** 0 = third operand is register (Rt), 1 = third operand is immediate (imm32)
+
+## 9.3 Addressing Modes
+
+| Mode | Syntax | Description | Example |
+|------|--------|-------------|---------|
+| Immediate | `#value` | Constant value | `move.l r1, #42` |
+| Register | `Rn` | Register contents | `add r1, r2, r3` |
+| Register-indirect | `(Rs)` | Memory at address in Rs | `load.l r1, (r2)` |
+| Displacement | `offset(Rs)` | Memory at Rs + offset | `load.l r1, 16(r2)` |
+| PC-relative | `label` | Branch target relative to PC | `bra loop` |
+
+## 9.4 Instruction Set
+
+### Data Movement
+
+| Mnemonic | Description | Example |
+|----------|-------------|---------|
+| `MOVE` | Move register/immediate to register | `move.l r1, #100` |
+| `MOVT` | Move to upper 32 bits | `movt r1, #$DEAD` |
+| `MOVEQ` | Move with sign-extend 32→64 | `moveq r1, #-1` |
+| `LEA` | Load effective address | `lea r1, offset(r2)` |
+
+### Load/Store
+
+| Mnemonic | Description | Example |
+|----------|-------------|---------|
+| `LOAD.x` | Load from memory (size suffix) | `load.l r1, (r2)` |
+| `STORE.x` | Store to memory (size suffix) | `store.l r1, (r2)` |
+
+Size suffixes: `.b` (8-bit), `.w` (16-bit), `.l` (32-bit), `.q` (64-bit)
+
+### Arithmetic
+
+| Mnemonic | Description |
+|----------|-------------|
+| `ADD` | Add (register or immediate) |
+| `SUB` | Subtract |
+| `MULU` | Multiply unsigned |
+| `MULS` | Multiply signed |
+| `DIVU` | Divide unsigned |
+| `DIVS` | Divide signed |
+| `MOD` | Modulo |
+| `NEG` | Negate |
+
+### Logical and Shifts
+
+| Mnemonic | Description |
+|----------|-------------|
+| `AND` | Bitwise AND |
+| `OR` | Bitwise OR |
+| `EOR` | Bitwise exclusive OR |
+| `NOT` | Bitwise NOT |
+| `LSL` | Logical shift left |
+| `LSR` | Logical shift right |
+| `ASR` | Arithmetic shift right |
+
+### Branches (Compare-and-Branch)
+
+All conditional branches compare two registers directly — no flags register:
+
+| Mnemonic | Condition | Example |
+|----------|-----------|---------|
+| `BRA` | Always | `bra loop` |
+| `BEQ` | Rs == Rt | `beq r1, r2, equal` |
+| `BNE` | Rs != Rt | `bne r1, r0, nonzero` |
+| `BLT` | Rs < Rt (signed) | `blt r1, r2, less` |
+| `BGE` | Rs >= Rt (signed) | `bge r1, r2, greater_eq` |
+| `BGT` | Rs > Rt (signed) | `bgt r1, r2, greater` |
+| `BLE` | Rs <= Rt (signed) | `ble r1, r2, less_eq` |
+| `BHI` | Rs > Rt (unsigned) | `bhi r1, r2, higher` |
+| `BLS` | Rs <= Rt (unsigned) | `bls r1, r2, lower_same` |
+
+### Subroutine and Stack
+
+| Mnemonic | Description |
+|----------|-------------|
+| `JSR` | Jump to subroutine (pushes return address) |
+| `RTS` | Return from subroutine |
+| `PUSH` | Push register onto stack |
+| `POP` | Pop from stack to register |
+
+### System
+
+| Mnemonic | Description |
+|----------|-------------|
+| `NOP` | No operation |
+| `HALT` | Halt processor |
+| `SEI` | Set (enable) interrupts |
+| `CLI` | Clear (disable) interrupts |
+| `RTI` | Return from interrupt |
+| `WAIT` | Wait for specified microseconds |
+
+### Pseudo-Instructions
+
+The `ie64asm` assembler provides these convenience pseudo-instructions:
+
+| Pseudo | Expansion | Description |
+|--------|-----------|-------------|
+| `la Rd, addr` | `lea Rd, addr(r0)` | Load address into register |
+| `li Rd, #val` | `move.l Rd, #val` | Load immediate (use `move.l` for symbols) |
+| `beqz Rs, label` | `beq Rs, r0, label` | Branch if zero |
+| `bnez Rs, label` | `bne Rs, r0, label` | Branch if not zero |
+| `bltz Rs, label` | `blt Rs, r0, label` | Branch if less than zero |
+| `bgez Rs, label` | `bge Rs, r0, label` | Branch if greater or equal to zero |
+| `bgtz Rs, label` | `bgt Rs, r0, label` | Branch if greater than zero |
+| `blez Rs, label` | `ble Rs, r0, label` | Branch if less or equal to zero |
+
+### Common Patterns
+
+```assembly
+    include "ie64.inc"
+
+start:
+    ; Set up video
+    la   r1, VIDEO_CTRL
+    move.l r2, #1
+    store.l r2, (r1)
+
+    ; Loop with counter
+    move.l r10, #0              ; counter
+    move.l r11, #100            ; limit
+.loop:
+    add.l  r10, r10, #1
+    blt    r10, r11, .loop      ; compare-and-branch
+
+    ; Subroutine call
+    jsr    my_func
+    halt
+
+my_func:
+    push   r5
+    ; ... work ...
+    pop    r5
+    rts
+```
+
+## 9.5 Memory and I/O Integration
+
+The IE64 shares the same 32MB system bus and memory-mapped device address space as all other Intuition Engine CPUs:
+
+- All hardware registers at `$F0000–$FFFFF` are accessible via `LOAD`/`STORE`
+- VGA VRAM at `$A0000–$AFFFF`, Video RAM at `$100000+`
+- VRAM direct-write fast path for stores to `$A0000+`
+- 64-bit bus operations (`Read64`/`Write64`) with I/O region split semantics for device registers
+
+## 9.6 Interrupt Handling
+
+The IE64 has an integrated timer and interrupt system:
+
+- **Interrupt vector**: Internal `interruptVector` field (set to 0 on reset)
+- **Timer**: Integrated CPU timer, decremented every 44100 cycles
+- **Timer registers**: Accessed via standard system timer addresses (`$F0800–$F080C`)
+
+**Interrupt flow:**
+1. Timer counts down; when it reaches zero, an interrupt fires
+2. CPU pushes PC to stack, disables interrupts
+3. Execution jumps to interrupt vector address
+4. ISR executes and returns via `RTI` (restores PC, re-enables interrupts)
+
+**Instructions:**
+- `SEI` — Enable interrupts
+- `CLI` — Disable interrupts
+- `RTI` — Return from interrupt (pops PC, re-enables interrupts)
+
+Note: The interrupt vector is currently set internally. Assembly-level vector programming is reserved for a future update.
+
+## 9.7 Compatibility Notes
+
+- Use `-ie64` flag to run IE64 binaries
+- File extension: `.ie64`
+- Use `ie64asm` assembler with `ie64.inc` include file
+- Little-endian byte order
+- Compare-and-branch model (no flags register — unlike IE32, M68K, Z80, 6502, x86)
+- R0 is hardwired to zero (reads always return 0, writes are silently ignored)
+- `.l` operations zero-mask to 32 bits; use `.q` for full 64-bit arithmetic
+- Full ISA reference: [IE64_ISA.md](IE64_ISA.md)
+- Assembly cookbook: [IE64_COOKBOOK.md](IE64_COOKBOOK.md)
+
+# 10. Assembly Language Reference
+
+This section documents the IE32 assembly language used with the `ie32asm` assembler. For IE64, 6502, Z80, M68K, and x86 programming, use their respective assemblers (`ie64asm`, ca65, vasmz80_std, vasmm68k_mot, NASM/FASM) with the include files documented in Section 13.4.
 
 The Intuition Engine assembly language provides a straightforward way to program the system while maintaining access to all hardware features.
 
-## 9.1 Basic Program Structure
+## 10.1 Basic Program Structure
 
 Every assembly program follows this basic structure:
 
@@ -2781,7 +3007,7 @@ setup_timer:
     RTS
 ```
 
-## 9.2 Assembler Directives
+## 10.2 Assembler Directives
 
 The assembler supports these directives:
 
@@ -2807,7 +3033,7 @@ start:
     JMP main
 ```
 
-## 9.3 Memory Access Patterns
+## 10.3 Memory Access Patterns
 
 When working with memory, consider alignment and efficiency:
 
@@ -2827,7 +3053,7 @@ copy_loop:
     RTS
 ```
 
-## 9.4 Stack Usage
+## 10.4 Stack Usage
 
 The stack is essential for subroutines and temporary storage:
 
@@ -2845,7 +3071,7 @@ calculate:
     RTS
 ```
 
-## 9.5 Interrupt Handlers
+## 10.5 Interrupt Handlers
 
 Interrupt handlers must preserve register state:
 
@@ -2862,7 +3088,7 @@ isr_handler:
     RTI                ; Return from interrupt
 ```
 
-# 10. Sound System
+# 11. Sound System
 
 The Intuition Engine provides a powerful custom audio synthesizer alongside three emulated classic sound chips. The custom audio chip offers modern synthesis capabilities while maintaining the retro aesthetic.
 
@@ -2890,7 +3116,7 @@ Sample rate: 44.1kHz with 32-bit floating-point internal processing
 
 ### Memory Map
 
-| Register Block | IE32/M68K Address | Z80/6502 Address | Description |
+| Register Block | IE32/IE64/M68K Address | Z80/6502 Address | Description |
 |----------------|-------------------|------------------|-------------|
 | Global Control | `$F0800-$F0807` | `$F800-$F807` | Master audio control, envelope shape |
 | Filter | `$F0820-$F0833` | `$F820-$F833` | Cutoff, resonance, type, modulation |
@@ -2990,7 +3216,7 @@ Each flexible channel is 48 bytes ($30) with full synthesis control:
 | 3 | WAVE_NOISE | Noise generator |
 | 4 | WAVE_SAWTOOTH | Sawtooth wave |
 
-## 10.1 Sound Channel Types
+## 11.1 Sound Channel Types
 
 Each channel offers different synthesis capabilities:
 
@@ -3160,7 +3386,7 @@ setup_sawtooth:
     rts
 ```
 
-## 10.2 Modulation System
+## 11.2 Modulation System
 
 The sound system supports complex inter-channel modulation for creating rich, evolving timbres.
 
@@ -3264,7 +3490,7 @@ For square wave channels, PWM automatically varies the duty cycle for a rich, an
     STORE A, @SQUARE_CTRL
 ```
 
-## 10.3 Global Effects
+## 11.3 Global Effects
 
 The system provides global audio processing applied after channel mixing.
 
@@ -3390,7 +3616,7 @@ Stereo reverb with adjustable mix and decay time.
     SET_REVERB 128, 2000
 ```
 
-## 10.4 PSG Sound Chip (AY-3-8910/YM2149)
+## 11.4 PSG Sound Chip (AY-3-8910/YM2149)
 
 The PSG chip emulates the General Instrument AY-3-8910 and Yamaha YM2149, providing three channels of square wave synthesis with noise and envelope capabilities. This chip powered the sound in countless 8-bit computers including the ZX Spectrum 128, Amstrad CPC, Atari ST, and MSX.
 
@@ -3613,7 +3839,7 @@ music_data_end:
 - Read PSG_PLAY_STATUS bit 0 to check if playing (1=busy, 0=stopped)
 - Read PSG_PLAY_STATUS bit 1 to check for errors
 
-## 10.5 POKEY Sound Chip
+## 11.5 POKEY Sound Chip
 
 The POKEY chip emulates the Atari 8-bit computer's sound hardware, providing four channels of distinctive 8-bit audio with polynomial-based distortion.
 
@@ -3759,7 +3985,7 @@ sap_data_end:
 - Set SAP_SUBSONG before starting to select a specific subsong (0-255)
 - Read SAP_PLAY_STATUS for busy/error flags
 
-## 10.6 SID Sound Chip
+## 11.6 SID Sound Chip
 
 The SID chip emulates the legendary MOS 6581/8580 from the Commodore 64, providing three voices of analog-style synthesis with the distinctive warm sound that defined a generation of computer music.
 
@@ -3970,7 +4196,7 @@ sid_data_end:
 - Read SID_PLAY_STATUS for busy/error flags
 - Many SID files contain multiple subsongs (tunes) - check the SID header for count
 
-## 10.7 TED Sound Chip
+## 11.7 TED Sound Chip
 
 The TED (Text Editing Device) chip emulates the sound capabilities of the Commodore Plus/4 and C16, providing simple 2-voice square wave synthesis. While simpler than the SID, the TED has a distinctive lo-fi character valued by demoscene musicians.
 
@@ -4112,7 +4338,7 @@ ted_data_end:
 - Write `1` to TED_PLAY_CTRL to start, `2` to stop, `5` to start with loop
 - Read TED_PLAY_STATUS for busy/error flags
 
-## 10.8 AHX Sound Chip
+## 11.8 AHX Sound Chip
 
 The AHX engine provides Amiga AHX/THX module playback with 4-channel waveform synthesis. AHX modules use procedural synthesis rather than samples, creating rich sounds from simple waveforms (triangle, sawtooth, square, noise) with modulation.
 
@@ -4170,11 +4396,11 @@ ahx_data_end:
 - Read AHX_PLAY_STATUS for busy/error flags
 - Speed 0 command in the module signals end of song
 
-# 11. Video System
+# 12. Video System
 
 The video system provides flexible graphics output through a memory-mapped framebuffer design.
 
-## 11.1 Display Modes
+## 12.1 Display Modes
 
 Three resolution modes are available:
 - 640x480 (MODE_640x480)
@@ -4221,7 +4447,7 @@ init_display:
     rts
 ```
 
-## 11.2 Framebuffer Organisation
+## 12.2 Framebuffer Organisation
 
 The framebuffer uses 32-bit RGBA colour format:
 - Start address: 0x100000 (VRAM_START)
@@ -4234,14 +4460,14 @@ The framebuffer uses 32-bit RGBA colour format:
 Address = 0x100000 + (y * width + x) * 4
 ```
 
-## 11.3 Dirty Rectangle Tracking
+## 12.3 Dirty Rectangle Tracking
 
 The system tracks changes in 32x32 pixel blocks:
 - Automatically marks modified regions
 - Updates only changed areas
 - Improves rendering performance
 
-## 11.4 Double Buffering and VBlank Synchronisation
+## 12.4 Double Buffering and VBlank Synchronisation
 
 Video output uses double buffering to prevent tearing. The system provides a VBlank status bit for flicker-free animation:
 
@@ -4341,7 +4567,7 @@ main_loop:
 
 The `wait_frame` pattern ensures exactly one frame per loop iteration, giving smooth 60 FPS animation regardless of how fast the CPU runs.
 
-## 11.5 Direct VRAM Access Mode
+## 12.5 Direct VRAM Access Mode
 
 For fullscreen effects such as plasma, fire, or tunnel demos where every pixel is updated each frame, the system provides a direct VRAM access mode with lock-free dirty tracking that bypasses the standard memory bus. This delivers approximately **4.5x video throughput** compared to bus-based access.
 
@@ -4383,7 +4609,7 @@ videoChip.DisableDirectMode()
 
 Direct VRAM mode is ideal for demoscene-style effects, real-time visualisations, and any application that redraws the entire screen each frame.
 
-## 11.6 Copper List Executor
+## 12.6 Copper List Executor
 
 The video subsystem includes a simple copper-like list executor for mid-frame register updates. Copper lists are stored in RAM as little-endian 32-bit words and can WAIT on raster positions, MOVE values into video registers, and END the list. The copper restarts each frame while enabled.
 
@@ -4464,7 +4690,7 @@ copper_list:
     .long COP_END
 ```
 
-## 11.7 DMA Blitter
+## 12.7 DMA Blitter
 
 The DMA blitter performs rectangle copy/fill and line drawing. Registers are written via memory-mapped I/O, and the blitter operates on VRAM addresses (RGBA, 4 bytes/pixel).
 
@@ -4532,7 +4758,7 @@ Line coordinates:
 
 The blitter defaults `BLT_SRC_STRIDE`/`BLT_DST_STRIDE` to the current mode row bytes when the address is in VRAM, otherwise it uses `width*4`. If an unaligned VRAM address is used, `BLT_STATUS.bit0` is set.
 
-## 11.8 Raster Band Fill
+## 12.8 Raster Band Fill
 
 `VIDEO_RASTER_*` registers draw a full-width horizontal band directly into the framebuffer. This is useful for copper-driven raster bars without adding a palette system.
 
@@ -4576,7 +4802,7 @@ The blitter defaults `BLT_SRC_STRIDE`/`BLT_DST_STRIDE` to the current mode row b
     sta  VIDEO_RASTER_CTRL
 ```
 
-## 11.9 Video Compositor
+## 12.9 Video Compositor
 
 The Intuition Engine uses a video compositor to blend multiple video sources into a single display output. This architecture enables layered rendering where different video devices (VideoChip, VGA) can contribute to the final frame.
 
@@ -4662,9 +4888,9 @@ copper_list:
 
 This creates a horizontal band where the VGA background color (palette entry 0) changes from red to blue at specific scanlines.
 
-# 12. Developer's Guide
+# 13. Developer's Guide
 
-## 12.1 Development Environment Setup
+## 13.1 Development Environment Setup
 
 To develop for the Intuition Engine, you'll need to set up your development environment with several components:
 
@@ -4683,7 +4909,7 @@ my_project/
 └── tools/           # Development tools
 ```
 
-## 12.2 Building the System
+## 13.2 Building the System
 
 The build process uses the provided Makefile:
 
@@ -4696,6 +4922,9 @@ make intuition-engine
 
 # Build only the IE32 assembler
 make ie32asm
+
+# Build only the IE64 assembler
+make ie64asm
 
 # Install to /usr/local/bin
 make install
@@ -4710,14 +4939,17 @@ make clean
 This creates:
 ```
 ./bin/IntuitionEngine   # The virtual machine
-./bin/ie32asm           # The assembler
+./bin/ie32asm           # The IE32 assembler
+./bin/ie64asm           # The IE64 assembler
 ```
 
 Available make targets:
 ```
-all              - Build both Intuition Engine and ie32asm (default)
+all              - Build Intuition Engine, ie32asm, and ie64asm (default)
 intuition-engine - Build only the Intuition Engine VM
 ie32asm          - Build only the IE32 assembler
+ie64asm          - Build only the IE64 assembler
+ie64dis          - Build only the IE64 disassembler
 appimage         - Build AppImage package for Linux distributions
 install          - Install binaries to $(INSTALL_BIN_DIR)
 uninstall        - Remove installed binaries from $(INSTALL_BIN_DIR)
@@ -4726,7 +4958,7 @@ list             - List compiled binaries with sizes
 help             - Show this help message
 ```
 
-## 12.3 Development Workflow
+## 13.3 Development Workflow
 
 A typical development cycle involves:
 
@@ -4799,7 +5031,7 @@ A typical development cycle involves:
 **Enhanced Audio Modes (PSG+/POKEY+/SID+/TED+/AHX+):**
 These modes provide oversampling, gentle low-pass smoothing, subtle saturation, and a tiny room/width effect for richer sound while preserving pitch and timing. AHX+ additionally provides authentic Amiga stereo panning (L-R-R-L pattern) and hardware PWM for square wave modulation.
 
-## 12.4 Assembler Include Files
+## 13.4 Assembler Include Files
 
 The `assembler/` directory provides hardware definition include files for each CPU architecture. These files are essential for writing portable Intuition Engine programs.
 
@@ -4810,6 +5042,7 @@ The `assembler/` directory provides hardware definition include files for each C
 | `ie65.inc` | 6502 | ca65 | Hardware constants, macros, and zero page allocation |
 | `ie80.inc` | Z80 | vasmz80_std | Hardware constants with Z80 macros |
 | `ie86.inc` | x86 | NASM/FASM | Hardware constants, port I/O, VGA registers |
+| `ie64.inc` | IE64 | ie64asm | Hardware constants and macros |
 
 ### Contents Overview
 
@@ -4979,6 +5212,39 @@ start:
 - `sid_write reg, val` - Write SID register via port I/O
 - `pokey_write reg, val` - Write POKEY register via port I/O
 
+### ie64.inc (IE64 CPU)
+
+The IE64 include file provides constants using `equ` and comprehensive macros:
+
+```assembly
+    include "ie64.inc"
+
+start:
+    la   r1, VRAM_START
+    move.l r2, #1
+    store.l r2, VIDEO_CTRL(r0)
+    wait_vblank                     ; Macro: wait for VBlank
+    set_blt_color $FF00FF00         ; Macro: set blitter fill color
+    start_blit                      ; Macro: trigger blitter
+```
+
+**Macros provided:**
+- `wait_vblank`, `wait_blit`, `start_blit`
+- `set_blt_color`, `set_blt_src`, `set_blt_dst`, `set_blt_size`, `set_blt_strides`
+- `set_copper_ptr`, `enable_copper`, `disable_copper`
+- `vga_setmode`, `vga_enable`, `vga_setpalette`, `vga_palette_rgb`, `vga_wait_vsync`, `vga_mapmask`, `vga_readmap`
+- `set_ula_border`, `ula_enable`, `ula_disable`
+- `set_ted_v_enable`, `ted_v_disable`, `set_ted_v_border`, `ted_v_bgcolor`, `ted_v_wait_vblank`
+- `set_antic_enable`, `antic_disable`, `antic_wait_vblank`, `antic_set_dlist`
+- `gtia_setbk`, `gtia_setpf0`–`gtia_setpf3`
+- PSG: `enable_psg_plus`, `set_psg_play`, `start_psg_play`, `stop_psg_play`
+- SID: `enable_sid_plus`, `set_sid_play`, `set_sid_subsong`, `start_sid_play`, `start_sid_loop`, `stop_sid_play`
+- SAP: `set_sap_play`, `set_sap_subsong`, `start_sap_play`, `start_sap_loop`, `stop_sap_play`
+- AHX: `PLAY_AHX`, `PLAY_AHX_LOOP`, `PLAY_AHX_PLUS`, `PLAY_AHX_PLUS_LOOP`, `STOP_AHX`
+- POKEY: `enable_pokey_plus`, `set_pokey_audctl`, `set_pokey_ch`
+- Audio channels: `set_ch_freq`, `set_ch_vol`, `set_ch_wave`, `set_ch_env`, `gate_ch_on`, `gate_ch_off`, `set_filter`, `set_reverb`
+- Voodoo: `voodoo_vertex_a/b/c`, `voodoo_color_rgb`, `voodoo_triangle`, `voodoo_swap`, `voodoo_clear`
+
 ### 8-Bit CPU Banking System
 
 The 6502 and Z80 use a banking system to access the full 32MB address space:
@@ -5006,7 +5272,7 @@ The 6502 and Z80 use a banking system to access the full 32MB address space:
     ld   a,(BANK1_WINDOW)       ; Read first byte
 ```
 
-## 12.5 Debugging Techniques
+## 13.5 Debugging Techniques
 
 ### Console Output
 
@@ -5167,11 +5433,11 @@ stack_overflow:
 5. **Watch for signed/unsigned issues**: Know when operations treat values as signed
 6. **Trace interrupt handlers**: Ensure registers are saved/restored properly
 
-# 13. Implementation Details
+# 14. Implementation Details
 
 This section describes how the Intuition Engine emulates its hardware components.
 
-## 13.1 CPU Emulation
+## 14.1 CPU Emulation
 
 ### IE32 Custom RISC CPU
 
@@ -5224,7 +5490,19 @@ The x86 emulation provides a 32-bit flat memory model:
 - **8086 core instruction set**: Integer instructions with 32-bit register extensions
 - **I/O port access**: IN/OUT instructions mapped to hardware
 
-## 13.2 Memory Architecture
+### IE64 Custom 64-bit RISC CPU
+
+The IE64 is a 64-bit RISC processor with a clean load-store architecture:
+
+- **32 general-purpose registers**: R0 (hardwired zero) through R31 (stack pointer), all 64-bit
+- **Fixed 8-byte instruction format**: Consistent fetch/decode
+- **Compare-and-branch model**: No flags register; conditional branches embed register comparison
+- **Size-polymorphic operations**: .B/.W/.L/.Q suffixes on most instructions
+- **64-bit bus support**: Read64/Write64 with I/O region split semantics
+
+Execution cycle: Fetch (8 bytes) → Decode → Execute → Update PC → Check timer/interrupts
+
+## 14.2 Memory Architecture
 
 ### Unified Memory Bus
 
@@ -5254,7 +5532,7 @@ Z80 and 6502 access the full address space through bank windows:
 | Bank 3 | `$6000` | 8KB | `$F704-$F705` |
 | VRAM | `$8000` | 16KB | `$F7F0` |
 
-## 13.3 Audio System Architecture
+## 14.3 Audio System Architecture
 
 ### Sample Generation
 
@@ -5283,11 +5561,11 @@ This approach provides accurate register-level compatibility while leveraging th
 
 File playback (.ym, .ay, .sndh, .vgm, .sap, .sid) executes embedded CPU code that writes to the mapped registers, driving the synthesis in real-time.
 
-# 14. Platform Support
+# 15. Platform Support
 
 The Intuition Engine supports multiple platforms through abstracted backend systems for graphics, audio, and GUI.
 
-## 14.1 Supported Platforms
+## 15.1 Supported Platforms
 
 | Platform | Graphics | Audio | GUI |
 |----------|----------|-------|-----|
@@ -5295,7 +5573,7 @@ The Intuition Engine supports multiple platforms through abstracted backend syst
 | macOS | Ebiten | Oto | GTK4, FLTK |
 | Windows | Ebiten | Oto | GTK4, FLTK |
 
-## 14.2 Graphics Backends
+## 15.2 Graphics Backends
 
 ### Ebiten (Primary)
 
@@ -5312,7 +5590,7 @@ For testing and batch processing without a display:
 go test -tags headless ./...
 ```
 
-## 14.3 Audio Backends
+## 15.3 Audio Backends
 
 ### Oto (Primary)
 
@@ -5328,7 +5606,7 @@ Native Linux audio for:
 - Direct hardware access
 - System audio integration
 
-## 14.4 GUI Frontends
+## 15.4 GUI Frontends
 
 ### GTK4
 
@@ -5346,13 +5624,13 @@ Lightweight alternative offering:
 - Basic file selection
 - Simple controls
 
-# 15. Running Demonstrations
+# 16. Running Demonstrations
 
 The Intuition Engine includes visual and audio demonstrations that showcase system capabilities.
 
-**Tutorial:** For a hands-on guide to building a complete demoscene-style demo (blitter sprites, copper effects, PSG+ music, scrolltext), see **[TUTORIAL.md](TUTORIAL.md)**. It includes full implementations for all four CPU architectures.
+**Tutorial:** For a hands-on guide to building a complete demoscene-style demo (blitter sprites, copper effects, PSG+ music, scrolltext), see **[TUTORIAL.md](TUTORIAL.md)**. It includes full implementations for multiple CPU architectures.
 
-## 15.1 Quick Start
+## 16.1 Quick Start
 
 Run all short tests:
 ```bash
@@ -5364,7 +5642,7 @@ Run with headless mode (no GUI/audio):
 go test -v -tags headless
 ```
 
-## 15.2 Audio Demonstrations
+## 16.2 Audio Demonstrations
 
 Long-running audio demos require the `audiolong` tag:
 
@@ -5379,7 +5657,7 @@ go test -v -tags audiolong -run TestSquareWave_PWM
 go test -v -tags audiolong -run TestFilterSweep
 ```
 
-## 15.3 Visual Demonstrations
+## 16.3 Visual Demonstrations
 
 Long-running visual demos require the `videolong` tag:
 
@@ -5400,7 +5678,7 @@ go test -v -tags videolong -run TestRotatingCube
 go test -v -tags videolong -run TestMandelbrot
 ```
 
-## 15.4 CPU Test Suites
+## 16.4 CPU Test Suites
 
 ### M68K Tests
 ```bash
@@ -5417,7 +5695,7 @@ KLAUS_FUNCTIONAL=1 KLAUS_INTERRUPT_SUCCESS_PC=0x06F5 go test -v -run '^Test6502'
 go test -v -run TestZ80
 ```
 
-## 15.5 Available Demonstrations
+## 16.5 Available Demonstrations
 
 | Category | Test Name | Description |
 |----------|-----------|-------------|
@@ -5434,10 +5712,11 @@ go test -v -run TestZ80
 | Video | TestStarfield | 3D star simulation |
 | Video | TestMandelbrot | Fractal visualisation |
 | Video | TestParticles | Physics-based particles |
+| Video | rotozoomer_ie64 | IE64 rotozoomer with blitter, copper, and fixed-point math |
 
-# 16. Building from Source
+# 17. Building from Source
 
-## 16.1 Prerequisites
+## 17.1 Prerequisites
 
 - Go 1.21 or later
 - C compiler (for CGO dependencies)
@@ -5459,7 +5738,7 @@ sudo dnf install gtk4-devel alsa-lib-devel mesa-libGL-devel libX11-devel
 brew install gtk4
 ```
 
-## 16.2 Build Commands
+## 17.2 Build Commands
 
 ```bash
 # Build everything (VM and assembler)
@@ -5471,6 +5750,9 @@ make intuition-engine
 # Build only the IE32 assembler
 make ie32asm
 
+# Build only the IE64 assembler
+make ie64asm
+
 # Install to /usr/local/bin
 make install
 
@@ -5481,7 +5763,7 @@ make appimage
 make clean
 ```
 
-## 16.3 Build Tags
+## 17.3 Build Tags
 
 | Tag | Effect |
 |-----|--------|
@@ -5490,7 +5772,7 @@ make clean
 | `audiolong` | Enable long-running audio demos |
 | `videolong` | Enable long-running video demos |
 
-## 16.4 Development Workflow
+## 17.4 Development Workflow
 
 1. Edit source files
 2. Run `make` to build
@@ -5498,7 +5780,7 @@ make clean
 4. Run demos to verify changes
 5. Use `./bin/IntuitionEngine -ie32 program.iex` to test programs
 
-## 16.5 Creating New Demonstrations
+## 17.5 Creating New Demonstrations
 
 When adding new test demonstrations:
 
