@@ -1300,9 +1300,13 @@ func (bus *SystemBus) read32Half(addr uint32) uint32 {
 	// Check for 64-bit region (dispatch as 32-bit portion)
 	region64 := bus.findIORegion64(addr)
 	if region64 != nil && region64.onRead64 != nil {
-		// Read full 64-bit value and extract the relevant 32-bit half
-		val := region64.onRead64(addr)
-		return uint32(val)
+		// Align to 8-byte boundary, read full 64 bits, extract the correct half.
+		base := addr &^ 7 // align down to 8-byte boundary
+		val := region64.onRead64(base)
+		if addr == base {
+			return uint32(val) // low half
+		}
+		return uint32(val >> 32) // high half
 	}
 
 	// Check for legacy 32-bit region
@@ -1393,13 +1397,31 @@ func (bus *SystemBus) write64Slow(addr uint32, value uint64) {
 }
 
 // write32Half writes a 32-bit half for split 64-bit operations.
+// For native-64 regions, performs read-modify-write: reads the current 64-bit
+// value from backing memory, replaces the correct half, then calls onWrite64.
 func (bus *SystemBus) write32Half(addr uint32, value uint32) {
 	// Check for 64-bit region
 	region64 := bus.findIORegion64(addr)
 	if region64 != nil && region64.onWrite64 != nil {
-		region64.onWrite64(addr, uint64(value))
-		if addr+4 <= uint32(len(bus.memory)) {
-			*(*uint32)(unsafe.Pointer(&bus.memory[addr])) = value
+		base := addr &^ 7 // align down to 8-byte boundary
+		// Read current 64-bit value from backing memory
+		var current uint64
+		if base+8 <= uint32(len(bus.memory)) {
+			current = *(*uint64)(unsafe.Pointer(&bus.memory[base]))
+		}
+		// Replace the correct 32-bit half
+		if addr == base {
+			// Low half: clear low 32 bits, set new value
+			current = (current & 0xFFFFFFFF00000000) | uint64(value)
+		} else {
+			// High half: clear high 32 bits, set new value
+			current = (current & 0x00000000FFFFFFFF) | (uint64(value) << 32)
+		}
+		// Write full 64-bit value via handler
+		region64.onWrite64(base, current)
+		// Update backing memory
+		if base+8 <= uint32(len(bus.memory)) {
+			*(*uint64)(unsafe.Pointer(&bus.memory[base])) = current
 		}
 		return
 	}

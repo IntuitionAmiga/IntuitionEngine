@@ -555,8 +555,14 @@ func TestBusRead64Write64_MixedSpan_Native64_Legacy(t *testing.T) {
 		t.Error("Legacy onRead was not called for spanning read")
 	}
 
-	// Verify the result combines both halves
-	_ = got // exact value depends on implementation split behavior
+	// Verify the result combines both halves:
+	// Low dword: read32Half(0x60FC) hits native64 region, aligns to base=0x60F8,
+	//   reads 0xAAAAAAAABBBBBBBB, extracts high half (addr != base) → 0xAAAAAAAA
+	// High dword: read32Half(0x6100) hits legacy region (Split policy) → 0xCCCCCCCC
+	want := uint64(0xAAAAAAAA) | (uint64(0xCCCCCCCC) << 32)
+	if got != want {
+		t.Errorf("Read64(0x60FC) mixed native64+legacy = 0x%016X, want 0x%016X", got, want)
+	}
 }
 
 // TestBusMapIO64_SignExtension verifies that MapIO64 for a region in the

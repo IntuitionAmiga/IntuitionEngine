@@ -251,9 +251,7 @@ func (cpu *CPU64) loadMem(addr uint32, size byte) uint64 {
 	case IE64_SIZE_L:
 		return uint64(cpu.bus.Read32(addr))
 	case IE64_SIZE_Q:
-		// Direct memory access for 64-bit loads.
-		// TODO: Replace with bus.Read64() when MemoryBus64 interface is available.
-		return binary.LittleEndian.Uint64(cpu.memory[addr:])
+		return cpu.bus.Read64(addr)
 	}
 	return 0
 }
@@ -294,9 +292,7 @@ func (cpu *CPU64) storeMem(addr uint32, val uint64, size byte) {
 	case IE64_SIZE_L:
 		cpu.bus.Write32(addr, uint32(val))
 	case IE64_SIZE_Q:
-		// Direct memory access for 64-bit stores.
-		// TODO: Replace with bus.Write64() when MemoryBus64 interface is available.
-		binary.LittleEndian.PutUint64(cpu.memory[addr:], val)
+		cpu.bus.Write64(addr, val)
 	}
 }
 
