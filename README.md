@@ -194,13 +194,16 @@ The Intuition Engine is a virtual machine that emulates a complete retro-style c
 
 # Play SID music
 ./bin/IntuitionEngine -sid music.sid
+
+# Run with performance measurement (MIPS reporting)
+./bin/IntuitionEngine -perf -m68k program.ie68
 ```
 
 # 2. Architecture
 
 ## 2.1 Unified Memory
 
-All CPU cores (IE32, M68K, Z80, 6502) share the same memory space through the SystemBus. This unified architecture ensures that:
+All CPU cores (IE32, M68K, Z80, 6502, x86) share the same memory space through the SystemBus. This unified architecture ensures that:
 
 - **Program data** loaded by any CPU is immediately visible to all peripherals
 - **Audio synthesis** responds instantly to register writes from any CPU
@@ -5211,6 +5214,15 @@ The 6502 emulation covers the original NMOS instruction set:
 - **Zero page optimisation**: Fast access to first 256 bytes
 - **Stack at $0100-$01FF**: Hardware stack page
 - **Status flags**: N, V, B, D, I, Z, C
+
+### Intel x86 (32-bit)
+
+The x86 emulation provides a 32-bit flat memory model:
+
+- **8 general-purpose registers**: EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP
+- **Segment-free flat model**: Direct 32-bit addressing
+- **8086 core instruction set**: Integer instructions with 32-bit register extensions
+- **I/O port access**: IN/OUT instructions mapped to hardware
 
 ## 13.2 Memory Architecture
 
