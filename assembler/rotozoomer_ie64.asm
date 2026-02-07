@@ -307,7 +307,7 @@ FRAME_SIZE     equ 0x12C000      ; 1,228,800 bytes (640*480*4)
 
 ; Back buffer lives above VRAM so we can render without tearing.
 ; VRAM_START (front buffer) is at 0x100000 (defined in ie64.inc).
-; We place the back buffer above it with room to spare.
+; BACK_BUFFER is placed immediately after one full 640x480x4 front frame.
 BACK_BUFFER    equ 0x22C000
 
 ; --- Texture Dimensions ---
@@ -632,8 +632,9 @@ generate_sine_table:
 ; === WHY RECIPROCALS? ===
 ;
 ; Division is expensive on most CPUs and impossible on many retro platforms.
-; The IE64 doesn't have a divide instruction either. Instead, we precompute
-; 1/x values and multiply by them later: a/b = a * (1/b).
+; IE64 does provide DIVU/DIVS/MOD, but table lookup + multiply keeps this
+; setup path simple and mirrors classic demoscene precompute style:
+; a/b = a * (1/b).
 ;
 ; === WHY 1536? ===
 ;
@@ -1468,11 +1469,10 @@ render_rotozoomer:
 ;
 ; === WHY USE THE BLITTER? ===
 ;
-; The blitter is a DMA (Direct Memory Access) engine built into the VideoChip.
-; It copies memory independently of the CPU, meaning:
-;   1. The copy runs at memory bandwidth speed (faster than CPU loops)
-;   2. The CPU is free to start computing the next frame immediately
-;      (though we don't overlap in this simple demo)
+; The blitter is a hardware copy engine built into the VideoChip.
+; In the current IntuitionEngine implementation, BLT_CTRL start runs the copy
+; synchronously before returning. So this routine still waits for completion,
+; but using blitter registers keeps the code aligned with the hardware model.
 ;
 ; For a 640x480x4 = 1,228,800 byte copy, the blitter is significantly
 ; faster than a CPU copy loop.
@@ -1487,11 +1487,11 @@ render_rotozoomer:
 ;   BLT_HEIGHT:     Height in pixels
 ;   BLT_SRC_STRIDE: Source bytes per row
 ;   BLT_DST_STRIDE: Destination bytes per row
-;   BLT_CTRL:       Write 1 to start the operation
-;   BLT_STATUS:     Bit 1 = busy (operation in progress)
+;   BLT_CTRL:       Bit 0=start, bit 1=busy, bit 2=IRQ enable
+;   BLT_STATUS:     Bit 0=error
 ;
-; After configuring all parameters, writing 1 to BLT_CTRL triggers the
-; copy. We then poll BLT_STATUS until the busy bit clears.
+; After configuring all parameters, writing 1 to BLT_CTRL triggers the copy.
+; We poll BLT_CTRL bit 1 (busy) until it clears.
 ; =============================================================================
 blit_to_front:
     ; Configure blitter for a simple copy operation
@@ -1527,8 +1527,8 @@ blit_to_front:
     li      r1, #1                      ; write 1 to start
     store.l r1, (r5)
 
-    ; Wait for blit to complete (poll busy bit)
-    la      r5, BLT_STATUS
+    ; Wait for blit to complete (poll BLT_CTRL busy bit 1)
+    la      r5, BLT_CTRL
 .wait_blit:
     load.l  r1, (r5)
     and.l   r1, r1, #2                  ; isolate busy bit
