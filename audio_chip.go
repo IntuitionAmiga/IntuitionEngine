@@ -2188,11 +2188,10 @@ func (chip *SoundChip) GenerateSample() float32 {
 	//    - Wet/dry mixing for effect balance
 	//
 	// Thread Safety:
-	// The function uses read/write locks to safely access shared state:
-	//   - Initial state capture under read lock
-	//   - Channel array copied for thread safety
-	//   - Filter state updates under write lock
-	//   - All other processing lock-free
+	// The function acquires chip.mu for the state snapshot and channel mixing loop,
+	// ensuring channel fields cannot be torn by concurrent HandleRegisterWrite calls.
+	// Post-mixing processing (overdrive, filter, reverb) runs lock-free using only
+	// snapshotted locals and audio-thread-only state.
 	//
 	// Returns a stereo sample pair in the range [-1.0, 1.0]
 	// ------------------------------------------------------------------------------
@@ -2217,22 +2216,19 @@ func (chip *SoundChip) GenerateSample() float32 {
 	sidMixerDCOffset := chip.sidMixerDCOffset
 	sidMixerSaturate := chip.sidMixerSaturate
 
-	// Channel pointers are fixed at init time and never change, so we can
-	// access them directly without copying. Only the channel state is mutable.
-	channels := &chip.channels
-	chip.mu.Unlock()
-
-	// Mix samples from all active channels
+	// Channel mixing under lock — protects channel fields from concurrent
+	// HandleRegisterWrite on CPU threads
 	var sum float32
 	activeCount := 0
 	var primaryType uint32 = 0 // Store the wave type of first active channel
 	for i := 0; i < NUM_CHANNELS; i++ {
-		ch := channels[i]
+		ch := chip.channels[i]
 		if ch.enabled {
 			sum += ch.generateSample()
 			activeCount++
 		}
 	}
+	chip.mu.Unlock()
 
 	var sample float32
 	if activeCount == 0 {
