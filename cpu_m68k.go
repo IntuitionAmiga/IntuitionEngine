@@ -1004,6 +1004,48 @@ func (cpu *M68KCPU) decodeGroup2(opcode uint16) {
 		return
 	}
 
+	// Fast path: MOVE.L #imm,Dn
+	if srcMode == 7 && srcReg == 4 && destMode == 0 {
+		value := cpu.Fetch32()
+		cpu.DataRegs[destReg] = value
+		cpu.SR &= ^uint16(M68K_SR_N | M68K_SR_Z | M68K_SR_V | M68K_SR_C)
+		if value == 0 {
+			cpu.SR |= M68K_SR_Z
+		} else if (value & 0x80000000) != 0 {
+			cpu.SR |= M68K_SR_N
+		}
+		cpu.cycleCounter += M68K_CYCLE_FETCH + M68K_CYCLE_EA_IM + M68K_CYCLE_REG
+		return
+	}
+
+	// Fast path: MOVE.L (An),Dm
+	if srcMode == M68K_AM_AR_IND && destMode == 0 {
+		value := cpu.Read32(cpu.AddrRegs[srcReg])
+		cpu.DataRegs[destReg] = value
+		cpu.SR &= ^uint16(M68K_SR_N | M68K_SR_Z | M68K_SR_V | M68K_SR_C)
+		if value == 0 {
+			cpu.SR |= M68K_SR_Z
+		} else if (value & 0x80000000) != 0 {
+			cpu.SR |= M68K_SR_N
+		}
+		cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_REG
+		return
+	}
+
+	// Fast path: MOVE.L Dn,(Am)
+	if srcMode == 0 && destMode == M68K_AM_AR_IND {
+		value := cpu.DataRegs[srcReg]
+		cpu.Write32(cpu.AddrRegs[destReg], value)
+		cpu.SR &= ^uint16(M68K_SR_N | M68K_SR_Z | M68K_SR_V | M68K_SR_C)
+		if value == 0 {
+			cpu.SR |= M68K_SR_Z
+		} else if (value & 0x80000000) != 0 {
+			cpu.SR |= M68K_SR_N
+		}
+		cpu.cycleCounter += M68K_CYCLE_REG + M68K_CYCLE_MEM_WRITE
+		return
+	}
+
 	cpu.ExecMove(srcMode, srcReg, destMode, destReg, 2) // size=2 for long
 }
 
@@ -1112,10 +1154,19 @@ func (cpu *M68KCPU) decodeGroup4(opcode uint16) {
 
 	// LEA
 	if (opcode & 0xF1C0) == M68K_LEA {
-		reg := (opcode >> 9) & 0x7
+		areg := (opcode >> 9) & 0x7
 		mode := (opcode >> 3) & 0x7
 		xreg := opcode & 0x7
-		cpu.ExecLea(reg, mode, xreg)
+
+		// Fast path: LEA d16(An),Am
+		if mode == M68K_AM_AR_DISP {
+			disp := int16(cpu.Fetch16())
+			cpu.AddrRegs[areg] = cpu.AddrRegs[xreg] + uint32(disp)
+			cpu.cycleCounter += M68K_CYCLE_REG
+			return
+		}
+
+		cpu.ExecLea(areg, mode, xreg)
 		return
 	}
 
@@ -1298,11 +1349,35 @@ func (cpu *M68KCPU) decodeGroup4(opcode uint16) {
 
 // decodeGroup5: 0x5xxx - ADDQ, SUBQ, Scc, DBcc
 func (cpu *M68KCPU) decodeGroup5(opcode uint16) {
-	// DBcc
+	// DBcc (inlined)
 	if (opcode & 0xF0F8) == M68K_DBcc {
 		reg := opcode & 0x7
 		condition := (opcode >> 8) & 0xF
-		cpu.ExecDBcc(condition, reg)
+		displacement := int16(cpu.Fetch16()) // MUST fetch before condition check
+
+		var condMet bool
+		switch condition {
+		case 0: // DBT
+			condMet = true
+		case 1: // DBF (DBRA)
+			condMet = false
+		case 6: // DBNE
+			condMet = (cpu.SR & M68K_SR_Z) == 0
+		case 7: // DBEQ
+			condMet = (cpu.SR & M68K_SR_Z) != 0
+		default:
+			condMet = cpu.CheckCondition(uint8(condition))
+		}
+
+		if !condMet {
+			counter := int16(cpu.DataRegs[reg] & 0xFFFF)
+			counter--
+			cpu.DataRegs[reg] = (cpu.DataRegs[reg] & 0xFFFF0000) | uint32(uint16(counter))
+			if counter != -1 {
+				cpu.PC = cpu.PC - M68K_WORD_SIZE + uint32(displacement)
+			}
+		}
+		cpu.cycleCounter += M68K_CYCLE_BRANCH
 		return
 	}
 
@@ -1324,7 +1399,66 @@ func (cpu *M68KCPU) decodeGroup5(opcode uint16) {
 		size := (opcode >> 6) & 0x3
 		mode := (opcode >> 3) & 0x7
 		reg := opcode & 0x7
-		if (opcode & 0x0100) != 0 {
+		isSub := (opcode & 0x0100) != 0
+
+		// Fast path: ADDQ/SUBQ An (no flags affected)
+		if mode == M68K_AM_AR {
+			if isSub {
+				cpu.AddrRegs[reg] -= uint32(data)
+			} else {
+				cpu.AddrRegs[reg] += uint32(data)
+			}
+			cpu.cycleCounter += M68K_CYCLE_REG
+			return
+		}
+
+		// Fast path: ADDQ.L/SUBQ.L #n,Dn
+		if mode == M68K_AM_DR && size == 2 {
+			d := uint32(data)
+			dest := cpu.DataRegs[reg]
+			if isSub {
+				result := dest - d
+				cpu.DataRegs[reg] = result
+				cpu.SR &= ^uint16(M68K_SR_N | M68K_SR_Z | M68K_SR_V | M68K_SR_C | M68K_SR_X)
+				if result == 0 {
+					cpu.SR |= M68K_SR_Z
+				}
+				if (result & 0x80000000) != 0 {
+					cpu.SR |= M68K_SR_N
+				}
+				if dest < d {
+					cpu.SR |= M68K_SR_C | M68K_SR_X
+				}
+				// Overflow: dest negative and result positive (data is always 1-8, positive)
+				if ((dest & 0x80000000) != 0) && ((result & 0x80000000) == 0) {
+					cpu.SR |= M68K_SR_V
+				}
+			} else {
+				result := dest + d
+				cpu.DataRegs[reg] = result
+				cpu.SR &= ^uint16(M68K_SR_N | M68K_SR_Z | M68K_SR_V | M68K_SR_C | M68K_SR_X)
+				if result == 0 {
+					cpu.SR |= M68K_SR_Z
+				}
+				if (result & 0x80000000) != 0 {
+					cpu.SR |= M68K_SR_N
+				}
+				if result < dest { // unsigned overflow
+					cpu.SR |= M68K_SR_C | M68K_SR_X
+				}
+				// Overflow: positive + positive = negative (data always positive)
+				signDest := (dest & 0x80000000) != 0
+				signResult := (result & 0x80000000) != 0
+				if !signDest && signResult {
+					cpu.SR |= M68K_SR_V
+				}
+			}
+			cpu.cycleCounter += M68K_CYCLE_REG
+			return
+		}
+
+		// Slow path
+		if isSub {
 			cpu.ExecSubq(uint32(data), size, mode, reg)
 		} else {
 			cpu.ExecAddq(uint32(data), size, mode, reg)
@@ -1339,14 +1473,55 @@ func (cpu *M68KCPU) decodeGroup5(opcode uint16) {
 
 // decodeGroup6: 0x6xxx - Bcc (branches including BRA, BSR)
 func (cpu *M68KCPU) decodeGroup6(opcode uint16) {
-	cpu.ExecBRA(opcode)
+	condition := (opcode >> 8) & 0xF
+	displacement := int8(opcode & 0xFF)
+
+	// Fast path: Bcc.B (byte displacement, not BRA/BSR, not word/long)
+	if displacement != 0 && displacement != -1 && condition >= 2 {
+		var take bool
+		switch condition {
+		case 6: // BNE
+			take = (cpu.SR & M68K_SR_Z) == 0
+		case 7: // BEQ
+			take = (cpu.SR & M68K_SR_Z) != 0
+		case 4: // BCC
+			take = (cpu.SR & M68K_SR_C) == 0
+		case 5: // BCS
+			take = (cpu.SR & M68K_SR_C) != 0
+		case 10: // BPL
+			take = (cpu.SR & M68K_SR_N) == 0
+		case 11: // BMI
+			take = (cpu.SR & M68K_SR_N) != 0
+		default:
+			take = cpu.CheckCondition(uint8(condition))
+		}
+		if take {
+			targetPC := cpu.PC + uint32(int32(displacement))
+			if targetPC >= M68K_MEMORY_SIZE-M68K_WORD_SIZE {
+				cpu.running.Store(false)
+				return
+			}
+			cpu.PC = targetPC
+			cpu.prefetchSize = 0
+		}
+		return
+	}
+
+	cpu.ExecBRA(opcode) // Slow path: BRA, BSR, word/long displacement
 }
 
-// decodeGroup7: 0x7xxx - MOVEQ
+// decodeGroup7: 0x7xxx - MOVEQ (fully inlined — always LONG, no size switch needed)
 func (cpu *M68KCPU) decodeGroup7(opcode uint16) {
 	reg := (opcode >> 9) & 0x7
-	data := int8(opcode & 0xFF)
-	cpu.ExecMoveq(reg, data)
+	value := uint32(int32(int8(opcode & 0xFF)))
+	cpu.DataRegs[reg] = value
+	cpu.SR &= ^uint16(M68K_SR_N | M68K_SR_Z | M68K_SR_V | M68K_SR_C)
+	if value == 0 {
+		cpu.SR |= M68K_SR_Z
+	} else if (value & 0x80000000) != 0 {
+		cpu.SR |= M68K_SR_N
+	}
+	cpu.cycleCounter += M68K_CYCLE_REG
 }
 
 // decodeGroup8: 0x8xxx - OR, DIV, SBCD
@@ -1396,6 +1571,21 @@ func (cpu *M68KCPU) decodeGroup8(opcode uint16) {
 	opmode := (opcode >> 6) & 0x7
 	mode := (opcode >> 3) & 0x7
 	xreg := opcode & 0x7
+
+	// Fast path: OR.L Dn,Dm (opmode=2: <ea> to Dn, register-to-register long)
+	if mode == 0 && opmode == 2 {
+		result := cpu.DataRegs[reg] | cpu.DataRegs[xreg]
+		cpu.DataRegs[reg] = result
+		cpu.SR &= ^uint16(M68K_SR_N | M68K_SR_Z)
+		if result == 0 {
+			cpu.SR |= M68K_SR_Z
+		} else if (result & 0x80000000) != 0 {
+			cpu.SR |= M68K_SR_N
+		}
+		cpu.cycleCounter += M68K_CYCLE_REG
+		return
+	}
+
 	cpu.ExecOr(reg, opmode, mode, xreg)
 }
 
@@ -1525,6 +1715,28 @@ func (cpu *M68KCPU) decodeGroupB(opcode uint16) {
 		return
 	}
 
+	// Fast path: CMP.L Dn,Dm (register-to-register long)
+	if mode == 0 && (opmode&3) == 2 {
+		source := cpu.DataRegs[xreg]
+		dest := cpu.DataRegs[reg]
+		result := dest - source
+		cpu.SR &= ^uint16(M68K_SR_N | M68K_SR_Z | M68K_SR_V | M68K_SR_C)
+		if dest < source {
+			cpu.SR |= M68K_SR_C
+		}
+		if ((dest & 0x80000000) != (source & 0x80000000)) && ((result & 0x80000000) == (source & 0x80000000)) {
+			cpu.SR |= M68K_SR_V
+		}
+		if result == 0 {
+			cpu.SR |= M68K_SR_Z
+		}
+		if (result & 0x80000000) != 0 {
+			cpu.SR |= M68K_SR_N
+		}
+		cpu.cycleCounter += M68K_CYCLE_REG + M68K_CYCLE_EXECUTE
+		return
+	}
+
 	cpu.ExecCmp(reg, opmode, mode, xreg)
 }
 
@@ -1577,6 +1789,29 @@ func (cpu *M68KCPU) decodeGroupC(opcode uint16) {
 	opmode := (opcode >> 6) & 0x7
 	mode := (opcode >> 3) & 0x7
 	xreg := opcode & 0x7
+
+	// Fast path: AND.L Dn,Dm (register-to-register long)
+	if mode == 0 && (opmode == 2 || opmode == 6) {
+		var result uint32
+		if opmode == 2 {
+			// AND.L <ea>,Dn — source from xreg, dest is reg
+			result = cpu.DataRegs[reg] & cpu.DataRegs[xreg]
+			cpu.DataRegs[reg] = result
+		} else {
+			// AND.L Dn,<ea> — source from reg, dest is xreg
+			result = cpu.DataRegs[xreg] & cpu.DataRegs[reg]
+			cpu.DataRegs[xreg] = result
+		}
+		cpu.SR &= ^uint16(M68K_SR_N | M68K_SR_Z)
+		if result == 0 {
+			cpu.SR |= M68K_SR_Z
+		} else if (result & 0x80000000) != 0 {
+			cpu.SR |= M68K_SR_N
+		}
+		cpu.cycleCounter += M68K_CYCLE_REG
+		return
+	}
+
 	cpu.ExecAnd(reg, opmode, mode, xreg)
 }
 
@@ -1852,8 +2087,6 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 				break innerLoop
 			}
 
-			originalPC := cpu.PC
-
 			// Fast inline fetch - PC is always word-aligned after valid execution
 			// Read as little-endian uint16, then byte-swap to big-endian
 			leValue := *(*uint16)(unsafe.Pointer(uintptr(memBase) + uintptr(cpu.PC)))
@@ -1862,24 +2095,12 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 
 			cpu.FetchAndDecodeInstruction()
 
-			// Check if we're stuck at the same PC (only needed for debugging malformed programs)
-			if cpu.PC == originalPC {
-				stuckCounter++
-				if stuckCounter > 10 {
-					fmt.Printf("Error: PC stuck at 0x%08X, skipping instruction\n", cpu.PC)
-					cpu.PC += 2
-					stuckCounter = 0
-				}
-			} else if cpu.PC == lastPC {
-				stuckCounter++
-			} else {
-				stuckCounter = 0
-				lastPC = cpu.PC
-			}
-
 			instructionCount++
 
-			// Process interrupts every 256 instructions (reduces atomic load overhead)
+			// Process interrupts + stuck-PC debug check every 256 instructions.
+			// Stuck-PC detection is sampled rather than per-instruction — a stuck PC
+			// will be caught within ~256 iterations instead of immediately. This is
+			// acceptable: stuck-PC is a debug safety net, not a correctness mechanism.
 			if instructionCount&0xFF == 0 {
 				pendingException := cpu.pendingException.Load()
 				if pendingException != 0 && !cpu.inException.Load() {
@@ -1894,6 +2115,19 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 						cpu.ProcessInterrupt(uint8(pending))
 						cpu.pendingInterrupt.Store(0)
 					}
+				}
+
+				// Stuck-PC detection (sampled every 256 instructions)
+				if cpu.PC == lastPC {
+					stuckCounter++
+					if stuckCounter > 10 {
+						fmt.Printf("Error: PC stuck at 0x%08X, skipping instruction\n", cpu.PC)
+						cpu.PC += 2
+						stuckCounter = 0
+					}
+				} else {
+					stuckCounter = 0
+					lastPC = cpu.PC
 				}
 			}
 		}
