@@ -43,6 +43,9 @@ func (p *PSGPlayer) AttachBus(bus MemoryBus) {
 }
 
 func (p *PSGPlayer) Load(path string) error {
+	p.renderInstructions = 0
+	p.renderCPU = ""
+	p.renderExecNanos = 0
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
 	case ".ym":
@@ -115,6 +118,9 @@ func (p *PSGPlayer) Load(path string) error {
 }
 
 func (p *PSGPlayer) LoadData(data []byte) error {
+	p.renderInstructions = 0
+	p.renderCPU = ""
+	p.renderExecNanos = 0
 	if len(data) == 0 {
 		return fmt.Errorf("psg data empty")
 	}
