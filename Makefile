@@ -58,7 +58,7 @@ APP_VERSION := 1.0.0
 .PHONY: all clean list install uninstall
 
 # Default target builds everything
-all: setup intuition-engine ie32asm
+all: setup intuition-engine ie32asm ie64asm
 	@echo "Build complete! Executables are in $(BIN_DIR)/"
 	@$(MAKE) list
 
@@ -89,6 +89,28 @@ ie32asm: setup
 	@$(UPX) --lzma ie32asm
 	@mv ie32asm $(BIN_DIR)/
 	@echo "IE32 assembler build complete"
+
+# Build the IE64 assembler
+ie64asm: setup
+	@echo "Building IE64 assembler..."
+	@$(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm assembler/ie64asm.go
+	@echo "Stripping debug symbols..."
+	@$(SSTRIP) -z ie64asm
+	@echo "Applying UPX compression..."
+	@$(UPX) --lzma ie64asm
+	@mv ie64asm $(BIN_DIR)/
+	@echo "IE64 assembler build complete"
+
+# Build the IE64 disassembler
+ie64dis: setup
+	@echo "Building IE64 disassembler..."
+	@$(GO) build $(GO_FLAGS) -tags ie64dis -o ie64dis assembler/ie64dis.go
+	@echo "Stripping debug symbols..."
+	@$(SSTRIP) -z ie64dis
+	@echo "Applying UPX compression..."
+	@$(UPX) --lzma ie64dis
+	@mv ie64dis $(BIN_DIR)/
+	@echo "IE64 disassembler build complete"
 
 # Build the IE65 data generator tool
 gen-65-data: setup
@@ -368,6 +390,8 @@ help:
 	@echo "  all            - Build both Intuition Engine and ie32asm (default)"
 	@echo "  intuition-engine - Build only the Intuition Engine VM"
 	@echo "  ie32asm        - Build only the IE32 assembler"
+	@echo "  ie64asm        - Build only the IE64 assembler"
+	@echo "  ie64dis        - Build only the IE64 disassembler"
 	@echo "  appimage       - Create AppImage package"
 	@echo "  install        - Install binaries to $(INSTALL_BIN_DIR)"
 	@echo "  uninstall      - Remove installed binaries from $(INSTALL_BIN_DIR)"

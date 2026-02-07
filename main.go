@@ -130,6 +130,7 @@ func main() {
 
 	var (
 		modeIE32  bool
+		modeIE64  bool
 		modeM68K  bool
 		modeM6502 bool
 		modeZ80   bool
@@ -156,6 +157,7 @@ func main() {
 	flagSet := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
 	flagSet.SetOutput(io.Discard)
 	flagSet.BoolVar(&modeIE32, "ie32", false, "Run IE32 CPU mode")
+	flagSet.BoolVar(&modeIE64, "ie64", false, "Run IE64 CPU mode (64-bit RISC)")
 	flagSet.BoolVar(&modeM68K, "m68k", false, "Run M68K CPU mode")
 	flagSet.BoolVar(&modeM6502, "m6502", false, "Run 6502 CPU mode")
 	flagSet.BoolVar(&modeZ80, "z80", false, "Run Z80 CPU mode")
@@ -180,7 +182,7 @@ func main() {
 
 	flagSet.Usage = func() {
 		flagSet.SetOutput(os.Stdout)
-		fmt.Println("Usage: ./intuition_engine -ie32|-m68k|-m6502|-z80|-x86|-psg|-psg+|-sid|-sid+|-pokey|-pokey+|-ted|-ted+|-ahx|-ahx+ [--load-addr addr] [--entry addr] filename")
+		fmt.Println("Usage: ./intuition_engine -ie32|-ie64|-m68k|-m6502|-z80|-x86|-psg|-psg+|-sid|-sid+|-pokey|-pokey+|-ted|-ted+|-ahx|-ahx+ [--load-addr addr] [--entry addr] filename")
 		flagSet.PrintDefaults()
 	}
 
@@ -217,6 +219,9 @@ func main() {
 	if modeIE32 {
 		modeCount++
 	}
+	if modeIE64 {
+		modeCount++
+	}
 	if modeM68K {
 		modeCount++
 	}
@@ -249,7 +254,7 @@ func main() {
 		modeCount = 1
 	}
 	if modeCount != 1 {
-		fmt.Println("Error: select exactly one mode flag: -ie32, -m68k, -m6502, -z80, -x86, -psg, -psg+, -sid, -sid+, -pokey, -pokey+, -ted, -ted+, -ahx, or -ahx+")
+		fmt.Println("Error: select exactly one mode flag: -ie32, -ie64, -m68k, -m6502, -z80, -x86, -psg, -psg+, -sid, -sid+, -pokey, -pokey+, -ted, -ted+, -ahx, or -ahx+")
 		os.Exit(1)
 	}
 	if filename == "" && modePSG {
@@ -719,6 +724,41 @@ func main() {
 			// Start CPU execution
 			fmt.Printf("Starting IE32 CPU with program: %s\n", filename)
 			go ie32CPU.Execute()
+		}
+
+	} else if modeIE64 {
+		// Initialize IE64 CPU (64-bit RISC)
+		ie64CPU := NewCPU64(sysBus)
+
+		// Load program
+		if filename != "" {
+			if err := ie64CPU.LoadProgram(filename); err != nil {
+				fmt.Printf("Error loading IE64 program: %v\n", err)
+				os.Exit(1)
+			}
+			startExecution = true
+		}
+
+		// Initialize GUI with IE64 CPU
+		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, ie64CPU, videoChip, soundChip, psgPlayer, sidPlayer, ahxPlayerCPU)
+		if err != nil {
+			fmt.Printf("Failed to initialize GUI: %v\n", err)
+			os.Exit(1)
+		}
+
+		if startExecution {
+			// Start peripherals
+			videoChip.Start()
+			compositor.Start()
+			vgaEngine.StartRenderLoop()
+			ulaEngine.StartRenderLoop()
+			tedVideoEngine.StartRenderLoop()
+			anticEngine.StartRenderLoop()
+			soundChip.Start()
+
+			// Start CPU execution
+			fmt.Printf("Starting IE64 CPU with program: %s\n", filename)
+			go ie64CPU.Execute()
 		}
 
 	} else if modeM68K {

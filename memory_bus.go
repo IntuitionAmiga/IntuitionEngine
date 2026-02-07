@@ -103,6 +103,13 @@ type SystemBus struct {
 
 	// Lock-free fast path for VIDEO_STATUS (allows VBlank polling without blocking)
 	videoStatusReader func(addr uint32) uint32
+
+	// 64-bit I/O region map — separate from legacy 32-bit mapping.
+	// Registered via MapIO64, used by Read64/Write64 for native 64-bit dispatch.
+	mapping64 map[uint32][]IORegion64
+
+	// Policy for 64-bit access to legacy-only MMIO regions (default: Fault)
+	legacyMMIO64Policy MMIO64Policy
 }
 
 type IORegion struct {
@@ -118,6 +125,34 @@ type IORegion struct {
 	end     uint32
 	onRead  func(addr uint32) uint32
 	onWrite func(addr uint32, value uint32)
+}
+
+// IORegion64 represents a 64-bit-capable memory-mapped I/O region.
+// These are registered separately from legacy 32-bit IORegions via MapIO64.
+type IORegion64 struct {
+	start     uint32
+	end       uint32
+	onRead64  func(addr uint32) uint64
+	onWrite64 func(addr uint32, value uint64)
+}
+
+// MMIO64Policy controls behavior when a 64-bit access hits a legacy-only I/O region.
+type MMIO64Policy int
+
+const (
+	// MMIO64PolicyFault returns 0/no-op when 64-bit access hits legacy-only MMIO.
+	MMIO64PolicyFault MMIO64Policy = iota
+	// MMIO64PolicySplit splits into two 32-bit operations (low then high).
+	MMIO64PolicySplit
+)
+
+// MemoryBus64 extends the memory bus with native 64-bit data operations.
+// Only used by the IE64 CPU; existing 32-bit CPUs are unaffected.
+type MemoryBus64 interface {
+	Read64(addr uint32) uint64
+	Write64(addr uint32, value uint64)
+	Read64WithFault(addr uint32) (uint64, bool)
+	Write64WithFault(addr uint32, value uint64) bool
 }
 
 func (bus *SystemBus) Write32WithFault(addr uint32, value uint32) bool {
@@ -521,6 +556,7 @@ func NewSystemBus() *SystemBus {
 		memory:       make([]byte, DEFAULT_MEMORY_SIZE),
 		mapping:      make(map[uint32][]IORegion),
 		ioPageBitmap: make([]bool, DEFAULT_MEMORY_SIZE/PAGE_SIZE),
+		mapping64:    make(map[uint32][]IORegion64),
 	}
 }
 
@@ -1129,6 +1165,325 @@ func (bus *SystemBus) read8Slow(addr uint32) uint8 {
 	// Regular memory read
 	result := bus.memory[addr]
 	return result
+}
+
+// =============================================================================
+// 64-bit Memory Bus Extension (IE64 only)
+// =============================================================================
+
+// SetLegacyMMIO64Policy sets the behavior when 64-bit access hits a legacy-only I/O region.
+func (bus *SystemBus) SetLegacyMMIO64Policy(policy MMIO64Policy) {
+	bus.legacyMMIO64Policy = policy
+}
+
+// MapIO64 registers a 64-bit-capable I/O region. This is separate from MapIO;
+// 64-bit handlers are only used by Read64/Write64. 32-bit operations always use MapIO.
+func (bus *SystemBus) MapIO64(start, end uint32, onRead64 func(addr uint32) uint64, onWrite64 func(addr uint32, value uint64)) {
+	region := IORegion64{
+		start:     start,
+		end:       end,
+		onRead64:  onRead64,
+		onWrite64: onWrite64,
+	}
+
+	firstPage := start & PAGE_MASK
+	lastPage := end & PAGE_MASK
+	for page := firstPage; page <= lastPage; page += PAGE_SIZE {
+		bus.mapping64[page] = append(bus.mapping64[page], region)
+		pageIdx := page >> 8
+		if pageIdx < uint32(len(bus.ioPageBitmap)) {
+			bus.ioPageBitmap[pageIdx] = true
+		}
+	}
+
+	// Sign-extension mirroring for addresses in 0x8000-0xFFFF range
+	if start >= 0x8000 && start <= 0xFFFF {
+		signExtStart := start | 0xFFFF0000
+		signExtEnd := end | 0xFFFF0000
+		firstSignExtPage := signExtStart & PAGE_MASK
+		lastSignExtPage := signExtEnd & PAGE_MASK
+		for page := firstSignExtPage; page <= lastSignExtPage; page += PAGE_SIZE {
+			bus.mapping64[page] = append(bus.mapping64[page], region)
+		}
+	}
+}
+
+// findIORegion64 looks up a 64-bit I/O region for the given address.
+func (bus *SystemBus) findIORegion64(addr uint32) *IORegion64 {
+	page := addr & PAGE_MASK
+	if regions, exists := bus.mapping64[page]; exists {
+		for i := range regions {
+			if addr >= regions[i].start && addr <= regions[i].end {
+				return &regions[i]
+			}
+		}
+	}
+	return nil
+}
+
+// findIORegion looks up a legacy 32-bit I/O region for the given address.
+func (bus *SystemBus) findIORegion(addr uint32) *IORegion {
+	page := addr & PAGE_MASK
+	if regions, exists := bus.mapping[page]; exists {
+		for i := range regions {
+			if addr >= regions[i].start && addr <= regions[i].end {
+				return &regions[i]
+			}
+		}
+	}
+	return nil
+}
+
+// Read64 performs a native 64-bit read. For plain RAM (no I/O on either page),
+// uses a single unsafe 64-bit load. For I/O regions, dispatches per the span rules.
+func (bus *SystemBus) Read64(addr uint32) uint64 {
+	// Sign-extended addresses always take the slow path (before bounds check,
+	// since the mapped address may be in bounds even if the raw address is not)
+	if addr >= 0xFFFF0000 {
+		return bus.read64Slow(addr)
+	}
+
+	// Bounds check using uint64 arithmetic to prevent overflow
+	if uint64(addr)+8 > uint64(len(bus.memory)) {
+		return 0
+	}
+
+	// Fast path: both pages are non-I/O → single 64-bit load
+	lowPage := addr >> 8
+	highPage := uint32(uint64(addr)+7) >> 8
+	if lowPage < uint32(len(bus.ioPageBitmap)) && highPage < uint32(len(bus.ioPageBitmap)) &&
+		!bus.ioPageBitmap[lowPage] && !bus.ioPageBitmap[highPage] {
+		return *(*uint64)(unsafe.Pointer(&bus.memory[addr]))
+	}
+
+	return bus.read64Slow(addr)
+}
+
+// read64Slow handles 64-bit reads that may involve I/O regions.
+func (bus *SystemBus) read64Slow(addr uint32) uint64 {
+	// Map sign-extended addresses
+	effectiveAddr := addr
+	if addr >= 0xFFFF0000 {
+		// Reject addresses where raw addr+7 would overflow uint32
+		if uint64(addr)+8 > 0x100000000 {
+			return 0
+		}
+		effectiveAddr = addr & 0x0000FFFF
+		if uint64(effectiveAddr)+8 > uint64(len(bus.memory)) {
+			return 0
+		}
+	}
+
+	lowAddr := effectiveAddr
+	highAddr := effectiveAddr + 4
+
+	// Check for native 64-bit region covering the entire 8 bytes.
+	// For sign-extended addresses, also look up the original (unmapped) address
+	// since MapIO64 registers sign-extended pages in the mapping64 table.
+	region64 := bus.findIORegion64(lowAddr)
+	if region64 == nil && addr >= 0xFFFF0000 {
+		region64 = bus.findIORegion64(addr)
+	}
+	if region64 != nil && highAddr <= region64.end && region64.onRead64 != nil {
+		return region64.onRead64(lowAddr)
+	}
+
+	// Must split into two 32-bit halves
+	lowVal := bus.read32Half(lowAddr)
+	highVal := bus.read32Half(highAddr)
+	return uint64(lowVal) | (uint64(highVal) << 32)
+}
+
+// read32Half reads a 32-bit half for split 64-bit operations.
+// Prefers native 64-bit handler (read as single half), then legacy, then RAM.
+func (bus *SystemBus) read32Half(addr uint32) uint32 {
+	// Check for 64-bit region (dispatch as 32-bit portion)
+	region64 := bus.findIORegion64(addr)
+	if region64 != nil && region64.onRead64 != nil {
+		// Read full 64-bit value and extract the relevant 32-bit half
+		val := region64.onRead64(addr)
+		return uint32(val)
+	}
+
+	// Check for legacy 32-bit region
+	region := bus.findIORegion(addr)
+	if region != nil {
+		if bus.legacyMMIO64Policy == MMIO64PolicyFault {
+			return 0
+		}
+		// Split policy: use legacy callback
+		if region.onRead != nil {
+			return region.onRead(addr)
+		}
+		return 0
+	}
+
+	// Plain RAM
+	if addr+4 <= uint32(len(bus.memory)) {
+		return *(*uint32)(unsafe.Pointer(&bus.memory[addr]))
+	}
+	return 0
+}
+
+// Write64 performs a native 64-bit write. For plain RAM (no I/O on either page),
+// uses a single unsafe 64-bit store. For I/O regions, dispatches per the span rules.
+func (bus *SystemBus) Write64(addr uint32, value uint64) {
+	// Sign-extended addresses always take the slow path (before bounds check,
+	// since the mapped address may be in bounds even if the raw address is not)
+	if addr >= 0xFFFF0000 {
+		bus.write64Slow(addr, value)
+		return
+	}
+
+	// Bounds check using uint64 arithmetic to prevent overflow
+	if uint64(addr)+8 > uint64(len(bus.memory)) {
+		return
+	}
+
+	// Fast path: both pages are non-I/O → single 64-bit store
+	lowPage := addr >> 8
+	highPage := uint32(uint64(addr)+7) >> 8
+	if lowPage < uint32(len(bus.ioPageBitmap)) && highPage < uint32(len(bus.ioPageBitmap)) &&
+		!bus.ioPageBitmap[lowPage] && !bus.ioPageBitmap[highPage] {
+		*(*uint64)(unsafe.Pointer(&bus.memory[addr])) = value
+		return
+	}
+
+	bus.write64Slow(addr, value)
+}
+
+// write64Slow handles 64-bit writes that may involve I/O regions.
+func (bus *SystemBus) write64Slow(addr uint32, value uint64) {
+	// Map sign-extended addresses
+	effectiveAddr := addr
+	if addr >= 0xFFFF0000 {
+		// Reject addresses where raw addr+7 would overflow uint32
+		if uint64(addr)+8 > 0x100000000 {
+			return
+		}
+		effectiveAddr = addr & 0x0000FFFF
+		if uint64(effectiveAddr)+8 > uint64(len(bus.memory)) {
+			return
+		}
+	}
+
+	lowAddr := effectiveAddr
+	highAddr := effectiveAddr + 4
+
+	// Check for native 64-bit region covering the entire 8 bytes.
+	// For sign-extended addresses, also look up the original (unmapped) address.
+	region64 := bus.findIORegion64(lowAddr)
+	if region64 == nil && addr >= 0xFFFF0000 {
+		region64 = bus.findIORegion64(addr)
+	}
+	if region64 != nil && highAddr <= region64.end && region64.onWrite64 != nil {
+		region64.onWrite64(lowAddr, value)
+		// Also store to backing memory
+		if uint64(lowAddr)+8 <= uint64(len(bus.memory)) {
+			*(*uint64)(unsafe.Pointer(&bus.memory[lowAddr])) = value
+		}
+		return
+	}
+
+	// Must split into two 32-bit halves (low then high)
+	lowVal := uint32(value)
+	highVal := uint32(value >> 32)
+	bus.write32Half(lowAddr, lowVal)
+	bus.write32Half(highAddr, highVal)
+}
+
+// write32Half writes a 32-bit half for split 64-bit operations.
+func (bus *SystemBus) write32Half(addr uint32, value uint32) {
+	// Check for 64-bit region
+	region64 := bus.findIORegion64(addr)
+	if region64 != nil && region64.onWrite64 != nil {
+		region64.onWrite64(addr, uint64(value))
+		if addr+4 <= uint32(len(bus.memory)) {
+			*(*uint32)(unsafe.Pointer(&bus.memory[addr])) = value
+		}
+		return
+	}
+
+	// Check for legacy 32-bit region
+	region := bus.findIORegion(addr)
+	if region != nil {
+		if bus.legacyMMIO64Policy == MMIO64PolicyFault {
+			return // no-op under Fault policy
+		}
+		// Split policy: use legacy callback
+		if region.onWrite != nil {
+			region.onWrite(addr, value)
+		}
+		if addr+4 <= uint32(len(bus.memory)) {
+			binary.LittleEndian.PutUint32(bus.memory[addr:addr+4], value)
+		}
+		return
+	}
+
+	// Plain RAM
+	if addr+4 <= uint32(len(bus.memory)) {
+		*(*uint32)(unsafe.Pointer(&bus.memory[addr])) = value
+	}
+}
+
+// Read64WithFault performs a 64-bit read with fault reporting.
+// Returns (0, false) if the access cannot complete (OOB or legacy MMIO under Fault policy).
+func (bus *SystemBus) Read64WithFault(addr uint32) (uint64, bool) {
+	effectiveAddr := addr
+	if addr >= 0xFFFF0000 {
+		effectiveAddr = addr & 0x0000FFFF
+	}
+
+	if uint64(effectiveAddr)+8 > uint64(len(bus.memory)) {
+		return 0, false
+	}
+
+	// Check if any half hits legacy-only MMIO under Fault policy
+	lowAddr := effectiveAddr
+	highAddr := effectiveAddr + 4
+
+	if bus.legacyMMIO64Policy == MMIO64PolicyFault {
+		// Check low half
+		if bus.findIORegion64(lowAddr) == nil && bus.findIORegion(lowAddr) != nil {
+			return 0, false
+		}
+		// Check high half
+		if bus.findIORegion64(highAddr) == nil && bus.findIORegion(highAddr) != nil {
+			return 0, false
+		}
+	}
+
+	val := bus.Read64(addr)
+	return val, true
+}
+
+// Write64WithFault performs a 64-bit write with fault reporting.
+// Returns false if the access cannot complete.
+func (bus *SystemBus) Write64WithFault(addr uint32, value uint64) bool {
+	effectiveAddr := addr
+	if addr >= 0xFFFF0000 {
+		effectiveAddr = addr & 0x0000FFFF
+	}
+
+	if uint64(effectiveAddr)+8 > uint64(len(bus.memory)) {
+		return false
+	}
+
+	// Check if any half hits legacy-only MMIO under Fault policy
+	lowAddr := effectiveAddr
+	highAddr := effectiveAddr + 4
+
+	if bus.legacyMMIO64Policy == MMIO64PolicyFault {
+		if bus.findIORegion64(lowAddr) == nil && bus.findIORegion(lowAddr) != nil {
+			return false
+		}
+		if bus.findIORegion64(highAddr) == nil && bus.findIORegion(highAddr) != nil {
+			return false
+		}
+	}
+
+	bus.Write64(addr, value)
+	return true
 }
 
 func (bus *SystemBus) Reset() {
