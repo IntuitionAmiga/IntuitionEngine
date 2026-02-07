@@ -636,6 +636,10 @@ func main() {
 			// Start peripherals
 			videoChip.Start()
 			compositor.Start()
+			vgaEngine.StartRenderLoop()
+			ulaEngine.StartRenderLoop()
+			tedVideoEngine.StartRenderLoop()
+			anticEngine.StartRenderLoop()
 			soundChip.Start()
 
 			// Start CPU execution
@@ -679,6 +683,10 @@ func main() {
 			// Start peripherals
 			videoChip.Start()
 			compositor.Start()
+			vgaEngine.StartRenderLoop()
+			ulaEngine.StartRenderLoop()
+			tedVideoEngine.StartRenderLoop()
+			anticEngine.StartRenderLoop()
 			soundChip.SetSampleTicker(sidEngine)
 			soundChip.Start()
 
@@ -733,6 +741,10 @@ func main() {
 			// Start peripherals
 			videoChip.Start()
 			compositor.Start()
+			vgaEngine.StartRenderLoop()
+			ulaEngine.StartRenderLoop()
+			tedVideoEngine.StartRenderLoop()
+			anticEngine.StartRenderLoop()
 			soundChip.Start()
 
 			// Start CPU execution
@@ -770,6 +782,10 @@ func main() {
 			// Start peripherals
 			videoChip.Start()
 			compositor.Start()
+			vgaEngine.StartRenderLoop()
+			ulaEngine.StartRenderLoop()
+			tedVideoEngine.StartRenderLoop()
+			anticEngine.StartRenderLoop()
 			soundChip.Start()
 
 			// Start CPU execution
@@ -825,6 +841,10 @@ func main() {
 			// Start peripherals
 			videoChip.Start()
 			compositor.Start()
+			vgaEngine.StartRenderLoop()
+			ulaEngine.StartRenderLoop()
+			tedVideoEngine.StartRenderLoop()
+			anticEngine.StartRenderLoop()
 			soundChip.Start()
 
 			// Start CPU execution

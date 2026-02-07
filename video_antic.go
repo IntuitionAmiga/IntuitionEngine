@@ -46,6 +46,7 @@ Signal Flow:
 package main
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -126,6 +127,21 @@ type ANTICEngine struct {
 	debugFrameCount int
 	debugWriteCount int
 	statusReads     int
+
+	// Triple-buffered frame output for lock-free GetFrame()
+	frameBufs  [3][]byte
+	writeIdx   int
+	sharedIdx  atomic.Int32
+	readingIdx int
+
+	// Render goroutine lifecycle
+	renderMu      sync.Mutex
+	renderRunning atomic.Bool
+	renderCancel  context.CancelFunc
+	renderDone    chan struct{}
+
+	// Set by compositor during scanline-aware rendering
+	compositorManaged atomic.Bool
 }
 
 // NewANTICEngine creates a new ANTIC video engine instance
@@ -151,6 +167,15 @@ func NewANTICEngine(bus *SystemBus) *ANTICEngine {
 	antic.prior = 0
 	antic.gractl = 0
 	antic.consol = 0x07 // All console buttons released
+
+	// Initialize triple buffers for lock-free GetFrame
+	bufSize := ANTIC_FRAME_WIDTH * ANTIC_FRAME_HEIGHT * 4
+	for i := range antic.frameBufs {
+		antic.frameBufs[i] = make([]byte, bufSize)
+	}
+	antic.writeIdx = 0
+	antic.sharedIdx.Store(1)
+	antic.readingIdx = 2
 
 	return antic
 }
@@ -862,14 +887,14 @@ func (a *ANTICEngine) getDisplayListAddress() uint16 {
 // VideoSource Interface Implementation
 // =============================================================================
 
-// GetFrame returns the current rendered frame (nil if disabled)
+// GetFrame returns the current rendered frame via lock-free triple-buffer swap.
 func (a *ANTICEngine) GetFrame() []byte {
 	if !a.IsEnabled() {
 		return nil
 	}
-	frame := a.RenderFrame()
-	a.debugFrameCount++
-	return frame
+	newRead := int(a.sharedIdx.Swap(int32(a.readingIdx)))
+	a.readingIdx = newRead
+	return a.frameBufs[a.readingIdx]
 }
 
 // IsEnabled returns whether ANTIC video is active (lock-free)
@@ -918,6 +943,63 @@ func (a *ANTICEngine) SignalVSync() {
 		for i := 0; i < ANTIC_DISPLAY_HEIGHT; i++ {
 			a.playerGfx[a.writeBuffer][p][i] = 0
 			a.playerPos[a.writeBuffer][p][i] = 0
+		}
+	}
+}
+
+// =============================================================================
+// Independent Render Goroutine
+// =============================================================================
+
+// StartRenderLoop spawns a 60Hz render goroutine for lock-free GetFrame.
+func (a *ANTICEngine) StartRenderLoop() {
+	a.renderMu.Lock()
+	defer a.renderMu.Unlock()
+	if a.renderRunning.Load() {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	a.renderCancel = cancel
+	a.renderDone = make(chan struct{})
+	a.renderRunning.Store(true)
+	go a.renderLoop(ctx)
+}
+
+// StopRenderLoop stops the render goroutine and waits for it to exit.
+func (a *ANTICEngine) StopRenderLoop() {
+	a.renderMu.Lock()
+	if !a.renderRunning.Swap(false) {
+		a.renderMu.Unlock()
+		return
+	}
+	cancel := a.renderCancel
+	done := a.renderDone
+	a.renderMu.Unlock()
+	cancel()
+	<-done
+}
+
+// renderLoop runs at 60Hz, rendering frames into the triple buffer.
+func (a *ANTICEngine) renderLoop(ctx context.Context) {
+	defer close(a.renderDone)
+	ticker := time.NewTicker(COMPOSITOR_REFRESH_INTERVAL)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if !a.enabled.Load() || a.compositorManaged.Load() {
+				continue
+			}
+			frame := a.RenderFrame()
+			if frame == nil {
+				continue
+			}
+			buf := a.frameBufs[a.writeIdx]
+			copy(buf, frame)
+			a.writeIdx = int(a.sharedIdx.Swap(int32(a.writeIdx)))
 		}
 	}
 }

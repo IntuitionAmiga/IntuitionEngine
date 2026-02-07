@@ -47,8 +47,10 @@ Signal Flow:
 package main
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // ULAEngine implements ZX Spectrum ULA video as a standalone device.
@@ -85,6 +87,21 @@ type ULAEngine struct {
 
 	// Pre-allocated frame buffer (320x256 RGBA)
 	frameBuffer []byte
+
+	// Triple-buffered frame output for lock-free GetFrame()
+	frameBufs  [3][]byte
+	writeIdx   int
+	sharedIdx  atomic.Int32
+	readingIdx int
+
+	// Render goroutine lifecycle
+	renderMu      sync.Mutex
+	renderRunning atomic.Bool
+	renderCancel  context.CancelFunc
+	renderDone    chan struct{}
+
+	// Set by compositor during scanline-aware rendering
+	compositorManaged atomic.Bool
 }
 
 // NewULAEngine creates a new ULA engine instance
@@ -109,6 +126,15 @@ func NewULAEngine(bus *SystemBus) *ULAEngine {
 		midY := (y & 0x38) << 2  // Middle 3 bits of Y * 4
 		ula.rowStartAddr[y] = uint16(highY + lowY + midY)
 	}
+
+	// Initialize triple buffers for lock-free GetFrame
+	bufSize := ULA_FRAME_WIDTH * ULA_FRAME_HEIGHT * 4
+	for i := range ula.frameBufs {
+		ula.frameBufs[i] = make([]byte, bufSize)
+	}
+	ula.writeIdx = 0
+	ula.sharedIdx.Store(1)
+	ula.readingIdx = 2
 
 	return ula
 }
@@ -296,12 +322,14 @@ func (u *ULAEngine) RenderFrame() []byte {
 // VideoSource Interface Implementation
 // =============================================================================
 
-// GetFrame returns the current rendered frame (nil if disabled).
+// GetFrame returns the current rendered frame via lock-free triple-buffer swap.
 func (u *ULAEngine) GetFrame() []byte {
 	if !u.IsEnabled() {
 		return nil
 	}
-	return u.RenderFrame()
+	newRead := int(u.sharedIdx.Swap(int32(u.readingIdx)))
+	u.readingIdx = newRead
+	return u.frameBufs[u.readingIdx]
 }
 
 // IsEnabled returns whether the ULA is active (lock-free).
@@ -330,6 +358,63 @@ func (u *ULAEngine) SignalVSync() {
 	if u.flashCounter >= ULA_FLASH_FRAMES {
 		u.flashCounter = 0
 		u.flashState = !u.flashState
+	}
+}
+
+// =============================================================================
+// Independent Render Goroutine
+// =============================================================================
+
+// StartRenderLoop spawns a 60Hz render goroutine for lock-free GetFrame.
+func (u *ULAEngine) StartRenderLoop() {
+	u.renderMu.Lock()
+	defer u.renderMu.Unlock()
+	if u.renderRunning.Load() {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	u.renderCancel = cancel
+	u.renderDone = make(chan struct{})
+	u.renderRunning.Store(true)
+	go u.renderLoop(ctx)
+}
+
+// StopRenderLoop stops the render goroutine and waits for it to exit.
+func (u *ULAEngine) StopRenderLoop() {
+	u.renderMu.Lock()
+	if !u.renderRunning.Swap(false) {
+		u.renderMu.Unlock()
+		return
+	}
+	cancel := u.renderCancel
+	done := u.renderDone
+	u.renderMu.Unlock()
+	cancel()
+	<-done
+}
+
+// renderLoop runs at 60Hz, rendering frames into the triple buffer.
+func (u *ULAEngine) renderLoop(ctx context.Context) {
+	defer close(u.renderDone)
+	ticker := time.NewTicker(COMPOSITOR_REFRESH_INTERVAL)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if !u.enabled.Load() || u.compositorManaged.Load() {
+				continue
+			}
+			frame := u.RenderFrame()
+			if frame == nil {
+				continue
+			}
+			buf := u.frameBufs[u.writeIdx]
+			copy(buf, frame)
+			u.writeIdx = int(u.sharedIdx.Swap(int32(u.writeIdx)))
+		}
 	}
 }
 

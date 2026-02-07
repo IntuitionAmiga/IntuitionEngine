@@ -202,6 +202,13 @@ func (c *VideoCompositor) compositeScanlineAware() bool {
 		}
 	}
 
+	// Signal render goroutines to yield during scanline-aware compositing
+	for _, e := range entries {
+		if cm, ok := e.source.(CompositorManageable); ok {
+			cm.SetCompositorManaged(true)
+		}
+	}
+
 	// Start frame on all sources
 	for _, e := range entries {
 		e.sa.StartFrame()
@@ -234,6 +241,13 @@ func (c *VideoCompositor) compositeScanlineAware() bool {
 		e.source.SignalVSync()
 	}
 
+	// Release render goroutines
+	for _, e := range entries {
+		if cm, ok := e.source.(CompositorManageable); ok {
+			cm.SetCompositorManaged(false)
+		}
+	}
+
 	// Send final frame to output if we have content
 	if hasContent && c.output != nil && c.output.IsStarted() {
 		if err := c.output.UpdateFrame(c.finalFrame); err != nil {
@@ -244,32 +258,53 @@ func (c *VideoCompositor) compositeScanlineAware() bool {
 	return true
 }
 
-// compositeFullFrame performs traditional full-frame compositing
+// frameResult holds the result of a parallel GetFrame call
+type frameResult struct {
+	frame  []byte
+	w, h   int
+	source VideoSource
+}
+
+// compositeFullFrame performs full-frame compositing with parallel frame collection
 func (c *VideoCompositor) compositeFullFrame() {
-	// Track if any source provided content
-	hasContent := false
-
-	// Collect frames from enabled sources sorted by layer
-	// Lower layer numbers are rendered first (background)
-	// Higher layer numbers are rendered on top
+	// Collect enabled sources
+	var enabledSources []VideoSource
 	for _, source := range c.sources {
-		if !source.IsEnabled() {
+		if source.IsEnabled() {
+			enabledSources = append(enabledSources, source)
+		}
+	}
+	if len(enabledSources) == 0 {
+		return
+	}
+
+	// Fetch all frames in parallel (lock-free triple-buffer swaps)
+	results := make([]frameResult, len(enabledSources))
+	var wg sync.WaitGroup
+	for i, src := range enabledSources {
+		wg.Add(1)
+		go func(idx int, s VideoSource) {
+			defer wg.Done()
+			w, h := s.GetDimensions()
+			results[idx] = frameResult{
+				frame:  s.GetFrame(),
+				w:      w,
+				h:      h,
+				source: s,
+			}
+		}(i, src)
+	}
+	wg.Wait()
+
+	// Blend in layer order (sequential — layers overlap)
+	hasContent := false
+	for _, r := range results {
+		if r.frame == nil {
 			continue
 		}
-
-		frame := source.GetFrame()
-		if frame == nil {
-			continue
-		}
-
 		hasContent = true
-		srcW, srcH := source.GetDimensions()
-
-		// Blend source frame into final frame
-		c.blendFrame(frame, srcW, srcH)
-
-		// Signal VSync to source
-		source.SignalVSync()
+		c.blendFrame(r.frame, r.w, r.h)
+		r.source.SignalVSync()
 	}
 
 	// Send final frame to output if we have content
@@ -303,22 +338,42 @@ func (c *VideoCompositor) blendFrame(srcFrame []byte, srcW, srcH int) {
 	c.blendFrameScaled(srcFrame, srcW, srcH)
 }
 
-// blendFrame1to1 is the optimized fast path for same-size source and destination
+// blendFrame1to1 is the optimized fast path for same-size source and destination.
+// For large frames, it splits into horizontal strips blended in parallel.
 func (c *VideoCompositor) blendFrame1to1(srcFrame []byte, width, height int) {
-	rowBytes := width * BYTES_PER_PIXEL
-	srcOffset := 0
-	dstOffset := 0
+	const stripHeight = 60
+	if height <= stripHeight {
+		c.blendStrip(srcFrame, width, 0, height)
+		return
+	}
 
-	for y := 0; y < height; y++ {
-		// Process row in uint32 chunks for faster memory access
+	var wg sync.WaitGroup
+	for y0 := 0; y0 < height; y0 += stripHeight {
+		y1 := y0 + stripHeight
+		if y1 > height {
+			y1 = height
+		}
+		wg.Add(1)
+		go func(startY, endY int) {
+			defer wg.Done()
+			c.blendStrip(srcFrame, width, startY, endY)
+		}(y0, y1)
+	}
+	wg.Wait()
+}
+
+// blendStrip blends rows [startY, endY) from srcFrame into finalFrame.
+func (c *VideoCompositor) blendStrip(srcFrame []byte, width, startY, endY int) {
+	rowBytes := width * BYTES_PER_PIXEL
+	srcOffset := startY * rowBytes
+	dstOffset := startY * rowBytes
+
+	for y := startY; y < endY; y++ {
 		for x := 0; x < rowBytes; x += BYTES_PER_PIXEL {
 			srcIdx := srcOffset + x
 			dstIdx := dstOffset + x
-			// Read uint32 directly using unsafe pointer
 			srcPixel := *(*uint32)(unsafe.Pointer(&srcFrame[srcIdx]))
-			// Check alpha (high byte in little-endian RGBA)
 			if srcPixel&0xFF000000 != 0 {
-				// Write uint32 directly
 				*(*uint32)(unsafe.Pointer(&c.finalFrame[dstIdx])) = srcPixel
 			}
 		}

@@ -108,6 +108,13 @@ type ScanlineAware interface {
 	FinishFrame() []byte
 }
 
+// CompositorManageable is implemented by video sources with independent render
+// goroutines. The compositor sets the flag during scanline-aware rendering to
+// prevent the render goroutine from racing with the compositor's scanline path.
+type CompositorManageable interface {
+	SetCompositorManaged(managed bool)
+}
+
 // Optional interfaces for enhanced functionality
 type PaletteCapable interface {
 	UpdatePalette(colors []uint32) error

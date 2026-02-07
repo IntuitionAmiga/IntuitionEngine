@@ -45,8 +45,10 @@ Signal Flow:
 package main
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // TEDVideoEngine implements TED video chip as a standalone device.
@@ -90,6 +92,21 @@ type TEDVideoEngine struct {
 
 	// Pre-allocated frame buffer (384x272 RGBA)
 	frameBuffer []byte
+
+	// Triple-buffered frame output for lock-free GetFrame()
+	frameBufs  [3][]byte
+	writeIdx   int
+	sharedIdx  atomic.Int32
+	readingIdx int
+
+	// Render goroutine lifecycle
+	renderMu      sync.Mutex
+	renderRunning atomic.Bool
+	renderCancel  context.CancelFunc
+	renderDone    chan struct{}
+
+	// Set by compositor during scanline-aware rendering
+	compositorManaged atomic.Bool
 }
 
 // NewTEDVideoEngine creates a new TED video engine instance
@@ -113,6 +130,15 @@ func NewTEDVideoEngine(bus *SystemBus) *TEDVideoEngine {
 			ted.vram[charsetOffset+i*8+j] = TEDDefaultCharset[i][j]
 		}
 	}
+
+	// Initialize triple buffers for lock-free GetFrame
+	bufSize := TED_V_FRAME_WIDTH * TED_V_FRAME_HEIGHT * 4
+	for i := range ted.frameBufs {
+		ted.frameBufs[i] = make([]byte, bufSize)
+	}
+	ted.writeIdx = 0
+	ted.sharedIdx.Store(1)
+	ted.readingIdx = 2
 
 	return ted
 }
@@ -446,12 +472,14 @@ func (t *TEDVideoEngine) renderCursorSnapshot(cursorPos uint16, cursorColor uint
 // VideoSource Interface Implementation
 // =============================================================================
 
-// GetFrame returns the current rendered frame (nil if disabled)
+// GetFrame returns the current rendered frame via lock-free triple-buffer swap.
 func (t *TEDVideoEngine) GetFrame() []byte {
 	if !t.IsEnabled() {
 		return nil
 	}
-	return t.RenderFrame()
+	newRead := int(t.sharedIdx.Swap(int32(t.readingIdx)))
+	t.readingIdx = newRead
+	return t.frameBufs[t.readingIdx]
 }
 
 // IsEnabled returns whether the TED video is active (lock-free)
@@ -484,4 +512,61 @@ func (t *TEDVideoEngine) SignalVSync() {
 
 	// Reset raster line at VSync
 	t.rasterLine = 0
+}
+
+// =============================================================================
+// Independent Render Goroutine
+// =============================================================================
+
+// StartRenderLoop spawns a 60Hz render goroutine for lock-free GetFrame.
+func (t *TEDVideoEngine) StartRenderLoop() {
+	t.renderMu.Lock()
+	defer t.renderMu.Unlock()
+	if t.renderRunning.Load() {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.renderCancel = cancel
+	t.renderDone = make(chan struct{})
+	t.renderRunning.Store(true)
+	go t.renderLoop(ctx)
+}
+
+// StopRenderLoop stops the render goroutine and waits for it to exit.
+func (t *TEDVideoEngine) StopRenderLoop() {
+	t.renderMu.Lock()
+	if !t.renderRunning.Swap(false) {
+		t.renderMu.Unlock()
+		return
+	}
+	cancel := t.renderCancel
+	done := t.renderDone
+	t.renderMu.Unlock()
+	cancel()
+	<-done
+}
+
+// renderLoop runs at 60Hz, rendering frames into the triple buffer.
+func (t *TEDVideoEngine) renderLoop(ctx context.Context) {
+	defer close(t.renderDone)
+	ticker := time.NewTicker(COMPOSITOR_REFRESH_INTERVAL)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if !t.enabled.Load() || t.compositorManaged.Load() {
+				continue
+			}
+			frame := t.RenderFrame()
+			if frame == nil {
+				continue
+			}
+			buf := t.frameBufs[t.writeIdx]
+			copy(buf, frame)
+			t.writeIdx = int(t.sharedIdx.Swap(int32(t.writeIdx)))
+		}
+	}
 }

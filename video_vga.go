@@ -44,6 +44,7 @@ Signal Flow:
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sync"
@@ -128,6 +129,21 @@ type VGAEngine struct {
 
 	// Per-scanline render buffer (used by ScanlineAware interface)
 	scanlineFrame []byte
+
+	// Triple-buffered frame output for lock-free GetFrame()
+	frameBufs  [3][]byte
+	writeIdx   int
+	sharedIdx  atomic.Int32
+	readingIdx int
+
+	// Render goroutine lifecycle
+	renderMu      sync.Mutex
+	renderRunning atomic.Bool
+	renderCancel  context.CancelFunc
+	renderDone    chan struct{}
+
+	// Set by compositor during scanline-aware rendering
+	compositorManaged atomic.Bool
 }
 
 // NewVGAEngine creates a new VGA engine instance as a standalone video device
@@ -148,6 +164,15 @@ func NewVGAEngine(bus *SystemBus) *VGAEngine {
 
 	// Initialize default VGA palette (standard 16-color + grayscale)
 	vga.initDefaultPalette()
+
+	// Initialize triple buffers for lock-free GetFrame (largest mode: 640x480)
+	bufSize := VGA_MODE12H_WIDTH * VGA_MODE12H_HEIGHT * 4
+	for i := range vga.frameBufs {
+		vga.frameBufs[i] = make([]byte, bufSize)
+	}
+	vga.writeIdx = 0
+	vga.sharedIdx.Store(1)
+	vga.readingIdx = 2
 
 	return vga
 }
@@ -932,13 +957,15 @@ func vgaDebugLog(format string, args ...interface{}) {
 // VideoSource Interface Implementation
 // -----------------------------------------------------------------------------
 
-// GetFrame implements VideoSource - returns the current rendered frame
+// GetFrame implements VideoSource - lock-free triple-buffer swap
 // Called by compositor each frame to collect video output
 func (v *VGAEngine) GetFrame() []byte {
 	if !v.enabled.Load() {
 		return nil
 	}
-	return v.RenderFrame()
+	newRead := int(v.sharedIdx.Swap(int32(v.readingIdx)))
+	v.readingIdx = newRead
+	return v.frameBufs[v.readingIdx]
 }
 
 // IsEnabled implements VideoSource - returns whether VGA is enabled (lock-free)
@@ -1009,6 +1036,70 @@ func (v *VGAEngine) ProcessScanline(y int) {
 func (v *VGAEngine) FinishFrame() []byte {
 	// Return the scanline-rendered buffer
 	return v.scanlineFrame
+}
+
+// SetCompositorManaged implements CompositorManageable — signals the render
+// goroutine to skip rendering while the compositor owns scanline rendering.
+func (v *VGAEngine) SetCompositorManaged(managed bool) {
+	v.compositorManaged.Store(managed)
+}
+
+// -----------------------------------------------------------------------------
+// Independent Render Goroutine
+// -----------------------------------------------------------------------------
+
+// StartRenderLoop spawns a 60Hz render goroutine that renders frames into
+// the triple buffer. GetFrame() becomes a lock-free atomic swap.
+func (v *VGAEngine) StartRenderLoop() {
+	v.renderMu.Lock()
+	defer v.renderMu.Unlock()
+	if v.renderRunning.Load() {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	v.renderCancel = cancel
+	v.renderDone = make(chan struct{})
+	v.renderRunning.Store(true)
+	go v.renderLoop(ctx)
+}
+
+// StopRenderLoop stops the render goroutine and waits for it to exit.
+func (v *VGAEngine) StopRenderLoop() {
+	v.renderMu.Lock()
+	if !v.renderRunning.Swap(false) {
+		v.renderMu.Unlock()
+		return
+	}
+	cancel := v.renderCancel
+	done := v.renderDone
+	v.renderMu.Unlock()
+	cancel()
+	<-done
+}
+
+// renderLoop runs at 60Hz, rendering frames into the triple buffer.
+func (v *VGAEngine) renderLoop(ctx context.Context) {
+	defer close(v.renderDone)
+	ticker := time.NewTicker(VGA_REFRESH_INTERVAL)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if !v.enabled.Load() || v.compositorManaged.Load() {
+				continue
+			}
+			frame := v.RenderFrame()
+			if frame == nil {
+				continue
+			}
+			buf := v.frameBufs[v.writeIdx]
+			copy(buf, frame)
+			v.writeIdx = int(v.sharedIdx.Swap(int32(v.writeIdx)))
+		}
+	}
 }
 
 // renderScanlineMode13h renders one scanline in Mode 13h (320x200x256)
