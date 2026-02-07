@@ -915,17 +915,11 @@ func (cpu *CPU) Execute() {
 	// Unsafe base pointer for bounds-check-free memory access
 	memBase := unsafe.Pointer(&cpu.memory[0])
 
-	// Cache timer enabled — refreshed every 4096 instructions alongside running check
-	timerLocalEnabled := cpu.timerEnabled.Load()
-
 	for running {
 		// Periodic check of external stop signal (every 4096 instructions)
 		checkCounter++
-		if checkCounter&0xFFF == 0 {
-			if !cpu.running.Load() {
-				break
-			}
-			timerLocalEnabled = cpu.timerEnabled.Load()
+		if checkCounter&0xFFF == 0 && !cpu.running.Load() {
+			break
 		}
 
 		// Performance measurement: count instructions and report periodically
@@ -965,8 +959,8 @@ func (cpu *CPU) Execute() {
 			resolvedOperand = cpu.Read32(operand)
 		}
 
-		// Timer handling — uses cached timerLocalEnabled (no atomic per instruction)
-		if timerLocalEnabled {
+		// Timer handling with lock-free atomics
+		if cpu.timerEnabled.Load() {
 			cpu.cycleCounter++
 			if cpu.cycleCounter >= SAMPLE_RATE {
 				cpu.cycleCounter = 0
@@ -1293,8 +1287,7 @@ func (cpu *CPU) Execute() {
 				fmt.Printf("%s cpu.Push\tStack overflow error at PC=%08x (SP=%08x)\n",
 					time.Now().Format("15:04:05.000"), cpu.PC, cpu.SP)
 				cpu.running.Store(false)
-				running = false
-				break
+				return
 			}
 			cpu.SP -= WORD_SIZE
 			*(*uint32)(unsafe.Pointer(uintptr(memBase) + uintptr(cpu.SP))) = *cpu.regs[reg&REG_INDEX_MASK]
@@ -1305,8 +1298,7 @@ func (cpu *CPU) Execute() {
 			if cpu.SP >= STACK_START {
 				fmt.Printf("Stack underflow error at PC=%08x (SP=%08x)\n", cpu.PC, cpu.SP)
 				cpu.running.Store(false)
-				running = false
-				break
+				return
 			}
 			*cpu.regs[reg&REG_INDEX_MASK] = *(*uint32)(unsafe.Pointer(uintptr(memBase) + uintptr(cpu.SP)))
 			cpu.SP += WORD_SIZE
@@ -1360,8 +1352,7 @@ func (cpu *CPU) Execute() {
 				fmt.Printf("%s cpu.Push\tStack overflow error at PC=%08x (SP=%08x)\n",
 					time.Now().Format("15:04:05.000"), cpu.PC, cpu.SP)
 				cpu.running.Store(false)
-				running = false
-				break
+				return
 			}
 			cpu.SP -= WORD_SIZE
 			*(*uint32)(unsafe.Pointer(uintptr(memBase) + uintptr(cpu.SP))) = cpu.PC + INSTRUCTION_SIZE
@@ -1372,8 +1363,7 @@ func (cpu *CPU) Execute() {
 			if cpu.SP >= STACK_START {
 				fmt.Printf("Stack underflow error at PC=%08x (SP=%08x)\n", cpu.PC, cpu.SP)
 				cpu.running.Store(false)
-				running = false
-				break
+				return
 			}
 			cpu.PC = *(*uint32)(unsafe.Pointer(uintptr(memBase) + uintptr(cpu.SP)))
 			cpu.SP += WORD_SIZE
