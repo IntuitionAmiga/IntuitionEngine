@@ -729,6 +729,7 @@ func main() {
 	} else if modeIE64 {
 		// Initialize IE64 CPU (64-bit RISC)
 		ie64CPU := NewCPU64(sysBus)
+		ie64CPU.PerfEnabled = perfMode
 
 		// Load program
 		if filename != "" {
