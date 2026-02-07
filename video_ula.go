@@ -48,6 +48,7 @@ package main
 
 import (
 	"context"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -102,6 +103,7 @@ type ULAEngine struct {
 
 	// Set by compositor during scanline-aware rendering
 	compositorManaged atomic.Bool
+	rendering         atomic.Bool // True while renderLoop is inside RenderFrame
 }
 
 // NewULAEngine creates a new ULA engine instance
@@ -365,6 +367,18 @@ func (u *ULAEngine) SignalVSync() {
 // Independent Render Goroutine
 // =============================================================================
 
+// SetCompositorManaged implements CompositorManageable.
+func (u *ULAEngine) SetCompositorManaged(managed bool) {
+	u.compositorManaged.Store(managed)
+}
+
+// WaitRenderIdle implements CompositorManageable.
+func (u *ULAEngine) WaitRenderIdle() {
+	for u.rendering.Load() {
+		runtime.Gosched()
+	}
+}
+
 // StartRenderLoop spawns a 60Hz render goroutine for lock-free GetFrame.
 func (u *ULAEngine) StartRenderLoop() {
 	u.renderMu.Lock()
@@ -374,9 +388,10 @@ func (u *ULAEngine) StartRenderLoop() {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	u.renderCancel = cancel
-	u.renderDone = make(chan struct{})
+	done := make(chan struct{})
+	u.renderDone = done
 	u.renderRunning.Store(true)
-	go u.renderLoop(ctx)
+	go u.renderLoop(ctx, done)
 }
 
 // StopRenderLoop stops the render goroutine and waits for it to exit.
@@ -394,8 +409,9 @@ func (u *ULAEngine) StopRenderLoop() {
 }
 
 // renderLoop runs at 60Hz, rendering frames into the triple buffer.
-func (u *ULAEngine) renderLoop(ctx context.Context) {
-	defer close(u.renderDone)
+// done is goroutine-local to avoid close-of-wrong-channel on restart.
+func (u *ULAEngine) renderLoop(ctx context.Context, done chan struct{}) {
+	defer close(done)
 	ticker := time.NewTicker(COMPOSITOR_REFRESH_INTERVAL)
 	defer ticker.Stop()
 
@@ -407,7 +423,13 @@ func (u *ULAEngine) renderLoop(ctx context.Context) {
 			if !u.enabled.Load() || u.compositorManaged.Load() {
 				continue
 			}
+			u.rendering.Store(true)
+			if u.compositorManaged.Load() {
+				u.rendering.Store(false)
+				continue
+			}
 			frame := u.RenderFrame()
+			u.rendering.Store(false)
 			if frame == nil {
 				continue
 			}

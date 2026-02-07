@@ -46,6 +46,7 @@ package main
 
 import (
 	"context"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -107,6 +108,7 @@ type TEDVideoEngine struct {
 
 	// Set by compositor during scanline-aware rendering
 	compositorManaged atomic.Bool
+	rendering         atomic.Bool // True while renderLoop is inside RenderFrame
 }
 
 // NewTEDVideoEngine creates a new TED video engine instance
@@ -518,6 +520,18 @@ func (t *TEDVideoEngine) SignalVSync() {
 // Independent Render Goroutine
 // =============================================================================
 
+// SetCompositorManaged implements CompositorManageable.
+func (t *TEDVideoEngine) SetCompositorManaged(managed bool) {
+	t.compositorManaged.Store(managed)
+}
+
+// WaitRenderIdle implements CompositorManageable.
+func (t *TEDVideoEngine) WaitRenderIdle() {
+	for t.rendering.Load() {
+		runtime.Gosched()
+	}
+}
+
 // StartRenderLoop spawns a 60Hz render goroutine for lock-free GetFrame.
 func (t *TEDVideoEngine) StartRenderLoop() {
 	t.renderMu.Lock()
@@ -527,9 +541,10 @@ func (t *TEDVideoEngine) StartRenderLoop() {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.renderCancel = cancel
-	t.renderDone = make(chan struct{})
+	done := make(chan struct{})
+	t.renderDone = done
 	t.renderRunning.Store(true)
-	go t.renderLoop(ctx)
+	go t.renderLoop(ctx, done)
 }
 
 // StopRenderLoop stops the render goroutine and waits for it to exit.
@@ -547,8 +562,9 @@ func (t *TEDVideoEngine) StopRenderLoop() {
 }
 
 // renderLoop runs at 60Hz, rendering frames into the triple buffer.
-func (t *TEDVideoEngine) renderLoop(ctx context.Context) {
-	defer close(t.renderDone)
+// done is goroutine-local to avoid close-of-wrong-channel on restart.
+func (t *TEDVideoEngine) renderLoop(ctx context.Context, done chan struct{}) {
+	defer close(done)
 	ticker := time.NewTicker(COMPOSITOR_REFRESH_INTERVAL)
 	defer ticker.Stop()
 
@@ -560,7 +576,13 @@ func (t *TEDVideoEngine) renderLoop(ctx context.Context) {
 			if !t.enabled.Load() || t.compositorManaged.Load() {
 				continue
 			}
+			t.rendering.Store(true)
+			if t.compositorManaged.Load() {
+				t.rendering.Store(false)
+				continue
+			}
 			frame := t.RenderFrame()
+			t.rendering.Store(false)
 			if frame == nil {
 				continue
 			}

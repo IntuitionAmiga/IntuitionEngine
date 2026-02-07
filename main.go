@@ -876,6 +876,13 @@ func main() {
 
 	// Show the GUI and run the main event loop
 	err = gui.Show()
+
+	// Shut down render goroutines on exit
+	vgaEngine.StopRenderLoop()
+	ulaEngine.StopRenderLoop()
+	tedVideoEngine.StopRenderLoop()
+	anticEngine.StopRenderLoop()
+
 	if err != nil {
 		return
 	}

@@ -47,6 +47,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -144,6 +145,7 @@ type VGAEngine struct {
 
 	// Set by compositor during scanline-aware rendering
 	compositorManaged atomic.Bool
+	rendering         atomic.Bool // True while renderLoop is inside RenderFrame
 }
 
 // NewVGAEngine creates a new VGA engine instance as a standalone video device
@@ -1044,6 +1046,14 @@ func (v *VGAEngine) SetCompositorManaged(managed bool) {
 	v.compositorManaged.Store(managed)
 }
 
+// WaitRenderIdle implements CompositorManageable — spins until any in-flight
+// render tick has finished, so the compositor can safely begin scanline rendering.
+func (v *VGAEngine) WaitRenderIdle() {
+	for v.rendering.Load() {
+		runtime.Gosched()
+	}
+}
+
 // -----------------------------------------------------------------------------
 // Independent Render Goroutine
 // -----------------------------------------------------------------------------
@@ -1058,9 +1068,10 @@ func (v *VGAEngine) StartRenderLoop() {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	v.renderCancel = cancel
-	v.renderDone = make(chan struct{})
+	done := make(chan struct{})
+	v.renderDone = done
 	v.renderRunning.Store(true)
-	go v.renderLoop(ctx)
+	go v.renderLoop(ctx, done)
 }
 
 // StopRenderLoop stops the render goroutine and waits for it to exit.
@@ -1078,8 +1089,9 @@ func (v *VGAEngine) StopRenderLoop() {
 }
 
 // renderLoop runs at 60Hz, rendering frames into the triple buffer.
-func (v *VGAEngine) renderLoop(ctx context.Context) {
-	defer close(v.renderDone)
+// done is goroutine-local to avoid close-of-wrong-channel on restart.
+func (v *VGAEngine) renderLoop(ctx context.Context, done chan struct{}) {
+	defer close(done)
 	ticker := time.NewTicker(VGA_REFRESH_INTERVAL)
 	defer ticker.Stop()
 
@@ -1091,7 +1103,15 @@ func (v *VGAEngine) renderLoop(ctx context.Context) {
 			if !v.enabled.Load() || v.compositorManaged.Load() {
 				continue
 			}
+			// Double-check barrier: signal rendering, then re-check managed.
+			// Compositor sets managed=true then calls WaitRenderIdle().
+			v.rendering.Store(true)
+			if v.compositorManaged.Load() {
+				v.rendering.Store(false)
+				continue
+			}
 			frame := v.RenderFrame()
+			v.rendering.Store(false)
 			if frame == nil {
 				continue
 			}

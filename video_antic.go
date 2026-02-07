@@ -47,6 +47,7 @@ package main
 
 import (
 	"context"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -142,6 +143,7 @@ type ANTICEngine struct {
 
 	// Set by compositor during scanline-aware rendering
 	compositorManaged atomic.Bool
+	rendering         atomic.Bool // True while renderLoop is inside RenderFrame
 }
 
 // NewANTICEngine creates a new ANTIC video engine instance
@@ -951,6 +953,18 @@ func (a *ANTICEngine) SignalVSync() {
 // Independent Render Goroutine
 // =============================================================================
 
+// SetCompositorManaged implements CompositorManageable.
+func (a *ANTICEngine) SetCompositorManaged(managed bool) {
+	a.compositorManaged.Store(managed)
+}
+
+// WaitRenderIdle implements CompositorManageable.
+func (a *ANTICEngine) WaitRenderIdle() {
+	for a.rendering.Load() {
+		runtime.Gosched()
+	}
+}
+
 // StartRenderLoop spawns a 60Hz render goroutine for lock-free GetFrame.
 func (a *ANTICEngine) StartRenderLoop() {
 	a.renderMu.Lock()
@@ -960,9 +974,10 @@ func (a *ANTICEngine) StartRenderLoop() {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	a.renderCancel = cancel
-	a.renderDone = make(chan struct{})
+	done := make(chan struct{})
+	a.renderDone = done
 	a.renderRunning.Store(true)
-	go a.renderLoop(ctx)
+	go a.renderLoop(ctx, done)
 }
 
 // StopRenderLoop stops the render goroutine and waits for it to exit.
@@ -980,8 +995,9 @@ func (a *ANTICEngine) StopRenderLoop() {
 }
 
 // renderLoop runs at 60Hz, rendering frames into the triple buffer.
-func (a *ANTICEngine) renderLoop(ctx context.Context) {
-	defer close(a.renderDone)
+// done is goroutine-local to avoid close-of-wrong-channel on restart.
+func (a *ANTICEngine) renderLoop(ctx context.Context, done chan struct{}) {
+	defer close(done)
 	ticker := time.NewTicker(COMPOSITOR_REFRESH_INTERVAL)
 	defer ticker.Stop()
 
@@ -993,7 +1009,13 @@ func (a *ANTICEngine) renderLoop(ctx context.Context) {
 			if !a.enabled.Load() || a.compositorManaged.Load() {
 				continue
 			}
+			a.rendering.Store(true)
+			if a.compositorManaged.Load() {
+				a.rendering.Store(false)
+				continue
+			}
 			frame := a.RenderFrame()
+			a.rendering.Store(false)
 			if frame == nil {
 				continue
 			}

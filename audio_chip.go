@@ -925,6 +925,7 @@ type SoundChip struct {
 
 	// Ring buffer for pre-generated samples (lock-free SPSC)
 	ringBuf     *sampleRingBuffer // Allocated once in NewSoundChip, never nil
+	ringMu      sync.Mutex        // Serializes Start/Stop lifecycle
 	ringDone    chan struct{}     // Created per Start(), closed by producer on exit
 	ringRunning atomic.Bool       // Guards producer lifecycle
 }
@@ -2997,8 +2998,9 @@ func (chip *SoundChip) ReadSampleFromRing() float32 {
 
 // ringProducerLoop is the producer goroutine that pre-generates samples
 // into the ring buffer. It is the exclusive owner of ReadSample().
-func (chip *SoundChip) ringProducerLoop() {
-	defer close(chip.ringDone)
+// done is goroutine-local to avoid close-of-closed races on chip.ringDone.
+func (chip *SoundChip) ringProducerLoop(done chan struct{}) {
+	defer close(done)
 	for chip.ringRunning.Load() {
 		if !chip.enabled.Load() {
 			runtime.Gosched()
@@ -3012,15 +3014,23 @@ func (chip *SoundChip) ringProducerLoop() {
 }
 
 func (chip *SoundChip) Start() {
+	chip.ringMu.Lock()
+	defer chip.ringMu.Unlock()
+
+	if chip.ringRunning.Load() {
+		return // already running
+	}
+
 	// Reset ring positions to drain stale samples
 	chip.ringBuf.writePos.Store(0)
 	chip.ringBuf.readPos.Store(0)
 
-	// Create fresh done channel
-	chip.ringDone = make(chan struct{})
+	// Create fresh done channel and publish before setting ringRunning
+	done := make(chan struct{})
+	chip.ringDone = done
 	chip.enabled.Store(true)
 	chip.ringRunning.Store(true)
-	go chip.ringProducerLoop()
+	go chip.ringProducerLoop(done)
 
 	// Start output after producer — consumer will find valid ring buffer
 	chip.mu.Lock()
@@ -3029,14 +3039,25 @@ func (chip *SoundChip) Start() {
 }
 
 func (chip *SoundChip) Stop() {
-	// Atomically claim ownership of stopping
-	wasRunning := chip.ringRunning.Swap(false)
-	chip.enabled.Store(false)
-
-	// Wait for producer only if it was running
-	if wasRunning {
-		<-chip.ringDone
+	chip.ringMu.Lock()
+	if !chip.ringRunning.Swap(false) {
+		chip.ringMu.Unlock()
+		// Not running — still clear enabled and tear down output
+		chip.enabled.Store(false)
+		chip.mu.Lock()
+		defer chip.mu.Unlock()
+		if chip.output != nil {
+			chip.output.Stop()
+			chip.output.Close()
+		}
+		return
 	}
+	chip.enabled.Store(false)
+	done := chip.ringDone
+	chip.ringMu.Unlock()
+
+	// Wait outside lock — producer may need chip.mu during final ReadSample
+	<-done
 
 	// Now safe to tear down output
 	chip.mu.Lock()

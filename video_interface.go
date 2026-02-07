@@ -111,8 +111,12 @@ type ScanlineAware interface {
 // CompositorManageable is implemented by video sources with independent render
 // goroutines. The compositor sets the flag during scanline-aware rendering to
 // prevent the render goroutine from racing with the compositor's scanline path.
+//
+// Protocol: compositor calls SetCompositorManaged(true), then WaitRenderIdle()
+// to ensure any in-flight render tick has finished before scanline rendering.
 type CompositorManageable interface {
 	SetCompositorManaged(managed bool)
+	WaitRenderIdle()
 }
 
 // Optional interfaces for enhanced functionality

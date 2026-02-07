@@ -202,10 +202,16 @@ func (c *VideoCompositor) compositeScanlineAware() bool {
 		}
 	}
 
-	// Signal render goroutines to yield during scanline-aware compositing
+	// Signal render goroutines to yield, then wait for any in-flight
+	// render tick to finish before entering scanline-aware compositing.
 	for _, e := range entries {
 		if cm, ok := e.source.(CompositorManageable); ok {
 			cm.SetCompositorManaged(true)
+		}
+	}
+	for _, e := range entries {
+		if cm, ok := e.source.(CompositorManageable); ok {
+			cm.WaitRenderIdle()
 		}
 	}
 
