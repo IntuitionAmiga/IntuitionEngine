@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // SID6502Player executes PSID 6502 code and captures SID register writes.
 type SID6502Player struct {
@@ -18,6 +21,8 @@ type SID6502Player struct {
 	initEmitted      bool
 	sampleMultiplier uint64     // Pre-computed: (sampleRate << 32) / clockHz for fast conversion
 	eventBuffer      []SIDEvent // Pre-allocated buffer for frame events (zero-allocation path)
+	instructionCount uint64
+	cpuExecNanos     uint64
 }
 
 // maxEventsPerFrame is the initial capacity for the event buffer.
@@ -135,6 +140,8 @@ func (p *SID6502Player) createCPU() *CPU_6502 {
 }
 
 func (p *SID6502Player) callRoutine(addr uint16, aReg uint8) error {
+	start := time.Now()
+	defer func() { p.cpuExecNanos += uint64(time.Since(start).Nanoseconds()) }()
 	p.cpu.A = aReg
 	p.cpu.X = 0
 	p.cpu.Y = 0
@@ -166,6 +173,7 @@ func (p *SID6502Player) callRoutine(addr uint16, aReg uint8) error {
 }
 
 func (p *SID6502Player) executeInstruction() {
+	p.instructionCount++
 	cycles := p.cpu.Step()
 	p.bus.AddCycles(cycles)
 	if p.bus.irqPending {
@@ -224,6 +232,8 @@ func (p *SID6502Player) RenderFrames(numFrames int) ([]SIDEvent, uint64) {
 }
 
 func (p *SID6502Player) runForCycles(target uint64) {
+	start := time.Now()
+	defer func() { p.cpuExecNanos += uint64(time.Since(start).Nanoseconds()) }()
 	for p.bus.GetFrameCycles() < target && p.cpu.Running() {
 		p.executeInstruction()
 	}

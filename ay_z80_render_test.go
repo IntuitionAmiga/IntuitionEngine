@@ -60,7 +60,7 @@ func buildAYZ80EmulData(songName string, lengthFrames uint16) []byte {
 
 func TestRenderAYZ80MetadataAndClock(t *testing.T) {
 	data := buildAYZ80EmulData("RenderSong", 2)
-	meta, events, total, clockHz, frameRate, loop, loopSample, err := renderAYZ80(data, 44100)
+	meta, events, total, clockHz, frameRate, loop, loopSample, _, _, err := renderAYZ80(data, 44100)
 	if err != nil {
 		t.Fatalf("render ay z80: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestRenderAYZ80MetadataAndClock(t *testing.T) {
 
 func TestRenderAYZ80LoopDefault(t *testing.T) {
 	data := buildAYZ80EmulData("LoopSong", 0)
-	_, _, total, _, _, loop, loopSample, err := renderAYZ80WithLimit(data, 44100, 2)
+	_, _, total, _, _, loop, loopSample, _, _, err := renderAYZ80WithLimit(data, 44100, 2)
 	if err != nil {
 		t.Fatalf("render ay z80: %v", err)
 	}

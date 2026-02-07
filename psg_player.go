@@ -26,6 +26,10 @@ type PSGPlayer struct {
 	playBusy      bool
 	playErr       bool
 	forceLoop     bool // When true, loop from start even if file has no loop point
+
+	renderInstructions uint64
+	renderCPU          string
+	renderExecNanos    uint64
 }
 
 func NewPSGPlayer(engine *PSGEngine) *PSGPlayer {
@@ -59,7 +63,7 @@ func (p *PSGPlayer) Load(path string) error {
 			if p.engine == nil {
 				return fmt.Errorf("psg engine not configured")
 			}
-			meta, events, total, clockHz, frameRate, loop, loopSample, err := renderAYZ80(data, p.engine.sampleRate)
+			meta, events, total, clockHz, frameRate, loop, loopSample, instrCount, execNanos, err := renderAYZ80(data, p.engine.sampleRate)
 			if err != nil {
 				return err
 			}
@@ -68,6 +72,9 @@ func (p *PSGPlayer) Load(path string) error {
 			p.clockHz = clockHz
 			p.loop = loop
 			p.loopSample = loopSample
+			p.renderInstructions = instrCount
+			p.renderCPU = "Z80"
+			p.renderExecNanos = execNanos
 			p.engine.SetClockHz(clockHz)
 			p.engine.SetEvents(events, total, loop, loopSample)
 			return nil
@@ -159,7 +166,7 @@ func (p *PSGPlayer) LoadData(data []byte) error {
 		if p.engine == nil {
 			return fmt.Errorf("psg engine not configured")
 		}
-		meta, events, total, clockHz, frameRate, loop, loopSample, err := renderAYZ80(data, p.engine.sampleRate)
+		meta, events, total, clockHz, frameRate, loop, loopSample, instrCount, execNanos, err := renderAYZ80(data, p.engine.sampleRate)
 		if err != nil {
 			return err
 		}
@@ -168,6 +175,9 @@ func (p *PSGPlayer) LoadData(data []byte) error {
 		p.clockHz = clockHz
 		p.loop = loop
 		p.loopSample = loopSample
+		p.renderInstructions = instrCount
+		p.renderCPU = "Z80"
+		p.renderExecNanos = execNanos
 		p.engine.SetClockHz(clockHz)
 		p.engine.SetEvents(events, total, loop, loopSample)
 		return nil
@@ -208,7 +218,7 @@ func (p *PSGPlayer) loadSNDH(data []byte) error {
 	if p.engine == nil {
 		return fmt.Errorf("psg engine not configured")
 	}
-	meta, events, total, clockHz, frameRate, loop, loopSample, err := renderSNDH(data, p.engine.sampleRate)
+	meta, events, total, clockHz, frameRate, loop, loopSample, instrCount, execNanos, err := renderSNDH(data, p.engine.sampleRate)
 	if err != nil {
 		return err
 	}
@@ -217,6 +227,9 @@ func (p *PSGPlayer) loadSNDH(data []byte) error {
 	p.clockHz = clockHz
 	p.loop = loop
 	p.loopSample = loopSample
+	p.renderInstructions = instrCount
+	p.renderCPU = "68K"
+	p.renderExecNanos = execNanos
 	p.engine.SetClockHz(clockHz)
 	p.engine.SetEvents(events, total, loop, loopSample)
 	return nil
@@ -265,6 +278,10 @@ func (p *PSGPlayer) loadFrames(frames [][]uint8, frameRate uint16, clockHz uint3
 	p.engine.SetClockHz(clockHz)
 	p.engine.SetEvents(events, samplePos, p.loop, p.loopSample)
 	return nil
+}
+
+func (p *PSGPlayer) RenderPerf() (uint64, string, uint64) {
+	return p.renderInstructions, p.renderCPU, p.renderExecNanos
 }
 
 func (p *PSGPlayer) DurationSeconds() float64 {

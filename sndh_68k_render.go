@@ -42,16 +42,16 @@ func isSNDHData(data []byte) bool {
 
 // renderSNDH renders SNDH data to PSGEvents
 // Returns: metadata, events, totalSamples, clockHz, frameRate, loop, loopSample, error
-func renderSNDH(data []byte, sampleRate int) (PSGMetadata, []PSGEvent, uint64, uint32, uint16, bool, uint64, error) {
+func renderSNDH(data []byte, sampleRate int) (PSGMetadata, []PSGEvent, uint64, uint32, uint16, bool, uint64, uint64, uint64, error) {
 	return renderSNDHWithLimit(data, sampleRate, 0, 1)
 }
 
 // renderSNDHWithLimit renders SNDH data with optional frame limit and subsong selection
-func renderSNDHWithLimit(data []byte, sampleRate int, maxFrames int, subsong int) (PSGMetadata, []PSGEvent, uint64, uint32, uint16, bool, uint64, error) {
+func renderSNDHWithLimit(data []byte, sampleRate int, maxFrames int, subsong int) (PSGMetadata, []PSGEvent, uint64, uint32, uint16, bool, uint64, uint64, uint64, error) {
 	// Parse SNDH file
 	file, err := ParseSNDHData(data)
 	if err != nil {
-		return PSGMetadata{}, nil, 0, 0, 0, false, 0, fmt.Errorf("parse SNDH: %w", err)
+		return PSGMetadata{}, nil, 0, 0, 0, false, 0, 0, 0, fmt.Errorf("parse SNDH: %w", err)
 	}
 
 	// Validate subsong
@@ -62,7 +62,7 @@ func renderSNDHWithLimit(data []byte, sampleRate int, maxFrames int, subsong int
 	// Create player
 	player, err := newSNDH68KPlayer(file, subsong, sampleRate)
 	if err != nil {
-		return PSGMetadata{}, nil, 0, 0, 0, false, 0, fmt.Errorf("create player: %w", err)
+		return PSGMetadata{}, nil, 0, 0, 0, false, 0, 0, 0, fmt.Errorf("create player: %w", err)
 	}
 
 	// Determine frame count
@@ -102,7 +102,7 @@ func renderSNDHWithLimit(data []byte, sampleRate int, maxFrames int, subsong int
 
 	clockHz := uint32(PSG_CLOCK_ATARI_ST)
 
-	return meta, events, totalSamples, clockHz, frameRate, loop, loopSample, nil
+	return meta, events, totalSamples, clockHz, frameRate, loop, loopSample, player.instructionCount, player.cpuExecNanos, nil
 }
 
 // SNDHSystemName returns the system name for SNDH files

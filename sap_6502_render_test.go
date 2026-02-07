@@ -8,7 +8,7 @@ import (
 // Test 1: renderSAP returns valid metadata
 func TestRenderSAP_Metadata(t *testing.T) {
 	data := buildTestSAPData("Test Song", "Test Author", "1986")
-	meta, _, _, _, _, _, _, err := renderSAP(data, 44100)
+	meta, _, _, _, _, _, _, _, _, err := renderSAP(data, 44100)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -23,7 +23,7 @@ func TestRenderSAP_Metadata(t *testing.T) {
 // Test 2: renderSAP returns POKEY events
 func TestRenderSAP_Events(t *testing.T) {
 	data := buildTestSAPWithPOKEYWrites()
-	_, events, _, _, _, _, _, err := renderSAP(data, 44100)
+	_, events, _, _, _, _, _, _, _, err := renderSAP(data, 44100)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -35,7 +35,7 @@ func TestRenderSAP_Events(t *testing.T) {
 // Test 3: renderSAP returns correct POKEY clock
 func TestRenderSAP_ClockHz(t *testing.T) {
 	data := buildTestSAPDataPAL()
-	_, _, _, clockHz, _, _, _, _ := renderSAP(data, 44100)
+	_, _, _, clockHz, _, _, _, _, _, _ := renderSAP(data, 44100)
 	if clockHz != POKEY_CLOCK_PAL {
 		t.Errorf("expected POKEY clock %d, got %d", POKEY_CLOCK_PAL, clockHz)
 	}
@@ -44,8 +44,8 @@ func TestRenderSAP_ClockHz(t *testing.T) {
 // Test 4: renderSAP with frame limit
 func TestRenderSAPWithLimit(t *testing.T) {
 	data := buildTestSAPWithPOKEYWrites()
-	_, events1, _, _, _, _, _, _ := renderSAPWithLimit(data, 44100, 10, 0)
-	_, events2, _, _, _, _, _, _ := renderSAPWithLimit(data, 44100, 100, 0)
+	_, events1, _, _, _, _, _, _, _, _ := renderSAPWithLimit(data, 44100, 10, 0)
+	_, events2, _, _, _, _, _, _, _, _ := renderSAPWithLimit(data, 44100, 100, 0)
 	if len(events1) >= len(events2) {
 		t.Errorf("expected fewer events with smaller limit: %d vs %d", len(events1), len(events2))
 	}
@@ -60,7 +60,7 @@ func TestRenderSAP_RealFile(t *testing.T) {
 	if err != nil {
 		t.Skipf("Error loading SAP file: %v", err)
 	}
-	meta, events, total, clockHz, _, _, _, err := renderSAP(data, 44100)
+	meta, events, total, clockHz, _, _, _, _, _, err := renderSAP(data, 44100)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestRenderSAP_RealFile(t *testing.T) {
 // Test 6: Frame rate calculation
 func TestRenderSAP_FrameRate(t *testing.T) {
 	data := buildTestSAPDataPAL()
-	_, _, _, _, frameRate, _, _, _ := renderSAP(data, 44100)
+	_, _, _, _, frameRate, _, _, _, _, _ := renderSAP(data, 44100)
 	// PAL rate is approximately 50 Hz
 	if frameRate < 49 || frameRate > 51 {
 		t.Errorf("expected frame rate ~50, got %d", frameRate)
@@ -92,7 +92,7 @@ func TestRenderSAP_FrameRate(t *testing.T) {
 func TestRenderSAP_POKEYEventFormat(t *testing.T) {
 	data := buildTestSAPWithPOKEYWrites()
 	// Use limited frames
-	_, events, total, _, _, _, _, _ := renderSAPWithLimit(data, 44100, 50, 0)
+	_, events, total, _, _, _, _, _, _, _ := renderSAPWithLimit(data, 44100, 50, 0)
 	// Events should have valid sample positions within total
 	for _, e := range events {
 		if e.Sample > total {
@@ -112,7 +112,7 @@ func TestRenderSAP_StereoMetadata(t *testing.T) {
 	binary := []byte{0xFF, 0xFF, 0x00, 0x10, 0x00, 0x10, 0x60}
 	data := append([]byte(header), binary...)
 
-	meta, _, _, _, _, _, _, err := renderSAP(data, 44100)
+	meta, _, _, _, _, _, _, _, _, err := renderSAP(data, 44100)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

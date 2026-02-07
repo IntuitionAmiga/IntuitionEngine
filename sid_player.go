@@ -37,6 +37,10 @@ type SIDPlayer struct {
 	subsong       uint8
 
 	mu sync.Mutex
+
+	renderInstructions uint64
+	renderCPU          string
+	renderExecNanos    uint64
 }
 
 func NewSIDPlayer(engine *SIDEngine) *SIDPlayer {
@@ -65,7 +69,7 @@ func (p *SIDPlayer) LoadDataWithOptions(data []byte, subsong int, forcePAL bool,
 
 	p.engine.StopPlayback()
 
-	meta, events, totalSamples, clockHz, _, loop, loopSample, err := renderSIDWithLimit(data, p.engine.sampleRate, 0, subsong, forcePAL, forceNTSC)
+	meta, events, totalSamples, clockHz, _, loop, loopSample, instrCount, execNanos, err := renderSIDWithLimit(data, p.engine.sampleRate, 0, subsong, forcePAL, forceNTSC)
 	if err != nil {
 		return err
 	}
@@ -73,6 +77,9 @@ func (p *SIDPlayer) LoadDataWithOptions(data []byte, subsong int, forcePAL bool,
 	p.metadata = meta
 	p.clockHz = clockHz
 	p.loop = loop
+	p.renderInstructions = instrCount
+	p.renderCPU = "6502"
+	p.renderExecNanos = execNanos
 
 	p.engine.SetClockHz(clockHz)
 	p.engine.SetEvents(events, totalSamples, loop, loopSample)
@@ -98,6 +105,10 @@ func (p *SIDPlayer) Metadata() SIDMetadata {
 	return p.metadata
 }
 
+func (p *SIDPlayer) RenderPerf() (uint64, string, uint64) {
+	return p.renderInstructions, p.renderCPU, p.renderExecNanos
+}
+
 func (p *SIDPlayer) DurationSeconds() float64 {
 	p.engine.mutex.Lock()
 	defer p.engine.mutex.Unlock()
@@ -117,14 +128,14 @@ func (p *SIDPlayer) DurationText() string {
 	return fmt.Sprintf("%d:%02d", minutes, seconds)
 }
 
-func renderSIDWithLimit(data []byte, sampleRate int, maxFrames int, subsong int, forcePAL bool, forceNTSC bool) (SIDMetadata, []SIDEvent, uint64, uint32, uint16, bool, uint64, error) {
+func renderSIDWithLimit(data []byte, sampleRate int, maxFrames int, subsong int, forcePAL bool, forceNTSC bool) (SIDMetadata, []SIDEvent, uint64, uint32, uint16, bool, uint64, uint64, uint64, error) {
 	file, err := ParseSIDData(data)
 	if err != nil {
-		return SIDMetadata{}, nil, 0, 0, 0, false, 0, fmt.Errorf("parse SID: %w", err)
+		return SIDMetadata{}, nil, 0, 0, 0, false, 0, 0, 0, fmt.Errorf("parse SID: %w", err)
 	}
 
 	if forcePAL && forceNTSC {
-		return SIDMetadata{}, nil, 0, 0, 0, false, 0, fmt.Errorf("cannot force both PAL and NTSC")
+		return SIDMetadata{}, nil, 0, 0, 0, false, 0, 0, 0, fmt.Errorf("cannot force both PAL and NTSC")
 	}
 	if forcePAL {
 		file.Header.Flags = (file.Header.Flags &^ 0x03) | 0x01
@@ -142,7 +153,7 @@ func renderSIDWithLimit(data []byte, sampleRate int, maxFrames int, subsong int,
 
 	player, err := newSID6502Player(file, subsong, sampleRate)
 	if err != nil {
-		return SIDMetadata{}, nil, 0, 0, 0, false, 0, fmt.Errorf("create player: %w", err)
+		return SIDMetadata{}, nil, 0, 0, 0, false, 0, 0, 0, fmt.Errorf("create player: %w", err)
 	}
 
 	frameRate := sidTickHz(player.clockHz, sidIsNTSC(file.Header), player.interruptMode, file.Header.Speed, subsong)
@@ -168,7 +179,7 @@ func renderSIDWithLimit(data []byte, sampleRate int, maxFrames int, subsong int,
 
 	clockHz := player.clockHz
 
-	return meta, events, totalSamples, clockHz, uint16(frameRate), loop, loopSample, nil
+	return meta, events, totalSamples, clockHz, uint16(frameRate), loop, loopSample, player.instructionCount, player.cpuExecNanos, nil
 }
 
 func isSIDExtension(path string) bool {

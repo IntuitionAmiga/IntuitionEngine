@@ -40,16 +40,16 @@ type SAPRenderResult struct {
 }
 
 // renderSAP renders SAP data to POKEY events
-func renderSAP(data []byte, sampleRate int) (SAPMetadata, []SAPPOKEYEvent, uint64, uint32, uint16, bool, uint64, error) {
+func renderSAP(data []byte, sampleRate int) (SAPMetadata, []SAPPOKEYEvent, uint64, uint32, uint16, bool, uint64, uint64, uint64, error) {
 	return renderSAPWithLimit(data, sampleRate, 0, 0)
 }
 
 // renderSAPWithLimit renders SAP data with optional frame limit and subsong selection
-func renderSAPWithLimit(data []byte, sampleRate int, maxFrames int, subsong int) (SAPMetadata, []SAPPOKEYEvent, uint64, uint32, uint16, bool, uint64, error) {
+func renderSAPWithLimit(data []byte, sampleRate int, maxFrames int, subsong int) (SAPMetadata, []SAPPOKEYEvent, uint64, uint32, uint16, bool, uint64, uint64, uint64, error) {
 	// Parse SAP file
 	file, err := ParseSAPData(data)
 	if err != nil {
-		return SAPMetadata{}, nil, 0, 0, 0, false, 0, fmt.Errorf("parse SAP: %w", err)
+		return SAPMetadata{}, nil, 0, 0, 0, false, 0, 0, 0, fmt.Errorf("parse SAP: %w", err)
 	}
 
 	// Validate subsong
@@ -60,7 +60,7 @@ func renderSAPWithLimit(data []byte, sampleRate int, maxFrames int, subsong int)
 	// Create player
 	player, err := newSAP6502Player(file, subsong, sampleRate)
 	if err != nil {
-		return SAPMetadata{}, nil, 0, 0, 0, false, 0, fmt.Errorf("create SAP player: %w", err)
+		return SAPMetadata{}, nil, 0, 0, 0, false, 0, 0, 0, fmt.Errorf("create SAP player: %w", err)
 	}
 
 	// Build metadata
@@ -115,5 +115,5 @@ func renderSAPWithLimit(data []byte, sampleRate int, maxFrames int, subsong int)
 		loopSample = 0
 	}
 
-	return meta, pokeyEvents, totalSamples, clockHz, frameRate, loop, loopSample, nil
+	return meta, pokeyEvents, totalSamples, clockHz, frameRate, loop, loopSample, player.instructionCount, player.cpuExecNanos, nil
 }

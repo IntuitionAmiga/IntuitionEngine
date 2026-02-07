@@ -306,6 +306,22 @@ func main() {
 			fmt.Printf(" (%s)", dur)
 		}
 		fmt.Println()
+		if perfMode {
+			instrCount, cpuName, execNanos := psgPlayer.RenderPerf()
+			if cpuName != "" {
+				if execNanos > 0 {
+					secs := float64(execNanos) / 1e9
+					mips := float64(instrCount) / secs / 1e6
+					fmt.Printf("PSG (%s): %.2f MIPS (%d instructions in %.3fs)\n",
+						cpuName, mips, instrCount, secs)
+				} else {
+					fmt.Printf("PSG (%s): %d instructions (too fast to measure)\n",
+						cpuName, instrCount)
+				}
+			} else {
+				fmt.Printf("PSG: register dump — no CPU to measure\n")
+			}
+		}
 		soundChip.Start()
 		psgPlayer.Play()
 		// Wait for playback to complete, then exit
@@ -337,6 +353,20 @@ func main() {
 			fmt.Printf(" [%s]", dur)
 		}
 		fmt.Println()
+		if perfMode {
+			instrCount, cpuName, execNanos := sidPlayer.RenderPerf()
+			if cpuName != "" {
+				if execNanos > 0 {
+					secs := float64(execNanos) / 1e9
+					mips := float64(instrCount) / secs / 1e6
+					fmt.Printf("SID (%s): %.2f MIPS (%d instructions in %.3fs)\n",
+						cpuName, mips, instrCount, secs)
+				} else {
+					fmt.Printf("SID (%s): %d instructions (too fast to measure)\n",
+						cpuName, instrCount)
+				}
+			}
+		}
 		soundChip.SetSampleTicker(sidEngine)
 		soundChip.Start()
 		sidPlayer.Play()
@@ -373,6 +403,20 @@ func main() {
 			fmt.Printf(" (%s)", dur)
 		}
 		fmt.Println()
+		if perfMode {
+			instrCount, cpuName, execNanos := pokeyPlayer.RenderPerf()
+			if cpuName != "" {
+				if execNanos > 0 {
+					secs := float64(execNanos) / 1e9
+					mips := float64(instrCount) / secs / 1e6
+					fmt.Printf("SAP (%s): %.2f MIPS (%d instructions in %.3fs)\n",
+						cpuName, mips, instrCount, secs)
+				} else {
+					fmt.Printf("SAP (%s): %d instructions (too fast to measure)\n",
+						cpuName, instrCount)
+				}
+			}
+		}
 		soundChip.Start()
 		pokeyPlayer.Play()
 		// Wait for playback to complete
@@ -412,6 +456,20 @@ func main() {
 			fmt.Printf(" [%s]", dur)
 		}
 		fmt.Println()
+		if perfMode {
+			instrCount, cpuName, execNanos := tedPlayer.RenderPerf()
+			if cpuName != "" {
+				if execNanos > 0 {
+					secs := float64(execNanos) / 1e9
+					mips := float64(instrCount) / secs / 1e6
+					fmt.Printf("TED (%s): %.2f MIPS (%d instructions in %.3fs)\n",
+						cpuName, mips, instrCount, secs)
+				} else {
+					fmt.Printf("TED (%s): %d instructions (too fast to measure)\n",
+						cpuName, instrCount)
+				}
+			}
+		}
 		soundChip.Start()
 		tedPlayer.Play()
 		// Wait for playback to complete
@@ -453,6 +511,22 @@ func main() {
 			fmt.Print(" [AHX+]")
 		}
 		fmt.Println()
+		if perfMode {
+			instrCount, cpuName, execNanos := ahxPlayer.RenderPerf()
+			if cpuName != "" {
+				if execNanos > 0 {
+					secs := float64(execNanos) / 1e9
+					mips := float64(instrCount) / secs / 1e6
+					fmt.Printf("AHX (%s): %.2f MIPS (%d instructions in %.3fs)\n",
+						cpuName, mips, instrCount, secs)
+				} else {
+					fmt.Printf("AHX (%s): %d instructions (too fast to measure)\n",
+						cpuName, instrCount)
+				}
+			} else {
+				fmt.Printf("AHX: software module replay — no CPU to measure\n")
+			}
+		}
 		soundChip.Start()
 		ahxPlayer.Play()
 		// Wait for playback to complete

@@ -2,7 +2,10 @@
 
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 type ayZ80Player struct {
 	cpu              *CPU_Z80
@@ -19,6 +22,8 @@ type ayZ80Player struct {
 	initDone         bool
 	sampleMultiplier uint64     // Pre-computed: (sampleRate << 32) / clockHz for fast conversion
 	eventBuffer      []PSGEvent // Pre-allocated buffer for events (zero-allocation path)
+	instructionCount uint64
+	cpuExecNanos     uint64
 }
 
 // maxAYEventsPerFrame is the initial capacity for the event buffer.
@@ -105,6 +110,8 @@ func (p *ayZ80Player) RenderFrames(frameCount int) ([]PSGEvent, uint64) {
 }
 
 func (p *ayZ80Player) runIRQFrame(budget uint64) {
+	start := time.Now()
+	defer func() { p.cpuExecNanos += uint64(time.Since(start).Nanoseconds()) }()
 	idlePC := p.cpu.PC
 	startCycles := p.bus.cycles
 	executed := false
@@ -119,6 +126,7 @@ func (p *ayZ80Player) runIRQFrame(budget uint64) {
 
 		prevIFF1 := p.cpu.IFF1
 		p.cpu.Step()
+		p.instructionCount++
 		executed = true
 
 		if irqAsserted && prevIFF1 && !p.cpu.IFF1 && !irqServiced {

@@ -14,7 +14,10 @@ Usage:
 
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // TEDFileMetadata contains parsed metadata from a TED file
 type TEDFileMetadata struct {
@@ -27,21 +30,23 @@ type TEDFileMetadata struct {
 
 // TED6502Player executes Plus/4 6502 code and captures TED register writes.
 type TED6502Player struct {
-	bus            *TED6502Bus
-	cpu            *CPU_6502
-	file           *TEDFile
-	clockHz        uint32
-	frameRate      int
-	sampleRate     int
-	cyclesPerFrame uint64
-	totalCycles    uint64
-	totalSamples   uint64
-	engine         *TEDEngine
-	initEvents     []TEDEvent
-	initEmitted    bool
-	continuousMode bool // True if player runs continuously (init==play)
-	realTEDMode    bool // True for RealTED mode (PlayAddr==0, full raster emulation)
-	currentSubtune int  // Currently selected subtune (0-based)
+	bus              *TED6502Bus
+	cpu              *CPU_6502
+	file             *TEDFile
+	clockHz          uint32
+	frameRate        int
+	sampleRate       int
+	cyclesPerFrame   uint64
+	totalCycles      uint64
+	totalSamples     uint64
+	engine           *TEDEngine
+	initEvents       []TEDEvent
+	initEmitted      bool
+	continuousMode   bool // True if player runs continuously (init==play)
+	realTEDMode      bool // True for RealTED mode (PlayAddr==0, full raster emulation)
+	currentSubtune   int  // Currently selected subtune (0-based)
+	instructionCount uint64
+	cpuExecNanos     uint64
 }
 
 // NewTED6502Player creates a new TED 6502 player
@@ -133,6 +138,8 @@ func (p *TED6502Player) LoadFromData(data []byte) error {
 
 // runInitToCompletion runs the init routine until it hits a stable wait loop
 func (p *TED6502Player) runInitToCompletion() error {
+	start := time.Now()
+	defer func() { p.cpuExecNanos += uint64(time.Since(start).Nanoseconds()) }()
 	maxCycles := uint64(2000000) // Allow plenty of time for unpackers
 	startCycles := p.cpu.Cycles
 	lastPC := uint16(0)
@@ -150,6 +157,7 @@ func (p *TED6502Player) runInitToCompletion() error {
 			lastPC = p.cpu.PC
 		}
 
+		p.instructionCount++
 		p.cpu.Step()
 		p.bus.AddCycles(1)
 	}
@@ -335,6 +343,8 @@ func (p *TED6502Player) createCPU() *CPU_6502 {
 // runContinuous runs the CPU for one frame's worth of cycles without resetting PC
 // Used for players that have an internal infinite loop
 func (p *TED6502Player) runContinuous() error {
+	start := time.Now()
+	defer func() { p.cpuExecNanos += uint64(time.Since(start).Nanoseconds()) }()
 	maxCycles := p.cyclesPerFrame
 	startCycles := p.cpu.Cycles
 
@@ -344,6 +354,7 @@ func (p *TED6502Player) runContinuous() error {
 			p.cpu.irqPending.Store(true)
 		}
 
+		p.instructionCount++
 		cycles := p.cpu.Step()
 		p.bus.AddCycles(cycles)
 	}
@@ -354,6 +365,8 @@ func (p *TED6502Player) runContinuous() error {
 // callRoutine calls a 6502 subroutine and runs for one frame's worth of cycles
 // Many TED players run continuously and don't return, so we run for a fixed time
 func (p *TED6502Player) callRoutine(addr uint16, aReg uint8) error {
+	start := time.Now()
+	defer func() { p.cpuExecNanos += uint64(time.Since(start).Nanoseconds()) }()
 	p.cpu.A = aReg
 	p.cpu.X = 0
 	p.cpu.Y = 0
@@ -390,6 +403,7 @@ func (p *TED6502Player) callRoutine(addr uint16, aReg uint8) error {
 			p.cpu.irqPending.Store(true)
 		}
 
+		p.instructionCount++
 		cycles := p.cpu.Step()
 		p.bus.AddCycles(cycles)
 	}

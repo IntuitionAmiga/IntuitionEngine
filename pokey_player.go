@@ -27,6 +27,10 @@ type POKEYPlayer struct {
 	forceLoop     bool
 
 	mu sync.Mutex
+
+	renderInstructions uint64
+	renderCPU          string
+	renderExecNanos    uint64
 }
 
 // NewPOKEYPlayer creates a new POKEY player
@@ -59,12 +63,15 @@ func (p *POKEYPlayer) LoadDataWithSubsong(data []byte, subsong int) error {
 	p.engine.StopPlayback()
 
 	// Render SAP to POKEY events
-	meta, events, totalSamples, clockHz, _, loop, loopSample, err := renderSAPWithLimit(data, SAMPLE_RATE, 0, subsong)
+	meta, events, totalSamples, clockHz, _, loop, loopSample, instrCount, execNanos, err := renderSAPWithLimit(data, SAMPLE_RATE, 0, subsong)
 	if err != nil {
 		return err
 	}
 
 	p.metadata = meta
+	p.renderInstructions = instrCount
+	p.renderCPU = "6502"
+	p.renderExecNanos = execNanos
 
 	// Set POKEY clock and events
 	p.engine.SetClockHz(clockHz)
@@ -96,6 +103,10 @@ func (p *POKEYPlayer) Metadata() SAPMetadata {
 }
 
 // DurationSeconds returns the duration in seconds
+func (p *POKEYPlayer) RenderPerf() (uint64, string, uint64) {
+	return p.renderInstructions, p.renderCPU, p.renderExecNanos
+}
+
 func (p *POKEYPlayer) DurationSeconds() float64 {
 	p.engine.mutex.Lock()
 	defer p.engine.mutex.Unlock()

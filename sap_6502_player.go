@@ -9,6 +9,7 @@ package main
 
 import (
 	"fmt"
+	"time"
 )
 
 // SAP6502Player executes SAP 6502 code and captures POKEY events
@@ -30,6 +31,8 @@ type SAP6502Player struct {
 	stereo           bool
 	sampleMultiplier uint64          // Pre-computed: (sampleRate << 32) / clockHz for fast conversion
 	eventBuffer      []SAPPOKEYEvent // Pre-allocated buffer for frame events (zero-allocation path)
+	instructionCount uint64
+	cpuExecNanos     uint64
 }
 
 // maxSAPEventsPerFrame is the initial capacity for the event buffer.
@@ -130,6 +133,8 @@ func (p *SAP6502Player) runInit() error {
 
 // callRoutine calls a subroutine at the given address with A register set
 func (p *SAP6502Player) callRoutine(addr uint16, aReg uint8) error {
+	start := time.Now()
+	defer func() { p.cpuExecNanos += uint64(time.Since(start).Nanoseconds()) }()
 	// Set up CPU state
 	p.cpu.A = aReg
 	p.cpu.X = 0
@@ -175,6 +180,7 @@ func (p *SAP6502Player) callRoutine(addr uint16, aReg uint8) error {
 
 // executeInstruction executes a single CPU instruction using the proven 6502 emulator
 func (p *SAP6502Player) executeInstruction() {
+	p.instructionCount++
 	// Use the proven CPU_6502.Step() method that passes Klaus's tests
 	cycles := p.cpu.Step()
 	p.bus.AddCycles(cycles)

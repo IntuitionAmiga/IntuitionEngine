@@ -55,6 +55,10 @@ type TEDPlayer struct {
 	forceLoop     bool
 
 	mu sync.Mutex
+
+	renderInstructions uint64
+	renderCPU          string
+	renderExecNanos    uint64
 }
 
 // NewTEDPlayer creates a new TED player
@@ -80,7 +84,7 @@ func (p *TEDPlayer) LoadData(data []byte) error {
 		p.engine.StopPlayback()
 	}
 
-	meta, events, totalSamples, clockHz, loop, loopSample, err := renderTEDWithLimit(data, p.engine.sampleRate, 0)
+	meta, events, totalSamples, clockHz, loop, loopSample, instrCount, execNanos, err := renderTEDWithLimit(data, p.engine.sampleRate, 0)
 	if err != nil {
 		return err
 	}
@@ -88,6 +92,9 @@ func (p *TEDPlayer) LoadData(data []byte) error {
 	p.metadata = meta
 	p.clockHz = clockHz
 	p.loop = loop
+	p.renderInstructions = instrCount
+	p.renderCPU = "6502"
+	p.renderExecNanos = execNanos
 
 	if p.engine != nil {
 		p.engine.SetClockHz(clockHz)
@@ -98,19 +105,19 @@ func (p *TEDPlayer) LoadData(data []byte) error {
 }
 
 // renderTEDWithLimit renders a TED file to events
-func renderTEDWithLimit(data []byte, sampleRate int, maxFrames int) (TEDPlayerMetadata, []TEDEvent, uint64, uint32, bool, uint64, error) {
+func renderTEDWithLimit(data []byte, sampleRate int, maxFrames int) (TEDPlayerMetadata, []TEDEvent, uint64, uint32, bool, uint64, uint64, uint64, error) {
 	file, err := parseTEDFile(data)
 	if err != nil {
-		return TEDPlayerMetadata{}, nil, 0, 0, false, 0, fmt.Errorf("parse TED: %w", err)
+		return TEDPlayerMetadata{}, nil, 0, 0, false, 0, 0, 0, fmt.Errorf("parse TED: %w", err)
 	}
 
 	player, err := NewTED6502Player(nil, sampleRate)
 	if err != nil {
-		return TEDPlayerMetadata{}, nil, 0, 0, false, 0, fmt.Errorf("create player: %w", err)
+		return TEDPlayerMetadata{}, nil, 0, 0, false, 0, 0, 0, fmt.Errorf("create player: %w", err)
 	}
 
 	if err := player.LoadFromData(data); err != nil {
-		return TEDPlayerMetadata{}, nil, 0, 0, false, 0, fmt.Errorf("load data: %w", err)
+		return TEDPlayerMetadata{}, nil, 0, 0, false, 0, 0, 0, fmt.Errorf("load data: %w", err)
 	}
 
 	frameCount := tedDefaultLoopFrames
@@ -145,7 +152,7 @@ func renderTEDWithLimit(data []byte, sampleRate int, maxFrames int) (TEDPlayerMe
 
 	clockHz := player.GetClockHz()
 
-	return meta, allEvents, totalSamples, clockHz, loop, loopSample, nil
+	return meta, allEvents, totalSamples, clockHz, loop, loopSample, player.instructionCount, player.cpuExecNanos, nil
 }
 
 // Play starts playback
@@ -178,6 +185,10 @@ func (p *TEDPlayer) Metadata() TEDPlayerMetadata {
 }
 
 // DurationSeconds returns the duration in seconds
+func (p *TEDPlayer) RenderPerf() (uint64, string, uint64) {
+	return p.renderInstructions, p.renderCPU, p.renderExecNanos
+}
+
 func (p *TEDPlayer) DurationSeconds() float64 {
 	if p.engine == nil {
 		return 0

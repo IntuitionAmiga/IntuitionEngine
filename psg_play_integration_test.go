@@ -50,7 +50,7 @@ func TestPSGPlayFromMemory(t *testing.T) {
 	for i := uint32(0); i < ayLen; i++ {
 		ayData[i] = bus.Read8(ayStart + i)
 	}
-	meta, events, total, clockHz, frameRate, loop, loopSample, err := renderAYZ80(ayData, SAMPLE_RATE)
+	meta, events, total, clockHz, frameRate, loop, loopSample, _, _, err := renderAYZ80(ayData, SAMPLE_RATE)
 	if err != nil {
 		t.Logf("renderAYZ80 error: %v", err)
 	} else {

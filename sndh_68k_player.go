@@ -9,6 +9,7 @@ package main
 
 import (
 	"fmt"
+	"time"
 )
 
 const (
@@ -43,6 +44,9 @@ type sndh68KPlayer struct {
 	// SID emulation timer handling - these are called independently
 	timerBVector uint32 // Timer B interrupt handler
 	timerDVector uint32 // Timer D interrupt handler
+
+	instructionCount uint64
+	cpuExecNanos     uint64
 }
 
 // newSNDH68KPlayer creates a new SNDH player
@@ -360,6 +364,8 @@ var debugSNDH = false
 
 // runUntilReturnOrRTE executes instructions until RTS/RTE returns to sentinel
 func (p *sndh68KPlayer) runUntilReturnOrRTE() error {
+	start := time.Now()
+	defer func() { p.cpuExecNanos += uint64(time.Since(start).Nanoseconds()) }()
 	instructions := 0
 	p.cpu.SetRunning(true)
 	startPC := p.cpu.PC
@@ -400,6 +406,7 @@ func (p *sndh68KPlayer) runUntilReturnOrRTE() error {
 		p.cpu.cycleCounter = 0
 
 		instructions++
+		p.instructionCount++
 	}
 
 	if debugSNDH {
@@ -410,6 +417,8 @@ func (p *sndh68KPlayer) runUntilReturnOrRTE() error {
 
 // runUntilReturn executes instructions until RTS returns to sentinel
 func (p *sndh68KPlayer) runUntilReturn() error {
+	start := time.Now()
+	defer func() { p.cpuExecNanos += uint64(time.Since(start).Nanoseconds()) }()
 	instructions := 0
 	p.cpu.SetRunning(true)
 
@@ -433,6 +442,7 @@ func (p *sndh68KPlayer) runUntilReturn() error {
 		p.cpu.cycleCounter = 0
 
 		instructions++
+		p.instructionCount++
 	}
 
 	return fmt.Errorf("exceeded max instructions per frame")

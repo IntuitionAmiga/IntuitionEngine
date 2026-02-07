@@ -22,18 +22,18 @@ func ayZ80SystemName(system byte) string {
 	}
 }
 
-func renderAYZ80(data []byte, sampleRate int) (PSGMetadata, []PSGEvent, uint64, uint32, uint16, bool, uint64, error) {
+func renderAYZ80(data []byte, sampleRate int) (PSGMetadata, []PSGEvent, uint64, uint32, uint16, bool, uint64, uint64, uint64, error) {
 	return renderAYZ80WithLimit(data, sampleRate, 0)
 }
 
-func renderAYZ80WithLimit(data []byte, sampleRate int, maxFrames int) (PSGMetadata, []PSGEvent, uint64, uint32, uint16, bool, uint64, error) {
+func renderAYZ80WithLimit(data []byte, sampleRate int, maxFrames int) (PSGMetadata, []PSGEvent, uint64, uint32, uint16, bool, uint64, uint64, uint64, error) {
 	file, err := ParseAYZ80Data(data)
 	if err != nil {
-		return PSGMetadata{}, nil, 0, 0, 0, false, 0, err
+		return PSGMetadata{}, nil, 0, 0, 0, false, 0, 0, 0, err
 	}
 	songIndex := int(file.Header.FirstSongIndex)
 	if songIndex < 0 || songIndex >= len(file.Songs) {
-		return PSGMetadata{}, nil, 0, 0, 0, false, 0, fmt.Errorf("ay z80 default song out of range")
+		return PSGMetadata{}, nil, 0, 0, 0, false, 0, 0, 0, fmt.Errorf("ay z80 default song out of range")
 	}
 	song := file.Songs[songIndex]
 	frameRate := uint16(50)
@@ -42,7 +42,7 @@ func renderAYZ80WithLimit(data []byte, sampleRate int, maxFrames int) (PSGMetada
 
 	player, err := newAYZ80Player(file, songIndex, sampleRate, z80Clock, frameRate, nil)
 	if err != nil {
-		return PSGMetadata{}, nil, 0, 0, 0, false, 0, err
+		return PSGMetadata{}, nil, 0, 0, 0, false, 0, 0, 0, err
 	}
 
 	frameCount := int(song.Data.LengthFrames)
@@ -62,5 +62,5 @@ func renderAYZ80WithLimit(data []byte, sampleRate int, maxFrames int) (PSGMetada
 		Author: file.Header.Author,
 		System: ayZ80SystemName(song.Data.PlayerSystem),
 	}
-	return meta, events, totalSamples, clockHz, frameRate, loop, loopSample, nil
+	return meta, events, totalSamples, clockHz, frameRate, loop, loopSample, player.instructionCount, player.cpuExecNanos, nil
 }

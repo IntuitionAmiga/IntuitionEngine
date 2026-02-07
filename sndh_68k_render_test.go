@@ -27,7 +27,7 @@ func TestRenderSNDH_Goldrunner(t *testing.T) {
 
 	// Test rendering
 	sampleRate := 44100
-	meta, events, totalSamples, clockHz, frameRate, loop, loopSample, err := renderSNDH(data, sampleRate)
+	meta, events, totalSamples, clockHz, frameRate, loop, loopSample, _, _, err := renderSNDH(data, sampleRate)
 	if err != nil {
 		t.Fatalf("renderSNDH failed: %v", err)
 	}

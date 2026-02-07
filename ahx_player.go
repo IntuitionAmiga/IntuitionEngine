@@ -76,6 +76,11 @@ func (p *AHXPlayer) TickSample() {
 	p.engine.TickSample()
 }
 
+// RenderPerf returns perf data. AHX is a software module replayer with no CPU.
+func (p *AHXPlayer) RenderPerf() (uint64, string, uint64) {
+	return 0, "", 0
+}
+
 // GetSongName returns the name of the loaded song
 func (p *AHXPlayer) GetSongName() string {
 	return p.engine.GetSongName()
