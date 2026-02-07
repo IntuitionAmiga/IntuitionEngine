@@ -160,7 +160,7 @@ wait_vsync:
 generate_texture:
     la      r5, TEXTURE_BASE            ; r5 = write pointer
     li      r6, #0                      ; r6 = row (Y)
-    li      r7, #TEX_SIZE               ; r7 = 256 (limit)
+    move.l  r7, #TEX_SIZE               ; r7 = 256 (limit)
 
 .row:
     li      r8, #0                      ; r8 = col (X)
@@ -298,7 +298,10 @@ generate_dudv_tables:
     lsl.l   r1, r1, #2
     la      r2, SINE_TABLE
     add.l   r1, r2, r1
-    load.l  r8, (r1)                    ; r8 = cos[angle] (signed)
+    load.l  r8, (r1)                    ; r8 = cos[angle] (signed 32-bit)
+    ; Sign-extend r8 from 32 to 64 bits for signed multiply
+    lsl.q   r8, r8, #32
+    asr.q   r8, r8, #32
 
     ; du = (scale_inv * cos) >> 8  (signed multiply + arithmetic shift)
     muls.l  r1, r17, r8
@@ -309,7 +312,10 @@ generate_dudv_tables:
     lsl.l   r1, r20, #2
     la      r2, SINE_TABLE
     add.l   r1, r2, r1
-    load.l  r8, (r1)                    ; r8 = sin[angle] (signed)
+    load.l  r8, (r1)                    ; r8 = sin[angle] (signed 32-bit)
+    ; Sign-extend r8 from 32 to 64 bits for signed multiply
+    lsl.q   r8, r8, #32
+    asr.q   r8, r8, #32
 
     ; dv = (scale_inv * sin) >> 8
     muls.l  r1, r17, r8
@@ -366,6 +372,9 @@ update_animation:
     ; Convert to scale selector: (scale >> 6) - 1, clamped to 0-4
     lsr.l   r1, r1, #6                 ; 1-5
     sub.l   r1, r1, #1                 ; 0-4
+    ; Sign-extend for signed comparison
+    lsl.q   r1, r1, #32
+    asr.q   r1, r1, #32
 
     ; Clamp low
     bltz    r1, .clamp_low
@@ -430,12 +439,20 @@ render_rotozoomer:
     ; Load variables for center offset calculation
     la      r5, VAR_DU_DX
     load.l  r8, (r5)                    ; r8 = du_dx
+    lsl.q   r8, r8, #32                ; sign-extend 32->64
+    asr.q   r8, r8, #32
     la      r5, VAR_DV_DX
     load.l  r9, (r5)                    ; r9 = dv_dx
+    lsl.q   r9, r9, #32
+    asr.q   r9, r9, #32
     la      r5, VAR_DU_DY
     load.l  r10, (r5)                   ; r10 = du_dy
+    lsl.q   r10, r10, #32
+    asr.q   r10, r10, #32
     la      r5, VAR_DV_DY
     load.l  r11, (r5)                   ; r11 = dv_dy
+    lsl.q   r11, r11, #32
+    asr.q   r11, r11, #32
 
     ; Calculate starting row U,V using MULS (exact, 2 instr vs ~10)
     ; row_u = start_u - (320 * du_dx >> 8) - (240 * du_dy >> 8)
@@ -475,7 +492,7 @@ render_rotozoomer:
 
     ; Init VRAM pointer
     la      r5, VAR_VRAM_ROW
-    li      r1, #BACK_BUFFER
+    move.l  r1, #BACK_BUFFER
     store.l r1, (r5)
 
     ; Load constants into registers for inner loop
@@ -483,15 +500,15 @@ render_rotozoomer:
     load.l  r16, (r5)                   ; r16 = du_dx
     la      r5, VAR_DV_DX
     load.l  r17, (r5)                   ; r17 = dv_dx
-    li      r18, #TEXTURE_BASE          ; r18 = texture base
-    li      r19, #TEX_MASK              ; r19 = 255
+    move.l  r18, #TEXTURE_BASE          ; r18 = texture base
+    move.l  r19, #TEX_MASK              ; r19 = 255
     li      r20, #4                     ; r20 = pixel stride
     la      r5, VAR_DU_DY
     load.l  r21, (r5)                   ; r21 = du_dy
     la      r5, VAR_DV_DY
     load.l  r24, (r5)                   ; r24 = dv_dy
-    li      r25, #LINE_BYTES            ; r25 = 2560
-    li      r29, #RENDER_H              ; r29 = 480 (loop limit)
+    move.l  r25, #LINE_BYTES            ; r25 = 2560
+    move.l  r29, #RENDER_H              ; r29 = 480 (loop limit)
     li      r30, #40                    ; r30 = 40 (col iterations)
 
     li      r27, #0                     ; r27 = row counter
@@ -779,27 +796,27 @@ render_rotozoomer:
 ; =============================================================================
 blit_to_front:
     la      r5, BLT_OP
-    li      r1, #BLT_OP_COPY
+    move.l  r1, #BLT_OP_COPY
     store.l r1, (r5)
 
     la      r5, BLT_SRC
-    li      r1, #BACK_BUFFER
+    move.l  r1, #BACK_BUFFER
     store.l r1, (r5)
 
     la      r5, BLT_DST
-    li      r1, #VRAM_START
+    move.l  r1, #VRAM_START
     store.l r1, (r5)
 
     la      r5, BLT_WIDTH
-    li      r1, #DISPLAY_W
+    move.l  r1, #DISPLAY_W
     store.l r1, (r5)
 
     la      r5, BLT_HEIGHT
-    li      r1, #DISPLAY_H
+    move.l  r1, #DISPLAY_H
     store.l r1, (r5)
 
     la      r5, BLT_SRC_STRIDE
-    li      r1, #LINE_BYTES
+    move.l  r1, #LINE_BYTES
     store.l r1, (r5)
 
     la      r5, BLT_DST_STRIDE
