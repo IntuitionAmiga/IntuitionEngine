@@ -262,7 +262,7 @@ func BenchmarkChannel_GenerateSample_Sine(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		_ = ch.generateWaveSample(SAMPLE_RATE)
+		_ = ch.generateWaveSample(SAMPLE_RATE, 1.0/SAMPLE_RATE)
 	}
 }
 
@@ -281,7 +281,7 @@ func BenchmarkChannel_GenerateSample_Square(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		_ = ch.generateWaveSample(SAMPLE_RATE)
+		_ = ch.generateWaveSample(SAMPLE_RATE, 1.0/SAMPLE_RATE)
 	}
 }
 
@@ -299,7 +299,7 @@ func BenchmarkChannel_GenerateSample_Triangle(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		_ = ch.generateWaveSample(SAMPLE_RATE)
+		_ = ch.generateWaveSample(SAMPLE_RATE, 1.0/SAMPLE_RATE)
 	}
 }
 
@@ -318,7 +318,7 @@ func BenchmarkChannel_GenerateSample_Noise(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		_ = ch.generateWaveSample(SAMPLE_RATE)
+		_ = ch.generateWaveSample(SAMPLE_RATE, 1.0/SAMPLE_RATE)
 	}
 }
 

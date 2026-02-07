@@ -32,7 +32,7 @@ func TestHardSync_PhaseResetOnSourceWrap(t *testing.T) {
 				frequency:  440,
 				noiseSR:    NOISE_LFSR_SEED,
 			}
-			slave.generateWaveSample(testSampleRate)
+			slave.generateWaveSample(testSampleRate, 1.0/testSampleRate)
 			if tc.expectReset && slave.phase > 0.1 {
 				t.Errorf("expected phase reset, got %f", slave.phase)
 			}
@@ -62,7 +62,7 @@ func TestHardSync_PhaseWrappedFlag(t *testing.T) {
 				phase:     tc.initialPhase,
 				frequency: tc.frequency,
 			}
-			ch.generateWaveSample(testSampleRate)
+			ch.generateWaveSample(testSampleRate, 1.0/testSampleRate)
 			if ch.phaseWrapped != tc.expectWrap {
 				t.Errorf("phaseWrapped = %v, want %v", ch.phaseWrapped, tc.expectWrap)
 			}
@@ -103,14 +103,14 @@ func TestHardSync_SyncChain(t *testing.T) {
 
 	// Advance chA until it wraps
 	for i := 0; i < 1000 && !chA.phaseWrapped; i++ {
-		chA.generateWaveSample(testSampleRate)
+		chA.generateWaveSample(testSampleRate, 1.0/testSampleRate)
 	}
 	if !chA.phaseWrapped {
 		t.Fatal("chA should have wrapped after 1000 samples")
 	}
 
 	chB.phase = 3.0 // Set non-zero phase
-	chB.generateWaveSample(testSampleRate)
+	chB.generateWaveSample(testSampleRate, 1.0/testSampleRate)
 
 	if chB.phase > 0.2 {
 		t.Errorf("chB should reset when chA wraps, phase = %f", chB.phase)
@@ -119,14 +119,14 @@ func TestHardSync_SyncChain(t *testing.T) {
 	// Now advance chB until it wraps
 	chA.phaseWrapped = false // Clear master flag
 	for i := 0; i < 1000 && !chB.phaseWrapped; i++ {
-		chB.generateWaveSample(testSampleRate)
+		chB.generateWaveSample(testSampleRate, 1.0/testSampleRate)
 	}
 	if !chB.phaseWrapped {
 		t.Fatal("chB should have wrapped after 1000 samples")
 	}
 
 	chC.phase = 3.0 // Set non-zero phase
-	chC.generateWaveSample(testSampleRate)
+	chC.generateWaveSample(testSampleRate, 1.0/testSampleRate)
 
 	if chC.phase > 0.2 {
 		t.Errorf("chC should reset when chB wraps, phase = %f", chC.phase)

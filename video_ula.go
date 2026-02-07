@@ -52,6 +52,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 )
 
 // ULAEngine implements ZX Spectrum ULA video as a standalone device.
@@ -80,6 +81,9 @@ type ULAEngine struct {
 	// Pre-computed row start addresses for the non-linear ZX Spectrum addressing
 	// Computed once at init, indexed by Y coordinate (0-191)
 	rowStartAddr [ULA_DISPLAY_HEIGHT]uint16
+
+	// Pre-built uint32 color lookup: [0..7] = normal, [8..15] = bright
+	colorU32 [16]uint32
 
 	// Snapshot fields for lock-free rendering
 	snapVram    [ULA_VRAM_SIZE]uint8
@@ -118,6 +122,14 @@ func NewULAEngine(bus *SystemBus) *ULAEngine {
 	// Initialize VRAM to zero
 	for i := range ula.vram {
 		ula.vram[i] = 0
+	}
+
+	// Pre-build uint32 color lookup: [0..7] = normal, [8..15] = bright
+	for i := 0; i < 8; i++ {
+		c := ULAColorNormal[i]
+		ula.colorU32[i] = uint32(c[0]) | uint32(c[1])<<8 | uint32(c[2])<<16 | 0xFF000000
+		c = ULAColorBright[i]
+		ula.colorU32[8+i] = uint32(c[0]) | uint32(c[1])<<8 | uint32(c[2])<<16 | 0xFF000000
 	}
 
 	// Pre-compute row start addresses for the non-linear ZX Spectrum addressing
@@ -238,6 +250,14 @@ func (u *ULAEngine) GetColor(colorIndex uint8, bright bool) (r, g, b uint8) {
 	return ULAColorNormal[index][0], ULAColorNormal[index][1], ULAColorNormal[index][2]
 }
 
+// RenderFrameTo renders the complete display directly into dst, avoiding a copy.
+func (u *ULAEngine) RenderFrameTo(dst []byte) {
+	saved := u.frameBuffer
+	u.frameBuffer = dst
+	u.RenderFrame()
+	u.frameBuffer = saved
+}
+
 // RenderFrame renders the complete display including border.
 func (u *ULAEngine) RenderFrame() []byte {
 	// Snapshot VRAM and registers under lock, then render lock-free
@@ -248,20 +268,17 @@ func (u *ULAEngine) RenderFrame() []byte {
 	snapFlashState := u.flashState
 	u.mu.Unlock()
 
-	// Get border color
-	borderR, borderG, borderB := u.GetColor(u.snapBorder, false)
+	// Get border color as packed uint32
+	borderU32 := u.colorU32[u.snapBorder&0x07]
 
-	// Fill entire frame with border color first
+	// Fill entire frame with border color using uint32 writes
 	for i := 0; i < len(u.frameBuffer); i += 4 {
-		u.frameBuffer[i] = borderR
-		u.frameBuffer[i+1] = borderG
-		u.frameBuffer[i+2] = borderB
-		u.frameBuffer[i+3] = 255 // Alpha
+		*(*uint32)(unsafe.Pointer(&u.frameBuffer[i])) = borderU32
 	}
 
-	// Render the 256x192 display area
+	// Render the 256x192 display area (cell-based: 32 cells wide x 192 scanlines)
 	for screenY := 0; screenY < ULA_DISPLAY_HEIGHT; screenY++ {
-		// Use pre-computed row start address instead of calling GetBitmapAddress per pixel
+		// Use pre-computed row start address
 		rowAddr := u.rowStartAddr[screenY]
 
 		// Pre-compute attribute row address base
@@ -272,48 +289,47 @@ func (u *ULAEngine) RenderFrame() []byte {
 		frameY := ULA_BORDER_TOP + screenY
 		frameRowBase := frameY * ULA_FRAME_WIDTH * 4
 
-		for screenX := 0; screenX < ULA_DISPLAY_WIDTH; screenX++ {
-			// Get bitmap byte and bit within it
-			xByte := screenX >> 3
-			bitmapAddr := rowAddr + uint16(xByte)
+		// Iterate by 8-pixel cell (32 cells per row)
+		for cellX := 0; cellX < ULA_CELLS_X; cellX++ {
+			// Read bitmap byte once per cell
+			bitmapAddr := rowAddr + uint16(cellX)
 			bitmapByte := u.snapVram[bitmapAddr]
-			bitPosition := 7 - (screenX & 0x07) // MSB is leftmost pixel
-			pixelSet := (bitmapByte >> bitPosition) & 1
 
-			// Get attribute for this character cell
-			cellX := screenX >> 3
+			// Read attribute once per cell
 			attr := u.snapVram[attrRowBase+uint16(cellX)]
 
-			// Parse attribute inline for speed
+			// Parse attribute
 			ink := attr & 0x07
 			paper := (attr >> 3) & 0x07
 			bright := (attr & 0x40) != 0
 			flash := (attr & 0x80) != 0
 
-			// Determine actual foreground/background based on FLASH state
+			// Determine fg/bg based on FLASH state
 			fgColor := ink
 			bgColor := paper
 			if flash && snapFlashState {
-				// Swap ink and paper when flashing
 				fgColor, bgColor = bgColor, fgColor
 			}
 
-			// Choose color based on whether pixel is set
-			var r, g, b uint8
-			if pixelSet != 0 {
-				r, g, b = u.GetColor(fgColor, bright)
-			} else {
-				r, g, b = u.GetColor(bgColor, bright)
+			// Resolve to uint32 colors once per cell
+			var brightOff uint8
+			if bright {
+				brightOff = 8
 			}
+			fgU32 := u.colorU32[brightOff+fgColor]
+			bgU32 := u.colorU32[brightOff+bgColor]
 
-			// Calculate frame buffer position (add border offset)
-			frameX := ULA_BORDER_LEFT + screenX
-			offset := frameRowBase + frameX*4
-
-			u.frameBuffer[offset] = r
-			u.frameBuffer[offset+1] = g
-			u.frameBuffer[offset+2] = b
-			u.frameBuffer[offset+3] = 255 // Alpha
+			// Write 8 pixels for this cell
+			frameX := ULA_BORDER_LEFT + cellX*8
+			pixelBase := frameRowBase + frameX*4
+			for bit := 7; bit >= 0; bit-- {
+				pixelIdx := pixelBase + (7-bit)*4
+				if (bitmapByte>>bit)&1 != 0 {
+					*(*uint32)(unsafe.Pointer(&u.frameBuffer[pixelIdx])) = fgU32
+				} else {
+					*(*uint32)(unsafe.Pointer(&u.frameBuffer[pixelIdx])) = bgU32
+				}
+			}
 		}
 	}
 
@@ -428,13 +444,8 @@ func (u *ULAEngine) renderLoop(ctx context.Context, done chan struct{}) {
 				u.rendering.Store(false)
 				continue
 			}
-			frame := u.RenderFrame()
+			u.RenderFrameTo(u.frameBufs[u.writeIdx])
 			u.rendering.Store(false)
-			if frame == nil {
-				continue
-			}
-			buf := u.frameBufs[u.writeIdx]
-			copy(buf, frame)
 			u.writeIdx = int(u.sharedIdx.Swap(int32(u.writeIdx)))
 		}
 	}

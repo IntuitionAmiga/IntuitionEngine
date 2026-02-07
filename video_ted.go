@@ -50,6 +50,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 )
 
 // TEDVideoEngine implements TED video chip as a standalone device.
@@ -296,6 +297,14 @@ func (t *TEDVideoEngine) GetCharsetAddress(charCode uint8) int {
 // Rendering
 // =============================================================================
 
+// RenderFrameTo renders the complete display directly into dst, avoiding a copy.
+func (t *TEDVideoEngine) RenderFrameTo(dst []byte) {
+	saved := t.frameBuffer
+	t.frameBuffer = dst
+	t.RenderFrame()
+	t.frameBuffer = saved
+}
+
 // RenderFrame renders the complete display including border
 func (t *TEDVideoEngine) RenderFrame() []byte {
 	// Snapshot VRAM and registers under lock, then render lock-free
@@ -308,19 +317,20 @@ func (t *TEDVideoEngine) RenderFrame() []byte {
 	snapCursorColor := t.cursorColor
 	t.mu.Unlock()
 
-	// Get border color
-	borderR, borderG, borderB := GetTEDColor(t.snapBorder)
+	// Pack border color as uint32
+	borderIdx := t.snapBorder & 0x7F
+	borderC := TEDPalette[borderIdx]
+	borderU32 := uint32(borderC[0]) | uint32(borderC[1])<<8 | uint32(borderC[2])<<16 | 0xFF000000
 
-	// Fill entire frame with border color first
+	// Fill entire frame with border color using uint32 writes
 	for i := 0; i < len(t.frameBuffer); i += 4 {
-		t.frameBuffer[i] = borderR
-		t.frameBuffer[i+1] = borderG
-		t.frameBuffer[i+2] = borderB
-		t.frameBuffer[i+3] = 255 // Alpha
+		*(*uint32)(unsafe.Pointer(&t.frameBuffer[i])) = borderU32
 	}
 
-	// Get background color
-	bgR, bgG, bgB := GetTEDColor(t.snapBgColor[0])
+	// Pack background color as uint32
+	bgIdx := t.snapBgColor[0] & 0x7F
+	bgC := TEDPalette[bgIdx]
+	bgU32 := uint32(bgC[0]) | uint32(bgC[1])<<8 | uint32(bgC[2])<<16 | 0xFF000000
 
 	// Pre-compute address offsets for character rendering
 	charsetBase := TED_V_MATRIX_SIZE + TED_V_COLOR_SIZE
@@ -339,16 +349,17 @@ func (t *TEDVideoEngine) RenderFrame() []byte {
 			// Get character code from video matrix
 			charCode := t.snapVram[matrixRowBase+cellX]
 
-			// Get foreground color from color RAM
+			// Get foreground color from color RAM — pack as uint32
 			fgColorByte := t.snapVram[colorRowBase+cellX]
-			fgR, fgG, fgB := GetTEDColor(fgColorByte)
+			fgIdx := fgColorByte & 0x7F
+			fgC := TEDPalette[fgIdx]
+			fgU32 := uint32(fgC[0]) | uint32(fgC[1])<<8 | uint32(fgC[2])<<16 | 0xFF000000
 
 			// Get character bitmap offset
 			charsetOffset := charsetBase + int(charCode)*8
 
 			// Pre-compute X base for frame buffer
-			screenXBase := cellX * TED_V_CELL_WIDTH
-			frameXBase := TED_V_BORDER_LEFT + screenXBase
+			frameXBase := TED_V_BORDER_LEFT + cellX*TED_V_CELL_WIDTH
 
 			// Render 8x8 pixel character
 			for row := 0; row < TED_V_CELL_HEIGHT; row++ {
@@ -361,23 +372,14 @@ func (t *TEDVideoEngine) RenderFrame() []byte {
 				// Frame buffer row offset
 				frameRowOffset := (frameYBase + row*TED_V_FRAME_WIDTH + frameXBase) * 4
 
-				// Render 8 pixels
+				// Render 8 pixels with uint32 writes
 				for col := 0; col < TED_V_CELL_WIDTH; col++ {
-					// Check if pixel is set (MSB = leftmost)
-					pixelSet := (bitmapByte >> (7 - col)) & 1
 					offset := frameRowOffset + col*4
-
-					// Set pixel color
-					if pixelSet != 0 {
-						t.frameBuffer[offset] = fgR
-						t.frameBuffer[offset+1] = fgG
-						t.frameBuffer[offset+2] = fgB
+					if (bitmapByte>>(7-col))&1 != 0 {
+						*(*uint32)(unsafe.Pointer(&t.frameBuffer[offset])) = fgU32
 					} else {
-						t.frameBuffer[offset] = bgR
-						t.frameBuffer[offset+1] = bgG
-						t.frameBuffer[offset+2] = bgB
+						*(*uint32)(unsafe.Pointer(&t.frameBuffer[offset])) = bgU32
 					}
-					t.frameBuffer[offset+3] = 255 // Alpha
 				}
 			}
 		}
@@ -581,13 +583,8 @@ func (t *TEDVideoEngine) renderLoop(ctx context.Context, done chan struct{}) {
 				t.rendering.Store(false)
 				continue
 			}
-			frame := t.RenderFrame()
+			t.RenderFrameTo(t.frameBufs[t.writeIdx])
 			t.rendering.Store(false)
-			if frame == nil {
-				continue
-			}
-			buf := t.frameBufs[t.writeIdx]
-			copy(buf, frame)
 			t.writeIdx = int(t.sharedIdx.Swap(int32(t.writeIdx)))
 		}
 	}

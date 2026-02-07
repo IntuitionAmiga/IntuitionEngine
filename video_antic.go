@@ -646,6 +646,14 @@ func (a *ANTICEngine) Handle6502GTIAWrite(addr uint16, value uint8) {
 // =============================================================================
 
 // RenderFrame renders the complete display including border
+// RenderFrameTo renders the complete display directly into dst, avoiding a copy.
+func (a *ANTICEngine) RenderFrameTo(dst []byte) {
+	saved := a.frameBuffer
+	a.frameBuffer = dst
+	a.RenderFrame()
+	a.frameBuffer = saved
+}
+
 func (a *ANTICEngine) RenderFrame() []byte {
 	// Snapshot state under lock, then render lock-free
 	a.mu.Lock()
@@ -1014,13 +1022,8 @@ func (a *ANTICEngine) renderLoop(ctx context.Context, done chan struct{}) {
 				a.rendering.Store(false)
 				continue
 			}
-			frame := a.RenderFrame()
+			a.RenderFrameTo(a.frameBufs[a.writeIdx])
 			a.rendering.Store(false)
-			if frame == nil {
-				continue
-			}
-			buf := a.frameBufs[a.writeIdx]
-			copy(buf, frame)
 			a.writeIdx = int(a.sharedIdx.Swap(int32(a.writeIdx)))
 		}
 	}

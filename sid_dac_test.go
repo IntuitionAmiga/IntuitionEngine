@@ -22,7 +22,7 @@ func TestSIDDAC_StandardPathQuantization(t *testing.T) {
 	// Generate samples across a full cycle
 	samples := make([]float32, 100)
 	for i := range samples {
-		samples[i] = ch.generateWaveSample(testSampleRate)
+		samples[i] = ch.generateWaveSample(testSampleRate, 1.0/testSampleRate)
 	}
 
 	// Verify samples are quantized to 12-bit levels
@@ -63,7 +63,7 @@ func TestSIDDAC_OnlyWhenSIDModeEnabled(t *testing.T) {
 		sidWaveMask:   0,
 	}
 
-	sample := ch.generateWaveSample(testSampleRate)
+	sample := ch.generateWaveSample(testSampleRate, 1.0/testSampleRate)
 
 	// Without DAC, sample should have full float precision
 	// Convert to 12-bit space and check it's NOT an integer
@@ -79,7 +79,7 @@ func TestSIDDAC_OnlyWhenSIDModeEnabled(t *testing.T) {
 		nonQuantizedFound := false
 		for i := 0; i < 100; i++ {
 			ch.phase = float32(i) * 0.1
-			sample = ch.generateWaveSample(testSampleRate)
+			sample = ch.generateWaveSample(testSampleRate, 1.0/testSampleRate)
 			normalized = (sample + 1.0) / 2.0 * 4095.0
 			rounded = math.Round(float64(normalized))
 			diff = math.Abs(float64(normalized) - rounded)
@@ -119,8 +119,8 @@ func TestSIDDAC_MatchesCombinedPath(t *testing.T) {
 	}
 
 	// Generate samples from both paths
-	sampleCombined := chCombined.generateWaveSample(testSampleRate)
-	sampleStandard := chStandard.generateWaveSample(testSampleRate)
+	sampleCombined := chCombined.generateWaveSample(testSampleRate, 1.0/testSampleRate)
+	sampleStandard := chStandard.generateWaveSample(testSampleRate, 1.0/testSampleRate)
 
 	// Both should produce 12-bit quantized output
 	// Allow some tolerance due to different code paths
@@ -164,7 +164,7 @@ func TestSIDDAC_AllWaveforms(t *testing.T) {
 			totalSamples := 50
 
 			for i := 0; i < totalSamples; i++ {
-				sample := ch.generateWaveSample(testSampleRate)
+				sample := ch.generateWaveSample(testSampleRate, 1.0/testSampleRate)
 
 				// Check quantization
 				normalized := (sample + 1.0) / 2.0 * 4095.0
@@ -200,7 +200,7 @@ func TestSIDDAC_QuantizationStepSize(t *testing.T) {
 	// Collect samples from a ramp
 	var samples []float32
 	for i := 0; i < 200; i++ {
-		samples = append(samples, ch.generateWaveSample(testSampleRate))
+		samples = append(samples, ch.generateWaveSample(testSampleRate, 1.0/testSampleRate))
 	}
 
 	// Find minimum non-zero difference between consecutive samples

@@ -44,12 +44,12 @@ func TestRingMod_OnlyAffectsTriangle(t *testing.T) {
 			}
 
 			// Generate sample with master MSB high
-			sample1 := slave.generateWaveSample(testSampleRate)
+			sample1 := slave.generateWaveSample(testSampleRate, 1.0/testSampleRate)
 
 			// Reset phase and generate with master MSB low
 			master.phaseMSB = false
 			slave.phase = 1.0
-			sample2 := slave.generateWaveSample(testSampleRate)
+			sample2 := slave.generateWaveSample(testSampleRate, 1.0/testSampleRate)
 
 			if tc.expectFlip {
 				// For triangle, samples should have opposite signs when MSB changes
@@ -96,7 +96,7 @@ func TestRingMod_MSBTracking(t *testing.T) {
 				enabled:   true,
 			}
 
-			ch.generateWaveSample(testSampleRate)
+			ch.generateWaveSample(testSampleRate, 1.0/testSampleRate)
 
 			// After sample generation, phaseMSB should reflect the current phase position
 			// Note: phase advances during generation, so we check if MSB tracking is working
@@ -121,7 +121,7 @@ func TestRingMod_MSBTrackingAfterWrap(t *testing.T) {
 
 	// Generate enough samples to see several phase wraps
 	for i := 0; i < 200; i++ {
-		ch.generateWaveSample(testSampleRate)
+		ch.generateWaveSample(testSampleRate, 1.0/testSampleRate)
 		if ch.phaseMSB != prevMSB {
 			msbChanges++
 			prevMSB = ch.phaseMSB
@@ -210,13 +210,13 @@ func TestRingMod_CombinedWaveformPath(t *testing.T) {
 	}
 
 	// Generate sample with MSB high
-	sample1 := slave.generateWaveSample(testSampleRate)
+	sample1 := slave.generateWaveSample(testSampleRate, 1.0/testSampleRate)
 
 	// Generate sample with MSB low
 	master.phaseMSB = false
 	slave.phase = 1.0
 	slave.sidWaveMask = SID_WAVE_TRIANGLE
-	sample2 := slave.generateWaveSample(testSampleRate)
+	sample2 := slave.generateWaveSample(testSampleRate, 1.0/testSampleRate)
 
 	// With triangle and ring mod, sign should flip
 	if sample1 != 0 && sample2 != 0 {
@@ -245,7 +245,7 @@ func TestRingMod_NoiseUnaffected(t *testing.T) {
 	// Generate several samples and verify noise still produces output
 	var nonZeroSamples int
 	for i := 0; i < 100; i++ {
-		sample := slave.generateWaveSample(testSampleRate)
+		sample := slave.generateWaveSample(testSampleRate, 1.0/testSampleRate)
 		if sample != 0 {
 			nonZeroSamples++
 		}

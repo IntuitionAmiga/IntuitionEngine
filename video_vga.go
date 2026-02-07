@@ -51,6 +51,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 )
 
 // VGA timing constants
@@ -113,13 +114,18 @@ type VGAEngine struct {
 	// Pre-expanded RGBA palette cache (256 entries, 4 bytes each: R, G, B, A)
 	// Invalidated on any palette write, rebuilt on first read after invalidation
 	paletteRGBA  [256][4]uint8
-	paletteDirty bool // True when palette cache needs rebuilding
+	paletteU32   [256]uint32 // Packed LE uint32 for direct framebuffer stores
+	paletteDirty bool        // True when palette cache needs rebuilding
 
 	// Pre-allocated framebuffers for each mode to avoid per-frame allocation
 	frameBuffer13h []uint8 // 320x200x4 = 256,000 bytes
 	frameBuffer12h []uint8 // 640x480x4 = 1,228,800 bytes
 	frameBufferX   []uint8 // 320x240x4 = 307,200 bytes
 	frameBufferTxt []uint8 // 640x400x4 = 1,024,000 bytes
+
+	// Optional render target — when non-nil, render functions write here
+	// instead of into the mode-specific internal buffer.
+	renderTarget []byte
 
 	// VSync state
 	vsync      atomic.Bool
@@ -693,6 +699,13 @@ func (v *VGAEngine) GetFontGlyph(char uint8) []uint8 {
 	return make([]uint8, VGA_FONT_HEIGHT)
 }
 
+// RenderFrameTo renders the current mode directly into dst, avoiding a copy.
+func (v *VGAEngine) RenderFrameTo(dst []byte) {
+	v.renderTarget = dst
+	v.RenderFrame()
+	v.renderTarget = nil
+}
+
 // RenderFrame renders the current mode to a framebuffer
 func (v *VGAEngine) RenderFrame() []uint8 {
 	// Note: No lock acquired here - VRAM is fixed-size and minor racing is
@@ -722,6 +735,9 @@ func (v *VGAEngine) renderMode13h() []uint8 {
 		v.frameBuffer13h = make([]uint8, width*height*4)
 	}
 	fb := v.frameBuffer13h
+	if v.renderTarget != nil {
+		fb = v.renderTarget
+	}
 
 	// Rebuild palette cache once at frame start if dirty
 	if v.paletteDirty {
@@ -732,9 +748,11 @@ func (v *VGAEngine) renderMode13h() []uint8 {
 	dacMask := v.dacMask
 
 	for y := 0; y < height; y++ {
+		rowLinear := uint32(y*width) + startAddr
+		pixelBase := y * width * 4
 		for x := 0; x < width; x++ {
 			// Linear addressing with start address offset
-			linearOffset := uint32(y*width+x) + startAddr
+			linearOffset := rowLinear + uint32(x)
 
 			// Chain-4: address bits 0-1 select plane, bits 2+ are VRAM offset
 			plane := linearOffset & 3
@@ -748,8 +766,8 @@ func (v *VGAEngine) renderMode13h() []uint8 {
 			// Apply DAC mask and get color from cache
 			colorIndex &= dacMask
 
-			pixelIdx := (y*width + x) * 4
-			copy(fb[pixelIdx:pixelIdx+4], v.paletteRGBA[colorIndex][:])
+			pixelIdx := pixelBase + x*4
+			*(*uint32)(unsafe.Pointer(&fb[pixelIdx])) = v.paletteU32[colorIndex]
 		}
 	}
 
@@ -766,6 +784,9 @@ func (v *VGAEngine) renderMode12h() []uint8 {
 		v.frameBuffer12h = make([]uint8, width*height*4)
 	}
 	fb := v.frameBuffer12h
+	if v.renderTarget != nil {
+		fb = v.renderTarget
+	}
 
 	// Rebuild palette cache once at frame start if dirty
 	if v.paletteDirty {
@@ -789,29 +810,18 @@ func (v *VGAEngine) renderMode12h() []uint8 {
 				planes[3] = v.vram[3][offset]
 			}
 
-			// Extract 8 pixels from the planes
-			baseX := byteX * 8
+			// Extract 8 pixels from the planes (branchless)
+			pixelBase := rowBase + byteX*8*4
 			for bit := 7; bit >= 0; bit-- {
-				// Combine bits from all planes to get color index
-				colorIndex := uint8(0)
-				mask := uint8(1 << bit)
-				if planes[0]&mask != 0 {
-					colorIndex |= 1
-				}
-				if planes[1]&mask != 0 {
-					colorIndex |= 2
-				}
-				if planes[2]&mask != 0 {
-					colorIndex |= 4
-				}
-				if planes[3]&mask != 0 {
-					colorIndex |= 8
-				}
+				ubit := uint(bit)
+				colorIndex := ((planes[0] >> ubit) & 1) |
+					(((planes[1] >> ubit) & 1) << 1) |
+					(((planes[2] >> ubit) & 1) << 2) |
+					(((planes[3] >> ubit) & 1) << 3)
 
 				colorIndex &= dacMask
-				pixelX := baseX + (7 - bit)
-				pixelIdx := rowBase + pixelX*4
-				copy(fb[pixelIdx:pixelIdx+4], v.paletteRGBA[colorIndex][:])
+				pixelIdx := pixelBase + (7-bit)*4
+				*(*uint32)(unsafe.Pointer(&fb[pixelIdx])) = v.paletteU32[colorIndex]
 			}
 		}
 	}
@@ -829,6 +839,9 @@ func (v *VGAEngine) renderModeX() []uint8 {
 		v.frameBufferX = make([]uint8, width*height*4)
 	}
 	fb := v.frameBufferX
+	if v.renderTarget != nil {
+		fb = v.renderTarget
+	}
 
 	// Rebuild palette cache once at frame start if dirty
 	if v.paletteDirty {
@@ -854,7 +867,7 @@ func (v *VGAEngine) renderModeX() []uint8 {
 
 			colorIndex &= dacMask
 			pixelIdx := (rowStart + x) * 4
-			copy(fb[pixelIdx:pixelIdx+4], v.paletteRGBA[colorIndex][:])
+			*(*uint32)(unsafe.Pointer(&fb[pixelIdx])) = v.paletteU32[colorIndex]
 		}
 	}
 
@@ -873,6 +886,9 @@ func (v *VGAEngine) renderTextMode() []uint8 {
 		v.frameBufferTxt = make([]uint8, width*height*4)
 	}
 	fb := v.frameBufferTxt
+	if v.renderTarget != nil {
+		fb = v.renderTarget
+	}
 
 	// Rebuild palette cache once at frame start if dirty
 	if v.paletteDirty {
@@ -901,14 +917,16 @@ func (v *VGAEngine) renderTextMode() []uint8 {
 				pixelY := charBaseY + cy
 				rowBase := pixelY * width * 4
 
+				fgU32 := v.paletteU32[fg]
+				bgU32 := v.paletteU32[bg]
 				for cx := 0; cx < charWidth; cx++ {
 					pixelX := charBaseX + cx
 					pixelIdx := rowBase + pixelX*4
 
 					if fontRow&(0x80>>cx) != 0 {
-						copy(fb[pixelIdx:pixelIdx+4], v.paletteRGBA[fg][:])
+						*(*uint32)(unsafe.Pointer(&fb[pixelIdx])) = fgU32
 					} else {
-						copy(fb[pixelIdx:pixelIdx+4], v.paletteRGBA[bg][:])
+						*(*uint32)(unsafe.Pointer(&fb[pixelIdx])) = bgU32
 					}
 				}
 			}
@@ -922,10 +940,14 @@ func (v *VGAEngine) renderTextMode() []uint8 {
 func (v *VGAEngine) rebuildPaletteCache() {
 	for i := 0; i < 256; i++ {
 		idx := i * 3
-		v.paletteRGBA[i][0] = v.Expand6BitTo8Bit(v.palette[idx])
-		v.paletteRGBA[i][1] = v.Expand6BitTo8Bit(v.palette[idx+1])
-		v.paletteRGBA[i][2] = v.Expand6BitTo8Bit(v.palette[idx+2])
+		r := v.Expand6BitTo8Bit(v.palette[idx])
+		g := v.Expand6BitTo8Bit(v.palette[idx+1])
+		b := v.Expand6BitTo8Bit(v.palette[idx+2])
+		v.paletteRGBA[i][0] = r
+		v.paletteRGBA[i][1] = g
+		v.paletteRGBA[i][2] = b
 		v.paletteRGBA[i][3] = 255
+		v.paletteU32[i] = uint32(r) | uint32(g)<<8 | uint32(b)<<16 | 0xFF000000
 	}
 	v.paletteDirty = false
 }
@@ -1110,13 +1132,8 @@ func (v *VGAEngine) renderLoop(ctx context.Context, done chan struct{}) {
 				v.rendering.Store(false)
 				continue
 			}
-			frame := v.RenderFrame()
+			v.RenderFrameTo(v.frameBufs[v.writeIdx])
 			v.rendering.Store(false)
-			if frame == nil {
-				continue
-			}
-			buf := v.frameBufs[v.writeIdx]
-			copy(buf, frame)
 			v.writeIdx = int(v.sharedIdx.Swap(int32(v.writeIdx)))
 		}
 	}

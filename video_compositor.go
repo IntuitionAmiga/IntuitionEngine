@@ -264,53 +264,23 @@ func (c *VideoCompositor) compositeScanlineAware() bool {
 	return true
 }
 
-// frameResult holds the result of a parallel GetFrame call
-type frameResult struct {
-	frame  []byte
-	w, h   int
-	source VideoSource
-}
-
-// compositeFullFrame performs full-frame compositing with parallel frame collection
+// compositeFullFrame performs full-frame compositing with sequential frame collection
 func (c *VideoCompositor) compositeFullFrame() {
-	// Collect enabled sources
-	var enabledSources []VideoSource
-	for _, source := range c.sources {
-		if source.IsEnabled() {
-			enabledSources = append(enabledSources, source)
-		}
-	}
-	if len(enabledSources) == 0 {
-		return
-	}
-
-	// Fetch all frames in parallel (lock-free triple-buffer swaps)
-	results := make([]frameResult, len(enabledSources))
-	var wg sync.WaitGroup
-	for i, src := range enabledSources {
-		wg.Add(1)
-		go func(idx int, s VideoSource) {
-			defer wg.Done()
-			w, h := s.GetDimensions()
-			results[idx] = frameResult{
-				frame:  s.GetFrame(),
-				w:      w,
-				h:      h,
-				source: s,
-			}
-		}(i, src)
-	}
-	wg.Wait()
-
-	// Blend in layer order (sequential — layers overlap)
+	// Collect enabled sources and fetch frames sequentially
+	// (GetFrame is a single atomic swap — goroutine overhead far exceeds the work)
 	hasContent := false
-	for _, r := range results {
-		if r.frame == nil {
+	for _, source := range c.sources {
+		if !source.IsEnabled() {
 			continue
 		}
+		frame := source.GetFrame()
+		if frame == nil {
+			continue
+		}
+		w, h := source.GetDimensions()
 		hasContent = true
-		c.blendFrame(r.frame, r.w, r.h)
-		r.source.SignalVSync()
+		c.blendFrame(frame, w, h)
+		source.SignalVSync()
 	}
 
 	// Send final frame to output if we have content

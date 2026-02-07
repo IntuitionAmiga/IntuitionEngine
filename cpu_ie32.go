@@ -968,24 +968,30 @@ func (cpu *CPU) Execute() {
 			if cpu.cycleCounter >= SAMPLE_RATE {
 				cpu.cycleCounter = 0
 
+				var finalCount uint32
 				count := cpu.timerCount.Load()
 				if count > 0 {
 					newCount := count - 1
 					cpu.timerCount.Store(newCount)
+					finalCount = newCount
 					if newCount == 0 {
 						cpu.timerState.Store(TIMER_EXPIRED)
 						if cpu.interruptEnabled.Load() && !cpu.inInterrupt.Load() {
 							cpu.handleInterrupt()
 						}
 						if cpu.timerEnabled.Load() {
-							cpu.timerCount.Store(cpu.timerPeriod.Load())
+							period := cpu.timerPeriod.Load()
+							cpu.timerCount.Store(period)
+							finalCount = period
 						}
 					}
+				} else {
+					finalCount = count
 				}
 
 				binary.LittleEndian.PutUint32(
 					cpu.memory[TIMER_COUNT:TIMER_COUNT+WORD_SIZE],
-					cpu.timerCount.Load())
+					finalCount)
 			}
 		}
 

@@ -308,6 +308,7 @@ const PWM_RATE_SCALE = 0.1 // Convert 7-bit value to Hz range 0-12.7
 // ------------------------------------------------------------------------------
 const (
 	TWO_PI           = 2 * math.Pi
+	INV_TWO_PI       = 1.0 / (2.0 * math.Pi)
 	SQUARE_AMPLITUDE = 4.0 // Square wave peak amplitude
 	TRIANGLE_SCALE   = 2.0 // Triangle wave scaling factor
 	HALF_CYCLE       = 0.5
@@ -831,6 +832,10 @@ type Channel struct {
 	sampleCount         int                    // Track number of samples generated
 
 	releaseStartLevel float32 // Level when release phase began
+	releaseDecay      float32 // Pre-computed release decay coefficient
+	attackRecip       float32 // Pre-computed 1.0 / attackTime
+	decayRecip        float32 // Pre-computed 1.0 / decayTime
+	releaseRecip      float32 // Pre-computed 1.0 / releaseTime
 }
 
 // SampleTicker allows external systems to advance state per output sample.
@@ -857,6 +862,7 @@ type SoundChip struct {
 	filterResonance  float32                   // Filter resonance/Q factor (0-1)
 	filterModAmount  float32                   // Filter modulation depth (0-1)
 	overdriveLevel   float32                   // Overdrive distortion amount (0-4)
+	overdriveGain    float32                   // Pre-computed overdrive gain
 	reverbMix        float32                   // Reverb wet/dry mix ratio (0-1)
 	sidMixerDCOffset float32                   // SID mixer DC offset (model-dependent)
 	filterType       int                       // Filter mode (0=off, 1=LP, 2=HP, 3=BP)
@@ -874,12 +880,13 @@ type SoundChip struct {
 	sampleTicker atomic.Value // Optional per-sample ticker (SampleTicker)
 
 	// Cache line 3+ - Reverb state (cold path)
-	preDelayPos int                            // Current position in pre-delay buffer
-	allpassPos  [NUM_ALLPASS_FILTERS]int       // Current positions in allpass buffers
-	combFilters [NUM_COMB_FILTERS]CombFilter   // Parallel comb filter bank for reverb
-	allpassBuf  [NUM_ALLPASS_FILTERS][]float32 // Allpass diffusion filters
-	preDelayBuf []float32                      // 8ms pre-delay buffer
-	output      AudioOutput                    // Audio backend interface
+	preDelayPos     int                            // Current position in pre-delay buffer
+	allpassPos      [NUM_ALLPASS_FILTERS]int       // Current positions in allpass buffers
+	combFilters     [NUM_COMB_FILTERS]CombFilter   // Parallel comb filter bank for reverb
+	allpassBuf      [NUM_ALLPASS_FILTERS][]float32 // Allpass diffusion filters
+	preDelayBuf     []float32                      // 8ms pre-delay buffer
+	output          AudioOutput                    // Audio backend interface
+	sampleRateRecip float32                        // Pre-computed 1.0 / sampleRate
 }
 
 func NewSoundChip(backend int) (*SoundChip, error) {
@@ -892,10 +899,11 @@ func NewSoundChip(backend int) (*SoundChip, error) {
 
 	// Initialise sound chip with default settings
 	chip := &SoundChip{
-		filterLP:    DEFAULT_FILTER_LP,
-		filterBP:    DEFAULT_FILTER_BP,
-		filterHP:    DEFAULT_FILTER_HP,
-		preDelayBuf: make([]float32, PRE_DELAY_MS*MS_TO_SAMPLES),
+		filterLP:        DEFAULT_FILTER_LP,
+		filterBP:        DEFAULT_FILTER_BP,
+		filterHP:        DEFAULT_FILTER_HP,
+		preDelayBuf:     make([]float32, PRE_DELAY_MS*MS_TO_SAMPLES),
+		sampleRateRecip: 1.0 / float32(SAMPLE_RATE),
 	}
 	chip.sampleTicker.Store(&sampleTickerHolder{})
 
@@ -1070,12 +1078,27 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 			ch.sweepDirection = (value & SWEEP_DIR_MASK) != 0
 		case FLEX_OFF_ATK:
 			ch.attackTime = max(int(value*MS_TO_SAMPLES), MIN_ENV_TIME)
+			if ch.attackTime > 0 {
+				ch.attackRecip = 1.0 / float32(ch.attackTime)
+			} else {
+				ch.attackRecip = 0
+			}
 		case FLEX_OFF_DEC:
 			ch.decayTime = max(int(value*MS_TO_SAMPLES), MIN_ENV_TIME)
+			if ch.decayTime > 0 {
+				ch.decayRecip = 1.0 / float32(ch.decayTime)
+			} else {
+				ch.decayRecip = 0
+			}
 		case FLEX_OFF_SUS:
 			ch.sustainLevel = float32(value) / NORMALISE_8BIT
 		case FLEX_OFF_REL:
 			ch.releaseTime = max(int(value*MS_TO_SAMPLES), MIN_ENV_TIME)
+			if ch.releaseTime > 0 {
+				ch.releaseRecip = 1.0 / float32(ch.releaseTime)
+			} else {
+				ch.releaseRecip = 0
+			}
 		case FLEX_OFF_WAVE_TYPE:
 			ch.waveType = int(value % NUM_WAVE_TYPES)
 		case FLEX_OFF_PWM_CTRL:
@@ -1175,11 +1198,21 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 			ch.waveType = WAVE_SAWTOOTH
 		}
 		ch.attackTime = max(int(value*MS_TO_SAMPLES), MIN_ENV_TIME)
+		if ch.attackTime > 0 {
+			ch.attackRecip = 1.0 / float32(ch.attackTime)
+		} else {
+			ch.attackRecip = 0
+		}
 	case SQUARE_DEC, TRI_DEC, SINE_DEC, NOISE_DEC, SAW_DEC:
 		if addr == SAW_DEC {
 			ch.waveType = WAVE_SAWTOOTH
 		}
 		ch.decayTime = max(int(value*MS_TO_SAMPLES), MIN_ENV_TIME)
+		if ch.decayTime > 0 {
+			ch.decayRecip = 1.0 / float32(ch.decayTime)
+		} else {
+			ch.decayRecip = 0
+		}
 	case SQUARE_SUS, TRI_SUS, SINE_SUS, NOISE_SUS, SAW_SUS:
 		if addr == SAW_SUS {
 			ch.waveType = WAVE_SAWTOOTH
@@ -1190,6 +1223,11 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 			ch.waveType = WAVE_SAWTOOTH
 		}
 		ch.releaseTime = max(int(value*MS_TO_SAMPLES), MIN_ENV_TIME)
+		if ch.releaseTime > 0 {
+			ch.releaseRecip = 1.0 / float32(ch.releaseTime)
+		} else {
+			ch.releaseRecip = 0
+		}
 	case NOISE_MODE:
 		ch.waveType = WAVE_NOISE
 		ch.noiseMode = int(value % NUM_NOISE_MODES) // 0=white, 1=periodic, 2=metallic, 3=psg
@@ -1276,6 +1314,7 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 		chip.filterModAmount = float32(value) / NORMALISE_8BIT
 	case OVERDRIVE_CTRL:
 		chip.overdriveLevel = float32(value) / NORMALISE_8BIT * MAX_OVERDRIVE // 0.0-4.0 gain
+		chip.overdriveGain = 1.0 + (chip.overdriveLevel / 10.0)
 	case REVERB_MIX:
 		chip.reverbMix = float32(value) / NORMALISE_8BIT
 	case REVERB_DECAY:
@@ -1416,7 +1455,7 @@ func (ch *Channel) updateEnvelope() {
 				ch.envelopeSample = 0
 			} else {
 				// Linear attack: increment per sample
-				increment := MAX_LEVEL / float32(ch.attackTime)
+				increment := MAX_LEVEL * ch.attackRecip
 				ch.envelopeLevel += increment
 				if ch.envelopeLevel >= MAX_LEVEL {
 					ch.envelopeLevel = MAX_LEVEL
@@ -1433,7 +1472,7 @@ func (ch *Channel) updateEnvelope() {
 				ch.envelopePhase = ENV_SUSTAIN
 			} else {
 				// Calculate rate based on current level (bent curve)
-				rate := 1.0 / float32(ch.decayTime)
+				rate := ch.decayRecip
 				level255 := ch.envelopeLevel * 255.0
 				if level255 < 94 && level255 >= 55 {
 					rate *= 3.0 // Faster in middle region
@@ -1457,7 +1496,7 @@ func (ch *Channel) updateEnvelope() {
 				ch.enabled = false
 			} else {
 				// Calculate rate based on current level (bent curve)
-				rate := 1.0 / float32(ch.releaseTime)
+				rate := ch.releaseRecip
 				level255 := ch.envelopeLevel * 255.0
 				if level255 < 94 && level255 >= 55 {
 					rate *= 3.0 // Faster in middle region
@@ -1480,7 +1519,7 @@ func (ch *Channel) updateEnvelope() {
 				ch.envelopeLevel = MAX_LEVEL
 				ch.envelopePhase = ENV_SUSTAIN
 			} else {
-				ch.envelopeLevel = float32(ch.envelopeSample) / float32(ch.attackTime)
+				ch.envelopeLevel = float32(ch.envelopeSample) * ch.attackRecip
 				ch.envelopeSample++
 				if ch.envelopeSample >= ch.attackTime {
 					ch.envelopeLevel = MAX_LEVEL
@@ -1492,7 +1531,7 @@ func (ch *Channel) updateEnvelope() {
 				ch.envelopeLevel = MIN_LEVEL
 				ch.envelopePhase = ENV_SUSTAIN
 			} else {
-				ch.envelopeLevel = MAX_LEVEL - float32(ch.envelopeSample)/float32(ch.attackTime)
+				ch.envelopeLevel = MAX_LEVEL - float32(ch.envelopeSample)*ch.attackRecip
 				ch.envelopeSample++
 				if ch.envelopeSample >= ch.attackTime {
 					ch.envelopeLevel = MIN_LEVEL
@@ -1505,7 +1544,7 @@ func (ch *Channel) updateEnvelope() {
 				ch.envelopePhase = ENV_DECAY
 				ch.envelopeSample = 0
 			} else {
-				ch.envelopeLevel = float32(ch.envelopeSample) / float32(ch.attackTime)
+				ch.envelopeLevel = float32(ch.envelopeSample) * ch.attackRecip
 				ch.envelopeSample++
 				if ch.envelopeSample >= ch.attackTime {
 					ch.envelopeLevel = MAX_LEVEL
@@ -1520,7 +1559,7 @@ func (ch *Channel) updateEnvelope() {
 			ch.envelopeLevel = ch.sustainLevel
 			ch.envelopePhase = ENV_SUSTAIN
 		} else {
-			ch.envelopeLevel = MAX_LEVEL - ((MAX_LEVEL - ch.sustainLevel) * float32(ch.envelopeSample) / float32(ch.decayTime))
+			ch.envelopeLevel = MAX_LEVEL - ((MAX_LEVEL - ch.sustainLevel) * float32(ch.envelopeSample) * ch.decayRecip)
 			ch.envelopeSample++
 			if ch.envelopeSample >= ch.decayTime {
 				ch.envelopePhase = ENV_SUSTAIN
@@ -1538,7 +1577,7 @@ func (ch *Channel) updateEnvelope() {
 		switch ch.envelopeShape {
 		case ENV_SHAPE_LOOP:
 			// Linear interpolation from release start level to zero
-			remaining := 1.0 - float32(ch.envelopeSample)/float32(ch.releaseTime)
+			remaining := 1.0 - float32(ch.envelopeSample)*ch.releaseRecip
 			ch.envelopeLevel = ch.releaseStartLevel * remaining
 			ch.envelopeSample++
 			if ch.envelopeSample >= ch.releaseTime {
@@ -1550,9 +1589,10 @@ func (ch *Channel) updateEnvelope() {
 				ch.envelopeLevel = 0
 				ch.enabled = false
 			} else {
-				//decay := float32(math.Pow(0.001, 1.0/float64(ch.releaseTime)))
-				decay := float32(math.Pow(0.01, 1.0/float64(ch.releaseTime)))
-				ch.envelopeLevel *= decay
+				if ch.envelopeSample == 0 && ch.releaseTime > 0 {
+					ch.releaseDecay = float32(math.Pow(0.01, 1.0/float64(ch.releaseTime)))
+				}
+				ch.envelopeLevel *= ch.releaseDecay
 				ch.envelopeSample++
 				if ch.envelopeSample >= ch.releaseTime || ch.envelopeLevel <= 0.001 {
 					ch.envelopeLevel = 0
@@ -1563,20 +1603,20 @@ func (ch *Channel) updateEnvelope() {
 	}
 }
 
-func (ch *Channel) generateWaveSample(sampleRate float32) float32 {
+func (ch *Channel) generateWaveSample(sampleRate, sampleRateRecip float32) float32 {
 	var rawSample float32
-	phaseInc := TWO_PI * float32(ch.frequency) / sampleRate
+	phaseInc := TWO_PI * float32(ch.frequency) * sampleRateRecip
 	waveMask := ch.sidWaveMask
 
 	if waveMask != 0 {
 		squareSample := func() float32 {
 			currentDuty := ch.dutyCycle
 			if ch.pwmEnabled {
-				ch.pwmPhase += ch.pwmRate * (TWO_PI / sampleRate)
+				ch.pwmPhase += ch.pwmRate * (TWO_PI * sampleRateRecip)
 				if ch.pwmPhase >= TWO_PI {
 					ch.pwmPhase -= TWO_PI
 				}
-				normalisedPhase := ch.pwmPhase / TWO_PI
+				normalisedPhase := ch.pwmPhase * INV_TWO_PI
 				// Triangle LFO: abs(2*phase - 1) * 2 - 1 gives triangle wave from -1 to 1
 				lfo := normalisedPhase*NORMALISE_SCALE - NORMALISE_OFFSET
 				if lfo < 0 {
@@ -1590,8 +1630,8 @@ func (ch *Channel) generateWaveSample(sampleRate float32) float32 {
 					currentDuty = 1
 				}
 			}
-			normalizedPhase := ch.phase / TWO_PI
-			dt := ch.frequency / sampleRate
+			normalizedPhase := ch.phase * INV_TWO_PI
+			dt := ch.frequency * sampleRateRecip
 			var sample float32
 			if normalizedPhase < currentDuty {
 				sample = SQUARE_AMPLITUDE
@@ -1611,7 +1651,7 @@ func (ch *Channel) generateWaveSample(sampleRate float32) float32 {
 		}
 
 		triangleSample := func() float32 {
-			phaseNorm := ch.phase / TWO_PI
+			phaseNorm := ch.phase * INV_TWO_PI
 			if phaseNorm < HALF_CYCLE {
 				rawSample = TRIANGLE_SLOPE*phaseNorm - TRIANGLE_PHASE_SUBTRACT
 			} else {
@@ -1622,15 +1662,15 @@ func (ch *Channel) generateWaveSample(sampleRate float32) float32 {
 		}
 
 		sawSample := func() float32 {
-			phaseNorm := ch.phase / TWO_PI
-			dt := ch.frequency / sampleRate
+			phaseNorm := ch.phase * INV_TWO_PI
+			dt := ch.frequency * sampleRateRecip
 			rawSample = 2.0*phaseNorm - 1.0
 			rawSample -= polyBLEP32(phaseNorm, dt)
 			return rawSample
 		}
 
 		noiseSample := func() float32 {
-			noisePhaseInc := ch.frequency / sampleRate
+			noisePhaseInc := ch.frequency * sampleRateRecip
 			ch.noisePhase += noisePhaseInc
 			steps := int(ch.noisePhase)
 			ch.noisePhase -= float32(steps)
@@ -1676,7 +1716,7 @@ func (ch *Channel) generateWaveSample(sampleRate float32) float32 {
 		} else {
 			// Combined waveforms - generate 12-bit values and AND them together
 			// SID oscillator outputs 12-bit unsigned (0-4095)
-			phaseNorm := ch.phase / TWO_PI // 0.0 to 1.0
+			phaseNorm := ch.phase * INV_TWO_PI // 0.0 to 1.0
 			phase12 := uint16(phaseNorm * SID_OSC_MAX)
 
 			// Start with all bits set (0xFFF = 4095)
@@ -1714,7 +1754,7 @@ func (ch *Channel) generateWaveSample(sampleRate float32) float32 {
 			if waveMask&SID_WAVE_NOISE != 0 {
 				// Noise: 12-bit LFSR output ANDed with waveform selector bits
 				// When noise is combined with other waveforms, it gates them
-				noisePhaseInc := ch.frequency / sampleRate
+				noisePhaseInc := ch.frequency * sampleRateRecip
 				ch.noisePhase += noisePhaseInc
 				steps := int(ch.noisePhase)
 				ch.noisePhase -= float32(steps)
@@ -1777,11 +1817,11 @@ func (ch *Channel) generateWaveSample(sampleRate float32) float32 {
 	case WAVE_SQUARE:
 		currentDuty := ch.dutyCycle
 		if ch.pwmEnabled {
-			ch.pwmPhase += ch.pwmRate * (TWO_PI / sampleRate)
+			ch.pwmPhase += ch.pwmRate * (TWO_PI * sampleRateRecip)
 			if ch.pwmPhase >= TWO_PI {
 				ch.pwmPhase -= TWO_PI
 			}
-			normalisedPhase := ch.pwmPhase / TWO_PI
+			normalisedPhase := ch.pwmPhase * INV_TWO_PI
 			// Triangle LFO: abs(2*phase - 1) * 2 - 1 gives triangle wave from -1 to 1
 			lfo := normalisedPhase*NORMALISE_SCALE - NORMALISE_OFFSET
 			if lfo < 0 {
@@ -1795,8 +1835,8 @@ func (ch *Channel) generateWaveSample(sampleRate float32) float32 {
 				currentDuty = 1
 			}
 		}
-		normalizedPhase := ch.phase / TWO_PI
-		dt := ch.frequency / sampleRate
+		normalizedPhase := ch.phase * INV_TWO_PI
+		dt := ch.frequency * sampleRateRecip
 
 		if normalizedPhase < currentDuty {
 			rawSample = SQUARE_AMPLITUDE
@@ -1815,7 +1855,7 @@ func (ch *Channel) generateWaveSample(sampleRate float32) float32 {
 		rawSample *= SQUARE_NORM
 
 	case WAVE_TRIANGLE:
-		phaseNorm := ch.phase / TWO_PI
+		phaseNorm := ch.phase * INV_TWO_PI
 		if phaseNorm < HALF_CYCLE {
 			rawSample = TRIANGLE_SLOPE*phaseNorm - TRIANGLE_PHASE_SUBTRACT
 		} else {
@@ -1846,7 +1886,7 @@ func (ch *Channel) generateWaveSample(sampleRate float32) float32 {
 			}
 		} else {
 			// Traditional frequency-based clocking
-			noisePhaseInc := ch.frequency / sampleRate
+			noisePhaseInc := ch.frequency * sampleRateRecip
 			ch.noisePhase += noisePhaseInc
 			steps := int(ch.noisePhase)
 			ch.noisePhase -= float32(steps)
@@ -1875,8 +1915,8 @@ func (ch *Channel) generateWaveSample(sampleRate float32) float32 {
 		rawSample *= NOISE_NORM
 
 	case WAVE_SAWTOOTH:
-		phaseNorm := ch.phase / TWO_PI
-		dt := ch.frequency / sampleRate
+		phaseNorm := ch.phase * INV_TWO_PI
+		dt := ch.frequency * sampleRateRecip
 		rawSample = 2.0*phaseNorm - 1.0
 		rawSample -= polyBLEP32(phaseNorm, dt)
 	}
@@ -1937,9 +1977,10 @@ func (ch *Channel) processEnhancedSample(
 ) float32 {
 	// Oversampling: generate multiple samples at higher rate and average
 	sampleRate := float32(SAMPLE_RATE) * float32(oversample)
+	sampleRateRecip := 1.0 / sampleRate
 	var sum float32
 	for i := 0; i < oversample; i++ {
-		sum += ch.generateWaveSample(sampleRate)
+		sum += ch.generateWaveSample(sampleRate, sampleRateRecip)
 	}
 	rawSample := sum / float32(oversample)
 
@@ -1953,7 +1994,10 @@ func (ch *Channel) processEnhancedSample(
 	if roomMix > 0 && len(roomBuf) > 0 {
 		delayed := roomBuf[*roomPos]
 		roomBuf[*roomPos] = rawSample
-		*roomPos = (*roomPos + 1) % len(roomBuf)
+		*roomPos++
+		if *roomPos >= len(roomBuf) {
+			*roomPos = 0
+		}
 		rawSample = rawSample*(1-roomMix) + delayed*roomMix
 	}
 
@@ -2087,7 +2131,7 @@ func (ch *Channel) generateSample() float32 {
 		)
 	}
 
-	rawSample := ch.generateWaveSample(float32(SAMPLE_RATE))
+	rawSample := ch.generateWaveSample(float32(SAMPLE_RATE), 1.0/float32(SAMPLE_RATE))
 	scaledSample := rawSample * ch.volume * envLevel
 
 	// Per-channel filter (state-variable with multi-mode mix)
@@ -2123,9 +2167,9 @@ func (ch *Channel) generateSample() float32 {
 		hp := (scaledSample - lp) - resonance*ch.filterBP
 		bp := ch.filterBP + cutoff*hp
 
-		lp = float32(math.Max(math.Min(float64(lp), MAX_SAMPLE), MIN_SAMPLE))
-		bp = float32(math.Max(math.Min(float64(bp), MAX_SAMPLE), MIN_SAMPLE))
-		hp = float32(math.Max(math.Min(float64(hp), MAX_SAMPLE), MIN_SAMPLE))
+		lp = clampF32(lp, MIN_SAMPLE, MAX_SAMPLE)
+		bp = clampF32(bp, MIN_SAMPLE, MAX_SAMPLE)
+		hp = clampF32(hp, MIN_SAMPLE, MAX_SAMPLE)
 
 		lp = flushDenormal(lp)
 		bp = flushDenormal(bp)
@@ -2209,6 +2253,7 @@ func (chip *SoundChip) GenerateSample() float32 {
 	filterModAmount := chip.filterModAmount
 	filterResonance := chip.filterResonance
 	overdriveLevel := chip.overdriveLevel
+	overdriveGain := chip.overdriveGain
 	reverbMix := chip.reverbMix
 	filterLP := chip.filterLP
 	filterBP := chip.filterBP
@@ -2254,8 +2299,7 @@ func (chip *SoundChip) GenerateSample() float32 {
 
 	// Apply overdrive effect with waveform-specific processing
 	if overdriveLevel > 0 {
-		// More aggressive gain calculation
-		gain := 1.0 + (float32(overdriveLevel) / 10.0)
+		gain := overdriveGain
 
 		// Apply waveform-specific gain scaling for better effect
 		switch primaryType {
@@ -2278,7 +2322,7 @@ func (chip *SoundChip) GenerateSample() float32 {
 		if filterModSource != nil {
 			modSignal := filterModSource.prevRawSample * filterModAmount
 			modulatedCutoff = filterCutoff + modSignal
-			modulatedCutoff = float32(math.Max(math.Min(float64(modulatedCutoff), MAX_FILTER_CUTOFF), MIN_FILTER_CUTOFF))
+			modulatedCutoff = clampF32(modulatedCutoff, MIN_FILTER_CUTOFF, MAX_FILTER_CUTOFF)
 		}
 
 		// Apply 2-pole state variable filter with exponential cutoff mapping
@@ -2290,9 +2334,9 @@ func (chip *SoundChip) GenerateSample() float32 {
 		bp := filterBP + cutoff*hp
 
 		// Clamp filter outputs
-		lp = float32(math.Max(math.Min(float64(lp), MAX_SAMPLE), MIN_SAMPLE))
-		bp = float32(math.Max(math.Min(float64(bp), MAX_SAMPLE), MIN_SAMPLE))
-		hp = float32(math.Max(math.Min(float64(hp), MAX_SAMPLE), MIN_SAMPLE))
+		lp = clampF32(lp, MIN_SAMPLE, MAX_SAMPLE)
+		bp = clampF32(bp, MIN_SAMPLE, MAX_SAMPLE)
+		hp = clampF32(hp, MIN_SAMPLE, MAX_SAMPLE)
 
 		// Flush denormals to prevent CPU stalls
 		lp = flushDenormal(lp)
@@ -2321,7 +2365,7 @@ func (chip *SoundChip) GenerateSample() float32 {
 	sample = sample*(1-reverbMix) + wet*reverbMix
 
 	// Clamp final output
-	return float32(math.Max(math.Min(float64(sample), MAX_SAMPLE), MIN_SAMPLE))
+	return clampF32(sample, MIN_SAMPLE, MAX_SAMPLE)
 }
 
 func (chip *SoundChip) applyReverb(input float32) float32 {
@@ -2364,7 +2408,10 @@ func (chip *SoundChip) applyReverb(input float32) float32 {
 	// Apply pre-delay
 	delayed := chip.preDelayBuf[chip.preDelayPos]
 	chip.preDelayBuf[chip.preDelayPos] = input
-	chip.preDelayPos = (chip.preDelayPos + 1) % len(chip.preDelayBuf)
+	chip.preDelayPos++
+	if chip.preDelayPos >= len(chip.preDelayBuf) {
+		chip.preDelayPos = 0
+	}
 
 	// Process comb filters
 	var out float32
@@ -2373,7 +2420,10 @@ func (chip *SoundChip) applyReverb(input float32) float32 {
 		cDelay := comb.buffer[comb.pos]
 		comb.buffer[comb.pos] = delayed + cDelay*comb.decay
 		out += cDelay
-		comb.pos = (comb.pos + 1) % len(comb.buffer)
+		comb.pos++
+		if comb.pos >= len(comb.buffer) {
+			comb.pos = 0
+		}
 	}
 
 	// Process allpass filters
@@ -2383,7 +2433,11 @@ func (chip *SoundChip) applyReverb(input float32) float32 {
 		aDelay := buf[pos]
 		buf[pos] = out + aDelay*ALLPASS_COEF
 		out = aDelay - out
-		chip.allpassPos[i] = (pos + 1) % len(buf)
+		pos++
+		if pos >= len(buf) {
+			pos = 0
+		}
+		chip.allpassPos[i] = pos
 	}
 
 	return out * REVERB_ATTENUATION // Attenuate to prevent overflow
@@ -2988,13 +3042,10 @@ func polyBLEP(t, dt float64) float64 {
 	return 0.0
 }
 
-// flushDenormal prevents CPU stalls from subnormal float values
-// by flushing very small numbers to zero.
-const denormalThreshold = 1e-15
-
 func flushDenormal(v float32) float32 {
-	if v > -denormalThreshold && v < denormalThreshold {
-		return 0.0
+	bits := math.Float32bits(v)
+	if bits&0x7F800000 == 0 && bits&0x007FFFFF != 0 {
+		return 0
 	}
 	return v
 }

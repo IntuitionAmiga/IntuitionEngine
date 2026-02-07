@@ -96,6 +96,11 @@ type SystemBus struct {
 	memory  []byte
 	mapping map[uint32][]IORegion
 
+	// Fast I/O page bitmap — indexed by (addr >> 8), true if page has I/O mappings.
+	// Sized for the normal address range only (DEFAULT_MEMORY_SIZE / PAGE_SIZE).
+	// Sign-extended pages (0xFFFF0000+) use the slow path before this is consulted.
+	ioPageBitmap []bool
+
 	// Lock-free fast path for VIDEO_STATUS (allows VBlank polling without blocking)
 	videoStatusReader func(addr uint32) uint32
 }
@@ -513,8 +518,9 @@ func NewSystemBus() *SystemBus {
 	*/
 
 	return &SystemBus{
-		memory:  make([]byte, DEFAULT_MEMORY_SIZE),
-		mapping: make(map[uint32][]IORegion),
+		memory:       make([]byte, DEFAULT_MEMORY_SIZE),
+		mapping:      make(map[uint32][]IORegion),
+		ioPageBitmap: make([]bool, DEFAULT_MEMORY_SIZE/PAGE_SIZE),
 	}
 }
 
@@ -548,6 +554,11 @@ func (bus *SystemBus) MapIO(start, end uint32, onRead func(addr uint32) uint32, 
 	lastPage := end & PAGE_MASK
 	for page := firstPage; page <= lastPage; page += PAGE_SIZE {
 		bus.mapping[page] = append(bus.mapping[page], region)
+		// Set bitmap for fast-path lookup (normal range only)
+		pageIdx := page >> 8
+		if pageIdx < uint32(len(bus.ioPageBitmap)) {
+			bus.ioPageBitmap[pageIdx] = true
+		}
 	}
 
 	// Handle sign extension for I/O addresses (only if in upper 16-bit range)
@@ -583,9 +594,8 @@ func (bus *SystemBus) Write32(addr uint32, value uint32) {
 		return
 	}
 
-	// Lock-free fast path: check if this page has ANY I/O mappings
-	page := addr & PAGE_MASK
-	if _, hasIO := bus.mapping[page]; !hasIO {
+	// Lock-free fast path: check bitmap for I/O mappings
+	if !bus.ioPageBitmap[addr>>8] {
 		// No I/O on this page - lock-free write using unsafe pointer
 		*(*uint32)(unsafe.Pointer(&bus.memory[addr])) = value
 		return
@@ -679,9 +689,8 @@ func (bus *SystemBus) Read32(addr uint32) uint32 {
 		return 0
 	}
 
-	// Lock-free fast path: check if this page has ANY I/O mappings
-	page := addr & PAGE_MASK
-	if _, hasIO := bus.mapping[page]; !hasIO {
+	// Lock-free fast path: check bitmap for I/O mappings
+	if !bus.ioPageBitmap[addr>>8] {
 		// No I/O on this page - lock-free read using unsafe pointer
 		return *(*uint32)(unsafe.Pointer(&bus.memory[addr]))
 	}
@@ -768,9 +777,8 @@ func (bus *SystemBus) Write16(addr uint32, value uint16) {
 		return
 	}
 
-	// Lock-free fast path: check if this page has ANY I/O mappings
-	page := addr & PAGE_MASK
-	if _, hasIO := bus.mapping[page]; !hasIO {
+	// Lock-free fast path: check bitmap for I/O mappings
+	if !bus.ioPageBitmap[addr>>8] {
 		// No I/O on this page - lock-free write using unsafe pointer
 		*(*uint16)(unsafe.Pointer(&bus.memory[addr])) = value
 		return
@@ -859,9 +867,8 @@ func (bus *SystemBus) Read16(addr uint32) uint16 {
 		return 0
 	}
 
-	// Lock-free fast path: check if this page has ANY I/O mappings
-	page := addr & PAGE_MASK
-	if _, hasIO := bus.mapping[page]; !hasIO {
+	// Lock-free fast path: check bitmap for I/O mappings
+	if !bus.ioPageBitmap[addr>>8] {
 		// No I/O on this page - lock-free read using unsafe pointer
 		return *(*uint16)(unsafe.Pointer(&bus.memory[addr]))
 	}
@@ -948,9 +955,8 @@ func (bus *SystemBus) Write8(addr uint32, value uint8) {
 		return
 	}
 
-	// Lock-free fast path: check if this page has ANY I/O mappings
-	page := addr & PAGE_MASK
-	if _, hasIO := bus.mapping[page]; !hasIO {
+	// Lock-free fast path: check bitmap for I/O mappings
+	if !bus.ioPageBitmap[addr>>8] {
 		// No I/O on this page - lock-free write
 		bus.memory[addr] = value
 		return
@@ -1049,9 +1055,8 @@ func (bus *SystemBus) Read8(addr uint32) uint8 {
 		return 0
 	}
 
-	// Lock-free fast path: check if this page has ANY I/O mappings
-	page := addr & PAGE_MASK
-	if _, hasIO := bus.mapping[page]; !hasIO {
+	// Lock-free fast path: check bitmap for I/O mappings
+	if !bus.ioPageBitmap[addr>>8] {
 		// No I/O on this page - lock-free read
 		return bus.memory[addr]
 	}
