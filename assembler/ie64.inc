@@ -8,6 +8,17 @@
 ;
 ; All macros clobber r1-r4 (caller-saved scratch registers).
 ;
+; RENAMED MACROS (ie68.inc -> ie64.inc):
+;   The ie64asm assembler treats equate lines whose name matches a macro
+;   (case-insensitive) as macro invocations. The following macros are
+;   renamed to avoid shadowing their corresponding hardware equates:
+;
+;     ie68.inc name     -> ie64.inc name       (conflicting equate)
+;     ula_border        -> set_ula_border      (ULA_BORDER)
+;     ted_v_enable      -> set_ted_v_enable    (TED_V_ENABLE)
+;     ted_v_border      -> set_ted_v_border    (TED_V_BORDER)
+;     antic_enable      -> set_antic_enable    (ANTIC_ENABLE)
+;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 
 ; ============================================================================
