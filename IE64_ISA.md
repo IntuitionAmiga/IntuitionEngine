@@ -204,7 +204,9 @@ When X=1, the third operand is the immediate, zero-extended to 64 bits: `operand
 | `.B` | 1 | Read8/Write8 |
 | `.W` | 2 | Read16/Write16 |
 | `.L` | 4 | Read32/Write32 |
-| `.Q` | 8 | Direct memory access (LittleEndian.Uint64) |
+| `.Q` | 8 | Read64/Write64 |
+
+> **64-bit memory access**: `.Q` loads and stores go through the system bus (`Read64`/`Write64`). For plain RAM (no I/O region on either 32-bit half), the bus uses a single 64-bit read/write. If the access spans an I/O region, the bus may split it into two 32-bit halves. For MMIO64 regions receiving a split write, a read-modify-write is performed on backing memory to preserve the untouched half. These semantics are transparent for normal RAM access but matter when accessing hardware registers with `.Q` size.
 
 ---
 
@@ -372,11 +374,11 @@ All stack operations use 64-bit (8-byte) transfers regardless of size suffix. Th
 
 **SEI** (opcode `0xE2`):
 - Atomically sets the interrupt-enabled flag to true.
-- Allows pending timer interrupts to fire.
+- The next timer expiration after SEI will trigger an interrupt. Expirations that occurred while interrupts were disabled are not queued or replayed.
 
 **CLI** (opcode `0xE3`):
 - Atomically sets the interrupt-enabled flag to false.
-- Timer interrupts are masked (not lost; the timer continues counting).
+- The timer continues running and counting, but expirations are silently discarded (not queued for later delivery).
 
 **RTI** (opcode `0xE4`):
 - Reads the 64-bit return address from mem[SP].
@@ -417,6 +419,8 @@ lea r5, $A0000(r0)     ; r5 = r0 + $A0000 = 0 + $A0000 = $A0000
 ```
 
 Since R0 is hardwired to zero, `lea Rd, disp(r0)` effectively loads the displacement value as an absolute address.
+
+> **Limitation**: Because `la` expands textually to `lea Rd, expr(r0)`, the address expression must not contain parentheses. For example, `la r1, BASE+(1*4)` will fail because `(1*4)` is misinterpreted as a register addressing mode. To work around this, precompute the address with separate arithmetic instructions or restructure the expression to avoid inner parentheses (e.g., use `BASE+4` instead of `BASE+(1*4)`).
 
 ### 5.2 `li` -- Load Immediate
 
@@ -598,9 +602,9 @@ Low memory:
 
 ### 9.1 Interrupt Vector
 
-The IE64 uses a single interrupt vector stored in the `interruptVector` field of the CPU. The vector address is the absolute address of the interrupt service routine (ISR). It is set up by writing the ISR address into the vector before enabling interrupts.
+The IE64 uses a single interrupt vector stored in the internal `interruptVector` field of the CPU. This field is initialized to `0` on reset. There is currently no assembly-level instruction or memory-mapped mechanism to change `interruptVector` from user code. (By contrast, the IE32 reads the vector from a memory-mapped vector table via `cpu.Read32(VECTOR_TABLE)`, but the IE64 does not implement this pattern.)
 
-Note: The vector table area is at address `$0000` in the memory map. The actual mechanism for loading the vector depends on how the system is configured.
+The vector table area at `$0000` in the memory map is reserved for future use. A future revision may add a memory-mapped vector table or a dedicated instruction to set the interrupt vector.
 
 ### 9.2 Timer Registers
 
@@ -627,7 +631,7 @@ The timer is decremented once every `SAMPLE_RATE` (44100) instruction cycles:
 
 ### 9.4 Interrupt Flow
 
-When an interrupt fires:
+The following describes the internal CPU mechanics when an interrupt fires:
 
 1. Check: `interruptEnabled == true` AND `inInterrupt == false`. If either fails, the interrupt is suppressed.
 2. Set `inInterrupt = true` (prevents nesting).
@@ -637,15 +641,18 @@ When an interrupt fires:
 6. `RTI` pops the return address: `PC = mem[SP]; SP += 8`.
 7. `RTI` clears `inInterrupt`, re-enabling interrupt delivery.
 
-### 9.5 Interrupt Programming Pattern
+> **Implementation note**: The interrupt mechanism exists and functions at the Go implementation level (`handleInterrupt()` does push PC and jump to `interruptVector`). However, since there is no assembly-level way to set `interruptVector` to a non-zero value, user programs cannot currently utilize timer interrupts. Host/test code can set the vector directly on the CPU struct (e.g., `cpu.interruptVector = addr`), though this field is unexported and internal.
+
+### 9.5 Interrupt Programming Pattern (Aspirational)
+
+> **Not yet functional**: The following pattern shows the *intended* future usage of interrupt vectors. In the current implementation, `interruptVector` is an internal CPU field that cannot be set from assembly. The `dc.q` at `$0000` writes to memory but has no effect on the CPU's `interruptVector` field. This example is retained to document the planned design; it will become functional when a memory-mapped vector table or a dedicated instruction is added.
 
 ```
     org $0000
-    dc.q isr_handler       ; interrupt vector at $0000
+    dc.q isr_handler       ; (reserved) interrupt vector at $0000
 
     org $1000
 start:
-    ; Set up interrupt vector (alternative: write to memory at $0)
     sei                     ; enable interrupts
     ; ... main program ...
     halt
@@ -663,7 +670,7 @@ isr_handler:
 
 | Instruction | Effect |
 |-------------|--------|
-| SEI | Sets `interruptEnabled = true`. Pending timer expirations will trigger an interrupt at the next timer check. |
+| SEI | Sets `interruptEnabled = true`. The timer continues running; the next expiration after SEI will trigger an interrupt. Note: expirations that occurred while interrupts were disabled are not queued or replayed. |
 | CLI | Sets `interruptEnabled = false`. Timer continues running and counting, but interrupts are not delivered. |
 
 Interrupts do not nest: if `inInterrupt` is true, no new interrupt is delivered regardless of the `interruptEnabled` flag.
@@ -801,6 +808,8 @@ multi   macro
 ```
 
 **Recursive expansion**: Macro bodies can contain macro invocations. Expansion depth is limited to 100 levels to prevent infinite recursion.
+
+> **Name collision warning**: Macro names must not match `equ` or `set` constant names (case-insensitive comparison). Because macro expansion occurs before directive processing, a line like `FOO equ 42` will be treated as an invocation of a macro named `foo` (with `equ` and `42` as arguments) rather than as a constant definition. This silently shadows the equate. Rename the macro or the constant to avoid the collision.
 
 ### 11.4 Conditional Assembly
 
