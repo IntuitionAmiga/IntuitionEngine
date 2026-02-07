@@ -292,6 +292,51 @@ const (
 	STT = 0x51 // Store T register
 )
 
+// loadRegMap maps LD* opcodes to register indices in cpu.regs[].
+// storeRegMap maps ST* opcodes to register indices in cpu.regs[].
+var loadRegMap [256]byte
+var storeRegMap [256]byte
+
+func init() {
+	// Primary: LDA=0x20→0, LDX=0x21→1, LDY=0x22→2, LDZ=0x23→3
+	loadRegMap[LDA] = 0
+	loadRegMap[LDX] = 1
+	loadRegMap[LDY] = 2
+	loadRegMap[LDZ] = 3
+	// Extended: LDB..LDG=0x3A..0x3F→4..9, LDU..LDW=0x40..0x42→13..15
+	loadRegMap[LDB] = 4
+	loadRegMap[LDC] = 5
+	loadRegMap[LDD] = 6
+	loadRegMap[LDE] = 7
+	loadRegMap[LDF] = 8
+	loadRegMap[LDG] = 9
+	loadRegMap[LDU] = 13
+	loadRegMap[LDV] = 14
+	loadRegMap[LDW] = 15
+	loadRegMap[LDH] = 10
+	loadRegMap[LDS] = 11
+	loadRegMap[LDT] = 12
+
+	// Primary: STA=0x24→0, STX=0x25→1, STY=0x26→2, STZ=0x27→3
+	storeRegMap[STA] = 0
+	storeRegMap[STX] = 1
+	storeRegMap[STY] = 2
+	storeRegMap[STZ] = 3
+	// Extended: STB..STG=0x43..0x48→4..9, STU..STW=0x49..0x4B→13..15
+	storeRegMap[STB] = 4
+	storeRegMap[STC] = 5
+	storeRegMap[STD] = 6
+	storeRegMap[STE] = 7
+	storeRegMap[STF] = 8
+	storeRegMap[STG] = 9
+	storeRegMap[STU] = 13
+	storeRegMap[STV] = 14
+	storeRegMap[STW] = 15
+	storeRegMap[STH] = 10
+	storeRegMap[STS] = 11
+	storeRegMap[STT] = 12
+}
+
 type CPU struct {
 	/*
 	   Cache Line 0 (64 bytes) - Hot Path Registers:
@@ -907,639 +952,369 @@ func (cpu *CPU) Execute() {
 	cpu.lastPerfReport = cpu.perfStartTime
 	cpu.InstructionCount = 0
 
-	// Use local running flag to avoid atomic load every iteration
-	// Check external stop signal every 4096 instructions
+	// Local copies to keep base addresses in registers
 	running := true
-	checkCounter := uint32(0)
-
-	// Unsafe base pointer for bounds-check-free memory access
 	memBase := unsafe.Pointer(&cpu.memory[0])
+	regs := cpu.regs
+	const batchSize = 64
 
+	// Cache timer enabled state — refreshed every batch boundary
+	timerLocalEnabled := cpu.timerEnabled.Load()
+
+outer:
 	for running {
-		// Periodic check of external stop signal (every 4096 instructions)
-		checkCounter++
-		if checkCounter&0xFFF == 0 && !cpu.running.Load() {
+		// Check external stop signal at batch boundary
+		if !cpu.running.Load() {
 			break
 		}
 
-		// Performance measurement: count instructions and report periodically
+		// Refresh timer cache at batch boundary
+		timerLocalEnabled = cpu.timerEnabled.Load()
+
+		executed := 0
+		for i := 0; i < batchSize; i++ {
+			executed++
+
+			// Fetch instruction components using unsafe pointer (no bounds checking)
+			instrPtr := unsafe.Pointer(uintptr(memBase) + uintptr(cpu.PC))
+			opcode := *(*byte)(instrPtr)
+			reg := *(*byte)(unsafe.Pointer(uintptr(instrPtr) + 1))
+			addrMode := *(*byte)(unsafe.Pointer(uintptr(instrPtr) + 2))
+			operand := *(*uint32)(unsafe.Pointer(uintptr(instrPtr) + 4))
+
+			// Fully inlined operand resolution
+			var resolvedOperand uint32
+			switch addrMode {
+			case ADDR_IMMEDIATE:
+				resolvedOperand = operand
+			case ADDR_REGISTER:
+				resolvedOperand = *regs[operand&REG_INDEX_MASK]
+			case ADDR_REG_IND:
+				resolvedOperand = cpu.Read32(*regs[operand&REG_INDEX_MASK] + (operand & ^uint32(REG_INDEX_MASK)))
+			case ADDR_MEM_IND, ADDR_DIRECT:
+				resolvedOperand = cpu.Read32(operand)
+			}
+
+			// Timer handling — uses cached timerLocalEnabled (no atomic per instruction)
+			if timerLocalEnabled {
+				cpu.cycleCounter++
+				if cpu.cycleCounter >= SAMPLE_RATE {
+					cpu.cycleCounter = 0
+
+					var finalCount uint32
+					count := cpu.timerCount.Load()
+					if count > 0 {
+						newCount := count - 1
+						cpu.timerCount.Store(newCount)
+						finalCount = newCount
+						if newCount == 0 {
+							cpu.timerState.Store(TIMER_EXPIRED)
+							if cpu.interruptEnabled.Load() && !cpu.inInterrupt.Load() {
+								cpu.handleInterrupt()
+							}
+							// Real atomic load: interrupt handler may have disabled the timer
+							if cpu.timerEnabled.Load() {
+								period := cpu.timerPeriod.Load()
+								cpu.timerCount.Store(period)
+								finalCount = period
+							}
+						}
+					} else {
+						finalCount = count
+					}
+
+					binary.LittleEndian.PutUint32(
+						cpu.memory[TIMER_COUNT:TIMER_COUNT+WORD_SIZE],
+						finalCount)
+				}
+			}
+
+			switch opcode {
+			case LOAD:
+				*regs[reg&REG_INDEX_MASK] = resolvedOperand
+				cpu.PC += INSTRUCTION_SIZE
+
+			case LDA, LDB, LDC, LDD, LDE, LDF, LDG, LDH, LDS, LDT, LDU, LDV, LDW, LDX, LDY, LDZ:
+				*regs[loadRegMap[opcode]] = resolvedOperand
+				cpu.PC += INSTRUCTION_SIZE
+
+			case STORE:
+				val := *regs[reg&REG_INDEX_MASK]
+				if addrMode == ADDR_REG_IND {
+					cpu.Write32(*regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), val)
+				} else if addrMode == ADDR_MEM_IND {
+					cpu.Write32(cpu.Read32(operand), val)
+				} else {
+					cpu.Write32(operand, val)
+				}
+				cpu.PC += INSTRUCTION_SIZE
+
+			case STA, STB, STC, STD, STE, STF, STG, STH, STS, STT, STU, STV, STW, STX, STY, STZ:
+				val := *regs[storeRegMap[opcode]]
+				if addrMode == ADDR_REG_IND {
+					cpu.Write32(*regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), val)
+				} else if addrMode == ADDR_MEM_IND {
+					cpu.Write32(cpu.Read32(operand), val)
+				} else {
+					cpu.Write32(operand, val)
+				}
+				cpu.PC += INSTRUCTION_SIZE
+
+			case ADD:
+				*regs[reg&REG_INDEX_MASK] += resolvedOperand
+				cpu.PC += INSTRUCTION_SIZE
+
+			case SUB:
+				*regs[reg&REG_INDEX_MASK] -= resolvedOperand
+				cpu.PC += INSTRUCTION_SIZE
+
+			case AND:
+				*regs[reg&REG_INDEX_MASK] &= resolvedOperand
+				cpu.PC += INSTRUCTION_SIZE
+
+			case OR:
+				*regs[reg&REG_INDEX_MASK] |= resolvedOperand
+				cpu.PC += INSTRUCTION_SIZE
+
+			case XOR:
+				*regs[reg&REG_INDEX_MASK] ^= resolvedOperand
+				cpu.PC += INSTRUCTION_SIZE
+
+			case SHL:
+				*regs[reg&REG_INDEX_MASK] <<= resolvedOperand
+				cpu.PC += INSTRUCTION_SIZE
+
+			case SHR:
+				*regs[reg&REG_INDEX_MASK] >>= resolvedOperand
+				cpu.PC += INSTRUCTION_SIZE
+
+			case NOT:
+				r := regs[reg&REG_INDEX_MASK]
+				*r = ^(*r)
+				cpu.PC += INSTRUCTION_SIZE
+
+			case JMP:
+				cpu.PC = operand
+
+			case JNZ:
+				if *regs[reg&REG_INDEX_MASK] != 0 {
+					cpu.PC = operand
+				} else {
+					cpu.PC += INSTRUCTION_SIZE
+				}
+
+			case JZ:
+				if *regs[reg&REG_INDEX_MASK] == 0 {
+					cpu.PC = operand
+				} else {
+					cpu.PC += INSTRUCTION_SIZE
+				}
+
+			case JGT:
+				if int32(*regs[reg&REG_INDEX_MASK]) > 0 {
+					cpu.PC = operand
+				} else {
+					cpu.PC += INSTRUCTION_SIZE
+				}
+
+			case JGE:
+				if int32(*regs[reg&REG_INDEX_MASK]) >= 0 {
+					cpu.PC = operand
+				} else {
+					cpu.PC += INSTRUCTION_SIZE
+				}
+
+			case JLT:
+				if int32(*regs[reg&REG_INDEX_MASK]) < 0 {
+					cpu.PC = operand
+				} else {
+					cpu.PC += INSTRUCTION_SIZE
+				}
+
+			case JLE:
+				if int32(*regs[reg&REG_INDEX_MASK]) <= 0 {
+					cpu.PC = operand
+				} else {
+					cpu.PC += INSTRUCTION_SIZE
+				}
+
+			case PUSH:
+				// Inlined stack push — stack is always below IO_REGION_START
+				if cpu.SP < STACK_BOTTOM+WORD_SIZE {
+					fmt.Printf("%s cpu.Push\tStack overflow error at PC=%08x (SP=%08x)\n",
+						time.Now().Format("15:04:05.000"), cpu.PC, cpu.SP)
+					cpu.running.Store(false)
+					running = false
+					break // inner loop only
+				}
+				cpu.SP -= WORD_SIZE
+				*(*uint32)(unsafe.Pointer(uintptr(memBase) + uintptr(cpu.SP))) = *regs[reg&REG_INDEX_MASK]
+				cpu.PC += INSTRUCTION_SIZE
+
+			case POP:
+				// Inlined stack pop
+				if cpu.SP >= STACK_START {
+					fmt.Printf("Stack underflow error at PC=%08x (SP=%08x)\n", cpu.PC, cpu.SP)
+					cpu.running.Store(false)
+					running = false
+					break // inner loop only
+				}
+				*regs[reg&REG_INDEX_MASK] = *(*uint32)(unsafe.Pointer(uintptr(memBase) + uintptr(cpu.SP)))
+				cpu.SP += WORD_SIZE
+				cpu.PC += INSTRUCTION_SIZE
+
+			case MUL:
+				if resolvedOperand != 0 && (resolvedOperand&(resolvedOperand-1)) == 0 {
+					*regs[reg&REG_INDEX_MASK] <<= bits.TrailingZeros32(resolvedOperand)
+				} else {
+					*regs[reg&REG_INDEX_MASK] *= resolvedOperand
+				}
+				cpu.PC += INSTRUCTION_SIZE
+
+			case DIV:
+				if resolvedOperand == 0 {
+					fmt.Printf("Division by zero error at PC=%08x\n", cpu.PC)
+					cpu.running.Store(false)
+					running = false
+					break // inner loop only
+				}
+				if (resolvedOperand & (resolvedOperand - 1)) == 0 {
+					*regs[reg&REG_INDEX_MASK] >>= bits.TrailingZeros32(resolvedOperand)
+				} else {
+					*regs[reg&REG_INDEX_MASK] /= resolvedOperand
+				}
+				cpu.PC += INSTRUCTION_SIZE
+
+			case MOD:
+				if resolvedOperand == 0 {
+					fmt.Printf("Division by zero error at PC=%08x\n", cpu.PC)
+					cpu.running.Store(false)
+					running = false
+					break // inner loop only
+				}
+				if (resolvedOperand & (resolvedOperand - 1)) == 0 {
+					*regs[reg&REG_INDEX_MASK] &= resolvedOperand - 1
+				} else {
+					*regs[reg&REG_INDEX_MASK] %= resolvedOperand
+				}
+				cpu.PC += INSTRUCTION_SIZE
+
+			case WAIT:
+				if resolvedOperand > 0 {
+					time.Sleep(time.Duration(resolvedOperand) * time.Microsecond)
+				}
+				cpu.PC += INSTRUCTION_SIZE
+
+			case JSR:
+				// Inlined JSR — push return address, jump to target
+				if cpu.SP < STACK_BOTTOM+WORD_SIZE {
+					fmt.Printf("%s cpu.Push\tStack overflow error at PC=%08x (SP=%08x)\n",
+						time.Now().Format("15:04:05.000"), cpu.PC, cpu.SP)
+					cpu.running.Store(false)
+					running = false
+					break // inner loop only
+				}
+				cpu.SP -= WORD_SIZE
+				*(*uint32)(unsafe.Pointer(uintptr(memBase) + uintptr(cpu.SP))) = cpu.PC + INSTRUCTION_SIZE
+				cpu.PC = operand
+
+			case RTS:
+				// Inlined RTS — pop return address, jump to it
+				if cpu.SP >= STACK_START {
+					fmt.Printf("Stack underflow error at PC=%08x (SP=%08x)\n", cpu.PC, cpu.SP)
+					cpu.running.Store(false)
+					running = false
+					break // inner loop only
+				}
+				cpu.PC = *(*uint32)(unsafe.Pointer(uintptr(memBase) + uintptr(cpu.SP)))
+				cpu.SP += WORD_SIZE
+
+			case SEI:
+				cpu.interruptEnabled.Store(true)
+				cpu.PC += INSTRUCTION_SIZE
+
+			case CLI:
+				cpu.interruptEnabled.Store(false)
+				cpu.PC += INSTRUCTION_SIZE
+
+			case RTI:
+				// RTI still uses Pop() — interrupt path is not hot
+				returnPC, ok := cpu.Pop()
+				if !ok {
+					running = false
+					break // inner loop only
+				}
+				cpu.PC = returnPC
+				cpu.inInterrupt.Store(false)
+
+			case INC:
+				if addrMode == ADDR_REGISTER {
+					(*regs[operand&REG_INDEX_MASK])++
+				} else if addrMode == ADDR_REG_IND {
+					addr := *regs[operand&REG_INDEX_MASK] + (operand & ^uint32(REG_INDEX_MASK))
+					val := cpu.Read32(addr)
+					cpu.Write32(addr, val+1)
+				} else if addrMode == ADDR_MEM_IND {
+					addr := cpu.Read32(operand)
+					val := cpu.Read32(addr)
+					cpu.Write32(addr, val+1)
+				} else {
+					val := cpu.Read32(operand)
+					cpu.Write32(operand, val+1)
+				}
+				cpu.PC += INSTRUCTION_SIZE
+
+			case DEC:
+				if addrMode == ADDR_REGISTER {
+					(*regs[operand&REG_INDEX_MASK])--
+				} else if addrMode == ADDR_REG_IND {
+					addr := *regs[operand&REG_INDEX_MASK] + (operand & ^uint32(REG_INDEX_MASK))
+					val := cpu.Read32(addr)
+					cpu.Write32(addr, val-1)
+				} else if addrMode == ADDR_MEM_IND {
+					addr := cpu.Read32(operand)
+					val := cpu.Read32(addr)
+					cpu.Write32(addr, val-1)
+				} else {
+					val := cpu.Read32(operand)
+					cpu.Write32(operand, val-1)
+				}
+				cpu.PC += INSTRUCTION_SIZE
+
+			case NOP:
+				cpu.PC += INSTRUCTION_SIZE
+
+			case HALT:
+				fmt.Printf("HALT executed at PC=%08x\n", cpu.PC)
+				cpu.running.Store(false)
+				running = false
+				break // inner loop only
+
+			default:
+				fmt.Printf("Invalid opcode: %02x at PC=%08x\n", opcode, cpu.PC)
+				cpu.running.Store(false)
+				running = false
+				break // inner loop only
+			}
+		} // end inner loop
+
+		// Flush perf count — always runs whether inner loop completed or broke early
 		if cpu.PerfEnabled {
-			cpu.InstructionCount++
-			if cpu.InstructionCount&0xFFFFFF == 0 { // Every ~16M instructions
+			cpu.InstructionCount += uint64(executed)
+			if cpu.InstructionCount&0xFFFFFF == 0 {
 				now := time.Now()
 				if now.Sub(cpu.lastPerfReport) >= time.Second {
 					elapsed := now.Sub(cpu.perfStartTime).Seconds()
-					ips := float64(cpu.InstructionCount) / elapsed
-					mips := ips / 1_000_000
+					mips := float64(cpu.InstructionCount) / elapsed / 1_000_000
 					fmt.Printf("IE32: %.2f MIPS (%.0f instructions in %.1fs)\n", mips, float64(cpu.InstructionCount), elapsed)
 					cpu.lastPerfReport = now
 				}
 			}
 		}
 
-		// Cache frequently accessed values
-		currentPC := cpu.PC
-
-		// Fetch instruction components using unsafe pointer (no bounds checking)
-		instrPtr := unsafe.Pointer(uintptr(memBase) + uintptr(currentPC))
-		opcode := *(*byte)(instrPtr)
-		reg := *(*byte)(unsafe.Pointer(uintptr(instrPtr) + 1))
-		addrMode := *(*byte)(unsafe.Pointer(uintptr(instrPtr) + 2))
-		operand := *(*uint32)(unsafe.Pointer(uintptr(instrPtr) + 4))
-
-		// Fully inlined operand resolution - avoids function call overhead
-		var resolvedOperand uint32
-		switch addrMode {
-		case ADDR_IMMEDIATE:
-			resolvedOperand = operand
-		case ADDR_REGISTER:
-			resolvedOperand = *cpu.regs[operand&REG_INDEX_MASK]
-		case ADDR_REG_IND:
-			regIdx := operand & REG_INDEX_MASK
-			offset := operand & ^uint32(REG_INDEX_MASK)
-			resolvedOperand = cpu.Read32(*cpu.regs[regIdx] + offset)
-		case ADDR_MEM_IND, ADDR_DIRECT:
-			resolvedOperand = cpu.Read32(operand)
-		}
-
-		// Timer handling with lock-free atomics
-		if cpu.timerEnabled.Load() {
-			cpu.cycleCounter++
-			if cpu.cycleCounter >= SAMPLE_RATE {
-				cpu.cycleCounter = 0
-
-				var finalCount uint32
-				count := cpu.timerCount.Load()
-				if count > 0 {
-					newCount := count - 1
-					cpu.timerCount.Store(newCount)
-					finalCount = newCount
-					if newCount == 0 {
-						cpu.timerState.Store(TIMER_EXPIRED)
-						if cpu.interruptEnabled.Load() && !cpu.inInterrupt.Load() {
-							cpu.handleInterrupt()
-						}
-						if cpu.timerEnabled.Load() {
-							period := cpu.timerPeriod.Load()
-							cpu.timerCount.Store(period)
-							finalCount = period
-						}
-					}
-				} else {
-					finalCount = count
-				}
-
-				binary.LittleEndian.PutUint32(
-					cpu.memory[TIMER_COUNT:TIMER_COUNT+WORD_SIZE],
-					finalCount)
-			}
-		}
-
-		switch opcode {
-		case LOAD:
-			/*
-			   Load value to register based on addressing mode.
-
-			   Operation:
-			   1. Gets target register
-			   2. Sets register value from resolved operand
-			   3. Advances PC by INSTRUCTION_SIZE
-			*/
-			*cpu.getRegister(reg) = resolvedOperand
-			cpu.PC += INSTRUCTION_SIZE
-
-		case LDA:
-			cpu.A = resolvedOperand
-			cpu.PC += INSTRUCTION_SIZE
-		case LDB:
-			cpu.B = resolvedOperand
-			cpu.PC += INSTRUCTION_SIZE
-		case LDC:
-			cpu.C = resolvedOperand
-			cpu.PC += INSTRUCTION_SIZE
-		case LDD:
-			cpu.D = resolvedOperand
-			cpu.PC += INSTRUCTION_SIZE
-		case LDE:
-			cpu.E = resolvedOperand
-			cpu.PC += INSTRUCTION_SIZE
-		case LDF:
-			cpu.F = resolvedOperand
-			cpu.PC += INSTRUCTION_SIZE
-		case LDG:
-			cpu.G = resolvedOperand
-			cpu.PC += INSTRUCTION_SIZE
-		case LDH:
-			cpu.H = resolvedOperand
-			cpu.PC += INSTRUCTION_SIZE
-		case LDS:
-			cpu.S = resolvedOperand
-			cpu.PC += INSTRUCTION_SIZE
-		case LDT:
-			cpu.T = resolvedOperand
-			cpu.PC += INSTRUCTION_SIZE
-		case LDU:
-			cpu.U = resolvedOperand
-			cpu.PC += INSTRUCTION_SIZE
-		case LDV:
-			cpu.V = resolvedOperand
-			cpu.PC += INSTRUCTION_SIZE
-		case LDW:
-			cpu.W = resolvedOperand
-			cpu.PC += INSTRUCTION_SIZE
-		case LDX:
-			cpu.X = resolvedOperand
-			cpu.PC += INSTRUCTION_SIZE
-		case LDY:
-			cpu.Y = resolvedOperand
-			cpu.PC += INSTRUCTION_SIZE
-		case LDZ:
-			cpu.Z = resolvedOperand
-			cpu.PC += INSTRUCTION_SIZE
-
-		case STORE:
-			/*
-			   Store register value to memory location.
-
-			   Operation:
-			   1. Handles different addressing modes:
-			      - Register indirect: Uses register + offset
-			      - Memory indirect: Uses memory address
-			      - Direct: Uses operand as address
-			   2. Writes register value to resolved location
-			   3. Advances PC by INSTRUCTION_SIZE
-			*/
-			if addrMode == ADDR_REG_IND {
-				// CRITICAL FIX: Exclude register bits from offset
-				addr := *cpu.getRegister(byte(operand & REG_INDIRECT_MASK)) + (operand & ^uint32(REG_INDIRECT_MASK))
-				cpu.Write32(addr, *cpu.getRegister(reg))
-			} else if addrMode == ADDR_MEM_IND {
-				addr := cpu.Read32(operand)
-				cpu.Write32(addr, *cpu.getRegister(reg))
-			} else {
-				cpu.Write32(operand, *cpu.getRegister(reg))
-			}
-			cpu.PC += INSTRUCTION_SIZE
-
-		case STA:
-			if addrMode == ADDR_REG_IND {
-				cpu.Write32(*cpu.regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), cpu.A)
-			} else if addrMode == ADDR_MEM_IND {
-				cpu.Write32(cpu.Read32(operand), cpu.A)
-			} else {
-				cpu.Write32(operand, cpu.A)
-			}
-			cpu.PC += INSTRUCTION_SIZE
-		case STB:
-			if addrMode == ADDR_REG_IND {
-				cpu.Write32(*cpu.regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), cpu.B)
-			} else if addrMode == ADDR_MEM_IND {
-				cpu.Write32(cpu.Read32(operand), cpu.B)
-			} else {
-				cpu.Write32(operand, cpu.B)
-			}
-			cpu.PC += INSTRUCTION_SIZE
-		case STC:
-			if addrMode == ADDR_REG_IND {
-				cpu.Write32(*cpu.regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), cpu.C)
-			} else if addrMode == ADDR_MEM_IND {
-				cpu.Write32(cpu.Read32(operand), cpu.C)
-			} else {
-				cpu.Write32(operand, cpu.C)
-			}
-			cpu.PC += INSTRUCTION_SIZE
-		case STD:
-			if addrMode == ADDR_REG_IND {
-				cpu.Write32(*cpu.regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), cpu.D)
-			} else if addrMode == ADDR_MEM_IND {
-				cpu.Write32(cpu.Read32(operand), cpu.D)
-			} else {
-				cpu.Write32(operand, cpu.D)
-			}
-			cpu.PC += INSTRUCTION_SIZE
-		case STE:
-			if addrMode == ADDR_REG_IND {
-				cpu.Write32(*cpu.regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), cpu.E)
-			} else if addrMode == ADDR_MEM_IND {
-				cpu.Write32(cpu.Read32(operand), cpu.E)
-			} else {
-				cpu.Write32(operand, cpu.E)
-			}
-			cpu.PC += INSTRUCTION_SIZE
-		case STF:
-			if addrMode == ADDR_REG_IND {
-				cpu.Write32(*cpu.regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), cpu.F)
-			} else if addrMode == ADDR_MEM_IND {
-				cpu.Write32(cpu.Read32(operand), cpu.F)
-			} else {
-				cpu.Write32(operand, cpu.F)
-			}
-			cpu.PC += INSTRUCTION_SIZE
-		case STG:
-			if addrMode == ADDR_REG_IND {
-				cpu.Write32(*cpu.regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), cpu.G)
-			} else if addrMode == ADDR_MEM_IND {
-				cpu.Write32(cpu.Read32(operand), cpu.G)
-			} else {
-				cpu.Write32(operand, cpu.G)
-			}
-			cpu.PC += INSTRUCTION_SIZE
-		case STH:
-			if addrMode == ADDR_REG_IND {
-				cpu.Write32(*cpu.regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), cpu.H)
-			} else if addrMode == ADDR_MEM_IND {
-				cpu.Write32(cpu.Read32(operand), cpu.H)
-			} else {
-				cpu.Write32(operand, cpu.H)
-			}
-			cpu.PC += INSTRUCTION_SIZE
-		case STS:
-			if addrMode == ADDR_REG_IND {
-				cpu.Write32(*cpu.regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), cpu.S)
-			} else if addrMode == ADDR_MEM_IND {
-				cpu.Write32(cpu.Read32(operand), cpu.S)
-			} else {
-				cpu.Write32(operand, cpu.S)
-			}
-			cpu.PC += INSTRUCTION_SIZE
-		case STT:
-			if addrMode == ADDR_REG_IND {
-				cpu.Write32(*cpu.regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), cpu.T)
-			} else if addrMode == ADDR_MEM_IND {
-				cpu.Write32(cpu.Read32(operand), cpu.T)
-			} else {
-				cpu.Write32(operand, cpu.T)
-			}
-			cpu.PC += INSTRUCTION_SIZE
-		case STU:
-			if addrMode == ADDR_REG_IND {
-				cpu.Write32(*cpu.regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), cpu.U)
-			} else if addrMode == ADDR_MEM_IND {
-				cpu.Write32(cpu.Read32(operand), cpu.U)
-			} else {
-				cpu.Write32(operand, cpu.U)
-			}
-			cpu.PC += INSTRUCTION_SIZE
-		case STV:
-			if addrMode == ADDR_REG_IND {
-				cpu.Write32(*cpu.regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), cpu.V)
-			} else if addrMode == ADDR_MEM_IND {
-				cpu.Write32(cpu.Read32(operand), cpu.V)
-			} else {
-				cpu.Write32(operand, cpu.V)
-			}
-			cpu.PC += INSTRUCTION_SIZE
-		case STW:
-			if addrMode == ADDR_REG_IND {
-				cpu.Write32(*cpu.regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), cpu.W)
-			} else if addrMode == ADDR_MEM_IND {
-				cpu.Write32(cpu.Read32(operand), cpu.W)
-			} else {
-				cpu.Write32(operand, cpu.W)
-			}
-			cpu.PC += INSTRUCTION_SIZE
-		case STX:
-			if addrMode == ADDR_REG_IND {
-				cpu.Write32(*cpu.regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), cpu.X)
-			} else if addrMode == ADDR_MEM_IND {
-				cpu.Write32(cpu.Read32(operand), cpu.X)
-			} else {
-				cpu.Write32(operand, cpu.X)
-			}
-			cpu.PC += INSTRUCTION_SIZE
-		case STY:
-			if addrMode == ADDR_REG_IND {
-				cpu.Write32(*cpu.regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), cpu.Y)
-			} else if addrMode == ADDR_MEM_IND {
-				cpu.Write32(cpu.Read32(operand), cpu.Y)
-			} else {
-				cpu.Write32(operand, cpu.Y)
-			}
-			cpu.PC += INSTRUCTION_SIZE
-		case STZ:
-			if addrMode == ADDR_REG_IND {
-				cpu.Write32(*cpu.regs[operand&REG_INDEX_MASK]+(operand&^uint32(REG_INDEX_MASK)), cpu.Z)
-			} else if addrMode == ADDR_MEM_IND {
-				cpu.Write32(cpu.Read32(operand), cpu.Z)
-			} else {
-				cpu.Write32(operand, cpu.Z)
-			}
-			cpu.PC += INSTRUCTION_SIZE
-
-		case ADD:
-			// Add resolved operand to target register (inlined for speed)
-			*cpu.regs[reg&REG_INDEX_MASK] += resolvedOperand
-			cpu.PC += INSTRUCTION_SIZE
-
-		case SUB:
-			// Subtract resolved operand from target register (inlined for speed)
-			*cpu.regs[reg&REG_INDEX_MASK] -= resolvedOperand
-			cpu.PC += INSTRUCTION_SIZE
-
-		case AND:
-			// Logical AND (inlined for speed)
-			*cpu.regs[reg&REG_INDEX_MASK] &= resolvedOperand
-			cpu.PC += INSTRUCTION_SIZE
-
-		case OR:
-			// Logical OR (inlined for speed)
-			*cpu.regs[reg&REG_INDEX_MASK] |= resolvedOperand
-			cpu.PC += INSTRUCTION_SIZE
-
-		case XOR:
-			// Logical XOR (inlined for speed)
-			*cpu.regs[reg&REG_INDEX_MASK] ^= resolvedOperand
-			cpu.PC += INSTRUCTION_SIZE
-
-		case SHL:
-			// Shift left (inlined for speed)
-			*cpu.regs[reg&REG_INDEX_MASK] <<= resolvedOperand
-			cpu.PC += INSTRUCTION_SIZE
-
-		case SHR:
-			// Shift right (inlined for speed)
-			*cpu.regs[reg&REG_INDEX_MASK] >>= resolvedOperand
-			cpu.PC += INSTRUCTION_SIZE
-
-		case NOT:
-			// Logical NOT (inlined for speed)
-			r := cpu.regs[reg&REG_INDEX_MASK]
-			*r = ^(*r)
-			cpu.PC += INSTRUCTION_SIZE
-
-		case JMP:
-			// Unconditional jump
-			cpu.PC = operand
-
-		case JNZ:
-			// Jump if register not zero (inlined for speed)
-			if *cpu.regs[reg&REG_INDEX_MASK] != 0 {
-				cpu.PC = operand
-			} else {
-				cpu.PC += INSTRUCTION_SIZE
-			}
-
-		case JZ:
-			/*
-			   Jump if register zero.
-			   Uses pre-decoded reg and operand (target address).
-			*/
-			if *cpu.regs[reg&REG_INDEX_MASK] == 0 {
-				cpu.PC = operand
-			} else {
-				cpu.PC += INSTRUCTION_SIZE
-			}
-
-		case JGT:
-			// Jump if register > 0 (signed, inlined)
-			if int32(*cpu.regs[reg&REG_INDEX_MASK]) > 0 {
-				cpu.PC = operand
-			} else {
-				cpu.PC += INSTRUCTION_SIZE
-			}
-
-		case JGE:
-			// Jump if register >= 0 (signed, inlined)
-			if int32(*cpu.regs[reg&REG_INDEX_MASK]) >= 0 {
-				cpu.PC = operand
-			} else {
-				cpu.PC += INSTRUCTION_SIZE
-			}
-
-		case JLT:
-			// Jump if register < 0 (signed, inlined)
-			if int32(*cpu.regs[reg&REG_INDEX_MASK]) < 0 {
-				cpu.PC = operand
-			} else {
-				cpu.PC += INSTRUCTION_SIZE
-			}
-
-		case JLE:
-			// Jump if register <= 0 (signed, inlined)
-			if int32(*cpu.regs[reg&REG_INDEX_MASK]) <= 0 {
-				cpu.PC = operand
-			} else {
-				cpu.PC += INSTRUCTION_SIZE
-			}
-
-		case PUSH:
-			// Push register to stack (inlined)
-			if !cpu.Push(*cpu.regs[reg&REG_INDEX_MASK]) {
-				return
-			}
-			cpu.PC += INSTRUCTION_SIZE
-
-		case POP:
-			// Pop from stack to register (inlined)
-			value, ok := cpu.Pop()
-			if !ok {
-				return
-			}
-			*cpu.regs[reg&REG_INDEX_MASK] = value
-			cpu.PC += INSTRUCTION_SIZE
-
-		case MUL:
-			// Multiply with power-of-2 fast path (shift instead of multiply)
-			if resolvedOperand != 0 && (resolvedOperand&(resolvedOperand-1)) == 0 {
-				// Power of 2: use left shift
-				*cpu.regs[reg&REG_INDEX_MASK] <<= bits.TrailingZeros32(resolvedOperand)
-			} else {
-				*cpu.regs[reg&REG_INDEX_MASK] *= resolvedOperand
-			}
-			cpu.PC += INSTRUCTION_SIZE
-
-		case DIV:
-			// Division with power-of-2 fast path (shift instead of divide)
-			if resolvedOperand == 0 {
-				fmt.Printf("Division by zero error at PC=%08x\n", cpu.PC)
-				cpu.running.Store(false)
-				running = false
-				break
-			}
-			if (resolvedOperand & (resolvedOperand - 1)) == 0 {
-				// Power of 2: use right shift
-				*cpu.regs[reg&REG_INDEX_MASK] >>= bits.TrailingZeros32(resolvedOperand)
-			} else {
-				*cpu.regs[reg&REG_INDEX_MASK] /= resolvedOperand
-			}
-			cpu.PC += INSTRUCTION_SIZE
-
-		case MOD:
-			// Modulo with power-of-2 fast path (AND instead of modulo)
-			if resolvedOperand == 0 {
-				fmt.Printf("Division by zero error at PC=%08x\n", cpu.PC)
-				cpu.running.Store(false)
-				running = false
-				break
-			}
-			if (resolvedOperand & (resolvedOperand - 1)) == 0 {
-				// Power of 2: x % n == x & (n-1)
-				*cpu.regs[reg&REG_INDEX_MASK] &= resolvedOperand - 1
-			} else {
-				*cpu.regs[reg&REG_INDEX_MASK] %= resolvedOperand
-			}
-			cpu.PC += INSTRUCTION_SIZE
-
-		case WAIT:
-			/*
-			   Wait specified microseconds.
-			   Operation:
-			   1. Get delay count from operand (in microseconds)
-			   2. Sleep for the specified duration
-			   3. Advance PC by INSTRUCTION_SIZE
-			*/
-			delayMicros := resolvedOperand
-			if delayMicros > 0 {
-				time.Sleep(time.Duration(delayMicros) * time.Microsecond)
-			}
-			cpu.PC += INSTRUCTION_SIZE
-
-		case JSR:
-			/*
-			   Jump to subroutine.
-			   Operation:
-			   1. Calculate return address
-			   2. Push return address to stack
-			   3. Jump to target address
-			*/
-			retAddr := cpu.PC + INSTRUCTION_SIZE
-			if !cpu.Push(retAddr) {
-				return
-			}
-			cpu.PC = operand
-
-		case RTS:
-			/*
-			   Return from subroutine.
-			   Operation:
-			   1. Pop return address
-			   2. Check for stack underflow
-			   3. Set PC to return address
-			*/
-			retAddr, ok := cpu.Pop()
-			if !ok {
-				return
-			}
-			cpu.PC = retAddr
-
-		case SEI:
-			/*
-			   Set interrupt enable flag.
-			   Operation:
-			   1. Enable interrupts
-			   2. Advance PC by INSTRUCTION_SIZE
-			*/
-			cpu.interruptEnabled.Store(true)
-			cpu.PC += INSTRUCTION_SIZE
-
-		case CLI:
-			/*
-			   Clear interrupt enable flag.
-			   Operation:
-			   1. Disable interrupts
-			   2. Advance PC by INSTRUCTION_SIZE
-			*/
-			cpu.interruptEnabled.Store(false)
-			cpu.PC += INSTRUCTION_SIZE
-
-		case RTI:
-			/*
-			   Return from interrupt.
-			   Operation:
-			   1. Pop return PC from stack
-			   2. Clear interrupt processing flag
-			   3. Set PC to return address
-			*/
-			returnPC, ok := cpu.Pop()
-			if !ok {
-				return
-			}
-			cpu.PC = returnPC
-			cpu.inInterrupt.Store(false)
-
-		case INC:
-			/*
-			   Increment value based on mode.
-			   Operation:
-			   1. Resolve target by mode:
-			      - Register: Direct increment
-			      - Register indirect: Memory at reg+offset
-			      - Memory indirect: Memory at address
-			   2. Increment value
-			   3. Store result
-			   4. Advance PC by INSTRUCTION_SIZE
-			*/
-			if addrMode == ADDR_REGISTER {
-				reg := cpu.getRegister(byte(operand & REG_INDIRECT_MASK))
-				(*reg)++
-			} else if addrMode == ADDR_REG_IND {
-				// CRITICAL FIX: Exclude register bits from offset
-				addr := *cpu.getRegister(byte(operand & REG_INDIRECT_MASK)) + (operand & ^uint32(REG_INDIRECT_MASK))
-				val := cpu.Read32(addr)
-				cpu.Write32(addr, val+1)
-			} else if addrMode == ADDR_MEM_IND {
-				addr := cpu.Read32(operand)
-				val := cpu.Read32(addr)
-				cpu.Write32(addr, val+1)
-			} else {
-				val := cpu.Read32(operand)
-				cpu.Write32(operand, val+1)
-			}
-			cpu.PC += INSTRUCTION_SIZE
-
-		case DEC:
-			/*
-			   Decrement value based on mode.
-			   Operation:
-			   1. Resolve target by mode:
-			      - Register: Direct decrement
-			      - Register indirect: Memory at reg+offset
-			      - Memory indirect: Memory at address
-			   2. Decrement value
-			   3. Store result
-			   4. Advance PC by INSTRUCTION_SIZE
-			*/
-			if addrMode == ADDR_REGISTER {
-				reg := cpu.getRegister(byte(operand & REG_INDIRECT_MASK))
-				(*reg)--
-			} else if addrMode == ADDR_REG_IND {
-				// CRITICAL FIX: Exclude register bits from offset
-				addr := *cpu.getRegister(byte(operand & REG_INDIRECT_MASK)) + (operand & ^uint32(REG_INDIRECT_MASK))
-				val := cpu.Read32(addr)
-				cpu.Write32(addr, val-1)
-			} else if addrMode == ADDR_MEM_IND {
-				addr := cpu.Read32(operand)
-				val := cpu.Read32(addr)
-				cpu.Write32(addr, val-1)
-			} else {
-				val := cpu.Read32(operand)
-				cpu.Write32(operand, val-1)
-			}
-			cpu.PC += INSTRUCTION_SIZE
-
-		case NOP:
-			/*
-			   No operation.
-			   Operation:
-			   Advance PC by INSTRUCTION_SIZE
-			*/
-			cpu.PC += INSTRUCTION_SIZE
-
-		case HALT:
-			/*
-			   Halt CPU execution.
-			   Operation:
-			   1. Log halt with PC
-			   2. Set running to false
-			*/
-			fmt.Printf("HALT executed at PC=%08x\n", cpu.PC)
-			cpu.running.Store(false)
-			running = false
-
-		default:
-			fmt.Printf("Invalid opcode: %02x at PC=%08x\n", opcode, cpu.PC)
-			cpu.running.Store(false)
-			running = false
+		// Check if inner loop signaled stop
+		if !running {
+			break outer
 		}
 	}
 
