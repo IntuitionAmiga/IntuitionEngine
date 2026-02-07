@@ -45,6 +45,8 @@
    - 3.13 VGA Video Chip
    - 3.14 ULA Video Chip (ZX Spectrum)
    - 3.15 ANTIC Video Chip (Atari 8-bit)
+   - 3.16 GTIA Color Control (Atari 8-bit)
+   - 3.17 Voodoo 3D Graphics
 4. [IE32 CPU Architecture](#4-ie32-cpu-architecture)
    - 4.1 Register Set
    - 4.2 Status Flags
@@ -2896,7 +2898,8 @@ The `ie64asm` assembler provides these convenience pseudo-instructions:
 | Pseudo | Expansion | Description |
 |--------|-----------|-------------|
 | `la Rd, addr` | `lea Rd, addr(r0)` | Load address into register |
-| `li Rd, #val` | `move.l Rd, #val` | Load immediate (use `move.l` for symbols) |
+| `li Rd, #imm32` | `move.l Rd, #imm32` | Load 32-bit immediate |
+| `li Rd, #imm64` | `move.l Rd, #lo32` + `movt Rd, #hi32` | Load full 64-bit immediate |
 | `beqz Rs, label` | `beq Rs, r0, label` | Branch if zero |
 | `bnez Rs, label` | `bne Rs, r0, label` | Branch if not zero |
 | `bltz Rs, label` | `blt Rs, r0, label` | Branch if less than zero |
@@ -2939,7 +2942,7 @@ The IE64 shares the same 32MB system bus and memory-mapped device address space 
 
 - All hardware registers at `$F0000–$FFFFF` are accessible via `LOAD`/`STORE`
 - VGA VRAM at `$A0000–$AFFFF`, Video RAM at `$100000+`
-- VRAM direct-write fast path for stores to `$A0000+`
+- VRAM direct-write fast path for stores to Video RAM (`$100000+`, attached VRAM window)
 - 64-bit bus operations (`Read64`/`Write64`) with I/O region split semantics for device registers
 
 ## 9.6 Interrupt Handling
@@ -2948,18 +2951,18 @@ The IE64 has an integrated timer and interrupt system:
 
 - **Interrupt vector**: Internal `interruptVector` field (set to 0 on reset)
 - **Timer**: Integrated CPU timer, decremented every 44100 cycles
-- **Timer registers**: Accessed via standard system timer addresses (`$F0800–$F080C`)
+- **Timer state**: Internal CPU fields (not memory-mapped timer registers)
 
 **Interrupt flow:**
 1. Timer counts down; when it reaches zero, an interrupt fires
-2. CPU pushes PC to stack, disables interrupts
-3. Execution jumps to interrupt vector address
-4. ISR executes and returns via `RTI` (restores PC, re-enables interrupts)
+2. If `interruptEnabled` is true and not already in an ISR, CPU sets `inInterrupt=true`
+3. CPU pushes PC to stack and jumps to `interruptVector`
+4. ISR executes and returns via `RTI` (restores PC, clears `inInterrupt`)
 
 **Instructions:**
 - `SEI` — Enable interrupts
 - `CLI` — Disable interrupts
-- `RTI` — Return from interrupt (pops PC, re-enables interrupts)
+- `RTI` — Return from interrupt (pops PC, clears `inInterrupt`)
 
 Note: The interrupt vector is currently set internally. Assembly-level vector programming is reserved for a future update.
 
