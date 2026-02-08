@@ -1236,3 +1236,154 @@ func TestIE64_InvalidOpcode(t *testing.T) {
 		t.Fatal("running should be false after invalid opcode")
 	}
 }
+
+// ===========================================================================
+// Regression tests for fast-path refactor
+// ===========================================================================
+
+func TestIE64_HALT_Immediate(t *testing.T) {
+	// Verify HALT stops immediately — no instructions execute after it
+	r := newIE64TestRig()
+	halt := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
+	// Place a MOVE after HALT that would change R1
+	mov := ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 0xDEAD)
+	r.loadInstructions(halt, mov)
+	r.cpu.running.Store(true)
+	r.cpu.Execute()
+	if r.cpu.regs[1] != 0 {
+		t.Fatalf("R1 = 0x%X, want 0 (HALT should stop immediately)", r.cpu.regs[1])
+	}
+	if r.cpu.running.Load() {
+		t.Fatal("running should be false after HALT")
+	}
+}
+
+func TestIE64_InvalidOpcode_Immediate(t *testing.T) {
+	// Verify invalid opcode stops immediately — no instructions execute after it
+	r := newIE64TestRig()
+	invalid := make([]byte, 8)
+	invalid[0] = 0xFE
+	mov := ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 0xDEAD)
+	r.loadInstructions(invalid, mov)
+	r.cpu.running.Store(true)
+	r.cpu.Execute()
+	if r.cpu.regs[1] != 0 {
+		t.Fatalf("R1 = 0x%X, want 0 (invalid opcode should stop immediately)", r.cpu.regs[1])
+	}
+	if r.cpu.running.Load() {
+		t.Fatal("running should be false after invalid opcode")
+	}
+}
+
+func TestIE64_StackOverflow_Halt(t *testing.T) {
+	// Push with SP near 0 — should halt cleanly without panic
+	r := newIE64TestRig()
+	r.cpu.regs[31] = 4 // SP too low for an 8-byte push
+	r.cpu.regs[5] = 0xCAFE
+	push := ie64Instr(OP_PUSH64, 0, 0, 0, 5, 0, 0)
+	halt := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
+	r.loadInstructions(push, halt)
+	r.cpu.running.Store(true)
+	r.cpu.Execute()
+	// SP wraps to a huge value — bounds check should halt
+	if r.cpu.running.Load() {
+		t.Fatal("running should be false after stack overflow")
+	}
+}
+
+func TestIE64_StackUnderflow_Halt(t *testing.T) {
+	// RTS with SP beyond memory bounds — should halt cleanly
+	r := newIE64TestRig()
+	r.cpu.regs[31] = uint64(len(r.cpu.memory)) // SP at end of memory
+	rts := ie64Instr(OP_RTS64, 0, 0, 0, 0, 0, 0)
+	halt := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
+	r.loadInstructions(rts, halt)
+	r.cpu.running.Store(true)
+	r.cpu.Execute()
+	if r.cpu.running.Load() {
+		t.Fatal("running should be false after stack underflow")
+	}
+}
+
+// ===========================================================================
+// Benchmarks
+// ===========================================================================
+
+func BenchmarkIE64_TightLoop(b *testing.B) {
+	// Tight decrement-and-branch loop: measures raw instruction throughput
+	bus := NewSystemBus()
+	cpu := NewCPU64(bus)
+
+	// R1 = loop count (set per iteration)
+	// R2 = 1 (decrement value)
+	// +0:  SUB.Q R1, R1, R2
+	// +8:  BNE R1, R0, -8
+	// +16: HALT
+	sub := ie64Instr(OP_SUB, 1, IE64_SIZE_Q, 0, 1, 2, 0)
+	var backOffset int32 = -8
+	bne := ie64Instr(OP_BNE, 0, 0, 0, 1, 0, uint32(backOffset))
+	halt := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
+
+	offset := uint32(PROG_START)
+	copy(cpu.memory[offset:], sub)
+	offset += 8
+	copy(cpu.memory[offset:], bne)
+	offset += 8
+	copy(cpu.memory[offset:], halt)
+
+	const loopIterations = 100000
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cpu.PC = PROG_START
+		cpu.regs[1] = loopIterations
+		cpu.regs[2] = 1
+		cpu.running.Store(true)
+		cpu.Execute()
+	}
+	// 2 instructions per loop iteration + 1 HALT
+	b.ReportMetric(float64(loopIterations*2+1), "instructions/op")
+}
+
+func BenchmarkIE64_MemoryIntensive(b *testing.B) {
+	// Load/store loop: measures memory access throughput
+	bus := NewSystemBus()
+	cpu := NewCPU64(bus)
+
+	// R1 = loop counter
+	// R2 = 1 (decrement)
+	// R3 = base address for load/store
+	// R4 = scratch register
+	//
+	// +0:  STORE.Q R1, (R3)      — store counter to memory
+	// +8:  LOAD.Q R4, (R3)       — load it back
+	// +16: SUB.Q R1, R1, R2      — decrement counter
+	// +24: BNE R1, R0, -24       — loop back to +0
+	// +32: HALT
+	store := ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 0)
+	load := ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 3, 0, 0)
+	sub := ie64Instr(OP_SUB, 1, IE64_SIZE_Q, 0, 1, 2, 0)
+	var backOffset int32 = -24
+	bne := ie64Instr(OP_BNE, 0, 0, 0, 1, 0, uint32(backOffset))
+	halt := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
+
+	offset := uint32(PROG_START)
+	for _, instr := range [][]byte{store, load, sub, bne, halt} {
+		copy(cpu.memory[offset:], instr)
+		offset += 8
+	}
+
+	const loopIterations = 100000
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cpu.PC = PROG_START
+		cpu.regs[1] = loopIterations
+		cpu.regs[2] = 1
+		cpu.regs[3] = 0x5000 // data address
+		cpu.running.Store(true)
+		cpu.Execute()
+	}
+	// 4 instructions per loop iteration + 1 HALT
+	b.ReportMetric(float64(loopIterations*4+1), "instructions/op")
+}

@@ -53,7 +53,6 @@ Thread Safety:
 package main
 
 import (
-	"encoding/binary"
 	"fmt"
 	"os"
 	"sync/atomic"
@@ -224,18 +223,10 @@ func (cpu *CPU64) getReg(idx byte) uint64 {
 // Size Masking
 // ------------------------------------------------------------------------------
 
+var ie64SizeMask = [4]uint64{0xFF, 0xFFFF, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF}
+
 func maskToSize(val uint64, size byte) uint64 {
-	switch size {
-	case IE64_SIZE_B:
-		return val & 0xFF
-	case IE64_SIZE_W:
-		return val & 0xFFFF
-	case IE64_SIZE_L:
-		return val & 0xFFFFFFFF
-	case IE64_SIZE_Q:
-		return val
-	}
-	return val
+	return val & ie64SizeMask[size]
 }
 
 // ------------------------------------------------------------------------------
@@ -243,6 +234,38 @@ func maskToSize(val uint64, size byte) uint64 {
 // ------------------------------------------------------------------------------
 
 func (cpu *CPU64) loadMem(addr uint32, size byte) uint64 {
+	// VRAM direct read fast path (VRAM addresses are above IO_REGION_START)
+	if cpu.vramDirect != nil && addr >= cpu.vramStart && addr < cpu.vramEnd {
+		offset := addr - cpu.vramStart
+		base := unsafe.Pointer(&cpu.vramDirect[offset])
+		switch size {
+		case IE64_SIZE_Q:
+			return *(*uint64)(base)
+		case IE64_SIZE_L:
+			return uint64(*(*uint32)(base))
+		case IE64_SIZE_W:
+			return uint64(*(*uint16)(base))
+		case IE64_SIZE_B:
+			return uint64(*(*byte)(base))
+		}
+	}
+
+	// Non-I/O fast path — direct memory read, no bus overhead
+	if addr < IO_REGION_START {
+		base := unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr))
+		switch size {
+		case IE64_SIZE_Q:
+			return *(*uint64)(base)
+		case IE64_SIZE_L:
+			return uint64(*(*uint32)(base))
+		case IE64_SIZE_W:
+			return uint64(*(*uint16)(base))
+		case IE64_SIZE_B:
+			return uint64(*(*byte)(base))
+		}
+	}
+
+	// I/O slow path — bus callbacks protect their own state
 	switch size {
 	case IE64_SIZE_B:
 		return uint64(cpu.bus.Read8(addr))
@@ -257,33 +280,40 @@ func (cpu *CPU64) loadMem(addr uint32, size byte) uint64 {
 }
 
 func (cpu *CPU64) storeMem(addr uint32, val uint64, size byte) {
-	// VRAM direct write fast path
+	// VRAM direct write fast path (VRAM addresses are above IO_REGION_START)
 	if cpu.vramDirect != nil && addr >= cpu.vramStart && addr < cpu.vramEnd {
 		offset := addr - cpu.vramStart
+		base := unsafe.Pointer(&cpu.vramDirect[offset])
 		switch size {
 		case IE64_SIZE_B:
-			if offset < uint32(len(cpu.vramDirect)) {
-				cpu.vramDirect[offset] = byte(val)
-				return
-			}
+			*(*byte)(base) = byte(val)
 		case IE64_SIZE_W:
-			if offset+2 <= uint32(len(cpu.vramDirect)) {
-				binary.LittleEndian.PutUint16(cpu.vramDirect[offset:], uint16(val))
-				return
-			}
+			*(*uint16)(base) = uint16(val)
 		case IE64_SIZE_L:
-			if offset+4 <= uint32(len(cpu.vramDirect)) {
-				binary.LittleEndian.PutUint32(cpu.vramDirect[offset:], uint32(val))
-				return
-			}
+			*(*uint32)(base) = uint32(val)
 		case IE64_SIZE_Q:
-			if offset+8 <= uint32(len(cpu.vramDirect)) {
-				binary.LittleEndian.PutUint64(cpu.vramDirect[offset:], val)
-				return
-			}
+			*(*uint64)(base) = val
 		}
+		return
 	}
 
+	// Non-I/O fast path — direct memory write, no bus overhead
+	if addr < IO_REGION_START {
+		base := unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr))
+		switch size {
+		case IE64_SIZE_B:
+			*(*byte)(base) = byte(val)
+		case IE64_SIZE_W:
+			*(*uint16)(base) = uint16(val)
+		case IE64_SIZE_L:
+			*(*uint32)(base) = uint32(val)
+		case IE64_SIZE_Q:
+			*(*uint64)(base) = val
+		}
+		return
+	}
+
+	// I/O slow path — bus callbacks protect their own state
 	switch size {
 	case IE64_SIZE_B:
 		cpu.bus.Write8(addr, uint8(val))
@@ -367,25 +397,6 @@ func (cpu *CPU64) DetachDirectVRAM() {
 }
 
 // ------------------------------------------------------------------------------
-// Interrupt Handling
-// ------------------------------------------------------------------------------
-
-func (cpu *CPU64) handleInterrupt() {
-	if !cpu.interruptEnabled.Load() || cpu.inInterrupt.Load() {
-		return
-	}
-	cpu.inInterrupt.Store(true)
-
-	// Push return address (PC) onto stack
-	cpu.regs[31] -= 8
-	sp := uint32(cpu.regs[31])
-	binary.LittleEndian.PutUint64(cpu.memory[sp:], cpu.PC)
-
-	// Jump to interrupt vector
-	cpu.PC = cpu.interruptVector
-}
-
-// ------------------------------------------------------------------------------
 // Execute — Main Instruction Loop
 // ------------------------------------------------------------------------------
 
@@ -401,13 +412,15 @@ func (cpu *CPU64) Execute() {
 	cpu.lastPerfReport = cpu.perfStartTime
 	cpu.InstructionCount = 0
 
+	// Cache locals that never change during execution
+	perfEnabled := cpu.PerfEnabled
+	memBase := unsafe.Pointer(&cpu.memory[0])
+	memSize := uint64(len(cpu.memory))
+
 	// Use local running flag to avoid atomic load every iteration
 	// Check external stop signal every 4096 instructions
 	running := true
 	checkCounter := uint32(0)
-
-	// Unsafe base pointer for bounds-check-free memory access
-	memBase := unsafe.Pointer(&cpu.memory[0])
 
 	for running {
 		// Periodic check of external stop signal (every 4096 instructions)
@@ -417,7 +430,7 @@ func (cpu *CPU64) Execute() {
 		}
 
 		// Performance measurement: count instructions and report periodically
-		if cpu.PerfEnabled {
+		if perfEnabled {
 			cpu.InstructionCount++
 			if cpu.InstructionCount&0xFFFFFF == 0 { // Every ~16M instructions
 				now := time.Now()
@@ -433,14 +446,13 @@ func (cpu *CPU64) Execute() {
 		// Mask PC to 32MB address space
 		pc32 := uint32(cpu.PC & IE64_ADDR_MASK)
 
-		// Fetch instruction using unsafe pointer (no bounds checking)
-		instrPtr := unsafe.Pointer(uintptr(memBase) + uintptr(pc32))
-
-		opcode := *(*byte)(instrPtr)
-		byte1 := *(*byte)(unsafe.Pointer(uintptr(instrPtr) + 1))
-		byte2 := *(*byte)(unsafe.Pointer(uintptr(instrPtr) + 2))
-		byte3 := *(*byte)(unsafe.Pointer(uintptr(instrPtr) + 3))
-		imm32 := *(*uint32)(unsafe.Pointer(uintptr(instrPtr) + 4))
+		// Fetch entire 8-byte instruction in one read (LE platform enforced by le_check.go)
+		instr := *(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(pc32)))
+		opcode := byte(instr)
+		byte1 := byte(instr >> 8)
+		byte2 := byte(instr >> 16)
+		byte3 := byte(instr >> 24)
+		imm32 := uint32(instr >> 32)
 
 		// Decode fields
 		rd := byte1 >> 3            // 5 bits
@@ -469,13 +481,22 @@ func (cpu *CPU64) Execute() {
 					cpu.timerCount.Store(newCount)
 					if newCount == 0 {
 						cpu.timerState.Store(TIMER_EXPIRED)
+						// Inline handleInterrupt — uses memBase/memSize locals
 						if cpu.interruptEnabled.Load() && !cpu.inInterrupt.Load() {
-							cpu.handleInterrupt()
+							cpu.inInterrupt.Store(true)
+							cpu.regs[31] -= 8
+							sp := uint32(cpu.regs[31])
+							if uint64(sp)+8 > memSize {
+								cpu.running.Store(false)
+								running = false
+								continue
+							}
+							*(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(sp))) = cpu.PC
+							cpu.PC = cpu.interruptVector
 						}
 						// Reload timer if still enabled (handler may have disabled it)
 						if cpu.timerEnabled.Load() {
-							period := cpu.timerPeriod.Load()
-							cpu.timerCount.Store(period)
+							cpu.timerCount.Store(cpu.timerPeriod.Load())
 						}
 					}
 				} else {
@@ -491,135 +512,142 @@ func (cpu *CPU64) Execute() {
 		switch opcode {
 		case OP_MOVE:
 			if xbit == 1 {
-				cpu.setReg(rd, maskToSize(uint64(imm32), size))
+				if rd != 0 {
+					cpu.regs[rd] = maskToSize(uint64(imm32), size)
+				}
 			} else {
-				cpu.setReg(rd, maskToSize(cpu.regs[rs], size))
+				if rd != 0 {
+					cpu.regs[rd] = maskToSize(cpu.regs[rs], size)
+				}
 			}
-			cpu.PC += IE64_INSTR_SIZE
 
 		case OP_MOVT:
-			val := cpu.regs[rd]
-			val = (val & 0x00000000FFFFFFFF) | (uint64(imm32) << 32)
-			cpu.setReg(rd, val)
-			cpu.PC += IE64_INSTR_SIZE
+			if rd != 0 {
+				cpu.regs[rd] = (cpu.regs[rd] & 0x00000000FFFFFFFF) | (uint64(imm32) << 32)
+			}
 
 		case OP_MOVEQ:
-			cpu.setReg(rd, uint64(int64(int32(imm32)))) // sign-extend 32 to 64
-			cpu.PC += IE64_INSTR_SIZE
+			if rd != 0 {
+				cpu.regs[rd] = uint64(int64(int32(imm32)))
+			}
 
 		case OP_LEA:
-			disp := int64(int32(imm32)) // sign-extend displacement
-			cpu.setReg(rd, uint64(int64(cpu.regs[rs])+disp))
-			cpu.PC += IE64_INSTR_SIZE
+			if rd != 0 {
+				cpu.regs[rd] = uint64(int64(cpu.regs[rs]) + int64(int32(imm32)))
+			}
 
 		case OP_LOAD:
-			disp := int64(int32(imm32))
-			addr := uint32(int64(cpu.regs[rs]) + disp)
-			cpu.setReg(rd, cpu.loadMem(addr, size))
-			cpu.PC += IE64_INSTR_SIZE
+			if rd != 0 {
+				addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
+				cpu.regs[rd] = cpu.loadMem(addr, size)
+			}
 
 		case OP_STORE:
-			disp := int64(int32(imm32))
-			addr := uint32(int64(cpu.regs[rs]) + disp)
+			addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
 			cpu.storeMem(addr, maskToSize(cpu.regs[rd], size), size)
-			cpu.PC += IE64_INSTR_SIZE
 
 		case OP_ADD:
-			result := cpu.regs[rs] + operand3
-			cpu.setReg(rd, maskToSize(result, size))
-			cpu.PC += IE64_INSTR_SIZE
+			if rd != 0 {
+				cpu.regs[rd] = maskToSize(cpu.regs[rs]+operand3, size)
+			}
 
 		case OP_SUB:
-			result := cpu.regs[rs] - operand3
-			cpu.setReg(rd, maskToSize(result, size))
-			cpu.PC += IE64_INSTR_SIZE
+			if rd != 0 {
+				cpu.regs[rd] = maskToSize(cpu.regs[rs]-operand3, size)
+			}
 
 		case OP_MULU:
-			result := cpu.regs[rs] * operand3
-			cpu.setReg(rd, maskToSize(result, size))
-			cpu.PC += IE64_INSTR_SIZE
+			if rd != 0 {
+				cpu.regs[rd] = maskToSize(cpu.regs[rs]*operand3, size)
+			}
 
 		case OP_MULS:
-			a := int64(cpu.regs[rs])
-			b := int64(operand3)
-			cpu.setReg(rd, maskToSize(uint64(a*b), size))
-			cpu.PC += IE64_INSTR_SIZE
+			if rd != 0 {
+				cpu.regs[rd] = maskToSize(uint64(int64(cpu.regs[rs])*int64(operand3)), size)
+			}
 
 		case OP_DIVU:
-			if operand3 == 0 {
-				cpu.setReg(rd, 0)
-			} else {
-				cpu.setReg(rd, maskToSize(cpu.regs[rs]/operand3, size))
+			if rd != 0 {
+				if operand3 == 0 {
+					cpu.regs[rd] = 0
+				} else {
+					cpu.regs[rd] = maskToSize(cpu.regs[rs]/operand3, size)
+				}
 			}
-			cpu.PC += IE64_INSTR_SIZE
 
 		case OP_DIVS:
-			if operand3 == 0 {
-				cpu.setReg(rd, 0)
-			} else {
-				a := int64(cpu.regs[rs])
-				b := int64(operand3)
-				cpu.setReg(rd, maskToSize(uint64(a/b), size))
+			if rd != 0 {
+				if operand3 == 0 {
+					cpu.regs[rd] = 0
+				} else {
+					cpu.regs[rd] = maskToSize(uint64(int64(cpu.regs[rs])/int64(operand3)), size)
+				}
 			}
-			cpu.PC += IE64_INSTR_SIZE
 
 		case OP_MOD64:
-			if operand3 == 0 {
-				cpu.setReg(rd, 0)
-			} else {
-				cpu.setReg(rd, maskToSize(cpu.regs[rs]%operand3, size))
+			if rd != 0 {
+				if operand3 == 0 {
+					cpu.regs[rd] = 0
+				} else {
+					cpu.regs[rd] = maskToSize(cpu.regs[rs]%operand3, size)
+				}
 			}
-			cpu.PC += IE64_INSTR_SIZE
 
 		case OP_NEG:
-			cpu.setReg(rd, maskToSize(uint64(-int64(cpu.regs[rs])), size))
-			cpu.PC += IE64_INSTR_SIZE
+			if rd != 0 {
+				cpu.regs[rd] = maskToSize(uint64(-int64(cpu.regs[rs])), size)
+			}
 
 		case OP_AND64:
-			cpu.setReg(rd, maskToSize(cpu.regs[rs]&operand3, size))
-			cpu.PC += IE64_INSTR_SIZE
+			if rd != 0 {
+				cpu.regs[rd] = maskToSize(cpu.regs[rs]&operand3, size)
+			}
 
 		case OP_OR64:
-			cpu.setReg(rd, maskToSize(cpu.regs[rs]|operand3, size))
-			cpu.PC += IE64_INSTR_SIZE
+			if rd != 0 {
+				cpu.regs[rd] = maskToSize(cpu.regs[rs]|operand3, size)
+			}
 
 		case OP_EOR:
-			cpu.setReg(rd, maskToSize(cpu.regs[rs]^operand3, size))
-			cpu.PC += IE64_INSTR_SIZE
+			if rd != 0 {
+				cpu.regs[rd] = maskToSize(cpu.regs[rs]^operand3, size)
+			}
 
 		case OP_NOT64:
-			cpu.setReg(rd, maskToSize(^cpu.regs[rs], size))
-			cpu.PC += IE64_INSTR_SIZE
+			if rd != 0 {
+				cpu.regs[rd] = maskToSize(^cpu.regs[rs], size)
+			}
 
 		case OP_LSL:
-			shift := operand3 & 63
-			cpu.setReg(rd, maskToSize(cpu.regs[rs]<<shift, size))
-			cpu.PC += IE64_INSTR_SIZE
+			if rd != 0 {
+				cpu.regs[rd] = maskToSize(cpu.regs[rs]<<(operand3&63), size)
+			}
 
 		case OP_LSR:
-			shift := operand3 & 63
-			cpu.setReg(rd, maskToSize(cpu.regs[rs]>>shift, size))
-			cpu.PC += IE64_INSTR_SIZE
+			if rd != 0 {
+				cpu.regs[rd] = maskToSize(cpu.regs[rs]>>(operand3&63), size)
+			}
 
 		case OP_ASR:
-			shift := operand3 & 63
-			var sval int64
-			switch size {
-			case IE64_SIZE_B:
-				sval = int64(int8(cpu.regs[rs]))
-			case IE64_SIZE_W:
-				sval = int64(int16(cpu.regs[rs]))
-			case IE64_SIZE_L:
-				sval = int64(int32(cpu.regs[rs]))
-			case IE64_SIZE_Q:
-				sval = int64(cpu.regs[rs])
+			if rd != 0 {
+				shift := operand3 & 63
+				var sval int64
+				switch size {
+				case IE64_SIZE_B:
+					sval = int64(int8(cpu.regs[rs]))
+				case IE64_SIZE_W:
+					sval = int64(int16(cpu.regs[rs]))
+				case IE64_SIZE_L:
+					sval = int64(int32(cpu.regs[rs]))
+				case IE64_SIZE_Q:
+					sval = int64(cpu.regs[rs])
+				}
+				cpu.regs[rd] = maskToSize(uint64(sval>>shift), size)
 			}
-			cpu.setReg(rd, maskToSize(uint64(sval>>shift), size))
-			cpu.PC += IE64_INSTR_SIZE
 
 		case OP_BRA:
-			offset := int64(int32(imm32))
-			cpu.PC = uint64(int64(cpu.PC) + offset)
+			cpu.PC = uint64(int64(cpu.PC) + int64(int32(imm32)))
+			continue
 
 		case OP_BEQ:
 			if cpu.regs[rs] == cpu.regs[rt] {
@@ -627,6 +655,7 @@ func (cpu *CPU64) Execute() {
 			} else {
 				cpu.PC += IE64_INSTR_SIZE
 			}
+			continue
 
 		case OP_BNE:
 			if cpu.regs[rs] != cpu.regs[rt] {
@@ -634,6 +663,7 @@ func (cpu *CPU64) Execute() {
 			} else {
 				cpu.PC += IE64_INSTR_SIZE
 			}
+			continue
 
 		case OP_BLT:
 			if int64(cpu.regs[rs]) < int64(cpu.regs[rt]) {
@@ -641,6 +671,7 @@ func (cpu *CPU64) Execute() {
 			} else {
 				cpu.PC += IE64_INSTR_SIZE
 			}
+			continue
 
 		case OP_BGE:
 			if int64(cpu.regs[rs]) >= int64(cpu.regs[rt]) {
@@ -648,6 +679,7 @@ func (cpu *CPU64) Execute() {
 			} else {
 				cpu.PC += IE64_INSTR_SIZE
 			}
+			continue
 
 		case OP_BGT:
 			if int64(cpu.regs[rs]) > int64(cpu.regs[rt]) {
@@ -655,6 +687,7 @@ func (cpu *CPU64) Execute() {
 			} else {
 				cpu.PC += IE64_INSTR_SIZE
 			}
+			continue
 
 		case OP_BLE:
 			if int64(cpu.regs[rs]) <= int64(cpu.regs[rt]) {
@@ -662,6 +695,7 @@ func (cpu *CPU64) Execute() {
 			} else {
 				cpu.PC += IE64_INSTR_SIZE
 			}
+			continue
 
 		case OP_BHI:
 			if cpu.regs[rs] > cpu.regs[rt] {
@@ -669,6 +703,7 @@ func (cpu *CPU64) Execute() {
 			} else {
 				cpu.PC += IE64_INSTR_SIZE
 			}
+			continue
 
 		case OP_BLS:
 			if cpu.regs[rs] <= cpu.regs[rt] {
@@ -676,62 +711,93 @@ func (cpu *CPU64) Execute() {
 			} else {
 				cpu.PC += IE64_INSTR_SIZE
 			}
+			continue
 
 		case OP_JSR64:
-			cpu.regs[31] -= 8 // SP -= 8
+			cpu.regs[31] -= 8
 			sp := uint32(cpu.regs[31])
-			retAddr := cpu.PC + IE64_INSTR_SIZE
-			binary.LittleEndian.PutUint64(cpu.memory[sp:], retAddr)
+			if uint64(sp)+8 > memSize {
+				cpu.running.Store(false)
+				running = false
+				continue
+			}
+			*(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(sp))) = cpu.PC + IE64_INSTR_SIZE
 			cpu.PC = uint64(int64(cpu.PC) + int64(int32(imm32)))
+			continue
 
 		case OP_RTS64:
 			sp := uint32(cpu.regs[31])
-			cpu.PC = binary.LittleEndian.Uint64(cpu.memory[sp:])
+			if uint64(sp)+8 > memSize {
+				cpu.running.Store(false)
+				running = false
+				continue
+			}
+			cpu.PC = *(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(sp)))
 			cpu.regs[31] += 8
+			continue
 
 		case OP_PUSH64:
 			cpu.regs[31] -= 8
 			sp := uint32(cpu.regs[31])
-			binary.LittleEndian.PutUint64(cpu.memory[sp:], cpu.regs[rs])
-			cpu.PC += IE64_INSTR_SIZE
+			if uint64(sp)+8 > memSize {
+				cpu.running.Store(false)
+				running = false
+				continue
+			}
+			*(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(sp))) = cpu.regs[rs]
 
 		case OP_POP64:
 			sp := uint32(cpu.regs[31])
-			cpu.setReg(rd, binary.LittleEndian.Uint64(cpu.memory[sp:]))
+			if uint64(sp)+8 > memSize {
+				cpu.running.Store(false)
+				running = false
+				continue
+			}
+			val := *(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(sp)))
+			if rd != 0 {
+				cpu.regs[rd] = val
+			}
 			cpu.regs[31] += 8
-			cpu.PC += IE64_INSTR_SIZE
 
 		case OP_NOP64:
-			cpu.PC += IE64_INSTR_SIZE
+			// default PC advance
 
 		case OP_HALT64:
 			cpu.running.Store(false)
 			running = false
+			continue
 
 		case OP_SEI64:
 			cpu.interruptEnabled.Store(true)
-			cpu.PC += IE64_INSTR_SIZE
 
 		case OP_CLI64:
 			cpu.interruptEnabled.Store(false)
-			cpu.PC += IE64_INSTR_SIZE
 
 		case OP_RTI64:
 			sp := uint32(cpu.regs[31])
-			cpu.PC = binary.LittleEndian.Uint64(cpu.memory[sp:])
+			if uint64(sp)+8 > memSize {
+				cpu.running.Store(false)
+				running = false
+				continue
+			}
+			cpu.PC = *(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(sp)))
 			cpu.regs[31] += 8
 			cpu.inInterrupt.Store(false)
+			continue
 
 		case OP_WAIT64:
 			if imm32 > 0 {
 				time.Sleep(time.Duration(imm32) * time.Microsecond)
 			}
-			cpu.PC += IE64_INSTR_SIZE
 
 		default:
 			fmt.Printf("IE64: Invalid opcode 0x%02X at PC=0x%X\n", opcode, cpu.PC)
 			cpu.running.Store(false)
 			running = false
+			continue
 		}
+
+		// Default PC advance — opcodes that set PC themselves use `continue` above
+		cpu.PC += IE64_INSTR_SIZE
 	}
 }
