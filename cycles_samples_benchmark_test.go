@@ -87,7 +87,7 @@ func TestCyclesToSamples_Accuracy(t *testing.T) {
 // BenchmarkEventCollection_Allocations benchmarks event collection allocation behavior
 func BenchmarkEventCollection_Allocations(b *testing.B) {
 	// Create a mock SID 6502 bus with some events
-	bus := newSID6502Bus(false)
+	bus := newSIDPlaybackBus6502(false)
 
 	b.Run("OldCollectEvents", func(b *testing.B) {
 		// Simulate the old pattern that allocates per frame

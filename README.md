@@ -217,7 +217,7 @@ The Intuition Engine is a virtual machine that emulates a complete retro-style c
 
 ## 2.1 Unified Memory
 
-All CPU cores (IE32, IE64, M68K, Z80, 6502, x86) share the same memory space through the SystemBus. This unified architecture ensures that:
+All CPU cores (IE32, IE64, M68K, Z80, 6502, x86) share the same memory space through the MachineBus. This unified architecture ensures that:
 
 - **Program data** loaded by any CPU is immediately visible to all peripherals
 - **Audio synthesis** responds instantly to register writes from any CPU
@@ -227,7 +227,7 @@ All CPU cores (IE32, IE64, M68K, Z80, 6502, x86) share the same memory space thr
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        SystemBus Memory                         │
+│                       MachineBus Memory                         │
 │                          (32MB Shared)                          │
 ├─────────────────────────────────────────────────────────────────┤
 │  0x000000 - 0x000FFF  │  System Vectors                         │
@@ -255,6 +255,13 @@ All CPU cores (IE32, IE64, M68K, Z80, 6502, x86) share the same memory space thr
 The video compositor blends output from the VideoChip (layer 0) and VGA (layer 10) into a single display, enabling mixed-mode effects. The copper coprocessor can target both video systems via SETBASE for per-scanline raster effects.
 
 The custom audio synthesizer is the core of the sound system. PSG, POKEY, and SID registers are mapped to the custom synth, providing authentic register-level compatibility with high-quality 44.1kHz output. File players (.ym, .ay, .vgm/vgz, .sid, .sap, etc.) execute embedded CPU code that writes to these mapped registers.
+
+### Bus Layers
+
+- **MachineBus** (`Bus32`/`Bus64` interfaces): The global 32MB RAM + MMIO backbone shared by all CPUs and peripherals.
+- **CPU bus interfaces** (`Z80Bus`, `X86Bus`, `Bus6502`): Per-CPU contract shapes that define the read/write/port operations each CPU core expects.
+- **CPU bus adapters** (`Z80BusAdapter`, `X86BusAdapter`, `Bus6502Adapter`): Translate 8/16-bit CPU address spaces and port I/O into MachineBus calls, handling bank switching and sign extension.
+- **Playback buses** (`SAPPlaybackBus6502`, `SIDPlaybackBus6502`, `TEDPlaybackBus6502`, `sndhPlaybackBus68K`, `ayPlaybackBusZ80`): Standalone lightweight bus implementations for music file playback — provide just enough memory and I/O to run embedded CPU code that drives audio register writes.
 
 ## 2.2 Hardware I/O
 
@@ -5509,7 +5516,7 @@ Execution cycle: Fetch (8 bytes) → Decode → Execute → Update PC → Check 
 
 ### Unified Memory Bus
 
-All CPUs share a unified 32MB address space through the SystemBus:
+All CPUs share a unified 32MB address space through the MachineBus:
 
 - **Direct memory array**: Fast non-I/O access via cached pointer
 - **Page-based I/O callbacks**: Handlers for memory-mapped registers

@@ -8,9 +8,9 @@ import (
 )
 
 // TestLoadProgramVisibleToPeripherals verifies that programs loaded via
-// LoadProgram() are visible to peripherals reading through the SystemBus.
+// LoadProgram() are visible to peripherals reading through the MachineBus.
 func TestLoadProgramVisibleToPeripherals(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	cpu := NewCPU(bus)
 
 	// Create a minimal test program with known data at offset 8 (relative to PROG_START)
@@ -41,7 +41,7 @@ func TestLoadProgramVisibleToPeripherals(t *testing.T) {
 // TestCPUMemoryWriteVisibleToBus verifies that direct memory writes
 // by the CPU are visible through the bus.
 func TestCPUMemoryWriteVisibleToBus(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	cpu := NewCPU(bus)
 
 	// CPU writes directly to memory

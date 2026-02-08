@@ -13,7 +13,7 @@ import (
 
 type PSGPlayer struct {
 	engine     *PSGEngine
-	bus        MemoryBus
+	bus        Bus32
 	metadata   PSGMetadata
 	frameRate  uint16
 	clockHz    uint32
@@ -42,7 +42,7 @@ func NewPSGPlayer(engine *PSGEngine) *PSGPlayer {
 	}
 }
 
-func (p *PSGPlayer) AttachBus(bus MemoryBus) {
+func (p *PSGPlayer) AttachBus(bus Bus32) {
 	p.bus = bus
 }
 

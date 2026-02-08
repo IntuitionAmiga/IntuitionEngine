@@ -35,8 +35,8 @@ type SAPPOKEYEvent struct {
 	Chip   int    // Chip number (0=left/mono, 1=right for stereo)
 }
 
-// SAP6502Bus implements the memory bus for SAP 6502 player execution
-type SAP6502Bus struct {
+// SAPPlaybackBus6502 implements the memory bus for SAP 6502 player execution
+type SAPPlaybackBus6502 struct {
 	ram [0x10000]byte // Full 64KB RAM
 
 	// POKEY state
@@ -55,9 +55,9 @@ type SAP6502Bus struct {
 	scanlineCycle int
 }
 
-// newSAP6502Bus creates a new 6502 bus for SAP playback
-func newSAP6502Bus(stereo, ntsc bool) *SAP6502Bus {
-	bus := &SAP6502Bus{
+// newSAPPlaybackBus6502 creates a new 6502 bus for SAP playback
+func newSAPPlaybackBus6502(stereo, ntsc bool) *SAPPlaybackBus6502 {
+	bus := &SAPPlaybackBus6502{
 		stereo: stereo,
 		ntsc:   ntsc,
 		random: 0x12345678, // Initial random seed
@@ -66,7 +66,7 @@ func newSAP6502Bus(stereo, ntsc bool) *SAP6502Bus {
 }
 
 // Read reads a byte from the given address
-func (b *SAP6502Bus) Read(addr uint16) byte {
+func (b *SAPPlaybackBus6502) Read(addr uint16) byte {
 	// Handle memory-mapped I/O regions
 	switch {
 	case addr >= atariGTIABase && addr <= atariGTIAEnd:
@@ -81,7 +81,7 @@ func (b *SAP6502Bus) Read(addr uint16) byte {
 }
 
 // Write writes a byte to the given address
-func (b *SAP6502Bus) Write(addr uint16, value byte) {
+func (b *SAPPlaybackBus6502) Write(addr uint16, value byte) {
 	// Handle memory-mapped I/O regions
 	switch {
 	case addr >= atariGTIABase && addr <= atariGTIAEnd:
@@ -96,7 +96,7 @@ func (b *SAP6502Bus) Write(addr uint16, value byte) {
 }
 
 // readGTIA handles reads from GTIA registers
-func (b *SAP6502Bus) readGTIA(addr uint16) byte {
+func (b *SAPPlaybackBus6502) readGTIA(addr uint16) byte {
 	reg := byte(addr & 0x1F)
 	switch reg {
 	case 0x14: // CONSOL - PAL/NTSC detection
@@ -110,12 +110,12 @@ func (b *SAP6502Bus) readGTIA(addr uint16) byte {
 }
 
 // writeGTIA handles writes to GTIA registers (mostly ignored for SAP)
-func (b *SAP6502Bus) writeGTIA(addr uint16, value byte) {
+func (b *SAPPlaybackBus6502) writeGTIA(addr uint16, value byte) {
 	// GTIA writes ignored for audio playback
 }
 
 // readPOKEY handles reads from POKEY registers
-func (b *SAP6502Bus) readPOKEY(addr uint16) byte {
+func (b *SAPPlaybackBus6502) readPOKEY(addr uint16) byte {
 	reg := byte(addr & 0x0F)
 
 	// Determine which chip (for stereo)
@@ -139,7 +139,7 @@ func (b *SAP6502Bus) readPOKEY(addr uint16) byte {
 }
 
 // writePOKEY handles writes to POKEY registers and captures events
-func (b *SAP6502Bus) writePOKEY(addr uint16, value byte) {
+func (b *SAPPlaybackBus6502) writePOKEY(addr uint16, value byte) {
 	// Determine register and chip
 	offset := addr - atariPOKEYBase
 	reg := byte(offset & 0x0F)
@@ -171,7 +171,7 @@ func (b *SAP6502Bus) writePOKEY(addr uint16, value byte) {
 }
 
 // readANTIC handles reads from ANTIC registers
-func (b *SAP6502Bus) readANTIC(addr uint16) byte {
+func (b *SAPPlaybackBus6502) readANTIC(addr uint16) byte {
 	reg := byte(addr & 0x0F)
 	switch reg {
 	case 0x0B: // VCOUNT - vertical line counter (divided by 2)
@@ -184,7 +184,7 @@ func (b *SAP6502Bus) readANTIC(addr uint16) byte {
 }
 
 // writeANTIC handles writes to ANTIC registers
-func (b *SAP6502Bus) writeANTIC(addr uint16, value byte) {
+func (b *SAPPlaybackBus6502) writeANTIC(addr uint16, value byte) {
 	reg := byte(addr & 0x0F)
 	switch reg {
 	case 0x0A: // WSYNC - wait for horizontal sync
@@ -196,7 +196,7 @@ func (b *SAP6502Bus) writeANTIC(addr uint16, value byte) {
 }
 
 // advanceToNextScanline advances to the next scanline boundary
-func (b *SAP6502Bus) advanceToNextScanline() {
+func (b *SAPPlaybackBus6502) advanceToNextScanline() {
 	// Calculate remaining cycles in current scanline
 	remaining := atariCyclesPerScanline - b.scanlineCycle
 	if remaining > 0 {
@@ -207,7 +207,7 @@ func (b *SAP6502Bus) advanceToNextScanline() {
 }
 
 // AddCycles adds CPU cycles and updates timing state
-func (b *SAP6502Bus) AddCycles(cycles int) {
+func (b *SAPPlaybackBus6502) AddCycles(cycles int) {
 	b.cycles += uint64(cycles)
 	b.scanlineCycle += cycles
 
@@ -219,7 +219,7 @@ func (b *SAP6502Bus) AddCycles(cycles int) {
 }
 
 // StartFrame resets frame state and clears captured events
-func (b *SAP6502Bus) StartFrame() {
+func (b *SAPPlaybackBus6502) StartFrame() {
 	b.frameCycle = b.cycles
 	b.events = b.events[:0] // Clear events slice but keep capacity
 }
@@ -227,7 +227,7 @@ func (b *SAP6502Bus) StartFrame() {
 // CollectEvents returns and clears the captured POKEY events
 // CollectEvents returns events captured this frame (allocates new slice).
 // DEPRECATED: Use GetEvents() for zero-allocation access.
-func (b *SAP6502Bus) CollectEvents() []SAPPOKEYEvent {
+func (b *SAPPlaybackBus6502) CollectEvents() []SAPPOKEYEvent {
 	events := make([]SAPPOKEYEvent, len(b.events))
 	copy(events, b.events)
 	b.events = b.events[:0]
@@ -237,22 +237,22 @@ func (b *SAP6502Bus) CollectEvents() []SAPPOKEYEvent {
 // GetEvents returns a direct reference to the internal events slice.
 // The caller must not retain this slice after the next StartFrame call.
 // This is the zero-allocation path for performance-critical code.
-func (b *SAP6502Bus) GetEvents() []SAPPOKEYEvent {
+func (b *SAPPlaybackBus6502) GetEvents() []SAPPOKEYEvent {
 	return b.events
 }
 
 // ClearEvents clears the internal events buffer without allocation.
-func (b *SAP6502Bus) ClearEvents() {
+func (b *SAPPlaybackBus6502) ClearEvents() {
 	b.events = b.events[:0]
 }
 
 // GetFrameCycleStart returns the cycle count at the start of the current frame.
-func (b *SAP6502Bus) GetFrameCycleStart() uint64 {
+func (b *SAPPlaybackBus6502) GetFrameCycleStart() uint64 {
 	return b.frameCycle
 }
 
 // LoadBlocks loads SAP binary blocks into RAM
-func (b *SAP6502Bus) LoadBlocks(blocks []SAPBlock) {
+func (b *SAPPlaybackBus6502) LoadBlocks(blocks []SAPBlock) {
 	for _, block := range blocks {
 		for i, v := range block.Data {
 			addr := block.Start + uint16(i)
@@ -264,7 +264,7 @@ func (b *SAP6502Bus) LoadBlocks(blocks []SAPBlock) {
 }
 
 // Reset resets the bus state
-func (b *SAP6502Bus) Reset() {
+func (b *SAPPlaybackBus6502) Reset() {
 	b.cycles = 0
 	b.frameCycle = 0
 	b.scanline = 0
@@ -280,27 +280,27 @@ func (b *SAP6502Bus) Reset() {
 }
 
 // GetCycles returns the current cycle count
-func (b *SAP6502Bus) GetCycles() uint64 {
+func (b *SAPPlaybackBus6502) GetCycles() uint64 {
 	return b.cycles
 }
 
 // GetFrameCycles returns cycles elapsed since StartFrame
-func (b *SAP6502Bus) GetFrameCycles() uint64 {
+func (b *SAPPlaybackBus6502) GetFrameCycles() uint64 {
 	return b.cycles - b.frameCycle
 }
 
 // GetScanline returns the current scanline
-func (b *SAP6502Bus) GetScanline() int {
+func (b *SAPPlaybackBus6502) GetScanline() int {
 	return b.scanline
 }
 
 // SetScanline sets the current scanline (for testing)
-func (b *SAP6502Bus) SetScanline(scanline int) {
+func (b *SAPPlaybackBus6502) SetScanline(scanline int) {
 	b.scanline = scanline
 }
 
 // MaxScanlines returns the max scanlines for the current video mode
-func (b *SAP6502Bus) MaxScanlines() int {
+func (b *SAPPlaybackBus6502) MaxScanlines() int {
 	if b.ntsc {
 		return atariNTSCScanlines
 	}
@@ -308,6 +308,6 @@ func (b *SAP6502Bus) MaxScanlines() int {
 }
 
 // GetRAM returns a pointer to the RAM array (for direct CPU access)
-func (b *SAP6502Bus) GetRAM() *[0x10000]byte {
+func (b *SAPPlaybackBus6502) GetRAM() *[0x10000]byte {
 	return &b.ram
 }

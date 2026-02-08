@@ -88,7 +88,7 @@ type PlayerControlState struct {
 	PlayBusy      bool
 	PlayErr       bool
 	ForceLoop     bool
-	Bus           MemoryBus
+	Bus           Bus32
 }
 
 // HandlePtrWrite handles writes to PLAY_PTR register bytes

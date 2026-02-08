@@ -71,7 +71,7 @@ type CPUX86Config struct {
 // CPUX86Runner manages the x86 CPU and system bus
 type CPUX86Runner struct {
 	cpu      *CPU_X86
-	bus      *X86SystemBus
+	bus      *X86BusAdapter
 	loadAddr uint32
 	entry    uint32
 
@@ -82,9 +82,9 @@ type CPUX86Runner struct {
 	lastPerfReport   time.Time // Last time we printed stats
 }
 
-// X86SystemBus provides the system bus for x86 with hardware routing
-type X86SystemBus struct {
-	bus            *SystemBus
+// X86BusAdapter provides the system bus for x86 with hardware routing
+type X86BusAdapter struct {
+	bus            *MachineBus
 	psgRegSelect   byte       // Currently selected PSG register for port I/O
 	sidRegSelect   byte       // Currently selected SID register for port I/O
 	pokeyRegSelect byte       // Currently selected POKEY register for port I/O
@@ -110,24 +110,24 @@ type X86SystemBus struct {
 	bank3Enable bool
 }
 
-// NewX86SystemBus creates a new x86 system bus
-func NewX86SystemBus(bus *SystemBus) *X86SystemBus {
-	return &X86SystemBus{bus: bus, psgRegSelect: 0}
+// NewX86BusAdapter creates a new x86 system bus
+func NewX86BusAdapter(bus *MachineBus) *X86BusAdapter {
+	return &X86BusAdapter{bus: bus, psgRegSelect: 0}
 }
 
-// NewX86SystemBusWithVGA creates an x86 system bus with VGA engine support
-func NewX86SystemBusWithVGA(bus *SystemBus, vga *VGAEngine) *X86SystemBus {
-	return &X86SystemBus{bus: bus, psgRegSelect: 0, vgaEngine: vga}
+// NewX86BusAdapterWithVGA creates an x86 system bus with VGA engine support
+func NewX86BusAdapterWithVGA(bus *MachineBus, vga *VGAEngine) *X86BusAdapter {
+	return &X86BusAdapter{bus: bus, psgRegSelect: 0, vgaEngine: vga}
 }
 
-// NewX86SystemBusWithVoodoo creates an x86 system bus with VGA and Voodoo engine support
-func NewX86SystemBusWithVoodoo(bus *SystemBus, vga *VGAEngine, voodoo *VoodooEngine) *X86SystemBus {
-	return &X86SystemBus{bus: bus, psgRegSelect: 0, vgaEngine: vga, voodooEngine: voodoo}
+// NewX86BusAdapterWithVoodoo creates an x86 system bus with VGA and Voodoo engine support
+func NewX86BusAdapterWithVoodoo(bus *MachineBus, vga *VGAEngine, voodoo *VoodooEngine) *X86BusAdapter {
+	return &X86BusAdapter{bus: bus, psgRegSelect: 0, vgaEngine: vga, voodooEngine: voodoo}
 }
 
 // translateIO translates I/O addresses for the system bus
 // Non-I/O addresses pass through unchanged
-func (b *X86SystemBus) translateIO(addr uint32) uint32 {
+func (b *X86BusAdapter) translateIO(addr uint32) uint32 {
 	// I/O region at 0xF0000
 	if addr >= 0xF000 && addr < 0x10000 {
 		return 0xF0000 + (addr - 0xF000)
@@ -136,7 +136,7 @@ func (b *X86SystemBus) translateIO(addr uint32) uint32 {
 }
 
 // Read implements X86Bus.Read
-func (b *X86SystemBus) Read(addr uint32) byte {
+func (b *X86BusAdapter) Read(addr uint32) byte {
 	// Handle VRAM bank register reads
 	if addr == X86_VRAM_BANK_REG {
 		return byte(b.vramBank & 0xFF)
@@ -180,7 +180,7 @@ func (b *X86SystemBus) Read(addr uint32) byte {
 }
 
 // Write implements X86Bus.Write
-func (b *X86SystemBus) Write(addr uint32, value byte) {
+func (b *X86BusAdapter) Write(addr uint32, value byte) {
 	// Handle VRAM bank register writes
 	if addr == X86_VRAM_BANK_REG {
 		b.vramBank = uint32(value)
@@ -241,7 +241,7 @@ func (b *X86SystemBus) Write(addr uint32, value byte) {
 }
 
 // translateExtendedBank translates addresses in extended bank windows
-func (b *X86SystemBus) translateExtendedBank(addr uint32) (uint32, bool) {
+func (b *X86BusAdapter) translateExtendedBank(addr uint32) (uint32, bool) {
 	// Only translate 16-bit addresses for bank windows
 	if addr >= 0x10000 {
 		return 0, false
@@ -280,7 +280,7 @@ func (b *X86SystemBus) translateExtendedBank(addr uint32) (uint32, bool) {
 }
 
 // translateVRAM translates addresses in the VRAM bank window
-func (b *X86SystemBus) translateVRAM(addr uint32) (uint32, bool) {
+func (b *X86BusAdapter) translateVRAM(addr uint32) (uint32, bool) {
 	if addr >= 0x10000 {
 		return 0, false
 	}
@@ -299,7 +299,7 @@ func (b *X86SystemBus) translateVRAM(addr uint32) (uint32, bool) {
 }
 
 // In implements X86Bus.In for port I/O
-func (b *X86SystemBus) In(port uint16) byte {
+func (b *X86BusAdapter) In(port uint16) byte {
 	// PSG port I/O
 	if port == X86_PORT_PSG_SELECT {
 		return b.psgRegSelect
@@ -429,7 +429,7 @@ func (b *X86SystemBus) In(port uint16) byte {
 }
 
 // Out implements X86Bus.Out for port I/O
-func (b *X86SystemBus) Out(port uint16, value byte) {
+func (b *X86BusAdapter) Out(port uint16, value byte) {
 	// PSG port I/O
 	if port == X86_PORT_PSG_SELECT {
 		b.psgRegSelect = value
@@ -595,12 +595,12 @@ func (b *X86SystemBus) Out(port uint16, value byte) {
 }
 
 // Tick implements X86Bus.Tick
-func (b *X86SystemBus) Tick(cycles int) {
+func (b *X86BusAdapter) Tick(cycles int) {
 	// Could be used for cycle-accurate timing
 }
 
 // NewCPUX86Runner creates a new x86 CPU runner with the given configuration
-func NewCPUX86Runner(bus *SystemBus, config *CPUX86Config) *CPUX86Runner {
+func NewCPUX86Runner(bus *MachineBus, config *CPUX86Config) *CPUX86Runner {
 	loadAddr := uint32(defaultX86LoadAddr)
 	entry := uint32(defaultX86LoadAddr)
 
@@ -613,13 +613,13 @@ func NewCPUX86Runner(bus *SystemBus, config *CPUX86Config) *CPUX86Runner {
 		}
 	}
 
-	var x86Bus *X86SystemBus
+	var x86Bus *X86BusAdapter
 	if config != nil && config.VoodooEngine != nil {
-		x86Bus = NewX86SystemBusWithVoodoo(bus, config.VGAEngine, config.VoodooEngine)
+		x86Bus = NewX86BusAdapterWithVoodoo(bus, config.VGAEngine, config.VoodooEngine)
 	} else if config != nil && config.VGAEngine != nil {
-		x86Bus = NewX86SystemBusWithVGA(bus, config.VGAEngine)
+		x86Bus = NewX86BusAdapterWithVGA(bus, config.VGAEngine)
 	} else {
-		x86Bus = NewX86SystemBus(bus)
+		x86Bus = NewX86BusAdapter(bus)
 	}
 
 	cpu := NewCPU_X86(x86Bus)

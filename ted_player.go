@@ -40,7 +40,7 @@ type TEDPlayerMetadata struct {
 // TEDPlayer provides high-level TED music playback
 type TEDPlayer struct {
 	engine   *TEDEngine
-	bus      MemoryBus
+	bus      Bus32
 	metadata TEDPlayerMetadata
 	clockHz  uint32
 	loop     bool
@@ -215,7 +215,7 @@ func (p *TEDPlayer) DurationText() string {
 }
 
 // AttachBus attaches a memory bus for reading embedded TED data
-func (p *TEDPlayer) AttachBus(bus MemoryBus) {
+func (p *TEDPlayer) AttachBus(bus Bus32) {
 	p.bus = bus
 }
 

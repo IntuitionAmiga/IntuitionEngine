@@ -67,7 +67,7 @@ const VGA_LAYER = 10 // VGA renders on top of VideoChip (layer 0)
 // Implements VideoSource interface for compositor integration
 type VGAEngine struct {
 	mu    sync.Mutex
-	bus   *SystemBus
+	bus   *MachineBus
 	layer int // Z-order for compositor (higher = on top)
 
 	// Current mode
@@ -155,7 +155,7 @@ type VGAEngine struct {
 }
 
 // NewVGAEngine creates a new VGA engine instance as a standalone video device
-func NewVGAEngine(bus *SystemBus) *VGAEngine {
+func NewVGAEngine(bus *MachineBus) *VGAEngine {
 	vga := &VGAEngine{
 		bus:          bus,
 		layer:        VGA_LAYER, // VGA renders on top

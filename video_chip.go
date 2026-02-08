@@ -396,7 +396,7 @@ type VideoChip struct {
 	prevVRAM     []byte // 24 bytes
 
 	// Copper state
-	bus                       MemoryBus
+	bus                       Bus32
 	busMemory                 []byte       // Cached reference to bus memory for lock-free reads
 	bigEndianMode             bool         // Read memory as big-endian (for M68K programs)
 	lastFrameStart            atomic.Int64 // Unix nanoseconds when current frame started
@@ -570,7 +570,7 @@ func NewVideoChip(backend int) (*VideoChip, error) {
 	return chip, nil
 }
 
-func (chip *VideoChip) AttachBus(bus MemoryBus) {
+func (chip *VideoChip) AttachBus(bus Bus32) {
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 	chip.bus = bus

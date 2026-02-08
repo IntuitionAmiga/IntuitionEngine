@@ -9,7 +9,7 @@ import (
 
 type ayZ80Player struct {
 	cpu              *CPU_Z80
-	bus              *ayZ80Bus
+	bus              *ayPlaybackBusZ80
 	song             AYZ80Song
 	header           AYZ80Header
 	clockHz          uint32
@@ -29,7 +29,7 @@ type ayZ80Player struct {
 // maxAYEventsPerFrame is the initial capacity for the event buffer.
 const maxAYEventsPerFrame = 512
 
-func newAYZ80Player(file *AYZ80File, songIndex int, sampleRate int, clockHz uint32, frameRate uint16, writer ayZ80PSGWriter) (*ayZ80Player, error) {
+func newAYZ80Player(file *AYZ80File, songIndex int, sampleRate int, clockHz uint32, frameRate uint16, writer ayPlaybackPSGWriterZ80) (*ayZ80Player, error) {
 	if file == nil {
 		return nil, fmt.Errorf("ay z80 file is nil")
 	}
@@ -51,7 +51,7 @@ func newAYZ80Player(file *AYZ80File, songIndex int, sampleRate int, clockHz uint
 	if err != nil {
 		return nil, err
 	}
-	bus := newAYZ80Bus(&ram, song.Data.PlayerSystem, writer)
+	bus := newAyPlaybackBusZ80(&ram, song.Data.PlayerSystem, writer)
 	cpu := NewCPU_Z80(bus)
 	applyAYZ80Registers(cpu, songIndex, song.Data)
 

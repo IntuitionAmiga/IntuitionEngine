@@ -68,7 +68,7 @@ type VoodooTriangle struct {
 // VoodooEngine implements 3DFX Voodoo SST-1 graphics emulation
 type VoodooEngine struct {
 	mu  sync.Mutex
-	bus *SystemBus
+	bus *MachineBus
 
 	// Rendering backend (Vulkan or software fallback)
 	backend VoodooBackend
@@ -167,7 +167,7 @@ type VoodooBackend interface {
 }
 
 // NewVoodooEngine creates a new Voodoo graphics engine
-func NewVoodooEngine(bus *SystemBus) (*VoodooEngine, error) {
+func NewVoodooEngine(bus *MachineBus) (*VoodooEngine, error) {
 	v := &VoodooEngine{
 		bus:           bus,
 		layer:         VOODOO_LAYER,

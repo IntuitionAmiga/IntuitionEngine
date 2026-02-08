@@ -5,7 +5,7 @@ import "testing"
 // TestPSGPlayerCanReadCPULoadedData verifies that the PSG player can read
 // audio data that was loaded by the CPU (simulating embedded .ay file data).
 func TestPSGPlayerCanReadCPULoadedData(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	cpu := NewCPU(bus)
 
 	soundChip := newTestSoundChip()

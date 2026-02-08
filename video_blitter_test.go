@@ -2,10 +2,10 @@ package main
 
 import "testing"
 
-func newBlitterTestRig(t *testing.T) (*VideoChip, *SystemBus) {
+func newBlitterTestRig(t *testing.T) (*VideoChip, *MachineBus) {
 	t.Helper()
 
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
 	if err != nil {
 		t.Fatalf("failed to create video chip: %v", err)
@@ -15,7 +15,7 @@ func newBlitterTestRig(t *testing.T) (*VideoChip, *SystemBus) {
 	return video, bus
 }
 
-func writeU32Bytes(bus *SystemBus, addr uint32, value uint32) {
+func writeU32Bytes(bus *MachineBus, addr uint32, value uint32) {
 	bus.Write8(addr, uint8(value))
 	bus.Write8(addr+1, uint8(value>>8))
 	bus.Write8(addr+2, uint8(value>>16))

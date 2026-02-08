@@ -9,7 +9,7 @@ import (
 // TestBusRead64Write64 writes a 64-bit value to plain RAM and reads it back,
 // verifying that Read64/Write64 round-trip correctly.
 func TestBusRead64Write64(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	var want uint64 = 0xDEADBEEFCAFEBABE
 
 	bus.Write64(0x2000, want)
@@ -24,7 +24,7 @@ func TestBusRead64Write64(t *testing.T) {
 // little-endian byte order in the underlying memory, consistent with the
 // existing 32-bit and 16-bit bus operations.
 func TestBusRead64Write64_Endianness(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	var val uint64 = 0x0102030405060708
 
 	bus.Write64(0x2000, val)
@@ -44,7 +44,7 @@ func TestBusRead64Write64_Endianness(t *testing.T) {
 // and verifies that Read64 invokes the onRead64 callback and Write64 invokes
 // the onWrite64 callback.
 func TestBusRead64Write64_NativeIORegion(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 
 	var writtenAddr uint32
 	var writtenValue uint64
@@ -90,7 +90,7 @@ func TestBusRead64Write64_NativeIORegion(t *testing.T) {
 // active, Read64 returns 0 and Write64 is a no-op (the legacy onWrite is NOT
 // called).
 func TestBusRead64Write64_LegacyIORegion_Fault(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 
 	writeCalled := false
 	bus.MapIO(0xE0000, 0xE00FF,
@@ -119,7 +119,7 @@ func TestBusRead64Write64_LegacyIORegion_Fault(t *testing.T) {
 // a 64-bit access to a legacy (32-bit) I/O region is decomposed into two
 // 32-bit accesses: low dword at addr, high dword at addr+4.
 func TestBusRead64Write64_LegacyIORegion_Split(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	bus.SetLegacyMMIO64Policy(MMIO64PolicySplit)
 
 	var writeAddrs []uint32
@@ -174,7 +174,7 @@ func TestBusRead64Write64_LegacyIORegion_Split(t *testing.T) {
 // boundary where the first 4 bytes are in plain RAM and the second 4 bytes
 // fall within an I/O-mapped page. The bus should split the access correctly.
 func TestBusRead64Write64_CrossPage(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	bus.SetLegacyMMIO64Policy(MMIO64PolicySplit)
 
 	// Map I/O at page 0x100 (addr 0x100-0x1FF). Place 64-bit access at
@@ -213,7 +213,7 @@ func TestBusRead64Write64_CrossPage(t *testing.T) {
 // TestBusRead64_OutOfBounds verifies that Read64 at an address near the end
 // of memory where addr+8 would exceed the memory size returns 0 without panic.
 func TestBusRead64_OutOfBounds(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	memSize := uint32(len(bus.GetMemory()))
 
 	// addr+8 > memSize
@@ -227,7 +227,7 @@ func TestBusRead64_OutOfBounds(t *testing.T) {
 // TestBusRead64Write64WithFault verifies that the WithFault variants return
 // true for valid RAM addresses and correctly round-trip data.
 func TestBusRead64Write64WithFault(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	var want uint64 = 0x123456789ABCDEF0
 
 	ok := bus.Write64WithFault(0x4000, want)
@@ -247,7 +247,7 @@ func TestBusRead64Write64WithFault(t *testing.T) {
 // TestBusWrite64WithFault_FirstHalfFail tests that Write64WithFault returns
 // false when the first 4 bytes of the access fall out of bounds (Split mode).
 func TestBusWrite64WithFault_FirstHalfFail(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	bus.SetLegacyMMIO64Policy(MMIO64PolicySplit)
 
 	// Address beyond memory entirely
@@ -263,7 +263,7 @@ func TestBusWrite64WithFault_FirstHalfFail(t *testing.T) {
 // TestBusWrite64WithFault_SecondHalfFail tests that Write64WithFault returns
 // false when the second 4 bytes of the access fall out of bounds (Split mode).
 func TestBusWrite64WithFault_SecondHalfFail(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	bus.SetLegacyMMIO64Policy(MMIO64PolicySplit)
 
 	// Place addr so first 4 bytes are in bounds but addr+4 is not
@@ -279,7 +279,7 @@ func TestBusWrite64WithFault_SecondHalfFail(t *testing.T) {
 // TestBusRead64WithFault_FirstHalfFail tests that Read64WithFault returns
 // (0, false) when the first 4 bytes are out of bounds.
 func TestBusRead64WithFault_FirstHalfFail(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	bus.SetLegacyMMIO64Policy(MMIO64PolicySplit)
 
 	memSize := uint32(len(bus.GetMemory()))
@@ -297,7 +297,7 @@ func TestBusRead64WithFault_FirstHalfFail(t *testing.T) {
 // TestBusRead64WithFault_SecondHalfFail tests that Read64WithFault returns
 // (0, false) when the second 4 bytes are out of bounds.
 func TestBusRead64WithFault_SecondHalfFail(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	bus.SetLegacyMMIO64Policy(MMIO64PolicySplit)
 
 	memSize := uint32(len(bus.GetMemory()))
@@ -316,7 +316,7 @@ func TestBusRead64WithFault_SecondHalfFail(t *testing.T) {
 // and reads it back via the sign-extended alias (0xFFFF0000 | addr), verifying
 // that the M68K sign-extension mapping works for 64-bit operations.
 func TestBusRead64Write64_SignExtended(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	var want uint64 = 0xFEDCBA9876543210
 
 	bus.Write64(0x9000, want)
@@ -340,7 +340,7 @@ func TestBusRead64Write64_SignExtended(t *testing.T) {
 // TestBusRead64Write64_Unaligned writes and reads a 64-bit value at an
 // unaligned address (0x2003) and verifies correct round-trip behavior.
 func TestBusRead64Write64_Unaligned(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	var want uint64 = 0xA5A5A5A5B6B6B6B6
 
 	bus.Write64(0x2003, want)
@@ -364,7 +364,7 @@ func TestBusRead64Write64_Unaligned(t *testing.T) {
 // 0xFFFFFFFC (where addr+8 would overflow uint32) returns 0 and is a no-op,
 // preventing any wrap-around corruption.
 func TestBusRead64Write64_AddrWrap(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 
 	// Write should be a no-op (addr wraps around)
 	bus.Write64(0xFFFFFFFC, 0x1111111122222222)
@@ -379,7 +379,7 @@ func TestBusRead64Write64_AddrWrap(t *testing.T) {
 // TestBusMMIO64PolicyDefault verifies that a newly created bus has the Fault
 // policy as the default for legacy MMIO 64-bit access.
 func TestBusMMIO64PolicyDefault(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 
 	// The default legacyMMIO64Policy should be MMIO64PolicyFault (iota = 0)
 	if bus.legacyMMIO64Policy != MMIO64PolicyFault {
@@ -391,7 +391,7 @@ func TestBusMMIO64PolicyDefault(t *testing.T) {
 // TestBusRead64WithFault_LegacyFaultPolicy verifies that Read64WithFault
 // returns (0, false) when hitting a legacy I/O region under Fault policy.
 func TestBusRead64WithFault_LegacyFaultPolicy(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	// Default policy is Fault
 
 	readCalled := false
@@ -419,7 +419,7 @@ func TestBusRead64WithFault_LegacyFaultPolicy(t *testing.T) {
 // returns false and does NOT invoke the legacy onWrite callback when the
 // Fault policy is active.
 func TestBusWrite64WithFault_LegacyFaultPolicy(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	// Default policy is Fault
 
 	writeCalled := false
@@ -443,7 +443,7 @@ func TestBusWrite64WithFault_LegacyFaultPolicy(t *testing.T) {
 // both plain RAM (first 4 bytes) and a legacy MMIO region (second 4 bytes)
 // under Split policy. The bus must split the operation correctly.
 func TestBusRead64Write64_MixedSpan_RAM_MMIO(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	bus.SetLegacyMMIO64Policy(MMIO64PolicySplit)
 
 	// Map legacy I/O at 0x5100-0x51FF. Place 64-bit access at 0x50FC so
@@ -503,7 +503,7 @@ func TestBusRead64Write64_MixedSpan_RAM_MMIO(t *testing.T) {
 // I/O region (second 4 bytes) under Split policy. The native64 handler should
 // be used for the first half, and the legacy handler (split) for the second.
 func TestBusRead64Write64_MixedSpan_Native64_Legacy(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	bus.SetLegacyMMIO64Policy(MMIO64PolicySplit)
 
 	native64WriteCalled := false
@@ -570,7 +570,7 @@ func TestBusRead64Write64_MixedSpan_Native64_Legacy(t *testing.T) {
 // decision that write32Half reads from backing memory (not the device) to
 // avoid side effects such as clear-on-read or FIFO pop.
 func TestBusSplitWrite_Native64_NoReadSideEffect(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	bus.SetLegacyMMIO64Policy(MMIO64PolicySplit)
 
 	readCalled := false
@@ -611,7 +611,7 @@ func TestBusSplitWrite_Native64_NoReadSideEffect(t *testing.T) {
 // 0x8000-0xFFFF range is accessible via the sign-extended address
 // (0xFFFF0000 | addr), matching the existing MapIO sign-extension behavior.
 func TestBusMapIO64_SignExtension(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 
 	readCalled := false
 	writeCalled := false
@@ -645,7 +645,7 @@ func TestBusMapIO64_SignExtension(t *testing.T) {
 // MapIO64 cover the same address range, Read64 uses the native 64-bit handler
 // rather than falling through to the legacy 32-bit handler.
 func TestBusRead64_PrefersNative64OverLegacy(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 
 	legacyReadCalled := false
 	native64ReadCalled := false
@@ -684,7 +684,7 @@ func TestBusRead64_PrefersNative64OverLegacy(t *testing.T) {
 	legacyWriteCalled := false
 	native64WriteCalled := false
 
-	bus2 := NewSystemBus()
+	bus2 := NewMachineBus()
 
 	bus2.MapIO(0xA0000, 0xA00FF,
 		nil,

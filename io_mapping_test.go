@@ -5,7 +5,7 @@ import (
 )
 
 func TestIOMapping(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 
 	writesCaptured := 0
 	testHandler := func(addr uint32, value uint32) {

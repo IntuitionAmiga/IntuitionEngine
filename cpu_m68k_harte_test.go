@@ -355,12 +355,12 @@ func VerifyHarteFinalState(cpu *M68KCPU, expected HarteState, testName string) H
 // -----------------------------------------------------------------------------
 
 // Reusable test harness to avoid allocating 16MB per test case
-var harteTestBus *SystemBus
+var harteTestBus *MachineBus
 var harteTestCPU *M68KCPU
 
 func getHarteTestCPU() *M68KCPU {
 	if harteTestBus == nil {
-		harteTestBus = NewSystemBus()
+		harteTestBus = NewMachineBus()
 		mem := harteTestBus.GetMemory()
 		harteTestCPU = &M68KCPU{
 			SR:              M68K_SR_S,

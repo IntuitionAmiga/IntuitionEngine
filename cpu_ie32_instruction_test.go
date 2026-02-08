@@ -23,13 +23,13 @@ func createInstruction(opcode, reg, addrMode byte, operand uint32) []byte {
 
 // ie32TestRig wraps CPU and bus for testing.
 type ie32TestRig struct {
-	bus *SystemBus
+	bus *MachineBus
 	cpu *CPU
 }
 
 // newIE32TestRig creates a fresh CPU and bus for testing.
 func newIE32TestRig() *ie32TestRig {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	cpu := NewCPU(bus)
 	return &ie32TestRig{bus: bus, cpu: cpu}
 }

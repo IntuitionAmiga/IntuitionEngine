@@ -1754,7 +1754,7 @@ func TestM68K_RunAssembledBinaryTableGeneration(t *testing.T) {
 
 	// Set up the CPU with proper M68K endianness
 	boilerPlateTest()
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 
 	// Initialize terminal output
 	termOut := NewTerminalOutput()

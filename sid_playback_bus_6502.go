@@ -27,8 +27,8 @@ type SIDEvent struct {
 	Value  uint8
 }
 
-// SID6502Bus implements a minimal C64-like memory bus for PSID playback.
-type SID6502Bus struct {
+// SIDPlaybackBus6502 implements a minimal C64-like memory bus for PSID playback.
+type SIDPlaybackBus6502 struct {
 	ram     [0x10000]byte
 	sidRegs [SID_REG_COUNT]uint8
 	vicRegs [0x400]byte
@@ -52,8 +52,8 @@ type SID6502Bus struct {
 	raster uint16
 }
 
-func newSID6502Bus(ntsc bool) *SID6502Bus {
-	bus := &SID6502Bus{
+func newSIDPlaybackBus6502(ntsc bool) *SIDPlaybackBus6502 {
+	bus := &SIDPlaybackBus6502{
 		ntsc: ntsc,
 	}
 	bus.installIRQStub()
@@ -61,7 +61,7 @@ func newSID6502Bus(ntsc bool) *SID6502Bus {
 }
 
 // Read reads a byte from the given address.
-func (b *SID6502Bus) Read(addr uint16) byte {
+func (b *SIDPlaybackBus6502) Read(addr uint16) byte {
 	switch {
 	case addr >= c64VICBase && addr <= c64VICEnd:
 		return b.readVIC(addr)
@@ -77,7 +77,7 @@ func (b *SID6502Bus) Read(addr uint16) byte {
 }
 
 // Write writes a byte to the given address.
-func (b *SID6502Bus) Write(addr uint16, value byte) {
+func (b *SIDPlaybackBus6502) Write(addr uint16, value byte) {
 	switch {
 	case addr >= c64VICBase && addr <= c64VICEnd:
 		b.writeVIC(addr, value)
@@ -92,7 +92,7 @@ func (b *SID6502Bus) Write(addr uint16, value byte) {
 	}
 }
 
-func (b *SID6502Bus) readSID(addr uint16) byte {
+func (b *SIDPlaybackBus6502) readSID(addr uint16) byte {
 	reg := uint8(addr - c64SIDBase)
 	if reg >= SID_REG_COUNT {
 		return 0xFF
@@ -103,7 +103,7 @@ func (b *SID6502Bus) readSID(addr uint16) byte {
 	return b.sidRegs[reg]
 }
 
-func (b *SID6502Bus) writeSID(addr uint16, value byte) {
+func (b *SIDPlaybackBus6502) writeSID(addr uint16, value byte) {
 	reg := uint8(addr - c64SIDBase)
 	if reg >= SID_REG_COUNT {
 		return
@@ -116,7 +116,7 @@ func (b *SID6502Bus) writeSID(addr uint16, value byte) {
 	})
 }
 
-func (b *SID6502Bus) readVIC(addr uint16) byte {
+func (b *SIDPlaybackBus6502) readVIC(addr uint16) byte {
 	reg := addr - c64VICBase
 	if reg >= uint16(len(b.vicRegs)) {
 		return 0xFF
@@ -134,7 +134,7 @@ func (b *SID6502Bus) readVIC(addr uint16) byte {
 	return b.vicRegs[reg]
 }
 
-func (b *SID6502Bus) writeVIC(addr uint16, value byte) {
+func (b *SIDPlaybackBus6502) writeVIC(addr uint16, value byte) {
 	reg := addr - c64VICBase
 	if reg >= uint16(len(b.vicRegs)) {
 		return
@@ -142,7 +142,7 @@ func (b *SID6502Bus) writeVIC(addr uint16, value byte) {
 	b.vicRegs[reg] = value
 }
 
-func (b *SID6502Bus) readCIA1(addr uint16) byte {
+func (b *SIDPlaybackBus6502) readCIA1(addr uint16) byte {
 	switch addr {
 	case ciaTimerALo:
 		return byte(b.ciaTimerA & 0xFF)
@@ -169,7 +169,7 @@ func (b *SID6502Bus) readCIA1(addr uint16) byte {
 	}
 }
 
-func (b *SID6502Bus) writeCIA1(addr uint16, value byte) {
+func (b *SIDPlaybackBus6502) writeCIA1(addr uint16, value byte) {
 	switch addr {
 	case ciaTimerALo:
 		b.ciaLatchA = (b.ciaLatchA & 0xFF00) | uint16(value)
@@ -199,7 +199,7 @@ func (b *SID6502Bus) writeCIA1(addr uint16, value byte) {
 	}
 }
 
-func (b *SID6502Bus) installIRQStub() {
+func (b *SIDPlaybackBus6502) installIRQStub() {
 	b.ram[0xFF00] = 0x6C // JMP ($0314)
 	b.ram[0xFF01] = 0x14
 	b.ram[0xFF02] = 0x03
@@ -208,7 +208,7 @@ func (b *SID6502Bus) installIRQStub() {
 }
 
 // AddCycles advances the bus clock and updates CIA timers.
-func (b *SID6502Bus) AddCycles(cycles int) {
+func (b *SIDPlaybackBus6502) AddCycles(cycles int) {
 	if cycles <= 0 {
 		return
 	}
@@ -222,7 +222,7 @@ func (b *SID6502Bus) AddCycles(cycles int) {
 	}
 }
 
-func (b *SID6502Bus) advanceTimer(timer *uint16, latch uint16, cycles int, flag uint8) {
+func (b *SIDPlaybackBus6502) advanceTimer(timer *uint16, latch uint16, cycles int, flag uint8) {
 	if latch == 0 {
 		return
 	}
@@ -246,21 +246,21 @@ func (b *SID6502Bus) advanceTimer(timer *uint16, latch uint16, cycles int, flag 
 	*timer = uint16(remaining)
 }
 
-func (b *SID6502Bus) setCIAFlag(flag uint8) {
+func (b *SIDPlaybackBus6502) setCIAFlag(flag uint8) {
 	b.ciaICR |= flag
 	if (b.ciaICR & b.ciaIRQMask) != 0 {
 		b.irqPending = true
 	}
 }
 
-func (b *SID6502Bus) StartFrame() {
+func (b *SIDPlaybackBus6502) StartFrame() {
 	b.frameCycle = b.cycles
 	b.events = b.events[:0]
 }
 
 // CollectEvents returns the events captured this frame.
 // DEPRECATED: Use GetEvents() for zero-allocation access.
-func (b *SID6502Bus) CollectEvents() []SIDEvent {
+func (b *SIDPlaybackBus6502) CollectEvents() []SIDEvent {
 	if len(b.events) == 0 {
 		return nil
 	}
@@ -273,29 +273,29 @@ func (b *SID6502Bus) CollectEvents() []SIDEvent {
 // GetEvents returns a direct reference to the internal events slice.
 // The caller must not retain this slice after the next StartFrame call.
 // This is the zero-allocation path for performance-critical code.
-func (b *SID6502Bus) GetEvents() []SIDEvent {
+func (b *SIDPlaybackBus6502) GetEvents() []SIDEvent {
 	return b.events
 }
 
 // ClearEvents clears the internal events buffer without allocation.
 // Call this after processing events from GetEvents().
-func (b *SID6502Bus) ClearEvents() {
+func (b *SIDPlaybackBus6502) ClearEvents() {
 	b.events = b.events[:0]
 }
 
 // GetFrameCycleStart returns the cycle count at the start of the current frame.
-func (b *SID6502Bus) GetFrameCycleStart() uint64 {
+func (b *SIDPlaybackBus6502) GetFrameCycleStart() uint64 {
 	return b.frameCycle
 }
 
-func (b *SID6502Bus) LoadBinary(addr uint16, data []byte) {
+func (b *SIDPlaybackBus6502) LoadBinary(addr uint16, data []byte) {
 	for i, v := range data {
 		target := addr + uint16(i)
 		b.ram[target] = v
 	}
 }
 
-func (b *SID6502Bus) Reset() {
+func (b *SIDPlaybackBus6502) Reset() {
 	b.cycles = 0
 	b.frameCycle = 0
 	b.events = nil
@@ -318,14 +318,14 @@ func (b *SID6502Bus) Reset() {
 	b.raster = 0
 }
 
-func (b *SID6502Bus) GetCycles() uint64 {
+func (b *SIDPlaybackBus6502) GetCycles() uint64 {
 	return b.cycles
 }
 
-func (b *SID6502Bus) GetFrameCycles() uint64 {
+func (b *SIDPlaybackBus6502) GetFrameCycles() uint64 {
 	return b.cycles - b.frameCycle
 }
 
-func (b *SID6502Bus) SetRaster(raster uint16) {
+func (b *SIDPlaybackBus6502) SetRaster(raster uint16) {
 	b.raster = raster & 0x1FF
 }

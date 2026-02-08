@@ -14,7 +14,7 @@ import (
 // POKEYPlayer handles SAP file playback
 type POKEYPlayer struct {
 	engine   *POKEYEngine
-	bus      MemoryBus
+	bus      Bus32
 	metadata SAPMetadata
 
 	// Playback control state (for CPU-triggered playback)
@@ -133,7 +133,7 @@ func (p *POKEYPlayer) DurationText() string {
 }
 
 // AttachBus attaches a memory bus for reading embedded SAP data
-func (p *POKEYPlayer) AttachBus(bus MemoryBus) {
+func (p *POKEYPlayer) AttachBus(bus Bus32) {
 	p.bus = bus
 }
 

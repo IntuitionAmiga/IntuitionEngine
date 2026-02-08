@@ -7,7 +7,7 @@ import (
 
 // SID6502Player executes PSID 6502 code and captures SID register writes.
 type SID6502Player struct {
-	bus              *SID6502Bus
+	bus              *SIDPlaybackBus6502
 	cpu              *CPU_6502
 	file             *SIDFile
 	subsong          int
@@ -56,7 +56,7 @@ func newSID6502Player(file *SIDFile, subsong, sampleRate int) (*SID6502Player, e
 	interruptMode := file.Header.PlayAddress == 0
 	cyclesPerTick := sidCyclesPerTick(clockHz, ntsc, interruptMode, file.Header.Speed, subsong)
 
-	bus := newSID6502Bus(ntsc)
+	bus := newSIDPlaybackBus6502(ntsc)
 	bus.LoadBinary(file.Header.LoadAddress, file.Data)
 
 	// Pre-compute sample multiplier for fast cycle-to-sample conversion

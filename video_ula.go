@@ -59,7 +59,7 @@ import (
 // Implements VideoSource interface for compositor integration.
 type ULAEngine struct {
 	mu  sync.Mutex
-	bus *SystemBus
+	bus *MachineBus
 
 	// Border color (0-7)
 	border uint8
@@ -111,7 +111,7 @@ type ULAEngine struct {
 }
 
 // NewULAEngine creates a new ULA engine instance
-func NewULAEngine(bus *SystemBus) *ULAEngine {
+func NewULAEngine(bus *MachineBus) *ULAEngine {
 	ula := &ULAEngine{
 		bus:         bus,
 		border:      0, // Default: black border
@@ -452,7 +452,7 @@ func (u *ULAEngine) renderLoop(ctx context.Context, done chan struct{}) {
 }
 
 // =============================================================================
-// SystemBus-Compatible VRAM Handlers
+// MachineBus-Compatible VRAM Handlers
 // =============================================================================
 
 // HandleBusVRAMRead handles VRAM reads from the system bus (uint32 addresses)

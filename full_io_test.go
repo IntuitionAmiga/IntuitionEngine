@@ -13,7 +13,7 @@ func TestFullIOPath(t *testing.T) {
 		t.Skip("robocop_intro.iex not found")
 	}
 
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 
 	// Track writes
 	var videoCtrlWrites atomic.Int32

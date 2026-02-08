@@ -140,7 +140,7 @@ const (
 	M68K_WORD_SIZE_BITS = 16
 	M68K_LONG_SIZE_BITS = 32
 	M68K_CACHE_LINE     = 64                    // Optimises struct layout for modern CPU cache architecture
-	M68K_MEMORY_SIZE    = DEFAULT_MEMORY_SIZE   // Use unified memory size from memory_bus.go
+	M68K_MEMORY_SIZE    = DEFAULT_MEMORY_SIZE   // Use unified memory size from machine_bus.go
 	M68K_RESET_DELAY    = 50 * time.Millisecond // Hardware requires stabilisation time before resuming
 	M68K_PREFETCH_SIZE  = 4                     // Balances fetch overhead with branch misprediction cost
 )
@@ -625,7 +625,7 @@ type M68KCPU struct {
 	_padding2        [33]byte      // Cache line alignment reduces false sharing
 
 	// Cache Lines 3+ - Bus Interface (lock-free design like IE32)
-	bus MemoryBus
+	bus Bus32
 
 	// FPU Coprocessor (68881/68882)
 	FPU *M68881FPU // Optional FPU - nil if not present
@@ -677,7 +677,7 @@ type faultingBus interface {
 	Write32WithFault(addr uint32, value uint32) bool
 }
 
-func NewM68KCPU(bus MemoryBus) *M68KCPU {
+func NewM68KCPU(bus Bus32) *M68KCPU {
 	mem := bus.GetMemory()
 	cpu := &M68KCPU{
 		SR:              M68K_SR_S, // Hardware powers up in supervisor mode

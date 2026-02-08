@@ -14,7 +14,7 @@ type AHXPlayer struct {
 	engine *AHXEngine
 
 	// I/O register state for memory-mapped playback control
-	bus           MemoryBus
+	bus           Bus32
 	playPtrStaged uint32
 	playLenStaged uint32
 	playPtr       uint32
@@ -146,7 +146,7 @@ func (p *AHXPlayer) Reset() {
 }
 
 // AttachBus attaches the memory bus for reading embedded AHX data
-func (p *AHXPlayer) AttachBus(bus MemoryBus) {
+func (p *AHXPlayer) AttachBus(bus Bus32) {
 	p.bus = bus
 }
 

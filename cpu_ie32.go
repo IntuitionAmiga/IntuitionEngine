@@ -130,7 +130,7 @@ const (
 	ADDR_DIRECT    = 0x04 // Direct memory addressing (operand is the address)
 )
 
-// Memory Map Boundaries are defined in memory_bus.go
+// Memory Map Boundaries are defined in machine_bus.go
 
 // ------------------------------------------------------------------------------
 // I/O Register Locations
@@ -359,7 +359,7 @@ type CPU struct {
 	// Large buffers (Cache Lines 3+)
 	Screen [25][80]byte // Display buffer
 	memory []byte       // Cached reference to bus.memory (shared, not private)
-	bus    MemoryBus    // Memory interface
+	bus    Bus32        // Memory interface
 
 	// Direct VRAM access (bypasses bus for video writes)
 	vramDirect     []byte // Direct pointer to video framebuffer
@@ -381,7 +381,7 @@ type CPU struct {
 	memBase unsafe.Pointer
 }
 
-func NewCPU(bus MemoryBus) *CPU {
+func NewCPU(bus Bus32) *CPU {
 	/*
 	   NewCPU initialises a new CPU instance with default state.
 

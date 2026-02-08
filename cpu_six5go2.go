@@ -192,7 +192,7 @@ type CPU_6502 struct {
 	   Cache Line 2 (64 bytes) - System Interface:
 	   Memory and debug interfaces are grouped for coherent access.
 	   - Cycles        uint64           // Performance counter
-	   - memory        MemoryBus_6502   // Memory interface
+	   - memory        Bus6502   // Memory interface
 	   - Debug         bool             // Debug mode
 	   - breakpoints   map[uint16]bool  // Debug points
 	   - breakpointHit chan uint16      // Debug channel
@@ -222,7 +222,7 @@ type CPU_6502 struct {
 	rdyLine       atomic.Bool     // RDY signal
 	rdyHold       bool            // RDY active
 	Debug         bool            // Debug mode
-	memory        MemoryBus_6502  // Memory interface
+	memory        Bus6502         // Memory interface
 	breakpoints   map[uint16]bool // Debug points
 	breakpointHit chan uint16     // Debug channel
 
@@ -243,9 +243,9 @@ func (cpu_6502 *CPU_6502) SetRunning(state bool) {
 	cpu_6502.running.Store(state)
 }
 
-type MemoryBus_6502 interface {
+type Bus6502 interface {
 	/*
-	   MemoryBus_6502 defines the memory access protocol for the 6502.
+	   Bus6502 defines the memory access protocol for the 6502.
 
 	   Required Methods:
 	   - Read: Fetches byte from specified address
@@ -260,9 +260,9 @@ type MemoryBus_6502 interface {
 	Read(addr uint16) byte
 	Write(addr uint16, value byte)
 }
-type MemoryBusAdapter_6502 struct {
+type Bus6502Adapter struct {
 	/*
-	   MemoryBusAdapter_6502 adapts the 32-bit memory bus for 8-bit access.
+	   Bus6502Adapter adapts the 32-bit memory bus for 8-bit access.
 
 	   Structure:
 	   - bus: Reference to 32-bit system bus
@@ -276,7 +276,7 @@ type MemoryBusAdapter_6502 struct {
 	   space through three additional 8KB bank windows at $2000, $4000, $6000.
 	*/
 
-	bus         MemoryBus
+	bus         Bus32
 	vramBank    uint32
 	vramEnabled bool
 	vgaEngine   *VGAEngine // VGA engine for memory-mapped I/O access
@@ -290,7 +290,7 @@ type MemoryBusAdapter_6502 struct {
 	bank3Enable bool   // Bank 3 enabled
 }
 
-func NewCPU_6502(bus MemoryBus) *CPU_6502 {
+func NewCPU_6502(bus Bus32) *CPU_6502 {
 	/*
 	   NewCPU_6502 creates and initialises a new CPU instance.
 
@@ -308,7 +308,7 @@ func NewCPU_6502(bus MemoryBus) *CPU_6502 {
 	   Thread Safety:
 	   Initial state setup requires no locks as object is not yet shared.
 	*/
-	adapter := NewMemoryBusAdapter_6502(bus)
+	adapter := NewBus6502Adapter(bus)
 	cpu := &CPU_6502{
 		memory:        adapter,
 		SP:            0xFF,
@@ -320,23 +320,23 @@ func NewCPU_6502(bus MemoryBus) *CPU_6502 {
 	cpu.running.Store(true)
 	return cpu
 }
-func NewMemoryBusAdapter_6502(bus MemoryBus) *MemoryBusAdapter_6502 {
+func NewBus6502Adapter(bus Bus32) *Bus6502Adapter {
 	/*
-	   NewMemoryBusAdapter_6502 creates memory bus adapter instance.
+	   NewBus6502Adapter creates memory bus adapter instance.
 
 	   Parameters:
 	   - bus: System memory bus interface
 
 	   Returns:
-	   - *MemoryBusAdapter_6502: Configured adapter
+	   - *Bus6502Adapter: Configured adapter
 	*/
 
-	return &MemoryBusAdapter_6502{bus: bus}
+	return &Bus6502Adapter{bus: bus}
 }
 
-// NewMemoryBusAdapter_6502WithVGA creates a 6502 memory bus adapter with VGA engine support
-func NewMemoryBusAdapter_6502WithVGA(bus MemoryBus, vga *VGAEngine) *MemoryBusAdapter_6502 {
-	return &MemoryBusAdapter_6502{bus: bus, vgaEngine: vga}
+// NewBus6502AdapterWithVGA creates a 6502 memory bus adapter with VGA engine support
+func NewBus6502AdapterWithVGA(bus Bus32, vga *VGAEngine) *Bus6502Adapter {
+	return &Bus6502Adapter{bus: bus, vgaEngine: vga}
 }
 
 func (cpu_6502 *CPU_6502) rmw(addr uint16, operation func(byte) byte) {
@@ -1165,7 +1165,7 @@ func (cpu_6502 *CPU_6502) Reset() {
 	cpu_6502.irqPending.Store(false)
 	cpu_6502.resetPending = false
 
-	if adapter, ok := cpu_6502.memory.(*MemoryBusAdapter_6502); ok {
+	if adapter, ok := cpu_6502.memory.(*Bus6502Adapter); ok {
 		adapter.ResetBank()
 	}
 
@@ -2695,7 +2695,7 @@ func translateIO8Bit_6502(addr uint16) uint32 {
 	return uint32(addr)
 }
 
-func (adapter *MemoryBusAdapter_6502) Read(addr uint16) byte {
+func (adapter *Bus6502Adapter) Read(addr uint16) byte {
 	/*
 	   Read performs 8-bit memory read.
 
@@ -2812,7 +2812,7 @@ func (adapter *MemoryBusAdapter_6502) Read(addr uint16) byte {
 	return adapter.bus.Read8(translateIO8Bit_6502(addr))
 }
 
-func (adapter *MemoryBusAdapter_6502) Write(addr uint16, value byte) {
+func (adapter *Bus6502Adapter) Write(addr uint16, value byte) {
 	/*
 	   Write performs 8-bit memory write.
 
@@ -2964,7 +2964,7 @@ func (adapter *MemoryBusAdapter_6502) Write(addr uint16, value byte) {
 	adapter.bus.Write8(translateIO8Bit_6502(addr), value)
 }
 
-func (adapter *MemoryBusAdapter_6502) ResetBank() {
+func (adapter *Bus6502Adapter) ResetBank() {
 	adapter.vramBank = 0
 	adapter.vramEnabled = false
 	adapter.bank1 = 0
@@ -2975,7 +2975,7 @@ func (adapter *MemoryBusAdapter_6502) ResetBank() {
 	adapter.bank3Enable = false
 }
 
-func (adapter *MemoryBusAdapter_6502) translateExtendedBank(addr uint16) (uint32, bool) {
+func (adapter *Bus6502Adapter) translateExtendedBank(addr uint16) (uint32, bool) {
 	/*
 	   translateExtendedBank translates addresses in the extended bank windows
 	   to their actual 32-bit addresses.
@@ -3020,7 +3020,7 @@ func (adapter *MemoryBusAdapter_6502) translateExtendedBank(addr uint16) (uint32
 	return 0, false
 }
 
-func (adapter *MemoryBusAdapter_6502) translateVRAM(addr uint16) (uint32, bool) {
+func (adapter *Bus6502Adapter) translateVRAM(addr uint16) (uint32, bool) {
 	if !adapter.vramEnabled {
 		return 0, false
 	}
@@ -3044,8 +3044,8 @@ func (adapter *MemoryBusAdapter_6502) translateVRAM(addr uint16) (uint32, bool) 
 	return translated, true
 }
 
-func (adapter *MemoryBusAdapter_6502) isMappedIO(addr uint16) bool {
-	bus, ok := adapter.bus.(*SystemBus)
+func (adapter *Bus6502Adapter) isMappedIO(addr uint16) bool {
+	bus, ok := adapter.bus.(*MachineBus)
 	if !ok {
 		return false
 	}

@@ -11,7 +11,7 @@ import "testing"
 // =============================================================================
 
 func BenchmarkVGA_RenderMode13h(b *testing.B) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	vga := NewVGAEngine(bus)
 	vga.setMode(VGA_MODE_13H)
 	vga.control = VGA_CTRL_ENABLE
@@ -31,7 +31,7 @@ func BenchmarkVGA_RenderMode13h(b *testing.B) {
 }
 
 func BenchmarkVGA_RenderMode12h(b *testing.B) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	vga := NewVGAEngine(bus)
 	vga.setMode(VGA_MODE_12H)
 	vga.control = VGA_CTRL_ENABLE
@@ -50,7 +50,7 @@ func BenchmarkVGA_RenderMode12h(b *testing.B) {
 }
 
 func BenchmarkVGA_RenderModeX(b *testing.B) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	vga := NewVGAEngine(bus)
 	vga.setMode(VGA_MODE_X)
 	vga.control = VGA_CTRL_ENABLE
@@ -69,7 +69,7 @@ func BenchmarkVGA_RenderModeX(b *testing.B) {
 }
 
 func BenchmarkVGA_RenderTextMode(b *testing.B) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	vga := NewVGAEngine(bus)
 	vga.setMode(VGA_MODE_TEXT)
 	vga.control = VGA_CTRL_ENABLE
@@ -87,7 +87,7 @@ func BenchmarkVGA_RenderTextMode(b *testing.B) {
 }
 
 func BenchmarkVGA_GetPaletteRGBA(b *testing.B) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	vga := NewVGAEngine(bus)
 
 	b.ResetTimer()
@@ -101,7 +101,7 @@ func BenchmarkVGA_GetPaletteRGBA(b *testing.B) {
 // =============================================================================
 
 func BenchmarkULA_RenderFrame(b *testing.B) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	ula := NewULAEngine(bus)
 	ula.control = ULA_CTRL_ENABLE
 
@@ -117,7 +117,7 @@ func BenchmarkULA_RenderFrame(b *testing.B) {
 }
 
 func BenchmarkULA_GetBitmapAddress(b *testing.B) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	ula := NewULAEngine(bus)
 
 	b.ResetTimer()
@@ -127,7 +127,7 @@ func BenchmarkULA_GetBitmapAddress(b *testing.B) {
 }
 
 func BenchmarkULA_GetColor(b *testing.B) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	ula := NewULAEngine(bus)
 
 	b.ResetTimer()
@@ -141,7 +141,7 @@ func BenchmarkULA_GetColor(b *testing.B) {
 // =============================================================================
 
 func BenchmarkTED_RenderFrame(b *testing.B) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	ted := NewTEDVideoEngine(bus)
 	ted.enabled.Store(true)
 
@@ -169,7 +169,7 @@ func BenchmarkTED_GetTEDColor(b *testing.B) {
 }
 
 func BenchmarkTED_RenderCharacter(b *testing.B) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	ted := NewTEDVideoEngine(bus)
 	ted.enabled.Store(true)
 
@@ -184,7 +184,7 @@ func BenchmarkTED_RenderCharacter(b *testing.B) {
 // =============================================================================
 
 func BenchmarkANTIC_RenderFrame(b *testing.B) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	antic := NewANTICEngine(bus)
 	antic.enabled.Store(true)
 
@@ -208,7 +208,7 @@ func BenchmarkANTIC_GetANTICColor(b *testing.B) {
 }
 
 func BenchmarkANTIC_RenderFrameWithPlayers(b *testing.B) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	antic := NewANTICEngine(bus)
 	antic.enabled.Store(true)
 	antic.gractl = GTIA_GRACTL_PLAYER // Enable players
@@ -247,7 +247,7 @@ func BenchmarkANTIC_RenderFrameWithPlayers(b *testing.B) {
 
 // BenchmarkAllEngines_RenderFrame compares all engine render times
 func BenchmarkAllEngines_VGA13h(b *testing.B) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	vga := NewVGAEngine(bus)
 	vga.setMode(VGA_MODE_13H)
 	vga.control = VGA_CTRL_ENABLE
@@ -259,7 +259,7 @@ func BenchmarkAllEngines_VGA13h(b *testing.B) {
 }
 
 func BenchmarkAllEngines_ULA(b *testing.B) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	ula := NewULAEngine(bus)
 	ula.control = ULA_CTRL_ENABLE
 
@@ -270,7 +270,7 @@ func BenchmarkAllEngines_ULA(b *testing.B) {
 }
 
 func BenchmarkAllEngines_TED(b *testing.B) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	ted := NewTEDVideoEngine(bus)
 	ted.enabled.Store(true)
 
@@ -281,7 +281,7 @@ func BenchmarkAllEngines_TED(b *testing.B) {
 }
 
 func BenchmarkAllEngines_ANTIC(b *testing.B) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	antic := NewANTICEngine(bus)
 	antic.enabled.Store(true)
 

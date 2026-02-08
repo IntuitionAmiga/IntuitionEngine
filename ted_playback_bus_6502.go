@@ -24,8 +24,8 @@ TED Sound Registers (we care about):
 
 package main
 
-// TED6502Bus implements a minimal Plus/4-like memory bus for TED playback.
-type TED6502Bus struct {
+// TEDPlaybackBus6502 implements a minimal Plus/4-like memory bus for TED playback.
+type TEDPlaybackBus6502 struct {
 	ram     [0x10000]byte
 	tedRegs [TED_REG_COUNT]uint8
 	events  []TEDEvent
@@ -52,9 +52,9 @@ type TED6502Bus struct {
 	ntsc bool
 }
 
-// newTED6502Bus creates a new Plus/4 memory bus.
-func newTED6502Bus(ntsc bool) *TED6502Bus {
-	bus := &TED6502Bus{
+// newTEDPlaybackBus6502 creates a new Plus/4 memory bus.
+func newTEDPlaybackBus6502(ntsc bool) *TEDPlaybackBus6502 {
+	bus := &TEDPlaybackBus6502{
 		ntsc: ntsc,
 	}
 	bus.installVectors()
@@ -64,7 +64,7 @@ func newTED6502Bus(ntsc bool) *TED6502Bus {
 // EnableKERNALTimer sets up Timer 1 like the Plus/4 KERNAL does.
 // Many TED music players assume the KERNAL has already configured the system timer
 // to fire at 50Hz (PAL) / 60Hz (NTSC) and just hook their code via $0314.
-func (b *TED6502Bus) EnableKERNALTimer() {
+func (b *TEDPlaybackBus6502) EnableKERNALTimer() {
 	// Plus/4 KERNAL configures Timer 1 to fire at the frame rate
 	// PAL: 886724 Hz / 50 = 17734 cycles per tick
 	// NTSC: 894886 Hz / 60 = 14915 cycles per tick
@@ -96,7 +96,7 @@ func (b *TED6502Bus) EnableKERNALTimer() {
 }
 
 // Read reads a byte from the given address.
-func (b *TED6502Bus) Read(addr uint16) byte {
+func (b *TEDPlaybackBus6502) Read(addr uint16) byte {
 	// TED registers at $FF00-$FF3F
 	if addr >= 0xFF00 && addr <= 0xFF3F {
 		return b.readTED(addr)
@@ -105,7 +105,7 @@ func (b *TED6502Bus) Read(addr uint16) byte {
 }
 
 // Write writes a byte to the given address.
-func (b *TED6502Bus) Write(addr uint16, value byte) {
+func (b *TEDPlaybackBus6502) Write(addr uint16, value byte) {
 	// TED registers at $FF00-$FF3F
 	if addr >= 0xFF00 && addr <= 0xFF3F {
 		b.writeTED(addr, value)
@@ -147,7 +147,7 @@ const (
 )
 
 // readTED reads from a TED register
-func (b *TED6502Bus) readTED(addr uint16) byte {
+func (b *TEDPlaybackBus6502) readTED(addr uint16) byte {
 	// Map Plus/4 addresses to our register array
 	switch addr {
 	case PLUS4_TED_FREQ1_LO:
@@ -202,7 +202,7 @@ func (b *TED6502Bus) readTED(addr uint16) byte {
 }
 
 // updateRasterPosition computes the raster position from absolute frame cycles
-func (b *TED6502Bus) updateRasterPosition() {
+func (b *TEDPlaybackBus6502) updateRasterPosition() {
 	// Calculate raster line directly from cycles since frame start
 	// This ensures consistent timing regardless of polling frequency
 	frameCycles := b.cycles - b.frameCycle
@@ -217,7 +217,7 @@ func (b *TED6502Bus) updateRasterPosition() {
 }
 
 // writeTED writes to a TED register and captures events for sound registers
-func (b *TED6502Bus) writeTED(addr uint16, value byte) {
+func (b *TEDPlaybackBus6502) writeTED(addr uint16, value byte) {
 	// Store in RAM too (for non-sound registers)
 	b.ram[addr] = value
 
@@ -284,7 +284,7 @@ func (b *TED6502Bus) writeTED(addr uint16, value byte) {
 }
 
 // installVectors sets up CPU vectors for IRQ handling
-func (b *TED6502Bus) installVectors() {
+func (b *TEDPlaybackBus6502) installVectors() {
 	// KERNAL-like IRQ stub that properly saves/restores state
 	// This mimics the Plus/4 KERNAL IRQ handler structure:
 	// 1. Save registers (A, X, Y)
@@ -344,7 +344,7 @@ func (b *TED6502Bus) installVectors() {
 }
 
 // AddCycles advances the bus clock and updates timers
-func (b *TED6502Bus) AddCycles(cycles int) {
+func (b *TEDPlaybackBus6502) AddCycles(cycles int) {
 	if cycles <= 0 {
 		return
 	}
@@ -373,7 +373,7 @@ func (b *TED6502Bus) AddCycles(cycles int) {
 
 // StartFrame starts a new frame and clears captured events
 // Also generates a raster interrupt (TED fires raster IRQ at frame end)
-func (b *TED6502Bus) StartFrame() {
+func (b *TEDPlaybackBus6502) StartFrame() {
 	b.frameCycle = b.cycles
 	b.events = b.events[:0]
 	b.rasterLine = 0
@@ -390,12 +390,12 @@ func (b *TED6502Bus) StartFrame() {
 
 // EnableRasterIRQ enables per-frame raster interrupts
 // Call this after init is complete
-func (b *TED6502Bus) EnableRasterIRQ() {
+func (b *TEDPlaybackBus6502) EnableRasterIRQ() {
 	b.rasterIRQEnabled = true
 }
 
 // CollectEvents returns captured TED events and clears the list
-func (b *TED6502Bus) CollectEvents() []TEDEvent {
+func (b *TEDPlaybackBus6502) CollectEvents() []TEDEvent {
 	if len(b.events) == 0 {
 		return nil
 	}
@@ -406,7 +406,7 @@ func (b *TED6502Bus) CollectEvents() []TEDEvent {
 }
 
 // LoadBinary loads binary data into memory at the specified address
-func (b *TED6502Bus) LoadBinary(addr uint16, data []byte) {
+func (b *TEDPlaybackBus6502) LoadBinary(addr uint16, data []byte) {
 	for i, v := range data {
 		target := addr + uint16(i)
 		b.ram[target] = v
@@ -414,7 +414,7 @@ func (b *TED6502Bus) LoadBinary(addr uint16, data []byte) {
 }
 
 // Reset resets the bus state
-func (b *TED6502Bus) Reset() {
+func (b *TEDPlaybackBus6502) Reset() {
 	b.cycles = 0
 	b.frameCycle = 0
 	b.events = nil
@@ -435,7 +435,7 @@ func (b *TED6502Bus) Reset() {
 }
 
 // CheckIRQ returns true if an IRQ is pending and clears the pending flag
-func (b *TED6502Bus) CheckIRQ() bool {
+func (b *TEDPlaybackBus6502) CheckIRQ() bool {
 	if b.irqPending {
 		b.irqPending = false
 		return true
@@ -444,11 +444,11 @@ func (b *TED6502Bus) CheckIRQ() bool {
 }
 
 // GetCycles returns the total cycle count
-func (b *TED6502Bus) GetCycles() uint64 {
+func (b *TEDPlaybackBus6502) GetCycles() uint64 {
 	return b.cycles
 }
 
 // GetFrameCycles returns cycles since frame start
-func (b *TED6502Bus) GetFrameCycles() uint64 {
+func (b *TEDPlaybackBus6502) GetFrameCycles() uint64 {
 	return b.cycles - b.frameCycle
 }

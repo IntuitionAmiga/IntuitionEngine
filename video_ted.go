@@ -57,7 +57,7 @@ import (
 // Implements VideoSource interface for compositor integration.
 type TEDVideoEngine struct {
 	mu  sync.Mutex
-	bus *SystemBus
+	bus *MachineBus
 
 	// Control registers
 	ctrl1     uint8 // Control register 1 (DEN, BMM, ECM, RSEL, YSCROLL)
@@ -113,7 +113,7 @@ type TEDVideoEngine struct {
 }
 
 // NewTEDVideoEngine creates a new TED video engine instance
-func NewTEDVideoEngine(bus *SystemBus) *TEDVideoEngine {
+func NewTEDVideoEngine(bus *MachineBus) *TEDVideoEngine {
 	ted := &TEDVideoEngine{
 		bus:           bus,
 		cursorVisible: true, // Cursor starts visible

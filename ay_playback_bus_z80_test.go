@@ -14,7 +14,7 @@ func (w *ayZ80TestWriter) WriteRegister(reg uint8, value uint8) {
 
 func TestAYZ80BusSpectrumPorts(t *testing.T) {
 	var ram [0x10000]byte
-	bus := newAYZ80Bus(&ram, ayZXSystemSpectrum, nil)
+	bus := newAyPlaybackBusZ80(&ram, ayZXSystemSpectrum, nil)
 	bus.Out(0xFFFD, 0x07)
 	bus.Out(0xBFFD, 0x55)
 	if len(bus.writes) != 1 {
@@ -28,7 +28,7 @@ func TestAYZ80BusSpectrumPorts(t *testing.T) {
 
 func TestAYZ80BusCPCPorts(t *testing.T) {
 	var ram [0x10000]byte
-	bus := newAYZ80Bus(&ram, ayZXSystemCPC, nil)
+	bus := newAyPlaybackBusZ80(&ram, ayZXSystemCPC, nil)
 	bus.Out(0x12F4, 0x03)
 	bus.Out(0x34F6, 0x99)
 	if len(bus.writes) != 1 {
@@ -41,7 +41,7 @@ func TestAYZ80BusCPCPorts(t *testing.T) {
 
 func TestAYZ80BusMSXPorts(t *testing.T) {
 	var ram [0x10000]byte
-	bus := newAYZ80Bus(&ram, ayZXSystemMSX, nil)
+	bus := newAyPlaybackBusZ80(&ram, ayZXSystemMSX, nil)
 	bus.Out(0x00A0, 0x0D)
 	bus.Out(0x00A1, 0x7F)
 	if len(bus.writes) != 1 {
@@ -54,7 +54,7 @@ func TestAYZ80BusMSXPorts(t *testing.T) {
 
 func TestAYZ80BusIgnoresUnknownPorts(t *testing.T) {
 	var ram [0x10000]byte
-	bus := newAYZ80Bus(&ram, ayZXSystemSpectrum, nil)
+	bus := newAyPlaybackBusZ80(&ram, ayZXSystemSpectrum, nil)
 	bus.Out(0x1234, 0x01)
 	bus.Out(0x5678, 0x02)
 	if len(bus.writes) != 0 {
@@ -64,7 +64,7 @@ func TestAYZ80BusIgnoresUnknownPorts(t *testing.T) {
 
 func TestAYZ80BusSpectrumMaskedPorts(t *testing.T) {
 	var ram [0x10000]byte
-	bus := newAYZ80Bus(&ram, ayZXSystemSpectrum, nil)
+	bus := newAyPlaybackBusZ80(&ram, ayZXSystemSpectrum, nil)
 	bus.Out(0xC0FD, 0x0A)
 	bus.Out(0x80FD, 0x66)
 	if len(bus.writes) != 1 {
@@ -78,7 +78,7 @@ func TestAYZ80BusSpectrumMaskedPorts(t *testing.T) {
 func TestAYZ80BusPSGEngineIntegration(t *testing.T) {
 	var ram [0x10000]byte
 	writer := &ayZ80TestWriter{}
-	bus := newAYZ80Bus(&ram, ayZXSystemSpectrum, writer)
+	bus := newAyPlaybackBusZ80(&ram, ayZXSystemSpectrum, writer)
 	bus.Out(0xFFFD, 0x02)
 	bus.Out(0xBFFD, 0xAA)
 	if writer.regs[2] != 0xAA {
@@ -89,7 +89,7 @@ func TestAYZ80BusPSGEngineIntegration(t *testing.T) {
 // BenchmarkAYZ80_IsSelectPort_Spectrum benchmarks Spectrum port matching
 func BenchmarkAYZ80_IsSelectPort_Spectrum(b *testing.B) {
 	var ram [0x10000]byte
-	bus := newAYZ80Bus(&ram, ayZXSystemSpectrum, nil)
+	bus := newAyPlaybackBusZ80(&ram, ayZXSystemSpectrum, nil)
 
 	ports := []uint16{0xFFFD, 0xC0FD, 0x8000, 0x1234, 0xBFFD}
 
@@ -105,7 +105,7 @@ func BenchmarkAYZ80_IsSelectPort_Spectrum(b *testing.B) {
 // BenchmarkAYZ80_IsSelectPort_CPC benchmarks CPC port matching
 func BenchmarkAYZ80_IsSelectPort_CPC(b *testing.B) {
 	var ram [0x10000]byte
-	bus := newAYZ80Bus(&ram, ayZXSystemCPC, nil)
+	bus := newAyPlaybackBusZ80(&ram, ayZXSystemCPC, nil)
 
 	ports := []uint16{0xF4, 0x12F4, 0xF6, 0x34F6, 0x1234}
 
@@ -121,7 +121,7 @@ func BenchmarkAYZ80_IsSelectPort_CPC(b *testing.B) {
 // BenchmarkAYZ80_IsSelectPort_MSX benchmarks MSX port matching
 func BenchmarkAYZ80_IsSelectPort_MSX(b *testing.B) {
 	var ram [0x10000]byte
-	bus := newAYZ80Bus(&ram, ayZXSystemMSX, nil)
+	bus := newAyPlaybackBusZ80(&ram, ayZXSystemMSX, nil)
 
 	ports := []uint16{0xA0, 0x00A0, 0xA1, 0x00A1, 0x1234}
 
@@ -138,7 +138,7 @@ func BenchmarkAYZ80_IsSelectPort_MSX(b *testing.B) {
 func BenchmarkAYZ80_Out_Spectrum(b *testing.B) {
 	var ram [0x10000]byte
 	writer := &ayZ80TestWriter{}
-	bus := newAYZ80Bus(&ram, ayZXSystemSpectrum, writer)
+	bus := newAyPlaybackBusZ80(&ram, ayZXSystemSpectrum, writer)
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -154,7 +154,7 @@ func BenchmarkAYZ80_Out_Spectrum(b *testing.B) {
 func BenchmarkAYZ80_Out_CPC(b *testing.B) {
 	var ram [0x10000]byte
 	writer := &ayZ80TestWriter{}
-	bus := newAYZ80Bus(&ram, ayZXSystemCPC, writer)
+	bus := newAyPlaybackBusZ80(&ram, ayZXSystemCPC, writer)
 
 	b.ResetTimer()
 	b.ReportAllocs()

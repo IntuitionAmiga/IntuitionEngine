@@ -133,7 +133,7 @@ func TestZ80StepNOP(t *testing.T) {
 // TestZ80_Voodoo_IOPort_Integration tests the Z80 Voodoo I/O port mechanism
 func TestZ80_Voodoo_IOPort_Integration(t *testing.T) {
 	// Create a system bus and Voodoo engine
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	voodoo, err := NewVoodooEngine(bus)
 	if err != nil {
 		t.Fatalf("NewVoodooEngine failed: %v", err)
@@ -144,7 +144,7 @@ func TestZ80_Voodoo_IOPort_Integration(t *testing.T) {
 	bus.MapIO(VOODOO_BASE, VOODOO_END, voodoo.HandleRead, voodoo.HandleWrite)
 
 	// Create Z80 system bus with Voodoo
-	z80Bus := NewZ80SystemBusWithVoodoo(bus, nil, voodoo)
+	z80Bus := NewZ80BusAdapterWithVoodoo(bus, nil, voodoo)
 
 	// Simulate: write 0x00001400 to VOODOO_VERTEX_AX (offset 0x008)
 	// Step 1: Set register offset to 0x008
@@ -184,7 +184,7 @@ func TestZ80_Voodoo_IOPort_Integration(t *testing.T) {
 
 // TestZ80_Voodoo_FullTriangle_IOPort tests complete triangle via I/O ports with pixel verification
 func TestZ80_Voodoo_FullTriangle_IOPort(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	voodoo, err := NewVoodooEngine(bus)
 	if err != nil {
 		t.Fatalf("NewVoodooEngine failed: %v", err)
@@ -192,7 +192,7 @@ func TestZ80_Voodoo_FullTriangle_IOPort(t *testing.T) {
 	defer voodoo.Destroy()
 
 	bus.MapIO(VOODOO_BASE, VOODOO_END, voodoo.HandleRead, voodoo.HandleWrite)
-	z80Bus := NewZ80SystemBusWithVoodoo(bus, nil, voodoo)
+	z80Bus := NewZ80BusAdapterWithVoodoo(bus, nil, voodoo)
 
 	// Helper to write 32-bit value via I/O ports (mimics Z80 voodoo_write32)
 	write32 := func(offset uint16, value uint32) {

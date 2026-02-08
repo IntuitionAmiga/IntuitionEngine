@@ -12,12 +12,12 @@ import (
 // ===========================================================================
 
 type ie64TestRig struct {
-	bus *SystemBus
+	bus *MachineBus
 	cpu *CPU64
 }
 
 func newIE64TestRig() *ie64TestRig {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	cpu := NewCPU64(bus)
 	return &ie64TestRig{bus: bus, cpu: cpu}
 }
@@ -62,7 +62,7 @@ func (r *ie64TestRig) executeN(instructions ...[]byte) {
 // ===========================================================================
 
 func TestIE64_NewCPU(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	cpu := NewCPU64(bus)
 
 	if cpu.PC != PROG_START {
@@ -86,7 +86,7 @@ func TestIE64_NewCPU(t *testing.T) {
 }
 
 func TestIE64_R0_Hardwired(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	cpu := NewCPU64(bus)
 
 	cpu.setReg(0, 0x123)
@@ -1311,7 +1311,7 @@ func TestIE64_StackUnderflow_Halt(t *testing.T) {
 
 func BenchmarkIE64_TightLoop(b *testing.B) {
 	// Tight decrement-and-branch loop: measures raw instruction throughput
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	cpu := NewCPU64(bus)
 
 	// R1 = loop count (set per iteration)
@@ -1347,7 +1347,7 @@ func BenchmarkIE64_TightLoop(b *testing.B) {
 
 func BenchmarkIE64_MemoryIntensive(b *testing.B) {
 	// Load/store loop: measures memory access throughput
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	cpu := NewCPU64(bus)
 
 	// R1 = loop counter

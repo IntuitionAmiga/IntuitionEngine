@@ -1,4 +1,4 @@
-// memory_bus.go - Memory bus for the Intuition Engine
+// machine_bus.go - Machine bus for the Intuition Engine
 
 /*
  ██▓ ███▄    █ ▄▄▄█████▓ █    ██  ██▓▄▄▄█████▓ ██▓ ▒█████   ███▄    █    ▓█████  ███▄    █   ▄████  ██▓ ███▄    █ ▓█████
@@ -19,7 +19,7 @@ License: GPLv3 or later
 */
 
 /*
-memory_bus.go - Memory Bus for the Intuition Engine
+machine_bus.go - Machine Bus for the Intuition Engine
 
 This module implements the memory bus that forms the backbone of the Intuition Engine's memory subsystem. It provides a unified interface for 32-bit memory operations, including both standard memory access and memory-mapped I/O. The implementation emphasises thread safety, cache efficiency and precise control over memory layout, all of which are critical for accurate retro-style computer emulation.
 
@@ -33,7 +33,7 @@ Core Features:
 
 Technical Details:
 
-    The SystemBus struct fulfils the MemoryBus interface, encapsulating the main memory and a mapping of I/O regions.
+    The MachineBus struct fulfils the Bus32 interface, encapsulating the main memory and a mapping of I/O regions.
     I/O regions are registered with a defined start and end address along with callback functions (onRead and onWrite) to intercept memory accesses.
     Memory page keys are calculated using a page mask (0xFFF00) and a page increment of 0x100, ensuring that I/O regions are correctly mapped across the memory space.
     32-bit values are accessed using binary.LittleEndian conversion routines, maintaining consistency with the CPU's data handling.
@@ -77,9 +77,9 @@ const (
 	IO_LIMIT        = 0xFFFFF // I/O register limit
 )
 
-type MemoryBus interface {
+type Bus32 interface {
 	/*
-		MemoryBus defines the interface for memory operations
+		Bus32 defines the interface for memory operations
 		within the Intuition Engine. It provides methods to read
 		and write 32‐bit values as well as to reset the memory state.
 
@@ -96,9 +96,9 @@ type MemoryBus interface {
 	GetMemory() []byte
 }
 
-type SystemBus struct {
+type MachineBus struct {
 	/*
-		SystemBus implements the MemoryBus interface and serves
+		MachineBus implements the Bus32 interface and serves
 		as the primary memory bus for the Intuition Engine.
 
 		It maintains a contiguous block of main memory and a
@@ -160,16 +160,16 @@ const (
 	MMIO64PolicySplit
 )
 
-// MemoryBus64 extends the memory bus with native 64-bit data operations.
+// Bus64 extends the memory bus with native 64-bit data operations.
 // Only used by the IE64 CPU; existing 32-bit CPUs are unaffected.
-type MemoryBus64 interface {
+type Bus64 interface {
 	Read64(addr uint32) uint64
 	Write64(addr uint32, value uint64)
 	Read64WithFault(addr uint32) (uint64, bool)
 	Write64WithFault(addr uint32, value uint64) bool
 }
 
-func (bus *SystemBus) Write32WithFault(addr uint32, value uint32) bool {
+func (bus *MachineBus) Write32WithFault(addr uint32, value uint32) bool {
 	// Check if the address is in the upper memory region (potentially sign-extended)
 	if addr >= 0xFFFF0000 {
 		// Map to lower 16-bit range if it looks like a sign-extended I/O address
@@ -234,7 +234,7 @@ func (bus *SystemBus) Write32WithFault(addr uint32, value uint32) bool {
 	return true
 }
 
-func (bus *SystemBus) Read32WithFault(addr uint32) (uint32, bool) {
+func (bus *MachineBus) Read32WithFault(addr uint32) (uint32, bool) {
 	// Lock-free fast path for VIDEO_STATUS (VBlank polling)
 	if addr == 0xF0008 && bus.videoStatusReader != nil {
 		return bus.videoStatusReader(addr), true
@@ -302,7 +302,7 @@ func (bus *SystemBus) Read32WithFault(addr uint32) (uint32, bool) {
 	return result, true
 }
 
-func (bus *SystemBus) Write16WithFault(addr uint32, value uint16) bool {
+func (bus *MachineBus) Write16WithFault(addr uint32, value uint16) bool {
 	// Check if the address is in the upper memory region (potentially sign-extended)
 	if addr >= 0xFFFF0000 {
 		// Map to lower 16-bit range if it looks like a sign-extended I/O address
@@ -367,7 +367,7 @@ func (bus *SystemBus) Write16WithFault(addr uint32, value uint16) bool {
 	return true
 }
 
-func (bus *SystemBus) Read16WithFault(addr uint32) (uint16, bool) {
+func (bus *MachineBus) Read16WithFault(addr uint32) (uint16, bool) {
 	// Check if the address is in the upper memory region (potentially sign-extended)
 	if addr >= 0xFFFF0000 {
 		// Map to lower 16-bit range if it looks like a sign-extended I/O address
@@ -430,7 +430,7 @@ func (bus *SystemBus) Read16WithFault(addr uint32) (uint16, bool) {
 	return result, true
 }
 
-func (bus *SystemBus) Write8WithFault(addr uint32, value uint8) bool {
+func (bus *MachineBus) Write8WithFault(addr uint32, value uint8) bool {
 	// Check if the address is in the upper memory region (potentially sign-extended)
 	if addr >= 0xFFFF0000 {
 		// Map to lower 16-bit range if it looks like a sign-extended I/O address
@@ -495,7 +495,7 @@ func (bus *SystemBus) Write8WithFault(addr uint32, value uint8) bool {
 	return true
 }
 
-func (bus *SystemBus) Read8WithFault(addr uint32) (uint8, bool) {
+func (bus *MachineBus) Read8WithFault(addr uint32) (uint8, bool) {
 	// Check if the address is in the upper memory region (potentially sign-extended)
 	if addr >= 0xFFFF0000 {
 		// Map to lower 16-bit range if it looks like a sign-extended I/O address
@@ -558,15 +558,15 @@ func (bus *SystemBus) Read8WithFault(addr uint32) (uint8, bool) {
 	return result, true
 }
 
-func NewSystemBus() *SystemBus {
+func NewMachineBus() *MachineBus {
 	/*
-		NewSystemBus initialises and returns a new SystemBus instance.
+		NewMachineBus initialises and returns a new MachineBus instance.
 
 		The function allocates a 32MB block of main memory and initialises
 		the I/O mapping table.
 	*/
 
-	return &SystemBus{
+	return &MachineBus{
 		memory:       make([]byte, DEFAULT_MEMORY_SIZE),
 		mapping:      make(map[uint32][]IORegion),
 		ioPageBitmap: make([]bool, DEFAULT_MEMORY_SIZE/PAGE_SIZE),
@@ -574,7 +574,7 @@ func NewSystemBus() *SystemBus {
 	}
 }
 
-func (bus *SystemBus) GetMemory() []byte {
+func (bus *MachineBus) GetMemory() []byte {
 	/*
 		GetMemory returns a direct reference to the underlying memory slice.
 
@@ -587,11 +587,11 @@ func (bus *SystemBus) GetMemory() []byte {
 
 // SetVideoStatusReader registers a lock-free callback for VIDEO_STATUS reads.
 // This allows VBlank polling without blocking on the bus mutex.
-func (bus *SystemBus) SetVideoStatusReader(reader func(addr uint32) uint32) {
+func (bus *MachineBus) SetVideoStatusReader(reader func(addr uint32) uint32) {
 	bus.videoStatusReader = reader
 }
 
-func (bus *SystemBus) MapIO(start, end uint32, onRead func(addr uint32) uint32, onWrite func(addr uint32, value uint32)) {
+func (bus *MachineBus) MapIO(start, end uint32, onRead func(addr uint32) uint32, onWrite func(addr uint32, value uint32)) {
 	region := IORegion{
 		start:   start,
 		end:     end,
@@ -631,7 +631,7 @@ func (bus *SystemBus) MapIO(start, end uint32, onRead func(addr uint32) uint32, 
 	}
 }
 
-func (bus *SystemBus) Write32(addr uint32, value uint32) {
+func (bus *MachineBus) Write32(addr uint32, value uint32) {
 	// Skip sign-extended addresses (rare, use slow path)
 	if addr >= 0xFFFF0000 {
 		bus.write32Slow(addr, value)
@@ -655,7 +655,7 @@ func (bus *SystemBus) Write32(addr uint32, value uint32) {
 	bus.write32Slow(addr, value)
 }
 
-func (bus *SystemBus) write32Slow(addr uint32, value uint32) {
+func (bus *MachineBus) write32Slow(addr uint32, value uint32) {
 	// Check if the address is in the upper memory region (potentially sign-extended)
 	if addr >= 0xFFFF0000 {
 		// Map to lower 16-bit range if it looks like a sign-extended I/O address
@@ -722,7 +722,7 @@ func (bus *SystemBus) write32Slow(addr uint32, value uint32) {
 	binary.LittleEndian.PutUint32(bus.memory[addr:addr+4], value)
 }
 
-func (bus *SystemBus) Read32(addr uint32) uint32 {
+func (bus *MachineBus) Read32(addr uint32) uint32 {
 	// Lock-free fast path for VIDEO_STATUS (VBlank polling)
 	if addr == 0xF0008 && bus.videoStatusReader != nil {
 		return bus.videoStatusReader(addr)
@@ -749,7 +749,7 @@ func (bus *SystemBus) Read32(addr uint32) uint32 {
 	return bus.read32Slow(addr)
 }
 
-func (bus *SystemBus) read32Slow(addr uint32) uint32 {
+func (bus *MachineBus) read32Slow(addr uint32) uint32 {
 	// Check if the address is in the upper memory region (potentially sign-extended)
 	if addr >= 0xFFFF0000 {
 		// Map to lower 16-bit range if it looks like a sign-extended I/O address
@@ -814,7 +814,7 @@ func (bus *SystemBus) read32Slow(addr uint32) uint32 {
 	return result
 }
 
-func (bus *SystemBus) Write16(addr uint32, value uint16) {
+func (bus *MachineBus) Write16(addr uint32, value uint16) {
 	// Skip sign-extended addresses (rare, use slow path)
 	if addr >= 0xFFFF0000 {
 		bus.write16Slow(addr, value)
@@ -838,7 +838,7 @@ func (bus *SystemBus) Write16(addr uint32, value uint16) {
 	bus.write16Slow(addr, value)
 }
 
-func (bus *SystemBus) write16Slow(addr uint32, value uint16) {
+func (bus *MachineBus) write16Slow(addr uint32, value uint16) {
 	// Check if the address is in the upper memory region (potentially sign-extended)
 	if addr >= 0xFFFF0000 {
 		// Map to lower 16-bit range if it looks like a sign-extended I/O address
@@ -905,7 +905,7 @@ func (bus *SystemBus) write16Slow(addr uint32, value uint16) {
 	binary.LittleEndian.PutUint16(bus.memory[addr:addr+2], value)
 }
 
-func (bus *SystemBus) Read16(addr uint32) uint16 {
+func (bus *MachineBus) Read16(addr uint32) uint16 {
 	// Skip sign-extended addresses (rare, use slow path)
 	if addr >= 0xFFFF0000 {
 		return bus.read16Slow(addr)
@@ -927,7 +927,7 @@ func (bus *SystemBus) Read16(addr uint32) uint16 {
 	return bus.read16Slow(addr)
 }
 
-func (bus *SystemBus) read16Slow(addr uint32) uint16 {
+func (bus *MachineBus) read16Slow(addr uint32) uint16 {
 	// Check if the address is in the upper memory region (potentially sign-extended)
 	if addr >= 0xFFFF0000 {
 		// Map to lower 16-bit range if it looks like a sign-extended I/O address
@@ -992,7 +992,7 @@ func (bus *SystemBus) read16Slow(addr uint32) uint16 {
 	return result
 }
 
-func (bus *SystemBus) Write8(addr uint32, value uint8) {
+func (bus *MachineBus) Write8(addr uint32, value uint8) {
 	// Skip sign-extended addresses (rare, use slow path)
 	if addr >= 0xFFFF0000 {
 		bus.write8Slow(addr, value)
@@ -1020,13 +1020,13 @@ func (bus *SystemBus) Write8(addr uint32, value uint8) {
 // bypassing I/O handlers. Used for 8-bit CPU VRAM bank writes
 // where the VideoChip handler would corrupt adjacent bytes
 // (it does 32-bit writes even for single-byte values).
-func (bus *SystemBus) WriteMemoryDirect(addr uint32, value uint8) {
+func (bus *MachineBus) WriteMemoryDirect(addr uint32, value uint8) {
 	if addr < uint32(len(bus.memory)) {
 		bus.memory[addr] = value
 	}
 }
 
-func (bus *SystemBus) write8Slow(addr uint32, value uint8) {
+func (bus *MachineBus) write8Slow(addr uint32, value uint8) {
 	// Check if the address is in the upper memory region (potentially sign-extended)
 	if addr >= 0xFFFF0000 {
 		// Map to lower 16-bit range if it looks like a sign-extended I/O address
@@ -1093,7 +1093,7 @@ func (bus *SystemBus) write8Slow(addr uint32, value uint8) {
 	bus.memory[addr] = value
 }
 
-func (bus *SystemBus) Read8(addr uint32) uint8 {
+func (bus *MachineBus) Read8(addr uint32) uint8 {
 	// Skip sign-extended addresses (rare, use slow path)
 	if addr >= 0xFFFF0000 {
 		return bus.read8Slow(addr)
@@ -1115,7 +1115,7 @@ func (bus *SystemBus) Read8(addr uint32) uint8 {
 	return bus.read8Slow(addr)
 }
 
-func (bus *SystemBus) read8Slow(addr uint32) uint8 {
+func (bus *MachineBus) read8Slow(addr uint32) uint8 {
 	// Check if the address is in the upper memory region (potentially sign-extended)
 	if addr >= 0xFFFF0000 {
 		// Map to lower 16-bit range if it looks like a sign-extended I/O address
@@ -1186,13 +1186,13 @@ func (bus *SystemBus) read8Slow(addr uint32) uint8 {
 // =============================================================================
 
 // SetLegacyMMIO64Policy sets the behavior when 64-bit access hits a legacy-only I/O region.
-func (bus *SystemBus) SetLegacyMMIO64Policy(policy MMIO64Policy) {
+func (bus *MachineBus) SetLegacyMMIO64Policy(policy MMIO64Policy) {
 	bus.legacyMMIO64Policy = policy
 }
 
 // MapIO64 registers a 64-bit-capable I/O region. This is separate from MapIO;
 // 64-bit handlers are only used by Read64/Write64. 32-bit operations always use MapIO.
-func (bus *SystemBus) MapIO64(start, end uint32, onRead64 func(addr uint32) uint64, onWrite64 func(addr uint32, value uint64)) {
+func (bus *MachineBus) MapIO64(start, end uint32, onRead64 func(addr uint32) uint64, onWrite64 func(addr uint32, value uint64)) {
 	region := IORegion64{
 		start:     start,
 		end:       end,
@@ -1223,7 +1223,7 @@ func (bus *SystemBus) MapIO64(start, end uint32, onRead64 func(addr uint32) uint
 }
 
 // findIORegion64 looks up a 64-bit I/O region for the given address.
-func (bus *SystemBus) findIORegion64(addr uint32) *IORegion64 {
+func (bus *MachineBus) findIORegion64(addr uint32) *IORegion64 {
 	page := addr & PAGE_MASK
 	if regions, exists := bus.mapping64[page]; exists {
 		for i := range regions {
@@ -1236,7 +1236,7 @@ func (bus *SystemBus) findIORegion64(addr uint32) *IORegion64 {
 }
 
 // findIORegion looks up a legacy 32-bit I/O region for the given address.
-func (bus *SystemBus) findIORegion(addr uint32) *IORegion {
+func (bus *MachineBus) findIORegion(addr uint32) *IORegion {
 	page := addr & PAGE_MASK
 	if regions, exists := bus.mapping[page]; exists {
 		for i := range regions {
@@ -1250,7 +1250,7 @@ func (bus *SystemBus) findIORegion(addr uint32) *IORegion {
 
 // Read64 performs a native 64-bit read. For plain RAM (no I/O on either page),
 // uses a single unsafe 64-bit load. For I/O regions, dispatches per the span rules.
-func (bus *SystemBus) Read64(addr uint32) uint64 {
+func (bus *MachineBus) Read64(addr uint32) uint64 {
 	// Sign-extended addresses always take the slow path (before bounds check,
 	// since the mapped address may be in bounds even if the raw address is not)
 	if addr >= 0xFFFF0000 {
@@ -1274,7 +1274,7 @@ func (bus *SystemBus) Read64(addr uint32) uint64 {
 }
 
 // read64Slow handles 64-bit reads that may involve I/O regions.
-func (bus *SystemBus) read64Slow(addr uint32) uint64 {
+func (bus *MachineBus) read64Slow(addr uint32) uint64 {
 	// Map sign-extended addresses
 	effectiveAddr := addr
 	if addr >= 0xFFFF0000 {
@@ -1310,7 +1310,7 @@ func (bus *SystemBus) read64Slow(addr uint32) uint64 {
 
 // read32Half reads a 32-bit half for split 64-bit operations.
 // Prefers native 64-bit handler (read as single half), then legacy, then RAM.
-func (bus *SystemBus) read32Half(addr uint32) uint32 {
+func (bus *MachineBus) read32Half(addr uint32) uint32 {
 	// Check for 64-bit region (dispatch as 32-bit portion)
 	region64 := bus.findIORegion64(addr)
 	if region64 != nil && region64.onRead64 != nil {
@@ -1345,7 +1345,7 @@ func (bus *SystemBus) read32Half(addr uint32) uint32 {
 
 // Write64 performs a native 64-bit write. For plain RAM (no I/O on either page),
 // uses a single unsafe 64-bit store. For I/O regions, dispatches per the span rules.
-func (bus *SystemBus) Write64(addr uint32, value uint64) {
+func (bus *MachineBus) Write64(addr uint32, value uint64) {
 	// Sign-extended addresses always take the slow path (before bounds check,
 	// since the mapped address may be in bounds even if the raw address is not)
 	if addr >= 0xFFFF0000 {
@@ -1371,7 +1371,7 @@ func (bus *SystemBus) Write64(addr uint32, value uint64) {
 }
 
 // write64Slow handles 64-bit writes that may involve I/O regions.
-func (bus *SystemBus) write64Slow(addr uint32, value uint64) {
+func (bus *MachineBus) write64Slow(addr uint32, value uint64) {
 	// Map sign-extended addresses
 	effectiveAddr := addr
 	if addr >= 0xFFFF0000 {
@@ -1418,7 +1418,7 @@ func (bus *SystemBus) write64Slow(addr uint32, value uint64) {
 // Backing memory stays in sync because write64Slow updates it after every write,
 // and the two write32Half calls in a split sequence execute in low-then-high
 // order, so the second call sees the first half's update.
-func (bus *SystemBus) write32Half(addr uint32, value uint32) {
+func (bus *MachineBus) write32Half(addr uint32, value uint32) {
 	// Check for 64-bit region
 	region64 := bus.findIORegion64(addr)
 	if region64 != nil && region64.onWrite64 != nil {
@@ -1470,7 +1470,7 @@ func (bus *SystemBus) write32Half(addr uint32, value uint32) {
 
 // Read64WithFault performs a 64-bit read with fault reporting.
 // Returns (0, false) if the access cannot complete (OOB or legacy MMIO under Fault policy).
-func (bus *SystemBus) Read64WithFault(addr uint32) (uint64, bool) {
+func (bus *MachineBus) Read64WithFault(addr uint32) (uint64, bool) {
 	effectiveAddr := addr
 	if addr >= 0xFFFF0000 {
 		// Reject addresses where raw addr+7 would overflow uint32
@@ -1505,7 +1505,7 @@ func (bus *SystemBus) Read64WithFault(addr uint32) (uint64, bool) {
 
 // Write64WithFault performs a 64-bit write with fault reporting.
 // Returns false if the access cannot complete.
-func (bus *SystemBus) Write64WithFault(addr uint32, value uint64) bool {
+func (bus *MachineBus) Write64WithFault(addr uint32, value uint64) bool {
 	effectiveAddr := addr
 	if addr >= 0xFFFF0000 {
 		// Reject addresses where raw addr+7 would overflow uint32
@@ -1536,7 +1536,7 @@ func (bus *SystemBus) Write64WithFault(addr uint32, value uint64) bool {
 	return true
 }
 
-func (bus *SystemBus) Reset() {
+func (bus *MachineBus) Reset() {
 	/*
 		Reset clears the entire main memory of the system bus.
 

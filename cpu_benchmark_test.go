@@ -15,8 +15,8 @@ import (
 // =============================================================================
 
 // setup6502BenchCPU creates a 6502 CPU for benchmarking
-func setup6502BenchCPU() (*CPU_6502, *SystemBus) {
-	bus := NewSystemBus()
+func setup6502BenchCPU() (*CPU_6502, *MachineBus) {
+	bus := NewMachineBus()
 	cpu := NewCPU_6502(bus)
 	cpu.SetRDYLine(true)
 	return cpu, bus
@@ -451,7 +451,7 @@ func BenchmarkX86_PUSH_POP(b *testing.B) {
 
 // setupM68KBenchCPU creates a M68K CPU for benchmarking
 func setupM68KBenchCPU() *M68KCPU {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	bus.Write32(0, M68K_STACK_START)
 	bus.Write32(M68K_RESET_VECTOR, M68K_ENTRY_POINT)
 	return NewM68KCPU(bus)

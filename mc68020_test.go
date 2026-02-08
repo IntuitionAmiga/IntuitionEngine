@@ -36,7 +36,7 @@ func createMoveOpcode(size, srcMode, srcReg, destMode, destReg uint16) uint16 {
 func setupTestCPU() *M68KCPU {
 	boilerPlateTest()
 	// Create a real system bus
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 
 	// Initialize terminal output
 	termOut := NewTerminalOutput()

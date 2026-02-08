@@ -6,10 +6,10 @@ import (
 	"testing"
 )
 
-// TestMemoryBusGetMemory verifies that SystemBus exposes its memory slice
+// TestBus32GetMemory verifies that MachineBus exposes its memory slice
 // via GetMemory() for direct access by CPU cores.
-func TestMemoryBusGetMemory(t *testing.T) {
-	bus := NewSystemBus()
+func TestBus32GetMemory(t *testing.T) {
+	bus := NewMachineBus()
 
 	mem := bus.GetMemory()
 	if mem == nil {
@@ -28,9 +28,9 @@ func TestMemoryBusGetMemory(t *testing.T) {
 }
 
 // TestCPUMemoryVisibleToBus verifies that data written by the CPU
-// is visible when read through the SystemBus (as peripherals would).
+// is visible when read through the MachineBus (as peripherals would).
 func TestCPUMemoryVisibleToBus(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	cpu := NewCPU(bus)
 
 	// Write through CPU's memory at address 0x2000
@@ -49,7 +49,7 @@ func TestCPUMemoryVisibleToBus(t *testing.T) {
 
 // BenchmarkRead32_NonIO measures read performance for non-I/O addresses
 func BenchmarkRead32_NonIO(b *testing.B) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	bus.Write32(0x1000, 0x12345678)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -59,7 +59,7 @@ func BenchmarkRead32_NonIO(b *testing.B) {
 
 // BenchmarkRead32_IORegion measures read performance for I/O-mapped addresses
 func BenchmarkRead32_IORegion(b *testing.B) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	bus.MapIO(0xF0000, 0xF00FF, func(addr uint32) uint32 { return 0x42 }, nil)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -69,7 +69,7 @@ func BenchmarkRead32_IORegion(b *testing.B) {
 
 // BenchmarkWrite32_NonIO measures write performance for non-I/O addresses
 func BenchmarkWrite32_NonIO(b *testing.B) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		bus.Write32(0x1000, uint32(i))
@@ -78,7 +78,7 @@ func BenchmarkWrite32_NonIO(b *testing.B) {
 
 // BenchmarkWrite32_IORegion measures write performance for I/O-mapped addresses
 func BenchmarkWrite32_IORegion(b *testing.B) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	bus.MapIO(0xF0000, 0xF00FF, nil, func(addr uint32, value uint32) {})
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -88,7 +88,7 @@ func BenchmarkWrite32_IORegion(b *testing.B) {
 
 // BenchmarkRead16_NonIO measures 16-bit read performance
 func BenchmarkRead16_NonIO(b *testing.B) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	bus.Write16(0x1000, 0x1234)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -98,7 +98,7 @@ func BenchmarkRead16_NonIO(b *testing.B) {
 
 // BenchmarkWrite16_NonIO measures 16-bit write performance
 func BenchmarkWrite16_NonIO(b *testing.B) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		bus.Write16(0x1000, uint16(i))
@@ -107,7 +107,7 @@ func BenchmarkWrite16_NonIO(b *testing.B) {
 
 // BenchmarkRead8_NonIO measures 8-bit read performance
 func BenchmarkRead8_NonIO(b *testing.B) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	bus.Write8(0x1000, 0x42)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -117,7 +117,7 @@ func BenchmarkRead8_NonIO(b *testing.B) {
 
 // BenchmarkWrite8_NonIO measures 8-bit write performance
 func BenchmarkWrite8_NonIO(b *testing.B) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		bus.Write8(0x1000, uint8(i))
@@ -130,7 +130,7 @@ func BenchmarkWrite8_NonIO(b *testing.B) {
 
 // TestRead32_DeferRemoval_Correctness ensures defer removal doesn't break reads
 func TestRead32_DeferRemoval_Correctness(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	bus.Write32(0x1000, 0xDEADBEEF)
 
 	// Normal read
@@ -147,7 +147,7 @@ func TestRead32_DeferRemoval_Correctness(t *testing.T) {
 
 // TestRead32_IOCallback_AfterDeferRemoval ensures I/O callbacks still work
 func TestRead32_IOCallback_AfterDeferRemoval(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	called := false
 	bus.MapIO(0xF0000, 0xF00FF, func(addr uint32) uint32 {
 		called = true
@@ -165,7 +165,7 @@ func TestRead32_IOCallback_AfterDeferRemoval(t *testing.T) {
 
 // TestWrite32_IOCallback_AfterDeferRemoval ensures I/O write callbacks still work
 func TestWrite32_IOCallback_AfterDeferRemoval(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	var captured uint32
 	bus.MapIO(0xF0000, 0xF00FF, nil, func(addr uint32, value uint32) {
 		captured = value
@@ -179,7 +179,7 @@ func TestWrite32_IOCallback_AfterDeferRemoval(t *testing.T) {
 
 // TestRead32_LockFree_NoIOPage tests reads from pages without I/O mappings
 func TestRead32_LockFree_NoIOPage(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	bus.Write32(0x1000, 0x12345678)
 
 	// No I/O mapped at 0x1000, should use lock-free path
@@ -190,7 +190,7 @@ func TestRead32_LockFree_NoIOPage(t *testing.T) {
 
 // TestRead32_StillUsesIO_WhenMapped ensures I/O is still invoked when mapped
 func TestRead32_StillUsesIO_WhenMapped(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	callCount := 0
 	bus.MapIO(0x1000, 0x10FF, func(addr uint32) uint32 {
 		callCount++
@@ -208,7 +208,7 @@ func TestRead32_StillUsesIO_WhenMapped(t *testing.T) {
 
 // TestWrite32_LockFree_NoIOPage tests writes to pages without I/O mappings
 func TestWrite32_LockFree_NoIOPage(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	bus.Write32(0x2000, 0xABCD1234)
 
 	// Verify via direct memory access
@@ -221,7 +221,7 @@ func TestWrite32_LockFree_NoIOPage(t *testing.T) {
 
 // TestUnsafeRead32_MatchesBinaryEncoding tests unsafe pointer reads
 func TestUnsafeRead32_MatchesBinaryEncoding(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	testCases := []uint32{0, 1, 0xFF, 0xFFFF, 0xFFFFFF, 0xFFFFFFFF, 0x12345678}
 
 	for _, want := range testCases {
@@ -235,7 +235,7 @@ func TestUnsafeRead32_MatchesBinaryEncoding(t *testing.T) {
 
 // TestUnsafeWrite32_MatchesBinaryEncoding tests unsafe pointer writes
 func TestUnsafeWrite32_MatchesBinaryEncoding(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	mem := bus.GetMemory()
 
 	bus.Write32(0x1000, 0x12345678)
@@ -250,7 +250,7 @@ func TestUnsafeWrite32_MatchesBinaryEncoding(t *testing.T) {
 
 // TestRead16_Correctness tests 16-bit read operations
 func TestRead16_Correctness(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	bus.Write16(0x1000, 0xABCD)
 
 	if got := bus.Read16(0x1000); got != 0xABCD {
@@ -260,7 +260,7 @@ func TestRead16_Correctness(t *testing.T) {
 
 // TestRead8_Correctness tests 8-bit read operations
 func TestRead8_Correctness(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	bus.Write8(0x1000, 0x42)
 
 	if got := bus.Read8(0x1000); got != 0x42 {
@@ -270,7 +270,7 @@ func TestRead8_Correctness(t *testing.T) {
 
 // TestSignExtendedAddressRead tests sign-extended address handling
 func TestSignExtendedAddressRead(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	// Write to low address
 	bus.Write32(0x8000, 0xBEEFCAFE)
 
@@ -283,7 +283,7 @@ func TestSignExtendedAddressRead(t *testing.T) {
 
 // TestSignExtendedAddressWrite tests sign-extended address writes
 func TestSignExtendedAddressWrite(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	// Write via sign-extended address
 	bus.Write32(0xFFFF8000, 0xDEADC0DE)
 
@@ -296,7 +296,7 @@ func TestSignExtendedAddressWrite(t *testing.T) {
 
 // TestConcurrentAccess ensures thread safety after optimizations
 func TestConcurrentAccess(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	const iterations = 1000
 	var wg sync.WaitGroup
 
@@ -329,7 +329,7 @@ func TestConcurrentAccess(t *testing.T) {
 
 // TestWithFaultVariants ensures WithFault methods remain correct
 func TestWithFaultVariants(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 
 	// Write32WithFault
 	ok := bus.Write32WithFault(0x1000, 0x11111111)

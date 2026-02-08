@@ -10,7 +10,7 @@ import (
 // =============================================================================
 
 func setupFPUTestCPU() *M68KCPU {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	termOut := NewTerminalOutput()
 	bus.MapIO(TERM_OUT, TERM_OUT, nil, termOut.HandleWrite)
 	bus.Write32(0, M68K_STACK_START)

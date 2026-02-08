@@ -53,7 +53,7 @@ func Test6502VRAMBankRegister(t *testing.T) {
 	runSingleInstruction(t, rig.cpu, 0x0205)
 	runSingleInstruction(t, rig.cpu, 0x0207)
 
-	adapter := rig.cpu.memory.(*MemoryBusAdapter_6502)
+	adapter := rig.cpu.memory.(*Bus6502Adapter)
 	if adapter.vramBank != 0x02 {
 		t.Fatalf("vramBank=%d, want 2", adapter.vramBank)
 	}

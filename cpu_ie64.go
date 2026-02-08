@@ -173,7 +173,7 @@ type CPU64 struct {
 
 	// Beyond cache lines:
 	memory  []byte
-	bus     *SystemBus
+	bus     *MachineBus
 	memBase unsafe.Pointer
 
 	// VRAM direct access
@@ -192,7 +192,7 @@ type CPU64 struct {
 // Constructor
 // ------------------------------------------------------------------------------
 
-func NewCPU64(bus *SystemBus) *CPU64 {
+func NewCPU64(bus *MachineBus) *CPU64 {
 	cpu := &CPU64{
 		PC:     PROG_START,
 		bus:    bus,

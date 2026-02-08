@@ -29,7 +29,7 @@ const (
 // sndh68KPlayer handles SNDH playback using 68K CPU emulation
 type sndh68KPlayer struct {
 	cpu               *M68KCPU
-	bus               *sndh68KBus
+	bus               *sndhPlaybackBus68K
 	file              *SNDHFile
 	clockHz           uint32
 	frameRate         uint16
@@ -62,7 +62,7 @@ func newSNDH68KPlayer(file *SNDHFile, subsong int, sampleRate int) (*sndh68KPlay
 	}
 
 	// Create bus and load SNDH data
-	bus := newSNDH68KBus()
+	bus := newSndhPlaybackBus68K()
 	bus.LoadSNDH(file.Data)
 
 	// Create CPU with this bus

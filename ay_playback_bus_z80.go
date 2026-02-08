@@ -2,23 +2,23 @@
 
 package main
 
-type ayZ80Write struct {
+type ayPlaybackWriteZ80 struct {
 	Reg   byte
 	Value byte
 	Cycle uint64
 }
 
-type ayZ80PSGWriter interface {
+type ayPlaybackPSGWriterZ80 interface {
 	WriteRegister(reg uint8, value uint8)
 }
 
-type ayZ80Bus struct {
+type ayPlaybackBusZ80 struct {
 	ram       *[0x10000]byte
 	system    byte
-	engine    ayZ80PSGWriter
+	engine    ayPlaybackPSGWriterZ80
 	regSelect byte
 	regs      [PSG_REG_COUNT]byte
-	writes    []ayZ80Write
+	writes    []ayPlaybackWriteZ80
 	cycles    uint64
 
 	// Pre-computed port matching for fast dispatch
@@ -29,8 +29,8 @@ type ayZ80Bus struct {
 	useByteMatch   bool   // True if matching on low byte only
 }
 
-func newAYZ80Bus(ram *[0x10000]byte, system byte, engine ayZ80PSGWriter) *ayZ80Bus {
-	b := &ayZ80Bus{
+func newAyPlaybackBusZ80(ram *[0x10000]byte, system byte, engine ayPlaybackPSGWriterZ80) *ayPlaybackBusZ80 {
+	b := &ayPlaybackBusZ80{
 		ram:    ram,
 		system: system,
 		engine: engine,
@@ -40,7 +40,7 @@ func newAYZ80Bus(ram *[0x10000]byte, system byte, engine ayZ80PSGWriter) *ayZ80B
 }
 
 // updatePortMatching pre-computes port matching values based on system type
-func (b *ayZ80Bus) updatePortMatching() {
+func (b *ayPlaybackBusZ80) updatePortMatching() {
 	switch b.system {
 	case ayZXSystemCPC:
 		// CPC: low byte match F4/F6
@@ -62,29 +62,29 @@ func (b *ayZ80Bus) updatePortMatching() {
 	}
 }
 
-func (b *ayZ80Bus) Read(addr uint16) byte {
+func (b *ayPlaybackBusZ80) Read(addr uint16) byte {
 	return b.ram[addr]
 }
 
-func (b *ayZ80Bus) Write(addr uint16, value byte) {
+func (b *ayPlaybackBusZ80) Write(addr uint16, value byte) {
 	b.ram[addr] = value
 }
 
-func (b *ayZ80Bus) In(port uint16) byte {
+func (b *ayPlaybackBusZ80) In(port uint16) byte {
 	if b.isAYDataPort(port) && b.regSelect < PSG_REG_COUNT {
 		return b.regs[b.regSelect]
 	}
 	return 0
 }
 
-func (b *ayZ80Bus) Out(port uint16, value byte) {
+func (b *ayPlaybackBusZ80) Out(port uint16, value byte) {
 	if b.isAYSelectPort(port) {
 		b.regSelect = value & 0x0F
 		return
 	}
 	if b.isAYDataPort(port) && b.regSelect < PSG_REG_COUNT {
 		b.regs[b.regSelect] = value
-		b.writes = append(b.writes, ayZ80Write{
+		b.writes = append(b.writes, ayPlaybackWriteZ80{
 			Reg:   b.regSelect,
 			Value: value,
 			Cycle: b.cycles,
@@ -95,13 +95,13 @@ func (b *ayZ80Bus) Out(port uint16, value byte) {
 	}
 }
 
-func (b *ayZ80Bus) Tick(cycles int) {
+func (b *ayPlaybackBusZ80) Tick(cycles int) {
 	b.cycles += uint64(cycles)
 }
 
 // isAYSelectPort checks if the port is the AY register select port
 // Uses pre-computed values for fast matching without branching.
-func (b *ayZ80Bus) isAYSelectPort(port uint16) bool {
+func (b *ayPlaybackBusZ80) isAYSelectPort(port uint16) bool {
 	if b.useByteMatch {
 		return byte(port) == byte(b.selectPortVal)
 	}
@@ -110,7 +110,7 @@ func (b *ayZ80Bus) isAYSelectPort(port uint16) bool {
 
 // isAYDataPort checks if the port is the AY data port
 // Uses pre-computed values for fast matching without branching.
-func (b *ayZ80Bus) isAYDataPort(port uint16) bool {
+func (b *ayPlaybackBusZ80) isAYDataPort(port uint16) bool {
 	if b.useByteMatch {
 		return byte(port) == byte(b.dataPortVal)
 	}

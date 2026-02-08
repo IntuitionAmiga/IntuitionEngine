@@ -206,7 +206,7 @@ When X=1, the third operand is the immediate, zero-extended to 64 bits: `operand
 | `.L` | 4 | Read32/Write32 |
 | `.Q` | 8 | Read64/Write64 |
 
-> **64-bit memory access**: `.Q` loads and stores go through the system bus (`Read64`/`Write64`). For plain RAM (no I/O region on either 32-bit half), the bus uses a single 64-bit read/write. If the access spans an I/O region, the bus may split it into two 32-bit halves. For MMIO64 regions receiving a split write, a read-modify-write is performed on backing memory to preserve the untouched half. These semantics are transparent for normal RAM access but matter when accessing hardware registers with `.Q` size.
+> **64-bit memory access**: `.Q` loads and stores go through the MachineBus (`Read64`/`Write64`). For plain RAM (no I/O region on either 32-bit half), the bus uses a single 64-bit read/write. If the access spans an I/O region, the bus may split it into two 32-bit halves. For MMIO64 regions receiving a split write, a read-modify-write is performed on backing memory to preserve the untouched half. These semantics are transparent for normal RAM access but matter when accessing hardware registers with `.Q` size.
 
 ---
 

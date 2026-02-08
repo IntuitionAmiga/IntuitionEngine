@@ -57,7 +57,7 @@ import (
 // Implements VideoSource interface for compositor integration.
 type ANTICEngine struct {
 	mu  sync.Mutex
-	bus *SystemBus
+	bus *MachineBus
 
 	// DMA and control registers
 	dmactl uint8 // DMA control (playfield width, DMA enables)
@@ -147,7 +147,7 @@ type ANTICEngine struct {
 }
 
 // NewANTICEngine creates a new ANTIC video engine instance
-func NewANTICEngine(bus *SystemBus) *ANTICEngine {
+func NewANTICEngine(bus *MachineBus) *ANTICEngine {
 	antic := &ANTICEngine{
 		bus:         bus,
 		frameBuffer: make([]byte, ANTIC_FRAME_WIDTH*ANTIC_FRAME_HEIGHT*4),

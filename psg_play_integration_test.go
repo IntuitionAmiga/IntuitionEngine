@@ -12,7 +12,7 @@ func TestPSGPlayFromMemory(t *testing.T) {
 		t.Skip("test_ay_only.iex not found")
 	}
 
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 
 	// Create PSG engine with test sound chip
 	soundChip := newTestSoundChip()

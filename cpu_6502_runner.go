@@ -16,13 +16,13 @@ type CPU6502Config struct {
 
 type CPU6502Runner struct {
 	cpu         *CPU_6502
-	bus         *SystemBus
+	bus         *MachineBus
 	loadAddr    uint16
 	entry       uint16
 	PerfEnabled bool
 }
 
-func NewCPU6502Runner(bus *SystemBus, config CPU6502Config) *CPU6502Runner {
+func NewCPU6502Runner(bus *MachineBus, config CPU6502Config) *CPU6502Runner {
 	loadAddr := config.LoadAddr
 	if loadAddr == 0 {
 		loadAddr = default6502LoadAddr

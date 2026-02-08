@@ -8,12 +8,12 @@ import (
 )
 
 type cpu6502TestRig struct {
-	bus *SystemBus
+	bus *MachineBus
 	cpu *CPU_6502
 }
 
 func newCPU6502TestRig() *cpu6502TestRig {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	cpu := NewCPU_6502(bus)
 	return &cpu6502TestRig{
 		bus: bus,

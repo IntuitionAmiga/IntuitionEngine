@@ -5,8 +5,8 @@ import (
 )
 
 // Test 1: RAM read/write
-func TestSAP6502Bus_RAMReadWrite(t *testing.T) {
-	bus := newSAP6502Bus(false, false) // mono, PAL
+func TestSAPPlaybackBus6502_RAMReadWrite(t *testing.T) {
+	bus := newSAPPlaybackBus6502(false, false) // mono, PAL
 	bus.Write(0x1000, 0x42)
 	if bus.Read(0x1000) != 0x42 {
 		t.Errorf("expected 0x42, got 0x%02X", bus.Read(0x1000))
@@ -14,8 +14,8 @@ func TestSAP6502Bus_RAMReadWrite(t *testing.T) {
 }
 
 // Test 2: RAM in upper region (non-ROM for SAP)
-func TestSAP6502Bus_RAMUpperRegion(t *testing.T) {
-	bus := newSAP6502Bus(false, false)
+func TestSAPPlaybackBus6502_RAMUpperRegion(t *testing.T) {
+	bus := newSAPPlaybackBus6502(false, false)
 	bus.Write(0xE000, 0x55)
 	if bus.Read(0xE000) != 0x55 {
 		t.Errorf("expected 0x55, got 0x%02X", bus.Read(0xE000))
@@ -23,8 +23,8 @@ func TestSAP6502Bus_RAMUpperRegion(t *testing.T) {
 }
 
 // Test 3: POKEY write capture (mono)
-func TestSAP6502Bus_POKEYWriteCapture(t *testing.T) {
-	bus := newSAP6502Bus(false, false)
+func TestSAPPlaybackBus6502_POKEYWriteCapture(t *testing.T) {
+	bus := newSAPPlaybackBus6502(false, false)
 	bus.StartFrame()
 
 	bus.Write(0xD200, 0x10) // AUDF1
@@ -49,8 +49,8 @@ func TestSAP6502Bus_POKEYWriteCapture(t *testing.T) {
 }
 
 // Test 4: POKEY mirroring (mono: 16x mirrors)
-func TestSAP6502Bus_POKEYMirror(t *testing.T) {
-	bus := newSAP6502Bus(false, false)
+func TestSAPPlaybackBus6502_POKEYMirror(t *testing.T) {
+	bus := newSAPPlaybackBus6502(false, false)
 	bus.StartFrame()
 
 	bus.Write(0xD210, 0x20) // Mirror of D200+0 = AUDF1
@@ -70,8 +70,8 @@ func TestSAP6502Bus_POKEYMirror(t *testing.T) {
 }
 
 // Test 5: Stereo POKEY (two chips)
-func TestSAP6502Bus_StereoPOKEY(t *testing.T) {
-	bus := newSAP6502Bus(true, false) // stereo, PAL
+func TestSAPPlaybackBus6502_StereoPOKEY(t *testing.T) {
+	bus := newSAPPlaybackBus6502(true, false) // stereo, PAL
 	bus.StartFrame()
 
 	bus.Write(0xD200, 0x10) // Left POKEY AUDF1
@@ -90,8 +90,8 @@ func TestSAP6502Bus_StereoPOKEY(t *testing.T) {
 }
 
 // Test 6: GTIA PAL detection
-func TestSAP6502Bus_GTIA_PAL(t *testing.T) {
-	bus := newSAP6502Bus(false, false) // PAL
+func TestSAPPlaybackBus6502_GTIA_PAL(t *testing.T) {
+	bus := newSAPPlaybackBus6502(false, false) // PAL
 	// PAL returns 0x01 at $D014 (CONSOL)
 	if bus.Read(0xD014) != 0x01 {
 		t.Errorf("expected PAL value 0x01, got 0x%02X", bus.Read(0xD014))
@@ -99,8 +99,8 @@ func TestSAP6502Bus_GTIA_PAL(t *testing.T) {
 }
 
 // Test 7: GTIA NTSC detection
-func TestSAP6502Bus_GTIA_NTSC(t *testing.T) {
-	bus := newSAP6502Bus(false, true) // NTSC
+func TestSAPPlaybackBus6502_GTIA_NTSC(t *testing.T) {
+	bus := newSAPPlaybackBus6502(false, true) // NTSC
 	// NTSC returns 0x0F at $D014 (CONSOL)
 	if bus.Read(0xD014) != 0x0F {
 		t.Errorf("expected NTSC value 0x0F, got 0x%02X", bus.Read(0xD014))
@@ -108,8 +108,8 @@ func TestSAP6502Bus_GTIA_NTSC(t *testing.T) {
 }
 
 // Test 8: VCOUNT reads
-func TestSAP6502Bus_VCOUNT(t *testing.T) {
-	bus := newSAP6502Bus(false, false)
+func TestSAPPlaybackBus6502_VCOUNT(t *testing.T) {
+	bus := newSAPPlaybackBus6502(false, false)
 	bus.scanline = 100
 	// VCOUNT = scanline / 2
 	if bus.Read(0xD40B) != 50 {
@@ -118,8 +118,8 @@ func TestSAP6502Bus_VCOUNT(t *testing.T) {
 }
 
 // Test 9: VCOUNT wraparound
-func TestSAP6502Bus_VCOUNT_Wraparound(t *testing.T) {
-	bus := newSAP6502Bus(false, false)
+func TestSAPPlaybackBus6502_VCOUNT_Wraparound(t *testing.T) {
+	bus := newSAPPlaybackBus6502(false, false)
 	bus.scanline = 312 // PAL max
 	if bus.Read(0xD40B) != 156 {
 		t.Errorf("expected VCOUNT 156, got %d", bus.Read(0xD40B))
@@ -127,8 +127,8 @@ func TestSAP6502Bus_VCOUNT_Wraparound(t *testing.T) {
 }
 
 // Test 10: Cycle counting
-func TestSAP6502Bus_CycleCounting(t *testing.T) {
-	bus := newSAP6502Bus(false, false)
+func TestSAPPlaybackBus6502_CycleCounting(t *testing.T) {
+	bus := newSAPPlaybackBus6502(false, false)
 	bus.StartFrame()
 
 	bus.AddCycles(100)
@@ -144,8 +144,8 @@ func TestSAP6502Bus_CycleCounting(t *testing.T) {
 }
 
 // Test 11: WSYNC stall behavior
-func TestSAP6502Bus_WSYNC(t *testing.T) {
-	bus := newSAP6502Bus(false, false)
+func TestSAPPlaybackBus6502_WSYNC(t *testing.T) {
+	bus := newSAPPlaybackBus6502(false, false)
 	bus.scanline = 50
 	bus.AddCycles(50) // Mid-scanline
 
@@ -158,8 +158,8 @@ func TestSAP6502Bus_WSYNC(t *testing.T) {
 }
 
 // Test 12: Load binary blocks
-func TestSAP6502Bus_LoadBlocks(t *testing.T) {
-	bus := newSAP6502Bus(false, false)
+func TestSAPPlaybackBus6502_LoadBlocks(t *testing.T) {
+	bus := newSAPPlaybackBus6502(false, false)
 	blocks := []SAPBlock{
 		{Start: 0x1000, End: 0x1003, Data: []byte{0xA9, 0x42, 0x60, 0x00}},
 	}
@@ -177,8 +177,8 @@ func TestSAP6502Bus_LoadBlocks(t *testing.T) {
 }
 
 // Test 13: POKEY register readback (KBCODE, etc)
-func TestSAP6502Bus_POKEYReadback(t *testing.T) {
-	bus := newSAP6502Bus(false, false)
+func TestSAPPlaybackBus6502_POKEYReadback(t *testing.T) {
+	bus := newSAPPlaybackBus6502(false, false)
 	// Most POKEY reads return 0 except special cases
 	// RANDOM ($D20A) should return pseudo-random value
 	val := bus.Read(0xD20A)
@@ -187,8 +187,8 @@ func TestSAP6502Bus_POKEYReadback(t *testing.T) {
 }
 
 // Test 14: ANTIC NMIST/NMIEN
-func TestSAP6502Bus_ANTICReads(t *testing.T) {
-	bus := newSAP6502Bus(false, false)
+func TestSAPPlaybackBus6502_ANTICReads(t *testing.T) {
+	bus := newSAPPlaybackBus6502(false, false)
 	// NMIST at $D40F - status register
 	// Should return something reasonable
 	val := bus.Read(0xD40F)
@@ -196,8 +196,8 @@ func TestSAP6502Bus_ANTICReads(t *testing.T) {
 }
 
 // Test 15: Zero page operations
-func TestSAP6502Bus_ZeroPage(t *testing.T) {
-	bus := newSAP6502Bus(false, false)
+func TestSAPPlaybackBus6502_ZeroPage(t *testing.T) {
+	bus := newSAPPlaybackBus6502(false, false)
 	bus.Write(0x00, 0xAA)
 	bus.Write(0xFF, 0x55)
 	if bus.Read(0x00) != 0xAA {
@@ -209,8 +209,8 @@ func TestSAP6502Bus_ZeroPage(t *testing.T) {
 }
 
 // Test 16: All POKEY registers captured
-func TestSAP6502Bus_AllPOKEYRegisters(t *testing.T) {
-	bus := newSAP6502Bus(false, false)
+func TestSAPPlaybackBus6502_AllPOKEYRegisters(t *testing.T) {
+	bus := newSAPPlaybackBus6502(false, false)
 	bus.StartFrame()
 
 	// Write to all POKEY registers
@@ -233,8 +233,8 @@ func TestSAP6502Bus_AllPOKEYRegisters(t *testing.T) {
 }
 
 // Test 17: Cycle to scanline conversion
-func TestSAP6502Bus_CycleToScanline(t *testing.T) {
-	bus := newSAP6502Bus(false, false) // PAL
+func TestSAPPlaybackBus6502_CycleToScanline(t *testing.T) {
+	bus := newSAPPlaybackBus6502(false, false) // PAL
 	// PAL: 114 cycles per scanline
 	bus.AddCycles(114)
 	if bus.scanline != 1 {

@@ -44,8 +44,8 @@ const (
 	MFP_CLOCK = 2000000
 )
 
-// sndh68KWrite records a YM2149 register write with timing
-type sndh68KWrite struct {
+// sndhPlaybackWrite68K records a YM2149 register write with timing
+type sndhPlaybackWrite68K struct {
 	Reg   uint8
 	Value uint8
 	Cycle uint64
@@ -59,13 +59,13 @@ type mfpTimer struct {
 	cycleAcc uint64 // Accumulated cycles for this timer
 }
 
-// sndh68KBus provides memory and YM2149 I/O for SNDH playback
-type sndh68KBus struct {
+// sndhPlaybackBus68K provides memory and YM2149 I/O for SNDH playback
+type sndhPlaybackBus68K struct {
 	memory    []byte
-	regSelect uint8               // Currently selected YM register
-	regs      [PSG_REG_COUNT]byte // Shadow copy of YM registers
-	writes    []sndh68KWrite      // Captured register writes
-	cycles    uint64              // Cycle counter
+	regSelect uint8                  // Currently selected YM register
+	regs      [PSG_REG_COUNT]byte    // Shadow copy of YM registers
+	writes    []sndhPlaybackWrite68K // Captured register writes
+	cycles    uint64                 // Cycle counter
 
 	// MFP timer state
 	timerA mfpTimer
@@ -84,11 +84,11 @@ type sndh68KBus struct {
 	lastTimerCycles uint64
 }
 
-// newSNDH68KBus creates a new bus for SNDH playback
-func newSNDH68KBus() *sndh68KBus {
-	return &sndh68KBus{
+// newSndhPlaybackBus68K creates a new bus for SNDH playback
+func newSndhPlaybackBus68K() *sndhPlaybackBus68K {
+	return &sndhPlaybackBus68K{
 		memory: make([]byte, SNDH_BUS_SIZE),
-		writes: make([]sndh68KWrite, 0, 1024),
+		writes: make([]sndhPlaybackWrite68K, 0, 1024),
 	}
 }
 
@@ -97,7 +97,7 @@ func newSNDH68KBus() *sndh68KBus {
 var mfpPrescaler = [8]uint32{0, 4, 10, 16, 50, 64, 100, 200}
 
 // Reset clears the bus state
-func (b *sndh68KBus) Reset() {
+func (b *sndhPlaybackBus68K) Reset() {
 	for i := range b.memory {
 		b.memory[i] = 0
 	}
@@ -124,29 +124,29 @@ func (b *sndh68KBus) Reset() {
 }
 
 // GetMemory returns the raw memory array
-func (b *sndh68KBus) GetMemory() []byte {
+func (b *sndhPlaybackBus68K) GetMemory() []byte {
 	return b.memory
 }
 
 // ResetWrites clears the recorded writes (called at frame start)
-func (b *sndh68KBus) ResetWrites() {
+func (b *sndhPlaybackBus68K) ResetWrites() {
 	b.writes = b.writes[:0]
 }
 
 // GetWrites returns the recorded writes since last reset
-func (b *sndh68KBus) GetWrites() []sndh68KWrite {
+func (b *sndhPlaybackBus68K) GetWrites() []sndhPlaybackWrite68K {
 	return b.writes
 }
 
 // AddCycles adds to the cycle counter (called by CPU after each instruction)
-func (b *sndh68KBus) AddCycles(cycles int) {
+func (b *sndhPlaybackBus68K) AddCycles(cycles int) {
 	b.cycles += uint64(cycles)
 	// Update MFP timers
 	b.tickTimers()
 }
 
 // GetCycles returns the current cycle count
-func (b *sndh68KBus) GetCycles() uint64 {
+func (b *sndhPlaybackBus68K) GetCycles() uint64 {
 	return b.cycles
 }
 
@@ -154,7 +154,7 @@ func (b *sndh68KBus) GetCycles() uint64 {
 var debugMFP = false
 
 // tickTimers updates MFP timer counters based on elapsed cycles
-func (b *sndh68KBus) tickTimers() {
+func (b *sndhPlaybackBus68K) tickTimers() {
 	elapsed := b.cycles - b.lastTimerCycles
 	if elapsed == 0 {
 		return
@@ -169,7 +169,7 @@ func (b *sndh68KBus) tickTimers() {
 }
 
 // tickTimer ticks a single timer (A or B) and sets interrupt pending if needed
-func (b *sndh68KBus) tickTimer(t *mfpTimer, elapsed uint64, pendingBit uint8) {
+func (b *sndhPlaybackBus68K) tickTimer(t *mfpTimer, elapsed uint64, pendingBit uint8) {
 	prescale := mfpPrescaler[t.control&0x07]
 	if prescale == 0 {
 		return // Timer stopped
@@ -197,7 +197,7 @@ func (b *sndh68KBus) tickTimer(t *mfpTimer, elapsed uint64, pendingBit uint8) {
 }
 
 // tickTimerCD ticks Timer C or D (sets bits in IPRB)
-func (b *sndh68KBus) tickTimerCD(t *mfpTimer, elapsed uint64, pendingBit uint8) {
+func (b *sndhPlaybackBus68K) tickTimerCD(t *mfpTimer, elapsed uint64, pendingBit uint8) {
 	prescale := mfpPrescaler[t.control&0x07]
 	if prescale == 0 {
 		return // Timer stopped
@@ -224,7 +224,7 @@ func (b *sndh68KBus) tickTimerCD(t *mfpTimer, elapsed uint64, pendingBit uint8) 
 var debugMFPRead = false
 
 // readMFP reads an MFP register
-func (b *sndh68KBus) readMFP(addr uint32) uint8 {
+func (b *sndhPlaybackBus68K) readMFP(addr uint32) uint8 {
 	var result uint8
 	switch addr {
 	case MFP_IERA:
@@ -272,7 +272,7 @@ func (b *sndh68KBus) readMFP(addr uint32) uint8 {
 }
 
 // writeMFP writes an MFP register
-func (b *sndh68KBus) writeMFP(addr uint32, value uint8) {
+func (b *sndhPlaybackBus68K) writeMFP(addr uint32, value uint8) {
 	if debugMFP {
 		println("MFP write addr=", addr, "value=", value)
 	}
@@ -330,7 +330,7 @@ func (b *sndh68KBus) writeMFP(addr uint32, value uint8) {
 }
 
 // Read8 reads a byte from memory or hardware register
-func (b *sndh68KBus) Read8(addr uint32) uint8 {
+func (b *sndhPlaybackBus68K) Read8(addr uint32) uint8 {
 	// Mask to 24-bit address space (Atari ST)
 	addr24 := addr & 0x00FFFFFF
 
@@ -366,7 +366,7 @@ func (b *sndh68KBus) Read8(addr uint32) uint8 {
 var debugYM = false
 
 // Write8 writes a byte to memory or hardware register
-func (b *sndh68KBus) Write8(addr uint32, value uint8) {
+func (b *sndhPlaybackBus68K) Write8(addr uint32, value uint8) {
 	// Mask to 24-bit address space (Atari ST)
 	addr24 := addr & 0x00FFFFFF
 
@@ -393,7 +393,7 @@ func (b *sndh68KBus) Write8(addr uint32, value uint8) {
 		}
 		if b.regSelect < PSG_REG_COUNT {
 			b.regs[b.regSelect] = value
-			b.writes = append(b.writes, sndh68KWrite{
+			b.writes = append(b.writes, sndhPlaybackWrite68K{
 				Reg:   b.regSelect,
 				Value: value,
 				Cycle: b.cycles,
@@ -418,7 +418,7 @@ func (b *sndh68KBus) Write8(addr uint32, value uint8) {
 
 // Read16 reads a word from memory
 // Note: M68K CPU converts to little-endian before calling bus, so bus uses little-endian
-func (b *sndh68KBus) Read16(addr uint32) uint16 {
+func (b *sndhPlaybackBus68K) Read16(addr uint32) uint16 {
 	// Check for YM2149 register read
 	if addr == YM_REG_SELECT || addr == YM_REG_SELECT+1 {
 		hi := b.Read8(YM_REG_SELECT)
@@ -436,7 +436,7 @@ func (b *sndh68KBus) Read16(addr uint32) uint16 {
 
 // Write16 writes a word to memory
 // Note: M68K CPU converts to little-endian before calling bus, so bus uses little-endian
-func (b *sndh68KBus) Write16(addr uint32, value uint16) {
+func (b *sndhPlaybackBus68K) Write16(addr uint32, value uint16) {
 	// Check for YM2149 register select (write to 0xFF8800)
 	// CPU sends little-endian, but we need big-endian for register/data extraction
 	// Convert back: original big-endian byte order was (reg, data)
@@ -468,7 +468,7 @@ func (b *sndh68KBus) Write16(addr uint32, value uint16) {
 
 // Read32 reads a long from memory
 // Note: M68K CPU converts to little-endian before calling bus, so bus uses little-endian
-func (b *sndh68KBus) Read32(addr uint32) uint32 {
+func (b *sndhPlaybackBus68K) Read32(addr uint32) uint32 {
 	// Mask address to bus size
 	addr &= SNDH_BUS_SIZE - 1
 	if addr+3 >= SNDH_BUS_SIZE {
@@ -479,7 +479,7 @@ func (b *sndh68KBus) Read32(addr uint32) uint32 {
 
 // Write32 writes a long to memory
 // Note: M68K CPU converts to little-endian before calling bus, so bus uses little-endian
-func (b *sndh68KBus) Write32(addr uint32, value uint32) {
+func (b *sndhPlaybackBus68K) Write32(addr uint32, value uint32) {
 	// Mask to 24-bit address space
 	addr24 := addr & 0x00FFFFFF
 
@@ -522,7 +522,7 @@ func (b *sndh68KBus) Write32(addr uint32, value uint32) {
 }
 
 // LoadSNDH loads SNDH data into the bus memory
-func (b *sndh68KBus) LoadSNDH(data []byte) {
+func (b *sndhPlaybackBus68K) LoadSNDH(data []byte) {
 	// Copy data to memory starting at address 0
 	copyLen := len(data)
 	if copyLen > SNDH_BUS_SIZE {

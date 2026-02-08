@@ -21,7 +21,7 @@ type SIDMetadata struct {
 
 type SIDPlayer struct {
 	engine   *SIDEngine
-	bus      MemoryBus
+	bus      Bus32
 	metadata SIDMetadata
 	clockHz  uint32
 	loop     bool
@@ -197,7 +197,7 @@ func isSIDExtension(path string) bool {
 }
 
 // AttachBus attaches the memory bus for reading embedded SID data
-func (p *SIDPlayer) AttachBus(bus MemoryBus) {
+func (p *SIDPlayer) AttachBus(bus Bus32) {
 	p.bus = bus
 }
 

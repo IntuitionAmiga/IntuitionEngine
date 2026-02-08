@@ -14,7 +14,7 @@ import (
 
 // SAP6502Player executes SAP 6502 code and captures POKEY events
 type SAP6502Player struct {
-	bus     *SAP6502Bus
+	bus     *SAPPlaybackBus6502
 	cpu     *CPU_6502
 	file    *SAPFile
 	subsong int
@@ -38,9 +38,9 @@ type SAP6502Player struct {
 // maxSAPEventsPerFrame is the initial capacity for the event buffer.
 const maxSAPEventsPerFrame = 512
 
-// sapBusAdapter adapts SAP6502Bus to MemoryBus_6502 interface
+// sapBusAdapter adapts SAPPlaybackBus6502 to Bus6502 interface
 type sapBusAdapter struct {
-	bus *SAP6502Bus
+	bus *SAPPlaybackBus6502
 }
 
 func (a *sapBusAdapter) Read(addr uint16) byte {
@@ -59,7 +59,7 @@ func newSAP6502Player(file *SAPFile, subsong, sampleRate int) (*SAP6502Player, e
 	}
 
 	// Create bus
-	bus := newSAP6502Bus(file.Header.Stereo, file.Header.NTSC)
+	bus := newSAPPlaybackBus6502(file.Header.Stereo, file.Header.NTSC)
 
 	// Load binary blocks into memory
 	bus.LoadBlocks(file.Blocks)

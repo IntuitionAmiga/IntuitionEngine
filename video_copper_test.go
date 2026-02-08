@@ -2,10 +2,10 @@ package main
 
 import "testing"
 
-func newCopperTestRig(t *testing.T) (*VideoChip, *SystemBus) {
+func newCopperTestRig(t *testing.T) (*VideoChip, *MachineBus) {
 	t.Helper()
 
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
 	if err != nil {
 		t.Fatalf("failed to create video chip: %v", err)
@@ -31,7 +31,7 @@ func copperSetBaseWord(addr uint32) uint32 {
 	return (uint32(copperOpcodeSetBase) << copperOpcodeShift) | ((addr >> 2) & copperSetBaseMask)
 }
 
-func writeWord8(bus *SystemBus, addr uint32, value uint32) {
+func writeWord8(bus *MachineBus, addr uint32, value uint32) {
 	bus.Write8(addr, uint8(value))
 	bus.Write8(addr+1, uint8(value>>8))
 	bus.Write8(addr+2, uint8(value>>16))
@@ -304,10 +304,10 @@ func TestCopperSetBaseResetsOnFrame(t *testing.T) {
 }
 
 // newCopperVGATestRig creates a test rig with both VideoChip and VGAEngine on the bus.
-func newCopperVGATestRig(t *testing.T) (*VideoChip, *VGAEngine, *SystemBus) {
+func newCopperVGATestRig(t *testing.T) (*VideoChip, *VGAEngine, *MachineBus) {
 	t.Helper()
 
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
 	if err != nil {
 		t.Fatalf("failed to create video chip: %v", err)

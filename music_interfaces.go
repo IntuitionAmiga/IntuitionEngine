@@ -35,7 +35,7 @@ type MusicPlayer interface {
 type RegisterMappedPlayer interface {
 	MusicPlayer
 	// AttachBus attaches the memory bus for reading embedded music data
-	AttachBus(bus MemoryBus)
+	AttachBus(bus Bus32)
 	// HandlePlayWrite handles writes to play control registers
 	HandlePlayWrite(addr uint32, value uint32)
 	// HandlePlayRead handles reads from play control registers

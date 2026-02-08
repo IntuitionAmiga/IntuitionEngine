@@ -12,9 +12,9 @@ import (
 
 func TestZ80_VGA_PortOut_Mode(t *testing.T) {
 	// Setup: Create system bus with VGA engine
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	vga := NewVGAEngine(bus)
-	z80Bus := NewZ80SystemBusWithVGA(bus, vga)
+	z80Bus := NewZ80BusAdapterWithVGA(bus, vga)
 
 	// Test: OUT (0xA0), value → VGA_MODE
 	z80Bus.Out(Z80_VGA_PORT_MODE, VGA_MODE_13H)
@@ -28,9 +28,9 @@ func TestZ80_VGA_PortOut_Mode(t *testing.T) {
 
 func TestZ80_VGA_PortIn_Status(t *testing.T) {
 	// Setup
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	vga := NewVGAEngine(bus)
-	z80Bus := NewZ80SystemBusWithVGA(bus, vga)
+	z80Bus := NewZ80BusAdapterWithVGA(bus, vga)
 
 	// Test: IN A, (0xA1) → VGA_STATUS
 	status := z80Bus.In(Z80_VGA_PORT_STATUS)
@@ -43,9 +43,9 @@ func TestZ80_VGA_PortIn_Status(t *testing.T) {
 
 func TestZ80_VGA_PortOut_Control(t *testing.T) {
 	// Setup
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	vga := NewVGAEngine(bus)
-	z80Bus := NewZ80SystemBusWithVGA(bus, vga)
+	z80Bus := NewZ80BusAdapterWithVGA(bus, vga)
 
 	// Test: OUT (0xA2), value → VGA_CTRL
 	z80Bus.Out(Z80_VGA_PORT_CTRL, VGA_CTRL_ENABLE)
@@ -59,9 +59,9 @@ func TestZ80_VGA_PortOut_Control(t *testing.T) {
 
 func TestZ80_VGA_PortOut_DAC(t *testing.T) {
 	// Setup
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	vga := NewVGAEngine(bus)
-	z80Bus := NewZ80SystemBusWithVGA(bus, vga)
+	z80Bus := NewZ80BusAdapterWithVGA(bus, vga)
 
 	// Test: Set palette entry 10 via Z80 ports
 	// First set write index
@@ -81,9 +81,9 @@ func TestZ80_VGA_PortOut_DAC(t *testing.T) {
 
 func TestZ80_VGA_PortOut_Sequencer(t *testing.T) {
 	// Setup
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	vga := NewVGAEngine(bus)
-	z80Bus := NewZ80SystemBusWithVGA(bus, vga)
+	z80Bus := NewZ80BusAdapterWithVGA(bus, vga)
 
 	// Test: Set sequencer map mask via Z80 ports
 	z80Bus.Out(Z80_VGA_PORT_SEQ_IDX, VGA_SEQ_MAPMASK_R)
@@ -102,9 +102,9 @@ func TestZ80_VGA_PortOut_Sequencer(t *testing.T) {
 
 func TestZ80_VGA_PortOut_CRTC(t *testing.T) {
 	// Setup
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	vga := NewVGAEngine(bus)
-	z80Bus := NewZ80SystemBusWithVGA(bus, vga)
+	z80Bus := NewZ80BusAdapterWithVGA(bus, vga)
 
 	// Test: Set CRTC start address via Z80 ports
 	z80Bus.Out(Z80_VGA_PORT_CRTC_IDX, VGA_CRTC_START_HI)
@@ -123,9 +123,9 @@ func TestZ80_VGA_PortOut_CRTC(t *testing.T) {
 
 func TestZ80_VGA_PortOut_GC(t *testing.T) {
 	// Setup
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	vga := NewVGAEngine(bus)
-	z80Bus := NewZ80SystemBusWithVGA(bus, vga)
+	z80Bus := NewZ80BusAdapterWithVGA(bus, vga)
 
 	// Test: Set Graphics Controller read map via Z80 ports
 	z80Bus.Out(Z80_VGA_PORT_GC_IDX, VGA_GC_READ_MAP_R)
@@ -148,9 +148,9 @@ func TestZ80_VGA_PortOut_GC(t *testing.T) {
 
 func Test6502_VGA_Write_Mode(t *testing.T) {
 	// Setup: Create system bus with VGA engine
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	vga := NewVGAEngine(bus)
-	adapter := NewMemoryBusAdapter_6502WithVGA(bus, vga)
+	adapter := NewBus6502AdapterWithVGA(bus, vga)
 
 	// Test: STA $D700 → VGA_MODE
 	adapter.Write(C6502_VGA_MODE, VGA_MODE_13H)
@@ -164,9 +164,9 @@ func Test6502_VGA_Write_Mode(t *testing.T) {
 
 func Test6502_VGA_Read_Status(t *testing.T) {
 	// Setup
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	vga := NewVGAEngine(bus)
-	adapter := NewMemoryBusAdapter_6502WithVGA(bus, vga)
+	adapter := NewBus6502AdapterWithVGA(bus, vga)
 
 	// Test: LDA $D701 → VGA_STATUS
 	status := adapter.Read(C6502_VGA_STATUS)
@@ -177,9 +177,9 @@ func Test6502_VGA_Read_Status(t *testing.T) {
 
 func Test6502_VGA_Write_Control(t *testing.T) {
 	// Setup
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	vga := NewVGAEngine(bus)
-	adapter := NewMemoryBusAdapter_6502WithVGA(bus, vga)
+	adapter := NewBus6502AdapterWithVGA(bus, vga)
 
 	// Test: STA $D702 → VGA_CTRL
 	adapter.Write(C6502_VGA_CTRL, VGA_CTRL_ENABLE)
@@ -193,9 +193,9 @@ func Test6502_VGA_Write_Control(t *testing.T) {
 
 func Test6502_VGA_DAC(t *testing.T) {
 	// Setup
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	vga := NewVGAEngine(bus)
-	adapter := NewMemoryBusAdapter_6502WithVGA(bus, vga)
+	adapter := NewBus6502AdapterWithVGA(bus, vga)
 
 	// Test: Set palette entry 10 via 6502 memory-mapped registers
 	// First set write index
@@ -215,9 +215,9 @@ func Test6502_VGA_DAC(t *testing.T) {
 
 func Test6502_VGA_Sequencer(t *testing.T) {
 	// Setup
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	vga := NewVGAEngine(bus)
-	adapter := NewMemoryBusAdapter_6502WithVGA(bus, vga)
+	adapter := NewBus6502AdapterWithVGA(bus, vga)
 
 	// Test: Set sequencer map mask via 6502 memory-mapped registers
 	adapter.Write(C6502_VGA_SEQ_IDX, VGA_SEQ_MAPMASK_R)
@@ -236,9 +236,9 @@ func Test6502_VGA_Sequencer(t *testing.T) {
 
 func Test6502_VGA_CRTC(t *testing.T) {
 	// Setup
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	vga := NewVGAEngine(bus)
-	adapter := NewMemoryBusAdapter_6502WithVGA(bus, vga)
+	adapter := NewBus6502AdapterWithVGA(bus, vga)
 
 	// Test: Set CRTC start address via 6502 memory-mapped registers
 	adapter.Write(C6502_VGA_CRTC_IDX, VGA_CRTC_START_HI)
@@ -257,9 +257,9 @@ func Test6502_VGA_CRTC(t *testing.T) {
 
 func Test6502_VGA_GC(t *testing.T) {
 	// Setup
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	vga := NewVGAEngine(bus)
-	adapter := NewMemoryBusAdapter_6502WithVGA(bus, vga)
+	adapter := NewBus6502AdapterWithVGA(bus, vga)
 
 	// Test: Set Graphics Controller read map via 6502 memory-mapped registers
 	adapter.Write(C6502_VGA_GC_IDX, VGA_GC_READ_MAP_R)
@@ -282,9 +282,9 @@ func Test6502_VGA_GC(t *testing.T) {
 
 func TestZ80_VGA_Mode13h_Integration(t *testing.T) {
 	// Setup
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	vga := NewVGAEngine(bus)
-	z80Bus := NewZ80SystemBusWithVGA(bus, vga)
+	z80Bus := NewZ80BusAdapterWithVGA(bus, vga)
 
 	// Test: Full Mode 13h setup sequence via Z80 ports
 	// 1. Set Mode 13h
@@ -320,9 +320,9 @@ func TestZ80_VGA_Mode13h_Integration(t *testing.T) {
 
 func Test6502_VGA_Mode13h_Integration(t *testing.T) {
 	// Setup
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	vga := NewVGAEngine(bus)
-	adapter := NewMemoryBusAdapter_6502WithVGA(bus, vga)
+	adapter := NewBus6502AdapterWithVGA(bus, vga)
 
 	// Test: Full Mode 13h setup sequence via 6502 memory-mapped I/O
 	// 1. Set Mode 13h
@@ -359,9 +359,9 @@ func Test6502_VGA_Mode13h_Integration(t *testing.T) {
 // Test that existing PSG I/O still works after VGA changes
 func TestZ80_PSG_StillWorks_AfterVGA(t *testing.T) {
 	// Setup
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	vga := NewVGAEngine(bus)
-	z80Bus := NewZ80SystemBusWithVGA(bus, vga)
+	z80Bus := NewZ80BusAdapterWithVGA(bus, vga)
 
 	// Test: PSG register select and write
 	z80Bus.Out(Z80_PSG_PORT_SELECT, 0x07) // Mixer register
@@ -377,9 +377,9 @@ func TestZ80_PSG_StillWorks_AfterVGA(t *testing.T) {
 // Test that existing PSG/SID still work for 6502 after VGA changes
 func Test6502_PSG_StillWorks_AfterVGA(t *testing.T) {
 	// Setup
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 	vga := NewVGAEngine(bus)
-	adapter := NewMemoryBusAdapter_6502WithVGA(bus, vga)
+	adapter := NewBus6502AdapterWithVGA(bus, vga)
 
 	// Test: PSG write via 6502
 	adapter.Write(C6502_PSG_BASE, 0x42) // First PSG register

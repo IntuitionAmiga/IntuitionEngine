@@ -40,14 +40,14 @@ type CPUZ80Config struct {
 
 type CPUZ80Runner struct {
 	cpu         *CPU_Z80
-	bus         *SystemBus
+	bus         *MachineBus
 	loadAddr    uint16
 	entry       uint16
 	PerfEnabled bool
 }
 
-type Z80SystemBus struct {
-	bus            *SystemBus
+type Z80BusAdapter struct {
+	bus            *MachineBus
 	psgRegSelect   byte       // Currently selected PSG register for port I/O
 	sidRegSelect   byte       // Currently selected SID register for port I/O
 	pokeyRegSelect byte       // Currently selected POKEY register for port I/O
@@ -73,18 +73,18 @@ type Z80SystemBus struct {
 	bank3Enable bool   // Bank 3 enabled
 }
 
-func NewZ80SystemBus(bus *SystemBus) *Z80SystemBus {
-	return &Z80SystemBus{bus: bus, psgRegSelect: 0}
+func NewZ80BusAdapter(bus *MachineBus) *Z80BusAdapter {
+	return &Z80BusAdapter{bus: bus, psgRegSelect: 0}
 }
 
-// NewZ80SystemBusWithVGA creates a Z80 system bus with VGA engine support
-func NewZ80SystemBusWithVGA(bus *SystemBus, vga *VGAEngine) *Z80SystemBus {
-	return &Z80SystemBus{bus: bus, psgRegSelect: 0, vgaEngine: vga}
+// NewZ80BusAdapterWithVGA creates a Z80 system bus with VGA engine support
+func NewZ80BusAdapterWithVGA(bus *MachineBus, vga *VGAEngine) *Z80BusAdapter {
+	return &Z80BusAdapter{bus: bus, psgRegSelect: 0, vgaEngine: vga}
 }
 
-// NewZ80SystemBusWithVoodoo creates a Z80 system bus with VGA and Voodoo engine support
-func NewZ80SystemBusWithVoodoo(bus *SystemBus, vga *VGAEngine, voodoo *VoodooEngine) *Z80SystemBus {
-	return &Z80SystemBus{bus: bus, psgRegSelect: 0, vgaEngine: vga, voodooEngine: voodoo}
+// NewZ80BusAdapterWithVoodoo creates a Z80 system bus with VGA and Voodoo engine support
+func NewZ80BusAdapterWithVoodoo(bus *MachineBus, vga *VGAEngine, voodoo *VoodooEngine) *Z80BusAdapter {
+	return &Z80BusAdapter{bus: bus, psgRegSelect: 0, vgaEngine: vga, voodooEngine: voodoo}
 }
 
 // translateIO8Bit converts 16-bit I/O addresses (0xF000-0xFFFF) to
@@ -97,7 +97,7 @@ func translateIO8Bit(addr uint16) uint32 {
 	return uint32(addr)
 }
 
-func (b *Z80SystemBus) Read(addr uint16) byte {
+func (b *Z80BusAdapter) Read(addr uint16) byte {
 	// Handle VRAM bank register reads
 	if addr == Z80_VRAM_BANK_REG {
 		return byte(b.vramBank & 0xFF)
@@ -135,7 +135,7 @@ func (b *Z80SystemBus) Read(addr uint16) byte {
 	return b.bus.Read8(translateIO8Bit(addr))
 }
 
-func (b *Z80SystemBus) Write(addr uint16, value byte) {
+func (b *Z80BusAdapter) Write(addr uint16, value byte) {
 	// Handle VRAM bank register writes
 	if addr == Z80_VRAM_BANK_REG {
 		b.vramBank = uint32(value)
@@ -202,7 +202,7 @@ func (b *Z80SystemBus) Write(addr uint16, value byte) {
 // Each bank window maps to:
 // base_address = bank_number * 8KB
 // actual_address = base_address + (addr - window_base)
-func (b *Z80SystemBus) translateExtendedBank(addr uint16) (uint32, bool) {
+func (b *Z80BusAdapter) translateExtendedBank(addr uint16) (uint32, bool) {
 	// Check Bank 1 window ($2000-$3FFF)
 	if b.bank1Enable && addr >= Z80_BANK1_WINDOW_BASE && addr < Z80_BANK1_WINDOW_BASE+Z80_BANK_WINDOW_SIZE {
 		offset := uint32(addr - Z80_BANK1_WINDOW_BASE)
@@ -236,7 +236,7 @@ func (b *Z80SystemBus) translateExtendedBank(addr uint16) (uint32, bool) {
 // translateVRAM translates addresses in the VRAM bank window to their
 // actual 32-bit addresses. Supports both VGA text buffer (0xB8000) and
 // main VRAM (0x100000+) depending on bank value.
-func (b *Z80SystemBus) translateVRAM(addr uint16) (uint32, bool) {
+func (b *Z80BusAdapter) translateVRAM(addr uint16) (uint32, bool) {
 	if !b.vramEnabled {
 		return 0, false
 	}
@@ -264,7 +264,7 @@ func (b *Z80SystemBus) translateVRAM(addr uint16) (uint32, bool) {
 }
 
 // ResetBank resets all bank registers to their default state
-func (b *Z80SystemBus) ResetBank() {
+func (b *Z80BusAdapter) ResetBank() {
 	b.vramBank = 0
 	b.vramEnabled = false
 	b.bank1 = 0
@@ -275,7 +275,7 @@ func (b *Z80SystemBus) ResetBank() {
 	b.bank3Enable = false
 }
 
-func (b *Z80SystemBus) In(port uint16) byte {
+func (b *Z80BusAdapter) In(port uint16) byte {
 	lowPort := byte(port)
 
 	// Handle PSG port I/O (0xF0-0xF1)
@@ -413,7 +413,7 @@ func (b *Z80SystemBus) In(port uint16) byte {
 	return b.bus.Read8(translateIO8Bit(port))
 }
 
-func (b *Z80SystemBus) Out(port uint16, value byte) {
+func (b *Z80BusAdapter) Out(port uint16, value byte) {
 	lowPort := byte(port)
 
 	// Handle PSG port I/O (0xF0-0xF1)
@@ -596,22 +596,22 @@ func (b *Z80SystemBus) Out(port uint16, value byte) {
 	b.bus.Write8(translateIO8Bit(port), value)
 }
 
-func (b *Z80SystemBus) Tick(cycles int) {}
+func (b *Z80BusAdapter) Tick(cycles int) {}
 
-func NewCPUZ80Runner(bus *SystemBus, config CPUZ80Config) *CPUZ80Runner {
+func NewCPUZ80Runner(bus *MachineBus, config CPUZ80Config) *CPUZ80Runner {
 	loadAddr := config.LoadAddr
 	if loadAddr == 0 {
 		loadAddr = defaultZ80LoadAddr
 	}
 
 	// Create Z80 system bus with optional VGA and Voodoo engine for port I/O
-	var z80Bus *Z80SystemBus
+	var z80Bus *Z80BusAdapter
 	if config.VoodooEngine != nil {
-		z80Bus = NewZ80SystemBusWithVoodoo(bus, config.VGAEngine, config.VoodooEngine)
+		z80Bus = NewZ80BusAdapterWithVoodoo(bus, config.VGAEngine, config.VoodooEngine)
 	} else if config.VGAEngine != nil {
-		z80Bus = NewZ80SystemBusWithVGA(bus, config.VGAEngine)
+		z80Bus = NewZ80BusAdapterWithVGA(bus, config.VGAEngine)
 	} else {
-		z80Bus = NewZ80SystemBus(bus)
+		z80Bus = NewZ80BusAdapter(bus)
 	}
 
 	return &CPUZ80Runner{

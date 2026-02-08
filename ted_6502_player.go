@@ -30,7 +30,7 @@ type TEDFileMetadata struct {
 
 // TED6502Player executes Plus/4 6502 code and captures TED register writes.
 type TED6502Player struct {
-	bus              *TED6502Bus
+	bus              *TEDPlaybackBus6502
 	cpu              *CPU_6502
 	file             *TEDFile
 	clockHz          uint32
@@ -83,7 +83,7 @@ func (p *TED6502Player) LoadFromData(data []byte) error {
 	p.cyclesPerFrame = uint64(p.clockHz) / uint64(p.frameRate)
 
 	// Create bus and load program
-	p.bus = newTED6502Bus(file.NTSC)
+	p.bus = newTEDPlaybackBus6502(file.NTSC)
 	p.bus.LoadBinary(file.LoadAddr, file.Data)
 
 	// Create CPU

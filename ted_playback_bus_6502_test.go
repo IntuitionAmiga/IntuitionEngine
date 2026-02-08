@@ -6,23 +6,23 @@ import (
 	"testing"
 )
 
-func TestTED6502BusCreation(t *testing.T) {
-	bus := newTED6502Bus(false) // PAL
+func TestTEDPlaybackBus6502Creation(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false) // PAL
 	if bus == nil {
-		t.Fatal("newTED6502Bus returned nil")
+		t.Fatal("newTEDPlaybackBus6502 returned nil")
 	}
 	if bus.ntsc {
 		t.Error("should be PAL (ntsc=false)")
 	}
 
-	bus = newTED6502Bus(true) // NTSC
+	bus = newTEDPlaybackBus6502(true) // NTSC
 	if !bus.ntsc {
 		t.Error("should be NTSC (ntsc=true)")
 	}
 }
 
-func TestTED6502BusRAMReadWrite(t *testing.T) {
-	bus := newTED6502Bus(false)
+func TestTEDPlaybackBus6502RAMReadWrite(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
 
 	// Write to RAM
 	bus.Write(0x1000, 0xAB)
@@ -39,8 +39,8 @@ func TestTED6502BusRAMReadWrite(t *testing.T) {
 	}
 }
 
-func TestTED6502BusTEDRegisterCapture(t *testing.T) {
-	bus := newTED6502Bus(false)
+func TestTEDPlaybackBus6502TEDRegisterCapture(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
 
 	// Write to TED sound registers (Plus/4 addresses $FF0E-$FF12)
 	bus.Write(PLUS4_TED_SND_CTRL, 0x18) // Voice 1 on, volume 8
@@ -63,8 +63,8 @@ func TestTED6502BusTEDRegisterCapture(t *testing.T) {
 	}
 }
 
-func TestTED6502BusTEDFrequencyRegisters(t *testing.T) {
-	bus := newTED6502Bus(false)
+func TestTEDPlaybackBus6502TEDFrequencyRegisters(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
 
 	// Write voice 1 frequency
 	bus.Write(PLUS4_TED_FREQ1_LO, 0x55)
@@ -78,8 +78,8 @@ func TestTED6502BusTEDFrequencyRegisters(t *testing.T) {
 	}
 }
 
-func TestTED6502BusTEDRead(t *testing.T) {
-	bus := newTED6502Bus(false)
+func TestTEDPlaybackBus6502TEDRead(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
 
 	// Write a value
 	bus.Write(PLUS4_TED_FREQ1_LO, 0x77)
@@ -91,8 +91,8 @@ func TestTED6502BusTEDRead(t *testing.T) {
 	}
 }
 
-func TestTED6502BusAddCycles(t *testing.T) {
-	bus := newTED6502Bus(false)
+func TestTEDPlaybackBus6502AddCycles(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
 
 	if bus.cycles != 0 {
 		t.Errorf("initial cycles = %d, want 0", bus.cycles)
@@ -109,8 +109,8 @@ func TestTED6502BusAddCycles(t *testing.T) {
 	}
 }
 
-func TestTED6502BusStartFrame(t *testing.T) {
-	bus := newTED6502Bus(false)
+func TestTEDPlaybackBus6502StartFrame(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
 
 	// Add some cycles and events
 	bus.AddCycles(1000)
@@ -128,8 +128,8 @@ func TestTED6502BusStartFrame(t *testing.T) {
 	}
 }
 
-func TestTED6502BusCollectEvents(t *testing.T) {
-	bus := newTED6502Bus(false)
+func TestTEDPlaybackBus6502CollectEvents(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
 
 	// Generate some events
 	bus.Write(PLUS4_TED_FREQ1_LO, 0x55)
@@ -152,8 +152,8 @@ func TestTED6502BusCollectEvents(t *testing.T) {
 	}
 }
 
-func TestTED6502BusLoadBinary(t *testing.T) {
-	bus := newTED6502Bus(false)
+func TestTEDPlaybackBus6502LoadBinary(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
 
 	data := []byte{0xA9, 0x00, 0x8D, 0x11, 0xFF, 0x60} // LDA #$00, STA $FF11, RTS
 	bus.LoadBinary(0x1000, data)
@@ -165,8 +165,8 @@ func TestTED6502BusLoadBinary(t *testing.T) {
 	}
 }
 
-func TestTED6502BusReset(t *testing.T) {
-	bus := newTED6502Bus(false)
+func TestTEDPlaybackBus6502Reset(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
 
 	// Add state
 	bus.Write(0x1000, 0xFF)
@@ -187,8 +187,8 @@ func TestTED6502BusReset(t *testing.T) {
 	}
 }
 
-func TestTED6502BusGetCycles(t *testing.T) {
-	bus := newTED6502Bus(false)
+func TestTEDPlaybackBus6502GetCycles(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
 	bus.AddCycles(500)
 
 	if bus.GetCycles() != 500 {
@@ -196,8 +196,8 @@ func TestTED6502BusGetCycles(t *testing.T) {
 	}
 }
 
-func TestTED6502BusGetFrameCycles(t *testing.T) {
-	bus := newTED6502Bus(false)
+func TestTEDPlaybackBus6502GetFrameCycles(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
 	bus.AddCycles(1000)
 	bus.StartFrame()
 	bus.AddCycles(250)
@@ -208,8 +208,8 @@ func TestTED6502BusGetFrameCycles(t *testing.T) {
 	}
 }
 
-func TestTED6502BusVectorSetup(t *testing.T) {
-	bus := newTED6502Bus(false)
+func TestTEDPlaybackBus6502VectorSetup(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
 
 	// Check IRQ vector is set up
 	irqLo := bus.Read(0xFFFE)

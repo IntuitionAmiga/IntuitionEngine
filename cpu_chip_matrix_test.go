@@ -14,8 +14,8 @@ import (
 // =============================================================================
 
 func Test6502_PSG_Access(t *testing.T) {
-	bus := NewSystemBus()
-	adapter := NewMemoryBusAdapter_6502(bus)
+	bus := NewMachineBus()
+	adapter := NewBus6502Adapter(bus)
 
 	// Test write to PSG register via 6502 address space ($D400)
 	adapter.Write(0xD400, 0xAB) // PSG_A_FREQ_LO
@@ -33,8 +33,8 @@ func Test6502_PSG_Access(t *testing.T) {
 }
 
 func Test6502_SID_Access(t *testing.T) {
-	bus := NewSystemBus()
-	adapter := NewMemoryBusAdapter_6502(bus)
+	bus := NewMachineBus()
+	adapter := NewBus6502Adapter(bus)
 
 	// Test write to SID register via 6502 address space ($D500)
 	adapter.Write(0xD500, 0x12) // SID_V1_FREQ_LO
@@ -52,8 +52,8 @@ func Test6502_SID_Access(t *testing.T) {
 }
 
 func Test6502_POKEY_Access(t *testing.T) {
-	bus := NewSystemBus()
-	adapter := NewMemoryBusAdapter_6502(bus)
+	bus := NewMachineBus()
+	adapter := NewBus6502Adapter(bus)
 
 	// Test write to POKEY register via 6502 address space ($D200)
 	adapter.Write(0xD200, 0x34) // POKEY_AUDF1
@@ -77,8 +77,8 @@ func Test6502_POKEY_Access(t *testing.T) {
 }
 
 func Test6502_TED_Access(t *testing.T) {
-	bus := NewSystemBus()
-	adapter := NewMemoryBusAdapter_6502(bus)
+	bus := NewMachineBus()
+	adapter := NewBus6502Adapter(bus)
 
 	// Test write to TED register via 6502 address space ($D600)
 	adapter.Write(0xD600, 0x56) // TED_FREQ1_LO
@@ -102,8 +102,8 @@ func Test6502_TED_Access(t *testing.T) {
 }
 
 func Test6502_ULA_Access(t *testing.T) {
-	bus := NewSystemBus()
-	adapter := NewMemoryBusAdapter_6502(bus)
+	bus := NewMachineBus()
+	adapter := NewBus6502Adapter(bus)
 
 	// Test write to ULA border register via 6502 address space ($D800)
 	adapter.Write(0xD800, 0x03) // ULA_BORDER
@@ -131,8 +131,8 @@ func Test6502_ULA_Access(t *testing.T) {
 // =============================================================================
 
 func TestZ80_PSG_PortIO(t *testing.T) {
-	bus := NewSystemBus()
-	z80Bus := NewZ80SystemBus(bus)
+	bus := NewMachineBus()
+	z80Bus := NewZ80BusAdapter(bus)
 
 	// Select PSG register 0 and write value
 	z80Bus.Out(Z80_PSG_PORT_SELECT, 0)
@@ -152,8 +152,8 @@ func TestZ80_PSG_PortIO(t *testing.T) {
 }
 
 func TestZ80_SID_PortIO(t *testing.T) {
-	bus := NewSystemBus()
-	z80Bus := NewZ80SystemBus(bus)
+	bus := NewMachineBus()
+	z80Bus := NewZ80BusAdapter(bus)
 
 	// Select SID register 0 and write value
 	z80Bus.Out(Z80_SID_PORT_SELECT, 0)
@@ -173,8 +173,8 @@ func TestZ80_SID_PortIO(t *testing.T) {
 }
 
 func TestZ80_POKEY_PortIO(t *testing.T) {
-	bus := NewSystemBus()
-	z80Bus := NewZ80SystemBus(bus)
+	bus := NewMachineBus()
+	z80Bus := NewZ80BusAdapter(bus)
 
 	// Select POKEY register 0 and write value
 	z80Bus.Out(Z80_POKEY_PORT_SELECT, 0)
@@ -194,8 +194,8 @@ func TestZ80_POKEY_PortIO(t *testing.T) {
 }
 
 func TestZ80_TED_PortIO(t *testing.T) {
-	bus := NewSystemBus()
-	z80Bus := NewZ80SystemBus(bus)
+	bus := NewMachineBus()
+	z80Bus := NewZ80BusAdapter(bus)
 
 	// Select TED register 0 and write value
 	z80Bus.Out(Z80_TED_PORT_SELECT, 0)
@@ -215,8 +215,8 @@ func TestZ80_TED_PortIO(t *testing.T) {
 }
 
 func TestZ80_ULA_PortIO(t *testing.T) {
-	bus := NewSystemBus()
-	z80Bus := NewZ80SystemBus(bus)
+	bus := NewMachineBus()
+	z80Bus := NewZ80BusAdapter(bus)
 
 	// Write border color via port 0xFE (bits 0-2 only)
 	z80Bus.Out(Z80_ULA_PORT, 0x05) // Border color 5 (cyan)
@@ -238,7 +238,7 @@ func TestZ80_ULA_PortIO(t *testing.T) {
 // =============================================================================
 
 func TestM68K_PSG_Access(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 
 	// M68K accesses PSG directly at $F0C00
 	bus.Write8(PSG_BASE, 0x11)
@@ -250,7 +250,7 @@ func TestM68K_PSG_Access(t *testing.T) {
 }
 
 func TestM68K_SID_Access(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 
 	// M68K accesses SID directly at $F0E00
 	bus.Write8(SID_BASE, 0x22)
@@ -262,7 +262,7 @@ func TestM68K_SID_Access(t *testing.T) {
 }
 
 func TestM68K_POKEY_Access(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 
 	// M68K accesses POKEY directly at $F0D00
 	bus.Write8(POKEY_BASE, 0x33)
@@ -274,7 +274,7 @@ func TestM68K_POKEY_Access(t *testing.T) {
 }
 
 func TestM68K_TED_Access(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 
 	// M68K accesses TED directly at $F0F00
 	bus.Write8(TED_BASE, 0x44)
@@ -286,7 +286,7 @@ func TestM68K_TED_Access(t *testing.T) {
 }
 
 func TestM68K_ULA_Access(t *testing.T) {
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 
 	// M68K accesses ULA directly at $F2000
 	bus.Write8(ULA_BASE, 0x55)
@@ -359,9 +359,9 @@ func TestChipAddressConstants(t *testing.T) {
 // =============================================================================
 
 func TestCrossCPU_PSG_Consistency(t *testing.T) {
-	bus := NewSystemBus()
-	adapter6502 := NewMemoryBusAdapter_6502(bus)
-	z80Bus := NewZ80SystemBus(bus)
+	bus := NewMachineBus()
+	adapter6502 := NewBus6502Adapter(bus)
+	z80Bus := NewZ80BusAdapter(bus)
 
 	// Write via 6502
 	adapter6502.Write(0xD400, 0xAA)
@@ -379,9 +379,9 @@ func TestCrossCPU_PSG_Consistency(t *testing.T) {
 }
 
 func TestCrossCPU_SID_Consistency(t *testing.T) {
-	bus := NewSystemBus()
-	adapter6502 := NewMemoryBusAdapter_6502(bus)
-	z80Bus := NewZ80SystemBus(bus)
+	bus := NewMachineBus()
+	adapter6502 := NewBus6502Adapter(bus)
+	z80Bus := NewZ80BusAdapter(bus)
 
 	// Write via M68K (direct)
 	bus.Write8(SID_BASE, 0xBB)
@@ -399,9 +399,9 @@ func TestCrossCPU_SID_Consistency(t *testing.T) {
 }
 
 func TestCrossCPU_POKEY_Consistency(t *testing.T) {
-	bus := NewSystemBus()
-	adapter6502 := NewMemoryBusAdapter_6502(bus)
-	z80Bus := NewZ80SystemBus(bus)
+	bus := NewMachineBus()
+	adapter6502 := NewBus6502Adapter(bus)
+	z80Bus := NewZ80BusAdapter(bus)
 
 	// Write via Z80
 	z80Bus.Out(Z80_POKEY_PORT_SELECT, 0)
@@ -419,9 +419,9 @@ func TestCrossCPU_POKEY_Consistency(t *testing.T) {
 }
 
 func TestCrossCPU_TED_Consistency(t *testing.T) {
-	bus := NewSystemBus()
-	adapter6502 := NewMemoryBusAdapter_6502(bus)
-	z80Bus := NewZ80SystemBus(bus)
+	bus := NewMachineBus()
+	adapter6502 := NewBus6502Adapter(bus)
+	z80Bus := NewZ80BusAdapter(bus)
 
 	// Write via 6502
 	adapter6502.Write(0xD600, 0xDD)
@@ -439,9 +439,9 @@ func TestCrossCPU_TED_Consistency(t *testing.T) {
 }
 
 func TestCrossCPU_ULA_Consistency(t *testing.T) {
-	bus := NewSystemBus()
-	adapter6502 := NewMemoryBusAdapter_6502(bus)
-	z80Bus := NewZ80SystemBus(bus)
+	bus := NewMachineBus()
+	adapter6502 := NewBus6502Adapter(bus)
+	z80Bus := NewZ80BusAdapter(bus)
 
 	// Write via Z80 port
 	z80Bus.Out(Z80_ULA_PORT, 0x07) // Max border color
@@ -462,8 +462,8 @@ func TestCrossCPU_ULA_Consistency(t *testing.T) {
 // =============================================================================
 
 func TestX86_PSG_PortIO(t *testing.T) {
-	bus := NewSystemBus()
-	x86Bus := NewX86SystemBus(bus)
+	bus := NewMachineBus()
+	x86Bus := NewX86BusAdapter(bus)
 
 	// Select PSG register 0 and write value
 	x86Bus.Out(X86_PORT_PSG_SELECT, 0)
@@ -483,8 +483,8 @@ func TestX86_PSG_PortIO(t *testing.T) {
 }
 
 func TestX86_SID_PortIO(t *testing.T) {
-	bus := NewSystemBus()
-	x86Bus := NewX86SystemBus(bus)
+	bus := NewMachineBus()
+	x86Bus := NewX86BusAdapter(bus)
 
 	// Select SID register 0 and write value
 	x86Bus.Out(X86_PORT_SID_SELECT, 0)
@@ -504,8 +504,8 @@ func TestX86_SID_PortIO(t *testing.T) {
 }
 
 func TestX86_POKEY_PortIO(t *testing.T) {
-	bus := NewSystemBus()
-	x86Bus := NewX86SystemBus(bus)
+	bus := NewMachineBus()
+	x86Bus := NewX86BusAdapter(bus)
 
 	// Write to POKEY register 0 via direct port mapping (0xD0 = AUDF1)
 	x86Bus.Out(X86_PORT_POKEY_BASE, 0xDE)
@@ -523,8 +523,8 @@ func TestX86_POKEY_PortIO(t *testing.T) {
 }
 
 func TestX86_TED_PortIO(t *testing.T) {
-	bus := NewSystemBus()
-	x86Bus := NewX86SystemBus(bus)
+	bus := NewMachineBus()
+	x86Bus := NewX86BusAdapter(bus)
 
 	// Select TED register 0 and write value
 	x86Bus.Out(X86_PORT_TED_SELECT, 0)
@@ -544,8 +544,8 @@ func TestX86_TED_PortIO(t *testing.T) {
 }
 
 func TestX86_ULA_PortIO(t *testing.T) {
-	bus := NewSystemBus()
-	x86Bus := NewX86SystemBus(bus)
+	bus := NewMachineBus()
+	x86Bus := NewX86BusAdapter(bus)
 
 	// Write border color via port 0xFE (same as Z80)
 	x86Bus.Out(Z80_ULA_PORT, 0x05)
@@ -563,8 +563,8 @@ func TestX86_ULA_PortIO(t *testing.T) {
 }
 
 func TestX86_ANTIC_PortIO(t *testing.T) {
-	bus := NewSystemBus()
-	x86Bus := NewX86SystemBus(bus)
+	bus := NewMachineBus()
+	x86Bus := NewX86BusAdapter(bus)
 
 	// Select ANTIC register 0 (DMACTL) and write value
 	x86Bus.Out(X86_PORT_ANTIC_SELECT, 0)
@@ -584,8 +584,8 @@ func TestX86_ANTIC_PortIO(t *testing.T) {
 }
 
 func TestX86_GTIA_PortIO(t *testing.T) {
-	bus := NewSystemBus()
-	x86Bus := NewX86SystemBus(bus)
+	bus := NewMachineBus()
+	x86Bus := NewX86BusAdapter(bus)
 
 	// Select GTIA register 0 (COLPF0) and write value
 	x86Bus.Out(X86_PORT_GTIA_SELECT, 0)
@@ -609,8 +609,8 @@ func TestX86_GTIA_PortIO(t *testing.T) {
 // =============================================================================
 
 func TestZ80_ANTIC_PortIO(t *testing.T) {
-	bus := NewSystemBus()
-	z80Bus := NewZ80SystemBus(bus)
+	bus := NewMachineBus()
+	z80Bus := NewZ80BusAdapter(bus)
 
 	// Select ANTIC register 0 (DMACTL) and write value
 	z80Bus.Out(Z80_ANTIC_PORT_SELECT, 0)
@@ -630,8 +630,8 @@ func TestZ80_ANTIC_PortIO(t *testing.T) {
 }
 
 func TestZ80_GTIA_PortIO(t *testing.T) {
-	bus := NewSystemBus()
-	z80Bus := NewZ80SystemBus(bus)
+	bus := NewMachineBus()
+	z80Bus := NewZ80BusAdapter(bus)
 
 	// Select GTIA register 0 (COLPF0) and write value
 	z80Bus.Out(Z80_GTIA_PORT_SELECT, 0)
@@ -655,10 +655,10 @@ func TestZ80_GTIA_PortIO(t *testing.T) {
 // =============================================================================
 
 func TestCrossCPU_PSG_WithX86(t *testing.T) {
-	bus := NewSystemBus()
-	adapter6502 := NewMemoryBusAdapter_6502(bus)
-	z80Bus := NewZ80SystemBus(bus)
-	x86Bus := NewX86SystemBus(bus)
+	bus := NewMachineBus()
+	adapter6502 := NewBus6502Adapter(bus)
+	z80Bus := NewZ80BusAdapter(bus)
+	x86Bus := NewX86BusAdapter(bus)
 
 	// Write via x86
 	x86Bus.Out(X86_PORT_PSG_SELECT, 0)
@@ -682,9 +682,9 @@ func TestCrossCPU_PSG_WithX86(t *testing.T) {
 }
 
 func TestCrossCPU_ANTIC_AllCPUs(t *testing.T) {
-	bus := NewSystemBus()
-	z80Bus := NewZ80SystemBus(bus)
-	x86Bus := NewX86SystemBus(bus)
+	bus := NewMachineBus()
+	z80Bus := NewZ80BusAdapter(bus)
+	x86Bus := NewX86BusAdapter(bus)
 
 	// Note: 6502 has PSG at $D400 which conflicts with ANTIC's authentic Atari address
 	// So we test cross-CPU with M68K, Z80, and x86 only
@@ -711,9 +711,9 @@ func TestCrossCPU_ANTIC_AllCPUs(t *testing.T) {
 }
 
 func TestCrossCPU_GTIA_AllCPUs(t *testing.T) {
-	bus := NewSystemBus()
-	z80Bus := NewZ80SystemBus(bus)
-	x86Bus := NewX86SystemBus(bus)
+	bus := NewMachineBus()
+	z80Bus := NewZ80BusAdapter(bus)
+	x86Bus := NewX86BusAdapter(bus)
 
 	// Write via Z80
 	z80Bus.Out(Z80_GTIA_PORT_SELECT, 0)
@@ -732,10 +732,10 @@ func TestCrossCPU_GTIA_AllCPUs(t *testing.T) {
 }
 
 func TestCrossCPU_ULA_WithX86(t *testing.T) {
-	bus := NewSystemBus()
-	adapter6502 := NewMemoryBusAdapter_6502(bus)
-	z80Bus := NewZ80SystemBus(bus)
-	x86Bus := NewX86SystemBus(bus)
+	bus := NewMachineBus()
+	adapter6502 := NewBus6502Adapter(bus)
+	z80Bus := NewZ80BusAdapter(bus)
+	x86Bus := NewX86BusAdapter(bus)
 
 	// Write via x86
 	x86Bus.Out(Z80_ULA_PORT, 0x06)

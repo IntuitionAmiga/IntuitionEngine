@@ -55,7 +55,7 @@ func boilerPlate() {
 //func main() {
 //	boilerPlate()
 //
-//	sysBus := NewSystemBus()
+//	sysBus := NewMachineBus()
 //	cpu := NewCPU(sysBus)
 //
 //	soundChip, err := NewSoundChip(AUDIO_BACKEND_OTO)
@@ -543,7 +543,7 @@ func main() {
 	}
 
 	// Create system bus
-	sysBus := NewSystemBus()
+	sysBus := NewMachineBus()
 	psgPlayer.AttachBus(sysBus)
 	sidPlayer.AttachBus(sysBus)
 

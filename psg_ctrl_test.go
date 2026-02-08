@@ -13,7 +13,7 @@ func TestPSGPlayCtrlWrites(t *testing.T) {
 		t.Skip("robocop_intro.iex not found")
 	}
 
-	bus := NewSystemBus()
+	bus := NewMachineBus()
 
 	// Track writes
 	var psgPlayCtrlWrites atomic.Int32
