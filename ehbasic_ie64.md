@@ -745,6 +745,8 @@ Display the stored program.
 LIST
 ```
 
+`LIST` is handled by the REPL command parser in immediate mode. It is not dispatched from tokenised program lines.
+
 ### LOCATE
 
 Set the text-mode cursor position.
@@ -753,7 +755,7 @@ Set the text-mode cursor position.
 LOCATE row, col
 ```
 
-Positions are zero-based. Sets the VGA CRTC start address for cursor display.
+Positions are zero-based. Writes cursor position via VGA CRTC cursor registers (indices `0x0E`/`0x0F`).
 
 ### LOKE
 
@@ -775,6 +777,8 @@ Clear the program from memory.
 NEW
 ```
 
+`NEW` is handled by the REPL command parser in immediate mode. It is not dispatched from tokenised program lines.
+
 ### NEXT
 
 See [FOR...NEXT](#fornext).
@@ -792,7 +796,7 @@ The selector is 1-based: `ON 1 GOTO 100,200` jumps to line 100. If the selector 
 
 **Example:**
 ```basic
-10 INPUT "Choice (1-3): "; C
+10 INPUT C
 20 ON C GOTO 100, 200, 300
 30 PRINT "Invalid choice"
 40 END
@@ -831,19 +835,20 @@ Default colour is 15 (white). Calculates the VRAM offset as `y*320 + x`.
 ```basic
 SCREEN &H13
 FOR I = 0 TO 319
-  PLOT I, 100, I MOD 256
+  PLOT I, 100, I AND 255
 NEXT I
 ```
 
 ### POKE
 
-Write a 32-bit value to a memory address.
+Write a value to memory as either 32-bit (`POKE`) or byte (`POKE8`).
 
 ```
 POKE address, value
+POKE8 address, value
 ```
 
-Both address and value are evaluated as expressions and truncated to integers.
+Both address and value are evaluated as expressions and truncated to integers. `POKE` stores 32 bits; `POKE8` stores the low 8 bits.
 
 **Example:**
 ```basic
@@ -940,6 +945,8 @@ Execute the stored program from the beginning.
 RUN
 ```
 
+`RUN` is handled by the REPL command parser in immediate mode. It is not dispatched from tokenised program lines.
+
 ### SAP
 
 Control the SAP (Slight Atari Player) music player.
@@ -1030,18 +1037,18 @@ SOUND REVERB mix, decay
 - `mix` — dry/wet mix (0-255)
 - `decay` — decay time (0-255)
 
-**SOUND OVERDRIVE** enables or disables the overdrive (distortion) effect:
+**SOUND OVERDRIVE** sets the overdrive (distortion) amount:
 ```
-SOUND OVERDRIVE ON gain
-SOUND OVERDRIVE OFF
+SOUND OVERDRIVE amount
 ```
-- `gain` — drive amount (0-255)
+- `amount` — drive amount (0-255)
 
-**SOUND NOISE** sets the noise generator mode:
+**SOUND NOISE** sets noise mode using a channel-qualified command:
 ```
-SOUND NOISE MODE value
+SOUND NOISE channel, mode
 ```
-- `value` — noise mode (0=off, 1=white, 2=pink, etc.)
+- `channel` — channel number
+- `mode` — noise mode value
 
 **SOUND WAVE** sets the waveform type for a flexible channel:
 ```
@@ -1978,7 +1985,7 @@ All players support `STOP` to halt playback. SID and SAP players support subsong
 |---------------|--------|
 | `&HF0000`-`&HF0057` | Video Chip (copper, blitter, raster) |
 | `&HF0700`-`&HF07FF` | Terminal MMIO |
-| `&HF0800`-`&HF0B3F` | Audio Chip (SoundChip) |
+| `&HF0800`-`&HF0B7F` | Audio Chip (SoundChip) |
 | `&HF0B80`-`&HF0B91` | AHX Player |
 | `&HF0C00`-`&HF0C1C` | PSG (AY-3-8910) |
 | `&HF0D00`-`&HF0D1D` | POKEY |
@@ -1994,14 +2001,19 @@ All players support `STOP` to halt playback. SID and SAP players support subsong
 
 | Address | Size | Purpose |
 |---------|------|---------|
-| `&H001000`-`&H020FFF` | 128 KB | Interpreter code |
+| `&H001000`-`&H020FFF` | 128 KB | Interpreter code reservation |
 | `&H021000`-`&H021FFF` | 4 KB | Input line buffer |
 | `&H022000`-`&H022FFF` | 4 KB | Interpreter state block |
-| `&H023000`-`&H08BFFF` | 428 KB | Program text + variables + heap |
-| `&H08C000`-`&H08FFFF` | 16 KB | String temporaries |
-| `&H090000`-`&H096FFF` | 28 KB | GOSUB/FOR stacks |
-| `&H097000`-`&H09EFFF` | 32 KB | Hardware stack (R31) |
-| `&H09F000` | - | Stack top (initial SP) |
+| `&H023000`-`&H04FFFF` | 180 KB | Program text region (grows upward) |
+| `&H050000`-`&H057FFF` | 32 KB | Numeric variable table region start |
+| `&H058000`-`&H05FFFF` | 32 KB | String variable table region start |
+| `&H060000`-`&H08BFFF` | 176 KB | Array storage region start |
+| `&H08C000`-`&H08FFFF` | 16 KB | String temporaries / heap top |
+| `&H090000`-`&H096FFF` | 28 KB | GOSUB/FOR/DO/WHILE stacks |
+| `&H097000`-`&H09EFFF` | 32 KB | Hardware stack region |
+| `&H09F000` | - | Initial stack top (SP) |
+
+`var_init` initialises variable/array pointers at fixed bases (`&H050000`, `&H058000`, `&H060000`) and the string heap at `&H08C000`.
 
 ### State Block Offsets
 
@@ -2075,7 +2087,7 @@ This section documents every I/O register accessible via POKE/PEEK or the hardwa
 
 ULA VRAM at `&H4000`: 6,144 bytes bitmap + 768 bytes attributes.
 
-### 9.4 Audio Chip Registers (`&HF0800`-`&HF0B3F`)
+### 9.4 Audio Chip Registers (`&HF0800`-`&HF0B7F`)
 
 #### Global Control
 
@@ -2236,17 +2248,17 @@ Audio registers at `&HF0F00`-`&HF0F05`. Video control at `&HF0F20`-`&HF0F5F`. Se
 | `&HF0000` | VIDEO_CTRL | Video control |
 | `&HF0004` | VIDEO_MODE | Video mode select |
 | `&HF0008` | VIDEO_STATUS | Video status |
-| `&HF0020` | COPPER_CTRL | Copper control (1=enable) |
-| `&HF0024` | COPPER_PTR | Copper list pointer |
-| `&HF0030` | BLT_SRC | Blitter source address |
-| `&HF0034` | BLT_DST | Blitter destination address |
-| `&HF0038` | BLT_WIDTH | Blitter width |
-| `&HF003C` | BLT_HEIGHT | Blitter height |
-| `&HF0040` | BLT_SRC_STRIDE | Source stride |
-| `&HF0044` | BLT_DST_STRIDE | Destination stride |
-| `&HF0048` | BLT_OP | Operation (0=copy, 1=fill, 2=line) |
-| `&HF004C` | BLT_CTRL | Control (write 1 to start) |
-| `&HF0050` | BLT_COLOR | Fill/line colour |
+| `&HF000C` | COPPER_CTRL | Copper control (1=enable) |
+| `&HF0010` | COPPER_PTR | Copper list pointer |
+| `&HF001C` | BLT_CTRL | Control (write 1 to start) |
+| `&HF0020` | BLT_OP | Operation (0=copy, 1=fill, 2=line) |
+| `&HF0024` | BLT_SRC | Blitter source address |
+| `&HF0028` | BLT_DST | Blitter destination address |
+| `&HF002C` | BLT_WIDTH | Blitter width |
+| `&HF0030` | BLT_HEIGHT | Blitter height |
+| `&HF0034` | BLT_SRC_STRIDE | Source stride |
+| `&HF0038` | BLT_DST_STRIDE | Destination stride |
+| `&HF003C` | BLT_COLOR | Fill/line colour |
 
 ---
 
@@ -2261,7 +2273,8 @@ POKE &HF0700, 65    : REM write 'A' to terminal
 V = PEEK(&HF1000)   : REM read VGA mode register
 ```
 
-POKE writes a 32-bit value; DOKE writes 16-bit; LOKE writes 32-bit (same as POKE). PEEK reads 32-bit; DEEK reads 16-bit; LEEK reads 32-bit (same as PEEK).
+POKE writes a 32-bit value; `POKE8` writes an 8-bit value; DOKE writes 16-bit; LOKE writes 32-bit (same as POKE).  
+PEEK reads 32-bit; `PEEK8(address)` reads an 8-bit value; DEEK reads 16-bit; LEEK reads 32-bit (same as PEEK).
 
 ### Direct Memory Access
 
@@ -2286,7 +2299,6 @@ If you write IE64 assembly routines callable from BASIC (via CALL or USR), the f
 | R10-R15 | Scratch (some routines push/pop) |
 | R16 | State base pointer (preserved) |
 | R17 | Text/token stream pointer (preserved) |
-| R19 | Expression stack pointer |
 | R22 | Temporary value (BASIC expressions) |
 | R26 | Cached TERM_OUT address |
 | R27 | Cached TERM_STATUS address |
@@ -2306,24 +2318,23 @@ Available routines: `fp_add`, `fp_sub`, `fp_mul`, `fp_div`, `fp_neg`, `fp_abs`, 
 
 ## 11. Error Messages
 
-EhBASIC IE64 stores error codes in the state block at offset `+&H38` (ST_ERROR_FLAG). The interpreter handles errors by stopping execution and returning to the `Ready` prompt.
+The current interpreter does not emit textual BASIC error messages, and it does not currently set structured runtime error codes during normal execution. `ST_ERROR_FLAG` exists in the state block layout but is only initialised/cleared at startup.
 
-Common error conditions:
+Current behaviour for common failure cases:
 
 | Condition | Behaviour |
 |-----------|-----------|
 | Undefined line (GOTO/GOSUB) | Execution stops silently |
-| RETURN without GOSUB | Stack underflow; execution stops |
-| NEXT without FOR | Stack underflow; execution stops |
-| WEND without WHILE | Stack underflow; execution stops |
-| LOOP without DO | Stack underflow; execution stops |
-| Division by zero | Returns +/-Infinity (no error) |
-| Square root of negative | Returns 0 (no error) |
-| Input buffer full | Characters dropped silently |
-| Out of memory | Variables/arrays may overwrite adjacent regions |
+| RETURN without GOSUB | Treated as stack mismatch; execution stops |
+| NEXT without FOR | Treated as stack mismatch; execution stops |
+| WEND without WHILE | Treated as stack mismatch; execution stops |
+| LOOP without DO | Treated as stack mismatch; execution stops |
+| Division by zero | FP32 operation result (typically +/-Infinity) |
+| Square root of negative | Returns 0 |
+| INPUT buffer full | Extra typed characters are ignored |
 | DATA exhausted | READ returns 0 |
 
-Note: The current implementation does not display textual error messages. Errors are indicated by unexpected execution stops or incorrect values. Future versions may add explicit error reporting.
+Use `TRON` to trace line execution when debugging control-flow issues.
 
 ---
 
@@ -2353,7 +2364,7 @@ Note: The current implementation does not display textual error messages. Errors
 ```basic
 10 N = INT(RND(1) * 100) + 1
 20 PRINT "I'm thinking of a number between 1 and 100."
-30 INPUT "Your guess: "; G
+30 INPUT G
 40 IF G < N THEN PRINT "Too low!" : GOTO 30
 50 IF G > N THEN PRINT "Too high!" : GOTO 30
 60 PRINT "Correct! You got it!"
@@ -2365,13 +2376,13 @@ Note: The current implementation does not display textual error messages. Errors
 10 PRINT "Temperature Converter"
 20 PRINT "1. Celsius to Fahrenheit"
 30 PRINT "2. Fahrenheit to Celsius"
-40 INPUT "Choice: "; C
+40 INPUT C
 50 ON C GOSUB 100, 200
 60 END
-100 INPUT "Celsius: "; T
+100 INPUT T
 110 PRINT T; "C = "; T * 9 / 5 + 32; "F"
 120 RETURN
-200 INPUT "Fahrenheit: "; T
+200 INPUT T
 210 PRINT T; "F = "; (T - 32) * 5 / 9; "C"
 220 RETURN
 ```
@@ -2613,6 +2624,8 @@ Atari colours use a hue-luminance system: `(hue << 4) | luminance`. 16 hues x 16
 
 Tokens marked with \* are tokenised (recognised by the tokeniser) but do not yet have execution dispatch. Using them in a program will silently have no effect or return 0.
 
+`RUN`, `LIST`, and `NEW` are tokenised keywords but are handled by the REPL command parser in immediate mode rather than the program-line statement dispatcher.
+
 | Hex | Token | Keyword | Type |
 |-----|-------|---------|------|
 | 80 | TK_END | END | Statement |
@@ -2694,7 +2707,7 @@ Tokens marked with \* are tokenised (recognised by the tokeniser) but do not yet
 | CC | TK_PEEK | PEEK | Function |
 | CD | TK_DEEK | DEEK | Function |
 | CE | TK_LEEK | LEEK | Function |
-| CF | TK_SADD | SADD | Function |
+| CF | TK_SADD | SADD | Function \* |
 | D0 | TK_LEN | LEN | Function |
 | D1 | TK_STRS | STR$ | Function |
 | D2 | TK_VAL | VAL | Function |
@@ -2702,14 +2715,14 @@ Tokens marked with \* are tokenised (recognised by the tokeniser) but do not yet
 | D4 | TK_UCASES | UCASE$ | Function \* |
 | D5 | TK_LCASES | LCASE$ | Function \* |
 | D6 | TK_CHRS | CHR$ | Function |
-| D7 | TK_HEXS | HEX$ | Function \* |
-| D8 | TK_BINS | BIN$ | Function \* |
+| D7 | TK_HEXS | HEX$ | Function |
+| D8 | TK_BINS | BIN$ | Function |
 | D9 | TK_BITTST | BITTST | Function |
 | DA | TK_MAX | MAX | Function |
 | DB | TK_MIN | MIN | Function |
 | DC | TK_PI | PI | Function |
 | DD | TK_TWOPI | TWOPI | Function |
-| DE | TK_VPTR | VARPTR | Function |
+| DE | TK_VPTR | VARPTR | Function \* |
 | DF | TK_LEFTS | LEFT$ | Function |
 | E0 | TK_RIGHTS | RIGHT$ | Function |
 | E1 | TK_MIDS | MID$ | Function |
