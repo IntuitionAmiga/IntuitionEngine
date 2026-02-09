@@ -122,13 +122,13 @@ func TestTerminalMMIO_EchoControl(t *testing.T) {
 
 func TestTerminalMMIO_EchoWritesToOutput(t *testing.T) {
 	tm := NewTerminalMMIO()
-	// Echo enabled: enqueue should echo to output
+	// EnqueueByte does NOT echo — echo is the application's responsibility.
 	tm.EnqueueByte('X')
 	out := tm.DrainOutput()
-	if out != "X" {
-		t.Fatalf("expected echoed 'X', got %q", out)
+	if out != "" {
+		t.Fatalf("expected no echo from EnqueueByte, got %q", out)
 	}
-	// Disable echo
+	// Same with echo disabled
 	tm.HandleWrite(TERM_ECHO, 0)
 	tm.EnqueueByte('Y')
 	out = tm.DrainOutput()
