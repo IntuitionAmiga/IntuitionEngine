@@ -159,146 +159,19 @@ exec_line:
 
     add.q   r17, r17, #1        ; consume the token byte
 
-    ; Statement tokens are 0x80..0xA9 (END through TO)
-    ; Function tokens are 0xAD+ (NOT, SGN, etc.) — not statements
-
-    ; Check each statement token
-    beqz    r1, .do_end          ; 0 = END
-    move.q  r2, #1
-    beq     r1, r2, .do_for     ; 1 = FOR
-    move.q  r2, #2
-    beq     r1, r2, .do_next    ; 2 = NEXT
-    move.q  r2, #3
-    beq     r1, r2, .do_data    ; 3 = DATA (skip)
-    move.q  r2, #4
-    beq     r1, r2, .do_input   ; 4 = INPUT
-    move.q  r2, #5
-    beq     r1, r2, .do_dim     ; 5 = DIM
-    move.q  r2, #6
-    beq     r1, r2, .do_read    ; 6 = READ
-    move.q  r2, #7
-    beq     r1, r2, .do_let     ; 7 = LET
-    move.q  r2, #8
-    beq     r1, r2, .do_dec     ; 8 = DEC
-    move.q  r2, #9
-    beq     r1, r2, .do_goto    ; 9 = GOTO
-    move.q  r2, #11
-    beq     r1, r2, .do_if      ; 11 = IF
-    move.q  r2, #12
-    beq     r1, r2, .do_restore ; 12 = RESTORE
-    move.q  r2, #13
-    beq     r1, r2, .do_gosub   ; 13 = GOSUB
-    move.q  r2, #14
-    beq     r1, r2, .do_return  ; 14 = RETURN
-    move.q  r2, #15
-    beq     r1, r2, .do_rem     ; 15 = REM
-    move.q  r2, #16
-    beq     r1, r2, .do_stop    ; 16 = STOP
-    move.q  r2, #17
-    beq     r1, r2, .do_on      ; 17 = ON
-    move.q  r2, #19
-    beq     r1, r2, .do_inc     ; 19 = INC
-    move.q  r2, #20
-    beq     r1, r2, .do_wait    ; 20 = WAIT
-    move.q  r2, #24
-    beq     r1, r2, .do_poke    ; 24 = POKE
-    move.q  r2, #25
-    beq     r1, r2, .do_doke    ; 25 = DOKE
-    move.q  r2, #26
-    beq     r1, r2, .do_loke    ; 26 = LOKE
-    move.q  r2, #28
-    beq     r1, r2, .do_do      ; 28 = DO
-    move.q  r2, #29
-    beq     r1, r2, .do_loop    ; 29 = LOOP
-    move.q  r2, #30
-    beq     r1, r2, .do_print   ; 30 = PRINT
-    move.q  r2, #31
-    beq     r1, r2, .do_cont    ; 31 = CONT (TK_CONT=0x9F, idx=31)
-    move.q  r2, #18
-    beq     r1, r2, .do_tron    ; 18 = TRON (via TK_NULL)
-    move.q  r2, #21
-    beq     r1, r2, .do_troff   ; 21 = TROFF (via TK_LOAD)
-    move.q  r2, #27
-    beq     r1, r2, .do_call    ; 27 = CALL
-    move.q  r2, #33
-    beq     r1, r2, .do_clear   ; 33 = CLEAR
-    move.q  r2, #36
-    beq     r1, r2, .do_get     ; 36 = GET
-    move.q  r2, #37
-    beq     r1, r2, .do_swap    ; 37 = SWAP
-    move.q  r2, #38
-    beq     r1, r2, .do_bitset  ; 38 = BITSET
-    move.q  r2, #39
-    beq     r1, r2, .do_bitclr  ; 39 = BITCLR
-    move.q  r2, #47
-    beq     r1, r2, .do_wend    ; 47 = WEND (tokenized as TK_UNTIL)
-    move.q  r2, #48
-    beq     r1, r2, .do_while   ; 48 = WHILE
-
-    ; Hardware extension tokens (0xE2+ → index 98+)
-    move.q  r2, #98
-    beq     r1, r2, .do_screen  ; 98 = SCREEN
-    move.q  r2, #99
-    beq     r1, r2, .do_cls     ; 99 = CLS
-    move.q  r2, #100
-    beq     r1, r2, .do_plot    ; 100 = PLOT
-    move.q  r2, #101
-    beq     r1, r2, .do_palette ; 101 = PALETTE
-    move.q  r2, #102
-    beq     r1, r2, .do_vsync   ; 102 = VSYNC
-    move.q  r2, #103
-    beq     r1, r2, .do_locate  ; 103 = LOCATE
-    move.q  r2, #104
-    beq     r1, r2, .do_color   ; 104 = COLOR
-    move.q  r2, #105
-    beq     r1, r2, .do_line    ; 105 = LINE (TK_LINE_CMD=0xE9, idx=105)
-    move.q  r2, #106
-    beq     r1, r2, .do_circle  ; 106 = CIRCLE (TK_CIRCLE=0xEA, idx=106)
-    move.q  r2, #107
-    beq     r1, r2, .do_box     ; 107 = BOX (TK_BOX=0xEB, idx=107)
-    move.q  r2, #108
-    beq     r1, r2, .do_scroll  ; 108 = SCROLL (TK_SCROLL_CMD=0xEC, idx=108)
-    move.q  r2, #111
-    beq     r1, r2, .do_sound   ; 111 = SOUND (TK_SOUND=0xEF, idx=111)
-    move.q  r2, #112
-    beq     r1, r2, .do_envelope ; 112 = ENVELOPE (TK_ENVELOPE=0xF0, idx=112)
-    move.q  r2, #113
-    beq     r1, r2, .do_gate    ; 113 = GATE (TK_GATE=0xF1, idx=113)
-    move.q  r2, #109
-    beq     r1, r2, .do_copper  ; 109 = COPPER (TK_COPPER=0xED, idx=109)
-    move.q  r2, #110
-    beq     r1, r2, .do_blit   ; 110 = BLIT (TK_BLIT=0xEE, idx=110)
-    move.q  r2, #114
-    beq     r1, r2, .do_ula    ; 114 = ULA (TK_ULA=0xF2, idx=114)
-    move.q  r2, #115
-    beq     r1, r2, .do_ted_cmd ; 115 = TED (TK_TED_CMD=0xF3, idx=115)
-    move.q  r2, #116
-    beq     r1, r2, .do_antic  ; 116 = ANTIC (TK_ANTIC=0xF4, idx=116)
-    move.q  r2, #117
-    beq     r1, r2, .do_gtia   ; 117 = GTIA (TK_GTIA=0xF5, idx=117)
-    move.q  r2, #118
-    beq     r1, r2, .do_voodoo ; 118 = VOODOO (TK_VOODOO=0xF6, idx=118)
-    move.q  r2, #119
-    beq     r1, r2, .do_psg    ; 119 = PSG (TK_PSG_CMD=0xF7, idx=119)
-    move.q  r2, #120
-    beq     r1, r2, .do_sid    ; 120 = SID (TK_SID_CMD=0xF8, idx=120)
-    move.q  r2, #121
-    beq     r1, r2, .do_pokey  ; 121 = POKEY (TK_POKEY_CMD=0xF9, idx=121)
-    move.q  r2, #122
-    beq     r1, r2, .do_ahx    ; 122 = AHX (TK_AHX=0xFA, idx=122)
-    move.q  r2, #123
-    beq     r1, r2, .do_sap    ; 123 = SAP (TK_SAP=0xFB, idx=123)
-    move.q  r2, #124
-    beq     r1, r2, .do_zbuffer ; 124 = ZBUFFER (TK_ZBUFFER=0xFC, idx=124)
-    move.q  r2, #125
-    beq     r1, r2, .do_vertex ; 125 = VERTEX (TK_VERTEX=0xFD, idx=125)
-    move.q  r2, #126
-    beq     r1, r2, .do_triangle ; 126 = TRIANGLE (TK_TRIANGLE=0xFE, idx=126)
-    move.q  r2, #127
-    beq     r1, r2, .do_texture ; 127 = TEXTURE (TK_TEXTURE=0xFF, idx=127)
-
-    ; Unknown token — skip rest of line
-    bra     .el_done
+    ; --- Jump table dispatch ---
+    ; R1 = token index (0-127), guaranteed in range by load.b - 0x80
+    la      r9, stmt_jump_table
+    lsl.q   r2, r1, #2              ; index * 4
+    add.q   r9, r9, r2
+    load.l  r9, (r9)                ; handler address
+    jsr     (r9)                    ; dispatch to handler
+    ; fall through to check return code
+.el_check_rc:
+    ; After handler returns, check R28
+    ; 0 = continue to next stmt, 1 = GOTO (R14 changed), 2 = END/STOP
+    bnez    r28, .el_done
+    bra     .el_next_stmt
 
 .el_colon:
     ; Statement separator — advance and continue
@@ -313,7 +186,8 @@ exec_line:
     move.q  r2, #0x7A            ; 'z'
     bgt     r1, r2, .el_done
     ; It's a letter — implied LET (don't consume, var_lookup will read name)
-    bra     .do_let
+    jsr     exec_do_let
+    bra     .el_check_rc
 
 .el_done:
     move.q  r8, r28
@@ -325,26 +199,28 @@ exec_line:
 ; ============================================================================
 
 ; --- END ---
-.do_end:
+exec_do_end:
     move.q  r28, #2
-    bra     .el_done
+    rts
+    ; === END exec_do_end ===
 
 ; --- STOP ---
-.do_stop:
+exec_do_stop:
     ; Save state for CONT
     add.q   r1, r16, #ST_CONT_LINE_PTR
     store.l r14, (r1)
     add.q   r1, r16, #ST_CONT_TEXT_PTR
     store.l r17, (r1)
     move.q  r28, #2
-    bra     .el_done
+    rts
+    ; === END exec_do_stop ===
 
 ; --- CONT ---
-.do_cont:
+exec_do_cont:
     ; Restore saved execution position from STOP
     add.q   r1, r16, #ST_CONT_LINE_PTR
     load.l  r14, (r1)
-    beqz    r14, .el_done        ; no saved state → ignore
+    beqz    r14, .cont_done      ; no saved state → ignore
     add.q   r1, r16, #ST_CONT_TEXT_PTR
     load.l  r17, (r1)
     ; Clear saved state
@@ -352,30 +228,43 @@ exec_line:
     store.l r0, (r1)
     ; Signal exec_run to use updated R14
     move.q  r28, #1
-    bra     .el_done
+.cont_done:
+    rts
+    ; === END exec_do_cont ===
 
 ; --- REM ---
-.do_rem:
+exec_do_rem:
     ; Skip rest of line (everything after REM is a comment)
-    bra     .el_done
+    ; Advance R17 to end of line (null terminator)
+.rem_skip:
+    load.b  r1, (r17)
+    beqz    r1, .rem_done
+    add.q   r17, r17, #1
+    bra     .rem_skip
+.rem_done:
+    rts
+    ; === END exec_do_rem ===
 
 ; --- DATA ---
-.do_data:
+exec_do_data:
     ; Skip rest of DATA statement (skip to colon or EOL)
 .data_skip:
     load.b  r1, (r17)
-    beqz    r1, .el_done
+    beqz    r1, .data_done
     move.q  r2, #0x3A            ; ':'
-    beq     r1, r2, .el_next_stmt
+    beq     r1, r2, .data_done
     add.q   r17, r17, #1
     bra     .data_skip
+.data_done:
+    rts
+    ; === END exec_do_data ===
 
 ; --- LET ---
-.do_let:
+exec_do_let:
     jsr     exec_skip_spaces
     ; Parse variable name and get pointer to value slot
     jsr     var_lookup           ; R8 = value slot, R9 = 0(num)/1(str)
-    beqz    r8, .el_done         ; error: no variable name
+    beqz    r8, .let_done        ; error: no variable name
     move.q  r22, r8              ; R22 = save value slot pointer
     move.q  r23, r9              ; R23 = type flag (0=num, 1=str)
 
@@ -387,7 +276,7 @@ exec_line:
     beq     r1, r2, .let_has_eq
     ; Also check raw '='
     move.q  r2, #0x3D
-    bne     r1, r2, .el_done     ; no '=' → syntax error (silently skip)
+    bne     r1, r2, .let_done   ; no '=' → syntax error (silently skip)
 .let_has_eq:
     add.q   r17, r17, #1        ; consume '='
     jsr     exec_skip_spaces
@@ -398,16 +287,18 @@ exec_line:
     ; Numeric RHS
     jsr     expr_eval            ; R8 = FP32 result
     store.l r8, (r22)
-    bra     .el_next_stmt
+    rts
 
 .let_str_rhs:
     ; String RHS
     jsr     str_eval             ; R8 = pointer to string data
     store.l r8, (r22)
-    bra     .el_next_stmt
+.let_done:
+    rts
+    ; === END exec_do_let ===
 
 ; --- PRINT ---
-.do_print:
+exec_do_print:
     jsr     exec_skip_spaces
     load.b  r1, (r17)
 
@@ -492,21 +383,24 @@ exec_line:
 .print_crlf:
     jsr     print_crlf
 .print_no_crlf:
-    bra     .el_next_stmt
+    rts
+    ; === END exec_do_print ===
 
 ; --- GOTO ---
-.do_goto:
+exec_do_goto:
     jsr     exec_skip_spaces
     ; Parse line number (numeric literal)
     jsr     exec_parse_linenum   ; R8 = line number
     ; Search for the target line
     jsr     exec_find_line       ; R14 = new line pointer (or 0)
-    beqz    r14, .el_done        ; line not found → error (silently stop)
+    beqz    r14, .goto_done      ; line not found → error (silently stop)
     move.q  r28, #1              ; signal: R14 was changed
-    bra     .el_done
+.goto_done:
+    rts
+    ; === END exec_do_goto ===
 
 ; --- GOSUB ---
-.do_gosub:
+exec_do_gosub:
     jsr     exec_skip_spaces
     ; Save return context on GOSUB stack
     ; Stack frame: [return line ptr (4)] [return text ptr offset (4)] [marker (4)]
@@ -530,12 +424,14 @@ exec_line:
     ; Now do the GOTO part
     jsr     exec_parse_linenum   ; R8 = target line number
     jsr     exec_find_line       ; R14 = target line pointer
-    beqz    r14, .el_done        ; not found → error
+    beqz    r14, .gosub_done     ; not found → error
     move.q  r28, #1              ; R14 changed
-    bra     .el_done
+.gosub_done:
+    rts
+    ; === END exec_do_gosub ===
 
 ; --- RETURN ---
-.do_return:
+exec_do_return:
     ; Pop GOSUB stack
     add.q   r1, r16, #ST_GOSUB_SP
     load.l  r2, (r1)            ; R2 = GOSUB stack pointer
@@ -563,19 +459,24 @@ exec_line:
     load.b  r1, (r17)
     beqz    r1, .return_next_line
     move.q  r2, #0x3A
-    beq     r1, r2, .el_next_stmt
+    beq     r1, r2, .return_at_colon
     add.q   r17, r17, #1
     bra     .return_skip
+
+.return_at_colon:
+    ; Found colon — R28=0 means continue, caller will see .el_next_stmt
+    rts
 
 .return_next_line:
     ; End of the GOSUB's line — advance to next line
     load.l  r15, (r14)           ; R15 = next line pointer from saved line
     move.q  r14, r15
     move.q  r28, #1              ; R14 changed
-    bra     .el_done
+    rts
+    ; === END exec_do_return ===
 
 ; --- IF ---
-.do_if:
+exec_do_if:
     jsr     exec_skip_spaces
     ; Evaluate condition expression
     jsr     expr_eval            ; R8 = FP32 condition value
@@ -588,18 +489,18 @@ exec_line:
     jsr     exec_skip_spaces
     load.b  r1, (r17)
     move.q  r2, #TK_THEN
-    bne     r1, r2, .el_next_stmt  ; no THEN → just continue
+    bne     r1, r2, .if_done     ; no THEN → just continue (R28=0)
     add.q   r17, r17, #1        ; consume THEN
 
     ; Check if what follows THEN is a line number (GOTO shorthand)
     jsr     exec_skip_spaces
     load.b  r1, (r17)
     move.q  r2, #0x30            ; '0'
-    blt     r1, r2, .el_next_stmt  ; not a digit → execute as statement
+    blt     r1, r2, .if_done    ; not a digit → execute as statement (R28=0)
     move.q  r2, #0x39            ; '9'
-    bgt     r1, r2, .el_next_stmt  ; not a digit → execute as statement
+    bgt     r1, r2, .if_done    ; not a digit → execute as statement (R28=0)
     ; It's a line number — implicit GOTO
-    bra     .do_goto
+    bra     exec_do_goto
 
 .if_false:
     ; Condition is FALSE.
@@ -607,7 +508,7 @@ exec_line:
     ; Both THEN and ELSE tokenize to TK_THEN in EhBASIC.
 .if_find_then:
     load.b  r1, (r17)
-    beqz    r1, .el_done          ; no THEN found → end of line
+    beqz    r1, .if_done          ; no THEN found → end of line
     move.q  r2, #TK_THEN
     beq     r1, r2, .if_past_then
     add.q   r17, r17, #1
@@ -619,7 +520,7 @@ exec_line:
     ; Everything between here and ELSE is the THEN-clause (skipped).
 .if_seek_else:
     load.b  r1, (r17)
-    beqz    r1, .el_done          ; no ELSE → done, produce no output
+    beqz    r1, .if_done          ; no ELSE → done, produce no output
     move.q  r2, #TK_THEN
     beq     r1, r2, .if_else_found
     add.q   r17, r17, #1
@@ -627,15 +528,18 @@ exec_line:
 
 .if_else_found:
     add.q   r17, r17, #1         ; consume ELSE marker (TK_THEN)
-    bra     .el_next_stmt         ; execute ELSE clause
+    ; R28=0, return to dispatch loop which will continue to .el_next_stmt
+.if_done:
+    rts
+    ; === END exec_do_if ===
 
 ; --- FOR ---
-.do_for:
+exec_do_for:
     jsr     exec_skip_spaces
 
     ; Get loop variable
     jsr     var_lookup           ; R8 = pointer to value slot
-    beqz    r8, .el_done
+    beqz    r8, .for_done
     move.q  r22, r8              ; R22 = var value slot pointer
 
     jsr     exec_skip_spaces
@@ -645,7 +549,7 @@ exec_line:
     move.q  r2, #TK_EQUAL
     beq     r1, r2, .for_eq
     move.q  r2, #0x3D
-    bne     r1, r2, .el_done
+    bne     r1, r2, .for_done
 .for_eq:
     add.q   r17, r17, #1
 
@@ -659,7 +563,7 @@ exec_line:
     ; Expect TO token
     load.b  r1, (r17)
     move.q  r2, #TK_TO
-    bne     r1, r2, .el_done
+    bne     r1, r2, .for_done
     add.q   r17, r17, #1
 
     ; Evaluate limit value
@@ -711,10 +615,12 @@ exec_line:
     store.l r2, (r1)
 
     ; Continue execution normally (body of loop follows)
-    bra     .el_next_stmt
+.for_done:
+    rts
+    ; === END exec_do_for ===
 
 ; --- NEXT ---
-.do_next:
+exec_do_next:
     ; Find the most recent FOR frame on GOSUB stack
     add.q   r1, r16, #ST_GOSUB_SP
     load.l  r2, (r1)            ; R2 = top of GOSUB stack
@@ -723,7 +629,7 @@ exec_line:
     sub.q   r2, r2, #24         ; back up 24 bytes (FOR frame size)
     load.l  r3, (r2)            ; should be "FOR " marker
     move.l  r4, #0x464F5220
-    bne     r3, r4, .el_done     ; not FOR → error (silently)
+    bne     r3, r4, .next_err   ; not FOR → error (silently)
 
     ; Read FOR frame
     add.q   r3, r2, #4
@@ -771,7 +677,7 @@ exec_line:
     ; We need to go to the NEXT line after the FOR line
     load.l  r14, (r25)          ; R14 = next line after FOR line
     move.q  r28, #1              ; signal R14 changed
-    bra     .el_done
+    rts
 
 .next_done:
     ; Loop complete: pop FOR frame from GOSUB stack
@@ -779,11 +685,13 @@ exec_line:
     load.l  r2, (r1)
     sub.q   r2, r2, #24
     store.l r2, (r1)
-    ; Continue to next statement
-    bra     .el_next_stmt
+    ; R28=0, continue to next statement
+.next_err:
+    rts
+    ; === END exec_do_next ===
 
 ; --- WHILE ---
-.do_while:
+exec_do_while:
     jsr     exec_skip_spaces
     jsr     expr_eval            ; R8 = condition
     and.l   r1, r8, #0x7FFFFFFF
@@ -798,16 +706,16 @@ exec_line:
     store.l r14, (r2)            ; line pointer of WHILE
     add.q   r2, r2, #4
     store.l r2, (r1)
-    bra     .el_next_stmt
+    rts                          ; R28=0, continue
 
 .while_false:
     ; FALSE: scan forward to matching WEND (nested — tracks WHILE/WEND depth)
     move.q  r7, #1               ; nesting depth = 1 (we are inside this WHILE)
     load.l  r2, (r14)            ; start from next line
 .while_scan_lines:
-    beqz    r2, .el_done
+    beqz    r2, .while_done
     load.l  r3, (r2)             ; next pointer
-    beqz    r3, .el_done         ; terminator
+    beqz    r3, .while_done      ; terminator
     add.q   r4, r2, #8           ; content ptr
 
     ; skip leading spaces
@@ -834,59 +742,69 @@ exec_line:
     ; depth=0 → found matching WEND. Continue after this line.
     load.l  r14, (r2)
     move.q  r28, #1
-    bra     .el_done
+    rts
 
 .while_next_line:
     move.q  r2, r3
     bra     .while_scan_lines
+.while_done:
+    rts
+    ; === END exec_do_while ===
 
 ; --- WEND ---
-.do_wend:
+exec_do_wend:
     ; Pop latest WHILE frame and jump back to WHILE line.
     add.q   r1, r16, #ST_GOSUB_SP
     load.l  r2, (r1)
     sub.q   r2, r2, #8
     load.l  r3, (r2)             ; marker
     move.l  r4, #0x5748494C      ; "WHIL"
-    bne     r3, r4, .el_done
+    bne     r3, r4, .wend_done
     add.q   r5, r2, #4
     load.l  r14, (r5)            ; WHILE line pointer
     store.l r2, (r1)             ; pop frame
     move.q  r28, #1
-    bra     .el_done
+.wend_done:
+    rts
+    ; === END exec_do_wend ===
 
 ; --- RESTORE ---
-.do_restore:
+exec_do_restore:
     add.q   r1, r16, #ST_DATA_PTR
     store.l r0, (r1)            ; reset DATA pointer to 0
-    bra     .el_next_stmt
+    rts
+    ; === END exec_do_restore ===
 
 ; --- INC ---
-.do_inc:
+exec_do_inc:
     jsr     exec_skip_spaces
     jsr     var_lookup           ; R8 = pointer to value slot
-    beqz    r8, .el_done
+    beqz    r8, .inc_done
     move.q  r22, r8
     load.l  r8, (r22)           ; current FP32 value
     move.l  r9, #0x3F800000     ; 1.0
     jsr     fp_add
     store.l r8, (r22)
-    bra     .el_next_stmt
+.inc_done:
+    rts
+    ; === END exec_do_inc ===
 
 ; --- DEC ---
-.do_dec:
+exec_do_dec:
     jsr     exec_skip_spaces
     jsr     var_lookup           ; R8 = pointer to value slot
-    beqz    r8, .el_done
+    beqz    r8, .dec_done
     move.q  r22, r8
     load.l  r8, (r22)           ; current FP32 value
     move.l  r9, #0x3F800000     ; 1.0
     jsr     fp_sub
     store.l r8, (r22)
-    bra     .el_next_stmt
+.dec_done:
+    rts
+    ; === END exec_do_dec ===
 
 ; --- DOKE ---
-.do_doke:
+exec_do_doke:
     jsr     exec_skip_spaces
     jsr     expr_eval            ; R8 = address (FP32)
     jsr     fp_int
@@ -895,22 +813,25 @@ exec_line:
     jsr     exec_skip_spaces
     load.b  r1, (r17)
     move.q  r2, #0x2C
-    bne     r1, r2, .el_next_stmt
+    bne     r1, r2, .doke_done
     add.q   r17, r17, #1
     jsr     exec_skip_spaces
     jsr     expr_eval            ; R8 = value (FP32)
     jsr     fp_int
     jsr     fp_fix               ; R8 = integer value
     store.w r8, (r22)            ; write 16-bit to address
-    bra     .el_next_stmt
+.doke_done:
+    rts
+    ; === END exec_do_doke ===
 
 ; --- LOKE ---
-.do_loke:
+exec_do_loke:
     ; LOKE is identical to POKE (32-bit write)
-    bra     .do_poke
+    bra     exec_do_poke
+    ; === END exec_do_loke ===
 
 ; --- CLEAR ---
-.do_clear:
+exec_do_clear:
     jsr     var_init             ; reset all variables
     ; Reset DATA pointer
     add.q   r1, r16, #ST_DATA_PTR
@@ -919,32 +840,35 @@ exec_line:
     la      r1, BASIC_GOSUB_STACK
     add.q   r2, r16, #ST_GOSUB_SP
     store.l r1, (r2)
-    bra     .el_next_stmt
+    rts
+    ; === END exec_do_clear ===
 
 ; --- SWAP ---
-.do_swap:
+exec_do_swap:
     jsr     exec_skip_spaces
     jsr     var_lookup           ; R8 = ptr to first var
-    beqz    r8, .el_done
+    beqz    r8, .swap_done
     move.q  r22, r8              ; R22 = first var ptr
     jsr     exec_skip_spaces
     load.b  r1, (r17)
     move.q  r2, #0x2C
-    bne     r1, r2, .el_next_stmt
+    bne     r1, r2, .swap_done
     add.q   r17, r17, #1
     jsr     exec_skip_spaces
     jsr     var_lookup           ; R8 = ptr to second var
-    beqz    r8, .el_done
+    beqz    r8, .swap_done
     move.q  r23, r8              ; R23 = second var ptr
     ; Exchange values
     load.l  r1, (r22)
     load.l  r2, (r23)
     store.l r2, (r22)
     store.l r1, (r23)
-    bra     .el_next_stmt
+.swap_done:
+    rts
+    ; === END exec_do_swap ===
 
 ; --- BITSET ---
-.do_bitset:
+exec_do_bitset:
     jsr     exec_skip_spaces
     jsr     expr_eval            ; R8 = address
     jsr     fp_int
@@ -953,7 +877,7 @@ exec_line:
     jsr     exec_skip_spaces
     load.b  r1, (r17)
     move.q  r2, #0x2C
-    bne     r1, r2, .el_next_stmt
+    bne     r1, r2, .bitset_done
     add.q   r17, r17, #1
     jsr     exec_skip_spaces
     jsr     expr_eval            ; R8 = bit number (0-7)
@@ -966,10 +890,12 @@ exec_line:
     load.b  r2, (r22)
     or.l    r2, r2, r1
     store.b r2, (r22)
-    bra     .el_next_stmt
+.bitset_done:
+    rts
+    ; === END exec_do_bitset ===
 
 ; --- BITCLR ---
-.do_bitclr:
+exec_do_bitclr:
     jsr     exec_skip_spaces
     jsr     expr_eval            ; R8 = address
     jsr     fp_int
@@ -978,7 +904,7 @@ exec_line:
     jsr     exec_skip_spaces
     load.b  r1, (r17)
     move.q  r2, #0x2C
-    bne     r1, r2, .el_next_stmt
+    bne     r1, r2, .bitclr_done
     add.q   r17, r17, #1
     jsr     exec_skip_spaces
     jsr     expr_eval            ; R8 = bit number (0-7)
@@ -993,13 +919,15 @@ exec_line:
     load.b  r2, (r22)
     and.l   r2, r2, r1
     store.b r2, (r22)
-    bra     .el_next_stmt
+.bitclr_done:
+    rts
+    ; === END exec_do_bitclr ===
 
 ; --- GET ---
-.do_get:
+exec_do_get:
     jsr     exec_skip_spaces
     jsr     var_lookup           ; R8 = ptr to value slot, R9 = type
-    beqz    r8, .el_done
+    beqz    r8, .get_done
     move.q  r22, r8              ; R22 = value slot
     move.q  r23, r9              ; R23 = type (0=num, 1=str)
     ; Check if char available
@@ -1015,7 +943,7 @@ exec_line:
     ; Numeric: store ASCII code as FP32
     jsr     fp_float
     store.l r8, (r22)
-    bra     .el_next_stmt
+    rts
 .get_str:
     ; Allocate a 2-byte string (char + null)
     add.q   r1, r16, #ST_HEAP_TOP
@@ -1026,12 +954,12 @@ exec_line:
     store.l r3, (r22)            ; store pointer in var
     add.q   r3, r3, #2
     store.l r3, (r1)             ; advance heap
-    bra     .el_next_stmt
+    rts
 .get_empty:
     ; No char available: store 0 (num) or "" (str)
     bnez    r23, .get_empty_str
     store.l r0, (r22)            ; 0
-    bra     .el_next_stmt
+    rts
 .get_empty_str:
     add.q   r1, r16, #ST_HEAP_TOP
     load.l  r3, (r1)
@@ -1039,10 +967,12 @@ exec_line:
     store.l r3, (r22)
     add.q   r3, r3, #1
     store.l r3, (r1)
-    bra     .el_next_stmt
+.get_done:
+    rts
+    ; === END exec_do_get ===
 
 ; --- ON ---
-.do_on:
+exec_do_on:
     jsr     exec_skip_spaces
     jsr     expr_eval            ; R8 = selector (FP32)
     jsr     fp_int
@@ -1056,7 +986,7 @@ exec_line:
     move.q  r2, #TK_GOSUB
     beq     r1, r2, .on_gosub
     ; Neither → error
-    bra     .el_done
+    rts
 .on_goto:
     add.q   r17, r17, #1         ; consume GOTO token
     jsr     exec_skip_spaces
@@ -1067,13 +997,13 @@ exec_line:
     jsr     exec_skip_spaces
     load.b  r1, (r17)
     move.q  r2, #0x2C            ; ','
-    bne     r1, r2, .el_next_stmt  ; out of range → fall through
+    bne     r1, r2, .on_done     ; out of range → fall through
     add.q   r17, r17, #1
     jsr     exec_skip_spaces
     add.q   r23, r23, #1
     bra     .on_goto_scan
 .on_goto_target:
-    bra     .do_goto             ; parse line number and GOTO
+    bra     exec_do_goto         ; parse line number and GOTO
 .on_gosub:
     add.q   r17, r17, #1         ; consume GOSUB token
     jsr     exec_skip_spaces
@@ -1084,16 +1014,19 @@ exec_line:
     jsr     exec_skip_spaces
     load.b  r1, (r17)
     move.q  r2, #0x2C
-    bne     r1, r2, .el_next_stmt  ; out of range → fall through
+    bne     r1, r2, .on_done     ; out of range → fall through
     add.q   r17, r17, #1
     jsr     exec_skip_spaces
     add.q   r23, r23, #1
     bra     .on_gosub_scan
 .on_gosub_target:
-    bra     .do_gosub            ; parse line number and GOSUB
+    bra     exec_do_gosub        ; parse line number and GOSUB
+.on_done:
+    rts
+    ; === END exec_do_on ===
 
 ; --- DO ---
-.do_do:
+exec_do_do:
     ; Push DO frame on GOSUB stack: ["DO  "][line ptr] = 8 bytes
     add.q   r1, r16, #ST_GOSUB_SP
     load.l  r2, (r1)
@@ -1103,10 +1036,11 @@ exec_line:
     store.l r14, (r2)            ; line pointer of DO statement
     add.q   r2, r2, #4
     store.l r2, (r1)             ; update SP
-    bra     .el_next_stmt
+    rts
+    ; === END exec_do_do ===
 
 ; --- LOOP ---
-.do_loop:
+exec_do_loop:
     jsr     exec_skip_spaces
     load.b  r1, (r17)
     move.q  r2, #TK_WHILE
@@ -1136,28 +1070,30 @@ exec_line:
     sub.q   r2, r2, #8           ; DO frame = 8 bytes
     load.l  r3, (r2)             ; marker
     move.l  r4, #0x444F2020
-    bne     r3, r4, .el_done     ; not DO → error
+    bne     r3, r4, .loop_done   ; not DO → error
     add.q   r5, r2, #4
     load.l  r14, (r5)            ; DO line pointer
     store.l r2, (r1)             ; pop frame
     move.q  r28, #1              ; R14 changed
-    bra     .el_done
+    rts
 .loop_exit:
     ; Pop DO frame and continue
     add.q   r1, r16, #ST_GOSUB_SP
     load.l  r2, (r1)
     sub.q   r2, r2, #8
     store.l r2, (r1)
-    bra     .el_next_stmt
+.loop_done:
+    rts
+    ; === END exec_do_loop ===
 
 ; --- INPUT ---
-.do_input:
+exec_do_input:
     ; Minimal INPUT implementation: INPUT A[,B,...]
     ; Reads one line per variable from terminal and parses numeric expression.
 .input_loop:
     jsr     exec_skip_spaces
     jsr     var_lookup           ; R8 = value slot pointer
-    beqz    r8, .el_done
+    beqz    r8, .input_done
     move.q  r22, r8              ; save value slot pointer
     move.q  r23, r17             ; save statement cursor
 
@@ -1174,18 +1110,22 @@ exec_line:
     jsr     exec_skip_spaces
     load.b  r1, (r17)
     move.q  r2, #0x2C            ; ','
-    bne     r1, r2, .el_next_stmt
+    bne     r1, r2, .input_done
     add.q   r17, r17, #1
     bra     .input_loop
+.input_done:
+    rts
+    ; === END exec_do_input ===
 
 ; --- DIM ---
-.do_dim:
+exec_do_dim:
     jsr     arr_dim
-    bra     .el_next_stmt
+    rts
+    ; === END exec_do_dim ===
 
 ; --- POKE ---
 ; POKE addr, value  — write 32-bit value to addr (matches PEEK which reads 32-bit)
-.do_poke:
+exec_do_poke:
     ; Check for POKE8 (byte-level access)
     load.b  r1, (r17)
     move.q  r2, #0x38            ; '8'
@@ -1202,7 +1142,7 @@ exec_line:
     jsr     exec_skip_spaces
     load.b  r1, (r17)
     move.q  r2, #0x2C            ; ','
-    bne     r1, r2, .el_next_stmt
+    bne     r1, r2, .poke_done
     add.q   r17, r17, #1         ; consume ','
     jsr     exec_skip_spaces
     jsr     expr_eval            ; R8 = value (FP32)
@@ -1210,18 +1150,20 @@ exec_line:
     jsr     fp_fix               ; R8 = integer
     beqz    r23, .poke_32bit
     store.b r8, (r22)            ; write byte to address
-    bra     .el_next_stmt
+    rts
 .poke_32bit:
     store.l r8, (r22)            ; write 32-bit to address
-    bra     .el_next_stmt
+.poke_done:
+    rts
+    ; === END exec_do_poke ===
 
 ; --- READ ---
-.do_read:
+exec_do_read:
     ; READ A[,B,...] from DATA statements in program text
 .read_loop:
     jsr     exec_skip_spaces
     jsr     var_lookup           ; R8 = value slot pointer
-    beqz    r8, .el_done
+    beqz    r8, .read_done
     move.q  r22, r8
     push    r17                  ; save text pointer (clobbered by data scanner)
     jsr     exec_read_next_data_value ; R8 = FP32 value
@@ -1230,167 +1172,50 @@ exec_line:
     jsr     exec_skip_spaces
     load.b  r1, (r17)
     move.q  r2, #0x2C            ; ','
-    bne     r1, r2, .el_next_stmt
+    bne     r1, r2, .read_done
     add.q   r17, r17, #1
     bra     .read_loop
+.read_done:
+    rts
+    ; === END exec_do_read ===
 
-; --- SCREEN ---
-.do_screen:
-    jsr     hw_screen
-    bra     .el_next_stmt
-
-; --- CLS ---
-.do_cls:
-    jsr     hw_cls
-    bra     .el_next_stmt
-
-; --- PLOT ---
-.do_plot:
-    jsr     hw_plot
-    bra     .el_next_stmt
-
-; --- PALETTE ---
-.do_palette:
-    jsr     hw_palette
-    bra     .el_next_stmt
-
-; --- VSYNC ---
-.do_vsync:
-    jsr     hw_vsync
-    bra     .el_next_stmt
-
-; --- LOCATE ---
-.do_locate:
-    jsr     hw_locate
-    bra     .el_next_stmt
-
-; --- COLOR ---
-.do_color:
-    jsr     hw_color
-    bra     .el_next_stmt
-
-; --- LINE ---
-.do_line:
-    jsr     hw_line
-    bra     .el_next_stmt
-
-; --- CIRCLE ---
-.do_circle:
-    jsr     hw_circle
-    bra     .el_next_stmt
-
-; --- BOX ---
-.do_box:
-    jsr     hw_box
-    bra     .el_next_stmt
-
-; --- SCROLL ---
-.do_scroll:
-    jsr     hw_scroll
-    bra     .el_next_stmt
-
-; --- SOUND ---
-.do_sound:
-    jsr     hw_sound
-    bra     .el_next_stmt
-
-; --- ENVELOPE ---
-.do_envelope:
-    jsr     hw_envelope
-    bra     .el_next_stmt
-
-; --- GATE ---
-.do_gate:
-    jsr     hw_gate
-    bra     .el_next_stmt
-
-; --- WAIT ---
-.do_wait:
-    jsr     hw_wait
-    bra     .el_next_stmt
-
-; --- COPPER ---
-.do_copper:
-    jsr     hw_copper
-    bra     .el_next_stmt
-
-; --- BLIT ---
-.do_blit:
-    jsr     hw_blit
-    bra     .el_next_stmt
-
-; --- ULA ---
-.do_ula:
-    jsr     hw_ula
-    bra     .el_next_stmt
-
-; --- TED ---
-.do_ted_cmd:
-    jsr     hw_ted_cmd
-    bra     .el_next_stmt
-
-; --- ANTIC ---
-.do_antic:
-    jsr     hw_antic
-    bra     .el_next_stmt
-
-; --- GTIA ---
-.do_gtia:
-    jsr     hw_gtia
-    bra     .el_next_stmt
-
-; --- VOODOO ---
-.do_voodoo:
-    jsr     hw_voodoo
-    bra     .el_next_stmt
-
-; --- PSG ---
-.do_psg:
-    jsr     hw_psg
-    bra     .el_next_stmt
-
-; --- SID ---
-.do_sid:
-    jsr     hw_sid
-    bra     .el_next_stmt
-
-; --- POKEY ---
-.do_pokey:
-    jsr     hw_pokey
-    bra     .el_next_stmt
-
-; --- AHX ---
-.do_ahx:
-    jsr     hw_ahx
-    bra     .el_next_stmt
-
-; --- SAP ---
-.do_sap:
-    jsr     hw_sap
-    bra     .el_next_stmt
-
-; --- ZBUFFER ---
-.do_zbuffer:
-    jsr     hw_zbuffer
-    bra     .el_next_stmt
-
-; --- VERTEX ---
-.do_vertex:
-    jsr     hw_vertex
-    bra     .el_next_stmt
-
-; --- TRIANGLE ---
-.do_triangle:
-    jsr     hw_triangle
-    bra     .el_next_stmt
-
-; --- TEXTURE ---
-.do_texture:
-    jsr     hw_texture
-    bra     .el_next_stmt
+; --- Hardware command wrappers ---
+; Each wraps a hw_xxx call, then returns. Since the hw_xxx handlers
+; all return via rts, we can tail-call them with bra instead of jsr+rts.
+exec_do_screen:   bra hw_screen
+exec_do_cls:      bra hw_cls
+exec_do_plot:     bra hw_plot
+exec_do_palette:  bra hw_palette
+exec_do_vsync:    bra hw_vsync
+exec_do_locate:   bra hw_locate
+exec_do_color:    bra hw_color
+exec_do_line:     bra hw_line
+exec_do_circle:   bra hw_circle
+exec_do_box:      bra hw_box
+exec_do_scroll:   bra hw_scroll
+exec_do_sound:    bra hw_sound
+exec_do_envelope: bra hw_envelope
+exec_do_gate:     bra hw_gate
+exec_do_wait:     bra hw_wait
+exec_do_copper:   bra hw_copper
+exec_do_blit:     bra hw_blit
+exec_do_ula:      bra hw_ula
+exec_do_ted_cmd:  bra hw_ted_cmd
+exec_do_antic:    bra hw_antic
+exec_do_gtia:     bra hw_gtia
+exec_do_voodoo:   bra hw_voodoo
+exec_do_psg:      bra hw_psg
+exec_do_sid:      bra hw_sid
+exec_do_pokey:    bra hw_pokey
+exec_do_ahx:      bra hw_ahx
+exec_do_sap:      bra hw_sap
+exec_do_zbuffer:  bra hw_zbuffer
+exec_do_vertex:   bra hw_vertex
+exec_do_triangle: bra hw_triangle
+exec_do_texture:  bra hw_texture
 
 ; --- CALL ---
-.do_call:
+exec_do_call:
     ; CALL addr — JSR to machine code at given address
     jsr     exec_skip_spaces
     jsr     expr_eval            ; R8 = FP32 address
@@ -1407,22 +1232,174 @@ exec_line:
     pop     r17
     pop     r16
     pop     r14
-    bra     .el_next_stmt
+    rts
+    ; === END exec_do_call ===
 
 ; --- TRON ---
-.do_tron:
+exec_do_tron:
     ; TRON — enable trace mode (print line numbers during execution)
     add.q   r1, r16, #ST_TRACE_FLAG
     move.q  r2, #1
     store.l r2, (r1)
-    bra     .el_next_stmt
+    rts
+    ; === END exec_do_tron ===
 
 ; --- TROFF ---
-.do_troff:
+exec_do_troff:
     ; TROFF — disable trace mode
     add.q   r1, r16, #ST_TRACE_FLAG
     store.l r0, (r1)
-    bra     .el_next_stmt
+    rts
+    ; === END exec_do_troff ===
+
+; --- Unknown token handler ---
+exec_do_unknown:
+    rts
+    ; === END exec_do_unknown ===
+
+; ============================================================================
+; Statement Jump Table (128 entries, indexed by token - 0x80)
+; ============================================================================
+; Indices: 0=END, 1=FOR, 2=NEXT, 3=DATA, 4=INPUT, 5=DIM, 6=READ, 7=LET,
+;          8=DEC, 9=GOTO, 10=unused(RUN), 11=IF, 12=RESTORE, 13=GOSUB,
+;          14=RETURN, 15=REM, 16=STOP, 17=ON(TRON), 18=TRON, 19=INC,
+;          20=WAIT, 21=TROFF, 22-23=unused, 24=POKE, 25=DOKE, 26=LOKE,
+;          27=CALL, 28=DO, 29=LOOP, 30=PRINT, 31=CONT
+;          32-46=unused, 47=WEND, 48=WHILE, 49-97=unused
+;          98=SCREEN..127=TEXTURE
+
+    align 4
+stmt_jump_table:
+    dc.l    exec_do_end          ;  0 = TK_END      (0x80)
+    dc.l    exec_do_for          ;  1 = TK_FOR      (0x81)
+    dc.l    exec_do_next         ;  2 = TK_NEXT     (0x82)
+    dc.l    exec_do_data         ;  3 = TK_DATA     (0x83)
+    dc.l    exec_do_input        ;  4 = TK_INPUT    (0x84)
+    dc.l    exec_do_dim          ;  5 = TK_DIM      (0x85)
+    dc.l    exec_do_read         ;  6 = TK_READ     (0x86)
+    dc.l    exec_do_let          ;  7 = TK_LET      (0x87)
+    dc.l    exec_do_dec          ;  8 = TK_DEC      (0x88)
+    dc.l    exec_do_goto         ;  9 = TK_GOTO     (0x89)
+    dc.l    exec_do_unknown      ; 10 = TK_RUN      (0x8A) — not a stmt token
+    dc.l    exec_do_if           ; 11 = TK_IF       (0x8B)
+    dc.l    exec_do_restore      ; 12 = TK_RESTORE  (0x8C)
+    dc.l    exec_do_gosub        ; 13 = TK_GOSUB    (0x8D)
+    dc.l    exec_do_return       ; 14 = TK_RETURN   (0x8E)
+    dc.l    exec_do_rem          ; 15 = TK_REM      (0x8F)
+    dc.l    exec_do_stop         ; 16 = TK_STOP     (0x90)
+    dc.l    exec_do_on           ; 17 = TK_ON       (0x91)
+    dc.l    exec_do_tron         ; 18 = TK_NULL→TRON(0x92)
+    dc.l    exec_do_inc          ; 19 = TK_INC      (0x93)
+    dc.l    exec_do_wait         ; 20 = TK_WAIT     (0x94)
+    dc.l    exec_do_troff        ; 21 = TK_LOAD→TROFF(0x95)
+    dc.l    exec_do_unknown      ; 22 = unused      (0x96)
+    dc.l    exec_do_unknown      ; 23 = unused      (0x97)
+    dc.l    exec_do_poke         ; 24 = TK_POKE     (0x98)
+    dc.l    exec_do_doke         ; 25 = TK_DOKE     (0x99)
+    dc.l    exec_do_loke         ; 26 = TK_LOKE     (0x9A)
+    dc.l    exec_do_call         ; 27 = TK_CALL     (0x9B)
+    dc.l    exec_do_do           ; 28 = TK_DO       (0x9C)
+    dc.l    exec_do_loop         ; 29 = TK_LOOP     (0x9D)
+    dc.l    exec_do_print        ; 30 = TK_PRINT    (0x9E)
+    dc.l    exec_do_cont         ; 31 = TK_CONT     (0x9F)
+    dc.l    exec_do_unknown      ; 32 = unused      (0xA0)
+    dc.l    exec_do_clear        ; 33 = TK_CLEAR    (0xA1)
+    dc.l    exec_do_unknown      ; 34 = unused      (0xA2)
+    dc.l    exec_do_unknown      ; 35 = unused      (0xA3)
+    dc.l    exec_do_get          ; 36 = TK_GET      (0xA4)
+    dc.l    exec_do_swap         ; 37 = TK_SWAP     (0xA5)
+    dc.l    exec_do_bitset       ; 38 = TK_BITSET   (0xA6)
+    dc.l    exec_do_bitclr       ; 39 = TK_BITCLR   (0xA7)
+    dc.l    exec_do_unknown      ; 40 = TK_THEN     (0xA8)
+    dc.l    exec_do_unknown      ; 41 = TK_TO       (0xA9)
+    dc.l    exec_do_unknown      ; 42 = TK_STEP     (0xAA)
+    dc.l    exec_do_unknown      ; 43 = unused      (0xAB)
+    dc.l    exec_do_unknown      ; 44 = unused      (0xAC)
+    dc.l    exec_do_unknown      ; 45 = TK_NOT      (0xAD)
+    dc.l    exec_do_unknown      ; 46 = unused      (0xAE)
+    dc.l    exec_do_wend         ; 47 = TK_UNTIL    (0xAF) → WEND
+    dc.l    exec_do_while        ; 48 = TK_WHILE    (0xB0)
+    ; 49-97: function/operator tokens — not statements
+    dc.l    exec_do_unknown      ; 49  (0xB1) TK_PLUS
+    dc.l    exec_do_unknown      ; 50  (0xB2) TK_MINUS
+    dc.l    exec_do_unknown      ; 51  (0xB3) TK_MULT
+    dc.l    exec_do_unknown      ; 52  (0xB4) TK_DIV
+    dc.l    exec_do_unknown      ; 53  (0xB5) TK_POWER
+    dc.l    exec_do_unknown      ; 54  (0xB6) TK_AND
+    dc.l    exec_do_unknown      ; 55  (0xB7) TK_EOR
+    dc.l    exec_do_unknown      ; 56  (0xB8) TK_OR
+    dc.l    exec_do_unknown      ; 57  (0xB9)
+    dc.l    exec_do_unknown      ; 58  (0xBA)
+    dc.l    exec_do_unknown      ; 59  (0xBB) TK_GT
+    dc.l    exec_do_unknown      ; 60  (0xBC) TK_EQUAL
+    dc.l    exec_do_unknown      ; 61  (0xBD) TK_LT
+    dc.l    exec_do_unknown      ; 62  (0xBE) TK_SGN
+    dc.l    exec_do_unknown      ; 63  (0xBF) TK_INT
+    dc.l    exec_do_unknown      ; 64  (0xC0) TK_ABS
+    dc.l    exec_do_unknown      ; 65  (0xC1) TK_USR
+    dc.l    exec_do_unknown      ; 66  (0xC2) TK_FRE
+    dc.l    exec_do_unknown      ; 67  (0xC3)
+    dc.l    exec_do_unknown      ; 68  (0xC4) TK_SQR
+    dc.l    exec_do_unknown      ; 69  (0xC5) TK_RND
+    dc.l    exec_do_unknown      ; 70  (0xC6) TK_SIN
+    dc.l    exec_do_unknown      ; 71  (0xC7) TK_LOG
+    dc.l    exec_do_unknown      ; 72  (0xC8) TK_EXP
+    dc.l    exec_do_unknown      ; 73  (0xC9) TK_COS
+    dc.l    exec_do_unknown      ; 74  (0xCA) TK_TAN
+    dc.l    exec_do_unknown      ; 75  (0xCB) TK_ATN
+    dc.l    exec_do_unknown      ; 76  (0xCC) TK_PEEK
+    dc.l    exec_do_unknown      ; 77  (0xCD) TK_DEEK
+    dc.l    exec_do_unknown      ; 78  (0xCE) TK_LEEK
+    dc.l    exec_do_unknown      ; 79  (0xCF) TK_LEN
+    dc.l    exec_do_unknown      ; 80  (0xD0) TK_STR
+    dc.l    exec_do_unknown      ; 81  (0xD1) TK_VAL
+    dc.l    exec_do_unknown      ; 82  (0xD2) TK_ASC
+    dc.l    exec_do_unknown      ; 83  (0xD3) TK_CHR
+    dc.l    exec_do_unknown      ; 84  (0xD4) TK_LEFTS
+    dc.l    exec_do_unknown      ; 85  (0xD5) TK_RIGHTS
+    dc.l    exec_do_unknown      ; 86  (0xD6) TK_MIDS
+    dc.l    exec_do_unknown      ; 87  (0xD7) TK_PI
+    dc.l    exec_do_unknown      ; 88  (0xD8) TK_TWOPI
+    dc.l    exec_do_unknown      ; 89  (0xD9) TK_HEXS
+    dc.l    exec_do_unknown      ; 90  (0xDA) TK_BINS
+    dc.l    exec_do_unknown      ; 91  (0xDB) TK_BITTST
+    dc.l    exec_do_unknown      ; 92  (0xDC) TK_MAX
+    dc.l    exec_do_unknown      ; 93  (0xDD) TK_MIN
+    dc.l    exec_do_unknown      ; 94  (0xDE)
+    dc.l    exec_do_unknown      ; 95  (0xDF)
+    dc.l    exec_do_unknown      ; 96  (0xE0)
+    dc.l    exec_do_unknown      ; 97  (0xE1)
+    ; 98-127: Hardware extension tokens (0xE2-0xFF)
+    dc.l    exec_do_screen       ; 98  (0xE2) TK_SCREEN
+    dc.l    exec_do_cls          ; 99  (0xE3) TK_CLS
+    dc.l    exec_do_plot         ;100  (0xE4) TK_PLOT
+    dc.l    exec_do_palette      ;101  (0xE5) TK_PALETTE
+    dc.l    exec_do_vsync        ;102  (0xE6) TK_VSYNC
+    dc.l    exec_do_locate       ;103  (0xE7) TK_LOCATE
+    dc.l    exec_do_color        ;104  (0xE8) TK_COLOR
+    dc.l    exec_do_line         ;105  (0xE9) TK_LINE_CMD
+    dc.l    exec_do_circle       ;106  (0xEA) TK_CIRCLE
+    dc.l    exec_do_box          ;107  (0xEB) TK_BOX
+    dc.l    exec_do_scroll       ;108  (0xEC) TK_SCROLL_CMD
+    dc.l    exec_do_copper       ;109  (0xED) TK_COPPER
+    dc.l    exec_do_blit         ;110  (0xEE) TK_BLIT
+    dc.l    exec_do_sound        ;111  (0xEF) TK_SOUND
+    dc.l    exec_do_envelope     ;112  (0xF0) TK_ENVELOPE
+    dc.l    exec_do_gate         ;113  (0xF1) TK_GATE
+    dc.l    exec_do_ula          ;114  (0xF2) TK_ULA
+    dc.l    exec_do_ted_cmd      ;115  (0xF3) TK_TED_CMD
+    dc.l    exec_do_antic        ;116  (0xF4) TK_ANTIC
+    dc.l    exec_do_gtia         ;117  (0xF5) TK_GTIA
+    dc.l    exec_do_voodoo       ;118  (0xF6) TK_VOODOO
+    dc.l    exec_do_psg          ;119  (0xF7) TK_PSG_CMD
+    dc.l    exec_do_sid          ;120  (0xF8) TK_SID_CMD
+    dc.l    exec_do_pokey        ;121  (0xF9) TK_POKEY_CMD
+    dc.l    exec_do_ahx          ;122  (0xFA) TK_AHX
+    dc.l    exec_do_sap          ;123  (0xFB) TK_SAP
+    dc.l    exec_do_zbuffer      ;124  (0xFC) TK_ZBUFFER
+    dc.l    exec_do_vertex       ;125  (0xFD) TK_VERTEX
+    dc.l    exec_do_triangle     ;126  (0xFE) TK_TRIANGLE
+    dc.l    exec_do_texture      ;127  (0xFF) TK_TEXTURE
 
 ; ============================================================================
 ; Helper: exec_skip_spaces

@@ -54,6 +54,7 @@ package main
 
 import (
 	"fmt"
+	"math/bits"
 	"os"
 	"sync/atomic"
 	"time"
@@ -116,6 +117,7 @@ const (
 	OP_LSL   = 0x34 // Logical shift left
 	OP_LSR   = 0x35 // Logical shift right
 	OP_ASR   = 0x36 // Arithmetic shift right
+	OP_CLZ   = 0x37 // Count leading zeros
 
 	// Branches (compare-and-branch, PC-relative)
 	OP_BRA = 0x40 // Branch always
@@ -655,6 +657,11 @@ func (cpu *CPU64) Execute() {
 					sval = int64(cpu.regs[rs])
 				}
 				cpu.regs[rd] = maskToSize(uint64(sval>>shift), size)
+			}
+
+		case OP_CLZ:
+			if rd != 0 {
+				cpu.regs[rd] = uint64(bits.LeadingZeros32(uint32(cpu.regs[rs])))
 			}
 
 		case OP_BRA:

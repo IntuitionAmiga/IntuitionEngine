@@ -56,6 +56,12 @@ var_init:
     la      r1, BASIC_STR_TEMP
     add.q   r2, r16, #ST_HEAP_TOP
     store.l r1, (r2)
+    ; Clear variable cache (4 slots × 8 bytes = 32 bytes)
+    la      r2, var_cache
+    store.q r0, (r2)
+    store.q r0, 8(r2)
+    store.q r0, 16(r2)
+    store.q r0, 24(r2)
     rts
 
 ; ============================================================================
@@ -141,7 +147,18 @@ var_lookup:
     move.q  r2, #0x28            ; '('
     beq     r1, r2, .vl_array_ref
 
-    ; --- Simple numeric variable: search table ---
+    ; --- Simple numeric variable: check 4-slot cache first ---
+    la      r5, var_cache
+    load.l  r6, (r5)             ; slot 0 name_tag
+    beq     r6, r14, .vl_cache_hit_0
+    load.l  r6, 8(r5)            ; slot 1 name_tag
+    beq     r6, r14, .vl_cache_hit_1
+    load.l  r6, 16(r5)           ; slot 2 name_tag
+    beq     r6, r14, .vl_cache_hit_2
+    load.l  r6, 24(r5)           ; slot 3 name_tag
+    beq     r6, r14, .vl_cache_hit_3
+
+    ; Cache miss: linear scan
     add.q   r1, r16, #ST_VAR_START
     load.l  r2, (r1)            ; R2 = var_start
     add.q   r1, r16, #ST_VAR_END
@@ -156,6 +173,15 @@ var_lookup:
 
 .vl_found:
     add.q   r8, r2, #4
+    ; Update cache: shift slots 0→1, 1→2, 2→3, insert at 0
+    load.q  r1, 16(r5)          ; old slot 2
+    store.q r1, 24(r5)          ; → slot 3
+    load.q  r1, 8(r5)           ; old slot 1
+    store.q r1, 16(r5)          ; → slot 2
+    load.q  r1, (r5)            ; old slot 0
+    store.q r1, 8(r5)           ; → slot 1
+    store.l r14, (r5)           ; new slot 0 name_tag
+    store.l r8, 4(r5)           ; new slot 0 var_ptr
     move.q  r9, r0               ; R9 = 0 (numeric)
     pop     r15
     pop     r14
@@ -166,10 +192,65 @@ var_lookup:
     add.q   r1, r3, #4
     store.l r0, (r1)             ; value = 0
     move.q  r8, r1
+    ; Update cache: shift and insert at slot 0
+    load.q  r2, 16(r5)
+    store.q r2, 24(r5)
+    load.q  r2, 8(r5)
+    store.q r2, 16(r5)
+    load.q  r2, (r5)
+    store.q r2, 8(r5)
+    store.l r14, (r5)
+    store.l r8, 4(r5)
     move.q  r9, r0               ; R9 = 0 (numeric)
     add.q   r3, r3, #8
     add.q   r1, r16, #ST_VAR_END
     store.l r3, (r1)
+    pop     r15
+    pop     r14
+    rts
+
+.vl_cache_hit_0:
+    load.l  r8, 4(r5)           ; var_ptr from slot 0
+    move.q  r9, r0
+    pop     r15
+    pop     r14
+    rts
+.vl_cache_hit_1:
+    load.l  r8, 12(r5)          ; var_ptr from slot 1
+    ; Promote to slot 0: swap slots 0 and 1
+    load.q  r1, (r5)            ; old slot 0
+    load.q  r2, 8(r5)           ; old slot 1 (the hit)
+    store.q r2, (r5)            ; → slot 0
+    store.q r1, 8(r5)           ; → slot 1
+    move.q  r9, r0
+    pop     r15
+    pop     r14
+    rts
+.vl_cache_hit_2:
+    load.l  r8, 20(r5)          ; var_ptr from slot 2
+    ; Promote to slot 0: save hit, shift 0→1, 1→2, put hit at 0
+    load.q  r2, 16(r5)          ; save hit (slot 2) in r2
+    load.q  r1, 8(r5)           ; old slot 1
+    store.q r1, 16(r5)          ; → slot 2
+    load.q  r1, (r5)            ; old slot 0
+    store.q r1, 8(r5)           ; → slot 1
+    store.q r2, (r5)            ; hit → slot 0
+    move.q  r9, r0
+    pop     r15
+    pop     r14
+    rts
+.vl_cache_hit_3:
+    load.l  r8, 28(r5)          ; var_ptr from slot 3
+    ; Promote to slot 0: shift 0→1, 1→2, 2→3, put hit at 0
+    load.q  r1, 16(r5)          ; old slot 2
+    store.q r1, 24(r5)          ; → slot 3
+    load.q  r1, 8(r5)           ; old slot 1
+    store.q r1, 16(r5)          ; → slot 2
+    load.q  r1, (r5)            ; old slot 0
+    store.q r1, 8(r5)           ; → slot 1
+    store.l r14, (r5)           ; hit name_tag → slot 0
+    store.l r8, 4(r5)           ; hit var_ptr → slot 0
+    move.q  r9, r0
     pop     r15
     pop     r14
     rts
@@ -550,6 +631,15 @@ var_read:
 .vr_zero:
     move.q  r8, r0               ; undefined → 0
     rts
+
+; ============================================================================
+; Variable cache: 4 slots × [name_tag(4) + var_ptr(4)] = 32 bytes
+; ============================================================================
+var_cache:
+    dc.q    0                    ; slot 0: name_tag(4) + var_ptr(4)
+    dc.q    0                    ; slot 1
+    dc.q    0                    ; slot 2
+    dc.q    0                    ; slot 3
 
 ; ============================================================================
 ; EOF

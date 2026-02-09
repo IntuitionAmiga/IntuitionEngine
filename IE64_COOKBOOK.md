@@ -730,10 +730,70 @@ Notes:
                 and.q   r2, r2, #$F     ; mask to 4 bits
 ```
 
+### Count leading zeros
+
+```asm
+; Count leading zeros in the low 32 bits of r1, result in r2.
+
+                clz.l   r2, r1          ; r2 = 0..32
+```
+
+### Find highest set bit (integer log₂)
+
+```asm
+; Compute floor(log2(r1)) for a non-zero 32-bit value.
+; Result in r2.  Undefined if r1 is zero.
+
+                clz.l   r2, r1          ; r2 = leading zeros
+                move.q  r3, #31
+                sub.q   r2, r3, r2      ; r2 = 31 - CLZ = bit position
+```
+
+### Round up to next power of two (32-bit)
+
+```asm
+; Round r1 up to the next power of two.  Result in r1.
+; If r1 is already a power of two it is returned unchanged.
+
+                sub.l   r1, r1, #1      ; handle exact powers
+                clz.l   r2, r1          ; leading zeros of (n-1)
+                move.q  r3, #32
+                sub.q   r2, r3, r2      ; r2 = ceil(log2(n))
+                move.q  r1, #1
+                lsl.l   r1, r1, r2      ; r1 = 1 << ceil(log2(n))
+```
+
+### O(1) floating-point normalisation
+
+```asm
+; Normalise a 32-bit mantissa in r12 so that bit 23 is the
+; implicit leading 1.  Adjust the exponent in r11 accordingly.
+
+                clz.l   r1, r12         ; leading zeros
+                sub.q   r1, r1, #8      ; shift needed (bit 23 = 8 leading zeros)
+                beqz    r1, .already_normal
+                blt     r1, r0, .shift_right
+                lsl.l   r12, r12, r1    ; shift mantissa left
+                sub.l   r11, r11, r1    ; decrease exponent
+                bra     .already_normal
+.shift_right:
+                neg.q   r1, r1
+                lsr.l   r12, r12, r1    ; shift mantissa right
+                add.l   r11, r11, r1    ; increase exponent
+.already_normal:
+```
+
+> **Gotcha**: use `sub.q` (not `sub.l`) when the result may be negative and is
+> subsequently tested with `blt`.  A `.l` subtraction zero-extends its 32-bit
+> result to 64 bits, so negative values appear as large positive numbers in a
+> 64-bit signed comparison.
+
 Notes:
 - Immediate values in `and`/`or`/`eor` are zero-extended 32-bit. For masks wider
   than 32 bits, load the mask into a register first using `li`.
 - `not.q` inverts all 64 bits. For size-restricted NOT, use `.b`/`.w`/`.l` suffix.
+- `clz.l` only supports the `.l` size suffix and always operates on the low 32 bits
+  of the source register.
 
 ---
 

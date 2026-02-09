@@ -34,6 +34,22 @@ FP_LN2            equ 0x3F317218
 FP_INV_LN2        equ 0x3FB8AA3B
 FP_E              equ 0x402DF854
 
+; Precomputed reciprocals for replacing fp_div with fp_mul
+FP_INV_2          equ 0x3F000000    ; 1/2 = 0.5
+FP_INV_3          equ 0x3EAAAAAB    ; 1/3
+FP_INV_4          equ 0x3E800000    ; 1/4 = 0.25
+FP_INV_5          equ 0x3E4CCCCD    ; 1/5
+FP_INV_6          equ 0x3E2AAAAB    ; 1/6
+FP_INV_7          equ 0x3E124925    ; 1/7
+FP_INV_9          equ 0x3DE38E39    ; 1/9
+FP_INV_11         equ 0x3DBA2E8C    ; 1/11
+FP_INV_20         equ 0x3D4CCCCD    ; 1/20
+FP_INV_42         equ 0x3CC2F8BC    ; 1/42
+; Combined ratio constants for fp_log
+FP_FOUR_FIFTHS    equ 0x3F4CCCCD    ; 4/5
+FP_THREE_QUARTERS equ 0x3F400000    ; 3/4
+FP_TWO_THIRDS     equ 0x3F2AAAAB    ; 2/3
+
 ; ============================================================================
 ; fp_neg: R8 = -R8 (flip sign bit)
 ; ============================================================================
@@ -180,13 +196,16 @@ fp_add:
 .fp_add_normalise:
     ; Normalise: shift left until bit 23 is set (or mantissa is zero)
     beqz    r12, .fp_add_zero_result
-.fp_add_norm_loop:
-    and.l   r1, r12, #FP_IMPLICIT_BIT
-    bnez    r1, .fp_add_pack
-    lsl.l   r12, r12, #1
-    sub.l   r11, r11, #1
-    beqz    r11, .fp_add_denorm     ; exponent underflow
-    bra     .fp_add_norm_loop
+    ; CLZ-based O(1) normalisation
+    clz.l   r1, r12             ; count leading zeros of mantissa
+    sub.q   r1, r1, #8          ; bit 23 = 8 leading zeros in 32-bit (.q for signed result)
+    beqz    r1, .fp_add_pack    ; already normalised
+    blt     r1, r0, .fp_add_pack ; negative shift means already >=bit23 (shouldn't happen in sub path)
+    ; Check for exponent underflow: if shift > exponent, denormalise
+    bge     r1, r11, .fp_add_denorm
+    lsl.l   r12, r12, r1       ; normalise mantissa
+    sub.l   r11, r11, r1       ; adjust exponent
+    bra     .fp_add_pack
 
 .fp_add_denorm:
     ; Denormalised result (exponent = 0)
@@ -459,25 +478,23 @@ fp_float:
 .fp_float_negate:
     neg.l   r8, r8
 .fp_float_have_abs:
-    ; Count leading zeros by shifting
-    move.l  r1, #0                  ; shift count
-    move.l  r2, #FP_IMPLICIT_BIT    ; target: bit 23
-.fp_float_norm:
-    and.l   r3, r8, #0xFF000000     ; check if any bit above bit 23 is set
-    bnez    r3, .fp_float_shift_right
-    ; Check if bit 23 is set
-    and.l   r3, r8, r2
-    bnez    r3, .fp_float_pack
-    lsl.l   r8, r8, #1
-    add.l   r1, r1, #1
-    move.l  r3, #31
-    bgt     r1, r3, .fp_float_zero_result
-    bra     .fp_float_norm
-
-.fp_float_shift_right:
-    lsr.l   r8, r8, #1
-    sub.l   r1, r1, #1
-    bra     .fp_float_norm
+    ; CLZ-based O(1) normalisation
+    clz.l   r1, r8              ; count leading zeros
+    ; Target: bit 23 set = 8 leading zeros in 32-bit
+    ; shift_left = clz - 8 (positive = shift left, negative = shift right)
+    sub.q   r1, r1, #8          ; .q for signed result
+    beqz    r1, .fp_float_pack  ; already normalised (bit 23 set)
+    blt     r1, r0, .fp_float_shr
+    ; Shift left (mantissa too small)
+    move.q  r2, #31
+    bgt     r1, r2, .fp_float_zero_result
+    lsl.l   r8, r8, r1
+    bra     .fp_float_pack
+.fp_float_shr:
+    ; Shift right (mantissa too large) — negate shift count
+    neg.q   r1, r1
+    lsr.l   r8, r8, r1
+    neg.q   r1, r1              ; restore negative for exponent calc
 
 .fp_float_pack:
     ; Exponent = 127 + 23 - shift_count = 150 - shift_count
@@ -575,8 +592,8 @@ fp_sin:
 
     ; --- Range reduction: reduce to [0, 2*pi) ---
     move.l  r15, r8                 ; r15 = |x|
-    move.l  r9, #FP_TWO_PI
-    jsr     fp_div                  ; |x| / 2pi
+    move.l  r9, #FP_INV_TWO_PI
+    jsr     fp_mul                  ; |x| * (1/2pi) = |x| / 2pi
     jsr     fp_int                  ; floor(|x| / 2pi)
     move.l  r9, #FP_TWO_PI
     jsr     fp_mul                  ; floor * 2pi
@@ -632,8 +649,8 @@ fp_sin:
     move.l  r14, r8                 ; r14 = x^2
 
     ; Innermost: 1 - x^2/42
-    move.l  r9, #0x42280000         ; 42.0
-    jsr     fp_div                  ; x^2/42
+    move.l  r9, #FP_INV_42          ; 1/42
+    jsr     fp_mul                  ; x^2 * (1/42) = x^2/42
     eor.l   r8, r8, #FP_SIGN_BIT   ; -x^2/42
     move.l  r9, #FP_ONE
     jsr     fp_add                  ; 1 - x^2/42
@@ -641,8 +658,8 @@ fp_sin:
     ; Next: * x^2/20, then 1 - that
     move.l  r9, r14                 ; x^2
     jsr     fp_mul
-    move.l  r9, #0x41A00000         ; 20.0
-    jsr     fp_div
+    move.l  r9, #FP_INV_20          ; 1/20
+    jsr     fp_mul                  ; * (1/20) = /20
     eor.l   r8, r8, #FP_SIGN_BIT
     move.l  r9, #FP_ONE
     jsr     fp_add                  ; 1 - x^2/20*(...)
@@ -650,8 +667,8 @@ fp_sin:
     ; Next: * x^2/6, then 1 - that
     move.l  r9, r14                 ; x^2
     jsr     fp_mul
-    move.l  r9, #0x40C00000         ; 6.0
-    jsr     fp_div
+    move.l  r9, #FP_INV_6           ; 1/6
+    jsr     fp_mul                  ; * (1/6) = /6
     eor.l   r8, r8, #FP_SIGN_BIT
     move.l  r9, #FP_ONE
     jsr     fp_add                  ; 1 - x^2/6*(...)
@@ -777,29 +794,21 @@ fp_atn:
     jsr     fp_mul                  ; t^2
     move.l  r14, r8                 ; r14 = t^2
 
-    ; Innermost: -1/11
-    move.l  r8, #FP_ONE
-    move.l  r9, #0x41300000         ; 11.0
-    jsr     fp_div
+    ; Innermost: -1/11 (use precomputed constant directly)
+    move.l  r8, #FP_INV_11
     eor.l   r8, r8, #FP_SIGN_BIT   ; -1/11
 
     ; * t^2 + 1/9
     move.l  r9, r14
     jsr     fp_mul
-    push    r8
-    move.l  r8, #FP_ONE
-    move.l  r9, #0x41100000         ; 9.0
-    jsr     fp_div                  ; 1/9
-    pop     r9
+    move.l  r9, #FP_INV_9           ; 1/9 (precomputed)
     jsr     fp_add                  ; 1/9 - t^2/11
 
     ; * t^2 + (-1/7)
     move.l  r9, r14
     jsr     fp_mul
     push    r8
-    move.l  r8, #FP_ONE
-    move.l  r9, #0x40E00000         ; 7.0
-    jsr     fp_div
+    move.l  r8, #FP_INV_7           ; 1/7 (precomputed)
     eor.l   r8, r8, #FP_SIGN_BIT   ; -1/7
     pop     r9
     jsr     fp_add                  ; -1/7 + t^2*(1/9 - ...)
@@ -807,20 +816,14 @@ fp_atn:
     ; * t^2 + 1/5
     move.l  r9, r14
     jsr     fp_mul
-    push    r8
-    move.l  r8, #FP_ONE
-    move.l  r9, #0x40A00000         ; 5.0
-    jsr     fp_div                  ; 1/5
-    pop     r9
+    move.l  r9, #FP_INV_5           ; 1/5 (precomputed)
     jsr     fp_add                  ; 1/5 + t^2*(...)
 
     ; * t^2 + (-1/3)
     move.l  r9, r14
     jsr     fp_mul
     push    r8
-    move.l  r8, #FP_ONE
-    move.l  r9, #0x40400000         ; 3.0
-    jsr     fp_div
+    move.l  r8, #FP_INV_3           ; 1/3 (precomputed)
     eor.l   r8, r8, #FP_SIGN_BIT   ; -1/3
     pop     r9
     jsr     fp_add                  ; -1/3 + t^2*(...)
@@ -916,43 +919,37 @@ fp_log:
     ; ln(1+t) = t*(1 - t/2*(1 - 2t/3*(1 - 3t/4*(1 - 4t/5))))
     ; Start from innermost: 1 - 4t/5
 
-    ; 4t/5
+    ; 4t/5 → t * (4/5)
     move.l  r8, r15                 ; t
-    move.l  r9, #0x40800000         ; 4.0
-    jsr     fp_mul                  ; 4t
-    move.l  r9, #0x40A00000         ; 5.0
-    jsr     fp_div                  ; 4t/5
+    move.l  r9, #FP_FOUR_FIFTHS     ; 4/5 precomputed
+    jsr     fp_mul                  ; t * (4/5)
     eor.l   r8, r8, #FP_SIGN_BIT   ; -4t/5
     move.l  r9, #FP_ONE
     jsr     fp_add                  ; 1 - 4t/5
 
-    ; * 3t/4 then 1 - ...
+    ; * 3t/4 → * t * (3/4), then 1 - ...
     move.l  r9, r15                 ; t
     jsr     fp_mul
-    move.l  r9, #0x40400000         ; 3.0
-    jsr     fp_mul
-    move.l  r9, #0x40800000         ; 4.0
-    jsr     fp_div
+    move.l  r9, #FP_THREE_QUARTERS  ; 3/4 precomputed
+    jsr     fp_mul                  ; * (3/4)
     eor.l   r8, r8, #FP_SIGN_BIT
     move.l  r9, #FP_ONE
     jsr     fp_add                  ; 1 - 3t/4*(...)
 
-    ; * 2t/3 then 1 - ...
+    ; * 2t/3 → * t * (2/3), then 1 - ...
     move.l  r9, r15                 ; t
     jsr     fp_mul
-    move.l  r9, #FP_TWO
-    jsr     fp_mul
-    move.l  r9, #0x40400000         ; 3.0
-    jsr     fp_div
+    move.l  r9, #FP_TWO_THIRDS      ; 2/3 precomputed
+    jsr     fp_mul                  ; * (2/3)
     eor.l   r8, r8, #FP_SIGN_BIT
     move.l  r9, #FP_ONE
     jsr     fp_add                  ; 1 - 2t/3*(...)
 
-    ; * t/2 then 1 - ...
+    ; * t/2 → * t * (1/2), then 1 - ...
     move.l  r9, r15                 ; t
     jsr     fp_mul
-    move.l  r9, #FP_TWO
-    jsr     fp_div
+    move.l  r9, #FP_INV_2           ; 1/2 precomputed
+    jsr     fp_mul                  ; * (1/2)
     eor.l   r8, r8, #FP_SIGN_BIT
     move.l  r9, #FP_ONE
     jsr     fp_add                  ; 1 - t/2*(...)
@@ -1052,32 +1049,32 @@ fp_exp:
 
     ; Start from inside: 1 + u/5
     move.l  r8, r14
-    move.l  r9, #0x40A00000         ; 5.0
-    jsr     fp_div                  ; u/5
+    move.l  r9, #FP_INV_5           ; 1/5
+    jsr     fp_mul                  ; u * (1/5)
     move.l  r9, #FP_ONE
     jsr     fp_add                  ; 1 + u/5
 
     ; * u/4, then + 1
     move.l  r9, r14
     jsr     fp_mul
-    move.l  r9, #0x40800000         ; 4.0
-    jsr     fp_div
+    move.l  r9, #FP_INV_4           ; 1/4
+    jsr     fp_mul                  ; * (1/4)
     move.l  r9, #FP_ONE
     jsr     fp_add
 
     ; * u/3, then + 1
     move.l  r9, r14
     jsr     fp_mul
-    move.l  r9, #0x40400000         ; 3.0
-    jsr     fp_div
+    move.l  r9, #FP_INV_3           ; 1/3
+    jsr     fp_mul                  ; * (1/3)
     move.l  r9, #FP_ONE
     jsr     fp_add
 
     ; * u/2, then + 1
     move.l  r9, r14
     jsr     fp_mul
-    move.l  r9, #FP_TWO
-    jsr     fp_div
+    move.l  r9, #FP_INV_2           ; 1/2
+    jsr     fp_mul                  ; * (1/2)
     move.l  r9, #FP_ONE
     jsr     fp_add
 

@@ -275,8 +275,13 @@ When X=1, the third operand is the immediate, zero-extended to 64 bits: `operand
 | LSR      | `0x35` | `lsr.s Rd, Rs, #imm` | `Rd = maskToSize(Rs >> (imm32 & 63), s)` | N | B/W/L/Q |
 | ASR      | `0x36` | `asr.s Rd, Rs, Rt` | `Rd = maskToSize(signedRs >> (Rt & 63), s)` | N | B/W/L/Q |
 | ASR      | `0x36` | `asr.s Rd, Rs, #imm` | `Rd = maskToSize(signedRs >> (imm32 & 63), s)` | N | B/W/L/Q |
+| CLZ      | `0x37` | `clz.l Rd, Rs` | `Rd = LeadingZeros32(uint32(Rs))` | N | L |
 
 **Shift amount masking**: The shift count is always masked to 6 bits (`& 63`), limiting the effective shift range to 0-63.
+
+**CLZ (Count Leading Zeros)**: A 2-operand instruction that counts the number of leading zero bits in the low 32 bits of Rs and stores the result in Rd. The result is an integer in the range 0–32: zero if the most-significant bit is set, 32 if the input is zero. Only the `.l` size suffix is supported. Writing to R0 is silently discarded (as with all instructions).
+
+This instruction is particularly useful for O(1) floating-point normalisation, integer log₂ computation, and highest-set-bit detection. See the IE64 Cookbook for worked examples.
 
 **ASR sign extension**: Before performing the arithmetic right shift, the source value is sign-extended according to the current size:
 
@@ -952,6 +957,7 @@ dc.b "hello; world" ; the semicolon in the string is literal
 | 0x34   | `$34`  | LSL      | Shift | Rd, Rs, Rt/#imm |
 | 0x35   | `$35`  | LSR      | Shift | Rd, Rs, Rt/#imm |
 | 0x36   | `$36`  | ASR      | Shift | Rd, Rs, Rt/#imm |
+| 0x37   | `$37`  | CLZ      | Shift | Rd, Rs |
 | 0x40   | `$40`  | BRA      | Branch | label |
 | 0x41   | `$41`  | BEQ      | Branch | Rs, Rt, label |
 | 0x42   | `$42`  | BNE      | Branch | Rs, Rt, label |
@@ -981,7 +987,7 @@ dc.b "hello; world" ; the semicolon in the string is literal
 | `$01-$04` | Data Movement |
 | `$10-$11` | Memory Access |
 | `$20-$27` | Arithmetic |
-| `$30-$36` | Logical / Shift |
+| `$30-$37` | Logical / Shift |
 | `$40-$49` | Branches |
 | `$50-$54` | Subroutine / Stack |
 | `$E0-$E5` | System |

@@ -125,6 +125,7 @@ const (
 	OP64_LSL     = 0x34
 	OP64_LSR     = 0x35
 	OP64_ASR     = 0x36
+	OP64_CLZ     = 0x37
 	OP64_BRA     = 0x40
 	OP64_BEQ     = 0x41
 	OP64_BNE     = 0x42
@@ -2035,6 +2036,8 @@ func (a *IE64Assembler) assembleInstruction(trimmed string, program []byte) erro
 		instr, err = a.asmALU3(OP64_LSR, size, operands)
 	case "asr":
 		instr, err = a.asmALU3(OP64_ASR, size, operands)
+	case "clz":
+		instr, err = a.asmALU2(OP64_CLZ, size, operands)
 
 	// Branches
 	case "bra":

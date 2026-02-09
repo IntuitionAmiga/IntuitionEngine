@@ -102,9 +102,9 @@ expr_or:
     move.q  r22, r8
     bra     .eor_loop
 
-; --- Level 2: AND ---
+; --- Level 2: AND (with inlined NOT check) ---
 expr_and:
-    jsr     expr_not
+    jsr     expr_not_inline
     move.q  r22, r8
 .and_loop:
     ; Skip spaces before checking for AND token
@@ -118,7 +118,7 @@ expr_and:
     bne     r1, r2, .and_done
     add.q   r17, r17, #1
     push    r22
-    jsr     expr_not
+    jsr     expr_not_inline
     pop     r22
     jsr     fp32_to_int_pair
     and.l   r1, r1, r2
@@ -130,23 +130,25 @@ expr_and:
     move.q  r8, r22
     rts
 
-; --- Level 3: NOT (unary prefix) ---
-expr_not:
-    ; Skip spaces before checking for NOT token
-.not_skip_sp:
+; --- Level 3: NOT (unary prefix, inlined skip-spaces + compare check) ---
+expr_not_inline:
+    ; Skip spaces then check for NOT token; if not found, tail-call expr_compare
     load.b  r1, (r17)
     move.q  r2, #0x20
-    bne     r1, r2, .not_check
+    beq     r1, r2, .not_skip_sp
+    bra     .not_check
+.not_skip_sp:
     add.q   r17, r17, #1
-    bra     .not_skip_sp
+    load.b  r1, (r17)
+    move.q  r2, #0x20
+    beq     r1, r2, .not_skip_sp
 .not_check:
     move.q  r2, #TK_NOT
-    bne     r1, r2, expr_compare
+    bne     r1, r2, expr_compare ; tail-call: no NOT → go straight to compare
     add.q   r17, r17, #1
-    jsr     expr_not             ; recursive for NOT NOT x
+    jsr     expr_not_inline      ; recursive for NOT NOT x
     ; NOT: convert to int, complement, convert back
     jsr     fp_int               ; truncate to integer
-    ; R8 = FP32 of integer value; convert to raw int
     push    r8
     jsr     fp_fix               ; FP32→signed int32 in R8
     move.q  r1, r8
@@ -514,39 +516,19 @@ expr_primary:
 
 .func_call:
     ; R1 = function token, R8 = argument
-    ; Dispatch to the correct function
-    move.q  r2, #TK_SGN
-    beq     r1, r2, .fn_sgn
-    move.q  r2, #TK_INT
-    beq     r1, r2, .fn_int
-    move.q  r2, #TK_ABS
-    beq     r1, r2, .fn_abs
-    move.q  r2, #TK_SQR
-    beq     r1, r2, .fn_sqr
-    move.q  r2, #TK_SIN
-    beq     r1, r2, .fn_sin
-    move.q  r2, #TK_COS
-    beq     r1, r2, .fn_cos
-    move.q  r2, #TK_TAN
-    beq     r1, r2, .fn_tan
-    move.q  r2, #TK_ATN
-    beq     r1, r2, .fn_atn
-    move.q  r2, #TK_LOG
-    beq     r1, r2, .fn_log
-    move.q  r2, #TK_EXP
-    beq     r1, r2, .fn_exp
-    move.q  r2, #TK_RND
-    beq     r1, r2, .fn_rnd
-    move.q  r2, #TK_PEEK
-    beq     r1, r2, .fn_peek
-    move.q  r2, #TK_FRE
-    beq     r1, r2, .fn_fre
-    move.q  r2, #TK_DEEK
-    beq     r1, r2, .fn_deek
-    move.q  r2, #TK_LEEK
-    beq     r1, r2, .fn_leek
-    move.q  r2, #TK_USR
-    beq     r1, r2, .fn_usr
+    ; Jump table dispatch: index = token - 0xBE, range 0..16
+    sub.q   r1, r1, #0xBE
+    move.q  r2, #17
+    bge     r1, r2, .fn_unknown     ; out of range → return arg unchanged
+    blt     r1, r0, .fn_unknown
+    la      r2, .func_jump_table
+    lsl.q   r3, r1, #2             ; index * 4
+    add.q   r2, r2, r3
+    load.l  r2, (r2)               ; handler address
+    jsr     (r2)                   ; dispatch
+    rts
+
+.fn_unknown:
     ; Unknown function — return argument unchanged
     rts
 
@@ -979,6 +961,33 @@ expr_primary:
     jsr     fp_float
     rts
 
+.fn_pos:
+    ; POS(x) — cursor column position (stub: returns 0)
+    move.q  r8, r0
+    jsr     fp_float
+    rts
+
+; Function dispatch jump table (17 entries, tokens 0xBE-0xCE)
+    align 4
+.func_jump_table:
+    dc.l    .fn_sgn              ; 0xBE TK_SGN
+    dc.l    .fn_int              ; 0xBF TK_INT
+    dc.l    .fn_abs              ; 0xC0 TK_ABS
+    dc.l    .fn_usr              ; 0xC1 TK_USR
+    dc.l    .fn_fre              ; 0xC2 TK_FRE
+    dc.l    .fn_pos              ; 0xC3 TK_POS
+    dc.l    .fn_sqr              ; 0xC4 TK_SQR
+    dc.l    .fn_rnd              ; 0xC5 TK_RND
+    dc.l    .fn_log              ; 0xC6 TK_LOG
+    dc.l    .fn_exp              ; 0xC7 TK_EXP
+    dc.l    .fn_cos              ; 0xC8 TK_COS
+    dc.l    .fn_sin              ; 0xC9 TK_SIN
+    dc.l    .fn_tan              ; 0xCA TK_TAN
+    dc.l    .fn_atn              ; 0xCB TK_ATN
+    dc.l    .fn_peek             ; 0xCC TK_PEEK
+    dc.l    .fn_deek             ; 0xCD TK_DEEK
+    dc.l    .fn_leek             ; 0xCE TK_LEEK
+
 rnd_state:
     dc.l    0x12345678
 
@@ -1049,33 +1058,37 @@ parse_number:
     ; Restore fractional digit count
     pop     r2
 
-    ; If there were fractional digits, divide by 10^n
+    ; If there were fractional digits, divide by 10^n using lookup table
     beqz    r2, .pn_end
-
-    ; Build divisor: start with 1.0, multiply by 10 for each fractional digit
-    move.l  r15, #0x3F800000      ; R15 = 1.0 (accumulates 10^n)
-
-.pn_div_build:
-    beqz    r2, .pn_div_apply
-    push    r8                    ; save the numeric value
-    push    r2                    ; save loop counter (fp_mul clobbers R2)
-    move.q  r8, r15              ; R8 = current divisor
-    move.l  r9, #0x41200000      ; R9 = 10.0
-    jsr     fp_mul               ; R8 = divisor * 10
-    move.q  r15, r8              ; save new divisor
-    pop     r2                   ; restore loop counter
-    pop     r8                   ; restore numeric value
-    sub.q   r2, r2, #1
-    bra     .pn_div_build
-
-.pn_div_apply:
-    move.q  r9, r15               ; R9 = 10^n
+    ; Clamp n to 8 (max table entries)
+    move.q  r3, #8
+    ble     r2, r3, .pn_div_lookup
+    move.q  r2, r3
+.pn_div_lookup:
+    ; Table index: (n-1) * 4
+    sub.q   r3, r2, #1
+    lsl.q   r3, r3, #2
+    la      r4, .fp_pow10_table
+    add.q   r4, r4, r3
+    load.l  r9, (r4)              ; R9 = 10^n (exact FP32)
     jsr     fp_div                ; R8 = value / 10^n
 
 .pn_end:
     pop     r15
     pop     r14
     rts
+
+; Power-of-10 lookup table (exact FP32 representations)
+    align 4
+.fp_pow10_table:
+    dc.l    0x41200000            ; 10^1 = 10
+    dc.l    0x42C80000            ; 10^2 = 100
+    dc.l    0x447A0000            ; 10^3 = 1000
+    dc.l    0x461C4000            ; 10^4 = 10000
+    dc.l    0x47C35000            ; 10^5 = 100000
+    dc.l    0x49742400            ; 10^6 = 1000000
+    dc.l    0x4B189680            ; 10^7 = 10000000
+    dc.l    0x4CBEBC20            ; 10^8 = 100000000
 
 ; ============================================================================
 ; fp32_to_int_pair - Convert R22 (FP32) and R8 (FP32) to integers
