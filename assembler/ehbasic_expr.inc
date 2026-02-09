@@ -63,7 +63,13 @@ expr_or:
     jsr     expr_and
     move.q  r22, r8              ; save left operand
 .eor_loop:
+    ; Skip spaces before checking for OR/EOR token
     load.b  r1, (r17)
+    move.q  r2, #0x20
+    bne     r1, r2, .eor_check
+    add.q   r17, r17, #1
+    bra     .eor_loop
+.eor_check:
     move.q  r2, #TK_OR
     beq     r1, r2, .do_or
     move.q  r2, #TK_EOR
@@ -101,7 +107,13 @@ expr_and:
     jsr     expr_not
     move.q  r22, r8
 .and_loop:
+    ; Skip spaces before checking for AND token
     load.b  r1, (r17)
+    move.q  r2, #0x20
+    bne     r1, r2, .and_check
+    add.q   r17, r17, #1
+    bra     .and_loop
+.and_check:
     move.q  r2, #TK_AND
     bne     r1, r2, .and_done
     add.q   r17, r17, #1
@@ -120,7 +132,14 @@ expr_and:
 
 ; --- Level 3: NOT (unary prefix) ---
 expr_not:
+    ; Skip spaces before checking for NOT token
+.not_skip_sp:
     load.b  r1, (r17)
+    move.q  r2, #0x20
+    bne     r1, r2, .not_check
+    add.q   r17, r17, #1
+    bra     .not_skip_sp
+.not_check:
     move.q  r2, #TK_NOT
     bne     r1, r2, expr_compare
     add.q   r17, r17, #1
@@ -1068,12 +1087,14 @@ fp32_to_int_pair:
     push    r8
     move.q  r8, r22
     jsr     fp_int
-    jsr     fp_fix               ; R8 = signed int32
+    jsr     fp_fix               ; R8 = signed int32 of left
     move.q  r1, r8
     pop     r8
+    push    r1                   ; save left int32 (fp_fix clobbers R1)
     jsr     fp_int
-    jsr     fp_fix               ; R8 = signed int32
+    jsr     fp_fix               ; R8 = signed int32 of right
     move.q  r2, r8
+    pop     r1                   ; restore left int32
     rts
 
 ; ============================================================================

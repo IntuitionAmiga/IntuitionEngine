@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
 	"math"
 	"os"
@@ -4923,4 +4924,197 @@ func TestEhBASIC_SidStatus(t *testing.T) {
 	if out != "0" {
 		t.Fatalf("SID STATUS: expected '0', got %q", out)
 	}
+}
+
+// execStmtTestWithVideo is like execStmtTestWithBus but also attaches the
+// global VideoChip to the bus so that BLIT and VRAM operations work.
+func execStmtTestWithVideo(t *testing.T, asmBin string, program string, maxCycles int) (string, *ehbasicTestHarness, *VideoChip) {
+	t.Helper()
+
+	lines := strings.Split(strings.TrimSpace(program), "\n")
+	var storeCode string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, " ", 2)
+		if len(parts) < 2 {
+			continue
+		}
+		lineNum := parts[0]
+		lineContent := parts[1]
+		var dcBytes string
+		for i, b := range []byte(lineContent) {
+			if i > 0 {
+				dcBytes += ", "
+			}
+			dcBytes += fmt.Sprintf("0x%02X", b)
+		}
+		dcBytes += ", 0"
+		storeCode += fmt.Sprintf(`
+    ; --- Store line %s ---
+    la      r8, .line_%s_raw
+    la      r9, 0x021100
+    jsr     tokenize
+    move.q  r10, r8
+    move.q  r8, #%s
+    la      r9, 0x021100
+    jsr     line_store
+    bra     .line_%s_end
+.line_%s_raw:
+    dc.b    %s
+    align 8
+.line_%s_end:
+`, lineNum, lineNum, lineNum, lineNum, lineNum, dcBytes, lineNum)
+	}
+	body := storeCode + `
+    jsr     exec_run
+`
+	binary := assembleExecTest(t, asmBin, body)
+
+	// Create harness and attach the global VideoChip
+	h := newEhbasicHarness(t)
+	video := videoChip
+	// Disable to prevent refresh loop from swapping buffers during test
+	video.enabled.Store(false)
+	video.AttachBus(h.bus)
+	h.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+	h.bus.MapIO(VRAM_START, VRAM_START+VRAM_SIZE-1, video.HandleRead, video.HandleWrite)
+
+	h.loadBytes(binary)
+
+	// Run with extended timeout for blitter-heavy programs
+	h.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() {
+		h.cpu.Execute()
+		close(done)
+	}()
+	timeout := time.Duration(maxCycles/20000) * time.Millisecond
+	if timeout < 100*time.Millisecond {
+		timeout = 100 * time.Millisecond
+	}
+	if timeout > 30*time.Second {
+		timeout = 30 * time.Second
+	}
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		h.cpu.running.Store(false)
+		<-done
+		t.Fatalf("CPU execution timed out after %s (cycle budget %d)", timeout, maxCycles)
+	}
+
+	return h.readOutput(), h, video
+}
+
+func TestEhBASIC_IntAndNegative(t *testing.T) {
+	asmBin := buildAssembler(t)
+
+	// Test 1: basic AND
+	out1 := execStmtTest(t, asmBin, "10 A=5 AND 3\n20 PRINT A")
+	t.Logf("Test 1 - 5 AND 3: %q", out1)
+	if !strings.Contains(out1, "1") {
+		t.Fatalf("5 AND 3: expected 1, got %q", out1)
+	}
+
+	// Test 2: INT(-32) AND 255 should give 224
+	out2 := execStmtTest(t, asmBin, "10 A=INT(-32) AND 255\n20 PRINT A")
+	t.Logf("Test 2 - INT(-32) AND 255: %q", out2)
+	if !strings.Contains(out2, "224") {
+		t.Fatalf("INT(-32) AND 255: expected 224, got %q", out2)
+	}
+
+	// Test 3: OR operator
+	out3 := execStmtTest(t, asmBin, "10 A=5 OR 3\n20 PRINT A")
+	t.Logf("Test 3 - 5 OR 3: %q", out3)
+	if !strings.Contains(out3, "7") {
+		t.Fatalf("5 OR 3: expected 7, got %q", out3)
+	}
+}
+
+func TestEhBASIC_Rotozoomer(t *testing.T) {
+	asmBin := buildAssembler(t)
+
+	// Full rotozoomer: 10x10 nested FOR with 4-colour texture lookup
+	// BGRA colours: Red(top-left), Green(top-right), Blue(bottom-left), Yellow(bottom-right)
+	program := `10 TB=&H500000: ST=1024
+20 BLIT FILL TB, 128, 128, &HFFFF0000, ST
+30 BLIT FILL TB+512, 128, 128, &HFF00FF00, ST
+40 BLIT FILL TB+131072, 128, 128, &HFF0000FF, ST
+50 BLIT FILL TB+131584, 128, 128, &HFFFFFF00, ST
+60 BX=4: BY=0: EX=0: EY=4
+70 RU=-32: RV=8
+80 FOR Y=0 TO 9
+90 U=RU: V=RV: P=&H100000+Y*20480
+100 FOR X=0 TO 9
+110 TU=INT(U) AND 255: TV=INT(V) AND 255
+120 C=PEEK(TB+TV*1024+TU*4)
+130 BLIT FILL P, 8, 8, C, 2560
+140 P=P+32: U=U+BX: V=V+BY
+150 NEXT X
+160 RU=RU+EX: RV=RV+EY
+170 NEXT Y
+180 PRINT "DONE"`
+
+	out, h, video := execStmtTestWithVideo(t, asmBin, program, 500_000_000)
+	t.Logf("Output: %q", out)
+	t.Logf("VideoChip enabled: %v", video.enabled.Load())
+
+	if !strings.Contains(out, "DONE") {
+		t.Fatalf("Program did not complete: output = %q", out)
+	}
+
+	// --- Verify texture generation (4 colours) ---
+	texRed := readBusMem32(h, 0x500000)
+	if texRed != 0xFFFF0000 {
+		t.Fatalf("Texture top-left: expected 0xFFFF0000 (red), got 0x%08X", texRed)
+	}
+	texGreen := readBusMem32(h, 0x500200)
+	if texGreen != 0xFF00FF00 {
+		t.Fatalf("Texture top-right: expected 0xFF00FF00 (green), got 0x%08X", texGreen)
+	}
+
+	// Read from video chip buffers (check both in case refresh loop swapped)
+	readVRAMPixel := func(offset uint32) uint32 {
+		video.mu.Lock()
+		defer video.mu.Unlock()
+		off := int(offset)
+		if off+4 <= len(video.frontBuffer) {
+			val := binary.LittleEndian.Uint32(video.frontBuffer[off : off+4])
+			if val != 0 {
+				return val
+			}
+		}
+		if off+4 <= len(video.backBuffer) {
+			return binary.LittleEndian.Uint32(video.backBuffer[off : off+4])
+		}
+		return 0
+	}
+
+	// Block (0,0): U=-32, V=8 -> TU=224, TV=8 -> top-right quadrant = green
+	pixel00 := readVRAMPixel(0)
+	t.Logf("VRAM block (0,0): 0x%08X", pixel00)
+	if pixel00 != 0xFF00FF00 {
+		t.Fatalf("VRAM block (0,0): expected 0xFF00FF00 (green), got 0x%08X", pixel00)
+	}
+
+	// Block (8,0): after 8 steps of BX=4 from U=-32, U=0 -> TU=0, TV=8
+	// TU=0, TV=8 -> top-left quadrant = red
+	// Pixel col 64 = byte offset 256
+	block8 := readVRAMPixel(256)
+	t.Logf("VRAM block (8,0): 0x%08X", block8)
+	if block8 != 0xFFFF0000 {
+		t.Fatalf("VRAM block (8,0): expected 0xFFFF0000 (red), got 0x%08X", block8)
+	}
+
+	// Verify block (0,0) fill spans 8 rows — row 1 at byte offset 2560
+	pixel01row1 := readVRAMPixel(2560)
+	t.Logf("VRAM block (0,0) row 1: 0x%08X", pixel01row1)
+	if pixel01row1 != 0xFF00FF00 {
+		t.Fatalf("VRAM block (0,0) row 1: expected 0xFF00FF00 (green), got 0x%08X", pixel01row1)
+	}
+
+	t.Logf("Rotozoomer test passed: texture generated, 10x10 block grid rendered correctly")
 }
