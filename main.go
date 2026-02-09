@@ -1029,17 +1029,24 @@ func main() {
 	// Placed here so no os.Exit() path sits between Start and Stop.
 	termHost.Start()
 	outputTicker := time.NewTicker(10 * time.Millisecond)
+	outputStop := make(chan struct{})
 	go func() {
-		for range outputTicker.C {
-			termHost.PrintOutput()
+		for {
+			select {
+			case <-outputStop:
+				return
+			case <-outputTicker.C:
+				termHost.PrintOutput()
+			}
 		}
 	}()
 
 	// Show the GUI and run the main event loop
 	err = gui.Show()
 
-	// Shut down terminal host (restores stdin to blocking) and render goroutines
+	// Shut down terminal host (restores stdin to blocking) and render goroutines.
 	outputTicker.Stop()
+	close(outputStop)
 	termHost.Stop()
 	vgaEngine.StopRenderLoop()
 	ulaEngine.StopRenderLoop()

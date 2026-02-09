@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -45,7 +46,46 @@ func newEhbasicHarness(t *testing.T) *ehbasicTestHarness {
 	// Register terminal MMIO for the full region
 	bus.MapIO(TERM_OUT, TERMINAL_REGION_END, term.HandleRead, term.HandleWrite)
 
+	// Wire sentinel callback to stop the CPU when TERM_SENTINEL receives 0xDEAD
+	term.OnSentinel(func() { cpu.running.Store(false) })
+
 	return h
+}
+
+// f32bits converts a float32 to its IEEE 754 bit representation.
+func f32bits(f float32) uint32 {
+	return math.Float32bits(f)
+}
+
+// assertF32Equal compares two IEEE 754 FP32 values with ULP tolerance.
+func assertF32Equal(t *testing.T, label string, got, want uint32, ulpTolerance uint32) {
+	t.Helper()
+	if got == want {
+		return
+	}
+	var diff uint32
+	if got > want {
+		diff = got - want
+	} else {
+		diff = want - got
+	}
+	if diff > ulpTolerance {
+		t.Fatalf("%s: got 0x%08X (%g), want 0x%08X (%g), diff %d ULP (tolerance %d)",
+			label, got, math.Float32frombits(got), want, math.Float32frombits(want), diff, ulpTolerance)
+	}
+}
+
+// buildAssembler compiles the IE64 assembler binary and returns its path.
+func buildAssembler(t *testing.T) string {
+	t.Helper()
+	binPath := filepath.Join(t.TempDir(), "ie64asm")
+	cmd := exec.Command("go", "build", "-tags", "ie64", "-o", binPath,
+		filepath.Join(repoRootDir(t), "assembler", "ie64asm.go"))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to build ie64asm: %v\n%s", err, out)
+	}
+	return binPath
 }
 
 func repoRootDir(t *testing.T) string {

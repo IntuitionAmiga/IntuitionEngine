@@ -97,6 +97,7 @@
    - 9.5 Memory and I/O Integration
    - 9.6 Interrupt Handling
    - 9.7 Compatibility Notes
+   - 9.8 EhBASIC IE64
 10. [Assembly Language Reference](#10-assembly-language-reference)
     - 10.1 Basic Program Structure
     - 10.2 Assembler Directives
@@ -202,6 +203,9 @@ The Intuition Engine is a virtual machine that emulates a complete retro-style c
 
 # Run IE64 program
 ./bin/IntuitionEngine -ie64 program.ie64
+
+# Run EhBASIC interpreter
+./bin/IntuitionEngine -basic
 
 # Play PSG music
 ./bin/IntuitionEngine -psg music.ym
@@ -2987,6 +2991,41 @@ Note: The interrupt vector is currently set internally. Assembly-level vector pr
 - Full ISA reference: [IE64_ISA.md](IE64_ISA.md)
 - Assembly cookbook: [IE64_COOKBOOK.md](IE64_COOKBOOK.md)
 
+## 9.8 EhBASIC IE64
+
+The Intuition Engine includes a full port of Lee Davison's Enhanced BASIC (EhBASIC) for the IE64 CPU. The interpreter is a ground-up reimplementation in IE64 assembly, using IEEE 754 single-precision (FP32) arithmetic and providing direct access to all hardware subsystems from BASIC.
+
+### Running
+
+```bash
+# Run with embedded BASIC image (requires 'make basic' build)
+./bin/IntuitionEngine -basic
+
+# Run with a custom BASIC binary
+./bin/IntuitionEngine -basic-image path/to/custom.ie64
+```
+
+### Features
+
+- **Core language**: PRINT, LET, IF/THEN/ELSE, FOR/NEXT/STEP, WHILE/WEND, DO/LOOP, GOTO, GOSUB/RETURN, DATA/READ, INPUT, DIM (multi-dimensional arrays), string variables and operations
+- **Built-in functions**: ABS, INT, SQR, RND, SGN, SIN, COS, TAN, ATN, LOG, EXP, LEN, ASC, VAL, CHR$, LEFT$, RIGHT$, MID$, STR$, HEX$, BIN$, PEEK, POKE, USR, MAX, MIN, BITTST, FRE
+- **Video commands**: SCREEN, CLS, PLOT, LINE, CIRCLE, BOX, PALETTE, LOCATE, COLOR, SCROLL, VSYNC, plus ULA, TED, ANTIC/GTIA, and full Voodoo 3D pipeline (vertices, triangles, textures, Z-buffer, alpha blending, fog)
+- **Audio commands**: SOUND, ENVELOPE, GATE, WAVE, FILTER, REVERB, OVERDRIVE, SWEEP, SYNC, RINGMOD, plus PSG/SID/POKEY/TED/AHX playback and STATUS queries
+- **System commands**: CALL (machine code subroutine), USR (call with return value), POKE8/PEEK8, DOKE/DEEK, WAIT, BLIT, COPPER, TRON/TROFF (trace mode)
+- **Machine code interface**: CALL and USR use register-indirect JSR to invoke IE64 assembly routines; R8 carries return values
+
+### Example
+
+```basic
+10 SCREEN &H13
+20 FOR I = 0 TO 199
+30   PLOT 160, I, I AND 255
+40 NEXT
+50 VSYNC
+```
+
+Full reference: [ehbasic_ie64.md](ehbasic_ie64.md)
+
 # 10. Assembly Language Reference
 
 This section documents the IE32 assembly language used with the `ie32asm` assembler. For IE64, 6502, Z80, M68K, and x86 programming, use their respective assemblers (`ie64asm`, ca65, vasmz80_std, vasmm68k_mot, NASM/FASM) with the include files documented in Section 13.4.
@@ -5055,6 +5094,9 @@ The `assembler/` directory provides hardware definition include files for each C
 | `ie80.inc` | Z80 | vasmz80_std | Hardware constants with Z80 macros |
 | `ie86.inc` | x86 | NASM/FASM | Hardware constants, port I/O, VGA registers |
 | `ie64.inc` | IE64 | ie64asm | Hardware constants and macros |
+| `ie64_fp.inc` | IE64 | ie64asm | IEEE 754 FP32 soft-float library |
+| `ehbasic_ie64.asm` | IE64 | ie64asm | EhBASIC interpreter (entry point + REPL) |
+| `ehbasic_*.inc` | IE64 | ie64asm | EhBASIC modules (tokeniser, executor, expressions, variables, strings, I/O, hardware commands) |
 
 ### Contents Overview
 
@@ -5765,6 +5807,9 @@ make ie32asm
 # Build only the IE64 assembler
 make ie64asm
 
+# Build with embedded EhBASIC interpreter
+make basic
+
 # Install to /usr/local/bin
 make install
 
@@ -5780,6 +5825,7 @@ make clean
 | Tag | Effect |
 |-----|--------|
 | `headless` | Disable GUI/audio/video backends |
+| `embed_basic` | Embed assembled EhBASIC binary for `-basic` flag |
 | `m68k` | Enable M68K-specific tests |
 | `audiolong` | Enable long-running audio demos |
 | `videolong` | Enable long-running video demos |
