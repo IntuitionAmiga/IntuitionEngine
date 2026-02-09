@@ -6,6 +6,7 @@ require (
 	github.com/ebitengine/oto/v3 v3.4.0
 	github.com/goki/vulkan v1.0.8
 	github.com/hajimehoshi/ebiten/v2 v2.9.8
+	golang.org/x/term v0.39.0
 )
 
 require (
@@ -14,5 +15,5 @@ require (
 	github.com/ebitengine/purego v0.9.1 // indirect
 	github.com/jezek/xgb v1.3.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/sys v0.40.0 // indirect
+	golang.org/x/sys v0.41.0 // indirect
 )

@@ -6,17 +6,20 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"golang.org/x/term"
 )
 
 // TerminalHost reads raw stdin and feeds bytes into a TerminalMMIO device.
 // Only instantiated in main.go for interactive use — never in tests.
 type TerminalHost struct {
-	mmio        *TerminalMMIO
-	stopCh      chan struct{}
-	done        chan struct{}
-	stopped     sync.Once
-	fd          int
-	nonblockSet bool
+	mmio         *TerminalMMIO
+	stopCh       chan struct{}
+	done         chan struct{}
+	stopped      sync.Once
+	fd           int
+	nonblockSet  bool
+	oldTermState *term.State
 }
 
 // NewTerminalHost creates a host adapter that reads stdin into the given MMIO device.
@@ -32,8 +35,21 @@ func NewTerminalHost(mmio *TerminalMMIO) *TerminalHost {
 // Each byte is fed to mmio.EnqueueByte(). Call Stop() to restore stdin.
 func (h *TerminalHost) Start() {
 	h.fd = int(os.Stdin.Fd())
+
+	// Put terminal in raw mode to disable OS-level echo and line buffering.
+	// The MMIO device handles echo itself via echoEnabled.
+	oldState, err := term.MakeRaw(h.fd)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "terminal_host: failed to set raw mode: %v\n", err)
+		close(h.done)
+		return
+	}
+	h.oldTermState = oldState
+
 	if err := syscall.SetNonblock(h.fd, true); err != nil {
 		fmt.Fprintf(os.Stderr, "terminal_host: failed to set nonblocking stdin: %v\n", err)
+		_ = term.Restore(h.fd, h.oldTermState)
+		h.oldTermState = nil
 		close(h.done)
 		return
 	}
@@ -52,7 +68,12 @@ func (h *TerminalHost) Start() {
 
 			n, err := syscall.Read(h.fd, buf)
 			if n > 0 {
-				h.mmio.EnqueueByte(buf[0])
+				b := buf[0]
+				// Raw mode sends CR for Enter; translate to LF for the MMIO device.
+				if b == '\r' {
+					b = '\n'
+				}
+				h.mmio.EnqueueByte(b)
 			}
 			if err == syscall.EAGAIN || err == syscall.EWOULDBLOCK {
 				time.Sleep(5 * time.Millisecond)
@@ -77,6 +98,10 @@ func (h *TerminalHost) Stop() {
 	if h.nonblockSet {
 		_ = syscall.SetNonblock(h.fd, false)
 		h.nonblockSet = false
+	}
+	if h.oldTermState != nil {
+		_ = term.Restore(h.fd, h.oldTermState)
+		h.oldTermState = nil
 	}
 }
 
