@@ -73,6 +73,10 @@ func (h *TerminalHost) Start() {
 				if b == '\r' {
 					b = '\n'
 				}
+				// Modern terminals send 0x7F (DEL) for Backspace; translate to 0x08 (BS).
+				if b == 0x7F {
+					b = 0x08
+				}
 				h.mmio.EnqueueByte(b)
 			}
 			if err == syscall.EAGAIN || err == syscall.EWOULDBLOCK {
