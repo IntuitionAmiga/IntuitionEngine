@@ -22,7 +22,8 @@ type TerminalMMIO struct {
 	// Output buffer (drained by tests or host adapter)
 	outputBuf []byte
 
-	// Echo flag: when true, EnqueueByte also appends to outputBuf
+	// Echo flag: readable by application code via TERM_ECHO register.
+	// The application (e.g. read_line) decides whether to echo based on this.
 	echoEnabled bool
 
 	// SentinelTriggered is set when TERM_SENTINEL receives 0xDEAD.
@@ -122,7 +123,6 @@ func (tm *TerminalMMIO) HandleWrite(addr uint32, value uint32) {
 }
 
 // EnqueueByte adds a byte to the input ring buffer.
-// If echo is enabled, it also appends to the output buffer.
 func (tm *TerminalMMIO) EnqueueByte(b byte) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -136,9 +136,9 @@ func (tm *TerminalMMIO) EnqueueByte(b byte) {
 	if b == '\n' {
 		tm.newlines++
 	}
-	if tm.echoEnabled {
-		tm.outputBuf = append(tm.outputBuf, b)
-	}
+	// No echo here — echo is the application's responsibility (e.g. read_line).
+	// EnqueueByte is a transport layer; echoing here causes double-echo when
+	// the application (EhBASIC) also echoes characters it reads from TERM_IN.
 }
 
 // DrainOutput returns and clears the accumulated output buffer.

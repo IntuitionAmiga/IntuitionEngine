@@ -57,9 +57,9 @@ cold_start:
     add.q   r2, r16, #ST_RANDOM_SEED
     store.l r1, (r2)
 
-    ; Disable MMIO echo — EhBASIC's read_line handles echo itself
+    ; Enable terminal echo (read_line checks this flag)
     la      r1, TERM_ECHO
-    move.q  r2, #0
+    move.q  r2, #1
     store.l r2, (r1)
 
     ; Print boot banner
