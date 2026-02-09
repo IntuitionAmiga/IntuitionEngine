@@ -34,6 +34,67 @@ VECTOR_IRQ        equ 0x000004
 PROGRAM_START     equ 0x001000
 STACK_TOP         equ 0x09F000              ; Top of stack (grows downward)
 
+; ============================================================================
+; EhBASIC IE64 MEMORY MAP
+; ============================================================================
+
+; Interpreter code: placed by assembler from org 0x1000
+; Reserve 0x1000-0x20FFF (128KB) for code growth.
+
+; Working buffers
+BASIC_LINE_BUF    equ 0x021000              ; Input line buffer (4KB, 1024 chars max)
+BASIC_LINE_BUFLEN equ 1024
+BASIC_LINE_END    equ 0x021FFF
+
+; Interpreter state variables block (pointer cached in R16)
+BASIC_STATE       equ 0x022000              ; State block (4KB)
+BASIC_STATE_END   equ 0x022FFF
+
+; State block offsets (add to BASIC_STATE / R16)
+ST_PROG_START     equ 0x00                  ; Start of BASIC program text
+ST_PROG_END       equ 0x04                  ; End of program text (next free)
+ST_VAR_START      equ 0x08                  ; Simple variable storage start
+ST_VAR_END        equ 0x0C                  ; Simple variable storage end
+ST_ARRAY_START    equ 0x10                  ; Array storage start
+ST_ARRAY_END      equ 0x14                  ; Array storage end
+ST_HEAP_TOP       equ 0x18                  ; String heap top (grows down)
+ST_HEAP_BOTTOM    equ 0x1C                  ; Heap bottom limit
+ST_CURRENT_LINE   equ 0x20                  ; Line number being executed
+ST_TEXT_PTR       equ 0x24                  ; Execution cursor
+ST_DATA_PTR       equ 0x28                  ; DATA/READ pointer
+ST_GOSUB_SP       equ 0x2C                  ; GOSUB return stack pointer
+ST_FOR_SP         equ 0x30                  ; FOR/NEXT stack pointer
+ST_RANDOM_SEED    equ 0x34                  ; RND seed
+ST_ERROR_FLAG     equ 0x38                  ; Last error code
+ST_TRACE_FLAG     equ 0x3C                  ; TRON/TROFF
+ST_DIRECT_MODE    equ 0x40                  ; 1=immediate, 0=running
+ST_SVAR_START     equ 0x44                  ; String variable table start
+ST_SVAR_END       equ 0x48                  ; String variable table end
+ST_TEXT_ATTR      equ 0x4C                  ; Text attribute (COLOR fg,bg)
+ST_COPPER_BUILD   equ 0x50                  ; Copper build pointer
+ST_ULA_BRIGHT     equ 0x54                  ; ULA bright flag
+ST_ULA_INK        equ 0x58                  ; ULA ink colour
+ST_ULA_PAPER      equ 0x5C                  ; ULA paper colour
+ST_ULA_FLASH      equ 0x60                  ; ULA flash flag
+ST_CONT_LINE_PTR  equ 0x64                  ; CONT: saved line pointer (R14)
+ST_CONT_TEXT_PTR  equ 0x68                  ; CONT: saved text pointer (R17)
+
+; BASIC program/variable storage
+BASIC_PROG_START  equ 0x023000              ; Program text + variables + heap (428KB)
+BASIC_PROG_END    equ 0x08BFFF
+
+; String temporary space
+BASIC_STR_TEMP    equ 0x08C000              ; String temporaries (16KB)
+BASIC_STR_END     equ 0x08FFFF
+
+; Stack regions
+BASIC_GOSUB_STACK equ 0x090000              ; GOSUB/FOR stacks (28KB)
+BASIC_GOSUB_END   equ 0x096FFF
+BASIC_HW_STACK    equ 0x097000              ; Hardware stack (R31, grows down, 32KB)
+BASIC_HW_STACK_END equ 0x09EFFF
+; STACK_TOP (0x09F000) = initial SP value
+; 0x09F000-0x0A0000 = 4KB unmapped guard zone
+
 ; Bank window addresses (for 8-bit CPU compatibility)
 BANK1_WINDOW      equ 0x002000              ; Sprite data bank window (8KB)
 BANK2_WINDOW      equ 0x004000              ; Font data bank window (8KB)
@@ -50,6 +111,17 @@ BANK2_REG_HI      equ 0x00F703              ; Bank 2 select (high byte)
 BANK3_REG_LO      equ 0x00F704              ; Bank 3 select (low byte)
 BANK3_REG_HI      equ 0x00F705              ; Bank 3 select (high byte)
 VRAM_BANK_REG     equ 0x00F7F0              ; VRAM bank select
+
+; ============================================================================
+; TERMINAL I/O REGISTERS (0xF0700-0xF07FF)
+; ============================================================================
+
+TERM_OUT          equ 0xF0700               ; Character output (W)
+TERM_STATUS       equ 0xF0704               ; Bit 0: input available, Bit 1: output ready (R)
+TERM_IN           equ 0xF0708               ; Read next input char, dequeues (R)
+TERM_LINE_STATUS  equ 0xF070C               ; Bit 0: complete line available (R)
+TERM_ECHO         equ 0xF0710               ; Bit 0: local echo enable (W, default 1)
+TERM_SENTINEL     equ 0xF07F0               ; Write 0xDEAD to stop CPU (via OnSentinel callback)
 
 ; ============================================================================
 ; VIDEO HARDWARE REGISTERS (I/O region at 0xF0000)
@@ -87,6 +159,7 @@ VIDEO_RASTER_CTRL    equ 0xF0054            ; Raster control
 ; PSG/AUDIO REGISTERS (AY-3-8910 style)
 ; ============================================================================
 
+PSG_BASE          equ 0xF0C00               ; PSG base address (AY-3-8910 registers)
 PSG_PLUS_CTRL     equ 0xF0C0E               ; PSG+ mode control
 
 ; PSG Player Registers
@@ -776,6 +849,24 @@ VOODOO_START_A        equ 0xF4030
 VOODOO_START_S        equ 0xF4034
 VOODOO_START_T        equ 0xF4038
 VOODOO_START_W        equ 0xF403C
+
+; Vertex attribute gradients (per-scanline deltas for interpolation)
+VOODOO_DRDX           equ 0xF4040     ; dR/dX
+VOODOO_DGDX           equ 0xF4044     ; dG/dX
+VOODOO_DBDX           equ 0xF4048     ; dB/dX
+VOODOO_DZDX           equ 0xF404C     ; dZ/dX
+VOODOO_DADX           equ 0xF4050     ; dA/dX
+VOODOO_DSDX           equ 0xF4054     ; dS/dX
+VOODOO_DTDX           equ 0xF4058     ; dT/dX
+VOODOO_DWDX           equ 0xF405C     ; dW/dX
+VOODOO_DRDY           equ 0xF4060     ; dR/dY
+VOODOO_DGDY           equ 0xF4064     ; dG/dY
+VOODOO_DBDY           equ 0xF4068     ; dB/dY
+VOODOO_DZDY           equ 0xF406C     ; dZ/dY
+VOODOO_DADY           equ 0xF4070     ; dA/dY
+VOODOO_DSDY           equ 0xF4074     ; dS/dY
+VOODOO_DTDY           equ 0xF4078     ; dT/dY
+VOODOO_DWDY           equ 0xF407C     ; dW/dY
 
 ; Command registers
 VOODOO_TRIANGLE_CMD   equ 0xF4080

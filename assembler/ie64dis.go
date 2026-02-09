@@ -63,10 +63,12 @@ const (
 	dis64_BLE   = 0x46
 	dis64_BHI   = 0x47
 	dis64_BLS   = 0x48
+	dis64_JMP   = 0x49
 	dis64_JSR   = 0x50
 	dis64_RTS   = 0x51
 	dis64_PUSH  = 0x52
 	dis64_POP   = 0x53
+	dis64_JSRI  = 0x54
 	dis64_NOP   = 0xE0
 	dis64_HALT  = 0xE1
 	dis64_SEI   = 0xE2
@@ -113,10 +115,12 @@ var opcodeNames = map[byte]string{
 	dis64_BLE:   "ble",
 	dis64_BHI:   "bhi",
 	dis64_BLS:   "bls",
+	dis64_JMP:   "jmp",
 	dis64_JSR:   "jsr",
 	dis64_RTS:   "rts",
 	dis64_PUSH:  "push",
 	dis64_POP:   "pop",
+	dis64_JSRI:  "jsr",
 	dis64_NOP:   "nop",
 	dis64_HALT:  "halt",
 	dis64_SEI:   "sei",
@@ -179,7 +183,7 @@ func Decode(data []byte, pc uint32) DecodedInstruction {
 // ---------------------------------------------------------------------
 
 func isBranch(op byte) bool {
-	return op >= dis64_BRA && op <= dis64_BLS
+	return op >= dis64_BRA && op <= dis64_JMP
 }
 
 func isConditionalBranch(op byte) bool {
@@ -190,8 +194,8 @@ func isSized(op byte) bool {
 	switch op {
 	case dis64_NOP, dis64_HALT, dis64_SEI, dis64_CLI, dis64_RTI, dis64_WAIT,
 		dis64_BRA, dis64_BEQ, dis64_BNE, dis64_BLT, dis64_BGE, dis64_BGT,
-		dis64_BLE, dis64_BHI, dis64_BLS, dis64_JSR, dis64_RTS, dis64_MOVT,
-		dis64_MOVEQ, dis64_LEA, dis64_PUSH, dis64_POP:
+		dis64_BLE, dis64_BHI, dis64_BLS, dis64_JMP, dis64_JSR, dis64_RTS,
+		dis64_MOVT, dis64_MOVEQ, dis64_LEA, dis64_PUSH, dis64_POP, dis64_JSRI:
 		return false
 	}
 	return true
@@ -343,6 +347,28 @@ func FormatInstruction(d DecodedInstruction) (string, string) {
 	case d.Opcode == dis64_JSR:
 		target := uint32(int32(d.PC) + int32(d.Imm32))
 		return hexBytes, fmt.Sprintf("%s $%06X", mnemonic, target)
+
+	// JMP: register-indirect
+	case d.Opcode == dis64_JMP:
+		disp := int32(d.Imm32)
+		if disp == 0 {
+			return hexBytes, fmt.Sprintf("%s (%s)", mnemonic, regName(d.Rs))
+		}
+		if disp < 0 {
+			return hexBytes, fmt.Sprintf("%s -%d(%s)", mnemonic, -disp, regName(d.Rs))
+		}
+		return hexBytes, fmt.Sprintf("%s %d(%s)", mnemonic, disp, regName(d.Rs))
+
+	// JSR indirect: register-indirect
+	case d.Opcode == dis64_JSRI:
+		disp := int32(d.Imm32)
+		if disp == 0 {
+			return hexBytes, fmt.Sprintf("%s (%s)", mnemonic, regName(d.Rs))
+		}
+		if disp < 0 {
+			return hexBytes, fmt.Sprintf("%s -%d(%s)", mnemonic, -disp, regName(d.Rs))
+		}
+		return hexBytes, fmt.Sprintf("%s %d(%s)", mnemonic, disp, regName(d.Rs))
 
 	// PUSH: Rs
 	case d.Opcode == dis64_PUSH:

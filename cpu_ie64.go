@@ -127,12 +127,14 @@ const (
 	OP_BLE = 0x46 // Branch if less or equal (signed)
 	OP_BHI = 0x47 // Branch if higher (unsigned)
 	OP_BLS = 0x48 // Branch if lower or same (unsigned)
+	OP_JMP = 0x49 // Jump register-indirect
 
 	// Subroutine / Stack
-	OP_JSR64  = 0x50 // Jump to subroutine (PC-relative)
-	OP_RTS64  = 0x51 // Return from subroutine
-	OP_PUSH64 = 0x52 // Push register to stack
-	OP_POP64  = 0x53 // Pop from stack to register
+	OP_JSR64   = 0x50 // Jump to subroutine (PC-relative)
+	OP_RTS64   = 0x51 // Return from subroutine
+	OP_PUSH64  = 0x52 // Push register to stack
+	OP_POP64   = 0x53 // Pop from stack to register
+	OP_JSR_IND = 0x54 // JSR register-indirect
 
 	// System
 	OP_NOP64  = 0xE0 // No operation
@@ -335,13 +337,18 @@ func (cpu *CPU64) LoadProgram(filename string) error {
 	if err != nil {
 		return err
 	}
+	cpu.LoadProgramBytes(program)
+	return nil
+}
+
+// LoadProgramBytes loads raw machine code bytes at PROG_START and resets PC.
+func (cpu *CPU64) LoadProgramBytes(program []byte) {
 	// Clear program area
 	for i := PROG_START; i < len(cpu.memory) && i < STACK_START; i++ {
 		cpu.memory[i] = 0
 	}
 	copy(cpu.memory[PROG_START:], program)
 	cpu.PC = PROG_START
-	return nil
 }
 
 // ------------------------------------------------------------------------------
@@ -445,6 +452,11 @@ func (cpu *CPU64) Execute() {
 
 		// Mask PC to 32MB address space
 		pc32 := uint32(cpu.PC & IE64_ADDR_MASK)
+		if uint64(pc32)+8 > memSize {
+			fmt.Printf("IE64: PC out of bounds during fetch: PC=0x%08X mem=%d\n", pc32, memSize)
+			cpu.running.Store(false)
+			break
+		}
 
 		// Fetch entire 8-byte instruction in one read (LE platform enforced by le_check.go)
 		instr := *(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(pc32)))
@@ -713,6 +725,11 @@ func (cpu *CPU64) Execute() {
 			}
 			continue
 
+		case OP_JMP:
+			target := uint64(int64(cpu.regs[rs]) + int64(int32(imm32)))
+			cpu.PC = target & IE64_ADDR_MASK
+			continue
+
 		case OP_JSR64:
 			cpu.regs[31] -= 8
 			sp := uint32(cpu.regs[31])
@@ -758,6 +775,19 @@ func (cpu *CPU64) Execute() {
 				cpu.regs[rd] = val
 			}
 			cpu.regs[31] += 8
+
+		case OP_JSR_IND:
+			cpu.regs[31] -= 8
+			sp := uint32(cpu.regs[31])
+			if uint64(sp)+8 > memSize {
+				cpu.running.Store(false)
+				running = false
+				continue
+			}
+			*(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(sp))) = cpu.PC + IE64_INSTR_SIZE
+			target := uint64(int64(cpu.regs[rs]) + int64(int32(imm32)))
+			cpu.PC = target & IE64_ADDR_MASK
+			continue
 
 		case OP_NOP64:
 			// default PC advance

@@ -104,46 +104,48 @@ import (
 // Opcode constants
 // ---------------------------------------------------------------------
 const (
-	OP64_MOVE  = 0x01
-	OP64_MOVT  = 0x02
-	OP64_MOVEQ = 0x03
-	OP64_LEA   = 0x04
-	OP64_LOAD  = 0x10
-	OP64_STORE = 0x11
-	OP64_ADD   = 0x20
-	OP64_SUB   = 0x21
-	OP64_MULU  = 0x22
-	OP64_MULS  = 0x23
-	OP64_DIVU  = 0x24
-	OP64_DIVS  = 0x25
-	OP64_MOD   = 0x26
-	OP64_NEG   = 0x27
-	OP64_AND   = 0x30
-	OP64_OR    = 0x31
-	OP64_EOR   = 0x32
-	OP64_NOT   = 0x33
-	OP64_LSL   = 0x34
-	OP64_LSR   = 0x35
-	OP64_ASR   = 0x36
-	OP64_BRA   = 0x40
-	OP64_BEQ   = 0x41
-	OP64_BNE   = 0x42
-	OP64_BLT   = 0x43
-	OP64_BGE   = 0x44
-	OP64_BGT   = 0x45
-	OP64_BLE   = 0x46
-	OP64_BHI   = 0x47
-	OP64_BLS   = 0x48
-	OP64_JSR   = 0x50
-	OP64_RTS   = 0x51
-	OP64_PUSH  = 0x52
-	OP64_POP   = 0x53
-	OP64_NOP   = 0xE0
-	OP64_HALT  = 0xE1
-	OP64_SEI   = 0xE2
-	OP64_CLI   = 0xE3
-	OP64_RTI   = 0xE4
-	OP64_WAIT  = 0xE5
+	OP64_MOVE    = 0x01
+	OP64_MOVT    = 0x02
+	OP64_MOVEQ   = 0x03
+	OP64_LEA     = 0x04
+	OP64_LOAD    = 0x10
+	OP64_STORE   = 0x11
+	OP64_ADD     = 0x20
+	OP64_SUB     = 0x21
+	OP64_MULU    = 0x22
+	OP64_MULS    = 0x23
+	OP64_DIVU    = 0x24
+	OP64_DIVS    = 0x25
+	OP64_MOD     = 0x26
+	OP64_NEG     = 0x27
+	OP64_AND     = 0x30
+	OP64_OR      = 0x31
+	OP64_EOR     = 0x32
+	OP64_NOT     = 0x33
+	OP64_LSL     = 0x34
+	OP64_LSR     = 0x35
+	OP64_ASR     = 0x36
+	OP64_BRA     = 0x40
+	OP64_BEQ     = 0x41
+	OP64_BNE     = 0x42
+	OP64_BLT     = 0x43
+	OP64_BGE     = 0x44
+	OP64_BGT     = 0x45
+	OP64_BLE     = 0x46
+	OP64_BHI     = 0x47
+	OP64_BLS     = 0x48
+	OP64_JMP     = 0x49
+	OP64_JSR     = 0x50
+	OP64_RTS     = 0x51
+	OP64_PUSH    = 0x52
+	OP64_POP     = 0x53
+	OP64_JSR_IND = 0x54
+	OP64_NOP     = 0xE0
+	OP64_HALT    = 0xE1
+	OP64_SEI     = 0xE2
+	OP64_CLI     = 0xE3
+	OP64_RTI     = 0xE4
+	OP64_WAIT    = 0xE5
 )
 
 // Size codes
@@ -2054,6 +2056,10 @@ func (a *IE64Assembler) assembleInstruction(trimmed string, program []byte) erro
 	case "bls":
 		instr, err = a.asmBcc(OP64_BLS, operands, currentPC)
 
+	// Branches (register-indirect)
+	case "jmp":
+		instr, err = a.asmJmp(operands)
+
 	// Subroutine/Stack
 	case "jsr":
 		instr, err = a.asmJsr(operands, currentPC)
@@ -2340,12 +2346,33 @@ func (a *IE64Assembler) asmBcc(opcode byte, operands []string, pc uint32) ([]byt
 	return encodeInstruction(opcode, 0, SIZE_Q, 0, rs, rt, uint32(offset)), nil
 }
 
-// asmJsr handles: jsr label (imm32 = target - PC)
+// asmJmp handles: jmp (rs) or jmp disp(rs)
+func (a *IE64Assembler) asmJmp(operands []string) ([]byte, error) {
+	if len(operands) != 1 {
+		return nil, fmt.Errorf("jmp requires 1 operand (register-indirect)")
+	}
+	disp, rs, err := a.parseDispReg(strings.TrimSpace(operands[0]))
+	if err != nil {
+		return nil, fmt.Errorf("jmp requires register-indirect operand: %v", err)
+	}
+	return encodeInstruction(OP64_JMP, 0, 0, 0, rs, 0, uint32(disp)), nil
+}
+
+// asmJsr handles: jsr label (PC-relative) or jsr (rs) / jsr disp(rs) (register-indirect)
 func (a *IE64Assembler) asmJsr(operands []string, pc uint32) ([]byte, error) {
 	if len(operands) != 1 {
-		return nil, fmt.Errorf("jsr requires 1 operand (label)")
+		return nil, fmt.Errorf("jsr requires 1 operand")
 	}
-	target, err := a.resolveLabel(strings.TrimSpace(operands[0]))
+	op := strings.TrimSpace(operands[0])
+
+	// Try register-indirect form first
+	disp, rs, err := a.parseDispReg(op)
+	if err == nil {
+		return encodeInstruction(OP64_JSR_IND, 0, 0, 0, rs, 0, uint32(disp)), nil
+	}
+
+	// Fall through to PC-relative label form
+	target, err := a.resolveLabel(op)
 	if err != nil {
 		return nil, err
 	}

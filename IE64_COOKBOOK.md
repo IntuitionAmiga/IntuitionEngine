@@ -472,8 +472,8 @@ Notes:
 ## 10. Switch/Dispatch Patterns
 
 IE64 branch instructions target labels (PC-relative offsets resolved by the
-assembler). There is no native branch-to-register or call-to-register instruction,
-so direct computed-goto jump tables are not available.
+assembler). The `jmp (Rs)` and `jsr (Rs)` instructions provide register-indirect
+control flow for jump tables, function pointers, and vtable dispatch.
 
 ### Dispatch on value 0..3
 
@@ -540,11 +540,54 @@ single handler path. This keeps dispatch explicit while still using table data.
 ```
 
 Notes:
-- The IE64 `bra`/`jsr` instructions take labels, not register targets.
 - For small dispatch tables (up to ~8 cases), the cascading `beq` pattern is clean
   and fast. Each test is 2 instructions (16 bytes).
-- For larger dispatch sets, use either a binary-search comparison tree or table data
-  feeding a shared handler path (as above).
+- For larger dispatch sets, use a jump table with `jmp (Rs)` (see below).
+
+### Function Pointers
+
+```asm
+; Call a function whose address is in r5.
+                la      r5, handler
+                jsr     (r5)                    ; push return addr, jump to handler
+                ; ... execution continues here after rts
+                bra     .done
+
+handler:
+                ; function body
+                rts
+.done:
+```
+
+### Jump Tables
+
+```asm
+; Dispatch on r1 (0..N) via address table.
+; r1 = case index (bounds-checked)
+
+                move.q  r2, #3
+                bhi     r1, r2, .default_case   ; unsigned bounds check
+                lsl.q   r3, r1, #3              ; index * 8 (64-bit entries)
+                la      r4, .jump_table
+                add.q   r4, r4, r3
+                load.q  r5, (r4)                ; load target address
+                jmp     (r5)                    ; jump to case handler
+
+                align   8
+.jump_table:
+                dc.q    case_0, case_1, case_2, case_3
+```
+
+### VTable Dispatch
+
+```asm
+; r8 = pointer to object (first field is vtable pointer)
+; Call method at vtable offset 16.
+
+                load.q  r1, (r8)                ; r1 = vtable pointer
+                jsr     16(r1)                  ; call vtable[2] (offset 16)
+                ; returns here after rts
+```
 
 ---
 

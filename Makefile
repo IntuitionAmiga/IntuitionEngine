@@ -101,6 +101,20 @@ ie64asm: setup
 	@mv ie64asm $(BIN_DIR)/
 	@echo "IE64 assembler build complete"
 
+# Build with embedded EhBASIC BASIC interpreter
+.PHONY: basic
+basic: ie64asm
+	@echo "Assembling EhBASIC IE64 interpreter..."
+	@$(BIN_DIR)/ie64asm assembler/ehbasic_ie64.asm
+	@echo "Building Intuition Engine with embedded BASIC..."
+	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags embed_basic .
+	@echo "Stripping debug symbols..."
+	@$(NICE) -$(NICE_LEVEL) $(SSTRIP) -z IntuitionEngine
+	@echo "Applying UPX compression..."
+	@$(NICE) -$(NICE_LEVEL) $(UPX) --lzma IntuitionEngine
+	@mv IntuitionEngine $(BIN_DIR)/
+	@echo "EhBASIC build complete — run with: $(BIN_DIR)/IntuitionEngine -basic"
+
 # Build the IE64 disassembler
 ie64dis: setup
 	@echo "Building IE64 disassembler..."
@@ -392,6 +406,7 @@ help:
 	@echo "  ie32asm        - Build only the IE32 assembler"
 	@echo "  ie64asm        - Build only the IE64 assembler"
 	@echo "  ie64dis        - Build only the IE64 disassembler"
+	@echo "  basic          - Build with embedded EhBASIC interpreter"
 	@echo "  appimage       - Create AppImage package"
 	@echo "  install        - Install binaries to $(INSTALL_BIN_DIR)"
 	@echo "  uninstall      - Remove installed binaries from $(INSTALL_BIN_DIR)"

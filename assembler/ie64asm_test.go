@@ -119,11 +119,13 @@ const (
 	opBLE = 0x46
 	opBHI = 0x47
 	opBLS = 0x48
+	opJMP = 0x49
 
-	opJSR  = 0x50
-	opRTS  = 0x51
-	opPUSH = 0x52
-	opPOP  = 0x53
+	opJSR    = 0x50
+	opRTS    = 0x51
+	opPUSH   = 0x52
+	opPOP    = 0x53
+	opJSRInd = 0x54
 
 	opNOP  = 0xE0
 	opHALT = 0xE1
@@ -1418,6 +1420,84 @@ func TestIE64Asm_Lint_SizeTruncation(t *testing.T) {
 	if !found {
 		t.Errorf("expected size truncation warning for move.b with #$1FF, got warnings: %v", warnings)
 	}
+}
+
+// ===========================================================================
+// JMP (register-indirect jump)
+// ===========================================================================
+
+func TestIE64Asm_Jmp_Register(t *testing.T) {
+	// jmp (r5) -> opcode 0x49, rs=5, imm32=0
+	bin := assembleString(t, "jmp (r5)")
+	expected := encodeInstr(opJMP, 0, 0, 0, 5, 0, 0)
+	assertBytes(t, bin, 0, expected, "jmp (r5)")
+}
+
+func TestIE64Asm_Jmp_SP(t *testing.T) {
+	// jmp (sp) -> rs=31
+	bin := assembleString(t, "jmp (sp)")
+	expected := encodeInstr(opJMP, 0, 0, 0, 31, 0, 0)
+	assertBytes(t, bin, 0, expected, "jmp (sp)")
+}
+
+func TestIE64Asm_Jmp_Displacement(t *testing.T) {
+	// jmp 16(r5) -> imm32=16
+	bin := assembleString(t, "jmp 16(r5)")
+	expected := encodeInstr(opJMP, 0, 0, 0, 5, 0, 16)
+	assertBytes(t, bin, 0, expected, "jmp 16(r5)")
+}
+
+func TestIE64Asm_Jmp_NegativeDisplacement(t *testing.T) {
+	// jmp -8(r5) -> imm32=0xFFFFFFF8
+	bin := assembleString(t, "jmp -8(r5)")
+	expected := encodeInstr(opJMP, 0, 0, 0, 5, 0, 0xFFFFFFF8)
+	assertBytes(t, bin, 0, expected, "jmp -8(r5)")
+}
+
+func TestIE64Asm_Jmp_Error_NoOperand(t *testing.T) {
+	assembleExpectError(t, "jmp")
+}
+
+func TestIE64Asm_Jmp_Error_Label(t *testing.T) {
+	// jmp label should error — use bra for label-based jumps
+	assembleExpectError(t, "jmp target\ntarget:\nhalt")
+}
+
+// ===========================================================================
+// JSR Indirect (register-indirect subroutine call)
+// ===========================================================================
+
+func TestIE64Asm_Jsr_Indirect_Register(t *testing.T) {
+	// jsr (r5) -> opcode 0x54, rs=5, imm32=0
+	bin := assembleString(t, "jsr (r5)")
+	expected := encodeInstr(opJSRInd, 0, 0, 0, 5, 0, 0)
+	assertBytes(t, bin, 0, expected, "jsr (r5)")
+}
+
+func TestIE64Asm_Jsr_Indirect_Displacement(t *testing.T) {
+	// jsr 16(r5) -> opcode 0x54, imm32=16
+	bin := assembleString(t, "jsr 16(r5)")
+	expected := encodeInstr(opJSRInd, 0, 0, 0, 5, 0, 16)
+	assertBytes(t, bin, 0, expected, "jsr 16(r5)")
+}
+
+func TestIE64Asm_Jsr_Label_Unchanged(t *testing.T) {
+	// jsr label should still emit opcode 0x50 (PC-relative)
+	src := "jsr target\nhalt\ntarget:\nhalt"
+	bin := assembleString(t, src)
+	if bin[0] != opJSR {
+		t.Fatalf("opcode = 0x%02X, want 0x%02X (jsr label should use PC-relative)", bin[0], opJSR)
+	}
+}
+
+func TestIE64Asm_Jsr_Rts_Indirect_Roundtrip(t *testing.T) {
+	// Full program encoding check
+	src := "jsr (r5)\nrts"
+	bin := assembleString(t, src)
+	expected1 := encodeInstr(opJSRInd, 0, 0, 0, 5, 0, 0)
+	expected2 := encodeInstr(opRTS, 0, 0, 0, 0, 0, 0)
+	assertBytes(t, bin, 0, expected1, "jsr (r5)")
+	assertBytes(t, bin, 8, expected2, "rts")
 }
 
 // ---------------------------------------------------------------------------

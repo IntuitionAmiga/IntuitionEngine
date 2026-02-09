@@ -445,10 +445,12 @@ func TestIE64Dis_AllOpcodes(t *testing.T) {
 		{dis64_BLE, "ble"},
 		{dis64_BHI, "bhi"},
 		{dis64_BLS, "bls"},
+		{dis64_JMP, "jmp"},
 		{dis64_JSR, "jsr"},
 		{dis64_RTS, "rts"},
 		{dis64_PUSH, "push"},
 		{dis64_POP, "pop"},
+		{dis64_JSRI, "jsr"},
 		{dis64_NOP, "nop"},
 		{dis64_HALT, "halt"},
 		{dis64_SEI, "sei"},
@@ -476,6 +478,8 @@ func TestIE64Dis_AllOpcodes(t *testing.T) {
 				instr = encodeInstr(tt.opcode, 1, 2, 0, 2, 0, 0)
 			case tt.opcode == dis64_BRA || tt.opcode == dis64_JSR:
 				instr = encodeInstr(tt.opcode, 0, 0, 0, 0, 0, 0x10)
+			case tt.opcode == dis64_JMP || tt.opcode == dis64_JSRI:
+				instr = encodeInstr(tt.opcode, 0, 0, 0, 5, 0, 0)
 			case isConditionalBranch(tt.opcode):
 				instr = encodeInstr(tt.opcode, 0, 0, 0, 1, 2, 0x10)
 			case tt.opcode == dis64_PUSH:
@@ -646,4 +650,77 @@ func TestIE64Dis_SizeAnnotations(t *testing.T) {
 			t.Errorf("BRA should not have size suffix, got %q", asm)
 		}
 	})
+
+	t.Run("JMP has no size suffix", func(t *testing.T) {
+		instr := encodeInstr(dis64_JMP, 0, 3, 0, 5, 0, 0)
+		d := Decode(instr, 0x1000)
+		_, asm := FormatInstruction(d)
+		if strings.Contains(asm, ".q") || strings.Contains(asm, ".b") ||
+			strings.Contains(asm, ".w") || strings.Contains(asm, ".l") {
+			t.Errorf("JMP should not have size suffix, got %q", asm)
+		}
+	})
+
+	t.Run("JSR indirect has no size suffix", func(t *testing.T) {
+		instr := encodeInstr(dis64_JSRI, 0, 3, 0, 5, 0, 0)
+		d := Decode(instr, 0x1000)
+		_, asm := FormatInstruction(d)
+		if strings.Contains(asm, ".q") || strings.Contains(asm, ".b") ||
+			strings.Contains(asm, ".w") || strings.Contains(asm, ".l") {
+			t.Errorf("JSR indirect should not have size suffix, got %q", asm)
+		}
+	})
+}
+
+// ===========================================================================
+// JMP disassembly
+// ===========================================================================
+
+func TestIE64Dis_JMP_Register(t *testing.T) {
+	instr := encodeInstr(dis64_JMP, 0, 0, 0, 5, 0, 0)
+	d := Decode(instr, 0x1000)
+	_, asm := FormatInstruction(d)
+	if !strings.Contains(asm, "jmp (r5)") {
+		t.Errorf("expected 'jmp (r5)', got %q", asm)
+	}
+}
+
+func TestIE64Dis_JMP_Displacement(t *testing.T) {
+	instr := encodeInstr(dis64_JMP, 0, 0, 0, 5, 0, 16)
+	d := Decode(instr, 0x1000)
+	_, asm := FormatInstruction(d)
+	if !strings.Contains(asm, "jmp 16(r5)") {
+		t.Errorf("expected 'jmp 16(r5)', got %q", asm)
+	}
+}
+
+func TestIE64Dis_JMP_NegativeDisplacement(t *testing.T) {
+	instr := encodeInstr(dis64_JMP, 0, 0, 0, 5, 0, neg32(-8))
+	d := Decode(instr, 0x1000)
+	_, asm := FormatInstruction(d)
+	if !strings.Contains(asm, "jmp -8(r5)") {
+		t.Errorf("expected 'jmp -8(r5)', got %q", asm)
+	}
+}
+
+// ===========================================================================
+// JSR indirect disassembly
+// ===========================================================================
+
+func TestIE64Dis_JSR_Indirect_Register(t *testing.T) {
+	instr := encodeInstr(dis64_JSRI, 0, 0, 0, 5, 0, 0)
+	d := Decode(instr, 0x1000)
+	_, asm := FormatInstruction(d)
+	if !strings.Contains(asm, "jsr (r5)") {
+		t.Errorf("expected 'jsr (r5)', got %q", asm)
+	}
+}
+
+func TestIE64Dis_JSR_Indirect_Displacement(t *testing.T) {
+	instr := encodeInstr(dis64_JSRI, 0, 0, 0, 5, 0, 16)
+	d := Decode(instr, 0x1000)
+	_, asm := FormatInstruction(d)
+	if !strings.Contains(asm, "jsr 16(r5)") {
+		t.Errorf("expected 'jsr 16(r5)', got %q", asm)
+	}
 }

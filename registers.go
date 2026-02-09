@@ -199,6 +199,11 @@ const (
 	TERM_OUT            = 0xF0700    // Alias for backwards compatibility
 	TERM_OUT_16BIT      = 0xF700     // 16-bit form for Z80/6502 access
 	TERM_OUT_SIGNEXT    = 0xFFFFF700 // Sign-extended form (M68K .W addressing)
+	TERM_STATUS         = 0xF0704    // Bit 0: input available, Bit 1: output ready
+	TERM_IN             = 0xF0708    // Read next input character (dequeues)
+	TERM_LINE_STATUS    = 0xF070C    // Bit 0: complete line available
+	TERM_ECHO           = 0xF0710    // Bit 0: local echo enable (default 1)
+	TERM_SENTINEL       = 0xF07F0    // Write 0xDEAD to stop CPU (via OnSentinel callback)
 	TERMINAL_REGION_END = 0xF07FF    // Reserve 256 bytes for future expansion
 )
 

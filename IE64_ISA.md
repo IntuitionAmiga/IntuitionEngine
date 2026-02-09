@@ -314,10 +314,18 @@ If the branch is not taken, PC advances by 8 (one instruction).
 | BLE      | `0x46` | `ble Rs, Rt, label` | `int64(Rs) <= int64(Rt)` | Signed |
 | BHI      | `0x47` | `bhi Rs, Rt, label` | `Rs > Rt` | Unsigned |
 | BLS      | `0x48` | `bls Rs, Rt, label` | `Rs <= Rt` | Unsigned |
+| JMP      | `0x49` | `jmp (Rs)` / `jmp disp(Rs)` | `PC = Rs + signExtend(disp)` | Register-indirect |
 
 **Encoding note for conditional branches**: Rs is in byte 2[7:3], Rt is in byte 3[7:3], and the branch offset is in bytes 4-7 (imm32). The Rd field (byte 1[7:3]) is unused (set to 0). The assembler computes the offset as `target_address - current_PC`.
 
 **BRA** uses only the imm32 field. Rs and Rt fields are unused.
+
+**JMP** (opcode `0x49`):
+- Computes the effective address as `Rs + signExtend(imm32)`, masked to the 25-bit address space.
+- Transfers control to the effective address.
+- Does not modify the stack. No return address is saved.
+- Rs is in byte 2[7:3], the optional displacement is in bytes 4-7 (imm32).
+- Enables computed jumps, jump tables, and register-indirect branching.
 
 ---
 
@@ -329,12 +337,22 @@ If the branch is not taken, PC advances by 8 (one instruction).
 | RTS      | `0x51` | `rts` | `PC = mem[SP]; SP += 8` | Read | Q |
 | PUSH     | `0x52` | `push Rs` | `SP -= 8; mem[SP] = Rs` | Write | Q |
 | POP      | `0x53` | `pop Rd` | `Rd = mem[SP]; SP += 8` | Read | Q |
+| JSR      | `0x54` | `jsr (Rs)` / `jsr disp(Rs)` | `SP -= 8; mem[SP] = PC + 8; PC = Rs + signExtend(disp)` | Write | Q |
 
-**JSR** (opcode `0x50`):
+**JSR** (opcode `0x50`, PC-relative):
 - Decrements SP (R31) by 8.
 - Stores the return address (PC + 8, i.e., the instruction after the JSR) at the new SP.
 - Branches to `PC + signExtend32to64(offset)`.
 - Encoding: offset is `target_address - current_PC` in imm32.
+
+**JSR** (opcode `0x54`, register-indirect):
+- Decrements SP (R31) by 8.
+- Stores the return address (PC + 8) at the new SP.
+- Computes the effective address as `Rs + signExtend(imm32)`, masked to the 25-bit address space.
+- Transfers control to the effective address.
+- Rs is in byte 2[7:3], the optional displacement is in bytes 4-7 (imm32).
+- The assembler disambiguates: `jsr label` emits opcode `0x50`, `jsr (Rs)` emits opcode `0x54`.
+- Enables function pointers, vtable dispatch, and callback patterns.
 
 **RTS** (opcode `0x51`):
 - Reads the 64-bit return address from mem[SP].
@@ -458,8 +476,9 @@ The IE64 supports the following addressing modes:
 |------|--------|-------------|---------|
 | Immediate | `#imm` | 32-bit immediate value, zero-extended to 64 bits | MOVE, ALU ops, WAIT |
 | Register | `Rs` or `Rt` | Register contents (64-bit) | MOVE, ALU ops, branches |
-| Register-indirect | `(Rs)` | Memory at address in Rs | LOAD, STORE |
-| Displacement | `disp(Rs)` | Memory at `Rs + signExtend(disp)` | LOAD, STORE, LEA |
+| Register-indirect (data) | `(Rs)` | Memory at address in Rs | LOAD, STORE |
+| Register-indirect (control) | `(Rs)` | Transfer control to address in Rs | JMP, JSR |
+| Displacement | `disp(Rs)` | Memory at `Rs + signExtend(disp)` | LOAD, STORE, LEA, JMP, JSR |
 | PC-relative | `label` (assembler computes offset) | `PC + signExtend(offset)` | BRA, Bcc, JSR |
 
 ### 6.1 Immediate Addressing
@@ -495,7 +514,13 @@ The IE64 uses compare-and-branch instructions instead of a separate flags regist
 
 The comparison and branch are performed atomically in a single instruction. This eliminates the need for separate compare (CMP) and branch instructions, and avoids hazards associated with flag registers in pipelined implementations.
 
-### 7.2 PC-Relative Offsets
+### 7.2 Register-Indirect Transfer
+
+**JMP** (opcode `0x49`) provides register-indirect unconditional transfer. The target address is computed from a register plus an optional signed 32-bit displacement, then masked to the 25-bit address space. This enables computed jumps, jump tables, and dispatch through register-held addresses.
+
+**JSR** (opcode `0x54`) provides the same register-indirect addressing for subroutine calls. It pushes the return address before transferring control, so a standard `rts` returns to the caller.
+
+### 7.3 PC-Relative Offsets
 
 All branch offsets are signed 32-bit values stored in the imm32 field. The effective target address is:
 
@@ -936,10 +961,12 @@ dc.b "hello; world" ; the semicolon in the string is literal
 | 0x46   | `$46`  | BLE      | Branch | Rs, Rt, label |
 | 0x47   | `$47`  | BHI      | Branch | Rs, Rt, label |
 | 0x48   | `$48`  | BLS      | Branch | Rs, Rt, label |
+| 0x49   | `$49`  | JMP      | Branch | (Rs) / disp(Rs) |
 | 0x50   | `$50`  | JSR      | Subroutine | label |
 | 0x51   | `$51`  | RTS      | Subroutine | (none) |
 | 0x52   | `$52`  | PUSH     | Stack | Rs |
 | 0x53   | `$53`  | POP      | Stack | Rd |
+| 0x54   | `$54`  | JSR      | Subroutine | (Rs) / disp(Rs) |
 | 0xE0   | `$E0`  | NOP      | System | (none) |
 | 0xE1   | `$E1`  | HALT     | System | (none) |
 | 0xE2   | `$E2`  | SEI      | System | (none) |
@@ -955,8 +982,8 @@ dc.b "hello; world" ; the semicolon in the string is literal
 | `$10-$11` | Memory Access |
 | `$20-$27` | Arithmetic |
 | `$30-$36` | Logical / Shift |
-| `$40-$48` | Branches |
-| `$50-$53` | Subroutine / Stack |
+| `$40-$49` | Branches |
+| `$50-$54` | Subroutine / Stack |
 | `$E0-$E5` | System |
 
 Any opcode not listed above causes the CPU to print an error message and halt execution.
@@ -1048,4 +1075,38 @@ Byte 3: 0x00
 Bytes 4-7: 0x00 0x00 0x00 0x00
 
 Binary: 52 06 78 00 00 00 00 00
+```
+
+### B.6 `jmp (r5)`
+
+```
+Opcode = 0x49 (JMP)
+Rd = 0 (unused), Size = 0, X = 0
+Rs = 5, Rt = 0
+imm32 = 0 (no displacement)
+
+Byte 0: 0x49
+Byte 1: 0x00
+Byte 2: 5 << 3 = 0x28
+Byte 3: 0x00
+Bytes 4-7: 0x00 0x00 0x00 0x00
+
+Binary: 49 00 28 00 00 00 00 00
+```
+
+### B.7 `jsr 16(r3)`
+
+```
+Opcode = 0x54 (JSR indirect)
+Rd = 0 (unused), Size = 0, X = 0
+Rs = 3, Rt = 0
+imm32 = 16 (displacement)
+
+Byte 0: 0x54
+Byte 1: 0x00
+Byte 2: 3 << 3 = 0x18
+Byte 3: 0x00
+Bytes 4-7: 0x10 0x00 0x00 0x00
+
+Binary: 54 00 18 00 10 00 00 00
 ```

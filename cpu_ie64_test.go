@@ -1387,3 +1387,434 @@ func BenchmarkIE64_MemoryIntensive(b *testing.B) {
 	// 4 instructions per loop iteration + 1 HALT
 	b.ReportMetric(float64(loopIterations*4+1), "instructions/op")
 }
+
+// ===========================================================================
+// JMP (register-indirect jump)
+// ===========================================================================
+
+func TestIE64_JMP_Register(t *testing.T) {
+	// Load target address into R5, JMP (R5), verify target executes
+	// Layout:
+	// +0:  MOVE.L R5, #targetAddr  (load target into R5)
+	// +8:  JMP (R5)                (jump to target)
+	// +16: MOVE.Q R1, #99          (SHOULD BE SKIPPED)
+	// +24: HALT
+	// +32: MOVE.Q R2, #42          (target — should execute)
+	// +40: HALT
+	r := newIE64TestRig()
+	targetAddr := uint32(PROG_START + 32)
+	loadR5 := ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, targetAddr)
+	jmp := ie64Instr(OP_JMP, 0, 0, 0, 5, 0, 0)
+	skipped := ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 99)
+	halt1 := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
+	target := ie64Instr(OP_MOVE, 2, IE64_SIZE_Q, 1, 0, 0, 42)
+	halt2 := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
+
+	r.loadInstructions(loadR5, jmp, skipped, halt1, target, halt2)
+	r.cpu.running.Store(true)
+	r.cpu.Execute()
+
+	if r.cpu.regs[1] != 0 {
+		t.Fatalf("R1 = %d, want 0 (skipped instruction should not execute)", r.cpu.regs[1])
+	}
+	if r.cpu.regs[2] != 42 {
+		t.Fatalf("R2 = %d, want 42", r.cpu.regs[2])
+	}
+}
+
+func TestIE64_JMP_NoStackEffect(t *testing.T) {
+	r := newIE64TestRig()
+	spBefore := r.cpu.regs[31]
+
+	targetAddr := uint32(PROG_START + 16)
+	loadR5 := ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, targetAddr)
+	jmp := ie64Instr(OP_JMP, 0, 0, 0, 5, 0, 0)
+	halt := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
+
+	r.loadInstructions(loadR5, jmp, halt)
+	r.cpu.running.Store(true)
+	r.cpu.Execute()
+
+	if r.cpu.regs[31] != spBefore {
+		t.Fatalf("SP = 0x%X, want 0x%X (JMP should not change SP)", r.cpu.regs[31], spBefore)
+	}
+}
+
+func TestIE64_JMP_Displacement(t *testing.T) {
+	// JMP 8(R5) should jump to R5 + 8
+	r := newIE64TestRig()
+	baseAddr := uint32(PROG_START + 16)
+	// target is at baseAddr + 8 = PROG_START + 24
+	loadR5 := ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, baseAddr)
+	jmp := ie64Instr(OP_JMP, 0, 0, 0, 5, 0, 8)
+	halt1 := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0) // +16 (base, skipped)
+	target := ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 77)
+	halt2 := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
+
+	r.loadInstructions(loadR5, jmp, halt1, target, halt2)
+	r.cpu.running.Store(true)
+	r.cpu.Execute()
+
+	if r.cpu.regs[1] != 77 {
+		t.Fatalf("R1 = %d, want 77", r.cpu.regs[1])
+	}
+}
+
+func TestIE64_JMP_NegativeDisplacement(t *testing.T) {
+	// Layout:
+	// +0:  MOVE.Q R2, #55   (target)
+	// +8:  HALT
+	// +16: MOVE.L R5, #(PROG_START+16) (point R5 to +16)
+	// +24: JMP -16(R5)       (jump to +0)
+	// +32: HALT
+	r := newIE64TestRig()
+	target := ie64Instr(OP_MOVE, 2, IE64_SIZE_Q, 1, 0, 0, 55)
+	halt1 := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
+	loadR5 := ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, uint32(PROG_START+16))
+	negDisp := uint32(0xFFFFFFF0) // int32(-16)
+	jmp := ie64Instr(OP_JMP, 0, 0, 0, 5, 0, negDisp)
+	halt2 := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
+
+	// We need to start execution at +16 to set up R5, then JMP back to +0
+	r.loadInstructions(target, halt1, loadR5, jmp, halt2)
+	r.cpu.PC = PROG_START + 16
+	r.cpu.running.Store(true)
+	r.cpu.Execute()
+
+	if r.cpu.regs[2] != 55 {
+		t.Fatalf("R2 = %d, want 55", r.cpu.regs[2])
+	}
+}
+
+func TestIE64_JMP_AddrMask(t *testing.T) {
+	// Address above 32MB should be masked to 25-bit range
+	r := newIE64TestRig()
+	// Set R5 directly to an address with bit 25 set; when masked it gives PROG_START+24
+	targetAddr := uint64(0x2000000 + PROG_START + 24) // bit 25 set
+	r.cpu.regs[5] = targetAddr
+	jmp := ie64Instr(OP_JMP, 0, 0, 0, 5, 0, 0)
+	halt1 := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
+	halt2 := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
+	target := ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 88) // at PROG_START+24
+	halt3 := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
+
+	r.loadInstructions(jmp, halt1, halt2, target, halt3)
+	r.cpu.running.Store(true)
+	r.cpu.Execute()
+
+	if r.cpu.regs[1] != 88 {
+		t.Fatalf("R1 = %d, want 88 (address mask should wrap)", r.cpu.regs[1])
+	}
+}
+
+func TestIE64_JMP_R0(t *testing.T) {
+	// JMP 8(R0) — R0 is always 0, so displacement is the absolute target
+	r := newIE64TestRig()
+	targetAddr := uint32(PROG_START + 16)
+	jmp := ie64Instr(OP_JMP, 0, 0, 0, 0, 0, targetAddr)
+	halt1 := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
+	target := ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 33)
+	halt2 := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
+
+	r.loadInstructions(jmp, halt1, target, halt2)
+	r.cpu.running.Store(true)
+	r.cpu.Execute()
+
+	if r.cpu.regs[1] != 33 {
+		t.Fatalf("R1 = %d, want 33", r.cpu.regs[1])
+	}
+}
+
+// ===========================================================================
+// JSR Indirect (register-indirect subroutine call)
+// ===========================================================================
+
+func TestIE64_JSR_Indirect_Basic(t *testing.T) {
+	// Layout:
+	// +0:  MOVE.L R5, #(PROG_START+24)  (load subroutine address)
+	// +8:  JSR (R5)                       (call subroutine)
+	// +16: HALT                           (return here after RTS)
+	// +24: MOVE.Q R1, #42                (subroutine body)
+	// +32: RTS
+	r := newIE64TestRig()
+	subAddr := uint32(PROG_START + 24)
+	loadR5 := ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, subAddr)
+	jsrInd := ie64Instr(OP_JSR_IND, 0, 0, 0, 5, 0, 0)
+	halt := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
+	body := ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 42)
+	rts := ie64Instr(OP_RTS64, 0, 0, 0, 0, 0, 0)
+
+	r.loadInstructions(loadR5, jsrInd, halt, body, rts)
+	r.cpu.running.Store(true)
+	r.cpu.Execute()
+
+	if r.cpu.regs[1] != 42 {
+		t.Fatalf("R1 = %d, want 42", r.cpu.regs[1])
+	}
+}
+
+func TestIE64_JSR_Indirect_ReturnAddress(t *testing.T) {
+	// Return address on stack should be PC + 8 (address of next instruction after JSR)
+	r := newIE64TestRig()
+	subAddr := uint32(PROG_START + 24)
+	loadR5 := ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, subAddr)
+	jsrInd := ie64Instr(OP_JSR_IND, 0, 0, 0, 5, 0, 0)
+	// +16: this is the return address (PROG_START+16)
+	halt := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
+	// Subroutine: read return address from stack into R6 for verification
+	loadRA := ie64Instr(OP_LOAD, 6, IE64_SIZE_Q, 0, 31, 0, 0) // load.q r6, (sp)
+	rts := ie64Instr(OP_RTS64, 0, 0, 0, 0, 0, 0)
+
+	r.loadInstructions(loadR5, jsrInd, halt, loadRA, rts)
+	r.cpu.running.Store(true)
+	r.cpu.Execute()
+
+	expectedRA := uint64(PROG_START + 16) // PC of instruction after JSR
+	if r.cpu.regs[6] != expectedRA {
+		t.Fatalf("return address = 0x%X, want 0x%X", r.cpu.regs[6], expectedRA)
+	}
+}
+
+func TestIE64_JSR_Indirect_SP(t *testing.T) {
+	// SP decremented by 8 during call, restored after RTS
+	r := newIE64TestRig()
+	spBefore := r.cpu.regs[31]
+	subAddr := uint32(PROG_START + 24)
+	loadR5 := ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, subAddr)
+	jsrInd := ie64Instr(OP_JSR_IND, 0, 0, 0, 5, 0, 0)
+	halt := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
+	body := ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 1)
+	rts := ie64Instr(OP_RTS64, 0, 0, 0, 0, 0, 0)
+
+	r.loadInstructions(loadR5, jsrInd, halt, body, rts)
+	r.cpu.running.Store(true)
+	r.cpu.Execute()
+
+	if r.cpu.regs[31] != spBefore {
+		t.Fatalf("SP = 0x%X, want 0x%X (SP should be restored after RTS)", r.cpu.regs[31], spBefore)
+	}
+}
+
+func TestIE64_JSR_Indirect_Displacement(t *testing.T) {
+	// JSR 8(R5) calls subroutine at R5+8
+	r := newIE64TestRig()
+	baseAddr := uint32(PROG_START + 16)
+	// subroutine is at baseAddr + 8 = PROG_START + 24
+	loadR5 := ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, baseAddr)
+	jsrInd := ie64Instr(OP_JSR_IND, 0, 0, 0, 5, 0, 8)
+	halt := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
+	body := ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 77)
+	rts := ie64Instr(OP_RTS64, 0, 0, 0, 0, 0, 0)
+
+	// Layout: loadR5(+0), jsrInd(+8), halt(+16), body(+24), rts(+32)
+	r.loadInstructions(loadR5, jsrInd, halt, body, rts)
+	r.cpu.running.Store(true)
+	r.cpu.Execute()
+
+	if r.cpu.regs[1] != 77 {
+		t.Fatalf("R1 = %d, want 77", r.cpu.regs[1])
+	}
+}
+
+func TestIE64_JSR_Indirect_NegativeDisplacement(t *testing.T) {
+	// Layout:
+	// +0:  MOVE.Q R1, #55    (subroutine)
+	// +8:  RTS
+	// +16: MOVE.L R5, #(PROG_START+16)
+	// +24: JSR -16(R5)        (calls PROG_START+0)
+	// +32: HALT
+	r := newIE64TestRig()
+	body := ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 55)
+	rts := ie64Instr(OP_RTS64, 0, 0, 0, 0, 0, 0)
+	loadR5 := ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, uint32(PROG_START+16))
+	negDisp := uint32(0xFFFFFFF0) // int32(-16)
+	jsrInd := ie64Instr(OP_JSR_IND, 0, 0, 0, 5, 0, negDisp)
+	halt := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
+
+	r.loadInstructions(body, rts, loadR5, jsrInd, halt)
+	r.cpu.PC = PROG_START + 16
+	r.cpu.running.Store(true)
+	r.cpu.Execute()
+
+	if r.cpu.regs[1] != 55 {
+		t.Fatalf("R1 = %d, want 55", r.cpu.regs[1])
+	}
+}
+
+func TestIE64_JSR_Indirect_Nested(t *testing.T) {
+	// Nested indirect calls both return correctly
+	// Layout:
+	// +0:  MOVE.L R5, #(PROG_START+24)   (addr of sub1)
+	// +8:  JSR (R5)                        (call sub1)
+	// +16: HALT                            (return here after sub1)
+	// +24: MOVE.L R6, #(PROG_START+48)   (sub1: load addr of sub2)
+	// +32: JSR (R6)                        (sub1: call sub2)
+	// +40: RTS                             (sub1: return)
+	// +48: MOVE.Q R1, #42                 (sub2: body)
+	// +56: RTS                             (sub2: return)
+	r := newIE64TestRig()
+	loadR5 := ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, uint32(PROG_START+24))
+	jsr1 := ie64Instr(OP_JSR_IND, 0, 0, 0, 5, 0, 0)
+	halt := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
+	loadR6 := ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, uint32(PROG_START+48))
+	jsr2 := ie64Instr(OP_JSR_IND, 0, 0, 0, 6, 0, 0)
+	rts1 := ie64Instr(OP_RTS64, 0, 0, 0, 0, 0, 0)
+	body := ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 42)
+	rts2 := ie64Instr(OP_RTS64, 0, 0, 0, 0, 0, 0)
+
+	r.loadInstructions(loadR5, jsr1, halt, loadR6, jsr2, rts1, body, rts2)
+	r.cpu.running.Store(true)
+	r.cpu.Execute()
+
+	if r.cpu.regs[1] != 42 {
+		t.Fatalf("R1 = %d, want 42", r.cpu.regs[1])
+	}
+}
+
+func TestIE64_JSR_Indirect_AddrMask(t *testing.T) {
+	// Target address should be masked to 32MB
+	r := newIE64TestRig()
+	bigAddr := uint64(0x2000000 + PROG_START + 24) // bit 25 set
+	loadR5 := ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, uint32(bigAddr))
+	jsrInd := ie64Instr(OP_JSR_IND, 0, 0, 0, 5, 0, 0)
+	halt := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
+	body := ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 88)
+	rts := ie64Instr(OP_RTS64, 0, 0, 0, 0, 0, 0)
+
+	r.loadInstructions(loadR5, jsrInd, halt, body, rts)
+	r.cpu.running.Store(true)
+	r.cpu.Execute()
+
+	if r.cpu.regs[1] != 88 {
+		t.Fatalf("R1 = %d, want 88", r.cpu.regs[1])
+	}
+}
+
+func TestIE64_JSR_Indirect_StackOverflow(t *testing.T) {
+	// CPU should halt when SP is too low for the push
+	r := newIE64TestRig()
+	r.cpu.regs[31] = 4 // SP too low for 8-byte push
+	subAddr := uint32(PROG_START + 16)
+	loadR5 := ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, subAddr)
+	jsrInd := ie64Instr(OP_JSR_IND, 0, 0, 0, 5, 0, 0)
+	halt := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
+
+	r.loadInstructions(loadR5, jsrInd, halt)
+	r.cpu.running.Store(true)
+	r.cpu.Execute()
+
+	if r.cpu.running.Load() {
+		t.Fatal("CPU should have halted due to stack overflow")
+	}
+}
+
+// ===========================================================================
+// Integration: Jump Table
+// ===========================================================================
+
+func TestIE64_JumpTable(t *testing.T) {
+	// Build a jump table in memory, index into it, and JMP
+	r := newIE64TestRig()
+
+	// Layout:
+	// +0:  MOVE.L R3, #tableAddr   (load table base)
+	// +8:  LOAD.Q R5, 8(R3)        (load second entry — offset 8)
+	// +16: JMP (R5)                 (jump to entry)
+	// +24: MOVE.Q R1, #11          (entry 0 — not taken)
+	// +32: HALT
+	// +40: MOVE.Q R1, #22          (entry 1 — taken)
+	// +48: HALT
+	// +56: table: dc.q entry0, entry1
+	tableAddr := uint32(PROG_START + 56)
+	entry0Addr := uint64(PROG_START + 24)
+	entry1Addr := uint64(PROG_START + 40)
+
+	loadR3 := ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, tableAddr)
+	loadR5 := ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 3, 0, 8)
+	jmp := ie64Instr(OP_JMP, 0, 0, 0, 5, 0, 0)
+	e0body := ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 11)
+	halt0 := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
+	e1body := ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 22)
+	halt1 := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
+
+	r.loadInstructions(loadR3, loadR5, jmp, e0body, halt0, e1body, halt1)
+
+	// Write the jump table at tableAddr
+	binary.LittleEndian.PutUint64(r.cpu.memory[tableAddr:], entry0Addr)
+	binary.LittleEndian.PutUint64(r.cpu.memory[tableAddr+8:], entry1Addr)
+
+	r.cpu.running.Store(true)
+	r.cpu.Execute()
+
+	if r.cpu.regs[1] != 22 {
+		t.Fatalf("R1 = %d, want 22 (should have jumped via table entry 1)", r.cpu.regs[1])
+	}
+}
+
+// ===========================================================================
+// Integration: Function Pointer
+// ===========================================================================
+
+func TestIE64_FunctionPointer(t *testing.T) {
+	// Store function address, load it, JSR (Rs), return
+	r := newIE64TestRig()
+
+	// Layout:
+	// +0:  MOVE.L R5, #funcAddr    (load function pointer)
+	// +8:  JSR (R5)                 (call function)
+	// +16: HALT                     (return here)
+	// +24: MOVE.Q R1, #99          (function body)
+	// +32: RTS
+	funcAddr := uint32(PROG_START + 24)
+	loadR5 := ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, funcAddr)
+	jsrInd := ie64Instr(OP_JSR_IND, 0, 0, 0, 5, 0, 0)
+	halt := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
+	body := ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 99)
+	rts := ie64Instr(OP_RTS64, 0, 0, 0, 0, 0, 0)
+
+	r.loadInstructions(loadR5, jsrInd, halt, body, rts)
+	r.cpu.running.Store(true)
+	r.cpu.Execute()
+
+	if r.cpu.regs[1] != 99 {
+		t.Fatalf("R1 = %d, want 99", r.cpu.regs[1])
+	}
+}
+
+// ===========================================================================
+// Integration: Mixing PC-relative JSR and register-indirect JSR
+// ===========================================================================
+
+func TestIE64_JMP_JSR_Indirect_Coexist(t *testing.T) {
+	// Use PC-relative JSR to call one function, then register-indirect JSR for another
+	r := newIE64TestRig()
+
+	// Layout:
+	// +0:  JSR +32 (PC-relative to sub1 at +32)
+	// +8:  MOVE.L R5, #(PROG_START+48)  (load addr of sub2)
+	// +16: JSR (R5)                       (call sub2)
+	// +24: HALT
+	// +32: MOVE.Q R1, #10               (sub1 body)
+	// +40: RTS
+	// +48: MOVE.Q R2, #20               (sub2 body)
+	// +56: RTS
+	jsr1 := ie64Instr(OP_JSR64, 0, 0, 0, 0, 0, 32) // PC-relative
+	loadR5 := ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, uint32(PROG_START+48))
+	jsr2 := ie64Instr(OP_JSR_IND, 0, 0, 0, 5, 0, 0) // register-indirect
+	halt := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
+	sub1body := ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 10)
+	rts1 := ie64Instr(OP_RTS64, 0, 0, 0, 0, 0, 0)
+	sub2body := ie64Instr(OP_MOVE, 2, IE64_SIZE_Q, 1, 0, 0, 20)
+	rts2 := ie64Instr(OP_RTS64, 0, 0, 0, 0, 0, 0)
+
+	r.loadInstructions(jsr1, loadR5, jsr2, halt, sub1body, rts1, sub2body, rts2)
+	r.cpu.running.Store(true)
+	r.cpu.Execute()
+
+	if r.cpu.regs[1] != 10 {
+		t.Fatalf("R1 = %d, want 10 (sub1 via PC-relative JSR)", r.cpu.regs[1])
+	}
+	if r.cpu.regs[2] != 20 {
+		t.Fatalf("R2 = %d, want 20 (sub2 via register-indirect JSR)", r.cpu.regs[2])
+	}
+}

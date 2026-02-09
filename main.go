@@ -129,35 +129,39 @@ func main() {
 	boilerPlate()
 
 	var (
-		modeIE32  bool
-		modeIE64  bool
-		modeM68K  bool
-		modeM6502 bool
-		modeZ80   bool
-		modeX86   bool
-		modePSG   bool
-		modeSID   bool
-		psgPlus   bool
-		sidPlus   bool
-		modePOKEY bool
-		pokeyPlus bool
-		modeTED   bool
-		tedPlus   bool
-		modeAHX   bool
-		ahxPlus   bool
-		perfMode  bool
-		sidFile   string
-		sidDebug  int
-		sidPAL    bool
-		sidNTSC   bool
-		loadAddr  optionalStringFlag
-		entryAddr optionalStringFlag
+		modeIE32   bool
+		modeIE64   bool
+		modeBasic  bool
+		basicImage string
+		modeM68K   bool
+		modeM6502  bool
+		modeZ80    bool
+		modeX86    bool
+		modePSG    bool
+		modeSID    bool
+		psgPlus    bool
+		sidPlus    bool
+		modePOKEY  bool
+		pokeyPlus  bool
+		modeTED    bool
+		tedPlus    bool
+		modeAHX    bool
+		ahxPlus    bool
+		perfMode   bool
+		sidFile    string
+		sidDebug   int
+		sidPAL     bool
+		sidNTSC    bool
+		loadAddr   optionalStringFlag
+		entryAddr  optionalStringFlag
 	)
 
 	flagSet := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
 	flagSet.SetOutput(io.Discard)
 	flagSet.BoolVar(&modeIE32, "ie32", false, "Run IE32 CPU mode")
 	flagSet.BoolVar(&modeIE64, "ie64", false, "Run IE64 CPU mode (64-bit RISC)")
+	flagSet.BoolVar(&modeBasic, "basic", false, "Run EhBASIC IE64 interpreter (embedded image)")
+	flagSet.StringVar(&basicImage, "basic-image", "", "Run EhBASIC IE64 from custom binary path")
 	flagSet.BoolVar(&modeM68K, "m68k", false, "Run M68K CPU mode")
 	flagSet.BoolVar(&modeM6502, "m6502", false, "Run 6502 CPU mode")
 	flagSet.BoolVar(&modeZ80, "z80", false, "Run Z80 CPU mode")
@@ -182,7 +186,7 @@ func main() {
 
 	flagSet.Usage = func() {
 		flagSet.SetOutput(os.Stdout)
-		fmt.Println("Usage: ./intuition_engine -ie32|-ie64|-m68k|-m6502|-z80|-x86|-psg|-psg+|-sid|-sid+|-pokey|-pokey+|-ted|-ted+|-ahx|-ahx+ [--load-addr addr] [--entry addr] filename")
+		fmt.Println("Usage: ./intuition_engine -ie32|-ie64|-basic|-m68k|-m6502|-z80|-x86|-psg|-psg+|-sid|-sid+|-pokey|-pokey+|-ted|-ted+|-ahx|-ahx+ [--basic-image path] [--load-addr addr] [--entry addr] filename")
 		flagSet.PrintDefaults()
 	}
 
@@ -213,6 +217,14 @@ func main() {
 	}
 	if ahxPlus && !modeAHX {
 		modeAHX = true
+	}
+	// -basic-image implies -basic mode
+	if basicImage != "" {
+		modeBasic = true
+	}
+	// -basic is IE64 mode with embedded/custom BASIC image
+	if modeBasic {
+		modeIE64 = true
 	}
 
 	modeCount := 0
@@ -254,7 +266,11 @@ func main() {
 		modeCount = 1
 	}
 	if modeCount != 1 {
-		fmt.Println("Error: select exactly one mode flag: -ie32, -ie64, -m68k, -m6502, -z80, -x86, -psg, -psg+, -sid, -sid+, -pokey, -pokey+, -ted, -ted+, -ahx, or -ahx+")
+		fmt.Println("Error: select exactly one mode flag: -ie32, -ie64, -m68k, -m6502, -z80, -x86, -basic, -psg, -psg+, -sid, -sid+, -pokey, -pokey+, -ted, -ted+, -ahx, or -ahx+")
+		os.Exit(1)
+	}
+	if modeBasic && filename != "" {
+		fmt.Println("Error: -basic and -basic-image do not accept a positional filename")
 		os.Exit(1)
 	}
 	if filename == "" && modePSG {
@@ -554,8 +570,9 @@ func main() {
 	}
 	videoChip.AttachBus(sysBus)
 
-	// Setup terminal output
-	termOut := NewTerminalOutput()
+	// Setup terminal MMIO device (host adapter started later, just before GUI loop)
+	termMMIO := NewTerminalMMIO()
+	termHost := NewTerminalHost(termMMIO)
 
 	// Map I/O regions for peripherals
 	sysBus.MapIO(AUDIO_CTRL, AUDIO_REG_END,
@@ -573,9 +590,9 @@ func main() {
 		videoChip.HandleRead,
 		videoChip.HandleWrite)
 
-	sysBus.MapIO(TERM_OUT, TERM_OUT,
-		nil,
-		termOut.HandleWrite)
+	sysBus.MapIO(TERM_OUT, TERMINAL_REGION_END,
+		termMMIO.HandleRead,
+		termMMIO.HandleWrite)
 
 	// Map PSG registers (CPU modes only)
 	sysBus.MapIO(PSG_BASE, PSG_END,
@@ -731,8 +748,25 @@ func main() {
 		ie64CPU := NewCPU64(sysBus)
 		ie64CPU.PerfEnabled = perfMode
 
-		// Load program
-		if filename != "" {
+		// Load program — three paths: -basic, -basic-image, or explicit file
+		if modeBasic {
+			if basicImage != "" {
+				// -basic-image: load custom binary
+				if err := ie64CPU.LoadProgram(basicImage); err != nil {
+					fmt.Printf("Error loading BASIC image %s: %v\n", basicImage, err)
+					os.Exit(1)
+				}
+				fmt.Printf("Starting EhBASIC IE64 (custom image: %s)\n", basicImage)
+			} else if len(embeddedBasicImage) > 0 {
+				// -basic: load embedded image
+				ie64CPU.LoadProgramBytes(embeddedBasicImage)
+				fmt.Println("Starting EhBASIC IE64 (embedded image)")
+			} else {
+				fmt.Println("Error: BASIC not embedded in this build; use -basic-image or rebuild with 'make basic'")
+				os.Exit(1)
+			}
+			startExecution = true
+		} else if filename != "" {
 			if err := ie64CPU.LoadProgram(filename); err != nil {
 				fmt.Printf("Error loading IE64 program: %v\n", err)
 				os.Exit(1)
@@ -758,7 +792,9 @@ func main() {
 			soundChip.Start()
 
 			// Start CPU execution
-			fmt.Printf("Starting IE64 CPU with program: %s\n", filename)
+			if !modeBasic {
+				fmt.Printf("Starting IE64 CPU with program: %s\n", filename)
+			}
 			go ie64CPU.Execute()
 		}
 
@@ -989,10 +1025,22 @@ func main() {
 		}
 	}
 
+	// Start terminal host (stdin non-blocking) just before the GUI loop.
+	// Placed here so no os.Exit() path sits between Start and Stop.
+	termHost.Start()
+	outputTicker := time.NewTicker(10 * time.Millisecond)
+	go func() {
+		for range outputTicker.C {
+			termHost.PrintOutput()
+		}
+	}()
+
 	// Show the GUI and run the main event loop
 	err = gui.Show()
 
-	// Shut down render goroutines on exit
+	// Shut down terminal host (restores stdin to blocking) and render goroutines
+	outputTicker.Stop()
+	termHost.Stop()
 	vgaEngine.StopRenderLoop()
 	ulaEngine.StopRenderLoop()
 	tedVideoEngine.StopRenderLoop()

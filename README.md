@@ -2813,8 +2813,9 @@ Bytes 4-7: imm32      (32-bit LE immediate)
 |------|--------|-------------|---------|
 | Immediate | `#value` | Constant value | `move.l r1, #42` |
 | Register | `Rn` | Register contents | `add r1, r2, r3` |
-| Register-indirect | `(Rs)` | Memory at address in Rs | `load.l r1, (r2)` |
-| Displacement | `offset(Rs)` | Memory at Rs + offset | `load.l r1, 16(r2)` |
+| Register-indirect (data) | `(Rs)` | Memory at address in Rs | `load.l r1, (r2)` |
+| Register-indirect (control) | `(Rs)` | Transfer control to address in Rs | `jmp (r5)` |
+| Displacement | `offset(Rs)` | Memory/control at Rs + offset | `load.l r1, 16(r2)` |
 | PC-relative | `label` | Branch target relative to PC | `bra loop` |
 
 ## 9.4 Instruction Set
@@ -2877,12 +2878,13 @@ All conditional branches compare two registers directly — no flags register:
 | `BLE` | Rs <= Rt (signed) | `ble r1, r2, less_eq` |
 | `BHI` | Rs > Rt (unsigned) | `bhi r1, r2, higher` |
 | `BLS` | Rs <= Rt (unsigned) | `bls r1, r2, lower_same` |
+| `JMP` | Register-indirect | `jmp (r5)` / `jmp 16(r5)` |
 
 ### Subroutine and Stack
 
 | Mnemonic | Description |
 |----------|-------------|
-| `JSR` | Jump to subroutine (pushes return address) |
+| `JSR` | Jump to subroutine — PC-relative (`jsr label`) or register-indirect (`jsr (r5)`) |
 | `RTS` | Return from subroutine |
 | `PUSH` | Push register onto stack |
 | `POP` | Pop from stack to register |
