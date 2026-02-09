@@ -508,9 +508,13 @@ fp_sqr:
     push    r15
     push    r9
 
-    ; Handle zero and negative
+    ; Handle zero
     and.l   r1, r8, #0x7FFFFFFF
     beqz    r1, .fp_sqr_done        ; sqrt(0) = 0
+
+    ; Handle negative: return 0
+    lsr.l   r1, r8, #31
+    bnez    r1, .fp_sqr_neg
 
     ; Initial estimate: halve the exponent
     lsr.l   r14, r8, #1
@@ -540,6 +544,10 @@ fp_sqr:
     bnez    r1, .fp_sqr_iter
 
     move.l  r8, r14
+    bra     .fp_sqr_done
+
+.fp_sqr_neg:
+    move.l  r8, r0              ; return 0.0
 
 .fp_sqr_done:
     pop     r9

@@ -814,7 +814,7 @@ GTIA_GRACTL_PLAYER equ 0x02                 ; Enable player graphics
 GTIA_GRACTL_LATCH  equ 0x04                 ; Latch trigger inputs
 
 ; GTIA register end
-GTIA_END          equ 0xF216F
+GTIA_END          equ 0xF21B7
 
 ; Copper SETBASE for GTIA
 COP_SETBASE_GTIA  equ 0x8003C850            ; GTIA_BASE (0xF2140 >> 2)

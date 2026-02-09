@@ -867,7 +867,7 @@ GTIA_GRACTL_PLAYER equ 0x02             ; Enable player graphics
 GTIA_GRACTL_LATCH  equ 0x04             ; Latch trigger inputs
 
 ; GTIA register end
-GTIA_END          equ 0xF216F
+GTIA_END          equ 0xF21B7
 
 ; Wait for GTIA WSYNC (writes to WSYNC wait for horizontal sync)
 %macro gtia_wsync 0

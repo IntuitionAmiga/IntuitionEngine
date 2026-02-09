@@ -2131,6 +2131,15 @@ func TestEhBASIC_Sqr(t *testing.T) {
 	}
 }
 
+func TestEhBASIC_SqrNegative(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out := execStmtTest(t, asmBin, `10 PRINT SQR(-4)`)
+	out = strings.TrimSpace(strings.TrimRight(out, "\r\n"))
+	if out != "0" {
+		t.Fatalf("SQR(-4): expected '0', got %q", out)
+	}
+}
+
 func TestEhBASIC_Rnd(t *testing.T) {
 	asmBin := buildAssembler(t)
 	out := execStmtTest(t, asmBin, `10 PRINT RND(1)`)
@@ -2514,24 +2523,128 @@ func TestHW_Copper_List(t *testing.T) {
 func TestHW_Copper_WaitMoveEnd(t *testing.T) {
 	asmBin := buildAssembler(t)
 	// Build a copper list at address 0x30000:
-	// WAIT scan 100, MOVE reg 5 val 42, END
+	// WAIT scan 100, MOVE addr &HF0050 val 42, END
 	_, h := execStmtTestWithBus(t, asmBin,
-		"10 COPPER LIST 196608\n20 COPPER WAIT 100\n30 COPPER MOVE 5, 42\n40 COPPER END")
+		"10 COPPER LIST 196608\n20 COPPER WAIT 100\n30 COPPER MOVE &HF0050, 42\n40 COPPER END")
 	// Copper list at 0x30000 (196608):
-	// [0] WAIT = 0x80000000 | (100 << 16) = 0x80640000
+	// [0] WAIT = (0<<30) | (100 << 12) = 0x00064000
 	w0 := readBusMem32(h, 0x30000)
-	if w0 != 0x80640000 {
-		t.Fatalf("COPPER WAIT: expected 0x80640000, got 0x%08X", w0)
+	if w0 != 0x00064000 {
+		t.Fatalf("COPPER WAIT: expected 0x00064000, got 0x%08X", w0)
 	}
-	// [4] MOVE = (5 << 16) | 42 = 0x0005002A
+	// [4] SETBASE = 0x80000000 | (0xF0050 >> 2) = 0x8003C014
 	w1 := readBusMem32(h, 0x30004)
-	if w1 != 0x0005002A {
-		t.Fatalf("COPPER MOVE: expected 0x0005002A, got 0x%08X", w1)
+	if w1 != 0x8003C014 {
+		t.Fatalf("COPPER SETBASE: expected 0x8003C014, got 0x%08X", w1)
 	}
-	// [8] END = 0xFFFFFFFF
+	// [8] MOVE opcode = 0x40000000 (bits 31:30=01, regIndex=0)
 	w2 := readBusMem32(h, 0x30008)
-	if w2 != 0xFFFFFFFF {
-		t.Fatalf("COPPER END: expected 0xFFFFFFFF, got 0x%08X", w2)
+	if w2 != 0x40000000 {
+		t.Fatalf("COPPER MOVE opcode: expected 0x40000000, got 0x%08X", w2)
+	}
+	// [C] MOVE data = 42
+	w3 := readBusMem32(h, 0x3000C)
+	if w3 != 42 {
+		t.Fatalf("COPPER MOVE data: expected 42, got %d", w3)
+	}
+	// [10] END = 0xC0000000
+	w4 := readBusMem32(h, 0x30010)
+	if w4 != 0xC0000000 {
+		t.Fatalf("COPPER END: expected 0xC0000000, got 0x%08X", w4)
+	}
+}
+
+func TestHW_Copper_Wait_Encoding(t *testing.T) {
+	asmBin := buildAssembler(t)
+	// Test WAIT encoding for various scanlines: 0, 100, 200, 479
+	_, h := execStmtTestWithBus(t, asmBin,
+		"10 COPPER LIST 196608\n20 COPPER WAIT 0\n30 COPPER WAIT 100\n40 COPPER WAIT 200\n50 COPPER WAIT 479\n60 COPPER END")
+	// Each WAIT = (scanline << 12), opcode 00 in bits 31:30
+	cases := []struct {
+		offset   uint32
+		scanline uint32
+	}{
+		{0x30000, 0},
+		{0x30004, 100},
+		{0x30008, 200},
+		{0x3000C, 479},
+	}
+	for _, tc := range cases {
+		got := readBusMem32(h, tc.offset)
+		want := tc.scanline << 12
+		if got != want {
+			t.Fatalf("COPPER WAIT scanline %d: expected 0x%08X, got 0x%08X", tc.scanline, want, got)
+		}
+	}
+}
+
+func TestHW_Copper_End_Encoding(t *testing.T) {
+	asmBin := buildAssembler(t)
+	_, h := execStmtTestWithBus(t, asmBin,
+		"10 COPPER LIST 196608\n20 COPPER END")
+	w0 := readBusMem32(h, 0x30000)
+	if w0 != 0xC0000000 {
+		t.Fatalf("COPPER END: expected 0xC0000000, got 0x%08X", w0)
+	}
+}
+
+func TestHW_Copper_Move_Encoding(t *testing.T) {
+	asmBin := buildAssembler(t)
+	// MOVE &HF0050, &HFF0000 — SETBASE + MOVE opcode + MOVE data
+	_, h := execStmtTestWithBus(t, asmBin,
+		"10 COPPER LIST 196608\n20 COPPER MOVE &HF0050, &HFF0000\n30 COPPER END")
+	// SETBASE = 0x80000000 | (0xF0050 >> 2) = 0x8003C014
+	w0 := readBusMem32(h, 0x30000)
+	if w0 != 0x8003C014 {
+		t.Fatalf("COPPER MOVE SETBASE: expected 0x8003C014, got 0x%08X", w0)
+	}
+	// MOVE opcode = 0x40000000
+	w1 := readBusMem32(h, 0x30004)
+	if w1 != 0x40000000 {
+		t.Fatalf("COPPER MOVE opcode: expected 0x40000000, got 0x%08X", w1)
+	}
+	// MOVE data = 0xFF0000
+	w2 := readBusMem32(h, 0x30008)
+	if w2 != 0xFF0000 {
+		t.Fatalf("COPPER MOVE data: expected 0x00FF0000, got 0x%08X", w2)
+	}
+}
+
+func TestHW_Copper_Move_VGA_DAC(t *testing.T) {
+	asmBin := buildAssembler(t)
+	// MOVE &HF1058, 42 — different address to test SETBASE calculation
+	_, h := execStmtTestWithBus(t, asmBin,
+		"10 COPPER LIST 196608\n20 COPPER MOVE &HF1058, 42\n30 COPPER END")
+	// SETBASE = 0x80000000 | (0xF1058 >> 2) = 0x8003C416
+	w0 := readBusMem32(h, 0x30000)
+	if w0 != 0x8003C416 {
+		t.Fatalf("COPPER MOVE VGA DAC SETBASE: expected 0x8003C416, got 0x%08X", w0)
+	}
+	// MOVE opcode = 0x40000000
+	w1 := readBusMem32(h, 0x30004)
+	if w1 != 0x40000000 {
+		t.Fatalf("COPPER MOVE VGA DAC opcode: expected 0x40000000, got 0x%08X", w1)
+	}
+	// MOVE data = 42
+	w2 := readBusMem32(h, 0x30008)
+	if w2 != 42 {
+		t.Fatalf("COPPER MOVE VGA DAC data: expected 42, got %d", w2)
+	}
+}
+
+func TestHW_Copper_Move_BadAddr(t *testing.T) {
+	asmBin := buildAssembler(t)
+	// MOVE 5, 42 — address below 0xA0000, should print ?FC ERROR and not emit MOVE
+	out, h := execStmtTestWithBus(t, asmBin,
+		"10 COPPER LIST 196608\n20 COPPER MOVE 5, 42\n30 COPPER END")
+	// Output should contain ?FC ERROR
+	if !strings.Contains(out, "?FC ERROR") {
+		t.Fatalf("COPPER MOVE bad addr: expected '?FC ERROR' in output, got %q", out)
+	}
+	// Copper list should have END at offset 0 (no MOVE emitted)
+	w0 := readBusMem32(h, 0x30000)
+	if w0 != 0xC0000000 {
+		t.Fatalf("COPPER MOVE bad addr: expected END (0xC0000000) at list start, got 0x%08X", w0)
 	}
 }
 

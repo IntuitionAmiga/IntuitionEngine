@@ -1342,7 +1342,7 @@ GTIA_GRACTL_PLAYER equ $02              ; Enable player graphics
 GTIA_GRACTL_LATCH  equ $04              ; Latch trigger inputs
 
 ; GTIA register end
-GTIA_END          equ $F216F
+GTIA_END          equ $F21B7
 
 ; Copper SETBASE for GTIA
 COP_SETBASE_GTIA  equ $8003C850         ; GTIA_BASE ($F2140 >> 2)

@@ -974,7 +974,7 @@
 .equ GTIA_GRACTL_LATCH  0x04            ; Latch trigger inputs
 
 ; GTIA register end
-.equ GTIA_END          0xF216F
+.equ GTIA_END          0xF21B7
 
 ; Copper SETBASE for GTIA
 .equ COP_SETBASE_GTIA  0x8003C850       ; GTIA_BASE (0xF2140 >> 2)

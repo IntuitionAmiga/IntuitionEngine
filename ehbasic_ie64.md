@@ -442,9 +442,11 @@ COPPER LIST addr            Set copper list address (also sets build pointer)
 COPPER ON                   Enable copper
 COPPER OFF                  Disable copper
 COPPER WAIT scanline        Emit WAIT instruction at build pointer
-COPPER MOVE reg, value      Emit MOVE instruction at build pointer
+COPPER MOVE addr, value     Emit MOVE instruction at build pointer
 COPPER END                  Emit END instruction at build pointer
 ```
+
+`COPPER MOVE addr, value` takes an absolute register address (>= `&HA0000`). Addresses below `&HA0000` raise `?FC ERROR`. Each MOVE auto-emits a SETBASE instruction (12 bytes total). `COPPER WAIT` emits 4 bytes. `COPPER END` emits 4 bytes.
 
 **Example:**
 ```basic
@@ -1259,6 +1261,7 @@ VOODOO FOG COLOR r, g, b     Set fog colour
 VOODOO DITHER ON/OFF         Enable/disable dithering
 VOODOO CHROMAKEY ON/OFF       Enable/disable chroma keying
 VOODOO CHROMAKEY COLOR r,g,b  Set chroma key colour
+VOODOO RGB ON/OFF             Enable/disable RGB buffer writes
 ```
 
 **VOODOO TRICOLOR** sets the start colour registers (START_R, START_G, START_B, optionally START_A) used by the triangle rasteriser:
@@ -1283,6 +1286,8 @@ VOODOO TRICOLOR 128, 128, 0, 200  : REM with alpha
 **VOODOO CHROMAKEY** controls chroma-key transparency via FBZ_MODE:
 - `CHROMAKEY ON/OFF` toggles the FBZ_CHROMAKEY bit
 - `CHROMAKEY COLOR r,g,b` packs `(b<<16)|(g<<8)|r` into the CHROMA_KEY register
+
+**VOODOO RGB** toggles the FBZ_RGB_WRITE bit (0x0200) in the FBZ_MODE register. When disabled, triangle rasterisation computes colours but does not write them to the framebuffer (useful for depth-only passes).
 
 ### VSYNC
 
@@ -1602,7 +1607,7 @@ Returns the sine of `x` (in radians).
 SQR(x)
 ```
 
-Returns the square root of `x`. Domain: `x >= 0`.
+Returns the square root of `x`. Domain: `x >= 0`. Returns 0 for negative inputs.
 
 ### STATUS (Chip)
 
@@ -1718,10 +1723,10 @@ The copper is a display-list coprocessor that executes instructions synchronised
 
 | Instruction | Format | Description |
 |-------------|--------|-------------|
-| WAIT | `0x80000000 \| (scanline << 16)` | Wait until raster reaches scanline |
-| MOVE | `(register << 16) \| (value & 0xFFFF)` | Write value to register |
-| END | `0xFFFFFFFF` | End of copper list |
-| SETBASE | `0x80000000 \| (addr >> 2)` | Set register base for subsequent MOVEs |
+| WAIT | bits 31:30=00, scanline in bits 23:12, X in bits 11:0 | Wait for raster position (BASIC sets X=0) |
+| MOVE | opcode word (bits 31:30=01, reg index 23:16) + 32-bit data word | Write value to register |
+| SETBASE | `0x80000000 \| (addr >> 2)` (bits 31:30=10) | Set I/O base for subsequent MOVEs |
+| END | `0xC0000000` (bits 31:30=11) | End of copper list |
 
 **Example: Rainbow bars**
 ```basic
@@ -2331,6 +2336,7 @@ Current behaviour for common failure cases:
 | LOOP without DO | Treated as stack mismatch; execution stops |
 | Division by zero | FP32 operation result (typically +/-Infinity) |
 | Square root of negative | Returns 0 |
+| COPPER MOVE with address < &HA0000 | Prints ?FC ERROR, MOVE not emitted |
 | INPUT buffer full | Extra typed characters are ignored |
 | DATA exhausted | READ returns 0 |
 

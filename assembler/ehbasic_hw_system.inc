@@ -90,9 +90,9 @@ hw_wait:
 ; ============================================================================
 ; COPPER LIST addr    → set COPPER_PTR
 ; COPPER ON / OFF     → set/clear COPPER_CTRL bit 0
-; COPPER WAIT scan    → write wait opcode at copper build pointer
-; COPPER MOVE reg,val → write move opcode
-; COPPER END          → write end opcode (0xFFFFFFFF)
+; COPPER WAIT scan    → (0<<30)|(scan<<12), 4 bytes
+; COPPER MOVE addr,val→ SETBASE(addr) + MOVE(regIdx=0) + DATA(val), 12 bytes
+; COPPER END          → 0xC0000000, 4 bytes
 ;
 ; Copper build pointer stored at state + 0x50
 
@@ -163,10 +163,8 @@ hw_copper:
     jsr     expr_eval
     jsr     fp_int
     jsr     fp_fix
-    ; Build WAIT opcode: 0x80000000 | (scanline << 16)
-    lsl.l   r1, r8, #16
-    move.l  r2, #0x80000000
-    or.l    r1, r1, r2
+    ; Build WAIT opcode: (0<<30) | (scanline << 12)
+    lsl.l   r1, r8, #12
     ; Write at build pointer
     add.q   r3, r16, #0x50
     load.l  r4, (r3)
@@ -182,7 +180,7 @@ hw_copper:
     jsr     expr_eval
     jsr     fp_int
     jsr     fp_fix
-    move.q  r22, r8              ; R22 = register offset
+    move.q  r22, r8              ; R22 = absolute address
     jsr     exec_skip_spaces
     load.b  r1, (r17)
     move.q  r2, #0x2C
@@ -192,24 +190,44 @@ hw_copper:
     jsr     expr_eval
     jsr     fp_int
     jsr     fp_fix
-    ; Build MOVE opcode: reg in upper 16, value in lower 16
-    lsl.l   r1, r22, #16
-    and.l   r2, r8, #0xFFFF
-    or.l    r1, r1, r2
-    ; Write at build pointer
+    move.q  r23, r8              ; R23 = value
+
+    ; Guard: addr < 0xA0000 → ?FC ERROR
+    move.l  r1, #0xA0000
+    blt     r22, r1, .cop_move_err
+
+    ; Emit SETBASE: 0x80000000 | (addr >> 2)
+    lsr.l   r1, r22, #2
+    or.l    r1, r1, #0x80000000
     add.q   r3, r16, #0x50
     load.l  r4, (r3)
     store.l r1, (r4)
     add.q   r4, r4, #4
-    store.l r4, (r3)
+
+    ; Emit MOVE opcode: 0x40000000 (regIndex=0)
+    move.l  r1, #0x40000000
+    store.l r1, (r4)
+    add.q   r4, r4, #4
+
+    ; Emit MOVE data
+    store.l r23, (r4)
+    add.q   r4, r4, #4
+
+    store.l r4, (r3)            ; update build pointer (+12)
+    rts
+
+.cop_move_err:
+    la      r8, cop_err_fc
+    jsr     print_string
+    jsr     print_crlf
     rts
 .cop_end:
     add.q   r17, r17, #1
     jsr     skip_alpha
-    ; Write end opcode: 0xFFFFFFFF
+    ; Write end opcode: 0xC0000000 (opcode 3 = END)
     add.q   r3, r16, #0x50
     load.l  r4, (r3)
-    move.l  r1, #0xFFFFFFFF
+    move.l  r1, #0xC0000000
     store.l r1, (r4)
     add.q   r4, r4, #4
     store.l r4, (r3)
@@ -549,6 +567,10 @@ hw_memcopy:
     store.l r1, (r3)
 .mc_done:
     rts
+
+cop_err_fc:
+    dc.b    "?FC ERROR", 0
+    align 8
 
 ; ============================================================================
 ; EOF
