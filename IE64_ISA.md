@@ -595,6 +595,10 @@ The IE64 uses the same memory map as the Intuition Engine platform. The PC is ma
 | `$F0F00-$F0F5F` | 96 B | TED registers |
 | `$F1000-$F13FF` | 1 KB | VGA registers |
 | `$F2000-$F200B` | 12 B | ULA (ZX Spectrum) registers |
+| `$F2100-$F213C` | 60 B | ANTIC registers |
+| `$F2140-$F21B7` | 120 B | GTIA registers |
+| `$F2200-$F221F` | 32 B | File I/O registers |
+| `$F4000-$F43FF` | 1 KB | Voodoo 3D registers |
 | `$100000-$4FFFFF` | 4 MB | Video RAM (VRAM_START = `$100000`) |
 
 ### 8.2 Initial State After Reset

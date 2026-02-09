@@ -160,6 +160,10 @@ const (
 	// ULA region (ZX Spectrum video)
 	ULA_REGION_BASE = 0xF2000
 	ULA_REGION_END  = 0xF200B
+
+	// File I/O region
+	FILE_IO_REGION_BASE = 0xF2200
+	FILE_IO_REGION_END  = 0xF221F
 )
 
 // =============================================================================
@@ -248,6 +252,8 @@ func GetIORegion(addr uint32) string {
 		return "VGA"
 	case addr >= ULA_REGION_BASE && addr <= ULA_REGION_END:
 		return "ULA"
+	case addr >= FILE_IO_REGION_BASE && addr <= FILE_IO_REGION_END:
+		return "FileIO"
 	default:
 		return "Unknown"
 	}

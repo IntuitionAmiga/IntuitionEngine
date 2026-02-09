@@ -926,3 +926,47 @@ Notes:
   add.q sp, sp, #32    ; deallocate locals
   ```
 - Keep `sp` 8-byte aligned at all times for quad-word load/store correctness.
+
+---
+
+## 11. File I/O
+
+The Intuition Engine provides a memory-mapped File I/O device for reading and writing files within a restricted sandbox directory on the host.
+
+### MMIO Registers
+
+| Address | Name | Description |
+|---------|------|-------------|
+| `$F2200` | `FILE_NAME_PTR` | Pointer to null-terminated filename in VM memory |
+| `$F2204` | `FILE_DATA_PTR` | Pointer to data buffer in VM memory |
+| `$F2208` | `FILE_DATA_LEN` | Data length (for WRITE operations) |
+| `$F220C` | `FILE_CTRL` | Control: Bit 0=READ, Bit 1=WRITE (triggers op) |
+| `$F2210` | `FILE_STATUS` | Status: 0=OK, 1=ERROR |
+| `$F2214` | `FILE_RESULT_LEN` | Actually read bytes (for READ operations) |
+| `$F2218` | `FILE_ERROR_CODE` | 0=OK, 1=NOT_FOUND, 2=PERMISSION, 3=TRAVERSAL |
+
+### Example: Reading a File
+
+```asm
+                la      r1, .fname      ; pointer to "hello.txt"
+                la      r2, FILE_NAME_PTR
+                store.l r1, (r2)        ; set filename pointer
+
+                li      r1, #$10000     ; read buffer at 64KB
+                la      r2, FILE_DATA_PTR
+                store.l r1, (r2)        ; set data pointer
+
+                li      r1, #1          ; OP_READ
+                la      r2, FILE_CTRL
+                store.l r1, (r2)        ; trigger read
+
+                la      r1, FILE_STATUS
+                load.l  r1, (r1)
+                bnez    r1, .read_fail  ; check for error
+
+                la      r1, FILE_RESULT_LEN
+                load.l  r8, (r1)        ; r8 = number of bytes read
+                ; ... data is now at $10000 ...
+
+.fname:         dc.b    "hello.txt", 0
+```

@@ -281,6 +281,7 @@ All hardware is accessed through memory-mapped registers in the `$F0000-$FFFFF` 
 | SID | `$F0E00-$F0E2D` | MOS 6581 registers and SID playback |
 | Banking | `$F700-$F7F0` | Bank window control (Z80/6502 only) |
 | VGA | `$F1000-$F13FF` | VGA mode, DAC, sequencer, CRTC, palette |
+| File I/O | `$F2200-$F221F` | Host filesystem access (LOAD/SAVE) |
 
 Additionally, VGA uses legacy PC-compatible memory windows:
 - `$A0000-$AFFFF`: VGA VRAM (64KB graphics memory)
@@ -318,6 +319,7 @@ The system's memory layout is designed to provide efficient access to both progr
 0x0F0F00 - 0x0F0F05: TED registers (Plus/4 audio)
 0x0F0F10 - 0x0F0F1C: TED playback control
 0x0F1000 - 0x0F13FF: VGA registers (IBM VGA emulation)
+0x0F2200 - 0x0F221F: File I/O registers
 0x0A0000 - 0x0AFFFF: VGA VRAM window (Mode 13h/12h)
 0x0B8000 - 0x0BFFFF: VGA text buffer
 0x100000 - 0x4FFFFF: Video RAM (VRAM_START to VRAM_START + VRAM_SIZE)

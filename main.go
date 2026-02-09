@@ -703,6 +703,10 @@ func main() {
 		compositor.RegisterSource(voodooEngine) // Layer 20 - Voodoo 3D on top
 	}
 
+	// Initialize File I/O
+	fileIO := NewFileIODevice(sysBus, ".") // Current directory as base
+	sysBus.MapIO(FILE_IO_BASE, FILE_IO_END, fileIO.HandleRead, fileIO.HandleWrite)
+
 	// Initialize the selected CPU and optionally load program
 	var gui GUIFrontend
 	var startExecution bool

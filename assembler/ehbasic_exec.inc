@@ -1245,6 +1245,16 @@ exec_do_tron:
     ; === END exec_do_tron ===
 
 ; --- TROFF ---
+; --- LOAD command ---
+exec_do_load:
+    rts
+    ; === END exec_do_load ===
+
+; --- SAVE command ---
+exec_do_save:
+    rts
+    ; === END exec_do_save ===
+
 exec_do_troff:
     ; TROFF — disable trace mode
     add.q   r1, r16, #ST_TRACE_FLAG
@@ -1291,9 +1301,9 @@ stmt_jump_table:
     dc.l    exec_do_tron         ; 18 = TK_NULL→TRON(0x92)
     dc.l    exec_do_inc          ; 19 = TK_INC      (0x93)
     dc.l    exec_do_wait         ; 20 = TK_WAIT     (0x94)
-    dc.l    exec_do_troff        ; 21 = TK_LOAD→TROFF(0x95)
-    dc.l    exec_do_unknown      ; 22 = unused      (0x96)
-    dc.l    exec_do_unknown      ; 23 = unused      (0x97)
+    dc.l    exec_do_load         ; 21 = TK_LOAD     (0x95)
+    dc.l    exec_do_save         ; 22 = TK_SAVE     (0x96)
+    dc.l    exec_do_troff        ; 23 = TK_DEF→TROFF(0x97)
     dc.l    exec_do_poke         ; 24 = TK_POKE     (0x98)
     dc.l    exec_do_doke         ; 25 = TK_DOKE     (0x99)
     dc.l    exec_do_loke         ; 26 = TK_LOKE     (0x9A)

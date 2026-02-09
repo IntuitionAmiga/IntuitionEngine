@@ -267,7 +267,7 @@ tok_kw_table:
     dc.b    "BITSET", 0, TK_BITSET
     dc.b    "BITCLR", 0, TK_BITCLR
     dc.b    "CLEAR", 0, TK_CLEAR
-    dc.b    "TROFF", 0, TK_LOAD
+    dc.b    "TROFF", 0, TK_DEF
     dc.b    "GOSUB", 0, TK_GOSUB
     dc.b    "INPUT", 0, TK_INPUT
     dc.b    "PRINT", 0, TK_PRINT
