@@ -54,6 +54,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"math/bits"
 	"os"
 	"sync/atomic"
@@ -138,8 +139,40 @@ const (
 	OP_POP64   = 0x53 // Pop from stack to register
 	OP_JSR_IND = 0x54 // JSR register-indirect
 
+	// Floating Point (FPU)
+	OP_FMOV    = 0x60 // FP reg copy
+	OP_FLOAD   = 0x61 // Memory -> FP reg
+	OP_FSTORE  = 0x62 // FP reg -> memory
+	OP_FADD    = 0x63 // fd = fs + ft
+	OP_FSUB    = 0x64 // fd = fs - ft
+	OP_FMUL    = 0x65 // fd = fs * ft
+	OP_FDIV    = 0x66 // fd = fs / ft
+	OP_FMOD    = 0x67 // fd = fmod(fs, ft)
+	OP_FABS    = 0x68 // fd = |fs|
+	OP_FNEG    = 0x69 // fd = -fs
+	OP_FSQRT   = 0x6A // fd = sqrt(fs)
+	OP_FINT    = 0x6B // Round to integer
+	OP_FCMP    = 0x6C // Compare fs, ft
+	OP_FCVTIF  = 0x6D // int -> float
+	OP_FCVTFI  = 0x6E // float -> int
+	OP_FMOVI   = 0x6F // Bitwise int -> FP
+	OP_FMOVO   = 0x70 // Bitwise FP -> int
+	OP_FSIN    = 0x71 // Sin
+	OP_FCOS    = 0x72 // Cos
+	OP_FTAN    = 0x73 // Tan
+	OP_FATAN   = 0x74 // Atan
+	OP_FLOG    = 0x75 // Ln
+	OP_FEXP    = 0x76 // e^x
+	OP_FPOW    = 0x77 // fs^ft
+	OP_FMOVECR = 0x78 // Load ROM constant
+	OP_FMOVSR  = 0x79 // Read FPSR
+	OP_FMOVCR  = 0x7A // Read FPCR
+	OP_FMOVSC  = 0x7B // Write FPSR
+	OP_FMOVCC  = 0x7C // Write FPCR
+
 	// System
-	OP_NOP64  = 0xE0 // No operation
+	OP_NOP64 = 0xE0 // No operation
+
 	OP_HALT64 = 0xE1 // Halt processor
 	OP_SEI64  = 0xE2 // Set interrupt enable
 	OP_CLI64  = 0xE3 // Clear interrupt enable
@@ -185,6 +218,9 @@ type CPU64 struct {
 	vramStart  uint32
 	vramEnd    uint32
 
+	// Floating Point Unit
+	FPU *IE64FPU
+
 	// Performance measurement
 	PerfEnabled      bool
 	InstructionCount uint64
@@ -201,6 +237,7 @@ func NewCPU64(bus *MachineBus) *CPU64 {
 		PC:     PROG_START,
 		bus:    bus,
 		memory: bus.GetMemory(),
+		FPU:    NewIE64FPU(),
 	}
 	cpu.memBase = unsafe.Pointer(&cpu.memory[0])
 	cpu.regs[31] = STACK_START // R31 is the stack pointer
@@ -376,6 +413,15 @@ func (cpu *CPU64) Reset() {
 	cpu.timerState.Store(TIMER_STOPPED)
 	cpu.timerEnabled.Store(false)
 	cpu.InstructionCount = 0
+
+	// Reset FPU
+	if cpu.FPU != nil {
+		cpu.FPU.FPSR = 0
+		cpu.FPU.FPCR = 0
+		for i := range cpu.FPU.FPRegs {
+			cpu.FPU.FPRegs[i] = 0
+		}
+	}
 
 	// Clear memory in chunks for better cache utilization
 	for i := PROG_START; i < len(cpu.memory); i += CACHE_LINE_SIZE {
@@ -796,6 +842,276 @@ func (cpu *CPU64) Execute() {
 			cpu.PC = target & IE64_ADDR_MASK
 			continue
 
+		// ----------------------------------------------------------------------
+		// Floating Point (FPU)
+		// ----------------------------------------------------------------------
+
+		case OP_FMOV:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if rd > 15 || rs > 15 {
+				goto invalid_freg
+			}
+			cpu.FPU.setFReg(rd, cpu.FPU.getFReg(rs))
+
+		case OP_FLOAD:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if rd > 15 {
+				goto invalid_freg
+			}
+			addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
+			val := uint32(cpu.loadMem(addr, IE64_SIZE_L))
+			cpu.FPU.FPRegs[rd] = val
+			cpu.FPU.setConditionCodes(math.Float32frombits(val))
+
+		case OP_FSTORE:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if rs > 15 {
+				goto invalid_freg
+			}
+			addr := uint32(int64(cpu.regs[rd]) + int64(int32(imm32)))
+			cpu.storeMem(addr, uint64(cpu.FPU.FPRegs[rs]), IE64_SIZE_L)
+
+		case OP_FADD:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if rd > 15 || rs > 15 || rt > 15 {
+				goto invalid_freg
+			}
+			cpu.FPU.FADD(rd, rs, rt)
+
+		case OP_FSUB:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if rd > 15 || rs > 15 || rt > 15 {
+				goto invalid_freg
+			}
+			cpu.FPU.FSUB(rd, rs, rt)
+
+		case OP_FMUL:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if rd > 15 || rs > 15 || rt > 15 {
+				goto invalid_freg
+			}
+			cpu.FPU.FMUL(rd, rs, rt)
+
+		case OP_FDIV:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if rd > 15 || rs > 15 || rt > 15 {
+				goto invalid_freg
+			}
+			cpu.FPU.FDIV(rd, rs, rt)
+
+		case OP_FMOD:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if rd > 15 || rs > 15 || rt > 15 {
+				goto invalid_freg
+			}
+			cpu.FPU.FMOD(rd, rs, rt)
+
+		case OP_FABS:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if rd > 15 || rs > 15 {
+				goto invalid_freg
+			}
+			cpu.FPU.FABS(rd, rs)
+
+		case OP_FNEG:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if rd > 15 || rs > 15 {
+				goto invalid_freg
+			}
+			cpu.FPU.FNEG(rd, rs)
+
+		case OP_FSQRT:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if rd > 15 || rs > 15 {
+				goto invalid_freg
+			}
+			cpu.FPU.FSQRT(rd, rs)
+
+		case OP_FINT:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if rd > 15 || rs > 15 {
+				goto invalid_freg
+			}
+			cpu.FPU.FINT(rd, rs)
+
+		case OP_FCMP:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if rs > 15 || rt > 15 {
+				goto invalid_freg
+			}
+			res := cpu.FPU.FCMP(rs, rt)
+			if rd != 0 {
+				cpu.regs[rd] = uint64(int64(res))
+			}
+
+		case OP_FCVTIF:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if rd > 15 {
+				goto invalid_freg
+			}
+			cpu.FPU.FCVTIF(rd, cpu.regs[rs])
+
+		case OP_FCVTFI:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if rs > 15 {
+				goto invalid_freg
+			}
+			res := cpu.FPU.FCVTFI(rs)
+			if rd != 0 {
+				cpu.regs[rd] = uint64(int64(res))
+			}
+
+		case OP_FMOVI:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if rd > 15 {
+				goto invalid_freg
+			}
+			cpu.FPU.FMOVI(rd, cpu.regs[rs])
+
+		case OP_FMOVO:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if rs > 15 {
+				goto invalid_freg
+			}
+			res := cpu.FPU.FMOVO(rs)
+			if rd != 0 {
+				cpu.regs[rd] = res
+			}
+
+		case OP_FSIN:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if rd > 15 || rs > 15 {
+				goto invalid_freg
+			}
+			cpu.FPU.FSIN(rd, rs)
+
+		case OP_FCOS:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if rd > 15 || rs > 15 {
+				goto invalid_freg
+			}
+			cpu.FPU.FCOS(rd, rs)
+
+		case OP_FTAN:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if rd > 15 || rs > 15 {
+				goto invalid_freg
+			}
+			cpu.FPU.FTAN(rd, rs)
+
+		case OP_FATAN:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if rd > 15 || rs > 15 {
+				goto invalid_freg
+			}
+			cpu.FPU.FATAN(rd, rs)
+
+		case OP_FLOG:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if rd > 15 || rs > 15 {
+				goto invalid_freg
+			}
+			cpu.FPU.FLOG(rd, rs)
+
+		case OP_FEXP:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if rd > 15 || rs > 15 {
+				goto invalid_freg
+			}
+			cpu.FPU.FEXP(rd, rs)
+
+		case OP_FPOW:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if rd > 15 || rs > 15 || rt > 15 {
+				goto invalid_freg
+			}
+			cpu.FPU.FPOW(rd, rs, rt)
+
+		case OP_FMOVECR:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if rd > 15 {
+				goto invalid_freg
+			}
+			cpu.FPU.FMOVECR(rd, byte(imm32))
+
+		case OP_FMOVSR:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if rd != 0 {
+				cpu.regs[rd] = uint64(cpu.FPU.FMOVSR())
+			}
+
+		case OP_FMOVCR:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if rd != 0 {
+				cpu.regs[rd] = uint64(cpu.FPU.FMOVCR())
+			}
+
+		case OP_FMOVSC:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			cpu.FPU.FMOVSC(uint32(cpu.regs[rs]))
+
+		case OP_FMOVCC:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			cpu.FPU.FMOVCC(uint32(cpu.regs[rs]))
+
 		case OP_NOP64:
 			// default PC advance
 
@@ -836,5 +1152,16 @@ func (cpu *CPU64) Execute() {
 
 		// Default PC advance — opcodes that set PC themselves use `continue` above
 		cpu.PC += IE64_INSTR_SIZE
+		continue
+
+	fpu_missing:
+		fmt.Printf("IE64: FPU instruction executed but FPU is missing at PC=0x%X\n", cpu.PC)
+		cpu.running.Store(false)
+		break
+
+	invalid_freg:
+		fmt.Printf("IE64: Invalid FP register index at PC=0x%X\n", cpu.PC)
+		cpu.running.Store(false)
+		break
 	}
 }

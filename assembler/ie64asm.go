@@ -141,12 +141,42 @@ const (
 	OP64_PUSH    = 0x52
 	OP64_POP     = 0x53
 	OP64_JSR_IND = 0x54
+	OP64_FMOV    = 0x60
+	OP64_FLOAD   = 0x61
+	OP64_FSTORE  = 0x62
+	OP64_FADD    = 0x63
+	OP64_FSUB    = 0x64
+	OP64_FMUL    = 0x65
+	OP64_FDIV    = 0x66
+	OP64_FMOD    = 0x67
+	OP64_FABS    = 0x68
+	OP64_FNEG    = 0x69
+	OP64_FSQRT   = 0x6A
+	OP64_FINT    = 0x6B
+	OP64_FCMP    = 0x6C
+	OP64_FCVTIF  = 0x6D
+	OP64_FCVTFI  = 0x6E
+	OP64_FMOVI   = 0x6F
+	OP64_FMOVO   = 0x70
+	OP64_FSIN    = 0x71
+	OP64_FCOS    = 0x72
+	OP64_FTAN    = 0x73
+	OP64_FATAN   = 0x74
+	OP64_FLOG    = 0x75
+	OP64_FEXP    = 0x76
+	OP64_FPOW    = 0x77
+	OP64_FMOVECR = 0x78
+	OP64_FMOVSR  = 0x79
+	OP64_FMOVCR  = 0x7A
+	OP64_FMOVSC  = 0x7B
+	OP64_FMOVCC  = 0x7C
 	OP64_NOP     = 0xE0
-	OP64_HALT    = 0xE1
-	OP64_SEI     = 0xE2
-	OP64_CLI     = 0xE3
-	OP64_RTI     = 0xE4
-	OP64_WAIT    = 0xE5
+
+	OP64_HALT = 0xE1
+	OP64_SEI  = 0xE2
+	OP64_CLI  = 0xE3
+	OP64_RTI  = 0xE4
+	OP64_WAIT = 0xE5
 )
 
 // Size codes
@@ -275,6 +305,17 @@ func parseRegister(name string) (byte, bool) {
 	if strings.HasPrefix(name, "r") {
 		n, err := strconv.Atoi(name[1:])
 		if err == nil && n >= 0 && n <= 31 {
+			return byte(n), true
+		}
+	}
+	return 0, false
+}
+
+func parseFPRegister(name string) (byte, bool) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if strings.HasPrefix(name, "f") {
+		n, err := strconv.Atoi(name[1:])
+		if err == nil && n >= 0 && n <= 15 {
 			return byte(n), true
 		}
 	}
@@ -1964,6 +2005,21 @@ func (a *IE64Assembler) assembleInstruction(trimmed string, program []byte) erro
 	mnemonicRaw := strings.ToLower(fields[0])
 	base, size := parseSizeSuffix(mnemonicRaw)
 
+	// Reject size suffixes on FP instructions (always 32-bit)
+	if strings.HasPrefix(base, "f") && base != "f" { // base != "f" avoids matching potential future 'f' pseudo-ops
+		// List of FP mnemonics to validate
+		fpMnemonics := map[string]bool{
+			"fmov": true, "fload": true, "fstore": true, "fadd": true, "fsub": true,
+			"fmul": true, "fdiv": true, "fmod": true, "fabs": true, "fneg": true,
+			"fsqrt": true, "fint": true, "fcmp": true, "fcvtif": true, "fcvtfi": true,
+			"fmovi": true, "fmovo": true, "fsin": true, "fcos": true, "ftan": true,
+			"fatan": true, "flog": true, "fexp": true, "fpow": true, "fmovecr": true,
+			"fmovsr": true, "fmovcr": true, "fmovsc": true, "fmovcc": true,
+		}
+		if fpMnemonics[base] && strings.Contains(mnemonicRaw, ".") {
+			return fmt.Errorf("size suffixes not allowed on FP instruction: %s", mnemonicRaw)
+		}
+	}
 	// Build operand string from everything after the mnemonic
 	operandStr := ""
 	if len(fields) > 1 {
@@ -2072,6 +2128,66 @@ func (a *IE64Assembler) assembleInstruction(trimmed string, program []byte) erro
 		instr, err = a.asmPushPop(OP64_PUSH, operands)
 	case "pop":
 		instr, err = a.asmPushPop(OP64_POP, operands)
+
+	// Floating Point (FPU)
+	case "fmov":
+		instr, err = a.asmFP2(OP64_FMOV, operands, true, true)
+	case "fload":
+		instr, err = a.asmFP_Mem(OP64_FLOAD, operands, true)
+	case "fstore":
+		instr, err = a.asmFP_Mem(OP64_FSTORE, operands, false)
+	case "fadd":
+		instr, err = a.asmFP3(OP64_FADD, operands)
+	case "fsub":
+		instr, err = a.asmFP3(OP64_FSUB, operands)
+	case "fmul":
+		instr, err = a.asmFP3(OP64_FMUL, operands)
+	case "fdiv":
+		instr, err = a.asmFP3(OP64_FDIV, operands)
+	case "fmod":
+		instr, err = a.asmFP3(OP64_FMOD, operands)
+	case "fabs":
+		instr, err = a.asmFP2(OP64_FABS, operands, true, true)
+	case "fneg":
+		instr, err = a.asmFP2(OP64_FNEG, operands, true, true)
+	case "fsqrt":
+		instr, err = a.asmFP2(OP64_FSQRT, operands, true, true)
+	case "fint":
+		instr, err = a.asmFP2(OP64_FINT, operands, true, true)
+	case "fcmp":
+		instr, err = a.asmFP3_Int(OP64_FCMP, operands)
+	case "fcvtif":
+		instr, err = a.asmFP2(OP64_FCVTIF, operands, true, false)
+	case "fcvtfi":
+		instr, err = a.asmFP2(OP64_FCVTFI, operands, false, true)
+	case "fmovi":
+		instr, err = a.asmFP2(OP64_FMOVI, operands, true, false)
+	case "fmovo":
+		instr, err = a.asmFP2(OP64_FMOVO, operands, false, true)
+	case "fsin":
+		instr, err = a.asmFP2(OP64_FSIN, operands, true, true)
+	case "fcos":
+		instr, err = a.asmFP2(OP64_FCOS, operands, true, true)
+	case "ftan":
+		instr, err = a.asmFP2(OP64_FTAN, operands, true, true)
+	case "fatan":
+		instr, err = a.asmFP2(OP64_FATAN, operands, true, true)
+	case "flog":
+		instr, err = a.asmFP2(OP64_FLOG, operands, true, true)
+	case "fexp":
+		instr, err = a.asmFP2(OP64_FEXP, operands, true, true)
+	case "fpow":
+		instr, err = a.asmFP3(OP64_FPOW, operands)
+	case "fmovecr":
+		instr, err = a.asmFP_Imm(OP64_FMOVECR, operands)
+	case "fmovsr":
+		instr, err = a.asmFP_Status(OP64_FMOVSR, operands, false)
+	case "fmovcr":
+		instr, err = a.asmFP_Status(OP64_FMOVCR, operands, false)
+	case "fmovsc":
+		instr, err = a.asmFP_Status(OP64_FMOVSC, operands, true)
+	case "fmovcc":
+		instr, err = a.asmFP_Status(OP64_FMOVCC, operands, true)
 
 	// System
 	case "nop":
@@ -2514,4 +2630,157 @@ func main() {
 			fmt.Println(line)
 		}
 	}
+}
+
+// ---------------------------------------------------------------------
+// FPU Assembler Helpers
+// ---------------------------------------------------------------------
+
+func (a *IE64Assembler) asmFP2(opcode byte, operands []string, isSrcFP, isDstFP bool) ([]byte, error) {
+	if len(operands) != 2 {
+		return nil, fmt.Errorf("FPU instruction requires 2 operands")
+	}
+
+	var dst, src byte
+	var ok bool
+
+	if isDstFP {
+		dst, ok = parseFPRegister(operands[0])
+	} else {
+		dst, ok = parseRegister(operands[0])
+	}
+	if !ok {
+		return nil, fmt.Errorf("invalid destination register: %s", operands[0])
+	}
+
+	if isSrcFP {
+		src, ok = parseFPRegister(operands[1])
+	} else {
+		src, ok = parseRegister(operands[1])
+	}
+	if !ok {
+		return nil, fmt.Errorf("invalid source register: %s", operands[1])
+	}
+
+	return encodeInstruction(opcode, dst, SIZE_L, 0, src, 0, 0), nil
+}
+
+func (a *IE64Assembler) asmFP3(opcode byte, operands []string) ([]byte, error) {
+	if len(operands) != 3 {
+		return nil, fmt.Errorf("FPU instruction requires 3 operands")
+	}
+
+	rd, ok := parseFPRegister(operands[0])
+	if !ok {
+		return nil, fmt.Errorf("invalid destination register: %s", operands[0])
+	}
+
+	rs, ok := parseFPRegister(operands[1])
+	if !ok {
+		return nil, fmt.Errorf("invalid source register 1: %s", operands[1])
+	}
+
+	rt, ok := parseFPRegister(operands[2])
+	if !ok {
+		return nil, fmt.Errorf("invalid source register 2: %s", operands[2])
+	}
+
+	return encodeInstruction(opcode, rd, SIZE_L, 0, rs, rt, 0), nil
+}
+
+func (a *IE64Assembler) asmFP3_Int(opcode byte, operands []string) ([]byte, error) {
+	if len(operands) != 3 {
+		return nil, fmt.Errorf("FPU instruction requires 3 operands")
+	}
+
+	rd, ok := parseRegister(operands[0])
+	if !ok {
+		return nil, fmt.Errorf("invalid destination register: %s", operands[0])
+	}
+
+	rs, ok := parseFPRegister(operands[1])
+	if !ok {
+		return nil, fmt.Errorf("invalid source register 1: %s", operands[1])
+	}
+
+	rt, ok := parseFPRegister(operands[2])
+	if !ok {
+		return nil, fmt.Errorf("invalid source register 2: %s", operands[2])
+	}
+
+	return encodeInstruction(opcode, rd, SIZE_L, 0, rs, rt, 0), nil
+}
+
+func (a *IE64Assembler) asmFP_Mem(opcode byte, operands []string, isLoad bool) ([]byte, error) {
+	if len(operands) != 2 {
+		return nil, fmt.Errorf("FPU memory instruction requires 2 operands")
+	}
+
+	var freg, mreg byte
+	var ok bool
+	var memOp string
+
+	if isLoad {
+		freg, ok = parseFPRegister(operands[0])
+		memOp = operands[1]
+	} else {
+		freg, ok = parseFPRegister(operands[1])
+		memOp = operands[0]
+	}
+
+	if !ok {
+		return nil, fmt.Errorf("invalid FP register")
+	}
+
+	disp, mreg, err := a.parseDispReg(memOp)
+	if err != nil {
+		return nil, err
+	}
+
+	var xbit byte
+	if disp != 0 {
+		xbit = 1
+	}
+
+	// For FPU memory, Rd is always the FP reg, Rs is memory base
+	return encodeInstruction(opcode, freg, SIZE_L, xbit, mreg, 0, uint32(disp)), nil
+}
+
+func (a *IE64Assembler) asmFP_Imm(opcode byte, operands []string) ([]byte, error) {
+	if len(operands) != 2 {
+		return nil, fmt.Errorf("FPU instruction requires 2 operands")
+	}
+
+	rd, ok := parseFPRegister(operands[0])
+	if !ok {
+		return nil, fmt.Errorf("invalid destination register: %s", operands[0])
+	}
+
+	immStr := strings.TrimSpace(operands[1])
+	if !strings.HasPrefix(immStr, "#") {
+		return nil, fmt.Errorf("expected immediate value (starting with #)")
+	}
+
+	val, err := a.evalExpr(immStr[1:])
+	if err != nil {
+		return nil, err
+	}
+
+	return encodeInstruction(opcode, rd, SIZE_L, 1, 0, 0, uint32(val)), nil
+}
+
+func (a *IE64Assembler) asmFP_Status(opcode byte, operands []string, isWrite bool) ([]byte, error) {
+	if len(operands) != 1 {
+		return nil, fmt.Errorf("FPU status instruction requires 1 operand")
+	}
+
+	reg, ok := parseRegister(operands[0])
+	if !ok {
+		return nil, fmt.Errorf("invalid register: %s", operands[0])
+	}
+
+	if isWrite {
+		return encodeInstruction(opcode, 0, SIZE_L, 0, reg, 0, 0), nil
+	}
+	return encodeInstruction(opcode, reg, SIZE_L, 0, 0, 0, 0), nil
 }

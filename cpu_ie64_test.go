@@ -1818,3 +1818,39 @@ func TestIE64_JMP_JSR_Indirect_Coexist(t *testing.T) {
 		t.Fatalf("R2 = %d, want 20 (sub2 via register-indirect JSR)", r.cpu.regs[2])
 	}
 }
+
+// ===========================================================================
+// FPU Integration Tests
+// ===========================================================================
+
+func TestIE64_FPU_Integration(t *testing.T) {
+	rig := newIE64TestRig()
+
+	t.Run("FADD", func(t *testing.T) {
+		rig.cpu.Reset()
+		// Load F1=1.5, F2=2.5 via bits
+		rig.cpu.FPU.setFReg(1, 1.5)
+		rig.cpu.FPU.setFReg(2, 2.5)
+
+		// FADD F0, F1, F2
+		instr := ie64Instr(OP_FADD, 0, 0, 0, 1, 2, 0)
+		rig.executeOne(instr)
+
+		if rig.cpu.FPU.getFReg(0) != 4.0 {
+			t.Errorf("FPU FADD via CPU failed: got %v, want 4.0", rig.cpu.FPU.getFReg(0))
+		}
+	})
+
+	t.Run("FCVTFI", func(t *testing.T) {
+		rig.cpu.Reset()
+		rig.cpu.FPU.setFReg(1, 42.0)
+
+		// FCVTFI R1, F1
+		instr := ie64Instr(OP_FCVTFI, 1, 0, 0, 1, 0, 0)
+		rig.executeOne(instr)
+
+		if rig.cpu.getReg(1) != 42 {
+			t.Errorf("FPU FCVTFI via CPU failed: got %v, want 42", rig.cpu.getReg(1))
+		}
+	})
+}

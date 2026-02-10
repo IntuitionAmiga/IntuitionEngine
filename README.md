@@ -94,10 +94,11 @@
    - 9.2 Instruction Format
    - 9.3 Addressing Modes
    - 9.4 Instruction Set
-   - 9.5 Memory and I/O Integration
-   - 9.6 Interrupt Handling
-   - 9.7 Compatibility Notes
-   - 9.8 EhBASIC IE64
+   - 9.5 FPU Logic
+   - 9.6 Memory and I/O Integration
+   - 9.7 Interrupt Handling
+   - 9.8 Compatibility Notes
+   - 9.9 EhBASIC IE64
 10. [Assembly Language Reference](#10-assembly-language-reference)
     - 10.1 Basic Program Structure
     - 10.2 Assembler Directives
@@ -165,7 +166,7 @@ The Intuition Engine is a virtual machine that emulates a complete retro-style c
 | **Z80** | 8-bit | AF, BC, DE, HL + alternates, IX, IY | Full instruction set, interrupt modes |
 | **6502** | 8-bit | A, X, Y | NMOS instruction set, zero page optimisation |
 | **x86** | 32-bit | EAX-EDX, ESI, EDI, EBP, ESP | 8086 instructions + 32-bit registers, flat memory model |
-| **IE64** | 64-bit RISC | 32 general-purpose (R0=zero, R31=SP) | Fixed 8-byte instructions, compare-and-branch, no flags register |
+| **IE64** | 64-bit RISC | 32 general-purpose (R0=zero, R31=SP) | Native FP32 FPU, compare-and-branch, no flags register |
 
 ## Audio Capabilities
 
@@ -2951,7 +2952,24 @@ my_func:
     rts
 ```
 
-## 9.5 Memory and I/O Integration
+## 9.5 FPU Logic
+
+The IE64 includes a dedicated hardware Floating-Point Unit (FPU) for IEEE-754 single-precision arithmetic.
+
+### FPU Register File
+- **F0–F15**: 16 dedicated 32-bit registers for floating-point bit patterns.
+- **FPSR**: Status register containing overwritten condition codes (N, Z, I, NaN) and sticky exception flags (IO, DZ, OE, UE).
+- **FPCR**: Control register for setting the rounding mode (Nearest, Zero, Floor, Ceil).
+
+### Native FPU Instructions (29)
+- **Arithmetic**: FADD, FSUB, FMUL, FDIV, FMOD, FABS, FNEG, FSQRT, FINT
+- **Transcendentals**: FSIN, FCOS, FTAN, FATAN, FLOG, FEXP, FPOW
+- **Movement/Conversion**: FMOV, FLOAD, FSTORE, FCVTIF (int→float), FCVTFI (float→int), FMOVI, FMOVO (bitwise reinterpret)
+- **Status/Constants**: FMOVSR, FMOVCR, FMOVSC, FMOVCC, FMOVECR (load ROM Pi, e, etc.)
+
+FPU instructions are strictly 32-bit; the assembler rejects size suffixes on these mnemonics.
+
+## 9.6 Memory and I/O Integration
 
 The IE64 shares the same 32MB system bus and memory-mapped device address space as all other Intuition Engine CPUs:
 
@@ -2960,7 +2978,7 @@ The IE64 shares the same 32MB system bus and memory-mapped device address space 
 - VRAM direct-write fast path for stores to Video RAM (`$100000+`, attached VRAM window)
 - 64-bit bus operations (`Read64`/`Write64`) with I/O region split semantics for device registers
 
-## 9.6 Interrupt Handling
+## 9.7 Interrupt Handling
 
 The IE64 has an integrated timer and interrupt system:
 
@@ -2981,7 +2999,7 @@ The IE64 has an integrated timer and interrupt system:
 
 Note: The interrupt vector is currently set internally. Assembly-level vector programming is reserved for a future update.
 
-## 9.7 Compatibility Notes
+## 9.8 Compatibility Notes
 
 - Use `-ie64` flag to run IE64 binaries
 - File extension: `.ie64`
@@ -2993,7 +3011,7 @@ Note: The interrupt vector is currently set internally. Assembly-level vector pr
 - Full ISA reference: [IE64_ISA.md](IE64_ISA.md)
 - Assembly cookbook: [IE64_COOKBOOK.md](IE64_COOKBOOK.md)
 
-## 9.8 EhBASIC IE64
+## 9.9 EhBASIC IE64
 
 The Intuition Engine includes a full port of Lee Davison's Enhanced BASIC (EhBASIC) for the IE64 CPU. The interpreter is a ground-up reimplementation in IE64 assembly, using IEEE 754 single-precision (FP32) arithmetic and providing direct access to all hardware subsystems from BASIC.
 

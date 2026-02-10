@@ -970,3 +970,105 @@ The Intuition Engine provides a memory-mapped File I/O device for reading and wr
 
 .fname:         dc.b    "hello.txt", 0
 ```
+
+---
+
+## 14. Floating Point Operations
+
+The IE64 FPU provides 16 dedicated 32-bit registers (`f0`-`f15`) for high-performance
+IEEE-754 single-precision arithmetic.
+
+### Register Conventions
+
+| Register | Purpose |
+|----------|---------|
+| `f0`-`f3` | Scratch / Temporaries (caller-saved) |
+| `f4`-`f7` | Arguments / Return values (caller-saved) |
+| `f8`-`f15`| Callee-saved (preserved across calls) |
+
+### Basic Arithmetic
+
+```asm
+; Compute hypotenuse: c = sqrt(a^2 + b^2)
+; a in f4, b in f5; result in f4
+
+hypotenuse:
+                fmul    f0, f4, f4      ; f0 = a * a
+                fmul    f1, f5, f5      ; f1 = b * b
+                fadd    f0, f0, f1      ; f0 = a^2 + b^2
+                fsqrt   f4, f0          ; f4 = sqrt(f0)
+                rts
+```
+
+### Conversion and Bitwise Reinterpretation
+
+Use `fcvtif` to convert an integer to float and `fcvtfi` to convert back (with
+saturation).
+
+```asm
+; Round float in f4 to nearest integer and return as 64-bit int in r8.
+
+float_to_int:
+                fint    f0, f4          ; f0 = round(f4)
+                fcvtfi  r8, f0          ; r8 = int32(f0)
+                rts
+```
+
+Bitwise reinterpretation (`fmovi`/`fmovo`) is useful for low-level bit manipulation
+or for passing bit patterns directly without conversion.
+
+```asm
+; Clear sign bit of float in f4 (alternative to fabs)
+                fmovo   r1, f4          ; move bit pattern to integer reg
+                li      r2, #$7FFFFFFF  ; mask for all bits except sign
+                and.l   r1, r1, r2      ; clear bit 31
+                fmovi   f4, r1          ; move bit pattern back to FPU
+```
+
+### Trigonometry: Circle Animation
+
+```asm
+; Compute X, Y coordinates for a circle animation.
+; r8 = base address, r9 = radius, f4 = angle (radians)
+
+update_pos:
+                fcvtif  f5, r9          ; f5 = float(radius)
+                
+                fcos    f0, f4          ; f0 = cos(angle)
+                fmul    f0, f0, f5      ; f0 = cos * radius
+                fcvtfi  r1, f0          ; r1 = int(X)
+                store.l r1, 0(r8)       ; save X
+
+                fsin    f0, f4          ; f0 = sin(angle)
+                fmul    f0, f0, f5      ; f0 = sin * radius
+                fcvtfi  r1, f0          ; r1 = int(Y)
+                store.l r1, 4(r8)       ; save Y
+                
+                rts
+```
+
+### Comparison and Status
+
+`fcmp` returns -1, 0, or 1 to an integer register. You can then use standard
+integer branches to act on the result.
+
+```asm
+; Branch to .less if f4 < f5
+                fcmp    r1, f4, f5      ; r1 = -1 if f4 < f5
+                moveq   r2, #-1
+                beq     r1, r2, .less
+```
+
+To check for FPU exceptions (like division by zero), read the FPSR:
+
+```asm
+                fmovsr  r1              ; r1 = FPSR
+                and.l   r1, r1, #2      ; bit 1 = DZ (divide by zero)
+                bnez    r1, .handle_div_zero
+```
+
+Notes:
+- FPU instructions are always 32-bit; size suffixes are not allowed.
+- Memory access (`fload`/`fstore`) is strictly 4-byte.
+- `fmovecr` provides high-precision constants like Pi and e from internal ROM.
+- Exception flags in FPSR are sticky; use `fmovsc` to clear them.

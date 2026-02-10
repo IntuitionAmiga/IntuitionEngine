@@ -12,6 +12,15 @@ Intuition Engine 64-bit RISC CPU -- Complete ISA Specification
 2. [Register File](#2-register-file)
 3. [Instruction Encoding](#3-instruction-encoding)
 4. [Complete Instruction Reference](#4-complete-instruction-reference)
+    - [4.1 Data Movement](#41-data-movement)
+    - [4.2 Load/Store](#42-loadstore)
+    - [4.3 Arithmetic](#43-arithmetic)
+    - [4.4 Logical](#44-logical)
+    - [4.5 Shifts](#45-shifts)
+    - [4.6 Floating Point (FPU)](#46-floating-point-fpu)
+    - [4.7 Branches](#47-branches)
+    - [4.8 Subroutine / Stack](#48-subroutine--stack)
+    - [4.9 System](#49-system)
 5. [Pseudo-Instructions](#5-pseudo-instructions)
 6. [Addressing Modes](#6-addressing-modes)
 7. [Branch Architecture](#7-branch-architecture)
@@ -47,6 +56,11 @@ The IE64 has 32 general-purpose 64-bit registers, addressed by a 5-bit field (0-
 | R0       | --    | Hardwired zero. Reads always return 0. Writes are silently discarded. |
 | R1-R30   | --    | General-purpose registers. 64-bit read/write. |
 | R31      | SP    | Stack pointer. Used implicitly by PUSH, POP, JSR, RTS, RTI, and interrupt entry. Initialized to `0x9F000` on reset. |
+
+**Floating Point Registers (F0-F15)**:
+- 16 dedicated 32-bit registers for IEEE-754 single-precision floating point.
+- Accessed via dedicated FPU instructions (0x60-0x7C).
+- Initialized to 0.0 on reset.
 
 **Program Counter (PC)**:
 - 64-bit internal register, not directly addressable.
@@ -298,7 +312,95 @@ The result is then masked to the specified size after the shift.
 
 ---
 
-### 4.6 Branches
+### 4.6 Floating Point (FPU)
+
+The IE64 FPU is a dedicated single-precision (32-bit) IEEE-754 coprocessor.
+
+#### 4.6.1 FPU Data Movement
+
+| Mnemonic | Opcode | Syntax | Operation |
+|----------|--------|--------|-----------|
+| FMOV     | `0x60` | `fmov fd, fs` | `fd = fs` (FP copy) |
+| FLOAD    | `0x61` | `fload fd, disp(rs)` | `fd = mem32[rs + disp]` |
+| FSTORE   | `0x62` | `fstore fs, disp(rd)` | `mem32[rd + disp] = fs` |
+| FMOVECR  | `0x78` | `fmovecr fd, #idx` | `fd = ROM_Constant[idx]` |
+
+**FLOAD/FSTORE** always transfer 4 bytes (32 bits) between memory and an FP register. The `disp` is a signed 32-bit immediate.
+
+**FMOVECR** loads a constant from the FPU ROM (indices 0-15). Indices outside this range load 0.0 and set the Z condition code.
+
+| Index | Constant | Index | Constant |
+|-------|----------|-------|----------|
+| 0     | Pi       | 8     | 1.0      |
+| 1     | e        | 9     | 2.0      |
+| 2     | log2(e)  | 10    | 10.0     |
+| 3     | log10(e) | 11    | 100.0    |
+| 4     | ln(2)    | 12    | 1000.0   |
+| 5     | ln(10)   | 13    | 0.5      |
+| 6     | log10(2) | 14    | FLT_MIN  |
+| 7     | 0.0      | 15    | FLT_MAX  |
+
+#### 4.6.2 FPU Arithmetic
+
+| Mnemonic | Opcode | Syntax | Operation |
+|----------|--------|--------|-----------|
+| FADD     | `0x63` | `fadd fd, fs, ft` | `fd = fs + ft` |
+| FSUB     | `0x64` | `fsub fd, fs, ft` | `fd = fs - ft` |
+| FMUL     | `0x65` | `fmul fd, fs, ft` | `fd = fs * ft` |
+| FDIV     | `0x66` | `fdiv fd, fs, ft` | `fd = fs / ft` |
+| FMOD     | `0x67` | `fmod fd, fs, ft` | `fd = fs % ft` |
+| FABS     | `0x68` | `fabs fd, fs` | `fd = \|fs\|` |
+| FNEG     | `0x69` | `fneg fd, fs` | `fd = -fs` |
+| FSQRT    | `0x6A` | `fsqrt fd, fs` | `fd = sqrt(fs)` |
+| FINT     | `0x6B` | `fint fd, fs` | `fd = round(fs)` (uses FPCR mode) |
+
+#### 4.6.3 FPU Transcendentals
+
+| Mnemonic | Opcode | Syntax | Operation |
+|----------|--------|--------|-----------|
+| FSIN     | `0x71` | `fsin fd, fs` | `fd = sin(fs)` |
+| FCOS     | `0x72` | `fcos fd, fs` | `fd = cos(fs)` |
+| FTAN     | `0x73` | `ftan fd, fs` | `fd = tan(fs)` |
+| FATAN    | `0x74` | `fatan fd, fs` | `fd = atan(fs)` |
+| FLOG     | `0x75` | `flog fd, fs` | `fd = ln(fs)` |
+| FEXP     | `0x76` | `fexp fd, fs` | `fd = e^fs` |
+| FPOW     | `0x77` | `fpow fd, fs, ft` | `fd = fs^ft` |
+
+#### 4.6.4 FPU Comparison and Conversion
+
+| Mnemonic | Opcode | Syntax | Operation |
+|----------|--------|--------|-----------|
+| FCMP     | `0x6C` | `fcmp rd, fs, ft` | `rd = (fs < ft ? -1 : (fs > ft ? 1 : 0))` |
+| FCVTIF   | `0x6D` | `fcvtif fd, rs` | `fd = float32(int32(rs))` |
+| FCVTFI   | `0x6E` | `fcvtfi rd, fs` | `rd = int32(fs)` (saturating) |
+| FMOVI    | `0x6F` | `fmovi fd, rs` | `fd = bits_to_float(uint32(rs))` |
+| FMOVO    | `0x70` | `fmovo rd, fs` | `rd = uint64(float_to_bits(fs))` |
+
+**FCVTFI** saturates to `INT32_MAX` or `INT32_MIN` on overflow. NaNs return 0 and set the IO exception flag.
+
+#### 4.6.5 FPU Status and Control
+
+| Mnemonic | Opcode | Syntax | Operation |
+|----------|--------|--------|-----------|
+| FMOVSR   | `0x79` | `fmovsr rd` | `rd = FPSR` |
+| FMOVCR   | `0x7A` | `fmovcr rd` | `rd = FPCR` |
+| FMOVSC   | `0x7B` | `fmovsc rs` | `FPSR = rs` |
+| FMOVCC   | `0x7C` | `fmovcc rs` | `FPCR = rs` |
+
+**FPSR (Status Register)**:
+- Bits 27:24 - Condition Codes (N, Z, I, NaN). Overwritten per instruction.
+- Bits 3:0 - Exception Flags (UE, OE, DZ, IO). Sticky (IEEE-754).
+
+**FPCR (Control Register)**:
+- Bits 1:0 - Rounding Mode:
+  - 00: Nearest (default)
+  - 01: Toward Zero (truncate)
+  - 10: Toward -Inf (floor)
+  - 11: Toward +Inf (ceil)
+
+---
+
+### 4.7 Branches
 
 All branches are PC-relative. The branch offset is stored as a signed 32-bit value in the imm32 field. The new PC is calculated as:
 
@@ -380,7 +482,7 @@ All stack operations use 64-bit (8-byte) transfers regardless of size suffix. Th
 
 ---
 
-### 4.8 System
+### 4.9 System
 
 | Mnemonic | Opcode | Syntax | Operation | Mem | Size |
 |----------|--------|--------|-----------|-----|------|
@@ -977,6 +1079,35 @@ dc.b "hello; world" ; the semicolon in the string is literal
 | 0x52   | `$52`  | PUSH     | Stack | Rs |
 | 0x53   | `$53`  | POP      | Stack | Rd |
 | 0x54   | `$54`  | JSR      | Subroutine | (Rs) / disp(Rs) |
+| 0x60   | `$60`  | FMOV     | FPU | fd, fs |
+| 0x61   | `$61`  | FLOAD    | FPU | fd, disp(rs) |
+| 0x62   | `$62`  | FSTORE   | FPU | fs, disp(rd) |
+| 0x63   | `$63`  | FADD     | FPU | fd, fs, ft |
+| 0x64   | `$64`  | FSUB     | FPU | fd, fs, ft |
+| 0x65   | `$65`  | FMUL     | FPU | fd, fs, ft |
+| 0x66   | `$66`  | FDIV     | FPU | fd, fs, ft |
+| 0x67   | `$67`  | FMOD     | FPU | fd, fs, ft |
+| 0x68   | `$68`  | FABS     | FPU | fd, fs |
+| 0x69   | `$69`  | FNEG     | FPU | fd, fs |
+| 0x6A   | `$6A`  | FSQRT    | FPU | fd, fs |
+| 0x6B   | `$6B`  | FINT     | FPU | fd, fs |
+| 0x6C   | `$6C`  | FCMP     | FPU | rd, fs, ft |
+| 0x6D   | `$6D`  | FCVTIF   | FPU | fd, rs |
+| 0x6E   | `$6E`  | FCVTFI   | FPU | rd, fs |
+| 0x6F   | `$6F`  | FMOVI    | FPU | fd, rs |
+| 0x70   | `$70`  | FMOVO    | FPU | rd, fs |
+| 0x71   | `$71`  | FSIN     | FPU | fd, fs |
+| 0x72   | `$72`  | FCOS     | FPU | fd, fs |
+| 0x73   | `$73`  | FTAN     | FPU | fd, fs |
+| 0x74   | `$74`  | FATAN    | FPU | fd, fs |
+| 0x75   | `$75`  | FLOG     | FPU | fd, fs |
+| 0x76   | `$76`  | FEXP     | FPU | fd, fs |
+| 0x77   | `$77`  | FPOW     | FPU | fd, fs, ft |
+| 0x78   | `$78`  | FMOVECR  | FPU | fd, #idx |
+| 0x79   | `$79`  | FMOVSR   | FPU | rd |
+| 0x7A   | `$7A`  | FMOVCR   | FPU | rd |
+| 0x7B   | `$7B`  | FMOVSC   | FPU | rs |
+| 0x7C   | `$7C`  | FMOVCC   | FPU | rs |
 | 0xE0   | `$E0`  | NOP      | System | (none) |
 | 0xE1   | `$E1`  | HALT     | System | (none) |
 | 0xE2   | `$E2`  | SEI      | System | (none) |
@@ -994,6 +1125,7 @@ dc.b "hello; world" ; the semicolon in the string is literal
 | `$30-$37` | Logical / Shift |
 | `$40-$49` | Branches |
 | `$50-$54` | Subroutine / Stack |
+| `$60-$7C` | Floating Point (FPU) |
 | `$E0-$E5` | System |
 
 Any opcode not listed above causes the CPU to print an error message and halt execution.
