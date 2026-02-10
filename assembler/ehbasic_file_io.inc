@@ -459,115 +459,142 @@ exec_do_load:
     ; Check status
     la      r1, FILE_STATUS
     load.l  r1, (r1)
-    beqz    r1, .load_ok
+    beqz    r1, .load_process
     
     la      r8, .msg_not_found
     jsr     print_string
     jsr     print_crlf
     rts
 
-.load_ok:
-    ; NEW
+.load_process:
+    ; NEW (clear current program first)
     jsr     line_init
     jsr     var_init
-    
-    ; R18 = current ptr, R19 = end ptr, R20 = line number
-    push    r18
-    push    r19
-    push    r20
-    la      r18, FILE_DATA_BUF
+
+    ; State management: R25=read ptr, R26=end ptr, R27=line#
+    push    r25
+    push    r26
+    push    r27
+
+    la      r25, FILE_DATA_BUF
     la      r1, FILE_RESULT_LEN
-    load.l  r19, (r1)               ; R19 = data length
+    load.l  r3, (r1)                ; R3 = bytes read
     la      r1, FILE_DATA_BUF
-    add.q   r19, r1, r19            ; R19 = end ptr
-    
-.load_line_loop:
-    beq     r18, r19, .load_finished
-    
-.load_skip_ws:
-    load.b  r1, (r18)
-    beqz    r1, .load_finished
-    move.q  r2, #0x20
-    bgt     r1, r2, .load_parse_num
-    add.q   r18, r18, #1
-    beq     r18, r19, .load_finished
-    bra     .load_skip_ws
+    add.q   r26, r1, r3             ; R26 = end of data
 
-.load_parse_num:
-    move.q  r20, r0                 ; r20 = line#
-.load_num_loop:
-    load.b  r1, (r18)
-    add.q   r2, r1, #-48            ; '0'
-    bltz    r2, .load_num_done
-    move.q  r4, #9
-    bgt     r2, r4, .load_num_done
-    
-    ; Manual multiply by 10: r20 = r20 * 10 + r2
-    li      r3, #10
-    mulu.l  r20, r20, r3
-    add.q   r20, r20, r2
-    
-    add.q   r18, r18, #1
-    beq     r18, r19, .load_num_done
-    bra     .load_num_loop
+.l_line_loop:
+    beq     r25, r26, .l_finished
 
-.load_num_done:
-    ; Skip ONE space if present
-    beq     r18, r19, .load_find_eol
-    load.b  r1, (r18)
-    move.q  r2, #0x20
-    bne     r1, r2, .load_find_eol
-    add.q   r18, r18, #1
+    ; 1. Skip leading whitespace/newlines
+.l_skip_ws:
+    beq     r25, r26, .l_finished
+    load.b  r1, (r25)
+    beqz    r1, .l_finished
+    move.q  r2, #32
+    bgt     r1, r2, .l_parse_num
+    add.q   r25, r25, #1
+    bra     .l_skip_ws
 
-.load_find_eol:
+    ; 2. Parse decimal line number into R27
+.l_parse_num:
+    move.q  r27, r0
+    move.q  r10, r0                 ; digit counter
+.l_num_loop:
+    beq     r25, r26, .l_num_check
+    load.b  r1, (r25)
+    ; Check digit range: '0' (0x30) <= r1 <= '9' (0x39)
+    move.q  r2, #0x30
+    blt     r1, r2, .l_num_check
+    move.q  r2, #0x3A
+    bge     r1, r2, .l_num_check
+    ; Digit value = r1 - '0'
+    sub.q   r2, r1, #0x30
+
+    ; R27 = R27 * 10 + R2
+    lsl.q   r4, r27, #3
+    lsl.q   r5, r27, #1
+    add.q   r27, r4, r5
+    add.q   r27, r27, r2
+    add.q   r10, r10, #1
+
+    add.q   r25, r25, #1
+    bra     .l_num_loop
+
+.l_num_check:
+    beqz    r10, .l_skip_line       ; no digits? skip this line
+    
+    ; Skip spaces after line number
+.l_skip_spc:
+    beq     r25, r26, .l_copy_line
+    load.b  r1, (r25)
+    move.q  r2, #32
+    bne     r1, r2, .l_copy_line
+    add.q   r25, r25, #1
+    bra     .l_skip_spc
+
+    ; 3. Copy content until newline to BASIC_LINE_BUF
+.l_copy_line:
     la      r12, BASIC_LINE_BUF
     move.q  r13, r12
-.load_copy_line:
-    beq     r18, r19, .load_line_eol
-    load.b  r1, (r18)
-    move.q  r2, #0x0A
-    beq     r1, r2, .load_line_eol
-    move.q  r2, #0x0D
-    beq     r1, r2, .load_line_eol
+.l_cp_loop:
+    beq     r25, r26, .l_cp_done
+    load.b  r1, (r25)
+    move.q  r2, #10
+    beq     r1, r2, .l_cp_done
+    move.q  r2, #13
+    beq     r1, r2, .l_cp_done
     store.b r1, (r13)
     add.q   r13, r13, #1
-    add.q   r18, r18, #1
-    bra     .load_copy_line
-
-.load_line_eol:
-    store.b r0, (r13)
+    add.q   r25, r25, #1
+    bra     .l_cp_loop
+.l_cp_done:
+    store.b r0, (r13)               ; null term
     
-.load_skip_eol_chars:
-    beq     r18, r19, .load_tokenize
-    load.b  r1, (r18)
-    move.q  r2, #0x0A
-    beq     r1, r2, .load_skip_one_eol
-    move.q  r2, #0x0D
-    beq     r1, r2, .load_skip_one_eol
-    bra     .load_tokenize
-.load_skip_one_eol:
-    add.q   r18, r18, #1
-    bra     .load_skip_eol_chars
-
-.load_tokenize:
-    push    r18
-    push    r19
+    ; 4. Tokenize and Store
+    push    r25
+    push    r26
+    push    r27
     la      r8, BASIC_LINE_BUF
     la      r9, 0x021800            ; temp tokenize buffer
     jsr     tokenize
-    move.q  r10, r8                 ; R10 = length
-    move.q  r8, r20                 ; R8 = line#
+    move.q  r10, r8                 ; length
+
+    pop     r27                     ; restore line#
+    move.q  r8, r27
     la      r9, 0x021800
     jsr     line_store
-    pop     r19
-    pop     r18
-    bra     .load_line_loop
 
-.load_finished:
-    pop     r20
-    pop     r19
-    pop     r18
-    ; Signal end of execution to stop current RUN
+    pop     r26
+    pop     r25
+    
+    ; 5. Skip trailing newline chars
+.l_skip_eol:
+    beq     r25, r26, .l_line_loop
+    load.b  r1, (r25)
+    move.q  r2, #10
+    beq     r1, r2, .l_next_eol
+    move.q  r2, #13
+    beq     r1, r2, .l_next_eol
+    bra     .l_line_loop
+.l_next_eol:
+    add.q   r25, r25, #1
+    bra     .l_skip_eol
+
+.l_skip_line:
+    beq     r25, r26, .l_line_loop
+    load.b  r1, (r25)
+    add.q   r25, r25, #1
+    move.q  r2, #10
+    beq     r1, r2, .l_line_loop
+    move.q  r2, #13
+    beq     r1, r2, .l_line_loop
+    bra     .l_skip_line
+
+.l_finished:
+    pop     r27
+    pop     r26
+    pop     r25
+    ; Signal end of execution
     move.q  r28, #2
     rts
 

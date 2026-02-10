@@ -1244,16 +1244,7 @@ exec_do_tron:
     rts
     ; === END exec_do_tron ===
 
-; --- TROFF ---
-; --- LOAD command ---
-exec_do_load:
-    rts
-    ; === END exec_do_load ===
-
-; --- SAVE command ---
-exec_do_save:
-    rts
-    ; === END exec_do_save ===
+; --- LOAD and SAVE are implemented in ehbasic_file_io.inc ---
 
 exec_do_troff:
     ; TROFF — disable trace mode
