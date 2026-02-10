@@ -25,13 +25,13 @@ type ehbasicTestHarness struct {
 	bus      *MachineBus
 	cpu      *CPU64
 	terminal *TerminalMMIO
-	t        *testing.T
+	t        testing.TB
 	stopped  atomic.Bool
 }
 
 // newEhbasicHarness sets up a complete IE64 + bus + terminal environment for testing.
 // It registers the terminal MMIO region.
-func newEhbasicHarness(t *testing.T) *ehbasicTestHarness {
+func newEhbasicHarness(t testing.TB) *ehbasicTestHarness {
 	t.Helper()
 	bus := NewMachineBus()
 	cpu := NewCPU64(bus)
@@ -77,7 +77,7 @@ func assertF32Equal(t *testing.T, label string, got, want uint32, ulpTolerance u
 }
 
 // buildAssembler compiles the IE64 assembler binary and returns its path.
-func buildAssembler(t *testing.T) string {
+func buildAssembler(t testing.TB) string {
 	t.Helper()
 	binPath := filepath.Join(t.TempDir(), "ie64asm")
 	cmd := exec.Command("go", "build", "-tags", "ie64", "-o", binPath,
@@ -89,7 +89,7 @@ func buildAssembler(t *testing.T) string {
 	return binPath
 }
 
-func repoRootDir(t *testing.T) string {
+func repoRootDir(t testing.TB) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
@@ -1387,6 +1387,8 @@ test_entry:
     la      r16, BASIC_STATE
     jsr     line_init
     jsr     var_init
+    move.l  r1, #1
+    fmovcc  r1
 
 %s
 
@@ -1538,7 +1540,7 @@ func TestEhBASIC_Expr_Comparison_False(t *testing.T) {
 
 // assembleExecTest assembles a program that includes all BASIC infrastructure
 // plus the statement executor and variable storage modules.
-func assembleExecTest(t *testing.T, asmBin string, body string) []byte {
+func assembleExecTest(t testing.TB, asmBin string, body string) []byte {
 	t.Helper()
 
 	source := fmt.Sprintf(`include "ie64.inc"
@@ -1552,6 +1554,8 @@ test_entry:
     la      r16, BASIC_STATE
     jsr     line_init
     jsr     var_init
+    move.l  r1, #1
+    fmovcc  r1
 
 %s
 
@@ -1608,6 +1612,12 @@ include "ie64_fp.inc"
 // execStmtTest stores a tokenized BASIC program in line storage, then
 // calls the interpreter loop to execute it. Returns terminal output.
 func execStmtTest(t *testing.T, asmBin string, program string) string {
+	t.Helper()
+	return execStmtTB(t, asmBin, program)
+}
+
+// execStmtTB is execStmtTest generalized for both tests and benchmarks.
+func execStmtTB(t testing.TB, asmBin string, program string) string {
 	t.Helper()
 
 	// Split program into lines. Each line: "linenum statement"
@@ -5518,4 +5528,144 @@ func TestHW_Load_Simple(t *testing.T) {
 	if strings.Contains(out, "EMPTY") {
 		t.Errorf("LOAD produced no lines")
 	}
+}
+
+func TestEhBASIC_FPSmoke_Arithmetic(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out := execStmtTest(t, asmBin, `10 PRINT 1.5+2.25
+20 PRINT 7.5-2.25
+30 PRINT 3*2.5
+40 PRINT 7/2
+50 PRINT 2<3
+60 PRINT 3<2`)
+
+	lines := strings.Split(strings.ReplaceAll(strings.TrimSpace(out), "\r", ""), "\n")
+	var cleaned []string
+	for _, l := range lines {
+		l = strings.TrimSpace(l)
+		if l != "" {
+			cleaned = append(cleaned, l)
+		}
+	}
+	if len(cleaned) != 6 {
+		t.Fatalf("expected 6 output lines, got %d (%q)", len(cleaned), out)
+	}
+
+	parse := func(idx int, want float64) {
+		got, err := strconv.ParseFloat(cleaned[idx], 64)
+		if err != nil {
+			t.Fatalf("line %d: expected float, got %q (%v)", idx, cleaned[idx], err)
+		}
+		if math.Abs(got-want) > 1e-5 {
+			t.Fatalf("line %d: expected %.6f, got %.6f", idx, want, got)
+		}
+	}
+	parse(0, 3.75)
+	parse(1, 5.25)
+	parse(2, 7.5)
+	parse(3, 3.5)
+	if cleaned[4] != "-1" {
+		t.Fatalf("comparison true should be -1, got %q", cleaned[4])
+	}
+	if cleaned[5] != "0" {
+		t.Fatalf("comparison false should be 0, got %q", cleaned[5])
+	}
+}
+
+func TestEhBASIC_FPSmoke_TrigPow(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out := execStmtTest(t, asmBin, `10 PRINT SIN(0)
+20 PRINT COS(0)
+30 PRINT TAN(0)
+40 PRINT 2^3`)
+
+	lines := strings.Split(strings.ReplaceAll(strings.TrimSpace(out), "\r", ""), "\n")
+	var cleaned []string
+	for _, l := range lines {
+		l = strings.TrimSpace(l)
+		if l != "" {
+			cleaned = append(cleaned, l)
+		}
+	}
+	if len(cleaned) != 4 {
+		t.Fatalf("expected 4 output lines, got %d (%q)", len(cleaned), out)
+	}
+
+	parse := func(idx int, want float64) {
+		got, err := strconv.ParseFloat(cleaned[idx], 64)
+		if err != nil {
+			t.Fatalf("line %d: expected float, got %q (%v)", idx, cleaned[idx], err)
+		}
+		if math.Abs(got-want) > 1e-5 {
+			t.Fatalf("line %d: expected %.6f, got %.6f", idx, want, got)
+		}
+	}
+	parse(0, 0.0)
+	parse(1, 1.0)
+	parse(2, 0.0)
+	parse(3, 8.0)
+}
+
+func TestEhBASIC_FPSmoke_SqrtPolicy(t *testing.T) {
+	asmBin := buildAssembler(t)
+
+	// BASIC convention: finite negatives return 0.
+	out := execStmtTest(t, asmBin, `10 PRINT SQR(-4)`)
+	out = strings.TrimSpace(strings.ReplaceAll(out, "\r", ""))
+	if out != "0" {
+		t.Fatalf("SQR(-4): expected 0, got %q", out)
+	}
+
+	// Directly verify NaN propagation in fp_sqr for a negative NaN payload.
+	body := `
+    move.l  r8, #0xFFC00000      ; negative quiet NaN
+    jsr     fp_sqr
+    la      r1, 0x021000
+    store.l r8, (r1)
+`
+	binary := assembleExecTest(t, asmBin, body)
+	h := newEhbasicHarness(t)
+	h.loadBytes(binary)
+	h.runCycles(200_000)
+	got := h.bus.Read32(0x021000)
+	if (got&0x7F800000) != 0x7F800000 || (got&0x007FFFFF) == 0 {
+		t.Fatalf("fp_sqr NaN policy: expected NaN result bits, got 0x%08X", got)
+	}
+}
+
+func benchmarkEhBASICFP(b *testing.B, program string) {
+	b.Helper()
+	asmBin := buildAssembler(b)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = execStmtTB(b, asmBin, program)
+	}
+}
+
+func BenchmarkEhBASIC_FPArithmetic(b *testing.B) {
+	benchmarkEhBASICFP(b, `10 X=1
+20 FOR I=1 TO 500
+30 X=X+1.5*2.3-0.7/1.1
+40 NEXT I
+50 PRINT X`)
+}
+
+func BenchmarkEhBASIC_FPTranscendental(b *testing.B) {
+	benchmarkEhBASICFP(b, `10 X=0.5
+20 FOR I=1 TO 250
+30 X=SIN(X)+COS(X)+SQR(X+1)
+40 X=X+LOG(X+1)+EXP(0.01)
+50 NEXT I
+60 PRINT X`)
+}
+
+func BenchmarkEhBASIC_FPMixed(b *testing.B) {
+	benchmarkEhBASICFP(b, `10 X=1
+20 FOR I=1 TO 500
+30 A=2^3
+40 B=INT(3.7)
+50 C=A>B
+60 X=X+A+B+C
+70 NEXT I
+80 PRINT X`)
 }

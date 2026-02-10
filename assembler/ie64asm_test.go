@@ -1567,6 +1567,34 @@ func TestIE64Asm_FPU(t *testing.T) {
 		assertBytes(t, bin, 0, want, "fcmp r1, f4, f5")
 	})
 
+	t.Run("FMOVI", func(t *testing.T) {
+		src := "fmovi f0, r8"
+		bin := assembleString(t, src)
+		want := encodeInstr(opFMOVI, 0, szL, 0, 8, 0, 0)
+		assertBytes(t, bin, 0, want, "fmovi f0, r8")
+	})
+
+	t.Run("FMOVO", func(t *testing.T) {
+		src := "fmovo r8, f0"
+		bin := assembleString(t, src)
+		want := encodeInstr(opFMOVO, 8, szL, 0, 0, 0, 0)
+		assertBytes(t, bin, 0, want, "fmovo r8, f0")
+	})
+
+	t.Run("FCVTIF", func(t *testing.T) {
+		src := "fcvtif f0, r8"
+		bin := assembleString(t, src)
+		want := encodeInstr(opFCVTIF, 0, szL, 0, 8, 0, 0)
+		assertBytes(t, bin, 0, want, "fcvtif f0, r8")
+	})
+
+	t.Run("FCVTFI", func(t *testing.T) {
+		src := "fcvtfi r8, f0"
+		bin := assembleString(t, src)
+		want := encodeInstr(opFCVTFI, 8, szL, 0, 0, 0, 0)
+		assertBytes(t, bin, 0, want, "fcvtfi r8, f0")
+	})
+
 	t.Run("FMOVSR", func(t *testing.T) {
 		src := "fmovsr r8"
 		bin := assembleString(t, src)

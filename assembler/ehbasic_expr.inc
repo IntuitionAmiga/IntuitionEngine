@@ -1121,49 +1121,8 @@ fp32_to_int_pair:
 ; reconstruct integer value.
 
 fp_fix:
-    ; Handle zero
-    and.l   r1, r8, #0x7FFFFFFF
-    beqz    r1, .fix_zero
-
-    ; Extract sign (bit 31)
-    lsr.l   r2, r8, #31          ; R2 = sign (0 or 1)
-
-    ; Extract exponent (bits 30..23)
-    lsr.l   r3, r8, #23
-    and.l   r3, r3, #0xFF        ; R3 = biased exponent
-    sub.q   r3, r3, #127         ; R3 = unbiased exponent
-
-    ; Extract mantissa (bits 22..0) with implicit leading 1
-    and.l   r4, r8, #0x7FFFFF
-    or.l    r4, r4, #0x800000    ; R4 = mantissa with leading 1 (24 bits)
-
-    ; Shift mantissa: if exp >= 23, shift left; if exp < 23, shift right
-    move.q  r1, #23
-    sub.q   r1, r3, r1           ; R1 = exp - 23
-    bgez    r1, .fix_shl
-
-    ; Shift right by (23 - exp)
-    move.q  r1, #23
-    sub.q   r1, r1, r3
-    lsr.l   r4, r4, r1
-    bra     .fix_apply_sign
-
-.fix_shl:
-    lsl.l   r4, r4, r1
-
-.fix_apply_sign:
-    ; Apply sign
-    beqz    r2, .fix_positive
-    ; Negate (two's complement)
-    move.q  r1, r0
-    sub.l   r4, r1, r4
-
-.fix_positive:
-    move.q  r8, r4
-    rts
-
-.fix_zero:
-    move.q  r8, r0
+    fmovi   f0, r8
+    fcvtfi  r8, f0            ; float -> int32 (truncates toward zero, saturates)
     rts
 
 ; ============================================================================

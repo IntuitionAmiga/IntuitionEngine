@@ -52,6 +52,10 @@ cold_start:
     ; Initialise variable storage
     jsr     var_init
 
+    ; Initialise FPU rounding mode to truncate toward zero (fp_int compatibility)
+    move.l  r1, #1                ; RND_ZERO = 1
+    fmovcc  r1
+
     ; Seed RNG
     move.q  r1, #12345
     add.q   r2, r16, #ST_RANDOM_SEED

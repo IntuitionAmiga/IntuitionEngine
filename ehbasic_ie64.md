@@ -36,7 +36,7 @@ EhBASIC IE64's FP32 representation gives:
 
 - **Precision**: ~7 decimal digits (24-bit mantissa: 23 explicit + 1 implicit)
 - **Range**: approximately +/-3.4 x 10^38
-- **Special values**: +/-0, +/-Infinity (no NaN)
+- **Special values**: +/-0, +/-Infinity, NaN
 
 The trade-off is clear: FP32 sacrifices roughly 2 digits of precision compared to the original format, but gains IEEE 754 compatibility, hardware-friendly bit layouts, and simpler register handling (the 32-bit value sits in the lower half of a 64-bit IE64 register, leaving the upper 32 bits free for bit manipulation).
 

@@ -5114,7 +5114,7 @@ The `assembler/` directory provides hardware definition include files for each C
 | `ie80.inc` | Z80 | vasmz80_std | Hardware constants with Z80 macros |
 | `ie86.inc` | x86 | NASM/FASM | Hardware constants, port I/O, VGA registers |
 | `ie64.inc` | IE64 | ie64asm | Hardware constants and macros |
-| `ie64_fp.inc` | IE64 | ie64asm | IEEE 754 FP32 soft-float library |
+| `ie64_fp.inc` | IE64 | ie64asm | IEEE 754 FP32 math wrappers backed by IE64 hardware FPU |
 | `ehbasic_ie64.asm` | IE64 | ie64asm | EhBASIC interpreter (entry point + REPL) |
 | `ehbasic_*.inc` | IE64 | ie64asm | EhBASIC modules (tokeniser, executor, expressions, variables, strings, I/O, hardware commands) |
 

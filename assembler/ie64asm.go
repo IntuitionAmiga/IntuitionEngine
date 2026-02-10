@@ -2157,13 +2157,17 @@ func (a *IE64Assembler) assembleInstruction(trimmed string, program []byte) erro
 	case "fcmp":
 		instr, err = a.asmFP3_Int(OP64_FCMP, operands)
 	case "fcvtif":
-		instr, err = a.asmFP2(OP64_FCVTIF, operands, true, false)
+		// FCVTIF fd, rs  (src is GPR, dst is FPR)
+		instr, err = a.asmFP2(OP64_FCVTIF, operands, false, true)
 	case "fcvtfi":
-		instr, err = a.asmFP2(OP64_FCVTFI, operands, false, true)
+		// FCVTFI rd, fs  (src is FPR, dst is GPR)
+		instr, err = a.asmFP2(OP64_FCVTFI, operands, true, false)
 	case "fmovi":
-		instr, err = a.asmFP2(OP64_FMOVI, operands, true, false)
+		// FMOVI fd, rs  (src is GPR bits, dst is FPR bits)
+		instr, err = a.asmFP2(OP64_FMOVI, operands, false, true)
 	case "fmovo":
-		instr, err = a.asmFP2(OP64_FMOVO, operands, false, true)
+		// FMOVO rd, fs  (src is FPR bits, dst is GPR bits)
+		instr, err = a.asmFP2(OP64_FMOVO, operands, true, false)
 	case "fsin":
 		instr, err = a.asmFP2(OP64_FSIN, operands, true, true)
 	case "fcos":
