@@ -32,6 +32,8 @@ const (
 	IE64_FPU_EX_UE uint32 = 1 << 3 // Underflow
 )
 
+const IE64_FPU_FPSR_MASK uint32 = 0x0F00000F // CC bits (27:24) | Exception bits (3:0)
+
 // =============================================================================
 // IE64FPU - FPU State and Registers
 // =============================================================================
@@ -333,18 +335,33 @@ func (fpu *IE64FPU) FCMP(fs, ft byte) int32 {
 	s := fpu.getFReg(fs)
 	t := fpu.getFReg(ft)
 
-	fpu.setConditionCodes(s - t)
+	// Clear CC
+	fpu.FPSR &= ^(IE64_FPU_CC_N | IE64_FPU_CC_Z | IE64_FPU_CC_I | IE64_FPU_CC_NAN)
 
 	if math.IsNaN(float64(s)) || math.IsNaN(float64(t)) {
+		fpu.FPSR |= IE64_FPU_CC_NAN
 		fpu.setExceptionFlag(IE64_FPU_EX_IO)
 		return 0
 	}
 
 	if s < t {
+		fpu.FPSR |= IE64_FPU_CC_N
 		return -1
 	}
 	if s > t {
+		if math.IsInf(float64(s), 1) {
+			fpu.FPSR |= IE64_FPU_CC_I
+		}
 		return 1
+	}
+
+	// Equal
+	fpu.FPSR |= IE64_FPU_CC_Z
+	if math.IsInf(float64(s), 0) {
+		fpu.FPSR |= IE64_FPU_CC_I
+		if s < 0 {
+			fpu.FPSR |= IE64_FPU_CC_N
+		}
 	}
 	return 0
 }
@@ -411,7 +428,7 @@ func (fpu *IE64FPU) FMOVCR() uint32 {
 }
 
 func (fpu *IE64FPU) FMOVSC(val uint32) {
-	fpu.FPSR = val
+	fpu.FPSR = val & IE64_FPU_FPSR_MASK
 }
 
 func (fpu *IE64FPU) FMOVCC(val uint32) {

@@ -127,6 +127,36 @@ const (
 	opPOP    = 0x53
 	opJSRInd = 0x54
 
+	opFMOV    = 0x60
+	opFLOAD   = 0x61
+	opFSTORE  = 0x62
+	opFADD    = 0x63
+	opFSUB    = 0x64
+	opFMUL    = 0x65
+	opFDIV    = 0x66
+	opFMOD    = 0x67
+	opFABS    = 0x68
+	opFNEG    = 0x69
+	opFSQRT   = 0x6A
+	opFINT    = 0x6B
+	opFCMP    = 0x6C
+	opFCVTIF  = 0x6D
+	opFCVTFI  = 0x6E
+	opFMOVI   = 0x6F
+	opFMOVO   = 0x70
+	opFSIN    = 0x71
+	opFCOS    = 0x72
+	opFTAN    = 0x73
+	opFATAN   = 0x74
+	opFLOG    = 0x75
+	opFEXP    = 0x76
+	opFPOW    = 0x77
+	opFMOVECR = 0x78
+	opFMOVSR  = 0x79
+	opFMOVCR  = 0x7A
+	opFMOVSC  = 0x7B
+	opFMOVCC  = 0x7C
+
 	opNOP  = 0xE0
 	opHALT = 0xE1
 	opSEI  = 0xE2
@@ -1498,6 +1528,65 @@ func TestIE64Asm_Jsr_Rts_Indirect_Roundtrip(t *testing.T) {
 	expected2 := encodeInstr(opRTS, 0, 0, 0, 0, 0, 0)
 	assertBytes(t, bin, 0, expected1, "jsr (r5)")
 	assertBytes(t, bin, 8, expected2, "rts")
+}
+
+func TestIE64Asm_FPU(t *testing.T) {
+	t.Run("FMOV", func(t *testing.T) {
+		src := "fmov f1, f2"
+		bin := assembleString(t, src)
+		want := encodeInstr(opFMOV, 1, szL, 0, 2, 0, 0)
+		assertBytes(t, bin, 0, want, "fmov f1, f2")
+	})
+
+	t.Run("FLOAD", func(t *testing.T) {
+		src := "fload f5, 16(r10)"
+		bin := assembleString(t, src)
+		want := encodeInstr(opFLOAD, 5, szL, 1, 10, 0, 16)
+		assertBytes(t, bin, 0, want, "fload f5, 16(r10)")
+	})
+
+	t.Run("FSTORE", func(t *testing.T) {
+		// Regression: ensure fstore is freg, mem and freg is encoded in rd
+		src := "fstore f5, 8(r10)"
+		bin := assembleString(t, src)
+		want := encodeInstr(opFSTORE, 5, szL, 1, 10, 0, 8)
+		assertBytes(t, bin, 0, want, "fstore f5, 8(r10)")
+	})
+
+	t.Run("FADD", func(t *testing.T) {
+		src := "fadd f0, f1, f2"
+		bin := assembleString(t, src)
+		want := encodeInstr(opFADD, 0, szL, 0, 1, 2, 0)
+		assertBytes(t, bin, 0, want, "fadd f0, f1, f2")
+	})
+
+	t.Run("FCMP", func(t *testing.T) {
+		src := "fcmp r1, f4, f5"
+		bin := assembleString(t, src)
+		want := encodeInstr(opFCMP, 1, szL, 0, 4, 5, 0)
+		assertBytes(t, bin, 0, want, "fcmp r1, f4, f5")
+	})
+
+	t.Run("FMOVSR", func(t *testing.T) {
+		src := "fmovsr r8"
+		bin := assembleString(t, src)
+		want := encodeInstr(opFMOVSR, 8, szL, 0, 0, 0, 0)
+		assertBytes(t, bin, 0, want, "fmovsr r8")
+	})
+
+	t.Run("RejectSizeSuffix", func(t *testing.T) {
+		src := "fadd.l f0, f1, f2"
+		err := assembleExpectError(t, src)
+		if !strings.Contains(err.Error(), "size suffixes not allowed") {
+			t.Errorf("Expected size suffix error, got: %v", err)
+		}
+	})
+
+	t.Run("RejectMemoryFirstFSTORE", func(t *testing.T) {
+		// Ensure the old memory-first order is rejected
+		src := "fstore 8(r10), f5"
+		assembleExpectError(t, src)
+	})
 }
 
 // ---------------------------------------------------------------------------

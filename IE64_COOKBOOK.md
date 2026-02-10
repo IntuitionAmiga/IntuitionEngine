@@ -1071,4 +1071,4 @@ Notes:
 - FPU instructions are always 32-bit; size suffixes are not allowed.
 - Memory access (`fload`/`fstore`) is strictly 4-byte.
 - `fmovecr` provides high-precision constants like Pi and e from internal ROM.
-- Exception flags in FPSR are sticky; use `fmovsc` to clear them.
+- Exception flags in FPSR are sticky; use `fmovsc` to clear them. `fmovsc` automatically masks reserved bits.

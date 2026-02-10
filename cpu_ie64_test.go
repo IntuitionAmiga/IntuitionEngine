@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -1851,6 +1852,54 @@ func TestIE64_FPU_Integration(t *testing.T) {
 
 		if rig.cpu.getReg(1) != 42 {
 			t.Errorf("FPU FCVTFI via CPU failed: got %v, want 42", rig.cpu.getReg(1))
+		}
+	})
+
+	t.Run("FSTORE_FLOAD", func(t *testing.T) {
+		rig.cpu.Reset()
+		rig.cpu.FPU.setFReg(5, 3.14)
+		rig.cpu.regs[10] = 0x2000 // base address
+
+		// FSTORE F5, 8(R10)
+		instr1 := ie64Instr(OP_FSTORE, 5, 0, 1, 10, 0, 8)
+		rig.executeOne(instr1)
+
+		// Verify memory
+		memVal := binary.LittleEndian.Uint32(rig.cpu.memory[0x2008:])
+		if math.Float32frombits(memVal) != 3.14 {
+			t.Errorf("FSTORE failed: memory got %v, want 3.14", math.Float32frombits(memVal))
+		}
+
+		// FLOAD F0, 8(R10)
+		instr2 := ie64Instr(OP_FLOAD, 0, 0, 1, 10, 0, 8)
+		rig.executeOne(instr2)
+
+		if rig.cpu.FPU.getFReg(0) != 3.14 {
+			t.Errorf("FLOAD failed: got %v, want 3.14", rig.cpu.FPU.getFReg(0))
+		}
+	})
+
+	t.Run("FCMP_INF", func(t *testing.T) {
+		rig.cpu.Reset()
+		inf := float32(math.Inf(1))
+		rig.cpu.FPU.setFReg(1, inf)
+		rig.cpu.FPU.setFReg(2, inf)
+
+		// FCMP R1, F1, F2
+		instr := ie64Instr(OP_FCMP, 1, 0, 0, 1, 2, 0)
+		rig.executeOne(instr)
+
+		if rig.cpu.getReg(1) != 0 {
+			t.Errorf("FCMP Inf, Inf result: got %v, want 0", rig.cpu.getReg(1))
+		}
+		if (rig.cpu.FPU.FPSR & IE64_FPU_CC_Z) == 0 {
+			t.Error("FCMP Inf, Inf: Zero bit not set")
+		}
+		if (rig.cpu.FPU.FPSR & IE64_FPU_CC_I) == 0 {
+			t.Error("FCMP Inf, Inf: Infinity bit not set")
+		}
+		if (rig.cpu.FPU.FPSR & IE64_FPU_CC_NAN) != 0 {
+			t.Error("FCMP Inf, Inf: NaN bit incorrectly set")
 		}
 	})
 }

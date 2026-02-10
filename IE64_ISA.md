@@ -325,7 +325,7 @@ The IE64 FPU is a dedicated single-precision (32-bit) IEEE-754 coprocessor.
 | FSTORE   | `0x62` | `fstore fs, disp(rd)` | `mem32[rd + disp] = fs` |
 | FMOVECR  | `0x78` | `fmovecr fd, #idx` | `fd = ROM_Constant[idx]` |
 
-**FLOAD/FSTORE** always transfer 4 bytes (32 bits) between memory and an FP register. The `disp` is a signed 32-bit immediate.
+**FLOAD/FSTORE** always transfer 4 bytes (32 bits) between memory and an FP register. The `disp` is a signed 32-bit immediate. **FSTORE** uses `fs` as the source floating-point register and `rd` as the base integer register for the effective address.
 
 **FMOVECR** loads a constant from the FPU ROM (indices 0-15). Indices outside this range load 0.0 and set the Z condition code.
 
@@ -376,6 +376,8 @@ The IE64 FPU is a dedicated single-precision (32-bit) IEEE-754 coprocessor.
 | FMOVI    | `0x6F` | `fmovi fd, rs` | `fd = bits_to_float(uint32(rs))` |
 | FMOVO    | `0x70` | `fmovo rd, fs` | `rd = uint64(float_to_bits(fs))` |
 
+**FCMP** performs an explicit comparison. It handles infinity correctly: `+Inf` is equal to `+Inf` (sets Z bit, rd=0) and greater than all finite values. NaNs are unordered and set the NaN condition code and IO exception flag.
+
 **FCVTFI** saturates to `INT32_MAX` or `INT32_MIN` on overflow. NaNs return 0 and set the IO exception flag.
 
 #### 4.6.5 FPU Status and Control
@@ -384,12 +386,13 @@ The IE64 FPU is a dedicated single-precision (32-bit) IEEE-754 coprocessor.
 |----------|--------|--------|-----------|
 | FMOVSR   | `0x79` | `fmovsr rd` | `rd = FPSR` |
 | FMOVCR   | `0x7A` | `fmovcr rd` | `rd = FPCR` |
-| FMOVSC   | `0x7B` | `fmovsc rs` | `FPSR = rs` |
+| FMOVSC   | `0x7B` | `fmovsc rs` | `FPSR = rs` (masked) |
 | FMOVCC   | `0x7C` | `fmovcc rs` | `FPCR = rs` |
 
 **FPSR (Status Register)**:
 - Bits 27:24 - Condition Codes (N, Z, I, NaN). Overwritten per instruction.
 - Bits 3:0 - Exception Flags (UE, OE, DZ, IO). Sticky (IEEE-754).
+- **FMOVSC** masks the input value to preserve only these valid bits; bits 23:4 are reserved and always read as zero.
 
 **FPCR (Control Register)**:
 - Bits 1:0 - Rounding Mode:

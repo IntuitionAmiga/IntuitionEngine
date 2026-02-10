@@ -2716,23 +2716,12 @@ func (a *IE64Assembler) asmFP_Mem(opcode byte, operands []string, isLoad bool) (
 		return nil, fmt.Errorf("FPU memory instruction requires 2 operands")
 	}
 
-	var freg, mreg byte
-	var ok bool
-	var memOp string
-
-	if isLoad {
-		freg, ok = parseFPRegister(operands[0])
-		memOp = operands[1]
-	} else {
-		freg, ok = parseFPRegister(operands[1])
-		memOp = operands[0]
-	}
-
+	freg, ok := parseFPRegister(operands[0])
 	if !ok {
-		return nil, fmt.Errorf("invalid FP register")
+		return nil, fmt.Errorf("invalid FP register: %s", operands[0])
 	}
 
-	disp, mreg, err := a.parseDispReg(memOp)
+	disp, mreg, err := a.parseDispReg(operands[1])
 	if err != nil {
 		return nil, err
 	}
@@ -2742,7 +2731,7 @@ func (a *IE64Assembler) asmFP_Mem(opcode byte, operands []string, isLoad bool) (
 		xbit = 1
 	}
 
-	// For FPU memory, Rd is always the FP reg, Rs is memory base
+	// Rd is always the FP reg, Rs is memory base
 	return encodeInstruction(opcode, freg, SIZE_L, xbit, mreg, 0, uint32(disp)), nil
 }
 

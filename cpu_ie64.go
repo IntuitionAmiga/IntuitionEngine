@@ -871,11 +871,11 @@ func (cpu *CPU64) Execute() {
 			if cpu.FPU == nil {
 				goto fpu_missing
 			}
-			if rs > 15 {
+			if rd > 15 {
 				goto invalid_freg
 			}
-			addr := uint32(int64(cpu.regs[rd]) + int64(int32(imm32)))
-			cpu.storeMem(addr, uint64(cpu.FPU.FPRegs[rs]), IE64_SIZE_L)
+			addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
+			cpu.storeMem(addr, uint64(cpu.FPU.FPRegs[rd]), IE64_SIZE_L)
 
 		case OP_FADD:
 			if cpu.FPU == nil {

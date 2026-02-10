@@ -91,10 +91,52 @@ func TestIE64FPU_ExceptionFlagsSticky(t *testing.T) {
 	}
 
 	// Clear via direct write (model of fmovsc)
-	fpu.FPSR = 0
+	fpu.FMOVSC(0)
 	if fpu.FPSR != 0 {
 		t.Error("Failed to clear FPSR")
 	}
+
+	// Test masking of reserved bits
+	fpu.FMOVSC(0xFFFFFFFF)
+	if fpu.FPSR != IE64_FPU_FPSR_MASK {
+		t.Errorf("FMOVSC masking failed: got %08x, want %08x", fpu.FPSR, IE64_FPU_FPSR_MASK)
+	}
+}
+
+func TestIE64FPU_FCMP_SpecialValues(t *testing.T) {
+	fpu := NewIE64FPU()
+	inf := float32(math.Inf(1))
+	negInf := float32(math.Inf(-1))
+
+	t.Run("Inf_Inf", func(t *testing.T) {
+		fpu.setFReg(1, inf)
+		fpu.setFReg(2, inf)
+		res := fpu.FCMP(1, 2)
+		if res != 0 {
+			t.Errorf("FCMP(Inf, Inf) = %v, want 0", res)
+		}
+		if (fpu.FPSR & IE64_FPU_CC_Z) == 0 {
+			t.Error("Zero bit not set")
+		}
+		if (fpu.FPSR & IE64_FPU_CC_I) == 0 {
+			t.Error("Infinity bit not set")
+		}
+		if (fpu.FPSR & IE64_FPU_CC_NAN) != 0 {
+			t.Error("NaN bit set")
+		}
+	})
+
+	t.Run("Inf_NegInf", func(t *testing.T) {
+		fpu.setFReg(1, inf)
+		fpu.setFReg(2, negInf)
+		res := fpu.FCMP(1, 2)
+		if res != 1 {
+			t.Errorf("FCMP(Inf, -Inf) = %v, want 1", res)
+		}
+		if (fpu.FPSR & IE64_FPU_CC_I) == 0 {
+			t.Error("Infinity bit not set")
+		}
+	})
 }
 
 func TestIE64FPU_Arithmetic(t *testing.T) {
