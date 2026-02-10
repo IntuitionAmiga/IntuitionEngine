@@ -141,6 +141,11 @@ fp_float:
 ; NaN inputs are passed to FSQRT to preserve NaN propagation.
 ; ============================================================================
 fp_sqr:
+    ; Handle +-0 early (sqrt(+-0) = +-0, preserves sign bit)
+    and.l   r1, r8, #0x7FFFFFFF
+    beqz    r1, .fp_sqr_done
+
+    ; Check for NaN (exponent=0xFF, mantissa!=0) -> propagate via FSQRT
     lsr.l   r1, r8, #23
     and.l   r1, r1, #0xFF          ; exponent
     move.l  r2, #0xFF
@@ -149,6 +154,7 @@ fp_sqr:
     bnez    r1, .fp_sqr_do_sqrt     ; NaN -> propagate via FSQRT
 
 .fp_sqr_check_neg:
+    ; BASIC convention: finite negative -> 0.0
     lsr.l   r1, r8, #31
     bnez    r1, .fp_sqr_neg
 
@@ -156,6 +162,7 @@ fp_sqr:
     fmovi   f0, r8
     fsqrt   f0, f0
     fmovo   r8, f0
+.fp_sqr_done:
     rts
 
 .fp_sqr_neg:

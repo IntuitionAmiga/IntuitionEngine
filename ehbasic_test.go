@@ -5631,6 +5631,22 @@ func TestEhBASIC_FPSmoke_SqrtPolicy(t *testing.T) {
 	if (got&0x7F800000) != 0x7F800000 || (got&0x007FFFFF) == 0 {
 		t.Fatalf("fp_sqr NaN policy: expected NaN result bits, got 0x%08X", got)
 	}
+
+	// Verify sqrt(-0.0) preserves negative zero (IEEE-754: sqrt(-0) = -0)
+	body2 := `
+    move.l  r8, #0x80000000      ; -0.0
+    jsr     fp_sqr
+    la      r1, 0x021000
+    store.l r8, (r1)
+`
+	binary2 := assembleExecTest(t, asmBin, body2)
+	h2 := newEhbasicHarness(t)
+	h2.loadBytes(binary2)
+	h2.runCycles(200_000)
+	got2 := h2.bus.Read32(0x021000)
+	if got2 != 0x80000000 {
+		t.Fatalf("fp_sqr(-0.0): expected 0x80000000 (-0.0), got 0x%08X", got2)
+	}
 }
 
 func benchmarkEhBASICFP(b *testing.B, program string) {
