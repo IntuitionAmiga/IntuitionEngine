@@ -54,7 +54,6 @@ package main
 
 import (
 	"fmt"
-	"math"
 	"math/bits"
 	"os"
 	"sync/atomic"
@@ -853,7 +852,7 @@ func (cpu *CPU64) Execute() {
 			if rd > 15 || rs > 15 {
 				goto invalid_freg
 			}
-			cpu.FPU.setFReg(rd, cpu.FPU.getFReg(rs))
+			cpu.FPU.FPRegs[rd&0x0F] = cpu.FPU.FPRegs[rs&0x0F]
 
 		case OP_FLOAD:
 			if cpu.FPU == nil {
@@ -865,7 +864,7 @@ func (cpu *CPU64) Execute() {
 			addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
 			val := uint32(cpu.loadMem(addr, IE64_SIZE_L))
 			cpu.FPU.FPRegs[rd] = val
-			cpu.FPU.setConditionCodes(math.Float32frombits(val))
+			cpu.FPU.setConditionCodesBits(val)
 
 		case OP_FSTORE:
 			if cpu.FPU == nil {
@@ -929,7 +928,9 @@ func (cpu *CPU64) Execute() {
 			if rd > 15 || rs > 15 {
 				goto invalid_freg
 			}
-			cpu.FPU.FABS(rd, rs)
+			bits := cpu.FPU.FPRegs[rs&0x0F] & 0x7FFFFFFF
+			cpu.FPU.FPRegs[rd&0x0F] = bits
+			cpu.FPU.setConditionCodesBits(bits)
 
 		case OP_FNEG:
 			if cpu.FPU == nil {
@@ -938,7 +939,9 @@ func (cpu *CPU64) Execute() {
 			if rd > 15 || rs > 15 {
 				goto invalid_freg
 			}
-			cpu.FPU.FNEG(rd, rs)
+			bits := cpu.FPU.FPRegs[rs&0x0F] ^ 0x80000000
+			cpu.FPU.FPRegs[rd&0x0F] = bits
+			cpu.FPU.setConditionCodesBits(bits)
 
 		case OP_FSQRT:
 			if cpu.FPU == nil {

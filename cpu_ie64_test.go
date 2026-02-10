@@ -1389,6 +1389,47 @@ func BenchmarkIE64_MemoryIntensive(b *testing.B) {
 	b.ReportMetric(float64(loopIterations*4+1), "instructions/op")
 }
 
+func BenchmarkIE64FPU_FADD_ViaExecute(b *testing.B) {
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+	cpu.FPU.setFReg(1, 1.5)
+	cpu.FPU.setFReg(2, 2.5)
+
+	// FADD F0, F1, F2; HALT
+	fadd := ie64Instr(OP_FADD, 0, 0, 0, 1, 2, 0)
+	halt := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
+
+	// We need a loop without re-loading memory every time if possible to measure dispatch overhead
+	// But Execute() runs until HALT.
+	// So we'll put FADD in a loop:
+	// +0: FADD F0, F1, F2
+	// +8: SUB.Q R1, R1, R2
+	// +16: BNE R1, R0, -16
+	// +24: HALT
+
+	sub := ie64Instr(OP_SUB, 1, IE64_SIZE_Q, 0, 1, 2, 0)
+	bne := ie64Instr(OP_BNE, 0, 0, 0, 1, 0, uint32(0xFFFFFFF0)) // -16 = 0xFFFFFFF0
+
+	offset := uint32(PROG_START)
+	for _, instr := range [][]byte{fadd, sub, bne, halt} {
+		copy(cpu.memory[offset:], instr)
+		offset += 8
+	}
+
+	const loopIterations = 1000
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cpu.PC = PROG_START
+		cpu.regs[1] = loopIterations
+		cpu.regs[2] = 1
+		cpu.running.Store(true)
+		cpu.Execute()
+	}
+	// 3 instructions per loop iteration + 1 HALT
+	b.ReportMetric(float64(loopIterations*3+1), "instructions/op")
+}
+
 // ===========================================================================
 // JMP (register-indirect jump)
 // ===========================================================================
