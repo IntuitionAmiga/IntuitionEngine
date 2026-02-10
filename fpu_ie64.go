@@ -243,14 +243,21 @@ func (fpu *IE64FPU) FNEG(fd, fs byte) {
 }
 
 // FSQRT: fd = sqrt(fs)
+
 func (fpu *IE64FPU) FSQRT(fd, fs byte) {
+
 	sBits := fpu.FPRegs[fs&0x0F]
-	// s < 0 check: sign bit (31) set and not -0.0
-	// 0x80000000 is -0.0
-	if (sBits&0x80000000) != 0 && (sBits&0x7FFFFFFF) != 0 {
+
+	// s < 0 check: sign bit (31) set, not -0.0, and not NaN
+
+	if (sBits&0x80000000) != 0 && !isZero32(sBits) && !isNaN32(sBits) {
+
 		fpu.setExceptionFlag(IE64_FPU_EX_IO)
+
 	}
+
 	res := float32(math.Sqrt(float64(math.Float32frombits(sBits))))
+
 	resBits := math.Float32bits(res)
 
 	fpu.FPRegs[fd&0x0F] = resBits

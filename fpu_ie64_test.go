@@ -559,6 +559,23 @@ func TestIE64FPU_NaNPropagation(t *testing.T) {
 	}
 }
 
+func TestIE64FPU_FSQRT_NegativeNaN(t *testing.T) {
+	fpu := NewIE64FPU()
+	// Negative NaN: Sign bit set, exponent all 1s, non-zero fraction
+	negNaN := math.Float32frombits(0xFFC00000)
+
+	fpu.FPSR = 0
+	fpu.setFReg(1, negNaN)
+	fpu.FSQRT(0, 1)
+
+	if !math.IsNaN(float64(fpu.getFReg(0))) {
+		t.Error("FSQRT(-NaN) should be NaN")
+	}
+	if (fpu.FPSR & IE64_FPU_EX_IO) != 0 {
+		t.Error("FSQRT(-NaN) propagation should NOT set IO flag")
+	}
+}
+
 func TestIE64FPU_NegativeZero(t *testing.T) {
 	fpu := NewIE64FPU()
 
