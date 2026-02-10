@@ -204,7 +204,8 @@ func TestZ80_Voodoo_FullTriangle_IOPort(t *testing.T) {
 		z80Bus.Out(Z80_VOODOO_PORT_DATA3, byte(value>>24))
 	}
 
-	// 1. Set video dimensions (640x480)
+	// 1. Enable Voodoo and set video dimensions (640x480)
+	write32(0x004, 1) // VOODOO_ENABLE
 	write32(0x214, (640<<16)|480)
 	t.Logf("After VIDEO_DIM: width=%d, height=%d", voodoo.width.Load(), voodoo.height.Load())
 
