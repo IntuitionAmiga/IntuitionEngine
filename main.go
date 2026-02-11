@@ -255,7 +255,7 @@ func main() {
 	if modeBasic {
 		modeIE64 = true
 	}
-	useGraphicalTerm := modeBasic && !modeTerm
+	useGraphicalTerm := false
 
 	modeCount := 0
 	if modeIE32 {
@@ -296,6 +296,7 @@ func main() {
 		modeIE64 = true
 		modeCount = 1
 	}
+	useGraphicalTerm = modeBasic && !modeTerm
 	if modeCount != 1 {
 		fmt.Println("Error: select exactly one mode flag: -ie32, -ie64, -m68k, -m6502, -z80, -x86, -basic, -psg, -psg+, -sid, -sid+, -pokey, -pokey+, -ted, -ted+, -ahx, or -ahx+")
 		os.Exit(1)
