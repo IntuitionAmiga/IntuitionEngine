@@ -772,9 +772,14 @@ func main() {
 	fileIO := NewFileIODevice(sysBus, ".") // Current directory as base
 	sysBus.MapIO(FILE_IO_BASE, FILE_IO_END, fileIO.HandleRead, fileIO.HandleWrite)
 
+	// Initialize unified SOUND PLAY media loader
+	mediaLoader := NewMediaLoader(sysBus, soundChip, ".", psgPlayer, sidPlayer, tedPlayer, ahxPlayerCPU)
+	sysBus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END, mediaLoader.HandleRead, mediaLoader.HandleWrite)
+
 	// Initialize the selected CPU and optionally load program
 	var gui GUIFrontend
 	var startExecution bool
+	var ie64CPU *CPU64
 
 	if modeIE32 {
 		// Initialize IE32 CPU
@@ -814,8 +819,12 @@ func main() {
 
 	} else if modeIE64 {
 		// Initialize IE64 CPU (64-bit RISC)
-		ie64CPU := NewCPU64(sysBus)
+		ie64CPU = NewCPU64(sysBus)
 		ie64CPU.PerfEnabled = perfMode
+
+		// Initialize external program executor MMIO (RUN "file" from BASIC)
+		progExec := NewProgramExecutor(sysBus, ie64CPU, videoChip, vgaEngine, voodooEngine, ".")
+		sysBus.MapIO(EXEC_BASE, EXEC_END, progExec.HandleRead, progExec.HandleWrite)
 
 		// Load program — three paths: -basic, -basic-image, or explicit file
 		if modeBasic {

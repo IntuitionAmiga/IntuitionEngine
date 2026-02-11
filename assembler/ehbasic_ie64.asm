@@ -201,8 +201,68 @@ repl_immediate:
     bra     repl_loop
 
 repl_do_run:
-    ; Execute stored program
+    ; RUN with optional external file path:
+    ;   RUN           -> existing exec_run path
+    ;   RUN "file"    -> EXEC_* handoff path
+    la      r1, BASIC_LINE_BUF
+    jsr     repl_parse_run_filename
+    beqz    r8, .run_internal
+
+    ; Read current session value before triggering executor
+    la      r1, EXEC_SESSION
+    load.l  r21, (r1)
+
+    ; EXEC_NAME_PTR = FILE_NAME_BUF
+    la      r1, EXEC_NAME_PTR
+    la      r2, FILE_NAME_BUF
+    store.l r2, (r1)
+
+    ; EXEC_CTRL = 1 (execute)
+    la      r1, EXEC_CTRL
+    move.q  r2, #1
+    store.l r2, (r1)
+
+    ; Wait for EXEC_SESSION to advance (bounded)
+    move.q  r25, #0x200000
+.run_wait_session:
+    la      r1, EXEC_SESSION
+    load.l  r22, (r1)
+    bne     r22, r21, .run_wait_status
+    sub.q   r25, r25, #1
+    bnez    r25, .run_wait_session
+    bra     .run_file_error
+
+    ; Poll status for the new session (bounded)
+.run_wait_status:
+    move.q  r25, #0x400000
+.run_status_loop:
+    la      r1, EXEC_STATUS
+    load.l  r22, (r1)
+    move.q  r23, #1
+    beq     r22, r23, .run_status_waiting
+    move.q  r23, #3
+    beq     r22, r23, .run_file_error
+    move.q  r23, #2
+    beq     r22, r23, .run_external_ok
+    bra     .run_file_error
+
+.run_status_waiting:
+    sub.q   r25, r25, #1
+    bnez    r25, .run_status_loop
+    bra     .run_file_error
+
+.run_external_ok:
+    ; Success path: do not downgrade to timeout/error after running state observed.
+    rts
+
+.run_internal:
     jsr     exec_run
+    bra     repl_loop
+
+.run_file_error:
+    la      r8, repl_msg_file_error
+    jsr     print_string
+    jsr     print_crlf
     bra     repl_loop
 
 repl_do_list:
@@ -288,6 +348,65 @@ repl_check_run:
     move.q  r8, #1
     rts
 .no:
+    move.q  r8, r0
+    rts
+
+; ============================================================================
+; repl_parse_run_filename — Parse RUN "file" from input line
+; ============================================================================
+; Input:  BASIC_LINE_BUF contains the line
+; Output: R8 = 1 if FILE_NAME_BUF was populated, 0 if no quoted filename
+; Clobbers: R1-R3, R10
+
+repl_parse_run_filename:
+    la      r1, BASIC_LINE_BUF
+    jsr     repl_skip_spaces
+
+    ; Match "RUN" prefix
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x72               ; 'r'
+    bne     r2, r3, .no_file
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x75               ; 'u'
+    bne     r2, r3, .no_file
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x6E               ; 'n'
+    bne     r2, r3, .no_file
+
+    add.q   r1, r1, #1
+    jsr     repl_skip_spaces
+
+    ; Require opening quote for external RUN
+    load.b  r2, (r1)
+    move.q  r3, #0x22               ; '"'
+    bne     r2, r3, .no_file
+    add.q   r1, r1, #1
+
+    ; Copy quoted filename into FILE_NAME_BUF
+    la      r10, FILE_NAME_BUF
+.copy_name_loop:
+    load.b  r2, (r1)
+    beqz    r2, .no_file            ; Unterminated quote
+    move.q  r3, #0x22               ; closing quote
+    beq     r2, r3, .copy_done
+    store.b r2, (r10)
+    add.q   r1, r1, #1
+    add.q   r10, r10, #1
+    bra     .copy_name_loop
+
+.copy_done:
+    store.b r0, (r10)
+    move.q  r8, #1
+    rts
+
+.no_file:
     move.q  r8, r0
     rts
 
@@ -406,6 +525,10 @@ repl_str_banner:
 
 repl_str_ready:
     dc.b    "Ready", 0
+    align 4
+
+repl_msg_file_error:
+    dc.b    "?FILE ERROR", 0
     align 4
 
 ; ============================================================================

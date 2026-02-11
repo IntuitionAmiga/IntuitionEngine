@@ -164,6 +164,14 @@ const (
 	// File I/O region
 	FILE_IO_REGION_BASE = 0xF2200
 	FILE_IO_REGION_END  = 0xF221F
+
+	// Unified media loader region
+	MEDIA_LOADER_REGION_BASE = 0xF2300
+	MEDIA_LOADER_REGION_END  = 0xF231F
+
+	// BASIC external program executor region
+	EXEC_REGION_BASE = 0xF2320
+	EXEC_REGION_END  = 0xF233F
 )
 
 // =============================================================================
@@ -261,6 +269,10 @@ func GetIORegion(addr uint32) string {
 		return "ULA"
 	case addr >= FILE_IO_REGION_BASE && addr <= FILE_IO_REGION_END:
 		return "FileIO"
+	case addr >= MEDIA_LOADER_REGION_BASE && addr <= MEDIA_LOADER_REGION_END:
+		return "MediaLoader"
+	case addr >= EXEC_REGION_BASE && addr <= EXEC_REGION_END:
+		return "ProgramExecutor"
 	default:
 		return "Unknown"
 	}

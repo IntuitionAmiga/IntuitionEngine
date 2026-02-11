@@ -971,11 +971,28 @@ Return from a GOSUB subroutine. See [GOSUB...RETURN](#gosubreturn).
 
 ### RUN
 
-Execute the stored program from the beginning.
+Execute the stored program or launch an external CPU binary.
 
 ```
 RUN
+RUN "file.ext"
 ```
+
+- `RUN` with no argument executes the stored BASIC program from the beginning.
+- `RUN "file.ext"` loads and launches an external CPU binary, handing off execution to the appropriate CPU emulator. The IE64 CPU stops and the new CPU takes over.
+
+Supported extensions:
+
+| Extension | CPU Architecture |
+|-----------|-----------------|
+| `.iex`, `.ie32` | IE32 (custom 32-bit) |
+| `.ie64` | IE64 (custom 64-bit RISC) |
+| `.ie65` | 6502 (load at `&H0800`) |
+| `.ie68` | M68K (Motorola 68020) |
+| `.ie80` | Z80 |
+| `.ie86` | x86 (32-bit flat) |
+
+On error (file not found, unsupported extension), prints `?FILE ERROR` and returns to the REPL.
 
 `RUN` is handled by the REPL command parser in immediate mode. It is not dispatched from tokenised program lines.
 
@@ -1113,12 +1130,36 @@ SOUND RINGMOD channel, source
 - `channel` — 0 to 3
 - `source` — source channel number
 
+**SOUND PLAY** loads and plays a music file through the appropriate audio engine:
+```
+SOUND PLAY "filename.ext" [,subsong]
+SOUND PLAY STOP
+```
+- `filename` — path to a music file (relative to working directory)
+- `subsong` — optional subsong index (default 0, for SID/AHX formats)
+
+Supported formats:
+
+| Extension | Engine |
+|-----------|--------|
+| `.sid` | SID (Commodore 64) |
+| `.ym`, `.ay`, `.sndh` | PSG (AY-3-8910) |
+| `.ted`, `.prg` | TED (Commodore 16) |
+| `.ahx` | AHX (Amiga tracker) |
+
+`SOUND PLAY STOP` stops all audio engine playback.
+
+On error (file not found, unsupported format, file too large), prints `?PLAY ERROR`.
+
 **Example:**
 ```basic
 SOUND 0, 440, 200, 0, 128    : REM 440Hz square wave, 50% duty
 ENVELOPE 0, 10, 50, 200, 100
 GATE 0, ON
 SOUND REVERB 100, 200        : REM add reverb
+SOUND PLAY "music.sid"       : REM play a SID tune
+SOUND PLAY "music.sid", 3    : REM play subsong 3
+SOUND PLAY STOP              : REM stop playback
 ```
 
 ### STOP
@@ -1991,7 +2032,15 @@ AHX STOP
 
 ### 7.7 Music File Playback
 
-Several audio engines support file-based playback of native music formats:
+The unified `SOUND PLAY` command provides the simplest way to play music files:
+
+```basic
+SOUND PLAY "music.sid"        : REM auto-detect and play
+SOUND PLAY "music.ahx", 2    : REM play subsong 2
+SOUND PLAY STOP               : REM stop all playback
+```
+
+For low-level control, per-engine playback commands are also available:
 
 | Command | Format | Origin |
 |---------|--------|--------|
@@ -2017,6 +2066,7 @@ All players support `STOP` to halt playback. SID and SAP players support subsong
 | `&HB8000`-`&HBFFFF` | 32 KB | VGA text buffer |
 | `&HF0000`-`&HFFFFF` | 64 KB | I/O region |
 | `&H100000`-`&H4FFFFF` | 4 MB | Video RAM |
+| `&H800000`-`&H80FFFF` | 64 KB | Media staging buffer (SOUND PLAY) |
 
 ### I/O Region Map
 
@@ -2034,6 +2084,9 @@ All players support `STOP` to halt playback. SID and SAP players support subsong
 | `&HF2000`-`&HF200B` | ULA (ZX Spectrum) |
 | `&HF2100`-`&HF213F` | ANTIC |
 | `&HF2140`-`&HF21B4` | GTIA |
+| `&HF2200`-`&HF221F` | File I/O |
+| `&HF2300`-`&HF231F` | Media Loader (SOUND PLAY) |
+| `&HF2320`-`&HF233F` | Program Executor (RUN "file") |
 | `&HF4000`-`&HF5000` | Voodoo 3DFX |
 
 ### EhBASIC Memory Layout
@@ -2298,6 +2351,34 @@ Audio registers at `&HF0F00`-`&HF0F05`. Video control at `&HF0F20`-`&HF0F5F`. Se
 | `&HF0034` | BLT_SRC_STRIDE | Source stride |
 | `&HF0038` | BLT_DST_STRIDE | Destination stride |
 | `&HF003C` | BLT_COLOR | Fill/line colour |
+
+### 9.13 Media Loader Registers (`&HF2300`-`&HF231F`)
+
+Used by `SOUND PLAY` to load and play music files.
+
+| Address | Name | R/W | Description |
+|---------|------|-----|-------------|
+| `&HF2300` | MEDIA_NAME_PTR | W | Pointer to NUL-terminated filename in memory |
+| `&HF2304` | MEDIA_SUBSONG | W | Subsong index (0=default) |
+| `&HF2308` | MEDIA_CTRL | W | Control: 1=play, 2=stop all |
+| `&HF230C` | MEDIA_STATUS | R | 0=idle, 1=loading, 2=playing, 3=error |
+| `&HF2310` | MEDIA_TYPE | R | Detected type: 1=SID, 2=PSG, 3=TED, 4=AHX |
+| `&HF2314` | MEDIA_ERROR | R | 0=ok, 1=not-found, 2=bad-format, 3=unsupported, 4=path-invalid, 5=too-large |
+
+Staging buffer: `&H800000`-`&H80FFFF` (64 KB) — transient copy of loaded file data.
+
+### 9.14 Program Executor Registers (`&HF2320`-`&HF233F`)
+
+Used by `RUN "file"` to launch external CPU binaries.
+
+| Address | Name | R/W | Description |
+|---------|------|-----|-------------|
+| `&HF2320` | EXEC_NAME_PTR | W | Pointer to NUL-terminated filename in memory |
+| `&HF2324` | EXEC_CTRL | W | Control: 1=execute |
+| `&HF2328` | EXEC_STATUS | R | 0=idle, 1=loading, 2=running, 3=error |
+| `&HF232C` | EXEC_TYPE | R | 1=IE32, 2=IE64, 3=6502, 4=M68K, 5=Z80, 6=x86 |
+| `&HF2330` | EXEC_ERROR | R | 0=ok, 1=not-found, 2=unsupported, 3=path-invalid, 4=load-failed |
+| `&HF2334` | EXEC_SESSION | R | Monotonic session counter (increments per request) |
 
 ---
 

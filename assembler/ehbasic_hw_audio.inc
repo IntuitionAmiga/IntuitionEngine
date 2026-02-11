@@ -52,6 +52,8 @@ hw_sound:
     beq     r1, r2, .snd_noise
     move.q  r2, #0x4F            ; 'O' (OVERDRIVE)
     beq     r1, r2, .snd_overdrive
+    move.q  r2, #0x50            ; 'P' (PLAY)
+    beq     r1, r2, .snd_play_cmd
     move.q  r2, #0x52            ; 'R' (REVERB / RINGMOD)
     beq     r1, r2, .snd_r_cmd
     move.q  r2, #0x53            ; 'S' (SWEEP / SYNC)
@@ -123,6 +125,75 @@ hw_sound:
     add.q   r3, r22, #FLEX_OFF_DUTY
     store.l r8, (r3)
     rts
+
+; --- SOUND PLAY "file"[,subsong] / SOUND PLAY STOP ---
+.snd_play_cmd:
+    add.q   r17, r17, #1
+    jsr     skip_alpha
+    jsr     exec_skip_spaces
+
+    ; Optional STOP sub-command
+    load.b  r1, (r17)
+    move.q  r2, #0x53            ; 'S'
+    beq     r1, r2, .snd_play_stop
+    move.q  r2, #TK_STOP
+    beq     r1, r2, .snd_play_stop
+
+    ; Parse filename string expression
+    jsr     str_eval             ; R8 = filename pointer
+    move.q  r10, r8
+    la      r11, FILE_NAME_BUF
+.snd_play_copy_name:
+    load.b  r1, (r10)
+    store.b r1, (r11)
+    add.q   r10, r10, #1
+    add.q   r11, r11, #1
+    bnez    r1, .snd_play_copy_name
+
+    ; Optional ",subsong"
+    move.q  r20, r0              ; default subsong=0
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x2C
+    bne     r1, r2, .snd_play_trigger
+    add.q   r17, r17, #1
+    jsr     exec_skip_spaces
+    jsr     expr_eval
+    jsr     fp_int
+    jsr     fp_fix
+    move.q  r20, r8
+
+.snd_play_trigger:
+    la      r1, MEDIA_NAME_PTR
+    la      r2, FILE_NAME_BUF
+    store.l r2, (r1)
+    la      r1, MEDIA_SUBSONG
+    store.l r20, (r1)
+    la      r1, MEDIA_CTRL
+    move.q  r2, #1
+    store.l r2, (r1)
+
+    ; Immediate error check for synchronous validation failures
+    la      r1, MEDIA_STATUS
+    load.l  r2, (r1)
+    move.q  r3, #3
+    bne     r2, r3, .snd_done
+    la      r8, .msg_play_error
+    jsr     print_string
+    jsr     print_crlf
+    rts
+
+.snd_play_stop:
+    add.q   r17, r17, #1
+    jsr     skip_alpha
+    la      r1, MEDIA_CTRL
+    move.q  r2, #2
+    store.l r2, (r1)
+    rts
+.msg_play_error:
+    dc.b    "?PLAY ERROR", 0
+    align   4
+
 .snd_filter:
     add.q   r17, r17, #1
     jsr     skip_alpha

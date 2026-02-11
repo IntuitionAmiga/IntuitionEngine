@@ -1723,5 +1723,27 @@ FILE_NAME_BUF     equ 0x6FF000              ; 256 bytes
 FILE_DATA_BUF     equ 0x700000              ; Up to ~1MB safe area
 
 ; ============================================================================
+; MEDIA LOADER REGISTERS (0xF2300-0xF231F)
+; ============================================================================
+
+MEDIA_NAME_PTR    equ 0xF2300               ; Pointer to null-terminated filename (W)
+MEDIA_SUBSONG     equ 0xF2304               ; Subsong (W)
+MEDIA_CTRL        equ 0xF2308               ; 1=play, 2=stop (W)
+MEDIA_STATUS      equ 0xF230C               ; 0=idle,1=loading,2=playing,3=error (R)
+MEDIA_TYPE        equ 0xF2310               ; 1=SID,2=PSG,3=TED,4=AHX (R)
+MEDIA_ERROR       equ 0xF2314               ; 0=ok,1=not-found,2=bad/io,3=unsupported,4=path,5=too-large (R)
+
+; ============================================================================
+; PROGRAM EXECUTOR REGISTERS (0xF2320-0xF233F)
+; ============================================================================
+
+EXEC_NAME_PTR     equ 0xF2320               ; Pointer to null-terminated filename (W)
+EXEC_CTRL         equ 0xF2324               ; 1=execute (W)
+EXEC_STATUS       equ 0xF2328               ; 0=idle,1=loading,2=running,3=error (R)
+EXEC_TYPE         equ 0xF232C               ; 1=IE32,2=IE64,3=6502,4=M68K,5=Z80,6=x86 (R)
+EXEC_ERROR        equ 0xF2330               ; 0=ok,1=not-found,2=unsupported,3=path,4=load-failed (R)
+EXEC_SESSION      equ 0xF2334               ; Monotonic session id (R)
+
+; ============================================================================
 ; EOF
 ; ============================================================================
