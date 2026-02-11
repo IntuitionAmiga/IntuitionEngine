@@ -274,7 +274,7 @@ func (p *PSGPlayer) loadFrames(frames [][]uint8, frameRate uint16, clockHz uint3
 		if uint32(frameIndex) == loopFrame {
 			loopSample = samplePos
 		}
-		for reg := 0; reg < PSG_REG_COUNT; reg++ {
+		for reg := range PSG_REG_COUNT {
 			events = append(events, PSGEvent{
 				Sample: samplePos,
 				Reg:    uint8(reg),
@@ -348,7 +348,7 @@ func buildPSGEventsFromFrames(frames [][]uint8, frameRate uint16, sampleRate int
 		if uint32(frameIndex) == loopFrame {
 			loopSample = samplePos
 		}
-		for reg := 0; reg < PSG_REG_COUNT; reg++ {
+		for reg := range PSG_REG_COUNT {
 			events = append(events, PSGEvent{
 				Sample: samplePos,
 				Reg:    uint8(reg),

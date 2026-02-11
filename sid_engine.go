@@ -126,7 +126,7 @@ func (e *SIDEngine) SetModel(model int) {
 		e.model = model
 		// Configure all model-specific features
 		if e.sound != nil {
-			for ch := 0; ch < 3; ch++ {
+			for ch := range 3 {
 				if model == SID_MODEL_6581 {
 					e.sound.SetChannelSIDADSRBugs(ch, true)
 					e.sound.SetChannelSID6581FilterDistort(ch, true)
@@ -222,7 +222,7 @@ func (e *SIDEngine) ensureChannelsInitialized() {
 	}
 
 	// SID uses channels 0-2 of the SoundChip
-	for ch := 0; ch < 3; ch++ {
+	for ch := range 3 {
 		e.writeChannel(ch, FLEX_OFF_WAVE_TYPE, WAVE_TRIANGLE)
 		e.writeChannel(ch, FLEX_OFF_DUTY, 0x0080) // 50% duty cycle
 		e.writeChannel(ch, FLEX_OFF_PWM_CTRL, 0)
@@ -296,7 +296,7 @@ func (e *SIDEngine) applyFrequencies() {
 		return
 	}
 
-	for voice := 0; voice < 3; voice++ {
+	for voice := range 3 {
 		freq := e.calcFrequency(voice)
 		if freq > 0 && freq <= 20000 {
 			e.writeChannel(voice, FLEX_OFF_FREQ, uint32(freq*256)) // 16.8 fixed-point
@@ -312,7 +312,7 @@ func (e *SIDEngine) applyWaveforms() {
 		return
 	}
 
-	for voice := 0; voice < 3; voice++ {
+	for voice := range 3 {
 		base := voice * 7
 		ctrl := e.regs[base+4]
 		mask := ctrl & (SID_CTRL_TRIANGLE | SID_CTRL_SAWTOOTH | SID_CTRL_PULSE | SID_CTRL_NOISE)
@@ -378,7 +378,7 @@ func (e *SIDEngine) applyEnvelopes() {
 		return
 	}
 
-	for voice := 0; voice < 3; voice++ {
+	for voice := range 3 {
 		base := voice * 7
 		ad := e.regs[base+5]
 		sr := e.regs[base+6]
@@ -416,7 +416,7 @@ func (e *SIDEngine) applyVolumes() {
 
 	masterGain := sidVolumeGain(masterVol, e.sidPlusEnabled)
 
-	for voice := 0; voice < 3; voice++ {
+	for voice := range 3 {
 		if voice == 2 && voice3Off {
 			e.writeChannel(voice, FLEX_OFF_VOL, 0)
 			continue
@@ -442,7 +442,7 @@ func (e *SIDEngine) applyModulation() {
 		return
 	}
 
-	for voice := 0; voice < 3; voice++ {
+	for voice := range 3 {
 		base := voice * 7
 		ctrl := e.regs[base+4]
 
@@ -521,7 +521,7 @@ func (e *SIDEngine) applyFilter() {
 		modeMask |= 0x04
 	}
 
-	for voice := 0; voice < 3; voice++ {
+	for voice := range 3 {
 		mask := uint8(1 << voice)
 		if routing&mask != 0 && modeMask != 0 {
 			e.sound.SetChannelFilter(voice, modeMask, cutoffNorm, resNorm)
@@ -709,7 +709,7 @@ func (e *SIDEngine) silenceChannels() {
 	if e.sound == nil {
 		return
 	}
-	for ch := 0; ch < 3; ch++ {
+	for ch := range 3 {
 		e.writeChannel(ch, FLEX_OFF_VOL, 0)
 	}
 }

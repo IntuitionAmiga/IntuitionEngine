@@ -1192,25 +1192,25 @@ func (c *CPU_X86) initBaseOps() {
 	c.baseOps[0x3F] = (*CPU_X86).opAAS
 
 	// 0x40-0x47: INC r16/r32
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		idx := i
 		c.baseOps[0x40+i] = func(cpu *CPU_X86) { cpu.opINC_reg(byte(idx)) }
 	}
 
 	// 0x48-0x4F: DEC r16/r32
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		idx := i
 		c.baseOps[0x48+i] = func(cpu *CPU_X86) { cpu.opDEC_reg(byte(idx)) }
 	}
 
 	// 0x50-0x57: PUSH r16/r32
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		idx := i
 		c.baseOps[0x50+i] = func(cpu *CPU_X86) { cpu.opPUSH_reg(byte(idx)) }
 	}
 
 	// 0x58-0x5F: POP r16/r32
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		idx := i
 		c.baseOps[0x58+i] = func(cpu *CPU_X86) { cpu.opPOP_reg(byte(idx)) }
 	}
@@ -1353,13 +1353,13 @@ func (c *CPU_X86) initBaseOps() {
 	c.baseOps[0xAF] = (*CPU_X86).opSCASW
 
 	// 0xB0-0xB7: MOV r8,imm8
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		idx := i
 		c.baseOps[0xB0+i] = func(cpu *CPU_X86) { cpu.opMOV_r8_imm8(byte(idx)) }
 	}
 
 	// 0xB8-0xBF: MOV r16/r32,imm16/imm32
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		idx := i
 		c.baseOps[0xB8+i] = func(cpu *CPU_X86) { cpu.opMOV_r_imm(byte(idx)) }
 	}

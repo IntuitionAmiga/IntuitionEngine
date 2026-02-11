@@ -185,11 +185,11 @@ func TestTerminalMMIO_RingBufferWrap(t *testing.T) {
 	// Disable echo so output doesn't fill up
 	tm.HandleWrite(TERM_ECHO, 0)
 	// Fill and drain the ring buffer multiple times to test wrap-around
-	for round := 0; round < 3; round++ {
-		for i := 0; i < 128; i++ {
+	for round := range 3 {
+		for i := range 128 {
 			tm.EnqueueByte(byte(i + 1))
 		}
-		for i := 0; i < 128; i++ {
+		for i := range 128 {
 			val := tm.HandleRead(TERM_IN)
 			expected := uint32(i + 1)
 			if val != expected {
@@ -243,7 +243,7 @@ func TestTerminalMMIO_LineStatusClearsAfterConsume(t *testing.T) {
 		t.Fatal("expected line available")
 	}
 	// Consume all 4 bytes including newline
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		tm.HandleRead(TERM_IN)
 	}
 	// No more line
@@ -385,7 +385,7 @@ func TestTerminalMMIO_RawKey_Empty(t *testing.T) {
 
 func TestTerminalMMIO_RawKey_BufferFull(t *testing.T) {
 	tm := NewTerminalMMIO()
-	for i := 0; i < 300; i++ {
+	for i := range 300 {
 		tm.EnqueueRawKey(byte(i))
 	}
 	count := 0
@@ -460,7 +460,7 @@ func TestTerminalMMIO_RouteHostKey(t *testing.T) {
 
 func TestTerminalMMIO_RouteHostKey_Atomic(t *testing.T) {
 	tm := NewTerminalMMIO()
-	for i := 0; i < 500; i++ {
+	for i := range 500 {
 		// Drain any leftover bytes from either channel.
 		for tm.HandleRead(TERM_STATUS)&1 != 0 {
 			_ = tm.HandleRead(TERM_IN)
@@ -535,7 +535,7 @@ func TestTerminalMMIO_RouteGraphicalKey_CharMode(t *testing.T) {
 func TestTerminalMMIO_RouteGraphicalKey_Atomic(t *testing.T) {
 	tm := NewTerminalMMIO()
 	// Same atomicity test as RouteHostKey: mode flip during concurrent RouteGraphicalKey.
-	for i := 0; i < 500; i++ {
+	for i := range 500 {
 		for tm.HandleRead(TERM_STATUS)&1 != 0 {
 			_ = tm.HandleRead(TERM_IN)
 		}

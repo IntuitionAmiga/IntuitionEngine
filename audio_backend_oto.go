@@ -85,7 +85,7 @@ func (op *OtoPlayer) Read(p []byte) (n int, err error) {
 	}
 	samples := op.sampleBuf[:numSamples]
 
-	for i := 0; i < numSamples; i++ {
+	for i := range numSamples {
 		samples[i] = chip.ReadSample()
 	}
 

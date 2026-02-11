@@ -42,7 +42,7 @@ func ParseAYData(data []byte) (*AYFile, error) {
 
 	// Create slice headers pointing into the contiguous buffer
 	frames := make([][]uint8, frameCount)
-	for i := 0; i < frameCount; i++ {
+	for i := range frameCount {
 		start := i * PSG_REG_COUNT
 		frames[i] = buffer[start : start+PSG_REG_COUNT : start+PSG_REG_COUNT]
 	}

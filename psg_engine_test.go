@@ -14,7 +14,7 @@ func TestPSGEngineEnvelopeAdvance(t *testing.T) {
 
 	initial := engine.envLevel
 	steps := int(engine.envPeriodSamples) + 2
-	for i := 0; i < steps; i++ {
+	for range steps {
 		engine.TickSample()
 	}
 

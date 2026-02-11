@@ -60,11 +60,11 @@ import (
 
 // HarteTestCase represents a single test from Tom Harte's test suite
 type HarteTestCase struct {
-	Name         string          `json:"name"`
-	Initial      HarteState      `json:"initial"`
-	Final        HarteState      `json:"final"`
-	Length       int             `json:"length"`
-	Transactions [][]interface{} `json:"transactions"` // Optional, for cycle accuracy
+	Name         string     `json:"name"`
+	Initial      HarteState `json:"initial"`
+	Final        HarteState `json:"final"`
+	Length       int        `json:"length"`
+	Transactions [][]any    `json:"transactions"` // Optional, for cycle accuracy
 }
 
 // HarteState represents CPU and memory state
@@ -278,7 +278,7 @@ func VerifyHarteFinalState(cpu *M68KCPU, expected HarteState, testName string) H
 	}
 
 	// Helper to record mismatches
-	mismatch := func(format string, args ...interface{}) {
+	mismatch := func(format string, args ...any) {
 		result.Passed = false
 		result.Mismatches = append(result.Mismatches, fmt.Sprintf(format, args...))
 	}

@@ -122,7 +122,7 @@ func (p *ayZ80Parser) parse() (*AYZ80File, error) {
 
 func (p *ayZ80Parser) parseSongs(count int, base int) ([]AYZ80Song, error) {
 	songs := make([]AYZ80Song, 0, count)
-	for i := 0; i < count; i++ {
+	for i := range count {
 		entry := base + i*ayZXSongSize
 		if entry+4 > len(p.data) {
 			return nil, fmt.Errorf("ay z80 song structure out of range")
@@ -316,9 +316,9 @@ func (p *ayZ80Parser) readNTString(start int) (string, error) {
 	}
 	// Use bytes.IndexByte for faster null-terminator search
 	remaining := p.data[start:]
-	nullIdx := bytes.IndexByte(remaining, 0)
-	if nullIdx < 0 {
+	before, _, ok := bytes.Cut(remaining, []byte{0})
+	if !ok {
 		return "", fmt.Errorf("ay z80 unterminated string")
 	}
-	return string(remaining[:nullIdx]), nil
+	return string(before), nil
 }

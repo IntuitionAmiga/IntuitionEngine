@@ -12,7 +12,7 @@ func newTestSoundChip() *SoundChip {
 	chip.sampleTicker.Store(&sampleTickerHolder{})
 
 	waveTypes := []int{WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE, WAVE_NOISE}
-	for i := 0; i < NUM_CHANNELS; i++ {
+	for i := range NUM_CHANNELS {
 		chip.channels[i] = &Channel{
 			waveType:            waveTypes[i],
 			attackTime:          DEFAULT_ATTACK_TIME,

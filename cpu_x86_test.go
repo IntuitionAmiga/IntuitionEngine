@@ -600,7 +600,7 @@ func TestX86_REP_STOSB(t *testing.T) {
 	cpu.Step()
 
 	// Check all bytes filled
-	for i := uint32(0); i < 4; i++ {
+	for i := range uint32(4) {
 		if bus.memory[0x2000+i] != 0xFF {
 			t.Errorf("REP STOSB: memory[0x%X] = 0x%02X, want 0xFF", 0x2000+i, bus.memory[0x2000+i])
 		}

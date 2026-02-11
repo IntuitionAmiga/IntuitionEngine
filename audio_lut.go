@@ -45,13 +45,13 @@ var tanhLUT [tanhLUTSize]float32
 
 func init() {
 	// Initialize sine lookup table
-	for i := 0; i < sinLUTSize; i++ {
+	for i := range sinLUTSize {
 		phase := float64(i) * 2 * math.Pi / float64(sinLUTSize)
 		sinLUT[i] = float32(math.Sin(phase))
 	}
 
 	// Initialize tanh lookup table
-	for i := 0; i < tanhLUTSize; i++ {
+	for i := range tanhLUTSize {
 		x := float64(tanhLUTMin) + float64(i)*float64(tanhLUTMax-tanhLUTMin)/float64(tanhLUTSize-1)
 		tanhLUT[i] = float32(math.Tanh(x))
 	}

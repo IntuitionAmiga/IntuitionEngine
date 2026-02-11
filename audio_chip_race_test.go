@@ -40,9 +40,7 @@ func TestSoundChip_ConcurrentWriteRead(t *testing.T) {
 	stop := make(chan struct{})
 
 	// Goroutine 1: CPU-side writer — hammers HandleRegisterWrite on channel 0
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		iter := uint32(0)
 		for {
 			select {
@@ -62,12 +60,10 @@ func TestSoundChip_ConcurrentWriteRead(t *testing.T) {
 			chip.HandleRegisterWrite(FLEX_CH0_BASE+FLEX_OFF_DUTY, 128)
 			iter++
 		}
-	}()
+	})
 
 	// Goroutine 2: audio-side reader — calls GenerateSample in a loop
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for {
 			select {
 			case <-stop:
@@ -76,7 +72,7 @@ func TestSoundChip_ConcurrentWriteRead(t *testing.T) {
 			}
 			chip.GenerateSample()
 		}
-	}()
+	})
 
 	time.Sleep(100 * time.Millisecond)
 	close(stop)

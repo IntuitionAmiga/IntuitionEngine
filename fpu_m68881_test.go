@@ -13,7 +13,7 @@ func TestFPURegisterInit(t *testing.T) {
 	t.Run("FPU_registers_initialized_to_zero", func(t *testing.T) {
 		fpu := NewM68881FPU()
 
-		for i := 0; i < 8; i++ {
+		for i := range 8 {
 			if !fpu.FPRegs[i].IsZero() {
 				t.Errorf("FP%d should be zero on init, got: %v", i, fpu.FPRegs[i])
 			}

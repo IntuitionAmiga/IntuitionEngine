@@ -255,7 +255,7 @@ func TestParseAHXPositions(t *testing.T) {
 	expectedTracks := [4]int{0, 1, 0, 1}
 	expectedTranspose := [4]int8{0, 12, -12, 5}
 
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		if pos.Track[i] != expectedTracks[i] {
 			t.Errorf("Position 0 track[%d]: expected %d, got %d", i, expectedTracks[i], pos.Track[i])
 		}

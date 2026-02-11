@@ -231,10 +231,7 @@ func parseTEDMUSICHeaderAt(data []byte, sigPos int, file *TEDFile) error {
 
 	// Bytes 17-18: Number of subtunes
 	if pos+2 <= len(data) {
-		file.Subtunes = int(data[pos]) | (int(data[pos+1]) << 8)
-		if file.Subtunes < 1 {
-			file.Subtunes = 1
-		}
+		file.Subtunes = max(int(data[pos])|(int(data[pos+1])<<8), 1)
 	}
 	pos += 2
 

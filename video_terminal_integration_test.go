@@ -11,8 +11,8 @@ func TestVideoTerminal_CursorHidesDuringGraphics(t *testing.T) {
 	// Simulate graphics activity under cursor cell.
 	graphicsColor := uint32(0xFF112233)
 	chip.RenderToFrontBuffer(func(fb []byte, stride int) {
-		for y := 0; y < terminalGlyphHeight; y++ {
-			for x := 0; x < terminalGlyphWidth; x++ {
+		for y := range terminalGlyphHeight {
+			for x := range terminalGlyphWidth {
 				idx := y*stride + x*4
 				writeColorLE(fb, idx, graphicsColor)
 			}
@@ -229,7 +229,7 @@ func TestScreenEditor_E2E_TypeaheadBeforeReadLine(t *testing.T) {
 func TestScreenEditor_E2E_ScrollbackNav(t *testing.T) {
 	vt, _, _ := newVideoTerminalForTest(t)
 	// Fill 35 rows of output (more than 30-row viewport)
-	for i := 0; i < 35; i++ {
+	for i := range 35 {
 		line := byte('A' + byte(i%26))
 		vt.processChar(line)
 		vt.processChar('\r')
@@ -241,7 +241,7 @@ func TestScreenEditor_E2E_ScrollbackNav(t *testing.T) {
 		t.Fatalf("expected cursor at or past row 35, got %d", cy)
 	}
 	// Navigate up past the viewport
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		vt.mu.Lock()
 		vt.screen.MoveCursor(0, -1)
 		vt.mu.Unlock()

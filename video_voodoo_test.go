@@ -276,7 +276,7 @@ func TestVoodoo_TriangleBatch_MultipleTriangles(t *testing.T) {
 	defer v.Destroy()
 
 	// Add 3 triangles
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		offset := float32(i * 100)
 		v.HandleWrite(VOODOO_VERTEX_AX, floatToFixed12_4(100+offset))
 		v.HandleWrite(VOODOO_VERTEX_AY, floatToFixed12_4(50))
@@ -808,7 +808,7 @@ func TestVoodoo_FullRenderLoop(t *testing.T) {
 	// 2. Draw triangles
 	// 3. Swap
 
-	for frameNum := 0; frameNum < 3; frameNum++ {
+	for frameNum := range 3 {
 		// Clear to different color each frame
 		clearColor := uint32(0xFF000000) | uint32((frameNum*80)<<16)
 		v.HandleWrite(VOODOO_COLOR0, clearColor)
@@ -851,7 +851,7 @@ func TestVoodoo_ColorSelect_Register(t *testing.T) {
 	defer v.Destroy()
 
 	// Write vertex select values
-	for i := uint32(0); i < 3; i++ {
+	for i := range uint32(3) {
 		v.HandleWrite(VOODOO_COLOR_SELECT, i)
 		readValue := v.HandleRead(VOODOO_COLOR_SELECT)
 		if readValue != i {
@@ -2340,8 +2340,8 @@ func TestVoodoo_Backend_HasTextureInterface(t *testing.T) {
 	texData := make([]byte, texWidth*texHeight*4) // ARGB8888
 
 	// Create a simple 2x2 checkerboard pattern
-	for y := 0; y < texHeight; y++ {
-		for x := 0; x < texWidth; x++ {
+	for y := range texHeight {
+		for x := range texWidth {
 			idx := (y*texWidth + x) * 4
 			if (x+y)%2 == 0 {
 				texData[idx+0] = 255 // R
@@ -4030,8 +4030,8 @@ func TestVoodoo_SoftwareBackend_Dither_4x4_Enabled(t *testing.T) {
 
 	// Sample a 4x4 block inside the triangle to check for dither pattern
 	var values []byte
-	for dy := 0; dy < 4; dy++ {
-		for dx := 0; dx < 4; dx++ {
+	for dy := range 4 {
+		for dx := range 4 {
 			idx := ((50+dy)*100 + (50 + dx)) * 4
 			values = append(values, frame[idx]) // R channel
 		}
@@ -4195,8 +4195,8 @@ func TestVoodoo_VulkanBackend_Dither_Enabled(t *testing.T) {
 
 	// Sample 4x4 block
 	var values []byte
-	for dy := 0; dy < 4; dy++ {
-		for dx := 0; dx < 4; dx++ {
+	for dy := range 4 {
+		for dx := range 4 {
 			idx := ((50+dy)*100 + (50 + dx)) * 4
 			values = append(values, frame[idx])
 		}
@@ -4401,8 +4401,8 @@ func TestVoodoo_VulkanBackend_GPU_Dither_4x4_Pattern(t *testing.T) {
 
 	// Sample an 8x8 block to see dither pattern
 	var values []int
-	for dy := 0; dy < 8; dy++ {
-		for dx := 0; dx < 8; dx++ {
+	for dy := range 8 {
+		for dx := range 8 {
 			idx := ((40+dy)*100 + (40 + dx)) * 4
 			values = append(values, int(frame[idx]))
 		}
@@ -4458,8 +4458,8 @@ func TestVoodoo_VulkanBackend_GPU_Dither_2x2_Mode(t *testing.T) {
 
 	// Sample 4x4 block
 	var values []int
-	for dy := 0; dy < 4; dy++ {
-		for dx := 0; dx < 4; dx++ {
+	for dy := range 4 {
+		for dx := range 4 {
 			idx := ((40+dy)*100 + (40 + dx)) * 4
 			values = append(values, int(frame[idx]))
 		}
@@ -4618,7 +4618,7 @@ func BenchmarkVoodoo_FullFrame(b *testing.B) {
 		v.HandleWrite(VOODOO_FAST_FILL_CMD, 0)
 
 		// Draw 100 triangles
-		for j := 0; j < 100; j++ {
+		for j := range 100 {
 			offset := float32(j % 10 * 50)
 			v.HandleWrite(VOODOO_VERTEX_AX, floatToFixed12_4(100+offset))
 			v.HandleWrite(VOODOO_VERTEX_AY, floatToFixed12_4(50+float32(j/10*40)))
@@ -4822,7 +4822,7 @@ func TestVoodoo_TextureMemory_64x64Upload(t *testing.T) {
 	v.HandleWrite(VOODOO_TEX_HEIGHT, 64)
 
 	// Fill texture memory with a pattern (64x64x4 = 16384 bytes = 4096 dwords)
-	for i := uint32(0); i < 4096; i++ {
+	for i := range uint32(4096) {
 		// Create a gradient pattern
 		v.HandleWrite(VOODOO_TEXMEM_BASE+i*4, 0xFF000000|i)
 	}
@@ -5272,7 +5272,7 @@ func BenchmarkVoodoo_100Triangles_AllFeatures(b *testing.B) {
 
 	// Create a simple 8x8 texture
 	texData := make([]byte, 8*8*4)
-	for i := 0; i < 8*8; i++ {
+	for i := range 8 * 8 {
 		texData[i*4+0] = byte((i % 8) * 32) // R
 		texData[i*4+1] = byte((i / 8) * 32) // G
 		texData[i*4+2] = 128                // B
@@ -5405,8 +5405,8 @@ func TestVoodoo_Golden_TexturedTriangle(t *testing.T) {
 
 	// Create 4x4 checkerboard texture
 	texData := make([]byte, 4*4*4)
-	for y := 0; y < 4; y++ {
-		for x := 0; x < 4; x++ {
+	for y := range 4 {
+		for x := range 4 {
 			idx := (y*4 + x) * 4
 			if (x+y)%2 == 0 {
 				texData[idx+0] = 255 // R
@@ -5557,7 +5557,7 @@ func TestVoodoo_FuncTable_DepthTest_MatchesSwitch(t *testing.T) {
 	}
 
 	// For each depth function
-	for depthFunc := 0; depthFunc < 8; depthFunc++ {
+	for depthFunc := range 8 {
 		for _, tv := range testValues {
 			result := backend.depthTest(tv.newZ, tv.oldZ, depthFunc)
 
@@ -5606,7 +5606,7 @@ func TestVoodooTripleBufferConcurrent(t *testing.T) {
 	v.width.Store(int32(w))
 	v.height.Store(int32(h))
 	bufSize := w * h * 4
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		v.frameBufs[i] = make([]byte, bufSize)
 	}
 	v.writeIdx = 0        // Producer owns buffer 0
@@ -5619,7 +5619,7 @@ func TestVoodooTripleBufferConcurrent(t *testing.T) {
 	// Producer: simulate SWAP_BUFFER_CMD publishing frames
 	go func() {
 		defer close(done)
-		for i := 0; i < iterations; i++ {
+		for i := range iterations {
 			// Write a marker byte to the current write buffer
 			marker := byte(i & 0xFF)
 			buf := v.frameBufs[v.writeIdx]

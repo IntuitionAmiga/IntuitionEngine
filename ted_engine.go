@@ -187,7 +187,7 @@ func (e *TEDEngine) ensureChannelsInitialized() {
 
 	// TED uses channels 0-1 of the SoundChip
 	// Configure them as square waves with instant envelope
-	for ch := 0; ch < 2; ch++ {
+	for ch := range 2 {
 		e.writeChannel(ch, FLEX_OFF_WAVE_TYPE, WAVE_SQUARE)
 		e.writeChannel(ch, FLEX_OFF_DUTY, 0x0080) // 50% duty cycle
 		e.writeChannel(ch, FLEX_OFF_PWM_CTRL, 0)
@@ -255,7 +255,7 @@ func (e *TEDEngine) applyFrequencies() {
 		return
 	}
 
-	for voice := 0; voice < 2; voice++ {
+	for voice := range 2 {
 		freq := e.calcFrequency(voice)
 		if freq > 0 && freq <= 20000 {
 			e.writeChannel(voice, FLEX_OFF_FREQ, uint32(freq*256)) // 16.8 fixed-point
@@ -481,7 +481,7 @@ func (e *TEDEngine) silenceChannels() {
 	if e.sound == nil {
 		return
 	}
-	for ch := 0; ch < 2; ch++ {
+	for ch := range 2 {
 		e.writeChannel(ch, FLEX_OFF_VOL, 0)
 	}
 }

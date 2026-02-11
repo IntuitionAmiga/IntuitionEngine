@@ -603,7 +603,7 @@ var ahxPlusPan = [4]float32{-0.7, 0.7, 0.7, -0.7}
 //
 //	25-14 (idx 3, 8x), 13-6 (idx 4, 16x), 5-0 (idx 5, 30x)
 func sidGetExpIndex(level uint8) int {
-	for i := 0; i < len(sidEnvExpThresholds); i++ {
+	for i := range len(sidEnvExpThresholds) {
 		if level >= sidEnvExpThresholds[i] {
 			return i
 		}
@@ -909,7 +909,7 @@ func NewSoundChip(backend int) (*SoundChip, error) {
 
 	// Initialise channels
 	waveTypes := []int{WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE, WAVE_NOISE}
-	for i := 0; i < NUM_CHANNELS; i++ {
+	for i := range NUM_CHANNELS {
 		chip.channels[i] = &Channel{
 			waveType:            waveTypes[i],
 			attackTime:          DEFAULT_ATTACK_TIME,
@@ -1684,7 +1684,7 @@ func (ch *Channel) generateWaveSample(sampleRate, sampleRateRecip float32) float
 			steps := int(ch.noisePhase)
 			ch.noisePhase -= float32(steps)
 
-			for i := 0; i < steps; i++ {
+			for range steps {
 				switch ch.noiseMode {
 				case NOISE_MODE_WHITE:
 					newBit := ((ch.noiseSR >> NOISE_TAP1) ^ (ch.noiseSR >> NOISE_TAP2)) & 1
@@ -1767,7 +1767,7 @@ func (ch *Channel) generateWaveSample(sampleRate, sampleRateRecip float32) float
 				ch.noisePhase += noisePhaseInc
 				steps := int(ch.noisePhase)
 				ch.noisePhase -= float32(steps)
-				for i := 0; i < steps; i++ {
+				for range steps {
 					newBit := ((ch.noiseSR >> NOISE_TAP1) ^ (ch.noiseSR >> NOISE_TAP2)) & 1
 					ch.noiseSR = ((ch.noiseSR << 1) | newBit) & NOISE_LFSR_MASK
 				}
@@ -1988,7 +1988,7 @@ func (ch *Channel) processEnhancedSample(
 	sampleRate := float32(SAMPLE_RATE) * float32(oversample)
 	sampleRateRecip := 1.0 / sampleRate
 	var sum float32
-	for i := 0; i < oversample; i++ {
+	for range oversample {
 		sum += ch.generateWaveSample(sampleRate, sampleRateRecip)
 	}
 	rawSample := sum / float32(oversample)
@@ -2275,7 +2275,7 @@ func (chip *SoundChip) GenerateSample() float32 {
 	var sum float32
 	activeCount := 0
 	var primaryType uint32 = 0 // Store the wave type of first active channel
-	for i := 0; i < NUM_CHANNELS; i++ {
+	for i := range NUM_CHANNELS {
 		ch := chip.channels[i]
 		if ch.enabled {
 			sum += ch.generateSample()
@@ -2469,7 +2469,7 @@ func (chip *SoundChip) SetPSGPlusEnabled(enabled bool) {
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 
-	for i := 0; i < NUM_CHANNELS; i++ {
+	for i := range NUM_CHANNELS {
 		ch := chip.channels[i]
 		if ch == nil {
 			continue
@@ -2867,7 +2867,7 @@ func (chip *SoundChip) SetPOKEYPlusEnabled(enabled bool) {
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 
-	for i := 0; i < NUM_CHANNELS; i++ {
+	for i := range NUM_CHANNELS {
 		ch := chip.channels[i]
 		if ch == nil {
 			continue
@@ -2905,7 +2905,7 @@ func (chip *SoundChip) SetSIDPlusEnabled(enabled bool) {
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 
-	for i := 0; i < NUM_CHANNELS; i++ {
+	for i := range NUM_CHANNELS {
 		ch := chip.channels[i]
 		if ch == nil {
 			continue
@@ -2944,7 +2944,7 @@ func (chip *SoundChip) SetTEDPlusEnabled(enabled bool) {
 	defer chip.mu.Unlock()
 
 	// TED uses channels 0-1
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		ch := chip.channels[i]
 		if ch == nil {
 			continue
@@ -2983,7 +2983,7 @@ func (chip *SoundChip) SetAHXPlusEnabled(enabled bool) {
 	defer chip.mu.Unlock()
 
 	// AHX uses channels 0-3
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		ch := chip.channels[i]
 		if ch == nil {
 			continue

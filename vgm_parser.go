@@ -138,10 +138,7 @@ func ParseVGMData(data []byte) (*VGMFile, error) {
 	}
 
 	if len(events) > 0 {
-		last := events[len(events)-1].Sample + 1
-		if uint64(totalSamples) > last {
-			last = uint64(totalSamples)
-		}
+		last := max(uint64(totalSamples), events[len(events)-1].Sample+1)
 		totalSamples = uint32(last)
 	}
 	if loopSample == 0 && loopSamples > 0 && uint64(totalSamples) >= uint64(loopSamples) {

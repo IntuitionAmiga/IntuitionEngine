@@ -374,7 +374,7 @@ func (a *ANTICEngine) HandleWrite(addr uint32, value uint32) {
 			a.scanlineColors[a.writeBuffer][a.scanline] = a.colbk
 			// Capture player positions and graphics for this scanline
 			// This enables authentic multiplexing - HPOSP/GRAFP changes mid-frame
-			for p := 0; p < 4; p++ {
+			for p := range 4 {
 				a.playerGfx[a.writeBuffer][p][a.scanline] = a.grafp[p]
 				a.playerPos[a.writeBuffer][p][a.scanline] = a.hposp[p]
 			}
@@ -669,7 +669,7 @@ func (a *ANTICEngine) RenderFrame() []byte {
 	// Render per-scanline colors for raster bar effects
 	// The frame is ANTIC_FRAME_WIDTH x ANTIC_FRAME_HEIGHT (384x240)
 	// Extend plasma into borders by wrapping scanline indices
-	for y := 0; y < ANTIC_FRAME_HEIGHT; y++ {
+	for y := range ANTIC_FRAME_HEIGHT {
 		// Map frame Y to a virtual scanline that wraps for border areas
 		// This extends the plasma pattern seamlessly into the borders
 		virtualScanline := y - ANTIC_BORDER_TOP
@@ -686,7 +686,7 @@ func (a *ANTICEngine) RenderFrame() []byte {
 
 		// Fill entire row with this color using pre-packed RGBA
 		colorRGBA := ANTICPaletteRGBA[color][:]
-		for x := 0; x < ANTIC_FRAME_WIDTH; x++ {
+		for x := range ANTIC_FRAME_WIDTH {
 			offset := rowStart + x*4
 			copy(a.frameBuffer[offset:offset+4], colorRGBA)
 		}
@@ -704,7 +704,7 @@ func (a *ANTICEngine) RenderFrame() []byte {
 			rowStart := y * ANTIC_FRAME_WIDTH * 4
 
 			// Draw each player (0-3) - read from display buffer (opposite of write buffer)
-			for p := 0; p < 4; p++ {
+			for p := range 4 {
 				gfx := snapPlayerGfx[p][scanline]
 				if gfx == 0 {
 					continue // No pixels set
@@ -724,7 +724,7 @@ func (a *ANTICEngine) RenderFrame() []byte {
 				}
 
 				// Draw 8 pixels (each bit in gfx)
-				for bit := 0; bit < 8; bit++ {
+				for bit := range 8 {
 					if gfx&(0x80>>bit) != 0 {
 						// Calculate screen X position
 						// HPOS is in color clocks, roughly maps to screen coords
@@ -944,13 +944,13 @@ func (a *ANTICEngine) SignalVSync() {
 	a.vcount = 0
 
 	// Clear the write buffer for next frame (start with current background)
-	for i := 0; i < ANTIC_DISPLAY_HEIGHT; i++ {
+	for i := range ANTIC_DISPLAY_HEIGHT {
 		a.scanlineColors[a.writeBuffer][i] = a.colbk
 	}
 
 	// Clear player graphics and positions for next frame (write buffer)
-	for p := 0; p < 4; p++ {
-		for i := 0; i < ANTIC_DISPLAY_HEIGHT; i++ {
+	for p := range 4 {
+		for i := range ANTIC_DISPLAY_HEIGHT {
 			a.playerGfx[a.writeBuffer][p][i] = 0
 			a.playerPos[a.writeBuffer][p][i] = 0
 		}

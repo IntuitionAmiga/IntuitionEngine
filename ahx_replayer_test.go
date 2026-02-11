@@ -92,7 +92,7 @@ func TestEnvelopeProgression_Attack(t *testing.T) {
 	}
 
 	// Simulate 4 frames of attack
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		if v.ADSR.AFrames <= 0 {
 			t.Fatalf("Attack ended too early at frame %d", i)
 		}
@@ -127,7 +127,7 @@ func TestEnvelopeProgression_Decay(t *testing.T) {
 	}
 
 	// Simulate 4 frames of decay
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		v.ADSRVolume += v.ADSR.DVolume
 		v.ADSR.DFrames--
 		if v.ADSR.DFrames <= 0 {
@@ -155,7 +155,7 @@ func TestEnvelopeProgression_Sustain(t *testing.T) {
 	initialVolume := v.ADSRVolume
 
 	// Sustain should hold volume constant while counting down
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		if v.ADSR.SFrames > 0 {
 			v.ADSR.SFrames--
 		}
@@ -190,7 +190,7 @@ func TestEnvelopeProgression_Release(t *testing.T) {
 	}
 
 	// Simulate 4 frames of release
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		v.ADSRVolume += v.ADSR.RVolume
 		v.ADSR.RFrames--
 		if v.ADSR.RFrames <= 0 {
@@ -215,7 +215,7 @@ func TestPortamentoUp(t *testing.T) {
 	v.PeriodSlidePeriod = 0
 
 	// Simulate a few frames
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		if v.PeriodSlideOn && !v.PeriodSlideWithLimit {
 			v.PeriodSlidePeriod += v.PeriodSlideSpeed
 			v.PlantPeriod = true
@@ -239,7 +239,7 @@ func TestPortamentoDown(t *testing.T) {
 	v.PeriodSlidePeriod = 0
 
 	// Simulate a few frames
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		if v.PeriodSlideOn && !v.PeriodSlideWithLimit {
 			v.PeriodSlidePeriod += v.PeriodSlideSpeed
 			v.PlantPeriod = true
@@ -267,7 +267,7 @@ func TestTonePortamento(t *testing.T) {
 	v.PeriodSlideLimit = -0x01C5 // Target is lower period (higher pitch)
 
 	// Simulate frames until we reach the limit
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		if v.PeriodSlideOn && v.PeriodSlideWithLimit {
 			d0 := v.PeriodSlidePeriod - v.PeriodSlideLimit
 			d2 := v.PeriodSlideSpeed
@@ -308,7 +308,7 @@ func TestVibrato(t *testing.T) {
 	periods := make([]int, 64)
 
 	// Simulate 64 frames of vibrato
-	for i := 0; i < 64; i++ {
+	for i := range 64 {
 		if v.VibratoDepth > 0 && v.VibratoDelay <= 0 {
 			v.VibratoPeriod = (AHXVibratoTable[v.VibratoCurrent] * v.VibratoDepth) >> 7
 			v.VibratoCurrent = (v.VibratoCurrent + v.VibratoSpeed) & 0x3F
@@ -343,7 +343,7 @@ func TestVolumeSlide(t *testing.T) {
 	v.VolumeSlideDown = 0
 
 	// Slide up
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		v.NoteMaxVolume += v.VolumeSlideUp - v.VolumeSlideDown
 		if v.NoteMaxVolume < 0 {
 			v.NoteMaxVolume = 0
@@ -361,7 +361,7 @@ func TestVolumeSlide(t *testing.T) {
 	v.VolumeSlideUp = 0
 	v.VolumeSlideDown = 8
 
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		v.NoteMaxVolume += v.VolumeSlideUp - v.VolumeSlideDown
 		if v.NoteMaxVolume < 0 {
 			v.NoteMaxVolume = 0
@@ -396,7 +396,7 @@ func TestSquareModulation(t *testing.T) {
 	positions := make([]int, 40)
 
 	// Simulate modulation
-	for i := 0; i < 40; i++ {
+	for i := range 40 {
 		if v.SquareOn != 0 && v.SquareWait <= 0 {
 			if v.SquareInit != 0 {
 				v.SquareInit = 0
@@ -458,7 +458,7 @@ func TestFilterModulation(t *testing.T) {
 	positions := make([]int, 100)
 
 	// Simulate modulation
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		if v.FilterOn != 0 && v.FilterWait <= 0 {
 			if v.FilterInit != 0 {
 				v.FilterInit = 0
@@ -485,10 +485,7 @@ func TestFilterModulation(t *testing.T) {
 				}
 				v.FilterPos += v.FilterSign
 			}
-			v.FilterWait = v.FilterSpeed - 3
-			if v.FilterWait < 1 {
-				v.FilterWait = 1
-			}
+			v.FilterWait = max(v.FilterSpeed-3, 1)
 		} else {
 			v.FilterWait--
 		}
@@ -605,7 +602,7 @@ func TestPlayIRQ_AdvanceRow(t *testing.T) {
 	initialRow := replayer.NoteNr
 
 	// Run enough IRQ calls to advance rows
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		replayer.PlayIRQ()
 	}
 

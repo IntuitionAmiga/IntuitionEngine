@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -139,13 +140,7 @@ func (h *ehbasicTestHarness) runCycles(maxCycles int) {
 
 	// Use a timeout based on cycles (1ms per 20000 cycles, min 50ms),
 	// with a lower cap to fail hung tests quickly.
-	timeout := time.Duration(maxCycles/20000) * time.Millisecond
-	if timeout < 50*time.Millisecond {
-		timeout = 50 * time.Millisecond
-	}
-	if timeout > 3*time.Second {
-		timeout = 3 * time.Second
-	}
+	timeout := min(max(time.Duration(maxCycles/20000)*time.Millisecond, 50*time.Millisecond), 3*time.Second)
 
 	select {
 	case <-done:
@@ -482,7 +477,7 @@ func TestEhBASIC_ReadLine(t *testing.T) {
 
 	// Check buffer contents
 	buf := make([]byte, 6) // 5 chars + null
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		buf[i] = h.cpu.memory[0x021100+uint32(i)]
 	}
 	if string(buf[:5]) != "HELLO" {
@@ -514,7 +509,7 @@ func TestEhBASIC_ReadLine_Backspace(t *testing.T) {
 	}
 
 	buf := make([]byte, 5)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		buf[i] = h.cpu.memory[0x021100+uint32(i)]
 	}
 	if string(buf) != "HELLO" {
@@ -657,14 +652,14 @@ func tokeniserTest(t *testing.T, asmBin string, input string) []byte {
 	t.Helper()
 
 	// Escape the input string for dc.b
-	var dcBytes string
+	var dcBytes strings.Builder
 	for i, b := range []byte(input) {
 		if i > 0 {
-			dcBytes += ", "
+			dcBytes.WriteString(", ")
 		}
-		dcBytes += fmt.Sprintf("0x%02X", b)
+		dcBytes.WriteString(fmt.Sprintf("0x%02X", b))
 	}
-	dcBytes += ", 0" // null terminator
+	dcBytes.WriteString(", 0") // null terminator
 
 	body := fmt.Sprintf(`    la      r8, test_input
     la      r9, 0x021100
@@ -678,7 +673,7 @@ test_input:
     dc.b    %s
 
     align 8
-test_done:`, dcBytes)
+test_done:`, dcBytes.String())
 
 	binary := assembleBasicTest(t, asmBin, body)
 	h := newEhbasicHarness(t)
@@ -687,7 +682,7 @@ test_done:`, dcBytes)
 
 	length := h.bus.Read32(0x021000)
 	result := make([]byte, length)
-	for i := uint32(0); i < length; i++ {
+	for i := range length {
 		result[i] = h.cpu.memory[0x021100+i]
 	}
 	return result
@@ -696,19 +691,19 @@ test_done:`, dcBytes)
 func detokenizeViaAsm(t *testing.T, asmBin string, tokens []byte) string {
 	t.Helper()
 
-	var dcBytes string
+	var dcBytes strings.Builder
 	for i, b := range tokens {
 		if i > 0 {
-			dcBytes += ", "
+			dcBytes.WriteString(", ")
 		}
-		dcBytes += fmt.Sprintf("0x%02X", b)
+		dcBytes.WriteString(fmt.Sprintf("0x%02X", b))
 	}
 	// Ensure null termination if not present
 	if len(tokens) == 0 || tokens[len(tokens)-1] != 0 {
 		if len(tokens) > 0 {
-			dcBytes += ", "
+			dcBytes.WriteString(", ")
 		}
-		dcBytes += "0"
+		dcBytes.WriteString("0")
 	}
 
 	body := fmt.Sprintf(`    la      r8, test_input
@@ -723,7 +718,7 @@ test_input:
     dc.b    %s
 
     align 8
-test_done:`, dcBytes)
+test_done:`, dcBytes.String())
 
 	binary := assembleBasicTest(t, asmBin, body)
 	h := newEhbasicHarness(t)
@@ -732,7 +727,7 @@ test_done:`, dcBytes)
 
 	length := h.bus.Read32(0x021000)
 	result := make([]byte, length)
-	for i := uint32(0); i < length; i++ {
+	for i := range length {
 		result[i] = h.cpu.memory[0x021100+i]
 	}
 	// Remove null terminator if present at end of string
@@ -806,13 +801,7 @@ func TestEhBASIC_Tokenize_ForNext(t *testing.T) {
 		t.Fatalf("tokenize FOR: expected TK_FOR (0x81), got 0x%02X", result[0])
 	}
 	// Find TK_TO in the result
-	foundTO := false
-	for _, b := range result {
-		if b == 0xA9 {
-			foundTO = true
-			break
-		}
-	}
+	foundTO := slices.Contains(result, 0xA9)
 	if !foundTO {
 		t.Fatalf("tokenize FOR: missing TK_TO (0xA9) in %X", result)
 	}
@@ -1440,14 +1429,14 @@ func exprEvalTest(t *testing.T, asmBin string, expr string) uint32 {
 	t.Helper()
 
 	// Encode expression as hex bytes for dc.b
-	var dcBytes string
+	var dcBytes strings.Builder
 	for i, b := range []byte(expr) {
 		if i > 0 {
-			dcBytes += ", "
+			dcBytes.WriteString(", ")
 		}
-		dcBytes += fmt.Sprintf("0x%02X", b)
+		dcBytes.WriteString(fmt.Sprintf("0x%02X", b))
 	}
-	dcBytes += ", 0" // null terminator
+	dcBytes.WriteString(", 0") // null terminator
 
 	body := fmt.Sprintf(`    ; Tokenize the expression
     la      r8, test_expr
@@ -1469,7 +1458,7 @@ test_expr:
     dc.b    %s
 
     align 8
-test_done:`, dcBytes)
+test_done:`, dcBytes.String())
 
 	binary := assembleExprTest(t, asmBin, body)
 	h := newEhbasicHarness(t)
@@ -1624,7 +1613,7 @@ func execStmtTB(t testing.TB, asmBin string, program string) string {
 	// We tokenize each line, store it, then call exec_run.
 	lines := strings.Split(strings.TrimSpace(program), "\n")
 
-	var storeCode string
+	var storeCode strings.Builder
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -1639,16 +1628,16 @@ func execStmtTB(t testing.TB, asmBin string, program string) string {
 		lineContent := parts[1]
 
 		// Encode content as hex bytes
-		var dcBytes string
+		var dcBytes strings.Builder
 		for i, b := range []byte(lineContent) {
 			if i > 0 {
-				dcBytes += ", "
+				dcBytes.WriteString(", ")
 			}
-			dcBytes += fmt.Sprintf("0x%02X", b)
+			dcBytes.WriteString(fmt.Sprintf("0x%02X", b))
 		}
-		dcBytes += ", 0"
+		dcBytes.WriteString(", 0")
 
-		storeCode += fmt.Sprintf(`
+		storeCode.WriteString(fmt.Sprintf(`
     ; --- Store line %s ---
     la      r8, .line_%s_raw
     la      r9, 0x021100
@@ -1662,10 +1651,10 @@ func execStmtTB(t testing.TB, asmBin string, program string) string {
     dc.b    %s
     align 8
 .line_%s_end:
-`, lineNum, lineNum, lineNum, lineNum, lineNum, dcBytes, lineNum)
+`, lineNum, lineNum, lineNum, lineNum, lineNum, dcBytes.String(), lineNum))
 	}
 
-	body := storeCode + `
+	body := storeCode.String() + `
     ; Execute the stored program
     jsr     exec_run
 `
@@ -1684,7 +1673,7 @@ func execStmtTestWithBus(t *testing.T, asmBin string, program string) (string, *
 	t.Helper()
 
 	lines := strings.Split(strings.TrimSpace(program), "\n")
-	var storeCode string
+	var storeCode strings.Builder
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -1696,15 +1685,15 @@ func execStmtTestWithBus(t *testing.T, asmBin string, program string) (string, *
 		}
 		lineNum := parts[0]
 		lineContent := parts[1]
-		var dcBytes string
+		var dcBytes strings.Builder
 		for i, b := range []byte(lineContent) {
 			if i > 0 {
-				dcBytes += ", "
+				dcBytes.WriteString(", ")
 			}
-			dcBytes += fmt.Sprintf("0x%02X", b)
+			dcBytes.WriteString(fmt.Sprintf("0x%02X", b))
 		}
-		dcBytes += ", 0"
-		storeCode += fmt.Sprintf(`
+		dcBytes.WriteString(", 0")
+		storeCode.WriteString(fmt.Sprintf(`
     ; --- Store line %s ---
     la      r8, .line_%s_raw
     la      r9, 0x021100
@@ -1718,9 +1707,9 @@ func execStmtTestWithBus(t *testing.T, asmBin string, program string) (string, *
     dc.b    %s
     align 8
 .line_%s_end:
-`, lineNum, lineNum, lineNum, lineNum, lineNum, dcBytes, lineNum)
+`, lineNum, lineNum, lineNum, lineNum, lineNum, dcBytes.String(), lineNum))
 	}
-	body := storeCode + `
+	body := storeCode.String() + `
     jsr     exec_run
 `
 	binary := assembleExecTest(t, asmBin, body)
@@ -1834,14 +1823,14 @@ func TestEhBASIC_ForNext(t *testing.T) {
 30 NEXT`)
 	out = strings.TrimRight(out, "\r\n")
 	var cleaned []string
-	for _, l := range strings.Split(out, "\r\n") {
+	for l := range strings.SplitSeq(out, "\r\n") {
 		l = strings.TrimSpace(l)
 		if l != "" {
 			cleaned = append(cleaned, l)
 		}
 	}
 	if len(cleaned) == 0 {
-		for _, l := range strings.Split(out, "\n") {
+		for l := range strings.SplitSeq(out, "\n") {
 			l = strings.TrimSpace(l)
 			if l != "" {
 				cleaned = append(cleaned, l)
@@ -1866,14 +1855,14 @@ func TestEhBASIC_ForStep(t *testing.T) {
 30 NEXT`)
 	out = strings.TrimRight(out, "\r\n")
 	var cleaned []string
-	for _, l := range strings.Split(out, "\r\n") {
+	for l := range strings.SplitSeq(out, "\r\n") {
 		l = strings.TrimSpace(l)
 		if l != "" {
 			cleaned = append(cleaned, l)
 		}
 	}
 	if len(cleaned) == 0 {
-		for _, l := range strings.Split(out, "\n") {
+		for l := range strings.SplitSeq(out, "\n") {
 			l = strings.TrimSpace(l)
 			if l != "" {
 				cleaned = append(cleaned, l)
@@ -1900,7 +1889,7 @@ func TestEhBASIC_WhileWend(t *testing.T) {
 50 WEND`)
 	out = strings.TrimRight(out, "\r\n")
 	var cleaned []string
-	for _, l := range strings.Split(strings.ReplaceAll(out, "\r", ""), "\n") {
+	for l := range strings.SplitSeq(strings.ReplaceAll(out, "\r", ""), "\n") {
 		l = strings.TrimSpace(l)
 		if l != "" {
 			cleaned = append(cleaned, l)
@@ -4095,7 +4084,7 @@ func TestREPL_NewClearsProgram(t *testing.T) {
 
 	// The program was cleared by NEW, so PRINT 123 never executes.
 	// Output from RUN should not contain "123" as a standalone line.
-	for _, line := range strings.Split(output, "\n") {
+	for line := range strings.SplitSeq(output, "\n") {
 		if strings.TrimRight(line, "\r") == "123" {
 			t.Fatalf("PRINT should not execute after NEW, got: %q", output)
 		}
@@ -4130,7 +4119,7 @@ func TestREPL_DeleteLine(t *testing.T) {
 
 	// Check that "222" appears as PRINT output
 	found222 := false
-	for _, line := range strings.Split(output, "\n") {
+	for line := range strings.SplitSeq(output, "\n") {
 		if strings.TrimRight(line, "\r") == "222" {
 			found222 = true
 		}
@@ -4140,7 +4129,7 @@ func TestREPL_DeleteLine(t *testing.T) {
 	}
 
 	// Check that "111" does NOT appear as standalone PRINT output
-	for _, line := range strings.Split(output, "\n") {
+	for line := range strings.SplitSeq(output, "\n") {
 		if strings.TrimRight(line, "\r") == "111" {
 			t.Fatalf("line 10 should have been deleted, got: %q", output)
 		}
@@ -4425,7 +4414,7 @@ func TestEhBASIC_Get(t *testing.T) {
 	// GET reads single char — we pre-queue 'X' (ASCII 88)
 	// Need to use execStmtTestWithBus to send input first
 	lines := strings.Split(strings.TrimSpace("10 GET A\n20 PRINT A"), "\n")
-	var storeCode string
+	var storeCode strings.Builder
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -4437,15 +4426,15 @@ func TestEhBASIC_Get(t *testing.T) {
 		}
 		lineNum := parts[0]
 		lineContent := parts[1]
-		var dcBytes string
+		var dcBytes strings.Builder
 		for i, b := range []byte(lineContent) {
 			if i > 0 {
-				dcBytes += ", "
+				dcBytes.WriteString(", ")
 			}
-			dcBytes += fmt.Sprintf("0x%02X", b)
+			dcBytes.WriteString(fmt.Sprintf("0x%02X", b))
 		}
-		dcBytes += ", 0"
-		storeCode += fmt.Sprintf(`
+		dcBytes.WriteString(", 0")
+		storeCode.WriteString(fmt.Sprintf(`
     ; --- Store line %s ---
     la      r8, .line_%s_raw
     la      r9, 0x021100
@@ -4459,9 +4448,9 @@ func TestEhBASIC_Get(t *testing.T) {
     dc.b    %s
     align 8
 .line_%s_end:
-`, lineNum, lineNum, lineNum, lineNum, lineNum, dcBytes, lineNum)
+`, lineNum, lineNum, lineNum, lineNum, lineNum, dcBytes.String(), lineNum))
 	}
-	body := storeCode + `
+	body := storeCode.String() + `
     jsr     exec_run
 `
 	binary := assembleExecTest(t, buildAssembler(t), body)
@@ -4532,7 +4521,7 @@ func TestEhBASIC_NestedWhileWend(t *testing.T) {
 100 PRINT "DONE"`)
 	out = strings.TrimRight(out, "\r\n")
 	var cleaned []string
-	for _, l := range strings.Split(strings.ReplaceAll(out, "\r", ""), "\n") {
+	for l := range strings.SplitSeq(strings.ReplaceAll(out, "\r", ""), "\n") {
 		l = strings.TrimSpace(l)
 		if l != "" {
 			cleaned = append(cleaned, l)
@@ -5229,7 +5218,7 @@ func execStmtTestWithVideo(t *testing.T, asmBin string, program string, maxCycle
 	t.Helper()
 
 	lines := strings.Split(strings.TrimSpace(program), "\n")
-	var storeCode string
+	var storeCode strings.Builder
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -5241,15 +5230,15 @@ func execStmtTestWithVideo(t *testing.T, asmBin string, program string, maxCycle
 		}
 		lineNum := parts[0]
 		lineContent := parts[1]
-		var dcBytes string
+		var dcBytes strings.Builder
 		for i, b := range []byte(lineContent) {
 			if i > 0 {
-				dcBytes += ", "
+				dcBytes.WriteString(", ")
 			}
-			dcBytes += fmt.Sprintf("0x%02X", b)
+			dcBytes.WriteString(fmt.Sprintf("0x%02X", b))
 		}
-		dcBytes += ", 0"
-		storeCode += fmt.Sprintf(`
+		dcBytes.WriteString(", 0")
+		storeCode.WriteString(fmt.Sprintf(`
     ; --- Store line %s ---
     la      r8, .line_%s_raw
     la      r9, 0x021100
@@ -5263,9 +5252,9 @@ func execStmtTestWithVideo(t *testing.T, asmBin string, program string, maxCycle
     dc.b    %s
     align 8
 .line_%s_end:
-`, lineNum, lineNum, lineNum, lineNum, lineNum, dcBytes, lineNum)
+`, lineNum, lineNum, lineNum, lineNum, lineNum, dcBytes.String(), lineNum))
 	}
-	body := storeCode + `
+	body := storeCode.String() + `
     jsr     exec_run
 `
 	binary := assembleExecTest(t, asmBin, body)
@@ -5288,13 +5277,7 @@ func execStmtTestWithVideo(t *testing.T, asmBin string, program string, maxCycle
 		h.cpu.Execute()
 		close(done)
 	}()
-	timeout := time.Duration(maxCycles/20000) * time.Millisecond
-	if timeout < 100*time.Millisecond {
-		timeout = 100 * time.Millisecond
-	}
-	if timeout > 30*time.Second {
-		timeout = 30 * time.Second
-	}
+	timeout := min(max(time.Duration(maxCycles/20000)*time.Millisecond, 100*time.Millisecond), 30*time.Second)
 	select {
 	case <-done:
 	case <-time.After(timeout):
@@ -5420,7 +5403,7 @@ func execStmtTestWithFileIO(t *testing.T, asmBin string, tmpDir string, program 
 	t.Helper()
 
 	lines := strings.Split(strings.TrimSpace(program), "\n")
-	var storeCode string
+	var storeCode strings.Builder
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -5432,16 +5415,16 @@ func execStmtTestWithFileIO(t *testing.T, asmBin string, tmpDir string, program 
 		}
 		lineNum := parts[0]
 		lineContent := parts[1]
-		var dcBytes string
+		var dcBytes strings.Builder
 		for i, b := range []byte(lineContent) {
 			if i > 0 {
-				dcBytes += ", "
+				dcBytes.WriteString(", ")
 			}
-			dcBytes += fmt.Sprintf("0x%02X", b)
+			dcBytes.WriteString(fmt.Sprintf("0x%02X", b))
 		}
-		dcBytes += ", 0"
+		dcBytes.WriteString(", 0")
 
-		storeCode += fmt.Sprintf(`
+		storeCode.WriteString(fmt.Sprintf(`
     ; --- Store line %s ---
     la      r8, .line_%s_raw
     la      r9, 0x021100
@@ -5455,10 +5438,10 @@ func execStmtTestWithFileIO(t *testing.T, asmBin string, tmpDir string, program 
     dc.b    %s
     align 8
 .line_%s_end:
-`, lineNum, lineNum, lineNum, lineNum, lineNum, dcBytes, lineNum)
+`, lineNum, lineNum, lineNum, lineNum, lineNum, dcBytes.String(), lineNum))
 	}
 
-	body := storeCode + `
+	body := storeCode.String() + `
     jsr     exec_run
     halt
 `

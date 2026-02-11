@@ -83,9 +83,9 @@ func TestRenderGlyph_PixelPattern(t *testing.T) {
 	fb := chip.GetFrontBuffer()
 	stride := VideoModes[chip.currentMode].bytesPerRow
 	glyph := vt.glyphs['A']
-	for y := 0; y < terminalGlyphHeight; y++ {
+	for y := range terminalGlyphHeight {
 		rowBits := glyph[y]
-		for x := 0; x < terminalGlyphWidth; x++ {
+		for x := range terminalGlyphWidth {
 			want := vt.bgColor
 			if (rowBits & (0x80 >> x)) != 0 {
 				want = vt.fgColor
@@ -107,9 +107,9 @@ func TestRenderGlyph_Position(t *testing.T) {
 	fb := chip.GetFrontBuffer()
 	stride := VideoModes[chip.currentMode].bytesPerRow
 	glyph := vt.glyphs['A']
-	for y := 0; y < terminalGlyphHeight; y++ {
+	for y := range terminalGlyphHeight {
 		rowBits := glyph[y]
-		for x := 0; x < terminalGlyphWidth; x++ {
+		for x := range terminalGlyphWidth {
 			want := vt.bgColor
 			if (rowBits & (0x80 >> x)) != 0 {
 				want = vt.fgColor
@@ -654,9 +654,9 @@ func TestHandleKeyInput_LineMode_RenderUpdate(t *testing.T) {
 	glyph := vt.glyphs['A']
 	// Check that at least one foreground pixel was rendered for glyph 'A'
 	found := false
-	for y := 0; y < terminalGlyphHeight; y++ {
+	for y := range terminalGlyphHeight {
 		rowBits := glyph[y]
-		for x := 0; x < terminalGlyphWidth; x++ {
+		for x := range terminalGlyphWidth {
 			if (rowBits & (0x80 >> x)) != 0 {
 				if pixelAt(fb, stride, x, y) == vt.fgColor {
 					found = true

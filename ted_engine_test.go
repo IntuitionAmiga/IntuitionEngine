@@ -267,7 +267,7 @@ func TestTEDTickSample(t *testing.T) {
 	}
 
 	// Tick 5 more times to reach sample 5
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		engine.TickSample()
 	}
 
@@ -286,7 +286,7 @@ func TestTEDPlaybackLoop(t *testing.T) {
 	engine.SetEvents(events, 10, true, 0) // Loop from start
 
 	// Tick past the end
-	for i := 0; i < 15; i++ {
+	for range 15 {
 		engine.TickSample()
 	}
 

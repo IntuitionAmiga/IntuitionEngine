@@ -60,11 +60,11 @@ func parseNullTerminatedString(data []byte, offset int) (string, int) {
 // Uses bytes.IndexByte for optimized null byte search.
 func parsePaddedString(data []byte) string {
 	// Use bytes.IndexByte for optimized search
-	nullPos := bytes.IndexByte(data, 0)
-	if nullPos == -1 {
+	before, _, ok := bytes.Cut(data, []byte{0})
+	if !ok {
 		return strings.TrimRight(string(data), " ")
 	}
-	return strings.TrimRight(string(data[:nullPos]), " ")
+	return strings.TrimRight(string(before), " ")
 }
 
 // MusicMetadata contains common metadata fields across all music formats

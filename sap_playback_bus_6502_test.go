@@ -214,7 +214,7 @@ func TestSAPPlaybackBus6502_AllPOKEYRegisters(t *testing.T) {
 	bus.StartFrame()
 
 	// Write to all POKEY registers
-	for i := 0; i < 9; i++ {
+	for i := range 9 {
 		bus.Write(uint16(0xD200+i), uint8(i*16))
 	}
 

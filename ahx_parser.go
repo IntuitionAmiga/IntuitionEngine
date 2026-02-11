@@ -164,7 +164,7 @@ func ParseAHX(data []byte) (*AHXFile, error) {
 		if pos+8 > len(data) {
 			return nil, errors.New("AHX: unexpected end of data in position list")
 		}
-		for j := 0; j < 4; j++ {
+		for j := range 4 {
 			song.Positions[i].Track[j] = int(data[pos])
 			song.Positions[i].Transpose[j] = int8(data[pos+1])
 			pos += 2
@@ -284,7 +284,7 @@ func ParseAHX(data []byte) (*AHXFile, error) {
 
 		// Parse playlist entries
 		inst.PList.Entries = make([]AHXPListEntry, plistLen)
-		for j := 0; j < plistLen; j++ {
+		for j := range plistLen {
 			if pos+4 > len(data) {
 				return nil, errors.New("AHX: unexpected end of data in playlist")
 			}

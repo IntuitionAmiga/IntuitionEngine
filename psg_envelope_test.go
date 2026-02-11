@@ -13,7 +13,7 @@ func collectEnvelopeLevels(shape uint8, steps int) []int {
 
 	levels := make([]int, 0, steps+1)
 	levels = append(levels, engine.envLevel)
-	for i := 0; i < steps; i++ {
+	for range steps {
 		engine.TickSample()
 		levels = append(levels, engine.envLevel)
 	}
@@ -21,7 +21,7 @@ func collectEnvelopeLevels(shape uint8, steps int) []int {
 }
 
 func TestPSGEnvelopeShapesBehavior(t *testing.T) {
-	for shape := 0; shape < 16; shape++ {
+	for shape := range 16 {
 		levels := collectEnvelopeLevels(uint8(shape), 32)
 		cont := shape&0x08 != 0
 		attack := shape&0x04 != 0

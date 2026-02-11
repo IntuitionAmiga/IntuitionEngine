@@ -35,7 +35,7 @@ func TestAHXPlus_StereoSpread(t *testing.T) {
 
 	// Verify pan values for each channel (L R R L pattern)
 	expectedPan := []float32{-0.7, 0.7, 0.7, -0.7}
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		ch := chip.channels[i]
 		if ch == nil {
 			t.Fatalf("Channel %d is nil", i)
@@ -47,7 +47,7 @@ func TestAHXPlus_StereoSpread(t *testing.T) {
 
 	// Verify gains for Amiga stereo spread
 	expectedGain := []float32{1.08, 0.92, 0.92, 1.08}
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		ch := chip.channels[i]
 		if ch.ahxPlusGain != expectedGain[i] {
 			t.Errorf("Channel %d gain should be %.2f, got %.2f", i, expectedGain[i], ch.ahxPlusGain)
@@ -62,7 +62,7 @@ func TestAHXPlus_Oversampling(t *testing.T) {
 	// Enable AHX+
 	engine.SetAHXPlusEnabled(true)
 
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		ch := chip.channels[i]
 		if ch == nil {
 			t.Fatalf("Channel %d is nil", i)
@@ -74,7 +74,7 @@ func TestAHXPlus_Oversampling(t *testing.T) {
 
 	// Disable and verify reset
 	engine.SetAHXPlusEnabled(false)
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		ch := chip.channels[i]
 		if ch.ahxPlusOversample != 1 {
 			t.Errorf("Channel %d oversample should be 1 when disabled, got %d", i, ch.ahxPlusOversample)
@@ -87,7 +87,7 @@ func TestAHXPlus_RoomReverb(t *testing.T) {
 	engine := NewAHXEngine(chip, 44100)
 	engine.SetAHXPlusEnabled(true)
 
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		ch := chip.channels[i]
 		if ch == nil {
 			t.Fatalf("Channel %d is nil", i)
@@ -105,7 +105,7 @@ func TestAHXPlus_RoomReverb(t *testing.T) {
 
 	// Disable and verify cleanup
 	engine.SetAHXPlusEnabled(false)
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		ch := chip.channels[i]
 		if ch.ahxPlusRoomBuf != nil {
 			t.Errorf("Channel %d room buffer should be nil when disabled", i)
@@ -154,13 +154,7 @@ func TestAHXPlus_PWMMapping(t *testing.T) {
 		if squarePos > 0x20 {
 			squarePos = 0x40 - squarePos
 		}
-		duty := squarePos * 4
-		if duty < 0x08 {
-			duty = 0x08
-		}
-		if duty > 0x80 {
-			duty = 0x80
-		}
+		duty := min(max(squarePos*4, 0x08), 0x80)
 		if duty != tc.expected {
 			t.Errorf("SquarePos %d: expected duty 0x%02X, got 0x%02X", tc.squarePos, tc.expected, duty)
 		}
@@ -172,7 +166,7 @@ func TestAHXPlus_Drive(t *testing.T) {
 	engine := NewAHXEngine(chip, 44100)
 	engine.SetAHXPlusEnabled(true)
 
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		ch := chip.channels[i]
 		if ch == nil {
 			t.Fatalf("Channel %d is nil", i)
@@ -183,7 +177,7 @@ func TestAHXPlus_Drive(t *testing.T) {
 	}
 
 	engine.SetAHXPlusEnabled(false)
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		ch := chip.channels[i]
 		if ch.ahxPlusDrive != 0 {
 			t.Errorf("Channel %d drive should be 0 when disabled, got %.2f", i, ch.ahxPlusDrive)

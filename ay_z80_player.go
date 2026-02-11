@@ -92,7 +92,7 @@ func (p *ayZ80Player) RenderFrames(frameCount int) ([]PSGEvent, uint64) {
 	acc := p.frameAcc
 	samplePos := p.currentSample
 
-	for frame := 0; frame < frameCount; frame++ {
+	for range frameCount {
 		startCycle := p.bus.cycles
 		startIndex := len(p.bus.writes)
 		p.runIRQFrame(p.cyclesPerFrame)
@@ -190,7 +190,7 @@ func buildAYZ80RAM(header AYZ80Header, song AYZ80SongData) ([0x10000]byte, error
 
 	switch {
 	case playerVersion >= 3:
-		for i := 0; i < 0x0100; i++ {
+		for i := range 0x0100 {
 			ram[i] = 0xC9
 		}
 		for i := 0x0100; i < 0x4000; i++ {
@@ -200,7 +200,7 @@ func buildAYZ80RAM(header AYZ80Header, song AYZ80SongData) ([0x10000]byte, error
 			ram[i] = 0x00
 		}
 	case playerVersion == 2:
-		for i := 0; i < 0x0100; i++ {
+		for i := range 0x0100 {
 			ram[i] = 0xC9
 		}
 	}
@@ -214,10 +214,7 @@ func buildAYZ80RAM(header AYZ80Header, song AYZ80SongData) ([0x10000]byte, error
 			continue
 		}
 		start := int(block.Addr)
-		end := start + len(block.Data)
-		if end > len(ram) {
-			end = len(ram)
-		}
+		end := min(start+len(block.Data), len(ram))
 		copy(ram[start:end], block.Data[:end-start])
 	}
 

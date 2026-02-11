@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -136,11 +137,11 @@ func parseHeader(data []byte, header *SAPHeader) error {
 		}
 
 		// Find tag/value separator (first space)
-		spaceIdx := bytes.IndexByte(line, ' ')
+		before, after, ok := bytes.Cut(line, []byte{' '})
 		var tag, value []byte
-		if spaceIdx >= 0 {
-			tag = line[:spaceIdx]
-			value = bytes.TrimSpace(line[spaceIdx+1:])
+		if ok {
+			tag = before
+			value = bytes.TrimSpace(after)
 		} else {
 			tag = line
 			value = nil
@@ -307,13 +308,7 @@ func parseBlocks(data []byte) ([]SAPBlock, error) {
 func validateHeader(header *SAPHeader) error {
 	// TYPE is always required
 	validTypes := []byte{'B', 'C', 'D', 'S', 'R'}
-	typeValid := false
-	for _, t := range validTypes {
-		if header.Type == t {
-			typeValid = true
-			break
-		}
-	}
+	typeValid := slices.Contains(validTypes, header.Type)
 	if !typeValid {
 		if header.Type == 0 {
 			return errors.New("SAP file missing required TYPE tag")

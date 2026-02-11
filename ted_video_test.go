@@ -302,7 +302,7 @@ func TestTEDVideo_RasterRegisters(t *testing.T) {
 // TestTEDVideo_ColorPalette tests the 121-color TED palette
 func TestTEDVideo_ColorPalette(t *testing.T) {
 	// Black should always be (0, 0, 0) regardless of luminance
-	for lum := uint8(0); lum < 8; lum++ {
+	for lum := range uint8(8) {
 		colorByte := TEDColorByte(TED_HUE_BLACK, lum)
 		r, g, b := GetTEDColor(colorByte)
 		if r != 0 || g != 0 || b != 0 {
@@ -334,7 +334,7 @@ func TestTEDVideo_ColorPalette(t *testing.T) {
 func TestTEDVideo_BlackColorLuminance(t *testing.T) {
 	// This is the specific TED quirk: black (hue 0) is always black
 	// regardless of the luminance value
-	for lum := uint8(0); lum < 8; lum++ {
+	for lum := range uint8(8) {
 		colorByte := (lum << 4) | TED_HUE_BLACK
 		r, g, b := GetTEDColor(colorByte)
 		if r != 0 || g != 0 || b != 0 {
@@ -762,7 +762,7 @@ func TestTEDVideo_CursorBlinkTiming(t *testing.T) {
 	initialVisible := ted.cursorVisible
 
 	// Signal VSync 29 times (one less than blink interval)
-	for i := 0; i < TED_V_CURSOR_FRAMES-1; i++ {
+	for range TED_V_CURSOR_FRAMES - 1 {
 		ted.SignalVSync()
 	}
 
@@ -778,7 +778,7 @@ func TestTEDVideo_CursorBlinkTiming(t *testing.T) {
 	}
 
 	// Another 30 frames should toggle back
-	for i := 0; i < TED_V_CURSOR_FRAMES; i++ {
+	for range TED_V_CURSOR_FRAMES {
 		ted.SignalVSync()
 	}
 	if ted.cursorVisible != initialVisible {

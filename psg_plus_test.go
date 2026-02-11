@@ -38,7 +38,7 @@ func TestPSGPlusAffectsOutput(t *testing.T) {
 
 	var baseSample float32
 	var plusSample float32
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		baseSample = chipBase.GenerateSample()
 		plusSample = chipPlus.GenerateSample()
 	}
@@ -62,7 +62,7 @@ func TestPSGPlusDisabledMatchesBaseline(t *testing.T) {
 	engineOff.WriteRegister(7, 0x3E)
 	engineOff.SetPSGPlusEnabled(false)
 
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		baseSample := chipBase.GenerateSample()
 		offSample := chipOff.GenerateSample()
 		if baseSample != offSample {

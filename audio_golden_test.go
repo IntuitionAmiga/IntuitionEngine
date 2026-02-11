@@ -46,7 +46,7 @@ func createGoldenChip() *SoundChip {
 
 	// Initialize channels with deterministic state
 	waveTypes := []int{WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE, WAVE_NOISE}
-	for i := 0; i < NUM_CHANNELS; i++ {
+	for i := range NUM_CHANNELS {
 		chip.channels[i] = &Channel{
 			waveType:            waveTypes[i],
 			attackTime:          DEFAULT_ATTACK_TIME,
@@ -325,7 +325,7 @@ func TestGolden_MultiChannel(t *testing.T) {
 	chip := createGoldenChip()
 
 	// Set up 3 channels with different frequencies (C major chord)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		ch := chip.channels[i]
 		ch.enabled = true
 		ch.gate = true

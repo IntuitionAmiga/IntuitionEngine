@@ -371,10 +371,7 @@ func (c *VideoCompositor) blendFrame1to1(srcFrame []byte, width, height int) {
 
 	var wg sync.WaitGroup
 	for y0 := 0; y0 < height; y0 += stripHeight {
-		y1 := y0 + stripHeight
-		if y1 > height {
-			y1 = height
-		}
+		y1 := min(y0+stripHeight, height)
 		wg.Add(1)
 		go func(startY, endY int) {
 			defer wg.Done()
@@ -415,12 +412,12 @@ func (c *VideoCompositor) blendFrameScaled(srcFrame []byte, srcW, srcH int) {
 
 	dstOffset := 0
 
-	for dstY := 0; dstY < dstH; dstY++ {
+	for dstY := range dstH {
 		// Calculate srcY once per row (matches original: dstY * srcH / dstH)
 		srcY := dstY * srcH / dstH
 		srcRowOffset := srcY * srcRowBytes
 
-		for dstX := 0; dstX < dstW; dstX++ {
+		for dstX := range dstW {
 			srcX := dstX * srcW / dstW
 			srcIdx := srcRowOffset + srcX*BYTES_PER_PIXEL
 			dstIdx := dstOffset + dstX*BYTES_PER_PIXEL

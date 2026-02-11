@@ -577,7 +577,7 @@ func (b *X86BusAdapter) Out(port uint16, value byte) {
 			if addr == VOODOO_TEX_UPLOAD && b.voodooTexSrc != 0 {
 				texSize := b.voodooEngine.textureWidth * b.voodooEngine.textureHeight * 4
 				if texSize > 0 && texSize <= VOODOO_TEXMEM_SIZE {
-					for i := 0; i < texSize; i++ {
+					for i := range texSize {
 						b.voodooEngine.textureMemory[i] = b.bus.Read8(uint32(b.voodooTexSrc) + uint32(i))
 					}
 				}

@@ -191,7 +191,7 @@ func (p *SAP6502Player) RenderFrames(numFrames int) ([]SAPPOKEYEvent, uint64) {
 	// Reuse pre-allocated buffer, reset length but keep capacity
 	p.eventBuffer = p.eventBuffer[:0]
 
-	for frame := 0; frame < numFrames; frame++ {
+	for range numFrames {
 		// Start new frame for event collection
 		p.bus.StartFrame()
 

@@ -231,7 +231,7 @@ func (p *sndh68KPlayer) RenderFrames(frameCount int) ([]PSGEvent, uint64) {
 	acc := p.frameAcc
 	samplePos := p.currentSample
 
-	for frame := 0; frame < frameCount; frame++ {
+	for range frameCount {
 		// Clear writes from previous frame
 		p.bus.ResetWrites()
 		startCycle := p.bus.GetCycles()
@@ -254,12 +254,11 @@ func (p *sndh68KPlayer) RenderFrames(frameCount int) ([]PSGEvent, uint64) {
 		// Call SID emulation timer handlers (Timer B and D)
 		// These handle ADSR envelope processing for SID-style tunes
 		if p.timerBVector != 0 {
-			timerBCalls := calcTimerInterruptsPerFrame(
-				p.bus.timerB.control, p.bus.timerB.data, p.frameRate)
-			if timerBCalls > 100 {
-				timerBCalls = 100 // Safety cap
-			}
-			for t := 0; t < timerBCalls; t++ {
+			timerBCalls := min(calcTimerInterruptsPerFrame(
+				p.bus.timerB.control, p.bus.timerB.data, p.frameRate),
+				// Safety cap
+				100)
+			for range timerBCalls {
 				p.bus.ipra |= 0x01 // Set Timer B interrupt pending
 				if err := p.callTimerHandler(p.timerBVector); err != nil {
 					break
@@ -267,12 +266,11 @@ func (p *sndh68KPlayer) RenderFrames(frameCount int) ([]PSGEvent, uint64) {
 			}
 		}
 		if p.timerDVector != 0 {
-			timerDCalls := calcTimerInterruptsPerFrame(
-				p.bus.timerD.control, p.bus.timerD.data, p.frameRate)
-			if timerDCalls > 100 {
-				timerDCalls = 100 // Safety cap
-			}
-			for t := 0; t < timerDCalls; t++ {
+			timerDCalls := min(calcTimerInterruptsPerFrame(
+				p.bus.timerD.control, p.bus.timerD.data, p.frameRate),
+				// Safety cap
+				100)
+			for range timerDCalls {
 				p.bus.iprb |= 0x10 // Set Timer D interrupt pending
 				if err := p.callTimerHandler(p.timerDVector); err != nil {
 					break

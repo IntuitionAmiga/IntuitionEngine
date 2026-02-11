@@ -100,7 +100,7 @@ func TestAHXEngine_TickSample(t *testing.T) {
 	engine.SetPlaying(true)
 
 	// Tick some samples
-	for i := 0; i < 1000; i++ {
+	for range 1000 {
 		engine.TickSample()
 	}
 
@@ -230,7 +230,7 @@ func TestAHXEngine_ChannelMapping(t *testing.T) {
 	}
 
 	// Channels should be consecutive (0-3)
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		expected := i
 		if engine.channels[i] != expected {
 			t.Errorf("Channel %d should map to %d, got %d", i, expected, engine.channels[i])

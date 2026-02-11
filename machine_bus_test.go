@@ -301,24 +301,24 @@ func TestConcurrentAccess(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// Concurrent writers
-	for g := 0; g < 4; g++ {
+	for g := range 4 {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
 			base := uint32(id * 0x10000)
-			for i := 0; i < iterations; i++ {
+			for i := range iterations {
 				bus.Write32(base+uint32(i*4), uint32(i))
 			}
 		}(g)
 	}
 
 	// Concurrent readers
-	for g := 0; g < 4; g++ {
+	for g := range 4 {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
 			base := uint32(id * 0x10000)
-			for i := 0; i < iterations; i++ {
+			for i := range iterations {
 				_ = bus.Read32(base + uint32(i*4))
 			}
 		}(g)

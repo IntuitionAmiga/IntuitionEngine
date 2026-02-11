@@ -125,7 +125,7 @@ func NewULAEngine(bus *MachineBus) *ULAEngine {
 	}
 
 	// Pre-build uint32 color lookup: [0..7] = normal, [8..15] = bright
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		c := ULAColorNormal[i]
 		ula.colorU32[i] = uint32(c[0]) | uint32(c[1])<<8 | uint32(c[2])<<16 | 0xFF000000
 		c = ULAColorBright[i]
@@ -134,7 +134,7 @@ func NewULAEngine(bus *MachineBus) *ULAEngine {
 
 	// Pre-compute row start addresses for the non-linear ZX Spectrum addressing
 	// This avoids recalculating the complex formula on every pixel
-	for y := 0; y < ULA_DISPLAY_HEIGHT; y++ {
+	for y := range ULA_DISPLAY_HEIGHT {
 		highY := (y & 0xC0) << 5 // Top 2 bits of Y * 32
 		lowY := (y & 0x07) << 8  // Bottom 3 bits of Y * 256
 		midY := (y & 0x38) << 2  // Middle 3 bits of Y * 4
@@ -277,7 +277,7 @@ func (u *ULAEngine) RenderFrame() []byte {
 	}
 
 	// Render the 256x192 display area (cell-based: 32 cells wide x 192 scanlines)
-	for screenY := 0; screenY < ULA_DISPLAY_HEIGHT; screenY++ {
+	for screenY := range ULA_DISPLAY_HEIGHT {
 		// Use pre-computed row start address
 		rowAddr := u.rowStartAddr[screenY]
 
@@ -290,7 +290,7 @@ func (u *ULAEngine) RenderFrame() []byte {
 		frameRowBase := frameY * ULA_FRAME_WIDTH * 4
 
 		// Iterate by 8-pixel cell (32 cells per row)
-		for cellX := 0; cellX < ULA_CELLS_X; cellX++ {
+		for cellX := range ULA_CELLS_X {
 			// Read bitmap byte once per cell
 			bitmapAddr := rowAddr + uint16(cellX)
 			bitmapByte := u.snapVram[bitmapAddr]

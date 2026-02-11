@@ -353,7 +353,7 @@ func (b *TEDPlaybackBus6502) AddCycles(cycles int) {
 	// Update Timer 1 - counts down every cycle when enabled
 	// (TED actually counts every other cycle, but we simplify)
 	if b.timer1Running {
-		for i := 0; i < cycles; i++ {
+		for range cycles {
 			if b.timer1Counter == 0 {
 				// Timer underflowed - set IRQ flag bit 3
 				b.irqFlags |= TED_IRQ_TIMER1

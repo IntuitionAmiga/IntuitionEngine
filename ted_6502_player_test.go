@@ -64,7 +64,7 @@ func TestTED6502PlayerRenderFrame(t *testing.T) {
 
 	// Render a few frames
 	var totalEvents int
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		events, err := player.RenderFrame()
 		if err != nil {
 			t.Fatalf("RenderFrame failed: %v", err)

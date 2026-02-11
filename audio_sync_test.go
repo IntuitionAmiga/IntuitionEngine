@@ -155,8 +155,8 @@ func TestHardSync_AllChannels(t *testing.T) {
 	chip := newTestSoundChip()
 
 	// Test each channel syncing to a different channel
-	for slave := 0; slave < NUM_CHANNELS; slave++ {
-		for master := 0; master < NUM_CHANNELS; master++ {
+	for slave := range NUM_CHANNELS {
+		for master := range NUM_CHANNELS {
 			if slave == master {
 				continue // Skip self-sync
 			}

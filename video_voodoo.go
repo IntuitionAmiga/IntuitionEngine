@@ -470,7 +470,7 @@ func (v *VoodooEngine) executeTriangleCmd() {
 	// Apply vertex attributes based on shading mode
 	if v.gouraudEnabled {
 		// Gouraud shading: use per-vertex colors from vertexColors[]
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			v.vertices[i].R = v.vertexColors[i].R
 			v.vertices[i].G = v.vertexColors[i].G
 			v.vertices[i].B = v.vertexColors[i].B
@@ -482,7 +482,7 @@ func (v *VoodooEngine) executeTriangleCmd() {
 		}
 	} else {
 		// Flat shading: all vertices get the same color from currentVertex
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			v.vertices[i].R = v.currentVertex.R
 			v.vertices[i].G = v.currentVertex.G
 			v.vertices[i].B = v.currentVertex.B

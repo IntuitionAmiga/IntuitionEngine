@@ -152,10 +152,10 @@ func TestDirtyMark_HighContention(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(numGoroutines)
 
-	for g := 0; g < numGoroutines; g++ {
+	for g := range numGoroutines {
 		go func(gid int) {
 			defer wg.Done()
-			for i := 0; i < marksPerGoroutine; i++ {
+			for i := range marksPerGoroutine {
 				// Distribute marks across the screen
 				x := (gid*100 + i) % mode.width
 				y := (gid*50 + i) % mode.height
@@ -187,7 +187,7 @@ func TestDirtyMark_NoPixelsLost(t *testing.T) {
 
 	tilesPerGoroutine := (DIRTY_GRID_COLS * DIRTY_GRID_ROWS) / numGoroutines
 
-	for g := 0; g < numGoroutines; g++ {
+	for g := range numGoroutines {
 		go func(gid int) {
 			defer wg.Done()
 			startTile := gid * tilesPerGoroutine
@@ -313,7 +313,7 @@ func TestBlitter_CopyMatchesReference(t *testing.T) {
 	chip.initialiseDirtyGrid(mode)
 
 	// Create test pattern in buffer - fill entire first 100 rows
-	for y := 0; y < 100; y++ {
+	for y := range 100 {
 		for x := 0; x < mode.width; x++ {
 			idx := (y*mode.width + x) * BYTES_PER_PIXEL
 			chip.frontBuffer[idx+0] = 255 // R
@@ -364,8 +364,8 @@ func TestBlitter_FillMatchesReference(t *testing.T) {
 
 	// Verify fill
 	// The color 0xFF00FF00 in little-endian means R=0, G=FF, B=0, A=FF
-	for y := 0; y < 50; y++ {
-		for x := 0; x < 100; x++ {
+	for y := range 50 {
+		for x := range 100 {
 			idx := (y*mode.width + x) * BYTES_PER_PIXEL
 			// Little-endian: 0xFF00FF00 stored as bytes: 00 FF 00 FF
 			r := chip.frontBuffer[idx+0]
@@ -396,7 +396,7 @@ func BenchmarkBlitter_Copy(b *testing.B) {
 
 	// Fill source area with pattern
 	srcOffset := 1024 * 1024 // 1MB into memory
-	for i := 0; i < 100*100*4; i++ {
+	for i := range 100 * 100 * 4 {
 		chip.busMemory[srcOffset+i] = byte(i % 256)
 	}
 

@@ -41,7 +41,7 @@ func TestTEDAudioPipeline(t *testing.T) {
 
 	t.Log("\n=== Step 3: Render frames and capture events ===")
 	totalEvents := 0
-	for frame := 0; frame < 50; frame++ {
+	for frame := range 50 {
 		events, err := player.RenderFrame()
 		if err != nil {
 			t.Fatalf("Frame %d render failed: %v", frame, err)
@@ -68,7 +68,7 @@ func TestTEDAudioPipeline(t *testing.T) {
 	player.Reset()
 	var ctrlEvents []TEDEvent
 	var freqEvents []TEDEvent
-	for frame := 0; frame < 50; frame++ {
+	for range 50 {
 		events, _ := player.RenderFrame()
 		for _, ev := range events {
 			switch ev.Reg {

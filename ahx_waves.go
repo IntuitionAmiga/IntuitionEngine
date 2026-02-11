@@ -101,7 +101,7 @@ func (w *AHXWaves) generateTriangle(buffer []int8, length int) {
 	eax := 0
 
 	// First quarter: 0 up to near 127
-	for ecx := 0; ecx < d5; ecx++ {
+	for range d5 {
 		buffer[pos] = int8(eax)
 		pos++
 		eax += d1
@@ -140,7 +140,7 @@ func (w *AHXWaves) generateTriangle(buffer []int8, length int) {
 func (w *AHXWaves) generateSawtooth(buffer []int8, length int) {
 	step := 256 / (length - 1)
 	val := -128
-	for i := 0; i < length; i++ {
+	for i := range length {
 		buffer[i] = int8(val)
 		val += step
 	}
@@ -153,13 +153,13 @@ func (w *AHXWaves) generateSquare(buffer []int8) {
 	for width := 1; width <= 0x20; width++ {
 		// Low portion: (0x40 - width) * 2 samples at -128
 		lowCount := (0x40 - width) * 2
-		for i := 0; i < lowCount; i++ {
+		for range lowCount {
 			buffer[pos] = -128
 			pos++
 		}
 		// High portion: width * 2 samples at 127
 		highCount := width * 2
-		for i := 0; i < highCount; i++ {
+		for range highCount {
 			buffer[pos] = 127
 			pos++
 		}
@@ -172,7 +172,7 @@ func (w *AHXWaves) generateWhiteNoise(buffer []int8, length int) {
 	// Initial seed from C++ reference
 	eax := uint32(0x41595321) // "AYS!"
 
-	for i := 0; i < length; i++ {
+	for i := range length {
 		if eax&0x100 != 0 {
 			// Check if ax portion is negative or positive
 			ax := int16(eax & 0xFFFF)
@@ -265,7 +265,7 @@ func (w *AHXWaves) generateFilterWaveforms() {
 	highPos := 0
 	for temp, freq := 0, float32(8); temp < 31; temp, freq = temp+1, freq+3 {
 		srcPos := 0
-		for waveIdx := 0; waveIdx < len(lengthTable); waveIdx++ {
+		for waveIdx := range lengthTable {
 			waveLen := lengthTable[waveIdx]
 			fre := freq * 1.25 / 100.0
 

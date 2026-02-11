@@ -120,7 +120,7 @@ func TestRingMod_MSBTrackingAfterWrap(t *testing.T) {
 	prevMSB := ch.phaseMSB
 
 	// Generate enough samples to see several phase wraps
-	for i := 0; i < 200; i++ {
+	for range 200 {
 		ch.generateWaveSample(testSampleRate, 1.0/testSampleRate)
 		if ch.phaseMSB != prevMSB {
 			msbChanges++
@@ -170,8 +170,8 @@ func TestRingMod_SelfModPrevented(t *testing.T) {
 func TestRingMod_AllChannels(t *testing.T) {
 	chip := newTestSoundChip()
 
-	for slave := 0; slave < NUM_CHANNELS; slave++ {
-		for master := 0; master < NUM_CHANNELS; master++ {
+	for slave := range NUM_CHANNELS {
+		for master := range NUM_CHANNELS {
 			if slave == master {
 				continue // Skip self-mod
 			}
@@ -244,7 +244,7 @@ func TestRingMod_NoiseUnaffected(t *testing.T) {
 
 	// Generate several samples and verify noise still produces output
 	var nonZeroSamples int
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		sample := slave.generateWaveSample(testSampleRate, 1.0/testSampleRate)
 		if sample != 0 {
 			nonZeroSamples++

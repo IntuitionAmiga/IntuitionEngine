@@ -85,13 +85,7 @@ func TestAHXIntegration_VolumeScaling(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			vol := tc.voiceVol
-			if vol < 0 {
-				vol = 0
-			}
-			if vol > 64 {
-				vol = 64
-			}
+			vol := min(max(tc.voiceVol, 0), 64)
 			dacVol := vol * 4
 			if dacVol < tc.minDAC || dacVol > tc.maxDAC {
 				t.Errorf("Voice vol %d: expected DAC [%d, %d], got %d",
@@ -224,7 +218,7 @@ func TestAHXIntegration_FullPlayback(t *testing.T) {
 	engine.samplesPerTick = 44100 / 50
 
 	// Tick through several frames
-	for frame := 0; frame < 20; frame++ {
+	for range 20 {
 		for sample := 0; sample < engine.samplesPerTick; sample++ {
 			engine.TickSample()
 		}

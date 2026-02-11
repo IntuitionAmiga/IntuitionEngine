@@ -382,7 +382,7 @@ func TestULA_FlashTiming(t *testing.T) {
 	}
 
 	// Signal 31 vsyncs - should not toggle yet
-	for i := 0; i < 31; i++ {
+	for range 31 {
 		ula.SignalVSync()
 	}
 	if ula.flashState {
@@ -396,7 +396,7 @@ func TestULA_FlashTiming(t *testing.T) {
 	}
 
 	// Another 32 frames should toggle back
-	for i := 0; i < 32; i++ {
+	for range 32 {
 		ula.SignalVSync()
 	}
 	if ula.flashState {

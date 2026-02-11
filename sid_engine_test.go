@@ -257,14 +257,8 @@ func TestSIDEngine_GainToDAC(t *testing.T) {
 	for _, tt := range tests {
 		result := int(sidGainToDAC(tt.gain))
 		// Allow ±1 for rounding
-		minExpected := tt.expected - 1
-		if minExpected < 0 {
-			minExpected = 0
-		}
-		maxExpected := tt.expected + 1
-		if maxExpected > 255 {
-			maxExpected = 255
-		}
+		minExpected := max(tt.expected-1, 0)
+		maxExpected := min(tt.expected+1, 255)
 		if result < minExpected || result > maxExpected {
 			t.Errorf("sidGainToDAC(%f): expected ~%d, got %d", tt.gain, tt.expected, result)
 		}
@@ -493,14 +487,14 @@ func TestSIDEngine_FilterCutoffTableAccuracy_8580(t *testing.T) {
 // TestSIDEngine_FilterNormalizationRange verifies normalized cutoff stays in [0,1]
 func TestSIDEngine_FilterNormalizationRange(t *testing.T) {
 	// Check all 6581 entries
-	for i := 0; i < sidFilterCutoffTableSize; i++ {
+	for i := range sidFilterCutoffTableSize {
 		if sidFilterNorm6581Table[i] < 0 || sidFilterNorm6581Table[i] > 1 {
 			t.Errorf("6581 norm table[%d] = %f out of [0,1] range", i, sidFilterNorm6581Table[i])
 		}
 	}
 
 	// Check all 8580 entries
-	for i := 0; i < sidFilterCutoffTableSize; i++ {
+	for i := range sidFilterCutoffTableSize {
 		if sidFilterNorm8580Table[i] < 0 || sidFilterNorm8580Table[i] > 1 {
 			t.Errorf("8580 norm table[%d] = %f out of [0,1] range", i, sidFilterNorm8580Table[i])
 		}

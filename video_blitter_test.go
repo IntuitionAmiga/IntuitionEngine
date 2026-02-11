@@ -261,7 +261,7 @@ func TestBlitterMaskedCopy(t *testing.T) {
 	dst := vramAddr(mode, 10, 20)
 	maskAddr := uint32(0x5000)
 
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		video.HandleWrite(src+uint32(i*4), 0xAA000000+uint32(i))
 	}
 	bus.Write8(maskAddr, 0b01010101)
@@ -276,7 +276,7 @@ func TestBlitterMaskedCopy(t *testing.T) {
 
 	video.RunBlitterForTest()
 
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		addr := dst + uint32(i*4)
 		got := video.HandleRead(addr)
 		if i%2 == 0 {
@@ -375,7 +375,7 @@ func TestBlitterCanReadCPULoadedData(t *testing.T) {
 
 	// CPU writes sprite data to address 0x2000 (simulating loaded program data)
 	// 4 pixels of red (RGBA little-endian: 0xFF0000FF)
-	for i := uint32(0); i < 4; i++ {
+	for i := range uint32(4) {
 		cpu.Write32(0x2000+i*4, 0xFF0000FF)
 	}
 
@@ -491,7 +491,7 @@ func TestBlitterMode7Identity(t *testing.T) {
 
 	// Setup 4x4 texture at 0x8000
 	texAddr := uint32(0x8000)
-	for i := uint32(0); i < 16; i++ {
+	for i := range uint32(16) {
 		bus.Write32(texAddr+i*4, 0x11000000+i)
 	}
 
@@ -526,8 +526,8 @@ func TestBlitterMode7Identity(t *testing.T) {
 	video.RunBlitterForTest()
 
 	// Verify destination
-	for y := 0; y < 4; y++ {
-		for x := 0; x < 4; x++ {
+	for y := range 4 {
+		for x := range 4 {
 			addr := dst + uint32(y*mode.bytesPerRow+x*4)
 			expected := 0x11000000 + uint32(y*4+x)
 			if got := video.HandleRead(addr); got != expected {
@@ -551,8 +551,8 @@ func TestBlitterMode7DefaultSrcStrideFromMask(t *testing.T) {
 	texAddr := uint32(0x9000)
 	// Write pattern that helps identify if stride is correct
 	// Row 0: 0xA0, Row 1: 0xA1, etc.
-	for y := 0; y < 4; y++ {
-		for x := 0; x < 4; x++ {
+	for y := range 4 {
+		for x := range 4 {
 			bus.Write32(texAddr+uint32(y*16+x*4), 0xA0+uint32(y))
 		}
 	}
@@ -608,8 +608,8 @@ func TestBlitterMode7Rotated(t *testing.T) {
 	texAddr := uint32(0x9000)
 	// Write unique colors
 	// 0,0=0x00, 1,0=0x01, ..., 0,1=0x10, ...
-	for y := 0; y < 4; y++ {
-		for x := 0; x < 4; x++ {
+	for y := range 4 {
+		for x := range 4 {
 			bus.Write32(texAddr+uint32(y*16+x*4), uint32(y*16+x))
 		}
 	}
@@ -670,8 +670,8 @@ func TestBlitterMode7Wrap(t *testing.T) {
 
 	texAddr := uint32(0x9000)
 	// Write pattern: Row 0 = 0xA0, Row 1 = 0xA1...
-	for y := 0; y < 4; y++ {
-		for x := 0; x < 4; x++ {
+	for y := range 4 {
+		for x := range 4 {
 			bus.Write32(texAddr+uint32(y*16+x*4), 0xA0+uint32(y))
 		}
 	}

@@ -37,7 +37,7 @@ func createBenchmarkChip(t testing.TB) *SoundChip {
 
 	// Initialize channels
 	waveTypes := []int{WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE, WAVE_NOISE}
-	for i := 0; i < NUM_CHANNELS; i++ {
+	for i := range NUM_CHANNELS {
 		chip.channels[i] = &Channel{
 			waveType:            waveTypes[i],
 			attackTime:          DEFAULT_ATTACK_TIME,
@@ -522,7 +522,7 @@ func BenchmarkGenerateSample_1Second(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		for j := 0; j < samples; j++ {
+		for range samples {
 			_ = chip.GenerateSample()
 		}
 	}

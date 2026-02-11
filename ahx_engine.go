@@ -126,7 +126,7 @@ func (e *AHXEngine) ensureChannelsInitialized() {
 		return
 	}
 
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		ch := e.channels[i]
 		// Simple setup - no envelope, just direct volume control
 		e.writeChannel(ch, FLEX_OFF_WAVE_TYPE, WAVE_SQUARE)
@@ -151,18 +151,12 @@ func (e *AHXEngine) updateChannels() {
 
 	e.ensureChannelsInitialized()
 
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		voice := &e.replayer.Voices[i]
 		ch := e.channels[i]
 
 		// Volume (0-64 -> 0-255)
-		vol := voice.VoiceVolume
-		if vol < 0 {
-			vol = 0
-		}
-		if vol > 64 {
-			vol = 64
-		}
+		vol := min(max(voice.VoiceVolume, 0), 64)
 		e.writeChannel(ch, FLEX_OFF_VOL, uint32(vol*4))
 
 		// Frequency from period - must account for waveform length!
@@ -205,13 +199,7 @@ func (e *AHXEngine) updateChannels() {
 				squarePos = 0x40 - squarePos
 			}
 			// Map to duty cycle range 0x08-0x80 (narrow to 50%)
-			duty := squarePos * 4
-			if duty < 0x08 {
-				duty = 0x08
-			}
-			if duty > 0x80 {
-				duty = 0x80
-			}
+			duty := min(max(squarePos*4, 0x08), 0x80)
 			e.writeChannel(ch, FLEX_OFF_DUTY, uint32(duty))
 		}
 
@@ -250,7 +238,7 @@ func (e *AHXEngine) silenceChannels() {
 	if e.sound == nil {
 		return
 	}
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		e.writeChannel(e.channels[i], FLEX_OFF_VOL, 0)
 	}
 }

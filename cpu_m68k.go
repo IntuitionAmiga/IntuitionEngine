@@ -2183,7 +2183,7 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 	// Main execution loop - batch check running flag every 4096 instructions
 	for cpu.running.Load() {
 	innerLoop:
-		for i := 0; i < 4096; i++ {
+		for range 4096 {
 			// STOP state: only interrupts can resume execution
 			if cpu.stopped.Load() {
 				pendingException := cpu.pendingException.Load()
@@ -4254,7 +4254,7 @@ func (cpu *M68KCPU) ExecMovem(direction, size, mode, reg uint16) {
 			//   - Bits 8-15 = D7-D0 (bit 8 = D7, bit 15 = D0)
 			// We iterate from bit 0 to bit 15, which processes registers in order A7,A6,...,A0,D7,...,D0.
 			// This ensures the stack order matches what postincrement mode expects when restoring.
-			for i := 0; i < 16; i++ {
+			for i := range 16 {
 				if (mask & (1 << uint(i))) != 0 {
 					// Decrement address register BEFORE writing
 					cpu.AddrRegs[reg] -= operandSize
@@ -4283,7 +4283,7 @@ func (cpu *M68KCPU) ExecMovem(direction, size, mode, reg uint16) {
 			// Other modes: iterate in normal order (D0→D7→A0→A7)
 			addr := cpu.GetEffectiveAddress(mode, reg)
 
-			for i := 0; i < 16; i++ {
+			for i := range 16 {
 				if (mask & (1 << uint(i))) != 0 {
 					if i < 8 {
 						// Data registers
@@ -4308,7 +4308,7 @@ func (cpu *M68KCPU) ExecMovem(direction, size, mode, reg uint16) {
 		// Memory to register: always in normal order (D0→D7→A0→A7)
 		addr := cpu.GetEffectiveAddress(mode, reg)
 
-		for i := 0; i < 16; i++ {
+		for i := range 16 {
 			if (mask & (1 << uint(i))) != 0 {
 				if i < 8 {
 					// Data registers
@@ -8748,7 +8748,7 @@ func (cpu *M68KCPU) ExecShiftRotate(operation ShiftRotateOperation, reg, count u
 			}
 			result = 0
 		} else {
-			for i := uint32(0); i < countVal; i++ {
+			for range countVal {
 				if (result & msbMask) != 0 {
 					cFlag = true
 					vFlag = true
@@ -8772,7 +8772,7 @@ func (cpu *M68KCPU) ExecShiftRotate(operation ShiftRotateOperation, reg, count u
 				result = 0
 			}
 		} else {
-			for i := uint32(0); i < countVal; i++ {
+			for range countVal {
 				if (result & lsbMask) != 0 {
 					cFlag = true
 				} else {
@@ -8827,7 +8827,7 @@ func (cpu *M68KCPU) ExecShiftRotate(operation ShiftRotateOperation, reg, count u
 
 	case ROL:
 		// Handle ROL operation
-		for i := uint32(0); i < countVal; i++ {
+		for range countVal {
 			var msb uint32 = 0
 			if (result & msbMask) != 0 {
 				msb = lsbMask
@@ -8840,7 +8840,7 @@ func (cpu *M68KCPU) ExecShiftRotate(operation ShiftRotateOperation, reg, count u
 
 	case ROR:
 		// Handle ROR operation
-		for i := uint32(0); i < countVal; i++ {
+		for range countVal {
 			var lsb uint32 = 0
 			if (result & lsbMask) != 0 {
 				lsb = msbMask
@@ -8853,7 +8853,7 @@ func (cpu *M68KCPU) ExecShiftRotate(operation ShiftRotateOperation, reg, count u
 
 	case ROXL:
 		// Handle ROXL operation
-		for i := uint32(0); i < countVal; i++ {
+		for range countVal {
 			var msb bool = (result & msbMask) != 0
 
 			result = (result << 1) & mask
@@ -8869,7 +8869,7 @@ func (cpu *M68KCPU) ExecShiftRotate(operation ShiftRotateOperation, reg, count u
 
 	case ROXR:
 		// Handle ROXR operation
-		for i := uint32(0); i < countVal; i++ {
+		for range countVal {
 			var lsb bool = (result & lsbMask) != 0
 
 			result = result >> 1
@@ -9651,7 +9651,7 @@ func (cpu *M68KCPU) ExecRTE() {
 		return
 	}
 	remainingWords := words - 4
-	for i := 0; i < remainingWords; i++ {
+	for range remainingWords {
 		cpu.Pop16()
 	}
 	oldSupervisor := (cpu.SR & M68K_SR_S) != 0
@@ -10122,10 +10122,7 @@ func (cpu *M68KCPU) GetBitFieldParameters(ext uint16) BFParameters {
 	params.bitOffset = params.offset % 8
 
 	// Determine how many bytes to read
-	params.bytesToRead = ((params.bitOffset + params.width + 7) / 8)
-	if params.bytesToRead > M68K_LONG_SIZE {
-		params.bytesToRead = M68K_LONG_SIZE
-	}
+	params.bytesToRead = min(((params.bitOffset + params.width + 7) / 8), M68K_LONG_SIZE)
 
 	// Create a mask for the field
 	if params.width == 32 {
@@ -10722,7 +10719,7 @@ func (cpu *M68KCPU) execFMOVEM(opcode, cmdWord uint16) {
 
 	if direction == 0 {
 		// FP registers to memory
-		for i := 0; i < 8; i++ {
+		for i := range 8 {
 			if (regList & (1 << (7 - i))) != 0 {
 				value := cpu.FPU.FPRegs[i].ToFloat64()
 				bits := math.Float64bits(value)
@@ -10733,7 +10730,7 @@ func (cpu *M68KCPU) execFMOVEM(opcode, cmdWord uint16) {
 		}
 	} else {
 		// Memory to FP registers
-		for i := 0; i < 8; i++ {
+		for i := range 8 {
 			if (regList & (1 << (7 - i))) != 0 {
 				hi := cpu.Read32(ea)
 				lo := cpu.Read32(ea + 4)

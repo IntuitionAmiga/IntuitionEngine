@@ -184,7 +184,7 @@ func (e *POKEYEngine) ensureChannelsInitialized() {
 
 	// POKEY uses channels 0-3 of the SoundChip
 	// Configure them as square waves with instant envelope
-	for ch := 0; ch < 4; ch++ {
+	for ch := range 4 {
 		e.writeChannel(ch, FLEX_OFF_WAVE_TYPE, WAVE_SQUARE)
 		e.writeChannel(ch, FLEX_OFF_DUTY, 0x0080) // 50% duty cycle
 		e.writeChannel(ch, FLEX_OFF_PWM_CTRL, 0)
@@ -303,7 +303,7 @@ func (e *POKEYEngine) applyFrequencies() {
 
 	audctl := e.regs[8]
 
-	for ch := 0; ch < 4; ch++ {
+	for ch := range 4 {
 		// Skip slave channels in 16-bit mode (they're driven by master)
 		if ch == 1 && (audctl&AUDCTL_CH2_BY_CH1) != 0 {
 			e.writeChannel(ch, FLEX_OFF_VOL, 0) // Silence slave
@@ -329,7 +329,7 @@ func (e *POKEYEngine) applyVolumes() {
 		return
 	}
 
-	for ch := 0; ch < 4; ch++ {
+	for ch := range 4 {
 		audc := e.regs[ch*2+1] // AUDCn register
 		level := audc & AUDC_VOLUME_MASK
 
@@ -344,7 +344,7 @@ func (e *POKEYEngine) applyDistortion() {
 		return
 	}
 
-	for ch := 0; ch < 4; ch++ {
+	for ch := range 4 {
 		audc := e.regs[ch*2+1]
 		distortion := (audc & AUDC_DISTORTION_MASK) >> AUDC_DISTORTION_SHIFT
 		volumeOnly := (audc & AUDC_VOLUME_ONLY) != 0

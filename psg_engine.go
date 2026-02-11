@@ -257,7 +257,7 @@ func (e *PSGEngine) silenceChannels() {
 	if e.sound == nil {
 		return
 	}
-	for ch := 0; ch < 4; ch++ {
+	for ch := range 4 {
 		e.writeChannel(ch, FLEX_OFF_VOL, 0)
 	}
 }
@@ -298,7 +298,7 @@ func (e *PSGEngine) advanceEnvelope() {
 	steps := int(e.envSampleCounter / e.envPeriodSamples)
 	e.envSampleCounter -= float64(steps) * e.envPeriodSamples
 
-	for i := 0; i < steps; i++ {
+	for range steps {
 		if e.envHoldActive {
 			break
 		}
@@ -347,7 +347,7 @@ func (e *PSGEngine) ensureChannelsInitialized() {
 		return
 	}
 
-	for ch := 0; ch < 3; ch++ {
+	for ch := range 3 {
 		e.writeChannel(ch, FLEX_OFF_WAVE_TYPE, WAVE_SQUARE)
 		e.writeChannel(ch, FLEX_OFF_DUTY, 0x0080)
 		e.writeChannel(ch, FLEX_OFF_PWM_CTRL, 0)
@@ -380,7 +380,7 @@ func (e *PSGEngine) applyFrequencies() {
 		return
 	}
 
-	for ch := 0; ch < 3; ch++ {
+	for ch := range 3 {
 		low := uint16(e.regs[ch*2])
 		high := uint16(e.regs[ch*2+1] & 0x0F)
 		period := (high << 8) | low
@@ -418,7 +418,7 @@ func (e *PSGEngine) applyVolumes() {
 	}
 
 	var noiseSum float32
-	for ch := 0; ch < 3; ch++ {
+	for ch := range 3 {
 		vol := e.regs[8+ch]
 		useEnv := (vol & 0x10) != 0
 		level := vol & 0x0F

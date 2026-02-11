@@ -141,7 +141,7 @@ func TestSIDFilter_ResonanceTableSymmetry(t *testing.T) {
 	}
 
 	// All values should be positive
-	for i := 0; i < 16; i++ {
+	for i := range 16 {
 		if sid6581ResonanceTable[i] <= 0 {
 			t.Errorf("6581 resonance[%d] should be positive: %f", i, sid6581ResonanceTable[i])
 		}

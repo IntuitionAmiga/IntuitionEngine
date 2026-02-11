@@ -220,14 +220,8 @@ func TestPOKEYEngine_GainToDAC(t *testing.T) {
 	for _, tt := range tests {
 		result := int(pokeyGainToDAC(tt.gain))
 		// Allow ±1 for rounding
-		minExpected := tt.expected - 1
-		if minExpected < 0 {
-			minExpected = 0
-		}
-		maxExpected := tt.expected + 1
-		if maxExpected > 255 {
-			maxExpected = 255
-		}
+		minExpected := max(tt.expected-1, 0)
+		maxExpected := min(tt.expected+1, 255)
 		if result < minExpected || result > maxExpected {
 			t.Errorf("pokeyGainToDAC(%f): expected ~%d, got %d", tt.gain, tt.expected, result)
 		}

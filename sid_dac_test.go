@@ -77,7 +77,7 @@ func TestSIDDAC_OnlyWhenSIDModeEnabled(t *testing.T) {
 	if diff < 0.0001 {
 		// This could happen by chance, so generate more samples
 		nonQuantizedFound := false
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			ch.phase = float32(i) * 0.1
 			sample = ch.generateWaveSample(testSampleRate, 1.0/testSampleRate)
 			normalized = (sample + 1.0) / 2.0 * 4095.0
@@ -163,7 +163,7 @@ func TestSIDDAC_AllWaveforms(t *testing.T) {
 			quantizedCount := 0
 			totalSamples := 50
 
-			for i := 0; i < totalSamples; i++ {
+			for range totalSamples {
 				sample := ch.generateWaveSample(testSampleRate, 1.0/testSampleRate)
 
 				// Check quantization
@@ -199,7 +199,7 @@ func TestSIDDAC_QuantizationStepSize(t *testing.T) {
 
 	// Collect samples from a ramp
 	var samples []float32
-	for i := 0; i < 200; i++ {
+	for range 200 {
 		samples = append(samples, ch.generateWaveSample(testSampleRate, 1.0/testSampleRate))
 	}
 

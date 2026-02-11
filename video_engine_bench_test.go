@@ -17,7 +17,7 @@ func BenchmarkVGA_RenderMode13h(b *testing.B) {
 	vga.control = VGA_CTRL_ENABLE
 
 	// Fill VRAM with pattern
-	for i := 0; i < 64000; i++ {
+	for i := range 64000 {
 		offset := uint32(i)
 		plane := offset & 3
 		vramOffset := offset >> 2
@@ -37,8 +37,8 @@ func BenchmarkVGA_RenderMode12h(b *testing.B) {
 	vga.control = VGA_CTRL_ENABLE
 
 	// Fill VRAM with pattern
-	for plane := 0; plane < 4; plane++ {
-		for i := 0; i < 38400; i++ { // 640*480/8 = 38400 bytes per plane
+	for plane := range 4 {
+		for i := range 38400 { // 640*480/8 = 38400 bytes per plane
 			vga.vram[plane][i] = uint8((i + plane) & 0xFF)
 		}
 	}
@@ -56,8 +56,8 @@ func BenchmarkVGA_RenderModeX(b *testing.B) {
 	vga.control = VGA_CTRL_ENABLE
 
 	// Fill VRAM with pattern (320x240 / 4 planes = 19200 bytes per plane)
-	for plane := 0; plane < 4; plane++ {
-		for i := 0; i < 19200; i++ {
+	for plane := range 4 {
+		for i := range 19200 {
 			vga.vram[plane][i] = uint8((i + plane) & 0xFF)
 		}
 	}
@@ -75,7 +75,7 @@ func BenchmarkVGA_RenderTextMode(b *testing.B) {
 	vga.control = VGA_CTRL_ENABLE
 
 	// Fill text buffer with pattern (80*25*2 = 4000 bytes)
-	for i := 0; i < 2000; i++ {
+	for i := range 2000 {
 		vga.textBuffer[i*2] = uint8('A' + (i % 26))   // Character
 		vga.textBuffer[i*2+1] = uint8(0x07 + (i % 8)) // Attribute
 	}
@@ -106,7 +106,7 @@ func BenchmarkULA_RenderFrame(b *testing.B) {
 	ula.control = ULA_CTRL_ENABLE
 
 	// Fill VRAM with pattern (6144 bitmap + 768 attributes)
-	for i := 0; i < 6912; i++ {
+	for i := range 6912 {
 		ula.vram[i] = uint8(i & 0xFF)
 	}
 
@@ -146,8 +146,8 @@ func BenchmarkTED_RenderFrame(b *testing.B) {
 	ted.enabled.Store(true)
 
 	// Fill video matrix and color RAM with pattern
-	for y := 0; y < TED_V_CELLS_Y; y++ {
-		for x := 0; x < TED_V_CELLS_X; x++ {
+	for y := range TED_V_CELLS_Y {
+		for x := range TED_V_CELLS_X {
 			matrixOffset := y*TED_V_CELLS_X + x
 			colorOffset := TED_V_MATRIX_SIZE + y*TED_V_CELLS_X + x
 			ted.vram[matrixOffset] = uint8((x + y) % 256)
@@ -189,7 +189,7 @@ func BenchmarkANTIC_RenderFrame(b *testing.B) {
 	antic.enabled.Store(true)
 
 	// Fill scanline colors with pattern
-	for y := 0; y < ANTIC_DISPLAY_HEIGHT; y++ {
+	for y := range ANTIC_DISPLAY_HEIGHT {
 		antic.scanlineColors[0][y] = uint8(y & 0xFF)
 		antic.scanlineColors[1][y] = uint8(y & 0xFF)
 	}
@@ -214,14 +214,14 @@ func BenchmarkANTIC_RenderFrameWithPlayers(b *testing.B) {
 	antic.gractl = GTIA_GRACTL_PLAYER // Enable players
 
 	// Set up players with graphics
-	for p := 0; p < 4; p++ {
+	for p := range 4 {
 		antic.grafp[p] = 0xFF // All pixels set
 		antic.hposp[p] = uint8(80 + p*40)
 		antic.colpm[p] = uint8(0x40 + p*0x20)
 		antic.sizep[p] = 1 // Double width
 
 		// Fill per-scanline data
-		for y := 0; y < ANTIC_DISPLAY_HEIGHT; y++ {
+		for y := range ANTIC_DISPLAY_HEIGHT {
 			antic.playerGfx[0][p][y] = 0xFF
 			antic.playerGfx[1][p][y] = 0xFF
 			antic.playerPos[0][p][y] = uint8(80 + p*40)
@@ -230,7 +230,7 @@ func BenchmarkANTIC_RenderFrameWithPlayers(b *testing.B) {
 	}
 
 	// Fill scanline colors
-	for y := 0; y < ANTIC_DISPLAY_HEIGHT; y++ {
+	for y := range ANTIC_DISPLAY_HEIGHT {
 		antic.scanlineColors[0][y] = uint8(y & 0xFF)
 		antic.scanlineColors[1][y] = uint8(y & 0xFF)
 	}

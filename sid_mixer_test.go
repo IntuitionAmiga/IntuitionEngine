@@ -11,7 +11,7 @@ import (
 // while the 8580 model does not.
 func TestSIDMixer_6581DCOffset(t *testing.T) {
 	// Disable all channels for this test
-	for i := 0; i < NUM_CHANNELS; i++ {
+	for i := range NUM_CHANNELS {
 		chip.channels[i].enabled = false
 	}
 
@@ -21,7 +21,7 @@ func TestSIDMixer_6581DCOffset(t *testing.T) {
 	// Generate samples - should have DC offset
 	var sum float64
 	numSamples := 100
-	for i := 0; i < numSamples; i++ {
+	for range numSamples {
 		sample := chip.GenerateSample()
 		sum += float64(sample)
 	}
@@ -31,7 +31,7 @@ func TestSIDMixer_6581DCOffset(t *testing.T) {
 	chip.SetSIDMixerMode(true, SID_8580_DC_OFFSET, false)
 
 	sum = 0
-	for i := 0; i < numSamples; i++ {
+	for range numSamples {
 		sample := chip.GenerateSample()
 		sum += float64(sample)
 	}
@@ -64,7 +64,7 @@ func TestSIDMixer_DCOffsetValue(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			// Disable all channels
-			for i := 0; i < NUM_CHANNELS; i++ {
+			for i := range NUM_CHANNELS {
 				chip.channels[i].enabled = false
 			}
 
@@ -73,7 +73,7 @@ func TestSIDMixer_DCOffsetValue(t *testing.T) {
 			// Generate samples and measure DC
 			var sum float64
 			numSamples := 100
-			for i := 0; i < numSamples; i++ {
+			for range numSamples {
 				sample := chip.GenerateSample()
 				sum += float64(sample)
 			}
@@ -96,7 +96,7 @@ func TestSIDMixer_SoftSaturation(t *testing.T) {
 	chip.SetSIDMixerMode(true, 0, true)
 
 	// Configure three channels at full volume with same frequency
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		chip.channels[i].waveType = WAVE_SQUARE
 		chip.channels[i].frequency = 440
 		chip.channels[i].volume = 1.0
@@ -113,7 +113,7 @@ func TestSIDMixer_SoftSaturation(t *testing.T) {
 
 	// Generate samples and find peak
 	var maxSample float32
-	for i := 0; i < 1000; i++ {
+	for range 1000 {
 		sample := chip.GenerateSample()
 		absSample := sample
 		if absSample < 0 {
@@ -126,7 +126,7 @@ func TestSIDMixer_SoftSaturation(t *testing.T) {
 
 	// Cleanup
 	chip.SetSIDMixerMode(false, 0, false)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		chip.channels[i].enabled = false
 	}
 
@@ -163,7 +163,7 @@ func TestSIDMixer_SaturationDisabled(t *testing.T) {
 
 	// Generate some samples
 	var sum float64
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		sample := chip.GenerateSample()
 		sum += float64(sample)
 	}

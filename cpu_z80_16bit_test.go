@@ -66,7 +66,7 @@ func TestZ80IncDec16(t *testing.T) {
 	rig.cpu.SetHL(0x0003)
 	rig.cpu.SP = 0x0004
 
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		rig.cpu.Step()
 	}
 	requireZ80EqualU16(t, "BC", rig.cpu.BC(), 0x0002)
@@ -74,7 +74,7 @@ func TestZ80IncDec16(t *testing.T) {
 	requireZ80EqualU16(t, "HL", rig.cpu.HL(), 0x0004)
 	requireZ80EqualU16(t, "SP", rig.cpu.SP, 0x0005)
 
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		rig.cpu.Step()
 	}
 	requireZ80EqualU16(t, "BC", rig.cpu.BC(), 0x0001)
@@ -105,14 +105,14 @@ func TestZ80PushPop(t *testing.T) {
 	rig.cpu.SetAF(0x7788)
 	rig.cpu.SP = 0x9000
 
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		rig.cpu.Step()
 	}
 	if rig.cpu.SP != 0x8FF8 {
 		t.Fatalf("SP = 0x%04X, want 0x8FF8", rig.cpu.SP)
 	}
 
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		rig.cpu.Step()
 	}
 	requireZ80EqualU16(t, "AF", rig.cpu.AF(), 0x7788)

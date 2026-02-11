@@ -129,7 +129,7 @@ func NewTEDVideoEngine(bus *MachineBus) *TEDVideoEngine {
 	// Copy default character set into VRAM
 	charsetOffset := TED_V_MATRIX_SIZE + TED_V_COLOR_SIZE
 	for i := 0; i < 256 && i < len(TEDDefaultCharset); i++ {
-		for j := 0; j < 8; j++ {
+		for j := range 8 {
 			ted.vram[charsetOffset+i*8+j] = TEDDefaultCharset[i][j]
 		}
 	}
@@ -336,7 +336,7 @@ func (t *TEDVideoEngine) RenderFrame() []byte {
 	charsetBase := TED_V_MATRIX_SIZE + TED_V_COLOR_SIZE
 
 	// Render the 320x200 display area (40x25 characters)
-	for cellY := 0; cellY < TED_V_CELLS_Y; cellY++ {
+	for cellY := range TED_V_CELLS_Y {
 		// Pre-compute row base addresses
 		matrixRowBase := cellY * TED_V_CELLS_X
 		colorRowBase := TED_V_MATRIX_SIZE + cellY*TED_V_CELLS_X
@@ -345,7 +345,7 @@ func (t *TEDVideoEngine) RenderFrame() []byte {
 		screenYBase := cellY * TED_V_CELL_HEIGHT
 		frameYBase := (TED_V_BORDER_TOP + screenYBase) * TED_V_FRAME_WIDTH
 
-		for cellX := 0; cellX < TED_V_CELLS_X; cellX++ {
+		for cellX := range TED_V_CELLS_X {
 			// Get character code from video matrix
 			charCode := t.snapVram[matrixRowBase+cellX]
 
@@ -362,7 +362,7 @@ func (t *TEDVideoEngine) RenderFrame() []byte {
 			frameXBase := TED_V_BORDER_LEFT + cellX*TED_V_CELL_WIDTH
 
 			// Render 8x8 pixel character
-			for row := 0; row < TED_V_CELL_HEIGHT; row++ {
+			for row := range TED_V_CELL_HEIGHT {
 				// Get bitmap row (if charset offset is valid)
 				var bitmapByte uint8
 				if charsetOffset+row < len(t.snapVram) {
@@ -373,7 +373,7 @@ func (t *TEDVideoEngine) RenderFrame() []byte {
 				frameRowOffset := (frameYBase + row*TED_V_FRAME_WIDTH + frameXBase) * 4
 
 				// Render 8 pixels with uint32 writes
-				for col := 0; col < TED_V_CELL_WIDTH; col++ {
+				for col := range TED_V_CELL_WIDTH {
 					offset := frameRowOffset + col*4
 					if (bitmapByte>>(7-col))&1 != 0 {
 						*(*uint32)(unsafe.Pointer(&t.frameBuffer[offset])) = fgU32
@@ -408,14 +408,14 @@ func (t *TEDVideoEngine) renderCharacter(cellX, cellY int, bgR, bgG, bgB uint8) 
 	charsetOffset := t.GetCharsetAddress(charCode)
 
 	// Render 8x8 pixel character
-	for row := 0; row < TED_V_CELL_HEIGHT; row++ {
+	for row := range TED_V_CELL_HEIGHT {
 		// Get bitmap row (if charset offset is valid)
 		var bitmapByte uint8
 		if charsetOffset+row < len(t.vram) {
 			bitmapByte = t.vram[charsetOffset+row]
 		}
 
-		for col := 0; col < TED_V_CELL_WIDTH; col++ {
+		for col := range TED_V_CELL_WIDTH {
 			// Check if pixel is set (MSB = leftmost)
 			bitPos := 7 - col
 			pixelSet := (bitmapByte >> bitPos) & 1
@@ -460,7 +460,7 @@ func (t *TEDVideoEngine) renderCursorSnapshot(cursorPos uint16, cursorColor uint
 	screenY := cellY*TED_V_CELL_HEIGHT + (TED_V_CELL_HEIGHT - 1)
 	frameY := TED_V_BORDER_TOP + screenY
 
-	for col := 0; col < TED_V_CELL_WIDTH; col++ {
+	for col := range TED_V_CELL_WIDTH {
 		screenX := cellX*TED_V_CELL_WIDTH + col
 		frameX := TED_V_BORDER_LEFT + screenX
 		offset := (frameY*TED_V_FRAME_WIDTH + frameX) * 4

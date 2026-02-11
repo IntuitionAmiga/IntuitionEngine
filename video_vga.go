@@ -215,9 +215,9 @@ func (v *VGAEngine) initDefaultPalette() {
 
 	// Colors 16-231: 6x6x6 color cube
 	idx := 16
-	for r := 0; r < 6; r++ {
-		for g := 0; g < 6; g++ {
-			for b := 0; b < 6; b++ {
+	for r := range 6 {
+		for g := range 6 {
+			for b := range 6 {
 				v.palette[idx*3+0] = uint8(r * 63 / 5)
 				v.palette[idx*3+1] = uint8(g * 63 / 5)
 				v.palette[idx*3+2] = uint8(b * 63 / 5)
@@ -227,7 +227,7 @@ func (v *VGAEngine) initDefaultPalette() {
 	}
 
 	// Colors 232-255: grayscale ramp
-	for i := 0; i < 24; i++ {
+	for i := range 24 {
 		gray := uint8(i * 63 / 23)
 		v.palette[idx*3+0] = gray
 		v.palette[idx*3+1] = gray
@@ -503,7 +503,7 @@ func (v *VGAEngine) HandleVRAMRead(addr uint32) uint32 {
 		plane := v.gcRegs[VGA_GC_READ_MAP_R] & 3
 
 		// Load all latches (for potential read mode 1)
-		for p := 0; p < 4; p++ {
+		for p := range 4 {
 			if offset < VGA_PLANE_SIZE {
 				v.latch[p] = v.vram[p][offset]
 			}
@@ -539,7 +539,7 @@ func (v *VGAEngine) HandleVRAMWrite(addr uint32, value uint32) {
 		mapMask := v.seqRegs[VGA_SEQ_MAPMASK_R]
 		bitMask := v.gcRegs[VGA_GC_BITMASK_R]
 
-		for plane := 0; plane < 4; plane++ {
+		for plane := range 4 {
 			if mapMask&(1<<plane) != 0 && offset < VGA_PLANE_SIZE {
 				if bitMask == 0xFF {
 					// Full byte write
@@ -747,10 +747,10 @@ func (v *VGAEngine) renderMode13h() []uint8 {
 	startAddr := v.getStartAddressInternal()
 	dacMask := v.dacMask
 
-	for y := 0; y < height; y++ {
+	for y := range height {
 		rowLinear := uint32(y*width) + startAddr
 		pixelBase := y * width * 4
-		for x := 0; x < width; x++ {
+		for x := range width {
 			// Linear addressing with start address offset
 			linearOffset := rowLinear + uint32(x)
 
@@ -796,9 +796,9 @@ func (v *VGAEngine) renderMode12h() []uint8 {
 	bytesPerLine := width / 8
 	dacMask := v.dacMask
 
-	for y := 0; y < height; y++ {
+	for y := range height {
 		rowBase := y * width * 4
-		for byteX := 0; byteX < bytesPerLine; byteX++ {
+		for byteX := range bytesPerLine {
 			offset := y*bytesPerLine + byteX
 
 			// Get all 4 planes for this byte
@@ -852,10 +852,10 @@ func (v *VGAEngine) renderModeX() []uint8 {
 	dacMask := v.dacMask
 	widthDiv4 := width / 4
 
-	for y := 0; y < height; y++ {
+	for y := range height {
 		rowStart := y * width
 		yOffset := uint32(y * widthDiv4)
-		for x := 0; x < width; x++ {
+		for x := range width {
 			// Unchained: pixel X determines plane, Y*width/4 + X/4 is offset
 			plane := x & 3
 			offset := yOffset + uint32(x/4) + startAddr
@@ -895,8 +895,8 @@ func (v *VGAEngine) renderTextMode() []uint8 {
 		v.rebuildPaletteCache()
 	}
 
-	for row := 0; row < VGA_TEXT_ROWS; row++ {
-		for col := 0; col < VGA_TEXT_COLS; col++ {
+	for row := range VGA_TEXT_ROWS {
+		for col := range VGA_TEXT_COLS {
 			// Get character and attribute from text buffer
 			bufOffset := (row*VGA_TEXT_COLS + col) * 2
 			char := v.textBuffer[bufOffset]
@@ -912,14 +912,14 @@ func (v *VGAEngine) renderTextMode() []uint8 {
 			charBaseY := row * charHeight
 
 			// Render character
-			for cy := 0; cy < charHeight; cy++ {
+			for cy := range charHeight {
 				fontRow := vgaFont8x16[glyphOffset+cy]
 				pixelY := charBaseY + cy
 				rowBase := pixelY * width * 4
 
 				fgU32 := v.paletteU32[fg]
 				bgU32 := v.paletteU32[bg]
-				for cx := 0; cx < charWidth; cx++ {
+				for cx := range charWidth {
 					pixelX := charBaseX + cx
 					pixelIdx := rowBase + pixelX*4
 
@@ -938,7 +938,7 @@ func (v *VGAEngine) renderTextMode() []uint8 {
 
 // rebuildPaletteCache rebuilds the pre-expanded RGBA palette cache
 func (v *VGAEngine) rebuildPaletteCache() {
-	for i := 0; i < 256; i++ {
+	for i := range 256 {
 		idx := i * 3
 		r := v.Expand6BitTo8Bit(v.palette[idx])
 		g := v.Expand6BitTo8Bit(v.palette[idx+1])
@@ -965,7 +965,7 @@ func (v *VGAEngine) getPaletteRGBAInternal(index uint8) (uint8, uint8, uint8, ui
 var vgaFrameCount int
 var vgaDebugFile *os.File
 
-func vgaDebugLog(format string, args ...interface{}) {
+func vgaDebugLog(format string, args ...any) {
 	if vgaDebugFile == nil {
 		var err error
 		vgaDebugFile, err = os.Create("/tmp/vga_debug.log")
@@ -1150,7 +1150,7 @@ func (v *VGAEngine) renderScanlineMode13h(y int) {
 
 	startAddr := v.getStartAddressInternal()
 
-	for x := 0; x < width; x++ {
+	for x := range width {
 		// Linear addressing with start address offset
 		linearOffset := uint32(y*width+x) + startAddr
 
@@ -1190,12 +1190,12 @@ func (v *VGAEngine) renderScanlineMode12h(y int) {
 
 	bytesPerLine := width / 8
 
-	for byteX := 0; byteX < bytesPerLine; byteX++ {
+	for byteX := range bytesPerLine {
 		offset := y*bytesPerLine + byteX
 
 		// Get all 4 planes for this byte
 		var planes [4]uint8
-		for p := 0; p < 4; p++ {
+		for p := range 4 {
 			if offset < int(VGA_PLANE_SIZE) {
 				planes[p] = v.vram[p][offset]
 			}
@@ -1205,7 +1205,7 @@ func (v *VGAEngine) renderScanlineMode12h(y int) {
 		for bit := 7; bit >= 0; bit-- {
 			// Combine bits from all planes to get color index
 			colorIndex := uint8(0)
-			for p := 0; p < 4; p++ {
+			for p := range 4 {
 				if planes[p]&(1<<bit) != 0 {
 					colorIndex |= 1 << p
 				}
@@ -1237,7 +1237,7 @@ func (v *VGAEngine) renderScanlineModeX(y int) {
 
 	startAddr := v.getStartAddressInternal()
 
-	for x := 0; x < width; x++ {
+	for x := range width {
 		// Unchained: pixel X determines plane, Y*width/4 + X/4 is offset
 		plane := x & 3
 		offset := uint32(y*(width/4)+x/4) + startAddr
@@ -1275,7 +1275,7 @@ func (v *VGAEngine) renderScanlineText(y int) {
 	charRow := y / charHeight
 	charLine := y % charHeight
 
-	for col := 0; col < VGA_TEXT_COLS; col++ {
+	for col := range VGA_TEXT_COLS {
 		// Get character and attribute from text buffer
 		bufOffset := (charRow*VGA_TEXT_COLS + col) * 2
 		char := v.textBuffer[bufOffset]
@@ -1289,7 +1289,7 @@ func (v *VGAEngine) renderScanlineText(y int) {
 		fontRow := vgaFont8x16[int(char)*charHeight+charLine]
 
 		// Render 8 pixels for this character
-		for cx := 0; cx < charWidth; cx++ {
+		for cx := range charWidth {
 			pixelX := col*charWidth + cx
 
 			var colorIndex uint8

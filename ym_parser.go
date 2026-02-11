@@ -155,10 +155,7 @@ func parseYMData(data []byte) (*YMFile, error) {
 	}
 
 	if psgDebugEnabledYM() {
-		dumpLen := 64
-		if len(data) < dumpLen {
-			dumpLen = len(data)
-		}
+		dumpLen := min(len(data), 64)
 		fmt.Printf("YM debug header bytes: % X\n", data[:dumpLen])
 		fmt.Printf("YM debug: frames=%d attrs=0x%X drums=%d clock=%d rate=%d loop=%d add=%d title=%q author=%q\n",
 			nbFrames, songAttrs, numDrums, clock, frameRate, loopFrame, addData, title, author)
@@ -190,7 +187,7 @@ func parseYMData(data []byte) (*YMFile, error) {
 	// Allocate single contiguous buffer for all frames
 	buffer := make([]uint8, frameCount*PSG_REG_COUNT)
 	frames := make([][]uint8, frameCount)
-	for i := 0; i < frameCount; i++ {
+	for i := range frameCount {
 		start := i * PSG_REG_COUNT
 		frames[i] = buffer[start : start+PSG_REG_COUNT : start+PSG_REG_COUNT]
 	}
@@ -198,12 +195,12 @@ func parseYMData(data []byte) (*YMFile, error) {
 	if interleaved {
 		for reg := 0; reg < frameRegCount && reg < PSG_REG_COUNT; reg++ {
 			base := reg * frameCount
-			for frame := 0; frame < frameCount; frame++ {
+			for frame := range frameCount {
 				frames[frame][reg] = remaining[base+frame]
 			}
 		}
 	} else {
-		for frame := 0; frame < frameCount; frame++ {
+		for frame := range frameCount {
 			start := frame * frameRegCount
 			copy(frames[frame], remaining[start:start+PSG_REG_COUNT])
 		}

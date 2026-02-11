@@ -196,7 +196,7 @@ func (r *AHXReplayer) InitSubsong(nr int) error {
 	r.SongEndReached = false
 	r.PlayingTime = 0
 
-	for v := 0; v < 4; v++ {
+	for v := range 4 {
 		r.Voices[v].Init()
 	}
 
@@ -215,7 +215,7 @@ func (r *AHXReplayer) PlayIRQ() {
 			if nextPos >= r.Song.PositionNr {
 				nextPos = 0
 			}
-			for i := 0; i < 4; i++ {
+			for i := range 4 {
 				r.Voices[i].Track = r.Song.Positions[r.PosNr].Track[i]
 				r.Voices[i].Transpose = int(r.Song.Positions[r.PosNr].Transpose[i])
 				r.Voices[i].NextTrack = r.Song.Positions[nextPos].Track[i]
@@ -223,14 +223,14 @@ func (r *AHXReplayer) PlayIRQ() {
 			}
 			r.GetNewPosition = false
 		}
-		for i := 0; i < 4; i++ {
+		for i := range 4 {
 			r.ProcessStep(i)
 		}
 		r.StepWaitFrames = r.Tempo
 	}
 
 	// Process frame effects
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		r.ProcessFrame(i)
 	}
 	r.PlayingTime++
@@ -262,7 +262,7 @@ func (r *AHXReplayer) PlayIRQ() {
 	}
 
 	// Set audio output for all voices
-	for a := 0; a < 4; a++ {
+	for a := range 4 {
 		r.SetAudio(a)
 	}
 }
@@ -460,7 +460,7 @@ func (r *AHXReplayer) ProcessStep(v int) {
 		} else {
 			fxParam -= 0x50
 			if fxParam <= 0x40 {
-				for i := 0; i < 4; i++ {
+				for i := range 4 {
 					r.Voices[i].TrackMasterVolume = fxParam
 				}
 			} else {
@@ -525,10 +525,7 @@ func (r *AHXReplayer) ProcessFrame(v int) {
 			}
 		}
 		if nextInst != 0 {
-			d1 := r.Tempo - voice.HardCut
-			if d1 < 0 {
-				d1 = 0
-			}
+			d1 := max(r.Tempo-voice.HardCut, 0)
 			if voice.NoteCutOn == 0 {
 				voice.NoteCutOn = 1
 				voice.NoteCutWait = d1
@@ -581,13 +578,7 @@ func (r *AHXReplayer) ProcessFrame(v int) {
 	}
 
 	// Volume slide
-	voice.NoteMaxVolume = voice.NoteMaxVolume + voice.VolumeSlideUp - voice.VolumeSlideDown
-	if voice.NoteMaxVolume < 0 {
-		voice.NoteMaxVolume = 0
-	}
-	if voice.NoteMaxVolume > 0x40 {
-		voice.NoteMaxVolume = 0x40
-	}
+	voice.NoteMaxVolume = min(max(voice.NoteMaxVolume+voice.VolumeSlideUp-voice.VolumeSlideDown, 0), 0x40)
 
 	// Portamento
 	if voice.PeriodSlideOn {
@@ -641,7 +632,7 @@ func (r *AHXReplayer) ProcessFrame(v int) {
 			}
 
 			voice.PeriodPerfSlideOn = false
-			for i := 0; i < 2; i++ {
+			for i := range 2 {
 				r.PListCommandParse(v, entry.FX[i], entry.FXParam[i])
 			}
 
@@ -738,10 +729,7 @@ func (r *AHXReplayer) ProcessFrame(v int) {
 			}
 			voice.FilterPos = d3
 			voice.NewWaveform = 1
-			voice.FilterWait = voice.FilterSpeed - 3
-			if voice.FilterWait < 1 {
-				voice.FilterWait = 1
-			}
+			voice.FilterWait = max(voice.FilterSpeed-3, 1)
 		}
 	}
 

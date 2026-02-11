@@ -135,7 +135,7 @@ func BenchmarkAHXEngine_UpdateChannels(b *testing.B) {
 	engine.ensureChannelsInitialized()
 
 	// Set up voices with data
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		engine.replayer.Voices[i].VoiceVolume = 32
 		engine.replayer.Voices[i].VoicePeriod = 284
 		engine.replayer.Voices[i].WaveLength = 3

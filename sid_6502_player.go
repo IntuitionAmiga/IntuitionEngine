@@ -200,7 +200,7 @@ func (p *SID6502Player) RenderFrames(numFrames int) ([]SIDEvent, uint64) {
 		p.initEmitted = true
 	}
 
-	for frame := 0; frame < numFrames; frame++ {
+	for range numFrames {
 		p.bus.StartFrame()
 
 		if p.interruptMode {

@@ -424,10 +424,7 @@ func (cpu *CPU64) Reset() {
 
 	// Clear memory in chunks for better cache utilization
 	for i := PROG_START; i < len(cpu.memory); i += CACHE_LINE_SIZE {
-		end := i + CACHE_LINE_SIZE
-		if end > len(cpu.memory) {
-			end = len(cpu.memory)
-		}
+		end := min(i+CACHE_LINE_SIZE, len(cpu.memory))
 		for j := i; j < end; j++ {
 			cpu.memory[j] = 0
 		}

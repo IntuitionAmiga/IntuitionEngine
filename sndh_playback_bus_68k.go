@@ -524,9 +524,6 @@ func (b *sndhPlaybackBus68K) Write32(addr uint32, value uint32) {
 // LoadSNDH loads SNDH data into the bus memory
 func (b *sndhPlaybackBus68K) LoadSNDH(data []byte) {
 	// Copy data to memory starting at address 0
-	copyLen := len(data)
-	if copyLen > SNDH_BUS_SIZE {
-		copyLen = SNDH_BUS_SIZE
-	}
+	copyLen := min(len(data), SNDH_BUS_SIZE)
 	copy(b.memory[:copyLen], data[:copyLen])
 }

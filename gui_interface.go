@@ -44,7 +44,7 @@ const (
 
 type GUIEvent struct {
 	Type GUIEventType
-	Data interface{}
+	Data any
 }
 
 type EmulatorState struct {

@@ -246,7 +246,7 @@ func VerifyX86HarteFinalState(cpu *CPU_X86, bus *X86HarteBus, expected X86HarteS
 	}
 
 	// Helper to record mismatches
-	mismatch := func(format string, args ...interface{}) {
+	mismatch := func(format string, args ...any) {
 		result.Passed = false
 		result.Mismatches = append(result.Mismatches, fmt.Sprintf(format, args...))
 	}

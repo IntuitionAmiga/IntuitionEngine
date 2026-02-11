@@ -23,7 +23,7 @@ func loadTopazFont() [256][16]byte {
 		return glyphs
 	}
 	offset := 0
-	for g := 0; g < len(glyphs); g++ {
+	for g := range len(glyphs) {
 		copy(glyphs[g][:], topazRawFont[offset:offset+terminalGlyphHeight])
 		offset += terminalGlyphHeight
 	}
@@ -177,10 +177,10 @@ func (vt *VideoTerminal) renderCellLocked(col, row int, ch byte) {
 	baseY := row * terminalGlyphHeight
 	glyph := vt.glyphs[ch]
 	vt.video.RenderToFrontBuffer(func(fb []byte, stride int) {
-		for gy := 0; gy < terminalGlyphHeight; gy++ {
+		for gy := range terminalGlyphHeight {
 			rowBits := glyph[gy]
 			dst := (baseY+gy)*stride + baseX*4
-			for gx := 0; gx < terminalGlyphWidth; gx++ {
+			for gx := range terminalGlyphWidth {
 				color := vt.bgColor
 				if (rowBits & (0x80 >> gx)) != 0 {
 					color = vt.fgColor
@@ -209,9 +209,9 @@ func (vt *VideoTerminal) renderCursorCellLocked(visible bool) {
 	baseX := cursorX * terminalGlyphWidth
 	baseY := cursorY * terminalGlyphHeight
 	vt.video.RenderToFrontBuffer(func(fb []byte, stride int) {
-		for gy := 0; gy < terminalGlyphHeight; gy++ {
+		for gy := range terminalGlyphHeight {
 			dst := (baseY+gy)*stride + baseX*4
-			for gx := 0; gx < terminalGlyphWidth; gx++ {
+			for gx := range terminalGlyphWidth {
 				writeColorLE(fb, dst+gx*4, vt.fgColor)
 			}
 		}

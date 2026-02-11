@@ -25,7 +25,7 @@ func TestSIDNoise_OscillatorPhaseLocked(t *testing.T) {
 	// with phase-locked mode, it should only clock when phase wraps
 	lfsr_changes := 0
 	prevSR := ch.noiseSR
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		ch.generateWaveSample(testSampleRate, 1.0/testSampleRate)
 		if ch.noiseSR != prevSR {
 			lfsr_changes++
@@ -58,7 +58,7 @@ func TestSIDNoise_FrequencyBasedClocking(t *testing.T) {
 	// Generate samples
 	lfsr_changes := 0
 	prevSR := ch.noiseSR
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		ch.generateWaveSample(testSampleRate, 1.0/testSampleRate)
 		if ch.noiseSR != prevSR {
 			lfsr_changes++
@@ -86,7 +86,7 @@ func TestSIDNoise_ZeroFrequencyNoClocking(t *testing.T) {
 	initialSR := ch.noiseSR
 
 	// Generate samples - LFSR should not change
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		ch.generateWaveSample(testSampleRate, 1.0/testSampleRate)
 	}
 
@@ -122,7 +122,7 @@ func TestSIDNoise_CombinedWaveformTiming(t *testing.T) {
 	}
 
 	// Generate samples and compare LFSR states
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		chNoise.generateWaveSample(testSampleRate, 1.0/testSampleRate)
 		chCombined.generateWaveSample(testSampleRate, 1.0/testSampleRate)
 	}
@@ -150,7 +150,7 @@ func TestSIDNoise_PhaseWrapDetection(t *testing.T) {
 	lfsr_changes := 0
 	prevSR := ch.noiseSR
 
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		prevPhase := ch.phase
 		ch.generateWaveSample(testSampleRate, 1.0/testSampleRate)
 

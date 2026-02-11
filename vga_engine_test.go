@@ -210,12 +210,12 @@ func TestVGA_Mode13h_ReadVRAM(t *testing.T) {
 	vga.HandleWrite(VGA_MODE, VGA_MODE_13H)
 
 	// Fill a range of VRAM
-	for i := uint32(0); i < 100; i++ {
+	for i := range uint32(100) {
 		vga.HandleVRAMWrite(VGA_VRAM_WINDOW+i, uint32(i&0xFF))
 	}
 
 	// Read back and verify
-	for i := uint32(0); i < 100; i++ {
+	for i := range uint32(100) {
 		val := vga.HandleVRAMRead(VGA_VRAM_WINDOW + i)
 		if val != i&0xFF {
 			t.Errorf("VRAM[%d]: got %d, want %d", i, val, i&0xFF)
@@ -318,7 +318,7 @@ func TestVGA_Mode12h_MapMask(t *testing.T) {
 	vga.HandleVRAMWrite(VGA_VRAM_WINDOW, 0xFF)
 
 	// Verify only plane 0 was written
-	for plane := 0; plane < 4; plane++ {
+	for plane := range 4 {
 		val := vga.ReadPlane(0, plane)
 		if plane == 0 {
 			if val != 0xFF {
@@ -336,7 +336,7 @@ func TestVGA_Mode12h_MapMask(t *testing.T) {
 	vga.HandleVRAMWrite(VGA_VRAM_WINDOW+1, 0xAA)
 
 	// All planes should have the value
-	for plane := 0; plane < 4; plane++ {
+	for plane := range 4 {
 		val := vga.ReadPlane(1, plane)
 		if val != 0xAA {
 			t.Errorf("Plane %d at offset 1: got 0x%02X, want 0xAA", plane, val)
@@ -349,13 +349,13 @@ func TestVGA_Mode12h_ReadMap(t *testing.T) {
 	vga.HandleWrite(VGA_MODE, VGA_MODE_12H)
 
 	// Write different values to each plane
-	for plane := 0; plane < 4; plane++ {
+	for plane := range 4 {
 		vga.HandleWrite(VGA_SEQ_MAPMASK, uint32(1<<plane))
 		vga.HandleVRAMWrite(VGA_VRAM_WINDOW, uint32(0x10+plane))
 	}
 
 	// Read from each plane using read map select
-	for plane := 0; plane < 4; plane++ {
+	for plane := range 4 {
 		vga.HandleWrite(VGA_GC_READMAP, uint32(plane))
 		val := vga.HandleVRAMRead(VGA_VRAM_WINDOW)
 		expected := uint32(0x10 + plane)
@@ -516,8 +516,8 @@ func TestVGA_Text_Render(t *testing.T) {
 	// Check that there's some white pixels in the first character cell
 	hasWhite := false
 	// Character cell is 8 pixels wide, 16 tall
-	for y := 0; y < VGA_FONT_HEIGHT; y++ {
-		for x := 0; x < VGA_FONT_WIDTH; x++ {
+	for y := range VGA_FONT_HEIGHT {
+		for x := range VGA_FONT_WIDTH {
 			idx := (y*640 + x) * 4 // Assuming 640 width for text mode
 			if idx+3 < len(fb) {
 				if fb[idx] > 0 || fb[idx+1] > 0 || fb[idx+2] > 0 {
@@ -606,7 +606,7 @@ func TestVGA_Integration_VideoChip(t *testing.T) {
 
 	// Draw a pattern
 	vga.SetPaletteEntry(1, 63, 0, 0) // Red
-	for i := uint32(0); i < 100; i++ {
+	for i := range uint32(100) {
 		vga.HandleVRAMWrite(VGA_VRAM_WINDOW+i, 1)
 	}
 

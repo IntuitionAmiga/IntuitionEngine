@@ -680,7 +680,7 @@ var ANTICPaletteRGBA [256][4]uint8
 
 func init() {
 	// Pre-pack the palette with alpha = 255
-	for i := 0; i < 256; i++ {
+	for i := range 256 {
 		ANTICPaletteRGBA[i][0] = ANTICPalette[i][0]
 		ANTICPaletteRGBA[i][1] = ANTICPalette[i][1]
 		ANTICPaletteRGBA[i][2] = ANTICPalette[i][2]

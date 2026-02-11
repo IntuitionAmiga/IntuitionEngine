@@ -3,6 +3,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -270,7 +271,7 @@ func createTestVGMData(events int) []byte {
 
 	// Event data
 	pos := 0x80
-	for i := 0; i < events; i++ {
+	for i := range events {
 		// AY write
 		data[pos] = 0xA0
 		data[pos+1] = byte(i % 14) // Register
@@ -306,7 +307,7 @@ PLAYER 2100
 	// Data block: start=$2000, end=$21FF
 	binary = append(binary, 0x00, 0x20, 0xFF, 0x21)
 	// Fill with dummy code
-	for i := 0; i < 0x200; i++ {
+	for i := range 0x200 {
 		binary = append(binary, byte(i&0xFF))
 	}
 
@@ -314,29 +315,30 @@ PLAYER 2100
 }
 
 func createTestSAPDataLargeHeader() []byte {
-	header := "SAP\r\n"
-	header += `AUTHOR "Test Author With A Very Long Name Here"` + "\r\n"
-	header += `NAME "Test Song With An Extremely Long Title That Goes On"` + "\r\n"
-	header += `DATE "2024/01/15"` + "\r\n"
-	header += "SONGS 10\r\n"
-	header += "DEFSONG 0\r\n"
-	header += "TYPE B\r\n"
-	header += "STEREO\r\n"
-	header += "INIT 2000\r\n"
-	header += "PLAYER 2100\r\n"
-	header += "FASTPLAY 312\r\n"
+	var header strings.Builder
+	header.WriteString("SAP\r\n")
+	header.WriteString(`AUTHOR "Test Author With A Very Long Name Here"` + "\r\n")
+	header.WriteString(`NAME "Test Song With An Extremely Long Title That Goes On"` + "\r\n")
+	header.WriteString(`DATE "2024/01/15"` + "\r\n")
+	header.WriteString("SONGS 10\r\n")
+	header.WriteString("DEFSONG 0\r\n")
+	header.WriteString("TYPE B\r\n")
+	header.WriteString("STEREO\r\n")
+	header.WriteString("INIT 2000\r\n")
+	header.WriteString("PLAYER 2100\r\n")
+	header.WriteString("FASTPLAY 312\r\n")
 	// Add multiple TIME entries
-	for i := 0; i < 10; i++ {
-		header += "TIME 03:30.500\r\n"
+	for range 10 {
+		header.WriteString("TIME 03:30.500\r\n")
 	}
 
 	binary := []byte{0xFF, 0xFF}
 	binary = append(binary, 0x00, 0x20, 0xFF, 0x21)
-	for i := 0; i < 0x200; i++ {
+	for i := range 0x200 {
 		binary = append(binary, byte(i&0xFF))
 	}
 
-	return append([]byte(header), binary...)
+	return append([]byte(header.String()), binary...)
 }
 
 func createTestSNDHData() []byte {
@@ -637,7 +639,7 @@ func createTestAYZ80Data() []byte {
 	data[177] = 0x00
 
 	// Block data at offset 190
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		data[190+i] = byte(i)
 	}
 

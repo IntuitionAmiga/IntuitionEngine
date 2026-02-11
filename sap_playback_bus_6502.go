@@ -272,8 +272,8 @@ func (b *SAPPlaybackBus6502) Reset() {
 	b.events = nil
 
 	// Clear POKEY registers
-	for chip := 0; chip < 2; chip++ {
-		for reg := 0; reg < 10; reg++ {
+	for chip := range 2 {
+		for reg := range 10 {
 			b.pokeyRegs[chip][reg] = 0
 		}
 	}

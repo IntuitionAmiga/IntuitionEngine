@@ -234,7 +234,7 @@ var sidFilterNorm8580Table [sidFilterCutoffTableSize]float32
 
 func init() {
 	// Initialize 6581 filter cutoff tables
-	for i := 0; i < sidFilterCutoffTableSize; i++ {
+	for i := range sidFilterCutoffTableSize {
 		var cutoffHz float64
 		if i == 0 {
 			cutoffHz = sidFilterMinCutoff
@@ -262,7 +262,7 @@ func init() {
 	}
 
 	// Initialize 8580 filter cutoff tables
-	for i := 0; i < sidFilterCutoffTableSize; i++ {
+	for i := range sidFilterCutoffTableSize {
 		var cutoffHz float64
 		if i == 0 {
 			cutoffHz = sidFilterMinCutoff

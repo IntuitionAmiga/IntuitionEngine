@@ -925,7 +925,7 @@ func (chip *VideoChip) refreshLoop() {
 						if bits == 0 {
 							continue
 						}
-						for bitIdx := 0; bitIdx < DIRTY_BITS_PER_WORD; bitIdx++ {
+						for bitIdx := range DIRTY_BITS_PER_WORD {
 							if bits&(1<<uint(bitIdx)) == 0 {
 								continue
 							}
@@ -1020,9 +1020,9 @@ func (chip *VideoChip) blitFillLocked(mode VideoMode) {
 	}
 
 	rowAddr := chip.bltDst
-	for y := 0; y < height; y++ {
+	for range height {
 		addr := rowAddr
-		for x := 0; x < width; x++ {
+		for range width {
 			chip.blitWritePixelLocked(addr, chip.bltColor, mode)
 			addr += BYTES_PER_PIXEL
 		}
@@ -1047,10 +1047,10 @@ func (chip *VideoChip) blitCopyLocked(mode VideoMode) {
 
 	srcRow := chip.bltSrc
 	dstRow := chip.bltDst
-	for y := 0; y < height; y++ {
+	for range height {
 		srcAddr := srcRow
 		dstAddr := dstRow
-		for x := 0; x < width; x++ {
+		for range width {
 			value := chip.blitReadPixelLocked(srcAddr)
 			chip.blitWritePixelLocked(dstAddr, value, mode)
 			srcAddr += BYTES_PER_PIXEL
@@ -1080,11 +1080,11 @@ func (chip *VideoChip) blitMaskedCopyLocked(mode VideoMode) {
 	srcRow := chip.bltSrc
 	dstRow := chip.bltDst
 	maskRow := chip.bltMask
-	for y := 0; y < height; y++ {
+	for range height {
 		srcAddr := srcRow
 		dstAddr := dstRow
 		maskAddr := maskRow
-		for x := 0; x < width; x++ {
+		for x := range width {
 			maskByte := chip.busRead8Locked(maskAddr + uint32(x/8))
 			if (maskByte>>uint(x%8))&1 == 0 {
 				srcAddr += BYTES_PER_PIXEL
@@ -1119,10 +1119,10 @@ func (chip *VideoChip) blitAlphaCopyLocked(mode VideoMode) {
 
 	srcRow := chip.bltSrc
 	dstRow := chip.bltDst
-	for y := 0; y < height; y++ {
+	for range height {
 		srcAddr := srcRow
 		dstAddr := dstRow
-		for x := 0; x < width; x++ {
+		for range width {
 			value := chip.blitReadPixelLocked(srcAddr)
 			// Only copy if alpha (lowest byte in our BGRA format) is non-zero
 			alpha := value & 0xFF
@@ -1172,12 +1172,12 @@ func (chip *VideoChip) blitMode7Locked(mode VideoMode) {
 
 	dstRow := chip.bltDst
 
-	for y := 0; y < height; y++ {
+	for range height {
 		u := rowU
 		v := rowV
 		dstAddr := dstRow
 
-		for x := 0; x < width; x++ {
+		for range width {
 			uInt := (u >> 16) & texMaskU
 			vInt := (v >> 16) & texMaskV
 
@@ -2140,10 +2140,7 @@ func (chip *VideoChip) drawRasterBandLocked() {
 	if startY < 0 || startY >= mode.height {
 		return
 	}
-	endY := startY + height
-	if endY > mode.height {
-		endY = mode.height
-	}
+	endY := min(startY+height, mode.height)
 
 	for y := startY; y < endY; y++ {
 		rowOffset := uint32(y * mode.bytesPerRow)

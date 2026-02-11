@@ -35,7 +35,7 @@ func TestSIDADSR_DelayBug(t *testing.T) {
 	// Count samples until envelope starts increasing
 	delayCount := 0
 	prevLevel := ch.envelopeLevel
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		ch.updateEnvelope()
 		if ch.envelopeLevel > prevLevel {
 			break
@@ -73,7 +73,7 @@ func TestSIDADSR_DelayBugDisabled(t *testing.T) {
 	ch.envelopeSample = 0
 
 	// Run a few envelope updates
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		ch.updateEnvelope()
 	}
 
@@ -113,7 +113,7 @@ func TestSIDADSR_CounterLeak(t *testing.T) {
 	ch.envelopePhase = ENV_RELEASE
 
 	// Let it release partway (not to zero)
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		ch.updateEnvelope()
 	}
 
@@ -161,7 +161,7 @@ func TestSIDADSR_HardRestartTechnique(t *testing.T) {
 	ch.releaseStartLevel = ch.envelopeLevel
 
 	// Wait for specific number of samples (hard restart timing)
-	for i := 0; i < 15; i++ {
+	for range 15 {
 		ch.updateEnvelope()
 	}
 
@@ -175,7 +175,7 @@ func TestSIDADSR_HardRestartTechnique(t *testing.T) {
 	levelAfterRetrigger := ch.envelopeLevel
 
 	// Generate a few samples
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		ch.updateEnvelope()
 	}
 
@@ -240,7 +240,7 @@ func TestSIDADSR_DelayCounterRange(t *testing.T) {
 		// Count delay
 		delayCount := 0
 		prevLevel := ch.envelopeLevel
-		for i := 0; i < 50; i++ {
+		for range 50 {
 			ch.updateEnvelope()
 			if ch.envelopeLevel > prevLevel {
 				break

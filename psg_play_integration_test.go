@@ -47,7 +47,7 @@ func TestPSGPlayFromMemory(t *testing.T) {
 	// Test renderAYZ80 directly to see what it returns
 	ayLen := uint32(24525)
 	ayData := make([]byte, ayLen)
-	for i := uint32(0); i < ayLen; i++ {
+	for i := range ayLen {
 		ayData[i] = bus.Read8(ayStart + i)
 	}
 	meta, events, total, clockHz, frameRate, loop, loopSample, _, _, err := renderAYZ80(ayData, SAMPLE_RATE)

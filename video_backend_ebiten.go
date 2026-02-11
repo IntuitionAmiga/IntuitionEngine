@@ -253,7 +253,7 @@ func (eo *EbitenOutput) UpdateRegion(x, y, width, height int, pixels []byte) err
 	}
 
 	eo.bufferMutex.Lock()
-	for dy := 0; dy < height; dy++ {
+	for dy := range height {
 		dstOffset := ((y+dy)*eo.width + x) * 4
 		srcOffset := dy * width * 4
 		copy(eo.frameBuffer[dstOffset:], pixels[srcOffset:srcOffset+width*4])

@@ -27,7 +27,7 @@ func TestFPU_CpuIntegration(t *testing.T) {
 		}
 
 		// Verify FPU registers are zero-initialized
-		for i := 0; i < 8; i++ {
+		for i := range 8 {
 			if !cpu.FPU.FPRegs[i].IsZero() {
 				t.Errorf("FP%d should be zero on init", i)
 			}
