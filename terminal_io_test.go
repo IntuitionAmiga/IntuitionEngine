@@ -420,19 +420,20 @@ func TestTerminalMMIO_RawKey_NoLineStatus(t *testing.T) {
 
 func TestTerminalMMIO_LineMode_WriteRead(t *testing.T) {
 	tm := NewTerminalMMIO()
-	if tm.LineInputMode() {
-		t.Fatal("expected default line mode false")
-	}
-	tm.HandleWrite(TERM_CTRL, 1)
+	// Default is line mode true (typeahead safety: keys go to TERM_IN for read_line).
 	if !tm.LineInputMode() {
-		t.Fatal("expected line mode true")
+		t.Fatal("expected default line mode true")
 	}
 	if got := tm.HandleRead(TERM_CTRL); got != 1 {
-		t.Fatalf("expected TERM_CTRL 1, got %d", got)
+		t.Fatalf("expected default TERM_CTRL 1, got %d", got)
 	}
 	tm.HandleWrite(TERM_CTRL, 0)
 	if tm.LineInputMode() {
 		t.Fatal("expected line mode false after clear")
+	}
+	tm.HandleWrite(TERM_CTRL, 1)
+	if !tm.LineInputMode() {
+		t.Fatal("expected line mode true after set")
 	}
 }
 
@@ -496,6 +497,107 @@ func TestTerminalMMIO_RouteHostKey_Atomic(t *testing.T) {
 		if total != 1 {
 			t.Fatalf("expected byte routed to exactly one channel, got %d", total)
 		}
+	}
+}
+
+func TestTerminalMMIO_RouteGraphicalKey_LineMode(t *testing.T) {
+	tm := NewTerminalMMIO()
+	// Default is line mode true.
+	lineMode := tm.RouteGraphicalKey('A')
+	if !lineMode {
+		t.Fatal("expected line mode true")
+	}
+	// In line mode, key should NOT be in raw key buffer.
+	if got := tm.HandleRead(TERM_KEY_STATUS); got != 0 {
+		t.Fatalf("expected no raw key in line mode, got %d", got)
+	}
+	// Key should NOT be auto-enqueued to TERM_IN either (that's HandleKeyInput's job).
+	if got := tm.HandleRead(TERM_STATUS) & 1; got != 0 {
+		t.Fatal("expected TERM_IN empty — RouteGraphicalKey in line mode doesn't enqueue")
+	}
+}
+
+func TestTerminalMMIO_RouteGraphicalKey_CharMode(t *testing.T) {
+	tm := NewTerminalMMIO()
+	tm.HandleWrite(TERM_CTRL, 0) // char mode
+	lineMode := tm.RouteGraphicalKey('B')
+	if lineMode {
+		t.Fatal("expected line mode false")
+	}
+	if got := tm.HandleRead(TERM_KEY_STATUS); got != 1 {
+		t.Fatalf("expected raw key available, got %d", got)
+	}
+	if got := tm.HandleRead(TERM_KEY_IN); got != 'B' {
+		t.Fatalf("expected raw key B, got 0x%X", got)
+	}
+}
+
+func TestTerminalMMIO_RouteGraphicalKey_Atomic(t *testing.T) {
+	tm := NewTerminalMMIO()
+	// Same atomicity test as RouteHostKey: mode flip during concurrent RouteGraphicalKey.
+	for i := 0; i < 500; i++ {
+		for tm.HandleRead(TERM_STATUS)&1 != 0 {
+			_ = tm.HandleRead(TERM_IN)
+		}
+		for tm.HandleRead(TERM_KEY_STATUS)&1 != 0 {
+			_ = tm.HandleRead(TERM_KEY_IN)
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			tm.HandleWrite(TERM_CTRL, uint32(i&1))
+		}()
+		var gotLineMode bool
+		go func() {
+			defer wg.Done()
+			gotLineMode = tm.RouteGraphicalKey('X')
+		}()
+		wg.Wait()
+
+		inTermIn := 0
+		if tm.HandleRead(TERM_STATUS)&1 != 0 {
+			t.Fatal("RouteGraphicalKey should never enqueue to TERM_IN")
+		}
+		inRawKey := 0
+		if tm.HandleRead(TERM_KEY_STATUS)&1 != 0 {
+			if got := tm.HandleRead(TERM_KEY_IN); got != 'X' {
+				t.Fatalf("expected TERM_KEY_IN X, got 0x%X", got)
+			}
+			inRawKey++
+		}
+		// In line mode: raw key count should be 0. In char mode: 1.
+		if gotLineMode && inRawKey != 0 {
+			t.Fatal("line mode returned true but raw key was enqueued")
+		}
+		if !gotLineMode && inRawKey != 1 {
+			t.Fatal("char mode returned false but raw key was not enqueued")
+		}
+		_ = inTermIn
+	}
+}
+
+func TestTerminalMMIO_TypeaheadDefault(t *testing.T) {
+	// Keys typed before read_line sets TERM_CTRL should go to TERM_IN (line mode default).
+	tm := NewTerminalMMIO()
+	// Simulate keys typed before read_line starts (no TERM_CTRL write yet).
+	tm.EnqueueByte('H')
+	tm.EnqueueByte('I')
+	tm.EnqueueByte('\n')
+	// read_line polls TERM_STATUS/TERM_IN — verify keys are there.
+	if got := tm.HandleRead(TERM_STATUS) & 1; got != 1 {
+		t.Fatal("expected TERM_IN to have typeahead keys")
+	}
+	if got := tm.HandleRead(TERM_LINE_STATUS) & 1; got != 1 {
+		t.Fatal("expected complete line available from typeahead")
+	}
+	var out []byte
+	for tm.HandleRead(TERM_STATUS)&1 != 0 {
+		out = append(out, byte(tm.HandleRead(TERM_IN)))
+	}
+	if string(out) != "HI\n" {
+		t.Fatalf("expected typeahead 'HI\\n', got %q", string(out))
 	}
 }
 

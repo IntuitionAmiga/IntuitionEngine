@@ -207,6 +207,25 @@ func TestScreenEditor_E2E_OutputThenInput(t *testing.T) {
 	}
 }
 
+func TestScreenEditor_E2E_TypeaheadBeforeReadLine(t *testing.T) {
+	vt, _, term := newVideoTerminalForTest(t)
+	// Default is line mode (simulates state before read_line runs).
+	// Type keys before read_line sets TERM_CTRL — they should go to TERM_IN.
+	for _, ch := range "10 PRINT 42" {
+		vt.HandleKeyInput(byte(ch))
+	}
+	vt.HandleKeyInput('\n')
+
+	// Verify keys ended up in TERM_IN (where read_line reads), not TERM_KEY_IN.
+	got := drainTermIn(term)
+	if got != "10 PRINT 42\n" {
+		t.Fatalf("expected typeahead in TERM_IN, got %q", got)
+	}
+	if term.HandleRead(TERM_KEY_STATUS)&1 != 0 {
+		t.Fatal("expected TERM_KEY_IN empty for typeahead keys")
+	}
+}
+
 func TestScreenEditor_E2E_ScrollbackNav(t *testing.T) {
 	vt, _, _ := newVideoTerminalForTest(t)
 	// Fill 35 rows of output (more than 30-row viewport)

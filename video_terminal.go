@@ -122,25 +122,28 @@ func (vt *VideoTerminal) processChar(ch byte) {
 		return
 	}
 
-	redrawAll := false
 	switch ch {
 	case '\b':
 		vt.screen.PutChar('\b')
 		cx, cy := vt.screen.CursorPos()
 		vt.screen.SetCell(cx, cy, 0)
-		redrawAll = true
+		vrow := cy - vt.screen.ViewportTop()
+		vt.renderRowFromLocked(vrow, cx)
 	case '\f':
 		vt.screen.Clear()
 		vt.clearScreenLocked()
-		redrawAll = false
 	default:
-		if vt.screen.PutChar(ch) || ch >= 0x20 || ch == '\r' || ch == '\n' || ch == '\t' {
-			redrawAll = true
+		beforeTop := vt.screen.ViewportTop()
+		beforeX, beforeY := vt.screen.CursorPos()
+		scrolled := vt.screen.PutChar(ch)
+		if scrolled || vt.screen.ViewportTop() != beforeTop {
+			vt.renderViewportLocked()
+		} else if ch >= 0x20 {
+			vrow := beforeY - vt.screen.ViewportTop()
+			if vrow >= 0 && vrow < vt.rows {
+				vt.renderCellLocked(beforeX, vrow, ch)
+			}
 		}
-	}
-
-	if redrawAll {
-		vt.renderViewportLocked()
 	}
 
 	vt.cursorOn = true
@@ -252,6 +255,29 @@ func (vt *VideoTerminal) renderViewportLocked() {
 	}
 }
 
+// renderRowFromLocked re-renders visible row vrow from column startCol to end.
+func (vt *VideoTerminal) renderRowFromLocked(vrow, startCol int) {
+	if vrow < 0 || vrow >= vt.rows {
+		return
+	}
+	for col := startCol; col < vt.cols; col++ {
+		ch := vt.screen.VisibleCell(col, vrow)
+		if ch == 0 {
+			ch = ' '
+		}
+		vt.renderCellLocked(col, vrow, ch)
+	}
+}
+
+// renderVisibleCellLocked renders a single cell using its ScreenBuffer content.
+func (vt *VideoTerminal) renderVisibleCellLocked(col, vrow int) {
+	ch := vt.screen.VisibleCell(col, vrow)
+	if ch == 0 {
+		ch = ' '
+	}
+	vt.renderCellLocked(col, vrow, ch)
+}
+
 func (vt *VideoTerminal) setCellLocked(col, row int, ch byte) {
 	vt.screen.SetCell(col, vt.screen.ViewportTop()+row, ch)
 }
@@ -273,10 +299,7 @@ func (vt *VideoTerminal) HandleKeyInput(b byte) {
 		vt.renderCursorCellLocked(false)
 	}
 
-	lineMode := vt.term.LineInputMode()
-	if !lineMode {
-		vt.term.EnqueueRawKey(b)
-	}
+	lineMode := vt.term.RouteGraphicalKey(b)
 
 	redrawAll := vt.handleInputByteLocked(b, lineMode)
 	if redrawAll {
@@ -333,8 +356,10 @@ func (vt *VideoTerminal) handleOutputEscapeLocked(ch byte) bool {
 	case 3:
 		vt.escState = 0
 		if ch == '~' && vt.escParam == '3' {
+			cx, cy := vt.screen.CursorPos()
 			vt.screen.DeleteChar()
-			vt.renderViewportLocked()
+			vrow := cy - vt.screen.ViewportTop()
+			vt.renderRowFromLocked(vrow, cx)
 		}
 		return true
 	default:
@@ -345,7 +370,7 @@ func (vt *VideoTerminal) handleOutputEscapeLocked(ch byte) bool {
 
 func (vt *VideoTerminal) handleInputByteLocked(b byte, lineMode bool) bool {
 	if vt.handleInputEscapeLocked(b) {
-		return true
+		return false // escape handler does its own targeted rendering
 	}
 
 	if b == 0x1B {
@@ -363,21 +388,37 @@ func (vt *VideoTerminal) handleInputByteLocked(b byte, lineMode bool) bool {
 			}
 			vt.term.EnqueueByte('\n')
 		}
+		beforeTop := vt.screen.ViewportTop()
 		vt.screen.PutChar('\r')
 		vt.screen.PutChar('\n')
-		return true
+		return vt.screen.ViewportTop() != beforeTop // full redraw only on scroll
 	case '\b':
+		cx, cy := vt.screen.CursorPos()
 		vt.screen.BackspaceChar()
-		return true
+		vrow := cy - vt.screen.ViewportTop()
+		if cx > 0 {
+			vt.renderRowFromLocked(vrow, cx-1)
+		}
+		return false
 	case '\t':
+		beforeTop := vt.screen.ViewportTop()
 		vt.screen.PutChar('\t')
-		return true
+		return vt.screen.ViewportTop() != beforeTop
 	default:
 		if b < 0x20 {
 			return false
 		}
-		vt.screen.PutChar(b)
-		return true
+		beforeTop := vt.screen.ViewportTop()
+		beforeX, beforeY := vt.screen.CursorPos()
+		scrolled := vt.screen.PutChar(b)
+		if scrolled || vt.screen.ViewportTop() != beforeTop {
+			return true // full redraw on scroll
+		}
+		vrow := beforeY - vt.screen.ViewportTop()
+		if vrow >= 0 && vrow < vt.rows {
+			vt.renderCellLocked(beforeX, vrow, b)
+		}
+		return false
 	}
 }
 
@@ -394,37 +435,37 @@ func (vt *VideoTerminal) handleInputEscapeLocked(b byte) bool {
 		return false
 	case 2:
 		vt.inputEscState = 0
+		beforeTop := vt.screen.ViewportTop()
 		switch b {
 		case 'A':
 			vt.screen.MoveCursor(0, -1)
-			return true
 		case 'B':
 			vt.screen.MoveCursor(0, 1)
-			return true
 		case 'C':
 			vt.screen.MoveCursor(1, 0)
-			return true
 		case 'D':
 			vt.screen.MoveCursor(-1, 0)
-			return true
 		case 'H':
 			vt.screen.Home()
-			return true
 		case 'F':
 			vt.screen.End()
-			return true
 		default:
 			if b >= '0' && b <= '9' {
 				vt.inputEscParam = b
 				vt.inputEscState = 3
 			}
-			return true
 		}
+		if vt.screen.ViewportTop() != beforeTop {
+			vt.renderViewportLocked()
+		}
+		return true
 	case 3:
 		vt.inputEscState = 0
 		if b == '~' && vt.inputEscParam == '3' {
+			cx, cy := vt.screen.CursorPos()
 			vt.screen.DeleteChar()
-			return true
+			vrow := cy - vt.screen.ViewportTop()
+			vt.renderRowFromLocked(vrow, cx)
 		}
 		return true
 	default:

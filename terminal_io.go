@@ -51,10 +51,13 @@ type TerminalMMIO struct {
 }
 
 // NewTerminalMMIO creates a new terminal MMIO device with echo enabled.
+// lineInputMode defaults to true so keys typed before read_line sets TERM_CTRL
+// are routed to TERM_IN (where read_line reads), not TERM_KEY_IN.
 func NewTerminalMMIO() *TerminalMMIO {
 	return &TerminalMMIO{
-		echoEnabled: true,
-		outputBuf:   make([]byte, 0, 256),
+		echoEnabled:   true,
+		lineInputMode: true,
+		outputBuf:     make([]byte, 0, 256),
 	}
 }
 
@@ -209,6 +212,20 @@ func (tm *TerminalMMIO) RouteHostKey(b byte) {
 		return
 	}
 	tm.enqueueRawKeyLocked(b)
+}
+
+// RouteGraphicalKey atomically checks line mode and, if in char mode, enqueues
+// the key to the raw key buffer. Returns the line mode state so the caller can
+// decide how to handle the key visually. This prevents the race where
+// LineInputMode() and EnqueueRawKey() are separate lock acquisitions.
+func (tm *TerminalMMIO) RouteGraphicalKey(b byte) (lineMode bool) {
+	tm.mu.Lock()
+	lineMode = tm.lineInputMode
+	if !lineMode {
+		tm.enqueueRawKeyLocked(b)
+	}
+	tm.mu.Unlock()
+	return lineMode
 }
 
 func (tm *TerminalMMIO) LineInputMode() bool {
