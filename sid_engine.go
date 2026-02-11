@@ -676,12 +676,14 @@ func (e *SIDEngine) TickSample() {
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
 
-	if e.playing {
-		for e.eventIndex < len(e.events) && e.events[e.eventIndex].Sample == e.currentSample {
-			ev := e.events[e.eventIndex]
-			e.writeRegisterLocked(ev.Reg, ev.Value)
-			e.eventIndex++
-		}
+	if !e.playing {
+		return
+	}
+
+	for e.eventIndex < len(e.events) && e.events[e.eventIndex].Sample == e.currentSample {
+		ev := e.events[e.eventIndex]
+		e.writeRegisterLocked(ev.Reg, ev.Value)
+		e.eventIndex++
 	}
 
 	if e.debugEnabled && e.currentSample < e.debugUntil && e.currentSample >= e.debugNextTick {
@@ -692,7 +694,7 @@ func (e *SIDEngine) TickSample() {
 
 	e.currentSample++
 
-	if e.playing && e.totalSamples > 0 && e.currentSample >= e.totalSamples {
+	if e.totalSamples > 0 && e.currentSample >= e.totalSamples {
 		if e.loop {
 			e.currentSample = e.loopSample
 			e.eventIndex = e.loopEventIndex

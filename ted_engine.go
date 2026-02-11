@@ -451,19 +451,21 @@ func (e *TEDEngine) TickSample() {
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
 
-	if e.playing {
-		// Process all events at current sample position
-		for e.eventIndex < len(e.events) && e.events[e.eventIndex].Sample == e.currentSample {
-			ev := e.events[e.eventIndex]
-			e.writeRegisterLocked(ev.Reg, ev.Value)
-			e.eventIndex++
-		}
+	if !e.playing {
+		return
+	}
+
+	// Process all events at current sample position
+	for e.eventIndex < len(e.events) && e.events[e.eventIndex].Sample == e.currentSample {
+		ev := e.events[e.eventIndex]
+		e.writeRegisterLocked(ev.Reg, ev.Value)
+		e.eventIndex++
 	}
 
 	e.currentSample++
 
 	// Check for end of playback
-	if e.playing && e.totalSamples > 0 && e.currentSample >= e.totalSamples {
+	if e.totalSamples > 0 && e.currentSample >= e.totalSamples {
 		if e.loop {
 			e.currentSample = e.loopSample
 			e.eventIndex = e.loopEventIndex

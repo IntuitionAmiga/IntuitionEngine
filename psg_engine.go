@@ -221,26 +221,28 @@ func (e *PSGEngine) TickSample() {
 
 	e.advanceEnvelope()
 
-	if e.playing {
-		for e.eventIndex < len(e.events) && e.events[e.eventIndex].Sample == e.currentSample {
-			ev := e.events[e.eventIndex]
-			if ev.Reg < PSG_REG_COUNT {
-				e.regs[ev.Reg] = ev.Value
-				if ev.Reg == 11 || ev.Reg == 12 {
-					e.updateEnvPeriodSamples()
-				}
-				if ev.Reg == 13 {
-					e.resetEnvelope()
-				}
-				e.syncToChip()
+	if !e.playing {
+		return
+	}
+
+	for e.eventIndex < len(e.events) && e.events[e.eventIndex].Sample == e.currentSample {
+		ev := e.events[e.eventIndex]
+		if ev.Reg < PSG_REG_COUNT {
+			e.regs[ev.Reg] = ev.Value
+			if ev.Reg == 11 || ev.Reg == 12 {
+				e.updateEnvPeriodSamples()
 			}
-			e.eventIndex++
+			if ev.Reg == 13 {
+				e.resetEnvelope()
+			}
+			e.syncToChip()
 		}
+		e.eventIndex++
 	}
 
 	e.currentSample++
 
-	if e.playing && e.totalSamples > 0 && e.currentSample >= e.totalSamples {
+	if e.totalSamples > 0 && e.currentSample >= e.totalSamples {
 		if e.loop {
 			e.currentSample = e.loopSample
 			e.eventIndex = e.loopEventIndex
