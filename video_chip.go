@@ -69,51 +69,68 @@ const (
 
 	VIDEO_REG_BASE = 0xF0000 // Base address for memory-mapped registers
 	// Register offsets for control, mode, and status
-	VIDEO_REG_OFFSET_CTRL           = 0x000
-	VIDEO_REG_OFFSET_MODE           = 0x004
-	VIDEO_REG_OFFSET_STATUS         = 0x008
-	VIDEO_REG_OFFSET_COPPER_CTRL    = 0x00C
-	VIDEO_REG_OFFSET_COPPER_PTR     = 0x010
-	VIDEO_REG_OFFSET_COPPER_PC      = 0x014
-	VIDEO_REG_OFFSET_COPPER_STATUS  = 0x018
-	VIDEO_REG_OFFSET_BLT_CTRL       = 0x01C
-	VIDEO_REG_OFFSET_BLT_OP         = 0x020
-	VIDEO_REG_OFFSET_BLT_SRC        = 0x024
-	VIDEO_REG_OFFSET_BLT_DST        = 0x028
-	VIDEO_REG_OFFSET_BLT_WIDTH      = 0x02C
-	VIDEO_REG_OFFSET_BLT_HEIGHT     = 0x030
-	VIDEO_REG_OFFSET_BLT_SRC_STRIDE = 0x034
-	VIDEO_REG_OFFSET_BLT_DST_STRIDE = 0x038
-	VIDEO_REG_OFFSET_BLT_COLOR      = 0x03C
-	VIDEO_REG_OFFSET_BLT_MASK       = 0x040
-	VIDEO_REG_OFFSET_BLT_STATUS     = 0x044
-	VIDEO_REG_OFFSET_RASTER_Y       = 0x048
-	VIDEO_REG_OFFSET_RASTER_HEIGHT  = 0x04C
-	VIDEO_REG_OFFSET_RASTER_COLOR   = 0x050
-	VIDEO_REG_OFFSET_RASTER_CTRL    = 0x054
-	VIDEO_CTRL                      = VIDEO_REG_BASE + VIDEO_REG_OFFSET_CTRL
-	VIDEO_MODE                      = VIDEO_REG_BASE + VIDEO_REG_OFFSET_MODE
-	VIDEO_STATUS                    = VIDEO_REG_BASE + VIDEO_REG_OFFSET_STATUS
-	COPPER_CTRL                     = VIDEO_REG_BASE + VIDEO_REG_OFFSET_COPPER_CTRL
-	COPPER_PTR                      = VIDEO_REG_BASE + VIDEO_REG_OFFSET_COPPER_PTR
-	COPPER_PC                       = VIDEO_REG_BASE + VIDEO_REG_OFFSET_COPPER_PC
-	COPPER_STATUS                   = VIDEO_REG_BASE + VIDEO_REG_OFFSET_COPPER_STATUS
-	BLT_CTRL                        = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_CTRL
-	BLT_OP                          = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_OP
-	BLT_SRC                         = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_SRC
-	BLT_DST                         = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_DST
-	BLT_WIDTH                       = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_WIDTH
-	BLT_HEIGHT                      = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_HEIGHT
-	BLT_SRC_STRIDE                  = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_SRC_STRIDE
-	BLT_DST_STRIDE                  = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_DST_STRIDE
-	BLT_COLOR                       = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_COLOR
-	BLT_MASK                        = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_MASK
-	BLT_STATUS                      = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_STATUS
-	VIDEO_RASTER_Y                  = VIDEO_REG_BASE + VIDEO_REG_OFFSET_RASTER_Y
-	VIDEO_RASTER_HEIGHT             = VIDEO_REG_BASE + VIDEO_REG_OFFSET_RASTER_HEIGHT
-	VIDEO_RASTER_COLOR              = VIDEO_REG_BASE + VIDEO_REG_OFFSET_RASTER_COLOR
-	VIDEO_RASTER_CTRL               = VIDEO_REG_BASE + VIDEO_REG_OFFSET_RASTER_CTRL
-	VIDEO_REG_END                   = VIDEO_RASTER_CTRL + 3
+	VIDEO_REG_OFFSET_CTRL             = 0x000
+	VIDEO_REG_OFFSET_MODE             = 0x004
+	VIDEO_REG_OFFSET_STATUS           = 0x008
+	VIDEO_REG_OFFSET_COPPER_CTRL      = 0x00C
+	VIDEO_REG_OFFSET_COPPER_PTR       = 0x010
+	VIDEO_REG_OFFSET_COPPER_PC        = 0x014
+	VIDEO_REG_OFFSET_COPPER_STATUS    = 0x018
+	VIDEO_REG_OFFSET_BLT_CTRL         = 0x01C
+	VIDEO_REG_OFFSET_BLT_OP           = 0x020
+	VIDEO_REG_OFFSET_BLT_SRC          = 0x024
+	VIDEO_REG_OFFSET_BLT_DST          = 0x028
+	VIDEO_REG_OFFSET_BLT_WIDTH        = 0x02C
+	VIDEO_REG_OFFSET_BLT_HEIGHT       = 0x030
+	VIDEO_REG_OFFSET_BLT_SRC_STRIDE   = 0x034
+	VIDEO_REG_OFFSET_BLT_DST_STRIDE   = 0x038
+	VIDEO_REG_OFFSET_BLT_COLOR        = 0x03C
+	VIDEO_REG_OFFSET_BLT_MASK         = 0x040
+	VIDEO_REG_OFFSET_BLT_STATUS       = 0x044
+	VIDEO_REG_OFFSET_RASTER_Y         = 0x048
+	VIDEO_REG_OFFSET_RASTER_HEIGHT    = 0x04C
+	VIDEO_REG_OFFSET_RASTER_COLOR     = 0x050
+	VIDEO_REG_OFFSET_RASTER_CTRL      = 0x054
+	VIDEO_REG_OFFSET_BLT_MODE7_U0     = 0x058
+	VIDEO_REG_OFFSET_BLT_MODE7_V0     = 0x05C
+	VIDEO_REG_OFFSET_BLT_MODE7_DU_COL = 0x060
+	VIDEO_REG_OFFSET_BLT_MODE7_DV_COL = 0x064
+	VIDEO_REG_OFFSET_BLT_MODE7_DU_ROW = 0x068
+	VIDEO_REG_OFFSET_BLT_MODE7_DV_ROW = 0x06C
+	VIDEO_REG_OFFSET_BLT_MODE7_TEX_W  = 0x070
+	VIDEO_REG_OFFSET_BLT_MODE7_TEX_H  = 0x074
+
+	VIDEO_CTRL          = VIDEO_REG_BASE + VIDEO_REG_OFFSET_CTRL
+	VIDEO_MODE          = VIDEO_REG_BASE + VIDEO_REG_OFFSET_MODE
+	VIDEO_STATUS        = VIDEO_REG_BASE + VIDEO_REG_OFFSET_STATUS
+	COPPER_CTRL         = VIDEO_REG_BASE + VIDEO_REG_OFFSET_COPPER_CTRL
+	COPPER_PTR          = VIDEO_REG_BASE + VIDEO_REG_OFFSET_COPPER_PTR
+	COPPER_PC           = VIDEO_REG_BASE + VIDEO_REG_OFFSET_COPPER_PC
+	COPPER_STATUS       = VIDEO_REG_BASE + VIDEO_REG_OFFSET_COPPER_STATUS
+	BLT_CTRL            = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_CTRL
+	BLT_OP              = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_OP
+	BLT_SRC             = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_SRC
+	BLT_DST             = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_DST
+	BLT_WIDTH           = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_WIDTH
+	BLT_HEIGHT          = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_HEIGHT
+	BLT_SRC_STRIDE      = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_SRC_STRIDE
+	BLT_DST_STRIDE      = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_DST_STRIDE
+	BLT_COLOR           = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_COLOR
+	BLT_MASK            = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_MASK
+	BLT_STATUS          = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_STATUS
+	VIDEO_RASTER_Y      = VIDEO_REG_BASE + VIDEO_REG_OFFSET_RASTER_Y
+	VIDEO_RASTER_HEIGHT = VIDEO_REG_BASE + VIDEO_REG_OFFSET_RASTER_HEIGHT
+	VIDEO_RASTER_COLOR  = VIDEO_REG_BASE + VIDEO_REG_OFFSET_RASTER_COLOR
+	VIDEO_RASTER_CTRL   = VIDEO_REG_BASE + VIDEO_REG_OFFSET_RASTER_CTRL
+	BLT_MODE7_U0        = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_MODE7_U0
+	BLT_MODE7_V0        = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_MODE7_V0
+	BLT_MODE7_DU_COL    = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_MODE7_DU_COL
+	BLT_MODE7_DV_COL    = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_MODE7_DV_COL
+	BLT_MODE7_DU_ROW    = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_MODE7_DU_ROW
+	BLT_MODE7_DV_ROW    = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_MODE7_DV_ROW
+	BLT_MODE7_TEX_W     = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_MODE7_TEX_W
+	BLT_MODE7_TEX_H     = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_MODE7_TEX_H
+	VIDEO_REG_END       = BLT_MODE7_TEX_H + 3
 
 	VRAM_START_MB = 1 // VRAM starts at 1MB offset
 	VRAM_SIZE_MB  = 4 // 4MB of video memory
@@ -163,6 +180,7 @@ const (
 	bltOpLine
 	bltOpMaskedCopy
 	bltOpAlphaCopy // Copy only pixels with alpha > 0 (for transparency)
+	bltOpMode7     // Affine texture mapping
 )
 
 const (
@@ -415,17 +433,26 @@ type VideoChip struct {
 	copperManagedByCompositor bool   // true when compositor handles copper per-scanline
 
 	// Blitter state
-	bltIrqEnabled   bool
-	bltBusy         bool
-	bltOpStaged     uint32
-	bltSrcStaged    uint32
-	bltDstStaged    uint32
-	bltWidthStaged  uint32
-	bltHeightStaged uint32
-	bltSrcStride    uint32
-	bltDstStride    uint32
-	bltColorStaged  uint32
-	bltMaskStaged   uint32
+	bltIrqEnabled       bool
+	bltBusy             bool
+	bltOpStaged         uint32
+	bltSrcStaged        uint32
+	bltDstStaged        uint32
+	bltWidthStaged      uint32
+	bltHeightStaged     uint32
+	bltSrcStride        uint32
+	bltDstStride        uint32
+	bltColorStaged      uint32
+	bltMaskStaged       uint32
+	bltMode7U0Staged    uint32
+	bltMode7V0Staged    uint32
+	bltMode7DuColStaged uint32
+	bltMode7DvColStaged uint32
+	bltMode7DuRowStaged uint32
+	bltMode7DvRowStaged uint32
+	bltMode7TexWStaged  uint32
+	bltMode7TexHStaged  uint32
+
 	bltOp           uint32
 	bltSrc          uint32
 	bltDst          uint32
@@ -435,8 +462,17 @@ type VideoChip struct {
 	bltDstStrideRun uint32
 	bltColor        uint32
 	bltMask         uint32
-	bltPending      bool
-	bltErr          bool
+	bltMode7U0      uint32
+	bltMode7V0      uint32
+	bltMode7DuCol   uint32
+	bltMode7DvCol   uint32
+	bltMode7DuRow   uint32
+	bltMode7DvRow   uint32
+	bltMode7TexW    uint32
+	bltMode7TexH    uint32
+
+	bltPending bool
+	bltErr     bool
 
 	rasterY      uint32
 	rasterHeight uint32
@@ -965,6 +1001,8 @@ func (chip *VideoChip) executeBlitterLocked(mode VideoMode) {
 		chip.blitMaskedCopyLocked(mode)
 	case bltOpAlphaCopy:
 		chip.blitAlphaCopyLocked(mode)
+	case bltOpMode7:
+		chip.blitMode7Locked(mode)
 	default:
 		chip.blitCopyLocked(mode)
 	}
@@ -1097,6 +1135,76 @@ func (chip *VideoChip) blitAlphaCopyLocked(mode VideoMode) {
 		srcRow += srcStride
 		dstRow += dstStride
 	}
+}
+
+func (chip *VideoChip) blitMode7Locked(mode VideoMode) {
+	width := int(chip.bltWidth)
+	height := int(chip.bltHeight)
+	if width <= 0 || height <= 0 {
+		return
+	}
+
+	// Validate masks are power of 2 minus 1
+	if !isValidMask(chip.bltMode7TexW) || !isValidMask(chip.bltMode7TexH) {
+		chip.bltErr = true
+		return
+	}
+
+	texMaskU := int32(chip.bltMode7TexW)
+	texMaskV := int32(chip.bltMode7TexH)
+
+	srcStride := chip.bltSrcStrideRun
+	if srcStride == 0 {
+		srcStride = uint32(texMaskU+1) * 4
+	}
+	dstStride := chip.bltDstStrideRun
+	if dstStride == 0 {
+		dstStride = chip.defaultStride(chip.bltDst, width, mode)
+	}
+
+	// Fixed point coordinates (16.16)
+	rowU := int32(chip.bltMode7U0)
+	rowV := int32(chip.bltMode7V0)
+	duCol := int32(chip.bltMode7DuCol)
+	dvCol := int32(chip.bltMode7DvCol)
+	duRow := int32(chip.bltMode7DuRow)
+	dvRow := int32(chip.bltMode7DvRow)
+
+	dstRow := chip.bltDst
+
+	for y := 0; y < height; y++ {
+		u := rowU
+		v := rowV
+		dstAddr := dstRow
+
+		for x := 0; x < width; x++ {
+			uInt := (u >> 16) & texMaskU
+			vInt := (v >> 16) & texMaskV
+
+			// Sample source
+			texAddr := chip.bltSrc + uint32(vInt)*srcStride + uint32(uInt)*4
+			texel := chip.blitReadPixelLocked(texAddr)
+
+			// Write destination
+			chip.blitWritePixelLocked(dstAddr, texel, mode)
+
+			dstAddr += BYTES_PER_PIXEL
+			u += duCol
+			v += dvCol
+		}
+
+		rowU += duRow
+		rowV += dvRow
+		dstRow += dstStride
+	}
+}
+
+func isValidMask(mask uint32) bool {
+	// Check if mask is 2^n - 1
+	// (mask + 1) should be power of 2
+	// power of 2 means only one bit set
+	v := mask + 1
+	return v > 0 && (v&(v-1)) == 0
 }
 
 func (chip *VideoChip) blitLineLocked(mode VideoMode) {
@@ -1420,6 +1528,22 @@ func (chip *VideoChip) HandleRead(addr uint32) uint32 {
 		return chip.rasterColor
 	case VIDEO_RASTER_CTRL:
 		return 0
+	case BLT_MODE7_U0:
+		return chip.bltMode7U0Staged
+	case BLT_MODE7_V0:
+		return chip.bltMode7V0Staged
+	case BLT_MODE7_DU_COL:
+		return chip.bltMode7DuColStaged
+	case BLT_MODE7_DV_COL:
+		return chip.bltMode7DvColStaged
+	case BLT_MODE7_DU_ROW:
+		return chip.bltMode7DuRowStaged
+	case BLT_MODE7_DV_ROW:
+		return chip.bltMode7DvRowStaged
+	case BLT_MODE7_TEX_W:
+		return chip.bltMode7TexWStaged
+	case BLT_MODE7_TEX_H:
+		return chip.bltMode7TexHStaged
 	case COPPER_PC + 1:
 		return readUint32Byte(chip.copperPC, 1)
 	case COPPER_PC + 2:
@@ -1516,6 +1640,54 @@ func (chip *VideoChip) HandleRead(addr uint32) uint32 {
 		return readUint32Byte(chip.rasterColor, 2)
 	case VIDEO_RASTER_COLOR + 3:
 		return readUint32Byte(chip.rasterColor, 3)
+	case BLT_MODE7_U0 + 1:
+		return readUint32Byte(chip.bltMode7U0Staged, 1)
+	case BLT_MODE7_U0 + 2:
+		return readUint32Byte(chip.bltMode7U0Staged, 2)
+	case BLT_MODE7_U0 + 3:
+		return readUint32Byte(chip.bltMode7U0Staged, 3)
+	case BLT_MODE7_V0 + 1:
+		return readUint32Byte(chip.bltMode7V0Staged, 1)
+	case BLT_MODE7_V0 + 2:
+		return readUint32Byte(chip.bltMode7V0Staged, 2)
+	case BLT_MODE7_V0 + 3:
+		return readUint32Byte(chip.bltMode7V0Staged, 3)
+	case BLT_MODE7_DU_COL + 1:
+		return readUint32Byte(chip.bltMode7DuColStaged, 1)
+	case BLT_MODE7_DU_COL + 2:
+		return readUint32Byte(chip.bltMode7DuColStaged, 2)
+	case BLT_MODE7_DU_COL + 3:
+		return readUint32Byte(chip.bltMode7DuColStaged, 3)
+	case BLT_MODE7_DV_COL + 1:
+		return readUint32Byte(chip.bltMode7DvColStaged, 1)
+	case BLT_MODE7_DV_COL + 2:
+		return readUint32Byte(chip.bltMode7DvColStaged, 2)
+	case BLT_MODE7_DV_COL + 3:
+		return readUint32Byte(chip.bltMode7DvColStaged, 3)
+	case BLT_MODE7_DU_ROW + 1:
+		return readUint32Byte(chip.bltMode7DuRowStaged, 1)
+	case BLT_MODE7_DU_ROW + 2:
+		return readUint32Byte(chip.bltMode7DuRowStaged, 2)
+	case BLT_MODE7_DU_ROW + 3:
+		return readUint32Byte(chip.bltMode7DuRowStaged, 3)
+	case BLT_MODE7_DV_ROW + 1:
+		return readUint32Byte(chip.bltMode7DvRowStaged, 1)
+	case BLT_MODE7_DV_ROW + 2:
+		return readUint32Byte(chip.bltMode7DvRowStaged, 2)
+	case BLT_MODE7_DV_ROW + 3:
+		return readUint32Byte(chip.bltMode7DvRowStaged, 3)
+	case BLT_MODE7_TEX_W + 1:
+		return readUint32Byte(chip.bltMode7TexWStaged, 1)
+	case BLT_MODE7_TEX_W + 2:
+		return readUint32Byte(chip.bltMode7TexWStaged, 2)
+	case BLT_MODE7_TEX_W + 3:
+		return readUint32Byte(chip.bltMode7TexWStaged, 3)
+	case BLT_MODE7_TEX_H + 1:
+		return readUint32Byte(chip.bltMode7TexHStaged, 1)
+	case BLT_MODE7_TEX_H + 2:
+		return readUint32Byte(chip.bltMode7TexHStaged, 2)
+	case BLT_MODE7_TEX_H + 3:
+		return readUint32Byte(chip.bltMode7TexHStaged, 3)
 	default:
 		if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
 			offset := addr - ADDR_OFFSET
@@ -1736,6 +1908,14 @@ func (chip *VideoChip) handleBlitterWriteLocked(addr uint32, value uint32) bool 
 		chip.bltDstStrideRun = chip.bltDstStride
 		chip.bltColor = chip.bltColorStaged
 		chip.bltMask = chip.bltMaskStaged
+		chip.bltMode7U0 = chip.bltMode7U0Staged
+		chip.bltMode7V0 = chip.bltMode7V0Staged
+		chip.bltMode7DuCol = chip.bltMode7DuColStaged
+		chip.bltMode7DvCol = chip.bltMode7DvColStaged
+		chip.bltMode7DuRow = chip.bltMode7DuRowStaged
+		chip.bltMode7DvRow = chip.bltMode7DvRowStaged
+		chip.bltMode7TexW = chip.bltMode7TexWStaged
+		chip.bltMode7TexH = chip.bltMode7TexHStaged
 		chip.bltPending = true
 		// Run blitter immediately (synchronous) so CPU doesn't wait for next frame
 		mode := VideoModes[chip.currentMode]
@@ -1848,6 +2028,102 @@ func (chip *VideoChip) handleBlitterWriteLocked(addr uint32, value uint32) bool 
 		return true
 	case BLT_MASK + 3:
 		chip.bltMaskStaged = writeUint32Byte(chip.bltMaskStaged, value, 3)
+		return true
+	case BLT_MODE7_U0:
+		chip.bltMode7U0Staged = value
+		return true
+	case BLT_MODE7_U0 + 1:
+		chip.bltMode7U0Staged = writeUint32Byte(chip.bltMode7U0Staged, value, 1)
+		return true
+	case BLT_MODE7_U0 + 2:
+		chip.bltMode7U0Staged = writeUint32Word(chip.bltMode7U0Staged, value, 2)
+		return true
+	case BLT_MODE7_U0 + 3:
+		chip.bltMode7U0Staged = writeUint32Byte(chip.bltMode7U0Staged, value, 3)
+		return true
+	case BLT_MODE7_V0:
+		chip.bltMode7V0Staged = value
+		return true
+	case BLT_MODE7_V0 + 1:
+		chip.bltMode7V0Staged = writeUint32Byte(chip.bltMode7V0Staged, value, 1)
+		return true
+	case BLT_MODE7_V0 + 2:
+		chip.bltMode7V0Staged = writeUint32Word(chip.bltMode7V0Staged, value, 2)
+		return true
+	case BLT_MODE7_V0 + 3:
+		chip.bltMode7V0Staged = writeUint32Byte(chip.bltMode7V0Staged, value, 3)
+		return true
+	case BLT_MODE7_DU_COL:
+		chip.bltMode7DuColStaged = value
+		return true
+	case BLT_MODE7_DU_COL + 1:
+		chip.bltMode7DuColStaged = writeUint32Byte(chip.bltMode7DuColStaged, value, 1)
+		return true
+	case BLT_MODE7_DU_COL + 2:
+		chip.bltMode7DuColStaged = writeUint32Word(chip.bltMode7DuColStaged, value, 2)
+		return true
+	case BLT_MODE7_DU_COL + 3:
+		chip.bltMode7DuColStaged = writeUint32Byte(chip.bltMode7DuColStaged, value, 3)
+		return true
+	case BLT_MODE7_DV_COL:
+		chip.bltMode7DvColStaged = value
+		return true
+	case BLT_MODE7_DV_COL + 1:
+		chip.bltMode7DvColStaged = writeUint32Byte(chip.bltMode7DvColStaged, value, 1)
+		return true
+	case BLT_MODE7_DV_COL + 2:
+		chip.bltMode7DvColStaged = writeUint32Word(chip.bltMode7DvColStaged, value, 2)
+		return true
+	case BLT_MODE7_DV_COL + 3:
+		chip.bltMode7DvColStaged = writeUint32Byte(chip.bltMode7DvColStaged, value, 3)
+		return true
+	case BLT_MODE7_DU_ROW:
+		chip.bltMode7DuRowStaged = value
+		return true
+	case BLT_MODE7_DU_ROW + 1:
+		chip.bltMode7DuRowStaged = writeUint32Byte(chip.bltMode7DuRowStaged, value, 1)
+		return true
+	case BLT_MODE7_DU_ROW + 2:
+		chip.bltMode7DuRowStaged = writeUint32Word(chip.bltMode7DuRowStaged, value, 2)
+		return true
+	case BLT_MODE7_DU_ROW + 3:
+		chip.bltMode7DuRowStaged = writeUint32Byte(chip.bltMode7DuRowStaged, value, 3)
+		return true
+	case BLT_MODE7_DV_ROW:
+		chip.bltMode7DvRowStaged = value
+		return true
+	case BLT_MODE7_DV_ROW + 1:
+		chip.bltMode7DvRowStaged = writeUint32Byte(chip.bltMode7DvRowStaged, value, 1)
+		return true
+	case BLT_MODE7_DV_ROW + 2:
+		chip.bltMode7DvRowStaged = writeUint32Word(chip.bltMode7DvRowStaged, value, 2)
+		return true
+	case BLT_MODE7_DV_ROW + 3:
+		chip.bltMode7DvRowStaged = writeUint32Byte(chip.bltMode7DvRowStaged, value, 3)
+		return true
+	case BLT_MODE7_TEX_W:
+		chip.bltMode7TexWStaged = value
+		return true
+	case BLT_MODE7_TEX_W + 1:
+		chip.bltMode7TexWStaged = writeUint32Byte(chip.bltMode7TexWStaged, value, 1)
+		return true
+	case BLT_MODE7_TEX_W + 2:
+		chip.bltMode7TexWStaged = writeUint32Word(chip.bltMode7TexWStaged, value, 2)
+		return true
+	case BLT_MODE7_TEX_W + 3:
+		chip.bltMode7TexWStaged = writeUint32Byte(chip.bltMode7TexWStaged, value, 3)
+		return true
+	case BLT_MODE7_TEX_H:
+		chip.bltMode7TexHStaged = value
+		return true
+	case BLT_MODE7_TEX_H + 1:
+		chip.bltMode7TexHStaged = writeUint32Byte(chip.bltMode7TexHStaged, value, 1)
+		return true
+	case BLT_MODE7_TEX_H + 2:
+		chip.bltMode7TexHStaged = writeUint32Word(chip.bltMode7TexHStaged, value, 2)
+		return true
+	case BLT_MODE7_TEX_H + 3:
+		chip.bltMode7TexHStaged = writeUint32Byte(chip.bltMode7TexHStaged, value, 3)
 		return true
 	default:
 		return false

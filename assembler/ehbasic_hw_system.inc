@@ -236,11 +236,12 @@ hw_copper:
     rts
 
 ; ============================================================================
-; hw_blit - BLIT COPY/FILL/LINE/WAIT
+; hw_blit - BLIT COPY/FILL/LINE/WAIT/MEMCOPY/MODE7
 ; ============================================================================
 ; BLIT COPY src, dst, w, h [,srcstride, dststride]
 ; BLIT FILL dst, w, h, colour [,stride]
 ; BLIT LINE x1, y1, x2, y2, colour, stride
+; BLIT MODE7 src, dst, dstW, dstH, u0, v0, duCol, dvCol, duRow, dvRow, texW, texH [,srcStride, dstStride]
 ; BLIT WAIT
 
 hw_blit:
@@ -261,10 +262,15 @@ hw_blit:
     beq     r1, r2, .blt_wait
     move.q  r2, #0x57
     beq     r1, r2, .blt_wait
-    ; MEMCOPY (ASCII)
+    ; MEMCOPY / MODE7 (ASCII)
     move.q  r2, #0x4D            ; 'M'
-    beq     r1, r2, .blt_memcopy
-    rts
+    bne     r1, r2, .blt_done
+    load.b  r2, 1(r17)           ; second character
+    move.q  r3, #0x4F            ; 'O' -> MODE7
+    beq     r2, r3, .blt_mode7
+    move.q  r3, #0x45            ; 'E' -> MEMCOPY
+    beq     r2, r3, .blt_memcopy
+    bra     .blt_memcopy         ; compatibility: BLIT M ...
 .blt_copy:
     add.q   r17, r17, #1
     jsr     skip_alpha
@@ -511,6 +517,194 @@ hw_blit:
     jsr     skip_alpha
     jsr     exec_skip_spaces
     jsr     hw_memcopy
+    rts
+.blt_mode7:
+    add.q   r17, r17, #1
+    jsr     skip_alpha
+    ; MODE7 includes a numeric suffix; skip '7' when present.
+    load.b  r1, (r17)
+    move.q  r2, #0x37
+    bne     r1, r2, .blt_mode7_args
+    add.q   r17, r17, #1
+.blt_mode7_args:
+    jsr     exec_skip_spaces
+    ; src
+    jsr     expr_eval
+    jsr     fp_int
+    jsr     fp_fix
+    la      r3, BLT_SRC
+    store.l r8, (r3)
+    ; dst
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x2C
+    bne     r1, r2, .blt_done
+    add.q   r17, r17, #1
+    jsr     exec_skip_spaces
+    jsr     expr_eval
+    jsr     fp_int
+    jsr     fp_fix
+    la      r3, BLT_DST
+    store.l r8, (r3)
+    ; dstW
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x2C
+    bne     r1, r2, .blt_done
+    add.q   r17, r17, #1
+    jsr     exec_skip_spaces
+    jsr     expr_eval
+    jsr     fp_int
+    jsr     fp_fix
+    la      r3, BLT_WIDTH
+    store.l r8, (r3)
+    ; dstH
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x2C
+    bne     r1, r2, .blt_done
+    add.q   r17, r17, #1
+    jsr     exec_skip_spaces
+    jsr     expr_eval
+    jsr     fp_int
+    jsr     fp_fix
+    la      r3, BLT_HEIGHT
+    store.l r8, (r3)
+    ; u0
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x2C
+    bne     r1, r2, .blt_done
+    add.q   r17, r17, #1
+    jsr     exec_skip_spaces
+    jsr     expr_eval
+    jsr     fp_int
+    jsr     fp_fix
+    la      r3, BLT_MODE7_U0
+    store.l r8, (r3)
+    ; v0
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x2C
+    bne     r1, r2, .blt_done
+    add.q   r17, r17, #1
+    jsr     exec_skip_spaces
+    jsr     expr_eval
+    jsr     fp_int
+    jsr     fp_fix
+    la      r3, BLT_MODE7_V0
+    store.l r8, (r3)
+    ; duCol
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x2C
+    bne     r1, r2, .blt_done
+    add.q   r17, r17, #1
+    jsr     exec_skip_spaces
+    jsr     expr_eval
+    jsr     fp_int
+    jsr     fp_fix
+    la      r3, BLT_MODE7_DU_COL
+    store.l r8, (r3)
+    ; dvCol
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x2C
+    bne     r1, r2, .blt_done
+    add.q   r17, r17, #1
+    jsr     exec_skip_spaces
+    jsr     expr_eval
+    jsr     fp_int
+    jsr     fp_fix
+    la      r3, BLT_MODE7_DV_COL
+    store.l r8, (r3)
+    ; duRow
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x2C
+    bne     r1, r2, .blt_done
+    add.q   r17, r17, #1
+    jsr     exec_skip_spaces
+    jsr     expr_eval
+    jsr     fp_int
+    jsr     fp_fix
+    la      r3, BLT_MODE7_DU_ROW
+    store.l r8, (r3)
+    ; dvRow
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x2C
+    bne     r1, r2, .blt_done
+    add.q   r17, r17, #1
+    jsr     exec_skip_spaces
+    jsr     expr_eval
+    jsr     fp_int
+    jsr     fp_fix
+    la      r3, BLT_MODE7_DV_ROW
+    store.l r8, (r3)
+    ; texW
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x2C
+    bne     r1, r2, .blt_done
+    add.q   r17, r17, #1
+    jsr     exec_skip_spaces
+    jsr     expr_eval
+    jsr     fp_int
+    jsr     fp_fix
+    la      r3, BLT_MODE7_TEX_W
+    store.l r8, (r3)
+    ; texH
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x2C
+    bne     r1, r2, .blt_done
+    add.q   r17, r17, #1
+    jsr     exec_skip_spaces
+    jsr     expr_eval
+    jsr     fp_int
+    jsr     fp_fix
+    la      r3, BLT_MODE7_TEX_H
+    store.l r8, (r3)
+
+    ; Always clear staged strides so 12-arg form cannot inherit stale values.
+    la      r3, BLT_SRC_STRIDE
+    store.l r0, (r3)
+    la      r3, BLT_DST_STRIDE
+    store.l r0, (r3)
+
+    ; Optional srcStride,dstStride pair
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x2C
+    bne     r1, r2, .blt_mode7_start
+    add.q   r17, r17, #1
+    jsr     exec_skip_spaces
+    jsr     expr_eval
+    jsr     fp_int
+    jsr     fp_fix
+    la      r3, BLT_SRC_STRIDE
+    store.l r8, (r3)
+
+    ; If one optional stride is present, require the second.
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x2C
+    bne     r1, r2, .blt_done
+    add.q   r17, r17, #1
+    jsr     exec_skip_spaces
+    jsr     expr_eval
+    jsr     fp_int
+    jsr     fp_fix
+    la      r3, BLT_DST_STRIDE
+    store.l r8, (r3)
+.blt_mode7_start:
+    la      r3, BLT_OP
+    move.q  r1, #BLT_OP_MODE7
+    store.l r1, (r3)
+    la      r3, BLT_CTRL
+    move.q  r1, #1
+    store.l r1, (r3)
     rts
 .blt_done:
     rts

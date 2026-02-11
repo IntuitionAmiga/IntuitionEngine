@@ -396,6 +396,73 @@ Notes:
   transactions when touching I/O regions. Treat `.q` MMIO accesses as potentially
   non-atomic unless a device explicitly documents 64-bit atomic behavior.
 
+### Affine/Mode7 texture-mapped blitting
+
+```asm
+; Render a 640x480 affine-mapped frame from a 256x256 RGBA texture.
+; UV coordinates are signed 16.16 fixed-point.
+
+BLT_CTRL         equ     $F001C
+BLT_OP           equ     $F0020
+BLT_SRC          equ     $F0024
+BLT_DST          equ     $F0028
+BLT_WIDTH        equ     $F002C
+BLT_HEIGHT       equ     $F0030
+BLT_SRC_STRIDE   equ     $F0034
+BLT_DST_STRIDE   equ     $F0038
+BLT_MODE7_U0     equ     $F0058
+BLT_MODE7_V0     equ     $F005C
+BLT_MODE7_DU_COL equ     $F0060
+BLT_MODE7_DV_COL equ     $F0064
+BLT_MODE7_DU_ROW equ     $F0068
+BLT_MODE7_DV_ROW equ     $F006C
+BLT_MODE7_TEX_W  equ     $F0070
+BLT_MODE7_TEX_H  equ     $F0074
+BLT_OP_MODE7     equ     5
+
+TEX_BASE         equ     $500000
+DST_BASE         equ     $600000
+
+                move.l  r1, #TEX_BASE
+                store.l r1, BLT_SRC(r0)
+                move.l  r1, #DST_BASE
+                store.l r1, BLT_DST(r0)
+                move.l  r1, #640
+                store.l r1, BLT_WIDTH(r0)
+                move.l  r1, #480
+                store.l r1, BLT_HEIGHT(r0)
+
+                ; Identity map: u=x, v=y in 16.16 fixed-point.
+                store.l r0, BLT_MODE7_U0(r0)
+                store.l r0, BLT_MODE7_V0(r0)
+                move.l  r1, #$00010000
+                store.l r1, BLT_MODE7_DU_COL(r0)
+                store.l r0, BLT_MODE7_DV_COL(r0)
+                store.l r0, BLT_MODE7_DU_ROW(r0)
+                store.l r1, BLT_MODE7_DV_ROW(r0)
+
+                ; 256x256 texture wrap masks.
+                move.l  r1, #255
+                store.l r1, BLT_MODE7_TEX_W(r0)
+                store.l r1, BLT_MODE7_TEX_H(r0)
+
+                ; Explicit strides (bytes per row).
+                move.l  r1, #1024
+                store.l r1, BLT_SRC_STRIDE(r0)
+                move.l  r1, #2560
+                store.l r1, BLT_DST_STRIDE(r0)
+
+                move.l  r1, #BLT_OP_MODE7
+                store.l r1, BLT_OP(r0)
+                move.q  r1, #1
+                store.l r1, BLT_CTRL(r0)       ; start
+```
+
+Notes:
+- `duCol/dvCol` are per-pixel deltas across X; `duRow/dvRow` are per-row deltas across Y.
+- `texW/texH` are masks, so use `255` for a 256-sized dimension.
+- If `BLT_SRC_STRIDE` is `0`, hardware defaults to `(texW+1)*4`.
+
 ---
 
 ## 9. Memcpy/Memset Loops

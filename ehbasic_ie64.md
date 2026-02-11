@@ -336,6 +336,7 @@ Blitter hardware operations for fast block transfers, fills, and line drawing.
 BLIT COPY src, dst, w, h [,srcstride, dststride]
 BLIT FILL dst, w, h, colour [,stride]
 BLIT LINE x1, y1, x2, y2, colour, stride
+BLIT MODE7 src, dst, dstW, dstH, u0, v0, duCol, dvCol, duRow, dvRow, texW, texH [,srcStride, dstStride]
 BLIT MEMCOPY src, dst, len
 BLIT WAIT
 ```
@@ -346,6 +347,8 @@ BLIT WAIT
 
 **BLIT LINE** — Draw a line using the blitter hardware.
 
+**BLIT MODE7** — Affine texture-mapped blit (Mode7). Renders a rotated/scaled texture into a destination rectangle at per-pixel resolution. Texture coordinates use signed 16.16 fixed-point. `texW`/`texH` are power-of-2 masks (for example `255` for a 256x256 texture).
+
 **BLIT MEMCOPY** — Copy a contiguous block of bytes.
 
 **BLIT WAIT** — Poll until the blitter has finished its current operation (includes timeout).
@@ -355,6 +358,14 @@ BLIT WAIT
 REM Fill a 100x50 box at VGA VRAM offset 1000
 BLIT FILL &HA0000 + 1000, 100, 50, 15
 BLIT WAIT
+
+REM Mode7 rotozoom-style blit into a 640x480 backbuffer
+FP=65536: SC=1.0: A=0.25
+CA=COS(A)/SC: SA=SIN(A)/SC
+DC=INT(CA*FP): DS=INT(SA*FP)
+SU=INT((128-320*CA+240*SA)*FP)
+SV=INT((128-320*SA-240*CA)*FP)
+BLIT MODE7 &H500000, &H600000, 640, 480, SU, SV, DC, DS, 0-DS, DC, 255, 255, 1024, 2560
 ```
 
 ### BOX
@@ -1775,6 +1786,10 @@ BLIT LINE 0, 0, 319, 199, 15, 320
 
 REM Wait for completion
 BLIT WAIT
+
+REM Mode7 affine texture map (256x256 texture, 16.16 fixed-point UVs)
+FP=65536
+BLIT MODE7 &H500000, &H600000, 640, 480, 0, 0, FP, 0, 0, FP, 255, 255, 1024, 2560
 ```
 
 ### 6.4 ULA (ZX Spectrum) Programming

@@ -62,6 +62,14 @@ BLT_DST_STRIDE  equ 0xF0038              ; Dest stride (32-bit)
 BLT_COLOR       equ 0xF003C              ; Fill color (32-bit BGRA)
 BLT_MASK        equ 0xF0040              ; Mask address (32-bit)
 BLT_STATUS      equ 0xF0044              ; Blitter status
+BLT_MODE7_U0    equ 0xF0058              ; Mode7 U0
+BLT_MODE7_V0    equ 0xF005C              ; Mode7 V0
+BLT_MODE7_DU_COL equ 0xF0060             ; Mode7 dU/dCol
+BLT_MODE7_DV_COL equ 0xF0064             ; Mode7 dV/dCol
+BLT_MODE7_DU_ROW equ 0xF0068             ; Mode7 dU/dRow
+BLT_MODE7_DV_ROW equ 0xF006C             ; Mode7 dV/dRow
+BLT_MODE7_TEX_W equ 0xF0070              ; Mode7 Texture Width Mask
+BLT_MODE7_TEX_H equ 0xF0074              ; Mode7 Texture Height Mask
 
 ; Raster registers
 VIDEO_RASTER_Y       equ 0xF0048         ; Raster Y position (32-bit)
@@ -504,6 +512,7 @@ BLT_OP_FILL     equ 1                    ; Fill rect with color
 BLT_OP_LINE     equ 2                    ; Draw line
 BLT_OP_MASKED   equ 3                    ; Copy with mask
 BLT_OP_ALPHA    equ 4                    ; Alpha blending
+BLT_OP_MODE7    equ 5                    ; Affine texture mapping
 
 ; Background color (black with alpha)
 BACKGROUND      equ 0xFF000000           ; BGRA: Black, full alpha

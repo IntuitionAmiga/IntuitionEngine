@@ -2885,6 +2885,130 @@ func TestHW_Blit_Line(t *testing.T) {
 	}
 }
 
+func TestEhBASIC_BlitMode7(t *testing.T) {
+	asmBin := buildAssembler(t)
+	// Use FP32-exact values (≤2^24) to avoid precision loss through BASIC's float POKE
+	program := `10 TB=&H500000: DB=&H100000: FP=65536
+20 POKE TB, &H110000: POKE TB+4, &H220000
+30 POKE TB+8, &H330000: POKE TB+12, &H440000
+40 BLIT MODE7 TB, DB, 2, 2, 0, 0, FP, 0, 0, FP, 1, 1, 8, 2560
+50 PRINT "DONE"`
+
+	out, _, video := execStmtTestWithVideo(t, asmBin, program, 500_000_000)
+	if !strings.Contains(out, "DONE") {
+		t.Fatalf("BLIT MODE7 test program did not complete: %q", out)
+	}
+
+	// Read from frontBuffer directly (bus.Read32 doesn't route VRAM through HandleRead)
+	readFB := func(offset uint32) uint32 {
+		video.mu.Lock()
+		defer video.mu.Unlock()
+		off := int(offset)
+		if off+4 <= len(video.frontBuffer) {
+			return binary.LittleEndian.Uint32(video.frontBuffer[off : off+4])
+		}
+		return 0
+	}
+
+	if got := readFB(0); got != 0x110000 {
+		t.Fatalf("BLIT MODE7 pixel 0,0: expected 0x00110000, got 0x%08X", got)
+	}
+	if got := readFB(4); got != 0x220000 {
+		t.Fatalf("BLIT MODE7 pixel 1,0: expected 0x00220000, got 0x%08X", got)
+	}
+	if got := readFB(0xA00); got != 0x330000 {
+		t.Fatalf("BLIT MODE7 pixel 0,1: expected 0x00330000, got 0x%08X", got)
+	}
+	if got := readFB(0xA04); got != 0x440000 {
+		t.Fatalf("BLIT MODE7 pixel 1,1: expected 0x00440000, got 0x%08X", got)
+	}
+}
+
+func TestEhBASIC_BlitMode7DispatchVsMemcopy(t *testing.T) {
+	asmBin := buildAssembler(t)
+
+	_, hMode7 := execStmtTestWithBus(t, asmBin,
+		"10 BLIT MODE7 4096, 8192, 4, 4, 0, 0, 65536, 0, 0, 65536, 3, 3")
+	if op := readBusMem32(hMode7, 0xF0020); op != 5 {
+		t.Fatalf("BLIT MODE7 dispatch: expected BLT_OP=5, got %d", op)
+	}
+
+	_, hMemcopy := execStmtTestWithBus(t, asmBin, "10 BLIT MEMCOPY 4096, 8192, 256")
+	if op := readBusMem32(hMemcopy, 0xF0020); op != 0 {
+		t.Fatalf("BLIT MEMCOPY dispatch: expected BLT_OP=0, got %d", op)
+	}
+}
+
+func TestEhBASIC_BlitMode7OptionalStrides(t *testing.T) {
+	asmBin := buildAssembler(t)
+
+	_, h12 := execStmtTestWithBus(t, asmBin,
+		"10 BLIT MODE7 4096, 8192, 4, 4, 0, 0, 65536, 0, 0, 65536, 3, 3")
+	if got := readBusMem32(h12, 0xF0034); got != 0 {
+		t.Fatalf("BLIT MODE7 12-arg form: BLT_SRC_STRIDE expected 0, got %d", got)
+	}
+	if got := readBusMem32(h12, 0xF0038); got != 0 {
+		t.Fatalf("BLIT MODE7 12-arg form: BLT_DST_STRIDE expected 0, got %d", got)
+	}
+
+	_, h14 := execStmtTestWithBus(t, asmBin,
+		"10 BLIT MODE7 4096, 8192, 4, 4, 0, 0, 65536, 0, 0, 65536, 3, 3, 64, 2560")
+	if got := readBusMem32(h14, 0xF0034); got != 64 {
+		t.Fatalf("BLIT MODE7 14-arg form: BLT_SRC_STRIDE expected 64, got %d", got)
+	}
+	if got := readBusMem32(h14, 0xF0038); got != 2560 {
+		t.Fatalf("BLIT MODE7 14-arg form: BLT_DST_STRIDE expected 2560, got %d", got)
+	}
+}
+
+func TestEhBASIC_BlitMode7ClearsStaleStrides(t *testing.T) {
+	asmBin := buildAssembler(t)
+	// Use FP32-exact values (≤2^24) to avoid precision loss through BASIC's float POKE
+	program := `10 TB=&H500000: DB=&H100000: FP=65536
+20 POKE TB, &HAA0001: POKE TB+4, &HAA0002
+30 POKE TB+8, &HAA0003: POKE TB+12, &HAA0004
+40 POKE &HF0034, 1234: POKE &HF0038, 5678
+50 BLIT MODE7 TB, DB, 2, 2, 0, 0, FP, 0, 0, FP, 1, 1
+60 PRINT "DONE"`
+
+	out, h, video := execStmtTestWithVideo(t, asmBin, program, 500_000_000)
+	if !strings.Contains(out, "DONE") {
+		t.Fatalf("BLIT MODE7 stale-stride test program did not complete: %q", out)
+	}
+
+	if got := readBusMem32(h, 0xF0034); got != 0 {
+		t.Fatalf("BLIT MODE7 should clear stale BLT_SRC_STRIDE, got %d", got)
+	}
+	if got := readBusMem32(h, 0xF0038); got != 0 {
+		t.Fatalf("BLIT MODE7 should clear stale BLT_DST_STRIDE, got %d", got)
+	}
+	// Read from frontBuffer directly (bus.Read32 doesn't route VRAM through HandleRead)
+	video.mu.Lock()
+	got := binary.LittleEndian.Uint32(video.frontBuffer[0xA00 : 0xA00+4])
+	video.mu.Unlock()
+	if got != 0xAA0003 {
+		t.Fatalf("BLIT MODE7 rendered output mismatch at row 1: expected 0x00AA0003, got 0x%08X", got)
+	}
+}
+
+func TestEhBASIC_BlitMemcopyMShorthandStillWorks(t *testing.T) {
+	asmBin := buildAssembler(t)
+	_, h := execStmtTestWithBus(t, asmBin, "10 BLIT M 4096, 8192, 256")
+
+	if got := readBusMem32(h, 0xF0024); got != 4096 {
+		t.Fatalf("BLIT M src: expected 4096, got %d", got)
+	}
+	if got := readBusMem32(h, 0xF0028); got != 8192 {
+		t.Fatalf("BLIT M dst: expected 8192, got %d", got)
+	}
+	if got := readBusMem32(h, 0xF002C); got != 256 {
+		t.Fatalf("BLIT M len: expected 256, got %d", got)
+	}
+	if got := readBusMem32(h, 0xF0020); got != 0 {
+		t.Fatalf("BLIT M should dispatch to MEMCOPY (BLT_OP=0), got %d", got)
+	}
+}
+
 // =============================================================================
 // ULA tests
 // =============================================================================

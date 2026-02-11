@@ -70,6 +70,39 @@ BLT_MASK_1      = $F041         ; Mask address byte 1
 BLT_MASK_2      = $F042         ; Mask address byte 2
 BLT_MASK_3      = $F043         ; Mask address byte 3 (MSB)
 BLT_STATUS      = $F044         ; Blitter status
+BLT_MODE7_U0_0    = $F058         ; Mode7 U0 byte 0
+BLT_MODE7_U0_1    = $F059
+BLT_MODE7_U0_2    = $F05A
+BLT_MODE7_U0_3    = $F05B
+BLT_MODE7_V0_0    = $F05C         ; Mode7 V0 byte 0
+BLT_MODE7_V0_1    = $F05D
+BLT_MODE7_V0_2    = $F05E
+BLT_MODE7_V0_3    = $F05F
+BLT_MODE7_DU_COL_0 = $F060        ; Mode7 dU/dCol byte 0
+BLT_MODE7_DU_COL_1 = $F061
+BLT_MODE7_DU_COL_2 = $F062
+BLT_MODE7_DU_COL_3 = $F063
+BLT_MODE7_DV_COL_0 = $F064        ; Mode7 dV/dCol byte 0
+BLT_MODE7_DV_COL_1 = $F065
+BLT_MODE7_DV_COL_2 = $F066
+BLT_MODE7_DV_COL_3 = $F067
+BLT_MODE7_DU_ROW_0 = $F068        ; Mode7 dU/dRow byte 0
+BLT_MODE7_DU_ROW_1 = $F069
+BLT_MODE7_DU_ROW_2 = $F06A
+BLT_MODE7_DU_ROW_3 = $F06B
+BLT_MODE7_DV_ROW_0 = $F06C        ; Mode7 dV/dRow byte 0
+BLT_MODE7_DV_ROW_1 = $F06D
+BLT_MODE7_DV_ROW_2 = $F06E
+BLT_MODE7_DV_ROW_3 = $F06F
+BLT_MODE7_TEX_W_0 = $F070         ; Mode7 Texture Width Mask byte 0
+BLT_MODE7_TEX_W_1 = $F071
+BLT_MODE7_TEX_W_2 = $F072
+BLT_MODE7_TEX_W_3 = $F073
+BLT_MODE7_TEX_H_0 = $F074         ; Mode7 Texture Height Mask byte 0
+BLT_MODE7_TEX_H_1 = $F075
+BLT_MODE7_TEX_H_2 = $F076
+BLT_MODE7_TEX_H_3 = $F077
+BLT_OP_MODE7      = 5             ; Affine texture mapping
 
 ; Raster registers
 VIDEO_RASTER_Y_LO     = $F048   ; Raster Y position (low)
@@ -1295,6 +1328,7 @@ BLT_OP_FILL     = 1             ; Fill rect with color
 BLT_OP_LINE     = 2             ; Draw line
 BLT_OP_MASKED   = 3             ; Copy with mask
 BLT_OP_ALPHA    = 4             ; Alpha blending
+BLT_OP_MODE7_OP = 5             ; Affine texture mapping
 
 ; Background color (black with alpha)
 BACKGROUND_0    = $00           ; Blue

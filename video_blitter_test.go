@@ -398,3 +398,419 @@ func TestBlitterCanReadCPULoadedData(t *testing.T) {
 		t.Fatalf("Blitter read 0x%08X from CPU memory, expected 0xFF0000FF - CPU memory not visible to blitter", got)
 	}
 }
+
+func TestBlitterMode7Registers(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+
+	// Define constants locally for the test until they are added to video_chip.go
+	const (
+		BLT_MODE7_U0     = 0xF0058
+		BLT_MODE7_V0     = 0xF005C
+		BLT_MODE7_DU_COL = 0xF0060
+		BLT_MODE7_DV_COL = 0xF0064
+		BLT_MODE7_DU_ROW = 0xF0068
+		BLT_MODE7_DV_ROW = 0xF006C
+		BLT_MODE7_TEX_W  = 0xF0070
+		BLT_MODE7_TEX_H  = 0xF0074
+	)
+
+	// Write values to new registers
+	bus.Write32(BLT_MODE7_U0, 0x12345678)
+	bus.Write32(BLT_MODE7_V0, 0x87654321)
+	bus.Write32(BLT_MODE7_DU_COL, 0x10000)
+	bus.Write32(BLT_MODE7_DV_COL, 0x20000)
+	bus.Write32(BLT_MODE7_DU_ROW, 0x30000)
+	bus.Write32(BLT_MODE7_DV_ROW, 0x40000)
+	bus.Write32(BLT_MODE7_TEX_W, 255)
+	bus.Write32(BLT_MODE7_TEX_H, 127)
+
+	// Verify reads
+	if got := video.HandleRead(BLT_MODE7_U0); got != 0x12345678 {
+		t.Fatalf("expected BLT_MODE7_U0=0x12345678, got 0x%X", got)
+	}
+	if got := video.HandleRead(BLT_MODE7_V0); got != 0x87654321 {
+		t.Fatalf("expected BLT_MODE7_V0=0x87654321, got 0x%X", got)
+	}
+	if got := video.HandleRead(BLT_MODE7_DU_COL); got != 0x10000 {
+		t.Fatalf("expected BLT_MODE7_DU_COL=0x10000, got 0x%X", got)
+	}
+	if got := video.HandleRead(BLT_MODE7_DV_COL); got != 0x20000 {
+		t.Fatalf("expected BLT_MODE7_DV_COL=0x20000, got 0x%X", got)
+	}
+	if got := video.HandleRead(BLT_MODE7_DU_ROW); got != 0x30000 {
+		t.Fatalf("expected BLT_MODE7_DU_ROW=0x30000, got 0x%X", got)
+	}
+	if got := video.HandleRead(BLT_MODE7_DV_ROW); got != 0x40000 {
+		t.Fatalf("expected BLT_MODE7_DV_ROW=0x40000, got 0x%X", got)
+	}
+	if got := video.HandleRead(BLT_MODE7_TEX_W); got != 255 {
+		t.Fatalf("expected BLT_MODE7_TEX_W=255, got 0x%X", got)
+	}
+	if got := video.HandleRead(BLT_MODE7_TEX_H); got != 127 {
+		t.Fatalf("expected BLT_MODE7_TEX_H=127, got 0x%X", got)
+	}
+}
+
+func TestBlitterMode7RegistersByteWordAccess(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+
+	const BLT_MODE7_U0 = 0xF0058
+
+	// Write 32-bit value using bytes
+	bus.Write8(BLT_MODE7_U0, 0x78)
+	bus.Write8(BLT_MODE7_U0+1, 0x56)
+	bus.Write8(BLT_MODE7_U0+2, 0x34)
+	bus.Write8(BLT_MODE7_U0+3, 0x12)
+
+	if got := video.HandleRead(BLT_MODE7_U0); got != 0x12345678 {
+		t.Fatalf("expected composed 32-bit read 0x12345678, got 0x%X", got)
+	}
+
+	// Read back individual bytes
+	if got := video.HandleRead(BLT_MODE7_U0 + 1); got != 0x56 {
+		t.Fatalf("expected byte 1 read 0x56, got 0x%X", got)
+	}
+}
+
+func TestBlitterMode7Identity(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	mode := VideoModes[video.currentMode]
+
+	// Define constants locally
+	const (
+		BLT_MODE7_U0     = 0xF0058
+		BLT_MODE7_V0     = 0xF005C
+		BLT_MODE7_DU_COL = 0xF0060
+		BLT_MODE7_DV_COL = 0xF0064
+		BLT_MODE7_DU_ROW = 0xF0068
+		BLT_MODE7_DV_ROW = 0xF006C
+		BLT_MODE7_TEX_W  = 0xF0070
+		BLT_MODE7_TEX_H  = 0xF0074
+		BLT_OP_MODE7     = 5
+	)
+
+	// Setup 4x4 texture at 0x8000
+	texAddr := uint32(0x8000)
+	for i := uint32(0); i < 16; i++ {
+		bus.Write32(texAddr+i*4, 0x11000000+i)
+	}
+
+	// Setup destination at 20,20
+	dst := vramAddr(mode, 20, 20)
+
+	// Configure Mode7 Identity
+	// u0, v0 = 0
+	// duCol = 1.0 (0x10000), dvCol = 0
+	// duRow = 0, dvRow = 1.0 (0x10000)
+	// texW = 3 (4 pixels wide - 1)
+	// texH = 3 (4 pixels high - 1)
+
+	bus.Write32(BLT_OP, BLT_OP_MODE7)
+	bus.Write32(BLT_SRC, texAddr)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 4)
+	bus.Write32(BLT_HEIGHT, 4)
+	bus.Write32(BLT_SRC_STRIDE, 16) // 4 pixels * 4 bytes
+	bus.Write32(BLT_DST_STRIDE, uint32(mode.bytesPerRow))
+
+	bus.Write32(BLT_MODE7_U0, 0)
+	bus.Write32(BLT_MODE7_V0, 0)
+	bus.Write32(BLT_MODE7_DU_COL, 0x10000)
+	bus.Write32(BLT_MODE7_DV_COL, 0)
+	bus.Write32(BLT_MODE7_DU_ROW, 0)
+	bus.Write32(BLT_MODE7_DV_ROW, 0x10000)
+	bus.Write32(BLT_MODE7_TEX_W, 3)
+	bus.Write32(BLT_MODE7_TEX_H, 3)
+
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	// Verify destination
+	for y := 0; y < 4; y++ {
+		for x := 0; x < 4; x++ {
+			addr := dst + uint32(y*mode.bytesPerRow+x*4)
+			expected := 0x11000000 + uint32(y*4+x)
+			if got := video.HandleRead(addr); got != expected {
+				t.Fatalf("expected pixel at %d,%d to be 0x%X, got 0x%X", x, y, expected, got)
+			}
+		}
+	}
+}
+
+func TestBlitterMode7DefaultSrcStrideFromMask(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	mode := VideoModes[video.currentMode]
+
+	const (
+		BLT_MODE7_TEX_W = 0xF0070
+		BLT_MODE7_TEX_H = 0xF0074
+		BLT_OP_MODE7    = 5
+	)
+
+	// Setup 4x4 texture
+	texAddr := uint32(0x9000)
+	// Write pattern that helps identify if stride is correct
+	// Row 0: 0xA0, Row 1: 0xA1, etc.
+	for y := 0; y < 4; y++ {
+		for x := 0; x < 4; x++ {
+			bus.Write32(texAddr+uint32(y*16+x*4), 0xA0+uint32(y))
+		}
+	}
+
+	dst := vramAddr(mode, 0, 0)
+
+	bus.Write32(BLT_OP, BLT_OP_MODE7)
+	bus.Write32(BLT_SRC, texAddr)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 4)
+	bus.Write32(BLT_HEIGHT, 4)
+	bus.Write32(BLT_SRC_STRIDE, 0) // Should default to (texW+1)*4
+	bus.Write32(BLT_DST_STRIDE, uint32(mode.bytesPerRow))
+
+	// Identity transform
+	const (
+		BLT_MODE7_DU_COL = 0xF0060
+		BLT_MODE7_DV_ROW = 0xF006C
+	)
+	bus.Write32(BLT_MODE7_DU_COL, 0x10000)
+	bus.Write32(BLT_MODE7_DV_ROW, 0x10000)
+	bus.Write32(BLT_MODE7_TEX_W, 3) // Width 4 -> Stride 16
+	bus.Write32(BLT_MODE7_TEX_H, 3)
+
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	// Check pixel at (0,1). Should be from row 1 (0xA1)
+	// If stride defaulted to dstWidth (screen width), it would read garbage or wrong line
+	addr := dst + uint32(mode.bytesPerRow)
+	if got := video.HandleRead(addr); got != 0xA1 {
+		t.Fatalf("expected pixel at 0,1 to be 0xA1 (from src row 1), got 0x%X. Likely wrong stride default.", got)
+	}
+}
+
+func TestBlitterMode7Rotated(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	mode := VideoModes[video.currentMode]
+
+	const (
+		BLT_MODE7_U0     = 0xF0058
+		BLT_MODE7_V0     = 0xF005C
+		BLT_MODE7_DU_COL = 0xF0060
+		BLT_MODE7_DV_COL = 0xF0064
+		BLT_MODE7_DU_ROW = 0xF0068
+		BLT_MODE7_DV_ROW = 0xF006C
+		BLT_MODE7_TEX_W  = 0xF0070
+		BLT_MODE7_TEX_H  = 0xF0074
+		BLT_OP_MODE7     = 5
+	)
+
+	// Setup 4x4 texture
+	texAddr := uint32(0x9000)
+	// Write unique colors
+	// 0,0=0x00, 1,0=0x01, ..., 0,1=0x10, ...
+	for y := 0; y < 4; y++ {
+		for x := 0; x < 4; x++ {
+			bus.Write32(texAddr+uint32(y*16+x*4), uint32(y*16+x))
+		}
+	}
+
+	dst := vramAddr(mode, 0, 0)
+
+	bus.Write32(BLT_OP, BLT_OP_MODE7)
+	bus.Write32(BLT_SRC, texAddr)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 4)
+	bus.Write32(BLT_HEIGHT, 4)
+	bus.Write32(BLT_SRC_STRIDE, 16)
+	bus.Write32(BLT_DST_STRIDE, uint32(mode.bytesPerRow))
+
+	// 90 degree rotation clockwise
+	// duCol = 0, dvCol = 1.0 (u doesn't change with x, v increases with x) -> texture Y maps to screen X
+	// duRow = -1.0, dvRow = 0 (u decreases with y, v doesn't change with y) -> texture X maps to screen -Y
+	// Start at bottom-left of texture (0, 3) mapping to (0,0) screen?
+	// Let's just swap axes:
+	// Screen X -> Texture Y (v)
+	// Screen Y -> Texture X (u)
+
+	bus.Write32(BLT_MODE7_U0, 0)
+	bus.Write32(BLT_MODE7_V0, 0)
+	bus.Write32(BLT_MODE7_DU_COL, 0)
+	bus.Write32(BLT_MODE7_DV_COL, 0x10000) // v increases with x
+	bus.Write32(BLT_MODE7_DU_ROW, 0x10000) // u increases with y
+	bus.Write32(BLT_MODE7_DV_ROW, 0)
+	bus.Write32(BLT_MODE7_TEX_W, 3)
+	bus.Write32(BLT_MODE7_TEX_H, 3)
+
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	// Screen(0,0) -> Tex(0,0) = 0x00
+	// Screen(1,0) -> Tex(0,1) = 0x10
+	// Screen(0,1) -> Tex(1,0) = 0x01
+
+	if got := video.HandleRead(dst + 4); got != 0x10 {
+		t.Fatalf("expected pixel at 1,0 to be 0x10 (tex 0,1), got 0x%X", got)
+	}
+	if got := video.HandleRead(dst + uint32(mode.bytesPerRow)); got != 0x01 {
+		t.Fatalf("expected pixel at 0,1 to be 0x01 (tex 1,0), got 0x%X", got)
+	}
+}
+
+func TestBlitterMode7Wrap(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	mode := VideoModes[video.currentMode]
+
+	// Constants
+	const (
+		BLT_MODE7_U0    = 0xF0058
+		BLT_MODE7_TEX_W = 0xF0070
+		BLT_MODE7_TEX_H = 0xF0074
+		BLT_OP_MODE7    = 5
+	)
+
+	texAddr := uint32(0x9000)
+	// Write pattern: Row 0 = 0xA0, Row 1 = 0xA1...
+	for y := 0; y < 4; y++ {
+		for x := 0; x < 4; x++ {
+			bus.Write32(texAddr+uint32(y*16+x*4), 0xA0+uint32(y))
+		}
+	}
+
+	dst := vramAddr(mode, 0, 0)
+	bus.Write32(BLT_OP, BLT_OP_MODE7)
+	bus.Write32(BLT_SRC, texAddr)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 4)
+	bus.Write32(BLT_HEIGHT, 4)
+	bus.Write32(BLT_SRC_STRIDE, 16)
+	bus.Write32(BLT_DST_STRIDE, uint32(mode.bytesPerRow))
+
+	// Start V at 5.0 (out of bounds 0..3)
+	bus.Write32(0xF005C, 5<<16)   // V0
+	bus.Write32(0xF0060, 0x10000) // DU_COL = 1.0
+	bus.Write32(0xF0064, 0)       // DV_COL
+	bus.Write32(0xF0068, 0)       // DU_ROW
+	bus.Write32(0xF006C, 0x10000) // DV_ROW
+	bus.Write32(BLT_MODE7_TEX_W, 3)
+	bus.Write32(BLT_MODE7_TEX_H, 3)
+
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	// V=5 should wrap to V=1 (5 & 3 = 1) -> Row 1 (0xA1)
+	if got := video.HandleRead(dst); got != 0xA1 {
+		t.Fatalf("expected wrap to row 1 (0xA1), got 0x%X", got)
+	}
+}
+
+func TestBlitterMode7Scaled(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	mode := VideoModes[video.currentMode]
+
+	const (
+		BLT_MODE7_DU_COL = 0xF0060
+		BLT_MODE7_DV_ROW = 0xF006C
+		BLT_MODE7_TEX_W  = 0xF0070
+		BLT_MODE7_TEX_H  = 0xF0074
+		BLT_OP_MODE7     = 5
+	)
+
+	texAddr := uint32(0x9000)
+	// Pixel at 0,0 = 0xFFFFFFFF, others 0
+	bus.Write32(texAddr, 0xFFFFFFFF)
+
+	dst := vramAddr(mode, 0, 0)
+	bus.Write32(BLT_OP, BLT_OP_MODE7)
+	bus.Write32(BLT_SRC, texAddr)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 4)
+	bus.Write32(BLT_HEIGHT, 4)
+	bus.Write32(BLT_SRC_STRIDE, 16)
+	bus.Write32(BLT_DST_STRIDE, uint32(mode.bytesPerRow))
+
+	// Scale by 2x (step 0.5 per pixel)
+	bus.Write32(BLT_MODE7_DU_COL, 0x8000) // 0.5
+	bus.Write32(BLT_MODE7_DV_ROW, 0x8000) // 0.5
+	bus.Write32(BLT_MODE7_TEX_W, 3)
+	bus.Write32(BLT_MODE7_TEX_H, 3)
+
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	// Screen(0,0) -> Tex(0,0) -> White
+	// Screen(1,0) -> Tex(0.5, 0) -> Tex(0,0) -> White
+	// Screen(2,0) -> Tex(1.0, 0) -> Tex(1,0) -> 0
+	if got := video.HandleRead(dst); got != 0xFFFFFFFF {
+		t.Fatalf("expected 0,0 white")
+	}
+	if got := video.HandleRead(dst + 4); got != 0xFFFFFFFF {
+		t.Fatalf("expected 1,0 white (scaled)")
+	}
+	if got := video.HandleRead(dst + 8); got != 0 {
+		t.Fatalf("expected 2,0 black")
+	}
+}
+
+func TestBlitterMode7InvalidMaskSetsError(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+
+	const (
+		BLT_MODE7_TEX_W = 0xF0070
+		BLT_MODE7_TEX_H = 0xF0074
+		BLT_OP_MODE7    = 5
+	)
+
+	bus.Write32(BLT_OP, BLT_OP_MODE7)
+	bus.Write32(BLT_WIDTH, 4)
+	bus.Write32(BLT_HEIGHT, 4)
+
+	// Invalid mask (5 is not 2^n - 1)
+	bus.Write32(BLT_MODE7_TEX_W, 5)
+	bus.Write32(BLT_MODE7_TEX_H, 3)
+
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	if got := video.HandleRead(BLT_STATUS); got&bltStatusErr == 0 {
+		t.Fatalf("expected error on invalid mask")
+	}
+}
+
+func TestBlitterMode7NegativeCoordsWrap(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	mode := VideoModes[video.currentMode]
+
+	const (
+		BLT_MODE7_U0    = 0xF0058
+		BLT_MODE7_TEX_W = 0xF0070
+		BLT_MODE7_TEX_H = 0xF0074
+		BLT_OP_MODE7    = 5
+	)
+
+	texAddr := uint32(0x9000)
+	// Write pattern: Row 0 col 3 (last pixel) = 0xFE
+	bus.Write32(texAddr+12, 0xFE)
+
+	dst := vramAddr(mode, 0, 0)
+	bus.Write32(BLT_OP, BLT_OP_MODE7)
+	bus.Write32(BLT_SRC, texAddr)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 1)
+	bus.Write32(BLT_HEIGHT, 1)
+	bus.Write32(BLT_SRC_STRIDE, 16)
+
+	// Start U at -1.0
+	// In hex, -1.0 is 0xFFFF0000
+	bus.Write32(BLT_MODE7_U0, 0xFFFF0000)
+	bus.Write32(BLT_MODE7_TEX_W, 3)
+	bus.Write32(BLT_MODE7_TEX_H, 3)
+
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	// -1 masked by 3 should be 3 (-1 & 3 = 3 in 2s complement)
+	// So should read column 3
+	if got := video.HandleRead(dst); got != 0xFE {
+		t.Fatalf("expected wrap of -1 to 3 (0xFE), got 0x%X", got)
+	}
+}

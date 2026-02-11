@@ -306,7 +306,7 @@ The system's memory layout is designed to provide efficient access to both progr
 ```
 0x000000 - 0x000FFF: System vectors (including interrupt vector)
 0x001000 - 0x0EFFFF: Program space
-0x0F0000 - 0x0F0058: Video registers (copper, blitter, raster control)
+0x0F0000 - 0x0F0077: Video registers (copper, blitter, raster control, Mode7)
 0x0F0700 - 0x0F07FF: Terminal/Serial output
 0x0F0800 - 0x0F080C: Timer registers
 0x0F0820 - 0x0F0834: Filter registers
@@ -354,7 +354,7 @@ Programs begin loading at 0x1000, providing:
 - Clear separation from system areas
 - Space for program code and data
 
-## 3.3 Video Registers (0x0F0000 - 0x0F0058)
+## 3.3 Video Registers (0x0F0000 - 0x0F0077)
 
 ```
 0x0F0000: VIDEO_CTRL   - Video system control (0 = disabled, 1 = enabled)
@@ -367,7 +367,7 @@ Programs begin loading at 0x1000, providing:
 0x0F0014: COPPER_PC    - Copper program counter (read-only)
 0x0F0018: COPPER_STATUS- Copper status (bit0=running, bit1=waiting, bit2=halted)
 0x0F001C: BLT_CTRL     - Blitter control (bit0=start, bit1=busy, bit2=irq enable)
-0x0F0020: BLT_OP       - Blitter op (copy/fill/line/masked copy)
+0x0F0020: BLT_OP       - Blitter op (copy/fill/line/masked copy/alpha/mode7)
 0x0F0024: BLT_SRC      - Blitter source address (32-bit)
 0x0F0028: BLT_DST      - Blitter dest address (32-bit)
 0x0F002C: BLT_WIDTH    - Blit width (pixels)
@@ -381,6 +381,14 @@ Programs begin loading at 0x1000, providing:
 0x0F004C: VIDEO_RASTER_HEIGHT - Raster band height (pixels)
 0x0F0050: VIDEO_RASTER_COLOR - Raster band color (RGBA)
 0x0F0054: VIDEO_RASTER_CTRL - Raster band control (bit0=draw)
+0x0F0058: BLT_MODE7_U0 - Mode7 start U (signed 16.16)
+0x0F005C: BLT_MODE7_V0 - Mode7 start V (signed 16.16)
+0x0F0060: BLT_MODE7_DU_COL - Mode7 U delta per column pixel (signed 16.16)
+0x0F0064: BLT_MODE7_DV_COL - Mode7 V delta per column pixel (signed 16.16)
+0x0F0068: BLT_MODE7_DU_ROW - Mode7 U delta per row (signed 16.16)
+0x0F006C: BLT_MODE7_DV_ROW - Mode7 V delta per row (signed 16.16)
+0x0F0070: BLT_MODE7_TEX_W - Mode7 texture width mask (2^n-1)
+0x0F0074: BLT_MODE7_TEX_H - Mode7 texture height mask (2^n-1)
 
 Available Video Modes:
 MODE_640x480  = 0x00
@@ -802,7 +810,7 @@ All sound and video chips are accessible from all CPU architectures at different
 
 | Chip      | IE32/IE64/M68K         | Z80 Ports   | x86 Ports     | 6502        | Notes |
 |-----------|-------------------|-------------|---------------|-------------|-------|
-| VideoChip | 0x0F0000-0x0F0058 | Memory      | Memory        | $F000-$F058 | Custom copper/blitter |
+| VideoChip | 0x0F0000-0x0F0077 | Memory      | Memory        | $F000-$F077 | Custom copper/blitter |
 | TED Video | 0x0F0F20-0x0F0F5F | 0xF2/0xF3   | 0xF2/0xF3     | $D620-$D62F | Plus/4 (idx 0x20-0x2F) |
 | VGA       | 0x0F1000-0x0F13FF | 0xA0-0xAC   | 0x3C4-0x3DA   | $D700-$D70A | IBM VGA compatible |
 | Voodoo    | 0x0F4000-0x0F43FF | Memory      | Memory        | Memory      | 3DFX SST-1 3D accelerator |
@@ -4778,10 +4786,25 @@ Operations (`BLT_OP`):
 - `2`: LINE (coordinates packed into `BLT_SRC`/`BLT_DST`)
 - `3`: MASKED COPY (1-bit mask, LSB-first per byte)
 - `4`: ALPHA (alpha-aware copy with source alpha blending)
+- `5`: MODE7 (affine texture mapping with 16.16 UV coordinates)
 
 Line coordinates:
 - `BLT_SRC`: x0 (low 16 bits), y0 (high 16 bits)
 - `BLT_DST`: x1 (low 16 bits), y1 (high 16 bits)
+
+### Mode7 Parameters
+
+`BLT_OP=5` uses these registers in addition to the normal blitter source/destination/size:
+- `BLT_MODE7_U0`, `BLT_MODE7_V0`: start coordinates in signed 16.16 fixed-point.
+- `BLT_MODE7_DU_COL`, `BLT_MODE7_DV_COL`: UV deltas per destination X pixel.
+- `BLT_MODE7_DU_ROW`, `BLT_MODE7_DV_ROW`: UV deltas applied when moving to next destination row.
+- `BLT_MODE7_TEX_W`, `BLT_MODE7_TEX_H`: wrap masks (must be `2^n-1`, for example `255` for 256).
+- `BLT_SRC_STRIDE`: source row stride bytes. `0` means auto `((texWMask+1)*4)`.
+- `BLT_DST_STRIDE`: destination row stride bytes. `0` keeps normal auto behavior.
+
+Example UV mapping values:
+- Identity sampling: `duCol=0x00010000`, `dvCol=0`, `duRow=0`, `dvRow=0x00010000`.
+- Rotation/zoom: precompute sine/cosine in software and write fixed-point deltas once per frame.
 
 ### Blitter Example (fill a 16x16 block):
 
@@ -5130,7 +5153,7 @@ All include files provide:
 - **Video Registers**: VIDEO_CTRL, VIDEO_MODE, VIDEO_STATUS, blitter, copper, raster band
 - **Audio Registers**: PSG (raw + player), POKEY (raw + SAP player), SID (raw + SID player)
 - **Memory Constants**: VRAM_START, SCREEN_W/H, LINE_BYTES
-- **Blitter Operations**: BLT_OP_COPY, BLT_OP_FILL, BLT_OP_LINE, BLT_OP_MASKED, BLT_OP_ALPHA
+- **Blitter Operations**: BLT_OP_COPY, BLT_OP_FILL, BLT_OP_LINE, BLT_OP_MASKED, BLT_OP_ALPHA, BLT_OP_MODE7
 - **Copper Opcodes**: COP_WAIT_MASK, COP_MOVE_RASTER_*, COP_END
 - **Timer Registers**: TIMER_CTRL, TIMER_COUNT, TIMER_RELOAD
 
