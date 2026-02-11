@@ -173,9 +173,19 @@ hw_sound:
     move.q  r2, #1
     store.l r2, (r1)
 
-    ; Immediate error check for synchronous validation failures
+    ; Bounded status poll so async load failures are visible in BASIC.
+    ; status: 0=idle, 1=loading, 2=playing, 3=error
+    move.q  r25, #0x40000
+.snd_play_wait_status:
     la      r1, MEDIA_STATUS
     load.l  r2, (r1)
+    move.q  r3, #1
+    bne     r2, r3, .snd_play_status_done
+    sub.q   r25, r25, #1
+    bnez    r25, .snd_play_wait_status
+    bra     .snd_done
+
+.snd_play_status_done:
     move.q  r3, #3
     bne     r2, r3, .snd_done
     la      r8, .msg_play_error
