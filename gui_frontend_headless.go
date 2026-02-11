@@ -7,6 +7,7 @@ import "fmt"
 type HeadlessFrontend struct {
 	config    GUIConfig
 	actions   *GUIActions
+	cpu       EmulatorCPU
 	video     *VideoChip
 	lastError error
 	visible   bool
@@ -14,18 +15,10 @@ type HeadlessFrontend struct {
 
 var activeFrontend *HeadlessFrontend
 
-func NewGTKFrontend(cpu EmulatorCPU, video *VideoChip, sound *SoundChip, psg *PSGPlayer, sid *SIDPlayer, ahx *AHXPlayer) (GUIFrontend, error) {
+func NewRuntimeFrontend(cpu EmulatorCPU, video *VideoChip, sound *SoundChip, psg *PSGPlayer, sid *SIDPlayer, ahx *AHXPlayer) (GUIFrontend, error) {
 	frontend := &HeadlessFrontend{
 		actions: NewGUIActions(cpu, video, sound, psg, sid, ahx),
-		video:   video,
-	}
-	activeFrontend = frontend
-	return frontend, nil
-}
-
-func NewFLTKFrontend(cpu EmulatorCPU, video *VideoChip, sound *SoundChip, psg *PSGPlayer, sid *SIDPlayer, ahx *AHXPlayer) (GUIFrontend, error) {
-	frontend := &HeadlessFrontend{
-		actions: NewGUIActions(cpu, video, sound, psg, sid, ahx),
+		cpu:     cpu,
 		video:   video,
 	}
 	activeFrontend = frontend

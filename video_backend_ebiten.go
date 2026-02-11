@@ -49,6 +49,7 @@ type EbitenOutput struct {
 	frameCount  uint64
 	refreshRate int
 	vsyncChan   chan struct{}
+	done        chan struct{}
 	keyHandler  func(byte)
 
 	clipboardOnce sync.Once
@@ -67,6 +68,7 @@ func NewEbitenOutput() (VideoOutput, error) {
 		frameBuffer:   make([]byte, 640*480*4),
 		refreshRate:   60,
 		vsyncChan:     make(chan struct{}, 1),
+		done:          make(chan struct{}),
 		showStatusBar: true,
 	}, nil
 }
@@ -75,6 +77,9 @@ func (eo *EbitenOutput) Start() error {
 	if eo.running {
 		return nil
 	}
+	eo.bufferMutex.Lock()
+	eo.done = make(chan struct{})
+	eo.bufferMutex.Unlock()
 	eo.running = true
 	ebiten.SetWindowSize(eo.windowedW, eo.windowedH)
 	ebiten.SetWindowTitle("Intuition Engine (c) 2024 - 2026 Zayn Otley")
@@ -86,6 +91,17 @@ func (eo *EbitenOutput) Start() error {
 	}
 
 	go func() {
+		defer func() {
+			eo.running = false
+			eo.bufferMutex.RLock()
+			done := eo.done
+			eo.bufferMutex.RUnlock()
+			select {
+			case <-done:
+			default:
+				close(done)
+			}
+		}()
 		if err := ebiten.RunGame(eo); err != nil {
 			fmt.Printf("Ebiten error: %v\n", err)
 		}
@@ -103,6 +119,13 @@ func (eo *EbitenOutput) Stop() error {
 
 func (eo *EbitenOutput) Close() error {
 	return eo.Stop()
+}
+
+func (eo *EbitenOutput) Done() <-chan struct{} {
+	eo.bufferMutex.RLock()
+	done := eo.done
+	eo.bufferMutex.RUnlock()
+	return done
 }
 
 func (eo *EbitenOutput) Clear(color uint32) error {

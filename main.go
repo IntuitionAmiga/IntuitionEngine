@@ -108,7 +108,7 @@ func boilerPlate() {
 //	}
 //
 //	// Initialize GUI
-//	gui, err := NewGUIFrontend(GUI_FRONTEND_GTK4, cpu, videoChip, soundChip)
+//	gui, err := NewGUIFrontend(cpu, videoChip, soundChip)
 //	if err != nil {
 //		fmt.Printf("Failed to initialize GUI: %v\n", err)
 //		os.Exit(1)
@@ -323,6 +323,28 @@ func main() {
 	if modeSID && sidFile == "" {
 		fmt.Println("Error: SID mode requires a filename")
 		os.Exit(1)
+	}
+	if filename == "" && !modeBasic {
+		switch {
+		case modeIE32:
+			fmt.Println("Error: IE32 mode requires a filename")
+			os.Exit(1)
+		case modeIE64:
+			fmt.Println("Error: IE64 mode requires a filename (or use -basic)")
+			os.Exit(1)
+		case modeM68K:
+			fmt.Println("Error: M68K mode requires a filename")
+			os.Exit(1)
+		case modeM6502:
+			fmt.Println("Error: 6502 mode requires a filename")
+			os.Exit(1)
+		case modeZ80:
+			fmt.Println("Error: Z80 mode requires a filename")
+			os.Exit(1)
+		case modeX86:
+			fmt.Println("Error: x86 mode requires a filename")
+			os.Exit(1)
+		}
 	}
 
 	// Initialize sound first (used by all modes)
@@ -814,7 +836,7 @@ func main() {
 		}
 
 		// Initialize GUI with IE32 CPU
-		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, ie32CPU, videoChip, soundChip, psgPlayer, sidPlayer, ahxPlayerCPU)
+		gui, err = NewGUIFrontend(ie32CPU, videoChip, soundChip, psgPlayer, sidPlayer, ahxPlayerCPU)
 		if err != nil {
 			fmt.Printf("Failed to initialize GUI: %v\n", err)
 			os.Exit(1)
@@ -882,7 +904,7 @@ func main() {
 		}
 
 		// Initialize GUI with IE64 CPU
-		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, ie64CPU, videoChip, soundChip, psgPlayer, sidPlayer, ahxPlayerCPU)
+		gui, err = NewGUIFrontend(ie64CPU, videoChip, soundChip, psgPlayer, sidPlayer, ahxPlayerCPU)
 		if err != nil {
 			fmt.Printf("Failed to initialize GUI: %v\n", err)
 			os.Exit(1)
@@ -932,7 +954,7 @@ func main() {
 		m68kRunner := NewM68KRunner(m68kCPU)
 		m68kRunner.PerfEnabled = perfMode
 		runtimeStatus.setCPUs(runtimeCPUM68K, nil, nil, m68kRunner, nil, nil, nil)
-		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, m68kRunner, videoChip, soundChip, psgPlayer, sidPlayer, ahxPlayerCPU)
+		gui, err = NewGUIFrontend(m68kRunner, videoChip, soundChip, psgPlayer, sidPlayer, ahxPlayerCPU)
 		if err != nil {
 			fmt.Printf("Failed to initialize GUI: %v\n", err)
 			os.Exit(1)
@@ -990,7 +1012,7 @@ func main() {
 			startExecution = true
 		}
 
-		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, z80CPU, videoChip, soundChip, psgPlayer, sidPlayer, ahxPlayerCPU)
+		gui, err = NewGUIFrontend(z80CPU, videoChip, soundChip, psgPlayer, sidPlayer, ahxPlayerCPU)
 		if err != nil {
 			fmt.Printf("Failed to initialize GUI: %v\n", err)
 			os.Exit(1)
@@ -1032,7 +1054,7 @@ func main() {
 			startExecution = true
 		}
 
-		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, x86CPU, videoChip, soundChip, psgPlayer, sidPlayer, ahxPlayerCPU)
+		gui, err = NewGUIFrontend(x86CPU, videoChip, soundChip, psgPlayer, sidPlayer, ahxPlayerCPU)
 		if err != nil {
 			fmt.Printf("Failed to initialize GUI: %v\n", err)
 			os.Exit(1)
@@ -1092,7 +1114,7 @@ func main() {
 			startExecution = true
 		}
 
-		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, cpu6502, videoChip, soundChip, psgPlayer, sidPlayer, ahxPlayerCPU)
+		gui, err = NewGUIFrontend(cpu6502, videoChip, soundChip, psgPlayer, sidPlayer, ahxPlayerCPU)
 		if err != nil {
 			fmt.Printf("Failed to initialize GUI: %v\n", err)
 			os.Exit(1)
@@ -1125,14 +1147,6 @@ func main() {
 	if err := gui.Initialize(config); err != nil {
 		fmt.Printf("Failed to configure GUI: %v\n", err)
 		os.Exit(1)
-	}
-
-	// If running with a file argument, minimize control window so it doesn't
-	// obscure the display (Wayland doesn't allow apps to position windows)
-	if startExecution {
-		if minimizable, ok := gui.(interface{ SetStartMinimized(bool) }); ok {
-			minimizable.SetStartMinimized(true)
-		}
 	}
 
 	// Start console terminal host only when not using graphical BASIC terminal.

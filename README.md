@@ -139,7 +139,7 @@
     - 15.1 Supported Platforms
     - 15.2 Graphics Backends
     - 15.3 Audio Backends
-    - 15.4 GUI Frontends
+    - 15.4 Runtime UI
 16. [Running Demonstrations](#16-running-demonstrations)
     - 16.1 Quick Start
     - 16.2 Audio Demonstrations
@@ -229,6 +229,8 @@ Default core: **IE64**. Additional cores: **IE32, M68K, x86, Z80, 6502**.
 ./bin/IntuitionEngine -fullscreen -m68k program.ie68   # Start in fullscreen (F11 to toggle)
 ./bin/IntuitionEngine -width 800 -height 600 -ie64 program.ie64  # Override output resolution
 ```
+
+CPU modes that execute binaries (`-ie32`, `-ie64`, `-m68k`, `-m6502`, `-z80`, `-x86`) require a filename unless `-basic` is used.
 
 ## 1.4 Ebiten Window Controls
 
@@ -5014,7 +5016,6 @@ To develop for the Intuition Engine, you'll need to set up your development envi
 
 1. Install the Go programming language (version 1.21 or later)
 2. Install required development libraries:
-   - GTK4 or FLTK development files
    - ALSA development files (Linux only)
    - OpenGL development files (optional)
 
@@ -5688,11 +5689,11 @@ The Intuition Engine supports multiple platforms through abstracted backend syst
 
 ## 15.1 Supported Platforms
 
-| Platform | Graphics | Audio | GUI |
-|----------|----------|-------|-----|
-| Linux | Ebiten | Oto, ALSA | GTK4, FLTK |
-| macOS | Ebiten | Oto | GTK4, FLTK |
-| Windows | Ebiten | Oto | GTK4, FLTK |
+| Platform | Graphics | Audio |
+|----------|----------|-------|
+| Linux | Ebiten | Oto, ALSA |
+| macOS | Ebiten | Oto |
+| Windows | Ebiten | Oto |
 
 ## 15.2 Graphics Backends
 
@@ -5727,23 +5728,10 @@ Native Linux audio for:
 - Direct hardware access
 - System audio integration
 
-## 15.4 GUI Frontends
+## 15.4 Runtime UI
 
-### GTK4
-
-Modern desktop interface with:
-- Native look and feel
-- File browser dialogs
-- Debug/inspector windows
-- Menu bar integration
-
-### FLTK
-
-Lightweight alternative offering:
-- Minimal dependencies
-- Fast startup
-- Basic file selection
-- Simple controls
+The runtime is display-only and uses the Ebiten output window directly.
+There is no separate control window frontend.
 
 # 16. Running Demonstrations
 
@@ -5846,17 +5834,17 @@ go test -v -run TestZ80
 
 **Linux (Debian/Ubuntu):**
 ```bash
-sudo apt install libgtk-4-dev libasound2-dev libgl1-mesa-dev xorg-dev
+sudo apt install libasound2-dev libgl1-mesa-dev xorg-dev
 ```
 
 **Linux (Fedora):**
 ```bash
-sudo dnf install gtk4-devel alsa-lib-devel mesa-libGL-devel libX11-devel
+sudo dnf install alsa-lib-devel mesa-libGL-devel libX11-devel
 ```
 
 **macOS:**
 ```bash
-brew install gtk4
+# No extra system packages required for the runtime window path.
 ```
 
 ## 17.2 Build Commands

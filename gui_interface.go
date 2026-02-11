@@ -80,11 +80,6 @@ type GUIFrontend interface {
 	GetLastError() error
 }
 
-const (
-	GUI_FRONTEND_FLTK = iota
-	GUI_FRONTEND_GTK4
-)
-
 func NewGUIActions(cpu EmulatorCPU, video *VideoChip, sound *SoundChip, psg *PSGPlayer, sid *SIDPlayer, ahx *AHXPlayer) *GUIActions {
 	return &GUIActions{
 		cpu:   cpu,
@@ -196,12 +191,6 @@ func (a *GUIActions) Debug() error {
 	return fmt.Errorf("debugging not yet implemented")
 }
 
-func NewGUIFrontend(backend int, cpu EmulatorCPU, video *VideoChip, sound *SoundChip, psg *PSGPlayer, sid *SIDPlayer, ahx *AHXPlayer) (GUIFrontend, error) {
-	switch backend {
-	case GUI_FRONTEND_FLTK:
-		return NewFLTKFrontend(cpu, video, sound, psg, sid, ahx)
-	case GUI_FRONTEND_GTK4:
-		return NewGTKFrontend(cpu, video, sound, psg, sid, ahx)
-	}
-	return nil, fmt.Errorf("unknown backend: %d", backend)
+func NewGUIFrontend(cpu EmulatorCPU, video *VideoChip, sound *SoundChip, psg *PSGPlayer, sid *SIDPlayer, ahx *AHXPlayer) (GUIFrontend, error) {
+	return NewRuntimeFrontend(cpu, video, sound, psg, sid, ahx)
 }
