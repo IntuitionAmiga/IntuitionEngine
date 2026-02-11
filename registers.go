@@ -207,6 +207,11 @@ const (
 	TERM_IN             = 0xF0708    // Read next input character (dequeues)
 	TERM_LINE_STATUS    = 0xF070C    // Bit 0: complete line available
 	TERM_ECHO           = 0xF0710    // Bit 0: local echo enable (default 1)
+	TERM_CURSOR_X       = 0xF0714    // Terminal cursor X position (future)
+	TERM_CURSOR_Y       = 0xF0718    // Terminal cursor Y position (future)
+	TERM_FG_COLOR       = 0xF071C    // Terminal foreground color (future)
+	TERM_BG_COLOR       = 0xF0720    // Terminal background color (future)
+	TERM_CTRL           = 0xF0724    // Terminal control flags (future)
 	TERM_SENTINEL       = 0xF07F0    // Write 0xDEAD to stop CPU (via OnSentinel callback)
 	TERMINAL_REGION_END = 0xF07FF    // Reserve 256 bytes for future expansion
 )

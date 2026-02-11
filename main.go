@@ -143,6 +143,7 @@ func main() {
 		modeIE32   bool
 		modeIE64   bool
 		modeBasic  bool
+		modeTerm   bool
 		basicImage string
 		modeM68K   bool
 		modeM6502  bool
@@ -176,6 +177,7 @@ func main() {
 	flagSet.BoolVar(&modeIE32, "ie32", false, "Run IE32 CPU mode")
 	flagSet.BoolVar(&modeIE64, "ie64", false, "Run IE64 CPU mode (64-bit RISC)")
 	flagSet.BoolVar(&modeBasic, "basic", false, "Run EhBASIC IE64 interpreter (embedded image)")
+	flagSet.BoolVar(&modeTerm, "term", false, "Use console terminal with -basic")
 	flagSet.StringVar(&basicImage, "basic-image", "", "Run EhBASIC IE64 from custom binary path")
 	flagSet.BoolVar(&modeM68K, "m68k", false, "Run M68K CPU mode")
 	flagSet.BoolVar(&modeM6502, "m6502", false, "Run 6502 CPU mode")
@@ -246,6 +248,7 @@ func main() {
 	if modeBasic {
 		modeIE64 = true
 	}
+	useGraphicalTerm := modeBasic && !modeTerm
 
 	modeCount := 0
 	if modeIE32 {
@@ -291,6 +294,10 @@ func main() {
 	}
 	if modeBasic && filename != "" {
 		fmt.Println("Error: -basic and -basic-image do not accept a positional filename")
+		os.Exit(1)
+	}
+	if modeTerm && !modeBasic {
+		fmt.Println("Error: -term is only valid with -basic")
 		os.Exit(1)
 	}
 	if filename == "" && modePSG {
@@ -591,7 +598,17 @@ func main() {
 
 	// Setup terminal MMIO device (host adapter started later, just before GUI loop)
 	termMMIO := NewTerminalMMIO()
-	termHost := NewTerminalHost(termMMIO)
+	var termHost *TerminalHost
+	var videoTerm *VideoTerminal
+	if useGraphicalTerm {
+		videoTerm = NewVideoTerminal(videoChip, termMMIO)
+		videoTerm.Start()
+		if ki, ok := videoChip.GetOutput().(KeyboardInput); ok {
+			ki.SetKeyHandler(termMMIO.EnqueueByte)
+		}
+	} else {
+		termHost = NewTerminalHost(termMMIO)
+	}
 
 	// Map I/O regions for peripherals
 	sysBus.MapIO(AUDIO_CTRL, AUDIO_REG_END,
@@ -1066,29 +1083,41 @@ func main() {
 		}
 	}
 
-	// Start terminal host (stdin non-blocking) just before the GUI loop.
-	// Placed here so no os.Exit() path sits between Start and Stop.
-	termHost.Start()
-	outputTicker := time.NewTicker(10 * time.Millisecond)
-	outputStop := make(chan struct{})
-	go func() {
-		for {
-			select {
-			case <-outputStop:
-				return
-			case <-outputTicker.C:
-				termHost.PrintOutput()
+	// Start console terminal host only when not using graphical BASIC terminal.
+	var outputTicker *time.Ticker
+	var outputStop chan struct{}
+	if termHost != nil {
+		termHost.Start()
+		outputTicker = time.NewTicker(10 * time.Millisecond)
+		outputStop = make(chan struct{})
+		go func() {
+			for {
+				select {
+				case <-outputStop:
+					return
+				case <-outputTicker.C:
+					termHost.PrintOutput()
+				}
 			}
-		}
-	}()
+		}()
+	}
 
 	// Show the GUI and run the main event loop
 	err = gui.Show()
 
 	// Shut down terminal host (restores stdin to blocking) and render goroutines.
-	outputTicker.Stop()
-	close(outputStop)
-	termHost.Stop()
+	if outputTicker != nil {
+		outputTicker.Stop()
+	}
+	if outputStop != nil {
+		close(outputStop)
+	}
+	if termHost != nil {
+		termHost.Stop()
+	}
+	if videoTerm != nil {
+		videoTerm.Stop()
+	}
 	vgaEngine.StopRenderLoop()
 	ulaEngine.StopRenderLoop()
 	tedVideoEngine.StopRenderLoop()

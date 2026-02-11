@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
+	"golang.design/x/clipboard"
 	"sync"
 	"time"
 )
@@ -43,6 +44,10 @@ type EbitenOutput struct {
 	frameCount  uint64
 	refreshRate int
 	vsyncChan   chan struct{}
+	keyHandler  func(byte)
+
+	clipboardOnce sync.Once
+	clipboardOK   bool
 }
 
 func NewEbitenOutput() (VideoOutput, error) {
@@ -249,7 +254,152 @@ func (eo *EbitenOutput) Update() error {
 		}
 		eo.bufferMutex.Unlock()
 	}
+	eo.handleKeyboardInput()
 	return nil
+}
+
+func (eo *EbitenOutput) SetKeyHandler(fn func(byte)) {
+	eo.bufferMutex.Lock()
+	eo.keyHandler = fn
+	eo.bufferMutex.Unlock()
+}
+
+func (eo *EbitenOutput) emitByte(b byte) {
+	eo.bufferMutex.RLock()
+	handler := eo.keyHandler
+	eo.bufferMutex.RUnlock()
+	if handler != nil {
+		handler(b)
+	}
+}
+
+func (eo *EbitenOutput) emitSeq(seq []byte) {
+	for _, b := range seq {
+		eo.emitByte(b)
+	}
+}
+
+func (eo *EbitenOutput) handleKeyboardInput() {
+	eo.bufferMutex.RLock()
+	hasHandler := eo.keyHandler != nil
+	eo.bufferMutex.RUnlock()
+	if !hasHandler {
+		return
+	}
+
+	ctrl := ebiten.IsKeyPressed(ebiten.KeyControlLeft) || ebiten.IsKeyPressed(ebiten.KeyControlRight)
+	shift := ebiten.IsKeyPressed(ebiten.KeyShiftLeft) || ebiten.IsKeyPressed(ebiten.KeyShiftRight)
+
+	// Clipboard paste: Ctrl+Shift+V
+	if ctrl && shift && inpututil.IsKeyJustPressed(ebiten.KeyV) {
+		eo.handleClipboardPaste()
+	}
+	// Ctrl+Shift+C intentionally reserved for future copy/selection support.
+
+	// Printable input path.
+	for _, r := range ebiten.AppendInputChars(nil) {
+		if b, ok := runeToInputByte(r); ok {
+			eo.emitByte(b)
+		}
+	}
+
+	specialKeys := []ebiten.Key{
+		ebiten.KeyEnter,
+		ebiten.KeyNumpadEnter,
+		ebiten.KeyBackspace,
+		ebiten.KeyTab,
+		ebiten.KeyEscape,
+		ebiten.KeyArrowUp,
+		ebiten.KeyArrowDown,
+		ebiten.KeyArrowRight,
+		ebiten.KeyArrowLeft,
+		ebiten.KeyHome,
+		ebiten.KeyEnd,
+		ebiten.KeyDelete,
+	}
+	for _, key := range specialKeys {
+		if inpututil.IsKeyJustPressed(key) {
+			if seq, ok := translateSpecialKey(key); ok {
+				eo.emitSeq(seq)
+			}
+		}
+	}
+}
+
+func runeToInputByte(r rune) (byte, bool) {
+	if r <= 0 || r > 0xFF {
+		return 0, false
+	}
+	return byte(r), true
+}
+
+func translateSpecialKey(key ebiten.Key) ([]byte, bool) {
+	switch key {
+	case ebiten.KeyEnter, ebiten.KeyNumpadEnter:
+		return []byte{'\n'}, true
+	case ebiten.KeyBackspace:
+		return []byte{'\b'}, true
+	case ebiten.KeyTab:
+		return []byte{'\t'}, true
+	case ebiten.KeyEscape:
+		return []byte{0x1B}, true
+	case ebiten.KeyArrowUp:
+		return []byte{0x1B, '[', 'A'}, true
+	case ebiten.KeyArrowDown:
+		return []byte{0x1B, '[', 'B'}, true
+	case ebiten.KeyArrowRight:
+		return []byte{0x1B, '[', 'C'}, true
+	case ebiten.KeyArrowLeft:
+		return []byte{0x1B, '[', 'D'}, true
+	case ebiten.KeyHome:
+		return []byte{0x1B, '[', 'H'}, true
+	case ebiten.KeyEnd:
+		return []byte{0x1B, '[', 'F'}, true
+	case ebiten.KeyDelete:
+		return []byte{0x1B, '[', '3', '~'}, true
+	default:
+		return nil, false
+	}
+}
+
+func normalizePasteText(raw []byte) []byte {
+	norm := make([]byte, 0, len(raw))
+	for i := 0; i < len(raw); i++ {
+		if raw[i] == '\r' {
+			if i+1 < len(raw) && raw[i+1] == '\n' {
+				i++
+			}
+			norm = append(norm, '\n')
+			continue
+		}
+		norm = append(norm, raw[i])
+	}
+	return norm
+}
+
+func capPasteText(raw []byte, max int) []byte {
+	if len(raw) <= max {
+		return raw
+	}
+	return raw[:max]
+}
+
+func (eo *EbitenOutput) handleClipboardPaste() {
+	eo.clipboardOnce.Do(func() {
+		eo.clipboardOK = clipboard.Init() == nil
+	})
+	if !eo.clipboardOK {
+		return
+	}
+	data := clipboard.Read(clipboard.FmtText)
+	if len(data) == 0 {
+		return
+	}
+	data = normalizePasteText(data)
+	data = capPasteText(data, 4096)
+	for _, b := range data {
+		eo.emitByte(b)
+	}
 }
 
 func (eo *EbitenOutput) Draw(screen *ebiten.Image) {

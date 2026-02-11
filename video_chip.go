@@ -1932,6 +1932,35 @@ func (chip *VideoChip) GetFrontBuffer() []byte {
 	return chip.frontBuffer
 }
 
+// RenderToFrontBuffer executes fn while holding chip.mu and providing front buffer access.
+// The provided stride is bytes per row for the active mode.
+func (chip *VideoChip) RenderToFrontBuffer(fn func(fb []byte, stride int)) {
+	chip.mu.Lock()
+	mode := VideoModes[chip.currentMode]
+	fn(chip.frontBuffer, mode.bytesPerRow)
+	chip.hasContent.Store(true)
+	chip.mu.Unlock()
+}
+
+// MarkRectDirty marks all dirty tiles overlapped by the provided pixel rectangle.
+func (chip *VideoChip) MarkRectDirty(x, y, w, h int) {
+	tileW := int(chip.tileWidth)
+	tileH := int(chip.tileHeight)
+	if tileW <= 0 || tileH <= 0 || w <= 0 || h <= 0 {
+		return
+	}
+
+	startTileX := x / tileW
+	startTileY := y / tileH
+	endTileX := (x + w - 1) / tileW
+	endTileY := (y + h - 1) / tileH
+	for ty := startTileY; ty <= endTileY; ty++ {
+		for tx := startTileX; tx <= endTileX; tx++ {
+			chip.markTileDirtyAtomic(tx*tileW, ty*tileH)
+		}
+	}
+}
+
 // GetOutput returns the video output interface for sharing with other video devices.
 func (chip *VideoChip) GetOutput() VideoOutput {
 	return chip.output

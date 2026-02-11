@@ -3,6 +3,7 @@ package main
 import (
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // TerminalMMIO is a pure state-machine terminal device for MMIO register access.
@@ -32,6 +33,13 @@ type TerminalMMIO struct {
 	// onSentinel is called (if non-nil) when TERM_SENTINEL is triggered.
 	// Typically wired to stop the CPU.
 	onSentinel func()
+
+	// onCharOutput, when set, receives TERM_OUT bytes immediately.
+	// Callback is invoked outside tm.mu to avoid deadlocks/re-entrancy issues.
+	onCharOutput func(byte)
+
+	// lastStatusRead stores unix nanos of the latest TERM_STATUS read.
+	lastStatusRead atomic.Int64
 }
 
 // NewTerminalMMIO creates a new terminal MMIO device with echo enabled.
@@ -48,6 +56,23 @@ func (tm *TerminalMMIO) OnSentinel(fn func()) {
 	tm.onSentinel = fn
 }
 
+// SetCharOutputCallback registers a callback for TERM_OUT writes.
+// When set, TERM_OUT bytes are delivered directly to fn and not buffered in outputBuf.
+func (tm *TerminalMMIO) SetCharOutputCallback(fn func(byte)) {
+	tm.mu.Lock()
+	tm.onCharOutput = fn
+	tm.mu.Unlock()
+}
+
+// LastStatusReadTime returns the most recent TERM_STATUS read time.
+func (tm *TerminalMMIO) LastStatusReadTime() time.Time {
+	nanos := tm.lastStatusRead.Load()
+	if nanos <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, nanos)
+}
+
 // HandleRead processes reads from terminal registers.
 func (tm *TerminalMMIO) HandleRead(addr uint32) uint32 {
 	tm.mu.Lock()
@@ -59,6 +84,7 @@ func (tm *TerminalMMIO) HandleRead(addr uint32) uint32 {
 		return 0
 
 	case TERM_STATUS:
+		tm.lastStatusRead.Store(time.Now().UnixNano())
 		var status uint32
 		if tm.inputLen > 0 {
 			status |= 1 // bit 0: input available
@@ -99,12 +125,19 @@ func (tm *TerminalMMIO) HandleRead(addr uint32) uint32 {
 // HandleWrite processes writes to terminal registers.
 func (tm *TerminalMMIO) HandleWrite(addr uint32, value uint32) {
 	var sentinelFn func()
+	var charFn func(byte)
+	var charArg byte
 
 	tm.mu.Lock()
 	switch addr {
 	case TERM_OUT, TERM_OUT_16BIT, TERM_OUT_SIGNEXT:
 		ch := byte(value & 0xFF)
-		tm.outputBuf = append(tm.outputBuf, ch)
+		if tm.onCharOutput != nil {
+			charFn = tm.onCharOutput
+			charArg = ch
+		} else {
+			tm.outputBuf = append(tm.outputBuf, ch)
+		}
 
 	case TERM_ECHO:
 		tm.echoEnabled = (value & 1) != 0
@@ -119,6 +152,9 @@ func (tm *TerminalMMIO) HandleWrite(addr uint32, value uint32) {
 
 	if sentinelFn != nil {
 		sentinelFn()
+	}
+	if charFn != nil {
+		charFn(charArg)
 	}
 }
 

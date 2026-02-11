@@ -105,6 +105,11 @@ type VideoSource interface {
 	SignalVSync()              // Called by compositor after frame sent
 }
 
+// KeyboardInput is implemented by video outputs that can forward keyboard bytes.
+type KeyboardInput interface {
+	SetKeyHandler(func(byte))
+}
+
 // ScanlineAware is implemented by video sources that support per-scanline rendering.
 // This enables copper-style raster effects where register changes take effect
 // at specific scanline positions.

@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 )
 
 // =============================================================================
@@ -248,5 +249,68 @@ func TestTerminalMMIO_LineStatusClearsAfterConsume(t *testing.T) {
 	ls = tm.HandleRead(TERM_LINE_STATUS)
 	if ls&1 != 0 {
 		t.Fatal("expected no line after consuming all chars")
+	}
+}
+
+func TestTerminalMMIO_CharOutputCallback(t *testing.T) {
+	tm := NewTerminalMMIO()
+	got := byte(0)
+	called := false
+	tm.SetCharOutputCallback(func(b byte) {
+		called = true
+		got = b
+	})
+
+	tm.HandleWrite(TERM_OUT, 'A')
+
+	if !called {
+		t.Fatal("expected callback to be called")
+	}
+	if got != 'A' {
+		t.Fatalf("expected callback byte 'A', got %q", got)
+	}
+	if out := tm.DrainOutput(); out != "" {
+		t.Fatalf("expected no buffered output with callback set, got %q", out)
+	}
+}
+
+func TestTerminalMMIO_NilCallbackOutputBuf(t *testing.T) {
+	tm := NewTerminalMMIO()
+	tm.SetCharOutputCallback(nil)
+
+	tm.HandleWrite(TERM_OUT, 'B')
+	if out := tm.DrainOutput(); out != "B" {
+		t.Fatalf("expected buffered output 'B', got %q", out)
+	}
+}
+
+func TestTerminalMMIO_CallbackNoDeadlock(t *testing.T) {
+	tm := NewTerminalMMIO()
+	done := make(chan struct{})
+	tm.SetCharOutputCallback(func(_ byte) {
+		// Re-enter terminal API while callback runs.
+		tm.EnqueueByte('x')
+		close(done)
+	})
+
+	tm.HandleWrite(TERM_OUT, 'C')
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("callback did not complete; possible deadlock")
+	}
+}
+
+func TestTerminalMMIO_StatusReadTimestamp(t *testing.T) {
+	tm := NewTerminalMMIO()
+	before := time.Now()
+	_ = tm.HandleRead(TERM_STATUS)
+	got := tm.LastStatusReadTime()
+	if got.IsZero() {
+		t.Fatal("expected non-zero status read timestamp")
+	}
+	if got.Before(before.Add(-50*time.Millisecond)) || got.After(time.Now().Add(50*time.Millisecond)) {
+		t.Fatalf("expected recent status read timestamp, got %v", got)
 	}
 }
