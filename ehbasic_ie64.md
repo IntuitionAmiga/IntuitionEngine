@@ -1134,6 +1134,7 @@ SOUND RINGMOD channel, source
 ```
 SOUND PLAY "filename.ext" [,subsong]
 SOUND PLAY STOP
+SOUND STOP
 ```
 - `filename` — path to a music file (relative to working directory)
 - `subsong` — optional subsong index (default 0, for SID/AHX formats)
@@ -1149,6 +1150,8 @@ Supported formats:
 
 `SOUND PLAY STOP` stops all audio engine playback.
 
+`SOUND STOP` is a shorthand alias for `SOUND PLAY STOP`.
+
 On error (file not found, unsupported format, file too large), prints `?PLAY ERROR`.
 
 **Example:**
@@ -1160,6 +1163,7 @@ SOUND REVERB 100, 200        : REM add reverb
 SOUND PLAY "music.sid"       : REM play a SID tune
 SOUND PLAY "music.sid", 3    : REM play subsong 3
 SOUND PLAY STOP              : REM stop playback
+SOUND STOP                   : REM shorthand stop
 ```
 
 ### STOP
@@ -2038,6 +2042,7 @@ The unified `SOUND PLAY` command provides the simplest way to play music files:
 SOUND PLAY "music.sid"        : REM auto-detect and play
 SOUND PLAY "music.ahx", 2    : REM play subsong 2
 SOUND PLAY STOP               : REM stop all playback
+SOUND STOP                    : REM shorthand stop
 ```
 
 For low-level control, per-engine playback commands are also available:

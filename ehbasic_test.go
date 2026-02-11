@@ -4758,6 +4758,24 @@ func TestHW_Sound_RingmodCh2(t *testing.T) {
 	}
 }
 
+func TestHW_Sound_StopAlias(t *testing.T) {
+	asmBin := buildAssembler(t)
+	_, h := execStmtTestWithBus(t, asmBin, "10 SOUND STOP")
+	ctrl := readBusMem32(h, 0xF2308) // MEDIA_CTRL
+	if ctrl != 2 {
+		t.Fatalf("SOUND STOP: MEDIA_CTRL expected 2, got %d", ctrl)
+	}
+}
+
+func TestHW_Sound_PlayStop(t *testing.T) {
+	asmBin := buildAssembler(t)
+	_, h := execStmtTestWithBus(t, asmBin, "10 SOUND PLAY STOP")
+	ctrl := readBusMem32(h, 0xF2308) // MEDIA_CTRL
+	if ctrl != 2 {
+		t.Fatalf("SOUND PLAY STOP: MEDIA_CTRL expected 2, got %d", ctrl)
+	}
+}
+
 // --- Voodoo advanced: TRICOLOR ---
 
 func TestHW_Voodoo_Tricolor(t *testing.T) {

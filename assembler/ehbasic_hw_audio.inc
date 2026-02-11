@@ -10,6 +10,7 @@
 ;   SOUND SWEEP ch, enable, period, shift
 ;   SOUND SYNC ch, source
 ;   SOUND RINGMOD ch, source
+;   SOUND STOP
 ;   ENVELOPE ch, atk, dec, sus, rel
 ;   GATE ch, ON / GATE ch, OFF
 ;
@@ -54,6 +55,8 @@ hw_sound:
     beq     r1, r2, .snd_overdrive
     move.q  r2, #0x50            ; 'P' (PLAY)
     beq     r1, r2, .snd_play_cmd
+    move.q  r2, #TK_STOP         ; STOP token (SOUND STOP)
+    beq     r1, r2, .snd_stop
     move.q  r2, #0x52            ; 'R' (REVERB / RINGMOD)
     beq     r1, r2, .snd_r_cmd
     move.q  r2, #0x53            ; 'S' (SWEEP / SYNC)
@@ -196,6 +199,13 @@ hw_sound:
 .snd_play_stop:
     add.q   r17, r17, #1
     jsr     skip_alpha
+    la      r1, MEDIA_CTRL
+    move.q  r2, #2
+    store.l r2, (r1)
+    rts
+
+; --- SOUND STOP (alias of SOUND PLAY STOP) ---
+.snd_stop:
     la      r1, MEDIA_CTRL
     move.q  r2, #2
     store.l r2, (r1)
@@ -419,8 +429,11 @@ hw_sound:
 
 ; --- SOUND S dispatch: SWEEP vs SYNC ---
 .snd_s_cmd:
+    ; Accept raw "SOUND STOP" when STOP was not tokenized.
     add.q   r3, r17, #1
     load.b  r4, (r3)
+    move.q  r2, #0x54            ; 'T' → STOP
+    beq     r4, r2, .snd_play_stop
     move.q  r2, #0x57            ; 'W' → SWEEP
     beq     r4, r2, .snd_sweep
     move.q  r2, #0x59            ; 'Y' → SYNC
