@@ -3054,6 +3054,12 @@ The Intuition Engine includes a full port of Lee Davison's Enhanced BASIC (EhBAS
 - **System commands**: CALL (machine code subroutine), USR (call with return value), POKE8/PEEK8, DOKE/DEEK, WAIT, BLIT, COPPER, TRON/TROFF (trace mode)
 - **Machine code interface**: CALL and USR use register-indirect JSR to invoke IE64 assembly routines; R8 carries return values
 
+### Common REPL Commands
+
+- `SOUND PLAY "music.ext" [,subsong]` starts music playback and auto-detects format by extension: `.sid`, `.ym`, `.ay`, `.sndh`, `.ted`, `.prg`, `.ahx` (stops any currently playing track first)
+- `SOUND STOP` stops current music playback (`SOUND PLAY STOP` is also accepted)
+- `RUN` executes the current BASIC program; `RUN "program.ie64"` (or `.iex`/`.ie68`/`.ie86`/`.ie80`/`.bin`) loads and launches an external binary
+
 ### Example
 
 ```basic
