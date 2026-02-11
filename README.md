@@ -5819,7 +5819,7 @@ go test -v -run TestZ80
 
 ## 17.1 Prerequisites
 
-- Go 1.21 or later
+- Go 1.26 or later
 - `sstrip` and `upx` (for binary optimization; modify Makefile to skip if unavailable)
 - No extra system packages are required for the default runtime window/audio path.
 
