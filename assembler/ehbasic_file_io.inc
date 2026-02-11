@@ -39,7 +39,7 @@ tk_cont_str:     dc.b "CONT", 0
 tk_list_str:     dc.b "LIST", 0
 tk_clear_str:    dc.b "CLEAR", 0
 tk_new_str:      dc.b "NEW", 0
-tk_width_str:    dc.b "WIDTH", 0
+tk_width_str:    dc.b "BLOAD", 0
 tk_get_str:      dc.b "GET", 0
 tk_swap_str:     dc.b "SWAP", 0
 tk_bitset_str:   dc.b "BITSET", 0
@@ -599,3 +599,63 @@ exec_do_load:
     rts
 
 .msg_not_found: dc.b "?FILE NOT FOUND", 0
+
+; ============================================================================
+; exec_do_bload - BLOAD "filename", addr
+; ============================================================================
+exec_do_bload:
+    jsr     exec_skip_spaces
+    jsr     str_eval                ; R8 = filename pointer
+    move.q  r10, r8
+
+    ; Copy to FILE_NAME_BUF
+    la      r1, FILE_NAME_BUF
+.bload_copy_name:
+    load.b  r2, (r10)
+    store.b r2, (r1)
+    add.q   r10, r10, #1
+    add.q   r1, r1, #1
+    bnez    r2, .bload_copy_name
+
+    ; Parse comma + destination address
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x2C               ; ','
+    bne     r1, r2, .bload_syntax_err
+    add.q   r17, r17, #1
+    jsr     exec_skip_spaces
+    jsr     expr_eval
+    jsr     fp_int
+    jsr     fp_fix                  ; R8 = destination address
+    move.q  r11, r8
+
+    ; Setup MMIO
+    la      r1, FILE_NAME_PTR
+    la      r2, FILE_NAME_BUF
+    store.l r2, (r1)
+
+    la      r1, FILE_DATA_PTR
+    store.l r11, (r1)               ; destination address in VM memory
+
+    la      r1, FILE_CTRL
+    li      r2, #1                  ; OP_READ
+    store.l r2, (r1)
+
+    ; Check status
+    la      r1, FILE_STATUS
+    load.l  r1, (r1)
+    beqz    r1, .bload_success
+
+    la      r8, msg_bload_not_found
+    jsr     print_string
+    jsr     print_crlf
+    rts
+
+.bload_syntax_err:
+    ; Match existing interpreter style: fail silently on malformed statement.
+    rts
+
+.bload_success:
+    rts
+
+msg_bload_not_found: dc.b "?FILE NOT FOUND", 0

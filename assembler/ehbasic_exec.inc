@@ -1266,7 +1266,7 @@ exec_do_unknown:
 ;          14=RETURN, 15=REM, 16=STOP, 17=ON(TRON), 18=TRON, 19=INC,
 ;          20=WAIT, 21=TROFF, 22-23=unused, 24=POKE, 25=DOKE, 26=LOKE,
 ;          27=CALL, 28=DO, 29=LOOP, 30=PRINT, 31=CONT
-;          32-46=unused, 47=WEND, 48=WHILE, 49-97=unused
+;          32-46=mixed (LIST/NEW/BLOAD and parser keywords), 47=WEND, 48=WHILE, 49-97=unused
 ;          98=SCREEN..127=TEXTURE
 
     align 4
@@ -1306,7 +1306,7 @@ stmt_jump_table:
     dc.l    exec_do_unknown      ; 32 = unused      (0xA0)
     dc.l    exec_do_clear        ; 33 = TK_CLEAR    (0xA1)
     dc.l    exec_do_unknown      ; 34 = unused      (0xA2)
-    dc.l    exec_do_unknown      ; 35 = unused      (0xA3)
+    dc.l    exec_do_bload        ; 35 = TK_WIDTH→BLOAD (0xA3)
     dc.l    exec_do_get          ; 36 = TK_GET      (0xA4)
     dc.l    exec_do_swap         ; 37 = TK_SWAP     (0xA5)
     dc.l    exec_do_bitset       ; 38 = TK_BITSET   (0xA6)
@@ -1526,7 +1526,6 @@ exec_find_data_value_by_index:
 .fd_line_loop:
     beqz    r10, .fd_not_found
     load.l  r11, (r10)           ; next line pointer
-    beqz    r11, .fd_not_found   ; terminator reached
 
     add.q   r12, r10, #8         ; R12 = content pointer
 .fd_stmt_loop:
@@ -1579,13 +1578,20 @@ exec_find_data_value_by_index:
     move.q  r13, #1
 
 .fd_parse_value:
+    ; parse_number clobbers R1-R7, so preserve DATA indices (R6=target, R7=current)
+    push    r6
+    push    r7
     move.q  r17, r12
     jsr     parse_number          ; R8 = FP32, R17 advanced
     move.q  r12, r17
 
     ; apply sign if needed
-    beqz    r13, .fd_check_index
+    beqz    r13, .fd_restore_idx
     jsr     fp_neg
+
+.fd_restore_idx:
+    pop     r7
+    pop     r6
 
 .fd_check_index:
     beq     r7, r6, .fd_found

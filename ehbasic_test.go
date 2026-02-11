@@ -2173,6 +2173,30 @@ func TestEhBASIC_DataRead(t *testing.T) {
 	}
 }
 
+func TestEhBASIC_DataRead_LastLineData(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out := execStmtTest(t, asmBin, `10 READ A,B,C
+20 PRINT A+B+C
+30 DATA 1,2,3`)
+	out = strings.TrimRight(out, "\r\n")
+	out = strings.TrimSpace(out)
+	if out != "6" {
+		t.Fatalf("DATA/READ (last-line DATA): expected '6', got %q", out)
+	}
+}
+
+func TestEhBASIC_DataRead_SecondValue(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out := execStmtTest(t, asmBin, `10 DATA 80,83
+20 READ A,B
+30 PRINT B`)
+	out = strings.TrimRight(out, "\r\n")
+	out = strings.TrimSpace(out)
+	if out != "83" {
+		t.Fatalf("DATA/READ second value: expected '83', got %q", out)
+	}
+}
+
 func TestEhBASIC_Input(t *testing.T) {
 	asmBin := buildAssembler(t)
 	binary := assembleExecTest(t, asmBin, `
@@ -5527,6 +5551,56 @@ func TestHW_Load_Simple(t *testing.T) {
 	}
 	if strings.Contains(out, "EMPTY") {
 		t.Errorf("LOAD produced no lines")
+	}
+}
+
+func TestHW_BLoad_Simple(t *testing.T) {
+	asmBin := buildAssembler(t)
+	tmpDir := t.TempDir()
+
+	const dst = 0x710000
+	payload := []byte{0x50, 0x53, 0x49, 0x44, 0x00, 0x02}
+	if err := os.WriteFile(filepath.Join(tmpDir, "blob.sid"), payload, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, h := execStmtTestWithFileIO(t, asmBin, tmpDir, `10 BLOAD "blob.sid", &H710000`)
+	for i, want := range payload {
+		got := readBusMem8(h, dst+uint32(i))
+		if got != want {
+			t.Fatalf("BLOAD byte %d: expected 0x%02X, got 0x%02X", i, want, got)
+		}
+	}
+	resultLen := readBusMem32(h, FILE_RESULT_LEN)
+	if resultLen != uint32(len(payload)) {
+		t.Fatalf("BLOAD FILE_RESULT_LEN expected %d, got %d", len(payload), resultLen)
+	}
+}
+
+func TestHW_BLoad_FileNotFound(t *testing.T) {
+	asmBin := buildAssembler(t)
+	tmpDir := t.TempDir()
+
+	out, _ := execStmtTestWithFileIO(t, asmBin, tmpDir, `10 BLOAD "missing.sid", &H710000`)
+	if !strings.Contains(out, "?FILE NOT FOUND") {
+		t.Fatalf("BLOAD missing file: expected ?FILE NOT FOUND, got %q", out)
+	}
+}
+
+func TestHW_BLoad_DoesNotResetProgramState(t *testing.T) {
+	asmBin := buildAssembler(t)
+	tmpDir := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(tmpDir, "tiny.bin"), []byte{1}, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, _ := execStmtTestWithFileIO(t, asmBin, tmpDir, `10 LET A=42
+20 BLOAD "tiny.bin", &H710000
+30 PRINT A`)
+	out = strings.TrimSpace(strings.ReplaceAll(out, "\r", ""))
+	if !strings.Contains(out, "42") {
+		t.Fatalf("BLOAD should not reset BASIC state, output: %q", out)
 	}
 }
 

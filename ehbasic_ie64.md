@@ -309,6 +309,25 @@ BITSET address, bit
 BITSET &HF0700, 3     : REM set bit 3
 ```
 
+### BLOAD
+
+Load a binary file directly into memory (raw bytes, no tokenisation).
+
+```
+BLOAD "filename", address
+```
+
+- `filename` — string path resolved through the file I/O sandbox
+- `address` — destination memory address
+
+Unlike `LOAD`, `BLOAD` does **not** clear program lines or variables. It only reads file bytes into memory.
+
+**Example:**
+```basic
+BLOAD "Yummy_Pizza.sid", &H710000
+SID PLAY &H710000, 3725
+```
+
 ### BLIT
 
 Blitter hardware operations for fast block transfers, fills, and line drawing.
@@ -2669,7 +2688,7 @@ Tokens marked with \* are tokenised (recognised by the tokeniser) but do not yet
 | A0 | TK_LIST | LIST | Statement |
 | A1 | TK_CLEAR | CLEAR | Statement |
 | A2 | TK_NEW | NEW | Statement |
-| A3 | TK_WIDTH | WIDTH | Statement |
+| A3 | TK_WIDTH | BLOAD | Statement |
 | A4 | TK_GET | GET | Statement |
 | A5 | TK_SWAP | SWAP | Statement |
 | A6 | TK_BITSET | BITSET | Statement |

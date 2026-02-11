@@ -89,6 +89,9 @@ func (p *SIDPlayer) LoadDataWithOptions(data []byte, subsong int, forcePAL bool,
 }
 
 func (p *SIDPlayer) Play() {
+	if p.engine.sound != nil {
+		p.engine.sound.SetSampleTicker(p.engine)
+	}
 	p.engine.SetPlaying(true)
 }
 
@@ -261,9 +264,6 @@ func (p *SIDPlayer) HandlePlayWrite(addr uint32, value uint32) {
 		data := make([]byte, p.playLen)
 		copy(data, mem[p.playPtr:p.playPtr+p.playLen])
 		subsong := int(p.subsong)
-		if subsong == 0 {
-			subsong = 1 // Default to subsong 1
-		}
 		p.playBusy = true
 		p.playGen++
 		startReq = &sidAsyncStartRequest{
@@ -305,9 +305,13 @@ func (p *SIDPlayer) startAsync(req sidAsyncStartRequest) {
 	}
 
 	if err != nil {
+		fmt.Printf("SID PLAY error: %v\n", err)
 		p.playErr = true
 		p.playBusy = false
 		return
+	}
+	if len(events) == 0 || totalSamples == 0 {
+		fmt.Printf("SID PLAY warning: rendered empty stream (events=%d, samples=%d)\n", len(events), totalSamples)
 	}
 
 	p.metadata = meta
@@ -323,10 +327,7 @@ func (p *SIDPlayer) startAsync(req sidAsyncStartRequest) {
 	if req.forceLoop {
 		p.engine.SetForceLoop(true)
 	}
-	if p.engine.sound != nil {
-		p.engine.sound.SetSampleTicker(p.engine)
-	}
-	p.engine.SetPlaying(true)
+	p.Play()
 }
 
 // HandlePlayRead handles reads from SID_PLAY_* registers

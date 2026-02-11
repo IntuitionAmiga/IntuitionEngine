@@ -273,7 +273,7 @@ tok_kw_table:
     dc.b    "PRINT", 0, TK_PRINT
     dc.b    "UNTIL", 0, TK_UNTIL
     dc.b    "WHILE", 0, TK_WHILE
-    dc.b    "WIDTH", 0, TK_WIDTH
+    dc.b    "BLOAD", 0, TK_WIDTH
     dc.b    "TWOPI", 0, TK_TWOPI
     dc.b    "LEFT$", 0, TK_LEFTS
     dc.b    "CALL", 0, TK_CALL

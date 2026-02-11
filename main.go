@@ -408,7 +408,6 @@ func main() {
 				}
 			}
 		}
-		soundChip.SetSampleTicker(sidEngine)
 		soundChip.Start()
 		sidPlayer.Play()
 		for sidPlayer.IsPlaying() {
@@ -881,7 +880,6 @@ func main() {
 			ulaEngine.StartRenderLoop()
 			tedVideoEngine.StartRenderLoop()
 			anticEngine.StartRenderLoop()
-			soundChip.SetSampleTicker(sidEngine)
 			soundChip.Start()
 
 			// Start CPU execution

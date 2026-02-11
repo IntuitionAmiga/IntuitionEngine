@@ -378,8 +378,11 @@ line_list:
     move.q  r8, #0x20
     jsr     putchar
 
-    ; Print content (starting at offset +8)
-    add.q   r8, r14, #8
+    ; Print content (detokenized)
+    add.q   r8, r14, #8            ; tokenized source
+    la      r9, BASIC_LINE_BUF     ; detokenize scratch/output buffer
+    jsr     detokenize
+    la      r8, BASIC_LINE_BUF
     jsr     print_string
 
     ; Print CR+LF
