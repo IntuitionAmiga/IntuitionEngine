@@ -172,6 +172,12 @@ hw_sound:
     store.l r2, (r1)
     la      r1, MEDIA_SUBSONG
     store.l r20, (r1)
+
+    ; Stop any currently playing track before starting the new one.
+    la      r1, MEDIA_CTRL
+    move.q  r2, #2
+    store.l r2, (r1)
+
     la      r1, MEDIA_CTRL
     move.q  r2, #1
     store.l r2, (r1)
