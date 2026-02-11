@@ -96,9 +96,21 @@ func (e *ProgramExecutor) startExecute() {
 		e.mu.Unlock()
 		return
 	}
-	if st, err := os.Stat(fullPath); err != nil || st.IsDir() {
+	st, err := os.Stat(fullPath)
+	if err != nil {
 		e.status = EXEC_STATUS_ERROR
-		e.errCode = EXEC_ERR_NOT_FOUND
+		if os.IsNotExist(err) {
+			e.errCode = EXEC_ERR_NOT_FOUND
+		} else {
+			e.errCode = EXEC_ERR_LOAD_FAILED
+		}
+		e.typ = typ
+		e.mu.Unlock()
+		return
+	}
+	if st.IsDir() {
+		e.status = EXEC_STATUS_ERROR
+		e.errCode = EXEC_ERR_LOAD_FAILED
 		e.typ = typ
 		e.mu.Unlock()
 		return
@@ -120,12 +132,17 @@ func (e *ProgramExecutor) executeAsync(session uint32, fullPath string, typ uint
 		return
 	}
 
-	if err := e.prepareAndLaunch(data, typ); err != nil {
-		e.failSession(session, EXEC_ERR_LOAD_FAILED)
+	e.mu.Lock()
+	if session != e.session {
+		e.mu.Unlock()
 		return
 	}
-
-	e.mu.Lock()
+	if err := e.prepareAndLaunch(data, typ); err != nil {
+		e.status = EXEC_STATUS_ERROR
+		e.errCode = EXEC_ERR_LOAD_FAILED
+		e.mu.Unlock()
+		return
+	}
 	if session != e.session {
 		e.mu.Unlock()
 		return

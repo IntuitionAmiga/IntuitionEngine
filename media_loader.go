@@ -166,8 +166,8 @@ func (m *MediaLoader) loadAndStart(reqGen uint64, fullPath string, typ uint32, s
 		m.mu.Unlock()
 		return
 	}
-	m.mu.Unlock()
-
+	// Keep media state lock held while applying side effects so a newer
+	// request cannot interleave and leave stale playback running.
 	m.stopPlayersOnly()
 	switch typ {
 	case MEDIA_TYPE_SID:
@@ -209,7 +209,6 @@ func (m *MediaLoader) loadAndStart(reqGen uint64, fullPath string, typ uint32, s
 			m.ahxPlayer.HandlePlayWrite(AHX_PLAY_CTRL, 1)
 		}
 	default:
-		m.mu.Lock()
 		if reqGen == m.reqGen {
 			m.status = MEDIA_STATUS_ERROR
 			m.errCode = MEDIA_ERR_UNSUPPORTED
@@ -218,7 +217,6 @@ func (m *MediaLoader) loadAndStart(reqGen uint64, fullPath string, typ uint32, s
 		return
 	}
 
-	m.mu.Lock()
 	defer m.mu.Unlock()
 	if reqGen != m.reqGen {
 		return

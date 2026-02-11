@@ -253,7 +253,7 @@ repl_do_run:
 
 .run_external_ok:
     ; Success path: do not downgrade to timeout/error after running state observed.
-    rts
+    bra     repl_loop
 
 .run_internal:
     jsr     exec_run
@@ -356,7 +356,7 @@ repl_check_run:
 ; ============================================================================
 ; Input:  BASIC_LINE_BUF contains the line
 ; Output: R8 = 1 if FILE_NAME_BUF was populated, 0 if no quoted filename
-; Clobbers: R1-R3, R10
+; Clobbers: R1-R3, R10-R11
 
 repl_parse_run_filename:
     la      r1, BASIC_LINE_BUF
@@ -391,14 +391,17 @@ repl_parse_run_filename:
 
     ; Copy quoted filename into FILE_NAME_BUF
     la      r10, FILE_NAME_BUF
+    move.q  r11, #255              ; max chars to prevent FILE_NAME_BUF overflow
 .copy_name_loop:
     load.b  r2, (r1)
     beqz    r2, .no_file            ; Unterminated quote
     move.q  r3, #0x22               ; closing quote
     beq     r2, r3, .copy_done
+    beqz    r11, .no_file
     store.b r2, (r10)
     add.q   r1, r1, #1
     add.q   r10, r10, #1
+    sub.q   r11, r11, #1
     bra     .copy_name_loop
 
 .copy_done:
