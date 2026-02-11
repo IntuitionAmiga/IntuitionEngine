@@ -211,7 +211,9 @@ const (
 	TERM_CURSOR_Y       = 0xF0718    // Terminal cursor Y position (future)
 	TERM_FG_COLOR       = 0xF071C    // Terminal foreground color (future)
 	TERM_BG_COLOR       = 0xF0720    // Terminal background color (future)
-	TERM_CTRL           = 0xF0724    // Terminal control flags (future)
+	TERM_CTRL           = 0xF0724    // Terminal control flags (bit 0: line input mode)
+	TERM_KEY_IN         = 0xF0728    // Read next raw key (dequeues)
+	TERM_KEY_STATUS     = 0xF072C    // Bit 0: raw key available
 	TERM_SENTINEL       = 0xF07F0    // Write 0xDEAD to stop CPU (via OnSentinel callback)
 	TERMINAL_REGION_END = 0xF07FF    // Reserve 256 bytes for future expansion
 )

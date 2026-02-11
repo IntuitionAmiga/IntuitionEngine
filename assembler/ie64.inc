@@ -121,6 +121,9 @@ TERM_STATUS       equ 0xF0704               ; Bit 0: input available, Bit 1: out
 TERM_IN           equ 0xF0708               ; Read next input char, dequeues (R)
 TERM_LINE_STATUS  equ 0xF070C               ; Bit 0: complete line available (R)
 TERM_ECHO         equ 0xF0710               ; Bit 0: local echo enable (W, default 1)
+TERM_CTRL         equ 0xF0724               ; Bit 0: line input mode (W/R)
+TERM_KEY_IN       equ 0xF0728               ; Per-keystroke input for GET (R)
+TERM_KEY_STATUS   equ 0xF072C               ; Bit 0: raw key available (R)
 TERM_SENTINEL     equ 0xF07F0               ; Write 0xDEAD to stop CPU (via OnSentinel callback)
 
 ; ============================================================================

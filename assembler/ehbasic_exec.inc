@@ -930,12 +930,13 @@ exec_do_get:
     beqz    r8, .get_done
     move.q  r22, r8              ; R22 = value slot
     move.q  r23, r9              ; R23 = type (0=num, 1=str)
-    ; Check if char available
-    load.l  r1, (r27)           ; TERM_STATUS
+    ; Check if key available
+    la      r1, TERM_KEY_STATUS
+    load.l  r1, (r1)
     and.l   r1, r1, #1          ; bit 0 = char available
     beqz    r1, .get_empty
     ; Read char
-    add.q   r3, r27, #4         ; TERM_IN = TERM_STATUS + 4
+    la      r3, TERM_KEY_IN
     load.b  r8, (r3)
     and.l   r8, r8, #0xFF
     ; If string var, store as single-char string

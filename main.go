@@ -602,9 +602,10 @@ func main() {
 	var videoTerm *VideoTerminal
 	if useGraphicalTerm {
 		videoTerm = NewVideoTerminal(videoChip, termMMIO)
+		termMMIO.SetForceEchoOff(true)
 		videoTerm.Start()
 		if ki, ok := videoChip.GetOutput().(KeyboardInput); ok {
-			ki.SetKeyHandler(termMMIO.EnqueueByte)
+			ki.SetKeyHandler(videoTerm.HandleKeyInput)
 		}
 	} else {
 		termHost = NewTerminalHost(termMMIO)

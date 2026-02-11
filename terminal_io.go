@@ -25,7 +25,15 @@ type TerminalMMIO struct {
 
 	// Echo flag: readable by application code via TERM_ECHO register.
 	// The application (e.g. read_line) decides whether to echo based on this.
-	echoEnabled bool
+	echoEnabled   bool
+	forceEchoOff  bool
+	lineInputMode bool
+
+	// Raw key ring buffer for per-keystroke input (GET).
+	rawKeyBuf  [256]byte
+	rawKeyHead int
+	rawKeyTail int
+	rawKeyLen  int
 
 	// SentinelTriggered is set when TERM_SENTINEL receives 0xDEAD.
 	SentinelTriggered atomic.Bool
@@ -96,12 +104,7 @@ func (tm *TerminalMMIO) HandleRead(addr uint32) uint32 {
 		if tm.inputLen == 0 {
 			return 0
 		}
-		b := tm.inputBuf[tm.inputHead]
-		tm.inputHead = (tm.inputHead + 1) % len(tm.inputBuf)
-		tm.inputLen--
-		if b == '\n' {
-			tm.newlines--
-		}
+		b := tm.dequeueInputByteLocked()
 		return uint32(b)
 
 	case TERM_LINE_STATUS:
@@ -112,7 +115,28 @@ func (tm *TerminalMMIO) HandleRead(addr uint32) uint32 {
 		return status
 
 	case TERM_ECHO:
+		if tm.forceEchoOff {
+			return 0
+		}
 		if tm.echoEnabled {
+			return 1
+		}
+		return 0
+	case TERM_KEY_STATUS:
+		if tm.rawKeyLen > 0 {
+			return 1
+		}
+		return 0
+	case TERM_KEY_IN:
+		if tm.rawKeyLen == 0 {
+			return 0
+		}
+		b := tm.rawKeyBuf[tm.rawKeyHead]
+		tm.rawKeyHead = (tm.rawKeyHead + 1) % len(tm.rawKeyBuf)
+		tm.rawKeyLen--
+		return uint32(b)
+	case TERM_CTRL:
+		if tm.lineInputMode {
 			return 1
 		}
 		return 0
@@ -141,6 +165,8 @@ func (tm *TerminalMMIO) HandleWrite(addr uint32, value uint32) {
 
 	case TERM_ECHO:
 		tm.echoEnabled = (value & 1) != 0
+	case TERM_CTRL:
+		tm.lineInputMode = (value & 1) != 0
 
 	case TERM_SENTINEL:
 		if value == 0xDEAD {
@@ -162,19 +188,39 @@ func (tm *TerminalMMIO) HandleWrite(addr uint32, value uint32) {
 func (tm *TerminalMMIO) EnqueueByte(b byte) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
-
-	if tm.inputLen >= len(tm.inputBuf) {
-		return // buffer full — drop
-	}
-	tm.inputBuf[tm.inputTail] = b
-	tm.inputTail = (tm.inputTail + 1) % len(tm.inputBuf)
-	tm.inputLen++
-	if b == '\n' {
-		tm.newlines++
-	}
+	tm.enqueueInputByteLocked(b)
 	// No echo here — echo is the application's responsibility (e.g. read_line).
 	// EnqueueByte is a transport layer; echoing here causes double-echo when
 	// the application (EhBASIC) also echoes characters it reads from TERM_IN.
+}
+
+func (tm *TerminalMMIO) EnqueueRawKey(b byte) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	tm.enqueueRawKeyLocked(b)
+}
+
+// RouteHostKey atomically checks line mode and routes the key to exactly one queue.
+func (tm *TerminalMMIO) RouteHostKey(b byte) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	if tm.lineInputMode {
+		tm.enqueueInputByteLocked(b)
+		return
+	}
+	tm.enqueueRawKeyLocked(b)
+}
+
+func (tm *TerminalMMIO) LineInputMode() bool {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	return tm.lineInputMode
+}
+
+func (tm *TerminalMMIO) SetForceEchoOff(force bool) {
+	tm.mu.Lock()
+	tm.forceEchoOff = force
+	tm.mu.Unlock()
 }
 
 // DrainOutput returns and clears the accumulated output buffer.
@@ -184,4 +230,35 @@ func (tm *TerminalMMIO) DrainOutput() string {
 	s := string(tm.outputBuf)
 	tm.outputBuf = tm.outputBuf[:0]
 	return s
+}
+
+func (tm *TerminalMMIO) enqueueInputByteLocked(b byte) {
+	if tm.inputLen >= len(tm.inputBuf) {
+		return
+	}
+	tm.inputBuf[tm.inputTail] = b
+	tm.inputTail = (tm.inputTail + 1) % len(tm.inputBuf)
+	tm.inputLen++
+	if b == '\n' {
+		tm.newlines++
+	}
+}
+
+func (tm *TerminalMMIO) dequeueInputByteLocked() byte {
+	b := tm.inputBuf[tm.inputHead]
+	tm.inputHead = (tm.inputHead + 1) % len(tm.inputBuf)
+	tm.inputLen--
+	if b == '\n' {
+		tm.newlines--
+	}
+	return b
+}
+
+func (tm *TerminalMMIO) enqueueRawKeyLocked(b byte) {
+	if tm.rawKeyLen >= len(tm.rawKeyBuf) {
+		return
+	}
+	tm.rawKeyBuf[tm.rawKeyTail] = b
+	tm.rawKeyTail = (tm.rawKeyTail + 1) % len(tm.rawKeyBuf)
+	tm.rawKeyLen++
 }

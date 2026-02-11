@@ -141,6 +141,10 @@ print_crlf:
 ;   R27 = TERM_STATUS (cached)
 
 read_line:
+    la      r1, TERM_CTRL
+    move.l  r2, #1
+    store.l r2, (r1)               ; enter line-input mode
+
     move.q  r3, r8                 ; r3 = buffer base pointer
     move.q  r4, r9                 ; r4 = max length
     move.q  r5, r0                 ; r5 = length (0)
@@ -450,6 +454,10 @@ read_line:
     bra     .rl_poll
 
 .rl_done:
+    ; Exit line-input mode
+    la      r1, TERM_CTRL
+    store.l r0, (r1)
+
     ; Null-terminate the buffer
     add.q   r1, r3, r5             ; buffer[length]
     store.b r0, (r1)               ; write null terminator

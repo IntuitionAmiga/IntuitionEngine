@@ -32,7 +32,8 @@ func NewTerminalHost(mmio *TerminalMMIO) *TerminalHost {
 }
 
 // Start sets stdin to non-blocking mode and begins reading in a goroutine.
-// Each byte is fed to mmio.EnqueueByte(). Call Stop() to restore stdin.
+// Each byte is routed by mode to TERM_IN (line mode) or TERM_KEY_IN (char mode).
+// Call Stop() to restore stdin.
 func (h *TerminalHost) Start() {
 	h.fd = int(os.Stdin.Fd())
 
@@ -77,7 +78,7 @@ func (h *TerminalHost) Start() {
 				if b == 0x7F {
 					b = 0x08
 				}
-				h.mmio.EnqueueByte(b)
+				h.mmio.RouteHostKey(b)
 			}
 			if err == syscall.EAGAIN || err == syscall.EWOULDBLOCK {
 				time.Sleep(5 * time.Millisecond)

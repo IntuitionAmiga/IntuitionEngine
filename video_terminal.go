@@ -34,17 +34,20 @@ type VideoTerminal struct {
 	video       *VideoChip
 	term        *TerminalMMIO
 	mu          sync.Mutex
-	textBuf     []byte
+	screen      *ScreenBuffer
 	cols        int
 	rows        int
 	pixelWidth  int
 	pixelHeight int
-	cursorX     int
-	cursorY     int
 	cursorOn    bool
 	fgColor     uint32
 	bgColor     uint32
 	glyphs      [256][16]byte
+	escState    int
+	escParam    byte
+
+	inputEscState int
+	inputEscParam byte
 
 	done     chan struct{}
 	stopOnce sync.Once
@@ -64,7 +67,7 @@ func NewVideoTerminal(video *VideoChip, term *TerminalMMIO) *VideoTerminal {
 	vt := &VideoTerminal{
 		video:       video,
 		term:        term,
-		textBuf:     make([]byte, cols*rows),
+		screen:      NewScreenBuffer(cols, rows, 1000),
 		cols:        cols,
 		rows:        rows,
 		pixelWidth:  mode.width,
@@ -111,42 +114,33 @@ func (vt *VideoTerminal) processChar(ch byte) {
 		vt.renderCursorCellLocked(false)
 	}
 
+	if vt.handleOutputEscapeLocked(ch) {
+		vt.cursorOn = true
+		if vt.shouldShowCursorLocked() {
+			vt.renderCursorCellLocked(true)
+		}
+		return
+	}
+
+	redrawAll := false
 	switch ch {
-	case '\r':
-		vt.cursorX = 0
-	case '\n':
-		vt.newLineLocked()
 	case '\b':
-		if vt.cursorX > 0 {
-			vt.cursorX--
-			vt.setCellLocked(vt.cursorX, vt.cursorY, 0)
-			vt.renderCellLocked(vt.cursorX, vt.cursorY, ' ')
-		}
-	case '\t':
-		next := (vt.cursorX + tabWidth) &^ (tabWidth - 1)
-		if next >= vt.cols {
-			vt.cursorX = 0
-			vt.newLineLocked()
-		} else {
-			vt.cursorX = next
-		}
+		vt.screen.PutChar('\b')
+		cx, cy := vt.screen.CursorPos()
+		vt.screen.SetCell(cx, cy, 0)
+		redrawAll = true
 	case '\f':
+		vt.screen.Clear()
 		vt.clearScreenLocked()
+		redrawAll = false
 	default:
-		if ch < 0x20 {
-			break
+		if vt.screen.PutChar(ch) || ch >= 0x20 || ch == '\r' || ch == '\n' || ch == '\t' {
+			redrawAll = true
 		}
-		if vt.cursorX >= vt.cols {
-			vt.cursorX = 0
-			vt.newLineLocked()
-		}
-		vt.setCellLocked(vt.cursorX, vt.cursorY, ch)
-		vt.renderCellLocked(vt.cursorX, vt.cursorY, ch)
-		vt.cursorX++
-		if vt.cursorX >= vt.cols {
-			vt.cursorX = 0
-			vt.newLineLocked()
-		}
+	}
+
+	if redrawAll {
+		vt.renderViewportLocked()
 	}
 
 	vt.cursorOn = true
@@ -158,59 +152,13 @@ func (vt *VideoTerminal) processChar(ch byte) {
 func (vt *VideoTerminal) clearScreen() {
 	vt.mu.Lock()
 	defer vt.mu.Unlock()
+	vt.screen.Clear()
 	vt.clearScreenLocked()
 }
 
 func (vt *VideoTerminal) clearScreenLocked() {
 	vt.video.RenderToFrontBuffer(func(fb []byte, _ int) {
 		for i := 0; i < len(fb); i += 4 {
-			writeColorLE(fb, i, vt.bgColor)
-		}
-	})
-	for i := range vt.textBuf {
-		vt.textBuf[i] = 0
-	}
-	vt.cursorX = 0
-	vt.cursorY = 0
-	vt.video.MarkRectDirty(0, 0, vt.pixelWidth, vt.pixelHeight)
-}
-
-func (vt *VideoTerminal) newLineLocked() {
-	vt.cursorY++
-	if vt.cursorY >= vt.rows {
-		vt.scrollUpLocked()
-		vt.cursorY = vt.rows - 1
-	}
-}
-
-func (vt *VideoTerminal) scrollUpLocked() {
-	if vt.rows <= 0 {
-		return
-	}
-
-	if vt.rows > 1 {
-		rowBytes := vt.cols
-		copy(vt.textBuf[0:], vt.textBuf[rowBytes:])
-	}
-	lastRowStart := (vt.rows - 1) * vt.cols
-	for i := lastRowStart; i < lastRowStart+vt.cols; i++ {
-		vt.textBuf[i] = 0
-	}
-
-	scrollPx := terminalGlyphHeight
-	vt.video.RenderToFrontBuffer(func(fb []byte, stride int) {
-		if scrollPx >= vt.pixelHeight {
-			for i := 0; i < len(fb); i += 4 {
-				writeColorLE(fb, i, vt.bgColor)
-			}
-			return
-		}
-
-		moveBytes := (vt.pixelHeight - scrollPx) * stride
-		copy(fb[0:moveBytes], fb[scrollPx*stride:scrollPx*stride+moveBytes])
-
-		start := (vt.pixelHeight - scrollPx) * stride
-		for i := start; i < len(fb); i += 4 {
 			writeColorLE(fb, i, vt.bgColor)
 		}
 	})
@@ -242,20 +190,21 @@ func (vt *VideoTerminal) renderCellLocked(col, row int, ch byte) {
 }
 
 func (vt *VideoTerminal) renderCursorCellLocked(visible bool) {
-	if vt.cursorX < 0 || vt.cursorX >= vt.cols || vt.cursorY < 0 || vt.cursorY >= vt.rows {
+	cursorX, cursorY := vt.screen.CursorViewportPos()
+	if cursorX < 0 || cursorX >= vt.cols || cursorY < 0 || cursorY >= vt.rows {
 		return
 	}
 	if !visible {
-		ch := vt.getCellLocked(vt.cursorX, vt.cursorY)
+		ch := vt.screen.VisibleCell(cursorX, cursorY)
 		if ch == 0 {
 			ch = ' '
 		}
-		vt.renderCellLocked(vt.cursorX, vt.cursorY, ch)
+		vt.renderCellLocked(cursorX, cursorY, ch)
 		return
 	}
 
-	baseX := vt.cursorX * terminalGlyphWidth
-	baseY := vt.cursorY * terminalGlyphHeight
+	baseX := cursorX * terminalGlyphWidth
+	baseY := cursorY * terminalGlyphHeight
 	vt.video.RenderToFrontBuffer(func(fb []byte, stride int) {
 		for gy := 0; gy < terminalGlyphHeight; gy++ {
 			dst := (baseY+gy)*stride + baseX*4
@@ -291,18 +240,197 @@ func (vt *VideoTerminal) shouldShowCursorLocked() bool {
 	return time.Since(last) <= cursorPollWindow
 }
 
-func (vt *VideoTerminal) setCellLocked(col, row int, ch byte) {
-	if col < 0 || col >= vt.cols || row < 0 || row >= vt.rows {
-		return
+func (vt *VideoTerminal) renderViewportLocked() {
+	for row := 0; row < vt.rows; row++ {
+		for col := 0; col < vt.cols; col++ {
+			ch := vt.screen.VisibleCell(col, row)
+			if ch == 0 {
+				ch = ' '
+			}
+			vt.renderCellLocked(col, row, ch)
+		}
 	}
-	vt.textBuf[row*vt.cols+col] = ch
+}
+
+func (vt *VideoTerminal) setCellLocked(col, row int, ch byte) {
+	vt.screen.SetCell(col, vt.screen.ViewportTop()+row, ch)
 }
 
 func (vt *VideoTerminal) getCellLocked(col, row int) byte {
-	if col < 0 || col >= vt.cols || row < 0 || row >= vt.rows {
-		return 0
+	return vt.screen.GetCell(col, vt.screen.ViewportTop()+row)
+}
+
+func (vt *VideoTerminal) scrollUpLocked() {
+	vt.screen.ScrollUp()
+	vt.renderViewportLocked()
+}
+
+func (vt *VideoTerminal) HandleKeyInput(b byte) {
+	vt.mu.Lock()
+	defer vt.mu.Unlock()
+
+	if vt.cursorOn {
+		vt.renderCursorCellLocked(false)
 	}
-	return vt.textBuf[row*vt.cols+col]
+
+	lineMode := vt.term.LineInputMode()
+	if !lineMode {
+		vt.term.EnqueueRawKey(b)
+	}
+
+	redrawAll := vt.handleInputByteLocked(b, lineMode)
+	if redrawAll {
+		vt.renderViewportLocked()
+	}
+
+	vt.cursorOn = true
+	if vt.shouldShowCursorLocked() {
+		vt.renderCursorCellLocked(true)
+	}
+}
+
+func (vt *VideoTerminal) handleOutputEscapeLocked(ch byte) bool {
+	beforeTop := vt.screen.ViewportTop()
+	switch vt.escState {
+	case 0:
+		if ch == 0x1B {
+			vt.escState = 1
+			return true
+		}
+		return false
+	case 1:
+		if ch == '[' {
+			vt.escState = 2
+			return true
+		}
+		vt.escState = 0
+		return false
+	case 2:
+		vt.escState = 0
+		switch ch {
+		case 'A':
+			vt.screen.MoveCursor(0, -1)
+		case 'B':
+			vt.screen.MoveCursor(0, 1)
+		case 'C':
+			vt.screen.MoveCursor(1, 0)
+		case 'D':
+			vt.screen.MoveCursor(-1, 0)
+		case 'H':
+			vt.screen.Home()
+		case 'F':
+			vt.screen.End()
+		default:
+			if ch >= '0' && ch <= '9' {
+				vt.escParam = ch
+				vt.escState = 3
+			}
+		}
+		if vt.screen.ViewportTop() != beforeTop {
+			vt.renderViewportLocked()
+		}
+		return true
+	case 3:
+		vt.escState = 0
+		if ch == '~' && vt.escParam == '3' {
+			vt.screen.DeleteChar()
+			vt.renderViewportLocked()
+		}
+		return true
+	default:
+		vt.escState = 0
+		return true
+	}
+}
+
+func (vt *VideoTerminal) handleInputByteLocked(b byte, lineMode bool) bool {
+	if vt.handleInputEscapeLocked(b) {
+		return true
+	}
+
+	if b == 0x1B {
+		vt.inputEscState = 1
+		return false
+	}
+
+	switch b {
+	case '\r', '\n':
+		if lineMode {
+			_, absRow := vt.screen.CursorPos()
+			line := vt.screen.ReadLine(absRow)
+			for i := 0; i < len(line); i++ {
+				vt.term.EnqueueByte(line[i])
+			}
+			vt.term.EnqueueByte('\n')
+		}
+		vt.screen.PutChar('\r')
+		vt.screen.PutChar('\n')
+		return true
+	case '\b':
+		vt.screen.BackspaceChar()
+		return true
+	case '\t':
+		vt.screen.PutChar('\t')
+		return true
+	default:
+		if b < 0x20 {
+			return false
+		}
+		vt.screen.PutChar(b)
+		return true
+	}
+}
+
+func (vt *VideoTerminal) handleInputEscapeLocked(b byte) bool {
+	switch vt.inputEscState {
+	case 0:
+		return false
+	case 1:
+		if b == '[' {
+			vt.inputEscState = 2
+			return true
+		}
+		vt.inputEscState = 0
+		return false
+	case 2:
+		vt.inputEscState = 0
+		switch b {
+		case 'A':
+			vt.screen.MoveCursor(0, -1)
+			return true
+		case 'B':
+			vt.screen.MoveCursor(0, 1)
+			return true
+		case 'C':
+			vt.screen.MoveCursor(1, 0)
+			return true
+		case 'D':
+			vt.screen.MoveCursor(-1, 0)
+			return true
+		case 'H':
+			vt.screen.Home()
+			return true
+		case 'F':
+			vt.screen.End()
+			return true
+		default:
+			if b >= '0' && b <= '9' {
+				vt.inputEscParam = b
+				vt.inputEscState = 3
+			}
+			return true
+		}
+	case 3:
+		vt.inputEscState = 0
+		if b == '~' && vt.inputEscParam == '3' {
+			vt.screen.DeleteChar()
+			return true
+		}
+		return true
+	default:
+		vt.inputEscState = 0
+		return true
+	}
 }
 
 func writeColorLE(buf []byte, offset int, color uint32) {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -312,5 +313,197 @@ func TestTerminalMMIO_StatusReadTimestamp(t *testing.T) {
 	}
 	if got.Before(before.Add(-50*time.Millisecond)) || got.After(time.Now().Add(50*time.Millisecond)) {
 		t.Fatalf("expected recent status read timestamp, got %v", got)
+	}
+}
+
+func TestTerminalMMIO_ForceEchoOff(t *testing.T) {
+	tm := NewTerminalMMIO()
+	tm.HandleWrite(TERM_ECHO, 1)
+	tm.SetForceEchoOff(true)
+	if got := tm.HandleRead(TERM_ECHO); got != 0 {
+		t.Fatalf("expected forced echo off readback 0, got %d", got)
+	}
+}
+
+func TestTerminalMMIO_ForceEchoOff_DefaultOff(t *testing.T) {
+	tm := NewTerminalMMIO()
+	tm.HandleWrite(TERM_ECHO, 1)
+	if got := tm.HandleRead(TERM_ECHO); got != 1 {
+		t.Fatalf("expected default echo read 1, got %d", got)
+	}
+}
+
+func TestTerminalMMIO_ConsoleEchoPreserved(t *testing.T) {
+	tm := NewTerminalMMIO()
+	tm.HandleWrite(TERM_ECHO, 0)
+	if got := tm.HandleRead(TERM_ECHO); got != 0 {
+		t.Fatalf("expected echo 0, got %d", got)
+	}
+	tm.HandleWrite(TERM_ECHO, 1)
+	if got := tm.HandleRead(TERM_ECHO); got != 1 {
+		t.Fatalf("expected echo 1, got %d", got)
+	}
+}
+
+func TestTerminalMMIO_RawKey_Enqueue(t *testing.T) {
+	tm := NewTerminalMMIO()
+	tm.EnqueueRawKey('A')
+	if got := tm.HandleRead(TERM_KEY_STATUS); got != 1 {
+		t.Fatalf("expected key status 1, got %d", got)
+	}
+	if got := tm.HandleRead(TERM_KEY_IN); got != 'A' {
+		t.Fatalf("expected key 'A', got 0x%X", got)
+	}
+	if got := tm.HandleRead(TERM_KEY_STATUS); got != 0 {
+		t.Fatalf("expected key status cleared, got %d", got)
+	}
+}
+
+func TestTerminalMMIO_RawKey_Sequence(t *testing.T) {
+	tm := NewTerminalMMIO()
+	for _, b := range []byte("ABCDE") {
+		tm.EnqueueRawKey(b)
+	}
+	var got []byte
+	for tm.HandleRead(TERM_KEY_STATUS)&1 != 0 {
+		got = append(got, byte(tm.HandleRead(TERM_KEY_IN)))
+	}
+	if string(got) != "ABCDE" {
+		t.Fatalf("expected ABCDE, got %q", string(got))
+	}
+}
+
+func TestTerminalMMIO_RawKey_Empty(t *testing.T) {
+	tm := NewTerminalMMIO()
+	if got := tm.HandleRead(TERM_KEY_STATUS); got != 0 {
+		t.Fatalf("expected empty status 0, got %d", got)
+	}
+	if got := tm.HandleRead(TERM_KEY_IN); got != 0 {
+		t.Fatalf("expected empty key read 0, got %d", got)
+	}
+}
+
+func TestTerminalMMIO_RawKey_BufferFull(t *testing.T) {
+	tm := NewTerminalMMIO()
+	for i := 0; i < 300; i++ {
+		tm.EnqueueRawKey(byte(i))
+	}
+	count := 0
+	for tm.HandleRead(TERM_KEY_STATUS)&1 != 0 {
+		_ = tm.HandleRead(TERM_KEY_IN)
+		count++
+	}
+	if count != 256 {
+		t.Fatalf("expected capped 256 keys, got %d", count)
+	}
+}
+
+func TestTerminalMMIO_RawKey_IndependentOfTermIn(t *testing.T) {
+	tm := NewTerminalMMIO()
+	tm.EnqueueRawKey('K')
+	tm.EnqueueByte('L')
+	if got := tm.HandleRead(TERM_KEY_IN); got != 'K' {
+		t.Fatalf("expected raw key K, got 0x%X", got)
+	}
+	if got := tm.HandleRead(TERM_IN); got != 'L' {
+		t.Fatalf("expected term input L, got 0x%X", got)
+	}
+}
+
+func TestTerminalMMIO_RawKey_NoLineStatus(t *testing.T) {
+	tm := NewTerminalMMIO()
+	tm.EnqueueRawKey('\n')
+	if got := tm.HandleRead(TERM_LINE_STATUS); got != 0 {
+		t.Fatalf("expected line status unaffected by raw key, got %d", got)
+	}
+}
+
+func TestTerminalMMIO_LineMode_WriteRead(t *testing.T) {
+	tm := NewTerminalMMIO()
+	if tm.LineInputMode() {
+		t.Fatal("expected default line mode false")
+	}
+	tm.HandleWrite(TERM_CTRL, 1)
+	if !tm.LineInputMode() {
+		t.Fatal("expected line mode true")
+	}
+	if got := tm.HandleRead(TERM_CTRL); got != 1 {
+		t.Fatalf("expected TERM_CTRL 1, got %d", got)
+	}
+	tm.HandleWrite(TERM_CTRL, 0)
+	if tm.LineInputMode() {
+		t.Fatal("expected line mode false after clear")
+	}
+}
+
+func TestTerminalMMIO_RouteHostKey(t *testing.T) {
+	tm := NewTerminalMMIO()
+	tm.HandleWrite(TERM_CTRL, 1)
+	tm.RouteHostKey('A')
+	if got := tm.HandleRead(TERM_IN); got != 'A' {
+		t.Fatalf("expected line-mode route to TERM_IN, got 0x%X", got)
+	}
+	if got := tm.HandleRead(TERM_KEY_STATUS); got != 0 {
+		t.Fatalf("expected raw empty in line mode, got %d", got)
+	}
+
+	tm.HandleWrite(TERM_CTRL, 0)
+	tm.RouteHostKey('B')
+	if got := tm.HandleRead(TERM_KEY_IN); got != 'B' {
+		t.Fatalf("expected char-mode route to TERM_KEY_IN, got 0x%X", got)
+	}
+	if got := tm.HandleRead(TERM_STATUS) & 1; got != 0 {
+		t.Fatalf("expected TERM_IN empty in char mode, got %d", got)
+	}
+}
+
+func TestTerminalMMIO_RouteHostKey_Atomic(t *testing.T) {
+	tm := NewTerminalMMIO()
+	for i := 0; i < 500; i++ {
+		// Drain any leftover bytes from either channel.
+		for tm.HandleRead(TERM_STATUS)&1 != 0 {
+			_ = tm.HandleRead(TERM_IN)
+		}
+		for tm.HandleRead(TERM_KEY_STATUS)&1 != 0 {
+			_ = tm.HandleRead(TERM_KEY_IN)
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			tm.HandleWrite(TERM_CTRL, uint32(i&1))
+		}()
+		go func() {
+			defer wg.Done()
+			tm.RouteHostKey('X')
+		}()
+		wg.Wait()
+
+		total := 0
+		if tm.HandleRead(TERM_STATUS)&1 != 0 {
+			if got := tm.HandleRead(TERM_IN); got != 'X' {
+				t.Fatalf("expected TERM_IN X, got 0x%X", got)
+			}
+			total++
+		}
+		if tm.HandleRead(TERM_KEY_STATUS)&1 != 0 {
+			if got := tm.HandleRead(TERM_KEY_IN); got != 'X' {
+				t.Fatalf("expected TERM_KEY_IN X, got 0x%X", got)
+			}
+			total++
+		}
+		if total != 1 {
+			t.Fatalf("expected byte routed to exactly one channel, got %d", total)
+		}
+	}
+}
+
+func TestTerminalMMIO_RegisterConstants(t *testing.T) {
+	if TERM_KEY_IN != 0xF0728 {
+		t.Fatalf("TERM_KEY_IN mismatch: 0x%X", TERM_KEY_IN)
+	}
+	if TERM_KEY_STATUS != 0xF072C {
+		t.Fatalf("TERM_KEY_STATUS mismatch: 0x%X", TERM_KEY_STATUS)
 	}
 }
