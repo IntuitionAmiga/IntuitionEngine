@@ -47,6 +47,7 @@ package main
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 )
@@ -59,13 +60,15 @@ const (
 
 // VideoCompositor blends multiple video sources into a single output
 type VideoCompositor struct {
-	mu          sync.Mutex
-	output      VideoOutput
-	sources     []VideoSource
-	finalFrame  []byte
-	done        chan struct{}
-	frameWidth  int
-	frameHeight int
+	mu                sync.Mutex
+	output            VideoOutput
+	sources           []VideoSource
+	finalFrame        []byte
+	done              chan struct{}
+	frameWidth        int
+	frameHeight       int
+	pendingResolution atomic.Uint64
+	lockedResolution  bool
 }
 
 // NewVideoCompositor creates a new video compositor
@@ -90,9 +93,43 @@ func (c *VideoCompositor) RegisterSource(source VideoSource) {
 func (c *VideoCompositor) SetDimensions(width, height int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.applyResolution(width, height)
+}
+
+func (c *VideoCompositor) NotifyResolutionChange(width, height int) {
+	if width <= 0 || height <= 0 {
+		return
+	}
+	packed := (uint64(uint32(width)) << 32) | uint64(uint32(height))
+	c.pendingResolution.Store(packed)
+}
+
+func (c *VideoCompositor) LockResolution(width, height int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lockedResolution = true
+	c.applyResolution(width, height)
+}
+
+func (c *VideoCompositor) applyResolution(width, height int) {
+	if width <= 0 || height <= 0 {
+		return
+	}
+	if width == c.frameWidth && height == c.frameHeight {
+		return
+	}
 	c.frameWidth = width
 	c.frameHeight = height
 	c.finalFrame = make([]byte, width*height*BYTES_PER_PIXEL)
+
+	if c.output != nil {
+		config := c.output.GetDisplayConfig()
+		config.Width = width
+		config.Height = height
+		if err := c.output.SetDisplayConfig(config); err != nil {
+			fmt.Printf("Compositor: Error applying display config: %v\n", err)
+		}
+	}
 }
 
 // Start begins the compositor refresh loop
@@ -134,6 +171,15 @@ func (c *VideoCompositor) refreshLoop() {
 func (c *VideoCompositor) composite() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if !c.lockedResolution {
+		packed := c.pendingResolution.Swap(0)
+		if packed != 0 {
+			width := int(uint32(packed >> 32))
+			height := int(uint32(packed))
+			c.applyResolution(width, height)
+		}
+	}
 
 	// Clear final frame (Go compiler optimizes this to memset)
 	for i := range c.finalFrame {

@@ -55,6 +55,17 @@ type DisplayConfig struct {
 	RefreshRate int // Target refresh rate in Hz
 	PixelFormat PixelFormat
 	VSync       bool // Whether to sync frame updates to display refresh
+	Fullscreen  bool
+}
+
+func ClampScale(s int) int {
+	if s < 1 {
+		return 1
+	}
+	if s > 4 {
+		return 4
+	}
+	return s
 }
 
 // VideoOutput defines the minimal interface that backends must implement

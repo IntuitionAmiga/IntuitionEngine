@@ -216,6 +216,11 @@ The Intuition Engine is a virtual machine that emulates a complete retro-style c
 
 # Run with performance measurement (MIPS reporting)
 ./bin/IntuitionEngine -perf -m68k program.ie68
+
+# Display options
+./bin/IntuitionEngine -scale 2 -ie32 program.iex      # 2x window scaling
+./bin/IntuitionEngine -fullscreen -m68k program.ie68   # Start in fullscreen (F11 to toggle)
+./bin/IntuitionEngine -width 800 -height 600 -ie64 program.ie64  # Override output resolution
 ```
 
 # 2. Architecture

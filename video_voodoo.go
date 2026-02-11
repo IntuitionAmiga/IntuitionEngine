@@ -74,10 +74,11 @@ type VoodooEngine struct {
 	backend VoodooBackend
 
 	// Display configuration — lock-free for compositor reads
-	width   atomic.Int32
-	height  atomic.Int32
-	layer   int
-	enabled atomic.Bool
+	width              atomic.Int32
+	height             atomic.Int32
+	layer              int
+	enabled            atomic.Bool
+	onResolutionChange func(w, h int)
 
 	// Shadow registers (CPU-written values)
 	regs [256]uint32
@@ -429,7 +430,7 @@ func (v *VoodooEngine) HandleWrite(addr uint32, value uint32) {
 			v.backend.SetChromaKey(value)
 		}
 
-	// Video dimensions
+		// Video dimensions
 	case VOODOO_VIDEO_DIM:
 		newWidth := int((value >> 16) & 0xFFFF)
 		newHeight := int(value & 0xFFFF)
@@ -446,6 +447,9 @@ func (v *VoodooEngine) HandleWrite(addr uint32, value uint32) {
 			v.readingIdx.Store(2) // Consumer takes buffer 2
 			if v.backend != nil {
 				v.backend.Init(newWidth, newHeight)
+			}
+			if v.onResolutionChange != nil {
+				v.onResolutionChange(newWidth, newHeight)
 			}
 		}
 
@@ -655,6 +659,12 @@ func (v *VoodooEngine) SignalVSync() {
 // SetEnabled enables or disables the Voodoo (lock-free)
 func (v *VoodooEngine) SetEnabled(enabled bool) {
 	v.enabled.Store(enabled)
+}
+
+func (v *VoodooEngine) SetResolutionChangeCallback(cb func(w, h int)) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.onResolutionChange = cb
 }
 
 // SetBackend sets the rendering backend (Vulkan or software)

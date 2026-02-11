@@ -43,6 +43,17 @@ func (f *optionalStringFlag) Set(value string) error {
 	return nil
 }
 
+func validateResolutionOverride(w, h int) (int, int, bool) {
+	if w > 0 && h > 0 {
+		return w, h, true
+	}
+	if w == 0 && h == 0 {
+		return 0, 0, false
+	}
+	fmt.Println("Warning: -width and -height must be set together; ignoring partial resolution override")
+	return 0, 0, false
+}
+
 func boilerPlate() {
 	fmt.Println("\n\033[38;2;255;20;147m ██▓ ███▄    █ ▄▄▄█████▓ █    ██  ██▓▄▄▄█████▓ ██▓ ▒█████   ███▄    █    ▓█████  ███▄    █   ▄████  ██▓ ███▄    █ ▓█████\033[0m\n\033[38;2;255;50;147m▓██▒ ██ ▀█   █ ▓  ██▒ ▓▒ ██  ▓██▒▓██▒▓  ██▒ ▓▒▓██▒▒██▒  ██▒ ██ ▀█   █    ▓█   ▀  ██ ▀█   █  ██▒ ▀█▒▓██▒ ██ ▀█   █ ▓█   ▀\033[0m\n\033[38;2;255;80;147m▒██▒▓██  ▀█ ██▒▒ ▓██░ ▒░▓██  ▒██░▒██▒▒ ▓██░ ▒░▒██▒▒██░  ██▒▓██  ▀█ ██▒   ▒███   ▓██  ▀█ ██▒▒██░▄▄▄░▒██▒▓██  ▀█ ██▒▒███\033[0m\n\033[38;2;255;110;147m░██░▓██▒  ▐▌██▒░ ▓██▓ ░ ▓▓█  ░██░░██░░ ▓██▓ ░ ░██░▒██   ██░▓██▒  ▐▌██▒   ▒▓█  ▄ ▓██▒  ▐▌██▒░▓█  ██▓░██░▓██▒  ▐▌██▒▒▓█  ▄\033[0m\n\033[38;2;255;140;147m░██░▒██░   ▓██░  ▒██▒ ░ ▒▒█████▓ ░██░  ▒██▒ ░ ░██░░ ████▓▒░▒██░   ▓██░   ░▒████▒▒██░   ▓██░░▒▓███▀▒░██░▒██░   ▓██░░▒████▒\033[0m\n\033[38;2;255;170;147m░▓  ░ ▒░   ▒ ▒   ▒ ░░   ░▒▓▒ ▒ ▒ ░▓    ▒ ░░   ░▓  ░ ▒░▒░▒░ ░ ▒░   ▒ ▒    ░░ ▒░ ░░ ▒░   ▒ ▒  ░▒   ▒ ░▓  ░ ▒░   ▒ ▒ ░░ ▒░ ░\033[0m\n\033[38;2;255;200;147m ▒ ░░ ░░   ░ ▒░    ░    ░░▒░ ░ ░  ▒ ░    ░     ▒ ░  ░ ▒ ▒░ ░ ░░   ░ ▒░    ░ ░  ░░ ░░   ░ ▒░  ░   ░  ▒ ░░ ░░   ░ ▒░ ░ ░  ░\033[0m\n\033[38;2;255;230;147m ▒ ░   ░   ░ ░   ░       ░░░ ░ ░  ▒ ░  ░       ▒ ░░ ░ ░ ▒     ░   ░ ░       ░      ░   ░ ░ ░ ░   ░  ▒ ░   ░   ░ ░    ░\033[0m\n\033[38;2;255;255;147m ░           ░             ░      ░            ░      ░ ░           ░       ░  ░         ░       ░  ░           ░    ░  ░\033[0m")
 	fmt.Println("\nA modern 32-bit reimagining of the Commodore, Atari and Sinclair 8-bit home computers.")
@@ -154,6 +165,10 @@ func main() {
 		sidNTSC    bool
 		loadAddr   optionalStringFlag
 		entryAddr  optionalStringFlag
+		resWidth   int
+		resHeight  int
+		scale      int
+		fullscreen bool
 	)
 
 	flagSet := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
@@ -180,6 +195,10 @@ func main() {
 	flagSet.BoolVar(&modeAHX, "ahx", false, "Play AHX file (Amiga AHX module)")
 	flagSet.BoolVar(&ahxPlus, "ahx+", false, "Enable AHX+ enhanced mode")
 	flagSet.BoolVar(&perfMode, "perf", false, "Enable performance measurement (MIPS reporting)")
+	flagSet.IntVar(&resWidth, "width", 0, "Override output width (0 = auto)")
+	flagSet.IntVar(&resHeight, "height", 0, "Override output height (0 = auto)")
+	flagSet.IntVar(&scale, "scale", 1, "Integer window scale factor (1-4)")
+	flagSet.BoolVar(&fullscreen, "fullscreen", false, "Start in fullscreen mode")
 	loadAddr.value = "0x0600"
 	flagSet.Var(&loadAddr, "load-addr", "6502/Z80 load address (hex or decimal, defaults: 6502=0x0600, Z80=0x0000)")
 	flagSet.Var(&entryAddr, "entry", "6502/Z80 entry address (hex or decimal, defaults to load address)")
@@ -199,6 +218,7 @@ func main() {
 	}
 
 	filename := flagSet.Arg(0)
+	validWidth, validHeight, useResolutionOverride := validateResolutionOverride(resWidth, resHeight)
 
 	if sidFile != "" {
 		modeSID = true
@@ -701,6 +721,25 @@ func main() {
 	compositor.RegisterSource(ulaEngine)      // Layer 15 - ULA renders on top of TED
 	if voodooEngine != nil {
 		compositor.RegisterSource(voodooEngine) // Layer 20 - Voodoo 3D on top
+	}
+	videoChip.SetResolutionChangeCallback(func(w, h int) {
+		compositor.NotifyResolutionChange(w, h)
+	})
+	if voodooEngine != nil {
+		voodooEngine.SetResolutionChangeCallback(func(w, h int) {
+			compositor.NotifyResolutionChange(w, h)
+		})
+	}
+	if useResolutionOverride {
+		compositor.LockResolution(validWidth, validHeight)
+	}
+	output := videoChip.GetOutput()
+	outputConfig := output.GetDisplayConfig()
+	outputConfig.Scale = ClampScale(scale)
+	outputConfig.Fullscreen = fullscreen
+	if err := output.SetDisplayConfig(outputConfig); err != nil {
+		fmt.Printf("Failed to configure video output: %v\n", err)
+		os.Exit(1)
 	}
 
 	// Initialize File I/O

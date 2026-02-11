@@ -375,8 +375,9 @@ type VideoChip struct {
 	mu sync.Mutex // 8 bytes - Keep mutex at cache line boundary
 
 	// Display interface (Cache Line 1-2)
-	output VideoOutput // 8 bytes - Interface pointer
-	layer  int         // Z-order for compositor
+	output             VideoOutput    // 8 bytes - Interface pointer
+	onResolutionChange func(w, h int) // Optional resolution callback for compositor integration
+	layer              int            // Z-order for compositor
 
 	// Communication channels (Cache Line 2)
 	vsyncChan chan struct{} // 8 bytes
@@ -584,6 +585,12 @@ func (chip *VideoChip) SetBigEndianMode(enabled bool) {
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 	chip.bigEndianMode = enabled
+}
+
+func (chip *VideoChip) SetResolutionChangeCallback(cb func(w, h int)) {
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
+	chip.onResolutionChange = cb
 }
 
 // MarkHasContent signals that the framebuffer contains displayable content.
@@ -1580,18 +1587,22 @@ func (chip *VideoChip) handleWriteLocked(addr uint32, value uint32) {
 		chip.enabled.Store(value != CTRL_DISABLE_FLAG)
 		if !wasEnabled && chip.enabled.Load() {
 			mode := VideoModes[chip.currentMode]
-			config := DisplayConfig{
-				Width:       mode.width,
-				Height:      mode.height,
-				Scale:       DEFAULT_DISPLAY_SCALE,
-				PixelFormat: PixelFormatRGBA,
-				VSync:       VSYNC_ON,
-			}
-			if err := chip.output.SetDisplayConfig(config); err != nil {
-				return
-			}
-			if err := chip.output.Start(); err != nil {
-				return
+			if chip.onResolutionChange != nil {
+				chip.onResolutionChange(mode.width, mode.height)
+			} else {
+				config := DisplayConfig{
+					Width:       mode.width,
+					Height:      mode.height,
+					Scale:       DEFAULT_DISPLAY_SCALE,
+					PixelFormat: PixelFormatRGBA,
+					VSync:       VSYNC_ON,
+				}
+				if err := chip.output.SetDisplayConfig(config); err != nil {
+					return
+				}
+				if err := chip.output.Start(); err != nil {
+					return
+				}
 			}
 		}
 	case VIDEO_MODE:
@@ -1601,17 +1612,21 @@ func (chip *VideoChip) handleWriteLocked(addr uint32, value uint32) {
 				chip.frontBuffer = make([]byte, mode.totalSize)
 				chip.backBuffer = make([]byte, mode.totalSize)
 			}
-			config := DisplayConfig{
-				Width:       mode.width,
-				Height:      mode.height,
-				Scale:       DEFAULT_DISPLAY_SCALE,
-				PixelFormat: PixelFormatRGBA,
-				VSync:       VSYNC_ON,
-			}
-			if err := chip.output.SetDisplayConfig(config); err != nil {
-				return
-			}
 			chip.initialiseDirtyGrid(mode)
+			if chip.onResolutionChange != nil {
+				chip.onResolutionChange(mode.width, mode.height)
+			} else {
+				config := DisplayConfig{
+					Width:       mode.width,
+					Height:      mode.height,
+					Scale:       DEFAULT_DISPLAY_SCALE,
+					PixelFormat: PixelFormatRGBA,
+					VSync:       VSYNC_ON,
+				}
+				if err := chip.output.SetDisplayConfig(config); err != nil {
+					return
+				}
+			}
 		}
 	case COPPER_CTRL:
 		prevEnabled := chip.copperEnabled

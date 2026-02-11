@@ -23,6 +23,7 @@ package main
 import (
 	"fmt"
 	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/hajimehoshi/ebiten/v2/inpututil"
 	"sync"
 	"time"
 )
@@ -33,6 +34,10 @@ type EbitenOutput struct {
 	width       int
 	height      int
 	format      PixelFormat
+	fullscreen  bool
+	scale       int
+	windowedW   int
+	windowedH   int
 	frameBuffer []byte
 	bufferMutex sync.RWMutex
 	frameCount  uint64
@@ -45,6 +50,9 @@ func NewEbitenOutput() (VideoOutput, error) {
 		width:       640,
 		height:      480,
 		format:      PixelFormatRGBA,
+		scale:       1,
+		windowedW:   640,
+		windowedH:   480,
 		frameBuffer: make([]byte, 640*480*4),
 		refreshRate: 60,
 		vsyncChan:   make(chan struct{}, 1),
@@ -56,11 +64,14 @@ func (eo *EbitenOutput) Start() error {
 		return nil
 	}
 	eo.running = true
-	ebiten.SetWindowSize(eo.width, eo.height)
+	ebiten.SetWindowSize(eo.windowedW, eo.windowedH)
 	ebiten.SetWindowTitle("Intuition Engine (c) 2024 - 2026 Zayn Otley")
-	ebiten.SetWindowResizable(false)
+	ebiten.SetWindowResizable(true)
 	ebiten.SetRunnableOnUnfocused(true)
 	ebiten.SetVsyncEnabled(true)
+	if eo.fullscreen {
+		ebiten.SetFullscreen(true)
+	}
 
 	go func() {
 		if err := ebiten.RunGame(eo); err != nil {
@@ -105,16 +116,37 @@ func (eo *EbitenOutput) SetDisplayConfig(config DisplayConfig) error {
 	eo.bufferMutex.Lock()
 	defer eo.bufferMutex.Unlock()
 
-	eo.width = config.Width
-	eo.height = config.Height
+	width := config.Width
+	height := config.Height
+	if width <= 0 {
+		width = eo.width
+	}
+	if height <= 0 {
+		height = eo.height
+	}
+	if width <= 0 {
+		width = 640
+	}
+	if height <= 0 {
+		height = 480
+	}
+	eo.width = width
+	eo.height = height
 	eo.format = config.PixelFormat
-	newSize := config.Width * config.Height * 4
+	eo.scale = ClampScale(config.Scale)
+	newSize := eo.width * eo.height * 4
 
 	if len(eo.frameBuffer) != newSize {
 		eo.frameBuffer = make([]byte, newSize)
 	}
 
-	ebiten.SetWindowSize(config.Width*config.Scale, config.Height*config.Scale)
+	eo.windowedW = eo.width * eo.scale
+	eo.windowedH = eo.height * eo.scale
+	eo.fullscreen = config.Fullscreen
+	ebiten.SetFullscreen(eo.fullscreen)
+	if !eo.fullscreen {
+		ebiten.SetWindowSize(eo.windowedW, eo.windowedH)
+	}
 	if eo.window != nil {
 		eo.window.Dispose()
 		eo.window = nil
@@ -126,9 +158,11 @@ func (eo *EbitenOutput) GetDisplayConfig() DisplayConfig {
 	return DisplayConfig{
 		Width:       eo.width,
 		Height:      eo.height,
+		Scale:       eo.scale,
 		PixelFormat: eo.format,
 		RefreshRate: eo.refreshRate,
 		VSync:       true,
+		Fullscreen:  eo.fullscreen,
 	}
 }
 
@@ -205,6 +239,15 @@ func (eo *EbitenOutput) Update() error {
 	// Normal update path when window is open
 	if !eo.running {
 		return ebiten.Termination
+	}
+	if inpututil.IsKeyJustPressed(ebiten.KeyF11) {
+		eo.bufferMutex.Lock()
+		eo.fullscreen = !eo.fullscreen
+		ebiten.SetFullscreen(eo.fullscreen)
+		if !eo.fullscreen {
+			ebiten.SetWindowSize(eo.windowedW, eo.windowedH)
+		}
+		eo.bufferMutex.Unlock()
 	}
 	return nil
 }
