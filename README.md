@@ -155,7 +155,7 @@
 
 # 1. System Overview
 
-The Intuition Engine is a virtual machine that emulates a complete retro-style computer system. It provides a platform for learning assembly language, developing demoscene-style effects, and playing classic music formats from the 8-bit and 16-bit era.
+The Intuition Engine is a virtual machine that emulates a complete retro-style computer system. It is a modern 64-bit RISC reimagining of the Commodore, Atari, Sinclair and IBM 8/16/32-bit home computers, with IE64 as the default core and five additional CPU cores.
 
 ## CPU Options
 
@@ -168,6 +168,8 @@ The Intuition Engine is a virtual machine that emulates a complete retro-style c
 | **x86** | 32-bit | EAX-EDX, ESI, EDI, EBP, ESP | 8086 instructions + 32-bit registers, flat memory model |
 | **IE64** | 64-bit RISC | 32 general-purpose (R0=zero, R31=SP) | Native FP32 FPU, compare-and-branch, no flags register |
 
+Default core: **IE64**. Additional cores: **IE32, M68K, x86, Z80, 6502**.
+
 ## Audio Capabilities
 
 **Custom Synthesizer:**
@@ -178,9 +180,10 @@ The Intuition Engine is a virtual machine that emulates a complete retro-style c
 - 44.1kHz, 32-bit floating-point processing
 
 **Classic Sound Chips (register-mapped to custom synth):**
-- **PSG** (AY-3-8910/YM2149) - Supports .ym, .ay, .vgm, .sndh playback
+- **AY/YM/PSG** (AY-3-8910/YM2149) - Supports .ym, .ay, .vgm, .sndh playback
 - **POKEY** (Atari) - Supports .sap playback
 - **SID** (6581/8580) - Supports .sid playback
+- **Amiga AHX** module playback
 
 ## Video System
 
@@ -189,10 +192,14 @@ The Intuition Engine is a virtual machine that emulates a complete retro-style c
 - Copper coprocessor for raster effects
 - DMA blitter for fast copy/fill/line operations
 - Dirty rectangle tracking for efficient updates
+- Engines/chips: **IEVideoChip**, **VGA**, **ULA**, **TED video**, **ANTIC/GTIA**, **3DFX Voodoo**
 
 ## Quick Start
 
 ```bash
+# Default: start EhBASIC on IE64
+./bin/IntuitionEngine
+
 # Run IE32 program
 ./bin/IntuitionEngine -ie32 program.iex
 

@@ -56,7 +56,10 @@ func validateResolutionOverride(w, h int) (int, int, bool) {
 
 func boilerPlate() {
 	fmt.Println("\n\033[38;2;255;20;147m ██▓ ███▄    █ ▄▄▄█████▓ █    ██  ██▓▄▄▄█████▓ ██▓ ▒█████   ███▄    █    ▓█████  ███▄    █   ▄████  ██▓ ███▄    █ ▓█████\033[0m\n\033[38;2;255;50;147m▓██▒ ██ ▀█   █ ▓  ██▒ ▓▒ ██  ▓██▒▓██▒▓  ██▒ ▓▒▓██▒▒██▒  ██▒ ██ ▀█   █    ▓█   ▀  ██ ▀█   █  ██▒ ▀█▒▓██▒ ██ ▀█   █ ▓█   ▀\033[0m\n\033[38;2;255;80;147m▒██▒▓██  ▀█ ██▒▒ ▓██░ ▒░▓██  ▒██░▒██▒▒ ▓██░ ▒░▒██▒▒██░  ██▒▓██  ▀█ ██▒   ▒███   ▓██  ▀█ ██▒▒██░▄▄▄░▒██▒▓██  ▀█ ██▒▒███\033[0m\n\033[38;2;255;110;147m░██░▓██▒  ▐▌██▒░ ▓██▓ ░ ▓▓█  ░██░░██░░ ▓██▓ ░ ░██░▒██   ██░▓██▒  ▐▌██▒   ▒▓█  ▄ ▓██▒  ▐▌██▒░▓█  ██▓░██░▓██▒  ▐▌██▒▒▓█  ▄\033[0m\n\033[38;2;255;140;147m░██░▒██░   ▓██░  ▒██▒ ░ ▒▒█████▓ ░██░  ▒██▒ ░ ░██░░ ████▓▒░▒██░   ▓██░   ░▒████▒▒██░   ▓██░░▒▓███▀▒░██░▒██░   ▓██░░▒████▒\033[0m\n\033[38;2;255;170;147m░▓  ░ ▒░   ▒ ▒   ▒ ░░   ░▒▓▒ ▒ ▒ ░▓    ▒ ░░   ░▓  ░ ▒░▒░▒░ ░ ▒░   ▒ ▒    ░░ ▒░ ░░ ▒░   ▒ ▒  ░▒   ▒ ░▓  ░ ▒░   ▒ ▒ ░░ ▒░ ░\033[0m\n\033[38;2;255;200;147m ▒ ░░ ░░   ░ ▒░    ░    ░░▒░ ░ ░  ▒ ░    ░     ▒ ░  ░ ▒ ▒░ ░ ░░   ░ ▒░    ░ ░  ░░ ░░   ░ ▒░  ░   ░  ▒ ░░ ░░   ░ ▒░ ░ ░  ░\033[0m\n\033[38;2;255;230;147m ▒ ░   ░   ░ ░   ░       ░░░ ░ ░  ▒ ░  ░       ▒ ░░ ░ ░ ▒     ░   ░ ░       ░      ░   ░ ░ ░ ░   ░  ▒ ░   ░   ░ ░    ░\033[0m\n\033[38;2;255;255;147m ░           ░             ░      ░            ░      ░ ░           ░       ░  ░         ░       ░  ░           ░    ░  ░\033[0m")
-	fmt.Println("\nA modern 32-bit reimagining of the Commodore, Atari and Sinclair 8-bit home computers.")
+	fmt.Println("\nA modern 64-bit RISC reimagining of the Commodore, Atari, Sinclair and IBM 8/16/32-bit home computers.")
+	fmt.Println("Default core: IE64. Also supports IE32, M68K, x86, Z80, and 6502 CPU modes.")
+	fmt.Println("Video: IEVideoChip, VGA, ULA, TED video, ANTIC/GTIA, 3DFX Voodoo.")
+	fmt.Println("Audio: IESoundChip, AY/YM/PSG, SID, POKEY, TED audio, Amiga AHX.")
 	fmt.Println("(c) 2024 - 2026 Zayn Otley")
 	fmt.Println("https://github.com/IntuitionAmiga/IntuitionEngine")
 	fmt.Println("Buy me a coffee: https://ko-fi.com/intuition/tip")
@@ -207,7 +210,10 @@ func main() {
 
 	flagSet.Usage = func() {
 		flagSet.SetOutput(os.Stdout)
-		fmt.Println("Usage: ./intuition_engine -ie32|-ie64|-basic|-m68k|-m6502|-z80|-x86|-psg|-psg+|-sid|-sid+|-pokey|-pokey+|-ted|-ted+|-ahx|-ahx+ [--basic-image path] [--load-addr addr] [--entry addr] filename")
+		fmt.Println("Usage: ./intuition_engine [mode] [options] [filename]")
+		fmt.Println("Default (no mode/filename): start EhBASIC IE64.")
+		fmt.Println("Video: IEVideoChip, VGA, ULA, TED video, ANTIC/GTIA, 3DFX Voodoo.")
+		fmt.Println("Audio: IESoundChip, AY/YM/PSG, SID, POKEY, TED audio, Amiga AHX.")
 		flagSet.PrintDefaults()
 	}
 
@@ -285,7 +291,8 @@ func main() {
 		modeCount++
 	}
 	if modeCount == 0 && filename == "" {
-		modeIE32 = true
+		modeBasic = true
+		modeIE64 = true
 		modeCount = 1
 	}
 	if modeCount != 1 {
