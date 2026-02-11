@@ -34,33 +34,3 @@ func (op *OtoPlayer) Close() {
 func (op *OtoPlayer) IsStarted() bool {
 	return op.started
 }
-
-type ALSAPlayer struct {
-	started bool
-}
-
-func NewALSAPlayer() (*ALSAPlayer, error) {
-	return &ALSAPlayer{}, nil
-}
-
-func (ap *ALSAPlayer) SetupPlayer() {}
-
-func (ap *ALSAPlayer) IsStarted() bool {
-	return ap.started
-}
-
-func (ap *ALSAPlayer) Write(samples []float32) error {
-	return nil
-}
-
-func (ap *ALSAPlayer) Start() {
-	ap.started = true
-}
-
-func (ap *ALSAPlayer) Stop() {
-	ap.started = false
-}
-
-func (ap *ALSAPlayer) Close() {
-	ap.started = false
-}

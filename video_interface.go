@@ -159,7 +159,6 @@ type SpriteCapable interface {
 // Predefined video backend types
 const (
 	VIDEO_BACKEND_EBITEN = iota // Pure Go Ebiten backend
-	VIDEO_BACKEND_OPENGL        // OpenGL backend using cgo
 )
 
 // NewVideoOutput creates a new video output instance using the specified backend
@@ -167,11 +166,6 @@ func NewVideoOutput(backend int) (VideoOutput, error) {
 	switch backend {
 	case VIDEO_BACKEND_EBITEN:
 		return NewEbitenOutput()
-	case VIDEO_BACKEND_OPENGL:
-		return nil, &VideoError{
-			Operation: "backend creation",
-			Details:   "OpenGL backend not yet implemented",
-		}
 	}
 	return nil, &VideoError{
 		Operation: "backend creation",

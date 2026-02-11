@@ -5016,8 +5016,7 @@ To develop for the Intuition Engine, you'll need to set up your development envi
 
 1. Install the Go programming language (version 1.21 or later)
 2. Install required development libraries:
-   - ALSA development files (Linux only)
-   - OpenGL development files (optional)
+   - None for default runtime path (Ebiten + Oto)
 
 Create a project directory structure:
 
@@ -5685,13 +5684,13 @@ File playback (.ym, .ay, .sndh, .vgm, .sap, .sid) executes embedded CPU code tha
 
 # 15. Platform Support
 
-The Intuition Engine supports multiple platforms through abstracted backend systems for graphics, audio, and GUI.
+The default runtime path is Ebiten (video) + Oto (audio), with no separate control-window frontend.
 
 ## 15.1 Supported Platforms
 
 | Platform | Graphics | Audio |
 |----------|----------|-------|
-| Linux | Ebiten | Oto, ALSA |
+| Linux | Ebiten | Oto |
 | macOS | Ebiten | Oto |
 | Windows | Ebiten | Oto |
 
@@ -5720,13 +5719,6 @@ Cross-platform audio output with:
 - Low-latency playback (~20ms)
 - Automatic sample rate conversion
 - 44.1kHz stereo output
-
-### ALSA (Linux)
-
-Native Linux audio for:
-- Lower latency (~10ms)
-- Direct hardware access
-- System audio integration
 
 ## 15.4 Runtime UI
 
@@ -5828,19 +5820,12 @@ go test -v -run TestZ80
 ## 17.1 Prerequisites
 
 - Go 1.21 or later
-- C compiler (for CGO dependencies)
 - `sstrip` and `upx` (for binary optimization; modify Makefile to skip if unavailable)
-- Platform-specific libraries:
+- No extra system packages are required for the default runtime window/audio path.
 
-**Linux (Debian/Ubuntu):**
-```bash
-sudo apt install libasound2-dev libgl1-mesa-dev xorg-dev
-```
-
-**Linux (Fedora):**
-```bash
-sudo dnf install alsa-lib-devel mesa-libGL-devel libX11-devel
-```
+Optional advanced features may still use CGO/toolchain libraries:
+- Voodoo Vulkan path: requires Vulkan-capable system/driver/toolchain support.
+- Linux LHA decompression path: uses `liblhasa` (see `lhasa_linux.go`).
 
 **macOS:**
 ```bash

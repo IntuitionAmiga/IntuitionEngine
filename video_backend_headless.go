@@ -15,10 +15,6 @@ func NewEbitenOutput() (VideoOutput, error) {
 	return &HeadlessVideoOutput{refreshRate: 60}, nil
 }
 
-func NewOpenGLOutput() (VideoOutput, error) {
-	return &HeadlessVideoOutput{refreshRate: 60}, nil
-}
-
 func (h *HeadlessVideoOutput) Start() error {
 	h.started = true
 	return nil
