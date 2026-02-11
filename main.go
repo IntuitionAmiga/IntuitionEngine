@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -829,8 +830,18 @@ func main() {
 				ie64CPU.LoadProgramBytes(embeddedBasicImage)
 				fmt.Println("Starting EhBASIC IE64 (embedded image)")
 			} else {
-				fmt.Println("Error: BASIC not embedded in this build; use -basic-image or rebuild with 'make basic'")
-				os.Exit(1)
+				// Development fallback for go run / non-embedded builds.
+				autoPath := resolveDefaultBasicImagePath()
+				if autoPath == "" {
+					fmt.Println("Error: BASIC not embedded and no local BASIC image found.")
+					fmt.Println("Use -basic-image <path>, run 'make basic', or place ehbasic_ie64.ie64 in assembler/ or bin/.")
+					os.Exit(1)
+				}
+				if err := ie64CPU.LoadProgram(autoPath); err != nil {
+					fmt.Printf("Error loading fallback BASIC image %s: %v\n", autoPath, err)
+					os.Exit(1)
+				}
+				fmt.Printf("Starting EhBASIC IE64 (auto image: %s)\n", autoPath)
 			}
 			startExecution = true
 		} else if filename != "" {
@@ -1145,4 +1156,33 @@ func parseUint16Flag(value string) (uint16, error) {
 		return 0, fmt.Errorf("value out of range: 0x%X", parsed)
 	}
 	return uint16(parsed), nil
+}
+
+func resolveDefaultBasicImagePath() string {
+	candidates := []string{
+		"assembler/ehbasic_ie64.ie64",
+		"bin/ehbasic_ie64.ie64",
+		"ehbasic_ie64.ie64",
+	}
+	for _, p := range candidates {
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return p
+		}
+	}
+
+	if exe, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exe)
+		exeCandidates := []string{
+			filepath.Join(exeDir, "ehbasic_ie64.ie64"),
+			filepath.Join(exeDir, "bin", "ehbasic_ie64.ie64"),
+			filepath.Join(exeDir, "..", "assembler", "ehbasic_ie64.ie64"),
+		}
+		for _, p := range exeCandidates {
+			if st, err := os.Stat(p); err == nil && !st.IsDir() {
+				return p
+			}
+		}
+	}
+
+	return ""
 }
