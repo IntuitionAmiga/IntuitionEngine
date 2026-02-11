@@ -230,6 +230,12 @@ Default core: **IE64**. Additional cores: **IE32, M68K, x86, Z80, 6502**.
 ./bin/IntuitionEngine -width 800 -height 600 -ie64 program.ie64  # Override output resolution
 ```
 
+## 1.4 Ebiten Window Controls
+
+- `F11`: Toggle fullscreen mode
+- `F12`: Toggle the runtime status bar
+- Status bar semantics: `CPU`, `VIDEO`, and `AUDIO` device names are shown in green when active and gray when inactive.
+
 # 2. Architecture
 
 ## 2.1 Unified Memory

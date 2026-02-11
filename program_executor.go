@@ -172,6 +172,7 @@ func (e *ProgramExecutor) prepareAndLaunch(data []byte, typ uint32) error {
 		}
 		copy(mem[PROG_START:], data)
 		cpu.PC = PROG_START
+		runtimeStatus.setCPUs(runtimeCPUIE32, cpu, nil, nil, nil, nil, nil)
 		go cpu.Execute()
 		return nil
 
@@ -181,6 +182,7 @@ func (e *ProgramExecutor) prepareAndLaunch(data []byte, typ uint32) error {
 		}
 		cpu := NewCPU64(e.bus)
 		cpu.LoadProgramBytes(data)
+		runtimeStatus.setCPUs(runtimeCPUIE64, nil, cpu, nil, nil, nil, nil)
 		go cpu.Execute()
 		return nil
 
@@ -206,6 +208,7 @@ func (e *ProgramExecutor) prepareAndLaunch(data []byte, typ uint32) error {
 		e.bus.Write8(IRQ_VECTOR+1, uint8(entry>>8))
 		runner.cpu.Reset()
 		runner.cpu.SetRDYLine(true)
+		runtimeStatus.setCPUs(runtimeCPU6502, nil, nil, nil, nil, nil, runner)
 		go runner.Execute()
 		return nil
 
@@ -216,6 +219,7 @@ func (e *ProgramExecutor) prepareAndLaunch(data []byte, typ uint32) error {
 		cpu := NewM68KCPU(e.bus)
 		cpu.LoadProgramBytes(data)
 		runner := NewM68KRunner(cpu)
+		runtimeStatus.setCPUs(runtimeCPUM68K, nil, nil, runner, nil, nil, nil)
 		go runner.Execute()
 		return nil
 
@@ -238,6 +242,7 @@ func (e *ProgramExecutor) prepareAndLaunch(data []byte, typ uint32) error {
 		}
 		runner.cpu.Reset()
 		runner.cpu.PC = 0
+		runtimeStatus.setCPUs(runtimeCPUZ80, nil, nil, nil, runner, nil, nil)
 		go runner.Execute()
 		return nil
 
@@ -254,6 +259,7 @@ func (e *ProgramExecutor) prepareAndLaunch(data []byte, typ uint32) error {
 		if err := runner.LoadProgramData(data); err != nil {
 			return err
 		}
+		runtimeStatus.setCPUs(runtimeCPUX86, nil, nil, nil, nil, runner, nil)
 		go runner.Execute()
 		return nil
 	}

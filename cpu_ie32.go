@@ -1425,3 +1425,7 @@ func (cpu *CPU) Execute() {
 		cpu.DisplayScreen()
 	}
 }
+
+func (cpu *CPU) IsRunning() bool {
+	return cpu.running.Load()
+}

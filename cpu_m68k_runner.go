@@ -25,3 +25,7 @@ func (r *M68KRunner) Execute() {
 func (r *M68KRunner) CPU() *M68KCPU {
 	return r.cpu
 }
+
+func (r *M68KRunner) IsRunning() bool {
+	return r.cpu.Running()
+}

@@ -1168,3 +1168,7 @@ func (cpu *CPU64) Execute() {
 		break
 	}
 }
+
+func (cpu *CPU64) IsRunning() bool {
+	return cpu.running.Load()
+}

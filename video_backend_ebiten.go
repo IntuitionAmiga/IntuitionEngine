@@ -22,11 +22,16 @@ package main
 
 import (
 	"fmt"
-	"github.com/hajimehoshi/ebiten/v2"
-	"github.com/hajimehoshi/ebiten/v2/inpututil"
-	"golang.design/x/clipboard"
+	"image/color"
 	"sync"
 	"time"
+
+	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
+	"github.com/hajimehoshi/ebiten/v2/inpututil"
+	"github.com/hajimehoshi/ebiten/v2/text"
+	"golang.design/x/clipboard"
+	"golang.org/x/image/font/basicfont"
 )
 
 type EbitenOutput struct {
@@ -48,19 +53,21 @@ type EbitenOutput struct {
 
 	clipboardOnce sync.Once
 	clipboardOK   bool
+	showStatusBar bool
 }
 
 func NewEbitenOutput() (VideoOutput, error) {
 	return &EbitenOutput{
-		width:       640,
-		height:      480,
-		format:      PixelFormatRGBA,
-		scale:       1,
-		windowedW:   640,
-		windowedH:   480,
-		frameBuffer: make([]byte, 640*480*4),
-		refreshRate: 60,
-		vsyncChan:   make(chan struct{}, 1),
+		width:         640,
+		height:        480,
+		format:        PixelFormatRGBA,
+		scale:         1,
+		windowedW:     640,
+		windowedH:     480,
+		frameBuffer:   make([]byte, 640*480*4),
+		refreshRate:   60,
+		vsyncChan:     make(chan struct{}, 1),
+		showStatusBar: true,
 	}, nil
 }
 
@@ -254,6 +261,11 @@ func (eo *EbitenOutput) Update() error {
 		}
 		eo.bufferMutex.Unlock()
 	}
+	if inpututil.IsKeyJustPressed(ebiten.KeyF12) {
+		eo.bufferMutex.Lock()
+		eo.showStatusBar = !eo.showStatusBar
+		eo.bufferMutex.Unlock()
+	}
 	eo.handleKeyboardInput()
 	return nil
 }
@@ -409,8 +421,12 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 
 	eo.bufferMutex.RLock()
 	eo.window.WritePixels(eo.frameBuffer)
+	showStatusBar := eo.showStatusBar
 	eo.bufferMutex.RUnlock()
 	screen.DrawImage(eo.window, nil)
+	if showStatusBar {
+		eo.drawRuntimeStatusBar(screen)
+	}
 
 	eo.frameCount++
 	select {
@@ -421,4 +437,140 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 
 func (eo *EbitenOutput) Layout(_, _ int) (int, int) {
 	return eo.width, eo.height
+}
+
+func playbackCPUFlags(s runtimeStatusSnapshot) (ie32 bool, ie64 bool, m68k bool, z80 bool, x86 bool, cpu65 bool) {
+	if s.psgPlayer != nil && s.psgEngine != nil && s.psgEngine.IsPlaying() {
+		_, cpuName, _ := s.psgPlayer.RenderPerf()
+		switch cpuName {
+		case "Z80":
+			z80 = true
+		case "68K":
+			m68k = true
+		case "6502":
+			cpu65 = true
+		case "IE32":
+			ie32 = true
+		case "IE64":
+			ie64 = true
+		case "X86":
+			x86 = true
+		}
+	}
+	if s.sidPlayer != nil && s.sidPlayer.IsPlaying() {
+		_, cpuName, _ := s.sidPlayer.RenderPerf()
+		if cpuName == "6502" {
+			cpu65 = true
+		}
+	}
+	if s.pokeyPlayer != nil && s.pokeyPlayer.IsPlaying() {
+		_, cpuName, _ := s.pokeyPlayer.RenderPerf()
+		if cpuName == "6502" {
+			cpu65 = true
+		}
+	}
+	if s.tedPlayer != nil && s.tedPlayer.IsPlaying() {
+		_, cpuName, _ := s.tedPlayer.RenderPerf()
+		if cpuName == "6502" {
+			cpu65 = true
+		}
+	}
+	return
+}
+
+type statusToken struct {
+	name    string
+	enabled bool
+}
+
+func drawStatusLine(screen *ebiten.Image, x, baselineY int, label string, tokens []statusToken) {
+	face := basicfont.Face7x13
+	labelColor := color.RGBA{190, 190, 190, 255}
+	offColor := color.RGBA{120, 120, 120, 255}
+	onColor := color.RGBA{0, 220, 90, 255}
+
+	text.Draw(screen, label, face, x, baselineY, labelColor)
+	cursorX := x + text.BoundString(face, label).Dx() + 6
+
+	for _, token := range tokens {
+		c := offColor
+		if token.enabled {
+			c = onColor
+		}
+		text.Draw(screen, token.name, face, cursorX, baselineY, c)
+		cursorX += text.BoundString(face, token.name).Dx() + 8
+	}
+}
+
+func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
+	s := runtimeStatus.snapshot()
+	playIE32, playIE64, playM68K, playZ80, playX86, play6502 := playbackCPUFlags(s)
+
+	ie32On := (s.selectedCPU == runtimeCPUIE32 && s.ie32 != nil && s.ie32.IsRunning()) || playIE32
+	ie64On := (s.selectedCPU == runtimeCPUIE64 && s.ie64 != nil && s.ie64.IsRunning()) || playIE64
+	m68kOn := (s.selectedCPU == runtimeCPUM68K && s.m68k != nil && s.m68k.IsRunning()) || playM68K
+	z80On := (s.selectedCPU == runtimeCPUZ80 && s.z80 != nil && s.z80.IsRunning()) || playZ80
+	x86On := (s.selectedCPU == runtimeCPUX86 && s.x86 != nil && s.x86.IsRunning()) || playX86
+	cpu65On := (s.selectedCPU == runtimeCPU6502 && s.cpu65 != nil && s.cpu65.IsRunning()) || play6502
+
+	videoOn := s.video != nil && s.video.IsEnabled()
+	vgaOn := s.vga != nil && s.vga.IsEnabled()
+	ulaOn := s.ula != nil && s.ula.IsEnabled()
+	tedVideoOn := s.tedVideo != nil && s.tedVideo.IsEnabled()
+	anticOn := s.antic != nil && s.antic.IsEnabled()
+	voodooOn := s.voodoo != nil && s.voodoo.IsEnabled()
+
+	soundOn := s.sound != nil && s.sound.IsEnabled()
+	psgOn := s.psgEngine != nil && s.psgEngine.IsPlaying()
+	sidOn := s.sidEngine != nil && s.sidEngine.IsPlaying()
+	pokeyOn := s.pokey != nil && s.pokey.IsPlaying()
+	tedOn := s.tedEngine != nil && s.tedEngine.IsPlaying()
+	ahxOn := s.ahxEngine != nil && s.ahxEngine.IsPlaying()
+
+	barHeight := 42
+	if barHeight >= eo.height {
+		return
+	}
+	y := eo.height - barHeight
+	ebitenutil.DrawRect(screen, 0, float64(y), float64(eo.width), float64(barHeight), color.RGBA{0, 0, 0, 180})
+
+	drawStatusLine(screen, 6, y+13, "CPU  ", []statusToken{
+		{name: "IE32 ", enabled: ie32On},
+		{name: "|", enabled: false},
+		{name: "Z80", enabled: z80On},
+		{name: "|", enabled: false},
+		{name: "X86", enabled: x86On},
+		{name: "|", enabled: false},
+		{name: "68K", enabled: m68kOn},
+		{name: "|", enabled: false},
+		{name: "IE64 ", enabled: ie64On},
+		{name: "|", enabled: false},
+		{name: "6502", enabled: cpu65On},
+	})
+	drawStatusLine(screen, 6, y+26, "VIDEO", []statusToken{
+		{name: "IEVID", enabled: videoOn},
+		{name: "|", enabled: false},
+		{name: "VGA", enabled: vgaOn},
+		{name: "|", enabled: false},
+		{name: "ULA", enabled: ulaOn},
+		{name: "|", enabled: false},
+		{name: "TED", enabled: tedVideoOn},
+		{name: "|", enabled: false},
+		{name: "ANTIC", enabled: anticOn},
+		{name: "|", enabled: false},
+		{name: "VOODOO", enabled: voodooOn},
+	})
+	drawStatusLine(screen, 6, y+39, "AUDIO", []statusToken{
+		{name: "IESND", enabled: soundOn},
+		{name: "|", enabled: false},
+		{name: "PSG", enabled: psgOn},
+		{name: "|", enabled: false},
+		{name: "TED", enabled: tedOn},
+		{name: "|", enabled: false},
+		{name: "SID", enabled: sidOn},
+		{name: "|", enabled: false},
+		{name: "POKEY", enabled: pokeyOn},
+		{name: "|", enabled: false},
+		{name: "AHX", enabled: ahxOn},
+	})
 }

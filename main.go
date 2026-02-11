@@ -759,6 +759,23 @@ func main() {
 	if useResolutionOverride {
 		compositor.LockResolution(validWidth, validHeight)
 	}
+
+	runtimeStatus.setChips(
+		videoChip,
+		vgaEngine,
+		ulaEngine,
+		tedVideoEngine,
+		anticEngine,
+		voodooEngine,
+		soundChip,
+		psgEngine,
+		sidEngine,
+		pokeyEngine,
+		tedEngine,
+		ahxPlayerCPU.engine,
+	)
+	runtimeStatus.setPlayers(psgPlayer, sidPlayer, pokeyPlayer, tedPlayer)
+
 	output := videoChip.GetOutput()
 	outputConfig := output.GetDisplayConfig()
 	outputConfig.Scale = ClampScale(scale)
@@ -785,6 +802,7 @@ func main() {
 		// Initialize IE32 CPU
 		ie32CPU := NewCPU(sysBus)
 		ie32CPU.PerfEnabled = perfMode
+		runtimeStatus.setCPUs(runtimeCPUIE32, ie32CPU, nil, nil, nil, nil, nil)
 
 		// Load program
 		if filename != "" {
@@ -821,6 +839,7 @@ func main() {
 		// Initialize IE64 CPU (64-bit RISC)
 		ie64CPU = NewCPU64(sysBus)
 		ie64CPU.PerfEnabled = perfMode
+		runtimeStatus.setCPUs(runtimeCPUIE64, nil, ie64CPU, nil, nil, nil, nil)
 
 		// Initialize external program executor MMIO (RUN "file" from BASIC)
 		progExec := NewProgramExecutor(sysBus, ie64CPU, videoChip, vgaEngine, voodooEngine, ".")
@@ -912,6 +931,7 @@ func main() {
 		// Note: The GUI might need modifications to properly support M68K CPU
 		m68kRunner := NewM68KRunner(m68kCPU)
 		m68kRunner.PerfEnabled = perfMode
+		runtimeStatus.setCPUs(runtimeCPUM68K, nil, nil, m68kRunner, nil, nil, nil)
 		gui, err = NewGUIFrontend(GUI_FRONTEND_GTK4, m68kRunner, videoChip, soundChip, psgPlayer, sidPlayer, ahxPlayerCPU)
 		if err != nil {
 			fmt.Printf("Failed to initialize GUI: %v\n", err)
@@ -959,6 +979,7 @@ func main() {
 			VoodooEngine: voodooEngine,
 		})
 		z80CPU.PerfEnabled = perfMode
+		runtimeStatus.setCPUs(runtimeCPUZ80, nil, nil, nil, z80CPU, nil, nil)
 
 		// Load program
 		if filename != "" {
@@ -1000,6 +1021,7 @@ func main() {
 
 		x86CPU := NewCPUX86Runner(sysBus, x86Config)
 		x86CPU.PerfEnabled = perfMode
+		runtimeStatus.setCPUs(runtimeCPUX86, nil, nil, nil, nil, x86CPU, nil)
 
 		// Load program
 		if filename != "" {
@@ -1059,6 +1081,7 @@ func main() {
 			Entry:    parsedEntry,
 		})
 		cpu6502.PerfEnabled = perfMode
+		runtimeStatus.setCPUs(runtimeCPU6502, nil, nil, nil, nil, nil, cpu6502)
 
 		// Load program
 		if filename != "" {

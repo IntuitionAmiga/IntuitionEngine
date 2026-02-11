@@ -84,3 +84,7 @@ func (r *CPU6502Runner) Execute() {
 func (r *CPU6502Runner) CPU() *CPU_6502 {
 	return r.cpu
 }
+
+func (r *CPU6502Runner) IsRunning() bool {
+	return r.cpu.Running()
+}

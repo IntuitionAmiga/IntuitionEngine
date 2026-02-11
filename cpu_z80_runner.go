@@ -665,3 +665,7 @@ func (r *CPUZ80Runner) Execute() {
 func (r *CPUZ80Runner) CPU() *CPU_Z80 {
 	return r.cpu
 }
+
+func (r *CPUZ80Runner) IsRunning() bool {
+	return r.cpu.Running()
+}

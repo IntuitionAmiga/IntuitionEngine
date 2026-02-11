@@ -3041,6 +3041,10 @@ func (chip *SoundChip) Stop() {
 	}
 }
 
+func (chip *SoundChip) IsEnabled() bool {
+	return chip.enabled.Load()
+}
+
 func clampF32(value, min, max float32) float32 {
 	if value < min {
 		return min
