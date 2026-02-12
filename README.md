@@ -2798,13 +2798,18 @@ The x86 core uses a simplified flat memory model:
 - Full 32-bit address space accessible without segment arithmetic
 - This is neither true real mode (1MB limit) nor protected mode
 
+**x87 FPU (387 scope):**
+- x87 escape opcodes `D8`-`DF` are implemented with stack-based floating-point operations
+- Data movement, arithmetic, compares, control ops, and ENV/SAVE/RESTORE paths are supported
+- Deliberate exclusions: `FCMOV*`, `FCOMI/FCOMIP`, `FUCOMI/FUCOMIP`, and SSE-family instructions
+- Deliberate deviations: large-argument trig reduction always completes (`C2=0`), `FPREM/FPREM1` complete in one step (`C2=0`), and ENV/SAVE always use the 32-bit layout
+
 **Not Implemented:**
 - Real mode segment:offset addressing
 - Protected mode (descriptor tables, privilege levels)
 - Virtual 8086 mode
 - Paging and virtual memory
 - Task switching
-- x87 FPU
 
 # 9. IE64 CPU Architecture
 
