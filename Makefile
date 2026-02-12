@@ -163,6 +163,22 @@ robocop-65:
 	@echo "Output: assembler/robocop_intro_65.ie65"
 	@ls -lh assembler/robocop_intro_65.ie65
 
+# Build the rotozoomer IE65 (6502) demo (requires ca65/ld65 from cc65 suite)
+.PHONY: rotozoomer-65
+rotozoomer-65:
+	@echo "Building rotozoomer 6502 demo..."
+	@if ! command -v ca65 >/dev/null 2>&1; then \
+		echo "Error: ca65 not found. Please install the cc65 toolchain."; \
+		echo "  Ubuntu/Debian: sudo apt install cc65"; \
+		echo "  macOS: brew install cc65"; \
+		exit 1; \
+	fi
+	@cd assembler && ca65 -o rotozoomer_65.o rotozoomer_65.asm
+	@cd assembler && ld65 -C ie65.cfg -o rotozoomer_65.ie65 rotozoomer_65.o
+	@rm -f assembler/rotozoomer_65.o
+	@echo "Output: assembler/rotozoomer_65.ie65"
+	@ls -lh assembler/rotozoomer_65.ie65
+
 # Build the Robocop IE32 demo (requires ImageMagick for asset conversion)
 .PHONY: robocop-32
 robocop-32:
