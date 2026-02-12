@@ -1,3 +1,5 @@
+//go:build !headless
+
 // video_voodoo_test.go - Test suite for 3DFX Voodoo SST-1 Graphics Emulation
 
 /*

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"sync/atomic"
 	"testing"
 )
 
@@ -50,6 +51,170 @@ func Benchmark6502_LDA_Absolute(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		cpu.PC = 0x1000
+		cpu.Step()
+	}
+}
+
+// Benchmark6502_LDA_ZeroPage measures LDA zp throughput
+func Benchmark6502_LDA_ZeroPage(b *testing.B) {
+	cpu, bus := setup6502BenchCPU()
+	// LDA $42
+	bus.Write8(0x1000, 0xA5)
+	bus.Write8(0x1001, 0x42)
+	bus.Write8(0x0042, 0x55)
+	cpu.PC = 0x1000
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cpu.PC = 0x1000
+		cpu.Step()
+	}
+}
+
+// Benchmark6502_LDA_IndirectY measures LDA (zp),Y throughput
+func Benchmark6502_LDA_IndirectY(b *testing.B) {
+	cpu, bus := setup6502BenchCPU()
+	cpu.Y = 0x01
+	// LDA ($42),Y
+	bus.Write8(0x1000, 0xB1)
+	bus.Write8(0x1001, 0x42)
+	// Pointer at $42 -> $2000
+	bus.Write8(0x0042, 0x00)
+	bus.Write8(0x0043, 0x20)
+	// Value at $2001
+	bus.Write8(0x2001, 0x55)
+	cpu.PC = 0x1000
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cpu.PC = 0x1000
+		cpu.Step()
+	}
+}
+
+func Benchmark6502_LDA_IndirectX(b *testing.B) {
+	cpu, bus := setup6502BenchCPU()
+	cpu.X = 0x04
+	// LDA ($40,X)
+	bus.Write8(0x1000, 0xA1)
+	bus.Write8(0x1001, 0x40)
+	// pointer at $44 -> $2000
+	bus.Write8(0x0044, 0x00)
+	bus.Write8(0x0045, 0x20)
+	bus.Write8(0x2000, 0x66)
+	cpu.PC = 0x1000
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cpu.PC = 0x1000
+		cpu.Step()
+	}
+}
+
+// Benchmark6502_Memory_Read_Direct measures isolated adapter.Read() call
+func Benchmark6502_Memory_Read_Direct(b *testing.B) {
+	_, bus := setup6502BenchCPU()
+	adapter := NewBus6502Adapter(bus)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = adapter.Read(0x1000)
+	}
+}
+
+func Benchmark6502_Execute_Mixed(b *testing.B) {
+	cpu, bus := setup6502BenchCPU()
+	// LDA #$01; STA $10; INX; JMP $1000
+	bus.Write8(0x1000, 0xA9)
+	bus.Write8(0x1001, 0x01)
+	bus.Write8(0x1002, 0x85)
+	bus.Write8(0x1003, 0x10)
+	bus.Write8(0x1004, 0xE8)
+	bus.Write8(0x1005, 0x4C)
+	bus.Write8(0x1006, 0x00)
+	bus.Write8(0x1007, 0x10)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cpu.PC = 0x1000
+		cpu.X = 0
+		cpu.Step()
+		cpu.Step()
+		cpu.Step()
+		cpu.Step()
+	}
+}
+
+func Benchmark6502_Execute_Tight_Loop(b *testing.B) {
+	cpu, bus := setup6502BenchCPU()
+	// NOP; JMP $1000
+	bus.Write8(0x1000, 0xEA)
+	bus.Write8(0x1001, 0x4C)
+	bus.Write8(0x1002, 0x00)
+	bus.Write8(0x1003, 0x10)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cpu.PC = 0x1000
+		cpu.Step()
+		cpu.Step()
+	}
+}
+
+func Benchmark6502_UpdateNZ(b *testing.B) {
+	cpu, _ := setup6502BenchCPU()
+	var v byte
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		v += byte(i)
+		cpu.updateNZ(v)
+	}
+}
+
+func Benchmark6502_Read_IO_PSG(b *testing.B) {
+	_, bus := setup6502BenchCPU()
+	adapter := NewBus6502Adapter(bus)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = adapter.Read(0xD400)
+	}
+}
+
+func Benchmark6502_Write_IO_SID(b *testing.B) {
+	_, bus := setup6502BenchCPU()
+	adapter := NewBus6502Adapter(bus)
+	var v byte
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		v += byte(i)
+		adapter.Write(0xD500, v)
+	}
+}
+
+func Benchmark6502_Execute_WithContention(b *testing.B) {
+	cpu, bus := setup6502BenchCPU()
+	// NOP; JMP $1000
+	bus.Write8(0x1000, 0xEA)
+	bus.Write8(0x1001, 0x4C)
+	bus.Write8(0x1002, 0x00)
+	bus.Write8(0x1003, 0x10)
+
+	stop := atomic.Bool{}
+	go func() {
+		for !stop.Load() {
+			cpu.irqPending.Store(true)
+			cpu.irqPending.Store(false)
+		}
+	}()
+	defer stop.Store(true)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cpu.PC = 0x1000
+		cpu.Step()
 		cpu.Step()
 	}
 }

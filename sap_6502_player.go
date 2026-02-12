@@ -113,6 +113,7 @@ func (p *SAP6502Player) createCPU() *CPU_6502 {
 		breakpoints:   make(map[uint16]bool),
 		breakpointHit: make(chan uint16, 1),
 	}
+	cpu.InitOpcodeTable()
 	cpu.rdyLine.Store(true) // RDY line must be high for CPU to run
 	cpu.running.Store(true)
 	return cpu

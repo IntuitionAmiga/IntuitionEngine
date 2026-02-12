@@ -125,6 +125,19 @@ const (
 	NEGATIVE_FLAG  = 0x80 // Negative flag
 )
 
+var nzTable [256]byte
+
+func init() {
+	for i := 0; i < 256; i++ {
+		if i == 0 {
+			nzTable[i] |= ZERO_FLAG
+		}
+		if i&0x80 != 0 {
+			nzTable[i] |= NEGATIVE_FLAG
+		}
+	}
+}
+
 type CPU_6502 struct {
 	/*
 	   CPU_6502 implements a cycle-accurate MOS Technology 6502 processor.
@@ -205,6 +218,7 @@ type CPU_6502 struct {
 	X  byte   // X Index Register
 	Y  byte   // Y Index Register
 	SR byte   // Status Register
+	_  [57]byte
 
 	// Cache Line 1 - Interrupt Control
 	running      atomic.Bool // Execution state (atomic for lock-free access)
@@ -216,6 +230,7 @@ type CPU_6502 struct {
 	resetting    atomic.Bool // Set during Reset() to pause Execute() at instruction boundary
 	resetAck     atomic.Bool // Execute() signals it has paused for reset
 	executing    atomic.Bool // True while Execute() is in its main loop
+	_            [32]byte
 
 	// Cache Line 2 - System Control
 	Cycles        uint64          // Cycle counter
@@ -223,8 +238,11 @@ type CPU_6502 struct {
 	rdyHold       bool            // RDY active
 	Debug         bool            // Debug mode
 	memory        Bus6502         // Memory interface
+	fastAdapter   *Bus6502Adapter // Direct memory fast path (nil if non-standard bus)
+	opcodeTable   [256]func(*CPU_6502)
 	breakpoints   map[uint16]bool // Debug points
 	breakpointHit chan uint16     // Debug channel
+	_             [24]byte
 
 	// Performance monitoring (matching IE32 pattern)
 	PerfEnabled      bool      // Enable MIPS reporting
@@ -288,6 +306,16 @@ type Bus6502Adapter struct {
 	bank1Enable bool   // Bank 1 enabled
 	bank2Enable bool   // Bank 2 enabled
 	bank3Enable bool   // Bank 3 enabled
+
+	// Direct memory fast path
+	memDirect    []byte // cached from bus.GetMemory()
+	ioPageBitmap []bool // reference to MachineBus.ioPageBitmap
+	ioTable      [256]ioHandler
+}
+
+type ioHandler struct {
+	read  func(*Bus6502Adapter, uint16) byte
+	write func(*Bus6502Adapter, uint16, byte)
 }
 
 func NewCPU_6502(bus Bus32) *CPU_6502 {
@@ -311,14 +339,45 @@ func NewCPU_6502(bus Bus32) *CPU_6502 {
 	adapter := NewBus6502Adapter(bus)
 	cpu := &CPU_6502{
 		memory:        adapter,
+		fastAdapter:   adapter, // Set fastAdapter since we just created it
 		SP:            0xFF,
 		SR:            UNUSED_FLAG,
 		breakpoints:   make(map[uint16]bool),
 		breakpointHit: make(chan uint16, 1),
 	}
+	cpu.InitOpcodeTable()
 	cpu.rdyLine.Store(true)
 	cpu.running.Store(true)
 	return cpu
+}
+
+func (cpu_6502 *CPU_6502) InitOpcodeTable() {
+	cpu_6502.initOpcodeTableGenerated()
+}
+
+func (cpu_6502 *CPU_6502) ensureOpcodeTableReady() {
+	if cpu_6502.opcodeTable[0xEA] == nil {
+		panic("CPU_6502: opcodeTable not initialized, call InitOpcodeTable()")
+	}
+}
+
+func (cpu_6502 *CPU_6502) readByte(addr uint16) byte {
+	if cpu_6502.fastAdapter != nil {
+		return cpu_6502.fastAdapter.ReadFast(addr)
+	}
+	return cpu_6502.memory.Read(addr)
+}
+
+func (cpu_6502 *CPU_6502) writeByte(addr uint16, value byte) {
+	if cpu_6502.fastAdapter != nil {
+		cpu_6502.fastAdapter.WriteFast(addr, value)
+		return
+	}
+	cpu_6502.memory.Write(addr, value)
+}
+
+func (cpu_6502 *CPU_6502) updateNZ(value byte) {
+	cpu_6502.SR = (cpu_6502.SR &^ (ZERO_FLAG | NEGATIVE_FLAG)) | nzTable[value]
 }
 func NewBus6502Adapter(bus Bus32) *Bus6502Adapter {
 	/*
@@ -330,13 +389,297 @@ func NewBus6502Adapter(bus Bus32) *Bus6502Adapter {
 	   Returns:
 	   - *Bus6502Adapter: Configured adapter
 	*/
-
-	return &Bus6502Adapter{bus: bus}
+	a := &Bus6502Adapter{bus: bus}
+	a.memDirect = bus.GetMemory()
+	if mb, ok := bus.(*MachineBus); ok {
+		a.ioPageBitmap = mb.ioPageBitmap
+	}
+	a.initIOTable()
+	return a
 }
 
 // NewBus6502AdapterWithVGA creates a 6502 memory bus adapter with VGA engine support
 func NewBus6502AdapterWithVGA(bus Bus32, vga *VGAEngine) *Bus6502Adapter {
-	return &Bus6502Adapter{bus: bus, vgaEngine: vga}
+	a := &Bus6502Adapter{bus: bus, vgaEngine: vga}
+	a.memDirect = bus.GetMemory()
+	if mb, ok := bus.(*MachineBus); ok {
+		a.ioPageBitmap = mb.ioPageBitmap
+	}
+	a.initIOTable()
+	return a
+}
+
+func (a *Bus6502Adapter) initIOTable() {
+	a.ioTable[0xD2] = ioHandler{read: readPOKEYPage, write: writePOKEYPage}
+	a.ioTable[0xD4] = ioHandler{read: readPSGPage, write: writePSGPage}
+	a.ioTable[0xD5] = ioHandler{read: readSIDPage, write: writeSIDPage}
+	a.ioTable[0xD6] = ioHandler{read: readTEDPage, write: writeTEDPage}
+	a.ioTable[0xD7] = ioHandler{read: readVGAPage, write: writeVGAPage}
+	a.ioTable[0xD8] = ioHandler{read: readULAPage, write: writeULAPage}
+	a.ioTable[0xF7] = ioHandler{read: readBankRegPage, write: writeBankRegPage}
+}
+
+func readPOKEYPage(a *Bus6502Adapter, addr uint16) byte {
+	if addr >= C6502_POKEY_BASE && addr <= C6502_POKEY_END {
+		return a.bus.Read8(POKEY_BASE + uint32(addr-C6502_POKEY_BASE))
+	}
+	return a.bus.Read8(translateIO8Bit_6502(addr))
+}
+
+func writePOKEYPage(a *Bus6502Adapter, addr uint16, value byte) {
+	if addr >= C6502_POKEY_BASE && addr <= C6502_POKEY_END {
+		a.bus.Write8(POKEY_BASE+uint32(addr-C6502_POKEY_BASE), value)
+		return
+	}
+	a.bus.Write8(translateIO8Bit_6502(addr), value)
+}
+
+func readPSGPage(a *Bus6502Adapter, addr uint16) byte {
+	if addr >= C6502_PSG_BASE && addr <= C6502_PSG_END {
+		return a.bus.Read8(PSG_BASE + uint32(addr-C6502_PSG_BASE))
+	}
+	return a.bus.Read8(translateIO8Bit_6502(addr))
+}
+
+func writePSGPage(a *Bus6502Adapter, addr uint16, value byte) {
+	if addr >= C6502_PSG_BASE && addr <= C6502_PSG_END {
+		a.bus.Write8(PSG_BASE+uint32(addr-C6502_PSG_BASE), value)
+		return
+	}
+	a.bus.Write8(translateIO8Bit_6502(addr), value)
+}
+
+func readSIDPage(a *Bus6502Adapter, addr uint16) byte {
+	if addr >= C6502_SID_BASE && addr <= C6502_SID_END {
+		return a.bus.Read8(SID_BASE + uint32(addr-C6502_SID_BASE))
+	}
+	return a.bus.Read8(translateIO8Bit_6502(addr))
+}
+
+func writeSIDPage(a *Bus6502Adapter, addr uint16, value byte) {
+	if addr >= C6502_SID_BASE && addr <= C6502_SID_END {
+		a.bus.Write8(SID_BASE+uint32(addr-C6502_SID_BASE), value)
+		return
+	}
+	a.bus.Write8(translateIO8Bit_6502(addr), value)
+}
+
+func readTEDPage(a *Bus6502Adapter, addr uint16) byte {
+	if addr >= C6502_TED_BASE && addr <= C6502_TED_END {
+		return a.bus.Read8(TED_BASE + uint32(addr-C6502_TED_BASE))
+	}
+	if addr >= C6502_TED_V_BASE && addr <= C6502_TED_V_END {
+		return a.bus.Read8(TED_VIDEO_BASE + uint32((addr-C6502_TED_V_BASE)*4))
+	}
+	return a.bus.Read8(translateIO8Bit_6502(addr))
+}
+
+func writeTEDPage(a *Bus6502Adapter, addr uint16, value byte) {
+	if addr >= C6502_TED_BASE && addr <= C6502_TED_END {
+		a.bus.Write8(TED_BASE+uint32(addr-C6502_TED_BASE), value)
+		return
+	}
+	if addr >= C6502_TED_V_BASE && addr <= C6502_TED_V_END {
+		a.bus.Write8(TED_VIDEO_BASE+uint32((addr-C6502_TED_V_BASE)*4), value)
+		return
+	}
+	a.bus.Write8(translateIO8Bit_6502(addr), value)
+}
+
+func readVGAPage(a *Bus6502Adapter, addr uint16) byte {
+	if a.vgaEngine != nil && addr >= C6502_VGA_BASE && addr <= C6502_VGA_END {
+		switch addr {
+		case C6502_VGA_MODE:
+			return byte(a.vgaEngine.HandleRead(VGA_MODE))
+		case C6502_VGA_STATUS:
+			return byte(a.vgaEngine.HandleRead(VGA_STATUS))
+		case C6502_VGA_CTRL:
+			return byte(a.vgaEngine.HandleRead(VGA_CTRL))
+		case C6502_VGA_SEQ_IDX:
+			return byte(a.vgaEngine.HandleRead(VGA_SEQ_INDEX))
+		case C6502_VGA_SEQ_DATA:
+			return byte(a.vgaEngine.HandleRead(VGA_SEQ_DATA))
+		case C6502_VGA_CRTC_IDX:
+			return byte(a.vgaEngine.HandleRead(VGA_CRTC_INDEX))
+		case C6502_VGA_CRTC_DATA:
+			return byte(a.vgaEngine.HandleRead(VGA_CRTC_DATA))
+		case C6502_VGA_GC_IDX:
+			return byte(a.vgaEngine.HandleRead(VGA_GC_INDEX))
+		case C6502_VGA_GC_DATA:
+			return byte(a.vgaEngine.HandleRead(VGA_GC_DATA))
+		case C6502_VGA_DAC_WIDX:
+			return byte(a.vgaEngine.HandleRead(VGA_DAC_WINDEX))
+		case C6502_VGA_DAC_DATA:
+			return byte(a.vgaEngine.HandleRead(VGA_DAC_DATA))
+		}
+	}
+	return a.bus.Read8(translateIO8Bit_6502(addr))
+}
+
+func writeVGAPage(a *Bus6502Adapter, addr uint16, value byte) {
+	if a.vgaEngine != nil && addr >= C6502_VGA_BASE && addr <= C6502_VGA_END {
+		switch addr {
+		case C6502_VGA_MODE:
+			a.vgaEngine.HandleWrite(VGA_MODE, uint32(value))
+			return
+		case C6502_VGA_STATUS:
+			return
+		case C6502_VGA_CTRL:
+			a.vgaEngine.HandleWrite(VGA_CTRL, uint32(value))
+			return
+		case C6502_VGA_SEQ_IDX:
+			a.vgaEngine.HandleWrite(VGA_SEQ_INDEX, uint32(value))
+			return
+		case C6502_VGA_SEQ_DATA:
+			a.vgaEngine.HandleWrite(VGA_SEQ_DATA, uint32(value))
+			return
+		case C6502_VGA_CRTC_IDX:
+			a.vgaEngine.HandleWrite(VGA_CRTC_INDEX, uint32(value))
+			return
+		case C6502_VGA_CRTC_DATA:
+			a.vgaEngine.HandleWrite(VGA_CRTC_DATA, uint32(value))
+			return
+		case C6502_VGA_GC_IDX:
+			a.vgaEngine.HandleWrite(VGA_GC_INDEX, uint32(value))
+			return
+		case C6502_VGA_GC_DATA:
+			a.vgaEngine.HandleWrite(VGA_GC_DATA, uint32(value))
+			return
+		case C6502_VGA_DAC_WIDX:
+			a.vgaEngine.HandleWrite(VGA_DAC_WINDEX, uint32(value))
+			return
+		case C6502_VGA_DAC_DATA:
+			a.vgaEngine.HandleWrite(VGA_DAC_DATA, uint32(value))
+			return
+		}
+	}
+	a.bus.Write8(translateIO8Bit_6502(addr), value)
+}
+
+func readULAPage(a *Bus6502Adapter, addr uint16) byte {
+	if addr >= C6502_ULA_BASE && addr <= C6502_ULA_BASE+0x0F {
+		return a.bus.Read8(ULA_BASE + uint32(addr-C6502_ULA_BASE))
+	}
+	return a.bus.Read8(translateIO8Bit_6502(addr))
+}
+
+func writeULAPage(a *Bus6502Adapter, addr uint16, value byte) {
+	if addr >= C6502_ULA_BASE && addr <= C6502_ULA_BASE+0x0F {
+		a.bus.Write8(ULA_BASE+uint32(addr-C6502_ULA_BASE), value)
+		return
+	}
+	a.bus.Write8(translateIO8Bit_6502(addr), value)
+}
+
+func readBankRegPage(a *Bus6502Adapter, addr uint16) byte {
+	switch addr {
+	case VRAM_BANK_REG:
+		return byte(a.vramBank & 0xFF)
+	case VRAM_BANK_REG_RSVD:
+		return 0
+	case BANK1_REG_LO:
+		return byte(a.bank1 & 0xFF)
+	case BANK1_REG_HI:
+		return byte((a.bank1 >> 8) & 0xFF)
+	case BANK2_REG_LO:
+		return byte(a.bank2 & 0xFF)
+	case BANK2_REG_HI:
+		return byte((a.bank2 >> 8) & 0xFF)
+	case BANK3_REG_LO:
+		return byte(a.bank3 & 0xFF)
+	case BANK3_REG_HI:
+		return byte((a.bank3 >> 8) & 0xFF)
+	default:
+		return a.bus.Read8(translateIO8Bit_6502(addr))
+	}
+}
+
+func writeBankRegPage(a *Bus6502Adapter, addr uint16, value byte) {
+	switch addr {
+	case VRAM_BANK_REG:
+		a.vramBank = uint32(value)
+		a.vramEnabled = true
+		return
+	case VRAM_BANK_REG_RSVD:
+		return
+	case BANK1_REG_LO:
+		a.bank1 = (a.bank1 & 0xFF00) | uint32(value)
+		a.bank1Enable = true
+		return
+	case BANK1_REG_HI:
+		a.bank1 = (a.bank1 & 0x00FF) | (uint32(value) << 8)
+		a.bank1Enable = true
+		return
+	case BANK2_REG_LO:
+		a.bank2 = (a.bank2 & 0xFF00) | uint32(value)
+		a.bank2Enable = true
+		return
+	case BANK2_REG_HI:
+		a.bank2 = (a.bank2 & 0x00FF) | (uint32(value) << 8)
+		a.bank2Enable = true
+		return
+	case BANK3_REG_LO:
+		a.bank3 = (a.bank3 & 0xFF00) | uint32(value)
+		a.bank3Enable = true
+		return
+	case BANK3_REG_HI:
+		a.bank3 = (a.bank3 & 0x00FF) | (uint32(value) << 8)
+		a.bank3Enable = true
+		return
+	default:
+		a.bus.Write8(translateIO8Bit_6502(addr), value)
+	}
+}
+
+func (a *Bus6502Adapter) ReadFast(addr uint16) byte {
+	// Fast path: has bitmap, no I/O on this page, and within standard 6502 address space
+	// We check addr < 0x2000 because ZP and Stack are there, and it's the most common RAM area.
+	// We also fall back to slow path for banking regions ($2000-$7FFF) or VRAM window ($8000-$BFFF).
+	if a.ioPageBitmap != nil && addr < 0x2000 && !a.ioPageBitmap[addr>>8] {
+		return a.memDirect[addr]
+	}
+	// Slow path: no bitmap, banking, I/O, or VRAM
+	return a.Read(addr)
+}
+
+func (a *Bus6502Adapter) WriteFast(addr uint16, val byte) {
+	if a.ioPageBitmap != nil && addr < 0x2000 && !a.ioPageBitmap[addr>>8] {
+		a.memDirect[addr] = val
+		return
+	}
+	a.Write(addr, val)
+}
+
+func (a *Bus6502Adapter) ReadZP(addr byte) byte {
+	// Zero page is $0000-$00FF. Always page 0.
+	if a.ioPageBitmap != nil && !a.ioPageBitmap[0] {
+		return a.memDirect[addr]
+	}
+	return a.Read(uint16(addr))
+}
+
+func (a *Bus6502Adapter) WriteZP(addr byte, val byte) {
+	if a.ioPageBitmap != nil && !a.ioPageBitmap[0] {
+		a.memDirect[addr] = val
+		return
+	}
+	a.Write(uint16(addr), val)
+}
+
+func (a *Bus6502Adapter) ReadStack(sp byte) byte {
+	// Stack is $0100-$01FF. Always page 1.
+	if a.ioPageBitmap != nil && !a.ioPageBitmap[1] {
+		return a.memDirect[0x0100|uint16(sp)]
+	}
+	return a.Read(0x0100 | uint16(sp))
+}
+
+func (a *Bus6502Adapter) WriteStack(sp byte, val byte) {
+	if a.ioPageBitmap != nil && !a.ioPageBitmap[1] {
+		a.memDirect[0x0100|uint16(sp)] = val
+		return
+	}
+	a.Write(0x0100|uint16(sp), val)
 }
 
 func (cpu_6502 *CPU_6502) rmw(addr uint16, operation func(byte) byte) {
@@ -354,10 +697,10 @@ func (cpu_6502 *CPU_6502) rmw(addr uint16, operation func(byte) byte) {
 	   4. Writes modified value
 	*/
 
-	value := cpu_6502.memory.Read(addr)
-	cpu_6502.memory.Write(addr, value) // Spurious write of original value
+	value := cpu_6502.readByte(addr)
+	cpu_6502.writeByte(addr, value) // Spurious write of original value
 	result := operation(value)
-	cpu_6502.memory.Write(addr, result)
+	cpu_6502.writeByte(addr, result)
 }
 func (cpu_6502 *CPU_6502) read16(addr uint16) uint16 {
 	/*
@@ -378,8 +721,8 @@ func (cpu_6502 *CPU_6502) read16(addr uint16) uint16 {
 	   Protected by memory interface mutex
 	*/
 
-	lo := uint16(cpu_6502.memory.Read(addr))
-	hi := uint16(cpu_6502.memory.Read(addr + 1))
+	lo := uint16(cpu_6502.readByte(addr))
+	hi := uint16(cpu_6502.readByte(addr + 1))
 	return (hi << 8) | lo
 }
 func (cpu_6502 *CPU_6502) push(value byte) {
@@ -398,7 +741,11 @@ func (cpu_6502 *CPU_6502) push(value byte) {
 	   Protected by memory write mutex
 	*/
 
-	cpu_6502.memory.Write(STACK_BASE|uint16(cpu_6502.SP), value)
+	if cpu_6502.fastAdapter != nil {
+		cpu_6502.fastAdapter.WriteStack(cpu_6502.SP, value)
+	} else {
+		cpu_6502.writeByte(STACK_BASE|uint16(cpu_6502.SP), value)
+	}
 	cpu_6502.SP--
 }
 func (cpu_6502 *CPU_6502) push16(value uint16) {
@@ -436,7 +783,10 @@ func (cpu_6502 *CPU_6502) pop() byte {
 	*/
 
 	cpu_6502.SP++
-	return cpu_6502.memory.Read(STACK_BASE | uint16(cpu_6502.SP))
+	if cpu_6502.fastAdapter != nil {
+		return cpu_6502.fastAdapter.ReadStack(cpu_6502.SP)
+	}
+	return cpu_6502.readByte(STACK_BASE | uint16(cpu_6502.SP))
 }
 func (cpu_6502 *CPU_6502) pop16() uint16 {
 	/*
@@ -580,7 +930,7 @@ func (cpu_6502 *CPU_6502) getZeroPage() uint16 {
 	   Protected by memory read mutex
 	*/
 
-	addr := uint16(cpu_6502.memory.Read(cpu_6502.PC))
+	addr := uint16(cpu_6502.readByte(cpu_6502.PC))
 	cpu_6502.PC++
 	return addr
 }
@@ -600,7 +950,7 @@ func (cpu_6502 *CPU_6502) getZeroPageX() uint16 {
 	   Protected by memory read mutex
 	*/
 
-	addr := (uint16(cpu_6502.memory.Read(cpu_6502.PC)) + uint16(cpu_6502.X)) & 0xFF
+	addr := (uint16(cpu_6502.readByte(cpu_6502.PC)) + uint16(cpu_6502.X)) & 0xFF
 	cpu_6502.PC++
 	return addr
 }
@@ -620,7 +970,7 @@ func (cpu_6502 *CPU_6502) getZeroPageY() uint16 {
 	   Protected by memory read mutex
 	*/
 
-	addr := (uint16(cpu_6502.memory.Read(cpu_6502.PC)) + uint16(cpu_6502.Y)) & 0xFF
+	addr := (uint16(cpu_6502.readByte(cpu_6502.PC)) + uint16(cpu_6502.Y)) & 0xFF
 	cpu_6502.PC++
 	return addr
 }
@@ -637,10 +987,15 @@ func (cpu_6502 *CPU_6502) getIndirectX() uint16 {
 	   3. Reads address from result
 	*/
 
-	base := cpu_6502.memory.Read(cpu_6502.PC)
+	base := cpu_6502.readByte(cpu_6502.PC)
 	cpu_6502.PC++
 	ptr := (uint16(base) + uint16(cpu_6502.X)) & 0xFF
-	return uint16(cpu_6502.memory.Read(ptr)) | uint16(cpu_6502.memory.Read((ptr+1)&0xFF))<<8
+	if cpu_6502.fastAdapter != nil {
+		lo := uint16(cpu_6502.fastAdapter.ReadZP(byte(ptr)))
+		hi := uint16(cpu_6502.fastAdapter.ReadZP(byte((ptr + 1) & 0xFF)))
+		return lo | (hi << 8)
+	}
+	return uint16(cpu_6502.readByte(ptr)) | uint16(cpu_6502.readByte((ptr+1)&0xFF))<<8
 }
 func (cpu_6502 *CPU_6502) getIndirectY() (uint16, bool) {
 	/*
@@ -657,9 +1012,15 @@ func (cpu_6502 *CPU_6502) getIndirectY() (uint16, bool) {
 	   4. Checks page crossing
 	*/
 
-	ptr := uint16(cpu_6502.memory.Read(cpu_6502.PC))
+	ptr := uint16(cpu_6502.readByte(cpu_6502.PC))
 	cpu_6502.PC++
-	base := uint16(cpu_6502.memory.Read(ptr)) | uint16(cpu_6502.memory.Read((ptr+1)&0xFF))<<8
+	var base uint16
+	if cpu_6502.fastAdapter != nil {
+		base = uint16(cpu_6502.fastAdapter.ReadZP(byte(ptr))) |
+			uint16(cpu_6502.fastAdapter.ReadZP(byte((ptr+1)&0xFF)))<<8
+	} else {
+		base = uint16(cpu_6502.readByte(ptr)) | uint16(cpu_6502.readByte((ptr+1)&0xFF))<<8
+	}
 	addr := base + uint16(cpu_6502.Y)
 	return addr, (base & 0xFF00) != (addr & 0xFF00)
 }
@@ -685,10 +1046,10 @@ func (cpu_6502 *CPU_6502) adc(value byte) {
 	   Direct register access requires no mutex
 	*/
 
-	if cpu_6502.getFlag(DECIMAL_FLAG) {
+	if cpu_6502.SR&DECIMAL_FLAG != 0 {
 		a := uint16(cpu_6502.A)
 		b := uint16(value)
-		carry := btou16(cpu_6502.getFlag(CARRY_FLAG))
+		carry := btou16(cpu_6502.SR&CARRY_FLAG != 0)
 
 		lo_a := a & 0x0F
 		hi_a := (a >> 4) & 0x0F
@@ -712,8 +1073,7 @@ func (cpu_6502 *CPU_6502) adc(value byte) {
 		result := (hi_sum << 4) | lo_sum
 
 		cpu_6502.setFlag(CARRY_FLAG, carry == 1)
-		cpu_6502.setFlag(ZERO_FLAG, (result&0xFF) == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, result&0x80 != 0)
+		cpu_6502.updateNZ(byte(result))
 
 		old_a := cpu_6502.A
 		cpu_6502.A = byte(result)
@@ -723,7 +1083,7 @@ func (cpu_6502 *CPU_6502) adc(value byte) {
 		cpu_6502.setFlag(OVERFLOW_FLAG, overflow)
 	} else {
 		temp := uint16(cpu_6502.A) + uint16(value)
-		if cpu_6502.getFlag(CARRY_FLAG) {
+		if cpu_6502.SR&CARRY_FLAG != 0 {
 			temp++
 		}
 
@@ -731,8 +1091,7 @@ func (cpu_6502 *CPU_6502) adc(value byte) {
 		result := byte(temp)
 
 		cpu_6502.setFlag(CARRY_FLAG, carry)
-		cpu_6502.setFlag(ZERO_FLAG, result == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, result&0x80 != 0)
+		cpu_6502.updateNZ(result)
 
 		overflow := (cpu_6502.A^value)&0x80 == 0 && (cpu_6502.A^result)&0x80 != 0
 		cpu_6502.setFlag(OVERFLOW_FLAG, overflow)
@@ -761,10 +1120,10 @@ func (cpu_6502 *CPU_6502) sbc(value byte) {
 	   Direct register access requires no mutex
 	*/
 
-	if cpu_6502.getFlag(DECIMAL_FLAG) {
+	if cpu_6502.SR&DECIMAL_FLAG != 0 {
 		a := uint16(cpu_6502.A)
 		b := uint16(value)
-		borrow := btou16(!cpu_6502.getFlag(CARRY_FLAG))
+		borrow := btou16(cpu_6502.SR&CARRY_FLAG == 0)
 
 		lo_a := a & 0x0F
 		hi_a := (a >> 4) & 0x0F
@@ -788,8 +1147,7 @@ func (cpu_6502 *CPU_6502) sbc(value byte) {
 		result := (hi_diff << 4) | lo_diff
 
 		cpu_6502.setFlag(CARRY_FLAG, borrow == 0)
-		cpu_6502.setFlag(ZERO_FLAG, (result&0xFF) == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, result&0x80 != 0)
+		cpu_6502.updateNZ(byte(result))
 
 		old_a := cpu_6502.A
 		cpu_6502.A = byte(result)
@@ -798,7 +1156,7 @@ func (cpu_6502 *CPU_6502) sbc(value byte) {
 		cpu_6502.setFlag(OVERFLOW_FLAG, overflow)
 	} else {
 		temp := uint16(cpu_6502.A) - uint16(value)
-		if !cpu_6502.getFlag(CARRY_FLAG) {
+		if cpu_6502.SR&CARRY_FLAG == 0 {
 			temp--
 		}
 
@@ -806,8 +1164,7 @@ func (cpu_6502 *CPU_6502) sbc(value byte) {
 		carry := temp < 0x100
 
 		cpu_6502.setFlag(CARRY_FLAG, carry)
-		cpu_6502.setFlag(ZERO_FLAG, result == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, result&0x80 != 0)
+		cpu_6502.updateNZ(result)
 
 		overflow := (cpu_6502.A^value)&0x80 != 0 && (cpu_6502.A^result)&0x80 != 0
 		cpu_6502.setFlag(OVERFLOW_FLAG, overflow)
@@ -833,8 +1190,7 @@ func (cpu_6502 *CPU_6502) inc(addr uint16) byte {
 	var result byte
 	cpu_6502.rmw(addr, func(value byte) byte {
 		result = value + 1
-		cpu_6502.setFlag(ZERO_FLAG, result == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, result&0x80 != 0)
+		cpu_6502.updateNZ(result)
 		return result
 	})
 	return result
@@ -857,8 +1213,7 @@ func (cpu_6502 *CPU_6502) dec(addr uint16) byte {
 	var result byte
 	cpu_6502.rmw(addr, func(value byte) byte {
 		result = value - 1
-		cpu_6502.setFlag(ZERO_FLAG, result == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, result&0x80 != 0)
+		cpu_6502.updateNZ(result)
 		return result
 	})
 	return result
@@ -884,8 +1239,7 @@ func (cpu_6502 *CPU_6502) asl(addr uint16, accumulator bool) byte {
 	if accumulator {
 		cpu_6502.setFlag(CARRY_FLAG, cpu_6502.A&0x80 != 0)
 		cpu_6502.A <<= 1
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		return cpu_6502.A
 	}
 
@@ -893,8 +1247,7 @@ func (cpu_6502 *CPU_6502) asl(addr uint16, accumulator bool) byte {
 	cpu_6502.rmw(addr, func(value byte) byte {
 		cpu_6502.setFlag(CARRY_FLAG, value&0x80 != 0)
 		result = value << 1
-		cpu_6502.setFlag(ZERO_FLAG, result == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, result&0x80 != 0)
+		cpu_6502.updateNZ(result)
 		return result
 	})
 	return result
@@ -919,8 +1272,7 @@ func (cpu_6502 *CPU_6502) lsr(addr uint16, accumulator bool) byte {
 	if accumulator {
 		cpu_6502.setFlag(CARRY_FLAG, cpu_6502.A&0x01 != 0)
 		cpu_6502.A >>= 1
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, false)
+		cpu_6502.updateNZ(cpu_6502.A)
 		return cpu_6502.A
 	}
 
@@ -928,8 +1280,7 @@ func (cpu_6502 *CPU_6502) lsr(addr uint16, accumulator bool) byte {
 	cpu_6502.rmw(addr, func(value byte) byte {
 		cpu_6502.setFlag(CARRY_FLAG, value&0x01 != 0)
 		result = value >> 1
-		cpu_6502.setFlag(ZERO_FLAG, result == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, false)
+		cpu_6502.updateNZ(result)
 		return result
 	})
 	return result
@@ -952,21 +1303,19 @@ func (cpu_6502 *CPU_6502) rol(addr uint16, accumulator bool) byte {
 	*/
 
 	if accumulator {
-		carry := btou8(cpu_6502.getFlag(CARRY_FLAG))
+		carry := btou8(cpu_6502.SR&CARRY_FLAG != 0)
 		cpu_6502.setFlag(CARRY_FLAG, cpu_6502.A&0x80 != 0)
 		cpu_6502.A = (cpu_6502.A << 1) | carry
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		return cpu_6502.A
 	}
 
 	var result byte
-	oldCarry := btou8(cpu_6502.getFlag(CARRY_FLAG))
+	oldCarry := btou8(cpu_6502.SR&CARRY_FLAG != 0)
 	cpu_6502.rmw(addr, func(value byte) byte {
 		cpu_6502.setFlag(CARRY_FLAG, value&0x80 != 0)
 		result = (value << 1) | oldCarry
-		cpu_6502.setFlag(ZERO_FLAG, result == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, result&0x80 != 0)
+		cpu_6502.updateNZ(result)
 		return result
 	})
 	return result
@@ -989,21 +1338,19 @@ func (cpu_6502 *CPU_6502) ror(addr uint16, accumulator bool) byte {
 	*/
 
 	if accumulator {
-		carry := btou8(cpu_6502.getFlag(CARRY_FLAG))
+		carry := btou8(cpu_6502.SR&CARRY_FLAG != 0)
 		cpu_6502.setFlag(CARRY_FLAG, cpu_6502.A&0x01 != 0)
 		cpu_6502.A = (cpu_6502.A >> 1) | (carry << 7)
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		return cpu_6502.A
 	}
 
 	var result byte
-	oldCarry := btou8(cpu_6502.getFlag(CARRY_FLAG))
+	oldCarry := btou8(cpu_6502.SR&CARRY_FLAG != 0)
 	cpu_6502.rmw(addr, func(value byte) byte {
 		cpu_6502.setFlag(CARRY_FLAG, value&0x01 != 0)
 		result = (value >> 1) | (oldCarry << 7)
-		cpu_6502.setFlag(ZERO_FLAG, result == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, result&0x80 != 0)
+		cpu_6502.updateNZ(result)
 		return result
 	})
 	return result
@@ -1025,8 +1372,7 @@ func (cpu_6502 *CPU_6502) compare(reg, value byte) {
 
 	temp := uint16(reg) - uint16(value)
 	cpu_6502.setFlag(CARRY_FLAG, reg >= value)
-	cpu_6502.setFlag(ZERO_FLAG, reg == value)
-	cpu_6502.setFlag(NEGATIVE_FLAG, (temp&0x80) != 0)
+	cpu_6502.updateNZ(byte(temp))
 }
 func (cpu_6502 *CPU_6502) branch(condition bool) {
 	/*
@@ -1043,7 +1389,7 @@ func (cpu_6502 *CPU_6502) branch(condition bool) {
 	      - Adds cycle for page cross
 	*/
 
-	offset := int8(cpu_6502.memory.Read(cpu_6502.PC))
+	offset := int8(cpu_6502.readByte(cpu_6502.PC))
 	cpu_6502.PC++
 	if condition {
 		cpu_6502.Cycles++
@@ -1075,7 +1421,7 @@ func (cpu_6502 *CPU_6502) handleInterrupt(vector uint16, isNMI bool) {
 	   Protected by CPU mutex during processing
 	*/
 
-	if !isNMI && cpu_6502.getFlag(INTERRUPT_FLAG) {
+	if !isNMI && cpu_6502.SR&INTERRUPT_FLAG != 0 {
 		return
 	}
 
@@ -1216,59 +1562,77 @@ func (cpu_6502 *CPU_6502) Execute() {
 
 	cpu_6502.executing.Store(true)
 	defer cpu_6502.executing.Store(false)
+	cpu_6502.ensureOpcodeTableReady()
+
+	if adapter, ok := cpu_6502.memory.(*Bus6502Adapter); ok {
+		if mb, ok := adapter.bus.(*MachineBus); ok {
+			mb.SealMappings()
+		}
+	}
 
 	for cpu_6502.running.Load() {
-		// Pause at instruction boundary if Reset() or external observer requests it
-		if cpu_6502.resetting.Load() {
-			cpu_6502.resetAck.Store(true)
-			for cpu_6502.resetting.Load() {
-				runtime.Gosched()
+		for range 4096 {
+			// Pause at instruction boundary if Reset() or external observer requests it
+			if cpu_6502.resetting.Load() {
+				cpu_6502.resetAck.Store(true)
+				for cpu_6502.resetting.Load() {
+					runtime.Gosched()
+				}
+				cpu_6502.resetAck.Store(false)
+				break
 			}
-			cpu_6502.resetAck.Store(false)
-			continue
+
+			// Check for RDY line hold
+			if !cpu_6502.rdyLine.Load() {
+				cpu_6502.rdyHold = true
+				break
+			}
+			cpu_6502.rdyHold = false
+
+			// Check for interrupts
+			if cpu_6502.nmiPending.Load() {
+				cpu_6502.handleInterrupt(NMI_VECTOR, true)
+				cpu_6502.nmiPending.Store(false)
+			} else if cpu_6502.irqPending.Load() && cpu_6502.SR&INTERRUPT_FLAG == 0 {
+				cpu_6502.handleInterrupt(IRQ_VECTOR, false)
+				cpu_6502.irqPending.Store(false)
+			}
+
+			// Fetch and execute instruction
+			opcode := cpu_6502.readByte(cpu_6502.PC)
+			cpu_6502.PC++
+
+			// Handle breakpoints
+			if cpu_6502.Debug {
+				if _, exists := cpu_6502.breakpoints[cpu_6502.PC-1]; exists {
+					cpu_6502.breakpointHit <- cpu_6502.PC - 1
+					<-cpu_6502.breakpointHit
+				}
+			}
+
+			// Execute opcode via dispatch table
+			cpu_6502.opcodeTable[opcode](cpu_6502)
+
+			if !cpu_6502.running.Load() {
+				break
+			}
+
+			// Performance monitoring (matching IE32 pattern)
+			if cpu_6502.PerfEnabled {
+				cpu_6502.InstructionCount++
+			}
 		}
 
-		// Check for RDY line hold
-		if !cpu_6502.rdyLine.Load() {
-			cpu_6502.rdyHold = true
-			continue
-		}
-		cpu_6502.rdyHold = false
-
-		// Check for interrupts
-		if cpu_6502.nmiPending.Load() {
-			cpu_6502.handleInterrupt(NMI_VECTOR, true)
-			cpu_6502.nmiPending.Store(false)
-		} else if cpu_6502.irqPending.Load() && !cpu_6502.getFlag(INTERRUPT_FLAG) {
-			cpu_6502.handleInterrupt(IRQ_VECTOR, false)
-			cpu_6502.irqPending.Store(false)
-		}
-
-		// Fetch and execute instruction
-		opcode := cpu_6502.memory.Read(cpu_6502.PC)
-		cpu_6502.PC++
-
-		// Handle breakpoints
-		if _, exists := cpu_6502.breakpoints[cpu_6502.PC-1]; exists {
-			cpu_6502.breakpointHit <- cpu_6502.PC - 1
-			<-cpu_6502.breakpointHit
-		}
-
-		// Execute the opcode using shared implementation
-		cpu_6502.executeOpcodeInternal(opcode)
-
-		// Performance monitoring (matching IE32 pattern)
 		if cpu_6502.PerfEnabled {
-			cpu_6502.InstructionCount++
-			if cpu_6502.InstructionCount&0xFFFFFF == 0 { // Every ~16M instructions
-				now := time.Now()
-				if now.Sub(cpu_6502.lastPerfReport) >= time.Second {
-					elapsed := now.Sub(cpu_6502.perfStartTime).Seconds()
+			now := time.Now()
+			if now.Sub(cpu_6502.lastPerfReport) >= time.Second {
+				elapsed := now.Sub(cpu_6502.perfStartTime).Seconds()
+				if elapsed > 0 {
 					ips := float64(cpu_6502.InstructionCount) / elapsed
 					mips := ips / 1_000_000
 					fmt.Printf("6502: %.2f MIPS (%.0f instructions in %.1fs)\n", mips, float64(cpu_6502.InstructionCount), elapsed)
-					cpu_6502.lastPerfReport = now
 				}
+				cpu_6502.lastPerfReport = now
 			}
 		}
 	}
@@ -1277,6 +1641,13 @@ func (cpu_6502 *CPU_6502) Execute() {
 // Step executes a single instruction and returns the number of cycles consumed.
 // This is useful for embedding the CPU in other systems that need precise control.
 func (cpu_6502 *CPU_6502) Step() int {
+	cpu_6502.ensureOpcodeTableReady()
+	if adapter, ok := cpu_6502.memory.(*Bus6502Adapter); ok {
+		if mb, ok := adapter.bus.(*MachineBus); ok {
+			mb.SealMappings()
+		}
+	}
+
 	if !cpu_6502.running.Load() || cpu_6502.resetting.Load() {
 		return 0
 	}
@@ -1292,7 +1663,7 @@ func (cpu_6502 *CPU_6502) Step() int {
 	if cpu_6502.nmiPending.Load() {
 		cpu_6502.handleInterrupt(NMI_VECTOR, true)
 		cpu_6502.nmiPending.Store(false)
-	} else if cpu_6502.irqPending.Load() && !cpu_6502.getFlag(INTERRUPT_FLAG) {
+	} else if cpu_6502.irqPending.Load() && cpu_6502.SR&INTERRUPT_FLAG == 0 {
 		cpu_6502.handleInterrupt(IRQ_VECTOR, false)
 		cpu_6502.irqPending.Store(false)
 	}
@@ -1300,50 +1671,45 @@ func (cpu_6502 *CPU_6502) Step() int {
 	startCycles := cpu_6502.Cycles
 
 	// Fetch opcode
-	opcode := cpu_6502.memory.Read(cpu_6502.PC)
+	opcode := cpu_6502.readByte(cpu_6502.PC)
 	cpu_6502.PC++
 
-	// Execute the instruction using the same switch as Execute()
-	cpu_6502.executeOpcodeInternal(opcode)
+	// Execute the instruction using the same dispatch table as Execute()
+	cpu_6502.opcodeTable[opcode](cpu_6502)
 
 	return int(cpu_6502.Cycles - startCycles)
 }
 
-// executeOpcodeInternal executes a single opcode. Called by both Execute() and Step().
-func (cpu_6502 *CPU_6502) executeOpcodeInternal(opcode byte) {
+// executeOpcodeSwitch executes a single opcode through the legacy switch.
+func (cpu_6502 *CPU_6502) executeOpcodeSwitch(opcode byte) {
 	switch opcode {
 
 	// Load/Store Operations
 	case 0xA9: // LDA Immediate
-		cpu_6502.A = cpu_6502.memory.Read(cpu_6502.PC)
+		cpu_6502.A = cpu_6502.readByte(cpu_6502.PC)
 		cpu_6502.PC++
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 2
 
 	case 0xA5: // LDA Zero Page
-		cpu_6502.A = cpu_6502.memory.Read(cpu_6502.getZeroPage())
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.A = cpu_6502.readByte(cpu_6502.getZeroPage())
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 3
 
 	case 0xB5: // LDA Zero Page,X
-		cpu_6502.A = cpu_6502.memory.Read(cpu_6502.getZeroPageX())
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.A = cpu_6502.readByte(cpu_6502.getZeroPageX())
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 4
 
 	case 0xAD: // LDA Absolute
-		cpu_6502.A = cpu_6502.memory.Read(cpu_6502.getAbsolute())
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.A = cpu_6502.readByte(cpu_6502.getAbsolute())
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 4
 
 	case 0xBD: // LDA Absolute,X
 		addr, crossed := cpu_6502.getAbsoluteX()
-		cpu_6502.A = cpu_6502.memory.Read(addr)
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.A = cpu_6502.readByte(addr)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 4
 		if crossed {
 			cpu_6502.Cycles++
@@ -1351,95 +1717,82 @@ func (cpu_6502 *CPU_6502) executeOpcodeInternal(opcode byte) {
 
 	case 0xB9: // LDA Absolute,Y
 		addr, crossed := cpu_6502.getAbsoluteY()
-		cpu_6502.A = cpu_6502.memory.Read(addr)
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.A = cpu_6502.readByte(addr)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 4
 		if crossed {
 			cpu_6502.Cycles++
 		}
 
 	case 0xA1: // LDA (Indirect,X)
-		cpu_6502.A = cpu_6502.memory.Read(cpu_6502.getIndirectX())
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.A = cpu_6502.readByte(cpu_6502.getIndirectX())
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 6
 
 	case 0xB1: // LDA (Indirect),Y
 		addr, crossed := cpu_6502.getIndirectY()
-		cpu_6502.A = cpu_6502.memory.Read(addr)
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.A = cpu_6502.readByte(addr)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 5
 		if crossed {
 			cpu_6502.Cycles++
 		}
 
 	case 0xA2: // LDX Immediate
-		cpu_6502.X = cpu_6502.memory.Read(cpu_6502.PC)
+		cpu_6502.X = cpu_6502.readByte(cpu_6502.PC)
 		cpu_6502.PC++
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.X == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.X&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.X)
 		cpu_6502.Cycles += 2
 
 	case 0xA6: // LDX Zero Page
-		cpu_6502.X = cpu_6502.memory.Read(cpu_6502.getZeroPage())
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.X == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.X&0x80 != 0)
+		cpu_6502.X = cpu_6502.readByte(cpu_6502.getZeroPage())
+		cpu_6502.updateNZ(cpu_6502.X)
 		cpu_6502.Cycles += 3
 
 	case 0xB6: // LDX Zero Page,Y
-		cpu_6502.X = cpu_6502.memory.Read(cpu_6502.getZeroPageY())
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.X == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.X&0x80 != 0)
+		cpu_6502.X = cpu_6502.readByte(cpu_6502.getZeroPageY())
+		cpu_6502.updateNZ(cpu_6502.X)
 		cpu_6502.Cycles += 4
 
 	case 0xAE: // LDX Absolute
-		cpu_6502.X = cpu_6502.memory.Read(cpu_6502.getAbsolute())
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.X == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.X&0x80 != 0)
+		cpu_6502.X = cpu_6502.readByte(cpu_6502.getAbsolute())
+		cpu_6502.updateNZ(cpu_6502.X)
 		cpu_6502.Cycles += 4
 
 	case 0xBE: // LDX Absolute,Y
 		addr, crossed := cpu_6502.getAbsoluteY()
-		cpu_6502.X = cpu_6502.memory.Read(addr)
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.X == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.X&0x80 != 0)
+		cpu_6502.X = cpu_6502.readByte(addr)
+		cpu_6502.updateNZ(cpu_6502.X)
 		cpu_6502.Cycles += 4
 		if crossed {
 			cpu_6502.Cycles++
 		}
 
 	case 0xA0: // LDY Immediate
-		cpu_6502.Y = cpu_6502.memory.Read(cpu_6502.PC)
+		cpu_6502.Y = cpu_6502.readByte(cpu_6502.PC)
 		cpu_6502.PC++
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.Y == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.Y&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.Y)
 		cpu_6502.Cycles += 2
 
 	case 0xA4: // LDY Zero Page
-		cpu_6502.Y = cpu_6502.memory.Read(cpu_6502.getZeroPage())
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.Y == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.Y&0x80 != 0)
+		cpu_6502.Y = cpu_6502.readByte(cpu_6502.getZeroPage())
+		cpu_6502.updateNZ(cpu_6502.Y)
 		cpu_6502.Cycles += 3
 
 	case 0xB4: // LDY Zero Page,X
-		cpu_6502.Y = cpu_6502.memory.Read(cpu_6502.getZeroPageX())
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.Y == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.Y&0x80 != 0)
+		cpu_6502.Y = cpu_6502.readByte(cpu_6502.getZeroPageX())
+		cpu_6502.updateNZ(cpu_6502.Y)
 		cpu_6502.Cycles += 4
 
 	case 0xAC: // LDY Absolute
-		cpu_6502.Y = cpu_6502.memory.Read(cpu_6502.getAbsolute())
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.Y == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.Y&0x80 != 0)
+		cpu_6502.Y = cpu_6502.readByte(cpu_6502.getAbsolute())
+		cpu_6502.updateNZ(cpu_6502.Y)
 		cpu_6502.Cycles += 4
 
 	case 0xBC: // LDY Absolute,X
 		addr, crossed := cpu_6502.getAbsoluteX()
-		cpu_6502.Y = cpu_6502.memory.Read(addr)
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.Y == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.Y&0x80 != 0)
+		cpu_6502.Y = cpu_6502.readByte(addr)
+		cpu_6502.updateNZ(cpu_6502.Y)
 		cpu_6502.Cycles += 4
 		if crossed {
 			cpu_6502.Cycles++
@@ -1447,89 +1800,84 @@ func (cpu_6502 *CPU_6502) executeOpcodeInternal(opcode byte) {
 
 	// Store operations
 	case 0x85: // STA Zero Page
-		cpu_6502.memory.Write(cpu_6502.getZeroPage(), cpu_6502.A)
+		cpu_6502.writeByte(cpu_6502.getZeroPage(), cpu_6502.A)
 		cpu_6502.Cycles += 3
 
 	case 0x95: // STA Zero Page,X
-		cpu_6502.memory.Write(cpu_6502.getZeroPageX(), cpu_6502.A)
+		cpu_6502.writeByte(cpu_6502.getZeroPageX(), cpu_6502.A)
 		cpu_6502.Cycles += 4
 
 	case 0x8D: // STA Absolute
-		cpu_6502.memory.Write(cpu_6502.getAbsolute(), cpu_6502.A)
+		cpu_6502.writeByte(cpu_6502.getAbsolute(), cpu_6502.A)
 		cpu_6502.Cycles += 4
 
 	case 0x9D: // STA Absolute,X
 		addr, _ := cpu_6502.getAbsoluteX()
-		cpu_6502.memory.Write(addr, cpu_6502.A)
+		cpu_6502.writeByte(addr, cpu_6502.A)
 		cpu_6502.Cycles += 5
 
 	case 0x99: // STA Absolute,Y
 		addr, _ := cpu_6502.getAbsoluteY()
-		cpu_6502.memory.Write(addr, cpu_6502.A)
+		cpu_6502.writeByte(addr, cpu_6502.A)
 		cpu_6502.Cycles += 5
 
 	case 0x81: // STA (Indirect,X)
-		cpu_6502.memory.Write(cpu_6502.getIndirectX(), cpu_6502.A)
+		cpu_6502.writeByte(cpu_6502.getIndirectX(), cpu_6502.A)
 		cpu_6502.Cycles += 6
 
 	case 0x91: // STA (Indirect),Y
 		addr, _ := cpu_6502.getIndirectY()
-		cpu_6502.memory.Write(addr, cpu_6502.A)
+		cpu_6502.writeByte(addr, cpu_6502.A)
 		cpu_6502.Cycles += 6
 
 	case 0x86: // STX Zero Page
-		cpu_6502.memory.Write(cpu_6502.getZeroPage(), cpu_6502.X)
+		cpu_6502.writeByte(cpu_6502.getZeroPage(), cpu_6502.X)
 		cpu_6502.Cycles += 3
 
 	case 0x96: // STX Zero Page,Y
-		cpu_6502.memory.Write(cpu_6502.getZeroPageY(), cpu_6502.X)
+		cpu_6502.writeByte(cpu_6502.getZeroPageY(), cpu_6502.X)
 		cpu_6502.Cycles += 4
 
 	case 0x8E: // STX Absolute
-		cpu_6502.memory.Write(cpu_6502.getAbsolute(), cpu_6502.X)
+		cpu_6502.writeByte(cpu_6502.getAbsolute(), cpu_6502.X)
 		cpu_6502.Cycles += 4
 
 	case 0x84: // STY Zero Page
-		cpu_6502.memory.Write(cpu_6502.getZeroPage(), cpu_6502.Y)
+		cpu_6502.writeByte(cpu_6502.getZeroPage(), cpu_6502.Y)
 		cpu_6502.Cycles += 3
 
 	case 0x94: // STY Zero Page,X
-		cpu_6502.memory.Write(cpu_6502.getZeroPageX(), cpu_6502.Y)
+		cpu_6502.writeByte(cpu_6502.getZeroPageX(), cpu_6502.Y)
 		cpu_6502.Cycles += 4
 
 	case 0x8C: // STY Absolute
-		cpu_6502.memory.Write(cpu_6502.getAbsolute(), cpu_6502.Y)
+		cpu_6502.writeByte(cpu_6502.getAbsolute(), cpu_6502.Y)
 		cpu_6502.Cycles += 4
 
 	// Register Transfer Operations
 	case 0xAA: // TAX
 		cpu_6502.X = cpu_6502.A
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.X == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.X&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.X)
 		cpu_6502.Cycles += 2
 
 	case 0x8A: // TXA
 		cpu_6502.A = cpu_6502.X
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 2
 
 	case 0xA8: // TAY
 		cpu_6502.Y = cpu_6502.A
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.Y == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.Y&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.Y)
 		cpu_6502.Cycles += 2
 
 	case 0x98: // TYA
 		cpu_6502.A = cpu_6502.Y
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 2
 
 	case 0xBA: // TSX
 		cpu_6502.X = cpu_6502.SP
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.X == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.X&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.X)
 		cpu_6502.Cycles += 2
 
 	case 0x9A: // TXS
@@ -1543,8 +1891,7 @@ func (cpu_6502 *CPU_6502) executeOpcodeInternal(opcode byte) {
 
 	case 0x68: // PLA
 		cpu_6502.A = cpu_6502.pop()
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 4
 
 	case 0x08: // PHP
@@ -1557,25 +1904,25 @@ func (cpu_6502 *CPU_6502) executeOpcodeInternal(opcode byte) {
 
 	// Arithmetic Operations
 	case 0x69: // ADC Immediate
-		cpu_6502.adc(cpu_6502.memory.Read(cpu_6502.PC))
+		cpu_6502.adc(cpu_6502.readByte(cpu_6502.PC))
 		cpu_6502.PC++
 		cpu_6502.Cycles += 2
 
 	case 0x65: // ADC Zero Page
-		cpu_6502.adc(cpu_6502.memory.Read(cpu_6502.getZeroPage()))
+		cpu_6502.adc(cpu_6502.readByte(cpu_6502.getZeroPage()))
 		cpu_6502.Cycles += 3
 
 	case 0x75: // ADC Zero Page,X
-		cpu_6502.adc(cpu_6502.memory.Read(cpu_6502.getZeroPageX()))
+		cpu_6502.adc(cpu_6502.readByte(cpu_6502.getZeroPageX()))
 		cpu_6502.Cycles += 4
 
 	case 0x6D: // ADC Absolute
-		cpu_6502.adc(cpu_6502.memory.Read(cpu_6502.getAbsolute()))
+		cpu_6502.adc(cpu_6502.readByte(cpu_6502.getAbsolute()))
 		cpu_6502.Cycles += 4
 
 	case 0x7D: // ADC Absolute,X
 		addr, crossed := cpu_6502.getAbsoluteX()
-		cpu_6502.adc(cpu_6502.memory.Read(addr))
+		cpu_6502.adc(cpu_6502.readByte(addr))
 		cpu_6502.Cycles += 4
 		if crossed {
 			cpu_6502.Cycles++
@@ -1583,44 +1930,44 @@ func (cpu_6502 *CPU_6502) executeOpcodeInternal(opcode byte) {
 
 	case 0x79: // ADC Absolute,Y
 		addr, crossed := cpu_6502.getAbsoluteY()
-		cpu_6502.adc(cpu_6502.memory.Read(addr))
+		cpu_6502.adc(cpu_6502.readByte(addr))
 		cpu_6502.Cycles += 4
 		if crossed {
 			cpu_6502.Cycles++
 		}
 
 	case 0x61: // ADC (Indirect,X)
-		cpu_6502.adc(cpu_6502.memory.Read(cpu_6502.getIndirectX()))
+		cpu_6502.adc(cpu_6502.readByte(cpu_6502.getIndirectX()))
 		cpu_6502.Cycles += 6
 
 	case 0x71: // ADC (Indirect),Y
 		addr, crossed := cpu_6502.getIndirectY()
-		cpu_6502.adc(cpu_6502.memory.Read(addr))
+		cpu_6502.adc(cpu_6502.readByte(addr))
 		cpu_6502.Cycles += 5
 		if crossed {
 			cpu_6502.Cycles++
 		}
 
 	case 0xE9: // SBC Immediate
-		cpu_6502.sbc(cpu_6502.memory.Read(cpu_6502.PC))
+		cpu_6502.sbc(cpu_6502.readByte(cpu_6502.PC))
 		cpu_6502.PC++
 		cpu_6502.Cycles += 2
 
 	case 0xE5: // SBC Zero Page
-		cpu_6502.sbc(cpu_6502.memory.Read(cpu_6502.getZeroPage()))
+		cpu_6502.sbc(cpu_6502.readByte(cpu_6502.getZeroPage()))
 		cpu_6502.Cycles += 3
 
 	case 0xF5: // SBC Zero Page,X
-		cpu_6502.sbc(cpu_6502.memory.Read(cpu_6502.getZeroPageX()))
+		cpu_6502.sbc(cpu_6502.readByte(cpu_6502.getZeroPageX()))
 		cpu_6502.Cycles += 4
 
 	case 0xED: // SBC Absolute
-		cpu_6502.sbc(cpu_6502.memory.Read(cpu_6502.getAbsolute()))
+		cpu_6502.sbc(cpu_6502.readByte(cpu_6502.getAbsolute()))
 		cpu_6502.Cycles += 4
 
 	case 0xFD: // SBC Absolute,X
 		addr, crossed := cpu_6502.getAbsoluteX()
-		cpu_6502.sbc(cpu_6502.memory.Read(addr))
+		cpu_6502.sbc(cpu_6502.readByte(addr))
 		cpu_6502.Cycles += 4
 		if crossed {
 			cpu_6502.Cycles++
@@ -1628,19 +1975,19 @@ func (cpu_6502 *CPU_6502) executeOpcodeInternal(opcode byte) {
 
 	case 0xF9: // SBC Absolute,Y
 		addr, crossed := cpu_6502.getAbsoluteY()
-		cpu_6502.sbc(cpu_6502.memory.Read(addr))
+		cpu_6502.sbc(cpu_6502.readByte(addr))
 		cpu_6502.Cycles += 4
 		if crossed {
 			cpu_6502.Cycles++
 		}
 
 	case 0xE1: // SBC (Indirect,X)
-		cpu_6502.sbc(cpu_6502.memory.Read(cpu_6502.getIndirectX()))
+		cpu_6502.sbc(cpu_6502.readByte(cpu_6502.getIndirectX()))
 		cpu_6502.Cycles += 6
 
 	case 0xF1: // SBC (Indirect),Y
 		addr, crossed := cpu_6502.getIndirectY()
-		cpu_6502.sbc(cpu_6502.memory.Read(addr))
+		cpu_6502.sbc(cpu_6502.readByte(addr))
 		cpu_6502.Cycles += 5
 		if crossed {
 			cpu_6502.Cycles++
@@ -1683,59 +2030,50 @@ func (cpu_6502 *CPU_6502) executeOpcodeInternal(opcode byte) {
 
 	case 0xE8: // INX
 		cpu_6502.X++
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.X == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.X&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.X)
 		cpu_6502.Cycles += 2
 
 	case 0xC8: // INY
 		cpu_6502.Y++
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.Y == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.Y&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.Y)
 		cpu_6502.Cycles += 2
 
 	case 0xCA: // DEX
 		cpu_6502.X--
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.X == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.X&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.X)
 		cpu_6502.Cycles += 2
 
 	case 0x88: // DEY
 		cpu_6502.Y--
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.Y == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.Y&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.Y)
 		cpu_6502.Cycles += 2
 
 	// Logical Operations
 	case 0x29: // AND Immediate
-		cpu_6502.A &= cpu_6502.memory.Read(cpu_6502.PC)
+		cpu_6502.A &= cpu_6502.readByte(cpu_6502.PC)
 		cpu_6502.PC++
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 2
 
 	case 0x25: // AND Zero Page
-		cpu_6502.A &= cpu_6502.memory.Read(cpu_6502.getZeroPage())
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.A &= cpu_6502.readByte(cpu_6502.getZeroPage())
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 3
 
 	case 0x35: // AND Zero Page,X
-		cpu_6502.A &= cpu_6502.memory.Read(cpu_6502.getZeroPageX())
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.A &= cpu_6502.readByte(cpu_6502.getZeroPageX())
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 4
 
 	case 0x2D: // AND Absolute
-		cpu_6502.A &= cpu_6502.memory.Read(cpu_6502.getAbsolute())
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.A &= cpu_6502.readByte(cpu_6502.getAbsolute())
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 4
 
 	case 0x3D: // AND Absolute,X
 		addr, crossed := cpu_6502.getAbsoluteX()
-		cpu_6502.A &= cpu_6502.memory.Read(addr)
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.A &= cpu_6502.readByte(addr)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 4
 		if crossed {
 			cpu_6502.Cycles++
@@ -1743,60 +2081,52 @@ func (cpu_6502 *CPU_6502) executeOpcodeInternal(opcode byte) {
 
 	case 0x39: // AND Absolute,Y
 		addr, crossed := cpu_6502.getAbsoluteY()
-		cpu_6502.A &= cpu_6502.memory.Read(addr)
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.A &= cpu_6502.readByte(addr)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 4
 		if crossed {
 			cpu_6502.Cycles++
 		}
 
 	case 0x21: // AND (Indirect,X)
-		cpu_6502.A &= cpu_6502.memory.Read(cpu_6502.getIndirectX())
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.A &= cpu_6502.readByte(cpu_6502.getIndirectX())
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 6
 
 	case 0x31: // AND (Indirect),Y
 		addr, crossed := cpu_6502.getIndirectY()
-		cpu_6502.A &= cpu_6502.memory.Read(addr)
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.A &= cpu_6502.readByte(addr)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 5
 		if crossed {
 			cpu_6502.Cycles++
 		}
 
 	case 0x09: // ORA Immediate
-		cpu_6502.A |= cpu_6502.memory.Read(cpu_6502.PC)
+		cpu_6502.A |= cpu_6502.readByte(cpu_6502.PC)
 		cpu_6502.PC++
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 2
 
 	case 0x05: // ORA Zero Page
-		cpu_6502.A |= cpu_6502.memory.Read(cpu_6502.getZeroPage())
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.A |= cpu_6502.readByte(cpu_6502.getZeroPage())
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 3
 
 	case 0x15: // ORA Zero Page,X
-		cpu_6502.A |= cpu_6502.memory.Read(cpu_6502.getZeroPageX())
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.A |= cpu_6502.readByte(cpu_6502.getZeroPageX())
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 4
 
 	case 0x0D: // ORA Absolute
-		cpu_6502.A |= cpu_6502.memory.Read(cpu_6502.getAbsolute())
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.A |= cpu_6502.readByte(cpu_6502.getAbsolute())
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 4
 
 	case 0x1D: // ORA Absolute,X
 		addr, crossed := cpu_6502.getAbsoluteX()
-		cpu_6502.A |= cpu_6502.memory.Read(addr)
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.A |= cpu_6502.readByte(addr)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 4
 		if crossed {
 			cpu_6502.Cycles++
@@ -1804,60 +2134,52 @@ func (cpu_6502 *CPU_6502) executeOpcodeInternal(opcode byte) {
 
 	case 0x19: // ORA Absolute,Y
 		addr, crossed := cpu_6502.getAbsoluteY()
-		cpu_6502.A |= cpu_6502.memory.Read(addr)
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.A |= cpu_6502.readByte(addr)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 4
 		if crossed {
 			cpu_6502.Cycles++
 		}
 
 	case 0x01: // ORA (Indirect,X)
-		cpu_6502.A |= cpu_6502.memory.Read(cpu_6502.getIndirectX())
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.A |= cpu_6502.readByte(cpu_6502.getIndirectX())
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 6
 
 	case 0x11: // ORA (Indirect),Y
 		addr, crossed := cpu_6502.getIndirectY()
-		cpu_6502.A |= cpu_6502.memory.Read(addr)
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.A |= cpu_6502.readByte(addr)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 5
 		if crossed {
 			cpu_6502.Cycles++
 		}
 
 	case 0x49: // EOR Immediate
-		cpu_6502.A ^= cpu_6502.memory.Read(cpu_6502.PC)
+		cpu_6502.A ^= cpu_6502.readByte(cpu_6502.PC)
 		cpu_6502.PC++
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 2
 
 	case 0x45: // EOR Zero Page
-		cpu_6502.A ^= cpu_6502.memory.Read(cpu_6502.getZeroPage())
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.A ^= cpu_6502.readByte(cpu_6502.getZeroPage())
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 3
 
 	case 0x55: // EOR Zero Page,X
-		cpu_6502.A ^= cpu_6502.memory.Read(cpu_6502.getZeroPageX())
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.A ^= cpu_6502.readByte(cpu_6502.getZeroPageX())
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 4
 
 	case 0x4D: // EOR Absolute
-		cpu_6502.A ^= cpu_6502.memory.Read(cpu_6502.getAbsolute())
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.A ^= cpu_6502.readByte(cpu_6502.getAbsolute())
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 4
 
 	case 0x5D: // EOR Absolute,X
 		addr, crossed := cpu_6502.getAbsoluteX()
-		cpu_6502.A ^= cpu_6502.memory.Read(addr)
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.A ^= cpu_6502.readByte(addr)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 4
 		if crossed {
 			cpu_6502.Cycles++
@@ -1865,25 +2187,22 @@ func (cpu_6502 *CPU_6502) executeOpcodeInternal(opcode byte) {
 
 	case 0x59: // EOR Absolute,Y
 		addr, crossed := cpu_6502.getAbsoluteY()
-		cpu_6502.A ^= cpu_6502.memory.Read(addr)
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.A ^= cpu_6502.readByte(addr)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 4
 		if crossed {
 			cpu_6502.Cycles++
 		}
 
 	case 0x41: // EOR (Indirect,X)
-		cpu_6502.A ^= cpu_6502.memory.Read(cpu_6502.getIndirectX())
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.A ^= cpu_6502.readByte(cpu_6502.getIndirectX())
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 6
 
 	case 0x51: // EOR (Indirect),Y
 		addr, crossed := cpu_6502.getIndirectY()
-		cpu_6502.A ^= cpu_6502.memory.Read(addr)
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.A ^= cpu_6502.readByte(addr)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 5
 		if crossed {
 			cpu_6502.Cycles++
@@ -1891,14 +2210,14 @@ func (cpu_6502 *CPU_6502) executeOpcodeInternal(opcode byte) {
 
 	// Bit Operations
 	case 0x24: // BIT Zero Page
-		value := cpu_6502.memory.Read(cpu_6502.getZeroPage())
+		value := cpu_6502.readByte(cpu_6502.getZeroPage())
 		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A&value == 0)
 		cpu_6502.setFlag(OVERFLOW_FLAG, value&0x40 != 0)
 		cpu_6502.setFlag(NEGATIVE_FLAG, value&0x80 != 0)
 		cpu_6502.Cycles += 3
 
 	case 0x2C: // BIT Absolute
-		value := cpu_6502.memory.Read(cpu_6502.getAbsolute())
+		value := cpu_6502.readByte(cpu_6502.getAbsolute())
 		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A&value == 0)
 		cpu_6502.setFlag(OVERFLOW_FLAG, value&0x40 != 0)
 		cpu_6502.setFlag(NEGATIVE_FLAG, value&0x80 != 0)
@@ -1991,25 +2310,25 @@ func (cpu_6502 *CPU_6502) executeOpcodeInternal(opcode byte) {
 
 	// Compare Operations
 	case 0xC9: // CMP Immediate
-		cpu_6502.compare(cpu_6502.A, cpu_6502.memory.Read(cpu_6502.PC))
+		cpu_6502.compare(cpu_6502.A, cpu_6502.readByte(cpu_6502.PC))
 		cpu_6502.PC++
 		cpu_6502.Cycles += 2
 
 	case 0xC5: // CMP Zero Page
-		cpu_6502.compare(cpu_6502.A, cpu_6502.memory.Read(cpu_6502.getZeroPage()))
+		cpu_6502.compare(cpu_6502.A, cpu_6502.readByte(cpu_6502.getZeroPage()))
 		cpu_6502.Cycles += 3
 
 	case 0xD5: // CMP Zero Page,X
-		cpu_6502.compare(cpu_6502.A, cpu_6502.memory.Read(cpu_6502.getZeroPageX()))
+		cpu_6502.compare(cpu_6502.A, cpu_6502.readByte(cpu_6502.getZeroPageX()))
 		cpu_6502.Cycles += 4
 
 	case 0xCD: // CMP Absolute
-		cpu_6502.compare(cpu_6502.A, cpu_6502.memory.Read(cpu_6502.getAbsolute()))
+		cpu_6502.compare(cpu_6502.A, cpu_6502.readByte(cpu_6502.getAbsolute()))
 		cpu_6502.Cycles += 4
 
 	case 0xDD: // CMP Absolute,X
 		addr, crossed := cpu_6502.getAbsoluteX()
-		cpu_6502.compare(cpu_6502.A, cpu_6502.memory.Read(addr))
+		cpu_6502.compare(cpu_6502.A, cpu_6502.readByte(addr))
 		cpu_6502.Cycles += 4
 		if crossed {
 			cpu_6502.Cycles++
@@ -2017,74 +2336,74 @@ func (cpu_6502 *CPU_6502) executeOpcodeInternal(opcode byte) {
 
 	case 0xD9: // CMP Absolute,Y
 		addr, crossed := cpu_6502.getAbsoluteY()
-		cpu_6502.compare(cpu_6502.A, cpu_6502.memory.Read(addr))
+		cpu_6502.compare(cpu_6502.A, cpu_6502.readByte(addr))
 		cpu_6502.Cycles += 4
 		if crossed {
 			cpu_6502.Cycles++
 		}
 
 	case 0xC1: // CMP (Indirect,X)
-		cpu_6502.compare(cpu_6502.A, cpu_6502.memory.Read(cpu_6502.getIndirectX()))
+		cpu_6502.compare(cpu_6502.A, cpu_6502.readByte(cpu_6502.getIndirectX()))
 		cpu_6502.Cycles += 6
 
 	case 0xD1: // CMP (Indirect),Y
 		addr, crossed := cpu_6502.getIndirectY()
-		cpu_6502.compare(cpu_6502.A, cpu_6502.memory.Read(addr))
+		cpu_6502.compare(cpu_6502.A, cpu_6502.readByte(addr))
 		cpu_6502.Cycles += 5
 		if crossed {
 			cpu_6502.Cycles++
 		}
 
 	case 0xE0: // CPX Immediate
-		cpu_6502.compare(cpu_6502.X, cpu_6502.memory.Read(cpu_6502.PC))
+		cpu_6502.compare(cpu_6502.X, cpu_6502.readByte(cpu_6502.PC))
 		cpu_6502.PC++
 		cpu_6502.Cycles += 2
 
 	case 0xE4: // CPX Zero Page
-		cpu_6502.compare(cpu_6502.X, cpu_6502.memory.Read(cpu_6502.getZeroPage()))
+		cpu_6502.compare(cpu_6502.X, cpu_6502.readByte(cpu_6502.getZeroPage()))
 		cpu_6502.Cycles += 3
 
 	case 0xEC: // CPX Absolute
-		cpu_6502.compare(cpu_6502.X, cpu_6502.memory.Read(cpu_6502.getAbsolute()))
+		cpu_6502.compare(cpu_6502.X, cpu_6502.readByte(cpu_6502.getAbsolute()))
 		cpu_6502.Cycles += 4
 
 	case 0xC0: // CPY Immediate
-		cpu_6502.compare(cpu_6502.Y, cpu_6502.memory.Read(cpu_6502.PC))
+		cpu_6502.compare(cpu_6502.Y, cpu_6502.readByte(cpu_6502.PC))
 		cpu_6502.PC++
 		cpu_6502.Cycles += 2
 
 	case 0xC4: // CPY Zero Page
-		cpu_6502.compare(cpu_6502.Y, cpu_6502.memory.Read(cpu_6502.getZeroPage()))
+		cpu_6502.compare(cpu_6502.Y, cpu_6502.readByte(cpu_6502.getZeroPage()))
 		cpu_6502.Cycles += 3
 
 	case 0xCC: // CPY Absolute
-		cpu_6502.compare(cpu_6502.Y, cpu_6502.memory.Read(cpu_6502.getAbsolute()))
+		cpu_6502.compare(cpu_6502.Y, cpu_6502.readByte(cpu_6502.getAbsolute()))
 		cpu_6502.Cycles += 4
 
 	// Branch Operations
 	case 0x90: // BCC
-		cpu_6502.branch(!cpu_6502.getFlag(CARRY_FLAG))
+		cpu_6502.branch(cpu_6502.SR&CARRY_FLAG == 0)
 
 	case 0xB0: // BCS
-		cpu_6502.branch(cpu_6502.getFlag(CARRY_FLAG))
+		cpu_6502.branch(cpu_6502.SR&CARRY_FLAG != 0)
 
 	case 0xF0: // BEQ
-		cpu_6502.branch(cpu_6502.getFlag(ZERO_FLAG))
+		cpu_6502.branch(cpu_6502.SR&ZERO_FLAG != 0)
 
 	case 0xD0: // BNE
-		cpu_6502.branch(!cpu_6502.getFlag(ZERO_FLAG))
+		cpu_6502.branch(cpu_6502.SR&ZERO_FLAG == 0)
 
 	case 0x30: // BMI
-		cpu_6502.branch(cpu_6502.getFlag(NEGATIVE_FLAG))
+		cpu_6502.branch(cpu_6502.SR&NEGATIVE_FLAG != 0)
 
 	case 0x10: // BPL
-		cpu_6502.branch(!cpu_6502.getFlag(NEGATIVE_FLAG))
+		cpu_6502.branch(cpu_6502.SR&NEGATIVE_FLAG == 0)
 
 	case 0x70: // BVS
-		cpu_6502.branch(cpu_6502.getFlag(OVERFLOW_FLAG))
+		cpu_6502.branch(cpu_6502.SR&OVERFLOW_FLAG != 0)
 
 	case 0x50: // BVC
-		cpu_6502.branch(!cpu_6502.getFlag(OVERFLOW_FLAG))
+		cpu_6502.branch(cpu_6502.SR&OVERFLOW_FLAG == 0)
 
 	// Jump/Call Operations
 	case 0x4C: // JMP Absolute
@@ -2092,12 +2411,12 @@ func (cpu_6502 *CPU_6502) executeOpcodeInternal(opcode byte) {
 		cpu_6502.Cycles += 3
 
 	case 0x6C: // JMP Indirect
-		low := cpu_6502.memory.Read(cpu_6502.PC)
-		high := cpu_6502.memory.Read(cpu_6502.PC + 1)
+		low := cpu_6502.readByte(cpu_6502.PC)
+		high := cpu_6502.readByte(cpu_6502.PC + 1)
 		addr := uint16(low) | uint16(high)<<8
 		// 6502 bug: wraps within page
-		low2 := cpu_6502.memory.Read(addr)
-		high2 := cpu_6502.memory.Read((addr & 0xFF00) | ((addr + 1) & 0x00FF))
+		low2 := cpu_6502.readByte(addr)
+		high2 := cpu_6502.readByte((addr & 0xFF00) | ((addr + 1) & 0x00FF))
 		cpu_6502.PC = uint16(low2) | uint16(high2)<<8
 		cpu_6502.Cycles += 5
 
@@ -2113,31 +2432,31 @@ func (cpu_6502 *CPU_6502) executeOpcodeInternal(opcode byte) {
 
 	// Flag Operations
 	case 0x18: // CLC
-		cpu_6502.setFlag(CARRY_FLAG, false)
+		cpu_6502.SR &^= CARRY_FLAG
 		cpu_6502.Cycles += 2
 
 	case 0x38: // SEC
-		cpu_6502.setFlag(CARRY_FLAG, true)
+		cpu_6502.SR |= CARRY_FLAG
 		cpu_6502.Cycles += 2
 
 	case 0x58: // CLI
-		cpu_6502.setFlag(INTERRUPT_FLAG, false)
+		cpu_6502.SR &^= INTERRUPT_FLAG
 		cpu_6502.Cycles += 2
 
 	case 0x78: // SEI
-		cpu_6502.setFlag(INTERRUPT_FLAG, true)
+		cpu_6502.SR |= INTERRUPT_FLAG
 		cpu_6502.Cycles += 2
 
 	case 0xB8: // CLV
-		cpu_6502.setFlag(OVERFLOW_FLAG, false)
+		cpu_6502.SR &^= OVERFLOW_FLAG
 		cpu_6502.Cycles += 2
 
 	case 0xD8: // CLD
-		cpu_6502.setFlag(DECIMAL_FLAG, false)
+		cpu_6502.SR &^= DECIMAL_FLAG
 		cpu_6502.Cycles += 2
 
 	case 0xF8: // SED
-		cpu_6502.setFlag(DECIMAL_FLAG, true)
+		cpu_6502.SR |= DECIMAL_FLAG
 		cpu_6502.Cycles += 2
 
 	// Special Operations
@@ -2180,7 +2499,7 @@ func (cpu_6502 *CPU_6502) executeOpcodeInternal(opcode byte) {
 
 	case 0x1C, 0x3C, 0x5C, 0x7C, 0xDC, 0xFC: // NOP Absolute,X
 		addr, crossed := cpu_6502.getAbsoluteX()
-		_ = cpu_6502.memory.Read(addr)
+		_ = cpu_6502.readByte(addr)
 		cpu_6502.Cycles += 4
 		if crossed {
 			cpu_6502.Cycles++
@@ -2188,171 +2507,165 @@ func (cpu_6502 *CPU_6502) executeOpcodeInternal(opcode byte) {
 
 	// Unofficial opcodes
 	case 0xA7: // LAX Zero Page
-		cpu_6502.A = cpu_6502.memory.Read(cpu_6502.getZeroPage())
+		cpu_6502.A = cpu_6502.readByte(cpu_6502.getZeroPage())
 		cpu_6502.X = cpu_6502.A
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 3
 
 	case 0xB7: // LAX Zero Page,Y
-		cpu_6502.A = cpu_6502.memory.Read(cpu_6502.getZeroPageY())
+		cpu_6502.A = cpu_6502.readByte(cpu_6502.getZeroPageY())
 		cpu_6502.X = cpu_6502.A
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 4
 
 	case 0xAF: // LAX Absolute
-		cpu_6502.A = cpu_6502.memory.Read(cpu_6502.getAbsolute())
+		cpu_6502.A = cpu_6502.readByte(cpu_6502.getAbsolute())
 		cpu_6502.X = cpu_6502.A
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 4
 
 	case 0xBF: // LAX Absolute,Y
 		addr, crossed := cpu_6502.getAbsoluteY()
-		cpu_6502.A = cpu_6502.memory.Read(addr)
+		cpu_6502.A = cpu_6502.readByte(addr)
 		cpu_6502.X = cpu_6502.A
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 4
 		if crossed {
 			cpu_6502.Cycles++
 		}
 
 	case 0xA3: // LAX (Indirect,X)
-		cpu_6502.A = cpu_6502.memory.Read(cpu_6502.getIndirectX())
+		cpu_6502.A = cpu_6502.readByte(cpu_6502.getIndirectX())
 		cpu_6502.X = cpu_6502.A
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 6
 
 	case 0xB3: // LAX (Indirect),Y
 		addr, crossed := cpu_6502.getIndirectY()
-		cpu_6502.A = cpu_6502.memory.Read(addr)
+		cpu_6502.A = cpu_6502.readByte(addr)
 		cpu_6502.X = cpu_6502.A
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 5
 		if crossed {
 			cpu_6502.Cycles++
 		}
 
 	case 0x87: // SAX Zero Page
-		cpu_6502.memory.Write(cpu_6502.getZeroPage(), cpu_6502.A&cpu_6502.X)
+		cpu_6502.writeByte(cpu_6502.getZeroPage(), cpu_6502.A&cpu_6502.X)
 		cpu_6502.Cycles += 3
 
 	case 0x97: // SAX Zero Page,Y
-		cpu_6502.memory.Write(cpu_6502.getZeroPageY(), cpu_6502.A&cpu_6502.X)
+		cpu_6502.writeByte(cpu_6502.getZeroPageY(), cpu_6502.A&cpu_6502.X)
 		cpu_6502.Cycles += 4
 
 	case 0x8F: // SAX Absolute
-		cpu_6502.memory.Write(cpu_6502.getAbsolute(), cpu_6502.A&cpu_6502.X)
+		cpu_6502.writeByte(cpu_6502.getAbsolute(), cpu_6502.A&cpu_6502.X)
 		cpu_6502.Cycles += 4
 
 	case 0x83: // SAX (Indirect,X)
-		cpu_6502.memory.Write(cpu_6502.getIndirectX(), cpu_6502.A&cpu_6502.X)
+		cpu_6502.writeByte(cpu_6502.getIndirectX(), cpu_6502.A&cpu_6502.X)
 		cpu_6502.Cycles += 6
 
 	case 0xEB: // SBC Immediate (unofficial)
-		cpu_6502.sbc(cpu_6502.memory.Read(cpu_6502.PC))
+		cpu_6502.sbc(cpu_6502.readByte(cpu_6502.PC))
 		cpu_6502.PC++
 		cpu_6502.Cycles += 2
 
 	case 0xC7: // DCP Zero Page
 		addr := cpu_6502.getZeroPage()
-		val := cpu_6502.memory.Read(addr) - 1
-		cpu_6502.memory.Write(addr, val)
+		val := cpu_6502.readByte(addr) - 1
+		cpu_6502.writeByte(addr, val)
 		cpu_6502.compare(cpu_6502.A, val)
 		cpu_6502.Cycles += 5
 
 	case 0xD7: // DCP Zero Page,X
 		addr := cpu_6502.getZeroPageX()
-		val := cpu_6502.memory.Read(addr) - 1
-		cpu_6502.memory.Write(addr, val)
+		val := cpu_6502.readByte(addr) - 1
+		cpu_6502.writeByte(addr, val)
 		cpu_6502.compare(cpu_6502.A, val)
 		cpu_6502.Cycles += 6
 
 	case 0xCF: // DCP Absolute
 		addr := cpu_6502.getAbsolute()
-		val := cpu_6502.memory.Read(addr) - 1
-		cpu_6502.memory.Write(addr, val)
+		val := cpu_6502.readByte(addr) - 1
+		cpu_6502.writeByte(addr, val)
 		cpu_6502.compare(cpu_6502.A, val)
 		cpu_6502.Cycles += 6
 
 	case 0xDF: // DCP Absolute,X
 		addr, _ := cpu_6502.getAbsoluteX()
-		val := cpu_6502.memory.Read(addr) - 1
-		cpu_6502.memory.Write(addr, val)
+		val := cpu_6502.readByte(addr) - 1
+		cpu_6502.writeByte(addr, val)
 		cpu_6502.compare(cpu_6502.A, val)
 		cpu_6502.Cycles += 7
 
 	case 0xDB: // DCP Absolute,Y
 		addr, _ := cpu_6502.getAbsoluteY()
-		val := cpu_6502.memory.Read(addr) - 1
-		cpu_6502.memory.Write(addr, val)
+		val := cpu_6502.readByte(addr) - 1
+		cpu_6502.writeByte(addr, val)
 		cpu_6502.compare(cpu_6502.A, val)
 		cpu_6502.Cycles += 7
 
 	case 0xC3: // DCP (Indirect,X)
 		addr := cpu_6502.getIndirectX()
-		val := cpu_6502.memory.Read(addr) - 1
-		cpu_6502.memory.Write(addr, val)
+		val := cpu_6502.readByte(addr) - 1
+		cpu_6502.writeByte(addr, val)
 		cpu_6502.compare(cpu_6502.A, val)
 		cpu_6502.Cycles += 8
 
 	case 0xD3: // DCP (Indirect),Y
 		addr, _ := cpu_6502.getIndirectY()
-		val := cpu_6502.memory.Read(addr) - 1
-		cpu_6502.memory.Write(addr, val)
+		val := cpu_6502.readByte(addr) - 1
+		cpu_6502.writeByte(addr, val)
 		cpu_6502.compare(cpu_6502.A, val)
 		cpu_6502.Cycles += 8
 
 	case 0xE7: // ISC Zero Page
 		addr := cpu_6502.getZeroPage()
-		val := cpu_6502.memory.Read(addr) + 1
-		cpu_6502.memory.Write(addr, val)
+		val := cpu_6502.readByte(addr) + 1
+		cpu_6502.writeByte(addr, val)
 		cpu_6502.sbc(val)
 		cpu_6502.Cycles += 5
 
 	case 0xF7: // ISC Zero Page,X
 		addr := cpu_6502.getZeroPageX()
-		val := cpu_6502.memory.Read(addr) + 1
-		cpu_6502.memory.Write(addr, val)
+		val := cpu_6502.readByte(addr) + 1
+		cpu_6502.writeByte(addr, val)
 		cpu_6502.sbc(val)
 		cpu_6502.Cycles += 6
 
 	case 0xEF: // ISC Absolute
 		addr := cpu_6502.getAbsolute()
-		val := cpu_6502.memory.Read(addr) + 1
-		cpu_6502.memory.Write(addr, val)
+		val := cpu_6502.readByte(addr) + 1
+		cpu_6502.writeByte(addr, val)
 		cpu_6502.sbc(val)
 		cpu_6502.Cycles += 6
 
 	case 0xFF: // ISC Absolute,X
 		addr, _ := cpu_6502.getAbsoluteX()
-		val := cpu_6502.memory.Read(addr) + 1
-		cpu_6502.memory.Write(addr, val)
+		val := cpu_6502.readByte(addr) + 1
+		cpu_6502.writeByte(addr, val)
 		cpu_6502.sbc(val)
 		cpu_6502.Cycles += 7
 
 	case 0xFB: // ISC Absolute,Y
 		addr, _ := cpu_6502.getAbsoluteY()
-		val := cpu_6502.memory.Read(addr) + 1
-		cpu_6502.memory.Write(addr, val)
+		val := cpu_6502.readByte(addr) + 1
+		cpu_6502.writeByte(addr, val)
 		cpu_6502.sbc(val)
 		cpu_6502.Cycles += 7
 
 	case 0xE3: // ISC (Indirect,X)
 		addr := cpu_6502.getIndirectX()
-		val := cpu_6502.memory.Read(addr) + 1
-		cpu_6502.memory.Write(addr, val)
+		val := cpu_6502.readByte(addr) + 1
+		cpu_6502.writeByte(addr, val)
 		cpu_6502.sbc(val)
 		cpu_6502.Cycles += 8
 
 	case 0xF3: // ISC (Indirect),Y
 		addr, _ := cpu_6502.getIndirectY()
-		val := cpu_6502.memory.Read(addr) + 1
-		cpu_6502.memory.Write(addr, val)
+		val := cpu_6502.readByte(addr) + 1
+		cpu_6502.writeByte(addr, val)
 		cpu_6502.sbc(val)
 		cpu_6502.Cycles += 8
 
@@ -2360,168 +2673,147 @@ func (cpu_6502 *CPU_6502) executeOpcodeInternal(opcode byte) {
 		addr := cpu_6502.getZeroPage()
 		val := cpu_6502.asl(addr, false)
 		cpu_6502.A |= val
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 5
 
 	case 0x17: // SLO Zero Page,X
 		addr := cpu_6502.getZeroPageX()
 		val := cpu_6502.asl(addr, false)
 		cpu_6502.A |= val
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 6
 
 	case 0x0F: // SLO Absolute
 		addr := cpu_6502.getAbsolute()
 		val := cpu_6502.asl(addr, false)
 		cpu_6502.A |= val
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 6
 
 	case 0x1F: // SLO Absolute,X
 		addr, _ := cpu_6502.getAbsoluteX()
 		val := cpu_6502.asl(addr, false)
 		cpu_6502.A |= val
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 7
 
 	case 0x1B: // SLO Absolute,Y
 		addr, _ := cpu_6502.getAbsoluteY()
 		val := cpu_6502.asl(addr, false)
 		cpu_6502.A |= val
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 7
 
 	case 0x03: // SLO (Indirect,X)
 		addr := cpu_6502.getIndirectX()
 		val := cpu_6502.asl(addr, false)
 		cpu_6502.A |= val
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 8
 
 	case 0x13: // SLO (Indirect),Y
 		addr, _ := cpu_6502.getIndirectY()
 		val := cpu_6502.asl(addr, false)
 		cpu_6502.A |= val
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 8
 
 	case 0x27: // RLA Zero Page
 		addr := cpu_6502.getZeroPage()
 		val := cpu_6502.rol(addr, false)
 		cpu_6502.A &= val
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 5
 
 	case 0x37: // RLA Zero Page,X
 		addr := cpu_6502.getZeroPageX()
 		val := cpu_6502.rol(addr, false)
 		cpu_6502.A &= val
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 6
 
 	case 0x2F: // RLA Absolute
 		addr := cpu_6502.getAbsolute()
 		val := cpu_6502.rol(addr, false)
 		cpu_6502.A &= val
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 6
 
 	case 0x3F: // RLA Absolute,X
 		addr, _ := cpu_6502.getAbsoluteX()
 		val := cpu_6502.rol(addr, false)
 		cpu_6502.A &= val
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 7
 
 	case 0x3B: // RLA Absolute,Y
 		addr, _ := cpu_6502.getAbsoluteY()
 		val := cpu_6502.rol(addr, false)
 		cpu_6502.A &= val
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 7
 
 	case 0x23: // RLA (Indirect,X)
 		addr := cpu_6502.getIndirectX()
 		val := cpu_6502.rol(addr, false)
 		cpu_6502.A &= val
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 8
 
 	case 0x33: // RLA (Indirect),Y
 		addr, _ := cpu_6502.getIndirectY()
 		val := cpu_6502.rol(addr, false)
 		cpu_6502.A &= val
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 8
 
 	case 0x47: // SRE Zero Page
 		addr := cpu_6502.getZeroPage()
 		val := cpu_6502.lsr(addr, false)
 		cpu_6502.A ^= val
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 5
 
 	case 0x57: // SRE Zero Page,X
 		addr := cpu_6502.getZeroPageX()
 		val := cpu_6502.lsr(addr, false)
 		cpu_6502.A ^= val
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 6
 
 	case 0x4F: // SRE Absolute
 		addr := cpu_6502.getAbsolute()
 		val := cpu_6502.lsr(addr, false)
 		cpu_6502.A ^= val
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 6
 
 	case 0x5F: // SRE Absolute,X
 		addr, _ := cpu_6502.getAbsoluteX()
 		val := cpu_6502.lsr(addr, false)
 		cpu_6502.A ^= val
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 7
 
 	case 0x5B: // SRE Absolute,Y
 		addr, _ := cpu_6502.getAbsoluteY()
 		val := cpu_6502.lsr(addr, false)
 		cpu_6502.A ^= val
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 7
 
 	case 0x43: // SRE (Indirect,X)
 		addr := cpu_6502.getIndirectX()
 		val := cpu_6502.lsr(addr, false)
 		cpu_6502.A ^= val
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 8
 
 	case 0x53: // SRE (Indirect),Y
 		addr, _ := cpu_6502.getIndirectY()
 		val := cpu_6502.lsr(addr, false)
 		cpu_6502.A ^= val
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 8
 
 	case 0x67: // RRA Zero Page
@@ -2568,57 +2860,53 @@ func (cpu_6502 *CPU_6502) executeOpcodeInternal(opcode byte) {
 
 	// ANC
 	case 0x0B, 0x2B: // ANC Immediate
-		cpu_6502.A &= cpu_6502.memory.Read(cpu_6502.PC)
+		cpu_6502.A &= cpu_6502.readByte(cpu_6502.PC)
 		cpu_6502.PC++
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.setFlag(CARRY_FLAG, cpu_6502.A&0x80 != 0)
 		cpu_6502.Cycles += 2
 
 	case 0x4B: // ALR Immediate
-		cpu_6502.A &= cpu_6502.memory.Read(cpu_6502.PC)
+		cpu_6502.A &= cpu_6502.readByte(cpu_6502.PC)
 		cpu_6502.PC++
 		cpu_6502.setFlag(CARRY_FLAG, cpu_6502.A&1 != 0)
 		cpu_6502.A >>= 1
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, false)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 2
 
 	case 0x6B: // ARR Immediate
-		cpu_6502.A &= cpu_6502.memory.Read(cpu_6502.PC)
+		cpu_6502.A &= cpu_6502.readByte(cpu_6502.PC)
 		cpu_6502.PC++
-		carry := cpu_6502.getFlag(CARRY_FLAG)
+		carry := cpu_6502.SR&CARRY_FLAG != 0
 		carryBit := byte(0)
 		if carry {
 			carryBit = 0x80
 		}
 		cpu_6502.A = (cpu_6502.A >> 1) | carryBit
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.A == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.A&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.setFlag(CARRY_FLAG, cpu_6502.A&0x40 != 0)
 		cpu_6502.setFlag(OVERFLOW_FLAG, ((cpu_6502.A>>6)^(cpu_6502.A>>5))&1 != 0)
 		cpu_6502.Cycles += 2
 
 	case 0xCB: // AXS Immediate
-		val := cpu_6502.memory.Read(cpu_6502.PC)
+		val := cpu_6502.readByte(cpu_6502.PC)
 		cpu_6502.PC++
 		result := int(cpu_6502.A&cpu_6502.X) - int(val)
 		cpu_6502.X = byte(result)
 		cpu_6502.setFlag(CARRY_FLAG, result >= 0)
-		cpu_6502.setFlag(ZERO_FLAG, cpu_6502.X == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, cpu_6502.X&0x80 != 0)
+		cpu_6502.updateNZ(cpu_6502.X)
 		cpu_6502.Cycles += 2
 
 	case 0x9F: // SHA Absolute,Y
 		addr, _ := cpu_6502.getAbsoluteY()
 		value := cpu_6502.A & cpu_6502.X & byte((addr>>8)+1)
-		cpu_6502.memory.Write(addr, value)
+		cpu_6502.writeByte(addr, value)
 		cpu_6502.Cycles += 5
 
 	case 0x93: // SHA (Indirect),Y
 		addr, _ := cpu_6502.getIndirectY()
 		value := cpu_6502.A & cpu_6502.X & byte((addr>>8)+1)
-		cpu_6502.memory.Write(addr, value)
+		cpu_6502.writeByte(addr, value)
 		cpu_6502.Cycles += 6
 
 	case 0x9E: // SHX Absolute,Y
@@ -2627,7 +2915,7 @@ func (cpu_6502 *CPU_6502) executeOpcodeInternal(opcode byte) {
 		if (addr&0xFF)+uint16(cpu_6502.Y) > 0xFF {
 			value &= byte(addr >> 8)
 		}
-		cpu_6502.memory.Write(addr, value)
+		cpu_6502.writeByte(addr, value)
 		cpu_6502.Cycles += 5
 
 	case 0x9C: // SHY Absolute,X
@@ -2636,36 +2924,34 @@ func (cpu_6502 *CPU_6502) executeOpcodeInternal(opcode byte) {
 		if (addr&0xFF)+uint16(cpu_6502.X) > 0xFF {
 			value &= byte(addr >> 8)
 		}
-		cpu_6502.memory.Write(addr, value)
+		cpu_6502.writeByte(addr, value)
 		cpu_6502.Cycles += 5
 
 	case 0x9B: // TAS Absolute,Y
 		cpu_6502.SP = cpu_6502.A & cpu_6502.X
 		addr, _ := cpu_6502.getAbsoluteY()
 		value := cpu_6502.SP & byte((addr>>8)+1)
-		cpu_6502.memory.Write(addr, value)
+		cpu_6502.writeByte(addr, value)
 		cpu_6502.Cycles += 5
 
 	case 0xBB: // LAS Absolute,Y
 		addr, crossed := cpu_6502.getAbsoluteY()
-		value := cpu_6502.memory.Read(addr) & cpu_6502.SP
+		value := cpu_6502.readByte(addr) & cpu_6502.SP
 		cpu_6502.A = value
 		cpu_6502.X = value
 		cpu_6502.SP = value
-		cpu_6502.setFlag(ZERO_FLAG, value == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, value&0x80 != 0)
+		cpu_6502.updateNZ(value)
 		cpu_6502.Cycles += 4
 		if crossed {
 			cpu_6502.Cycles++
 		}
 
 	case 0xAB: // LAX Immediate (unstable)
-		val := cpu_6502.memory.Read(cpu_6502.PC)
+		val := cpu_6502.readByte(cpu_6502.PC)
 		cpu_6502.PC++
 		cpu_6502.A = val
 		cpu_6502.X = val
-		cpu_6502.setFlag(ZERO_FLAG, val == 0)
-		cpu_6502.setFlag(NEGATIVE_FLAG, val&0x80 != 0)
+		cpu_6502.updateNZ(val)
 		cpu_6502.Cycles += 2
 
 	case 0x02, 0x12, 0x22, 0x32, 0x42, 0x52, 0x62, 0x72, 0x92, 0xB2, 0xD2, 0xF2: // KIL (halt)
@@ -2710,6 +2996,10 @@ func (adapter *Bus6502Adapter) Read(addr uint16) byte {
 	   2. Check for banked memory access
 	   3. Fall back to direct memory access
 	*/
+
+	if h := adapter.ioTable[addr>>8]; h.read != nil {
+		return h.read(adapter, addr)
+	}
 
 	// Handle VRAM bank register reads
 	if addr == VRAM_BANK_REG {
@@ -2825,6 +3115,11 @@ func (adapter *Bus6502Adapter) Write(addr uint16, value byte) {
 	   2. Check for banked memory access
 	   3. Fall back to direct memory access
 	*/
+
+	if h := adapter.ioTable[addr>>8]; h.write != nil {
+		h.write(adapter, addr, value)
+		return
+	}
 
 	// Handle VRAM bank register writes
 	if addr == VRAM_BANK_REG {

@@ -54,6 +54,7 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -124,6 +125,9 @@ type MachineBus struct {
 
 	// Policy for 64-bit access to legacy-only MMIO regions (default: Fault)
 	legacyMMIO64Policy MMIO64Policy
+
+	// Sealed state to prevent I/O mapping after execution has started
+	sealed atomic.Bool
 }
 
 type IORegion struct {
@@ -591,7 +595,16 @@ func (bus *MachineBus) SetVideoStatusReader(reader func(addr uint32) uint32) {
 	bus.videoStatusReader = reader
 }
 
+// SealMappings prevents further MapIO calls. This is called when execution starts
+// to ensure the ioPageBitmap remains stable during hot-path access.
+func (bus *MachineBus) SealMappings() {
+	bus.sealed.CompareAndSwap(false, true)
+}
+
 func (bus *MachineBus) MapIO(start, end uint32, onRead func(addr uint32) uint32, onWrite func(addr uint32, value uint32)) {
+	if bus.sealed.Load() {
+		panic(fmt.Sprintf("MapIO called after execution started (mapping range $%05X-$%05X)", start, end))
+	}
 	region := IORegion{
 		start:   start,
 		end:     end,
@@ -1193,6 +1206,9 @@ func (bus *MachineBus) SetLegacyMMIO64Policy(policy MMIO64Policy) {
 // MapIO64 registers a 64-bit-capable I/O region. This is separate from MapIO;
 // 64-bit handlers are only used by Read64/Write64. 32-bit operations always use MapIO.
 func (bus *MachineBus) MapIO64(start, end uint32, onRead64 func(addr uint32) uint64, onWrite64 func(addr uint32, value uint64)) {
+	if bus.sealed.Load() {
+		panic(fmt.Sprintf("MapIO64 called after execution started (mapping range $%05X-$%05X)", start, end))
+	}
 	region := IORegion64{
 		start:     start,
 		end:       end,
