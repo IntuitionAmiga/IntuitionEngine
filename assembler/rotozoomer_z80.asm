@@ -84,9 +84,8 @@ start:
 
 main_loop:
     call update_animation
-    call render_rotozoomer
     WAIT_VBLANK
-    call blit_to_front
+    call render_mode7
     jp main_loop
 
 ; =============================================================================
@@ -316,6 +315,71 @@ update_animation:
 ; =============================================================================
 ; RENDER
 ; =============================================================================
+render_mode7:
+    ; Configure Mode7 blit directly to front VRAM.
+    STORE32 BLT_OP, BLT_OP_MODE7
+    STORE32 BLT_SRC_0, TEXTURE_BASE
+    STORE32 BLT_DST_0, VRAM_START
+    STORE32 BLT_WIDTH_LO, RENDER_W
+    STORE32 BLT_HEIGHT_LO, RENDER_H
+    STORE32 BLT_SRC_STRIDE_LO, 1024
+    STORE32 BLT_DST_STRIDE_LO, LINE_BYTES
+    STORE32 BLT_MODE7_TEX_W_0, 255
+    STORE32 BLT_MODE7_TEX_H_0, 255
+
+    ; Convert 24.8-ish coordinates/increments to signed 16.16 for Mode7:
+    ; write (value << 8) into each 32-bit Mode7 register.
+    ld hl,var_row_u
+    ld de,BLT_MODE7_U0_0
+    call write_mode7_shift8
+
+    ld hl,var_row_v
+    ld de,BLT_MODE7_V0_0
+    call write_mode7_shift8
+
+    ld hl,var_du_dx
+    ld de,BLT_MODE7_DU_COL_0
+    call write_mode7_shift8
+
+    ld hl,var_dv_dx
+    ld de,BLT_MODE7_DV_COL_0
+    call write_mode7_shift8
+
+    ld hl,var_du_dy
+    ld de,BLT_MODE7_DU_ROW_0
+    call write_mode7_shift8
+
+    ld hl,var_dv_dy
+    ld de,BLT_MODE7_DV_ROW_0
+    call write_mode7_shift8
+
+    START_BLIT
+    WAIT_BLIT
+    ret
+
+; write_mode7_shift8
+;   Input: HL = source 32-bit little-endian value, DE = destination register byte 0
+;   Effect: writes (src << 8) as little-endian 32-bit to destination bytes [0..3].
+write_mode7_shift8:
+    xor a
+    ld (de),a
+    inc de
+
+    ld a,(hl)
+    ld (de),a
+    inc hl
+    inc de
+
+    ld a,(hl)
+    ld (de),a
+    inc hl
+    inc de
+
+    ld a,(hl)
+    ld (de),a
+    ret
+
+; Legacy CPU rasterizer path retained below (unused in main loop).
 render_rotozoomer:
     SET_BANK3 TABLES_BANK_BASE
     xor a
