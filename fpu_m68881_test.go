@@ -14,8 +14,8 @@ func TestFPURegisterInit(t *testing.T) {
 		fpu := NewM68881FPU()
 
 		for i := range 8 {
-			if !fpu.FPRegs[i].IsZero() {
-				t.Errorf("FP%d should be zero on init, got: %v", i, fpu.FPRegs[i])
+			if fpu.GetFP64(i) != 0 {
+				t.Errorf("FP%d should be zero on init, got: %v", i, fpu.GetFP64(i))
 			}
 		}
 	})
@@ -49,6 +49,43 @@ func TestFPURegisterInit(t *testing.T) {
 			t.Errorf("FPIAR should be 0 on init, got: 0x%08X", fpu.FPIAR)
 		}
 	})
+}
+
+func TestFPU_SetGetFloat64(t *testing.T) {
+	fpu := NewM68881FPU()
+	values := []float64{0, -0.0, math.Pi, -math.E, math.Inf(1), math.Inf(-1)}
+	for i, v := range values {
+		reg := i % 8
+		fpu.SetFP64(reg, v)
+		got := fpu.GetFP64(reg)
+		if math.IsNaN(v) {
+			if !math.IsNaN(got) {
+				t.Fatalf("FP%d expected NaN, got %v", reg, got)
+			}
+			continue
+		}
+		if got != v {
+			t.Fatalf("FP%d expected %v, got %v", reg, v, got)
+		}
+	}
+}
+
+func TestFPU_GetExtendedReal(t *testing.T) {
+	fpu := NewM68881FPU()
+	fpu.SetFP64(3, -123.75)
+	ext := fpu.GetExtendedReal(3)
+	if got := ext.ToFloat64(); got != -123.75 {
+		t.Fatalf("GetExtendedReal round-trip got %v, want -123.75", got)
+	}
+}
+
+func TestFPU_SetFromExtendedReal(t *testing.T) {
+	fpu := NewM68881FPU()
+	ext := ExtendedRealFromFloat64(math.Pi)
+	fpu.SetFromExtendedReal(2, ext)
+	if got := fpu.GetFP64(2); math.Abs(got-math.Pi) > 1e-15 {
+		t.Fatalf("SetFromExtendedReal got %v, want %v", got, math.Pi)
+	}
 }
 
 // =============================================================================
@@ -172,11 +209,11 @@ func TestFMOVE_RegisterToRegister(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fpu := NewM68881FPU()
-			fpu.FPRegs[tt.srcReg] = ExtendedRealFromFloat64(tt.value)
+			fpu.SetFP64(tt.srcReg, tt.value)
 
 			fpu.FMOVE_RegToReg(tt.srcReg, tt.dstReg)
 
-			result := fpu.FPRegs[tt.dstReg].ToFloat64()
+			result := fpu.GetFP64(tt.dstReg)
 			if result != tt.value {
 				t.Errorf("FMOVE FP%d,FP%d = %v, want %v",
 					tt.srcReg, tt.dstReg, result, tt.value)
@@ -203,7 +240,7 @@ func TestFMOVE_ImmediateToRegister(t *testing.T) {
 
 			fpu.FMOVE_ImmToReg(tt.value, tt.dstReg)
 
-			result := fpu.FPRegs[tt.dstReg].ToFloat64()
+			result := fpu.GetFP64(tt.dstReg)
 			if math.Abs(result-tt.value) > 1e-15 {
 				t.Errorf("FMOVE #%v,FP%d = %v", tt.value, tt.dstReg, result)
 			}
@@ -233,12 +270,12 @@ func TestFADD_Basic(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fpu := NewM68881FPU()
-			fpu.FPRegs[0] = ExtendedRealFromFloat64(tt.a)
-			fpu.FPRegs[1] = ExtendedRealFromFloat64(tt.b)
+			fpu.SetFP64(0, tt.a)
+			fpu.SetFP64(1, tt.b)
 
 			fpu.FADD(1, 0) // FP0 = FP0 + FP1
 
-			result := fpu.FPRegs[0].ToFloat64()
+			result := fpu.GetFP64(0)
 			if math.Abs(result-tt.expect) > 1e-14 {
 				t.Errorf("FADD: %v + %v = %v, want %v", tt.a, tt.b, result, tt.expect)
 			}
@@ -249,24 +286,24 @@ func TestFADD_Basic(t *testing.T) {
 func TestFADD_SpecialValues(t *testing.T) {
 	t.Run("infinity_plus_finite", func(t *testing.T) {
 		fpu := NewM68881FPU()
-		fpu.FPRegs[0] = ExtendedRealFromFloat64(math.Inf(1))
-		fpu.FPRegs[1] = ExtendedRealFromFloat64(42.0)
+		fpu.SetFP64(0, math.Inf(1))
+		fpu.SetFP64(1, 42.0)
 
 		fpu.FADD(1, 0)
 
-		if !fpu.FPRegs[0].IsInf() || fpu.FPRegs[0].Sign != 0 {
+		if !math.IsInf(fpu.GetFP64(0), 0) || math.Signbit(fpu.GetFP64(0)) {
 			t.Error("Inf + finite should be +Inf")
 		}
 	})
 
 	t.Run("infinity_plus_neg_infinity", func(t *testing.T) {
 		fpu := NewM68881FPU()
-		fpu.FPRegs[0] = ExtendedRealFromFloat64(math.Inf(1))
-		fpu.FPRegs[1] = ExtendedRealFromFloat64(math.Inf(-1))
+		fpu.SetFP64(0, math.Inf(1))
+		fpu.SetFP64(1, math.Inf(-1))
 
 		fpu.FADD(1, 0)
 
-		if !fpu.FPRegs[0].IsNaN() {
+		if !math.IsNaN(fpu.GetFP64(0)) {
 			t.Error("Inf + (-Inf) should be NaN")
 		}
 	})
@@ -275,8 +312,8 @@ func TestFADD_SpecialValues(t *testing.T) {
 func TestFADD_ConditionCodes(t *testing.T) {
 	t.Run("result_negative_sets_N", func(t *testing.T) {
 		fpu := NewM68881FPU()
-		fpu.FPRegs[0] = ExtendedRealFromFloat64(-5.0)
-		fpu.FPRegs[1] = ExtendedRealFromFloat64(2.0)
+		fpu.SetFP64(0, -5.0)
+		fpu.SetFP64(1, 2.0)
 
 		fpu.FADD(1, 0)
 
@@ -287,8 +324,8 @@ func TestFADD_ConditionCodes(t *testing.T) {
 
 	t.Run("result_zero_sets_Z", func(t *testing.T) {
 		fpu := NewM68881FPU()
-		fpu.FPRegs[0] = ExtendedRealFromFloat64(5.0)
-		fpu.FPRegs[1] = ExtendedRealFromFloat64(-5.0)
+		fpu.SetFP64(0, 5.0)
+		fpu.SetFP64(1, -5.0)
 
 		fpu.FADD(1, 0)
 
@@ -320,12 +357,12 @@ func TestFSUB_Basic(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fpu := NewM68881FPU()
-			fpu.FPRegs[0] = ExtendedRealFromFloat64(tt.a)
-			fpu.FPRegs[1] = ExtendedRealFromFloat64(tt.b)
+			fpu.SetFP64(0, tt.a)
+			fpu.SetFP64(1, tt.b)
 
 			fpu.FSUB(1, 0) // FP0 = FP0 - FP1
 
-			result := fpu.FPRegs[0].ToFloat64()
+			result := fpu.GetFP64(0)
 			if math.Abs(result-tt.expect) > 1e-14 {
 				t.Errorf("FSUB: %v - %v = %v, want %v", tt.a, tt.b, result, tt.expect)
 			}
@@ -356,12 +393,12 @@ func TestFMUL_Basic(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fpu := NewM68881FPU()
-			fpu.FPRegs[0] = ExtendedRealFromFloat64(tt.a)
-			fpu.FPRegs[1] = ExtendedRealFromFloat64(tt.b)
+			fpu.SetFP64(0, tt.a)
+			fpu.SetFP64(1, tt.b)
 
 			fpu.FMUL(1, 0) // FP0 = FP0 * FP1
 
-			result := fpu.FPRegs[0].ToFloat64()
+			result := fpu.GetFP64(0)
 			if math.Abs(result-tt.expect) > 1e-14 {
 				t.Errorf("FMUL: %v * %v = %v, want %v", tt.a, tt.b, result, tt.expect)
 			}
@@ -372,24 +409,24 @@ func TestFMUL_Basic(t *testing.T) {
 func TestFMUL_SpecialValues(t *testing.T) {
 	t.Run("infinity_times_finite", func(t *testing.T) {
 		fpu := NewM68881FPU()
-		fpu.FPRegs[0] = ExtendedRealFromFloat64(math.Inf(1))
-		fpu.FPRegs[1] = ExtendedRealFromFloat64(2.0)
+		fpu.SetFP64(0, math.Inf(1))
+		fpu.SetFP64(1, 2.0)
 
 		fpu.FMUL(1, 0)
 
-		if !fpu.FPRegs[0].IsInf() {
+		if !math.IsInf(fpu.GetFP64(0), 0) {
 			t.Error("Inf * positive should be Inf")
 		}
 	})
 
 	t.Run("infinity_times_zero", func(t *testing.T) {
 		fpu := NewM68881FPU()
-		fpu.FPRegs[0] = ExtendedRealFromFloat64(math.Inf(1))
-		fpu.FPRegs[1] = ExtendedRealFromFloat64(0.0)
+		fpu.SetFP64(0, math.Inf(1))
+		fpu.SetFP64(1, 0.0)
 
 		fpu.FMUL(1, 0)
 
-		if !fpu.FPRegs[0].IsNaN() {
+		if !math.IsNaN(fpu.GetFP64(0)) {
 			t.Error("Inf * 0 should be NaN")
 		}
 	})
@@ -417,12 +454,12 @@ func TestFDIV_Basic(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fpu := NewM68881FPU()
-			fpu.FPRegs[0] = ExtendedRealFromFloat64(tt.a)
-			fpu.FPRegs[1] = ExtendedRealFromFloat64(tt.b)
+			fpu.SetFP64(0, tt.a)
+			fpu.SetFP64(1, tt.b)
 
 			fpu.FDIV(1, 0) // FP0 = FP0 / FP1
 
-			result := fpu.FPRegs[0].ToFloat64()
+			result := fpu.GetFP64(0)
 			if math.Abs(result-tt.expect) > 1e-14 {
 				t.Errorf("FDIV: %v / %v = %v, want %v", tt.a, tt.b, result, tt.expect)
 			}
@@ -433,36 +470,36 @@ func TestFDIV_Basic(t *testing.T) {
 func TestFDIV_SpecialValues(t *testing.T) {
 	t.Run("divide_by_zero_positive", func(t *testing.T) {
 		fpu := NewM68881FPU()
-		fpu.FPRegs[0] = ExtendedRealFromFloat64(1.0)
-		fpu.FPRegs[1] = ExtendedRealFromFloat64(0.0)
+		fpu.SetFP64(0, 1.0)
+		fpu.SetFP64(1, 0.0)
 
 		fpu.FDIV(1, 0)
 
-		if !fpu.FPRegs[0].IsInf() || fpu.FPRegs[0].Sign != 0 {
+		if !math.IsInf(fpu.GetFP64(0), 0) || math.Signbit(fpu.GetFP64(0)) {
 			t.Error("1 / 0 should be +Inf")
 		}
 	})
 
 	t.Run("divide_by_zero_negative", func(t *testing.T) {
 		fpu := NewM68881FPU()
-		fpu.FPRegs[0] = ExtendedRealFromFloat64(-1.0)
-		fpu.FPRegs[1] = ExtendedRealFromFloat64(0.0)
+		fpu.SetFP64(0, -1.0)
+		fpu.SetFP64(1, 0.0)
 
 		fpu.FDIV(1, 0)
 
-		if !fpu.FPRegs[0].IsInf() || fpu.FPRegs[0].Sign != 1 {
+		if !math.IsInf(fpu.GetFP64(0), 0) || !math.Signbit(fpu.GetFP64(0)) {
 			t.Error("-1 / 0 should be -Inf")
 		}
 	})
 
 	t.Run("zero_divide_by_zero", func(t *testing.T) {
 		fpu := NewM68881FPU()
-		fpu.FPRegs[0] = ExtendedRealFromFloat64(0.0)
-		fpu.FPRegs[1] = ExtendedRealFromFloat64(0.0)
+		fpu.SetFP64(0, 0.0)
+		fpu.SetFP64(1, 0.0)
 
 		fpu.FDIV(1, 0)
 
-		if !fpu.FPRegs[0].IsNaN() {
+		if !math.IsNaN(fpu.GetFP64(0)) {
 			t.Error("0 / 0 should be NaN")
 		}
 	})
@@ -487,11 +524,11 @@ func TestFNEG(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fpu := NewM68881FPU()
-			fpu.FPRegs[0] = ExtendedRealFromFloat64(tt.value)
+			fpu.SetFP64(0, tt.value)
 
 			fpu.FNEG(0, 0) // FP0 = -FP0
 
-			result := fpu.FPRegs[0].ToFloat64()
+			result := fpu.GetFP64(0)
 			if result != tt.expect {
 				t.Errorf("FNEG: -%v = %v, want %v", tt.value, result, tt.expect)
 			}
@@ -518,11 +555,11 @@ func TestFABS(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fpu := NewM68881FPU()
-			fpu.FPRegs[0] = ExtendedRealFromFloat64(tt.value)
+			fpu.SetFP64(0, tt.value)
 
 			fpu.FABS(0, 0) // FP0 = |FP0|
 
-			result := fpu.FPRegs[0].ToFloat64()
+			result := fpu.GetFP64(0)
 			if result != tt.expect {
 				t.Errorf("FABS: |%v| = %v, want %v", tt.value, result, tt.expect)
 			}
@@ -537,8 +574,8 @@ func TestFABS(t *testing.T) {
 func TestFCMP(t *testing.T) {
 	t.Run("equal_values", func(t *testing.T) {
 		fpu := NewM68881FPU()
-		fpu.FPRegs[0] = ExtendedRealFromFloat64(42.0)
-		fpu.FPRegs[1] = ExtendedRealFromFloat64(42.0)
+		fpu.SetFP64(0, 42.0)
+		fpu.SetFP64(1, 42.0)
 
 		fpu.FCMP(1, 0) // Compare FP0 with FP1
 
@@ -552,8 +589,8 @@ func TestFCMP(t *testing.T) {
 
 	t.Run("first_greater", func(t *testing.T) {
 		fpu := NewM68881FPU()
-		fpu.FPRegs[0] = ExtendedRealFromFloat64(100.0)
-		fpu.FPRegs[1] = ExtendedRealFromFloat64(42.0)
+		fpu.SetFP64(0, 100.0)
+		fpu.SetFP64(1, 42.0)
 
 		fpu.FCMP(1, 0)
 
@@ -567,8 +604,8 @@ func TestFCMP(t *testing.T) {
 
 	t.Run("first_less", func(t *testing.T) {
 		fpu := NewM68881FPU()
-		fpu.FPRegs[0] = ExtendedRealFromFloat64(10.0)
-		fpu.FPRegs[1] = ExtendedRealFromFloat64(42.0)
+		fpu.SetFP64(0, 10.0)
+		fpu.SetFP64(1, 42.0)
 
 		fpu.FCMP(1, 0)
 
@@ -588,7 +625,7 @@ func TestFCMP(t *testing.T) {
 func TestFTST(t *testing.T) {
 	t.Run("test_positive", func(t *testing.T) {
 		fpu := NewM68881FPU()
-		fpu.FPRegs[0] = ExtendedRealFromFloat64(42.0)
+		fpu.SetFP64(0, 42.0)
 
 		fpu.FTST(0)
 
@@ -602,7 +639,7 @@ func TestFTST(t *testing.T) {
 
 	t.Run("test_negative", func(t *testing.T) {
 		fpu := NewM68881FPU()
-		fpu.FPRegs[0] = ExtendedRealFromFloat64(-42.0)
+		fpu.SetFP64(0, -42.0)
 
 		fpu.FTST(0)
 
@@ -616,7 +653,7 @@ func TestFTST(t *testing.T) {
 
 	t.Run("test_zero", func(t *testing.T) {
 		fpu := NewM68881FPU()
-		fpu.FPRegs[0] = ExtendedRealFromFloat64(0.0)
+		fpu.SetFP64(0, 0.0)
 
 		fpu.FTST(0)
 
@@ -627,6 +664,35 @@ func TestFTST(t *testing.T) {
 			t.Error("Z should be set for zero")
 		}
 	})
+}
+
+func TestSetCC64(t *testing.T) {
+	tests := []struct {
+		name string
+		val  float64
+		n    bool
+		z    bool
+		i    bool
+		nan  bool
+	}{
+		{"pos", 1.0, false, false, false, false},
+		{"neg", -1.0, true, false, false, false},
+		{"pos_zero", 0.0, false, true, false, false},
+		{"neg_zero", math.Copysign(0.0, -1.0), false, true, false, false},
+		{"pos_inf", math.Inf(1), false, false, true, false},
+		{"neg_inf", math.Inf(-1), true, false, true, false},
+		{"nan", math.NaN(), false, false, false, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fpu := NewM68881FPU()
+			fpu.setCC64(tt.val)
+			if fpu.GetConditionN() != tt.n || fpu.GetConditionZ() != tt.z || fpu.GetConditionI() != tt.i || fpu.GetConditionNAN() != tt.nan {
+				t.Fatalf("CC mismatch N=%v Z=%v I=%v NAN=%v", fpu.GetConditionN(), fpu.GetConditionZ(), fpu.GetConditionI(), fpu.GetConditionNAN())
+			}
+		})
+	}
 }
 
 // =============================================================================
@@ -650,11 +716,11 @@ func TestFSQRT(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fpu := NewM68881FPU()
-			fpu.FPRegs[0] = ExtendedRealFromFloat64(tt.value)
+			fpu.SetFP64(0, tt.value)
 
 			fpu.FSQRT(0, 0)
 
-			result := fpu.FPRegs[0].ToFloat64()
+			result := fpu.GetFP64(0)
 			if math.Abs(result-tt.expect) > tt.epsilon {
 				t.Errorf("FSQRT(%v) = %v, want %v", tt.value, result, tt.expect)
 			}
@@ -664,11 +730,11 @@ func TestFSQRT(t *testing.T) {
 
 func TestFSQRT_Negative(t *testing.T) {
 	fpu := NewM68881FPU()
-	fpu.FPRegs[0] = ExtendedRealFromFloat64(-1.0)
+	fpu.SetFP64(0, -1.0)
 
 	fpu.FSQRT(0, 0)
 
-	if !fpu.FPRegs[0].IsNaN() {
+	if !math.IsNaN(fpu.GetFP64(0)) {
 		t.Error("FSQRT of negative should be NaN")
 	}
 }
@@ -694,11 +760,11 @@ func TestFSIN(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fpu := NewM68881FPU()
-			fpu.FPRegs[0] = ExtendedRealFromFloat64(tt.value)
+			fpu.SetFP64(0, tt.value)
 
 			fpu.FSIN(0, 0)
 
-			result := fpu.FPRegs[0].ToFloat64()
+			result := fpu.GetFP64(0)
 			if math.Abs(result-tt.expect) > tt.epsilon {
 				t.Errorf("FSIN(%v) = %v, want %v", tt.value, result, tt.expect)
 			}
@@ -723,11 +789,11 @@ func TestFCOS(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fpu := NewM68881FPU()
-			fpu.FPRegs[0] = ExtendedRealFromFloat64(tt.value)
+			fpu.SetFP64(0, tt.value)
 
 			fpu.FCOS(0, 0)
 
-			result := fpu.FPRegs[0].ToFloat64()
+			result := fpu.GetFP64(0)
 			if math.Abs(result-tt.expect) > tt.epsilon {
 				t.Errorf("FCOS(%v) = %v, want %v", tt.value, result, tt.expect)
 			}
@@ -750,11 +816,11 @@ func TestFTAN(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fpu := NewM68881FPU()
-			fpu.FPRegs[0] = ExtendedRealFromFloat64(tt.value)
+			fpu.SetFP64(0, tt.value)
 
 			fpu.FTAN(0, 0)
 
-			result := fpu.FPRegs[0].ToFloat64()
+			result := fpu.GetFP64(0)
 			if math.Abs(result-tt.expect) > tt.epsilon {
 				t.Errorf("FTAN(%v) = %v, want %v", tt.value, result, tt.expect)
 			}
@@ -778,11 +844,11 @@ func TestFLOG10(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fpu := NewM68881FPU()
-			fpu.FPRegs[0] = ExtendedRealFromFloat64(tt.value)
+			fpu.SetFP64(0, tt.value)
 
 			fpu.FLOG10(0, 0)
 
-			result := fpu.FPRegs[0].ToFloat64()
+			result := fpu.GetFP64(0)
 			if math.Abs(result-tt.expect) > tt.epsilon {
 				t.Errorf("FLOG10(%v) = %v, want %v", tt.value, result, tt.expect)
 			}
@@ -805,11 +871,11 @@ func TestFLOGN(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fpu := NewM68881FPU()
-			fpu.FPRegs[0] = ExtendedRealFromFloat64(tt.value)
+			fpu.SetFP64(0, tt.value)
 
 			fpu.FLOGN(0, 0)
 
-			result := fpu.FPRegs[0].ToFloat64()
+			result := fpu.GetFP64(0)
 			if math.Abs(result-tt.expect) > tt.epsilon {
 				t.Errorf("FLOGN(%v) = %v, want %v", tt.value, result, tt.expect)
 			}
@@ -833,11 +899,11 @@ func TestFETOX(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fpu := NewM68881FPU()
-			fpu.FPRegs[0] = ExtendedRealFromFloat64(tt.value)
+			fpu.SetFP64(0, tt.value)
 
 			fpu.FETOX(0, 0)
 
-			result := fpu.FPRegs[0].ToFloat64()
+			result := fpu.GetFP64(0)
 			if math.Abs(result-tt.expect) > tt.epsilon {
 				t.Errorf("FETOX(%v) = %v, want %v", tt.value, result, tt.expect)
 			}
@@ -861,11 +927,11 @@ func TestFTWOTOX(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fpu := NewM68881FPU()
-			fpu.FPRegs[0] = ExtendedRealFromFloat64(tt.value)
+			fpu.SetFP64(0, tt.value)
 
 			fpu.FTWOTOX(0, 0)
 
-			result := fpu.FPRegs[0].ToFloat64()
+			result := fpu.GetFP64(0)
 			if math.Abs(result-tt.expect) > tt.epsilon {
 				t.Errorf("FTWOTOX(%v) = %v, want %v", tt.value, result, tt.expect)
 			}
@@ -889,11 +955,11 @@ func TestFTENTOX(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fpu := NewM68881FPU()
-			fpu.FPRegs[0] = ExtendedRealFromFloat64(tt.value)
+			fpu.SetFP64(0, tt.value)
 
 			fpu.FTENTOX(0, 0)
 
-			result := fpu.FPRegs[0].ToFloat64()
+			result := fpu.GetFP64(0)
 			if math.Abs(result-tt.expect) > tt.epsilon {
 				t.Errorf("FTENTOX(%v) = %v, want %v", tt.value, result, tt.expect)
 			}
@@ -920,11 +986,11 @@ func TestFINT(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fpu := NewM68881FPU()
-			fpu.FPRegs[0] = ExtendedRealFromFloat64(tt.value)
+			fpu.SetFP64(0, tt.value)
 
 			fpu.FINT(0, 0)
 
-			result := fpu.FPRegs[0].ToFloat64()
+			result := fpu.GetFP64(0)
 			if result != tt.expect {
 				t.Errorf("FINT(%v) = %v, want %v", tt.value, result, tt.expect)
 			}
@@ -947,11 +1013,11 @@ func TestFINTRZ(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fpu := NewM68881FPU()
-			fpu.FPRegs[0] = ExtendedRealFromFloat64(tt.value)
+			fpu.SetFP64(0, tt.value)
 
 			fpu.FINTRZ(0, 0)
 
-			result := fpu.FPRegs[0].ToFloat64()
+			result := fpu.GetFP64(0)
 			if result != tt.expect {
 				t.Errorf("FINTRZ(%v) = %v, want %v", tt.value, result, tt.expect)
 			}
@@ -1039,7 +1105,7 @@ func TestFMOVECR(t *testing.T) {
 
 			fpu.FMOVECR(tt.romAddr, 0)
 
-			result := fpu.FPRegs[0].ToFloat64()
+			result := fpu.GetFP64(0)
 			if math.Abs(result-tt.expect) > tt.epsilon {
 				t.Errorf("FMOVECR(0x%02X) = %v, want %v", tt.romAddr, result, tt.expect)
 			}
@@ -1053,8 +1119,8 @@ func TestFMOVECR(t *testing.T) {
 
 func BenchmarkFADD(b *testing.B) {
 	fpu := NewM68881FPU()
-	fpu.FPRegs[0] = ExtendedRealFromFloat64(math.Pi)
-	fpu.FPRegs[1] = ExtendedRealFromFloat64(math.E)
+	fpu.SetFP64(0, math.Pi)
+	fpu.SetFP64(1, math.E)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -1064,8 +1130,8 @@ func BenchmarkFADD(b *testing.B) {
 
 func BenchmarkFMUL(b *testing.B) {
 	fpu := NewM68881FPU()
-	fpu.FPRegs[0] = ExtendedRealFromFloat64(math.Pi)
-	fpu.FPRegs[1] = ExtendedRealFromFloat64(math.E)
+	fpu.SetFP64(0, math.Pi)
+	fpu.SetFP64(1, math.E)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -1075,8 +1141,8 @@ func BenchmarkFMUL(b *testing.B) {
 
 func BenchmarkFDIV(b *testing.B) {
 	fpu := NewM68881FPU()
-	fpu.FPRegs[0] = ExtendedRealFromFloat64(math.Pi)
-	fpu.FPRegs[1] = ExtendedRealFromFloat64(math.E)
+	fpu.SetFP64(0, math.Pi)
+	fpu.SetFP64(1, math.E)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -1086,7 +1152,7 @@ func BenchmarkFDIV(b *testing.B) {
 
 func BenchmarkFSQRT(b *testing.B) {
 	fpu := NewM68881FPU()
-	fpu.FPRegs[0] = ExtendedRealFromFloat64(2.0)
+	fpu.SetFP64(0, 2.0)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -1096,11 +1162,112 @@ func BenchmarkFSQRT(b *testing.B) {
 
 func BenchmarkFSIN(b *testing.B) {
 	fpu := NewM68881FPU()
-	fpu.FPRegs[0] = ExtendedRealFromFloat64(math.Pi / 4)
+	fpu.SetFP64(0, math.Pi/4)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		fpu.FSIN(0, 0)
+	}
+}
+
+func BenchmarkFSUB(b *testing.B) {
+	fpu := NewM68881FPU()
+	fpu.SetFP64(0, math.Pi)
+	fpu.SetFP64(1, math.E)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fpu.FSUB(1, 0)
+	}
+}
+
+func BenchmarkFNEG(b *testing.B) {
+	fpu := NewM68881FPU()
+	fpu.SetFP64(0, -math.Pi)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fpu.FNEG(0, 0)
+	}
+}
+
+func BenchmarkFABS(b *testing.B) {
+	fpu := NewM68881FPU()
+	fpu.SetFP64(0, -math.Pi)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fpu.FABS(0, 0)
+	}
+}
+
+func BenchmarkFCMP(b *testing.B) {
+	fpu := NewM68881FPU()
+	fpu.SetFP64(0, math.Pi)
+	fpu.SetFP64(1, math.E)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fpu.FCMP(1, 0)
+	}
+}
+
+func BenchmarkFTST(b *testing.B) {
+	fpu := NewM68881FPU()
+	fpu.SetFP64(0, math.Pi)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fpu.FTST(0)
+	}
+}
+
+func BenchmarkFMOVE_RegToReg(b *testing.B) {
+	fpu := NewM68881FPU()
+	fpu.SetFP64(1, math.Pi)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fpu.FMOVE_RegToReg(1, 0)
+	}
+}
+
+func BenchmarkFINT(b *testing.B) {
+	fpu := NewM68881FPU()
+	fpu.SetFP64(0, math.Pi)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fpu.FINT(0, 0)
+	}
+}
+
+func BenchmarkFMOD(b *testing.B) {
+	fpu := NewM68881FPU()
+	fpu.SetFP64(0, 1234.567)
+	fpu.SetFP64(1, 9.0)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fpu.FMOD(1, 0)
+	}
+}
+
+func BenchmarkFCOS(b *testing.B) {
+	fpu := NewM68881FPU()
+	fpu.SetFP64(0, math.Pi/3)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fpu.FCOS(0, 0)
+	}
+}
+
+func BenchmarkFTAN(b *testing.B) {
+	fpu := NewM68881FPU()
+	fpu.SetFP64(0, math.Pi/6)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fpu.FTAN(0, 0)
+	}
+}
+
+func BenchmarkSetConditionCodes(b *testing.B) {
+	fpu := NewM68881FPU()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fpu.setCC64(math.Pi)
 	}
 }
 

@@ -10423,6 +10423,46 @@ const (
 	FPU_OP_FTST    = 0x3A
 )
 
+var fpuOpTable = func() [128]func(*M68881FPU, int, int) {
+	var table [128]func(*M68881FPU, int, int)
+	table[FPU_OP_FMOVE] = (*M68881FPU).FMOVE_RegToReg
+	table[FPU_OP_FINT] = (*M68881FPU).FINT
+	table[FPU_OP_FSINH] = (*M68881FPU).FSINH
+	table[FPU_OP_FINTRZ] = (*M68881FPU).FINTRZ
+	table[FPU_OP_FSQRT] = (*M68881FPU).FSQRT
+	table[FPU_OP_FTANH] = (*M68881FPU).FTANH
+	table[FPU_OP_FATAN] = (*M68881FPU).FATAN
+	table[FPU_OP_FASIN] = (*M68881FPU).FASIN
+	table[FPU_OP_FATANH] = (*M68881FPU).FATANH
+	table[FPU_OP_FSIN] = (*M68881FPU).FSIN
+	table[FPU_OP_FTAN] = (*M68881FPU).FTAN
+	table[FPU_OP_FETOX] = (*M68881FPU).FETOX
+	table[FPU_OP_FTWOTOX] = (*M68881FPU).FTWOTOX
+	table[FPU_OP_FTENTOX] = (*M68881FPU).FTENTOX
+	table[FPU_OP_FLOGN] = (*M68881FPU).FLOGN
+	table[FPU_OP_FLOG10] = (*M68881FPU).FLOG10
+	table[FPU_OP_FLOG2] = (*M68881FPU).FLOG2
+	table[FPU_OP_FABS] = (*M68881FPU).FABS
+	table[FPU_OP_FCOSH] = (*M68881FPU).FCOSH
+	table[FPU_OP_FNEG] = (*M68881FPU).FNEG
+	table[FPU_OP_FACOS] = (*M68881FPU).FACOS
+	table[FPU_OP_FCOS] = (*M68881FPU).FCOS
+	table[FPU_OP_FGETEXP] = (*M68881FPU).FGETEXP
+	table[FPU_OP_FGETMAN] = (*M68881FPU).FGETMAN
+	table[FPU_OP_FDIV] = (*M68881FPU).FDIV
+	table[FPU_OP_FMOD] = (*M68881FPU).FMOD
+	table[FPU_OP_FADD] = (*M68881FPU).FADD
+	table[FPU_OP_FMUL] = (*M68881FPU).FMUL
+	table[FPU_OP_FSGLDIV] = (*M68881FPU).FSGLDIV
+	table[FPU_OP_FREM] = (*M68881FPU).FREM
+	table[FPU_OP_FSCALE] = (*M68881FPU).FSCALE
+	table[FPU_OP_FSGLMUL] = (*M68881FPU).FSGLMUL
+	table[FPU_OP_FSUB] = (*M68881FPU).FSUB
+	table[FPU_OP_FCMP] = (*M68881FPU).FCMP
+	table[FPU_OP_FTST] = func(fpu *M68881FPU, src, _ int) { fpu.FTST(src) }
+	return table
+}()
+
 // ExecFPUInstruction decodes and executes an FPU instruction
 func (cpu *M68KCPU) ExecFPUInstruction(opcode uint16) {
 	// Store instruction address for FPIAR
@@ -10486,81 +10526,30 @@ func (cpu *M68KCPU) execFPUGeneral(cmdWord uint16) {
 	dstReg := int((cmdWord >> 7) & 0x7)
 	op := cmdWord & 0x7F
 
-	switch op {
-	case FPU_OP_FMOVE:
-		cpu.FPU.FMOVE_RegToReg(srcReg, dstReg)
-	case FPU_OP_FINT:
-		cpu.FPU.FINT(srcReg, dstReg)
-	case FPU_OP_FSINH:
-		cpu.FPU.FSINH(srcReg, dstReg)
-	case FPU_OP_FINTRZ:
-		cpu.FPU.FINTRZ(srcReg, dstReg)
-	case FPU_OP_FSQRT:
-		cpu.FPU.FSQRT(srcReg, dstReg)
-	case FPU_OP_FTANH:
-		cpu.FPU.FTANH(srcReg, dstReg)
-	case FPU_OP_FATAN:
-		cpu.FPU.FATAN(srcReg, dstReg)
-	case FPU_OP_FASIN:
-		cpu.FPU.FASIN(srcReg, dstReg)
-	case FPU_OP_FATANH:
-		cpu.FPU.FATANH(srcReg, dstReg)
-	case FPU_OP_FSIN:
-		cpu.FPU.FSIN(srcReg, dstReg)
-	case FPU_OP_FTAN:
-		cpu.FPU.FTAN(srcReg, dstReg)
-	case FPU_OP_FETOX:
-		cpu.FPU.FETOX(srcReg, dstReg)
-	case FPU_OP_FTWOTOX:
-		cpu.FPU.FTWOTOX(srcReg, dstReg)
-	case FPU_OP_FTENTOX:
-		cpu.FPU.FTENTOX(srcReg, dstReg)
-	case FPU_OP_FLOGN:
-		cpu.FPU.FLOGN(srcReg, dstReg)
-	case FPU_OP_FLOG10:
-		cpu.FPU.FLOG10(srcReg, dstReg)
-	case FPU_OP_FLOG2:
-		cpu.FPU.FLOG2(srcReg, dstReg)
-	case FPU_OP_FABS:
-		cpu.FPU.FABS(srcReg, dstReg)
-	case FPU_OP_FCOSH:
-		cpu.FPU.FCOSH(srcReg, dstReg)
-	case FPU_OP_FNEG:
-		cpu.FPU.FNEG(srcReg, dstReg)
-	case FPU_OP_FACOS:
-		cpu.FPU.FACOS(srcReg, dstReg)
-	case FPU_OP_FCOS:
-		cpu.FPU.FCOS(srcReg, dstReg)
-	case FPU_OP_FGETEXP:
-		cpu.FPU.FGETEXP(srcReg, dstReg)
-	case FPU_OP_FGETMAN:
-		cpu.FPU.FGETMAN(srcReg, dstReg)
-	case FPU_OP_FDIV:
-		cpu.FPU.FDIV(srcReg, dstReg)
-	case FPU_OP_FMOD:
-		cpu.FPU.FMOD(srcReg, dstReg)
-	case FPU_OP_FADD:
-		cpu.FPU.FADD(srcReg, dstReg)
-	case FPU_OP_FMUL:
-		cpu.FPU.FMUL(srcReg, dstReg)
-	case FPU_OP_FSGLDIV:
-		cpu.FPU.FSGLDIV(srcReg, dstReg)
-	case FPU_OP_FREM:
-		cpu.FPU.FREM(srcReg, dstReg)
-	case FPU_OP_FSCALE:
-		cpu.FPU.FSCALE(srcReg, dstReg)
-	case FPU_OP_FSGLMUL:
-		cpu.FPU.FSGLMUL(srcReg, dstReg)
-	case FPU_OP_FSUB:
-		cpu.FPU.FSUB(srcReg, dstReg)
-	case FPU_OP_FCMP:
-		cpu.FPU.FCMP(srcReg, dstReg)
-	case FPU_OP_FTST:
-		cpu.FPU.FTST(srcReg)
-	default:
-		// Unknown FPU opcode
+	if fn := fpuOpTable[op]; fn != nil {
+		fn(cpu.FPU, srcReg, dstReg)
+	} else {
 		cpu.ProcessException(M68K_VEC_LINE_F)
 	}
+}
+
+func (cpu *M68KCPU) readExtendedReal96(ea uint32) ExtendedReal {
+	signExp := cpu.Read16(ea)
+	mantHi := cpu.Read32(ea + 4)
+	mantLo := cpu.Read32(ea + 8)
+	return ExtendedReal{
+		Sign: uint8(signExp >> 15),
+		Exp:  signExp & 0x7FFF,
+		Mant: (uint64(mantHi) << 32) | uint64(mantLo),
+	}
+}
+
+func (cpu *M68KCPU) writeExtendedReal96(ea uint32, ext ExtendedReal) {
+	signExp := (uint16(ext.Sign&1) << 15) | (ext.Exp & 0x7FFF)
+	cpu.Write16(ea, signExp)
+	cpu.Write16(ea+2, 0) // Reserved/padding
+	cpu.Write32(ea+4, uint32(ext.Mant>>32))
+	cpu.Write32(ea+8, uint32(ext.Mant))
 }
 
 // execFPUMemToReg handles loading FP register from memory
@@ -10582,13 +10571,11 @@ func (cpu *M68KCPU) execFPUMemToReg(opcode, cmdWord uint16) {
 	case 1: // Single precision
 		bits := cpu.Read32(ea)
 		value = float64(math.Float32frombits(bits))
-	case 2: // Extended precision (12 bytes - simplified)
-		// Read 80-bit extended as 96 bits (padded)
-		// For now, read as double precision approximation
-		hi := cpu.Read32(ea)
-		lo := cpu.Read32(ea + 4)
-		bits := uint64(hi)<<32 | uint64(lo)
-		value = math.Float64frombits(bits)
+	case 2: // Extended precision (96-bit storage with 80-bit payload)
+		ext := cpu.readExtendedReal96(ea)
+		cpu.FPU.SetFromExtendedReal(dstReg, ext)
+		cpu.FPU.setCC64(cpu.FPU.GetFP64(dstReg))
+		return
 	case 3: // Packed decimal (not implemented)
 		value = 0.0
 	case 4: // Word integer
@@ -10606,8 +10593,8 @@ func (cpu *M68KCPU) execFPUMemToReg(opcode, cmdWord uint16) {
 		value = 0.0
 	}
 
-	cpu.FPU.FPRegs[dstReg] = ExtendedRealFromFloat64(value)
-	cpu.FPU.SetConditionCodes(cpu.FPU.FPRegs[dstReg])
+	cpu.FPU.SetFP64(dstReg, value)
+	cpu.FPU.setCC64(value)
 }
 
 // execFPUMemOp handles FPU operations with memory source
@@ -10645,35 +10632,25 @@ func (cpu *M68KCPU) execFPUMemOp(opcode, cmdWord uint16) {
 		value = 0.0
 	}
 
-	// Store source value temporarily
-	srcExt := ExtendedRealFromFloat64(value)
-
 	// Perform operation
 	switch op {
 	case FPU_OP_FADD:
-		result := cpu.FPU.FPRegs[dstReg].ToFloat64() + srcExt.ToFloat64()
-		cpu.FPU.FPRegs[dstReg] = ExtendedRealFromFloat64(result)
+		cpu.FPU.AddImm(dstReg, value)
 	case FPU_OP_FSUB:
-		result := cpu.FPU.FPRegs[dstReg].ToFloat64() - srcExt.ToFloat64()
-		cpu.FPU.FPRegs[dstReg] = ExtendedRealFromFloat64(result)
+		cpu.FPU.SubImm(dstReg, value)
 	case FPU_OP_FMUL:
-		result := cpu.FPU.FPRegs[dstReg].ToFloat64() * srcExt.ToFloat64()
-		cpu.FPU.FPRegs[dstReg] = ExtendedRealFromFloat64(result)
+		cpu.FPU.MulImm(dstReg, value)
 	case FPU_OP_FDIV:
-		result := cpu.FPU.FPRegs[dstReg].ToFloat64() / srcExt.ToFloat64()
-		cpu.FPU.FPRegs[dstReg] = ExtendedRealFromFloat64(result)
+		cpu.FPU.DivImm(dstReg, value)
 	case FPU_OP_FCMP:
-		diff := cpu.FPU.FPRegs[dstReg].ToFloat64() - srcExt.ToFloat64()
-		cpu.FPU.SetConditionCodes(ExtendedRealFromFloat64(diff))
+		cpu.FPU.CmpImm(dstReg, value)
 		return
 	case FPU_OP_FMOVE:
-		cpu.FPU.FPRegs[dstReg] = srcExt
+		cpu.FPU.MoveImm(dstReg, value)
 	default:
 		cpu.ProcessException(M68K_VEC_LINE_F)
 		return
 	}
-
-	cpu.FPU.SetConditionCodes(cpu.FPU.FPRegs[dstReg])
 }
 
 // execFPURegToMem handles storing FP register to memory
@@ -10686,7 +10663,7 @@ func (cpu *M68KCPU) execFPURegToMem(opcode, cmdWord uint16) {
 	// Calculate effective address
 	ea := cpu.GetEffectiveAddress(mode, reg)
 
-	value := cpu.FPU.FPRegs[srcReg].ToFloat64()
+	value := cpu.FPU.GetFP64(srcReg)
 
 	switch dstFormat {
 	case 0: // Long integer
@@ -10694,6 +10671,8 @@ func (cpu *M68KCPU) execFPURegToMem(opcode, cmdWord uint16) {
 	case 1: // Single precision
 		bits := math.Float32bits(float32(value))
 		cpu.Write32(ea, bits)
+	case 2: // Extended precision (96-bit storage with 80-bit payload)
+		cpu.writeExtendedReal96(ea, cpu.FPU.GetExtendedReal(srcReg))
 	case 4: // Word integer
 		cpu.Write16(ea, uint16(int16(value)))
 	case 5: // Double precision
@@ -10721,10 +10700,7 @@ func (cpu *M68KCPU) execFMOVEM(opcode, cmdWord uint16) {
 		// FP registers to memory
 		for i := range 8 {
 			if (regList & (1 << (7 - i))) != 0 {
-				value := cpu.FPU.FPRegs[i].ToFloat64()
-				bits := math.Float64bits(value)
-				cpu.Write32(ea, uint32(bits>>32))
-				cpu.Write32(ea+4, uint32(bits))
+				cpu.writeExtendedReal96(ea, cpu.FPU.GetExtendedReal(i))
 				ea += 12 // Extended precision takes 12 bytes
 			}
 		}
@@ -10732,11 +10708,7 @@ func (cpu *M68KCPU) execFMOVEM(opcode, cmdWord uint16) {
 		// Memory to FP registers
 		for i := range 8 {
 			if (regList & (1 << (7 - i))) != 0 {
-				hi := cpu.Read32(ea)
-				lo := cpu.Read32(ea + 4)
-				bits := uint64(hi)<<32 | uint64(lo)
-				value := math.Float64frombits(bits)
-				cpu.FPU.FPRegs[i] = ExtendedRealFromFloat64(value)
+				cpu.FPU.SetFromExtendedReal(i, cpu.readExtendedReal96(ea))
 				ea += 12
 			}
 		}

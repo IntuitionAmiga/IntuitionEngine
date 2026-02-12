@@ -28,7 +28,7 @@ func TestFPU_CpuIntegration(t *testing.T) {
 
 		// Verify FPU registers are zero-initialized
 		for i := range 8 {
-			if !cpu.FPU.FPRegs[i].IsZero() {
+			if cpu.FPU.GetFP64(i) != 0 {
 				t.Errorf("FP%d should be zero on init", i)
 			}
 		}
@@ -41,8 +41,8 @@ func TestFPU_FlineDecoder(t *testing.T) {
 		cpu.PC = 0x1000
 
 		// Load FP0 with a value manually
-		cpu.FPU.FPRegs[0] = ExtendedRealFromFloat64(1.5)
-		cpu.FPU.FPRegs[1] = ExtendedRealFromFloat64(2.5)
+		cpu.FPU.SetFP64(0, 1.5)
+		cpu.FPU.SetFP64(1, 2.5)
 
 		// FADD FP1,FP0 - should add FP1 to FP0
 		// F-line opcode: 1111 001 0 00 000 000 = 0xF200
@@ -58,7 +58,7 @@ func TestFPU_FlineDecoder(t *testing.T) {
 		cpu.currentIR = cpu.Fetch16()
 		cpu.FetchAndDecodeInstruction()
 
-		result := cpu.FPU.FPRegs[0].ToFloat64()
+		result := cpu.FPU.GetFP64(0)
 		expected := 4.0 // 1.5 + 2.5
 
 		if math.Abs(result-expected) > 1e-10 {
@@ -81,7 +81,7 @@ func TestFPU_FlineDecoder(t *testing.T) {
 		cpu.currentIR = cpu.Fetch16()
 		cpu.FetchAndDecodeInstruction()
 
-		result := cpu.FPU.FPRegs[0].ToFloat64()
+		result := cpu.FPU.GetFP64(0)
 		if math.Abs(result-math.Pi) > 1e-15 {
 			t.Errorf("FMOVECR pi: expected %v, got %v", math.Pi, result)
 		}
@@ -92,7 +92,7 @@ func TestFPU_FlineDecoder(t *testing.T) {
 		cpu.PC = 0x1000
 
 		// Set FP1 to a value
-		cpu.FPU.FPRegs[1] = ExtendedRealFromFloat64(42.5)
+		cpu.FPU.SetFP64(1, 42.5)
 
 		// FMOVE FP1,FP0
 		// Command word: src=1 (bits 12-10), dst=0 (bits 9-7), op=FMOVE(0x00)
@@ -103,7 +103,7 @@ func TestFPU_FlineDecoder(t *testing.T) {
 		cpu.currentIR = cpu.Fetch16()
 		cpu.FetchAndDecodeInstruction()
 
-		result := cpu.FPU.FPRegs[0].ToFloat64()
+		result := cpu.FPU.GetFP64(0)
 		if result != 42.5 {
 			t.Errorf("FMOVE FP1,FP0: expected 42.5, got %v", result)
 		}
@@ -113,8 +113,8 @@ func TestFPU_FlineDecoder(t *testing.T) {
 		cpu := setupFPUTestCPU()
 		cpu.PC = 0x1000
 
-		cpu.FPU.FPRegs[0] = ExtendedRealFromFloat64(3.0)
-		cpu.FPU.FPRegs[2] = ExtendedRealFromFloat64(4.0)
+		cpu.FPU.SetFP64(0, 3.0)
+		cpu.FPU.SetFP64(2, 4.0)
 
 		// FMUL FP2,FP0 - FP0 = FP0 * FP2
 		// Command word: src=2 (bits 12-10 = 010), dst=0 (bits 9-7 = 000), op=FMUL(0x23)
@@ -125,7 +125,7 @@ func TestFPU_FlineDecoder(t *testing.T) {
 		cpu.currentIR = cpu.Fetch16()
 		cpu.FetchAndDecodeInstruction()
 
-		result := cpu.FPU.FPRegs[0].ToFloat64()
+		result := cpu.FPU.GetFP64(0)
 		if result != 12.0 {
 			t.Errorf("FMUL FP2,FP0: expected 12.0, got %v", result)
 		}
@@ -135,8 +135,8 @@ func TestFPU_FlineDecoder(t *testing.T) {
 		cpu := setupFPUTestCPU()
 		cpu.PC = 0x1000
 
-		cpu.FPU.FPRegs[0] = ExtendedRealFromFloat64(20.0)
-		cpu.FPU.FPRegs[3] = ExtendedRealFromFloat64(4.0)
+		cpu.FPU.SetFP64(0, 20.0)
+		cpu.FPU.SetFP64(3, 4.0)
 
 		// FDIV FP3,FP0 - FP0 = FP0 / FP3
 		// Command word: src=3 (bits 12-10 = 011), dst=0 (bits 9-7 = 000), op=FDIV(0x20)
@@ -147,7 +147,7 @@ func TestFPU_FlineDecoder(t *testing.T) {
 		cpu.currentIR = cpu.Fetch16()
 		cpu.FetchAndDecodeInstruction()
 
-		result := cpu.FPU.FPRegs[0].ToFloat64()
+		result := cpu.FPU.GetFP64(0)
 		if result != 5.0 {
 			t.Errorf("FDIV FP3,FP0: expected 5.0, got %v", result)
 		}
@@ -157,7 +157,7 @@ func TestFPU_FlineDecoder(t *testing.T) {
 		cpu := setupFPUTestCPU()
 		cpu.PC = 0x1000
 
-		cpu.FPU.FPRegs[0] = ExtendedRealFromFloat64(16.0)
+		cpu.FPU.SetFP64(0, 16.0)
 
 		// FSQRT FP0,FP0
 		// Command word: R/M=0, src=000, dst=000, op=FSQRT(0x04)
@@ -168,7 +168,7 @@ func TestFPU_FlineDecoder(t *testing.T) {
 		cpu.currentIR = cpu.Fetch16()
 		cpu.FetchAndDecodeInstruction()
 
-		result := cpu.FPU.FPRegs[0].ToFloat64()
+		result := cpu.FPU.GetFP64(0)
 		if result != 4.0 {
 			t.Errorf("FSQRT FP0: expected 4.0, got %v", result)
 		}
@@ -178,7 +178,7 @@ func TestFPU_FlineDecoder(t *testing.T) {
 		cpu := setupFPUTestCPU()
 		cpu.PC = 0x1000
 
-		cpu.FPU.FPRegs[0] = ExtendedRealFromFloat64(math.Pi / 2)
+		cpu.FPU.SetFP64(0, math.Pi/2)
 
 		// FSIN FP0,FP0
 		// Command word: R/M=0, src=000, dst=000, op=FSIN(0x0E)
@@ -189,7 +189,7 @@ func TestFPU_FlineDecoder(t *testing.T) {
 		cpu.currentIR = cpu.Fetch16()
 		cpu.FetchAndDecodeInstruction()
 
-		result := cpu.FPU.FPRegs[0].ToFloat64()
+		result := cpu.FPU.GetFP64(0)
 		if math.Abs(result-1.0) > 1e-14 {
 			t.Errorf("FSIN(pi/2): expected 1.0, got %v", result)
 		}
@@ -199,8 +199,8 @@ func TestFPU_FlineDecoder(t *testing.T) {
 		cpu := setupFPUTestCPU()
 		cpu.PC = 0x1000
 
-		cpu.FPU.FPRegs[0] = ExtendedRealFromFloat64(5.0)
-		cpu.FPU.FPRegs[1] = ExtendedRealFromFloat64(10.0)
+		cpu.FPU.SetFP64(0, 5.0)
+		cpu.FPU.SetFP64(1, 10.0)
 
 		// FCMP FP1,FP0 - compare FP0 with FP1
 		// Command word: src=1 (bits 12-10 = 001), dst=0 (bits 9-7 = 000), op=FCMP(0x38)
@@ -266,7 +266,7 @@ func TestFPU_ConditionCodes(t *testing.T) {
 			cpu := setupFPUTestCPU()
 			cpu.PC = 0x1000
 
-			cpu.FPU.FPRegs[0] = ExtendedRealFromFloat64(tt.value)
+			cpu.FPU.SetFP64(0, tt.value)
 
 			// FTST FP0
 			// Command word: R/M=0, src=000, dst=000, op=FTST(0x3A)
@@ -302,13 +302,148 @@ func BenchmarkFPU_FlineDecodeExecute(b *testing.B) {
 	cpu.Write16(0x1000, 0xF200)
 	cpu.Write16(0x1002, 0x0822)
 
-	cpu.FPU.FPRegs[0] = ExtendedRealFromFloat64(1.0)
-	cpu.FPU.FPRegs[1] = ExtendedRealFromFloat64(2.0)
+	cpu.FPU.SetFP64(0, 1.0)
+	cpu.FPU.SetFP64(1, 2.0)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		cpu.PC = 0x1000
 		cpu.currentIR = cpu.Fetch16()
 		cpu.FetchAndDecodeInstruction()
+	}
+}
+
+func TestFPU_MemToReg_ExtendedFormat(t *testing.T) {
+	cpu := setupFPUTestCPU()
+	cpu.AddrRegs[0] = 0x3000
+	want := ExtendedRealFromFloat64(math.Pi)
+	cpu.writeExtendedReal96(cpu.AddrRegs[0], want)
+	opcode := uint16((2 << 3) | 0) // (A0)
+	cmdWord := uint16((2 << 10) | (1 << 7))
+	cpu.execFPUMemToReg(opcode, cmdWord)
+	if got := cpu.FPU.GetFP64(1); math.Abs(got-math.Pi) > 1e-15 {
+		t.Fatalf("mem->reg extended got %v want %v", got, math.Pi)
+	}
+}
+
+func TestFPU_RegToMem_ExtendedFormat(t *testing.T) {
+	cpu := setupFPUTestCPU()
+	cpu.AddrRegs[0] = 0x3200
+	cpu.FPU.SetFP64(2, -math.E)
+	opcode := uint16((2 << 3) | 0) // (A0)
+	cmdWord := uint16((2 << 10) | (2 << 7))
+	cpu.execFPURegToMem(opcode, cmdWord)
+	ext := cpu.readExtendedReal96(cpu.AddrRegs[0])
+	if got := ext.ToFloat64(); math.Abs(got-(-math.E)) > 1e-15 {
+		t.Fatalf("reg->mem extended got %v want %v", got, -math.E)
+	}
+}
+
+func TestFPU_FMOVEM_ExtendedRoundTrip(t *testing.T) {
+	cpu := setupFPUTestCPU()
+	cpu.AddrRegs[0] = 0x3400
+	values := [8]float64{math.Pi, -math.E, 0, math.Inf(1), math.Inf(-1), 1.25, -42.0, 1e-20}
+	for i := range 8 {
+		cpu.FPU.SetFP64(i, values[i])
+	}
+
+	opcode := uint16((2 << 3) | 0) // (A0)
+	cpu.execFMOVEM(opcode, 0x00FF) // to memory, FP0-FP7
+	for i := range 8 {
+		cpu.FPU.SetFP64(i, 0)
+	}
+	cpu.execFMOVEM(opcode, 0x20FF) // from memory, FP0-FP7
+
+	for i := range 8 {
+		got := cpu.FPU.GetFP64(i)
+		want := values[i]
+		if math.IsInf(want, 0) {
+			if !math.IsInf(got, 0) || (math.Signbit(got) != math.Signbit(want)) {
+				t.Fatalf("FP%d round-trip got %v want %v", i, got, want)
+			}
+			continue
+		}
+		if math.Abs(got-want) > 1e-15 {
+			t.Fatalf("FP%d round-trip got %v want %v", i, got, want)
+		}
+	}
+}
+
+func TestFPU_IllegalOpcodeRaisesLineF(t *testing.T) {
+	cpu := setupFPUTestCPU()
+	cpu.SR = M68K_SR_S
+	cpu.Write32(M68K_VEC_LINE_F*4, 0x4000)
+
+	invalidOps := make([]uint16, 0, 128)
+	valid := map[uint16]bool{
+		0x00: true, 0x01: true, 0x02: true, 0x03: true, 0x04: true, 0x09: true, 0x0A: true,
+		0x0C: true, 0x0D: true, 0x0E: true, 0x0F: true, 0x10: true, 0x11: true, 0x12: true,
+		0x14: true, 0x15: true, 0x16: true, 0x18: true, 0x19: true, 0x1A: true, 0x1C: true,
+		0x1D: true, 0x1E: true, 0x1F: true, 0x20: true, 0x21: true, 0x22: true, 0x23: true,
+		0x24: true, 0x25: true, 0x26: true, 0x27: true, 0x28: true, 0x38: true, 0x3A: true,
+	}
+	for op := uint16(0); op < 128; op++ {
+		if !valid[op] {
+			invalidOps = append(invalidOps, op)
+		}
+	}
+
+	for _, op := range invalidOps {
+		cpu.PC = 0x2000
+		cpu.execFPUGeneral(op)
+		if cpu.PC != 0x4000 {
+			t.Fatalf("op 0x%02X did not raise LINE_F", op)
+		}
+	}
+}
+
+func TestFPU_FMOVECR_AfterJumpTable(t *testing.T) {
+	cpu := setupFPUTestCPU()
+	cases := []struct {
+		rom  uint8
+		want float64
+	}{
+		{0x00, math.Pi},
+		{0x0C, math.E},
+		{0x30, math.Ln2},
+		{0x31, math.Ln10},
+	}
+	for i, tc := range cases {
+		cmdWord := uint16(0x5C00 | (uint16(i&7) << 7) | uint16(tc.rom))
+		cpu.execFPUGeneral(cmdWord)
+		if got := cpu.FPU.GetFP64(i & 7); math.Abs(got-tc.want) > 1e-15 {
+			t.Fatalf("rom 0x%02X got %v want %v", tc.rom, got, tc.want)
+		}
+	}
+}
+
+func BenchmarkFPU_MemOp_FADD(b *testing.B) {
+	cpu := setupFPUTestCPU()
+	cpu.AddrRegs[0] = 0x3600
+	bits := math.Float64bits(1.5)
+	cpu.Write32(cpu.AddrRegs[0], uint32(bits>>32))
+	cpu.Write32(cpu.AddrRegs[0]+4, uint32(bits))
+	opcode := uint16((2 << 3) | 0)                 // (A0)
+	cmdWord := uint16((5 << 10) | (0 << 7) | 0x22) // double src, dst FP0, FADD
+	cpu.FPU.SetFP64(0, 2.5)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cpu.execFPUMemOp(opcode, cmdWord)
+	}
+}
+
+func BenchmarkFPU_FMOVEM_RoundTrip(b *testing.B) {
+	cpu := setupFPUTestCPU()
+	cpu.AddrRegs[0] = 0x3800
+	for i := range 8 {
+		cpu.FPU.SetFP64(i, float64(i)+0.25)
+	}
+	opcode := uint16((2 << 3) | 0)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cpu.execFMOVEM(opcode, 0x00FF)
+		cpu.execFMOVEM(opcode, 0x20FF)
 	}
 }
