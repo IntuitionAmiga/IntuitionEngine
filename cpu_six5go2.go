@@ -128,7 +128,7 @@ const (
 var nzTable [256]byte
 
 func init() {
-	for i := 0; i < 256; i++ {
+	for i := range 256 {
 		if i == 0 {
 			nzTable[i] |= ZERO_FLAG
 		}

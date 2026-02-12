@@ -382,7 +382,7 @@ func TestFPU_IllegalOpcodeRaisesLineF(t *testing.T) {
 		0x1D: true, 0x1E: true, 0x1F: true, 0x20: true, 0x21: true, 0x22: true, 0x23: true,
 		0x24: true, 0x25: true, 0x26: true, 0x27: true, 0x28: true, 0x38: true, 0x3A: true,
 	}
-	for op := uint16(0); op < 128; op++ {
+	for op := range uint16(128) {
 		if !valid[op] {
 			invalidOps = append(invalidOps, op)
 		}

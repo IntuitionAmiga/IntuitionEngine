@@ -65,6 +65,7 @@ type CPU_X86 struct {
 	prefixRep      int  // REP prefix (0 = none, 1 = REP/REPE, 2 = REPNE)
 	prefixOpSize   bool // Operand size prefix (0x66)
 	prefixAddrSize bool // Address size prefix (0x67)
+	lastEASeg      int  // Resolved segment for last effective address calculation
 	opcode         byte // Current opcode
 	modrm          byte // ModR/M byte
 	modrmLoaded    bool // ModR/M already fetched
@@ -73,6 +74,9 @@ type CPU_X86 struct {
 
 	// Bus interface
 	bus X86Bus
+
+	// Optional x87 FPU coprocessor
+	FPU *FPU_X87
 
 	// Instruction dispatch tables
 	baseOps     [256]func(*CPU_X86)
@@ -124,6 +128,7 @@ const (
 func NewCPU_X86(bus X86Bus) *CPU_X86 {
 	cpu := &CPU_X86{
 		bus: bus,
+		FPU: NewFPU_X87(),
 	}
 	// Initialize register pointer array for O(1) lookup
 	cpu.regs32 = [8]*uint32{
@@ -170,6 +175,7 @@ func (c *CPU_X86) Reset() {
 	c.prefixRep = 0
 	c.prefixOpSize = false
 	c.prefixAddrSize = false
+	c.lastEASeg = x86SegDS
 	c.modrmLoaded = false
 	c.sibLoaded = false
 
@@ -182,6 +188,10 @@ func (c *CPU_X86) Reset() {
 	c.Halted = false
 	c.running.Store(true)
 	c.Cycles = 0
+
+	if c.FPU != nil {
+		c.FPU.Reset()
+	}
 }
 
 // Running returns the execution state (thread-safe)
@@ -862,7 +872,7 @@ func (c *CPU_X86) calcEffectiveAddress16() uint32 {
 	}
 
 	// For flat model, segment base is 0
-	_ = seg
+	c.lastEASeg = seg
 	return uint32(base)
 }
 
@@ -917,7 +927,7 @@ func (c *CPU_X86) calcEffectiveAddress32() uint32 {
 	if c.prefixSeg >= 0 {
 		seg = c.prefixSeg
 	}
-	_ = seg
+	c.lastEASeg = seg
 
 	return addr
 }
@@ -1430,10 +1440,15 @@ func (c *CPU_X86) initBaseOps() {
 	// 0xD7: XLAT
 	c.baseOps[0xD7] = (*CPU_X86).opXLAT
 
-	// 0xD8-0xDF: FPU escape (NOP for now)
-	for i := 0xD8; i <= 0xDF; i++ {
-		c.baseOps[i] = (*CPU_X86).opFPU_escape
-	}
+	// 0xD8-0xDF: x87 FPU escapes
+	c.baseOps[0xD8] = (*CPU_X86).opFPU_D8
+	c.baseOps[0xD9] = (*CPU_X86).opFPU_D9
+	c.baseOps[0xDA] = (*CPU_X86).opFPU_DA
+	c.baseOps[0xDB] = (*CPU_X86).opFPU_DB
+	c.baseOps[0xDC] = (*CPU_X86).opFPU_DC
+	c.baseOps[0xDD] = (*CPU_X86).opFPU_DD
+	c.baseOps[0xDE] = (*CPU_X86).opFPU_DE
+	c.baseOps[0xDF] = (*CPU_X86).opFPU_DF
 
 	// 0xE0-0xE3: LOOP/JCXZ
 	c.baseOps[0xE0] = (*CPU_X86).opLOOPNE
