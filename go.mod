@@ -16,7 +16,7 @@ require (
 	github.com/ebitengine/hideconsole v1.0.0 // indirect
 	github.com/ebitengine/purego v0.9.1 // indirect
 	github.com/jezek/xgb v1.3.0 // indirect
-	golang.org/x/exp/shiny v0.0.0-20260211191109-2735e65f0518 // indirect
+	golang.org/x/exp/shiny v0.0.0-20260212183809-81e46e3db34a // indirect
 	golang.org/x/mobile v0.0.0-20260211191516-dcd2a3258864 // indirect
 	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect

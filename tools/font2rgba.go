@@ -158,10 +158,3 @@ func extractPNGFromGoFile(path string) ([]byte, error) {
 
 	return result, nil
 }
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
