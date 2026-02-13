@@ -197,8 +197,8 @@
 ;
 ; ANGLE_INC=313 and SCALE_INC=104 maintain a 3:1 ratio, matching the
 ; original BASIC rotozoomer's `A+=0.03, SI+=0.01`. In 8.8 fixed-point:
-;   0.03 * 256 * ~40.7 (frames normalizer) ~ 313
-;   0.01 * 256 * ~40.7 ~ 104
+;   0.03 * (256 / 2*pi) * 256 ~= 313
+;   0.01 * (256 / 2*pi) * 256 ~= 104
 ;
 ; The 3:1 ratio means the rotation completes 3 full cycles for every 1
 ; zoom cycle, creating a visually interesting Lissajous-like pattern where

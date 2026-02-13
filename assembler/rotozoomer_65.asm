@@ -144,7 +144,7 @@ TEXTURE_BASE     = $500000
 BACK_BUFFER      = $600000
 
 ; --- Texture Dimensions ---
-; TEX_STRIDE = 1024 bytes = 256 pixels * 4 bytes/pixel (RGBA).
+; TEX_STRIDE = 1024 bytes = 256 pixels * 4 bytes/pixel (BGRA).
 ; The width/height MASKS are 255 (0xFF), meaning the blitter wraps
 ; texture coordinates modulo 256 by ANDing with the mask. This gives
 ; us seamless tiling with no branch or modulo instruction.
@@ -172,8 +172,8 @@ TEX_H_MASK       = 255
 ;
 ; These values were chosen to match the BASIC version's A+=0.03, SI+=0.01
 ; ratio (approximately 3:1) while using 8.8 fixed-point representation.
-; The ratio ensures the rotation and zoom never synchronize, creating
-; an endlessly varying visual pattern.
+; Because this is finite-step fixed-point animation, the full state is
+; periodic and will eventually repeat, but only after a very long cycle.
 ;
 ; The `<` and `>` operators are cc65 syntax for extracting the low and
 ; high bytes of a 16-bit value, respectively.
