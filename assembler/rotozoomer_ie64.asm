@@ -21,6 +21,9 @@ SCALE_INC       equ 104
 org 0x1000
 
 start:
+    ; Init stack pointer
+    la      r31, STACK_TOP
+
     ; Enable VideoChip, mode 0
     la      r1, VIDEO_CTRL
     li      r2, #1
@@ -66,7 +69,7 @@ wait_vsync:
 generate_texture:
     ; Top-left 128x128 white
     la      r1, BLT_OP
-    li      r2, #BLT_OP_FILL
+    move.l  r2, #BLT_OP_FILL
     store.l r2, (r1)
     la      r1, BLT_DST
     move.l  r2, #TEXTURE_BASE
@@ -241,7 +244,7 @@ compute_frame:
 render_mode7:
     ; BLT_OP = MODE7
     la      r1, BLT_OP
-    li      r2, #BLT_OP_MODE7
+    move.l  r2, #BLT_OP_MODE7
     store.l r2, (r1)
 
     ; Source = texture, Dest = back buffer
@@ -324,7 +327,7 @@ render_mode7:
 ; =============================================================================
 blit_to_front:
     la      r1, BLT_OP
-    li      r2, #BLT_OP_COPY
+    move.l  r2, #BLT_OP_COPY
     store.l r2, (r1)
 
     la      r1, BLT_SRC

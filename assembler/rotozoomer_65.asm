@@ -69,9 +69,24 @@ loop:
     jsr compute_frame
     jsr render_mode7
     jsr blit_to_front
-    WAIT_VBLANK
+    jsr wait_vsync
     jsr advance_animation
     jmp loop
+.endproc
+
+; =============================================================================
+; WAIT FOR VSYNC (two-phase edge sync: wait for end, then wait for start)
+; =============================================================================
+.proc wait_vsync
+@wait_end:
+    lda VIDEO_STATUS
+    and #STATUS_VBLANK
+    bne @wait_end
+@wait_start:
+    lda VIDEO_STATUS
+    and #STATUS_VBLANK
+    beq @wait_start
+    rts
 .endproc
 
 ; =============================================================================
@@ -135,21 +150,37 @@ loop:
     txa
     clc
     adc #64                 ; A = (angle_idx + 64) & 0xFF (natural wrap)
-    asl a                   ; *2 for word index
-    tax                     ; save in X
+    asl a                   ; *2 for word index, C=1 if index>=128
+    tax
+    bcs @cos_hi
     lda sine_table,x
     sta mul_a
     lda sine_table+1,x
-    sta mul_a+1             ; mul_a = cos_val (signed 16-bit)
+    sta mul_a+1
+    jmp @cos_done
+@cos_hi:
+    lda sine_table+256,x
+    sta mul_a
+    lda sine_table+257,x
+    sta mul_a+1
+@cos_done:
 
     ; recip = recip_table[scale_idx]
     tya
     asl a
     tax
+    bcs @rcp1_hi
     lda recip_table,x
     sta mul_b
     lda recip_table+1,x
-    sta mul_b+1             ; mul_b = recip (unsigned 16-bit)
+    sta mul_b+1
+    jmp @rcp1_done
+@rcp1_hi:
+    lda recip_table+256,x
+    sta mul_b
+    lda recip_table+257,x
+    sta mul_b+1
+@rcp1_done:
 
     ; CA = cos_val * recip
     jsr mul16_signed
@@ -166,19 +197,35 @@ loop:
     lda angle_accum+1
     asl a
     tax
+    bcs @sin_hi
     lda sine_table,x
     sta mul_a
     lda sine_table+1,x
-    sta mul_a+1             ; mul_a = sin_val
+    sta mul_a+1
+    jmp @sin_done
+@sin_hi:
+    lda sine_table+256,x
+    sta mul_a
+    lda sine_table+257,x
+    sta mul_a+1
+@sin_done:
 
-    ; recip already in mul_b
+    ; recip for SA
     lda scale_accum+1
     asl a
     tax
+    bcs @rcp2_hi
     lda recip_table,x
     sta mul_b
     lda recip_table+1,x
     sta mul_b+1
+    jmp @rcp2_done
+@rcp2_hi:
+    lda recip_table+256,x
+    sta mul_b
+    lda recip_table+257,x
+    sta mul_b+1
+@rcp2_done:
 
     ; SA = sin_val * recip
     jsr mul16_signed
@@ -539,14 +586,18 @@ loop:
     rol mul_a+1
     bcc @no_add
 
-    ; Add mul_b to high word of result
+    ; Add mul_b to low word of result (with carry to high word)
     clc
-    lda mul_result+2
+    lda mul_result
     adc mul_b
-    sta mul_result+2
-    lda mul_result+3
+    sta mul_result
+    lda mul_result+1
     adc mul_b+1
-    sta mul_result+3
+    sta mul_result+1
+    bcc @no_add
+    inc mul_result+2
+    bne @no_add
+    inc mul_result+3
 @no_add:
     dex
     bne @loop

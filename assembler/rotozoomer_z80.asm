@@ -24,9 +24,11 @@
 .set ANGLE_INC,313
 .set SCALE_INC,104
 
-    .org 0x1000
+    .org 0x0000
 
 start:
+    ld sp,STACK_TOP
+
     ; Enable VideoChip
     ld a,1
     ld (VIDEO_CTRL),a
@@ -378,123 +380,51 @@ mul16_signed:
 
 ; =============================================================================
 ; MUL16U: DEHL = HL * DE (unsigned 16x16 -> 32)
-; Uses partial-product method: (H*256+L) * (D*256+E)
+; Shift-and-add: shifts multiplicand (BC) out MSB-first, adds DE to accumulator
 ; =============================================================================
 mul16u:
     push bc
     ld b,h
-    ld c,l                 ; BC = first operand
+    ld c,l                 ; BC = multiplicand (shifts out)
+    ; DE = multiplier (added when bit set)
+    ; Accumulator = DEHL -> use (sp):HL for 32-bit, but DE is multiplier...
+    ; Use IX for high word to avoid stack issues
+    push ix
+    ld ix,0                ; IX = high word of result
+    ld hl,0                ; HL = low word of result
 
-    ; Partial product: L*E
-    ld a,c                 ; A = C (low byte of first)
-    ld h,0
-    ld l,e                 ; HL will be used for mul
-    call mul_a_l           ; HL = C*E
-    push hl                ; save C*E
-
-    ; Partial product: H*E (shifted left 8)
-    ld a,b
-    ld l,e
-    call mul_a_l           ; HL = B*E
-    push hl
-
-    ; Partial product: L*D (shifted left 8)
-    ld a,c
-    ld l,d
-    call mul_a_l           ; HL = C*D
-    push hl
-
-    ; Partial product: H*D (shifted left 16)
-    ld a,b
-    ld l,d
-    call mul_a_l           ; HL = B*D
-    push hl                ; B*D
-
-    ; Combine: result[0:1] = C*E
-    ;          result[1:2] += B*E + C*D
-    ;          result[2:3] += B*D + carries
-    ; Stack (top to bottom): B*D, C*D, B*E, C*E
-
-    ; Start with result = 0
-    pop bc                 ; BC = B*D
-    pop hl                 ; HL = C*D
-    pop de                 ; DE = B*E
-
-    ; result[2:3] = B*D
-    ; Add C*D to result at offset 1:
-    ; Add B*E to result at offset 1:
-    ; Add C*E at offset 0:
-
-    ; Let me use a simpler accumulator approach
-    push bc                ; save B*D
-    push hl                ; save C*D
-    push de                ; save B*E
-
-    ; Result bytes: r0, r1, r2, r3
-    ; r0 = low byte of C*E
-    ; r1 = high byte of C*E + low bytes of B*E and C*D + carries
-    ; r2 = high bytes of B*E and C*D + low byte of B*D + carries
-    ; r3 = high byte of B*D + carries
-
-    pop de                 ; DE = B*E
-    pop hl                 ; HL = C*D
-    pop bc                 ; BC = B*D
-
-    ; Get C*E from stack
-    pop hl                 ; HL = C*E... wait, I already popped everything
-    ; Let me redo the stack management
-
-    pop bc                 ; This won't work, stack is wrong
-    ; I've messed up the stack. Let me use memory instead.
-
-    push bc
-    ; Restart with clean approach using memory
-    pop bc
-
-    ; Restore BC (first operand) -- actually we already consumed the stack
-    ; Let me just use var_mul_result as scratch
-
-    ; Save all partial products to memory, then combine
-    ; Actually let me just rewrite mul16u properly from scratch
-
-    pop bc                 ; restore saved BC from beginning
-    push bc                ; re-save
-
-    ; Clean multiply: BC * DE -> DEHL
-    ; Using shift-and-add on 32-bit accumulator
-
-    ; DEHL = 0 (accumulator)
-    ld hl,0
-    push hl                ; high word on stack = 0
-
-    ; Iterate 16 bits of BC
     ld a,16
 .mul_loop:
-    ; Shift accumulator (stack:HL) left by 1
-    add hl,hl              ; shift HL left
-    ex (sp),hl             ; swap: HL = high word, stack = low word
-    adc hl,hl              ; shift high word left with carry
-    ex (sp),hl             ; swap back: HL = low word, stack = high word
+    ; Shift accumulator left by 1
+    add hl,hl              ; shift low word
+    push hl
+    push ix
+    pop hl                 ; HL = IX (high word)
+    adc hl,hl              ; shift high word with carry
+    push hl
+    pop ix                 ; IX = shifted high word
+    pop hl                 ; HL = shifted low word
 
     ; Shift BC left, test top bit
     sla c
     rl b
     jr nc,.no_add
 
-    ; Add DE to low word HL
+    ; Add DE to low word
     add hl,de
     jr nc,.no_add
     ; Carry to high word
-    ex (sp),hl
-    inc hl
-    ex (sp),hl
+    inc ix
 .no_add:
     dec a
     jr nz,.mul_loop
 
-    ; Result: HL = low word, stack top = high word
+    ; Result: IX = high word, HL = low word
+    push ix
     pop de                 ; DE = high word
-    pop bc                 ; restore original BC
+
+    pop ix                 ; restore IX
+    pop bc                 ; restore BC
     ret
 
 ; =============================================================================

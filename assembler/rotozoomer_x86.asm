@@ -18,9 +18,12 @@ TEX_STRIDE      equ 1024
 ANGLE_INC       equ 313
 SCALE_INC       equ 104
 
-                org 0x1000
+bits 32
+                org 0x0000
 
 start:
+                mov esp, STACK_TOP
+
                 ; Enable VideoChip, mode 0
                 mov dword [VIDEO_CTRL], 1
                 mov dword [VIDEO_MODE], 0
