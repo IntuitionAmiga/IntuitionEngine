@@ -607,6 +607,7 @@ include "ehbasic_hw_audio.inc"
 include "ehbasic_hw_system.inc"
 include "ehbasic_hw_voodoo.inc"
 include "ehbasic_file_io.inc"
+include "ehbasic_hw_coproc.inc"
 include "ie64_fp.inc"
 `, body)
 
@@ -621,7 +622,7 @@ include "ie64_fp.inc"
 		"ehbasic_tokens.inc", "ehbasic_tokenizer.inc", "ehbasic_lineeditor.inc",
 		"ehbasic_expr.inc", "ehbasic_vars.inc", "ehbasic_strings.inc", "ehbasic_exec.inc",
 		"ehbasic_hw_video.inc", "ehbasic_hw_audio.inc", "ehbasic_hw_system.inc",
-		"ehbasic_hw_voodoo.inc", "ehbasic_file_io.inc"} {
+		"ehbasic_hw_voodoo.inc", "ehbasic_file_io.inc", "ehbasic_hw_coproc.inc"} {
 		src := filepath.Join(asmDir, inc)
 		dst := filepath.Join(dir, inc)
 		if err := os.Symlink(src, dst); err != nil {
@@ -1562,6 +1563,7 @@ include "ehbasic_hw_audio.inc"
 include "ehbasic_hw_system.inc"
 include "ehbasic_hw_voodoo.inc"
 include "ehbasic_file_io.inc"
+include "ehbasic_hw_coproc.inc"
 include "ie64_fp.inc"
 `, body)
 
@@ -1576,7 +1578,7 @@ include "ie64_fp.inc"
 		"ehbasic_tokens.inc", "ehbasic_tokenizer.inc", "ehbasic_lineeditor.inc",
 		"ehbasic_expr.inc", "ehbasic_vars.inc", "ehbasic_strings.inc", "ehbasic_exec.inc",
 		"ehbasic_hw_video.inc", "ehbasic_hw_audio.inc", "ehbasic_hw_system.inc",
-		"ehbasic_hw_voodoo.inc", "ehbasic_file_io.inc"} {
+		"ehbasic_hw_voodoo.inc", "ehbasic_file_io.inc", "ehbasic_hw_coproc.inc"} {
 		src := filepath.Join(asmDir, inc)
 		dst := filepath.Join(dir, inc)
 		if err := os.Symlink(src, dst); err != nil {

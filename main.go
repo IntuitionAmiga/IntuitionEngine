@@ -867,6 +867,11 @@ func main() {
 		progExec := NewProgramExecutor(sysBus, ie64CPU, videoChip, vgaEngine, voodooEngine, ".")
 		sysBus.MapIO(EXEC_BASE, EXEC_END, progExec.HandleRead, progExec.HandleWrite)
 
+		// Initialize coprocessor subsystem MMIO (COSTART/COCALL from BASIC)
+		coprocMgr := NewCoprocessorManager(sysBus, ".")
+		sysBus.MapIO(COPROC_BASE, COPROC_END, coprocMgr.HandleRead, coprocMgr.HandleWrite)
+		_ = coprocMgr // StopAll() called at shutdown if needed
+
 		// Load program — three paths: -basic, -basic-image, or explicit file
 		if modeBasic {
 			if basicImage != "" {

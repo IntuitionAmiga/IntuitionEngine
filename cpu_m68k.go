@@ -651,6 +651,11 @@ type M68KCPU struct {
 	lastFaultData          uint32
 	lastFaultIsInstruction bool
 
+	// Coprocessor mode: skip byte-swap for shared data regions (mailbox, user data)
+	// When true, Read16/Read32/Write16/Write32 return/accept LE values directly
+	// for addresses in the mailbox (0x820000-0x820FFF) and user data (0x400000-0x7FFFFF)
+	CoprocMode bool
+
 	// Performance monitoring (matching IE32 pattern)
 	PerfEnabled      bool      // Enable MIPS reporting
 	InstructionCount uint64    // Total instructions executed
@@ -2347,6 +2352,16 @@ func (cpu *M68KCPU) DumpRegisters() {
 	fmt.Println()
 }
 
+// isCoprocSharedAddr returns true if the address is in a coprocessor shared data
+// region where byte-swap should be skipped: mailbox (0x820000-0x820FFF) or user
+// data buffers (0x400000-0x7FFFFF). Worker code regions are NOT included — instruction
+// fetch must still byte-swap for correct BE opcode decoding.
+func (cpu *M68KCPU) isCoprocSharedAddr(addr uint32) bool {
+	return cpu.CoprocMode &&
+		((addr >= 0x400000 && addr < 0x800000) ||
+			(addr >= 0x820000 && addr < 0x821000))
+}
+
 func (cpu *M68KCPU) Read8(addr uint32) uint8 {
 	// Lock-free fast path for non-I/O addresses using unsafe pointer
 	// EXCLUDE VGA windows (0xA0000-0xBFFFF) which need bus routing
@@ -2402,6 +2417,11 @@ func (cpu *M68KCPU) Read16(addr uint32) uint16 {
 		leValue = cpu.bus.Read16(addr)
 	}
 
+	// Coprocessor shared data: return LE value directly (no byte-swap)
+	if cpu.isCoprocSharedAddr(addr) {
+		return leValue
+	}
+
 	// Endian conversion required because host bus is little-endian
 	return bits.ReverseBytes16(leValue)
 }
@@ -2449,6 +2469,11 @@ func (cpu *M68KCPU) Read32(addr uint32) uint32 {
 		leValue = cpu.bus.Read32(addr)
 	}
 
+	// Coprocessor shared data: return LE value directly (no byte-swap)
+	if cpu.isCoprocSharedAddr(addr) {
+		return leValue
+	}
+
 	// Endian conversion required because host bus is little-endian
 	return bits.ReverseBytes32(leValue)
 }
@@ -2494,17 +2519,23 @@ func (cpu *M68KCPU) Write16(addr uint32, value uint16) {
 
 	// For addresses >= M68K_MEMORY_SIZE, let bus handle (Atari ST hardware registers)
 
-	// Endian conversion required because host bus is little-endian
-	leValue := bits.ReverseBytes16(value)
+	// Coprocessor shared data: write value directly (no byte-swap)
+	// Normal path: endian conversion required because host bus is little-endian
+	var busValue uint16
+	if cpu.isCoprocSharedAddr(addr) {
+		busValue = value
+	} else {
+		busValue = bits.ReverseBytes16(value)
+	}
 
 	// Lock-free - bus handles its own synchronisation
 	if fb, ok := cpu.bus.(faultingBus); ok {
-		if !fb.Write16WithFault(addr, leValue) {
+		if !fb.Write16WithFault(addr, busValue) {
 			cpu.ProcessException(M68K_VEC_BUS_ERROR)
 		}
 		return
 	}
-	cpu.bus.Write16(addr, leValue)
+	cpu.bus.Write16(addr, busValue)
 }
 func (cpu *M68KCPU) Write32(addr uint32, value uint32) {
 	if (addr & M68K_BYTE_SIZE) != 0 {
@@ -2523,8 +2554,14 @@ func (cpu *M68KCPU) Write32(addr uint32, value uint32) {
 		return
 	}
 
-	// Endian conversion required because host bus is little-endian
-	leValue := bits.ReverseBytes32(value)
+	// Coprocessor shared data: write value directly (no byte-swap)
+	// Normal path: endian conversion required because host bus is little-endian
+	var leValue uint32
+	if cpu.isCoprocSharedAddr(addr) {
+		leValue = value
+	} else {
+		leValue = bits.ReverseBytes32(value)
+	}
 
 	// VRAM fast path - direct write, no mutex, no bus overhead
 	if cpu.vramDirect != nil && addr >= cpu.vramStart && addr < cpu.vramEnd {

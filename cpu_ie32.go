@@ -379,6 +379,9 @@ type CPU struct {
 
 	// Unsafe memory base pointer for bounds-check-free access
 	memBase unsafe.Pointer
+
+	// CoprocMode skips the PC range check in Execute() for coprocessor workers
+	CoprocMode bool
 }
 
 func NewCPU(bus Bus32) *CPU {
@@ -881,7 +884,7 @@ func (cpu *CPU) Execute() {
 	   - Memory access synchronised via bus interface
 	*/
 
-	if cpu.PC < PROG_START || cpu.PC >= STACK_START {
+	if !cpu.CoprocMode && (cpu.PC < PROG_START || cpu.PC >= STACK_START) {
 		fmt.Printf("Error: Invalid initial PC value: 0x%08x\n", cpu.PC)
 		cpu.running.Store(false)
 		return

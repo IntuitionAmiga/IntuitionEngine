@@ -384,6 +384,75 @@ expr_primary:
     beq     r1, r2, .do_chip_status
 
 .not_func:
+    ; --- Intercept coprocessor functions (COCALL, COSTATUS) ---
+    or.q    r3, r1, #0x20        ; normalize to lowercase
+    move.q  r2, #0x63            ; 'c'
+    bne     r3, r2, .check_var_range
+    load.b  r3, 1(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x6F            ; 'o'
+    bne     r3, r2, .check_var_range
+    load.b  r3, 2(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x63            ; 'c' → COCALL
+    beq     r3, r2, .check_cocall_func
+    move.q  r2, #0x73            ; 's' → COSTATUS
+    beq     r3, r2, .check_costatus_func
+    bra     .check_var_range
+
+.check_cocall_func:
+    ; Match "COCALL" (6 chars) + '('
+    load.b  r3, 3(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x61            ; 'a'
+    bne     r3, r2, .check_var_range
+    load.b  r3, 4(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x6C            ; 'l'
+    bne     r3, r2, .check_var_range
+    load.b  r3, 5(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x6C            ; 'l'
+    bne     r3, r2, .check_var_range
+    ; Check for '(' after keyword
+    load.b  r3, 6(r17)
+    move.q  r2, #0x28            ; '('
+    bne     r3, r2, .check_var_range
+    add.q   r17, r17, #7         ; consume "COCALL("
+    jsr     fn_cocall
+    rts
+
+.check_costatus_func:
+    ; Match "COSTATUS" (8 chars) + '('
+    load.b  r3, 3(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x74            ; 't'
+    bne     r3, r2, .check_var_range
+    load.b  r3, 4(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x61            ; 'a'
+    bne     r3, r2, .check_var_range
+    load.b  r3, 5(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x74            ; 't'
+    bne     r3, r2, .check_var_range
+    load.b  r3, 6(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x75            ; 'u'
+    bne     r3, r2, .check_var_range
+    load.b  r3, 7(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x73            ; 's'
+    bne     r3, r2, .check_var_range
+    ; Check for '(' after keyword
+    load.b  r3, 8(r17)
+    move.q  r2, #0x28            ; '('
+    bne     r3, r2, .check_var_range
+    add.q   r17, r17, #9         ; consume "COSTATUS("
+    jsr     fn_costatus
+    rts
+
+.check_var_range:
     ; Check for variable name (A-Z or a-z)
     move.q  r2, #0x41            ; 'A'
     blt     r1, r2, .not_var

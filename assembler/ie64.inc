@@ -1745,5 +1745,39 @@ EXEC_ERROR        equ 0xF2330               ; 0=ok,1=not-found,2=unsupported,3=p
 EXEC_SESSION      equ 0xF2334               ; Monotonic session id (R)
 
 ; ============================================================================
+; COPROCESSOR REGISTERS (0xF2340-0xF237F)
+; ============================================================================
+
+COPROC_CMD            equ 0xF2340               ; Command register (W triggers)
+COPROC_CPU_TYPE       equ 0xF2344               ; Target CPU type (W)
+COPROC_CMD_STATUS     equ 0xF2348               ; Command status: 0=ok,1=error (R)
+COPROC_CMD_ERROR      equ 0xF234C               ; Error code (R)
+COPROC_TICKET         equ 0xF2350               ; Ticket ID (R/W)
+COPROC_TICKET_STATUS  equ 0xF2354               ; Per-ticket status (R)
+COPROC_OP             equ 0xF2358               ; Operation code (W)
+COPROC_REQ_PTR        equ 0xF235C               ; Request data pointer (W)
+COPROC_REQ_LEN        equ 0xF2360               ; Request data length (W)
+COPROC_RESP_PTR       equ 0xF2364               ; Response buffer pointer (W)
+COPROC_RESP_CAP       equ 0xF2368               ; Response buffer capacity (W)
+COPROC_TIMEOUT        equ 0xF236C               ; Timeout ms (W)
+COPROC_NAME_PTR       equ 0xF2370               ; Pointer to service filename (W)
+COPROC_WORKER_STATE   equ 0xF2374               ; Bitmask of running workers (R)
+
+; Coprocessor command values
+COPROC_CMD_START      equ 1                     ; Start worker from file
+COPROC_CMD_STOP       equ 2                     ; Stop worker
+COPROC_CMD_ENQUEUE    equ 3                     ; Enqueue request (returns ticket)
+COPROC_CMD_POLL       equ 4                     ; Poll ticket status
+COPROC_CMD_WAIT_CMD   equ 5                     ; Block until ticket completes
+
+; Coprocessor ticket status values
+COPROC_ST_PENDING     equ 0
+COPROC_ST_RUNNING     equ 1
+COPROC_ST_OK          equ 2
+COPROC_ST_ERROR       equ 3
+COPROC_ST_TIMEOUT     equ 4
+COPROC_ST_WORKER_DOWN equ 5
+
+; ============================================================================
 ; EOF
 ; ============================================================================

@@ -185,6 +185,105 @@ exec_line:
     blt     r1, r2, .el_done
     move.q  r2, #0x7A            ; 'z'
     bgt     r1, r2, .el_done
+
+    ; --- Intercept coprocessor statements (COSTART, COSTOP, COWAIT) ---
+    or.q    r3, r1, #0x20        ; normalize to lowercase
+    move.q  r2, #0x63            ; 'c'
+    bne     r3, r2, .el_do_let
+    load.b  r3, 1(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x6F            ; 'o'
+    bne     r3, r2, .el_do_let
+    ; "CO..." — check third char
+    load.b  r3, 2(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x73            ; 's' → COSTART or COSTOP
+    beq     r3, r2, .el_check_cos
+    move.q  r2, #0x77            ; 'w' → COWAIT
+    beq     r3, r2, .el_check_cowait
+    bra     .el_do_let
+
+.el_check_cos:
+    ; Check for COSTART (7 chars) or COSTOP (6 chars)
+    load.b  r3, 3(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x74            ; 't'
+    bne     r3, r2, .el_do_let
+    load.b  r3, 4(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x61            ; 'a' → COSTART
+    beq     r3, r2, .el_match_costart
+    move.q  r2, #0x6F            ; 'o' → COSTOP
+    beq     r3, r2, .el_match_costop
+    bra     .el_do_let
+
+.el_match_costart:
+    ; Verify remaining chars: R, T + word boundary
+    load.b  r3, 5(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x72            ; 'r'
+    bne     r3, r2, .el_do_let
+    load.b  r3, 6(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x74            ; 't'
+    bne     r3, r2, .el_do_let
+    ; Word boundary: next char must not be alpha
+    load.b  r3, 7(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x61            ; 'a'
+    blt     r3, r2, .el_is_costart
+    move.q  r2, #0x7A            ; 'z'
+    ble     r3, r2, .el_do_let   ; still alpha → not our keyword
+.el_is_costart:
+    add.q   r17, r17, #7         ; consume "COSTART"
+    jsr     exec_do_costart
+    bra     .el_check_rc
+
+.el_match_costop:
+    ; Verify remaining char: P + word boundary
+    load.b  r3, 5(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x70            ; 'p'
+    bne     r3, r2, .el_do_let
+    ; Word boundary
+    load.b  r3, 6(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x61            ; 'a'
+    blt     r3, r2, .el_is_costop
+    move.q  r2, #0x7A            ; 'z'
+    ble     r3, r2, .el_do_let
+.el_is_costop:
+    add.q   r17, r17, #6         ; consume "COSTOP"
+    jsr     exec_do_costop
+    bra     .el_check_rc
+
+.el_check_cowait:
+    ; Match "COWAIT" (6 chars)
+    load.b  r3, 3(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x61            ; 'a'
+    bne     r3, r2, .el_do_let
+    load.b  r3, 4(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x69            ; 'i'
+    bne     r3, r2, .el_do_let
+    load.b  r3, 5(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x74            ; 't'
+    bne     r3, r2, .el_do_let
+    ; Word boundary
+    load.b  r3, 6(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x61            ; 'a'
+    blt     r3, r2, .el_is_cowait
+    move.q  r2, #0x7A            ; 'z'
+    ble     r3, r2, .el_do_let
+.el_is_cowait:
+    add.q   r17, r17, #6         ; consume "COWAIT"
+    jsr     exec_do_cowait
+    bra     .el_check_rc
+
+.el_do_let:
     ; It's a letter — implied LET (don't consume, var_lookup will read name)
     jsr     exec_do_let
     bra     .el_check_rc

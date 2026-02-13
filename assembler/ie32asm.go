@@ -168,9 +168,9 @@ func preprocessIncludes(code string, basePath string, included map[string]bool) 
 	}
 
 	var result strings.Builder
-	lines := strings.Split(code, "\n")
+	lines := strings.SplitSeq(code, "\n")
 
-	for _, line := range lines {
+	for line := range lines {
 		trimmed := strings.TrimSpace(line)
 
 		// Check for .include directive
@@ -330,7 +330,7 @@ func (a *Assembler) handleDirective(line string, lineNum int, program []byte) er
 		}
 		if program != nil {
 			// Zero-fill the space (Go slices are already zero-initialized, but be explicit)
-			for i := uint64(0); i < size; i++ {
+			for i := range size {
 				program[a.codeOffset+uint32(i)] = 0
 			}
 			a.codeOffset += uint32(size)
@@ -397,8 +397,8 @@ func (a *Assembler) parseOperand(operand string, lineNum int) (byte, uint32, err
 	}
 
 	// Direct memory addressing @addr (write/read directly to/from this address)
-	if strings.HasPrefix(operand, "@") {
-		addr := strings.TrimPrefix(operand, "@")
+	if after, ok := strings.CutPrefix(operand, "@"); ok {
+		addr := after
 		fmt.Printf("  Direct memory: addr='%s'\n", addr)
 
 		// Handle equate
@@ -582,8 +582,8 @@ func (a *Assembler) assemble(code string) []byte {
 			continue
 		}
 
-		if strings.HasSuffix(line, ":") {
-			label := strings.TrimSuffix(line, ":")
+		if before, ok := strings.CutSuffix(line, ":"); ok {
+			label := before
 			// All labels now use the unified codeOffset
 			a.labels[label] = a.baseAddr + a.codeOffset
 			fmt.Printf("Label '%s' at 0x%04x\n", label, a.labels[label])

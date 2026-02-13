@@ -46,7 +46,8 @@
    - 3.14 ULA Video Chip (ZX Spectrum)
    - 3.15 ANTIC Video Chip (Atari 8-bit)
    - 3.16 GTIA Color Control (Atari 8-bit)
-   - 3.17 Voodoo 3D Graphics
+   - 3.17 Coprocessor Subsystem
+   - 3.18 Voodoo 3D Graphics
 4. [IE32 CPU Architecture](#4-ie32-cpu-architecture)
    - 4.1 Register Set
    - 4.2 Status Flags
@@ -303,6 +304,7 @@ All hardware is accessed through memory-mapped registers in the `$F0000-$FFFFF` 
 | Banking | `$F700-$F7F0` | Bank window control (Z80/6502 only) |
 | VGA | `$F1000-$F13FF` | VGA mode, DAC, sequencer, CRTC, palette |
 | File I/O | `$F2200-$F221F` | Host filesystem access (LOAD/SAVE) |
+| Coprocessor | `$F2340-$F237F` | Worker CPU lifecycle and async RPC |
 
 Additionally, VGA uses legacy PC-compatible memory windows:
 - `$A0000-$AFFFF`: VGA VRAM (64KB graphics memory)
@@ -341,9 +343,17 @@ The system's memory layout is designed to provide efficient access to both progr
 0x0F0F10 - 0x0F0F1C: TED playback control
 0x0F1000 - 0x0F13FF: VGA registers (IBM VGA emulation)
 0x0F2200 - 0x0F221F: File I/O registers
+0x0F2340 - 0x0F237F: Coprocessor MMIO registers
 0x0A0000 - 0x0AFFFF: VGA VRAM window (Mode 13h/12h)
 0x0B8000 - 0x0BFFFF: VGA text buffer
 0x100000 - 0x4FFFFF: Video RAM (VRAM_START to VRAM_START + VRAM_SIZE)
+0x200000 - 0x27FFFF: Coprocessor worker region (IE32, 512KB)
+0x280000 - 0x2FFFFF: Coprocessor worker region (M68K, 512KB)
+0x300000 - 0x30FFFF: Coprocessor worker region (6502, 64KB)
+0x310000 - 0x31FFFF: Coprocessor worker region (Z80, 64KB)
+0x320000 - 0x39FFFF: Coprocessor worker region (x86, 512KB)
+0x400000 - 0x7FFFFF: User data buffers (coprocessor request/response data)
+0x820000 - 0x820FFF: Coprocessor mailbox shared RAM (4KB, ring buffers)
 ```
 
 ## 3.1 System Vector Table (0x000000 - 0x000FFF)
@@ -1377,7 +1387,69 @@ The PRIOR register controls display priority and special GTIA modes:
     move.b  #$00,GTIA_COLBK     ; Black background
 ```
 
-## 3.17 Voodoo 3D Graphics (0x0F4000 - 0x0F43FF)
+## 3.17 Coprocessor Subsystem (0x0F2340 - 0x0F237F)
+
+The coprocessor subsystem allows the IE64 host CPU to launch worker CPUs (IE32, 6502, M68K, Z80, x86) that run service binaries. Workers poll a shared mailbox ring buffer for requests, process them, and write results. The IE64 host manages worker lifecycle and request routing via MMIO registers. This is only available in IE64/BASIC mode.
+
+### MMIO Registers
+
+| Address | Name | R/W | Description |
+|---------|------|-----|-------------|
+| 0xF2340 | COPROC_CMD | W | Command register (triggers action) |
+| 0xF2344 | COPROC_CPU_TYPE | W | Target CPU type (1=IE32, 3=6502, 4=M68K, 5=Z80, 6=x86) |
+| 0xF2348 | COPROC_CMD_STATUS | R | 0=ok, 1=error |
+| 0xF234C | COPROC_CMD_ERROR | R | Error code (see below) |
+| 0xF2350 | COPROC_TICKET | R/W | Ticket ID |
+| 0xF2354 | COPROC_TICKET_STATUS | R | Per-ticket status |
+| 0xF2358 | COPROC_OP | W | Operation code |
+| 0xF235C | COPROC_REQ_PTR | W | Request data pointer |
+| 0xF2360 | COPROC_REQ_LEN | W | Request data length |
+| 0xF2364 | COPROC_RESP_PTR | W | Response buffer pointer |
+| 0xF2368 | COPROC_RESP_CAP | W | Response buffer capacity |
+| 0xF236C | COPROC_TIMEOUT | W | Timeout in ms |
+| 0xF2370 | COPROC_NAME_PTR | W | Service filename pointer |
+| 0xF2374 | COPROC_WORKER_STATE | R | Bitmask of running workers |
+
+### Commands (COPROC_CMD)
+
+| Value | Name | Description |
+|-------|------|-------------|
+| 1 | START | Load and start a worker from service binary file |
+| 2 | STOP | Stop a running worker |
+| 3 | ENQUEUE | Submit async request, returns ticket in COPROC_TICKET |
+| 4 | POLL | Check ticket status (non-blocking) |
+| 5 | WAIT | Block until ticket completes or timeout |
+
+### Ticket Status (COPROC_TICKET_STATUS)
+
+| Value | Meaning |
+|-------|---------|
+| 0 | Pending |
+| 1 | Running |
+| 2 | OK (completed successfully) |
+| 3 | Error |
+| 4 | Timeout |
+| 5 | Worker down |
+
+### Shared Mailbox RAM (0x820000 - 0x820FFF)
+
+4KB ring buffer region shared between the Go manager and all worker CPUs. Contains 5 rings (one per supported CPU type), each 768 bytes with 16 request/response descriptor slots. Workers are loaded into dedicated, non-overlapping memory regions (0x200000-0x39FFFF). User data buffers for request/response payloads should be placed at 0x400000-0x7FFFFF.
+
+### EhBASIC Interface
+
+From BASIC, use the high-level commands instead of direct MMIO access:
+
+```basic
+COSTART 3, "svc_6502.ie65"         ' Start 6502 worker
+T = COCALL(3, 1, &H1000, 8, &H2000, 16)  ' Async RPC (op=1, add)
+COWAIT T, 5000                      ' Wait up to 5 seconds
+IF COSTATUS(T) = 2 THEN PRINT "OK" ' Check result
+COSTOP 3                            ' Stop worker
+```
+
+Full reference: [assembler/ehbasic_ie64.md](assembler/ehbasic_ie64.md)
+
+## 3.18 Voodoo 3D Graphics (0x0F4000 - 0x0F43FF)
 
 The Voodoo chip emulates a 3DFX SST-1 graphics accelerator using High-Level Emulation (HLE). Instead of software rasterization, register writes are translated to GPU draw calls for hardware-accelerated 3D rendering with Vulkan (or software fallback).
 
@@ -3065,6 +3137,7 @@ The Intuition Engine includes a full port of Lee Davison's Enhanced BASIC (EhBAS
 - **Video commands**: SCREEN, CLS, PLOT, LINE, CIRCLE, BOX, PALETTE, LOCATE, COLOR, SCROLL, VSYNC, plus ULA, TED, ANTIC/GTIA, and full Voodoo 3D pipeline (vertices, triangles, textures, Z-buffer, alpha blending, fog)
 - **Audio commands**: SOUND, ENVELOPE, GATE, WAVE, FILTER, REVERB, OVERDRIVE, SWEEP, SYNC, RINGMOD, plus PSG/SID/POKEY/TED/AHX playback and STATUS queries
 - **System commands**: CALL (machine code subroutine), USR (call with return value), POKE8/PEEK8, DOKE/DEEK, WAIT, BLIT, COPPER, TRON/TROFF (trace mode)
+- **Coprocessor commands**: COSTART, COSTOP, COWAIT (worker lifecycle); COCALL(), COSTATUS() (async cross-CPU RPC to IE32/6502/M68K/Z80/x86 workers)
 - **Machine code interface**: CALL and USR use register-indirect JSR to invoke IE64 assembly routines; R8 carries return values
 
 ### Common REPL Commands
