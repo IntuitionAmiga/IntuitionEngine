@@ -3089,6 +3089,11 @@ func (adapter *Bus6502Adapter) Read(addr uint16) byte {
 		}
 	}
 
+	// Handle coprocessor gateway window (0xF200-0xF23F → COPROC_BASE on bus)
+	if addr >= COPROC_GATEWAY_BASE && addr <= COPROC_GATEWAY_END {
+		return adapter.bus.Read8(COPROC_BASE + uint32(addr-COPROC_GATEWAY_BASE))
+	}
+
 	// Handle extended bank window reads (IE65 mode)
 	if translated, ok := adapter.translateExtendedBank(addr); ok {
 		return adapter.bus.Read8(translated)
@@ -3238,6 +3243,12 @@ func (adapter *Bus6502Adapter) Write(addr uint16, value byte) {
 			adapter.vgaEngine.HandleWrite(VGA_DAC_DATA, uint32(value))
 			return
 		}
+	}
+
+	// Handle coprocessor gateway window (0xF200-0xF23F → COPROC_BASE on bus)
+	if addr >= COPROC_GATEWAY_BASE && addr <= COPROC_GATEWAY_END {
+		adapter.bus.Write8(COPROC_BASE+uint32(addr-COPROC_GATEWAY_BASE), value)
+		return
 	}
 
 	// Handle extended bank window writes (IE65 mode)

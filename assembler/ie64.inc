@@ -1778,6 +1778,92 @@ COPROC_ST_ERROR       equ 3
 COPROC_ST_TIMEOUT     equ 4
 COPROC_ST_WORKER_DOWN equ 5
 
+; CPU type constants
+COPROC_CPU_IE32       equ 1
+COPROC_CPU_IE64       equ 2
+COPROC_CPU_6502       equ 3
+COPROC_CPU_M68K       equ 4
+COPROC_CPU_Z80        equ 5
+COPROC_CPU_X86        equ 6
+
+; ----- Coprocessor helper macros -----
+
+; Start a coprocessor worker
+; \1 = cpuType, \2 = namePtr (address of filename string)
+coproc_start macro
+    la      r1, COPROC_CPU_TYPE
+    li      r2, #\1
+    store.l r2, (r1)
+    la      r1, COPROC_NAME_PTR
+    li      r2, #\2
+    store.l r2, (r1)
+    la      r1, COPROC_CMD
+    li      r2, #COPROC_CMD_START
+    store.l r2, (r1)
+    endm
+
+; Stop a coprocessor worker
+; \1 = cpuType
+coproc_stop macro
+    la      r1, COPROC_CPU_TYPE
+    li      r2, #\1
+    store.l r2, (r1)
+    la      r1, COPROC_CMD
+    li      r2, #COPROC_CMD_STOP
+    store.l r2, (r1)
+    endm
+
+; Enqueue a request — ticket returned in COPROC_TICKET
+; \1 = cpuType, \2 = op, \3 = reqPtr, \4 = reqLen, \5 = respPtr, \6 = respCap
+coproc_enqueue macro
+    la      r1, COPROC_CPU_TYPE
+    li      r2, #\1
+    store.l r2, (r1)
+    la      r1, COPROC_OP
+    li      r2, #\2
+    store.l r2, (r1)
+    la      r1, COPROC_REQ_PTR
+    li      r2, #\3
+    store.l r2, (r1)
+    la      r1, COPROC_REQ_LEN
+    li      r2, #\4
+    store.l r2, (r1)
+    la      r1, COPROC_RESP_PTR
+    li      r2, #\5
+    store.l r2, (r1)
+    la      r1, COPROC_RESP_CAP
+    li      r2, #\6
+    store.l r2, (r1)
+    la      r1, COPROC_CMD
+    li      r2, #COPROC_CMD_ENQUEUE
+    store.l r2, (r1)
+    endm
+
+; Poll ticket status — result in COPROC_TICKET_STATUS
+; \1 = ticket ID
+coproc_poll macro
+    la      r1, COPROC_TICKET
+    li      r2, #\1
+    store.l r2, (r1)
+    la      r1, COPROC_CMD
+    li      r2, #COPROC_CMD_POLL
+    store.l r2, (r1)
+    endm
+
+; Wait for ticket completion with timeout
+; \1 = ticket ID, \2 = timeout ms
+coproc_wait macro
+    la      r1, COPROC_TICKET
+    li      r2, #\1
+    store.l r2, (r1)
+    la      r1, COPROC_TIMEOUT
+    li      r2, #\2
+    store.l r2, (r1)
+    la      r1, COPROC_CMD
+    li      r2, #COPROC_CMD_WAIT_CMD
+    store.l r2, (r1)
+    endm
+
 ; ============================================================================
 ; EOF
 ; ============================================================================

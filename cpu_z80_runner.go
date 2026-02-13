@@ -122,6 +122,11 @@ func (b *Z80BusAdapter) Read(addr uint16) byte {
 		return byte((b.bank3 >> 8) & 0xFF)
 	}
 
+	// Handle coprocessor gateway window (0xF200-0xF23F → COPROC_BASE on bus)
+	if addr >= COPROC_GATEWAY_BASE && addr <= COPROC_GATEWAY_END {
+		return b.bus.Read8(COPROC_BASE + uint32(addr-COPROC_GATEWAY_BASE))
+	}
+
 	// Handle extended bank window reads (IE80 mode)
 	if translated, ok := b.translateExtendedBank(addr); ok {
 		return b.bus.Read8(translated)
@@ -171,6 +176,12 @@ func (b *Z80BusAdapter) Write(addr uint16, value byte) {
 	case Z80_BANK3_REG_HI:
 		b.bank3 = (b.bank3 & 0x00FF) | (uint32(value) << 8)
 		b.bank3Enable = true
+		return
+	}
+
+	// Handle coprocessor gateway window (0xF200-0xF23F → COPROC_BASE on bus)
+	if addr >= COPROC_GATEWAY_BASE && addr <= COPROC_GATEWAY_END {
+		b.bus.Write8(COPROC_BASE+uint32(addr-COPROC_GATEWAY_BASE), value)
 		return
 	}
 

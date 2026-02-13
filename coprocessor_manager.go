@@ -74,12 +74,9 @@ func NewCoprocessorManager(bus *MachineBus, baseDir string) *CoprocessorManager 
 	return mgr
 }
 
-// HandleRead reads an MMIO register.
-func (m *CoprocessorManager) HandleRead(addr uint32) uint32 {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	switch addr {
+// readReg returns the shadow register value for a given aligned register base address.
+func (m *CoprocessorManager) readReg(regBase uint32) uint32 {
+	switch regBase {
 	case COPROC_CMD:
 		return m.cmd
 	case COPROC_CPU_TYPE:
@@ -113,15 +110,11 @@ func (m *CoprocessorManager) HandleRead(addr uint32) uint32 {
 	}
 }
 
-// HandleWrite writes an MMIO register. Writing to COPROC_CMD triggers an action.
-func (m *CoprocessorManager) HandleWrite(addr uint32, val uint32) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	switch addr {
+// writeReg sets a shadow register value for a given aligned register base address.
+func (m *CoprocessorManager) writeReg(regBase, val uint32) {
+	switch regBase {
 	case COPROC_CMD:
 		m.cmd = val
-		m.dispatchCmd()
 	case COPROC_CPU_TYPE:
 		m.cpuType = val
 	case COPROC_TICKET:
@@ -140,6 +133,48 @@ func (m *CoprocessorManager) HandleWrite(addr uint32, val uint32) {
 		m.timeout = val
 	case COPROC_NAME_PTR:
 		m.namePtr = val
+	}
+}
+
+// HandleRead reads an MMIO register. Supports both aligned 32-bit reads
+// and byte-level reads at sub-register offsets (for 8-bit CPUs).
+func (m *CoprocessorManager) HandleRead(addr uint32) uint32 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	offset := addr - COPROC_BASE
+	regBase := COPROC_BASE + (offset & ^uint32(3))
+	byteOff := offset & 3
+	val := m.readReg(regBase)
+	if byteOff != 0 {
+		return (val >> (byteOff * 8)) & 0xFF
+	}
+	return val
+}
+
+// HandleWrite writes an MMIO register. Supports both aligned 32-bit writes
+// and byte-level writes at sub-register offsets (for 8-bit CPUs).
+// Writing to COPROC_CMD byte 0 triggers command dispatch.
+func (m *CoprocessorManager) HandleWrite(addr uint32, val uint32) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	offset := addr - COPROC_BASE
+	regBase := COPROC_BASE + (offset & ^uint32(3))
+	byteOff := offset & 3
+
+	if byteOff != 0 {
+		// Byte-level write: read-modify-write into the aligned register
+		existing := m.readReg(regBase)
+		shift := byteOff * 8
+		val = (existing & ^(uint32(0xFF) << shift)) | ((val & 0xFF) << shift)
+	}
+
+	m.writeReg(regBase, val)
+
+	// Only dispatch when byte 0 of COPROC_CMD is written
+	if regBase == COPROC_CMD && byteOff == 0 {
+		m.dispatchCmd()
 	}
 }
 

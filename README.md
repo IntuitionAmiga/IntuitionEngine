@@ -1389,14 +1389,14 @@ The PRIOR register controls display priority and special GTIA modes:
 
 ## 3.17 Coprocessor Subsystem (0x0F2340 - 0x0F237F)
 
-The coprocessor subsystem allows the IE64 host CPU to launch worker CPUs (IE32, 6502, M68K, Z80, x86) that run service binaries. Workers poll a shared mailbox ring buffer for requests, process them, and write results. The IE64 host manages worker lifecycle and request routing via MMIO registers. This is only available in IE64/BASIC mode.
+The coprocessor subsystem allows any CPU to launch worker CPUs (IE32, 6502, M68K, Z80, x86) that run service binaries. Workers poll a shared mailbox ring buffer for requests, process them, and write results. The caller manages worker lifecycle and request routing via MMIO registers. Available in all CPU modes.
 
 ### MMIO Registers
 
 | Address | Name | R/W | Description |
 |---------|------|-----|-------------|
-| 0xF2340 | COPROC_CMD | W | Command register (triggers action) |
-| 0xF2344 | COPROC_CPU_TYPE | W | Target CPU type (1=IE32, 3=6502, 4=M68K, 5=Z80, 6=x86) |
+| 0xF2340 | COPROC_CMD | W | Command register (triggers action on byte-0 write) |
+| 0xF2344 | COPROC_CPU_TYPE | W | Target CPU type (1=IE32, 2=IE64, 3=6502, 4=M68K, 5=Z80, 6=x86) |
 | 0xF2348 | COPROC_CMD_STATUS | R | 0=ok, 1=error |
 | 0xF234C | COPROC_CMD_ERROR | R | Error code (see below) |
 | 0xF2350 | COPROC_TICKET | R/W | Ticket ID |
@@ -1409,6 +1409,33 @@ The coprocessor subsystem allows the IE64 host CPU to launch worker CPUs (IE32, 
 | 0xF236C | COPROC_TIMEOUT | W | Timeout in ms |
 | 0xF2370 | COPROC_NAME_PTR | W | Service filename pointer |
 | 0xF2374 | COPROC_WORKER_STATE | R | Bitmask of running workers |
+
+### Byte-Level MMIO Access
+
+All registers support byte-level reads and writes. This allows 8-bit CPUs to program 32-bit registers using four single-byte writes. Registers are aligned to 4-byte boundaries: sub-register byte offsets are computed as `addr & 3`. Writes to bytes 1-3 of a register perform read-modify-write on the shadow register. Command dispatch only fires when byte 0 of COPROC_CMD is written — writes to bytes 1-3 of COPROC_CMD do not trigger dispatch. This means the CMD register must be written last in any sequence.
+
+### 16-bit CPU Gateway (0xF200 - 0xF23F)
+
+Z80 and 6502 CPUs have 16-bit address spaces and cannot directly reach `0xF2340`. A gateway window at `0xF200-0xF23F` transparently redirects reads and writes to the coprocessor MMIO:
+
+| Gateway Address | Maps To | Register |
+|----------------|---------|----------|
+| 0xF200 | 0xF2340 | COPROC_CMD |
+| 0xF204 | 0xF2344 | COPROC_CPU_TYPE |
+| 0xF208 | 0xF2348 | COPROC_CMD_STATUS |
+| 0xF20C | 0xF234C | COPROC_CMD_ERROR |
+| 0xF210 | 0xF2350 | COPROC_TICKET |
+| 0xF214 | 0xF2354 | COPROC_TICKET_STATUS |
+| 0xF218 | 0xF2358 | COPROC_OP |
+| 0xF21C | 0xF235C | COPROC_REQ_PTR |
+| 0xF220 | 0xF2360 | COPROC_REQ_LEN |
+| 0xF224 | 0xF2364 | COPROC_RESP_PTR |
+| 0xF228 | 0xF2368 | COPROC_RESP_CAP |
+| 0xF22C | 0xF236C | COPROC_TIMEOUT |
+| 0xF230 | 0xF2370 | COPROC_NAME_PTR |
+| 0xF234 | 0xF2374 | COPROC_WORKER_STATE |
+
+IE32, IE64, M68K, and x86 CPUs access `0xF2340` directly (no gateway needed).
 
 ### Commands (COPROC_CMD)
 
@@ -1435,6 +1462,49 @@ The coprocessor subsystem allows the IE64 host CPU to launch worker CPUs (IE32, 
 
 4KB ring buffer region shared between the Go manager and all worker CPUs. Contains 5 rings (one per supported CPU type), each 768 bytes with 16 request/response descriptor slots. Workers are loaded into dedicated, non-overlapping memory regions (0x200000-0x39FFFF). User data buffers for request/response payloads should be placed at 0x400000-0x7FFFFF.
 
+### Access by CPU Type
+
+| CPU | Register Addresses | Write Method | Include File |
+|-----|-------------------|--------------|-------------|
+| IE32 | `0xF2340` direct | 32-bit `STORE` | `ie32.inc` |
+| IE64 | `0xF2340` direct | 32-bit `store.l` | `ie64.inc` |
+| M68K | `0xF2340` direct | 32-bit `move.l` | `ie68.inc` |
+| x86 | `0xF2340` direct | 32-bit `mov dword` | `ie86.inc` |
+| Z80 | `0xF200` gateway | 4x byte `ld (addr),a` | `ie80.inc` |
+| 6502 | `$F200` gateway | 4x byte `sta addr` | `ie65.inc` |
+
+### ASM Helper Macros
+
+All include files provide coprocessor helper macros with identical semantics:
+
+| Macro | Arguments | Description |
+|-------|-----------|-------------|
+| `coproc_start` | cpuType, namePtr | Start a worker from service binary |
+| `coproc_stop` | cpuType | Stop a running worker |
+| `coproc_enqueue` | cpuType, op, reqPtr, reqLen, respPtr, respCap | Enqueue async request (ticket in COPROC_TICKET) |
+| `coproc_poll` | ticket | Poll ticket status (non-blocking) |
+| `coproc_wait` | ticket, timeoutMs | Block until ticket completes or timeout |
+
+For 16-bit CPUs (Z80/6502), macros use `STORE32` internally to compose 32-bit values from 4 byte writes through the gateway.
+
+**Example (x86 — native 32-bit):**
+```nasm
+%include "ie86.inc"
+    coproc_start COPROC_CPU_IE32, 0x400000    ; start IE32 worker
+    coproc_enqueue COPROC_CPU_IE32, 1, 0x410000, 8, 0x410100, 4
+    mov ebx, [COPROC_TICKET]                  ; save ticket
+    coproc_poll ebx                           ; poll status
+    mov eax, [COPROC_TICKET_STATUS]           ; read result
+```
+
+**Example (Z80 — gateway + byte writes):**
+```z80
+    .include "ie80.inc"
+    coproc_start COPROC_CPU_M68K 0x400000     ; start M68K worker
+    coproc_enqueue COPROC_CPU_M68K 1 0x410000 8 0x410100 4
+    ld a,(COPROC_TICKET)                      ; read ticket byte 0
+```
+
 ### EhBASIC Interface
 
 From BASIC, use the high-level commands instead of direct MMIO access:
@@ -1448,6 +1518,18 @@ COSTOP 3                            ' Stop worker
 ```
 
 Full reference: [assembler/ehbasic_ie64.md](assembler/ehbasic_ie64.md)
+
+### Caller Examples
+
+Complete caller examples are provided for all CPU architectures:
+
+| File | Caller CPU | Worker CPU | Description |
+|------|-----------|------------|-------------|
+| `assembler/coproc_caller_ie32.asm` | IE32 | IE32 | Native 32-bit register access |
+| `assembler/coproc_caller_68k.asm` | M68K | IE32 | Uses `coproc_start`/`coproc_enqueue` macros |
+| `assembler/coproc_caller_x86.asm` | x86 | IE32 | Uses NASM `%macro` helpers |
+| `assembler/coproc_caller_z80.asm` | Z80 | M68K | Gateway access via `STORE32` macros |
+| `assembler/coproc_caller_65.asm` | 6502 | IE32 | Gateway access via `STORE32` macros |
 
 ## 3.18 Voodoo 3D Graphics (0x0F4000 - 0x0F43FF)
 
@@ -5292,6 +5374,7 @@ start:
 - `set_sid_play`, `start_sid_play`, `start_sid_loop`, `stop_sid_play`, `enable_sid_plus`
 - `set_sap_play`, `start_sap_play`, `stop_sap_play`
 - `PLAY_AHX`, `PLAY_AHX_LOOP`, `PLAY_AHX_PLUS`, `PLAY_AHX_PLUS_LOOP`, `STOP_AHX`
+- `coproc_start`, `coproc_stop`, `coproc_enqueue`, `coproc_poll`, `coproc_wait` - Coprocessor helpers
 
 ### ie65.inc (6502 CPU)
 
@@ -5320,6 +5403,7 @@ start:
 - `SET_SRC_STRIDE`, `SET_DST_STRIDE`
 - `ADD16`, `INC16`, `CMP16` - 16-bit arithmetic helpers
 - `SET_AHX_PTR`, `SET_AHX_LEN`, `START_AHX_PLAY`, `START_AHX_LOOP`, `STOP_AHX_PLAY`, `ENABLE_AHX_PLUS`
+- `COPROC_START`, `COPROC_STOP`, `COPROC_ENQUEUE`, `COPROC_POLL`, `COPROC_WAIT` - Coprocessor helpers (via gateway `$F200`)
 
 **Zero page allocation:**
 ```assembly
@@ -5364,6 +5448,7 @@ start:
 - `SET_AHX_PTR`, `SET_AHX_LEN`, `START_AHX_PLAY`, `START_AHX_LOOP`, `STOP_AHX_PLAY`, `ENABLE_AHX_PLUS`
 - `SID_WRITE reg,val` - Write SID register via port I/O
 - `ADD_HL_IMM`, `CP_HL_IMM`, `INC16` - Utility macros
+- `coproc_start`, `coproc_stop`, `coproc_enqueue`, `coproc_poll`, `coproc_wait` - Coprocessor helpers (via gateway `0xF200`)
 
 ### ie86.inc (x86 CPU)
 
@@ -5410,6 +5495,7 @@ start:
 - `psg_write reg, val` - Write PSG register via port I/O
 - `sid_write reg, val` - Write SID register via port I/O
 - `pokey_write reg, val` - Write POKEY register via port I/O
+- `coproc_start cpuType, namePtr`, `coproc_stop`, `coproc_enqueue`, `coproc_poll`, `coproc_wait` - Coprocessor helpers
 
 ### ie64.inc (IE64 CPU)
 
@@ -5443,6 +5529,7 @@ start:
 - POKEY: `enable_pokey_plus`, `set_pokey_audctl`, `set_pokey_ch`
 - Audio channels: `set_ch_freq`, `set_ch_vol`, `set_ch_wave`, `set_ch_env`, `gate_ch_on`, `gate_ch_off`, `set_filter`, `set_reverb`
 - Voodoo: `voodoo_vertex_a/b/c`, `voodoo_color_rgb`, `voodoo_triangle`, `voodoo_swap`, `voodoo_clear`
+- Coprocessor: `coproc_start`, `coproc_stop`, `coproc_enqueue`, `coproc_poll`, `coproc_wait`
 
 ### 8-Bit CPU Banking System
 

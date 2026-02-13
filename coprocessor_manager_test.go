@@ -1173,6 +1173,169 @@ func TestCoprocEndToEnd_6502(t *testing.T) {
 	)
 }
 
+// --- Byte-level MMIO register tests ---
+
+// TestCoprocMMIO_ByteLevelWrite writes a 32-bit value to COPROC_REQ_PTR via
+// 4 individual bus.Write8 calls and verifies bus.Read32 returns the correct value.
+func TestCoprocMMIO_ByteLevelWrite(t *testing.T) {
+	bus, _ := newTestBusAndManager(t)
+
+	// Write 0xDEADBEEF via 4 byte writes (little-endian)
+	bus.Write8(COPROC_REQ_PTR+0, 0xEF)
+	bus.Write8(COPROC_REQ_PTR+1, 0xBE)
+	bus.Write8(COPROC_REQ_PTR+2, 0xAD)
+	bus.Write8(COPROC_REQ_PTR+3, 0xDE)
+
+	got := bus.Read32(COPROC_REQ_PTR)
+	if got != 0xDEADBEEF {
+		t.Fatalf("expected 0xDEADBEEF, got 0x%08X", got)
+	}
+}
+
+// TestCoprocMMIO_ByteLevelRead sets a shadow register and reads individual bytes.
+func TestCoprocMMIO_ByteLevelRead(t *testing.T) {
+	bus, _ := newTestBusAndManager(t)
+
+	// Set COPROC_OP to 0x12345678 via 32-bit write
+	bus.Write32(COPROC_OP, 0x12345678)
+
+	// Read back byte by byte (little-endian)
+	b0 := bus.Read8(COPROC_OP + 0)
+	b1 := bus.Read8(COPROC_OP + 1)
+	b2 := bus.Read8(COPROC_OP + 2)
+	b3 := bus.Read8(COPROC_OP + 3)
+
+	if b0 != 0x78 || b1 != 0x56 || b2 != 0x34 || b3 != 0x12 {
+		t.Fatalf("byte-level read mismatch: got %02X %02X %02X %02X, want 78 56 34 12",
+			b0, b1, b2, b3)
+	}
+}
+
+// TestCoprocMMIO_Write32Compat verifies existing 32-bit write behavior is unchanged.
+func TestCoprocMMIO_Write32Compat(t *testing.T) {
+	bus, _ := newTestBusAndManager(t)
+
+	registers := []struct {
+		addr uint32
+		val  uint32
+	}{
+		{COPROC_CPU_TYPE, EXEC_TYPE_IE32},
+		{COPROC_OP, 42},
+		{COPROC_REQ_PTR, 0x400000},
+		{COPROC_REQ_LEN, 8},
+		{COPROC_RESP_PTR, 0x400100},
+		{COPROC_RESP_CAP, 16},
+		{COPROC_TIMEOUT, 1000},
+		{COPROC_NAME_PTR, 0x500000},
+		{COPROC_TICKET, 99},
+	}
+
+	for _, r := range registers {
+		bus.Write32(r.addr, r.val)
+		got := bus.Read32(r.addr)
+		if got != r.val {
+			t.Errorf("register 0x%X: wrote 0x%X, read 0x%X", r.addr, r.val, got)
+		}
+	}
+}
+
+// TestCoprocMMIO_CmdDispatchOnByte0Only verifies that only writing byte 0 of
+// COPROC_CMD dispatches the command; writes to bytes 1-3 must NOT dispatch.
+func TestCoprocMMIO_CmdDispatchOnByte0Only(t *testing.T) {
+	_, mgr := newTestBusAndManager(t)
+
+	// Set up a valid CPU type so we can detect dispatch via cmdStatus change
+	mgr.mu.Lock()
+	mgr.cpuType = 99 // invalid CPU type — dispatch will set ERROR status
+	mgr.cmdStatus = COPROC_STATUS_OK
+	mgr.mu.Unlock()
+
+	// Write to bytes 1, 2, 3 of CMD — should NOT dispatch
+	for _, off := range []uint32{1, 2, 3} {
+		mgr.HandleWrite(COPROC_CMD+off, COPROC_CMD_START)
+		mgr.mu.Lock()
+		if mgr.cmdStatus != COPROC_STATUS_OK {
+			mgr.mu.Unlock()
+			t.Fatalf("writing byte %d of CMD triggered dispatch", off)
+		}
+		mgr.mu.Unlock()
+	}
+
+	// Write to byte 0 — should dispatch and fail (invalid CPU type)
+	mgr.HandleWrite(COPROC_CMD, COPROC_CMD_START)
+	mgr.mu.Lock()
+	if mgr.cmdStatus != COPROC_STATUS_ERROR {
+		mgr.mu.Unlock()
+		t.Fatal("writing byte 0 of CMD did not trigger dispatch")
+	}
+	mgr.mu.Unlock()
+}
+
+// TestCoprocMMIO_ByteLevelEnqueueFlow writes all parameters byte-by-byte,
+// triggers CMD=ENQUEUE via byte-0 write, and verifies a ticket is returned.
+func TestCoprocMMIO_ByteLevelEnqueueFlow(t *testing.T) {
+	bus, mgr := newTestBusAndManager(t)
+
+	// Create dummy worker
+	mgr.mu.Lock()
+	mgr.workers[EXEC_TYPE_IE32] = &CoprocWorker{
+		cpuType: EXEC_TYPE_IE32,
+		done:    make(chan struct{}),
+		stop:    func() {},
+	}
+	mgr.mu.Unlock()
+
+	// Write CPU_TYPE = EXEC_TYPE_IE32 (=1) byte by byte
+	bus.Write8(COPROC_CPU_TYPE+0, byte(EXEC_TYPE_IE32))
+	bus.Write8(COPROC_CPU_TYPE+1, 0)
+	bus.Write8(COPROC_CPU_TYPE+2, 0)
+	bus.Write8(COPROC_CPU_TYPE+3, 0)
+
+	// Write OP = 1
+	bus.Write8(COPROC_OP+0, 1)
+	bus.Write8(COPROC_OP+1, 0)
+	bus.Write8(COPROC_OP+2, 0)
+	bus.Write8(COPROC_OP+3, 0)
+
+	// Write REQ_PTR = 0x400000
+	bus.Write8(COPROC_REQ_PTR+0, 0x00)
+	bus.Write8(COPROC_REQ_PTR+1, 0x00)
+	bus.Write8(COPROC_REQ_PTR+2, 0x40)
+	bus.Write8(COPROC_REQ_PTR+3, 0x00)
+
+	// Write REQ_LEN = 8
+	bus.Write8(COPROC_REQ_LEN+0, 8)
+	bus.Write8(COPROC_REQ_LEN+1, 0)
+	bus.Write8(COPROC_REQ_LEN+2, 0)
+	bus.Write8(COPROC_REQ_LEN+3, 0)
+
+	// Write RESP_PTR = 0x400100
+	bus.Write8(COPROC_RESP_PTR+0, 0x00)
+	bus.Write8(COPROC_RESP_PTR+1, 0x01)
+	bus.Write8(COPROC_RESP_PTR+2, 0x40)
+	bus.Write8(COPROC_RESP_PTR+3, 0x00)
+
+	// Write RESP_CAP = 16
+	bus.Write8(COPROC_RESP_CAP+0, 16)
+	bus.Write8(COPROC_RESP_CAP+1, 0)
+	bus.Write8(COPROC_RESP_CAP+2, 0)
+	bus.Write8(COPROC_RESP_CAP+3, 0)
+
+	// Trigger ENQUEUE via byte-0 write to CMD
+	bus.Write8(COPROC_CMD+0, COPROC_CMD_ENQUEUE)
+
+	status := bus.Read32(COPROC_CMD_STATUS)
+	if status != COPROC_STATUS_OK {
+		errCode := bus.Read32(COPROC_CMD_ERROR)
+		t.Fatalf("byte-level enqueue failed: status=%d err=%d", status, errCode)
+	}
+
+	ticket := bus.Read32(COPROC_TICKET)
+	if ticket == 0 {
+		t.Fatal("expected non-zero ticket from byte-level enqueue")
+	}
+}
+
 // --- Regression tests for bugs #1, #2, #3 ---
 
 // TestCoprocessorEnqueueFailReturnsZeroTicket verifies that when ENQUEUE fails

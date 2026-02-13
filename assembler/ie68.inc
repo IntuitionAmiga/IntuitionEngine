@@ -1676,5 +1676,89 @@ voodoo_clear      macro   color
                   endm
 
 ; ============================================================================
+; COPROCESSOR REGISTERS ($F2340-$F237F)
+; ============================================================================
+
+; Register addresses
+COPROC_CMD            equ $F2340         ; Command register (W triggers)
+COPROC_CPU_TYPE       equ $F2344         ; Target CPU type (W)
+COPROC_CMD_STATUS     equ $F2348         ; Command status: 0=ok,1=error (R)
+COPROC_CMD_ERROR      equ $F234C         ; Error code (R)
+COPROC_TICKET         equ $F2350         ; Ticket ID (R/W)
+COPROC_TICKET_STATUS  equ $F2354         ; Per-ticket status (R)
+COPROC_OP             equ $F2358         ; Operation code (W)
+COPROC_REQ_PTR        equ $F235C         ; Request data pointer (W)
+COPROC_REQ_LEN        equ $F2360         ; Request data length (W)
+COPROC_RESP_PTR       equ $F2364         ; Response buffer pointer (W)
+COPROC_RESP_CAP       equ $F2368         ; Response buffer capacity (W)
+COPROC_TIMEOUT        equ $F236C         ; Timeout ms (W)
+COPROC_NAME_PTR       equ $F2370         ; Pointer to service filename (W)
+COPROC_WORKER_STATE   equ $F2374         ; Bitmask of running workers (R)
+
+; Command values
+COPROC_CMD_START      equ 1              ; Start worker from file
+COPROC_CMD_STOP       equ 2              ; Stop worker
+COPROC_CMD_ENQUEUE    equ 3              ; Enqueue request (returns ticket)
+COPROC_CMD_POLL       equ 4              ; Poll ticket status
+COPROC_CMD_WAIT_CMD   equ 5              ; Block until ticket completes
+
+; Ticket status values
+COPROC_ST_PENDING     equ 0
+COPROC_ST_RUNNING     equ 1
+COPROC_ST_OK          equ 2
+COPROC_ST_ERROR       equ 3
+COPROC_ST_TIMEOUT     equ 4
+COPROC_ST_WORKER_DOWN equ 5
+
+; CPU type constants
+COPROC_CPU_IE32       equ 1
+COPROC_CPU_IE64       equ 2
+COPROC_CPU_6502       equ 3
+COPROC_CPU_M68K       equ 4
+COPROC_CPU_Z80        equ 5
+COPROC_CPU_X86        equ 6
+
+; ----- Coprocessor helper macros -----
+
+; Start a coprocessor worker
+; cpuType: CPU type constant (COPROC_CPU_*)
+; namePtr: pointer to null-terminated filename string
+coproc_start  macro cpuType,namePtr
+              move.l  #\cpuType,COPROC_CPU_TYPE
+              move.l  #\namePtr,COPROC_NAME_PTR
+              move.l  #COPROC_CMD_START,COPROC_CMD
+              endm
+
+; Stop a coprocessor worker
+coproc_stop   macro cpuType
+              move.l  #\cpuType,COPROC_CPU_TYPE
+              move.l  #COPROC_CMD_STOP,COPROC_CMD
+              endm
+
+; Enqueue a request — ticket returned in COPROC_TICKET
+coproc_enqueue macro cpuType,op,reqPtr,reqLen,respPtr,respCap
+              move.l  #\cpuType,COPROC_CPU_TYPE
+              move.l  #\op,COPROC_OP
+              move.l  #\reqPtr,COPROC_REQ_PTR
+              move.l  #\reqLen,COPROC_REQ_LEN
+              move.l  #\respPtr,COPROC_RESP_PTR
+              move.l  #\respCap,COPROC_RESP_CAP
+              move.l  #COPROC_CMD_ENQUEUE,COPROC_CMD
+              endm
+
+; Poll ticket status — result in COPROC_TICKET_STATUS
+coproc_poll   macro ticket
+              move.l  #\ticket,COPROC_TICKET
+              move.l  #COPROC_CMD_POLL,COPROC_CMD
+              endm
+
+; Wait for ticket completion with timeout
+coproc_wait   macro ticket,timeoutMs
+              move.l  #\ticket,COPROC_TICKET
+              move.l  #\timeoutMs,COPROC_TIMEOUT
+              move.l  #COPROC_CMD_WAIT_CMD,COPROC_CMD
+              endm
+
+; ============================================================================
 ; EOF
 ; ============================================================================

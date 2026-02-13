@@ -815,6 +815,11 @@ func main() {
 	mediaLoader := NewMediaLoader(sysBus, soundChip, ".", psgPlayer, sidPlayer, tedPlayer, ahxPlayerCPU)
 	sysBus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END, mediaLoader.HandleRead, mediaLoader.HandleWrite)
 
+	// Initialize coprocessor subsystem MMIO (available to all CPU modes)
+	coprocMgr := NewCoprocessorManager(sysBus, ".")
+	sysBus.MapIO(COPROC_BASE, COPROC_END, coprocMgr.HandleRead, coprocMgr.HandleWrite)
+	defer coprocMgr.StopAll()
+
 	// Initialize the selected CPU and optionally load program
 	var gui GUIFrontend
 	var startExecution bool
@@ -866,11 +871,6 @@ func main() {
 		// Initialize external program executor MMIO (RUN "file" from BASIC)
 		progExec := NewProgramExecutor(sysBus, ie64CPU, videoChip, vgaEngine, voodooEngine, ".")
 		sysBus.MapIO(EXEC_BASE, EXEC_END, progExec.HandleRead, progExec.HandleWrite)
-
-		// Initialize coprocessor subsystem MMIO (COSTART/COCALL from BASIC)
-		coprocMgr := NewCoprocessorManager(sysBus, ".")
-		sysBus.MapIO(COPROC_BASE, COPROC_END, coprocMgr.HandleRead, coprocMgr.HandleWrite)
-		_ = coprocMgr // StopAll() called at shutdown if needed
 
 		// Load program — three paths: -basic, -basic-image, or explicit file
 		if modeBasic {

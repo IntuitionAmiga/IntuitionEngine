@@ -59,6 +59,16 @@ const (
 	COPROC_ERR_STALE_TICKET = 7
 )
 
+// 16-bit CPU gateway window for coprocessor MMIO.
+// Z80 and 6502 cannot address 0xF2340 directly (16-bit address space).
+// Their adapters intercept 0xF200-0xF23F and redirect to COPROC_BASE on the bus.
+// This range is within the I/O region (0xF000-0xFFFF) and maps to bus address
+// 0xF0200 via translateIO8Bit, which is an unused gap — safe to reserve.
+const (
+	COPROC_GATEWAY_BASE = 0xF200 // Z80/6502 address for COPROC_CMD
+	COPROC_GATEWAY_END  = 0xF23F // Z80/6502 address for COPROC_END
+)
+
 // Mailbox shared RAM (0x820000-0x820FFF, 4KB)
 const (
 	MAILBOX_BASE = 0x820000

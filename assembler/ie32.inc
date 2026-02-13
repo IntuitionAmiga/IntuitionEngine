@@ -1181,5 +1181,48 @@
 .equ VOODOO_FBZ_DITHER_2X2   0x0800         ; Use 2x2 dither pattern (vs 4x4)
 
 ; ============================================================================
+; COPROCESSOR REGISTERS (0xF2340-0xF237F)
+; ============================================================================
+
+; Register addresses
+.equ COPROC_CMD            0xF2340       ; Command register (W triggers)
+.equ COPROC_CPU_TYPE       0xF2344       ; Target CPU type (W)
+.equ COPROC_CMD_STATUS     0xF2348       ; Command status: 0=ok,1=error (R)
+.equ COPROC_CMD_ERROR      0xF234C       ; Error code (R)
+.equ COPROC_TICKET         0xF2350       ; Ticket ID (R/W)
+.equ COPROC_TICKET_STATUS  0xF2354       ; Per-ticket status (R)
+.equ COPROC_OP             0xF2358       ; Operation code (W)
+.equ COPROC_REQ_PTR        0xF235C       ; Request data pointer (W)
+.equ COPROC_REQ_LEN        0xF2360       ; Request data length (W)
+.equ COPROC_RESP_PTR       0xF2364       ; Response buffer pointer (W)
+.equ COPROC_RESP_CAP       0xF2368       ; Response buffer capacity (W)
+.equ COPROC_TIMEOUT        0xF236C       ; Timeout ms (W)
+.equ COPROC_NAME_PTR       0xF2370       ; Pointer to service filename (W)
+.equ COPROC_WORKER_STATE   0xF2374       ; Bitmask of running workers (R)
+
+; Command values
+.equ COPROC_CMD_START      1             ; Start worker from file
+.equ COPROC_CMD_STOP       2             ; Stop worker
+.equ COPROC_CMD_ENQUEUE    3             ; Enqueue request (returns ticket)
+.equ COPROC_CMD_POLL       4             ; Poll ticket status
+.equ COPROC_CMD_WAIT_CMD   5             ; Block until ticket completes
+
+; Ticket status values
+.equ COPROC_ST_PENDING     0
+.equ COPROC_ST_RUNNING     1
+.equ COPROC_ST_OK          2
+.equ COPROC_ST_ERROR       3
+.equ COPROC_ST_TIMEOUT     4
+.equ COPROC_ST_WORKER_DOWN 5
+
+; CPU type constants
+.equ COPROC_CPU_IE32       1
+.equ COPROC_CPU_IE64       2
+.equ COPROC_CPU_6502       3
+.equ COPROC_CPU_M68K       4
+.equ COPROC_CPU_Z80        5
+.equ COPROC_CPU_X86        6
+
+; ============================================================================
 ; EOF
 ; ============================================================================

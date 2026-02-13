@@ -1110,5 +1110,87 @@ VOODOO_FBZ_DITHER_2X2   equ 0x0800          ; Use 2x2 dither pattern (vs 4x4)
 %endmacro
 
 ; ============================================================================
+; COPROCESSOR REGISTERS (0xF2340-0xF237F)
+; ============================================================================
+
+; Register addresses
+COPROC_CMD            equ 0xF2340        ; Command register (W triggers)
+COPROC_CPU_TYPE       equ 0xF2344        ; Target CPU type (W)
+COPROC_CMD_STATUS     equ 0xF2348        ; Command status: 0=ok,1=error (R)
+COPROC_CMD_ERROR      equ 0xF234C        ; Error code (R)
+COPROC_TICKET         equ 0xF2350        ; Ticket ID (R/W)
+COPROC_TICKET_STATUS  equ 0xF2354        ; Per-ticket status (R)
+COPROC_OP             equ 0xF2358        ; Operation code (W)
+COPROC_REQ_PTR        equ 0xF235C        ; Request data pointer (W)
+COPROC_REQ_LEN        equ 0xF2360        ; Request data length (W)
+COPROC_RESP_PTR       equ 0xF2364        ; Response buffer pointer (W)
+COPROC_RESP_CAP       equ 0xF2368        ; Response buffer capacity (W)
+COPROC_TIMEOUT        equ 0xF236C        ; Timeout ms (W)
+COPROC_NAME_PTR       equ 0xF2370        ; Pointer to service filename (W)
+COPROC_WORKER_STATE   equ 0xF2374        ; Bitmask of running workers (R)
+
+; Command values
+COPROC_CMD_START      equ 1              ; Start worker from file
+COPROC_CMD_STOP       equ 2              ; Stop worker
+COPROC_CMD_ENQUEUE    equ 3              ; Enqueue request (returns ticket)
+COPROC_CMD_POLL       equ 4              ; Poll ticket status
+COPROC_CMD_WAIT_CMD   equ 5              ; Block until ticket completes
+
+; Ticket status values
+COPROC_ST_PENDING     equ 0
+COPROC_ST_RUNNING     equ 1
+COPROC_ST_OK          equ 2
+COPROC_ST_ERROR       equ 3
+COPROC_ST_TIMEOUT     equ 4
+COPROC_ST_WORKER_DOWN equ 5
+
+; CPU type constants
+COPROC_CPU_IE32       equ 1
+COPROC_CPU_IE64       equ 2
+COPROC_CPU_6502       equ 3
+COPROC_CPU_M68K       equ 4
+COPROC_CPU_Z80        equ 5
+COPROC_CPU_X86        equ 6
+
+; ----- Coprocessor helper macros (NASM) -----
+
+; Start a coprocessor worker
+%macro coproc_start 2  ; %1=cpuType, %2=namePtr
+    mov dword [COPROC_CPU_TYPE], %1
+    mov dword [COPROC_NAME_PTR], %2
+    mov dword [COPROC_CMD], COPROC_CMD_START
+%endmacro
+
+; Stop a coprocessor worker
+%macro coproc_stop 1  ; %1=cpuType
+    mov dword [COPROC_CPU_TYPE], %1
+    mov dword [COPROC_CMD], COPROC_CMD_STOP
+%endmacro
+
+; Enqueue a request — ticket returned in COPROC_TICKET
+%macro coproc_enqueue 6  ; %1=cpuType, %2=op, %3=reqPtr, %4=reqLen, %5=respPtr, %6=respCap
+    mov dword [COPROC_CPU_TYPE], %1
+    mov dword [COPROC_OP], %2
+    mov dword [COPROC_REQ_PTR], %3
+    mov dword [COPROC_REQ_LEN], %4
+    mov dword [COPROC_RESP_PTR], %5
+    mov dword [COPROC_RESP_CAP], %6
+    mov dword [COPROC_CMD], COPROC_CMD_ENQUEUE
+%endmacro
+
+; Poll ticket status — result in COPROC_TICKET_STATUS
+%macro coproc_poll 1  ; %1=ticket
+    mov dword [COPROC_TICKET], %1
+    mov dword [COPROC_CMD], COPROC_CMD_POLL
+%endmacro
+
+; Wait for ticket completion with timeout
+%macro coproc_wait 2  ; %1=ticket, %2=timeoutMs
+    mov dword [COPROC_TICKET], %1
+    mov dword [COPROC_TIMEOUT], %2
+    mov dword [COPROC_CMD], COPROC_CMD_WAIT_CMD
+%endmacro
+
+; ============================================================================
 ; EOF
 ; ============================================================================
