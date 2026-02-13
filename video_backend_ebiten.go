@@ -601,10 +601,7 @@ func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
 	legend := "F11 Fullscreen  F12 Status Bar"
 	legendScale := 1.0
 	legendW := int(float64(text.BoundString(basicfont.Face7x13, legend).Dx()) * legendScale)
-	legendX := eo.width - legendW - 6
-	if legendX < 6 {
-		legendX = 6
-	}
+	legendX := max(eo.width-legendW-6, 6)
 	legendOpts := &ebiten.DrawImageOptions{}
 	legendOpts.GeoM.Scale(legendScale, legendScale)
 	legendOpts.GeoM.Translate(float64(legendX), float64(y+39))

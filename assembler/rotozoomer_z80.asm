@@ -43,6 +43,30 @@ start:
     ld (angle_accum),hl
     ld (scale_accum),hl
 
+    ; Start SID music playback (looping)
+    ; SID player registers at physical 0xF0E20+ map to Z80 0xFE20+
+    ; (translateIO8Bit: 0xFE20 - 0xF000 + 0xF0000 = 0xF0E20)
+    ; SET_SID_PTR/LEN/LOOP macros use 20-bit addresses which vasm
+    ; truncates to 16-bit, so we write the 16-bit aliases directly.
+    ld a,sid_data & 0xFF
+    ld (0xFE20),a
+    ld a,(sid_data >> 8) & 0xFF
+    ld (0xFE21),a
+    ld a,(sid_data >> 16) & 0xFF
+    ld (0xFE22),a
+    ld a,(sid_data >> 24) & 0xFF
+    ld (0xFE23),a
+    ld a,(sid_data_end-sid_data) & 0xFF
+    ld (0xFE24),a
+    ld a,((sid_data_end-sid_data) >> 8) & 0xFF
+    ld (0xFE25),a
+    ld a,((sid_data_end-sid_data) >> 16) & 0xFF
+    ld (0xFE26),a
+    ld a,((sid_data_end-sid_data) >> 24) & 0xFF
+    ld (0xFE27),a
+    ld a,5
+    ld (0xFE28),a
+
 main_loop:
     call compute_frame
     call render_mode7
@@ -692,3 +716,10 @@ recip_table:
     .word 1149,1134,1119,1103,1087,1071,1055,1038,1022,1005,988,972,955,938,922,905
     .word 889,873,858,842,827,812,797,782,768,754,740,727,714,701,689,676
     .word 665,653,642,631,620,610,599,589,580,571,561,553,544,536,528,520
+
+; =============================================================================
+; MUSIC DATA
+; =============================================================================
+sid_data:
+    .incbin "Circus_Attractions.sid"
+sid_data_end:

@@ -72,7 +72,7 @@ func requireTool(t *testing.T, name string) {
 // Each entry is round(sin(i * 2π / 256) * 256), range -256..+256.
 func computeRefSine() [256]int16 {
 	var tbl [256]int16
-	for i := 0; i < 256; i++ {
+	for i := range 256 {
 		angle := float64(i) * 2.0 * math.Pi / 256.0
 		tbl[i] = int16(math.Round(math.Sin(angle) * 256.0))
 	}
@@ -83,7 +83,7 @@ func computeRefSine() [256]int16 {
 // Each entry is round(256 / (0.5 + sin(i * 2π / 256) * 0.3)), range 320..1280.
 func computeRefRecip() [256]uint16 {
 	var tbl [256]uint16
-	for i := 0; i < 256; i++ {
+	for i := range 256 {
 		angle := float64(i) * 2.0 * math.Pi / 256.0
 		tbl[i] = uint16(math.Round(256.0 / (0.5 + math.Sin(angle)*0.3)))
 	}
@@ -95,7 +95,7 @@ func computeRefRecip() [256]uint16 {
 func buildSentinel(refSine [256]int16, entryWidth int, bigEndian bool) []byte {
 	n := 4
 	sentinel := make([]byte, n*entryWidth)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		v := refSine[i]
 		switch {
 		case entryWidth == 2 && !bigEndian:
@@ -141,7 +141,7 @@ func findAndValidateSineTable(t *testing.T, data []byte, entryWidth int, bigEndi
 		// Validate reciprocal entries are all in range 320..1280
 		recipOff := off + tableBytes
 		recipValid := true
-		for i := 0; i < 256; i++ {
+		for i := range 256 {
 			rv := readUnsignedEntry(data, recipOff+i*entryWidth, entryWidth, bigEndian)
 			if rv < 320 || rv > 1280 {
 				recipValid = false
@@ -311,7 +311,7 @@ func TestRotozoomerTables(t *testing.T) {
 			}
 
 			// Validate all 256 sine entries
-			for i := 0; i < 256; i++ {
+			for i := range 256 {
 				got := readSignedEntry(data, sineOff+i*target.entryWidth, target.entryWidth, target.bigEndian)
 				if got != refSine[i] {
 					t.Errorf("sine[%d]: got %d, want %d", i, got, refSine[i])
@@ -320,7 +320,7 @@ func TestRotozoomerTables(t *testing.T) {
 
 			// Validate all 256 reciprocal entries
 			recipOff := sineOff + 256*target.entryWidth
-			for i := 0; i < 256; i++ {
+			for i := range 256 {
 				got := readUnsignedEntry(data, recipOff+i*target.entryWidth, target.entryWidth, target.bigEndian)
 				if got != refRecip[i] {
 					t.Errorf("recip[%d]: got %d, want %d", i, got, refRecip[i])
@@ -329,9 +329,9 @@ func TestRotozoomerTables(t *testing.T) {
 
 			// Sweep 32 angles × 4 scale buckets (128 pairs)
 			// Compute CA/SA/u0/v0 and compare against Go reference
-			for ai := 0; ai < 32; ai++ {
+			for ai := range 32 {
 				angleIdx := ai * 8 // 0, 8, 16, ..., 248
-				for si := 0; si < 4; si++ {
+				for si := range 4 {
 					scaleIdx := si * 64 // 0, 64, 128, 192
 
 					cosIdx := (angleIdx + 64) & 255

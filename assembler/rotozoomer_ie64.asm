@@ -40,6 +40,22 @@ start:
     la      r1, scale_accum
     store.l r0, (r1)
 
+    ; Start SAP music playback (looping)
+    la      r1, POKEY_PLUS_CTRL
+    li      r2, #1
+    store.b r2, (r1)
+    la      r1, SAP_PLAY_PTR
+    la      r2, sap_data
+    store.l r2, (r1)
+    la      r1, SAP_PLAY_LEN
+    la      r2, sap_data_end
+    la      r3, sap_data
+    sub.l   r2, r2, r3
+    store.l r2, (r1)
+    la      r1, SAP_PLAY_CTRL
+    li      r2, #5
+    store.l r2, (r1)
+
 main_loop:
     jsr     compute_frame
     jsr     render_mode7
@@ -434,3 +450,10 @@ recip_table:
     dc.w    1149,1134,1119,1103,1087,1071,1055,1038,1022,1005,988,972,955,938,922,905
     dc.w    889,873,858,842,827,812,797,782,768,754,740,727,714,701,689,676
     dc.w    665,653,642,631,620,610,599,589,580,571,561,553,544,536,528,520
+
+; =============================================================================
+; MUSIC DATA
+; =============================================================================
+sap_data:
+    incbin  "Chromaluma.sap"
+sap_data_end:

@@ -65,6 +65,12 @@ sign_flag:       .res 1
     sta scale_accum
     sta scale_accum+1
 
+    ; Start PSG music playback (looping)
+    ENABLE_PSG_PLUS
+    SET_PSG_PTR psg_data
+    SET_PSG_LEN psg_data_end - psg_data
+    START_PSG_LOOP
+
 loop:
     jsr compute_frame
     jsr render_mode7
@@ -769,3 +775,10 @@ recip_table:
     .word 1149,1134,1119,1103,1087,1071,1055,1038,1022,1005,988,972,955,938,922,905
     .word 889,873,858,842,827,812,797,782,768,754,740,727,714,701,689,676
     .word 665,653,642,631,620,610,599,589,580,571,561,553,544,536,528,520
+
+; =============================================================================
+; MUSIC DATA
+; =============================================================================
+psg_data:
+    .incbin "WaksonsZak018.ay"
+psg_data_end:

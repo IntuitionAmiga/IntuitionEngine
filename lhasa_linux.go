@@ -63,6 +63,7 @@ import "C"
 
 import (
 	"fmt"
+	"os"
 	"unsafe"
 )
 
@@ -80,4 +81,20 @@ func DecompressLHAFile(path string) ([]byte, error) {
 
 	data := C.GoBytes(unsafe.Pointer(out), C.int(outLen))
 	return data, nil
+}
+
+// DecompressLHAData decompresses in-memory LHA data by writing to a temp file.
+func DecompressLHAData(data []byte) ([]byte, error) {
+	tmp, err := os.CreateTemp("", "lha-*.bin")
+	if err != nil {
+		return nil, fmt.Errorf("lha temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return nil, fmt.Errorf("lha temp write: %w", err)
+	}
+	tmp.Close()
+	return DecompressLHAFile(tmpPath)
 }

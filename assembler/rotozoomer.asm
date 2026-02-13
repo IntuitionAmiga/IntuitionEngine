@@ -48,6 +48,16 @@ start:
     STA @VAR_ANGLE_ACC
     STA @VAR_SCALE_ACC
 
+    ; Start AHX music playback (looping)
+    LDA #ahx_data
+    STA @AHX_PLAY_PTR
+    LDA #ahx_data_end
+    LDB #ahx_data
+    SUB A, B
+    STA @AHX_PLAY_LEN
+    LDA #5
+    STA @AHX_PLAY_CTRL
+
 main_loop:
     JSR compute_frame
     JSR render_mode7
@@ -454,3 +464,10 @@ recip_table:
     .word 1149,1134,1119,1103,1087,1071,1055,1038,1022,1005,988,972,955,938,922,905
     .word 889,873,858,842,827,812,797,782,768,754,740,727,714,701,689,676
     .word 665,653,642,631,620,610,599,589,580,571,561,553,544,536,528,520
+
+; =============================================================================
+; MUSIC DATA
+; =============================================================================
+ahx_data:
+.incbin "Fairlightz.ahx"
+ahx_data_end:

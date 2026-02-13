@@ -172,6 +172,12 @@ func (p *PSGPlayer) LoadData(data []byte) error {
 		p.clockHz = file.ClockHz
 		return p.loadFrames(file.Frames, file.FrameRate, file.ClockHz, file.LoopFrame)
 	}
+	if isLHAData(data) {
+		decompressed, err := DecompressLHAData(data)
+		if err == nil {
+			return p.LoadData(decompressed)
+		}
+	}
 	if isZXAYEMUL(data) {
 		if p.engine == nil {
 			return fmt.Errorf("psg engine not configured")
@@ -420,6 +426,12 @@ func renderPSGData(data []byte, sampleRate int) (psgRenderResult, error) {
 		res.events = events
 		res.totalSamples = total
 		return res, nil
+	}
+	if isLHAData(data) {
+		decompressed, err := DecompressLHAData(data)
+		if err == nil {
+			return renderPSGData(decompressed, sampleRate)
+		}
 	}
 	if isZXAYEMUL(data) {
 		meta, events, total, clockHz, frameRate, loop, loopSample, instrCount, execNanos, err := renderAYZ80(data, sampleRate)

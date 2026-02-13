@@ -67,6 +67,11 @@ func parsePaddedString(data []byte) string {
 	return strings.TrimRight(string(before), " ")
 }
 
+// isLHAData detects LHA archive format by checking for the -lhN- method ID at offset 2.
+func isLHAData(data []byte) bool {
+	return len(data) >= 7 && data[2] == '-' && data[3] == 'l' && data[4] == 'h' && data[6] == '-'
+}
+
 // MusicMetadata contains common metadata fields across all music formats
 type MusicMetadata struct {
 	Title    string

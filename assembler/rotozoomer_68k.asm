@@ -34,6 +34,11 @@ start:
                 clr.l   angle_accum
                 clr.l   scale_accum
 
+                ; Start TED music playback (looping)
+                move.l  #ted_data,TED_PLAY_PTR
+                move.l  #ted_data_end-ted_data,TED_PLAY_LEN
+                move.l  #5,TED_PLAY_CTRL
+
 main_loop:
                 bsr     compute_frame
                 bsr     render_mode7
@@ -355,3 +360,11 @@ recip_table:
                 dc.w    1149,1134,1119,1103,1087,1071,1055,1038,1022,1005,988,972,955,938,922,905
                 dc.w    889,873,858,842,827,812,797,782,768,754,740,727,714,701,689,676
                 dc.w    665,653,642,631,620,610,599,589,580,571,561,553,544,536,528,520
+
+; =============================================================================
+; MUSIC DATA
+; =============================================================================
+                even
+ted_data:
+                incbin  "chromatic_admiration.ted"
+ted_data_end:

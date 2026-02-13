@@ -35,6 +35,12 @@ start:
                 mov dword [angle_accum], 0
                 mov dword [scale_accum], 0
 
+                ; Start PSG music playback (looping)
+                mov dword [PSG_PLUS_CTRL], 1
+                mov dword [PSG_PLAY_PTR], psg_data
+                mov dword [PSG_PLAY_LEN], psg_data_end - psg_data
+                mov dword [PSG_PLAY_CTRL], 5
+
 main_loop:
                 call compute_frame
                 call render_mode7
@@ -315,3 +321,10 @@ recip_table:
                 dw 1149,1134,1119,1103,1087,1071,1055,1038,1022,1005,988,972,955,938,922,905
                 dw 889,873,858,842,827,812,797,782,768,754,740,727,714,701,689,676
                 dw 665,653,642,631,620,610,599,589,580,571,561,553,544,536,528,520
+
+; =============================================================================
+; MUSIC DATA
+; =============================================================================
+psg_data:
+                incbin "OverscanScreen.ym"
+psg_data_end:
