@@ -101,6 +101,13 @@ ie64asm: setup
 	@mv ie64asm $(BIN_DIR)/
 	@echo "IE64 assembler build complete"
 
+# Build the IE32-to-IE64 converter
+ie32to64: setup
+	@echo "Building IE32-to-IE64 converter..."
+	@$(GO) build $(GO_FLAGS) -o ie32to64 ./cmd/ie32to64/
+	@mv ie32to64 $(BIN_DIR)/
+	@echo "IE32-to-IE64 converter build complete"
+
 # Build with embedded EhBASIC BASIC interpreter
 .PHONY: basic
 basic: ie64asm
