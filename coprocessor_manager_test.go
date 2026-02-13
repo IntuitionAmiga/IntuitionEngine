@@ -1172,3 +1172,154 @@ func TestCoprocEndToEnd_6502(t *testing.T) {
 		0x4000, 0x4100, // CPU-visible addresses for ring entry
 	)
 }
+
+// --- Regression tests for bugs #1, #2, #3 ---
+
+// TestCoprocessorEnqueueFailReturnsZeroTicket verifies that when ENQUEUE fails
+// (no worker), COPROC_TICKET is reset to 0 so callers never see a stale ticket.
+func TestCoprocessorEnqueueFailReturnsZeroTicket(t *testing.T) {
+	bus := NewMachineBus()
+	mgr := NewCoprocessorManager(bus, t.TempDir())
+	bus.MapIO(COPROC_BASE, COPROC_END, mgr.HandleRead, mgr.HandleWrite)
+
+	// Register a dummy worker and enqueue one successful request to set m.ticket=1
+	mgr.mu.Lock()
+	mgr.workers[EXEC_TYPE_IE32] = &CoprocWorker{
+		cpuType: EXEC_TYPE_IE32,
+		done:    make(chan struct{}),
+		stop:    func() {},
+	}
+	mgr.mu.Unlock()
+
+	bus.Write32(COPROC_CPU_TYPE, EXEC_TYPE_IE32)
+	bus.Write32(COPROC_OP, 1)
+	bus.Write32(COPROC_REQ_PTR, 0x400000)
+	bus.Write32(COPROC_REQ_LEN, 8)
+	bus.Write32(COPROC_RESP_PTR, 0x400100)
+	bus.Write32(COPROC_RESP_CAP, 16)
+	bus.Write32(COPROC_CMD, COPROC_CMD_ENQUEUE)
+
+	if bus.Read32(COPROC_CMD_STATUS) != COPROC_STATUS_OK {
+		t.Fatal("first enqueue should succeed")
+	}
+	firstTicket := bus.Read32(COPROC_TICKET)
+	if firstTicket == 0 {
+		t.Fatal("first ticket should be non-zero")
+	}
+
+	// Now remove the worker and enqueue again — should fail
+	mgr.mu.Lock()
+	mgr.workers[EXEC_TYPE_IE32] = nil
+	mgr.mu.Unlock()
+
+	bus.Write32(COPROC_CPU_TYPE, EXEC_TYPE_IE32)
+	bus.Write32(COPROC_CMD, COPROC_CMD_ENQUEUE)
+
+	if bus.Read32(COPROC_CMD_STATUS) != COPROC_STATUS_ERROR {
+		t.Fatal("second enqueue should fail (no worker)")
+	}
+
+	// COPROC_TICKET must be 0 after failed enqueue, NOT the stale firstTicket
+	failedTicket := bus.Read32(COPROC_TICKET)
+	if failedTicket != 0 {
+		t.Fatalf("ticket after failed enqueue should be 0, got %d (stale from ticket %d)", failedTicket, firstTicket)
+	}
+}
+
+// TestCoprocessorCachedStatusSurvivesRingReuse verifies that once a terminal
+// status is cached in the completion map, it's returned correctly even after
+// the ring slot is overwritten by later requests.
+func TestCoprocessorCachedStatusSurvivesRingReuse(t *testing.T) {
+	bus := NewMachineBus()
+	mgr := NewCoprocessorManager(bus, t.TempDir())
+	bus.MapIO(COPROC_BASE, COPROC_END, mgr.HandleRead, mgr.HandleWrite)
+
+	mgr.mu.Lock()
+	mgr.workers[EXEC_TYPE_IE32] = &CoprocWorker{
+		cpuType: EXEC_TYPE_IE32,
+		done:    make(chan struct{}),
+		stop:    func() {},
+	}
+	mgr.mu.Unlock()
+
+	// Enqueue a request
+	bus.Write32(COPROC_CPU_TYPE, EXEC_TYPE_IE32)
+	bus.Write32(COPROC_OP, 1)
+	bus.Write32(COPROC_REQ_PTR, 0x400000)
+	bus.Write32(COPROC_REQ_LEN, 8)
+	bus.Write32(COPROC_RESP_PTR, 0x400100)
+	bus.Write32(COPROC_RESP_CAP, 16)
+	bus.Write32(COPROC_CMD, COPROC_CMD_ENQUEUE)
+
+	ticket1 := bus.Read32(COPROC_TICKET)
+
+	// Simulate worker completing the request: write OK status to response slot
+	cpuIdx := cpuTypeToIndex(EXEC_TYPE_IE32)
+	ringBase := ringBaseAddr(cpuIdx)
+	respAddr := ringBase + RING_RESPONSES_OFFSET + 0*RESP_DESC_SIZE // slot 0
+	bus.Write32(respAddr+RESP_TICKET_OFF, ticket1)
+	bus.Write32(respAddr+RESP_STATUS_OFF, COPROC_TICKET_OK)
+	bus.Write32(respAddr+RESP_RESP_LEN_OFF, 4)
+
+	// First POLL — should find terminal status and cache it
+	bus.Write32(COPROC_TICKET, ticket1)
+	bus.Write32(COPROC_CMD, COPROC_CMD_POLL)
+	status1 := bus.Read32(COPROC_TICKET_STATUS)
+	if status1 != COPROC_TICKET_OK {
+		t.Fatalf("first poll expected OK (2), got %d", status1)
+	}
+
+	// Now overwrite the ring slot with a DIFFERENT ticket (simulating ring reuse)
+	bus.Write32(respAddr+RESP_TICKET_OFF, 9999)
+	bus.Write32(respAddr+RESP_STATUS_OFF, COPROC_TICKET_ERROR)
+
+	// Second POLL of ticket1 — should still return OK from cache, NOT regress to PENDING
+	bus.Write32(COPROC_TICKET, ticket1)
+	bus.Write32(COPROC_CMD, COPROC_CMD_POLL)
+	status2 := bus.Read32(COPROC_TICKET_STATUS)
+	if status2 != COPROC_TICKET_OK {
+		t.Fatalf("second poll after ring reuse expected cached OK (2), got %d", status2)
+	}
+}
+
+// TestCoprocessorWorkerDownUsesStoredCPUType verifies that the worker-down
+// check in cmdPoll uses the stored cpuType from the completion entry (not
+// comp.ticket or a ring scan), and doesn't panic on invalid values.
+func TestCoprocessorWorkerDownUsesStoredCPUType(t *testing.T) {
+	bus := NewMachineBus()
+	mgr := NewCoprocessorManager(bus, t.TempDir())
+	bus.MapIO(COPROC_BASE, COPROC_END, mgr.HandleRead, mgr.HandleWrite)
+
+	// Register worker, enqueue, then remove worker
+	mgr.mu.Lock()
+	mgr.workers[EXEC_TYPE_Z80] = &CoprocWorker{
+		cpuType: EXEC_TYPE_Z80,
+		done:    make(chan struct{}),
+		stop:    func() {},
+	}
+	mgr.mu.Unlock()
+
+	bus.Write32(COPROC_CPU_TYPE, EXEC_TYPE_Z80)
+	bus.Write32(COPROC_OP, 1)
+	bus.Write32(COPROC_REQ_PTR, 0x400000)
+	bus.Write32(COPROC_REQ_LEN, 8)
+	bus.Write32(COPROC_RESP_PTR, 0x400100)
+	bus.Write32(COPROC_RESP_CAP, 16)
+	bus.Write32(COPROC_CMD, COPROC_CMD_ENQUEUE)
+
+	ticket := bus.Read32(COPROC_TICKET)
+
+	// Remove the worker (simulating crash)
+	mgr.mu.Lock()
+	mgr.workers[EXEC_TYPE_Z80] = nil
+	mgr.mu.Unlock()
+
+	// POLL should detect worker-down via stored cpuType, not panic
+	bus.Write32(COPROC_TICKET, ticket)
+	bus.Write32(COPROC_CMD, COPROC_CMD_POLL)
+
+	status := bus.Read32(COPROC_TICKET_STATUS)
+	if status != COPROC_TICKET_WORKER_DOWN {
+		t.Fatalf("expected WORKER_DOWN (5), got %d", status)
+	}
+}

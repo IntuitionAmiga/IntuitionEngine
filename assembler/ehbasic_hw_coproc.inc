@@ -250,6 +250,11 @@ fn_cocall:
     move.l  r2, #COPROC_CMD_ENQUEUE
     store.l r2, (r1)
 
+    ; Check command status — if error, return 0
+    la      r1, COPROC_CMD_STATUS
+    load.l  r1, (r1)
+    bnez    r1, .cocall_fail
+
     ; Read ticket from COPROC_TICKET
     la      r1, COPROC_TICKET
     load.l  r8, (r1)
@@ -264,6 +269,17 @@ fn_cocall:
     bne     r1, r2, .cocall_ret
     add.q   r17, r17, #1
 .cocall_ret:
+    rts
+
+.cocall_fail:
+    move.q  r8, r0               ; return 0 on enqueue failure
+    ; Skip closing ')'
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x29            ; ')'
+    bne     r1, r2, .cocall_fail_ret
+    add.q   r17, r17, #1
+.cocall_fail_ret:
     rts
 
 .cocall_err5:

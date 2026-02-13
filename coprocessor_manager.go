@@ -21,6 +21,7 @@ type CoprocWorker struct {
 // CoprocCompletion tracks a ticket's completion state.
 type CoprocCompletion struct {
 	ticket     uint32
+	cpuType    uint32 // stored at enqueue time for worker-down checks
 	status     uint32
 	resultCode uint32
 	respLen    uint32
@@ -237,6 +238,7 @@ func (m *CoprocessorManager) cmdStop() {
 func (m *CoprocessorManager) cmdEnqueue() {
 	cpuIdx := cpuTypeToIndex(m.cpuType)
 	if cpuIdx < 0 {
+		m.ticket = 0
 		m.cmdStatus = COPROC_STATUS_ERROR
 		m.cmdError = COPROC_ERR_INVALID_CPU
 		return
@@ -244,6 +246,7 @@ func (m *CoprocessorManager) cmdEnqueue() {
 
 	worker := m.workers[m.cpuType]
 	if worker == nil {
+		m.ticket = 0
 		m.cmdStatus = COPROC_STATUS_ERROR
 		m.cmdError = COPROC_ERR_NO_WORKER
 		return
@@ -259,6 +262,7 @@ func (m *CoprocessorManager) cmdEnqueue() {
 	nextHead := (head + 1) % capacity
 	tail := m.bus.Read8(ringBase + RING_TAIL_OFFSET)
 	if nextHead == tail {
+		m.ticket = 0
 		m.cmdStatus = COPROC_STATUS_ERROR
 		m.cmdError = COPROC_ERR_QUEUE_FULL
 		return
@@ -292,6 +296,7 @@ func (m *CoprocessorManager) cmdEnqueue() {
 	// Track completion
 	m.completions[ticket] = &CoprocCompletion{
 		ticket:  ticket,
+		cpuType: m.cpuType,
 		status:  COPROC_TICKET_PENDING,
 		created: time.Now(),
 	}
@@ -311,33 +316,28 @@ func (m *CoprocessorManager) cmdPoll() {
 		return
 	}
 
-	// Check if worker is still running
-	cpuIdx := cpuTypeToIndex(comp.ticket) // need to find the CPU type
-	// Scan ring responses for this ticket
-	status := m.scanTicketStatus(ticket)
+	status := comp.status
+
+	// If already in a terminal state (cached from previous poll/wait), use it
+	if status == COPROC_TICKET_PENDING || status == COPROC_TICKET_RUNNING {
+		// Not yet terminal — scan ring to discover new state
+		status = m.scanTicketStatus(ticket)
+		if status == COPROC_TICKET_PENDING || status == COPROC_TICKET_RUNNING {
+			// Still non-terminal — check if worker is down
+			ct := comp.cpuType
+			if ct >= 1 && ct <= 6 && m.workers[ct] == nil {
+				status = COPROC_TICKET_WORKER_DOWN
+			}
+		}
+	}
+
 	if status != COPROC_TICKET_PENDING && status != COPROC_TICKET_RUNNING {
-		// Terminal state
+		// Terminal state — handle two-read eviction
+		comp.status = status
 		if comp.observed {
-			// Second read of terminal state — evict
 			delete(m.completions, ticket)
 		} else {
 			comp.observed = true
-		}
-		comp.status = status
-	} else {
-		// Check if worker is down
-		ct := m.findCPUTypeForTicket(ticket)
-		if ct > 0 {
-			cpuIdx = cpuTypeToIndex(ct)
-		}
-		if cpuIdx >= 0 && m.workers[ct] == nil {
-			status = COPROC_TICKET_WORKER_DOWN
-			comp.status = status
-			if comp.observed {
-				delete(m.completions, ticket)
-			} else {
-				comp.observed = true
-			}
 		}
 	}
 
@@ -358,6 +358,14 @@ func (m *CoprocessorManager) cmdWait() {
 		m.ticketStatus = COPROC_TICKET_ERROR
 		m.cmdStatus = COPROC_STATUS_ERROR
 		m.cmdError = COPROC_ERR_STALE_TICKET
+		return
+	}
+
+	// Already terminal? Return immediately.
+	if comp.status != COPROC_TICKET_PENDING && comp.status != COPROC_TICKET_RUNNING {
+		m.ticketStatus = comp.status
+		m.cmdStatus = COPROC_STATUS_OK
+		m.cmdError = COPROC_ERR_NONE
 		return
 	}
 
@@ -398,21 +406,6 @@ func (m *CoprocessorManager) scanTicketStatus(ticket uint32) uint32 {
 		}
 	}
 	return COPROC_TICKET_PENDING
-}
-
-// findCPUTypeForTicket finds the CPU type for a given ticket by scanning request descriptors.
-func (m *CoprocessorManager) findCPUTypeForTicket(ticket uint32) uint32 {
-	for i := range 5 {
-		ringBase := ringBaseAddr(i)
-		for slot := range uint32(RING_CAPACITY) {
-			entryAddr := ringBase + RING_ENTRIES_OFFSET + slot*REQ_DESC_SIZE
-			t := m.bus.Read32(entryAddr + REQ_TICKET_OFF)
-			if t == ticket {
-				return m.bus.Read32(entryAddr + REQ_CPU_TYPE_OFF)
-			}
-		}
-	}
-	return 0
 }
 
 func (m *CoprocessorManager) computeWorkerState() uint32 {

@@ -1673,6 +1673,14 @@ func execStmtTB(t testing.TB, asmBin string, program string) string {
 // returns both the terminal output and the harness (for inspecting bus memory).
 func execStmtTestWithBus(t *testing.T, asmBin string, program string) (string, *ehbasicTestHarness) {
 	t.Helper()
+	return execStmtTestCore(t, asmBin, program, nil)
+}
+
+// execStmtTestCore is the shared implementation for execStmtTestWithBus and
+// execStmtTestWithCoproc. The optional setup callback runs after the harness is
+// created but before the program binary is loaded and executed.
+func execStmtTestCore(t *testing.T, asmBin string, program string, setup func(h *ehbasicTestHarness)) (string, *ehbasicTestHarness) {
+	t.Helper()
 
 	lines := strings.Split(strings.TrimSpace(program), "\n")
 	var storeCode strings.Builder
@@ -1716,6 +1724,9 @@ func execStmtTestWithBus(t *testing.T, asmBin string, program string) (string, *
 `
 	binary := assembleExecTest(t, asmBin, body)
 	h := newEhbasicHarness(t)
+	if setup != nil {
+		setup(h)
+	}
 	h.loadBytes(binary)
 	h.runCycles(50_000_000)
 	return h.readOutput(), h
@@ -5885,4 +5896,55 @@ func BenchmarkEhBASIC_FPMixed(b *testing.B) {
 60 X=X+A+B+C
 70 NEXT I
 80 PRINT X`)
+}
+
+// execStmtTestWithCoproc is like execStmtTestWithBus but also registers the
+// CoprocessorManager MMIO region on the bus before running the program.
+// baseDir controls where COSTART resolves service binary filenames.
+func execStmtTestWithCoproc(t *testing.T, asmBin string, program string, baseDir string) (string, *ehbasicTestHarness, *CoprocessorManager) {
+	t.Helper()
+	var mgr *CoprocessorManager
+	out, h := execStmtTestCore(t, asmBin, program, func(h *ehbasicTestHarness) {
+		mgr = NewCoprocessorManager(h.bus, baseDir)
+		h.bus.MapIO(COPROC_BASE, COPROC_END, mgr.HandleRead, mgr.HandleWrite)
+	})
+	return out, h, mgr
+}
+
+// TestEhBASIC_CocallReturnsZeroOnFailure verifies that COCALL() returns 0
+// when enqueue fails after a worker is stopped, not a stale ticket from the
+// previous successful call.
+func TestEhBASIC_CocallReturnsZeroOnFailure(t *testing.T) {
+	asmBin := buildAssembler(t)
+
+	// Write a minimal IE32 service binary (JMP-to-self loop) so COSTART succeeds
+	svcDir := t.TempDir()
+	// IE32 JMP instruction: opcode=0x06, reg=0, addrMode=0(imm), operand=0x200000 (WORKER_IE32_BASE)
+	svcBin := []byte{0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20, 0x00}
+	if err := os.WriteFile(filepath.Join(svcDir, "svc.ie32"), svcBin, 0o644); err != nil {
+		t.Fatalf("write svc: %v", err)
+	}
+
+	// Step 1: COSTART starts a worker, COCALL succeeds → non-zero ticket in A
+	// Step 2: COSTOP removes the worker, COCALL fails → B must be 0 (not stale A)
+	prog := `10 COSTART 1, "svc.ie32"
+20 A=COCALL(1, 1, 0, 8, 0, 16)
+30 COSTOP 1
+40 B=COCALL(1, 1, 0, 8, 0, 16)
+50 PRINT A
+60 PRINT B`
+
+	out, _, mgr := execStmtTestWithCoproc(t, asmBin, prog, svcDir)
+	_ = mgr
+
+	lines := strings.Fields(strings.TrimSpace(strings.TrimRight(out, "\r\n")))
+	if len(lines) < 2 {
+		t.Fatalf("expected 2 output values, got %q", out)
+	}
+	if lines[0] == "0" {
+		t.Fatalf("first COCALL (with worker) should return non-zero ticket, got %q", lines[0])
+	}
+	if lines[1] != "0" {
+		t.Fatalf("second COCALL (no worker) should return 0, got %q (stale ticket from first call was %q)", lines[1], lines[0])
+	}
 }
