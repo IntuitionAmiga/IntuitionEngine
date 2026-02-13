@@ -550,7 +550,7 @@ func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
 	tedOn := s.tedEngine != nil && s.tedEngine.IsPlaying()
 	ahxOn := s.ahxEngine != nil && s.ahxEngine.IsPlaying()
 
-	barHeight := 42
+	barHeight := 44
 	if barHeight >= eo.height {
 		return
 	}
@@ -596,4 +596,18 @@ func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
 		{name: "|", enabled: false},
 		{name: "AHX", enabled: ahxOn},
 	})
+
+	legendColor := color.RGBA{160, 160, 160, 255}
+	legend := "F11 Fullscreen  F12 Status Bar"
+	legendScale := 1.0
+	legendW := int(float64(text.BoundString(basicfont.Face7x13, legend).Dx()) * legendScale)
+	legendX := eo.width - legendW - 6
+	if legendX < 6 {
+		legendX = 6
+	}
+	legendOpts := &ebiten.DrawImageOptions{}
+	legendOpts.GeoM.Scale(legendScale, legendScale)
+	legendOpts.GeoM.Translate(float64(legendX), float64(y+39))
+	legendOpts.ColorScale.ScaleWithColor(legendColor)
+	text.DrawWithOptions(screen, legend, basicfont.Face7x13, legendOpts)
 }
