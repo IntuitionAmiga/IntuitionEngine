@@ -1,811 +1,357 @@
-; rotozoomer_68k.asm - Maximum Optimized Rotozoomer
+; rotozoomer_68k.asm - Mode7 Blitter Rotozoomer
 ;
-; M68020 port of the classic demoscene rotozoomer effect.
-; Renders a rotating and zooming checkerboard texture at 640x480.
-;
-; =============================================================================
-; OPTIMIZATIONS APPLIED
-; =============================================================================
-;
-; 1. INCREMENTAL TEXTURE COORDINATE CALCULATION
-;    - Instead of per-pixel: texX = dx*cosA - dy*sinA (4 multiplies)
-;    - We use: texU += du_dx, texV += dv_dx (2 additions)
-;    - Saves ~1.2 million multiplications per frame
-;
-; 2. DOUBLE BUFFERING WITH HARDWARE BLITTER
-;    - Render to back buffer (0x22C000) while front is displayed
-;    - Hardware blitter copies back->front during vblank
-;    - Eliminates tearing artifacts
-;
-; 3. REGISTER ALLOCATION (Inner Loop)
-;    - Hot loop constants cached in registers (no memory reads)
-;    - d1 = du_dx, d2 = dv_dx, d3 = scratch, d4 = texV
-;    - d5 = texU, d6 = TEX_MASK (255), d7 = loop counter
-;    - a0 = TEXTURE_BASE, a1 = VRAM ptr, a2 = scratch
-;
-; 4. 16x LOOP UNROLLING
-;    - Process 16 pixels per iteration (40 iterations for 640 pixels)
-;    - Reduces loop overhead significantly
-;
-; 5. PRECOMPUTED DU/DV TABLES
-;    - du_table[scale][angle] = scale_inv[scale] * cos[angle]
-;    - dv_table[scale][angle] = scale_inv[scale] * sin[angle]
-;    - 5 scale values x 256 angles x 2 tables = 2560 entries (10KB)
-;    - Eliminates ALL MUL operations in render path
-;
-; =============================================================================
-; USAGE
-; =============================================================================
+; M68020 rotozoomer using hardware Mode7 affine texture mapping.
+; Proper sine tables, smooth 256-level zoom, fractional animation accumulators.
 ;
 ; Assemble: vasmm68k_mot -Fbin -m68020 -devpac -o assembler/rotozoomer_68k.ie68 assembler/rotozoomer_68k.asm
-; Run:      ./bin/IntuitionEngine -68k assembler/rotozoomer_68k.ie68
-;
+; Run:      ./bin/IntuitionEngine -m68k assembler/rotozoomer_68k.ie68
 
                 include "ie68.inc"
 
-; =============================================================================
-; CONSTANTS
-; =============================================================================
-
+TEXTURE_BASE    equ     $500000
+BACK_BUFFER     equ     $600000
 RENDER_W        equ     640
 RENDER_H        equ     480
-CENTER_X        equ     320
-CENTER_Y        equ     240
+TEX_STRIDE      equ     1024
 
-DISPLAY_W       equ     640
-DISPLAY_H       equ     480
-FRAME_SIZE      equ     $12C000
+; Animation accumulator increments (8.8 fixed-point, 16-bit)
+ANGLE_INC       equ     313
+SCALE_INC       equ     104
 
-BACK_BUFFER     equ     $22C000
-
-TEX_SIZE        equ     256
-TEX_MASK        equ     255
-TEX_ROW_SHIFT   equ     10
-
-FP_SHIFT        equ     8
-FP_ONE          equ     256
-
-; Memory layout
-TEXTURE_BASE    equ     $4000
-SINE_TABLE      equ     $44000
-RECIP_TABLE     equ     $44400
-DU_TABLE        equ     $44420
-DV_TABLE        equ     $45820
-VAR_BASE        equ     $46C20
-
-; =============================================================================
-; ENTRY POINT
-; =============================================================================
                 org     PROGRAM_START
 
 start:
-                move.l  #STACK_TOP,sp           ; Initialize stack
+                move.l  #STACK_TOP,sp
 
-                ; Enable video
+                ; Enable VideoChip, mode 0
                 move.l  #1,VIDEO_CTRL
+                move.l  #0,VIDEO_MODE
 
-                ; Initialize variables
-                clr.l   var_angle
-                move.l  #192,var_scale_idx      ; Start at sine minimum = most zoomed in
-
+                ; Generate 256x256 checkerboard texture via 4x BLIT FILL
                 bsr     generate_texture
-                bsr     generate_sine_table
-                bsr     generate_recip_table
-                bsr     generate_dudv_tables
+
+                ; Init animation accumulators
+                clr.l   angle_accum
+                clr.l   scale_accum
 
 main_loop:
-                bsr     update_animation
-                bsr     render_rotozoomer
-                bsr     wait_vsync
+                bsr     compute_frame
+                bsr     render_mode7
                 bsr     blit_to_front
+                bsr     wait_vsync
+                bsr     advance_animation
                 bra     main_loop
 
 ; =============================================================================
 ; WAIT FOR VSYNC
-; Proper vsync: wait for vblank to END first (if active), then wait for START
-; This ensures exactly one frame per vsync cycle
 ; =============================================================================
 wait_vsync:
-                ; First, wait for vblank to END (if we're already in vblank)
 .wait_end:      move.l  VIDEO_STATUS,d0
                 andi.l  #STATUS_VBLANK,d0
                 bne.s   .wait_end
-                ; Now wait for vblank to START
 .wait_start:    move.l  VIDEO_STATUS,d0
                 andi.l  #STATUS_VBLANK,d0
                 beq.s   .wait_start
                 rts
 
 ; =============================================================================
-; GENERATE TEXTURE (256x256 checkerboard)
+; GENERATE TEXTURE (256x256 checkerboard via 4x BLIT FILL)
 ; =============================================================================
 generate_texture:
-                movem.l d0-d3/a0,-(sp)
-                lea     TEXTURE_BASE,a0
-                moveq   #0,d1                   ; y counter
+                ; Top-left 128x128 white
+                move.l  #BLT_OP_FILL,BLT_OP
+                move.l  #TEXTURE_BASE,BLT_DST
+                move.l  #128,BLT_WIDTH
+                move.l  #128,BLT_HEIGHT
+                move.l  #$FFFFFFFF,BLT_COLOR
+                move.l  #TEX_STRIDE,BLT_DST_STRIDE
+                move.l  #1,BLT_CTRL
+.w1:            move.l  BLT_STATUS,d0
+                andi.l  #2,d0
+                bne.s   .w1
 
-.row:           moveq   #0,d2                   ; x counter
+                ; Top-right 128x128 black
+                move.l  #BLT_OP_FILL,BLT_OP
+                move.l  #TEXTURE_BASE+512,BLT_DST
+                move.l  #128,BLT_WIDTH
+                move.l  #128,BLT_HEIGHT
+                move.l  #$FF000000,BLT_COLOR
+                move.l  #TEX_STRIDE,BLT_DST_STRIDE
+                move.l  #1,BLT_CTRL
+.w2:            move.l  BLT_STATUS,d0
+                andi.l  #2,d0
+                bne.s   .w2
 
-.col:           move.l  d2,d0
-                eor.l   d1,d0
-                andi.l  #128,d0
-                bne.s   .dark
+                ; Bottom-left 128x128 black
+                move.l  #BLT_OP_FILL,BLT_OP
+                move.l  #TEXTURE_BASE+131072,BLT_DST
+                move.l  #128,BLT_WIDTH
+                move.l  #128,BLT_HEIGHT
+                move.l  #$FF000000,BLT_COLOR
+                move.l  #TEX_STRIDE,BLT_DST_STRIDE
+                move.l  #1,BLT_CTRL
+.w3:            move.l  BLT_STATUS,d0
+                andi.l  #2,d0
+                bne.s   .w3
 
-                move.l  #$FFFFFFFF,d3
-                bra.s   .store
+                ; Bottom-right 128x128 white
+                move.l  #BLT_OP_FILL,BLT_OP
+                move.l  #TEXTURE_BASE+131584,BLT_DST
+                move.l  #128,BLT_WIDTH
+                move.l  #128,BLT_HEIGHT
+                move.l  #$FFFFFFFF,BLT_COLOR
+                move.l  #TEX_STRIDE,BLT_DST_STRIDE
+                move.l  #1,BLT_CTRL
+.w4:            move.l  BLT_STATUS,d0
+                andi.l  #2,d0
+                bne.s   .w4
 
-.dark:          move.l  #$FF000000,d3
-
-.store:         move.l  d3,(a0)+
-
-                addq.l  #1,d2
-                cmpi.l  #TEX_SIZE,d2
-                bne.s   .col
-
-                addq.l  #1,d1
-                cmpi.l  #TEX_SIZE,d1
-                bne.s   .row
-
-                movem.l (sp)+,d0-d3/a0
                 rts
 
 ; =============================================================================
-; GENERATE SINE TABLE
-; 256 entries, 8.8 fixed-point: -256 to +256 (-1.0 to +1.0)
+; COMPUTE FRAME - calculate Mode7 parameters from animation state
 ; =============================================================================
-generate_sine_table:
-                movem.l d0-d4/a0,-(sp)
-                lea     SINE_TABLE,a0
-                moveq   #0,d1                   ; index 0-255
+compute_frame:
+                movem.l d0-d7,-(sp)
 
-.loop:          move.l  d1,d0
-                andi.l  #63,d0                  ; d0 = index & 63
+                ; Get table indices from accumulators
+                move.l  angle_accum,d0
+                lsr.l   #8,d0
+                andi.l  #255,d0                 ; angle_idx
 
+                move.l  scale_accum,d1
+                lsr.l   #8,d1
+                andi.l  #255,d1                 ; scale_idx
+
+                ; Look up cos = sine_table[(angle_idx + 64) & 255]
+                move.l  d0,d2
+                addi.l  #64,d2
+                andi.l  #255,d2
+                add.l   d2,d2                   ; *2 for word access
+                lea     sine_table(pc),a0
+                move.w  (a0,d2.l),d3            ; d3 = cos_val (signed 16-bit)
+                ext.l   d3                      ; sign-extend to 32-bit
+
+                ; Look up sin = sine_table[angle_idx]
+                move.l  d0,d2
+                add.l   d2,d2                   ; *2 for word access
+                move.w  (a0,d2.l),d4            ; d4 = sin_val (signed 16-bit)
+                ext.l   d4
+
+                ; Look up recip = recip_table[scale_idx]
                 move.l  d1,d2
-                andi.l  #64,d2
-                beq.s   .rising
+                add.l   d2,d2                   ; *2 for word access
+                lea     recip_table(pc),a1
+                move.w  (a1,d2.l),d5            ; d5 = recip (unsigned 16-bit)
+                andi.l  #$FFFF,d5               ; zero-extend
 
-                ; Falling edge: 64 - (index & 63)
-                moveq   #64,d3
-                sub.l   d0,d3
-                move.l  d3,d0
+                ; CA = cos_val * recip (signed 16 x unsigned 16 -> 32)
+                ; Result is 16.16 fixed-point
+                move.l  d3,d6
+                muls.w  d5,d6                   ; d6 = CA (signed 32-bit, 16.16 FP)
 
-.rising:        ; d0 = ramp value 0-64
-                lsl.l   #2,d0                   ; d0 * 4, range 0-256
+                ; SA = sin_val * recip
+                move.l  d4,d7
+                muls.w  d5,d7                   ; d7 = SA (signed 32-bit, 16.16 FP)
 
-                ; Clamp to 256
-                cmpi.l  #256,d0
-                ble.s   .clamp_ok
-                move.l  #256,d0
-.clamp_ok:
-                ; Check if negative half (index & 128)
+                ; Store CA, SA for Mode7 register writes
+                move.l  d6,var_ca
+                move.l  d7,var_sa
+
+                ; u0 = 8388608 - (CA*320 + CA*64) + (SA*256 - SA*16)
+                ;    = 8388608 - CA*(256+64) + SA*(256-16)
+                ; Using shifts: CA<<8 = CA*256, CA<<6 = CA*64, etc.
+                ; But CA is already 16.16, so we shift the RESULT
+                ; u0 = 8388608 - (CA<<8 + CA<<6) + (SA<<8 - SA<<4)
+                ;    = 8388608 - CA*320 + SA*240
+                ; Actually the plan says:
+                ; u0 = 8388608 - (CA<<8 + CA<<6) + (SA<<8 - SA<<4)
+                ; where shifts are on the 16.16 value, meaning multiply by 320/240
+
+                ; u0 = 8388608 - CA*320 + SA*240
+                ; Compute CA*320 via shifts: CA*256 + CA*64 = (CA<<8) + (CA<<6)
+                move.l  d6,d0                   ; CA
+                asr.l   #2,d0                   ; CA>>2 (for *64 relative to *256)
+                ; Actually let's just use the shift approach from the plan directly:
+                ; CA<<8 = CA * 256, CA<<6 = CA * 64
+                ; But CA is already the multiply result, those shifts would overflow.
+                ; Better: just multiply CA * 320 directly.
+                ; M68K MULS.W is 16x16->32, but CA might be >16 bits.
+                ; Use shift decomposition: 320 = 256 + 64
+                move.l  d6,d0                   ; d0 = CA
+                move.l  d0,d1
+                lsl.l   #8,d0                   ; CA * 256
+                lsl.l   #6,d1                   ; CA * 64
+                add.l   d1,d0                   ; d0 = CA * 320
+
+                move.l  d7,d1                   ; d1 = SA
                 move.l  d1,d2
-                andi.l  #128,d2
-                beq.s   .positive
+                lsl.l   #8,d1                   ; SA * 256
+                lsl.l   #4,d2                   ; SA * 16
+                sub.l   d2,d1                   ; d1 = SA * 240
 
-                neg.l   d0                      ; Negate for second half
+                move.l  #$800000,d3             ; 8388608 = 128 << 16
+                sub.l   d0,d3                   ; - CA*320
+                add.l   d1,d3                   ; + SA*240
+                move.l  d3,var_u0
 
-.positive:
-                move.l  d0,(a0)+
+                ; v0 = 8388608 - (SA<<8 + SA<<6) - (CA<<8 - CA<<4)
+                ;    = 8388608 - SA*320 - CA*240
+                move.l  d7,d0                   ; SA
+                move.l  d0,d1
+                lsl.l   #8,d0                   ; SA * 256
+                lsl.l   #6,d1                   ; SA * 64
+                add.l   d1,d0                   ; d0 = SA * 320
 
-                addq.l  #1,d1
-                cmpi.l  #256,d1
-                bne.s   .loop
+                move.l  d6,d1                   ; CA
+                move.l  d1,d2
+                lsl.l   #8,d1                   ; CA * 256
+                lsl.l   #4,d2                   ; CA * 16
+                sub.l   d2,d1                   ; d1 = CA * 240
 
-                movem.l (sp)+,d0-d4/a0
+                move.l  #$800000,d3             ; 8388608
+                sub.l   d0,d3                   ; - SA*320
+                sub.l   d1,d3                   ; - CA*240
+                move.l  d3,var_v0
+
+                movem.l (sp)+,d0-d7
                 rts
 
 ; =============================================================================
-; GENERATE RECIPROCAL TABLE
-; recip_table[x] = 1536 / x for x = 0..7
+; RENDER MODE7 - configure and trigger Mode7 blit
 ; =============================================================================
-generate_recip_table:
-                movem.l a0,-(sp)
-                lea     RECIP_TABLE,a0
+render_mode7:
+                ; Set blitter operation
+                move.l  #BLT_OP_MODE7,BLT_OP
 
-                move.l  #0,(a0)+                ; 1536/0 = 0 (undefined)
-                move.l  #1536,(a0)+             ; 1536/1 = 1536
-                move.l  #768,(a0)+              ; 1536/2 = 768
-                move.l  #512,(a0)+              ; 1536/3 = 512
-                move.l  #384,(a0)+              ; 1536/4 = 384
-                move.l  #307,(a0)+              ; 1536/5 = 307
-                move.l  #256,(a0)+              ; 1536/6 = 256
-                move.l  #219,(a0)               ; 1536/7 = 219
+                ; Source = texture, Dest = back buffer
+                move.l  #TEXTURE_BASE,BLT_SRC
+                move.l  #BACK_BUFFER,BLT_DST
 
-                movem.l (sp)+,a0
+                ; Dimensions
+                move.l  #RENDER_W,BLT_WIDTH
+                move.l  #RENDER_H,BLT_HEIGHT
+
+                ; Strides
+                move.l  #TEX_STRIDE,BLT_SRC_STRIDE
+                move.l  #LINE_BYTES,BLT_DST_STRIDE
+
+                ; Texture masks
+                move.l  #255,BLT_MODE7_TEX_W
+                move.l  #255,BLT_MODE7_TEX_H
+
+                ; Mode7 parameters (all 16.16 fixed-point, stored as uint32)
+                move.l  var_u0,d0
+                move.l  d0,BLT_MODE7_U0
+
+                move.l  var_v0,d0
+                move.l  d0,BLT_MODE7_V0
+
+                move.l  var_ca,d0
+                move.l  d0,BLT_MODE7_DU_COL       ; du_col = CA
+
+                move.l  var_sa,d0
+                move.l  d0,BLT_MODE7_DV_COL       ; dv_col = SA
+
+                neg.l   d0                          ; -SA
+                move.l  d0,BLT_MODE7_DU_ROW       ; du_row = -SA
+
+                move.l  var_ca,d0
+                move.l  d0,BLT_MODE7_DV_ROW       ; dv_row = CA
+
+                ; Trigger blit
+                move.l  #1,BLT_CTRL
+
+                ; Wait for completion
+.wait:          move.l  BLT_STATUS,d0
+                andi.l  #2,d0
+                bne.s   .wait
+
                 rts
 
 ; =============================================================================
-; GENERATE DU/DV TABLES
-; Precompute scale_inv * cos/sin for all scale and angle combinations
-; DU_TABLE[scale * 256 + angle] = recip[scale+2] * cos[angle] >> 8
-; DV_TABLE[scale * 256 + angle] = recip[scale+2] * sin[angle] >> 8
-; scale = 0..4 (maps to divisor 2..6)
-; =============================================================================
-generate_dudv_tables:
-                movem.l d0-d7/a0-a4,-(sp)
-
-                ; a3 = sine table base
-                lea     SINE_TABLE,a3
-
-                ; For each scale (0-4)
-                moveq   #0,d7                   ; d7 = scale index
-
-.scale_loop:
-                ; Get reciprocal value for this scale
-                ; recip_table[scale + 2]
-                move.l  d7,d0
-                addq.l  #2,d0                   ; divisor index
-                lsl.l   #2,d0                   ; *4 for long access
-                lea     RECIP_TABLE,a0
-                move.l  (a0,d0.l),d6            ; d6 = scale_inv for this scale
-
-                ; Calculate table base for this scale
-                ; DU base = DU_TABLE + scale * 1024 (256 entries * 4 bytes)
-                move.l  d7,d0
-                lsl.l   #8,d0
-                lsl.l   #2,d0                   ; *1024 (split: 8+2=10)
-                lea     DU_TABLE,a1
-                adda.l  d0,a1                   ; a1 = DU table ptr for this scale
-
-                lea     DV_TABLE,a2
-                adda.l  d0,a2                   ; a2 = DV table ptr for this scale
-
-                ; For each angle (0-255)
-                moveq   #0,d5                   ; d5 = angle
-
-.angle_loop:
-                ; Get cos[angle] = sin[angle + 64]
-                move.l  d5,d0
-                addi.l  #64,d0
-                andi.l  #255,d0
-                lsl.l   #2,d0                   ; *4 for long
-                move.l  (a3,d0.l),d0            ; d0 = cos[angle]
-
-                ; Multiply by scale_inv (signed)
-                ; Result = (scale_inv * cosA) >> 8
-                move.l  d0,d1
-                bpl.s   .cos_pos
-
-                ; Negative: negate, multiply, negate
-                neg.l   d1
-                mulu.w  d6,d1
-                lsr.l   #8,d1
-                neg.l   d1
-                bra.s   .store_du
-
-.cos_pos:       mulu.w  d6,d1
-                lsr.l   #8,d1
-
-.store_du:      move.l  d1,(a1)+
-
-                ; Get sin[angle]
-                move.l  d5,d0
-                lsl.l   #2,d0
-                move.l  (a3,d0.l),d0            ; d0 = sin[angle]
-
-                ; Multiply by scale_inv (signed)
-                move.l  d0,d1
-                bpl.s   .sin_pos
-
-                neg.l   d1
-                mulu.w  d6,d1
-                lsr.l   #8,d1
-                neg.l   d1
-                bra.s   .store_dv
-
-.sin_pos:       mulu.w  d6,d1
-                lsr.l   #8,d1
-
-.store_dv:      move.l  d1,(a2)+
-
-                addq.l  #1,d5
-                cmpi.l  #256,d5
-                bne.s   .angle_loop
-
-                ; Next scale
-                addq.l  #1,d7
-                cmpi.l  #5,d7
-                bne     .scale_loop
-
-                movem.l (sp)+,d0-d7/a0-a4
-                rts
-
-; =============================================================================
-; UPDATE ANIMATION
-; =============================================================================
-update_animation:
-                movem.l d0-d4/a0-a1,-(sp)
-
-                ; Increment angle
-                move.l  var_angle,d0
-                addq.l  #1,d0
-                andi.l  #TEX_MASK,d0
-                move.l  d0,var_angle
-
-                ; Increment scale index
-                move.l  var_scale_idx,d0
-                addq.l  #2,d0
-                andi.l  #TEX_MASK,d0
-                move.l  d0,var_scale_idx
-
-                ; Calculate scale selector (0-4) from scale value
-                ; scale = 205 + (sin[scale_idx] >> 1), range ~77-333
-                ; scale >> 6 gives 1-5, so (scale >> 6) - 1 gives 0-4
-                lsl.l   #2,d0                   ; *4 for long access
-                lea     SINE_TABLE,a0
-                move.l  (a0,d0.l),d0            ; sin value
-
-                ; Signed shift right by 1
-                asr.l   #1,d0
-                addi.l  #205,d0                 ; scale in 8.8
-
-                ; Clamp to positive
-                tst.l   d0
-                bpl.s   .scale_ok
-                moveq   #77,d0
-.scale_ok:
-                ; Convert to scale selector: (scale >> 6) - 1, clamped to 0-4
-                lsr.l   #6,d0                   ; 1-5
-                subq.l  #1,d0                   ; 0-4
-                bpl.s   .check_high
-                moveq   #0,d0
-                bra.s   .scale_sel_done
-.check_high:    cmpi.l  #4,d0
-                ble.s   .scale_sel_done
-                moveq   #4,d0
-.scale_sel_done:
-                move.l  d0,var_scale_sel
-
-                ; Look up du_dx from precomputed table
-                ; DU_TABLE[scale_sel * 256 + angle]
-                lsl.l   #8,d0
-                lsl.l   #2,d0                   ; * 1024 (256 entries * 4 bytes, split: 8+2=10)
-                move.l  var_angle,d1
-                lsl.l   #2,d1                   ; * 4
-                add.l   d1,d0
-                lea     DU_TABLE,a0
-                move.l  (a0,d0.l),d2
-                move.l  d2,var_du_dx
-
-                ; Look up dv_dx from precomputed table
-                move.l  var_scale_sel,d0
-                lsl.l   #8,d0
-                lsl.l   #2,d0                   ; *1024 (split: 8+2=10)
-                add.l   d1,d0
-                lea     DV_TABLE,a0
-                move.l  (a0,d0.l),d3
-                move.l  d3,var_dv_dx
-
-                ; du_dy = -dv_dx
-                neg.l   d3
-                move.l  d3,var_du_dy
-
-                ; dv_dy = du_dx
-                move.l  d2,var_dv_dy
-
-                ; Set texture center
-                move.l  #$8000,var_start_u
-                move.l  #$8000,var_start_v
-
-                movem.l (sp)+,d0-d4/a0-a1
-                rts
-
-; =============================================================================
-; RENDER ROTOZOOMER
-; 16x loop unrolling, all arithmetic inlined
-; =============================================================================
-render_rotozoomer:
-                movem.l d0-d7/a0-a6,-(sp)
-
-                ; Calculate starting row U,V using shifts (no MUL)
-                ; 320 * x >> 8 = x + (x >> 2)   [320/256 = 1.25]
-                ; 240 * x >> 8 = x - (x >> 4)   [240/256 = 0.9375]
-
-                ; === 320 * du_dx >> 8 ===
-                move.l  var_du_dx,d0
-                bpl.s   .pos_320_dudx
-
-                neg.l   d0
-                move.l  d0,d1
-                lsr.l   #2,d1
-                add.l   d1,d0
-                neg.l   d0
-                bra.s   .done_320_dudx
-
-.pos_320_dudx:  move.l  d0,d1
-                lsr.l   #2,d1
-                add.l   d1,d0
-
-.done_320_dudx: move.l  d0,-(sp)                ; Save temp
-
-                ; === 240 * du_dy >> 8 ===
-                move.l  var_du_dy,d0
-                bpl.s   .pos_240_dudy
-
-                neg.l   d0
-                move.l  d0,d1
-                lsr.l   #4,d1
-                sub.l   d1,d0
-                neg.l   d0
-                bra.s   .done_240_dudy
-
-.pos_240_dudy:  move.l  d0,d1
-                lsr.l   #4,d1
-                sub.l   d1,d0
-
-.done_240_dudy: add.l   (sp)+,d0                ; Add 320*du_dx
-
-                move.l  var_start_u,d1
-                sub.l   d0,d1
-                move.l  d1,var_row_u
-
-                ; === 320 * dv_dx >> 8 ===
-                move.l  var_dv_dx,d0
-                bpl.s   .pos_320_dvdx
-
-                neg.l   d0
-                move.l  d0,d1
-                lsr.l   #2,d1
-                add.l   d1,d0
-                neg.l   d0
-                bra.s   .done_320_dvdx
-
-.pos_320_dvdx:  move.l  d0,d1
-                lsr.l   #2,d1
-                add.l   d1,d0
-
-.done_320_dvdx: move.l  d0,-(sp)                ; Save temp
-
-                ; === 240 * dv_dy >> 8 ===
-                move.l  var_dv_dy,d0
-                bpl.s   .pos_240_dvdy
-
-                neg.l   d0
-                move.l  d0,d1
-                lsr.l   #4,d1
-                sub.l   d1,d0
-                neg.l   d0
-                bra.s   .done_240_dvdy
-
-.pos_240_dvdy:  move.l  d0,d1
-                lsr.l   #4,d1
-                sub.l   d1,d0
-
-.done_240_dvdy: add.l   (sp)+,d0                ; Add 320*dv_dx
-
-                move.l  var_start_v,d1
-                sub.l   d0,d1
-                move.l  d1,var_row_v
-
-                ; Initialize VRAM pointer
-                move.l  #BACK_BUFFER,var_vram_row
-
-                ; Load constants into registers for inner loop
-                ; d1 = du_dx, d2 = dv_dx, d6 = TEX_MASK (255)
-                ; a0 = TEXTURE_BASE
-                move.l  var_du_dx,d1
-                move.l  var_dv_dx,d2
-                moveq   #0,d6
-                move.b  #TEX_MASK,d6            ; d6 = 255
-                lea     TEXTURE_BASE,a0
-
-                ; a3 = du_dy, a4 = dv_dy for row updates
-                move.l  var_du_dy,a3
-                move.l  var_dv_dy,a4
-
-                ; Row counter
-                move.l  #RENDER_H-1,d7
-
-.row_loop:
-                move.l  var_vram_row,a1         ; VRAM pointer
-                move.l  var_row_u,d5            ; texU
-                move.l  var_row_v,d4            ; texV
-
-                ; Column loop: 40 iterations x 16 pixels = 640 pixels
-                ; Use a5 for col counter since d0 is used as scratch in pixel calcs
-                move.l  #40-1,a5
-
-.col_loop:
-                ; ===== PIXEL 0 =====
-                move.l  d4,d3                   ; texV
-                lsr.l   #8,d3
-                and.l   d6,d3
-                lsl.l   #8,d3
-                lsl.l   #2,d3                   ; row * 1024
-                move.l  d5,d0                   ; texU
-                lsr.l   #8,d0
-                and.l   d6,d0
-                lsl.l   #2,d0                   ; col * 4
-                add.l   d3,d0
-                move.l  (a0,d0.l),(a1)+
-                add.l   d1,d5                   ; texU += du_dx
-                add.l   d2,d4                   ; texV += dv_dx
-
-                ; ===== PIXEL 1 =====
-                move.l  d4,d3
-                lsr.l   #8,d3
-                and.l   d6,d3
-                lsl.l   #8,d3
-                lsl.l   #2,d3
-                move.l  d5,d0
-                lsr.l   #8,d0
-                and.l   d6,d0
-                lsl.l   #2,d0
-                add.l   d3,d0
-                move.l  (a0,d0.l),(a1)+
-                add.l   d1,d5
-                add.l   d2,d4
-
-                ; ===== PIXEL 2 =====
-                move.l  d4,d3
-                lsr.l   #8,d3
-                and.l   d6,d3
-                lsl.l   #8,d3
-                lsl.l   #2,d3
-                move.l  d5,d0
-                lsr.l   #8,d0
-                and.l   d6,d0
-                lsl.l   #2,d0
-                add.l   d3,d0
-                move.l  (a0,d0.l),(a1)+
-                add.l   d1,d5
-                add.l   d2,d4
-
-                ; ===== PIXEL 3 =====
-                move.l  d4,d3
-                lsr.l   #8,d3
-                and.l   d6,d3
-                lsl.l   #8,d3
-                lsl.l   #2,d3
-                move.l  d5,d0
-                lsr.l   #8,d0
-                and.l   d6,d0
-                lsl.l   #2,d0
-                add.l   d3,d0
-                move.l  (a0,d0.l),(a1)+
-                add.l   d1,d5
-                add.l   d2,d4
-
-                ; ===== PIXEL 4 =====
-                move.l  d4,d3
-                lsr.l   #8,d3
-                and.l   d6,d3
-                lsl.l   #8,d3
-                lsl.l   #2,d3
-                move.l  d5,d0
-                lsr.l   #8,d0
-                and.l   d6,d0
-                lsl.l   #2,d0
-                add.l   d3,d0
-                move.l  (a0,d0.l),(a1)+
-                add.l   d1,d5
-                add.l   d2,d4
-
-                ; ===== PIXEL 5 =====
-                move.l  d4,d3
-                lsr.l   #8,d3
-                and.l   d6,d3
-                lsl.l   #8,d3
-                lsl.l   #2,d3
-                move.l  d5,d0
-                lsr.l   #8,d0
-                and.l   d6,d0
-                lsl.l   #2,d0
-                add.l   d3,d0
-                move.l  (a0,d0.l),(a1)+
-                add.l   d1,d5
-                add.l   d2,d4
-
-                ; ===== PIXEL 6 =====
-                move.l  d4,d3
-                lsr.l   #8,d3
-                and.l   d6,d3
-                lsl.l   #8,d3
-                lsl.l   #2,d3
-                move.l  d5,d0
-                lsr.l   #8,d0
-                and.l   d6,d0
-                lsl.l   #2,d0
-                add.l   d3,d0
-                move.l  (a0,d0.l),(a1)+
-                add.l   d1,d5
-                add.l   d2,d4
-
-                ; ===== PIXEL 7 =====
-                move.l  d4,d3
-                lsr.l   #8,d3
-                and.l   d6,d3
-                lsl.l   #8,d3
-                lsl.l   #2,d3
-                move.l  d5,d0
-                lsr.l   #8,d0
-                and.l   d6,d0
-                lsl.l   #2,d0
-                add.l   d3,d0
-                move.l  (a0,d0.l),(a1)+
-                add.l   d1,d5
-                add.l   d2,d4
-
-                ; ===== PIXEL 8 =====
-                move.l  d4,d3
-                lsr.l   #8,d3
-                and.l   d6,d3
-                lsl.l   #8,d3
-                lsl.l   #2,d3
-                move.l  d5,d0
-                lsr.l   #8,d0
-                and.l   d6,d0
-                lsl.l   #2,d0
-                add.l   d3,d0
-                move.l  (a0,d0.l),(a1)+
-                add.l   d1,d5
-                add.l   d2,d4
-
-                ; ===== PIXEL 9 =====
-                move.l  d4,d3
-                lsr.l   #8,d3
-                and.l   d6,d3
-                lsl.l   #8,d3
-                lsl.l   #2,d3
-                move.l  d5,d0
-                lsr.l   #8,d0
-                and.l   d6,d0
-                lsl.l   #2,d0
-                add.l   d3,d0
-                move.l  (a0,d0.l),(a1)+
-                add.l   d1,d5
-                add.l   d2,d4
-
-                ; ===== PIXEL 10 =====
-                move.l  d4,d3
-                lsr.l   #8,d3
-                and.l   d6,d3
-                lsl.l   #8,d3
-                lsl.l   #2,d3
-                move.l  d5,d0
-                lsr.l   #8,d0
-                and.l   d6,d0
-                lsl.l   #2,d0
-                add.l   d3,d0
-                move.l  (a0,d0.l),(a1)+
-                add.l   d1,d5
-                add.l   d2,d4
-
-                ; ===== PIXEL 11 =====
-                move.l  d4,d3
-                lsr.l   #8,d3
-                and.l   d6,d3
-                lsl.l   #8,d3
-                lsl.l   #2,d3
-                move.l  d5,d0
-                lsr.l   #8,d0
-                and.l   d6,d0
-                lsl.l   #2,d0
-                add.l   d3,d0
-                move.l  (a0,d0.l),(a1)+
-                add.l   d1,d5
-                add.l   d2,d4
-
-                ; ===== PIXEL 12 =====
-                move.l  d4,d3
-                lsr.l   #8,d3
-                and.l   d6,d3
-                lsl.l   #8,d3
-                lsl.l   #2,d3
-                move.l  d5,d0
-                lsr.l   #8,d0
-                and.l   d6,d0
-                lsl.l   #2,d0
-                add.l   d3,d0
-                move.l  (a0,d0.l),(a1)+
-                add.l   d1,d5
-                add.l   d2,d4
-
-                ; ===== PIXEL 13 =====
-                move.l  d4,d3
-                lsr.l   #8,d3
-                and.l   d6,d3
-                lsl.l   #8,d3
-                lsl.l   #2,d3
-                move.l  d5,d0
-                lsr.l   #8,d0
-                and.l   d6,d0
-                lsl.l   #2,d0
-                add.l   d3,d0
-                move.l  (a0,d0.l),(a1)+
-                add.l   d1,d5
-                add.l   d2,d4
-
-                ; ===== PIXEL 14 =====
-                move.l  d4,d3
-                lsr.l   #8,d3
-                and.l   d6,d3
-                lsl.l   #8,d3
-                lsl.l   #2,d3
-                move.l  d5,d0
-                lsr.l   #8,d0
-                and.l   d6,d0
-                lsl.l   #2,d0
-                add.l   d3,d0
-                move.l  (a0,d0.l),(a1)+
-                add.l   d1,d5
-                add.l   d2,d4
-
-                ; ===== PIXEL 15 =====
-                move.l  d4,d3
-                lsr.l   #8,d3
-                and.l   d6,d3
-                lsl.l   #8,d3
-                lsl.l   #2,d3
-                move.l  d5,d0
-                lsr.l   #8,d0
-                and.l   d6,d0
-                lsl.l   #2,d0
-                add.l   d3,d0
-                move.l  (a0,d0.l),(a1)+
-                add.l   d1,d5
-                add.l   d2,d4
-
-                ; Decrement col counter (in a5) and loop
-                subq.l  #1,a5
-                move.l  a5,d0
-                bpl     .col_loop
-
-                ; Advance to next row
-                move.l  var_vram_row,d0
-                addi.l  #LINE_BYTES,d0
-                move.l  d0,var_vram_row
-
-                move.l  var_row_u,d0
-                add.l   a3,d0                   ; row_u += du_dy
-                move.l  d0,var_row_u
-
-                move.l  var_row_v,d0
-                add.l   a4,d0                   ; row_v += dv_dy
-                move.l  d0,var_row_v
-
-                dbf     d7,.row_loop
-
-                movem.l (sp)+,d0-d7/a0-a6
-                rts
-
-; =============================================================================
-; BLIT BACK BUFFER TO FRONT BUFFER
+; BLIT BACK BUFFER TO FRONT (VRAM)
 ; =============================================================================
 blit_to_front:
                 move.l  #BLT_OP_COPY,BLT_OP
                 move.l  #BACK_BUFFER,BLT_SRC
                 move.l  #VRAM_START,BLT_DST
-                move.l  #DISPLAY_W,BLT_WIDTH
-                move.l  #DISPLAY_H,BLT_HEIGHT
+                move.l  #RENDER_W,BLT_WIDTH
+                move.l  #RENDER_H,BLT_HEIGHT
                 move.l  #LINE_BYTES,BLT_SRC_STRIDE
                 move.l  #LINE_BYTES,BLT_DST_STRIDE
                 move.l  #1,BLT_CTRL
 
-.wait_blit:     move.l  BLT_STATUS,d0
+.wait:          move.l  BLT_STATUS,d0
                 andi.l  #2,d0
-                bne.s   .wait_blit
+                bne.s   .wait
 
                 rts
 
 ; =============================================================================
-; VARIABLE ADDRESSES (using fixed RAM locations like IE32)
-; Located after the precomputed tables at VAR_BASE (0x46C20)
+; ADVANCE ANIMATION - update fractional accumulators
 ; =============================================================================
-var_angle       equ     VAR_BASE+$00
-var_scale_idx   equ     VAR_BASE+$04
-var_scale_sel   equ     VAR_BASE+$08
-var_du_dx       equ     VAR_BASE+$0C
-var_dv_dx       equ     VAR_BASE+$10
-var_du_dy       equ     VAR_BASE+$14
-var_dv_dy       equ     VAR_BASE+$18
-var_row_u       equ     VAR_BASE+$1C
-var_row_v       equ     VAR_BASE+$20
-var_start_u     equ     VAR_BASE+$24
-var_start_v     equ     VAR_BASE+$28
-var_vram_row    equ     VAR_BASE+$2C
+advance_animation:
+                move.l  angle_accum,d0
+                addi.l  #ANGLE_INC,d0
+                andi.l  #$FFFF,d0
+                move.l  d0,angle_accum
+
+                move.l  scale_accum,d0
+                addi.l  #SCALE_INC,d0
+                andi.l  #$FFFF,d0
+                move.l  d0,scale_accum
+
+                rts
 
 ; =============================================================================
-; EOF
+; VARIABLES
 ; =============================================================================
+angle_accum:    dc.l    0
+scale_accum:    dc.l    0
+var_ca:         dc.l    0
+var_sa:         dc.l    0
+var_u0:         dc.l    0
+var_v0:         dc.l    0
+
+; =============================================================================
+; SINE TABLE - 256 entries, signed 16-bit, round(sin(i*2pi/256)*256)
+; =============================================================================
+sine_table:
+                dc.w    0,6,13,19,25,31,38,44,50,56,62,68,74,80,86,92
+                dc.w    98,104,109,115,121,126,132,137,142,147,152,157,162,167,172,177
+                dc.w    181,185,190,194,198,202,206,209,213,216,220,223,226,229,231,234
+                dc.w    237,239,241,243,245,247,248,250,251,252,253,254,255,255,256,256
+                dc.w    256,256,256,255,255,254,253,252,251,250,248,247,245,243,241,239
+                dc.w    237,234,231,229,226,223,220,216,213,209,206,202,198,194,190,185
+                dc.w    181,177,172,167,162,157,152,147,142,137,132,126,121,115,109,104
+                dc.w    98,92,86,80,74,68,62,56,50,44,38,31,25,19,13,6
+                dc.w    0,-6,-13,-19,-25,-31,-38,-44,-50,-56,-62,-68,-74,-80,-86,-92
+                dc.w    -98,-104,-109,-115,-121,-126,-132,-137,-142,-147,-152,-157,-162,-167,-172,-177
+                dc.w    -181,-185,-190,-194,-198,-202,-206,-209,-213,-216,-220,-223,-226,-229,-231,-234
+                dc.w    -237,-239,-241,-243,-245,-247,-248,-250,-251,-252,-253,-254,-255,-255,-256,-256
+                dc.w    -256,-256,-256,-255,-255,-254,-253,-252,-251,-250,-248,-247,-245,-243,-241,-239
+                dc.w    -237,-234,-231,-229,-226,-223,-220,-216,-213,-209,-206,-202,-198,-194,-190,-185
+                dc.w    -181,-177,-172,-167,-162,-157,-152,-147,-142,-137,-132,-126,-121,-115,-109,-104
+                dc.w    -98,-92,-86,-80,-74,-68,-62,-56,-50,-44,-38,-31,-25,-19,-13,-6
+
+; =============================================================================
+; RECIPROCAL TABLE - 256 entries, unsigned 16-bit, round(256/(0.5+sin(i*2pi/256)*0.3))
+; =============================================================================
+recip_table:
+                dc.w    512,505,497,490,484,477,471,464,458,453,447,441,436,431,426,421
+                dc.w    416,412,407,403,399,395,391,388,384,381,377,374,371,368,365,362
+                dc.w    359,357,354,352,350,348,345,343,342,340,338,336,335,333,332,331
+                dc.w    329,328,327,326,325,324,324,323,322,322,321,321,321,320,320,320
+                dc.w    320,320,320,320,321,321,321,322,322,323,324,324,325,326,327,328
+                dc.w    329,331,332,333,335,336,338,340,342,343,345,348,350,352,354,357
+                dc.w    359,362,365,368,371,374,377,381,384,388,391,395,399,403,407,412
+                dc.w    416,421,426,431,436,441,447,453,458,464,471,477,484,490,497,505
+                dc.w    512,520,528,536,544,553,561,571,580,589,599,610,620,631,642,653
+                dc.w    665,676,689,701,714,727,740,754,768,782,797,812,827,842,858,873
+                dc.w    889,905,922,938,955,972,988,1005,1022,1038,1055,1071,1087,1103,1119,1134
+                dc.w    1149,1163,1177,1190,1202,1214,1225,1235,1244,1252,1260,1266,1271,1275,1278,1279
+                dc.w    1280,1279,1278,1275,1271,1266,1260,1252,1244,1235,1225,1214,1202,1190,1177,1163
+                dc.w    1149,1134,1119,1103,1087,1071,1055,1038,1022,1005,988,972,955,938,922,905
+                dc.w    889,873,858,842,827,812,797,782,768,754,740,727,714,701,689,676
+                dc.w    665,653,642,631,620,610,599,589,580,571,561,553,544,536,528,520
