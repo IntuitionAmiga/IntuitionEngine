@@ -210,14 +210,20 @@ func BenchmarkX87_FCHS(b *testing.B) {
 
 func BenchmarkX87_FLD_STi(b *testing.B) {
 	cpu, bus := setupX87BenchCPU()
-	cpu.FPU.push(1.0) // ST1
-	cpu.FPU.push(2.0) // ST0
 	// D9 C1 = FLD ST(1)
 	x87BenchWriteCode(bus, 0x1000, 0xD9, 0xC1)
+	// Snapshot a clean 2-entry stack to restore each iteration
+	cpu.FPU.push(1.0) // ST1
+	cpu.FPU.push(2.0) // ST0
+	saveFSW := cpu.FPU.FSW
+	saveFTW := cpu.FPU.FTW
+	saveRegs := cpu.FPU.regs
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		cpu.EIP = 0x1000
-		cpu.FPU.pop() // undo the push from previous iteration
+		cpu.FPU.FSW = saveFSW
+		cpu.FPU.FTW = saveFTW
+		cpu.FPU.regs = saveRegs
 		cpu.Step()
 	}
 }
