@@ -227,13 +227,19 @@ exec_line:
     or.q    r3, r3, #0x20
     move.q  r2, #0x74            ; 't'
     bne     r3, r2, .el_do_let
-    ; Word boundary: next char must not be alpha
+    ; Word boundary: next char must not be alpha, digit, or '$'
     load.b  r3, 7(r17)
+    move.q  r2, #0x24            ; '$'
+    beq     r3, r2, .el_do_let   ; string suffix → variable
     or.q    r3, r3, #0x20
+    move.q  r2, #0x30            ; '0'
+    blt     r3, r2, .el_is_costart
+    move.q  r2, #0x39            ; '9'
+    ble     r3, r2, .el_do_let   ; digit → variable
     move.q  r2, #0x61            ; 'a'
     blt     r3, r2, .el_is_costart
     move.q  r2, #0x7A            ; 'z'
-    ble     r3, r2, .el_do_let   ; still alpha → not our keyword
+    ble     r3, r2, .el_do_let   ; alpha → variable
 .el_is_costart:
     add.q   r17, r17, #7         ; consume "COSTART"
     jsr     exec_do_costart
@@ -245,9 +251,15 @@ exec_line:
     or.q    r3, r3, #0x20
     move.q  r2, #0x70            ; 'p'
     bne     r3, r2, .el_do_let
-    ; Word boundary
+    ; Word boundary: next char must not be alpha, digit, or '$'
     load.b  r3, 6(r17)
+    move.q  r2, #0x24            ; '$'
+    beq     r3, r2, .el_do_let   ; string suffix → variable
     or.q    r3, r3, #0x20
+    move.q  r2, #0x30            ; '0'
+    blt     r3, r2, .el_is_costop
+    move.q  r2, #0x39            ; '9'
+    ble     r3, r2, .el_do_let   ; digit → variable
     move.q  r2, #0x61            ; 'a'
     blt     r3, r2, .el_is_costop
     move.q  r2, #0x7A            ; 'z'
@@ -271,9 +283,15 @@ exec_line:
     or.q    r3, r3, #0x20
     move.q  r2, #0x74            ; 't'
     bne     r3, r2, .el_do_let
-    ; Word boundary
+    ; Word boundary: next char must not be alpha, digit, or '$'
     load.b  r3, 6(r17)
+    move.q  r2, #0x24            ; '$'
+    beq     r3, r2, .el_do_let   ; string suffix → variable
     or.q    r3, r3, #0x20
+    move.q  r2, #0x30            ; '0'
+    blt     r3, r2, .el_is_cowait
+    move.q  r2, #0x39            ; '9'
+    ble     r3, r2, .el_do_let   ; digit → variable
     move.q  r2, #0x61            ; 'a'
     blt     r3, r2, .el_is_cowait
     move.q  r2, #0x7A            ; 'z'

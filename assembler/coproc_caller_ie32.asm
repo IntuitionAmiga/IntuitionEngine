@@ -5,126 +5,75 @@
 ;
 ; Usage:
 ;   bin/ie32asm assembler/coproc_caller_ie32.asm
-;   bin/ie assembler/coproc_caller_ie32.ie32
+;   bin/ie assembler/coproc_caller_ie32.iex
 ;
 ; Prerequisites:
-;   - Worker binary 'coproc_service_ie32.ie32' in the working directory
+;   - Worker binary 'coproc_service_ie32.iex' in the working directory
+;   - Service filename string at bus address 0x400000
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 
     .include "ie32.inc"
 
-    org 0x1000
+    .org 0x1000
 
 ; Data layout:
-;   0x400000: service filename string
+;   0x400000: service filename string (pre-loaded by host)
 ;   0x410000: request data (two uint32: val1, val2)
 ;   0x410100: response buffer (uint32 result)
 
-; ---- Store service filename at 0x400000 ----
-    load    A, 'c'
-    store   A, 0x400000
-    load    A, 'o'
-    store   A, 0x400004
-    load    A, 'p'
-    store   A, 0x400008
-    load    A, 'r'
-    store   A, 0x40000C
-    load    A, 'o'
-    store   A, 0x400010
-    load    A, 'c'
-    store   A, 0x400014
-    load    A, '_'
-    store   A, 0x400018
-    load    A, 's'
-    store   A, 0x40001C
-    load    A, 'e'
-    store   A, 0x400020
-    load    A, 'r'
-    store   A, 0x400024
-    load    A, 'v'
-    store   A, 0x400028
-    load    A, 'i'
-    store   A, 0x40002C
-    load    A, 'c'
-    store   A, 0x400030
-    load    A, 'e'
-    store   A, 0x400034
-    load    A, '_'
-    store   A, 0x400038
-    load    A, 'i'
-    store   A, 0x40003C
-    load    A, 'e'
-    store   A, 0x400040
-    load    A, '3'
-    store   A, 0x400044
-    load    A, '2'
-    store   A, 0x400048
-    load    A, '.'
-    store   A, 0x40004C
-    load    A, 'i'
-    store   A, 0x400050
-    load    A, 'e'
-    store   A, 0x400054
-    load    A, '3'
-    store   A, 0x400058
-    load    A, '2'
-    store   A, 0x40005C
-    load    A, 0
-    store   A, 0x400060                ; null terminator
-
 ; ---- START worker ----
-    load    A, COPROC_CPU_IE32
-    store   A, COPROC_CPU_TYPE
-    load    A, 0x400000
-    store   A, COPROC_NAME_PTR
-    load    A, COPROC_CMD_START
-    store   A, COPROC_CMD
+    LOAD    A, #COPROC_CPU_IE32
+    STORE   A, COPROC_CPU_TYPE
+    LOAD    A, #0x400000
+    STORE   A, COPROC_NAME_PTR
+    LOAD    A, #COPROC_CMD_START
+    STORE   A, COPROC_CMD
 
     ; Check status
-    load    A, COPROC_CMD_STATUS
-    jnz     A, error                   ; if status != 0, start failed
+    LOAD    A, COPROC_CMD_STATUS
+    JNZ     A, error                   ; if status != 0, start failed
 
 ; ---- Write request data: 10 + 20 ----
-    load    A, 10
-    store   A, 0x410000                ; val1
-    load    A, 20
-    store   A, 0x410004                ; val2
+    LOAD    A, #10
+    STORE   A, 0x410000                ; val1
+    LOAD    A, #20
+    STORE   A, 0x410004                ; val2
 
 ; ---- ENQUEUE request ----
-    load    A, COPROC_CPU_IE32
-    store   A, COPROC_CPU_TYPE
-    load    A, 1                       ; op = add
-    store   A, COPROC_OP
-    load    A, 0x410000
-    store   A, COPROC_REQ_PTR
-    load    A, 8
-    store   A, COPROC_REQ_LEN
-    load    A, 0x410100
-    store   A, COPROC_RESP_PTR
-    load    A, 4
-    store   A, COPROC_RESP_CAP
-    load    A, COPROC_CMD_ENQUEUE
-    store   A, COPROC_CMD
+    LOAD    A, #COPROC_CPU_IE32
+    STORE   A, COPROC_CPU_TYPE
+    LOAD    A, #1                      ; op = add
+    STORE   A, COPROC_OP
+    LOAD    A, #0x410000
+    STORE   A, COPROC_REQ_PTR
+    LOAD    A, #8
+    STORE   A, COPROC_REQ_LEN
+    LOAD    A, #0x410100
+    STORE   A, COPROC_RESP_PTR
+    LOAD    A, #4
+    STORE   A, COPROC_RESP_CAP
+    LOAD    A, #COPROC_CMD_ENQUEUE
+    STORE   A, COPROC_CMD
 
     ; Save ticket from COPROC_TICKET
-    load    X, COPROC_TICKET           ; X = ticket
+    LOAD    X, COPROC_TICKET           ; X = ticket
 
 ; ---- POLL until complete ----
 poll_loop:
-    store   X, COPROC_TICKET
-    load    A, COPROC_CMD_POLL
-    store   A, COPROC_CMD
-    load    A, COPROC_TICKET_STATUS
-    sub     A, #COPROC_ST_OK           ; compare with OK (2)
-    jz      A, done
-    jmp     poll_loop
+    STORE   X, COPROC_TICKET
+    LOAD    A, #COPROC_CMD_POLL
+    STORE   A, COPROC_CMD
+    LOAD    A, COPROC_TICKET_STATUS
+    SUB     A, #COPROC_ST_OK           ; compare with OK (2)
+    JZ      A, done
+    JMP     poll_loop
 
 done:
     ; Result is at 0x410100 (should be 30)
-    load    A, 0x410100                ; A = result
-    halt
+    LOAD    A, 0x410100                ; A = result
+    HALT
 
 error:
-    load    A, COPROC_CMD_ERROR
-    halt
+    LOAD    A, COPROC_CMD_ERROR
+    HALT

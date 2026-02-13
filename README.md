@@ -1475,7 +1475,7 @@ IE32, IE64, M68K, and x86 CPUs access `0xF2340` directly (no gateway needed).
 
 ### ASM Helper Macros
 
-All include files provide coprocessor helper macros with identical semantics:
+All include files except `ie32.inc` (constants only, no macro support) provide coprocessor helper macros with identical semantics:
 
 | Macro | Arguments | Description |
 |-------|-----------|-------------|
