@@ -187,3 +187,68 @@ func TestX87_FISTP_m16_m32_PopBehavior(t *testing.T) {
 		t.Fatalf("FISTP m32 should store+pop")
 	}
 }
+
+func TestX87_BinaryOp_InvalidOpSafety(t *testing.T) {
+	bus := NewTestX86Bus()
+	cpu := NewCPU_X86(bus)
+	cpu.FPU.push(2.0) // ST1
+	cpu.FPU.push(3.0) // ST0
+	st0Before := cpu.FPU.ST(0)
+	st1Before := cpu.FPU.ST(1)
+
+	// Op values 2 and 3 are FCOM/FCOMP — should not perform arithmetic
+	cpu.x87BinaryST0STi(2, 1)
+	if cpu.FPU.ST(0) != st0Before {
+		t.Fatalf("op=2 modified ST(0): got %v, want %v", cpu.FPU.ST(0), st0Before)
+	}
+	cpu.x87BinaryST0STi(3, 1)
+	if cpu.FPU.ST(0) != st0Before {
+		t.Fatalf("op=3 modified ST(0): got %v, want %v", cpu.FPU.ST(0), st0Before)
+	}
+
+	// Out-of-bounds op values should not panic or modify state
+	cpu.x87BinaryST0STi(8, 1)
+	if cpu.FPU.ST(0) != st0Before || cpu.FPU.ST(1) != st1Before {
+		t.Fatalf("op=8 modified registers")
+	}
+	cpu.x87BinaryST0STi(-1, 1)
+	if cpu.FPU.ST(0) != st0Before || cpu.FPU.ST(1) != st1Before {
+		t.Fatalf("op=-1 modified registers")
+	}
+
+	// Same coverage for STiST0 variant
+	cpu.x87BinarySTiST0(2, 1)
+	if cpu.FPU.ST(0) != st0Before || cpu.FPU.ST(1) != st1Before {
+		t.Fatalf("STiST0 op=2 modified registers")
+	}
+	cpu.x87BinarySTiST0(3, 1)
+	if cpu.FPU.ST(0) != st0Before || cpu.FPU.ST(1) != st1Before {
+		t.Fatalf("STiST0 op=3 modified registers")
+	}
+	cpu.x87BinarySTiST0(8, 1)
+	if cpu.FPU.ST(0) != st0Before || cpu.FPU.ST(1) != st1Before {
+		t.Fatalf("STiST0 op=8 modified registers")
+	}
+	cpu.x87BinarySTiST0(-1, 1)
+	if cpu.FPU.ST(0) != st0Before || cpu.FPU.ST(1) != st1Before {
+		t.Fatalf("STiST0 op=-1 modified registers")
+	}
+
+	// Same coverage for BinaryMem variant
+	cpu.x87BinaryMem(2, 42.0)
+	if cpu.FPU.ST(0) != st0Before {
+		t.Fatalf("BinaryMem op=2 modified ST(0)")
+	}
+	cpu.x87BinaryMem(3, 42.0)
+	if cpu.FPU.ST(0) != st0Before {
+		t.Fatalf("BinaryMem op=3 modified ST(0)")
+	}
+	cpu.x87BinaryMem(8, 42.0)
+	if cpu.FPU.ST(0) != st0Before {
+		t.Fatalf("BinaryMem op=8 modified ST(0)")
+	}
+	cpu.x87BinaryMem(-1, 42.0)
+	if cpu.FPU.ST(0) != st0Before {
+		t.Fatalf("BinaryMem op=-1 modified ST(0)")
+	}
+}

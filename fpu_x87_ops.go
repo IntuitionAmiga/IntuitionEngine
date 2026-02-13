@@ -2,6 +2,37 @@ package main
 
 import "math"
 
+var x87BinaryOpTable = [8]func(a, b float64) float64{
+	0: func(a, b float64) float64 { return a + b }, // FADD
+	1: func(a, b float64) float64 { return a * b }, // FMUL
+	4: func(a, b float64) float64 { return a - b }, // FSUB
+	5: func(a, b float64) float64 { return b - a }, // FSUBR
+	6: func(a, b float64) float64 { return a / b }, // FDIV
+	7: func(a, b float64) float64 { return b / a }, // FDIVR
+}
+
+func x87CheckBinaryExceptions(f *FPU_X87, op int, r, a, b float64) {
+	bits := math.Float64bits(r)
+	exp := bits & 0x7FF0000000000000
+	frac := bits & 0x000FFFFFFFFFFFFF
+	if exp == 0x7FF0000000000000 {
+		if frac != 0 {
+			f.setException(x87FSW_IE) // NaN result
+		} else {
+			f.setException(x87FSW_OE) // Inf result
+		}
+	}
+	if op >= 6 { // FDIV or FDIVR
+		den := b
+		if op == 7 {
+			den = a
+		}
+		if den == 0 {
+			f.setException(x87FSW_ZE)
+		}
+	}
+}
+
 func (c *CPU_X86) x87RegPair() (int, int) {
 	return int(c.getModRMReg()), int(c.getModRMRM())
 }
@@ -27,109 +58,72 @@ func (c *CPU_X86) x87MemAddrNoCapture() uint32 {
 
 func (c *CPU_X86) x87BinaryST0STi(op int, i int) {
 	f := c.FPU
-	if f.checkStackUnderflow(0) || f.checkStackUnderflow(i) {
+	t := f.top()
+	p0 := t & 7
+	pi := (t + i) & 7
+	if f.getTag(p0) == x87TagEmpty || f.getTag(pi) == x87TagEmpty {
+		f.setException(x87FSW_IE | x87FSW_SF)
+		f.FSW &^= x87FSW_C1
 		return
 	}
-	a := f.ST(0)
-	b := f.ST(i)
-	var r float64
-	den := b
-	switch op {
-	case 0:
-		r = a + b
-	case 1:
-		r = a * b
-	case 4:
-		r = a - b
-	case 5:
-		r = b - a
-	case 6:
-		r = a / b
-	case 7:
-		r = b / a
-		den = a
+	if op < 0 || op >= len(x87BinaryOpTable) {
+		return
 	}
-	if math.IsInf(r, 0) {
-		f.setException(x87FSW_OE)
+	fn := x87BinaryOpTable[op]
+	if fn == nil {
+		return
 	}
-	if math.IsNaN(r) {
-		f.setException(x87FSW_IE)
-	}
-	if (op == 6 || op == 7) && den == 0 {
-		f.setException(x87FSW_ZE)
-	}
-	f.setST(0, r)
+	a, b := f.regs[p0], f.regs[pi]
+	r := fn(a, b)
+	x87CheckBinaryExceptions(f, op, r, a, b)
+	f.regs[p0] = r
+	f.setTag(p0, f.classifyTag(r))
 }
 
 func (c *CPU_X86) x87BinarySTiST0(op int, i int) {
 	f := c.FPU
-	if f.checkStackUnderflow(0) || f.checkStackUnderflow(i) {
+	t := f.top()
+	p0 := t & 7
+	pi := (t + i) & 7
+	if f.getTag(p0) == x87TagEmpty || f.getTag(pi) == x87TagEmpty {
+		f.setException(x87FSW_IE | x87FSW_SF)
+		f.FSW &^= x87FSW_C1
 		return
 	}
-	a := f.ST(i)
-	b := f.ST(0)
-	var r float64
-	den := b
-	switch op {
-	case 0:
-		r = a + b
-	case 1:
-		r = a * b
-	case 4:
-		r = a - b
-	case 5:
-		r = b - a
-	case 6:
-		r = a / b
-	case 7:
-		r = b / a
-		den = a
+	if op < 0 || op >= len(x87BinaryOpTable) {
+		return
 	}
-	if math.IsInf(r, 0) {
-		f.setException(x87FSW_OE)
+	fn := x87BinaryOpTable[op]
+	if fn == nil {
+		return
 	}
-	if math.IsNaN(r) {
-		f.setException(x87FSW_IE)
-	}
-	if (op == 6 || op == 7) && den == 0 {
-		f.setException(x87FSW_ZE)
-	}
-	f.setST(i, r)
+	a, b := f.regs[pi], f.regs[p0]
+	r := fn(a, b)
+	x87CheckBinaryExceptions(f, op, r, a, b)
+	f.regs[pi] = r
+	f.setTag(pi, f.classifyTag(r))
 }
 
 func (c *CPU_X86) x87BinaryMem(op int, v float64) {
 	f := c.FPU
-	if f.checkStackUnderflow(0) {
+	p0 := f.top() & 7
+	if f.getTag(p0) == x87TagEmpty {
+		f.setException(x87FSW_IE | x87FSW_SF)
+		f.FSW &^= x87FSW_C1
 		return
 	}
-	a := f.ST(0)
-	var r float64
-	den := v
-	switch op {
-	case 0:
-		r = a + v
-	case 1:
-		r = a * v
-	case 4:
-		r = a - v
-	case 5:
-		r = v - a
-	case 6:
-		r = a / v
-	case 7:
-		r = v / a
-		den = a
+	if op < 0 || op >= len(x87BinaryOpTable) {
+		return
 	}
-	if math.IsNaN(r) {
-		f.setException(x87FSW_IE)
+	fn := x87BinaryOpTable[op]
+	if fn == nil {
+		return
 	}
-	if math.IsInf(r, 0) {
-		f.setException(x87FSW_OE)
-	}
-	if (op == 6 || op == 7) && den == 0 {
-		f.setException(x87FSW_ZE)
-	}
-	f.setST(0, r)
+	a := f.regs[p0]
+	r := fn(a, v)
+	x87CheckBinaryExceptions(f, op, r, a, v)
+	f.regs[p0] = r
+	f.setTag(p0, f.classifyTag(r))
 }
 
 func (c *CPU_X86) opFPU_D8() {
@@ -172,156 +166,238 @@ func (c *CPU_X86) opFPU_D8() {
 	c.Cycles += 1
 }
 
+var x87D9RegOps [64]func(*CPU_X86)
+
+func init() {
+	// FLD ST(i): 0xC0-0xC7 → indices 0x00-0x07
+	for i := range 8 {
+		idx := i
+		x87D9RegOps[idx] = func(c *CPU_X86) {
+			f := c.FPU
+			if !f.checkStackUnderflow(idx) {
+				f.push(f.ST(idx))
+			}
+		}
+	}
+	// FXCH ST(i): 0xC8-0xCF → indices 0x08-0x0F
+	for i := range 8 {
+		idx := i
+		x87D9RegOps[0x08+idx] = func(c *CPU_X86) {
+			f := c.FPU
+			if !f.checkStackUnderflow(0) && !f.checkStackUnderflow(idx) {
+				a := f.ST(0)
+				b := f.ST(idx)
+				f.setST(0, b)
+				f.setST(idx, a)
+			}
+		}
+	}
+	// FNOP: 0xD0 → index 0x10
+	x87D9RegOps[0x10] = func(c *CPU_X86) {}
+	// FCHS: 0xE0 → index 0x20
+	x87D9RegOps[0x20] = func(c *CPU_X86) {
+		f := c.FPU
+		if !f.checkStackUnderflow(0) {
+			f.setST(0, -f.ST(0))
+		}
+	}
+	// FABS: 0xE1 → index 0x21
+	x87D9RegOps[0x21] = func(c *CPU_X86) {
+		f := c.FPU
+		if !f.checkStackUnderflow(0) {
+			f.setST(0, math.Abs(f.ST(0)))
+		}
+	}
+	// FTST: 0xE4 → index 0x24
+	x87D9RegOps[0x24] = func(c *CPU_X86) {
+		f := c.FPU
+		if !f.checkStackUnderflow(0) {
+			f.doCompare(f.ST(0), 0, true)
+		}
+	}
+	// FXAM: 0xE5 → index 0x25
+	x87D9RegOps[0x25] = func(c *CPU_X86) {
+		f := c.FPU
+		top := f.top()
+		f.xam(f.regs[top], f.getTag(top) == x87TagEmpty)
+	}
+	// Constants: 0xE8-0xEE → indices 0x28-0x2E
+	for i := range 7 {
+		idx := i
+		x87D9RegOps[0x28+idx] = func(c *CPU_X86) {
+			c.FPU.push(x87ConstTable[idx])
+		}
+	}
+	// F2XM1: 0xF0 → index 0x30
+	x87D9RegOps[0x30] = func(c *CPU_X86) {
+		f := c.FPU
+		if !f.checkStackUnderflow(0) {
+			f.setST(0, math.Exp2(f.ST(0))-1.0)
+		}
+	}
+	// FYL2X: 0xF1 → index 0x31
+	x87D9RegOps[0x31] = func(c *CPU_X86) {
+		f := c.FPU
+		if !f.checkStackUnderflow(0) && !f.checkStackUnderflow(1) {
+			x := f.ST(0)
+			y := f.ST(1)
+			if x < 0 {
+				f.setException(x87FSW_IE)
+			} else if x == 0 && !math.IsNaN(y) && !math.IsInf(y, 0) && y != 0 {
+				f.setException(x87FSW_ZE)
+			}
+			f.setST(1, y*math.Log2(x))
+			f.pop()
+		}
+	}
+	// FPTAN: 0xF2 → index 0x32
+	x87D9RegOps[0x32] = func(c *CPU_X86) {
+		f := c.FPU
+		if !f.checkStackUnderflow(0) {
+			f.FSW &^= x87FSW_C2
+			f.setST(0, math.Tan(f.ST(0)))
+			f.push(1.0)
+		}
+	}
+	// FPATAN: 0xF3 → index 0x33
+	x87D9RegOps[0x33] = func(c *CPU_X86) {
+		f := c.FPU
+		if !f.checkStackUnderflow(0) && !f.checkStackUnderflow(1) {
+			f.setST(1, math.Atan2(f.ST(1), f.ST(0)))
+			f.pop()
+		}
+	}
+	// FXTRACT: 0xF4 → index 0x34
+	x87D9RegOps[0x34] = func(c *CPU_X86) {
+		f := c.FPU
+		if !f.checkStackUnderflow(0) {
+			x := f.ST(0)
+			if x == 0 {
+				f.push(math.Inf(-1))
+				f.setST(1, 0)
+			} else {
+				frac, exp := math.Frexp(x)
+				f.setST(0, frac*2)
+				f.push(float64(exp - 1))
+			}
+		}
+	}
+	// FPREM1: 0xF5 → index 0x35
+	x87D9RegOps[0x35] = func(c *CPU_X86) {
+		f := c.FPU
+		if !f.checkStackUnderflow(0) && !f.checkStackUnderflow(1) {
+			a := f.ST(0)
+			b := f.ST(1)
+			q := int64(math.RoundToEven(a / b))
+			f.setST(0, math.Remainder(a, b))
+			f.FSW &^= x87FSW_C2
+			f.setQuotientFlags(q)
+		}
+	}
+	// FDECSTP: 0xF6 → index 0x36
+	x87D9RegOps[0x36] = func(c *CPU_X86) {
+		f := c.FPU
+		f.setTop((f.top() - 1) & 7)
+	}
+	// FINCSTP: 0xF7 → index 0x37
+	x87D9RegOps[0x37] = func(c *CPU_X86) {
+		f := c.FPU
+		f.setTop((f.top() + 1) & 7)
+	}
+	// FPREM: 0xF8 → index 0x38
+	x87D9RegOps[0x38] = func(c *CPU_X86) {
+		f := c.FPU
+		if !f.checkStackUnderflow(0) && !f.checkStackUnderflow(1) {
+			a := f.ST(0)
+			b := f.ST(1)
+			q := int64(math.Trunc(a / b))
+			f.setST(0, a-float64(q)*b)
+			f.FSW &^= x87FSW_C2
+			f.setQuotientFlags(q)
+		}
+	}
+	// FYL2XP1: 0xF9 → index 0x39
+	x87D9RegOps[0x39] = func(c *CPU_X86) {
+		f := c.FPU
+		if !f.checkStackUnderflow(0) && !f.checkStackUnderflow(1) {
+			x := f.ST(0)
+			y := f.ST(1)
+			if x <= -1 {
+				f.setException(x87FSW_IE)
+			}
+			f.setST(1, y*math.Log1p(x)/math.Ln2)
+			f.pop()
+		}
+	}
+	// FSQRT: 0xFA → index 0x3A
+	x87D9RegOps[0x3A] = func(c *CPU_X86) {
+		f := c.FPU
+		if !f.checkStackUnderflow(0) {
+			x := f.ST(0)
+			if x < 0 {
+				f.setException(x87FSW_IE)
+			}
+			f.setST(0, math.Sqrt(x))
+		}
+	}
+	// FSINCOS: 0xFB → index 0x3B
+	x87D9RegOps[0x3B] = func(c *CPU_X86) {
+		f := c.FPU
+		if !f.checkStackUnderflow(0) {
+			x := f.ST(0)
+			s := math.Sin(x)
+			co := math.Cos(x)
+			f.setST(0, s)
+			f.push(co)
+			f.FSW &^= x87FSW_C2
+		}
+	}
+	// FRNDINT: 0xFC → index 0x3C
+	x87D9RegOps[0x3C] = func(c *CPU_X86) {
+		f := c.FPU
+		if !f.checkStackUnderflow(0) {
+			f.setST(0, f.roundPerFCW(f.ST(0)))
+		}
+	}
+	// FSCALE: 0xFD → index 0x3D
+	x87D9RegOps[0x3D] = func(c *CPU_X86) {
+		f := c.FPU
+		if !f.checkStackUnderflow(0) && !f.checkStackUnderflow(1) {
+			scale := int(f.ST(1))
+			f.setST(0, math.Ldexp(f.ST(0), scale))
+		}
+	}
+	// FSIN: 0xFE → index 0x3E
+	x87D9RegOps[0x3E] = func(c *CPU_X86) {
+		f := c.FPU
+		if !f.checkStackUnderflow(0) {
+			f.setST(0, math.Sin(f.ST(0)))
+			f.FSW &^= x87FSW_C2
+		}
+	}
+	// FCOS: 0xFF → index 0x3F
+	x87D9RegOps[0x3F] = func(c *CPU_X86) {
+		f := c.FPU
+		if !f.checkStackUnderflow(0) {
+			f.setST(0, math.Cos(f.ST(0)))
+			f.FSW &^= x87FSW_C2
+		}
+	}
+}
+
 func (c *CPU_X86) opFPU_D9() {
 	c.x87FetchOp(0xD9)
 	if c.FPU == nil {
 		return
 	}
-	mod := c.getModRMMod()
-	reg, rm := c.x87RegPair()
 	f := c.FPU
 
-	if mod == 3 {
-		switch {
-		case c.modrm >= 0xC0 && c.modrm <= 0xC7: // FLD ST(i)
-			if !f.checkStackUnderflow(rm) {
-				f.push(f.ST(rm))
-			}
-		case c.modrm >= 0xC8 && c.modrm <= 0xCF: // FXCH ST(i)
-			if !f.checkStackUnderflow(0) && !f.checkStackUnderflow(rm) {
-				a := f.ST(0)
-				b := f.ST(rm)
-				f.setST(0, b)
-				f.setST(rm, a)
-			}
-		case c.modrm == 0xD0: // FNOP
-		case c.modrm == 0xE0: // FCHS
-			if !f.checkStackUnderflow(0) {
-				f.setST(0, -f.ST(0))
-			}
-		case c.modrm == 0xE1: // FABS
-			if !f.checkStackUnderflow(0) {
-				f.setST(0, math.Abs(f.ST(0)))
-			}
-		case c.modrm == 0xE4: // FTST
-			if !f.checkStackUnderflow(0) {
-				f.doCompare(f.ST(0), 0, true)
-			}
-		case c.modrm == 0xE5: // FXAM
-			top := f.top()
-			f.xam(f.regs[top], f.getTag(top) == x87TagEmpty)
-		case c.modrm >= 0xE8 && c.modrm <= 0xEE: // constants
-			f.push(x87ConstTable[c.modrm-0xE8])
-		case c.modrm == 0xF0: // F2XM1
-			if !f.checkStackUnderflow(0) {
-				f.setST(0, math.Exp2(f.ST(0))-1.0)
-			}
-		case c.modrm == 0xF1: // FYL2X
-			if !f.checkStackUnderflow(0) && !f.checkStackUnderflow(1) {
-				x := f.ST(0)
-				y := f.ST(1)
-				if x < 0 {
-					f.setException(x87FSW_IE)
-				} else if x == 0 && !math.IsNaN(y) && !math.IsInf(y, 0) && y != 0 {
-					f.setException(x87FSW_ZE)
-				}
-				f.setST(1, y*math.Log2(x))
-				f.pop()
-			}
-		case c.modrm == 0xF2: // FPTAN
-			if !f.checkStackUnderflow(0) {
-				f.FSW &^= x87FSW_C2
-				f.setST(0, math.Tan(f.ST(0)))
-				f.push(1.0)
-			}
-		case c.modrm == 0xF3: // FPATAN
-			if !f.checkStackUnderflow(0) && !f.checkStackUnderflow(1) {
-				f.setST(1, math.Atan2(f.ST(1), f.ST(0)))
-				f.pop()
-			}
-		case c.modrm == 0xF4: // FXTRACT
-			if !f.checkStackUnderflow(0) {
-				x := f.ST(0)
-				if x == 0 {
-					f.push(math.Inf(-1))
-					f.setST(1, 0)
-				} else {
-					frac, exp := math.Frexp(x)
-					sig := frac * 2
-					f.setST(0, sig)
-					f.push(float64(exp - 1))
-				}
-			}
-		case c.modrm == 0xF5: // FPREM1
-			if !f.checkStackUnderflow(0) && !f.checkStackUnderflow(1) {
-				a := f.ST(0)
-				b := f.ST(1)
-				q := int64(math.RoundToEven(a / b))
-				f.setST(0, math.Remainder(a, b))
-				f.FSW &^= x87FSW_C2
-				f.setQuotientFlags(q)
-			}
-		case c.modrm == 0xF6: // FDECSTP
-			f.setTop((f.top() - 1) & 7)
-		case c.modrm == 0xF7: // FINCSTP
-			f.setTop((f.top() + 1) & 7)
-		case c.modrm == 0xF8: // FPREM
-			if !f.checkStackUnderflow(0) && !f.checkStackUnderflow(1) {
-				a := f.ST(0)
-				b := f.ST(1)
-				q := int64(math.Trunc(a / b))
-				f.setST(0, a-float64(q)*b)
-				f.FSW &^= x87FSW_C2
-				f.setQuotientFlags(q)
-			}
-		case c.modrm == 0xF9: // FYL2XP1
-			if !f.checkStackUnderflow(0) && !f.checkStackUnderflow(1) {
-				x := f.ST(0)
-				y := f.ST(1)
-				if x <= -1 {
-					f.setException(x87FSW_IE)
-				}
-				f.setST(1, y*math.Log1p(x)/math.Ln2)
-				f.pop()
-			}
-		case c.modrm == 0xFA: // FSQRT
-			if !f.checkStackUnderflow(0) {
-				x := f.ST(0)
-				if x < 0 {
-					f.setException(x87FSW_IE)
-				}
-				f.setST(0, math.Sqrt(x))
-			}
-		case c.modrm == 0xFB: // FSINCOS
-			if !f.checkStackUnderflow(0) {
-				x := f.ST(0)
-				s := math.Sin(x)
-				co := math.Cos(x)
-				f.setST(0, s)
-				f.push(co)
-				f.FSW &^= x87FSW_C2
-			}
-		case c.modrm == 0xFC: // FRNDINT
-			if !f.checkStackUnderflow(0) {
-				f.setST(0, f.roundPerFCW(f.ST(0)))
-			}
-		case c.modrm == 0xFD: // FSCALE
-			if !f.checkStackUnderflow(0) && !f.checkStackUnderflow(1) {
-				scale := int(f.ST(1))
-				f.setST(0, math.Ldexp(f.ST(0), scale))
-			}
-		case c.modrm == 0xFE: // FSIN
-			if !f.checkStackUnderflow(0) {
-				f.setST(0, math.Sin(f.ST(0)))
-				f.FSW &^= x87FSW_C2
-			}
-		case c.modrm == 0xFF: // FCOS
-			if !f.checkStackUnderflow(0) {
-				f.setST(0, math.Cos(f.ST(0)))
-				f.FSW &^= x87FSW_C2
-			}
+	if c.getModRMMod() == 3 {
+		if fn := x87D9RegOps[c.modrm-0xC0]; fn != nil {
+			fn(c)
 		}
 	} else {
+		reg := int(c.getModRMReg())
 		switch reg {
 		case 0: // FLD m32
 			addr := c.x87MemAddr()

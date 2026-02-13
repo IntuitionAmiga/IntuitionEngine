@@ -123,14 +123,17 @@ func (f *FPU_X87) setTag(phys int, tag uint16) {
 }
 
 func (f *FPU_X87) classifyTag(v float64) uint16 {
-	if v == 0 {
-		return x87TagZero
+	bits := math.Float64bits(v)
+	exp := bits & 0x7FF0000000000000
+	frac := bits & 0x000FFFFFFFFFFFFF
+	if exp|frac == 0 {
+		return x87TagZero // ±0
 	}
-	if math.IsNaN(v) || math.IsInf(v, 0) {
-		return x87TagSpecial
+	if exp == 0x7FF0000000000000 {
+		return x87TagSpecial // NaN or Inf
 	}
-	if math.Abs(v) < x87SmallestNormal {
-		return x87TagSpecial
+	if exp == 0 {
+		return x87TagSpecial // subnormal
 	}
 	return x87TagValid
 }
@@ -379,20 +382,23 @@ func (f *FPU_X87) storeBCD(bus x87Bus, addr uint32, v float64) {
 }
 
 func (f *FPU_X87) doCompare(a, b float64, signalNaN bool) {
-	f.clearCond()
-	if math.IsNaN(a) || math.IsNaN(b) {
+	f.FSW &^= x87FSW_C0 | x87FSW_C1 | x87FSW_C2 | x87FSW_C3
+
+	bitsA := math.Float64bits(a)
+	bitsB := math.Float64bits(b)
+	nanA := (bitsA&0x7FF0000000000000) == 0x7FF0000000000000 && (bitsA&0x000FFFFFFFFFFFFF) != 0
+	nanB := (bitsB&0x7FF0000000000000) == 0x7FF0000000000000 && (bitsB&0x000FFFFFFFFFFFFF) != 0
+
+	if nanA || nanB {
 		f.FSW |= x87FSW_C0 | x87FSW_C2 | x87FSW_C3
 		if signalNaN {
 			f.setException(x87FSW_IE)
 		}
 		return
 	}
-	switch {
-	case a > b:
-		// all clear
-	case a < b:
+	if a < b {
 		f.FSW |= x87FSW_C0
-	default:
+	} else if a == b {
 		f.FSW |= x87FSW_C3
 	}
 }
@@ -479,26 +485,29 @@ func (f *FPU_X87) xam(v float64, empty bool) {
 		f.FSW |= x87FSW_C0 | x87FSW_C3
 		return
 	}
-	if math.Signbit(v) {
-		f.FSW |= x87FSW_C1
+	bits := math.Float64bits(v)
+	if bits>>63 != 0 {
+		f.FSW |= x87FSW_C1 // sign bit
 	}
-	if math.IsNaN(v) {
-		f.FSW |= x87FSW_C0
+	exp := bits & 0x7FF0000000000000
+	frac := bits & 0x000FFFFFFFFFFFFF
+	if exp == 0x7FF0000000000000 {
+		if frac != 0 {
+			f.FSW |= x87FSW_C0 // NaN: C0=1
+		} else {
+			f.FSW |= x87FSW_C0 | x87FSW_C2 // Inf: C0=1,C2=1
+		}
 		return
 	}
-	if math.IsInf(v, 0) {
-		f.FSW |= x87FSW_C0 | x87FSW_C2
+	if exp|frac == 0 {
+		f.FSW |= x87FSW_C3 // zero: C3=1
 		return
 	}
-	if v == 0 {
-		f.FSW |= x87FSW_C3
+	if exp == 0 {
+		f.FSW |= x87FSW_C2 | x87FSW_C3 // denormal: C2=1,C3=1
 		return
 	}
-	if math.Abs(v) < x87SmallestNormal {
-		f.FSW |= x87FSW_C2 | x87FSW_C3
-		return
-	}
-	f.FSW |= x87FSW_C2
+	f.FSW |= x87FSW_C2 // normal: C2=1
 }
 
 var x87ConstTable = [7]float64{
