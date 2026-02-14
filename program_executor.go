@@ -43,6 +43,14 @@ func NewProgramExecutor(bus *MachineBus, ie64CPU *CPU64, videoChip *VideoChip, v
 	}
 }
 
+// SetCPU updates the IE64 CPU pointer. Called during mode switches so EXEC
+// MMIO targets the correct CPU instance.
+func (e *ProgramExecutor) SetCPU(cpu *CPU64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.ie64CPU = cpu
+}
+
 func (e *ProgramExecutor) HandleRead(addr uint32) uint32 {
 	e.mu.Lock()
 	defer e.mu.Unlock()

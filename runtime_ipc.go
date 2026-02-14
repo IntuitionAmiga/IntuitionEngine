@@ -50,6 +50,7 @@ type IPCServer struct {
 	listener net.Listener
 	handler  func(path string) error
 	done     chan struct{}
+	sockPath string
 }
 
 func resolveSocketPath() string {
@@ -59,9 +60,13 @@ func resolveSocketPath() string {
 	return "/tmp/intuition-engine.sock"
 }
 
-// NewIPCServer creates and binds the IPC Unix socket.
+// NewIPCServer creates and binds the IPC Unix socket at the default path.
 func NewIPCServer(handler func(string) error) (*IPCServer, error) {
-	sockPath := resolveSocketPath()
+	return newIPCServerAt(resolveSocketPath(), handler)
+}
+
+// newIPCServerAt creates and binds the IPC Unix socket at the given path.
+func newIPCServerAt(sockPath string, handler func(string) error) (*IPCServer, error) {
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {
 		// Stale socket cleanup: try connecting. If peer is dead, remove and retry.
@@ -77,7 +82,7 @@ func NewIPCServer(handler func(string) error) (*IPCServer, error) {
 			return nil, fmt.Errorf("another instance is already running")
 		}
 	}
-	return &IPCServer{listener: ln, handler: handler, done: make(chan struct{})}, nil
+	return &IPCServer{listener: ln, handler: handler, done: make(chan struct{}), sockPath: sockPath}, nil
 }
 
 // Start begins accepting IPC connections in a goroutine.
@@ -89,7 +94,7 @@ func (s *IPCServer) Start() {
 func (s *IPCServer) Stop() {
 	s.listener.Close()
 	<-s.done
-	os.Remove(resolveSocketPath())
+	os.Remove(s.sockPath)
 }
 
 func (s *IPCServer) acceptLoop() {
@@ -160,9 +165,13 @@ func validateIPCPath(path string) error {
 	return nil
 }
 
-// SendIPCOpen sends an OPEN request to an existing instance.
+// SendIPCOpen sends an OPEN request to an existing instance at the default socket.
 func SendIPCOpen(path string) error {
-	sockPath := resolveSocketPath()
+	return sendIPCOpenAt(resolveSocketPath(), path)
+}
+
+// sendIPCOpenAt sends an OPEN request to an instance at the given socket path.
+func sendIPCOpenAt(sockPath, path string) error {
 	conn, err := net.DialTimeout("unix", sockPath, 10*time.Second)
 	if err != nil {
 		return fmt.Errorf("cannot connect to running instance: %w", err)

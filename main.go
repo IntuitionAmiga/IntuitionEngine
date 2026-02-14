@@ -841,6 +841,11 @@ func main() {
 	var startExecution bool
 	var ie64CPU *CPU64
 
+	// ProgramExecutor is created unconditionally so EXEC MMIO is always mapped.
+	// Its CPU pointer is set/updated when entering IE64 mode (initial or mode-switch).
+	progExec := NewProgramExecutor(sysBus, nil, videoChip, vgaEngine, voodooEngine, ".")
+	sysBus.MapIO(EXEC_BASE, EXEC_END, progExec.HandleRead, progExec.HandleWrite)
+
 	// State for runProgramWithFullReset
 	var programBytes []byte
 	var reloadProgram func()
@@ -879,9 +884,7 @@ func main() {
 		ie64CPU = NewCPU64(sysBus)
 		ie64CPU.PerfEnabled = perfMode
 		runtimeStatus.setCPUs(runtimeCPUIE64, nil, ie64CPU, nil, nil, nil, nil)
-
-		progExec := NewProgramExecutor(sysBus, ie64CPU, videoChip, vgaEngine, voodooEngine, ".")
-		sysBus.MapIO(EXEC_BASE, EXEC_END, progExec.HandleRead, progExec.HandleWrite)
+		progExec.SetCPU(ie64CPU)
 
 		if modeBasic {
 			if basicImage != "" {
@@ -1152,7 +1155,7 @@ func main() {
 		tedVideoEngine.StopRenderLoop()
 		anticEngine.StopRenderLoop()
 
-		// 4. Mode switch if needed
+		// 4. Mode switch if needed — update cpuRunner, runtimeStatus, and progExec
 		if mode != currentMode {
 			newRunner, err := createCPURunner(mode, sysBus, videoChip, vgaEngine, voodooEngine)
 			if err != nil {
@@ -1160,6 +1163,29 @@ func main() {
 			}
 			cpuRunner = newRunner
 			activeCPU = newRunner
+
+			// Update runtime status with new CPU type
+			switch mode {
+			case "ie32":
+				runtimeStatus.setCPUs(runtimeCPUIE32, newRunner.(*CPU), nil, nil, nil, nil, nil)
+				progExec.SetCPU(nil)
+			case "ie64":
+				cpu64 := newRunner.(*CPU64)
+				runtimeStatus.setCPUs(runtimeCPUIE64, nil, cpu64, nil, nil, nil, nil)
+				progExec.SetCPU(cpu64)
+			case "m68k":
+				runtimeStatus.setCPUs(runtimeCPUM68K, nil, nil, newRunner.(*M68KRunner), nil, nil, nil)
+				progExec.SetCPU(nil)
+			case "z80":
+				runtimeStatus.setCPUs(runtimeCPUZ80, nil, nil, nil, newRunner.(*CPUZ80Runner), nil, nil)
+				progExec.SetCPU(nil)
+			case "x86":
+				runtimeStatus.setCPUs(runtimeCPUX86, nil, nil, nil, nil, newRunner.(*CPUX86Runner), nil)
+				progExec.SetCPU(nil)
+			case "6502":
+				runtimeStatus.setCPUs(runtimeCPU6502, nil, nil, nil, nil, nil, newRunner.(*CPU6502Runner))
+				progExec.SetCPU(nil)
+			}
 		}
 
 		// 5-6. Reset audio engines + sound chip

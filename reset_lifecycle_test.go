@@ -217,21 +217,23 @@ func TestBuildReloadClosure(t *testing.T) {
 	}
 }
 
+// testSocketPath returns an isolated socket path for a test.
+func testSocketPath(t *testing.T) string {
+	return filepath.Join(t.TempDir(), "test.sock")
+}
+
 // TestIPC_SocketLifecycle tests IPC server start and stop.
 func TestIPC_SocketLifecycle(t *testing.T) {
-	handled := make(chan string, 1)
-	server, err := NewIPCServer(func(path string) error {
-		handled <- path
+	sockPath := testSocketPath(t)
+	server, err := newIPCServerAt(sockPath, func(path string) error {
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("NewIPCServer failed: %v", err)
+		t.Fatalf("newIPCServerAt failed: %v", err)
 	}
 	server.Start()
 	defer server.Stop()
 
-	// Verify socket file exists
-	sockPath := resolveSocketPath()
 	if _, err := os.Stat(sockPath); os.IsNotExist(err) {
 		t.Fatal("socket file not created")
 	}
@@ -239,13 +241,14 @@ func TestIPC_SocketLifecycle(t *testing.T) {
 
 // TestIPC_SendOpen tests IPC client-server communication.
 func TestIPC_SendOpen(t *testing.T) {
+	sockPath := testSocketPath(t)
 	handled := make(chan string, 1)
-	server, err := NewIPCServer(func(path string) error {
+	server, err := newIPCServerAt(sockPath, func(path string) error {
 		handled <- path
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("NewIPCServer failed: %v", err)
+		t.Fatalf("newIPCServerAt failed: %v", err)
 	}
 	server.Start()
 	defer server.Stop()
@@ -257,9 +260,9 @@ func TestIPC_SendOpen(t *testing.T) {
 		t.Fatalf("failed to create temp file: %v", err)
 	}
 
-	err = SendIPCOpen(tmpFile)
+	err = sendIPCOpenAt(sockPath, tmpFile)
 	if err != nil {
-		t.Fatalf("SendIPCOpen failed: %v", err)
+		t.Fatalf("sendIPCOpenAt failed: %v", err)
 	}
 
 	select {
@@ -290,20 +293,19 @@ func TestIPC_ValidateRejectsBadExtension(t *testing.T) {
 
 // TestIPC_StaleSocketCleanup tests stale socket detection and cleanup.
 func TestIPC_StaleSocketCleanup(t *testing.T) {
-	sockPath := resolveSocketPath()
+	sockPath := testSocketPath(t)
 
 	// Create a stale socket file (not listening)
-	os.Remove(sockPath)
 	f, err := os.Create(sockPath)
 	if err != nil {
 		t.Fatalf("failed to create stale socket: %v", err)
 	}
 	f.Close()
 
-	// NewIPCServer should clean up stale socket and bind successfully
-	server, err := NewIPCServer(func(path string) error { return nil })
+	// newIPCServerAt should clean up stale socket and bind successfully
+	server, err := newIPCServerAt(sockPath, func(path string) error { return nil })
 	if err != nil {
-		t.Fatalf("NewIPCServer failed with stale socket: %v", err)
+		t.Fatalf("newIPCServerAt failed with stale socket: %v", err)
 	}
 	server.Start()
 	server.Stop()
@@ -311,17 +313,18 @@ func TestIPC_StaleSocketCleanup(t *testing.T) {
 
 // TestIPC_ConcurrentRequests tests multiple concurrent IPC OPEN requests.
 func TestIPC_ConcurrentRequests(t *testing.T) {
+	sockPath := testSocketPath(t)
 	var mu sync.Mutex
 	var paths []string
 
-	server, err := NewIPCServer(func(path string) error {
+	server, err := newIPCServerAt(sockPath, func(path string) error {
 		mu.Lock()
 		paths = append(paths, path)
 		mu.Unlock()
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("NewIPCServer failed: %v", err)
+		t.Fatalf("newIPCServerAt failed: %v", err)
 	}
 	server.Start()
 	defer server.Stop()
@@ -337,8 +340,8 @@ func TestIPC_ConcurrentRequests(t *testing.T) {
 		}
 		go func(path string) {
 			defer wg.Done()
-			if err := SendIPCOpen(path); err != nil {
-				t.Errorf("SendIPCOpen failed: %v", err)
+			if err := sendIPCOpenAt(sockPath, path); err != nil {
+				t.Errorf("sendIPCOpenAt failed: %v", err)
 			}
 		}(tmpFile)
 	}
