@@ -284,9 +284,20 @@ Display a quick command reference.
 | Enter | Submit command |
 | Esc | Exit monitor (same as `x`) |
 | Up/Down | Navigate command history |
+| Left/Right | Move cursor within input line |
+| Home / End | Jump to start/end of input line |
+| Delete | Delete character at cursor |
+| Backspace | Delete character before cursor |
+| Ctrl+A / Ctrl+E | Jump to start/end of input line |
+| Ctrl+K | Kill from cursor to end of line |
+| Ctrl+U | Kill from start of line to cursor |
+| Ctrl+Left/Right | Jump by word |
 | PgUp/PgDn | Scroll output buffer |
+| Mouse wheel | Scroll output buffer |
 | F9 | Toggle monitor on/off |
 | F10 | Hard reset (works while monitor is active) |
+
+Cursor movement, delete, and backspace keys repeat automatically when held.
 
 ## CPU-Specific Notes
 

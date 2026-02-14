@@ -90,6 +90,19 @@ func (o *MonitorOverlay) drawGlyph(ch byte, col, row int, fg, bg uint32) {
 	}
 }
 
+const (
+	monitorKeyRepeatDelay    = 24
+	monitorKeyRepeatInterval = 2
+)
+
+func monitorShouldRepeat(key ebiten.Key) bool {
+	dur := inpututil.KeyPressDuration(key)
+	if dur < monitorKeyRepeatDelay {
+		return false
+	}
+	return (dur-monitorKeyRepeatDelay)%monitorKeyRepeatInterval == 0
+}
+
 // drawString renders a string at the given column/row with colors.
 func (o *MonitorOverlay) drawString(s string, col, row int, fg uint32) {
 	bg := uint32(0x0055AAFF) // deep blue background
@@ -213,6 +226,26 @@ func (o *MonitorOverlay) HandleInput() bool {
 		}
 	}
 
+	// Mouse wheel scroll
+	_, wy := ebiten.Wheel()
+	if wy != 0 {
+		delta := int(wy)
+		if delta == 0 && wy > 0 {
+			delta = 1
+		}
+		if delta == 0 && wy < 0 {
+			delta = -1
+		}
+		m.scrollOffset += delta
+		maxScroll := len(m.outputLines) - (overlayRows - 3)
+		if m.scrollOffset > maxScroll {
+			m.scrollOffset = maxScroll
+		}
+		if m.scrollOffset < 0 {
+			m.scrollOffset = 0
+		}
+	}
+
 	// Up/Down for command history
 	if inpututil.IsKeyJustPressed(ebiten.KeyArrowUp) {
 		if m.historyIdx > 0 {
@@ -255,34 +288,89 @@ func (o *MonitorOverlay) HandleInput() bool {
 	}
 
 	// Backspace
-	if inpututil.IsKeyJustPressed(ebiten.KeyBackspace) {
+	if inpututil.IsKeyJustPressed(ebiten.KeyBackspace) || monitorShouldRepeat(ebiten.KeyBackspace) {
 		if m.cursorPos > 0 && len(m.inputLine) > 0 {
 			m.inputLine = append(m.inputLine[:m.cursorPos-1], m.inputLine[m.cursorPos:]...)
 			m.cursorPos--
 		}
 	}
 
-	// Left/Right arrows
-	if inpututil.IsKeyJustPressed(ebiten.KeyArrowLeft) {
-		if m.cursorPos > 0 {
-			m.cursorPos--
-		}
-	}
-	if inpututil.IsKeyJustPressed(ebiten.KeyArrowRight) {
+	// Delete
+	if inpututil.IsKeyJustPressed(ebiten.KeyDelete) || monitorShouldRepeat(ebiten.KeyDelete) {
 		if m.cursorPos < len(m.inputLine) {
-			m.cursorPos++
+			m.inputLine = append(m.inputLine[:m.cursorPos], m.inputLine[m.cursorPos+1:]...)
 		}
 	}
 
-	// Printable character input
-	for _, r := range ebiten.AppendInputChars(nil) {
-		if r >= 0x20 && r < 0x7F {
-			ch := byte(r)
-			if len(m.inputLine) < overlayCols-4 {
-				m.inputLine = append(m.inputLine, 0)
-				copy(m.inputLine[m.cursorPos+1:], m.inputLine[m.cursorPos:])
-				m.inputLine[m.cursorPos] = ch
+	// Home / End
+	if inpututil.IsKeyJustPressed(ebiten.KeyHome) || monitorShouldRepeat(ebiten.KeyHome) {
+		m.cursorPos = 0
+	}
+	if inpututil.IsKeyJustPressed(ebiten.KeyEnd) || monitorShouldRepeat(ebiten.KeyEnd) {
+		m.cursorPos = len(m.inputLine)
+	}
+
+	ctrl := ebiten.IsKeyPressed(ebiten.KeyControl)
+	if ctrl {
+		// Ctrl+A = Home
+		if inpututil.IsKeyJustPressed(ebiten.KeyA) {
+			m.cursorPos = 0
+		}
+		// Ctrl+E = End
+		if inpututil.IsKeyJustPressed(ebiten.KeyE) {
+			m.cursorPos = len(m.inputLine)
+		}
+		// Ctrl+K = Kill to EOL
+		if inpututil.IsKeyJustPressed(ebiten.KeyK) {
+			m.inputLine = m.inputLine[:m.cursorPos]
+		}
+		// Ctrl+U = Kill to BOL
+		if inpututil.IsKeyJustPressed(ebiten.KeyU) {
+			m.inputLine = m.inputLine[m.cursorPos:]
+			m.cursorPos = 0
+		}
+		// Ctrl+Left = Word left
+		if inpututil.IsKeyJustPressed(ebiten.KeyArrowLeft) || monitorShouldRepeat(ebiten.KeyArrowLeft) {
+			for m.cursorPos > 0 && m.inputLine[m.cursorPos-1] == ' ' {
+				m.cursorPos--
+			}
+			for m.cursorPos > 0 && m.inputLine[m.cursorPos-1] != ' ' {
+				m.cursorPos--
+			}
+		}
+		// Ctrl+Right = Word right
+		if inpututil.IsKeyJustPressed(ebiten.KeyArrowRight) || monitorShouldRepeat(ebiten.KeyArrowRight) {
+			for m.cursorPos < len(m.inputLine) && m.inputLine[m.cursorPos] != ' ' {
 				m.cursorPos++
+			}
+			for m.cursorPos < len(m.inputLine) && m.inputLine[m.cursorPos] == ' ' {
+				m.cursorPos++
+			}
+		}
+		ebiten.AppendInputChars(nil) // drain to prevent ctrl+key inserting chars
+	} else {
+		// Plain Left/Right arrows
+		if inpututil.IsKeyJustPressed(ebiten.KeyArrowLeft) || monitorShouldRepeat(ebiten.KeyArrowLeft) {
+			if m.cursorPos > 0 {
+				m.cursorPos--
+			}
+		}
+		if inpututil.IsKeyJustPressed(ebiten.KeyArrowRight) || monitorShouldRepeat(ebiten.KeyArrowRight) {
+			if m.cursorPos < len(m.inputLine) {
+				m.cursorPos++
+			}
+		}
+
+		// Printable character input
+		for _, r := range ebiten.AppendInputChars(nil) {
+			if r >= 0x20 && r < 0x7F {
+				ch := byte(r)
+				if len(m.inputLine) < overlayCols-4 {
+					m.inputLine = append(m.inputLine, 0)
+					copy(m.inputLine[m.cursorPos+1:], m.inputLine[m.cursorPos:])
+					m.inputLine[m.cursorPos] = ch
+					m.cursorPos++
+				}
 			}
 		}
 	}
