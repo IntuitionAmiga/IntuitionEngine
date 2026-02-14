@@ -4687,6 +4687,69 @@ func TestRunUntilStopsWithConditionalBreakpoint(t *testing.T) {
 }
 
 // ===========================================================================
+// Bug fix: bc clears savedConditions to prevent stale restores
+// ===========================================================================
+
+func TestBreakpointClearDiscardsSavedCondition(t *testing.T) {
+	mon, _ := newTestMonitor()
+	entry := mon.cpus[0]
+
+	// Set a conditional breakpoint and run-until (saves + suspends condition)
+	cond, _ := ParseCondition("r1==$FF")
+	entry.CPU.SetConditionalBreakpoint(0x2000, cond)
+
+	mon.mu.Lock()
+	mon.ExecuteCommand("u $2000")
+
+	// Verify condition was saved
+	if mon.savedConditions[0] == nil || mon.savedConditions[0][0x2000] == nil {
+		mon.mu.Unlock()
+		t.Fatal("Expected saved condition after run-until")
+	}
+
+	// User clears the breakpoint before it's hit
+	mon.ExecuteCommand("bc $2000")
+	mon.mu.Unlock()
+
+	// savedConditions for that address should be gone
+	mon.mu.Lock()
+	if saved, ok := mon.savedConditions[0]; ok && saved[0x2000] != nil {
+		mon.mu.Unlock()
+		t.Error("savedConditions should be cleared when breakpoint is cleared")
+	} else {
+		mon.mu.Unlock()
+	}
+}
+
+func TestBreakpointClearAllDiscardsSavedConditions(t *testing.T) {
+	mon, _ := newTestMonitor()
+	entry := mon.cpus[0]
+
+	cond, _ := ParseCondition("r1==$FF")
+	entry.CPU.SetConditionalBreakpoint(0x2000, cond)
+
+	mon.mu.Lock()
+	mon.ExecuteCommand("u $2000")
+
+	if mon.savedConditions[0] == nil || mon.savedConditions[0][0x2000] == nil {
+		mon.mu.Unlock()
+		t.Fatal("Expected saved condition")
+	}
+
+	// Clear all breakpoints
+	mon.ExecuteCommand("bc *")
+	mon.mu.Unlock()
+
+	mon.mu.Lock()
+	if len(mon.savedConditions[0]) != 0 {
+		mon.mu.Unlock()
+		t.Error("savedConditions should be cleared by bc *")
+	} else {
+		mon.mu.Unlock()
+	}
+}
+
+// ===========================================================================
 // Unused import check helpers (ensures tests compile)
 // ===========================================================================
 

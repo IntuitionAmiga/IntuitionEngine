@@ -554,6 +554,8 @@ func (m *MachineMonitor) cmdBreakpointClear(cmd MonitorCommand) bool {
 
 	if cmd.Args[0] == "*" {
 		entry.CPU.ClearAllBreakpoints()
+		// Discard any saved conditions for this CPU since the breakpoints are gone
+		delete(m.savedConditions, m.focusedID)
 		m.appendOutput("All breakpoints cleared", colorCyan)
 		return false
 	}
@@ -565,6 +567,13 @@ func (m *MachineMonitor) cmdBreakpointClear(cmd MonitorCommand) bool {
 	}
 
 	if entry.CPU.ClearBreakpoint(addr) {
+		// Discard any saved condition for this address
+		if saved, ok := m.savedConditions[m.focusedID]; ok {
+			delete(saved, addr)
+			if len(saved) == 0 {
+				delete(m.savedConditions, m.focusedID)
+			}
+		}
 		m.appendOutput(fmt.Sprintf("Breakpoint cleared at $%X", addr), colorCyan)
 	} else {
 		m.appendOutput(fmt.Sprintf("No breakpoint at $%X", addr), colorRed)
