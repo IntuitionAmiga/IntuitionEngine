@@ -1115,18 +1115,24 @@ func (m *MachineMonitor) cmdRunUntil(cmd MonitorCommand) bool {
 		return false
 	}
 
-	// Only set a real breakpoint if one doesn't already exist at this address.
-	// If a user breakpoint already exists, just piggyback on it — don't mark as temp
-	// so we don't delete the user's breakpoint when we hit it.
-	alreadyExists := entry.CPU.HasBreakpoint(addr)
-	if !alreadyExists {
+	existingBP := entry.CPU.GetConditionalBreakpoint(addr)
+	if existingBP == nil {
+		// No breakpoint exists — create a temp unconditional one
 		entry.CPU.SetBreakpoint(addr)
-		// Record as temporary breakpoint (only if we created it)
 		if m.tempBreakpoints[m.focusedID] == nil {
 			m.tempBreakpoints[m.focusedID] = make(map[uint64]bool)
 		}
 		m.tempBreakpoints[m.focusedID][addr] = true
+	} else if existingBP.Condition != nil {
+		// A conditional breakpoint exists — temporarily make it unconditional
+		// so run-until always stops. Save the original condition for restore.
+		if m.savedConditions[m.focusedID] == nil {
+			m.savedConditions[m.focusedID] = make(map[uint64]*BreakpointCondition)
+		}
+		m.savedConditions[m.focusedID][addr] = existingBP.Condition
+		existingBP.Condition = nil
 	}
+	// else: unconditional breakpoint already exists — it will fire on its own
 
 	m.appendOutput(fmt.Sprintf("Run until $%X", addr), colorCyan)
 	return true // exit monitor to resume execution

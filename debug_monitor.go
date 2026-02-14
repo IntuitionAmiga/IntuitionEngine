@@ -84,6 +84,7 @@ type MachineMonitor struct {
 
 	// Run-Until temp breakpoints (Feature 2)
 	tempBreakpoints map[int]map[uint64]bool
+	savedConditions map[int]map[uint64]*BreakpointCondition // original conditions saved during run-until
 
 	// Trace state (Feature 8)
 	traceFile      *os.File
@@ -117,6 +118,7 @@ func NewMachineMonitor(bus *MachineBus) *MachineMonitor {
 		bus:             bus,
 		prevRegs:        make(map[string]uint64),
 		tempBreakpoints: make(map[int]map[uint64]bool),
+		savedConditions: make(map[int]map[uint64]*BreakpointCondition),
 		traceWatches:    make(map[uint64]bool),
 		traceSnapshots:  make(map[uint64]byte),
 		writeHistory:    make(map[uint64][]WriteRecord),
@@ -162,6 +164,8 @@ func (m *MachineMonitor) ResetCPUs() {
 	m.focusedID = 0
 	m.wasRunning = make(map[int]bool)
 	m.tempBreakpoints = make(map[int]map[uint64]bool)
+	m.savedConditions = make(map[int]map[uint64]*BreakpointCondition)
+	m.stepHistory = make(map[int][]*MachineSnapshot)
 }
 
 // UnregisterCPU removes a CPU by its stable ID.
@@ -174,6 +178,9 @@ func (m *MachineMonitor) UnregisterCPU(id int) {
 	}
 	entry.CPU.ClearAllBreakpoints()
 	delete(m.cpus, id)
+	delete(m.stepHistory, id)
+	delete(m.tempBreakpoints, id)
+	delete(m.savedConditions, id)
 	if m.focusedID == id {
 		m.focusedID = 0 // fall back to primary
 	}
@@ -306,7 +313,7 @@ func (m *MachineMonitor) handleBreakpointHit(ev BreakpointEvent) {
 		}
 	}
 
-	// Clear temp breakpoint if this was a run-until
+	// Handle run-until: clear temp breakpoint or restore saved condition
 	if temps, ok := m.tempBreakpoints[ev.CPUID]; ok {
 		if temps[ev.Address] {
 			if entry := m.cpus[ev.CPUID]; entry != nil {
@@ -315,6 +322,20 @@ func (m *MachineMonitor) handleBreakpointHit(ev BreakpointEvent) {
 			delete(temps, ev.Address)
 			if len(temps) == 0 {
 				delete(m.tempBreakpoints, ev.CPUID)
+			}
+		}
+	}
+	if saved, ok := m.savedConditions[ev.CPUID]; ok {
+		if cond, hasSaved := saved[ev.Address]; hasSaved {
+			// Restore original condition on the user's breakpoint
+			if entry := m.cpus[ev.CPUID]; entry != nil {
+				if bp := entry.CPU.GetConditionalBreakpoint(ev.Address); bp != nil {
+					bp.Condition = cond
+				}
+			}
+			delete(saved, ev.Address)
+			if len(saved) == 0 {
+				delete(m.savedConditions, ev.CPUID)
 			}
 		}
 	}

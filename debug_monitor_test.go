@@ -4414,20 +4414,37 @@ func TestRunUntilPreservesExistingBreakpoint(t *testing.T) {
 	// Now do run-until to the same address
 	mon.mu.Lock()
 	mon.ExecuteCommand("u $2000")
-	mon.mu.Unlock()
 
-	// The breakpoint should still exist (run-until should not overwrite it)
+	// The breakpoint should still exist
 	if !entry.CPU.HasBreakpoint(0x2000) {
+		mon.mu.Unlock()
 		t.Fatal("Breakpoint at $2000 should still exist after run-until")
 	}
 
+	// The condition should be temporarily nil'd (so trapLoop fires unconditionally)
+	bp := entry.CPU.GetConditionalBreakpoint(0x2000)
+	if bp == nil {
+		mon.mu.Unlock()
+		t.Fatal("Breakpoint should exist")
+	}
+	if bp.Condition != nil {
+		mon.mu.Unlock()
+		t.Error("Condition should be temporarily nil during run-until")
+	}
+
+	// The original condition should be saved
+	if mon.savedConditions[0] == nil || mon.savedConditions[0][0x2000] == nil {
+		mon.mu.Unlock()
+		t.Fatal("Original condition should be saved in savedConditions")
+	}
+
 	// run-until should NOT have marked it as temp (since it pre-existed)
-	mon.mu.Lock()
 	temps := mon.tempBreakpoints[0]
-	mon.mu.Unlock()
 	if temps != nil && temps[0x2000] {
+		mon.mu.Unlock()
 		t.Error("Pre-existing breakpoint should not be marked as temp by run-until")
 	}
+	mon.mu.Unlock()
 
 	// Simulate hitting the breakpoint
 	ev := BreakpointEvent{CPUID: 0, Address: 0x2000}
@@ -4438,10 +4455,10 @@ func TestRunUntilPreservesExistingBreakpoint(t *testing.T) {
 		t.Error("User breakpoint at $2000 should survive run-until hit")
 	}
 
-	// And the condition should still be intact
-	bp := entry.CPU.GetConditionalBreakpoint(0x2000)
+	// And the condition should be restored
+	bp = entry.CPU.GetConditionalBreakpoint(0x2000)
 	if bp == nil || bp.Condition == nil {
-		t.Error("Conditional breakpoint should be preserved after run-until")
+		t.Error("Conditional breakpoint condition should be restored after run-until hit")
 	}
 }
 
@@ -4548,6 +4565,124 @@ func TestBackstepPerCPU(t *testing.T) {
 	}
 	if len(hist1) != 0 {
 		t.Errorf("CPU1 step history should have 0 entries after backstep, got %d", len(hist1))
+	}
+}
+
+// ===========================================================================
+// Bug fix: ResetCPUs and UnregisterCPU clear stepHistory
+// ===========================================================================
+
+func TestResetCPUsClearsStepHistory(t *testing.T) {
+	mon, cpu := newTestMonitor()
+
+	// Write a NOP and step to create history
+	cpu.memory[PROG_START] = OP_NOP64
+	cpu.PC = uint64(PROG_START)
+
+	mon.mu.Lock()
+	mon.ExecuteCommand("s")
+
+	if len(mon.stepHistory[0]) == 0 {
+		mon.mu.Unlock()
+		t.Fatal("Expected step history after stepping")
+	}
+	mon.mu.Unlock()
+
+	// Reset CPUs
+	mon.ResetCPUs()
+
+	mon.mu.Lock()
+	hist := mon.stepHistory[0]
+	mon.mu.Unlock()
+
+	if len(hist) != 0 {
+		t.Errorf("Expected step history to be cleared after ResetCPUs, got %d entries", len(hist))
+	}
+}
+
+func TestUnregisterCPUClearsStepHistory(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+	cpu.running.Store(false)
+
+	mon := NewMachineMonitor(bus)
+	adapter := NewDebugIE64(cpu)
+	id := mon.RegisterCPU("IE64", adapter)
+	mon.state = MonitorActive
+	mon.focusedID = id
+	mon.saveCurrentRegs()
+
+	// Write a NOP and step
+	cpu.memory[PROG_START] = OP_NOP64
+	cpu.PC = uint64(PROG_START)
+
+	mon.mu.Lock()
+	mon.ExecuteCommand("s")
+	if len(mon.stepHistory[id]) == 0 {
+		mon.mu.Unlock()
+		t.Fatal("Expected step history")
+	}
+	mon.mu.Unlock()
+
+	// Unregister the CPU
+	mon.UnregisterCPU(id)
+
+	mon.mu.Lock()
+	hist := mon.stepHistory[id]
+	mon.mu.Unlock()
+
+	if len(hist) != 0 {
+		t.Errorf("Expected step history cleared after UnregisterCPU, got %d", len(hist))
+	}
+}
+
+// ===========================================================================
+// Bug fix: run-until stops even with false conditional BP at addr
+// ===========================================================================
+
+func TestRunUntilStopsWithConditionalBreakpoint(t *testing.T) {
+	mon, _ := newTestMonitor()
+	entry := mon.cpus[0]
+
+	// Set a conditional breakpoint with a condition that is currently false
+	cond, _ := ParseCondition("r1==$FF")
+	entry.CPU.SetConditionalBreakpoint(0x2000, cond)
+
+	// Verify condition is set
+	bp := entry.CPU.GetConditionalBreakpoint(0x2000)
+	if bp == nil || bp.Condition == nil {
+		t.Fatal("Expected conditional breakpoint")
+	}
+
+	// Run-until to the same address
+	mon.mu.Lock()
+	mon.ExecuteCommand("u $2000")
+
+	// The condition should now be nil (temporarily suspended)
+	bp = entry.CPU.GetConditionalBreakpoint(0x2000)
+	if bp == nil {
+		mon.mu.Unlock()
+		t.Fatal("Breakpoint should exist")
+	}
+	if bp.Condition != nil {
+		mon.mu.Unlock()
+		t.Error("Condition should be nil during run-until (so trapLoop fires unconditionally)")
+	}
+	mon.mu.Unlock()
+
+	// Simulate the hit
+	mon.handleBreakpointHit(BreakpointEvent{CPUID: 0, Address: 0x2000})
+
+	// After hit, condition should be restored
+	bp = entry.CPU.GetConditionalBreakpoint(0x2000)
+	if bp == nil {
+		t.Fatal("Breakpoint should still exist after hit")
+	}
+	if bp.Condition == nil {
+		t.Error("Condition should be restored after run-until hit")
+	}
+	if bp.Condition.Source != CondSourceRegister || bp.Condition.RegName != "R1" {
+		t.Errorf("Restored condition should match original, got source=%d reg=%s", bp.Condition.Source, bp.Condition.RegName)
 	}
 }
 
