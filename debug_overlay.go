@@ -23,9 +23,11 @@ package main
 import (
 	"fmt"
 	"image/color"
+	"sync"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
+	"golang.design/x/clipboard"
 )
 
 const (
@@ -38,6 +40,11 @@ const (
 )
 
 // MonitorOverlay handles rendering and input for the monitor's full-screen overlay.
+var (
+	monClipboardOnce sync.Once
+	monClipboardOK   bool
+)
+
 type MonitorOverlay struct {
 	monitor *MachineMonitor
 	glyphs  [256][16]byte
@@ -404,7 +411,14 @@ func (o *MonitorOverlay) HandleInput() bool {
 		m.cursorPos = len(m.inputLine)
 	}
 
-	ctrl := ebiten.IsKeyPressed(ebiten.KeyControl)
+	ctrl := ebiten.IsKeyPressed(ebiten.KeyControlLeft) || ebiten.IsKeyPressed(ebiten.KeyControlRight)
+	shift := ebiten.IsKeyPressed(ebiten.KeyShiftLeft) || ebiten.IsKeyPressed(ebiten.KeyShiftRight)
+
+	// Clipboard paste: Ctrl+Shift+V
+	if ctrl && shift && inpututil.IsKeyJustPressed(ebiten.KeyV) {
+		o.handleMonitorPaste(m)
+	}
+
 	if ctrl {
 		// Ctrl+A = Home
 		if inpututil.IsKeyJustPressed(ebiten.KeyA) {
@@ -470,6 +484,31 @@ func (o *MonitorOverlay) HandleInput() bool {
 	}
 
 	return false
+}
+
+// handleMonitorPaste reads the system clipboard and inserts printable ASCII
+// into the monitor input line at the cursor position. Caller must hold m.mu.
+func (o *MonitorOverlay) handleMonitorPaste(m *MachineMonitor) {
+	monClipboardOnce.Do(func() {
+		monClipboardOK = clipboard.Init() == nil
+	})
+	if !monClipboardOK {
+		return
+	}
+	data := clipboard.Read(clipboard.FmtText)
+	if len(data) == 0 {
+		return
+	}
+	for _, b := range data {
+		if b >= 0x20 && b < 0x7F {
+			if len(m.inputLine) < overlayCols-4 {
+				m.inputLine = append(m.inputLine, 0)
+				copy(m.inputLine[m.cursorPos+1:], m.inputLine[m.cursorPos:])
+				m.inputLine[m.cursorPos] = b
+				m.cursorPos++
+			}
+		}
+	}
 }
 
 // colorToRGBA converts packed RGBA to color.RGBA (unused but available).
