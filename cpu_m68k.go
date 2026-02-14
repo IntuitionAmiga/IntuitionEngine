@@ -2271,6 +2271,26 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 	fmt.Printf("\n\nM68K: CPU halted at PC=%08x after %d instructions\n",
 		cpu.PC, instructionCount)
 }
+
+// StepOne executes a single M68K instruction and returns 1.
+// Must only be called when the CPU is frozen.
+func (cpu *M68KCPU) StepOne() int {
+	if cpu.stopped.Load() {
+		return 0
+	}
+
+	// Fast inline fetch
+	if cpu.PC >= uint32(len(cpu.memory))-2 {
+		return 0
+	}
+	leValue := *(*uint16)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(cpu.PC)))
+	cpu.currentIR = bits.ReverseBytes16(leValue)
+	cpu.PC += M68K_WORD_SIZE
+
+	cpu.FetchAndDecodeInstruction()
+	return 1
+}
+
 func (cpu *M68KCPU) FillPrefetch() {
 	if cpu.prefetchSize < M68K_PREFETCH_SIZE {
 		prefetchAddr := cpu.PC + uint32(cpu.prefetchSize*M68K_WORD_SIZE)

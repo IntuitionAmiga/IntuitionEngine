@@ -1468,3 +1468,252 @@ func (cpu *CPU) Stop() {
 	cpu.execMu.Unlock()
 	<-done
 }
+
+// StepOne executes a single IE32 instruction at the current PC and returns 1.
+// Must only be called when the CPU is frozen.
+func (cpu *CPU) StepOne() int {
+	memBase := cpu.memBase
+	memSize := uint32(len(cpu.memory))
+
+	if cpu.PC+INSTRUCTION_SIZE > memSize {
+		return 0
+	}
+
+	instrPtr := unsafe.Pointer(uintptr(memBase) + uintptr(cpu.PC))
+	opcode := *(*byte)(instrPtr)
+	reg := *(*byte)(unsafe.Pointer(uintptr(instrPtr) + 1))
+	addrMode := *(*byte)(unsafe.Pointer(uintptr(instrPtr) + 2))
+	operand := *(*uint32)(unsafe.Pointer(uintptr(instrPtr) + 4))
+
+	var resolvedOperand uint32
+	switch addrMode {
+	case ADDR_IMMEDIATE:
+		resolvedOperand = operand
+	case ADDR_REGISTER:
+		resolvedOperand = *cpu.regs[operand&REG_INDEX_MASK]
+	case ADDR_REG_IND:
+		resolvedOperand = cpu.Read32(*cpu.regs[operand&REG_INDEX_MASK] + (operand & ^uint32(REG_INDEX_MASK)))
+	case ADDR_MEM_IND, ADDR_DIRECT:
+		resolvedOperand = cpu.Read32(operand)
+	}
+
+	switch opcode {
+	case LOAD:
+		*cpu.regs[reg&REG_INDEX_MASK] = resolvedOperand
+		cpu.PC += INSTRUCTION_SIZE
+	case LDA:
+		cpu.A = resolvedOperand
+		cpu.PC += INSTRUCTION_SIZE
+	case LDB:
+		cpu.B = resolvedOperand
+		cpu.PC += INSTRUCTION_SIZE
+	case LDC:
+		cpu.C = resolvedOperand
+		cpu.PC += INSTRUCTION_SIZE
+	case LDD:
+		cpu.D = resolvedOperand
+		cpu.PC += INSTRUCTION_SIZE
+	case LDE:
+		cpu.E = resolvedOperand
+		cpu.PC += INSTRUCTION_SIZE
+	case LDF:
+		cpu.F = resolvedOperand
+		cpu.PC += INSTRUCTION_SIZE
+	case LDG:
+		cpu.G = resolvedOperand
+		cpu.PC += INSTRUCTION_SIZE
+	case LDH:
+		cpu.H = resolvedOperand
+		cpu.PC += INSTRUCTION_SIZE
+	case LDS:
+		cpu.S = resolvedOperand
+		cpu.PC += INSTRUCTION_SIZE
+	case LDT:
+		cpu.T = resolvedOperand
+		cpu.PC += INSTRUCTION_SIZE
+	case LDU:
+		cpu.U = resolvedOperand
+		cpu.PC += INSTRUCTION_SIZE
+	case LDV:
+		cpu.V = resolvedOperand
+		cpu.PC += INSTRUCTION_SIZE
+	case LDW:
+		cpu.W = resolvedOperand
+		cpu.PC += INSTRUCTION_SIZE
+	case LDX:
+		cpu.X = resolvedOperand
+		cpu.PC += INSTRUCTION_SIZE
+	case LDY:
+		cpu.Y = resolvedOperand
+		cpu.PC += INSTRUCTION_SIZE
+	case LDZ:
+		cpu.Z = resolvedOperand
+		cpu.PC += INSTRUCTION_SIZE
+	case STORE:
+		cpu.Write32(operand, *cpu.regs[reg&REG_INDEX_MASK])
+		cpu.PC += INSTRUCTION_SIZE
+	case STA:
+		cpu.Write32(operand, cpu.A)
+		cpu.PC += INSTRUCTION_SIZE
+	case STB:
+		cpu.Write32(operand, cpu.B)
+		cpu.PC += INSTRUCTION_SIZE
+	case STC:
+		cpu.Write32(operand, cpu.C)
+		cpu.PC += INSTRUCTION_SIZE
+	case STD:
+		cpu.Write32(operand, cpu.D)
+		cpu.PC += INSTRUCTION_SIZE
+	case STE:
+		cpu.Write32(operand, cpu.E)
+		cpu.PC += INSTRUCTION_SIZE
+	case STF:
+		cpu.Write32(operand, cpu.F)
+		cpu.PC += INSTRUCTION_SIZE
+	case STG:
+		cpu.Write32(operand, cpu.G)
+		cpu.PC += INSTRUCTION_SIZE
+	case STH:
+		cpu.Write32(operand, cpu.H)
+		cpu.PC += INSTRUCTION_SIZE
+	case STS:
+		cpu.Write32(operand, cpu.S)
+		cpu.PC += INSTRUCTION_SIZE
+	case STT:
+		cpu.Write32(operand, cpu.T)
+		cpu.PC += INSTRUCTION_SIZE
+	case STU:
+		cpu.Write32(operand, cpu.U)
+		cpu.PC += INSTRUCTION_SIZE
+	case STV:
+		cpu.Write32(operand, cpu.V)
+		cpu.PC += INSTRUCTION_SIZE
+	case STW:
+		cpu.Write32(operand, cpu.W)
+		cpu.PC += INSTRUCTION_SIZE
+	case STX:
+		cpu.Write32(operand, cpu.X)
+		cpu.PC += INSTRUCTION_SIZE
+	case STY:
+		cpu.Write32(operand, cpu.Y)
+		cpu.PC += INSTRUCTION_SIZE
+	case STZ:
+		cpu.Write32(operand, cpu.Z)
+		cpu.PC += INSTRUCTION_SIZE
+	case ADD:
+		*cpu.regs[reg&REG_INDEX_MASK] += resolvedOperand
+		cpu.PC += INSTRUCTION_SIZE
+	case SUB:
+		*cpu.regs[reg&REG_INDEX_MASK] -= resolvedOperand
+		cpu.PC += INSTRUCTION_SIZE
+	case MUL:
+		*cpu.regs[reg&REG_INDEX_MASK] *= resolvedOperand
+		cpu.PC += INSTRUCTION_SIZE
+	case DIV:
+		if resolvedOperand != 0 {
+			*cpu.regs[reg&REG_INDEX_MASK] /= resolvedOperand
+		}
+		cpu.PC += INSTRUCTION_SIZE
+	case MOD:
+		if resolvedOperand != 0 {
+			*cpu.regs[reg&REG_INDEX_MASK] %= resolvedOperand
+		}
+		cpu.PC += INSTRUCTION_SIZE
+	case AND:
+		*cpu.regs[reg&REG_INDEX_MASK] &= resolvedOperand
+		cpu.PC += INSTRUCTION_SIZE
+	case OR:
+		*cpu.regs[reg&REG_INDEX_MASK] |= resolvedOperand
+		cpu.PC += INSTRUCTION_SIZE
+	case XOR:
+		*cpu.regs[reg&REG_INDEX_MASK] ^= resolvedOperand
+		cpu.PC += INSTRUCTION_SIZE
+	case NOT:
+		*cpu.regs[reg&REG_INDEX_MASK] = ^resolvedOperand
+		cpu.PC += INSTRUCTION_SIZE
+	case SHL:
+		*cpu.regs[reg&REG_INDEX_MASK] <<= resolvedOperand & 31
+		cpu.PC += INSTRUCTION_SIZE
+	case SHR:
+		*cpu.regs[reg&REG_INDEX_MASK] >>= resolvedOperand & 31
+		cpu.PC += INSTRUCTION_SIZE
+	case INC:
+		*cpu.regs[reg&REG_INDEX_MASK]++
+		cpu.PC += INSTRUCTION_SIZE
+	case DEC:
+		*cpu.regs[reg&REG_INDEX_MASK]--
+		cpu.PC += INSTRUCTION_SIZE
+	case JMP:
+		cpu.PC = resolvedOperand
+	case JNZ:
+		if *cpu.regs[reg&REG_INDEX_MASK] != 0 {
+			cpu.PC = resolvedOperand
+		} else {
+			cpu.PC += INSTRUCTION_SIZE
+		}
+	case JZ:
+		if *cpu.regs[reg&REG_INDEX_MASK] == 0 {
+			cpu.PC = resolvedOperand
+		} else {
+			cpu.PC += INSTRUCTION_SIZE
+		}
+	case JGT:
+		if int32(*cpu.regs[reg&REG_INDEX_MASK]) > int32(resolvedOperand) {
+			cpu.PC = operand
+		} else {
+			cpu.PC += INSTRUCTION_SIZE
+		}
+	case JGE:
+		if int32(*cpu.regs[reg&REG_INDEX_MASK]) >= int32(resolvedOperand) {
+			cpu.PC = operand
+		} else {
+			cpu.PC += INSTRUCTION_SIZE
+		}
+	case JLT:
+		if int32(*cpu.regs[reg&REG_INDEX_MASK]) < int32(resolvedOperand) {
+			cpu.PC = operand
+		} else {
+			cpu.PC += INSTRUCTION_SIZE
+		}
+	case JLE:
+		if int32(*cpu.regs[reg&REG_INDEX_MASK]) <= int32(resolvedOperand) {
+			cpu.PC = operand
+		} else {
+			cpu.PC += INSTRUCTION_SIZE
+		}
+	case PUSH:
+		cpu.SP -= WORD_SIZE
+		cpu.Write32(cpu.SP, *cpu.regs[reg&REG_INDEX_MASK])
+		cpu.PC += INSTRUCTION_SIZE
+	case POP:
+		*cpu.regs[reg&REG_INDEX_MASK] = cpu.Read32(cpu.SP)
+		cpu.SP += WORD_SIZE
+		cpu.PC += INSTRUCTION_SIZE
+	case JSR:
+		cpu.SP -= WORD_SIZE
+		cpu.Write32(cpu.SP, cpu.PC+INSTRUCTION_SIZE)
+		cpu.PC = resolvedOperand
+	case RTS:
+		cpu.PC = cpu.Read32(cpu.SP)
+		cpu.SP += WORD_SIZE
+	case SEI:
+		cpu.interruptEnabled.Store(true)
+		cpu.PC += INSTRUCTION_SIZE
+	case CLI:
+		cpu.interruptEnabled.Store(false)
+		cpu.PC += INSTRUCTION_SIZE
+	case RTI:
+		cpu.PC = cpu.Read32(cpu.SP)
+		cpu.SP += WORD_SIZE
+		cpu.inInterrupt.Store(false)
+	case WAIT:
+		cpu.PC += INSTRUCTION_SIZE
+	case NOP:
+		cpu.PC += INSTRUCTION_SIZE
+	case HALT:
+		return 1
+	default:
+		return 0
+	}
+	return 1
+}

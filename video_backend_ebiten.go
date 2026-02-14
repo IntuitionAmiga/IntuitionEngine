@@ -59,6 +59,8 @@ type EbitenOutput struct {
 
 	hardResetHandler func()
 	resetInProgress  atomic.Bool
+
+	monitorOverlay *MonitorOverlay
 }
 
 func NewEbitenOutput() (VideoOutput, error) {
@@ -279,6 +281,25 @@ func (eo *EbitenOutput) Update() error {
 	if !eo.running {
 		return ebiten.Termination
 	}
+
+	// F9: Machine Monitor toggle
+	if inpututil.IsKeyJustPressed(ebiten.KeyF9) {
+		if eo.monitorOverlay != nil {
+			mon := eo.monitorOverlay.monitor
+			if mon.IsActive() {
+				mon.Deactivate()
+			} else {
+				mon.Activate()
+			}
+		}
+	}
+
+	// When monitor is active, route all input to the overlay
+	if eo.monitorOverlay != nil && eo.monitorOverlay.monitor.IsActive() {
+		eo.monitorOverlay.HandleInput()
+		return nil
+	}
+
 	if inpututil.IsKeyJustPressed(ebiten.KeyF11) {
 		eo.bufferMutex.Lock()
 		eo.fullscreen = !eo.fullscreen
@@ -310,6 +331,19 @@ func (eo *EbitenOutput) Update() error {
 	}
 	eo.handleKeyboardInput()
 	return nil
+}
+
+func (eo *EbitenOutput) SetMonitorOverlay(overlay *MonitorOverlay) {
+	eo.bufferMutex.Lock()
+	eo.monitorOverlay = overlay
+	eo.bufferMutex.Unlock()
+}
+
+// AttachMonitor creates a MonitorOverlay and attaches it.
+// Implements MonitorAttachable interface.
+func (eo *EbitenOutput) AttachMonitor(monitor *MachineMonitor) {
+	overlay := NewMonitorOverlay(monitor)
+	eo.SetMonitorOverlay(overlay)
 }
 
 func (eo *EbitenOutput) SetHardResetHandler(fn func()) {
@@ -463,6 +497,17 @@ func (eo *EbitenOutput) handleClipboardPaste() {
 }
 
 func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
+	// When monitor is active, draw the overlay instead
+	if eo.monitorOverlay != nil && eo.monitorOverlay.monitor.IsActive() {
+		eo.monitorOverlay.Draw(screen)
+		eo.frameCount++
+		select {
+		case eo.vsyncChan <- struct{}{}:
+		default:
+		}
+		return
+	}
+
 	if eo.window == nil {
 		eo.window = ebiten.NewImage(eo.width, eo.height)
 	}
@@ -623,7 +668,7 @@ func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
 	})
 
 	legendColor := color.RGBA{160, 160, 160, 255}
-	legend := "F10 Reset  F11 Fullscreen  F12 Status Bar"
+	legend := "F9 Monitor  F10 Reset  F11 Fullscreen  F12 Status Bar"
 	legendScale := 1.0
 	legendW := int(float64(text.BoundString(basicfont.Face7x13, legend).Dx()) * legendScale)
 	legendX := max(eo.width-legendW-6, 6)

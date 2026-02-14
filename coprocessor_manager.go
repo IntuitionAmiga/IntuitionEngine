@@ -16,6 +16,7 @@ type CoprocWorker struct {
 	done     chan struct{} // closed when Execute() returns
 	loadBase uint32
 	loadEnd  uint32
+	debugCPU DebuggableCPU // retained for monitor access
 }
 
 // CoprocCompletion tracks a ticket's completion state.
@@ -521,6 +522,48 @@ func (m *CoprocessorManager) createWorker(cpuType uint32, data []byte) (*CoprocW
 	default:
 		return nil, fmt.Errorf("unsupported CPU type: %d", cpuType)
 	}
+}
+
+// CoprocDebugInfo holds a coprocessor's debug adapter and type label.
+type CoprocDebugInfo struct {
+	CPUType uint32
+	Label   string
+	CPU     DebuggableCPU
+}
+
+// GetActiveWorkers returns a snapshot of all running coprocessor workers
+// with their DebuggableCPU references. Safe for inspection from the monitor.
+func (m *CoprocessorManager) GetActiveWorkers() []CoprocDebugInfo {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var result []CoprocDebugInfo
+	for i := uint32(1); i <= 6; i++ {
+		w := m.workers[i]
+		if w != nil && w.debugCPU != nil {
+			label := "coproc:"
+			switch i {
+			case EXEC_TYPE_IE32:
+				label += "IE32"
+			case EXEC_TYPE_6502:
+				label += "6502"
+			case EXEC_TYPE_M68K:
+				label += "M68K"
+			case EXEC_TYPE_Z80:
+				label += "Z80"
+			case EXEC_TYPE_X86:
+				label += "X86"
+			default:
+				label += fmt.Sprintf("type%d", i)
+			}
+			result = append(result, CoprocDebugInfo{
+				CPUType: i,
+				Label:   label,
+				CPU:     w.debugCPU,
+			})
+		}
+	}
+	return result
 }
 
 // StopAll stops all running workers. Called during shutdown.

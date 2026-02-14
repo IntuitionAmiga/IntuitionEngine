@@ -235,6 +235,7 @@ CPU modes that execute binaries (`-ie32`, `-ie64`, `-m68k`, `-m6502`, `-z80`, `-
 
 ## 1.4 Ebiten Window Controls
 
+- `F9`: Open the Machine Monitor (debugger) — freezes all CPUs, shows registers and disassembly. See [iemon.md](iemon.md) for full documentation.
 - `F10`: Hard reset — performs a full power-on hardware reset and boots IE64 BASIC
 - `F11`: Toggle fullscreen mode
 - `F12`: Toggle the runtime status bar

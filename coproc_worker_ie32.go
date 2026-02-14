@@ -29,6 +29,7 @@ func createIE32Worker(bus *MachineBus, data []byte) (*CoprocWorker, error) {
 		done:     done,
 		loadBase: WORKER_IE32_BASE,
 		loadEnd:  WORKER_IE32_END,
+		debugCPU: NewDebugIE32(cpu),
 	}
 
 	go func() {

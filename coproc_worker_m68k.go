@@ -29,6 +29,7 @@ func createM68KWorker(bus *MachineBus, data []byte) (*CoprocWorker, error) {
 		done:     done,
 		loadBase: WORKER_M68K_BASE,
 		loadEnd:  WORKER_M68K_END,
+		debugCPU: NewDebugM68K(cpu, nil),
 	}
 
 	go func() {
