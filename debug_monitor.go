@@ -99,12 +99,19 @@ func (m *MachineMonitor) RegisterCPU(label string, cpu DebuggableCPU) int {
 	return id
 }
 
-// ResetCPUs clears all registered CPUs and resets the ID counter.
-// Used when the CPU is recreated (e.g. F10 reset / IPC mode switch).
+// ResetCPUs stops all trap-mode goroutines, clears breakpoints, and
+// removes all registered CPUs. Must be called before recreating CPUs
+// (e.g. F10 reset / IPC mode switch) to prevent stale trapLoop
+// goroutines from continuing to step against reset state.
 func (m *MachineMonitor) ResetCPUs() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, entry := range m.cpus {
+		// Freeze stops any adapter-managed trapLoop goroutine that may
+		// be running independently of the native CPU runner.
+		if entry.CPU.IsRunning() {
+			entry.CPU.Freeze()
+		}
 		entry.CPU.ClearAllBreakpoints()
 	}
 	m.cpus = make(map[int]*CPUEntry)
@@ -234,7 +241,21 @@ func (m *MachineMonitor) handleBreakpointHit(ev BreakpointEvent) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Freeze all other CPUs
+	// Snapshot which CPUs are running BEFORE freezing, so Deactivate
+	// only resumes CPUs that were genuinely running. The CPU that hit
+	// the breakpoint already stopped its own trapLoop, so IsRunning()
+	// returns false for it — we record it explicitly below.
+	wasRunning := make(map[int]bool)
+	for id, entry := range m.cpus {
+		if entry.CPU.IsRunning() {
+			wasRunning[id] = true
+		}
+	}
+	// The breakpoint-hitting CPU was running (it stopped itself just
+	// before publishing the event), so mark it too.
+	wasRunning[ev.CPUID] = true
+
+	// Now freeze all still-running CPUs
 	for _, entry := range m.cpus {
 		if entry.CPU.IsRunning() {
 			entry.CPU.Freeze()
@@ -258,12 +279,7 @@ func (m *MachineMonitor) handleBreakpointHit(ev BreakpointEvent) {
 
 	// Activate the monitor
 	m.state = MonitorActive
-	m.wasRunning = make(map[int]bool)
-	// Mark all as "was running" since we froze everything
-	for id := range m.cpus {
-		m.wasRunning[id] = true
-	}
-	// The CPU that hit the breakpoint already stopped itself
+	m.wasRunning = wasRunning
 	m.focusedID = ev.CPUID
 
 	m.scrollOffset = 0

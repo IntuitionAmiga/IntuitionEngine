@@ -294,21 +294,8 @@ func (eo *EbitenOutput) Update() error {
 		}
 	}
 
-	// When monitor is active, route all input to the overlay
-	if eo.monitorOverlay != nil && eo.monitorOverlay.monitor.IsActive() {
-		eo.monitorOverlay.HandleInput()
-		return nil
-	}
-
-	if inpututil.IsKeyJustPressed(ebiten.KeyF11) {
-		eo.bufferMutex.Lock()
-		eo.fullscreen = !eo.fullscreen
-		ebiten.SetFullscreen(eo.fullscreen)
-		if !eo.fullscreen {
-			ebiten.SetWindowSize(eo.windowedW, eo.windowedH)
-		}
-		eo.bufferMutex.Unlock()
-	}
+	// F10: Hard reset — must be checked before the monitor input
+	// intercept so reset works even when the monitor is active.
 	if inpututil.IsKeyJustPressed(ebiten.KeyF10) {
 		if eo.resetInProgress.CompareAndSwap(false, true) {
 			eo.bufferMutex.RLock()
@@ -323,6 +310,22 @@ func (eo *EbitenOutput) Update() error {
 				eo.resetInProgress.Store(false)
 			}
 		}
+	}
+
+	// When monitor is active, route all input to the overlay
+	if eo.monitorOverlay != nil && eo.monitorOverlay.monitor.IsActive() {
+		eo.monitorOverlay.HandleInput()
+		return nil
+	}
+
+	if inpututil.IsKeyJustPressed(ebiten.KeyF11) {
+		eo.bufferMutex.Lock()
+		eo.fullscreen = !eo.fullscreen
+		ebiten.SetFullscreen(eo.fullscreen)
+		if !eo.fullscreen {
+			ebiten.SetWindowSize(eo.windowedW, eo.windowedH)
+		}
+		eo.bufferMutex.Unlock()
 	}
 	if inpututil.IsKeyJustPressed(ebiten.KeyF12) {
 		eo.bufferMutex.Lock()
@@ -668,7 +671,7 @@ func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
 	})
 
 	legendColor := color.RGBA{160, 160, 160, 255}
-	legend := "F9 Monitor  F10 Reset  F11 Fullscreen  F12 Status Bar"
+	legend := "F9 Debug F10 Reset F11 Fullscreen F12 Status"
 	legendScale := 1.0
 	legendW := int(float64(text.BoundString(basicfont.Face7x13, legend).Dx()) * legendScale)
 	legendX := max(eo.width-legendW-6, 6)

@@ -162,6 +162,7 @@ func (d *DebugZ80) Resume() {
 
 func (d *DebugZ80) trapLoop() {
 	defer d.trapRunning.Store(false)
+	defer d.cpu.SetRunning(false)
 	d.cpu.SetRunning(true)
 	for {
 		select {
