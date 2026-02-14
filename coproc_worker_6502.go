@@ -102,6 +102,7 @@ func create6502Worker(bus *MachineBus, data []byte) (*CoprocWorker, error) {
 		done:     done,
 		loadBase: WORKER_6502_BASE,
 		loadEnd:  WORKER_6502_END,
+		debugCPU: NewDebug6502(cpu, nil),
 	}
 
 	go func() {

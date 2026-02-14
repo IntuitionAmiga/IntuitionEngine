@@ -76,6 +76,7 @@ func createZ80Worker(bus *MachineBus, data []byte) (*CoprocWorker, error) {
 		done:     done,
 		loadBase: WORKER_Z80_BASE,
 		loadEnd:  WORKER_Z80_END,
+		debugCPU: NewDebugZ80(cpu, nil),
 	}
 
 	go func() {

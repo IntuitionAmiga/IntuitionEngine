@@ -31,6 +31,7 @@ func createX86Worker(bus *MachineBus, data []byte) (*CoprocWorker, error) {
 		done:     done,
 		loadBase: WORKER_X86_BASE,
 		loadEnd:  WORKER_X86_END,
+		debugCPU: NewDebugX86(cpu, nil),
 	}
 
 	go func() {

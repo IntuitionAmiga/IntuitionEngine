@@ -1208,3 +1208,420 @@ func (cpu *CPU64) Stop() {
 	cpu.execMu.Unlock()
 	<-done
 }
+
+// StepOne executes a single instruction at the current PC and returns 1 (cycle count).
+// Must only be called when the CPU is frozen (not running in its Execute loop).
+func (cpu *CPU64) StepOne() int {
+	memSize := uint64(len(cpu.memory))
+	memBase := unsafe.Pointer(&cpu.memory[0])
+
+	pc32 := uint32(cpu.PC & IE64_ADDR_MASK)
+	if uint64(pc32)+8 > memSize {
+		return 0
+	}
+
+	instr := *(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(pc32)))
+	opcode := byte(instr)
+	byte1 := byte(instr >> 8)
+	byte2 := byte(instr >> 16)
+	byte3 := byte(instr >> 24)
+	imm32 := uint32(instr >> 32)
+
+	rd := byte1 >> 3
+	size := (byte1 >> 1) & 0x03
+	rs := byte2 >> 3
+	rt := byte3 >> 3
+	xbit := byte1 & 1
+
+	var operand3 uint64
+	if xbit == 1 {
+		operand3 = uint64(imm32)
+	} else {
+		operand3 = cpu.regs[rt]
+	}
+
+	// pcAdvanced tracks whether the opcode set PC itself
+	pcAdvanced := false
+
+	switch opcode {
+	case OP_MOVE:
+		if xbit == 1 {
+			if rd != 0 {
+				cpu.regs[rd] = maskToSize(uint64(imm32), size)
+			}
+		} else {
+			if rd != 0 {
+				cpu.regs[rd] = maskToSize(cpu.regs[rs], size)
+			}
+		}
+	case OP_MOVT:
+		if rd != 0 {
+			cpu.regs[rd] = (cpu.regs[rd] & 0x00000000FFFFFFFF) | (uint64(imm32) << 32)
+		}
+	case OP_MOVEQ:
+		if rd != 0 {
+			cpu.regs[rd] = uint64(int64(int32(imm32)))
+		}
+	case OP_LEA:
+		if rd != 0 {
+			cpu.regs[rd] = uint64(int64(cpu.regs[rs]) + int64(int32(imm32)))
+		}
+	case OP_LOAD:
+		if rd != 0 {
+			addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
+			cpu.regs[rd] = cpu.loadMem(addr, size)
+		}
+	case OP_STORE:
+		addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
+		cpu.storeMem(addr, maskToSize(cpu.regs[rd], size), size)
+	case OP_ADD:
+		if rd != 0 {
+			cpu.regs[rd] = maskToSize(cpu.regs[rs]+operand3, size)
+		}
+	case OP_SUB:
+		if rd != 0 {
+			cpu.regs[rd] = maskToSize(cpu.regs[rs]-operand3, size)
+		}
+	case OP_MULU:
+		if rd != 0 {
+			cpu.regs[rd] = maskToSize(cpu.regs[rs]*operand3, size)
+		}
+	case OP_MULS:
+		if rd != 0 {
+			cpu.regs[rd] = maskToSize(uint64(int64(cpu.regs[rs])*int64(operand3)), size)
+		}
+	case OP_DIVU:
+		if rd != 0 {
+			if operand3 == 0 {
+				cpu.regs[rd] = 0
+			} else {
+				cpu.regs[rd] = maskToSize(cpu.regs[rs]/operand3, size)
+			}
+		}
+	case OP_DIVS:
+		if rd != 0 {
+			if operand3 == 0 {
+				cpu.regs[rd] = 0
+			} else {
+				cpu.regs[rd] = maskToSize(uint64(int64(cpu.regs[rs])/int64(operand3)), size)
+			}
+		}
+	case OP_MOD64:
+		if rd != 0 {
+			if operand3 == 0 {
+				cpu.regs[rd] = 0
+			} else {
+				cpu.regs[rd] = maskToSize(cpu.regs[rs]%operand3, size)
+			}
+		}
+	case OP_NEG:
+		if rd != 0 {
+			cpu.regs[rd] = maskToSize(uint64(-int64(cpu.regs[rs])), size)
+		}
+	case OP_AND64:
+		if rd != 0 {
+			cpu.regs[rd] = maskToSize(cpu.regs[rs]&operand3, size)
+		}
+	case OP_OR64:
+		if rd != 0 {
+			cpu.regs[rd] = maskToSize(cpu.regs[rs]|operand3, size)
+		}
+	case OP_EOR:
+		if rd != 0 {
+			cpu.regs[rd] = maskToSize(cpu.regs[rs]^operand3, size)
+		}
+	case OP_NOT64:
+		if rd != 0 {
+			cpu.regs[rd] = maskToSize(^cpu.regs[rs], size)
+		}
+	case OP_LSL:
+		if rd != 0 {
+			cpu.regs[rd] = maskToSize(cpu.regs[rs]<<(operand3&63), size)
+		}
+	case OP_LSR:
+		if rd != 0 {
+			cpu.regs[rd] = maskToSize(cpu.regs[rs]>>(operand3&63), size)
+		}
+	case OP_ASR:
+		if rd != 0 {
+			shift := operand3 & 63
+			var sval int64
+			switch size {
+			case IE64_SIZE_B:
+				sval = int64(int8(cpu.regs[rs]))
+			case IE64_SIZE_W:
+				sval = int64(int16(cpu.regs[rs]))
+			case IE64_SIZE_L:
+				sval = int64(int32(cpu.regs[rs]))
+			case IE64_SIZE_Q:
+				sval = int64(cpu.regs[rs])
+			}
+			cpu.regs[rd] = maskToSize(uint64(sval>>shift), size)
+		}
+	case OP_CLZ:
+		if rd != 0 {
+			cpu.regs[rd] = uint64(bits.LeadingZeros32(uint32(cpu.regs[rs])))
+		}
+	case OP_BRA:
+		cpu.PC = uint64(int64(cpu.PC) + int64(int32(imm32)))
+		pcAdvanced = true
+	case OP_BEQ:
+		if cpu.regs[rs] == cpu.regs[rt] {
+			cpu.PC = uint64(int64(cpu.PC) + int64(int32(imm32)))
+		} else {
+			cpu.PC += IE64_INSTR_SIZE
+		}
+		pcAdvanced = true
+	case OP_BNE:
+		if cpu.regs[rs] != cpu.regs[rt] {
+			cpu.PC = uint64(int64(cpu.PC) + int64(int32(imm32)))
+		} else {
+			cpu.PC += IE64_INSTR_SIZE
+		}
+		pcAdvanced = true
+	case OP_BLT:
+		if int64(cpu.regs[rs]) < int64(cpu.regs[rt]) {
+			cpu.PC = uint64(int64(cpu.PC) + int64(int32(imm32)))
+		} else {
+			cpu.PC += IE64_INSTR_SIZE
+		}
+		pcAdvanced = true
+	case OP_BGE:
+		if int64(cpu.regs[rs]) >= int64(cpu.regs[rt]) {
+			cpu.PC = uint64(int64(cpu.PC) + int64(int32(imm32)))
+		} else {
+			cpu.PC += IE64_INSTR_SIZE
+		}
+		pcAdvanced = true
+	case OP_BGT:
+		if int64(cpu.regs[rs]) > int64(cpu.regs[rt]) {
+			cpu.PC = uint64(int64(cpu.PC) + int64(int32(imm32)))
+		} else {
+			cpu.PC += IE64_INSTR_SIZE
+		}
+		pcAdvanced = true
+	case OP_BLE:
+		if int64(cpu.regs[rs]) <= int64(cpu.regs[rt]) {
+			cpu.PC = uint64(int64(cpu.PC) + int64(int32(imm32)))
+		} else {
+			cpu.PC += IE64_INSTR_SIZE
+		}
+		pcAdvanced = true
+	case OP_BHI:
+		if cpu.regs[rs] > cpu.regs[rt] {
+			cpu.PC = uint64(int64(cpu.PC) + int64(int32(imm32)))
+		} else {
+			cpu.PC += IE64_INSTR_SIZE
+		}
+		pcAdvanced = true
+	case OP_BLS:
+		if cpu.regs[rs] <= cpu.regs[rt] {
+			cpu.PC = uint64(int64(cpu.PC) + int64(int32(imm32)))
+		} else {
+			cpu.PC += IE64_INSTR_SIZE
+		}
+		pcAdvanced = true
+	case OP_JMP:
+		target := uint64(int64(cpu.regs[rs]) + int64(int32(imm32)))
+		cpu.PC = target & IE64_ADDR_MASK
+		pcAdvanced = true
+	case OP_JSR64:
+		cpu.regs[31] -= 8
+		sp := uint32(cpu.regs[31])
+		if uint64(sp)+8 <= memSize {
+			*(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(sp))) = cpu.PC + IE64_INSTR_SIZE
+			cpu.PC = uint64(int64(cpu.PC) + int64(int32(imm32)))
+		}
+		pcAdvanced = true
+	case OP_RTS64:
+		sp := uint32(cpu.regs[31])
+		if uint64(sp)+8 <= memSize {
+			cpu.PC = *(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(sp)))
+			cpu.regs[31] += 8
+		}
+		pcAdvanced = true
+	case OP_PUSH64:
+		cpu.regs[31] -= 8
+		sp := uint32(cpu.regs[31])
+		if uint64(sp)+8 <= memSize {
+			*(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(sp))) = cpu.regs[rs]
+		}
+	case OP_POP64:
+		sp := uint32(cpu.regs[31])
+		if uint64(sp)+8 <= memSize {
+			val := *(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(sp)))
+			if rd != 0 {
+				cpu.regs[rd] = val
+			}
+			cpu.regs[31] += 8
+		}
+	case OP_JSR_IND:
+		cpu.regs[31] -= 8
+		sp := uint32(cpu.regs[31])
+		if uint64(sp)+8 <= memSize {
+			*(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(sp))) = cpu.PC + IE64_INSTR_SIZE
+			target := uint64(int64(cpu.regs[rs]) + int64(int32(imm32)))
+			cpu.PC = target & IE64_ADDR_MASK
+		}
+		pcAdvanced = true
+	case OP_FMOV:
+		if cpu.FPU != nil && rd <= 15 && rs <= 15 {
+			cpu.FPU.FPRegs[rd&0x0F] = cpu.FPU.FPRegs[rs&0x0F]
+		}
+	case OP_FLOAD:
+		if cpu.FPU != nil && rd <= 15 {
+			addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
+			val := uint32(cpu.loadMem(addr, IE64_SIZE_L))
+			cpu.FPU.FPRegs[rd] = val
+			cpu.FPU.setConditionCodesBits(val)
+		}
+	case OP_FSTORE:
+		if cpu.FPU != nil && rd <= 15 {
+			addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
+			cpu.storeMem(addr, uint64(cpu.FPU.FPRegs[rd]), IE64_SIZE_L)
+		}
+	case OP_FADD:
+		if cpu.FPU != nil && rd <= 15 && rs <= 15 && rt <= 15 {
+			cpu.FPU.FADD(rd, rs, rt)
+		}
+	case OP_FSUB:
+		if cpu.FPU != nil && rd <= 15 && rs <= 15 && rt <= 15 {
+			cpu.FPU.FSUB(rd, rs, rt)
+		}
+	case OP_FMUL:
+		if cpu.FPU != nil && rd <= 15 && rs <= 15 && rt <= 15 {
+			cpu.FPU.FMUL(rd, rs, rt)
+		}
+	case OP_FDIV:
+		if cpu.FPU != nil && rd <= 15 && rs <= 15 && rt <= 15 {
+			cpu.FPU.FDIV(rd, rs, rt)
+		}
+	case OP_FMOD:
+		if cpu.FPU != nil && rd <= 15 && rs <= 15 && rt <= 15 {
+			cpu.FPU.FMOD(rd, rs, rt)
+		}
+	case OP_FABS:
+		if cpu.FPU != nil && rd <= 15 && rs <= 15 {
+			b := cpu.FPU.FPRegs[rs&0x0F] & 0x7FFFFFFF
+			cpu.FPU.FPRegs[rd&0x0F] = b
+			cpu.FPU.setConditionCodesBits(b)
+		}
+	case OP_FNEG:
+		if cpu.FPU != nil && rd <= 15 && rs <= 15 {
+			b := cpu.FPU.FPRegs[rs&0x0F] ^ 0x80000000
+			cpu.FPU.FPRegs[rd&0x0F] = b
+			cpu.FPU.setConditionCodesBits(b)
+		}
+	case OP_FSQRT:
+		if cpu.FPU != nil && rd <= 15 && rs <= 15 {
+			cpu.FPU.FSQRT(rd, rs)
+		}
+	case OP_FINT:
+		if cpu.FPU != nil && rd <= 15 && rs <= 15 {
+			cpu.FPU.FINT(rd, rs)
+		}
+	case OP_FCMP:
+		if cpu.FPU != nil && rs <= 15 && rt <= 15 {
+			res := cpu.FPU.FCMP(rs, rt)
+			if rd != 0 {
+				cpu.regs[rd] = uint64(int64(res))
+			}
+		}
+	case OP_FCVTIF:
+		if cpu.FPU != nil && rd <= 15 {
+			cpu.FPU.FCVTIF(rd, cpu.regs[rs])
+		}
+	case OP_FCVTFI:
+		if cpu.FPU != nil && rs <= 15 {
+			res := cpu.FPU.FCVTFI(rs)
+			if rd != 0 {
+				cpu.regs[rd] = uint64(int64(res))
+			}
+		}
+	case OP_FMOVI:
+		if cpu.FPU != nil && rd <= 15 {
+			cpu.FPU.FMOVI(rd, cpu.regs[rs])
+		}
+	case OP_FMOVO:
+		if cpu.FPU != nil && rs <= 15 {
+			res := cpu.FPU.FMOVO(rs)
+			if rd != 0 {
+				cpu.regs[rd] = res
+			}
+		}
+	case OP_FSIN:
+		if cpu.FPU != nil && rd <= 15 && rs <= 15 {
+			cpu.FPU.FSIN(rd, rs)
+		}
+	case OP_FCOS:
+		if cpu.FPU != nil && rd <= 15 && rs <= 15 {
+			cpu.FPU.FCOS(rd, rs)
+		}
+	case OP_FTAN:
+		if cpu.FPU != nil && rd <= 15 && rs <= 15 {
+			cpu.FPU.FTAN(rd, rs)
+		}
+	case OP_FATAN:
+		if cpu.FPU != nil && rd <= 15 && rs <= 15 {
+			cpu.FPU.FATAN(rd, rs)
+		}
+	case OP_FLOG:
+		if cpu.FPU != nil && rd <= 15 && rs <= 15 {
+			cpu.FPU.FLOG(rd, rs)
+		}
+	case OP_FEXP:
+		if cpu.FPU != nil && rd <= 15 && rs <= 15 {
+			cpu.FPU.FEXP(rd, rs)
+		}
+	case OP_FPOW:
+		if cpu.FPU != nil && rd <= 15 && rs <= 15 && rt <= 15 {
+			cpu.FPU.FPOW(rd, rs, rt)
+		}
+	case OP_FMOVECR:
+		if cpu.FPU != nil && rd <= 15 {
+			cpu.FPU.FMOVECR(rd, byte(imm32))
+		}
+	case OP_FMOVSR:
+		if cpu.FPU != nil && rd != 0 {
+			cpu.regs[rd] = uint64(cpu.FPU.FMOVSR())
+		}
+	case OP_FMOVCR:
+		if cpu.FPU != nil && rd != 0 {
+			cpu.regs[rd] = uint64(cpu.FPU.FMOVCR())
+		}
+	case OP_FMOVSC:
+		if cpu.FPU != nil {
+			cpu.FPU.FMOVSC(uint32(cpu.regs[rs]))
+		}
+	case OP_FMOVCC:
+		if cpu.FPU != nil {
+			cpu.FPU.FMOVCC(uint32(cpu.regs[rs]))
+		}
+	case OP_NOP64:
+		// advance PC
+	case OP_HALT64:
+		// don't advance, CPU halted
+		return 1
+	case OP_SEI64:
+		cpu.interruptEnabled.Store(true)
+	case OP_CLI64:
+		cpu.interruptEnabled.Store(false)
+	case OP_RTI64:
+		sp := uint32(cpu.regs[31])
+		if uint64(sp)+8 <= memSize {
+			cpu.PC = *(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(sp)))
+			cpu.regs[31] += 8
+			cpu.inInterrupt.Store(false)
+		}
+		pcAdvanced = true
+	case OP_WAIT64:
+		// In step mode, just skip the wait
+	default:
+		return 0
+	}
+
+	if !pcAdvanced {
+		cpu.PC += IE64_INSTR_SIZE
+	}
+	return 1
+}

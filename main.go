@@ -839,6 +839,11 @@ func main() {
 	sysBus.MapIO(COPROC_BASE, COPROC_END, coprocMgr.HandleRead, coprocMgr.HandleWrite)
 	defer coprocMgr.StopAll()
 
+	// Initialize Machine Monitor (debugger)
+	monitor := NewMachineMonitor(sysBus)
+	monitor.coprocMgr = coprocMgr
+	monitor.StartBreakpointListener()
+
 	// Initialize the selected CPU and optionally load program
 	var cpuRunner EmulatorCPU
 	var startExecution bool
@@ -946,6 +951,7 @@ func main() {
 
 		cpuRunner = ie32CPU
 		currentMode = "ie32"
+		monitor.RegisterCPU("IE32", NewDebugIE32(ie32CPU))
 
 		if startExecution {
 			videoChip.Start()
@@ -1005,6 +1011,7 @@ func main() {
 
 		cpuRunner = ie64CPU
 		currentMode = "ie64"
+		monitor.RegisterCPU("IE64", NewDebugIE64(ie64CPU))
 
 		if startExecution {
 			videoChip.Start()
@@ -1038,6 +1045,7 @@ func main() {
 
 		cpuRunner = m68kRunner
 		currentMode = "m68k"
+		monitor.RegisterCPU("M68K", NewDebugM68K(m68kCPU, m68kRunner))
 
 		if startExecution {
 			videoChip.Start()
@@ -1091,6 +1099,7 @@ func main() {
 
 		cpuRunner = z80CPU
 		currentMode = "z80"
+		monitor.RegisterCPU("Z80", NewDebugZ80(z80CPU.cpu, z80CPU))
 
 		if startExecution {
 			videoChip.Start()
@@ -1127,6 +1136,7 @@ func main() {
 
 		cpuRunner = x86CPU
 		currentMode = "x86"
+		monitor.RegisterCPU("X86", NewDebugX86(x86CPU.cpu, x86CPU))
 
 		if startExecution {
 			videoChip.Start()
@@ -1180,6 +1190,7 @@ func main() {
 
 		cpuRunner = cpu6502
 		currentMode = "6502"
+		monitor.RegisterCPU("6502", NewDebug6502(cpu6502.cpu, cpu6502))
 
 		if startExecution {
 			videoChip.Start()
@@ -1197,6 +1208,11 @@ func main() {
 	// Set global state for cross-module access
 	activeCPU = cpuRunner
 	activeVideoChip = videoChip
+
+	// Wire monitor overlay to the video output
+	if ma, ok := videoChip.GetOutput().(MonitorAttachable); ok {
+		ma.AttachMonitor(monitor)
+	}
 
 	// Cache initial program bytes for F10 reload
 	if filename != "" && len(programBytes) == 0 {
@@ -1233,6 +1249,11 @@ func main() {
 			if err != nil {
 				return err
 			}
+		}
+
+		// 0. Deactivate monitor if active (prevents freeze/resume interference)
+		if monitor.IsActive() {
+			monitor.Deactivate()
 		}
 
 		// 1. Stop CPU
@@ -1275,6 +1296,27 @@ func main() {
 		case "6502":
 			runtimeStatus.setCPUs(runtimeCPU6502, nil, nil, nil, nil, nil, newRunner.(*CPU6502Runner))
 			progExec.SetCPU(nil)
+		}
+
+		// Re-register CPU with the monitor (old adapters are stale after recreate)
+		monitor.ResetCPUs()
+		switch mode {
+		case "ie32":
+			monitor.RegisterCPU("IE32", NewDebugIE32(newRunner.(*CPU)))
+		case "ie64":
+			monitor.RegisterCPU("IE64", NewDebugIE64(newRunner.(*CPU64)))
+		case "m68k":
+			r := newRunner.(*M68KRunner)
+			monitor.RegisterCPU("M68K", NewDebugM68K(r.cpu, r))
+		case "z80":
+			r := newRunner.(*CPUZ80Runner)
+			monitor.RegisterCPU("Z80", NewDebugZ80(r.cpu, r))
+		case "x86":
+			r := newRunner.(*CPUX86Runner)
+			monitor.RegisterCPU("X86", NewDebugX86(r.cpu, r))
+		case "6502":
+			r := newRunner.(*CPU6502Runner)
+			monitor.RegisterCPU("6502", NewDebug6502(r.cpu, r))
 		}
 
 		// 5-6. Reset audio engines + sound chip
