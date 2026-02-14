@@ -192,7 +192,7 @@ func (d *DebugIE32) trapLoop() {
 		d.bpMu.RUnlock()
 		if bp != nil {
 			bp.HitCount++
-			if evaluateCondition(bp.Condition, d) {
+			if evaluateConditionWithHitCount(bp.Condition, d, bp.HitCount) {
 				if d.bpChan != nil {
 					select {
 					case d.bpChan <- BreakpointEvent{CPUID: d.cpuID, Address: uint64(d.cpu.PC)}:
@@ -301,6 +301,12 @@ func (d *DebugIE32) HasBreakpoint(addr uint64) bool {
 	defer d.bpMu.RUnlock()
 	_, ok := d.breakpoints[addr]
 	return ok
+}
+
+func (d *DebugIE32) GetConditionalBreakpoint(addr uint64) *ConditionalBreakpoint {
+	d.bpMu.RLock()
+	defer d.bpMu.RUnlock()
+	return d.breakpoints[addr]
 }
 
 func (d *DebugIE32) SetWatchpoint(addr uint64) bool {

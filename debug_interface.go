@@ -126,6 +126,7 @@ type DebuggableCPU interface {
 	ListBreakpoints() []uint64
 	ListConditionalBreakpoints() []*ConditionalBreakpoint
 	HasBreakpoint(addr uint64) bool
+	GetConditionalBreakpoint(addr uint64) *ConditionalBreakpoint
 
 	SetWatchpoint(addr uint64) bool
 	ClearWatchpoint(addr uint64) bool

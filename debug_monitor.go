@@ -91,8 +91,8 @@ type MachineMonitor struct {
 	traceSnapshots map[uint64]byte
 	writeHistory   map[uint64][]WriteRecord
 
-	// Backstep (Feature 9)
-	stepHistory []*MachineSnapshot
+	// Backstep (Feature 9) — per-CPU history keyed by CPU ID
+	stepHistory map[int][]*MachineSnapshot
 	maxBackstep int
 
 	// Hex editor (Feature 12)
@@ -120,6 +120,7 @@ func NewMachineMonitor(bus *MachineBus) *MachineMonitor {
 		traceWatches:    make(map[uint64]bool),
 		traceSnapshots:  make(map[uint64]byte),
 		writeHistory:    make(map[uint64][]WriteRecord),
+		stepHistory:     make(map[int][]*MachineSnapshot),
 		maxBackstep:     32,
 		hexEditDirty:    make(map[uint64]byte),
 		macros:          make(map[string][]string),

@@ -141,7 +141,7 @@ func (d *Debug6502) trapLoop() {
 		d.bpMu.RUnlock()
 		if bp != nil {
 			bp.HitCount++
-			if evaluateCondition(bp.Condition, d) {
+			if evaluateConditionWithHitCount(bp.Condition, d, bp.HitCount) {
 				d.cpu.SetRunning(false)
 				if d.bpChan != nil {
 					select {
@@ -252,6 +252,12 @@ func (d *Debug6502) HasBreakpoint(addr uint64) bool {
 	defer d.bpMu.RUnlock()
 	_, ok := d.breakpoints[addr]
 	return ok
+}
+
+func (d *Debug6502) GetConditionalBreakpoint(addr uint64) *ConditionalBreakpoint {
+	d.bpMu.RLock()
+	defer d.bpMu.RUnlock()
+	return d.breakpoints[addr]
 }
 
 func (d *Debug6502) SetWatchpoint(addr uint64) bool {

@@ -4348,6 +4348,210 @@ func TestBreakpointClearWithExpression(t *testing.T) {
 }
 
 // ===========================================================================
+// Bug fix: hitcount breakpoints fire in trapLoop
+// ===========================================================================
+
+func TestHitCountBreakpointInTrapLoop(t *testing.T) {
+	mon, cpu := newTestMonitor()
+	entry := mon.cpus[0]
+
+	// Write 20 NOPs starting at PROG_START
+	for i := range 20 {
+		cpu.memory[PROG_START+uint32(i*8)] = OP_NOP64
+	}
+	cpu.PC = uint64(PROG_START)
+
+	// Set a conditional breakpoint: hitcount>3 at PROG_START
+	// The CPU will loop through PROG_START multiple times if we use run-until
+	// But more directly: set bp at PROG_START, step past it, then set PC back
+	cond, err := ParseCondition("hitcount>3")
+	if err != nil {
+		t.Fatalf("ParseCondition: %v", err)
+	}
+	entry.CPU.SetConditionalBreakpoint(uint64(PROG_START), cond)
+
+	// Verify the breakpoint uses evaluateConditionWithHitCount in trapLoop:
+	// Get the conditional breakpoint and manually simulate what trapLoop does
+	bp := entry.CPU.GetConditionalBreakpoint(uint64(PROG_START))
+	if bp == nil {
+		t.Fatal("Expected conditional breakpoint at PROG_START")
+	}
+
+	// hitcount=0, condition "hitcount>3" should be false
+	bp.HitCount = 1
+	if evaluateConditionWithHitCount(bp.Condition, entry.CPU, bp.HitCount) {
+		t.Error("hitcount=1 > 3 should be false")
+	}
+
+	bp.HitCount = 3
+	if evaluateConditionWithHitCount(bp.Condition, entry.CPU, bp.HitCount) {
+		t.Error("hitcount=3 > 3 should be false")
+	}
+
+	bp.HitCount = 4
+	if !evaluateConditionWithHitCount(bp.Condition, entry.CPU, bp.HitCount) {
+		t.Error("hitcount=4 > 3 should be true")
+	}
+}
+
+// ===========================================================================
+// Bug fix: run-until preserves existing breakpoints
+// ===========================================================================
+
+func TestRunUntilPreservesExistingBreakpoint(t *testing.T) {
+	mon, _ := newTestMonitor()
+	entry := mon.cpus[0]
+
+	// Set a real user breakpoint at $2000
+	cond, _ := ParseCondition("r1==$FF")
+	entry.CPU.SetConditionalBreakpoint(0x2000, cond)
+
+	// Verify it exists
+	if !entry.CPU.HasBreakpoint(0x2000) {
+		t.Fatal("Expected breakpoint at $2000")
+	}
+
+	// Now do run-until to the same address
+	mon.mu.Lock()
+	mon.ExecuteCommand("u $2000")
+	mon.mu.Unlock()
+
+	// The breakpoint should still exist (run-until should not overwrite it)
+	if !entry.CPU.HasBreakpoint(0x2000) {
+		t.Fatal("Breakpoint at $2000 should still exist after run-until")
+	}
+
+	// run-until should NOT have marked it as temp (since it pre-existed)
+	mon.mu.Lock()
+	temps := mon.tempBreakpoints[0]
+	mon.mu.Unlock()
+	if temps != nil && temps[0x2000] {
+		t.Error("Pre-existing breakpoint should not be marked as temp by run-until")
+	}
+
+	// Simulate hitting the breakpoint
+	ev := BreakpointEvent{CPUID: 0, Address: 0x2000}
+	mon.handleBreakpointHit(ev)
+
+	// The user's breakpoint should still be there (not deleted by temp cleanup)
+	if !entry.CPU.HasBreakpoint(0x2000) {
+		t.Error("User breakpoint at $2000 should survive run-until hit")
+	}
+
+	// And the condition should still be intact
+	bp := entry.CPU.GetConditionalBreakpoint(0x2000)
+	if bp == nil || bp.Condition == nil {
+		t.Error("Conditional breakpoint should be preserved after run-until")
+	}
+}
+
+// ===========================================================================
+// Bug fix: trace respects breakpoint conditions
+// ===========================================================================
+
+func TestTraceRespectsBreakpointConditions(t *testing.T) {
+	mon, cpu := newTestMonitor()
+	entry := mon.cpus[0]
+
+	// Write 10 NOPs
+	for i := range 10 {
+		cpu.memory[PROG_START+uint32(i*8)] = OP_NOP64
+	}
+	cpu.PC = uint64(PROG_START)
+
+	// Set a conditional breakpoint at instruction 5 with a condition that is false
+	bpAddr := uint64(PROG_START + 5*8)
+	cond, _ := ParseCondition("r1==$FF")
+	entry.CPU.SetConditionalBreakpoint(bpAddr, cond)
+
+	// Trace 10 instructions — should NOT stop at the conditional breakpoint
+	// because r1 != $FF
+	mon.mu.Lock()
+	mon.outputLines = nil
+	mon.ExecuteCommand("trace #10")
+
+	stoppedAtBP := false
+	for _, line := range mon.outputLines {
+		if strings.Contains(line.Text, "Trace stopped at breakpoint") {
+			stoppedAtBP = true
+		}
+	}
+	mon.mu.Unlock()
+
+	if stoppedAtBP {
+		t.Error("Trace should not stop at conditional breakpoint when condition is false")
+	}
+}
+
+// ===========================================================================
+// Bug fix: backstep history is per-CPU
+// ===========================================================================
+
+func TestBackstepPerCPU(t *testing.T) {
+	bus := NewMachineBus()
+	cpu1 := NewCPU64(bus)
+	cpu2 := NewCPU64(bus)
+	cpu1.running.Store(false)
+	cpu2.running.Store(false)
+
+	mon := NewMachineMonitor(bus)
+	a1 := NewDebugIE64(cpu1)
+	a2 := NewDebugIE64(cpu2)
+	id0 := mon.RegisterCPU("cpu0", a1)
+	id1 := mon.RegisterCPU("cpu1", a2)
+	mon.state = MonitorActive
+	mon.focusedID = id0
+	mon.saveCurrentRegs()
+
+	// Write a NOP for cpu1
+	cpu1.memory[PROG_START] = OP_NOP64
+	cpu1.PC = uint64(PROG_START)
+
+	// Write a NOP for cpu2
+	cpu2.memory[PROG_START] = OP_NOP64
+	cpu2.PC = uint64(PROG_START)
+
+	// Step cpu0
+	mon.mu.Lock()
+	mon.focusedID = id0
+	mon.saveCurrentRegs()
+	mon.ExecuteCommand("s")
+	pc0AfterStep := cpu1.PC
+	mon.mu.Unlock()
+
+	// Switch to cpu1 and step
+	mon.mu.Lock()
+	mon.focusedID = id1
+	mon.saveCurrentRegs()
+	mon.ExecuteCommand("s")
+	mon.mu.Unlock()
+
+	// Now backstep on cpu1 — should only restore cpu1's state, not cpu0's
+	mon.mu.Lock()
+	mon.focusedID = id1
+	mon.ExecuteCommand("bs")
+	mon.mu.Unlock()
+
+	// cpu0 should still be at its post-step PC (not reverted)
+	if cpu1.PC != pc0AfterStep {
+		t.Errorf("CPU0 PC should still be $%X after backstep on CPU1, got $%X", pc0AfterStep, cpu1.PC)
+	}
+
+	// cpu0's history should still have 1 entry
+	mon.mu.Lock()
+	hist0 := mon.stepHistory[id0]
+	hist1 := mon.stepHistory[id1]
+	mon.mu.Unlock()
+
+	if len(hist0) != 1 {
+		t.Errorf("CPU0 step history should have 1 entry, got %d", len(hist0))
+	}
+	if len(hist1) != 0 {
+		t.Errorf("CPU1 step history should have 0 entries after backstep, got %d", len(hist1))
+	}
+}
+
+// ===========================================================================
 // Unused import check helpers (ensures tests compile)
 // ===========================================================================
 

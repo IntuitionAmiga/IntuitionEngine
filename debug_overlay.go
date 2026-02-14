@@ -217,7 +217,7 @@ func (o *MonitorOverlay) drawHexEditor() {
 	// 16 rows of 16 bytes = 256 bytes visible
 	hexRows := min(16, overlayRows-3)
 
-	for row := 0; row < hexRows; row++ {
+	for row := range hexRows {
 		rowAddr := m.hexEditAddr + uint64(row*16)
 		data := entry.CPU.ReadMemory(rowAddr, 16)
 

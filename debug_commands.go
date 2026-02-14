@@ -459,11 +459,12 @@ func (m *MachineMonitor) cmdStep(cmd MonitorCommand) bool {
 		}
 	}
 
-	// Snapshot before stepping (for backstep)
+	// Snapshot before stepping (for backstep) — per-CPU history
 	snap := TakeSnapshot(entry.CPU)
-	m.stepHistory = append(m.stepHistory, snap)
-	if len(m.stepHistory) > m.maxBackstep {
-		m.stepHistory = m.stepHistory[len(m.stepHistory)-m.maxBackstep:]
+	cpuID := m.focusedID
+	m.stepHistory[cpuID] = append(m.stepHistory[cpuID], snap)
+	if len(m.stepHistory[cpuID]) > m.maxBackstep {
+		m.stepHistory[cpuID] = m.stepHistory[cpuID][len(m.stepHistory[cpuID])-m.maxBackstep:]
 	}
 
 	totalCycles := 0
@@ -1114,13 +1115,18 @@ func (m *MachineMonitor) cmdRunUntil(cmd MonitorCommand) bool {
 		return false
 	}
 
-	entry.CPU.SetBreakpoint(addr)
-
-	// Record as temporary breakpoint
-	if m.tempBreakpoints[m.focusedID] == nil {
-		m.tempBreakpoints[m.focusedID] = make(map[uint64]bool)
+	// Only set a real breakpoint if one doesn't already exist at this address.
+	// If a user breakpoint already exists, just piggyback on it — don't mark as temp
+	// so we don't delete the user's breakpoint when we hit it.
+	alreadyExists := entry.CPU.HasBreakpoint(addr)
+	if !alreadyExists {
+		entry.CPU.SetBreakpoint(addr)
+		// Record as temporary breakpoint (only if we created it)
+		if m.tempBreakpoints[m.focusedID] == nil {
+			m.tempBreakpoints[m.focusedID] = make(map[uint64]bool)
+		}
+		m.tempBreakpoints[m.focusedID][addr] = true
 	}
-	m.tempBreakpoints[m.focusedID][addr] = true
 
 	m.appendOutput(fmt.Sprintf("Run until $%X", addr), colorCyan)
 	return true // exit monitor to resume execution
@@ -1513,11 +1519,14 @@ func (m *MachineMonitor) cmdTraceRun(cmd MonitorCommand) bool {
 			}
 		}
 
-		// Check for breakpoint at new PC
+		// Check for breakpoint at new PC — only stop if condition is satisfied
 		newPC := entry.CPU.GetPC()
-		if entry.CPU.HasBreakpoint(newPC) {
-			m.appendOutput(fmt.Sprintf("Trace stopped at breakpoint $%X", newPC), colorRed)
-			break
+		if bp := entry.CPU.GetConditionalBreakpoint(newPC); bp != nil {
+			bp.HitCount++
+			if evaluateConditionWithHitCount(bp.Condition, entry.CPU, bp.HitCount) {
+				m.appendOutput(fmt.Sprintf("Trace stopped at breakpoint $%X", newPC), colorRed)
+				break
+			}
 		}
 
 		// Yield lock periodically so UI can render
@@ -1545,13 +1554,15 @@ func (m *MachineMonitor) cmdBackstep(_ MonitorCommand) bool {
 		return false
 	}
 
-	if len(m.stepHistory) == 0 {
+	cpuID := m.focusedID
+	hist := m.stepHistory[cpuID]
+	if len(hist) == 0 {
 		m.appendOutput("No step history available", colorRed)
 		return false
 	}
 
-	snap := m.stepHistory[len(m.stepHistory)-1]
-	m.stepHistory = m.stepHistory[:len(m.stepHistory)-1]
+	snap := hist[len(hist)-1]
+	m.stepHistory[cpuID] = hist[:len(hist)-1]
 
 	RestoreSnapshot(entry.CPU, snap)
 
