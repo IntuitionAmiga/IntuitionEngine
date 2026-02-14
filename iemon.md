@@ -4,7 +4,7 @@
 
 The Machine Monitor is a built-in system-level debugger inspired by the Commodore 64/Amiga Action Replay cartridge, HRTMon, and the Commodore Plus/4 built-in monitor. Press **F9** at any time to freeze the entire system and enter the monitor. Press **x** or **Esc** to resume execution.
 
-The monitor works with all six CPU types (IE64, IE32, M68K, Z80, 6502, X86) and handles multi-CPU scenarios, including coprocessors and music playback engines.
+The monitor works with all six CPU types (IE64, IE32, M68K, Z80, 6502, X86) and handles multi-CPU scenarios, including coprocessors.
 
 ## Quick Start
 
@@ -174,14 +174,14 @@ Breakpoint set at $1010
 
 #### `bc <addr>` / `bc *` — Clear Breakpoint(s)
 
-Clear a single breakpoint or all breakpoints.
+Clear a single breakpoint by address, or clear all breakpoints on the currently focused CPU.
 
 ```
 > bc $1010
 Breakpoint cleared at $1010
 
 > bc *
-All breakpoints cleared
+All breakpoints cleared for focused CPU
 ```
 
 #### `bl` — List Breakpoints
@@ -222,12 +222,14 @@ Switch the focused CPU by stable ID or label. All register/disassembly/step comm
 Focused on id:1 coproc:Z80
 ```
 
-If a label matches multiple CPUs, the command lists matches and asks for the ID:
+Labels are matched exactly (case-insensitive).
+
+If an exact label matches multiple CPUs, the command lists matches and asks for the ID:
 ```
-> cpu 6502
+> cpu coproc:z80
 Ambiguous label, use ID:
-  id:2 coproc:6502
-  id:4 music:6502
+  id:1 coproc:Z80
+  id:5 coproc:Z80
 ```
 
 #### `freeze <id|label|*>` — Freeze CPU
@@ -236,7 +238,7 @@ Freeze a specific CPU or all CPUs.
 
 ```
 > freeze 1       (freeze CPU id:1)
-> freeze z80     (freeze by label, must be unambiguous)
+> freeze coproc:z80     (freeze by label, must be unambiguous)
 > freeze *       (freeze all)
 ```
 
