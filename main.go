@@ -647,6 +647,8 @@ func main() {
 	termMMIO := NewTerminalMMIO()
 	var termHost *TerminalHost
 	var videoTerm *VideoTerminal
+	var outputTicker *time.Ticker
+	var outputStop chan struct{}
 	if useGraphicalTerm {
 		videoTerm = NewVideoTerminal(videoChip, termMMIO)
 		termMMIO.SetForceEchoOff(true)
@@ -840,6 +842,9 @@ func main() {
 	var cpuRunner EmulatorCPU
 	var startExecution bool
 	var ie64CPU *CPU64
+	var z80LoadAddr, z80Entry uint16
+	var cpu6502LoadAddr, cpu6502Entry uint16
+	var x86LoadAddr, x86Entry uint32
 
 	// ProgramExecutor is created unconditionally so EXEC MMIO is always mapped.
 	// Its CPU pointer is set/updated when entering IE64 mode (initial or mode-switch).
@@ -851,6 +856,79 @@ func main() {
 	var reloadProgram func()
 	var currentMode string
 	var currentPath string
+
+	createRunnerForMode := func(mode string) (EmulatorCPU, error) {
+		switch mode {
+		case "ie32":
+			videoChip.SetBigEndianMode(false)
+			cpu := NewCPU(sysBus)
+			cpu.PerfEnabled = perfMode
+			return cpu, nil
+		case "ie64":
+			videoChip.SetBigEndianMode(false)
+			cpu := NewCPU64(sysBus)
+			cpu.PerfEnabled = perfMode
+			return cpu, nil
+		case "m68k":
+			videoChip.SetBigEndianMode(true)
+			m68k := NewM68KCPU(sysBus)
+			runner := NewM68KRunner(m68k)
+			runner.PerfEnabled = perfMode
+			return runner, nil
+		case "z80":
+			videoChip.SetBigEndianMode(false)
+			runner := NewCPUZ80Runner(sysBus, CPUZ80Config{
+				LoadAddr:     z80LoadAddr,
+				Entry:        z80Entry,
+				VGAEngine:    vgaEngine,
+				VoodooEngine: voodooEngine,
+			})
+			runner.PerfEnabled = perfMode
+			return runner, nil
+		case "x86":
+			videoChip.SetBigEndianMode(false)
+			runner := NewCPUX86Runner(sysBus, &CPUX86Config{
+				LoadAddr:     x86LoadAddr,
+				Entry:        x86Entry,
+				VGAEngine:    vgaEngine,
+				VoodooEngine: voodooEngine,
+			})
+			runner.PerfEnabled = perfMode
+			return runner, nil
+		case "6502":
+			videoChip.SetBigEndianMode(false)
+			runner := NewCPU6502Runner(sysBus, CPU6502Config{
+				LoadAddr: cpu6502LoadAddr,
+				Entry:    cpu6502Entry,
+			})
+			runner.PerfEnabled = perfMode
+			return runner, nil
+		default:
+			return nil, fmt.Errorf("unsupported CPU mode: %s", mode)
+		}
+	}
+
+	loadBasicBootImage := func() ([]byte, string, error) {
+		if basicImage != "" {
+			b, err := os.ReadFile(basicImage)
+			if err != nil {
+				return nil, "", fmt.Errorf("failed to read BASIC image %s: %w", basicImage, err)
+			}
+			return b, basicImage, nil
+		}
+		if len(embeddedBasicImage) > 0 {
+			return append([]byte(nil), embeddedBasicImage...), "", nil
+		}
+		autoPath := resolveDefaultBasicImagePath()
+		if autoPath == "" {
+			return nil, "", fmt.Errorf("BASIC not embedded and no local BASIC image found")
+		}
+		b, err := os.ReadFile(autoPath)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to read fallback BASIC image %s: %w", autoPath, err)
+		}
+		return b, autoPath, nil
+	}
 
 	if modeIE32 {
 		ie32CPU := NewCPU(sysBus)
@@ -892,9 +970,13 @@ func main() {
 					fmt.Printf("Error loading BASIC image %s: %v\n", basicImage, err)
 					os.Exit(1)
 				}
+				programBytes, _ = os.ReadFile(basicImage)
+				currentPath = basicImage
 				fmt.Printf("Starting EhBASIC IE64 (custom image: %s)\n", basicImage)
 			} else if len(embeddedBasicImage) > 0 {
 				ie64CPU.LoadProgramBytes(embeddedBasicImage)
+				programBytes = append([]byte(nil), embeddedBasicImage...)
+				currentPath = ""
 				fmt.Println("Starting EhBASIC IE64 (embedded image)")
 			} else {
 				autoPath := resolveDefaultBasicImagePath()
@@ -907,6 +989,8 @@ func main() {
 					fmt.Printf("Error loading fallback BASIC image %s: %v\n", autoPath, err)
 					os.Exit(1)
 				}
+				programBytes, _ = os.ReadFile(autoPath)
+				currentPath = autoPath
 				fmt.Printf("Starting EhBASIC IE64 (auto image: %s)\n", autoPath)
 			}
 			startExecution = true
@@ -975,6 +1059,7 @@ func main() {
 			}
 			parsedLoadAddr = parsed
 		}
+		z80LoadAddr = parsedLoadAddr
 		var parsedEntry uint16
 		if entryAddr.set {
 			parsed, err := parseUint16Flag(entryAddr.value)
@@ -984,6 +1069,7 @@ func main() {
 			}
 			parsedEntry = parsed
 		}
+		z80Entry = parsedEntry
 
 		z80CPU := NewCPUZ80Runner(sysBus, CPUZ80Config{
 			LoadAddr:     parsedLoadAddr,
@@ -1023,6 +1109,8 @@ func main() {
 			VGAEngine:    vgaEngine,
 			VoodooEngine: voodooEngine,
 		}
+		x86LoadAddr = x86Config.LoadAddr
+		x86Entry = x86Config.Entry
 
 		x86CPU := NewCPUX86Runner(sysBus, x86Config)
 		x86CPU.PerfEnabled = perfMode
@@ -1062,6 +1150,7 @@ func main() {
 		} else if strings.HasSuffix(strings.ToLower(filename), ".ie65") {
 			parsedLoadAddr = 0x0800
 		}
+		cpu6502LoadAddr = parsedLoadAddr
 		var parsedEntry uint16
 		if entryAddr.set {
 			parsed, err := parseUint16Flag(entryAddr.value)
@@ -1071,6 +1160,7 @@ func main() {
 			}
 			parsedEntry = parsed
 		}
+		cpu6502Entry = parsedEntry
 
 		cpu6502 := NewCPU6502Runner(sysBus, CPU6502Config{
 			LoadAddr: parsedLoadAddr,
@@ -1108,14 +1198,14 @@ func main() {
 	activeVideoChip = videoChip
 
 	// Cache initial program bytes for F10 reload
-	if filename != "" {
+	if filename != "" && len(programBytes) == 0 {
 		programBytes, _ = os.ReadFile(filename)
 		currentPath = filename
-		reloadProgram = buildReloadClosure(currentMode, cpuRunner, programBytes, sysBus)
 	}
+	reloadProgram = buildReloadClosure(currentMode, cpuRunner, programBytes, sysBus)
 
 	// runProgramWithFullReset is the ONLY mutating entry point for reset+load.
-	// path == "" means "reload current program" (F10 case).
+	// path == "" means "hard reset to BASIC cold boot" (F10 case).
 	// path != "" means "load new program from disk" (IPC OPEN case).
 	runProgramWithFullReset := func(path string) error {
 		resetMu.Lock()
@@ -1123,14 +1213,15 @@ func main() {
 
 		var bytes []byte
 		var mode string
+		forceBasicBoot := path == ""
 
-		if path == "" {
-			if programBytes == nil || reloadProgram == nil {
-				return nil
+		if forceBasicBoot {
+			var err error
+			bytes, path, err = loadBasicBootImage()
+			if err != nil {
+				return err
 			}
-			bytes = programBytes
-			mode = currentMode
-			path = currentPath
+			mode = "ie64"
 		} else {
 			var err error
 			bytes, err = os.ReadFile(path)
@@ -1155,37 +1246,34 @@ func main() {
 		tedVideoEngine.StopRenderLoop()
 		anticEngine.StopRenderLoop()
 
-		// 4. Mode switch if needed — update cpuRunner, runtimeStatus, and progExec
-		if mode != currentMode {
-			newRunner, err := createCPURunner(mode, sysBus, videoChip, vgaEngine, voodooEngine)
-			if err != nil {
-				return err
-			}
-			cpuRunner = newRunner
-			activeCPU = newRunner
+		// 4. Recreate CPU runner for a true cold boot, then update runtime status/progExec.
+		newRunner, err := createRunnerForMode(mode)
+		if err != nil {
+			return err
+		}
+		cpuRunner = newRunner
+		activeCPU = newRunner
 
-			// Update runtime status with new CPU type
-			switch mode {
-			case "ie32":
-				runtimeStatus.setCPUs(runtimeCPUIE32, newRunner.(*CPU), nil, nil, nil, nil, nil)
-				progExec.SetCPU(nil)
-			case "ie64":
-				cpu64 := newRunner.(*CPU64)
-				runtimeStatus.setCPUs(runtimeCPUIE64, nil, cpu64, nil, nil, nil, nil)
-				progExec.SetCPU(cpu64)
-			case "m68k":
-				runtimeStatus.setCPUs(runtimeCPUM68K, nil, nil, newRunner.(*M68KRunner), nil, nil, nil)
-				progExec.SetCPU(nil)
-			case "z80":
-				runtimeStatus.setCPUs(runtimeCPUZ80, nil, nil, nil, newRunner.(*CPUZ80Runner), nil, nil)
-				progExec.SetCPU(nil)
-			case "x86":
-				runtimeStatus.setCPUs(runtimeCPUX86, nil, nil, nil, nil, newRunner.(*CPUX86Runner), nil)
-				progExec.SetCPU(nil)
-			case "6502":
-				runtimeStatus.setCPUs(runtimeCPU6502, nil, nil, nil, nil, nil, newRunner.(*CPU6502Runner))
-				progExec.SetCPU(nil)
-			}
+		switch mode {
+		case "ie32":
+			runtimeStatus.setCPUs(runtimeCPUIE32, newRunner.(*CPU), nil, nil, nil, nil, nil)
+			progExec.SetCPU(nil)
+		case "ie64":
+			cpu64 := newRunner.(*CPU64)
+			runtimeStatus.setCPUs(runtimeCPUIE64, nil, cpu64, nil, nil, nil, nil)
+			progExec.SetCPU(cpu64)
+		case "m68k":
+			runtimeStatus.setCPUs(runtimeCPUM68K, nil, nil, newRunner.(*M68KRunner), nil, nil, nil)
+			progExec.SetCPU(nil)
+		case "z80":
+			runtimeStatus.setCPUs(runtimeCPUZ80, nil, nil, nil, newRunner.(*CPUZ80Runner), nil, nil)
+			progExec.SetCPU(nil)
+		case "x86":
+			runtimeStatus.setCPUs(runtimeCPUX86, nil, nil, nil, nil, newRunner.(*CPUX86Runner), nil)
+			progExec.SetCPU(nil)
+		case "6502":
+			runtimeStatus.setCPUs(runtimeCPU6502, nil, nil, nil, nil, nil, newRunner.(*CPU6502Runner))
+			progExec.SetCPU(nil)
 		}
 
 		// 5-6. Reset audio engines + sound chip
@@ -1215,6 +1303,30 @@ func main() {
 
 		// 9. Reset terminal/coproc
 		termMMIO.Reset()
+		if forceBasicBoot {
+			// F10 is a power-on reset to BASIC: switch terminal plumbing to
+			// the in-window BASIC terminal path.
+			if outputTicker != nil {
+				outputTicker.Stop()
+				outputTicker = nil
+			}
+			if outputStop != nil {
+				close(outputStop)
+				outputStop = nil
+			}
+			if termHost != nil {
+				termHost.Stop()
+				termHost = nil
+			}
+			if videoTerm == nil {
+				videoTerm = NewVideoTerminal(videoChip, termMMIO)
+				videoTerm.Start()
+			}
+			termMMIO.SetForceEchoOff(true)
+			if ki, ok := videoChip.GetOutput().(KeyboardInput); ok {
+				ki.SetKeyHandler(videoTerm.HandleKeyInput)
+			}
+		}
 		if videoTerm != nil {
 			videoTerm.Reset()
 		}
@@ -1273,8 +1385,6 @@ func main() {
 	_ = currentPath
 
 	// Start console terminal host only when not using graphical BASIC terminal.
-	var outputTicker *time.Ticker
-	var outputStop chan struct{}
 	if termHost != nil {
 		termHost.Start()
 		outputTicker = time.NewTicker(10 * time.Millisecond)
