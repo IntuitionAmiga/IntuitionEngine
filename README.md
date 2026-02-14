@@ -276,21 +276,36 @@ The monitor works with all six CPU types (IE64, IE32, M68K, Z80, 6502, X86) and 
 |---------|-------------|
 | `r` | Show all registers (changed values highlighted in green) |
 | `r <name> <value>` | Set a register value |
-| `d [addr] [count]` | Disassemble instructions (default: from PC, 16 lines) |
+| `d [addr] [count]` | Disassemble instructions with branch annotations |
 | `m <addr> [count]` | Hex dump memory |
 | `s [count]` | Single-step one or more instructions |
+| `bs` | Backstep (undo last step, restores CPU + memory) |
 | `g [addr]` | Resume execution (optionally from a new address) |
-| `b <addr>` | Set a breakpoint |
-| `bc <addr>` | Clear a breakpoint |
+| `u <addr>` | Run until address |
+| `b <addr> [cond]` | Set breakpoint (with optional condition) |
+| `bc <addr>` / `bc *` | Clear breakpoint(s) |
 | `bl` | List all breakpoints |
+| `ww <addr>` | Set write watchpoint |
+| `wc <addr\|*>` / `wl` | Clear/list watchpoints |
+| `bt [depth]` | Stack backtrace |
 | `f <addr> <len> <byte>` | Fill memory with a byte value |
+| `w <addr> <bytes..>` | Write bytes to memory |
 | `t <dst> <src> <len>` | Transfer (copy) memory |
 | `c <addr1> <addr2> <len>` | Compare two memory regions |
+| `h <start> <end> <bytes..>` | Search memory for byte pattern |
+| `save <s> <e> <file>` | Save memory range to file |
+| `load <file> <addr>` | Load file into memory |
+| `ss` / `sl [file]` | Save/load machine state |
+| `trace <count>` | Trace N instructions (+ write history) |
+| `io [device]` | I/O register viewer |
+| `e <addr>` | Hex editor mode |
+| `script <file>` | Run command script |
+| `macro <name> ...` | Define command macro |
 | `cpu [n]` | Switch focus to CPU #n (for multi-CPU debugging) |
-| `af` / `at` | Audio freeze / thaw |
+| `fa` / `ta` | Audio freeze / thaw |
 | `x` | Exit monitor and resume all CPUs |
 
-Addresses accept `$hex`, `0xhex`, bare hex, or `#decimal` formats.
+Addresses accept `$hex`, `0xhex`, bare hex, `#decimal`, or expressions like `pc+$20`.
 
 Full documentation: [iemon.md](iemon.md)
 

@@ -161,12 +161,42 @@ func disassembleM68K(readMem func(addr uint64, size int) []byte, startAddr uint6
 			}
 		}
 
-		lines = append(lines, DisassembledLine{
+		line := DisassembledLine{
 			Address:  instrAddr,
 			HexBytes: strings.Join(hexParts, " "),
 			Mnemonic: mnemonic,
 			Size:     instrSize,
-		})
+		}
+
+		// Branch annotation by opcode group
+		group := (w >> 12) & 0xF
+		if group == 6 { // Bcc, BRA, BSR
+			line.IsBranch = true
+			disp := int8(w & 0xFF)
+			if disp == 0 && instrSize >= 4 {
+				d16 := uint16(hexData[2])<<8 | uint16(hexData[3])
+				line.BranchTarget = uint64(uint32(instrAddr+2) + uint32(int16(d16)))
+			} else if disp == -1 && instrSize >= 6 {
+				d32 := uint32(hexData[2])<<24 | uint32(hexData[3])<<16 | uint32(hexData[4])<<8 | uint32(hexData[5])
+				line.BranchTarget = uint64(uint32(instrAddr+2) + d32)
+			} else if disp != 0 && disp != -1 {
+				line.BranchTarget = uint64(uint32(instrAddr+2) + uint32(int32(disp)))
+			}
+		} else if w&0xFFC0 == 0x4E80 || w&0xFFC0 == 0x4EC0 { // JSR / JMP
+			line.IsBranch = true
+			// Target is in EA — for absolute modes we can extract it
+			mode := (w >> 3) & 7
+			if mode == 7 { // Absolute address modes
+				subReg := w & 7
+				if subReg == 0 && instrSize >= 4 { // (xxx).W
+					line.BranchTarget = uint64(uint16(hexData[2])<<8 | uint16(hexData[3]))
+				} else if subReg == 1 && instrSize >= 6 { // (xxx).L
+					line.BranchTarget = uint64(uint32(hexData[2])<<24 | uint32(hexData[3])<<16 | uint32(hexData[4])<<8 | uint32(hexData[5]))
+				}
+			}
+		}
+
+		lines = append(lines, line)
 	}
 	return lines
 }

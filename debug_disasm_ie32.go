@@ -62,12 +62,21 @@ func disassembleIE32(readMem func(addr uint64, size int) []byte, addr uint64, co
 			mnemonic = fmt.Sprintf("%s %s, %s$%08X", name, regName, modeStr, operand)
 		}
 
-		lines = append(lines, DisassembledLine{
+		line := DisassembledLine{
 			Address:  addr,
 			HexBytes: hexBytes,
 			Mnemonic: mnemonic,
 			Size:     8,
-		})
+		}
+
+		// Branch annotation
+		switch opcode {
+		case JMP, JNZ, JZ, JGT, JGE, JLT, JLE, JSR:
+			line.IsBranch = true
+			line.BranchTarget = uint64(operand)
+		}
+
+		lines = append(lines, line)
 		addr += 8
 	}
 	return lines

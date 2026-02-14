@@ -21,6 +21,7 @@ License: GPLv3 or later
 package main
 
 import (
+	"fmt"
 	"image/color"
 
 	"github.com/hajimehoshi/ebiten/v2"
@@ -134,6 +135,19 @@ func (o *MonitorOverlay) Draw(screen *ebiten.Image) {
 		o.fillRow(row)
 	}
 
+	if m.state == MonitorHexEdit {
+		o.drawHexEditor()
+	} else {
+		o.drawCommandMode()
+	}
+
+	o.image.WritePixels(o.pixels)
+	screen.DrawImage(o.image, nil)
+}
+
+func (o *MonitorOverlay) drawCommandMode() {
+	m := o.monitor
+
 	// Header
 	entry := m.cpus[m.focusedID]
 	header := "MACHINE MONITOR"
@@ -185,9 +199,85 @@ func (o *MonitorOverlay) Draw(screen *ebiten.Image) {
 	if cursorCol < overlayCols {
 		o.drawGlyph('_', cursorCol, inputRow, colorWhite, 0x0055AAFF)
 	}
+}
 
-	o.image.WritePixels(o.pixels)
-	screen.DrawImage(o.image, nil)
+func (o *MonitorOverlay) drawHexEditor() {
+	m := o.monitor
+	bg := uint32(0x0055AAFF)
+
+	entry := m.cpus[m.focusedID]
+	if entry == nil {
+		return
+	}
+
+	// Header
+	header := fmt.Sprintf("HEX EDITOR - $%06X                     ESC=exit  ENTER=commit", m.hexEditAddr)
+	o.drawString(header, 0, 0, colorCyan)
+
+	// 16 rows of 16 bytes = 256 bytes visible
+	hexRows := min(16, overlayRows-3)
+
+	for row := 0; row < hexRows; row++ {
+		rowAddr := m.hexEditAddr + uint64(row*16)
+		data := entry.CPU.ReadMemory(rowAddr, 16)
+
+		// Address
+		addrStr := fmt.Sprintf("%06X:", rowAddr)
+		o.drawString(addrStr, 0, row+1, colorDim)
+
+		// Hex bytes
+		for col := 0; col < 16 && col < len(data); col++ {
+			byteAddr := rowAddr + uint64(col)
+			byteOffset := row*16 + col
+			val := data[col]
+
+			// Check if this byte has been modified
+			if dirtyVal, ok := m.hexEditDirty[byteAddr]; ok {
+				val = dirtyVal
+			}
+
+			hexStr := fmt.Sprintf("%02X", val)
+			xPos := 8 + col*3
+			if col >= 8 {
+				xPos++ // extra space between groups
+			}
+
+			fg := uint32(colorWhite)
+			byteBg := bg
+			if _, isDirty := m.hexEditDirty[byteAddr]; isDirty {
+				fg = colorGreen
+			}
+			if byteOffset == m.hexEditCursor {
+				// Invert for cursor
+				fg, byteBg = bg, colorWhite
+			}
+
+			for i := range 2 {
+				o.drawGlyph(hexStr[i], xPos+i, row+1, fg, byteBg)
+			}
+		}
+
+		// ASCII column
+		asciiStart := 8 + 16*3 + 2
+		for col := 0; col < 16 && col < len(data); col++ {
+			byteAddr := rowAddr + uint64(col)
+			val := data[col]
+			if dirtyVal, ok := m.hexEditDirty[byteAddr]; ok {
+				val = dirtyVal
+			}
+
+			ch := byte('.')
+			if val >= 0x20 && val < 0x7F {
+				ch = val
+			}
+
+			fg := uint32(colorDim)
+			if _, isDirty := m.hexEditDirty[byteAddr]; isDirty {
+				fg = colorGreen
+			}
+			o.drawGlyph(ch, asciiStart+col, row+1, fg, bg)
+		}
+	}
 }
 
 // HandleInput processes keyboard input when the monitor is active.
@@ -196,6 +286,10 @@ func (o *MonitorOverlay) HandleInput() bool {
 	m := o.monitor
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if m.state == MonitorHexEdit {
+		return o.handleHexEditInput()
+	}
 
 	// Escape = exit
 	if inpututil.IsKeyJustPressed(ebiten.KeyEscape) {
@@ -381,4 +475,80 @@ func (o *MonitorOverlay) HandleInput() bool {
 // colorToRGBA converts packed RGBA to color.RGBA (unused but available).
 func colorToRGBA(c uint32) color.RGBA {
 	return color.RGBA{R: byte(c >> 24), G: byte(c >> 16), B: byte(c >> 8), A: byte(c)}
+}
+
+func (o *MonitorOverlay) handleHexEditInput() bool {
+	m := o.monitor
+
+	// Escape = discard and return to command mode
+	if inpututil.IsKeyJustPressed(ebiten.KeyEscape) {
+		m.HexEditDiscard()
+		return false
+	}
+
+	// Enter = commit and return to command mode
+	if inpututil.IsKeyJustPressed(ebiten.KeyEnter) {
+		m.HexEditCommit()
+		return false
+	}
+
+	// Arrow keys
+	if inpututil.IsKeyJustPressed(ebiten.KeyArrowLeft) || monitorShouldRepeat(ebiten.KeyArrowLeft) {
+		if m.hexEditCursor > 0 {
+			m.hexEditCursor--
+			m.hexEditNibble = 0
+		}
+	}
+	if inpututil.IsKeyJustPressed(ebiten.KeyArrowRight) || monitorShouldRepeat(ebiten.KeyArrowRight) {
+		if m.hexEditCursor < 255 {
+			m.hexEditCursor++
+			m.hexEditNibble = 0
+		}
+	}
+	if inpututil.IsKeyJustPressed(ebiten.KeyArrowUp) || monitorShouldRepeat(ebiten.KeyArrowUp) {
+		if m.hexEditCursor >= 16 {
+			m.hexEditCursor -= 16
+			m.hexEditNibble = 0
+		}
+	}
+	if inpututil.IsKeyJustPressed(ebiten.KeyArrowDown) || monitorShouldRepeat(ebiten.KeyArrowDown) {
+		if m.hexEditCursor < 240 {
+			m.hexEditCursor += 16
+			m.hexEditNibble = 0
+		}
+	}
+
+	// PgUp/PgDn scroll by 256 bytes
+	if inpututil.IsKeyJustPressed(ebiten.KeyPageUp) {
+		if m.hexEditAddr >= 256 {
+			m.hexEditAddr -= 256
+		} else {
+			m.hexEditAddr = 0
+		}
+	}
+	if inpututil.IsKeyJustPressed(ebiten.KeyPageDown) {
+		m.hexEditAddr += 256
+	}
+
+	// Hex digit input (0-9, A-F)
+	for _, r := range ebiten.AppendInputChars(nil) {
+		var nibbleVal byte
+		var valid bool
+		switch {
+		case r >= '0' && r <= '9':
+			nibbleVal = byte(r - '0')
+			valid = true
+		case r >= 'a' && r <= 'f':
+			nibbleVal = byte(r-'a') + 10
+			valid = true
+		case r >= 'A' && r <= 'F':
+			nibbleVal = byte(r-'A') + 10
+			valid = true
+		}
+		if valid {
+			m.HexEditSetNibble(nibbleVal)
+		}
+	}
+
+	return false
 }

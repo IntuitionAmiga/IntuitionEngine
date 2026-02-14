@@ -11,7 +11,8 @@ import (
 type DebugIE32 struct {
 	cpu         *CPU
 	bpMu        sync.RWMutex
-	breakpoints map[uint64]bool
+	breakpoints map[uint64]*ConditionalBreakpoint
+	watchpoints map[uint64]*Watchpoint
 	bpChan      chan<- BreakpointEvent
 	cpuID       int
 	trapRunning atomic.Bool
@@ -24,7 +25,8 @@ type DebugIE32 struct {
 func NewDebugIE32(cpu *CPU) *DebugIE32 {
 	return &DebugIE32{
 		cpu:         cpu,
-		breakpoints: make(map[uint64]bool),
+		breakpoints: make(map[uint64]*ConditionalBreakpoint),
+		watchpoints: make(map[uint64]*Watchpoint),
 	}
 }
 
@@ -159,7 +161,7 @@ func (d *DebugIE32) Freeze() {
 
 func (d *DebugIE32) Resume() {
 	d.bpMu.RLock()
-	hasBP := len(d.breakpoints) > 0
+	hasBP := len(d.breakpoints) > 0 || len(d.watchpoints) > 0
 	d.bpMu.RUnlock()
 	if hasBP {
 		d.trapStop = make(chan struct{})
@@ -186,20 +188,48 @@ func (d *DebugIE32) trapLoop() {
 		default:
 		}
 		d.bpMu.RLock()
-		if len(d.breakpoints) > 0 && d.breakpoints[uint64(d.cpu.PC)] {
-			d.bpMu.RUnlock()
-			if d.bpChan != nil {
-				select {
-				case d.bpChan <- BreakpointEvent{CPUID: d.cpuID, Address: uint64(d.cpu.PC)}:
-				default:
-				}
-			}
-			return
-		}
+		bp := d.breakpoints[uint64(d.cpu.PC)]
 		d.bpMu.RUnlock()
+		if bp != nil {
+			bp.HitCount++
+			if evaluateCondition(bp.Condition, d) {
+				if d.bpChan != nil {
+					select {
+					case d.bpChan <- BreakpointEvent{CPUID: d.cpuID, Address: uint64(d.cpu.PC)}:
+					default:
+					}
+				}
+				return
+			}
+		}
 		if d.cpu.StepOne() == 0 {
 			return
 		}
+		// Check watchpoints
+		d.bpMu.RLock()
+		for _, wp := range d.watchpoints {
+			var cur byte
+			if int(uint32(wp.Address)) < len(d.cpu.memory) {
+				cur = d.cpu.memory[uint32(wp.Address)]
+			}
+			if cur != wp.LastValue {
+				old := wp.LastValue
+				wp.LastValue = cur
+				d.bpMu.RUnlock()
+				if d.bpChan != nil {
+					select {
+					case d.bpChan <- BreakpointEvent{
+						CPUID: d.cpuID, Address: uint64(d.cpu.PC),
+						IsWatch: true, WatchAddr: wp.Address,
+						WatchOldValue: old, WatchNewValue: cur,
+					}:
+					default:
+					}
+				}
+				return
+			}
+		}
+		d.bpMu.RUnlock()
 	}
 }
 
@@ -219,7 +249,14 @@ func (d *DebugIE32) Disassemble(addr uint64, count int) []DisassembledLine {
 func (d *DebugIE32) SetBreakpoint(addr uint64) bool {
 	d.bpMu.Lock()
 	defer d.bpMu.Unlock()
-	d.breakpoints[addr] = true
+	d.breakpoints[addr] = &ConditionalBreakpoint{Address: addr}
+	return true
+}
+
+func (d *DebugIE32) SetConditionalBreakpoint(addr uint64, cond *BreakpointCondition) bool {
+	d.bpMu.Lock()
+	defer d.bpMu.Unlock()
+	d.breakpoints[addr] = &ConditionalBreakpoint{Address: addr, Condition: cond}
 	return true
 }
 
@@ -236,7 +273,7 @@ func (d *DebugIE32) ClearBreakpoint(addr uint64) bool {
 func (d *DebugIE32) ClearAllBreakpoints() {
 	d.bpMu.Lock()
 	defer d.bpMu.Unlock()
-	d.breakpoints = make(map[uint64]bool)
+	d.breakpoints = make(map[uint64]*ConditionalBreakpoint)
 }
 
 func (d *DebugIE32) ListBreakpoints() []uint64 {
@@ -249,10 +286,58 @@ func (d *DebugIE32) ListBreakpoints() []uint64 {
 	return result
 }
 
+func (d *DebugIE32) ListConditionalBreakpoints() []*ConditionalBreakpoint {
+	d.bpMu.RLock()
+	defer d.bpMu.RUnlock()
+	result := make([]*ConditionalBreakpoint, 0, len(d.breakpoints))
+	for _, bp := range d.breakpoints {
+		result = append(result, bp)
+	}
+	return result
+}
+
 func (d *DebugIE32) HasBreakpoint(addr uint64) bool {
 	d.bpMu.RLock()
 	defer d.bpMu.RUnlock()
-	return d.breakpoints[addr]
+	_, ok := d.breakpoints[addr]
+	return ok
+}
+
+func (d *DebugIE32) SetWatchpoint(addr uint64) bool {
+	d.bpMu.Lock()
+	defer d.bpMu.Unlock()
+	var val byte
+	if int(uint32(addr)) < len(d.cpu.memory) {
+		val = d.cpu.memory[uint32(addr)]
+	}
+	d.watchpoints[addr] = &Watchpoint{Address: addr, LastValue: val}
+	return true
+}
+
+func (d *DebugIE32) ClearWatchpoint(addr uint64) bool {
+	d.bpMu.Lock()
+	defer d.bpMu.Unlock()
+	if _, ok := d.watchpoints[addr]; ok {
+		delete(d.watchpoints, addr)
+		return true
+	}
+	return false
+}
+
+func (d *DebugIE32) ClearAllWatchpoints() {
+	d.bpMu.Lock()
+	defer d.bpMu.Unlock()
+	d.watchpoints = make(map[uint64]*Watchpoint)
+}
+
+func (d *DebugIE32) ListWatchpoints() []uint64 {
+	d.bpMu.RLock()
+	defer d.bpMu.RUnlock()
+	result := make([]uint64, 0, len(d.watchpoints))
+	for addr := range d.watchpoints {
+		result = append(result, addr)
+	}
+	return result
 }
 
 func (d *DebugIE32) ReadMemory(addr uint64, size int) []byte {

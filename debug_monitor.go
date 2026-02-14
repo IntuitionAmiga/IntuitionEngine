@@ -20,6 +20,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"runtime"
 	"sync"
 )
 
@@ -29,12 +31,21 @@ type MonitorState int
 const (
 	MonitorInactive MonitorState = iota
 	MonitorActive
+	MonitorHexEdit
 )
 
 // OutputLine holds styled text for the monitor scrollback buffer.
 type OutputLine struct {
 	Text  string
 	Color uint32 // RGBA packed
+}
+
+// WriteRecord records a single write to a watched address during trace.
+type WriteRecord struct {
+	PC       uint64
+	OldValue byte
+	NewValue byte
+	StepNum  int
 }
 
 // CPUEntry associates a stable integer ID with a debuggable CPU.
@@ -70,18 +81,48 @@ type MachineMonitor struct {
 	bus       *MachineBus
 	coprocMgr *CoprocessorManager
 	prevRegs  map[string]uint64 // for change highlighting
+
+	// Run-Until temp breakpoints (Feature 2)
+	tempBreakpoints map[int]map[uint64]bool
+
+	// Trace state (Feature 8)
+	traceFile      *os.File
+	traceWatches   map[uint64]bool
+	traceSnapshots map[uint64]byte
+	writeHistory   map[uint64][]WriteRecord
+
+	// Backstep (Feature 9)
+	stepHistory []*MachineSnapshot
+	maxBackstep int
+
+	// Hex editor (Feature 12)
+	hexEditAddr   uint64
+	hexEditCursor int
+	hexEditNibble int
+	hexEditDirty  map[uint64]byte
+
+	// Scripting (Feature 13)
+	macros      map[string][]string
+	scriptDepth int
 }
 
 // NewMachineMonitor creates a new monitor instance.
 func NewMachineMonitor(bus *MachineBus) *MachineMonitor {
 	return &MachineMonitor{
-		state:          MonitorInactive,
-		cpus:           make(map[int]*CPUEntry),
-		breakpointChan: make(chan BreakpointEvent, 1),
-		maxOutput:      500,
-		wasRunning:     make(map[int]bool),
-		bus:            bus,
-		prevRegs:       make(map[string]uint64),
+		state:           MonitorInactive,
+		cpus:            make(map[int]*CPUEntry),
+		breakpointChan:  make(chan BreakpointEvent, 1),
+		maxOutput:       500,
+		wasRunning:      make(map[int]bool),
+		bus:             bus,
+		prevRegs:        make(map[string]uint64),
+		tempBreakpoints: make(map[int]map[uint64]bool),
+		traceWatches:    make(map[uint64]bool),
+		traceSnapshots:  make(map[uint64]byte),
+		writeHistory:    make(map[uint64][]WriteRecord),
+		maxBackstep:     32,
+		hexEditDirty:    make(map[uint64]byte),
+		macros:          make(map[string][]string),
 	}
 }
 
@@ -113,11 +154,13 @@ func (m *MachineMonitor) ResetCPUs() {
 			entry.CPU.Freeze()
 		}
 		entry.CPU.ClearAllBreakpoints()
+		entry.CPU.ClearAllWatchpoints()
 	}
 	m.cpus = make(map[int]*CPUEntry)
 	m.nextID = 0
 	m.focusedID = 0
 	m.wasRunning = make(map[int]bool)
+	m.tempBreakpoints = make(map[int]map[uint64]bool)
 }
 
 // UnregisterCPU removes a CPU by its stable ID.
@@ -139,7 +182,7 @@ func (m *MachineMonitor) UnregisterCPU(id int) {
 func (m *MachineMonitor) IsActive() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.state == MonitorActive
+	return m.state == MonitorActive || m.state == MonitorHexEdit
 }
 
 // FocusedCPU returns the currently focused CPU entry, or nil.
@@ -262,15 +305,32 @@ func (m *MachineMonitor) handleBreakpointHit(ev BreakpointEvent) {
 		}
 	}
 
+	// Clear temp breakpoint if this was a run-until
+	if temps, ok := m.tempBreakpoints[ev.CPUID]; ok {
+		if temps[ev.Address] {
+			if entry := m.cpus[ev.CPUID]; entry != nil {
+				entry.CPU.ClearBreakpoint(ev.Address)
+			}
+			delete(temps, ev.Address)
+			if len(temps) == 0 {
+				delete(m.tempBreakpoints, ev.CPUID)
+			}
+		}
+	}
+
+	// Build the display message
+	var msg string
+	if ev.IsWatch {
+		msg = fmt.Sprintf("WATCH $%X: $%02X -> $%02X at PC=$%X on %s (id:%d)",
+			ev.WatchAddr, ev.WatchOldValue, ev.WatchNewValue, ev.Address, getLabelForCPU(m.cpus, ev.CPUID), ev.CPUID)
+	} else {
+		msg = fmt.Sprintf("BREAK at $%X on %s (id:%d)", ev.Address, getLabelForCPU(m.cpus, ev.CPUID), ev.CPUID)
+	}
+
 	// If already active, just print the message and switch focus
 	if m.state == MonitorActive {
 		m.focusedID = ev.CPUID
-		entry := m.cpus[ev.CPUID]
-		label := "???"
-		if entry != nil {
-			label = entry.Label
-		}
-		m.appendOutput(fmt.Sprintf("BREAK at $%X on %s (id:%d)", ev.Address, label, ev.CPUID), colorRed)
+		m.appendOutput(msg, colorRed)
 		m.saveCurrentRegs()
 		m.showRegisters()
 		m.showDisassembly(0, 8)
@@ -287,23 +347,34 @@ func (m *MachineMonitor) handleBreakpointHit(ev BreakpointEvent) {
 	m.cursorPos = 0
 	m.historyIdx = len(m.history)
 
-	entry := m.cpus[ev.CPUID]
-	label := "???"
-	if entry != nil {
-		label = entry.Label
-	}
-	m.appendOutput(fmt.Sprintf("BREAK at $%X on %s (id:%d)", ev.Address, label, ev.CPUID), colorRed)
+	m.appendOutput(msg, colorRed)
 	m.saveCurrentRegs()
 	m.showRegisters()
 	m.showDisassembly(0, 8)
 }
 
+func getLabelForCPU(cpus map[int]*CPUEntry, id int) string {
+	if e, ok := cpus[id]; ok {
+		return e.Label
+	}
+	return "???"
+}
+
 // Color constants (RGBA packed as 0xRRGGBBAA)
 const (
-	colorWhite  = 0xFFFFFFFF
-	colorCyan   = 0x64C8FFFF
-	colorYellow = 0xFFFF55FF
-	colorRed    = 0xFF5555FF
-	colorGreen  = 0x55FF55FF
-	colorDim    = 0x5555FFFF
+	colorWhite   = 0xFFFFFFFF
+	colorCyan    = 0x64C8FFFF
+	colorYellow  = 0xFFFF55FF
+	colorRed     = 0xFF5555FF
+	colorGreen   = 0x55FF55FF
+	colorDim     = 0x5555FFFF
+	colorMagenta = 0xFF55FFFF
 )
+
+// yieldLock temporarily releases mu so the Ebiten render loop can acquire it,
+// then re-acquires. Used during trace to keep the UI responsive.
+func (m *MachineMonitor) yieldLock() {
+	m.mu.Unlock()
+	runtime.Gosched()
+	m.mu.Lock()
+}

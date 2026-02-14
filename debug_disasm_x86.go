@@ -153,12 +153,39 @@ func disassembleX86(readMem func(addr uint64, size int) []byte, startAddr uint64
 			hexParts = append(hexParts, fmt.Sprintf("%02X", b))
 		}
 
-		lines = append(lines, DisassembledLine{
+		line := DisassembledLine{
 			Address:  instrAddr,
 			HexBytes: strings.Join(hexParts, " "),
 			Mnemonic: mnemonic,
 			Size:     instrSize,
-		})
+		}
+
+		// Branch annotation by opcode
+		if len(hexData) >= 1 {
+			op := hexData[0]
+			switch {
+			case op == 0xE8 && instrSize >= 5: // CALL rel32
+				line.IsBranch = true
+				off := int32(uint32(hexData[1]) | uint32(hexData[2])<<8 | uint32(hexData[3])<<16 | uint32(hexData[4])<<24)
+				line.BranchTarget = uint64(int64(instrAddr) + int64(instrSize) + int64(off))
+			case op == 0xE9 && instrSize >= 5: // JMP rel32
+				line.IsBranch = true
+				off := int32(uint32(hexData[1]) | uint32(hexData[2])<<8 | uint32(hexData[3])<<16 | uint32(hexData[4])<<24)
+				line.BranchTarget = uint64(int64(instrAddr) + int64(instrSize) + int64(off))
+			case op == 0xEB && instrSize >= 2: // JMP rel8
+				line.IsBranch = true
+				line.BranchTarget = uint64(int64(instrAddr) + 2 + int64(int8(hexData[1])))
+			case op >= 0x70 && op <= 0x7F && instrSize >= 2: // Jcc rel8
+				line.IsBranch = true
+				line.BranchTarget = uint64(int64(instrAddr) + 2 + int64(int8(hexData[1])))
+			case op == 0x0F && instrSize >= 6 && len(hexData) >= 2 && hexData[1] >= 0x80 && hexData[1] <= 0x8F: // Jcc rel32
+				line.IsBranch = true
+				off := int32(uint32(hexData[2]) | uint32(hexData[3])<<8 | uint32(hexData[4])<<16 | uint32(hexData[5])<<24)
+				line.BranchTarget = uint64(int64(instrAddr) + int64(instrSize) + int64(off))
+			}
+		}
+
+		lines = append(lines, line)
 	}
 	return lines
 }

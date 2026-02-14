@@ -234,12 +234,31 @@ func disassemble6502(readMem func(addr uint64, size int) []byte, addr uint64, co
 			}
 		}
 
-		lines = append(lines, DisassembledLine{
+		line := DisassembledLine{
 			Address:  addr,
 			HexBytes: strings.Join(hexParts, " "),
 			Mnemonic: mnemonic,
 			Size:     size,
-		})
+		}
+
+		// Branch annotation
+		switch info.mode {
+		case am6502Rel:
+			line.IsBranch = true
+			if size >= 2 {
+				line.BranchTarget = uint64(uint16(addr) + 2 + uint16(int8(data[1])))
+			}
+		default:
+			switch info.name {
+			case "JMP", "JSR":
+				line.IsBranch = true
+				if size >= 3 {
+					line.BranchTarget = uint64(uint16(data[1]) | uint16(data[2])<<8)
+				}
+			}
+		}
+
+		lines = append(lines, line)
 		addr += uint64(size)
 	}
 	return lines

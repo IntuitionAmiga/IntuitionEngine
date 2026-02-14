@@ -19,12 +19,39 @@ func disassembleZ80(readMem func(addr uint64, size int) []byte, addr uint64, cou
 		for j := 0; j < size && j < len(data); j++ {
 			hexParts = append(hexParts, fmt.Sprintf("%02X", data[j]))
 		}
-		lines = append(lines, DisassembledLine{
+		line := DisassembledLine{
 			Address:  addr,
 			HexBytes: strings.Join(hexParts, " "),
 			Mnemonic: mnemonic,
 			Size:     size,
-		})
+		}
+
+		// Detect branches by opcode
+		op := data[0]
+		switch {
+		case op == 0xC3 || op == 0xC2 || op == 0xCA || op == 0xD2 || op == 0xDA || op == 0xE2 || op == 0xEA || op == 0xF2 || op == 0xFA: // JP nn / JP cc,nn
+			line.IsBranch = true
+			if len(data) >= 3 {
+				line.BranchTarget = uint64(uint16(data[1]) | uint16(data[2])<<8)
+			}
+		case op == 0xCD || op == 0xC4 || op == 0xCC || op == 0xD4 || op == 0xDC || op == 0xE4 || op == 0xEC || op == 0xF4 || op == 0xFC: // CALL nn / CALL cc,nn
+			line.IsBranch = true
+			if len(data) >= 3 {
+				line.BranchTarget = uint64(uint16(data[1]) | uint16(data[2])<<8)
+			}
+		case op == 0x18 || op == 0x20 || op == 0x28 || op == 0x30 || op == 0x38: // JR / JR cc
+			line.IsBranch = true
+			if len(data) >= 2 {
+				line.BranchTarget = uint64(uint16(addr) + 2 + uint16(int8(data[1])))
+			}
+		case op == 0x10: // DJNZ
+			line.IsBranch = true
+			if len(data) >= 2 {
+				line.BranchTarget = uint64(uint16(addr) + 2 + uint16(int8(data[1])))
+			}
+		}
+
+		lines = append(lines, line)
 		addr += uint64(size)
 	}
 	return lines

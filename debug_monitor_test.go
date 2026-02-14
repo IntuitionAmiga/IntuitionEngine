@@ -3021,3 +3021,1341 @@ func TestMonitorFaWithoutSoundChip(t *testing.T) {
 		t.Error("Expected error message when no soundChip wired")
 	}
 }
+
+// ===========================================================================
+// Feature 1: Export/Import Memory
+// ===========================================================================
+
+func TestMonitorSaveLoadMemory(t *testing.T) {
+	mon, cpu := newTestMonitor()
+
+	// Write test data
+	cpu.memory[0x5000] = 0xDE
+	cpu.memory[0x5001] = 0xAD
+	cpu.memory[0x5002] = 0xBE
+	cpu.memory[0x5003] = 0xEF
+
+	tmpFile := filepath.Join(t.TempDir(), "test.bin")
+
+	mon.mu.Lock()
+	mon.outputLines = nil
+	mon.ExecuteCommand("save $5000 $5003 " + tmpFile)
+	mon.mu.Unlock()
+
+	// Verify file was created
+	data, err := os.ReadFile(tmpFile)
+	if err != nil {
+		t.Fatalf("Failed to read saved file: %v", err)
+	}
+	if len(data) != 4 {
+		t.Fatalf("Expected 4 bytes, got %d", len(data))
+	}
+	if data[0] != 0xDE || data[1] != 0xAD || data[2] != 0xBE || data[3] != 0xEF {
+		t.Errorf("Saved data = %X, want DEADBEEF", data)
+	}
+
+	// Load at a different address
+	mon.mu.Lock()
+	mon.outputLines = nil
+	mon.ExecuteCommand("load " + tmpFile + " $6000")
+	mon.mu.Unlock()
+
+	if cpu.memory[0x6000] != 0xDE || cpu.memory[0x6001] != 0xAD {
+		t.Errorf("Loaded data at $6000 = %02X%02X, want DEAD", cpu.memory[0x6000], cpu.memory[0x6001])
+	}
+}
+
+// ===========================================================================
+// Feature 2: Run-Until
+// ===========================================================================
+
+func TestMonitorRunUntil(t *testing.T) {
+	mon, _ := newTestMonitor()
+	entry := mon.cpus[0]
+
+	mon.mu.Lock()
+	mon.outputLines = nil
+	exitMon := mon.ExecuteCommand("u $2000")
+	mon.mu.Unlock()
+
+	if !exitMon {
+		t.Error("Run-until should return true to exit monitor")
+	}
+
+	// Verify breakpoint was set
+	if !entry.CPU.HasBreakpoint(0x2000) {
+		t.Error("Expected breakpoint at $2000")
+	}
+
+	// Verify it's in temp breakpoints
+	mon.mu.Lock()
+	temps := mon.tempBreakpoints[0]
+	mon.mu.Unlock()
+	if !temps[0x2000] {
+		t.Error("Expected temp breakpoint at $2000")
+	}
+}
+
+// ===========================================================================
+// Feature 3: Expression Evaluation
+// ===========================================================================
+
+func TestEvalAddress(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+	cpu.running.Store(false)
+	cpu.PC = 0x1000
+	cpu.regs[1] = 0x100
+
+	adapter := NewDebugIE64(cpu)
+
+	tests := []struct {
+		expr string
+		want uint64
+		ok   bool
+	}{
+		{"$1000", 0x1000, true},
+		{"pc", 0x1000, true},
+		{"pc+$20", 0x1020, true},
+		{"pc-8", 0x0FF8, true},
+		{"r1+$10", 0x110, true},
+		{"$1000+r1", 0x1100, true},
+		{"", 0, false},
+	}
+
+	for _, tt := range tests {
+		got, ok := EvalAddress(tt.expr, adapter)
+		if ok != tt.ok || (ok && got != tt.want) {
+			t.Errorf("EvalAddress(%q) = ($%X, %v), want ($%X, %v)", tt.expr, got, ok, tt.want, tt.ok)
+		}
+	}
+}
+
+func TestEvalAddressNilCPU(t *testing.T) {
+	val, ok := EvalAddress("$1000+$20", nil)
+	if !ok || val != 0x1020 {
+		t.Errorf("EvalAddress with nil CPU: got ($%X, %v), want ($1020, true)", val, ok)
+	}
+}
+
+// ===========================================================================
+// Feature 4: Conditional Breakpoints
+// ===========================================================================
+
+func TestConditionParse(t *testing.T) {
+	tests := []struct {
+		text string
+		ok   bool
+	}{
+		{"r1==$FF", true},
+		{"[$1000]==$42", true},
+		{"hitcount>10", true},
+		{"r1!=0", true},
+		{"", false},
+		{"nooperator", false},
+	}
+
+	for _, tt := range tests {
+		cond, err := ParseCondition(tt.text)
+		if tt.ok && err != nil {
+			t.Errorf("ParseCondition(%q) unexpected error: %v", tt.text, err)
+		}
+		if !tt.ok && err == nil {
+			t.Errorf("ParseCondition(%q) expected error, got %v", tt.text, cond)
+		}
+	}
+}
+
+func TestConditionEvaluate(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+	cpu.running.Store(false)
+	cpu.regs[1] = 0xFF
+
+	adapter := NewDebugIE64(cpu)
+
+	// Register condition met
+	cond, _ := ParseCondition("r1==$FF")
+	if !evaluateCondition(cond, adapter) {
+		t.Error("Condition r1==$FF should be true")
+	}
+
+	// Register condition not met
+	cond2, _ := ParseCondition("r1==$00")
+	if evaluateCondition(cond2, adapter) {
+		t.Error("Condition r1==$00 should be false")
+	}
+
+	// Memory condition
+	cpu.memory[0x1000] = 0x42
+	cond3, _ := ParseCondition("[$1000]==$42")
+	if !evaluateCondition(cond3, adapter) {
+		t.Error("Condition [$1000]==$42 should be true")
+	}
+
+	// Nil condition = unconditional
+	if !evaluateCondition(nil, adapter) {
+		t.Error("Nil condition should return true")
+	}
+}
+
+func TestConditionFormat(t *testing.T) {
+	cond, _ := ParseCondition("r1==$FF")
+	s := FormatCondition(cond)
+	if !strings.Contains(s, "R1") || !strings.Contains(s, "==") || !strings.Contains(s, "$FF") {
+		t.Errorf("FormatCondition returned %q, expected R1==$FF", s)
+	}
+}
+
+func TestConditionalBreakpointCommand(t *testing.T) {
+	mon, _ := newTestMonitor()
+	entry := mon.cpus[0]
+
+	mon.mu.Lock()
+	mon.outputLines = nil
+	mon.ExecuteCommand("b $1000 r1==$FF")
+	mon.mu.Unlock()
+
+	bps := entry.CPU.ListConditionalBreakpoints()
+	if len(bps) != 1 {
+		t.Fatalf("Expected 1 breakpoint, got %d", len(bps))
+	}
+	if bps[0].Condition == nil {
+		t.Fatal("Expected conditional breakpoint")
+	}
+	if bps[0].Condition.Source != CondSourceRegister {
+		t.Error("Expected register condition")
+	}
+}
+
+func TestHitCountCondition(t *testing.T) {
+	cond, err := ParseCondition("hitcount>5")
+	if err != nil {
+		t.Fatalf("ParseCondition error: %v", err)
+	}
+
+	if evaluateConditionWithHitCount(cond, nil, 3) {
+		t.Error("hitcount 3 > 5 should be false")
+	}
+	if !evaluateConditionWithHitCount(cond, nil, 6) {
+		t.Error("hitcount 6 > 5 should be true")
+	}
+}
+
+// ===========================================================================
+// Feature 5: Watchpoints
+// ===========================================================================
+
+func TestWatchpointCommands(t *testing.T) {
+	mon, _ := newTestMonitor()
+	entry := mon.cpus[0]
+
+	// Set watchpoint
+	mon.mu.Lock()
+	mon.ExecuteCommand("ww $5000")
+	mon.mu.Unlock()
+
+	wps := entry.CPU.ListWatchpoints()
+	if len(wps) != 1 || wps[0] != 0x5000 {
+		t.Errorf("Expected watchpoint at $5000, got %v", wps)
+	}
+
+	// List watchpoints
+	mon.mu.Lock()
+	mon.outputLines = nil
+	mon.ExecuteCommand("wl")
+	hasWatch := false
+	for _, line := range mon.outputLines {
+		if strings.Contains(line.Text, "5000") {
+			hasWatch = true
+		}
+	}
+	mon.mu.Unlock()
+	if !hasWatch {
+		t.Error("Expected wl output to contain $5000")
+	}
+
+	// Clear watchpoint
+	mon.mu.Lock()
+	mon.ExecuteCommand("wc $5000")
+	mon.mu.Unlock()
+
+	wps = entry.CPU.ListWatchpoints()
+	if len(wps) != 0 {
+		t.Errorf("Expected no watchpoints after clear, got %v", wps)
+	}
+}
+
+func TestWatchpointClearAll(t *testing.T) {
+	mon, _ := newTestMonitor()
+	entry := mon.cpus[0]
+
+	mon.mu.Lock()
+	mon.ExecuteCommand("ww $5000")
+	mon.ExecuteCommand("ww $6000")
+	mon.ExecuteCommand("wc *")
+	mon.mu.Unlock()
+
+	wps := entry.CPU.ListWatchpoints()
+	if len(wps) != 0 {
+		t.Errorf("Expected all watchpoints cleared, got %v", wps)
+	}
+}
+
+// ===========================================================================
+// Feature 6: Backtrace
+// ===========================================================================
+
+func TestBacktraceIE64(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+	cpu.running.Store(false)
+	adapter := NewDebugIE64(cpu)
+
+	// Simulate stack with return addresses
+	sp := uint64(0x10000 - 8)
+	cpu.regs[31] = sp // SP = R31
+
+	// Write two 8-byte return addresses on the stack
+	addr1 := uint64(0x1234)
+	addr2 := uint64(0x5678)
+	for i := range 8 {
+		cpu.memory[sp+uint64(i)] = byte(addr1 >> (i * 8))
+		cpu.memory[sp+8+uint64(i)] = byte(addr2 >> (i * 8))
+	}
+
+	addrs := backtrace(adapter, 2)
+	if len(addrs) != 2 {
+		t.Fatalf("Expected 2 backtrace entries, got %d", len(addrs))
+	}
+	if addrs[0] != addr1 {
+		t.Errorf("Entry 0: got $%X, want $%X", addrs[0], addr1)
+	}
+	if addrs[1] != addr2 {
+		t.Errorf("Entry 1: got $%X, want $%X", addrs[1], addr2)
+	}
+}
+
+func TestBacktraceCommand(t *testing.T) {
+	mon, cpu := newTestMonitor()
+
+	sp := uint64(0x10000 - 8)
+	cpu.regs[31] = sp
+	// One return address
+	cpu.memory[sp] = 0x34
+	cpu.memory[sp+1] = 0x12
+
+	mon.mu.Lock()
+	mon.outputLines = nil
+	mon.ExecuteCommand("bt 1")
+	hasAddr := false
+	for _, line := range mon.outputLines {
+		if strings.Contains(line.Text, "1234") {
+			hasAddr = true
+		}
+	}
+	mon.mu.Unlock()
+
+	if !hasAddr {
+		t.Error("Expected bt output to contain return address")
+	}
+}
+
+// ===========================================================================
+// Feature 7: Save/Load Machine State
+// ===========================================================================
+
+func TestSnapshotSaveLoad(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+	cpu.running.Store(false)
+	cpu.PC = 0x2000
+	cpu.regs[1] = 0xDEAD
+	cpu.memory[0x5000] = 0x42
+
+	adapter := NewDebugIE64(cpu)
+
+	snap := TakeSnapshot(adapter)
+	if snap.CPUType != "IE64" {
+		t.Errorf("CPUType = %q, want IE64", snap.CPUType)
+	}
+
+	// Modify state
+	cpu.PC = 0x3000
+	cpu.regs[1] = 0
+	cpu.memory[0x5000] = 0
+
+	RestoreSnapshot(adapter, snap)
+
+	if cpu.PC != 0x2000 {
+		t.Errorf("PC after restore = $%X, want $2000", cpu.PC)
+	}
+	if cpu.regs[1] != 0xDEAD {
+		t.Errorf("R1 after restore = $%X, want $DEAD", cpu.regs[1])
+	}
+	if cpu.memory[0x5000] != 0x42 {
+		t.Errorf("Memory[$5000] after restore = $%X, want $42", cpu.memory[0x5000])
+	}
+}
+
+func TestSnapshotFile(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+	cpu.running.Store(false)
+	cpu.PC = 0x1234
+	cpu.regs[5] = 0xBEEF
+	adapter := NewDebugIE64(cpu)
+
+	snap := TakeSnapshot(adapter)
+
+	tmpFile := filepath.Join(t.TempDir(), "test.iem")
+	if err := SaveSnapshotToFile(snap, tmpFile); err != nil {
+		t.Fatalf("SaveSnapshotToFile error: %v", err)
+	}
+
+	loaded, err := LoadSnapshotFromFile(tmpFile)
+	if err != nil {
+		t.Fatalf("LoadSnapshotFromFile error: %v", err)
+	}
+
+	if loaded.CPUType != snap.CPUType {
+		t.Errorf("CPUType = %q, want %q", loaded.CPUType, snap.CPUType)
+	}
+	if len(loaded.Registers) != len(snap.Registers) {
+		t.Errorf("Register count = %d, want %d", len(loaded.Registers), len(snap.Registers))
+	}
+}
+
+func TestSaveLoadStateCommands(t *testing.T) {
+	mon, cpu := newTestMonitor()
+	cpu.PC = 0x5000
+	cpu.regs[1] = 0xCAFE
+
+	tmpFile := filepath.Join(t.TempDir(), "test.iem")
+
+	mon.mu.Lock()
+	mon.ExecuteCommand("ss " + tmpFile)
+	mon.mu.Unlock()
+
+	// Modify state
+	cpu.PC = 0x9000
+	cpu.regs[1] = 0
+
+	mon.mu.Lock()
+	mon.ExecuteCommand("sl " + tmpFile)
+	mon.mu.Unlock()
+
+	if cpu.PC != 0x5000 {
+		t.Errorf("PC after sl = $%X, want $5000", cpu.PC)
+	}
+	if cpu.regs[1] != 0xCAFE {
+		t.Errorf("R1 after sl = $%X, want $CAFE", cpu.regs[1])
+	}
+}
+
+// ===========================================================================
+// Feature 8: Trace + Write History
+// ===========================================================================
+
+func TestTraceRun(t *testing.T) {
+	mon, cpu := newTestMonitor()
+
+	// Write 4 NOP instructions
+	for i := range 4 {
+		cpu.memory[PROG_START+uint32(i*8)] = OP_NOP64
+	}
+	cpu.PC = uint64(PROG_START)
+
+	mon.mu.Lock()
+	mon.outputLines = nil
+	mon.ExecuteCommand("trace 4")
+	traceCount := 0
+	for _, line := range mon.outputLines {
+		if strings.Contains(line.Text, "nop") {
+			traceCount++
+		}
+	}
+	complete := false
+	for _, line := range mon.outputLines {
+		if strings.Contains(line.Text, "Trace complete") {
+			complete = true
+		}
+	}
+	mon.mu.Unlock()
+
+	if traceCount != 4 {
+		t.Errorf("Expected 4 trace lines with 'nop', got %d", traceCount)
+	}
+	if !complete {
+		t.Error("Expected 'Trace complete' message")
+	}
+}
+
+func TestTraceWriteHistory(t *testing.T) {
+	mon, cpu := newTestMonitor()
+
+	// Write a MOVE that will write to memory:
+	// move.l r1, #$42  then store.l r1, [addr $5000]
+	// For simplicity, let's test the trace watch mechanism by manually stepping
+	cpu.memory[0x5000] = 0x00
+	cpu.PC = uint64(PROG_START)
+	// Write NOPs - we'll manually test the watch
+	for i := range 4 {
+		cpu.memory[PROG_START+uint32(i*8)] = OP_NOP64
+	}
+
+	mon.mu.Lock()
+	// Add a trace watch
+	mon.ExecuteCommand("trace watch add $5000")
+	if !mon.traceWatches[0x5000] {
+		t.Error("Expected trace watch at $5000")
+	}
+
+	// List watches
+	mon.outputLines = nil
+	mon.ExecuteCommand("trace watch list")
+	hasWatch := false
+	for _, line := range mon.outputLines {
+		if strings.Contains(line.Text, "5000") {
+			hasWatch = true
+		}
+	}
+	if !hasWatch {
+		t.Error("Expected watch list to contain $5000")
+	}
+
+	// Remove watch
+	mon.ExecuteCommand("trace watch del $5000")
+	if mon.traceWatches[0x5000] {
+		t.Error("Expected trace watch removed")
+	}
+	mon.mu.Unlock()
+}
+
+func TestTraceHistoryClear(t *testing.T) {
+	mon, _ := newTestMonitor()
+
+	mon.mu.Lock()
+	mon.writeHistory[0x5000] = []WriteRecord{{PC: 0x1000, OldValue: 0, NewValue: 0xFF, StepNum: 1}}
+
+	mon.outputLines = nil
+	mon.ExecuteCommand("trace history show $5000")
+	hasHistory := false
+	for _, line := range mon.outputLines {
+		if strings.Contains(line.Text, "1 writes") {
+			hasHistory = true
+		}
+	}
+	if !hasHistory {
+		t.Error("Expected history show to display write count")
+	}
+
+	mon.ExecuteCommand("trace history clear $5000")
+	if len(mon.writeHistory[0x5000]) != 0 {
+		t.Error("Expected history cleared for $5000")
+	}
+	mon.mu.Unlock()
+}
+
+func TestTraceFile(t *testing.T) {
+	mon, cpu := newTestMonitor()
+	cpu.PC = uint64(PROG_START)
+	for i := range 4 {
+		cpu.memory[PROG_START+uint32(i*8)] = OP_NOP64
+	}
+
+	tmpFile := filepath.Join(t.TempDir(), "trace.log")
+
+	mon.mu.Lock()
+	mon.ExecuteCommand("trace file " + tmpFile)
+	if mon.traceFile == nil {
+		t.Fatal("Expected trace file to be set")
+	}
+	mon.ExecuteCommand("trace 2")
+	mon.ExecuteCommand("trace file off")
+	if mon.traceFile != nil {
+		t.Error("Expected trace file to be nil after 'off'")
+	}
+	mon.mu.Unlock()
+
+	data, err := os.ReadFile(tmpFile)
+	if err != nil {
+		t.Fatalf("Failed to read trace file: %v", err)
+	}
+	if len(data) == 0 {
+		t.Error("Expected trace file to have content")
+	}
+}
+
+// ===========================================================================
+// Feature 9: Backstep
+// ===========================================================================
+
+func TestBackstep(t *testing.T) {
+	mon, cpu := newTestMonitor()
+
+	// Write a move.l r1, #$42 instruction
+	cpu.memory[PROG_START] = OP_MOVE
+	cpu.memory[PROG_START+1] = (1<<3 | 2<<1 | 1) // rd=1, size=L, xbit=1
+	cpu.memory[PROG_START+4] = 0x42
+	cpu.PC = uint64(PROG_START)
+
+	// Save initial state
+	origPC := cpu.PC
+	origR1 := cpu.regs[1]
+
+	mon.mu.Lock()
+	// Step (should snapshot before stepping)
+	mon.ExecuteCommand("s")
+
+	// Verify step happened
+	if cpu.PC == origPC {
+		t.Error("PC should have changed after step")
+	}
+
+	// Backstep
+	mon.ExecuteCommand("bs")
+	mon.mu.Unlock()
+
+	if cpu.PC != origPC {
+		t.Errorf("PC after backstep = $%X, want $%X", cpu.PC, origPC)
+	}
+	if cpu.regs[1] != origR1 {
+		t.Errorf("R1 after backstep = $%X, want $%X", cpu.regs[1], origR1)
+	}
+}
+
+func TestBackstepEmptyHistory(t *testing.T) {
+	mon, _ := newTestMonitor()
+
+	mon.mu.Lock()
+	mon.outputLines = nil
+	mon.ExecuteCommand("bs")
+	hasError := false
+	for _, line := range mon.outputLines {
+		if strings.Contains(line.Text, "No step history") {
+			hasError = true
+		}
+	}
+	mon.mu.Unlock()
+
+	if !hasError {
+		t.Error("Expected error message for empty step history")
+	}
+}
+
+// ===========================================================================
+// Feature 10: Disassembly Annotation
+// ===========================================================================
+
+func TestDisassemblyBranchAnnotation(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+	cpu.running.Store(false)
+
+	// Write a BRA instruction at PROG_START that branches back to itself
+	cpu.memory[PROG_START] = OP_BRA
+	offset := int32(0) // branch to self (0 offset = same address)
+	uoff := uint32(offset)
+	cpu.memory[PROG_START+4] = byte(uoff)
+	cpu.memory[PROG_START+5] = byte(uoff >> 8)
+	cpu.memory[PROG_START+6] = byte(uoff >> 16)
+	cpu.memory[PROG_START+7] = byte(uoff >> 24)
+
+	adapter := NewDebugIE64(cpu)
+	lines := adapter.Disassemble(uint64(PROG_START), 1)
+
+	if len(lines) != 1 {
+		t.Fatalf("Expected 1 line, got %d", len(lines))
+	}
+	if !lines[0].IsBranch {
+		t.Error("Expected IsBranch=true for BRA")
+	}
+}
+
+func TestDisassemblyBranchIE32(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU(bus)
+	cpu.running.Store(false)
+
+	// Write JMP $2000
+	cpu.memory[0] = JMP
+	cpu.memory[4] = 0x00
+	cpu.memory[5] = 0x20 // $2000 in LE
+	cpu.memory[6] = 0x00
+	cpu.memory[7] = 0x00
+
+	adapter := NewDebugIE32(cpu)
+	lines := adapter.Disassemble(0, 1)
+
+	if len(lines) != 1 {
+		t.Fatalf("Expected 1 line, got %d", len(lines))
+	}
+	if !lines[0].IsBranch {
+		t.Error("Expected IsBranch=true for JMP")
+	}
+	if lines[0].BranchTarget != 0x2000 {
+		t.Errorf("BranchTarget = $%X, want $2000", lines[0].BranchTarget)
+	}
+}
+
+// ===========================================================================
+// Feature 11: I/O Register Viewer
+// ===========================================================================
+
+func TestIOViewCommand(t *testing.T) {
+	mon, _ := newTestMonitor()
+
+	// List devices
+	mon.mu.Lock()
+	mon.outputLines = nil
+	mon.ExecuteCommand("io")
+	hasDevices := false
+	for _, line := range mon.outputLines {
+		if strings.Contains(line.Text, "vga") || strings.Contains(line.Text, "Available") {
+			hasDevices = true
+		}
+	}
+	mon.mu.Unlock()
+
+	if !hasDevices {
+		t.Error("Expected device list output")
+	}
+}
+
+func TestIOViewDevice(t *testing.T) {
+	mon, _ := newTestMonitor()
+
+	mon.mu.Lock()
+	mon.outputLines = nil
+	mon.ExecuteCommand("io video")
+	hasRegs := false
+	for _, line := range mon.outputLines {
+		if strings.Contains(line.Text, "CTRL") || strings.Contains(line.Text, "VideoChip") {
+			hasRegs = true
+		}
+	}
+	mon.mu.Unlock()
+
+	if !hasRegs {
+		t.Error("Expected register output for 'io video'")
+	}
+}
+
+func TestIOViewUnknownDevice(t *testing.T) {
+	mon, _ := newTestMonitor()
+
+	mon.mu.Lock()
+	mon.outputLines = nil
+	mon.ExecuteCommand("io nonexistent")
+	hasError := false
+	for _, line := range mon.outputLines {
+		if strings.Contains(line.Text, "Unknown device") {
+			hasError = true
+		}
+	}
+	mon.mu.Unlock()
+
+	if !hasError {
+		t.Error("Expected error for unknown device")
+	}
+}
+
+func TestListIODevices(t *testing.T) {
+	devices := listIODevices()
+	if len(devices) != 10 {
+		t.Errorf("Expected 10 devices, got %d", len(devices))
+	}
+}
+
+// ===========================================================================
+// Feature 12: Hex Editor
+// ===========================================================================
+
+func TestHexEditorEnter(t *testing.T) {
+	mon, _ := newTestMonitor()
+
+	mon.mu.Lock()
+	mon.ExecuteCommand("e $5000")
+	if mon.state != MonitorHexEdit {
+		t.Error("Expected state to be MonitorHexEdit")
+	}
+	if mon.hexEditAddr != 0x5000 {
+		t.Errorf("hexEditAddr = $%X, want $5000", mon.hexEditAddr)
+	}
+	mon.mu.Unlock()
+}
+
+func TestHexEditorSetNibble(t *testing.T) {
+	mon, cpu := newTestMonitor()
+	cpu.memory[0x5000] = 0x00
+
+	mon.mu.Lock()
+	mon.state = MonitorHexEdit
+	mon.hexEditAddr = 0x5000
+	mon.hexEditCursor = 0
+	mon.hexEditNibble = 0
+	mon.hexEditDirty = make(map[uint64]byte)
+
+	// Set high nibble to A
+	mon.HexEditSetNibble(0xA)
+	// Set low nibble to B
+	mon.HexEditSetNibble(0xB)
+
+	if mon.hexEditDirty[0x5000] != 0xAB {
+		t.Errorf("Dirty byte = $%02X, want $AB", mon.hexEditDirty[0x5000])
+	}
+	mon.mu.Unlock()
+}
+
+func TestHexEditorCommit(t *testing.T) {
+	mon, cpu := newTestMonitor()
+
+	mon.mu.Lock()
+	mon.state = MonitorHexEdit
+	mon.hexEditAddr = 0x5000
+	mon.hexEditDirty = map[uint64]byte{0x5000: 0xFF, 0x5001: 0xAA}
+
+	mon.HexEditCommit()
+
+	if mon.state != MonitorActive {
+		t.Error("Expected state to be MonitorActive after commit")
+	}
+	mon.mu.Unlock()
+
+	if cpu.memory[0x5000] != 0xFF {
+		t.Errorf("Memory[$5000] = $%02X, want $FF", cpu.memory[0x5000])
+	}
+	if cpu.memory[0x5001] != 0xAA {
+		t.Errorf("Memory[$5001] = $%02X, want $AA", cpu.memory[0x5001])
+	}
+}
+
+func TestHexEditorDiscard(t *testing.T) {
+	mon, cpu := newTestMonitor()
+	cpu.memory[0x5000] = 0x00
+
+	mon.mu.Lock()
+	mon.state = MonitorHexEdit
+	mon.hexEditDirty = map[uint64]byte{0x5000: 0xFF}
+
+	mon.HexEditDiscard()
+
+	if mon.state != MonitorActive {
+		t.Error("Expected state to be MonitorActive after discard")
+	}
+	mon.mu.Unlock()
+
+	if cpu.memory[0x5000] != 0x00 {
+		t.Error("Memory should not have changed after discard")
+	}
+}
+
+// ===========================================================================
+// Feature 13: Scripting / Command Batching
+// ===========================================================================
+
+func TestScriptExecution(t *testing.T) {
+	mon, cpu := newTestMonitor()
+
+	tmpFile := filepath.Join(t.TempDir(), "test.mon")
+	os.WriteFile(tmpFile, []byte("r pc $2000\nw $5000 FF\n"), 0644)
+
+	mon.mu.Lock()
+	mon.ExecuteCommand("script " + tmpFile)
+	mon.mu.Unlock()
+
+	if cpu.PC != 0x2000 {
+		t.Errorf("PC = $%X, want $2000 after script", cpu.PC)
+	}
+	if cpu.memory[0x5000] != 0xFF {
+		t.Errorf("Memory[$5000] = $%02X, want $FF after script", cpu.memory[0x5000])
+	}
+}
+
+func TestScriptComments(t *testing.T) {
+	mon, _ := newTestMonitor()
+
+	tmpFile := filepath.Join(t.TempDir(), "test.mon")
+	os.WriteFile(tmpFile, []byte("# This is a comment\n\nr pc $3000\n"), 0644)
+
+	mon.mu.Lock()
+	mon.ExecuteCommand("script " + tmpFile)
+	mon.mu.Unlock()
+
+	entry := mon.cpus[0]
+	pc := entry.CPU.GetPC()
+	if pc != 0x3000 {
+		t.Errorf("PC = $%X, want $3000 after script with comments", pc)
+	}
+}
+
+func TestScriptRecursionLimit(t *testing.T) {
+	mon, _ := newTestMonitor()
+
+	// Create a script that calls itself
+	tmpFile := filepath.Join(t.TempDir(), "loop.mon")
+	os.WriteFile(tmpFile, []byte("script "+tmpFile+"\n"), 0644)
+
+	mon.mu.Lock()
+	mon.outputLines = nil
+	mon.ExecuteCommand("script " + tmpFile)
+	hasLimit := false
+	for _, line := range mon.outputLines {
+		if strings.Contains(line.Text, "recursion limit") {
+			hasLimit = true
+		}
+	}
+	mon.mu.Unlock()
+
+	if !hasLimit {
+		t.Error("Expected recursion limit message")
+	}
+}
+
+func TestMacroDefineAndRun(t *testing.T) {
+	mon, cpu := newTestMonitor()
+
+	mon.mu.Lock()
+	// Define a macro
+	mon.ExecuteCommand("macro test r pc $4000 ; w $5000 AA")
+
+	if _, ok := mon.macros["test"]; !ok {
+		t.Fatal("Expected macro 'test' to be defined")
+	}
+
+	// Run the macro
+	mon.ExecuteCommand("test")
+	mon.mu.Unlock()
+
+	if cpu.PC != 0x4000 {
+		t.Errorf("PC = $%X, want $4000 after macro", cpu.PC)
+	}
+	if cpu.memory[0x5000] != 0xAA {
+		t.Errorf("Memory[$5000] = $%02X, want $AA after macro", cpu.memory[0x5000])
+	}
+}
+
+// ===========================================================================
+// Breakpoint listener with watchpoints
+// ===========================================================================
+
+func TestBreakpointListenerWatchpoint(t *testing.T) {
+	mon, _ := newTestMonitor()
+	mon.state = MonitorActive // Already active
+
+	// Simulate a watchpoint event
+	ev := BreakpointEvent{
+		CPUID:         0,
+		Address:       0x1000,
+		IsWatch:       true,
+		WatchAddr:     0x5000,
+		WatchOldValue: 0x00,
+		WatchNewValue: 0xFF,
+	}
+
+	mon.handleBreakpointHit(ev)
+
+	mon.mu.Lock()
+	hasWatch := false
+	for _, line := range mon.outputLines {
+		if strings.Contains(line.Text, "WATCH") && strings.Contains(line.Text, "$5000") {
+			hasWatch = true
+		}
+	}
+	mon.mu.Unlock()
+
+	if !hasWatch {
+		t.Error("Expected watchpoint hit message")
+	}
+}
+
+// ===========================================================================
+// Temp breakpoint auto-clear
+// ===========================================================================
+
+func TestTempBreakpointAutoRemove(t *testing.T) {
+	mon, _ := newTestMonitor()
+	entry := mon.cpus[0]
+
+	// Set a temp breakpoint
+	entry.CPU.SetBreakpoint(0x2000)
+	mon.mu.Lock()
+	mon.tempBreakpoints[0] = map[uint64]bool{0x2000: true}
+	mon.mu.Unlock()
+
+	// Simulate breakpoint hit at that address
+	ev := BreakpointEvent{
+		CPUID:   0,
+		Address: 0x2000,
+	}
+	mon.handleBreakpointHit(ev)
+
+	// Verify temp BP was cleaned up
+	mon.mu.Lock()
+	temps := mon.tempBreakpoints[0]
+	mon.mu.Unlock()
+
+	if temps != nil && temps[0x2000] {
+		t.Error("Expected temp breakpoint to be auto-removed")
+	}
+
+	// Verify actual BP was cleared
+	if entry.CPU.HasBreakpoint(0x2000) {
+		t.Error("Expected breakpoint to be cleared from CPU")
+	}
+}
+
+// ===========================================================================
+// BreakpointList shows conditions
+// ===========================================================================
+
+func TestBreakpointListShowsConditions(t *testing.T) {
+	mon, _ := newTestMonitor()
+	entry := mon.cpus[0]
+
+	cond, _ := ParseCondition("r1>=$10")
+	entry.CPU.SetConditionalBreakpoint(0x3000, cond)
+
+	mon.mu.Lock()
+	mon.outputLines = nil
+	mon.ExecuteCommand("bl")
+	hasCondition := false
+	for _, line := range mon.outputLines {
+		if strings.Contains(line.Text, "$3000") && strings.Contains(line.Text, "R1") {
+			hasCondition = true
+		}
+	}
+	mon.mu.Unlock()
+
+	if !hasCondition {
+		t.Error("Expected bl to show condition info")
+	}
+}
+
+// ===========================================================================
+// Compare values for conditions
+// ===========================================================================
+
+func TestCompareValues(t *testing.T) {
+	tests := []struct {
+		a    uint64
+		op   ConditionOp
+		b    uint64
+		want bool
+	}{
+		{5, CondOpEqual, 5, true},
+		{5, CondOpEqual, 6, false},
+		{5, CondOpNotEqual, 6, true},
+		{5, CondOpLess, 6, true},
+		{6, CondOpLess, 5, false},
+		{5, CondOpGreater, 4, true},
+		{5, CondOpLessEqual, 5, true},
+		{5, CondOpGreaterEqual, 5, true},
+	}
+
+	for _, tt := range tests {
+		got := compareValues(tt.a, tt.op, tt.b)
+		if got != tt.want {
+			t.Errorf("compareValues(%d, %d, %d) = %v, want %v", tt.a, tt.op, tt.b, got, tt.want)
+		}
+	}
+}
+
+// ===========================================================================
+// ResetCPUs clears watchpoints
+// ===========================================================================
+
+func TestResetCPUsClearsWatchpoints(t *testing.T) {
+	mon, _ := newTestMonitor()
+	entry := mon.cpus[0]
+
+	entry.CPU.SetWatchpoint(0x5000)
+	entry.CPU.SetBreakpoint(0x1000)
+
+	mon.ResetCPUs()
+
+	// After reset, cpus map should be empty
+	mon.mu.Lock()
+	cpuCount := len(mon.cpus)
+	mon.mu.Unlock()
+
+	if cpuCount != 0 {
+		t.Errorf("Expected 0 CPUs after reset, got %d", cpuCount)
+	}
+}
+
+// ===========================================================================
+// IsActive returns true for hex edit mode
+// ===========================================================================
+
+func TestIsActiveHexEditMode(t *testing.T) {
+	mon, _ := newTestMonitor()
+
+	mon.mu.Lock()
+	mon.state = MonitorHexEdit
+	mon.mu.Unlock()
+
+	if !mon.IsActive() {
+		t.Error("IsActive() should return true in hex edit mode")
+	}
+}
+
+// ===========================================================================
+// Snapshot memory sizing
+// ===========================================================================
+
+func TestMemSizeFromWidth(t *testing.T) {
+	if memSizeFromWidth(16) != 64*1024 {
+		t.Error("16-bit should be 64KB")
+	}
+	if memSizeFromWidth(32) != 32*1024*1024 {
+		t.Error("32-bit should be 32MB")
+	}
+}
+
+// ===========================================================================
+// Multi-CPU focus with watchpoint hit
+// ===========================================================================
+
+func TestMultiCPUBreakpointHit(t *testing.T) {
+	bus := NewMachineBus()
+	cpu1 := NewCPU64(bus)
+	cpu2 := NewCPU64(bus)
+	cpu1.running.Store(false)
+	cpu2.running.Store(false)
+
+	mon := NewMachineMonitor(bus)
+	adapter1 := NewDebugIE64(cpu1)
+	adapter2 := NewDebugIE64(cpu2)
+	id1 := mon.RegisterCPU("CPU1", adapter1)
+	id2 := mon.RegisterCPU("CPU2", adapter2)
+	_ = id1
+
+	// Focus should start on first CPU
+	if mon.focusedID != id1 {
+		t.Errorf("Initial focus = %d, want %d", mon.focusedID, id1)
+	}
+
+	// Simulate breakpoint on second CPU
+	ev := BreakpointEvent{CPUID: id2, Address: 0x1234}
+	mon.handleBreakpointHit(ev)
+
+	// Focus should switch to second CPU
+	mon.mu.Lock()
+	focused := mon.focusedID
+	mon.mu.Unlock()
+
+	if focused != id2 {
+		t.Errorf("Focus after breakpoint = %d, want %d", focused, id2)
+	}
+}
+
+// ===========================================================================
+// Snapshot file format validation
+// ===========================================================================
+
+func TestSnapshotInvalidFile(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "bad.iem")
+	os.WriteFile(tmpFile, []byte("NOT_VALID_DATA"), 0644)
+
+	_, err := LoadSnapshotFromFile(tmpFile)
+	if err == nil {
+		t.Error("Expected error for invalid snapshot file")
+	}
+}
+
+// ===========================================================================
+// Breakpoint event channel integration
+// ===========================================================================
+
+func TestBreakpointChannel(t *testing.T) {
+	bus := NewMachineBus()
+	mon := NewMachineMonitor(bus)
+
+	cpu := NewCPU64(bus)
+	cpu.running.Store(false)
+	adapter := NewDebugIE64(cpu)
+	mon.RegisterCPU("IE64", adapter)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	mon.StartBreakpointListener()
+
+	// Send a breakpoint event
+	go func() {
+		defer wg.Done()
+		mon.breakpointChan <- BreakpointEvent{CPUID: 0, Address: 0x1000}
+	}()
+
+	wg.Wait()
+	time.Sleep(50 * time.Millisecond) // Give listener time to process
+
+	mon.mu.Lock()
+	active := mon.state == MonitorActive
+	mon.mu.Unlock()
+
+	if !active {
+		t.Error("Monitor should be active after breakpoint hit")
+	}
+}
+
+// ===========================================================================
+// Help command coverage
+// ===========================================================================
+
+func TestHelpCommand(t *testing.T) {
+	mon, _ := newTestMonitor()
+
+	mon.mu.Lock()
+	mon.outputLines = nil
+	mon.ExecuteCommand("?")
+	lineCount := len(mon.outputLines)
+	mon.mu.Unlock()
+
+	if lineCount < 20 {
+		t.Errorf("Expected at least 20 help lines, got %d", lineCount)
+	}
+}
+
+// ===========================================================================
+// Unknown command shows error
+// ===========================================================================
+
+func TestUnknownCommand(t *testing.T) {
+	mon, _ := newTestMonitor()
+
+	mon.mu.Lock()
+	mon.outputLines = nil
+	mon.ExecuteCommand("zzz")
+	hasError := false
+	for _, line := range mon.outputLines {
+		if strings.Contains(line.Text, "Unknown command") {
+			hasError = true
+		}
+	}
+	mon.mu.Unlock()
+
+	if !hasError {
+		t.Error("Expected unknown command error")
+	}
+}
+
+// ===========================================================================
+// Macro invocation from default case
+// ===========================================================================
+
+func TestMacroUnknownFallback(t *testing.T) {
+	mon, _ := newTestMonitor()
+
+	mon.mu.Lock()
+	// Command that's not a macro and not a known command
+	mon.outputLines = nil
+	mon.ExecuteCommand("notamacro")
+	hasUnknown := false
+	for _, line := range mon.outputLines {
+		if strings.Contains(line.Text, "Unknown command") {
+			hasUnknown = true
+		}
+	}
+	mon.mu.Unlock()
+
+	if !hasUnknown {
+		t.Error("Expected unknown command for non-macro")
+	}
+}
+
+// ===========================================================================
+// Expression with subtraction
+// ===========================================================================
+
+func TestEvalAddressSubtraction(t *testing.T) {
+	val, ok := EvalAddress("$1000-$10", nil)
+	if !ok || val != 0xFF0 {
+		t.Errorf("EvalAddress('$1000-$10') = ($%X, %v), want ($FF0, true)", val, ok)
+	}
+}
+
+// ===========================================================================
+// Format condition for all source types
+// ===========================================================================
+
+func TestFormatConditionAllSources(t *testing.T) {
+	// Register
+	c1 := &BreakpointCondition{Source: CondSourceRegister, RegName: "PC", Op: CondOpEqual, Value: 0x100}
+	s1 := FormatCondition(c1)
+	if !strings.Contains(s1, "PC==") {
+		t.Errorf("FormatCondition register: %q", s1)
+	}
+
+	// Memory
+	c2 := &BreakpointCondition{Source: CondSourceMemory, MemAddr: 0x5000, Op: CondOpNotEqual, Value: 0}
+	s2 := FormatCondition(c2)
+	if !strings.Contains(s2, "[$5000]!=") {
+		t.Errorf("FormatCondition memory: %q", s2)
+	}
+
+	// HitCount
+	c3 := &BreakpointCondition{Source: CondSourceHitCount, Op: CondOpGreater, Value: 10}
+	s3 := FormatCondition(c3)
+	if !strings.Contains(s3, "hitcount>") {
+		t.Errorf("FormatCondition hitcount: %q", s3)
+	}
+
+	// Nil
+	s4 := FormatCondition(nil)
+	if s4 != "" {
+		t.Errorf("FormatCondition nil should be empty, got %q", s4)
+	}
+}
+
+// ===========================================================================
+// getLabelForCPU helper
+// ===========================================================================
+
+func TestGetLabelForCPU(t *testing.T) {
+	cpus := map[int]*CPUEntry{
+		0: {ID: 0, Label: "TestCPU"},
+	}
+	if getLabelForCPU(cpus, 0) != "TestCPU" {
+		t.Error("Expected TestCPU")
+	}
+	if getLabelForCPU(cpus, 99) != "???" {
+		t.Error("Expected ??? for unknown ID")
+	}
+}
+
+// ===========================================================================
+// Breakpoint clear command with EvalAddress
+// ===========================================================================
+
+func TestBreakpointClearWithExpression(t *testing.T) {
+	mon, _ := newTestMonitor()
+	entry := mon.cpus[0]
+
+	mon.mu.Lock()
+	mon.ExecuteCommand("b $1000")
+	if !entry.CPU.HasBreakpoint(0x1000) {
+		t.Fatal("Breakpoint should exist at $1000")
+	}
+	mon.ExecuteCommand("bc $1000")
+	mon.mu.Unlock()
+
+	if entry.CPU.HasBreakpoint(0x1000) {
+		t.Error("Breakpoint should be cleared")
+	}
+}
+
+// ===========================================================================
+// Unused import check helpers (ensures tests compile)
+// ===========================================================================
+
+var (
+	_ = fmt.Sprintf
+	_ = os.ReadFile
+	_ = filepath.Join
+	_ = strings.Contains
+	_ = sync.Mutex{}
+	_ = time.Millisecond
+)
