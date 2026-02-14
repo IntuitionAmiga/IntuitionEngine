@@ -235,7 +235,7 @@ CPU modes that execute binaries (`-ie32`, `-ie64`, `-m68k`, `-m6502`, `-z80`, `-
 
 ## 1.4 Ebiten Window Controls
 
-- `F10`: Hard reset — performs a full hardware reset, restoring cold boot state and restarting the current program
+- `F10`: Hard reset — performs a full power-on hardware reset and boots IE64 BASIC
 - `F11`: Toggle fullscreen mode
 - `F12`: Toggle the runtime status bar
 - Status bar semantics: `CPU`, `VIDEO`, and `AUDIO` device names are shown in green when active and gray when inactive.
