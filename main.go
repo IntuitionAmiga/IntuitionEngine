@@ -24,6 +24,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -1340,6 +1341,10 @@ func main() {
 
 		// 11. Load program
 		reloadProgram()
+		if forceBasicBoot {
+			// Optional cleanup point: BASIC image is now loaded into reset state.
+			runtime.GC()
+		}
 
 		// 12. Start peripherals
 		videoChip.Start()
@@ -1383,6 +1388,10 @@ func main() {
 	_ = reloadProgram
 	_ = currentMode
 	_ = currentPath
+	if modeBasic {
+		// Initial BASIC startup: collect transient allocations after image setup.
+		runtime.GC()
+	}
 
 	// Start console terminal host only when not using graphical BASIC terminal.
 	if termHost != nil {
