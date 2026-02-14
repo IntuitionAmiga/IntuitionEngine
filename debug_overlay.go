@@ -92,7 +92,7 @@ func (o *MonitorOverlay) drawGlyph(ch byte, col, row int, fg, bg uint32) {
 
 // drawString renders a string at the given column/row with colors.
 func (o *MonitorOverlay) drawString(s string, col, row int, fg uint32) {
-	bg := uint32(0x0000AAFF) // deep blue background
+	bg := uint32(0x0055AAFF) // deep blue background
 	for i := 0; i < len(s) && col+i < overlayCols; i++ {
 		o.drawGlyph(s[i], col+i, row, fg, bg)
 	}
@@ -100,7 +100,7 @@ func (o *MonitorOverlay) drawString(s string, col, row int, fg uint32) {
 
 // fillRow fills an entire row with the background color.
 func (o *MonitorOverlay) fillRow(row int) {
-	bg := uint32(0x0000AAFF)
+	bg := uint32(0x0055AAFF)
 	for col := range overlayCols {
 		o.drawGlyph(' ', col, row, colorWhite, bg)
 	}
@@ -170,7 +170,7 @@ func (o *MonitorOverlay) Draw(screen *ebiten.Image) {
 	// Cursor
 	cursorCol := 2 + m.cursorPos
 	if cursorCol < overlayCols {
-		o.drawGlyph('_', cursorCol, inputRow, colorWhite, 0x0000AAFF)
+		o.drawGlyph('_', cursorCol, inputRow, colorWhite, 0x0055AAFF)
 	}
 
 	o.image.WritePixels(o.pixels)
