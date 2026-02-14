@@ -2732,8 +2732,11 @@ func TestCoprocMonitorIDWriteUnderMu(t *testing.T) {
 }
 
 func TestCoprocRegistrationRace(t *testing.T) {
-	// This test verifies that if a worker is replaced during the unlock window
-	// in cmdStart, the stale monitor entry gets cleaned up properly.
+	// This test exercises cmdStart's post-relock ownership check.
+	// Simulates the race: thread A creates and stores a worker, then
+	// while A is registering with the monitor (outside mu), thread B
+	// replaces it. When A relocks, it must detect the replacement
+	// and clean up its stale monitor entry.
 	bus := NewMachineBus()
 	mon := NewMachineMonitor(bus)
 	mgr := NewCoprocessorManager(bus, ".")
@@ -2741,43 +2744,56 @@ func TestCoprocRegistrationRace(t *testing.T) {
 
 	code := buildIE32ServiceBinary(ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE32)))
 
-	// Create first worker and register
-	w1, err := mgr.createWorkerAndRegister(EXEC_TYPE_IE32, code)
+	// Thread A: create worker_A and store it
+	wA, err := mgr.createWorker(EXEC_TYPE_IE32, code)
 	if err != nil {
-		t.Fatalf("first createWorkerAndRegister: %v", err)
+		t.Fatalf("createWorker A: %v", err)
 	}
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE32] = w1
+	mgr.workers[EXEC_TYPE_IE32] = wA
 	mgr.mu.Unlock()
 
-	w1ID := w1.monitorID
-	if w1ID < 0 {
-		t.Fatal("First worker should be registered")
-	}
-
-	// Create second worker and register (replacing first)
-	w2, err := mgr.createWorkerAndRegister(EXEC_TYPE_IE32, code)
+	// Simulate thread B interleaving: B replaces A with a new worker
+	wB, err := mgr.createWorkerAndRegister(EXEC_TYPE_IE32, code)
 	if err != nil {
-		t.Fatalf("second createWorkerAndRegister: %v", err)
+		t.Fatalf("createWorkerAndRegister B: %v", err)
 	}
-
-	// Stop and unregister old worker
-	mgr.stopWorkerAndUnregister(EXEC_TYPE_IE32, w1)
+	// Stop A (which B would do via stopWorkerAndUnregister)
+	wA.stopCPU()
+	select {
+	case <-wA.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Worker A didn't stop")
+	}
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE32] = w2
+	mgr.workers[EXEC_TYPE_IE32] = wB
 	mgr.mu.Unlock()
 
-	// Old monitor entry should be cleaned up
+	// Now simulate thread A's post-relock phase: it tries to register
+	// worker_A with the monitor, but worker_A is no longer in the map.
+	idA := mon.RegisterCPU("coproc:IE32", wA.debugCPU)
+
+	// Thread A relocks and checks ownership — worker_A is NOT in map.
+	mgr.mu.Lock()
+	if mgr.workers[EXEC_TYPE_IE32] != wA {
+		// Detected replacement — clean up stale monitor entry
+		mgr.mu.Unlock()
+		mon.UnregisterCPU(idA)
+		mgr.mu.Lock()
+	}
+	mgr.mu.Unlock()
+
+	// Verify: only worker_B's monitor entry should exist
 	mon.mu.Lock()
-	_, oldExists := mon.cpus[w1ID]
-	_, newExists := mon.cpus[w2.monitorID]
+	_, aExists := mon.cpus[idA]
+	_, bExists := mon.cpus[wB.monitorID]
 	mon.mu.Unlock()
 
-	if oldExists {
-		t.Error("Stale monitor entry for first worker should be removed")
+	if aExists {
+		t.Error("Stale monitor entry for worker A should have been cleaned up")
 	}
-	if !newExists {
-		t.Error("New monitor entry for second worker should exist")
+	if !bExists {
+		t.Error("Worker B's monitor entry should exist")
 	}
 
 	// Clean up

@@ -239,7 +239,7 @@ func (m *CoprocessorManager) cmdStart() {
 	}
 
 	m.mu.Unlock()
-	worker, err := m.createWorkerAndRegister(cpuType, data)
+	worker, err := m.createWorker(cpuType, data)
 	m.mu.Lock()
 	if err != nil {
 		m.cmdStatus = COPROC_STATUS_ERROR
@@ -247,7 +247,43 @@ func (m *CoprocessorManager) cmdStart() {
 		return
 	}
 
+	// Store worker under mu BEFORE registering with monitor.
+	// If someone else took this slot while we were unlocked, stop our
+	// newly created worker instead of overwriting theirs.
+	if m.workers[cpuType] != nil {
+		// Another start beat us — discard our worker
+		m.mu.Unlock()
+		worker.stopCPU()
+		select {
+		case <-worker.done:
+		case <-time.After(2 * time.Second):
+		}
+		m.mu.Lock()
+		m.cmdStatus = COPROC_STATUS_ERROR
+		m.cmdError = COPROC_ERR_LOAD_FAILED
+		return
+	}
 	m.workers[cpuType] = worker
+	mon := m.monitor
+
+	// Register with monitor outside mu, then recheck ownership.
+	m.mu.Unlock()
+	var newID int = -1
+	if mon != nil && worker.debugCPU != nil {
+		newID = mon.RegisterCPU(coprocLabel(cpuType), worker.debugCPU)
+	}
+	m.mu.Lock()
+	if m.workers[cpuType] == worker {
+		worker.monitorID = newID
+	} else {
+		// Stale: someone replaced us during registration — clean up
+		if mon != nil && newID >= 0 {
+			m.mu.Unlock()
+			mon.UnregisterCPU(newID)
+			m.mu.Lock()
+		}
+	}
+
 	m.cmdStatus = COPROC_STATUS_OK
 	m.cmdError = COPROC_ERR_NONE
 }
