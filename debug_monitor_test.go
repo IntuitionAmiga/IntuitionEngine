@@ -2,7 +2,10 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -2732,68 +2735,80 @@ func TestCoprocMonitorIDWriteUnderMu(t *testing.T) {
 }
 
 func TestCoprocRegistrationRace(t *testing.T) {
-	// This test exercises cmdStart's post-relock ownership check.
-	// Simulates the race: thread A creates and stores a worker, then
-	// while A is registering with the monitor (outside mu), thread B
-	// replaces it. When A relocks, it must detect the replacement
-	// and clean up its stale monitor entry.
+	// Drive cmdStart end-to-end through the real MMIO path with concurrent
+	// callers racing on the same cpuType. After all starts complete, verify
+	// exactly one worker is active and every monitor entry is accounted for
+	// (no leaked IDs from stale registrations).
 	bus := NewMachineBus()
 	mon := NewMachineMonitor(bus)
-	mgr := NewCoprocessorManager(bus, ".")
+	mgr := NewCoprocessorManager(bus, t.TempDir())
 	mgr.monitor = mon
+	bus.MapIO(COPROC_BASE, COPROC_END, mgr.HandleRead, mgr.HandleWrite)
 
+	// Write a valid IE32 service binary to a temp file
 	code := buildIE32ServiceBinary(ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE32)))
-
-	// Thread A: create worker_A and store it
-	wA, err := mgr.createWorker(EXEC_TYPE_IE32, code)
-	if err != nil {
-		t.Fatalf("createWorker A: %v", err)
+	binPath := filepath.Join(t.TempDir(), "worker.bin")
+	if err := os.WriteFile(binPath, code, 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
 	}
+	// sanitizePath requires a relative path under baseDir; use the mgr's baseDir
+	binPath2 := filepath.Join(mgr.baseDir, "worker.bin")
+	if err := os.WriteFile(binPath2, code, 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Helper: trigger cmdStart through the real HandleWrite path
+	triggerStart := func() {
+		nameAddr := uint32(0x400000)
+		writeString(bus, nameAddr, "worker.bin")
+		bus.Write32(COPROC_CPU_TYPE, EXEC_TYPE_IE32)
+		bus.Write32(COPROC_NAME_PTR, nameAddr)
+		bus.Write32(COPROC_CMD, COPROC_CMD_START)
+	}
+
+	// Launch N concurrent cmdStart calls for the same cpuType
+	const N = 8
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for range N {
+		go func() {
+			defer wg.Done()
+			triggerStart()
+		}()
+	}
+	wg.Wait()
+
+	// After all concurrent starts, exactly one worker should be active
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE32] = wA
+	worker := mgr.workers[EXEC_TYPE_IE32]
 	mgr.mu.Unlock()
-
-	// Simulate thread B interleaving: B replaces A with a new worker
-	wB, err := mgr.createWorkerAndRegister(EXEC_TYPE_IE32, code)
-	if err != nil {
-		t.Fatalf("createWorkerAndRegister B: %v", err)
+	if worker == nil {
+		t.Fatal("Expected one active IE32 worker after concurrent starts")
 	}
-	// Stop A (which B would do via stopWorkerAndUnregister)
-	wA.stopCPU()
-	select {
-	case <-wA.done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Worker A didn't stop")
-	}
-	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE32] = wB
-	mgr.mu.Unlock()
 
-	// Now simulate thread A's post-relock phase: it tries to register
-	// worker_A with the monitor, but worker_A is no longer in the map.
-	idA := mon.RegisterCPU("coproc:IE32", wA.debugCPU)
-
-	// Thread A relocks and checks ownership — worker_A is NOT in map.
-	mgr.mu.Lock()
-	if mgr.workers[EXEC_TYPE_IE32] != wA {
-		// Detected replacement — clean up stale monitor entry
-		mgr.mu.Unlock()
-		mon.UnregisterCPU(idA)
-		mgr.mu.Lock()
-	}
-	mgr.mu.Unlock()
-
-	// Verify: only worker_B's monitor entry should exist
+	// Count monitor entries with label "coproc:IE32"
 	mon.mu.Lock()
-	_, aExists := mon.cpus[idA]
-	_, bExists := mon.cpus[wB.monitorID]
-	mon.mu.Unlock()
-
-	if aExists {
-		t.Error("Stale monitor entry for worker A should have been cleaned up")
+	var coprocEntries int
+	for _, entry := range mon.cpus {
+		if entry.Label == "coproc:IE32" {
+			coprocEntries++
+		}
 	}
-	if !bExists {
-		t.Error("Worker B's monitor entry should exist")
+	mon.mu.Unlock()
+	if coprocEntries != 1 {
+		t.Errorf("Expected exactly 1 monitor entry for coproc:IE32, got %d (leaked registrations)", coprocEntries)
+	}
+
+	// Verify the active worker's monitorID points to a valid entry
+	if worker.monitorID < 0 {
+		t.Error("Active worker should have a valid monitorID")
+	} else {
+		mon.mu.Lock()
+		_, exists := mon.cpus[worker.monitorID]
+		mon.mu.Unlock()
+		if !exists {
+			t.Error("Active worker's monitorID does not correspond to a monitor entry")
+		}
 	}
 
 	// Clean up
