@@ -1740,3 +1740,187 @@ func TestBreakpointConcurrency(t *testing.T) {
 	// Clean up
 	adapter.ClearAllBreakpoints()
 }
+
+// ===========================================================================
+// Regression: ResetCPUs stops trap-mode goroutines before CPU recreation
+// ===========================================================================
+
+func TestResetCPUsStopsTrapMode(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+
+	// Write a NOP loop: 10 NOPs + BRA back
+	for i := uint32(0); i < 10; i++ {
+		cpu.memory[PROG_START+i*8] = OP_NOP64
+	}
+	cpu.memory[PROG_START+80] = OP_BRA
+	offset := int32(-88)
+	uoff := uint32(offset)
+	cpu.memory[PROG_START+84] = byte(uoff)
+	cpu.memory[PROG_START+85] = byte(uoff >> 8)
+	cpu.memory[PROG_START+86] = byte(uoff >> 16)
+	cpu.memory[PROG_START+87] = byte(uoff >> 24)
+
+	mon := NewMachineMonitor(bus)
+	adapter := NewDebugIE64(cpu)
+	mon.RegisterCPU("IE64", adapter)
+
+	// Enter trap mode: set far breakpoint, resume
+	adapter.SetBreakpoint(0xFFFFFF)
+	adapter.Resume()
+
+	// Wait for the trap loop to start
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if adapter.trapRunning.Load() {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !adapter.trapRunning.Load() {
+		t.Fatal("Adapter should be in trap mode")
+	}
+
+	// ResetCPUs must stop the trap goroutine before clearing the CPU map
+	mon.ResetCPUs()
+
+	if adapter.trapRunning.Load() {
+		t.Error("trapRunning should be false after ResetCPUs")
+	}
+	if adapter.IsRunning() {
+		t.Error("IsRunning() should be false after ResetCPUs")
+	}
+}
+
+// ===========================================================================
+// Regression: breakpoint auto-activation preserves frozen CPU state
+// ===========================================================================
+
+func TestBreakpointAutoActivationPreservesFrozenState(t *testing.T) {
+	bus := NewMachineBus()
+
+	// CPU 0: intentionally frozen (never started)
+	cpu0 := NewCPU64(bus)
+	cpu0.running.Store(false)
+
+	// CPU 1: will run and hit breakpoint
+	cpu1 := NewCPU64(bus)
+	for i := uint32(0); i < 10; i++ {
+		cpu1.memory[PROG_START+i*8] = OP_NOP64
+	}
+	cpu1.memory[PROG_START+80] = OP_BRA
+	offset := int32(-88)
+	uoff := uint32(offset)
+	cpu1.memory[PROG_START+84] = byte(uoff)
+	cpu1.memory[PROG_START+85] = byte(uoff >> 8)
+	cpu1.memory[PROG_START+86] = byte(uoff >> 16)
+	cpu1.memory[PROG_START+87] = byte(uoff >> 24)
+
+	mon := NewMachineMonitor(bus)
+	adapter0 := NewDebugIE64(cpu0)
+	adapter1 := NewDebugIE64(cpu1)
+	mon.RegisterCPU("IE64-main", adapter0)
+	mon.RegisterCPU("IE64-coproc", adapter1)
+	mon.StartBreakpointListener()
+
+	// Set breakpoint on CPU 1 at 3rd instruction
+	bpAddr := uint64(PROG_START + 16)
+	adapter1.SetBreakpoint(bpAddr)
+
+	// Resume CPU 1 (enters trap mode, CPU 0 stays frozen)
+	adapter1.Resume()
+
+	// Wait for auto-activation
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if mon.IsActive() {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !mon.IsActive() {
+		adapter1.Freeze()
+		t.Fatal("Monitor should auto-activate on breakpoint hit")
+	}
+
+	// Clear breakpoints so Deactivate's Resume won't re-trigger immediately
+	adapter1.ClearAllBreakpoints()
+
+	// Deactivate — should only resume CPUs that were genuinely running
+	mon.Deactivate()
+
+	// CPU 0 was frozen before the breakpoint — it must NOT be resumed
+	if adapter0.IsRunning() {
+		t.Error("CPU 0 should remain frozen — it was not running before the breakpoint")
+	}
+}
+
+// ===========================================================================
+// Regression: Z80 trap loop clears CPU Running flag on all exit paths
+// ===========================================================================
+
+func TestZ80TrapLoopClearsRunning(t *testing.T) {
+	bus := &testZ80Bus{}
+	cpu := NewCPU_Z80(bus)
+
+	bpChan := make(chan BreakpointEvent, 1)
+	adapter := NewDebugZ80(cpu, nil)
+	adapter.SetBreakpointChannel(bpChan, 0)
+
+	// Sub-test 1: breakpoint hit must clear Running
+	t.Run("breakpoint_exit", func(t *testing.T) {
+		cpu.PC = 0
+		// Memory is zero-initialized = all NOPs (0x00)
+		adapter.SetBreakpoint(5)
+		adapter.Resume()
+
+		select {
+		case <-bpChan:
+		case <-time.After(2 * time.Second):
+			adapter.Freeze()
+			t.Fatal("Timeout waiting for breakpoint")
+		}
+
+		if cpu.Running() {
+			t.Error("CPU.Running() should be false after breakpoint hit")
+		}
+		if adapter.trapRunning.Load() {
+			t.Error("trapRunning should be false after breakpoint hit")
+		}
+		adapter.ClearAllBreakpoints()
+	})
+
+	// Sub-test 2: Freeze must clear Running
+	t.Run("freeze_exit", func(t *testing.T) {
+		cpu.PC = 0
+		// JR -2: infinite loop at address 0 so breakpoint is never reached
+		bus.mem[0] = 0x18 // JR
+		bus.mem[1] = 0xFE // offset -2
+
+		adapter.SetBreakpoint(0xFFFF)
+		adapter.Resume()
+
+		deadline := time.Now().Add(time.Second)
+		for time.Now().Before(deadline) {
+			if adapter.trapRunning.Load() {
+				break
+			}
+			time.Sleep(time.Millisecond)
+		}
+		if !adapter.trapRunning.Load() {
+			t.Fatal("Trap loop should have started")
+		}
+
+		adapter.Freeze()
+
+		if cpu.Running() {
+			t.Error("CPU.Running() should be false after Freeze")
+		}
+		if adapter.trapRunning.Load() {
+			t.Error("trapRunning should be false after Freeze")
+		}
+		adapter.ClearAllBreakpoints()
+		bus.mem[0] = 0x00
+		bus.mem[1] = 0x00
+	})
+}

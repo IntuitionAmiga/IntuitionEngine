@@ -149,6 +149,8 @@ func (d *DebugIE64) Resume() {
 
 func (d *DebugIE64) trapLoop() {
 	defer d.trapRunning.Store(false)
+	defer d.cpu.running.Store(false)
+	d.cpu.running.Store(true)
 	for {
 		select {
 		case <-d.trapStop:

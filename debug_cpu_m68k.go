@@ -128,6 +128,8 @@ func (d *DebugM68K) Resume() {
 
 func (d *DebugM68K) trapLoop() {
 	defer d.trapRunning.Store(false)
+	defer d.cpu.SetRunning(false)
+	d.cpu.SetRunning(true)
 	for {
 		select {
 		case <-d.trapStop:

@@ -166,6 +166,8 @@ func (d *DebugIE32) Resume() {
 
 func (d *DebugIE32) trapLoop() {
 	defer d.trapRunning.Store(false)
+	defer d.cpu.running.Store(false)
+	d.cpu.running.Store(true)
 	for {
 		select {
 		case <-d.trapStop:
