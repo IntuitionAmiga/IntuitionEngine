@@ -26,6 +26,7 @@
    - Audio Capabilities
    - Video System
    - Quick Start
+   - [1.7 Machine Monitor](#17-machine-monitor)
 2. [Architecture](#2-architecture)
    - 2.1 Unified Memory
    - 2.2 Hardware I/O
@@ -239,6 +240,8 @@ CPU modes that execute binaries (`-ie32`, `-ie64`, `-m68k`, `-m6502`, `-z80`, `-
 - `F10`: Hard reset — performs a full power-on hardware reset and boots IE64 BASIC
 - `F11`: Toggle fullscreen mode
 - `F12`: Toggle the runtime status bar
+- `Page Up` / `Page Down`: Scroll terminal scrollback buffer
+- `Mouse wheel`: Scroll terminal scrollback buffer
 - Status bar semantics: `CPU`, `VIDEO`, and `AUDIO` device names are shown in green when active and gray when inactive.
 
 ## 1.5 Single-Instance Mode
@@ -260,6 +263,36 @@ make set-default-handler
 ```
 
 After registration, double-clicking any `.ie*` file in a file manager will open it in Intuition Engine (or send it to an already-running instance).
+
+## 1.7 Machine Monitor
+
+Press **F9** at any time to freeze the entire system and enter the built-in Machine Monitor — a system-level debugger inspired by the Commodore 64/Amiga Action Replay cartridge and HRTMon. Press **x** or **Esc** to resume execution.
+
+The monitor works with all six CPU types (IE64, IE32, M68K, Z80, 6502, X86) and handles multi-CPU scenarios including coprocessors.
+
+### Quick Reference
+
+| Command | Description |
+|---------|-------------|
+| `r` | Show all registers (changed values highlighted in green) |
+| `r <name> <value>` | Set a register value |
+| `d [addr] [count]` | Disassemble instructions (default: from PC, 16 lines) |
+| `m <addr> [count]` | Hex dump memory |
+| `s [count]` | Single-step one or more instructions |
+| `g [addr]` | Resume execution (optionally from a new address) |
+| `b <addr>` | Set a breakpoint |
+| `bc <addr>` | Clear a breakpoint |
+| `bl` | List all breakpoints |
+| `f <addr> <len> <byte>` | Fill memory with a byte value |
+| `t <dst> <src> <len>` | Transfer (copy) memory |
+| `c <addr1> <addr2> <len>` | Compare two memory regions |
+| `cpu [n]` | Switch focus to CPU #n (for multi-CPU debugging) |
+| `af` / `at` | Audio freeze / thaw |
+| `x` | Exit monitor and resume all CPUs |
+
+Addresses accept `$hex`, `0xhex`, bare hex, or `#decimal` formats.
+
+Full documentation: [iemon.md](iemon.md)
 
 # 2. Architecture
 
@@ -3243,6 +3276,7 @@ The Intuition Engine includes a full port of Lee Davison's Enhanced BASIC (EhBAS
 - **System commands**: CALL (machine code subroutine), USR (call with return value), POKE8/PEEK8, DOKE/DEEK, WAIT, BLIT, COPPER, TRON/TROFF (trace mode)
 - **Coprocessor commands**: COSTART, COSTOP, COWAIT (worker lifecycle); COCALL(), COSTATUS() (async cross-CPU RPC to IE32/6502/M68K/Z80/x86 workers)
 - **Machine code interface**: CALL and USR use register-indirect JSR to invoke IE64 assembly routines; R8 carries return values
+- **Terminal editor**: Insert mode with character shifting, key repeat, Ctrl shortcuts (A/E/K/U/L), Ctrl+Arrow word movement, command history (Ctrl+Up/Down), Page Up/Down and mouse wheel scrollback navigation
 
 ### Common REPL Commands
 

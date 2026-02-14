@@ -36,22 +36,24 @@ import (
 )
 
 type EbitenOutput struct {
-	running     bool
-	window      *ebiten.Image
-	width       int
-	height      int
-	format      PixelFormat
-	fullscreen  bool
-	scale       int
-	windowedW   int
-	windowedH   int
-	frameBuffer []byte
-	bufferMutex sync.RWMutex
-	frameCount  uint64
-	refreshRate int
-	vsyncChan   chan struct{}
-	done        chan struct{}
-	keyHandler  func(byte)
+	running       bool
+	window        *ebiten.Image
+	width         int
+	height        int
+	format        PixelFormat
+	fullscreen    bool
+	scale         int
+	windowedW     int
+	windowedH     int
+	frameBuffer   []byte
+	bufferMutex   sync.RWMutex
+	frameCount    uint64
+	refreshRate   int
+	vsyncChan     chan struct{}
+	done          chan struct{}
+	keyHandler    func(byte)
+	scrollHandler func(int)
+	wheelAccum    float64
 
 	clipboardOnce sync.Once
 	clipboardOK   bool
@@ -361,6 +363,12 @@ func (eo *EbitenOutput) SetKeyHandler(fn func(byte)) {
 	eo.bufferMutex.Unlock()
 }
 
+func (eo *EbitenOutput) SetScrollHandler(fn func(int)) {
+	eo.bufferMutex.Lock()
+	eo.scrollHandler = fn
+	eo.bufferMutex.Unlock()
+}
+
 func (eo *EbitenOutput) emitByte(b byte) {
 	eo.bufferMutex.RLock()
 	handler := eo.keyHandler
@@ -374,6 +382,19 @@ func (eo *EbitenOutput) emitSeq(seq []byte) {
 	for _, b := range seq {
 		eo.emitByte(b)
 	}
+}
+
+const (
+	keyRepeatDelay    = 24 // ticks (~400ms at 60TPS)
+	keyRepeatInterval = 2  // ticks (~33ms)
+)
+
+func shouldRepeat(key ebiten.Key) bool {
+	dur := inpututil.KeyPressDuration(key)
+	if dur < keyRepeatDelay {
+		return false
+	}
+	return (dur-keyRepeatDelay)%keyRepeatInterval == 0
 }
 
 func (eo *EbitenOutput) handleKeyboardInput() {
@@ -393,11 +414,54 @@ func (eo *EbitenOutput) handleKeyboardInput() {
 	}
 	// Ctrl+Shift+C intentionally reserved for future copy/selection support.
 
-	// Printable input path.
-	for _, r := range ebiten.AppendInputChars(nil) {
-		if b, ok := runeToInputByte(r); ok {
-			eo.emitByte(b)
+	// Ctrl shortcuts (without shift): emit control bytes
+	ctrlHandled := false
+	if ctrl && !shift {
+		type ctrlBind struct {
+			key  ebiten.Key
+			code byte
 		}
+		ctrlBinds := []ctrlBind{
+			{ebiten.KeyA, 0x01}, // Home
+			{ebiten.KeyE, 0x05}, // End
+			{ebiten.KeyK, 0x0B}, // Kill to EOL
+			{ebiten.KeyU, 0x15}, // Kill to BOL
+			{ebiten.KeyL, 0x0C}, // Clear screen
+		}
+		for _, cb := range ctrlBinds {
+			if inpututil.IsKeyJustPressed(cb.key) {
+				eo.emitByte(cb.code)
+				ctrlHandled = true
+			}
+		}
+		// Ctrl+Arrow: emit CSI modifier sequences
+		ctrlArrows := []struct {
+			key ebiten.Key
+			seq []byte
+		}{
+			{ebiten.KeyArrowLeft, []byte{0x1B, '[', '1', ';', '5', 'D'}},
+			{ebiten.KeyArrowRight, []byte{0x1B, '[', '1', ';', '5', 'C'}},
+			{ebiten.KeyArrowUp, []byte{0x1B, '[', '1', ';', '5', 'A'}},
+			{ebiten.KeyArrowDown, []byte{0x1B, '[', '1', ';', '5', 'B'}},
+		}
+		for _, ca := range ctrlArrows {
+			if inpututil.IsKeyJustPressed(ca.key) || shouldRepeat(ca.key) {
+				eo.emitSeq(ca.seq)
+				ctrlHandled = true
+			}
+		}
+	}
+
+	// Printable input path — skip when ctrl is held to avoid double emission.
+	if !ctrl {
+		for _, r := range ebiten.AppendInputChars(nil) {
+			if b, ok := runeToInputByte(r); ok {
+				eo.emitByte(b)
+			}
+		}
+	} else {
+		// Drain AppendInputChars to prevent stale buffer accumulation.
+		ebiten.AppendInputChars(nil)
 	}
 
 	specialKeys := []ebiten.Key{
@@ -413,11 +477,34 @@ func (eo *EbitenOutput) handleKeyboardInput() {
 		ebiten.KeyHome,
 		ebiten.KeyEnd,
 		ebiten.KeyDelete,
+		ebiten.KeyPageUp,
+		ebiten.KeyPageDown,
 	}
 	for _, key := range specialKeys {
-		if inpututil.IsKeyJustPressed(key) {
+		// Skip arrow keys when ctrl handled them as word-move/history
+		if ctrlHandled && (key == ebiten.KeyArrowUp || key == ebiten.KeyArrowDown ||
+			key == ebiten.KeyArrowLeft || key == ebiten.KeyArrowRight) {
+			continue
+		}
+		if inpututil.IsKeyJustPressed(key) || shouldRepeat(key) {
 			if seq, ok := translateSpecialKey(key); ok {
 				eo.emitSeq(seq)
+			}
+		}
+	}
+
+	// Mouse wheel scrolling
+	_, yoff := ebiten.Wheel()
+	if yoff != 0 {
+		eo.wheelAccum += yoff
+		lines := int(eo.wheelAccum)
+		if lines != 0 {
+			eo.wheelAccum -= float64(lines)
+			eo.bufferMutex.RLock()
+			handler := eo.scrollHandler
+			eo.bufferMutex.RUnlock()
+			if handler != nil {
+				handler(-lines)
 			}
 		}
 	}
@@ -454,6 +541,10 @@ func translateSpecialKey(key ebiten.Key) ([]byte, bool) {
 		return []byte{0x1B, '[', 'F'}, true
 	case ebiten.KeyDelete:
 		return []byte{0x1B, '[', '3', '~'}, true
+	case ebiten.KeyPageUp:
+		return []byte{0x1B, '[', '5', '~'}, true
+	case ebiten.KeyPageDown:
+		return []byte{0x1B, '[', '6', '~'}, true
 	default:
 		return nil, false
 	}

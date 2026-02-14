@@ -46,8 +46,17 @@ type VideoTerminal struct {
 	escState    int
 	escParam    byte
 
-	inputEscState int
-	inputEscParam byte
+	inputEscState  int
+	inputEscParam  byte
+	inputEscParam2 byte
+
+	inputStartCol int
+	inputStartRow int
+	inputActive   bool
+
+	history    []string
+	historyIdx int
+	savedInput string
 
 	done     chan struct{}
 	stopOnce sync.Once
@@ -103,6 +112,7 @@ func (vt *VideoTerminal) Stop() {
 	vt.stopOnce.Do(func() {
 		close(vt.done)
 		vt.term.SetCharOutputCallback(nil)
+		vt.history = nil
 	})
 }
 
@@ -145,6 +155,11 @@ func (vt *VideoTerminal) processChar(ch byte) {
 			}
 		}
 	}
+
+	cx, cy := vt.screen.CursorPos()
+	vt.inputStartCol = cx
+	vt.inputStartRow = cy
+	vt.inputActive = true
 
 	vt.cursorOn = true
 	if vt.shouldShowCursorLocked() {
@@ -291,6 +306,13 @@ func (vt *VideoTerminal) scrollUpLocked() {
 	vt.renderViewportLocked()
 }
 
+func (vt *VideoTerminal) HandleScroll(delta int) {
+	vt.mu.Lock()
+	defer vt.mu.Unlock()
+	vt.screen.ScrollViewport(delta)
+	vt.renderViewportLocked()
+}
+
 func (vt *VideoTerminal) HandleKeyInput(b byte) {
 	vt.mu.Lock()
 	defer vt.mu.Unlock()
@@ -388,9 +410,30 @@ func (vt *VideoTerminal) handleInputByteLocked(b byte, lineMode bool) bool {
 			}
 			vt.term.EnqueueByte('\n')
 		}
+		// Append to history before moving cursor
+		{
+			_, absRow := vt.screen.CursorPos()
+			startCol := 0
+			if vt.inputActive && absRow == vt.inputStartRow {
+				startCol = vt.inputStartCol
+			}
+			line := vt.screen.ReadLine(absRow)
+			if len(line) > startCol {
+				entry := line[startCol:]
+				if entry != "" {
+					vt.history = append(vt.history, entry)
+				}
+			}
+		}
 		beforeTop := vt.screen.ViewportTop()
 		vt.screen.PutChar('\r')
 		vt.screen.PutChar('\n')
+		cx, cy := vt.screen.CursorPos()
+		vt.inputStartCol = cx
+		vt.inputStartRow = cy
+		vt.inputActive = true
+		vt.historyIdx = len(vt.history)
+		vt.savedInput = ""
 		return vt.screen.ViewportTop() != beforeTop // full redraw only on scroll
 	case '\b':
 		cx, cy := vt.screen.CursorPos()
@@ -404,22 +447,100 @@ func (vt *VideoTerminal) handleInputByteLocked(b byte, lineMode bool) bool {
 		beforeTop := vt.screen.ViewportTop()
 		vt.screen.PutChar('\t')
 		return vt.screen.ViewportTop() != beforeTop
+	case 0x01: // Ctrl+A — Home
+		vt.screen.Home()
+		return false
+	case 0x05: // Ctrl+E — End
+		vt.screen.End()
+		return false
+	case 0x0B: // Ctrl+K — Kill to EOL
+		cx, cy := vt.screen.CursorPos()
+		vt.screen.ClearLine(cy, cx)
+		vrow := cy - vt.screen.ViewportTop()
+		vt.renderRowFromLocked(vrow, cx)
+		return false
+	case 0x0C: // Ctrl+L — Clear screen
+		vt.screen.Clear()
+		vt.clearScreenLocked()
+		vt.inputActive = false
+		return false
+	case 0x15: // Ctrl+U — Kill to BOL
+		cx, cy := vt.screen.CursorPos()
+		startCol := 0
+		if vt.inputActive && cy == vt.inputStartRow {
+			startCol = vt.inputStartCol
+		}
+		if cx > startCol {
+			vt.screen.KillToStart(cy, startCol)
+			vrow := cy - vt.screen.ViewportTop()
+			vt.renderRowFromLocked(vrow, startCol)
+		}
+		return false
 	default:
 		if b < 0x20 {
 			return false
 		}
 		beforeTop := vt.screen.ViewportTop()
 		beforeX, beforeY := vt.screen.CursorPos()
-		scrolled := vt.screen.PutChar(b)
+		scrolled := vt.screen.InsertChar(b)
 		if scrolled || vt.screen.ViewportTop() != beforeTop {
 			return true // full redraw on scroll
 		}
 		vrow := beforeY - vt.screen.ViewportTop()
 		if vrow >= 0 && vrow < vt.rows {
-			vt.renderCellLocked(beforeX, vrow, b)
+			vt.renderRowFromLocked(vrow, beforeX)
 		}
 		return false
 	}
+}
+
+func (vt *VideoTerminal) historyPrevLocked() {
+	if !vt.inputActive || len(vt.history) == 0 {
+		return
+	}
+	_, cy := vt.screen.CursorPos()
+	if cy != vt.inputStartRow {
+		return
+	}
+	if vt.historyIdx == len(vt.history) {
+		// Save current input
+		line := vt.screen.ReadLine(vt.inputStartRow)
+		if len(line) >= vt.inputStartCol {
+			vt.savedInput = line[vt.inputStartCol:]
+		} else {
+			vt.savedInput = ""
+		}
+	}
+	if vt.historyIdx <= 0 {
+		return
+	}
+	vt.historyIdx--
+	vt.screen.ReplaceLine(vt.inputStartRow, vt.inputStartCol, vt.history[vt.historyIdx])
+	vrow := vt.inputStartRow - vt.screen.ViewportTop()
+	vt.renderRowFromLocked(vrow, vt.inputStartCol)
+}
+
+func (vt *VideoTerminal) historyNextLocked() {
+	if !vt.inputActive || len(vt.history) == 0 {
+		return
+	}
+	_, cy := vt.screen.CursorPos()
+	if cy != vt.inputStartRow {
+		return
+	}
+	if vt.historyIdx >= len(vt.history) {
+		return
+	}
+	vt.historyIdx++
+	var text string
+	if vt.historyIdx >= len(vt.history) {
+		text = vt.savedInput
+	} else {
+		text = vt.history[vt.historyIdx]
+	}
+	vt.screen.ReplaceLine(vt.inputStartRow, vt.inputStartCol, text)
+	vrow := vt.inputStartRow - vt.screen.ViewportTop()
+	vt.renderRowFromLocked(vrow, vt.inputStartCol)
 }
 
 func (vt *VideoTerminal) handleInputEscapeLocked(b byte) bool {
@@ -461,11 +582,41 @@ func (vt *VideoTerminal) handleInputEscapeLocked(b byte) bool {
 		return true
 	case 3:
 		vt.inputEscState = 0
-		if b == '~' && vt.inputEscParam == '3' {
-			cx, cy := vt.screen.CursorPos()
-			vt.screen.DeleteChar()
-			vrow := cy - vt.screen.ViewportTop()
-			vt.renderRowFromLocked(vrow, cx)
+		if b == '~' {
+			switch vt.inputEscParam {
+			case '3':
+				cx, cy := vt.screen.CursorPos()
+				vt.screen.DeleteChar()
+				vrow := cy - vt.screen.ViewportTop()
+				vt.renderRowFromLocked(vrow, cx)
+			case '5':
+				vt.screen.ScrollViewport(-vt.rows)
+				vt.renderViewportLocked()
+			case '6':
+				vt.screen.ScrollViewport(vt.rows)
+				vt.renderViewportLocked()
+			}
+		} else if b == ';' && vt.inputEscParam == '1' {
+			vt.inputEscState = 4
+		}
+		return true
+	case 4:
+		vt.inputEscState = 5
+		vt.inputEscParam2 = b
+		return true
+	case 5:
+		vt.inputEscState = 0
+		if vt.inputEscParam2 == '5' { // Ctrl modifier
+			switch b {
+			case 'C': // Ctrl+Right — word right
+				vt.screen.WordRight()
+			case 'D': // Ctrl+Left — word left
+				vt.screen.WordLeft()
+			case 'A': // Ctrl+Up — history previous
+				vt.historyPrevLocked()
+			case 'B': // Ctrl+Down — history next
+				vt.historyNextLocked()
+			}
 		}
 		return true
 	default:

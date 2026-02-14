@@ -152,8 +152,8 @@ func TestScreenEditor_E2E_ModeTransition(t *testing.T) {
 	term.HandleWrite(TERM_CTRL, 1)
 	vt.HandleKeyInput('C')
 	vt.HandleKeyInput('\n')
-	if got := drainTermIn(term); got != "C\n" {
-		t.Fatalf("expected second line mode submit C, got %q", got)
+	if got := drainTermIn(term); got != "BC\n" {
+		t.Fatalf("expected second line mode submit BC, got %q", got)
 	}
 }
 
@@ -164,13 +164,14 @@ func TestScreenEditor_E2E_EditAndReturn(t *testing.T) {
 	for _, ch := range "10 PRIMT 42" {
 		vt.HandleKeyInput(byte(ch))
 	}
-	// Navigate back to the 'M' and overwrite with 'N'
-	feedInput(vt, 0x1B, '[', 'D') // left past '2'
-	feedInput(vt, 0x1B, '[', 'D') // left past '4'
-	feedInput(vt, 0x1B, '[', 'D') // left past ' '
-	feedInput(vt, 0x1B, '[', 'D') // left past 'T'
-	feedInput(vt, 0x1B, '[', 'D') // on 'M'
-	vt.HandleKeyInput('N')        // overwrite 'M' with 'N'
+	// Navigate back to the 'M', delete it, type 'N'
+	feedInput(vt, 0x1B, '[', 'D')      // left past '2'
+	feedInput(vt, 0x1B, '[', 'D')      // left past '4'
+	feedInput(vt, 0x1B, '[', 'D')      // left past ' '
+	feedInput(vt, 0x1B, '[', 'D')      // left past 'T'
+	feedInput(vt, 0x1B, '[', 'D')      // on 'M'
+	feedInput(vt, 0x1B, '[', '3', '~') // delete 'M'
+	vt.HandleKeyInput('N')             // insert 'N'
 	// Submit
 	vt.HandleKeyInput('\n')
 	got := drainTermIn(term)
@@ -256,5 +257,206 @@ func TestScreenEditor_E2E_ScrollbackNav(t *testing.T) {
 	firstLineContent := vt.screen.ReadLine(0)
 	if firstLineContent != "A" {
 		t.Fatalf("expected scrollback row 0 to be 'A', got %q", firstLineContent)
+	}
+}
+
+func TestVideoTerminal_HandleScroll(t *testing.T) {
+	vt, _, _ := newVideoTerminalForTest(t)
+	// Fill 40 rows of output
+	for i := range 40 {
+		ch := byte('A' + byte(i%26))
+		vt.processChar(ch)
+		vt.processChar('\r')
+		vt.processChar('\n')
+	}
+	topBefore := vt.screen.ViewportTop()
+	vt.HandleScroll(-5)
+	topAfter := vt.screen.ViewportTop()
+	if topAfter != topBefore-5 {
+		t.Fatalf("expected viewport scrolled up by 5, before=%d after=%d", topBefore, topAfter)
+	}
+	vt.HandleScroll(3)
+	topAfter2 := vt.screen.ViewportTop()
+	if topAfter2 != topAfter+3 {
+		t.Fatalf("expected viewport scrolled down by 3, before=%d after=%d", topAfter, topAfter2)
+	}
+}
+
+func TestHandleKeyInput_CtrlA(t *testing.T) {
+	vt, _, _ := newVideoTerminalForTest(t)
+	for _, ch := range "HELLO" {
+		vt.processChar(byte(ch))
+	}
+	// Cursor is at col 5. Ctrl+A should go to col 0.
+	vt.HandleKeyInput(0x01)
+	cx, _ := vt.screen.CursorPos()
+	if cx != 0 {
+		t.Fatalf("expected Ctrl+A to go to col 0, got %d", cx)
+	}
+}
+
+func TestHandleKeyInput_CtrlK_KillToEOL(t *testing.T) {
+	vt, _, term := newVideoTerminalForTest(t)
+	// CPU output ">" then user types "HELLO WORLD"
+	vt.processChar('>')
+	term.HandleWrite(TERM_CTRL, 1)
+	for _, ch := range "HELLO WORLD" {
+		vt.HandleKeyInput(byte(ch))
+	}
+	// Move back 5 chars to 'W', then Ctrl+K
+	for range 5 {
+		feedInput(vt, 0x1B, '[', 'D')
+	}
+	vt.HandleKeyInput(0x0B) // Ctrl+K
+	// ReadLine trims trailing spaces, so ">HELLO " becomes ">HELLO"
+	if got := vt.screen.ReadLine(0); got != ">HELLO" {
+		t.Fatalf("expected '>HELLO' after Ctrl+K, got %q", got)
+	}
+	// Verify the cells after cursor are actually zeroed
+	if got := vt.screen.GetCell(7, 0); got != 0 {
+		t.Fatalf("expected cell 7 zeroed after Ctrl+K, got %q", got)
+	}
+}
+
+func TestHandleKeyInput_CtrlU_KillToBOL(t *testing.T) {
+	vt, _, term := newVideoTerminalForTest(t)
+	// CPU output ">" then user types "HELLO"
+	vt.processChar('>')
+	term.HandleWrite(TERM_CTRL, 1)
+	for _, ch := range "HELLO" {
+		vt.HandleKeyInput(byte(ch))
+	}
+	// Ctrl+U should kill from cursor back to prompt
+	vt.HandleKeyInput(0x15) // Ctrl+U
+	if got := vt.screen.ReadLine(0); got != ">" {
+		t.Fatalf("expected '>' after Ctrl+U, got %q", got)
+	}
+	cx, _ := vt.screen.CursorPos()
+	if cx != 1 {
+		t.Fatalf("expected cursor at col 1 (after prompt), got %d", cx)
+	}
+}
+
+func TestHandleKeyInput_CtrlK_AnyRow(t *testing.T) {
+	vt, _, _ := newVideoTerminalForTest(t)
+	// Output on row 0
+	for _, ch := range "OUTPUT" {
+		vt.processChar(byte(ch))
+	}
+	vt.processChar('\r')
+	vt.processChar('\n')
+	// Move cursor back to row 0, col 3 (on 'P')
+	vt.mu.Lock()
+	vt.screen.MoveCursor(0, -1)
+	vt.screen.cursorX = 3
+	vt.mu.Unlock()
+	// Ctrl+K clears from cursor to end of line
+	vt.HandleKeyInput(0x0B)
+	if got := vt.screen.ReadLine(0); got != "OUT" {
+		t.Fatalf("expected 'OUT' after Ctrl+K from col 3, got %q", got)
+	}
+}
+
+func TestVideoTerminal_HistoryRecall(t *testing.T) {
+	vt, _, term := newVideoTerminalForTest(t)
+	term.HandleWrite(TERM_CTRL, 1)
+	// Type "A" and submit
+	vt.HandleKeyInput('A')
+	vt.HandleKeyInput('\n')
+	drainTermIn(term)
+	// Type "B" and submit
+	vt.HandleKeyInput('B')
+	vt.HandleKeyInput('\n')
+	drainTermIn(term)
+	// Now on row 2. Ctrl+Up should recall "B"
+	feedInput(vt, 0x1B, '[', '1', ';', '5', 'A') // Ctrl+Up
+	_, cy := vt.screen.CursorPos()
+	if got := vt.screen.ReadLine(cy); got != "B" {
+		t.Fatalf("expected history recall 'B', got %q", got)
+	}
+	// Ctrl+Up again should recall "A"
+	feedInput(vt, 0x1B, '[', '1', ';', '5', 'A')
+	if got := vt.screen.ReadLine(cy); got != "A" {
+		t.Fatalf("expected history recall 'A', got %q", got)
+	}
+	// Ctrl+Down should go back to "B"
+	feedInput(vt, 0x1B, '[', '1', ';', '5', 'B')
+	if got := vt.screen.ReadLine(cy); got != "B" {
+		t.Fatalf("expected history forward 'B', got %q", got)
+	}
+}
+
+func TestVideoTerminal_HistoryOnNonInputRow(t *testing.T) {
+	vt, _, _ := newVideoTerminalForTest(t)
+	// Output some text
+	for _, ch := range "OUTPUT" {
+		vt.processChar(byte(ch))
+	}
+	vt.processChar('\r')
+	vt.processChar('\n')
+	// Move cursor back to output row
+	vt.mu.Lock()
+	vt.screen.MoveCursor(0, -1)
+	vt.mu.Unlock()
+	// Ctrl+Up should be a no-op
+	feedInput(vt, 0x1B, '[', '1', ';', '5', 'A')
+	if got := vt.screen.ReadLine(0); got != "OUTPUT" {
+		t.Fatalf("expected OUTPUT unchanged, got %q", got)
+	}
+}
+
+func TestVideoTerminal_HistoryPreservesPrompt(t *testing.T) {
+	vt, _, term := newVideoTerminalForTest(t)
+	// CPU outputs ">"
+	vt.processChar('>')
+	term.HandleWrite(TERM_CTRL, 1)
+	// User types "HELLO" and submits
+	for _, ch := range "HELLO" {
+		vt.HandleKeyInput(byte(ch))
+	}
+	vt.HandleKeyInput('\n')
+	drainTermIn(term)
+	// CPU outputs ">" again on new line
+	vt.processChar('>')
+	// Ctrl+Up should recall "HELLO" after the ">"
+	feedInput(vt, 0x1B, '[', '1', ';', '5', 'A')
+	_, cy := vt.screen.CursorPos()
+	if got := vt.screen.ReadLine(cy); got != ">HELLO" {
+		t.Fatalf("expected '>HELLO' with prompt preserved, got %q", got)
+	}
+}
+
+func TestVideoTerminal_ResetPreservesHistory(t *testing.T) {
+	vt, _, term := newVideoTerminalForTest(t)
+	term.HandleWrite(TERM_CTRL, 1)
+	// Type "CMD1" and submit
+	for _, ch := range "CMD1" {
+		vt.HandleKeyInput(byte(ch))
+	}
+	vt.HandleKeyInput('\n')
+	drainTermIn(term)
+	// Reset
+	vt.Reset()
+	// Output prompt to establish input region
+	vt.processChar('>')
+	// Ctrl+Up should still recall "CMD1"
+	feedInput(vt, 0x1B, '[', '1', ';', '5', 'A')
+	_, cy := vt.screen.CursorPos()
+	if got := vt.screen.ReadLine(cy); got != ">CMD1" {
+		t.Fatalf("expected history preserved after reset, got %q", got)
+	}
+}
+
+func TestVideoTerminal_StopClearsHistory(t *testing.T) {
+	vt, _, term := newVideoTerminalForTest(t)
+	term.HandleWrite(TERM_CTRL, 1)
+	for _, ch := range "CMD1" {
+		vt.HandleKeyInput(byte(ch))
+	}
+	vt.HandleKeyInput('\n')
+	drainTermIn(term)
+	vt.Stop()
+	if vt.history != nil {
+		t.Fatal("expected history cleared after Stop")
 	}
 }

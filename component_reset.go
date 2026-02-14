@@ -478,6 +478,12 @@ func (vt *VideoTerminal) Reset() {
 	vt.escParam = 0
 	vt.inputEscState = 0
 	vt.inputEscParam = 0
+	vt.inputEscParam2 = 0
+	vt.inputActive = false
+	vt.inputStartCol = 0
+	vt.inputStartRow = 0
+	vt.historyIdx = len(vt.history)
+	vt.savedInput = ""
 
 	if vt.screen != nil {
 		vt.screen.Clear()

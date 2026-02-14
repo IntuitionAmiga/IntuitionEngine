@@ -657,6 +657,9 @@ func main() {
 		if ki, ok := videoChip.GetOutput().(KeyboardInput); ok {
 			ki.SetKeyHandler(videoTerm.HandleKeyInput)
 		}
+		if si, ok := videoChip.GetOutput().(ScrollInput); ok {
+			si.SetScrollHandler(videoTerm.HandleScroll)
+		}
 	} else {
 		termHost = NewTerminalHost(termMMIO)
 	}
@@ -1376,6 +1379,9 @@ func main() {
 			termMMIO.SetForceEchoOff(true)
 			if ki, ok := videoChip.GetOutput().(KeyboardInput); ok {
 				ki.SetKeyHandler(videoTerm.HandleKeyInput)
+			}
+			if si, ok := videoChip.GetOutput().(ScrollInput); ok {
+				si.SetScrollHandler(videoTerm.HandleScroll)
 			}
 		}
 		if videoTerm != nil {

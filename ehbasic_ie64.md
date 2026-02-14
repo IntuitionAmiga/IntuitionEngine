@@ -117,6 +117,55 @@ Ready
 | Line number followed by text | Store or replace a program line |
 | Line number alone | Delete that line |
 
+### Terminal Editor
+
+EhBASIC runs inside a graphical terminal with full line-editing support. Text is rendered on the VideoChip framebuffer using a built-in font, with cursor blinking and scrollback history.
+
+#### Editing Keys
+
+| Key | Action |
+|-----|--------|
+| Left / Right arrow | Move cursor one character |
+| Up / Down arrow | Move cursor one line |
+| Home | Move cursor to start of line |
+| End | Move cursor to end of text on line |
+| Backspace | Delete character before cursor |
+| Delete | Delete character at cursor |
+| Enter | Submit the current line |
+| Tab | Advance to next tab stop |
+
+Typing inserts characters at the cursor position — existing text shifts right. Holding any key repeats the action automatically after a short delay.
+
+#### Ctrl Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| Ctrl+A | Move cursor to start of line |
+| Ctrl+E | Move cursor to end of line |
+| Ctrl+K | Kill (clear) from cursor to end of line |
+| Ctrl+U | Kill (clear) from start of input to cursor |
+| Ctrl+L | Clear screen |
+| Ctrl+Left | Jump one word left |
+| Ctrl+Right | Jump one word right |
+| Ctrl+Up | Recall previous command from history |
+| Ctrl+Down | Recall next command from history |
+
+Ctrl+U preserves the prompt text (e.g. `Ready`) and only clears user input. Ctrl+K works on any line.
+
+#### Scrollback and Navigation
+
+| Key / Action | Effect |
+|--------------|--------|
+| Page Up | Scroll viewport up one page |
+| Page Down | Scroll viewport down one page |
+| Mouse wheel | Scroll viewport up/down |
+
+The terminal maintains a scrollback buffer. Output that scrolls off the top of the screen is preserved and can be reviewed using Page Up/Down or the mouse wheel. The cursor is not moved by scrollback navigation.
+
+#### Command History
+
+Previously entered commands are saved for the duration of the session. Use Ctrl+Up and Ctrl+Down to cycle through them. When recalling history, the current input is saved and restored when you move past the end of the history list. History is cleared when the terminal is stopped and preserved across resets.
+
 ---
 
 ## 3. Language Reference

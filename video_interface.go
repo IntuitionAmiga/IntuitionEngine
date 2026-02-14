@@ -110,6 +110,11 @@ type KeyboardInput interface {
 	SetKeyHandler(func(byte))
 }
 
+// ScrollInput is implemented by video outputs that can forward scroll events.
+type ScrollInput interface {
+	SetScrollHandler(func(int))
+}
+
 // ScanlineAware is implemented by video sources that support per-scanline rendering.
 // This enables copper-style raster effects where register changes take effect
 // at specific scanline positions.
