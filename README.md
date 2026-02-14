@@ -297,7 +297,7 @@ The monitor works with all six CPU types (IE64, IE32, M68K, Z80, 6502, X86) and 
 | `load <file> <addr>` | Load file into memory |
 | `ss` / `sl [file]` | Save/load machine state |
 | `trace <count>` | Trace N instructions (+ write history) |
-| `io [device]` | I/O register viewer |
+| `io [device\|all]` | I/O register viewer (use `all` for every device) |
 | `e <addr>` | Hex editor mode |
 | `script <file>` | Run command script |
 | `macro <name> ...` | Define command macro |

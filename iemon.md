@@ -519,11 +519,11 @@ Clear write history for a specific address or all addresses.
 
 #### `io [device]` — View I/O Registers
 
-Display formatted I/O register values for a hardware device. Without arguments, lists available devices.
+Display formatted I/O register values for a hardware device. Without arguments, lists available devices. Use `io all` to dump every device's registers at once.
 
 ```
 > io
-Available devices: video audio psg sid pokey ted vga ula antic voodoo
+Available devices: video terminal audio ahx psg pokey sid ted vga ula antic gtia fileio media exec coproc voodoo
 
 > io vga
 === VGA Registers ===
@@ -531,6 +531,9 @@ VGA_MODE       ($F1000) = $00000013  [19]
 VGA_STATUS     ($F1004) = $00000000  [0]
 VGA_CTRL       ($F1008) = $00000001  [1]
 ...
+
+> io all
+(dumps all 17 devices)
 ```
 
 Register widths are per-register (1, 2, or 4 bytes). Values are displayed in the appropriate width with both hex and decimal representations.
@@ -633,6 +636,7 @@ Display a quick command reference.
 | Ctrl+K | Kill from cursor to end of line |
 | Ctrl+U | Kill from start of line to cursor |
 | Ctrl+Left/Right | Jump by word |
+| Ctrl+Shift+V | Paste from clipboard |
 | PgUp/PgDn | Scroll output buffer |
 | Mouse wheel | Scroll output buffer |
 | F9 | Toggle monitor on/off |
