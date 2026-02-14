@@ -9,7 +9,7 @@ import (
 
 func disassembleZ80(readMem func(addr uint64, size int) []byte, addr uint64, count int) []DisassembledLine {
 	var lines []DisassembledLine
-	for i := 0; i < count; i++ {
+	for range count {
 		data := readMem(addr, 4) // max Z80 instruction is 4 bytes
 		if len(data) < 1 {
 			break

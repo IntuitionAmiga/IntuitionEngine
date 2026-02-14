@@ -28,7 +28,7 @@ var ie32AddrModes = [5]string{"#", "R", "(R)", "[M]", "M:"}
 
 func disassembleIE32(readMem func(addr uint64, size int) []byte, addr uint64, count int) []DisassembledLine {
 	var lines []DisassembledLine
-	for i := 0; i < count; i++ {
+	for range count {
 		data := readMem(addr, 8)
 		if len(data) < 8 {
 			break

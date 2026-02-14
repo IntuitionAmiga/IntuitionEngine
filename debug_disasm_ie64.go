@@ -307,7 +307,7 @@ func ie64FormatFPU(d ie64Decoded, mnemonic string) string {
 // reading memory via the provided function.
 func disassembleIE64(readMem func(addr uint64, size int) []byte, addr uint64, count int) []DisassembledLine {
 	var lines []DisassembledLine
-	for i := 0; i < count; i++ {
+	for range count {
 		data := readMem(addr, 8)
 		if len(data) < 8 {
 			break

@@ -542,7 +542,7 @@ func TestMemoryFill(t *testing.T) {
 	mon.ExecuteCommand("f 1000 100F 42")
 	mon.mu.Unlock()
 
-	for i := 0; i < 16; i++ {
+	for i := range 16 {
 		if cpu.memory[0x1000+i] != 0x42 {
 			t.Errorf("memory[%X] = %02X, expected 42", 0x1000+i, cpu.memory[0x1000+i])
 		}
@@ -1248,7 +1248,7 @@ func TestBreakpointRuntimeTrap(t *testing.T) {
 	cpu := NewCPU64(bus)
 
 	// Write a NOP loop: 10 NOPs + BRA back
-	for i := uint32(0); i < 10; i++ {
+	for i := range uint32(10) {
 		cpu.memory[PROG_START+i*8] = OP_NOP64
 	}
 	// BRA back to start
@@ -1291,7 +1291,7 @@ func TestBreakpointAutoActivation(t *testing.T) {
 	cpu := NewCPU64(bus)
 
 	// Write NOPs + BRA loop
-	for i := uint32(0); i < 10; i++ {
+	for i := range uint32(10) {
 		cpu.memory[PROG_START+i*8] = OP_NOP64
 	}
 	cpu.memory[PROG_START+80] = OP_BRA
@@ -1449,7 +1449,7 @@ func TestOutputScrollback(t *testing.T) {
 
 	// Add enough output to test scrolling
 	mon.mu.Lock()
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		mon.appendOutput(fmt.Sprintf("Line %d", i), colorWhite)
 	}
 	mon.mu.Unlock()
@@ -1642,7 +1642,7 @@ func TestBreakpointStepHit(t *testing.T) {
 	cpu := NewCPU64(bus)
 
 	// Write 5 NOPs starting at PROG_START (each 8 bytes)
-	for i := uint32(0); i < 5; i++ {
+	for i := range uint32(5) {
 		cpu.memory[PROG_START+i*8] = OP_NOP64
 	}
 
@@ -1689,7 +1689,7 @@ func TestBreakpointConcurrency(t *testing.T) {
 	cpu := NewCPU64(bus)
 
 	// Write a NOP loop: 10 NOPs + BRA back to start
-	for i := uint32(0); i < 10; i++ {
+	for i := range uint32(10) {
 		cpu.memory[PROG_START+i*8] = OP_NOP64
 	}
 	cpu.memory[PROG_START+80] = OP_BRA
@@ -1714,7 +1714,7 @@ func TestBreakpointConcurrency(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			addr := uint64(0x80000 + i)
 			adapter.SetBreakpoint(addr)
 			adapter.ClearBreakpoint(addr)
@@ -1750,7 +1750,7 @@ func TestResetCPUsStopsTrapMode(t *testing.T) {
 	cpu := NewCPU64(bus)
 
 	// Write a NOP loop: 10 NOPs + BRA back
-	for i := uint32(0); i < 10; i++ {
+	for i := range uint32(10) {
 		cpu.memory[PROG_START+i*8] = OP_NOP64
 	}
 	cpu.memory[PROG_START+80] = OP_BRA
@@ -1805,7 +1805,7 @@ func TestBreakpointAutoActivationPreservesFrozenState(t *testing.T) {
 
 	// CPU 1: will run and hit breakpoint
 	cpu1 := NewCPU64(bus)
-	for i := uint32(0); i < 10; i++ {
+	for i := range uint32(10) {
 		cpu1.memory[PROG_START+i*8] = OP_NOP64
 	}
 	cpu1.memory[PROG_START+80] = OP_BRA

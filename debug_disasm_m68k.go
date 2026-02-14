@@ -139,7 +139,7 @@ func disassembleM68K(readMem func(addr uint64, size int) []byte, startAddr uint6
 	var lines []DisassembledLine
 	addr := startAddr
 
-	for i := 0; i < count; i++ {
+	for range count {
 		instrAddr := addr
 		w, ok := readM68KWord(readMem, addr)
 		if !ok {
@@ -776,7 +776,7 @@ func formatM68KRegList(mask uint16, reversed bool) string {
 	names := [16]string{"D0", "D1", "D2", "D3", "D4", "D5", "D6", "D7",
 		"A0", "A1", "A2", "A3", "A4", "A5", "A6", "A7"}
 
-	for i := 0; i < 16; i++ {
+	for i := range 16 {
 		bit := i
 		if reversed {
 			bit = 15 - i

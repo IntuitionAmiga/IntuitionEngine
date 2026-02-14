@@ -51,7 +51,7 @@ func (d *DebugIE64) AddressWidth() int { return 32 }
 
 func (d *DebugIE64) GetRegisters() []RegisterInfo {
 	regs := make([]RegisterInfo, 0, 33)
-	for i := 0; i < 31; i++ {
+	for i := range 31 {
 		regs = append(regs, RegisterInfo{
 			Name:     fmt.Sprintf("R%d", i),
 			BitWidth: 64,

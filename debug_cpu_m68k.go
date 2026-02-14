@@ -35,13 +35,13 @@ func (d *DebugM68K) AddressWidth() int { return 32 }
 func (d *DebugM68K) GetRegisters() []RegisterInfo {
 	c := d.cpu
 	regs := make([]RegisterInfo, 0, 19)
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		regs = append(regs, RegisterInfo{
 			Name: fmt.Sprintf("D%d", i), BitWidth: 32,
 			Value: uint64(c.DataRegs[i]), Group: "general",
 		})
 	}
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		regs = append(regs, RegisterInfo{
 			Name: fmt.Sprintf("A%d", i), BitWidth: 32,
 			Value: uint64(c.AddrRegs[i]), Group: "general",

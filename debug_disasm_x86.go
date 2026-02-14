@@ -135,7 +135,7 @@ func disassembleX86(readMem func(addr uint64, size int) []byte, startAddr uint64
 	var lines []DisassembledLine
 	addr := startAddr
 
-	for i := 0; i < count; i++ {
+	for range count {
 		instrAddr := addr
 		dis := &x86Disasm{readMem: readMem, pos: addr}
 

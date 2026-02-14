@@ -199,7 +199,7 @@ func (d *Debug6502) HasBreakpoint(addr uint64) bool {
 
 func (d *Debug6502) ReadMemory(addr uint64, size int) []byte {
 	result := make([]byte, size)
-	for i := 0; i < size; i++ {
+	for i := range size {
 		result[i] = d.cpu.memory.Read(uint16(addr) + uint16(i))
 	}
 	return result

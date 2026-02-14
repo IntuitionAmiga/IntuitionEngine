@@ -250,7 +250,7 @@ func (d *DebugX86) HasBreakpoint(addr uint64) bool {
 
 func (d *DebugX86) ReadMemory(addr uint64, size int) []byte {
 	result := make([]byte, size)
-	for i := 0; i < size; i++ {
+	for i := range size {
 		result[i] = d.cpu.bus.Read(uint32(addr) + uint32(i))
 	}
 	return result

@@ -70,10 +70,10 @@ func (o *MonitorOverlay) drawGlyph(ch byte, col, row int, fg, bg uint32) {
 	bgR, bgG, bgB, bgA := colorFromPacked(bg)
 
 	glyph := &o.glyphs[ch]
-	for dy := 0; dy < glyphH; dy++ {
+	for dy := range glyphH {
 		rowBits := glyph[dy]
 		pixY := (y + dy) * overlayWidth * 4
-		for dx := 0; dx < glyphW; dx++ {
+		for dx := range glyphW {
 			pixIdx := pixY + (x+dx)*4
 			if rowBits&(0x80>>dx) != 0 {
 				o.pixels[pixIdx] = fgR
@@ -101,7 +101,7 @@ func (o *MonitorOverlay) drawString(s string, col, row int, fg uint32) {
 // fillRow fills an entire row with the background color.
 func (o *MonitorOverlay) fillRow(row int) {
 	bg := uint32(0x0000AAFF)
-	for col := 0; col < overlayCols; col++ {
+	for col := range overlayCols {
 		o.drawGlyph(' ', col, row, colorWhite, bg)
 	}
 }
@@ -117,7 +117,7 @@ func (o *MonitorOverlay) Draw(screen *ebiten.Image) {
 	}
 
 	// Clear to background
-	for row := 0; row < overlayRows; row++ {
+	for row := range overlayRows {
 		o.fillRow(row)
 	}
 
@@ -150,10 +150,7 @@ func (o *MonitorOverlay) Draw(screen *ebiten.Image) {
 	visibleLines := outputEnd - outputStart
 
 	totalLines := len(m.outputLines)
-	startIdx := totalLines - visibleLines - m.scrollOffset
-	if startIdx < 0 {
-		startIdx = 0
-	}
+	startIdx := max(totalLines-visibleLines-m.scrollOffset, 0)
 
 	for row := outputStart; row < outputEnd; row++ {
 		idx := startIdx + (row - outputStart)

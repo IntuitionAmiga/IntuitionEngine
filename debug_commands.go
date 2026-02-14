@@ -290,7 +290,7 @@ func (m *MachineMonitor) cmdMemoryDump(cmd MonitorCommand) bool {
 
 		var hexParts []string
 		var asciiParts []byte
-		for j := 0; j < 16; j++ {
+		for j := range 16 {
 			if j < len(data) {
 				hexParts = append(hexParts, fmt.Sprintf("%02X", data[j]))
 				if data[j] >= 0x20 && data[j] < 0x7F {
