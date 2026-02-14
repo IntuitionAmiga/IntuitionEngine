@@ -36,7 +36,7 @@ Execute one (or more) instructions on the focused CPU. Displays changed register
 
 ```
 > s
-Step: 1 instruction(s), 8 cycle(s)
+Step: 1 instruction(s), 1 cycle(s)
   R1: $0 -> $2A
 > 001008: E0 00 00 00 00 00 00 00  nop
 ```
@@ -44,7 +44,7 @@ Step: 1 instruction(s), 8 cycle(s)
 Step 10 instructions:
 ```
 > s #10
-Step: 10 instruction(s), 80 cycle(s)
+Step: 10 instruction(s), 10 cycle(s)
 ```
 
 #### `g [addr]` — Go/Continue
@@ -284,12 +284,13 @@ Display a quick command reference.
 | Up/Down | Navigate command history |
 | PgUp/PgDn | Scroll output buffer |
 | F9 | Toggle monitor on/off |
+| F10 | Hard reset (works while monitor is active) |
 
 ## CPU-Specific Notes
 
 ### IE64 (64-bit RISC)
 - 32 general-purpose 64-bit registers: R0-R31
-- R0 is always zero, R31 is the link register
+- R0 is always zero, R31 is the stack pointer (SP)
 - Fixed 8-byte instruction encoding
 - Register display: 16-digit hex (`$0000000000001000`)
 

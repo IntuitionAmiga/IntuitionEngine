@@ -18,6 +18,9 @@ type DebugX86 struct {
 	cpuID       int
 	trapRunning atomic.Bool
 	trapStop    chan struct{}
+
+	workerFreeze func()
+	workerResume func()
 }
 
 func NewDebugX86(cpu *CPU_X86, runner *CPUX86Runner) *DebugX86 {
@@ -43,7 +46,7 @@ func (d *DebugX86) GetRegisters() []RegisterInfo {
 		{Name: "EBP", BitWidth: 32, Value: uint64(c.EBP), Group: "general"},
 		{Name: "ESP", BitWidth: 32, Value: uint64(c.ESP), Group: "general"},
 		{Name: "EIP", BitWidth: 32, Value: uint64(c.EIP), Group: "general"},
-		{Name: "FLAGS", BitWidth: 32, Value: uint64(c.Flags), Group: "flags"},
+		{Name: "EFLAGS", BitWidth: 32, Value: uint64(c.Flags), Group: "flags"},
 		{Name: "CS", BitWidth: 16, Value: uint64(c.CS), Group: "segment"},
 		{Name: "DS", BitWidth: 16, Value: uint64(c.DS), Group: "segment"},
 		{Name: "ES", BitWidth: 16, Value: uint64(c.ES), Group: "segment"},
@@ -74,7 +77,7 @@ func (d *DebugX86) GetRegister(name string) (uint64, bool) {
 		return uint64(c.ESP), true
 	case "EIP":
 		return uint64(c.EIP), true
-	case "FLAGS":
+	case "FLAGS", "EFLAGS":
 		return uint64(c.Flags), true
 	case "CS":
 		return uint64(c.CS), true
@@ -113,7 +116,7 @@ func (d *DebugX86) SetRegister(name string, value uint64) bool {
 		c.ESP = uint32(value)
 	case "EIP":
 		c.EIP = uint32(value)
-	case "FLAGS":
+	case "FLAGS", "EFLAGS":
 		c.Flags = uint32(value)
 	case "CS":
 		c.CS = uint16(value)
@@ -147,6 +150,10 @@ func (d *DebugX86) Freeze() {
 		}
 		return
 	}
+	if d.workerFreeze != nil {
+		d.workerFreeze()
+		return
+	}
 	d.runner.Stop()
 }
 
@@ -158,6 +165,10 @@ func (d *DebugX86) Resume() {
 		d.trapStop = make(chan struct{})
 		d.trapRunning.Store(true)
 		go d.trapLoop()
+		return
+	}
+	if d.workerResume != nil {
+		d.workerResume()
 		return
 	}
 	d.runner.StartExecution()

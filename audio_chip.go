@@ -878,6 +878,7 @@ type SoundChip struct {
 	_pad2           [SOUNDCHIP_PAD2_SIZE]byte // Align to 64-byte cache line boundary
 
 	sampleTicker atomic.Value // Optional per-sample ticker (SampleTicker)
+	audioFrozen  atomic.Bool  // When true, ReadSample returns 0 (hard pause)
 
 	// Cache line 3+ - Reverb state (cold path)
 	preDelayPos     int                            // Current position in pre-delay buffer
@@ -2453,6 +2454,9 @@ func (chip *SoundChip) applyReverb(input float32) float32 {
 }
 
 func (chip *SoundChip) ReadSample() float32 {
+	if chip.audioFrozen.Load() {
+		return 0
+	}
 	if holder, ok := chip.sampleTicker.Load().(*sampleTickerHolder); ok {
 		if holder.ticker != nil {
 			holder.ticker.TickSample()

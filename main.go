@@ -842,6 +842,8 @@ func main() {
 	// Initialize Machine Monitor (debugger)
 	monitor := NewMachineMonitor(sysBus)
 	monitor.coprocMgr = coprocMgr
+	monitor.soundChip = soundChip
+	coprocMgr.monitor = monitor
 	monitor.StartBreakpointListener()
 
 	// Initialize the selected CPU and optionally load program

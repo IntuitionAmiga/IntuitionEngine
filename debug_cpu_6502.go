@@ -18,6 +18,9 @@ type Debug6502 struct {
 	cpuID       int
 	trapRunning atomic.Bool
 	trapStop    chan struct{}
+
+	workerFreeze func()
+	workerResume func()
 }
 
 func NewDebug6502(cpu *CPU_6502, runner *CPU6502Runner) *Debug6502 {
@@ -97,6 +100,10 @@ func (d *Debug6502) Freeze() {
 		}
 		return
 	}
+	if d.workerFreeze != nil {
+		d.workerFreeze()
+		return
+	}
 	d.runner.Stop()
 }
 
@@ -108,6 +115,10 @@ func (d *Debug6502) Resume() {
 		d.trapStop = make(chan struct{})
 		d.trapRunning.Store(true)
 		go d.trapLoop()
+		return
+	}
+	if d.workerResume != nil {
+		d.workerResume()
 		return
 	}
 	d.runner.StartExecution()

@@ -23,14 +23,25 @@ func createIE32Worker(bus *MachineBus, data []byte) (*CoprocWorker, error) {
 	cpu.CoprocMode = true           // Skip PC range check in Execute()
 
 	done := make(chan struct{})
+	stopFn := func() { cpu.running.Store(false) }
+	execFn := func() { cpu.running.Store(true); cpu.Execute() }
+
+	adapter := NewDebugIE32(cpu)
+
 	worker := &CoprocWorker{
-		cpuType:  EXEC_TYPE_IE32,
-		stop:     func() { cpu.running.Store(false) },
-		done:     done,
-		loadBase: WORKER_IE32_BASE,
-		loadEnd:  WORKER_IE32_END,
-		debugCPU: NewDebugIE32(cpu),
+		cpuType:   EXEC_TYPE_IE32,
+		monitorID: -1,
+		stop:      stopFn,
+		stopCPU:   stopFn,
+		execCPU:   execFn,
+		done:      done,
+		loadBase:  WORKER_IE32_BASE,
+		loadEnd:   WORKER_IE32_END,
+		debugCPU:  adapter,
 	}
+
+	adapter.workerFreeze = worker.Pause
+	adapter.workerResume = worker.Unpause
 
 	go func() {
 		defer close(done)

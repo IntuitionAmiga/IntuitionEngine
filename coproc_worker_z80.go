@@ -70,14 +70,25 @@ func createZ80Worker(bus *MachineBus, data []byte) (*CoprocWorker, error) {
 	cpu.PC = 0x0000
 
 	done := make(chan struct{})
+	stopFn := func() { cpu.SetRunning(false) }
+	execFn := func() { cpu.SetRunning(true); cpu.Execute() }
+
+	adapter := NewDebugZ80(cpu, nil)
+
 	worker := &CoprocWorker{
-		cpuType:  EXEC_TYPE_Z80,
-		stop:     func() { cpu.SetRunning(false) },
-		done:     done,
-		loadBase: WORKER_Z80_BASE,
-		loadEnd:  WORKER_Z80_END,
-		debugCPU: NewDebugZ80(cpu, nil),
+		cpuType:   EXEC_TYPE_Z80,
+		monitorID: -1,
+		stop:      stopFn,
+		stopCPU:   stopFn,
+		execCPU:   execFn,
+		done:      done,
+		loadBase:  WORKER_Z80_BASE,
+		loadEnd:   WORKER_Z80_END,
+		debugCPU:  adapter,
 	}
+
+	adapter.workerFreeze = worker.Pause
+	adapter.workerResume = worker.Unpause
 
 	go func() {
 		defer close(done)

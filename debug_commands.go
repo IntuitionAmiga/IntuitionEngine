@@ -647,14 +647,6 @@ func (m *MachineMonitor) cmdCPU(cmd MonitorCommand) bool {
 			m.appendOutput(fmt.Sprintf("%sid:%-3d %-12s [%-7s]  PC=$%X",
 				focus, entry.ID, entry.Label, status, entry.CPU.GetPC()), colorWhite)
 		}
-		// List active coprocessor workers
-		if m.coprocMgr != nil {
-			workers := m.coprocMgr.GetActiveWorkers()
-			for _, w := range workers {
-				m.appendOutput(fmt.Sprintf(" %-16s [WORKER ]  PC=$%X",
-					w.Label, w.CPU.GetPC()), colorDim)
-			}
-		}
 		return false
 	}
 
@@ -765,13 +757,21 @@ func (m *MachineMonitor) cmdThaw(cmd MonitorCommand) bool {
 }
 
 func (m *MachineMonitor) cmdFreezeAudio(_ MonitorCommand) bool {
-	m.audioFrozen = true
+	if m.soundChip == nil {
+		m.appendOutput("No sound chip available", colorRed)
+		return false
+	}
+	m.soundChip.audioFrozen.Store(true)
 	m.appendOutput("Audio frozen", colorCyan)
 	return false
 }
 
 func (m *MachineMonitor) cmdThawAudio(_ MonitorCommand) bool {
-	m.audioFrozen = false
+	if m.soundChip == nil {
+		m.appendOutput("No sound chip available", colorRed)
+		return false
+	}
+	m.soundChip.audioFrozen.Store(false)
 	m.appendOutput("Audio thawed", colorCyan)
 	return false
 }

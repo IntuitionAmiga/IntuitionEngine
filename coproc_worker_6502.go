@@ -96,14 +96,25 @@ func create6502Worker(bus *MachineBus, data []byte) (*CoprocWorker, error) {
 	cpu.SetRDYLine(true)
 
 	done := make(chan struct{})
+	stopFn := func() { cpu.SetRunning(false) }
+	execFn := func() { cpu.SetRunning(true); cpu.Execute() }
+
+	adapter := NewDebug6502(cpu, nil)
+
 	worker := &CoprocWorker{
-		cpuType:  EXEC_TYPE_6502,
-		stop:     func() { cpu.SetRunning(false) },
-		done:     done,
-		loadBase: WORKER_6502_BASE,
-		loadEnd:  WORKER_6502_END,
-		debugCPU: NewDebug6502(cpu, nil),
+		cpuType:   EXEC_TYPE_6502,
+		monitorID: -1,
+		stop:      stopFn,
+		stopCPU:   stopFn,
+		execCPU:   execFn,
+		done:      done,
+		loadBase:  WORKER_6502_BASE,
+		loadEnd:   WORKER_6502_END,
+		debugCPU:  adapter,
 	}
+
+	adapter.workerFreeze = worker.Pause
+	adapter.workerResume = worker.Unpause
 
 	go func() {
 		defer close(done)

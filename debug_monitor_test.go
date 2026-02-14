@@ -1591,11 +1591,17 @@ func TestCoprocessorDiscovery(t *testing.T) {
 	// Create monitor with coprocMgr and verify cpu command lists coprocessor
 	mon := NewMachineMonitor(bus)
 	mon.coprocMgr = coprocMgr
+	coprocMgr.monitor = mon
 
 	// Register a primary CPU
 	cpu64 := NewCPU64(bus)
 	dbg := NewDebugIE64(cpu64)
 	mon.RegisterCPU("IE64", dbg)
+
+	// Register the worker with the monitor (as auto-registration would do)
+	if workers[0].CPU != nil {
+		mon.RegisterCPU(workers[0].Label, workers[0].CPU)
+	}
 
 	// Activate monitor
 	mon.mu.Lock()
@@ -1923,4 +1929,1064 @@ func TestZ80TrapLoopClearsRunning(t *testing.T) {
 		bus.mem[0] = 0x00
 		bus.mem[1] = 0x00
 	})
+}
+
+// ===========================================================================
+// Audio Freeze/Thaw
+// ===========================================================================
+
+func TestSoundChipFreezeBlocksOutput(t *testing.T) {
+	chip, err := NewSoundChip(AUDIO_BACKEND_OTO)
+	if err != nil {
+		t.Fatalf("NewSoundChip: %v", err)
+	}
+	chip.enabled.Store(true)
+
+	// Generate a sample with audio enabled — should produce some output
+	// (may be zero if no channels configured, but the path runs)
+	_ = chip.ReadSample()
+
+	// Freeze audio
+	chip.audioFrozen.Store(true)
+
+	// ReadSample must return exactly 0 when frozen
+	sample := chip.ReadSample()
+	if sample != 0 {
+		t.Errorf("ReadSample while frozen = %f, want 0", sample)
+	}
+}
+
+type mockTicker struct {
+	ticked bool
+}
+
+func (m *mockTicker) TickSample() { m.ticked = true }
+
+func TestSoundChipFreezeSkipsTicker(t *testing.T) {
+	chip, err := NewSoundChip(AUDIO_BACKEND_OTO)
+	if err != nil {
+		t.Fatalf("NewSoundChip: %v", err)
+	}
+
+	ticker := &mockTicker{}
+	chip.SetSampleTicker(ticker)
+	chip.audioFrozen.Store(true)
+
+	_ = chip.ReadSample()
+
+	if ticker.ticked {
+		t.Error("Ticker should NOT be called when audio is frozen")
+	}
+}
+
+func TestSoundChipThawRestoresOutput(t *testing.T) {
+	chip, err := NewSoundChip(AUDIO_BACKEND_OTO)
+	if err != nil {
+		t.Fatalf("NewSoundChip: %v", err)
+	}
+
+	ticker := &mockTicker{}
+	chip.SetSampleTicker(ticker)
+
+	// Freeze then thaw
+	chip.audioFrozen.Store(true)
+	_ = chip.ReadSample()
+	if ticker.ticked {
+		t.Fatal("Ticker should not tick while frozen")
+	}
+
+	chip.audioFrozen.Store(false)
+	_ = chip.ReadSample()
+	if !ticker.ticked {
+		t.Error("Ticker should tick after thaw")
+	}
+}
+
+func TestSoundChipResetClearsFrozen(t *testing.T) {
+	chip, err := NewSoundChip(AUDIO_BACKEND_OTO)
+	if err != nil {
+		t.Fatalf("NewSoundChip: %v", err)
+	}
+
+	chip.audioFrozen.Store(true)
+	chip.Reset()
+
+	if chip.audioFrozen.Load() {
+		t.Error("audioFrozen should be false after Reset()")
+	}
+}
+
+func TestMonitorFaCommand(t *testing.T) {
+	chip, err := NewSoundChip(AUDIO_BACKEND_OTO)
+	if err != nil {
+		t.Fatalf("NewSoundChip: %v", err)
+	}
+
+	mon, _ := newTestMonitor()
+	mon.soundChip = chip
+
+	mon.mu.Lock()
+	mon.ExecuteCommand("fa")
+	mon.mu.Unlock()
+
+	if !chip.audioFrozen.Load() {
+		t.Error("audioFrozen should be true after 'fa' command")
+	}
+}
+
+func TestMonitorTaCommand(t *testing.T) {
+	chip, err := NewSoundChip(AUDIO_BACKEND_OTO)
+	if err != nil {
+		t.Fatalf("NewSoundChip: %v", err)
+	}
+
+	mon, _ := newTestMonitor()
+	mon.soundChip = chip
+	chip.audioFrozen.Store(true)
+
+	mon.mu.Lock()
+	mon.ExecuteCommand("ta")
+	mon.mu.Unlock()
+
+	if chip.audioFrozen.Load() {
+		t.Error("audioFrozen should be false after 'ta' command")
+	}
+}
+
+// ===========================================================================
+// Worker Control Model (Step 2)
+// ===========================================================================
+
+func TestCoprocWorkerPauseUnpause(t *testing.T) {
+	bus := NewMachineBus()
+	code := buildIE32ServiceBinary(ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE32)))
+	worker, err := createIE32Worker(bus, code)
+	if err != nil {
+		t.Fatalf("createIE32Worker: %v", err)
+	}
+
+	// Give it a moment to start running
+	time.Sleep(10 * time.Millisecond)
+
+	// Pause
+	worker.Pause()
+	worker.mu.Lock()
+	frozen := worker.frozen
+	worker.mu.Unlock()
+	if !frozen {
+		t.Error("Worker should be frozen after Pause()")
+	}
+
+	// Unpause
+	worker.Unpause()
+	worker.mu.Lock()
+	frozen = worker.frozen
+	worker.mu.Unlock()
+	if frozen {
+		t.Error("Worker should not be frozen after Unpause()")
+	}
+
+	// Give it time to start running again
+	time.Sleep(10 * time.Millisecond)
+	select {
+	case <-worker.done:
+		t.Fatal("Worker should be running after Unpause()")
+	default:
+	}
+
+	// Clean up
+	worker.stop()
+	select {
+	case <-worker.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Worker didn't stop in time")
+	}
+}
+
+func TestCoprocWorkerPauseTimeout(t *testing.T) {
+	// Create a worker with stopCPU that does nothing (simulating stuck CPU)
+	done := make(chan struct{})
+	worker := &CoprocWorker{
+		cpuType:   EXEC_TYPE_IE32,
+		monitorID: -1,
+		stopCPU:   func() {},            // no-op — won't actually stop
+		execCPU:   func() { select {} }, // blocks forever
+		done:      done,
+		stop:      func() {},
+	}
+
+	// Launch the "stuck" goroutine
+	go func() {
+		defer close(done)
+		worker.execCPU()
+	}()
+
+	// Pause should return within ~2s timeout without hanging
+	start := time.Now()
+	worker.Pause()
+	elapsed := time.Since(start)
+
+	if elapsed > 4*time.Second {
+		t.Fatalf("Pause() took too long: %v", elapsed)
+	}
+
+	// frozen should be false since it timed out
+	worker.mu.Lock()
+	frozen := worker.frozen
+	worker.mu.Unlock()
+	if frozen {
+		t.Error("frozen should be false on timeout (goroutine still alive)")
+	}
+}
+
+func TestCoprocWorkerFreezeViaAdapterZ80(t *testing.T) {
+	bus := NewMachineBus()
+	code := []byte{0x18, 0xFE} // JR -2 (infinite loop)
+	worker, err := createZ80Worker(bus, code)
+	if err != nil {
+		t.Fatalf("createZ80Worker: %v", err)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+
+	// Freeze via the debug adapter — should not panic
+	worker.debugCPU.Freeze()
+
+	// Worker should be frozen
+	worker.mu.Lock()
+	frozen := worker.frozen
+	worker.mu.Unlock()
+	if !frozen {
+		t.Error("Worker should be frozen after adapter.Freeze()")
+	}
+}
+
+func TestCoprocWorkerResumeViaAdapterZ80(t *testing.T) {
+	bus := NewMachineBus()
+	code := []byte{0x18, 0xFE} // JR -2 (infinite loop)
+	worker, err := createZ80Worker(bus, code)
+	if err != nil {
+		t.Fatalf("createZ80Worker: %v", err)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+
+	// Freeze
+	worker.debugCPU.Freeze()
+	worker.mu.Lock()
+	frozen := worker.frozen
+	worker.mu.Unlock()
+	if !frozen {
+		t.Fatal("Worker should be frozen")
+	}
+
+	// Resume via adapter
+	worker.debugCPU.Resume()
+	time.Sleep(10 * time.Millisecond)
+
+	// Should be running again
+	worker.mu.Lock()
+	frozen = worker.frozen
+	worker.mu.Unlock()
+	if frozen {
+		t.Error("Worker should not be frozen after adapter.Resume()")
+	}
+
+	// Clean up
+	worker.stop()
+	select {
+	case <-worker.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Worker didn't stop")
+	}
+}
+
+func TestCoprocWorkerFreezeResume6502(t *testing.T) {
+	bus := NewMachineBus()
+	code := []byte{0x4C, 0x00, 0x00} // JMP $0000
+	worker, err := create6502Worker(bus, code)
+	if err != nil {
+		t.Fatalf("create6502Worker: %v", err)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+
+	worker.debugCPU.Freeze()
+	worker.mu.Lock()
+	if !worker.frozen {
+		worker.mu.Unlock()
+		t.Fatal("Worker should be frozen")
+	}
+	worker.mu.Unlock()
+
+	worker.debugCPU.Resume()
+	time.Sleep(10 * time.Millisecond)
+
+	worker.mu.Lock()
+	if worker.frozen {
+		worker.mu.Unlock()
+		t.Error("Worker should not be frozen after Resume()")
+	}
+	worker.mu.Unlock()
+
+	worker.stop()
+	select {
+	case <-worker.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Worker didn't stop")
+	}
+}
+
+func TestCoprocWorkerFreezeResumeM68K(t *testing.T) {
+	bus := NewMachineBus()
+	// M68K BRA.S -2: store as 0xFE60 (byte-swapped)
+	code := []byte{0xFE, 0x60}
+	worker, err := createM68KWorker(bus, code)
+	if err != nil {
+		t.Fatalf("createM68KWorker: %v", err)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+
+	worker.debugCPU.Freeze()
+	worker.mu.Lock()
+	if !worker.frozen {
+		worker.mu.Unlock()
+		t.Fatal("Worker should be frozen")
+	}
+	worker.mu.Unlock()
+
+	worker.debugCPU.Resume()
+	time.Sleep(10 * time.Millisecond)
+
+	worker.mu.Lock()
+	if worker.frozen {
+		worker.mu.Unlock()
+		t.Error("Worker should not be frozen after Resume()")
+	}
+	worker.mu.Unlock()
+
+	worker.stop()
+	select {
+	case <-worker.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Worker didn't stop")
+	}
+}
+
+func TestCoprocWorkerFreezeResumeX86(t *testing.T) {
+	bus := NewMachineBus()
+	code := []byte{0xEB, 0xFE} // JMP short -2
+	worker, err := createX86Worker(bus, code)
+	if err != nil {
+		t.Fatalf("createX86Worker: %v", err)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+
+	worker.debugCPU.Freeze()
+	worker.mu.Lock()
+	if !worker.frozen {
+		worker.mu.Unlock()
+		t.Fatal("Worker should be frozen")
+	}
+	worker.mu.Unlock()
+
+	worker.debugCPU.Resume()
+	time.Sleep(10 * time.Millisecond)
+
+	worker.mu.Lock()
+	if worker.frozen {
+		worker.mu.Unlock()
+		t.Error("Worker should not be frozen after Resume()")
+	}
+	worker.mu.Unlock()
+
+	worker.stop()
+	select {
+	case <-worker.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Worker didn't stop")
+	}
+}
+
+func TestCoprocWorkerFreezeResumeIE32(t *testing.T) {
+	bus := NewMachineBus()
+	code := buildIE32ServiceBinary(ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE32)))
+	worker, err := createIE32Worker(bus, code)
+	if err != nil {
+		t.Fatalf("createIE32Worker: %v", err)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+
+	worker.debugCPU.Freeze()
+	worker.mu.Lock()
+	if !worker.frozen {
+		worker.mu.Unlock()
+		t.Fatal("Worker should be frozen")
+	}
+	worker.mu.Unlock()
+
+	worker.debugCPU.Resume()
+	time.Sleep(10 * time.Millisecond)
+
+	worker.mu.Lock()
+	if worker.frozen {
+		worker.mu.Unlock()
+		t.Error("Worker should not be frozen after Resume()")
+	}
+	worker.mu.Unlock()
+
+	worker.stop()
+	select {
+	case <-worker.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Worker didn't stop")
+	}
+}
+
+func TestCoprocWorkerMonitorIDInitNegOne(t *testing.T) {
+	bus := NewMachineBus()
+	code := buildIE32ServiceBinary(ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE32)))
+	worker, err := createIE32Worker(bus, code)
+	if err != nil {
+		t.Fatalf("createIE32Worker: %v", err)
+	}
+	defer func() {
+		worker.stop()
+		<-worker.done
+	}()
+
+	if worker.monitorID != -1 {
+		t.Errorf("monitorID = %d, want -1", worker.monitorID)
+	}
+}
+
+// ===========================================================================
+// Auto-Registration (Step 3)
+// ===========================================================================
+
+func TestCoprocWorkerRegistersOnStart(t *testing.T) {
+	bus := NewMachineBus()
+	mon := NewMachineMonitor(bus)
+	mgr := NewCoprocessorManager(bus, ".")
+	mgr.monitor = mon
+
+	code := buildIE32ServiceBinary(ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE32)))
+	worker, err := mgr.createWorkerAndRegister(EXEC_TYPE_IE32, code)
+	if err != nil {
+		t.Fatalf("createWorkerAndRegister: %v", err)
+	}
+	defer func() {
+		worker.stopCPU()
+		<-worker.done
+	}()
+
+	if worker.monitorID < 0 {
+		t.Fatal("Worker should have a non-negative monitorID after registration")
+	}
+
+	// Verify the monitor has an entry with the right label
+	mon.mu.Lock()
+	entry, ok := mon.cpus[worker.monitorID]
+	mon.mu.Unlock()
+	if !ok {
+		t.Fatal("Monitor should have an entry for the worker's monitorID")
+	}
+	if entry.Label != "coproc:IE32" {
+		t.Errorf("Label = %q, want %q", entry.Label, "coproc:IE32")
+	}
+}
+
+func TestCoprocWorkerUnregistersOnStop(t *testing.T) {
+	bus := NewMachineBus()
+	mon := NewMachineMonitor(bus)
+	mgr := NewCoprocessorManager(bus, ".")
+	mgr.monitor = mon
+
+	code := buildIE32ServiceBinary(ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE32)))
+	worker, err := mgr.createWorkerAndRegister(EXEC_TYPE_IE32, code)
+	if err != nil {
+		t.Fatalf("createWorkerAndRegister: %v", err)
+	}
+	mgr.mu.Lock()
+	mgr.workers[EXEC_TYPE_IE32] = worker
+	mgr.mu.Unlock()
+
+	monID := worker.monitorID
+	if monID < 0 {
+		t.Fatal("Worker should be registered")
+	}
+
+	// Stop via stopWorkerAndUnregister
+	mgr.stopWorkerAndUnregister(EXEC_TYPE_IE32, worker)
+
+	// Verify monitor entry removed
+	mon.mu.Lock()
+	_, ok := mon.cpus[monID]
+	mon.mu.Unlock()
+	if ok {
+		t.Error("Monitor entry should be removed after stop")
+	}
+}
+
+func TestCoprocWorkerReplaceUnregisters(t *testing.T) {
+	bus := NewMachineBus()
+	mon := NewMachineMonitor(bus)
+	mgr := NewCoprocessorManager(bus, ".")
+	mgr.monitor = mon
+
+	code := buildIE32ServiceBinary(ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE32)))
+	w1, err := mgr.createWorkerAndRegister(EXEC_TYPE_IE32, code)
+	if err != nil {
+		t.Fatalf("first createWorkerAndRegister: %v", err)
+	}
+	mgr.mu.Lock()
+	mgr.workers[EXEC_TYPE_IE32] = w1
+	mgr.mu.Unlock()
+	oldID := w1.monitorID
+
+	// Create a second worker of the same type — should unregister the old one
+	w2, err := mgr.createWorkerAndRegister(EXEC_TYPE_IE32, code)
+	if err != nil {
+		t.Fatalf("second createWorkerAndRegister: %v", err)
+	}
+
+	// Stop old worker
+	mgr.stopWorkerAndUnregister(EXEC_TYPE_IE32, w1)
+	mgr.mu.Lock()
+	mgr.workers[EXEC_TYPE_IE32] = w2
+	mgr.mu.Unlock()
+
+	// Old monitor entry should be gone
+	mon.mu.Lock()
+	_, oldOK := mon.cpus[oldID]
+	_, newOK := mon.cpus[w2.monitorID]
+	mon.mu.Unlock()
+	if oldOK {
+		t.Error("Old monitor entry should be removed")
+	}
+	if !newOK {
+		t.Error("New monitor entry should exist")
+	}
+
+	// Clean up
+	w2.stopCPU()
+	<-w2.done
+}
+
+func TestCoprocMonitorIDInitNegOne2(t *testing.T) {
+	bus := NewMachineBus()
+	code := buildIE32ServiceBinary(ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE32)))
+	worker, err := createIE32Worker(bus, code)
+	if err != nil {
+		t.Fatalf("createIE32Worker: %v", err)
+	}
+	defer func() {
+		worker.stop()
+		<-worker.done
+	}()
+	if worker.monitorID != -1 {
+		t.Errorf("monitorID = %d, want -1", worker.monitorID)
+	}
+}
+
+func TestCoprocUnregisterGuardNegOne(t *testing.T) {
+	bus := NewMachineBus()
+	mon := NewMachineMonitor(bus)
+	mgr := NewCoprocessorManager(bus, ".")
+	mgr.monitor = mon
+
+	code := buildIE32ServiceBinary(ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE32)))
+	worker, err := createIE32Worker(bus, code)
+	if err != nil {
+		t.Fatalf("createIE32Worker: %v", err)
+	}
+	// monitorID is -1 (not registered)
+	// stopWorkerAndUnregister should not panic
+	mgr.stopWorkerAndUnregister(EXEC_TYPE_IE32, worker)
+}
+
+func TestCoprocStopAllUnregisters(t *testing.T) {
+	bus := NewMachineBus()
+	mon := NewMachineMonitor(bus)
+	mgr := NewCoprocessorManager(bus, ".")
+	mgr.monitor = mon
+
+	code := buildIE32ServiceBinary(ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE32)))
+	w1, err := mgr.createWorkerAndRegister(EXEC_TYPE_IE32, code)
+	if err != nil {
+		t.Fatalf("createWorkerAndRegister: %v", err)
+	}
+	mgr.mu.Lock()
+	mgr.workers[EXEC_TYPE_IE32] = w1
+	mgr.mu.Unlock()
+
+	monID := w1.monitorID
+	if monID < 0 {
+		t.Fatal("Worker should be registered")
+	}
+
+	mgr.StopAll()
+
+	// Verify monitor entry removed
+	mon.mu.Lock()
+	_, ok := mon.cpus[monID]
+	mon.mu.Unlock()
+	if ok {
+		t.Error("Monitor entry should be removed after StopAll")
+	}
+}
+
+func TestCoprocPauseTimeoutNoFrozen(t *testing.T) {
+	// Worker with no-op stopCPU (simulates stuck CPU)
+	done := make(chan struct{})
+	worker := &CoprocWorker{
+		cpuType:   EXEC_TYPE_IE32,
+		monitorID: -1,
+		stopCPU:   func() {},
+		execCPU:   func() { select {} },
+		done:      done,
+		stop:      func() {},
+	}
+	go func() {
+		defer close(done)
+		worker.execCPU()
+	}()
+
+	worker.Pause() // times out after 2s
+
+	worker.mu.Lock()
+	frozen := worker.frozen
+	worker.mu.Unlock()
+	if frozen {
+		t.Error("frozen should be false after Pause timeout")
+	}
+
+	// Subsequent Unpause should be no-op (no duplicate goroutine)
+	worker.Unpause()
+	worker.mu.Lock()
+	frozen = worker.frozen
+	worker.mu.Unlock()
+	if frozen {
+		t.Error("frozen should still be false after Unpause on non-frozen worker")
+	}
+}
+
+// ===========================================================================
+// TrapLoop + Worker Interaction (Step 2 remaining)
+// ===========================================================================
+
+func TestCoprocWorkerTrapLoopWhileFrozen(t *testing.T) {
+	// Create a Z80 worker with a tight loop (JR -2 = 0x18 0xFE)
+	bus := NewMachineBus()
+	code := []byte{0x18, 0xFE} // JR -2
+	worker, err := createZ80Worker(bus, code)
+	if err != nil {
+		t.Fatalf("createZ80Worker: %v", err)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+
+	// Freeze the worker via the adapter
+	worker.debugCPU.Freeze()
+	worker.mu.Lock()
+	if !worker.frozen {
+		worker.mu.Unlock()
+		t.Fatal("Worker should be frozen after Freeze()")
+	}
+	worker.mu.Unlock()
+
+	// Set a breakpoint at address 0 (the loop address)
+	worker.debugCPU.SetBreakpoint(0)
+
+	// Resume — should launch trapLoop, NOT the worker goroutine.
+	// Worker stays frozen because trapLoop drives execution directly.
+	worker.debugCPU.Resume()
+
+	// Give trapLoop time to hit the breakpoint
+	time.Sleep(50 * time.Millisecond)
+
+	// Worker should still be frozen (trapLoop manages CPU, not the worker goroutine)
+	worker.mu.Lock()
+	frozen := worker.frozen
+	worker.mu.Unlock()
+	if !frozen {
+		t.Error("Worker should remain frozen=true while trapLoop is driving execution")
+	}
+
+	// trapLoop should have exited after hitting the breakpoint
+	time.Sleep(50 * time.Millisecond)
+	if worker.debugCPU.IsRunning() {
+		t.Error("CPU should not be running after breakpoint hit in trapLoop")
+	}
+
+	// Clean up: clear breakpoints, resume without breakpoints (uses worker goroutine)
+	worker.debugCPU.ClearAllBreakpoints()
+	worker.debugCPU.Resume()
+	time.Sleep(10 * time.Millisecond)
+
+	worker.mu.Lock()
+	frozen = worker.frozen
+	worker.mu.Unlock()
+	if frozen {
+		t.Error("Worker should be unfrozen after Resume() without breakpoints")
+	}
+
+	// Final cleanup
+	worker.debugCPU.Freeze()
+	worker.stopCPU()
+	select {
+	case <-worker.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Worker didn't stop in time")
+	}
+}
+
+func TestCoprocWorkerStopDuringTrapLoop(t *testing.T) {
+	// Create a Z80 worker with a tight loop
+	bus := NewMachineBus()
+	code := []byte{0x18, 0xFE} // JR -2
+	worker, err := createZ80Worker(bus, code)
+	if err != nil {
+		t.Fatalf("createZ80Worker: %v", err)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+
+	// Freeze the worker
+	worker.debugCPU.Freeze()
+
+	// Set breakpoint at an address the CPU will never reach (far away)
+	worker.debugCPU.SetBreakpoint(0x1000)
+
+	// Resume with breakpoints — trapLoop drives execution
+	worker.debugCPU.Resume()
+
+	// Give trapLoop time to start stepping
+	time.Sleep(20 * time.Millisecond)
+
+	// Verify trapLoop is running
+	if !worker.debugCPU.IsRunning() {
+		t.Fatal("CPU should be running via trapLoop")
+	}
+
+	// Freeze the adapter — this should close trapStop and wait for trapLoop to exit
+	worker.debugCPU.Freeze()
+
+	// After Freeze, trapLoop should have exited
+	if worker.debugCPU.IsRunning() {
+		t.Error("CPU should not be running after Freeze() during trapLoop")
+	}
+
+	// Worker is still frozen — clean up by stopping CPU
+	worker.stopCPU()
+	select {
+	case <-worker.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Worker didn't stop")
+	}
+}
+
+// ===========================================================================
+// Auto-Registration Remaining Tests (Step 3 remaining)
+// ===========================================================================
+
+func TestCoprocMonitorIDWriteUnderMu(t *testing.T) {
+	bus := NewMachineBus()
+	mon := NewMachineMonitor(bus)
+	mgr := NewCoprocessorManager(bus, ".")
+	mgr.monitor = mon
+
+	code := buildIE32ServiceBinary(ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE32)))
+	worker, err := mgr.createWorkerAndRegister(EXEC_TYPE_IE32, code)
+	if err != nil {
+		t.Fatalf("createWorkerAndRegister: %v", err)
+	}
+	mgr.mu.Lock()
+	mgr.workers[EXEC_TYPE_IE32] = worker
+	mgr.mu.Unlock()
+	defer func() {
+		mgr.StopAll()
+	}()
+
+	// Verify monitorID is assigned (not -1) and visible via GetActiveWorkers
+	workers := mgr.GetActiveWorkers()
+	if len(workers) == 0 {
+		t.Fatal("Expected at least 1 active worker")
+	}
+	found := false
+	for _, w := range workers {
+		if w.CPUType == EXEC_TYPE_IE32 {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("Expected IE32 worker in active workers list")
+	}
+
+	if worker.monitorID < 0 {
+		t.Error("monitorID should have been assigned a non-negative value")
+	}
+}
+
+func TestCoprocRegistrationRace(t *testing.T) {
+	// This test verifies that if a worker is replaced during the unlock window
+	// in cmdStart, the stale monitor entry gets cleaned up properly.
+	bus := NewMachineBus()
+	mon := NewMachineMonitor(bus)
+	mgr := NewCoprocessorManager(bus, ".")
+	mgr.monitor = mon
+
+	code := buildIE32ServiceBinary(ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE32)))
+
+	// Create first worker and register
+	w1, err := mgr.createWorkerAndRegister(EXEC_TYPE_IE32, code)
+	if err != nil {
+		t.Fatalf("first createWorkerAndRegister: %v", err)
+	}
+	mgr.mu.Lock()
+	mgr.workers[EXEC_TYPE_IE32] = w1
+	mgr.mu.Unlock()
+
+	w1ID := w1.monitorID
+	if w1ID < 0 {
+		t.Fatal("First worker should be registered")
+	}
+
+	// Create second worker and register (replacing first)
+	w2, err := mgr.createWorkerAndRegister(EXEC_TYPE_IE32, code)
+	if err != nil {
+		t.Fatalf("second createWorkerAndRegister: %v", err)
+	}
+
+	// Stop and unregister old worker
+	mgr.stopWorkerAndUnregister(EXEC_TYPE_IE32, w1)
+	mgr.mu.Lock()
+	mgr.workers[EXEC_TYPE_IE32] = w2
+	mgr.mu.Unlock()
+
+	// Old monitor entry should be cleaned up
+	mon.mu.Lock()
+	_, oldExists := mon.cpus[w1ID]
+	_, newExists := mon.cpus[w2.monitorID]
+	mon.mu.Unlock()
+
+	if oldExists {
+		t.Error("Stale monitor entry for first worker should be removed")
+	}
+	if !newExists {
+		t.Error("New monitor entry for second worker should exist")
+	}
+
+	// Clean up
+	mgr.StopAll()
+}
+
+func TestCoprocNoDeadlock(t *testing.T) {
+	bus := NewMachineBus()
+	mon := NewMachineMonitor(bus)
+	mgr := NewCoprocessorManager(bus, ".")
+	mgr.monitor = mon
+
+	// Register a primary CPU
+	cpu64 := NewCPU64(bus)
+	dbg := NewDebugIE64(cpu64)
+	mon.RegisterCPU("IE64", dbg)
+
+	mon.mu.Lock()
+	mon.state = MonitorActive
+	mon.mu.Unlock()
+
+	code := buildIE32ServiceBinary(ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE32)))
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// Loop: start and stop workers rapidly
+		for range 10 {
+			w, err := mgr.createWorkerAndRegister(EXEC_TYPE_IE32, code)
+			if err != nil {
+				continue
+			}
+			mgr.mu.Lock()
+			mgr.workers[EXEC_TYPE_IE32] = w
+			mgr.mu.Unlock()
+
+			// Small delay to let things settle
+			time.Sleep(time.Millisecond)
+
+			mgr.stopWorkerAndUnregister(EXEC_TYPE_IE32, w)
+			mgr.mu.Lock()
+			mgr.workers[EXEC_TYPE_IE32] = nil
+			mgr.mu.Unlock()
+		}
+	}()
+
+	// Concurrently run cpu command to list CPUs
+	done2 := make(chan struct{})
+	go func() {
+		defer close(done2)
+		for range 20 {
+			mon.mu.Lock()
+			mon.outputLines = nil
+			mon.cmdCPU(MonitorCommand{Name: "cpu"})
+			mon.mu.Unlock()
+			time.Sleep(500 * time.Microsecond)
+		}
+	}()
+
+	// Both goroutines must finish within timeout — no deadlock
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Deadlock detected: start/stop loop didn't finish")
+	}
+	select {
+	case <-done2:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Deadlock detected: cpu command loop didn't finish")
+	}
+}
+
+func TestCoprocStopAllTimeout(t *testing.T) {
+	// Create a worker with a stuck CPU (ignores stop signal)
+	done := make(chan struct{})
+	worker := &CoprocWorker{
+		cpuType:   EXEC_TYPE_IE32,
+		monitorID: -1,
+		stopCPU:   func() {},            // no-op — won't actually stop
+		execCPU:   func() { select {} }, // blocks forever
+		done:      done,
+		stop:      func() {},
+	}
+	go func() {
+		defer close(done)
+		worker.execCPU()
+	}()
+
+	bus := NewMachineBus()
+	mon := NewMachineMonitor(bus)
+	mgr := NewCoprocessorManager(bus, ".")
+	mgr.monitor = mon
+
+	mgr.mu.Lock()
+	mgr.workers[EXEC_TYPE_IE32] = worker
+	mgr.mu.Unlock()
+
+	// StopAll should return within reasonable time (2s timeout per worker + margin)
+	start := time.Now()
+	mgr.StopAll()
+	elapsed := time.Since(start)
+
+	if elapsed > 5*time.Second {
+		t.Errorf("StopAll took too long: %v (expected < 5s)", elapsed)
+	}
+}
+
+// ===========================================================================
+// X86 EFLAGS Register Naming (Step 4)
+// ===========================================================================
+
+func TestX86RegisterEFLAGS(t *testing.T) {
+	bus := NewMachineBus()
+	adapter := NewX86BusAdapter(bus)
+	cpu := NewCPU_X86(adapter)
+	cpu.Flags = 0x202
+	dbg := NewDebugX86(cpu, nil)
+
+	val, ok := dbg.GetRegister("EFLAGS")
+	if !ok {
+		t.Fatal("GetRegister('EFLAGS') should return ok=true")
+	}
+	if val != 0x202 {
+		t.Errorf("EFLAGS = 0x%X, want 0x202", val)
+	}
+}
+
+func TestX86RegisterFLAGSCompat(t *testing.T) {
+	bus := NewMachineBus()
+	adapter := NewX86BusAdapter(bus)
+	cpu := NewCPU_X86(adapter)
+	cpu.Flags = 0x246
+	dbg := NewDebugX86(cpu, nil)
+
+	val, ok := dbg.GetRegister("FLAGS")
+	if !ok {
+		t.Fatal("GetRegister('FLAGS') should still work for backward compatibility")
+	}
+	if val != 0x246 {
+		t.Errorf("FLAGS = 0x%X, want 0x246", val)
+	}
+}
+
+func TestX86SetRegisterEFLAGS(t *testing.T) {
+	bus := NewMachineBus()
+	adapter := NewX86BusAdapter(bus)
+	cpu := NewCPU_X86(adapter)
+	dbg := NewDebugX86(cpu, nil)
+
+	ok := dbg.SetRegister("EFLAGS", 0x42)
+	if !ok {
+		t.Fatal("SetRegister('EFLAGS') should return true")
+	}
+	if cpu.Flags != 0x42 {
+		t.Errorf("Flags = 0x%X, want 0x42", cpu.Flags)
+	}
+}
+
+func TestX86SetRegisterFLAGSCompat(t *testing.T) {
+	bus := NewMachineBus()
+	adapter := NewX86BusAdapter(bus)
+	cpu := NewCPU_X86(adapter)
+	dbg := NewDebugX86(cpu, nil)
+
+	ok := dbg.SetRegister("FLAGS", 0x99)
+	if !ok {
+		t.Fatal("SetRegister('FLAGS') should return true")
+	}
+	if cpu.Flags != 0x99 {
+		t.Errorf("Flags = 0x%X, want 0x99", cpu.Flags)
+	}
+}
+
+func TestX86RegisterDisplayName(t *testing.T) {
+	bus := NewMachineBus()
+	adapter := NewX86BusAdapter(bus)
+	cpu := NewCPU_X86(adapter)
+	dbg := NewDebugX86(cpu, nil)
+
+	regs := dbg.GetRegisters()
+	for _, r := range regs {
+		if r.Group == "flags" {
+			if r.Name != "EFLAGS" {
+				t.Errorf("Display name = %q, want %q", r.Name, "EFLAGS")
+			}
+			return
+		}
+	}
+	t.Fatal("No register with group 'flags' found")
+}
+
+func TestMonitorFaWithoutSoundChip(t *testing.T) {
+	mon, _ := newTestMonitor()
+	// No soundChip wired
+
+	mon.mu.Lock()
+	mon.outputLines = nil
+	mon.ExecuteCommand("fa")
+	lines := mon.outputLines
+	mon.mu.Unlock()
+
+	found := false
+	for _, line := range lines {
+		if strings.Contains(line.Text, "No sound chip") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("Expected error message when no soundChip wired")
+	}
 }

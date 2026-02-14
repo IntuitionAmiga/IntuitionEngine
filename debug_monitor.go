@@ -64,8 +64,8 @@ type MachineMonitor struct {
 	history    []string
 	historyIdx int
 
-	wasRunning  map[int]bool
-	audioFrozen bool
+	wasRunning map[int]bool
+	soundChip  *SoundChip
 
 	bus       *MachineBus
 	coprocMgr *CoprocessorManager

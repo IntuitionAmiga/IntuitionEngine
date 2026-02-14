@@ -11,12 +11,20 @@ import (
 
 // CoprocWorker represents a running coprocessor worker.
 type CoprocWorker struct {
-	cpuType  uint32
-	stop     func()        // sets running=false on the worker CPU
-	done     chan struct{} // closed when Execute() returns
-	loadBase uint32
-	loadEnd  uint32
-	debugCPU DebuggableCPU // retained for monitor access
+	cpuType   uint32
+	monitorID int           // -1 when not registered with monitor
+	debugCPU  DebuggableCPU // retained for monitor access
+	loadBase  uint32
+	loadEnd   uint32
+
+	mu      sync.Mutex
+	stopCPU func()        // sets running=false on the worker CPU
+	execCPU func()        // architecture-specific run loop (blocks until done)
+	done    chan struct{} // closed when current Execute() returns
+	frozen  bool
+
+	// Deprecated: kept for compatibility during transition
+	stop func()
 }
 
 // CoprocCompletion tracks a ticket's completion state.
@@ -34,6 +42,7 @@ type CoprocCompletion struct {
 type CoprocessorManager struct {
 	bus     *MachineBus
 	baseDir string
+	monitor *MachineMonitor
 
 	mu          sync.Mutex
 	workers     [7]*CoprocWorker // indexed by cpuType (1-6)
@@ -221,25 +230,24 @@ func (m *CoprocessorManager) cmdStart() {
 	}
 
 	// Stop existing worker for this CPU type if running
-	if existing := m.workers[m.cpuType]; existing != nil {
-		existing.stop()
+	cpuType := m.cpuType
+	if existing := m.workers[cpuType]; existing != nil {
+		m.workers[cpuType] = nil
 		m.mu.Unlock()
-		select {
-		case <-existing.done:
-		case <-time.After(2 * time.Second):
-		}
+		m.stopWorkerAndUnregister(cpuType, existing)
 		m.mu.Lock()
-		m.workers[m.cpuType] = nil
 	}
 
-	worker, err := m.createWorker(m.cpuType, data)
+	m.mu.Unlock()
+	worker, err := m.createWorkerAndRegister(cpuType, data)
+	m.mu.Lock()
 	if err != nil {
 		m.cmdStatus = COPROC_STATUS_ERROR
 		m.cmdError = COPROC_ERR_LOAD_FAILED
 		return
 	}
 
-	m.workers[m.cpuType] = worker
+	m.workers[cpuType] = worker
 	m.cmdStatus = COPROC_STATUS_OK
 	m.cmdError = COPROC_ERR_NONE
 }
@@ -252,21 +260,18 @@ func (m *CoprocessorManager) cmdStop() {
 		return
 	}
 
-	worker := m.workers[m.cpuType]
+	cpuType := m.cpuType
+	worker := m.workers[cpuType]
 	if worker == nil {
 		m.cmdStatus = COPROC_STATUS_ERROR
 		m.cmdError = COPROC_ERR_NO_WORKER
 		return
 	}
 
-	worker.stop()
+	m.workers[cpuType] = nil
 	m.mu.Unlock()
-	select {
-	case <-worker.done:
-	case <-time.After(2 * time.Second):
-	}
+	m.stopWorkerAndUnregister(cpuType, worker)
 	m.mu.Lock()
-	m.workers[m.cpuType] = nil
 	m.cmdStatus = COPROC_STATUS_OK
 	m.cmdError = COPROC_ERR_NONE
 }
@@ -524,6 +529,86 @@ func (m *CoprocessorManager) createWorker(cpuType uint32, data []byte) (*CoprocW
 	}
 }
 
+// createWorkerAndRegister creates a worker and registers it with the monitor.
+// Caller must NOT hold m.mu.
+func (m *CoprocessorManager) createWorkerAndRegister(cpuType uint32, data []byte) (*CoprocWorker, error) {
+	worker, err := m.createWorker(cpuType, data)
+	if err != nil {
+		return nil, err
+	}
+	if m.monitor != nil && worker.debugCPU != nil {
+		label := coprocLabel(cpuType)
+		worker.monitorID = m.monitor.RegisterCPU(label, worker.debugCPU)
+	}
+	return worker, nil
+}
+
+// stopWorkerAndUnregister stops a worker and unregisters it from the monitor.
+// Caller must NOT hold m.mu.
+func (m *CoprocessorManager) stopWorkerAndUnregister(cpuType uint32, worker *CoprocWorker) {
+	if worker.debugCPU != nil {
+		worker.debugCPU.Freeze()
+	}
+	worker.stopCPU()
+	select {
+	case <-worker.done:
+	case <-time.After(2 * time.Second):
+	}
+	if m.monitor != nil && worker.monitorID >= 0 {
+		m.monitor.UnregisterCPU(worker.monitorID)
+	}
+}
+
+// Pause stops the worker CPU and waits for the goroutine to exit.
+// If the stop times out (2s), frozen is NOT set to avoid inconsistent state.
+func (w *CoprocWorker) Pause() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.frozen {
+		return
+	}
+	w.stopCPU()
+	select {
+	case <-w.done:
+		w.frozen = true
+	case <-time.After(2 * time.Second):
+		// Timeout: goroutine still alive. Do NOT set frozen.
+	}
+}
+
+// Unpause launches a new goroutine running execCPU.
+func (w *CoprocWorker) Unpause() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.frozen {
+		return
+	}
+	w.done = make(chan struct{})
+	go func() {
+		defer close(w.done)
+		w.execCPU()
+	}()
+	w.frozen = false
+}
+
+// coprocLabel returns the monitor label for a CPU type.
+func coprocLabel(cpuType uint32) string {
+	switch cpuType {
+	case EXEC_TYPE_IE32:
+		return "coproc:IE32"
+	case EXEC_TYPE_6502:
+		return "coproc:6502"
+	case EXEC_TYPE_M68K:
+		return "coproc:M68K"
+	case EXEC_TYPE_Z80:
+		return "coproc:Z80"
+	case EXEC_TYPE_X86:
+		return "coproc:X86"
+	default:
+		return fmt.Sprintf("coproc:type%d", cpuType)
+	}
+}
+
 // CoprocDebugInfo holds a coprocessor's debug adapter and type label.
 type CoprocDebugInfo struct {
 	CPUType uint32
@@ -541,24 +626,9 @@ func (m *CoprocessorManager) GetActiveWorkers() []CoprocDebugInfo {
 	for i := uint32(1); i <= 6; i++ {
 		w := m.workers[i]
 		if w != nil && w.debugCPU != nil {
-			label := "coproc:"
-			switch i {
-			case EXEC_TYPE_IE32:
-				label += "IE32"
-			case EXEC_TYPE_6502:
-				label += "6502"
-			case EXEC_TYPE_M68K:
-				label += "M68K"
-			case EXEC_TYPE_Z80:
-				label += "Z80"
-			case EXEC_TYPE_X86:
-				label += "X86"
-			default:
-				label += fmt.Sprintf("type%d", i)
-			}
 			result = append(result, CoprocDebugInfo{
 				CPUType: i,
-				Label:   label,
+				Label:   coprocLabel(i),
 				CPU:     w.debugCPU,
 			})
 		}
@@ -569,16 +639,22 @@ func (m *CoprocessorManager) GetActiveWorkers() []CoprocDebugInfo {
 // StopAll stops all running workers. Called during shutdown.
 func (m *CoprocessorManager) StopAll() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
+	var toStop []struct {
+		cpuType uint32
+		worker  *CoprocWorker
+	}
 	for i := uint32(1); i <= 6; i++ {
 		if w := m.workers[i]; w != nil {
-			w.stop()
-			select {
-			case <-w.done:
-			case <-time.After(2 * time.Second):
-			}
+			toStop = append(toStop, struct {
+				cpuType uint32
+				worker  *CoprocWorker
+			}{i, w})
 			m.workers[i] = nil
 		}
+	}
+	m.mu.Unlock()
+
+	for _, s := range toStop {
+		m.stopWorkerAndUnregister(s.cpuType, s.worker)
 	}
 }

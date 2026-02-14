@@ -25,21 +25,34 @@ func createX86Worker(bus *MachineBus, data []byte) (*CoprocWorker, error) {
 	cpu.ESP = WORKER_X86_END - 0xFF // Stack at top of worker region
 
 	done := make(chan struct{})
-	worker := &CoprocWorker{
-		cpuType:  EXEC_TYPE_X86,
-		stop:     func() { cpu.SetRunning(false) },
-		done:     done,
-		loadBase: WORKER_X86_BASE,
-		loadEnd:  WORKER_X86_END,
-		debugCPU: NewDebugX86(cpu, nil),
-	}
-
-	go func() {
-		defer close(done)
-		// x86 doesn't have a built-in Execute() loop — run Step() in a loop
+	stopFn := func() { cpu.SetRunning(false) }
+	execFn := func() {
+		cpu.SetRunning(true)
 		for cpu.Running() {
 			cpu.Step()
 		}
+	}
+
+	dbg := NewDebugX86(cpu, nil)
+
+	worker := &CoprocWorker{
+		cpuType:   EXEC_TYPE_X86,
+		monitorID: -1,
+		stop:      stopFn,
+		stopCPU:   stopFn,
+		execCPU:   execFn,
+		done:      done,
+		loadBase:  WORKER_X86_BASE,
+		loadEnd:   WORKER_X86_END,
+		debugCPU:  dbg,
+	}
+
+	dbg.workerFreeze = worker.Pause
+	dbg.workerResume = worker.Unpause
+
+	go func() {
+		defer close(done)
+		execFn()
 	}()
 
 	return worker, nil

@@ -18,6 +18,9 @@ type DebugZ80 struct {
 	cpuID       int
 	trapRunning atomic.Bool
 	trapStop    chan struct{}
+
+	workerFreeze func()
+	workerResume func()
 }
 
 func NewDebugZ80(cpu *CPU_Z80, runner *CPUZ80Runner) *DebugZ80 {
@@ -144,6 +147,10 @@ func (d *DebugZ80) Freeze() {
 		}
 		return
 	}
+	if d.workerFreeze != nil {
+		d.workerFreeze()
+		return
+	}
 	d.runner.Stop()
 }
 
@@ -155,6 +162,10 @@ func (d *DebugZ80) Resume() {
 		d.trapStop = make(chan struct{})
 		d.trapRunning.Store(true)
 		go d.trapLoop()
+		return
+	}
+	if d.workerResume != nil {
+		d.workerResume()
 		return
 	}
 	d.runner.StartExecution()

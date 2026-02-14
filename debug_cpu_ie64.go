@@ -37,6 +37,9 @@ type DebugIE64 struct {
 
 	trapRunning atomic.Bool
 	trapStop    chan struct{}
+
+	workerFreeze func()
+	workerResume func()
 }
 
 func NewDebugIE64(cpu *CPU64) *DebugIE64 {
@@ -129,6 +132,10 @@ func (d *DebugIE64) Freeze() {
 		}
 		return
 	}
+	if d.workerFreeze != nil {
+		d.workerFreeze()
+		return
+	}
 	d.cpu.Stop()
 }
 
@@ -141,6 +148,10 @@ func (d *DebugIE64) Resume() {
 		d.trapStop = make(chan struct{})
 		d.trapRunning.Store(true)
 		go d.trapLoop()
+		return
+	}
+	if d.workerResume != nil {
+		d.workerResume()
 		return
 	}
 	d.cpu.running.Store(true)

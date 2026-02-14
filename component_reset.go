@@ -90,6 +90,7 @@ func (chip *SoundChip) Reset() {
 	}
 
 	chip.enabled.Store(false)
+	chip.audioFrozen.Store(false)
 }
 
 // PSGEngine.Reset clears all registers and envelope state.

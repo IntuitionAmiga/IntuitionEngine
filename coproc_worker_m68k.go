@@ -23,14 +23,25 @@ func createM68KWorker(bus *MachineBus, data []byte) (*CoprocWorker, error) {
 	cpu.AddrRegs[7] = WORKER_M68K_END - 0xFF // Stack at top of worker region
 
 	done := make(chan struct{})
+	stopFn := func() { cpu.SetRunning(false) }
+	execFn := func() { cpu.SetRunning(true); cpu.ExecuteInstruction() }
+
+	adapter := NewDebugM68K(cpu, nil)
+
 	worker := &CoprocWorker{
-		cpuType:  EXEC_TYPE_M68K,
-		stop:     func() { cpu.SetRunning(false) },
-		done:     done,
-		loadBase: WORKER_M68K_BASE,
-		loadEnd:  WORKER_M68K_END,
-		debugCPU: NewDebugM68K(cpu, nil),
+		cpuType:   EXEC_TYPE_M68K,
+		monitorID: -1,
+		stop:      stopFn,
+		stopCPU:   stopFn,
+		execCPU:   execFn,
+		done:      done,
+		loadBase:  WORKER_M68K_BASE,
+		loadEnd:   WORKER_M68K_END,
+		debugCPU:  adapter,
 	}
+
+	adapter.workerFreeze = worker.Pause
+	adapter.workerResume = worker.Unpause
 
 	go func() {
 		defer close(done)
