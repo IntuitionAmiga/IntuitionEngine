@@ -522,7 +522,7 @@ repl_skip_spaces:
 
 repl_str_banner:
     dc.b    "EhBASIC IE64 v1.0", 0x0D, 0x0A
-    dc.b    "Zayn Otley, 2024-2026", 0x0D, 0x0A
+    dc.b    "(c) Zayn Otley, 2024-2026", 0x0D, 0x0A
     dc.b    "Based on EhBASIC by Lee Davison", 0
     align 4
 

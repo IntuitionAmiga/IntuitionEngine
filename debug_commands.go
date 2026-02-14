@@ -1612,7 +1612,18 @@ func (m *MachineMonitor) cmdIOView(cmd MonitorCommand) bool {
 		return false
 	}
 
-	lines := formatIOView(entry.CPU, strings.ToLower(cmd.Args[0]))
+	arg := strings.ToLower(cmd.Args[0])
+	if arg == "all" {
+		for _, name := range listIODevices() {
+			lines := formatIOView(entry.CPU, name)
+			for _, line := range lines {
+				m.appendOutput(line, colorCyan)
+			}
+		}
+		return false
+	}
+
+	lines := formatIOView(entry.CPU, arg)
 	for _, line := range lines {
 		m.appendOutput(line, colorCyan)
 	}
