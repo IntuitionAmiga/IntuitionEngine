@@ -15,6 +15,8 @@ type ProgramExecutor struct {
 	vgaEngine    *VGAEngine
 	voodooEngine *VoodooEngine
 	baseDir      string
+	// launchExternal delegates full reset+launch orchestration to main when set.
+	launchExternal func(path string) error
 
 	namePtr uint32
 	status  uint32
@@ -49,6 +51,15 @@ func (e *ProgramExecutor) SetCPU(cpu *CPU64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.ie64CPU = cpu
+}
+
+// SetExternalLauncher configures an optional shared launcher callback.
+// When set, ProgramExecutor delegates RUN "file" handoff to this callback so
+// monitor/runtime reset behavior is consistent with other launch paths.
+func (e *ProgramExecutor) SetExternalLauncher(fn func(path string) error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.launchExternal = fn
 }
 
 func (e *ProgramExecutor) HandleRead(addr uint32) uint32 {
@@ -145,23 +156,38 @@ func (e *ProgramExecutor) executeAsync(session uint32, fullPath string, typ uint
 		e.mu.Unlock()
 		return
 	}
-	if err := e.prepareAndLaunch(data, typ); err != nil {
-		e.status = EXEC_STATUS_ERROR
-		e.errCode = EXEC_ERR_LOAD_FAILED
+	launcher := e.launchExternal
+	preLaunchIE64 := e.ie64CPU
+	e.mu.Unlock()
+
+	if err := e.launchProgram(fullPath, data, typ, launcher); err != nil {
+		e.mu.Lock()
+		if session == e.session {
+			e.status = EXEC_STATUS_ERROR
+			e.errCode = EXEC_ERR_LOAD_FAILED
+		}
 		e.mu.Unlock()
 		return
 	}
+
+	e.mu.Lock()
 	if session != e.session {
 		e.mu.Unlock()
 		return
 	}
+	if preLaunchIE64 != nil {
+		preLaunchIE64.running.Store(false)
+	}
 	e.status = EXEC_STATUS_RUNNING
 	e.errCode = EXEC_ERR_OK
 	e.mu.Unlock()
+}
 
-	if e.ie64CPU != nil {
-		e.ie64CPU.running.Store(false)
+func (e *ProgramExecutor) launchProgram(fullPath string, data []byte, typ uint32, externalLauncher func(path string) error) error {
+	if externalLauncher != nil {
+		return externalLauncher(fullPath)
 	}
+	return e.prepareAndLaunch(data, typ)
 }
 
 func (e *ProgramExecutor) prepareAndLaunch(data []byte, typ uint32) error {

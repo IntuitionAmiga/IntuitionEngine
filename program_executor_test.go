@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -245,5 +246,185 @@ func TestProgramExecutor_SessionPreventsStaleOverwrite(t *testing.T) {
 	// Session should still reflect the second request
 	if got := exec.HandleRead(EXEC_SESSION); got != s2 {
 		t.Fatalf("session=%d, want %d (second request)", got, s2)
+	}
+}
+
+func TestProgramExecutor_UsesExternalLauncherWhenConfigured(t *testing.T) {
+	dir := t.TempDir()
+	bus := NewMachineBus()
+	ie64CPU := NewCPU64(bus)
+	ie64CPU.running.Store(true)
+
+	filePath := filepath.Join(dir, "test.ie65")
+	if err := os.WriteFile(filePath, []byte{0xEA}, 0644); err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
+
+	exec := NewProgramExecutor(bus, ie64CPU, nil, nil, nil, dir)
+	var called bool
+	var launchedPath string
+	exec.SetExternalLauncher(func(path string) error {
+		called = true
+		launchedPath = path
+		return nil
+	})
+
+	nameAddr := uint32(0x1000)
+	writeFilenameToBus(bus, nameAddr, "test.ie65")
+	exec.HandleWrite(EXEC_NAME_PTR, nameAddr)
+	exec.HandleWrite(EXEC_CTRL, EXEC_OP_EXECUTE)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		s := exec.HandleRead(EXEC_STATUS)
+		if s == EXEC_STATUS_RUNNING {
+			break
+		}
+		if s == EXEC_STATUS_ERROR {
+			t.Fatalf("unexpected error state")
+		}
+		runtime.Gosched()
+	}
+
+	if got := exec.HandleRead(EXEC_STATUS); got != EXEC_STATUS_RUNNING {
+		t.Fatalf("status=%d, want %d (RUNNING)", got, EXEC_STATUS_RUNNING)
+	}
+	if !called {
+		t.Fatal("expected external launcher callback to be called")
+	}
+	if launchedPath != filePath {
+		t.Fatalf("launcher path=%q, want %q", launchedPath, filePath)
+	}
+	if ie64CPU.running.Load() {
+		t.Fatalf("IE64 CPU running should be false after successful exec handoff")
+	}
+}
+
+func TestProgramExecutor_ExternalLauncherErrorSetsLoadFailed(t *testing.T) {
+	dir := t.TempDir()
+	bus := NewMachineBus()
+	ie64CPU := NewCPU64(bus)
+	ie64CPU.running.Store(true)
+
+	if err := os.WriteFile(filepath.Join(dir, "test.ie65"), []byte{0xEA}, 0644); err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
+
+	exec := NewProgramExecutor(bus, ie64CPU, nil, nil, nil, dir)
+	exec.SetExternalLauncher(func(path string) error {
+		return errors.New("boom")
+	})
+
+	nameAddr := uint32(0x1000)
+	writeFilenameToBus(bus, nameAddr, "test.ie65")
+	exec.HandleWrite(EXEC_NAME_PTR, nameAddr)
+	exec.HandleWrite(EXEC_CTRL, EXEC_OP_EXECUTE)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		s := exec.HandleRead(EXEC_STATUS)
+		if s == EXEC_STATUS_ERROR {
+			break
+		}
+		runtime.Gosched()
+	}
+
+	if got := exec.HandleRead(EXEC_STATUS); got != EXEC_STATUS_ERROR {
+		t.Fatalf("status=%d, want %d (ERROR)", got, EXEC_STATUS_ERROR)
+	}
+	if got := exec.HandleRead(EXEC_ERROR); got != EXEC_ERR_LOAD_FAILED {
+		t.Fatalf("error=%d, want %d (LOAD_FAILED)", got, EXEC_ERR_LOAD_FAILED)
+	}
+	if !ie64CPU.running.Load() {
+		t.Fatalf("IE64 CPU running should remain true on launch failure")
+	}
+}
+
+func TestProgramExecutor_ExternalLauncherCanSwitchMonitorFocusToNewMainCPU(t *testing.T) {
+	dir := t.TempDir()
+	bus := NewMachineBus()
+	ie64CPU := NewCPU64(bus)
+	ie64CPU.running.Store(true)
+
+	if err := os.WriteFile(filepath.Join(dir, "test.ie65"), []byte{0xEA}, 0644); err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
+
+	mon := NewMachineMonitor(bus)
+	mon.RegisterCPU("IE64", NewDebugIE64(ie64CPU))
+	if focused := mon.FocusedCPU(); focused == nil || focused.Label != "IE64" {
+		t.Fatalf("initial focused CPU = %v, want IE64", focused)
+	}
+
+	exec := NewProgramExecutor(bus, ie64CPU, nil, nil, nil, dir)
+	exec.SetExternalLauncher(func(path string) error {
+		mon.ResetCPUs()
+		r := NewCPU6502Runner(bus, CPU6502Config{LoadAddr: 0x0800, Entry: 0})
+		mon.RegisterCPU("6502", NewDebug6502(r.cpu, r))
+		return nil
+	})
+
+	nameAddr := uint32(0x1000)
+	writeFilenameToBus(bus, nameAddr, "test.ie65")
+	exec.HandleWrite(EXEC_NAME_PTR, nameAddr)
+	exec.HandleWrite(EXEC_CTRL, EXEC_OP_EXECUTE)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if exec.HandleRead(EXEC_STATUS) == EXEC_STATUS_RUNNING {
+			break
+		}
+		runtime.Gosched()
+	}
+
+	if got := exec.HandleRead(EXEC_STATUS); got != EXEC_STATUS_RUNNING {
+		t.Fatalf("status=%d, want %d (RUNNING)", got, EXEC_STATUS_RUNNING)
+	}
+	focused := mon.FocusedCPU()
+	if focused == nil || focused.Label != "6502" {
+		t.Fatalf("focused CPU = %v, want label 6502", focused)
+	}
+}
+
+func TestProgramExecutor_ExternalLauncherDoesNotStopReplacementIE64CPU(t *testing.T) {
+	dir := t.TempDir()
+	bus := NewMachineBus()
+	oldIE64 := NewCPU64(bus)
+	oldIE64.running.Store(true)
+
+	if err := os.WriteFile(filepath.Join(dir, "test.ie64"), []byte{0x35, 0x00, 0x00, 0x00}, 0644); err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
+
+	exec := NewProgramExecutor(bus, oldIE64, nil, nil, nil, dir)
+	var newIE64 *CPU64
+	exec.SetExternalLauncher(func(path string) error {
+		newIE64 = NewCPU64(bus)
+		newIE64.running.Store(true)
+		exec.SetCPU(newIE64)
+		return nil
+	})
+
+	nameAddr := uint32(0x1000)
+	writeFilenameToBus(bus, nameAddr, "test.ie64")
+	exec.HandleWrite(EXEC_NAME_PTR, nameAddr)
+	exec.HandleWrite(EXEC_CTRL, EXEC_OP_EXECUTE)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if exec.HandleRead(EXEC_STATUS) == EXEC_STATUS_RUNNING {
+			break
+		}
+		runtime.Gosched()
+	}
+
+	if got := exec.HandleRead(EXEC_STATUS); got != EXEC_STATUS_RUNNING {
+		t.Fatalf("status=%d, want %d (RUNNING)", got, EXEC_STATUS_RUNNING)
+	}
+	if oldIE64.running.Load() {
+		t.Fatalf("old IE64 should be stopped after successful handoff")
+	}
+	if newIE64 == nil || !newIE64.running.Load() {
+		t.Fatalf("replacement IE64 should remain running")
 	}
 }

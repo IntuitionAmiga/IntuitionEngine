@@ -1251,6 +1251,12 @@ func main() {
 			if err != nil {
 				return err
 			}
+			// Preserve CLI/default 6502 semantics for .ie65 reload/launch paths.
+			// In BASIC/IPC mode we don't parse --load-addr, so apply the standard
+			// .ie65 default load address when no explicit load address was provided.
+			if mode == "6502" && !loadAddr.set && cpu6502LoadAddr == 0 {
+				cpu6502LoadAddr = 0x0800
+			}
 		}
 
 		// 0. Deactivate monitor if active (prevents freeze/resume interference)
@@ -1405,6 +1411,10 @@ func main() {
 		cpuRunner.StartExecution()
 		return nil
 	}
+
+	// Ensure RUN "file" (ProgramExecutor) uses the same launch path as IPC/F10
+	// so monitor/runtime state stays consistent across all entry points.
+	progExec.SetExternalLauncher(runProgramWithFullReset)
 
 	// Wire F10 hard reset handler
 	if hr, ok := videoChip.GetOutput().(HardResettable); ok {
