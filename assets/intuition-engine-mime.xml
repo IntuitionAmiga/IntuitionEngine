@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-intuition-engine">
+    <comment>Intuition Engine Binary</comment>
+    <glob pattern="*.ie32"/>
+    <glob pattern="*.ie64"/>
+    <glob pattern="*.ie65"/>
+    <glob pattern="*.ie68"/>
+    <glob pattern="*.ie80"/>
+    <glob pattern="*.ie86"/>
+    <glob pattern="*.iex"/>
+  </mime-type>
+</mime-info>

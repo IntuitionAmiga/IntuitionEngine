@@ -69,6 +69,10 @@ type VideoCompositor struct {
 	frameHeight       int
 	pendingResolution atomic.Uint64
 	lockedResolution  bool
+
+	compositorRunning atomic.Bool
+	stopRequested     bool
+	loopDone          chan struct{}
 }
 
 // NewVideoCompositor creates a new video compositor
@@ -134,22 +138,43 @@ func (c *VideoCompositor) applyResolution(width, height int) {
 
 // Start begins the compositor refresh loop
 func (c *VideoCompositor) Start() error {
-	// Initialize final frame buffer
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.compositorRunning.Load() {
+		return nil
+	}
 	if c.finalFrame == nil {
 		c.finalFrame = make([]byte, c.frameWidth*c.frameHeight*BYTES_PER_PIXEL)
 	}
-	c.mu.Unlock()
-
-	// Start refresh loop
-	go c.refreshLoop()
-
+	c.done = make(chan struct{})
+	c.stopRequested = false
+	loopDone := make(chan struct{})
+	c.loopDone = loopDone
+	c.compositorRunning.Store(true)
+	go func() {
+		defer func() {
+			c.compositorRunning.Store(false)
+			close(loopDone)
+		}()
+		c.refreshLoop()
+	}()
 	return nil
 }
 
-// Stop halts the compositor refresh loop
+// Stop halts the compositor refresh loop and waits for it to exit.
 func (c *VideoCompositor) Stop() {
-	close(c.done)
+	c.mu.Lock()
+	if !c.compositorRunning.Load() {
+		c.mu.Unlock()
+		return
+	}
+	if !c.stopRequested {
+		c.stopRequested = true
+		close(c.done)
+	}
+	loopDone := c.loopDone
+	c.mu.Unlock()
+	<-loopDone
 }
 
 // refreshLoop runs the compositor at 60Hz

@@ -84,6 +84,7 @@ import (
 	"math/bits"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -382,6 +383,11 @@ type CPU struct {
 
 	// CoprocMode skips the PC range check in Execute() for coprocessor workers
 	CoprocMode bool
+
+	// Execution lifecycle
+	execMu     sync.Mutex
+	execDone   chan struct{}
+	execActive bool
 }
 
 func NewCPU(bus Bus32) *CPU {
@@ -821,8 +827,8 @@ func (cpu *CPU) Reset() {
 
 	cpu.running.Store(false)
 
-	if activeFrontend != nil && activeFrontend.video != nil {
-		video := activeFrontend.video
+	if activeVideoChip != nil {
+		video := activeVideoChip
 		video.mu.Lock()
 		video.enabled.Store(false)
 		video.hasContent.Store(false)
@@ -839,8 +845,8 @@ func (cpu *CPU) Reset() {
 		}
 	}
 
-	if activeFrontend != nil && activeFrontend.video != nil {
-		video := activeFrontend.video
+	if activeVideoChip != nil {
+		video := activeVideoChip
 		video.mu.Lock()
 		for i := range video.prevVRAM {
 			video.prevVRAM[i] = 0
@@ -1428,4 +1434,37 @@ func (cpu *CPU) Execute() {
 
 func (cpu *CPU) IsRunning() bool {
 	return cpu.running.Load()
+}
+
+func (cpu *CPU) StartExecution() {
+	cpu.execMu.Lock()
+	defer cpu.execMu.Unlock()
+	if cpu.execActive {
+		return
+	}
+	cpu.execActive = true
+	cpu.running.Store(true)
+	cpu.execDone = make(chan struct{})
+	go func() {
+		defer func() {
+			cpu.execMu.Lock()
+			cpu.execActive = false
+			close(cpu.execDone)
+			cpu.execMu.Unlock()
+		}()
+		cpu.Execute()
+	}()
+}
+
+func (cpu *CPU) Stop() {
+	cpu.execMu.Lock()
+	if !cpu.execActive {
+		cpu.running.Store(false)
+		cpu.execMu.Unlock()
+		return
+	}
+	cpu.running.Store(false)
+	done := cpu.execDone
+	cpu.execMu.Unlock()
+	<-done
 }

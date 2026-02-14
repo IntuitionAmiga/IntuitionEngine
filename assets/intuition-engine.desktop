@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Intuition Engine
+Comment=Retro hardware emulator
+Exec=intuition-engine %f
+MimeType=application/x-intuition-engine;
+Icon=intuition-engine
+Terminal=false
+Categories=Game;Emulator;

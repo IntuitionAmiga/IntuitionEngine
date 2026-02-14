@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"image/color"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
@@ -55,6 +56,9 @@ type EbitenOutput struct {
 	clipboardOnce sync.Once
 	clipboardOK   bool
 	showStatusBar bool
+
+	hardResetHandler func()
+	resetInProgress  atomic.Bool
 }
 
 func NewEbitenOutput() (VideoOutput, error) {
@@ -265,8 +269,8 @@ func (eo *EbitenOutput) UpdateRegion(x, y, width, height int, pixels []byte) err
 func (eo *EbitenOutput) Update() error {
 	// Check if the window was closed using Ebiten's built-in detection
 	if ebiten.IsWindowBeingClosed() {
-		if activeFrontend != nil && activeFrontend.cpu != nil {
-			activeFrontend.cpu.Reset()
+		if activeCPU != nil {
+			activeCPU.Stop()
 		}
 		return ebiten.Termination
 	}
@@ -284,6 +288,21 @@ func (eo *EbitenOutput) Update() error {
 		}
 		eo.bufferMutex.Unlock()
 	}
+	if inpututil.IsKeyJustPressed(ebiten.KeyF10) {
+		if eo.resetInProgress.CompareAndSwap(false, true) {
+			eo.bufferMutex.RLock()
+			handler := eo.hardResetHandler
+			eo.bufferMutex.RUnlock()
+			if handler != nil {
+				go func() {
+					defer eo.resetInProgress.Store(false)
+					handler()
+				}()
+			} else {
+				eo.resetInProgress.Store(false)
+			}
+		}
+	}
 	if inpututil.IsKeyJustPressed(ebiten.KeyF12) {
 		eo.bufferMutex.Lock()
 		eo.showStatusBar = !eo.showStatusBar
@@ -291,6 +310,12 @@ func (eo *EbitenOutput) Update() error {
 	}
 	eo.handleKeyboardInput()
 	return nil
+}
+
+func (eo *EbitenOutput) SetHardResetHandler(fn func()) {
+	eo.bufferMutex.Lock()
+	eo.hardResetHandler = fn
+	eo.bufferMutex.Unlock()
 }
 
 func (eo *EbitenOutput) SetKeyHandler(fn func(byte)) {
@@ -598,7 +623,7 @@ func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
 	})
 
 	legendColor := color.RGBA{160, 160, 160, 255}
-	legend := "F11 Fullscreen  F12 Status Bar"
+	legend := "F10 Reset  F11 Fullscreen  F12 Status Bar"
 	legendScale := 1.0
 	legendW := int(float64(text.BoundString(basicfont.Face7x13, legend).Dx()) * legendScale)
 	legendX := max(eo.width-legendW-6, 6)

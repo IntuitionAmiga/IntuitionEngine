@@ -227,6 +227,22 @@ func main() {
 	}
 
 	filename := flagSet.Arg(0)
+
+	// Single-instance IPC handoff: if another instance is already running and we have
+	// a file to open, send it via IPC and exit. This must happen before hardware init.
+	if filename != "" {
+		absPath, absErr := filepath.Abs(filename)
+		if absErr == nil {
+			if _, extErr := modeFromExtension(absPath); extErr == nil {
+				if err := SendIPCOpen(absPath); err == nil {
+					fmt.Printf("Sent %s to running instance\n", filepath.Base(filename))
+					os.Exit(0)
+				}
+				// SendIPCOpen failed — no running instance, continue as primary
+			}
+		}
+	}
+
 	validWidth, validHeight, useResolutionOverride := validateResolutionOverride(resWidth, resHeight)
 
 	if sidFile != "" {
@@ -821,17 +837,21 @@ func main() {
 	defer coprocMgr.StopAll()
 
 	// Initialize the selected CPU and optionally load program
-	var gui GUIFrontend
+	var cpuRunner EmulatorCPU
 	var startExecution bool
 	var ie64CPU *CPU64
 
+	// State for runProgramWithFullReset
+	var programBytes []byte
+	var reloadProgram func()
+	var currentMode string
+	var currentPath string
+
 	if modeIE32 {
-		// Initialize IE32 CPU
 		ie32CPU := NewCPU(sysBus)
 		ie32CPU.PerfEnabled = perfMode
 		runtimeStatus.setCPUs(runtimeCPUIE32, ie32CPU, nil, nil, nil, nil, nil)
 
-		// Load program
 		if filename != "" {
 			if err := ie32CPU.LoadProgram(filename); err != nil {
 				fmt.Printf("Error loading IE32 program: %v\n", err)
@@ -840,15 +860,10 @@ func main() {
 			startExecution = true
 		}
 
-		// Initialize GUI with IE32 CPU
-		gui, err = NewGUIFrontend(ie32CPU, videoChip, soundChip, psgPlayer, sidPlayer, ahxPlayerCPU)
-		if err != nil {
-			fmt.Printf("Failed to initialize GUI: %v\n", err)
-			os.Exit(1)
-		}
+		cpuRunner = ie32CPU
+		currentMode = "ie32"
 
 		if startExecution {
-			// Start peripherals
 			videoChip.Start()
 			compositor.Start()
 			vgaEngine.StartRenderLoop()
@@ -856,37 +871,29 @@ func main() {
 			tedVideoEngine.StartRenderLoop()
 			anticEngine.StartRenderLoop()
 			soundChip.Start()
-
-			// Start CPU execution
 			fmt.Printf("Starting IE32 CPU with program: %s\n", filename)
-			go ie32CPU.Execute()
+			ie32CPU.StartExecution()
 		}
 
 	} else if modeIE64 {
-		// Initialize IE64 CPU (64-bit RISC)
 		ie64CPU = NewCPU64(sysBus)
 		ie64CPU.PerfEnabled = perfMode
 		runtimeStatus.setCPUs(runtimeCPUIE64, nil, ie64CPU, nil, nil, nil, nil)
 
-		// Initialize external program executor MMIO (RUN "file" from BASIC)
 		progExec := NewProgramExecutor(sysBus, ie64CPU, videoChip, vgaEngine, voodooEngine, ".")
 		sysBus.MapIO(EXEC_BASE, EXEC_END, progExec.HandleRead, progExec.HandleWrite)
 
-		// Load program — three paths: -basic, -basic-image, or explicit file
 		if modeBasic {
 			if basicImage != "" {
-				// -basic-image: load custom binary
 				if err := ie64CPU.LoadProgram(basicImage); err != nil {
 					fmt.Printf("Error loading BASIC image %s: %v\n", basicImage, err)
 					os.Exit(1)
 				}
 				fmt.Printf("Starting EhBASIC IE64 (custom image: %s)\n", basicImage)
 			} else if len(embeddedBasicImage) > 0 {
-				// -basic: load embedded image
 				ie64CPU.LoadProgramBytes(embeddedBasicImage)
 				fmt.Println("Starting EhBASIC IE64 (embedded image)")
 			} else {
-				// Development fallback for go run / non-embedded builds.
 				autoPath := resolveDefaultBasicImagePath()
 				if autoPath == "" {
 					fmt.Println("Error: BASIC not embedded and no local BASIC image found.")
@@ -908,15 +915,10 @@ func main() {
 			startExecution = true
 		}
 
-		// Initialize GUI with IE64 CPU
-		gui, err = NewGUIFrontend(ie64CPU, videoChip, soundChip, psgPlayer, sidPlayer, ahxPlayerCPU)
-		if err != nil {
-			fmt.Printf("Failed to initialize GUI: %v\n", err)
-			os.Exit(1)
-		}
+		cpuRunner = ie64CPU
+		currentMode = "ie64"
 
 		if startExecution {
-			// Start peripherals
 			videoChip.Start()
 			compositor.Start()
 			vgaEngine.StartRenderLoop()
@@ -924,23 +926,16 @@ func main() {
 			tedVideoEngine.StartRenderLoop()
 			anticEngine.StartRenderLoop()
 			soundChip.Start()
-
-			// Start CPU execution
 			if !modeBasic {
 				fmt.Printf("Starting IE64 CPU with program: %s\n", filename)
 			}
-			go ie64CPU.Execute()
+			ie64CPU.StartExecution()
 		}
 
 	} else if modeM68K {
-		// Initialize M68K CPU
 		m68kCPU := NewM68KCPU(sysBus)
-		// debug defaults to false (atomic.Bool), no need to set
-
-		// Configure video chip for M68K (big-endian data format)
 		videoChip.SetBigEndianMode(true)
 
-		// Load program
 		if filename != "" {
 			if err := m68kCPU.LoadProgram(filename); err != nil {
 				fmt.Printf("Error loading M68K program: %v\n", err)
@@ -948,25 +943,15 @@ func main() {
 			}
 			startExecution = true
 		}
-		//fmt.Println("Memory after program load:")
-		//for i := 0x1000; i < 0x1020; i += 2 {
-		//	value := m68kCPU.Read16(uint32(i))
-		//	fmt.Printf("Addr 0x%08X: 0x%04X\n", i, value)
-		//}
 
-		// Initialize GUI with M68K CPU
-		// Note: The GUI might need modifications to properly support M68K CPU
 		m68kRunner := NewM68KRunner(m68kCPU)
 		m68kRunner.PerfEnabled = perfMode
 		runtimeStatus.setCPUs(runtimeCPUM68K, nil, nil, m68kRunner, nil, nil, nil)
-		gui, err = NewGUIFrontend(m68kRunner, videoChip, soundChip, psgPlayer, sidPlayer, ahxPlayerCPU)
-		if err != nil {
-			fmt.Printf("Failed to initialize GUI: %v\n", err)
-			os.Exit(1)
-		}
+
+		cpuRunner = m68kRunner
+		currentMode = "m68k"
 
 		if startExecution {
-			// Start peripherals
 			videoChip.Start()
 			compositor.Start()
 			vgaEngine.StartRenderLoop()
@@ -974,10 +959,8 @@ func main() {
 			tedVideoEngine.StartRenderLoop()
 			anticEngine.StartRenderLoop()
 			soundChip.Start()
-
-			// Start CPU execution
 			fmt.Printf("Starting M68K CPU with program: %s\n\n", filename)
-			go m68kRunner.Execute()
+			m68kRunner.StartExecution()
 		}
 	} else if modeZ80 {
 		var parsedLoadAddr uint16
@@ -1008,7 +991,6 @@ func main() {
 		z80CPU.PerfEnabled = perfMode
 		runtimeStatus.setCPUs(runtimeCPUZ80, nil, nil, nil, z80CPU, nil, nil)
 
-		// Load program
 		if filename != "" {
 			if err := z80CPU.LoadProgram(filename); err != nil {
 				fmt.Printf("Error loading Z80 program: %v\n", err)
@@ -1017,14 +999,10 @@ func main() {
 			startExecution = true
 		}
 
-		gui, err = NewGUIFrontend(z80CPU, videoChip, soundChip, psgPlayer, sidPlayer, ahxPlayerCPU)
-		if err != nil {
-			fmt.Printf("Failed to initialize GUI: %v\n", err)
-			os.Exit(1)
-		}
+		cpuRunner = z80CPU
+		currentMode = "z80"
 
 		if startExecution {
-			// Start peripherals
 			videoChip.Start()
 			compositor.Start()
 			vgaEngine.StartRenderLoop()
@@ -1032,13 +1010,10 @@ func main() {
 			tedVideoEngine.StartRenderLoop()
 			anticEngine.StartRenderLoop()
 			soundChip.Start()
-
-			// Start CPU execution
 			fmt.Printf("Starting Z80 CPU with program: %s\n\n", filename)
-			go z80CPU.Execute()
+			z80CPU.StartExecution()
 		}
 	} else if modeX86 {
-		// x86 32-bit flat memory model
 		x86Config := &CPUX86Config{
 			LoadAddr:     0,
 			Entry:        0,
@@ -1050,7 +1025,6 @@ func main() {
 		x86CPU.PerfEnabled = perfMode
 		runtimeStatus.setCPUs(runtimeCPUX86, nil, nil, nil, nil, x86CPU, nil)
 
-		// Load program
 		if filename != "" {
 			if err := x86CPU.LoadProgramFromFile(filename); err != nil {
 				fmt.Printf("Error loading x86 program: %v\n", err)
@@ -1059,14 +1033,10 @@ func main() {
 			startExecution = true
 		}
 
-		gui, err = NewGUIFrontend(x86CPU, videoChip, soundChip, psgPlayer, sidPlayer, ahxPlayerCPU)
-		if err != nil {
-			fmt.Printf("Failed to initialize GUI: %v\n", err)
-			os.Exit(1)
-		}
+		cpuRunner = x86CPU
+		currentMode = "x86"
 
 		if startExecution {
-			// Start peripherals
 			videoChip.Start()
 			compositor.Start()
 			vgaEngine.StartRenderLoop()
@@ -1074,10 +1044,8 @@ func main() {
 			tedVideoEngine.StartRenderLoop()
 			anticEngine.StartRenderLoop()
 			soundChip.Start()
-
-			// Start CPU execution
 			fmt.Printf("Starting x86 CPU with program: %s\n\n", filename)
-			go x86CPU.Execute()
+			x86CPU.StartExecution()
 		}
 	} else {
 		var parsedLoadAddr uint16
@@ -1089,7 +1057,6 @@ func main() {
 			}
 			parsedLoadAddr = parsed
 		} else if strings.HasSuffix(strings.ToLower(filename), ".ie65") {
-			// Auto-detect IE65 files and default to $0800 load address
 			parsedLoadAddr = 0x0800
 		}
 		var parsedEntry uint16
@@ -1102,7 +1069,6 @@ func main() {
 			parsedEntry = parsed
 		}
 
-		// Initialize 6502 CPU
 		cpu6502 := NewCPU6502Runner(sysBus, CPU6502Config{
 			LoadAddr: parsedLoadAddr,
 			Entry:    parsedEntry,
@@ -1110,7 +1076,6 @@ func main() {
 		cpu6502.PerfEnabled = perfMode
 		runtimeStatus.setCPUs(runtimeCPU6502, nil, nil, nil, nil, nil, cpu6502)
 
-		// Load program
 		if filename != "" {
 			if err := cpu6502.LoadProgram(filename); err != nil {
 				fmt.Printf("Error loading 6502 program: %v\n", err)
@@ -1119,14 +1084,10 @@ func main() {
 			startExecution = true
 		}
 
-		gui, err = NewGUIFrontend(cpu6502, videoChip, soundChip, psgPlayer, sidPlayer, ahxPlayerCPU)
-		if err != nil {
-			fmt.Printf("Failed to initialize GUI: %v\n", err)
-			os.Exit(1)
-		}
+		cpuRunner = cpu6502
+		currentMode = "6502"
 
 		if startExecution {
-			// Start peripherals
 			videoChip.Start()
 			compositor.Start()
 			vgaEngine.StartRenderLoop()
@@ -1134,25 +1095,156 @@ func main() {
 			tedVideoEngine.StartRenderLoop()
 			anticEngine.StartRenderLoop()
 			soundChip.Start()
-
-			// Start CPU execution
 			fmt.Printf("Starting 6502 CPU with program: %s\n\n", filename)
-			go cpu6502.Execute()
+			cpu6502.StartExecution()
 		}
 	}
 
-	// Configure and show GUI
-	config := GUIConfig{
-		Width:     800,
-		Height:    600,
-		Title:     "Intuition Engine",
-		Resizable: true,
+	// Set global state for cross-module access
+	activeCPU = cpuRunner
+	activeVideoChip = videoChip
+
+	// Cache initial program bytes for F10 reload
+	if filename != "" {
+		programBytes, _ = os.ReadFile(filename)
+		currentPath = filename
+		reloadProgram = buildReloadClosure(currentMode, cpuRunner, programBytes, sysBus)
 	}
 
-	if err := gui.Initialize(config); err != nil {
-		fmt.Printf("Failed to configure GUI: %v\n", err)
-		os.Exit(1)
+	// runProgramWithFullReset is the ONLY mutating entry point for reset+load.
+	// path == "" means "reload current program" (F10 case).
+	// path != "" means "load new program from disk" (IPC OPEN case).
+	runProgramWithFullReset := func(path string) error {
+		resetMu.Lock()
+		defer resetMu.Unlock()
+
+		var bytes []byte
+		var mode string
+
+		if path == "" {
+			if programBytes == nil || reloadProgram == nil {
+				return nil
+			}
+			bytes = programBytes
+			mode = currentMode
+			path = currentPath
+		} else {
+			var err error
+			bytes, err = os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			mode, err = modeFromExtension(path)
+			if err != nil {
+				return err
+			}
+		}
+
+		// 1. Stop CPU
+		cpuRunner.Stop()
+
+		// 2. Stop compositor
+		compositor.Stop()
+
+		// 3. Stop render loops
+		vgaEngine.StopRenderLoop()
+		ulaEngine.StopRenderLoop()
+		tedVideoEngine.StopRenderLoop()
+		anticEngine.StopRenderLoop()
+
+		// 4. Mode switch if needed
+		if mode != currentMode {
+			newRunner, err := createCPURunner(mode, sysBus, videoChip, vgaEngine, voodooEngine)
+			if err != nil {
+				return err
+			}
+			cpuRunner = newRunner
+			activeCPU = newRunner
+		}
+
+		// 5-6. Reset audio engines + sound chip
+		psgEngine.Reset()
+		sidEngine.Reset()
+		tedEngine.Reset()
+		pokeyEngine.Reset()
+		ahxPlayerCPU.engine.Reset()
+		psgPlayer.Reset()
+		sidPlayer.Reset()
+		tedPlayer.Reset()
+		pokeyPlayer.Reset()
+		soundChip.Reset()
+
+		// 7. Reset memory
+		sysBus.Reset()
+
+		// 8. Reset video chips
+		videoChip.Reset()
+		vgaEngine.Reset()
+		ulaEngine.Reset()
+		tedVideoEngine.Reset()
+		anticEngine.Reset()
+		if voodooEngine != nil {
+			voodooEngine.Reset()
+		}
+
+		// 9. Reset terminal/coproc
+		termMMIO.Reset()
+		if videoTerm != nil {
+			videoTerm.Reset()
+		}
+		coprocMgr.Reset()
+
+		// 10. Update cached state
+		programBytes = bytes
+		currentPath = path
+		currentMode = mode
+		reloadProgram = buildReloadClosure(mode, cpuRunner, bytes, sysBus)
+
+		// 11. Load program
+		reloadProgram()
+
+		// 12. Start peripherals
+		videoChip.Start()
+		soundChip.Start()
+
+		// 13. Start compositor + render loops
+		compositor.Start()
+		vgaEngine.StartRenderLoop()
+		ulaEngine.StartRenderLoop()
+		tedVideoEngine.StartRenderLoop()
+		anticEngine.StartRenderLoop()
+
+		// 14. Start CPU
+		cpuRunner.StartExecution()
+		return nil
 	}
+
+	// Wire F10 hard reset handler
+	if hr, ok := videoChip.GetOutput().(HardResettable); ok {
+		hr.SetHardResetHandler(func() {
+			if err := runProgramWithFullReset(""); err != nil {
+				fmt.Printf("F10 reset failed: %v\n", err)
+			}
+		})
+	}
+
+	// Start IPC server for single-instance file opening
+	ipcServer, err := NewIPCServer(func(path string) error {
+		return runProgramWithFullReset(path)
+	})
+	if err != nil {
+		fmt.Printf("Warning: IPC server failed to start: %v\n", err)
+	} else {
+		ipcServer.Start()
+		defer ipcServer.Stop()
+	}
+
+	// Suppress unused warnings for variables used by the closure
+	_ = ie64CPU
+	_ = programBytes
+	_ = reloadProgram
+	_ = currentMode
+	_ = currentPath
 
 	// Start console terminal host only when not using graphical BASIC terminal.
 	var outputTicker *time.Ticker
@@ -1173,8 +1265,10 @@ func main() {
 		}()
 	}
 
-	// Show the GUI and run the main event loop
-	err = gui.Show()
+	// Wait for window close
+	if waiter, ok := videoChip.GetOutput().(interface{ Done() <-chan struct{} }); ok {
+		<-waiter.Done()
+	}
 
 	// Shut down terminal host (restores stdin to blocking) and render goroutines.
 	if outputTicker != nil {
@@ -1193,10 +1287,6 @@ func main() {
 	ulaEngine.StopRenderLoop()
 	tedVideoEngine.StopRenderLoop()
 	anticEngine.StopRenderLoop()
-
-	if err != nil {
-		return
-	}
 }
 
 func parseUint16Flag(value string) (uint16, error) {

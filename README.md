@@ -235,9 +235,30 @@ CPU modes that execute binaries (`-ie32`, `-ie64`, `-m68k`, `-m6502`, `-z80`, `-
 
 ## 1.4 Ebiten Window Controls
 
+- `F10`: Hard reset — performs a full hardware reset, restoring cold boot state and restarting the current program
 - `F11`: Toggle fullscreen mode
 - `F12`: Toggle the runtime status bar
 - Status bar semantics: `CPU`, `VIDEO`, and `AUDIO` device names are shown in green when active and gray when inactive.
+
+## 1.5 Single-Instance Mode
+
+Opening an `*.ie*` file while Intuition Engine is already running sends the file to the running instance via Unix domain socket IPC. The running instance performs a full hardware reset and loads the new binary. If the file uses a different CPU architecture (e.g., opening a `.ie80` Z80 binary while an IE32 program is running), the CPU mode switches automatically.
+
+Supported extensions: `.ie32`/`.iex` (IE32), `.ie64` (IE64), `.ie65` (6502), `.ie68` (M68K), `.ie80` (Z80), `.ie86` (X86).
+
+## 1.6 Desktop Integration
+
+Register Intuition Engine as the default handler for `*.ie*` files:
+
+```bash
+# Install .desktop entry and MIME type (system-wide, requires root)
+sudo make install-desktop-entry
+
+# Set as default handler for .ie* files (per-user)
+make set-default-handler
+```
+
+After registration, double-clicking any `.ie*` file in a file manager will open it in Intuition Engine (or send it to an already-running instance).
 
 # 2. Architecture
 

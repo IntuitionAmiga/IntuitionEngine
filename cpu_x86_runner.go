@@ -10,6 +10,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -80,6 +81,10 @@ type CPUX86Runner struct {
 	InstructionCount uint64    // Total instructions executed
 	perfStartTime    time.Time // When execution started
 	lastPerfReport   time.Time // Last time we printed stats
+
+	execMu     sync.Mutex
+	execDone   chan struct{}
+	execActive bool
 }
 
 // X86BusAdapter provides the system bus for x86 with hardware routing
@@ -738,4 +743,40 @@ func (r *CPUX86Runner) Execute() {
 // IsRunning returns whether the CPU is still running
 func (r *CPUX86Runner) IsRunning() bool {
 	return r.cpu.Running() && !r.cpu.Halted
+}
+
+func (r *CPUX86Runner) StartExecution() {
+	r.execMu.Lock()
+	defer r.execMu.Unlock()
+	if r.execActive {
+		return
+	}
+	r.execActive = true
+	r.cpu.SetRunning(true)
+	r.cpu.Halted = false
+	r.execDone = make(chan struct{})
+	go func() {
+		defer func() {
+			r.execMu.Lock()
+			r.execActive = false
+			close(r.execDone)
+			r.execMu.Unlock()
+		}()
+		r.Execute()
+	}()
+}
+
+func (r *CPUX86Runner) Stop() {
+	r.execMu.Lock()
+	if !r.execActive {
+		r.cpu.SetRunning(false)
+		r.cpu.Halted = true
+		r.execMu.Unlock()
+		return
+	}
+	r.cpu.SetRunning(false)
+	r.cpu.Halted = true
+	done := r.execDone
+	r.execMu.Unlock()
+	<-done
 }

@@ -1,8 +1,14 @@
 package main
 
+import "sync"
+
 type M68KRunner struct {
 	cpu         *M68KCPU
 	PerfEnabled bool
+
+	execMu     sync.Mutex
+	execDone   chan struct{}
+	execActive bool
 }
 
 func NewM68KRunner(cpu *M68KCPU) *M68KRunner {
@@ -28,4 +34,37 @@ func (r *M68KRunner) CPU() *M68KCPU {
 
 func (r *M68KRunner) IsRunning() bool {
 	return r.cpu.Running()
+}
+
+func (r *M68KRunner) StartExecution() {
+	r.execMu.Lock()
+	defer r.execMu.Unlock()
+	if r.execActive {
+		return
+	}
+	r.execActive = true
+	r.cpu.SetRunning(true)
+	r.execDone = make(chan struct{})
+	go func() {
+		defer func() {
+			r.execMu.Lock()
+			r.execActive = false
+			close(r.execDone)
+			r.execMu.Unlock()
+		}()
+		r.Execute()
+	}()
+}
+
+func (r *M68KRunner) Stop() {
+	r.execMu.Lock()
+	if !r.execActive {
+		r.cpu.SetRunning(false)
+		r.execMu.Unlock()
+		return
+	}
+	r.cpu.SetRunning(false)
+	done := r.execDone
+	r.execMu.Unlock()
+	<-done
 }

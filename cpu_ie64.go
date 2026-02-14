@@ -56,6 +56,7 @@ import (
 	"fmt"
 	"math/bits"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -225,6 +226,11 @@ type CPU64 struct {
 	InstructionCount uint64
 	perfStartTime    time.Time
 	lastPerfReport   time.Time
+
+	// Execution lifecycle
+	execMu     sync.Mutex
+	execDone   chan struct{}
+	execActive bool
 }
 
 // ------------------------------------------------------------------------------
@@ -1168,4 +1174,37 @@ func (cpu *CPU64) Execute() {
 
 func (cpu *CPU64) IsRunning() bool {
 	return cpu.running.Load()
+}
+
+func (cpu *CPU64) StartExecution() {
+	cpu.execMu.Lock()
+	defer cpu.execMu.Unlock()
+	if cpu.execActive {
+		return
+	}
+	cpu.execActive = true
+	cpu.running.Store(true)
+	cpu.execDone = make(chan struct{})
+	go func() {
+		defer func() {
+			cpu.execMu.Lock()
+			cpu.execActive = false
+			close(cpu.execDone)
+			cpu.execMu.Unlock()
+		}()
+		cpu.Execute()
+	}()
+}
+
+func (cpu *CPU64) Stop() {
+	cpu.execMu.Lock()
+	if !cpu.execActive {
+		cpu.running.Store(false)
+		cpu.execMu.Unlock()
+		return
+	}
+	cpu.running.Store(false)
+	done := cpu.execDone
+	cpu.execMu.Unlock()
+	<-done
 }

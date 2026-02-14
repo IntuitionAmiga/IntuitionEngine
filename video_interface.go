@@ -135,6 +135,11 @@ type CompositorManageable interface {
 	WaitRenderIdle()
 }
 
+// HardResettable is implemented by video outputs that support F10 hard reset.
+type HardResettable interface {
+	SetHardResetHandler(func())
+}
+
 // Optional interfaces for enhanced functionality
 type PaletteCapable interface {
 	UpdatePalette(colors []uint32) error

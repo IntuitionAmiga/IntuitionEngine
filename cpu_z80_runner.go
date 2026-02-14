@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"sync"
 )
 
 const (
@@ -44,6 +45,10 @@ type CPUZ80Runner struct {
 	loadAddr    uint16
 	entry       uint16
 	PerfEnabled bool
+
+	execMu     sync.Mutex
+	execDone   chan struct{}
+	execActive bool
 }
 
 type Z80BusAdapter struct {
@@ -679,4 +684,37 @@ func (r *CPUZ80Runner) CPU() *CPU_Z80 {
 
 func (r *CPUZ80Runner) IsRunning() bool {
 	return r.cpu.Running()
+}
+
+func (r *CPUZ80Runner) StartExecution() {
+	r.execMu.Lock()
+	defer r.execMu.Unlock()
+	if r.execActive {
+		return
+	}
+	r.execActive = true
+	r.cpu.SetRunning(true)
+	r.execDone = make(chan struct{})
+	go func() {
+		defer func() {
+			r.execMu.Lock()
+			r.execActive = false
+			close(r.execDone)
+			r.execMu.Unlock()
+		}()
+		r.Execute()
+	}()
+}
+
+func (r *CPUZ80Runner) Stop() {
+	r.execMu.Lock()
+	if !r.execActive {
+		r.cpu.SetRunning(false)
+		r.execMu.Unlock()
+		return
+	}
+	r.cpu.SetRunning(false)
+	done := r.execDone
+	r.execMu.Unlock()
+	<-done
 }

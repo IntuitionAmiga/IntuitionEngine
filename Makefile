@@ -419,6 +419,22 @@ test-harte-short: testdata-harte
 	@echo "Running Tom Harte 68000 tests (short mode)..."
 	@$(GO) test -v -short -run TestHarte68000 -timeout 5m
 
+# Install desktop entry and MIME type for file association
+.PHONY: install-desktop-entry
+install-desktop-entry:
+	@echo "Installing desktop entry and MIME type..."
+	@$(INSTALL) -D assets/intuition-engine.desktop $(DESTDIR)$(PREFIX)/share/applications/intuition-engine.desktop
+	@$(INSTALL) -D assets/intuition-engine-mime.xml $(DESTDIR)$(PREFIX)/share/mime/packages/intuition-engine-mime.xml
+	-update-mime-database $(DESTDIR)$(PREFIX)/share/mime 2>/dev/null || true
+	-update-desktop-database $(DESTDIR)$(PREFIX)/share/applications 2>/dev/null || true
+	@echo "Desktop entry and MIME type installed"
+
+# Set Intuition Engine as default handler for .ie* files (per-user)
+.PHONY: set-default-handler
+set-default-handler:
+	@xdg-mime default intuition-engine.desktop application/x-intuition-engine
+	@echo "Intuition Engine set as default handler for .ie* files"
+
 # Help target
 help:
 	@echo "Intuition Engine Build System"
@@ -455,6 +471,10 @@ help:
 	@echo "  test-harte       - Run full Tom Harte test suite"
 	@echo "  test-harte-short - Run Tom Harte tests (sampling mode)"
 	@echo "  clean-testdata   - Remove downloaded test data"
+	@echo ""
+	@echo "Desktop integration:"
+	@echo "  install-desktop-entry - Install .desktop and MIME type for file association"
+	@echo "  set-default-handler   - Set as default handler for .ie* files (per-user)"
 	@echo ""
 	@echo "Build flags:"
 	@echo "  GO_FLAGS       = $(GO_FLAGS)"
