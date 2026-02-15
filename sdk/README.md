@@ -178,8 +178,8 @@ The `sdk/include/` headers define the stable hardware register map for v1.x. The
 
 ## Further Documentation
 
-- [IE64 Instruction Set Reference](../docs/IE64_ISA.md)
-- [IE64 Cookbook](../docs/IE64_COOKBOOK.md)
-- [Tutorial](../docs/TUTORIAL.md)
-- [EhBASIC Guide](../docs/ehbasic_ie64.md)
-- [IE32 to IE64 Migration](../docs/ie32to64.md)
+- [IE64 Instruction Set Reference](docs/IE64_ISA.md)
+- [IE64 Cookbook](docs/IE64_COOKBOOK.md)
+- [Tutorial](docs/TUTORIAL.md)
+- [EhBASIC Guide](docs/ehbasic_ie64.md)
+- [IE32 to IE64 Migration](docs/ie32to64.md)

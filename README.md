@@ -17,7 +17,7 @@
 ## https://www.youtube.com/@IntuitionAmiga/
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/M4M61AHEFR)
 
-**See also: [TUTORIAL.md](docs/TUTORIAL.md)** - Step-by-step guide to building a complete demoscene intro with multiple CPU architectures.
+**See also: [TUTORIAL.md](sdk/docs/TUTORIAL.md)** - Step-by-step guide to building a complete demoscene intro with multiple CPU architectures.
 
 ### Quick Links
 
@@ -26,16 +26,16 @@
 | [DEVELOPERS.md](DEVELOPERS.md) | Build, test, toolchains, and contribution guide |
 | [CHANGELOG.md](CHANGELOG.md) | Release history |
 | [sdk/README.md](sdk/README.md) | SDK developer package with examples and build scripts |
-| [docs/TUTORIAL.md](docs/TUTORIAL.md) | Step-by-step demoscene intro tutorial |
-| [docs/IE64_ISA.md](docs/IE64_ISA.md) | IE64 instruction set reference |
-| [docs/IE64_COOKBOOK.md](docs/IE64_COOKBOOK.md) | IE64 common patterns and recipes |
-| [docs/ehbasic_ie64.md](docs/ehbasic_ie64.md) | EhBASIC language guide |
-| [docs/iemon.md](docs/iemon.md) | Machine monitor (F9 debugger) reference |
-| [docs/sdk-getting-started.md](docs/sdk-getting-started.md) | SDK quick start |
-| [docs/toolchains.md](docs/toolchains.md) | Assembler toolchain reference |
-| [docs/demo-matrix.md](docs/demo-matrix.md) | Demo program coverage matrix |
-| [docs/platform-compatibility.md](docs/platform-compatibility.md) | Platform support and build profiles |
-| [docs/release-process.md](docs/release-process.md) | Release packaging guide |
+| [sdk/docs/TUTORIAL.md](sdk/docs/TUTORIAL.md) | Step-by-step demoscene intro tutorial |
+| [sdk/docs/IE64_ISA.md](sdk/docs/IE64_ISA.md) | IE64 instruction set reference |
+| [sdk/docs/IE64_COOKBOOK.md](sdk/docs/IE64_COOKBOOK.md) | IE64 common patterns and recipes |
+| [sdk/docs/ehbasic_ie64.md](sdk/docs/ehbasic_ie64.md) | EhBASIC language guide |
+| [sdk/docs/iemon.md](sdk/docs/iemon.md) | Machine monitor (F9 debugger) reference |
+| [sdk/docs/sdk-getting-started.md](sdk/docs/sdk-getting-started.md) | SDK quick start |
+| [sdk/docs/toolchains.md](sdk/docs/toolchains.md) | Assembler toolchain reference |
+| [sdk/docs/demo-matrix.md](sdk/docs/demo-matrix.md) | Demo program coverage matrix |
+| [sdk/docs/platform-compatibility.md](sdk/docs/platform-compatibility.md) | Platform support and build profiles |
+| [sdk/docs/release-process.md](sdk/docs/release-process.md) | Release packaging guide |
 
 # Table of Contents
 
@@ -242,7 +242,7 @@ CPU modes that execute binaries (`-ie32`, `-ie64`, `-m68k`, `-m6502`, `-z80`, `-
 
 ## 1.4 Ebiten Window Controls
 
-- `F9`: Open the Machine Monitor (debugger) — freezes all CPUs, shows registers and disassembly. See [iemon.md](docs/iemon.md) for full documentation.
+- `F9`: Open the Machine Monitor (debugger) — freezes all CPUs, shows registers and disassembly. See [iemon.md](sdk/docs/iemon.md) for full documentation.
 - `F10`: Hard reset — performs a full power-on hardware reset and boots IE64 BASIC
 - `F11`: Toggle fullscreen mode
 - `F12`: Toggle the runtime status bar
@@ -313,7 +313,7 @@ The monitor works with all six CPU types (IE64, IE32, M68K, Z80, 6502, X86) and 
 
 Addresses accept `$hex`, `0xhex`, bare hex, `#decimal`, or expressions like `pc+$20`.
 
-Full documentation: [iemon.md](docs/iemon.md)
+Full documentation: [iemon.md](sdk/docs/iemon.md)
 
 # 2. Architecture
 
@@ -1593,7 +1593,7 @@ IF COSTATUS(T) = 2 THEN PRINT "OK" ' Check result
 COSTOP 3                            ' Stop worker
 ```
 
-Full reference: [ehbasic_ie64.md](docs/ehbasic_ie64.md)
+Full reference: [ehbasic_ie64.md](sdk/docs/ehbasic_ie64.md)
 
 ### Caller Examples
 
@@ -3271,8 +3271,8 @@ Note: The interrupt vector is currently set internally. Assembly-level vector pr
 - Compare-and-branch model (no flags register — unlike IE32, M68K, Z80, 6502, x86)
 - R0 is hardwired to zero (reads always return 0, writes are silently ignored)
 - `.l` operations zero-mask to 32 bits; use `.q` for full 64-bit arithmetic
-- Full ISA reference: [IE64_ISA.md](docs/IE64_ISA.md)
-- Assembly cookbook: [IE64_COOKBOOK.md](docs/IE64_COOKBOOK.md)
+- Full ISA reference: [IE64_ISA.md](sdk/docs/IE64_ISA.md)
+- Assembly cookbook: [IE64_COOKBOOK.md](sdk/docs/IE64_COOKBOOK.md)
 
 ## 9.9 EhBASIC IE64
 
@@ -3315,7 +3315,7 @@ The Intuition Engine includes a full port of Lee Davison's Enhanced BASIC (EhBAS
 50 VSYNC
 ```
 
-Full reference: [ehbasic_ie64.md](docs/ehbasic_ie64.md)
+Full reference: [ehbasic_ie64.md](sdk/docs/ehbasic_ie64.md)
 
 # 10. Assembly Language Reference
 
@@ -5263,7 +5263,7 @@ make release-all        # Build release archives for all platforms
 go build ./...          # Quick dev build without compression
 ```
 
-See [DEVELOPERS.md](DEVELOPERS.md) for the complete development workflow, running programs (all CPU modes and music playback), assembler include files, and debugging techniques. See also [docs/include-files.md](docs/include-files.md) for a detailed include file reference.
+See [DEVELOPERS.md](DEVELOPERS.md) for the complete development workflow, running programs (all CPU modes and music playback), assembler include files, and debugging techniques. See also [docs/include-files.md](sdk/docs/include-files.md) for a detailed include file reference.
 
 # 14. Implementation Details
 
@@ -5408,7 +5408,7 @@ Release builds embed the EhBASIC interpreter and include the SDK with pre-assemb
 
 Graphics: Ebiten (OpenGL/Metal/DirectX). Audio: Oto (44.1kHz stereo). Both have headless stubs for CI.
 
-See [docs/platform-compatibility.md](docs/platform-compatibility.md) for build profile requirements and known limitations.
+See [docs/platform-compatibility.md](sdk/docs/platform-compatibility.md) for build profile requirements and known limitations.
 
 ## Quick Start
 
@@ -5442,18 +5442,18 @@ See [DEVELOPERS.md](DEVELOPERS.md) for all CPU modes, music playback options, en
 
 ## SDK
 
-The `sdk/` directory contains a curated developer package with example programs, include files, and build scripts for all six CPU architectures. Run `make sdk` to sync include files from the canonical source and pre-assemble demos into `sdk/examples/prebuilt/`. See [sdk/README.md](sdk/README.md) for the full SDK documentation and [docs/demo-matrix.md](docs/demo-matrix.md) for the demo coverage matrix.
+The `sdk/` directory contains a curated developer package with example programs, include files, and build scripts for all six CPU architectures. Run `make sdk` to sync include files from the canonical source and pre-assemble demos into `sdk/examples/prebuilt/`. See [sdk/README.md](sdk/README.md) for the full SDK documentation and [docs/demo-matrix.md](sdk/docs/demo-matrix.md) for the demo coverage matrix.
 
 ## Further Documentation
 
 - [DEVELOPERS.md](DEVELOPERS.md) - Build, test, and contribute
 - [CHANGELOG.md](CHANGELOG.md) - Release history
-- [docs/TUTORIAL.md](docs/TUTORIAL.md) - Demoscene intro tutorial
-- [docs/iemon.md](docs/iemon.md) - Machine monitor (F9 debugger)
-- [docs/IE64_ISA.md](docs/IE64_ISA.md) - IE64 instruction set
-- [docs/IE64_COOKBOOK.md](docs/IE64_COOKBOOK.md) - IE64 patterns and recipes
-- [docs/ehbasic_ie64.md](docs/ehbasic_ie64.md) - EhBASIC language guide
-- [docs/ie32to64.md](docs/ie32to64.md) - IE32 to IE64 migration
-- [docs/toolchains.md](docs/toolchains.md) - Assembler toolchain reference
-- [docs/platform-compatibility.md](docs/platform-compatibility.md) - Platform support details
-- [docs/release-process.md](docs/release-process.md) - Release packaging
+- [docs/TUTORIAL.md](sdk/docs/TUTORIAL.md) - Demoscene intro tutorial
+- [docs/iemon.md](sdk/docs/iemon.md) - Machine monitor (F9 debugger)
+- [docs/IE64_ISA.md](sdk/docs/IE64_ISA.md) - IE64 instruction set
+- [docs/IE64_COOKBOOK.md](sdk/docs/IE64_COOKBOOK.md) - IE64 patterns and recipes
+- [docs/ehbasic_ie64.md](sdk/docs/ehbasic_ie64.md) - EhBASIC language guide
+- [docs/ie32to64.md](sdk/docs/ie32to64.md) - IE32 to IE64 migration
+- [docs/toolchains.md](sdk/docs/toolchains.md) - Assembler toolchain reference
+- [docs/platform-compatibility.md](sdk/docs/platform-compatibility.md) - Platform support details
+- [docs/release-process.md](sdk/docs/release-process.md) - Release packaging

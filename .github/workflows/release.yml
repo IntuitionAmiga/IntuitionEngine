@@ -67,7 +67,6 @@ jobs:
           mkdir -p "${DIR}"
           cp IntuitionEngine ie32asm ie64asm ie32to64 "${DIR}/"
           cp README.md CHANGELOG.md DEVELOPERS.md "${DIR}/" 2>/dev/null || true
-          cp -r docs/ "${DIR}/docs/" 2>/dev/null || true
           cp -r sdk/ "${DIR}/sdk/" 2>/dev/null || true
           tar -cJf "${DIR}.tar.xz" "${DIR}"
 
@@ -129,7 +128,6 @@ jobs:
           mkdir -p "${DIR}"
           cp IntuitionEngine.exe ie32asm.exe ie64asm.exe ie32to64.exe "${DIR}/"
           cp README.md CHANGELOG.md DEVELOPERS.md "${DIR}/" 2>/dev/null || true
-          cp -r docs/ "${DIR}/docs/" 2>/dev/null || true
           cp -r sdk/ "${DIR}/sdk/" 2>/dev/null || true
           zip -r "${DIR}.zip" "${DIR}"
 

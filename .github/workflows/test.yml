@@ -114,7 +114,7 @@ jobs:
         run: |
           exit_code=0
           # Check markdown links to local files (not URLs, not anchors)
-          for md in README.md CHANGELOG.md DEVELOPERS.md docs/*.md sdk/README.md; do
+          for md in README.md CHANGELOG.md DEVELOPERS.md sdk/docs/*.md sdk/README.md; do
             [ -f "$md" ] || continue
             # Extract [text](path) links where path doesn't start with http or #
             grep -oP '\[.*?\]\(\K[^)]+' "$md" | grep -v '^http' | grep -v '^#' | while read -r link; do

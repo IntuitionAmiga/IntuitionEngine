@@ -394,7 +394,6 @@ release-linux: setup sdk
 	$(MKDIR) -p $$STAGING; \
 	mv IntuitionEngine ie32asm ie64asm ie32to64 $$STAGING/; \
 	cp README.md CHANGELOG.md DEVELOPERS.md $$STAGING/; \
-	cp -r docs $$STAGING/docs; \
 	cp -r sdk $$STAGING/sdk; \
 	rm -rf $$STAGING/sdk/.git; \
 	echo "Creating $$RELEASE_NAME.tar.xz..."; \
@@ -421,7 +420,6 @@ release-windows: setup sdk
 		$(MKDIR) -p $$STAGING; \
 		mv IntuitionEngine.exe ie32asm.exe ie64asm.exe ie32to64.exe $$STAGING/; \
 		cp README.md CHANGELOG.md DEVELOPERS.md $$STAGING/; \
-		cp -r docs $$STAGING/docs; \
 		cp -r sdk $$STAGING/sdk; \
 		rm -rf $$STAGING/sdk/.git; \
 		echo "Creating $$RELEASE_NAME.zip..."; \

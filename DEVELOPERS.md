@@ -158,7 +158,7 @@ CGO_ENABLED=0 go build -tags "novulkan headless" .
 | `ie32to64` | Convert IE32 binaries to IE64 format | `make ie32to64` |
 | `ie64dis` | Disassemble IE64 binaries | `make ie64dis` |
 
-See [IE32 to IE64 Migration](docs/ie32to64.md) for converter documentation.
+See [IE32 to IE64 Migration](sdk/docs/ie32to64.md) for converter documentation.
 
 ### Assembling Programs
 
@@ -404,7 +404,7 @@ Press F9 during execution to enter the step-through debugger. Supports all 6 CPU
 - I/O register viewer for all hardware chips
 - Clipboard paste (Ctrl+Shift+V)
 
-See [docs/iemon.md](docs/iemon.md) for the full machine monitor reference.
+See [docs/iemon.md](sdk/docs/iemon.md) for the full machine monitor reference.
 
 ### Console Debug Output
 
@@ -470,7 +470,7 @@ make set-default-handler
 
 Build release archives with `make release-all` (or individual targets like `make release-linux`). Each target builds both amd64 and arm64 archives with embedded EhBASIC and pre-assembled SDK demos.
 
-Each archive contains: `IntuitionEngine`, `ie32asm`, `ie64asm`, `ie32to64`, `README.md`, `CHANGELOG.md`, `DEVELOPERS.md`, the full `docs/` directory, and the full `sdk/` directory with pre-assembled demos.
+Each archive contains: `IntuitionEngine`, `ie32asm`, `ie64asm`, `ie32to64`, `README.md`, `CHANGELOG.md`, `DEVELOPERS.md`, and the full `sdk/` directory with pre-assembled demos and documentation.
 
 Additional release targets:
 
@@ -502,7 +502,7 @@ machine_bus.go        Memory mapping and I/O dispatch
 main.go               CLI entry point and runtime
 assembler/            IE32/IE64 assembler source and include files
 sdk/                  Curated SDK with examples and build scripts
-docs/                 Technical documentation
+sdk/docs/             Technical documentation
 ```
 
 ### Code Style
