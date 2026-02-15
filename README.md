@@ -17,7 +17,7 @@
 ## https://www.youtube.com/@IntuitionAmiga/
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/M4M61AHEFR)
 
-**See also: [TUTORIAL.md](TUTORIAL.md)** - Step-by-step guide to building a complete demoscene intro with multiple CPU architectures.
+**See also: [TUTORIAL.md](docs/TUTORIAL.md)** - Step-by-step guide to building a complete demoscene intro with multiple CPU architectures.
 
 # Table of Contents
 
@@ -236,7 +236,7 @@ CPU modes that execute binaries (`-ie32`, `-ie64`, `-m68k`, `-m6502`, `-z80`, `-
 
 ## 1.4 Ebiten Window Controls
 
-- `F9`: Open the Machine Monitor (debugger) — freezes all CPUs, shows registers and disassembly. See [iemon.md](iemon.md) for full documentation.
+- `F9`: Open the Machine Monitor (debugger) — freezes all CPUs, shows registers and disassembly. See [iemon.md](docs/iemon.md) for full documentation.
 - `F10`: Hard reset — performs a full power-on hardware reset and boots IE64 BASIC
 - `F11`: Toggle fullscreen mode
 - `F12`: Toggle the runtime status bar
@@ -307,7 +307,7 @@ The monitor works with all six CPU types (IE64, IE32, M68K, Z80, 6502, X86) and 
 
 Addresses accept `$hex`, `0xhex`, bare hex, `#decimal`, or expressions like `pc+$20`.
 
-Full documentation: [iemon.md](iemon.md)
+Full documentation: [iemon.md](docs/iemon.md)
 
 # 2. Architecture
 
@@ -1587,7 +1587,7 @@ IF COSTATUS(T) = 2 THEN PRINT "OK" ' Check result
 COSTOP 3                            ' Stop worker
 ```
 
-Full reference: [assembler/ehbasic_ie64.md](assembler/ehbasic_ie64.md)
+Full reference: [ehbasic_ie64.md](docs/ehbasic_ie64.md)
 
 ### Caller Examples
 
@@ -3265,8 +3265,8 @@ Note: The interrupt vector is currently set internally. Assembly-level vector pr
 - Compare-and-branch model (no flags register — unlike IE32, M68K, Z80, 6502, x86)
 - R0 is hardwired to zero (reads always return 0, writes are silently ignored)
 - `.l` operations zero-mask to 32 bits; use `.q` for full 64-bit arithmetic
-- Full ISA reference: [IE64_ISA.md](IE64_ISA.md)
-- Assembly cookbook: [IE64_COOKBOOK.md](IE64_COOKBOOK.md)
+- Full ISA reference: [IE64_ISA.md](docs/IE64_ISA.md)
+- Assembly cookbook: [IE64_COOKBOOK.md](docs/IE64_COOKBOOK.md)
 
 ## 9.9 EhBASIC IE64
 
@@ -3309,7 +3309,7 @@ The Intuition Engine includes a full port of Lee Davison's Enhanced BASIC (EhBAS
 50 VSYNC
 ```
 
-Full reference: [ehbasic_ie64.md](ehbasic_ie64.md)
+Full reference: [ehbasic_ie64.md](docs/ehbasic_ie64.md)
 
 # 10. Assembly Language Reference
 
@@ -5965,7 +5965,7 @@ There is no separate control window frontend.
 
 The Intuition Engine includes visual and audio demonstrations that showcase system capabilities.
 
-**Tutorial:** For a hands-on guide to building a complete demoscene-style demo (blitter sprites, copper effects, PSG+ music, scrolltext), see **[TUTORIAL.md](TUTORIAL.md)**. It includes full implementations for multiple CPU architectures.
+**Tutorial:** For a hands-on guide to building a complete demoscene-style demo (blitter sprites, copper effects, PSG+ music, scrolltext), see **[TUTORIAL.md](docs/TUTORIAL.md)**. It includes full implementations for multiple CPU architectures.
 
 ## 16.1 Quick Start
 

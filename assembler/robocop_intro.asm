@@ -1177,7 +1177,7 @@ data_robocop_mask:
 .incbin "robocop_mask.bin"
 
 data_robocop_ay:
-.incbin "Robocop1.ay"
+.incbin "../assets/music/Robocop1.ay"
 
 ; ============================================================================
 ; SCROLLTEXT DATA (using labels)

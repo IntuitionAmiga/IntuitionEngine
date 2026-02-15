@@ -1012,7 +1012,7 @@ scroll_end:
     .org 0xE000
 
 sap_data:
-    .incbin "../WooBooDoo.sap"
+    .incbin "../assets/music/WooBooDoo.sap"
 sap_data_end:
 
 ; ============================================================================

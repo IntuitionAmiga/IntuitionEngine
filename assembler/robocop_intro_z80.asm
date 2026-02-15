@@ -1545,7 +1545,7 @@ data_robocop_mask:
 
 ; AY music data (24525 bytes)
 data_robocop_ay:
-    .incbin "../Robocop1.ay"
+    .incbin "../assets/music/Robocop1.ay"
 
 ; Font RGBA data (256000 bytes)
 data_font_rgba:

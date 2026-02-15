@@ -943,7 +943,7 @@ sine_table:
 ; Once started with looping enabled, the music plays forever.
 ; ============================================================================
 music_data:
-    incbin  "Platoon.ay"
+    incbin  "../assets/music/Platoon.ay"
 music_data_end:
 
     end start

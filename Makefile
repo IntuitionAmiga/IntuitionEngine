@@ -293,8 +293,8 @@ copy-binaries: intuition-engine ie32asm appimage-structure
 	@echo "Copying binaries and resources to AppImage structure..."
 	@cp $(BIN_DIR)/IntuitionEngine $(APPIMAGE_BIN_DIR)/
 	@cp $(BIN_DIR)/ie32asm $(APPIMAGE_BIN_DIR)/
-	@cp IntuitionEngine.png $(APPIMAGE_ICON_DIR)/$(APP_NAME).png
-	@cp IntuitionEngine.png $(APPIMAGE_DIR)/$(APP_NAME).png
+	@cp assets/images/IntuitionEngine.png $(APPIMAGE_ICON_DIR)/$(APP_NAME).png
+	@cp assets/images/IntuitionEngine.png $(APPIMAGE_DIR)/$(APP_NAME).png
 
 # Create AppRun script
 .PHONY: apprun
