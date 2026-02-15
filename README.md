@@ -230,6 +230,9 @@ Default core: **IE64**. Additional cores: **IE32, M68K, x86, Z80, 6502**.
 ./bin/IntuitionEngine -scale 2 -ie32 program.iex      # 2x window scaling
 ./bin/IntuitionEngine -fullscreen -m68k program.ie68   # Start in fullscreen (F11 to toggle)
 ./bin/IntuitionEngine -width 800 -height 600 -ie64 program.ie64  # Override output resolution
+
+# Version information
+./bin/IntuitionEngine -version
 ```
 
 CPU modes that execute binaries (`-ie32`, `-ie64`, `-m68k`, `-m6502`, `-z80`, `-x86`) require a filename unless `-basic` is used.
@@ -5291,6 +5294,8 @@ This creates:
 ./bin/ie32asm           # The IE32 assembler
 ./bin/ie64asm           # The IE64 assembler
 ```
+
+The build automatically injects version metadata (version, git commit, build date) via ldflags. Use `./bin/IntuitionEngine -version` to verify.
 
 Available make targets:
 ```

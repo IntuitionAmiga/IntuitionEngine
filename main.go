@@ -225,6 +225,7 @@ func main() {
 	flagSet.IntVar(&resHeight, "height", 0, "Override output height (0 = auto)")
 	flagSet.IntVar(&scale, "scale", 1, "Integer window scale factor (1-4)")
 	flagSet.BoolVar(&fullscreen, "fullscreen", false, "Start in fullscreen mode")
+	flagSet.Bool("version", false, "Print version information and exit")
 	loadAddr.value = "0x0600"
 	flagSet.Var(&loadAddr, "load-addr", "6502/Z80 load address (hex or decimal, defaults: 6502=0x0600, Z80=0x0000)")
 	flagSet.Var(&entryAddr, "entry", "6502/Z80 entry address (hex or decimal, defaults to load address)")
