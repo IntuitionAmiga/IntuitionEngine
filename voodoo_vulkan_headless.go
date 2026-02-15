@@ -4,16 +4,8 @@ package main
 
 import "fmt"
 
-// PipelineKey mirrors the non-headless type to keep APIs consistent.
-type PipelineKey struct {
-	DepthTestEnable  bool
-	DepthWriteEnable bool
-	DepthCompareOp   int
-	BlendEnable      bool
-	SrcBlendFactor   int
-	DstBlendFactor   int
-	AlphaTestEnable  bool
-	AlphaCompareOp   int
+func init() {
+	compiledFeatures = append(compiledFeatures, "voodoo:headless")
 }
 
 // VulkanBackend headless implementation: no GPU dependencies.

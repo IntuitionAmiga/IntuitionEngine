@@ -27,6 +27,10 @@ import (
 	"unsafe"
 )
 
+func init() {
+	compiledFeatures = append(compiledFeatures, "audio:oto")
+}
+
 type OtoPlayer struct {
 	ctx       *oto.Context
 	player    *oto.Player

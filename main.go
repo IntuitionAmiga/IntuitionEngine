@@ -149,7 +149,7 @@ func boilerPlate() {
 //}
 
 func main() {
-	// Handle -version before boilerplate so output is clean and script-friendly
+	// Handle -version and -features before boilerplate so output is clean and script-friendly
 	for _, arg := range os.Args[1:] {
 		if arg == "-version" || arg == "--version" {
 			fmt.Printf("Intuition Engine %s\n", Version)
@@ -157,6 +157,10 @@ func main() {
 			fmt.Printf("  Built:      %s\n", BuildDate)
 			fmt.Printf("  Go version: %s\n", runtime.Version())
 			fmt.Printf("  OS/Arch:    %s/%s\n", runtime.GOOS, runtime.GOARCH)
+			os.Exit(0)
+		}
+		if arg == "-features" || arg == "--features" {
+			printFeatures()
 			os.Exit(0)
 		}
 	}

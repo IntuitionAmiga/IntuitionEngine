@@ -67,6 +67,10 @@ import (
 	"unsafe"
 )
 
+func init() {
+	compiledFeatures = append(compiledFeatures, "lha:liblhasa")
+}
+
 func DecompressLHAFile(path string) ([]byte, error) {
 	cPath := C.CString(path)
 	defer C.free(unsafe.Pointer(cPath))

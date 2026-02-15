@@ -4,6 +4,10 @@ package main
 
 import "sync/atomic"
 
+func init() {
+	compiledFeatures = append(compiledFeatures, "video:headless")
+}
+
 type HeadlessVideoOutput struct {
 	started     bool
 	config      DisplayConfig

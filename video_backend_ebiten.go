@@ -35,6 +35,10 @@ import (
 	"golang.org/x/image/font/basicfont"
 )
 
+func init() {
+	compiledFeatures = append(compiledFeatures, "video:ebiten")
+}
+
 type EbitenOutput struct {
 	running       bool
 	window        *ebiten.Image

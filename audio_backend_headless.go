@@ -2,6 +2,10 @@
 
 package main
 
+func init() {
+	compiledFeatures = append(compiledFeatures, "audio:headless")
+}
+
 type OtoPlayer struct {
 	started bool
 	chip    *SoundChip

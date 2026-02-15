@@ -396,3 +396,82 @@ const (
 	Z80_VOODOO_PORT_TEXSRC_LO = 0xB6 // Texture source address low byte (Z80 RAM)
 	Z80_VOODOO_PORT_TEXSRC_HI = 0xB7 // Texture source address high byte (Z80 RAM)
 )
+
+// =============================================================================
+// Pipeline Key and Caching (shared across all backends)
+// =============================================================================
+
+// PipelineKey uniquely identifies a pipeline configuration for caching
+type PipelineKey struct {
+	DepthTestEnable  bool
+	DepthWriteEnable bool
+	DepthCompareOp   int // Voodoo depth function (0-7)
+	BlendEnable      bool
+	SrcBlendFactor   int // Voodoo source blend factor
+	DstBlendFactor   int // Voodoo destination blend factor
+}
+
+// VoodooPushConstants contains per-draw state passed to shaders via push constants
+type VoodooPushConstants struct {
+	FbzMode      uint32 // Framebuffer Z mode (contains chroma key enable flag, dither enable)
+	AlphaMode    uint32 // Alpha test mode (enable, function, reference value)
+	ChromaKey    uint32 // Chroma key color (RGB packed)
+	TextureMode  uint32 // bit 0 = texture enable
+	FbzColorPath uint32 // Color combine mode
+	FogMode      uint32 // Fog mode (bit 0 = enable)
+	FogColor     uint32 // Fog color (RGB packed)
+}
+
+// PipelineKeyFromRegisters creates a PipelineKey from fbzMode and alphaMode registers
+func PipelineKeyFromRegisters(fbzMode, alphaMode uint32) PipelineKey {
+	key := PipelineKey{
+		DepthTestEnable:  (fbzMode & VOODOO_FBZ_DEPTH_ENABLE) != 0,
+		DepthWriteEnable: (fbzMode & VOODOO_FBZ_DEPTH_WRITE) != 0,
+		DepthCompareOp:   int((fbzMode >> 5) & 0x7),
+		BlendEnable:      (alphaMode & VOODOO_ALPHA_BLEND_EN) != 0,
+		SrcBlendFactor:   VOODOO_BLEND_ONE,  // Default
+		DstBlendFactor:   VOODOO_BLEND_ZERO, // Default
+	}
+
+	if key.BlendEnable {
+		key.SrcBlendFactor = int((alphaMode >> 8) & 0xF)
+		key.DstBlendFactor = int((alphaMode >> 12) & 0xF)
+	}
+
+	return key
+}
+
+// VoodooDepthFuncToVulkan maps Voodoo depth function to Vulkan VkCompareOp
+// The mappings are identical (0=NEVER through 7=ALWAYS)
+func VoodooDepthFuncToVulkan(voodooFunc int) int {
+	if voodooFunc < 0 || voodooFunc > 7 {
+		return 7 // ALWAYS as fallback
+	}
+	return voodooFunc
+}
+
+// VoodooBlendFactorToVulkan maps Voodoo blend factor to Vulkan VkBlendFactor
+func VoodooBlendFactorToVulkan(voodooFactor int) int {
+	switch voodooFactor {
+	case VOODOO_BLEND_ZERO:
+		return 0 // VK_BLEND_FACTOR_ZERO
+	case VOODOO_BLEND_SRC_ALPHA:
+		return 6 // VK_BLEND_FACTOR_SRC_ALPHA
+	case VOODOO_BLEND_COLOR:
+		return 10 // VK_BLEND_FACTOR_CONSTANT_COLOR
+	case VOODOO_BLEND_DST_ALPHA:
+		return 8 // VK_BLEND_FACTOR_DST_ALPHA
+	case VOODOO_BLEND_ONE:
+		return 1 // VK_BLEND_FACTOR_ONE
+	case VOODOO_BLEND_INV_SRC_A:
+		return 7 // VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA
+	case VOODOO_BLEND_INV_COLOR:
+		return 11 // VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR
+	case VOODOO_BLEND_INV_DST_A:
+		return 9 // VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA
+	case VOODOO_BLEND_SATURATE:
+		return 14 // VK_BLEND_FACTOR_SRC_ALPHA_SATURATE
+	default:
+		return 1 // VK_BLEND_FACTOR_ONE as fallback
+	}
+}

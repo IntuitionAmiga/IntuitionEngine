@@ -1,4 +1,4 @@
-//go:build !headless
+//go:build !headless && !novulkan
 
 // voodoo_shaders.go - Embedded SPIR-V Shaders for Voodoo Vulkan Backend
 
