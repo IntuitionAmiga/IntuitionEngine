@@ -58,8 +58,14 @@ APPIMAGE_ICON_DIR := $(APPIMAGE_DIR)/usr/share/icons/hicolor/256x256/apps
 APP_NAME := IntuitionEngine
 APP_VERSION := 1.0.0
 
+# Build profiles:
+#   make                      Full build (Vulkan + Ebiten + OTO + liblhasa)
+#   make novulkan             Software Voodoo only (no Vulkan SDK needed)
+#   make headless             No display, no audio, no Vulkan (CI/testing)
+#   make headless-novulkan    CGO_ENABLED=0 portable build (cross-compile safe)
+
 # Main targets
-.PHONY: all clean list install uninstall
+.PHONY: all clean list install uninstall novulkan headless headless-novulkan
 
 # Default target builds everything
 all: setup intuition-engine ie32asm ie64asm
@@ -82,6 +88,35 @@ intuition-engine: setup
 	@$(NICE) -$(NICE_LEVEL) $(UPX) --lzma IntuitionEngine
 	@mv IntuitionEngine $(BIN_DIR)/
 	@echo "Intuition Engine VM build complete"
+
+# Build without Vulkan (software Voodoo rasterizer only)
+novulkan: setup
+	@echo "Building Intuition Engine VM (novulkan)..."
+	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags novulkan .
+	@echo "Stripping debug symbols..."
+	@$(NICE) -$(NICE_LEVEL) $(SSTRIP) -z IntuitionEngine
+	@echo "Applying UPX compression..."
+	@$(NICE) -$(NICE_LEVEL) $(UPX) --lzma IntuitionEngine
+	@mv IntuitionEngine $(BIN_DIR)/
+	@echo "Intuition Engine VM (novulkan) build complete"
+
+# Build headless (no display, no audio, no Vulkan — for CI/testing)
+headless: setup
+	@echo "Building Intuition Engine VM (headless)..."
+	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags headless .
+	@echo "Stripping debug symbols..."
+	@$(NICE) -$(NICE_LEVEL) $(SSTRIP) -z IntuitionEngine
+	@echo "Applying UPX compression..."
+	@$(NICE) -$(NICE_LEVEL) $(UPX) --lzma IntuitionEngine
+	@mv IntuitionEngine $(BIN_DIR)/
+	@echo "Intuition Engine VM (headless) build complete"
+
+# Build headless+novulkan with CGO disabled (fully portable, cross-compile safe)
+headless-novulkan: setup
+	@echo "Building Intuition Engine VM (headless-novulkan, CGO_ENABLED=0)..."
+	@CGO_ENABLED=0 $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags "novulkan headless" .
+	@mv IntuitionEngine $(BIN_DIR)/
+	@echo "Intuition Engine VM (headless-novulkan) build complete"
 
 # Build the IE32 assembler
 ie32asm: setup
@@ -444,18 +479,21 @@ help:
 	@echo "Intuition Engine Build System"
 	@echo ""
 	@echo "Available targets:"
-	@echo "  all            - Build both Intuition Engine and ie32asm (default)"
-	@echo "  intuition-engine - Build only the Intuition Engine VM"
-	@echo "  ie32asm        - Build only the IE32 assembler"
-	@echo "  ie64asm        - Build only the IE64 assembler"
-	@echo "  ie64dis        - Build only the IE64 disassembler"
-	@echo "  basic          - Build with embedded EhBASIC interpreter"
-	@echo "  appimage       - Create AppImage package"
-	@echo "  install        - Install binaries to $(INSTALL_BIN_DIR)"
-	@echo "  uninstall      - Remove installed binaries from $(INSTALL_BIN_DIR)"
-	@echo "  clean          - Remove all build artifacts"
-	@echo "  list           - List compiled binaries with sizes"
-	@echo "  help           - Show this help message"
+	@echo "  all              - Build Intuition Engine + assemblers (default, full)"
+	@echo "  intuition-engine - Build only the Intuition Engine VM (full)"
+	@echo "  novulkan         - Build without Vulkan (software Voodoo only)"
+	@echo "  headless         - Build without display/audio (CI/testing)"
+	@echo "  headless-novulkan - Fully portable CGO_ENABLED=0 build"
+	@echo "  ie32asm          - Build only the IE32 assembler"
+	@echo "  ie64asm          - Build only the IE64 assembler"
+	@echo "  ie64dis          - Build only the IE64 disassembler"
+	@echo "  basic            - Build with embedded EhBASIC interpreter"
+	@echo "  appimage         - Create AppImage package"
+	@echo "  install          - Install binaries to $(INSTALL_BIN_DIR)"
+	@echo "  uninstall        - Remove installed binaries from $(INSTALL_BIN_DIR)"
+	@echo "  clean            - Remove all build artifacts"
+	@echo "  list             - List compiled binaries with sizes"
+	@echo "  help             - Show this help message"
 	@echo ""
 	@echo "Demo targets:"
 	@echo "  robocop-32     - Build the Robocop IE32 demo (requires ImageMagick)"
