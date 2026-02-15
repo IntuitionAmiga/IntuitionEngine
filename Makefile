@@ -321,16 +321,16 @@ sdk: clean-sdk ie32asm ie64asm
 	@SDK_BUILT=0; SDK_SKIPPED=0; \
 	echo "Assembling IE32 examples..."; \
 	for f in rotozoomer vga_text_hello vga_mode13h_fire copper_vga_bands \
-	         coproc_caller_ie32 coproc_service_ie32; do \
+	         coproc_caller_ie32; do \
 		echo "  [IE32] $${f}.asm"; \
 		(cd sdk/examples/asm && ../../../$(BIN_DIR)/ie32asm -I ../../include $${f}.asm) && \
-		SDK_BUILT=$$((SDK_BUILT+1)) || true; \
+		SDK_BUILT=$$((SDK_BUILT+1)); \
 	done; \
 	echo "Assembling IE64 examples..."; \
 	for f in rotozoomer_ie64; do \
 		echo "  [IE64] $${f}.asm"; \
 		(cd sdk/examples/asm && ../../../$(BIN_DIR)/ie64asm -I ../../include $${f}.asm) && \
-		SDK_BUILT=$$((SDK_BUILT+1)) || true; \
+		SDK_BUILT=$$((SDK_BUILT+1)); \
 	done; \
 	mv sdk/examples/asm/*.iex sdk/examples/prebuilt/ 2>/dev/null || true; \
 	mv sdk/examples/asm/*.ie64 sdk/examples/prebuilt/ 2>/dev/null || true; \
@@ -339,7 +339,7 @@ sdk: clean-sdk ie32asm ie64asm
 		for f in rotozoomer_68k ted_121_colors_68k voodoo_cube_68k; do \
 			echo "  [M68K] $${f}.asm"; \
 			(cd sdk/examples/asm && vasmm68k_mot -Fbin -m68020 -devpac -I ../../include -o $${f}.ie68 $${f}.asm) && \
-			SDK_BUILT=$$((SDK_BUILT+1)) || true; \
+			SDK_BUILT=$$((SDK_BUILT+1)); \
 		done; \
 		mv sdk/examples/asm/*.ie68 sdk/examples/prebuilt/ 2>/dev/null || true; \
 	else \
@@ -351,7 +351,7 @@ sdk: clean-sdk ie32asm ie64asm
 		for f in rotozoomer_z80; do \
 			echo "  [Z80] $${f}.asm"; \
 			(cd sdk/examples/asm && vasmz80_std -Fbin -I ../../include -o $${f}.ie80 $${f}.asm) && \
-			SDK_BUILT=$$((SDK_BUILT+1)) || true; \
+			SDK_BUILT=$$((SDK_BUILT+1)); \
 		done; \
 		mv sdk/examples/asm/*.ie80 sdk/examples/prebuilt/ 2>/dev/null || true; \
 	else \
@@ -364,7 +364,7 @@ sdk: clean-sdk ie32asm ie64asm
 			echo "  [6502] $${f}.asm"; \
 			(cd sdk/examples/asm && ca65 --cpu 6502 -I ../../include -o $${f}.o $${f}.asm && \
 			 ld65 -C ../../include/ie65.cfg -o $${f}.ie65 $${f}.o && rm -f $${f}.o) && \
-			SDK_BUILT=$$((SDK_BUILT+1)) || true; \
+			SDK_BUILT=$$((SDK_BUILT+1)); \
 		done; \
 		mv sdk/examples/asm/*.ie65 sdk/examples/prebuilt/ 2>/dev/null || true; \
 	else \
@@ -376,7 +376,7 @@ sdk: clean-sdk ie32asm ie64asm
 		for f in rotozoomer_x86 antic_plasma_x86; do \
 			echo "  [x86] $${f}.asm"; \
 			(cd sdk/examples/asm && nasm -f bin -I ../../include/ -o $${f}.ie86 $${f}.asm) && \
-			SDK_BUILT=$$((SDK_BUILT+1)) || true; \
+			SDK_BUILT=$$((SDK_BUILT+1)); \
 		done; \
 		mv sdk/examples/asm/*.ie86 sdk/examples/prebuilt/ 2>/dev/null || true; \
 	else \

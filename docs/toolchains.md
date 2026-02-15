@@ -23,10 +23,12 @@ The `RUN` command auto-detects format by extension: `.iex` (IE32), `.ie64` (IE64
 ```bash
 make ie32asm                              # Build
 ./bin/ie32asm program.asm                 # Assemble (produces program.iex)
+./bin/ie32asm -I sdk/include program.asm  # With include search path
 ./bin/IntuitionEngine -ie32 program.iex   # Run (or: RUN "program.iex" from BASIC)
 ```
 
 - Custom assembler built from `assembler/ie32asm.go`
+- Supports `-I dir` include search paths (multiple allowed, searched after source file directory)
 - Supports `.include`, `.equ`, `.org`, `.db`, `.dw`, `.dd`, labels, macros
 - Fixed 8-byte instruction format
 
@@ -35,10 +37,13 @@ make ie32asm                              # Build
 ```bash
 make ie64asm                              # Build
 ./bin/ie64asm program.asm                 # Assemble (produces program.ie64)
+./bin/ie64asm -I sdk/include program.asm  # With include search path
+./bin/ie64asm -list program.asm           # Assemble with listing output
 ./bin/IntuitionEngine -ie64 program.ie64  # Run (or: RUN "program.ie64" from BASIC)
 ```
 
 - Custom assembler built from `assembler/ie64asm.go`
+- Supports `-I dir` include search paths (multiple allowed, searched after source file directory)
 - Supports `.include`, `equ`, `org`, `dc.b/w/l/q`, labels, macros with positional parameters (`\1`..`\9`)
 - Variable-length instruction encoding (4-12 bytes)
 

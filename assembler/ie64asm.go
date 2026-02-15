@@ -218,9 +218,32 @@ type IE64Assembler struct {
 	warnings        []string
 	errors          []string
 	// internal state for assembly
-	codeOffset uint32
-	pass       int
-	basePath   string
+	codeOffset   uint32
+	pass         int
+	basePath     string
+	includePaths []string
+}
+
+// resolveFile searches for filename relative to basePath first, then each
+// -I include path in command-line order. Returns the resolved path.
+func resolveFile(filename, basePath string, includePaths []string) (string, error) {
+	if filepath.IsAbs(filename) {
+		if _, err := os.Stat(filename); err == nil {
+			return filename, nil
+		}
+		return "", fmt.Errorf("file not found: %s", filename)
+	}
+	candidate := filepath.Join(basePath, filename)
+	if _, err := os.Stat(candidate); err == nil {
+		return candidate, nil
+	}
+	for _, dir := range includePaths {
+		candidate = filepath.Join(dir, filename)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("file not found: %s (searched: %s, -I paths: %v)", filename, basePath, includePaths)
 }
 
 // NewIE64Assembler creates a new assembler instance.
@@ -883,7 +906,10 @@ func (a *IE64Assembler) preprocess(source string, basePath string, included map[
 			if filename == "" {
 				return nil, fmt.Errorf("line %d: missing filename for include", i+1)
 			}
-			includePath := filepath.Join(basePath, filename)
+			includePath, err := resolveFile(filename, basePath, a.includePaths)
+			if err != nil {
+				return nil, fmt.Errorf("line %d: %v", i+1, err)
+			}
 			absPath, _ := filepath.Abs(includePath)
 			if included[absPath] {
 				a.addWarning("line %d: circular include skipped: %s", i+1, filename)
@@ -1422,7 +1448,11 @@ func (a *IE64Assembler) calcIncbinSize(line string) (uint32, error) {
 		return 0, fmt.Errorf("incbin requires a filename")
 	}
 	filename := strings.Trim(strings.TrimSpace(parts[0]), "\"'")
-	path := filepath.Join(a.basePath, filename)
+	path, err := resolveFile(filename, a.basePath, a.includePaths)
+	if err != nil {
+		a.addWarning("cannot resolve incbin file %s: %v", filename, err)
+		return 0, nil
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		a.addWarning("cannot stat incbin file %s: %v", path, err)
@@ -1952,7 +1982,10 @@ func (a *IE64Assembler) assembleIncbin(line string, program []byte, startOffset 
 		return fmt.Errorf("incbin requires a filename")
 	}
 	filename := strings.Trim(strings.TrimSpace(parts[0]), "\"'")
-	path := filepath.Join(a.basePath, filename)
+	path, err := resolveFile(filename, a.basePath, a.includePaths)
+	if err != nil {
+		return fmt.Errorf("incbin: %v", err)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("incbin: cannot read %s: %v", path, err)
@@ -2578,14 +2611,29 @@ func (a *IE64Assembler) resolveLabel(name string) (uint32, error) {
 func main() {
 	listMode := false
 	var inputFile string
+	var includePaths []string
 
 	args := os.Args[1:]
-	for _, arg := range args {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
 		if arg == "-list" {
 			listMode = true
+		} else if arg == "-I" {
+			i++
+			if i >= len(args) {
+				fmt.Fprintf(os.Stderr, "Error: -I requires a directory argument\n")
+				os.Exit(1)
+			}
+			includePaths = append(includePaths, args[i])
+		} else if strings.HasPrefix(arg, "-I") {
+			includePaths = append(includePaths, arg[2:])
 		} else if strings.HasPrefix(arg, "-") {
 			fmt.Fprintf(os.Stderr, "Unknown option: %s\n", arg)
-			fmt.Fprintf(os.Stderr, "Usage: ie64asm [-list] input.asm\n")
+			fmt.Fprintf(os.Stderr, "Usage: ie64asm [-list] [-I dir]... input.asm\n")
+			os.Exit(1)
+		} else if inputFile != "" {
+			fmt.Fprintf(os.Stderr, "Error: multiple input files specified\n")
+			fmt.Fprintf(os.Stderr, "Usage: ie64asm [-list] [-I dir]... input.asm\n")
 			os.Exit(1)
 		} else {
 			inputFile = arg
@@ -2593,7 +2641,7 @@ func main() {
 	}
 
 	if inputFile == "" {
-		fmt.Fprintf(os.Stderr, "Usage: ie64asm [-list] input.asm\n")
+		fmt.Fprintf(os.Stderr, "Usage: ie64asm [-list] [-I dir]... input.asm\n")
 		os.Exit(1)
 	}
 
@@ -2605,6 +2653,7 @@ func main() {
 
 	asm := NewIE64Assembler()
 	asm.basePath = filepath.Dir(inputFile)
+	asm.includePaths = includePaths
 	asm.SetListingMode(listMode)
 
 	binary, err := asm.Assemble(string(source))

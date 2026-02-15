@@ -146,10 +146,34 @@ func writeLittleEndian(val uint32) []byte {
 }
 
 type Assembler struct {
-	labels     map[string]uint32
-	equates    map[string]uint32
-	baseAddr   uint32
-	codeOffset uint32
+	labels       map[string]uint32
+	equates      map[string]uint32
+	baseAddr     uint32
+	codeOffset   uint32
+	basePath     string
+	includePaths []string
+}
+
+// resolveFile searches for filename relative to basePath first, then each
+// -I include path in command-line order. Returns the resolved path.
+func resolveFile(filename, basePath string, includePaths []string) (string, error) {
+	if filepath.IsAbs(filename) {
+		if _, err := os.Stat(filename); err == nil {
+			return filename, nil
+		}
+		return "", fmt.Errorf("file not found: %s", filename)
+	}
+	candidate := filepath.Join(basePath, filename)
+	if _, err := os.Stat(candidate); err == nil {
+		return candidate, nil
+	}
+	for _, dir := range includePaths {
+		candidate = filepath.Join(dir, filename)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("file not found: %s (searched: %s, -I paths: %v)", filename, basePath, includePaths)
 }
 
 func NewAssembler() *Assembler {
@@ -162,7 +186,7 @@ func NewAssembler() *Assembler {
 }
 
 // preprocessIncludes expands .include directives recursively
-func preprocessIncludes(code string, basePath string, included map[string]bool) (string, error) {
+func preprocessIncludes(code string, basePath string, includePaths []string, included map[string]bool) (string, error) {
 	if included == nil {
 		included = make(map[string]bool)
 	}
@@ -183,8 +207,11 @@ func preprocessIncludes(code string, basePath string, included map[string]bool) 
 			// Extract filename (remove quotes)
 			filename := strings.Trim(parts[1], "\"'")
 
-			// Resolve path relative to the base file
-			includePath := filepath.Join(basePath, filename)
+			// Resolve path using basePath + include paths
+			includePath, err := resolveFile(filename, basePath, includePaths)
+			if err != nil {
+				return "", fmt.Errorf("failed to include %s: %v", filename, err)
+			}
 
 			// Check for circular includes
 			absPath, _ := filepath.Abs(includePath)
@@ -201,7 +228,7 @@ func preprocessIncludes(code string, basePath string, included map[string]bool) 
 			}
 
 			// Recursively process includes in the included file
-			processed, err := preprocessIncludes(string(includeContent), filepath.Dir(includePath), included)
+			processed, err := preprocessIncludes(string(includeContent), filepath.Dir(includePath), includePaths, included)
 			if err != nil {
 				return "", err
 			}
@@ -292,7 +319,11 @@ func (a *Assembler) handleDirective(line string, lineNum int, program []byte) er
 		}
 
 	case ".incbin":
-		path := strings.Trim(parts[1], "\"")
+		filename := strings.Trim(parts[1], "\"")
+		path, err := resolveFile(filename, a.basePath, a.includePaths)
+		if err != nil {
+			return fmt.Errorf("incbin: %v", err)
+		}
 		payload, err := os.ReadFile(path)
 		if err != nil {
 			return fmt.Errorf("incbin read failed: %s", path)
@@ -514,7 +545,12 @@ func (a *Assembler) calcDirectiveSize(line string) uint32 {
 		return count // 1 byte per value
 
 	case ".incbin":
-		path := strings.Trim(parts[1], "\"")
+		filename := strings.Trim(parts[1], "\"")
+		path, err := resolveFile(filename, a.basePath, a.includePaths)
+		if err != nil {
+			fmt.Printf("Warning: cannot resolve incbin file %s: %v\n", filename, err)
+			return 0
+		}
 		info, err := os.Stat(path)
 		if err != nil {
 			fmt.Printf("Warning: cannot stat incbin file %s: %v\n", path, err)
@@ -1003,29 +1039,59 @@ func (a *Assembler) assemble(code string) []byte {
 }
 
 func main() {
-	if len(os.Args) != 2 {
-		fmt.Println("Usage: iasm <input.asm>")
+	var includePaths []string
+	var inputFile string
+
+	args := os.Args[1:]
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "-I" {
+			i++
+			if i >= len(args) {
+				fmt.Fprintf(os.Stderr, "Error: -I requires a directory argument\n")
+				os.Exit(1)
+			}
+			includePaths = append(includePaths, args[i])
+		} else if strings.HasPrefix(arg, "-I") {
+			includePaths = append(includePaths, arg[2:])
+		} else if strings.HasPrefix(arg, "-") {
+			fmt.Fprintf(os.Stderr, "Unknown option: %s\n", arg)
+			fmt.Fprintf(os.Stderr, "Usage: ie32asm [-I dir]... <input.asm>\n")
+			os.Exit(1)
+		} else if inputFile != "" {
+			fmt.Fprintf(os.Stderr, "Error: multiple input files specified\n")
+			fmt.Fprintf(os.Stderr, "Usage: ie32asm [-I dir]... <input.asm>\n")
+			os.Exit(1)
+		} else {
+			inputFile = arg
+		}
+	}
+
+	if inputFile == "" {
+		fmt.Fprintf(os.Stderr, "Usage: ie32asm [-I dir]... <input.asm>\n")
 		os.Exit(1)
 	}
 
-	code, err := os.ReadFile(os.Args[1])
+	code, err := os.ReadFile(inputFile)
 	if err != nil {
 		fmt.Printf("Error reading input file: %v\n", err)
 		os.Exit(1)
 	}
 
 	// Preprocess includes
-	basePath := filepath.Dir(os.Args[1])
-	processedCode, err := preprocessIncludes(string(code), basePath, nil)
+	basePath := filepath.Dir(inputFile)
+	processedCode, err := preprocessIncludes(string(code), basePath, includePaths, nil)
 	if err != nil {
 		fmt.Printf("Error processing includes: %v\n", err)
 		os.Exit(1)
 	}
 
 	asm := NewAssembler()
+	asm.basePath = basePath
+	asm.includePaths = includePaths
 	binary := asm.assemble(processedCode)
 
-	outFile := strings.TrimSuffix(os.Args[1], ".asm") + ".iex"
+	outFile := strings.TrimSuffix(inputFile, ".asm") + ".iex"
 	if err := os.WriteFile(outFile, binary, 0644); err != nil {
 		fmt.Printf("Error writing output file: %v\n", err)
 		os.Exit(1)
