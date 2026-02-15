@@ -72,7 +72,7 @@ func TestAHXPlus_Oversampling(t *testing.T) {
 		}
 	}
 
-	// Disable — starts a 64-sample fade-out, then generateSample clears the flag
+	// Disable - starts a 64-sample fade-out, then generateSample clears the flag
 	engine.SetAHXPlusEnabled(false)
 	// Drain the fade-out transition
 	for range 65 {
@@ -111,7 +111,7 @@ func TestAHXPlus_RoomReverb(t *testing.T) {
 		}
 	}
 
-	// Disable — starts fade-out, then flag cleared after draining
+	// Disable - starts fade-out, then flag cleared after draining
 	engine.SetAHXPlusEnabled(false)
 	for range 65 {
 		chip.GenerateSample()

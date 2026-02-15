@@ -300,7 +300,7 @@ func (eo *EbitenOutput) Update() error {
 		}
 	}
 
-	// F10: Hard reset — must be checked before the monitor input
+	// F10: Hard reset - must be checked before the monitor input
 	// intercept so reset works even when the monitor is active.
 	if inpututil.IsKeyJustPressed(ebiten.KeyF10) {
 		if eo.resetInProgress.CompareAndSwap(false, true) {
@@ -456,7 +456,7 @@ func (eo *EbitenOutput) handleKeyboardInput() {
 		}
 	}
 
-	// Printable input path — skip when ctrl is held to avoid double emission.
+	// Printable input path - skip when ctrl is held to avoid double emission.
 	if !ctrl {
 		for _, r := range ebiten.AppendInputChars(nil) {
 			if b, ok := runeToInputByte(r); ok {

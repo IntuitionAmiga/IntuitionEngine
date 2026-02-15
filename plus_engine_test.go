@@ -54,7 +54,7 @@ func TestPlusAllpassRoomNoCombPeaks(t *testing.T) {
 	}
 	denom := math.Sqrt(sumX2 * sumY2)
 	if denom == 0 {
-		t.Fatal("zero energy — no signal produced")
+		t.Fatal("zero energy - no signal produced")
 	}
 	corr := sumXY / denom
 
@@ -76,7 +76,7 @@ func TestPlusBiquadAttenuatesHighFreq(t *testing.T) {
 	// Compute the biquad frequency response at a frequency above cutoff
 	// H(z) = (b0 + b1*z^-1 + b2*z^-2) / (1 + a1*z^-1 + a2*z^-2)
 	// At frequency f, z = e^(j*2*pi*f/fs)
-	testFreq := effectiveSR * 0.49 // Just below Nyquist — should be heavily attenuated
+	testFreq := effectiveSR * 0.49 // Just below Nyquist - should be heavily attenuated
 	omega := 2.0 * math.Pi * float64(testFreq) / float64(effectiveSR)
 	cosW := math.Cos(omega)
 	sinW := math.Sin(omega)
@@ -120,7 +120,7 @@ func TestPlusTransitionNoPop(t *testing.T) {
 	ch.sustainLevel = 1.0
 	chip.mu.Unlock()
 
-	// Enable PLUS — should start fade-in from transGain=0
+	// Enable PLUS - should start fade-in from transGain=0
 	chip.SetPSGPlusEnabled(true)
 
 	// Verify transGain ramps up over 64 samples
@@ -157,7 +157,7 @@ func TestPlusTransitionNoPop(t *testing.T) {
 		t.Errorf("transCounter after 63 samples should be ≤1, got %d", counter63)
 	}
 
-	// Generate the last transition sample — counter should reach 0
+	// Generate the last transition sample - counter should reach 0
 	chip.GenerateSample()
 	chip.mu.Lock()
 	counterDone := ch.psgPlusTransCounter

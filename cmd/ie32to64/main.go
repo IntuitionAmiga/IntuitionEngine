@@ -16,9 +16,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Usage: ie32to64 [options] input.asm\n\nConverts IE32 assembly source to IE64 assembly.\n\nOptions:\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
-		fmt.Fprintf(os.Stderr, "  ie32to64 assembler/rotozoomer.asm\n")
-		fmt.Fprintf(os.Stderr, "  ie32to64 -o assembler/rotozoomer_ie64.asm assembler/rotozoomer.asm\n")
-		fmt.Fprintf(os.Stderr, "  ie32to64 -size .q assembler/program.asm\n")
+		fmt.Fprintf(os.Stderr, "  ie32to64 sdk/examples/asm/rotozoomer.asm\n")
+		fmt.Fprintf(os.Stderr, "  ie32to64 -o output.asm sdk/examples/asm/rotozoomer.asm\n")
+		fmt.Fprintf(os.Stderr, "  ie32to64 -size .q program.asm\n")
 	}
 	flag.Parse()
 
@@ -65,7 +65,7 @@ func main() {
 	}
 
 	if conv.errors > 0 {
-		fmt.Fprintf(os.Stderr, "%d conversion error(s) — search for '; ERROR:' in %s\n", conv.errors, outputPath)
+		fmt.Fprintf(os.Stderr, "%d conversion error(s) - search for '; ERROR:' in %s\n", conv.errors, outputPath)
 		os.Exit(1)
 	}
 }

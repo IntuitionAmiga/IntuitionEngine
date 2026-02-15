@@ -7,7 +7,7 @@ import (
 )
 
 // =============================================================================
-// Phase 0 TDD Tests — TerminalMMIO
+// Phase 0 TDD Tests - TerminalMMIO
 // =============================================================================
 
 func TestTerminalMMIO_WriteChar(t *testing.T) {
@@ -124,7 +124,7 @@ func TestTerminalMMIO_EchoControl(t *testing.T) {
 
 func TestTerminalMMIO_EchoWritesToOutput(t *testing.T) {
 	tm := NewTerminalMMIO()
-	// EnqueueByte does NOT echo — echo is the application's responsibility.
+	// EnqueueByte does NOT echo - echo is the application's responsibility.
 	tm.EnqueueByte('X')
 	out := tm.DrainOutput()
 	if out != "" {
@@ -150,7 +150,7 @@ func TestTerminalMMIO_ReadFromEmptyReturnsZero(t *testing.T) {
 func TestTerminalMMIO_OutputReady(t *testing.T) {
 	tm := NewTerminalMMIO()
 	status := tm.HandleRead(TERM_STATUS)
-	// Bit 1 should always be 1 (output ready — we never block)
+	// Bit 1 should always be 1 (output ready - we never block)
 	if status&2 != 2 {
 		t.Fatalf("expected bit 1 = 1 (output ready), got 0x%X", status)
 	}
@@ -513,7 +513,7 @@ func TestTerminalMMIO_RouteGraphicalKey_LineMode(t *testing.T) {
 	}
 	// Key should NOT be auto-enqueued to TERM_IN either (that's HandleKeyInput's job).
 	if got := tm.HandleRead(TERM_STATUS) & 1; got != 0 {
-		t.Fatal("expected TERM_IN empty — RouteGraphicalKey in line mode doesn't enqueue")
+		t.Fatal("expected TERM_IN empty - RouteGraphicalKey in line mode doesn't enqueue")
 	}
 }
 
@@ -585,7 +585,7 @@ func TestTerminalMMIO_TypeaheadDefault(t *testing.T) {
 	tm.EnqueueByte('H')
 	tm.EnqueueByte('I')
 	tm.EnqueueByte('\n')
-	// read_line polls TERM_STATUS/TERM_IN — verify keys are there.
+	// read_line polls TERM_STATUS/TERM_IN - verify keys are there.
 	if got := tm.HandleRead(TERM_STATUS) & 1; got != 1 {
 		t.Fatal("expected TERM_IN to have typeahead keys")
 	}

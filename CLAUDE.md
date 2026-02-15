@@ -27,16 +27,16 @@ go test -v -run TestHarte68000 -short  # M68K tests (sampling)
 
 ```bash
 # IE32 (custom CPU)
-sdk/bin/ie32asm assembler/program.asm
+sdk/bin/ie32asm sdk/examples/asm/program.asm
 
 # M68K (requires vasmm68k_mot)
 vasmm68k_mot -Fbin -m68020 -devpac -o out.ie68 input.asm
 
 # 6502 (requires cc65)
-make ie65asm SRC=assembler/program.asm
+make ie65asm SRC=sdk/examples/asm/program.asm
 
 # Z80 (requires vasmz80_std)
-make ie80asm SRC=assembler/program.asm
+make ie80asm SRC=sdk/examples/asm/program.asm
 ```
 
 ## Code Style
@@ -51,7 +51,7 @@ make ie80asm SRC=assembler/program.asm
 - `audio_chip.go` - Main audio engine
 - `*_engine.go` - Chip engines (PSG, SID, POKEY, TED)
 - `*_player.go` - Music file players
-- `assembler/` - IE32 assembler source
+- `assembler/` - Assembler tool source code (ie32asm, ie64asm, ie64dis, ie32to64)
 - `machine_bus.go` - Machine bus, memory mapping and I/O
 
 ## External Tools

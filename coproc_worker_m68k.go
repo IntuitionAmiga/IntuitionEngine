@@ -13,7 +13,7 @@ func createM68KWorker(bus *MachineBus, data []byte) (*CoprocWorker, error) {
 		mem[WORKER_M68K_BASE+i] = 0
 	}
 
-	// Copy service binary to worker region (raw bytes — M68K fetch handles byte ordering)
+	// Copy service binary to worker region (raw bytes - M68K fetch handles byte ordering)
 	copy(mem[WORKER_M68K_BASE:], data)
 
 	// Create M68K CPU using the shared bus (M68K uses 32-bit addressing directly)

@@ -111,7 +111,7 @@ func TestIE64_MOVE_Register(t *testing.T) {
 	r := newIE64TestRig()
 	// Set R2 = 42
 	r.cpu.regs[2] = 42
-	// MOVE.Q R1, R2 — rd=1, size=Q(3), xbit=0, rs=2, rt=0
+	// MOVE.Q R1, R2 - rd=1, size=Q(3), xbit=0, rs=2, rt=0
 	instr := ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 2, 0, 0)
 	r.executeOne(instr)
 	if r.cpu.regs[1] != 42 {
@@ -121,7 +121,7 @@ func TestIE64_MOVE_Register(t *testing.T) {
 
 func TestIE64_MOVE_Immediate(t *testing.T) {
 	r := newIE64TestRig()
-	// MOVE.Q R1, #42 — rd=1, size=Q(3), xbit=1, rs=0, rt=0, imm32=42
+	// MOVE.Q R1, #42 - rd=1, size=Q(3), xbit=1, rs=0, rt=0, imm32=42
 	instr := ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 42)
 	r.executeOne(instr)
 	if r.cpu.regs[1] != 42 {
@@ -161,7 +161,7 @@ func TestIE64_MOVT(t *testing.T) {
 	r := newIE64TestRig()
 	// Set R1 lower 32 bits first
 	r.cpu.regs[1] = 0x0000000012345678
-	// MOVT R1, #0xDEADBEEF — loads upper 32 bits
+	// MOVT R1, #0xDEADBEEF - loads upper 32 bits
 	instr := ie64Instr(OP_MOVT, 1, 0, 0, 0, 0, 0xDEADBEEF)
 	r.executeOne(instr)
 	if r.cpu.regs[1] != 0xDEADBEEF12345678 {
@@ -202,11 +202,11 @@ func TestIE64_LOAD_STORE_Quad(t *testing.T) {
 	r.cpu.regs[2] = uint64(addr)
 	r.cpu.regs[1] = 0xDEADBEEF12345678
 
-	// STORE.Q R1, (R2) — store R1 at address in R2
+	// STORE.Q R1, (R2) - store R1 at address in R2
 	store := ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 2, 0, 0)
 	// Clear R1
 	clr := ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 0)
-	// LOAD.Q R1, (R2) — load from address in R2 into R1
+	// LOAD.Q R1, (R2) - load from address in R2 into R1
 	load := ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 2, 0, 0)
 	r.executeN(store, clr, load)
 
@@ -269,7 +269,7 @@ func TestIE64_LOAD_Displacement(t *testing.T) {
 	binary.LittleEndian.PutUint64(r.cpu.memory[0x5010:], 0x1122334455667788)
 	// R2 = 0x5000
 	r.cpu.regs[2] = 0x5000
-	// LOAD.Q R1, 16(R2) — disp = 16
+	// LOAD.Q R1, 16(R2) - disp = 16
 	instr := ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 2, 0, 16)
 	r.executeOne(instr)
 	if r.cpu.regs[1] != 0x1122334455667788 {
@@ -323,7 +323,7 @@ func TestIE64_ADD_Register(t *testing.T) {
 	r := newIE64TestRig()
 	r.cpu.regs[2] = 100
 	r.cpu.regs[3] = 42
-	// ADD.Q R1, R2, R3 — rd=1, rs=2, rt=3, xbit=0
+	// ADD.Q R1, R2, R3 - rd=1, rs=2, rt=3, xbit=0
 	instr := ie64Instr(OP_ADD, 1, IE64_SIZE_Q, 0, 2, 3, 0)
 	r.executeOne(instr)
 	if r.cpu.regs[1] != 142 {
@@ -334,7 +334,7 @@ func TestIE64_ADD_Register(t *testing.T) {
 func TestIE64_ADD_Immediate(t *testing.T) {
 	r := newIE64TestRig()
 	r.cpu.regs[2] = 100
-	// ADD.Q R1, R2, #42 — xbit=1, imm32=42
+	// ADD.Q R1, R2, #42 - xbit=1, imm32=42
 	instr := ie64Instr(OP_ADD, 1, IE64_SIZE_Q, 1, 2, 0, 42)
 	r.executeOne(instr)
 	if r.cpu.regs[1] != 142 {
@@ -419,7 +419,7 @@ func TestIE64_DIVU_ByZero(t *testing.T) {
 	r := newIE64TestRig()
 	r.cpu.regs[2] = 100
 	r.cpu.regs[3] = 0
-	// DIVU.Q R1, R2, R3 — divisor is zero
+	// DIVU.Q R1, R2, R3 - divisor is zero
 	instr := ie64Instr(OP_DIVU, 1, IE64_SIZE_Q, 0, 2, 3, 0)
 	// Should not panic
 	r.executeOne(instr)
@@ -653,7 +653,7 @@ func TestIE64_BEQ_Taken(t *testing.T) {
 	r := newIE64TestRig()
 	r.cpu.regs[2] = 42
 	r.cpu.regs[3] = 42
-	// BEQ R2, R3, +16 — should branch (equal)
+	// BEQ R2, R3, +16 - should branch (equal)
 	beq := ie64Instr(OP_BEQ, 0, 0, 0, 2, 3, 16)
 	skipped := ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 0xDEAD)
 	halt := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
@@ -671,7 +671,7 @@ func TestIE64_BEQ_NotTaken(t *testing.T) {
 	r := newIE64TestRig()
 	r.cpu.regs[2] = 42
 	r.cpu.regs[3] = 99
-	// BEQ R2, R3, +16 — should NOT branch (not equal)
+	// BEQ R2, R3, +16 - should NOT branch (not equal)
 	beq := ie64Instr(OP_BEQ, 0, 0, 0, 2, 3, 16)
 	// This should execute (branch not taken)
 	mov := ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 0xBEEF)
@@ -690,7 +690,7 @@ func TestIE64_BNE_Taken(t *testing.T) {
 	r := newIE64TestRig()
 	r.cpu.regs[2] = 42
 	r.cpu.regs[3] = 99
-	// BNE R2, R3, +16 — should branch (not equal)
+	// BNE R2, R3, +16 - should branch (not equal)
 	bne := ie64Instr(OP_BNE, 0, 0, 0, 2, 3, 16)
 	skipped := ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 0xDEAD)
 	halt := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
@@ -708,7 +708,7 @@ func TestIE64_BNE_NotTaken(t *testing.T) {
 	r := newIE64TestRig()
 	r.cpu.regs[2] = 42
 	r.cpu.regs[3] = 42
-	// BNE R2, R3, +16 — should NOT branch (equal)
+	// BNE R2, R3, +16 - should NOT branch (equal)
 	bne := ie64Instr(OP_BNE, 0, 0, 0, 2, 3, 16)
 	mov := ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 0xBEEF)
 	halt := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
@@ -727,7 +727,7 @@ func TestIE64_BLT(t *testing.T) {
 	var neg5 int64 = -5
 	r.cpu.regs[2] = uint64(neg5) // -5 (signed)
 	r.cpu.regs[3] = 10
-	// BLT R2, R3, +16 — -5 < 10, should branch
+	// BLT R2, R3, +16 - -5 < 10, should branch
 	blt := ie64Instr(OP_BLT, 0, 0, 0, 2, 3, 16)
 	skipped := ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 0xDEAD)
 	halt := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
@@ -745,7 +745,7 @@ func TestIE64_BGE(t *testing.T) {
 	r := newIE64TestRig()
 	r.cpu.regs[2] = 10
 	r.cpu.regs[3] = 10
-	// BGE R2, R3, +16 — 10 >= 10, should branch
+	// BGE R2, R3, +16 - 10 >= 10, should branch
 	bge := ie64Instr(OP_BGE, 0, 0, 0, 2, 3, 16)
 	skipped := ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 0xDEAD)
 	halt := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
@@ -763,7 +763,7 @@ func TestIE64_BGT(t *testing.T) {
 	r := newIE64TestRig()
 	r.cpu.regs[2] = 11
 	r.cpu.regs[3] = 10
-	// BGT R2, R3, +16 — 11 > 10, should branch
+	// BGT R2, R3, +16 - 11 > 10, should branch
 	bgt := ie64Instr(OP_BGT, 0, 0, 0, 2, 3, 16)
 	skipped := ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 0xDEAD)
 	halt := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
@@ -781,7 +781,7 @@ func TestIE64_BLE(t *testing.T) {
 	r := newIE64TestRig()
 	r.cpu.regs[2] = 10
 	r.cpu.regs[3] = 10
-	// BLE R2, R3, +16 — 10 <= 10, should branch
+	// BLE R2, R3, +16 - 10 <= 10, should branch
 	ble := ie64Instr(OP_BLE, 0, 0, 0, 2, 3, 16)
 	skipped := ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 0xDEAD)
 	halt := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
@@ -799,7 +799,7 @@ func TestIE64_BHI(t *testing.T) {
 	r := newIE64TestRig()
 	r.cpu.regs[2] = 0xFFFFFFFFFFFFFFFF // large unsigned
 	r.cpu.regs[3] = 10
-	// BHI R2, R3, +16 — unsigned: 0xFFFF... > 10, should branch
+	// BHI R2, R3, +16 - unsigned: 0xFFFF... > 10, should branch
 	bhi := ie64Instr(OP_BHI, 0, 0, 0, 2, 3, 16)
 	skipped := ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 0xDEAD)
 	halt := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
@@ -817,7 +817,7 @@ func TestIE64_BLS(t *testing.T) {
 	r := newIE64TestRig()
 	r.cpu.regs[2] = 5
 	r.cpu.regs[3] = 10
-	// BLS R2, R3, +16 — unsigned: 5 <= 10, should branch
+	// BLS R2, R3, +16 - unsigned: 5 <= 10, should branch
 	bls := ie64Instr(OP_BLS, 0, 0, 0, 2, 3, 16)
 	skipped := ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 0xDEAD)
 	halt := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
@@ -835,7 +835,7 @@ func TestIE64_Branch_ZeroCompare(t *testing.T) {
 	r := newIE64TestRig()
 	// R0 is always zero. Compare R1 (=0) with R0 (=0) using BEQ.
 	r.cpu.regs[1] = 0
-	// BEQ R1, R0, +16 — both zero, should branch
+	// BEQ R1, R0, +16 - both zero, should branch
 	beq := ie64Instr(OP_BEQ, 0, 0, 0, 1, 0, 16)
 	skipped := ie64Instr(OP_MOVE, 5, IE64_SIZE_Q, 1, 0, 0, 0xDEAD)
 	halt := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
@@ -1193,7 +1193,7 @@ func TestIE64_Reset(t *testing.T) {
 
 func TestIE64_MOVE_R0_NoEffect(t *testing.T) {
 	r := newIE64TestRig()
-	// Try to MOVE #42 into R0 — should be silently discarded
+	// Try to MOVE #42 into R0 - should be silently discarded
 	instr := ie64Instr(OP_MOVE, 0, IE64_SIZE_Q, 1, 0, 0, 42)
 	r.executeOne(instr)
 	if r.cpu.regs[0] != 0 {
@@ -1243,7 +1243,7 @@ func TestIE64_InvalidOpcode(t *testing.T) {
 // ===========================================================================
 
 func TestIE64_HALT_Immediate(t *testing.T) {
-	// Verify HALT stops immediately — no instructions execute after it
+	// Verify HALT stops immediately - no instructions execute after it
 	r := newIE64TestRig()
 	halt := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
 	// Place a MOVE after HALT that would change R1
@@ -1260,7 +1260,7 @@ func TestIE64_HALT_Immediate(t *testing.T) {
 }
 
 func TestIE64_InvalidOpcode_Immediate(t *testing.T) {
-	// Verify invalid opcode stops immediately — no instructions execute after it
+	// Verify invalid opcode stops immediately - no instructions execute after it
 	r := newIE64TestRig()
 	invalid := make([]byte, 8)
 	invalid[0] = 0xFE
@@ -1277,7 +1277,7 @@ func TestIE64_InvalidOpcode_Immediate(t *testing.T) {
 }
 
 func TestIE64_StackOverflow_Halt(t *testing.T) {
-	// Push with SP near 0 — should halt cleanly without panic
+	// Push with SP near 0 - should halt cleanly without panic
 	r := newIE64TestRig()
 	r.cpu.regs[31] = 4 // SP too low for an 8-byte push
 	r.cpu.regs[5] = 0xCAFE
@@ -1286,14 +1286,14 @@ func TestIE64_StackOverflow_Halt(t *testing.T) {
 	r.loadInstructions(push, halt)
 	r.cpu.running.Store(true)
 	r.cpu.Execute()
-	// SP wraps to a huge value — bounds check should halt
+	// SP wraps to a huge value - bounds check should halt
 	if r.cpu.running.Load() {
 		t.Fatal("running should be false after stack overflow")
 	}
 }
 
 func TestIE64_StackUnderflow_Halt(t *testing.T) {
-	// RTS with SP beyond memory bounds — should halt cleanly
+	// RTS with SP beyond memory bounds - should halt cleanly
 	r := newIE64TestRig()
 	r.cpu.regs[31] = uint64(len(r.cpu.memory)) // SP at end of memory
 	rts := ie64Instr(OP_RTS64, 0, 0, 0, 0, 0, 0)
@@ -1356,10 +1356,10 @@ func BenchmarkIE64_MemoryIntensive(b *testing.B) {
 	// R3 = base address for load/store
 	// R4 = scratch register
 	//
-	// +0:  STORE.Q R1, (R3)      — store counter to memory
-	// +8:  LOAD.Q R4, (R3)       — load it back
-	// +16: SUB.Q R1, R1, R2      — decrement counter
-	// +24: BNE R1, R0, -24       — loop back to +0
+	// +0:  STORE.Q R1, (R3)      - store counter to memory
+	// +8:  LOAD.Q R4, (R3)       - load it back
+	// +16: SUB.Q R1, R1, R2      - decrement counter
+	// +24: BNE R1, R0, -24       - loop back to +0
 	// +32: HALT
 	store := ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 0)
 	load := ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 3, 0, 0)
@@ -1441,7 +1441,7 @@ func TestIE64_JMP_Register(t *testing.T) {
 	// +8:  JMP (R5)                (jump to target)
 	// +16: MOVE.Q R1, #99          (SHOULD BE SKIPPED)
 	// +24: HALT
-	// +32: MOVE.Q R2, #42          (target — should execute)
+	// +32: MOVE.Q R2, #42          (target - should execute)
 	// +40: HALT
 	r := newIE64TestRig()
 	targetAddr := uint32(PROG_START + 32)
@@ -1550,7 +1550,7 @@ func TestIE64_JMP_AddrMask(t *testing.T) {
 }
 
 func TestIE64_JMP_R0(t *testing.T) {
-	// JMP 8(R0) — R0 is always 0, so displacement is the absolute target
+	// JMP 8(R0) - R0 is always 0, so displacement is the absolute target
 	r := newIE64TestRig()
 	targetAddr := uint32(PROG_START + 16)
 	jmp := ie64Instr(OP_JMP, 0, 0, 0, 0, 0, targetAddr)
@@ -1760,11 +1760,11 @@ func TestIE64_JumpTable(t *testing.T) {
 
 	// Layout:
 	// +0:  MOVE.L R3, #tableAddr   (load table base)
-	// +8:  LOAD.Q R5, 8(R3)        (load second entry — offset 8)
+	// +8:  LOAD.Q R5, 8(R3)        (load second entry - offset 8)
 	// +16: JMP (R5)                 (jump to entry)
-	// +24: MOVE.Q R1, #11          (entry 0 — not taken)
+	// +24: MOVE.Q R1, #11          (entry 0 - not taken)
 	// +32: HALT
-	// +40: MOVE.Q R1, #22          (entry 1 — taken)
+	// +40: MOVE.Q R1, #22          (entry 1 - taken)
 	// +48: HALT
 	// +56: table: dc.q entry0, entry1
 	tableAddr := uint32(PROG_START + 56)

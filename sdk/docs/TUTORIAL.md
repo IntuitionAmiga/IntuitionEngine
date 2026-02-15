@@ -74,7 +74,7 @@ The Robocop Intro demo showcases the Intuition Engine's hardware capabilities th
 
 ## Include Files
 
-Each CPU architecture has a corresponding include file in the `assembler/` directory:
+Each CPU architecture has a corresponding include file in the `sdk/include/` directory:
 
 | File | CPU | Contents |
 |------|-----|----------|
@@ -105,15 +105,15 @@ The data is embedded at assembly time using the `incbin` directive:
 ```assembly
 ; M68K (vasm)
 data_robocop_rgba:
-    incbin  "../robocop_rgba.bin"
+    incbin  "../assets/robocop_rgba.bin"
 
 ; Z80 (vasm)
 data_robocop_rgba:
-    .incbin "../robocop_rgba.bin"
+    .incbin "../assets/robocop_rgba.bin"
 
 ; 6502 (ca65)
 data_robocop_rgba:
-.incbin "../robocop_rgba.bin"
+.incbin "../assets/robocop_rgba.bin"
 ```
 
 Once assembled, DMA engines (blitter, copper, PSG player) can access this data directly through the memory bus using the label addresses.
@@ -1376,7 +1376,7 @@ for (int i = 0; i < 256; i++) {
 
 # 8. Complete Source Listings
 
-The complete source files are located in the `assembler/` directory:
+The complete source files are located in the `sdk/examples/asm/` directory:
 
 | File | CPU | Lines | Description |
 |------|-----|-------|-------------|
@@ -1410,51 +1410,46 @@ The complete source files are located in the `assembler/` directory:
 
 ```bash
 # Assemble
-sdk/bin/ie32asm assembler/robocop_intro.asm
+sdk/bin/ie32asm sdk/examples/asm/robocop_intro.asm
 
 # Run
-./bin/IntuitionEngine -ie32 assembler/robocop_intro.iex
+./bin/IntuitionEngine -ie32 robocop_intro.iex
 ```
 
 ## M68K
 
 ```bash
-# Assemble (requires vasm) - run from assembler directory for incbin paths
-cd assembler
-vasmm68k_mot -Fbin -m68020 -I. \
+# Assemble (requires vasm) - use -I for include and asset paths
+vasmm68k_mot -Fbin -m68020 -Isdk/include -Isdk/examples/assets \
     -o robocop_intro_68k.ie68 \
-    robocop_intro_68k.asm
-cd ..
+    sdk/examples/asm/robocop_intro_68k.asm
 
 # Run
-./bin/IntuitionEngine -m68k assembler/robocop_intro_68k.ie68
+./bin/IntuitionEngine -m68k robocop_intro_68k.ie68
 ```
 
 ## Z80
 
 ```bash
-# Assemble (requires vasm) - run from assembler directory for includes
-cd assembler
-vasmz80_std -Fbin -I. \
+# Assemble (requires vasm) - use -I for include and asset paths
+vasmz80_std -Fbin -Isdk/include -Isdk/examples/assets \
     -o robocop_intro_z80.ie80 \
-    robocop_intro_z80.asm
-cd ..
+    sdk/examples/asm/robocop_intro_z80.asm
 
 # Run
-./bin/IntuitionEngine -z80 assembler/robocop_intro_z80.ie80
+./bin/IntuitionEngine -z80 robocop_intro_z80.ie80
 ```
 
 ## 6502
 
 ```bash
-# Assemble (requires cc65 suite) - run from assembler directory
-cd assembler
-ca65 robocop_intro_65.asm -o robocop_intro_65.o
-ld65 -C ie65.cfg -o robocop_intro_65.bin robocop_intro_65.o
-cd ..
+# Assemble (requires cc65 suite)
+ca65 -I sdk/include sdk/examples/asm/robocop_intro_65.asm -o robocop_intro_65.o
+ld65 -C sdk/include/ie65.cfg -o robocop_intro_65.bin robocop_intro_65.o
+rm robocop_intro_65.o
 
 # Run
-./bin/IntuitionEngine -m6502 assembler/robocop_intro_65.bin
+./bin/IntuitionEngine -m6502 robocop_intro_65.bin
 ```
 
 ## Running from EhBASIC
@@ -1462,10 +1457,10 @@ cd ..
 Any assembled binary can also be launched from the EhBASIC interpreter prompt:
 
 ```basic
-RUN "assembler/robocop_intro.iex"
-RUN "assembler/robocop_intro_68k.ie68"
-RUN "assembler/robocop_intro_z80.ie80"
-RUN "assembler/robocop_intro_65.bin"
+RUN "sdk/examples/prebuilt/robocop_intro.iex"
+RUN "sdk/examples/prebuilt/robocop_intro_68k.ie68"
+RUN "sdk/examples/prebuilt/robocop_intro_z80.ie80"
+RUN "sdk/examples/prebuilt/robocop_intro_65.bin"
 ```
 
 The `RUN` command auto-detects the CPU core from the file extension.
@@ -1486,9 +1481,9 @@ The demo runs at 60 FPS with VBlank synchronisation.
 # Further Reading
 
 - **README.md** - Complete system reference documentation
-- **assembler/ie32.inc** - IE32 hardware definitions
-- **assembler/ie68.inc** - M68K hardware definitions and macros
-- **assembler/ie80.inc** - Z80 hardware definitions and macros
-- **assembler/ie65.inc** - 6502 hardware definitions and macros
+- **sdk/include/ie32.inc** - IE32 hardware definitions
+- **sdk/include/ie68.inc** - M68K hardware definitions and macros
+- **sdk/include/ie80.inc** - Z80 hardware definitions and macros
+- **sdk/include/ie65.inc** - 6502 hardware definitions and macros
 
 For questions or issues, visit: https://github.com/intuitionamiga/IntuitionEngine

@@ -5,7 +5,7 @@
 ;
 ; === SDK QUICK REFERENCE ===
 ; Target CPU:    Motorola 68020
-; Video Chip:    IEVideoChip Mode 0 (640x480, 32bpp true color)
+; Video Chip:    IEVideoChip Mode 0 (640x480, 32bpp true colour)
 ; Audio Engine:  TED audio (Commodore Plus/4 music format)
 ; Assembler:     vasmm68k_mot (VASM M68K, Motorola syntax)
 ; Build:         vasmm68k_mot -Fbin -m68020 -o rotozoomer_68k.ie68 rotozoomer_68k.asm
@@ -175,14 +175,14 @@ SCALE_INC       equ     104
 ; ENTRY POINT
 ; ============================================================================
 ; The CPU begins execution here after loading the program.
-; We initialize the video hardware, generate the texture, set up animation
+; We initialise the video hardware, generate the texture, set up animation
 ; state, start music playback, and then enter the main loop.
 ; ============================================================================
 
                 org     PROGRAM_START
 
 start:
-                ; Initialize stack pointer. M68K uses a descending stack
+                ; Initialise stack pointer. M68K uses a descending stack
                 ; (grows toward lower addresses). Must be set before any
                 ; BSR/JSR calls.
                 move.l  #STACK_TOP,sp
@@ -205,7 +205,7 @@ start:
                 ; procedurally -- just 4 BLIT FILL calls.
                 bsr     generate_texture
 
-                ; --- Initialize Animation Accumulators ---
+                ; --- Initialise Animation Accumulators ---
                 ; Both accumulators start at zero. They will be incremented
                 ; by ANGLE_INC and SCALE_INC each frame, with the high byte
                 ; used as the table index and the low byte as fractional
@@ -237,7 +237,7 @@ start:
 ;   1. compute_frame:      Calculate the 6 Mode7 parameters for this frame
 ;   2. render_mode7:       Trigger the blitter to render into the back buffer
 ;   3. blit_to_front:      Copy completed back buffer to visible VRAM
-;   4. wait_vsync:         Synchronize to vertical blank (prevents tearing)
+;   4. wait_vsync:         Synchronise to vertical blank (prevents tearing)
 ;   5. advance_animation:  Update fractional accumulators for next frame
 ;
 ; We render BEFORE vsync so the blit-to-front happens as close to the
@@ -254,7 +254,7 @@ main_loop:
 ; ============================================================================
 ; WAIT FOR VSYNC (Two-Phase Edge Detection)
 ; ============================================================================
-; Synchronizes to the start of the vertical blanking interval.
+; Synchronises to the start of the vertical blanking interval.
 ;
 ; WHY TWO PHASES?
 ; A naive "wait until vblank bit is set" approach has a race condition:
@@ -320,7 +320,7 @@ wait_vsync:
 ;     Bottom-left:  TEXTURE_BASE + 131072   = $520000  (128 rows * 1024 stride)
 ;     Bottom-right: TEXTURE_BASE + 131584   = $520200  (128*1024 + 128*4)
 ;
-;   Color format is BGRA (32-bit):
+;   Colour format is BGRA (32-bit):
 ;     $FFFFFFFF = white (B=FF, G=FF, R=FF, A=FF)
 ;     $FF000000 = black (B=00, G=00, R=00, A=FF)
 ;
@@ -829,7 +829,7 @@ sine_table:
 ;     When sin =  0: 256/0.5 = 512  (~2x zoom out, neutral)
 ;     When sin = +1: 256/0.8 = 320  (~1.25x zoom out, texture appears large)
 ;
-;   - The 256 numerator normalizes to 8.8 fixed-point scale where 256 = 1.0
+;   - The 256 numerator normalises to 8.8 fixed-point scale where 256 = 1.0
 ;
 ; VALUE RANGE: 320 to 1280 (always fits in unsigned 16-bit)
 ;
@@ -880,5 +880,5 @@ recip_table:
 ; ============================================================================
                 even
 ted_data:
-                incbin  "../assets/chromatic_admiration.ted"
+                incbin  "../assets/music/chromatic_admiration.ted"
 ted_data_end:

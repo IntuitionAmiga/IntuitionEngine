@@ -1494,7 +1494,7 @@ func (cpu_6502 *CPU_6502) Reset() {
 		}
 	}
 
-	// Execute() is now paused — safe to modify all registers
+	// Execute() is now paused - safe to modify all registers
 	cpu_6502.A = 0
 	cpu_6502.X = 0
 	cpu_6502.Y = 0

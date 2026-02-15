@@ -1167,7 +1167,7 @@ COPROC_CPU_X86        equ 6
     mov dword [COPROC_CMD], COPROC_CMD_STOP
 %endmacro
 
-; Enqueue a request — ticket returned in COPROC_TICKET
+; Enqueue a request - ticket returned in COPROC_TICKET
 %macro coproc_enqueue 6  ; %1=cpuType, %2=op, %3=reqPtr, %4=reqLen, %5=respPtr, %6=respCap
     mov dword [COPROC_CPU_TYPE], %1
     mov dword [COPROC_OP], %2
@@ -1178,7 +1178,7 @@ COPROC_CPU_X86        equ 6
     mov dword [COPROC_CMD], COPROC_CMD_ENQUEUE
 %endmacro
 
-; Poll ticket status — result in COPROC_TICKET_STATUS
+; Poll ticket status - result in COPROC_TICKET_STATUS
 %macro coproc_poll 1  ; %1=ticket
     mov dword [COPROC_TICKET], %1
     mov dword [COPROC_CMD], COPROC_CMD_POLL

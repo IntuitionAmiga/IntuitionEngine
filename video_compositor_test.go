@@ -117,7 +117,7 @@ func TestCompositor_ScanlineAware_WithDisabledVoodoo(t *testing.T) {
 	// Run one composite cycle
 	comp.composite()
 
-	// Scanline path should have been used — both mock sources should have
+	// Scanline path should have been used - both mock sources should have
 	// received ProcessScanline calls (480 scanlines each)
 	if chip.scanlines != 480 {
 		t.Errorf("chip: expected 480 ProcessScanline calls, got %d (scanline path not used)", chip.scanlines)

@@ -2052,7 +2052,7 @@ func (ch *Channel) processEnhancedSample(
 	}
 	rawSample := sum / float32(oversample)
 
-	// Second-order biquad lowpass (Butterworth, -12dB/oct) — Direct Form II transposed
+	// Second-order biquad lowpass (Butterworth, -12dB/oct) - Direct Form II transposed
 	if ch.plusBqB0 != 0 {
 		out := ch.plusBqB0*rawSample + *bqZ1
 		*bqZ1 = ch.plusBqB1*rawSample - ch.plusBqA1*out + *bqZ2
@@ -2060,7 +2060,7 @@ func (ch *Channel) processEnhancedSample(
 		rawSample = out
 	}
 
-	// Room ambience (allpass diffuser — eliminates comb filter metallic artifacts)
+	// Room ambience (allpass diffuser - eliminates comb filter metallic artifacts)
 	if roomMix > 0 && len(roomBuf) > 0 {
 		g := roomMix * 0.7 // allpass feedback coefficient
 		bufOut := roomBuf[*roomPos]
@@ -2382,7 +2382,7 @@ func (chip *SoundChip) GenerateSample() float32 {
 	sidMixerDCOffset := chip.sidMixerDCOffset
 	sidMixerSaturate := chip.sidMixerSaturate
 
-	// Channel mixing under lock — protects channel fields from concurrent
+	// Channel mixing under lock - protects channel fields from concurrent
 	// HandleRegisterWrite on CPU threads
 	var sum float32
 	activeCount := 0
@@ -2616,7 +2616,7 @@ func (chip *SoundChip) SetPSGPlusEnabled(enabled bool) {
 			}
 		} else if ch.psgPlusEnabled {
 			if ch.enabled {
-				// Channel is producing audio — fade out over 64 samples
+				// Channel is producing audio - fade out over 64 samples
 				ch.psgPlusTransGain = 1.0
 				ch.psgPlusTransStep = -1.0 / 64.0
 				ch.psgPlusTransCounter = 64

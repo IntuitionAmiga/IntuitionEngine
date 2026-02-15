@@ -52,14 +52,14 @@ EhBASIC IE64 is assembled from source and optionally embedded into the Intuition
 
 ```bash
 # Assemble the BASIC interpreter
-bin/ie64asm assembler/ehbasic_ie64.asm
+sdk/bin/ie64asm -I sdk/include sdk/examples/asm/ehbasic_ie64.asm
 
 # Build the VM with embedded BASIC
 make basic
 ```
 
 The `make basic` target:
-1. Assembles `assembler/ehbasic_ie64.asm` into `assembler/ehbasic_ie64.ie64`
+1. Assembles `sdk/examples/asm/ehbasic_ie64.asm` into `sdk/examples/asm/ehbasic_ie64.ie64`
 2. Builds the Intuition Engine binary with the `embed_basic` build tag, which embeds the BASIC binary via Go's `//go:embed` directive
 
 ### Running
@@ -137,7 +137,7 @@ EhBASIC runs inside a graphical terminal with full line-editing support. Text is
 | Enter | Submit the current line |
 | Tab | Advance to next tab stop |
 
-Typing inserts characters at the cursor position — existing text shifts right. Holding any key repeats the action automatically after a short delay.
+Typing inserts characters at the cursor position - existing text shifts right. Holding any key repeats the action automatically after a short delay.
 
 #### Ctrl Shortcuts
 
@@ -177,9 +177,9 @@ Previously entered commands are saved for the duration of the session. Use Ctrl+
 
 EhBASIC IE64 supports two data types:
 
-**Numeric** — IEEE 754 single-precision floating-point (FP32). All numeric values, including integers, are stored as FP32. Integer operations truncate the fractional part where needed. Range: approximately +/-3.4 x 10^38. Precision: ~7 decimal digits.
+**Numeric** - IEEE 754 single-precision floating-point (FP32). All numeric values, including integers, are stored as FP32. Integer operations truncate the fractional part where needed. Range: approximately +/-3.4 x 10^38. Precision: ~7 decimal digits.
 
-**String** — Null-terminated byte sequences stored on a string heap. Strings are allocated linearly; there is no garbage collection. String variables are identified by a trailing `$` suffix.
+**String** - Null-terminated byte sequences stored on a string heap. Strings are allocated linearly; there is no garbage collection. String variables are identified by a trailing `$` suffix.
 
 ### 3.2 Variables
 
@@ -337,8 +337,8 @@ Clear a bit in a byte at a memory address.
 BITCLR address, bit
 ```
 
-- `address` — memory address
-- `bit` — bit number (0-7)
+- `address` - memory address
+- `bit` - bit number (0-7)
 
 **Example:**
 ```basic
@@ -353,8 +353,8 @@ Set a bit in a byte at a memory address.
 BITSET address, bit
 ```
 
-- `address` — memory address
-- `bit` — bit number (0-7)
+- `address` - memory address
+- `bit` - bit number (0-7)
 
 **Example:**
 ```basic
@@ -369,8 +369,8 @@ Load a binary file directly into memory (raw bytes, no tokenisation).
 BLOAD "filename", address
 ```
 
-- `filename` — string path resolved through the file I/O sandbox
-- `address` — destination memory address
+- `filename` - string path resolved through the file I/O sandbox
+- `address` - destination memory address
 
 Unlike `LOAD`, `BLOAD` does **not** clear program lines or variables. It only reads file bytes into memory.
 
@@ -393,17 +393,17 @@ BLIT MEMCOPY src, dst, len
 BLIT WAIT
 ```
 
-**BLIT COPY** — Copy a rectangular block of pixels from source to destination.
+**BLIT COPY** - Copy a rectangular block of pixels from source to destination.
 
-**BLIT FILL** — Fill a rectangular area with a solid colour.
+**BLIT FILL** - Fill a rectangular area with a solid colour.
 
-**BLIT LINE** — Draw a line using the blitter hardware.
+**BLIT LINE** - Draw a line using the blitter hardware.
 
-**BLIT MODE7** — Affine texture-mapped blit (Mode7). Renders a rotated/scaled texture into a destination rectangle at per-pixel resolution. Texture coordinates use signed 16.16 fixed-point. `texW`/`texH` are power-of-2 masks (for example `255` for a 256x256 texture).
+**BLIT MODE7** - Affine texture-mapped blit (Mode7). Renders a rotated/scaled texture into a destination rectangle at per-pixel resolution. Texture coordinates use signed 16.16 fixed-point. `texW`/`texH` are power-of-2 masks (for example `255` for a 256x256 texture).
 
-**BLIT MEMCOPY** — Copy a contiguous block of bytes.
+**BLIT MEMCOPY** - Copy a contiguous block of bytes.
 
-**BLIT WAIT** — Poll until the blitter has finished its current operation (includes timeout).
+**BLIT WAIT** - Poll until the blitter has finished its current operation (includes timeout).
 
 **Example:**
 ```basic
@@ -630,11 +630,11 @@ Set the ADSR envelope for a flexible audio channel.
 ENVELOPE channel, attack, decay, sustain, release
 ```
 
-- `channel` — 0 to 3
-- `attack` — attack time in milliseconds
-- `decay` — decay time in milliseconds
-- `sustain` — sustain level (0-255)
-- `release` — release time in milliseconds
+- `channel` - 0 to 3
+- `attack` - attack time in milliseconds
+- `decay` - decay time in milliseconds
+- `sustain` - sustain level (0-255)
+- `release` - release time in milliseconds
 
 **Example:**
 ```basic
@@ -897,8 +897,8 @@ Set a VGA DAC palette entry.
 PALETTE index, red, green, blue
 ```
 
-- `index` — palette entry (0-255)
-- `red`, `green`, `blue` — colour components (0-63, VGA 6-bit DAC)
+- `index` - palette entry (0-255)
+- `red`, `green`, `blue` - colour components (0-63, VGA 6-bit DAC)
 
 **Example:**
 ```basic
@@ -1068,9 +1068,9 @@ SCREEN OFF         Disable VGA display
 ```
 
 Supported modes:
-- `&H13` — 320x200, 256 colours (Mode 13h)
-- `&H12` — 640x480, 16 colours (Mode 12h, planar)
-- `3` — 80x25 text mode
+- `&H13` - 320x200, 256 colours (Mode 13h)
+- `&H12` - 640x480, 16 colours (Mode 12h, planar)
+- `3` - 80x25 text mode
 
 **Example:**
 ```basic
@@ -1104,12 +1104,12 @@ SID STOP                                 Stop playback
 ```
 
 **SID VOICE** parameters:
-- `num` — voice number (1-3)
-- `freq` — 16-bit frequency value
-- `pw` — 12-bit pulse width
-- `ctrl` — control register (gate, waveform select, sync, ring mod)
-- `ad` — attack/decay (upper nibble = attack, lower = decay)
-- `sr` — sustain/release (upper nibble = sustain, lower = release)
+- `num` - voice number (1-3)
+- `freq` - 16-bit frequency value
+- `pw` - 12-bit pulse width
+- `ctrl` - control register (gate, waveform select, sync, ring mod)
+- `ad` - attack/decay (upper nibble = attack, lower = decay)
+- `sr` - sustain/release (upper nibble = sustain, lower = release)
 
 ### SOUND
 
@@ -1120,51 +1120,51 @@ SOUND channel, freq, vol [,wave [,duty]]
 SOUND FILTER cutoff, resonance, type
 ```
 
-- `channel` — 0 to 3
-- `freq` — frequency in Hz
-- `vol` — volume (0-255)
-- `wave` — waveform type (0=square, 1=triangle, 2=sine, 3=noise, 4=sawtooth)
-- `duty` — duty cycle for square wave (0-255, 128=50%)
+- `channel` - 0 to 3
+- `freq` - frequency in Hz
+- `vol` - volume (0-255)
+- `wave` - waveform type (0=square, 1=triangle, 2=sine, 3=noise, 4=sawtooth)
+- `duty` - duty cycle for square wave (0-255, 128=50%)
 
 **SOUND FILTER** sets the global audio filter:
-- `cutoff` — cutoff frequency (0-255, exponential 20Hz-20kHz)
-- `resonance` — resonance (0-255)
-- `type` — filter type (0=off, 1=lowpass, 2=highpass, 3=bandpass)
+- `cutoff` - cutoff frequency (0-255, exponential 20Hz-20kHz)
+- `resonance` - resonance (0-255)
+- `type` - filter type (0=off, 1=lowpass, 2=highpass, 3=bandpass)
 
 **SOUND REVERB** configures the reverb effect:
 ```
 SOUND REVERB mix, decay
 ```
-- `mix` — dry/wet mix (0-255)
-- `decay` — decay time (0-255)
+- `mix` - dry/wet mix (0-255)
+- `decay` - decay time (0-255)
 
 **SOUND OVERDRIVE** sets the overdrive (distortion) amount:
 ```
 SOUND OVERDRIVE amount
 ```
-- `amount` — drive amount (0-255)
+- `amount` - drive amount (0-255)
 
 **SOUND NOISE** sets noise mode using a channel-qualified command:
 ```
 SOUND NOISE channel, mode
 ```
-- `channel` — channel number
-- `mode` — noise mode value
+- `channel` - channel number
+- `mode` - noise mode value
 
 **SOUND WAVE** sets the waveform type for a flexible channel:
 ```
 SOUND WAVE channel, type
 ```
-- `channel` — 0 to 3
-- `type` — waveform type
+- `channel` - 0 to 3
+- `type` - waveform type
 
 **SOUND SWEEP** configures a pitch sweep on a flexible channel:
 ```
 SOUND SWEEP channel, enable, period, shift
 ```
-- `enable` — 1=on, 0=off
-- `period` — sweep period
-- `shift` — sweep shift amount
+- `enable` - 1=on, 0=off
+- `period` - sweep period
+- `shift` - sweep shift amount
 
 Packed as `enable | (period << 8) | (shift << 16)` in the FLEX_OFF_SWEEP register.
 
@@ -1172,15 +1172,15 @@ Packed as `enable | (period << 8) | (shift << 16)` in the FLEX_OFF_SWEEP registe
 ```
 SOUND SYNC channel, source
 ```
-- `channel` — 0 to 3
-- `source` — source channel number
+- `channel` - 0 to 3
+- `source` - source channel number
 
 **SOUND RINGMOD** sets the ring modulation source for a channel:
 ```
 SOUND RINGMOD channel, source
 ```
-- `channel` — 0 to 3
-- `source` — source channel number
+- `channel` - 0 to 3
+- `source` - source channel number
 
 **SOUND PLAY** loads and plays a music file through the appropriate audio engine:
 ```
@@ -1188,8 +1188,8 @@ SOUND PLAY "filename.ext" [,subsong]
 SOUND PLAY STOP
 SOUND STOP
 ```
-- `filename` — path to a music file (relative to working directory)
-- `subsong` — optional subsong index (default 0, for SID/AHX formats)
+- `filename` - path to a music file (relative to working directory)
+- `subsong` - optional subsong index (default 0, for SID/AHX formats)
 
 Supported formats:
 
@@ -2422,7 +2422,7 @@ Used by `SOUND PLAY` to load and play music files.
 | `&HF2310` | MEDIA_TYPE | R | Detected type: 1=SID, 2=PSG, 3=TED, 4=AHX |
 | `&HF2314` | MEDIA_ERROR | R | 0=ok, 1=not-found, 2=bad-format, 3=unsupported, 4=path-invalid, 5=too-large |
 
-Staging buffer: `&H800000`-`&H80FFFF` (64 KB) — transient copy of loaded file data.
+Staging buffer: `&H800000`-`&H80FFFF` (64 KB) - transient copy of loaded file data.
 
 ### 9.14 Program Executor Registers (`&HF2320`-`&HF233F`)
 

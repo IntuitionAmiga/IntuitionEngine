@@ -251,7 +251,7 @@ func (m *CoprocessorManager) cmdStart() {
 	// If someone else took this slot while we were unlocked, stop our
 	// newly created worker instead of overwriting theirs.
 	if m.workers[cpuType] != nil {
-		// Another start beat us — discard our worker
+		// Another start beat us - discard our worker
 		m.mu.Unlock()
 		worker.stopCPU()
 		select {
@@ -276,7 +276,7 @@ func (m *CoprocessorManager) cmdStart() {
 	if m.workers[cpuType] == worker {
 		worker.monitorID = newID
 	} else {
-		// Stale: someone replaced us during registration — clean up
+		// Stale: someone replaced us during registration - clean up
 		if mon != nil && newID >= 0 {
 			m.mu.Unlock()
 			mon.UnregisterCPU(newID)
@@ -397,10 +397,10 @@ func (m *CoprocessorManager) cmdPoll() {
 
 	// If already in a terminal state (cached from previous poll/wait), use it
 	if status == COPROC_TICKET_PENDING || status == COPROC_TICKET_RUNNING {
-		// Not yet terminal — scan ring to discover new state
+		// Not yet terminal - scan ring to discover new state
 		status = m.scanTicketStatus(ticket)
 		if status == COPROC_TICKET_PENDING || status == COPROC_TICKET_RUNNING {
-			// Still non-terminal — check if worker is down
+			// Still non-terminal - check if worker is down
 			ct := comp.cpuType
 			if ct >= 1 && ct <= 6 && m.workers[ct] == nil {
 				status = COPROC_TICKET_WORKER_DOWN
@@ -409,7 +409,7 @@ func (m *CoprocessorManager) cmdPoll() {
 	}
 
 	if status != COPROC_TICKET_PENDING && status != COPROC_TICKET_RUNNING {
-		// Terminal state — handle two-read eviction
+		// Terminal state - handle two-read eviction
 		comp.status = status
 		if comp.observed {
 			delete(m.completions, ticket)

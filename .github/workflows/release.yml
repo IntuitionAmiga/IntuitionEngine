@@ -80,7 +80,7 @@ jobs:
           path: ${{ env.APP_NAME }}-*-linux-amd64.tar.xz
 
   # ---------------------------------------------------------------------------
-  # Windows (amd64 + arm64) — novulkan, cross-compiled
+  # Windows (amd64 + arm64) - novulkan, cross-compiled
   # ---------------------------------------------------------------------------
   windows:
     name: Windows ${{ matrix.arch }}

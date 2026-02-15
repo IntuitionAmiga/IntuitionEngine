@@ -8,7 +8,7 @@ import (
 
 // TestSoundChip_ConcurrentWriteRead stresses the writer/reader race between
 // HandleRegisterWrite (CPU thread) and GenerateSample (audio thread).
-// The test itself has no assertions — the race detector is the oracle.
+// The test itself has no assertions - the race detector is the oracle.
 // Run with: go test -race -run TestSoundChip_ConcurrentWriteRead -count=1
 func TestSoundChip_ConcurrentWriteRead(t *testing.T) {
 	chip := newTestSoundChip()
@@ -39,7 +39,7 @@ func TestSoundChip_ConcurrentWriteRead(t *testing.T) {
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
 
-	// Goroutine 1: CPU-side writer — hammers HandleRegisterWrite on channel 0
+	// Goroutine 1: CPU-side writer - hammers HandleRegisterWrite on channel 0
 	wg.Go(func() {
 		iter := uint32(0)
 		for {
@@ -52,7 +52,7 @@ func TestSoundChip_ConcurrentWriteRead(t *testing.T) {
 			chip.HandleRegisterWrite(FLEX_CH0_BASE+FLEX_OFF_FREQ, (440+iter%200)*256)
 			// Write volume (float32 field)
 			chip.HandleRegisterWrite(FLEX_CH0_BASE+FLEX_OFF_VOL, iter%256)
-			// Write control — enabled + gate (bool fields + envelope state)
+			// Write control - enabled + gate (bool fields + envelope state)
 			chip.HandleRegisterWrite(FLEX_CH0_BASE+FLEX_OFF_CTRL, 3) // enabled=1, gate=1
 			// Write wave type (int field)
 			chip.HandleRegisterWrite(FLEX_CH0_BASE+FLEX_OFF_WAVE_TYPE, iter%5)
@@ -62,7 +62,7 @@ func TestSoundChip_ConcurrentWriteRead(t *testing.T) {
 		}
 	})
 
-	// Goroutine 2: audio-side reader — calls GenerateSample in a loop
+	// Goroutine 2: audio-side reader - calls GenerateSample in a loop
 	wg.Go(func() {
 		for {
 			select {

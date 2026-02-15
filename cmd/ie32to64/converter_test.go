@@ -350,7 +350,7 @@ func TestConvert_LDX_Immediate(t *testing.T) {
 func TestConvert_LDA_Register(t *testing.T) {
 	c := NewConverter()
 	got := c.ConvertLine("    LDA X")
-	// LDA with a register operand — load register value into A
+	// LDA with a register operand - load register value into A
 	expectLines(t, got, []string{"    move.l r1, r2"})
 }
 
@@ -889,7 +889,7 @@ func TestConvert_Typo(t *testing.T) {
 
 func TestConvertFile_CoprocCaller(t *testing.T) {
 	c := NewConverter()
-	output, err := c.ConvertFileFromPath("../../assembler/coproc_caller_ie32.asm")
+	output, err := c.ConvertFileFromPath("../../sdk/examples/asm/coproc_caller_ie32.asm")
 	if err != nil {
 		t.Fatalf("ConvertFileFromPath: %v", err)
 	}
@@ -923,7 +923,7 @@ func TestConvertFile_CoprocCaller(t *testing.T) {
 
 func TestConvertFile_Rotozoomer(t *testing.T) {
 	c := NewConverter()
-	output, err := c.ConvertFileFromPath("../../assembler/rotozoomer.asm")
+	output, err := c.ConvertFileFromPath("../../sdk/examples/asm/rotozoomer.asm")
 	if err != nil {
 		t.Fatalf("ConvertFileFromPath: %v", err)
 	}
@@ -967,7 +967,7 @@ func TestConvertFile_Rotozoomer(t *testing.T) {
 func TestConvertFile_Rotozoomer_Golden(t *testing.T) {
 	c := NewConverter()
 	c.noHeader = true
-	output, err := c.ConvertFileFromPath("../../assembler/rotozoomer.asm")
+	output, err := c.ConvertFileFromPath("../../sdk/examples/asm/rotozoomer.asm")
 	if err != nil {
 		t.Fatalf("ConvertFileFromPath: %v", err)
 	}
@@ -976,11 +976,11 @@ func TestConvertFile_Rotozoomer_Golden(t *testing.T) {
 	golden, err := os.ReadFile(goldenPath)
 	if err != nil {
 		// Generate golden file if it doesn't exist
-		t.Logf("Golden file not found at %s — generating", goldenPath)
+		t.Logf("Golden file not found at %s - generating", goldenPath)
 		if err := os.WriteFile(goldenPath, []byte(output), 0644); err != nil {
 			t.Fatalf("Failed to write golden file: %v", err)
 		}
-		t.Skip("Generated golden file — re-run test to validate")
+		t.Skip("Generated golden file - re-run test to validate")
 	}
 
 	if output != string(golden) {

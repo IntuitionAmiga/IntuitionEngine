@@ -13,7 +13,7 @@ import (
 )
 
 // TerminalHost reads raw stdin and feeds bytes into a TerminalMMIO device.
-// Only instantiated in main.go for interactive use — never in tests.
+// Only instantiated in main.go for interactive use - never in tests.
 type TerminalHost struct {
 	mmio         *TerminalMMIO
 	stopCh       chan struct{}

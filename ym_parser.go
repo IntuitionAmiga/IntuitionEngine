@@ -235,7 +235,7 @@ func parseYMData(data []byte) (*YMFile, error) {
 }
 
 // parseYMLegacy handles YM2, YM3, and YM3b formats.
-// These have no metadata header — just interleaved 14-register frame data after the 4-byte magic.
+// These have no metadata header - just interleaved 14-register frame data after the 4-byte magic.
 // Default clock is 2000000 Hz (Atari ST YM2149), default frame rate is 50 Hz.
 func parseYMLegacy(frameData []byte, loopFrame uint32, id string) (*YMFile, error) {
 	if len(frameData) < ymLegacyRegisters {

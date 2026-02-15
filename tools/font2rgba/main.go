@@ -1,7 +1,7 @@
 // font2rgba.go - Convert cubeintro PNG font to raw RGBA for IE32 blitter
 //
 // Usage: go run font2rgba.go
-// Output: ../assembler/font_rgba.bin
+// Output: sdk/examples/assets/font_rgba.bin
 
 package main
 
@@ -59,7 +59,7 @@ func main() {
 	}
 
 	// Write raw RGBA to file
-	outPath := "/home/zayn/GolandProjects/IntuitionEngine/assembler/font_rgba.bin"
+	outPath := "/home/zayn/GolandProjects/IntuitionEngine/sdk/examples/assets/font_rgba.bin"
 	err = os.WriteFile(outPath, rgba.Pix, 0644)
 	if err != nil {
 		fmt.Printf("Error writing output: %v\n", err)

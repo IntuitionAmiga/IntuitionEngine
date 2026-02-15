@@ -203,7 +203,7 @@ func (h *ehbasicTestHarness) runCommand(cmd string) string {
 }
 
 // =============================================================================
-// Phase 0b Smoke Tests — verify the harness itself works
+// Phase 0b Smoke Tests - verify the harness itself works
 // =============================================================================
 
 func TestEhbasicHarness_Create(t *testing.T) {
@@ -284,7 +284,7 @@ func TestEhbasicHarness_OutputProgram(t *testing.T) {
 }
 
 // =============================================================================
-// Assembly Test Infrastructure — assemble and run IE64 BASIC I/O programs
+// Assembly Test Infrastructure - assemble and run IE64 BASIC I/O programs
 // =============================================================================
 
 // assembleIOTest writes an assembly source file that includes ie64.inc and
@@ -318,9 +318,9 @@ include "ehbasic_io.inc"
 	}
 
 	// Symlink include files
-	asmDir := filepath.Join(repoRootDir(t), "assembler")
+	incDir := filepath.Join(repoRootDir(t), "sdk", "include")
 	for _, inc := range []string{"ie64.inc", "ie64_fp.inc", "ehbasic_io.inc"} {
-		src := filepath.Join(asmDir, inc)
+		src := filepath.Join(incDir, inc)
 		dst := filepath.Join(dir, inc)
 		if err := os.Symlink(src, dst); err != nil {
 			t.Fatalf("failed to symlink %s: %v", inc, err)
@@ -342,7 +342,7 @@ include "ehbasic_io.inc"
 }
 
 // =============================================================================
-// Phase 3a Tests — I/O Layer (putchar, print_string, read_line, boot)
+// Phase 3a Tests - I/O Layer (putchar, print_string, read_line, boot)
 // =============================================================================
 
 func TestEhBASIC_PutChar(t *testing.T) {
@@ -417,7 +417,7 @@ func TestEhBASIC_GetChar_NonBlocking(t *testing.T) {
 	asmBin := buildAssembler(t)
 	// Test that getchar returns R9=0 when no input is available,
 	// then R9=1 after input is queued.
-	body := `    ; First call — no input queued, should return R9=0
+	body := `    ; First call - no input queued, should return R9=0
     jsr     getchar
     ; Store R9 (availability flag) to result address
     la      r1, 0x021000
@@ -459,7 +459,7 @@ func TestEhBASIC_ReadLine(t *testing.T) {
     la      r8, 0x021100
     move.q  r9, #80
     jsr     read_line
-    ; R8 = length — store it
+    ; R8 = length - store it
     la      r1, 0x021000
     store.l r8, (r1)
 `
@@ -574,7 +574,7 @@ test_done:`
 }
 
 // =============================================================================
-// Assembly Test Infrastructure — Tokeniser tests
+// Assembly Test Infrastructure - Tokeniser tests
 // =============================================================================
 
 // assembleBasicTest assembles a program that includes all BASIC infrastructure:
@@ -617,13 +617,13 @@ include "ie64_fp.inc"
 		t.Fatalf("failed to write source: %v", err)
 	}
 
-	asmDir := filepath.Join(repoRootDir(t), "assembler")
+	incDir := filepath.Join(repoRootDir(t), "sdk", "include")
 	for _, inc := range []string{"ie64.inc", "ie64_fp.inc", "ehbasic_io.inc",
 		"ehbasic_tokens.inc", "ehbasic_tokenizer.inc", "ehbasic_lineeditor.inc",
 		"ehbasic_expr.inc", "ehbasic_vars.inc", "ehbasic_strings.inc", "ehbasic_exec.inc",
 		"ehbasic_hw_video.inc", "ehbasic_hw_audio.inc", "ehbasic_hw_system.inc",
 		"ehbasic_hw_voodoo.inc", "ehbasic_file_io.inc", "ehbasic_hw_coproc.inc"} {
-		src := filepath.Join(asmDir, inc)
+		src := filepath.Join(incDir, inc)
 		dst := filepath.Join(dir, inc)
 		if err := os.Symlink(src, dst); err != nil {
 			t.Fatalf("failed to symlink %s: %v", inc, err)
@@ -645,7 +645,7 @@ include "ie64_fp.inc"
 }
 
 // =============================================================================
-// Phase 3b Tests — Tokeniser
+// Phase 3b Tests - Tokeniser
 // =============================================================================
 
 // tokeniserTest runs the tokeniser on a BASIC line and returns the output bytes.
@@ -665,7 +665,7 @@ func tokeniserTest(t *testing.T, asmBin string, input string) []byte {
 	body := fmt.Sprintf(`    la      r8, test_input
     la      r9, 0x021100
     jsr     tokenize
-    ; R8 = length — store it at 0x021000
+    ; R8 = length - store it at 0x021000
     la      r1, 0x021000
     store.l r8, (r1)
     bra     test_done
@@ -710,7 +710,7 @@ func detokenizeViaAsm(t *testing.T, asmBin string, tokens []byte) string {
 	body := fmt.Sprintf(`    la      r8, test_input
     la      r9, 0x021100
     jsr     detokenize
-    ; R8 = length — store it at 0x021000
+    ; R8 = length - store it at 0x021000
     la      r1, 0x021000
     store.l r8, (r1)
     bra     test_done
@@ -844,7 +844,7 @@ func TestEhBASIC_Tokenize_Rem(t *testing.T) {
 
 func TestEhBASIC_Tokenize_Expression(t *testing.T) {
 	asmBin := buildAssembler(t)
-	// "A+B*3" — variables are raw, operators are tokens
+	// "A+B*3" - variables are raw, operators are tokens
 	result := tokeniserTest(t, asmBin, "A+B*3")
 	// Expected: 'A' TK_PLUS 'B' TK_MULT '3'
 	expected := []byte{'A', 0xB1, 'B', 0xB3, '3'}
@@ -873,7 +873,7 @@ func TestEhBASIC_Tokenize_GotoGosub(t *testing.T) {
 
 func TestEhBASIC_Tokenize_IfThenElse(t *testing.T) {
 	asmBin := buildAssembler(t)
-	// "IF A THEN PRINT" — should have TK_IF, TK_THEN, TK_PRINT
+	// "IF A THEN PRINT" - should have TK_IF, TK_THEN, TK_PRINT
 	result := tokeniserTest(t, asmBin, "IF A THEN PRINT")
 	if len(result) < 3 {
 		t.Fatalf("tokenize IF..THEN: too short, got %X", result)
@@ -953,7 +953,7 @@ func TestEhBASIC_Tokenize_Troff(t *testing.T) {
 
 func TestEhBASIC_Tokenize_DataPreservesRaw(t *testing.T) {
 	asmBin := buildAssembler(t)
-	// DATA 1,PRINT,3 — after DATA token, no keyword matching
+	// DATA 1,PRINT,3 - after DATA token, no keyword matching
 	result := tokeniserTest(t, asmBin, "DATA 1,PRINT,3")
 	if len(result) < 2 {
 		t.Fatalf("tokenize DATA: too short, got %X", result)
@@ -961,7 +961,7 @@ func TestEhBASIC_Tokenize_DataPreservesRaw(t *testing.T) {
 	if result[0] != 0x83 {
 		t.Fatalf("tokenize DATA: expected TK_DATA (0x83), got 0x%02X", result[0])
 	}
-	// "PRINT" after DATA should NOT be tokenized — should be raw ASCII
+	// "PRINT" after DATA should NOT be tokenized - should be raw ASCII
 	for i := 1; i < len(result); i++ {
 		if result[i] == 0x9E {
 			t.Fatalf("tokenize DATA: PRINT should not be tokenized inside DATA, got %X", result)
@@ -970,7 +970,7 @@ func TestEhBASIC_Tokenize_DataPreservesRaw(t *testing.T) {
 }
 
 // =============================================================================
-// Phase 3c Tests — Line Editor (store, search, list, new, delete)
+// Phase 3c Tests - Line Editor (store, search, list, new, delete)
 // =============================================================================
 
 // assembleLineEditorTest assembles a program that includes all BASIC infrastructure
@@ -1006,10 +1006,10 @@ include "ehbasic_lineeditor.inc"
 		t.Fatalf("failed to write source: %v", err)
 	}
 
-	asmDir := filepath.Join(repoRootDir(t), "assembler")
+	incDir := filepath.Join(repoRootDir(t), "sdk", "include")
 	for _, inc := range []string{"ie64.inc", "ie64_fp.inc", "ehbasic_io.inc",
 		"ehbasic_tokens.inc", "ehbasic_tokenizer.inc", "ehbasic_lineeditor.inc"} {
-		src := filepath.Join(asmDir, inc)
+		src := filepath.Join(incDir, inc)
 		dst := filepath.Join(dir, inc)
 		if err := os.Symlink(src, dst); err != nil {
 			t.Fatalf("failed to symlink %s: %v", inc, err)
@@ -1358,7 +1358,7 @@ func TestEhBASIC_ListSingleLine(t *testing.T) {
 }
 
 // =============================================================================
-// Phase 3d Tests — Expression Evaluator
+// Phase 3d Tests - Expression Evaluator
 // =============================================================================
 
 // assembleExprTest assembles a program that includes all BASIC infrastructure
@@ -1399,11 +1399,11 @@ include "ie64_fp.inc"
 		t.Fatalf("failed to write source: %v", err)
 	}
 
-	asmDir := filepath.Join(repoRootDir(t), "assembler")
+	incDir := filepath.Join(repoRootDir(t), "sdk", "include")
 	for _, inc := range []string{"ie64.inc", "ie64_fp.inc", "ehbasic_io.inc",
 		"ehbasic_tokens.inc", "ehbasic_tokenizer.inc", "ehbasic_lineeditor.inc",
 		"ehbasic_expr.inc", "ehbasic_vars.inc", "ehbasic_strings.inc"} {
-		src := filepath.Join(asmDir, inc)
+		src := filepath.Join(incDir, inc)
 		dst := filepath.Join(dir, inc)
 		if err := os.Symlink(src, dst); err != nil {
 			t.Fatalf("failed to symlink %s: %v", inc, err)
@@ -1525,7 +1525,7 @@ func TestEhBASIC_Expr_Comparison_False(t *testing.T) {
 }
 
 // =============================================================================
-// Phase 3e Tests — Statement Executor
+// Phase 3e Tests - Statement Executor
 // =============================================================================
 
 // assembleExecTest assembles a program that includes all BASIC infrastructure
@@ -1573,13 +1573,13 @@ include "ie64_fp.inc"
 		t.Fatalf("failed to write source: %v", err)
 	}
 
-	asmDir := filepath.Join(repoRootDir(t), "assembler")
+	incDir := filepath.Join(repoRootDir(t), "sdk", "include")
 	for _, inc := range []string{"ie64.inc", "ie64_fp.inc", "ehbasic_io.inc",
 		"ehbasic_tokens.inc", "ehbasic_tokenizer.inc", "ehbasic_lineeditor.inc",
 		"ehbasic_expr.inc", "ehbasic_vars.inc", "ehbasic_strings.inc", "ehbasic_exec.inc",
 		"ehbasic_hw_video.inc", "ehbasic_hw_audio.inc", "ehbasic_hw_system.inc",
 		"ehbasic_hw_voodoo.inc", "ehbasic_file_io.inc", "ehbasic_hw_coproc.inc"} {
-		src := filepath.Join(asmDir, inc)
+		src := filepath.Join(incDir, inc)
 		dst := filepath.Join(dir, inc)
 		if err := os.Symlink(src, dst); err != nil {
 			t.Fatalf("failed to symlink %s: %v", inc, err)
@@ -2012,7 +2012,7 @@ func TestEhBASIC_ListRange(t *testing.T) {
 }
 
 // ============================================================================
-// Phase 3f: Variables & Arrays — DIM, string variables, string functions
+// Phase 3f: Variables & Arrays - DIM, string variables, string functions
 // ============================================================================
 
 func TestEhBASIC_DimArray(t *testing.T) {
@@ -2360,7 +2360,7 @@ func TestEhBASIC_Fre(t *testing.T) {
 }
 
 // ============================================================================
-// Phase 4: Hardware Extension Tests — VGA
+// Phase 4: Hardware Extension Tests - VGA
 // ============================================================================
 
 func TestHW_Screen_Mode13h(t *testing.T) {
@@ -2454,7 +2454,7 @@ func TestHW_Vsync(t *testing.T) {
 }
 
 // ============================================================================
-// Phase 4: Hardware Extension Tests — SoundChip
+// Phase 4: Hardware Extension Tests - SoundChip
 // ============================================================================
 
 func TestHW_Sound_SetChannel(t *testing.T) {
@@ -2527,7 +2527,7 @@ func TestHW_Sound_GateOff(t *testing.T) {
 }
 
 // ============================================================================
-// Phase 4: Hardware Extension Tests — System Commands
+// Phase 4: Hardware Extension Tests - System Commands
 // ============================================================================
 
 func TestHW_Wait(t *testing.T) {
@@ -2748,7 +2748,7 @@ func TestHW_Copper_End_Encoding(t *testing.T) {
 
 func TestHW_Copper_Move_Encoding(t *testing.T) {
 	asmBin := buildAssembler(t)
-	// MOVE &HF0050, &HFF0000 — SETBASE + MOVE opcode + MOVE data
+	// MOVE &HF0050, &HFF0000 - SETBASE + MOVE opcode + MOVE data
 	_, h := execStmtTestWithBus(t, asmBin,
 		"10 COPPER LIST 196608\n20 COPPER MOVE &HF0050, &HFF0000\n30 COPPER END")
 	// SETBASE = 0x80000000 | (0xF0050 >> 2) = 0x8003C014
@@ -2770,7 +2770,7 @@ func TestHW_Copper_Move_Encoding(t *testing.T) {
 
 func TestHW_Copper_Move_VGA_DAC(t *testing.T) {
 	asmBin := buildAssembler(t)
-	// MOVE &HF1058, 42 — different address to test SETBASE calculation
+	// MOVE &HF1058, 42 - different address to test SETBASE calculation
 	_, h := execStmtTestWithBus(t, asmBin,
 		"10 COPPER LIST 196608\n20 COPPER MOVE &HF1058, 42\n30 COPPER END")
 	// SETBASE = 0x80000000 | (0xF1058 >> 2) = 0x8003C416
@@ -2792,7 +2792,7 @@ func TestHW_Copper_Move_VGA_DAC(t *testing.T) {
 
 func TestHW_Copper_Move_BadAddr(t *testing.T) {
 	asmBin := buildAssembler(t)
-	// MOVE 5, 42 — address below 0xA0000, should print ?FC ERROR and not emit MOVE
+	// MOVE 5, 42 - address below 0xA0000, should print ?FC ERROR and not emit MOVE
 	out, h := execStmtTestWithBus(t, asmBin,
 		"10 COPPER LIST 196608\n20 COPPER MOVE 5, 42\n30 COPPER END")
 	// Output should contain ?FC ERROR
@@ -3123,7 +3123,7 @@ func TestHW_ANTIC_Scroll(t *testing.T) {
 
 func TestHW_GTIA_Color(t *testing.T) {
 	asmBin := buildAssembler(t)
-	// GTIA COLOR reg, value — writes to GTIA_COLPF0 + reg*4
+	// GTIA COLOR reg, value - writes to GTIA_COLPF0 + reg*4
 	_, h := execStmtTestWithBus(t, asmBin, "10 GTIA COLOR 2, 148")
 	// GTIA_COLPF0 = 0xF2140, reg 2 → 0xF2148
 	col := readBusMem32(h, 0xF2148)
@@ -4005,7 +4005,7 @@ func TestHW_AHX_PlusOff(t *testing.T) {
 }
 
 // =============================================================================
-// Phase 5 Tests — REPL Entry Point
+// Phase 5 Tests - REPL Entry Point
 // =============================================================================
 
 // assembleREPL assembles the full ehbasic_ie64.asm REPL and returns the binary.
@@ -4013,17 +4013,18 @@ func assembleREPL(t *testing.T) []byte {
 	t.Helper()
 	asmBin := buildAssembler(t)
 
-	asmDir := filepath.Join(repoRootDir(t), "assembler")
-	srcPath := filepath.Join(asmDir, "ehbasic_ie64.asm")
+	exDir := filepath.Join(repoRootDir(t), "sdk", "examples", "asm")
+	incDir := filepath.Join(repoRootDir(t), "sdk", "include")
+	srcPath := filepath.Join(exDir, "ehbasic_ie64.asm")
 
-	cmd := exec.Command(asmBin, srcPath)
-	cmd.Dir = asmDir
+	cmd := exec.Command(asmBin, "-I", incDir, srcPath)
+	cmd.Dir = exDir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("REPL assembly failed: %v\n%s", err, out)
 	}
 
-	outPath := filepath.Join(asmDir, "ehbasic_ie64.ie64")
+	outPath := filepath.Join(exDir, "ehbasic_ie64.ie64")
 	binary, err := os.ReadFile(outPath)
 	if err != nil {
 		t.Fatalf("failed to read REPL binary: %v", err)
@@ -4150,7 +4151,7 @@ func TestREPL_DeleteLine(t *testing.T) {
 }
 
 // =============================================================================
-// Phase 5b Tests — Launch Model
+// Phase 5b Tests - Launch Model
 // =============================================================================
 
 func TestLaunch_EmbeddedBasicImage_IsNil_WithoutBuildTag(t *testing.T) {
@@ -4204,8 +4205,8 @@ func TestLaunch_BasicImage_FileLoad(t *testing.T) {
 	// Verify LoadProgram (file path) loads the same REPL correctly.
 	_ = assembleREPL(t) // ensure the .ie64 exists
 
-	asmDir := filepath.Join(repoRootDir(t), "assembler")
-	binPath := filepath.Join(asmDir, "ehbasic_ie64.ie64")
+	exDir := filepath.Join(repoRootDir(t), "sdk", "examples", "asm")
+	binPath := filepath.Join(exDir, "ehbasic_ie64.ie64")
 
 	h := newEhbasicHarness(t)
 	if err := h.cpu.LoadProgram(binPath); err != nil {
@@ -4219,7 +4220,7 @@ func TestLaunch_BasicImage_FileLoad(t *testing.T) {
 }
 
 // =============================================================================
-// Phase 6 Tests — Missing BASIC Statements and Functions
+// Phase 6 Tests - Missing BASIC Statements and Functions
 // =============================================================================
 
 func TestEhBASIC_Inc(t *testing.T) {
@@ -4424,7 +4425,7 @@ func TestEhBASIC_DoLoopUntil(t *testing.T) {
 }
 
 func TestEhBASIC_Get(t *testing.T) {
-	// GET reads single char — we pre-queue 'X' (ASCII 88)
+	// GET reads single char - we pre-queue 'X' (ASCII 88)
 	// Need to use execStmtTestWithBus to send input first
 	lines := strings.Split(strings.TrimSpace("10 GET A\n20 PRINT A"), "\n")
 	var storeCode strings.Builder
@@ -4922,7 +4923,7 @@ func TestHW_Voodoo_ChromakeyColor(t *testing.T) {
 	}
 }
 
-// --- USR function (stub — returns 0) ---
+// --- USR function (stub - returns 0) ---
 
 func TestEhBASIC_USR(t *testing.T) {
 	asmBin := buildAssembler(t)
@@ -4937,7 +4938,7 @@ func TestEhBASIC_USR(t *testing.T) {
 }
 
 // =============================================================================
-// Phase 4 Remaining — Tests for newly implemented and previously untested commands
+// Phase 4 Remaining - Tests for newly implemented and previously untested commands
 // =============================================================================
 
 // --- POKE8/PEEK8 (byte-level access) ---
@@ -4953,7 +4954,7 @@ func TestHW_Poke8_Peek8(t *testing.T) {
 
 func TestHW_Poke8_ByteOnly(t *testing.T) {
 	asmBin := buildAssembler(t)
-	// POKE8 should only write one byte — verify upper bytes are unaffected
+	// POKE8 should only write one byte - verify upper bytes are unaffected
 	out := execStmtTest(t, asmBin, "10 POKE 327680, 0\n20 POKE8 327680, 255\n30 PRINT PEEK(327680)")
 	out = strings.TrimSpace(strings.TrimRight(out, "\r\n"))
 	if out != "255" {
@@ -5148,7 +5149,7 @@ func TestHW_Voodoo_RgbOff(t *testing.T) {
 }
 
 // =============================================================================
-// Phase 7 — Deferred Items Tests (CALL, USR, TRON/TROFF, STATUS)
+// Phase 7 - Deferred Items Tests (CALL, USR, TRON/TROFF, STATUS)
 // =============================================================================
 
 func TestEhBASIC_Call(t *testing.T) {
@@ -5402,7 +5403,7 @@ func TestEhBASIC_Rotozoomer(t *testing.T) {
 		t.Fatalf("VRAM block (8,0): expected 0xFFFF0000 (red), got 0x%08X", block8)
 	}
 
-	// Verify block (0,0) fill spans 8 rows — row 1 at byte offset 2560
+	// Verify block (0,0) fill spans 8 rows - row 1 at byte offset 2560
 	pixel01row1 := readVRAMPixel(2560)
 	t.Logf("VRAM block (0,0) row 1: 0x%08X", pixel01row1)
 	if pixel01row1 != 0xFF00FF00 {

@@ -5,7 +5,7 @@
 ;
 ; === SDK QUICK REFERENCE ===
 ; Target CPU:    IE64 (custom 64-bit RISC)
-; Video Chip:    IEVideoChip Mode 0 (640x480, 32bpp true color)
+; Video Chip:    IEVideoChip Mode 0 (640x480, 32bpp true colour)
 ; Audio Engine:  SAP/POKEY (Atari 8-bit music format)
 ; Assembler:     ie64asm (built-in IE64 assembler)
 ; Build:         sdk/bin/ie64asm sdk/examples/asm/rotozoomer_ie64.asm
@@ -116,7 +116,7 @@
 ; affine texture mapping -- rotating and scaling a texture in a single pass.
 ; Classic examples include Future Crew's "Second Reality" (1993) and
 ; Sanity's "Interference" (1995). On hardware without Mode7, this required
-; hand-optimized inner loops. Here, the blitter does the heavy lifting,
+; hand-optimised inner loops. Here, the blitter does the heavy lifting,
 ; letting us achieve the effect at 640x480 with minimal CPU cost.
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
@@ -139,7 +139,7 @@ TEXTURE_BASE    equ 0x500000
 ; Mode7 renders into this off-screen buffer, then we BLIT COPY it to VRAM.
 ; Why double buffer? Without it, the Mode7 blitter would write directly
 ; into the VRAM that the display is actively scanning out, causing visible
-; tearing artifacts (top half shows the new frame, bottom half the old).
+; tearing artefacts (top half shows the new frame, bottom half the old).
 ; By rendering to 0x600000 first, we can copy the completed frame to VRAM
 ; atomically (during vblank) for tear-free display.
 BACK_BUFFER     equ 0x600000
@@ -191,7 +191,7 @@ SCALE_INC       equ 104
 ; PROGRAM ENTRY POINT
 ; ============================================================================
 ; The IE64 CPU begins execution at the address specified by `org`.
-; We must initialize the stack pointer before any subroutine calls (JSR),
+; We must initialise the stack pointer before any subroutine calls (JSR),
 ; enable the video hardware, generate the texture, start audio, then
 ; enter the main loop.
 ; ============================================================================
@@ -199,7 +199,7 @@ SCALE_INC       equ 104
 org 0x1000
 
 start:
-    ; --- Initialize Stack Pointer ---
+    ; --- Initialise Stack Pointer ---
     ; IE64 uses a descending stack (grows toward lower addresses), with R31
     ; as the stack pointer. STACK_TOP (0x09F000) is defined in ie64.inc.
     ; This MUST be set before any JSR/RTS, as JSR pushes the return address
@@ -306,7 +306,7 @@ main_loop:
 ; =============================================================================
 ; WAIT FOR VSYNC (TWO-PHASE EDGE DETECTION)
 ; =============================================================================
-; Synchronizes the main loop to the 60 Hz display refresh.
+; Synchronises the main loop to the 60 Hz display refresh.
 ;
 ; Why two-phase? A single "wait for vblank" check has a race condition:
 ; if we happen to check during an ongoing vblank, we'd return immediately
@@ -343,7 +343,7 @@ wait_vsync:
 ;
 ; Why 4x BLIT FILL instead of a software XOR pattern?
 ;   1. Simpler: Each fill is a single blitter command (set dst, w, h,
-;      color, stride, go). No loops, no conditionals, no XOR logic.
+;      colour, stride, go). No loops, no conditionals, no XOR logic.
 ;   2. Faster: The blitter fills memory at hardware speed. A software
 ;      loop writing 256*256 = 65536 pixels would take thousands of cycles.
 ;   3. Clearer: The intent is obvious -- fill four rectangles. A software
@@ -368,8 +368,8 @@ wait_vsync:
 ;   Vertical offset for bottom row: 128 rows * 1024 bytes/row = 131072.
 ;   Bottom-right = 131072 + 512 = 131584.
 ;
-; The white color is 0xFFFFFFFF (fully opaque white in BGRA).
-; The black color is 0xFF000000 (fully opaque black -- note alpha is still
+; The white colour is 0xFFFFFFFF (fully opaque white in BGRA).
+; The black colour is 0xFF000000 (fully opaque black -- note alpha is still
 ; 0xFF; only the RGB channels are zeroed).
 ;
 ; After each BLIT FILL, we poll BLT_STATUS bit 1 (busy flag) to wait for
@@ -409,7 +409,7 @@ generate_texture:
     ; --- Top-Right 128x128: BLACK ---
     ; Offset = 128 pixels * 4 bytes = 512 bytes from TEXTURE_BASE.
     ; Width, height, stride carry over from the previous fill -- only
-    ; DST and COLOR need updating. (BLT_OP also carries over as FILL.)
+    ; DST and COLOUR need updating. (BLT_OP also carries over as FILL.)
     la      r1, BLT_DST
     move.l  r2, #TEXTURE_BASE+512
     store.l r2, (r1)
@@ -426,7 +426,7 @@ generate_texture:
 
     ; --- Bottom-Left 128x128: BLACK ---
     ; Offset = 128 rows * 1024 bytes/row = 131072 bytes from TEXTURE_BASE.
-    ; Color carries over as BLACK from the top-right fill.
+    ; Colour carries over as BLACK from the top-right fill.
     la      r1, BLT_DST
     move.l  r2, #TEXTURE_BASE+131072
     store.l r2, (r1)
@@ -934,7 +934,7 @@ advance_animation:
 ; =============================================================================
 ; These are modified every frame by compute_frame and advance_animation.
 ; They are stored in the code segment (no separate BSS on IE64) and
-; initialized to 0. Using dc.l ensures 32-bit alignment.
+; initialised to 0. Using dc.l ensures 32-bit alignment.
 ;
 ;   angle_accum: 8.8 FP accumulator for rotation angle (bits 15-8 = table index)
 ;   scale_accum: 8.8 FP accumulator for zoom scale  (bits 15-8 = table index)
@@ -1091,5 +1091,5 @@ recip_table:
 ; beyond raw register writes.
 ; =============================================================================
 sap_data:
-    incbin  "../assets/Chromaluma.sap"
+    incbin  "../assets/music/Chromaluma.sap"
 sap_data_end:

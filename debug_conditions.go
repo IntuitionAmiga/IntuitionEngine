@@ -10,9 +10,9 @@ import (
 // ParseCondition parses a condition string into a BreakpointCondition.
 // Formats:
 //
-//	r1==$FF        — register R1, op ==, value 0xFF
-//	[$1000]==$42   — memory at 0x1000, op ==, value 0x42
-//	hitcount>10    — hit count, op >, value 10
+//	r1==$FF        - register R1, op ==, value 0xFF
+//	[$1000]==$42   - memory at 0x1000, op ==, value 0x42
+//	hitcount>10    - hit count, op >, value 10
 func ParseCondition(text string) (*BreakpointCondition, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -105,7 +105,7 @@ func evaluateCondition(cond *BreakpointCondition, cpu DebuggableCPU) bool {
 	case CondSourceRegister:
 		val, ok := cpu.GetRegister(cond.RegName)
 		if !ok {
-			return false // unknown register — don't fire
+			return false // unknown register - don't fire
 		}
 		actual = val
 

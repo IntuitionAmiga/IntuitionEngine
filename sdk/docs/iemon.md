@@ -43,7 +43,7 @@ Operators: `+` and `-` only. Each term is either a register name or a numeric ad
 
 ### Execution Control
 
-#### `s [count]` — Single-Step
+#### `s [count]` - Single-Step
 
 Execute one (or more) instructions on the focused CPU. Displays changed registers in green, followed by the next instruction to be executed.
 
@@ -60,7 +60,7 @@ Step 10 instructions:
 Step: 10 instruction(s), 10 cycle(s)
 ```
 
-#### `g [addr]` — Go/Continue
+#### `g [addr]` - Go/Continue
 
 Resume execution and exit the monitor. Optionally set the PC before resuming.
 
@@ -69,13 +69,13 @@ Resume execution and exit the monitor. Optionally set the PC before resuming.
 > g $2000    (set PC to $2000, then resume)
 ```
 
-#### `x` — Exit Monitor
+#### `x` - Exit Monitor
 
 Resume all CPUs and close the monitor overlay. Equivalent to pressing Esc.
 
 ### Inspection
 
-#### `r` — Show Registers
+#### `r` - Show Registers
 
 Display all registers of the focused CPU. Registers that changed since the last step are shown in green.
 
@@ -87,7 +87,7 @@ R1   $000000000000002A    (green = changed)
 ...
 ```
 
-#### `r <name> <value>` — Set Register
+#### `r <name> <value>` - Set Register
 
 Modify a register value.
 
@@ -98,7 +98,7 @@ PC = $2000
 R1 = $2A
 ```
 
-#### `d [addr] [count]` — Disassemble
+#### `d [addr] [count]` - Disassemble
 
 Disassemble instructions starting from an address (default: current PC, 16 lines). The current PC is marked with `>`, breakpoints with `*`.
 
@@ -113,7 +113,7 @@ Disassemble instructions starting from an address (default: current PC, 16 lines
 
 **Branch annotations:** Branch and jump instructions are annotated with target information. Backward branches (likely loops) are marked with `<- LOOP` in magenta. Lines that are branch targets within the visible window are prefixed with `T`.
 
-#### `m [addr] [count]` — Memory Dump
+#### `m [addr] [count]` - Memory Dump
 
 Display memory in hex + ASCII format (default: from PC, 8 lines of 16 bytes).
 
@@ -127,7 +127,7 @@ Display memory in hex + ASCII format (default: from PC, 8 lines of 16 bytes).
 
 ### Memory Modification
 
-#### `w <addr> <bytes..>` — Write Bytes
+#### `w <addr> <bytes..>` - Write Bytes
 
 Write individual bytes to memory.
 
@@ -136,7 +136,7 @@ Write individual bytes to memory.
 Wrote 4 byte(s) at $1000
 ```
 
-#### `f <start> <end> <byte>` — Fill Memory
+#### `f <start> <end> <byte>` - Fill Memory
 
 Fill a memory range with a single byte value.
 
@@ -147,7 +147,7 @@ Filled $2000-$20FF with $00
 
 ### Memory Export/Import
 
-#### `save <start> <end> <filename>` — Save Memory to File
+#### `save <start> <end> <filename>` - Save Memory to File
 
 Save a range of memory to a raw binary file.
 
@@ -156,7 +156,7 @@ Save a range of memory to a raw binary file.
 Saved $1000 bytes to dump.bin
 ```
 
-#### `load <filename> <addr>` — Load File into Memory
+#### `load <filename> <addr>` - Load File into Memory
 
 Load a raw binary file into memory at the specified address.
 
@@ -169,7 +169,7 @@ File size is capped at 32MB for safety.
 
 ### Memory Tools
 
-#### `h <start> <end> <bytes..>` — Hunt/Search
+#### `h <start> <end> <bytes..>` - Hunt/Search
 
 Search a memory range for a byte pattern.
 
@@ -179,7 +179,7 @@ Found at $1000
 Found at $3456
 ```
 
-#### `c <start> <end> <dest>` — Compare Memory
+#### `c <start> <end> <dest>` - Compare Memory
 
 Compare two memory ranges and report differences.
 
@@ -189,7 +189,7 @@ $1000: DE != 00 (at $2000)
 $1001: AD != 00 (at $2001)
 ```
 
-#### `t <start> <end> <dest>` — Transfer/Copy Memory
+#### `t <start> <end> <dest>` - Transfer/Copy Memory
 
 Copy a memory range to another location.
 
@@ -198,7 +198,7 @@ Copy a memory range to another location.
 Transferred 16 bytes from $1000 to $2000
 ```
 
-#### `u <addr>` — Run Until
+#### `u <addr>` - Run Until
 
 Run the program until the PC reaches the specified address, then stop and re-enter the monitor. Internally sets a temporary breakpoint that is automatically cleared when hit.
 
@@ -208,7 +208,7 @@ Run the program until the PC reaches the specified address, then stop and re-ent
 
 The monitor exits and execution resumes. When the PC reaches `$2000`, the monitor activates automatically and the temporary breakpoint is removed.
 
-#### `bs` — Backstep (Undo Step)
+#### `bs` - Backstep (Undo Step)
 
 Rewind the focused CPU to the state before the last `s` (single-step) command. Restores all CPU registers and memory to their exact pre-step values.
 
@@ -226,7 +226,7 @@ A ring buffer of up to 32 snapshots is maintained (16 for 32-bit CPUs due to mem
 
 ### Breakpoints
 
-#### `b <addr> [condition]` — Set Breakpoint
+#### `b <addr> [condition]` - Set Breakpoint
 
 Set a breakpoint at an address. When the CPU executes an instruction at this address, the monitor activates automatically. An optional condition causes the breakpoint to fire only when the condition is true.
 
@@ -254,7 +254,7 @@ Conditional breakpoint set at $3000 (hitcount > 10)
 
 Operators: `==`, `!=`, `<`, `>`, `<=`, `>=`
 
-#### `bc <addr>` / `bc *` — Clear Breakpoint(s)
+#### `bc <addr>` / `bc *` - Clear Breakpoint(s)
 
 Clear a single breakpoint by address, or clear all breakpoints on the currently focused CPU.
 
@@ -266,7 +266,7 @@ Breakpoint cleared at $1010
 All breakpoints cleared for focused CPU
 ```
 
-#### `bl` — List Breakpoints
+#### `bl` - List Breakpoints
 
 List all breakpoints across all CPUs, including conditions and hit counts.
 
@@ -285,7 +285,7 @@ BREAK at $1010 on IE64 (id:0)
 
 ### Watchpoints
 
-#### `ww <addr>` — Set Write Watchpoint
+#### `ww <addr>` - Set Write Watchpoint
 
 Monitor a memory address for writes. When any instruction modifies the watched byte, the monitor activates and displays the old and new values.
 
@@ -300,7 +300,7 @@ When triggered:
 WATCH at $1000 on IE64 (id:0): $00 -> $FF
 ```
 
-#### `wc <addr>` / `wc *` — Clear Watchpoint(s)
+#### `wc <addr>` / `wc *` - Clear Watchpoint(s)
 
 Clear a single watchpoint by address, or clear all watchpoints on the focused CPU.
 
@@ -312,7 +312,7 @@ Watchpoint cleared at $1000
 All watchpoints cleared for focused CPU
 ```
 
-#### `wl` — List Watchpoints
+#### `wl` - List Watchpoints
 
 List all watchpoints on the focused CPU.
 
@@ -324,7 +324,7 @@ $2000 (write)
 
 ### Multi-CPU Commands
 
-#### `cpu` — List CPUs
+#### `cpu` - List CPUs
 
 List all registered CPUs with their ID, label, status, and program counter. The focused CPU is marked with `*`.
 
@@ -335,7 +335,7 @@ List all registered CPUs with their ID, label, status, and program counter. The 
  id:2   coproc:6502  [FROZEN ]  PC=$0200
 ```
 
-#### `cpu <id|label>` — Switch Focus
+#### `cpu <id|label>` - Switch Focus
 
 Switch the focused CPU by stable ID or label. All register/disassembly/step commands operate on the focused CPU.
 
@@ -354,7 +354,7 @@ Ambiguous label, use ID:
   id:5 coproc:Z80
 ```
 
-#### `freeze <id|label|*>` — Freeze CPU
+#### `freeze <id|label|*>` - Freeze CPU
 
 Freeze a specific CPU or all CPUs.
 
@@ -364,7 +364,7 @@ Freeze a specific CPU or all CPUs.
 > freeze *       (freeze all)
 ```
 
-#### `thaw <id|label|*>` — Thaw CPU
+#### `thaw <id|label|*>` - Thaw CPU
 
 Resume a specific CPU while the monitor stays open. This allows advanced debugging where some CPUs run while others are frozen.
 
@@ -375,7 +375,7 @@ Resume a specific CPU while the monitor stays open. This allows advanced debuggi
 
 ### Stack Trace
 
-#### `bt [depth]` — Backtrace
+#### `bt [depth]` - Backtrace
 
 Walk the stack and display return addresses. Default depth is 16.
 
@@ -397,15 +397,15 @@ Stack walking is CPU-specific:
 | CPU | SP Register | Slot Size | Notes |
 |-----|------------|-----------|-------|
 | IE64 | R31 | 8 bytes | Addresses masked to 25-bit |
-| IE32 | SP | 4 bytes | — |
-| M68K | A7 | 4 bytes | — |
-| Z80 | SP | 2 bytes | — |
+| IE32 | SP | 4 bytes | - |
+| M68K | A7 | 4 bytes | - |
+| Z80 | SP | 2 bytes | - |
 | 6502 | SP (page 1) | 2 bytes | +1 offset (JSR pushes return-1) |
-| X86 | ESP | 4 bytes | — |
+| X86 | ESP | 4 bytes | - |
 
 ### Save/Load Machine State
 
-#### `ss [filename]` — Save State
+#### `ss [filename]` - Save State
 
 Save a complete snapshot of the focused CPU's registers and memory to disk. Default filename: `snapshot.iem`.
 
@@ -417,7 +417,7 @@ State saved to snapshot.iem
 State saved to mystate.iem
 ```
 
-#### `sl [filename]` — Load State
+#### `sl [filename]` - Load State
 
 Restore a previously saved snapshot, overwriting all CPU registers and memory.
 
@@ -433,7 +433,7 @@ State loaded from mystate.iem
 
 ### Trace and Write History
 
-#### `trace <count>` — Trace Instructions
+#### `trace <count>` - Trace Instructions
 
 Execute exactly N instructions on the focused CPU, logging each instruction and register changes. The trace runs synchronously while the monitor is active.
 
@@ -453,7 +453,7 @@ If a breakpoint is hit during tracing, the trace stops early:
 Trace stopped at breakpoint $1010
 ```
 
-#### `trace file <path>` / `trace file off` — File Output
+#### `trace file <path>` / `trace file off` - File Output
 
 Direct trace output to a file instead of the scrollback buffer. Use `trace file off` to resume scrollback output.
 
@@ -467,7 +467,7 @@ Trace output -> trace.log
 Trace output -> scrollback
 ```
 
-#### `trace watch add <addr>` — Track Memory Writes
+#### `trace watch add <addr>` - Track Memory Writes
 
 Add a memory address to the write-tracking list. During subsequent `trace` runs, writes to tracked addresses are recorded.
 
@@ -476,7 +476,7 @@ Add a memory address to the write-tracking list. During subsequent `trace` runs,
 Watch added: $1000
 ```
 
-#### `trace watch del <addr>` — Stop Tracking
+#### `trace watch del <addr>` - Stop Tracking
 
 Remove an address from the write-tracking list.
 
@@ -485,7 +485,7 @@ Remove an address from the write-tracking list.
 Watch removed: $1000
 ```
 
-#### `trace watch list` — List Tracked Addresses
+#### `trace watch list` - List Tracked Addresses
 
 ```
 > trace watch list
@@ -493,7 +493,7 @@ $1000
 $2000
 ```
 
-#### `trace history show <addr>` — Show Write History
+#### `trace history show <addr>` - Show Write History
 
 Display recorded writes to a tracked address, including the PC that performed the write, and old/new values.
 
@@ -506,7 +506,7 @@ $1000: 4 writes recorded
   Step #510  PC=$009ABC  $00 -> $01
 ```
 
-#### `trace history clear [addr|*]` — Clear History
+#### `trace history clear [addr|*]` - Clear History
 
 Clear write history for a specific address or all addresses.
 
@@ -517,7 +517,7 @@ Clear write history for a specific address or all addresses.
 
 ### I/O Register Viewer
 
-#### `io [device]` — View I/O Registers
+#### `io [device]` - View I/O Registers
 
 Display formatted I/O register values for a hardware device. Without arguments, lists available devices. Use `io all` to dump every device's registers at once.
 
@@ -540,7 +540,7 @@ Register widths are per-register (1, 2, or 4 bytes). Values are displayed in the
 
 ### Hex Editor
 
-#### `e <addr>` — Enter Hex Editor
+#### `e <addr>` - Enter Hex Editor
 
 Open an interactive hex editor at the specified address. The display switches to a hex grid showing 16 rows of 16 bytes (256 bytes total).
 
@@ -562,7 +562,7 @@ Changed bytes are highlighted in green. The cursor position is shown with invert
 
 ### Scripting
 
-#### `script <filename>` — Run Command Script
+#### `script <filename>` - Run Command Script
 
 Execute monitor commands from a text file, one command per line. Lines starting with `#` are treated as comments and skipped.
 
@@ -581,7 +581,7 @@ trace watch add $3000
 
 Scripts can nest up to 8 levels deep.
 
-#### `macro <name> <commands>` — Define Macro
+#### `macro <name> <commands>` - Define Macro
 
 Define a named macro as a semicolon-separated list of commands. Invoke the macro by typing its name.
 
@@ -597,7 +597,7 @@ Macros persist for the duration of the session.
 
 ### Audio Control
 
-#### `fa` — Freeze Audio
+#### `fa` - Freeze Audio
 
 Freeze audio playback. By default, audio continues playing while the monitor is open (it's output-only and doesn't affect memory state). Use this command to silence audio during debugging.
 
@@ -606,7 +606,7 @@ Freeze audio playback. By default, audio continues playing while the monitor is 
 Audio frozen
 ```
 
-#### `ta` — Thaw Audio
+#### `ta` - Thaw Audio
 
 Resume audio playback.
 
@@ -617,7 +617,7 @@ Audio thawed
 
 ### Help
 
-#### `?` / `help` — Command Reference
+#### `?` / `help` - Command Reference
 
 Display a quick command reference.
 
@@ -690,7 +690,7 @@ Cursor movement, delete, and backspace keys repeat automatically when held.
 ### Debugging a Coprocessor
 
 1. Press F9 to enter the monitor
-2. `cpu` to list all CPUs — coprocessors appear automatically
+2. `cpu` to list all CPUs - coprocessors appear automatically
 3. `cpu 1` to focus on the coprocessor
 4. `r` to inspect registers, `d` to disassemble
 5. `s` to single-step the coprocessor
@@ -700,43 +700,43 @@ Cursor movement, delete, and backspace keys repeat automatically when held.
 ### Stepping One CPU While Others Run
 
 1. Press F9 (all CPUs frozen)
-2. `thaw 1` — let the coprocessor run freely
-3. `s` — step the primary CPU while coprocessor executes
-4. `freeze *` — re-freeze everything to inspect shared state
-5. `m $3000 4` — examine shared memory
+2. `thaw 1` - let the coprocessor run freely
+3. `s` - step the primary CPU while coprocessor executes
+4. `freeze *` - re-freeze everything to inspect shared state
+5. `m $3000 4` - examine shared memory
 
 ### Setting a Breakpoint and Continuing
 
-1. `b $2000` — set breakpoint at address $2000
-2. `x` — exit monitor and resume
+1. `b $2000` - set breakpoint at address $2000
+2. `x` - exit monitor and resume
 3. When execution reaches $2000, the monitor activates automatically
-4. `r` — inspect the state at the breakpoint
-5. `bc $2000` — clear the breakpoint
-6. `x` — resume
+4. `r` - inspect the state at the breakpoint
+5. `bc $2000` - clear the breakpoint
+6. `x` - resume
 
 ### Using Conditional Breakpoints
 
-1. `b $1000 r1==$FF` — break only when R1 is 0xFF
-2. `x` — resume execution
+1. `b $1000 r1==$FF` - break only when R1 is 0xFF
+2. `x` - resume execution
 3. The breakpoint is checked each time PC reaches $1000, but only fires when R1 equals 0xFF
 
 ### Tracing a Memory Write
 
-1. `trace watch add $3000` — track writes to $3000
-2. `trace #1000` — trace 1000 instructions
-3. `trace history show $3000` — see which instructions wrote to $3000 and what values they wrote
+1. `trace watch add $3000` - track writes to $3000
+2. `trace #1000` - trace 1000 instructions
+3. `trace history show $3000` - see which instructions wrote to $3000 and what values they wrote
 
 ### Saving and Restoring State
 
-1. `ss checkpoint.iem` — save current state
+1. `ss checkpoint.iem` - save current state
 2. (debug, modify registers, step through code)
-3. `sl checkpoint.iem` — restore to the saved state
+3. `sl checkpoint.iem` - restore to the saved state
 
 ### Using Macros for Repetitive Tasks
 
-1. `macro dump r ; d ; m sp 4 ; bt` — define a macro that shows registers, disassembly, stack memory, and backtrace
-2. `s` — step an instruction
-3. `dump` — run the macro to inspect everything at once
+1. `macro dump r ; d ; m sp 4 ; bt` - define a macro that shows registers, disassembly, stack memory, and backtrace
+2. `s` - step an instruction
+3. `dump` - run the macro to inspect everything at once
 
 ## Display
 

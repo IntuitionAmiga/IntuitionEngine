@@ -1723,39 +1723,39 @@ COPROC_CPU_X86        equ 6
 ; Start a coprocessor worker
 ; cpuType: CPU type constant (COPROC_CPU_*)
 ; namePtr: pointer to null-terminated filename string
-coproc_start  macro cpuType,namePtr
-              move.l  #\cpuType,COPROC_CPU_TYPE
-              move.l  #\namePtr,COPROC_NAME_PTR
+coproc_start  macro   ; \1=cpuType, \2=namePtr
+              move.l  #\1,COPROC_CPU_TYPE
+              move.l  #\2,COPROC_NAME_PTR
               move.l  #COPROC_CMD_START,COPROC_CMD
               endm
 
 ; Stop a coprocessor worker
-coproc_stop   macro cpuType
-              move.l  #\cpuType,COPROC_CPU_TYPE
+coproc_stop   macro   ; \1=cpuType
+              move.l  #\1,COPROC_CPU_TYPE
               move.l  #COPROC_CMD_STOP,COPROC_CMD
               endm
 
-; Enqueue a request — ticket returned in COPROC_TICKET
-coproc_enqueue macro cpuType,op,reqPtr,reqLen,respPtr,respCap
-              move.l  #\cpuType,COPROC_CPU_TYPE
-              move.l  #\op,COPROC_OP
-              move.l  #\reqPtr,COPROC_REQ_PTR
-              move.l  #\reqLen,COPROC_REQ_LEN
-              move.l  #\respPtr,COPROC_RESP_PTR
-              move.l  #\respCap,COPROC_RESP_CAP
+; Enqueue a request - ticket returned in COPROC_TICKET
+coproc_enqueue macro  ; \1=cpuType, \2=op, \3=reqPtr, \4=reqLen, \5=respPtr, \6=respCap
+              move.l  #\1,COPROC_CPU_TYPE
+              move.l  #\2,COPROC_OP
+              move.l  #\3,COPROC_REQ_PTR
+              move.l  #\4,COPROC_REQ_LEN
+              move.l  #\5,COPROC_RESP_PTR
+              move.l  #\6,COPROC_RESP_CAP
               move.l  #COPROC_CMD_ENQUEUE,COPROC_CMD
               endm
 
-; Poll ticket status — result in COPROC_TICKET_STATUS
-coproc_poll   macro ticket
-              move.l  #\ticket,COPROC_TICKET
+; Poll ticket status - result in COPROC_TICKET_STATUS
+coproc_poll   macro   ; \1=ticket
+              move.l  #\1,COPROC_TICKET
               move.l  #COPROC_CMD_POLL,COPROC_CMD
               endm
 
 ; Wait for ticket completion with timeout
-coproc_wait   macro ticket,timeoutMs
-              move.l  #\ticket,COPROC_TICKET
-              move.l  #\timeoutMs,COPROC_TIMEOUT
+coproc_wait   macro   ; \1=ticket, \2=timeoutMs
+              move.l  #\1,COPROC_TICKET
+              move.l  #\2,COPROC_TIMEOUT
               move.l  #COPROC_CMD_WAIT_CMD,COPROC_CMD
               endm
 

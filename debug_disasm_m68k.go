@@ -184,7 +184,7 @@ func disassembleM68K(readMem func(addr uint64, size int) []byte, startAddr uint6
 			}
 		} else if w&0xFFC0 == 0x4E80 || w&0xFFC0 == 0x4EC0 { // JSR / JMP
 			line.IsBranch = true
-			// Target is in EA — for absolute modes we can extract it
+			// Target is in EA - for absolute modes we can extract it
 			mode := (w >> 3) & 7
 			if mode == 7 { // Absolute address modes
 				subReg := w & 7

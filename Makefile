@@ -99,7 +99,7 @@ novulkan: setup
 	@mv IntuitionEngine $(BIN_DIR)/
 	@echo "Intuition Engine VM (novulkan) build complete"
 
-# Build headless (no display, no audio, no Vulkan — for CI/testing)
+# Build headless (no display, no audio, no Vulkan - for CI/testing)
 headless: setup
 	@echo "Building Intuition Engine VM (headless)..."
 	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags headless .
@@ -153,7 +153,7 @@ ie32to64: setup
 .PHONY: basic
 basic: ie64asm
 	@echo "Assembling EhBASIC IE64 interpreter..."
-	@$(SDK_BIN_DIR)/ie64asm assembler/ehbasic_ie64.asm
+	@$(SDK_BIN_DIR)/ie64asm -I sdk/include sdk/examples/asm/ehbasic_ie64.asm
 	@echo "Building Intuition Engine with embedded BASIC..."
 	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags embed_basic .
 	@echo "Stripping debug symbols..."
@@ -161,7 +161,7 @@ basic: ie64asm
 	@echo "Applying UPX compression..."
 	@$(NICE) -$(NICE_LEVEL) $(UPX) --lzma IntuitionEngine
 	@mv IntuitionEngine $(BIN_DIR)/
-	@echo "EhBASIC build complete — run with: $(BIN_DIR)/IntuitionEngine -basic"
+	@echo "EhBASIC build complete - run with: $(BIN_DIR)/IntuitionEngine -basic"
 
 # Build the IE64 disassembler
 ie64dis: setup
@@ -191,8 +191,8 @@ ie65asm:
 	@echo "Assembling IE65 program: $(SRC)..."
 	@BASENAME=$$(basename $(SRC) .asm); \
 	SRCDIR=$$(dirname $(SRC)); \
-	ca65 -I assembler -o $${SRCDIR}/$${BASENAME}.o $(SRC) && \
-	ld65 -C assembler/ie65.cfg -o $${SRCDIR}/$${BASENAME}.ie65 $${SRCDIR}/$${BASENAME}.o && \
+	ca65 -I sdk/include -o $${SRCDIR}/$${BASENAME}.o $(SRC) && \
+	ld65 -C sdk/include/ie65.cfg -o $${SRCDIR}/$${BASENAME}.ie65 $${SRCDIR}/$${BASENAME}.o && \
 	rm -f $${SRCDIR}/$${BASENAME}.o && \
 	echo "Output: $${SRCDIR}/$${BASENAME}.ie65"
 
@@ -206,11 +206,11 @@ robocop-65:
 		echo "  macOS: brew install cc65"; \
 		exit 1; \
 	fi
-	@cd assembler && ca65 -o robocop_intro_65.o robocop_intro_65.asm
-	@cd assembler && ld65 -C ie65.cfg -o robocop_intro_65.ie65 robocop_intro_65.o
-	@rm -f assembler/robocop_intro_65.o
-	@echo "Output: assembler/robocop_intro_65.ie65"
-	@ls -lh assembler/robocop_intro_65.ie65
+	@cd sdk/examples/asm && ca65 -I ../../include -o robocop_intro_65.o robocop_intro_65.asm
+	@cd sdk/examples/asm && ld65 -C ../../include/ie65_bindata.cfg -o robocop_intro_65.ie65 robocop_intro_65.o
+	@rm -f sdk/examples/asm/robocop_intro_65.o
+	@echo "Output: sdk/examples/asm/robocop_intro_65.ie65"
+	@ls -lh sdk/examples/asm/robocop_intro_65.ie65
 
 # Build the rotozoomer IE65 (6502) demo (requires ca65/ld65 from cc65 suite)
 .PHONY: rotozoomer-65
@@ -222,18 +222,18 @@ rotozoomer-65:
 		echo "  macOS: brew install cc65"; \
 		exit 1; \
 	fi
-	@cd assembler && ca65 -o rotozoomer_65.o rotozoomer_65.asm
-	@cd assembler && ld65 -C ie65.cfg -o rotozoomer_65.ie65 rotozoomer_65.o
-	@rm -f assembler/rotozoomer_65.o
-	@echo "Output: assembler/rotozoomer_65.ie65"
-	@ls -lh assembler/rotozoomer_65.ie65
+	@cd sdk/examples/asm && ca65 -I ../../include -o rotozoomer_65.o rotozoomer_65.asm
+	@cd sdk/examples/asm && ld65 -C ../../include/ie65.cfg -o rotozoomer_65.ie65 rotozoomer_65.o
+	@rm -f sdk/examples/asm/rotozoomer_65.o
+	@echo "Output: sdk/examples/asm/rotozoomer_65.ie65"
+	@ls -lh sdk/examples/asm/rotozoomer_65.ie65
 
 # Build the Robocop IE32 demo (requires ImageMagick for asset conversion)
 .PHONY: robocop-32
 robocop-32:
 	@echo "Building Robocop IE32 demo..."
-	@if [ ! -f "robocop.png" ]; then \
-		echo "Error: robocop.png not found"; \
+	@if [ ! -f "sdk/examples/assets/robocop.png" ]; then \
+		echo "Error: sdk/examples/assets/robocop.png not found"; \
 		exit 1; \
 	fi
 	@if ! command -v convert >/dev/null 2>&1; then \
@@ -242,8 +242,8 @@ robocop-32:
 		echo "  macOS: brew install imagemagick"; \
 		exit 1; \
 	fi
-	@./robocop.sh
-	@ls -lh assembler/robocop_intro.iex
+	@./sdk/scripts/robocop.sh
+	@ls -lh sdk/examples/asm/robocop_intro.iex
 
 # Build the Robocop M68K demo (requires vasmm68k_mot from VASM)
 .PHONY: robocop-68k
@@ -256,10 +256,11 @@ robocop-68k:
 		exit 1; \
 	fi
 	@vasmm68k_mot -Fbin -m68020 -devpac \
-		-o assembler/robocop_intro_68k.ie68 \
-		assembler/robocop_intro_68k.asm
-	@echo "Output: assembler/robocop_intro_68k.ie68"
-	@ls -lh assembler/robocop_intro_68k.ie68
+		-I sdk/include \
+		-o sdk/examples/asm/robocop_intro_68k.ie68 \
+		sdk/examples/asm/robocop_intro_68k.asm
+	@echo "Output: sdk/examples/asm/robocop_intro_68k.ie68"
+	@ls -lh sdk/examples/asm/robocop_intro_68k.ie68
 
 # Build the Robocop Z80 demo (requires vasmz80 from VASM)
 .PHONY: robocop-z80
@@ -272,11 +273,11 @@ robocop-z80:
 		exit 1; \
 	fi
 	@vasmz80_std -Fbin \
-		-I assembler \
-		-o assembler/robocop_intro_z80.ie80 \
-		assembler/robocop_intro_z80.asm
-	@echo "Output: assembler/robocop_intro_z80.ie80"
-	@ls -lh assembler/robocop_intro_z80.ie80
+		-I sdk/include \
+		-o sdk/examples/asm/robocop_intro_z80.ie80 \
+		sdk/examples/asm/robocop_intro_z80.asm
+	@echo "Output: sdk/examples/asm/robocop_intro_z80.ie80"
+	@ls -lh sdk/examples/asm/robocop_intro_z80.ie80
 
 # Assemble an IE80 (Z80) program using vasmz80
 # Usage: make ie80asm SRC=assembler/program.asm
@@ -295,86 +296,70 @@ ie80asm:
 	fi
 	@BASENAME=$$(basename $(SRC) .asm); \
 	SRCDIR=$$(dirname $(SRC)); \
-	vasmz80_std -Fbin -I assembler -o $${SRCDIR}/$${BASENAME}.ie80 $(SRC) && \
+	vasmz80_std -Fbin -I sdk/include -o $${SRCDIR}/$${BASENAME}.ie80 $(SRC) && \
 	echo "Output: $${SRCDIR}/$${BASENAME}.ie80"
 
 # ─── SDK & Release targets ───────────────────────────────────────────────────
 
-# Build SDK: sync includes from canonical source and pre-assemble demos
+# Build SDK: auto-discover and pre-assemble all SDK example .asm files
 sdk: clean-sdk ie32asm ie64asm ie32to64 ie64dis
 	@echo "=== Building SDK ==="
-	@# Sync include files from canonical source
-	@echo "Syncing include files..."
-	@cp assembler/ie32.inc assembler/ie64.inc assembler/ie65.inc assembler/ie65.cfg \
-	    assembler/ie68.inc assembler/ie80.inc assembler/ie86.inc sdk/include/
 	@$(MKDIR) -p sdk/examples/prebuilt
-	@SDK_BUILT=0; SDK_SKIPPED=0; \
-	echo "Assembling IE32 examples..."; \
-	for f in rotozoomer vga_text_hello vga_mode13h_fire copper_vga_bands \
-	         coproc_caller_ie32; do \
-		echo "  [IE32] $${f}.asm"; \
-		(cd sdk/examples/asm && ../../../$(SDK_BIN_DIR)/ie32asm -I ../../include $${f}.asm) && \
-		SDK_BUILT=$$((SDK_BUILT+1)); \
-	done; \
-	echo "Assembling IE64 examples..."; \
-	for f in rotozoomer_ie64; do \
-		echo "  [IE64] $${f}.asm"; \
-		(cd sdk/examples/asm && ../../../$(SDK_BIN_DIR)/ie64asm -I ../../include $${f}.asm) && \
-		SDK_BUILT=$$((SDK_BUILT+1)); \
+	@SDK_BUILT=0; SDK_SKIPPED=0; SDK_FAILED=0; \
+	for f in sdk/examples/asm/*.asm; do \
+		base=$$(basename "$$f" .asm); \
+		if grep -ql 'ie64\.inc\|ie64_fp\.inc' "$$f" 2>/dev/null; then \
+			echo "  [IE64] $${base}.asm"; \
+			if (cd sdk/examples/asm && ../../../$(SDK_BIN_DIR)/ie64asm -I ../../include $${base}.asm); then \
+				SDK_BUILT=$$((SDK_BUILT+1)); \
+			else SDK_FAILED=$$((SDK_FAILED+1)); fi; \
+		elif grep -ql 'ie68\.inc' "$$f" 2>/dev/null; then \
+			if command -v vasmm68k_mot >/dev/null 2>&1; then \
+				echo "  [M68K] $${base}.asm"; \
+				if (cd sdk/examples/asm && vasmm68k_mot -Fbin -m68020 -devpac -I ../../include -o $${base}.ie68 $${base}.asm); then \
+					SDK_BUILT=$$((SDK_BUILT+1)); \
+				else SDK_FAILED=$$((SDK_FAILED+1)); fi; \
+			else SDK_SKIPPED=$$((SDK_SKIPPED+1)); fi; \
+		elif grep -ql 'ie80\.inc' "$$f" 2>/dev/null; then \
+			if command -v vasmz80_std >/dev/null 2>&1; then \
+				echo "  [Z80] $${base}.asm"; \
+				if (cd sdk/examples/asm && vasmz80_std -Fbin -I ../../include -o $${base}.ie80 $${base}.asm); then \
+					SDK_BUILT=$$((SDK_BUILT+1)); \
+				else SDK_FAILED=$$((SDK_FAILED+1)); fi; \
+			else SDK_SKIPPED=$$((SDK_SKIPPED+1)); fi; \
+		elif grep -ql 'ie65\.inc' "$$f" 2>/dev/null; then \
+			if command -v ca65 >/dev/null 2>&1; then \
+				echo "  [6502] $${base}.asm"; \
+				CFG=ie65.cfg; \
+				if grep -q 'ie65_service' "$$f" 2>/dev/null; then CFG=ie65_service.cfg; \
+				elif grep -q 'BINDATA' "$$f" 2>/dev/null; then CFG=ie65_bindata.cfg; fi; \
+				if (cd sdk/examples/asm && ca65 --cpu 6502 -I ../../include -o $${base}.o $${base}.asm && \
+				    ld65 -C ../../include/$${CFG} -o $${base}.ie65 $${base}.o && rm -f $${base}.o); then \
+					SDK_BUILT=$$((SDK_BUILT+1)); \
+				else rm -f sdk/examples/asm/$${base}.o; SDK_FAILED=$$((SDK_FAILED+1)); fi; \
+			else SDK_SKIPPED=$$((SDK_SKIPPED+1)); fi; \
+		elif grep -ql 'ie86\.inc\|%include' "$$f" 2>/dev/null; then \
+			if command -v nasm >/dev/null 2>&1; then \
+				echo "  [x86] $${base}.asm"; \
+				if (cd sdk/examples/asm && nasm -f bin -I ../../include/ -o $${base}.ie86 $${base}.asm); then \
+					SDK_BUILT=$$((SDK_BUILT+1)); \
+				else SDK_FAILED=$$((SDK_FAILED+1)); fi; \
+			else SDK_SKIPPED=$$((SDK_SKIPPED+1)); fi; \
+		else \
+			echo "  [IE32] $${base}.asm"; \
+			if (cd sdk/examples/asm && ../../../$(SDK_BIN_DIR)/ie32asm -I ../../include $${base}.asm); then \
+				SDK_BUILT=$$((SDK_BUILT+1)); \
+			else SDK_FAILED=$$((SDK_FAILED+1)); fi; \
+		fi; \
 	done; \
 	mv sdk/examples/asm/*.iex sdk/examples/prebuilt/ 2>/dev/null || true; \
 	mv sdk/examples/asm/*.ie64 sdk/examples/prebuilt/ 2>/dev/null || true; \
-	if command -v vasmm68k_mot >/dev/null 2>&1; then \
-		echo "Assembling M68K examples..."; \
-		for f in rotozoomer_68k ted_121_colors_68k voodoo_cube_68k; do \
-			echo "  [M68K] $${f}.asm"; \
-			(cd sdk/examples/asm && vasmm68k_mot -Fbin -m68020 -devpac -I ../../include -o $${f}.ie68 $${f}.asm) && \
-			SDK_BUILT=$$((SDK_BUILT+1)); \
-		done; \
-		mv sdk/examples/asm/*.ie68 sdk/examples/prebuilt/ 2>/dev/null || true; \
-	else \
-		echo "Skipping M68K examples (vasmm68k_mot not found)"; \
-		SDK_SKIPPED=$$((SDK_SKIPPED+3)); \
-	fi; \
-	if command -v vasmz80_std >/dev/null 2>&1; then \
-		echo "Assembling Z80 examples..."; \
-		for f in rotozoomer_z80; do \
-			echo "  [Z80] $${f}.asm"; \
-			(cd sdk/examples/asm && vasmz80_std -Fbin -I ../../include -o $${f}.ie80 $${f}.asm) && \
-			SDK_BUILT=$$((SDK_BUILT+1)); \
-		done; \
-		mv sdk/examples/asm/*.ie80 sdk/examples/prebuilt/ 2>/dev/null || true; \
-	else \
-		echo "Skipping Z80 examples (vasmz80_std not found)"; \
-		SDK_SKIPPED=$$((SDK_SKIPPED+1)); \
-	fi; \
-	if command -v ca65 >/dev/null 2>&1; then \
-		echo "Assembling 6502 examples..."; \
-		for f in rotozoomer_65 ula_rotating_cube_65; do \
-			echo "  [6502] $${f}.asm"; \
-			(cd sdk/examples/asm && ca65 --cpu 6502 -I ../../include -o $${f}.o $${f}.asm && \
-			 ld65 -C ../../include/ie65.cfg -o $${f}.ie65 $${f}.o && rm -f $${f}.o) && \
-			SDK_BUILT=$$((SDK_BUILT+1)); \
-		done; \
-		mv sdk/examples/asm/*.ie65 sdk/examples/prebuilt/ 2>/dev/null || true; \
-	else \
-		echo "Skipping 6502 examples (ca65 not found)"; \
-		SDK_SKIPPED=$$((SDK_SKIPPED+2)); \
-	fi; \
-	if command -v nasm >/dev/null 2>&1; then \
-		echo "Assembling x86 examples..."; \
-		for f in rotozoomer_x86 antic_plasma_x86; do \
-			echo "  [x86] $${f}.asm"; \
-			(cd sdk/examples/asm && nasm -f bin -I ../../include/ -o $${f}.ie86 $${f}.asm) && \
-			SDK_BUILT=$$((SDK_BUILT+1)); \
-		done; \
-		mv sdk/examples/asm/*.ie86 sdk/examples/prebuilt/ 2>/dev/null || true; \
-	else \
-		echo "Skipping x86 examples (nasm not found)"; \
-		SDK_SKIPPED=$$((SDK_SKIPPED+2)); \
-	fi; \
+	mv sdk/examples/asm/*.ie68 sdk/examples/prebuilt/ 2>/dev/null || true; \
+	mv sdk/examples/asm/*.ie80 sdk/examples/prebuilt/ 2>/dev/null || true; \
+	mv sdk/examples/asm/*.ie65 sdk/examples/prebuilt/ 2>/dev/null || true; \
+	mv sdk/examples/asm/*.ie86 sdk/examples/prebuilt/ 2>/dev/null || true; \
 	echo ""; \
-	echo "SDK build complete: $${SDK_BUILT} assembled, $${SDK_SKIPPED} skipped"; \
+	echo "SDK build complete: $${SDK_BUILT} assembled, $${SDK_SKIPPED} skipped, $${SDK_FAILED} failed"; \
 	ls sdk/examples/prebuilt/ 2>/dev/null || true
 
 # Build release archive for Linux (native architecture only)
@@ -383,7 +368,7 @@ release-linux: setup sdk
 	@echo "=== Building Linux release ($(NATIVE_GOARCH)) ==="
 	@$(MKDIR) -p $(RELEASE_DIR)
 	@echo "Assembling EhBASIC IE64 ROM..."
-	@$(SDK_BIN_DIR)/ie64asm assembler/ehbasic_ie64.asm
+	@$(SDK_BIN_DIR)/ie64asm -I sdk/include sdk/examples/asm/ehbasic_ie64.asm
 	@RELEASE_NAME=$(APP_NAME)-$(APP_VERSION)-linux-$(NATIVE_GOARCH); \
 	echo ""; \
 	echo "--- $$RELEASE_NAME ---"; \
@@ -415,7 +400,7 @@ release-windows: setup sdk
 	@echo "=== Building Windows releases (amd64 + arm64) ==="
 	@$(MKDIR) -p $(RELEASE_DIR)
 	@echo "Assembling EhBASIC IE64 ROM..."
-	@$(SDK_BIN_DIR)/ie64asm assembler/ehbasic_ie64.asm
+	@$(SDK_BIN_DIR)/ie64asm -I sdk/include sdk/examples/asm/ehbasic_ie64.asm
 	@for goarch in amd64 arm64; do \
 		RELEASE_NAME=$(APP_NAME)-$(APP_VERSION)-windows-$$goarch; \
 		echo ""; \

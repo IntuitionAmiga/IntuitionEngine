@@ -1,97 +1,73 @@
 ; ============================================================================
-; ROTATING 3D CUBE DEMO WITH AHX MUSIC
-; 6502 Assembly for IntuitionEngine - ZX Spectrum ULA Display Mode
+; ULA ROTATING CUBE WITH AHX MUSIC - Pre-Calculated 3D Animation
+; 6502 Assembly for IntuitionEngine - ULA Display (256x192, attribute-based)
 ; ============================================================================
 ;
 ; === SDK QUICK REFERENCE ===
 ; Target CPU:    MOS 6502
-; Video Chip:    ULA (ZX Spectrum - 256x192 bitmap + attributes)
+; Video Chip:    ULA (ZX Spectrum-compatible, 256x192 with 8x8 attribute cells)
 ; Audio Engine:  AHX (Amiga tracker synthesis)
 ; Assembler:     ca65/ld65 (cc65 toolchain)
-; Build:         make ie65asm SRC=assembler/ula_rotating_cube_65.asm
-; Run:           ./bin/IntuitionEngine -m6502 ula_rotating_cube_65.ie65
-; Porting:       ULA/AHX MMIO is CPU-agnostic. Port effort: rewrite fixed-point
-;                math and ULA address calculation. Z80 port is straightforward
-;                (similar register model). M68K port simplifies significantly
-;                (hardware multiply, 32-bit registers).
-;
-; REFERENCE IMPLEMENTATION FOR DEMOSCENE TECHNIQUES
-; This file is heavily commented to teach demo programming concepts.
+; Build:         make ie65asm SRC=sdk/examples/asm/ula_rotating_cube_65.asm
+; Run:           ./bin/IntuitionEngine -6502 ula_rotating_cube_65.ie65
+; Porting:       ULA/AHX MMIO is CPU-agnostic. Port effort: rewrite the
+;                ULA address calculation and line-drawing loop. Z80 port is
+;                straightforward (similar register model). M68K simplifies
+;                significantly (hardware multiply, 32-bit registers).
 ;
 ; === WHAT THIS DEMO DOES ===
 ; 1. Displays a wireframe 3D cube rotating smoothly on two axes
 ; 2. Uses the ZX Spectrum-style ULA display with its unique memory layout
 ; 3. Plays Amiga AHX tracker music through the audio subsystem
 ;
-; === WHY THESE EFFECTS MATTER (HISTORICAL CONTEXT) ===
+; The cube animation uses 32 pre-calculated frames rather than real-time
+; trigonometry. This is a classic demoscene technique: trade memory for
+; CPU time. 32 frames x 8 vertices x 2 coordinates = 512 bytes for
+; butter-smooth rotation, freeing the 6502 to focus on the complex ULA
+; address calculations.
 ;
-; THE ZX SPECTRUM ULA:
-; The ZX Spectrum (1982) used a custom ULA (Uncommitted Logic Array) chip
-; to generate video output. Its display had a notorious memory layout where
-; scanlines were NOT stored sequentially - a design decision made to simplify
-; the ULA's address generation logic at the cost of programmer headaches.
+; === WHY ULA DISPLAY ARCHITECTURE ===
+; The ZX Spectrum's ULA (Uncommitted Logic Array) was the custom chip that
+; generated video output. Its most distinctive feature was a non-linear VRAM
+; layout: consecutive screen rows are NOT at consecutive memory addresses.
+; This was a cost-saving measure by Sinclair Research -- it simplified the
+; ULA's line-counting logic at the expense of making software more complex.
 ;
-; The Intuition Engine faithfully emulates this quirky addressing scheme,
-; allowing authentic Spectrum-style effects and teaching why this hardware
-; was both beloved and frustrating to program.
+; The attribute system divides the 256x192 pixel screen into 8x8 cells
+; (32 columns x 24 rows = 768 cells). Each cell has a single attribute byte
+; controlling: INK colour (foreground, 3 bits), PAPER colour (background,
+; 3 bits), BRIGHT (1 bit), and FLASH (1 bit). This means each 8x8 cell can
+; only display 2 colours, leading to the infamous "attribute clash" that
+; defined the Spectrum's visual style.
 ;
-; THE 6502 CPU:
-; The 6502 was the heart of the Apple II, Commodore 64, BBC Micro, and
-; (via the Z80A variant) influenced the Spectrum. With only three 8-bit
-; registers (A, X, Y), a 256-byte "zero page" for fast access, and no
-; multiply or divide instructions, it forced programmers to be creative.
+; The IntuitionEngine's ULA emulates this system faithfully, including the
+; non-linear addressing.
 ;
-; AHX TRACKER MUSIC:
-; AHX (Abyss' Highest eXperience) is a tracker format from the Amiga
-; demoscene, known for creating complex sounds from simple waveforms
-; using software synthesis. Unlike sampled music (MOD/XM), AHX generates
-; sounds algorithmically, achieving impressive results in tiny file sizes.
+; === 6502-SPECIFIC NOTES ===
+; The 6502 has only three 8-bit registers (A, X, Y), no multiply or divide
+; instructions, and a 256-byte zero page for fast access. The zero page
+; is critical: instructions that access it are one byte shorter and one
+; cycle faster than absolute addressing. For a routine like plot_pixel
+; called hundreds of times per frame, this adds up significantly:
+;   LDA $1234    ; Absolute: 3 bytes, 4 cycles
+;   LDA $12      ; Zero page: 2 bytes, 3 cycles
 ;
-; === ARCHITECTURE OVERVIEW ===
+; The 16-bit pointer zp_ptr0 (provided by ie65.inc) is used for reaching
+; ULA VRAM at $4000 via indirect indexed addressing: (zp_ptr0),Y.
 ;
-;   +-------------------------------------------------------------+
-;   |                    MAIN LOOP (~30 FPS)                      |
-;   |                                                             |
-;   |  +-----------+    +-----------+    +-----------+            |
-;   |  | WAIT FOR  |--->|   CLEAR   |--->|    SET    |            |
-;   |  |  VBLANK   |    |  SCREEN   |    | ATTRIBUTES|            |
-;   |  +-----------+    +-----------+    +-----------+            |
-;   |                                          |                  |
-;   |  +-----------+    +-----------+          |                  |
-;   |  |   NEXT    |<---|   DRAW    |<---------+                  |
-;   |  |   FRAME   |    |   CUBE    |                             |
-;   |  +-----------+    +-----------+                             |
-;   +-------------------------------------------------------------+
+; === MEMORY MAP ===
+;   $0000-$00FF  Zero page (line vars, frame pointers, animation state)
+;   $4000-$57FF  ULA bitmap VRAM (6144 bytes, non-linear layout)
+;   $5800-$5AFF  ULA attribute VRAM (768 bytes, 32x24 cells)
+;   $D800        ULA registers (border, control, status)
+;   RODATA       Pre-calculated vertex tables, edge list, bit masks
+;   BINDATA      Embedded AHX tracker module (~15KB)
 ;
-;   +-------------------------------------------------------------+
-;   |              AHX AUDIO ENGINE (runs in parallel)            |
-;   |                                                             |
-;   |  The AHX synthesizer generates Amiga-style music from the   |
-;   |  embedded tracker data. It runs independently of the CPU,   |
-;   |  freeing the 6502 to focus entirely on graphics.            |
-;   +-------------------------------------------------------------+
+; === BUILD AND RUN ===
+;   make ie65asm SRC=sdk/examples/asm/ula_rotating_cube_65.asm
+;   ./bin/IntuitionEngine -6502 ula_rotating_cube_65.ie65
 ;
-; === THE INTUITION ENGINE'S MULTI-CPU ARCHITECTURE ===
-;
-; This demo runs on the 6502 CPU core, but the Intuition Engine can
-; also run M68020, Z80, and IE32 code. The AHX audio engine is separate
-; from all CPUs - once started, it synthesizes music autonomously.
-;
-;   +----------+  +----------+  +----------+  +----------+
-;   |  M68020  |  |   6502   |  |   Z80    |  |   IE32   |
-;   | (unused) |  | (active) |  | (unused) |  | (unused) |
-;   +----------+  +----------+  +----------+  +----------+
-;        |             |             |             |
-;        +------+------+------+------+------+------+
-;               |                    |
-;          +---------+         +-----------+
-;          |   ULA   |         |    AHX    |
-;          | Display |         |   Synth   |
-;          +---------+         +-----------+
-;
-; The IE32 is a custom 32-bit RISC CPU designed specifically for the
-; Intuition Engine, offering modern performance with retro aesthetics.
-;
+; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================
 
 .include "ie65.inc"
@@ -100,62 +76,42 @@
 ; CONSTANTS
 ; ============================================================================
 
-; --- Music Configuration ---
-; AHX files are compact tracker modules. This one is under 15KB but contains
-; a full multi-channel composition with instrument definitions.
+; --- Music ---
 MUSIC_SIZE = 14687
 
-; --- Display Geometry ---
-; The ULA display is 256x192 pixels, but organized in a complex way.
-; We'll explain the memory layout in detail in the plot_pixel routine.
+; --- Display geometry ---
 SCR_W       = 256           ; Screen width in pixels
 SCR_H       = 192           ; Screen height in pixels
-CENTER_X    = 128           ; Screen center X (256/2)
-CENTER_Y    = 96            ; Screen center Y (192/2)
+CENTER_X    = 128           ; Screen centre X (256/2)
+CENTER_Y    = 96            ; Screen centre Y (192/2)
 
-; --- 3D Cube Geometry ---
-; A cube has 8 vertices and 12 edges. We pre-calculate all vertex positions
-; for 32 frames of animation (explained in the data section).
+; --- 3D cube topology ---
 NUM_VERTICES = 8
 NUM_EDGES    = 12
-NUM_FRAMES   = 32           ; Animation frames for smooth rotation
+NUM_FRAMES   = 32           ; Pre-calculated animation frames
 
 ; ============================================================================
 ; ZERO PAGE VARIABLES
 ; ============================================================================
-; The 6502's zero page ($00-$FF) is special: instructions that access it
-; are one byte shorter and one cycle faster than normal memory access.
-; We use it for frequently-accessed variables, especially pointers.
-;
-; WHY ZERO PAGE MATTERS:
-;   LDA $1234    ; Absolute addressing: 3 bytes, 4 cycles
-;   LDA $12      ; Zero page addressing: 2 bytes, 3 cycles
-;
-; For a routine called thousands of times per frame (like plot_pixel),
-; this difference adds up significantly.
-; ============================================================================
 .segment "ZEROPAGE"
 
-; --- Line Drawing Variables ---
-; Bresenham's algorithm needs to track current position, deltas, and error.
-; All are single bytes because our screen is 256x192 (fits in 8 bits).
+; --- Line drawing state ---
 line_x0:        .res 1      ; Current X position (also starting X)
 line_y0:        .res 1      ; Current Y position (also starting Y)
 line_x1:        .res 1      ; Destination X position
 line_y1:        .res 1      ; Destination Y position
 line_dx:        .res 1      ; Absolute delta X (|x1 - x0|)
 line_dy:        .res 1      ; Absolute delta Y (|y1 - y0|)
-line_sx:        .res 1      ; X step direction (+1 or -1, stored as $01 or $FF)
-line_sy:        .res 1      ; Y step direction (+1 or -1, stored as $01 or $FF)
-line_err:       .res 2      ; Error accumulator (needs 16 bits for safety)
+line_sx:        .res 1      ; X step direction ($01 or $FF)
+line_sy:        .res 1      ; Y step direction ($01 or $FF)
+line_err:       .res 2      ; Error accumulator
 
-; --- Animation State ---
+; --- Animation state ---
 edge_idx:       .res 1      ; Current edge being drawn (0-11)
 curr_frame:     .res 1      ; Current animation frame (0-31)
 
-; --- Frame Data Pointers ---
-; These point to the current frame's vertex coordinate arrays.
-; 16-bit pointers because the data tables are outside zero page.
+; --- Frame data pointers ---
+; 16-bit pointers to the current frame's vertex coordinate arrays.
 frame_ptr_x:    .res 2      ; Pointer to X coordinates for current frame
 frame_ptr_y:    .res 2      ; Pointer to Y coordinates for current frame
 
@@ -167,73 +123,43 @@ frame_ptr_y:    .res 2      ; Pointer to Y coordinates for current frame
 ; ============================================================================
 ; ENTRY POINT
 ; ============================================================================
-; The 6502 begins execution here after loading the program.
-; We initialize the display hardware and audio, then enter the main loop.
-; ============================================================================
 .proc start
-    ; === CONFIGURE ULA DISPLAY ===
-    ; The ULA has a border area surrounding the main display.
-    ; Border color 1 = blue (classic Spectrum look).
-    ; The border provides visual framing and was often used for loading
-    ; stripes or simple effects on the original hardware.
+    ; --- Initialise ULA display ---
+    ; Border colour 1 = blue (classic Spectrum look).
     lda #1
     sta ULA_BORDER
 
-    ; Enable the ULA display. Without this, we'd see nothing!
-    ; ULA_CTRL_ENABLE activates the video output circuitry.
+    ; Enable the ULA video output circuitry.
     lda #ULA_CTRL_ENABLE
     sta ULA_CTRL
 
-    ; === START MUSIC PLAYBACK ===
-    ; Initialize the AHX audio engine with our tracker module.
-    ; Music plays autonomously once started - no CPU overhead.
+    ; --- Start AHX music playback ---
+    ; Music runs autonomously once started -- no CPU overhead per frame.
     jsr init_music
 
-    ; === INITIALIZE ANIMATION STATE ===
-    ; Start at frame 0 of the 32-frame rotation sequence.
+    ; --- Initialise animation state ---
     lda #0
     sta curr_frame
 
 ; ============================================================================
 ; MAIN LOOP
 ; ============================================================================
-; This loop runs continuously, drawing one animation frame per iteration.
-; We synchronize to the display's vertical blank (VBLANK) to prevent tearing.
-;
-; FRAME TIMING:
-; The ULA runs at 50Hz (PAL) or 60Hz (NTSC). We wait for TWO vblanks per
-; frame, giving us ~25-30 FPS animation. This is intentional:
-;   1. Gives more CPU time for drawing (the ULA addressing is slow)
-;   2. Creates a more deliberate, "chunky" aesthetic
-;   3. Matches the feel of many original Spectrum demos
+; Each iteration draws one frame of the 32-frame rotation sequence.
+; We wait for two vertical blanks per frame (~25 FPS), giving the 6502
+; enough time for the complex ULA address calculations and providing
+; a deliberate, "chunky" aesthetic that matches many original Spectrum demos.
 ; ============================================================================
 main_loop:
-    ; === WAIT FOR VERTICAL BLANK ===
-    ; Drawing during active display causes "tearing" - visible artifacts
-    ; where part of the old frame and part of the new frame are both shown.
-    ; By waiting for VBLANK, we ensure all drawing happens while the
-    ; electron beam is returning to the top of the screen.
     jsr wait_vblank
-
-    ; === RENDER CURRENT FRAME ===
-    ; Order matters here:
-    ;   1. Clear old pixels (blank slate)
-    ;   2. Set attributes (colors for the whole screen)
-    ;   3. Set up pointers to this frame's vertex data
-    ;   4. Draw the wireframe cube
     jsr clear_screen
     jsr set_attributes
     jsr setup_frame_ptrs
     jsr draw_cube
 
-    ; === WAIT FOR SECOND VBLANK ===
-    ; This extra wait slows animation to ~25 FPS, giving a smoother
-    ; visual result and more time for the complex ULA addressing math.
+    ; Wait for a second vblank to halve the frame rate.
     jsr wait_vblank
 
-    ; === ADVANCE ANIMATION ===
-    ; Move to next frame. After frame 31, wrap back to frame 0.
-    ; This creates a seamless looping rotation.
+    ; --- Advance to next frame, wrapping at 32 ---
     inc curr_frame
     lda curr_frame
     cmp #NUM_FRAMES         ; 32 frames for full rotation
@@ -247,15 +173,7 @@ main_loop:
 ; WAIT FOR VERTICAL BLANK
 ; ============================================================================
 ; Polls the ULA status register until the VBLANK bit is set.
-;
-; WHY POLL?
-; The 6502 has no interrupt controller in this implementation.
-; We busy-wait, which "wastes" CPU cycles but keeps the code simple.
-; In a more complex demo, we might use this time for audio or calculations.
-;
-; ULA_STATUS BIT LAYOUT:
-;   Bit 0: VBLANK - Set when display is in vertical blank period
-;   Other bits reserved for future use
+; Busy-waiting is the simplest synchronisation method on the 6502.
 ; ============================================================================
 .proc wait_vblank
 @wait:
@@ -266,55 +184,26 @@ main_loop:
 .endproc
 
 ; ============================================================================
-; INITIALIZE AND START MUSIC PLAYBACK
+; INITIALISE AHX MUSIC PLAYBACK
 ; ============================================================================
-; Configures the AHX audio engine to play our embedded tracker module.
+; Configures the AHX audio engine with a pointer to the embedded tracker
+; module and starts looped playback.
 ;
-; === WHAT IS AHX? ===
-;
-; AHX (Abyss' Highest eXperience) is a tracker music format created by
-; Dexter and Pink of Abyss for the Amiga demoscene in 1998. It synthesizes
-; all sounds in real-time using mathematical waveforms, rather than playing
-; back sampled audio like MOD or XM files.
-;
-; This gives AHX files remarkable compression - a full song in under 16KB!
-;
-; === HOW AHX SYNTHESIS WORKS ===
-;
-;   +------------------+     +------------------+     +-------------+
-;   | Tracker Pattern  |---->| Instrument Def   |---->| Oscillator  |
-;   | (notes, effects) |     | (ADSR, waveform) |     | (sine, saw) |
-;   +------------------+     +------------------+     +-------------+
-;                                                           |
-;   +------------------+     +------------------+           v
-;   |   Audio Output   |<----| Filter/Effects   |<----------+
-;   +------------------+     +------------------+
-;
-; Each "instrument" is a program that modulates basic waveforms over time,
-; controlled by the tracker pattern data. The Intuition Engine's AHX player
-; interprets this data and generates audio samples in real-time.
+; === WHY AHX? ===
+; AHX (Abyss' Highest eXperience) is a tracker format from the Amiga
+; demoscene that synthesises all sounds algorithmically from waveform
+; definitions -- no PCM samples needed. This achieves remarkable compression:
+; a full multi-channel composition in under 16KB. Once started, the
+; IntuitionEngine's AHX player runs in the audio subsystem independently
+; of the CPU.
 ;
 ; === REGISTER INTERFACE ===
-;
-; The AHX player uses memory-mapped registers:
 ;   AHX_PLAY_PTR_0-3: 32-bit pointer to AHX data (little-endian)
 ;   AHX_PLAY_LEN_0-3: 32-bit length of AHX data (little-endian)
 ;   AHX_PLAY_CTRL:    Control register (bit 0=start, bit 2=loop)
-;
-; Once started, the player runs autonomously in the audio subsystem.
-; The 6502 doesn't need to do anything else for music playback!
 ; ============================================================================
 .proc init_music
-    ; === SET POINTER TO MUSIC DATA ===
-    ; The AHX player needs to know where the tracker data lives in memory.
-    ; We use a 32-bit pointer (4 bytes) stored in little-endian order.
-    ; On 6502, the < operator gives the low byte, > gives the high byte.
-    ;
-    ; For a 16-bit address like $8000, we'd store:
-    ;   PTR_0 = $00 (bits 0-7)
-    ;   PTR_1 = $80 (bits 8-15)
-    ;   PTR_2 = $00 (bits 16-23, always 0 on 6502)
-    ;   PTR_3 = $00 (bits 24-31, always 0 on 6502)
+    ; Set 32-bit pointer to music data (little-endian).
     lda #<music_data        ; Low byte of address
     sta AHX_PLAY_PTR_0
     lda #>music_data        ; High byte of address
@@ -323,9 +212,7 @@ main_loop:
     sta AHX_PLAY_PTR_2      ; (6502 has 16-bit address space)
     sta AHX_PLAY_PTR_3
 
-    ; === SET MUSIC LENGTH ===
-    ; The player needs to know the file size to parse the AHX header
-    ; and locate the pattern data within.
+    ; Set 32-bit data length.
     lda #<MUSIC_SIZE        ; Low byte of length
     sta AHX_PLAY_LEN_0
     lda #>MUSIC_SIZE        ; High byte of length
@@ -334,15 +221,8 @@ main_loop:
     sta AHX_PLAY_LEN_2
     sta AHX_PLAY_LEN_3
 
-    ; === START PLAYBACK ===
-    ; Control register bits:
-    ;   Bit 0 (value 1): Start playback
-    ;   Bit 1 (value 2): Stop playback
-    ;   Bit 2 (value 4): Enable looping
-    ;
-    ; We use $05 = %00000101 = start + loop
-    ; This makes the music play continuously, perfect for a demo.
-    lda #$05                ; Start playback with looping
+    ; Start playback with looping ($05 = start + loop).
+    lda #$05
     sta AHX_PLAY_CTRL
 
     rts
@@ -352,41 +232,19 @@ main_loop:
 ; SET UP FRAME POINTERS
 ; ============================================================================
 ; Calculates pointers to the current frame's pre-computed vertex coordinates.
+; Each frame has 8 X values and 8 Y values (8 bytes each). Frame N's data
+; starts at: all_vertex_x + (N * 8) and all_vertex_y + (N * 8).
 ;
-; === WHY PRE-COMPUTE? ===
-;
-; Real-time 3D rotation requires trigonometry (sin/cos) and matrix math.
-; The 6502 has no multiply instruction, let alone floating-point!
-; While we COULD compute rotations using lookup tables and shifts,
-; the ULA's complex addressing already taxes our CPU budget.
-;
-; Instead, we pre-computed all 32 frames of animation offline:
-;   - Python script calculates rotation matrices
-;   - Projects 3D vertices to 2D screen coordinates
-;   - Stores results as simple byte arrays
-;
-; This is a classic demoscene technique: trade memory for CPU time.
-; 32 frames * 8 vertices * 2 coords = 512 bytes for butter-smooth rotation.
-;
-; === POINTER CALCULATION ===
-;
-; Each frame has 8 vertex X values and 8 vertex Y values (8 bytes each).
-; Frame N's X data starts at: all_vertex_x + (N * 8)
-; Frame N's Y data starts at: all_vertex_y + (N * 8)
-;
-; We use shifts instead of multiplication:
-;   ASL A (shift left) = multiply by 2
-;   Three shifts = multiply by 8
+; We use ASL (shift left) instead of multiplication:
+;   ASL A three times = multiply by 8
 ; ============================================================================
 .proc setup_frame_ptrs
-    ; === CALCULATE X POINTER ===
-    ; frame_ptr_x = all_vertex_x + (curr_frame * 8)
+    ; --- Calculate X pointer ---
     lda curr_frame
     asl a                   ; * 2
     asl a                   ; * 4
     asl a                   ; * 8
 
-    ; Add base address (16-bit addition)
     clc
     adc #<all_vertex_x      ; Add low byte of base
     sta frame_ptr_x
@@ -394,8 +252,7 @@ main_loop:
     adc #0                  ; Add carry from low byte addition
     sta frame_ptr_x+1
 
-    ; === CALCULATE Y POINTER ===
-    ; Same calculation for Y coordinates
+    ; --- Calculate Y pointer ---
     lda curr_frame
     asl a
     asl a
@@ -411,31 +268,12 @@ main_loop:
 .endproc
 
 ; ============================================================================
-; CLEAR SCREEN
+; CLEAR SCREEN (BITMAP AREA)
 ; ============================================================================
-; Fills the entire ULA bitmap area with zeros (all pixels off).
-;
-; === ULA MEMORY LAYOUT OVERVIEW ===
-;
-; The ULA display memory starts at ULA_VRAM and occupies 6912 bytes:
-;   - 6144 bytes for pixel bitmap (256x192 / 8 bits per byte)
-;   - 768 bytes for color attributes (32x24 character cells)
-;
-; Unlike modern linear framebuffers, the ULA bitmap has a complex layout
-; that we'll explain in detail in the plot_pixel routine.
-;
-; === CLEARING STRATEGY ===
-;
-; We need to clear 6144 bytes ($1800) of bitmap data.
-; The inner loop clears 256 bytes (one "page"), then we increment the
-; high byte of our pointer and repeat for all 24 pages.
-;
-; This is faster than a single 6144-iteration loop because:
-;   - INY is faster than 16-bit pointer increment
-;   - The branch (BNE) predicts well when Y wraps from 255 to 0
+; Fills all 6144 bytes of the ULA bitmap with zero (all pixels off).
+; Uses page-at-a-time clearing: 24 pages x 256 bytes = 6144 bytes.
 ; ============================================================================
 .proc clear_screen
-    ; Set up pointer to start of video RAM
     lda #<ULA_VRAM
     sta zp_ptr0
     lda #>ULA_VRAM
@@ -459,48 +297,24 @@ main_loop:
 ; ============================================================================
 ; SET ATTRIBUTES
 ; ============================================================================
-; Fills the attribute area with a uniform color (white on black).
+; Fills the 768-byte attribute area with white INK on black PAPER ($07).
 ;
-; === ULA COLOR ATTRIBUTES ===
+; === WHY UNIFORM ATTRIBUTES? ===
+; Each attribute byte controls an 8x8 pixel cell:
+;   Bits 0-2: INK colour   (foreground)  -- 7 = white
+;   Bits 3-5: PAPER colour (background)  -- 0 = black
+;   Bit 6:    BRIGHT flag
+;   Bit 7:    FLASH flag
 ;
-; The Spectrum ULA uses a clever memory-saving trick: instead of storing
-; color per-pixel, it stores color per 8x8 CHARACTER CELL. The attribute
-; area is a 32x24 grid (one byte per cell) covering the 256x192 display.
-;
-; Each attribute byte encodes:
-;   Bits 0-2: INK color (foreground, 0-7)
-;   Bits 3-5: PAPER color (background, 0-7)
-;   Bit 6:    BRIGHT flag (makes colors brighter)
-;   Bit 7:    FLASH flag (swaps ink/paper periodically)
-;
-; Color palette (normal/bright):
-;   0: Black      / Black
-;   1: Blue       / Bright Blue
-;   2: Red        / Bright Red
-;   3: Magenta    / Bright Magenta
-;   4: Green      / Bright Green
-;   5: Cyan       / Bright Cyan
-;   6: Yellow     / Bright Yellow
-;   7: White      / Bright White
-;
-; === ATTRIBUTE CLASH ===
-;
-; Because colors apply to entire 8x8 cells, it's impossible to have more
-; than 2 colors in any cell. This "attribute clash" was a defining visual
-; characteristic of Spectrum graphics - and a challenge for artists!
-;
-; In this demo, we simply use white ink on black paper ($07) everywhere,
-; avoiding clash entirely at the cost of colorful graphics.
+; Using the same attribute everywhere avoids the infamous "attribute clash"
+; where overlapping colours in the same 8x8 cell cause visual artefacts.
 ; ============================================================================
 .proc set_attributes
-    ; Attribute area starts after the bitmap
-    ; ULA_ATTR_OFFSET = 6144 bytes ($1800)
     lda #<(ULA_VRAM + ULA_ATTR_OFFSET)
     sta zp_ptr0
     lda #>(ULA_VRAM + ULA_ATTR_OFFSET)
     sta zp_ptr0+1
 
-    ; Attribute value: $07 = white ink (7), black paper (0), no flash/bright
     lda #$07
     ldy #0
     ldx #3                  ; 768 bytes = 3 pages of 256
@@ -521,15 +335,6 @@ main_loop:
 ; ============================================================================
 ; Renders the wireframe cube by drawing all 12 edges.
 ;
-; === CUBE TOPOLOGY ===
-;
-; A cube has 8 vertices (corners) and 12 edges:
-;   - 4 edges on the front face
-;   - 4 edges on the back face
-;   - 4 edges connecting front to back
-;
-; We store edges as pairs of vertex indices in the cube_edges table.
-;
 ;        7--------6
 ;       /|       /|
 ;      / |      / |
@@ -539,29 +344,21 @@ main_loop:
 ;     |/       |/
 ;     0--------1
 ;
-; === RENDERING APPROACH ===
-;
-; For each edge:
-;   1. Look up the two vertex indices
-;   2. Fetch their screen coordinates from the current frame's tables
-;   3. Draw a line between them using Bresenham's algorithm
-;
-; The Y register is used for indirect indexed addressing: (ptr),Y
-; This lets us efficiently access the vertex coordinate arrays.
+; Edges 0-3: front face, 4-7: back face, 8-11: connecting edges.
+; For each edge, we look up the two vertex indices, fetch their screen
+; coordinates from the current frame's tables, and draw a line.
 ; ============================================================================
 .proc draw_cube
     lda #0
     sta edge_idx            ; Start with edge 0
 
 @edge_loop:
-    ; === CALCULATE EDGE TABLE OFFSET ===
-    ; Each edge is 2 bytes (two vertex indices), so offset = edge_idx * 2
+    ; --- Calculate edge table offset (2 bytes per edge) ---
     lda edge_idx
     asl a                   ; * 2
     tax                     ; X = offset into edge table
 
-    ; === GET FIRST VERTEX COORDINATES ===
-    ; Load first vertex index, use it to fetch X and Y from frame data
+    ; --- Get first vertex coordinates ---
     lda cube_edges,x        ; First vertex index
     tay                     ; Y = vertex index (for indirect addressing)
     lda (frame_ptr_x),y     ; Load X coordinate
@@ -569,7 +366,7 @@ main_loop:
     lda (frame_ptr_y),y     ; Load Y coordinate
     sta line_y0
 
-    ; === GET SECOND VERTEX COORDINATES ===
+    ; --- Get second vertex coordinates ---
     inx                     ; Move to second vertex index in edge table
     lda cube_edges,x
     tay
@@ -578,10 +375,10 @@ main_loop:
     lda (frame_ptr_y),y
     sta line_y1
 
-    ; === DRAW THE EDGE ===
+    ; --- Draw the edge ---
     jsr draw_line
 
-    ; === NEXT EDGE ===
+    ; --- Next edge ---
     inc edge_idx
     lda edge_idx
     cmp #NUM_EDGES          ; 12 edges total
@@ -596,53 +393,27 @@ main_loop:
 ; Draws a line from (line_x0, line_y0) to (line_x1, line_y1).
 ;
 ; === WHY BRESENHAM? ===
-;
 ; Bresenham's line algorithm (1962) is ideal for integer-only hardware:
-;   - Uses only addition, subtraction, and bit shifts
-;   - No multiplication or division required
-;   - Perfectly accurate (no floating-point drift)
+; it uses only addition, subtraction, and bit shifts -- no multiplication
+; or division required. For the 6502 with no MUL instruction, this is
+; essential.
 ;
-; For the 6502 with no MUL instruction, this is essential.
+; The algorithm steps along the major axis one pixel at a time, accumulating
+; an error term that determines when to step on the minor axis. We split
+; into X-major and Y-major loops because parameterising the axis on the
+; 6502 would be slower than duplicating the loop.
 ;
-; === ALGORITHM OVERVIEW ===
-;
-; The key insight is that we can track "error" as we step along the major
-; axis, deciding when to step on the minor axis:
-;
-;   1. Determine which axis has the larger delta (the "major" axis)
-;   2. Step along the major axis one pixel at a time
-;   3. Accumulate error (the minor axis delta) each step
-;   4. When error exceeds half the major delta, step on minor axis
-;   5. Repeat until we reach the destination
-;
-; === X-MAJOR vs Y-MAJOR ===
-;
-; A line is "X-major" if |dx| >= |dy| (more horizontal than vertical).
-; For X-major lines, we step X every iteration and sometimes step Y.
-; Y-major lines are the opposite.
-;
-; We need separate loops because the 6502 can't easily parameterize
-; which variable to step - the code would be slower than duplicating it.
-;
-; === SIGNED ARITHMETIC ON 6502 ===
-;
-; The 6502 has no signed compare instruction. We handle negative deltas
-; by computing the absolute value and storing the direction separately:
-;   - line_dx, line_dy: absolute delta values
-;   - line_sx, line_sy: step directions ($01 for +1, $FF for -1)
-;
-; Using $FF for -1 works because signed addition treats it as -1:
-;   CLC; ADC #$FF is equivalent to subtracting 1 (with potential carry)
+; === SIGNED DIRECTION ===
+; The 6502 has no signed compare. We compute |dx| and |dy| as unsigned
+; values, storing the step direction separately: $01 for +1, $FF for -1.
 ; ============================================================================
 .proc draw_line
-    ; === DRAW STARTING POINT ===
-    ; Always draw at least the first pixel
+    ; Always draw the starting pixel.
     lda line_x0
     ldx line_y0
     jsr plot_pixel
 
-    ; === CHECK FOR SINGLE-POINT LINE ===
-    ; If start == end, we're done (avoids division by zero in error calc)
+    ; Single-point check.
     lda line_x0
     cmp line_x1
     bne @not_point
@@ -652,15 +423,13 @@ main_loop:
     rts                     ; Start equals end, nothing more to draw
 
 @not_point:
-    ; === CALCULATE DX AND DETERMINE X DIRECTION ===
-    ; dx = x1 - x0 (signed)
-    ; We need |dx| and the sign separately
+    ; --- Calculate |dx| and X direction ---
     sec
     lda line_x1
     sbc line_x0             ; A = x1 - x0 (signed result)
     bcs @dx_pos             ; Branch if result >= 0 (no borrow)
 
-    ; dx is negative: negate it and set sx = -1
+    ; dx is negative: negate and set sx = -1
     eor #$FF                ; One's complement
     clc
     adc #1                  ; Two's complement = negate
@@ -670,14 +439,12 @@ main_loop:
     jmp @calc_dy
 
 @dx_pos:
-    ; dx is positive: store it and set sx = +1
     sta line_dx
     lda #$01
     sta line_sx
 
 @calc_dy:
-    ; === CALCULATE DY AND DETERMINE Y DIRECTION ===
-    ; Same process for the Y axis
+    ; --- Calculate |dy| and Y direction ---
     sec
     lda line_y1
     sbc line_y0
@@ -693,44 +460,34 @@ main_loop:
     jmp @start
 
 @dy_pos:
-    ; dy is positive
     sta line_dy
     lda #$01
     sta line_sy
 
 @start:
-    ; === CHOOSE MAJOR AXIS ===
-    ; Compare |dx| and |dy| to determine line orientation
+    ; --- Choose major axis ---
     lda line_dx
     cmp line_dy
     bcc @y_major            ; Branch if dx < dy (Y is major axis)
 
-; ============================================================================
-; X-MAJOR LINE DRAWING LOOP
-; ============================================================================
-; For lines where |dx| >= |dy|, we step X every iteration.
-; The error term tracks when to step Y.
-; ============================================================================
+; --- X-MAJOR LOOP ---
 @x_major:
     lda line_dx
-    beq @done               ; Safety check: if dx=0, we're done
-    sta line_err            ; Initialize error to dx
+    beq @done               ; Safety check
+    sta line_err            ; Initialise error to dx
     lsr line_err            ; error = dx / 2 (Bresenham's midpoint)
 
 @x_loop:
-    ; Step X in the appropriate direction
     clc
     lda line_x0
-    adc line_sx             ; Add +1 or -1
+    adc line_sx             ; Step X in the appropriate direction
     sta line_x0
 
-    ; Accumulate error (add dy each step)
     clc
     lda line_err
-    adc line_dy
+    adc line_dy             ; Accumulate error
     sta line_err
 
-    ; Check if error exceeds threshold (dx)
     cmp line_dx
     bcc @x_noy              ; Branch if error < dx
 
@@ -744,22 +501,16 @@ main_loop:
     sta line_y0
 
 @x_noy:
-    ; Draw current pixel
     lda line_x0
     ldx line_y0
     jsr plot_pixel
 
-    ; Check if we've reached the destination X
     lda line_x0
     cmp line_x1
-    bne @x_loop             ; Continue if not there yet
+    bne @x_loop             ; Continue if not at destination X
     rts
 
-; ============================================================================
-; Y-MAJOR LINE DRAWING LOOP
-; ============================================================================
-; For lines where |dy| > |dx|, we step Y every iteration.
-; ============================================================================
+; --- Y-MAJOR LOOP ---
 @y_major:
     lda line_dy
     beq @done               ; Safety check
@@ -767,19 +518,16 @@ main_loop:
     lsr line_err            ; error = dy / 2
 
 @y_loop:
-    ; Step Y
     clc
     lda line_y0
     adc line_sy
     sta line_y0
 
-    ; Accumulate error (add dx each step)
     clc
     lda line_err
     adc line_dx
     sta line_err
 
-    ; Check if error exceeds threshold (dy)
     cmp line_dy
     bcc @y_nox
 
@@ -793,12 +541,10 @@ main_loop:
     sta line_x0
 
 @y_nox:
-    ; Draw current pixel
     lda line_x0
     ldx line_y0
     jsr plot_pixel
 
-    ; Check if we've reached the destination Y
     lda line_y0
     cmp line_y1
     bne @y_loop
@@ -808,127 +554,79 @@ main_loop:
 .endproc
 
 ; ============================================================================
-; PLOT PIXEL
+; PLOT PIXEL (ULA NON-LINEAR ADDRESSING)
 ; ============================================================================
 ; Sets a single pixel at coordinates (A=X, X=Y).
 ;
-; Input: A = X coordinate (0-255)
-;        X = Y coordinate (0-191)
-;
 ; === THE INFAMOUS ULA MEMORY LAYOUT ===
 ;
-; The ZX Spectrum's ULA chip generated video addresses using a simplified
-; circuit that resulted in a highly non-linear memory layout. Understanding
-; this is essential for Spectrum programming!
+; The ZX Spectrum's ULA addressed video memory using a simplified circuit
+; that produced a highly non-linear layout. The Y coordinate (0-191) is
+; decomposed into three bit-fields:
 ;
-; === SCREEN ADDRESS CALCULATION ===
+;   Bits 7-6: Screen third (0-2)     --> high byte bits 4-3
+;   Bits 2-0: Pixel row in cell      --> high byte bits 2-0
+;   Bits 5-3: Character row in third --> low byte bits 7-5
 ;
-; For a pixel at coordinates (X, Y), the byte address is calculated from
-; the Y coordinate alone (X determines which BIT within that byte).
+; This creates the bizarre interleaving where Y=0 is at $4000, Y=1 is at
+; $4100 (not $4020!), and Y=8 is at $4020. Consecutive scanlines are
+; 256 bytes apart until you cross a character cell boundary.
 ;
-; The Y coordinate (0-191) is split into three parts:
-;   - Bits 7-6: Third of screen (0-2), contributes to high address
-;   - Bits 5-3: Character row (0-7), contributes to low address
-;   - Bits 2-0: Pixel row within character (0-7), contributes to high address
-;
-; This creates a bizarre interleaving where consecutive scanlines are
-; NOT consecutive in memory!
-;
-; Screen layout (simplified):
-;   Y=0   -> $4000    First pixel row of first character row
-;   Y=1   -> $4100    First pixel row of NINTH character row (!)
-;   Y=2   -> $4200    ...
-;   ...
-;   Y=8   -> $4020    SECOND pixel row of first character row
-;   ...
-;
-; === ADDRESS FORMULA ===
-;
-;   High byte: %010[Y7][Y6][Y2][Y1][Y0]
+; Address formula:
+;   High byte: %010[Y7][Y6][Y2][Y1][Y0]  (+ ULA_VRAM base)
 ;   Low byte:  %[Y5][Y4][Y3][X7][X6][X5][X4][X3]
 ;
-; Where:
-;   - 010 = base address ($4000 = %0100 0000 0000 0000)
-;   - Y7,Y6 = screen third (0, 1, or 2)
-;   - Y2,Y1,Y0 = pixel row within character cell
-;   - Y5,Y4,Y3 = character row within third
-;   - X7..X3 = character column (X / 8)
+; The X coordinate's low 3 bits select which bit within the byte to set.
+; Bit 7 is leftmost, bit 0 is rightmost.
 ;
-; === BIT WITHIN BYTE ===
-;
-; The X coordinate's low 3 bits (X2,X1,X0) determine which bit to set.
-; Bit 7 is leftmost, bit 0 is rightmost:
-;   X & 7 = 0 -> bit 7 ($80)
-;   X & 7 = 1 -> bit 6 ($40)
-;   ...
-;   X & 7 = 7 -> bit 0 ($01)
-;
-; We use a lookup table (bit_masks) for this conversion.
-;
-; === WHY THIS MADNESS? ===
-;
-; The ULA's address generator could compute this layout with very few gates.
-; Linear addressing would have required an adder circuit. In 1982, every
-; transistor counted, so this "programmer-hostile" layout was acceptable.
-;
-; Many Spectrum programmers memorized this calculation!
+; === WHY THIS LAYOUT? ===
+; The ULA could generate these addresses with very few logic gates. A
+; linear layout would have required a binary adder circuit. In 1982 every
+; transistor counted, so Sinclair accepted this programmer-hostile scheme
+; to keep manufacturing costs down.
 ; ============================================================================
 .proc plot_pixel
     pha                     ; Save X coordinate on stack
 
-    ; === CALCULATE HIGH BYTE OF ADDRESS ===
-    ; High byte = %010[Y7][Y6][Y2][Y1][Y0]
-
-    ; Get screen third from Y (bits 7-6)
-    ; Shift right 3 times: Y7,Y6 move to bits 4,3
+    ; --- High byte: screen third + pixel row within character ---
     txa                     ; A = Y coordinate
     and #$C0                ; Isolate bits 7-6 (screen third)
-    lsr a                   ; >> 1: bits now at 6,5
-    lsr a                   ; >> 2: bits now at 5,4
+    lsr a                   ; >> 1
+    lsr a                   ; >> 2
     lsr a                   ; >> 3: bits now at 4,3
     sta zp_ptr0+1           ; Store partial high byte
 
-    ; Get pixel row within character from Y (bits 2-0)
-    ; These go directly to bits 2,1,0 of high byte
     txa
-    and #$07                ; Isolate bits 2-0
+    and #$07                ; Isolate bits 2-0 (pixel row in cell)
     clc
     adc zp_ptr0+1           ; Combine with screen third
-    sta zp_ptr0+1           ; High byte now has: %000[Y7][Y6][Y2][Y1][Y0]
+    sta zp_ptr0+1
 
-    ; === CALCULATE LOW BYTE OF ADDRESS ===
-    ; Low byte = %[Y5][Y4][Y3][X7][X6][X5][X4][X3]
-
-    ; Get character row from Y (bits 5-3)
-    ; Shift left 2 times to move to bits 7-5
+    ; --- Low byte: character row + byte column ---
     txa
-    and #$38                ; Isolate bits 5-3 (%00111000)
-    asl a                   ; << 1: bits now at 6-4
+    and #$38                ; Isolate bits 5-3 (character row)
+    asl a                   ; << 1
     asl a                   ; << 2: bits now at 7-5
     sta zp_ptr0             ; Store partial low byte
 
-    ; Get character column from X (X / 8 = bits 7-3)
     pla                     ; Retrieve X coordinate
-    pha                     ; Keep it on stack (we need it again)
+    pha                     ; Keep it on stack (needed for bit mask)
     lsr a                   ; >> 1
     lsr a                   ; >> 2
-    lsr a                   ; >> 3: X/8 now in bits 4-0
+    lsr a                   ; >> 3: X/8 = byte column
     clc
     adc zp_ptr0             ; Combine with character row
-    sta zp_ptr0             ; Low byte complete
+    sta zp_ptr0
     bcc @nc                 ; Check for carry into high byte
     inc zp_ptr0+1
 @nc:
-    ; === ADD BASE ADDRESS ===
-    ; ULA_VRAM is the base address of video memory
-    ; We add only the high byte since low byte is already complete
+    ; --- Add ULA VRAM base address ---
     clc
     lda zp_ptr0+1
     adc #>ULA_VRAM          ; Add high byte of base address
     sta zp_ptr0+1
 
-    ; === SET THE PIXEL BIT ===
-    ; X coordinate's low 3 bits determine which bit in the byte
+    ; --- Set the pixel bit ---
     pla                     ; Retrieve X coordinate
     and #$07                ; Isolate low 3 bits (bit position)
     tax                     ; Use as index into bit_masks table
@@ -941,14 +639,13 @@ main_loop:
 .endproc
 
 ; ============================================================================
-; READ-ONLY DATA SEGMENT
+; READ-ONLY DATA
 ; ============================================================================
 .segment "RODATA"
 
 ; ============================================================================
 ; BIT MASKS TABLE
 ; ============================================================================
-; Lookup table for pixel bit positions within a byte.
 ; Index 0 = leftmost pixel (bit 7), index 7 = rightmost pixel (bit 0).
 ; ============================================================================
 bit_masks:
@@ -957,20 +654,23 @@ bit_masks:
 ; ============================================================================
 ; CUBE EDGE LIST
 ; ============================================================================
-; Each edge is defined by two vertex indices.
-; The cube_edges table contains 12 edges * 2 indices = 24 bytes.
+; 12 edges as pairs of vertex indices (24 bytes total).
 ;
-; Edge numbering:
-;   Edges 0-3:  Front face (vertices 0,1,2,3)
-;   Edges 4-7:  Back face (vertices 4,5,6,7)
-;   Edges 8-11: Connecting edges (front to back)
+;        7--------6
+;       /|       /|
+;      / |      / |
+;     4--------5  |
+;     |  3-----|--2
+;     | /      | /
+;     |/       |/
+;     0--------1
 ; ============================================================================
 cube_edges:
     ; Front face edges
-    .byte 0, 1              ; Bottom edge: vertex 0 to vertex 1
-    .byte 1, 2              ; Right edge:  vertex 1 to vertex 2
-    .byte 2, 3              ; Top edge:    vertex 2 to vertex 3
-    .byte 3, 0              ; Left edge:   vertex 3 to vertex 0
+    .byte 0, 1              ; Bottom edge
+    .byte 1, 2              ; Right edge
+    .byte 2, 3              ; Top edge
+    .byte 3, 0              ; Left edge
 
     ; Back face edges
     .byte 4, 5              ; Bottom edge
@@ -987,38 +687,17 @@ cube_edges:
 ; ============================================================================
 ; PRE-CALCULATED VERTEX COORDINATES
 ; ============================================================================
-; 32 frames of animation data, with 8 vertices per frame.
+; 32 frames of animation, 8 vertices per frame.
 ;
 ; === WHY PRE-CALCULATE? ===
+; Real-time 3D rotation requires sin/cos lookups and matrix multiplication.
+; The 6502 has no multiply instruction, and the ULA's non-linear addressing
+; already taxes the CPU budget. Instead, all 32 frames were computed offline:
+;   32 frames x 8 vertices x 2 coords = 512 bytes
+; This is a classic demoscene trade-off: memory for CPU time.
 ;
-; Real-time 3D rotation requires:
-;   1. Sine/cosine lookups (or calculations)
-;   2. Matrix multiplication (9 multiplies, 6 adds per vertex)
-;   3. Perspective division (divide by Z)
-;
-; On a 6502 without multiply/divide instructions, this would be VERY slow.
-; Instead, we pre-compute everything offline and store the results.
-;
-; === ANIMATION PARAMETERS ===
-;
-; Cube centered at (128, 96) - the screen center
-; Cube size: 80 pixels (±40 from center)
-; Rotation: Combined X and Y axis rotation
-;   - Full 360° rotation on Y axis across 32 frames
-;   - Half rotation (180°) on X axis for tumbling effect
-;
-; === VERTEX NUMBERING ===
-;
-;        7--------6
-;       /|       /|
-;      / |      / |
-;     4--------5  |
-;     |  3-----|--2
-;     | /      | /
-;     |/       |/
-;     0--------1
-;
-; Vertices 0-3 form the front face, 4-7 the back face.
+; Cube centred at (128, 96). Combined X + Y axis rotation. Full 360-degree
+; Y rotation and 180-degree X rotation across the 32-frame sequence.
 ; ============================================================================
 
 all_vertex_x:
@@ -1090,36 +769,15 @@ all_vertex_y:
     .byte 132, 131, 51, 53, 140, 138, 59, 60      ; Frame 31
 
 ; ============================================================================
-; MUSIC DATA
+; EMBEDDED AHX MUSIC DATA
 ; ============================================================================
-; Embedded AHX tracker module.
-;
-; === WHAT'S IN AN AHX FILE? ===
-;
-; An AHX file contains:
-;   1. Header with song metadata (name, speed, pattern count, etc.)
-;   2. Instrument definitions (waveform generators, ADSR envelopes)
-;   3. Pattern sequence (order of patterns to play)
-;   4. Pattern data (notes and effects for each channel)
-;
-; Unlike MOD/XM files which contain PCM samples, AHX generates ALL sound
-; through synthesis. This is why it achieves such small file sizes.
-;
-; === THE AUDIO ENGINE ===
-;
-; The Intuition Engine's AHX player:
-;   1. Parses the file header to find song structure
-;   2. Steps through patterns at the song's tempo
-;   3. Synthesizes waveforms based on instrument definitions
-;   4. Applies envelopes, filters, and effects
-;   5. Mixes all channels to stereo output
-;
-; All of this happens in the audio subsystem - the 6502 is completely
-; free to focus on graphics once playback is started.
-;
-; "Chopper" is a driving, energetic track typical of the Amiga demoscene.
+; AHX tracker module -- synthesises all sounds algorithmically from waveform
+; definitions (no PCM samples). The IntuitionEngine's AHX player parses the
+; file header, steps through patterns at the song's tempo, synthesises
+; waveforms, applies envelopes and effects, and mixes to stereo output --
+; all in the audio subsystem, completely independent of the 6502.
 ; ============================================================================
 .segment "BINDATA"
 
 music_data:
-    .incbin "../assets/chopper.ahx"
+    .incbin "../assets/music/chopper.ahx"

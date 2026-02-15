@@ -173,10 +173,10 @@ sdk/bin/ie64asm program.asm                  # Produces program.ie64
 vasmm68k_mot -Fbin -m68020 -devpac -o out.ie68 input.asm
 
 # 6502 (via Makefile helper)
-make ie65asm SRC=assembler/program.asm       # Produces program.ie65
+make ie65asm SRC=sdk/examples/asm/program.asm  # Produces program.ie65
 
 # Z80 (via Makefile helper)
-make ie80asm SRC=assembler/program.asm       # Produces program.ie80
+make ie80asm SRC=sdk/examples/asm/program.asm  # Produces program.ie80
 
 # x86
 nasm -f bin -o program.ie86 program.asm
@@ -214,7 +214,7 @@ When adding new test demonstrations:
 
 # 7. Include Files
 
-The `assembler/` directory provides hardware definition include files for each CPU architecture. The `sdk/include/` directory contains synced copies for the SDK.
+The `sdk/include/` directory provides hardware definition include files for each CPU architecture, plus the EhBASIC interpreter modules.
 
 | File | CPU | Assembler | Description |
 |------|-----|-----------|-------------|
@@ -238,7 +238,7 @@ All include files provide:
 
 ### Include File Stability
 
-The `sdk/include/` headers define the stable hardware register map for v1.x. The canonical source of truth is `assembler/*.inc` in the main repository. SDK copies are synced by `make sdk` and at release time.
+The `sdk/include/` directory is the canonical location for all include files.
 
 ### 8-Bit CPU Banking
 
@@ -500,7 +500,7 @@ audio_chip.go         Audio engine core
 *_player.go           Music file format players
 machine_bus.go        Memory mapping and I/O dispatch
 main.go               CLI entry point and runtime
-assembler/            IE32/IE64 assembler source and include files
+assembler/            Assembler tool source code (ie32asm, ie64asm, ie64dis, ie32to64)
 sdk/                  Curated SDK with examples and build scripts
 sdk/docs/             Technical documentation
 ```

@@ -748,7 +748,7 @@ func TestHandleKeyInput_Return_ScrollAtBottom(t *testing.T) {
 		vt.HandleKeyInput('\n')
 		_ = drainTermIn(term)
 	}
-	// Now on last row — type and RETURN should scroll
+	// Now on last row - type and RETURN should scroll
 	vt.HandleKeyInput('Z')
 	beforeTop := vt.screen.ViewportTop()
 	vt.HandleKeyInput('\n')

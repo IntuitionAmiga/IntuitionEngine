@@ -5,7 +5,7 @@
 ;
 ; === SDK QUICK REFERENCE ===
 ; Target CPU:    Zilog Z80
-; Video Chip:    IEVideoChip Mode 0 (640x480, 32bpp true color)
+; Video Chip:    IEVideoChip Mode 0 (640x480, 32bpp true colour)
 ; Audio Engine:  SID (Commodore 64 sound chip)
 ; Assembler:     vasmz80_std (VASM Z80, standard syntax)
 ; Build:         vasmz80_std -Fbin -o rotozoomer_z80.ie80 rotozoomer_z80.asm
@@ -77,7 +77,7 @@
 ;   |                                                                  |
 ;   |  A real 6502 CPU core executes the SID player code from the     |
 ;   |  embedded .sid file. Register writes to $D400-$D418 are         |
-;   |  intercepted and remapped to the native synthesizer engine.     |
+;   |  intercepted and remapped to the native synthesiser engine.     |
 ;   |  The Z80 main loop is completely unaware of audio playback.     |
 ;   +------------------------------------------------------------------+
 ;
@@ -151,7 +151,7 @@
 
 ; --- Blitter Operation Codes ---
 ; These select which operation the blitter performs when triggered.
-; BLT_OP_FILL (1):  Fills a rectangle with a solid color
+; BLT_OP_FILL (1):  Fills a rectangle with a solid colour
 ; BLT_OP_COPY (0):  Copies a rectangle from source to destination
 ; BLT_OP_MODE7 (5): Performs affine texture mapping (rotation + zoom)
 .set BLT_OP_FILL,1
@@ -173,7 +173,7 @@
 ;
 ; These values were chosen to match the BASIC reference implementation's
 ; rates of A+=0.03 and SI+=0.01 respectively (approximately a 3:1 ratio).
-; The 3:1 ratio ensures rotation and zoom don't sync up, creating an
+; The 3:1 ratio ensures rotation and zoom don't synchronise, creating an
 ; ever-changing visual pattern that doesn't repeat for a long time.
 .set ANGLE_INC,313
 .set SCALE_INC,104
@@ -182,14 +182,14 @@
 ; ENTRY POINT
 ; ============================================================================
 ; The Z80 CPU begins execution at address 0x0000.
-; We must initialize the stack, enable video, generate the texture,
+; We must initialise the stack, enable video, generate the texture,
 ; set up animation state, and start audio before entering the main loop.
 ; ============================================================================
 
     .org 0x0000
 
 start:
-    ; --- Initialize Stack Pointer ---
+    ; --- Initialise Stack Pointer ---
     ; Z80 uses a descending stack (SP decrements on PUSH, increments on POP).
     ; STACK_TOP is defined in ie80.inc as 0xF000, which is the highest RAM
     ; address before MMIO space begins. This gives us the full 0x0000-0xEFFF
@@ -213,7 +213,7 @@ start:
     ; rotozoomer texture because it makes rotation and scaling clearly visible.
     call generate_texture
 
-    ; --- Initialize Animation Accumulators ---
+    ; --- Initialise Animation Accumulators ---
     ; Both accumulators start at zero. They are 16-bit values that wrap
     ; naturally at 65536 due to Z80's 16-bit arithmetic overflow.
     ; The high byte of each accumulator is used as the table index (0-255),
@@ -227,7 +227,7 @@ start:
     ; data, then a control byte to begin playback. The .sid file contains
     ; actual 6502 machine code that is executed by the IntuitionEngine's
     ; real 6502 CPU core. Register writes to $D400-$D418 (SID chip) are
-    ; intercepted and remapped to the native synthesizer.
+    ; intercepted and remapped to the native synthesiser.
     ;
     ; WHY BYTE-BY-BYTE MMIO WRITES: Z80's address bus is only 16 bits
     ; (0x0000-0xFFFF), but IntuitionEngine MMIO registers live at 20-bit
@@ -283,7 +283,7 @@ start:
 ; 1. compute_frame:    CPU math -- derive 6 Mode7 parameters from angle/scale
 ; 2. render_mode7:     Program blitter with those params, trigger HW render
 ; 3. blit_to_front:    Copy completed back buffer to VRAM (display buffer)
-; 4. WAIT_VBLANK:      Synchronize to vertical blank (prevents tearing)
+; 4. WAIT_VBLANK:      Synchronise to vertical blank (prevents tearing)
 ; 5. advance_animation: Increment accumulators for next frame's parameters
 ;
 ; WHY THIS ORDER: We do all rendering BEFORE waiting for vblank. This means
@@ -321,7 +321,7 @@ main_loop:
 ;   +--------+--------+
 ;
 ; Each quadrant is a separate BLIT FILL operation. We can't fill the entire
-; texture in one pass because the two colors alternate per quadrant.
+; texture in one pass because the two colours alternate per quadrant.
 ;
 ; WHY BLIT FILL INSTEAD OF CPU LOOPS: The Z80 would need to write
 ; 256*256*4 = 262,144 bytes through MMIO one byte at a time. Even at
@@ -1275,7 +1275,7 @@ advance_animation:
 ; ============================================================================
 ; All mutable state used by compute_frame and render_mode7.
 ; These variables are in the code segment because the Z80's address space
-; is flat -- there is no separate data segment. They are initialized to
+; is flat -- there is no separate data segment. They are initialised to
 ; zero and overwritten every frame.
 ;
 ; MEMORY LAYOUT (byte offsets from angle_accum):
@@ -1435,5 +1435,5 @@ recip_table:
 ; per second by the audio subsystem to update SID register state.
 ; ============================================================================
 sid_data:
-    .incbin "../assets/Circus_Attractions.sid"
+    .incbin "../assets/music/Circus_Attractions.sid"
 sid_data_end:

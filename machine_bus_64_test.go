@@ -102,13 +102,13 @@ func TestBusRead64Write64_LegacyIORegion_Fault(t *testing.T) {
 		},
 	)
 
-	// Default policy is Fault — Read64 should return 0
+	// Default policy is Fault - Read64 should return 0
 	got := bus.Read64(0xE0000)
 	if got != 0 {
 		t.Errorf("Read64 with Fault policy = 0x%016X, want 0", got)
 	}
 
-	// Write64 should be a no-op — legacy onWrite should NOT be called
+	// Write64 should be a no-op - legacy onWrite should NOT be called
 	bus.Write64(0xE0000, 0xFFFFFFFFFFFFFFFF)
 	if writeCalled {
 		t.Error("Write64 with Fault policy invoked legacy onWrite, should be no-op")
@@ -598,7 +598,7 @@ func TestBusSplitWrite_Native64_NoReadSideEffect(t *testing.T) {
 	bus.Write64(0x70FC, 0x1111111122222222)
 
 	if readCalled {
-		t.Error("write32Half must not call onRead64 — device reads may have side effects")
+		t.Error("write32Half must not call onRead64 - device reads may have side effects")
 	}
 
 	// The write handler should have been called exactly once (for the native64 half)

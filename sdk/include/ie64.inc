@@ -1813,7 +1813,7 @@ coproc_stop macro
     store.l r2, (r1)
     endm
 
-; Enqueue a request — ticket returned in COPROC_TICKET
+; Enqueue a request - ticket returned in COPROC_TICKET
 ; \1 = cpuType, \2 = op, \3 = reqPtr, \4 = reqLen, \5 = respPtr, \6 = respCap
 coproc_enqueue macro
     la      r1, COPROC_CPU_TYPE
@@ -1839,7 +1839,7 @@ coproc_enqueue macro
     store.l r2, (r1)
     endm
 
-; Poll ticket status — result in COPROC_TICKET_STATUS
+; Poll ticket status - result in COPROC_TICKET_STATUS
 ; \1 = ticket ID
 coproc_poll macro
     la      r1, COPROC_TICKET

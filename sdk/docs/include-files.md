@@ -169,4 +169,4 @@ start:
 
 ## Stability Policy
 
-The `sdk/include/` copies define the stable hardware register map for v1.x releases. The canonical source of truth remains `assembler/*.inc` in the main repository. SDK copies are synced at each release.
+The `sdk/include/` directory is the canonical location for all include files. Hardware register definitions (`ie*.inc`) and EhBASIC modules (`ehbasic_*.inc`) live here.

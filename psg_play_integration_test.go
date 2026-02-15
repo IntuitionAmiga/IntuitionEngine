@@ -7,7 +7,7 @@ import (
 )
 
 func TestPSGPlayFromMemory(t *testing.T) {
-	binaryPath := "assembler/test_ay_only.iex"
+	binaryPath := "sdk/examples/prebuilt/test_ay_only.iex"
 	if _, err := os.Stat(binaryPath); os.IsNotExist(err) {
 		t.Skip("test_ay_only.iex not found")
 	}

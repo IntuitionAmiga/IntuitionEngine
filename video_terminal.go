@@ -447,24 +447,24 @@ func (vt *VideoTerminal) handleInputByteLocked(b byte, lineMode bool) bool {
 		beforeTop := vt.screen.ViewportTop()
 		vt.screen.PutChar('\t')
 		return vt.screen.ViewportTop() != beforeTop
-	case 0x01: // Ctrl+A — Home
+	case 0x01: // Ctrl+A - Home
 		vt.screen.Home()
 		return false
-	case 0x05: // Ctrl+E — End
+	case 0x05: // Ctrl+E - End
 		vt.screen.End()
 		return false
-	case 0x0B: // Ctrl+K — Kill to EOL
+	case 0x0B: // Ctrl+K - Kill to EOL
 		cx, cy := vt.screen.CursorPos()
 		vt.screen.ClearLine(cy, cx)
 		vrow := cy - vt.screen.ViewportTop()
 		vt.renderRowFromLocked(vrow, cx)
 		return false
-	case 0x0C: // Ctrl+L — Clear screen
+	case 0x0C: // Ctrl+L - Clear screen
 		vt.screen.Clear()
 		vt.clearScreenLocked()
 		vt.inputActive = false
 		return false
-	case 0x15: // Ctrl+U — Kill to BOL
+	case 0x15: // Ctrl+U - Kill to BOL
 		cx, cy := vt.screen.CursorPos()
 		startCol := 0
 		if vt.inputActive && cy == vt.inputStartRow {
@@ -608,13 +608,13 @@ func (vt *VideoTerminal) handleInputEscapeLocked(b byte) bool {
 		vt.inputEscState = 0
 		if vt.inputEscParam2 == '5' { // Ctrl modifier
 			switch b {
-			case 'C': // Ctrl+Right — word right
+			case 'C': // Ctrl+Right - word right
 				vt.screen.WordRight()
-			case 'D': // Ctrl+Left — word left
+			case 'D': // Ctrl+Left - word left
 				vt.screen.WordLeft()
-			case 'A': // Ctrl+Up — history previous
+			case 'A': // Ctrl+Up - history previous
 				vt.historyPrevLocked()
-			case 'B': // Ctrl+Down — history next
+			case 'B': // Ctrl+Down - history next
 				vt.historyNextLocked()
 			}
 		}

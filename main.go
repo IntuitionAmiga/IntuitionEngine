@@ -263,7 +263,7 @@ func main() {
 					fmt.Printf("Sent %s to running instance\n", filepath.Base(filename))
 					os.Exit(0)
 				}
-				// SendIPCOpen failed — no running instance, continue as primary
+				// SendIPCOpen failed - no running instance, continue as primary
 			}
 		}
 	}
@@ -443,7 +443,7 @@ func main() {
 						cpuName, instrCount)
 				}
 			} else {
-				fmt.Printf("PSG: register dump — no CPU to measure\n")
+				fmt.Printf("PSG: register dump - no CPU to measure\n")
 			}
 		}
 		soundChip.Start()
@@ -647,7 +647,7 @@ func main() {
 						cpuName, instrCount)
 				}
 			} else {
-				fmt.Printf("AHX: software module replay — no CPU to measure\n")
+				fmt.Printf("AHX: software module replay - no CPU to measure\n")
 			}
 		}
 		soundChip.Start()
@@ -1030,7 +1030,7 @@ func main() {
 				autoPath := resolveDefaultBasicImagePath()
 				if autoPath == "" {
 					fmt.Println("Error: BASIC not embedded and no local BASIC image found.")
-					fmt.Println("Use -basic-image <path>, run 'make basic', or place ehbasic_ie64.ie64 in assembler/ or bin/.")
+					fmt.Println("Use -basic-image <path>, run 'make basic', or place ehbasic_ie64.ie64 in sdk/examples/asm/ or bin/.")
 					os.Exit(1)
 				}
 				if err := ie64CPU.LoadProgram(autoPath); err != nil {
@@ -1543,7 +1543,7 @@ func parseUint16Flag(value string) (uint16, error) {
 
 func resolveDefaultBasicImagePath() string {
 	candidates := []string{
-		"assembler/ehbasic_ie64.ie64",
+		"sdk/examples/asm/ehbasic_ie64.ie64",
 		"bin/ehbasic_ie64.ie64",
 		"ehbasic_ie64.ie64",
 	}

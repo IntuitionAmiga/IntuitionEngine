@@ -459,7 +459,7 @@ func (m *MachineMonitor) cmdStep(cmd MonitorCommand) bool {
 		}
 	}
 
-	// Snapshot before stepping (for backstep) — per-CPU history
+	// Snapshot before stepping (for backstep) - per-CPU history
 	snap := TakeSnapshot(entry.CPU)
 	cpuID := m.focusedID
 	m.stepHistory[cpuID] = append(m.stepHistory[cpuID], snap)
@@ -1126,14 +1126,14 @@ func (m *MachineMonitor) cmdRunUntil(cmd MonitorCommand) bool {
 
 	existingBP := entry.CPU.GetConditionalBreakpoint(addr)
 	if existingBP == nil {
-		// No breakpoint exists — create a temp unconditional one
+		// No breakpoint exists - create a temp unconditional one
 		entry.CPU.SetBreakpoint(addr)
 		if m.tempBreakpoints[m.focusedID] == nil {
 			m.tempBreakpoints[m.focusedID] = make(map[uint64]bool)
 		}
 		m.tempBreakpoints[m.focusedID][addr] = true
 	} else if existingBP.Condition != nil {
-		// A conditional breakpoint exists — temporarily make it unconditional
+		// A conditional breakpoint exists - temporarily make it unconditional
 		// so run-until always stops. Save the original condition for restore.
 		if m.savedConditions[m.focusedID] == nil {
 			m.savedConditions[m.focusedID] = make(map[uint64]*BreakpointCondition)
@@ -1141,7 +1141,7 @@ func (m *MachineMonitor) cmdRunUntil(cmd MonitorCommand) bool {
 		m.savedConditions[m.focusedID][addr] = existingBP.Condition
 		existingBP.Condition = nil
 	}
-	// else: unconditional breakpoint already exists — it will fire on its own
+	// else: unconditional breakpoint already exists - it will fire on its own
 
 	m.appendOutput(fmt.Sprintf("Run until $%X", addr), colorCyan)
 	return true // exit monitor to resume execution
@@ -1534,7 +1534,7 @@ func (m *MachineMonitor) cmdTraceRun(cmd MonitorCommand) bool {
 			}
 		}
 
-		// Check for breakpoint at new PC — only stop if condition is satisfied
+		// Check for breakpoint at new PC - only stop if condition is satisfied
 		newPC := entry.CPU.GetPC()
 		if bp := entry.CPU.GetConditionalBreakpoint(newPC); bp != nil {
 			bp.HitCount++

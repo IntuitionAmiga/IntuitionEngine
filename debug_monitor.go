@@ -92,7 +92,7 @@ type MachineMonitor struct {
 	traceSnapshots map[uint64]byte
 	writeHistory   map[uint64][]WriteRecord
 
-	// Backstep (Feature 9) — per-CPU history keyed by CPU ID
+	// Backstep (Feature 9) - per-CPU history keyed by CPU ID
 	stepHistory map[int][]*MachineSnapshot
 	maxBackstep int
 
@@ -295,7 +295,7 @@ func (m *MachineMonitor) handleBreakpointHit(ev BreakpointEvent) {
 	// Snapshot which CPUs are running BEFORE freezing, so Deactivate
 	// only resumes CPUs that were genuinely running. The CPU that hit
 	// the breakpoint already stopped its own trapLoop, so IsRunning()
-	// returns false for it — we record it explicitly below.
+	// returns false for it - we record it explicitly below.
 	wasRunning := make(map[int]bool)
 	for id, entry := range m.cpus {
 		if entry.CPU.IsRunning() {

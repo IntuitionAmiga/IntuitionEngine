@@ -925,7 +925,7 @@ func (a *ANTICEngine) GetDimensions() (w, h int) {
 // SignalVSync is called by compositor after frame sent
 // Sets VBlank flag and handles NMI timing
 func (a *ANTICEngine) SignalVSync() {
-	// Set VBlank flag — lock-free
+	// Set VBlank flag - lock-free
 	a.vblankActive.Store(true)
 
 	a.mu.Lock()

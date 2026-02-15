@@ -27,7 +27,7 @@ sdk/bin/ie32asm -I sdk/include program.asm  # With include search path
 ./bin/IntuitionEngine -ie32 program.iex   # Run (or: RUN "program.iex" from BASIC)
 ```
 
-- Custom assembler built from `assembler/ie32asm.go`
+- Custom assembler built from `assembler/ie32asm.go` (assembler tool source code)
 - Supports `-I dir` include search paths (multiple allowed, searched after source file directory)
 - Supports `.include`, `.equ`, `.org`, `.db`, `.dw`, `.dd`, labels, macros
 - Fixed 8-byte instruction format
@@ -42,7 +42,7 @@ sdk/bin/ie64asm -list program.asm           # Assemble with listing output
 ./bin/IntuitionEngine -ie64 program.ie64  # Run (or: RUN "program.ie64" from BASIC)
 ```
 
-- Custom assembler built from `assembler/ie64asm.go`
+- Custom assembler built from `assembler/ie64asm.go` (assembler tool source code)
 - Supports `-I dir` include search paths (multiple allowed, searched after source file directory)
 - Supports `.include`, `equ`, `org`, `dc.b/w/l/q`, labels, macros with positional parameters (`\1`..`\9`)
 - Variable-length instruction encoding (4-12 bytes)
@@ -79,7 +79,7 @@ make CPU=m68k SYNTAX=mot
 vasmm68k_mot -Fbin -m68020 -devpac -o output.ie68 input.asm
 
 # With include path
-vasmm68k_mot -Fbin -m68020 -devpac -I assembler -o output.ie68 input.asm
+vasmm68k_mot -Fbin -m68020 -devpac -I sdk/include -o output.ie68 input.asm
 ```
 
 **Run:**
@@ -98,10 +98,10 @@ make CPU=z80 SYNTAX=std
 
 **Assemble:**
 ```bash
-vasmz80_std -Fbin -I assembler -o output.ie80 input.asm
+vasmz80_std -Fbin -I sdk/include -o output.ie80 input.asm
 
 # Or via Makefile helper:
-make ie80asm SRC=assembler/program.asm
+make ie80asm SRC=sdk/examples/asm/program.asm
 ```
 
 **Run:**
@@ -122,12 +122,12 @@ brew install cc65
 
 **Assemble:**
 ```bash
-ca65 -I assembler -o program.o program.asm
-ld65 -C assembler/ie65.cfg -o program.ie65 program.o
+ca65 -I sdk/include -o program.o program.asm
+ld65 -C sdk/include/ie65.cfg -o program.ie65 program.o
 rm program.o
 
 # Or via Makefile helper:
-make ie65asm SRC=assembler/program.asm
+make ie65asm SRC=sdk/examples/asm/program.asm
 ```
 
 The `ie65.cfg` linker configuration defines the Intuition Engine 6502 memory layout.

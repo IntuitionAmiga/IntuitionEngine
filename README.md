@@ -242,8 +242,8 @@ CPU modes that execute binaries (`-ie32`, `-ie64`, `-m68k`, `-m6502`, `-z80`, `-
 
 ## 1.4 Ebiten Window Controls
 
-- `F9`: Open the Machine Monitor (debugger) — freezes all CPUs, shows registers and disassembly. See [iemon.md](sdk/docs/iemon.md) for full documentation.
-- `F10`: Hard reset — performs a full power-on hardware reset and boots IE64 BASIC
+- `F9`: Open the Machine Monitor (debugger) - freezes all CPUs, shows registers and disassembly. See [iemon.md](sdk/docs/iemon.md) for full documentation.
+- `F10`: Hard reset - performs a full power-on hardware reset and boots IE64 BASIC
 - `F11`: Toggle fullscreen mode
 - `F12`: Toggle the runtime status bar
 - `Page Up` / `Page Down`: Scroll terminal scrollback buffer
@@ -272,7 +272,7 @@ After registration, double-clicking any `.ie*` file in a file manager will open 
 
 ## 1.7 Machine Monitor
 
-Press **F9** at any time to freeze the entire system and enter the built-in Machine Monitor — a system-level debugger inspired by the Commodore 64/Amiga Action Replay cartridge and HRTMon. Press **x** or **Esc** to resume execution.
+Press **F9** at any time to freeze the entire system and enter the built-in Machine Monitor - a system-level debugger inspired by the Commodore 64/Amiga Action Replay cartridge and HRTMon. Press **x** or **Esc** to resume execution.
 
 The monitor works with all six CPU types (IE64, IE32, M68K, Z80, 6502, X86) and handles multi-CPU scenarios including coprocessors.
 
@@ -363,7 +363,7 @@ The custom audio synthesizer is the core of the sound system. PSG, POKEY, and SI
 - **MachineBus** (`Bus32`/`Bus64` interfaces): The global 32MB RAM + MMIO backbone shared by all CPUs and peripherals.
 - **CPU bus interfaces** (`Z80Bus`, `X86Bus`, `Bus6502`): Per-CPU contract shapes that define the read/write/port operations each CPU core expects.
 - **CPU bus adapters** (`Z80BusAdapter`, `X86BusAdapter`, `Bus6502Adapter`): Translate 8/16-bit CPU address spaces and port I/O into MachineBus calls, handling bank switching and sign extension.
-- **Playback buses** (`SAPPlaybackBus6502`, `SIDPlaybackBus6502`, `TEDPlaybackBus6502`, `sndhPlaybackBus68K`, `ayPlaybackBusZ80`): Standalone lightweight bus implementations for music file playback — provide just enough memory and I/O to run embedded CPU code that drives audio register writes.
+- **Playback buses** (`SAPPlaybackBus6502`, `SIDPlaybackBus6502`, `TEDPlaybackBus6502`, `sndhPlaybackBus68K`, `ayPlaybackBusZ80`): Standalone lightweight bus implementations for music file playback - provide just enough memory and I/O to run embedded CPU code that drives audio register writes.
 
 ## 2.2 Hardware I/O
 
@@ -903,7 +903,7 @@ All sound and video chips are accessible from all CPU architectures at different
 | POKEY | 0x0F0D00-0x0F0D09 | 0xD0/0xD1 | 0xD0-0xD3* | $D200-$D209 | Atari 8-bit compatible |
 | SID   | 0x0F0E00-0x0F0E1C | 0xE0/0xE1 | 0xE0/0xE1 | $D500-$D51C | MOS 6581/8580 compatible |
 | TED   | 0x0F0F00-0x0F0F05 | 0xF2/0xF3 | 0xF2/0xF3 | $D600-$D605 | Plus/4 compatible |
-| AHX   | 0x0F0B80-0x0F0B91 | —         | —         | $FB80-$FB91 | Amiga AHX/THX module player |
+| AHX   | 0x0F0B80-0x0F0B91 | -         | -         | $FB80-$FB91 | Amiga AHX/THX module player |
 
 \* x86 POKEY uses ports 0xD0-0xD3 and 0xD8-0xDF (0xD4-0xD7 reserved for ANTIC/GTIA)
 
@@ -1488,7 +1488,7 @@ The coprocessor subsystem allows any CPU to launch worker CPUs (IE32, 6502, M68K
 
 ### Byte-Level MMIO Access
 
-All registers support byte-level reads and writes. This allows 8-bit CPUs to program 32-bit registers using four single-byte writes. Registers are aligned to 4-byte boundaries: sub-register byte offsets are computed as `addr & 3`. Writes to bytes 1-3 of a register perform read-modify-write on the shadow register. Command dispatch only fires when byte 0 of COPROC_CMD is written — writes to bytes 1-3 of COPROC_CMD do not trigger dispatch. This means the CMD register must be written last in any sequence.
+All registers support byte-level reads and writes. This allows 8-bit CPUs to program 32-bit registers using four single-byte writes. Registers are aligned to 4-byte boundaries: sub-register byte offsets are computed as `addr & 3`. Writes to bytes 1-3 of a register perform read-modify-write on the shadow register. Command dispatch only fires when byte 0 of COPROC_CMD is written - writes to bytes 1-3 of COPROC_CMD do not trigger dispatch. This means the CMD register must be written last in any sequence.
 
 ### 16-bit CPU Gateway (0xF200 - 0xF23F)
 
@@ -1563,7 +1563,7 @@ All include files except `ie32.inc` (constants only, no macro support) provide c
 
 For 16-bit CPUs (Z80/6502), macros use `STORE32` internally to compose 32-bit values from 4 byte writes through the gateway.
 
-**Example (x86 — native 32-bit):**
+**Example (x86 - native 32-bit):**
 ```nasm
 %include "ie86.inc"
     coproc_start COPROC_CPU_IE32, 0x400000    ; start IE32 worker
@@ -1573,7 +1573,7 @@ For 16-bit CPUs (Z80/6502), macros use `STORE32` internally to compose 32-bit va
     mov eax, [COPROC_TICKET_STATUS]           ; read result
 ```
 
-**Example (Z80 — gateway + byte writes):**
+**Example (Z80 - gateway + byte writes):**
 ```z80
     .include "ie80.inc"
     coproc_start COPROC_CPU_M68K 0x400000     ; start M68K worker
@@ -1601,11 +1601,11 @@ Complete caller examples are provided for all CPU architectures:
 
 | File | Caller CPU | Worker CPU | Description |
 |------|-----------|------------|-------------|
-| `assembler/coproc_caller_ie32.asm` | IE32 | IE32 | Native 32-bit register access |
-| `assembler/coproc_caller_68k.asm` | M68K | IE32 | Uses `coproc_start`/`coproc_enqueue` macros |
-| `assembler/coproc_caller_x86.asm` | x86 | IE32 | Uses NASM `%macro` helpers |
-| `assembler/coproc_caller_z80.asm` | Z80 | M68K | Gateway access via `STORE32` macros |
-| `assembler/coproc_caller_65.asm` | 6502 | IE32 | Gateway access via `STORE32` macros |
+| `sdk/examples/asm/coproc_caller_ie32.asm` | IE32 | IE32 | Native 32-bit register access |
+| `sdk/examples/asm/coproc_caller_68k.asm` | M68K | IE32 | Uses `coproc_start`/`coproc_enqueue` macros |
+| `sdk/examples/asm/coproc_caller_x86.asm` | x86 | IE32 | Uses NASM `%macro` helpers |
+| `sdk/examples/asm/coproc_caller_z80.asm` | Z80 | M68K | Gateway access via `STORE32` macros |
+| `sdk/examples/asm/coproc_caller_65.asm` | 6502 | IE32 | Gateway access via `STORE32` macros |
 
 ## 3.18 Voodoo 3D Graphics (0x0F4000 - 0x0F43FF)
 
@@ -3135,7 +3135,7 @@ Size suffixes: `.b` (8-bit), `.w` (16-bit), `.l` (32-bit), `.q` (64-bit)
 
 ### Branches (Compare-and-Branch)
 
-All conditional branches compare two registers directly — no flags register:
+All conditional branches compare two registers directly - no flags register:
 
 | Mnemonic | Condition | Example |
 |----------|-----------|---------|
@@ -3154,7 +3154,7 @@ All conditional branches compare two registers directly — no flags register:
 
 | Mnemonic | Description |
 |----------|-------------|
-| `JSR` | Jump to subroutine — PC-relative (`jsr label`) or register-indirect (`jsr (r5)`) |
+| `JSR` | Jump to subroutine - PC-relative (`jsr label`) or register-indirect (`jsr (r5)`) |
 | `RTS` | Return from subroutine |
 | `PUSH` | Push register onto stack |
 | `POP` | Pop from stack to register |
@@ -3256,9 +3256,9 @@ The IE64 has an integrated timer and interrupt system:
 4. ISR executes and returns via `RTI` (restores PC, clears `inInterrupt`)
 
 **Instructions:**
-- `SEI` — Enable interrupts
-- `CLI` — Disable interrupts
-- `RTI` — Return from interrupt (pops PC, clears `inInterrupt`)
+- `SEI` - Enable interrupts
+- `CLI` - Disable interrupts
+- `RTI` - Return from interrupt (pops PC, clears `inInterrupt`)
 
 Note: The interrupt vector is currently set internally. Assembly-level vector programming is reserved for a future update.
 
@@ -3268,7 +3268,7 @@ Note: The interrupt vector is currently set internally. Assembly-level vector pr
 - File extension: `.ie64`
 - Use `ie64asm` assembler with `ie64.inc` include file
 - Little-endian byte order
-- Compare-and-branch model (no flags register — unlike IE32, M68K, Z80, 6502, x86)
+- Compare-and-branch model (no flags register - unlike IE32, M68K, Z80, 6502, x86)
 - R0 is hardwired to zero (reads always return 0, writes are silently ignored)
 - `.l` operations zero-mask to 32 bits; use `.q` for full 64-bit arithmetic
 - Full ISA reference: [IE64_ISA.md](sdk/docs/IE64_ISA.md)

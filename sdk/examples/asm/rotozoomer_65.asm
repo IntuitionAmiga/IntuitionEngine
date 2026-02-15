@@ -5,7 +5,7 @@
 ;
 ; === SDK QUICK REFERENCE ===
 ; Target CPU:    MOS 6502
-; Video Chip:    IEVideoChip Mode 0 (640x480, 32bpp true color)
+; Video Chip:    IEVideoChip Mode 0 (640x480, 32bpp true colour)
 ; Audio Engine:  AHX (Amiga tracker synthesis)
 ; Assembler:     ca65/ld65 (cc65 toolchain)
 ; Build:         make ie65asm SRC=assembler/rotozoomer_65.asm
@@ -255,14 +255,14 @@ sign_flag:       .res 1          ; Signed multiply: counts negative operands
 ; ============================================================================
 ; ENTRY POINT / MAIN LOOP
 ; ============================================================================
-; The program begins here. We initialize the video hardware, generate
+; The program begins here. We initialise the video hardware, generate
 ; the texture, start background music, then enter the infinite main loop.
 ;
 ; The main loop is structured for maximum clarity:
 ;   1. compute_frame   - Calculate the 6 affine transform parameters
 ;   2. render_mode7    - Program the blitter and render to back buffer
 ;   3. blit_to_front   - Copy completed frame to VRAM (prevents tearing)
-;   4. wait_vsync      - Synchronize to display refresh (60 Hz)
+;   4. wait_vsync      - Synchronise to display refresh (60 Hz)
 ;   5. advance_animation - Increment rotation and zoom accumulators
 ; ============================================================================
 .proc main
@@ -280,7 +280,7 @@ sign_flag:       .res 1          ; Signed multiply: counts negative operands
     ; 4 hardware blitter FILL operations (one per quadrant).
     jsr generate_texture
 
-    ; --- Initialize animation accumulators to zero ---
+    ; --- Initialise animation accumulators to zero ---
     ; Both angle and scale start at 0. The high byte (table index) = 0
     ; means we start at sine[0]=0 (angle=0) and recip[0]=512 (max zoom).
     lda #0
@@ -308,7 +308,7 @@ sign_flag:       .res 1          ; Signed multiply: counts negative operands
     START_PSG_LOOP
 
     ; === MAIN LOOP ===
-    ; This runs forever at 60fps (synchronized by wait_vsync).
+    ; This runs forever at 60fps (synchronised by wait_vsync).
 loop:
     jsr compute_frame
     jsr render_mode7
@@ -321,7 +321,7 @@ loop:
 ; ============================================================================
 ; WAIT FOR VSYNC (two-phase edge detection)
 ; ============================================================================
-; Synchronizes to the vertical blanking interval to prevent tearing
+; Synchronises to the vertical blanking interval to prevent tearing
 ; and ensure consistent 60fps timing.
 ;
 ; WHY TWO PHASES?
@@ -381,7 +381,7 @@ loop:
 ; The top-right offset is 128 pixels * 4 bytes = 512 bytes.
 ; The bottom-left offset is 128 rows * 1024 bytes/row = 131072 bytes.
 ;
-; Colors:
+; Colours:
 ;   White = $FFFFFFFF (RGBA: fully opaque white)
 ;   Black = $FF000000 (RGBA: fully opaque black)
 ;
@@ -769,7 +769,7 @@ loop:
 ;
 ; Alternative decompositions like 320 = 5 * 64 would require a
 ; multiply by 5, which itself needs shifts and adds. The 256+64
-; decomposition minimizes total shift iterations (0 + 6 = 6 shifts
+; decomposition minimises total shift iterations (0 + 6 = 6 shifts
 ; vs. the 64*5 approach which needs 6 + 2 + 1 = 9).
 ; ============================================================================
 .proc compute_ca_320
@@ -1521,5 +1521,5 @@ recip_table:
 ; Intuition Engine supports. Either chip works fine with any CPU.
 ; ============================================================================
 psg_data:
-    .incbin "../assets/WaksonsZak018.ay"
+    .incbin "../assets/music/WaksonsZak018.ay"
 psg_data_end:

@@ -123,7 +123,7 @@ type VGAEngine struct {
 	frameBufferX   []uint8 // 320x240x4 = 307,200 bytes
 	frameBufferTxt []uint8 // 640x400x4 = 1,024,000 bytes
 
-	// Optional render target — when non-nil, render functions write here
+	// Optional render target - when non-nil, render functions write here
 	// instead of into the mode-specific internal buffer.
 	renderTarget []byte
 
@@ -1062,13 +1062,13 @@ func (v *VGAEngine) FinishFrame() []byte {
 	return v.scanlineFrame
 }
 
-// SetCompositorManaged implements CompositorManageable — signals the render
+// SetCompositorManaged implements CompositorManageable - signals the render
 // goroutine to skip rendering while the compositor owns scanline rendering.
 func (v *VGAEngine) SetCompositorManaged(managed bool) {
 	v.compositorManaged.Store(managed)
 }
 
-// WaitRenderIdle implements CompositorManageable — spins until any in-flight
+// WaitRenderIdle implements CompositorManageable - spins until any in-flight
 // render tick has finished, so the compositor can safely begin scanline rendering.
 func (v *VGAEngine) WaitRenderIdle() {
 	for v.rendering.Load() {

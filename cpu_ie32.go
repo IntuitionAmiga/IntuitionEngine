@@ -1276,7 +1276,7 @@ func (cpu *CPU) Execute() {
 			}
 
 		case PUSH:
-			// Inlined stack push — stack is always below IO_REGION_START
+			// Inlined stack push - stack is always below IO_REGION_START
 			if cpu.SP < STACK_BOTTOM+WORD_SIZE {
 				fmt.Printf("%s cpu.Push\tStack overflow error at PC=%08x (SP=%08x)\n",
 					time.Now().Format("15:04:05.000"), cpu.PC, cpu.SP)
@@ -1341,7 +1341,7 @@ func (cpu *CPU) Execute() {
 			cpu.PC += INSTRUCTION_SIZE
 
 		case JSR:
-			// Inlined JSR — push return address, jump to target
+			// Inlined JSR - push return address, jump to target
 			if cpu.SP < STACK_BOTTOM+WORD_SIZE {
 				fmt.Printf("%s cpu.Push\tStack overflow error at PC=%08x (SP=%08x)\n",
 					time.Now().Format("15:04:05.000"), cpu.PC, cpu.SP)
@@ -1353,7 +1353,7 @@ func (cpu *CPU) Execute() {
 			cpu.PC = operand
 
 		case RTS:
-			// Inlined RTS — pop return address
+			// Inlined RTS - pop return address
 			if cpu.SP >= STACK_START {
 				fmt.Printf("Stack underflow error at PC=%08x (SP=%08x)\n", cpu.PC, cpu.SP)
 				cpu.running.Store(false)

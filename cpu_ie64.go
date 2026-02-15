@@ -181,7 +181,7 @@ const (
 )
 
 // ------------------------------------------------------------------------------
-// CPU64 — 64-bit RISC CPU
+// CPU64 - 64-bit RISC CPU
 // ------------------------------------------------------------------------------
 
 type CPU64 struct {
@@ -296,7 +296,7 @@ func (cpu *CPU64) loadMem(addr uint32, size byte) uint64 {
 		}
 	}
 
-	// Non-I/O fast path — direct memory read, no bus overhead
+	// Non-I/O fast path - direct memory read, no bus overhead
 	if addr < IO_REGION_START {
 		base := unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr))
 		switch size {
@@ -311,7 +311,7 @@ func (cpu *CPU64) loadMem(addr uint32, size byte) uint64 {
 		}
 	}
 
-	// I/O slow path — bus callbacks protect their own state
+	// I/O slow path - bus callbacks protect their own state
 	switch size {
 	case IE64_SIZE_B:
 		return uint64(cpu.bus.Read8(addr))
@@ -343,7 +343,7 @@ func (cpu *CPU64) storeMem(addr uint32, val uint64, size byte) {
 		return
 	}
 
-	// Non-I/O fast path — direct memory write, no bus overhead
+	// Non-I/O fast path - direct memory write, no bus overhead
 	if addr < IO_REGION_START {
 		base := unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr))
 		switch size {
@@ -359,7 +359,7 @@ func (cpu *CPU64) storeMem(addr uint32, val uint64, size byte) {
 		return
 	}
 
-	// I/O slow path — bus callbacks protect their own state
+	// I/O slow path - bus callbacks protect their own state
 	switch size {
 	case IE64_SIZE_B:
 		cpu.bus.Write8(addr, uint8(val))
@@ -454,7 +454,7 @@ func (cpu *CPU64) DetachDirectVRAM() {
 }
 
 // ------------------------------------------------------------------------------
-// Execute — Main Instruction Loop
+// Execute - Main Instruction Loop
 // ------------------------------------------------------------------------------
 
 func (cpu *CPU64) Execute() {
@@ -543,7 +543,7 @@ func (cpu *CPU64) Execute() {
 					cpu.timerCount.Store(newCount)
 					if newCount == 0 {
 						cpu.timerState.Store(TIMER_EXPIRED)
-						// Inline handleInterrupt — uses memBase/memSize locals
+						// Inline handleInterrupt - uses memBase/memSize locals
 						if cpu.interruptEnabled.Load() && !cpu.inInterrupt.Load() {
 							cpu.inInterrupt.Store(true)
 							cpu.regs[31] -= 8
@@ -1156,7 +1156,7 @@ func (cpu *CPU64) Execute() {
 			continue
 		}
 
-		// Default PC advance — opcodes that set PC themselves use `continue` above
+		// Default PC advance - opcodes that set PC themselves use `continue` above
 		cpu.PC += IE64_INSTR_SIZE
 		continue
 

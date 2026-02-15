@@ -192,7 +192,7 @@ func (tm *TerminalMMIO) EnqueueByte(b byte) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 	tm.enqueueInputByteLocked(b)
-	// No echo here — echo is the application's responsibility (e.g. read_line).
+	// No echo here - echo is the application's responsibility (e.g. read_line).
 	// EnqueueByte is a transport layer; echoing here causes double-echo when
 	// the application (EhBASIC) also echoes characters it reads from TERM_IN.
 }

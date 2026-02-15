@@ -98,7 +98,7 @@ func buildIE32ServiceBinary(ringBase uint32) []byte {
 	appendInstr(ie32_SUB, 1, ie32_ADDR_REG, 0)     // X = X - A (head - tail)
 	appendInstr(ie32_JZ, 1, ie32_ADDR_IMM, base+0) // if X==0, jump to POLL_LOOP
 
-	// PC = base + 0x30: Ring not empty — process request
+	// PC = base + 0x30: Ring not empty - process request
 	// tail is in A. Compute entry addr = ringBase + 0x08 + A*32
 	// B = A * 32 (shift left 5)
 	appendInstr(ie32_LOAD, 4, ie32_ADDR_REG, 0) // B = A (tail)
@@ -109,7 +109,7 @@ func buildIE32ServiceBinary(ringBase uint32) []byte {
 
 	// Now B = address of request descriptor entry
 	// Read ticket (entry+0) into C
-	appendInstr(ie32_LOAD, 5, ie32_ADDR_DIRECT, 0) // placeholder — we'll use register indirect
+	appendInstr(ie32_LOAD, 5, ie32_ADDR_DIRECT, 0) // placeholder - we'll use register indirect
 	// Actually, IE32 ADDR_REG_IND: operand[3:0] = reg, operand[31:4] = offset
 	// value = MEM[reg[operand&0xF] + (operand & ~0xF)]
 	// So to read MEM[B + 0], operand = (0 << 4) | 4 = 0x04 (reg=B=4, offset=0)
@@ -800,7 +800,7 @@ func TestCoprocessorDoubleStart(t *testing.T) {
 	// First worker's done channel should be closed
 	select {
 	case <-done1:
-		// Good — first worker was stopped
+		// Good - first worker was stopped
 	default:
 		// This is expected since we directly replaced, not via cmdStart
 	}
@@ -1054,7 +1054,7 @@ func TestCoprocEndToEnd_X86(t *testing.T) {
 	// Assemble x86 service binary with nasm
 	data := assembleService(t, []string{
 		"nasm", "-f", "bin", "-o", "OUTPUT",
-	}, "assembler/coproc_service_x86.asm")
+	}, "sdk/examples/asm/coproc_service_x86.asm")
 
 	bus := NewMachineBus()
 	mgr := NewCoprocessorManager(bus, t.TempDir())
@@ -1075,7 +1075,7 @@ func TestCoprocEndToEnd_X86(t *testing.T) {
 	mgr.workers[EXEC_TYPE_X86] = worker
 	mgr.mu.Unlock()
 
-	// x86 uses 32-bit addressing — reqPtr/respPtr are bus addresses directly
+	// x86 uses 32-bit addressing - reqPtr/respPtr are bus addresses directly
 	coprocEndToEndTest(t, bus, mgr, EXEC_TYPE_X86, 0x400000, 0x400100, 0x400000, 0x400100)
 }
 
@@ -1083,7 +1083,7 @@ func TestCoprocEndToEnd_Z80(t *testing.T) {
 	// Assemble Z80 service binary with vasmz80_std
 	data := assembleService(t, []string{
 		"vasmz80_std", "-Fbin", "-o", "OUTPUT",
-	}, "assembler/coproc_service_z80.asm")
+	}, "sdk/examples/asm/coproc_service_z80.asm")
 
 	bus := NewMachineBus()
 	mgr := NewCoprocessorManager(bus, t.TempDir())
@@ -1117,7 +1117,7 @@ func TestCoprocEndToEnd_M68K(t *testing.T) {
 	// Assemble M68K service binary with vasmm68k_mot
 	data := assembleService(t, []string{
 		"/opt/amiga/bin/vasmm68k_mot", "-Fbin", "-m68020", "-devpac", "-o", "OUTPUT",
-	}, "assembler/coproc_service_68k.asm")
+	}, "sdk/examples/asm/coproc_service_68k.asm")
 
 	bus := NewMachineBus()
 	mgr := NewCoprocessorManager(bus, t.TempDir())
@@ -1138,13 +1138,13 @@ func TestCoprocEndToEnd_M68K(t *testing.T) {
 	mgr.workers[EXEC_TYPE_M68K] = worker
 	mgr.mu.Unlock()
 
-	// M68K uses 32-bit addressing — reqPtr/respPtr are bus addresses directly
+	// M68K uses 32-bit addressing - reqPtr/respPtr are bus addresses directly
 	coprocEndToEndTest(t, bus, mgr, EXEC_TYPE_M68K, 0x400000, 0x400100, 0x400000, 0x400100)
 }
 
 func TestCoprocEndToEnd_6502(t *testing.T) {
 	// Assemble 6502 service binary with ca65+ld65
-	data := assemble6502Service(t, "assembler/coproc_service_65.asm")
+	data := assemble6502Service(t, "sdk/examples/asm/coproc_service_65.asm")
 
 	bus := NewMachineBus()
 	mgr := NewCoprocessorManager(bus, t.TempDir())
@@ -1246,11 +1246,11 @@ func TestCoprocMMIO_CmdDispatchOnByte0Only(t *testing.T) {
 
 	// Set up a valid CPU type so we can detect dispatch via cmdStatus change
 	mgr.mu.Lock()
-	mgr.cpuType = 99 // invalid CPU type — dispatch will set ERROR status
+	mgr.cpuType = 99 // invalid CPU type - dispatch will set ERROR status
 	mgr.cmdStatus = COPROC_STATUS_OK
 	mgr.mu.Unlock()
 
-	// Write to bytes 1, 2, 3 of CMD — should NOT dispatch
+	// Write to bytes 1, 2, 3 of CMD - should NOT dispatch
 	for _, off := range []uint32{1, 2, 3} {
 		mgr.HandleWrite(COPROC_CMD+off, COPROC_CMD_START)
 		mgr.mu.Lock()
@@ -1261,7 +1261,7 @@ func TestCoprocMMIO_CmdDispatchOnByte0Only(t *testing.T) {
 		mgr.mu.Unlock()
 	}
 
-	// Write to byte 0 — should dispatch and fail (invalid CPU type)
+	// Write to byte 0 - should dispatch and fail (invalid CPU type)
 	mgr.HandleWrite(COPROC_CMD, COPROC_CMD_START)
 	mgr.mu.Lock()
 	if mgr.cmdStatus != COPROC_STATUS_ERROR {
@@ -1370,7 +1370,7 @@ func TestCoprocessorEnqueueFailReturnsZeroTicket(t *testing.T) {
 		t.Fatal("first ticket should be non-zero")
 	}
 
-	// Now remove the worker and enqueue again — should fail
+	// Now remove the worker and enqueue again - should fail
 	mgr.mu.Lock()
 	mgr.workers[EXEC_TYPE_IE32] = nil
 	mgr.mu.Unlock()
@@ -1424,7 +1424,7 @@ func TestCoprocessorCachedStatusSurvivesRingReuse(t *testing.T) {
 	bus.Write32(respAddr+RESP_STATUS_OFF, COPROC_TICKET_OK)
 	bus.Write32(respAddr+RESP_RESP_LEN_OFF, 4)
 
-	// First POLL — should find terminal status and cache it
+	// First POLL - should find terminal status and cache it
 	bus.Write32(COPROC_TICKET, ticket1)
 	bus.Write32(COPROC_CMD, COPROC_CMD_POLL)
 	status1 := bus.Read32(COPROC_TICKET_STATUS)
@@ -1436,7 +1436,7 @@ func TestCoprocessorCachedStatusSurvivesRingReuse(t *testing.T) {
 	bus.Write32(respAddr+RESP_TICKET_OFF, 9999)
 	bus.Write32(respAddr+RESP_STATUS_OFF, COPROC_TICKET_ERROR)
 
-	// Second POLL of ticket1 — should still return OK from cache, NOT regress to PENDING
+	// Second POLL of ticket1 - should still return OK from cache, NOT regress to PENDING
 	bus.Write32(COPROC_TICKET, ticket1)
 	bus.Write32(COPROC_CMD, COPROC_CMD_POLL)
 	status2 := bus.Read32(COPROC_TICKET_STATUS)

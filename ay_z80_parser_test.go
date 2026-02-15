@@ -109,7 +109,7 @@ func TestDetectAYSystem_CPC(t *testing.T) {
 }
 
 func TestDetectAYSystem_FalsePositiveRejected(t *testing.T) {
-	// D3 A0 appears in data but NOT preceded by LD A,n (0x3E) — should NOT detect as MSX
+	// D3 A0 appears in data but NOT preceded by LD A,n (0x3E) - should NOT detect as MSX
 	blocks := []AYZ80Block{{Addr: 0x4000, Data: []byte{0x00, 0x00, 0xD3, 0xA0, 0x00, 0x00, 0xD3, 0xF4, 0xC9}}}
 	system := detectAYSystem(blocks)
 	if system != ayZXSystemSpectrum {

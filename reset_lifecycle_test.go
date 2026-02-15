@@ -169,7 +169,7 @@ func TestCreateCPURunner(t *testing.T) {
 	bus := NewMachineBus()
 	vc, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
 	if err != nil {
-		// In headless mode, video chip creation may fail — skip
+		// In headless mode, video chip creation may fail - skip
 		t.Skipf("NewVideoChip failed (expected in headless): %v", err)
 	}
 

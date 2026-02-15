@@ -8,7 +8,7 @@ import (
 )
 
 func TestPSGPlayCtrlWrites(t *testing.T) {
-	binaryPath := "assembler/robocop_intro.iex"
+	binaryPath := "sdk/examples/prebuilt/robocop_intro.iex"
 	if _, err := os.Stat(binaryPath); os.IsNotExist(err) {
 		t.Skip("robocop_intro.iex not found")
 	}

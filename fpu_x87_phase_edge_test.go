@@ -196,7 +196,7 @@ func TestX87_BinaryOp_InvalidOpSafety(t *testing.T) {
 	st0Before := cpu.FPU.ST(0)
 	st1Before := cpu.FPU.ST(1)
 
-	// Op values 2 and 3 are FCOM/FCOMP — should not perform arithmetic
+	// Op values 2 and 3 are FCOM/FCOMP - should not perform arithmetic
 	cpu.x87BinaryST0STi(2, 1)
 	if cpu.FPU.ST(0) != st0Before {
 		t.Fatalf("op=2 modified ST(0): got %v, want %v", cpu.FPU.ST(0), st0Before)

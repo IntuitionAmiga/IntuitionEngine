@@ -366,7 +366,7 @@ func TestCoprocCallerPlumbing_Z80(t *testing.T) {
 	z80cpu := NewCPU_Z80(z80adapter)
 	go z80cpu.Execute()
 
-	// Z80 HALT doesn't stop execution — it just spins in NOP cycles.
+	// Z80 HALT doesn't stop execution - it just spins in NOP cycles.
 	// Poll Halted flag to detect completion, then stop.
 	deadline := time.After(2 * time.Second)
 	for {
@@ -501,24 +501,24 @@ func TestCoprocCallerPlumbing_M68K(t *testing.T) {
 	bus.Write32(respAddr+RESP_TICKET_OFF, 42)
 	bus.Write32(respAddr+RESP_STATUS_OFF, COPROC_TICKET_OK)
 
-	// M68K program (big-endian byte order — CPU does LE read + ReverseBytes16):
-	//   MOVE.L #42, ($F2350).L       — write ticket = 42
-	//   MOVE.L #4,  ($F2340).L       — write CMD = POLL (triggers dispatch)
-	//   STOP #$2700                  — halt (waits for interrupt)
+	// M68K program (big-endian byte order - CPU does LE read + ReverseBytes16):
+	//   MOVE.L #42, ($F2350).L       - write ticket = 42
+	//   MOVE.L #4,  ($F2340).L       - write CMD = POLL (triggers dispatch)
+	//   STOP #$2700                  - halt (waits for interrupt)
 	//
 	// We verify the MMIO writes landed correctly from Go, then read
 	// TICKET_STATUS directly via bus.Read32 (avoiding M68K big-endian
 	// byte-swap on MMIO reads which requires CoprocMode).
 	code := []byte{
-		// MOVE.L #42, ($000F2350).L  — opcode 0x23FC
+		// MOVE.L #42, ($000F2350).L  - opcode 0x23FC
 		0x23, 0xFC,
 		0x00, 0x00, 0x00, 0x2A, // imm32 = 42
 		0x00, 0x0F, 0x23, 0x50, // addr32 = 0x000F2350
-		// MOVE.L #4, ($000F2340).L   — opcode 0x23FC
+		// MOVE.L #4, ($000F2340).L   - opcode 0x23FC
 		0x23, 0xFC,
 		0x00, 0x00, 0x00, 0x04, // imm32 = 4 (POLL)
 		0x00, 0x0F, 0x23, 0x40, // addr32 = 0x000F2340
-		// STOP #$2700 — halt CPU (waits for interrupt, none will come)
+		// STOP #$2700 - halt CPU (waits for interrupt, none will come)
 		0x4E, 0x72,
 		0x27, 0x00, // SR = 0x2700 (supervisor, IPL=7)
 	}
@@ -588,13 +588,13 @@ func TestCoprocCallerPlumbing_X86(t *testing.T) {
 	bus.Write32(respAddr+RESP_STATUS_OFF, COPROC_TICKET_OK)
 
 	// x86 program (little-endian, native byte order):
-	//   MOV DWORD PTR [0xF2350], 42   — write ticket
-	//   MOV DWORD PTR [0xF2340], 4    — write CMD = POLL
-	//   MOV EAX, [0xF2354]            — read TICKET_STATUS
-	//   MOV [0x500000], EAX           — store result
-	//   HLT                           — halt
+	//   MOV DWORD PTR [0xF2350], 42   - write ticket
+	//   MOV DWORD PTR [0xF2340], 4    - write CMD = POLL
+	//   MOV EAX, [0xF2354]            - read TICKET_STATUS
+	//   MOV [0x500000], EAX           - store result
+	//   HLT                           - halt
 	code := []byte{
-		// MOV DWORD PTR [disp32], imm32 — opcode C7 05
+		// MOV DWORD PTR [disp32], imm32 - opcode C7 05
 		0xC7, 0x05,
 		0x50, 0x23, 0x0F, 0x00, // addr = 0x000F2350
 		0x2A, 0x00, 0x00, 0x00, // imm  = 42
@@ -602,10 +602,10 @@ func TestCoprocCallerPlumbing_X86(t *testing.T) {
 		0xC7, 0x05,
 		0x40, 0x23, 0x0F, 0x00, // addr = 0x000F2340
 		0x04, 0x00, 0x00, 0x00, // imm  = 4 (POLL)
-		// MOV EAX, moffs32 — opcode A1
+		// MOV EAX, moffs32 - opcode A1
 		0xA1,
 		0x54, 0x23, 0x0F, 0x00, // addr = 0x000F2354
-		// MOV moffs32, EAX — opcode A3
+		// MOV moffs32, EAX - opcode A3
 		0xA3,
 		0x00, 0x00, 0x50, 0x00, // addr = 0x00500000
 		// HLT
@@ -889,12 +889,9 @@ func TestCoprocByteLevel_NoWorkerEnqueue(t *testing.T) {
 func TestCoprocGateway_NoExistingConflict(t *testing.T) {
 	// Check for references to the gateway range in assembler source files
 	patterns := []string{
-		"assembler/*.asm",
-		"assembler/*.inc",
-		"assembler/*.ie65",
-		"assembler/*.ie80",
-		"assembler/*.ie68",
-		"assembler/*.bas",
+		"sdk/examples/asm/*.asm",
+		"sdk/include/*.inc",
+		"sdk/examples/asm/*.bas",
 	}
 
 	for _, pattern := range patterns {

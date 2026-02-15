@@ -124,7 +124,7 @@ func findAndValidateSineTable(t *testing.T, data []byte, entryWidth int, bigEndi
 			continue
 		}
 
-		// Candidate found — validate non-decreasing in first quadrant (entries 0..63)
+		// Candidate found - validate non-decreasing in first quadrant (entries 0..63)
 		valid := true
 		for i := 1; i <= 63; i++ {
 			v := readSignedEntry(data, off+i*entryWidth, entryWidth, bigEndian)
@@ -192,7 +192,8 @@ func TestRotozoomerTables(t *testing.T) {
 	refRecip := computeRefRecip()
 
 	root := rotozoomerRepoRoot(t)
-	asmDir := filepath.Join(root, "assembler")
+	asmDir := filepath.Join(root, "sdk", "examples", "asm")
+	incDir := filepath.Join(root, "sdk", "include")
 
 	targets := []cpuTarget{
 		{
@@ -212,7 +213,7 @@ func TestRotozoomerTables(t *testing.T) {
 			entryWidth: 2, bigEndian: false,
 			assemble: func(t *testing.T, src, out string) {
 				ie64asm := buildIE64Assembler(t)
-				cmd := exec.Command(ie64asm, src)
+				cmd := exec.Command(ie64asm, "-I", incDir, src)
 				cmd.Dir = asmDir
 				if o, err := cmd.CombinedOutput(); err != nil {
 					t.Fatalf("ie64asm failed: %v\n%s", err, o)
@@ -233,7 +234,7 @@ func TestRotozoomerTables(t *testing.T) {
 			entryWidth: 2, bigEndian: false,
 			assemble: func(t *testing.T, src, out string) {
 				requireTool(t, "nasm")
-				cmd := exec.Command("nasm", "-f", "bin", "-I", asmDir+"/", "-o", out, src)
+				cmd := exec.Command("nasm", "-f", "bin", "-I", incDir+"/", "-o", out, src)
 				if o, err := cmd.CombinedOutput(); err != nil {
 					t.Fatalf("nasm failed: %v\n%s", err, o)
 				}
@@ -265,7 +266,7 @@ func TestRotozoomerTables(t *testing.T) {
 			entryWidth: 2, bigEndian: false,
 			assemble: func(t *testing.T, src, out string) {
 				requireTool(t, "vasmz80_std")
-				cmd := exec.Command("vasmz80_std", "-Fbin", "-I", asmDir, "-o", out, src)
+				cmd := exec.Command("vasmz80_std", "-Fbin", "-I", incDir, "-o", out, src)
 				if o, err := cmd.CombinedOutput(); err != nil {
 					t.Fatalf("vasmz80_std failed: %v\n%s", err, o)
 				}
@@ -279,11 +280,11 @@ func TestRotozoomerTables(t *testing.T) {
 				requireTool(t, "ld65")
 				tmpDir := t.TempDir()
 				objFile := filepath.Join(tmpDir, "rotozoom.o")
-				cmd := exec.Command("ca65", "-I", asmDir, "-o", objFile, src)
+				cmd := exec.Command("ca65", "-I", incDir, "-o", objFile, src)
 				if o, err := cmd.CombinedOutput(); err != nil {
 					t.Fatalf("ca65 failed: %v\n%s", err, o)
 				}
-				cfgFile := filepath.Join(asmDir, "ie65.cfg")
+				cfgFile := filepath.Join(incDir, "ie65.cfg")
 				cmd = exec.Command("ld65", "-C", cfgFile, "-o", out, objFile)
 				if o, err := cmd.CombinedOutput(); err != nil {
 					t.Fatalf("ld65 failed: %v\n%s", err, o)

@@ -1,11 +1,11 @@
 ; ============================================================================
 ; MODE 7 HARDWARE BLITTER ROTOZOOMER - x86 (32-bit) REFERENCE IMPLEMENTATION
-; NASM Syntax for IntuitionEngine - VideoChip 640x480 True Color
+; NASM Syntax for IntuitionEngine - VideoChip 640x480 True Colour
 ; ============================================================================
 ;
 ; === SDK QUICK REFERENCE ===
 ; Target CPU:    x86 (32-bit protected mode)
-; Video Chip:    IEVideoChip Mode 0 (640x480, 32bpp true color)
+; Video Chip:    IEVideoChip Mode 0 (640x480, 32bpp true colour)
 ; Audio Engine:  PSG (AY-3-8910 compatible)
 ; Assembler:     nasm (Netwide Assembler)
 ; Build:         nasm -f bin -o rotozoomer_x86.ie86 rotozoomer_x86.asm
@@ -35,7 +35,7 @@
 ; dv_col, du_row, dv_row), then the blitter handles all 307,200 pixels in
 ; hardware. This is analogous to how the SNES Mode7 chip enabled F-Zero and
 ; Super Mario Kart -- the CPU sets up the transformation matrix, and
-; dedicated hardware rasterizes the result.
+; dedicated hardware rasterises the result.
 ;
 ; === THE MODE7 AFFINE TRANSFORM ===
 ; Mode7 maps a 2D texture onto the screen using an affine transformation:
@@ -43,7 +43,7 @@
 ;   For each screen pixel (px, py):
 ;     u = u0 + px * du_col + py * du_row
 ;     v = v0 + px * dv_col + py * dv_row
-;     color = texture[u & TEX_W_MASK][v & TEX_H_MASK]
+;     colour = texture[u & TEX_W_MASK][v & TEX_H_MASK]
 ;
 ; The six parameters encode rotation AND scaling simultaneously:
 ;
@@ -182,7 +182,7 @@ bits 32
 ; ENTRY POINT
 ; ============================================================================
 ; The CPU begins execution here after loading the binary.
-; We initialize all hardware subsystems in a specific order:
+; We initialise all hardware subsystems in a specific order:
 ;   1. Stack pointer (MUST be first -- all CALL/RET depend on it)
 ;   2. VideoChip enable (required before any blitter operations)
 ;   3. Texture generation (blitter fills to create checkerboard)
@@ -191,7 +191,7 @@ bits 32
 ; ============================================================================
 
 start:
-                ; --- Initialize Stack Pointer ---
+                ; --- Initialise Stack Pointer ---
                 ; x86 uses a descending stack: ESP starts high, PUSH decrements it.
                 ; STACK_TOP (0xFF0000 from ie86.inc) provides ample space above
                 ; our code and below the MMIO registers (0xF0000+).
@@ -202,7 +202,7 @@ start:
                 ; --- Enable VideoChip ---
                 ; The VideoChip (at VIDEO_CTRL / 0xF0000) manages the display and
                 ; contains the blitter hardware. Writing 1 enables it; writing 0
-                ; to VIDEO_MODE selects the default 640x480 true-color mode.
+                ; to VIDEO_MODE selects the default 640x480 true-colour mode.
                 ; CRITICAL: The blitter will silently do nothing if the VideoChip
                 ; is not enabled. This is a common "nothing appears on screen" bug.
                 mov dword [VIDEO_CTRL], 1
@@ -214,7 +214,7 @@ start:
                 ; mapped onto the screen by the Mode7 blitter every frame.
                 call generate_texture
 
-                ; --- Initialize Animation Accumulators ---
+                ; --- Initialise Animation Accumulators ---
                 ; Both start at zero: angle_accum controls rotation, scale_accum
                 ; controls the zoom oscillation. They increment each frame by
                 ; ANGLE_INC and SCALE_INC respectively.
@@ -251,7 +251,7 @@ start:
 ; ============================================================================
 ; MAIN LOOP
 ; ============================================================================
-; Runs once per frame at 60 FPS (synchronized by wait_vsync).
+; Runs once per frame at 60 FPS (synchronised by wait_vsync).
 ;
 ; The frame pipeline:
 ;   1. compute_frame:     CPU work (~6 multiplies, ~20 shifts/adds)
@@ -277,7 +277,7 @@ main_loop:
 ; ============================================================================
 ; WAIT FOR VSYNC (Two-Phase Vertical Blank Synchronization)
 ; ============================================================================
-; Synchronizes the main loop to the display's 60 Hz refresh rate.
+; Synchronises the main loop to the display's 60 Hz refresh rate.
 ; Without vsync, the main loop would run as fast as possible, causing:
 ;   - Visual tearing (blit_to_front updating VRAM mid-scanout)
 ;   - Inconsistent animation speed (varies with CPU speed)
@@ -291,7 +291,7 @@ main_loop:
 ;   Phase 1 (.wait_end):  Spin while vblank is ACTIVE (wait for it to end)
 ;   Phase 2 (.wait_start): Spin until vblank BEGINS (catch the leading edge)
 ;
-; This ensures we always synchronize to the START of vblank, regardless
+; This ensures we always synchronise to the START of vblank, regardless
 ; of where we happen to be in the refresh cycle when we enter this routine.
 ;
 ; WHY `test eax, N` FOR BIT CHECKS:
@@ -324,7 +324,7 @@ wait_vsync:
 ;   3. Tiling is seamless (the pattern wraps naturally at 256-pixel boundaries)
 ;
 ; WHY 4x BLIT FILL (NOT SOFTWARE):
-; The blitter hardware can fill a rectangular region with a solid color in
+; The blitter hardware can fill a rectangular region with a solid colour in
 ; a single operation, far faster than a CPU loop writing individual pixels.
 ; We use 4 fills to create the 2x2 checkerboard pattern:
 ;
@@ -972,5 +972,5 @@ recip_table:
 ; ============================================================================
 
 psg_data:
-                incbin "../assets/OverscanScreen.ym"
+                incbin "../assets/music/OverscanScreen.ym"
 psg_data_end:

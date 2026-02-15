@@ -164,7 +164,7 @@ func (u *ULAEngine) HandleRead(addr uint32) uint32 {
 	case ULA_CTRL:
 		return uint32(u.control)
 	case ULA_STATUS:
-		// Return vblank status and clear it (acknowledge) — atomic swap
+		// Return vblank status and clear it (acknowledge) - atomic swap
 		if u.vblankActive.Swap(false) {
 			return ULA_STATUS_VBLANK
 		}
@@ -368,7 +368,7 @@ func (u *ULAEngine) GetDimensions() (w, h int) {
 // SignalVSync is called by compositor after frame sent.
 // Sets VBlank flag (lock-free) and handles flash timing.
 func (u *ULAEngine) SignalVSync() {
-	// Set VBlank flag — lock-free
+	// Set VBlank flag - lock-free
 	u.vblankActive.Store(true)
 
 	// Flash state is compositor-only, no lock needed

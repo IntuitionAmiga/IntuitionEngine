@@ -2700,7 +2700,7 @@
     STORE32 COPROC_CMD COPROC_CMD_STOP
 .endm
 
-; Enqueue a request — ticket returned via COPROC_TICKET (read 4 bytes)
+; Enqueue a request - ticket returned via COPROC_TICKET (read 4 bytes)
 .macro coproc_enqueue cpuType op reqPtr reqLen respPtr respCap
     STORE32 COPROC_CPU_TYPE \cpuType
     STORE32 COPROC_OP \op
@@ -2711,7 +2711,7 @@
     STORE32 COPROC_CMD COPROC_CMD_ENQUEUE
 .endm
 
-; Poll ticket status — result at COPROC_TICKET_STATUS
+; Poll ticket status - result at COPROC_TICKET_STATUS
 .macro coproc_poll ticket
     STORE32 COPROC_TICKET \ticket
     STORE32 COPROC_CMD COPROC_CMD_POLL

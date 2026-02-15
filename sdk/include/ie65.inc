@@ -2594,7 +2594,7 @@ COPROC_CPU_X86        = 6
     STORE32 COPROC_CMD, COPROC_CMD_STOP
 .endmacro
 
-; Enqueue a request — ticket returned via COPROC_TICKET (read 4 bytes)
+; Enqueue a request - ticket returned via COPROC_TICKET (read 4 bytes)
 .macro COPROC_ENQUEUE cpuType, op, reqPtr, reqLen, respPtr, respCap
     STORE32 COPROC_CPU_TYPE, cpuType
     STORE32 COPROC_OP, op
@@ -2605,7 +2605,7 @@ COPROC_CPU_X86        = 6
     STORE32 COPROC_CMD, COPROC_CMD_ENQUEUE
 .endmacro
 
-; Poll ticket status — result at COPROC_TICKET_STATUS
+; Poll ticket status - result at COPROC_TICKET_STATUS
 .macro COPROC_POLL ticket
     STORE32 COPROC_TICKET, ticket
     STORE32 COPROC_CMD, COPROC_CMD_POLL

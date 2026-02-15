@@ -8,5 +8,5 @@ func init() {
 	compiledFeatures = append(compiledFeatures, "basic:embedded")
 }
 
-//go:embed assembler/ehbasic_ie64.ie64
+//go:embed sdk/examples/asm/ehbasic_ie64.ie64
 var embeddedBasicImage []byte

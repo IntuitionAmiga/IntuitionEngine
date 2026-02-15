@@ -83,7 +83,7 @@ const (
 	szQ byte = 3 // .Q  (default)
 )
 
-// IE64 opcodes — must match the constants defined in ie64asm.go.
+// IE64 opcodes - must match the constants defined in ie64asm.go.
 const (
 	opMOVE  = 0x01
 	opMOVT  = 0x02
@@ -171,7 +171,7 @@ func assertBytes(t *testing.T, got []byte, offset int, expected []byte, label st
 	t.Helper()
 	end := offset + len(expected)
 	if end > len(got) {
-		t.Fatalf("%s: output too short — want %d bytes at offset %d, got %d total bytes",
+		t.Fatalf("%s: output too short - want %d bytes at offset %d, got %d total bytes",
 			label, len(expected), offset, len(got))
 	}
 	actual := got[offset:end]
@@ -196,7 +196,7 @@ func assertLen(t *testing.T, got []byte, want int, label string) {
 func TestIE64Asm_Org(t *testing.T) {
 	// Origin only affects address calculations; the binary output starts at
 	// offset 0 regardless.  We verify by placing a label at the org address
-	// and using it as an immediate — the label value should equal the org.
+	// and using it as an immediate - the label value should equal the org.
 	src := `
 		org $2000
 start:
@@ -578,7 +578,7 @@ func TestIE64Asm_Expr_UnaryNot(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestIE64Asm_Move_Reg(t *testing.T) {
-	// move.q r1, r2 — register-to-register
+	// move.q r1, r2 - register-to-register
 	src := "move.q r1, r2"
 	bin := assembleString(t, src)
 	// opcode=MOVE, rd=1, size=Q(3), X=0, rs=2, rt=0, imm=0
@@ -587,7 +587,7 @@ func TestIE64Asm_Move_Reg(t *testing.T) {
 }
 
 func TestIE64Asm_Move_Imm(t *testing.T) {
-	// move.q r1, #$42 — immediate
+	// move.q r1, #$42 - immediate
 	src := "move.q r1, #$42"
 	bin := assembleString(t, src)
 	want := encodeInstr(opMOVE, 1, szQ, 1, 0, 0, 0x42)
@@ -595,7 +595,7 @@ func TestIE64Asm_Move_Imm(t *testing.T) {
 }
 
 func TestIE64Asm_Movt(t *testing.T) {
-	// movt r1, #$CAFE — move to top half
+	// movt r1, #$CAFE - move to top half
 	src := "movt r1, #$CAFE"
 	bin := assembleString(t, src)
 	want := encodeInstr(opMOVT, 1, szQ, 1, 0, 0, 0xCAFE)
@@ -603,7 +603,7 @@ func TestIE64Asm_Movt(t *testing.T) {
 }
 
 func TestIE64Asm_Moveq(t *testing.T) {
-	// moveq r1, #-1 — quick move (sign-extended)
+	// moveq r1, #-1 - quick move (sign-extended)
 	src := "moveq r1, #-1"
 	bin := assembleString(t, src)
 	want := encodeInstr(opMOVEQ, 1, szQ, 1, 0, 0, 0xFFFFFFFF)
@@ -611,13 +611,13 @@ func TestIE64Asm_Moveq(t *testing.T) {
 }
 
 func TestIE64Asm_Load(t *testing.T) {
-	// load.l r1, (r2) — base register, no offset
+	// load.l r1, (r2) - base register, no offset
 	src := "load.l r1, (r2)"
 	bin := assembleString(t, src)
 	want := encodeInstr(opLOAD, 1, szL, 0, 2, 0, 0)
 	assertBytes(t, bin, 0, want, "load.l r1, (r2)")
 
-	// load.l r1, 8(r2) — base + displacement
+	// load.l r1, 8(r2) - base + displacement
 	src = "load.l r1, 8(r2)"
 	bin = assembleString(t, src)
 	want = encodeInstr(opLOAD, 1, szL, 1, 2, 0, 8)
@@ -625,13 +625,13 @@ func TestIE64Asm_Load(t *testing.T) {
 }
 
 func TestIE64Asm_Store(t *testing.T) {
-	// store.l r1, (r2) — base register, no offset
+	// store.l r1, (r2) - base register, no offset
 	src := "store.l r1, (r2)"
 	bin := assembleString(t, src)
 	want := encodeInstr(opSTORE, 1, szL, 0, 2, 0, 0)
 	assertBytes(t, bin, 0, want, "store.l r1, (r2)")
 
-	// store.l r1, 8(r2) — base + displacement
+	// store.l r1, 8(r2) - base + displacement
 	src = "store.l r1, 8(r2)"
 	bin = assembleString(t, src)
 	want = encodeInstr(opSTORE, 1, szL, 1, 2, 0, 8)
@@ -639,7 +639,7 @@ func TestIE64Asm_Store(t *testing.T) {
 }
 
 func TestIE64Asm_Lea(t *testing.T) {
-	// lea r1, 16(r2) — load effective address
+	// lea r1, 16(r2) - load effective address
 	src := "lea r1, 16(r2)"
 	bin := assembleString(t, src)
 	want := encodeInstr(opLEA, 1, szQ, 1, 2, 0, 16)
@@ -647,7 +647,7 @@ func TestIE64Asm_Lea(t *testing.T) {
 }
 
 func TestIE64Asm_Add_Reg(t *testing.T) {
-	// add.q r1, r2, r3 — three-register
+	// add.q r1, r2, r3 - three-register
 	src := "add.q r1, r2, r3"
 	bin := assembleString(t, src)
 	want := encodeInstr(opADD, 1, szQ, 0, 2, 3, 0)
@@ -655,7 +655,7 @@ func TestIE64Asm_Add_Reg(t *testing.T) {
 }
 
 func TestIE64Asm_Add_Imm(t *testing.T) {
-	// add.q r1, r2, #10 — register + immediate
+	// add.q r1, r2, #10 - register + immediate
 	src := "add.q r1, r2, #10"
 	bin := assembleString(t, src)
 	want := encodeInstr(opADD, 1, szQ, 1, 2, 0, 10)
@@ -782,7 +782,7 @@ label:
 }
 
 func TestIE64Asm_Bra(t *testing.T) {
-	// bra label — unconditional, forward reference
+	// bra label - unconditional, forward reference
 	// bra @ $1000, nop @ $1008, label: @ $1010
 	// Offset = $1010 - $1000 = 16 = 0x10
 	src := `
@@ -798,8 +798,8 @@ label:
 }
 
 func TestIE64Asm_Jsr_Rts(t *testing.T) {
-	// jsr target — similar to bra but saves return address
-	// rts — return from subroutine (no operands)
+	// jsr target - similar to bra but saves return address
+	// rts - return from subroutine (no operands)
 	src := `
 		jsr sub
 		halt
@@ -842,7 +842,7 @@ func TestIE64Asm_System(t *testing.T) {
 		{"sei", opSEI},
 		{"cli", opCLI},
 		{"rti", opRTI},
-		// wait removed — it requires an operand and sets xbit=1, tested separately
+		// wait removed - it requires an operand and sets xbit=1, tested separately
 	}
 	for _, tc := range mnemonics {
 		bin := assembleString(t, tc.mnem)
@@ -1290,7 +1290,7 @@ start:
 	// 16: move.q r3, #$1F
 	assertBytes(t, bin, 16, encodeInstr(opMOVE, 3, szQ, 1, 0, 0, 0x1F), "move.q r3, #$1F")
 
-	// 24: store.b r3, (r1) — size .b = 0, X=0 (register indirect, no offset)
+	// 24: store.b r3, (r1) - size .b = 0, X=0 (register indirect, no offset)
 	assertBytes(t, bin, 24, encodeInstr(opSTORE, 3, szB, 0, 1, 0, 0), "store.b r3, (r1)")
 
 	// 32: add.q r1, r1, #1
@@ -1302,7 +1302,7 @@ start:
 	// 48: bnez r2, .loop => bne r2, r0, .loop
 	// .loop @ $1018 ($1000 + 3*8 = $1018), bnez @ $1030 ($1000 + 6*8 = $1030)
 	// offset = $1018 - $1030 = -24 = 0xFFFFFFE8
-	// bnez r2, .loop => bne r2, r0 — CPU uses rs (byte2) for first reg
+	// bnez r2, .loop => bne r2, r0 - CPU uses rs (byte2) for first reg
 	assertBytes(t, bin, 48, encodeInstr(opBNE, 0, szQ, 0, 2, 0, 0xFFFFFFE8), "bnez r2, .loop")
 
 	// 56: halt
@@ -1489,7 +1489,7 @@ func TestIE64Asm_Jmp_Error_NoOperand(t *testing.T) {
 }
 
 func TestIE64Asm_Jmp_Error_Label(t *testing.T) {
-	// jmp label should error — use bra for label-based jumps
+	// jmp label should error - use bra for label-based jumps
 	assembleExpectError(t, "jmp target\ntarget:\nhalt")
 }
 

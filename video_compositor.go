@@ -338,7 +338,7 @@ func (c *VideoCompositor) compositeScanlineAware() bool {
 // compositeFullFrame performs full-frame compositing with sequential frame collection
 func (c *VideoCompositor) compositeFullFrame() {
 	// Collect enabled sources and fetch frames sequentially
-	// (GetFrame is a single atomic swap — goroutine overhead far exceeds the work)
+	// (GetFrame is a single atomic swap - goroutine overhead far exceeds the work)
 	hasContent := false
 	for _, source := range c.sources {
 		if !source.IsEnabled() {

@@ -111,7 +111,7 @@ type MachineBus struct {
 	memory  []byte
 	mapping map[uint32][]IORegion
 
-	// Fast I/O page bitmap — indexed by (addr >> 8), true if page has I/O mappings.
+	// Fast I/O page bitmap - indexed by (addr >> 8), true if page has I/O mappings.
 	// Sized for the normal address range only (DEFAULT_MEMORY_SIZE / PAGE_SIZE).
 	// Sign-extended pages (0xFFFF0000+) use the slow path before this is consulted.
 	ioPageBitmap []bool
@@ -119,7 +119,7 @@ type MachineBus struct {
 	// Lock-free fast path for VIDEO_STATUS (allows VBlank polling without blocking)
 	videoStatusReader func(addr uint32) uint32
 
-	// 64-bit I/O region map — separate from legacy 32-bit mapping.
+	// 64-bit I/O region map - separate from legacy 32-bit mapping.
 	// Registered via MapIO64, used by Read64/Write64 for native 64-bit dispatch.
 	mapping64 map[uint32][]IORegion64
 
@@ -1439,7 +1439,7 @@ func (bus *MachineBus) write32Half(addr uint32, value uint32) {
 	region64 := bus.findIORegion64(addr)
 	if region64 != nil && region64.onWrite64 != nil {
 		base := addr &^ 7 // align down to 8-byte boundary
-		// Read current 64-bit value from backing memory (not device — avoids
+		// Read current 64-bit value from backing memory (not device - avoids
 		// side effects from onRead64 such as clear-on-read or FIFO pop)
 		var current uint64
 		if base+8 <= uint32(len(bus.memory)) {

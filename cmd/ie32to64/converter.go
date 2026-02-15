@@ -123,7 +123,7 @@ func ClassifyOperand(op string) OperandType {
 	if strings.HasPrefix(op, "[") {
 		return OpRegIndirect
 	}
-	return OpBare // Could be register or bare — caller disambiguates
+	return OpBare // Could be register or bare - caller disambiguates
 }
 
 // ClassifyOperandWithReg classifies an operand, distinguishing registers from bare values.
@@ -216,7 +216,7 @@ func (c *Converter) ConvertLine(rawLine string) []string {
 		return []string{""}
 	}
 
-	// Comment-only line — preserve verbatim
+	// Comment-only line - preserve verbatim
 	if strings.HasPrefix(trimmed, ";") {
 		return []string{rawLine}
 	}
@@ -448,7 +448,7 @@ func (c *Converter) convertLoad(destReg, operand, indent, sz string) []string {
 		srcReg, _ := c.MapRegister(operand)
 		return []string{indent + "move" + sz + " " + destReg + ", " + srcReg}
 
-	default: // OpBare — immediate per IE32 semantics
+	default: // OpBare - immediate per IE32 semantics
 		return []string{indent + "move" + sz + " " + destReg + ", #" + operand}
 	}
 }
@@ -482,7 +482,7 @@ func (c *Converter) convertGenericLoad(destReg, operand, indent, sz string) []st
 		srcReg, _ := c.MapRegister(operand)
 		return []string{indent + "move" + sz + " " + destReg + ", " + srcReg}
 
-	default: // OpBare — immediate per IE32 semantics
+	default: // OpBare - immediate per IE32 semantics
 		return []string{indent + "move" + sz + " " + destReg + ", #" + operand}
 	}
 }
@@ -509,7 +509,7 @@ func (c *Converter) convertStore(srcReg, operand, indent, sz string) []string {
 		}
 		return []string{indent + "store" + sz + " " + srcReg + ", (" + reg + ")"}
 
-	default: // OpBare and OpImmediate — STORE always writes to memory
+	default: // OpBare and OpImmediate - STORE always writes to memory
 		addr := operand
 		if strings.HasPrefix(addr, "#") {
 			addr = addr[1:]
@@ -557,7 +557,7 @@ func (c *Converter) convertALU(ie64op, destReg, operand, indent, sz string) []st
 			indent + ie64op + sz + " " + destReg + ", " + destReg + ", r17",
 		}
 
-	default: // OpBare — immediate per IE32 semantics
+	default: // OpBare - immediate per IE32 semantics
 		return []string{indent + ie64op + sz + " " + destReg + ", " + destReg + ", #" + operand}
 	}
 }
@@ -614,7 +614,7 @@ func (c *Converter) convertWait(operand, indent string) []string {
 		return c.emitError(indent, "WAIT "+op, "IE64 wait only accepts immediate operand; direct memory operand cannot be converted")
 	case OpRegIndirect:
 		return c.emitError(indent, "WAIT "+op, "IE64 wait only accepts immediate operand; register-indirect operand cannot be converted")
-	default: // OpBare — immediate per IE32 semantics, prepend #
+	default: // OpBare - immediate per IE32 semantics, prepend #
 		return []string{indent + "wait #" + op}
 	}
 }
@@ -679,6 +679,6 @@ func splitOperands(s string) []string {
 		}
 	}
 
-	// No comma found — single operand
+	// No comma found - single operand
 	return []string{s}
 }

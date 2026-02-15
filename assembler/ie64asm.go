@@ -13,7 +13,7 @@
  ▒ ░   ░   ░ ░   ░       ░░░ ░ ░  ▒ ░  ░       ▒ ░░ ░ ░ ▒     ░   ░ ░       ░      ░   ░ ░ ░ ░   ░  ▒ ░   ░   ░ ░    ░
  ░           ░             ░      ░            ░      ░ ░           ░       ░  ░         ░       ░  ░           ░    ░  ░
 
-IE64 Assembler — 64-bit RISC CPU assembler for the Intuition Engine
+IE64 Assembler - 64-bit RISC CPU assembler for the Intuition Engine
 (c) 2024 - 2026 Zayn Otley
 https://github.com/IntuitionAmiga/IntuitionEngine
 License: GPLv3 or later
@@ -37,31 +37,31 @@ Registers: r0-r31 (sp = r31)
 Assembler Syntax (68K-flavored, case-insensitive mnemonics/registers/directives):
 
   Directives:
-    org $addr             — set origin
-    NAME equ value        — define constant (case-sensitive name)
-    NAME set value        — define reassignable constant (case-sensitive name)
-    dc.b val,...          — byte data (supports "string" with escapes)
-    dc.w val,...          — 16-bit LE data
-    dc.l val,...          — 32-bit LE data
-    dc.q val,...          — 64-bit LE data
-    ds.b n                — reserve n zero bytes
-    ds.w n                — reserve n*2 zero bytes
-    ds.l n                — reserve n*4 zero bytes
-    ds.q n                — reserve n*8 zero bytes
-    align n               — align to n-byte boundary
-    incbin "file"         — include binary file
-    incbin "file",off,len — include binary file with offset and length
-    include "file"        — include source file (circular detection)
+    org $addr             - set origin
+    NAME equ value        - define constant (case-sensitive name)
+    NAME set value        - define reassignable constant (case-sensitive name)
+    dc.b val,...          - byte data (supports "string" with escapes)
+    dc.w val,...          - 16-bit LE data
+    dc.l val,...          - 32-bit LE data
+    dc.q val,...          - 64-bit LE data
+    ds.b n                - reserve n zero bytes
+    ds.w n                - reserve n*2 zero bytes
+    ds.l n                - reserve n*4 zero bytes
+    ds.q n                - reserve n*8 zero bytes
+    align n               - align to n-byte boundary
+    incbin "file"         - include binary file
+    incbin "file",off,len - include binary file with offset and length
+    include "file"        - include source file (circular detection)
 
   Labels:
-    global_label:         — global label (case-sensitive)
-    .local_label:         — local label (scoped to preceding global)
+    global_label:         - global label (case-sensitive)
+    .local_label:         - local label (scoped to preceding global)
 
   Macros:
     name   macro
            instr \1, \2   ; parameters \1..\9
            endm
-    narg                  — parameter count within macro body
+    narg                  - parameter count within macro body
 
   Conditional Assembly:
     if expr / else / endif
@@ -775,7 +775,7 @@ func (p *exprParser) parseExprAtom() (int64, error) {
 		}
 		name := p.input[start:p.pos]
 
-		// Check for narg pseudo-symbol (handled by macro expansion — should be resolved already)
+		// Check for narg pseudo-symbol (handled by macro expansion - should be resolved already)
 		if strings.ToLower(name) == "narg" {
 			// narg is replaced during macro expansion; if we get here, it's 0
 			return 0, nil
@@ -799,7 +799,7 @@ func (p *exprParser) parseExprAtom() (int64, error) {
 			return int64(val), nil
 		}
 
-		// On pass 1, unresolved labels are expected — return 0
+		// On pass 1, unresolved labels are expected - return 0
 		if p.asm.pass <= 1 {
 			return 0, nil
 		}
@@ -1232,7 +1232,7 @@ func (a *IE64Assembler) expandPseudo(line string) []string {
 		// Try to evaluate
 		val, err := a.evalExprUint64(immStr)
 		if err != nil {
-			// On pass 1, might not resolve — emit two instructions to be safe
+			// On pass 1, might not resolve - emit two instructions to be safe
 			return []string{
 				fmt.Sprintf("\tmove.l %s, #%s", rd, immStr),
 				fmt.Sprintf("\tmovt %s, #0", rd),
@@ -1413,7 +1413,7 @@ func calcDCBSize(rest string) uint32 {
 				i++ // skip closing quote
 			}
 		} else {
-			// Numeric value — skip to next comma or end
+			// Numeric value - skip to next comma or end
 			for i < len(rest) && rest[i] != ',' {
 				i++
 			}
@@ -1740,7 +1740,7 @@ func isDirective(lower string) bool {
 }
 
 // ---------------------------------------------------------------------
-// assembleLine — pass 2 code generation for a single line
+// assembleLine - pass 2 code generation for a single line
 // ---------------------------------------------------------------------
 
 func (a *IE64Assembler) assembleLine(trimmed string, program []byte) error {
@@ -1903,7 +1903,7 @@ func (a *IE64Assembler) parseDCB(rest string) []byte {
 			data = append(data, strBytes...)
 			i++ // skip closing quote
 		} else {
-			// Numeric value — find end
+			// Numeric value - find end
 			start := i
 			for i < len(rest) && rest[i] != ',' {
 				i++

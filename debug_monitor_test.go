@@ -664,7 +664,7 @@ func TestStableCPUIDs(t *testing.T) {
 	// Unregister id:1
 	mon.UnregisterCPU(1)
 
-	// Register another — should get id:3 (never reuse)
+	// Register another - should get id:3 (never reuse)
 	cpu4 := NewCPU64(bus)
 	cpu4.running.Store(false)
 	id3 := mon.RegisterCPU("M68K", NewDebugIE64(cpu4))
@@ -1611,7 +1611,7 @@ func TestCoprocessorDiscovery(t *testing.T) {
 	mon.state = MonitorActive
 	mon.mu.Unlock()
 
-	// Run cpu command (no lock needed — ExecuteCommand takes lock internally in cmdCPU)
+	// Run cpu command (no lock needed - ExecuteCommand takes lock internally in cmdCPU)
 	mon.mu.Lock()
 	mon.outputLines = nil
 	mon.cmdCPU(MonitorCommand{Name: "cpu"})
@@ -1663,7 +1663,7 @@ func TestBreakpointStepHit(t *testing.T) {
 	bpAddr := uint64(PROG_START + 16)
 	adapter.SetBreakpoint(bpAddr)
 
-	// Step through instructions manually — breakpoint should not prevent
+	// Step through instructions manually - breakpoint should not prevent
 	// stepping (breakpoints are checked by trapLoop, not Step).
 	// Step 1: NOP at PROG_START
 	adapter.Step()
@@ -1677,12 +1677,12 @@ func TestBreakpointStepHit(t *testing.T) {
 		t.Fatalf("After step 2, PC = %X, expected %X", cpu.PC, PROG_START+16)
 	}
 
-	// Now PC is at the breakpoint address — verify the breakpoint exists
+	// Now PC is at the breakpoint address - verify the breakpoint exists
 	if !adapter.HasBreakpoint(bpAddr) {
 		t.Fatal("Expected breakpoint at target address")
 	}
 
-	// Step again — Step() doesn't check breakpoints, so it should execute
+	// Step again - Step() doesn't check breakpoints, so it should execute
 	adapter.Step()
 	if cpu.PC != PROG_START+24 {
 		t.Fatalf("After step 3, PC = %X, expected %X", cpu.PC, PROG_START+24)
@@ -1716,7 +1716,7 @@ func TestBreakpointConcurrency(t *testing.T) {
 	// Set an initial breakpoint far away so trap mode is active but won't fire
 	adapter.SetBreakpoint(0xFFFFFF)
 
-	// Resume CPU — enters trap mode because breakpoints exist
+	// Resume CPU - enters trap mode because breakpoints exist
 	adapter.Resume()
 
 	// Concurrently set and clear breakpoints while CPU is running
@@ -1733,7 +1733,7 @@ func TestBreakpointConcurrency(t *testing.T) {
 	// Wait for concurrent operations to complete
 	select {
 	case <-done:
-		// Success — no data race or deadlock
+		// Success - no data race or deadlock
 	case <-time.After(5 * time.Second):
 		t.Fatal("Timeout: concurrent breakpoint operations deadlocked")
 	}
@@ -1855,12 +1855,12 @@ func TestBreakpointAutoActivationPreservesFrozenState(t *testing.T) {
 	// Clear breakpoints so Deactivate's Resume won't re-trigger immediately
 	adapter1.ClearAllBreakpoints()
 
-	// Deactivate — should only resume CPUs that were genuinely running
+	// Deactivate - should only resume CPUs that were genuinely running
 	mon.Deactivate()
 
-	// CPU 0 was frozen before the breakpoint — it must NOT be resumed
+	// CPU 0 was frozen before the breakpoint - it must NOT be resumed
 	if adapter0.IsRunning() {
-		t.Error("CPU 0 should remain frozen — it was not running before the breakpoint")
+		t.Error("CPU 0 should remain frozen - it was not running before the breakpoint")
 	}
 }
 
@@ -1945,7 +1945,7 @@ func TestSoundChipFreezeBlocksOutput(t *testing.T) {
 	}
 	chip.enabled.Store(true)
 
-	// Generate a sample with audio enabled — should produce some output
+	// Generate a sample with audio enabled - should produce some output
 	// (may be zero if no channels configured, but the path runs)
 	_ = chip.ReadSample()
 
@@ -2112,7 +2112,7 @@ func TestCoprocWorkerPauseTimeout(t *testing.T) {
 	worker := &CoprocWorker{
 		cpuType:   EXEC_TYPE_IE32,
 		monitorID: -1,
-		stopCPU:   func() {},            // no-op — won't actually stop
+		stopCPU:   func() {},            // no-op - won't actually stop
 		execCPU:   func() { select {} }, // blocks forever
 		done:      done,
 		stop:      func() {},
@@ -2152,7 +2152,7 @@ func TestCoprocWorkerFreezeViaAdapterZ80(t *testing.T) {
 
 	time.Sleep(10 * time.Millisecond)
 
-	// Freeze via the debug adapter — should not panic
+	// Freeze via the debug adapter - should not panic
 	worker.debugCPU.Freeze()
 
 	// Worker should be frozen
@@ -2450,7 +2450,7 @@ func TestCoprocWorkerReplaceUnregisters(t *testing.T) {
 	mgr.mu.Unlock()
 	oldID := w1.monitorID
 
-	// Create a second worker of the same type — should unregister the old one
+	// Create a second worker of the same type - should unregister the old one
 	w2, err := mgr.createWorkerAndRegister(EXEC_TYPE_IE32, code)
 	if err != nil {
 		t.Fatalf("second createWorkerAndRegister: %v", err)
@@ -2604,7 +2604,7 @@ func TestCoprocWorkerTrapLoopWhileFrozen(t *testing.T) {
 	// Set a breakpoint at address 0 (the loop address)
 	worker.debugCPU.SetBreakpoint(0)
 
-	// Resume — should launch trapLoop, NOT the worker goroutine.
+	// Resume - should launch trapLoop, NOT the worker goroutine.
 	// Worker stays frozen because trapLoop drives execution directly.
 	worker.debugCPU.Resume()
 
@@ -2664,7 +2664,7 @@ func TestCoprocWorkerStopDuringTrapLoop(t *testing.T) {
 	// Set breakpoint at an address the CPU will never reach (far away)
 	worker.debugCPU.SetBreakpoint(0x1000)
 
-	// Resume with breakpoints — trapLoop drives execution
+	// Resume with breakpoints - trapLoop drives execution
 	worker.debugCPU.Resume()
 
 	// Give trapLoop time to start stepping
@@ -2675,7 +2675,7 @@ func TestCoprocWorkerStopDuringTrapLoop(t *testing.T) {
 		t.Fatal("CPU should be running via trapLoop")
 	}
 
-	// Freeze the adapter — this should close trapStop and wait for trapLoop to exit
+	// Freeze the adapter - this should close trapStop and wait for trapLoop to exit
 	worker.debugCPU.Freeze()
 
 	// After Freeze, trapLoop should have exited
@@ -2683,7 +2683,7 @@ func TestCoprocWorkerStopDuringTrapLoop(t *testing.T) {
 		t.Error("CPU should not be running after Freeze() during trapLoop")
 	}
 
-	// Worker is still frozen — clean up by stopping CPU
+	// Worker is still frozen - clean up by stopping CPU
 	worker.stopCPU()
 	select {
 	case <-worker.done:
@@ -2868,7 +2868,7 @@ func TestCoprocNoDeadlock(t *testing.T) {
 		}
 	}()
 
-	// Both goroutines must finish within timeout — no deadlock
+	// Both goroutines must finish within timeout - no deadlock
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
@@ -2887,7 +2887,7 @@ func TestCoprocStopAllTimeout(t *testing.T) {
 	worker := &CoprocWorker{
 		cpuType:   EXEC_TYPE_IE32,
 		monitorID: -1,
-		stopCPU:   func() {},            // no-op — won't actually stop
+		stopCPU:   func() {},            // no-op - won't actually stop
 		execCPU:   func() { select {} }, // blocks forever
 		done:      done,
 		stop:      func() {},
@@ -4481,7 +4481,7 @@ func TestTraceRespectsBreakpointConditions(t *testing.T) {
 	cond, _ := ParseCondition("r1==$FF")
 	entry.CPU.SetConditionalBreakpoint(bpAddr, cond)
 
-	// Trace 10 instructions — should NOT stop at the conditional breakpoint
+	// Trace 10 instructions - should NOT stop at the conditional breakpoint
 	// because r1 != $FF
 	mon.mu.Lock()
 	mon.outputLines = nil
@@ -4543,7 +4543,7 @@ func TestBackstepPerCPU(t *testing.T) {
 	mon.ExecuteCommand("s")
 	mon.mu.Unlock()
 
-	// Now backstep on cpu1 — should only restore cpu1's state, not cpu0's
+	// Now backstep on cpu1 - should only restore cpu1's state, not cpu0's
 	mon.mu.Lock()
 	mon.focusedID = id1
 	mon.ExecuteCommand("bs")

@@ -190,7 +190,7 @@ func (t *TEDVideoEngine) HandleRead(addr uint32) uint32 {
 		}
 		return 0
 	case TED_V_STATUS:
-		// Return and clear vblank flag — atomic swap
+		// Return and clear vblank flag - atomic swap
 		if t.vblankActive.Swap(false) {
 			return TED_V_STATUS_VBLANK
 		}
@@ -349,7 +349,7 @@ func (t *TEDVideoEngine) RenderFrame() []byte {
 			// Get character code from video matrix
 			charCode := t.snapVram[matrixRowBase+cellX]
 
-			// Get foreground color from color RAM — pack as uint32
+			// Get foreground color from color RAM - pack as uint32
 			fgColorByte := t.snapVram[colorRowBase+cellX]
 			fgIdx := fgColorByte & 0x7F
 			fgC := TEDPalette[fgIdx]
@@ -504,7 +504,7 @@ func (t *TEDVideoEngine) GetDimensions() (w, h int) {
 // SignalVSync is called by compositor after frame sent
 // Sets VBlank flag (lock-free) and handles cursor blink timing
 func (t *TEDVideoEngine) SignalVSync() {
-	// Set VBlank flag — lock-free
+	// Set VBlank flag - lock-free
 	t.vblankActive.Store(true)
 
 	// Cursor blink and raster line are compositor-only state

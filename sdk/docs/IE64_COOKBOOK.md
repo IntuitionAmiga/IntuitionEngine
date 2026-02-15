@@ -175,7 +175,7 @@ must be preserved by the called function.
 ### Leaf function (no nested calls, no callee-saved registers used)
 
 ```asm
-; int add_two(int a, int b) — args in r8, r9; result in r8
+; int add_two(int a, int b) - args in r8, r9; result in r8
 add_two:
                 add.q   r8, r8, r9      ; r8 = a + b
                 rts
@@ -184,7 +184,7 @@ add_two:
 ### Non-leaf function with callee-saved registers
 
 ```asm
-; void process(int *data, int count) — args in r8, r9
+; void process(int *data, int count) - args in r8, r9
 process:
                 ; -- prologue --
                 push    r16             ; save callee-saved registers
@@ -196,7 +196,7 @@ process:
                 move.q  r18, #0         ; r18 = index
 
 .proc_loop:
-                ; call helper(data[index]) — sets up arg in r8
+                ; call helper(data[index]) - sets up arg in r8
                 lsl.q   r1, r18, #3     ; r1 = index * 8 (quad offset)
                 add.q   r1, r16, r1     ; r1 = &data[index]
                 load.q  r8, (r1)        ; r8 = data[index]

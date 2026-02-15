@@ -59,7 +59,7 @@ func TestVoodoo_DefaultState(t *testing.T) {
 			VOODOO_DEFAULT_WIDTH, VOODOO_DEFAULT_HEIGHT, w, h)
 	}
 
-	// Disabled by default — programs enable via VOODOO_ENABLE write
+	// Disabled by default - programs enable via VOODOO_ENABLE write
 	if v.IsEnabled() {
 		t.Error("Expected Voodoo to be disabled by default")
 	}
@@ -761,7 +761,7 @@ func TestVoodoo_Enable_Disable(t *testing.T) {
 	}
 	defer v.Destroy()
 
-	// Voodoo starts disabled — programs must enable via VOODOO_ENABLE write
+	// Voodoo starts disabled - programs must enable via VOODOO_ENABLE write
 	if v.IsEnabled() {
 		t.Error("Expected Voodoo to be disabled by default")
 	}
@@ -5639,7 +5639,7 @@ func TestVoodooTripleBufferConcurrent(t *testing.T) {
 	for {
 		select {
 		case <-done:
-			// Producer finished — do one final GetFrame
+			// Producer finished - do one final GetFrame
 			frame := v.GetFrame()
 			if frame != nil {
 				readCount++

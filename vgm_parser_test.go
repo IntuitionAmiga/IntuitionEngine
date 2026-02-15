@@ -24,7 +24,7 @@ func buildVGMHeaderSN(totalSamples, snClock, ayClock uint32) []byte {
 }
 
 func TestVGMParse_AYOnly(t *testing.T) {
-	// Simple VGM with only AY writes — should already work.
+	// Simple VGM with only AY writes - should already work.
 	header := buildVGMHeader(735, 1773400)
 	cmds := []byte{
 		0xA0, 0x00, 0xFF, // AY reg 0 = 0xFF

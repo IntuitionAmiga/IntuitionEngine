@@ -1103,7 +1103,7 @@ func (cpu *M68KCPU) decodeGroup2(opcode uint16) {
 				cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_EA_IX + M68K_CYCLE_REG
 				return
 
-			case M68K_AM_AR: // MOVEA.L (An,Xn),Am — no flags
+			case M68K_AM_AR: // MOVEA.L (An,Xn),Am - no flags
 				cpu.AddrRegs[destReg] = value
 				cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_EA_IX
 				return
@@ -1632,7 +1632,7 @@ func (cpu *M68KCPU) decodeGroup6(opcode uint16) {
 	cpu.ExecBRA(opcode) // Slow path: BRA, BSR, long displacement
 }
 
-// decodeGroup7: 0x7xxx - MOVEQ (fully inlined — always LONG, no size switch needed)
+// decodeGroup7: 0x7xxx - MOVEQ (fully inlined - always LONG, no size switch needed)
 func (cpu *M68KCPU) decodeGroup7(opcode uint16) {
 	reg := (opcode >> 9) & 0x7
 	value := uint32(int32(int8(opcode & 0xFF)))
@@ -1916,11 +1916,11 @@ func (cpu *M68KCPU) decodeGroupC(opcode uint16) {
 	if mode == 0 && (opmode == 2 || opmode == 6) {
 		var result uint32
 		if opmode == 2 {
-			// AND.L <ea>,Dn — source from xreg, dest is reg
+			// AND.L <ea>,Dn - source from xreg, dest is reg
 			result = cpu.DataRegs[reg] & cpu.DataRegs[xreg]
 			cpu.DataRegs[reg] = result
 		} else {
-			// AND.L Dn,<ea> — source from reg, dest is xreg
+			// AND.L Dn,<ea> - source from reg, dest is xreg
 			result = cpu.DataRegs[xreg] & cpu.DataRegs[reg]
 			cpu.DataRegs[xreg] = result
 		}
@@ -2220,7 +2220,7 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 			instructionCount++
 
 			// Process interrupts + stuck-PC debug check every 256 instructions.
-			// Stuck-PC detection is sampled rather than per-instruction — a stuck PC
+			// Stuck-PC detection is sampled rather than per-instruction - a stuck PC
 			// will be caught within ~256 iterations instead of immediately. This is
 			// acceptable: stuck-PC is a debug safety net, not a correctness mechanism.
 			if instructionCount&0xFF == 0 {
@@ -2374,7 +2374,7 @@ func (cpu *M68KCPU) DumpRegisters() {
 
 // isCoprocSharedAddr returns true if the address is in a coprocessor shared data
 // region where byte-swap should be skipped: mailbox (0x820000-0x820FFF) or user
-// data buffers (0x400000-0x7FFFFF). Worker code regions are NOT included — instruction
+// data buffers (0x400000-0x7FFFFF). Worker code regions are NOT included - instruction
 // fetch must still byte-swap for correct BE opcode decoding.
 func (cpu *M68KCPU) isCoprocSharedAddr(addr uint32) bool {
 	return cpu.CoprocMode &&

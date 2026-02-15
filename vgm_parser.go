@@ -1,8 +1,8 @@
 // vgm_parser.go - VGM/VGZ parser for PSG register writes.
 //
 // Supported chips (events extracted as PSGEvents):
-//   - AY-3-8910 / YM2149 (cmd 0xA0) — direct register mapping
-//   - SN76489 / SN76496 (cmd 0x50) — converted to AY-equivalent register writes
+//   - AY-3-8910 / YM2149 (cmd 0xA0) - direct register mapping
+//   - SN76489 / SN76496 (cmd 0x50) - converted to AY-equivalent register writes
 //
 // Ignored chips (commands skipped gracefully):
 //   - SN76489 GG stereo (cmd 0x4F)
@@ -14,7 +14,7 @@
 //   - PCM RAM writes (cmd 0x68), data blocks (cmd 0x67)
 //   - All seek/meta commands (cmd 0xE0-0xFF)
 //
-// Rejected: None — unknown commands are skipped with 1-byte advancement.
+// Rejected: None - unknown commands are skipped with 1-byte advancement.
 
 package main
 
@@ -465,7 +465,7 @@ func ParseVGMData(data []byte) (*VGMFile, error) {
 			i += 5
 			continue
 		default:
-			// Unknown command — skip 1 byte and hope for the best
+			// Unknown command - skip 1 byte and hope for the best
 			i++
 			continue
 		}

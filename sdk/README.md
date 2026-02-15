@@ -144,7 +144,7 @@ The VGM (Video Game Music) parser supports playback of `.vgm` and `.vgz` (gzip-c
 | Sega PCM | `0xC0`+ | Arcade PCM |
 | DAC stream | `0x90`-`0x95` | PCM streaming |
 
-SN76489 conversion maps tone channels 0-2 to AY channels A/B/C with frequency divider scaling based on chip clocks. Attenuation is inverted (SN: 0=max, 15=off → AY: 15=max, 0=off). The SN76489 noise channel maps to the AY noise generator with the mixer register controlling noise enable on channel C. Noise rate 3 (which uses channel 2's tone output as the noise clock on real hardware) is dynamically tracked — updating channel 2's tone divider automatically re-emits the noise period with clock-scaled frequency conversion.
+SN76489 conversion maps tone channels 0-2 to AY channels A/B/C with frequency divider scaling based on chip clocks. Attenuation is inverted (SN: 0=max, 15=off → AY: 15=max, 0=off). The SN76489 noise channel maps to the AY noise generator with the mixer register controlling noise enable on channel C. Noise rate 3 (which uses channel 2's tone output as the noise clock on real hardware) is dynamically tracked - updating channel 2's tone divider automatically re-emits the noise period with clock-scaled frequency conversion.
 
 ## Build Scripts
 
@@ -175,7 +175,7 @@ Environment variables for custom tool paths:
 
 ## Include File Stability
 
-The `sdk/include/` headers define the stable hardware register map for v1.x. The canonical source of truth is `assembler/*.inc` in the main repository. SDK copies are synced by `make sdk` and at release time.
+The `sdk/include/` headers define the stable hardware register map for v1.x and are the canonical source of truth for all platform headers.
 
 ## Further Documentation
 

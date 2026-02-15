@@ -329,7 +329,7 @@ func disassembleIE64(readMem func(addr uint64, size int) []byte, addr uint64, co
 			case d.Opcode == OP_BRA || ie64IsConditionalBranch(d.Opcode) || d.Opcode == OP_JSR64:
 				line.BranchTarget = uint64(int64(int32(d.PC)) + int64(int32(d.Imm32)))
 			default:
-				// JMP/JSR_IND with register — target unknown
+				// JMP/JSR_IND with register - target unknown
 				line.BranchTarget = 0
 			}
 		}

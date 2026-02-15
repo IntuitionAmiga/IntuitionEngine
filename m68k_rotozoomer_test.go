@@ -1734,7 +1734,7 @@ func TestM68K_TrigAccuracy(t *testing.T) {
 // M68K rotozoomer binary, then checks the DU/DV table values
 func TestM68K_RunAssembledBinaryTableGeneration(t *testing.T) {
 	// Assemble the rotozoomer
-	asmPath := "assembler/rotozoomer_68k.asm"
+	asmPath := "sdk/examples/asm/rotozoomer_68k.asm"
 	binPath := "/tmp/rotozoom_integration_test.ie68"
 
 	// Run vasm to assemble
