@@ -33,9 +33,6 @@ func newSID6502Player(file *SIDFile, subsong, sampleRate int) (*SID6502Player, e
 	if file == nil {
 		return nil, fmt.Errorf("SID file is nil")
 	}
-	if file.Header.IsRSID {
-		return nil, fmt.Errorf("RSID is not supported")
-	}
 	if file.Header.Songs == 0 {
 		return nil, fmt.Errorf("invalid SID header: songs=0")
 	}

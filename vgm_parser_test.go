@@ -181,3 +181,28 @@ func TestVGMParse_MultiChipVGM(t *testing.T) {
 		t.Fatalf("expected 5 AY events, got %d", len(vgm.Events))
 	}
 }
+
+func TestParseVGMData_TruncatedCommandErrors(t *testing.T) {
+	header := buildVGMHeader(1, 44100)
+
+	tests := []struct {
+		name string
+		cmds []byte
+	}{
+		{"truncated 2-byte cmd", []byte{0x30}},                   // 0x30 needs 2 bytes
+		{"truncated 3-byte cmd", []byte{0x51, 0x00}},             // 0x51 needs 3 bytes
+		{"truncated 4-byte cmd", []byte{0xC0, 0x00, 0x00}},       // 0xC0 needs 4 bytes
+		{"truncated 5-byte cmd", []byte{0xE0, 0x00, 0x00, 0x00}}, // 0xE0 needs 5 bytes
+		{"truncated DAC stream", []byte{0x90, 0x00, 0x00, 0x00}}, // 0x90 needs 5 bytes
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := append(append([]byte{}, header...), tt.cmds...)
+			_, err := ParseVGMData(data)
+			if err == nil {
+				t.Error("expected error for truncated command")
+			}
+		})
+	}
+}

@@ -57,7 +57,7 @@
 210 REM  SID STATUS returns 1 if playing, 0 if stopped.
 211 REM  POKE8 &HF0E18,15 — sets SID master volume to maximum (0-15).
 220 SA=&H710000
-230 BLOAD "Yummy_Pizza.sid", SA
+230 BLOAD "assets/music/Yummy_Pizza.sid", SA
 240 SID PLAY SA, 3725
 250 PRINT "SID STATUS=";SID STATUS
 260 POKE8 &HF0E18, 15

@@ -254,9 +254,9 @@ func parseYMLegacy(frameData []byte, loopFrame uint32, id string) (*YMFile, erro
 	}
 
 	// YM2/YM3/YM3b are always interleaved: reg 0 for all frames, then reg 1 for all frames, etc.
-	for reg := 0; reg < ymLegacyRegisters; reg++ {
+	for reg := range ymLegacyRegisters {
 		base := reg * frameCount
-		for f := 0; f < frameCount; f++ {
+		for f := range frameCount {
 			frames[f][reg] = frameData[base+f]
 		}
 	}

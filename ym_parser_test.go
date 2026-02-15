@@ -9,8 +9,8 @@ import (
 func buildYM2Data(frameCount int) []byte {
 	data := []byte("YM2!")
 	// Interleaved: all values for reg 0 (frameCount bytes), then reg 1, etc.
-	for reg := 0; reg < 14; reg++ {
-		for f := 0; f < frameCount; f++ {
+	for reg := range 14 {
+		for f := range frameCount {
 			data = append(data, byte(reg*16+f))
 		}
 	}
@@ -20,8 +20,8 @@ func buildYM2Data(frameCount int) []byte {
 // buildYM3Data creates a minimal YM3 file: "YM3!" + interleaved 14-reg frame data.
 func buildYM3Data(frameCount int) []byte {
 	data := []byte("YM3!")
-	for reg := 0; reg < 14; reg++ {
-		for f := 0; f < frameCount; f++ {
+	for reg := range 14 {
+		for f := range frameCount {
 			data = append(data, byte(reg*16+f))
 		}
 	}
@@ -31,8 +31,8 @@ func buildYM3Data(frameCount int) []byte {
 // buildYM3bData creates a minimal YM3b file: "YM3b" + interleaved data + 4-byte loop frame.
 func buildYM3bData(frameCount int, loopFrame uint32) []byte {
 	data := []byte("YM3b")
-	for reg := 0; reg < 14; reg++ {
-		for f := 0; f < frameCount; f++ {
+	for reg := range 14 {
+		for f := range frameCount {
 			data = append(data, byte(reg*16+f))
 		}
 	}
@@ -65,14 +65,14 @@ func buildYM4Data(frameCount int, clock uint32, frameRate uint16, loopFrame uint
 	// Frame data: 16 regs per frame
 	regsPerFrame := 16
 	if interleaved {
-		for reg := 0; reg < regsPerFrame; reg++ {
-			for f := 0; f < frameCount; f++ {
+		for reg := range regsPerFrame {
+			for f := range frameCount {
 				data = append(data, byte(reg*16+f))
 			}
 		}
 	} else {
-		for f := 0; f < frameCount; f++ {
-			for reg := 0; reg < regsPerFrame; reg++ {
+		for f := range frameCount {
+			for reg := range regsPerFrame {
 				data = append(data, byte(reg*16+f))
 			}
 		}

@@ -134,6 +134,9 @@ func ParseVGMData(data []byte) (*VGMFile, error) {
 			continue
 		case cmd == 0x68:
 			// PCM RAM write: 12 bytes total
+			if i+12 > len(data) {
+				return nil, fmt.Errorf("vgm truncated PCM RAM write at offset %d", i)
+			}
 			i += 12
 			continue
 		case cmd >= 0x80 && cmd <= 0x8F:
@@ -143,46 +146,79 @@ func ParseVGMData(data []byte) (*VGMFile, error) {
 			continue
 		case cmd == 0x90 || cmd == 0x91 || cmd == 0x95:
 			// DAC stream setup/set data/start fast: 5 bytes total
+			if i+5 > len(data) {
+				return nil, fmt.Errorf("vgm truncated DAC stream command at offset %d", i)
+			}
 			i += 5
 			continue
 		case cmd == 0x92:
 			// DAC stream set frequency: 6 bytes total
+			if i+6 > len(data) {
+				return nil, fmt.Errorf("vgm truncated DAC stream frequency at offset %d", i)
+			}
 			i += 6
 			continue
 		case cmd == 0x93:
 			// DAC stream start: 11 bytes total
+			if i+11 > len(data) {
+				return nil, fmt.Errorf("vgm truncated DAC stream start at offset %d", i)
+			}
 			i += 11
 			continue
 		case cmd == 0x94:
 			// DAC stream stop: 2 bytes total
+			if i+2 > len(data) {
+				return nil, fmt.Errorf("vgm truncated DAC stream stop at offset %d", i)
+			}
 			i += 2
 			continue
 		case cmd >= 0x30 && cmd <= 0x3F:
 			// One-operand commands (reserved/misc): 2 bytes total
+			if i+2 > len(data) {
+				return nil, fmt.Errorf("vgm truncated command 0x%02X at offset %d", cmd, i)
+			}
 			i += 2
 			continue
 		case cmd >= 0x41 && cmd <= 0x4E:
 			// Two-operand commands (misc chip writes): 3 bytes total
+			if i+3 > len(data) {
+				return nil, fmt.Errorf("vgm truncated command 0x%02X at offset %d", cmd, i)
+			}
 			i += 3
 			continue
 		case cmd == 0x4F:
 			// Game Gear PSG stereo: 2 bytes total
+			if i+2 > len(data) {
+				return nil, fmt.Errorf("vgm truncated GG PSG stereo at offset %d", i)
+			}
 			i += 2
 			continue
 		case cmd >= 0x51 && cmd <= 0x5F:
 			// Two-operand chip writes (YM2413, YM2612, etc.): 3 bytes total
+			if i+3 > len(data) {
+				return nil, fmt.Errorf("vgm truncated command 0x%02X at offset %d", cmd, i)
+			}
 			i += 3
 			continue
 		case cmd >= 0xA1 && cmd <= 0xBF:
 			// Two-operand chip writes: 3 bytes total
+			if i+3 > len(data) {
+				return nil, fmt.Errorf("vgm truncated command 0x%02X at offset %d", cmd, i)
+			}
 			i += 3
 			continue
 		case cmd >= 0xC0 && cmd <= 0xDF:
 			// Three-operand chip writes: 4 bytes total
+			if i+4 > len(data) {
+				return nil, fmt.Errorf("vgm truncated command 0x%02X at offset %d", cmd, i)
+			}
 			i += 4
 			continue
 		case cmd >= 0xE0 && cmd <= 0xFF:
 			// Four-operand commands (seek, etc.): 5 bytes total
+			if i+5 > len(data) {
+				return nil, fmt.Errorf("vgm truncated command 0x%02X at offset %d", cmd, i)
+			}
 			i += 5
 			continue
 		default:

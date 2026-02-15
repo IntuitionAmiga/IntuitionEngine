@@ -200,13 +200,19 @@ func (p *ayZ80Parser) parseSongData(offset int) (AYZ80SongData, error) {
 }
 
 // detectAYSystem scans Z80 code blocks for I/O port patterns to determine the target system.
-// MSX: OUT (n),A = D3 A0 or D3 A1
-// CPC: OUT (n),A = D3 F4 or D3 F6
+// Looks for the standard Z80 AY access pattern: LD A,n (3E xx) followed by OUT (n),A (D3 port).
+// Requiring the preceding LD A instruction avoids false positives from non-code data bytes.
+// MSX: OUT (n),A with port A0 or A1
+// CPC: OUT (n),A with port F4 or F6
 // Spectrum: default (OUT (C),r with port 0xFFFD/0xBFFD)
 func detectAYSystem(blocks []AYZ80Block) byte {
 	for _, block := range blocks {
-		for i := 0; i+1 < len(block.Data); i++ {
+		for i := 2; i+1 < len(block.Data); i++ {
 			if block.Data[i] != 0xD3 {
+				continue
+			}
+			// Require preceding LD A,n (0x3E xx) to confirm this is an instruction, not data
+			if block.Data[i-2] != 0x3E {
 				continue
 			}
 			port := block.Data[i+1]
