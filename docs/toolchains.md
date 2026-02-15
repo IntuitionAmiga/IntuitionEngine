@@ -1,0 +1,154 @@
+# Toolchain Reference
+
+Assembler toolchains for each Intuition Engine CPU core.
+
+## Built-in Assemblers
+
+### IE32 Assembler (`ie32asm`)
+
+```bash
+make ie32asm                              # Build
+./bin/ie32asm program.asm                 # Assemble (produces program.iex)
+./bin/IntuitionEngine -ie32 program.iex   # Run
+```
+
+- Custom assembler built from `assembler/ie32asm.go`
+- Supports `.include`, `.equ`, `.org`, `.db`, `.dw`, `.dd`, labels, macros
+- Fixed 8-byte instruction format
+
+### IE64 Assembler (`ie64asm`)
+
+```bash
+make ie64asm                              # Build
+./bin/ie64asm program.asm                 # Assemble (produces program.ie64)
+./bin/IntuitionEngine -ie64 program.ie64  # Run
+```
+
+- Custom assembler built from `assembler/ie64asm.go`
+- Supports `.include`, `equ`, `org`, `dc.b/w/l/q`, labels, macros with positional parameters (`\1`..`\9`)
+- Variable-length instruction encoding (4-12 bytes)
+
+### IE64 Disassembler (`ie64dis`)
+
+```bash
+make ie64dis                              # Build
+./bin/ie64dis program.ie64                # Disassemble
+```
+
+### IE32-to-IE64 Converter (`ie32to64`)
+
+```bash
+make ie32to64                             # Build
+./bin/ie32to64 program.asm                # Convert IE32 assembly to IE64
+```
+
+See [ie32to64.md](ie32to64.md) for conversion details.
+
+## External Assemblers
+
+### M68K: VASM (`vasmm68k_mot`)
+
+**Install:**
+```bash
+# Download from http://sun.hasenbraten.de/vasm/
+# Build:
+make CPU=m68k SYNTAX=mot
+```
+
+**Assemble:**
+```bash
+vasmm68k_mot -Fbin -m68020 -devpac -o output.ie68 input.asm
+
+# With include path
+vasmm68k_mot -Fbin -m68020 -devpac -I assembler -o output.ie68 input.asm
+```
+
+**Run:**
+```bash
+./bin/IntuitionEngine -m68k output.ie68
+```
+
+### Z80: VASM (`vasmz80_std`)
+
+**Install:**
+```bash
+# Download from http://sun.hasenbraten.de/vasm/
+# Build:
+make CPU=z80 SYNTAX=std
+```
+
+**Assemble:**
+```bash
+vasmz80_std -Fbin -I assembler -o output.ie80 input.asm
+
+# Or via Makefile helper:
+make ie80asm SRC=assembler/program.asm
+```
+
+**Run:**
+```bash
+./bin/IntuitionEngine -z80 output.ie80
+```
+
+### 6502: cc65 (`ca65` / `ld65`)
+
+**Install:**
+```bash
+# Ubuntu/Debian
+sudo apt install cc65
+
+# macOS
+brew install cc65
+```
+
+**Assemble:**
+```bash
+ca65 -I assembler -o program.o program.asm
+ld65 -C assembler/ie65.cfg -o program.ie65 program.o
+rm program.o
+
+# Or via Makefile helper:
+make ie65asm SRC=assembler/program.asm
+```
+
+The `ie65.cfg` linker configuration defines the Intuition Engine 6502 memory layout.
+
+**Run:**
+```bash
+./bin/IntuitionEngine -m6502 program.ie65
+# Or with explicit load/entry addresses:
+./bin/IntuitionEngine -m6502 --load-addr 0x0600 --entry 0x0600 program.bin
+```
+
+### x86: NASM
+
+**Install:**
+```bash
+# Ubuntu/Debian
+sudo apt install nasm
+
+# macOS
+brew install nasm
+```
+
+**Assemble:**
+```bash
+nasm -f bin -o program.ie86 program.asm
+```
+
+**Run:**
+```bash
+./bin/IntuitionEngine -x86 program.ie86
+```
+
+## Environment Variables
+
+The SDK build scripts support custom tool paths:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `IE_BIN_DIR` | `./bin` | Path to IE assembler binaries |
+| `VASM_M68K` | `vasmm68k_mot` | M68K assembler path |
+| `VASM_Z80` | `vasmz80_std` | Z80 assembler path |
+| `CA65` / `LD65` | `ca65` / `ld65` | cc65 toolchain paths |
+| `NASM` | `nasm` | x86 assembler path |

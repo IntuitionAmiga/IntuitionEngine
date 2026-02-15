@@ -19,6 +19,24 @@
 
 **See also: [TUTORIAL.md](docs/TUTORIAL.md)** - Step-by-step guide to building a complete demoscene intro with multiple CPU architectures.
 
+### Quick Links
+
+| Document | Description |
+|----------|-------------|
+| [DEVELOPERS.md](DEVELOPERS.md) | Build, test, toolchains, and contribution guide |
+| [CHANGELOG.md](CHANGELOG.md) | Release history |
+| [sdk/README.md](sdk/README.md) | SDK developer package with examples and build scripts |
+| [docs/TUTORIAL.md](docs/TUTORIAL.md) | Step-by-step demoscene intro tutorial |
+| [docs/IE64_ISA.md](docs/IE64_ISA.md) | IE64 instruction set reference |
+| [docs/IE64_COOKBOOK.md](docs/IE64_COOKBOOK.md) | IE64 common patterns and recipes |
+| [docs/ehbasic_ie64.md](docs/ehbasic_ie64.md) | EhBASIC language guide |
+| [docs/iemon.md](docs/iemon.md) | Machine monitor (F9 debugger) reference |
+| [docs/sdk-getting-started.md](docs/sdk-getting-started.md) | SDK quick start |
+| [docs/toolchains.md](docs/toolchains.md) | Assembler toolchain reference |
+| [docs/demo-matrix.md](docs/demo-matrix.md) | Demo program coverage matrix |
+| [docs/platform-compatibility.md](docs/platform-compatibility.md) | Platform support and build profiles |
+| [docs/release-process.md](docs/release-process.md) | Release packaging guide |
+
 # Table of Contents
 
 1. [System Overview](#1-system-overview)
@@ -128,33 +146,11 @@
     - 12.8 Raster Band Fill
     - 12.9 Video Compositor
 13. [Developer's Guide](#13-developers-guide)
-    - 13.1 Development Environment Setup
-    - 13.2 Building the System
-    - 13.3 Development Workflow
-    - 13.4 Assembler Include Files
-    - 13.5 Debugging Techniques
 14. [Implementation Details](#14-implementation-details)
     - 14.1 CPU Emulation
     - 14.2 Memory Architecture
     - 14.3 Audio System Architecture
-15. [Platform Support](#15-platform-support)
-    - 15.1 Supported Platforms
-    - 15.2 Graphics Backends
-    - 15.3 Audio Backends
-    - 15.4 Runtime UI
-16. [Running Demonstrations](#16-running-demonstrations)
-    - 16.1 Quick Start
-    - 16.2 Audio Demonstrations
-    - 16.3 Visual Demonstrations
-    - 16.4 CPU Test Suites
-    - 16.5 Available Demonstrations
-17. [Building from Source](#17-building-from-source)
-    - 17.1 Prerequisites
-    - 17.2 Build Commands
-    - 17.3 Build Tags
-    - 17.4 Development Workflow
-    - 17.5 Creating New Demonstrations
-18. [SDK Developer Package](#18-sdk-developer-package)
+15. [Platform Support and Building](#15-platform-support-and-building)
 
 # 1. System Overview
 
@@ -5251,560 +5247,19 @@ This creates a horizontal band where the VGA background color (palette entry 0) 
 
 # 13. Developer's Guide
 
-## 13.1 Development Environment Setup
+For the complete developer guide covering building, testing, toolchains, include files, debugging, platform support, and contribution guidance, see **[DEVELOPERS.md](DEVELOPERS.md)**.
 
-To develop for the Intuition Engine, you'll need to set up your development environment with several components:
-
-1. Install the Go programming language (version 1.21 or later)
-2. Install required development libraries:
-   - None for default runtime path (Ebiten + Oto)
-
-Create a project directory structure:
+### Quick Build
 
 ```bash
-my_project/
-├── src/             # Assembly source files
-├── bin/             # Compiled binaries
-└── tools/           # Development tools
+make                    # Build VM + assemblers
+make novulkan           # Build without Vulkan
+make headless           # Build for CI/testing (no display/audio)
+make basic              # Build with embedded EhBASIC interpreter
+go build ./...          # Quick dev build without compression
 ```
 
-## 13.2 Building the System
-
-The build process uses the provided Makefile:
-
-```bash
-# Build both VM and assembler
-make
-
-# Build only the VM
-make intuition-engine
-
-# Build only the IE32 assembler
-make ie32asm
-
-# Build only the IE64 assembler
-make ie64asm
-
-# Install to /usr/local/bin
-make install
-
-# Create AppImage package
-make appimage
-
-# Clean build artifacts
-make clean
-```
-
-This creates:
-```
-./bin/IntuitionEngine   # The virtual machine
-./bin/ie32asm           # The IE32 assembler
-./bin/ie64asm           # The IE64 assembler
-```
-
-The build automatically injects version metadata (version, git commit, build date) via ldflags. Use `./bin/IntuitionEngine -version` to verify.
-
-Available make targets:
-```
-all              - Build Intuition Engine, ie32asm, and ie64asm (default)
-intuition-engine - Build only the Intuition Engine VM
-ie32asm          - Build only the IE32 assembler
-ie64asm          - Build only the IE64 assembler
-ie64dis          - Build only the IE64 disassembler
-basic            - Build with embedded EhBASIC interpreter
-novulkan         - Build without Vulkan (software Voodoo only)
-headless         - Build without display/audio (CI/testing)
-headless-novulkan - Fully portable CGO_ENABLED=0 build
-appimage         - Build AppImage package for Linux distributions
-install          - Install binaries to $(INSTALL_BIN_DIR)
-uninstall        - Remove installed binaries from $(INSTALL_BIN_DIR)
-clean            - Remove all build artifacts
-list             - List compiled binaries with sizes
-help             - Show this help message
-```
-
-## 13.3 Development Workflow
-
-A typical development cycle involves:
-
-1. Write assembly code in your preferred text editor
-2. Assemble the code:
-```bash
-./bin/ie32asm program.asm
-```
-3. Run the resulting program:
-
-**IE32 programs:**
-```bash
-./bin/IntuitionEngine -ie32 program.iex
-```
-
-**M68K programs:**
-```bash
-./bin/IntuitionEngine -m68k program.ie68
-```
-
-**Z80 programs:**
-```bash
-./bin/IntuitionEngine -z80 program.ie80
-```
-
-**6502 programs:**
-```bash
-./bin/IntuitionEngine -m6502 program.bin
-./bin/IntuitionEngine -m6502 --load-addr 0x0600 --entry 0x0600 program.bin
-```
-
-**PSG music playback:**
-```bash
-./bin/IntuitionEngine -psg track.ym
-./bin/IntuitionEngine -psg track.ay
-./bin/IntuitionEngine -psg track.vgm
-./bin/IntuitionEngine -psg track.vgz
-./bin/IntuitionEngine -psg track.sndh
-./bin/IntuitionEngine -psg+ track.ym   # Enhanced audio
-```
-
-**POKEY/SAP music playback (Atari 8-bit):**
-```bash
-./bin/IntuitionEngine -pokey track.sap
-./bin/IntuitionEngine -pokey+ track.sap  # Enhanced audio
-```
-
-**SID music playback (C64 PSID):**
-```bash
-./bin/IntuitionEngine -sid tune.sid
-./bin/IntuitionEngine -sid+ tune.sid     # Enhanced audio
-./bin/IntuitionEngine -sid-pal tune.sid
-./bin/IntuitionEngine -sid-ntsc tune.sid
-```
-
-**AHX music playback (Amiga AHX/THX modules):**
-```bash
-./bin/IntuitionEngine -ahx module.ahx
-./bin/IntuitionEngine -ahx+ module.ahx   # Enhanced audio with stereo spread
-```
-
-**Notes:**
-- `.ym` files are Atari ST YM format
-- `.vgm/.vgz` are VGM streams (including MSX PSG logs)
-- `.ay` ZXAYEMUL files with embedded Z80 players are supported
-- `.sndh` files are Atari ST SNDH format with embedded M68K code
-- PSID only for SID; RSID is rejected
-- Single-SID playback at $D400; multi-SID not yet implemented
-
-**Enhanced Audio Modes (PSG+/POKEY+/SID+/TED+/AHX+):**
-These modes provide 4x oversampling, second-order Butterworth lowpass filtering, subtle drive saturation, and allpass diffuser room ambience for richer sound while preserving pitch and timing. SID+ additionally preserves per-channel filter sweeps through the enhanced path. AHX+ additionally provides authentic Amiga stereo panning (L-R-R-L pattern) and hardware PWM for square wave modulation.
-
-## 13.4 Assembler Include Files
-
-The `assembler/` directory provides hardware definition include files for each CPU architecture. These files are essential for writing portable Intuition Engine programs.
-
-| File | CPU | Assembler | Description |
-|------|-----|-----------|-------------|
-| `ie32.inc` | IE32 | ie32asm | Hardware constants and register definitions |
-| `ie68.inc` | M68K | vasmm68k_mot | Hardware constants with M68K macros |
-| `ie65.inc` | 6502 | ca65 | Hardware constants, macros, and zero page allocation |
-| `ie80.inc` | Z80 | vasmz80_std | Hardware constants with Z80 macros |
-| `ie86.inc` | x86 | NASM/FASM | Hardware constants, port I/O, VGA registers |
-| `ie64.inc` | IE64 | ie64asm | Hardware constants and macros |
-| `ie64_fp.inc` | IE64 | ie64asm | IEEE 754 FP32 math wrappers backed by IE64 hardware FPU |
-| `ehbasic_ie64.asm` | IE64 | ie64asm | EhBASIC interpreter (entry point + REPL) |
-| `ehbasic_*.inc` | IE64 | ie64asm | EhBASIC modules (tokeniser, executor, expressions, variables, strings, I/O, hardware commands) |
-
-### Contents Overview
-
-All include files provide:
-
-- **Video Registers**: VIDEO_CTRL, VIDEO_MODE, VIDEO_STATUS, blitter, copper, raster band
-- **Audio Registers**: PSG (raw + player), POKEY (raw + SAP player), SID (raw + SID player)
-- **Memory Constants**: VRAM_START, SCREEN_W/H, LINE_BYTES
-- **Blitter Operations**: BLT_OP_COPY, BLT_OP_FILL, BLT_OP_LINE, BLT_OP_MASKED, BLT_OP_ALPHA, BLT_OP_MODE7
-- **Copper Opcodes**: COP_WAIT_MASK, COP_MOVE_RASTER_*, COP_END
-- **Timer Registers**: TIMER_CTRL, TIMER_COUNT, TIMER_RELOAD
-
-### ie32.inc (IE32 CPU)
-
-The IE32 include file provides constants using `.equ` directives:
-
-```assembly
-.include "ie32.inc"
-
-start:
-    LOAD A, #1
-    STORE A, @VIDEO_CTRL        ; Use constant instead of raw address
-    LOAD A, #BLT_OP_FILL
-    STORE A, @BLT_OP
-```
-
-### ie68.inc (M68K CPU)
-
-The M68K include file provides constants using `equ` and helper macros:
-
-```assembly
-    include "ie68.inc"
-
-start:
-    move.l  #1,VIDEO_CTRL.l
-    wait_vblank                 ; Macro: wait for vertical blank
-    set_blt_color $FF00FF00     ; Macro: set blitter fill color
-    start_blit                  ; Macro: trigger blitter
-```
-
-**Macros provided:**
-- `wait_vblank` - Wait for VBlank period
-- `wait_blit` - Wait for blitter to complete
-- `start_blit` - Trigger blitter operation
-- `set_blt_color`, `set_blt_src`, `set_blt_dst`, `set_blt_size`, `set_blt_strides`
-- `set_copper_ptr`, `enable_copper`, `disable_copper`
-- `set_psg_play`, `start_psg_play`, `stop_psg_play`, `enable_psg_plus`
-- `set_sid_play`, `start_sid_play`, `start_sid_loop`, `stop_sid_play`, `enable_sid_plus`
-- `set_sap_play`, `start_sap_play`, `stop_sap_play`
-- `PLAY_AHX`, `PLAY_AHX_LOOP`, `PLAY_AHX_PLUS`, `PLAY_AHX_PLUS_LOOP`, `STOP_AHX`
-- `coproc_start`, `coproc_stop`, `coproc_enqueue`, `coproc_poll`, `coproc_wait` - Coprocessor helpers
-
-### ie65.inc (6502 CPU)
-
-The 6502 include file is the most comprehensive, providing constants, macros, and zero page allocation:
-
-```assembly
-.include "ie65.inc"
-
-.segment "CODE"
-start:
-    lda  #1
-    sta  VIDEO_CTRL             ; Memory-mapped at $F000
-    WAIT_VBLANK                 ; Macro: wait for VBlank
-    SET_BLT_OP BLT_OP_FILL      ; Macro: set blitter operation
-    SET_BLT_WIDTH 16            ; Macro: set 16-bit width
-    SET_BLT_HEIGHT 16           ; Macro: set 16-bit height
-    SET_BLT_COLOR $FF00FF00     ; Macro: set 32-bit color
-    START_BLIT                  ; Macro: trigger blitter
-```
-
-**Macros provided:**
-- `SET_BANK1`, `SET_BANK2`, `SET_BANK3`, `SET_VRAM_BANK` - Bank switching
-- `STORE16`, `STORE32`, `STORE32_ZP` - Multi-byte stores
-- `WAIT_VBLANK`, `WAIT_BLIT`, `START_BLIT`
-- `SET_BLT_OP`, `SET_BLT_WIDTH`, `SET_BLT_HEIGHT`, `SET_BLT_COLOR`
-- `SET_SRC_STRIDE`, `SET_DST_STRIDE`
-- `ADD16`, `INC16`, `CMP16` - 16-bit arithmetic helpers
-- `SET_AHX_PTR`, `SET_AHX_LEN`, `START_AHX_PLAY`, `START_AHX_LOOP`, `STOP_AHX_PLAY`, `ENABLE_AHX_PLUS`
-- `COPROC_START`, `COPROC_STOP`, `COPROC_ENQUEUE`, `COPROC_POLL`, `COPROC_WAIT` - Coprocessor helpers (via gateway `$F200`)
-
-**Zero page allocation:**
-```assembly
-.zeropage
-    zp_ptr0:    .res 2          ; General purpose pointer 0
-    zp_ptr1:    .res 2          ; General purpose pointer 1
-    zp_tmp0:    .res 4          ; 32-bit temporary 0
-    zp_frame:   .res 2          ; Frame counter
-    zp_scratch: .res 8          ; Scratch space
-```
-
-### ie80.inc (Z80 CPU)
-
-The Z80 include file provides constants using `.set` and comprehensive macros:
-
-```assembly
-    .include "ie80.inc"
-
-start:
-    ld   sp,STACK_TOP
-    ld   a,1
-    ld   (VIDEO_CTRL),a
-    WAIT_VBLANK                  ; Macro: wait for VBlank
-    SET_BLT_OP BLT_OP_FILL       ; Macro: set blitter operation
-    SET_BLT_DST VRAM_START       ; Macro: set 32-bit dest address
-    SET_BLT_WIDTH 16
-    SET_BLT_HEIGHT 16
-    SET_BLT_COLOR 0xFF00FF00
-    START_BLIT
-```
-
-**Macros provided:**
-- `SET_BANK1`, `SET_BANK2`, `SET_BANK3`, `SET_VRAM_BANK` - Bank switching
-- `STORE16`, `STORE32` - Multi-byte stores
-- `WAIT_VBLANK`, `WAIT_BLIT`, `START_BLIT`
-- `SET_BLT_OP`, `SET_BLT_SRC`, `SET_BLT_DST`, `SET_BLT_WIDTH`, `SET_BLT_HEIGHT`
-- `SET_BLT_COLOR`, `SET_BLT_MASK`, `SET_SRC_STRIDE`, `SET_DST_STRIDE`
-- `SET_COPPER_PTR`
-- `SET_PSG_PTR`, `SET_PSG_LEN` - PSG player setup
-- `SET_SID_PTR`, `SET_SID_LEN`, `SET_SID_SUBSONG`, `START_SID_PLAY`, `START_SID_LOOP`, `STOP_SID_PLAY`
-- `SET_SAP_PTR`, `SET_SAP_LEN` - SAP player setup
-- `SET_AHX_PTR`, `SET_AHX_LEN`, `START_AHX_PLAY`, `START_AHX_LOOP`, `STOP_AHX_PLAY`, `ENABLE_AHX_PLUS`
-- `SID_WRITE reg,val` - Write SID register via port I/O
-- `ADD_HL_IMM`, `CP_HL_IMM`, `INC16` - Utility macros
-- `coproc_start`, `coproc_stop`, `coproc_enqueue`, `coproc_poll`, `coproc_wait` - Coprocessor helpers (via gateway `0xF200`)
-
-### ie86.inc (x86 CPU)
-
-The x86 include file provides constants using `equ` and macros for NASM/FASM:
-
-```assembly
-%include "ie86.inc"
-
-section .text
-start:
-    mov     eax, 1
-    mov     [VIDEO_CTRL], eax
-    wait_vblank                 ; Macro: wait for vertical blank
-
-    ; PSG port I/O
-    psg_write PSG_REG_MIXER, 0x38    ; Enable channels A, B, C
-    psg_write PSG_REG_VOL_A, 15      ; Max volume channel A
-
-    ; VGA port I/O
-    vga_wait_vsync              ; Wait for vertical retrace
-```
-
-**Memory-mapped addresses (32-bit):**
-- Full 32-bit flat address space
-- VGA VRAM at standard PC address 0xA0000-0xAFFFF
-- Hardware I/O at 0xF0000+
-
-**Port I/O for audio chips:**
-- PSG: ports 0xF0-0xF1 (register select, data)
-- POKEY: ports 0xD0-0xDF (direct access)
-- SID: ports 0xE0-0xE1 (register select, data)
-- TED: ports 0xF2-0xF3 (register select, data)
-
-**VGA standard PC ports:**
-- 0x3C4-0x3C5: Sequencer index/data
-- 0x3C6-0x3C9: DAC mask, indices, data
-- 0x3CE-0x3CF: Graphics controller
-- 0x3D4-0x3D5: CRTC index/data
-- 0x3DA: Input status (bit 3 = VSync)
-
-**Macros provided:**
-- `wait_vblank` - Wait for vertical blank via memory-mapped status
-- `vga_wait_vsync` - Wait for VSync via VGA port I/O
-- `psg_write reg, val` - Write PSG register via port I/O
-- `sid_write reg, val` - Write SID register via port I/O
-- `pokey_write reg, val` - Write POKEY register via port I/O
-- `coproc_start cpuType, namePtr`, `coproc_stop`, `coproc_enqueue`, `coproc_poll`, `coproc_wait` - Coprocessor helpers
-
-### ie64.inc (IE64 CPU)
-
-The IE64 include file provides constants using `equ` and comprehensive macros:
-
-```assembly
-    include "ie64.inc"
-
-start:
-    la   r1, VRAM_START
-    move.l r2, #1
-    store.l r2, VIDEO_CTRL(r0)
-    wait_vblank                     ; Macro: wait for VBlank
-    set_blt_color $FF00FF00         ; Macro: set blitter fill color
-    start_blit                      ; Macro: trigger blitter
-```
-
-**Macros provided:**
-- `wait_vblank`, `wait_blit`, `start_blit`
-- `set_blt_color`, `set_blt_src`, `set_blt_dst`, `set_blt_size`, `set_blt_strides`
-- `set_copper_ptr`, `enable_copper`, `disable_copper`
-- `vga_setmode`, `vga_enable`, `vga_setpalette`, `vga_palette_rgb`, `vga_wait_vsync`, `vga_mapmask`, `vga_readmap`
-- `set_ula_border`, `ula_enable`, `ula_disable`
-- `set_ted_v_enable`, `ted_v_disable`, `set_ted_v_border`, `ted_v_bgcolor`, `ted_v_wait_vblank`
-- `set_antic_enable`, `antic_disable`, `antic_wait_vblank`, `antic_set_dlist`
-- `gtia_setbk`, `gtia_setpf0`–`gtia_setpf3`
-- PSG: `enable_psg_plus`, `set_psg_play`, `start_psg_play`, `stop_psg_play`
-- SID: `enable_sid_plus`, `set_sid_play`, `set_sid_subsong`, `start_sid_play`, `start_sid_loop`, `stop_sid_play`
-- SAP: `set_sap_play`, `set_sap_subsong`, `start_sap_play`, `start_sap_loop`, `stop_sap_play`
-- AHX: `PLAY_AHX`, `PLAY_AHX_LOOP`, `PLAY_AHX_PLUS`, `PLAY_AHX_PLUS_LOOP`, `STOP_AHX`
-- POKEY: `enable_pokey_plus`, `set_pokey_audctl`, `set_pokey_ch`
-- Audio channels: `set_ch_freq`, `set_ch_vol`, `set_ch_wave`, `set_ch_env`, `gate_ch_on`, `gate_ch_off`, `set_filter`, `set_reverb`
-- Voodoo: `voodoo_vertex_a/b/c`, `voodoo_color_rgb`, `voodoo_triangle`, `voodoo_swap`, `voodoo_clear`
-- Coprocessor: `coproc_start`, `coproc_stop`, `coproc_enqueue`, `coproc_poll`, `coproc_wait`
-
-### 8-Bit CPU Banking System
-
-The 6502 and Z80 use a banking system to access the full 32MB address space:
-
-| Window | Address Range | Purpose | Bank Register |
-|--------|---------------|---------|---------------|
-| Bank 1 | $2000-$3FFF | Sprite data | BANK1_REG_LO/HI |
-| Bank 2 | $4000-$5FFF | Font data | BANK2_REG_LO/HI |
-| Bank 3 | $6000-$7FFF | General data | BANK3_REG_LO/HI |
-| VRAM | $8000-$BFFF | Video memory (16KB) | VRAM_BANK_REG |
-
-**Banking example (6502):**
-```assembly
-    ; Switch bank 1 to sprite data at offset $10000
-    SET_BANK1 $10000>>13        ; Bank number = address / 8KB
-    ; Now access sprite data via $2000-$3FFF
-    lda  BANK1_WINDOW           ; Read first byte
-```
-
-**Banking example (Z80):**
-```assembly
-    ; Switch bank 1 to sprite data at offset $10000
-    SET_BANK1 (0x10000>>13)     ; Bank number = address / 8KB
-    ; Now access sprite data via 0x2000-0x3FFF
-    ld   a,(BANK1_WINDOW)       ; Read first byte
-```
-
-## 13.5 Debugging Techniques
-
-### Console Output
-
-Write values to the debug output register to display information during execution:
-
-**IE32:**
-```assembly
-debug_print:
-    STORE A, @0xF0700       ; Output register A value to console
-    RTS
-```
-
-**M68K:**
-```assembly
-debug_print:
-    move.l  d0,$F0700.l     ; Output D0 to console
-    rts
-```
-
-**Z80:**
-```assembly
-debug_print:
-    ld   a,l
-    ld   ($F700),a          ; Output L to console
-    ret
-```
-
-**6502:**
-```assembly
-debug_print:
-    sta  $F700              ; Output A to console
-    rts
-```
-
-### Memory Dumps
-
-Dump a range of memory to inspect state:
-
-**IE32:**
-```assembly
-; Dump 4 words (16 bytes) starting at address in B
-dump_memory:
-    LOAD C, #4              ; Counter (4 words = 16 bytes)
-.loop:
-    LOAD A, [B]             ; Read 32-bit word
-    STORE A, @0xF0700       ; Output to console
-    ADD B, #4               ; Next word address
-    SUB C, #1
-    JNZ C, .loop
-    RTS
-```
-
-**M68K:**
-```assembly
-; Dump 16 bytes from address in A0
-dump_memory:
-    moveq   #15,d1          ; Counter (16 bytes)
-.loop:
-    move.b  (a0)+,d0        ; Read byte, increment
-    move.l  d0,$F0700.l     ; Output
-    dbra    d1,.loop
-    rts
-```
-
-### Breakpoint Simulation
-
-Insert breakpoints by halting execution:
-
-**IE32:**
-```assembly
-breakpoint:
-    HALT                    ; Stop CPU
-```
-
-**M68K:**
-```assembly
-breakpoint:
-    illegal                 ; Trigger illegal instruction exception
-```
-
-**Z80:**
-```assembly
-breakpoint:
-    halt                    ; Stop CPU
-```
-
-**6502:**
-```assembly
-breakpoint:
-    brk                     ; Trigger break interrupt
-```
-
-### Register State Inspection
-
-Save and display all registers at a checkpoint:
-
-**M68K:**
-```assembly
-checkpoint:
-    movem.l d0-d7/a0-a6,-(sp)   ; Save all registers
-    ; ... inspect state ...
-    movem.l (sp)+,d0-d7/a0-a6   ; Restore
-    rts
-```
-
-### Hardware Status Monitoring
-
-Check hardware state during debugging:
-
-| Register | Address | Purpose |
-|----------|---------|---------|
-| VIDEO_STATUS | `$F0008` | VBlank flag (bit 1) |
-| BLT_STATUS | `$F0044` | Blitter busy (bit 1) |
-| PSG_PLAY_STATUS | `$F0C1C` | PSG player status |
-| SID_PLAY_STATUS | `$F0E2C` | SID player status |
-| SAP_PLAY_STATUS | `$F0D1C` | SAP player status |
-
-**IE32:**
-```assembly
-wait_debug:
-    LOAD A, @VIDEO_STATUS
-    AND A, #2               ; Check VBlank bit
-    BEQ wait_debug          ; Loop until set
-    RTS
-```
-
-### Stack Inspection
-
-Monitor stack usage to detect overflow:
-
-**IE32:**
-```assembly
-check_stack:
-    LOAD A, SP              ; Get stack pointer
-    CMP A, #0x1000          ; Compare against limit
-    BLT stack_overflow      ; Branch if too low
-    RTS
-stack_overflow:
-    HALT                    ; Stop on overflow
-```
-
-**M68K:**
-```assembly
-check_stack:
-    cmpa.l  #$1000,sp       ; Check stack limit
-    blt     stack_overflow
-    rts
-stack_overflow:
-    illegal
-```
-
-### Tips for Effective Debugging
-
-1. **Use incremental testing**: Test small code sections before combining
-2. **Monitor VBlank timing**: Ensure frame updates complete within VBlank
-3. **Check memory alignment**: M68K requires word/longword alignment for 16/32-bit access
-4. **Verify bank switching**: Ensure correct bank is selected before accessing windowed memory
-5. **Watch for signed/unsigned issues**: Know when operations treat values as signed
-6. **Trace interrupt handlers**: Ensure registers are saved/restored properly
+See [DEVELOPERS.md](DEVELOPERS.md) for the complete development workflow, running programs (all CPU modes and music playback), assembler include files, and debugging techniques. See also [docs/include-files.md](docs/include-files.md) for a detailed include file reference.
 
 # 14. Implementation Details
 
@@ -5934,239 +5389,62 @@ This approach provides accurate register-level compatibility while leveraging th
 
 File playback (.ym, .ay, .sndh, .vgm, .sap, .sid) executes embedded CPU code that writes to the mapped registers, driving the synthesis in real-time.
 
-# 15. Platform Support
+# 15. Platform Support and Building
 
-The default runtime path is Ebiten (video) + Oto (audio), with no separate control-window frontend.
+For detailed build instructions, all build profiles/tags, toolchain setup, testing, and platform compatibility details, see **[DEVELOPERS.md](DEVELOPERS.md)**.
 
-## 15.1 Supported Platforms
+## Supported Platforms
 
-| Platform | Graphics | Audio |
-|----------|----------|-------|
-| Linux | Ebiten | Oto |
-| macOS | Ebiten | Oto |
-| Windows | Ebiten | Oto |
+| Platform | Architecture | Status | Notes |
+|----------|-------------|--------|-------|
+| Linux | x86_64, aarch64 | **Official** | All build profiles |
+| macOS | ARM64 | Experimental | Use `novulkan` profile |
+| Windows | x86_64, ARM64 | Experimental | Use `novulkan` profile |
 
-## 15.2 Graphics Backends
+Graphics: Ebiten (OpenGL/Metal/DirectX). Audio: Oto (44.1kHz stereo). Both have headless stubs for CI.
 
-### Ebiten (Primary)
+See [docs/platform-compatibility.md](docs/platform-compatibility.md) for build profile requirements and known limitations.
 
-The default graphics backend providing:
-- Hardware-accelerated rendering via OpenGL/Metal/DirectX
-- Automatic display scaling
-- VSync synchronisation
-- Cross-platform window management
-
-### Headless Mode
-
-For testing and batch processing without a display:
-```bash
-go test -tags headless ./...
-```
-
-## 15.3 Audio Backends
-
-### Oto (Primary)
-
-Cross-platform audio output with:
-- Low-latency playback (~20ms)
-- Automatic sample rate conversion
-- 44.1kHz stereo output
-
-## 15.4 Runtime UI
-
-The runtime is display-only and uses the Ebiten output window directly.
-There is no separate control window frontend.
-
-# 16. Running Demonstrations
-
-The Intuition Engine includes visual and audio demonstrations that showcase system capabilities.
-
-**Tutorial:** For a hands-on guide to building a complete demoscene-style demo (blitter sprites, copper effects, PSG+ music, scrolltext), see **[TUTORIAL.md](docs/TUTORIAL.md)**. It includes full implementations for multiple CPU architectures.
-
-## 16.1 Quick Start
-
-Run all short tests:
-```bash
-go test -v
-```
-
-Run with headless mode (no GUI/audio):
-```bash
-go test -v -tags headless
-```
-
-## 16.2 Audio Demonstrations
-
-Long-running audio demos require the `audiolong` tag:
+## Quick Start
 
 ```bash
-# Sine wave generation
-go test -v -tags audiolong -run TestSineWave_BasicWaveforms
+# Default: start EhBASIC on IE64
+./bin/IntuitionEngine
 
-# Square wave with PWM
-go test -v -tags audiolong -run TestSquareWave_PWM
+# Run an IE32 program
+./bin/IntuitionEngine -ie32 program.iex
 
-# Filter sweep demonstration
-go test -v -tags audiolong -run TestFilterSweep
+# Run an M68K program
+./bin/IntuitionEngine -m68k program.ie68
+
+# Play SID music
+./bin/IntuitionEngine -sid tune.sid
+
+# Play PSG music (YM/AY/VGM/SNDH)
+./bin/IntuitionEngine -psg track.ym
+
+# Version and features
+./bin/IntuitionEngine -version
+./bin/IntuitionEngine -features
 ```
 
-## 16.3 Visual Demonstrations
 
-Long-running visual demos require the `videolong` tag:
+See [DEVELOPERS.md](DEVELOPERS.md) for all CPU modes, music playback options, enhanced audio modes, build commands, and testing instructions.
 
-```bash
-# Fire effect (cellular automata)
-go test -v -tags videolong -run TestFireEffect
+## SDK
 
-# Plasma waves
-go test -v -tags videolong -run TestPlasmaWaves
+The `sdk/` directory contains a curated developer package with example programs, include files, and build scripts for all six CPU architectures. See [sdk/README.md](sdk/README.md) for the full SDK documentation and [docs/demo-matrix.md](docs/demo-matrix.md) for the demo coverage matrix.
 
-# 3D starfield
-go test -v -tags videolong -run TestStarfield
+## Further Documentation
 
-# Rotating cube
-go test -v -tags videolong -run TestRotatingCube
-
-# Mandelbrot set
-go test -v -tags videolong -run TestMandelbrot
-```
-
-## 16.4 CPU Test Suites
-
-### M68K Tests
-```bash
-go test -v -tags m68k ./...
-```
-
-### 6502 Klaus Functional Tests
-```bash
-KLAUS_FUNCTIONAL=1 KLAUS_INTERRUPT_SUCCESS_PC=0x06F5 go test -v -run '^Test6502'
-```
-
-### Z80 Tests
-```bash
-go test -v -run TestZ80
-```
-
-## 16.5 Available Demonstrations
-
-| Category | Test Name | Description |
-|----------|-----------|-------------|
-| Audio | TestSineWave_BasicWaveforms | Pure sine wave generation |
-| Audio | TestSquareWave_DutyCycle | Variable duty cycle |
-| Audio | TestNoiseTypes | White, periodic, metallic noise |
-| Audio | TestADSR_Envelope | Envelope timing accuracy |
-| Audio | TestFilterModes | LP/HP/BP filter demonstration |
-| Video | TestFireEffect | Cellular automata fire |
-| Video | TestPlasmaWaves | Dynamic colour plasma |
-| Video | TestMetaballs | Organic blob rendering |
-| Video | TestTunnelEffect | Texture-mapped tunnel |
-| Video | TestRotozoom | Rotation and zoom effect |
-| Video | TestStarfield | 3D star simulation |
-| Video | TestMandelbrot | Fractal visualisation |
-| Video | TestParticles | Physics-based particles |
-| Video | rotozoomer_ie64 | IE64 rotozoomer with blitter, copper, and fixed-point math |
-
-# 17. Building from Source
-
-## 17.1 Prerequisites
-
-- Go 1.26 or later
-- `sstrip` and `upx` (for binary optimization; modify Makefile to skip if unavailable)
-- No extra system packages are required for the default runtime window/audio path.
-
-Optional advanced features may still use CGO/toolchain libraries:
-- Voodoo Vulkan path: requires Vulkan-capable system/driver/toolchain support.
-- Linux LHA decompression path: uses `liblhasa` (see `lhasa_linux.go`).
-
-**macOS:**
-```bash
-# No extra system packages required for the runtime window path.
-```
-
-## 17.2 Build Commands
-
-```bash
-# Build everything (VM and assembler)
-make
-
-# Build only the VM
-make intuition-engine
-
-# Build only the IE32 assembler
-make ie32asm
-
-# Build only the IE64 assembler
-make ie64asm
-
-# Build with embedded EhBASIC interpreter
-make basic
-
-# Build without Vulkan (software Voodoo only)
-make novulkan
-
-# Build without display/audio (CI/testing)
-make headless
-
-# Fully portable CGO_ENABLED=0 build (cross-compile safe)
-make headless-novulkan
-
-# Install to /usr/local/bin
-make install
-
-# Create Linux AppImage
-make appimage
-
-# Clean build artifacts
-make clean
-```
-
-## 17.3 Build Tags
-
-| Tag | Effect |
-|-----|--------|
-| `headless` | Disable GUI/audio/video backends |
-| `novulkan` | Disable Vulkan backend (software Voodoo only) |
-| `embed_basic` | Embed assembled EhBASIC binary for `-basic` flag |
-| `m68k` | Enable M68K-specific tests |
-| `audiolong` | Enable long-running audio demos |
-| `videolong` | Enable long-running video demos |
-
-## 17.4 Development Workflow
-
-1. Edit source files
-2. Run `make` to build
-3. Test with `go test -v`
-4. Run demos to verify changes
-5. Use `./bin/IntuitionEngine -ie32 program.iex` to test programs
-
-## 17.5 Creating New Demonstrations
-
-When adding new test demonstrations:
-
-1. Use descriptive names that indicate what capability is being showcased. The demonstration should tell a story about the system's capabilities.
-
-2. Include detailed logging that explains:
-    - What effects or sounds the user should expect
-    - The technical aspects being demonstrated
-    - Any interesting parameters or variations being shown
-
-3. Structure demonstrations to:
-    - Start with basic capabilities
-    - Progress to more complex effects
-    - Show interesting combinations of features
-    - Clean up resources properly when complete
-
-4. Add informative comments that explain:
-    - How the effects are achieved
-    - Key algorithms and techniques being used
-    - Important implementation details
-
-# 18. SDK Developer Package
-
-The `sdk/` directory contains a curated developer package with example programs, include files, and build scripts for all supported CPU architectures. See [sdk/README.md](sdk/README.md) for the full SDK documentation, including:
-
-- Ready-to-build example programs for IE32, IE64, M68K, 6502, and Z80
-- Reusable include files (register definitions, macros, helper routines)
-- Build scripts and Makefiles for each architecture
-- SID multi-chip support details and VGM chip coverage matrix
+- [DEVELOPERS.md](DEVELOPERS.md) - Build, test, and contribute
+- [CHANGELOG.md](CHANGELOG.md) - Release history
+- [docs/TUTORIAL.md](docs/TUTORIAL.md) - Demoscene intro tutorial
+- [docs/iemon.md](docs/iemon.md) - Machine monitor (F9 debugger)
+- [docs/IE64_ISA.md](docs/IE64_ISA.md) - IE64 instruction set
+- [docs/IE64_COOKBOOK.md](docs/IE64_COOKBOOK.md) - IE64 patterns and recipes
+- [docs/ehbasic_ie64.md](docs/ehbasic_ie64.md) - EhBASIC language guide
+- [docs/ie32to64.md](docs/ie32to64.md) - IE32 to IE64 migration
+- [docs/toolchains.md](docs/toolchains.md) - Assembler toolchain reference
+- [docs/platform-compatibility.md](docs/platform-compatibility.md) - Platform support details
+- [docs/release-process.md](docs/release-process.md) - Release packaging
