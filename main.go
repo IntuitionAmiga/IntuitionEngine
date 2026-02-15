@@ -30,6 +30,13 @@ import (
 	"time"
 )
 
+// Version metadata injected at build time via ldflags.
+var (
+	Version   = "dev"
+	Commit    = "unknown"
+	BuildDate = "unknown"
+)
+
 type optionalStringFlag struct {
 	value string
 	set   bool
@@ -142,6 +149,18 @@ func boilerPlate() {
 //}
 
 func main() {
+	// Handle -version before boilerplate so output is clean and script-friendly
+	for _, arg := range os.Args[1:] {
+		if arg == "-version" || arg == "--version" {
+			fmt.Printf("Intuition Engine %s\n", Version)
+			fmt.Printf("  Commit:     %s\n", Commit)
+			fmt.Printf("  Built:      %s\n", BuildDate)
+			fmt.Printf("  Go version: %s\n", runtime.Version())
+			fmt.Printf("  OS/Arch:    %s/%s\n", runtime.GOOS, runtime.GOARCH)
+			os.Exit(0)
+		}
+	}
+
 	boilerPlate()
 
 	var (

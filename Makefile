@@ -28,8 +28,12 @@ else ifeq ($(ARCH),aarch64)
     APPIMAGE_TOOL := appimagetool-aarch64.AppImage
 endif
 
-# Go build flags
-GO_FLAGS := -ldflags "-s -w"
+# Version metadata
+COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+BUILD_DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+
+# Go build flags with version injection
+GO_FLAGS := -ldflags "-s -w -X main.Version=$(APP_VERSION) -X main.Commit=$(COMMIT) -X main.BuildDate=$(BUILD_DATE)"
 
 # Commands and tools
 GO := go
