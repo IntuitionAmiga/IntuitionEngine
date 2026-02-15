@@ -68,7 +68,7 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           go build -ldflags "-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" .
 
-      - name: Build assemblers
+      - name: Build SDK tools
         env:
           GOOS: linux
           GOARCH: ${{ matrix.goarch }}
@@ -76,13 +76,19 @@ jobs:
         run: |
           go build -ldflags "-s -w" -o ie32asm assembler/ie32asm.go
           go build -ldflags "-s -w" -tags ie64 -o ie64asm assembler/ie64asm.go
+          go build -ldflags "-s -w" -o ie32to64 ./cmd/ie32to64/
+
+      - name: UPX compress binaries
+        run: |
+          sudo apt-get install -y upx-ucl
+          upx IntuitionEngine ie32asm ie64asm ie32to64
 
       - name: Create tar.xz archive
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           DIR="${APP_NAME}-${VERSION}-linux-${{ matrix.arch }}"
           mkdir -p "${DIR}"
-          cp IntuitionEngine ie32asm ie64asm "${DIR}/"
+          cp IntuitionEngine ie32asm ie64asm ie32to64 "${DIR}/"
           cp README.md CHANGELOG.md "${DIR}/" 2>/dev/null || true
           cp -r sdk/ "${DIR}/sdk/" 2>/dev/null || true
           tar -cJf "${DIR}.tar.xz" "${DIR}"
@@ -98,7 +104,7 @@ jobs:
 
           # Build AppDir
           mkdir -p AppDir/usr/bin AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/256x256/apps
-          cp IntuitionEngine ie32asm ie64asm AppDir/usr/bin/
+          cp IntuitionEngine ie32asm ie64asm ie32to64 AppDir/usr/bin/
 
           # Desktop entry
           cat > AppDir/usr/share/applications/${APP_NAME}.desktop <<DESKTOP
@@ -139,10 +145,72 @@ jobs:
             ${{ env.APP_NAME }}-*-linux-${{ matrix.arch }}.AppImage
 
   # ---------------------------------------------------------------------------
-  # Experimental: Windows (amd64 + arm64) — novulkan, CGO_ENABLED=0
+  # Experimental: Windows (amd64 + arm64) — novulkan, CGO_ENABLED=0, no headless
   # ---------------------------------------------------------------------------
   windows:
     name: Windows ${{ matrix.arch }} (experimental)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            goarch: amd64
+            upx: true
+          - arch: arm64
+            goarch: arm64
+            upx: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+
+      - name: Extract version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        env:
+          GOOS: windows
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          COMMIT=$(git rev-parse --short HEAD)
+          BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          VERSION="${{ steps.version.outputs.version }}"
+          go build -ldflags "-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" -tags novulkan .
+          go build -ldflags "-s -w" -o ie32asm.exe assembler/ie32asm.go
+          go build -ldflags "-s -w" -tags ie64 -o ie64asm.exe assembler/ie64asm.go
+          go build -ldflags "-s -w" -o ie32to64.exe ./cmd/ie32to64/
+
+      - name: UPX compress binaries
+        if: ${{ matrix.upx }}
+        run: |
+          sudo apt-get install -y upx-ucl
+          upx IntuitionEngine.exe ie32asm.exe ie64asm.exe ie32to64.exe
+
+      - name: Create zip archive
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          DIR="${APP_NAME}-${VERSION}-windows-${{ matrix.arch }}"
+          mkdir -p "${DIR}"
+          cp IntuitionEngine.exe ie32asm.exe ie64asm.exe ie32to64.exe "${DIR}/"
+          cp README.md CHANGELOG.md "${DIR}/" 2>/dev/null || true
+          cp -r sdk/ "${DIR}/sdk/" 2>/dev/null || true
+          zip -r "${DIR}.zip" "${DIR}"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.arch }}
+          path: ${{ env.APP_NAME }}-*-windows-${{ matrix.arch }}.zip
+
+  # ---------------------------------------------------------------------------
+  # Experimental: macOS (amd64 + arm64) — novulkan, CGO_ENABLED=0, no headless
+  # ---------------------------------------------------------------------------
+  macos:
+    name: macOS ${{ matrix.arch }} (experimental)
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -164,69 +232,29 @@ jobs:
 
       - name: Build
         env:
-          GOOS: windows
+          GOOS: darwin
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
         run: |
           COMMIT=$(git rev-parse --short HEAD)
           BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           VERSION="${{ steps.version.outputs.version }}"
-          go build -ldflags "-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" -tags "novulkan headless" .
-          go build -ldflags "-s -w" -o ie32asm.exe assembler/ie32asm.go
-          go build -ldflags "-s -w" -tags ie64 -o ie64asm.exe assembler/ie64asm.go
-
-      - name: Create zip archive
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          DIR="${APP_NAME}-${VERSION}-windows-${{ matrix.arch }}"
-          mkdir -p "${DIR}"
-          cp IntuitionEngine.exe ie32asm.exe ie64asm.exe "${DIR}/"
-          cp README.md CHANGELOG.md "${DIR}/" 2>/dev/null || true
-          cp -r sdk/ "${DIR}/sdk/" 2>/dev/null || true
-          zip -r "${DIR}.zip" "${DIR}"
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-${{ matrix.arch }}
-          path: ${{ env.APP_NAME }}-*-windows-${{ matrix.arch }}.zip
-
-  # ---------------------------------------------------------------------------
-  # Experimental: macOS arm64 — novulkan, CGO_ENABLED=0
-  # ---------------------------------------------------------------------------
-  macos:
-    name: macOS arm64 (experimental)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: ${{ env.GO_VERSION_FILE }}
-
-      - name: Extract version
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Build
-        env:
-          GOOS: darwin
-          GOARCH: arm64
-          CGO_ENABLED: "0"
-        run: |
-          COMMIT=$(git rev-parse --short HEAD)
-          BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          VERSION="${{ steps.version.outputs.version }}"
-          go build -ldflags "-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" -tags "novulkan headless" .
+          go build -ldflags "-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" -tags novulkan .
           go build -ldflags "-s -w" -o ie32asm assembler/ie32asm.go
           go build -ldflags "-s -w" -tags ie64 -o ie64asm assembler/ie64asm.go
+          go build -ldflags "-s -w" -o ie32to64 ./cmd/ie32to64/
+
+      - name: UPX compress binaries
+        run: |
+          sudo apt-get install -y upx-ucl
+          upx IntuitionEngine ie32asm ie64asm ie32to64
 
       - name: Create tar.xz archive
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          DIR="${APP_NAME}-${VERSION}-darwin-arm64"
+          DIR="${APP_NAME}-${VERSION}-darwin-${{ matrix.arch }}"
           mkdir -p "${DIR}"
-          cp IntuitionEngine ie32asm ie64asm "${DIR}/"
+          cp IntuitionEngine ie32asm ie64asm ie32to64 "${DIR}/"
           cp README.md CHANGELOG.md "${DIR}/" 2>/dev/null || true
           cp -r sdk/ "${DIR}/sdk/" 2>/dev/null || true
           tar -cJf "${DIR}.tar.xz" "${DIR}"
@@ -234,8 +262,8 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: darwin-arm64
-          path: ${{ env.APP_NAME }}-*-darwin-arm64.tar.xz
+          name: darwin-${{ matrix.arch }}
+          path: ${{ env.APP_NAME }}-*-darwin-${{ matrix.arch }}.tar.xz
 
   # ---------------------------------------------------------------------------
   # Publish GitHub Release with checksums
@@ -287,9 +315,10 @@ jobs:
           |----------|--------|-------|
           | Linux amd64 | Official | Full feature set |
           | Linux arm64 | Official | Full feature set |
-          | Windows amd64 | Experimental | headless + novulkan |
-          | Windows arm64 | Experimental | headless + novulkan |
-          | macOS arm64 | Experimental | headless + novulkan |
+          | Windows amd64 | Experimental | novulkan (software Voodoo) |
+          | Windows arm64 | Experimental | novulkan (software Voodoo) |
+          | macOS amd64 | Experimental | novulkan (software Voodoo) |
+          | macOS arm64 | Experimental | novulkan (software Voodoo) |
 
           ### Checksums
           See `SHA256SUMS` for file integrity verification:
