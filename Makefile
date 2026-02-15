@@ -10,23 +10,14 @@
 # - UPX compression for reduced executable size
 # - Automatic dependency management
 # - Build artifact organization
-# - AppImage packaging for Linux distribution
-
 # Directory structure
 BIN_DIR := ./bin
 
 # Detect number of CPU cores for parallel compilation
 NCORES := $(shell nproc)
 
-# Detect architecture for AppImage
+# Detect host architecture
 ARCH := $(shell uname -m)
-ifeq ($(ARCH),x86_64)
-    APPIMAGE_TOOL_URL := https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
-    APPIMAGE_TOOL := appimagetool-x86_64.AppImage
-else ifeq ($(ARCH),aarch64)
-    APPIMAGE_TOOL_URL := https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-aarch64.AppImage
-    APPIMAGE_TOOL := appimagetool-aarch64.AppImage
-endif
 
 # Map host architecture to Go architecture name
 ifeq ($(ARCH),x86_64)
@@ -57,12 +48,6 @@ NICE_LEVEL := 19
 PREFIX := /usr/local
 INSTALL_BIN_DIR := $(PREFIX)/bin
 
-# AppImage related directories and files
-APPIMAGE_DIR := ./AppDir
-APPIMAGE_BIN_DIR := $(APPIMAGE_DIR)/usr/bin
-APPIMAGE_DESKTOP_DIR := $(APPIMAGE_DIR)/usr/share/applications
-APPIMAGE_ICON_DIR := $(APPIMAGE_DIR)/usr/share/icons/hicolor/256x256/apps
-
 # Application metadata
 APP_NAME := IntuitionEngine
 APP_VERSION := 1.0.0
@@ -78,7 +63,7 @@ RELEASE_DIR := ./release
 
 # Main targets
 .PHONY: all clean list install uninstall novulkan headless headless-novulkan
-.PHONY: sdk clean-sdk release-src release-sdk release-linux release-windows release-macos release-freebsd release-netbsd release-openbsd release-all
+.PHONY: sdk clean-sdk release-src release-sdk release-linux release-windows release-all
 
 # Default target builds everything
 all: setup intuition-engine ie32asm ie64asm ie32to64 ie64dis
@@ -387,44 +372,35 @@ sdk: clean-sdk ie32asm ie64asm
 	echo "SDK build complete: $${SDK_BUILT} assembled, $${SDK_SKIPPED} skipped"; \
 	ls sdk/examples/prebuilt/ 2>/dev/null || true
 
-# Build release archives for Linux (amd64 + arm64)
-# Native arch gets full CGO build; cross arch gets CGO_ENABLED=0 (experimental)
+# Build release archive for Linux (native architecture only)
+# Ebiten/Oto require CGO (GLFW/X11/ALSA), so cross-compilation is not supported.
 release-linux: setup sdk
-	@echo "=== Building Linux releases (amd64 + arm64) ==="
+	@echo "=== Building Linux release ($(NATIVE_GOARCH)) ==="
 	@$(MKDIR) -p $(RELEASE_DIR)
 	@echo "Assembling EhBASIC IE64 ROM..."
 	@$(BIN_DIR)/ie64asm assembler/ehbasic_ie64.asm
-	@for goarch in amd64 arm64; do \
-		RELEASE_NAME=$(APP_NAME)-$(APP_VERSION)-linux-$$goarch; \
-		echo ""; \
-		echo "--- $$RELEASE_NAME ---"; \
-		if [ "$$goarch" = "$(NATIVE_GOARCH)" ]; then \
-			echo "Building (native, full)..."; \
-			CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags embed_basic -o IntuitionEngine .; \
-			command -v $(SSTRIP) >/dev/null 2>&1 && $(SSTRIP) -z IntuitionEngine || true; \
-			command -v $(UPX) >/dev/null 2>&1 && $(UPX) --lzma IntuitionEngine || true; \
-			$(GO) build $(GO_FLAGS) -o ie32asm assembler/ie32asm.go; \
-			$(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm assembler/ie64asm.go; \
-			$(GO) build $(GO_FLAGS) -o ie32to64 ./cmd/ie32to64/; \
-		else \
-			echo "Building (cross, experimental)..."; \
-			GOOS=linux GOARCH=$$goarch CGO_ENABLED=0 $(GO) build $(GO_FLAGS) -tags "novulkan embed_basic" -o IntuitionEngine .; \
-			GOOS=linux GOARCH=$$goarch CGO_ENABLED=0 $(GO) build $(GO_FLAGS) -o ie32asm assembler/ie32asm.go; \
-			GOOS=linux GOARCH=$$goarch CGO_ENABLED=0 $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm assembler/ie64asm.go; \
-			GOOS=linux GOARCH=$$goarch CGO_ENABLED=0 $(GO) build $(GO_FLAGS) -o ie32to64 ./cmd/ie32to64/; \
-		fi; \
-		STAGING=$(RELEASE_DIR)/$$RELEASE_NAME; \
-		rm -rf $$STAGING; \
-		$(MKDIR) -p $$STAGING; \
-		mv IntuitionEngine ie32asm ie64asm ie32to64 $$STAGING/; \
-		cp README.md CHANGELOG.md $$STAGING/; \
-		cp -r sdk $$STAGING/sdk; \
-		rm -rf $$STAGING/sdk/.git; \
-		echo "Creating $$RELEASE_NAME.tar.xz..."; \
-		tar -C $(RELEASE_DIR) -cJf $(RELEASE_DIR)/$$RELEASE_NAME.tar.xz $$RELEASE_NAME; \
-		rm -rf $$STAGING; \
-		echo "Created: $(RELEASE_DIR)/$$RELEASE_NAME.tar.xz"; \
-	done
+	@RELEASE_NAME=$(APP_NAME)-$(APP_VERSION)-linux-$(NATIVE_GOARCH); \
+	echo ""; \
+	echo "--- $$RELEASE_NAME ---"; \
+	echo "Building (native, full)..."; \
+	CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags embed_basic -o IntuitionEngine .; \
+	command -v $(SSTRIP) >/dev/null 2>&1 && $(SSTRIP) -z IntuitionEngine || true; \
+	command -v $(UPX) >/dev/null 2>&1 && $(UPX) --lzma IntuitionEngine || true; \
+	$(GO) build $(GO_FLAGS) -o ie32asm assembler/ie32asm.go; \
+	$(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm assembler/ie64asm.go; \
+	$(GO) build $(GO_FLAGS) -o ie32to64 ./cmd/ie32to64/; \
+	STAGING=$(RELEASE_DIR)/$$RELEASE_NAME; \
+	rm -rf $$STAGING; \
+	$(MKDIR) -p $$STAGING; \
+	mv IntuitionEngine ie32asm ie64asm ie32to64 $$STAGING/; \
+	cp README.md CHANGELOG.md DEVELOPERS.md $$STAGING/; \
+	cp -r docs $$STAGING/docs; \
+	cp -r sdk $$STAGING/sdk; \
+	rm -rf $$STAGING/sdk/.git; \
+	echo "Creating $$RELEASE_NAME.tar.xz..."; \
+	tar -C $(RELEASE_DIR) -cJf $(RELEASE_DIR)/$$RELEASE_NAME.tar.xz $$RELEASE_NAME; \
+	rm -rf $$STAGING; \
+	echo "Created: $(RELEASE_DIR)/$$RELEASE_NAME.tar.xz"
 
 # Build release archives for Windows (amd64 + arm64, cross-compiled, no Vulkan)
 release-windows: setup sdk
@@ -436,15 +412,16 @@ release-windows: setup sdk
 		RELEASE_NAME=$(APP_NAME)-$(APP_VERSION)-windows-$$goarch; \
 		echo ""; \
 		echo "--- $$RELEASE_NAME ---"; \
-		GOOS=windows GOARCH=$$goarch CGO_ENABLED=0 $(GO) build $(GO_FLAGS) -tags "novulkan embed_basic" -o IntuitionEngine.exe .; \
-		GOOS=windows GOARCH=$$goarch CGO_ENABLED=0 $(GO) build $(GO_FLAGS) -o ie32asm.exe assembler/ie32asm.go; \
-		GOOS=windows GOARCH=$$goarch CGO_ENABLED=0 $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm.exe assembler/ie64asm.go; \
-		GOOS=windows GOARCH=$$goarch CGO_ENABLED=0 $(GO) build $(GO_FLAGS) -o ie32to64.exe ./cmd/ie32to64/; \
+		GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags "novulkan embed_basic" -o IntuitionEngine.exe .; \
+		GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o ie32asm.exe assembler/ie32asm.go; \
+		GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm.exe assembler/ie64asm.go; \
+		GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o ie32to64.exe ./cmd/ie32to64/; \
 		STAGING=$(RELEASE_DIR)/$$RELEASE_NAME; \
 		rm -rf $$STAGING; \
 		$(MKDIR) -p $$STAGING; \
 		mv IntuitionEngine.exe ie32asm.exe ie64asm.exe ie32to64.exe $$STAGING/; \
-		cp README.md CHANGELOG.md $$STAGING/; \
+		cp README.md CHANGELOG.md DEVELOPERS.md $$STAGING/; \
+		cp -r docs $$STAGING/docs; \
 		cp -r sdk $$STAGING/sdk; \
 		rm -rf $$STAGING/sdk/.git; \
 		echo "Creating $$RELEASE_NAME.zip..."; \
@@ -453,113 +430,11 @@ release-windows: setup sdk
 		echo "Created: $(RELEASE_DIR)/$$RELEASE_NAME.zip"; \
 	done
 
-# Build release archives for macOS (amd64 + arm64, cross-compiled, no Vulkan)
-release-macos: setup sdk
-	@echo "=== Building macOS releases (amd64 + arm64) ==="
-	@$(MKDIR) -p $(RELEASE_DIR)
-	@echo "Assembling EhBASIC IE64 ROM..."
-	@$(BIN_DIR)/ie64asm assembler/ehbasic_ie64.asm
-	@for goarch in amd64 arm64; do \
-		RELEASE_NAME=$(APP_NAME)-$(APP_VERSION)-darwin-$$goarch; \
-		echo ""; \
-		echo "--- $$RELEASE_NAME ---"; \
-		GOOS=darwin GOARCH=$$goarch CGO_ENABLED=0 $(GO) build $(GO_FLAGS) -tags "novulkan embed_basic" -o IntuitionEngine .; \
-		GOOS=darwin GOARCH=$$goarch CGO_ENABLED=0 $(GO) build $(GO_FLAGS) -o ie32asm assembler/ie32asm.go; \
-		GOOS=darwin GOARCH=$$goarch CGO_ENABLED=0 $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm assembler/ie64asm.go; \
-		GOOS=darwin GOARCH=$$goarch CGO_ENABLED=0 $(GO) build $(GO_FLAGS) -o ie32to64 ./cmd/ie32to64/; \
-		STAGING=$(RELEASE_DIR)/$$RELEASE_NAME; \
-		rm -rf $$STAGING; \
-		$(MKDIR) -p $$STAGING; \
-		mv IntuitionEngine ie32asm ie64asm ie32to64 $$STAGING/; \
-		cp README.md CHANGELOG.md $$STAGING/; \
-		cp -r sdk $$STAGING/sdk; \
-		rm -rf $$STAGING/sdk/.git; \
-		echo "Creating $$RELEASE_NAME.tar.xz..."; \
-		tar -C $(RELEASE_DIR) -cJf $(RELEASE_DIR)/$$RELEASE_NAME.tar.xz $$RELEASE_NAME; \
-		rm -rf $$STAGING; \
-		echo "Created: $(RELEASE_DIR)/$$RELEASE_NAME.tar.xz"; \
-	done
-
-# Build release archives for FreeBSD (amd64 + arm64, cross-compiled, no Vulkan)
-release-freebsd: setup sdk
-	@echo "=== Building FreeBSD releases (amd64 + arm64) ==="
-	@$(MKDIR) -p $(RELEASE_DIR)
-	@echo "Assembling EhBASIC IE64 ROM..."
-	@$(BIN_DIR)/ie64asm assembler/ehbasic_ie64.asm
-	@for goarch in amd64 arm64; do \
-		RELEASE_NAME=$(APP_NAME)-$(APP_VERSION)-freebsd-$$goarch; \
-		echo ""; \
-		echo "--- $$RELEASE_NAME ---"; \
-		GOOS=freebsd GOARCH=$$goarch CGO_ENABLED=0 $(GO) build $(GO_FLAGS) -tags "novulkan embed_basic" -o IntuitionEngine .; \
-		GOOS=freebsd GOARCH=$$goarch CGO_ENABLED=0 $(GO) build $(GO_FLAGS) -o ie32asm assembler/ie32asm.go; \
-		GOOS=freebsd GOARCH=$$goarch CGO_ENABLED=0 $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm assembler/ie64asm.go; \
-		GOOS=freebsd GOARCH=$$goarch CGO_ENABLED=0 $(GO) build $(GO_FLAGS) -o ie32to64 ./cmd/ie32to64/; \
-		STAGING=$(RELEASE_DIR)/$$RELEASE_NAME; \
-		rm -rf $$STAGING; \
-		$(MKDIR) -p $$STAGING; \
-		mv IntuitionEngine ie32asm ie64asm ie32to64 $$STAGING/; \
-		cp README.md CHANGELOG.md $$STAGING/; \
-		cp -r sdk $$STAGING/sdk; \
-		rm -rf $$STAGING/sdk/.git; \
-		echo "Creating $$RELEASE_NAME.tar.xz..."; \
-		tar -C $(RELEASE_DIR) -cJf $(RELEASE_DIR)/$$RELEASE_NAME.tar.xz $$RELEASE_NAME; \
-		rm -rf $$STAGING; \
-		echo "Created: $(RELEASE_DIR)/$$RELEASE_NAME.tar.xz"; \
-	done
-
-# Build release archives for NetBSD (amd64 + arm64, cross-compiled, no Vulkan)
-release-netbsd: setup sdk
-	@echo "=== Building NetBSD releases (amd64 + arm64) ==="
-	@$(MKDIR) -p $(RELEASE_DIR)
-	@echo "Assembling EhBASIC IE64 ROM..."
-	@$(BIN_DIR)/ie64asm assembler/ehbasic_ie64.asm
-	@for goarch in amd64 arm64; do \
-		RELEASE_NAME=$(APP_NAME)-$(APP_VERSION)-netbsd-$$goarch; \
-		echo ""; \
-		echo "--- $$RELEASE_NAME ---"; \
-		GOOS=netbsd GOARCH=$$goarch CGO_ENABLED=0 $(GO) build $(GO_FLAGS) -tags "novulkan embed_basic" -o IntuitionEngine .; \
-		GOOS=netbsd GOARCH=$$goarch CGO_ENABLED=0 $(GO) build $(GO_FLAGS) -o ie32asm assembler/ie32asm.go; \
-		GOOS=netbsd GOARCH=$$goarch CGO_ENABLED=0 $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm assembler/ie64asm.go; \
-		GOOS=netbsd GOARCH=$$goarch CGO_ENABLED=0 $(GO) build $(GO_FLAGS) -o ie32to64 ./cmd/ie32to64/; \
-		STAGING=$(RELEASE_DIR)/$$RELEASE_NAME; \
-		rm -rf $$STAGING; \
-		$(MKDIR) -p $$STAGING; \
-		mv IntuitionEngine ie32asm ie64asm ie32to64 $$STAGING/; \
-		cp README.md CHANGELOG.md $$STAGING/; \
-		cp -r sdk $$STAGING/sdk; \
-		rm -rf $$STAGING/sdk/.git; \
-		echo "Creating $$RELEASE_NAME.tar.xz..."; \
-		tar -C $(RELEASE_DIR) -cJf $(RELEASE_DIR)/$$RELEASE_NAME.tar.xz $$RELEASE_NAME; \
-		rm -rf $$STAGING; \
-		echo "Created: $(RELEASE_DIR)/$$RELEASE_NAME.tar.xz"; \
-	done
-
-# Build release archives for OpenBSD (amd64 + arm64, cross-compiled, no Vulkan)
-release-openbsd: setup sdk
-	@echo "=== Building OpenBSD releases (amd64 + arm64) ==="
-	@$(MKDIR) -p $(RELEASE_DIR)
-	@echo "Assembling EhBASIC IE64 ROM..."
-	@$(BIN_DIR)/ie64asm assembler/ehbasic_ie64.asm
-	@for goarch in amd64 arm64; do \
-		RELEASE_NAME=$(APP_NAME)-$(APP_VERSION)-openbsd-$$goarch; \
-		echo ""; \
-		echo "--- $$RELEASE_NAME ---"; \
-		GOOS=openbsd GOARCH=$$goarch CGO_ENABLED=0 $(GO) build $(GO_FLAGS) -tags "novulkan embed_basic" -o IntuitionEngine .; \
-		GOOS=openbsd GOARCH=$$goarch CGO_ENABLED=0 $(GO) build $(GO_FLAGS) -o ie32asm assembler/ie32asm.go; \
-		GOOS=openbsd GOARCH=$$goarch CGO_ENABLED=0 $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm assembler/ie64asm.go; \
-		GOOS=openbsd GOARCH=$$goarch CGO_ENABLED=0 $(GO) build $(GO_FLAGS) -o ie32to64 ./cmd/ie32to64/; \
-		STAGING=$(RELEASE_DIR)/$$RELEASE_NAME; \
-		rm -rf $$STAGING; \
-		$(MKDIR) -p $$STAGING; \
-		mv IntuitionEngine ie32asm ie64asm ie32to64 $$STAGING/; \
-		cp README.md CHANGELOG.md $$STAGING/; \
-		cp -r sdk $$STAGING/sdk; \
-		rm -rf $$STAGING/sdk/.git; \
-		echo "Creating $$RELEASE_NAME.tar.xz..."; \
-		tar -C $(RELEASE_DIR) -cJf $(RELEASE_DIR)/$$RELEASE_NAME.tar.xz $$RELEASE_NAME; \
-		rm -rf $$STAGING; \
-		echo "Created: $(RELEASE_DIR)/$$RELEASE_NAME.tar.xz"; \
-	done
+# Commented out: ebiten/oto require CGO on macOS/BSD. Re-enable when upstream goes purego.
+# release-macos: ...
+# release-freebsd: ...
+# release-netbsd: ...
+# release-openbsd: ...
 
 # Clean stale SDK prebuilt artifacts
 clean-sdk:
@@ -580,121 +455,25 @@ release-sdk: sdk
 	@echo "SDK archive: $(RELEASE_DIR)/IntuitionEngine-SDK-$(APP_VERSION).zip"
 
 # Build all release archives and generate checksums
-release-all: release-src release-sdk release-linux release-windows release-macos release-freebsd release-netbsd release-openbsd
+release-all: release-src release-sdk release-linux release-windows
 	@echo ""
-	@# Build AppImage on Linux and copy to release dir
-	@if [ "$$(uname)" = "Linux" ]; then \
-		$(MAKE) appimage; \
-		cp -f $(APP_NAME)-$(APP_VERSION)-*.AppImage $(RELEASE_DIR)/ 2>/dev/null || true; \
-	fi
 	@echo "=== Generating SHA256 checksums ==="
-	@cd $(RELEASE_DIR) && sha256sum *.tar.xz *.zip *.AppImage 2>/dev/null > SHA256SUMS
+	@cd $(RELEASE_DIR) && sha256sum *.tar.xz *.zip 2>/dev/null > SHA256SUMS
 	@echo "Checksums:"
 	@cat $(RELEASE_DIR)/SHA256SUMS
 	@echo ""
 	@echo "All release archives:"
-	@ls -lh $(RELEASE_DIR)/*.tar.xz $(RELEASE_DIR)/*.zip $(RELEASE_DIR)/*.AppImage 2>/dev/null
+	@ls -lh $(RELEASE_DIR)/*.tar.xz $(RELEASE_DIR)/*.zip 2>/dev/null
 	@echo ""
 	@echo "Release build complete!"
 
-# ─── AppImage ────────────────────────────────────────────────────────────────
-
-# Download AppImage Tool if not present
-$(APPIMAGE_TOOL):
-	@echo "Downloading AppImage Tool for $(ARCH)..."
-	@wget $(APPIMAGE_TOOL_URL)
-	@chmod +x $(APPIMAGE_TOOL)
-
-# Create AppImage directory structure
-appimage-structure: setup
-	@echo "Creating AppImage directory structure..."
-	@$(MKDIR) -p $(APPIMAGE_BIN_DIR)
-	@$(MKDIR) -p $(APPIMAGE_DESKTOP_DIR)
-	@$(MKDIR) -p $(APPIMAGE_ICON_DIR)
-
-# Create desktop entry file
-.PHONY: desktop-entry
-desktop-entry: appimage-structure
-	@echo "Creating desktop entry..."
-	@echo "Desktop entry path: $(APPIMAGE_DESKTOP_DIR)/$(APP_NAME).desktop"
-	@echo "[Desktop Entry]" > $(APPIMAGE_DESKTOP_DIR)/$(APP_NAME).desktop
-	@echo "Name=$(APP_NAME)" >> $(APPIMAGE_DESKTOP_DIR)/$(APP_NAME).desktop
-	@echo "Exec=IntuitionEngine" >> $(APPIMAGE_DESKTOP_DIR)/$(APP_NAME).desktop
-	@echo "Icon=$(APP_NAME)" >> $(APPIMAGE_DESKTOP_DIR)/$(APP_NAME).desktop
-	@echo "Type=Application" >> $(APPIMAGE_DESKTOP_DIR)/$(APP_NAME).desktop
-	@echo "Categories=Development;" >> $(APPIMAGE_DESKTOP_DIR)/$(APP_NAME).desktop
-	@echo "Version=1.0" >> $(APPIMAGE_DESKTOP_DIR)/$(APP_NAME).desktop
-	@echo "Terminal=false" >> $(APPIMAGE_DESKTOP_DIR)/$(APP_NAME).desktop
-	@# Create symlink in AppDir root
-	@ln -sf usr/share/applications/$(APP_NAME).desktop $(APPIMAGE_DIR)/$(APP_NAME).desktop
-	@echo "Desktop entry file contents:"
-	@cat $(APPIMAGE_DESKTOP_DIR)/$(APP_NAME).desktop
-
-# Copy binaries and resources to AppImage structure
-.PHONY: copy-binaries
-copy-binaries: intuition-engine ie32asm appimage-structure
-	@echo "Copying binaries and resources to AppImage structure..."
-	@cp $(BIN_DIR)/IntuitionEngine $(APPIMAGE_BIN_DIR)/
-	@cp $(BIN_DIR)/ie32asm $(APPIMAGE_BIN_DIR)/
-	@cp assets/images/IntuitionEngine.png $(APPIMAGE_ICON_DIR)/$(APP_NAME).png
-	@cp assets/images/IntuitionEngine.png $(APPIMAGE_DIR)/$(APP_NAME).png
-
-# Create AppRun script
-.PHONY: apprun
-apprun: appimage-structure
-	@echo "Creating AppRun script..."
-	@echo '#!/bin/bash' > $(APPIMAGE_DIR)/AppRun
-	@echo 'SELF="$$(dirname "$$(readlink -f "$$0")")"' >> $(APPIMAGE_DIR)/AppRun
-	@echo 'export PATH="$$SELF/usr/bin:$$PATH"' >> $(APPIMAGE_DIR)/AppRun
-	@echo 'exec "$$SELF/usr/bin/IntuitionEngine" "$$@"' >> $(APPIMAGE_DIR)/AppRun
-	@chmod +x $(APPIMAGE_DIR)/AppRun
-
-# Build AppImage package
-.PHONY: appimage
-appimage: $(APPIMAGE_TOOL) copy-binaries desktop-entry apprun
-	@echo "Building AppImage package..."
-	@echo "Verifying AppDir structure..."
-	@# Check required files
-	@if [ ! -f "$(APPIMAGE_DIR)/AppRun" ]; then \
-		echo "Error: AppRun file missing"; \
-		exit 1; \
-	fi
-	@if [ ! -f "$(APPIMAGE_DESKTOP_DIR)/$(APP_NAME).desktop" ]; then \
-		echo "Error: Desktop file missing"; \
-		ls -la $(APPIMAGE_DESKTOP_DIR); \
-		exit 1; \
-	fi
-	@if [ ! -f "$(APPIMAGE_BIN_DIR)/IntuitionEngine" ]; then \
-		echo "Error: Main binary missing"; \
-		exit 1; \
-	fi
-	@if [ ! -f "$(APPIMAGE_ICON_DIR)/$(APP_NAME).png" ]; then \
-		echo "Error: Application icon missing"; \
-		exit 1; \
-	fi
-	@echo "AppDir structure verified"
-	@echo "AppDir contents:"
-	@find $(APPIMAGE_DIR) -type f
-	@echo "Using architecture $(ARCH)"
-	@# Create the AppImage
-	@ARCH=$(ARCH) ./$(APPIMAGE_TOOL) $(APPIMAGE_DIR) $(APP_NAME)-$(APP_VERSION)-$(ARCH).AppImage
-	@echo "AppImage created: $(APP_NAME)-$(APP_VERSION)-$(ARCH).AppImage"
-
 # Clean build artifacts
-clean: clean-appimage
+clean:
 	@echo "Cleaning build artifacts..."
 	@rm -rf $(BIN_DIR)
 	@rm -rf $(RELEASE_DIR)
 	@rm -rf sdk/examples/prebuilt
 	@echo "Clean complete"
-
-# Clean AppImage artifacts
-.PHONY: clean-appimage
-clean-appimage:
-	@echo "Cleaning AppImage artifacts..."
-	@rm -rf $(APPIMAGE_DIR)
-	@rm -f $(APP_NAME)-$(APP_VERSION)-*.AppImage
-	@rm -f $(APPIMAGE_TOOL)
 
 # List compiled binaries with their sizes
 list:
@@ -800,7 +579,6 @@ help:
 	@echo "  ie64asm          - Build only the IE64 assembler"
 	@echo "  ie64dis          - Build only the IE64 disassembler"
 	@echo "  basic            - Build with embedded EhBASIC interpreter"
-	@echo "  appimage         - Create AppImage package"
 	@echo "  install          - Install binaries to $(INSTALL_BIN_DIR)"
 	@echo "  uninstall        - Remove installed binaries from $(INSTALL_BIN_DIR)"
 	@echo "  clean            - Remove all build artifacts"
@@ -811,13 +589,9 @@ help:
 	@echo "  sdk              - Sync includes and pre-assemble SDK demos"
 	@echo "  release-src      - Create source archive from git"
 	@echo "  release-sdk      - Create standalone SDK archive"
-	@echo "  release-linux    - Build Linux release archives (amd64 + arm64)"
+	@echo "  release-linux    - Build Linux release archive (native arch)"
 	@echo "  release-windows  - Build Windows release archives (amd64 + arm64)"
-	@echo "  release-macos    - Build macOS release archives (amd64 + arm64)"
-	@echo "  release-freebsd  - Build FreeBSD release archives (amd64 + arm64)"
-	@echo "  release-netbsd   - Build NetBSD release archives (amd64 + arm64)"
-	@echo "  release-openbsd  - Build OpenBSD release archives (amd64 + arm64)"
-	@echo "  release-all      - Build all release archives + AppImage + SHA256SUMS"
+	@echo "  release-all      - Build all release archives + SHA256SUMS"
 	@echo ""
 	@echo "Demo targets:"
 	@echo "  robocop-32     - Build the Robocop IE32 demo (requires ImageMagick)"

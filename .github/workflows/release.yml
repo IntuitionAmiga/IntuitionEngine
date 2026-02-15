@@ -13,22 +13,11 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Linux official builds (amd64 + arm64)
+  # Linux official build (native amd64 only in CI)
   # ---------------------------------------------------------------------------
   linux:
-    name: Linux ${{ matrix.arch }}
+    name: Linux amd64
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - arch: amd64
-            goarch: amd64
-            appimage_arch: x86_64
-            cross: false
-          - arch: arm64
-            goarch: arm64
-            appimage_arch: aarch64
-            cross: true
     steps:
       - uses: actions/checkout@v4
 
@@ -36,21 +25,10 @@ jobs:
         with:
           go-version-file: ${{ env.GO_VERSION_FILE }}
 
-      - name: Install dependencies (amd64)
-        if: ${{ !matrix.cross }}
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libasound2-dev libgl1-mesa-dev libxcursor-dev libxi-dev libxinerama-dev libxrandr-dev libxxf86vm-dev
-
-      - name: Install cross-compile dependencies (arm64)
-        if: ${{ matrix.cross }}
-        run: |
-          sudo dpkg --add-architecture arm64
-          sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ $(lsb_release -cs) main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ $(lsb_release -cs)-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu libasound2-dev:arm64 libgl1-mesa-dev:arm64 libxcursor-dev:arm64 libxi-dev:arm64 libxinerama-dev:arm64 libxrandr-dev:arm64 libxxf86vm-dev:arm64
 
       - name: Extract version
         id: version
@@ -59,9 +37,8 @@ jobs:
       - name: Build
         env:
           GOOS: linux
-          GOARCH: ${{ matrix.goarch }}
+          GOARCH: amd64
           CGO_ENABLED: "1"
-          CC: ${{ matrix.cross && 'aarch64-linux-gnu-gcc' || 'gcc' }}
         run: |
           COMMIT=$(git rev-parse --short HEAD)
           BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -71,7 +48,7 @@ jobs:
       - name: Build SDK tools
         env:
           GOOS: linux
-          GOARCH: ${{ matrix.goarch }}
+          GOARCH: amd64
           CGO_ENABLED: "0"
         run: |
           go build -ldflags "-s -w" -o ie32asm assembler/ie32asm.go
@@ -86,69 +63,25 @@ jobs:
       - name: Create tar.xz archive
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          DIR="${APP_NAME}-${VERSION}-linux-${{ matrix.arch }}"
+          DIR="${APP_NAME}-${VERSION}-linux-amd64"
           mkdir -p "${DIR}"
           cp IntuitionEngine ie32asm ie64asm ie32to64 "${DIR}/"
-          cp README.md CHANGELOG.md "${DIR}/" 2>/dev/null || true
+          cp README.md CHANGELOG.md DEVELOPERS.md "${DIR}/" 2>/dev/null || true
+          cp -r docs/ "${DIR}/docs/" 2>/dev/null || true
           cp -r sdk/ "${DIR}/sdk/" 2>/dev/null || true
           tar -cJf "${DIR}.tar.xz" "${DIR}"
-
-      - name: Create AppImage
-        if: ${{ !matrix.cross }}
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-
-          # Download appimagetool
-          wget -q "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage" -O appimagetool
-          chmod +x appimagetool
-
-          # Build AppDir
-          mkdir -p AppDir/usr/bin AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/256x256/apps
-          cp IntuitionEngine ie32asm ie64asm ie32to64 AppDir/usr/bin/
-
-          # Desktop entry
-          cat > AppDir/usr/share/applications/${APP_NAME}.desktop <<DESKTOP
-          [Desktop Entry]
-          Name=${APP_NAME}
-          Exec=IntuitionEngine
-          Icon=${APP_NAME}
-          Type=Application
-          Categories=Development;
-          Version=1.0
-          Terminal=false
-          DESKTOP
-          # Fix indentation (heredoc artifact)
-          sed -i 's/^          //' AppDir/usr/share/applications/${APP_NAME}.desktop
-
-          ln -sf usr/share/applications/${APP_NAME}.desktop AppDir/${APP_NAME}.desktop
-          cp assets/images/IntuitionEngine.png AppDir/usr/share/icons/hicolor/256x256/apps/${APP_NAME}.png
-          cp assets/images/IntuitionEngine.png AppDir/${APP_NAME}.png
-
-          # AppRun
-          cat > AppDir/AppRun <<'APPRUN'
-          #!/bin/bash
-          SELF="$(dirname "$(readlink -f "$0")")"
-          export PATH="$SELF/usr/bin:$PATH"
-          exec "$SELF/usr/bin/IntuitionEngine" "$@"
-          APPRUN
-          sed -i 's/^          //' AppDir/AppRun
-          chmod +x AppDir/AppRun
-
-          ARCH=x86_64 ./appimagetool AppDir "${APP_NAME}-${VERSION}-linux-${{ matrix.arch }}.AppImage"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: linux-${{ matrix.arch }}
-          path: |
-            ${{ env.APP_NAME }}-*-linux-${{ matrix.arch }}.tar.xz
-            ${{ env.APP_NAME }}-*-linux-${{ matrix.arch }}.AppImage
+          name: linux-amd64
+          path: ${{ env.APP_NAME }}-*-linux-amd64.tar.xz
 
   # ---------------------------------------------------------------------------
-  # Experimental: Windows (amd64 + arm64) — novulkan, CGO_ENABLED=0, no headless
+  # Windows (amd64 + arm64) — novulkan, cross-compiled
   # ---------------------------------------------------------------------------
   windows:
-    name: Windows ${{ matrix.arch }} (experimental)
+    name: Windows ${{ matrix.arch }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -174,7 +107,6 @@ jobs:
         env:
           GOOS: windows
           GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: "0"
         run: |
           COMMIT=$(git rev-parse --short HEAD)
           BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -196,7 +128,8 @@ jobs:
           DIR="${APP_NAME}-${VERSION}-windows-${{ matrix.arch }}"
           mkdir -p "${DIR}"
           cp IntuitionEngine.exe ie32asm.exe ie64asm.exe ie32to64.exe "${DIR}/"
-          cp README.md CHANGELOG.md "${DIR}/" 2>/dev/null || true
+          cp README.md CHANGELOG.md DEVELOPERS.md "${DIR}/" 2>/dev/null || true
+          cp -r docs/ "${DIR}/docs/" 2>/dev/null || true
           cp -r sdk/ "${DIR}/sdk/" 2>/dev/null || true
           zip -r "${DIR}.zip" "${DIR}"
 
@@ -207,70 +140,19 @@ jobs:
           path: ${{ env.APP_NAME }}-*-windows-${{ matrix.arch }}.zip
 
   # ---------------------------------------------------------------------------
-  # Experimental: macOS (amd64 + arm64) — novulkan, CGO_ENABLED=0, no headless
+  # Commented out: macOS requires CGO for ebiten/oto. Re-enable when upstream goes purego.
   # ---------------------------------------------------------------------------
-  macos:
-    name: macOS ${{ matrix.arch }} (experimental)
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - arch: amd64
-            goarch: amd64
-          - arch: arm64
-            goarch: arm64
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: ${{ env.GO_VERSION_FILE }}
-
-      - name: Extract version
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Build
-        env:
-          GOOS: darwin
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: "0"
-        run: |
-          COMMIT=$(git rev-parse --short HEAD)
-          BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          VERSION="${{ steps.version.outputs.version }}"
-          go build -ldflags "-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" -tags novulkan .
-          go build -ldflags "-s -w" -o ie32asm assembler/ie32asm.go
-          go build -ldflags "-s -w" -tags ie64 -o ie64asm assembler/ie64asm.go
-          go build -ldflags "-s -w" -o ie32to64 ./cmd/ie32to64/
-
-      - name: UPX compress binaries
-        run: |
-          sudo apt-get install -y upx-ucl
-          upx IntuitionEngine ie32asm ie64asm ie32to64
-
-      - name: Create tar.xz archive
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          DIR="${APP_NAME}-${VERSION}-darwin-${{ matrix.arch }}"
-          mkdir -p "${DIR}"
-          cp IntuitionEngine ie32asm ie64asm ie32to64 "${DIR}/"
-          cp README.md CHANGELOG.md "${DIR}/" 2>/dev/null || true
-          cp -r sdk/ "${DIR}/sdk/" 2>/dev/null || true
-          tar -cJf "${DIR}.tar.xz" "${DIR}"
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: darwin-${{ matrix.arch }}
-          path: ${{ env.APP_NAME }}-*-darwin-${{ matrix.arch }}.tar.xz
+  # macos:
+  #   name: macOS ${{ matrix.arch }}
+  #   runs-on: ubuntu-latest
+  #   ...
 
   # ---------------------------------------------------------------------------
   # Publish GitHub Release with checksums
   # ---------------------------------------------------------------------------
   release:
     name: Publish release
-    needs: [linux, windows, macos]
+    needs: [linux, windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -283,7 +165,7 @@ jobs:
       - name: Collect release assets
         run: |
           mkdir -p release
-          find artifacts -type f \( -name '*.tar.xz' -o -name '*.zip' -o -name '*.AppImage' \) -exec cp {} release/ \;
+          find artifacts -type f \( -name '*.tar.xz' -o -name '*.zip' \) -exec cp {} release/ \;
 
       - name: Generate checksums
         working-directory: release
@@ -314,11 +196,8 @@ jobs:
           | Platform | Status | Notes |
           |----------|--------|-------|
           | Linux amd64 | Official | Full feature set |
-          | Linux arm64 | Official | Full feature set |
           | Windows amd64 | Experimental | novulkan (software Voodoo) |
           | Windows arm64 | Experimental | novulkan (software Voodoo) |
-          | macOS amd64 | Experimental | novulkan (software Voodoo) |
-          | macOS arm64 | Experimental | novulkan (software Voodoo) |
 
           ### Checksums
           See `SHA256SUMS` for file integrity verification:

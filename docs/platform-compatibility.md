@@ -8,18 +8,12 @@ Supported platforms, build profiles, and known limitations for Intuition Engine 
 |----------|-------------|--------|---------------|-------|
 | Linux | x86_64 | **Official** | `full` | Primary development platform |
 | Linux | aarch64 | **Official** | `full` | |
-| macOS | x86_64 | Experimental | `novulkan` | No Vulkan support |
-| macOS | ARM64 | Experimental | `novulkan` | No Vulkan support |
 | Windows | x86_64 | Experimental | `novulkan` | No Vulkan support |
 | Windows | ARM64 | Experimental | `novulkan` | No Vulkan support |
-| FreeBSD | x86_64 | Experimental | `novulkan` | No Vulkan support |
-| FreeBSD | ARM64 | Experimental | `novulkan` | No Vulkan support |
-| NetBSD | x86_64 | Experimental | `novulkan` | No Vulkan support |
-| NetBSD | ARM64 | Experimental | `novulkan` | No Vulkan support |
-| OpenBSD | x86_64 | Experimental | `novulkan` | No Vulkan support |
-| OpenBSD | ARM64 | Experimental | `novulkan` | No Vulkan support |
 
 **Official** platforms are fully tested and supported. **Experimental** platforms compile and run but may have untested edge cases.
+
+macOS and BSD variants (FreeBSD, NetBSD, OpenBSD) are not currently supported for release builds because ebiten and oto require CGO on those platforms, preventing cross-compilation. They may compile from source on native hardware with the `novulkan` profile.
 
 ## Build Profile Requirements
 
@@ -43,12 +37,12 @@ Software-only Voodoo rasteriser. Removes the Vulkan SDK dependency.
 
 **Requirements:**
 - Go 1.26+
-- CGO enabled
-- C compiler
+- CGO enabled (Linux) / auto-disabled (Windows cross-compile)
+- C compiler (Linux native builds)
 
 **Features:** Ebiten display, Oto audio, software Voodoo rasteriser.
 
-**Use this for:** macOS, Windows, and Linux systems without Vulkan.
+**Use this for:** Windows and Linux systems without Vulkan.
 
 ### headless
 
@@ -80,7 +74,7 @@ CGO_ENABLED=0 go build -tags "novulkan headless" .
 
 | Backend | Platforms | Rendering | Notes |
 |---------|-----------|-----------|-------|
-| Ebiten | Linux, macOS, Windows | OpenGL / Metal / DirectX | Default, hardware-accelerated |
+| Ebiten | Linux, Windows | OpenGL / DirectX | Default, hardware-accelerated |
 | Headless | All | None | Stub for testing |
 
 Ebiten provides:
@@ -93,29 +87,20 @@ Ebiten provides:
 
 | Backend | Platforms | Output | Notes |
 |---------|-----------|--------|-------|
-| Oto | Linux, macOS, Windows | 44.1kHz stereo | Default, low-latency (~20ms) |
+| Oto | Linux, Windows | 44.1kHz stereo | Default, low-latency (~20ms) |
 | Headless | All | None | Stub for testing |
 
 ## Known Limitations
-
-### macOS (Experimental)
-- Vulkan Voodoo path not available (use `novulkan`)
-- LHA decompression uses pure-Go fallback
 
 ### Windows (Experimental)
 - Vulkan Voodoo path not available (use `novulkan`)
 - LHA decompression uses pure-Go fallback
 - Desktop integration (`.desktop` files, MIME types) is Linux-only
 
-### BSD (FreeBSD, NetBSD, OpenBSD)
-- Vulkan Voodoo path not available (use `novulkan`)
-- Cross-compiled with `CGO_ENABLED=0`
-- Desktop integration (`.desktop` files, MIME types) is Linux-only
-
 ### Cross-Compilation
-- Release targets use `CGO_ENABLED=0` with the `novulkan` profile for cross-architecture builds
-- Use `make release-linux`, `make release-windows`, etc. for automated cross-compilation
-- Full and novulkan profiles require CGO and may need platform-specific sysroot for native builds
+- Linux release builds are native-arch only (ebiten/oto require CGO for GLFW/X11/ALSA)
+- Windows cross-compilation works from Linux (ebiten/oto are pure Go on Windows)
+- Use `make release-linux`, `make release-windows`, or `make release-all` for automated builds
 
 ## Runtime Feature Detection
 

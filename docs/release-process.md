@@ -52,30 +52,26 @@ The version is defined in `Makefile` as `APP_VERSION` and injected at build time
 Each release target builds both amd64 and arm64 archives, assembles the EhBASIC ROM, and embeds it in the binary:
 
 ```bash
-make release-linux      # Linux amd64 + arm64 (.tar.xz)
+make release-linux      # Linux native arch (.tar.xz)
 make release-windows    # Windows amd64 + arm64 (.zip)
-make release-macos      # macOS amd64 + arm64 (.tar.xz)
-make release-freebsd    # FreeBSD amd64 + arm64 (.tar.xz)
-make release-netbsd     # NetBSD amd64 + arm64 (.tar.xz)
-make release-openbsd    # OpenBSD amd64 + arm64 (.tar.xz)
 
 make release-src        # Source archive via git archive (.tar.xz)
 make release-sdk        # Standalone SDK archive (.zip)
 
-make release-all        # All of the above + AppImage (Linux) + SHA256SUMS
+make release-all        # All of the above + SHA256SUMS
 ```
 
-Each platform archive contains: `IntuitionEngine`, `ie32asm`, `ie64asm`, `ie32to64`, `ie64dis`, `README.md`, `CHANGELOG.md`, and the full `sdk/` directory with pre-assembled demos.
+Each platform archive contains: `IntuitionEngine`, `ie32asm`, `ie64asm`, `ie32to64`, `README.md`, `CHANGELOG.md`, `DEVELOPERS.md`, the full `docs/` directory, and the full `sdk/` directory with pre-assembled demos.
 
 ### Build Details
 
 **Linux (Official)**
 
-The native architecture gets a full CGO build with sstrip/upx compression. The cross architecture uses `CGO_ENABLED=0` with the `novulkan` profile.
+Native architecture only (ebiten/oto require CGO for GLFW/X11/ALSA). Full CGO build with sstrip/upx compression.
 
-**Windows, macOS, FreeBSD, NetBSD, OpenBSD (Experimental)**
+**Windows (Experimental)**
 
-Cross-compiled with `CGO_ENABLED=0` and the `novulkan` profile. No UPX compression (cannot compress foreign-architecture binaries).
+Cross-compiled with the `novulkan` profile. Ebiten and oto are pure Go on Windows.
 
 All release builds include the `embed_basic` tag, embedding the EhBASIC interpreter so the VM starts a BASIC prompt by default.
 
@@ -83,20 +79,16 @@ All release builds include the `embed_basic` tag, embedding the EhBASIC interpre
 
 | Platform | Architecture | Format | Profile |
 |----------|-------------|--------|---------|
-| Linux | amd64, arm64 | `.tar.xz`, `.AppImage` | full (native) / novulkan (cross) |
+| Linux | native arch | `.tar.xz` | full |
 | Windows | amd64, arm64 | `.zip` | novulkan |
-| macOS | amd64, arm64 | `.tar.xz` | novulkan |
-| FreeBSD | amd64, arm64 | `.tar.xz` | novulkan |
-| NetBSD | amd64, arm64 | `.tar.xz` | novulkan |
-| OpenBSD | amd64, arm64 | `.tar.xz` | novulkan |
 
 ## Checksums
 
-`make release-all` generates SHA256 checksums automatically (covering `.tar.xz`, `.zip`, and `.AppImage` artifacts). To generate manually:
+`make release-all` generates SHA256 checksums automatically (covering `.tar.xz` and `.zip` artifacts). To generate manually:
 
 ```bash
 cd release/
-sha256sum *.tar.xz *.zip *.AppImage 2>/dev/null > SHA256SUMS
+sha256sum *.tar.xz *.zip 2>/dev/null > SHA256SUMS
 ```
 
 ## Tagging

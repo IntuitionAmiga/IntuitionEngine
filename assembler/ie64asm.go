@@ -216,7 +216,9 @@ type IE64Assembler struct {
 	listingMode     bool
 	listing         []string
 	warnings        []string
+	infos           []string
 	errors          []string
+	verbose         bool
 	// internal state for assembly
 	codeOffset   uint32
 	pass         int
@@ -274,6 +276,15 @@ func (a *IE64Assembler) GetWarnings() []string {
 
 func (a *IE64Assembler) addWarning(format string, args ...interface{}) {
 	a.warnings = append(a.warnings, fmt.Sprintf(format, args...))
+}
+
+func (a *IE64Assembler) addInfo(format string, args ...interface{}) {
+	a.infos = append(a.infos, fmt.Sprintf(format, args...))
+}
+
+// GetInfos returns any informational messages generated during assembly.
+func (a *IE64Assembler) GetInfos() []string {
+	return a.infos
 }
 
 func (a *IE64Assembler) addError(format string, args ...interface{}) {
@@ -1201,7 +1212,7 @@ func (a *IE64Assembler) expandPseudo(line string) []string {
 		}
 		rd := strings.TrimSpace(parts[0])
 		addr := strings.TrimSpace(parts[1])
-		a.addWarning("pseudo-op 'la' lowered to lea %s, %s(r0)", rd, addr)
+		a.addInfo("pseudo-op 'la' lowered to lea %s, %s(r0)", rd, addr)
 		return []string{fmt.Sprintf("\tlea %s, %s(r0)", rd, addr)}
 
 	case "li":
@@ -1229,13 +1240,13 @@ func (a *IE64Assembler) expandPseudo(line string) []string {
 		}
 		if val <= math.MaxUint32 {
 			// Fits in 32 bits
-			a.addWarning("pseudo-op 'li' lowered to move.l %s, #%d", rd, val)
+			a.addInfo("pseudo-op 'li' lowered to move.l %s, #%d", rd, val)
 			return []string{fmt.Sprintf("\tmove.l %s, #%d", rd, val)}
 		}
 		// 64-bit: lo32 + hi32
 		lo := uint32(val & 0xFFFFFFFF)
 		hi := uint32(val >> 32)
-		a.addWarning("pseudo-op 'li' lowered to move.l + movt %s, #$%X_%08X", rd, hi, lo)
+		a.addInfo("pseudo-op 'li' lowered to move.l + movt %s, #$%X_%08X", rd, hi, lo)
 		return []string{
 			fmt.Sprintf("\tmove.l %s, #%d", rd, lo),
 			fmt.Sprintf("\tmovt %s, #%d", rd, hi),
@@ -2610,6 +2621,7 @@ func (a *IE64Assembler) resolveLabel(name string) (uint32, error) {
 
 func main() {
 	listMode := false
+	verbose := false
 	var inputFile string
 	var includePaths []string
 
@@ -2618,6 +2630,8 @@ func main() {
 		arg := args[i]
 		if arg == "-list" {
 			listMode = true
+		} else if arg == "-v" {
+			verbose = true
 		} else if arg == "-I" {
 			i++
 			if i >= len(args) {
@@ -2629,11 +2643,11 @@ func main() {
 			includePaths = append(includePaths, arg[2:])
 		} else if strings.HasPrefix(arg, "-") {
 			fmt.Fprintf(os.Stderr, "Unknown option: %s\n", arg)
-			fmt.Fprintf(os.Stderr, "Usage: ie64asm [-list] [-I dir]... input.asm\n")
+			fmt.Fprintf(os.Stderr, "Usage: ie64asm [-v] [-list] [-I dir]... input.asm\n")
 			os.Exit(1)
 		} else if inputFile != "" {
 			fmt.Fprintf(os.Stderr, "Error: multiple input files specified\n")
-			fmt.Fprintf(os.Stderr, "Usage: ie64asm [-list] [-I dir]... input.asm\n")
+			fmt.Fprintf(os.Stderr, "Usage: ie64asm [-v] [-list] [-I dir]... input.asm\n")
 			os.Exit(1)
 		} else {
 			inputFile = arg
@@ -2641,7 +2655,7 @@ func main() {
 	}
 
 	if inputFile == "" {
-		fmt.Fprintf(os.Stderr, "Usage: ie64asm [-list] [-I dir]... input.asm\n")
+		fmt.Fprintf(os.Stderr, "Usage: ie64asm [-v] [-list] [-I dir]... input.asm\n")
 		os.Exit(1)
 	}
 
@@ -2654,6 +2668,7 @@ func main() {
 	asm := NewIE64Assembler()
 	asm.basePath = filepath.Dir(inputFile)
 	asm.includePaths = includePaths
+	asm.verbose = verbose
 	asm.SetListingMode(listMode)
 
 	binary, err := asm.Assemble(string(source))
@@ -2665,6 +2680,13 @@ func main() {
 	// Print warnings to stderr
 	for _, w := range asm.GetWarnings() {
 		fmt.Fprintf(os.Stderr, "Warning: %s\n", w)
+	}
+
+	// Print infos only in verbose mode
+	if verbose {
+		for _, info := range asm.GetInfos() {
+			fmt.Fprintf(os.Stderr, "Info: %s\n", info)
+		}
 	}
 
 	// Write output

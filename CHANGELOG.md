@@ -79,7 +79,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Build profiles: `full` (default), `novulkan` (software Voodoo), `headless` (CI/testing), `headless-novulkan` (CGO_ENABLED=0 portable).
 - Version metadata injection via ldflags (`-version` flag).
 - Feature introspection (`-features` flag).
-- AppImage packaging for Linux (x86_64 and aarch64).
 - Desktop entry and MIME type integration for `.ie*` files.
 
 #### SDK
@@ -91,7 +90,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Platform Support
 - **Linux** (x86_64, aarch64): Official platform with Ebiten graphics and Oto audio.
-- **macOS** (ARM64): Experimental with `novulkan` profile.
 - **Windows** (x86_64, ARM64): Experimental with `novulkan` profile.
 - Single-instance mode with IPC-based file handoff.
 - F10 hard reset with full runtime state rebuild.

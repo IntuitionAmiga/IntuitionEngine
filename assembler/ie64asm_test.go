@@ -1412,23 +1412,23 @@ func TestIE64Asm_ListingMode(t *testing.T) {
 	}
 }
 
-func TestIE64Asm_Lint_PseudoOpWarning(t *testing.T) {
+func TestIE64Asm_Lint_PseudoOpInfo(t *testing.T) {
 	src := `la r1, $A0000`
 	asm := NewIE64Assembler()
 	_, err := asm.Assemble(src)
 	if err != nil {
 		t.Fatalf("assembly failed: %v", err)
 	}
-	warnings := asm.GetWarnings()
+	infos := asm.GetInfos()
 	found := false
-	for _, w := range warnings {
-		if strings.Contains(strings.ToLower(w), "pseudo") && strings.Contains(strings.ToLower(w), "lea") {
+	for _, info := range infos {
+		if strings.Contains(strings.ToLower(info), "pseudo") && strings.Contains(strings.ToLower(info), "lea") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("expected pseudo-op lowering warning for 'la', got warnings: %v", warnings)
+		t.Errorf("expected pseudo-op lowering info for 'la', got infos: %v", infos)
 	}
 }
 

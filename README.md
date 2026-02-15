@@ -5402,13 +5402,9 @@ For detailed build instructions, all build profiles/tags, toolchain setup, testi
 | Platform | Architecture | Status | Notes |
 |----------|-------------|--------|-------|
 | Linux | x86_64, aarch64 | **Official** | All build profiles |
-| macOS | x86_64, ARM64 | Experimental | `novulkan` profile |
 | Windows | x86_64, ARM64 | Experimental | `novulkan` profile |
-| FreeBSD | x86_64, ARM64 | Experimental | `novulkan` profile |
-| NetBSD | x86_64, ARM64 | Experimental | `novulkan` profile |
-| OpenBSD | x86_64, ARM64 | Experimental | `novulkan` profile |
 
-Release builds embed the EhBASIC interpreter and include the SDK with pre-assembled demos. Build with `make release-linux`, `make release-windows`, `make release-macos`, `make release-freebsd`, `make release-netbsd`, `make release-openbsd`, or `make release-all` for all platforms. Each produces both amd64 and arm64 archives.
+Release builds embed the EhBASIC interpreter and include the SDK with pre-assembled demos. Build with `make release-linux` (native arch), `make release-windows` (amd64 + arm64), or `make release-all` for all platforms.
 
 Graphics: Ebiten (OpenGL/Metal/DirectX). Audio: Oto (44.1kHz stereo). Both have headless stubs for CI.
 

@@ -59,9 +59,6 @@ make basic             # VM with embedded EhBASIC interpreter
 make install           # Install to /usr/local/bin (all built tools)
 make uninstall         # Remove installed binaries
 
-# Packaging
-make appimage          # Create Linux AppImage
-
 # Housekeeping
 make clean             # Remove all build artifacts
 make list              # List compiled binaries with sizes
@@ -440,16 +437,8 @@ Write to the debug output register (`0xF0700`) to print values during execution:
 |----------|--------|----------|-------|-------|
 | **Linux x86_64** | Official | Ebiten | Oto | Primary development platform |
 | **Linux aarch64** | Official | Ebiten | Oto | |
-| **macOS x86_64** | Experimental | Ebiten | Oto | Use `novulkan` profile |
-| **macOS ARM64** | Experimental | Ebiten | Oto | Use `novulkan` profile |
 | **Windows x86_64** | Experimental | Ebiten | Oto | Use `novulkan` profile |
 | **Windows ARM64** | Experimental | Ebiten | Oto | Use `novulkan` profile |
-| **FreeBSD x86_64** | Experimental | Ebiten | Oto | Use `novulkan` profile |
-| **FreeBSD ARM64** | Experimental | Ebiten | Oto | Use `novulkan` profile |
-| **NetBSD x86_64** | Experimental | Ebiten | Oto | Use `novulkan` profile |
-| **NetBSD ARM64** | Experimental | Ebiten | Oto | Use `novulkan` profile |
-| **OpenBSD x86_64** | Experimental | Ebiten | Oto | Use `novulkan` profile |
-| **OpenBSD ARM64** | Experimental | Ebiten | Oto | Use `novulkan` profile |
 
 ### Graphics Backend
 
@@ -467,14 +456,6 @@ Write to the debug output register (`0xF0700`) to print values during execution:
 
 # 12. Packaging and Distribution
 
-### AppImage (Linux)
-
-```bash
-make appimage
-```
-
-Produces `IntuitionEngine-1.0.0-<arch>.AppImage` for the host architecture (x86_64 or aarch64).
-
 ### Desktop Integration
 
 ```bash
@@ -489,7 +470,7 @@ make set-default-handler
 
 Build release archives with `make release-all` (or individual targets like `make release-linux`). Each target builds both amd64 and arm64 archives with embedded EhBASIC and pre-assembled SDK demos.
 
-Each archive contains: `IntuitionEngine`, `ie32asm`, `ie64asm`, `ie32to64`, `ie64dis`, `README.md`, `CHANGELOG.md`, and the full `sdk/` directory with pre-assembled demos.
+Each archive contains: `IntuitionEngine`, `ie32asm`, `ie64asm`, `ie32to64`, `README.md`, `CHANGELOG.md`, `DEVELOPERS.md`, the full `docs/` directory, and the full `sdk/` directory with pre-assembled demos.
 
 Additional release targets:
 
@@ -500,14 +481,10 @@ Additional release targets:
 
 | Platform | Format | Profile |
 |----------|--------|---------|
-| Linux amd64, arm64 | `.AppImage`, `.tar.xz` | full (native) / novulkan (cross) |
+| Linux (native arch) | `.tar.xz` | full |
 | Windows amd64, arm64 | `.zip` | novulkan |
-| macOS amd64, arm64 | `.tar.xz` | novulkan |
-| FreeBSD amd64, arm64 | `.tar.xz` | novulkan |
-| NetBSD amd64, arm64 | `.tar.xz` | novulkan |
-| OpenBSD amd64, arm64 | `.tar.xz` | novulkan |
 
-`make release-all` builds all of the above plus the source and SDK archives, generates an AppImage on Linux, and produces `SHA256SUMS` covering all artifacts.
+`make release-all` builds all of the above plus the source and SDK archives, and produces `SHA256SUMS` covering all artifacts.
 
 ---
 

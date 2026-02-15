@@ -152,6 +152,7 @@ type Assembler struct {
 	codeOffset   uint32
 	basePath     string
 	includePaths []string
+	verbose      bool
 }
 
 // resolveFile searches for filename relative to basePath first, then each
@@ -297,7 +298,9 @@ func (a *Assembler) handleDirective(line string, lineNum int, program []byte) er
 			return fmt.Errorf("invalid EQU value: %s", parts[2])
 		}
 		a.equates[parts[1]] = uint32(value)
-		fmt.Printf("Added equate: %s = 0x%x\n", parts[1], value)
+		if a.verbose {
+			fmt.Printf("Added equate: %s = 0x%x\n", parts[1], value)
+		}
 
 	case ".byte":
 		// Handle comma-separated list of byte values
@@ -392,7 +395,9 @@ func (a *Assembler) handleDirective(line string, lineNum int, program []byte) er
 			return fmt.Errorf("invalid org address: %s", parts[1])
 		}
 		a.codeOffset = uint32(addr) - a.baseAddr
-		fmt.Printf("Setting assembly address to 0x%x\n", addr)
+		if a.verbose {
+			fmt.Printf("Setting assembly address to 0x%x\n", addr)
+		}
 
 	default:
 		return fmt.Errorf("unknown directive: %s", parts[0])
@@ -401,7 +406,9 @@ func (a *Assembler) handleDirective(line string, lineNum int, program []byte) er
 }
 
 func (a *Assembler) parseOperand(operand string, lineNum int) (byte, uint32, error) {
-	fmt.Printf("Parsing operand: '%s'\n", operand)
+	if a.verbose {
+		fmt.Printf("Parsing operand: '%s'\n", operand)
+	}
 
 	// Register-indirect addressing [reg] or [reg+offset]
 	if strings.HasPrefix(operand, "[") && strings.HasSuffix(operand, "]") {
@@ -430,11 +437,15 @@ func (a *Assembler) parseOperand(operand string, lineNum int) (byte, uint32, err
 	// Direct memory addressing @addr (write/read directly to/from this address)
 	if after, ok := strings.CutPrefix(operand, "@"); ok {
 		addr := after
-		fmt.Printf("  Direct memory: addr='%s'\n", addr)
+		if a.verbose {
+			fmt.Printf("  Direct memory: addr='%s'\n", addr)
+		}
 
 		// Handle equate
 		if val, ok := a.equates[addr]; ok {
-			fmt.Printf("    Found equate: val=0x%x\n", val)
+			if a.verbose {
+				fmt.Printf("    Found equate: val=0x%x\n", val)
+			}
 			return ADDR_DIRECT, val, nil
 		}
 
@@ -444,13 +455,17 @@ func (a *Assembler) parseOperand(operand string, lineNum int) (byte, uint32, err
 			if err != nil {
 				return 0, 0, fmt.Errorf("invalid hex address: %s", addr)
 			}
-			fmt.Printf("    Parsed hex: val=0x%x\n", val)
+			if a.verbose {
+				fmt.Printf("    Parsed hex: val=0x%x\n", val)
+			}
 			return ADDR_DIRECT, uint32(val), nil
 		}
 
 		// Handle label
 		if labelAddr, ok := a.labels[addr]; ok {
-			fmt.Printf("    Found label: addr=0x%x\n", labelAddr)
+			if a.verbose {
+				fmt.Printf("    Found label: addr=0x%x\n", labelAddr)
+			}
 			return ADDR_DIRECT, labelAddr, nil
 		}
 		return 0, 0, fmt.Errorf("undefined label or invalid address: %s", addr)
@@ -459,34 +474,46 @@ func (a *Assembler) parseOperand(operand string, lineNum int) (byte, uint32, err
 	// Immediate value #n
 	if strings.HasPrefix(operand, "#") {
 		numStr := operand[1:]
-		fmt.Printf("  Immediate value: '%s'\n", numStr)
+		if a.verbose {
+			fmt.Printf("  Immediate value: '%s'\n", numStr)
+		}
 		// Handle equate
 		if val, ok := a.equates[numStr]; ok {
-			fmt.Printf("    Found equate: val=0x%x\n", val)
+			if a.verbose {
+				fmt.Printf("    Found equate: val=0x%x\n", val)
+			}
 			return ADDR_IMMEDIATE, val, nil
 		}
 		// Handle label
 		if labelAddr, ok := a.labels[numStr]; ok {
-			fmt.Printf("    Found label: addr=0x%x\n", labelAddr)
+			if a.verbose {
+				fmt.Printf("    Found label: addr=0x%x\n", labelAddr)
+			}
 			return ADDR_IMMEDIATE, labelAddr, nil
 		}
 		val, err := strconv.ParseUint(numStr, 0, 32)
 		if err != nil {
 			return 0, 0, fmt.Errorf("invalid immediate value: %s", numStr)
 		}
-		fmt.Printf("    Parsed value: val=0x%x\n", val)
+		if a.verbose {
+			fmt.Printf("    Parsed value: val=0x%x\n", val)
+		}
 		return ADDR_IMMEDIATE, uint32(val), nil
 	}
 
 	// Register
 	if regNum, ok := registers[operand]; ok {
-		fmt.Printf("  Found register: reg=%s num=%d\n", operand, regNum)
+		if a.verbose {
+			fmt.Printf("  Found register: reg=%s num=%d\n", operand, regNum)
+		}
 		return ADDR_REGISTER, uint32(regNum), nil
 	}
 
 	// Equate
 	if val, ok := a.equates[operand]; ok {
-		fmt.Printf("  Found equate: val=0x%x\n", val)
+		if a.verbose {
+			fmt.Printf("  Found equate: val=0x%x\n", val)
+		}
 		return ADDR_IMMEDIATE, val, nil
 	}
 
@@ -496,13 +523,17 @@ func (a *Assembler) parseOperand(operand string, lineNum int) (byte, uint32, err
 		if err != nil {
 			return 0, 0, fmt.Errorf("invalid hex address: %s", operand)
 		}
-		fmt.Printf("  Parsed hex: val=0x%x\n", val)
+		if a.verbose {
+			fmt.Printf("  Parsed hex: val=0x%x\n", val)
+		}
 		return ADDR_IMMEDIATE, uint32(val), nil
 	}
 
 	// Label
 	if labelAddr, ok := a.labels[operand]; ok {
-		fmt.Printf("  Found label: addr=0x%x\n", labelAddr)
+		if a.verbose {
+			fmt.Printf("  Found label: addr=0x%x\n", labelAddr)
+		}
 		return ADDR_IMMEDIATE, labelAddr, nil
 	}
 
@@ -622,7 +653,9 @@ func (a *Assembler) assemble(code string) []byte {
 			label := before
 			// All labels now use the unified codeOffset
 			a.labels[label] = a.baseAddr + a.codeOffset
-			fmt.Printf("Label '%s' at 0x%04x\n", label, a.labels[label])
+			if a.verbose {
+				fmt.Printf("Label '%s' at 0x%04x\n", label, a.labels[label])
+			}
 			continue
 		}
 
@@ -1041,11 +1074,14 @@ func (a *Assembler) assemble(code string) []byte {
 func main() {
 	var includePaths []string
 	var inputFile string
+	verbose := false
 
 	args := os.Args[1:]
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if arg == "-I" {
+		if arg == "-v" {
+			verbose = true
+		} else if arg == "-I" {
 			i++
 			if i >= len(args) {
 				fmt.Fprintf(os.Stderr, "Error: -I requires a directory argument\n")
@@ -1056,11 +1092,11 @@ func main() {
 			includePaths = append(includePaths, arg[2:])
 		} else if strings.HasPrefix(arg, "-") {
 			fmt.Fprintf(os.Stderr, "Unknown option: %s\n", arg)
-			fmt.Fprintf(os.Stderr, "Usage: ie32asm [-I dir]... <input.asm>\n")
+			fmt.Fprintf(os.Stderr, "Usage: ie32asm [-v] [-I dir]... <input.asm>\n")
 			os.Exit(1)
 		} else if inputFile != "" {
 			fmt.Fprintf(os.Stderr, "Error: multiple input files specified\n")
-			fmt.Fprintf(os.Stderr, "Usage: ie32asm [-I dir]... <input.asm>\n")
+			fmt.Fprintf(os.Stderr, "Usage: ie32asm [-v] [-I dir]... <input.asm>\n")
 			os.Exit(1)
 		} else {
 			inputFile = arg
@@ -1068,7 +1104,7 @@ func main() {
 	}
 
 	if inputFile == "" {
-		fmt.Fprintf(os.Stderr, "Usage: ie32asm [-I dir]... <input.asm>\n")
+		fmt.Fprintf(os.Stderr, "Usage: ie32asm [-v] [-I dir]... <input.asm>\n")
 		os.Exit(1)
 	}
 
@@ -1089,6 +1125,7 @@ func main() {
 	asm := NewAssembler()
 	asm.basePath = basePath
 	asm.includePaths = includePaths
+	asm.verbose = verbose
 	binary := asm.assemble(processedCode)
 
 	outFile := strings.TrimSuffix(inputFile, ".asm") + ".iex"
