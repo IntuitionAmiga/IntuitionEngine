@@ -132,8 +132,63 @@ func ParseVGMData(data []byte) (*VGMFile, error) {
 			blockLen := binary.LittleEndian.Uint32(data[i+3 : i+7])
 			i += 7 + int(blockLen)
 			continue
+		case cmd == 0x68:
+			// PCM RAM write: 12 bytes total
+			i += 12
+			continue
+		case cmd >= 0x80 && cmd <= 0x8F:
+			// YM2612 port 0 address 2A write + wait: 1 byte (no operand)
+			samplePos += uint64(cmd & 0x0F)
+			i++
+			continue
+		case cmd == 0x90 || cmd == 0x91 || cmd == 0x95:
+			// DAC stream setup/set data/start fast: 5 bytes total
+			i += 5
+			continue
+		case cmd == 0x92:
+			// DAC stream set frequency: 6 bytes total
+			i += 6
+			continue
+		case cmd == 0x93:
+			// DAC stream start: 11 bytes total
+			i += 11
+			continue
+		case cmd == 0x94:
+			// DAC stream stop: 2 bytes total
+			i += 2
+			continue
+		case cmd >= 0x30 && cmd <= 0x3F:
+			// One-operand commands (reserved/misc): 2 bytes total
+			i += 2
+			continue
+		case cmd >= 0x41 && cmd <= 0x4E:
+			// Two-operand commands (misc chip writes): 3 bytes total
+			i += 3
+			continue
+		case cmd == 0x4F:
+			// Game Gear PSG stereo: 2 bytes total
+			i += 2
+			continue
+		case cmd >= 0x51 && cmd <= 0x5F:
+			// Two-operand chip writes (YM2413, YM2612, etc.): 3 bytes total
+			i += 3
+			continue
+		case cmd >= 0xA1 && cmd <= 0xBF:
+			// Two-operand chip writes: 3 bytes total
+			i += 3
+			continue
+		case cmd >= 0xC0 && cmd <= 0xDF:
+			// Three-operand chip writes: 4 bytes total
+			i += 4
+			continue
+		case cmd >= 0xE0 && cmd <= 0xFF:
+			// Four-operand commands (seek, etc.): 5 bytes total
+			i += 5
+			continue
 		default:
-			return nil, fmt.Errorf("vgm unsupported command 0x%02X at 0x%X", cmd, i)
+			// Unknown command — skip 1 byte and hope for the best
+			i++
+			continue
 		}
 	}
 

@@ -101,6 +101,7 @@ const (
 	TED_HDR_RESERVED = 15 // Reserved bytes (2 bytes)
 	TED_HDR_SUBTUNES = 17 // Subtune count (2 bytes, little-endian)
 	TED_HDR_FLAGS    = 19 // FileFlags byte (at offset $27 from header start)
+	TED_HDR_TIMES    = 20 // Per-subtune play times start (2 bytes LE each, seconds)
 	TED_HDR_STRINGS  = 48 // Metadata strings start offset
 )
 

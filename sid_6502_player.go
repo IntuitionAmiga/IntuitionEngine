@@ -89,7 +89,8 @@ func newSID6502Player(file *SIDFile, subsong, sampleRate int) (*SID6502Player, e
 }
 
 func sidIsNTSC(header SIDHeader) bool {
-	video := header.Flags & 0x03
+	// Flags bits 2-3: video standard (00=unknown, 01=PAL, 10=NTSC, 11=PAL+NTSC)
+	video := (header.Flags >> 2) & 0x03
 	return video == 0x02
 }
 

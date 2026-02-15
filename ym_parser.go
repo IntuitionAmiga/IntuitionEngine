@@ -63,10 +63,24 @@ func parseYMData(data []byte) (*YMFile, error) {
 	}
 
 	id := string(data[:4])
-	if id != "YM5!" && id != "YM6!" {
+
+	// YM2/YM3/YM3b: simple formats with no header, just interleaved register data
+	switch id {
+	case "YM2!", "YM3!":
+		return parseYMLegacy(data[4:], 0, id)
+	case "YM3b":
+		if len(data) < 8 {
+			return nil, fmt.Errorf("ym3b too short")
+		}
+		loopFrame := binary.BigEndian.Uint32(data[len(data)-4:])
+		return parseYMLegacy(data[4:len(data)-4], loopFrame, id)
+	}
+
+	// YM4/YM5/YM6: full header format with "LeOnArD!" signature
+	if id != "YM4!" && id != "YM5!" && id != "YM6!" {
 		return nil, fmt.Errorf("unsupported ym version: %s", id)
 	}
-	if string(data[4:12]) != "LeOnArD!" {
+	if len(data) < 12 || string(data[4:12]) != "LeOnArD!" {
 		return nil, fmt.Errorf("invalid ym signature")
 	}
 
@@ -217,5 +231,41 @@ func parseYMData(data []byte) (*YMFile, error) {
 		Author:      author,
 		Comments:    comments,
 		Interleaved: interleaved,
+	}, nil
+}
+
+// parseYMLegacy handles YM2, YM3, and YM3b formats.
+// These have no metadata header — just interleaved 14-register frame data after the 4-byte magic.
+// Default clock is 2000000 Hz (Atari ST YM2149), default frame rate is 50 Hz.
+func parseYMLegacy(frameData []byte, loopFrame uint32, id string) (*YMFile, error) {
+	if len(frameData) < ymLegacyRegisters {
+		return nil, fmt.Errorf("ym frame data too short")
+	}
+	frameCount := len(frameData) / ymLegacyRegisters
+	if frameCount*ymLegacyRegisters != len(frameData) {
+		return nil, fmt.Errorf("ym frame data not aligned to %d registers", ymLegacyRegisters)
+	}
+
+	buffer := make([]uint8, frameCount*PSG_REG_COUNT)
+	frames := make([][]uint8, frameCount)
+	for i := range frameCount {
+		start := i * PSG_REG_COUNT
+		frames[i] = buffer[start : start+PSG_REG_COUNT : start+PSG_REG_COUNT]
+	}
+
+	// YM2/YM3/YM3b are always interleaved: reg 0 for all frames, then reg 1 for all frames, etc.
+	for reg := 0; reg < ymLegacyRegisters; reg++ {
+		base := reg * frameCount
+		for f := 0; f < frameCount; f++ {
+			frames[f][reg] = frameData[base+f]
+		}
+	}
+
+	return &YMFile{
+		Frames:      frames,
+		FrameRate:   50,
+		ClockHz:     2000000,
+		LoopFrame:   loopFrame,
+		Interleaved: true,
 	}, nil
 }

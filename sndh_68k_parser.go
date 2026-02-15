@@ -19,17 +19,19 @@ import (
 
 // SNDHHeader contains parsed metadata from an SNDH file
 type SNDHHeader struct {
-	Title        string
-	Composer     string
-	Ripper       string
-	Converter    string
-	Year         string
-	SubSongCount int
-	DefaultSong  int
-	TimerType    string   // "A", "B", "C", "D", or "V" (VBL)
-	TimerFreq    int      // Frequency in Hz (50 for PAL VBL)
-	Durations    []int    // Per-subsong duration in seconds (0 = loops)
-	Flags        []string // Hardware flags
+	Title          string
+	Composer       string
+	Ripper         string
+	Converter      string
+	Year           string
+	SubSongCount   int
+	DefaultSong    int
+	TimerType      string   // "A", "B", "C", "D", or "V" (VBL)
+	TimerFreq      int      // Frequency in Hz (50 for PAL VBL)
+	Durations      []int    // Per-subsong duration in seconds (from TIME tag)
+	FrameDurations []uint32 // Per-subsong duration in frames (from FRMS tag)
+	SubtuneNames   []string // Per-subtune names (from !SN tag)
+	Flags          []string // Hardware flags
 }
 
 // SNDHFile represents a parsed SNDH file
@@ -178,6 +180,21 @@ func ParseSNDHData(data []byte) (*SNDHFile, error) {
 					dur := int(binary.BigEndian.Uint16(data[tagOffset : tagOffset+2]))
 					file.Header.Durations[i] = dur
 					tagOffset += 2
+				}
+			} else if tag == "FRMS" {
+				// Per-subtune frame counts (uint32 per subtune)
+				file.Header.FrameDurations = make([]uint32, file.Header.SubSongCount)
+				for i := 0; i < file.Header.SubSongCount && tagOffset+4 <= len(data); i++ {
+					file.Header.FrameDurations[i] = binary.BigEndian.Uint32(data[tagOffset : tagOffset+4])
+					tagOffset += 4
+				}
+			} else if tag == "!SN\x00" || (len(tag) >= 3 && tag[:3] == "!SN") {
+				// Subtune names: sequential null-terminated strings
+				file.Header.SubtuneNames = make([]string, 0, file.Header.SubSongCount)
+				for i := 0; i < file.Header.SubSongCount && tagOffset < len(data); i++ {
+					name, newOff := parseNullTerminatedString(data, tagOffset)
+					file.Header.SubtuneNames = append(file.Header.SubtuneNames, name)
+					tagOffset = newOff
 				}
 			} else if tag == "FLAG" {
 				// Hardware flags - read null-terminated strings

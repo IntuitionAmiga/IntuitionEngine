@@ -621,3 +621,232 @@ func TestParseAHXSubsongs(t *testing.T) {
 		t.Errorf("Restart: expected 1, got %d", song.Restart)
 	}
 }
+
+// TestParseAHXInstrument_FilterSweep tests filter speed spanning all 3 bit fields
+func TestParseAHXInstrument_FilterSweep(t *testing.T) {
+	// FilterSpeed is assembled from 3 places:
+	//   bits 4-0 from byte 1 bits 7-3
+	//   bit 5 from byte 12 bit 7
+	//   bit 6 from byte 19 bit 7
+	// Test FilterSpeed = 0x7F (all 7 bits set) = 127
+
+	data := []byte{
+		'T', 'H', 'X', 0x00,
+		0x00, 0x2F, // Name offset = 47
+		0x00, 0x01, // PositionNr = 1
+		0x00, 0x00,
+		0x01, 0x00, 0x01, 0x00, // TrackLength=1, TrackNr=0, InstrumentNr=1, SubsongNr=0
+		// Position
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		// Track 0 data
+		0x00, 0x00, 0x00,
+		// Instrument 1 (22 bytes):
+		0x40,                                     // byte 0: Volume = 64
+		0xF8 | 0x02,                              // byte 1: FilterSpeed bits 4-0 = 0x1F (all set) in bits 7-3, WaveLength = 2
+		0x04, 0x40, 0x08, 0x30, 0x20, 0x04, 0x00, // bytes 2-8: ADSR
+		0x00, 0x00, 0x00, // bytes 9-11: unused
+		0x80 | 0x20, // byte 12: bit 7 = FilterSpeed bit 5, FilterLowerLimit = 0x20
+		0x00,        // byte 13: VibratoDelay
+		0x00,        // byte 14: HardCut + VibratoDepth
+		0x00,        // byte 15: VibratoSpeed
+		0x10,        // byte 16: SquareLowerLimit = 16
+		0x30,        // byte 17: SquareUpperLimit = 48
+		0x02,        // byte 18: SquareSpeed = 2
+		0x80 | 0x3F, // byte 19: bit 7 = FilterSpeed bit 6, FilterUpperLimit = 0x3F
+		0x01,        // byte 20: PList speed
+		0x00,        // byte 21: PList length = 0
+		// Song name
+		'F', 'S', 0x00,
+		// Instrument name
+		'F', 'i', 'l', 't', 0x00,
+	}
+
+	song, err := ParseAHX(data)
+	if err != nil {
+		t.Fatalf("ParseAHX failed: %v", err)
+	}
+
+	inst := song.Instruments[1]
+	// FilterSpeed should be: bits4-0=0x1F, bit5=1 (from byte12), bit6=1 (from byte19) = 0x7F = 127
+	if inst.FilterSpeed != 0x7F {
+		t.Errorf("FilterSpeed: expected 0x7F (127), got 0x%02X (%d)", inst.FilterSpeed, inst.FilterSpeed)
+	}
+	if inst.FilterLowerLimit != 0x20 {
+		t.Errorf("FilterLowerLimit: expected 0x20, got 0x%02X", inst.FilterLowerLimit)
+	}
+	if inst.FilterUpperLimit != 0x3F {
+		t.Errorf("FilterUpperLimit: expected 0x3F, got 0x%02X", inst.FilterUpperLimit)
+	}
+	if inst.SquareLowerLimit != 16 {
+		t.Errorf("SquareLowerLimit: expected 16, got %d", inst.SquareLowerLimit)
+	}
+	if inst.SquareUpperLimit != 48 {
+		t.Errorf("SquareUpperLimit: expected 48, got %d", inst.SquareUpperLimit)
+	}
+	if inst.SquareSpeed != 2 {
+		t.Errorf("SquareSpeed: expected 2, got %d", inst.SquareSpeed)
+	}
+}
+
+// TestParseAHXInstrument_DeepPList tests parsing instrument with long playlist and complex modulation
+func TestParseAHXInstrument_DeepPList(t *testing.T) {
+	// Build an instrument with 8 playlist entries covering all waveforms and FX
+	plistEntries := [][4]byte{
+		// Entry 0: Waveform=1 (triangle), Note=24, Fixed=0
+		{0x00, 0xD8, 0x00, 0x00}, // FX2=0, FX1=0, Wave=1, Fixed=0, Note=24(011000)
+		// Entry 1: Waveform=2 (sawtooth), Note=36, Fixed=1, FX1=1(set filter), FXP1=0x40
+		{0x0D, 0x24, 0x40, 0x00}, // FX2=0, FX1=1, Wave=2, Fixed=1, Note=36
+		// Entry 2: Waveform=3 (square), Note=48, FX1=4(set square), FXP1=0x20
+		{0x12, 0x30, 0x20, 0x00}, // FX2=0, FX1=2, Wave=3, Fixed=0, Note=48
+		// Entry 3: Waveform=4 (noise), Note=12, FX1=5(pitch slide up), FXP1=0x08
+		{0x17, 0x0C, 0x08, 0x00}, // FX2=0, FX1=2, Wave=4, Fixed=1, Note=12
+		// Entry 4: Waveform=0 (off), Note=0
+		{0x00, 0x00, 0x00, 0x00},
+		// Entry 5: Waveform=1, Note=60
+		{0x00, 0xFC, 0x00, 0x00}, // Wave=1, Note=60
+		// Entry 6: Waveform=5 (unused), Note=1, FX2=3
+		{0x60, 0xA8, 0x01, 0x00}, // FX2=3, FX1=0, Wave=5, Fixed=0, Note=1
+		// Entry 7: Both FX active
+		{0xE4, 0xD8, 0xFF, 0xFF}, // FX2=7, FX1=1, Wave=1, Fixed=0, Note=24, P1=0xFF, P2=0xFF
+	}
+
+	// Calculate sizes
+	plistLen := len(plistEntries)
+	headerSize := 14
+	posSize := 8
+	trackSize := 3
+	instSize := 22 + plistLen*4
+	nameOffset := headerSize + posSize + trackSize + instSize
+
+	data := make([]byte, 0, nameOffset+20)
+	// Header
+	data = append(data, 'T', 'H', 'X', 0x00)
+	data = append(data, byte(nameOffset>>8), byte(nameOffset)) // name offset
+	data = append(data, 0x00, 0x01)                            // PositionNr = 1
+	data = append(data, 0x00, 0x00)                            // Restart
+	data = append(data, 0x01, 0x00, 0x01, 0x00)                // TrackLen=1, TrackNr=0, InstrumentNr=1, SubsongNr=0
+	// Position
+	data = append(data, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00)
+	// Track 0
+	data = append(data, 0x00, 0x00, 0x00)
+	// Instrument 1
+	data = append(data,
+		0x40, 0x03, // Volume=64, FilterSpeed bits + WaveLength=3
+		0x08, 0x40, 0x10, 0x30, 0x20, 0x08, 0x00, // ADSR
+		0x00, 0x00, 0x00, // unused
+		0x00, 0x00, 0x00, 0x00, // FilterLower, VibDelay, HardCut+VibDepth, VibSpeed
+		0x00, 0x3F, 0x00, 0x00, // SquareLower, SquareUpper, SquareSpeed, FilterUpper
+		0x01,           // PList speed = 1
+		byte(plistLen), // PList length
+	)
+	// Playlist entries
+	for _, entry := range plistEntries {
+		data = append(data, entry[:]...)
+	}
+	// Song name
+	data = append(data, 'D', 'e', 'e', 'p', 0x00)
+	// Instrument name
+	data = append(data, 'M', 'o', 'd', 0x00)
+
+	song, err := ParseAHX(data)
+	if err != nil {
+		t.Fatalf("ParseAHX failed: %v", err)
+	}
+
+	inst := song.Instruments[1]
+	if inst.PList.Length != plistLen {
+		t.Fatalf("PList length: expected %d, got %d", plistLen, inst.PList.Length)
+	}
+	if len(inst.PList.Entries) != plistLen {
+		t.Fatalf("PList entries count: expected %d, got %d", plistLen, len(inst.PList.Entries))
+	}
+	if inst.PList.Speed != 1 {
+		t.Errorf("PList speed: expected 1, got %d", inst.PList.Speed)
+	}
+	if inst.Name != "Mod" {
+		t.Errorf("Instrument name: expected 'Mod', got '%s'", inst.Name)
+	}
+
+	// Verify last entry has both FX active
+	last := inst.PList.Entries[plistLen-1]
+	if last.FXParam[0] != 0xFF || last.FXParam[1] != 0xFF {
+		t.Errorf("Last entry FX params: expected 0xFF,0xFF, got 0x%02X,0x%02X",
+			last.FXParam[0], last.FXParam[1])
+	}
+}
+
+// TestParseAHXInstrument_HardCutRelease tests hard-cut release bit and frame extraction
+func TestParseAHXInstrument_HardCutRelease(t *testing.T) {
+	data := []byte{
+		'T', 'H', 'X', 0x01,
+		0x00, 0x2F,
+		0x00, 0x01,
+		0x00, 0x00,
+		0x01, 0x00, 0x01, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00,
+		// Instrument 1
+		0x40, 0x05, // Volume=64, WaveLength=5
+		0x02, 0x40, 0x04, 0x20, 0x10, 0x06, 0x00,
+		0x00, 0x00, 0x00,
+		0x00,
+		0x0A, // VibratoDelay = 10
+		0xF5, // byte 14: HardCutRelease=1 (bit7), HardCutFrames=7 (bits6-4), VibratoDepth=5 (bits3-0)
+		0x03, // VibratoSpeed = 3
+		0x00, 0x3F, 0x00, 0x00,
+		0x06, 0x00, // PList speed=6, length=0
+		// Song name
+		'H', 'C', 0x00,
+		// Instrument name
+		'H', 'c', 'u', 't', 0x00,
+	}
+
+	song, err := ParseAHX(data)
+	if err != nil {
+		t.Fatalf("ParseAHX failed: %v", err)
+	}
+
+	inst := song.Instruments[1]
+	if inst.HardCutRelease != 1 {
+		t.Errorf("HardCutRelease: expected 1, got %d", inst.HardCutRelease)
+	}
+	if inst.HardCutReleaseFrames != 7 {
+		t.Errorf("HardCutReleaseFrames: expected 7, got %d", inst.HardCutReleaseFrames)
+	}
+	if inst.VibratoDepth != 5 {
+		t.Errorf("VibratoDepth: expected 5, got %d", inst.VibratoDepth)
+	}
+	if inst.VibratoSpeed != 3 {
+		t.Errorf("VibratoSpeed: expected 3, got %d", inst.VibratoSpeed)
+	}
+	if inst.VibratoDelay != 10 {
+		t.Errorf("VibratoDelay: expected 10, got %d", inst.VibratoDelay)
+	}
+	if inst.WaveLength != 5 {
+		t.Errorf("WaveLength: expected 5, got %d", inst.WaveLength)
+	}
+}
+
+// TestParseAHX1_SpeedAlwaysOne tests that AHX0 always has SpeedMultiplier=1
+func TestParseAHX0_SpeedAlwaysOne(t *testing.T) {
+	// Even if bits 6-5 are nonzero in byte 6, AHX0 should ignore them
+	data := []byte{
+		'T', 'H', 'X', 0x00, // AHX0
+		0x00, 0x19,
+		0xE0, 0x01, // bits 6-5 = 11 (would be 200Hz on AHX1), track0NotSaved, PositionNr = 1
+		0x00, 0x00,
+		0x01, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		// No track 0 data (bit7=1)
+		'T', 0x00,
+	}
+
+	song, err := ParseAHX(data)
+	if err != nil {
+		t.Fatalf("ParseAHX failed: %v", err)
+	}
+
+	if song.SpeedMultiplier != 1 {
+		t.Errorf("AHX0 SpeedMultiplier: expected 1 (always), got %d", song.SpeedMultiplier)
+	}
+}

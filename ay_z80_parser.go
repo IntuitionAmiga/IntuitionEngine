@@ -171,7 +171,6 @@ func (p *ayZ80Parser) parseSongData(offset int) (AYZ80SongData, error) {
 		FadeFrames:   p.readU16(offset + 6),
 		HiReg:        p.readU8(offset + 8),
 		LoReg:        p.readU8(offset + 9),
-		PlayerSystem: ayZXSystemSpectrum,
 	}
 	pointsPtr, err := p.resolveOptionalPointer(offset+10, p.readI16(offset+10))
 	if err != nil {
@@ -195,7 +194,31 @@ func (p *ayZ80Parser) parseSongData(offset int) (AYZ80SongData, error) {
 		}
 		data.Blocks = blocks
 	}
+	// Auto-detect player system from Z80 code patterns
+	data.PlayerSystem = detectAYSystem(data.Blocks)
 	return data, nil
+}
+
+// detectAYSystem scans Z80 code blocks for I/O port patterns to determine the target system.
+// MSX: OUT (n),A = D3 A0 or D3 A1
+// CPC: OUT (n),A = D3 F4 or D3 F6
+// Spectrum: default (OUT (C),r with port 0xFFFD/0xBFFD)
+func detectAYSystem(blocks []AYZ80Block) byte {
+	for _, block := range blocks {
+		for i := 0; i+1 < len(block.Data); i++ {
+			if block.Data[i] != 0xD3 {
+				continue
+			}
+			port := block.Data[i+1]
+			if port == 0xA0 || port == 0xA1 {
+				return ayZXSystemMSX
+			}
+			if port == 0xF4 || port == 0xF6 {
+				return ayZXSystemCPC
+			}
+		}
+	}
+	return ayZXSystemSpectrum
 }
 
 func (p *ayZ80Parser) parsePoints(offset int) (AYZ80Points, error) {

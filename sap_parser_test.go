@@ -296,6 +296,85 @@ func TestParseSAPData_DefaultFastPlayNTSC(t *testing.T) {
 	}
 }
 
+// Test 16: Parse TYPE D (digital, INIT only, no PLAYER required)
+func TestParseSAPData_TypeD(t *testing.T) {
+	data := []byte("SAP\r\nTYPE D\r\nINIT 2000\r\n\xFF\xFF")
+	file, err := ParseSAPData(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if file.Header.Type != 'D' {
+		t.Errorf("expected TYPE D, got %c", file.Header.Type)
+	}
+	if file.Header.Init != 0x2000 {
+		t.Errorf("expected INIT 0x2000, got 0x%04X", file.Header.Init)
+	}
+	// Type D should NOT require PLAYER
+	if file.Header.Player != 0 {
+		t.Errorf("expected PLAYER 0, got 0x%04X", file.Header.Player)
+	}
+}
+
+// Test 17: Parse TYPE S (SoftSynth)
+func TestParseSAPData_TypeS(t *testing.T) {
+	data := []byte("SAP\r\nTYPE S\r\nINIT 3000\r\n\xFF\xFF")
+	file, err := ParseSAPData(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if file.Header.Type != 'S' {
+		t.Errorf("expected TYPE S, got %c", file.Header.Type)
+	}
+	if file.Header.Init != 0x3000 {
+		t.Errorf("expected INIT 0x3000, got 0x%04X", file.Header.Init)
+	}
+}
+
+// Test 18: Parse TYPE R (raw POKEY register dump)
+func TestParseSAPData_TypeR(t *testing.T) {
+	data := []byte("SAP\r\nTYPE R\r\n\xFF\xFF")
+	file, err := ParseSAPData(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if file.Header.Type != 'R' {
+		t.Errorf("expected TYPE R, got %c", file.Header.Type)
+	}
+}
+
+// Test 19: TYPE D with FASTPLAY override
+func TestParseSAPData_TypeD_FastPlay(t *testing.T) {
+	data := []byte("SAP\r\nTYPE D\r\nINIT 2000\r\nFASTPLAY 156\r\n\xFF\xFF")
+	file, err := ParseSAPData(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if file.Header.Type != 'D' {
+		t.Errorf("expected TYPE D, got %c", file.Header.Type)
+	}
+	if file.Header.FastPlay != 156 {
+		t.Errorf("expected FASTPLAY 156, got %d", file.Header.FastPlay)
+	}
+}
+
+// Test 20: STEREO with SONGS and DEFSONG
+func TestParseSAPData_StereoMultiSong(t *testing.T) {
+	data := []byte("SAP\r\nTYPE B\r\nINIT 1000\r\nPLAYER 1000\r\nSTEREO\r\nSONGS 5\r\nDEFSONG 2\r\n\xFF\xFF")
+	file, err := ParseSAPData(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !file.Header.Stereo {
+		t.Error("expected STEREO flag to be set")
+	}
+	if file.Header.Songs != 5 {
+		t.Errorf("expected 5 songs, got %d", file.Header.Songs)
+	}
+	if file.Header.DefSong != 2 {
+		t.Errorf("expected default song 2, got %d", file.Header.DefSong)
+	}
+}
+
 // Test helper to build test SAP data
 func buildTestSAPData(name, author, date string) []byte {
 	header := "SAP\r\n"

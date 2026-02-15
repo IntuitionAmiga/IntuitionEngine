@@ -3,6 +3,7 @@
 .gitignore
 .git/
 .idea/
-testdata/
+testdata/*
+!testdata/audio/
 untracked/
 assembler/untracked/

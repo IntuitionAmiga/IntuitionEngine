@@ -240,6 +240,19 @@ func parseTEDMUSICHeaderAt(data []byte, sigPos int, file *TEDFile) error {
 		file.FileFlags = data[pos]
 	}
 
+	// Parse per-subtune play times (2 bytes LE each, in seconds)
+	// Located between FileFlags (offset 19) and strings (offset 48)
+	timesStart := sigPos + TED_HDR_TIMES
+	maxTimes := (TED_HDR_STRINGS - TED_HDR_TIMES) / 2 // max subtunes that fit in the gap
+	if file.Subtunes > 0 && timesStart+2 <= len(data) {
+		count := min(file.Subtunes, maxTimes)
+		file.SubtuneTimes = make([]float64, count)
+		for i := 0; i < count && timesStart+(i+1)*2 <= len(data); i++ {
+			secs := uint16(data[timesStart+i*2]) | (uint16(data[timesStart+i*2+1]) << 8)
+			file.SubtuneTimes[i] = float64(secs)
+		}
+	}
+
 	// Parse metadata strings
 	// TMF format uses Latin-1 encoding, HVTC may use PETSCII
 	stringStart := sigPos + TED_HDR_STRINGS

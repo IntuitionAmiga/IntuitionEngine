@@ -319,3 +319,58 @@ func TestSubtuneSelection(t *testing.T) {
 		t.Error("SelectSubtune(5) should fail for 3 subtunes")
 	}
 }
+
+func TestParseTEDFile_SubtuneTimes(t *testing.T) {
+	// Create a TMF file with per-subtune play times
+	data := make([]byte, 300)
+	data[0] = 0x01 // Load address low ($1001)
+	data[1] = 0x10
+	data[2] = 0x10 // BASIC line number
+	data[3] = 0x00
+
+	sigStart := TMF_SIGNATURE_OFFSET
+	copy(data[sigStart:], "TEDMUSIC\x00")
+
+	// Init/Play addresses
+	data[sigStart+TED_HDR_INIT_LO] = 0x00
+	data[sigStart+TED_HDR_INIT_HI] = 0x20
+	data[sigStart+TED_HDR_PLAY_LO] = 0x00
+	data[sigStart+TED_HDR_PLAY_HI] = 0x20
+
+	// 3 subtunes
+	data[sigStart+TED_HDR_SUBTUNES] = 3
+	data[sigStart+TED_HDR_SUBTUNES+1] = 0
+
+	// Per-subtune play times at offset 20 (LE uint16, seconds)
+	timesOff := sigStart + TED_HDR_TIMES
+	data[timesOff+0] = 120 // subtune 1: 120 seconds
+	data[timesOff+1] = 0
+	data[timesOff+2] = 0 // subtune 2: 256 seconds
+	data[timesOff+3] = 1
+	data[timesOff+4] = 0 // subtune 3: 0 (loops)
+	data[timesOff+5] = 0
+
+	// Add metadata strings
+	stringStart := sigStart + TED_HDR_STRINGS
+	copy(data[stringStart:], "Timed Song                      ")
+	copy(data[stringStart+32:], "Author                          ")
+	copy(data[stringStart+64:], "2024                            ")
+	copy(data[stringStart+96:], "Tool                            ")
+
+	file, err := parseTEDFile(data)
+	if err != nil {
+		t.Fatalf("parseTEDFile failed: %v", err)
+	}
+	if len(file.SubtuneTimes) != 3 {
+		t.Fatalf("expected 3 subtune times, got %d", len(file.SubtuneTimes))
+	}
+	if file.SubtuneTimes[0] != 120.0 {
+		t.Errorf("subtune 1 time: expected 120.0, got %f", file.SubtuneTimes[0])
+	}
+	if file.SubtuneTimes[1] != 256.0 {
+		t.Errorf("subtune 2 time: expected 256.0, got %f", file.SubtuneTimes[1])
+	}
+	if file.SubtuneTimes[2] != 0.0 {
+		t.Errorf("subtune 3 time: expected 0.0 (loops), got %f", file.SubtuneTimes[2])
+	}
+}

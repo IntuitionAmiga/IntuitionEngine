@@ -56,7 +56,6 @@ func ParseSIDData(data []byte) (*SIDFile, error) {
 		header.IsRSID = false
 	case "RSID":
 		header.IsRSID = true
-		return nil, errors.New("RSID is not supported")
 	default:
 		return nil, fmt.Errorf("invalid SID magic: %q", magic)
 	}
