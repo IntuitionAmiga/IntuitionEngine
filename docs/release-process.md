@@ -59,10 +59,13 @@ make release-freebsd    # FreeBSD amd64 + arm64 (.tar.xz)
 make release-netbsd     # NetBSD amd64 + arm64 (.tar.xz)
 make release-openbsd    # OpenBSD amd64 + arm64 (.tar.xz)
 
-make release-all        # All platforms + SHA256SUMS
+make release-src        # Source archive via git archive (.tar.xz)
+make release-sdk        # Standalone SDK archive (.zip)
+
+make release-all        # All of the above + AppImage (Linux) + SHA256SUMS
 ```
 
-Each archive contains: `IntuitionEngine`, `ie32asm`, `ie64asm`, `ie32to64`, `README.md`, `CHANGELOG.md`, and the full `sdk/` directory with pre-assembled demos.
+Each platform archive contains: `IntuitionEngine`, `ie32asm`, `ie64asm`, `ie32to64`, `ie64dis`, `README.md`, `CHANGELOG.md`, and the full `sdk/` directory with pre-assembled demos.
 
 ### Build Details
 
@@ -89,11 +92,11 @@ All release builds include the `embed_basic` tag, embedding the EhBASIC interpre
 
 ## Checksums
 
-`make release-all` generates SHA256 checksums automatically. To generate manually:
+`make release-all` generates SHA256 checksums automatically (covering `.tar.xz`, `.zip`, and `.AppImage` artifacts). To generate manually:
 
 ```bash
 cd release/
-sha256sum *.tar.xz *.zip > SHA256SUMS
+sha256sum *.tar.xz *.zip *.AppImage 2>/dev/null > SHA256SUMS
 ```
 
 ## Tagging

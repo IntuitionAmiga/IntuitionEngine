@@ -114,7 +114,7 @@ IESoundChip (custom synthesizer), PSG/AY-3-8910, SID (Commodore 64), POKEY/SAP (
 The SID (MOS 6581/8580) emulation provides:
 
 - **Multi-SID playback** with up to 3 independent SID chips (9 voices total), each with full ADSR envelopes, ring modulation, hard sync, and resonant filter
-- **Model selection**: 6581 (non-linear filter, DC offset, warmer sound) and 8580 (linear, cleaner)
+- **Per-chip model selection**: each SID chip can independently use 6581 (non-linear filter, DC offset, warmer sound) or 8580 (linear, cleaner), extracted from PSID v3/v4 header flags (bits 4-5 for SID1, 6-7 for SID2, 8-9 for SID3)
 - **File format support**: PSID v1-v4 and RSID
 - **Multi-SID files**: Sid2Addr/Sid3Addr from v3/v4 headers are fully supported. Each SID chip is independently emulated on its own set of SoundChip channels and mixed in real-time.
 - **RSID handling**: RSID files are fully supported. PlayAddress=0 triggers interrupt-driven playback. Embedded load addresses (LoadAddress=0) are extracted from the data section. Speed bitmap selects CIA timer vs VBI rate per subsong.
@@ -143,7 +143,7 @@ The VGM (Video Game Music) parser supports playback of `.vgm` and `.vgz` (gzip-c
 | Sega PCM | `0xC0`+ | Arcade PCM |
 | DAC stream | `0x90`-`0x95` | PCM streaming |
 
-SN76489 conversion maps tone channels 0-2 to AY channels A/B/C with frequency divider scaling based on chip clocks. Attenuation is inverted (SN: 0=max, 15=off → AY: 15=max, 0=off). The SN76489 noise channel maps to the AY noise generator with the mixer register controlling noise enable on channel C.
+SN76489 conversion maps tone channels 0-2 to AY channels A/B/C with frequency divider scaling based on chip clocks. Attenuation is inverted (SN: 0=max, 15=off → AY: 15=max, 0=off). The SN76489 noise channel maps to the AY noise generator with the mixer register controlling noise enable on channel C. Noise rate 3 (which uses channel 2's tone output as the noise clock on real hardware) is dynamically tracked — updating channel 2's tone divider automatically re-emits the noise period with clock-scaled frequency conversion.
 
 ## Build Scripts
 

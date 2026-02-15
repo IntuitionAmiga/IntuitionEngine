@@ -78,10 +78,10 @@ RELEASE_DIR := ./release
 
 # Main targets
 .PHONY: all clean list install uninstall novulkan headless headless-novulkan
-.PHONY: sdk release-linux release-windows release-macos release-freebsd release-netbsd release-openbsd release-all
+.PHONY: sdk clean-sdk release-src release-sdk release-linux release-windows release-macos release-freebsd release-netbsd release-openbsd release-all
 
 # Default target builds everything
-all: setup intuition-engine ie32asm ie64asm
+all: setup intuition-engine ie32asm ie64asm ie32to64 ie64dis
 	@echo "Build complete! Executables are in $(BIN_DIR)/"
 	@$(MAKE) list
 
@@ -311,7 +311,7 @@ ie80asm:
 # ─── SDK & Release targets ───────────────────────────────────────────────────
 
 # Build SDK: sync includes from canonical source and pre-assemble demos
-sdk: ie32asm ie64asm
+sdk: clean-sdk ie32asm ie64asm
 	@echo "=== Building SDK ==="
 	@# Sync include files from canonical source
 	@echo "Syncing include files..."
@@ -561,16 +561,39 @@ release-openbsd: setup sdk
 		echo "Created: $(RELEASE_DIR)/$$RELEASE_NAME.tar.xz"; \
 	done
 
+# Clean stale SDK prebuilt artifacts
+clean-sdk:
+	@rm -rf sdk/examples/prebuilt
+
+# Create source archive from git
+release-src:
+	@mkdir -p $(RELEASE_DIR)
+	git archive --format=tar --prefix=IntuitionEngine-$(APP_VERSION)/ HEAD | xz -9 > $(RELEASE_DIR)/IntuitionEngine-$(APP_VERSION)-src.tar.xz
+	@echo "Source archive: $(RELEASE_DIR)/IntuitionEngine-$(APP_VERSION)-src.tar.xz"
+
+# Create standalone SDK archive
+release-sdk: sdk
+	@mkdir -p $(RELEASE_DIR)
+	@cp -r sdk IntuitionEngine-SDK-$(APP_VERSION)
+	zip -r $(RELEASE_DIR)/IntuitionEngine-SDK-$(APP_VERSION).zip IntuitionEngine-SDK-$(APP_VERSION)/
+	@rm -rf IntuitionEngine-SDK-$(APP_VERSION)
+	@echo "SDK archive: $(RELEASE_DIR)/IntuitionEngine-SDK-$(APP_VERSION).zip"
+
 # Build all release archives and generate checksums
-release-all: release-linux release-windows release-macos release-freebsd release-netbsd release-openbsd
+release-all: release-src release-sdk release-linux release-windows release-macos release-freebsd release-netbsd release-openbsd
 	@echo ""
+	@# Build AppImage on Linux and copy to release dir
+	@if [ "$$(uname)" = "Linux" ]; then \
+		$(MAKE) appimage; \
+		cp -f $(APP_NAME)-$(APP_VERSION)-*.AppImage $(RELEASE_DIR)/ 2>/dev/null || true; \
+	fi
 	@echo "=== Generating SHA256 checksums ==="
-	@cd $(RELEASE_DIR) && sha256sum *.tar.xz *.zip 2>/dev/null > SHA256SUMS
+	@cd $(RELEASE_DIR) && sha256sum *.tar.xz *.zip *.AppImage 2>/dev/null > SHA256SUMS
 	@echo "Checksums:"
 	@cat $(RELEASE_DIR)/SHA256SUMS
 	@echo ""
 	@echo "All release archives:"
-	@ls -lh $(RELEASE_DIR)/*.tar.xz $(RELEASE_DIR)/*.zip 2>/dev/null
+	@ls -lh $(RELEASE_DIR)/*.tar.xz $(RELEASE_DIR)/*.zip $(RELEASE_DIR)/*.AppImage 2>/dev/null
 	@echo ""
 	@echo "Release build complete!"
 
@@ -689,6 +712,9 @@ install:
 	@sudo $(INSTALL) -d $(INSTALL_BIN_DIR)
 	@sudo $(INSTALL) -m 755 $(BIN_DIR)/IntuitionEngine $(INSTALL_BIN_DIR)/
 	@sudo $(INSTALL) -m 755 $(BIN_DIR)/ie32asm $(INSTALL_BIN_DIR)/
+	@if [ -f "$(BIN_DIR)/ie64asm" ]; then sudo $(INSTALL) -m 755 $(BIN_DIR)/ie64asm $(INSTALL_BIN_DIR)/; fi
+	@if [ -f "$(BIN_DIR)/ie32to64" ]; then sudo $(INSTALL) -m 755 $(BIN_DIR)/ie32to64 $(INSTALL_BIN_DIR)/; fi
+	@if [ -f "$(BIN_DIR)/ie64dis" ]; then sudo $(INSTALL) -m 755 $(BIN_DIR)/ie64dis $(INSTALL_BIN_DIR)/; fi
 	@echo "Installation complete"
 
 # Remove installed binaries
@@ -696,6 +722,9 @@ uninstall:
 	@echo "Uninstalling binaries from $(INSTALL_BIN_DIR)..."
 	@sudo rm -f $(INSTALL_BIN_DIR)/IntuitionEngine
 	@sudo rm -f $(INSTALL_BIN_DIR)/ie32asm
+	@sudo rm -f $(INSTALL_BIN_DIR)/ie64asm
+	@sudo rm -f $(INSTALL_BIN_DIR)/ie32to64
+	@sudo rm -f $(INSTALL_BIN_DIR)/ie64dis
 	@echo "Uninstallation complete"
 
 # Test data directories
@@ -780,13 +809,15 @@ help:
 	@echo ""
 	@echo "SDK & Release targets:"
 	@echo "  sdk              - Sync includes and pre-assemble SDK demos"
+	@echo "  release-src      - Create source archive from git"
+	@echo "  release-sdk      - Create standalone SDK archive"
 	@echo "  release-linux    - Build Linux release archives (amd64 + arm64)"
 	@echo "  release-windows  - Build Windows release archives (amd64 + arm64)"
 	@echo "  release-macos    - Build macOS release archives (amd64 + arm64)"
 	@echo "  release-freebsd  - Build FreeBSD release archives (amd64 + arm64)"
 	@echo "  release-netbsd   - Build NetBSD release archives (amd64 + arm64)"
 	@echo "  release-openbsd  - Build OpenBSD release archives (amd64 + arm64)"
-	@echo "  release-all      - Build all release archives + SHA256SUMS"
+	@echo "  release-all      - Build all release archives + AppImage + SHA256SUMS"
 	@echo ""
 	@echo "Demo targets:"
 	@echo "  robocop-32     - Build the Robocop IE32 demo (requires ImageMagick)"

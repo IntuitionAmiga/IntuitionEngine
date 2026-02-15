@@ -4341,6 +4341,8 @@ The SID chip emulates the legendary MOS 6581/8580 from the Commodore 64, providi
 - OSC3 and ENV3 register readback (oscillator and envelope output)
 - Programmable resonant filter (low-pass, band-pass, high-pass, notch)
 - Rate counter ADSR with exponential decay curve
+- Per-chip model selection: 6581 (non-linear filter, DC offset, warmer sound) or 8580 (linear, cleaner), extracted from PSID v3/v4 header flags per SID chip
+- Multi-SID playback with up to 3 independent SID chips (9 voices total), using Sid2Addr/Sid3Addr from v3/v4 headers
 - SID+ enhanced audio processing mode
 - .SID file playback with embedded 6502 code execution
 

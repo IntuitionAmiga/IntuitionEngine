@@ -42,7 +42,7 @@ Optional dependencies for advanced features:
 The build process uses the provided Makefile:
 
 ```bash
-# Build everything (VM + IE32 assembler + IE64 assembler)
+# Build everything (VM + all tools)
 make
 
 # Build only the VM
@@ -51,11 +51,12 @@ make intuition-engine
 # Build individual tools
 make ie32asm           # IE32 assembler
 make ie64asm           # IE64 assembler
+make ie32to64          # IE32-to-IE64 converter
 make ie64dis           # IE64 disassembler
 make basic             # VM with embedded EhBASIC interpreter
 
 # Install / uninstall
-make install           # Install to /usr/local/bin
+make install           # Install to /usr/local/bin (all built tools)
 make uninstall         # Remove installed binaries
 
 # Packaging
@@ -72,6 +73,8 @@ Build outputs:
 ./bin/IntuitionEngine   # The virtual machine
 ./bin/ie32asm           # The IE32 assembler
 ./bin/ie64asm           # The IE64 assembler
+./bin/ie32to64          # The IE32-to-IE64 converter
+./bin/ie64dis           # The IE64 disassembler
 ```
 
 Version metadata (version, git commit, build date) is automatically injected via ldflags.
@@ -150,6 +153,15 @@ CGO_ENABLED=0 go build -tags "novulkan headless" .
 | Z80 | `vasmz80_std` | `.ie80` | [VASM](http://sun.hasenbraten.de/vasm/) (`make CPU=z80 SYNTAX=std`) |
 | 6502 | `ca65` / `ld65` | `.ie65` | [cc65](https://cc65.github.io/) |
 | x86 | `nasm` | `.ie86` | [NASM](https://www.nasm.us/) |
+
+### Companion Tools
+
+| Tool | Purpose | Install |
+|------|---------|---------|
+| `ie32to64` | Convert IE32 binaries to IE64 format | `make ie32to64` |
+| `ie64dis` | Disassemble IE64 binaries | `make ie64dis` |
+
+See [IE32 to IE64 Migration](docs/ie32to64.md) for converter documentation.
 
 ### Assembling Programs
 
@@ -477,6 +489,15 @@ make set-default-handler
 
 Build release archives with `make release-all` (or individual targets like `make release-linux`). Each target builds both amd64 and arm64 archives with embedded EhBASIC and pre-assembled SDK demos.
 
+Each archive contains: `IntuitionEngine`, `ie32asm`, `ie64asm`, `ie32to64`, `ie64dis`, `README.md`, `CHANGELOG.md`, and the full `sdk/` directory with pre-assembled demos.
+
+Additional release targets:
+
+| Target | Description |
+|--------|-------------|
+| `make release-src` | Source archive via `git archive` (`.tar.xz`) |
+| `make release-sdk` | Standalone SDK archive (`.zip`) |
+
 | Platform | Format | Profile |
 |----------|--------|---------|
 | Linux amd64, arm64 | `.AppImage`, `.tar.xz` | full (native) / novulkan (cross) |
@@ -486,7 +507,7 @@ Build release archives with `make release-all` (or individual targets like `make
 | NetBSD amd64, arm64 | `.tar.xz` | novulkan |
 | OpenBSD amd64, arm64 | `.tar.xz` | novulkan |
 
-All releases include `SHA256SUMS` with checksums.
+`make release-all` builds all of the above plus the source and SDK archives, generates an AppImage on Linux, and produces `SHA256SUMS` covering all artifacts.
 
 ---
 
