@@ -72,12 +72,20 @@ func TestAHXPlus_Oversampling(t *testing.T) {
 		}
 	}
 
-	// Disable and verify reset
+	// Disable — starts a 64-sample fade-out, then generateSample clears the flag
 	engine.SetAHXPlusEnabled(false)
+	// Drain the fade-out transition
+	for range 65 {
+		chip.GenerateSample()
+	}
 	for i := range 4 {
 		ch := chip.channels[i]
-		if ch.ahxPlusOversample != 1 {
-			t.Errorf("Channel %d oversample should be 1 when disabled, got %d", i, ch.ahxPlusOversample)
+		if ch.ahxPlusOversample != AHX_PLUS_OVERSAMPLE {
+			// Oversample value persists (only the enabled flag is cleared after fade-out)
+			continue
+		}
+		if ch.ahxPlusEnabled {
+			t.Errorf("Channel %d should be disabled after fade-out", i)
 		}
 	}
 }
@@ -103,15 +111,15 @@ func TestAHXPlus_RoomReverb(t *testing.T) {
 		}
 	}
 
-	// Disable and verify cleanup
+	// Disable — starts fade-out, then flag cleared after draining
 	engine.SetAHXPlusEnabled(false)
+	for range 65 {
+		chip.GenerateSample()
+	}
 	for i := range 4 {
 		ch := chip.channels[i]
-		if ch.ahxPlusRoomBuf != nil {
-			t.Errorf("Channel %d room buffer should be nil when disabled", i)
-		}
-		if ch.ahxPlusRoomMix != 0 {
-			t.Errorf("Channel %d room mix should be 0 when disabled, got %.2f", i, ch.ahxPlusRoomMix)
+		if ch.ahxPlusEnabled {
+			t.Errorf("Channel %d should be disabled after fade-out", i)
 		}
 	}
 }
@@ -177,10 +185,13 @@ func TestAHXPlus_Drive(t *testing.T) {
 	}
 
 	engine.SetAHXPlusEnabled(false)
+	for range 65 {
+		chip.GenerateSample()
+	}
 	for i := range 4 {
 		ch := chip.channels[i]
-		if ch.ahxPlusDrive != 0 {
-			t.Errorf("Channel %d drive should be 0 when disabled, got %.2f", i, ch.ahxPlusDrive)
+		if ch.ahxPlusEnabled {
+			t.Errorf("Channel %d should be disabled after fade-out", i)
 		}
 	}
 }

@@ -748,12 +748,17 @@ type Channel struct {
 	plusBqB2 float32
 	plusBqA1 float32
 	plusBqA2 float32
-	// Per-engine transition smoothing
+	// Per-engine transition smoothing (fade-in/out on PLUS toggle)
 	psgPlusTransGain      float32
+	psgPlusTransStep      float32
 	pokeyPlusTransGain    float32
+	pokeyPlusTransStep    float32
 	sidPlusTransGain      float32
+	sidPlusTransStep      float32
 	tedPlusTransGain      float32
+	tedPlusTransStep      float32
 	ahxPlusTransGain      float32
+	ahxPlusTransStep      float32
 	psgPlusTransCounter   int
 	pokeyPlusTransCounter int
 	sidPlusTransCounter   int
@@ -2031,6 +2036,7 @@ func (ch *Channel) processEnhancedSample(
 	drive float32,
 	envLevel float32,
 	transGain *float32,
+	transStep *float32,
 	transCounter *int,
 ) float32 {
 	// Oversampling: generate multiple samples at higher rate and average
@@ -2074,7 +2080,12 @@ func (ch *Channel) processEnhancedSample(
 	// Transition smoothing (fade in/out on PLUS toggle)
 	if *transCounter > 0 {
 		scaledSample *= *transGain
-		*transGain += 1.0 / 64.0
+		*transGain += *transStep
+		if *transGain < 0 {
+			*transGain = 0
+		} else if *transGain > 1.0 {
+			*transGain = 1.0
+		}
 		*transCounter--
 	}
 
@@ -2235,22 +2246,32 @@ func (ch *Channel) generateSample() float32 {
 
 	// Enhanced mode processing (PSG+, POKEY+, SID+, TED+, AHX+)
 	if ch.psgPlusEnabled && ch.psgPlusOversample > 1 {
-		return ch.processEnhancedSample(
+		sample := ch.processEnhancedSample(
 			ch.psgPlusOversample,
 			&ch.psgPlusBqZ1, &ch.psgPlusBqZ2,
 			ch.psgPlusRoomBuf, &ch.psgPlusRoomPos,
 			ch.psgPlusRoomMix, ch.psgPlusGain, ch.psgPlusDrive, envLevel,
-			&ch.psgPlusTransGain, &ch.psgPlusTransCounter,
+			&ch.psgPlusTransGain, &ch.psgPlusTransStep, &ch.psgPlusTransCounter,
 		)
+		if ch.psgPlusTransCounter == 0 && ch.psgPlusTransStep < 0 {
+			ch.psgPlusEnabled = false
+			ch.psgPlusTransStep = 0
+		}
+		return sample
 	}
 	if ch.pokeyPlusEnabled && ch.pokeyPlusOversample > 1 {
-		return ch.processEnhancedSample(
+		sample := ch.processEnhancedSample(
 			ch.pokeyPlusOversample,
 			&ch.pokeyPlusBqZ1, &ch.pokeyPlusBqZ2,
 			ch.pokeyPlusRoomBuf, &ch.pokeyPlusRoomPos,
 			ch.pokeyPlusRoomMix, ch.pokeyPlusGain, ch.pokeyPlusDrive, envLevel,
-			&ch.pokeyPlusTransGain, &ch.pokeyPlusTransCounter,
+			&ch.pokeyPlusTransGain, &ch.pokeyPlusTransStep, &ch.pokeyPlusTransCounter,
 		)
+		if ch.pokeyPlusTransCounter == 0 && ch.pokeyPlusTransStep < 0 {
+			ch.pokeyPlusEnabled = false
+			ch.pokeyPlusTransStep = 0
+		}
+		return sample
 	}
 	if ch.sidPlusEnabled && ch.sidPlusOversample > 1 {
 		sample := ch.processEnhancedSample(
@@ -2258,28 +2279,42 @@ func (ch *Channel) generateSample() float32 {
 			&ch.sidPlusBqZ1, &ch.sidPlusBqZ2,
 			ch.sidPlusRoomBuf, &ch.sidPlusRoomPos,
 			ch.sidPlusRoomMix, ch.sidPlusGain, ch.sidPlusDrive, envLevel,
-			&ch.sidPlusTransGain, &ch.sidPlusTransCounter,
+			&ch.sidPlusTransGain, &ch.sidPlusTransStep, &ch.sidPlusTransCounter,
 		)
+		if ch.sidPlusTransCounter == 0 && ch.sidPlusTransStep < 0 {
+			ch.sidPlusEnabled = false
+			ch.sidPlusTransStep = 0
+		}
 		// Apply per-channel SID filter so SID+ preserves filter sweeps
 		return ch.applyChannelFilter(sample)
 	}
 	if ch.tedPlusEnabled && ch.tedPlusOversample > 1 {
-		return ch.processEnhancedSample(
+		sample := ch.processEnhancedSample(
 			ch.tedPlusOversample,
 			&ch.tedPlusBqZ1, &ch.tedPlusBqZ2,
 			ch.tedPlusRoomBuf, &ch.tedPlusRoomPos,
 			ch.tedPlusRoomMix, ch.tedPlusGain, ch.tedPlusDrive, envLevel,
-			&ch.tedPlusTransGain, &ch.tedPlusTransCounter,
+			&ch.tedPlusTransGain, &ch.tedPlusTransStep, &ch.tedPlusTransCounter,
 		)
+		if ch.tedPlusTransCounter == 0 && ch.tedPlusTransStep < 0 {
+			ch.tedPlusEnabled = false
+			ch.tedPlusTransStep = 0
+		}
+		return sample
 	}
 	if ch.ahxPlusEnabled && ch.ahxPlusOversample > 1 {
-		return ch.processEnhancedSample(
+		sample := ch.processEnhancedSample(
 			ch.ahxPlusOversample,
 			&ch.ahxPlusBqZ1, &ch.ahxPlusBqZ2,
 			ch.ahxPlusRoomBuf, &ch.ahxPlusRoomPos,
 			ch.ahxPlusRoomMix, ch.ahxPlusGain, ch.ahxPlusDrive, envLevel,
-			&ch.ahxPlusTransGain, &ch.ahxPlusTransCounter,
+			&ch.ahxPlusTransGain, &ch.ahxPlusTransStep, &ch.ahxPlusTransCounter,
 		)
+		if ch.ahxPlusTransCounter == 0 && ch.ahxPlusTransStep < 0 {
+			ch.ahxPlusEnabled = false
+			ch.ahxPlusTransStep = 0
+		}
+		return sample
 	}
 
 	rawSample := ch.generateWaveSample(float32(SAMPLE_RATE), 1.0/float32(SAMPLE_RATE))
@@ -2550,8 +2585,8 @@ func (chip *SoundChip) SetPSGPlusEnabled(enabled bool) {
 		if ch == nil {
 			continue
 		}
-		ch.psgPlusEnabled = enabled
 		if enabled {
+			ch.psgPlusEnabled = true
 			ch.psgPlusOversample = PSG_PLUS_OVERSAMPLE
 			ch.psgPlusBqZ1 = 0
 			ch.psgPlusBqZ2 = 0
@@ -2560,8 +2595,9 @@ func (chip *SoundChip) SetPSGPlusEnabled(enabled bool) {
 			ch.psgPlusRoomMix = PSG_PLUS_ROOM_MIX
 			ch.psgPlusRoomDelay = PSG_PLUS_ROOM_DELAY
 			ch.psgPlusRoomPos = 0
-			ch.psgPlusTransGain = 1.0
-			ch.psgPlusTransCounter = 0
+			ch.psgPlusTransGain = 0
+			ch.psgPlusTransStep = 1.0 / 64.0
+			ch.psgPlusTransCounter = 64
 			if ch.psgPlusRoomBuf == nil || len(ch.psgPlusRoomBuf) != PSG_PLUS_ROOM_DELAY {
 				ch.psgPlusRoomBuf = make([]float32, PSG_PLUS_ROOM_DELAY)
 			} else {
@@ -2574,16 +2610,15 @@ func (chip *SoundChip) SetPSGPlusEnabled(enabled bool) {
 			} else {
 				ch.psgPlusGain = 1.0
 			}
-		} else {
-			ch.psgPlusOversample = 1
-			ch.psgPlusBqZ1 = 0
-			ch.psgPlusBqZ2 = 0
-			ch.psgPlusDrive = 0
-			ch.psgPlusRoomMix = 0
-			ch.psgPlusRoomDelay = 0
-			ch.psgPlusRoomPos = 0
-			ch.psgPlusRoomBuf = nil
-			ch.psgPlusGain = 1.0
+		} else if ch.psgPlusEnabled {
+			if ch.enabled {
+				// Channel is producing audio — fade out over 64 samples
+				ch.psgPlusTransGain = 1.0
+				ch.psgPlusTransStep = -1.0 / 64.0
+				ch.psgPlusTransCounter = 64
+			} else {
+				ch.psgPlusEnabled = false
+			}
 		}
 	}
 }
@@ -2953,8 +2988,8 @@ func (chip *SoundChip) SetPOKEYPlusEnabled(enabled bool) {
 		if ch == nil {
 			continue
 		}
-		ch.pokeyPlusEnabled = enabled
 		if enabled {
+			ch.pokeyPlusEnabled = true
 			ch.pokeyPlusOversample = POKEY_PLUS_OVERSAMPLE
 			ch.pokeyPlusBqZ1 = 0
 			ch.pokeyPlusBqZ2 = 0
@@ -2963,8 +2998,9 @@ func (chip *SoundChip) SetPOKEYPlusEnabled(enabled bool) {
 			ch.pokeyPlusRoomMix = POKEY_PLUS_ROOM_MIX
 			ch.pokeyPlusRoomDelay = POKEY_PLUS_ROOM_DELAY
 			ch.pokeyPlusRoomPos = 0
-			ch.pokeyPlusTransGain = 1.0
-			ch.pokeyPlusTransCounter = 0
+			ch.pokeyPlusTransGain = 0
+			ch.pokeyPlusTransStep = 1.0 / 64.0
+			ch.pokeyPlusTransCounter = 64
 			if ch.pokeyPlusRoomBuf == nil || len(ch.pokeyPlusRoomBuf) != POKEY_PLUS_ROOM_DELAY {
 				ch.pokeyPlusRoomBuf = make([]float32, POKEY_PLUS_ROOM_DELAY)
 			} else {
@@ -2973,16 +3009,14 @@ func (chip *SoundChip) SetPOKEYPlusEnabled(enabled bool) {
 				}
 			}
 			ch.pokeyPlusGain = pokeyPlusMixGain[i]
-		} else {
-			ch.pokeyPlusOversample = 1
-			ch.pokeyPlusBqZ1 = 0
-			ch.pokeyPlusBqZ2 = 0
-			ch.pokeyPlusDrive = 0
-			ch.pokeyPlusRoomMix = 0
-			ch.pokeyPlusRoomDelay = 0
-			ch.pokeyPlusRoomPos = 0
-			ch.pokeyPlusRoomBuf = nil
-			ch.pokeyPlusGain = 1.0
+		} else if ch.pokeyPlusEnabled {
+			if ch.enabled {
+				ch.pokeyPlusTransGain = 1.0
+				ch.pokeyPlusTransStep = -1.0 / 64.0
+				ch.pokeyPlusTransCounter = 64
+			} else {
+				ch.pokeyPlusEnabled = false
+			}
 		}
 	}
 }
@@ -2996,8 +3030,8 @@ func (chip *SoundChip) SetSIDPlusEnabled(enabled bool) {
 		if ch == nil {
 			continue
 		}
-		ch.sidPlusEnabled = enabled
 		if enabled {
+			ch.sidPlusEnabled = true
 			ch.sidPlusOversample = SID_PLUS_OVERSAMPLE
 			ch.sidPlusBqZ1 = 0
 			ch.sidPlusBqZ2 = 0
@@ -3006,8 +3040,9 @@ func (chip *SoundChip) SetSIDPlusEnabled(enabled bool) {
 			ch.sidPlusRoomMix = SID_PLUS_ROOM_MIX
 			ch.sidPlusRoomDelay = SID_PLUS_ROOM_DELAY
 			ch.sidPlusRoomPos = 0
-			ch.sidPlusTransGain = 1.0
-			ch.sidPlusTransCounter = 0
+			ch.sidPlusTransGain = 0
+			ch.sidPlusTransStep = 1.0 / 64.0
+			ch.sidPlusTransCounter = 64
 			if ch.sidPlusRoomBuf == nil || len(ch.sidPlusRoomBuf) != SID_PLUS_ROOM_DELAY {
 				ch.sidPlusRoomBuf = make([]float32, SID_PLUS_ROOM_DELAY)
 			} else {
@@ -3016,16 +3051,14 @@ func (chip *SoundChip) SetSIDPlusEnabled(enabled bool) {
 				}
 			}
 			ch.sidPlusGain = sidPlusMixGain[i%3]
-		} else {
-			ch.sidPlusOversample = 1
-			ch.sidPlusBqZ1 = 0
-			ch.sidPlusBqZ2 = 0
-			ch.sidPlusDrive = 0
-			ch.sidPlusRoomMix = 0
-			ch.sidPlusRoomDelay = 0
-			ch.sidPlusRoomPos = 0
-			ch.sidPlusRoomBuf = nil
-			ch.sidPlusGain = 1.0
+		} else if ch.sidPlusEnabled {
+			if ch.enabled {
+				ch.sidPlusTransGain = 1.0
+				ch.sidPlusTransStep = -1.0 / 64.0
+				ch.sidPlusTransCounter = 64
+			} else {
+				ch.sidPlusEnabled = false
+			}
 		}
 	}
 }
@@ -3040,8 +3073,8 @@ func (chip *SoundChip) SetTEDPlusEnabled(enabled bool) {
 		if ch == nil {
 			continue
 		}
-		ch.tedPlusEnabled = enabled
 		if enabled {
+			ch.tedPlusEnabled = true
 			ch.tedPlusOversample = TED_PLUS_OVERSAMPLE
 			ch.tedPlusBqZ1 = 0
 			ch.tedPlusBqZ2 = 0
@@ -3050,8 +3083,9 @@ func (chip *SoundChip) SetTEDPlusEnabled(enabled bool) {
 			ch.tedPlusRoomMix = TED_PLUS_ROOM_MIX
 			ch.tedPlusRoomDelay = TED_PLUS_ROOM_DELAY
 			ch.tedPlusRoomPos = 0
-			ch.tedPlusTransGain = 1.0
-			ch.tedPlusTransCounter = 0
+			ch.tedPlusTransGain = 0
+			ch.tedPlusTransStep = 1.0 / 64.0
+			ch.tedPlusTransCounter = 64
 			if ch.tedPlusRoomBuf == nil || len(ch.tedPlusRoomBuf) != TED_PLUS_ROOM_DELAY {
 				ch.tedPlusRoomBuf = make([]float32, TED_PLUS_ROOM_DELAY)
 			} else {
@@ -3060,16 +3094,14 @@ func (chip *SoundChip) SetTEDPlusEnabled(enabled bool) {
 				}
 			}
 			ch.tedPlusGain = tedPlusMixGain[i]
-		} else {
-			ch.tedPlusOversample = 1
-			ch.tedPlusBqZ1 = 0
-			ch.tedPlusBqZ2 = 0
-			ch.tedPlusDrive = 0
-			ch.tedPlusRoomMix = 0
-			ch.tedPlusRoomDelay = 0
-			ch.tedPlusRoomPos = 0
-			ch.tedPlusRoomBuf = nil
-			ch.tedPlusGain = 1.0
+		} else if ch.tedPlusEnabled {
+			if ch.enabled {
+				ch.tedPlusTransGain = 1.0
+				ch.tedPlusTransStep = -1.0 / 64.0
+				ch.tedPlusTransCounter = 64
+			} else {
+				ch.tedPlusEnabled = false
+			}
 		}
 	}
 }
@@ -3084,8 +3116,8 @@ func (chip *SoundChip) SetAHXPlusEnabled(enabled bool) {
 		if ch == nil {
 			continue
 		}
-		ch.ahxPlusEnabled = enabled
 		if enabled {
+			ch.ahxPlusEnabled = true
 			ch.ahxPlusOversample = AHX_PLUS_OVERSAMPLE
 			ch.ahxPlusBqZ1 = 0
 			ch.ahxPlusBqZ2 = 0
@@ -3094,8 +3126,9 @@ func (chip *SoundChip) SetAHXPlusEnabled(enabled bool) {
 			ch.ahxPlusRoomMix = AHX_PLUS_ROOM_MIX
 			ch.ahxPlusRoomDelay = AHX_PLUS_ROOM_DELAY
 			ch.ahxPlusRoomPos = 0
-			ch.ahxPlusTransGain = 1.0
-			ch.ahxPlusTransCounter = 0
+			ch.ahxPlusTransGain = 0
+			ch.ahxPlusTransStep = 1.0 / 64.0
+			ch.ahxPlusTransCounter = 64
 			if ch.ahxPlusRoomBuf == nil || len(ch.ahxPlusRoomBuf) != AHX_PLUS_ROOM_DELAY {
 				ch.ahxPlusRoomBuf = make([]float32, AHX_PLUS_ROOM_DELAY)
 			} else {
@@ -3105,17 +3138,14 @@ func (chip *SoundChip) SetAHXPlusEnabled(enabled bool) {
 			}
 			ch.ahxPlusGain = ahxPlusMixGain[i]
 			ch.ahxPlusPan = ahxPlusPan[i]
-		} else {
-			ch.ahxPlusOversample = 1
-			ch.ahxPlusBqZ1 = 0
-			ch.ahxPlusBqZ2 = 0
-			ch.ahxPlusDrive = 0
-			ch.ahxPlusRoomMix = 0
-			ch.ahxPlusRoomDelay = 0
-			ch.ahxPlusRoomPos = 0
-			ch.ahxPlusRoomBuf = nil
-			ch.ahxPlusGain = 1.0
-			ch.ahxPlusPan = 0
+		} else if ch.ahxPlusEnabled {
+			if ch.enabled {
+				ch.ahxPlusTransGain = 1.0
+				ch.ahxPlusTransStep = -1.0 / 64.0
+				ch.ahxPlusTransCounter = 64
+			} else {
+				ch.ahxPlusEnabled = false
+			}
 		}
 	}
 }

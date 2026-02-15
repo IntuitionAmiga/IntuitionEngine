@@ -102,49 +102,96 @@ func TestPlusBiquadAttenuatesHighFreq(t *testing.T) {
 	}
 }
 
-// TestPlusTransitionNoPop verifies that enabling PLUS mode doesn't produce a
-// sudden large discontinuity in sample level (pop/click). The transition starts
-// at transGain=1.0 (signal is already playing at full level) so there is no
-// sudden drop to silence.
+// TestPlusTransitionNoPop verifies that enabling PLUS mode produces a smooth
+// 64-sample fade-in ramp (transGain 0→1), and disabling produces a smooth
+// 64-sample fade-out ramp (transGain 1→0).
 func TestPlusTransitionNoPop(t *testing.T) {
 	_, chip := newTestPSGEngine(SAMPLE_RATE)
 
-	// Use a low-frequency sine to get a smooth signal with small sample-to-sample deltas
 	chip.mu.Lock()
 	ch := chip.channels[0]
-	ch.frequency = 100
+	ch.frequency = 440
 	ch.volume = 0.5
 	ch.enabled = true
 	ch.gate = true
-	ch.waveType = WAVE_SINE
+	ch.waveType = WAVE_SQUARE
 	ch.envelopePhase = ENV_SUSTAIN
 	ch.envelopeLevel = 1.0
 	ch.sustainLevel = 1.0
 	chip.mu.Unlock()
 
-	// Generate baseline samples and record the last one
-	var prevSample float32
-	for range 64 {
-		prevSample = chip.GenerateSample()
-	}
-
-	// Enable PLUS — transGain starts at 1.0 so no fade from silence
+	// Enable PLUS — should start fade-in from transGain=0
 	chip.SetPSGPlusEnabled(true)
 
-	// The first PLUS sample should be close in magnitude to the last baseline sample
-	firstPlusSample := chip.GenerateSample()
-	delta := firstPlusSample - prevSample
-	if delta < 0 {
-		delta = -delta
+	// Verify transGain ramps up over 64 samples
+	chip.mu.Lock()
+	if ch.psgPlusTransGain != 0 {
+		t.Errorf("transGain should start at 0, got %.4f", ch.psgPlusTransGain)
+	}
+	if ch.psgPlusTransCounter != 64 {
+		t.Errorf("transCounter should start at 64, got %d", ch.psgPlusTransCounter)
+	}
+	chip.mu.Unlock()
+
+	// First sample should be near zero (transGain ≈ 0)
+	firstSample := chip.GenerateSample()
+	if firstSample < -0.02 || firstSample > 0.02 {
+		t.Errorf("first PLUS sample should be near 0 (transGain≈0), got %.4f", firstSample)
 	}
 
-	// With a 100 Hz sine at 44100 SR, per-sample change is ~0.014.
-	// The PLUS path (oversampling + biquad) may shift the value slightly but
-	// should not produce a large discontinuity.
-	if delta > 0.1 {
-		t.Errorf("first PLUS sample delta = %.4f (> 0.1), possible pop: prev=%.4f first=%.4f",
-			delta, prevSample, firstPlusSample)
+	// Generate 62 more samples (64 total with the first one)
+	for range 62 {
+		chip.GenerateSample()
 	}
+
+	// After 63 samples, transGain should be close to 1.0
+	chip.mu.Lock()
+	gain63 := ch.psgPlusTransGain
+	counter63 := ch.psgPlusTransCounter
+	chip.mu.Unlock()
+
+	if gain63 < 0.95 {
+		t.Errorf("transGain after 63 samples should be near 1.0, got %.4f", gain63)
+	}
+	if counter63 > 1 {
+		t.Errorf("transCounter after 63 samples should be ≤1, got %d", counter63)
+	}
+
+	// Generate the last transition sample — counter should reach 0
+	chip.GenerateSample()
+	chip.mu.Lock()
+	counterDone := ch.psgPlusTransCounter
+	chip.mu.Unlock()
+	if counterDone != 0 {
+		t.Errorf("transCounter should be 0 after 64 samples, got %d", counterDone)
+	}
+
+	// Now test fade-out: disable PLUS
+	chip.SetPSGPlusEnabled(false)
+
+	chip.mu.Lock()
+	if ch.psgPlusTransStep >= 0 {
+		t.Errorf("transStep should be negative for fade-out, got %.6f", ch.psgPlusTransStep)
+	}
+	if ch.psgPlusTransCounter != 64 {
+		t.Errorf("fade-out transCounter should be 64, got %d", ch.psgPlusTransCounter)
+	}
+	chip.mu.Unlock()
+
+	// Generate 64 samples to drain fade-out
+	for range 64 {
+		chip.GenerateSample()
+	}
+
+	// After fade-out, the last PLUS sample should be near zero
+	lastSample := chip.GenerateSample()
+	_ = lastSample // next sample is baseline (PLUS disabled)
+
+	chip.mu.Lock()
+	if ch.psgPlusEnabled {
+		t.Error("psgPlusEnabled should be false after fade-out completes")
+	}
+	chip.mu.Unlock()
 }
 
 // --- SID+ Filter Passthrough ---
