@@ -84,10 +84,6 @@ func ParseSIDData(data []byte) (*SIDFile, error) {
 		header.Sid3Addr = binary.BigEndian.Uint16(data[0x7E:0x80])
 	}
 
-	if header.Sid2Addr != 0 || header.Sid3Addr != 0 {
-		return nil, errors.New("multi-SID files are not supported")
-	}
-
 	if header.DataOffset == 0 || int(header.DataOffset) > len(data) {
 		return nil, fmt.Errorf("invalid data offset: 0x%04X", header.DataOffset)
 	}

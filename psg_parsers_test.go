@@ -79,20 +79,22 @@ func TestParseVGMWaitsAndLoop(t *testing.T) {
 	}
 }
 
-func TestParseVGMPSGSkip(t *testing.T) {
+func TestParseVGMPSG_SN76489Extracted(t *testing.T) {
+	// SN76489 writes (cmd 0x50) are now extracted as PSGEvents (AY equivalents).
+	// 0xFF = latch byte: channel 3, attenuation=15 (silence) → mixer event.
 	data := make([]byte, 0x40)
 	copy(data[0:4], []byte("Vgm "))
 	binary.LittleEndian.PutUint32(data[0x34:0x38], 0)
 
 	commands := []byte{
-		0x50, 0xFF, // SN76489 PSG write (unsupported, should skip)
-		0xA0, 0x00, 0x01,
+		0x50, 0xFF, // SN76489: ch3 attenuation=15 (noise off) → mixer event
+		0xA0, 0x00, 0x01, // AY reg 0 = 0x01
 		0x66,
 	}
 	data = append(data, commands...)
 
 	tmpDir := t.TempDir()
-	path := filepath.Join(tmpDir, "test_skip.vgm")
+	path := filepath.Join(tmpDir, "test_sn.vgm")
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatalf("write vgm: %v", err)
 	}
@@ -101,8 +103,14 @@ func TestParseVGMPSGSkip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse vgm: %v", err)
 	}
-	if len(vgm.Events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(vgm.Events))
+	// SN76489 noise-off generates a mixer event, plus the AY write
+	if len(vgm.Events) < 2 {
+		t.Fatalf("expected at least 2 events (SN76489 + AY), got %d", len(vgm.Events))
+	}
+	// Last event should be the AY write
+	last := vgm.Events[len(vgm.Events)-1]
+	if last.Reg != 0x00 || last.Value != 0x01 {
+		t.Errorf("last event: reg=0x%02X val=0x%02X, want reg=0x00 val=0x01", last.Reg, last.Value)
 	}
 }
 

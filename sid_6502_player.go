@@ -53,7 +53,7 @@ func newSID6502Player(file *SIDFile, subsong, sampleRate int) (*SID6502Player, e
 	interruptMode := file.Header.PlayAddress == 0
 	cyclesPerTick := sidCyclesPerTick(clockHz, ntsc, interruptMode, file.Header.Speed, subsong)
 
-	bus := newSIDPlaybackBus6502(ntsc)
+	bus := newSIDPlaybackBus6502Multi(ntsc, file.Header.Sid2Addr, file.Header.Sid3Addr)
 	bus.LoadBinary(file.Header.LoadAddress, file.Data)
 
 	// Pre-compute sample multiplier for fast cycle-to-sample conversion

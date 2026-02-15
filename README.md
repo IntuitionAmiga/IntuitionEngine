@@ -154,6 +154,7 @@
     - 17.3 Build Tags
     - 17.4 Development Workflow
     - 17.5 Creating New Demonstrations
+18. [SDK Developer Package](#18-sdk-developer-package)
 
 # 1. System Overview
 
@@ -217,6 +218,9 @@ Default core: **IE64**. Additional cores: **IE32, M68K, x86, Z80, 6502**.
 # Run EhBASIC interpreter
 ./bin/IntuitionEngine -basic
 
+# Run EhBASIC with console terminal (no GUI window)
+./bin/IntuitionEngine -basic -term
+
 # Play PSG music
 ./bin/IntuitionEngine -psg music.ym
 
@@ -233,6 +237,9 @@ Default core: **IE64**. Additional cores: **IE32, M68K, x86, Z80, 6502**.
 
 # Version information
 ./bin/IntuitionEngine -version
+
+# List compiled feature flags and build profile
+./bin/IntuitionEngine -features
 ```
 
 CPU modes that execute binaries (`-ie32`, `-ie64`, `-m68k`, `-m6502`, `-z80`, `-x86`) require a filename unless `-basic` is used.
@@ -5304,6 +5311,10 @@ intuition-engine - Build only the Intuition Engine VM
 ie32asm          - Build only the IE32 assembler
 ie64asm          - Build only the IE64 assembler
 ie64dis          - Build only the IE64 disassembler
+basic            - Build with embedded EhBASIC interpreter
+novulkan         - Build without Vulkan (software Voodoo only)
+headless         - Build without display/audio (CI/testing)
+headless-novulkan - Fully portable CGO_ENABLED=0 build
 appimage         - Build AppImage package for Linux distributions
 install          - Install binaries to $(INSTALL_BIN_DIR)
 uninstall        - Remove installed binaries from $(INSTALL_BIN_DIR)
@@ -6091,6 +6102,15 @@ make ie64asm
 # Build with embedded EhBASIC interpreter
 make basic
 
+# Build without Vulkan (software Voodoo only)
+make novulkan
+
+# Build without display/audio (CI/testing)
+make headless
+
+# Fully portable CGO_ENABLED=0 build (cross-compile safe)
+make headless-novulkan
+
 # Install to /usr/local/bin
 make install
 
@@ -6106,6 +6126,7 @@ make clean
 | Tag | Effect |
 |-----|--------|
 | `headless` | Disable GUI/audio/video backends |
+| `novulkan` | Disable Vulkan backend (software Voodoo only) |
 | `embed_basic` | Embed assembled EhBASIC binary for `-basic` flag |
 | `m68k` | Enable M68K-specific tests |
 | `audiolong` | Enable long-running audio demos |
@@ -6140,3 +6161,12 @@ When adding new test demonstrations:
     - How the effects are achieved
     - Key algorithms and techniques being used
     - Important implementation details
+
+# 18. SDK Developer Package
+
+The `sdk/` directory contains a curated developer package with example programs, include files, and build scripts for all supported CPU architectures. See [sdk/README.md](sdk/README.md) for the full SDK documentation, including:
+
+- Ready-to-build example programs for IE32, IE64, M68K, 6502, and Z80
+- Reusable include files (register definitions, macros, helper routines)
+- Build scripts and Makefiles for each architecture
+- SID multi-chip support details and VGM chip coverage matrix

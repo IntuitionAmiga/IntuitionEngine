@@ -70,6 +70,9 @@ The `make basic` target:
 
 # Run with a custom BASIC binary
 ./IntuitionEngine -basic-image path/to/custom.ie64
+
+# Run with console terminal (stdin/stdout, no GUI window)
+./IntuitionEngine -basic -term
 ```
 
 On startup, EhBASIC IE64 displays a banner and the `Ready` prompt:

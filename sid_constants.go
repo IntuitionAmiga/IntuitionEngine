@@ -307,3 +307,12 @@ const (
 	SID_PLAY_STATUS = 0xF0E2C // Status: bit 0=busy, bit 1=error
 	SID_SUBSONG     = 0xF0E2D // Subsong selection (0-255)
 )
+
+// Multi-SID MMIO register ranges (reserved for future full multi-SID support).
+// Currently parsed and captured but played back as single-SID (chip 0 only).
+const (
+	SID2_BASE = 0xF0E30 // SID2 registers (0xF0E30-0xF0E4C)
+	SID2_END  = 0xF0E4C
+	SID3_BASE = 0xF0E50 // SID3 registers (0xF0E50-0xF0E6C)
+	SID3_END  = 0xF0E6C
+)

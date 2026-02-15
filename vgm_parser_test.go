@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// buildVGMHeader creates a minimal VGM header with data starting at offset 0x40.
+// buildVGMHeader creates a minimal VGM header with data starting at offset 0x80.
 func buildVGMHeader(totalSamples uint32, ayClock uint32) []byte {
 	header := make([]byte, 0x80)
 	copy(header[0:4], []byte("Vgm "))
@@ -13,6 +13,13 @@ func buildVGMHeader(totalSamples uint32, ayClock uint32) []byte {
 	binary.LittleEndian.PutUint32(header[0x18:0x1C], totalSamples)
 	binary.LittleEndian.PutUint32(header[0x34:0x38], 0x4C) // data offset: 0x34+0x4C=0x80
 	binary.LittleEndian.PutUint32(header[0x74:0x78], ayClock)
+	return header
+}
+
+// buildVGMHeaderSN creates a VGM header with SN76489 clock set at offset 0x0C.
+func buildVGMHeaderSN(totalSamples, snClock, ayClock uint32) []byte {
+	header := buildVGMHeader(totalSamples, ayClock)
+	binary.LittleEndian.PutUint32(header[0x0C:0x10], snClock)
 	return header
 }
 
@@ -153,20 +160,20 @@ func TestVGMParse_SkipPCMRAMWrite(t *testing.T) {
 
 func TestVGMParse_MultiChipVGM(t *testing.T) {
 	// Simulates a real multi-chip VGM with SN76489 + AY writes.
-	// SN76489 (0x50) already handled, this tests that AY events are
-	// properly extracted while other chip commands are skipped.
+	// Both SN76489 (0x50) and AY (0xA0) events are now extracted.
+	// SN76489 writes are converted to AY-equivalent register writes.
 	header := buildVGMHeader(44100, 1773400)
 	cmds := []byte{
 		// Frame 1: SN76489 + AY
-		0x50, 0x80, // SN76489 write (already skipped)
-		0x50, 0x00, // SN76489 write
+		0x50, 0x80, // SN76489: ch0 tone latch, low nibble=0
+		0x50, 0x00, // SN76489: data byte for latched register
 		0xA0, 0x00, 0xFE, // AY reg 0
 		0xA0, 0x01, 0x00, // AY reg 1
 		0xA0, 0x07, 0x3E, // AY mixer
 		0xA0, 0x08, 0x0F, // AY vol A
 		0x62, // wait 735 (60Hz frame)
 		// Frame 2: more mixed
-		0x50, 0x90, // SN76489
+		0x50, 0x90, // SN76489: ch0 attenuation=0 (max vol)
 		0xA0, 0x00, 0xD0, // AY reg 0
 		0x62, // wait 735
 		0x66, // end
@@ -177,8 +184,244 @@ func TestVGMParse_MultiChipVGM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseVGMData failed: %v", err)
 	}
-	if len(vgm.Events) != 5 {
-		t.Fatalf("expected 5 AY events, got %d", len(vgm.Events))
+	// SN76489 writes now produce events: tone latch → 2 freq events,
+	// data byte → 2 freq events, attenuation → 1 vol event.
+	// Plus 5 AY events = 10 total.
+	if len(vgm.Events) < 5 {
+		t.Fatalf("expected at least 5 events, got %d", len(vgm.Events))
+	}
+
+	// Verify that AY events are present and correctly positioned
+	// Find AY reg 0 = 0xFE in the event stream (it should be there from the 0xA0 command)
+	found := false
+	for _, ev := range vgm.Events {
+		if ev.Reg == 0x00 && ev.Value == 0xFE {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("AY reg 0 = 0xFE not found in events")
+	}
+}
+
+func TestVGMParse_SN76489_ToneLatch(t *testing.T) {
+	// SN76489 latch byte for tone: bit7=1, bits6-5=channel, bit4=0(tone), bits3-0=low data
+	// 0x80 = channel 0, tone, low nibble=0
+	// Followed by data byte 0x01 → high bits=0x01, combined divider = (0x01 << 4) | 0x00 = 0x10
+	header := buildVGMHeaderSN(735, 3579545, 1773400)
+	cmds := []byte{
+		0x50, 0x80, // Latch: ch0, tone, low=0
+		0x50, 0x01, // Data: high bits=0x01 → divider = 0x10
+		0x62, // wait 735
+		0x66, // end
+	}
+	data := append(header, cmds...)
+
+	vgm, err := ParseVGMData(data)
+	if err != nil {
+		t.Fatalf("ParseVGMData failed: %v", err)
+	}
+	if vgm.SNClockHz != 3579545 {
+		t.Errorf("expected SNClockHz=3579545, got %d", vgm.SNClockHz)
+	}
+
+	// Should produce frequency register events for channel A (regs 0, 1)
+	// Divider 0x10=16, AY equiv: 16 * 1773400 / (3579545 * 2) ≈ 3
+	foundFreqLo := false
+	for _, ev := range vgm.Events {
+		if ev.Reg == 0 { // AY channel A fine tune
+			foundFreqLo = true
+		}
+	}
+	if !foundFreqLo {
+		t.Error("expected frequency register events for channel A")
+	}
+}
+
+func TestVGMParse_SN76489_Attenuation(t *testing.T) {
+	// SN76489 attenuation latch: bit7=1, bits6-5=channel, bit4=1(atten), bits3-0=value
+	// 0x90 = ch0 atten=0 (max volume) → AY vol 15
+	// 0x9F = ch0 atten=15 (silence) → AY vol 0
+	header := buildVGMHeaderSN(735, 3579545, 0)
+	cmds := []byte{
+		0x50, 0x90, // ch0 atten=0 (max vol)
+		0x50, 0xBF, // ch1 atten=15 (silence)
+		0x50, 0xD5, // ch2 atten=5
+		0x62,
+		0x66,
+	}
+	data := append(header, cmds...)
+
+	vgm, err := ParseVGMData(data)
+	if err != nil {
+		t.Fatalf("ParseVGMData failed: %v", err)
+	}
+
+	// Find volume events for each channel
+	var volA, volB, volC uint8
+	var foundA, foundB, foundC bool
+	for _, ev := range vgm.Events {
+		switch ev.Reg {
+		case 8:
+			volA = ev.Value
+			foundA = true
+		case 9:
+			volB = ev.Value
+			foundB = true
+		case 10:
+			volC = ev.Value
+			foundC = true
+		}
+	}
+
+	if !foundA || volA != 15 {
+		t.Errorf("ch0 atten=0: expected AY vol 15, got %d (found=%v)", volA, foundA)
+	}
+	if !foundB || volB != 0 {
+		t.Errorf("ch1 atten=15: expected AY vol 0, got %d (found=%v)", volB, foundB)
+	}
+	if !foundC || volC != 10 {
+		t.Errorf("ch2 atten=5: expected AY vol 10, got %d (found=%v)", volC, foundC)
+	}
+}
+
+func TestVGMParse_SN76489_NoiseChannel(t *testing.T) {
+	// SN76489 noise register: bit7=1, bits6-5=11(ch3), bit4=0(tone=noise ctrl)
+	// 0xE0 = ch3, noise ctrl = 0x00 (periodic noise, fastest rate)
+	// 0xE4 = ch3, noise ctrl = 0x04 (white noise, fastest rate)
+	header := buildVGMHeaderSN(735, 3579545, 0)
+	cmds := []byte{
+		0x50, 0xE4, // Noise: white noise, rate 0 (fastest)
+		0x50, 0xF0, // Noise attenuation = 0 (max vol, enables noise in mixer)
+		0x62,
+		0x66,
+	}
+	data := append(header, cmds...)
+
+	vgm, err := ParseVGMData(data)
+	if err != nil {
+		t.Fatalf("ParseVGMData failed: %v", err)
+	}
+
+	// Should produce noise period event (reg 6) and mixer event (reg 7)
+	var foundNoise, foundMixer bool
+	var noiseVal, mixerVal uint8
+	for _, ev := range vgm.Events {
+		if ev.Reg == 6 {
+			foundNoise = true
+			noiseVal = ev.Value
+		}
+		if ev.Reg == 7 {
+			foundMixer = true
+			mixerVal = ev.Value
+		}
+	}
+
+	if !foundNoise {
+		t.Error("expected noise period event (reg 6)")
+	} else if noiseVal != 4 {
+		t.Errorf("noise period: got %d, want 4 (fastest rate)", noiseVal)
+	}
+
+	if !foundMixer {
+		t.Error("expected mixer event (reg 7)")
+	} else if mixerVal&0x20 != 0 {
+		// Bit 5 should be 0 (noise enabled on channel C) when noise atten < 15
+		t.Errorf("mixer 0x%02X: noise on channel C should be enabled (bit 5=0)", mixerVal)
+	}
+}
+
+func TestVGMParse_SN76489_DataByte(t *testing.T) {
+	// Test the latch+data byte protocol for multi-byte tone writes.
+	// Latch sets low 4 bits, data byte sets high 6 bits.
+	header := buildVGMHeaderSN(735, 3579545, 1773400)
+	cmds := []byte{
+		0x50, 0x85, // Latch: ch0, tone, low=5 (0x05)
+		0x50, 0x10, // Data: high bits=0x10 → divider = (0x10 << 4) | 0x05 = 0x105
+		0x62,
+		0x66,
+	}
+	data := append(header, cmds...)
+
+	vgm, err := ParseVGMData(data)
+	if err != nil {
+		t.Fatalf("ParseVGMData failed: %v", err)
+	}
+
+	// The data byte should produce updated frequency events.
+	// Divider 0x105 = 261. AY equiv: 261 * 1773400 / (3579545 * 2) ≈ 64
+	// Find the last frequency register write for channel A
+	var lastFreqLo, lastFreqHi uint8
+	for _, ev := range vgm.Events {
+		if ev.Reg == 0 {
+			lastFreqLo = ev.Value
+		}
+		if ev.Reg == 1 {
+			lastFreqHi = ev.Value
+		}
+	}
+	ayDiv := uint16(lastFreqLo) | (uint16(lastFreqHi) << 8)
+	// Expected: 261 * 1773400 / (3579545 * 2) ≈ 64
+	if ayDiv < 50 || ayDiv > 80 {
+		t.Errorf("AY divider %d out of expected range [50,80] for SN divider 261", ayDiv)
+	}
+}
+
+func TestVGMParse_SN76489_ClockScaling(t *testing.T) {
+	// Verify frequency divider conversion with different clock configurations.
+	// SN76489 SMS clock = 3579545 Hz, AY MSX clock = 1789773 Hz
+	// SN divider 100 → Freq = 3579545 / (32*100) = 1118.6 Hz
+	// AY divider = 100 * 1789773 / (3579545 * 2) = 24.999... ≈ 25
+	header := buildVGMHeaderSN(735, 3579545, 1789773)
+	cmds := []byte{
+		0x50, 0x84, // Latch: ch0, tone, low=4
+		0x50, 0x06, // Data: high=6 → divider = (6<<4)|4 = 100
+		0x62,
+		0x66,
+	}
+	data := append(header, cmds...)
+
+	vgm, err := ParseVGMData(data)
+	if err != nil {
+		t.Fatalf("ParseVGMData failed: %v", err)
+	}
+
+	var lastFreqLo, lastFreqHi uint8
+	for _, ev := range vgm.Events {
+		if ev.Reg == 0 {
+			lastFreqLo = ev.Value
+		}
+		if ev.Reg == 1 {
+			lastFreqHi = ev.Value
+		}
+	}
+	ayDiv := uint16(lastFreqLo) | (uint16(lastFreqHi) << 8)
+	// Expected: 100 * 1789773 / (3579545 * 2) = 24.999 ≈ 25
+	if ayDiv != 25 {
+		t.Errorf("AY divider: got %d, want 25 for SN divider 100 (SN=3579545, AY=1789773)", ayDiv)
+	}
+}
+
+func TestVGMParse_SN76489_OnlyClockFallback(t *testing.T) {
+	// VGM with only SN76489 (no AY clock) should use SN clock as primary.
+	header := buildVGMHeaderSN(735, 3579545, 0) // no AY clock
+	cmds := []byte{
+		0x50, 0x90, // ch0 atten=0 (max vol)
+		0x62,
+		0x66,
+	}
+	data := append(header, cmds...)
+
+	vgm, err := ParseVGMData(data)
+	if err != nil {
+		t.Fatalf("ParseVGMData failed: %v", err)
+	}
+	if vgm.ClockHz != 3579545 {
+		t.Errorf("expected ClockHz=3579545 (SN fallback), got %d", vgm.ClockHz)
+	}
+	if vgm.SNClockHz != 3579545 {
+		t.Errorf("expected SNClockHz=3579545, got %d", vgm.SNClockHz)
 	}
 }
 

@@ -682,7 +682,11 @@ func (e *SIDEngine) TickSample() {
 
 	for e.eventIndex < len(e.events) && e.events[e.eventIndex].Sample == e.currentSample {
 		ev := e.events[e.eventIndex]
-		e.writeRegisterLocked(ev.Reg, ev.Value)
+		if ev.Chip == 0 {
+			e.writeRegisterLocked(ev.Reg, ev.Value)
+		}
+		// Chip 1/2 events are captured but not applied (single-SID playback).
+		// Infrastructure ready for full multi-SID when additional channels are available.
 		e.eventIndex++
 	}
 

@@ -42,6 +42,13 @@ Address Range       Size    Device              Constants File
 0xF0F00-0xF0F5F     96B     TED (audio+video)   ted_constants.go, ted_video_constants.go
 0xF1000-0xF13FF     1KB     VGA Registers       vga_constants.go
 0xF2000-0xF200B     12B     ULA (ZX Spectrum)   ula_constants.go
+0xF2100-0xF213F     64B     ANTIC (Atari 8-bit) antic_constants.go
+0xF2140-0xF21B7     120B    GTIA (Atari 8-bit)  antic_constants.go
+0xF2200-0xF221F     32B     File I/O            registers.go
+0xF2300-0xF231F     32B     Media Loader        registers.go
+0xF2320-0xF233F     32B     Program Executor    registers.go
+0xF2340-0xF237F     64B     Coprocessor         coprocessor_constants.go
+0xF4000-0xF43FF     1KB     Voodoo 3D Graphics  voodoo_constants.go
 
 0x100000-0x4FFFFF   4MB     Video RAM           video_chip.go (VRAM_START)
 
@@ -92,6 +99,22 @@ ULA - ZX Spectrum (0xF2000-0xF200B) - ula_constants.go
   ULA_CTRL (enable/disable)
   ULA_STATUS (vblank)
   VRAM at 0x4000 (6144 bitmap + 768 attribute bytes)
+
+ANTIC (0xF2100-0xF213F) - antic_constants.go
+  ANTIC_DMACTL, ANTIC_CHACTL, ANTIC_DLISTL/H, ANTIC_HSCROL, ANTIC_VSCROL
+  ANTIC_PMBASE, ANTIC_CHBASE, ANTIC_WSYNC, ANTIC_VCOUNT, ANTIC_NMIEN, ANTIC_NMIST, ANTIC_NMIRES
+
+GTIA (0xF2140-0xF21B7) - antic_constants.go
+  GTIA_COLPM0-3, GTIA_COLPF0-3, GTIA_COLBK
+  GTIA_PRIOR, GTIA_GRACTL, GTIA_CONSOL
+
+Coprocessor (0xF2340-0xF237F) - coprocessor_constants.go
+  COPROC_CTRL, COPROC_STATUS, COPROC_PROGRAM_ADDR, COPROC_DATA_ADDR
+
+Voodoo 3D Graphics (0xF4000-0xF43FF) - voodoo_constants.go
+  VOODOO_STATUS, VOODOO_FB*, VOODOO_CLIP_*, VOODOO_TRI_*
+  VOODOO_TEXTURE_*, VOODOO_FOG_*, VOODOO_ALPHA_*
+  VOODOO_CHROMAKEY_*, VOODOO_ZBUFFER_*
 
 CPU-SPECIFIC I/O MAPPINGS
 =========================
@@ -172,6 +195,22 @@ const (
 	// BASIC external program executor region
 	EXEC_REGION_BASE = 0xF2320
 	EXEC_REGION_END  = 0xF233F
+
+	// ANTIC region (Atari 8-bit video)
+	ANTIC_REGION_BASE = 0xF2100
+	ANTIC_REGION_END  = 0xF213F
+
+	// GTIA region (Atari 8-bit color control)
+	GTIA_REGION_BASE = 0xF2140
+	GTIA_REGION_END  = 0xF21B7
+
+	// Coprocessor region
+	COPROC_REGION_BASE = 0xF2340
+	COPROC_REGION_END  = 0xF237F
+
+	// Voodoo 3D graphics region
+	VOODOO_REGION_BASE = 0xF4000
+	VOODOO_REGION_END  = 0xF43FF
 )
 
 // =============================================================================
@@ -273,6 +312,14 @@ func GetIORegion(addr uint32) string {
 		return "MediaLoader"
 	case addr >= EXEC_REGION_BASE && addr <= EXEC_REGION_END:
 		return "ProgramExecutor"
+	case addr >= ANTIC_REGION_BASE && addr <= ANTIC_REGION_END:
+		return "ANTIC"
+	case addr >= GTIA_REGION_BASE && addr <= GTIA_REGION_END:
+		return "GTIA"
+	case addr >= COPROC_REGION_BASE && addr <= COPROC_REGION_END:
+		return "Coprocessor"
+	case addr >= VOODOO_REGION_BASE && addr <= VOODOO_REGION_END:
+		return "Voodoo"
 	default:
 		return "Unknown"
 	}

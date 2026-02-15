@@ -25,6 +25,7 @@ type SIDEvent struct {
 	Sample uint64
 	Reg    uint8
 	Value  uint8
+	Chip   uint8 // 0 = SID1 (primary), 1 = SID2, 2 = SID3
 }
 
 // SIDPlaybackBus6502 implements a minimal C64-like memory bus for PSID playback.
@@ -33,6 +34,13 @@ type SIDPlaybackBus6502 struct {
 	sidRegs [SID_REG_COUNT]uint8
 	vicRegs [0x400]byte
 	events  []SIDEvent
+
+	// Multi-SID: additional SID chip register files and base addresses.
+	// sid2Base/sid3Base are 0 when not present.
+	sid2Regs [SID_REG_COUNT]uint8
+	sid3Regs [SID_REG_COUNT]uint8
+	sid2Base uint16
+	sid3Base uint16
 
 	cycles     uint64
 	frameCycle uint64
@@ -53,8 +61,14 @@ type SIDPlaybackBus6502 struct {
 }
 
 func newSIDPlaybackBus6502(ntsc bool) *SIDPlaybackBus6502 {
+	return newSIDPlaybackBus6502Multi(ntsc, 0, 0)
+}
+
+func newSIDPlaybackBus6502Multi(ntsc bool, sid2Addr, sid3Addr uint16) *SIDPlaybackBus6502 {
 	bus := &SIDPlaybackBus6502{
-		ntsc: ntsc,
+		ntsc:     ntsc,
+		sid2Base: sid2Addr,
+		sid3Base: sid3Addr,
 	}
 	bus.installIRQStub()
 	return bus
@@ -67,6 +81,10 @@ func (b *SIDPlaybackBus6502) Read(addr uint16) byte {
 		return b.readVIC(addr)
 	case addr >= c64SIDBase && addr <= c64SIDEnd:
 		return b.readSID(addr)
+	case b.sid2Base != 0 && addr >= b.sid2Base && addr <= b.sid2Base+c64SIDEnd-c64SIDBase:
+		return b.readSIDChip(addr, b.sid2Base, &b.sid2Regs)
+	case b.sid3Base != 0 && addr >= b.sid3Base && addr <= b.sid3Base+c64SIDEnd-c64SIDBase:
+		return b.readSIDChip(addr, b.sid3Base, &b.sid3Regs)
 	case addr >= c64CIA1Base && addr <= c64CIA1End:
 		return b.readCIA1(addr)
 	case addr >= c64CIA2Base && addr <= c64CIA2End:
@@ -83,6 +101,10 @@ func (b *SIDPlaybackBus6502) Write(addr uint16, value byte) {
 		b.writeVIC(addr, value)
 	case addr >= c64SIDBase && addr <= c64SIDEnd:
 		b.writeSID(addr, value)
+	case b.sid2Base != 0 && addr >= b.sid2Base && addr <= b.sid2Base+c64SIDEnd-c64SIDBase:
+		b.writeSIDChip(addr, value, b.sid2Base, &b.sid2Regs, 1)
+	case b.sid3Base != 0 && addr >= b.sid3Base && addr <= b.sid3Base+c64SIDEnd-c64SIDBase:
+		b.writeSIDChip(addr, value, b.sid3Base, &b.sid3Regs, 2)
 	case addr >= c64CIA1Base && addr <= c64CIA1End:
 		b.writeCIA1(addr, value)
 	case addr >= c64CIA2Base && addr <= c64CIA2End:
@@ -113,6 +135,32 @@ func (b *SIDPlaybackBus6502) writeSID(addr uint16, value byte) {
 		Cycle: b.cycles,
 		Reg:   reg,
 		Value: value,
+		Chip:  0,
+	})
+}
+
+func (b *SIDPlaybackBus6502) readSIDChip(addr, base uint16, regs *[SID_REG_COUNT]uint8) byte {
+	reg := uint8(addr - base)
+	if reg >= SID_REG_COUNT {
+		return 0xFF
+	}
+	if reg == 0x1B || reg == 0x1C {
+		return 0x00
+	}
+	return regs[reg]
+}
+
+func (b *SIDPlaybackBus6502) writeSIDChip(addr uint16, value byte, base uint16, regs *[SID_REG_COUNT]uint8, chip uint8) {
+	reg := uint8(addr - base)
+	if reg >= SID_REG_COUNT {
+		return
+	}
+	regs[reg] = value
+	b.events = append(b.events, SIDEvent{
+		Cycle: b.cycles,
+		Reg:   reg,
+		Value: value,
+		Chip:  chip,
 	})
 }
 
@@ -311,6 +359,12 @@ func (b *SIDPlaybackBus6502) Reset() {
 	b.installIRQStub()
 	for i := range b.sidRegs {
 		b.sidRegs[i] = 0
+	}
+	for i := range b.sid2Regs {
+		b.sid2Regs[i] = 0
+	}
+	for i := range b.sid3Regs {
+		b.sid3Regs[i] = 0
 	}
 	for i := range b.vicRegs {
 		b.vicRegs[i] = 0

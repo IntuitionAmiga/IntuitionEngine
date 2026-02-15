@@ -98,6 +98,42 @@ IEVideoChip (640x480 true color), VGA (text/Mode 13h/Mode 12h/ModeX), ULA (ZX Sp
 ### Audio Engines
 IESoundChip (custom synthesizer), PSG/AY-3-8910, SID (Commodore 64), POKEY/SAP (Atari 8-bit), TED audio (Commodore Plus/4), AHX (Amiga tracker)
 
+### SID Support
+
+The SID (MOS 6581/8580) emulation provides:
+
+- **Single-SID playback** with all 3 voices, ADSR envelopes, ring modulation, hard sync, and resonant filter
+- **Model selection**: 6581 (non-linear filter, DC offset, warmer sound) and 8580 (linear, cleaner)
+- **File format support**: PSID v1-v4 and RSID
+- **Multi-SID files**: Accepted and parsed (Sid2Addr/Sid3Addr extracted from v3/v4 headers). Playback uses the primary SID chip; additional SID writes are captured but not mixed. Full multi-SID mixing is planned for a future release.
+- **RSID handling**: RSID files are fully supported. PlayAddress=0 triggers interrupt-driven playback. Embedded load addresses (LoadAddress=0) are extracted from the data section. Speed bitmap selects CIA timer vs VBI rate per subsong.
+- **SID+ enhanced mode**: Optional logarithmic volume curve (2dB per step) for improved dynamic range.
+
+### VGM Support
+
+The VGM (Video Game Music) parser supports playback of `.vgm` and `.vgz` (gzip-compressed) files.
+
+**Supported chips** (events extracted and played):
+| Chip | VGM Command | Notes |
+|------|-------------|-------|
+| AY-3-8910 / YM2149 | `0xA0` | Direct register mapping to PSG engine |
+| SN76489 / SN76496 | `0x50` | Converted to AY-equivalent register writes with clock-accurate frequency scaling |
+
+**Ignored chips** (commands gracefully skipped):
+| Chip | VGM Command | Notes |
+|------|-------------|-------|
+| SN76489 GG stereo | `0x4F` | Game Gear stereo panning |
+| YM2413 (OPLL) | `0x51` | FM synthesis |
+| YM2612 (OPN2) | `0x52`-`0x53` | Mega Drive FM |
+| YM2151 (OPM) | `0x54` | Arcade FM |
+| YM2203/2608/2610 | `0x55`-`0x59` | Various FM+SSG |
+| YM3812/3526/Y8950 | `0x5A`-`0x5C` | OPL series |
+| YMF262/YMZ280B | `0x5D`-`0x5F` | OPL3 / PCMD8 |
+| Sega PCM | `0xC0`+ | Arcade PCM |
+| DAC stream | `0x90`-`0x95` | PCM streaming |
+
+SN76489 conversion maps tone channels 0-2 to AY channels A/B/C with frequency divider scaling based on chip clocks. Attenuation is inverted (SN: 0=max, 15=off → AY: 15=max, 0=off). The SN76489 noise channel maps to the AY noise generator with the mixer register controlling noise enable on channel C.
+
 ## Build Scripts
 
 Individual target scripts and a master build-all:
