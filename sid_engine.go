@@ -452,12 +452,9 @@ func (e *SIDEngine) applyVolumes() {
 		}
 
 		// Each voice gets master volume (individual voice volume is handled by envelope)
-		gain := masterGain
-		if e.sidPlusEnabled {
-			gain *= sidPlusMixGain[voice]
-		}
-
-		e.writeChannel(voice, FLEX_OFF_VOL, uint32(sidGainToDAC(gain)))
+		// Note: SID+ per-voice mix gain is applied in processEnhancedSample via ch.sidPlusGain,
+		// so we only apply masterGain here to avoid double application.
+		e.writeChannel(voice, FLEX_OFF_VOL, uint32(sidGainToDAC(masterGain)))
 	}
 }
 
@@ -766,11 +763,11 @@ func (e *SIDEngine) writeRegisterLocked(reg uint8, value uint8) {
 	e.enabled.Store(true)
 	e.regs[reg] = value
 
-	// Handle SID+ control register
+	// Handle SID+ control register (scoped to this engine's channels only)
 	if reg == 0x19 { // SID_PLUS_CTRL offset
 		e.sidPlusEnabled = (value & 1) != 0
 		if e.sound != nil {
-			e.sound.SetSIDPlusEnabled(e.sidPlusEnabled)
+			e.sound.SetSIDPlusEnabledForRange(e.sidPlusEnabled, e.baseChannel, 3)
 		}
 	}
 

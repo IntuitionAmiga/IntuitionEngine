@@ -89,9 +89,8 @@ func (s *sn76489State) decode(val byte, samplePos uint64) []PSGEvent {
 	}
 
 	if s.latchedCh == 3 {
-		// Noise data byte
-		s.noiseReg = dataBits & 0x07
-		return s.emitNoise(samplePos)
+		// Real SN76489 ignores data bytes for the noise register
+		return nil
 	}
 
 	// Tone data byte: high 6 bits of 10-bit divider
@@ -239,7 +238,7 @@ func ParseVGMData(data []byte) (*VGMFile, error) {
 	version := binary.LittleEndian.Uint32(data[0x08:0x0C])
 	_ = version
 
-	totalSamples := binary.LittleEndian.Uint32(data[0x18:0x1C])
+	totalSamples := uint64(binary.LittleEndian.Uint32(data[0x18:0x1C]))
 	loopSamples := binary.LittleEndian.Uint32(data[0x20:0x24])
 	loopOffset := binary.LittleEndian.Uint32(data[0x1C:0x20])
 
@@ -434,11 +433,11 @@ func ParseVGMData(data []byte) (*VGMFile, error) {
 	}
 
 	if len(events) > 0 {
-		last := max(uint64(totalSamples), events[len(events)-1].Sample+1)
-		totalSamples = uint32(last)
+		last := max(totalSamples, events[len(events)-1].Sample+1)
+		totalSamples = last
 	}
-	if loopSample == 0 && loopSamples > 0 && uint64(totalSamples) >= uint64(loopSamples) {
-		loopSample = uint64(totalSamples) - uint64(loopSamples)
+	if loopSample == 0 && loopSamples > 0 && totalSamples >= uint64(loopSamples) {
+		loopSample = totalSamples - uint64(loopSamples)
 	}
 
 	// Use SN76489 clock as primary clock if no AY clock present
@@ -451,7 +450,7 @@ func ParseVGMData(data []byte) (*VGMFile, error) {
 		Events:       events,
 		ClockHz:      reportClockHz,
 		SNClockHz:    snClockHz,
-		TotalSamples: uint64(totalSamples),
+		TotalSamples: totalSamples,
 		LoopSamples:  uint64(loopSamples),
 		LoopSample:   loopSample,
 	}, nil

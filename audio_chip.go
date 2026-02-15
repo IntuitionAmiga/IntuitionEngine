@@ -3034,6 +3034,63 @@ func (chip *SoundChip) SetSIDPlusEnabled(enabled bool) {
 	defer chip.mu.Unlock()
 
 	for i := range NUM_CHANNELS {
+		if i == 3 {
+			continue // Channel 3 is PSG noise, not a SID voice
+		}
+		ch := chip.channels[i]
+		if ch == nil {
+			continue
+		}
+		// Compute voice index within each SID chip (0-2).
+		// Channel layout: 0,1,2 (SID1), 3 (PSG noise/skip), 4,5,6 (SID2), 7,8,9 (SID3)
+		voiceIdx := i
+		if i > 3 {
+			voiceIdx = i - 1 // Account for channel 3 gap
+		}
+		if enabled {
+			ch.sidPlusEnabled = true
+			ch.sidPlusOversample = SID_PLUS_OVERSAMPLE
+			ch.sidPlusBqZ1 = 0
+			ch.sidPlusBqZ2 = 0
+			ch.initPlusBiquad(SID_PLUS_OVERSAMPLE)
+			ch.sidPlusDrive = SID_PLUS_DRIVE
+			ch.sidPlusRoomMix = SID_PLUS_ROOM_MIX
+			ch.sidPlusRoomDelay = SID_PLUS_ROOM_DELAY
+			ch.sidPlusRoomPos = 0
+			ch.sidPlusTransGain = 0
+			ch.sidPlusTransStep = 1.0 / 64.0
+			ch.sidPlusTransCounter = 64
+			if ch.sidPlusRoomBuf == nil || len(ch.sidPlusRoomBuf) != SID_PLUS_ROOM_DELAY {
+				ch.sidPlusRoomBuf = make([]float32, SID_PLUS_ROOM_DELAY)
+			} else {
+				for j := range ch.sidPlusRoomBuf {
+					ch.sidPlusRoomBuf[j] = 0
+				}
+			}
+			ch.sidPlusGain = sidPlusMixGain[voiceIdx%3]
+		} else if ch.sidPlusEnabled {
+			if ch.enabled {
+				ch.sidPlusTransGain = 1.0
+				ch.sidPlusTransStep = -1.0 / 64.0
+				ch.sidPlusTransCounter = 64
+			} else {
+				ch.sidPlusEnabled = false
+			}
+		}
+	}
+}
+
+// SetSIDPlusEnabledForRange enables/disables SID+ for a specific SID chip's channels only.
+// baseChannel is the first channel index (0, 4, or 7), count is the number of voices (3).
+func (chip *SoundChip) SetSIDPlusEnabledForRange(enabled bool, baseChannel, count int) {
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
+
+	for v := range count {
+		i := baseChannel + v
+		if i < 0 || i >= NUM_CHANNELS || i == 3 {
+			continue
+		}
 		ch := chip.channels[i]
 		if ch == nil {
 			continue
@@ -3058,7 +3115,7 @@ func (chip *SoundChip) SetSIDPlusEnabled(enabled bool) {
 					ch.sidPlusRoomBuf[j] = 0
 				}
 			}
-			ch.sidPlusGain = sidPlusMixGain[i%3]
+			ch.sidPlusGain = sidPlusMixGain[v%3]
 		} else if ch.sidPlusEnabled {
 			if ch.enabled {
 				ch.sidPlusTransGain = 1.0
