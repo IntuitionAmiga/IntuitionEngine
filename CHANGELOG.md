@@ -36,11 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Global filter (LP/HP/BP), overdrive, reverb.
   - 44.1kHz 32-bit floating-point processing.
 - **PSG** (AY-3-8910/YM2149): 3-channel square + noise with envelope generator. Supports `.ym`, `.ay`, `.vgm`, `.sndh` playback.
-- **SID** (MOS 6581/8580): 3 voices with ADSR, ring modulation, hard sync, resonant filter. Supports `.sid` playback (PSID v1-v4, RSID). Multi-SID file parsing with primary chip playback.
+- **SID** (MOS 6581/8580): 3 voices with ADSR, ring modulation, hard sync, resonant filter. Supports `.sid` playback (PSID v1-v4, RSID). Multi-SID playback with up to 3 independent chips (9 voices), per-chip model selection from header flags.
 - **POKEY** (Atari): 4-channel with polynomial counters and high-pass filter. Supports `.sap` playback.
 - **TED** (Commodore Plus/4): 2-channel square wave audio.
 - **AHX** (Amiga): Tracker-based module playback.
-- **SN76489** support via VGM command `0x50` with clock-accurate frequency scaling to AY registers.
+- **SN76489** support via VGM command `0x50` with clock-accurate frequency scaling to AY registers and dynamic noise-tracks-tone2.
 - PLUS enhanced modes for PSG, SID, POKEY, TED, and AHX with logarithmic volume curves.
 
 #### VGM Support
@@ -50,7 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Graceful skip of unsupported chip commands (YM2413, YM2612, YM2151, OPL series, Sega PCM, DAC streams).
 
 #### SID Enhancements
-- Multi-SID file support: Sid2Addr/Sid3Addr parsed from v3/v4 headers.
+- Multi-SID file support: Sid2Addr/Sid3Addr parsed from v3/v4 headers with per-chip 6581/8580 model from flags.
 - RSID handling: PlayAddress=0 interrupt-driven playback, embedded load addresses, CIA/VBI speed selection per subsong.
 - SID+ enhanced mode with 2dB-per-step logarithmic volume curve.
 

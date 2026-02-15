@@ -82,17 +82,22 @@ func (p *SIDPlayer) LoadDataWithOptions(data []byte, subsong int, forcePAL bool,
 	p.renderCPU = "6502"
 	p.renderExecNanos = execNanos
 
-	// Set up multi-SID engines if the file has Sid2Addr/Sid3Addr
+	// Set up multi-SID engines and apply chip models from header flags
 	if p.engine.sound != nil {
 		sidFile, parseErr := ParseSIDData(data)
 		if parseErr == nil {
+			// Apply primary SID model from flags bits 4-5
+			p.engine.SetModel(sidHeaderModel(sidFile.Header.Flags, 4))
+
 			if sidFile.Header.Sid2Addr != 0 && p.engine.sid2 == nil {
 				p.engine.sid2 = NewSIDEngineMulti(p.engine.sound, p.engine.sampleRate, 4, SID2_BASE, SID2_END)
 				p.engine.sid2.SetClockHz(clockHz)
+				p.engine.sid2.SetModel(sidHeaderModel(sidFile.Header.Flags, 6))
 			}
 			if sidFile.Header.Sid3Addr != 0 && p.engine.sid3 == nil {
 				p.engine.sid3 = NewSIDEngineMulti(p.engine.sound, p.engine.sampleRate, 7, SID3_BASE, SID3_END)
 				p.engine.sid3.SetClockHz(clockHz)
+				p.engine.sid3.SetModel(sidHeaderModel(sidFile.Header.Flags, 8))
 			}
 		}
 	}

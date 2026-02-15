@@ -76,7 +76,11 @@ func (s *sn76489State) decode(val byte, samplePos uint64) []PSGEvent {
 
 		// Tone latch: low 4 bits of 10-bit divider
 		s.toneRegs[s.latchedCh] = (s.toneRegs[s.latchedCh] & 0x3F0) | uint16(lowBits)
-		return s.emitTone(s.latchedCh, samplePos)
+		events := s.emitTone(s.latchedCh, samplePos)
+		if s.latchedCh == 2 && s.noiseReg&0x03 == 3 {
+			events = append(events, PSGEvent{Sample: samplePos, Reg: 6, Value: s.noiseFromTone2()})
+		}
+		return events
 	}
 
 	// Data byte: bit 7=0, bits 5-0 are data
@@ -95,7 +99,11 @@ func (s *sn76489State) decode(val byte, samplePos uint64) []PSGEvent {
 
 	// Tone data byte: high 6 bits of 10-bit divider
 	s.toneRegs[s.latchedCh] = (s.toneRegs[s.latchedCh] & 0x0F) | (uint16(dataBits) << 4)
-	return s.emitTone(s.latchedCh, samplePos)
+	events := s.emitTone(s.latchedCh, samplePos)
+	if s.latchedCh == 2 && s.noiseReg&0x03 == 3 {
+		events = append(events, PSGEvent{Sample: samplePos, Reg: 6, Value: s.noiseFromTone2()})
+	}
+	return events
 }
 
 // emitTone converts an SN76489 tone divider to AY frequency register writes.
@@ -153,6 +161,36 @@ func (s *sn76489State) emitAttenuation(ch uint8, samplePos uint64) []PSGEvent {
 	}
 }
 
+// noiseFromTone2 computes the AY noise period from channel 2's tone divider.
+// SN76489 noise rate 3 uses channel 2's tone output as the noise clock.
+// SN76489: Freq = snClock / (32 * N_sn), AY noise: Freq = ayClock / (16 * N_noise)
+// For equal frequency: N_noise = N_sn * ayClock / (snClock * 2)
+func (s *sn76489State) noiseFromTone2() uint8 {
+	divider := s.toneRegs[2]
+	if divider == 0 {
+		return 1
+	}
+	if s.snClockHz > 0 && s.ayClockHz > 0 {
+		np := uint32(divider) * s.ayClockHz / (s.snClockHz * 2)
+		if np == 0 {
+			return 1
+		}
+		if np > 31 {
+			return 31
+		}
+		return uint8(np)
+	}
+	// Fallback: approximate 1:2 ratio
+	np := divider / 2
+	if np == 0 {
+		return 1
+	}
+	if np > 31 {
+		return 31
+	}
+	return uint8(np)
+}
+
 // emitNoise converts SN76489 noise control to AY noise register + mixer.
 // SN76489 noise: bits 1-0 = shift rate, bit 2 = white(1)/periodic(0)
 // AY noise period register = 6 (5-bit), mixer register = 7
@@ -171,7 +209,8 @@ func (s *sn76489State) emitNoise(samplePos uint64) []PSGEvent {
 	case 2:
 		noisePeriod = 16
 	case 3:
-		noisePeriod = 31 // Slowest (channel 2 tracking not exactly mappable)
+		// Track channel 2's tone frequency
+		noisePeriod = s.noiseFromTone2()
 	}
 
 	events := []PSGEvent{

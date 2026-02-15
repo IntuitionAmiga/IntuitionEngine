@@ -91,6 +91,17 @@ func sidIsNTSC(header SIDHeader) bool {
 	return video == 0x02
 }
 
+// sidHeaderModel extracts the SID chip model from header flags at the given bit shift.
+// Flags encoding: 0=unknown, 1=6581, 2=8580, 3=both → mapped to SID_MODEL_6581 or SID_MODEL_8580.
+// Primary SID: shift=4, SID2: shift=6, SID3: shift=8.
+func sidHeaderModel(flags uint16, shift uint) int {
+	model := (flags >> shift) & 0x03
+	if model == 2 {
+		return SID_MODEL_8580
+	}
+	return SID_MODEL_6581
+}
+
 func sidCyclesPerTick(clockHz uint32, ntsc bool, interruptMode bool, speed uint32, subsong int) int {
 	tickHz := sidTickHz(clockHz, ntsc, interruptMode, speed, subsong)
 	if tickHz == 0 {
