@@ -7,3 +7,10 @@ testdata/*
 !testdata/audio/
 untracked/
 assembler/untracked/
+
+# Release artifacts
+*.AppImage
+appimagetool*
+AppDir/
+SHA256SUMS
+*.tar.xz

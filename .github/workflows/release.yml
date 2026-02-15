@@ -1,0 +1,308 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  APP_NAME: IntuitionEngine
+  GO_VERSION_FILE: go.mod
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Linux official builds (amd64 + arm64)
+  # ---------------------------------------------------------------------------
+  linux:
+    name: Linux ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            goarch: amd64
+            appimage_arch: x86_64
+            cross: false
+          - arch: arm64
+            goarch: arm64
+            appimage_arch: aarch64
+            cross: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+
+      - name: Install dependencies (amd64)
+        if: ${{ !matrix.cross }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libgl1-mesa-dev libxcursor-dev libxi-dev libxinerama-dev libxrandr-dev libxxf86vm-dev
+
+      - name: Install cross-compile dependencies (arm64)
+        if: ${{ matrix.cross }}
+        run: |
+          sudo dpkg --add-architecture arm64
+          sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ $(lsb_release -cs) main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ $(lsb_release -cs)-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu libasound2-dev:arm64 libgl1-mesa-dev:arm64 libxcursor-dev:arm64 libxi-dev:arm64 libxinerama-dev:arm64 libxrandr-dev:arm64 libxxf86vm-dev:arm64
+
+      - name: Extract version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "1"
+          CC: ${{ matrix.cross && 'aarch64-linux-gnu-gcc' || 'gcc' }}
+        run: |
+          COMMIT=$(git rev-parse --short HEAD)
+          BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          VERSION="${{ steps.version.outputs.version }}"
+          go build -ldflags "-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" .
+
+      - name: Build assemblers
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          go build -ldflags "-s -w" -o ie32asm assembler/ie32asm.go
+          go build -ldflags "-s -w" -tags ie64 -o ie64asm assembler/ie64asm.go
+
+      - name: Create tar.xz archive
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          DIR="${APP_NAME}-${VERSION}-linux-${{ matrix.arch }}"
+          mkdir -p "${DIR}"
+          cp IntuitionEngine ie32asm ie64asm "${DIR}/"
+          cp README.md CHANGELOG.md "${DIR}/" 2>/dev/null || true
+          cp -r sdk/ "${DIR}/sdk/" 2>/dev/null || true
+          tar -cJf "${DIR}.tar.xz" "${DIR}"
+
+      - name: Create AppImage
+        if: ${{ !matrix.cross }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          # Download appimagetool
+          wget -q "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage" -O appimagetool
+          chmod +x appimagetool
+
+          # Build AppDir
+          mkdir -p AppDir/usr/bin AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/256x256/apps
+          cp IntuitionEngine ie32asm ie64asm AppDir/usr/bin/
+
+          # Desktop entry
+          cat > AppDir/usr/share/applications/${APP_NAME}.desktop <<DESKTOP
+          [Desktop Entry]
+          Name=${APP_NAME}
+          Exec=IntuitionEngine
+          Icon=${APP_NAME}
+          Type=Application
+          Categories=Development;
+          Version=1.0
+          Terminal=false
+          DESKTOP
+          # Fix indentation (heredoc artifact)
+          sed -i 's/^          //' AppDir/usr/share/applications/${APP_NAME}.desktop
+
+          ln -sf usr/share/applications/${APP_NAME}.desktop AppDir/${APP_NAME}.desktop
+          cp assets/images/IntuitionEngine.png AppDir/usr/share/icons/hicolor/256x256/apps/${APP_NAME}.png
+          cp assets/images/IntuitionEngine.png AppDir/${APP_NAME}.png
+
+          # AppRun
+          cat > AppDir/AppRun <<'APPRUN'
+          #!/bin/bash
+          SELF="$(dirname "$(readlink -f "$0")")"
+          export PATH="$SELF/usr/bin:$PATH"
+          exec "$SELF/usr/bin/IntuitionEngine" "$@"
+          APPRUN
+          sed -i 's/^          //' AppDir/AppRun
+          chmod +x AppDir/AppRun
+
+          ARCH=x86_64 ./appimagetool AppDir "${APP_NAME}-${VERSION}-linux-${{ matrix.arch }}.AppImage"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: |
+            ${{ env.APP_NAME }}-*-linux-${{ matrix.arch }}.tar.xz
+            ${{ env.APP_NAME }}-*-linux-${{ matrix.arch }}.AppImage
+
+  # ---------------------------------------------------------------------------
+  # Experimental: Windows (amd64 + arm64) — novulkan, CGO_ENABLED=0
+  # ---------------------------------------------------------------------------
+  windows:
+    name: Windows ${{ matrix.arch }} (experimental)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            goarch: amd64
+          - arch: arm64
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+
+      - name: Extract version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        env:
+          GOOS: windows
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          COMMIT=$(git rev-parse --short HEAD)
+          BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          VERSION="${{ steps.version.outputs.version }}"
+          go build -ldflags "-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" -tags "novulkan headless" .
+          go build -ldflags "-s -w" -o ie32asm.exe assembler/ie32asm.go
+          go build -ldflags "-s -w" -tags ie64 -o ie64asm.exe assembler/ie64asm.go
+
+      - name: Create zip archive
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          DIR="${APP_NAME}-${VERSION}-windows-${{ matrix.arch }}"
+          mkdir -p "${DIR}"
+          cp IntuitionEngine.exe ie32asm.exe ie64asm.exe "${DIR}/"
+          cp README.md CHANGELOG.md "${DIR}/" 2>/dev/null || true
+          cp -r sdk/ "${DIR}/sdk/" 2>/dev/null || true
+          zip -r "${DIR}.zip" "${DIR}"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.arch }}
+          path: ${{ env.APP_NAME }}-*-windows-${{ matrix.arch }}.zip
+
+  # ---------------------------------------------------------------------------
+  # Experimental: macOS arm64 — novulkan, CGO_ENABLED=0
+  # ---------------------------------------------------------------------------
+  macos:
+    name: macOS arm64 (experimental)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+
+      - name: Extract version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        env:
+          GOOS: darwin
+          GOARCH: arm64
+          CGO_ENABLED: "0"
+        run: |
+          COMMIT=$(git rev-parse --short HEAD)
+          BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          VERSION="${{ steps.version.outputs.version }}"
+          go build -ldflags "-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" -tags "novulkan headless" .
+          go build -ldflags "-s -w" -o ie32asm assembler/ie32asm.go
+          go build -ldflags "-s -w" -tags ie64 -o ie64asm assembler/ie64asm.go
+
+      - name: Create tar.xz archive
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          DIR="${APP_NAME}-${VERSION}-darwin-arm64"
+          mkdir -p "${DIR}"
+          cp IntuitionEngine ie32asm ie64asm "${DIR}/"
+          cp README.md CHANGELOG.md "${DIR}/" 2>/dev/null || true
+          cp -r sdk/ "${DIR}/sdk/" 2>/dev/null || true
+          tar -cJf "${DIR}.tar.xz" "${DIR}"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: darwin-arm64
+          path: ${{ env.APP_NAME }}-*-darwin-arm64.tar.xz
+
+  # ---------------------------------------------------------------------------
+  # Publish GitHub Release with checksums
+  # ---------------------------------------------------------------------------
+  release:
+    name: Publish release
+    needs: [linux, windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect release assets
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name '*.tar.xz' -o -name '*.zip' -o -name '*.AppImage' \) -exec cp {} release/ \;
+
+      - name: Generate checksums
+        working-directory: release
+        run: sha256sum * > SHA256SUMS
+
+      - name: Extract changelog for this version
+        id: changelog
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          # Extract the section for this version from CHANGELOG.md
+          if [ -f CHANGELOG.md ]; then
+            awk "/^## .*${VERSION}/,/^## /" CHANGELOG.md | head -n -1 > release_notes.md
+            # If empty, use a default
+            if [ ! -s release_notes.md ]; then
+              echo "Release ${GITHUB_REF_NAME}" > release_notes.md
+            fi
+          else
+            echo "Release ${GITHUB_REF_NAME}" > release_notes.md
+          fi
+
+          # Append platform notes
+          cat >> release_notes.md <<'EOF'
+
+          ---
+
+          ### Platform support
+
+          | Platform | Status | Notes |
+          |----------|--------|-------|
+          | Linux amd64 | Official | Full feature set |
+          | Linux arm64 | Official | Full feature set |
+          | Windows amd64 | Experimental | headless + novulkan |
+          | Windows arm64 | Experimental | headless + novulkan |
+          | macOS arm64 | Experimental | headless + novulkan |
+
+          ### Checksums
+          See `SHA256SUMS` for file integrity verification:
+          ```
+          sha256sum -c SHA256SUMS
+          ```
+          EOF
+          sed -i 's/^          //' release_notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release_notes.md
+          files: release/*
+          draft: false
+          prerelease: ${{ contains(github.ref_name, 'rc') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}

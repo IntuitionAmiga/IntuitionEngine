@@ -1,0 +1,142 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.profile }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: novulkan
+            tags: novulkan
+            cgo: "1"
+          - profile: headless-novulkan
+            tags: "novulkan headless"
+            cgo: "0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        env:
+          CGO_ENABLED: ${{ matrix.cgo }}
+        run: go build -tags "${{ matrix.tags }}" .
+
+  vet:
+    name: Vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libgl1-mesa-dev libxcursor-dev libxi-dev libxinerama-dev libxrandr-dev libxxf86vm-dev
+
+      - name: go vet
+        run: go vet ./...
+
+  test:
+    name: Test (headless)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run tests
+        run: go test -tags headless -timeout 10m -count=1 ./...
+
+  sdk-smoke:
+    name: SDK example smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build IE32 assembler
+        run: go build -o ie32asm assembler/ie32asm.go
+
+      - name: Build IE64 assembler
+        run: go build -tags ie64 -o ie64asm assembler/ie64asm.go
+
+      - name: Assemble IE32 SDK examples
+        run: |
+          for f in sdk/examples/asm/vga_text_hello.asm \
+                   sdk/examples/asm/vga_mode13h_fire.asm \
+                   sdk/examples/asm/copper_vga_bands.asm \
+                   sdk/examples/asm/coproc_caller_ie32.asm \
+                   sdk/examples/asm/coproc_service_ie32.asm \
+                   sdk/examples/asm/rotozoomer.asm; do
+            echo "Assembling $f..."
+            ./ie32asm "$f" || exit 1
+          done
+
+      - name: Assemble IE64 SDK examples
+        run: |
+          for f in sdk/examples/asm/rotozoomer_ie64.asm; do
+            echo "Assembling $f..."
+            ./ie64asm "$f" || exit 1
+          done
+
+      - name: Clean up assembled binaries
+        run: rm -f ie32asm ie64asm sdk/examples/asm/*.iex sdk/examples/asm/*.ie64
+
+  docs-check:
+    name: Documentation checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for broken internal doc links
+        run: |
+          exit_code=0
+          # Check markdown links to local files (not URLs, not anchors)
+          for md in README.md CHANGELOG.md DEVELOPERS.md docs/*.md sdk/README.md; do
+            [ -f "$md" ] || continue
+            # Extract [text](path) links where path doesn't start with http or #
+            grep -oP '\[.*?\]\(\K[^)]+' "$md" | grep -v '^http' | grep -v '^#' | while read -r link; do
+              # Strip anchor from link
+              target="${link%%#*}"
+              [ -z "$target" ] && continue
+              # Resolve relative to the markdown file's directory
+              dir="$(dirname "$md")"
+              if [ ! -e "$dir/$target" ] && [ ! -e "$target" ]; then
+                echo "::warning file=$md::Broken link: $link"
+                exit_code=1
+              fi
+            done
+          done
+          exit $exit_code
+
+      - name: Validate SDK build scripts are executable
+        run: |
+          for script in sdk/scripts/*.sh; do
+            [ -f "$script" ] || continue
+            if [ ! -x "$script" ]; then
+              echo "::error file=$script::Script is not executable"
+              exit 1
+            fi
+          done
