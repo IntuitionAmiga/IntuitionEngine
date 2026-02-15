@@ -5,7 +5,7 @@
 # Usage: ./build-all.sh
 #
 # Environment variables:
-#   IE_BIN_DIR   - Path to IntuitionEngine bin/ directory (default: ./bin)
+#   IE_BIN_DIR   - Path to IE assembler binaries (default: ./sdk/bin)
 #   VASM_M68K    - Path to vasmm68k_mot (default: vasmm68k_mot)
 #   VASM_Z80     - Path to vasmz80_std (default: vasmz80_std)
 #   CA65 / LD65  - Path to cc65 tools (default: ca65 / ld65)
@@ -40,7 +40,7 @@ skip_builder() {
 }
 
 # IE32 (built-in assembler)
-BIN_DIR="${IE_BIN_DIR:-./bin}"
+BIN_DIR="${IE_BIN_DIR:-./sdk/bin}"
 if [ -f "$BIN_DIR/ie32asm" ]; then
     run_builder "IE32" "$SCRIPT_DIR/build-ie32.sh"
 else

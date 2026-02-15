@@ -8,7 +8,7 @@ set -euo pipefail
 SDK_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ASM_DIR="$SDK_DIR/examples/asm"
 INCLUDE_DIR="$SDK_DIR/include"
-BIN_DIR="${IE_BIN_DIR:-./bin}"
+BIN_DIR="${IE_BIN_DIR:-./sdk/bin}"
 IE32ASM="${BIN_DIR}/ie32asm"
 
 if [ ! -f "$IE32ASM" ]; then

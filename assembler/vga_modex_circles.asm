@@ -1,7 +1,7 @@
 ; vga_modex_circles.asm - VGA Mode X Demo with Page Flipping (IE32)
 ; 320x240 256-color mode with double buffering
 ;
-; Assemble: ./bin/ie32asm assembler/vga_modex_circles.asm
+; Assemble: sdk/bin/ie32asm assembler/vga_modex_circles.asm
 ; Run: ./bin/IntuitionEngine -ie32 assembler/vga_modex_circles.iex
 
 ; Include VGA definitions

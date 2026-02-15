@@ -97,7 +97,7 @@
 ;
 ; === BUILD AND RUN ===
 ;
-;   Assemble:  ./bin/ie64asm assembler/rotozoomer_ie64.asm
+;   Assemble:  sdk/bin/ie64asm assembler/rotozoomer_ie64.asm
 ;   Run:       ./bin/IntuitionEngine -ie64 assembler/rotozoomer_ie64.ie64
 ;
 ; === DEMOSCENE CONTEXT ===

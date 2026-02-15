@@ -22,8 +22,8 @@ The `RUN` command auto-detects format by extension: `.iex` (IE32), `.ie64` (IE64
 
 ```bash
 make ie32asm                              # Build
-./bin/ie32asm program.asm                 # Assemble (produces program.iex)
-./bin/ie32asm -I sdk/include program.asm  # With include search path
+sdk/bin/ie32asm program.asm                 # Assemble (produces program.iex)
+sdk/bin/ie32asm -I sdk/include program.asm  # With include search path
 ./bin/IntuitionEngine -ie32 program.iex   # Run (or: RUN "program.iex" from BASIC)
 ```
 
@@ -36,9 +36,9 @@ make ie32asm                              # Build
 
 ```bash
 make ie64asm                              # Build
-./bin/ie64asm program.asm                 # Assemble (produces program.ie64)
-./bin/ie64asm -I sdk/include program.asm  # With include search path
-./bin/ie64asm -list program.asm           # Assemble with listing output
+sdk/bin/ie64asm program.asm                 # Assemble (produces program.ie64)
+sdk/bin/ie64asm -I sdk/include program.asm  # With include search path
+sdk/bin/ie64asm -list program.asm           # Assemble with listing output
 ./bin/IntuitionEngine -ie64 program.ie64  # Run (or: RUN "program.ie64" from BASIC)
 ```
 
@@ -51,14 +51,14 @@ make ie64asm                              # Build
 
 ```bash
 make ie64dis                              # Build
-./bin/ie64dis program.ie64                # Disassemble
+sdk/bin/ie64dis program.ie64                # Disassemble
 ```
 
 ### IE32-to-IE64 Converter (`ie32to64`)
 
 ```bash
 make ie32to64                             # Build
-./bin/ie32to64 program.asm                # Convert IE32 assembly to IE64
+sdk/bin/ie32to64 program.asm                # Convert IE32 assembly to IE64
 ```
 
 See [ie32to64.md](ie32to64.md) for conversion details.

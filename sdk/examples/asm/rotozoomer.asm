@@ -8,7 +8,7 @@
 ; Video Chip:    IEVideoChip Mode 0 (640x480, 32bpp true color)
 ; Audio Engine:  AHX (Amiga tracker synthesis)
 ; Assembler:     ie32asm (built-in IE32 assembler)
-; Build:         ./bin/ie32asm sdk/examples/asm/rotozoomer.asm
+; Build:         sdk/bin/ie32asm sdk/examples/asm/rotozoomer.asm
 ; Run:           ./bin/IntuitionEngine -ie32 rotozoomer.iex
 ; Porting:       VideoChip/blitter MMIO is CPU-agnostic. See rotozoomer_68k.asm,
 ;                rotozoomer_z80.asm, rotozoomer_65.asm, rotozoomer_x86.asm for
@@ -147,7 +147,7 @@
 ;
 ; === BUILD AND RUN ===
 ;
-;   Assemble:  ./bin/ie32asm assembler/rotozoomer.asm
+;   Assemble:  sdk/bin/ie32asm assembler/rotozoomer.asm
 ;   Run:       ./bin/IntuitionEngine -ie32 assembler/rotozoomer.iex
 ;
 ; ============================================================================

@@ -54,18 +54,21 @@ jobs:
           go build -ldflags "-s -w" -o ie32asm assembler/ie32asm.go
           go build -ldflags "-s -w" -tags ie64 -o ie64asm assembler/ie64asm.go
           go build -ldflags "-s -w" -o ie32to64 ./cmd/ie32to64/
+          go build -ldflags "-s -w" -tags ie64dis -o ie64dis assembler/ie64dis.go
+          mkdir -p sdk/bin
+          mv ie32asm ie64asm ie32to64 ie64dis sdk/bin/
 
       - name: UPX compress binaries
         run: |
           sudo apt-get install -y upx-ucl
-          upx IntuitionEngine ie32asm ie64asm ie32to64
+          upx IntuitionEngine sdk/bin/ie32asm sdk/bin/ie64asm sdk/bin/ie32to64 sdk/bin/ie64dis
 
       - name: Create tar.xz archive
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           DIR="${APP_NAME}-${VERSION}-linux-amd64"
           mkdir -p "${DIR}"
-          cp IntuitionEngine ie32asm ie64asm ie32to64 "${DIR}/"
+          cp IntuitionEngine "${DIR}/"
           cp README.md CHANGELOG.md DEVELOPERS.md "${DIR}/" 2>/dev/null || true
           cp -r sdk/ "${DIR}/sdk/" 2>/dev/null || true
           tar -cJf "${DIR}.tar.xz" "${DIR}"
@@ -114,19 +117,22 @@ jobs:
           go build -ldflags "-s -w" -o ie32asm.exe assembler/ie32asm.go
           go build -ldflags "-s -w" -tags ie64 -o ie64asm.exe assembler/ie64asm.go
           go build -ldflags "-s -w" -o ie32to64.exe ./cmd/ie32to64/
+          go build -ldflags "-s -w" -tags ie64dis -o ie64dis.exe assembler/ie64dis.go
+          mkdir -p sdk/bin
+          mv ie32asm.exe ie64asm.exe ie32to64.exe ie64dis.exe sdk/bin/
 
       - name: UPX compress binaries
         if: ${{ matrix.upx }}
         run: |
           sudo apt-get install -y upx-ucl
-          upx IntuitionEngine.exe ie32asm.exe ie64asm.exe ie32to64.exe
+          upx IntuitionEngine.exe sdk/bin/ie32asm.exe sdk/bin/ie64asm.exe sdk/bin/ie32to64.exe sdk/bin/ie64dis.exe
 
       - name: Create zip archive
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           DIR="${APP_NAME}-${VERSION}-windows-${{ matrix.arch }}"
           mkdir -p "${DIR}"
-          cp IntuitionEngine.exe ie32asm.exe ie64asm.exe ie32to64.exe "${DIR}/"
+          cp IntuitionEngine.exe "${DIR}/"
           cp README.md CHANGELOG.md DEVELOPERS.md "${DIR}/" 2>/dev/null || true
           cp -r sdk/ "${DIR}/sdk/" 2>/dev/null || true
           zip -r "${DIR}.zip" "${DIR}"

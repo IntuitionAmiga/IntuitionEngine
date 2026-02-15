@@ -17,5 +17,6 @@ SHA256SUMS
 *.tar.xz
 *.zip
 
-# SDK pre-assembled binaries
+# SDK build artifacts
+sdk/bin/
 sdk/examples/prebuilt/

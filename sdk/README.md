@@ -6,6 +6,7 @@ Developer kit for building programs that run on the Intuition Engine retro hardw
 
 ```
 sdk/
+  bin/              Assembler and tool binaries (built by make)
   include/          Platform headers and linker configs
     ie32.inc          IE32 (custom 32-bit RISC) macro library + hardware register map
     ie64.inc          IE64 (custom 64-bit RISC) macro library + EhBASIC memory layout
@@ -41,7 +42,7 @@ sdk/
 
 3. Or build and run from source (IE32 VGA text mode):
    ```bash
-   ./bin/ie32asm sdk/examples/asm/vga_text_hello.asm
+   sdk/bin/ie32asm sdk/examples/asm/vga_text_hello.asm
    ./bin/IntuitionEngine -ie32 vga_text_hello.iex
    ```
 
@@ -166,7 +167,7 @@ Environment variables for custom tool paths:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `IE_BIN_DIR` | `./bin` | Path to IE assembler binaries |
+| `IE_BIN_DIR` | `./sdk/bin` | Path to IE assembler binaries |
 | `VASM_M68K` | `vasmm68k_mot` | M68K assembler path |
 | `VASM_Z80` | `vasmz80_std` | Z80 assembler path |
 | `CA65` / `LD65` | `ca65` / `ld65` | cc65 toolchain paths |

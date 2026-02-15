@@ -61,7 +61,7 @@ make release-sdk        # Standalone SDK archive (.zip)
 make release-all        # All of the above + SHA256SUMS
 ```
 
-Each platform archive contains: `IntuitionEngine`, `ie32asm`, `ie64asm`, `ie32to64`, `README.md`, `CHANGELOG.md`, `DEVELOPERS.md`, and the full `sdk/` directory with pre-assembled demos and documentation.
+Each platform archive contains: `IntuitionEngine` at the root, `sdk/bin/` with `ie32asm`, `ie64asm`, `ie32to64`, `ie64dis`, plus `README.md`, `CHANGELOG.md`, `DEVELOPERS.md`, and the full `sdk/` directory with pre-assembled demos and documentation.
 
 ### Build Details
 

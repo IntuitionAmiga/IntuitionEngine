@@ -12,6 +12,7 @@
 # - Build artifact organization
 # Directory structure
 BIN_DIR := ./bin
+SDK_BIN_DIR := ./sdk/bin
 
 # Detect number of CPU cores for parallel compilation
 NCORES := $(shell nproc)
@@ -67,7 +68,7 @@ RELEASE_DIR := ./release
 
 # Default target builds everything
 all: setup intuition-engine ie32asm ie64asm ie32to64 ie64dis
-	@echo "Build complete! Executables are in $(BIN_DIR)/"
+	@echo "Build complete! VM in $(BIN_DIR)/, tools in $(SDK_BIN_DIR)/"
 	@$(MAKE) list
 
 # Create necessary directories
@@ -124,7 +125,8 @@ ie32asm: setup
 	@$(SSTRIP) -z ie32asm
 	@echo "Applying UPX compression..."
 	@$(UPX) --lzma ie32asm
-	@mv ie32asm $(BIN_DIR)/
+	@$(MKDIR) -p $(SDK_BIN_DIR)
+	@mv ie32asm $(SDK_BIN_DIR)/
 	@echo "IE32 assembler build complete"
 
 # Build the IE64 assembler
@@ -135,21 +137,23 @@ ie64asm: setup
 	@$(SSTRIP) -z ie64asm
 	@echo "Applying UPX compression..."
 	@$(UPX) --lzma ie64asm
-	@mv ie64asm $(BIN_DIR)/
+	@$(MKDIR) -p $(SDK_BIN_DIR)
+	@mv ie64asm $(SDK_BIN_DIR)/
 	@echo "IE64 assembler build complete"
 
 # Build the IE32-to-IE64 converter
 ie32to64: setup
 	@echo "Building IE32-to-IE64 converter..."
 	@$(GO) build $(GO_FLAGS) -o ie32to64 ./cmd/ie32to64/
-	@mv ie32to64 $(BIN_DIR)/
+	@$(MKDIR) -p $(SDK_BIN_DIR)
+	@mv ie32to64 $(SDK_BIN_DIR)/
 	@echo "IE32-to-IE64 converter build complete"
 
 # Build with embedded EhBASIC BASIC interpreter
 .PHONY: basic
 basic: ie64asm
 	@echo "Assembling EhBASIC IE64 interpreter..."
-	@$(BIN_DIR)/ie64asm assembler/ehbasic_ie64.asm
+	@$(SDK_BIN_DIR)/ie64asm assembler/ehbasic_ie64.asm
 	@echo "Building Intuition Engine with embedded BASIC..."
 	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags embed_basic .
 	@echo "Stripping debug symbols..."
@@ -167,7 +171,8 @@ ie64dis: setup
 	@$(SSTRIP) -z ie64dis
 	@echo "Applying UPX compression..."
 	@$(UPX) --lzma ie64dis
-	@mv ie64dis $(BIN_DIR)/
+	@$(MKDIR) -p $(SDK_BIN_DIR)
+	@mv ie64dis $(SDK_BIN_DIR)/
 	@echo "IE64 disassembler build complete"
 
 # Build the IE65 data generator tool
@@ -296,7 +301,7 @@ ie80asm:
 # ─── SDK & Release targets ───────────────────────────────────────────────────
 
 # Build SDK: sync includes from canonical source and pre-assemble demos
-sdk: clean-sdk ie32asm ie64asm
+sdk: clean-sdk ie32asm ie64asm ie32to64 ie64dis
 	@echo "=== Building SDK ==="
 	@# Sync include files from canonical source
 	@echo "Syncing include files..."
@@ -308,13 +313,13 @@ sdk: clean-sdk ie32asm ie64asm
 	for f in rotozoomer vga_text_hello vga_mode13h_fire copper_vga_bands \
 	         coproc_caller_ie32; do \
 		echo "  [IE32] $${f}.asm"; \
-		(cd sdk/examples/asm && ../../../$(BIN_DIR)/ie32asm -I ../../include $${f}.asm) && \
+		(cd sdk/examples/asm && ../../../$(SDK_BIN_DIR)/ie32asm -I ../../include $${f}.asm) && \
 		SDK_BUILT=$$((SDK_BUILT+1)); \
 	done; \
 	echo "Assembling IE64 examples..."; \
 	for f in rotozoomer_ie64; do \
 		echo "  [IE64] $${f}.asm"; \
-		(cd sdk/examples/asm && ../../../$(BIN_DIR)/ie64asm -I ../../include $${f}.asm) && \
+		(cd sdk/examples/asm && ../../../$(SDK_BIN_DIR)/ie64asm -I ../../include $${f}.asm) && \
 		SDK_BUILT=$$((SDK_BUILT+1)); \
 	done; \
 	mv sdk/examples/asm/*.iex sdk/examples/prebuilt/ 2>/dev/null || true; \
@@ -378,7 +383,7 @@ release-linux: setup sdk
 	@echo "=== Building Linux release ($(NATIVE_GOARCH)) ==="
 	@$(MKDIR) -p $(RELEASE_DIR)
 	@echo "Assembling EhBASIC IE64 ROM..."
-	@$(BIN_DIR)/ie64asm assembler/ehbasic_ie64.asm
+	@$(SDK_BIN_DIR)/ie64asm assembler/ehbasic_ie64.asm
 	@RELEASE_NAME=$(APP_NAME)-$(APP_VERSION)-linux-$(NATIVE_GOARCH); \
 	echo ""; \
 	echo "--- $$RELEASE_NAME ---"; \
@@ -389,13 +394,17 @@ release-linux: setup sdk
 	$(GO) build $(GO_FLAGS) -o ie32asm assembler/ie32asm.go; \
 	$(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm assembler/ie64asm.go; \
 	$(GO) build $(GO_FLAGS) -o ie32to64 ./cmd/ie32to64/; \
+	$(GO) build $(GO_FLAGS) -tags ie64dis -o ie64dis assembler/ie64dis.go; \
 	STAGING=$(RELEASE_DIR)/$$RELEASE_NAME; \
 	rm -rf $$STAGING; \
 	$(MKDIR) -p $$STAGING; \
-	mv IntuitionEngine ie32asm ie64asm ie32to64 $$STAGING/; \
+	mv IntuitionEngine $$STAGING/; \
 	cp README.md CHANGELOG.md DEVELOPERS.md $$STAGING/; \
 	cp -r sdk $$STAGING/sdk; \
 	rm -rf $$STAGING/sdk/.git; \
+	rm -rf $$STAGING/sdk/bin; \
+	$(MKDIR) -p $$STAGING/sdk/bin; \
+	mv ie32asm ie64asm ie32to64 ie64dis $$STAGING/sdk/bin/; \
 	echo "Creating $$RELEASE_NAME.tar.xz..."; \
 	tar -C $(RELEASE_DIR) -cJf $(RELEASE_DIR)/$$RELEASE_NAME.tar.xz $$RELEASE_NAME; \
 	rm -rf $$STAGING; \
@@ -406,7 +415,7 @@ release-windows: setup sdk
 	@echo "=== Building Windows releases (amd64 + arm64) ==="
 	@$(MKDIR) -p $(RELEASE_DIR)
 	@echo "Assembling EhBASIC IE64 ROM..."
-	@$(BIN_DIR)/ie64asm assembler/ehbasic_ie64.asm
+	@$(SDK_BIN_DIR)/ie64asm assembler/ehbasic_ie64.asm
 	@for goarch in amd64 arm64; do \
 		RELEASE_NAME=$(APP_NAME)-$(APP_VERSION)-windows-$$goarch; \
 		echo ""; \
@@ -415,13 +424,17 @@ release-windows: setup sdk
 		GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o ie32asm.exe assembler/ie32asm.go; \
 		GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm.exe assembler/ie64asm.go; \
 		GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o ie32to64.exe ./cmd/ie32to64/; \
+		GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags ie64dis -o ie64dis.exe assembler/ie64dis.go; \
 		STAGING=$(RELEASE_DIR)/$$RELEASE_NAME; \
 		rm -rf $$STAGING; \
 		$(MKDIR) -p $$STAGING; \
-		mv IntuitionEngine.exe ie32asm.exe ie64asm.exe ie32to64.exe $$STAGING/; \
+		mv IntuitionEngine.exe $$STAGING/; \
 		cp README.md CHANGELOG.md DEVELOPERS.md $$STAGING/; \
 		cp -r sdk $$STAGING/sdk; \
 		rm -rf $$STAGING/sdk/.git; \
+		rm -rf $$STAGING/sdk/bin; \
+		$(MKDIR) -p $$STAGING/sdk/bin; \
+		mv ie32asm.exe ie64asm.exe ie32to64.exe ie64dis.exe $$STAGING/sdk/bin/; \
 		echo "Creating $$RELEASE_NAME.zip..."; \
 		(cd $(RELEASE_DIR) && zip -rq $$RELEASE_NAME.zip $$RELEASE_NAME); \
 		rm -rf $$STAGING; \
@@ -437,6 +450,7 @@ release-windows: setup sdk
 # Clean stale SDK prebuilt artifacts
 clean-sdk:
 	@rm -rf sdk/examples/prebuilt
+	@rm -rf $(SDK_BIN_DIR)
 
 # Create source archive from git
 release-src:
@@ -469,6 +483,7 @@ release-all: release-src release-sdk release-linux release-windows
 clean:
 	@echo "Cleaning build artifacts..."
 	@rm -rf $(BIN_DIR)
+	@rm -rf $(SDK_BIN_DIR)
 	@rm -rf $(RELEASE_DIR)
 	@rm -rf sdk/examples/prebuilt
 	@echo "Clean complete"
@@ -476,22 +491,22 @@ clean:
 # List compiled binaries with their sizes
 list:
 	@echo "Compiled binaries:"
-	@ls -alh $(BIN_DIR)/
+	@ls -alh $(BIN_DIR)/ 2>/dev/null || true
+	@ls -alh $(SDK_BIN_DIR)/ 2>/dev/null || true
 
 # Install binaries to system (requires binaries to be built first)
 install:
-	@if [ ! -f "$(BIN_DIR)/IntuitionEngine" ] || [ ! -f "$(BIN_DIR)/ie32asm" ]; then \
-		echo "Error: Binaries not found in $(BIN_DIR)/"; \
-		echo "Please run 'make' first to build the binaries."; \
+	@if [ ! -f "$(BIN_DIR)/IntuitionEngine" ] || [ ! -f "$(SDK_BIN_DIR)/ie32asm" ]; then \
+		echo "Error: Binaries not found. Please run 'make' first to build."; \
 		exit 1; \
 	fi
 	@echo "Installing binaries to $(INSTALL_BIN_DIR)..."
 	@sudo $(INSTALL) -d $(INSTALL_BIN_DIR)
 	@sudo $(INSTALL) -m 755 $(BIN_DIR)/IntuitionEngine $(INSTALL_BIN_DIR)/
-	@sudo $(INSTALL) -m 755 $(BIN_DIR)/ie32asm $(INSTALL_BIN_DIR)/
-	@if [ -f "$(BIN_DIR)/ie64asm" ]; then sudo $(INSTALL) -m 755 $(BIN_DIR)/ie64asm $(INSTALL_BIN_DIR)/; fi
-	@if [ -f "$(BIN_DIR)/ie32to64" ]; then sudo $(INSTALL) -m 755 $(BIN_DIR)/ie32to64 $(INSTALL_BIN_DIR)/; fi
-	@if [ -f "$(BIN_DIR)/ie64dis" ]; then sudo $(INSTALL) -m 755 $(BIN_DIR)/ie64dis $(INSTALL_BIN_DIR)/; fi
+	@sudo $(INSTALL) -m 755 $(SDK_BIN_DIR)/ie32asm $(INSTALL_BIN_DIR)/
+	@if [ -f "$(SDK_BIN_DIR)/ie64asm" ]; then sudo $(INSTALL) -m 755 $(SDK_BIN_DIR)/ie64asm $(INSTALL_BIN_DIR)/; fi
+	@if [ -f "$(SDK_BIN_DIR)/ie32to64" ]; then sudo $(INSTALL) -m 755 $(SDK_BIN_DIR)/ie32to64 $(INSTALL_BIN_DIR)/; fi
+	@if [ -f "$(SDK_BIN_DIR)/ie64dis" ]; then sudo $(INSTALL) -m 755 $(SDK_BIN_DIR)/ie64dis $(INSTALL_BIN_DIR)/; fi
 	@echo "Installation complete"
 
 # Remove installed binaries

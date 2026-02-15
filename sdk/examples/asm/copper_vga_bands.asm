@@ -8,7 +8,7 @@
 ; Video Chip:    VGA Mode 13h + Copper coprocessor (per-scanline palette)
 ; Audio Engine:  None
 ; Assembler:     ie32asm (built-in IE32 assembler)
-; Build:         ./bin/ie32asm sdk/examples/asm/copper_vga_bands.asm
+; Build:         sdk/bin/ie32asm sdk/examples/asm/copper_vga_bands.asm
 ; Run:           ./bin/IntuitionEngine -ie32 copper_vga_bands.iex
 ; Porting:       Copper lists are CPU-agnostic (copper is a separate chip).
 ;                Any CPU core can set up the copper list in memory.

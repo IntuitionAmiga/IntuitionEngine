@@ -1,7 +1,7 @@
 ; vga_text_hello.asm - VGA Text Mode Demo (IE32)
 ; 80x25 text mode with color attributes
 ;
-; Assemble: ./bin/ie32asm assembler/vga_text_hello.asm
+; Assemble: sdk/bin/ie32asm assembler/vga_text_hello.asm
 ; Run: ./bin/IntuitionEngine -ie32 assembler/vga_text_hello.iex
 
 ; Include VGA definitions

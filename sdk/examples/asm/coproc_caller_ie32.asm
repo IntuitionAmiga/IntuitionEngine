@@ -8,8 +8,8 @@
 ; Video Chip:    None (terminal output only)
 ; Audio Engine:  None
 ; Assembler:     ie32asm (built-in IE32 assembler)
-; Build:         ./bin/ie32asm sdk/examples/asm/coproc_caller_ie32.asm
-;                ./bin/ie32asm sdk/examples/asm/coproc_service_ie32.asm
+; Build:         sdk/bin/ie32asm sdk/examples/asm/coproc_caller_ie32.asm
+;                sdk/bin/ie32asm sdk/examples/asm/coproc_service_ie32.asm
 ; Run:           ./bin/IntuitionEngine -ie32 coproc_caller_ie32.iex
 ; Porting:       Coprocessor MMIO is CPU-agnostic. Caller/service pairs can
 ;                mix CPU cores (e.g. M68K caller + Z80 service).

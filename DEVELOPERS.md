@@ -68,10 +68,10 @@ make help              # Show all available targets
 Build outputs:
 ```
 ./bin/IntuitionEngine   # The virtual machine
-./bin/ie32asm           # The IE32 assembler
-./bin/ie64asm           # The IE64 assembler
-./bin/ie32to64          # The IE32-to-IE64 converter
-./bin/ie64dis           # The IE64 disassembler
+sdk/bin/ie32asm         # The IE32 assembler
+sdk/bin/ie64asm         # The IE64 assembler
+sdk/bin/ie32to64        # The IE32-to-IE64 converter
+sdk/bin/ie64dis         # The IE64 disassembler
 ```
 
 Version metadata (version, git commit, build date) is automatically injected via ldflags.
@@ -164,10 +164,10 @@ See [IE32 to IE64 Migration](sdk/docs/ie32to64.md) for converter documentation.
 
 ```bash
 # IE32
-./bin/ie32asm program.asm                    # Produces program.iex
+sdk/bin/ie32asm program.asm                  # Produces program.iex
 
 # IE64
-./bin/ie64asm program.asm                    # Produces program.ie64
+sdk/bin/ie64asm program.asm                  # Produces program.ie64
 
 # M68K
 vasmm68k_mot -Fbin -m68020 -devpac -o out.ie68 input.asm
@@ -191,7 +191,7 @@ A typical development cycle:
 1. Write assembly (or BASIC) code
 2. Assemble:
    ```bash
-   ./bin/ie32asm program.asm
+   sdk/bin/ie32asm program.asm
    ```
 3. Run:
    ```bash
@@ -470,7 +470,7 @@ make set-default-handler
 
 Build release archives with `make release-all` (or individual targets like `make release-linux`). Each target builds both amd64 and arm64 archives with embedded EhBASIC and pre-assembled SDK demos.
 
-Each archive contains: `IntuitionEngine`, `ie32asm`, `ie64asm`, `ie32to64`, `README.md`, `CHANGELOG.md`, `DEVELOPERS.md`, and the full `sdk/` directory with pre-assembled demos and documentation.
+Each archive contains: `IntuitionEngine` at the root, `sdk/bin/` with `ie32asm`, `ie64asm`, `ie32to64`, `ie64dis`, plus `README.md`, `CHANGELOG.md`, `DEVELOPERS.md`, and the full `sdk/` directory with pre-assembled demos and documentation.
 
 Additional release targets:
 

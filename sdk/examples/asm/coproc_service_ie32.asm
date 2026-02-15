@@ -8,7 +8,7 @@
 ; Video Chip:    None (headless worker)
 ; Audio Engine:  None
 ; Assembler:     ie32asm (built-in IE32 assembler)
-; Build:         ./bin/ie32asm sdk/examples/asm/coproc_service_ie32.asm
+; Build:         sdk/bin/ie32asm sdk/examples/asm/coproc_service_ie32.asm
 ; Run:           (launched by caller via COPROC_CMD_START)
 ; Porting:       Mailbox protocol is CPU-agnostic. Any CPU core can implement
 ;                the service side using the same memory-mapped ring buffer.

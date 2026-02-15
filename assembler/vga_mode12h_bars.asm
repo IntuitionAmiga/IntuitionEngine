@@ -1,7 +1,7 @@
 ; vga_mode12h_bars.asm - VGA Mode 12h Color Bars Demo (IE32)
 ; 640x480 16-color planar graphics
 ;
-; Assemble: ./bin/ie32asm assembler/vga_mode12h_bars.asm
+; Assemble: sdk/bin/ie32asm assembler/vga_mode12h_bars.asm
 ; Run: ./bin/IntuitionEngine -ie32 assembler/vga_mode12h_bars.iex
 
 ; Include VGA definitions

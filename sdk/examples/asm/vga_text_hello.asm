@@ -8,7 +8,7 @@
 ; Video Chip:    VGA Mode 03h (80x25 text, 16 foreground + 8 background colors)
 ; Audio Engine:  None
 ; Assembler:     ie32asm (built-in IE32 assembler)
-; Build:         ./bin/ie32asm sdk/examples/asm/vga_text_hello.asm
+; Build:         sdk/bin/ie32asm sdk/examples/asm/vga_text_hello.asm
 ; Run:           ./bin/IntuitionEngine -ie32 vga_text_hello.iex
 ; Porting:       VGA MMIO is CPU-agnostic. Any CPU core can drive VGA text mode
 ;                by writing to the same register addresses.

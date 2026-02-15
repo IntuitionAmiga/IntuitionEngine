@@ -1,7 +1,7 @@
 w; vga_mode13h_fire.asm - VGA Mode 13h Fire Effect Demo (IE32)
 ; Classic DOS-style 256-color fire effect
 ;
-; Assemble: ./bin/ie32asm assembler/vga_mode13h_fire.asm
+; Assemble: sdk/bin/ie32asm assembler/vga_mode13h_fire.asm
 ; Run: ./bin/IntuitionEngine -ie32 assembler/vga_mode13h_fire.iex
 
 ; Include VGA definitions

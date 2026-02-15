@@ -25,7 +25,7 @@
 ; through the system bus. The copper uses SETBASE to redirect its MOVE
 ; writes to VGA DAC registers instead of the default IE video registers.
 ;
-; Assemble: ./bin/ie32asm assembler/copper_vga_bands.asm
+; Assemble: sdk/bin/ie32asm assembler/copper_vga_bands.asm
 ; Run: ./bin/IntuitionEngine -ie32 assembler/copper_vga_bands.iex
 
 .include "ie32.inc"

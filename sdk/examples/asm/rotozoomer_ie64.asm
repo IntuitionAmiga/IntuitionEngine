@@ -8,7 +8,7 @@
 ; Video Chip:    IEVideoChip Mode 0 (640x480, 32bpp true color)
 ; Audio Engine:  SAP/POKEY (Atari 8-bit music format)
 ; Assembler:     ie64asm (built-in IE64 assembler)
-; Build:         ./bin/ie64asm sdk/examples/asm/rotozoomer_ie64.asm
+; Build:         sdk/bin/ie64asm sdk/examples/asm/rotozoomer_ie64.asm
 ; Run:           ./bin/IntuitionEngine -ie64 rotozoomer_ie64.ie64
 ; Porting:       VideoChip/blitter MMIO is CPU-agnostic. See rotozoomer.asm (IE32),
 ;                rotozoomer_68k.asm (M68K), rotozoomer_z80.asm (Z80) for other ports.
@@ -107,7 +107,7 @@
 ;
 ; === BUILD AND RUN ===
 ;
-;   Assemble:  ./bin/ie64asm assembler/rotozoomer_ie64.asm
+;   Assemble:  sdk/bin/ie64asm assembler/rotozoomer_ie64.asm
 ;   Run:       ./bin/IntuitionEngine -ie64 assembler/rotozoomer_ie64.ie64
 ;
 ; === DEMOSCENE CONTEXT ===

@@ -8,7 +8,7 @@
 ; Video Chip:    VGA Mode 13h (320x200, 256-color linear framebuffer)
 ; Audio Engine:  None
 ; Assembler:     ie32asm (built-in IE32 assembler)
-; Build:         ./bin/ie32asm sdk/examples/asm/vga_mode13h_fire.asm
+; Build:         sdk/bin/ie32asm sdk/examples/asm/vga_mode13h_fire.asm
 ; Run:           ./bin/IntuitionEngine -ie32 vga_mode13h_fire.iex
 ; Porting:       VGA MMIO is CPU-agnostic. The fire algorithm is simple enough
 ;                to run on any CPU core, even 8-bit (6502/Z80).

@@ -136,7 +136,7 @@
 ;
 ; === BUILD AND RUN ===
 ;
-;   Assemble:  ./bin/ie32asm assembler/rotozoomer.asm
+;   Assemble:  sdk/bin/ie32asm assembler/rotozoomer.asm
 ;   Run:       ./bin/IntuitionEngine -ie32 assembler/rotozoomer.iex
 ;
 ; ============================================================================
