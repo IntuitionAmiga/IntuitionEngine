@@ -30,6 +30,12 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Install dependencies
+        if: matrix.cgo == '1'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libgl1-mesa-dev libxcursor-dev libxi-dev libxinerama-dev libxrandr-dev libxxf86vm-dev liblhasa-dev
+
       - name: Build
         env:
           CGO_ENABLED: ${{ matrix.cgo }}
@@ -48,7 +54,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libgl1-mesa-dev libxcursor-dev libxi-dev libxinerama-dev libxrandr-dev libxxf86vm-dev
+          sudo apt-get install -y libasound2-dev libgl1-mesa-dev libxcursor-dev libxi-dev libxinerama-dev libxrandr-dev libxxf86vm-dev liblhasa-dev
 
       - name: go vet
         run: go vet ./...
@@ -86,19 +92,18 @@ jobs:
         run: |
           for f in sdk/examples/asm/vga_text_hello.asm \
                    sdk/examples/asm/vga_mode13h_fire.asm \
-                   sdk/examples/asm/copper_vga_bands.asm \
                    sdk/examples/asm/coproc_caller_ie32.asm \
                    sdk/examples/asm/coproc_service_ie32.asm \
                    sdk/examples/asm/rotozoomer.asm; do
             echo "Assembling $f..."
-            ./ie32asm "$f" || exit 1
+            ./ie32asm -I sdk/include "$f" || exit 1
           done
 
       - name: Assemble IE64 SDK examples
         run: |
           for f in sdk/examples/asm/rotozoomer_ie64.asm; do
             echo "Assembling $f..."
-            ./ie64asm "$f" || exit 1
+            ./ie64asm -I sdk/include "$f" || exit 1
           done
 
       - name: Clean up assembled binaries

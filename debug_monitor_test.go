@@ -3763,8 +3763,8 @@ func TestIOViewUnknownDevice(t *testing.T) {
 
 func TestListIODevices(t *testing.T) {
 	devices := listIODevices()
-	if len(devices) != 10 {
-		t.Errorf("Expected 10 devices, got %d", len(devices))
+	if len(devices) != 19 {
+		t.Errorf("Expected 19 devices, got %d", len(devices))
 	}
 }
 

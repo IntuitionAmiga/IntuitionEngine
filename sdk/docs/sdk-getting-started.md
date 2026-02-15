@@ -110,9 +110,9 @@ Example BASIC program:
 
 ## Next Steps
 
-- [SDK README](../sdk/README.md) - Full SDK documentation with demo matrix
+- [SDK README](../README.md) - Full SDK documentation with demo matrix
 - [Tutorial](TUTORIAL.md) - Build a complete demoscene intro
 - [IE64 ISA](IE64_ISA.md) - IE64 instruction set reference
 - [IE64 Cookbook](IE64_COOKBOOK.md) - Common patterns and recipes
 - [EhBASIC Guide](ehbasic_ie64.md) - BASIC language reference
-- [DEVELOPERS.md](../DEVELOPERS.md) - Build profiles, testing, and contribution guide
+- [DEVELOPERS.md](../../DEVELOPERS.md) - Build profiles, testing, and contribution guide
