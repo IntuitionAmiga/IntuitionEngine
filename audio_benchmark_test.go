@@ -36,7 +36,11 @@ func createBenchmarkChip(t testing.TB) *SoundChip {
 	chip.sampleTicker.Store(&sampleTickerHolder{})
 
 	// Initialize channels
-	waveTypes := []int{WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE, WAVE_NOISE}
+	waveTypes := []int{
+		WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE, WAVE_NOISE,
+		WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE,
+		WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE,
+	}
 	for i := range NUM_CHANNELS {
 		chip.channels[i] = &Channel{
 			waveType:            waveTypes[i],

@@ -523,7 +523,7 @@ Display formatted I/O register values for a hardware device. Without arguments, 
 
 ```
 > io
-Available devices: video terminal audio ahx psg pokey sid ted vga ula antic gtia fileio media exec coproc voodoo
+Available devices: video terminal audio ahx psg pokey sid sid2 sid3 ted vga ula antic gtia fileio media exec coproc voodoo
 
 > io vga
 === VGA Registers ===

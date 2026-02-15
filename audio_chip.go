@@ -351,7 +351,7 @@ const (
 // ------------------------------------------------------------------------------
 // Hardware Configuration
 // ------------------------------------------------------------------------------
-const NUM_CHANNELS = 4 // Number of audio channels (each can be any waveform)
+const NUM_CHANNELS = 10 // Number of audio channels (4 base + 3 SID2 + 3 SID3)
 const NUM_WAVE_TYPES = 5
 
 // ------------------------------------------------------------------------------
@@ -524,7 +524,7 @@ const (
 )
 const (
 	SOUNDCHIP_PAD1_SIZE = 10
-	SOUNDCHIP_PAD2_SIZE = 16
+	SOUNDCHIP_PAD2_SIZE = 32
 )
 
 // ------------------------------------------------------------------------------
@@ -935,8 +935,12 @@ func NewSoundChip(backend int) (*SoundChip, error) {
 	}
 	chip.sampleTicker.Store(&sampleTickerHolder{})
 
-	// Initialise channels
-	waveTypes := []int{WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE, WAVE_NOISE}
+	// Initialise channels (4 base + 6 SID2/SID3 channels)
+	waveTypes := []int{
+		WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE, WAVE_NOISE,
+		WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE,
+		WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE,
+	}
 	for i := range NUM_CHANNELS {
 		chip.channels[i] = &Channel{
 			waveType:            waveTypes[i],
@@ -3008,7 +3012,11 @@ func (chip *SoundChip) SetPOKEYPlusEnabled(enabled bool) {
 					ch.pokeyPlusRoomBuf[j] = 0
 				}
 			}
-			ch.pokeyPlusGain = pokeyPlusMixGain[i]
+			if i < len(pokeyPlusMixGain) {
+				ch.pokeyPlusGain = pokeyPlusMixGain[i]
+			} else {
+				ch.pokeyPlusGain = 1.0
+			}
 		} else if ch.pokeyPlusEnabled {
 			if ch.enabled {
 				ch.pokeyPlusTransGain = 1.0
@@ -3093,7 +3101,11 @@ func (chip *SoundChip) SetTEDPlusEnabled(enabled bool) {
 					ch.tedPlusRoomBuf[j] = 0
 				}
 			}
-			ch.tedPlusGain = tedPlusMixGain[i]
+			if i < len(tedPlusMixGain) {
+				ch.tedPlusGain = tedPlusMixGain[i]
+			} else {
+				ch.tedPlusGain = 1.0
+			}
 		} else if ch.tedPlusEnabled {
 			if ch.enabled {
 				ch.tedPlusTransGain = 1.0
@@ -3136,8 +3148,13 @@ func (chip *SoundChip) SetAHXPlusEnabled(enabled bool) {
 					ch.ahxPlusRoomBuf[j] = 0
 				}
 			}
-			ch.ahxPlusGain = ahxPlusMixGain[i]
-			ch.ahxPlusPan = ahxPlusPan[i]
+			if i < len(ahxPlusMixGain) {
+				ch.ahxPlusGain = ahxPlusMixGain[i]
+				ch.ahxPlusPan = ahxPlusPan[i]
+			} else {
+				ch.ahxPlusGain = 1.0
+				ch.ahxPlusPan = 0.0
+			}
 		} else if ch.ahxPlusEnabled {
 			if ch.enabled {
 				ch.ahxPlusTransGain = 1.0

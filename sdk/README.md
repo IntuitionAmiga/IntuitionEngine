@@ -113,10 +113,10 @@ IESoundChip (custom synthesizer), PSG/AY-3-8910, SID (Commodore 64), POKEY/SAP (
 
 The SID (MOS 6581/8580) emulation provides:
 
-- **Single-SID playback** with all 3 voices, ADSR envelopes, ring modulation, hard sync, and resonant filter
+- **Multi-SID playback** with up to 3 independent SID chips (9 voices total), each with full ADSR envelopes, ring modulation, hard sync, and resonant filter
 - **Model selection**: 6581 (non-linear filter, DC offset, warmer sound) and 8580 (linear, cleaner)
 - **File format support**: PSID v1-v4 and RSID
-- **Multi-SID files**: Accepted and parsed (Sid2Addr/Sid3Addr extracted from v3/v4 headers). Playback uses the primary SID chip; additional SID writes are captured but not mixed. Full multi-SID mixing is planned for a future release.
+- **Multi-SID files**: Sid2Addr/Sid3Addr from v3/v4 headers are fully supported. Each SID chip is independently emulated on its own set of SoundChip channels and mixed in real-time.
 - **RSID handling**: RSID files are fully supported. PlayAddress=0 triggers interrupt-driven playback. Embedded load addresses (LoadAddress=0) are extracted from the data section. Speed bitmap selects CIA timer vs VBI rate per subsong.
 - **SID+ enhanced mode**: Optional logarithmic volume curve (2dB per step) for improved dynamic range.
 

@@ -271,19 +271,20 @@ func TestSIDPlaybackBus_MultiSIDReadback(t *testing.T) {
 }
 
 func TestSIDEngine_MultiSIDChipFilter(t *testing.T) {
-	// Verify that TickSample only applies Chip==0 events, skipping Chip 1/2.
-	// This documents the current single-SID playback behavior.
+	// Verify that TickSample dispatches Chip 1/2 events to secondary engines.
 	sound, err := NewSoundChip(AUDIO_BACKEND_OTO)
 	if err != nil {
 		t.Fatalf("NewSoundChip: %v", err)
 	}
 	engine := NewSIDEngine(sound, 44100)
+	engine.sid2 = NewSIDEngineMulti(sound, 44100, 4, SID2_BASE, SID2_END)
+	engine.sid3 = NewSIDEngineMulti(sound, 44100, 7, SID3_BASE, SID3_END)
 
 	events := []SIDEvent{
 		{Sample: 0, Reg: 0x18, Value: 0x0F, Chip: 0}, // SID1 master vol=15
-		{Sample: 0, Reg: 0x18, Value: 0x0F, Chip: 1}, // SID2 master vol=15 (skipped)
+		{Sample: 0, Reg: 0x18, Value: 0x0F, Chip: 1}, // SID2 master vol=15
 		{Sample: 0, Reg: 0x00, Value: 0x50, Chip: 0}, // SID1 voice 1 freq lo
-		{Sample: 0, Reg: 0x00, Value: 0xA0, Chip: 2}, // SID3 voice 1 freq lo (skipped)
+		{Sample: 0, Reg: 0x00, Value: 0xA0, Chip: 2}, // SID3 voice 1 freq lo
 	}
 	engine.SetEvents(events, 100, false, 0)
 	engine.SetPlaying(true)
@@ -300,6 +301,20 @@ func TestSIDEngine_MultiSIDChipFilter(t *testing.T) {
 		t.Errorf("SID1 reg 0x00: got 0x%02X, want 0x50", engine.regs[0x00])
 	}
 	engine.mutex.Unlock()
+
+	// Verify SID2 register was applied (Chip 1)
+	engine.sid2.mutex.Lock()
+	if engine.sid2.regs[0x18] != 0x0F {
+		t.Errorf("SID2 reg 0x18: got 0x%02X, want 0x0F", engine.sid2.regs[0x18])
+	}
+	engine.sid2.mutex.Unlock()
+
+	// Verify SID3 register was applied (Chip 2)
+	engine.sid3.mutex.Lock()
+	if engine.sid3.regs[0x00] != 0xA0 {
+		t.Errorf("SID3 reg 0x00: got 0x%02X, want 0xA0", engine.sid3.regs[0x00])
+	}
+	engine.sid3.mutex.Unlock()
 }
 
 func TestSIDIsNTSC(t *testing.T) {

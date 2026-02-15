@@ -402,6 +402,10 @@ func main() {
 	}
 
 	sidEngine := NewSIDEngine(soundChip, SAMPLE_RATE)
+	sid2Engine := NewSIDEngineMulti(soundChip, SAMPLE_RATE, 4, SID2_BASE, SID2_END)
+	sid3Engine := NewSIDEngineMulti(soundChip, SAMPLE_RATE, 7, SID3_BASE, SID3_END)
+	sidEngine.sid2 = sid2Engine
+	sidEngine.sid3 = sid3Engine
 	sidPlayer := NewSIDPlayer(sidEngine)
 	if sidPlus {
 		sidEngine.SetSIDPlusEnabled(true)
@@ -726,6 +730,14 @@ func main() {
 	sysBus.MapIO(SID_PLAY_PTR, SID_SUBSONG,
 		sidPlayer.HandlePlayRead,
 		sidPlayer.HandlePlayWrite)
+
+	// Map SID2/SID3 registers for multi-SID playback
+	sysBus.MapIO(SID2_BASE, SID2_END,
+		sid2Engine.HandleRead,
+		sid2Engine.HandleWrite)
+	sysBus.MapIO(SID3_BASE, SID3_END,
+		sid3Engine.HandleRead,
+		sid3Engine.HandleWrite)
 
 	// Map TED registers
 	tedEngine := NewTEDEngine(soundChip, SAMPLE_RATE)

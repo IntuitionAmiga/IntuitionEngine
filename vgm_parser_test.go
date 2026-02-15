@@ -449,3 +449,316 @@ func TestParseVGMData_TruncatedCommandErrors(t *testing.T) {
 		})
 	}
 }
+
+// buildVGMHeaderWithLoop creates a VGM header with loop fields set.
+func buildVGMHeaderWithLoop(totalSamples, loopSamples, ayClock uint32, loopDataOffset uint32) []byte {
+	header := buildVGMHeader(totalSamples, ayClock)
+	binary.LittleEndian.PutUint32(header[0x20:0x24], loopSamples)
+	if loopDataOffset > 0 {
+		// Loop offset is relative to position 0x1C
+		binary.LittleEndian.PutUint32(header[0x1C:0x20], loopDataOffset-0x1C)
+	}
+	return header
+}
+
+func TestVGMGolden_AYSequence(t *testing.T) {
+	// Multi-frame AY-only VGM exercising all wait command variants:
+	//   0x61 (16-bit wait), 0x62 (735 samples), 0x63 (882 samples), 0x70-0x7F (1-16 samples)
+	header := buildVGMHeader(0, 1773400) // totalSamples auto-calculated
+	cmds := []byte{
+		// Sample 0: set up channel A
+		0xA0, 0x00, 0xFE, // AY reg 0 = 0xFE (fine tune A)
+		0xA0, 0x01, 0x01, // AY reg 1 = 0x01 (coarse tune A)
+		0xA0, 0x07, 0x3E, // AY reg 7 = 0x3E (mixer: tone A on)
+		0xA0, 0x08, 0x0F, // AY reg 8 = 0x0F (vol A max)
+		0x62, // wait 735 (60Hz NTSC frame)
+		// Sample 735: change freq
+		0xA0, 0x00, 0xD0, // AY reg 0 = 0xD0
+		0x63, // wait 882 (50Hz PAL frame)
+		// Sample 1617: short waits
+		0xA0, 0x00, 0xAA, // AY reg 0 = 0xAA
+		0x70, // wait 1 sample (0x70 = wait (n&0xF)+1 = 1)
+		// Sample 1618:
+		0xA0, 0x08, 0x0A, // AY reg 8 = 0x0A (vol A=10)
+		0x7F, // wait 16 samples
+		// Sample 1634:
+		0xA0, 0x08, 0x05, // AY reg 8 = 0x05
+		0x61, 0x00, 0x01, // wait 256 samples (0x0100 LE)
+		// Sample 1890:
+		0xA0, 0x08, 0x00, // AY reg 8 = 0x00 (silence)
+		0x66, // end
+	}
+	data := append(header, cmds...)
+
+	vgm, err := ParseVGMData(data)
+	if err != nil {
+		t.Fatalf("ParseVGMData failed: %v", err)
+	}
+
+	expected := []PSGEvent{
+		{Sample: 0, Reg: 0x00, Value: 0xFE},
+		{Sample: 0, Reg: 0x01, Value: 0x01},
+		{Sample: 0, Reg: 0x07, Value: 0x3E},
+		{Sample: 0, Reg: 0x08, Value: 0x0F},
+		{Sample: 735, Reg: 0x00, Value: 0xD0},
+		{Sample: 1617, Reg: 0x00, Value: 0xAA},
+		{Sample: 1618, Reg: 0x08, Value: 0x0A},
+		{Sample: 1634, Reg: 0x08, Value: 0x05},
+		{Sample: 1890, Reg: 0x08, Value: 0x00},
+	}
+
+	if len(vgm.Events) != len(expected) {
+		t.Fatalf("event count: got %d, want %d", len(vgm.Events), len(expected))
+	}
+	for i, want := range expected {
+		got := vgm.Events[i]
+		if got.Sample != want.Sample || got.Reg != want.Reg || got.Value != want.Value {
+			t.Errorf("event[%d]: got {Sample:%d Reg:0x%02X Value:0x%02X}, want {Sample:%d Reg:0x%02X Value:0x%02X}",
+				i, got.Sample, got.Reg, got.Value, want.Sample, want.Reg, want.Value)
+		}
+	}
+
+	if vgm.ClockHz != 1773400 {
+		t.Errorf("ClockHz: got %d, want 1773400", vgm.ClockHz)
+	}
+}
+
+func TestVGMGolden_SN76489Full(t *testing.T) {
+	// Complete SN76489 sequence: 3 tone channels + noise, latch+data, attenuation.
+	// SN clock 3579545, AY clock 1773400.
+	header := buildVGMHeaderSN(0, 3579545, 1773400)
+	cmds := []byte{
+		// Ch0: latch tone low=5, data high=6 → divider = (6<<4)|5 = 101
+		0x50, 0x85,
+		0x50, 0x06,
+		// Ch0: atten=0 (max vol) → AY vol=15
+		0x50, 0x90,
+		// Ch1: latch tone low=0xA, data high=3 → divider = (3<<4)|0xA = 58
+		0x50, 0xAA,
+		0x50, 0x03,
+		// Ch1: atten=5 → AY vol=10
+		0x50, 0xB5,
+		// Ch2: latch tone low=0, data high=1 → divider = (1<<4)|0 = 16
+		0x50, 0xC0,
+		0x50, 0x01,
+		// Ch2: atten=15 (silence) → AY vol=0
+		0x50, 0xDF,
+		// Noise: white noise, rate=0 → period=4
+		0x50, 0xE4,
+		// Noise atten=0 (max) → enables noise in mixer
+		0x50, 0xF0,
+		0x62, // wait 735
+		0x66, // end
+	}
+	data := append(header, cmds...)
+
+	vgm, err := ParseVGMData(data)
+	if err != nil {
+		t.Fatalf("ParseVGMData failed: %v", err)
+	}
+
+	// All events at sample 0. Check key register values.
+	// Ch0 freq: divider 101 → AY = 101*1773400/(3579545*2) ≈ 25
+	var freqA, volA, volB, volC, noisePeriod uint8
+	var freqAhi uint8
+	var mixerFound bool
+	var mixerVal uint8
+	for _, ev := range vgm.Events {
+		switch ev.Reg {
+		case 0:
+			freqA = ev.Value
+		case 1:
+			freqAhi = ev.Value
+		case 8:
+			volA = ev.Value
+		case 9:
+			volB = ev.Value
+		case 10:
+			volC = ev.Value
+		case 6:
+			noisePeriod = ev.Value
+		case 7:
+			mixerFound = true
+			mixerVal = ev.Value
+		}
+	}
+
+	ayDivA := uint16(freqA) | (uint16(freqAhi) << 8)
+	// 101 * 1773400 / (3579545 * 2) = 25.01 → 25
+	if ayDivA != 25 {
+		t.Errorf("Ch0 AY divider: got %d, want 25", ayDivA)
+	}
+	if volA != 15 {
+		t.Errorf("Ch0 vol: got %d, want 15", volA)
+	}
+	if volB != 10 {
+		t.Errorf("Ch1 vol: got %d, want 10", volB)
+	}
+	if volC != 0 {
+		t.Errorf("Ch2 vol: got %d, want 0", volC)
+	}
+	if noisePeriod != 4 {
+		t.Errorf("noise period: got %d, want 4", noisePeriod)
+	}
+	if !mixerFound {
+		t.Error("mixer event (reg 7) not found")
+	} else if mixerVal&0x20 != 0 {
+		t.Errorf("mixer 0x%02X: noise should be enabled (bit 5=0)", mixerVal)
+	}
+
+	// Verify all events are at sample 0 (before the wait)
+	for i, ev := range vgm.Events {
+		if ev.Sample != 0 {
+			t.Errorf("event[%d] at sample %d, want 0", i, ev.Sample)
+		}
+	}
+}
+
+func TestVGMGolden_MixedChipStream(t *testing.T) {
+	// Interleaved AY + SN76489 + ignored chip commands.
+	// Verifies only AY/SN events survive and timestamps are correct.
+	header := buildVGMHeaderSN(0, 3579545, 1773400)
+	cmds := []byte{
+		// Sample 0: AY write
+		0xA0, 0x00, 0x42,
+		// Sample 0: YM2612 port 0 (ignored, 3 bytes)
+		0x52, 0x30, 0x40,
+		// Sample 0: SN76489 ch0 atten=0 (produces AY vol=15)
+		0x50, 0x90,
+		// Sample 0: YM2413 (ignored, 3 bytes)
+		0x51, 0x10, 0x20,
+		// Sample 0: data block (ignored)
+		0x67, 0x66, 0x00, 0x04, 0x00, 0x00, 0x00, 0xDE, 0xAD, 0xBE, 0xEF,
+		// Sample 0: Sega PCM (ignored, 4 bytes)
+		0xC0, 0x01, 0x02, 0x03,
+		// Sample 0: PCM seek (ignored, 5 bytes)
+		0xE0, 0x00, 0x00, 0x00, 0x00,
+		0x62, // wait 735
+		// Sample 735: AY write
+		0xA0, 0x01, 0x03,
+		0x62, // wait 735
+		0x66, // end
+	}
+	data := append(header, cmds...)
+
+	vgm, err := ParseVGMData(data)
+	if err != nil {
+		t.Fatalf("ParseVGMData failed: %v", err)
+	}
+
+	// AY event at sample 0 (reg 0 = 0x42)
+	// SN76489 atten at sample 0 produces: vol event (reg 8=15) + mixer event (reg 7)
+	// AY event at sample 735 (reg 1 = 0x03)
+	// All YM, data block, Sega PCM, seek commands should be ignored.
+
+	// Find AY reg 0 = 0x42
+	foundAY0 := false
+	for _, ev := range vgm.Events {
+		if ev.Reg == 0x00 && ev.Value == 0x42 && ev.Sample == 0 {
+			foundAY0 = true
+		}
+	}
+	if !foundAY0 {
+		t.Error("AY reg 0 = 0x42 at sample 0 not found")
+	}
+
+	// Find AY reg 1 = 0x03 at sample 735
+	foundAY1 := false
+	for _, ev := range vgm.Events {
+		if ev.Reg == 0x01 && ev.Value == 0x03 && ev.Sample == 735 {
+			foundAY1 = true
+		}
+	}
+	if !foundAY1 {
+		t.Error("AY reg 1 = 0x03 at sample 735 not found")
+	}
+
+	// Find SN-derived vol event (reg 8 = 15) at sample 0
+	foundVol := false
+	for _, ev := range vgm.Events {
+		if ev.Reg == 8 && ev.Value == 15 && ev.Sample == 0 {
+			foundVol = true
+		}
+	}
+	if !foundVol {
+		t.Error("SN-derived vol event (reg 8 = 15) at sample 0 not found")
+	}
+
+	// Verify no events have bogus sample positions from ignored commands
+	for i, ev := range vgm.Events {
+		if ev.Sample != 0 && ev.Sample != 735 {
+			t.Errorf("event[%d] at unexpected sample %d (reg=0x%02X val=0x%02X)", i, ev.Sample, ev.Reg, ev.Value)
+		}
+	}
+}
+
+func TestVGMGolden_LoopAndTiming(t *testing.T) {
+	// VGM with loop offset in header. Verify LoopSample and TotalSamples.
+	// Layout: header (0x80 bytes) → 3 AY writes + wait 735 → 3 AY writes (loop point) + wait 735 → end
+	//
+	// Data starts at offset 0x80.
+	// Loop should point to the second batch of AY writes.
+	// First batch: 9 bytes (3 × 3-byte AY cmd) + 1 byte (0x62 wait) = 10 bytes
+	// Loop data offset = 0x80 + 10 = 0x8A
+	// loopOffset field at 0x1C is relative: 0x8A - 0x1C = 0x6E
+
+	totalSamples := uint32(1470) // 735 + 735
+	loopSamples := uint32(735)   // loop covers last 735 samples
+
+	header := make([]byte, 0x80)
+	copy(header[0:4], []byte("Vgm "))
+	binary.LittleEndian.PutUint32(header[0x08:0x0C], 0x00000172)
+	binary.LittleEndian.PutUint32(header[0x18:0x1C], totalSamples)
+	binary.LittleEndian.PutUint32(header[0x1C:0x20], 0x8A-0x1C)   // loop offset (relative to 0x1C)
+	binary.LittleEndian.PutUint32(header[0x20:0x24], loopSamples) // loop sample count
+	binary.LittleEndian.PutUint32(header[0x34:0x38], 0x4C)        // data offset: 0x34+0x4C=0x80
+	binary.LittleEndian.PutUint32(header[0x74:0x78], 1773400)     // AY clock
+
+	cmds := []byte{
+		// Offset 0x80: Frame 1
+		0xA0, 0x00, 0xFE, // AY reg 0 = 0xFE
+		0xA0, 0x07, 0x3E, // AY reg 7 = 0x3E
+		0xA0, 0x08, 0x0F, // AY reg 8 = 0x0F
+		0x62, // wait 735 → samplePos = 735
+		// Offset 0x8A: Frame 2 (loop start)
+		0xA0, 0x00, 0xD0, // AY reg 0 = 0xD0
+		0xA0, 0x08, 0x0A, // AY reg 8 = 0x0A
+		0xA0, 0x01, 0x02, // AY reg 1 = 0x02
+		0x62, // wait 735 → samplePos = 1470
+		0x66, // end
+	}
+	data := append(header, cmds...)
+
+	vgm, err := ParseVGMData(data)
+	if err != nil {
+		t.Fatalf("ParseVGMData failed: %v", err)
+	}
+
+	// LoopSample should be 735 (the sample position when we hit offset 0x8A)
+	if vgm.LoopSample != 735 {
+		t.Errorf("LoopSample: got %d, want 735", vgm.LoopSample)
+	}
+	if vgm.LoopSamples != 735 {
+		t.Errorf("LoopSamples: got %d, want 735", vgm.LoopSamples)
+	}
+	if vgm.TotalSamples != 1470 {
+		t.Errorf("TotalSamples: got %d, want 1470", vgm.TotalSamples)
+	}
+
+	// Verify events at correct positions
+	if len(vgm.Events) != 6 {
+		t.Fatalf("event count: got %d, want 6", len(vgm.Events))
+	}
+	// First 3 at sample 0
+	for i := range 3 {
+		if vgm.Events[i].Sample != 0 {
+			t.Errorf("event[%d].Sample: got %d, want 0", i, vgm.Events[i].Sample)
+		}
+	}
+	// Last 3 at sample 735
+	for i := 3; i < 6; i++ {
+		if vgm.Events[i].Sample != 735 {
+			t.Errorf("event[%d].Sample: got %d, want 735", i, vgm.Events[i].Sample)
+		}
+	}
+}

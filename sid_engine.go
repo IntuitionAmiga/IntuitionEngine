@@ -60,8 +60,15 @@ type SIDEngine struct {
 	enabled        atomic.Bool
 	sidPlusEnabled bool
 	channelsInit   bool
-	model          int  // SID_MODEL_6581 or SID_MODEL_8580
-	forceLoop      bool // Force looping from start when track ends
+	model          int    // SID_MODEL_6581 or SID_MODEL_8580
+	forceLoop      bool   // Force looping from start when track ends
+	baseChannel    int    // Base channel offset in SoundChip (0 for primary, 4 for SID2, 7 for SID3)
+	regBase        uint32 // MMIO register base address (SID_BASE for primary, SID2_BASE/SID3_BASE for secondary)
+	regEnd         uint32 // MMIO register end address
+
+	// Multi-SID: secondary engines for Chip 1/2 dispatch
+	sid2 *SIDEngine
+	sid3 *SIDEngine
 }
 
 // SID+ logarithmic volume curve (2dB per step)
@@ -105,6 +112,23 @@ func NewSIDEngine(sound *SoundChip, sampleRate int) *SIDEngine {
 		sampleRate: sampleRate,
 		clockHz:    SID_CLOCK_PAL,
 		model:      SID_MODEL_6581, // Default to original SID
+		regBase:    SID_BASE,
+		regEnd:     SID_END,
+	}
+}
+
+// NewSIDEngineMulti creates a SID engine targeting a specific channel range in the SoundChip.
+// baseChannel offsets all channel writes (0 for primary, 4 for SID2, 7 for SID3).
+// regBase/regEnd define the MMIO address range for HandleRead/HandleWrite.
+func NewSIDEngineMulti(sound *SoundChip, sampleRate int, baseChannel int, regBase, regEnd uint32) *SIDEngine {
+	return &SIDEngine{
+		sound:       sound,
+		sampleRate:  sampleRate,
+		clockHz:     SID_CLOCK_PAL,
+		model:       SID_MODEL_6581,
+		baseChannel: baseChannel,
+		regBase:     regBase,
+		regEnd:      regEnd,
 	}
 }
 
@@ -127,14 +151,15 @@ func (e *SIDEngine) SetModel(model int) {
 		// Configure all model-specific features
 		if e.sound != nil {
 			for ch := range 3 {
+				idx := e.baseChannel + ch
 				if model == SID_MODEL_6581 {
-					e.sound.SetChannelSIDADSRBugs(ch, true)
-					e.sound.SetChannelSID6581FilterDistort(ch, true)
-					e.sound.SetChannelSIDNoisePhaseLocked(ch, true)
+					e.sound.SetChannelSIDADSRBugs(idx, true)
+					e.sound.SetChannelSID6581FilterDistort(idx, true)
+					e.sound.SetChannelSIDNoisePhaseLocked(idx, true)
 				} else {
-					e.sound.SetChannelSIDADSRBugs(ch, false)
-					e.sound.SetChannelSID6581FilterDistort(ch, false)
-					e.sound.SetChannelSIDNoisePhaseLocked(ch, true) // 8580 also has phase-locked noise
+					e.sound.SetChannelSIDADSRBugs(idx, false)
+					e.sound.SetChannelSID6581FilterDistort(idx, false)
+					e.sound.SetChannelSIDNoisePhaseLocked(idx, true) // 8580 also has phase-locked noise
 				}
 			}
 			// Configure mixer mode
@@ -156,30 +181,30 @@ func (e *SIDEngine) GetModel() int {
 
 // HandleWrite processes a write to a SID register via memory-mapped I/O
 func (e *SIDEngine) HandleWrite(addr uint32, value uint32) {
-	if addr < SID_BASE || addr > SID_END {
+	if addr < e.regBase || addr > e.regEnd {
 		return
 	}
-	reg := uint8(addr - SID_BASE)
+	reg := uint8(addr - e.regBase)
 	e.WriteRegister(reg, uint8(value))
 }
 
 // HandleRead processes a read from a SID register
 func (e *SIDEngine) HandleRead(addr uint32) uint32 {
-	if addr < SID_BASE || addr > SID_END {
+	if addr < e.regBase || addr > e.regEnd {
 		return 0
 	}
-	reg := uint8(addr - SID_BASE)
+	reg := uint8(addr - e.regBase)
 
 	// Handle read-only registers that return live voice 3 state
 	switch reg {
 	case 0x1B: // OSC3 - Oscillator 3 output (8-bit)
 		if e.sound != nil {
-			return uint32(e.sound.GetChannelOscillatorOutput(2))
+			return uint32(e.sound.GetChannelOscillatorOutput(e.baseChannel + 2))
 		}
 		return 0
 	case 0x1C: // ENV3 - Envelope 3 output (8-bit)
 		if e.sound != nil {
-			return uint32(e.sound.GetChannelEnvelopeLevel(2))
+			return uint32(e.sound.GetChannelEnvelopeLevel(e.baseChannel + 2))
 		}
 		return 0
 	}
@@ -221,7 +246,7 @@ func (e *SIDEngine) ensureChannelsInitialized() {
 		return
 	}
 
-	// SID uses channels 0-2 of the SoundChip
+	// SID uses 3 voices mapped to baseChannel..baseChannel+2
 	for ch := range 3 {
 		e.writeChannel(ch, FLEX_OFF_WAVE_TYPE, WAVE_TRIANGLE)
 		e.writeChannel(ch, FLEX_OFF_DUTY, 0x0080) // 50% duty cycle
@@ -232,9 +257,9 @@ func (e *SIDEngine) ensureChannelsInitialized() {
 		e.writeChannel(ch, FLEX_OFF_REL, 0)
 		e.writeChannel(ch, FLEX_OFF_VOL, 0)
 		e.writeChannel(ch, FLEX_OFF_CTRL, 0) // Start with gate off
-		e.sound.SetChannelEnvelopeMode(ch, true)
-		e.sound.SetChannelSIDFilterMode(ch, false) // Safe filter mode
-		e.sound.SetChannelSIDDAC(ch, true)         // Enable 12-bit DAC quantization
+		e.sound.SetChannelEnvelopeMode(e.baseChannel+ch, true)
+		e.sound.SetChannelSIDFilterMode(e.baseChannel+ch, false) // Safe filter mode
+		e.sound.SetChannelSIDDAC(e.baseChannel+ch, true)         // Enable 12-bit DAC quantization
 	}
 
 	e.channelsInit = true
@@ -536,7 +561,7 @@ func (e *SIDEngine) writeChannel(ch int, offset uint32, value uint32) {
 	if e.sound == nil {
 		return
 	}
-	base := FLEX_CH_BASE + uint32(ch)*FLEX_CH_STRIDE
+	base := FLEX_CH_BASE + uint32(e.baseChannel+ch)*FLEX_CH_STRIDE
 	e.sound.HandleRegisterWrite(base+offset, value)
 }
 
@@ -586,6 +611,14 @@ func (e *SIDEngine) Reset() {
 	e.loop = false
 	e.loopSample = 0
 	e.loopEventIndex = 0
+
+	// Reset secondary engines if present
+	if e.sid2 != nil {
+		e.sid2.Reset()
+	}
+	if e.sid3 != nil {
+		e.sid3.Reset()
+	}
 }
 
 func (e *SIDEngine) SetEvents(events []SIDEvent, totalSamples uint64, loop bool, loopSample uint64) {
@@ -682,11 +715,14 @@ func (e *SIDEngine) TickSample() {
 
 	for e.eventIndex < len(e.events) && e.events[e.eventIndex].Sample == e.currentSample {
 		ev := e.events[e.eventIndex]
-		if ev.Chip == 0 {
+		switch {
+		case ev.Chip == 0:
 			e.writeRegisterLocked(ev.Reg, ev.Value)
+		case ev.Chip == 1 && e.sid2 != nil:
+			e.sid2.writeRegisterLocked(ev.Reg, ev.Value)
+		case ev.Chip == 2 && e.sid3 != nil:
+			e.sid3.writeRegisterLocked(ev.Reg, ev.Value)
 		}
-		// Chip 1/2 events are captured but not applied (single-SID playback).
-		// Infrastructure ready for full multi-SID when additional channels are available.
 		e.eventIndex++
 	}
 

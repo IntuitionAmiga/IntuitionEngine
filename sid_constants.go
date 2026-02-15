@@ -308,8 +308,8 @@ const (
 	SID_SUBSONG     = 0xF0E2D // Subsong selection (0-255)
 )
 
-// Multi-SID MMIO register ranges (reserved for future full multi-SID support).
-// Currently parsed and captured but played back as single-SID (chip 0 only).
+// Multi-SID MMIO register ranges.
+// Each secondary SID chip is independently emulated via its own SIDEngine instance.
 const (
 	SID2_BASE = 0xF0E30 // SID2 registers (0xF0E30-0xF0E4C)
 	SID2_END  = 0xF0E4C

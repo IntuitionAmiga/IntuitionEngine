@@ -38,7 +38,11 @@ func (chip *SoundChip) Reset() {
 	chip.sidMixerSaturate = false
 
 	// Reset channels to constructor defaults
-	waveTypes := [NUM_CHANNELS]int{WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE, WAVE_NOISE}
+	waveTypes := [NUM_CHANNELS]int{
+		WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE, WAVE_NOISE,
+		WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE,
+		WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE,
+	}
 	for i, ch := range chip.channels {
 		if ch == nil {
 			continue
