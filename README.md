@@ -5256,6 +5256,8 @@ make                    # Build VM + assemblers
 make novulkan           # Build without Vulkan
 make headless           # Build for CI/testing (no display/audio)
 make basic              # Build with embedded EhBASIC interpreter
+make sdk                # Sync includes + pre-assemble SDK demos
+make release-all        # Build release archives for all platforms
 go build ./...          # Quick dev build without compression
 ```
 
@@ -5398,8 +5400,13 @@ For detailed build instructions, all build profiles/tags, toolchain setup, testi
 | Platform | Architecture | Status | Notes |
 |----------|-------------|--------|-------|
 | Linux | x86_64, aarch64 | **Official** | All build profiles |
-| macOS | ARM64 | Experimental | Use `novulkan` profile |
-| Windows | x86_64, ARM64 | Experimental | Use `novulkan` profile |
+| macOS | x86_64, ARM64 | Experimental | `novulkan` profile |
+| Windows | x86_64, ARM64 | Experimental | `novulkan` profile |
+| FreeBSD | x86_64, ARM64 | Experimental | `novulkan` profile |
+| NetBSD | x86_64, ARM64 | Experimental | `novulkan` profile |
+| OpenBSD | x86_64, ARM64 | Experimental | `novulkan` profile |
+
+Release builds embed the EhBASIC interpreter and include the SDK with pre-assembled demos. Build with `make release-linux`, `make release-windows`, `make release-macos`, `make release-freebsd`, `make release-netbsd`, `make release-openbsd`, or `make release-all` for all platforms. Each produces both amd64 and arm64 archives.
 
 Graphics: Ebiten (OpenGL/Metal/DirectX). Audio: Oto (44.1kHz stereo). Both have headless stubs for CI.
 
@@ -5423,6 +5430,10 @@ See [docs/platform-compatibility.md](docs/platform-compatibility.md) for build p
 # Play PSG music (YM/AY/VGM/SNDH)
 ./bin/IntuitionEngine -psg track.ym
 
+# Or from the EhBASIC prompt, load and run any binary:
+# RUN "program.iex"
+# RUN "demo.ie68"
+
 # Version and features
 ./bin/IntuitionEngine -version
 ./bin/IntuitionEngine -features
@@ -5433,7 +5444,7 @@ See [DEVELOPERS.md](DEVELOPERS.md) for all CPU modes, music playback options, en
 
 ## SDK
 
-The `sdk/` directory contains a curated developer package with example programs, include files, and build scripts for all six CPU architectures. See [sdk/README.md](sdk/README.md) for the full SDK documentation and [docs/demo-matrix.md](docs/demo-matrix.md) for the demo coverage matrix.
+The `sdk/` directory contains a curated developer package with example programs, include files, and build scripts for all six CPU architectures. Run `make sdk` to sync include files from the canonical source and pre-assemble demos into `sdk/examples/prebuilt/`. See [sdk/README.md](sdk/README.md) for the full SDK documentation and [docs/demo-matrix.md](docs/demo-matrix.md) for the demo coverage matrix.
 
 ## Further Documentation
 

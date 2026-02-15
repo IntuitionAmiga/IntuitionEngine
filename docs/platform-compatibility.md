@@ -8,9 +8,16 @@ Supported platforms, build profiles, and known limitations for Intuition Engine 
 |----------|-------------|--------|---------------|-------|
 | Linux | x86_64 | **Official** | `full` | Primary development platform |
 | Linux | aarch64 | **Official** | `full` | |
+| macOS | x86_64 | Experimental | `novulkan` | No Vulkan support |
 | macOS | ARM64 | Experimental | `novulkan` | No Vulkan support |
 | Windows | x86_64 | Experimental | `novulkan` | No Vulkan support |
 | Windows | ARM64 | Experimental | `novulkan` | No Vulkan support |
+| FreeBSD | x86_64 | Experimental | `novulkan` | No Vulkan support |
+| FreeBSD | ARM64 | Experimental | `novulkan` | No Vulkan support |
+| NetBSD | x86_64 | Experimental | `novulkan` | No Vulkan support |
+| NetBSD | ARM64 | Experimental | `novulkan` | No Vulkan support |
+| OpenBSD | x86_64 | Experimental | `novulkan` | No Vulkan support |
+| OpenBSD | ARM64 | Experimental | `novulkan` | No Vulkan support |
 
 **Official** platforms are fully tested and supported. **Experimental** platforms compile and run but may have untested edge cases.
 
@@ -100,9 +107,15 @@ Ebiten provides:
 - LHA decompression uses pure-Go fallback
 - Desktop integration (`.desktop` files, MIME types) is Linux-only
 
+### BSD (FreeBSD, NetBSD, OpenBSD)
+- Vulkan Voodoo path not available (use `novulkan`)
+- Cross-compiled with `CGO_ENABLED=0`
+- Desktop integration (`.desktop` files, MIME types) is Linux-only
+
 ### Cross-Compilation
-- Use `headless-novulkan` profile (`CGO_ENABLED=0`)
-- Full and novulkan profiles require CGO and may need platform-specific sysroot
+- Release targets use `CGO_ENABLED=0` with the `novulkan` profile for cross-architecture builds
+- Use `make release-linux`, `make release-windows`, etc. for automated cross-compilation
+- Full and novulkan profiles require CGO and may need platform-specific sysroot for native builds
 
 ## Runtime Feature Detection
 

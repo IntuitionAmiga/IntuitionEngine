@@ -12,5 +12,10 @@ assembler/untracked/
 *.AppImage
 appimagetool*
 AppDir/
+release/
 SHA256SUMS
 *.tar.xz
+*.zip
+
+# SDK pre-assembled binaries
+sdk/examples/prebuilt/

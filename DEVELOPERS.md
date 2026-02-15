@@ -229,7 +229,7 @@ All include files provide:
 
 ### Include File Stability
 
-The `sdk/include/` headers define the stable hardware register map for v1.x. The canonical source of truth is `assembler/*.inc` in the main repository. SDK copies are synced at release time.
+The `sdk/include/` headers define the stable hardware register map for v1.x. The canonical source of truth is `assembler/*.inc` in the main repository. SDK copies are synced by `make sdk` and at release time.
 
 ### 8-Bit CPU Banking
 
@@ -266,6 +266,21 @@ The 6502 and Z80 use a banking system to access the full 32MB address space:
 ./bin/IntuitionEngine -basic-image file   # Custom BASIC binary
 ./bin/IntuitionEngine -term               # Console terminal (no GUI window)
 ```
+
+### Running from EhBASIC
+
+Programs can also be launched from the BASIC interpreter prompt using `RUN`:
+
+```basic
+RUN "program.iex"                         : REM Load and run IE32 binary
+RUN "demo.ie64"                           : REM Load and run IE64 binary
+RUN "game.ie68"                           : REM Load and run M68K binary
+RUN "effect.ie80"                         : REM Load and run Z80 binary
+RUN "intro.ie86"                          : REM Load and run x86 binary
+RUN "test.ie65"                           : REM Load and run 6502 binary
+```
+
+The `RUN` command auto-detects the CPU core from the file extension.
 
 ### Music Playback
 
@@ -413,9 +428,16 @@ Write to the debug output register (`0xF0700`) to print values during execution:
 |----------|--------|----------|-------|-------|
 | **Linux x86_64** | Official | Ebiten | Oto | Primary development platform |
 | **Linux aarch64** | Official | Ebiten | Oto | |
+| **macOS x86_64** | Experimental | Ebiten | Oto | Use `novulkan` profile |
 | **macOS ARM64** | Experimental | Ebiten | Oto | Use `novulkan` profile |
 | **Windows x86_64** | Experimental | Ebiten | Oto | Use `novulkan` profile |
 | **Windows ARM64** | Experimental | Ebiten | Oto | Use `novulkan` profile |
+| **FreeBSD x86_64** | Experimental | Ebiten | Oto | Use `novulkan` profile |
+| **FreeBSD ARM64** | Experimental | Ebiten | Oto | Use `novulkan` profile |
+| **NetBSD x86_64** | Experimental | Ebiten | Oto | Use `novulkan` profile |
+| **NetBSD ARM64** | Experimental | Ebiten | Oto | Use `novulkan` profile |
+| **OpenBSD x86_64** | Experimental | Ebiten | Oto | Use `novulkan` profile |
+| **OpenBSD ARM64** | Experimental | Ebiten | Oto | Use `novulkan` profile |
 
 ### Graphics Backend
 
@@ -453,13 +475,16 @@ make set-default-handler
 
 ### Release Artifacts
 
+Build release archives with `make release-all` (or individual targets like `make release-linux`). Each target builds both amd64 and arm64 archives with embedded EhBASIC and pre-assembled SDK demos.
+
 | Platform | Format | Profile |
 |----------|--------|---------|
-| Linux x86_64 | `.AppImage`, `.tar.xz` | full |
-| Linux aarch64 | `.AppImage`, `.tar.xz` | full |
-| Windows x86_64 | `.zip` | novulkan |
-| Windows aarch64 | `.zip` | novulkan |
-| macOS ARM64 | `.tar.xz` | novulkan |
+| Linux amd64, arm64 | `.AppImage`, `.tar.xz` | full (native) / novulkan (cross) |
+| Windows amd64, arm64 | `.zip` | novulkan |
+| macOS amd64, arm64 | `.tar.xz` | novulkan |
+| FreeBSD amd64, arm64 | `.tar.xz` | novulkan |
+| NetBSD amd64, arm64 | `.tar.xz` | novulkan |
+| OpenBSD amd64, arm64 | `.tar.xz` | novulkan |
 
 All releases include `SHA256SUMS` with checksums.
 

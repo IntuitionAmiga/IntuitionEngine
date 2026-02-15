@@ -1457,6 +1457,19 @@ cd ..
 ./bin/IntuitionEngine -m6502 assembler/robocop_intro_65.bin
 ```
 
+## Running from EhBASIC
+
+Any assembled binary can also be launched from the EhBASIC interpreter prompt:
+
+```basic
+RUN "assembler/robocop_intro.iex"
+RUN "assembler/robocop_intro_68k.ie68"
+RUN "assembler/robocop_intro_z80.ie80"
+RUN "assembler/robocop_intro_65.bin"
+```
+
+The `RUN` command auto-detects the CPU core from the file extension.
+
 ## Expected Output
 
 When running successfully, you should see:

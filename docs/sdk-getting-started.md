@@ -4,9 +4,9 @@ Quick guide to building and running your first Intuition Engine program using th
 
 ## Prerequisites
 
-1. Build the Intuition Engine VM and assemblers:
+1. Build the Intuition Engine VM, assemblers, and pre-assemble SDK demos:
    ```bash
-   make
+   make sdk
    ```
 
 2. Install external toolchains for your target CPU (only IE32 and IE64 are built-in):
@@ -20,14 +20,18 @@ Quick guide to building and running your first Intuition Engine program using th
 
 ## Your First Program
 
-The simplest SDK example is the VGA text mode demo:
+The simplest SDK example is the VGA text mode demo. If you ran `make sdk`, it's already pre-assembled:
 
 ```bash
-# Assemble
-./bin/ie32asm sdk/examples/asm/vga_text_hello.asm
+# Run the pre-assembled demo
+./bin/IntuitionEngine -ie32 sdk/examples/prebuilt/vga_text_hello.iex
 
-# Run
+# Or assemble from source and run
+./bin/ie32asm sdk/examples/asm/vga_text_hello.asm
 ./bin/IntuitionEngine -ie32 vga_text_hello.iex
+
+# Or from the EhBASIC prompt:
+# RUN "sdk/examples/prebuilt/vga_text_hello.iex"
 ```
 
 This displays coloured text on an 80x25 VGA text screen.

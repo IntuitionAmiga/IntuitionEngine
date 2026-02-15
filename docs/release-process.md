@@ -34,14 +34,12 @@ The version is defined in `Makefile` as `APP_VERSION` and injected at build time
    go test -tags headless ./...
    ```
 
-5. **Verify SDK examples build**:
+5. **Build SDK** (syncs includes and pre-assembles demos):
    ```bash
-   ./sdk/scripts/build-all.sh
+   make sdk
    ```
 
-6. **Sync SDK includes** from `assembler/*.inc` to `sdk/include/`
-
-7. **Check version output**:
+6. **Check version output**:
    ```bash
    ./bin/IntuitionEngine -version
    ./bin/IntuitionEngine -features
@@ -49,63 +47,53 @@ The version is defined in `Makefile` as `APP_VERSION` and injected at build time
 
 ## Building Release Artifacts
 
-### Linux (Official)
+### Using Makefile Targets (Recommended)
+
+Each release target builds both amd64 and arm64 archives, assembles the EhBASIC ROM, and embeds it in the binary:
 
 ```bash
-# x86_64
-make clean && make
-# Produces: bin/IntuitionEngine, bin/ie32asm, bin/ie64asm
+make release-linux      # Linux amd64 + arm64 (.tar.xz)
+make release-windows    # Windows amd64 + arm64 (.zip)
+make release-macos      # macOS amd64 + arm64 (.tar.xz)
+make release-freebsd    # FreeBSD amd64 + arm64 (.tar.xz)
+make release-netbsd     # NetBSD amd64 + arm64 (.tar.xz)
+make release-openbsd    # OpenBSD amd64 + arm64 (.tar.xz)
 
-# AppImage
-make appimage
-# Produces: IntuitionEngine-1.0.0-x86_64.AppImage
-
-# Archive
-tar -cJf IntuitionEngine-1.0.0-linux-amd64.tar.xz \
-  -C bin IntuitionEngine ie32asm ie64asm
+make release-all        # All platforms + SHA256SUMS
 ```
 
-For aarch64, build on an ARM64 host or cross-compile with appropriate sysroot.
+Each archive contains: `IntuitionEngine`, `ie32asm`, `ie64asm`, `ie32to64`, `README.md`, `CHANGELOG.md`, and the full `sdk/` directory with pre-assembled demos.
 
-### Windows (Experimental)
+### Build Details
 
-```bash
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
-  go build -tags "novulkan headless" \
-  -ldflags "-s -w -X main.Version=1.0.0 -X main.Commit=$(git rev-parse --short HEAD) -X main.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  -o IntuitionEngine.exe .
-```
+**Linux (Official)**
 
-Package as `.zip`.
+The native architecture gets a full CGO build with sstrip/upx compression. The cross architecture uses `CGO_ENABLED=0` with the `novulkan` profile.
 
-### macOS (Experimental)
+**Windows, macOS, FreeBSD, NetBSD, OpenBSD (Experimental)**
 
-```bash
-GOOS=darwin GOARCH=arm64 \
-  go build -tags novulkan \
-  -ldflags "-s -w -X main.Version=1.0.0 -X main.Commit=$(git rev-parse --short HEAD) -X main.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  -o IntuitionEngine .
-```
+Cross-compiled with `CGO_ENABLED=0` and the `novulkan` profile. No UPX compression (cannot compress foreign-architecture binaries).
 
-Package as `.tar.xz`.
+All release builds include the `embed_basic` tag, embedding the EhBASIC interpreter so the VM starts a BASIC prompt by default.
 
 ## Release Artifacts
 
 | Platform | Architecture | Format | Profile |
 |----------|-------------|--------|---------|
-| Linux | x86_64 | `.AppImage`, `.tar.xz` | full |
-| Linux | aarch64 | `.AppImage`, `.tar.xz` | full |
-| Windows | x86_64 | `.zip` | novulkan |
-| Windows | aarch64 | `.zip` | novulkan |
-| macOS | ARM64 | `.tar.xz` | novulkan |
+| Linux | amd64, arm64 | `.tar.xz`, `.AppImage` | full (native) / novulkan (cross) |
+| Windows | amd64, arm64 | `.zip` | novulkan |
+| macOS | amd64, arm64 | `.tar.xz` | novulkan |
+| FreeBSD | amd64, arm64 | `.tar.xz` | novulkan |
+| NetBSD | amd64, arm64 | `.tar.xz` | novulkan |
+| OpenBSD | amd64, arm64 | `.tar.xz` | novulkan |
 
 ## Checksums
 
-Generate SHA256 checksums for all release artifacts:
+`make release-all` generates SHA256 checksums automatically. To generate manually:
 
 ```bash
-sha256sum IntuitionEngine-*.AppImage IntuitionEngine-*.tar.xz IntuitionEngine-*.zip \
-  > SHA256SUMS
+cd release/
+sha256sum *.tar.xz *.zip > SHA256SUMS
 ```
 
 ## Tagging
@@ -117,12 +105,12 @@ git push origin v1.0.0
 
 ## CI/CD
 
-Release builds are triggered by pushing a version tag (`v*`). See `.github/workflows/release.yml` for the automated pipeline (Phase 7 of the release plan).
+Release builds are triggered by pushing a version tag (`v*`). See `.github/workflows/release.yml` for the automated pipeline.
 
 Test builds run on every push. See `.github/workflows/test.yml` for the CI pipeline.
 
 ## Post-Release
 
 1. Create GitHub release with tag, attach artifacts and `SHA256SUMS`
-2. Update `sdk/include/` if hardware register maps changed
+2. Update `sdk/include/` if hardware register maps changed (or run `make sdk`)
 3. Announce on project channels
