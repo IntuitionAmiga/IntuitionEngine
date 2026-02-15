@@ -1015,9 +1015,9 @@ The PSG player supports AY-3-8910/YM2149 music files with enhanced audio process
 
 PSG+ mode provides:
 - 4× oversampling for smoother waveforms
-- Gentle low-pass filtering
-- Subtle saturation for warmth
-- Stereo width enhancement
+- Second-order Butterworth lowpass filtering (-12dB/oct anti-alias)
+- Subtle drive saturation for warmth
+- Allpass diffuser room ambience
 
 This makes 8-bit chip music sound richer while preserving the authentic character.
 

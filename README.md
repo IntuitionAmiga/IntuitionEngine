@@ -879,9 +879,9 @@ AHX Player Registers (0x0F0B84 - 0x0F0B91):
 
 AHX+ mode provides enhanced audio processing:
 - 4x oversampling for cleaner waveforms
-- Soft low-pass filtering (alpha 0.11)
+- Second-order Butterworth lowpass (biquad, -12dB/oct anti-alias)
 - Subtle saturation (drive 0.16) for analog warmth
-- Room reverb (mix 0.09, delay 120 samples)
+- Allpass diffuser room ambience (mix 0.09, delay 120 samples)
 - Authentic Amiga stereo panning (L-R-R-L pattern)
 - Hardware PWM mapping SquarePos to duty cycle
 
@@ -5378,7 +5378,7 @@ A typical development cycle involves:
 - Single-SID playback at $D400; multi-SID not yet implemented
 
 **Enhanced Audio Modes (PSG+/POKEY+/SID+/TED+/AHX+):**
-These modes provide oversampling, gentle low-pass smoothing, subtle saturation, and a tiny room/width effect for richer sound while preserving pitch and timing. AHX+ additionally provides authentic Amiga stereo panning (L-R-R-L pattern) and hardware PWM for square wave modulation.
+These modes provide 4x oversampling, second-order Butterworth lowpass filtering, subtle drive saturation, and allpass diffuser room ambience for richer sound while preserving pitch and timing. SID+ additionally preserves per-channel filter sweeps through the enhanced path. AHX+ additionally provides authentic Amiga stereo panning (L-R-R-L pattern) and hardware PWM for square wave modulation.
 
 ## 13.4 Assembler Include Files
 

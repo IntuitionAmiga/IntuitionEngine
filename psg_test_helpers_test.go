@@ -9,7 +9,22 @@ func newTestSoundChip() *SoundChip {
 		filterHP:    DEFAULT_FILTER_HP,
 		preDelayBuf: make([]float32, PRE_DELAY_MS*MS_TO_SAMPLES),
 	}
+	chip.enabled.Store(true)
 	chip.sampleTicker.Store(&sampleTickerHolder{})
+
+	// Initialize reverb buffers (required by GenerateSample → applyReverb)
+	combDelays := []int{COMB_DELAY_1, COMB_DELAY_2, COMB_DELAY_3, COMB_DELAY_4}
+	combDecays := []float32{COMB_DECAY_1, COMB_DECAY_2, COMB_DECAY_3, COMB_DECAY_4}
+	for i := range chip.combFilters {
+		chip.combFilters[i] = CombFilter{
+			buffer: make([]float32, combDelays[i]),
+			decay:  combDecays[i],
+		}
+	}
+	allpassDelays := []int{ALLPASS_DELAY_1, ALLPASS_DELAY_2}
+	for i := range chip.allpassBuf {
+		chip.allpassBuf[i] = make([]float32, allpassDelays[i])
+	}
 
 	waveTypes := []int{WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE, WAVE_NOISE}
 	for i := range NUM_CHANNELS {

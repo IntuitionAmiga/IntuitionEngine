@@ -539,37 +539,37 @@ const (
 
 	PSG_PLUS_OVERSAMPLE    = 4
 	PSG_PLUS_LOWPASS_ALPHA = 0.12
-	PSG_PLUS_DRIVE         = 0.18
+	PSG_PLUS_DRIVE         = 0.10 // PSG is clean digital, less saturation needed
 	PSG_PLUS_ROOM_MIX      = 0.08
 	PSG_PLUS_ROOM_DELAY    = 128
 
 	// POKEY+ enhanced mode parameters
 	POKEY_PLUS_OVERSAMPLE    = 4
-	POKEY_PLUS_LOWPASS_ALPHA = 0.15 // Slightly more filtering for POKEY's harsher tones
-	POKEY_PLUS_DRIVE         = 0.12 // Less drive than PSG (POKEY is already gritty)
-	POKEY_PLUS_ROOM_MIX      = 0.06 // Subtle room ambience
-	POKEY_PLUS_ROOM_DELAY    = 96   // Shorter delay for tighter sound
+	POKEY_PLUS_LOWPASS_ALPHA = 0.10 // Preserve poly counter timbres
+	POKEY_PLUS_DRIVE         = 0.12
+	POKEY_PLUS_ROOM_MIX      = 0.06
+	POKEY_PLUS_ROOM_DELAY    = 72 // Shorter tail for tighter sound
 
 	// SID+ enhanced mode parameters
 	SID_PLUS_OVERSAMPLE    = 4
-	SID_PLUS_LOWPASS_ALPHA = 0.10 // Smoother filtering for SID's warm character
-	SID_PLUS_DRIVE         = 0.15 // Moderate saturation for analog warmth
-	SID_PLUS_ROOM_MIX      = 0.07 // Subtle room ambience
-	SID_PLUS_ROOM_DELAY    = 112  // Medium delay for spacious sound
+	SID_PLUS_LOWPASS_ALPHA = 0.10
+	SID_PLUS_DRIVE         = 0.10 // Avoid competing with SID's own filter character
+	SID_PLUS_ROOM_MIX      = 0.07
+	SID_PLUS_ROOM_DELAY    = 112
 
 	// TED+ enhanced mode parameters
 	TED_PLUS_OVERSAMPLE    = 4
-	TED_PLUS_LOWPASS_ALPHA = 0.14 // Smooth filtering for TED's simple square waves
-	TED_PLUS_DRIVE         = 0.20 // Moderate saturation for warmth
-	TED_PLUS_ROOM_MIX      = 0.10 // Room ambience for depth
-	TED_PLUS_ROOM_DELAY    = 144  // Delay for spacious Plus/4 sound
+	TED_PLUS_LOWPASS_ALPHA = 0.14
+	TED_PLUS_DRIVE         = 0.12 // Simple square waves distort easily
+	TED_PLUS_ROOM_MIX      = 0.10
+	TED_PLUS_ROOM_DELAY    = 144
 
 	// AHX+ enhanced mode parameters
 	AHX_PLUS_OVERSAMPLE    = 4
-	AHX_PLUS_LOWPASS_ALPHA = 0.11 // Between SID (0.10) and PSG (0.12)
-	AHX_PLUS_DRIVE         = 0.16 // Analog warmth
-	AHX_PLUS_ROOM_MIX      = 0.09 // Spacious ambience
-	AHX_PLUS_ROOM_DELAY    = 120  // Amiga-style room (between SID 112 and PSG 128)
+	AHX_PLUS_LOWPASS_ALPHA = 0.08 // Preserve rapid waveform modulation
+	AHX_PLUS_DRIVE         = 0.16
+	AHX_PLUS_ROOM_MIX      = 0.09
+	AHX_PLUS_ROOM_DELAY    = 120
 
 	SID_COMBINED_LOWPASS_ALPHA = 0.18 // Smooth combined SID waveforms
 
@@ -705,38 +705,60 @@ type Channel struct {
 	// ------------------------------------------------------------------------------
 	// Hot fields accessed every sample generation (cache line 1)
 	// These fields are read/written on each output sample
-	frequency             float32 // Base frequency of oscillator
-	phase                 float32 // Current phase position in waveform
-	volume                float32 // Channel volume (0.0-1.0)
-	envelopeLevel         float32 // Current envelope amplitude
-	prevRawSample         float32 // Previous output (needed for ring modulation)
-	dutyCycle             float32 // Square wave duty cycle (0.0-1.0)
-	noisePhase            float32 // Phase accumulator for noise timing
-	noiseValue            float32 // Current noise generator output
-	noiseFilter           float32 // Noise filter coefficient
-	noiseFilterState      float32 // Noise filter state variable
-	noiseSR               uint32  // Noise shift register state
-	psgPlusLowpassState   float32 // PSG+ low-pass filter state
-	psgPlusDrive          float32 // PSG+ saturation drive
-	psgPlusRoomMix        float32 // PSG+ room mix
-	psgPlusGain           float32 // PSG+ per-channel gain
-	pokeyPlusLowpassState float32 // POKEY+ low-pass filter state
-	pokeyPlusDrive        float32 // POKEY+ saturation drive
-	pokeyPlusRoomMix      float32 // POKEY+ room mix
-	pokeyPlusGain         float32 // POKEY+ per-channel gain
-	sidPlusLowpassState   float32 // SID+ low-pass filter state
-	sidPlusDrive          float32 // SID+ saturation drive
-	sidPlusRoomMix        float32 // SID+ room mix
-	sidPlusGain           float32 // SID+ per-channel gain
-	tedPlusLowpassState   float32 // TED+ low-pass filter state
-	tedPlusDrive          float32 // TED+ saturation drive
-	tedPlusRoomMix        float32 // TED+ room mix
-	tedPlusGain           float32 // TED+ per-channel gain
-	ahxPlusLowpassState   float32 // AHX+ low-pass filter state
-	ahxPlusDrive          float32 // AHX+ saturation drive
-	ahxPlusRoomMix        float32 // AHX+ room mix
-	ahxPlusGain           float32 // AHX+ per-channel gain
-	ahxPlusPan            float32 // AHX+ stereo pan (-1.0 left to 1.0 right)
+	frequency        float32 // Base frequency of oscillator
+	phase            float32 // Current phase position in waveform
+	volume           float32 // Channel volume (0.0-1.0)
+	envelopeLevel    float32 // Current envelope amplitude
+	prevRawSample    float32 // Previous output (needed for ring modulation)
+	dutyCycle        float32 // Square wave duty cycle (0.0-1.0)
+	noisePhase       float32 // Phase accumulator for noise timing
+	noiseValue       float32 // Current noise generator output
+	noiseFilter      float32 // Noise filter coefficient
+	noiseFilterState float32 // Noise filter state variable
+	noiseSR          uint32  // Noise shift register state
+	psgPlusDrive     float32 // PSG+ saturation drive
+	psgPlusRoomMix   float32 // PSG+ room mix
+	psgPlusGain      float32 // PSG+ per-channel gain
+	psgPlusBqZ1      float32 // PSG+ biquad state z1
+	psgPlusBqZ2      float32 // PSG+ biquad state z2
+	pokeyPlusDrive   float32 // POKEY+ saturation drive
+	pokeyPlusRoomMix float32 // POKEY+ room mix
+	pokeyPlusGain    float32 // POKEY+ per-channel gain
+	pokeyPlusBqZ1    float32 // POKEY+ biquad state z1
+	pokeyPlusBqZ2    float32 // POKEY+ biquad state z2
+	sidPlusDrive     float32 // SID+ saturation drive
+	sidPlusRoomMix   float32 // SID+ room mix
+	sidPlusGain      float32 // SID+ per-channel gain
+	sidPlusBqZ1      float32 // SID+ biquad state z1
+	sidPlusBqZ2      float32 // SID+ biquad state z2
+	tedPlusDrive     float32 // TED+ saturation drive
+	tedPlusRoomMix   float32 // TED+ room mix
+	tedPlusGain      float32 // TED+ per-channel gain
+	tedPlusBqZ1      float32 // TED+ biquad state z1
+	tedPlusBqZ2      float32 // TED+ biquad state z2
+	ahxPlusDrive     float32 // AHX+ saturation drive
+	ahxPlusRoomMix   float32 // AHX+ room mix
+	ahxPlusGain      float32 // AHX+ per-channel gain
+	ahxPlusBqZ1      float32 // AHX+ biquad state z1
+	ahxPlusBqZ2      float32 // AHX+ biquad state z2
+	ahxPlusPan       float32 // AHX+ stereo pan (-1.0 left to 1.0 right)
+	// Shared biquad coefficients (same cutoff for all engines)
+	plusBqB0 float32
+	plusBqB1 float32
+	plusBqB2 float32
+	plusBqA1 float32
+	plusBqA2 float32
+	// Per-engine transition smoothing
+	psgPlusTransGain      float32
+	pokeyPlusTransGain    float32
+	sidPlusTransGain      float32
+	tedPlusTransGain      float32
+	ahxPlusTransGain      float32
+	psgPlusTransCounter   int
+	pokeyPlusTransCounter int
+	sidPlusTransCounter   int
+	tedPlusTransCounter   int
+	ahxPlusTransCounter   int
 	sidMixLowpassState    float32 // SID combined waveform smoothing
 	sidOscOutput          float32 // Raw oscillator output (before ring mod, for OSC3 readback)
 	sidWaveMask           uint8   // SID waveform mask (combined waves)
@@ -1971,19 +1993,45 @@ func (ch *Channel) generateWaveSample(sampleRate, sampleRateRecip float32) float
 	return rawSample
 }
 
-// processEnhancedSample handles oversampling, lowpass filtering, room delay,
-// and drive processing for enhanced audio modes (PSG+, POKEY+, SID+, TED+, AHX+).
-// This consolidates the common processing logic shared by all enhanced modes.
+// computePlusBiquadCoeffs computes Butterworth second-order lowpass biquad coefficients.
+// cutoffHz is the filter cutoff frequency, sampleRate is the effective sample rate
+// (base rate * oversample factor).
+func computePlusBiquadCoeffs(cutoffHz, sampleRate float32) (b0, b1, b2, a1, a2 float32) {
+	omega := float32(2.0*math.Pi) * cutoffHz / sampleRate
+	s := float32(math.Sin(float64(omega)))
+	c := float32(math.Cos(float64(omega)))
+	alpha := s / (2.0 * 0.707) // Q = 0.707 (Butterworth)
+	a0 := 1.0 + alpha
+	a0Recip := 1.0 / a0
+	b0 = ((1.0 - c) / 2.0) * a0Recip
+	b1 = (1.0 - c) * a0Recip
+	b2 = b0
+	a1 = (-2.0 * c) * a0Recip
+	a2 = (1.0 - alpha) * a0Recip
+	return
+}
+
+// initPlusBiquad precomputes biquad coefficients for a channel at the given oversample factor.
+func (ch *Channel) initPlusBiquad(oversample int) {
+	effectiveSR := float32(SAMPLE_RATE) * float32(oversample)
+	cutoff := effectiveSR * 0.45 // ~20kHz at 44100*4
+	ch.plusBqB0, ch.plusBqB1, ch.plusBqB2, ch.plusBqA1, ch.plusBqA2 = computePlusBiquadCoeffs(cutoff, effectiveSR)
+}
+
+// processEnhancedSample handles oversampling, biquad lowpass filtering, allpass room delay,
+// transition smoothing, and drive processing for enhanced audio modes (PSG+, POKEY+, SID+, TED+, AHX+).
 func (ch *Channel) processEnhancedSample(
 	oversample int,
-	lowpassAlpha float32,
-	lowpassState *float32,
+	bqZ1 *float32,
+	bqZ2 *float32,
 	roomBuf []float32,
 	roomPos *int,
 	roomMix float32,
 	gain float32,
 	drive float32,
 	envLevel float32,
+	transGain *float32,
+	transCounter *int,
 ) float32 {
 	// Oversampling: generate multiple samples at higher rate and average
 	sampleRate := float32(SAMPLE_RATE) * float32(oversample)
@@ -1994,21 +2042,25 @@ func (ch *Channel) processEnhancedSample(
 	}
 	rawSample := sum / float32(oversample)
 
-	// Lowpass filtering to smooth oversampled output
-	if lowpassAlpha > 0 {
-		*lowpassState = *lowpassState*(1-lowpassAlpha) + rawSample*lowpassAlpha
-		rawSample = *lowpassState
+	// Second-order biquad lowpass (Butterworth, -12dB/oct) — Direct Form II transposed
+	if ch.plusBqB0 != 0 {
+		out := ch.plusBqB0*rawSample + *bqZ1
+		*bqZ1 = ch.plusBqB1*rawSample - ch.plusBqA1*out + *bqZ2
+		*bqZ2 = ch.plusBqB2*rawSample - ch.plusBqA2*out
+		rawSample = out
 	}
 
-	// Room delay effect (simple comb filter)
+	// Room ambience (allpass diffuser — eliminates comb filter metallic artifacts)
 	if roomMix > 0 && len(roomBuf) > 0 {
-		delayed := roomBuf[*roomPos]
-		roomBuf[*roomPos] = rawSample
+		g := roomMix * 0.7 // allpass feedback coefficient
+		bufOut := roomBuf[*roomPos]
+		roomBuf[*roomPos] = rawSample + bufOut*g
+		diffused := bufOut - rawSample*g
 		*roomPos++
 		if *roomPos >= len(roomBuf) {
 			*roomPos = 0
 		}
-		rawSample = rawSample*(1-roomMix) + delayed*roomMix
+		rawSample = rawSample*(1-roomMix) + diffused*roomMix
 	}
 
 	// Apply volume, envelope, and gain
@@ -2019,7 +2071,84 @@ func (ch *Channel) processEnhancedSample(
 		scaledSample = fastTanh(scaledSample * (1.0 + drive))
 	}
 
+	// Transition smoothing (fade in/out on PLUS toggle)
+	if *transCounter > 0 {
+		scaledSample *= *transGain
+		*transGain += 1.0 / 64.0
+		*transCounter--
+	}
+
 	return clampF32(scaledSample, MIN_SAMPLE, MAX_SAMPLE)
+}
+
+// applyChannelFilter runs the per-channel state-variable filter (LP/BP/HP mix).
+// Used by both the standard path and the SID+ enhanced path.
+func (ch *Channel) applyChannelFilter(sample float32) float32 {
+	if ch.filterModeMask == 0 || ch.filterCutoff <= 0 {
+		return sample
+	}
+
+	// Apply 6581 filter input distortion (before filter processing)
+	if ch.sid6581FilterDistort {
+		sample = sid6581FilterDistort(sample)
+	}
+
+	// Smooth cutoff/resonance to avoid zipper noise.
+	const filterSmooth = 0.02
+	ch.filterCutoff += (ch.filterCutoffTarget - ch.filterCutoff) * filterSmooth
+	ch.filterResonance += (ch.filterResonanceTarget - ch.filterResonance) * filterSmooth
+
+	cutoff := calculateFilterCutoff(ch.filterCutoff)
+	resonance := ch.filterResonance * MAX_RESONANCE
+
+	// SID filter mode allows self-oscillation at high resonance
+	// Non-SID mode applies safety limiting to prevent instability
+	if !ch.sidFilterMode {
+		if resonance > FILTER_MAX_SAFE_RESONANCE {
+			resonance = FILTER_MAX_SAFE_RESONANCE
+		}
+		if resonance > FILTER_RESONANCE_THRESHOLD {
+			cutoffLimit := FILTER_RESONANCE_CUTOFF_LIMIT - (resonance-FILTER_RESONANCE_THRESHOLD)*FILTER_RESONANCE_SLOPE
+			if cutoff > cutoffLimit {
+				cutoff = cutoffLimit
+			}
+		}
+	}
+
+	lp := ch.filterLP + cutoff*ch.filterBP
+	hp := (sample - lp) - resonance*ch.filterBP
+	bp := ch.filterBP + cutoff*hp
+
+	lp = clampF32(lp, MIN_SAMPLE, MAX_SAMPLE)
+	bp = clampF32(bp, MIN_SAMPLE, MAX_SAMPLE)
+	hp = clampF32(hp, MIN_SAMPLE, MAX_SAMPLE)
+
+	lp = flushDenormal(lp)
+	bp = flushDenormal(bp)
+	hp = flushDenormal(hp)
+
+	ch.filterLP = lp
+	ch.filterBP = bp
+	ch.filterHP = hp
+
+	var out float32
+	count := 0
+	if ch.filterModeMask&0x01 != 0 {
+		out += lp
+		count++
+	}
+	if ch.filterModeMask&0x02 != 0 {
+		out += bp
+		count++
+	}
+	if ch.filterModeMask&0x04 != 0 {
+		out += hp
+		count++
+	}
+	if count > 0 {
+		return out / float32(count)
+	}
+	return sample
 }
 
 func (ch *Channel) generateSample() float32 {
@@ -2107,37 +2236,49 @@ func (ch *Channel) generateSample() float32 {
 	// Enhanced mode processing (PSG+, POKEY+, SID+, TED+, AHX+)
 	if ch.psgPlusEnabled && ch.psgPlusOversample > 1 {
 		return ch.processEnhancedSample(
-			ch.psgPlusOversample, PSG_PLUS_LOWPASS_ALPHA,
-			&ch.psgPlusLowpassState, ch.psgPlusRoomBuf, &ch.psgPlusRoomPos,
+			ch.psgPlusOversample,
+			&ch.psgPlusBqZ1, &ch.psgPlusBqZ2,
+			ch.psgPlusRoomBuf, &ch.psgPlusRoomPos,
 			ch.psgPlusRoomMix, ch.psgPlusGain, ch.psgPlusDrive, envLevel,
+			&ch.psgPlusTransGain, &ch.psgPlusTransCounter,
 		)
 	}
 	if ch.pokeyPlusEnabled && ch.pokeyPlusOversample > 1 {
 		return ch.processEnhancedSample(
-			ch.pokeyPlusOversample, POKEY_PLUS_LOWPASS_ALPHA,
-			&ch.pokeyPlusLowpassState, ch.pokeyPlusRoomBuf, &ch.pokeyPlusRoomPos,
+			ch.pokeyPlusOversample,
+			&ch.pokeyPlusBqZ1, &ch.pokeyPlusBqZ2,
+			ch.pokeyPlusRoomBuf, &ch.pokeyPlusRoomPos,
 			ch.pokeyPlusRoomMix, ch.pokeyPlusGain, ch.pokeyPlusDrive, envLevel,
+			&ch.pokeyPlusTransGain, &ch.pokeyPlusTransCounter,
 		)
 	}
 	if ch.sidPlusEnabled && ch.sidPlusOversample > 1 {
-		return ch.processEnhancedSample(
-			ch.sidPlusOversample, SID_PLUS_LOWPASS_ALPHA,
-			&ch.sidPlusLowpassState, ch.sidPlusRoomBuf, &ch.sidPlusRoomPos,
+		sample := ch.processEnhancedSample(
+			ch.sidPlusOversample,
+			&ch.sidPlusBqZ1, &ch.sidPlusBqZ2,
+			ch.sidPlusRoomBuf, &ch.sidPlusRoomPos,
 			ch.sidPlusRoomMix, ch.sidPlusGain, ch.sidPlusDrive, envLevel,
+			&ch.sidPlusTransGain, &ch.sidPlusTransCounter,
 		)
+		// Apply per-channel SID filter so SID+ preserves filter sweeps
+		return ch.applyChannelFilter(sample)
 	}
 	if ch.tedPlusEnabled && ch.tedPlusOversample > 1 {
 		return ch.processEnhancedSample(
-			ch.tedPlusOversample, TED_PLUS_LOWPASS_ALPHA,
-			&ch.tedPlusLowpassState, ch.tedPlusRoomBuf, &ch.tedPlusRoomPos,
+			ch.tedPlusOversample,
+			&ch.tedPlusBqZ1, &ch.tedPlusBqZ2,
+			ch.tedPlusRoomBuf, &ch.tedPlusRoomPos,
 			ch.tedPlusRoomMix, ch.tedPlusGain, ch.tedPlusDrive, envLevel,
+			&ch.tedPlusTransGain, &ch.tedPlusTransCounter,
 		)
 	}
 	if ch.ahxPlusEnabled && ch.ahxPlusOversample > 1 {
 		return ch.processEnhancedSample(
-			ch.ahxPlusOversample, AHX_PLUS_LOWPASS_ALPHA,
-			&ch.ahxPlusLowpassState, ch.ahxPlusRoomBuf, &ch.ahxPlusRoomPos,
+			ch.ahxPlusOversample,
+			&ch.ahxPlusBqZ1, &ch.ahxPlusBqZ2,
+			ch.ahxPlusRoomBuf, &ch.ahxPlusRoomPos,
 			ch.ahxPlusRoomMix, ch.ahxPlusGain, ch.ahxPlusDrive, envLevel,
+			&ch.ahxPlusTransGain, &ch.ahxPlusTransCounter,
 		)
 	}
 
@@ -2145,76 +2286,7 @@ func (ch *Channel) generateSample() float32 {
 	scaledSample := rawSample * ch.volume * envLevel
 
 	// Per-channel filter (state-variable with multi-mode mix)
-	if ch.filterModeMask != 0 && ch.filterCutoff > 0 {
-		// Apply 6581 filter input distortion (before filter processing)
-		if ch.sid6581FilterDistort {
-			scaledSample = sid6581FilterDistort(scaledSample)
-		}
-
-		// Smooth cutoff/resonance to avoid zipper noise.
-		const filterSmooth = 0.02
-		ch.filterCutoff += (ch.filterCutoffTarget - ch.filterCutoff) * filterSmooth
-		ch.filterResonance += (ch.filterResonanceTarget - ch.filterResonance) * filterSmooth
-
-		cutoff := calculateFilterCutoff(ch.filterCutoff)
-		resonance := ch.filterResonance * MAX_RESONANCE
-
-		// SID filter mode allows self-oscillation at high resonance
-		// Non-SID mode applies safety limiting to prevent instability
-		if !ch.sidFilterMode {
-			if resonance > FILTER_MAX_SAFE_RESONANCE {
-				resonance = FILTER_MAX_SAFE_RESONANCE
-			}
-			if resonance > FILTER_RESONANCE_THRESHOLD {
-				cutoffLimit := FILTER_RESONANCE_CUTOFF_LIMIT - (resonance-FILTER_RESONANCE_THRESHOLD)*FILTER_RESONANCE_SLOPE
-				if cutoff > cutoffLimit {
-					cutoff = cutoffLimit
-				}
-			}
-		}
-
-		lp := ch.filterLP + cutoff*ch.filterBP
-		hp := (scaledSample - lp) - resonance*ch.filterBP
-		bp := ch.filterBP + cutoff*hp
-
-		lp = clampF32(lp, MIN_SAMPLE, MAX_SAMPLE)
-		bp = clampF32(bp, MIN_SAMPLE, MAX_SAMPLE)
-		hp = clampF32(hp, MIN_SAMPLE, MAX_SAMPLE)
-
-		lp = flushDenormal(lp)
-		bp = flushDenormal(bp)
-		hp = flushDenormal(hp)
-
-		ch.filterLP = lp
-		ch.filterBP = bp
-		ch.filterHP = hp
-
-		var out float32
-		count := 0
-		if ch.filterModeMask&0x01 != 0 {
-			out += lp
-			count++
-		}
-		if ch.filterModeMask&0x02 != 0 {
-			out += bp
-			count++
-		}
-		if ch.filterModeMask&0x04 != 0 {
-			out += hp
-			count++
-		}
-		if count > 0 {
-			scaledSample = out / float32(count)
-		}
-	}
-
-	//if ch.waveType == WAVE_SINE {
-	//	fmt.Printf("Raw sample: %.2f, After volume: %.2f\n", rawSample, scaledSample)
-	//}
-	//if ch.waveType == WAVE_SINE {
-	//	log.Printf("vol: %.2f env: %.2f raw: %.2f scaled: %.2f",
-	//		ch.volume, ch.envelopeLevel, rawSample, scaledSample)
-	//}
+	scaledSample = ch.applyChannelFilter(scaledSample)
 
 	// Clamp before returning
 	return clampF32(scaledSample, MIN_SAMPLE, MAX_SAMPLE)
@@ -2481,11 +2553,15 @@ func (chip *SoundChip) SetPSGPlusEnabled(enabled bool) {
 		ch.psgPlusEnabled = enabled
 		if enabled {
 			ch.psgPlusOversample = PSG_PLUS_OVERSAMPLE
-			ch.psgPlusLowpassState = 0
+			ch.psgPlusBqZ1 = 0
+			ch.psgPlusBqZ2 = 0
+			ch.initPlusBiquad(PSG_PLUS_OVERSAMPLE)
 			ch.psgPlusDrive = PSG_PLUS_DRIVE
 			ch.psgPlusRoomMix = PSG_PLUS_ROOM_MIX
 			ch.psgPlusRoomDelay = PSG_PLUS_ROOM_DELAY
 			ch.psgPlusRoomPos = 0
+			ch.psgPlusTransGain = 1.0
+			ch.psgPlusTransCounter = 0
 			if ch.psgPlusRoomBuf == nil || len(ch.psgPlusRoomBuf) != PSG_PLUS_ROOM_DELAY {
 				ch.psgPlusRoomBuf = make([]float32, PSG_PLUS_ROOM_DELAY)
 			} else {
@@ -2500,7 +2576,8 @@ func (chip *SoundChip) SetPSGPlusEnabled(enabled bool) {
 			}
 		} else {
 			ch.psgPlusOversample = 1
-			ch.psgPlusLowpassState = 0
+			ch.psgPlusBqZ1 = 0
+			ch.psgPlusBqZ2 = 0
 			ch.psgPlusDrive = 0
 			ch.psgPlusRoomMix = 0
 			ch.psgPlusRoomDelay = 0
@@ -2879,11 +2956,15 @@ func (chip *SoundChip) SetPOKEYPlusEnabled(enabled bool) {
 		ch.pokeyPlusEnabled = enabled
 		if enabled {
 			ch.pokeyPlusOversample = POKEY_PLUS_OVERSAMPLE
-			ch.pokeyPlusLowpassState = 0
+			ch.pokeyPlusBqZ1 = 0
+			ch.pokeyPlusBqZ2 = 0
+			ch.initPlusBiquad(POKEY_PLUS_OVERSAMPLE)
 			ch.pokeyPlusDrive = POKEY_PLUS_DRIVE
 			ch.pokeyPlusRoomMix = POKEY_PLUS_ROOM_MIX
 			ch.pokeyPlusRoomDelay = POKEY_PLUS_ROOM_DELAY
 			ch.pokeyPlusRoomPos = 0
+			ch.pokeyPlusTransGain = 1.0
+			ch.pokeyPlusTransCounter = 0
 			if ch.pokeyPlusRoomBuf == nil || len(ch.pokeyPlusRoomBuf) != POKEY_PLUS_ROOM_DELAY {
 				ch.pokeyPlusRoomBuf = make([]float32, POKEY_PLUS_ROOM_DELAY)
 			} else {
@@ -2894,7 +2975,8 @@ func (chip *SoundChip) SetPOKEYPlusEnabled(enabled bool) {
 			ch.pokeyPlusGain = pokeyPlusMixGain[i]
 		} else {
 			ch.pokeyPlusOversample = 1
-			ch.pokeyPlusLowpassState = 0
+			ch.pokeyPlusBqZ1 = 0
+			ch.pokeyPlusBqZ2 = 0
 			ch.pokeyPlusDrive = 0
 			ch.pokeyPlusRoomMix = 0
 			ch.pokeyPlusRoomDelay = 0
@@ -2917,11 +2999,15 @@ func (chip *SoundChip) SetSIDPlusEnabled(enabled bool) {
 		ch.sidPlusEnabled = enabled
 		if enabled {
 			ch.sidPlusOversample = SID_PLUS_OVERSAMPLE
-			ch.sidPlusLowpassState = 0
+			ch.sidPlusBqZ1 = 0
+			ch.sidPlusBqZ2 = 0
+			ch.initPlusBiquad(SID_PLUS_OVERSAMPLE)
 			ch.sidPlusDrive = SID_PLUS_DRIVE
 			ch.sidPlusRoomMix = SID_PLUS_ROOM_MIX
 			ch.sidPlusRoomDelay = SID_PLUS_ROOM_DELAY
 			ch.sidPlusRoomPos = 0
+			ch.sidPlusTransGain = 1.0
+			ch.sidPlusTransCounter = 0
 			if ch.sidPlusRoomBuf == nil || len(ch.sidPlusRoomBuf) != SID_PLUS_ROOM_DELAY {
 				ch.sidPlusRoomBuf = make([]float32, SID_PLUS_ROOM_DELAY)
 			} else {
@@ -2932,7 +3018,8 @@ func (chip *SoundChip) SetSIDPlusEnabled(enabled bool) {
 			ch.sidPlusGain = sidPlusMixGain[i%3]
 		} else {
 			ch.sidPlusOversample = 1
-			ch.sidPlusLowpassState = 0
+			ch.sidPlusBqZ1 = 0
+			ch.sidPlusBqZ2 = 0
 			ch.sidPlusDrive = 0
 			ch.sidPlusRoomMix = 0
 			ch.sidPlusRoomDelay = 0
@@ -2956,11 +3043,15 @@ func (chip *SoundChip) SetTEDPlusEnabled(enabled bool) {
 		ch.tedPlusEnabled = enabled
 		if enabled {
 			ch.tedPlusOversample = TED_PLUS_OVERSAMPLE
-			ch.tedPlusLowpassState = 0
+			ch.tedPlusBqZ1 = 0
+			ch.tedPlusBqZ2 = 0
+			ch.initPlusBiquad(TED_PLUS_OVERSAMPLE)
 			ch.tedPlusDrive = TED_PLUS_DRIVE
 			ch.tedPlusRoomMix = TED_PLUS_ROOM_MIX
 			ch.tedPlusRoomDelay = TED_PLUS_ROOM_DELAY
 			ch.tedPlusRoomPos = 0
+			ch.tedPlusTransGain = 1.0
+			ch.tedPlusTransCounter = 0
 			if ch.tedPlusRoomBuf == nil || len(ch.tedPlusRoomBuf) != TED_PLUS_ROOM_DELAY {
 				ch.tedPlusRoomBuf = make([]float32, TED_PLUS_ROOM_DELAY)
 			} else {
@@ -2971,7 +3062,8 @@ func (chip *SoundChip) SetTEDPlusEnabled(enabled bool) {
 			ch.tedPlusGain = tedPlusMixGain[i]
 		} else {
 			ch.tedPlusOversample = 1
-			ch.tedPlusLowpassState = 0
+			ch.tedPlusBqZ1 = 0
+			ch.tedPlusBqZ2 = 0
 			ch.tedPlusDrive = 0
 			ch.tedPlusRoomMix = 0
 			ch.tedPlusRoomDelay = 0
@@ -2995,11 +3087,15 @@ func (chip *SoundChip) SetAHXPlusEnabled(enabled bool) {
 		ch.ahxPlusEnabled = enabled
 		if enabled {
 			ch.ahxPlusOversample = AHX_PLUS_OVERSAMPLE
-			ch.ahxPlusLowpassState = 0
+			ch.ahxPlusBqZ1 = 0
+			ch.ahxPlusBqZ2 = 0
+			ch.initPlusBiquad(AHX_PLUS_OVERSAMPLE)
 			ch.ahxPlusDrive = AHX_PLUS_DRIVE
 			ch.ahxPlusRoomMix = AHX_PLUS_ROOM_MIX
 			ch.ahxPlusRoomDelay = AHX_PLUS_ROOM_DELAY
 			ch.ahxPlusRoomPos = 0
+			ch.ahxPlusTransGain = 1.0
+			ch.ahxPlusTransCounter = 0
 			if ch.ahxPlusRoomBuf == nil || len(ch.ahxPlusRoomBuf) != AHX_PLUS_ROOM_DELAY {
 				ch.ahxPlusRoomBuf = make([]float32, AHX_PLUS_ROOM_DELAY)
 			} else {
@@ -3011,7 +3107,8 @@ func (chip *SoundChip) SetAHXPlusEnabled(enabled bool) {
 			ch.ahxPlusPan = ahxPlusPan[i]
 		} else {
 			ch.ahxPlusOversample = 1
-			ch.ahxPlusLowpassState = 0
+			ch.ahxPlusBqZ1 = 0
+			ch.ahxPlusBqZ2 = 0
 			ch.ahxPlusDrive = 0
 			ch.ahxPlusRoomMix = 0
 			ch.ahxPlusRoomDelay = 0

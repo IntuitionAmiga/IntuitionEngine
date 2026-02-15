@@ -190,8 +190,8 @@ func TestAHXPlus_Constants(t *testing.T) {
 	if AHX_PLUS_OVERSAMPLE != 4 {
 		t.Errorf("AHX_PLUS_OVERSAMPLE should be 4, got %d", AHX_PLUS_OVERSAMPLE)
 	}
-	if AHX_PLUS_LOWPASS_ALPHA != 0.11 {
-		t.Errorf("AHX_PLUS_LOWPASS_ALPHA should be 0.11, got %.2f", AHX_PLUS_LOWPASS_ALPHA)
+	if AHX_PLUS_LOWPASS_ALPHA != 0.08 {
+		t.Errorf("AHX_PLUS_LOWPASS_ALPHA should be 0.08, got %.2f", AHX_PLUS_LOWPASS_ALPHA)
 	}
 	if AHX_PLUS_DRIVE != 0.16 {
 		t.Errorf("AHX_PLUS_DRIVE should be 0.16, got %.2f", AHX_PLUS_DRIVE)
