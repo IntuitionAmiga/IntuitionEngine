@@ -139,10 +139,11 @@ type IORegion struct {
 		These callbacks are invoked when a memory access falls within the
 		region's boundaries.
 	*/
-	start   uint32
-	end     uint32
-	onRead  func(addr uint32) uint32
-	onWrite func(addr uint32, value uint32)
+	start    uint32
+	end      uint32
+	onRead   func(addr uint32) uint32
+	onWrite  func(addr uint32, value uint32)
+	onWrite8 func(addr uint32, value uint8) // Optional: byte-level write handler
 }
 
 // IORegion64 represents a 64-bit-capable memory-mapped I/O region.
@@ -315,8 +316,13 @@ func (bus *MachineBus) Write16WithFault(addr uint32, value uint16) bool {
 			// This is a valid sign-extended address, handle normally but with mapped address
 			if regions, exists := bus.mapping[mapped&PAGE_MASK]; exists {
 				for _, region := range regions {
-					if mapped >= region.start && mapped <= region.end && region.onWrite != nil {
-						region.onWrite(mapped, uint32(value))
+					if mapped >= region.start && mapped <= region.end {
+						if region.onWrite8 != nil {
+							region.onWrite8(mapped, uint8(value))
+							region.onWrite8(mapped+1, uint8(value>>8))
+						} else if region.onWrite != nil {
+							region.onWrite(mapped, uint32(value))
+						}
 						// Still store in memory if within bounds
 						if mapped+2 <= uint32(len(bus.memory)) {
 							binary.LittleEndian.PutUint16(bus.memory[mapped:mapped+2], value)
@@ -338,8 +344,13 @@ func (bus *MachineBus) Write16WithFault(addr uint32, value uint16) bool {
 			// Call terminal output handler if available
 			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
 				for _, region := range regions {
-					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onWrite != nil {
-						region.onWrite(TERM_OUT, uint32(value))
+					if TERM_OUT >= region.start && TERM_OUT <= region.end {
+						if region.onWrite8 != nil {
+							region.onWrite8(TERM_OUT, uint8(value))
+							region.onWrite8(TERM_OUT+1, uint8(value>>8))
+						} else if region.onWrite != nil {
+							region.onWrite(TERM_OUT, uint32(value))
+						}
 						return true
 					}
 				}
@@ -358,8 +369,13 @@ func (bus *MachineBus) Write16WithFault(addr uint32, value uint16) bool {
 	// Process I/O regions
 	if regions, exists := bus.mapping[addr&PAGE_MASK]; exists {
 		for _, region := range regions {
-			if addr >= region.start && addr <= region.end && region.onWrite != nil {
-				region.onWrite(addr, uint32(value))
+			if addr >= region.start && addr <= region.end {
+				if region.onWrite8 != nil {
+					region.onWrite8(addr, uint8(value))
+					region.onWrite8(addr+1, uint8(value>>8))
+				} else if region.onWrite != nil {
+					region.onWrite(addr, uint32(value))
+				}
 				binary.LittleEndian.PutUint16(bus.memory[addr:addr+2], value)
 				return true
 			}
@@ -443,8 +459,12 @@ func (bus *MachineBus) Write8WithFault(addr uint32, value uint8) bool {
 			// This is a valid sign-extended address, handle normally but with mapped address
 			if regions, exists := bus.mapping[mapped&PAGE_MASK]; exists {
 				for _, region := range regions {
-					if mapped >= region.start && mapped <= region.end && region.onWrite != nil {
-						region.onWrite(mapped, uint32(value))
+					if mapped >= region.start && mapped <= region.end {
+						if region.onWrite8 != nil {
+							region.onWrite8(mapped, value)
+						} else if region.onWrite != nil {
+							region.onWrite(mapped, uint32(value))
+						}
 						// Still store in memory if within bounds
 						if mapped < uint32(len(bus.memory)) {
 							bus.memory[mapped] = value
@@ -466,8 +486,12 @@ func (bus *MachineBus) Write8WithFault(addr uint32, value uint8) bool {
 			// Call terminal output handler if available
 			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
 				for _, region := range regions {
-					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onWrite != nil {
-						region.onWrite(TERM_OUT, uint32(value))
+					if TERM_OUT >= region.start && TERM_OUT <= region.end {
+						if region.onWrite8 != nil {
+							region.onWrite8(TERM_OUT, value)
+						} else if region.onWrite != nil {
+							region.onWrite(TERM_OUT, uint32(value))
+						}
 						return true
 					}
 				}
@@ -486,8 +510,12 @@ func (bus *MachineBus) Write8WithFault(addr uint32, value uint8) bool {
 	// Process I/O regions
 	if regions, exists := bus.mapping[addr&PAGE_MASK]; exists {
 		for _, region := range regions {
-			if addr >= region.start && addr <= region.end && region.onWrite != nil {
-				region.onWrite(addr, uint32(value))
+			if addr >= region.start && addr <= region.end {
+				if region.onWrite8 != nil {
+					region.onWrite8(addr, value)
+				} else if region.onWrite != nil {
+					region.onWrite(addr, uint32(value))
+				}
 				bus.memory[addr] = value
 				return true
 			}
@@ -640,6 +668,48 @@ func (bus *MachineBus) MapIO(start, end uint32, onRead func(addr uint32) uint32,
 
 		for page := firstSignExtPage; page <= lastSignExtPage; page += PAGE_SIZE {
 			bus.mapping[page] = append(bus.mapping[page], region)
+		}
+	}
+}
+
+// MapIOByte registers an optional byte-level write handler for an existing I/O region.
+// This allows handlers that need byte-level awareness (e.g., accumulating 4 byte writes
+// into a 32-bit register value) to intercept Write8/Write16 calls individually.
+// The write8Slow path prefers onWrite8 when set, falling back to onWrite when nil.
+// The write16Slow path decomposes into two onWrite8 calls when onWrite8 is set.
+func (bus *MachineBus) MapIOByte(start, end uint32, onWrite8 func(addr uint32, value uint8)) {
+	if bus.sealed.Load() {
+		panic(fmt.Sprintf("MapIOByte called after execution started (mapping range $%05X-$%05X)", start, end))
+	}
+
+	// IORegion is a value type — each page has its own copy, so we must
+	// update every copy across all pages (no deduplication).
+	firstPage := start & PAGE_MASK
+	lastPage := end & PAGE_MASK
+	for page := firstPage; page <= lastPage; page += PAGE_SIZE {
+		regions := bus.mapping[page]
+		for i := range regions {
+			if regions[i].end >= start && regions[i].start <= end {
+				regions[i].onWrite8 = onWrite8
+			}
+		}
+		bus.mapping[page] = regions
+	}
+
+	// Also update sign-extended pages if applicable
+	if start >= 0x8000 && start <= 0xFFFF {
+		signExtStart := start | 0xFFFF0000
+		signExtEnd := end | 0xFFFF0000
+		firstSignExtPage := signExtStart & PAGE_MASK
+		lastSignExtPage := signExtEnd & PAGE_MASK
+		for page := firstSignExtPage; page <= lastSignExtPage; page += PAGE_SIZE {
+			regions := bus.mapping[page]
+			for i := range regions {
+				if regions[i].end >= start && regions[i].start <= end {
+					regions[i].onWrite8 = onWrite8
+				}
+			}
+			bus.mapping[page] = regions
 		}
 	}
 }
@@ -860,8 +930,13 @@ func (bus *MachineBus) write16Slow(addr uint32, value uint16) {
 			// This is a valid sign-extended address, handle normally but with mapped address
 			if regions, exists := bus.mapping[mapped&PAGE_MASK]; exists {
 				for _, region := range regions {
-					if mapped >= region.start && mapped <= region.end && region.onWrite != nil {
-						region.onWrite(mapped, uint32(value))
+					if mapped >= region.start && mapped <= region.end {
+						if region.onWrite8 != nil {
+							region.onWrite8(mapped, uint8(value))
+							region.onWrite8(mapped+1, uint8(value>>8))
+						} else if region.onWrite != nil {
+							region.onWrite(mapped, uint32(value))
+						}
 						// Still store in memory if within bounds
 						if mapped+2 <= uint32(len(bus.memory)) {
 							binary.LittleEndian.PutUint16(bus.memory[mapped:mapped+2], value)
@@ -883,8 +958,13 @@ func (bus *MachineBus) write16Slow(addr uint32, value uint16) {
 			// Call terminal output handler if available
 			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
 				for _, region := range regions {
-					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onWrite != nil {
-						region.onWrite(TERM_OUT, uint32(value))
+					if TERM_OUT >= region.start && TERM_OUT <= region.end {
+						if region.onWrite8 != nil {
+							region.onWrite8(TERM_OUT, uint8(value))
+							region.onWrite8(TERM_OUT+1, uint8(value>>8))
+						} else if region.onWrite != nil {
+							region.onWrite(TERM_OUT, uint32(value))
+						}
 						return
 					}
 				}
@@ -906,8 +986,13 @@ func (bus *MachineBus) write16Slow(addr uint32, value uint16) {
 	// Process I/O regions
 	if regions, exists := bus.mapping[addr&PAGE_MASK]; exists {
 		for _, region := range regions {
-			if addr >= region.start && addr <= region.end && region.onWrite != nil {
-				region.onWrite(addr, uint32(value))
+			if addr >= region.start && addr <= region.end {
+				if region.onWrite8 != nil {
+					region.onWrite8(addr, uint8(value))
+					region.onWrite8(addr+1, uint8(value>>8))
+				} else if region.onWrite != nil {
+					region.onWrite(addr, uint32(value))
+				}
 				binary.LittleEndian.PutUint16(bus.memory[addr:addr+2], value)
 				return
 			}
@@ -1048,8 +1133,12 @@ func (bus *MachineBus) write8Slow(addr uint32, value uint8) {
 			// This is a valid sign-extended address, handle normally but with mapped address
 			if regions, exists := bus.mapping[mapped&PAGE_MASK]; exists {
 				for _, region := range regions {
-					if mapped >= region.start && mapped <= region.end && region.onWrite != nil {
-						region.onWrite(mapped, uint32(value))
+					if mapped >= region.start && mapped <= region.end {
+						if region.onWrite8 != nil {
+							region.onWrite8(mapped, value)
+						} else if region.onWrite != nil {
+							region.onWrite(mapped, uint32(value))
+						}
 						// Still store in memory if within bounds
 						if mapped < uint32(len(bus.memory)) {
 							bus.memory[mapped] = value
@@ -1071,8 +1160,12 @@ func (bus *MachineBus) write8Slow(addr uint32, value uint8) {
 			// Call terminal output handler if available
 			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
 				for _, region := range regions {
-					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onWrite != nil {
-						region.onWrite(TERM_OUT, uint32(value))
+					if TERM_OUT >= region.start && TERM_OUT <= region.end {
+						if region.onWrite8 != nil {
+							region.onWrite8(TERM_OUT, value)
+						} else if region.onWrite != nil {
+							region.onWrite(TERM_OUT, uint32(value))
+						}
 						return
 					}
 				}
@@ -1094,8 +1187,12 @@ func (bus *MachineBus) write8Slow(addr uint32, value uint8) {
 	// Process I/O regions
 	if regions, exists := bus.mapping[addr&PAGE_MASK]; exists {
 		for _, region := range regions {
-			if addr >= region.start && addr <= region.end && region.onWrite != nil {
-				region.onWrite(addr, uint32(value))
+			if addr >= region.start && addr <= region.end {
+				if region.onWrite8 != nil {
+					region.onWrite8(addr, value)
+				} else if region.onWrite != nil {
+					region.onWrite(addr, uint32(value))
+				}
 				bus.memory[addr] = value
 				return
 			}

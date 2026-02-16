@@ -696,6 +696,7 @@ func main() {
 	sysBus.MapIO(AUDIO_CTRL, AUDIO_REG_END,
 		soundChip.HandleRegisterRead,
 		soundChip.HandleRegisterWrite)
+	sysBus.MapIOByte(AUDIO_CTRL, AUDIO_REG_END, soundChip.HandleRegisterWrite8)
 
 	sysBus.MapIO(VIDEO_CTRL, VIDEO_REG_END,
 		videoChip.HandleRead,

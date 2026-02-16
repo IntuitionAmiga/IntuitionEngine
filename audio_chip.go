@@ -915,6 +915,10 @@ type SoundChip struct {
 	preDelayBuf     []float32                      // 8ms pre-delay buffer
 	output          AudioOutput                    // Audio backend interface
 	sampleRateRecip float32                        // Pre-computed 1.0 / sampleRate
+
+	// Byte accumulator for sub-word flex register writes (Write8 path).
+	// Only covers bus-mapped channels 0-3 (4 * FLEX_CH_STRIDE = 256 bytes).
+	flexShadow [4 * FLEX_CH_STRIDE]byte
 }
 
 func NewSoundChip(backend int) (*SoundChip, error) {
@@ -1065,108 +1069,8 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 			log.Printf("invalid channel index: %d", chIndex)
 			return
 		}
-		ch := chip.channels[chIndex]
 		offset := (addr - FLEX_CH_BASE) % FLEX_CH_STRIDE
-		switch offset {
-		case FLEX_OFF_FREQ:
-			// 16.8 fixed-point: divide by 256 to get Hz
-			// Clamp frequency to prevent ultrasonic aliasing
-			// Frequencies above Nyquist (sampleRate/2) cause severe aliasing artifacts
-			freq := float32(value) / 256.0
-			if freq > MAX_FREQ {
-				freq = 0 // Mute ultrasonic frequencies (as real YM2149 would be inaudible)
-			}
-			ch.frequency = freq
-		case FLEX_OFF_VOL:
-			ch.volume = float32(value&BYTE_MASK) / NORMALISE_8BIT
-		case FLEX_OFF_CTRL:
-			ch.enabled = value != 0
-			newGate := value&GATE_MASK != 0
-
-			if newGate && !ch.gate {
-				ch.envelopePhase = ENV_ATTACK
-				ch.envelopeSample = 0
-				if !ch.sidEnvelope {
-					ch.envelopeLevel = 0
-				}
-			}
-
-			if !newGate && ch.gate {
-				if ch.envelopePhase == ENV_SUSTAIN || ch.sidEnvelope {
-					ch.releaseStartLevel = ch.envelopeLevel
-					ch.envelopePhase = ENV_RELEASE
-					ch.envelopeSample = 0
-				}
-			}
-			ch.gate = newGate
-		case FLEX_OFF_DUTY:
-			value16 := uint16(value & WORD_MASK)
-			ch.dutyCycle = float32(value16&BYTE_MASK) / PWM_RANGE
-			ch.pwmDepth = float32((value16>>PWM_DEPTH_SHIFT)&BYTE_MASK) / (PWM_RANGE * 2.0)
-		case FLEX_OFF_SWEEP:
-			ch.sweepEnabled = (value & SWEEP_ENABLE_MASK) != 0
-			ch.sweepPeriod = int((value >> SWEEP_PERIOD_SHIFT) & SWEEP_PERIOD_MASK)
-			ch.sweepShift = uint(value & SWEEP_SHIFT_MASK)
-			if ch.sweepShift == 0 {
-				ch.sweepShift = MIN_SWEEP_SHIFT
-			}
-			ch.sweepDirection = (value & SWEEP_DIR_MASK) != 0
-		case FLEX_OFF_ATK:
-			ch.attackTime = max(int(value*MS_TO_SAMPLES), MIN_ENV_TIME)
-			if ch.attackTime > 0 {
-				ch.attackRecip = 1.0 / float32(ch.attackTime)
-			} else {
-				ch.attackRecip = 0
-			}
-		case FLEX_OFF_DEC:
-			ch.decayTime = max(int(value*MS_TO_SAMPLES), MIN_ENV_TIME)
-			if ch.decayTime > 0 {
-				ch.decayRecip = 1.0 / float32(ch.decayTime)
-			} else {
-				ch.decayRecip = 0
-			}
-		case FLEX_OFF_SUS:
-			ch.sustainLevel = float32(value) / NORMALISE_8BIT
-		case FLEX_OFF_REL:
-			ch.releaseTime = max(int(value*MS_TO_SAMPLES), MIN_ENV_TIME)
-			if ch.releaseTime > 0 {
-				ch.releaseRecip = 1.0 / float32(ch.releaseTime)
-				if ch.envelopePhase == ENV_RELEASE {
-					ch.releaseDecay = float32(math.Pow(0.01, 1.0/float64(ch.releaseTime)))
-				}
-			} else {
-				ch.releaseRecip = 0
-			}
-		case FLEX_OFF_WAVE_TYPE:
-			ch.waveType = int(value % NUM_WAVE_TYPES)
-		case FLEX_OFF_PWM_CTRL:
-			ch.pwmEnabled = (value & PWM_ENABLE_MASK) != 0
-			ch.pwmRate = float32(value&PWM_RATE_MASK) * PWM_RATE_SCALE
-		case FLEX_OFF_NOISEMODE:
-			ch.noiseMode = int(value % NUM_NOISE_MODES)
-		case FLEX_OFF_PHASE:
-			ch.phase = 0 // Reset phase to start of waveform
-		case FLEX_OFF_RINGMOD:
-			if value&0x80 != 0 {
-				srcCh := int(value & 0x0F)
-				if srcCh < NUM_CHANNELS && srcCh != int(chIndex) {
-					ch.ringModSource = chip.channels[srcCh]
-				}
-			} else {
-				ch.ringModSource = nil
-			}
-		case FLEX_OFF_SYNC:
-			if value&0x80 != 0 {
-				srcCh := int(value & 0x0F)
-				if srcCh < NUM_CHANNELS && srcCh != int(chIndex) {
-					ch.syncSource = chip.channels[srcCh]
-				}
-			} else {
-				ch.syncSource = nil
-			}
-		default:
-			log.Printf("invalid flex register offset: 0x%X", offset)
-		}
+		chip.applyFlexRegister(chIndex, offset, value)
 		return
 	}
 
@@ -1366,6 +1270,159 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 		}
 	default:
 		log.Printf("invalid register address: 0x%X", addr)
+	}
+}
+
+// applyFlexRegister applies a 32-bit value to a flex channel register.
+// Must be called with chip.mu held.
+// Also syncs the shadow buffer so subsequent partial byte writes don't
+// assemble stale data from a previous write cycle.
+func (chip *SoundChip) applyFlexRegister(chIndex uint32, offset uint32, value uint32) {
+	// Sync shadow buffer for bus-mapped channels (keeps shadow consistent regardless of write size)
+	if chIndex < 4 {
+		baseIdx := chIndex*FLEX_CH_STRIDE + offset
+		chip.flexShadow[baseIdx] = byte(value)
+		chip.flexShadow[baseIdx+1] = byte(value >> 8)
+		chip.flexShadow[baseIdx+2] = byte(value >> 16)
+		chip.flexShadow[baseIdx+3] = byte(value >> 24)
+	}
+
+	ch := chip.channels[chIndex]
+	switch offset {
+	case FLEX_OFF_FREQ:
+		// 16.8 fixed-point: divide by 256 to get Hz
+		// Clamp frequency to prevent ultrasonic aliasing
+		// Frequencies above Nyquist (sampleRate/2) cause severe aliasing artifacts
+		freq := float32(value) / 256.0
+		if freq > MAX_FREQ {
+			freq = 0 // Mute ultrasonic frequencies (as real YM2149 would be inaudible)
+		}
+		ch.frequency = freq
+	case FLEX_OFF_VOL:
+		ch.volume = float32(value&BYTE_MASK) / NORMALISE_8BIT
+	case FLEX_OFF_CTRL:
+		ch.enabled = value != 0
+		newGate := value&GATE_MASK != 0
+
+		if newGate && !ch.gate {
+			ch.envelopePhase = ENV_ATTACK
+			ch.envelopeSample = 0
+			if !ch.sidEnvelope {
+				ch.envelopeLevel = 0
+			}
+		}
+
+		if !newGate && ch.gate {
+			if ch.envelopePhase == ENV_SUSTAIN || ch.sidEnvelope {
+				ch.releaseStartLevel = ch.envelopeLevel
+				ch.envelopePhase = ENV_RELEASE
+				ch.envelopeSample = 0
+			}
+		}
+		ch.gate = newGate
+	case FLEX_OFF_DUTY:
+		value16 := uint16(value & WORD_MASK)
+		ch.dutyCycle = float32(value16&BYTE_MASK) / PWM_RANGE
+		ch.pwmDepth = float32((value16>>PWM_DEPTH_SHIFT)&BYTE_MASK) / (PWM_RANGE * 2.0)
+	case FLEX_OFF_SWEEP:
+		ch.sweepEnabled = (value & SWEEP_ENABLE_MASK) != 0
+		ch.sweepPeriod = int((value >> SWEEP_PERIOD_SHIFT) & SWEEP_PERIOD_MASK)
+		ch.sweepShift = uint(value & SWEEP_SHIFT_MASK)
+		if ch.sweepShift == 0 {
+			ch.sweepShift = MIN_SWEEP_SHIFT
+		}
+		ch.sweepDirection = (value & SWEEP_DIR_MASK) != 0
+	case FLEX_OFF_ATK:
+		ch.attackTime = max(int(value*MS_TO_SAMPLES), MIN_ENV_TIME)
+		if ch.attackTime > 0 {
+			ch.attackRecip = 1.0 / float32(ch.attackTime)
+		} else {
+			ch.attackRecip = 0
+		}
+	case FLEX_OFF_DEC:
+		ch.decayTime = max(int(value*MS_TO_SAMPLES), MIN_ENV_TIME)
+		if ch.decayTime > 0 {
+			ch.decayRecip = 1.0 / float32(ch.decayTime)
+		} else {
+			ch.decayRecip = 0
+		}
+	case FLEX_OFF_SUS:
+		ch.sustainLevel = float32(value) / NORMALISE_8BIT
+	case FLEX_OFF_REL:
+		ch.releaseTime = max(int(value*MS_TO_SAMPLES), MIN_ENV_TIME)
+		if ch.releaseTime > 0 {
+			ch.releaseRecip = 1.0 / float32(ch.releaseTime)
+			if ch.envelopePhase == ENV_RELEASE {
+				ch.releaseDecay = float32(math.Pow(0.01, 1.0/float64(ch.releaseTime)))
+			}
+		} else {
+			ch.releaseRecip = 0
+		}
+	case FLEX_OFF_WAVE_TYPE:
+		ch.waveType = int(value % NUM_WAVE_TYPES)
+	case FLEX_OFF_PWM_CTRL:
+		ch.pwmEnabled = (value & PWM_ENABLE_MASK) != 0
+		ch.pwmRate = float32(value&PWM_RATE_MASK) * PWM_RATE_SCALE
+	case FLEX_OFF_NOISEMODE:
+		ch.noiseMode = int(value % NUM_NOISE_MODES)
+	case FLEX_OFF_PHASE:
+		ch.phase = 0 // Reset phase to start of waveform
+	case FLEX_OFF_RINGMOD:
+		if value&0x80 != 0 {
+			srcCh := int(value & 0x0F)
+			if srcCh < NUM_CHANNELS && srcCh != int(chIndex) {
+				ch.ringModSource = chip.channels[srcCh]
+			}
+		} else {
+			ch.ringModSource = nil
+		}
+	case FLEX_OFF_SYNC:
+		if value&0x80 != 0 {
+			srcCh := int(value & 0x0F)
+			if srcCh < NUM_CHANNELS && srcCh != int(chIndex) {
+				ch.syncSource = chip.channels[srcCh]
+			}
+		} else {
+			ch.syncSource = nil
+		}
+	default:
+		log.Printf("invalid flex register offset: 0x%X", offset)
+	}
+}
+
+// HandleRegisterWrite8 handles byte-level writes to audio registers.
+// For flex channel registers, bytes are accumulated in a shadow buffer.
+// When the 4th byte of a register arrives (offset & 3 == 3), the full
+// 32-bit value is assembled from the shadow and applied via applyFlexRegister.
+// For non-flex addresses, delegates directly to HandleRegisterWrite.
+func (chip *SoundChip) HandleRegisterWrite8(addr uint32, value uint8) {
+	// Non-flex addresses: delegate to existing handler (works fine for byte values)
+	if addr < FLEX_CH_BASE || addr > AUDIO_REG_END {
+		chip.HandleRegisterWrite(addr, uint32(value))
+		return
+	}
+
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
+
+	chIndex := (addr - FLEX_CH_BASE) / FLEX_CH_STRIDE
+	if chIndex >= 4 {
+		return // Only bus-mapped channels
+	}
+
+	offset := (addr - FLEX_CH_BASE) % FLEX_CH_STRIDE
+	shadowIdx := chIndex*FLEX_CH_STRIDE + offset
+	chip.flexShadow[shadowIdx] = value
+
+	if offset&3 == 3 {
+		// Last byte of a 4-byte LE write sequence — assemble and apply
+		regBase := offset &^ 3
+		baseIdx := chIndex*FLEX_CH_STRIDE + regBase
+		fullValue := uint32(chip.flexShadow[baseIdx]) |
+			uint32(chip.flexShadow[baseIdx+1])<<8 |
+			uint32(chip.flexShadow[baseIdx+2])<<16 |
+			uint32(value)<<24
+		chip.applyFlexRegister(chIndex, regBase, fullValue)
 	}
 }
 

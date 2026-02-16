@@ -93,6 +93,9 @@ func (chip *SoundChip) Reset() {
 		chip.allpassPos[i] = 0
 	}
 
+	// Clear byte accumulation shadow buffer
+	chip.flexShadow = [4 * FLEX_CH_STRIDE]byte{}
+
 	chip.enabled.Store(false)
 	chip.audioFrozen.Store(false)
 }
