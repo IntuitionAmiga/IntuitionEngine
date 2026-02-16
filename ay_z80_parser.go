@@ -200,12 +200,19 @@ func (p *ayZ80Parser) parseSongData(offset int) (AYZ80SongData, error) {
 }
 
 // detectAYSystem scans Z80 code blocks for I/O port patterns to determine the target system.
-// Looks for the standard Z80 AY access pattern: LD A,n (3E xx) followed by OUT (n),A (D3 port).
-// Requiring the preceding LD A instruction avoids false positives from non-code data bytes.
+//
+// Pass 1: Looks for OUT (n),A (D3 port) preceded by LD A,n (3E xx).
 // MSX: OUT (n),A with port A0 or A1
 // CPC: OUT (n),A with port F4 or F6
+//
+// Pass 2: Scans for ED-prefix OUT (C),r opcodes (ED xx where xx & 0xC7 == 0x41),
+// then searches backward up to 16 bytes for LD B,0xF4/0xF6 (06 F4/F6) or
+// LD BC,0xF4xx (01 lo F4) / LD BC,0xF6xx (01 lo F6). This catches the dominant
+// CPC pattern: LD BC,0xF4xx / OUT (C),C.
+//
 // Spectrum: default (OUT (C),r with port 0xFFFD/0xBFFD)
 func detectAYSystem(blocks []AYZ80Block) byte {
+	// Pass 1: OUT (n),A with preceding LD A,n
 	for _, block := range blocks {
 		for i := 2; i+1 < len(block.Data); i++ {
 			if block.Data[i] != 0xD3 {
@@ -224,6 +231,36 @@ func detectAYSystem(blocks []AYZ80Block) byte {
 			}
 		}
 	}
+
+	// Pass 2: ED-prefix OUT (C),r — scan for CPC PPI port patterns
+	for _, block := range blocks {
+		for i := 0; i+1 < len(block.Data); i++ {
+			if block.Data[i] != 0xED {
+				continue
+			}
+			// OUT (C),r opcodes: ED 41/49/51/59/61/69/71/79 — pattern: xx & 0xC7 == 0x41
+			if block.Data[i+1]&0xC7 != 0x41 {
+				continue
+			}
+			// Search backward up to 16 bytes for LD B,0xF4/0xF6 or LD BC,0xF4xx/0xF6xx
+			start := max(i-16, 0)
+			for j := i - 1; j >= start; j-- {
+				// LD B, n (06 n)
+				if block.Data[j] == 0x06 && j+1 < len(block.Data) {
+					if block.Data[j+1] == 0xF4 || block.Data[j+1] == 0xF6 {
+						return ayZXSystemCPC
+					}
+				}
+				// LD BC, nn (01 lo hi) — hi byte is the B register value
+				if block.Data[j] == 0x01 && j+2 < len(block.Data) {
+					if block.Data[j+2] == 0xF4 || block.Data[j+2] == 0xF6 {
+						return ayZXSystemCPC
+					}
+				}
+			}
+		}
+	}
+
 	return ayZXSystemSpectrum
 }
 

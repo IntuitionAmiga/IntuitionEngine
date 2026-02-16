@@ -59,7 +59,7 @@ IE32, IE64, M68020, Z80, 6502, x86 (32-bit)
 
 ### Audio File Formats
 - `.ym` - Atari ST YM format (PSG)
-- `.ay` - ZXAYEMUL with embedded Z80 player (PSG)
+- `.ay` - ZXAYEMUL with embedded Z80 player (PSG; ZX Spectrum/Amstrad CPC/MSX auto-detected)
 - `.vgm` / `.vgz` - Video Game Music streams (PSG, SN76489)
 - `.sndh` - Atari ST SNDH with embedded M68K code (PSG)
 - `.sid` - Commodore 64 SID tunes (PSID v1-v4, RSID)

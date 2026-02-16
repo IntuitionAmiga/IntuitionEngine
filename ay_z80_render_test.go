@@ -78,6 +78,90 @@ func TestRenderAYZ80MetadataAndClock(t *testing.T) {
 	}
 }
 
+func buildAYZ80EmulDataCPC(songName string, lengthFrames uint16) []byte {
+	data := make([]byte, 0x120)
+	copy(data[0:8], []byte("ZXAYEMUL"))
+	binary.BigEndian.PutUint16(data[0x08:0x0A], 0x0103)
+	data[0x0A] = 0x03
+	data[0x0B] = 0x00
+	data[0x10] = 0x00
+	data[0x11] = 0x00
+	binary.BigEndian.PutUint16(data[0x12:0x14], 0x0010) // songs at 0x22
+
+	songStruct := 0x22
+	songData := 0x30
+	points := 0x40
+	blocks := 0x50
+	blockData := 0x60
+	nameOff := 0x80
+
+	binary.BigEndian.PutUint16(data[songStruct:songStruct+2], uint16(nameOff-songStruct))
+	binary.BigEndian.PutUint16(data[songStruct+2:songStruct+4], uint16(songData-(songStruct+2)))
+	data[songData] = 0
+	data[songData+1] = 1
+	data[songData+2] = 2
+	data[songData+3] = 3
+	binary.BigEndian.PutUint16(data[songData+4:songData+6], lengthFrames)
+	binary.BigEndian.PutUint16(data[songData+6:songData+8], 0)
+	data[songData+8] = 0x00
+	data[songData+9] = 0x00
+	binary.BigEndian.PutUint16(data[songData+10:songData+12], uint16(points-(songData+10)))
+	binary.BigEndian.PutUint16(data[songData+12:songData+14], uint16(blocks-(songData+12)))
+
+	binary.BigEndian.PutUint16(data[points:points+2], 0xF000)
+	binary.BigEndian.PutUint16(data[points+2:points+4], 0x4000)
+	binary.BigEndian.PutUint16(data[points+4:points+6], 0x4000)
+
+	// CPC PPI protocol Z80 code:
+	// Select register 7: latch 0x07 to Port A (F4), select via Port C (F6) 0xC0
+	// Write value 0x38: latch 0x38 to Port A (F4), write via Port C (F6) 0x80
+	cpcCode := []byte{
+		// Select register 7
+		0x01, 0x07, 0xF4, // LD BC, 0xF407  (B=0xF4, C=0x07)
+		0xED, 0x49, // OUT (C), C      (Port A: latch 0x07)
+		0x01, 0xC0, 0xF6, // LD BC, 0xF6C0  (B=0xF6, C=0xC0)
+		0xED, 0x49, // OUT (C), C      (Port C: select reg)
+		// Write value 0x38
+		0x01, 0x38, 0xF4, // LD BC, 0xF438  (B=0xF4, C=0x38)
+		0xED, 0x49, // OUT (C), C      (Port A: latch 0x38)
+		0x01, 0x80, 0xF6, // LD BC, 0xF680  (B=0xF6, C=0x80)
+		0xED, 0x49, // OUT (C), C      (Port C: write data)
+		0xC9, // RET
+	}
+
+	binary.BigEndian.PutUint16(data[blocks:blocks+2], 0x4000)
+	binary.BigEndian.PutUint16(data[blocks+2:blocks+4], uint16(len(cpcCode)))
+	binary.BigEndian.PutUint16(data[blocks+4:blocks+6], uint16(blockData-(blocks+4)))
+	binary.BigEndian.PutUint16(data[blocks+6:blocks+8], 0x0000)
+
+	copy(data[blockData:], cpcCode)
+	copy(data[nameOff:], append([]byte(songName), 0x00))
+	return data
+}
+
+func TestRenderAYZ80CPCMetadataAndClock(t *testing.T) {
+	data := buildAYZ80EmulDataCPC("CPCSong", 2)
+	meta, events, total, clockHz, frameRate, _, _, _, _, err := renderAYZ80(data, 44100)
+	if err != nil {
+		t.Fatalf("render ay z80 cpc: %v", err)
+	}
+	if meta.Title != "CPCSong" || meta.System != "Amstrad CPC" {
+		t.Fatalf("unexpected metadata: title=%q system=%q", meta.Title, meta.System)
+	}
+	if clockHz != PSG_CLOCK_CPC {
+		t.Fatalf("expected CPC clock %d, got %d", PSG_CLOCK_CPC, clockHz)
+	}
+	if frameRate != 50 {
+		t.Fatalf("expected frame rate 50, got %d", frameRate)
+	}
+	if len(events) == 0 {
+		t.Fatalf("expected PSG events from CPC code, got none")
+	}
+	if total == 0 {
+		t.Fatalf("expected total samples > 0")
+	}
+}
+
 func TestRenderAYZ80LoopDefault(t *testing.T) {
 	data := buildAYZ80EmulData("LoopSong", 0)
 	_, _, total, _, _, loop, loopSample, _, _, err := renderAYZ80WithLimit(data, 44100, 2)

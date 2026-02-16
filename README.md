@@ -3969,7 +3969,7 @@ The PSG chip emulates the General Instrument AY-3-8910 and Yamaha YM2149, provid
 - Per-channel mixer control (tone/noise enable)
 - 4-bit volume control per channel (or envelope)
 - PSG+ enhanced audio processing mode
-- Support for .YM, .AY, .VGM, .VGZ, and .SNDH file playback (VGM supports both AY-3-8910 and SN76489 chip data)
+- Support for .YM, .AY, .VGM, .VGZ, and .SNDH file playback (VGM supports both AY-3-8910 and SN76489 chip data; .AY files auto-detect ZX Spectrum, Amstrad CPC, and MSX with correct clock speeds)
 
 ### Tone Generation:
 Each channel has a 12-bit frequency divider:
@@ -4106,7 +4106,7 @@ STORE A, @0x0F0C0D     ; Register 13: Envelope shape
 
 The PSG player supports multiple music file formats with automatic detection:
 - **.ym** - YM2149 register dump frames (50Hz playback)
-- **.ay** - ZX Spectrum format with embedded Z80 code
+- **.ay** - ZXAYEMUL format with embedded Z80 code (ZX Spectrum 1.77 MHz, Amstrad CPC 1.0 MHz, MSX 1.79 MHz auto-detected)
 - **.sndh** - Atari ST format with embedded M68K code
 - **.vgm** - Video Game Music format with timed PSG events (AY-3-8910 native; SN76489 auto-converted to AY registers)
 

@@ -20,6 +20,8 @@ const (
 	PSG_CLOCK_MSX         = 1789773
 
 	Z80_CLOCK_ZX_SPECTRUM = 3494400
+	Z80_CLOCK_CPC         = 4000000
+	Z80_CLOCK_MSX         = 3579545
 
 	// Z80 PSG port I/O mapping for standalone Z80 programs
 	// Use: OUT ($F0),A to select register, OUT ($F1),A to write data

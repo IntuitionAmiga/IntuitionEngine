@@ -27,6 +27,10 @@ type ayPlaybackBusZ80 struct {
 	dataPortMask   uint16 // Mask for port matching
 	dataPortVal    uint16 // Value after masking for data port
 	useByteMatch   bool   // True if matching on low byte only
+
+	// CPC PPI 8255 state machine
+	usePPI   bool // True for CPC — uses PPI protocol instead of direct port matching
+	ppiPortA byte // Port A latch (data bus to PSG)
 }
 
 func newAyPlaybackBusZ80(ram *[0x10000]byte, system byte, engine ayPlaybackPSGWriterZ80) *ayPlaybackBusZ80 {
@@ -43,10 +47,9 @@ func newAyPlaybackBusZ80(ram *[0x10000]byte, system byte, engine ayPlaybackPSGWr
 func (b *ayPlaybackBusZ80) updatePortMatching() {
 	switch b.system {
 	case ayZXSystemCPC:
-		// CPC: low byte match F4/F6
-		b.useByteMatch = true
-		b.selectPortVal = 0xF4
-		b.dataPortVal = 0xF6
+		// CPC uses PPI 8255 protocol: port 0xF4xx = Port A (data latch),
+		// port 0xF6xx = Port C (control). No direct select/data matching.
+		b.usePPI = true
 	case ayZXSystemMSX:
 		// MSX: low byte match A0/A1
 		b.useByteMatch = true
@@ -71,6 +74,9 @@ func (b *ayPlaybackBusZ80) Write(addr uint16, value byte) {
 }
 
 func (b *ayPlaybackBusZ80) In(port uint16) byte {
+	if b.usePPI {
+		return b.inCPC(port)
+	}
 	if b.isAYDataPort(port) && b.regSelect < PSG_REG_COUNT {
 		return b.regs[b.regSelect]
 	}
@@ -78,21 +84,78 @@ func (b *ayPlaybackBusZ80) In(port uint16) byte {
 }
 
 func (b *ayPlaybackBusZ80) Out(port uint16, value byte) {
+	if b.usePPI {
+		b.outCPC(port, value)
+		return
+	}
 	if b.isAYSelectPort(port) {
 		b.regSelect = value & 0x0F
 		return
 	}
-	if b.isAYDataPort(port) && b.regSelect < PSG_REG_COUNT {
-		b.regs[b.regSelect] = value
-		b.writes = append(b.writes, ayPlaybackWriteZ80{
-			Reg:   b.regSelect,
-			Value: value,
-			Cycle: b.cycles,
-		})
-		if b.engine != nil {
-			b.engine.WriteRegister(b.regSelect, value)
+	if b.isAYDataPort(port) {
+		b.writeReg(value)
+	}
+}
+
+// writeReg writes a value to the currently selected PSG register and records the event.
+func (b *ayPlaybackBusZ80) writeReg(value byte) {
+	if b.regSelect >= PSG_REG_COUNT {
+		return
+	}
+	b.regs[b.regSelect] = value
+	b.writes = append(b.writes, ayPlaybackWriteZ80{
+		Reg:   b.regSelect,
+		Value: value,
+		Cycle: b.cycles,
+	})
+	if b.engine != nil {
+		b.engine.WriteRegister(b.regSelect, value)
+	}
+}
+
+// cpcPPIPort determines the CPC PPI port from a Z80 port address.
+// OUT (C),r puts B in the high byte; OUT (n),A puts the port in the low byte.
+// Returns 0xF4 (Port A), 0xF6 (Port C), or 0 (no match).
+func cpcPPIPort(port uint16) byte {
+	hi := byte(port >> 8)
+	if hi == 0xF4 || hi == 0xF6 {
+		return hi
+	}
+	lo := byte(port)
+	if lo == 0xF4 || lo == 0xF6 {
+		return lo
+	}
+	return 0
+}
+
+// outCPC implements CPC PPI 8255 protocol for PSG access.
+// Port A (0xF4): latch data byte in ppiPortA.
+// Port C (0xF6): control bits in value & 0xC0 determine operation:
+//
+//	0xC0 = select register (ppiPortA & 0x0F → regSelect)
+//	0x80 = write data (ppiPortA → regs[regSelect])
+func (b *ayPlaybackBusZ80) outCPC(port uint16, value byte) {
+	ppi := cpcPPIPort(port)
+	switch ppi {
+	case 0xF4:
+		b.ppiPortA = value
+	case 0xF6:
+		switch value & 0xC0 {
+		case 0xC0:
+			b.regSelect = b.ppiPortA & 0x0F
+		case 0x80:
+			b.writeReg(b.ppiPortA)
 		}
 	}
+}
+
+// inCPC handles IN for CPC — reads current register value via Port A.
+func (b *ayPlaybackBusZ80) inCPC(port uint16) byte {
+	ppi := cpcPPIPort(port)
+	if ppi == 0xF4 && b.regSelect < PSG_REG_COUNT {
+		return b.regs[b.regSelect]
+	}
+	return 0
 }
 
 func (b *ayPlaybackBusZ80) Tick(cycles int) {

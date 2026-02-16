@@ -37,8 +37,18 @@ func renderAYZ80WithLimit(data []byte, sampleRate int, maxFrames int) (PSGMetada
 	}
 	song := file.Songs[songIndex]
 	frameRate := uint16(50)
-	clockHz := uint32(PSG_CLOCK_ZX_SPECTRUM)
-	z80Clock := uint32(Z80_CLOCK_ZX_SPECTRUM)
+	var clockHz, z80Clock uint32
+	switch song.Data.PlayerSystem {
+	case ayZXSystemCPC:
+		clockHz = PSG_CLOCK_CPC
+		z80Clock = Z80_CLOCK_CPC
+	case ayZXSystemMSX:
+		clockHz = PSG_CLOCK_MSX
+		z80Clock = Z80_CLOCK_MSX
+	default:
+		clockHz = PSG_CLOCK_ZX_SPECTRUM
+		z80Clock = Z80_CLOCK_ZX_SPECTRUM
+	}
 
 	player, err := newAYZ80Player(file, songIndex, sampleRate, z80Clock, frameRate, nil)
 	if err != nil {

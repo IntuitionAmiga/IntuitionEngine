@@ -296,7 +296,7 @@ The `RUN` command auto-detects the CPU core from the file extension.
 ```bash
 # PSG (AY-3-8910/YM2149; VGM also supports SN76489)
 ./bin/IntuitionEngine -psg track.ym       # Atari ST YM format
-./bin/IntuitionEngine -psg track.ay       # ZXAYEMUL (with embedded Z80 player)
+./bin/IntuitionEngine -psg track.ay       # ZXAYEMUL (ZX Spectrum/Amstrad CPC/MSX auto-detected)
 ./bin/IntuitionEngine -psg track.vgm      # VGM stream (AY-3-8910 + SN76489)
 ./bin/IntuitionEngine -psg track.vgz      # VGM compressed (AY-3-8910 + SN76489)
 ./bin/IntuitionEngine -psg track.sndh     # Atari ST SNDH (with embedded M68K code)

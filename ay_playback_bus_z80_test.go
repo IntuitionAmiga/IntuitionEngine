@@ -27,15 +27,85 @@ func TestAYZ80BusSpectrumPorts(t *testing.T) {
 }
 
 func TestAYZ80BusCPCPorts(t *testing.T) {
+	// CPC PPI protocol: latch register via Port A, select via Port C 0xC0,
+	// latch data via Port A, write via Port C 0x80.
+	// Uses OUT (C),r where B=0xF4/0xF6, so port high byte is the PPI chip select.
 	var ram [0x10000]byte
 	bus := newAyPlaybackBusZ80(&ram, ayZXSystemCPC, nil)
-	bus.Out(0x12F4, 0x03)
-	bus.Out(0x34F6, 0x99)
+
+	// Select register 3: latch 0x03 to Port A, then control 0xC0 to Port C
+	bus.Out(0xF400, 0x03) // Port A: latch register number
+	bus.Out(0xF600, 0xC0) // Port C: select register (bits 7:6 = 11)
+	// Write value 0x99: latch to Port A, then control 0x80 to Port C
+	bus.Out(0xF400, 0x99) // Port A: latch data value
+	bus.Out(0xF600, 0x80) // Port C: write data (bits 7:6 = 10)
+
 	if len(bus.writes) != 1 {
 		t.Fatalf("expected 1 write, got %d", len(bus.writes))
 	}
 	if bus.writes[0].Reg != 0x03 || bus.writes[0].Value != 0x99 {
-		t.Fatalf("unexpected write: %+v", bus.writes[0])
+		t.Fatalf("unexpected write: reg=%d val=0x%02X, want reg=3 val=0x99", bus.writes[0].Reg, bus.writes[0].Value)
+	}
+}
+
+func TestAYZ80BusCPCPortsOutNA(t *testing.T) {
+	// CPC PPI protocol via OUT (n),A — port in low byte (0xF4/0xF6)
+	var ram [0x10000]byte
+	bus := newAyPlaybackBusZ80(&ram, ayZXSystemCPC, nil)
+
+	bus.Out(0x00F4, 0x07) // Port A via low byte: latch register 7
+	bus.Out(0x00F6, 0xC0) // Port C via low byte: select register
+	bus.Out(0x00F4, 0x55) // Port A: latch data 0x55
+	bus.Out(0x00F6, 0x80) // Port C: write data
+
+	if len(bus.writes) != 1 {
+		t.Fatalf("expected 1 write, got %d", len(bus.writes))
+	}
+	if bus.writes[0].Reg != 0x07 || bus.writes[0].Value != 0x55 {
+		t.Fatalf("unexpected write: reg=%d val=0x%02X, want reg=7 val=0x55", bus.writes[0].Reg, bus.writes[0].Value)
+	}
+}
+
+func TestAYZ80BusCPCPortsMultipleRegs(t *testing.T) {
+	// Write to multiple PSG registers via PPI protocol
+	var ram [0x10000]byte
+	writer := &ayZ80TestWriter{}
+	bus := newAyPlaybackBusZ80(&ram, ayZXSystemCPC, writer)
+
+	// Write register 0 = 0xAA
+	bus.Out(0xF400, 0x00)
+	bus.Out(0xF600, 0xC0)
+	bus.Out(0xF400, 0xAA)
+	bus.Out(0xF600, 0x80)
+
+	// Write register 7 = 0x38
+	bus.Out(0xF400, 0x07)
+	bus.Out(0xF600, 0xC0)
+	bus.Out(0xF400, 0x38)
+	bus.Out(0xF600, 0x80)
+
+	if len(bus.writes) != 2 {
+		t.Fatalf("expected 2 writes, got %d", len(bus.writes))
+	}
+	if writer.regs[0] != 0xAA {
+		t.Fatalf("engine reg 0 not updated: got 0x%02X", writer.regs[0])
+	}
+	if writer.regs[7] != 0x38 {
+		t.Fatalf("engine reg 7 not updated: got 0x%02X", writer.regs[7])
+	}
+}
+
+func TestAYZ80BusCPCInactiveControl(t *testing.T) {
+	// Port C with bits 7:6 = 00 or 01 should be no-ops
+	var ram [0x10000]byte
+	bus := newAyPlaybackBusZ80(&ram, ayZXSystemCPC, nil)
+
+	bus.Out(0xF400, 0x07)
+	bus.Out(0xF600, 0x00) // Inactive
+	bus.Out(0xF600, 0x40) // Inactive
+
+	if len(bus.writes) != 0 {
+		t.Fatalf("expected 0 writes for inactive control, got %d", len(bus.writes))
 	}
 }
 
@@ -102,19 +172,16 @@ func BenchmarkAYZ80_IsSelectPort_Spectrum(b *testing.B) {
 	}
 }
 
-// BenchmarkAYZ80_IsSelectPort_CPC benchmarks CPC port matching
-func BenchmarkAYZ80_IsSelectPort_CPC(b *testing.B) {
-	var ram [0x10000]byte
-	bus := newAyPlaybackBusZ80(&ram, ayZXSystemCPC, nil)
-
-	ports := []uint16{0xF4, 0x12F4, 0xF6, 0x34F6, 0x1234}
+// BenchmarkAYZ80_PPIPort_CPC benchmarks CPC PPI port identification
+func BenchmarkAYZ80_PPIPort_CPC(b *testing.B) {
+	ports := []uint16{0xF400, 0xF600, 0x00F4, 0x00F6, 0x1234}
 
 	b.ResetTimer()
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
 		port := ports[i%len(ports)]
-		_ = bus.isAYSelectPort(port)
+		_ = cpcPPIPort(port)
 	}
 }
 
@@ -150,7 +217,7 @@ func BenchmarkAYZ80_Out_Spectrum(b *testing.B) {
 	}
 }
 
-// BenchmarkAYZ80_Out_CPC benchmarks CPC OUT instruction
+// BenchmarkAYZ80_Out_CPC benchmarks CPC OUT via PPI protocol (select + write)
 func BenchmarkAYZ80_Out_CPC(b *testing.B) {
 	var ram [0x10000]byte
 	writer := &ayZ80TestWriter{}
@@ -161,7 +228,9 @@ func BenchmarkAYZ80_Out_CPC(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		bus.writes = bus.writes[:0]
-		bus.Out(0xF4, byte(i))
-		bus.Out(0xF6, byte(i>>8))
+		bus.Out(0xF400, byte(i&0x0F)) // Latch register
+		bus.Out(0xF600, 0xC0)         // Select
+		bus.Out(0xF400, byte(i>>8))   // Latch data
+		bus.Out(0xF600, 0x80)         // Write
 	}
 }

@@ -165,6 +165,61 @@ func buildAYZ80File(blockCode []byte) []byte {
 	return data
 }
 
+func TestDetectAYSystem_CPC_EDPrefix(t *testing.T) {
+	// LD BC, 0xF407; OUT (C), C (ED 49) — CPC ED-prefix pattern
+	blocks := []AYZ80Block{{Addr: 0x4000, Data: []byte{
+		0x01, 0x07, 0xF4, // LD BC, 0xF407
+		0xED, 0x49, // OUT (C), C
+		0xC9,
+	}}}
+	system := detectAYSystem(blocks)
+	if system != ayZXSystemCPC {
+		t.Errorf("expected CPC (1) for ED-prefix OUT (C),C with LD BC,0xF4xx, got %d", system)
+	}
+}
+
+func TestDetectAYSystem_CPC_LDB(t *testing.T) {
+	// LD B, 0xF4; LD C, 0x07; OUT (C), A (ED 79) — CPC with separate LD B
+	blocks := []AYZ80Block{{Addr: 0x4000, Data: []byte{
+		0x06, 0xF4, // LD B, 0xF4
+		0x0E, 0x07, // LD C, 0x07
+		0xED, 0x79, // OUT (C), A
+		0xC9,
+	}}}
+	system := detectAYSystem(blocks)
+	if system != ayZXSystemCPC {
+		t.Errorf("expected CPC (1) for LD B,0xF4 + OUT (C),A, got %d", system)
+	}
+}
+
+func TestDetectAYSystem_CPC_F6Port(t *testing.T) {
+	// LD B, 0xF6; OUT (C), A — CPC control port
+	blocks := []AYZ80Block{{Addr: 0x4000, Data: []byte{
+		0x06, 0xF6, // LD B, 0xF6
+		0x0E, 0xC0, // LD C, 0xC0
+		0xED, 0x79, // OUT (C), A
+		0xC9,
+	}}}
+	system := detectAYSystem(blocks)
+	if system != ayZXSystemCPC {
+		t.Errorf("expected CPC (1) for LD B,0xF6 + OUT (C),A, got %d", system)
+	}
+}
+
+func TestDetectAYSystem_EDPrefix_NotCPC(t *testing.T) {
+	// ED-prefix OUT but with non-CPC port in B — should default to Spectrum
+	blocks := []AYZ80Block{{Addr: 0x4000, Data: []byte{
+		0x06, 0x55, // LD B, 0x55 (not CPC)
+		0x0E, 0x07, // LD C, 0x07
+		0xED, 0x79, // OUT (C), A
+		0xC9,
+	}}}
+	system := detectAYSystem(blocks)
+	if system != ayZXSystemSpectrum {
+		t.Errorf("expected Spectrum (0) for non-CPC ED-prefix, got %d", system)
+	}
+}
+
 func TestParseAYZ80_DetectsMSXSystem(t *testing.T) {
 	// Build an AY file with MSX OUT instructions in the Z80 code
 	msxCode := []byte{0x3E, 0x07, 0xD3, 0xA0, 0x3E, 0x3E, 0xD3, 0xA1, 0xC9}
