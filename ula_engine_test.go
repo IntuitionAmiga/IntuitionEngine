@@ -39,9 +39,9 @@ func TestULA_DefaultState(t *testing.T) {
 		t.Errorf("Expected border=0, got %d", ula.border)
 	}
 
-	// Should be enabled by default
-	if !ula.IsEnabled() {
-		t.Error("Expected ULA to be enabled by default")
+	// Should be disabled by default (enabled via ULA_CTRL register)
+	if ula.IsEnabled() {
+		t.Error("Expected ULA to be disabled by default")
 	}
 
 	// Flash state should be off
@@ -407,6 +407,9 @@ func TestULA_FlashTiming(t *testing.T) {
 // TestULA_GetFrame tests VideoSource interface method
 func TestULA_GetFrame(t *testing.T) {
 	ula := NewULAEngine(nil)
+
+	// Enable ULA via control register
+	ula.HandleWrite(ULA_CTRL, ULA_CTRL_ENABLE)
 
 	// Enabled - should return frame
 	frame := ula.GetFrame()
