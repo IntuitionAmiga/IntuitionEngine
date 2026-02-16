@@ -146,6 +146,23 @@ The VGM (Video Game Music) parser supports playback of `.vgm` and `.vgz` (gzip-c
 
 SN76489 conversion maps tone channels 0-2 to AY channels A/B/C with frequency divider scaling based on chip clocks. Attenuation is inverted (SN: 0=max, 15=off → AY: 15=max, 0=off). The SN76489 noise channel maps to the AY noise generator with the mixer register controlling noise enable on channel C. Noise rate 3 (which uses channel 2's tone output as the noise clock on real hardware) is dynamically tracked - updating channel 2's tone divider automatically re-emits the noise period with clock-scaled frequency conversion.
 
+### Tracker Format Support
+
+ZX Spectrum tracker formats are played back via Z80 CPU emulation. Each format has a Z80 player routine (embedded in the engine) that reads the module data and drives AY registers at the correct tempo:
+
+| Format | Extension | Description |
+|--------|-----------|-------------|
+| VTX | `.vtx` | Vortex Tracker (LH5-compressed YM register data) |
+| PT3 | `.pt3` | ProTracker 3.x (Vortex Tracker II) |
+| PT2 | `.pt2` | ProTracker 2 |
+| PT1 | `.pt1` | ProTracker 1 |
+| STC | `.stc` | Sound Tracker Compiled |
+| SQT | `.sqt` | SQ-Tracker |
+| ASC | `.asc` | ASC Sound Master |
+| FTC | `.ftc` | Fast Tracker (ZX) |
+
+Player routines are in `sdk/players/` and can be rebuilt with `make players` (requires `vasmz80_std`).
+
 ## Build Scripts
 
 Individual target scripts and a master build-all:

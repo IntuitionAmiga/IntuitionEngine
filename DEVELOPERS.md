@@ -300,6 +300,14 @@ The `RUN` command auto-detects the CPU core from the file extension.
 ./bin/IntuitionEngine -psg track.vgm      # VGM stream (AY-3-8910 + SN76489)
 ./bin/IntuitionEngine -psg track.vgz      # VGM compressed (AY-3-8910 + SN76489)
 ./bin/IntuitionEngine -psg track.sndh     # Atari ST SNDH (with embedded M68K code)
+./bin/IntuitionEngine -psg track.vtx      # Vortex Tracker (LHA-compressed YM)
+./bin/IntuitionEngine -psg track.pt3      # ProTracker 3 (Z80 tracker)
+./bin/IntuitionEngine -psg track.stc      # Sound Tracker Compiled (Z80 tracker)
+./bin/IntuitionEngine -psg track.pt2      # ProTracker 2 (Z80 tracker)
+./bin/IntuitionEngine -psg track.pt1      # ProTracker 1 (Z80 tracker)
+./bin/IntuitionEngine -psg track.sqt      # SQ-Tracker (Z80 tracker)
+./bin/IntuitionEngine -psg track.asc      # ASC Sound Master (Z80 tracker)
+./bin/IntuitionEngine -psg track.ftc      # Fast Tracker ZX (Z80 tracker)
 ./bin/IntuitionEngine -psg+ track.ym      # Enhanced audio
 
 # SID (Commodore 64)

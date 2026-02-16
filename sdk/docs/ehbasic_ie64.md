@@ -1196,7 +1196,7 @@ Supported formats:
 | Extension | Engine |
 |-----------|--------|
 | `.sid` | SID (Commodore 64) |
-| `.ym`, `.ay`, `.sndh` | PSG (AY-3-8910) |
+| `.ym`, `.ay`, `.vgm`, `.vgz`, `.vtx`, `.sndh`, `.pt3`, `.pt2`, `.pt1`, `.stc`, `.sqt`, `.asc`, `.ftc` | PSG (AY-3-8910) |
 | `.ted`, `.prg` | TED (Commodore 16) |
 | `.ahx` | AHX (Amiga tracker) |
 

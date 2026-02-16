@@ -116,6 +116,18 @@ func (p *PSGPlayer) Load(path string) error {
 			return err
 		}
 		return p.loadSNDH(data)
+	case ".vtx":
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return p.loadVTX(data)
+	case ".pt3", ".pt2", ".pt1", ".stc", ".sqt", ".asc", ".ftc":
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return p.loadTracker(ext, data)
 	default:
 		return fmt.Errorf("unsupported PSG file type: %s", ext)
 	}
@@ -171,6 +183,9 @@ func (p *PSGPlayer) LoadData(data []byte) error {
 		p.frameRate = file.FrameRate
 		p.clockHz = file.ClockHz
 		return p.loadFrames(file.Frames, file.FrameRate, file.ClockHz, file.LoopFrame)
+	}
+	if isVTXData(data) {
+		return p.loadVTX(data)
 	}
 	if isLHAData(data) {
 		decompressed, err := DecompressLHAData(data)
@@ -253,6 +268,72 @@ func (p *PSGPlayer) loadSNDH(data []byte) error {
 	p.engine.SetClockHz(clockHz)
 	p.engine.SetEvents(events, total, loop, loopSample)
 	return nil
+}
+
+func (p *PSGPlayer) loadVTX(data []byte) error {
+	if p.engine == nil {
+		return fmt.Errorf("psg engine not configured")
+	}
+	ymFile, meta, err := ParseVTXData(data)
+	if err != nil {
+		return err
+	}
+	p.metadata = meta
+	p.frameRate = ymFile.FrameRate
+	p.clockHz = ymFile.ClockHz
+	return p.loadFrames(ymFile.Frames, ymFile.FrameRate, ymFile.ClockHz, ymFile.LoopFrame)
+}
+
+func (p *PSGPlayer) loadTracker(ext string, data []byte) error {
+	if p.engine == nil {
+		return fmt.Errorf("psg engine not configured")
+	}
+	config, ok := trackerFormatConfigByExt(ext)
+	if !ok {
+		return fmt.Errorf("unsupported tracker format: %s", ext)
+	}
+	info, err := parseTrackerModule(ext, data)
+	if err != nil {
+		return err
+	}
+	meta, events, totalSamples, err := renderTrackerZ80(config, data, p.engine.sampleRate, info.frameCount)
+	if err != nil {
+		return err
+	}
+	meta.Title = info.title
+	meta.Author = info.author
+	if meta.System == "" {
+		meta.System = "ZX Spectrum"
+	}
+	p.metadata = meta
+	p.frameRate = config.frameRate
+	p.clockHz = config.clockHz
+	p.loop = true
+	p.loopSample = 0
+	p.renderCPU = "Z80"
+	p.engine.SetClockHz(config.clockHz)
+	p.engine.SetEvents(events, totalSamples, true, 0)
+	return nil
+}
+
+func renderVTXPSG(data []byte, sampleRate int) (psgRenderResult, error) {
+	var res psgRenderResult
+	ymFile, meta, err := ParseVTXData(data)
+	if err != nil {
+		return res, err
+	}
+	events, total, loop, loopSample, err := buildPSGEventsFromFrames(ymFile.Frames, ymFile.FrameRate, sampleRate, ymFile.LoopFrame)
+	if err != nil {
+		return res, err
+	}
+	res.metadata = meta
+	res.frameRate = ymFile.FrameRate
+	res.clockHz = ymFile.ClockHz
+	res.loop = loop
+	res.loopSample = loopSample
+	res.events = events
+	res.totalSamples = total
+	return res, nil
 }
 
 func (p *PSGPlayer) loadFrames(frames [][]uint8, frameRate uint16, clockHz uint32, loopFrame uint32) error {
@@ -426,6 +507,9 @@ func renderPSGData(data []byte, sampleRate int) (psgRenderResult, error) {
 		res.events = events
 		res.totalSamples = total
 		return res, nil
+	}
+	if isVTXData(data) {
+		return renderVTXPSG(data, sampleRate)
 	}
 	if isLHAData(data) {
 		decompressed, err := DecompressLHAData(data)

@@ -64,7 +64,7 @@ RELEASE_DIR := ./release
 
 # Main targets
 .PHONY: all clean list install uninstall novulkan headless headless-novulkan
-.PHONY: sdk clean-sdk release-src release-sdk release-linux release-windows release-all
+.PHONY: sdk clean-sdk release-src release-sdk release-linux release-windows release-all players
 
 # Default target builds everything
 all: setup intuition-engine ie32asm ie64asm ie32to64 ie64dis
@@ -298,6 +298,23 @@ ie80asm:
 	SRCDIR=$$(dirname $(SRC)); \
 	vasmz80_std -Fbin -I sdk/include -o $${SRCDIR}/$${BASENAME}.ie80 $(SRC) && \
 	echo "Output: $${SRCDIR}/$${BASENAME}.ie80"
+
+# Build Z80 player routines for tracker format support (requires vasmz80_std)
+players:
+	@echo "Building Z80 player routines..."
+	@if ! command -v vasmz80_std >/dev/null 2>&1; then \
+		echo "Error: vasmz80_std not found. Please install VASM."; \
+		echo "  Download from: http://sun.hasenbraten.de/vasm/"; \
+		echo "  Build with: make CPU=z80 SYNTAX=std"; \
+		exit 1; \
+	fi
+	@vasmz80_std -Fbin -o sdk/players/pt3play.bin sdk/players/pt3play.asm
+	@echo "  pt3play.bin: $$(wc -c < sdk/players/pt3play.bin) bytes"
+	@vasmz80_std -Fbin -o sdk/players/stcplay.bin sdk/players/stcplay.asm
+	@echo "  stcplay.bin: $$(wc -c < sdk/players/stcplay.bin) bytes"
+	@vasmz80_std -Fbin -o sdk/players/generic_play.bin sdk/players/generic_play.asm
+	@echo "  generic_play.bin: $$(wc -c < sdk/players/generic_play.bin) bytes"
+	@echo "Z80 player routines build complete"
 
 # ─── SDK & Release targets ───────────────────────────────────────────────────
 
@@ -603,6 +620,7 @@ help:
 	@echo ""
 	@echo "IE80 (Z80) targets:"
 	@echo "  ie80asm        - Assemble an IE80 program (SRC=file.asm)"
+	@echo "  players        - Rebuild Z80 player routines for tracker formats"
 	@echo ""
 	@echo "Test targets:"
 	@echo "  testdata-harte   - Download Tom Harte 68000 test files"

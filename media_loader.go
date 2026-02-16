@@ -300,7 +300,9 @@ func detectMediaType(path string) uint32 {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".sid":
 		return MEDIA_TYPE_SID
-	case ".ym", ".ay", ".sndh":
+	case ".ym", ".ay", ".sndh",
+		".vtx", ".pt3", ".pt2", ".pt1", ".stc", ".sqt", ".asc", ".ftc",
+		".vgm", ".vgz", ".snd":
 		return MEDIA_TYPE_PSG
 	case ".ted", ".prg":
 		return MEDIA_TYPE_TED

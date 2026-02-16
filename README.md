@@ -179,7 +179,7 @@ Default core: **IE64**. Additional cores: **IE32, M68K, x86, Z80, 6502**.
 - 44.1kHz, 32-bit floating-point processing
 
 **Classic Sound Chips (register-mapped to custom synth):**
-- **AY/YM/PSG** (AY-3-8910/YM2149) - Supports .ym, .ay, .vgm, .sndh playback (VGM includes SN76489 conversion)
+- **AY/YM/PSG** (AY-3-8910/YM2149) - Supports .ym, .ay, .vgm, .vgz, .vtx, .sndh, .pt3, .pt2, .pt1, .stc, .sqt, .asc, .ftc playback (VGM includes SN76489 conversion; tracker formats use Z80 emulation)
 - **POKEY** (Atari) - Supports .sap playback
 - **SID** (6581/8580) - Supports .sid playback
 - **Amiga AHX** module playback
@@ -219,6 +219,8 @@ Default core: **IE64**. Additional cores: **IE32, M68K, x86, Z80, 6502**.
 
 # Play PSG music
 ./bin/IntuitionEngine -psg music.ym
+./bin/IntuitionEngine -psg track.vtx       # VTX (LHA-compressed YM)
+./bin/IntuitionEngine -psg track.pt3       # ProTracker 3 (ZX Spectrum)
 
 # Play SID music
 ./bin/IntuitionEngine -sid music.sid
@@ -5425,7 +5427,7 @@ See [docs/platform-compatibility.md](sdk/docs/platform-compatibility.md) for bui
 # Play SID music
 ./bin/IntuitionEngine -sid tune.sid
 
-# Play PSG music (YM/AY/VGM/SNDH)
+# Play PSG music (YM/AY/VGM/VTX/SNDH/PT3/STC/...)
 ./bin/IntuitionEngine -psg track.ym
 
 # Or from the EhBASIC prompt, load and run any binary:
