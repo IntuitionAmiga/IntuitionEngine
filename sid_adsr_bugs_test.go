@@ -23,6 +23,9 @@ func TestSIDADSR_DelayBug(t *testing.T) {
 		sustainLevel:       0.5,
 		dutyCycle:          0.5,
 	}
+	ch.attackRecip = 1.0 / float32(ch.attackTime)
+	ch.decayRecip = 1.0 / float32(ch.decayTime)
+	ch.releaseRecip = 1.0 / float32(ch.releaseTime)
 
 	// Set a known counter state that should cause delay
 	ch.sidADSRDelayCounter = 10
@@ -66,6 +69,9 @@ func TestSIDADSR_DelayBugDisabled(t *testing.T) {
 		sustainLevel:       0.5,
 		dutyCycle:          0.5,
 	}
+	ch.attackRecip = 1.0 / float32(ch.attackTime)
+	ch.decayRecip = 1.0 / float32(ch.decayTime)
+	ch.releaseRecip = 1.0 / float32(ch.releaseTime)
 
 	// Trigger gate
 	ch.gate = true
@@ -107,6 +113,9 @@ func TestSIDADSR_CounterLeak(t *testing.T) {
 		sidEnvelope:        true,
 		sidEnvLevel:        200, // High envelope level
 	}
+	ch.attackRecip = 1.0 / float32(ch.attackTime)
+	ch.decayRecip = 1.0 / float32(ch.decayTime)
+	ch.releaseRecip = 1.0 / float32(ch.releaseTime)
 
 	// Release the note
 	ch.gate = false
@@ -154,6 +163,9 @@ func TestSIDADSR_HardRestartTechnique(t *testing.T) {
 		sidEnvelope:        true,
 		sidEnvLevel:        255,
 	}
+	ch.attackRecip = 1.0 / float32(ch.attackTime)
+	ch.decayRecip = 1.0 / float32(ch.decayTime)
+	ch.releaseRecip = 1.0 / float32(ch.releaseTime)
 
 	// Release
 	ch.gate = false

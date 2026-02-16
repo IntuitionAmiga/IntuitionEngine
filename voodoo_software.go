@@ -1,5 +1,3 @@
-//go:build !headless
-
 // voodoo_software.go - Software Rasterizer Backend for Voodoo Graphics
 
 /*

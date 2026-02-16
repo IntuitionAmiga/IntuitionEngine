@@ -264,7 +264,8 @@ func (v *VGAEngine) HandleRead(addr uint32) uint32 {
 			elapsed = 0
 		}
 		// VSync active during last 10% of frame period (~1.6ms at 60Hz)
-		inVSync := elapsed >= (VGA_REFRESH_INTERVAL * 9 / 10)
+		// Also respect explicit SetVSync() calls from compositor/tests
+		inVSync := elapsed >= (VGA_REFRESH_INTERVAL*9/10) || v.vsync.Load()
 		status := v.status &^ (VGA_STATUS_VSYNC | VGA_STATUS_RETRACE)
 		if inVSync {
 			status |= VGA_STATUS_VSYNC | VGA_STATUS_RETRACE

@@ -2,63 +2,74 @@
 
 package main
 
-import "fmt"
-
 func init() {
 	compiledFeatures = append(compiledFeatures, "voodoo:headless")
 }
 
-// VulkanBackend headless implementation: no GPU dependencies.
+// VulkanBackend wraps VoodooSoftwareBackend in headless builds.
+// Uses the same type name so the rest of the codebase compiles unchanged.
 type VulkanBackend struct {
-	width  int
-	height int
-	frame  []byte
+	software *VoodooSoftwareBackend
 }
 
 func NewVulkanBackend() (*VulkanBackend, error) {
-	return &VulkanBackend{}, nil
+	return &VulkanBackend{
+		software: NewVoodooSoftwareBackend(),
+	}, nil
 }
 
 func (vb *VulkanBackend) Init(width, height int) error {
-	if width <= 0 || height <= 0 {
-		return fmt.Errorf("invalid dimensions: %dx%d", width, height)
-	}
-	vb.width = width
-	vb.height = height
-	vb.frame = make([]byte, width*height*4)
-	return nil
+	return vb.software.Init(width, height)
 }
 
-func (vb *VulkanBackend) UpdatePipelineState(fbzMode, alphaMode uint32) error { return nil }
-func (vb *VulkanBackend) SetScissor(left, top, right, bottom int)             {}
-func (vb *VulkanBackend) SetChromaKey(chromaKey uint32)                       {}
+func (vb *VulkanBackend) UpdatePipelineState(fbzMode, alphaMode uint32) error {
+	return vb.software.UpdatePipelineState(fbzMode, alphaMode)
+}
+
+func (vb *VulkanBackend) SetScissor(left, top, right, bottom int) {
+	vb.software.SetScissor(left, top, right, bottom)
+}
+
+func (vb *VulkanBackend) SetChromaKey(chromaKey uint32) {
+	vb.software.SetChromaKey(chromaKey)
+}
+
 func (vb *VulkanBackend) SetTextureData(width, height int, data []byte, format int) {
+	vb.software.SetTextureData(width, height, data, format)
 }
-func (vb *VulkanBackend) SetTextureEnabled(enabled bool)         {}
-func (vb *VulkanBackend) SetTextureWrapMode(clampS, clampT bool) {}
-func (vb *VulkanBackend) SetColorPath(fbzColorPath uint32)       {}
-func (vb *VulkanBackend) SetFogState(fogMode, fogColor uint32)   {}
+
+func (vb *VulkanBackend) SetTextureEnabled(enabled bool) {
+	vb.software.SetTextureEnabled(enabled)
+}
+
+func (vb *VulkanBackend) SetTextureWrapMode(clampS, clampT bool) {
+	vb.software.SetTextureWrapMode(clampS, clampT)
+}
+
+func (vb *VulkanBackend) SetColorPath(fbzColorPath uint32) {
+	vb.software.SetColorPath(fbzColorPath)
+}
+
+func (vb *VulkanBackend) SetFogState(fogMode, fogColor uint32) {
+	vb.software.SetFogState(fogMode, fogColor)
+}
+
 func (vb *VulkanBackend) FlushTriangles(triangles []VoodooTriangle) {
+	vb.software.FlushTriangles(triangles)
 }
-func (vb *VulkanBackend) SwapBuffers(waitVSync bool) {}
-func (vb *VulkanBackend) Destroy()                   {}
 
 func (vb *VulkanBackend) ClearFramebuffer(color uint32) {
-	if len(vb.frame) == 0 {
-		return
-	}
-	r := byte((color >> 16) & 0xFF)
-	g := byte((color >> 8) & 0xFF)
-	b := byte(color & 0xFF)
-	a := byte((color >> 24) & 0xFF)
-	for i := 0; i < len(vb.frame); i += 4 {
-		vb.frame[i+0] = r
-		vb.frame[i+1] = g
-		vb.frame[i+2] = b
-		vb.frame[i+3] = a
-	}
+	vb.software.ClearFramebuffer(color)
+}
+
+func (vb *VulkanBackend) SwapBuffers(waitVSync bool) {
+	vb.software.SwapBuffers(waitVSync)
 }
 
 func (vb *VulkanBackend) GetFrame() []byte {
-	return vb.frame
+	return vb.software.GetFrame()
+}
+
+func (vb *VulkanBackend) Destroy() {
+	vb.software.Destroy()
 }

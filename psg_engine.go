@@ -304,14 +304,16 @@ func (e *PSGEngine) advanceEnvelope() {
 		}
 
 		e.envLevel += e.envDirection
-		if e.envLevel > 15 {
-			e.envLevel = 15
-		}
-		if e.envLevel < 0 {
-			e.envLevel = 0
-		}
 
-		if e.envLevel == 0 || e.envLevel == 15 {
+		if e.envLevel > 15 || e.envLevel < 0 {
+			// Clamp to valid range
+			if e.envLevel > 15 {
+				e.envLevel = 15
+			}
+			if e.envLevel < 0 {
+				e.envLevel = 0
+			}
+
 			if !e.envContinue {
 				e.envLevel = 0
 				e.envHoldActive = true
@@ -330,11 +332,13 @@ func (e *PSGEngine) advanceEnvelope() {
 			}
 			if e.envAlternate {
 				e.envDirection = -e.envDirection
-			}
-			if e.envDirection > 0 {
-				e.envLevel = 0
 			} else {
-				e.envLevel = 15
+				// Non-alternating: wrap to start of ramp
+				if e.envDirection > 0 {
+					e.envLevel = 0
+				} else {
+					e.envLevel = 15
+				}
 			}
 		}
 	}

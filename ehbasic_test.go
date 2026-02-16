@@ -998,6 +998,17 @@ test_entry:
 include "ehbasic_io.inc"
 include "ehbasic_tokenizer.inc"
 include "ehbasic_lineeditor.inc"
+include "ehbasic_strings.inc"
+include "ehbasic_exec.inc"
+include "ehbasic_vars.inc"
+include "ehbasic_expr.inc"
+include "ehbasic_hw_video.inc"
+include "ehbasic_hw_audio.inc"
+include "ehbasic_hw_system.inc"
+include "ehbasic_hw_voodoo.inc"
+include "ehbasic_file_io.inc"
+include "ehbasic_hw_coproc.inc"
+include "ie64_fp.inc"
 `, body)
 
 	dir := t.TempDir()
@@ -1008,7 +1019,11 @@ include "ehbasic_lineeditor.inc"
 
 	incDir := filepath.Join(repoRootDir(t), "sdk", "include")
 	for _, inc := range []string{"ie64.inc", "ie64_fp.inc", "ehbasic_io.inc",
-		"ehbasic_tokens.inc", "ehbasic_tokenizer.inc", "ehbasic_lineeditor.inc"} {
+		"ehbasic_tokens.inc", "ehbasic_tokenizer.inc", "ehbasic_lineeditor.inc",
+		"ehbasic_strings.inc", "ehbasic_exec.inc", "ehbasic_vars.inc",
+		"ehbasic_expr.inc", "ehbasic_hw_video.inc", "ehbasic_hw_audio.inc",
+		"ehbasic_hw_system.inc", "ehbasic_hw_voodoo.inc", "ehbasic_file_io.inc",
+		"ehbasic_hw_coproc.inc"} {
 		src := filepath.Join(incDir, inc)
 		dst := filepath.Join(dir, inc)
 		if err := os.Symlink(src, dst); err != nil {
@@ -1390,6 +1405,13 @@ include "ehbasic_lineeditor.inc"
 include "ehbasic_expr.inc"
 include "ehbasic_vars.inc"
 include "ehbasic_strings.inc"
+include "ehbasic_exec.inc"
+include "ehbasic_hw_video.inc"
+include "ehbasic_hw_audio.inc"
+include "ehbasic_hw_system.inc"
+include "ehbasic_hw_voodoo.inc"
+include "ehbasic_file_io.inc"
+include "ehbasic_hw_coproc.inc"
 include "ie64_fp.inc"
 `, body)
 
@@ -1402,7 +1424,10 @@ include "ie64_fp.inc"
 	incDir := filepath.Join(repoRootDir(t), "sdk", "include")
 	for _, inc := range []string{"ie64.inc", "ie64_fp.inc", "ehbasic_io.inc",
 		"ehbasic_tokens.inc", "ehbasic_tokenizer.inc", "ehbasic_lineeditor.inc",
-		"ehbasic_expr.inc", "ehbasic_vars.inc", "ehbasic_strings.inc"} {
+		"ehbasic_expr.inc", "ehbasic_vars.inc", "ehbasic_strings.inc",
+		"ehbasic_exec.inc", "ehbasic_hw_video.inc", "ehbasic_hw_audio.inc",
+		"ehbasic_hw_system.inc", "ehbasic_hw_voodoo.inc", "ehbasic_file_io.inc",
+		"ehbasic_hw_coproc.inc"} {
 		src := filepath.Join(incDir, inc)
 		dst := filepath.Join(dir, inc)
 		if err := os.Symlink(src, dst); err != nil {
@@ -2211,11 +2236,6 @@ func TestEhBASIC_Input(t *testing.T) {
     la      r9, 0x021100
     jsr     line_store
     
-    li      r8, #0x58 ; 'X'
-    jsr     putchar
-    li      r8, #0x0A
-    jsr     putchar
-
     ; Tokenize and store: 20 PRINT A
     la      r8, .line20_raw
     la      r9, 0x021100
@@ -4472,7 +4492,7 @@ func TestEhBASIC_Get(t *testing.T) {
 	h.loadBytes(binary)
 	// Queue 'X' before executing (disable echo first)
 	h.terminal.HandleWrite(TERM_ECHO, 0)
-	h.terminal.EnqueueByte('X')
+	h.terminal.EnqueueRawKey('X')
 	h.runCycles(50_000_000)
 	out := h.readOutput()
 	out = strings.TrimSpace(strings.TrimRight(out, "\r\n"))

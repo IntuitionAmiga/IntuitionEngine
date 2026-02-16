@@ -987,7 +987,7 @@ func assemble6502Service(t *testing.T, srcFile string) []byte {
 	binFile := filepath.Join(tmpDir, "service.bin")
 
 	// Assemble
-	cmd := exec.Command("ca65", "-o", objFile, srcFile)
+	cmd := exec.Command("ca65", "-I", "sdk/include", "-o", objFile, srcFile)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("ca65 failed: %v\n%s", err, out)
 	}
@@ -1053,7 +1053,7 @@ func coprocEndToEndTest(t *testing.T, bus *MachineBus, mgr *CoprocessorManager,
 func TestCoprocEndToEnd_X86(t *testing.T) {
 	// Assemble x86 service binary with nasm
 	data := assembleService(t, []string{
-		"nasm", "-f", "bin", "-o", "OUTPUT",
+		"nasm", "-f", "bin", "-I", "sdk/include/", "-o", "OUTPUT",
 	}, "sdk/examples/asm/coproc_service_x86.asm")
 
 	bus := NewMachineBus()
@@ -1082,7 +1082,7 @@ func TestCoprocEndToEnd_X86(t *testing.T) {
 func TestCoprocEndToEnd_Z80(t *testing.T) {
 	// Assemble Z80 service binary with vasmz80_std
 	data := assembleService(t, []string{
-		"vasmz80_std", "-Fbin", "-o", "OUTPUT",
+		"vasmz80_std", "-Fbin", "-I", "sdk/include", "-o", "OUTPUT",
 	}, "sdk/examples/asm/coproc_service_z80.asm")
 
 	bus := NewMachineBus()
@@ -1116,7 +1116,7 @@ func TestCoprocEndToEnd_Z80(t *testing.T) {
 func TestCoprocEndToEnd_M68K(t *testing.T) {
 	// Assemble M68K service binary with vasmm68k_mot
 	data := assembleService(t, []string{
-		"/opt/amiga/bin/vasmm68k_mot", "-Fbin", "-m68020", "-devpac", "-o", "OUTPUT",
+		"/opt/amiga/bin/vasmm68k_mot", "-Fbin", "-m68020", "-devpac", "-I", "sdk/include", "-o", "OUTPUT",
 	}, "sdk/examples/asm/coproc_service_68k.asm")
 
 	bus := NewMachineBus()

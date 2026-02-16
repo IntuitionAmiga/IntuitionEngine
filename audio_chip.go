@@ -1148,7 +1148,7 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 			ch.phase = 0 // Reset phase to start of waveform
 		case FLEX_OFF_RINGMOD:
 			if value&0x80 != 0 {
-				srcCh := int(value & 0x03)
+				srcCh := int(value & 0x0F)
 				if srcCh < NUM_CHANNELS && srcCh != int(chIndex) {
 					ch.ringModSource = chip.channels[srcCh]
 				}
@@ -1157,7 +1157,7 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 			}
 		case FLEX_OFF_SYNC:
 			if value&0x80 != 0 {
-				srcCh := int(value & 0x03)
+				srcCh := int(value & 0x0F)
 				if srcCh < NUM_CHANNELS && srcCh != int(chIndex) {
 					ch.syncSource = chip.channels[srcCh]
 				}
@@ -1914,15 +1914,10 @@ func (ch *Channel) generateWaveSample(sampleRate, sampleRateRecip float32) float
 
 		if ch.sidNoisePhaseLocked {
 			// Phase-locked mode: clock on phase wrap (authentic SID behavior)
-			// Track phase like a tonal oscillator and clock on wrap
-			prevPhase := ch.phase
+			// SID LFSR is clocked once per oscillator cycle
 			ch.phase += phaseInc
 			if ch.phase >= TWO_PI {
 				ch.phase -= TWO_PI
-				shouldClock = true
-			}
-			// Also clock on MSB transition (low-to-high at PI)
-			if prevPhase < math.Pi && ch.phase >= math.Pi {
 				shouldClock = true
 			}
 		} else {

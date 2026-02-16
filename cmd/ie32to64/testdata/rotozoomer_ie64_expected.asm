@@ -3,6 +3,17 @@
 ; IE32 Assembly for IntuitionEngine - VideoChip Mode 0 (640x480x32bpp)
 ; ============================================================================
 ;
+; === SDK QUICK REFERENCE ===
+; Target CPU:    IE32 (custom 32-bit RISC)
+; Video Chip:    IEVideoChip Mode 0 (640x480, 32bpp true colour)
+; Audio Engine:  AHX (Amiga tracker synthesis)
+; Assembler:     ie32asm (built-in IE32 assembler)
+; Build:         sdk/bin/ie32asm sdk/examples/asm/rotozoomer.asm
+; Run:           ./bin/IntuitionEngine -ie32 rotozoomer.iex
+; Porting:       VideoChip/blitter MMIO is CPU-agnostic. See rotozoomer_68k.asm,
+;                rotozoomer_z80.asm, rotozoomer_65.asm, rotozoomer_x86.asm for
+;                ports to other CPU cores.
+;
 ; REFERENCE IMPLEMENTATION FOR THE INTUITION ENGINE SDK
 ; This file is heavily commented to teach demo programming concepts on the
 ; IE32 custom CPU, with particular attention to IE32-specific idioms that
@@ -23,7 +34,7 @@
 ;   for each pixel (px, py):
 ;       u = u0 + px*du_col + py*du_row
 ;       v = v0 + px*dv_col + py*dv_row
-;       color = texture[u & mask][v & mask]
+;       colour = texture[u & mask][v & mask]
 ;
 ; At 640x480 = 307,200 pixels per frame, this is extremely expensive on
 ; the CPU. The Mode7 hardware blitter (BLT_OP=5) accepts just 6 parameters
@@ -136,7 +147,7 @@
 ;
 ; === BUILD AND RUN ===
 ;
-;   Assemble:  ./bin/ie32asm assembler/rotozoomer.asm
+;   Assemble:  sdk/bin/ie32asm assembler/rotozoomer.asm
 ;   Run:       ./bin/IntuitionEngine -ie32 assembler/rotozoomer.iex
 ;
 ; ============================================================================
@@ -243,7 +254,7 @@ VAR_V0 equ 0x46C34
 ; PROGRAM ENTRY POINT
 ; ============================================================================
 ; The IE32 CPU begins execution at .org 0x1000 after loading the binary.
-; We must initialize video, generate the texture, set up animation state,
+; We must initialise video, generate the texture, set up animation state,
 ; and start music before entering the main loop.
 ; ============================================================================
 
@@ -252,7 +263,7 @@ org 0x1000
 start:
     ; --- Enable VideoChip ---
     ; The VideoChip is the IE custom video system (distinct from VGA/ULA/etc).
-    ; Mode 0 = 640x480 truecolor (32-bit BGRA). The blitter and VRAM are
+    ; Mode 0 = 640x480 truecolour (32-bit BGRA). The blitter and VRAM are
     ; part of this subsystem, so it MUST be enabled before any blit operations.
     ; VIDEO_CTRL=1 enables the chip; VIDEO_MODE=0 selects Mode 0.
     move.l r1, #1
@@ -268,7 +279,7 @@ start:
     ; for the entire duration of the demo.
     jsr generate_texture
 
-    ; --- Initialize Animation State ---
+    ; --- Initialise Animation State ---
     ; Both accumulators start at zero. The angle accumulator determines
     ; rotation; the scale accumulator determines zoom oscillation.
     ; Starting both at zero means the demo begins with no rotation and
@@ -314,7 +325,7 @@ start:
 ;                        buffer at 0x600000.
 ; 3. blit_to_front:      Copy the completed back buffer to VRAM (0x100000)
 ;                        so the display shows the new frame.
-; 4. wait_vsync:         Synchronize with the vertical blank to prevent
+; 4. wait_vsync:         Synchronise with the vertical blank to prevent
 ;                        visual tearing.
 ; 5. advance_animation:  Increment the angle and scale accumulators for
 ;                        the next frame.
@@ -323,7 +334,7 @@ start:
 ; We compute+render+copy BEFORE waiting for vsync. This means all the
 ; heavy work happens during the active display period (while the previous
 ; frame is being shown). The vsync wait then ensures the completed blit
-; becomes visible at the start of the next refresh cycle. This maximizes
+; becomes visible at the start of the next refresh cycle. This maximises
 ; the time available for rendering without introducing tearing.
 ; ============================================================================
 main_loop:
@@ -349,7 +360,7 @@ main_loop:
 ;   Phase 2 (wait_start): Spin until vblank BEGINS. This catches the
 ;                         rising edge of the next vblank.
 ;
-; Together, these guarantee we synchronize to exactly one vblank boundary
+; Together, these guarantee we synchronise to exactly one vblank boundary
 ; per main loop iteration, giving a stable 60 FPS frame rate.
 ;
 ; STATUS_VBLANK is bit 1 (value 2) of the VIDEO_STATUS register.
@@ -374,7 +385,7 @@ wait_start:
 ;
 ; WHY 4x BLIT FILL?
 ; The blitter's FILL operation (BLT_OP=1) fills a rectangular region with
-; a solid color. A 2x2 checkerboard requires 4 filled quadrants:
+; a solid colour. A 2x2 checkerboard requires 4 filled quadrants:
 ; two white (0xFFFFFFFF = opaque white in BGRA) and two black (0xFF000000
 ; = opaque black). Each quadrant is 128x128 pixels.
 ;
@@ -390,7 +401,7 @@ wait_start:
 ;   BLT_DST        = destination address for this quadrant
 ;   BLT_WIDTH      = 128 (pixels per row in this quadrant)
 ;   BLT_HEIGHT     = 128 (rows in this quadrant)
-;   BLT_COLOR      = fill color (32-bit BGRA)
+;   BLT_COLOR      = fill colour (32-bit BGRA)
 ;   BLT_DST_STRIDE = 1024 (bytes per row in the FULL texture, not the
 ;                    quadrant -- the blitter advances the destination
 ;                    pointer by this amount after each row)
@@ -1215,5 +1226,5 @@ recip_table:
 ; the file size at assemble time: size = ahx_data_end - ahx_data.
 ; ============================================================================
 ahx_data:
-incbin "Fairlightz.ahx"
+incbin "../assets/music/Fairlightz.ahx"
 ahx_data_end:

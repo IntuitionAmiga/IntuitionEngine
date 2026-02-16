@@ -230,6 +230,12 @@ func (a *ANTICEngine) HandleRead(addr uint32) uint32 {
 	case ANTIC_STATUS:
 		// Debug: log status reads
 		a.statusReads++
+
+		// If vblankActive was explicitly set (e.g. by SignalVSync), report it
+		if a.vblankActive.Load() {
+			return ANTIC_STATUS_VBLANK
+		}
+
 		// Calculate VBlank based on time within frame
 		// Self-resetting: automatically starts new frame when period elapses
 		// VBlank is active for the last 20% of each frame (~3.3ms of 16.67ms frame)
@@ -664,24 +670,21 @@ func (a *ANTICEngine) RenderFrame() []byte {
 	snapGractl := a.gractl
 	snapSizep := a.sizep
 	snapColpm := a.colpm
+	snapColbk := a.colbk
 	a.mu.Unlock()
 
 	// Render per-scanline colors for raster bar effects
 	// The frame is ANTIC_FRAME_WIDTH x ANTIC_FRAME_HEIGHT (384x240)
-	// Extend plasma into borders by wrapping scanline indices
 	for y := range ANTIC_FRAME_HEIGHT {
-		// Map frame Y to a virtual scanline that wraps for border areas
-		// This extends the plasma pattern seamlessly into the borders
-		virtualScanline := y - ANTIC_BORDER_TOP
-
-		// Wrap negative values (top border) and overflow (bottom border)
-		// Use modulo to create seamless wrapping
-		for virtualScanline < 0 {
-			virtualScanline += ANTIC_DISPLAY_HEIGHT
+		var color byte
+		if y < ANTIC_BORDER_TOP || y >= ANTIC_FRAME_HEIGHT-ANTIC_BORDER_BOTTOM {
+			// Border rows use background color
+			color = snapColbk
+		} else {
+			// Active display: use per-scanline color
+			virtualScanline := y - ANTIC_BORDER_TOP
+			color = snapScanlineColors[virtualScanline]
 		}
-		virtualScanline = virtualScanline % ANTIC_DISPLAY_HEIGHT
-
-		color := snapScanlineColors[virtualScanline]
 		rowStart := y * ANTIC_FRAME_WIDTH * 4
 
 		// Fill entire row with this color using pre-packed RGBA

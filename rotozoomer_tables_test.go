@@ -201,7 +201,7 @@ func TestRotozoomerTables(t *testing.T) {
 			entryWidth: 2, bigEndian: true,
 			assemble: func(t *testing.T, src, out string) {
 				requireTool(t, "vasmm68k_mot")
-				cmd := exec.Command("vasmm68k_mot", "-Fbin", "-m68020", "-devpac", "-o", out, src)
+				cmd := exec.Command("vasmm68k_mot", "-Fbin", "-m68020", "-devpac", "-I", incDir, "-o", out, src)
 				cmd.Dir = asmDir
 				if o, err := cmd.CombinedOutput(); err != nil {
 					t.Fatalf("vasmm68k_mot failed: %v\n%s", err, o)
@@ -235,6 +235,7 @@ func TestRotozoomerTables(t *testing.T) {
 			assemble: func(t *testing.T, src, out string) {
 				requireTool(t, "nasm")
 				cmd := exec.Command("nasm", "-f", "bin", "-I", incDir+"/", "-o", out, src)
+				cmd.Dir = asmDir
 				if o, err := cmd.CombinedOutput(); err != nil {
 					t.Fatalf("nasm failed: %v\n%s", err, o)
 				}
@@ -245,7 +246,7 @@ func TestRotozoomerTables(t *testing.T) {
 			entryWidth: 4, bigEndian: false,
 			assemble: func(t *testing.T, src, out string) {
 				ie32asm := buildIE32Assembler(t)
-				cmd := exec.Command(ie32asm, src)
+				cmd := exec.Command(ie32asm, "-I", incDir, src)
 				cmd.Dir = asmDir
 				if o, err := cmd.CombinedOutput(); err != nil {
 					t.Fatalf("ie32asm failed: %v\n%s", err, o)

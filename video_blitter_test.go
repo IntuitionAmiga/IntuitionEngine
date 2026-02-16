@@ -68,10 +68,7 @@ func TestBlitterRegisters(t *testing.T) {
 	}
 
 	bus.Write32(BLT_CTRL, bltCtrlStart)
-	if got := video.HandleRead(BLT_CTRL); got&bltCtrlBusy == 0 {
-		t.Fatalf("expected BLT_CTRL busy set, got 0x%X", got)
-	}
-
+	// Blitter runs synchronously — busy is already cleared after Write
 	video.RunBlitterForTest()
 	if got := video.HandleRead(BLT_CTRL); got&bltCtrlBusy != 0 {
 		t.Fatalf("expected BLT_CTRL busy cleared, got 0x%X", got)

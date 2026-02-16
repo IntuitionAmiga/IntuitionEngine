@@ -150,6 +150,9 @@ func NewULAEngine(bus *MachineBus) *ULAEngine {
 	ula.sharedIdx.Store(1)
 	ula.readingIdx = 2
 
+	// ULA is enabled by default (matches real ZX Spectrum behavior)
+	ula.enabled.Store(true)
+
 	return ula
 }
 
