@@ -972,7 +972,7 @@ PRINT "A", "B", "C"
 
 ### PSG
 
-Control the PSG (AY-3-8910/YM2149) programmable sound generator.
+Control the PSG (AY-3-8910/YM2149) programmable sound generator. VGM data containing SN76489 writes is automatically converted to AY registers during playback.
 
 ```
 PSG channel, freq, vol           Set channel frequency and volume
