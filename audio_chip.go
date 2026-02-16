@@ -231,8 +231,8 @@ const (
 	REVERB_MIX   = 0xF0A50 // 0-255 → 0.0-1.0 (dry/wet)
 	REVERB_DECAY = 0xF0A54 // 0-255 → 0.1-0.99 (tail length)
 
-	AUDIO_CTRL    = 0xF0800 // Audio control register
-	AUDIO_REG_END = FLEX_CH_END
+	AUDIO_CTRL    = 0xF0800                                 // Audio control register
+	AUDIO_REG_END = FLEX_CH_BASE + (FLEX_CH_STRIDE * 4) - 1 // 0xF0B7F — bus-mapped channels only
 
 	SAMPLE_RATE = 44100 // Audio sample rate
 )
