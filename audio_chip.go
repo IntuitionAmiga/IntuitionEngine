@@ -919,6 +919,8 @@ type SoundChip struct {
 	// Byte accumulator for sub-word flex register writes (Write8 path).
 	// Only covers bus-mapped channels 0-3 (4 * FLEX_CH_STRIDE = 256 bytes).
 	flexShadow [4 * FLEX_CH_STRIDE]byte
+
+	busMemory []byte // mirror register writes for Machine Monitor visibility
 }
 
 func NewSoundChip(backend int) (*SoundChip, error) {
@@ -1031,6 +1033,10 @@ func (chip *SoundChip) HandleRegisterRead(addr uint32) uint32 {
 	return 0
 }
 
+func (chip *SoundChip) AttachBusMemory(mem []byte) {
+	chip.busMemory = mem
+}
+
 func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 	// ------------------------------------------------------------------------------
 	// HandleRegisterWrite processes a write to a hardware register address.
@@ -1057,6 +1063,14 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 	// Thread safety: This method holds the chip mutex during execution.
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
+
+	// Mirror raw value to bus memory so Machine Monitor can display it.
+	if mem := chip.busMemory; mem != nil && addr+3 < uint32(len(mem)) {
+		mem[addr] = byte(value)
+		mem[addr+1] = byte(value >> 8)
+		mem[addr+2] = byte(value >> 16)
+		mem[addr+3] = byte(value >> 24)
+	}
 
 	if addr == AUDIO_CTRL {
 		chip.enabled.Store(value != 0)

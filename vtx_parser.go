@@ -6,11 +6,12 @@
 // Header layout (little-endian):
 //   0x00  2  Magic: "ay" (AY-3-8910) or "ym" (YM2149)
 //   0x02  1  Stereo type (0=MONO, 1=ABC, 2=ACB, 3=BAC, 4=BCA, 5=CAB, 6=CBA)
-//   0x03  2  Chip frequency (uint16 LE) — in Hz; may need scaling
-//   0x05  1  Player/interrupt frequency (50 or 60 Hz)
-//   0x06  2  Year (uint16 LE)
-//   0x08  4  Uncompressed data size (uint32 LE)
-//   0x0C  ...  5 null-terminated strings: title, author, from, tracker, comment
+//   0x03  2  Loop frame (uint16 LE)
+//   0x05  4  Chip frequency (uint32 LE)
+//   0x09  1  Player/interrupt frequency (50 or 60 Hz)
+//   0x0A  2  Year (uint16 LE)
+//   0x0C  4  Uncompressed data size (uint32 LE)
+//   0x10  ...  5 null-terminated strings: title, author, from, tracker, comment
 //   ...   ...  LH5-compressed YM register data (interleaved)
 
 package main
@@ -20,7 +21,7 @@ import (
 	"fmt"
 )
 
-const vtxMinHeaderSize = 12 // Fixed header before variable strings
+const vtxMinHeaderSize = 16 // Fixed header before variable strings
 
 // VTXStereo represents the stereo layout of a VTX file.
 type VTXStereo uint8
@@ -39,6 +40,7 @@ const (
 type VTXHeader struct {
 	ChipType   string    // "ay" or "ym"
 	Stereo     VTXStereo // Stereo layout (0-6)
+	LoopFrame  uint16    // Frame to loop back to
 	ChipFreqHz uint32    // Chip frequency in Hz
 	PlayerFreq uint8     // Interrupt/player frequency (50 or 60)
 	Year       uint16    // Year of creation
@@ -90,6 +92,7 @@ func ParseVTXData(data []byte) (*YMFile, PSGMetadata, error) {
 	if header.PlayerFreq > 0 {
 		ym.FrameRate = uint16(header.PlayerFreq)
 	}
+	ym.LoopFrame = uint32(header.LoopFrame)
 	ym.Title = header.Title
 	ym.Author = header.Author
 
@@ -124,36 +127,13 @@ func parseVTXHeader(data []byte) (VTXHeader, []byte, error) {
 		Stereo:   VTXStereo(stereo),
 	}
 
-	// Detect header variant: check if byte at offset 5 or 7 is a valid player freq (50 or 60)
-	// This distinguishes uint16 vs uint32 chip frequency field.
-	off := 3
-	if len(data) >= 14 && (data[7] == 50 || data[7] == 60) {
-		// uint32 chip frequency variant (14-byte fixed header)
-		h.ChipFreqHz = binary.LittleEndian.Uint32(data[off:])
-		off = 7
-		h.PlayerFreq = data[off]
-		off++
-		h.Year = binary.LittleEndian.Uint16(data[off:])
-		off += 2
-		h.DataSize = binary.LittleEndian.Uint32(data[off:])
-		off += 4
-	} else {
-		// uint16 chip frequency variant (12-byte fixed header)
-		rawFreq := binary.LittleEndian.Uint16(data[off:])
-		off += 2
-		h.PlayerFreq = data[off]
-		off++
-		h.Year = binary.LittleEndian.Uint16(data[off:])
-		off += 2
-		h.DataSize = binary.LittleEndian.Uint32(data[off:])
-		off += 4
-
-		// Scale frequency: if < 10000, likely in kHz units
-		h.ChipFreqHz = uint32(rawFreq)
-		if rawFreq > 0 && rawFreq < 10000 {
-			h.ChipFreqHz = uint32(rawFreq) * 1000
-		}
-	}
+	// Fixed 16-byte header: stereo(1) + loop(2) + chipFreq(4) + playerFreq(1) + year(2) + dataSize(4)
+	h.LoopFrame = binary.LittleEndian.Uint16(data[3:])
+	h.ChipFreqHz = binary.LittleEndian.Uint32(data[5:])
+	h.PlayerFreq = data[9]
+	h.Year = binary.LittleEndian.Uint16(data[10:])
+	h.DataSize = binary.LittleEndian.Uint32(data[12:])
+	off := 16
 
 	// Apply defaults
 	if h.ChipFreqHz == 0 {

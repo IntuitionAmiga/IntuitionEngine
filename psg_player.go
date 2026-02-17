@@ -116,7 +116,7 @@ func (p *PSGPlayer) Load(path string) error {
 			return err
 		}
 		return p.loadSNDH(data)
-	case ".vtx":
+	case ".vtx", ".vt":
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return err
@@ -130,6 +130,20 @@ func (p *PSGPlayer) Load(path string) error {
 		return p.loadTracker(ext, data)
 	default:
 		return fmt.Errorf("unsupported PSG file type: %s", ext)
+	}
+}
+
+// LoadDataWithHint loads PSG data using the file extension for format detection.
+// Tracker formats (.pt3, .pt2, .pt1, .stc, .sqt, .asc, .ftc) require the extension
+// since they lack reliable magic bytes for content-based detection.
+func (p *PSGPlayer) LoadDataWithHint(data []byte, ext string) error {
+	switch ext {
+	case ".pt3", ".pt2", ".pt1", ".stc", ".sqt", ".asc", ".ftc":
+		return p.loadTracker(ext, data)
+	case ".vtx", ".vt":
+		return p.loadVTX(data)
+	default:
+		return p.LoadData(data)
 	}
 }
 
@@ -230,6 +244,9 @@ func (p *PSGPlayer) Play() {
 	if p.engine == nil {
 		return
 	}
+	if p.engine.sound != nil {
+		p.engine.sound.SetSampleTicker(p.engine)
+	}
 	p.engine.SetPlaying(true)
 }
 
@@ -288,6 +305,18 @@ func (p *PSGPlayer) loadTracker(ext string, data []byte) error {
 	if p.engine == nil {
 		return fmt.Errorf("psg engine not configured")
 	}
+
+	// PT1, ASC, FTC use native Go players (no Z80 emulation)
+	switch ext {
+	case ".pt1":
+		return p.loadTrackerNative(ext, data, renderPT1Native)
+	case ".asc":
+		return p.loadTrackerNative(ext, data, renderASCNative)
+	case ".ftc":
+		return p.loadTrackerNative(ext, data, renderFTCNative)
+	}
+
+	// PT3, PT2, STC, SQT use Z80 emulation
 	config, ok := trackerFormatConfigByExt(ext)
 	if !ok {
 		return fmt.Errorf("unsupported tracker format: %s", ext)
@@ -314,6 +343,29 @@ func (p *PSGPlayer) loadTracker(ext string, data []byte) error {
 	p.engine.SetClockHz(config.clockHz)
 	p.engine.SetEvents(events, totalSamples, true, 0)
 	return nil
+}
+
+// loadTrackerNative loads a tracker module using a native Go renderer.
+func (p *PSGPlayer) loadTrackerNative(ext string, data []byte, renderFunc func([]byte) ([][]uint8, uint32, error)) error {
+	info, err := parseTrackerModule(ext, data)
+	if err != nil {
+		// Metadata parsing failed — still try to render
+		info = trackerModuleInfo{format: ext}
+	}
+
+	frames, loopFrame, err := renderFunc(data)
+	if err != nil {
+		return err
+	}
+
+	p.metadata = PSGMetadata{
+		Title:  info.title,
+		Author: info.author,
+		System: "ZX Spectrum",
+	}
+	p.frameRate = trackerFrameRate
+	p.clockHz = zxSpectrumClock
+	return p.loadFrames(frames, trackerFrameRate, zxSpectrumClock, loopFrame)
 }
 
 func renderVTXPSG(data []byte, sampleRate int) (psgRenderResult, error) {
@@ -362,6 +414,11 @@ func (p *PSGPlayer) loadFrames(frames [][]uint8, frameRate uint16, clockHz uint3
 			loopSample = samplePos
 		}
 		for reg := range PSG_REG_COUNT {
+			// R13=0xFF is a sentinel meaning "don't write" (used by native tracker players).
+			// Writing R13 resets the envelope generator, so we must skip these.
+			if reg == 13 && frame[reg] == 0xFF {
+				continue
+			}
 			events = append(events, PSGEvent{
 				Sample: samplePos,
 				Reg:    uint8(reg),
@@ -436,6 +493,9 @@ func buildPSGEventsFromFrames(frames [][]uint8, frameRate uint16, sampleRate int
 			loopSample = samplePos
 		}
 		for reg := range PSG_REG_COUNT {
+			if reg == 13 && frame[reg] == 0xFF {
+				continue
+			}
 			events = append(events, PSGEvent{
 				Sample: samplePos,
 				Reg:    uint8(reg),

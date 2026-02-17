@@ -35,7 +35,7 @@ func TestDetectMediaType(t *testing.T) {
 
 func TestMediaLoaderSanitizePath(t *testing.T) {
 	bus := NewMachineBus()
-	loader := NewMediaLoader(bus, nil, ".", nil, nil, nil, nil)
+	loader := NewMediaLoader(bus, nil, ".", nil, nil, nil, nil, nil)
 
 	if _, ok := loader.sanitizePathLocked("safe.sid"); !ok {
 		t.Fatalf("expected safe relative path to be accepted")
@@ -43,8 +43,11 @@ func TestMediaLoaderSanitizePath(t *testing.T) {
 	if _, ok := loader.sanitizePathLocked("../escape.sid"); ok {
 		t.Fatalf("expected traversal path to be rejected")
 	}
-	if _, ok := loader.sanitizePathLocked("/abs/path.sid"); ok {
-		t.Fatalf("expected absolute path to be rejected")
+	if p, ok := loader.sanitizePathLocked("/abs/path.sid"); !ok || p != "/abs/path.sid" {
+		t.Fatalf("expected absolute path to be accepted, got ok=%v path=%q", ok, p)
+	}
+	if _, ok := loader.sanitizePathLocked("/abs/../escape.sid"); ok {
+		t.Fatalf("expected absolute path with traversal to be rejected")
 	}
 }
 
@@ -54,7 +57,7 @@ func TestMediaLoaderSanitizePath(t *testing.T) {
 func newMediaLoaderTestEnv(t *testing.T, baseDir string) (*MediaLoader, *MachineBus) {
 	t.Helper()
 	bus := NewMachineBus()
-	loader := NewMediaLoader(bus, nil, baseDir, nil, nil, nil, nil)
+	loader := NewMediaLoader(bus, nil, baseDir, nil, nil, nil, nil, nil)
 	return loader, bus
 }
 
@@ -255,6 +258,320 @@ func TestMediaLoader_RequestGenSupersedes(t *testing.T) {
 	if got := loader.HandleRead(MEDIA_STATUS); got != MEDIA_STATUS_IDLE {
 		t.Fatalf("status after supersede=%d, want %d (IDLE)", got, MEDIA_STATUS_IDLE)
 	}
+}
+
+// TestMediaLoader_SIDPlayback exercises the full SOUND PLAY path for SID files
+// with real players wired up, matching the main.go wiring.
+func TestMediaLoader_SIDPlayback(t *testing.T) {
+	sidPath := "sdk/examples/assets/music/Edge_of_Disgrace.sid"
+	if _, err := os.Stat(sidPath); os.IsNotExist(err) {
+		t.Skip("SID test file not available")
+	}
+
+	bus := NewMachineBus()
+	soundChip := newTestSoundChip()
+	psgEngine := NewPSGEngine(soundChip, SAMPLE_RATE)
+	psgPlayer := NewPSGPlayer(psgEngine)
+	psgPlayer.AttachBus(bus)
+	sidEngine := NewSIDEngine(soundChip, SAMPLE_RATE)
+	sidPlayer := NewSIDPlayer(sidEngine)
+	sidPlayer.AttachBus(bus)
+
+	bus.MapIO(PSG_BASE, PSG_END, psgEngine.HandleRead, psgEngine.HandleWrite)
+	bus.MapIO(PSG_PLAY_PTR, PSG_PLAY_STATUS+3, psgPlayer.HandlePlayRead, psgPlayer.HandlePlayWrite)
+	bus.MapIO(SID_BASE, SID_END, sidEngine.HandleRead, sidEngine.HandleWrite)
+	bus.MapIO(SID_PLAY_PTR, SID_PLAY_STATUS+3, sidPlayer.HandlePlayRead, sidPlayer.HandlePlayWrite)
+
+	loader := NewMediaLoader(bus, soundChip, ".", psgPlayer, sidPlayer, nil, nil, nil)
+	bus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END, loader.HandleRead, loader.HandleWrite)
+
+	// Mimic what EhBASIC does: write filename to bus, set MEDIA_NAME_PTR, trigger play
+	nameAddr := uint32(0x6FF000) // FILE_NAME_BUF
+	writeFilenameToBus(bus, nameAddr, sidPath)
+
+	loader.HandleWrite(MEDIA_NAME_PTR, nameAddr)
+	loader.HandleWrite(MEDIA_SUBSONG, 0)
+	loader.HandleWrite(MEDIA_CTRL, MEDIA_OP_STOP)
+	loader.HandleWrite(MEDIA_CTRL, MEDIA_OP_PLAY)
+
+	// Wait for async load to complete
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		s := loader.HandleRead(MEDIA_STATUS)
+		if s != MEDIA_STATUS_LOADING {
+			break
+		}
+		runtime.Gosched()
+	}
+
+	status := loader.HandleRead(MEDIA_STATUS)
+	errCode := loader.HandleRead(MEDIA_ERROR)
+	typ := loader.HandleRead(MEDIA_TYPE)
+
+	if status == MEDIA_STATUS_ERROR {
+		t.Fatalf("SOUND PLAY SID failed: status=ERROR, errCode=%d, type=%d", errCode, typ)
+	}
+	if status != MEDIA_STATUS_PLAYING {
+		t.Fatalf("SOUND PLAY SID: status=%d (want PLAYING=%d), errCode=%d, type=%d",
+			status, MEDIA_STATUS_PLAYING, errCode, typ)
+	}
+	if typ != MEDIA_TYPE_SID {
+		t.Fatalf("type=%d, want %d (SID)", typ, MEDIA_TYPE_SID)
+	}
+	if !sidPlayer.IsPlaying() {
+		t.Error("SID player not playing after SOUND PLAY")
+	}
+}
+
+// TestMediaLoader_PSGTrackerPlayback exercises SOUND PLAY for a PT3 tracker file.
+func TestMediaLoader_PSGTrackerPlayback(t *testing.T) {
+	pt3Path := "testdata/music/test_pt3.pt3"
+	if _, err := os.Stat(pt3Path); os.IsNotExist(err) {
+		t.Skip("PT3 test file not available")
+	}
+
+	bus := NewMachineBus()
+	soundChip := newTestSoundChip()
+	psgEngine := NewPSGEngine(soundChip, SAMPLE_RATE)
+	psgPlayer := NewPSGPlayer(psgEngine)
+	psgPlayer.AttachBus(bus)
+
+	bus.MapIO(PSG_BASE, PSG_END, psgEngine.HandleRead, psgEngine.HandleWrite)
+	bus.MapIO(PSG_PLAY_PTR, PSG_PLAY_STATUS+3, psgPlayer.HandlePlayRead, psgPlayer.HandlePlayWrite)
+
+	loader := NewMediaLoader(bus, soundChip, ".", psgPlayer, nil, nil, nil, nil)
+	bus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END, loader.HandleRead, loader.HandleWrite)
+
+	nameAddr := uint32(0x6FF000)
+	writeFilenameToBus(bus, nameAddr, pt3Path)
+
+	loader.HandleWrite(MEDIA_NAME_PTR, nameAddr)
+	loader.HandleWrite(MEDIA_SUBSONG, 0)
+	loader.HandleWrite(MEDIA_CTRL, MEDIA_OP_STOP)
+	loader.HandleWrite(MEDIA_CTRL, MEDIA_OP_PLAY)
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		s := loader.HandleRead(MEDIA_STATUS)
+		if s != MEDIA_STATUS_LOADING {
+			break
+		}
+		runtime.Gosched()
+	}
+
+	status := loader.HandleRead(MEDIA_STATUS)
+	errCode := loader.HandleRead(MEDIA_ERROR)
+
+	if status == MEDIA_STATUS_ERROR {
+		t.Fatalf("SOUND PLAY PT3 failed: status=ERROR, errCode=%d", errCode)
+	}
+	if status != MEDIA_STATUS_PLAYING {
+		t.Fatalf("SOUND PLAY PT3: status=%d (want PLAYING=%d), errCode=%d",
+			status, MEDIA_STATUS_PLAYING, errCode)
+	}
+	if !psgEngine.IsPlaying() {
+		t.Error("PSG engine not playing after SOUND PLAY PT3")
+	}
+}
+
+// TestMediaLoader_BusPath_SIDPlayback exercises the SOUND PLAY path for SID files
+// using bus.Write32/Read32 instead of direct loader.HandleWrite/HandleRead.
+// This matches the actual EhBASIC path where writes go through the bus.
+func TestMediaLoader_BusPath_SIDPlayback(t *testing.T) {
+	sidPath := "sdk/examples/assets/music/Edge_of_Disgrace.sid"
+	if _, err := os.Stat(sidPath); os.IsNotExist(err) {
+		t.Skip("SID test file not available")
+	}
+
+	bus := NewMachineBus()
+	soundChip := newTestSoundChip()
+	psgEngine := NewPSGEngine(soundChip, SAMPLE_RATE)
+	psgPlayer := NewPSGPlayer(psgEngine)
+	psgPlayer.AttachBus(bus)
+	sidEngine := NewSIDEngine(soundChip, SAMPLE_RATE)
+	sidPlayer := NewSIDPlayer(sidEngine)
+	sidPlayer.AttachBus(bus)
+
+	bus.MapIO(PSG_BASE, PSG_END, psgEngine.HandleRead, psgEngine.HandleWrite)
+	bus.MapIO(PSG_PLAY_PTR, PSG_PLAY_STATUS+3, psgPlayer.HandlePlayRead, psgPlayer.HandlePlayWrite)
+	bus.MapIO(SID_BASE, SID_END, sidEngine.HandleRead, sidEngine.HandleWrite)
+	bus.MapIO(SID_PLAY_PTR, SID_PLAY_STATUS+3, sidPlayer.HandlePlayRead, sidPlayer.HandlePlayWrite)
+
+	loader := NewMediaLoader(bus, soundChip, ".", psgPlayer, sidPlayer, nil, nil, nil)
+	bus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END, loader.HandleRead, loader.HandleWrite)
+
+	// Use bus.Write32 — this is the actual path EhBASIC takes
+	nameAddr := uint32(0x6FF000)
+	writeFilenameToBus(bus, nameAddr, sidPath)
+
+	bus.Write32(MEDIA_NAME_PTR, nameAddr)
+	bus.Write32(MEDIA_SUBSONG, 0)
+	bus.Write32(MEDIA_CTRL, MEDIA_OP_STOP)
+	bus.Write32(MEDIA_CTRL, MEDIA_OP_PLAY)
+
+	// Wait for async load to complete, polling via bus.Read32
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		s := bus.Read32(MEDIA_STATUS)
+		if s != MEDIA_STATUS_LOADING {
+			break
+		}
+		runtime.Gosched()
+	}
+
+	status := bus.Read32(MEDIA_STATUS)
+	errCode := bus.Read32(MEDIA_ERROR)
+	typ := bus.Read32(MEDIA_TYPE)
+
+	if status == MEDIA_STATUS_ERROR {
+		t.Fatalf("BusPath SOUND PLAY SID failed: status=ERROR, errCode=%d, type=%d", errCode, typ)
+	}
+	if status != MEDIA_STATUS_PLAYING {
+		t.Fatalf("BusPath SOUND PLAY SID: status=%d (want PLAYING=%d), errCode=%d, type=%d",
+			status, MEDIA_STATUS_PLAYING, errCode, typ)
+	}
+	if typ != MEDIA_TYPE_SID {
+		t.Fatalf("type=%d, want %d (SID)", typ, MEDIA_TYPE_SID)
+	}
+	if !sidPlayer.IsPlaying() {
+		t.Error("SID player not playing after bus-path SOUND PLAY")
+	}
+}
+
+// TestMediaLoader_AudioPipeline_PSG verifies actual audio output through the full
+// SOUND PLAY pipeline: load → set sample ticker → TickSample → GenerateSample → non-zero samples.
+func TestMediaLoader_AudioPipeline_PSG(t *testing.T) {
+	pt3Path := "testdata/music/test_pt3.pt3"
+	if _, err := os.Stat(pt3Path); os.IsNotExist(err) {
+		t.Skip("PT3 test file not available")
+	}
+
+	bus := NewMachineBus()
+	soundChip := newTestSoundChip()
+	psgEngine := NewPSGEngine(soundChip, SAMPLE_RATE)
+	psgPlayer := NewPSGPlayer(psgEngine)
+	psgPlayer.AttachBus(bus)
+
+	bus.MapIO(PSG_BASE, PSG_END, psgEngine.HandleRead, psgEngine.HandleWrite)
+	bus.MapIO(PSG_PLAY_PTR, PSG_PLAY_STATUS+3, psgPlayer.HandlePlayRead, psgPlayer.HandlePlayWrite)
+
+	loader := NewMediaLoader(bus, soundChip, ".", psgPlayer, nil, nil, nil, nil)
+	bus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END, loader.HandleRead, loader.HandleWrite)
+
+	nameAddr := uint32(0x6FF000)
+	writeFilenameToBus(bus, nameAddr, pt3Path)
+
+	loader.HandleWrite(MEDIA_NAME_PTR, nameAddr)
+	loader.HandleWrite(MEDIA_SUBSONG, 0)
+	loader.HandleWrite(MEDIA_CTRL, MEDIA_OP_STOP)
+	loader.HandleWrite(MEDIA_CTRL, MEDIA_OP_PLAY)
+
+	// Wait for async load to reach PLAYING state
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		s := loader.HandleRead(MEDIA_STATUS)
+		if s != MEDIA_STATUS_LOADING {
+			break
+		}
+		runtime.Gosched()
+	}
+
+	status := loader.HandleRead(MEDIA_STATUS)
+	if status == MEDIA_STATUS_ERROR {
+		t.Fatalf("SOUND PLAY PT3 failed: errCode=%d", loader.HandleRead(MEDIA_ERROR))
+	}
+	if status != MEDIA_STATUS_PLAYING {
+		t.Fatalf("status=%d, want PLAYING=%d", status, MEDIA_STATUS_PLAYING)
+	}
+	if !psgEngine.IsPlaying() {
+		t.Fatal("PSG engine not playing after SOUND PLAY")
+	}
+
+	// Generate samples via ReadSample() and verify at least some are non-zero.
+	// ReadSample calls TickSample (advancing PSG events) then GenerateSample.
+	const numSamples = 44100 // 1 second at 44.1kHz
+	nonZero := 0
+	for range numSamples {
+		s := soundChip.ReadSample()
+		if s != 0 {
+			nonZero++
+		}
+	}
+
+	if nonZero == 0 {
+		t.Fatalf("all %d samples were zero — audio pipeline not producing output", numSamples)
+	}
+	t.Logf("audio pipeline: %d/%d non-zero samples (%.1f%%)", nonZero, numSamples, float64(nonZero)/float64(numSamples)*100)
+}
+
+// TestMediaLoader_AudioPipeline_SID verifies the full SID audio pipeline:
+// load via MediaLoader MMIO → SID rendering → TickSample → GenerateSample → non-zero audio.
+func TestMediaLoader_AudioPipeline_SID(t *testing.T) {
+	sidPath := "sdk/examples/assets/music/Edge_of_Disgrace.sid"
+	if _, err := os.Stat(sidPath); os.IsNotExist(err) {
+		t.Skip("SID test file not available")
+	}
+
+	bus := NewMachineBus()
+	soundChip := newTestSoundChip()
+	sidEngine := NewSIDEngine(soundChip, SAMPLE_RATE)
+	sidPlayer := NewSIDPlayer(sidEngine)
+	sidPlayer.AttachBus(bus)
+
+	bus.MapIO(SID_BASE, SID_END, sidEngine.HandleRead, sidEngine.HandleWrite)
+	bus.MapIO(SID_PLAY_PTR, SID_PLAY_STATUS+3, sidPlayer.HandlePlayRead, sidPlayer.HandlePlayWrite)
+
+	loader := NewMediaLoader(bus, soundChip, ".", nil, sidPlayer, nil, nil, nil)
+	bus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END, loader.HandleRead, loader.HandleWrite)
+
+	nameAddr := uint32(0x6FF000)
+	writeFilenameToBus(bus, nameAddr, sidPath)
+
+	loader.HandleWrite(MEDIA_NAME_PTR, nameAddr)
+	loader.HandleWrite(MEDIA_SUBSONG, 0)
+	loader.HandleWrite(MEDIA_CTRL, MEDIA_OP_STOP)
+	loader.HandleWrite(MEDIA_CTRL, MEDIA_OP_PLAY)
+
+	// Wait for async load to reach PLAYING state
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		s := loader.HandleRead(MEDIA_STATUS)
+		if s != MEDIA_STATUS_LOADING {
+			break
+		}
+		runtime.Gosched()
+	}
+
+	status := loader.HandleRead(MEDIA_STATUS)
+	if status == MEDIA_STATUS_ERROR {
+		t.Fatalf("SOUND PLAY SID failed: errCode=%d", loader.HandleRead(MEDIA_ERROR))
+	}
+	if status != MEDIA_STATUS_PLAYING {
+		t.Fatalf("status=%d, want PLAYING=%d, errCode=%d", status, MEDIA_STATUS_PLAYING, loader.HandleRead(MEDIA_ERROR))
+	}
+	if !sidPlayer.IsPlaying() {
+		t.Fatal("SID player not playing after SOUND PLAY")
+	}
+
+	// Verify SID engine has events and samples
+	t.Logf("SID: events=%d, totalSamples=%d, enabled=%v, playing=%v",
+		len(sidEngine.events), sidEngine.totalSamples,
+		sidEngine.enabled.Load(), sidEngine.IsPlaying())
+
+	// Generate samples via ReadSample() — same path OTO uses in real binary.
+	const numSamples = 44100 // 1 second at 44.1kHz
+	nonZero := 0
+	for range numSamples {
+		s := soundChip.ReadSample()
+		if s != 0 {
+			nonZero++
+		}
+	}
+
+	if nonZero == 0 {
+		t.Fatalf("all %d samples were zero — SID audio pipeline not producing output", numSamples)
+	}
+	t.Logf("SID audio pipeline: %d/%d non-zero samples (%.1f%%)", nonZero, numSamples, float64(nonZero)/float64(numSamples)*100)
 }
 
 func TestMediaLoader_TypeDetectedOnPlay(t *testing.T) {

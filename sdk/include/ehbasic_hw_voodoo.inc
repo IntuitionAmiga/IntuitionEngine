@@ -24,6 +24,7 @@
 hw_voodoo:
     jsr     exec_skip_spaces
     load.b  r1, (r17)
+    jsr     toupper
     move.q  r2, #TK_ON
     beq     r1, r2, .voo_on
     move.q  r2, #0x4F            ; 'O' (OFF)
@@ -61,12 +62,15 @@ hw_voodoo:
     rts
 .voo_off_check:
     add.q   r3, r17, #1
-    load.b  r4, (r3)
+    load.b  r1, (r3)
+    jsr     toupper
     move.q  r2, #0x46
-    bne     r4, r2, .voo_done
+    bne     r1, r2, .voo_done
     add.q   r3, r3, #1
-    load.b  r4, (r3)
-    bne     r4, r2, .voo_done
+    load.b  r1, (r3)
+    jsr     toupper
+    move.q  r2, #0x46
+    bne     r1, r2, .voo_done
     add.q   r17, r3, #1
     la      r1, VOODOO_ENABLE
     store.l r0, (r1)
@@ -74,11 +78,12 @@ hw_voodoo:
 .voo_c_cmd:
     ; CL=CLEAR/CLIP, CO=COMBINE, CH=CHROMAKEY
     add.q   r3, r17, #1
-    load.b  r4, (r3)
+    load.b  r1, (r3)
+    jsr     toupper
     move.q  r2, #0x4C            ; 'L' → CLEAR or CLIP
-    beq     r4, r2, .voo_cl_cmd
+    beq     r1, r2, .voo_cl_cmd
     move.q  r2, #0x48            ; 'H' → CHROMAKEY
-    beq     r4, r2, .voo_chromakey
+    beq     r1, r2, .voo_chromakey
     ; COMBINE - skip keyword
     add.q   r17, r17, #1
     jsr     skip_alpha
@@ -92,9 +97,10 @@ hw_voodoo:
 .voo_cl_cmd:
     ; CLE=CLEAR, CLI=CLIP
     add.q   r3, r17, #2
-    load.b  r4, (r3)
+    load.b  r1, (r3)
+    jsr     toupper
     move.q  r2, #0x45            ; 'E' → CLEAR
-    beq     r4, r2, .voo_clear
+    beq     r1, r2, .voo_clear
     ; CLIP - skip keyword
     add.q   r17, r17, #1
     jsr     skip_alpha
@@ -168,9 +174,10 @@ hw_voodoo:
 .voo_s_cmd:
     ; SW=SWAP, ST=STATUS
     add.q   r3, r17, #1
-    load.b  r4, (r3)
+    load.b  r1, (r3)
+    jsr     toupper
     move.q  r2, #0x57            ; 'W' → SWAP
-    beq     r4, r2, .voo_swap
+    beq     r1, r2, .voo_swap
     ; STATUS is read-only, ignore as statement
     rts
 .voo_swap:
@@ -183,13 +190,15 @@ hw_voodoo:
 .voo_d_cmd:
     ; DI=DIM, DIT=DITHER
     add.q   r3, r17, #1
-    load.b  r4, (r3)
+    load.b  r1, (r3)
+    jsr     toupper
     move.q  r2, #0x49            ; 'I' → DIM or DITHER
-    bne     r4, r2, .voo_done
+    bne     r1, r2, .voo_done
     add.q   r3, r3, #1
-    load.b  r4, (r3)
+    load.b  r1, (r3)
+    jsr     toupper
     move.q  r2, #0x54            ; 'T' → DITHER
-    beq     r4, r2, .voo_dither
+    beq     r1, r2, .voo_dither
     ; DIM - fall through
 .voo_dim:
     ; Skip keyword
@@ -276,17 +285,18 @@ hw_voodoo:
 ; U=TRIUV, W=TRIW
 .voo_tri_dispatch:
     add.q   r3, r17, #3          ; peek at 4th char (TRI+?)
-    load.b  r4, (r3)
+    load.b  r1, (r3)
+    jsr     toupper
     move.q  r2, #0x43            ; 'C' → TRICOLOR
-    beq     r4, r2, .voo_tricolor
+    beq     r1, r2, .voo_tricolor
     move.q  r2, #0x53            ; 'S' → TRISHADE
-    beq     r4, r2, .voo_trishade
+    beq     r1, r2, .voo_trishade
     move.q  r2, #0x44            ; 'D' → TRIDEPTH
-    beq     r4, r2, .voo_tridepth
+    beq     r1, r2, .voo_tridepth
     move.q  r2, #0x55            ; 'U' → TRIUV
-    beq     r4, r2, .voo_triuv
+    beq     r1, r2, .voo_triuv
     move.q  r2, #0x57            ; 'W' → TRIW
-    beq     r4, r2, .voo_triw
+    beq     r1, r2, .voo_triw
     ; Unknown TRI* - default to TRICOLOR
     bra     .voo_tricolor
 
@@ -350,6 +360,7 @@ hw_voodoo:
     jsr     skip_alpha
     jsr     exec_skip_spaces
     load.b  r1, (r17)
+    jsr     toupper
     move.q  r2, #0x54            ; 'T' → TEST
     beq     r1, r2, .alpha_test
     move.q  r2, #0x46            ; 'F' → FUNC
@@ -473,6 +484,7 @@ hw_voodoo:
     jsr     skip_alpha
     jsr     exec_skip_spaces
     load.b  r1, (r17)
+    jsr     toupper
     move.q  r2, #TK_ON
     beq     r1, r2, .fog_on
     move.q  r2, #0x4F            ; 'O' → OFF
@@ -491,12 +503,15 @@ hw_voodoo:
     rts
 .fog_off_check:
     add.q   r3, r17, #1
-    load.b  r4, (r3)
+    load.b  r1, (r3)
+    jsr     toupper
     move.q  r2, #0x46            ; 'F'
-    bne     r4, r2, .fog_done
+    bne     r1, r2, .fog_done
     add.q   r3, r3, #1
-    load.b  r4, (r3)
-    bne     r4, r2, .fog_done
+    load.b  r1, (r3)
+    jsr     toupper
+    move.q  r2, #0x46            ; 'F'
+    bne     r1, r2, .fog_done
     add.q   r17, r3, #1
     la      r1, VOODOO_FOG_MODE
     load.l  r2, (r1)
@@ -581,6 +596,7 @@ hw_voodoo:
     jsr     skip_alpha
     jsr     exec_skip_spaces
     load.b  r1, (r17)
+    jsr     toupper
     move.q  r2, #TK_ON
     beq     r1, r2, .chroma_on
     move.q  r2, #0x4F            ; 'O' → OFF
@@ -599,12 +615,15 @@ hw_voodoo:
     rts
 .chroma_off_check:
     add.q   r3, r17, #1
-    load.b  r4, (r3)
+    load.b  r1, (r3)
+    jsr     toupper
     move.q  r2, #0x46            ; 'F'
-    bne     r4, r2, .chroma_done
+    bne     r1, r2, .chroma_done
     add.q   r3, r3, #1
-    load.b  r4, (r3)
-    bne     r4, r2, .chroma_done
+    load.b  r1, (r3)
+    jsr     toupper
+    move.q  r2, #0x46            ; 'F'
+    bne     r1, r2, .chroma_done
     add.q   r17, r3, #1
     la      r1, VOODOO_FBZ_MODE
     load.l  r2, (r1)
@@ -918,6 +937,7 @@ hw_voodoo:
 hw_vertex:
     jsr     exec_skip_spaces
     load.b  r1, (r17)
+    jsr     toupper
     ; A, B, or C
     move.q  r2, #0x41            ; 'A'
     beq     r1, r2, .vtx_a
@@ -1011,6 +1031,7 @@ hw_triangle:
 hw_zbuffer:
     jsr     exec_skip_spaces
     load.b  r1, (r17)
+    jsr     toupper
     move.q  r2, #TK_ON
     beq     r1, r2, .zb_on
     move.q  r2, #0x4F            ; 'O' (OFF)
@@ -1029,12 +1050,15 @@ hw_zbuffer:
     rts
 .zb_off_check:
     add.q   r3, r17, #1
-    load.b  r4, (r3)
+    load.b  r1, (r3)
+    jsr     toupper
     move.q  r2, #0x46
-    bne     r4, r2, .zb_done
+    bne     r1, r2, .zb_done
     add.q   r3, r3, #1
-    load.b  r4, (r3)
-    bne     r4, r2, .zb_done
+    load.b  r1, (r3)
+    jsr     toupper
+    move.q  r2, #0x46
+    bne     r1, r2, .zb_done
     add.q   r17, r3, #1
     la      r1, VOODOO_FBZ_MODE
     load.l  r2, (r1)
@@ -1095,6 +1119,7 @@ hw_zbuffer:
 hw_texture:
     jsr     exec_skip_spaces
     load.b  r1, (r17)
+    jsr     toupper
     move.q  r2, #TK_ON
     beq     r1, r2, .tex_on
     move.q  r2, #0x4F            ; 'O' (OFF)
@@ -1119,12 +1144,15 @@ hw_texture:
     rts
 .tex_off_check:
     add.q   r3, r17, #1
-    load.b  r4, (r3)
+    load.b  r1, (r3)
+    jsr     toupper
     move.q  r2, #0x46
-    bne     r4, r2, .tex_done
+    bne     r1, r2, .tex_done
     add.q   r3, r3, #1
-    load.b  r4, (r3)
-    bne     r4, r2, .tex_done
+    load.b  r1, (r3)
+    jsr     toupper
+    move.q  r2, #0x46
+    bne     r1, r2, .tex_done
     add.q   r17, r3, #1
     la      r1, VOODOO_TEXTURE_MODE
     load.l  r2, (r1)

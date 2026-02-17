@@ -69,6 +69,8 @@ type SIDEngine struct {
 	// Multi-SID: secondary engines for Chip 1/2 dispatch
 	sid2 *SIDEngine
 	sid3 *SIDEngine
+
+	busMemory []byte // mirror register writes for Machine Monitor visibility
 }
 
 // SID+ logarithmic volume curve (2dB per step)
@@ -130,6 +132,10 @@ func NewSIDEngineMulti(sound *SoundChip, sampleRate int, baseChannel int, regBas
 		regBase:     regBase,
 		regEnd:      regEnd,
 	}
+}
+
+func (e *SIDEngine) AttachBusMemory(mem []byte) {
+	e.busMemory = mem
 }
 
 // SetClockHz sets the SID master clock frequency
@@ -762,6 +768,9 @@ func (e *SIDEngine) writeRegisterLocked(reg uint8, value uint8) {
 
 	e.enabled.Store(true)
 	e.regs[reg] = value
+	if mem := e.busMemory; mem != nil {
+		mem[e.regBase+uint32(reg)] = value
+	}
 
 	// Handle SID+ control register (scoped to this engine's channels only)
 	if reg == 0x19 { // SID_PLUS_CTRL offset

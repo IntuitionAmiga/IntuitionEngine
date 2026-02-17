@@ -52,6 +52,8 @@ type POKEYEngine struct {
 	loop          bool
 	loopSample    uint64
 	forceLoop     bool
+
+	busMemory []byte // mirror register writes for Machine Monitor visibility
 }
 
 // pokeyLinearVolumeCurve provides pre-computed linear volume values for standard POKEY
@@ -89,6 +91,10 @@ func NewPOKEYEngine(sound *SoundChip, sampleRate int) *POKEYEngine {
 	// Pre-compute clock divisors for fast frequency calculation
 	e.updateClockDivisors()
 	return e
+}
+
+func (e *POKEYEngine) AttachBusMemory(mem []byte) {
+	e.busMemory = mem
 }
 
 // SetClockHz sets the POKEY master clock frequency
@@ -527,5 +533,8 @@ func (e *POKEYEngine) writeRegisterLocked(reg uint8, value uint8) {
 		return
 	}
 	e.regs[reg] = value
+	if mem := e.busMemory; mem != nil {
+		mem[POKEY_BASE+uint32(reg)] = value
+	}
 	e.syncToChip() // Apply changes to SoundChip
 }

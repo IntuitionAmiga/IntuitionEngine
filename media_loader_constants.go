@@ -35,6 +35,7 @@ const (
 	MEDIA_TYPE_PSG
 	MEDIA_TYPE_TED
 	MEDIA_TYPE_AHX
+	MEDIA_TYPE_POKEY
 )
 
 // Media error values.

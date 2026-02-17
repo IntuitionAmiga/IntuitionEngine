@@ -61,6 +61,8 @@ type TEDEngine struct {
 
 	// Pre-computed sound clock for fast frequency calculation
 	soundClock float64 // clockHz / TED_SOUND_CLOCK_DIV
+
+	busMemory []byte // mirror register writes for Machine Monitor visibility
 }
 
 // TED+ logarithmic volume curve (2dB per step)
@@ -97,6 +99,10 @@ func NewTEDEngine(sound *SoundChip, sampleRate int) *TEDEngine {
 	}
 	e.updateSoundClock()
 	return e
+}
+
+func (e *TEDEngine) AttachBusMemory(mem []byte) {
+	e.busMemory = mem
 }
 
 // SetClockHz sets the TED master clock frequency
@@ -492,6 +498,9 @@ func (e *TEDEngine) writeRegisterLocked(reg uint8, value uint8) {
 		return
 	}
 	e.regs[reg] = value
+	if mem := e.busMemory; mem != nil {
+		mem[TED_BASE+uint32(reg)] = value
+	}
 
 	// Handle TED+ control register
 	if reg == TED_REG_PLUS_CTRL {

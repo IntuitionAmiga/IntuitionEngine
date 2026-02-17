@@ -1,0 +1,777 @@
+; SQ-Tracker compiled song player © 1993 George K./Proxima Software
+; - disassmbled & added global attenuation © 2009 mborik/SinDiKat.
+; - implemented realocation of compiled song data, added status byte
+;   compatible with PTx and automatic fadeout © 2020 mborik/SinDiKat.
+
+		device zxspectrum128
+
+
+	ifndef PUREPLAYER
+		org	#8000
+
+demoplay	di
+		ld	sp,demoplay
+		call	sq_init
+.loop		ei
+		halt
+		call	sq_play
+		jr	.loop
+	endif
+
+
+	ifndef SINGLESETUP
+; bit.0 if you want to play without looping
+; bit.1 if you play looped but fadeout after few seconds
+; bit.7 is set each time when loop or fadeout was passed
+; ...or simplified:	2 - fadeout after loop
+;			1 - no loop
+;			0 - loop forever
+sq_status:	db	2
+	endif
+
+sq_init:	ld	de,(reloc_base)		; get the first absolute address
+		ld	hl,buffer+10		; which we use as base offset
+		xor	a			; after calc buffer address - 10
+		sbc	hl,de			; and relocate all following
+		push	hl			; absolute pointers in music data
+		ld	de,(reloc_endptr)
+		add	hl,de
+		pop	bc
+relocator:	dec	hl
+		ld	d,(hl)
+		dec	hl
+		ld	e,(hl)
+		ex	de,hl
+		add	hl,bc
+		ex	de,hl
+		ld	(hl),e
+		inc	hl
+		ld	(hl),d
+		dec	hl
+		ld	a,l
+		sub	reloc_base % 256
+		jr	nz,relocator
+		ld	hl,sq_status
+		res	7,(hl)			; clear the loop flags
+		ld	(chkfadeout+1),a
+		ld	(globvol+1),a
+		dec	a
+		ld	(sq_rest+1),a		; reset end-song detector
+
+		ld	a,8			; player initialization
+		ld	(chnz1),a
+		ld	(chnz2),a
+		ld	(chnz3),a
+		ld	bc,#0101
+		call	sq_rend1
+chn_init: 	ld	hl,(i_positions)
+		ld	ix,chnz1
+		call	sq_i9
+		call	sq_i
+		call	sq_i
+sq_stop:	ld	de,#073F		; AY regs 7-12 set to silence
+chn_iniloop:	call	out1
+		ld	e,0
+		inc	d
+		ld	a,d
+		cp	12
+		jr	nz,chn_iniloop
+		ret
+
+sq_deadend:	inc	(hl)			; playback ends, sq_play is dead
+		jr	sq_stop
+
+sq_play:	ld	hl,sq_sys
+		dec	(hl)
+		jr	nz,chkfadeout
+sq_playspeed:	ld	(hl),0
+		inc	hl
+		dec	(hl)
+		ld	a,(hl)
+		or	a
+		call	z,sq_rest
+		cp	4
+		call	c,sq_i
+
+sq_pp		ld	ix,chnz1
+		ld	c,36
+		call	sq_p
+		ld	ix,chnz2
+		ld	c,18
+		call	sq_p
+		ld	ix,chnz3
+		ld	c,9
+		call	sq_p
+
+chkfadeout:	ld	a,0			; check if we fading out
+		or	a
+		jr	z,sq_c
+		ld	a,(sq_status)
+		bit	7,a
+		jr	nz,sq_deadend
+
+countfadeout:	ld	a,0
+		dec	a
+		ld	(countfadeout+1),a
+		jr	nz,globvol
+		ld	a,(globvol+1)
+		inc	a
+		cp	16
+		jr	z,resetfadeout
+		ld	(globvol+1),a
+divfadeout:	ld	a,0
+		srl	a
+		ld	l,a
+		srl	l
+		add	a,l
+		jr	nz,divfadeout1
+		inc	a
+divfadeout1:	ld	(divfadeout+1),a
+		add	a,a
+		ld	(countfadeout+1),a
+
+globvol:	ld	a,0			; global attenuation
+		ld	(chnz1+11),a		; for all channels
+		ld	(chnz2+11),a
+		ld	(chnz3+11),a
+		bit	3,a			; if value of attenuation
+		jr	z,sq_c			; hits the 8 we turn off also
+		ld	hl,chnz1		; flags in all channels and
+		ld	de,chzl 		; disable hw envelopes
+		ld	c,3
+globvol1:	res	0,(hl)			; by reseting 0th bit
+		add	hl,de
+		dec	c
+		jr	nz,globvol1
+
+sq_c:		xor	a			; zero mixer register in all chans
+		ld	l,a
+		ld	h,a
+		ld	(sq_n+1),hl
+		ld	ix,chnz1
+		call	sq_r
+		call	sq_r
+		call	sq_r
+
+sq_n:		ld	bc,0			; configure mixer register
+		ld	a,b			; B = noise generators for abc
+		rla				; C = tone generators for abc
+		rla
+		rla
+		or	c			; complementing because
+		cpl				; mixer is active in zero
+sq_off: 	or	0			; and apply additional chn.off
+		ld	e,a
+		ld	d,7			; out to mixer register 7
+out1:		ld	bc,#FFFD
+		out	(c),d
+		ld	b,#BF
+		out	(c),e
+		ret
+
+resetfadeout:	ld	hl,-1
+		ld	(sq_sys),hl
+		ld	hl,sq_status
+		set	7,(hl)
+		xor	a
+		db	1 ; ld bc,* to skip next instruction
+enablefade:	ld	a,48
+forcefade:	ld	hl,chkfadeout+1
+		inc	(hl)
+		ld	(countfadeout+1),a
+		ld	(divfadeout+1),a
+		cpl
+		ld	(sq_rest+1),a
+		ret
+
+sq_i:		ld	hl,0
+sq_i1:		ld	ix,chnz1
+sq_i9:		ld	a,(hl)
+		or	a
+		jr	nz,sq_i3
+		ld	(sq_rest+1),a		; flag that if next pattern will
+		ld	hl,(i_repeat)		; be hit we test fadeout or noloop
+sq_i3:		ld	b,(hl)
+		rl	b
+		res	5,(ix+0)
+		jr	nc,sq_i4
+		set	5,(ix+0)
+sq_i4:		inc	hl
+		ld	a,(hl)
+		and	15
+		ld	(ix+26),a
+		ld	a,(hl)
+		and	240
+		rra
+		rra
+		rra
+		rra
+		cp	9
+		jr	c,zbr
+		sub	9
+		cpl
+zbr:		ld	(ix+24),a
+		inc	hl
+		ld	(sq_i+1),hl
+		ld	l,b
+		ld	h,0
+		ld	de,(i_patterns)
+		add	hl,de
+		ld	e,(hl)
+		inc	hl
+		ld	d,(hl)
+		inc	de
+		ld	(ix+22),e
+		ld	(ix+23),d
+		ld	de,chzl
+		add	ix,de
+		ld	(sq_i1+2),ix
+		ret
+
+sq_nofade:	call	resetfadeout
+		pop	af
+		ret
+
+sq_rest:	ld	a,-1
+		or	a
+		jr	nz,sq_rest0
+		ld	a,(sq_status)
+		rrca				; bit 0. = noloop
+		jr	c,sq_nofade
+		rrca				; bit 1. = fadeout
+		jr	nc,sq_rest0
+		call	enablefade
+sq_rest0:	ld	a,(chnz1+26)
+		ld	(chnz1+11),a
+		ld	a,(chnz2+26)
+		ld	(chnz2+11),a
+		ld	a,(chnz3+26)
+		ld	(chnz3+11),a
+		ld	hl,(chnz1+22)
+		dec	hl
+		ld	b,(hl)
+		inc	hl
+		ld	(chnz1+18),hl
+		ld	hl,(chnz2+22)
+		ld	(chnz2+18),hl
+		ld	hl,(chnz3+22)
+		ld	(chnz3+18),hl
+		ld	hl,(chnz1+24)
+		ld	(chnz1+20),hl
+		ld	hl,(chnz2+24)
+		ld	(chnz2+20),hl
+		ld	hl,(chnz3+24)
+		ld	(chnz3+20),hl
+		ld	hl,(sq_i+1)
+		ld	c,(hl)
+		inc	hl
+		ld	(sq_i+1),hl
+		ld	hl,chnz1
+		ld	(sq_i1+2),hl
+		ld	a,3
+		ld	d,0
+sq_rest1:	res	4,(hl)
+		bit	5,(hl)
+		jr	z,sq_rest2
+		set	4,(hl)
+sq_rest2:	ld	e,21
+		add	hl,de
+		ld	(hl),d
+		ld	e,chzl-21
+		add	hl,de
+		dec	a
+		jr	nz,sq_rest1
+sq_rend1:	ld	(sq_sys),bc
+		ld	a,c
+sq_rend2:	ld	(sq_playspeed+1),a
+		ld	a,b
+		ret
+
+sq_p:		ld	a,(ix+21)
+		or	a
+		jr	z,y01
+		dec	(ix+21)
+		bit	7,(ix+0)
+		jr	nz,y33
+		ret
+
+y01:		ld	e,(ix+18)
+		ld	d,(ix+19)
+		set	6,(ix+0)
+		res	7,(ix+0)
+		ld	a,(de)
+		inc	de
+		bit	7,a
+		jr	z,y02
+
+y05:		ld	(ix+18),e
+		ld	(ix+19),d
+		ld	b,a
+		bit	6,a
+		jr	z,y60
+
+		dec	de
+		ld	(ix+27),e
+		ld	(ix+28),d
+y34:		and	31
+		jp	sq_smp
+
+y60:		bit	5,a
+		jr	nz,y06
+
+		and	15
+		bit	4,b
+		jr	z,y07
+		neg
+y07:		add	a,(ix+12)
+		ld	(ix+12),a
+y33:		ld	e,(ix+27)
+		ld	d,(ix+28)
+		res	6,(ix+0)
+		ld	a,(de)
+		bit	7,a
+		jr	nz,y34
+		inc	de
+		jp	smp_orn
+
+y06:		and	15
+		ld	(ix+21),a
+		bit	4,b
+		ret	z
+		or	a
+		jr	z,y33
+		set	7,(ix+0)
+		jr	y33
+
+y02:		cp	96
+		jp	c,y03
+		sub	96
+		cp	15
+		jr	c,y04
+
+		ld	hl,sq_off+1
+		ld	b,a
+		ld	a,(hl)
+		or	c
+		ld	(hl),a
+		set	3,(ix+0)
+		ld	a,b
+		sub	15
+		jp	z,z26
+
+y04:		dec	a
+		ex	de,hl
+		ld	c,(hl)
+		inc	hl
+		bit	6,(ix+0)
+		jr	z,y69
+		ld	(ix+18),l
+		ld	(ix+19),h
+		res	6,(ix+0)
+y69:		cp	8
+		jr	c,z38
+		set	0,(ix+0)
+		ld	l,c
+		ld	e,a
+		ld	d,13
+		call	out1
+		ld	d,11
+		ld	e,l
+		jp	out1
+
+z38:		cp	6			; channel volume set
+		jr	nc,z36
+		bit	4,(ix+0)
+		ret	z
+		or	a
+		jr	nz,z31
+		ld	a,c
+sq_v:		and	15
+		ld	(ix+11),a
+		ret
+
+z31:		dec	a			; channel volume slide
+		jr	nz,z32
+		ld	a,c
+		add	a,(ix+11)
+		jr	sq_v
+
+z32:		dec	a			; global volume set
+		jr	nz,z33
+		ld	a,c
+		ld	(chnz1+11),a
+		ld	(chnz2+11),a
+		ld	(chnz3+11),a
+		ret
+
+z33:		dec	a			; global volume slide
+		jr	nz,z34
+		ld	b,3
+		ld	de,chzl
+		ld	hl,chnz1+11
+z33_2:		ld	a,(hl)
+		add	a,c
+		and	15
+		ld	(hl),a
+		add	hl,de
+		djnz	z33_2
+		ret
+
+z34:		ld	hl,sq_sys		; speed set
+		dec	a
+		jr	nz,z35
+		ld	a,c
+sq_s:		and	31
+		jr	nz,sq_z
+		ld	a,32
+sq_z:		ld	(hl),a
+		jp	sq_rend2
+
+z35:		ld	a,(hl)			; speed slide
+		add	a,c
+		jr	sq_s
+
+z36:		sub	6
+		ld	b,0
+		ld	a,c
+		ld	c,b
+		jr	nz,z37
+		dec	b
+		neg
+z37:		set	2,(ix+0)
+		ld	(ix+13),c
+		ld	(ix+14),c
+		ld	(ix+15),a
+		ld	(ix+16),b
+		ret
+
+y03:		ld	(ix+12),a
+		dec	de
+		ld	(ix+27),e
+		ld	(ix+28),d
+		inc	de
+		call	smp_orn
+		bit	6,(ix+0)
+		ret	z
+z26:		ld	(ix+18),e
+		ld	(ix+19),d
+		ret
+
+smp_orn:	ld	a,(de)
+		inc	de
+		bit	7,a
+		jr	z,smp_orn9
+		ld	b,a
+		rra
+		and	31
+		call	nz,sq_smp
+		bit	6,b
+		ret	z
+		ld	a,(de)
+		and	240
+		rr	b
+		rra
+		rra
+		rra
+		srl	a
+		call	nz,sq_orn
+		ld	a,(de)
+		inc	de
+		and	15
+		ret	z
+smp_orn9:	jp	y04
+
+sq_smp: 	push	bc
+		add	a,a
+		ld	c,a
+		ld	b,0
+		ld	a,(ix+0)
+		and	%11110000
+		ld	(ix+0),a
+		ld	hl,(i_samples)
+		add	hl,bc
+		ld	c,(hl)
+		inc	hl
+		ld	b,(hl)
+		push	ix
+		pop	hl
+		inc	hl
+		ld	(hl),c
+		inc	hl
+		ld	(hl),b
+		inc	bc
+		inc	bc
+		inc	hl
+		ld	(hl),c
+		inc	hl
+		ld	(hl),b
+		inc	hl
+		ld	(hl),32
+		inc	hl
+		ld	(sq_nxt+1),hl
+		pop	bc
+		ld	hl,sq_off+1
+		ld	a,(hl)
+		or	c
+		xor	c
+		ld	(hl),a
+		ret
+
+sq_orn: 	add	a,a
+		ld	c,a
+		ld	b,0
+		ld	hl,(i_ornaments)
+		add	hl,bc
+		ld	c,(hl)
+		inc	hl
+		ld	b,(hl)
+sq_nxt: 	ld	hl,0
+		ld	(hl),c
+		inc	hl
+		ld	(hl),b
+		inc	hl
+		inc	bc
+		inc	bc
+		ld	(hl),c
+		inc	hl
+		ld	(hl),b
+		inc	hl
+		ld	(hl),32
+		set	1,(ix+0)
+		ret
+
+out2:		ld	hl,sq_n+1		; carry was projected into tone
+		rl	(hl)			; generator and disable noise
+		inc	hl			; generator in sq_n
+		rl	(hl)
+		ld	a,(ix+17)		; then get channel number
+		add	a,8			; add 8 (AY reg number)
+		out	(c),a			; so we change volume regs
+		ld	b,#BF
+		out	(c),e			; and send value in E
+		jp	sq_zch
+
+sq_r:		ld	l,(ix+3)
+		ld	h,(ix+4)
+		ld	bc,#FFFD
+		ld	d,(ix+0)
+		ld	e,0
+		bit	3,d			; if nothing to play, then mute
+		jr	nz,out2
+		ld	a,(hl)
+		and	15
+		jr	nz,sq_r1
+		bit	0,d			; set envelopes if needed
+		jr	z,sq_r2
+		ld	e,16
+		jr	sq_r2
+
+sq_r1:		sub	(ix+11) 		; subtract global attenuation
+		jr	c,sq_r2 		; from actual channel volume
+		ld	e,a
+
+sq_r2:		ld	a,(ix+17)		; then get channel number
+		add	a,8			; add 8 (AY reg number)
+		out	(c),a			; so we change volume regs
+		ld	b,#BF
+		out	(c),e
+		ld	a,(hl)
+		inc	hl
+		and	240			; extract noise data
+		rra
+		rra
+		rra
+		ld	d,6
+		ld	e,(hl)
+		rl	e
+		bit	5,(hl)			; will be noise enabled?
+		jr	z,sq_znn
+		adc	a,0
+		ld	b,#FF
+		out	(c),d
+		ld	b,#BF
+		out	(c),a
+sq_znn:		ld	a,e
+		rla
+		ex	de,hl
+		ld	hl,sq_n+1		; set sq_n to both generators
+		rl	(hl)			; status for channel
+		inc	hl
+		rla
+		rl	(hl)
+		ex	de,hl
+		ld	a,(hl)			; frequency calculations...
+		and	31
+		ld	d,a
+		inc	hl
+		ld	e,(hl)
+		inc	hl
+		push	de
+		ld	d,0
+		dec	(ix+5)
+		jp	nz,fq_2
+		ld	l,(ix+1)
+		ld	h,(ix+2)
+		ld	a,(hl)
+		inc	hl
+		cp	32
+		ld	c,(hl)
+		inc	hl
+		jr	nz,fq_1
+		set	3,(ix+0)
+		res	1,(ix+0)
+fq_1:		ld	b,a
+		add	a,a
+		add	a,b
+		ld	e,a
+		add	hl,de
+		ld	(ix+5),c
+fq_2:		ld	(ix+3),l
+		ld	(ix+4),h
+		ld	a,(ix+12)
+		bit	1,(ix+0)
+		jr	z,fq_5
+		ld	l,(ix+8)
+		ld	h,(ix+9)
+		add	a,(hl)
+		inc	hl
+		dec	(ix+10)
+		jp	nz,fq_4
+		ex	af,af'
+		ld	l,(ix+6)
+		ld	h,(ix+7)
+		ld	a,(hl)
+		inc	hl
+		cp	32
+		ld	e,b
+		jr	z,fq_3
+		ld	c,(hl)
+		ld	e,a
+fq_3:		inc	hl
+		add	hl,de
+		ld	(ix+10),c
+		ex	af,af'
+fq_4:		ld	(ix+8),l
+		ld	(ix+9),h
+fq_5:		add	a,(ix+20)
+		cp	45
+		jr	nc,fq_6
+		add	a,a
+		ld	e,a
+		ld	hl,frq2
+		add	hl,de
+		ld	d,(hl)
+		inc	hl
+		jp	fq_7
+
+fq_6:		ld	hl,frq1-45
+		ld	e,a
+		add	hl,de
+fq_7:		ld	e,(hl)
+		ex	de,hl
+		pop	de			; we got a frequency,
+		bit	4,d			; need we add also fine-tuning?
+		res	4,d
+		jr	z,fq_9
+		add	hl,de
+		db	1 ; ld bc,* to skip next instruction
+fq_9:		sbc	hl,de
+		bit	2,(ix+0)
+		jr	z,out9
+		ld	c,(ix+13)
+		ld	b,(ix+14)
+		add	hl,bc
+		ex	de,hl
+		ld	l,(ix+15)
+		ld	h,(ix+16)
+		add	hl,bc
+		ld	(ix+13),l
+		ld	(ix+14),h
+		ex	de,hl
+
+out9:		ld	a,(ix+17)		; get channel number
+		add	a,a			; multiply by two
+		ld	bc,#FFFD		; and set tone frequency
+		out	(c),a
+		ld	b,#BF
+		out	(c),l
+		inc	a
+		ld	b,#FF
+		out	(c),a
+		ld	b,#BF
+		out	(c),h
+sq_zch: 	ld	de,chzl 		; and skip to next channel
+		add	ix,de			; state params with IX...
+		ret
+
+frq2:		db	13,93,12,156
+		db	11,231,11,60
+		db	10,155,10,2,9,115
+		db	8,235,8,107,7,242
+		db	7,128,7,20,6,174
+		db	6,78,5,244,5,158
+		db	5,79,5,1,4,185
+		db	4,117,4,53,3,249
+		db	3,192,3,138,3,87
+		db	3,39,2,250,2,207
+		db	2,167,2,129,2,93
+		db	2,59,2,27,1,252
+		db	1,224,1,197,1,172
+		db	1,148,1,125,1,104
+		db	1,83,1,64
+		db	1,46,1,29,1,13
+
+frq1:		db	254,240,226,214
+		db	202,190,180,170
+		db	160,151,143,135
+		db	127,120,113,107
+		db	101,95,90,85,80
+		db	76,71,67,64,60,57
+		db	53,50,48,45,42,40
+		db	38,36,34,32,30,28
+		db	27,25,24,22,21,20
+		db	19,18,17,16,15,14
+
+chnz1:		db	0
+		dw	0,0,0,0,0,0,0,0
+		dw	2,0,0,0,0,0
+chnz2:		db	0
+		dw	0,0,0,0,0,0,0,0
+		dw	1,0,0,0,0,0
+chnz3:		db	0
+		dw	0,0,0,0,0,0,0,0
+		dw	0,0,0,0,0,0
+
+sq_sys: 	dw	#0101
+
+chzl:		equ	chnz2-chnz1	; offset between channels
+
+
+	ifndef PUREPLAYER
+;		org	#C000
+	endif
+
+buffer:		ds	2		; song length
+reloc_base:
+i_samples:	ds	2		; samples lookup table address
+i_ornaments:	ds	2		; ornaments lookup table address
+i_patterns:	ds	2		; patterns lookup tables address
+i_positions:	ds	2		; positions defitions address
+i_repeat:	ds	2		; pointer to repeat position
+reloc_endptr:	ds	2		; pointer to first sample definition
+; and particular pattern lookup tables follows until first sample defintion...
+
+
+	ifndef PUREPLAYER
+; song data in format as was stored in .sqt file starts at buffer label
+; and it starting with absolute addresses which we need to relocate in sq_init
+		org	buffer
+
+;		incbin "songs/music.sqt"
+;		incbin "songs/minimum.bin",#510
+		incbin "songs/happy.sqt"
+;		incbin "songs/boulder128menu.sqt"
+
+
+		savesna "SQT.sna",demoplay
+	endif

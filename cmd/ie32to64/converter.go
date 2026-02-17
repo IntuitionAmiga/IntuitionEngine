@@ -142,9 +142,9 @@ func (c *Converter) parseRegIndirect(op string) (reg string, offset string, err 
 	inner = strings.TrimSuffix(inner, "]")
 	inner = strings.TrimSpace(inner)
 
-	if idx := strings.Index(inner, "+"); idx >= 0 {
-		regPart := strings.TrimSpace(inner[:idx])
-		offPart := strings.TrimSpace(inner[idx+1:])
+	if before, after, ok := strings.Cut(inner, "+"); ok {
+		regPart := strings.TrimSpace(before)
+		offPart := strings.TrimSpace(after)
 		mapped, e := c.MapRegister(regPart)
 		if e != nil {
 			return "", "", e

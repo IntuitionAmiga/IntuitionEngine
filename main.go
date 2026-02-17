@@ -65,7 +65,7 @@ func validateResolutionOverride(w, h int) (int, int, bool) {
 
 func boilerPlate() {
 	fmt.Println("\n\033[38;2;255;20;147m ██▓ ███▄    █ ▄▄▄█████▓ █    ██  ██▓▄▄▄█████▓ ██▓ ▒█████   ███▄    █    ▓█████  ███▄    █   ▄████  ██▓ ███▄    █ ▓█████\033[0m\n\033[38;2;255;50;147m▓██▒ ██ ▀█   █ ▓  ██▒ ▓▒ ██  ▓██▒▓██▒▓  ██▒ ▓▒▓██▒▒██▒  ██▒ ██ ▀█   █    ▓█   ▀  ██ ▀█   █  ██▒ ▀█▒▓██▒ ██ ▀█   █ ▓█   ▀\033[0m\n\033[38;2;255;80;147m▒██▒▓██  ▀█ ██▒▒ ▓██░ ▒░▓██  ▒██░▒██▒▒ ▓██░ ▒░▒██▒▒██░  ██▒▓██  ▀█ ██▒   ▒███   ▓██  ▀█ ██▒▒██░▄▄▄░▒██▒▓██  ▀█ ██▒▒███\033[0m\n\033[38;2;255;110;147m░██░▓██▒  ▐▌██▒░ ▓██▓ ░ ▓▓█  ░██░░██░░ ▓██▓ ░ ░██░▒██   ██░▓██▒  ▐▌██▒   ▒▓█  ▄ ▓██▒  ▐▌██▒░▓█  ██▓░██░▓██▒  ▐▌██▒▒▓█  ▄\033[0m\n\033[38;2;255;140;147m░██░▒██░   ▓██░  ▒██▒ ░ ▒▒█████▓ ░██░  ▒██▒ ░ ░██░░ ████▓▒░▒██░   ▓██░   ░▒████▒▒██░   ▓██░░▒▓███▀▒░██░▒██░   ▓██░░▒████▒\033[0m\n\033[38;2;255;170;147m░▓  ░ ▒░   ▒ ▒   ▒ ░░   ░▒▓▒ ▒ ▒ ░▓    ▒ ░░   ░▓  ░ ▒░▒░▒░ ░ ▒░   ▒ ▒    ░░ ▒░ ░░ ▒░   ▒ ▒  ░▒   ▒ ░▓  ░ ▒░   ▒ ▒ ░░ ▒░ ░\033[0m\n\033[38;2;255;200;147m ▒ ░░ ░░   ░ ▒░    ░    ░░▒░ ░ ░  ▒ ░    ░     ▒ ░  ░ ▒ ▒░ ░ ░░   ░ ▒░    ░ ░  ░░ ░░   ░ ▒░  ░   ░  ▒ ░░ ░░   ░ ▒░ ░ ░  ░\033[0m\n\033[38;2;255;230;147m ▒ ░   ░   ░ ░   ░       ░░░ ░ ░  ▒ ░  ░       ▒ ░░ ░ ░ ▒     ░   ░ ░       ░      ░   ░ ░ ░ ░   ░  ▒ ░   ░   ░ ░    ░\033[0m\n\033[38;2;255;255;147m ░           ░             ░      ░            ░      ░ ░           ░       ░  ░         ░       ░  ░           ░    ░  ░\033[0m")
-	fmt.Println("\nA modern 64-bit RISC reimagining of the Commodore, Atari, Sinclair and IBM 8/16/32-bit home computers.")
+	fmt.Println("\nA modern 64-bit RISC re-imagining of Commodore/Atari/Sinclair/BBC/Amstrad/IBM 8/16/32-bit home computers.")
 	fmt.Println("Default core: IE64. Also supports IE32, M68K, x86, Z80, and 6502 CPU modes.")
 	fmt.Println("Video: IEVideoChip, VGA, ULA, TED video, ANTIC/GTIA, 3DFX Voodoo.")
 	fmt.Println("Audio: IESoundChip, AY/YM/PSG, SID, POKEY, TED audio, Amiga AHX.")
@@ -870,8 +870,20 @@ func main() {
 	fileIO := NewFileIODevice(sysBus, ".") // Current directory as base
 	sysBus.MapIO(FILE_IO_BASE, FILE_IO_END, fileIO.HandleRead, fileIO.HandleWrite)
 
+	// Attach bus memory to sound engines and SoundChip so register writes
+	// during file playback are mirrored to raw memory, making them visible
+	// in the Machine Monitor's IO view.
+	busMem := sysBus.GetMemory()
+	soundChip.AttachBusMemory(busMem)
+	psgEngine.AttachBusMemory(busMem)
+	sidEngine.AttachBusMemory(busMem)
+	sid2Engine.AttachBusMemory(busMem)
+	sid3Engine.AttachBusMemory(busMem)
+	pokeyEngine.AttachBusMemory(busMem)
+	tedEngine.AttachBusMemory(busMem)
+
 	// Initialize unified SOUND PLAY media loader
-	mediaLoader := NewMediaLoader(sysBus, soundChip, ".", psgPlayer, sidPlayer, tedPlayer, ahxPlayerCPU)
+	mediaLoader := NewMediaLoader(sysBus, soundChip, ".", psgPlayer, sidPlayer, tedPlayer, ahxPlayerCPU, pokeyPlayer)
 	sysBus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END, mediaLoader.HandleRead, mediaLoader.HandleWrite)
 
 	// Initialize coprocessor subsystem MMIO (available to all CPU modes)

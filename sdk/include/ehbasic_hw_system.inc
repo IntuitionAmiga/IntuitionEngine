@@ -99,6 +99,7 @@ hw_wait:
 hw_copper:
     jsr     exec_skip_spaces
     load.b  r1, (r17)
+    jsr     toupper
     ; Check for ON token
     move.q  r2, #TK_ON
     beq     r1, r2, .cop_on
@@ -132,12 +133,15 @@ hw_copper:
     rts
 .cop_check_off:
     add.q   r3, r17, #1
-    load.b  r4, (r3)
+    load.b  r1, (r3)
+    jsr     toupper
     move.q  r2, #0x46            ; 'F'
-    bne     r4, r2, .cop_done
+    bne     r1, r2, .cop_done
     add.q   r3, r3, #1
-    load.b  r4, (r3)
-    bne     r4, r2, .cop_done
+    load.b  r1, (r3)
+    jsr     toupper
+    move.q  r2, #0x46            ; 'F'
+    bne     r1, r2, .cop_done
     add.q   r17, r3, #1
     la      r1, COPPER_CTRL
     store.l r0, (r1)
@@ -247,6 +251,7 @@ hw_copper:
 hw_blit:
     jsr     exec_skip_spaces
     load.b  r1, (r17)
+    jsr     toupper
     ; Check first letter/token to determine sub-command
     move.q  r2, #0x43            ; 'C' (COPY)
     beq     r1, r2, .blt_copy
@@ -265,11 +270,13 @@ hw_blit:
     ; MEMCOPY / MODE7 (ASCII)
     move.q  r2, #0x4D            ; 'M'
     bne     r1, r2, .blt_done
-    load.b  r2, 1(r17)           ; second character
-    move.q  r3, #0x4F            ; 'O' -> MODE7
-    beq     r2, r3, .blt_mode7
-    move.q  r3, #0x45            ; 'E' -> MEMCOPY
-    beq     r2, r3, .blt_memcopy
+    add.q   r3, r17, #1
+    load.b  r1, (r3)             ; second character
+    jsr     toupper
+    move.q  r2, #0x4F            ; 'O' -> MODE7
+    beq     r1, r2, .blt_mode7
+    move.q  r2, #0x45            ; 'E' -> MEMCOPY
+    beq     r1, r2, .blt_memcopy
     bra     .blt_memcopy         ; compatibility: BLIT M ...
 .blt_copy:
     add.q   r17, r17, #1

@@ -1,0 +1,1359 @@
+; ProTracker3 Extreme (P3X) player for ZX Spectrum
+; Copyright (c) 2004-2007 S.V.Bulba (http://bulba.untergrund.net)
+; formatted for Pasmo by Gasman
+; optimized by Cheveron
+; sjasmplus adaptation by © 2013 z00m/SinDiKat
+; improved by © 2016-2020 mborik/SinDiKat
+
+
+		device	zxspectrum128
+
+@NULL = 0
+
+
+	ifndef PUREPLAYER
+		org	#8000
+
+demo		di
+		ld	sp,demo
+		call	music_init
+demoloop	ei
+		halt
+		call	music_play
+		jr	demoloop
+	endif
+
+
+	ifndef SINGLESETUP
+; bit.0 if you want to play without looping
+; bit.1 if you play looped but fadeout after few seconds
+; bit.7 is set each time when loop or fadeout was passed
+; ...or simplified:	2 - fadeout after loop
+;			1 - no loop
+;			0 - loop forever
+music_setup:	db	2
+	endif
+
+music_init:	ld	hl,MDLADDR
+music_init0:	push	hl
+		ld	bc,#40			; look for "by" identifier
+		add	hl,bc
+		ld	a,(hl)
+		cp	'y'
+		dec	hl
+		ld	a,(hl)
+		pop	hl
+		jr	z,pt3fmt_init
+		cp	'b'
+		jr	z,pt3fmt_init
+		ld	a,(hl)			; and first byte of PT2 is delay
+		cp	c			; compared to PT3 text identifier
+		jp	c,pt2fmt_init
+
+pt3fmt_init	call	setmodaddr
+		push	hl
+		ld	de,100
+		add	hl,de
+		ld	a,(hl)
+		ld	(delay),a
+		push	hl
+		pop	ix
+		add	hl,de
+		ld	(CrPsPtr+1),hl
+		ld	e,(ix+2)
+		add	hl,de
+		inc	hl
+		ld	(LPosPtr+1),hl
+		pop	de
+		ld	l,(ix+3)
+		ld	h,(ix+4)
+		add	hl,de
+		ld	(PatsPtr+1),hl
+		ld	hl,#A9
+		add	hl,de
+		ld	(OrnPtrs+1),hl
+		ld	hl,#69
+		add	hl,de
+		ld	(SamPtrs+1),hl
+
+		ld	a,(ix-87)		; extract version number
+		sub	'0'
+		jr	c,l20
+		cp	10
+		jr	c,l21
+l20:		ld	a,6
+l21:		ld	(Version+1),a
+		push	af
+		cp	4
+		ld	a,(ix-1) ; tone table number
+		rla
+		and	7
+		push	af
+
+		ld	hl,#18 + ((smp_-SamCnv-2) << 8)	; jr smp_
+		ld	(SamCnv),hl
+		ld	a,#BA				; cp d
+		ld	(OrnCP),a
+		ld	(SamCP),a
+		ld	a,#7B				; ld a,e
+		ld	(OrnLD),a
+		ld	(SamLD),a
+		ld	a,#87				; add a,a
+		ld	(SamClc2),a
+		ld	hl,0
+		ld	de,PT3_EmptySmpOrn
+		ld	a,pt3pattdc-ptdecode-2
+		jr	ptx_initcommon
+
+pt2fmt_init:	ld	(delay),a
+		push	hl
+		push	hl
+		push	hl
+		inc	hl
+		inc	hl
+		ld	a,(hl)
+		inc	hl
+		ld	(SamPtrs+1),hl
+		ld	e,(hl)
+		inc	hl
+		ld	d,(hl)
+		pop	hl
+		and	a
+		sbc	hl,de
+		call	setmodaddr
+		pop	hl
+		ld	de,67
+		add	hl,de
+		ld	(OrnPtrs+1),hl
+		ld	e,32
+		add	hl,de
+		ld	c,(hl)
+		inc	hl
+		ld	b,(hl)
+		ld	e,30
+		add	hl,de
+		ld	(CrPsPtr+1),hl
+		ld	e,a
+		inc	hl
+
+		add	hl,de
+		ld	(LPosPtr+1),hl
+		pop	hl
+		add	hl,bc
+		ld	(PatsPtr+1),hl
+		ld	a,5
+		ld	(Version+1),a
+		push	af
+		ld	a,2
+		push	af
+		ld	hl,#51CB			; bit 2,c
+		ld	(SamCnv),hl
+		ld	a,#BB				; cp e
+		ld	(OrnCP),a
+		ld	(SamCP),a
+		ld	a,#7A				; ld a,d
+		ld	(OrnLD),a
+		ld	(SamLD),a
+		ld	a,#80				; add a,b
+		ld	(SamClc2),a
+		ld	hl,#8687			; add a,a,(hl)
+		ld	de,PT2_EmptySmpOrn
+		ld	a,pt2pattdc-ptdecode-2
+
+ptx_initcommon:	ld	(PsCalc),hl
+		ld	(ptdecode+1),a
+		push	de
+
+; note table data depacker
+		ld	de,T_PACK
+		ld	bc,T1_+(2*49)-1
+tp_0:		ld	a,(de)
+		inc	de
+		cp	15*2
+		jr	nc,tp_1
+		ld	h,a
+		ld	a,(de)
+		ld	l,a
+		inc	de
+		jr	tp_2
+tp_1:		push	de
+		ld	d,0
+		ld	e,a
+		add	hl,de
+		add	hl,de
+		pop	de
+tp_2:		ld	a,h
+		ld	(bc),a
+		dec	bc
+		ld	a,l
+		ld	(bc),a
+		dec	bc
+		sub	low (#F8*2)
+		jr	nz,tp_0
+
+		ld	(GlobalAttn+1),a
+		ld	(chkfadeout+1),a
+		ld	hl,music_setup
+		res	7,(hl)
+
+		ld	hl,VARS
+		ld	(hl),a
+		ld	de,VARS+1
+		ld	bc,VAR0END-VARS-1
+		ldir
+		inc	hl
+		ld	(AdInPtA+1),hl		; ptr to zero
+		inc	a
+		ld	(DelyCnt),a
+		ld	hl,#F001	; H - CHP.Volume, L - CHP.NtSkCn
+		ld	(ChanA+CHP.NtSkCn),hl
+		ld	(ChanB+CHP.NtSkCn),hl
+		ld	(ChanC+CHP.NtSkCn),hl
+		pop	hl
+		ld	(ChanA+CHP.OrnPtr),hl	; ornament 0 is "0,1,0"
+		ld	(ChanB+CHP.OrnPtr),hl	; in all versions from
+		ld	(ChanC+CHP.OrnPtr),hl	; 3.xx to 3.6x and VTII
+		pop	af
+
+;NoteTableCreator (c) Ivan Roshin
+;A - NoteTableNumber*2+VersionForNoteTable
+;	xx1b - 3.xx..3.4r
+;	xx0b - 3.4x..3.6x - VortexTracker II
+
+		ld	hl,nt_data
+		push	de
+		ld	d,b
+		add	a,a
+		ld	e,a
+		add	hl,de
+		ld	e,(hl)
+		inc	hl
+		srl	e
+		sbc	a,a
+		and	#A7	; #00 (NOP) or #A7 (AND A)
+		ld	(l3),a
+		ex	de,hl
+		pop	bc	; bc = T1_
+		add	hl,bc
+		ld	a,(de)
+		add	a,low T_
+		ld	c,a
+		adc	a,high T_
+		sub	c
+		ld	b,a
+		push	bc
+		ld	de,NT_
+		push	de
+		ld	b,12
+l1:		push	bc
+		ld	c,(hl)
+		inc	hl
+		push	hl
+		ld	b,(hl)
+		push	de
+		ex	de,hl
+		ld	de,#17
+		ld	xh,8
+l2:		srl	b
+		rr	c
+l3:		add	hl,de	; will be replaced by AND A or NOP apparently
+		ld	a,c
+		adc	a,d
+		ld	(hl),a
+		inc	hl
+		ld	a,b
+		adc	a,d
+		ld	(hl),a
+		add	hl,de
+		dec	xh
+		jr	nz,l2
+
+		pop	de
+		inc	de
+		inc	de
+		pop	hl
+		inc	hl
+		pop	bc
+		djnz	l1
+
+		pop	hl
+		pop	de
+		ld	a,e
+		cp	low TCOLD_1
+		jr	nz,corr_1
+		ld	a,#FD
+		ld	(NT_+#002E),a
+corr_1:		ld	a,(de)
+		and	a
+		jr	z,tc_exit
+		rra
+		push	af
+		add	a,a
+		ld	c,a
+		add	hl,bc
+		pop	af
+		jr	nc,corr_2
+		dec	(hl)
+		dec	(hl)
+corr_2:		inc	(hl)
+		and	a
+		sbc	hl,bc
+		inc	de
+		jr	corr_1
+tc_exit:	pop	af
+
+; VolTableCreator (c) Ivan Roshin
+; A - VersionForVolumeTable
+;	(0..4 - v3.xx .. v3.4x
+;	(5..  - v2.x, v3.5x .. v3.6x (VT2) .. v3.7)
+
+		cp	5
+		ld	hl,17
+		ld	d,h
+		ld	e,h
+		ld	a,#17
+		jr	nc,m1
+		dec	l
+		ld	e,l
+		xor	a
+m1:		ld	(m2),a
+		ld	ix,VT_+16
+		ld	c,16
+initloop2:	push	hl
+		add	hl,de
+		ex	de,hl
+		sbc	hl,hl
+initloop1:	ld	a,l
+m2:		ld	a,l
+		ld	a,h
+		adc	a,0
+		ld	(ix+0),a
+		inc	ix
+		add	hl,de
+		inc	c
+		ld	a,c
+		and	15
+		jr	nz,initloop1
+		pop	hl
+		ld	a,e
+		cp	#77
+		jr	nz,m3
+		inc	e
+m3:		ld	a,c
+		and	a
+		jr	nz,initloop2
+		jp	rout_a0
+
+setmodaddr:	ld	(modaddr+1),hl
+		ld	(mdaddr1+1),hl
+		ld	(mdaddr2+1),hl
+		ret
+
+; PT2 pattern decoder ---------------------------------------------------------
+pd2_sam		call	setsam
+		jr	pd2_loop
+
+pd2_eoff	ld	(ix-12+CHP.Env_En),a
+		jr	pd2_loop
+
+pd2_env		ld	(ix-12+CHP.Env_En),16
+		ld	(AYREGS+AR_EnvTp),a
+		ld	a,(bc)
+		inc	bc
+		ld	l,a
+		ld	a,(bc)
+		inc	bc
+		ld	h,a
+		ld	(EnvBase),hl
+		jr	pd2_loop
+
+pd2_orn		call	setorn
+		jr	pd2_loop
+
+pd2_skip	inc	a
+		ld	(ix-12+CHP.NNtSkp),a
+		jr	pd2_loop
+
+pd2_vol		rrca
+		rrca
+		rrca
+		rrca
+		ld	(ix-12+CHP.Volume),a
+		jr	pd2_loop
+
+pd2_del		call	c_delay
+		jr	pd2_loop
+
+pd2_glis	set	2,(ix-12+CHP.Flags)
+		inc	a
+		ld	(ix-12+CHP.TnSlDl),a
+		ld	(ix-12+CHP.TSlCnt),a
+		ld	a,(bc)
+		inc	bc
+		ld	(ix-12+CHP.TSlStp),a
+		add	a,a
+		sbc	a,a
+		ld	(ix-12+CHP.TSlStp+1),a
+		scf
+		jr	pd2_loop2
+
+pd2_port:	res	2,(ix-12+CHP.Flags)
+		ld	a,(bc)
+		inc	bc
+		inc	bc		; ignoring precalc delta to right sound
+		inc	bc
+		scf
+		jr	pd2_loop2
+
+pd2_stop:	ld	(ix-12+CHP.TSlCnt),a
+		jr	pd2_loop
+
+pt2pattdc:	and	a
+pd2_loop2:	ex	af,af'
+pd2_loop:	ld	a,(bc)
+		inc	bc
+		add	a,#20
+		jr	z,pd2_rel
+		jr	c,pd2_sam
+		add	a,96
+		jr	c,pd2_note
+		inc	a
+		jr	z,pd2_eoff
+		add	a,15
+		jp	z,pd_fin
+		jr	c,pd2_env
+		add	a,#10
+		jr	c,pd2_orn
+		add	a,#40
+		jr	c,pd2_skip
+		add	a,#10
+		jr	c,pd2_vol
+		inc	a
+		jr	z,pd2_del
+		inc	a
+		jr	z,pd2_glis
+		inc	a
+		jr	z,pd2_port
+		inc	a
+		jr	z,pd2_stop
+		ld	a,(bc)
+		inc	bc
+		ld	(ix-12+CHP.CrNsSl),a
+		jr	pd2_loop
+
+pd2_rel:	ld	(ix-12+CHP.Flags),a
+		jr	pd2_exit
+
+pd2_note:	ld	l,a
+		ld	a,(ix-12+CHP.Note)
+		ld	(PrNote+1),a
+		ld	(ix-12+CHP.Note),l
+		xor	a
+		ld	(ix-12+CHP.TSlCnt),a
+		set	0,(ix-12+CHP.Flags)
+		ex	af,af'
+		jr	nc,pd2_noglis
+		bit	2,(ix-12+CHP.Flags)
+		jr	nz,pd2_noport
+		ld	(LoStep+1),a
+		add	a,a
+		sbc	a,a
+		ex	af,af'
+		ld	h,a
+		ld	l,a
+		inc	a
+		call	setport
+pd2_noport:	ld	(ix-12+CHP.TSlCnt),1
+pd2_noglis:	xor	a
+
+pd2_exit:	ld	(ix-12+CHP.PsInSm),a
+		ld	(ix-12+CHP.PsInOr),a
+		ld	(ix-12+CHP.CrTnSl),a
+		ld	(ix-12+CHP.CrTnSl+1),a
+		jp	pd_fin
+
+
+ptdecode:	jr	pt3pattdc		; patter decoder fork
+
+; PT3 pattern decoder ---------------------------------------------------------
+PD_OrSm:	ld	(ix-12+CHP.Env_En),0
+		call	setorn
+pd_sam_:	ld	a,(bc)
+		inc	bc
+		rrca
+pd_sam:		call	setsam
+		jr	pd_loop
+
+pd_vol:		rrca
+		rrca
+		rrca
+		rrca
+		ld	(ix-12+CHP.Volume),a
+		jr	pd_lp2
+
+pd_eoff:	ld	(ix-12+CHP.Env_En),a
+		ld	(ix-12+CHP.PsInOr),a
+		jr	pd_lp2
+
+pd_SorE:	dec	a
+		jr	nz,pd_env
+		ld	a,(bc)
+		inc	bc
+		ld	(ix-12+CHP.NNtSkp),a
+		jr	pd_lp2
+
+pd_env:		call	setenv
+		jr	pd_lp2
+
+pd_orn:		call	setorn
+		jr	pd_loop
+
+pd_esam:	ld	(ix-12+CHP.Env_En),a
+		ld	(ix-12+CHP.PsInOr),a
+		call	nz,setenv
+		jr	pd_sam_
+
+pt3pattdc:	ld	a,(ix-12+CHP.Note)
+		ld	(PrNote+1),a
+		ld	l,(ix-12+CHP.CrTnSl)
+		ld	h,(ix-12+CHP.CrTnSl+1)
+		ld	(PrSlide+1),hl
+
+pd_loop:	ld	de,#2010
+pd_lp2:		ld	a,(bc)
+		inc	bc
+		add	a,e
+		jr	c,PD_OrSm
+		add	a,d
+		jr	z,pd_fin
+		jr	c,pd_sam
+		add	a,e
+		jr	z,pd_rel
+		jr	c,pd_vol
+		add	a,e
+		jr	z,pd_eoff
+		jr	c,pd_SorE
+		add	a,#60
+		jr	c,pd_note
+		add	a,e
+		jr	c,pd_orn
+		add	a,d
+		jr	c,pd_nois
+		add	a,e
+		jr	c,pd_esam
+		add	a,a
+		ld	e,a
+		ld	hl,spccoms-#20E0
+		add	hl,de
+		ld	e,(hl)
+		inc	hl
+		ld	d,(hl)
+		push	de
+		jr	pd_loop
+
+pd_nois:	ld	(Ns_base),a
+		jr	pd_lp2
+
+pd_rel:		res	0,(ix-12+CHP.Flags)
+		jr	pd_res
+
+pd_note:	ld	(ix-12+CHP.Note),a
+		set	0,(ix-12+CHP.Flags)
+		xor	a
+pd_res:		ld	(pdsp_+1),sp
+		ld	sp,ix
+		ld	h,a
+		ld	l,a
+		push	hl
+		push	hl
+		push	hl
+		push	hl
+		push	hl
+		push	hl
+pdsp_:		ld	sp,NULL
+pd_fin:		ld	a,(ix-12+CHP.NNtSkp)
+		ld	(ix-12+CHP.NtSkCn),a
+		ret
+
+c_portm:	ld	a,(bc)
+		inc	bc
+		inc	bc	; skip precalculated tone delta
+		inc	bc	; (because cannot be right after pt3 compilation)
+		ex	af,af'
+		ld	a,(bc)	; signed tone step
+		inc	bc
+		ld	(LoStep+1),a
+		ld	a,(bc)
+		inc	bc
+		and	a
+		ex	af,af'
+		ld	l,(ix-12+CHP.CrTnSl)
+		ld	h,(ix-12+CHP.CrTnSl+1)
+
+; Set portamento variables
+; A - Delay; A' - Hi(Step); ZF' - (A'=0); HL - CrTnSl
+setport		res	2,(ix-12+CHP.Flags)
+		ld	(ix-12+CHP.TnSlDl),a
+		ld	(ix-12+CHP.TSlCnt),a
+		push	hl
+		ld	de,NT_
+		ld	a,(ix-12+CHP.Note)
+		ld	(ix-12+CHP.SlToNt),a
+		add	a,a
+		ld	l,a
+		ld	h,0
+		add	hl,de
+		ld	a,(hl)
+		inc	hl
+		ld	h,(hl)
+		ld	l,a
+		push	hl
+PrNote:		ld	a,NULL
+		ld	(ix-12+CHP.Note),a
+		add	a,a
+		ld	l,a
+		ld	h,0
+		add	hl,de
+		ld	e,(hl)
+		inc	hl
+		ld	d,(hl)
+		pop	hl
+		sbc	hl,de
+		ld	(ix-12+CHP.TnDelt),l
+		ld	(ix-12+CHP.TnDelt+1),h
+		pop	de
+Version:	ld	a,NULL
+		cp	6
+		jr	c,LoStep	; old 3xxx for PT v3.5-
+PrSlide:	ld	de,NULL
+		ld	(ix-12+CHP.CrTnSl),e
+		ld	(ix-12+CHP.CrTnSl+1),d
+LoStep:		ld	a,0		; signed tone step
+		ex	af,af'
+		jr	z,nosig
+		ex	de,hl
+nosig:		sbc	hl,de
+		jp	p,set_stp
+		cpl
+		ex	af,af'
+		neg
+		ex	af,af'
+set_stp:	ld	(ix-12+CHP.TSlStp+1),a
+		ex	af,af'
+		ld	(ix-12+CHP.TSlStp),a
+		ld	(ix-12+CHP.COnOff),0
+		ret
+
+c_gliss:	set	2,(ix-12+CHP.Flags)
+		ld	a,(bc)
+		inc	bc
+		ld	(ix-12+CHP.TnSlDl),a
+		and	a
+		jr	nz,gl36
+		ld	a,(Version+1) ;AlCo PT3.7+
+		cp	7
+		sbc	a,a
+		inc	a
+gl36:		ld	(ix-12+CHP.TSlCnt),a
+		ld	a,(bc)
+		inc	bc
+		ex	af,af'
+		ld	a,(bc)
+		inc	bc
+		jr	set_stp
+
+c_smpos:	ld	a,(bc)
+		inc	bc
+		ld	(ix-12+CHP.PsInSm),a
+		ret
+
+c_orpos:	ld	a,(bc)
+		inc	bc
+		ld	(ix-12+CHP.PsInOr),a
+		ret
+
+c_vibrt:	ld	a,(bc)
+		inc	bc
+		ld	(ix-12+CHP.OnOffD),a
+		ld	(ix-12+CHP.COnOff),a
+		ld	a,(bc)
+		inc	bc
+		ld	(ix-12+CHP.OffOnD),a
+		xor	a
+		ld	(ix-12+CHP.TSlCnt),a
+		ld	(ix-12+CHP.CrTnSl),a
+		ld	(ix-12+CHP.CrTnSl+1),a
+		ret
+
+c_engls:	ld	a,(bc)
+		inc	bc
+		ld	(Env_Del+1),a
+		ld	(CurEDel),a
+		ld	a,(bc)
+		inc	bc
+		ld	l,a
+		ld	a,(bc)
+		inc	bc
+		ld	h,a
+		ld	(ESldAdd+1),hl
+		ret
+
+c_delay:	ld	a,(bc)
+		inc	bc
+		ld	(delay),a
+		ld	(DelyCnt),a ; bugfix by Lee_dC
+		ret
+
+setenv:		ld	(ix-12+CHP.Env_En),e
+		ld	(AYREGS+AR_EnvTp),a
+		ld	a,(bc)
+		inc	bc
+		ld	h,a
+		ld	a,(bc)
+		inc	bc
+		ld	l,a
+		ld	(EnvBase),hl
+		xor	a
+		ld	(ix-12+CHP.PsInOr),a
+		ld	(CurEDel),a
+		ld	h,a
+		ld	l,a
+		ld	(CurESld),hl
+c_nop:		ret
+
+setorn:		add	a,a
+		ld	e,a
+		ld	d,0
+		ld	(ix-12+CHP.PsInOr),d
+OrnPtrs:	ld	hl,NULL
+		add	hl,de
+		ld	e,(hl)
+		inc	hl
+		ld	d,(hl)
+mdaddr2:	ld	hl,NULL
+		add	hl,de
+		ld	(ix-12+CHP.OrnPtr),l
+		ld	(ix-12+CHP.OrnPtr+1),h
+		ret
+
+setsam:		add	a,a
+		ld	e,a
+		ld	d,0
+SamPtrs:	ld	hl,NULL
+		add	hl,de
+		ld	e,(hl)
+		inc	hl
+		ld	d,(hl)
+mdaddr1:	ld	hl,NULL
+		add	hl,de
+		ld	(ix-12+CHP.SamPtr),l
+		ld	(ix-12+CHP.SamPtr+1),h
+		ret
+
+; all 16 addresses filled to protect from broken pt3 modules
+spccoms:	dw	c_nop
+		dw	c_gliss
+		dw	c_portm
+		dw	c_smpos
+		dw	c_orpos
+		dw	c_vibrt
+		dw	c_nop
+		dw	c_nop
+		dw	c_engls
+		dw	c_delay
+		dw	c_nop
+		dw	c_nop
+		dw	c_nop
+		dw	c_nop
+		dw	c_nop
+		dw	c_nop
+
+chregs:		xor	a
+		ld	(Ampl),a
+		bit	0,(ix+CHP.Flags)
+		push	hl
+		jp	z,ch_exit
+		ld	(csp_+1),sp
+		ld	l,(ix+CHP.OrnPtr)
+		ld	h,(ix+CHP.OrnPtr+1)
+		ld	sp,hl
+		pop	de
+		ld	h,a
+		ld	a,(ix+CHP.PsInOr)
+		ld	l,a
+		add	hl,sp
+		inc	a			; PT2	| PT3
+OrnCP:		cp	d			; cp e	| cp d
+		jr	c,ch_orps
+OrnLD:		ld	a,e			; a,d	| a,e
+ch_orps:	ld	(ix+CHP.PsInOr),a
+		ld	a,(ix+CHP.Note)
+		add	a,(hl)
+		jp	p,ch_ntp
+		xor	a
+ch_ntp:		cp	96
+		jr	c,ch_nok
+		ld	a,95
+ch_nok:		add	a,a
+		ex	af,af'
+		ld	l,(ix+CHP.SamPtr)
+		ld	h,(ix+CHP.SamPtr+1)
+		ld	sp,hl
+		pop	de
+		ld	h,0
+		ld	a,(ix+CHP.PsInSm)
+		ld	b,a
+		add	a,a			; PT2	| PT3
+SamClc2:	add	a,a			; a,b	| a,a
+		ld	l,a
+		add	hl,sp
+		ld	sp,hl
+		ld	a,b
+		inc	a
+SamCP:		cp	d			; cp e	| cp d
+		jr	c,ch_smps
+SamLD:		ld	a,e			; a,d	| a,e
+ch_smps:	ld	(ix+CHP.PsInSm),a
+		pop	bc
+		pop	hl
+						; PT2     | PT3
+SamCnv:		jr	smp_			; bit 2,c | jr smp_
+
+		ld	h,b			; Convert PT2 sample to PT3
+		jr	nz,SamCnv1
+		ex	de,hl
+		and	a
+		sbc	hl,hl
+		sbc	hl,de
+SamCnv1:	ld	d,c
+		rr	c
+		sbc	a,a
+		cpl
+		and	#3E
+		rr	c
+		rr	b
+		and	c
+		ld	c,a
+		ld	a,b
+		rra
+		rra
+		rr	d
+		rra
+		and	#9F
+		ld	b,a
+
+smp_:		ld	e,(ix+CHP.TnAcc)
+		ld	d,(ix+CHP.TnAcc+1)
+		add	hl,de
+		bit	6,b
+		jr	z,ch_noac
+		ld	(ix+CHP.TnAcc),l
+		ld	(ix+CHP.TnAcc+1),h
+ch_noac:	ex	de,hl
+		ex	af,af'
+		ld	l,a
+		ld	h,0
+		ld	sp,NT_
+		add	hl,sp
+		ld	sp,hl
+		pop	hl
+		add	hl,de
+		ld	e,(ix+CHP.CrTnSl)
+		ld	d,(ix+CHP.CrTnSl+1)
+		add	hl,de
+csp_:		ld	sp,NULL
+		ex	(sp),hl
+		xor	a
+		or	(ix+CHP.TSlCnt)
+		jr	z,ch_amp
+		dec	(ix+CHP.TSlCnt)
+		jr	nz,ch_amp
+		ld	a,(ix+CHP.TnSlDl)
+		ld	(ix+CHP.TSlCnt),a
+		ld	l,(ix+CHP.TSlStp)
+		ld	h,(ix+CHP.TSlStp+1)
+		ld	a,h
+		add	hl,de
+		ld	(ix+CHP.CrTnSl),l
+		ld	(ix+CHP.CrTnSl+1),h
+		bit	2,(ix+CHP.Flags)
+		jr	nz,ch_amp
+		ld	e,(ix+CHP.TnDelt)
+		ld	d,(ix+CHP.TnDelt+1)
+		and	a
+		jr	z,ch_stpp
+		ex	de,hl
+ch_stpp:	sbc	hl,de
+		jp	m,ch_amp
+		ld	a,(ix+CHP.SlToNt)
+		ld	(ix+CHP.Note),a
+		xor	a
+		ld	(ix+CHP.TSlCnt),a
+		ld	(ix+CHP.CrTnSl),a
+		ld	(ix+CHP.CrTnSl+1),a
+ch_amp:		ld	a,(ix+CHP.CrAmSl)
+		bit	7,c
+		jr	z,ch_noam
+		bit	6,c
+		jr	z,ch_amin
+		cp	15
+		jr	z,ch_noam
+		inc	a
+		jr	ch_svam
+ch_amin:	cp	-15
+		jr	z,ch_noam
+		dec	a
+ch_svam:	ld	(ix+CHP.CrAmSl),a
+ch_noam:	ld	l,a
+		ld	a,b
+		and	15
+		add	a,l
+		jp	p,ch_apos
+		xor	a
+ch_apos:	cp	16
+		jr	c,ch_vol
+		ld	a,15
+ch_vol:		or	(ix+CHP.Volume)
+		ld	l,a
+		ld	h,0
+		ld	de,VT_
+		add	hl,de
+		ld	e,(hl)
+GlobalAttn:	ld	a,0		; GLOBAL ATTENUATION
+		cp	8		; if value of attenuation is higher
+		jr	c,ch_globvol	; then this value we will stop
+		set	0,c		; also envelopes (bit.0 in flags)...
+ch_globvol:	sub	e
+		jr	c,ch_env
+		xor	a
+ch_env:		neg
+		bit	0,c
+		jr	nz,ch_noen
+		or	(ix+CHP.Env_En)
+ch_noen:	ld	(Ampl),a
+		bit	7,b
+		ld	a,c
+		jr	z,no_ensl
+		rla
+		rla
+		sra	a
+		sra	a
+		sra	a
+		add	a,(ix+CHP.CrEnSl)
+		bit	5,b
+		jr	z,no_enac
+		ld	(ix+CHP.CrEnSl),a
+no_enac:	ld	hl,AddToEn+1
+		add	a,(hl)
+		ld	(hl),a
+		jr	ch_mix
+
+no_ensl:	rra
+		add	a,(ix+CHP.CrNsSl)
+		ld	(AddToNs),a
+		bit	5,b
+		jr	z,ch_mix
+		ld	(ix+CHP.CrNsSl),a
+ch_mix:		ld	a,b
+		rra
+		and	#48
+ch_exit:	ld	hl,AYREGS+AR_Mixer
+		or	(hl)
+		rrca
+		ld	(hl),a
+		pop	hl
+		xor	a
+		or	(ix+CHP.COnOff)
+		ret	z
+		dec	(ix+CHP.COnOff)
+		ret	nz
+		xor	(ix+CHP.Flags)
+		ld	(ix+CHP.Flags),a
+		rra
+		ld	a,(ix+CHP.OnOffD)
+		jr	c,ch_ondl
+		ld	a,(ix+CHP.OffOnD)
+ch_ondl:	ld	(ix+CHP.COnOff),a
+		ret
+
+;------------------------------------------------------------------------------
+music_play:	xor	a
+		ld	(AddToEn+1),a
+		ld	(AYREGS+AR_Mixer),a
+		dec	a
+		ld	(AYREGS+AR_EnvTp),a
+		ld	hl,DelyCnt
+		dec	(hl)
+		jp	nz,pl2
+		call	chkfadeout
+		ld	hl,ChanA+CHP.NtSkCn
+		dec	(hl)
+		jr	nz,pl1b
+AdInPtA:	ld	bc,NULL
+		ld	a,(bc)
+		and	a
+		jr	nz,pl1a
+		ld	d,a
+		ld	(Ns_base),a
+CrPsPtr:	ld	hl,NULL
+		inc	hl
+		ld	a,(hl)
+		inc	a
+		jr	nz,plnlp
+		call	checklp
+LPosPtr:	ld	hl,NULL
+		ld	a,(hl)
+		inc	a
+plnlp:		ld	(CrPsPtr+1),hl
+		dec	a			; PT2		PT3
+PsCalc:		nop				; add a,a	nop
+		nop				; add a,(hl)	nop
+		add	a,a
+		ld	e,a
+		rl	d
+PatsPtr:	ld	hl,NULL
+		add	hl,de
+modaddr:	ld	de,NULL
+		ld	(psp_+1),sp
+		ld	sp,hl
+		pop	hl
+		add	hl,de
+		ld	b,h
+		ld	c,l
+		pop	hl
+		add	hl,de
+		ld	(AdInPtB+1),hl
+		pop	hl
+		add	hl,de
+		ld	(AdInPtC+1),hl
+psp_:		ld	sp,NULL
+pl1a:		ld	ix,ChanA+12
+		call	ptdecode
+		ld	(AdInPtA+1),bc
+
+pl1b:		ld	hl,ChanB+CHP.NtSkCn
+		dec	(hl)
+		jr	nz,pl1c
+		ld	ix,ChanB+12
+AdInPtB:	ld	bc,NULL
+		call	ptdecode
+		ld	(AdInPtB+1),bc
+
+pl1c:		ld	hl,ChanC+CHP.NtSkCn
+		dec	(hl)
+		jr	nz,pl1d
+		ld	ix,ChanC+12
+AdInPtC:	ld	bc,NULL
+		call	ptdecode
+		ld	(AdInPtC+1),bc
+delay:		equ	$+1
+pl1d:		ld	a,NULL
+		ld	(DelyCnt),a
+pl2:		ld	ix,ChanA
+		ld	hl,(AYREGS+AR_TonA)
+		call	chregs
+		ld	(AYREGS+AR_TonA),hl
+
+		ld	a,(Ampl)
+		ld	(AYREGS+AR_AmplA),a
+		ld	ix,ChanB
+		ld	hl,(AYREGS+AR_TonB)
+		call	chregs
+		ld	(AYREGS+AR_TonB),hl
+
+		ld	a,(Ampl)
+		ld	(AYREGS+AR_AmplB),a
+		ld	ix,ChanC
+		ld	hl,(AYREGS+AR_TonC)
+		call	chregs
+		ld	(AYREGS+AR_TonC),hl
+
+		ld	hl,(Ns_base) ; read together with AddToNs
+		ld	a,h
+		add	a,l
+		ld	(AYREGS+AR_Noise),a
+
+AddToEn:	ld	a,NULL
+		ld	e,a
+		add	a,a
+		sbc	a,a
+		ld	d,a
+		ld	hl,(EnvBase)
+		add	hl,de
+		ld	de,(CurESld)
+		add	hl,de
+		ld	(AYREGS+AR_Env),hl
+
+		xor	a
+		ld	hl,CurEDel
+		or	(hl)
+		jr	z,rout_a0
+		dec	(hl)
+		jr	nz,rout
+Env_Del:	ld	a,NULL
+		ld	(hl),a
+ESldAdd:	ld	hl,NULL
+		add	hl,de
+		ld	(CurESld),hl
+
+rout:		xor	a
+rout_a0:	ld	de,#FFBF
+		ld	bc,#FFFD
+		ld	hl,AYREGS
+lout:		out	(c),a
+		ld	b,e
+		outi
+		ld	b,d
+		inc	a
+		cp	#0D
+		jr	nz,lout
+		out	(c),a
+		ld	a,(hl)
+		and	a
+		ret	m
+		ld	b,e
+		out	(c),a
+		ret
+
+checklp:	ld	hl,music_setup
+		bit	1,(hl)
+		jr	nz,enablefade
+		bit	0,(hl)
+		ret	z
+
+noloop:		set	7,(hl)
+deadend:	pop	hl
+		ld	hl,DelyCnt
+		inc	(hl)
+		ld	hl,ChanA+CHP.NtSkCn
+		inc	(hl)
+
+music_mute:	xor	a
+		ld	h,a
+		ld	l,a
+		ld	(AYREGS+AR_AmplA),a
+		ld	(AYREGS+AR_AmplB),hl
+		jr	rout_a0
+
+enablefade:	ld	a,48
+forcefade:	ld	hl,chkfadeout+1
+		inc	(hl)
+		ld	hl,(CrPsPtr+1)
+		ld	(resetfadeout+1),hl
+		ld	(resetfadeout1+1),bc
+		ld	(countfadeout+1),a
+		ld	(divfadeout+1),a
+
+chkfadeout:	ld	a,0
+		or	a
+		ret	z
+		ld	a,(music_setup)
+		rlca
+		jr	c,deadend
+countfadeout:	ld	a,NULL
+		dec	a
+		ld	(countfadeout+1),a
+		ret	nz
+		ld	a,(GlobalAttn+1)
+		inc	a
+		cp	16
+		jr	z,resetfadeout
+		ld	(GlobalAttn+1),a
+divfadeout:	ld	a,NULL
+		srl	a
+		ld	l,a
+		srl	l
+		add	a,l
+		jr	nz,divfadeout1
+		inc	a
+divfadeout1:	ld	(countfadeout+1),a
+		ld	(divfadeout+1),a
+		ret
+
+resetfadeout:	ld	hl,NULL
+		ld	(CrPsPtr+1),hl
+resetfadeout1:	ld	hl,NULL
+		ld	(AdInPtA+1),hl
+		xor	a
+		ld	(ChanA+CHP.NtSkCn),a
+		ld	hl,music_setup
+		jr	noloop
+
+;------------------------------------------------------------------------------
+; note table data
+nt_data:	db	(T_NEW_0-T1_)*2
+		db	TCNEW_0-T_
+		db	(T_OLD_0-T1_)*2+1
+		db	TCOLD_0-T_
+		db	(T_NEW_1-T1_)*2+1
+		db	TCNEW_1-T_
+		db	(T_OLD_1-T1_)*2+1
+		db	TCOLD_1-T_
+		db	(T_NEW_2-T1_)*2
+		db	TCNEW_2-T_
+		db	(T_OLD_2-T1_)*2
+		db	TCOLD_2-T_
+		db	(T_NEW_3-T1_)*2
+		db	TCNEW_3-T_
+		db	(T_OLD_3-T1_)*2
+		db	TCOLD_3-T_
+T_
+
+TCOLD_0		db	#00+1,#04+1,#08+1,#0A+1,#0C+1,#0E+1,#12+1,#14+1
+		db	#18+1,#24+1,#3C+1,0
+TCOLD_1		db	#5C+1,0
+TCOLD_2		db	#30+1,#36+1,#4C+1,#52+1,#5E+1,#70+1,#82,#8C,#9C
+		db	#9E,#A0,#A6,#A8,#AA,#AC,#AE,#AE,0
+TCNEW_3		db	#56+1
+TCOLD_3		db	#1E+1,#22+1,#24+1,#28+1,#2C+1,#2E+1,#32+1,#BE+1,0
+TCNEW_0		db	#1C+1,#20+1,#22+1,#26+1,#2A+1,#2C+1,#30+1,#54+1
+		db	#BC+1,#BE+1,0
+TCNEW_1		equ	TCOLD_1
+TCNEW_2		db	#1A+1,#20+1,#24+1,#28+1,#2A+1,#3A+1,#4C+1,#5E+1
+		db	#BA+1,#BC+1,#BE+1,0
+
+PT3_EmptySmpOrn	equ	$-1
+		db	1,0 ;#90 ; delete #90 if you don't need default sample
+
+PT2_EmptySmpOrn	equ	VT_+31 ; 1,0,0 sequence
+
+; first 12 values of tone tables (packed)
+T_PACK		db	high (#06EC*2), low (#06EC*2)
+		db	#0755-#06EC
+		db	#07C5-#0755
+		db	#083B-#07C5
+		db	#08B8-#083B
+		db	#093D-#08B8
+		db	#09CA-#093D
+		db	#0A5F-#09CA
+		db	#0AFC-#0A5F
+		db	#0BA4-#0AFC
+		db	#0C55-#0BA4
+		db	#0D10-#0C55
+		db	high (#066D*2), low (#066D*2)
+		db	#06CF-#066D
+		db	#0737-#06CF
+		db	#07A4-#0737
+		db	#0819-#07A4
+		db	#0894-#0819
+		db	#0917-#0894
+		db	#09A1-#0917
+		db	#0A33-#09A1
+		db	#0ACF-#0A33
+		db	#0B73-#0ACF
+		db	#0C22-#0B73
+		db	#0CDA-#0C22
+		db	high (#0704*2), low (#0704*2)
+		db	#076E-#0704
+		db	#07E0-#076E
+		db	#0858-#07E0
+		db	#08D6-#0858
+		db	#095C-#08D6
+		db	#09EC-#095C
+		db	#0A82-#09EC
+		db	#0B22-#0A82
+		db	#0BCC-#0B22
+		db	#0C80-#0BCC
+		db	#0D3E-#0C80
+		db	high (#07E0*2), low (#07E0*2)
+		db	#0858-#07E0
+		db	#08E0-#0858
+		db	#0960-#08E0
+		db	#09F0-#0960
+		db	#0A88-#09F0
+		db	#0B28-#0A88
+		db	#0BD8-#0B28
+		db	#0C80-#0BD8
+		db	#0D60-#0C80
+		db	#0E10-#0D60
+		db	#0EF8-#0E10
+
+; channel data offsets
+	struct CHP
+PsInOr		byte
+PsInSm		byte
+CrAmSl		byte
+CrNsSl		byte
+CrEnSl		byte
+TSlCnt		byte
+CrTnSl		word
+TnAcc		word
+COnOff		byte
+OnOffD		byte
+OffOnD		byte	; IX for PTDECOD here (+12)
+OrnPtr		word
+SamPtr		word
+NNtSkp		byte
+Note		byte
+SlToNt		byte
+Env_En		byte
+Flags		byte
+TnSlDl		byte	; Enabled - 0, SimpleGliss - 2
+TSlStp		word
+TnDelt		word
+NtSkCn		byte
+Volume		byte
+	ends
+
+AR_TonA		equ	0	; word 1
+AR_TonB		equ	2	; word 1
+AR_TonC		equ	4	; word 1
+AR_Noise	equ	6	; byte 1
+AR_Mixer	equ	7	; byte 1
+AR_AmplA	equ	8	; byte 1
+AR_AmplB	equ	9	; byte 1
+AR_AmplC	equ	10	; byte 1
+AR_Env		equ	11	; word 1
+AR_EnvTp	equ	13	; byte 1
+AR_Size		equ	14
+
+
+;------------------------------------------------------------------------------
+; variables are 541 bytes long
+VARS
+ChanA		ds	29
+ChanB		ds	29
+ChanC		ds	29
+
+; GlobalVars
+DelyCnt		db	0
+CurESld		dw	0
+CurEDel		db	0
+Ns_base		db	0
+AddToNs		db	0
+
+AYREGS		equ	$
+Ampl		equ	AYREGS+AR_AmplC
+
+VT_		ds	256		; Volume Table
+NT_		ds	192		; Note Table
+
+EnvBase		equ	VT_+14
+T1_		equ	VT_+16		; Tone tables data depacked here
+T_OLD_1		equ	T1_
+T_OLD_2		equ	T_OLD_1+24
+T_OLD_3		equ	T_OLD_2+24
+T_OLD_0		equ	T_OLD_3+2
+T_NEW_0		equ	T_OLD_0
+T_NEW_1		equ	T_OLD_1
+T_NEW_2		equ	T_NEW_0+24
+T_NEW_3		equ	T_OLD_3
+
+VAR0END		equ	T1_		; init zeroes from VARS to VAR0END-1
+VARSEND		equ	$
+
+
+	ifndef PUREPLAYER
+;		org	#C000
+
+MDLADDR
+;		incbin	"songs/zakzakzak.pt3"
+;		incbin	"songs/nq-ready-to-travel.pt3"
+;		incbin	"songs/dizzyXXrmx.pt3"
+;		incbin	"songs/sickmind.pt3"
+;		incbin	"songs/illusion.pt2"
+		incbin	"songs/rage.pt2"
+
+
+		savesna	"PTx.sna",demo
+	endif

@@ -72,7 +72,7 @@ func parsePT3Header(data []byte) (trackerModuleInfo, error) {
 
 	// Estimate total frames: positions × rows_per_pattern × speed
 	info.frameCount = info.positions * pt3RowsPerPattern * info.speed
-	if info.frameCount == 0 {
+	if info.frameCount < 500 {
 		info.frameCount = 15000 // Default ~5 min
 	}
 
@@ -99,7 +99,7 @@ func parsePT2Header(data []byte) (trackerModuleInfo, error) {
 	info.speed = 6 // PT2 default speed
 
 	info.frameCount = info.positions * 64 * info.speed
-	if info.frameCount == 0 {
+	if info.frameCount < 500 {
 		info.frameCount = 15000
 	}
 
@@ -121,7 +121,7 @@ func parsePT1Header(data []byte) (trackerModuleInfo, error) {
 	info.speed = 6
 
 	info.frameCount = info.positions * 64 * info.speed
-	if info.frameCount == 0 {
+	if info.frameCount < 500 {
 		info.frameCount = 15000
 	}
 
@@ -148,7 +148,7 @@ func parseSTCHeader(data []byte) (trackerModuleInfo, error) {
 
 	// STC: 64 rows per pattern, each row takes speed frames
 	info.frameCount = info.positions * 64 * info.speed
-	if info.frameCount == 0 {
+	if info.frameCount < 500 {
 		info.frameCount = 15000
 	}
 
@@ -176,7 +176,7 @@ func parseSQTHeader(data []byte) (trackerModuleInfo, error) {
 	}
 
 	info.frameCount = info.positions * 64 * info.speed
-	if info.frameCount == 0 {
+	if info.frameCount < 500 {
 		info.frameCount = 15000
 	}
 
@@ -213,7 +213,7 @@ func parseASCHeader(data []byte) (trackerModuleInfo, error) {
 	}
 
 	info.frameCount = info.positions * 64 * info.speed
-	if info.frameCount == 0 {
+	if info.frameCount < 500 {
 		info.frameCount = 15000
 	}
 
@@ -242,7 +242,7 @@ func parseFTCHeader(data []byte) (trackerModuleInfo, error) {
 	}
 
 	info.frameCount = info.positions * 64 * info.speed
-	if info.frameCount == 0 {
+	if info.frameCount < 500 {
 		info.frameCount = 15000
 	}
 

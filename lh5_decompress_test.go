@@ -42,7 +42,7 @@ func testCompressLH5(data []byte) []byte {
 		w.putBits(4, 0) // constant = 0
 
 		// Emit each byte as its 8-bit identity code
-		for i := 0; i < blockSize; i++ {
+		for i := range blockSize {
 			w.putBits(8, uint32(data[offset+i]))
 		}
 

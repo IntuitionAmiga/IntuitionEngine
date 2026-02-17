@@ -6,14 +6,23 @@ import (
 )
 
 // buildVTXFile constructs a valid VTX binary for testing.
-// Uses uint32 chip frequency variant (14-byte fixed header).
+// Fixed 16-byte header: magic(2) + stereo(1) + loop(2) + chipFreq(4) + playerFreq(1) + year(2) + dataSize(4).
 func buildVTXFile(chipType string, stereo uint8, chipFreq uint32, playerFreq uint8, year uint16,
 	title, author, from, tracker, comment string, frameData []byte) []byte {
+	return buildVTXFileWithLoop(chipType, stereo, 0, chipFreq, playerFreq, year, title, author, from, tracker, comment, frameData)
+}
 
-	// Fixed header: 2 + 1 + 4 + 1 + 2 + 4 = 14 bytes
+func buildVTXFileWithLoop(chipType string, stereo uint8, loop uint16, chipFreq uint32, playerFreq uint8, year uint16,
+	title, author, from, tracker, comment string, frameData []byte) []byte {
+
+	// Fixed header: 2 + 1 + 2 + 4 + 1 + 2 + 4 = 16 bytes
 	buf := make([]byte, 0, 256)
 	buf = append(buf, chipType[0], chipType[1]) // magic
 	buf = append(buf, stereo)                   // stereo type
+
+	var lp [2]byte
+	binary.LittleEndian.PutUint16(lp[:], loop)
+	buf = append(buf, lp[:]...) // loop frame
 
 	var freq [4]byte
 	binary.LittleEndian.PutUint32(freq[:], chipFreq)
@@ -103,7 +112,7 @@ func TestParseVTXHeader_YMChip(t *testing.T) {
 }
 
 func TestParseVTXHeader_InvalidMagic(t *testing.T) {
-	data := []byte("xx\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")
+	data := []byte("xx\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")
 	_, _, err := ParseVTXData(data)
 	if err == nil {
 		t.Error("expected error for invalid magic")
@@ -202,6 +211,70 @@ func TestParseVTXData_EmptyStrings(t *testing.T) {
 	}
 }
 
+func TestParseVTXHeader_RealAliceVTX(t *testing.T) {
+	// Real header bytes from alice.vtx: ym 01 00 00 58 0f 1b 00 32 d5 07 00 fc 00 00
+	header := []byte{
+		'y', 'm', // magic
+		0x01,       // stereo=1 (ABC)
+		0x00, 0x00, // loop=0
+		0x58, 0x0f, 0x1b, 0x00, // chipFreq=1773400 (0x001B0F58) LE
+		0x32,       // playerFreq=50
+		0xd5, 0x07, // year=2005
+		0x00, 0xfc, 0x00, 0x00, // dataSize=64512 (0x0000FC00) LE
+	}
+	// Add 5 null-terminated strings
+	header = append(header, '"', 'A', 'L', 'I', 'C', 'E', '"', 0)      // title
+	header = append(header, 'M', '.', 'F', 'A', 'R', 'M', 'E', 'R', 0) // author
+	header = append(header, 0)                                         // from
+	header = append(header, 0)                                         // tracker
+	header = append(header, 0)                                         // comment
+
+	h, _, err := parseVTXHeader(header)
+	if err != nil {
+		t.Fatalf("parseVTXHeader error: %v", err)
+	}
+	if h.ChipType != "ym" {
+		t.Errorf("chipType = %q, want %q", h.ChipType, "ym")
+	}
+	if h.Stereo != 1 {
+		t.Errorf("stereo = %d, want 1", h.Stereo)
+	}
+	if h.LoopFrame != 0 {
+		t.Errorf("loopFrame = %d, want 0", h.LoopFrame)
+	}
+	if h.ChipFreqHz != 1773400 {
+		t.Errorf("chipFreqHz = %d, want 1773400", h.ChipFreqHz)
+	}
+	if h.PlayerFreq != 50 {
+		t.Errorf("playerFreq = %d, want 50", h.PlayerFreq)
+	}
+	if h.Year != 2005 {
+		t.Errorf("year = %d, want 2005", h.Year)
+	}
+	if h.DataSize != 64512 {
+		t.Errorf("dataSize = %d, want 64512", h.DataSize)
+	}
+	if h.Title != "\"ALICE\"" {
+		t.Errorf("title = %q, want %q", h.Title, "\"ALICE\"")
+	}
+	if h.Author != "M.FARMER" {
+		t.Errorf("author = %q, want %q", h.Author, "M.FARMER")
+	}
+}
+
+func TestParseVTXHeader_LoopField(t *testing.T) {
+	frames := makeInterleavedFrames(10, 14, func(reg, frame int) byte { return 0 })
+	vtx := buildVTXFileWithLoop("ay", 0, 100, 1773400, 50, 2020, "Loop Test", "", "", "", "", frames)
+
+	ym, _, err := ParseVTXData(vtx)
+	if err != nil {
+		t.Fatalf("ParseVTXData error: %v", err)
+	}
+	if ym.LoopFrame != 100 {
+		t.Errorf("loopFrame = %d, want 100", ym.LoopFrame)
+	}
+}
+
 func TestIsVTXData_Valid(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -212,7 +285,8 @@ func TestIsVTXData_Valid(t *testing.T) {
 		{"ym stereo ABC", append([]byte("ym\x01"), make([]byte, 20)...), true},
 		{"invalid magic", append([]byte("xx\x00"), make([]byte, 20)...), false},
 		{"stereo 7", append([]byte("ay\x07"), make([]byte, 20)...), false},
-		{"too short", []byte("ay"), false},
+		{"too short", []byte("ay\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"), false}, // 15 bytes, need 16
+		{"really short", []byte("ay"), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

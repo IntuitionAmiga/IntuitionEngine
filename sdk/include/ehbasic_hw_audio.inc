@@ -47,6 +47,7 @@ hw_sound:
     jsr     exec_skip_spaces
     ; Check for sub-commands by first letter
     load.b  r1, (r17)
+    jsr     toupper              ; case-insensitive sub-command matching
     move.q  r2, #0x46            ; 'F' (FILTER)
     beq     r1, r2, .snd_filter
     move.q  r2, #0x4E            ; 'N' (NOISE)
@@ -73,7 +74,7 @@ hw_sound:
     jsr     exec_skip_spaces
     load.b  r1, (r17)
     move.q  r2, #0x2C
-    bne     r1, r2, .snd_done
+    bne     r1, r2, .snd_freq_only
     add.q   r17, r17, #1
     jsr     exec_skip_spaces
     jsr     expr_eval
@@ -137,6 +138,7 @@ hw_sound:
 
     ; Optional STOP sub-command
     load.b  r1, (r17)
+    jsr     toupper
     move.q  r2, #0x53            ; 'S'
     beq     r1, r2, .snd_play_stop
     move.q  r2, #TK_STOP
@@ -281,9 +283,10 @@ hw_sound:
 ; --- SOUND R dispatch: REVERB vs RINGMOD ---
 .snd_r_cmd:
     add.q   r3, r17, #1
-    load.b  r4, (r3)
+    load.b  r1, (r3)
+    jsr     toupper
     move.q  r2, #0x49            ; 'I' → RINGMOD
-    beq     r4, r2, .snd_ringmod
+    beq     r1, r2, .snd_ringmod
     ; Default to REVERB (RE...)
     bra     .snd_reverb
 
@@ -437,13 +440,14 @@ hw_sound:
 .snd_s_cmd:
     ; Accept raw "SOUND STOP" when STOP was not tokenized.
     add.q   r3, r17, #1
-    load.b  r4, (r3)
+    load.b  r1, (r3)
+    jsr     toupper
     move.q  r2, #0x54            ; 'T' → STOP
-    beq     r4, r2, .snd_play_stop
+    beq     r1, r2, .snd_play_stop
     move.q  r2, #0x57            ; 'W' → SWEEP
-    beq     r4, r2, .snd_sweep
+    beq     r1, r2, .snd_sweep
     move.q  r2, #0x59            ; 'Y' → SYNC
-    beq     r4, r2, .snd_sync
+    beq     r1, r2, .snd_sync
     ; Unrecognised S sub-command - fall through to done
     rts
 
@@ -536,18 +540,22 @@ hw_gate:
     jsr     exec_skip_spaces
     ; Check for ON token or OFF text
     load.b  r1, (r17)
+    jsr     toupper
     move.q  r2, #TK_ON
     beq     r1, r2, .gate_on
     ; Check for 'O' (OFF)
     move.q  r2, #0x4F
     bne     r1, r2, .gate_done
     add.q   r3, r17, #1
-    load.b  r4, (r3)
+    load.b  r1, (r3)
+    jsr     toupper
     move.q  r2, #0x46            ; 'F'
-    bne     r4, r2, .gate_done
+    bne     r1, r2, .gate_done
     add.q   r3, r3, #1
-    load.b  r4, (r3)
-    bne     r4, r2, .gate_done
+    load.b  r1, (r3)
+    jsr     toupper
+    move.q  r2, #0x46            ; 'F'
+    bne     r1, r2, .gate_done
     ; OFF confirmed
     add.q   r17, r3, #1
     add.q   r3, r22, #FLEX_OFF_CTRL
@@ -572,6 +580,7 @@ hw_filter:
     jsr     exec_skip_spaces
     ; Check for FILTER MOD sub-command
     load.b  r1, (r17)
+    jsr     toupper
     move.q  r2, #0x4D            ; 'M' (MOD)
     beq     r1, r2, .filt_mod
     ; Parse cutoff
@@ -638,6 +647,7 @@ hw_filter:
 hw_psg:
     jsr     exec_skip_spaces
     load.b  r1, (r17)
+    jsr     toupper
     ; Check for 'P' (PLUS/PLAY)
     move.q  r2, #0x50
     beq     r1, r2, .psg_p_cmd
@@ -696,9 +706,10 @@ hw_psg:
 .psg_p_cmd:
     ; PL=PLUS, PLA=PLAY
     add.q   r3, r17, #2
-    load.b  r4, (r3)
+    load.b  r1, (r3)
+    jsr     toupper
     move.q  r2, #0x55            ; 'U' → PLUS
-    beq     r4, r2, .psg_plus
+    beq     r1, r2, .psg_plus
     ; PLAY - skip sub-command
     add.q   r17, r17, #1
     jsr     skip_alpha
@@ -806,6 +817,7 @@ hw_psg:
 hw_sid:
     jsr     exec_skip_spaces
     load.b  r1, (r17)
+    jsr     toupper
     move.q  r2, #0x56            ; 'V' (VOICE/VOLUME)
     beq     r1, r2, .sid_v_cmd
     move.q  r2, #0x46            ; 'F' (FILTER)
@@ -820,9 +832,10 @@ hw_sid:
 .sid_v_cmd:
     ; VO=VOICE or VOLUME
     add.q   r3, r17, #2
-    load.b  r4, (r3)
+    load.b  r1, (r3)
+    jsr     toupper
     move.q  r2, #0x49            ; 'I' → VOICE
-    beq     r4, r2, .sid_voice
+    beq     r1, r2, .sid_voice
     ; VOLUME - skip sub-command
     add.q   r17, r17, #1
     jsr     skip_alpha
@@ -983,9 +996,10 @@ hw_sid:
     rts
 .sid_p_cmd:
     add.q   r3, r17, #2
-    load.b  r4, (r3)
+    load.b  r1, (r3)
+    jsr     toupper
     move.q  r2, #0x55            ; 'U' → PLUS
-    beq     r4, r2, .sid_plus
+    beq     r1, r2, .sid_plus
     ; PLAY - skip sub-command
     add.q   r17, r17, #1
     jsr     skip_alpha
@@ -1058,6 +1072,7 @@ hw_sid:
 hw_pokey:
     jsr     exec_skip_spaces
     load.b  r1, (r17)
+    jsr     toupper
     move.q  r2, #0x43            ; 'C' (CTRL)
     beq     r1, r2, .pokey_ctrl
     move.q  r2, #0x50            ; 'P' (PLUS)
@@ -1141,6 +1156,7 @@ hw_pokey:
 hw_ted_audio:
     jsr     exec_skip_spaces
     load.b  r1, (r17)
+    jsr     toupper
     move.q  r2, #0x54            ; 'T' (TONE)
     beq     r1, r2, .teda_tone
     move.q  r2, #0xA9            ; TK_TO token (TONE tokenized as TO+NE)
@@ -1237,9 +1253,10 @@ hw_ted_audio:
     rts
 .teda_p_cmd:
     add.q   r3, r17, #2
-    load.b  r4, (r3)
+    load.b  r1, (r3)
+    jsr     toupper
     move.q  r2, #0x55            ; 'U' → PLUS
-    beq     r4, r2, .teda_plus
+    beq     r1, r2, .teda_plus
     ; PLAY - skip sub-command
     add.q   r17, r17, #1
     jsr     skip_alpha
@@ -1298,6 +1315,7 @@ hw_ted_audio:
 hw_ahx:
     jsr     exec_skip_spaces
     load.b  r1, (r17)
+    jsr     toupper
     move.q  r2, #0x50            ; 'P' (PLAY/PLUS)
     beq     r1, r2, .ahx_p_cmd
     move.q  r2, #0x53            ; 'S' (STOP)
@@ -1307,9 +1325,10 @@ hw_ahx:
     rts
 .ahx_p_cmd:
     add.q   r3, r17, #2
-    load.b  r4, (r3)
+    load.b  r1, (r3)
+    jsr     toupper
     move.q  r2, #0x55            ; 'U' → PLUS
-    beq     r4, r2, .ahx_plus
+    beq     r1, r2, .ahx_plus
     ; PLAY - skip sub-command
     add.q   r17, r17, #1
     jsr     skip_alpha
@@ -1368,6 +1387,7 @@ hw_ahx:
 hw_sap:
     jsr     exec_skip_spaces
     load.b  r1, (r17)
+    jsr     toupper
     move.q  r2, #0x50            ; 'P' (PLAY)
     beq     r1, r2, .sap_play
     move.q  r2, #0x53            ; 'S' (STOP)

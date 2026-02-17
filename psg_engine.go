@@ -42,6 +42,7 @@ type PSGEngine struct {
 	psgPlusEnabled bool
 
 	channelsInit bool
+	busMemory    []byte // mirror register writes for Machine Monitor visibility
 }
 
 func NewPSGEngine(sound *SoundChip, sampleRate int) *PSGEngine {
@@ -57,6 +58,10 @@ func NewPSGEngine(sound *SoundChip, sampleRate int) *PSGEngine {
 		sound.SetSampleTicker(engine)
 	}
 	return engine
+}
+
+func (e *PSGEngine) AttachBusMemory(mem []byte) {
+	e.busMemory = mem
 }
 
 func (e *PSGEngine) SetPSGPlusEnabled(enabled bool) {
@@ -229,6 +234,9 @@ func (e *PSGEngine) TickSample() {
 		ev := e.events[e.eventIndex]
 		if ev.Reg < PSG_REG_COUNT {
 			e.regs[ev.Reg] = ev.Value
+			if mem := e.busMemory; mem != nil {
+				mem[PSG_BASE+uint32(ev.Reg)] = ev.Value
+			}
 			if ev.Reg == 11 || ev.Reg == 12 {
 				e.updateEnvPeriodSamples()
 			}
@@ -427,15 +435,7 @@ func (e *PSGEngine) applyVolumes() {
 		useEnv := (vol & 0x10) != 0
 		level := vol & 0x0F
 		if useEnv {
-			// For SID emulation: upper nibble often contains the actual volume
-			// when bit 4 is set. Check if upper nibble is non-zero before
-			// falling back to envelope generator.
-			upperNibble := vol >> 4
-			if upperNibble > 0 {
-				level = upperNibble
-			} else {
-				level = uint8(e.envLevel)
-			}
+			level = uint8(e.envLevel)
 		}
 		toneLevel := level
 		if !toneEnable[ch] {

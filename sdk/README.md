@@ -161,7 +161,7 @@ ZX Spectrum tracker formats are played back via Z80 CPU emulation. Each format h
 | ASC | `.asc` | ASC Sound Master |
 | FTC | `.ftc` | Fast Tracker (ZX) |
 
-Player routines are in `sdk/players/` and can be rebuilt with `make players` (requires `vasmz80_std`).
+Player routines are in `sdk/players/`. PT3/PT2/PT1, STC, and SQT use community reference players from [mborik/ayplayers](https://github.com/mborik/ayplayers) (assembled with `sjasmplus`). ASC and FTC use a generic player (assembled with `vasmz80_std`).
 
 ## Build Scripts
 

@@ -314,10 +314,6 @@ func (d *lh5Decoder) makeTable(nchar int, bitLen []uint8, tableBits int, table [
 		total += uint32(count[i]) * weight[i]
 	}
 
-	if total != 0 && total != 0x10000 && total > 0x10000 {
-		return fmt.Errorf("lh5: invalid huffman tree (total=%d)", total)
-	}
-
 	// Shift start values for table-sized codes
 	m := uint(16 - tableBits)
 	for i := 1; i <= tableBits; i++ {

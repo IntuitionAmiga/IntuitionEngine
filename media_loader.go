@@ -13,10 +13,11 @@ type MediaLoader struct {
 	soundChip *SoundChip
 	baseDir   string
 
-	psgPlayer *PSGPlayer
-	sidPlayer *SIDPlayer
-	tedPlayer *TEDPlayer
-	ahxPlayer *AHXPlayer
+	psgPlayer   *PSGPlayer
+	sidPlayer   *SIDPlayer
+	tedPlayer   *TEDPlayer
+	ahxPlayer   *AHXPlayer
+	pokeyPlayer *POKEYPlayer
 
 	namePtr uint32
 	subsong uint32
@@ -29,22 +30,23 @@ type MediaLoader struct {
 	mu sync.Mutex
 }
 
-func NewMediaLoader(bus *MachineBus, soundChip *SoundChip, baseDir string, psgPlayer *PSGPlayer, sidPlayer *SIDPlayer, tedPlayer *TEDPlayer, ahxPlayer *AHXPlayer) *MediaLoader {
+func NewMediaLoader(bus *MachineBus, soundChip *SoundChip, baseDir string, psgPlayer *PSGPlayer, sidPlayer *SIDPlayer, tedPlayer *TEDPlayer, ahxPlayer *AHXPlayer, pokeyPlayer *POKEYPlayer) *MediaLoader {
 	absBase, err := filepath.Abs(baseDir)
 	if err != nil {
 		absBase = baseDir
 	}
 	return &MediaLoader{
-		bus:       bus,
-		soundChip: soundChip,
-		baseDir:   absBase,
-		psgPlayer: psgPlayer,
-		sidPlayer: sidPlayer,
-		tedPlayer: tedPlayer,
-		ahxPlayer: ahxPlayer,
-		status:    MEDIA_STATUS_IDLE,
-		typ:       MEDIA_TYPE_NONE,
-		errCode:   MEDIA_ERR_OK,
+		bus:         bus,
+		soundChip:   soundChip,
+		baseDir:     absBase,
+		psgPlayer:   psgPlayer,
+		sidPlayer:   sidPlayer,
+		tedPlayer:   tedPlayer,
+		ahxPlayer:   ahxPlayer,
+		pokeyPlayer: pokeyPlayer,
+		status:      MEDIA_STATUS_IDLE,
+		typ:         MEDIA_TYPE_NONE,
+		errCode:     MEDIA_ERR_OK,
 	}
 }
 
@@ -121,6 +123,17 @@ func (m *MediaLoader) startPlay() {
 }
 
 func (m *MediaLoader) loadAndStart(reqGen uint64, fullPath string, typ uint32, subsong uint32) {
+	defer func() {
+		if r := recover(); r != nil {
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			if reqGen == m.reqGen {
+				m.status = MEDIA_STATUS_ERROR
+				m.errCode = MEDIA_ERR_BAD_FORMAT
+			}
+		}
+	}()
+
 	data, err := os.ReadFile(fullPath)
 	if err != nil {
 		m.mu.Lock()
@@ -169,44 +182,90 @@ func (m *MediaLoader) loadAndStart(reqGen uint64, fullPath string, typ uint32, s
 	// Keep media state lock held while applying side effects so a newer
 	// request cannot interleave and leave stale playback running.
 	m.stopPlayersOnly()
+
+	// All formats use direct loading — data is already in memory from os.ReadFile.
+	// Release lock during potentially slow decoding (Z80 emulation, SID parsing, etc.).
+	var loadErr error
 	switch typ {
 	case MEDIA_TYPE_SID:
-		if m.soundChip != nil && m.sidPlayer != nil && m.sidPlayer.engine != nil {
-			m.soundChip.SetSampleTicker(m.sidPlayer.engine)
-		}
 		if m.sidPlayer != nil {
-			m.sidPlayer.HandlePlayWrite(SID_PLAY_PTR, MEDIA_STAGING_BASE)
-			m.sidPlayer.HandlePlayWrite(SID_PLAY_LEN, uint32(len(data)))
-			m.sidPlayer.HandlePlayWrite(SID_SUBSONG, subsong)
-			m.sidPlayer.HandlePlayWrite(SID_PLAY_CTRL, 1)
+			m.mu.Unlock()
+			loadErr = m.sidPlayer.LoadDataWithOptions(data, int(subsong), false, false)
+			m.mu.Lock()
+			if reqGen != m.reqGen {
+				m.mu.Unlock()
+				return
+			}
+			if loadErr != nil {
+				m.status = MEDIA_STATUS_ERROR
+				m.errCode = MEDIA_ERR_BAD_FORMAT
+				m.mu.Unlock()
+				return
+			}
+			if m.soundChip != nil && m.sidPlayer.engine != nil {
+				m.soundChip.SetSampleTicker(m.sidPlayer.engine)
+			}
+			m.sidPlayer.Play()
 		}
 	case MEDIA_TYPE_PSG:
-		if m.soundChip != nil && m.psgPlayer != nil && m.psgPlayer.engine != nil {
-			m.soundChip.SetSampleTicker(m.psgPlayer.engine)
-		}
 		if m.psgPlayer != nil {
-			m.psgPlayer.HandlePlayWrite(PSG_PLAY_PTR, MEDIA_STAGING_BASE)
-			m.psgPlayer.HandlePlayWrite(PSG_PLAY_LEN, uint32(len(data)))
-			m.psgPlayer.HandlePlayWrite(PSG_PLAY_CTRL, 1)
+			ext := strings.ToLower(filepath.Ext(fullPath))
+			m.mu.Unlock()
+			loadErr = m.psgPlayer.LoadDataWithHint(data, ext)
+			m.mu.Lock()
+			if reqGen != m.reqGen {
+				m.mu.Unlock()
+				return
+			}
+			if loadErr != nil {
+				m.status = MEDIA_STATUS_ERROR
+				m.errCode = MEDIA_ERR_BAD_FORMAT
+				m.mu.Unlock()
+				return
+			}
+			if m.soundChip != nil && m.psgPlayer.engine != nil {
+				m.soundChip.SetSampleTicker(m.psgPlayer.engine)
+			}
+			m.psgPlayer.Play()
 		}
 	case MEDIA_TYPE_TED:
-		if m.soundChip != nil && m.tedPlayer != nil && m.tedPlayer.engine != nil {
-			m.soundChip.SetSampleTicker(m.tedPlayer.engine)
-		}
 		if m.tedPlayer != nil {
 			m.tedPlayer.HandlePlayWrite(TED_PLAY_PTR, MEDIA_STAGING_BASE)
 			m.tedPlayer.HandlePlayWrite(TED_PLAY_LEN, uint32(len(data)))
 			m.tedPlayer.HandlePlayWrite(TED_PLAY_CTRL, 1)
+			if m.soundChip != nil && m.tedPlayer.engine != nil {
+				m.soundChip.SetSampleTicker(m.tedPlayer.engine)
+			}
 		}
 	case MEDIA_TYPE_AHX:
-		if m.soundChip != nil && m.ahxPlayer != nil && m.ahxPlayer.engine != nil {
-			m.soundChip.SetSampleTicker(m.ahxPlayer.engine)
-		}
 		if m.ahxPlayer != nil {
 			m.ahxPlayer.HandlePlayWrite(AHX_PLAY_PTR, MEDIA_STAGING_BASE)
 			m.ahxPlayer.HandlePlayWrite(AHX_PLAY_LEN, uint32(len(data)))
 			m.ahxPlayer.HandlePlayWrite(AHX_SUBSONG, subsong)
 			m.ahxPlayer.HandlePlayWrite(AHX_PLAY_CTRL, 1)
+			if m.soundChip != nil && m.ahxPlayer.engine != nil {
+				m.soundChip.SetSampleTicker(m.ahxPlayer.engine)
+			}
+		}
+	case MEDIA_TYPE_POKEY:
+		if m.pokeyPlayer != nil {
+			m.mu.Unlock()
+			loadErr = m.pokeyPlayer.LoadDataWithSubsong(data, int(subsong))
+			m.mu.Lock()
+			if reqGen != m.reqGen {
+				m.mu.Unlock()
+				return
+			}
+			if loadErr != nil {
+				m.status = MEDIA_STATUS_ERROR
+				m.errCode = MEDIA_ERR_BAD_FORMAT
+				m.mu.Unlock()
+				return
+			}
+			if m.soundChip != nil && m.pokeyPlayer.engine != nil {
+				m.soundChip.SetSampleTicker(m.pokeyPlayer.engine)
+			}
+			m.pokeyPlayer.Play()
 		}
 	default:
 		if reqGen == m.reqGen {
@@ -237,6 +296,9 @@ func (m *MediaLoader) stopPlayersOnly() {
 	}
 	if m.ahxPlayer != nil {
 		m.ahxPlayer.Stop()
+	}
+	if m.pokeyPlayer != nil {
+		m.pokeyPlayer.Stop()
 	}
 }
 
@@ -283,6 +345,12 @@ func (m *MediaLoader) refreshStatusLocked() {
 			busy = m.ahxPlayer.IsPlaying() || (status&0x1) != 0
 			playerErr = (status & 0x2) != 0
 		}
+	case MEDIA_TYPE_POKEY:
+		if m.pokeyPlayer != nil {
+			status := m.pokeyPlayer.HandlePlayRead(SAP_PLAY_STATUS)
+			busy = m.pokeyPlayer.IsPlaying() || (status&0x1) != 0
+			playerErr = (status & 0x2) != 0
+		}
 	}
 
 	if playerErr {
@@ -301,21 +369,26 @@ func detectMediaType(path string) uint32 {
 	case ".sid":
 		return MEDIA_TYPE_SID
 	case ".ym", ".ay", ".sndh",
-		".vtx", ".pt3", ".pt2", ".pt1", ".stc", ".sqt", ".asc", ".ftc",
+		".vtx", ".vt", ".pt3", ".pt2", ".pt1", ".stc", ".sqt", ".asc", ".ftc",
 		".vgm", ".vgz", ".snd":
 		return MEDIA_TYPE_PSG
 	case ".ted", ".prg":
 		return MEDIA_TYPE_TED
 	case ".ahx":
 		return MEDIA_TYPE_AHX
+	case ".sap":
+		return MEDIA_TYPE_POKEY
 	default:
 		return MEDIA_TYPE_NONE
 	}
 }
 
 func (m *MediaLoader) sanitizePathLocked(path string) (string, bool) {
-	if filepath.IsAbs(path) || strings.Contains(path, "..") {
+	if strings.Contains(path, "..") {
 		return "", false
+	}
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path), true
 	}
 	fullPath := filepath.Join(m.baseDir, path)
 	rel, err := filepath.Rel(m.baseDir, fullPath)

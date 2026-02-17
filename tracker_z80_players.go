@@ -9,7 +9,8 @@
 //   PLAY (0xC003): Called 50 times/sec, processes one tick and writes AY registers
 //
 // Player binaries are assembled from source files in sdk/players/ using:
-//   vasmz80_std -Fbin -o <name>.bin <name>.asm
+//   sjasmplus --raw=<name>.bin <name>.asm   (PT3, STC, SQT — community reference players)
+//   vasmz80_std -Fbin -o <name>.bin <name>.asm  (generic player)
 
 package main
 
@@ -23,8 +24,8 @@ var pt3PlayerBinary []byte
 //go:embed sdk/players/stcplay.bin
 var stcPlayerBinary []byte
 
-//go:embed sdk/players/generic_play.bin
-var genericPlayerBinary []byte
+//go:embed sdk/players/sqtplay.bin
+var sqtPlayerBinary []byte
 
 const (
 	trackerPlayerBase = 0xC000
@@ -69,26 +70,11 @@ func stcFormatConfig() trackerFormatConfig {
 }
 
 // pt2FormatConfig returns the format configuration for ProTracker 2 modules.
+// Uses the PTx player which handles both PT2 and PT3 formats.
 func pt2FormatConfig() trackerFormatConfig {
 	return trackerFormatConfig{
 		name:         "PT2",
-		playerBinary: genericPlayerBinary,
-		playerBase:   trackerPlayerBase,
-		moduleBase:   trackerModuleBase,
-		initEntry:    trackerInitEntry,
-		playEntry:    trackerPlayEntry,
-		system:       ayZXSystemSpectrum,
-		clockHz:      zxSpectrumClock,
-		z80ClockHz:   z80CPUClock,
-		frameRate:    trackerFrameRate,
-	}
-}
-
-// pt1FormatConfig returns the format configuration for ProTracker 1 modules.
-func pt1FormatConfig() trackerFormatConfig {
-	return trackerFormatConfig{
-		name:         "PT1",
-		playerBinary: genericPlayerBinary,
+		playerBinary: pt3PlayerBinary,
 		playerBase:   trackerPlayerBase,
 		moduleBase:   trackerModuleBase,
 		initEntry:    trackerInitEntry,
@@ -104,7 +90,7 @@ func pt1FormatConfig() trackerFormatConfig {
 func sqtFormatConfig() trackerFormatConfig {
 	return trackerFormatConfig{
 		name:         "SQT",
-		playerBinary: genericPlayerBinary,
+		playerBinary: sqtPlayerBinary,
 		playerBase:   trackerPlayerBase,
 		moduleBase:   trackerModuleBase,
 		initEntry:    trackerInitEntry,
@@ -116,39 +102,8 @@ func sqtFormatConfig() trackerFormatConfig {
 	}
 }
 
-// ascFormatConfig returns the format configuration for ASC Sound Master modules.
-func ascFormatConfig() trackerFormatConfig {
-	return trackerFormatConfig{
-		name:         "ASC",
-		playerBinary: genericPlayerBinary,
-		playerBase:   trackerPlayerBase,
-		moduleBase:   trackerModuleBase,
-		initEntry:    trackerInitEntry,
-		playEntry:    trackerPlayEntry,
-		system:       ayZXSystemSpectrum,
-		clockHz:      zxSpectrumClock,
-		z80ClockHz:   z80CPUClock,
-		frameRate:    trackerFrameRate,
-	}
-}
-
-// ftcFormatConfig returns the format configuration for Fast Tracker (ZX) modules.
-func ftcFormatConfig() trackerFormatConfig {
-	return trackerFormatConfig{
-		name:         "FTC",
-		playerBinary: genericPlayerBinary,
-		playerBase:   trackerPlayerBase,
-		moduleBase:   trackerModuleBase,
-		initEntry:    trackerInitEntry,
-		playEntry:    trackerPlayEntry,
-		system:       ayZXSystemSpectrum,
-		clockHz:      zxSpectrumClock,
-		z80ClockHz:   z80CPUClock,
-		frameRate:    trackerFrameRate,
-	}
-}
-
-// trackerFormatConfigByExt returns the appropriate format config for a file extension.
+// trackerFormatConfigByExt returns the appropriate Z80-based format config for a file extension.
+// Note: PT1, ASC, FTC use native Go players and are NOT in this table.
 func trackerFormatConfigByExt(ext string) (trackerFormatConfig, bool) {
 	switch ext {
 	case ".pt3":
@@ -157,14 +112,8 @@ func trackerFormatConfigByExt(ext string) (trackerFormatConfig, bool) {
 		return stcFormatConfig(), true
 	case ".pt2":
 		return pt2FormatConfig(), true
-	case ".pt1":
-		return pt1FormatConfig(), true
 	case ".sqt":
 		return sqtFormatConfig(), true
-	case ".asc":
-		return ascFormatConfig(), true
-	case ".ftc":
-		return ftcFormatConfig(), true
 	default:
 		return trackerFormatConfig{}, false
 	}

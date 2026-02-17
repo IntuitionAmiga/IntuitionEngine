@@ -96,8 +96,35 @@ func TestPSGPlayer_LoadPT2(t *testing.T) {
 }
 
 func TestPSGPlayer_LoadPT1(t *testing.T) {
-	module := make([]byte, 0x22)
-	module[0x00] = 1
+	// Build a minimal valid PT1 module for native parser
+	// Header: tempo(1), length(1), loop(1), sampleOffsets[16]×u16LE(32), ornamentOffsets[16]×u16LE(32),
+	//         patternsOffset(u16LE)(2), name[30], positions...0xFF
+	module := make([]byte, 0x200)
+	module[0] = 3 // tempo
+	module[1] = 1 // length
+	module[2] = 0 // loop
+	// Patterns offset at bytes 67-68: point after positions
+	patternsOff := 101 // after positions (99 + 1 position + 0xFF marker)
+	module[67] = byte(patternsOff)
+	module[68] = byte(patternsOff >> 8)
+	// Position 0 at offset 99
+	module[99] = 0
+	module[100] = 0xFF
+	// Pattern 0: 3 channel offsets (u16LE each)
+	chanDataOff := patternsOff + 6 // after pattern header
+	module[patternsOff] = byte(chanDataOff)
+	module[patternsOff+1] = byte(chanDataOff >> 8)
+	module[patternsOff+2] = byte(chanDataOff + 2)
+	module[patternsOff+3] = byte((chanDataOff + 2) >> 8)
+	module[patternsOff+4] = byte(chanDataOff + 4)
+	module[patternsOff+5] = byte((chanDataOff + 4) >> 8)
+	// Channel data: 0x90 (empty/no note) for each channel, then 0xFF to end
+	module[chanDataOff] = 0x90   // ch A: empty
+	module[chanDataOff+1] = 0xFF // end marker (for ch A at start of next line check)
+	module[chanDataOff+2] = 0x90 // ch B: empty
+	module[chanDataOff+3] = 0x90 // padding
+	module[chanDataOff+4] = 0x90 // ch C: empty
+	module[chanDataOff+5] = 0x90 // padding
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.pt1")
@@ -128,9 +155,33 @@ func TestPSGPlayer_LoadSQT(t *testing.T) {
 }
 
 func TestPSGPlayer_LoadASC(t *testing.T) {
-	module := make([]byte, 0x30)
-	module[0x01] = 3
-	module[0x02] = 1
+	// Build a minimal valid ASC v0 module for native parser
+	// v0 header: tempo(1), patternsOff(u16LE), samplesOff(u16LE), ornamentsOff(u16LE), length(1), positions[]
+	module := make([]byte, 0x200)
+	module[0] = 5    // tempo
+	module[1] = 0x40 // patterns offset lo
+	module[2] = 0x00 // patterns offset hi
+	module[3] = 0x80 // samples offset lo
+	module[4] = 0x00 // samples offset hi
+	module[5] = 0xC0 // ornaments offset lo
+	module[6] = 0x00 // ornaments offset hi
+	module[7] = 1    // length
+	module[8] = 0    // position 0
+
+	// Pattern 0 at offset 0x40: 3 channel offsets
+	chanBase := 0x46
+	module[0x40] = byte(chanBase)
+	module[0x41] = byte(chanBase >> 8)
+	module[0x42] = byte(chanBase + 1)
+	module[0x43] = byte((chanBase + 1) >> 8)
+	module[0x44] = byte(chanBase + 2)
+	module[0x45] = byte((chanBase + 2) >> 8)
+	// Channel data: 0x5F (rest) for each
+	module[chanBase] = 0x5F   // rest
+	module[chanBase+1] = 0x5F // rest
+	module[chanBase+2] = 0x5F // rest
+	// Pattern end marker
+	module[chanBase+3] = 0xFF
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.asc")
@@ -145,10 +196,31 @@ func TestPSGPlayer_LoadASC(t *testing.T) {
 }
 
 func TestPSGPlayer_LoadFTC(t *testing.T) {
-	module := make([]byte, 0x20)
-	copy(module[0:4], "FTC!")
-	module[0x04] = 1
-	module[0x06] = 3
+	// Build a minimal valid FTC module for native parser (212-byte header + positions)
+	module := make([]byte, 0x200)
+	copy(module[0:8], "Module: ")
+	module[69] = 5    // tempo
+	module[70] = 0    // loop
+	module[75] = 0xE0 // patterns offset lo
+	module[76] = 0x00 // patterns offset hi
+	// Position at offset 212
+	module[212] = 0    // pattern 0
+	module[213] = 0    // transposition 0
+	module[214] = 0xFF // end marker
+
+	// Pattern 0 at offset 0xE0: 3 channel offsets
+	chanBase := 0xE6
+	module[0xE0] = byte(chanBase)
+	module[0xE1] = byte(chanBase >> 8)
+	module[0xE2] = byte(chanBase + 1)
+	module[0xE3] = byte((chanBase + 1) >> 8)
+	module[0xE4] = byte(chanBase + 2)
+	module[0xE5] = byte((chanBase + 2) >> 8)
+	// Channel data: 0x30 (rest) for each
+	module[chanBase] = 0x30   // rest
+	module[chanBase+1] = 0x30 // rest
+	module[chanBase+2] = 0x30 // rest
+	module[chanBase+3] = 0xFF // end
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.ftc")
@@ -179,6 +251,60 @@ func TestDetectMediaType_NewFormats(t *testing.T) {
 	}
 }
 
+func TestPSGPlayer_LoadRealPT3(t *testing.T) {
+	path := "testdata/music/test_pt3.pt3"
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		t.Skip("real PT3 file not available")
+	}
+
+	player := newTestPSGPlayer(t)
+	if err := player.Load(path); err != nil {
+		t.Fatalf("Load real PT3 error: %v", err)
+	}
+	if player.metadata.Title == "" {
+		t.Log("note: real PT3 title is empty (may be normal)")
+	}
+}
+
+func TestPSGPlayer_LoadRealVTX(t *testing.T) {
+	path := "testdata/music/test_vtx.vtx"
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		t.Skip("real VTX file not available")
+	}
+
+	player := newTestPSGPlayer(t)
+	if err := player.Load(path); err != nil {
+		t.Fatalf("Load real VTX error: %v", err)
+	}
+	if player.metadata.System == "" {
+		t.Error("metadata.System is empty for real VTX")
+	}
+}
+
+func TestPSGPlayer_LoadRealSTC(t *testing.T) {
+	path := "testdata/music/test_stc.stc"
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		t.Skip("real STC file not available")
+	}
+
+	player := newTestPSGPlayer(t)
+	if err := player.Load(path); err != nil {
+		t.Fatalf("Load real STC error: %v", err)
+	}
+}
+
+func TestPSGPlayer_LoadRealSQT(t *testing.T) {
+	path := "testdata/music/test_sqt.sqt"
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		t.Skip("real SQT file not available")
+	}
+
+	player := newTestPSGPlayer(t)
+	if err := player.Load(path); err != nil {
+		t.Fatalf("Load real SQT error: %v", err)
+	}
+}
+
 // buildTestVTXFile creates a minimal valid VTX file for testing.
 func buildTestVTXFile(t *testing.T) []byte {
 	t.Helper()
@@ -192,24 +318,6 @@ func buildTestVTXFile(t *testing.T) []byte {
 			interleaved[reg*numFrames+frame] = byte(reg + frame)
 		}
 	}
-	compressed := testCompressLH5(interleaved)
 
-	// Build VTX header (uint16 chipFreq variant, 12-byte header)
-	header := make([]byte, 0, 64)
-	header = append(header, 'a', 'y')   // chip ID
-	header = append(header, 0)          // stereo: mono
-	header = append(header, 0xF4, 0x06) // chipFreq: 1780 (×1000 = 1780000 Hz) LE uint16
-	header = append(header, 50)         // player freq
-	header = append(header, 0, 0)       // year: 0
-	origSize := uint32(len(interleaved))
-	header = append(header, byte(origSize), byte(origSize>>8), byte(origSize>>16), byte(origSize>>24))
-	// Null-terminated strings: title, author, from, tracker, comment
-	header = append(header, 'T', 'e', 's', 't', 0)
-	header = append(header, 0) // author
-	header = append(header, 0) // from
-	header = append(header, 0) // tracker
-	header = append(header, 0) // comment
-	header = append(header, compressed...)
-
-	return header
+	return buildVTXFile("ay", 0, 1773400, 50, 0, "Test", "", "", "", "", interleaved)
 }

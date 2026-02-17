@@ -33,6 +33,7 @@ hw_screen:
     jsr     exec_skip_spaces
     ; Check for ON token
     load.b  r1, (r17)
+    jsr     toupper
     move.q  r2, #TK_ON
     bne     r1, r2, .scr_not_on
     add.q   r17, r17, #1         ; consume ON
@@ -47,12 +48,15 @@ hw_screen:
     bne     r1, r2, .scr_mode
     ; Check "OFF"
     add.q   r3, r17, #1
-    load.b  r4, (r3)
+    load.b  r1, (r3)
+    jsr     toupper
     move.q  r2, #0x46            ; 'F'
-    bne     r4, r2, .scr_mode
+    bne     r1, r2, .scr_mode
     add.q   r3, r3, #1
-    load.b  r4, (r3)
-    bne     r4, r2, .scr_mode
+    load.b  r1, (r3)
+    jsr     toupper
+    move.q  r2, #0x46            ; 'F'
+    bne     r1, r2, .scr_mode
     ; Confirmed "OFF"
     add.q   r17, r3, #1          ; consume "OFF"
     ; Disable VGA: write 0 to VGA_CTRL
@@ -739,6 +743,7 @@ hw_circle:
 hw_ula:
     jsr     exec_skip_spaces
     load.b  r1, (r17)
+    jsr     toupper
     ; Check for ON token
     move.q  r2, #TK_ON
     beq     r1, r2, .ula_on
@@ -771,12 +776,15 @@ hw_ula:
     rts
 .ula_off_check:
     add.q   r3, r17, #1
-    load.b  r4, (r3)
+    load.b  r1, (r3)
+    jsr     toupper
     move.q  r2, #0x46
-    bne     r4, r2, .ula_done
+    bne     r1, r2, .ula_done
     add.q   r3, r3, #1
-    load.b  r4, (r3)
-    bne     r4, r2, .ula_done
+    load.b  r1, (r3)
+    jsr     toupper
+    move.q  r2, #0x46
+    bne     r1, r2, .ula_done
     add.q   r17, r3, #1
     la      r1, ULA_CTRL
     store.l r0, (r1)
@@ -784,9 +792,10 @@ hw_ula:
 .ula_b_cmd:
     ; Check second char: 'O'=BORDER, 'R'=BRIGHT
     add.q   r3, r17, #1
-    load.b  r4, (r3)
+    load.b  r1, (r3)
+    jsr     toupper
     move.q  r2, #0x52            ; 'R'
-    beq     r4, r2, .ula_bright
+    beq     r1, r2, .ula_bright
     ; BORDER - skip first char + remaining alpha
     add.q   r17, r17, #1
     jsr     skip_alpha
@@ -824,9 +833,10 @@ hw_ula:
 .ula_p_cmd:
     ; Check 'A'=PAPER, 'L'=PLOT
     add.q   r3, r17, #1
-    load.b  r4, (r3)
+    load.b  r1, (r3)
+    jsr     toupper
     move.q  r2, #0x4C            ; 'L'
-    beq     r4, r2, .ula_plot
+    beq     r1, r2, .ula_plot
     ; PAPER - skip first char + remaining alpha
     add.q   r17, r17, #1
     jsr     skip_alpha
@@ -1004,6 +1014,7 @@ hw_ula:
 hw_ted_cmd:
     jsr     exec_skip_spaces
     load.b  r1, (r17)
+    jsr     toupper
     move.q  r2, #TK_ON
     beq     r1, r2, .ted_on
     ; Check for token bytes first
@@ -1029,9 +1040,10 @@ hw_ted_cmd:
 .ted_v_cmd:
     ; Disambiguate VIDEO (VI...) vs VOL (VO...) → audio
     add.q   r3, r17, #1
-    load.b  r4, (r3)
+    load.b  r1, (r3)
+    jsr     toupper
     move.q  r2, #0x49            ; 'I' → VIDEO
-    beq     r4, r2, .ted_video
+    beq     r1, r2, .ted_video
     ; VOL or other V-word → route to TED audio handler
     bra     hw_ted_audio
 .ted_on:
@@ -1042,12 +1054,15 @@ hw_ted_cmd:
     rts
 .ted_off_check:
     add.q   r3, r17, #1
-    load.b  r4, (r3)
+    load.b  r1, (r3)
+    jsr     toupper
     move.q  r2, #0x46
-    bne     r4, r2, .ted_done
+    bne     r1, r2, .ted_done
     add.q   r3, r3, #1
-    load.b  r4, (r3)
-    bne     r4, r2, .ted_done
+    load.b  r1, (r3)
+    jsr     toupper
+    move.q  r2, #0x46
+    bne     r1, r2, .ted_done
     add.q   r17, r3, #1
     la      r1, TED_V_ENABLE
     store.b r0, (r1)
@@ -1085,13 +1100,14 @@ hw_ted_cmd:
 .ted_c_cmd:
     ; Disambiguate: CO=COLOR, CH=CHAR, CL=CLS
     add.q   r3, r17, #1
-    load.b  r4, (r3)
+    load.b  r1, (r3)
+    jsr     toupper
     move.q  r2, #0x4F            ; 'O' → COLOR
-    beq     r4, r2, .ted_color
+    beq     r1, r2, .ted_color
     move.q  r2, #0x48            ; 'H' → CHAR
-    beq     r4, r2, .ted_char
+    beq     r1, r2, .ted_char
     move.q  r2, #0x4C            ; 'L' → CLS
-    beq     r4, r2, .ted_cls
+    beq     r1, r2, .ted_cls
     rts
 .ted_color:
     ; Skip COLOR token or "COLOR" - skip first char + remaining alpha
@@ -1211,6 +1227,7 @@ hw_ted_cmd:
 hw_antic:
     jsr     exec_skip_spaces
     load.b  r1, (r17)
+    jsr     toupper
     move.q  r2, #TK_ON
     beq     r1, r2, .antic_on
     ; Check for token bytes first
@@ -1240,12 +1257,15 @@ hw_antic:
     rts
 .antic_off_check:
     add.q   r3, r17, #1
-    load.b  r4, (r3)
+    load.b  r1, (r3)
+    jsr     toupper
     move.q  r2, #0x46
-    bne     r4, r2, .antic_done
+    bne     r1, r2, .antic_done
     add.q   r3, r3, #1
-    load.b  r4, (r3)
-    bne     r4, r2, .antic_done
+    load.b  r1, (r3)
+    jsr     toupper
+    move.q  r2, #0x46
+    bne     r1, r2, .antic_done
     add.q   r17, r3, #1
     la      r1, ANTIC_ENABLE
     store.b r0, (r1)
@@ -1350,6 +1370,7 @@ hw_antic:
 hw_gtia:
     jsr     exec_skip_spaces
     load.b  r1, (r17)
+    jsr     toupper
     ; Check for token bytes first
     move.q  r2, #0xE8            ; TK_COLOR
     beq     r1, r2, .gtia_color
@@ -1391,9 +1412,10 @@ hw_gtia:
 .gtia_p_cmd:
     ; Disambiguate: PR=PRIOR, PL=PLAYER
     add.q   r3, r17, #1
-    load.b  r4, (r3)
+    load.b  r1, (r3)
+    jsr     toupper
     move.q  r2, #0x52            ; 'R' → PRIOR
-    beq     r4, r2, .gtia_prior
+    beq     r1, r2, .gtia_prior
     ; PLAYER - skip first char + remaining alpha
     add.q   r17, r17, #1
     jsr     skip_alpha
@@ -1476,13 +1498,14 @@ hw_gtia:
 .gtia_g_cmd:
     ; Disambiguate: GR=GRAFP/GRAFM/GRACTL
     add.q   r3, r17, #4
-    load.b  r4, (r3)
+    load.b  r1, (r3)
+    jsr     toupper
     move.q  r2, #0x50            ; 'P' → GRAFP
-    beq     r4, r2, .gtia_grafp
+    beq     r1, r2, .gtia_grafp
     move.q  r2, #0x4D            ; 'M' → GRAFM
-    beq     r4, r2, .gtia_grafm
+    beq     r1, r2, .gtia_grafm
     move.q  r2, #0x54            ; 'T' → GRACTL
-    beq     r4, r2, .gtia_gractl
+    beq     r1, r2, .gtia_gractl
     rts
 .gtia_grafp:
     ; Skip "GRAFP" - skip first char + remaining alpha

@@ -4799,6 +4799,107 @@ func TestHW_Sound_PlayStop(t *testing.T) {
 	}
 }
 
+// Regression: lowercase sub-commands must not crash (was PC=0x0 crash).
+func TestHW_Sound_PlayStop_Lowercase(t *testing.T) {
+	asmBin := buildAssembler(t)
+	_, h := execStmtTestWithBus(t, asmBin, "10 SOUND play stop")
+	ctrl := readBusMem32(h, 0xF2308) // MEDIA_CTRL
+	if ctrl != 2 {
+		t.Fatalf("lowercase SOUND play stop: MEDIA_CTRL expected 2, got %d", ctrl)
+	}
+}
+
+// Regression: SOUND with missing args must not crash (stack imbalance fix).
+func TestHW_Sound_MalformedInput_NoCrash(t *testing.T) {
+	asmBin := buildAssembler(t)
+	// "SOUND 0" with no comma/freq should hit the early-out path and not crash.
+	// The test passes if execStmtTestWithBus returns without panic/hang.
+	_, _ = execStmtTestWithBus(t, asmBin, "10 SOUND 0")
+}
+
+// Regression: lowercase SOUND STOP alias.
+func TestHW_Sound_StopAlias_Lowercase(t *testing.T) {
+	asmBin := buildAssembler(t)
+	_, h := execStmtTestWithBus(t, asmBin, "10 SOUND stop")
+	ctrl := readBusMem32(h, 0xF2308) // MEDIA_CTRL
+	if ctrl != 2 {
+		t.Fatalf("lowercase SOUND stop: MEDIA_CTRL expected 2, got %d", ctrl)
+	}
+}
+
+// Regression: lowercase SOUND sub-commands (FILTER, REVERB, etc.)
+func TestHW_Sound_Filter_Lowercase(t *testing.T) {
+	asmBin := buildAssembler(t)
+	_, h := execStmtTestWithBus(t, asmBin, "10 SOUND filter 200, 128, 1")
+	cutoff := readBusMem32(h, 0xF0820)
+	if cutoff != 200 {
+		t.Fatalf("lowercase SOUND filter: FILTER_CUTOFF expected 200, got %d", cutoff)
+	}
+}
+
+// TestHW_Sound_Play_SID_EndToEnd exercises SOUND PLAY through the full
+// EhBASIC interpreter with a real MediaLoader and SID player wired to the bus.
+func TestHW_Sound_Play_SID_EndToEnd(t *testing.T) {
+	sidPath := "sdk/examples/assets/music/Edge_of_Disgrace.sid"
+	if _, err := os.Stat(sidPath); os.IsNotExist(err) {
+		t.Skip("SID test file not available")
+	}
+
+	asmBin := buildAssembler(t)
+
+	var sidPlayer *SIDPlayer
+	var loader *MediaLoader
+
+	_, _ = execStmtTestCore(t, asmBin,
+		fmt.Sprintf("10 SOUND PLAY \"%s\"", sidPath),
+		func(h *ehbasicTestHarness) {
+			soundChip := newTestSoundChip()
+			psgEngine := NewPSGEngine(soundChip, SAMPLE_RATE)
+			psgPlayer := NewPSGPlayer(psgEngine)
+			psgPlayer.AttachBus(h.bus)
+			sidEngine := NewSIDEngine(soundChip, SAMPLE_RATE)
+			sidPlayer = NewSIDPlayer(sidEngine)
+			sidPlayer.AttachBus(h.bus)
+
+			h.bus.MapIO(PSG_BASE, PSG_END, psgEngine.HandleRead, psgEngine.HandleWrite)
+			h.bus.MapIO(PSG_PLAY_PTR, PSG_PLAY_STATUS+3, psgPlayer.HandlePlayRead, psgPlayer.HandlePlayWrite)
+			h.bus.MapIO(SID_BASE, SID_END, sidEngine.HandleRead, sidEngine.HandleWrite)
+			h.bus.MapIO(SID_PLAY_PTR, SID_PLAY_STATUS+3, sidPlayer.HandlePlayRead, sidPlayer.HandlePlayWrite)
+
+			loader = NewMediaLoader(h.bus, soundChip, ".", psgPlayer, sidPlayer, nil, nil, nil)
+			h.bus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END, loader.HandleRead, loader.HandleWrite)
+		})
+
+	if loader == nil {
+		t.Fatal("loader was never initialized")
+	}
+
+	// loadAndStart runs in a goroutine — poll until it finishes
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		s := loader.HandleRead(MEDIA_STATUS)
+		if s != MEDIA_STATUS_LOADING {
+			break
+		}
+		runtime.Gosched()
+	}
+
+	status := loader.HandleRead(MEDIA_STATUS)
+	errCode := loader.HandleRead(MEDIA_ERROR)
+	typ := loader.HandleRead(MEDIA_TYPE)
+
+	if status == MEDIA_STATUS_ERROR {
+		t.Fatalf("EhBASIC SOUND PLAY SID failed: status=ERROR, errCode=%d, type=%d", errCode, typ)
+	}
+	if status != MEDIA_STATUS_PLAYING {
+		t.Fatalf("EhBASIC SOUND PLAY SID: status=%d (want PLAYING=%d), errCode=%d, type=%d",
+			status, MEDIA_STATUS_PLAYING, errCode, typ)
+	}
+	if !sidPlayer.IsPlaying() {
+		t.Error("SID player not playing after EhBASIC SOUND PLAY")
+	}
+}
+
 // --- Voodoo advanced: TRICOLOR ---
 
 func TestHW_Voodoo_Tricolor(t *testing.T) {
