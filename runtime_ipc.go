@@ -32,7 +32,7 @@ const ipcMaxRequestSize = 4096
 
 var allowedExtensions = map[string]bool{
 	".ie32": true, ".iex": true, ".ie64": true,
-	".ie65": true, ".ie68": true, ".ie80": true, ".ie86": true,
+	".ie65": true, ".ie68": true, ".ie80": true, ".ie86": true, ".ies": true,
 }
 
 type ipcRequest struct {

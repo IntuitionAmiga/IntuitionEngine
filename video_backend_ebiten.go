@@ -70,6 +70,7 @@ type EbitenOutput struct {
 	resetInProgress  atomic.Bool
 
 	monitorOverlay *MonitorOverlay
+	luaOverlay     *LuaOverlay
 }
 
 func NewEbitenOutput() (VideoOutput, error) {
@@ -302,6 +303,13 @@ func (eo *EbitenOutput) Update() error {
 			}
 		}
 	}
+	// F8: Lua REPL toggle (monitor has priority when active)
+	if inpututil.IsKeyJustPressed(ebiten.KeyF8) {
+		monitorActive := eo.monitorOverlay != nil && eo.monitorOverlay.monitor.IsActive()
+		if !monitorActive && eo.luaOverlay != nil {
+			eo.luaOverlay.Toggle()
+		}
+	}
 
 	// F10: Hard reset - must be checked before the monitor input
 	// intercept so reset works even when the monitor is active.
@@ -324,6 +332,11 @@ func (eo *EbitenOutput) Update() error {
 	// When monitor is active, route all input to the overlay
 	if eo.monitorOverlay != nil && eo.monitorOverlay.monitor.IsActive() {
 		eo.monitorOverlay.HandleInput()
+		return nil
+	}
+	// Lua REPL has next priority after monitor.
+	if eo.luaOverlay != nil && eo.luaOverlay.IsActive() {
+		eo.luaOverlay.HandleInput()
 		return nil
 	}
 
@@ -351,11 +364,28 @@ func (eo *EbitenOutput) SetMonitorOverlay(overlay *MonitorOverlay) {
 	eo.bufferMutex.Unlock()
 }
 
+func (eo *EbitenOutput) SetLuaOverlay(overlay *LuaOverlay) {
+	eo.bufferMutex.Lock()
+	eo.luaOverlay = overlay
+	eo.bufferMutex.Unlock()
+}
+
 // AttachMonitor creates a MonitorOverlay and attaches it.
 // Implements MonitorAttachable interface.
 func (eo *EbitenOutput) AttachMonitor(monitor *MachineMonitor) {
 	overlay := NewMonitorOverlay(monitor)
 	eo.SetMonitorOverlay(overlay)
+	if eo.luaOverlay == nil {
+		eo.luaOverlay = NewLuaOverlay(nil)
+	}
+}
+
+func (eo *EbitenOutput) SetScriptEngine(scriptEngine *ScriptEngine) {
+	if eo.luaOverlay == nil {
+		eo.luaOverlay = NewLuaOverlay(scriptEngine)
+		return
+	}
+	eo.luaOverlay.SetScriptEngine(scriptEngine)
 }
 
 func (eo *EbitenOutput) SetHardResetHandler(fn func()) {
@@ -667,6 +697,15 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 		}
 		return
 	}
+	if eo.luaOverlay != nil && eo.luaOverlay.IsActive() {
+		eo.luaOverlay.Draw(screen)
+		eo.frameCount++
+		select {
+		case eo.vsyncChan <- struct{}{}:
+		default:
+		}
+		return
+	}
 
 	if eo.window == nil {
 		eo.window = ebiten.NewImage(eo.width, eo.height)
@@ -828,7 +867,7 @@ func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
 	})
 
 	legendColor := color.RGBA{160, 160, 160, 255}
-	legend := "F9 Debug F10 Reset F11 Fullscreen F12 Status"
+	legend := "F8 Lua F9 Debug F10 Reset F11 Fullscreen F12 Status"
 	legendScale := 1.0
 	legendW := int(float64(text.BoundString(basicfont.Face7x13, legend).Dx()) * legendScale)
 	legendX := max(eo.width-legendW-6, 6)

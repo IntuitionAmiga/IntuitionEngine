@@ -64,6 +64,7 @@ type VideoCompositor struct {
 	output            VideoOutput
 	sources           []VideoSource
 	finalFrame        []byte
+	onFrameComplete   func()
 	done              chan struct{}
 	frameWidth        int
 	frameHeight       int
@@ -113,6 +114,12 @@ func (c *VideoCompositor) LockResolution(width, height int) {
 	defer c.mu.Unlock()
 	c.lockedResolution = true
 	c.applyResolution(width, height)
+}
+
+func (c *VideoCompositor) UnlockResolution() {
+	c.mu.Lock()
+	c.lockedResolution = false
+	c.mu.Unlock()
 }
 
 func (c *VideoCompositor) applyResolution(width, height int) {
@@ -214,11 +221,17 @@ func (c *VideoCompositor) composite() {
 	// Check if we can use per-scanline rendering for copper effects
 	// This requires all enabled sources to implement ScanlineAware
 	if c.compositeScanlineAware() {
+		if c.onFrameComplete != nil {
+			c.onFrameComplete()
+		}
 		return
 	}
 
 	// Fallback: full-frame compositing (original behavior)
 	c.compositeFullFrame()
+	if c.onFrameComplete != nil {
+		c.onFrameComplete()
+	}
 }
 
 // scanlineSourceEntry pairs a VideoSource with its ScanlineAware implementation
@@ -458,4 +471,45 @@ func (c *VideoCompositor) blendFrameScaled(srcFrame []byte, srcW, srcH int) {
 
 		dstOffset += dstRowBytes
 	}
+}
+
+// SetFrameCallback installs a callback invoked after each composite() pass.
+func (c *VideoCompositor) SetFrameCallback(cb func()) {
+	c.mu.Lock()
+	c.onFrameComplete = cb
+	c.mu.Unlock()
+}
+
+// GetCurrentFrame returns a copy of the compositor's latest frame buffer.
+func (c *VideoCompositor) GetCurrentFrame() []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.finalFrame) == 0 {
+		return nil
+	}
+	out := make([]byte, len(c.finalFrame))
+	copy(out, c.finalFrame)
+	return out
+}
+
+// GetDimensions returns the compositor's current output dimensions.
+func (c *VideoCompositor) GetDimensions() (int, int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.frameWidth, c.frameHeight
+}
+
+// GetRefreshRate returns the output refresh rate in Hz.
+func (c *VideoCompositor) GetRefreshRate() int {
+	c.mu.Lock()
+	out := c.output
+	c.mu.Unlock()
+	if out == nil {
+		return COMPOSITOR_REFRESH_RATE
+	}
+	rate := out.GetRefreshRate()
+	if rate <= 0 {
+		return COMPOSITOR_REFRESH_RATE
+	}
+	return rate
 }

@@ -325,6 +325,8 @@ func detectExecType(path string) uint32 {
 		return EXEC_TYPE_Z80
 	case ".ie86":
 		return EXEC_TYPE_X86
+	case ".ies":
+		return EXEC_TYPE_SCRIPT
 	default:
 		return EXEC_TYPE_NONE
 	}

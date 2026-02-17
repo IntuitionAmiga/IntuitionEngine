@@ -33,6 +33,7 @@ const (
 	EXEC_TYPE_M68K
 	EXEC_TYPE_Z80
 	EXEC_TYPE_X86
+	EXEC_TYPE_SCRIPT
 )
 
 const (

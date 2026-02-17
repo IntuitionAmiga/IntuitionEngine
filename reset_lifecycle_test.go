@@ -145,6 +145,7 @@ func TestModeFromExtension(t *testing.T) {
 		{"program.ie68", "m68k", false},
 		{"program.ie80", "z80", false},
 		{"program.ie86", "x86", false},
+		{"program.ies", "script", false},
 		{"program.IE32", "ie32", false}, // case insensitive
 		{"program.txt", "", true},
 		{"program", "", true},

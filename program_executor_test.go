@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -22,6 +23,7 @@ func TestDetectExecType(t *testing.T) {
 		{name: "ie68", path: "prog.ie68", want: EXEC_TYPE_M68K},
 		{name: "ie80", path: "prog.ie80", want: EXEC_TYPE_Z80},
 		{name: "ie86", path: "prog.ie86", want: EXEC_TYPE_X86},
+		{name: "ies", path: "demo.ies", want: EXEC_TYPE_SCRIPT},
 		{name: "unknown", path: "prog.bin", want: EXEC_TYPE_NONE},
 	}
 
@@ -426,5 +428,145 @@ func TestProgramExecutor_ExternalLauncherDoesNotStopReplacementIE64CPU(t *testin
 	}
 	if newIE64 == nil || !newIE64.running.Load() {
 		t.Fatalf("replacement IE64 should remain running")
+	}
+}
+
+func TestProgramExecutor_IESLauncherRouting(t *testing.T) {
+	dir := t.TempDir()
+	bus := NewMachineBus()
+	ie64CPU := NewCPU64(bus)
+	ie64CPU.running.Store(true)
+
+	iesPath := filepath.Join(dir, "demo.ies")
+	ie64Path := filepath.Join(dir, "demo.ie64")
+	if err := os.WriteFile(iesPath, []byte("sys.wait_frames(1)"), 0644); err != nil {
+		t.Fatalf("write .ies file: %v", err)
+	}
+	if err := os.WriteFile(ie64Path, []byte{0x35, 0x00, 0x00, 0x00}, 0644); err != nil {
+		t.Fatalf("write .ie64 file: %v", err)
+	}
+
+	exec := NewProgramExecutor(bus, ie64CPU, nil, nil, nil, dir)
+	var launched []string
+	exec.SetExternalLauncher(func(path string) error {
+		launched = append(launched, path)
+		return nil
+	})
+
+	nameAddr := uint32(0x1000)
+	writeFilenameToBus(bus, nameAddr, "demo.ies")
+	exec.HandleWrite(EXEC_NAME_PTR, nameAddr)
+	exec.HandleWrite(EXEC_CTRL, EXEC_OP_EXECUTE)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if exec.HandleRead(EXEC_STATUS) == EXEC_STATUS_RUNNING {
+			break
+		}
+		runtime.Gosched()
+	}
+	if got := exec.HandleRead(EXEC_TYPE); got != EXEC_TYPE_SCRIPT {
+		t.Fatalf("type for .ies=%d, want %d", got, EXEC_TYPE_SCRIPT)
+	}
+
+	writeFilenameToBus(bus, nameAddr, "demo.ie64")
+	exec.HandleWrite(EXEC_NAME_PTR, nameAddr)
+	exec.HandleWrite(EXEC_CTRL, EXEC_OP_EXECUTE)
+
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if exec.HandleRead(EXEC_STATUS) == EXEC_STATUS_RUNNING {
+			break
+		}
+		runtime.Gosched()
+	}
+	if got := exec.HandleRead(EXEC_TYPE); got != EXEC_TYPE_IE64 {
+		t.Fatalf("type for .ie64=%d, want %d", got, EXEC_TYPE_IE64)
+	}
+
+	if len(launched) != 2 {
+		t.Fatalf("launcher call count=%d, want 2", len(launched))
+	}
+	if launched[0] != iesPath {
+		t.Fatalf("first launched path=%q, want %q", launched[0], iesPath)
+	}
+	if launched[1] != ie64Path {
+		t.Fatalf("second launched path=%q, want %q", launched[1], ie64Path)
+	}
+}
+
+func TestEhBASIC_RunIES(t *testing.T) {
+	dir := t.TempDir()
+	bus := NewMachineBus()
+	ie64CPU := NewCPU64(bus)
+	ie64CPU.running.Store(true)
+	term := NewTerminalMMIO()
+	comp := NewVideoCompositor(nil)
+	se := NewScriptEngine(bus, comp, term)
+
+	iesPath := filepath.Join(dir, "demo.ies")
+	if err := os.WriteFile(iesPath, []byte(`
+cpu.freeze()
+mem.write8(0x2600, 0x7B)
+cpu.resume()
+`), 0644); err != nil {
+		t.Fatalf("write .ies file: %v", err)
+	}
+
+	exec := NewProgramExecutor(bus, ie64CPU, nil, nil, nil, dir)
+	exec.SetExternalLauncher(func(path string) error {
+		if strings.EqualFold(filepath.Ext(path), ".ies") {
+			return se.RunFile(path)
+		}
+		return errors.New("unexpected extension")
+	})
+
+	nameAddr := uint32(0x1000)
+	writeFilenameToBus(bus, nameAddr, "demo.ies")
+	exec.HandleWrite(EXEC_NAME_PTR, nameAddr)
+	exec.HandleWrite(EXEC_CTRL, EXEC_OP_EXECUTE)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if exec.HandleRead(EXEC_STATUS) == EXEC_STATUS_RUNNING {
+			break
+		}
+		runtime.Gosched()
+	}
+	if got := exec.HandleRead(EXEC_STATUS); got != EXEC_STATUS_RUNNING {
+		t.Fatalf("status=%d, want %d (RUNNING)", got, EXEC_STATUS_RUNNING)
+	}
+
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if !se.IsRunning() {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+	if got := bus.Read8(0x2600); got != 0x7B {
+		t.Fatalf("marker=%#x, want %#x", got, uint32(0x7B))
+	}
+}
+
+func TestEhBASIC_RunIES_Error(t *testing.T) {
+	dir := t.TempDir()
+	bus := NewMachineBus()
+	ie64CPU := NewCPU64(bus)
+	exec := NewProgramExecutor(bus, ie64CPU, nil, nil, nil, dir)
+
+	nameAddr := uint32(0x1000)
+	writeFilenameToBus(bus, nameAddr, "missing.ies")
+	exec.HandleWrite(EXEC_NAME_PTR, nameAddr)
+	exec.HandleWrite(EXEC_CTRL, EXEC_OP_EXECUTE)
+
+	if got := exec.HandleRead(EXEC_STATUS); got != EXEC_STATUS_ERROR {
+		t.Fatalf("status=%d, want %d (ERROR)", got, EXEC_STATUS_ERROR)
+	}
+	if got := exec.HandleRead(EXEC_ERROR); got != EXEC_ERR_NOT_FOUND {
+		t.Fatalf("error=%d, want %d (NOT_FOUND)", got, EXEC_ERR_NOT_FOUND)
 	}
 }

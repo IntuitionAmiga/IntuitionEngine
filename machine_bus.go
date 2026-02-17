@@ -617,6 +617,30 @@ func (bus *MachineBus) GetMemory() []byte {
 	return bus.memory
 }
 
+// IsIOAddress reports whether addr resolves to a mapped MMIO region.
+func (bus *MachineBus) IsIOAddress(addr uint32) bool {
+	if addr >= 0xFFFF0000 {
+		addr &= 0x0000FFFF
+	}
+	if addr >= uint32(len(bus.memory)) {
+		return false
+	}
+	page := addr >> 8
+	if page >= uint32(len(bus.ioPageBitmap)) || !bus.ioPageBitmap[page] {
+		return false
+	}
+	regions, exists := bus.mapping[addr&PAGE_MASK]
+	if !exists {
+		return false
+	}
+	for _, region := range regions {
+		if addr >= region.start && addr <= region.end {
+			return true
+		}
+	}
+	return false
+}
+
 // SetVideoStatusReader registers a lock-free callback for VIDEO_STATUS reads.
 // This allows VBlank polling without blocking on the bus mutex.
 func (bus *MachineBus) SetVideoStatusReader(reader func(addr uint32) uint32) {

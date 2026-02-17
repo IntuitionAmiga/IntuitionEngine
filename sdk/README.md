@@ -40,6 +40,19 @@ sdk/
    RUN "sdk/examples/prebuilt/vga_text_hello.iex"
    ```
 
+   You can also run Lua automation scripts:
+   ```bash
+   ./bin/IntuitionEngine -ie64 program.ie64 -script demo.ies
+   ```
+   Or from the EhBASIC prompt:
+   ```basic
+   RUN "demo.ies"
+   ```
+
+## Scripting (IEScript)
+
+IEScript is the Lua 5.1 automation layer for Intuition Engine. Scripts use the `.ies` extension and provide programmatic control of the emulator via 10 API modules: `cpu`, `mem`, `term`, `audio`, `video`, `dbg`, `rec`, `coproc`, `media`, and `sys`. Use cases include automated demo recording, test harnesses, and scripted debugging workflows. See [IEScript Lua Automation](docs/iescript.md) for the full reference.
+
 3. Or build and run from source (IE32 VGA text mode):
    ```bash
    sdk/bin/ie32asm sdk/examples/asm/vga_text_hello.asm
@@ -200,4 +213,5 @@ The `sdk/include/` headers define the stable hardware register map for v1.x and 
 - [IE64 Cookbook](docs/IE64_COOKBOOK.md)
 - [Tutorial](docs/TUTORIAL.md)
 - [EhBASIC Guide](docs/ehbasic_ie64.md)
+- [IEScript Lua Automation](docs/iescript.md)
 - [IE32 to IE64 Migration](docs/ie32to64.md)

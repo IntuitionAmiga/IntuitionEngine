@@ -31,6 +31,7 @@
 | [sdk/docs/IE64_COOKBOOK.md](sdk/docs/IE64_COOKBOOK.md) | IE64 common patterns and recipes |
 | [sdk/docs/ehbasic_ie64.md](sdk/docs/ehbasic_ie64.md) | EhBASIC language guide |
 | [sdk/docs/iemon.md](sdk/docs/iemon.md) | Machine monitor (F9 debugger) reference |
+| [sdk/docs/iescript.md](sdk/docs/iescript.md) | IEScript Lua automation reference |
 | [sdk/docs/sdk-getting-started.md](sdk/docs/sdk-getting-started.md) | SDK quick start |
 | [sdk/docs/toolchains.md](sdk/docs/toolchains.md) | Assembler toolchain reference |
 | [sdk/docs/demo-matrix.md](sdk/docs/demo-matrix.md) | Demo program coverage matrix |
@@ -193,6 +194,13 @@ Default core: **IE64**. Additional cores: **IE32, M68K, x86, Z80, 6502**.
 - Dirty rectangle tracking for efficient updates
 - Engines/chips: **IEVideoChip**, **VGA**, **ULA**, **TED video**, **ANTIC/GTIA**, **3DFX Voodoo**
 
+## Scripting
+
+- **IEScript** (Lua 5.1) automation engine for programmatic control of the entire emulator
+- 10 API modules: `cpu`, `mem`, `term`, `audio`, `video`, `dbg`, `rec`, `coproc`, `media`, `sys`
+- Frame-synchronised coroutine model, MP4+AAC recording via FFmpeg, interactive F8 REPL overlay
+- See [iescript.md](sdk/docs/iescript.md) for the full reference
+
 ## Quick Start
 
 ```bash
@@ -225,6 +233,9 @@ Default core: **IE64**. Additional cores: **IE32, M68K, x86, Z80, 6502**.
 # Play SID music
 ./bin/IntuitionEngine -sid music.sid
 
+# Run a Lua automation script alongside a program
+./bin/IntuitionEngine -ie64 program.ie64 -script demo.ies
+
 # Run with performance measurement (MIPS reporting)
 ./bin/IntuitionEngine -perf -m68k program.ie68
 
@@ -256,7 +267,7 @@ CPU modes that execute binaries (`-ie32`, `-ie64`, `-m68k`, `-m6502`, `-z80`, `-
 
 Opening an `*.ie*` file while Intuition Engine is already running sends the file to the running instance via Unix domain socket IPC. The running instance performs a full hardware reset and loads the new binary. If the file uses a different CPU architecture (e.g., opening a `.ie80` Z80 binary while an IE32 program is running), the CPU mode switches automatically.
 
-Supported extensions: `.ie32`/`.iex` (IE32), `.ie64` (IE64), `.ie65` (6502), `.ie68` (M68K), `.ie80` (Z80), `.ie86` (X86).
+Supported extensions: `.ie32`/`.iex` (IE32), `.ie64` (IE64), `.ie65` (6502), `.ie68` (M68K), `.ie80` (Z80), `.ie86` (X86), `.ies` (IEScript Lua automation).
 
 ## 1.6 Desktop Integration
 
@@ -314,6 +325,8 @@ The monitor works with all six CPU types (IE64, IE32, M68K, Z80, 6502, X86) and 
 | `x` | Exit monitor and resume all CPUs |
 
 Addresses accept `$hex`, `0xhex`, bare hex, `#decimal`, or expressions like `pc+$20`.
+
+The monitor is also accessible from Lua scripts via the `dbg.*` API module. See [iescript.md](sdk/docs/iescript.md) for scripted debugging workflows.
 
 Full documentation: [iemon.md](sdk/docs/iemon.md)
 

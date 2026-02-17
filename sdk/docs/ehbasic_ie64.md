@@ -1047,6 +1047,7 @@ RUN "file.ext"
 
 - `RUN` with no argument executes the stored BASIC program from the beginning.
 - `RUN "file.ext"` loads and launches an external CPU binary, handing off execution to the appropriate CPU emulator. The IE64 CPU stops and the new CPU takes over.
+- `RUN "file.ies"` launches an IEScript Lua automation script. See [iescript.md](iescript.md) for the full scripting reference.
 
 Supported extensions:
 

@@ -5,6 +5,7 @@
 The Machine Monitor is a built-in system-level debugger inspired by the Commodore 64/Amiga Action Replay cartridge, HRTMon, and the Commodore Plus/4 built-in monitor. Press **F9** at any time to freeze the entire system and enter the monitor. Press **x** or **Esc** to resume execution.
 
 The monitor works with all six CPU types (IE64, IE32, M68K, Z80, 6502, X86) and handles multi-CPU scenarios, including coprocessors.
+It is also exposed to IEScript Lua via the `dbg.*` API for scripted debugging workflows. See [iescript.md](iescript.md) for the full `dbg.*` module reference.
 
 ## Quick Start
 

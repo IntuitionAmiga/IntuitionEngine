@@ -198,6 +198,7 @@ func main() {
 		resHeight  int
 		scale      int
 		fullscreen bool
+		scriptFile string
 	)
 
 	flagSet := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
@@ -229,6 +230,7 @@ func main() {
 	flagSet.IntVar(&resHeight, "height", 0, "Override output height (0 = auto)")
 	flagSet.IntVar(&scale, "scale", 1, "Integer window scale factor (1-4)")
 	flagSet.BoolVar(&fullscreen, "fullscreen", false, "Start in fullscreen mode")
+	flagSet.StringVar(&scriptFile, "script", "", "Run IES Lua script file after startup")
 	flagSet.Bool("version", false, "Print version information and exit")
 	loadAddr.value = "0x0600"
 	flagSet.Var(&loadAddr, "load-addr", "6502/Z80 load address (hex or decimal, defaults: 6502=0x0600, Z80=0x0000)")
@@ -922,6 +924,7 @@ func main() {
 	var reloadProgram func()
 	var currentMode string
 	var currentPath string
+	var scriptEngine *ScriptEngine
 
 	createRunnerForMode := func(mode string) (EmulatorCPU, error) {
 		switch mode {
@@ -1288,6 +1291,10 @@ func main() {
 		resetMu.Lock()
 		defer resetMu.Unlock()
 
+		if scriptEngine != nil {
+			scriptEngine.Cancel()
+		}
+
 		var bytes []byte
 		var mode string
 		forceBasicBoot := path == ""
@@ -1308,6 +1315,12 @@ func main() {
 			mode, err = modeFromExtension(path)
 			if err != nil {
 				return err
+			}
+			if mode == "script" {
+				if scriptEngine == nil {
+					return fmt.Errorf("script engine unavailable")
+				}
+				return scriptEngine.RunFile(path)
 			}
 			// Preserve CLI/default 6502 semantics for .ie65 reload/launch paths.
 			// In BASIC/IPC mode we don't parse --load-addr, so apply the standard
@@ -1479,13 +1492,36 @@ func main() {
 		return nil
 	}
 
+	scriptEngine = NewScriptEngine(sysBus, compositor, termMMIO)
+	scriptEngine.SetProgramLoader(runProgramWithFullReset)
+	scriptEngine.SetHardReset(func() error {
+		return runProgramWithFullReset("")
+	})
+	scriptEngine.SetMonitor(monitor)
+	scriptEngine.SetQuitFunc(func() {
+		os.Exit(0)
+	})
+	if sa, ok := videoChip.GetOutput().(interface{ SetScriptEngine(*ScriptEngine) }); ok {
+		sa.SetScriptEngine(scriptEngine)
+	}
+
+	launchProgramOrScript := func(path string) error {
+		if strings.EqualFold(filepath.Ext(path), ".ies") {
+			return scriptEngine.RunFile(path)
+		}
+		return runProgramWithFullReset(path)
+	}
+
 	// Ensure RUN "file" (ProgramExecutor) uses the same launch path as IPC/F10
 	// so monitor/runtime state stays consistent across all entry points.
-	progExec.SetExternalLauncher(runProgramWithFullReset)
+	progExec.SetExternalLauncher(launchProgramOrScript)
 
 	// Wire F10 hard reset handler
 	if hr, ok := videoChip.GetOutput().(HardResettable); ok {
 		hr.SetHardResetHandler(func() {
+			if scriptEngine != nil {
+				scriptEngine.Cancel()
+			}
 			if err := runProgramWithFullReset(""); err != nil {
 				fmt.Printf("F10 reset failed: %v\n", err)
 			}
@@ -1494,7 +1530,7 @@ func main() {
 
 	// Start IPC server for single-instance file opening
 	ipcServer, err := NewIPCServer(func(path string) error {
-		return runProgramWithFullReset(path)
+		return launchProgramOrScript(path)
 	})
 	if err != nil {
 		fmt.Printf("Warning: IPC server failed to start: %v\n", err)
@@ -1512,6 +1548,13 @@ func main() {
 	if modeBasic {
 		// Initial BASIC startup: collect transient allocations after image setup.
 		runtime.GC()
+	}
+
+	if scriptFile != "" {
+		if err := scriptEngine.RunFile(scriptFile); err != nil {
+			fmt.Printf("Error starting script %s: %v\n", scriptFile, err)
+			os.Exit(1)
+		}
 	}
 
 	// Start console terminal host only when not using graphical BASIC terminal.
@@ -1537,6 +1580,9 @@ func main() {
 	}
 
 	// Shut down terminal host (restores stdin to blocking) and render goroutines.
+	if scriptEngine != nil {
+		scriptEngine.Cancel()
+	}
 	if outputTicker != nil {
 		outputTicker.Stop()
 	}

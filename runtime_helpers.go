@@ -38,6 +38,8 @@ func modeFromExtension(path string) (string, error) {
 		return "z80", nil
 	case ".ie86":
 		return "x86", nil
+	case ".ies":
+		return "script", nil
 	default:
 		return "", fmt.Errorf("unsupported extension: %s", filepath.Ext(path))
 	}

@@ -873,6 +873,10 @@ type SampleTicker interface {
 type sampleTickerHolder struct {
 	ticker SampleTicker
 }
+
+type sampleTapHolder struct {
+	tap func(float32)
+}
 type CombFilter struct {
 	buffer []float32                 // Delay line buffer
 	decay  float32                   // Decay coefficient
@@ -905,6 +909,7 @@ type SoundChip struct {
 	_pad2           [SOUNDCHIP_PAD2_SIZE]byte // Align to 64-byte cache line boundary
 
 	sampleTicker atomic.Value // Optional per-sample ticker (SampleTicker)
+	sampleTap    atomic.Value // Optional tap callback fed with each generated sample
 	audioFrozen  atomic.Bool  // When true, ReadSample returns 0 (hard pause)
 
 	// Cache line 3+ - Reverb state (cold path)
@@ -940,6 +945,7 @@ func NewSoundChip(backend int) (*SoundChip, error) {
 		sampleRateRecip: 1.0 / float32(SAMPLE_RATE),
 	}
 	chip.sampleTicker.Store(&sampleTickerHolder{})
+	chip.sampleTap.Store(&sampleTapHolder{})
 
 	// Initialise channels (4 base + 6 SID2/SID3 channels)
 	waveTypes := []int{
@@ -2639,11 +2645,25 @@ func (chip *SoundChip) ReadSample() float32 {
 			holder.ticker.TickSample()
 		}
 	}
-	return chip.GenerateSample()
+	sample := chip.GenerateSample()
+	if holder, ok := chip.sampleTap.Load().(*sampleTapHolder); ok {
+		if holder.tap != nil {
+			holder.tap(sample)
+		}
+	}
+	return sample
 }
 
 func (chip *SoundChip) SetSampleTicker(ticker SampleTicker) {
 	chip.sampleTicker.Store(&sampleTickerHolder{ticker: ticker})
+}
+
+func (chip *SoundChip) SetSampleTap(tap func(float32)) {
+	chip.sampleTap.Store(&sampleTapHolder{tap: tap})
+}
+
+func (chip *SoundChip) ClearSampleTap() {
+	chip.sampleTap.Store(&sampleTapHolder{})
 }
 
 func (chip *SoundChip) SetPSGPlusEnabled(enabled bool) {
