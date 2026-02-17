@@ -40,24 +40,27 @@ func init() {
 }
 
 type EbitenOutput struct {
-	running       bool
-	window        *ebiten.Image
-	width         int
-	height        int
-	format        PixelFormat
-	fullscreen    bool
-	scale         int
-	windowedW     int
-	windowedH     int
-	frameBuffer   []byte
-	bufferMutex   sync.RWMutex
-	frameCount    uint64
-	refreshRate   int
-	vsyncChan     chan struct{}
-	done          chan struct{}
-	keyHandler    func(byte)
-	scrollHandler func(int)
-	wheelAccum    float64
+	running            bool
+	window             *ebiten.Image
+	width              int
+	height             int
+	format             PixelFormat
+	fullscreen         bool
+	scale              int
+	windowedW          int
+	windowedH          int
+	frameBuffer        []byte
+	bufferMutex        sync.RWMutex
+	frameCount         uint64
+	refreshRate        int
+	vsyncChan          chan struct{}
+	done               chan struct{}
+	keyHandler         func(byte)
+	scrollHandler      func(int)
+	copyHandler        func()
+	cutHandler         func()
+	middleMouseHandler func()
+	wheelAccum         float64
 
 	clipboardOnce sync.Once
 	clipboardOK   bool
@@ -373,6 +376,24 @@ func (eo *EbitenOutput) SetScrollHandler(fn func(int)) {
 	eo.bufferMutex.Unlock()
 }
 
+func (eo *EbitenOutput) SetCopyHandler(fn func()) {
+	eo.bufferMutex.Lock()
+	eo.copyHandler = fn
+	eo.bufferMutex.Unlock()
+}
+
+func (eo *EbitenOutput) SetCutHandler(fn func()) {
+	eo.bufferMutex.Lock()
+	eo.cutHandler = fn
+	eo.bufferMutex.Unlock()
+}
+
+func (eo *EbitenOutput) SetMiddleMouseHandler(fn func()) {
+	eo.bufferMutex.Lock()
+	eo.middleMouseHandler = fn
+	eo.bufferMutex.Unlock()
+}
+
 func (eo *EbitenOutput) emitByte(b byte) {
 	eo.bufferMutex.RLock()
 	handler := eo.keyHandler
@@ -412,11 +433,29 @@ func (eo *EbitenOutput) handleKeyboardInput() {
 	ctrl := ebiten.IsKeyPressed(ebiten.KeyControlLeft) || ebiten.IsKeyPressed(ebiten.KeyControlRight)
 	shift := ebiten.IsKeyPressed(ebiten.KeyShiftLeft) || ebiten.IsKeyPressed(ebiten.KeyShiftRight)
 
-	// Clipboard paste: Ctrl+Shift+V
-	if ctrl && shift && inpututil.IsKeyJustPressed(ebiten.KeyV) {
-		eo.handleClipboardPaste()
+	// Clipboard/selection: Ctrl+Shift+V/C/X (only when monitor is NOT active)
+	monitorActive := eo.monitorOverlay != nil && eo.monitorOverlay.monitor.IsActive()
+	if ctrl && shift && !monitorActive {
+		if inpututil.IsKeyJustPressed(ebiten.KeyV) {
+			eo.handleClipboardPaste()
+		}
+		if inpututil.IsKeyJustPressed(ebiten.KeyC) {
+			eo.bufferMutex.RLock()
+			handler := eo.copyHandler
+			eo.bufferMutex.RUnlock()
+			if handler != nil {
+				handler()
+			}
+		}
+		if inpututil.IsKeyJustPressed(ebiten.KeyX) {
+			eo.bufferMutex.RLock()
+			handler := eo.cutHandler
+			eo.bufferMutex.RUnlock()
+			if handler != nil {
+				handler()
+			}
+		}
 	}
-	// Ctrl+Shift+C intentionally reserved for future copy/selection support.
 
 	// Ctrl shortcuts (without shift): emit control bytes
 	ctrlHandled := false
@@ -456,6 +495,33 @@ func (eo *EbitenOutput) handleKeyboardInput() {
 		}
 	}
 
+	// Shift+Arrow/Home/End: emit CSI modifier sequences for selection.
+	// When Ctrl is also held, only Home/End trigger selection (arrows stay as Ctrl+Arrow word-move).
+	shiftHandled := false
+	if shift && !monitorActive {
+		shiftKeys := []struct {
+			key ebiten.Key
+			seq []byte
+		}{
+			{ebiten.KeyArrowLeft, []byte{0x1B, '[', '1', ';', '2', 'D'}},
+			{ebiten.KeyArrowRight, []byte{0x1B, '[', '1', ';', '2', 'C'}},
+			{ebiten.KeyArrowUp, []byte{0x1B, '[', '1', ';', '2', 'A'}},
+			{ebiten.KeyArrowDown, []byte{0x1B, '[', '1', ';', '2', 'B'}},
+			{ebiten.KeyHome, []byte{0x1B, '[', '1', ';', '2', 'H'}},
+			{ebiten.KeyEnd, []byte{0x1B, '[', '1', ';', '2', 'F'}},
+		}
+		for _, sk := range shiftKeys {
+			// When Ctrl is also held, only handle Home/End for selection
+			if ctrl && sk.key != ebiten.KeyHome && sk.key != ebiten.KeyEnd {
+				continue
+			}
+			if inpututil.IsKeyJustPressed(sk.key) || shouldRepeat(sk.key) {
+				eo.emitSeq(sk.seq)
+				shiftHandled = true
+			}
+		}
+	}
+
 	// Printable input path - skip when ctrl is held to avoid double emission.
 	if !ctrl {
 		for _, r := range ebiten.AppendInputChars(nil) {
@@ -490,10 +556,28 @@ func (eo *EbitenOutput) handleKeyboardInput() {
 			key == ebiten.KeyArrowLeft || key == ebiten.KeyArrowRight) {
 			continue
 		}
+		// Skip selection keys when shift handled them
+		if shiftHandled && (key == ebiten.KeyArrowLeft || key == ebiten.KeyArrowRight ||
+			key == ebiten.KeyArrowUp || key == ebiten.KeyArrowDown ||
+			key == ebiten.KeyHome || key == ebiten.KeyEnd) {
+			continue
+		}
 		if inpututil.IsKeyJustPressed(key) || shouldRepeat(key) {
 			if seq, ok := translateSpecialKey(key); ok {
 				eo.emitSeq(seq)
 			}
+		}
+	}
+
+	// Middle mouse button paste
+	if !monitorActive && inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonMiddle) {
+		eo.bufferMutex.RLock()
+		handler := eo.middleMouseHandler
+		eo.bufferMutex.RUnlock()
+		if handler != nil {
+			handler()
+		} else {
+			eo.handleClipboardPaste()
 		}
 	}
 
@@ -552,28 +636,6 @@ func translateSpecialKey(key ebiten.Key) ([]byte, bool) {
 	default:
 		return nil, false
 	}
-}
-
-func normalizePasteText(raw []byte) []byte {
-	norm := make([]byte, 0, len(raw))
-	for i := 0; i < len(raw); i++ {
-		if raw[i] == '\r' {
-			if i+1 < len(raw) && raw[i+1] == '\n' {
-				i++
-			}
-			norm = append(norm, '\n')
-			continue
-		}
-		norm = append(norm, raw[i])
-	}
-	return norm
-}
-
-func capPasteText(raw []byte, max int) []byte {
-	if len(raw) <= max {
-		return raw
-	}
-	return raw[:max]
 }
 
 func (eo *EbitenOutput) handleClipboardPaste() {

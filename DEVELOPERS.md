@@ -410,7 +410,7 @@ Press F9 during execution to enter the step-through debugger. Supports all 6 CPU
 - Trace logging and backstep history
 - Run-until with conditional stops
 - I/O register viewer for all hardware chips
-- Clipboard paste (Ctrl+Shift+V)
+- Clipboard copy/cut/paste (Ctrl+Shift+C/X/V), text selection (Shift+Arrow), middle mouse paste
 
 See [docs/iemon.md](sdk/docs/iemon.md) for the full machine monitor reference.
 

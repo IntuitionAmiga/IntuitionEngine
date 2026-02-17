@@ -58,6 +58,16 @@ type VideoTerminal struct {
 	historyIdx int
 	savedInput string
 
+	selActive    bool
+	selAnchorCol int
+	selAnchorRow int
+	selEndCol    int
+	selEndRow    int
+	selText      string
+
+	clipboardWrite func([]byte)
+	clipboardRead  func() []byte
+
 	done     chan struct{}
 	stopOnce sync.Once
 }
@@ -188,6 +198,14 @@ func (vt *VideoTerminal) renderCellLocked(col, row int, ch byte) {
 		return
 	}
 
+	fg, bg := vt.fgColor, vt.bgColor
+	if vt.selActive {
+		absRow := vt.screen.ViewportTop() + row
+		if vt.isInSelectionLocked(col, absRow) {
+			fg, bg = bg, fg
+		}
+	}
+
 	baseX := col * terminalGlyphWidth
 	baseY := row * terminalGlyphHeight
 	glyph := vt.glyphs[ch]
@@ -196,9 +214,9 @@ func (vt *VideoTerminal) renderCellLocked(col, row int, ch byte) {
 			rowBits := glyph[gy]
 			dst := (baseY+gy)*stride + baseX*4
 			for gx := range terminalGlyphWidth {
-				color := vt.bgColor
+				color := bg
 				if (rowBits & (0x80 >> gx)) != 0 {
-					color = vt.fgColor
+					color = fg
 				}
 				writeColorLE(fb, dst+gx*4, color)
 			}
@@ -309,6 +327,7 @@ func (vt *VideoTerminal) scrollUpLocked() {
 func (vt *VideoTerminal) HandleScroll(delta int) {
 	vt.mu.Lock()
 	defer vt.mu.Unlock()
+	vt.selClearLocked()
 	vt.screen.ScrollViewport(delta)
 	vt.renderViewportLocked()
 }
@@ -402,6 +421,7 @@ func (vt *VideoTerminal) handleInputByteLocked(b byte, lineMode bool) bool {
 
 	switch b {
 	case '\r', '\n':
+		vt.selClearLocked()
 		if lineMode {
 			_, absRow := vt.screen.CursorPos()
 			line := vt.screen.ReadLine(absRow)
@@ -436,6 +456,7 @@ func (vt *VideoTerminal) handleInputByteLocked(b byte, lineMode bool) bool {
 		vt.savedInput = ""
 		return vt.screen.ViewportTop() != beforeTop // full redraw only on scroll
 	case '\b':
+		vt.selClearLocked()
 		cx, cy := vt.screen.CursorPos()
 		vt.screen.BackspaceChar()
 		vrow := cy - vt.screen.ViewportTop()
@@ -444,27 +465,33 @@ func (vt *VideoTerminal) handleInputByteLocked(b byte, lineMode bool) bool {
 		}
 		return false
 	case '\t':
+		vt.selClearLocked()
 		beforeTop := vt.screen.ViewportTop()
 		vt.screen.PutChar('\t')
 		return vt.screen.ViewportTop() != beforeTop
 	case 0x01: // Ctrl+A - Home
+		vt.selClearLocked()
 		vt.screen.Home()
 		return false
 	case 0x05: // Ctrl+E - End
+		vt.selClearLocked()
 		vt.screen.End()
 		return false
 	case 0x0B: // Ctrl+K - Kill to EOL
+		vt.selClearLocked()
 		cx, cy := vt.screen.CursorPos()
 		vt.screen.ClearLine(cy, cx)
 		vrow := cy - vt.screen.ViewportTop()
 		vt.renderRowFromLocked(vrow, cx)
 		return false
 	case 0x0C: // Ctrl+L - Clear screen
+		vt.selClearLocked()
 		vt.screen.Clear()
 		vt.clearScreenLocked()
 		vt.inputActive = false
 		return false
 	case 0x15: // Ctrl+U - Kill to BOL
+		vt.selClearLocked()
 		cx, cy := vt.screen.CursorPos()
 		startCol := 0
 		if vt.inputActive && cy == vt.inputStartRow {
@@ -480,6 +507,7 @@ func (vt *VideoTerminal) handleInputByteLocked(b byte, lineMode bool) bool {
 		if b < 0x20 {
 			return false
 		}
+		vt.selClearLocked()
 		beforeTop := vt.screen.ViewportTop()
 		beforeX, beforeY := vt.screen.CursorPos()
 		scrolled := vt.screen.InsertChar(b)
@@ -543,6 +571,164 @@ func (vt *VideoTerminal) historyNextLocked() {
 	vt.renderRowFromLocked(vrow, vt.inputStartCol)
 }
 
+func (vt *VideoTerminal) SetClipboardHandlers(write func([]byte), read func() []byte) {
+	vt.mu.Lock()
+	defer vt.mu.Unlock()
+	vt.clipboardWrite = write
+	vt.clipboardRead = read
+}
+
+func (vt *VideoTerminal) isInSelectionLocked(col, absRow int) bool {
+	if !vt.selActive {
+		return false
+	}
+	startCol, startRow := vt.selAnchorCol, vt.selAnchorRow
+	endCol, endRow := vt.selEndCol, vt.selEndRow
+	if startRow > endRow || (startRow == endRow && startCol > endCol) {
+		startCol, startRow, endCol, endRow = endCol, endRow, startCol, startRow
+	}
+	if absRow < startRow || absRow > endRow {
+		return false
+	}
+	if startRow == endRow {
+		return col >= startCol && col <= endCol
+	}
+	if absRow == startRow {
+		return col >= startCol
+	}
+	if absRow == endRow {
+		return col <= endCol
+	}
+	return true
+}
+
+func (vt *VideoTerminal) selExtendToLocked(col, absRow int) {
+	vt.selEndCol = col
+	vt.selEndRow = absRow
+	vt.selActive = true
+	// Auto-copy to internal buffer and OS clipboard
+	vt.selText = vt.screen.ExtractText(vt.selAnchorCol, vt.selAnchorRow, vt.selEndCol, vt.selEndRow)
+	if vt.clipboardWrite != nil && vt.selText != "" {
+		vt.clipboardWrite([]byte(vt.selText))
+	}
+	vt.renderViewportLocked()
+}
+
+func (vt *VideoTerminal) selClearLocked() {
+	if !vt.selActive {
+		return
+	}
+	vt.selActive = false
+	vt.selText = ""
+	vt.renderViewportLocked()
+}
+
+func (vt *VideoTerminal) CopySelection() {
+	vt.mu.Lock()
+	defer vt.mu.Unlock()
+	if !vt.selActive {
+		return
+	}
+	vt.selText = vt.screen.ExtractText(vt.selAnchorCol, vt.selAnchorRow, vt.selEndCol, vt.selEndRow)
+	if vt.clipboardWrite != nil && vt.selText != "" {
+		vt.clipboardWrite([]byte(vt.selText))
+	}
+}
+
+func (vt *VideoTerminal) CutSelection() {
+	vt.mu.Lock()
+	defer vt.mu.Unlock()
+	if !vt.selActive {
+		return
+	}
+	// Copy first
+	vt.selText = vt.screen.ExtractText(vt.selAnchorCol, vt.selAnchorRow, vt.selEndCol, vt.selEndRow)
+	if vt.clipboardWrite != nil && vt.selText != "" {
+		vt.clipboardWrite([]byte(vt.selText))
+	}
+
+	// Normalize selection
+	startCol, startRow := vt.selAnchorCol, vt.selAnchorRow
+	endCol, endRow := vt.selEndCol, vt.selEndRow
+	if startRow > endRow || (startRow == endRow && startCol > endCol) {
+		startCol, startRow, endCol, endRow = endCol, endRow, startCol, startRow
+	}
+
+	// Delete selected text from each row in the selection range
+	for row := startRow; row <= endRow; row++ {
+		if row < 0 || row >= len(vt.screen.lines) {
+			continue
+		}
+		line := vt.screen.lines[row]
+
+		// Compute deletion range for this row
+		delStart := 0
+		if row == startRow {
+			delStart = startCol
+		}
+		delEnd := vt.cols - 1
+		if row == endRow {
+			delEnd = endCol
+		}
+
+		// For the input row, protect the prompt prefix
+		if vt.inputActive && row == vt.inputStartRow && delStart < vt.inputStartCol {
+			delStart = vt.inputStartCol
+		}
+
+		// Clamp delEnd to actual content (don't shift null padding)
+		contentEnd := -1
+		for i := vt.cols - 1; i >= 0; i-- {
+			if line[i] != 0 {
+				contentEnd = i
+				break
+			}
+		}
+		if delEnd > contentEnd {
+			delEnd = contentEnd
+		}
+		if delStart > delEnd || delStart < 0 {
+			continue
+		}
+
+		// Delete range by shifting left
+		count := delEnd - delStart + 1
+		copy(line[delStart:], line[delEnd+1:])
+		for i := vt.cols - count; i < vt.cols; i++ {
+			line[i] = 0
+		}
+
+		// Update cursor if this is the input row
+		if vt.inputActive && row == vt.inputStartRow {
+			vt.screen.cursorX = delStart
+		}
+	}
+
+	vt.selClearLocked()
+}
+
+func (vt *VideoTerminal) MiddleMousePaste() {
+	vt.mu.Lock()
+	var data []byte
+	if vt.selActive && vt.selText != "" {
+		data = []byte(vt.selText)
+	} else if vt.clipboardRead != nil {
+		data = vt.clipboardRead()
+	}
+	vt.mu.Unlock()
+
+	if len(data) == 0 {
+		return
+	}
+	data = normalizePasteText(data)
+	data = capPasteText(data, 4096)
+	// Route through the keyboard input path so characters appear on screen
+	// (same path as Ctrl+Shift+V paste via emitByte → HandleKeyInput).
+	for _, b := range data {
+		vt.HandleKeyInput(b)
+	}
+}
+
 func (vt *VideoTerminal) handleInputEscapeLocked(b byte) bool {
 	switch vt.inputEscState {
 	case 0:
@@ -559,18 +745,26 @@ func (vt *VideoTerminal) handleInputEscapeLocked(b byte) bool {
 		beforeTop := vt.screen.ViewportTop()
 		switch b {
 		case 'A':
+			vt.selClearLocked()
 			vt.screen.MoveCursor(0, -1)
 		case 'B':
+			vt.selClearLocked()
 			vt.screen.MoveCursor(0, 1)
 		case 'C':
+			vt.selClearLocked()
 			vt.screen.MoveCursor(1, 0)
 		case 'D':
+			vt.selClearLocked()
 			vt.screen.MoveCursor(-1, 0)
 		case 'H':
+			vt.selClearLocked()
 			vt.screen.Home()
 		case 'F':
+			vt.selClearLocked()
 			vt.screen.End()
 		default:
+			// Digit starts a parameterized sequence (e.g. ESC[1;2D for Shift+Arrow).
+			// Do NOT clear selection here — this is an intermediate parse step.
 			if b >= '0' && b <= '9' {
 				vt.inputEscParam = b
 				vt.inputEscState = 3
@@ -583,6 +777,7 @@ func (vt *VideoTerminal) handleInputEscapeLocked(b byte) bool {
 	case 3:
 		vt.inputEscState = 0
 		if b == '~' {
+			vt.selClearLocked()
 			switch vt.inputEscParam {
 			case '3':
 				cx, cy := vt.screen.CursorPos()
@@ -597,6 +792,8 @@ func (vt *VideoTerminal) handleInputEscapeLocked(b byte) bool {
 				vt.renderViewportLocked()
 			}
 		} else if b == ';' && vt.inputEscParam == '1' {
+			// Semicolon continues to modifier parameter (e.g. ESC[1;2D).
+			// Do NOT clear selection — this is an intermediate parse step.
 			vt.inputEscState = 4
 		}
 		return true
@@ -606,7 +803,41 @@ func (vt *VideoTerminal) handleInputEscapeLocked(b byte) bool {
 		return true
 	case 5:
 		vt.inputEscState = 0
-		if vt.inputEscParam2 == '5' { // Ctrl modifier
+		if vt.inputEscParam2 == '2' { // Shift modifier — extend selection
+			// Set anchor at cursor position BEFORE the move (only on first press)
+			if !vt.selActive {
+				cx, cy := vt.screen.CursorPos()
+				vt.selAnchorCol = cx
+				vt.selAnchorRow = cy
+			}
+			switch b {
+			case 'C': // Shift+Right
+				vt.screen.MoveCursor(1, 0)
+				cx, cy := vt.screen.CursorPos()
+				vt.selExtendToLocked(cx, cy)
+			case 'D': // Shift+Left
+				vt.screen.MoveCursor(-1, 0)
+				cx, cy := vt.screen.CursorPos()
+				vt.selExtendToLocked(cx, cy)
+			case 'A': // Shift+Up
+				vt.screen.MoveCursor(0, -1)
+				cx, cy := vt.screen.CursorPos()
+				vt.selExtendToLocked(cx, cy)
+			case 'B': // Shift+Down
+				vt.screen.MoveCursor(0, 1)
+				cx, cy := vt.screen.CursorPos()
+				vt.selExtendToLocked(cx, cy)
+			case 'H': // Shift+Home
+				vt.screen.Home()
+				cx, cy := vt.screen.CursorPos()
+				vt.selExtendToLocked(cx, cy)
+			case 'F': // Shift+End
+				vt.screen.End()
+				cx, cy := vt.screen.CursorPos()
+				vt.selExtendToLocked(cx, cy)
+			}
+		} else if vt.inputEscParam2 == '5' { // Ctrl modifier
+			vt.selClearLocked()
 			switch b {
 			case 'C': // Ctrl+Right - word right
 				vt.screen.WordRight()
@@ -617,6 +848,8 @@ func (vt *VideoTerminal) handleInputEscapeLocked(b byte) bool {
 			case 'B': // Ctrl+Down - history next
 				vt.historyNextLocked()
 			}
+		} else {
+			vt.selClearLocked()
 		}
 		return true
 	default:
@@ -630,4 +863,26 @@ func writeColorLE(buf []byte, offset int, color uint32) {
 	buf[offset+1] = byte(color >> 8)
 	buf[offset+2] = byte(color >> 16)
 	buf[offset+3] = byte(color >> 24)
+}
+
+func normalizePasteText(raw []byte) []byte {
+	norm := make([]byte, 0, len(raw))
+	for i := 0; i < len(raw); i++ {
+		if raw[i] == '\r' {
+			if i+1 < len(raw) && raw[i+1] == '\n' {
+				i++
+			}
+			norm = append(norm, '\n')
+			continue
+		}
+		norm = append(norm, raw[i])
+	}
+	return norm
+}
+
+func capPasteText(raw []byte, max int) []byte {
+	if len(raw) <= max {
+		return raw
+	}
+	return raw[:max]
 }

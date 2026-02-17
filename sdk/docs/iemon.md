@@ -637,6 +637,12 @@ Display a quick command reference.
 | Ctrl+U | Kill from start of line to cursor |
 | Ctrl+Left/Right | Jump by word |
 | Ctrl+Shift+V | Paste from clipboard |
+| Shift+Left/Right | Extend selection by one character |
+| Shift+Up/Down | Extend selection by one line |
+| Shift+Home/End | Extend selection to start/end of line |
+| Ctrl+Shift+C | Copy selected text to clipboard |
+| Ctrl+Shift+X | Cut selected text (input line only) |
+| Middle mouse button | Paste selection (or clipboard if nothing selected) |
 | PgUp/PgDn | Scroll output buffer |
 | Mouse wheel | Scroll output buffer |
 | F9 | Toggle monitor on/off |

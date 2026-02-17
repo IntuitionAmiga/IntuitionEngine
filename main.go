@@ -680,6 +680,7 @@ func main() {
 	var outputStop chan struct{}
 	if useGraphicalTerm {
 		videoTerm = NewVideoTerminal(videoChip, termMMIO)
+		initTerminalClipboard(videoTerm)
 		termMMIO.SetForceEchoOff(true)
 		videoTerm.Start()
 		if ki, ok := videoChip.GetOutput().(KeyboardInput); ok {
@@ -687,6 +688,11 @@ func main() {
 		}
 		if si, ok := videoChip.GetOutput().(ScrollInput); ok {
 			si.SetScrollHandler(videoTerm.HandleScroll)
+		}
+		if ci, ok := videoChip.GetOutput().(ClipboardInput); ok {
+			ci.SetCopyHandler(videoTerm.CopySelection)
+			ci.SetCutHandler(videoTerm.CutSelection)
+			ci.SetMiddleMouseHandler(videoTerm.MiddleMousePaste)
 		}
 	} else {
 		termHost = NewTerminalHost(termMMIO)
@@ -1423,6 +1429,7 @@ func main() {
 			}
 			if videoTerm == nil {
 				videoTerm = NewVideoTerminal(videoChip, termMMIO)
+				initTerminalClipboard(videoTerm)
 				videoTerm.Start()
 			}
 			termMMIO.SetForceEchoOff(true)
@@ -1431,6 +1438,11 @@ func main() {
 			}
 			if si, ok := videoChip.GetOutput().(ScrollInput); ok {
 				si.SetScrollHandler(videoTerm.HandleScroll)
+			}
+			if ci, ok := videoChip.GetOutput().(ClipboardInput); ok {
+				ci.SetCopyHandler(videoTerm.CopySelection)
+				ci.SetCutHandler(videoTerm.CutSelection)
+				ci.SetMiddleMouseHandler(videoTerm.MiddleMousePaste)
 			}
 		}
 		if videoTerm != nil {

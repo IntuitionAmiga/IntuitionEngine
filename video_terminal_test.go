@@ -762,3 +762,282 @@ func TestHandleKeyInput_Return_ScrollAtBottom(t *testing.T) {
 		t.Fatalf("expected viewport to scroll, beforeTop=%d afterTop=%d", beforeTop, afterTop)
 	}
 }
+
+func TestCutSelection_PromptOnly(t *testing.T) {
+	vt, _, term := newVideoTerminalForTest(t)
+	term.HandleWrite(TERM_CTRL, 1)
+	// Output a prompt and some text
+	vt.processChar('>')
+	vt.processChar(' ')
+	for _, ch := range "HELLO" {
+		vt.HandleKeyInput(byte(ch))
+	}
+	// Set up selection entirely in prompt area (cols 0-1)
+	vt.mu.Lock()
+	vt.selActive = true
+	vt.selAnchorCol = 0
+	vt.selAnchorRow = 0
+	vt.selEndCol = 1
+	vt.selEndRow = 0
+	vt.mu.Unlock()
+
+	vt.CutSelection()
+
+	// Input text should be unchanged
+	vt.mu.Lock()
+	got := vt.screen.ReadLine(0)
+	vt.mu.Unlock()
+	if got != "> HELLO" {
+		t.Fatalf("expected prompt+text unchanged after cut in prompt area, got %q", got)
+	}
+}
+
+func TestCutSelection_ZeroOverlap(t *testing.T) {
+	vt, _, term := newVideoTerminalForTest(t)
+	term.HandleWrite(TERM_CTRL, 1)
+	// Put cursor on row 1 with some input
+	vt.processChar('>')
+	vt.processChar(' ')
+	for _, ch := range "HELLO" {
+		vt.HandleKeyInput(byte(ch))
+	}
+
+	// Selection on a different row (row 5, which has no input)
+	vt.mu.Lock()
+	vt.selActive = true
+	vt.selAnchorCol = 0
+	vt.selAnchorRow = 5
+	vt.selEndCol = 10
+	vt.selEndRow = 5
+	vt.mu.Unlock()
+
+	vt.CutSelection()
+
+	vt.mu.Lock()
+	got := vt.screen.ReadLine(0)
+	vt.mu.Unlock()
+	if got != "> HELLO" {
+		t.Fatalf("expected text unchanged when selection doesn't overlap input row, got %q", got)
+	}
+}
+
+func TestCutSelection_PastInputEnd(t *testing.T) {
+	vt, _, term := newVideoTerminalForTest(t)
+	term.HandleWrite(TERM_CTRL, 1)
+	vt.processChar('>')
+	vt.processChar(' ')
+	for _, ch := range "HI" {
+		vt.HandleKeyInput(byte(ch))
+	}
+	// inputStartCol = 2, text "HI" at cols 2-3
+	// Select from col 2 to col 40 (past end of text into null padding)
+	vt.mu.Lock()
+	vt.selActive = true
+	vt.selAnchorCol = 2
+	vt.selAnchorRow = 0
+	vt.selEndCol = 40
+	vt.selEndRow = 0
+	vt.mu.Unlock()
+
+	vt.CutSelection()
+
+	vt.mu.Lock()
+	got := vt.screen.ReadLine(0)
+	cx, _ := vt.screen.CursorPos()
+	vt.mu.Unlock()
+	if got != ">" {
+		t.Fatalf("expected only prompt after cutting all input, got %q", got)
+	}
+	if cx != 2 {
+		t.Fatalf("expected cursor at inputStartCol after cut, got %d", cx)
+	}
+}
+
+func TestCutSelection_SpanOutputAndInput(t *testing.T) {
+	vt, _, term := newVideoTerminalForTest(t)
+	term.HandleWrite(TERM_CTRL, 1)
+	// First line is output
+	vt.processChar('O')
+	vt.processChar('U')
+	vt.processChar('T')
+	vt.processChar('\r')
+	vt.processChar('\n')
+	// Second line: prompt + input
+	vt.processChar('>')
+	vt.processChar(' ')
+	for _, ch := range "ABCDE" {
+		vt.HandleKeyInput(byte(ch))
+	}
+	// inputStartRow = 1, inputStartCol = 2
+	// Select from row 0 col 0 to row 1 col 4 (covers output + part of input)
+	vt.mu.Lock()
+	vt.selActive = true
+	vt.selAnchorCol = 0
+	vt.selAnchorRow = 0
+	vt.selEndCol = 4
+	vt.selEndRow = 1
+	vt.mu.Unlock()
+
+	vt.CutSelection()
+
+	// Output row should have text removed (cut deletes from all rows)
+	vt.mu.Lock()
+	outLine := vt.screen.ReadLine(0)
+	inputLine := vt.screen.ReadLine(1)
+	vt.mu.Unlock()
+	if outLine != "" {
+		t.Fatalf("expected output row cleared after cut, got %q", outLine)
+	}
+	// ABC should be deleted from input (cols 2-4), leaving DE
+	if inputLine != "> DE" {
+		t.Fatalf("expected '> DE' after partial cut, got %q", inputLine)
+	}
+}
+
+func TestSelection_ShiftArrow(t *testing.T) {
+	vt, _, term := newVideoTerminalForTest(t)
+	term.HandleWrite(TERM_CTRL, 1)
+	for _, ch := range "HELLO" {
+		vt.HandleKeyInput(byte(ch))
+	}
+	// Shift+Left (select one char left)
+	feedInput(vt, 0x1B, '[', '1', ';', '2', 'D')
+	vt.mu.Lock()
+	active := vt.selActive
+	text := vt.selText
+	vt.mu.Unlock()
+	if !active {
+		t.Fatal("expected selection to be active after Shift+Left")
+	}
+	if text != "O" {
+		t.Fatalf("expected selected text 'O', got %q", text)
+	}
+}
+
+func TestSelection_ClearOnTyping(t *testing.T) {
+	vt, _, term := newVideoTerminalForTest(t)
+	term.HandleWrite(TERM_CTRL, 1)
+	for _, ch := range "HELLO" {
+		vt.HandleKeyInput(byte(ch))
+	}
+	feedInput(vt, 0x1B, '[', '1', ';', '2', 'D') // Shift+Left
+	vt.mu.Lock()
+	if !vt.selActive {
+		t.Fatal("expected selection active")
+	}
+	vt.mu.Unlock()
+
+	// Type a character - should clear selection
+	vt.HandleKeyInput('X')
+	vt.mu.Lock()
+	active := vt.selActive
+	vt.mu.Unlock()
+	if active {
+		t.Fatal("expected selection cleared after typing")
+	}
+}
+
+func TestSelection_ShiftArrowAccumulates(t *testing.T) {
+	vt, _, term := newVideoTerminalForTest(t)
+	term.HandleWrite(TERM_CTRL, 1)
+	for _, ch := range "HELLO" {
+		vt.HandleKeyInput(byte(ch))
+	}
+	// Shift+Left three times should select "LLO" (3 chars from the end)
+	feedInput(vt, 0x1B, '[', '1', ';', '2', 'D') // select "O"
+	feedInput(vt, 0x1B, '[', '1', ';', '2', 'D') // extend to "LO"
+	feedInput(vt, 0x1B, '[', '1', ';', '2', 'D') // extend to "LLO"
+	vt.mu.Lock()
+	active := vt.selActive
+	text := vt.selText
+	vt.mu.Unlock()
+	if !active {
+		t.Fatal("expected selection to be active after 3x Shift+Left")
+	}
+	if text != "LLO" {
+		t.Fatalf("expected selected text 'LLO', got %q", text)
+	}
+}
+
+func TestSelection_ShiftHome(t *testing.T) {
+	vt, _, term := newVideoTerminalForTest(t)
+	term.HandleWrite(TERM_CTRL, 1)
+	for _, ch := range "HELLO" {
+		vt.HandleKeyInput(byte(ch))
+	}
+	// Shift+Home should select from cursor (col 5) to col 0
+	feedInput(vt, 0x1B, '[', '1', ';', '2', 'H')
+	vt.mu.Lock()
+	active := vt.selActive
+	text := vt.selText
+	vt.mu.Unlock()
+	if !active {
+		t.Fatal("expected selection active after Shift+Home")
+	}
+	if text != "HELLO" {
+		t.Fatalf("expected 'HELLO' selected by Shift+Home, got %q", text)
+	}
+}
+
+func TestSelection_ShiftEnd(t *testing.T) {
+	vt, _, term := newVideoTerminalForTest(t)
+	term.HandleWrite(TERM_CTRL, 1)
+	for _, ch := range "HELLO" {
+		vt.HandleKeyInput(byte(ch))
+	}
+	// Move cursor to col 0 first
+	feedInput(vt, 0x1B, '[', 'H') // Home
+	// Shift+End should select from cursor (col 0) to end of text
+	feedInput(vt, 0x1B, '[', '1', ';', '2', 'F')
+	vt.mu.Lock()
+	active := vt.selActive
+	text := vt.selText
+	vt.mu.Unlock()
+	if !active {
+		t.Fatal("expected selection active after Shift+End")
+	}
+	if text != "HELLO" {
+		t.Fatalf("expected 'HELLO' selected by Shift+End, got %q", text)
+	}
+}
+
+func TestSelection_FirstCharIncluded(t *testing.T) {
+	vt, _, term := newVideoTerminalForTest(t)
+	term.HandleWrite(TERM_CTRL, 1)
+	for _, ch := range "AB" {
+		vt.HandleKeyInput(byte(ch))
+	}
+	// Cursor at col 2 (after "AB"). Shift+Left once should select "B"
+	feedInput(vt, 0x1B, '[', '1', ';', '2', 'D')
+	vt.mu.Lock()
+	text := vt.selText
+	anchorCol := vt.selAnchorCol
+	endCol := vt.selEndCol
+	vt.mu.Unlock()
+	if text != "B" {
+		t.Fatalf("expected 'B' selected, got %q (anchor=%d, end=%d)", text, anchorCol, endCol)
+	}
+}
+
+func TestSelection_ClearOnPlainArrow(t *testing.T) {
+	vt, _, term := newVideoTerminalForTest(t)
+	term.HandleWrite(TERM_CTRL, 1)
+	for _, ch := range "HELLO" {
+		vt.HandleKeyInput(byte(ch))
+	}
+	feedInput(vt, 0x1B, '[', '1', ';', '2', 'D') // Shift+Left
+	vt.mu.Lock()
+	if !vt.selActive {
+		t.Fatal("expected selection active")
+	}
+	vt.mu.Unlock()
+
+	// Plain left arrow - should clear selection
+	feedInput(vt, 0x1B, '[', 'D')
+	vt.mu.Lock()
+	active := vt.selActive
+	vt.mu.Unlock()
+	if active {
+		t.Fatal("expected selection cleared after plain arrow")
+	}
+}

@@ -458,3 +458,88 @@ func TestScreenBuffer_WordRight(t *testing.T) {
 		t.Fatalf("expected WordRight to go to 11 (end), got %d", x)
 	}
 }
+
+func TestScreenBuffer_ExtractText_SingleChar(t *testing.T) {
+	sb := NewScreenBuffer(80, 30, 1000)
+	for _, ch := range "HELLO" {
+		sb.PutChar(byte(ch))
+	}
+	got := sb.ExtractText(0, 0, 0, 0)
+	if got != "H" {
+		t.Fatalf("expected single char 'H', got %q", got)
+	}
+}
+
+func TestScreenBuffer_ExtractText_SingleLine(t *testing.T) {
+	sb := NewScreenBuffer(80, 30, 1000)
+	for _, ch := range "HELLO WORLD" {
+		sb.PutChar(byte(ch))
+	}
+	got := sb.ExtractText(0, 0, 4, 0)
+	if got != "HELLO" {
+		t.Fatalf("expected 'HELLO', got %q", got)
+	}
+}
+
+func TestScreenBuffer_ExtractText_MultiLine(t *testing.T) {
+	sb := NewScreenBuffer(80, 30, 1000)
+	for _, ch := range "LINE ONE" {
+		sb.PutChar(byte(ch))
+	}
+	sb.PutChar('\r')
+	sb.PutChar('\n')
+	for _, ch := range "LINE TWO" {
+		sb.PutChar(byte(ch))
+	}
+	got := sb.ExtractText(5, 0, 3, 1)
+	if got != "ONE\nLINE" {
+		t.Fatalf("expected 'ONE\\nLINE', got %q", got)
+	}
+}
+
+func TestScreenBuffer_ExtractText_Reversed(t *testing.T) {
+	sb := NewScreenBuffer(80, 30, 1000)
+	for _, ch := range "ABCDE" {
+		sb.PutChar(byte(ch))
+	}
+	// End before start should normalize
+	got := sb.ExtractText(4, 0, 0, 0)
+	if got != "ABCDE" {
+		t.Fatalf("expected reversed to normalize, got %q", got)
+	}
+}
+
+func TestScreenBuffer_ExtractText_Boundaries(t *testing.T) {
+	sb := NewScreenBuffer(10, 2, 10)
+	for _, ch := range "0123456789" {
+		sb.PutChar(byte(ch))
+	}
+	// col 0 to col 9 (full row)
+	got := sb.ExtractText(0, 0, 9, 0)
+	if got != "0123456789" {
+		t.Fatalf("expected full row, got %q", got)
+	}
+}
+
+func TestScreenBuffer_ExtractText_TrailingNulls(t *testing.T) {
+	sb := NewScreenBuffer(80, 30, 1000)
+	for _, ch := range "ABC" {
+		sb.PutChar(byte(ch))
+	}
+	// Select past end of text (includes null padding)
+	got := sb.ExtractText(0, 0, 10, 0)
+	if got != "ABC" {
+		t.Fatalf("expected trailing nulls trimmed, got %q (len=%d)", got, len(got))
+	}
+}
+
+func TestScreenBuffer_ExtractText_PreservesSpaces(t *testing.T) {
+	sb := NewScreenBuffer(80, 30, 1000)
+	for _, ch := range "A B C" {
+		sb.PutChar(byte(ch))
+	}
+	got := sb.ExtractText(0, 0, 4, 0)
+	if got != "A B C" {
+		t.Fatalf("expected spaces preserved, got %q", got)
+	}
+}

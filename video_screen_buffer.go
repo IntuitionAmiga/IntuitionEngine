@@ -1,5 +1,7 @@
 package main
 
+import "strings"
+
 type ScreenBuffer struct {
 	cols, visibleRows, maxLines int
 	lines                       [][]byte
@@ -380,6 +382,59 @@ func (sb *ScreenBuffer) trimToMaxLines() {
 	if sb.viewportTop < 0 {
 		sb.viewportTop = 0
 	}
+}
+
+func (sb *ScreenBuffer) ExtractText(startCol, startRow, endCol, endRow int) string {
+	// Normalize so (startRow, startCol) <= (endRow, endCol) lexicographically
+	if startRow > endRow || (startRow == endRow && startCol > endCol) {
+		startCol, startRow, endCol, endRow = endCol, endRow, startCol, startRow
+	}
+	// Clamp to valid bounds
+	if startRow < 0 {
+		startRow = 0
+	}
+	if endRow >= len(sb.lines) {
+		endRow = len(sb.lines) - 1
+	}
+	if startRow > endRow {
+		return ""
+	}
+	if startCol < 0 {
+		startCol = 0
+	}
+	if endCol >= sb.cols {
+		endCol = sb.cols - 1
+	}
+
+	trimNulls := func(s []byte) string {
+		end := len(s)
+		for end > 0 && s[end-1] == 0 {
+			end--
+		}
+		return string(s[:end])
+	}
+
+	if startRow == endRow {
+		line := sb.lines[startRow]
+		return trimNulls(line[startCol : endCol+1])
+	}
+
+	var parts []string
+	// First line
+	parts = append(parts, trimNulls(sb.lines[startRow][startCol:]))
+	// Middle lines
+	for r := startRow + 1; r < endRow; r++ {
+		parts = append(parts, trimNulls(sb.lines[r]))
+	}
+	// Last line
+	parts = append(parts, trimNulls(sb.lines[endRow][:endCol+1]))
+
+	var result strings.Builder
+	result.WriteString(parts[0])
+	for i := 1; i < len(parts); i++ {
+		result.WriteString("\n" + parts[i])
+	}
+	return result.String()
 }
 
 func (sb *ScreenBuffer) maxViewportTop() int {

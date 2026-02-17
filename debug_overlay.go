@@ -23,6 +23,7 @@ package main
 import (
 	"fmt"
 	"image/color"
+	"strings"
 	"sync"
 
 	"github.com/hajimehoshi/ebiten/v2"
@@ -50,6 +51,13 @@ type MonitorOverlay struct {
 	glyphs  [256][16]byte
 	image   *ebiten.Image
 	pixels  []byte // raw RGBA pixel buffer
+
+	selActive    bool
+	selAnchorCol int
+	selAnchorRow int
+	selEndCol    int
+	selEndRow    int
+	selText      string
 }
 
 // NewMonitorOverlay creates the overlay, loading the Topaz font.
@@ -152,6 +160,17 @@ func (o *MonitorOverlay) Draw(screen *ebiten.Image) {
 	screen.DrawImage(o.image, nil)
 }
 
+func (o *MonitorOverlay) drawStringSel(s string, col, row int, fg uint32) {
+	bg := uint32(0x0055AAFF)
+	for i := 0; i < len(s) && col+i < overlayCols; i++ {
+		cfG, cBg := fg, bg
+		if o.isInSelection(col+i, row) {
+			cfG, cBg = cBg, cfG
+		}
+		o.drawGlyph(s[i], col+i, row, cfG, cBg)
+	}
+}
+
 func (o *MonitorOverlay) drawCommandMode() {
 	m := o.monitor
 
@@ -161,7 +180,7 @@ func (o *MonitorOverlay) drawCommandMode() {
 	if entry != nil {
 		header += "  [" + entry.Label + "]"
 	}
-	o.drawString(header, 0, 0, colorCyan)
+	o.drawStringSel(header, 0, 0, colorCyan)
 
 	// CPU tabs on the right
 	tabCol := overlayCols - 30
@@ -174,7 +193,7 @@ func (o *MonitorOverlay) drawCommandMode() {
 		if len(label) > 6 {
 			label = label[:6]
 		}
-		o.drawString(label+" ", tabCol, 0, tabColor)
+		o.drawStringSel(label+" ", tabCol, 0, tabColor)
 		tabCol += len(label) + 1
 	}
 
@@ -190,20 +209,20 @@ func (o *MonitorOverlay) drawCommandMode() {
 		idx := startIdx + (row - outputStart)
 		if idx >= 0 && idx < totalLines {
 			line := m.outputLines[idx]
-			o.drawString(line.Text, 0, row, line.Color)
+			o.drawStringSel(line.Text, 0, row, line.Color)
 		}
 	}
 
 	// Input line
 	inputRow := overlayRows - 1
 	o.fillRow(inputRow)
-	o.drawString("> ", 0, inputRow, colorWhite)
+	o.drawStringSel("> ", 0, inputRow, colorWhite)
 	if len(m.inputLine) > 0 {
-		o.drawString(string(m.inputLine), 2, inputRow, colorWhite)
+		o.drawStringSel(string(m.inputLine), 2, inputRow, colorWhite)
 	}
-	// Cursor
+	// Cursor (only show if not in selection at cursor position)
 	cursorCol := 2 + m.cursorPos
-	if cursorCol < overlayCols {
+	if cursorCol < overlayCols && !o.isInSelection(cursorCol, inputRow) {
 		o.drawGlyph('_', cursorCol, inputRow, colorWhite, 0x0055AAFF)
 	}
 }
@@ -298,8 +317,87 @@ func (o *MonitorOverlay) HandleInput() bool {
 		return o.handleHexEditInput()
 	}
 
+	ctrl := ebiten.IsKeyPressed(ebiten.KeyControlLeft) || ebiten.IsKeyPressed(ebiten.KeyControlRight)
+	shift := ebiten.IsKeyPressed(ebiten.KeyShiftLeft) || ebiten.IsKeyPressed(ebiten.KeyShiftRight)
+
+	// Shift+Arrow/Home/End: extend selection.
+	// When Ctrl is also held, only Home/End trigger selection (arrows stay as Ctrl+Arrow word-move).
+	shiftHandled := false
+	if shift {
+		inputRow := overlayRows - 1
+		type selKey struct {
+			key ebiten.Key
+		}
+		selKeys := []selKey{
+			{ebiten.KeyArrowLeft},
+			{ebiten.KeyArrowRight},
+			{ebiten.KeyArrowUp},
+			{ebiten.KeyArrowDown},
+			{ebiten.KeyHome},
+			{ebiten.KeyEnd},
+		}
+		for _, sk := range selKeys {
+			// When Ctrl is also held, only handle Home/End for selection
+			if ctrl && sk.key != ebiten.KeyHome && sk.key != ebiten.KeyEnd {
+				continue
+			}
+			if inpututil.IsKeyJustPressed(sk.key) || monitorShouldRepeat(sk.key) {
+				if !o.selActive {
+					// Anchor at current cursor position
+					o.selAnchorCol = 2 + m.cursorPos
+					o.selAnchorRow = inputRow
+					o.selEndCol = o.selAnchorCol
+					o.selEndRow = o.selAnchorRow
+					o.selActive = true
+				}
+				col, row := o.selEndCol, o.selEndRow
+				switch sk.key {
+				case ebiten.KeyArrowLeft:
+					col--
+				case ebiten.KeyArrowRight:
+					col++
+				case ebiten.KeyArrowUp:
+					row--
+				case ebiten.KeyArrowDown:
+					row++
+				case ebiten.KeyHome:
+					col = 0
+				case ebiten.KeyEnd:
+					col = overlayCols - 1
+				}
+				o.selExtendTo(col, row)
+				o.autoClipboardCopy(m)
+				shiftHandled = true
+			}
+		}
+	}
+
+	// Ctrl+Shift+C/X/V
+	if ctrl && shift {
+		if inpututil.IsKeyJustPressed(ebiten.KeyC) {
+			o.handleMonitorCopy(m)
+		}
+		if inpututil.IsKeyJustPressed(ebiten.KeyX) {
+			o.handleMonitorCut(m)
+		}
+		if inpututil.IsKeyJustPressed(ebiten.KeyV) {
+			o.selClear()
+			o.handleMonitorPaste(m)
+		}
+	}
+
+	// Middle mouse button paste
+	if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonMiddle) {
+		o.handleMonitorMiddlePaste(m)
+	}
+
+	if shiftHandled {
+		return false
+	}
+
 	// Escape = exit
 	if inpututil.IsKeyJustPressed(ebiten.KeyEscape) {
+		o.selClear()
 		m.state = MonitorInactive
 		for id, entry := range m.cpus {
 			if m.wasRunning[id] {
@@ -311,6 +409,7 @@ func (o *MonitorOverlay) HandleInput() bool {
 
 	// PgUp/PgDn for scrolling
 	if inpututil.IsKeyJustPressed(ebiten.KeyPageUp) {
+		o.selClear()
 		m.scrollOffset += 10
 		maxScroll := len(m.outputLines) - (overlayRows - 3)
 		if m.scrollOffset > maxScroll {
@@ -321,6 +420,7 @@ func (o *MonitorOverlay) HandleInput() bool {
 		}
 	}
 	if inpututil.IsKeyJustPressed(ebiten.KeyPageDown) {
+		o.selClear()
 		m.scrollOffset -= 10
 		if m.scrollOffset < 0 {
 			m.scrollOffset = 0
@@ -330,6 +430,7 @@ func (o *MonitorOverlay) HandleInput() bool {
 	// Mouse wheel scroll
 	_, wy := ebiten.Wheel()
 	if wy != 0 {
+		o.selClear()
 		delta := int(wy)
 		if delta == 0 && wy > 0 {
 			delta = 1
@@ -349,6 +450,7 @@ func (o *MonitorOverlay) HandleInput() bool {
 
 	// Up/Down for command history
 	if inpututil.IsKeyJustPressed(ebiten.KeyArrowUp) {
+		o.selClear()
 		if m.historyIdx > 0 {
 			m.historyIdx--
 			m.inputLine = []byte(m.history[m.historyIdx])
@@ -356,6 +458,7 @@ func (o *MonitorOverlay) HandleInput() bool {
 		}
 	}
 	if inpututil.IsKeyJustPressed(ebiten.KeyArrowDown) {
+		o.selClear()
 		if m.historyIdx < len(m.history)-1 {
 			m.historyIdx++
 			m.inputLine = []byte(m.history[m.historyIdx])
@@ -369,6 +472,7 @@ func (o *MonitorOverlay) HandleInput() bool {
 
 	// Enter = submit command
 	if inpututil.IsKeyJustPressed(ebiten.KeyEnter) {
+		o.selClear()
 		input := string(m.inputLine)
 		m.appendOutput("> "+input, colorDim)
 		m.inputLine = nil
@@ -390,6 +494,7 @@ func (o *MonitorOverlay) HandleInput() bool {
 
 	// Backspace
 	if inpututil.IsKeyJustPressed(ebiten.KeyBackspace) || monitorShouldRepeat(ebiten.KeyBackspace) {
+		o.selClear()
 		if m.cursorPos > 0 && len(m.inputLine) > 0 {
 			m.inputLine = append(m.inputLine[:m.cursorPos-1], m.inputLine[m.cursorPos:]...)
 			m.cursorPos--
@@ -398,6 +503,7 @@ func (o *MonitorOverlay) HandleInput() bool {
 
 	// Delete
 	if inpututil.IsKeyJustPressed(ebiten.KeyDelete) || monitorShouldRepeat(ebiten.KeyDelete) {
+		o.selClear()
 		if m.cursorPos < len(m.inputLine) {
 			m.inputLine = append(m.inputLine[:m.cursorPos], m.inputLine[m.cursorPos+1:]...)
 		}
@@ -405,21 +511,16 @@ func (o *MonitorOverlay) HandleInput() bool {
 
 	// Home / End
 	if inpututil.IsKeyJustPressed(ebiten.KeyHome) || monitorShouldRepeat(ebiten.KeyHome) {
+		o.selClear()
 		m.cursorPos = 0
 	}
 	if inpututil.IsKeyJustPressed(ebiten.KeyEnd) || monitorShouldRepeat(ebiten.KeyEnd) {
+		o.selClear()
 		m.cursorPos = len(m.inputLine)
 	}
 
-	ctrl := ebiten.IsKeyPressed(ebiten.KeyControlLeft) || ebiten.IsKeyPressed(ebiten.KeyControlRight)
-	shift := ebiten.IsKeyPressed(ebiten.KeyShiftLeft) || ebiten.IsKeyPressed(ebiten.KeyShiftRight)
-
-	// Clipboard paste: Ctrl+Shift+V
-	if ctrl && shift && inpututil.IsKeyJustPressed(ebiten.KeyV) {
-		o.handleMonitorPaste(m)
-	}
-
-	if ctrl {
+	if ctrl && !shift {
+		o.selClear()
 		// Ctrl+A = Home
 		if inpututil.IsKeyJustPressed(ebiten.KeyA) {
 			m.cursorPos = 0
@@ -456,14 +557,16 @@ func (o *MonitorOverlay) HandleInput() bool {
 			}
 		}
 		ebiten.AppendInputChars(nil) // drain to prevent ctrl+key inserting chars
-	} else {
+	} else if !ctrl {
 		// Plain Left/Right arrows
 		if inpututil.IsKeyJustPressed(ebiten.KeyArrowLeft) || monitorShouldRepeat(ebiten.KeyArrowLeft) {
+			o.selClear()
 			if m.cursorPos > 0 {
 				m.cursorPos--
 			}
 		}
 		if inpututil.IsKeyJustPressed(ebiten.KeyArrowRight) || monitorShouldRepeat(ebiten.KeyArrowRight) {
+			o.selClear()
 			if m.cursorPos < len(m.inputLine) {
 				m.cursorPos++
 			}
@@ -471,6 +574,7 @@ func (o *MonitorOverlay) HandleInput() bool {
 
 		// Printable character input
 		for _, r := range ebiten.AppendInputChars(nil) {
+			o.selClear()
 			if r >= 0x20 && r < 0x7F {
 				ch := byte(r)
 				if len(m.inputLine) < overlayCols-4 {
@@ -514,6 +618,280 @@ func (o *MonitorOverlay) handleMonitorPaste(m *MachineMonitor) {
 // colorToRGBA converts packed RGBA to color.RGBA (unused but available).
 func colorToRGBA(c uint32) color.RGBA {
 	return color.RGBA{R: byte(c >> 24), G: byte(c >> 16), B: byte(c >> 8), A: byte(c)}
+}
+
+func (o *MonitorOverlay) isInSelection(col, row int) bool {
+	if !o.selActive {
+		return false
+	}
+	startCol, startRow := o.selAnchorCol, o.selAnchorRow
+	endCol, endRow := o.selEndCol, o.selEndRow
+	if startRow > endRow || (startRow == endRow && startCol > endCol) {
+		startCol, startRow, endCol, endRow = endCol, endRow, startCol, startRow
+	}
+	if row < startRow || row > endRow {
+		return false
+	}
+	if startRow == endRow {
+		return col >= startCol && col <= endCol
+	}
+	if row == startRow {
+		return col >= startCol
+	}
+	if row == endRow {
+		return col <= endCol
+	}
+	return true
+}
+
+func (o *MonitorOverlay) selClear() {
+	if !o.selActive {
+		return
+	}
+	o.selActive = false
+	o.selText = ""
+}
+
+func (o *MonitorOverlay) selExtendTo(col, row int) {
+	if col < 0 {
+		col = 0
+	}
+	if col >= overlayCols {
+		col = overlayCols - 1
+	}
+	if row < 0 {
+		row = 0
+	}
+	if row >= overlayRows {
+		row = overlayRows - 1
+	}
+	o.selEndCol = col
+	o.selEndRow = row
+	o.selActive = true
+}
+
+func (o *MonitorOverlay) monitorExtractText(m *MachineMonitor) string {
+	if !o.selActive {
+		return ""
+	}
+	startCol, startRow := o.selAnchorCol, o.selAnchorRow
+	endCol, endRow := o.selEndCol, o.selEndRow
+	if startRow > endRow || (startRow == endRow && startCol > endCol) {
+		startCol, startRow, endCol, endRow = endCol, endRow, startCol, startRow
+	}
+	if startRow < 0 {
+		startRow = 0
+	}
+	if endRow >= overlayRows {
+		endRow = overlayRows - 1
+	}
+
+	getRowText := func(row int) string {
+		if row == 0 {
+			entry := m.cpus[m.focusedID]
+			header := "MACHINE MONITOR"
+			if entry != nil {
+				header += "  [" + entry.Label + "]"
+			}
+			for len(header) < overlayCols {
+				header += " "
+			}
+			return header
+		}
+		inputRow := overlayRows - 1
+		if row == inputRow {
+			line := "> " + string(m.inputLine)
+			for len(line) < overlayCols {
+				line += " "
+			}
+			return line
+		}
+		// Output rows: 1 to overlayRows-2
+		outputStart := 1
+		outputEnd := overlayRows - 2
+		visibleLines := outputEnd - outputStart
+		totalLines := len(m.outputLines)
+		startIdx := max(totalLines-visibleLines-m.scrollOffset, 0)
+		idx := startIdx + (row - 1)
+		if idx >= 0 && idx < totalLines {
+			line := m.outputLines[idx].Text
+			for len(line) < overlayCols {
+				line += " "
+			}
+			return line
+		}
+		return ""
+	}
+
+	trimRight := func(s string) string {
+		end := len(s)
+		for end > 0 && (s[end-1] == ' ' || s[end-1] == 0) {
+			end--
+		}
+		return s[:end]
+	}
+
+	if startRow == endRow {
+		line := getRowText(startRow)
+		ec := min(endCol+1, len(line))
+		sc := min(startCol, len(line))
+		if sc > ec {
+			return ""
+		}
+		return trimRight(line[sc:ec])
+	}
+
+	var parts []string
+	for r := startRow; r <= endRow; r++ {
+		line := getRowText(r)
+		sc := 0
+		ec := len(line)
+		if r == startRow {
+			sc = startCol
+		}
+		if r == endRow {
+			ec = endCol + 1
+		}
+		if sc > len(line) {
+			sc = len(line)
+		}
+		if ec > len(line) {
+			ec = len(line)
+		}
+		if sc > ec {
+			parts = append(parts, "")
+		} else {
+			parts = append(parts, trimRight(line[sc:ec]))
+		}
+	}
+	var result strings.Builder
+	result.WriteString(parts[0])
+	for i := 1; i < len(parts); i++ {
+		result.WriteString("\n" + parts[i])
+	}
+	return result.String()
+}
+
+func (o *MonitorOverlay) autoClipboardCopy(m *MachineMonitor) {
+	o.selText = o.monitorExtractText(m)
+	monClipboardOnce.Do(func() { monClipboardOK = clipboard.Init() == nil })
+	if monClipboardOK && o.selText != "" {
+		clipboard.Write(clipboard.FmtText, []byte(o.selText))
+	}
+}
+
+func (o *MonitorOverlay) handleMonitorCopy(m *MachineMonitor) {
+	if !o.selActive {
+		return
+	}
+	o.selText = o.monitorExtractText(m)
+	monClipboardOnce.Do(func() { monClipboardOK = clipboard.Init() == nil })
+	if monClipboardOK && o.selText != "" {
+		clipboard.Write(clipboard.FmtText, []byte(o.selText))
+	}
+}
+
+func (o *MonitorOverlay) handleMonitorCut(m *MachineMonitor) {
+	if !o.selActive {
+		return
+	}
+	o.handleMonitorCopy(m)
+
+	startCol, startRow := o.selAnchorCol, o.selAnchorRow
+	endCol, endRow := o.selEndCol, o.selEndRow
+	if startRow > endRow || (startRow == endRow && startCol > endCol) {
+		startCol, startRow, endCol, endRow = endCol, endRow, startCol, startRow
+	}
+
+	inputRow := overlayRows - 1
+	outputStart := 1
+	outputEnd := overlayRows - 2
+	visibleLines := outputEnd - outputStart
+	totalLines := len(m.outputLines)
+	baseIdx := max(totalLines-visibleLines-m.scrollOffset, 0)
+
+	for row := startRow; row <= endRow; row++ {
+		delStart := 0
+		if row == startRow {
+			delStart = startCol
+		}
+		delEnd := overlayCols - 1
+		if row == endRow {
+			delEnd = endCol
+		}
+
+		if row == 0 {
+			// Header row — skip
+			continue
+		} else if row >= outputStart && row < outputEnd {
+			// Output row — modify outputLines text
+			idx := baseIdx + (row - outputStart)
+			if idx >= 0 && idx < totalLines {
+				line := m.outputLines[idx].Text
+				for len(line) < overlayCols {
+					line += " "
+				}
+				if delStart >= 0 && delEnd < len(line) && delStart <= delEnd {
+					line = line[:delStart] + line[delEnd+1:]
+				}
+				// Trim trailing spaces
+				end := len(line)
+				for end > 0 && line[end-1] == ' ' {
+					end--
+				}
+				m.outputLines[idx].Text = line[:end]
+			}
+		} else if row == inputRow {
+			// Input line: protect "> " prompt prefix
+			if delStart < 2 {
+				delStart = 2
+			}
+			idxStart := delStart - 2
+			idxEnd := delEnd - 2
+			if idxEnd >= len(m.inputLine) {
+				idxEnd = len(m.inputLine) - 1
+			}
+			if idxStart <= idxEnd && idxStart < len(m.inputLine) {
+				m.inputLine = append(m.inputLine[:idxStart], m.inputLine[idxEnd+1:]...)
+				m.cursorPos = idxStart
+			}
+		}
+	}
+
+	o.selClear()
+}
+
+func (o *MonitorOverlay) handleMonitorMiddlePaste(m *MachineMonitor) {
+	if o.selActive && o.selText != "" {
+		// Paste from internal selection buffer
+		for _, b := range []byte(o.selText) {
+			if b >= 0x20 && b < 0x7F {
+				if len(m.inputLine) < overlayCols-4 {
+					m.inputLine = append(m.inputLine, 0)
+					copy(m.inputLine[m.cursorPos+1:], m.inputLine[m.cursorPos:])
+					m.inputLine[m.cursorPos] = b
+					m.cursorPos++
+				}
+			}
+		}
+		return
+	}
+	// Try X11 PRIMARY selection first (text highlighted by mouse in other apps)
+	if primary := readPrimarySelection(); len(primary) > 0 {
+		for _, b := range primary {
+			if b >= 0x20 && b < 0x7F {
+				if len(m.inputLine) < overlayCols-4 {
+					m.inputLine = append(m.inputLine, 0)
+					copy(m.inputLine[m.cursorPos+1:], m.inputLine[m.cursorPos:])
+					m.inputLine[m.cursorPos] = b
+					m.cursorPos++
+				}
+			}
+		}
+		return
+	}
+	// Fall back to OS CLIPBOARD
+	o.handleMonitorPaste(m)
 }
 
 func (o *MonitorOverlay) handleHexEditInput() bool {

@@ -115,6 +115,13 @@ type ScrollInput interface {
 	SetScrollHandler(func(int))
 }
 
+// ClipboardInput is implemented by video outputs that support copy/cut/paste handlers.
+type ClipboardInput interface {
+	SetCopyHandler(func())
+	SetCutHandler(func())
+	SetMiddleMouseHandler(func())
+}
+
 // ScanlineAware is implemented by video sources that support per-scanline rendering.
 // This enables copper-style raster effects where register changes take effect
 // at specific scanline positions.

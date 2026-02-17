@@ -155,6 +155,21 @@ Typing inserts characters at the cursor position - existing text shifts right. H
 
 Ctrl+U preserves the prompt text (e.g. `Ready`) and only clears user input. Ctrl+K works on any line.
 
+#### Text Selection and Clipboard
+
+| Shortcut | Action |
+|----------|--------|
+| Shift+Left/Right | Extend selection by one character |
+| Shift+Up/Down | Extend selection by one line |
+| Shift+Home | Extend selection to start of line |
+| Shift+End | Extend selection to end of line |
+| Ctrl+Shift+C | Copy selected text to clipboard |
+| Ctrl+Shift+X | Cut selected text (input line only) |
+| Ctrl+Shift+V | Paste from clipboard |
+| Middle mouse button | Paste selection (or clipboard if nothing selected) |
+
+Selected text is shown with inverted colors and is cleared on any non-selection input. Selection works on any visible text including scrollback. Selecting text automatically copies it to the OS clipboard. Middle mouse pastes the current selection if present, otherwise falls back to the OS clipboard. Cut removes text only from the current input line; output is read-only.
+
 #### Scrollback and Navigation
 
 | Key / Action | Effect |

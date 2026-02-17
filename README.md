@@ -3299,7 +3299,7 @@ The Intuition Engine includes a full port of Lee Davison's Enhanced BASIC (EhBAS
 - **System commands**: CALL (machine code subroutine), USR (call with return value), POKE8/PEEK8, DOKE/DEEK, WAIT, BLIT, COPPER, TRON/TROFF (trace mode)
 - **Coprocessor commands**: COSTART, COSTOP, COWAIT (worker lifecycle); COCALL(), COSTATUS() (async cross-CPU RPC to IE32/6502/M68K/Z80/x86 workers)
 - **Machine code interface**: CALL and USR use register-indirect JSR to invoke IE64 assembly routines; R8 carries return values
-- **Terminal editor**: Insert mode with character shifting, key repeat, Ctrl shortcuts (A/E/K/U/L), Ctrl+Arrow word movement, command history (Ctrl+Up/Down), Page Up/Down and mouse wheel scrollback navigation
+- **Terminal editor**: Insert mode with character shifting, key repeat, Ctrl shortcuts (A/E/K/U/L), Ctrl+Arrow word movement, command history (Ctrl+Up/Down), Page Up/Down and mouse wheel scrollback navigation, Shift+Arrow text selection with clipboard copy/cut/paste (Ctrl+Shift+C/X/V)
 
 ### Common REPL Commands
 
