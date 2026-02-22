@@ -33,7 +33,6 @@ For the SDK developer package, see [sdk/README.md](sdk/README.md).
 
 Optional dependencies for advanced features:
 - **Vulkan** SDK/driver: required for the Voodoo Vulkan rasteriser path (not needed with `novulkan` profile)
-- **liblhasa**: required for LHA decompression on Linux (not needed with `novulkan headless` profile)
 
 ---
 
@@ -87,7 +86,7 @@ Version metadata (version, git commit, build date) is automatically injected via
 
 | Profile | Command | CGO | Description |
 |---------|---------|-----|-------------|
-| **full** (default) | `make` | Yes | All features: Vulkan Voodoo, Ebiten display, Oto audio, liblhasa |
+| **full** (default) | `make` | Yes | All features: Vulkan Voodoo, Ebiten display, Oto audio |
 | **novulkan** | `make novulkan` | Yes | Software Voodoo rasteriser only, no Vulkan SDK needed |
 | **headless** | `make headless` | Yes | No display, no audio, no Vulkan (CI/testing) |
 | **headless-novulkan** | `make headless-novulkan` | No | Fully portable `CGO_ENABLED=0` build, cross-compile safe |
@@ -114,7 +113,6 @@ Version metadata (version, git commit, build date) is automatically injected via
 | Oto audio | Yes | Yes | Stub | Stub |
 | Vulkan Voodoo | Yes | No | No | No |
 | Software Voodoo | Yes | Yes | Yes | Yes |
-| liblhasa (LHA) | Yes | Yes | No | No |
 | CGO required | Yes | Yes | Yes | No |
 | Cross-compile | No | No | No | Yes |
 

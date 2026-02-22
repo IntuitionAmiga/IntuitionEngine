@@ -70,7 +70,7 @@ APP_NAME := IntuitionEngine
 APP_VERSION := 1.0.0
 
 # Build profiles:
-#   make                      Full build (Vulkan + Ebiten + OTO + liblhasa)
+#   make                      Full build (Vulkan + Ebiten + OTO)
 #   make novulkan             Software Voodoo only (no Vulkan SDK needed)
 #   make headless             No display, no audio, no Vulkan (CI/testing)
 #   make headless-novulkan    CGO_ENABLED=0 portable build (cross-compile safe)

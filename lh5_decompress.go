@@ -45,22 +45,33 @@ type lh5Decoder struct {
 	right [lh5TreeNodes]uint16
 
 	blockRemaining int
+
+	// Parameterized dictionary size: dicBit and np vary by method (LH4=12, LH5=13, LH6=15, LH7=16).
+	dicBit int
+	np     int
 }
 
-// decompressLH5 decompresses LH5-compressed data.
-// origSize is the expected uncompressed size.
-func decompressLH5(src []byte, origSize int) ([]byte, error) {
+// decompressLH decompresses LH4/LH5/LH6/LH7 data with a parameterized dictionary size.
+// dicBit controls the sliding window: LH4=12, LH5=13, LH6=15, LH7=16.
+func decompressLH(src []byte, origSize, dicBit int) ([]byte, error) {
+	if dicBit < 1 || dicBit > 16 {
+		return nil, fmt.Errorf("lh: invalid dicBit %d (must be 1..16)", dicBit)
+	}
 	if origSize <= 0 {
-		return nil, fmt.Errorf("lh5: invalid original size %d", origSize)
+		return nil, fmt.Errorf("lh: invalid original size %d", origSize)
 	}
 	if len(src) == 0 {
-		return nil, fmt.Errorf("lh5: empty compressed data")
+		return nil, fmt.Errorf("lh: empty compressed data")
 	}
 
-	d := &lh5Decoder{src: src}
+	dicSize := 1 << dicBit
+	np := dicBit + 1
+
+	d := &lh5Decoder{src: src, dicBit: dicBit, np: np}
 
 	out := make([]byte, origSize)
-	var dict [lh5DicSize]byte
+	dict := make([]byte, dicSize)
+	dictMask := dicSize - 1
 	dictPos := 0
 	outPos := 0
 
@@ -71,7 +82,7 @@ func decompressLH5(src []byte, origSize int) ([]byte, error) {
 		}
 		if c < 256 {
 			dict[dictPos] = byte(c)
-			dictPos = (dictPos + 1) & (lh5DicSize - 1)
+			dictPos = (dictPos + 1) & dictMask
 			out[outPos] = byte(c)
 			outPos++
 		} else {
@@ -80,12 +91,12 @@ func decompressLH5(src []byte, origSize int) ([]byte, error) {
 			if err != nil {
 				return nil, err
 			}
-			matchPos := (dictPos - p - 1) & (lh5DicSize - 1)
+			matchPos := (dictPos - p - 1) & dictMask
 			for i := 0; i < matchLen && outPos < origSize; i++ {
 				b := dict[matchPos]
 				dict[dictPos] = b
-				dictPos = (dictPos + 1) & (lh5DicSize - 1)
-				matchPos = (matchPos + 1) & (lh5DicSize - 1)
+				dictPos = (dictPos + 1) & dictMask
+				matchPos = (matchPos + 1) & dictMask
 				out[outPos] = b
 				outPos++
 			}
@@ -93,6 +104,11 @@ func decompressLH5(src []byte, origSize int) ([]byte, error) {
 	}
 
 	return out, nil
+}
+
+// decompressLH5 decompresses LH5-compressed data (8KB window, 13-bit dictionary).
+func decompressLH5(src []byte, origSize int) ([]byte, error) {
+	return decompressLH(src, origSize, lh5DicBit)
 }
 
 // ensureBits fills the bit buffer to have at least n valid bits.
@@ -132,7 +148,11 @@ func (d *lh5Decoder) decodeC() (int, error) {
 		if err := d.readCLen(); err != nil {
 			return 0, err
 		}
-		if err := d.readPTLen(lh5NP, lh5PBit, -1); err != nil {
+		np := d.np
+		if np == 0 {
+			np = lh5NP // fallback for zero-value struct
+		}
+		if err := d.readPTLen(np, lh5PBit, -1); err != nil {
 			return 0, err
 		}
 	}
@@ -156,11 +176,15 @@ func (d *lh5Decoder) decodeC() (int, error) {
 }
 
 func (d *lh5Decoder) decodeP() (int, error) {
+	np := d.np
+	if np == 0 {
+		np = lh5NP
+	}
 	d.ensureBits(lh5PTableBits)
 	j := d.pTable[d.bitBuf>>uint(32-lh5PTableBits)]
-	if int(j) >= lh5NP {
+	if int(j) >= np {
 		mask := uint32(1) << uint(32-lh5PTableBits-1)
-		for int(j) >= lh5NP {
+		for int(j) >= np {
 			if d.bitBuf&mask != 0 {
 				j = d.right[j]
 			} else {

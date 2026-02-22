@@ -26,10 +26,9 @@ The complete build with all features enabled.
 - CGO enabled
 - C compiler (gcc or clang)
 - Vulkan SDK and drivers (for Voodoo GPU path)
-- liblhasa development headers (for LHA decompression on Linux)
 - `sstrip` and `upx` (for binary optimisation, optional)
 
-**Features:** Ebiten display, Oto audio, Vulkan Voodoo rasteriser, software Voodoo rasteriser, LHA decompression.
+**Features:** Ebiten display, Oto audio, Vulkan Voodoo rasteriser, software Voodoo rasteriser.
 
 ### novulkan
 
@@ -94,7 +93,6 @@ Ebiten provides:
 
 ### Windows (Experimental)
 - Vulkan Voodoo path not available (use `novulkan`)
-- LHA decompression uses pure-Go fallback
 - Desktop integration (`.desktop` files, MIME types) is Linux-only
 
 ### Cross-Compilation

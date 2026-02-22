@@ -170,3 +170,81 @@ func TestDecompressLH5_YMRegisterData(t *testing.T) {
 		t.Errorf("decompressed YM register data mismatch")
 	}
 }
+
+func TestDecompressLH_LH5_Identity(t *testing.T) {
+	original := []byte("Hello, World! This is a test of parameterized LH decompression.")
+	compressed := testCompressLH5(original)
+
+	result, err := decompressLH(compressed, len(original), 13)
+	if err != nil {
+		t.Fatalf("decompressLH(dicBit=13) error: %v", err)
+	}
+	if !bytes.Equal(result, original) {
+		t.Errorf("decompressed data mismatch")
+	}
+}
+
+func TestDecompressLH_LH4(t *testing.T) {
+	original := []byte("LH4 test data with 4KB window (dicBit=12)")
+	compressed := testCompressLH5(original) // all-literal encoding works regardless of window size
+
+	result, err := decompressLH(compressed, len(original), 12)
+	if err != nil {
+		t.Fatalf("decompressLH(dicBit=12) error: %v", err)
+	}
+	if !bytes.Equal(result, original) {
+		t.Errorf("decompressed data mismatch")
+	}
+}
+
+func TestDecompressLH_LH6(t *testing.T) {
+	original := []byte("LH6 test data with 32KB window (dicBit=15)")
+	compressed := testCompressLH5(original)
+
+	result, err := decompressLH(compressed, len(original), 15)
+	if err != nil {
+		t.Fatalf("decompressLH(dicBit=15) error: %v", err)
+	}
+	if !bytes.Equal(result, original) {
+		t.Errorf("decompressed data mismatch")
+	}
+}
+
+func TestDecompressLH_LH7(t *testing.T) {
+	original := []byte("LH7 test data with 64KB window (dicBit=16)")
+	compressed := testCompressLH5(original)
+
+	result, err := decompressLH(compressed, len(original), 16)
+	if err != nil {
+		t.Fatalf("decompressLH(dicBit=16) error: %v", err)
+	}
+	if !bytes.Equal(result, original) {
+		t.Errorf("decompressed data mismatch")
+	}
+}
+
+func TestDecompressLH_InvalidDicBit(t *testing.T) {
+	data := testCompressLH5([]byte("test"))
+	if _, err := decompressLH(data, 4, 0); err == nil {
+		t.Error("expected error for dicBit=0")
+	}
+	if _, err := decompressLH(data, 4, 17); err == nil {
+		t.Error("expected error for dicBit=17")
+	}
+}
+
+func TestDecompressLH5_StillWorks(t *testing.T) {
+	original := make([]byte, 1024)
+	for i := range original {
+		original[i] = byte(i % 251) // prime modulus for variety
+	}
+	compressed := testCompressLH5(original)
+
+	result, err := decompressLH5(compressed, len(original))
+	if err != nil {
+		t.Fatalf("decompressLH5 wrapper error: %v", err)
+	}
+	if !bytes.Equal(result, original) {
+		t.Errorf("decompressLH5 wrapper data mismatch")
+	}
+}
