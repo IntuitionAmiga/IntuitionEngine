@@ -1262,8 +1262,8 @@ func main() {
 		videoChip.Start()
 		compositor.Start()
 		soundChip.Start()
-		// EmuTOS uses IE-native video/audio only in this profile.
-		// Keep non-IE chips detached for clean bring-up.
+		// All MMIO peripherals are registered unconditionally,
+		// so EmuTOS .PRG programs have full hardware access.
 		loader.StartTimer()
 		fmt.Println("Starting EmuTOS on M68K")
 		m68kRunner.StartExecution()
