@@ -736,17 +736,12 @@ func main() {
 		termHost = NewTerminalHost(termMMIO)
 	}
 
-	// EmuTOS should run on the native IE profile only.
-	// Keep non-IE peripherals fully detached in -emutos mode.
-	ieOnlyProfile := modeEmuTOS
-
-	// Map I/O regions for peripherals
-	if !ieOnlyProfile {
-		sysBus.MapIO(AUDIO_CTRL, AUDIO_REG_END,
-			soundChip.HandleRegisterRead,
-			soundChip.HandleRegisterWrite)
-		sysBus.MapIOByte(AUDIO_CTRL, AUDIO_REG_END, soundChip.HandleRegisterWrite8)
-	}
+	// Map I/O regions for peripherals — all devices registered unconditionally
+	// so that every CPU mode (including EmuTOS) can access the full hardware.
+	sysBus.MapIO(AUDIO_CTRL, AUDIO_REG_END,
+		soundChip.HandleRegisterRead,
+		soundChip.HandleRegisterWrite)
+	sysBus.MapIOByte(AUDIO_CTRL, AUDIO_REG_END, soundChip.HandleRegisterWrite8)
 
 	sysBus.MapIO(VIDEO_CTRL, VIDEO_REG_END,
 		videoChip.HandleRead,
@@ -765,135 +760,116 @@ func main() {
 		termMMIO.HandleRead,
 		termMMIO.HandleWrite)
 
-	if ieOnlyProfile {
-		// IE EmuTOS writes PSG-style audio registers directly at 0xF0C00-0xF0C0F.
-		// Keep this IE-native register file present without enabling non-IE audio paths.
-		sysBus.MapIO(PSG_BASE, PSG_PLUS_CTRL+1,
-			func(addr uint32) uint32 { return 0 },
-			func(addr uint32, value uint32) {})
-		sysBus.MapIOByte(PSG_BASE, PSG_PLUS_CTRL+1, func(addr uint32, value uint8) {})
-	}
+	// Map PSG registers
+	sysBus.MapIO(PSG_BASE, PSG_END,
+		psgEngine.HandleRead,
+		psgEngine.HandleWrite)
+	sysBus.MapIO(PSG_PLUS_CTRL, PSG_PLUS_CTRL,
+		psgEngine.HandlePSGPlusRead,
+		psgEngine.HandlePSGPlusWrite)
+	sysBus.MapIO(PSG_PLAY_PTR, PSG_PLAY_STATUS+3,
+		psgPlayer.HandlePlayRead,
+		psgPlayer.HandlePlayWrite)
 
-	if !ieOnlyProfile {
-		// Map PSG registers (CPU modes only)
-		sysBus.MapIO(PSG_BASE, PSG_END,
-			psgEngine.HandleRead,
-			psgEngine.HandleWrite)
-		sysBus.MapIO(PSG_PLUS_CTRL, PSG_PLUS_CTRL,
-			psgEngine.HandlePSGPlusRead,
-			psgEngine.HandlePSGPlusWrite)
-		sysBus.MapIO(PSG_PLAY_PTR, PSG_PLAY_STATUS+3,
-			psgPlayer.HandlePlayRead,
-			psgPlayer.HandlePlayWrite)
+	// Map SID registers
+	sysBus.MapIO(SID_BASE, SID_END,
+		sidEngine.HandleRead,
+		sidEngine.HandleWrite)
+	sysBus.MapIO(SID_PLAY_PTR, SID_SUBSONG,
+		sidPlayer.HandlePlayRead,
+		sidPlayer.HandlePlayWrite)
 
-		// Map SID registers
-		sysBus.MapIO(SID_BASE, SID_END,
-			sidEngine.HandleRead,
-			sidEngine.HandleWrite)
-		sysBus.MapIO(SID_PLAY_PTR, SID_SUBSONG,
-			sidPlayer.HandlePlayRead,
-			sidPlayer.HandlePlayWrite)
+	// Map SID2/SID3 registers for multi-SID playback
+	sysBus.MapIO(SID2_BASE, SID2_END,
+		sid2Engine.HandleRead,
+		sid2Engine.HandleWrite)
+	sysBus.MapIO(SID3_BASE, SID3_END,
+		sid3Engine.HandleRead,
+		sid3Engine.HandleWrite)
 
-		// Map SID2/SID3 registers for multi-SID playback
-		sysBus.MapIO(SID2_BASE, SID2_END,
-			sid2Engine.HandleRead,
-			sid2Engine.HandleWrite)
-		sysBus.MapIO(SID3_BASE, SID3_END,
-			sid3Engine.HandleRead,
-			sid3Engine.HandleWrite)
-	}
-
-	// Map TED registers
+	// Map TED audio registers
 	tedEngine := NewTEDEngine(soundChip, SAMPLE_RATE)
 	tedPlayer := NewTEDPlayer(tedEngine)
 	tedPlayer.AttachBus(sysBus)
-	if !ieOnlyProfile {
-		sysBus.MapIO(TED_BASE, TED_END,
-			tedEngine.HandleRead,
-			tedEngine.HandleWrite)
-		sysBus.MapIO(TED_PLAY_PTR, TED_PLAY_STATUS+3,
-			tedPlayer.HandlePlayRead,
-			tedPlayer.HandlePlayWrite)
-	}
+	sysBus.MapIO(TED_BASE, TED_END,
+		tedEngine.HandleRead,
+		tedEngine.HandleWrite)
+	sysBus.MapIO(TED_PLAY_PTR, TED_PLAY_STATUS+3,
+		tedPlayer.HandlePlayRead,
+		tedPlayer.HandlePlayWrite)
 
 	// Map AHX registers (Amiga AHX module player)
 	ahxPlayerCPU := NewAHXPlayer(soundChip, SAMPLE_RATE)
 	ahxPlayerCPU.AttachBus(sysBus)
-	if !ieOnlyProfile {
-		sysBus.MapIO(AHX_BASE, AHX_SUBSONG,
-			ahxPlayerCPU.HandlePlayRead,
-			ahxPlayerCPU.HandlePlayWrite)
-	}
+	sysBus.MapIO(AHX_BASE, AHX_SUBSONG,
+		ahxPlayerCPU.HandlePlayRead,
+		ahxPlayerCPU.HandlePlayWrite)
 
-	// Map POKEY registers (Atari POKEY chip for SAP playback in CPU modes)
+	// Map POKEY registers (Atari POKEY chip for SAP playback)
 	pokeyEngine := NewPOKEYEngine(soundChip, SAMPLE_RATE)
 	pokeyPlayer := NewPOKEYPlayer(pokeyEngine)
 	pokeyPlayer.AttachBus(sysBus)
-	if !ieOnlyProfile {
-		sysBus.MapIO(POKEY_BASE, POKEY_END,
-			pokeyEngine.HandleRead,
-			pokeyEngine.HandleWrite)
-		sysBus.MapIO(SAP_PLAY_PTR, SAP_SUBSONG,
-			pokeyPlayer.HandlePlayRead,
-			pokeyPlayer.HandlePlayWrite)
-	}
+	sysBus.MapIO(POKEY_BASE, POKEY_END,
+		pokeyEngine.HandleRead,
+		pokeyEngine.HandleWrite)
+	sysBus.MapIO(SAP_PLAY_PTR, SAP_SUBSONG,
+		pokeyPlayer.HandlePlayRead,
+		pokeyPlayer.HandlePlayWrite)
 
+	// Map VGA registers
 	var vgaEngine *VGAEngine
 	var ulaEngine *ULAEngine
 	var tedVideoEngine *TEDVideoEngine
 	var anticEngine *ANTICEngine
 	var voodooEngine *VoodooEngine
 
-	if !ieOnlyProfile {
-		// Map VGA registers (VGA is a standalone video device)
-		vgaEngine = NewVGAEngine(sysBus)
-		sysBus.MapIO(VGA_BASE, VGA_REG_END,
-			vgaEngine.HandleRead,
-			vgaEngine.HandleWrite)
-		sysBus.MapIO(VGA_VRAM_WINDOW, VGA_VRAM_WINDOW+VGA_VRAM_SIZE-1,
-			vgaEngine.HandleVRAMRead,
-			vgaEngine.HandleVRAMWrite)
-		sysBus.MapIO(VGA_TEXT_WINDOW, VGA_TEXT_WINDOW+VGA_TEXT_SIZE-1,
-			vgaEngine.HandleTextRead,
-			vgaEngine.HandleTextWrite)
+	vgaEngine = NewVGAEngine(sysBus)
+	sysBus.MapIO(VGA_BASE, VGA_REG_END,
+		vgaEngine.HandleRead,
+		vgaEngine.HandleWrite)
+	sysBus.MapIO(VGA_VRAM_WINDOW, VGA_VRAM_WINDOW+VGA_VRAM_SIZE-1,
+		vgaEngine.HandleVRAMRead,
+		vgaEngine.HandleVRAMWrite)
+	sysBus.MapIO(VGA_TEXT_WINDOW, VGA_TEXT_WINDOW+VGA_TEXT_SIZE-1,
+		vgaEngine.HandleTextRead,
+		vgaEngine.HandleTextWrite)
 
-		// Map ULA registers (ZX Spectrum video chip)
-		ulaEngine = NewULAEngine(sysBus)
-		sysBus.MapIO(ULA_BASE, ULA_REG_END,
-			ulaEngine.HandleRead,
-			ulaEngine.HandleWrite)
-		sysBus.MapIO(ULA_VRAM_BASE, ULA_VRAM_BASE+ULA_VRAM_SIZE-1,
-			ulaEngine.HandleBusVRAMRead,
-			ulaEngine.HandleBusVRAMWrite)
+	// Map ULA registers (ZX Spectrum video chip)
+	ulaEngine = NewULAEngine(sysBus)
+	sysBus.MapIO(ULA_BASE, ULA_REG_END,
+		ulaEngine.HandleRead,
+		ulaEngine.HandleWrite)
+	sysBus.MapIO(ULA_VRAM_BASE, ULA_VRAM_BASE+ULA_VRAM_SIZE-1,
+		ulaEngine.HandleBusVRAMRead,
+		ulaEngine.HandleBusVRAMWrite)
 
-		// Map TED video registers (Commodore Plus/4 video chip)
-		tedVideoEngine = NewTEDVideoEngine(sysBus)
-		sysBus.MapIO(TED_VIDEO_BASE, TED_VIDEO_END,
-			tedVideoEngine.HandleRead,
-			tedVideoEngine.HandleWrite)
-		sysBus.MapIO(TED_V_VRAM_BASE, TED_V_VRAM_BASE+TED_V_VRAM_SIZE-1,
-			tedVideoEngine.HandleBusVRAMRead,
-			tedVideoEngine.HandleBusVRAMWrite)
+	// Map TED video registers (Commodore Plus/4 video chip)
+	tedVideoEngine = NewTEDVideoEngine(sysBus)
+	sysBus.MapIO(TED_VIDEO_BASE, TED_VIDEO_END,
+		tedVideoEngine.HandleRead,
+		tedVideoEngine.HandleWrite)
+	sysBus.MapIO(TED_V_VRAM_BASE, TED_V_VRAM_BASE+TED_V_VRAM_SIZE-1,
+		tedVideoEngine.HandleBusVRAMRead,
+		tedVideoEngine.HandleBusVRAMWrite)
 
-		// Map ANTIC video registers (Atari 8-bit video chip)
-		anticEngine = NewANTICEngine(sysBus)
-		sysBus.MapIO(ANTIC_BASE, ANTIC_END,
-			anticEngine.HandleRead,
-			anticEngine.HandleWrite)
-		// Map GTIA color registers (ANTIC's companion chip)
-		sysBus.MapIO(GTIA_BASE, GTIA_END,
-			anticEngine.HandleRead,
-			anticEngine.HandleWrite)
+	// Map ANTIC video registers (Atari 8-bit video chip)
+	anticEngine = NewANTICEngine(sysBus)
+	sysBus.MapIO(ANTIC_BASE, ANTIC_END,
+		anticEngine.HandleRead,
+		anticEngine.HandleWrite)
+	// Map GTIA color registers (ANTIC's companion chip)
+	sysBus.MapIO(GTIA_BASE, GTIA_END,
+		anticEngine.HandleRead,
+		anticEngine.HandleWrite)
 
-		// Map Voodoo 3D graphics registers (3DFX SST-1 with Vulkan HLE)
-		voodooEngine, err = NewVoodooEngine(sysBus)
-		if err != nil {
-			fmt.Printf("Warning: Voodoo initialization failed: %v\n", err)
-		} else {
-			sysBus.MapIO(VOODOO_BASE, VOODOO_END,
-				voodooEngine.HandleRead,
-				voodooEngine.HandleWrite)
-		}
+	// Map Voodoo 3D graphics registers (3DFX SST-1 with Vulkan HLE)
+	voodooEngine, err = NewVoodooEngine(sysBus)
+	if err != nil {
+		fmt.Printf("Warning: Voodoo initialization failed: %v\n", err)
+	} else {
+		sysBus.MapIO(VOODOO_BASE, VOODOO_END,
+			voodooEngine.HandleRead,
+			voodooEngine.HandleWrite)
 	}
 
 	// Create video compositor - owns the display output and blends video sources
@@ -1285,6 +1261,7 @@ func main() {
 
 		videoChip.Start()
 		compositor.Start()
+		soundChip.Start()
 		// EmuTOS uses IE-native video/audio only in this profile.
 		// Keep non-IE chips detached for clean bring-up.
 		loader.StartTimer()
@@ -1731,9 +1708,7 @@ func main() {
 
 		// 12. Start peripherals
 		videoChip.Start()
-		if mode != "emutos" {
-			soundChip.Start()
-		}
+		soundChip.Start()
 
 		// 13. Start compositor + render loops
 		compositor.Start()
