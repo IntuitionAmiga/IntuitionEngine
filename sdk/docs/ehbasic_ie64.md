@@ -432,7 +432,7 @@ CA=COS(A)/SC: SA=SIN(A)/SC
 DC=INT(CA*FP): DS=INT(SA*FP)
 SU=INT((128-320*CA+240*SA)*FP)
 SV=INT((128-320*SA-240*CA)*FP)
-BLIT MODE7 &H500000, &H600000, 640, 480, SU, SV, DC, DS, 0-DS, DC, 255, 255, 1024, 2560
+BLIT MODE7 &H600000, &H900000, 640, 480, SU, SV, DC, DS, 0-DS, DC, 255, 255, 1024, 2560
 ```
 
 ### BOX
@@ -1920,7 +1920,7 @@ BLIT WAIT
 
 REM Mode7 affine texture map (256x256 texture, 16.16 fixed-point UVs)
 FP=65536
-BLIT MODE7 &H500000, &H600000, 640, 480, 0, 0, FP, 0, 0, FP, 255, 255, 1024, 2560
+BLIT MODE7 &H600000, &H900000, 640, 480, 0, 0, FP, 0, 0, FP, 255, 255, 1024, 2560
 ```
 
 ### 6.4 ULA (ZX Spectrum) Programming
@@ -2156,7 +2156,7 @@ All players support `STOP` to halt playback. SID and SAP players support subsong
 | `&HA0000`-`&HAFFFF` | 64 KB | VGA VRAM window |
 | `&HB8000`-`&HBFFFF` | 32 KB | VGA text buffer |
 | `&HF0000`-`&HFFFFF` | 64 KB | I/O region |
-| `&H100000`-`&H4FFFFF` | 4 MB | Video RAM |
+| `&H100000`-`&H5FFFFF` | 5 MB | Video RAM |
 | `&H800000`-`&H80FFFF` | 64 KB | Media staging buffer (SOUND PLAY) |
 
 ### I/O Region Map

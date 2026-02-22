@@ -142,8 +142,8 @@
 ;   ~0x003000     varies  AHX music data (.incbin)
 ;   0x046C20      24 B    Runtime variables (angle, scale, CA, SA, u0, v0)
 ;   0x100000      1.2 MB  VRAM front buffer (640x480x4 bytes)
-;   0x500000      256 KB  Texture (256x256, stride 1024 bytes)
-;   0x600000      1.2 MB  Back buffer (Mode7 render target)
+;   0x600000      256 KB  Texture (256x256, stride 1024 bytes)
+;   0x900000      1.2 MB  Back buffer (Mode7 render target)
 ;
 ; === BUILD AND RUN ===
 ;
@@ -160,7 +160,7 @@
 
 ; --- Texture Memory Layout ---
 ;
-; The texture is a 256x256 pixel checkerboard placed at 0x500000, which is
+; The texture is a 256x256 pixel checkerboard placed at 0x600000, which is
 ; above VRAM (0x100000-0x2E0000 for 640x480x4). We use a stride of 1024
 ; bytes (256 pixels * 4 bytes/pixel) so that each row is contiguous.
 ;
@@ -174,13 +174,13 @@
 ;
 ; The quadrant addresses are computed from TEXTURE_BASE + column offset
 ; and TEXTURE_BASE + row offset:
-;   Top-left  = 0x500000                (row 0, col 0)
-;   Top-right = 0x500200                (row 0, col 128 * 4 = +0x200)
-;   Bot-left  = 0x520000                (row 128 * 1024 = +0x20000)
-;   Bot-right = 0x520200                (row 128 * 1024 + col 128 * 4)
+;   Top-left  = 0x600000                (row 0, col 0)
+;   Top-right = 0x600200                (row 0, col 128 * 4 = +0x200)
+;   Bot-left  = 0x620000                (row 128 * 1024 = +0x20000)
+;   Bot-right = 0x620200                (row 128 * 1024 + col 128 * 4)
 ;
-; WHY 0x500000? This address is safely above the front buffer VRAM
-; (0x100000 + 640*480*4 = ~0x2E0000) and below the back buffer (0x600000).
+; WHY 0x600000? This address is safely above the front buffer VRAM
+; (0x100000 + 640*480*4 = ~0x2E0000) and below the back buffer (0x900000).
 ; Placing the texture in this gap means all three memory regions (front
 ; buffer, texture, back buffer) are non-overlapping and can be accessed
 ; simultaneously by the blitter without conflicts.
@@ -190,11 +190,11 @@
 ; advance from one row to the next in the texture source during Mode7
 ; rendering. The Mode7 mask (255) wraps texture coordinates to 0-255,
 ; creating the infinite-tiling illusion as the texture rotates.
-.equ TEXTURE_BASE   0x500000
-.equ TEX_TR         0x500200
-.equ TEX_BL         0x520000
-.equ TEX_BR         0x520200
-.equ BACK_BUFFER    0x600000
+.equ TEXTURE_BASE   0x600000
+.equ TEX_TR         0x600200
+.equ TEX_BL         0x620000
+.equ TEX_BR         0x620200
+.equ BACK_BUFFER    0x900000
 .equ RENDER_W       640
 .equ RENDER_H       480
 .equ TEX_STRIDE     1024
@@ -273,7 +273,7 @@ start:
 
     ; --- Generate Texture ---
     ; Build the 256x256 checkerboard using 4 hardware blitter FILL operations.
-    ; We do this once at startup; the texture persists in memory at 0x500000
+    ; We do this once at startup; the texture persists in memory at 0x600000
     ; for the entire duration of the demo.
     JSR generate_texture
 
@@ -315,7 +315,7 @@ start:
 ;                        current angle and scale accumulators.
 ; 2. render_mode7:       Program the blitter with those parameters and
 ;                        trigger a full-screen affine warp into the back
-;                        buffer at 0x600000.
+;                        buffer at 0x900000.
 ; 3. blit_to_front:      Copy the completed back buffer to VRAM (0x100000)
 ;                        so the display shows the new frame.
 ; 4. wait_vsync:         Synchronise with the vertical blank to prevent
@@ -822,7 +822,7 @@ m240_done:
 ; affine texture warp, then triggers the blit and waits for completion.
 ;
 ; WHY DOUBLE BUFFERING?
-; The Mode7 blit writes to the BACK BUFFER at 0x600000, NOT directly to
+; The Mode7 blit writes to the BACK BUFFER at 0x900000, NOT directly to
 ; VRAM (0x100000). If we wrote directly to VRAM, the display would show
 ; a partially-rendered frame (tearing) because the blit takes multiple
 ; scanline periods to complete. By rendering to an off-screen buffer
@@ -832,8 +832,8 @@ m240_done:
 ; === BLITTER PARAMETER SETUP ===
 ;
 ;   BLT_OP = 5                    Mode7 affine texture mapping operation
-;   BLT_SRC = TEXTURE_BASE        Source texture at 0x500000
-;   BLT_DST = BACK_BUFFER         Destination at 0x600000
+;   BLT_SRC = TEXTURE_BASE        Source texture at 0x600000
+;   BLT_DST = BACK_BUFFER         Destination at 0x900000
 ;   BLT_WIDTH = 640               Output width in pixels
 ;   BLT_HEIGHT = 480              Output height in pixels
 ;   BLT_SRC_STRIDE = 1024         Texture row stride (256 px * 4 bytes)
@@ -927,7 +927,7 @@ rm7_wait:
 ; ============================================================================
 ; BLIT BACK BUFFER TO FRONT (VRAM)
 ; ============================================================================
-; Copies the completed Mode7 render from the back buffer (0x600000)
+; Copies the completed Mode7 render from the back buffer (0x900000)
 ; to VRAM (0x100000) using the blitter's COPY operation (BLT_OP=0).
 ;
 ; WHY NOT JUST RENDER DIRECTLY TO VRAM?

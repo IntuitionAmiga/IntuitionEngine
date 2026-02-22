@@ -122,7 +122,7 @@ The rotozoomer is the canonical "hello world" demo: a hardware-accelerated rotat
 IE32, IE64, M68020, Z80, 6502, x86 (32-bit)
 
 ### Video Chips
-IEVideoChip (640x480 true color), VGA (text/Mode 13h/Mode 12h/ModeX), ULA (ZX Spectrum 256x192), TED (Commodore Plus/4 121 colors), ANTIC/GTIA (Atari 8-bit display lists), Voodoo SST-1 (3DFX hardware 3D), Copper coprocessor (per-scanline effects)
+IEVideoChip (up to 1280x960 true color, default), VGA (text/Mode 13h/Mode 12h/ModeX), ULA (ZX Spectrum 256x192), TED (Commodore Plus/4 121 colors), ANTIC/GTIA (Atari 8-bit display lists), Voodoo SST-1 (3DFX hardware 3D), Copper coprocessor (per-scanline effects)
 
 ### Audio Engines
 IESoundChip (custom synthesizer), PSG/AY-3-8910, SID (Commodore 64), POKEY/SAP (Atari 8-bit), TED audio (Commodore Plus/4), AHX (Amiga tracker)

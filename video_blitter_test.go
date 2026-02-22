@@ -961,7 +961,7 @@ func TestBlitterDirectVRAM_Copy(t *testing.T) {
 
 	// Write source pixels to off-screen busMemory using BigEndian (M68K byte order).
 	// Non-VRAM reads in bigEndianMode use BigEndian, matching how the M68K CPU writes.
-	srcAddr := uint32(0x500000)
+	srcAddr := uint32(0x600000)
 	binary.BigEndian.PutUint32(bus.memory[srcAddr:], 0xDEADBEEF)
 	binary.BigEndian.PutUint32(bus.memory[srcAddr+4:], 0xCAFEBABE)
 
@@ -1003,7 +1003,7 @@ func TestBlitterDirectVRAM_Mode7(t *testing.T) {
 
 	// Setup 4x4 texture at off-screen address using BigEndian (M68K byte order).
 	// Non-VRAM reads in bigEndianMode use BigEndian, matching how the M68K CPU writes.
-	texAddr := uint32(0x500000)
+	texAddr := uint32(0x600000)
 	for y := range 4 {
 		for x := range 4 {
 			off := texAddr + uint32(y*16+x*4)

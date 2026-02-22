@@ -115,7 +115,7 @@ Lock-free with atomics for hot paths. CPU `running` is `atomic.Bool`. No mutexes
 | `0xF2000-0xF21B7` | ULA / ANTIC+GTIA |
 | `0xF2200-0xF237F` | File I/O / Media / Program Executor / Coprocessor |
 | `0xF4000-0xF43FF` | Voodoo 3D |
-| `0x100000-0x4FFFFF` | Video RAM (4MB) |
+| `0x100000-0x5FFFFF` | Video RAM (5MB) |
 
 Full map in `registers.go`.
 

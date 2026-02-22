@@ -41,7 +41,7 @@ The rotozoomer is the canonical "hello world" demo: a hardware-accelerated rotat
 IE32, IE64, M68020, Z80, 6502, x86 (32-bit)
 
 ### Video Chips Covered
-- **IEVideoChip** (640x480 true colour) - rotozoomer series
+- **IEVideoChip** (up to 1280x960 true colour) - rotozoomer series
 - **VGA** (text / Mode 13h) - text hello, fire effect, copper bands
 - **ULA** (ZX Spectrum 256x192) - rotating cube
 - **TED** (Commodore Plus/4 121 colours) - plasma

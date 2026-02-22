@@ -2986,7 +2986,8 @@ func TestEhBASIC_BlitMode7OptionalStrides(t *testing.T) {
 func TestEhBASIC_BlitMode7ClearsStaleStrides(t *testing.T) {
 	asmBin := buildAssembler(t)
 	// Use FP32-exact values (≤2^24) to avoid precision loss through BASIC's float POKE
-	program := `10 TB=&H500000: DB=&H100000: FP=65536
+	// TB at 0x600000 (above 5MB VRAM range), DB at 0x100000 (VRAM base)
+	program := `10 TB=&H600000: DB=&H100000: FP=65536
 20 POKE TB, &HAA0001: POKE TB+4, &HAA0002
 30 POKE TB+8, &HAA0003: POKE TB+12, &HAA0004
 40 POKE &HF0034, 1234: POKE &HF0038, 5678
@@ -3005,8 +3006,11 @@ func TestEhBASIC_BlitMode7ClearsStaleStrides(t *testing.T) {
 		t.Fatalf("BLIT MODE7 should clear stale BLT_DST_STRIDE, got %d", got)
 	}
 	// Read from frontBuffer directly (bus.Read32 doesn't route VRAM through HandleRead)
+	// Row 1 offset = mode's bytesPerRow (destination stride defaults to mode stride for VRAM)
+	mode := VideoModes[DEFAULT_VIDEO_MODE]
+	row1Offset := mode.bytesPerRow
 	video.mu.Lock()
-	got := binary.LittleEndian.Uint32(video.frontBuffer[0xA00 : 0xA00+4])
+	got := binary.LittleEndian.Uint32(video.frontBuffer[row1Offset : row1Offset+4])
 	video.mu.Unlock()
 	if got != 0xAA0003 {
 		t.Fatalf("BLIT MODE7 rendered output mismatch at row 1: expected 0x00AA0003, got 0x%08X", got)
@@ -5454,7 +5458,7 @@ func TestEhBASIC_Rotozoomer(t *testing.T) {
 
 	// Full rotozoomer: 10x10 nested FOR with 4-colour texture lookup
 	// BGRA colours: Red(top-left), Green(top-right), Blue(bottom-left), Yellow(bottom-right)
-	program := `10 TB=&H500000: ST=1024
+	program := `10 TB=&H600000: ST=1024
 20 BLIT FILL TB, 128, 128, &HFFFF0000, ST
 30 BLIT FILL TB+512, 128, 128, &HFF00FF00, ST
 40 BLIT FILL TB+131072, 128, 128, &HFF0000FF, ST
@@ -5482,11 +5486,11 @@ func TestEhBASIC_Rotozoomer(t *testing.T) {
 	}
 
 	// --- Verify texture generation (4 colours) ---
-	texRed := readBusMem32(h, 0x500000)
+	texRed := readBusMem32(h, 0x600000)
 	if texRed != 0xFFFF0000 {
 		t.Fatalf("Texture top-left: expected 0xFFFF0000 (red), got 0x%08X", texRed)
 	}
-	texGreen := readBusMem32(h, 0x500200)
+	texGreen := readBusMem32(h, 0x600200)
 	if texGreen != 0xFF00FF00 {
 		t.Fatalf("Texture top-right: expected 0xFF00FF00 (green), got 0x%08X", texGreen)
 	}

@@ -86,8 +86,8 @@
 ;   $000000 - $0000FF : Zero page (fast-access working variables)
 ;   $000200 - $00EFFF : Program code + data (CODE and RODATA segments)
 ;   $100000 - $14BFFF : VRAM front buffer (640 x 480 x 4 bytes = 1,228,800)
-;   $500000 - $5FFFFF : Texture data (256 x 256 x 4, stride 1024)
-;   $600000 - $6FFFFF : Back buffer (Mode 7 renders here first)
+;   $600000 - $6FFFFF : Texture data (256 x 256 x 4, stride 1024)
+;   $900000 - $9FFFFF : Back buffer (Mode 7 renders here first)
 ;
 ;   ┌──────────────────────────────────────────────────────┐
 ;   │ $000000  Zero Page: angle_accum, scale_accum,        │
@@ -99,9 +99,9 @@
 ;   ├──────────────────────────────────────────────────────┤
 ;   │ $100000  VRAM (front buffer) -- final display output  │
 ;   ├──────────────────────────────────────────────────────┤
-;   │ $500000  Texture (256x256 checkerboard, stride 1024)  │
+;   │ $600000  Texture (256x256 checkerboard, stride 1024)  │
 ;   ├──────────────────────────────────────────────────────┤
-;   │ $600000  Back buffer (Mode 7 renders here)            │
+;   │ $900000  Back buffer (Mode 7 renders here)            │
 ;   └──────────────────────────────────────────────────────┘
 ;
 ; === WHY DOUBLE BUFFERING ===
@@ -125,6 +125,11 @@
 ;
 ; ============================================================================
 
+; Override SDK defaults before include (demo runs at 640x480, not 1280x960).
+SCREEN_W         = 640
+SCREEN_H         = 480
+LINE_BYTES       = 2560          ; 640 * 4 bytes per scanline
+
 .include "ie65.inc"
 
 ; ============================================================================
@@ -132,27 +137,25 @@
 ; ============================================================================
 
 ; --- Rendering Geometry ---
-; The IE VideoChip defaults to 640x480 in mode 0 (32-bit RGBA per pixel).
-; LINE_BYTES = 640 * 4 = 2560 bytes per scanline.
 RENDER_W         = 640
 RENDER_H         = 480
 
 ; --- Texture Memory ---
-; The texture lives at $500000, well above VRAM ($100000-$14BFFF) and the
-; back buffer ($600000-$6FFFFF). This avoids any memory overlap.
+; The texture lives at $600000, well above VRAM ($100000-$14BFFF) and below
+; the back buffer ($900000-$9FFFFF). This avoids any memory overlap.
 ;
 ; Why split into bytes: the 6502 is an 8-bit CPU with 16-bit addresses.
 ; The STORE32 macro needs individual bytes of the 32-bit address.
-; $500000 = byte 0: $00, byte 1: $00, byte 2: $50, byte 3: $00.
+; $600000 = byte 0: $00, byte 1: $00, byte 2: $60, byte 3: $00.
 TEXTURE_BASE_LO  = $00
 TEXTURE_BASE_MI  = $00
-TEXTURE_BASE_HI  = $50
-TEXTURE_BASE     = $500000
+TEXTURE_BASE_HI  = $60
+TEXTURE_BASE     = $600000
 
-; Why $600000 for the back buffer: it must not overlap the texture
-; ($500000) or VRAM ($100000). With 640x480x4 = 1,228,800 bytes
-; (~1.17 MB), $600000 has plenty of room in the 32-bit address space.
-BACK_BUFFER      = $600000
+; Why $900000 for the back buffer: it must not overlap the texture
+; ($600000) or VRAM ($100000). With 640x480x4 = 1,228,800 bytes
+; (~1.17 MB), $900000 has plenty of room in the 32-bit address space.
+BACK_BUFFER      = $900000
 
 ; --- Texture Dimensions ---
 ; TEX_STRIDE = 1024 bytes = 256 pixels * 4 bytes/pixel (BGRA).
@@ -276,7 +279,7 @@ sign_flag:       .res 1          ; Signed multiply: counts negative operands
     sta VIDEO_MODE
 
     ; --- Generate the checkerboard texture ---
-    ; Creates a 256x256 pixel checkerboard pattern at $500000 using
+    ; Creates a 256x256 pixel checkerboard pattern at $600000 using
     ; 4 hardware blitter FILL operations (one per quadrant).
     jsr generate_texture
 
@@ -364,18 +367,18 @@ loop:
 ;   ┌─────────────┬─────────────┐
 ;   │   WHITE     │   BLACK     │  Row 0-127
 ;   │  128x128    │  128x128    │
-;   │ $500000     │ $500200     │
+;   │ $600000     │ $600200     │
 ;   ├─────────────┼─────────────┤
 ;   │   BLACK     │   WHITE     │  Row 128-255
 ;   │  128x128    │  128x128    │
-;   │ $520000     │ $520200     │
+;   │ $620000     │ $620200     │
 ;   └─────────────┴─────────────┘
 ;
 ; Address calculations:
-;   Top-left:     TEXTURE_BASE + 0 = $500000
-;   Top-right:    TEXTURE_BASE + 128*4 = $500000 + 512 = $500200
-;   Bottom-left:  TEXTURE_BASE + 128*1024 = $500000 + 131072 = $520000
-;   Bottom-right: TEXTURE_BASE + 128*1024 + 128*4 = $500000 + 131584 = $520200
+;   Top-left:     TEXTURE_BASE + 0 = $600000
+;   Top-right:    TEXTURE_BASE + 128*4 = $600000 + 512 = $600200
+;   Bottom-left:  TEXTURE_BASE + 128*1024 = $600000 + 131072 = $620000
+;   Bottom-right: TEXTURE_BASE + 128*1024 + 128*4 = $600000 + 131584 = $620200
 ;
 ; Each pixel is 4 bytes (RGBA). Stride = 256 * 4 = 1024 bytes.
 ; The top-right offset is 128 pixels * 4 bytes = 512 bytes.
@@ -1167,8 +1170,8 @@ loop:
 ; ============================================================================
 ; This procedure sets up all Mode 7 blitter registers and triggers the
 ; hardware affine texture transformation. The blitter reads the texture
-; from $500000, applies the affine transform defined by the 6 parameters,
-; and writes the result to the back buffer at $600000.
+; from $600000, applies the affine transform defined by the 6 parameters,
+; and writes the result to the back buffer at $900000.
 ;
 ; MODE 7 BLITTER REGISTERS:
 ;   BLT_OP          = 5 (Mode 7 affine texture mapping)
@@ -1303,7 +1306,7 @@ loop:
 ; ============================================================================
 ; BLIT BACK BUFFER TO FRONT BUFFER
 ; ============================================================================
-; Copies the completed Mode 7 render from the back buffer ($600000)
+; Copies the completed Mode 7 render from the back buffer ($900000)
 ; to VRAM ($100000) using a hardware block copy (BLT_OP = 0).
 ;
 ; WHY NOT RENDER DIRECTLY TO VRAM?
@@ -1315,7 +1318,7 @@ loop:
 ; complete frame to VRAM between display refreshes.
 ;
 ; The copy itself is a simple source-to-destination block transfer:
-;   - Source: BACK_BUFFER ($600000)
+;   - Source: BACK_BUFFER ($900000)
 ;   - Destination: VRAM_START ($100000)
 ;   - Both use LINE_BYTES (2560) stride
 ;   - Full screen dimensions (640x480)

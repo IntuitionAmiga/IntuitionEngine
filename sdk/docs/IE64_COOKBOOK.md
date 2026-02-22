@@ -420,8 +420,8 @@ BLT_MODE7_TEX_W  equ     $F0070
 BLT_MODE7_TEX_H  equ     $F0074
 BLT_OP_MODE7     equ     5
 
-TEX_BASE         equ     $500000
-DST_BASE         equ     $600000
+TEX_BASE         equ     $600000
+DST_BASE         equ     $900000
 
                 move.l  r1, #TEX_BASE
                 store.l r1, BLT_SRC(r0)

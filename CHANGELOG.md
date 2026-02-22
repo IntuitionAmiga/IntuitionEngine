@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - IE32-to-IE64 assembly converter (`ie32to64`).
 
 #### Video System
-- **IEVideoChip**: 640x480/800x600/1024x768 true-colour framebuffer with double buffering.
+- **IEVideoChip**: 640x480/800x600/1024x768/1280x960 true-colour framebuffer with double buffering (default 1280x960).
 - **VGA**: Text mode (80x25), Mode 13h (320x200x256), Mode 12h (640x480x16), ModeX.
 - **ULA**: ZX Spectrum 256x192 display with attribute colour.
 - **TED**: Commodore Plus/4 video with 121-colour palette.

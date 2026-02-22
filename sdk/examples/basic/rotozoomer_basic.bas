@@ -32,8 +32,8 @@
 21 REM
 22 REM MEMORY MAP:
 23 REM   0x100000  VRAM front buffer (640x480x4 = 1,228,800 bytes)
-24 REM   0x500000  Texture source (256x256x4 = 262,144 bytes)
-25 REM   0x600000  Back buffer for Mode7 output (same size as VRAM)
+24 REM   0x600000  Texture source (256x256x4 = 262,144 bytes)
+25 REM   0x900000  Back buffer for Mode7 output (same size as VRAM)
 26 REM   0x710000  SID music file (loaded via BLOAD)
 27 REM
 28 REM AFFINE TRANSFORMATION:
@@ -102,7 +102,7 @@
 324 REM  WHY BLIT FILL?
 325 REM  Four hardware fills are faster and simpler than nested
 326 REM  FOR/NEXT loops POKEing 65,536 pixels individually.
-330 TB=&H500000: ST=1024
+330 TB=&H600000: ST=1024
 340 W=&HFFFFFFFF: B=&HFF000000
 350 BLIT FILL TB, 128, 128, W, ST
 360 BLIT FILL TB+512, 128, 128, B, ST
@@ -120,7 +120,7 @@
 408 REM       it to 16.16 fixed-point format for the blitter hardware.
 409 REM  A  = rotation angle in radians (starts at 0).
 410 REM  SI = zoom oscillation phase in radians (starts at 0).
-420 BB=&H600000: FP=65536
+420 BB=&H900000: FP=65536
 430 A=0: SI=0
 
 500 REM ================================================================
@@ -213,7 +213,7 @@
 1100 REM ----------------------------------------------------------------
 1101 REM  STEP 6: COPY BACK BUFFER TO VRAM (DOUBLE BUFFER FLIP)
 1102 REM ----------------------------------------------------------------
-1103 REM  The Mode7 blit rendered into the back buffer at 0x600000.
+1103 REM  The Mode7 blit rendered into the back buffer at 0x900000.
 1104 REM  Now we copy the finished frame to VRAM at 0x100000 where the
 1105 REM  display controller reads it. This ensures the viewer never
 1106 REM  sees a partially-rendered frame.
@@ -225,7 +225,7 @@
 1112 REM  VSYNC waits for the vertical blanking interval before the next
 1113 REM  frame, locking the animation to the display refresh rate (60Hz)
 1114 REM  and preventing tearing during the copy.
-1120 BLIT MEMCOPY &H600000, &H100000, 307200
+1120 BLIT MEMCOPY &H900000, &H100000, 307200
 1130 VSYNC
 
 1200 REM ----------------------------------------------------------------

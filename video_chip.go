@@ -22,7 +22,7 @@ License: GPLv3 or later
 video_chip.go - Graphics Display Chip for the Intuition Engine
 
 This module implements a complete video display system with:
-- Multiple resolution modes (640x480, 800x600, 1024x768)
+- Multiple resolution modes (640x480, 800x600, 1024x768, 1280x960)
 - Double-buffered RGBA framebuffer
 - Dirty region tracking for efficient updates
 - Splash screen support with bilinear scaling
@@ -133,7 +133,7 @@ const (
 	VIDEO_REG_END       = BLT_MODE7_TEX_H + 3
 
 	VRAM_START_MB = 1 // VRAM starts at 1MB offset
-	VRAM_SIZE_MB  = 4 // 4MB of video memory
+	VRAM_SIZE_MB  = 5 // 5MB of video memory
 	VRAM_START    = VRAM_START_MB * BYTES_PER_MB
 	VRAM_SIZE     = VRAM_SIZE_MB * BYTES_PER_MB
 )
@@ -198,6 +198,7 @@ const (
 	MODE_640x480  = 0x00
 	MODE_800x600  = 0x01
 	MODE_1024x768 = 0x02
+	MODE_1280x960 = 0x03
 
 	RESOLUTION_640x480_WIDTH   = 640
 	RESOLUTION_640x480_HEIGHT  = 480
@@ -205,6 +206,13 @@ const (
 	RESOLUTION_800x600_HEIGHT  = 600
 	RESOLUTION_1024x768_WIDTH  = 1024
 	RESOLUTION_1024x768_HEIGHT = 768
+	RESOLUTION_1280x960_WIDTH  = 1280
+	RESOLUTION_1280x960_HEIGHT = 960
+
+	// DEFAULT_VIDEO_MODE is the single source of truth for the default resolution.
+	// Change this one constant to change the default everywhere (VideoChip, compositor,
+	// Ebiten window, overlays). Valid values: MODE_640x480 .. MODE_1280x960.
+	DEFAULT_VIDEO_MODE = MODE_800x600
 )
 
 // ------------------------------------------------------------------------------
@@ -334,7 +342,22 @@ var VideoModes = map[uint32]VideoMode{
 		bytesPerRow: RESOLUTION_1024x768_WIDTH * BYTES_PER_PIXEL,
 		totalSize:   RESOLUTION_1024x768_WIDTH * RESOLUTION_1024x768_HEIGHT * BYTES_PER_PIXEL,
 	},
+	MODE_1280x960: {
+		width:       RESOLUTION_1280x960_WIDTH,
+		height:      RESOLUTION_1280x960_HEIGHT,
+		bytesPerRow: RESOLUTION_1280x960_WIDTH * BYTES_PER_PIXEL,
+		totalSize:   RESOLUTION_1280x960_WIDTH * RESOLUTION_1280x960_HEIGHT * BYTES_PER_PIXEL,
+	},
 }
+
+// Derived from DEFAULT_VIDEO_MODE — do not edit these directly.
+var (
+	defaultMode         = VideoModes[DEFAULT_VIDEO_MODE]
+	DefaultScreenWidth  = defaultMode.width
+	DefaultScreenHeight = defaultMode.height
+	DefaultOverlayCols  = DefaultScreenWidth / 8   // 8px glyph width
+	DefaultOverlayRows  = DefaultScreenHeight / 16 // 16px glyph height
+)
 
 //go:embed splash.png
 var splashData embed.FS
@@ -570,7 +593,7 @@ func NewVideoChip(backend int) (*VideoChip, error) {
 
 	chip := &VideoChip{
 		output:         output,
-		currentMode:    MODE_640x480, // Default video mode
+		currentMode:    DEFAULT_VIDEO_MODE,
 		layer:          VIDEOCHIP_LAYER,
 		vsyncChan:      make(chan struct{}),
 		done:           make(chan struct{}),

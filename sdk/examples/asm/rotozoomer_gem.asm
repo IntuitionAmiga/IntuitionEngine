@@ -72,7 +72,7 @@ END_UPDATE      equ 0
 ; APPLICATION CONSTANTS
 ; ============================================================================
 
-TEXTURE_BASE    equ $500000
+TEXTURE_BASE    equ $600000
 TEX_STRIDE      equ 1024            ; 256 * 4 bytes per pixel
 VRAM_STRIDE     equ 2560            ; 640 * 4 bytes per pixel
 

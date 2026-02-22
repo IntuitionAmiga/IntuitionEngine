@@ -91,8 +91,8 @@
 ;   0x001000    ~2KB     Program code (this file)
 ;   0x09F000    ---      Stack top (grows downward)
 ;   0x100000    1.2MB    VRAM front buffer (640x480x4 bytes)
-;   0x500000    256KB    Texture data (256x256 BGRA, stride 1024)
-;   0x600000    1.2MB    Back buffer for Mode7 render
+;   0x600000    256KB    Texture data (256x256 BGRA, stride 1024)
+;   0x900000    1.2MB    Back buffer for Mode7 render
 ;   0xF0000+    ---      Hardware I/O registers (video, blitter, audio)
 ;
 ;   Texture layout (256x256 pixels, 4 bytes/pixel, stride = 1024 bytes):
@@ -129,27 +129,28 @@ include "ie64.inc"
 ; ============================================================================
 
 ; --- Texture Memory Layout ---
-; The texture lives at 0x500000 -- above the 1MB VRAM region (0x100000) so
+; The texture lives at 0x600000 -- above the 1MB VRAM region (0x100000) so
 ; there is no overlap between texture data and the display framebuffer.
 ; If the texture were placed inside VRAM, Mode7 reads and display reads
 ; would compete, and writing the checkerboard would corrupt the display.
-TEXTURE_BASE    equ 0x500000
+TEXTURE_BASE    equ 0x600000
 
 ; --- Double-Buffer Back Buffer ---
 ; Mode7 renders into this off-screen buffer, then we BLIT COPY it to VRAM.
 ; Why double buffer? Without it, the Mode7 blitter would write directly
 ; into the VRAM that the display is actively scanning out, causing visible
 ; tearing artefacts (top half shows the new frame, bottom half the old).
-; By rendering to 0x600000 first, we can copy the completed frame to VRAM
+; By rendering to 0x900000 first, we can copy the completed frame to VRAM
 ; atomically (during vblank) for tear-free display.
-BACK_BUFFER     equ 0x600000
+BACK_BUFFER     equ 0x900000
 
 ; --- Output Resolution ---
 ; VideoChip Mode 0 is 640x480 at 32 bits per pixel (BGRA).
-; These match the VideoChip's native resolution. The back buffer and VRAM
-; are both sized for this: 640 * 480 * 4 = 1,228,800 bytes per frame.
+; Override SDK defaults (1280x960) since this demo runs at 640x480.
+; The back buffer and VRAM are both sized for this: 640 * 480 * 4 = 1,228,800 bytes per frame.
 RENDER_W        equ 640
 RENDER_H        equ 480
+LINE_BYTES      set 2560                  ; 640 * 4 bytes per scanline
 
 ; --- Texture Stride ---
 ; Stride = width * bytes_per_pixel = 256 * 4 = 1024 bytes per row.
@@ -354,13 +355,13 @@ wait_vsync:
 ;   +--------------------+--------------------+
 ;   | Top-Left (WHITE)   | Top-Right (BLACK)  |
 ;   | offset = 0         | offset = 128*4     |
-;   | 0x500000           | = +512 = 0x500200  |
+;   | 0x600000           | = +512 = 0x600200  |
 ;   +--------------------+--------------------+
 ;   | Bottom-Left (BLACK)| Bottom-Right (WHITE)|
 ;   | offset = 128*1024  | offset = 128*1024  |
 ;   | = +131072          |   + 128*4           |
-;   | = 0x520000         | = +131584           |
-;   |                    | = 0x520200          |
+;   | = 0x620000         | = +131584           |
+;   |                    | = 0x620200          |
 ;   +--------------------+--------------------+
 ;
 ;   Each row is TEX_STRIDE (1024) bytes apart (256 pixels * 4 bytes).
@@ -726,7 +727,7 @@ compute_frame:
 ; to modulo 256 but much faster. This only works when the texture
 ; dimensions are powers of 2 -- a deliberate design choice.
 ;
-; The blit renders to BACK_BUFFER (0x600000), not directly to VRAM.
+; The blit renders to BACK_BUFFER (0x900000), not directly to VRAM.
 ; See the double-buffering discussion in the constants section.
 ; =============================================================================
 render_mode7:

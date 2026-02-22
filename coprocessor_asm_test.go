@@ -269,7 +269,7 @@ func TestCoprocCallerPlumbing_IE32(t *testing.T) {
 	bus.Write32(respAddr+RESP_STATUS_OFF, COPROC_TICKET_OK)
 
 	// IE32 program: write ticket=42 to COPROC_TICKET, write CMD=POLL,
-	// read TICKET_STATUS, store to 0x500000, HALT
+	// read TICKET_STATUS, store to 0x600000, HALT
 	var code []byte
 	appendInstr := func(opcode, reg, addrMode byte, operand uint32) {
 		instr := ie32Instr(opcode, reg, addrMode, operand)
@@ -281,7 +281,7 @@ func TestCoprocCallerPlumbing_IE32(t *testing.T) {
 	appendInstr(ie32_LOAD, 0, ie32_ADDR_IMM, COPROC_CMD_POLL)         // A = POLL cmd
 	appendInstr(ie32_STORE, 0, ie32_ADDR_DIRECT, COPROC_CMD)          // trigger poll
 	appendInstr(ie32_LOAD, 0, ie32_ADDR_DIRECT, COPROC_TICKET_STATUS) // A = status
-	appendInstr(ie32_STORE, 0, ie32_ADDR_DIRECT, 0x500000)            // store result
+	appendInstr(ie32_STORE, 0, ie32_ADDR_DIRECT, 0x600000)            // store result
 	appendInstr(ie32_HALT, 0, ie32_ADDR_IMM, 0)                       // HALT
 
 	// Load and execute
@@ -304,7 +304,7 @@ func TestCoprocCallerPlumbing_IE32(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 
-	result := bus.Read32(0x500000)
+	result := bus.Read32(0x600000)
 	if result != COPROC_TICKET_OK {
 		t.Fatalf("IE32 plumbing: expected status %d, got %d", COPROC_TICKET_OK, result)
 	}
@@ -591,7 +591,7 @@ func TestCoprocCallerPlumbing_X86(t *testing.T) {
 	//   MOV DWORD PTR [0xF2350], 42   - write ticket
 	//   MOV DWORD PTR [0xF2340], 4    - write CMD = POLL
 	//   MOV EAX, [0xF2354]            - read TICKET_STATUS
-	//   MOV [0x500000], EAX           - store result
+	//   MOV [0x600000], EAX           - store result
 	//   HLT                           - halt
 	code := []byte{
 		// MOV DWORD PTR [disp32], imm32 - opcode C7 05
@@ -607,7 +607,7 @@ func TestCoprocCallerPlumbing_X86(t *testing.T) {
 		0x54, 0x23, 0x0F, 0x00, // addr = 0x000F2354
 		// MOV moffs32, EAX - opcode A3
 		0xA3,
-		0x00, 0x00, 0x50, 0x00, // addr = 0x00500000
+		0x00, 0x00, 0x60, 0x00, // addr = 0x00600000
 		// HLT
 		0xF4,
 	}
@@ -640,7 +640,7 @@ func TestCoprocCallerPlumbing_X86(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 
-	result := bus.Read32(0x500000)
+	result := bus.Read32(0x600000)
 	if result != COPROC_TICKET_OK {
 		t.Fatalf("x86 plumbing: expected status %d, got %d", COPROC_TICKET_OK, result)
 	}

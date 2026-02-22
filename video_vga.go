@@ -1012,7 +1012,6 @@ func (v *VGAEngine) GetDimensions() (int, int) {
 
 // SignalVSync implements VideoSource - called by compositor after frame sent (lock-free)
 func (v *VGAEngine) SignalVSync() {
-	v.vsync.Store(true)
 	v.frameStart.Store(time.Now().UnixNano())
 }
 

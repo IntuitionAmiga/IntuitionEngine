@@ -77,13 +77,13 @@ type EbitenOutput struct {
 
 func NewEbitenOutput() (VideoOutput, error) {
 	return &EbitenOutput{
-		width:         640,
-		height:        480,
+		width:         DefaultScreenWidth,
+		height:        DefaultScreenHeight,
 		format:        PixelFormatRGBA,
 		scale:         1,
-		windowedW:     640,
-		windowedH:     480,
-		frameBuffer:   make([]byte, 640*480*4),
+		windowedW:     DefaultScreenWidth,
+		windowedH:     DefaultScreenHeight,
+		frameBuffer:   make([]byte, DefaultScreenWidth*DefaultScreenHeight*4),
 		refreshRate:   60,
 		vsyncChan:     make(chan struct{}, 1),
 		done:          make(chan struct{}),
@@ -181,10 +181,10 @@ func (eo *EbitenOutput) SetDisplayConfig(config DisplayConfig) error {
 		height = eo.height
 	}
 	if width <= 0 {
-		width = 640
+		width = DefaultScreenWidth
 	}
 	if height <= 0 {
-		height = 480
+		height = DefaultScreenHeight
 	}
 	eo.width = width
 	eo.height = height

@@ -502,9 +502,24 @@ PWM_ENABLE        equ 0x80               ; PWM enable (bit 7)
 ; ============================================================================
 
 VRAM_START      equ 0x100000             ; VRAM starts at 1MB
-SCREEN_W        equ 640                  ; Default screen width
-SCREEN_H        equ 480                  ; Default screen height
-LINE_BYTES      equ 2560                 ; Bytes per scanline (640 * 4)
+; Default screen dimensions - override with equ AFTER %include to change.
+; (NASM equ is a single-assignment constant; the last definition wins
+; when using -DSCREEN_W=640 on the command line, or simply redefine below.)
+%ifndef SCREEN_W
+%define SCREEN_W 1280                    ; Default screen width
+%endif
+%ifndef SCREEN_H
+%define SCREEN_H 960                     ; Default screen height
+%endif
+%ifndef LINE_BYTES
+%define LINE_BYTES 5120                  ; Bytes per scanline (1280 * 4)
+%endif
+
+; VideoChip mode constants (write to VIDEO_MODE)
+MODE_640x480    equ 0x00                 ; 640x480 true colour
+MODE_800x600    equ 0x01                 ; 800x600 true colour
+MODE_1024x768   equ 0x02                 ; 1024x768 true colour
+MODE_1280x960   equ 0x03                 ; 1280x960 true colour (default)
 
 ; Blitter operations
 BLT_OP_COPY     equ 0                    ; Copy source to dest

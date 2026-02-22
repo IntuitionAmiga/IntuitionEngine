@@ -931,8 +931,8 @@ func TestConvertFile_Rotozoomer(t *testing.T) {
 	// Spot-check key translations for the rotozoomer
 	checks := []string{
 		"include \"ie64.inc\"",
-		"TEXTURE_BASE equ 0x500000", // .equ → NAME equ
-		"TEX_TR equ 0x500200",
+		"TEXTURE_BASE equ 0x600000", // .equ → NAME equ
+		"TEX_TR equ 0x600200",
 		"org 0x1000",
 		"move.l r1, #1",      // LDA #1
 		"la r17, VIDEO_CTRL", // STA @VIDEO_CTRL

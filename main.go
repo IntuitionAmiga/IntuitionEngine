@@ -898,6 +898,7 @@ func main() {
 			compositor.NotifyResolutionChange(w, h)
 		})
 	}
+	compositor.LockResolution(DefaultScreenWidth, DefaultScreenHeight)
 	if useResolutionOverride {
 		compositor.LockResolution(validWidth, validHeight)
 	}

@@ -70,6 +70,11 @@
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================
 
+; Override SDK defaults before include (demo runs at 640x480, not 1280x960).
+SCREEN_W        = 640
+SCREEN_H        = 480
+LINE_BYTES      = 2560          ; 640 * 4 bytes per scanline
+
 .include "ie65.inc"
 
 ; ============================================================================

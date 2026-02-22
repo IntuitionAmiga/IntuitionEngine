@@ -83,10 +83,10 @@
 ;            |  buffer)        |  Displayed on screen
 ;   0x200000 +-----------------+
 ;            |                 |
-;   0x500000 +-----------------+
+;   0x600000 +-----------------+
 ;            | Texture Buffer  |  256x256x4 = 262,144 bytes (stride 1024)
 ;            |                 |  Checkerboard pattern
-;   0x600000 +-----------------+
+;   0x900000 +-----------------+
 ;            | Back Buffer     |  640x480x4 = 1,228,800 bytes
 ;            |                 |  Mode7 renders here, then BLIT COPY to VRAM
 ;   0xFF0000 +-----------------+
@@ -106,7 +106,14 @@
 ; ie86.inc provides all MMIO register addresses, blitter opcodes, audio
 ; register definitions, and helper macros for the IntuitionEngine x86 mode.
 ; Uses NASM %include directive (not MASM's include).
+;
+; Override SDK defaults (1280x960) since this demo runs at 640x480.
+; These must be %define'd BEFORE %include so ie86.inc skips them.
 ; ============================================================================
+
+%define SCREEN_W 640
+%define SCREEN_H 480
+%define LINE_BYTES 2560
 
 %include "ie86.inc"
 
@@ -115,22 +122,21 @@
 ; ============================================================================
 
 ; --- Texture Configuration ---
-; WHY 0x500000: The texture must live ABOVE VRAM (0x100000-0x22C000) and
-; above the back buffer (0x600000-0x72C000). 0x500000 sits in a safe gap.
+; WHY 0x600000: The texture must live ABOVE VRAM (0x100000-0x22C000) and
+; below the back buffer (0x900000-0xA2C000). 0x600000 sits in a safe gap.
 ; On systems with banked memory, this would be inaccessible -- but x86's
 ; flat 32-bit address space lets us place buffers anywhere.
-TEXTURE_BASE    equ 0x500000
+TEXTURE_BASE    equ 0x600000
 
-; WHY 0x600000 FOR BACK BUFFER: Double buffering requires two full-screen
-; framebuffers. Mode7 renders to 0x600000 (off-screen), then a BLIT COPY
+; WHY 0x900000 FOR BACK BUFFER: Double buffering requires two full-screen
+; framebuffers. Mode7 renders to 0x900000 (off-screen), then a BLIT COPY
 ; transfers the completed frame to VRAM (0x100000) atomically. Without
 ; double buffering, the viewer would see the Mode7 blitter painting across
 ; the screen mid-frame, causing visible tearing.
-BACK_BUFFER     equ 0x600000
+BACK_BUFFER     equ 0x900000
 
 ; --- Screen Dimensions ---
-; The VideoChip's default mode is 640x480 true color (32-bit BGRA per pixel).
-; LINE_BYTES (from ie86.inc) = 640 * 4 = 2560 bytes per scanline.
+; SCREEN_W, SCREEN_H, LINE_BYTES are %define'd above (640x480 mode).
 RENDER_W        equ 640
 RENDER_H        equ 480
 
@@ -336,17 +342,17 @@ wait_vsync:
 ;   |(0,128)|(128,128)|
 ;   +-------+-------+
 ;
-; WHY TEXTURE AT 0x500000, STRIDE 1024:
+; WHY TEXTURE AT 0x600000, STRIDE 1024:
 ; The texture lives above VRAM (0x100000) to avoid conflicts. Each pixel
 ; is 4 bytes (BGRA), so a 256-pixel row = 256*4 = 1024 bytes stride.
 ; The Mode7 blitter uses TEX_W_MASK=255 and TEX_H_MASK=255 to wrap
 ; texture coordinates, creating infinite tiling from this 256x256 source.
 ;
 ; ADDRESS CALCULATIONS:
-;   Top-left  (0,0):     TEXTURE_BASE + 0*TEX_STRIDE + 0*4 = 0x500000
-;   Top-right (128,0):   TEXTURE_BASE + 0*TEX_STRIDE + 128*4 = 0x500000 + 512 = 0x500200
-;   Bottom-left (0,128): TEXTURE_BASE + 128*TEX_STRIDE + 0*4 = 0x500000 + 131072 = 0x520000
-;   Bottom-right (128,128): TEXTURE_BASE + 128*1024 + 128*4 = 0x500000 + 131584 = 0x520200
+;   Top-left  (0,0):     TEXTURE_BASE + 0*TEX_STRIDE + 0*4 = 0x600000
+;   Top-right (128,0):   TEXTURE_BASE + 0*TEX_STRIDE + 128*4 = 0x600000 + 512 = 0x600200
+;   Bottom-left (0,128): TEXTURE_BASE + 128*TEX_STRIDE + 0*4 = 0x600000 + 131072 = 0x620000
+;   Bottom-right (128,128): TEXTURE_BASE + 128*1024 + 128*4 = 0x600000 + 131584 = 0x620200
 ;
 ; WHY BLT_STATUS BIT 2 (mask value 2):
 ; Bit 1 of BLT_STATUS indicates the blitter is busy. We poll until it
@@ -642,7 +648,7 @@ compute_frame:
 ; This is a standard 2D rotation matrix [[cos,-sin],[sin,cos]] scaled by
 ; the zoom factor (already baked into CA and SA from compute_frame).
 ;
-; WHY RENDER TO BACK BUFFER (0x600000) NOT DIRECTLY TO VRAM:
+; WHY RENDER TO BACK BUFFER (0x900000) NOT DIRECTLY TO VRAM:
 ; The Mode7 blit takes time. If we wrote directly to VRAM (which is being
 ; scanned out to the display), the viewer would see the blit in progress --
 ; old frame at the bottom, new frame painting from the top. Rendering to an
@@ -709,7 +715,7 @@ render_mode7:
 ; ============================================================================
 ; BLIT BACK BUFFER TO FRONT (VRAM)
 ; ============================================================================
-; WHY DOUBLE BUFFERING: Mode7 renders to BACK_BUFFER (0x600000), and this
+; WHY DOUBLE BUFFERING: Mode7 renders to BACK_BUFFER (0x900000), and this
 ; routine copies the completed frame to VRAM_START (0x100000). The display
 ; hardware scans out from VRAM, so the viewer only ever sees complete frames.
 ;

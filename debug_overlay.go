@@ -32,12 +32,15 @@ import (
 )
 
 const (
-	overlayWidth  = 640
-	overlayHeight = 480
-	overlayCols   = 80
-	overlayRows   = 30
-	glyphW        = 8
-	glyphH        = 16
+	glyphW = 8
+	glyphH = 16
+)
+
+var (
+	overlayWidth  = DefaultScreenWidth
+	overlayHeight = DefaultScreenHeight
+	overlayCols   = DefaultOverlayCols
+	overlayRows   = DefaultOverlayRows
 )
 
 // MonitorOverlay handles rendering and input for the monitor's full-screen overlay.

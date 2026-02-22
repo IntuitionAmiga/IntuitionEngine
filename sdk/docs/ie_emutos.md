@@ -79,7 +79,7 @@ VRAM is RGBA32 packed as:
 (R << 24) | (G << 16) | (B << 8) | A
 ```
 
-Framebuffer base is `0x100000` at `640x480` (`stride=2560`).
+Framebuffer base is `0x100000`. Default mode is `1280x960` (`stride=5120`). Programs can set `640x480` (`stride=2560`) via `VIDEO_MODE=0`.
 
 ## IE Hardware Map (EmuTOS target)
 
@@ -88,7 +88,7 @@ EmuTOS has full access to the complete IE hardware map. The key registers for Em
 | Register | Address | Purpose |
 |---|---:|---|
 | `VIDEO_CTRL` | `0xF0000` | video enable |
-| `VIDEO_MODE` | `0xF0004` | `0=640x480` |
+| `VIDEO_MODE` | `0xF0004` | `0=640x480, 3=1280x960 (default)` |
 | `VIDEO_STATUS` | `0xF0008` | bit 1 `in_vblank` |
 | `BLT_OP` | `0xF0020` | blitter operation (fill, copy, Mode7) |
 | `TERM_OUT` | `0xF0700` | debug output |
@@ -111,7 +111,7 @@ EmuTOS has full access to the complete IE hardware map. The key registers for Em
 | `ULA_BASE` | `0xF2000+` | ULA registers |
 | `ANTIC_BASE` | `0xF2100+` | ANTIC/GTIA registers |
 | `VOODOO_BASE` | `0xF4000+` | Voodoo 3D registers |
-| `VRAM` | `0x100000+` | RGBA32 framebuffer (4MB) |
+| `VRAM` | `0x100000+` | RGBA32 framebuffer (5MB) |
 
 ## GEM Application Programming (.PRG)
 

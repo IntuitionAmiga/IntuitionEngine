@@ -124,8 +124,10 @@ func TestRenderGlyph_Position(t *testing.T) {
 
 func TestRenderGlyph_DynamicGrid(t *testing.T) {
 	vt, _, _ := newVideoTerminalForTest(t)
-	if vt.cols != 80 || vt.rows != 30 {
-		t.Fatalf("expected 80x30 grid for 640x480, got %dx%d", vt.cols, vt.rows)
+	wantCols := DefaultOverlayCols
+	wantRows := DefaultOverlayRows
+	if vt.cols != wantCols || vt.rows != wantRows {
+		t.Fatalf("expected %dx%d grid for %dx%d, got %dx%d", wantCols, wantRows, DefaultScreenWidth, DefaultScreenHeight, vt.cols, vt.rows)
 	}
 }
 

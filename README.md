@@ -355,8 +355,8 @@ All CPU cores (IE32, IE64, M68K, Z80, 6502, x86) share the same memory space thr
 │  0x0B8000 - 0x0BFFFF  │  VGA Text Buffer (32KB)                 │
 │  0x0F0000 - 0x0F0FFF  │  Video/Audio I/O Registers              │
 │  0x0F1000 - 0x0F13FF  │  VGA Registers                          │
-│  0x100000 - 0x4FFFFF  │  Video RAM (4MB, chunky RGBA)           │
-│  0x500000 - 0x1FFFFFF │  Extended RAM                           │
+│  0x100000 - 0x5FFFFF  │  Video RAM (5MB, chunky RGBA)           │
+│  0x600000 - 0x1FFFFFF │  Extended RAM                           │
 └─────────────────────────────────────────────────────────────────┘
         │                       │                      │
         ▼                       ▼                      ▼
@@ -441,7 +441,7 @@ The system's memory layout is designed to provide efficient access to both progr
 0x0F2340 - 0x0F237F: Coprocessor MMIO registers
 0x0A0000 - 0x0AFFFF: VGA VRAM window (Mode 13h/12h)
 0x0B8000 - 0x0BFFFF: VGA text buffer
-0x100000 - 0x4FFFFF: Video RAM (VRAM_START to VRAM_START + VRAM_SIZE)
+0x100000 - 0x5FFFFF: Video RAM (VRAM_START to VRAM_START + VRAM_SIZE)
 0x200000 - 0x27FFFF: Coprocessor worker region (IE32, 512KB)
 0x280000 - 0x2FFFFF: Coprocessor worker region (M68K, 512KB)
 0x300000 - 0x30FFFF: Coprocessor worker region (6502, 64KB)
@@ -514,6 +514,7 @@ Available Video Modes:
 MODE_640x480  = 0x00
 MODE_800x600  = 0x01
 MODE_1024x768 = 0x02
+MODE_1280x960 = 0x03 (default)
 ```
 
 **Video Compositor:** These registers control the VideoChip, which renders as layer 0 in the compositor. The VGA chip (section 3.11) renders as layer 10 on top. Both sources are composited together for final display output. The copper coprocessor can write to either device using the SETBASE instruction (see section 12.6).
@@ -1647,7 +1648,7 @@ The Voodoo chip emulates a 3DFX SST-1 graphics accelerator using High-Level Emul
 - Point sampling with wrap/clamp addressing modes
 - Dynamic pipeline state with automatic pipeline caching for performance
 - Scissor clipping
-- 640x480 default, up to 800x600
+- 800x600 default, up to 1280x960
 - Compositor layer 20 (renders on top of all 2D chips)
 
 ### Register Map
@@ -2405,7 +2406,7 @@ HALT (0xFF) ; Stop execution
 - The IE32 uses the shared 32MB system bus
 - All memory-mapped devices (video, audio, PSG/POKEY/SID, terminal) are accessible
 - I/O region: 0x0F0000 - 0x0FFFFF
-- VRAM access: 0x100000 - 0x4FFFFF (direct 32-bit addressing)
+- VRAM access: 0x100000 - 0x5FFFFF (direct 32-bit addressing)
 - Stack grows downward from 0xE0000
 
 ## 4.7 Interrupt Handling
@@ -4768,10 +4769,11 @@ The video system provides flexible graphics output through a memory-mapped frame
 
 ## 12.1 Display Modes
 
-Three resolution modes are available:
-- 640x480 (MODE_640x480)
-- 800x600 (MODE_800x600)
-- 1024x768 (MODE_1024x768)
+Four resolution modes are available:
+- 640x480 (MODE_640x480 = 0x00)
+- 800x600 (MODE_800x600 = 0x01)
+- 1024x768 (MODE_1024x768 = 0x02)
+- 1280x960 (MODE_1280x960 = 0x03, default)
 
 ### Setting display mode:
 
@@ -5506,7 +5508,7 @@ Intuition Engine runs [EmuTOS](https://emutos.sourceforge.io/) directly on the I
 
 ### EmuTOS-Specific Hardware
 
-EmuTOS runs on the IE M68K core with full access to all IE hardware: VideoChip (640x480 RGBA), terminal MMIO for keyboard/mouse, timer-driven interrupts, and the complete audio/video peripheral set (SoundChip, PSG, SID, POKEY, TED, AHX, VGA, ULA, TED video, ANTIC/GTIA, Voodoo 3D). TOS .PRG programs can drive any MMIO register in the hardware map via `ie68.inc`.
+EmuTOS runs on the IE M68K core with full access to all IE hardware: VideoChip (640x480 RGBA, set via VIDEO_MODE=0), terminal MMIO for keyboard/mouse, timer-driven interrupts, and the complete audio/video peripheral set (SoundChip, PSG, SID, POKEY, TED, AHX, VGA, ULA, TED video, ANTIC/GTIA, Voodoo 3D). TOS .PRG programs can drive any MMIO register in the hardware map via `ie68.inc`.
 
 **Mouse MMIO** (0xF0730 - 0xF073C):
 

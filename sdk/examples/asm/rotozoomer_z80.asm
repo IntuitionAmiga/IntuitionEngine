@@ -87,8 +87,8 @@
 ;   -----------   ------   ----------------------------------------
 ;   0x000000+     ~2KB     Z80 program code + tables (this file)
 ;   0x100000      1.2MB    VRAM front buffer (640x480x32bpp)
-;   0x500000      256KB    Texture (256x256x32bpp, 1024-byte stride)
-;   0x600000      1.2MB    Back buffer for Mode7 rendering
+;   0x600000      256KB    Texture (256x256x32bpp, 1024-byte stride)
+;   0x900000      1.2MB    Back buffer for Mode7 rendering
 ;   0xF000-0xFFFF          MMIO registers (mapped from 0xF0000+)
 ;
 ;   Note: Z80 has a 16-bit address bus (0x0000-0xFFFF). The bus adapter
@@ -115,19 +115,19 @@
 ; ============================================================================
 
 ; --- Texture Configuration ---
-; The texture lives in bus memory above VRAM, at address 0x500000.
+; The texture lives in bus memory above VRAM, at address 0x600000.
 ; We use bus memory (not VRAM) because VRAM at 0x100000 is the front buffer
 ; being displayed. The texture must be in a separate region so the blitter
 ; can read it while the display hardware reads VRAM.
-.set TEXTURE_BASE,0x500000
+.set TEXTURE_BASE,0x600000
 
 ; --- Double Buffer ---
-; Mode7 renders to this off-screen buffer at 0x600000, NOT directly to VRAM.
+; Mode7 renders to this off-screen buffer at 0x900000, NOT directly to VRAM.
 ; After rendering completes, we BLIT COPY the result to VRAM (0x100000).
 ; This prevents tearing: the display always shows a complete frame, never
 ; a partially-rendered one. Without double buffering, the top half of the
 ; screen might show the new frame while the bottom half shows the old one.
-.set BACK_BUFFER,0x600000
+.set BACK_BUFFER,0x900000
 
 ; --- Screen Dimensions ---
 ; 640x480 is the VideoChip's native resolution in mode 0 (32-bit RGBA).
@@ -309,7 +309,7 @@ main_loop:
 ; ============================================================================
 ; GENERATE TEXTURE (256x256 checkerboard via 4x BLIT FILL)
 ; ============================================================================
-; Creates a 256x256 checkerboard pattern in off-screen memory at 0x500000.
+; Creates a 256x256 checkerboard pattern in off-screen memory at 0x600000.
 ; The checkerboard has 128x128 quadrants alternating white and black:
 ;
 ;   +--------+--------+
@@ -330,10 +330,10 @@ main_loop:
 ;
 ; ADDRESS CALCULATIONS:
 ;   Texture stride = 1024 bytes/row (256 pixels * 4 bytes/pixel)
-;   Top-left quadrant:     TEXTURE_BASE + 0         = 0x500000
-;   Top-right quadrant:    TEXTURE_BASE + 128*4     = 0x500000 + 512
-;   Bottom-left quadrant:  TEXTURE_BASE + 128*1024  = 0x500000 + 131072
-;   Bottom-right quadrant: TEXTURE_BASE + 128*1024 + 128*4 = 0x500000 + 131584
+;   Top-left quadrant:     TEXTURE_BASE + 0         = 0x600000
+;   Top-right quadrant:    TEXTURE_BASE + 128*4     = 0x600000 + 512
+;   Bottom-left quadrant:  TEXTURE_BASE + 128*1024  = 0x600000 + 131072
+;   Bottom-right quadrant: TEXTURE_BASE + 128*1024 + 128*4 = 0x600000 + 131584
 ; ============================================================================
 generate_texture:
     ; --- Top-left 128x128: White (0xFFFFFFFF = opaque white RGBA) ---
@@ -1144,7 +1144,7 @@ neg32:
 ; and zoomed texture output.
 ;
 ; === WHY DOUBLE BUFFERING ===
-; The blitter writes to BACK_BUFFER (0x600000), not directly to VRAM
+; The blitter writes to BACK_BUFFER (0x900000), not directly to VRAM
 ; (0x100000). After rendering completes, blit_to_front copies the
 ; result to VRAM. This prevents the display from showing a partially-
 ; rendered frame (tearing). The cost is an extra copy, but the blitter
@@ -1222,7 +1222,7 @@ render_mode7:
 ; ============================================================================
 ; BLIT BACK BUFFER TO FRONT (Double Buffer Swap)
 ; ============================================================================
-; Copies the completed Mode7 rendering from the back buffer (0x600000)
+; Copies the completed Mode7 rendering from the back buffer (0x900000)
 ; to VRAM (0x100000) using a hardware block copy.
 ;
 ; This is the "swap" phase of double buffering. The blitter copies

@@ -333,11 +333,12 @@ robocop-65:
 		echo "  macOS: brew install cc65"; \
 		exit 1; \
 	fi
+	@$(MKDIR) -p sdk/examples/prebuilt
 	@cd sdk/examples/asm && ca65 -I ../../include -o robocop_intro_65.o robocop_intro_65.asm
-	@cd sdk/examples/asm && ld65 -C ../../include/ie65_bindata.cfg -o robocop_intro_65.ie65 robocop_intro_65.o
+	@cd sdk/examples/asm && ld65 -C ../../include/ie65_bindata.cfg -o ../prebuilt/robocop_intro_65.ie65 robocop_intro_65.o
 	@rm -f sdk/examples/asm/robocop_intro_65.o
-	@echo "Output: sdk/examples/asm/robocop_intro_65.ie65"
-	@ls -lh sdk/examples/asm/robocop_intro_65.ie65
+	@echo "Output: sdk/examples/prebuilt/robocop_intro_65.ie65"
+	@ls -lh sdk/examples/prebuilt/robocop_intro_65.ie65
 
 # Build the rotozoomer IE65 (6502) demo (requires ca65/ld65 from cc65 suite)
 .PHONY: rotozoomer-65
@@ -349,11 +350,12 @@ rotozoomer-65:
 		echo "  macOS: brew install cc65"; \
 		exit 1; \
 	fi
+	@$(MKDIR) -p sdk/examples/prebuilt
 	@cd sdk/examples/asm && ca65 -I ../../include -o rotozoomer_65.o rotozoomer_65.asm
-	@cd sdk/examples/asm && ld65 -C ../../include/ie65.cfg -o rotozoomer_65.ie65 rotozoomer_65.o
+	@cd sdk/examples/asm && ld65 -C ../../include/ie65.cfg -o ../prebuilt/rotozoomer_65.ie65 rotozoomer_65.o
 	@rm -f sdk/examples/asm/rotozoomer_65.o
-	@echo "Output: sdk/examples/asm/rotozoomer_65.ie65"
-	@ls -lh sdk/examples/asm/rotozoomer_65.ie65
+	@echo "Output: sdk/examples/prebuilt/rotozoomer_65.ie65"
+	@ls -lh sdk/examples/prebuilt/rotozoomer_65.ie65
 
 # Build the Robocop IE32 demo (requires ImageMagick for asset conversion)
 .PHONY: robocop-32
@@ -369,8 +371,11 @@ robocop-32:
 		echo "  macOS: brew install imagemagick"; \
 		exit 1; \
 	fi
+	@$(MKDIR) -p sdk/examples/prebuilt
 	@./sdk/scripts/robocop.sh
-	@ls -lh sdk/examples/asm/robocop_intro.iex
+	@mv sdk/examples/asm/robocop_intro.iex sdk/examples/prebuilt/
+	@echo "Output: sdk/examples/prebuilt/robocop_intro.iex"
+	@ls -lh sdk/examples/prebuilt/robocop_intro.iex
 
 # Build the Robocop M68K demo (requires vasmm68k_mot from VASM)
 .PHONY: robocop-68k
@@ -382,12 +387,13 @@ robocop-68k:
 		echo "  Build with: make CPU=m68k SYNTAX=mot"; \
 		exit 1; \
 	fi
+	@$(MKDIR) -p sdk/examples/prebuilt
 	@vasmm68k_mot -Fbin -m68020 -devpac \
 		-I sdk/include \
-		-o sdk/examples/asm/robocop_intro_68k.ie68 \
+		-o sdk/examples/prebuilt/robocop_intro_68k.ie68 \
 		sdk/examples/asm/robocop_intro_68k.asm
-	@echo "Output: sdk/examples/asm/robocop_intro_68k.ie68"
-	@ls -lh sdk/examples/asm/robocop_intro_68k.ie68
+	@echo "Output: sdk/examples/prebuilt/robocop_intro_68k.ie68"
+	@ls -lh sdk/examples/prebuilt/robocop_intro_68k.ie68
 
 # Build the Robocop Z80 demo (requires vasmz80 from VASM)
 .PHONY: robocop-z80
@@ -399,12 +405,13 @@ robocop-z80:
 		echo "  Build with: make CPU=z80 SYNTAX=std"; \
 		exit 1; \
 	fi
+	@$(MKDIR) -p sdk/examples/prebuilt
 	@vasmz80_std -Fbin \
 		-I sdk/include \
-		-o sdk/examples/asm/robocop_intro_z80.ie80 \
+		-o sdk/examples/prebuilt/robocop_intro_z80.ie80 \
 		sdk/examples/asm/robocop_intro_z80.asm
-	@echo "Output: sdk/examples/asm/robocop_intro_z80.ie80"
-	@ls -lh sdk/examples/asm/robocop_intro_z80.ie80
+	@echo "Output: sdk/examples/prebuilt/robocop_intro_z80.ie80"
+	@ls -lh sdk/examples/prebuilt/robocop_intro_z80.ie80
 
 # Assemble an IE80 (Z80) program using vasmz80
 # Usage: make ie80asm SRC=assembler/program.asm

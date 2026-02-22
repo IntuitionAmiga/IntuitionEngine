@@ -50,7 +50,7 @@ Address Range       Size    Device              Constants File
 0xF2340-0xF237F     64B     Coprocessor         coprocessor_constants.go
 0xF4000-0xF43FF     1KB     Voodoo 3D Graphics  voodoo_constants.go
 
-0x100000-0x4FFFFF   4MB     Video RAM           video_chip.go (VRAM_START)
+0x100000-0x5FFFFF   5MB     Video RAM           video_chip.go (VRAM_START)
 
 I/O REGION DETAILS
 ==================
@@ -226,8 +226,8 @@ const (
 
 	// Main VRAM (VideoChip high-resolution modes)
 	MAIN_VRAM_BASE = 0x100000 // 1MB
-	MAIN_VRAM_END  = 0x4FFFFF // 5MB - 1
-	MAIN_VRAM_SIZE = 0x400000 // 4MB
+	MAIN_VRAM_END  = 0x5FFFFF // 6MB - 1
+	MAIN_VRAM_SIZE = 0x500000 // 5MB
 )
 
 // =============================================================================

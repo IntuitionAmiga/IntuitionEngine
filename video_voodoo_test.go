@@ -24,6 +24,7 @@ package main
 import (
 	"math"
 	"testing"
+	"time"
 	"unsafe"
 
 	vk "github.com/goki/vulkan"
@@ -716,13 +717,14 @@ func TestVoodoo_VSync_Signal(t *testing.T) {
 	}
 	defer v.Destroy()
 
-	// Signal VSync
-	v.SignalVSync()
+	// Set frame start far enough in the past to be in vretrace region (last 10%)
+	// A 60Hz frame is ~16.67ms; vretrace starts at 90% = ~15ms
+	v.vretrace.Store(time.Now().Add(-16 * time.Millisecond).UnixNano())
 
 	// Status should show vretrace
 	status := v.HandleRead(VOODOO_STATUS)
 	if (status & VOODOO_STATUS_VRETRACE) == 0 {
-		t.Error("Expected VRETRACE flag after SignalVSync")
+		t.Error("Expected VRETRACE flag in last 10% of frame")
 	}
 }
 

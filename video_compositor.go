@@ -82,8 +82,8 @@ func NewVideoCompositor(output VideoOutput) *VideoCompositor {
 		output:      output,
 		sources:     make([]VideoSource, 0),
 		done:        make(chan struct{}),
-		frameWidth:  RESOLUTION_640x480_WIDTH,
-		frameHeight: RESOLUTION_640x480_HEIGHT,
+		frameWidth:  DefaultScreenWidth,
+		frameHeight: DefaultScreenHeight,
 	}
 }
 

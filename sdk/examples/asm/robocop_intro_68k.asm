@@ -71,6 +71,11 @@
 
     include "ie68.inc"
 
+; Override SDK defaults (1280x960) since this demo runs at 640x480.
+SCREEN_W        set 640
+SCREEN_H        set 480
+LINE_BYTES      set 2560                ; 640 * 4 bytes per scanline
+
 ; ----------------------------------------------------------------------------
 ; DEMO-SPECIFIC CONSTANTS
 ; ----------------------------------------------------------------------------

@@ -82,6 +82,11 @@
 
     .include "ie80.inc"
 
+; Override SDK defaults (1280x960) since this demo runs at 640x480.
+.set SCREEN_W,640
+.set SCREEN_H,480
+.set LINE_BYTES,2560
+
 ; ----------------------------------------------------------------------------
 ; DATA ORGANISATION
 ; ----------------------------------------------------------------------------

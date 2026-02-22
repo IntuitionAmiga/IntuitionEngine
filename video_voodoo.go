@@ -51,6 +51,7 @@ package main
 import (
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // VoodooVertex represents a single vertex with all attributes
@@ -117,7 +118,7 @@ type VoodooEngine struct {
 
 	// Status
 	busy        bool
-	vretrace    atomic.Bool
+	vretrace    atomic.Int64 // Frame start time (UnixNano) for time-based vretrace
 	swapPending bool
 
 	// Triple-buffered frame output for lock-free GetFrame()
@@ -557,8 +558,19 @@ func (v *VoodooEngine) getStatus() uint32 {
 	if v.busy {
 		status |= VOODOO_STATUS_FBI_BUSY | VOODOO_STATUS_SST_BUSY
 	}
-	if v.vretrace.Load() {
-		status |= VOODOO_STATUS_VRETRACE
+	// Time-based vretrace: active during last 10% of 60Hz frame (~1.67ms)
+	frameStart := v.vretrace.Load()
+	if frameStart != 0 {
+		elapsed := time.Duration(time.Now().UnixNano() - frameStart)
+		refreshInterval := time.Second / 60
+		if elapsed >= refreshInterval {
+			// Auto-reset frame timer
+			v.vretrace.Store(time.Now().UnixNano())
+			elapsed = 0
+		}
+		if elapsed >= (refreshInterval * 9 / 10) {
+			status |= VOODOO_STATUS_VRETRACE
+		}
 	}
 	if v.swapPending {
 		status |= VOODOO_STATUS_SWAPBUF
@@ -653,7 +665,7 @@ func (v *VoodooEngine) GetDimensions() (int, int) {
 
 // SignalVSync signals vertical retrace to the Voodoo (lock-free)
 func (v *VoodooEngine) SignalVSync() {
-	v.vretrace.Store(true)
+	v.vretrace.Store(time.Now().UnixNano())
 }
 
 // SetEnabled enables or disables the Voodoo (lock-free)

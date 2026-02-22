@@ -829,7 +829,7 @@ func (bus *MachineBus) MapIOByte(start, end uint32, onWrite8 func(addr uint32, v
 
 // UnmapIO removes all I/O region mappings that overlap the given address range,
 // restoring those pages to plain bus RAM access. This is used by the EmuTOS loader
-// to reclaim the VRAM address range (0x100000-0x4FFFFF) as normal M68K RAM.
+// to reclaim the VRAM address range (0x100000-0x5FFFFF) as normal M68K RAM.
 func (bus *MachineBus) UnmapIO(start, end uint32) {
 	firstPage := start & PAGE_MASK
 	lastPage := end & PAGE_MASK

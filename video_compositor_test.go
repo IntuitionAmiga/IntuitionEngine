@@ -192,29 +192,29 @@ func (m *mockVideoOutput) GetRefreshRate() int             { return 60 }
 
 func TestCompositor_SetDimensions_UpdatesFrameSize(t *testing.T) {
 	comp := NewVideoCompositor(nil)
-	comp.SetDimensions(800, 600)
-	if comp.frameWidth != 800 || comp.frameHeight != 600 {
-		t.Fatalf("expected 800x600, got %dx%d", comp.frameWidth, comp.frameHeight)
+	comp.SetDimensions(1024, 768)
+	if comp.frameWidth != 1024 || comp.frameHeight != 768 {
+		t.Fatalf("expected 1024x768, got %dx%d", comp.frameWidth, comp.frameHeight)
 	}
-	if len(comp.finalFrame) != 800*600*4 {
-		t.Fatalf("expected finalFrame len %d, got %d", 800*600*4, len(comp.finalFrame))
+	if len(comp.finalFrame) != 1024*768*4 {
+		t.Fatalf("expected finalFrame len %d, got %d", 1024*768*4, len(comp.finalFrame))
 	}
 }
 
 func TestCompositor_NotifyResolutionChange_AppliesOnComposite(t *testing.T) {
 	out := newMockVideoOutput()
 	comp := NewVideoCompositor(out)
-	comp.NotifyResolutionChange(800, 600)
-	if comp.frameWidth != 640 {
+	comp.NotifyResolutionChange(1024, 768)
+	if comp.frameWidth != DefaultScreenWidth {
 		t.Fatalf("expected width unchanged before composite, got %d", comp.frameWidth)
 	}
 	comp.composite()
-	if comp.frameWidth != 800 || comp.frameHeight != 600 {
-		t.Fatalf("expected 800x600, got %dx%d", comp.frameWidth, comp.frameHeight)
+	if comp.frameWidth != 1024 || comp.frameHeight != 768 {
+		t.Fatalf("expected 1024x768, got %dx%d", comp.frameWidth, comp.frameHeight)
 	}
 	cfg := out.GetDisplayConfig()
-	if cfg.Width != 800 || cfg.Height != 600 {
-		t.Fatalf("expected output config 800x600, got %dx%d", cfg.Width, cfg.Height)
+	if cfg.Width != 1024 || cfg.Height != 768 {
+		t.Fatalf("expected output config 1024x768, got %dx%d", cfg.Width, cfg.Height)
 	}
 }
 
@@ -242,35 +242,35 @@ func TestCompositor_LockResolution_PropagatesConfig_Started(t *testing.T) {
 	out := newMockVideoOutput()
 	_ = out.Start()
 	comp := NewVideoCompositor(out)
-	comp.LockResolution(800, 600)
+	comp.LockResolution(1024, 768)
 	cfg := out.GetDisplayConfig()
-	if cfg.Width != 800 || cfg.Height != 600 {
-		t.Fatalf("expected output config 800x600, got %dx%d", cfg.Width, cfg.Height)
+	if cfg.Width != 1024 || cfg.Height != 768 {
+		t.Fatalf("expected output config 1024x768, got %dx%d", cfg.Width, cfg.Height)
 	}
 }
 
 func TestCompositor_LockResolution_PropagatesConfig_PreStart(t *testing.T) {
 	out := newMockVideoOutput()
 	comp := NewVideoCompositor(out)
-	comp.LockResolution(800, 600)
+	comp.LockResolution(1024, 768)
 	cfg := out.GetDisplayConfig()
-	if cfg.Width != 800 || cfg.Height != 600 {
-		t.Fatalf("expected output config 800x600, got %dx%d", cfg.Width, cfg.Height)
+	if cfg.Width != 1024 || cfg.Height != 768 {
+		t.Fatalf("expected output config 1024x768, got %dx%d", cfg.Width, cfg.Height)
 	}
-	if comp.frameWidth != 800 || comp.frameHeight != 600 {
-		t.Fatalf("expected compositor 800x600, got %dx%d", comp.frameWidth, comp.frameHeight)
+	if comp.frameWidth != 1024 || comp.frameHeight != 768 {
+		t.Fatalf("expected compositor 1024x768, got %dx%d", comp.frameWidth, comp.frameHeight)
 	}
 	_ = out.Start()
 	comp.composite()
-	if len(comp.finalFrame) != 800*600*4 {
-		t.Fatalf("expected finalFrame len %d, got %d", 800*600*4, len(comp.finalFrame))
+	if len(comp.finalFrame) != 1024*768*4 {
+		t.Fatalf("expected finalFrame len %d, got %d", 1024*768*4, len(comp.finalFrame))
 	}
 }
 
 func TestCompositor_ApplyResolution_NoDuplicateUpdate(t *testing.T) {
 	out := newMockVideoOutput()
 	comp := NewVideoCompositor(out)
-	comp.NotifyResolutionChange(640, 480)
+	comp.NotifyResolutionChange(DefaultScreenWidth, DefaultScreenHeight)
 	comp.composite()
 	if out.setCalls != 0 {
 		t.Fatalf("expected no SetDisplayConfig calls, got %d", out.setCalls)

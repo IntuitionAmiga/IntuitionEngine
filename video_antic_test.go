@@ -20,6 +20,7 @@ package main
 
 import (
 	"testing"
+	"time"
 )
 
 // =============================================================================
@@ -255,25 +256,20 @@ func TestANTIC_GetFrame_Enabled(t *testing.T) {
 func TestANTIC_SignalVSync(t *testing.T) {
 	antic := NewANTICEngine(nil)
 
-	// Initial state
-	if antic.vblankActive.Load() {
-		t.Error("VBlank should be inactive initially")
-	}
-
 	// Set scanline to non-zero
 	antic.scanline = 100
 
 	// Signal VSync
 	antic.SignalVSync()
 
-	// VBlank should be active
-	if !antic.vblankActive.Load() {
-		t.Error("VBlank should be active after SignalVSync")
-	}
-
 	// Scanline should reset to 0
 	if antic.scanline != 0 {
 		t.Errorf("Scanline should be 0 after VSync, got %d", antic.scanline)
+	}
+
+	// Frame timer should be set
+	if antic.lastFrameStart == 0 {
+		t.Error("lastFrameStart should be set after SignalVSync")
 	}
 }
 
@@ -309,23 +305,23 @@ func TestANTIC_EnableRegister(t *testing.T) {
 	}
 }
 
-// TestANTIC_Status_VBlank tests STATUS reflects vblankActive
+// TestANTIC_Status_VBlank tests STATUS reflects time-based VBlank
 func TestANTIC_Status_VBlank(t *testing.T) {
 	antic := NewANTICEngine(nil)
 
-	// Initial status should be 0
+	// Initial status should be 0 (auto-initialises frame timer)
 	val := antic.HandleRead(ANTIC_STATUS)
 	if val != 0 {
 		t.Errorf("Initial STATUS: expected 0, got %d", val)
 	}
 
-	// Signal VSync to set VBlank flag
-	antic.SignalVSync()
+	// Set frame start far enough in the past that we're in VBlank region (last 20%)
+	// A 60Hz frame is ~16.67ms; VBlank starts at 80% = ~13.3ms
+	antic.lastFrameStart = time.Now().Add(-15 * time.Millisecond).UnixNano()
 
-	// Now status should have VBlank bit set
 	val = antic.HandleRead(ANTIC_STATUS)
 	if val&ANTIC_STATUS_VBLANK == 0 {
-		t.Error("Expected VBlank bit to be set after SignalVSync")
+		t.Error("Expected VBlank bit to be set in last 20% of frame")
 	}
 }
 

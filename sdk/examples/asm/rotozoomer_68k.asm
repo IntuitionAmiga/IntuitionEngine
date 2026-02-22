@@ -73,15 +73,15 @@
 ;   ---------    --------  ------------------------------------------
 ;   $001000      ~2 KB     Program code + data + tables
 ;   $100000      1,228,800 VRAM (front buffer, 640x480x4 bytes)
-;   $500000      262,144   Texture (256x256x4 bytes, stride 1024)
-;   $600000      1,228,800 Back buffer (640x480x4 bytes)
+;   $600000      262,144   Texture (256x256x4 bytes, stride 1024)
+;   $900000      1,228,800 Back buffer (640x480x4 bytes)
 ;   $FF0000      (stack)   Stack (grows downward)
 ;
 ;   Why these addresses?
 ;   - VRAM at $100000: Fixed by hardware (VideoChip framebuffer)
-;   - Texture at $500000: Placed above VRAM end (~$22C000) with margin,
+;   - Texture at $600000: Placed above VRAM end (~$22C000) with margin,
 ;     below back buffer. Avoids any overlap with display memory.
-;   - Back buffer at $600000: Well above texture end (~$540000).
+;   - Back buffer at $900000: Well above texture end (~$640000).
 ;     Mode7 renders here off-screen, then BLIT COPY transfers the
 ;     completed frame to VRAM atomically -- preventing visible tearing.
 ;
@@ -122,11 +122,11 @@
 ; ============================================================================
 
 ; --- Texture Memory Layout ---
-; The texture lives at $500000, above VRAM ($100000-~$22C000) and below
-; the back buffer ($600000). This keeps all three memory regions separate
+; The texture lives at $600000, above VRAM ($100000-~$22C000) and below
+; the back buffer ($900000). This keeps all three memory regions separate
 ; so the blitter can read the texture while writing the back buffer without
 ; any aliasing conflicts.
-TEXTURE_BASE    equ     $500000
+TEXTURE_BASE    equ     $600000
 
 ; --- Double Buffer ---
 ; We render to an off-screen back buffer and then copy the completed frame
@@ -134,14 +134,16 @@ TEXTURE_BASE    equ     $500000
 ; to visible VRAM, and the user would see partially-rendered frames ("tearing").
 ; The BLIT COPY from back buffer to VRAM is fast enough to complete within
 ; the vertical blanking interval.
-BACK_BUFFER     equ     $600000
+BACK_BUFFER     equ     $900000
 
 ; --- Screen Dimensions ---
 ; VideoChip Mode 0 is 640x480 pixels at 32 bits per pixel (BGRA).
 ; This is the native resolution of the Intuition Engine's VideoChip,
 ; giving us a large canvas for the rotozoomer effect.
+; Override SDK defaults (1280x960) since this demo runs at 640x480.
 RENDER_W        equ     640
 RENDER_H        equ     480
+LINE_BYTES      set     2560            ; 640 * 4 bytes per scanline
 
 ; --- Texture Stride ---
 ; The texture is 256 pixels wide, and each pixel is 4 bytes (BGRA).
@@ -315,10 +317,10 @@ wait_vsync:
 ;   +----------+----------+
 ;
 ;   Base address offsets:
-;     Top-left:     TEXTURE_BASE + 0        = $500000
-;     Top-right:    TEXTURE_BASE + 512      = $500200  (128 pixels * 4 bytes)
-;     Bottom-left:  TEXTURE_BASE + 131072   = $520000  (128 rows * 1024 stride)
-;     Bottom-right: TEXTURE_BASE + 131584   = $520200  (128*1024 + 128*4)
+;     Top-left:     TEXTURE_BASE + 0        = $600000
+;     Top-right:    TEXTURE_BASE + 512      = $600200  (128 pixels * 4 bytes)
+;     Bottom-left:  TEXTURE_BASE + 131072   = $620000  (128 rows * 1024 stride)
+;     Bottom-right: TEXTURE_BASE + 131584   = $620200  (128*1024 + 128*4)
 ;
 ;   Colour format is BGRA (32-bit):
 ;     $FFFFFFFF = white (B=FF, G=FF, R=FF, A=FF)
@@ -596,14 +598,14 @@ compute_frame:
 ; === WHY RENDER TO BACK BUFFER? ===
 ; The Mode7 blit writes 307,200 pixels sequentially. If we wrote directly
 ; to VRAM ($100000), the display would show the blit in progress (top half
-; new frame, bottom half old frame). By rendering to $600000 and then
+; new frame, bottom half old frame). By rendering to $900000 and then
 ; doing a fast BLIT COPY to VRAM, we get atomic frame updates.
 ; ============================================================================
 render_mode7:
                 ; Set blitter to Mode7 affine texture mapping operation
                 move.l  #BLT_OP_MODE7,BLT_OP
 
-                ; Source = texture at $500000, Destination = back buffer at $600000
+                ; Source = texture at $600000, Destination = back buffer at $900000
                 move.l  #TEXTURE_BASE,BLT_SRC
                 move.l  #BACK_BUFFER,BLT_DST
 
@@ -667,7 +669,7 @@ render_mode7:
 ; ============================================================================
 ; BLIT BACK BUFFER TO FRONT (VRAM) - Double Buffer Flip
 ; ============================================================================
-; Copies the completed frame from the off-screen back buffer ($600000)
+; Copies the completed frame from the off-screen back buffer ($900000)
 ; to visible VRAM ($100000) using the hardware BLIT COPY operation.
 ;
 ; WHY NOT JUST SWAP BUFFER POINTERS?

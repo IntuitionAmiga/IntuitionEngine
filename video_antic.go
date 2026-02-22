@@ -231,11 +231,6 @@ func (a *ANTICEngine) HandleRead(addr uint32) uint32 {
 		// Debug: log status reads
 		a.statusReads++
 
-		// If vblankActive was explicitly set (e.g. by SignalVSync), report it
-		if a.vblankActive.Load() {
-			return ANTIC_STATUS_VBLANK
-		}
-
 		// Calculate VBlank based on time within frame
 		// Self-resetting: automatically starts new frame when period elapses
 		// VBlank is active for the last 20% of each frame (~3.3ms of 16.67ms frame)
@@ -928,9 +923,6 @@ func (a *ANTICEngine) GetDimensions() (w, h int) {
 // SignalVSync is called by compositor after frame sent
 // Sets VBlank flag and handles NMI timing
 func (a *ANTICEngine) SignalVSync() {
-	// Set VBlank flag - lock-free
-	a.vblankActive.Store(true)
-
 	a.mu.Lock()
 	defer a.mu.Unlock()
 

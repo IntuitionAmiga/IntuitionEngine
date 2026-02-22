@@ -1184,9 +1184,15 @@
 ; ============================================================================
 
 .set VRAM_START,0x100000
-.set SCREEN_W,640
-.set SCREEN_H,480
-.set LINE_BYTES,2560
+.set SCREEN_W,1280
+.set SCREEN_H,960
+.set LINE_BYTES,5120
+
+; VideoChip mode constants (write to VIDEO_MODE)
+.set MODE_640x480,0x00
+.set MODE_800x600,0x01
+.set MODE_1024x768,0x02
+.set MODE_1280x960,0x03
 
 ; Blitter operations
 .set BLT_OP_COPY,0

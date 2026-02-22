@@ -262,8 +262,8 @@ func TestScreenEditor_E2E_ScrollbackNav(t *testing.T) {
 
 func TestVideoTerminal_HandleScroll(t *testing.T) {
 	vt, _, _ := newVideoTerminalForTest(t)
-	// Fill 40 rows of output
-	for i := range 40 {
+	// Fill 80 rows of output (must exceed visible rows at 1280x960 = 60 rows)
+	for i := range 80 {
 		ch := byte('A' + byte(i%26))
 		vt.processChar(ch)
 		vt.processChar('\r')

@@ -136,22 +136,23 @@ func (vc *VideoChip) Reset() {
 	vc.mu.Lock()
 	defer vc.mu.Unlock()
 
-	vc.currentMode = MODE_640x480
+	vc.currentMode = DEFAULT_VIDEO_MODE
 	vc.frameCounter = 0
 	vc.enabled.Store(false)
 	vc.hasContent.Store(false)
 	vc.inVBlank.Store(false)
 	vc.copperEnabled = false
 
-	for i := range vc.frontBuffer {
-		vc.frontBuffer[i] = 0
+	mode := VideoModes[vc.currentMode]
+	if len(vc.frontBuffer) != mode.totalSize {
+		vc.frontBuffer = make([]byte, mode.totalSize)
+		vc.backBuffer = make([]byte, mode.totalSize)
+	} else {
+		clear(vc.frontBuffer)
+		clear(vc.backBuffer)
 	}
-	for i := range vc.backBuffer {
-		vc.backBuffer[i] = 0
-	}
-	for i := range vc.prevVRAM {
-		vc.prevVRAM[i] = 0
-	}
+	clear(vc.prevVRAM)
+	vc.initialiseDirtyGrid(mode)
 
 	// Reset copper state
 	vc.copperPC = 0
