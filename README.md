@@ -37,6 +37,7 @@
 | [sdk/docs/demo-matrix.md](sdk/docs/demo-matrix.md) | Demo program coverage matrix |
 | [sdk/docs/platform-compatibility.md](sdk/docs/platform-compatibility.md) | Platform support and build profiles |
 | [sdk/docs/release-process.md](sdk/docs/release-process.md) | Release packaging guide |
+| [sdk/docs/ie_emutos.md](sdk/docs/ie_emutos.md) | EmuTOS integration guide (GEM desktop on IE) |
 
 # Table of Contents
 
@@ -148,6 +149,7 @@
     - 12.9 Video Compositor
 13. [Developer's Guide](#13-developers-guide)
 14. [Implementation Details](#14-implementation-details)
+15. [EmuTOS Mode](#15-emutos-mode)
     - 14.1 CPU Emulation
     - 14.2 Memory Architecture
     - 14.3 Audio System Architecture
@@ -415,7 +417,9 @@ The system's memory layout is designed to provide efficient access to both progr
 0x000000 - 0x000FFF: System vectors (including interrupt vector)
 0x001000 - 0x0EFFFF: Program space
 0x0F0000 - 0x0F0077: Video registers (copper, blitter, raster control, Mode7)
-0x0F0700 - 0x0F07FF: Terminal/Serial output
+0x0F0700 - 0x0F072F: Terminal/Serial output
+0x0F0730 - 0x0F073C: Mouse registers (X, Y, Buttons, Status)
+0x0F0740 - 0x0F0748: Scancode registers (Code, Status, Modifiers)
 0x0F0800 - 0x0F080C: Timer registers
 0x0F0820 - 0x0F0834: Filter registers
 0x0F0900 - 0x0F0A6F: Legacy synth registers (square/triangle/sine/noise/saw)
@@ -5477,16 +5481,60 @@ The `sdk/` directory contains a curated developer package with example programs,
 - [docs/platform-compatibility.md](sdk/docs/platform-compatibility.md) - Platform support details
 - [docs/release-process.md](sdk/docs/release-process.md) - Release packaging
 
-## EmuTOS Mode
+# 15. EmuTOS Mode
 
-Intuition Engine supports running EmuTOS directly on the IE M68K core.
+Intuition Engine runs [EmuTOS](https://emutos.sourceforge.io/) directly on the IE M68K core, providing a complete GEM desktop environment with file browser, mouse/keyboard input, and host filesystem access.
+
+### Quick Start
 
 ```bash
+# Embedded ROM (requires 'make emutos' or 'make basic-emutos' build)
+./bin/IntuitionEngine -emutos
+
 # External ROM image
 ./bin/IntuitionEngine -emutos-image etos256us.img
 
-# Or detect from extension through RUN/ProgramExecutor
+# Map a specific host directory as drive U: (default: ~/)
+./bin/IntuitionEngine -emutos -emutos-drive /path/to/files
+
+# Boot EmuTOS from the EhBASIC prompt (requires 'make basic-emutos' build)
+# At the Ready prompt, type: EMUTOS
+
+# Load .tos/.img files through the ProgramExecutor
 # RUN "emutos.img"
 ```
 
-See `sdk/docs/ie_emutos.md` for the hardware map and integration notes.
+### EmuTOS-Specific Hardware
+
+EmuTOS runs on the IE-native profile: VideoChip (640x480 RGBA), terminal MMIO for keyboard/mouse, and timer-driven interrupts. Non-IE peripherals (VGA, ULA, TED video, ANTIC, Voodoo, SID, POKEY) are detached to avoid I/O region conflicts.
+
+**Mouse MMIO** (0xF0730 - 0xF073C):
+
+| Address | Register | Description |
+|---------|----------|-------------|
+| `0xF0730` | `MOUSE_X` | Absolute X position (16-bit) |
+| `0xF0734` | `MOUSE_Y` | Absolute Y position (16-bit) |
+| `0xF0738` | `MOUSE_BUTTONS` | Bit 0=left, 1=right, 2=middle |
+| `0xF073C` | `MOUSE_STATUS` | Bit 0=changed since last read (clears on read) |
+
+**Scancode MMIO** (0xF0740 - 0xF0748):
+
+| Address | Register | Description |
+|---------|----------|-------------|
+| `0xF0740` | `SCAN_CODE` | Raw ST-style scancode (dequeues on read) |
+| `0xF0744` | `SCAN_STATUS` | Queue depth (0 = empty) |
+| `0xF0748` | `SCAN_MODIFIERS` | Bit 0=shift, 1=ctrl, 2=alt, 3=capslock |
+
+**Interrupts**: Timer IRQ level 5 at 200Hz, VBlank IRQ level 4 at 60Hz.
+
+**GEMDOS drive U:**: Host directory (default `~/`) is mapped as drive U: in the GEM desktop via TRAP #1 interception, providing file browsing, opening, and .PRG execution from the host filesystem.
+
+### Build Targets
+
+```bash
+make emutos             # VM with embedded EmuTOS ROM
+make basic-emutos       # VM with embedded EhBASIC + EmuTOS ROM
+make emutos-rom         # Build EmuTOS ROM from source (auto-clones if needed)
+```
+
+See [sdk/docs/ie_emutos.md](sdk/docs/ie_emutos.md) for the full hardware map, build instructions, and GEM programming guide.

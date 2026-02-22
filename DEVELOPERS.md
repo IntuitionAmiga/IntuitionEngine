@@ -54,6 +54,9 @@ make ie64asm           # IE64 assembler
 make ie32to64          # IE32-to-IE64 converter
 make ie64dis           # IE64 disassembler
 make basic             # VM with embedded EhBASIC interpreter
+make emutos            # VM with embedded EmuTOS ROM
+make basic-emutos      # VM with embedded EhBASIC + EmuTOS ROM
+make emutos-rom        # Build EmuTOS ROM from source (auto-clones if needed)
 
 # Install / uninstall
 make install           # Install to /usr/local/bin (all built tools)
@@ -546,14 +549,40 @@ CGO_ENABLED=0 go build -tags "novulkan headless" .
 
 # 14. EmuTOS Integration
 
-- Runtime flag: `-emutos` / `-emutos-image <path>`
-- ProgramExecutor extension mapping: `.tos`, `.img`
-- Loader/timer implementation: `emutos_loader.go`
-- SDK target stubs: `sdk/emutos/`
-- Documentation: `sdk/docs/ie_emutos.md`
+EmuTOS runs on the IE M68K core with GEM desktop, GEMDOS filesystem interception, and timer-driven interrupts.
 
-Build with embedded ROM:
+### Runtime Flags
+
+| Flag | Description |
+|------|-------------|
+| `-emutos` | Boot embedded EmuTOS ROM (requires `embed_emutos` build tag) |
+| `-emutos-image <path>` | Boot EmuTOS from external ROM image |
+| `-emutos-drive <dir>` | Host directory mapped as GEMDOS drive U: (default: `~/`) |
+
+### Key Files
+
+| File | Purpose |
+|------|---------|
+| `emutos_loader.go` | ROM loading, timer/VBlank IRQ generation, GEMDOS setup |
+| `emutos_embed.go` | `//go:embed` for ROM image (`embed_emutos` tag) |
+| `emutos_noembed.go` | Nil ROM fallback (`!embed_emutos` tag) |
+| `gemdos_intercept.go` | TRAP #1 filesystem interception (drive U: mapping) |
+| `gemdos_intercept_constants.go` | GEMDOS function numbers, error codes, DTA layout |
+| `sdk/emutos/` | C shim files for building EmuTOS against IE MMIO |
+| `sdk/docs/ie_emutos.md` | Full integration guide |
+
+### ProgramExecutor
+
+File extensions `.tos` and `.img` are detected as EmuTOS mode. The `EMUTOS` command at the BASIC prompt triggers boot via the `emutosSentinel` path.
+
+### Build
 
 ```bash
-make emutos
+make emutos             # VM with embedded EmuTOS ROM
+make basic-emutos       # VM with embedded EhBASIC + EmuTOS ROM
+make emutos-rom         # Build ROM from source (auto-clones EmuTOS repo, needs GCC 13 m68k cross-compiler)
 ```
+
+### GCC 13 -mshort Codegen Bug
+
+EmuTOS compiled with `-mshort` (2-byte `size_t`) triggers a GCC 13 bug: pointer arithmetic in `win_start()` produces displacement `$10804` instead of `$0804` (off by `$10000`). The last WNODE's `w_next` points past the array into FNODE memory, causing a bus error on desktop folder view switch. Workaround: `fixWnodeChain()` in `gemdos_intercept.go` patches the WNODE chain after directory enumeration.

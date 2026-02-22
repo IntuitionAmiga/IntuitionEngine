@@ -95,6 +95,7 @@ The rotozoomer is the canonical "hello world" demo: a hardware-accelerated rotat
 | `rotozoomer_65.asm` | 6502 | IEVideoChip | AHX | Mode7 blitter + Amiga tracker music |
 | `rotozoomer_x86.asm` | x86 | IEVideoChip | PSG | Mode7 blitter + AY-3-8910 music |
 | `rotozoomer_basic.bas` | IE64 (BASIC) | IEVideoChip | SID | Mode7 blitter from EhBASIC |
+| `rotozoomer_gem.asm` | M68K (EmuTOS) | IEVideoChip | -- | Mode7 blitter in a GEM desktop window |
 
 ### Video Chip Showcases
 
@@ -218,8 +219,9 @@ The `sdk/include/` headers define the stable hardware register map for v1.x and 
 - [EhBASIC Guide](docs/ehbasic_ie64.md)
 - [IEScript Lua Automation](docs/iescript.md)
 - [IE32 to IE64 Migration](docs/ie32to64.md)
+- [EmuTOS Integration Guide](docs/ie_emutos.md)
 
 ## EmuTOS Porting Stubs
 
 The SDK includes EmuTOS machine-target scaffolding in `sdk/emutos/`.
-Use this together with `sdk/docs/ie_emutos.md` when wiring an EmuTOS tree to IE MMIO.
+See [docs/ie_emutos.md](docs/ie_emutos.md) for the full hardware map, build instructions, and GEM programming guide.
