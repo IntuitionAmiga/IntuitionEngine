@@ -1106,7 +1106,12 @@ func (v *VGAEngine) StopRenderLoop() {
 	}
 	cancel := v.renderCancel
 	done := v.renderDone
+	v.renderCancel = nil
+	v.renderDone = nil
 	v.renderMu.Unlock()
+	if cancel == nil || done == nil {
+		return
+	}
 	cancel()
 	<-done
 }

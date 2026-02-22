@@ -16,6 +16,7 @@ const (
 
 const (
 	EXEC_OP_EXECUTE = 1
+	EXEC_OP_EMUTOS  = 2
 )
 
 const (
@@ -33,6 +34,7 @@ const (
 	EXEC_TYPE_M68K
 	EXEC_TYPE_Z80
 	EXEC_TYPE_X86
+	EXEC_TYPE_EMUTOS
 	EXEC_TYPE_SCRIPT
 )
 

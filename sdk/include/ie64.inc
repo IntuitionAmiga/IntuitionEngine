@@ -1743,6 +1743,7 @@ EXEC_STATUS       equ 0xF2328               ; 0=idle,1=loading,2=running,3=error
 EXEC_TYPE         equ 0xF232C               ; 1=IE32,2=IE64,3=6502,4=M68K,5=Z80,6=x86 (R)
 EXEC_ERROR        equ 0xF2330               ; 0=ok,1=not-found,2=unsupported,3=path,4=load-failed (R)
 EXEC_SESSION      equ 0xF2334               ; Monotonic session id (R)
+EXEC_OP_EMUTOS    equ 2                     ; Write to EXEC_CTRL to boot EmuTOS
 
 ; ============================================================================
 ; COPROCESSOR REGISTERS (0xF2340-0xF237F)

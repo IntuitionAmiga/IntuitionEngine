@@ -629,6 +629,24 @@ DOKE address, value
 DOKE &H50000, &HFFFF
 ```
 
+### EMUTOS
+
+Boot the EmuTOS operating system from the BASIC prompt. This performs a full
+CPU mode switch from IE64 to M68K and loads the EmuTOS ROM.
+
+```
+EMUTOS
+```
+
+The ROM is resolved in this order:
+1. `-emutos-image <path>` command-line flag
+2. Embedded ROM (if built with `make basic-emutos`)
+3. Local `etos256us.img` file in the working directory
+
+If no ROM is available, prints `?EMUTOS NOT AVAILABLE`.
+
+Once EmuTOS is running, press F10 to perform a hard reset back to EmuTOS.
+
 ### END
 
 Terminate program execution.
@@ -2447,7 +2465,7 @@ Used by `RUN "file"` to launch external CPU binaries.
 | Address | Name | R/W | Description |
 |---------|------|-----|-------------|
 | `&HF2320` | EXEC_NAME_PTR | W | Pointer to NUL-terminated filename in memory |
-| `&HF2324` | EXEC_CTRL | W | Control: 1=execute |
+| `&HF2324` | EXEC_CTRL | W | Control: 1=execute, 2=boot EmuTOS |
 | `&HF2328` | EXEC_STATUS | R | 0=idle, 1=loading, 2=running, 3=error |
 | `&HF232C` | EXEC_TYPE | R | 1=IE32, 2=IE64, 3=6502, 4=M68K, 5=Z80, 6=x86 |
 | `&HF2330` | EXEC_ERROR | R | 0=ok, 1=not-found, 2=unsupported, 3=path-invalid, 4=load-failed |

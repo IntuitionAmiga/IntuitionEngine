@@ -122,6 +122,11 @@ type ClipboardInput interface {
 	SetMiddleMouseHandler(func())
 }
 
+// SystemCursorHider is implemented by video outputs that can hide the OS cursor.
+type SystemCursorHider interface {
+	HideSystemCursor()
+}
+
 // ScanlineAware is implemented by video sources that support per-scanline rendering.
 // This enables copper-style raster effects where register changes take effect
 // at specific scanline positions.

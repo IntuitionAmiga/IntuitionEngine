@@ -69,8 +69,10 @@ type EbitenOutput struct {
 	hardResetHandler func()
 	resetInProgress  atomic.Bool
 
-	monitorOverlay *MonitorOverlay
-	luaOverlay     *LuaOverlay
+	monitorOverlay   *MonitorOverlay
+	luaOverlay       *LuaOverlay
+	termMMIO         *TerminalMMIO
+	hideSystemCursor bool
 }
 
 func NewEbitenOutput() (VideoOutput, error) {
@@ -102,6 +104,9 @@ func (eo *EbitenOutput) Start() error {
 	ebiten.SetWindowResizable(true)
 	ebiten.SetRunnableOnUnfocused(true)
 	ebiten.SetVsyncEnabled(true)
+	if eo.hideSystemCursor {
+		ebiten.SetCursorMode(ebiten.CursorModeHidden)
+	}
 	if eo.fullscreen {
 		ebiten.SetFullscreen(true)
 	}
@@ -355,6 +360,7 @@ func (eo *EbitenOutput) Update() error {
 		eo.bufferMutex.Unlock()
 	}
 	eo.handleKeyboardInput()
+	eo.updateTerminalMMIOInput()
 	return nil
 }
 
@@ -386,6 +392,12 @@ func (eo *EbitenOutput) SetScriptEngine(scriptEngine *ScriptEngine) {
 		return
 	}
 	eo.luaOverlay.SetScriptEngine(scriptEngine)
+}
+
+func (eo *EbitenOutput) SetTerminalMMIO(tm *TerminalMMIO) {
+	eo.bufferMutex.Lock()
+	eo.termMMIO = tm
+	eo.bufferMutex.Unlock()
 }
 
 func (eo *EbitenOutput) SetHardResetHandler(fn func()) {
@@ -424,6 +436,10 @@ func (eo *EbitenOutput) SetMiddleMouseHandler(fn func()) {
 	eo.bufferMutex.Unlock()
 }
 
+func (eo *EbitenOutput) HideSystemCursor() {
+	eo.hideSystemCursor = true
+}
+
 func (eo *EbitenOutput) emitByte(b byte) {
 	eo.bufferMutex.RLock()
 	handler := eo.keyHandler
@@ -444,12 +460,144 @@ const (
 	keyRepeatInterval = 2  // ticks (~33ms)
 )
 
+var ebitenToSTScancode = map[ebiten.Key]uint8{
+	ebiten.KeyEscape:       0x01,
+	ebiten.Key1:            0x02,
+	ebiten.Key2:            0x03,
+	ebiten.Key3:            0x04,
+	ebiten.Key4:            0x05,
+	ebiten.Key5:            0x06,
+	ebiten.Key6:            0x07,
+	ebiten.Key7:            0x08,
+	ebiten.Key8:            0x09,
+	ebiten.Key9:            0x0A,
+	ebiten.Key0:            0x0B,
+	ebiten.KeyMinus:        0x0C,
+	ebiten.KeyEqual:        0x0D,
+	ebiten.KeyBackspace:    0x0E,
+	ebiten.KeyTab:          0x0F,
+	ebiten.KeyQ:            0x10,
+	ebiten.KeyW:            0x11,
+	ebiten.KeyE:            0x12,
+	ebiten.KeyR:            0x13,
+	ebiten.KeyT:            0x14,
+	ebiten.KeyY:            0x15,
+	ebiten.KeyU:            0x16,
+	ebiten.KeyI:            0x17,
+	ebiten.KeyO:            0x18,
+	ebiten.KeyP:            0x19,
+	ebiten.KeyBracketLeft:  0x1A,
+	ebiten.KeyBracketRight: 0x1B,
+	ebiten.KeyEnter:        0x1C,
+	ebiten.KeyControlLeft:  0x1D,
+	ebiten.KeyA:            0x1E,
+	ebiten.KeyS:            0x1F,
+	ebiten.KeyD:            0x20,
+	ebiten.KeyF:            0x21,
+	ebiten.KeyG:            0x22,
+	ebiten.KeyH:            0x23,
+	ebiten.KeyJ:            0x24,
+	ebiten.KeyK:            0x25,
+	ebiten.KeyL:            0x26,
+	ebiten.KeySemicolon:    0x27,
+	ebiten.KeyApostrophe:   0x28,
+	ebiten.KeyBackquote:    0x29,
+	ebiten.KeyShiftLeft:    0x2A,
+	ebiten.KeyBackslash:    0x2B,
+	ebiten.KeyZ:            0x2C,
+	ebiten.KeyX:            0x2D,
+	ebiten.KeyC:            0x2E,
+	ebiten.KeyV:            0x2F,
+	ebiten.KeyB:            0x30,
+	ebiten.KeyN:            0x31,
+	ebiten.KeyM:            0x32,
+	ebiten.KeyComma:        0x33,
+	ebiten.KeyPeriod:       0x34,
+	ebiten.KeySlash:        0x35,
+	ebiten.KeyShiftRight:   0x36,
+	ebiten.KeySpace:        0x39,
+	ebiten.KeyCapsLock:     0x3A,
+	ebiten.KeyF1:           0x3B,
+	ebiten.KeyF2:           0x3C,
+	ebiten.KeyF3:           0x3D,
+	ebiten.KeyF4:           0x3E,
+	ebiten.KeyF5:           0x3F,
+	ebiten.KeyF6:           0x40,
+	ebiten.KeyF7:           0x41,
+	ebiten.KeyF8:           0x42,
+	ebiten.KeyF9:           0x43,
+	ebiten.KeyF10:          0x44,
+	ebiten.KeyF11:          0x57,
+	ebiten.KeyF12:          0x58,
+	ebiten.KeyArrowUp:      0x48,
+	ebiten.KeyArrowLeft:    0x4B,
+	ebiten.KeyArrowRight:   0x4D,
+	ebiten.KeyArrowDown:    0x50,
+}
+
 func shouldRepeat(key ebiten.Key) bool {
 	dur := inpututil.KeyPressDuration(key)
 	if dur < keyRepeatDelay {
 		return false
 	}
 	return (dur-keyRepeatDelay)%keyRepeatInterval == 0
+}
+
+func (eo *EbitenOutput) updateTerminalMMIOInput() {
+	eo.bufferMutex.RLock()
+	tm := eo.termMMIO
+	width := eo.width
+	height := eo.height
+	eo.bufferMutex.RUnlock()
+	if tm == nil {
+		return
+	}
+
+	mx, my := ebiten.CursorPosition()
+	newX := int32(max(0, min(mx, width-1)))
+	newY := int32(max(0, min(my, height-1)))
+
+	var buttons uint32
+	if ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft) {
+		buttons |= 1
+	}
+	if ebiten.IsMouseButtonPressed(ebiten.MouseButtonRight) {
+		buttons |= 2
+	}
+	if ebiten.IsMouseButtonPressed(ebiten.MouseButtonMiddle) {
+		buttons |= 4
+	}
+
+	oldX := tm.mouseX.Swap(newX)
+	oldY := tm.mouseY.Swap(newY)
+	oldButtons := tm.mouseButtons.Swap(buttons)
+	if oldX != newX || oldY != newY || oldButtons != buttons {
+		tm.mouseChanged.Store(true)
+	}
+
+	for ebitenKey, stScancode := range ebitenToSTScancode {
+		if inpututil.IsKeyJustPressed(ebitenKey) {
+			tm.EnqueueScancode(stScancode)
+		}
+		if inpututil.IsKeyJustReleased(ebitenKey) {
+			tm.EnqueueScancode(stScancode | 0x80)
+		}
+	}
+
+	var mods uint32
+	if ebiten.IsKeyPressed(ebiten.KeyShiftLeft) || ebiten.IsKeyPressed(ebiten.KeyShiftRight) {
+		mods |= 1
+	}
+	if ebiten.IsKeyPressed(ebiten.KeyControlLeft) || ebiten.IsKeyPressed(ebiten.KeyControlRight) {
+		mods |= 2
+	}
+	if ebiten.IsKeyPressed(ebiten.KeyAltLeft) || ebiten.IsKeyPressed(ebiten.KeyAltRight) {
+		mods |= 4
+	}
+	if ebiten.IsKeyPressed(ebiten.KeyCapsLock) {
+		mods |= 8
+	}
+	tm.modifiers.Store(mods)
 }
 
 func (eo *EbitenOutput) handleKeyboardInput() {
@@ -867,7 +1015,7 @@ func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
 	})
 
 	legendColor := color.RGBA{160, 160, 160, 255}
-	legend := "F8 Lua F9 Debug F10 Reset F11 Fullscreen F12 Status"
+	legend := "F8:Lua F9:Debug F10:Reset F11:FS/Win F12:Status"
 	legendScale := 1.0
 	legendW := int(float64(text.BoundString(basicfont.Face7x13, legend).Dx()) * legendScale)
 	legendX := max(eo.width-legendW-6, 6)

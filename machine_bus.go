@@ -61,7 +61,10 @@ import (
 const (
 	DEFAULT_MEMORY_SIZE = 32 * 1024 * 1024
 	PAGE_SIZE           = 0x100
-	PAGE_MASK           = 0xFFF00
+	// Keep page base bits for the full 32MB address space.
+	// 0x1FFFF00 aligns any address to its 256-byte page without truncating
+	// addresses >= 1MB (e.g. VRAM at 0x00100000).
+	PAGE_MASK = 0x1FFFF00
 )
 
 // ------------------------------------------------------------------------------
@@ -128,6 +131,16 @@ type MachineBus struct {
 
 	// Sealed state to prevent I/O mapping after execution has started
 	sealed atomic.Bool
+
+	// When strict MMIO windows are configured, accesses inside these ranges
+	// must hit a mapped IO region or fault via *WithFault methods.
+	strictMMIOWindows []AddrRange
+}
+
+// AddrRange defines an inclusive address range.
+type AddrRange struct {
+	Start uint32
+	End   uint32
 }
 
 type IORegion struct {
@@ -175,35 +188,18 @@ type Bus64 interface {
 }
 
 func (bus *MachineBus) Write32WithFault(addr uint32, value uint32) bool {
-	// Check if the address is in the upper memory region (potentially sign-extended)
+	mappedAddr := bus.normalizeFaultAddr(addr)
+	if bus.mustFaultUnmappedMMIO(mappedAddr) {
+		return false
+	}
+	// Sign-extended addresses (0xFFFF0000-0xFFFFFFFF): map to low 16-bit range.
+	// M68K generates these via pre-decrement from 0 (e.g. gouser SP=0 → -(SP) = 0xFFFFFFFC).
+	// On 68000 (24-bit), these wrap naturally. We emulate the same aliasing.
 	if addr >= 0xFFFF0000 {
-		// Map to lower 16-bit range if it looks like a sign-extended I/O address
 		mapped := addr & 0x0000FFFF
-		if mapped <= DEFAULT_MEMORY_SIZE-4 {
-			// This is a valid sign-extended address, handle normally but with mapped address
-			if regions, exists := bus.mapping[mapped&PAGE_MASK]; exists {
-				for _, region := range regions {
-					if mapped >= region.start && mapped <= region.end && region.onWrite != nil {
-						region.onWrite(mapped, value)
-						// Still store in memory if within bounds
-						if mapped+4 <= uint32(len(bus.memory)) {
-							binary.LittleEndian.PutUint32(bus.memory[mapped:mapped+4], value)
-						}
-						return true
-					}
-				}
-			}
-
-			// Proceed with writing to the mapped address if in bounds
-			if mapped+4 <= uint32(len(bus.memory)) {
-				binary.LittleEndian.PutUint32(bus.memory[mapped:mapped+4], value)
-				return true
-			}
-		}
 
 		// Special handling for terminal output case
 		if addr == TERM_OUT_SIGNEXT || addr == TERM_OUT_16BIT {
-			// Call terminal output handler if available
 			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
 				for _, region := range regions {
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onWrite != nil {
@@ -213,6 +209,27 @@ func (bus *MachineBus) Write32WithFault(addr uint32, value uint32) bool {
 				}
 			}
 			return true
+		}
+
+		if mapped <= DEFAULT_MEMORY_SIZE-4 {
+			// Check for I/O regions with the mapped address
+			if regions, exists := bus.mapping[mapped&PAGE_MASK]; exists {
+				for _, region := range regions {
+					if mapped >= region.start && mapped <= region.end && region.onWrite != nil {
+						region.onWrite(mapped, value)
+						if mapped+4 <= uint32(len(bus.memory)) {
+							binary.LittleEndian.PutUint32(bus.memory[mapped:mapped+4], value)
+						}
+						return true
+					}
+				}
+			}
+
+			// Regular memory write
+			if mapped+4 <= uint32(len(bus.memory)) {
+				binary.LittleEndian.PutUint32(bus.memory[mapped:mapped+4], value)
+				return true
+			}
 		}
 
 		return false
@@ -245,10 +262,27 @@ func (bus *MachineBus) Read32WithFault(addr uint32) (uint32, bool) {
 		return bus.videoStatusReader(addr), true
 	}
 
-	// Check if the address is in the upper memory region (potentially sign-extended)
+	mappedAddr := bus.normalizeFaultAddr(addr)
+	if bus.mustFaultUnmappedMMIO(mappedAddr) {
+		return 0, false
+	}
+	// Sign-extended addresses (0xFFFF0000-0xFFFFFFFF): map to low 16-bit range.
 	if addr >= 0xFFFF0000 {
-		// Map to lower 16-bit range if it looks like a sign-extended I/O address
 		mapped := addr & 0x0000FFFF
+
+		// Special handling for terminal input
+		if addr == TERM_OUT_SIGNEXT || addr == TERM_OUT_16BIT {
+			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
+				for _, region := range regions {
+					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onRead != nil {
+						result := region.onRead(TERM_OUT)
+						return result, true
+					}
+				}
+			}
+			return 0, true
+		}
+
 		if mapped <= DEFAULT_MEMORY_SIZE-4 {
 			// Check for I/O regions with the mapped address
 			if regions, exists := bus.mapping[mapped&PAGE_MASK]; exists {
@@ -268,19 +302,6 @@ func (bus *MachineBus) Read32WithFault(addr uint32) (uint32, bool) {
 				result := binary.LittleEndian.Uint32(bus.memory[mapped : mapped+4])
 				return result, true
 			}
-		}
-
-		// Special handling for terminal input
-		if addr == TERM_OUT_SIGNEXT || addr == TERM_OUT_16BIT {
-			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
-				for _, region := range regions {
-					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onRead != nil {
-						result := region.onRead(TERM_OUT)
-						return result, true
-					}
-				}
-			}
-			return 0, true
 		}
 
 		return 0, false
@@ -308,7 +329,12 @@ func (bus *MachineBus) Read32WithFault(addr uint32) (uint32, bool) {
 }
 
 func (bus *MachineBus) Write16WithFault(addr uint32, value uint16) bool {
-	// Check if the address is in the upper memory region (potentially sign-extended)
+	mappedAddr := bus.normalizeFaultAddr(addr)
+	if bus.mustFaultUnmappedMMIO(mappedAddr) {
+		return false
+	}
+
+	// Sign-extended addresses (0xFFFF0000-0xFFFFFFFF): map to low 16-bit range.
 	if addr >= 0xFFFF0000 {
 		// Map to lower 16-bit range if it looks like a sign-extended I/O address
 		mapped := addr & 0x0000FFFF
@@ -388,7 +414,12 @@ func (bus *MachineBus) Write16WithFault(addr uint32, value uint16) bool {
 }
 
 func (bus *MachineBus) Read16WithFault(addr uint32) (uint16, bool) {
-	// Check if the address is in the upper memory region (potentially sign-extended)
+	mappedAddr := bus.normalizeFaultAddr(addr)
+	if bus.mustFaultUnmappedMMIO(mappedAddr) {
+		return 0, false
+	}
+
+	// Sign-extended addresses (0xFFFF0000-0xFFFFFFFF): map to low 16-bit range.
 	if addr >= 0xFFFF0000 {
 		// Map to lower 16-bit range if it looks like a sign-extended I/O address
 		mapped := addr & 0x0000FFFF
@@ -451,7 +482,12 @@ func (bus *MachineBus) Read16WithFault(addr uint32) (uint16, bool) {
 }
 
 func (bus *MachineBus) Write8WithFault(addr uint32, value uint8) bool {
-	// Check if the address is in the upper memory region (potentially sign-extended)
+	mappedAddr := bus.normalizeFaultAddr(addr)
+	if bus.mustFaultUnmappedMMIO(mappedAddr) {
+		return false
+	}
+
+	// Sign-extended addresses (0xFFFF0000-0xFFFFFFFF): map to low 16-bit range.
 	if addr >= 0xFFFF0000 {
 		// Map to lower 16-bit range if it looks like a sign-extended I/O address
 		mapped := addr & 0x0000FFFF
@@ -528,7 +564,12 @@ func (bus *MachineBus) Write8WithFault(addr uint32, value uint8) bool {
 }
 
 func (bus *MachineBus) Read8WithFault(addr uint32) (uint8, bool) {
-	// Check if the address is in the upper memory region (potentially sign-extended)
+	mappedAddr := bus.normalizeFaultAddr(addr)
+	if bus.mustFaultUnmappedMMIO(mappedAddr) {
+		return 0, false
+	}
+
+	// Sign-extended addresses (0xFFFF0000-0xFFFFFFFF): map to low 16-bit range.
 	if addr >= 0xFFFF0000 {
 		// Map to lower 16-bit range if it looks like a sign-extended I/O address
 		mapped := addr & 0x0000FFFF
@@ -604,6 +645,54 @@ func NewMachineBus() *MachineBus {
 		ioPageBitmap: make([]bool, DEFAULT_MEMORY_SIZE/PAGE_SIZE),
 		mapping64:    make(map[uint32][]IORegion64),
 	}
+}
+
+// SetStrictMMIOWindows configures inclusive address windows where unmapped
+// accesses must fault in *WithFault operations.
+func (bus *MachineBus) SetStrictMMIOWindows(windows []AddrRange) {
+	bus.strictMMIOWindows = append([]AddrRange(nil), windows...)
+}
+
+func (bus *MachineBus) normalizeFaultAddr(addr uint32) uint32 {
+	if addr >= 0xFFFF0000 {
+		mapped := addr & 0x0000FFFF
+		if mapped < DEFAULT_MEMORY_SIZE {
+			return mapped
+		}
+	}
+	return addr
+}
+
+func (bus *MachineBus) addrInStrictMMIOWindow(addr uint32) bool {
+	if len(bus.strictMMIOWindows) == 0 {
+		return false
+	}
+	for _, w := range bus.strictMMIOWindows {
+		if addr >= w.Start && addr <= w.End {
+			return true
+		}
+	}
+	return false
+}
+
+func (bus *MachineBus) hasMappedRegion(addr uint32) bool {
+	regions, exists := bus.mapping[addr&PAGE_MASK]
+	if !exists {
+		return false
+	}
+	for _, region := range regions {
+		if addr >= region.start && addr <= region.end {
+			return true
+		}
+	}
+	return false
+}
+
+func (bus *MachineBus) mustFaultUnmappedMMIO(addr uint32) bool {
+	if !bus.addrInStrictMMIOWindow(addr) {
+		return false
+	}
+	return !bus.hasMappedRegion(addr)
 }
 
 func (bus *MachineBus) GetMemory() []byte {
@@ -734,6 +823,37 @@ func (bus *MachineBus) MapIOByte(start, end uint32, onWrite8 func(addr uint32, v
 				}
 			}
 			bus.mapping[page] = regions
+		}
+	}
+}
+
+// UnmapIO removes all I/O region mappings that overlap the given address range,
+// restoring those pages to plain bus RAM access. This is used by the EmuTOS loader
+// to reclaim the VRAM address range (0x100000-0x4FFFFF) as normal M68K RAM.
+func (bus *MachineBus) UnmapIO(start, end uint32) {
+	firstPage := start & PAGE_MASK
+	lastPage := end & PAGE_MASK
+	for page := firstPage; page <= lastPage; page += PAGE_SIZE {
+		// Remove all regions that overlap our unmap range
+		regions := bus.mapping[page]
+		filtered := regions[:0]
+		for _, r := range regions {
+			if r.start > end || r.end < start {
+				filtered = append(filtered, r)
+			}
+		}
+		if len(filtered) == 0 {
+			delete(bus.mapping, page)
+		} else {
+			bus.mapping[page] = filtered
+		}
+		// Clear the bitmap so the fast path skips I/O dispatch
+		pageIdx := page >> 8
+		if pageIdx < uint32(len(bus.ioPageBitmap)) {
+			// Only clear if no remaining regions on this page
+			if len(filtered) == 0 {
+				bus.ioPageBitmap[pageIdx] = false
+			}
 		}
 	}
 }

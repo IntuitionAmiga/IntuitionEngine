@@ -15,8 +15,15 @@ type ProgramExecutor struct {
 	vgaEngine    *VGAEngine
 	voodooEngine *VoodooEngine
 	baseDir      string
+	emuTOSLoader *EmuTOSLoader
 	// launchExternal delegates full reset+launch orchestration to main when set.
 	launchExternal func(path string) error
+	// loadEmuTOS boots EmuTOS without a filename (ROM is resolved by main).
+	loadEmuTOS func() error
+
+	// GEMDOS drive mapping for EmuTOS mode
+	gemdosHostRoot string
+	gemdosDriveNum uint16
 
 	namePtr uint32
 	status  uint32
@@ -51,6 +58,23 @@ func (e *ProgramExecutor) SetCPU(cpu *CPU64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.ie64CPU = cpu
+}
+
+// SetEmuTOSBootLoader configures a callback that boots EmuTOS from the
+// embedded ROM, -emutos-image flag, or local .img file. Called when BASIC
+// writes EXEC_OP_EMUTOS to EXEC_CTRL.
+func (e *ProgramExecutor) SetEmuTOSBootLoader(fn func() error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.loadEmuTOS = fn
+}
+
+// SetGemdosConfig sets the GEMDOS drive mapping for EmuTOS mode reloads.
+func (e *ProgramExecutor) SetGemdosConfig(hostRoot string, driveNum uint16) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.gemdosHostRoot = hostRoot
+	e.gemdosDriveNum = driveNum
 }
 
 // SetExternalLauncher configures an optional shared launcher callback.
@@ -91,6 +115,8 @@ func (e *ProgramExecutor) HandleWrite(addr uint32, val uint32) {
 	case EXEC_CTRL:
 		if val == EXEC_OP_EXECUTE {
 			e.startExecute()
+		} else if val == EXEC_OP_EMUTOS {
+			e.startEmuTOS()
 		}
 	}
 }
@@ -144,6 +170,37 @@ func (e *ProgramExecutor) startExecute() {
 	go e.executeAsync(session, fullPath, typ)
 }
 
+func (e *ProgramExecutor) startEmuTOS() {
+	e.mu.Lock()
+	loader := e.loadEmuTOS
+	if loader == nil {
+		e.status = EXEC_STATUS_ERROR
+		e.errCode = EXEC_ERR_LOAD_FAILED
+		e.typ = EXEC_TYPE_EMUTOS
+		e.mu.Unlock()
+		return
+	}
+	e.session++
+	session := e.session
+	e.status = EXEC_STATUS_LOADING
+	e.typ = EXEC_TYPE_EMUTOS
+	e.errCode = EXEC_ERR_OK
+	e.mu.Unlock()
+
+	go func() {
+		if err := loader(); err != nil {
+			e.failSession(session, EXEC_ERR_LOAD_FAILED)
+			return
+		}
+		e.mu.Lock()
+		if session == e.session {
+			e.status = EXEC_STATUS_RUNNING
+			e.errCode = EXEC_ERR_OK
+		}
+		e.mu.Unlock()
+	}()
+}
+
 func (e *ProgramExecutor) executeAsync(session uint32, fullPath string, typ uint32) {
 	data, err := os.ReadFile(fullPath)
 	if err != nil {
@@ -191,6 +248,12 @@ func (e *ProgramExecutor) launchProgram(fullPath string, data []byte, typ uint32
 }
 
 func (e *ProgramExecutor) prepareAndLaunch(data []byte, typ uint32) error {
+	e.stopRunningCPUs()
+	if e.emuTOSLoader != nil {
+		e.emuTOSLoader.Stop()
+		e.emuTOSLoader = nil
+	}
+
 	switch typ {
 	case EXEC_TYPE_IE32:
 		if e.videoChip != nil {
@@ -296,9 +359,53 @@ func (e *ProgramExecutor) prepareAndLaunch(data []byte, typ uint32) error {
 		runtimeStatus.setCPUs(runtimeCPUX86, nil, nil, nil, nil, runner, nil)
 		go runner.Execute()
 		return nil
+
+	case EXEC_TYPE_EMUTOS:
+		if e.videoChip != nil {
+			e.videoChip.SetBigEndianMode(true)
+		}
+		cpu := NewM68KCPU(e.bus)
+		loader := NewEmuTOSLoader(e.bus, cpu, e.videoChip)
+		if err := loader.LoadROM(data); err != nil {
+			return err
+		}
+		if e.gemdosHostRoot != "" {
+			if err := loader.SetupGemdos(e.gemdosHostRoot, e.gemdosDriveNum); err != nil {
+				fmt.Printf("Warning: GEMDOS drive U: disabled: %v\n", err)
+			}
+		}
+		loader.StartTimer()
+		e.emuTOSLoader = loader
+
+		runner := NewM68KRunner(cpu)
+		runtimeStatus.setCPUs(runtimeCPUM68K, nil, nil, runner, nil, nil, nil)
+		go runner.Execute()
+		return nil
 	}
 
 	return fmt.Errorf("unsupported execute type")
+}
+
+func (e *ProgramExecutor) stopRunningCPUs() {
+	snap := runtimeStatus.snapshot()
+	if snap.ie32 != nil {
+		snap.ie32.Stop()
+	}
+	if snap.ie64 != nil {
+		snap.ie64.Stop()
+	}
+	if snap.m68k != nil {
+		snap.m68k.Stop()
+	}
+	if snap.z80 != nil {
+		snap.z80.Stop()
+	}
+	if snap.x86 != nil {
+		snap.x86.Stop()
+	}
+	if snap.cpu65 != nil {
+		snap.cpu65.Stop()
+	}
 }
 
 func (e *ProgramExecutor) failSession(session uint32, errCode uint32) {
@@ -325,6 +432,8 @@ func detectExecType(path string) uint32 {
 		return EXEC_TYPE_Z80
 	case ".ie86":
 		return EXEC_TYPE_X86
+	case ".tos", ".img":
+		return EXEC_TYPE_EMUTOS
 	case ".ies":
 		return EXEC_TYPE_SCRIPT
 	default:

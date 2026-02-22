@@ -30,6 +30,10 @@ import (
 	"time"
 )
 
+// emutosSentinel is a non-filesystem path passed to runProgramWithFullReset
+// to trigger EmuTOS boot without a filename (ROM resolved via loadEmuTOSImage).
+const emutosSentinel = "\x00emutos\x00"
+
 // Version metadata injected at build time via ldflags.
 var (
 	Version   = "dev"
@@ -168,37 +172,39 @@ func main() {
 	boilerPlate()
 
 	var (
-		modeIE32   bool
-		modeIE64   bool
-		modeBasic  bool
-		modeTerm   bool
-		basicImage string
-		modeM68K   bool
-		modeM6502  bool
-		modeZ80    bool
-		modeX86    bool
-		modePSG    bool
-		modeSID    bool
-		psgPlus    bool
-		sidPlus    bool
-		modePOKEY  bool
-		pokeyPlus  bool
-		modeTED    bool
-		tedPlus    bool
-		modeAHX    bool
-		ahxPlus    bool
-		perfMode   bool
-		sidFile    string
-		sidDebug   int
-		sidPAL     bool
-		sidNTSC    bool
-		loadAddr   optionalStringFlag
-		entryAddr  optionalStringFlag
-		resWidth   int
-		resHeight  int
-		scale      int
-		fullscreen bool
-		scriptFile string
+		modeIE32    bool
+		modeIE64    bool
+		modeBasic   bool
+		modeTerm    bool
+		basicImage  string
+		modeM68K    bool
+		modeEmuTOS  bool
+		emutosImage string
+		modeM6502   bool
+		modeZ80     bool
+		modeX86     bool
+		modePSG     bool
+		modeSID     bool
+		psgPlus     bool
+		sidPlus     bool
+		modePOKEY   bool
+		pokeyPlus   bool
+		modeTED     bool
+		tedPlus     bool
+		modeAHX     bool
+		ahxPlus     bool
+		perfMode    bool
+		sidFile     string
+		sidDebug    int
+		sidPAL      bool
+		sidNTSC     bool
+		loadAddr    optionalStringFlag
+		entryAddr   optionalStringFlag
+		resWidth    int
+		resHeight   int
+		scale       int
+		fullscreen  bool
+		scriptFile  string
 	)
 
 	flagSet := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
@@ -209,6 +215,8 @@ func main() {
 	flagSet.BoolVar(&modeTerm, "term", false, "Use console terminal with -basic")
 	flagSet.StringVar(&basicImage, "basic-image", "", "Run EhBASIC IE64 from custom binary path")
 	flagSet.BoolVar(&modeM68K, "m68k", false, "Run M68K CPU mode")
+	flagSet.BoolVar(&modeEmuTOS, "emutos", false, "Run EmuTOS (M68K ROM)")
+	flagSet.StringVar(&emutosImage, "emutos-image", "", "Run EmuTOS from custom ROM image path")
 	flagSet.BoolVar(&modeM6502, "m6502", false, "Run 6502 CPU mode")
 	flagSet.BoolVar(&modeZ80, "z80", false, "Run Z80 CPU mode")
 	flagSet.BoolVar(&modeX86, "x86", false, "Run x86 CPU mode (32-bit flat model)")
@@ -231,6 +239,8 @@ func main() {
 	flagSet.IntVar(&scale, "scale", 1, "Integer window scale factor (1-4)")
 	flagSet.BoolVar(&fullscreen, "fullscreen", false, "Start in fullscreen mode")
 	flagSet.StringVar(&scriptFile, "script", "", "Run IES Lua script file after startup")
+	var emutosDrive string
+	flagSet.StringVar(&emutosDrive, "emutos-drive", "", "Host directory to map as GEMDOS drive U: (default: ~/)")
 	flagSet.Bool("version", false, "Print version information and exit")
 	loadAddr.value = "0x0600"
 	flagSet.Var(&loadAddr, "load-addr", "6502/Z80 load address (hex or decimal, defaults: 6502=0x0600, Z80=0x0000)")
@@ -294,6 +304,21 @@ func main() {
 	if basicImage != "" {
 		modeBasic = true
 	}
+	// -emutos-image implies -emutos mode
+	if emutosImage != "" {
+		modeEmuTOS = true
+	}
+
+	// Resolve GEMDOS drive config for EmuTOS (always, since EmuTOS can be
+	// launched dynamically from BASIC or the program executor)
+	gemdosHostRoot := emutosDrive
+	gemdosDriveNum := uint16(20) // U: = drive 20
+	if gemdosHostRoot == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			gemdosHostRoot = home
+		}
+	}
+
 	// -basic is IE64 mode with embedded/custom BASIC image
 	if modeBasic {
 		modeIE64 = true
@@ -308,6 +333,9 @@ func main() {
 		modeCount++
 	}
 	if modeM68K {
+		modeCount++
+	}
+	if modeEmuTOS {
 		modeCount++
 	}
 	if modeM6502 {
@@ -341,7 +369,7 @@ func main() {
 	}
 	useGraphicalTerm = modeBasic && !modeTerm
 	if modeCount != 1 {
-		fmt.Println("Error: select exactly one mode flag: -ie32, -ie64, -m68k, -m6502, -z80, -x86, -basic, -psg, -psg+, -sid, -sid+, -pokey, -pokey+, -ted, -ted+, -ahx, or -ahx+")
+		fmt.Println("Error: select exactly one mode flag: -ie32, -ie64, -m68k, -emutos, -m6502, -z80, -x86, -basic, -psg, -psg+, -sid, -sid+, -pokey, -pokey+, -ted, -ted+, -ahx, or -ahx+")
 		os.Exit(1)
 	}
 	if modeBasic && filename != "" {
@@ -378,6 +406,11 @@ func main() {
 		case modeM68K:
 			fmt.Println("Error: M68K mode requires a filename")
 			os.Exit(1)
+		case modeEmuTOS:
+			if emutosImage == "" && filename == "" && len(embeddedEmuTOSImage) == 0 && resolveDefaultEmuTOSImagePath() == "" {
+				fmt.Println("Error: EmuTOS mode requires -emutos-image <path> or an embedded EmuTOS ROM")
+				os.Exit(1)
+			}
 		case modeM6502:
 			fmt.Println("Error: 6502 mode requires a filename")
 			os.Exit(1)
@@ -676,6 +709,9 @@ func main() {
 
 	// Setup terminal MMIO device (host adapter started later, just before GUI loop)
 	termMMIO := NewTerminalMMIO()
+	if setter, ok := videoChip.GetOutput().(TerminalMMIOSetter); ok {
+		setter.SetTerminalMMIO(termMMIO)
+	}
 	var termHost *TerminalHost
 	var videoTerm *VideoTerminal
 	var outputTicker *time.Ticker
@@ -696,19 +732,26 @@ func main() {
 			ci.SetCutHandler(videoTerm.CutSelection)
 			ci.SetMiddleMouseHandler(videoTerm.MiddleMousePaste)
 		}
-	} else {
+	} else if !modeEmuTOS {
 		termHost = NewTerminalHost(termMMIO)
 	}
 
+	// EmuTOS should run on the native IE profile only.
+	// Keep non-IE peripherals fully detached in -emutos mode.
+	ieOnlyProfile := modeEmuTOS
+
 	// Map I/O regions for peripherals
-	sysBus.MapIO(AUDIO_CTRL, AUDIO_REG_END,
-		soundChip.HandleRegisterRead,
-		soundChip.HandleRegisterWrite)
-	sysBus.MapIOByte(AUDIO_CTRL, AUDIO_REG_END, soundChip.HandleRegisterWrite8)
+	if !ieOnlyProfile {
+		sysBus.MapIO(AUDIO_CTRL, AUDIO_REG_END,
+			soundChip.HandleRegisterRead,
+			soundChip.HandleRegisterWrite)
+		sysBus.MapIOByte(AUDIO_CTRL, AUDIO_REG_END, soundChip.HandleRegisterWrite8)
+	}
 
 	sysBus.MapIO(VIDEO_CTRL, VIDEO_REG_END,
 		videoChip.HandleRead,
 		videoChip.HandleWrite)
+	sysBus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, videoChip.HandleWrite8)
 
 	// Register lock-free VIDEO_STATUS reader for fast VBlank polling
 	sysBus.SetVideoStatusReader(videoChip.HandleRead)
@@ -716,124 +759,158 @@ func main() {
 	sysBus.MapIO(VRAM_START, VRAM_START+VRAM_SIZE-1,
 		videoChip.HandleRead,
 		videoChip.HandleWrite)
+	sysBus.MapIOByte(VRAM_START, VRAM_START+VRAM_SIZE-1, videoChip.HandleWrite8)
 
 	sysBus.MapIO(TERM_OUT, TERMINAL_REGION_END,
 		termMMIO.HandleRead,
 		termMMIO.HandleWrite)
 
-	// Map PSG registers (CPU modes only)
-	sysBus.MapIO(PSG_BASE, PSG_END,
-		psgEngine.HandleRead,
-		psgEngine.HandleWrite)
-	sysBus.MapIO(PSG_PLUS_CTRL, PSG_PLUS_CTRL,
-		psgEngine.HandlePSGPlusRead,
-		psgEngine.HandlePSGPlusWrite)
-	sysBus.MapIO(PSG_PLAY_PTR, PSG_PLAY_STATUS+3,
-		psgPlayer.HandlePlayRead,
-		psgPlayer.HandlePlayWrite)
+	if ieOnlyProfile {
+		// IE EmuTOS writes PSG-style audio registers directly at 0xF0C00-0xF0C0F.
+		// Keep this IE-native register file present without enabling non-IE audio paths.
+		sysBus.MapIO(PSG_BASE, PSG_PLUS_CTRL+1,
+			func(addr uint32) uint32 { return 0 },
+			func(addr uint32, value uint32) {})
+		sysBus.MapIOByte(PSG_BASE, PSG_PLUS_CTRL+1, func(addr uint32, value uint8) {})
+	}
 
-	// Map SID registers
-	sysBus.MapIO(SID_BASE, SID_END,
-		sidEngine.HandleRead,
-		sidEngine.HandleWrite)
-	sysBus.MapIO(SID_PLAY_PTR, SID_SUBSONG,
-		sidPlayer.HandlePlayRead,
-		sidPlayer.HandlePlayWrite)
+	if !ieOnlyProfile {
+		// Map PSG registers (CPU modes only)
+		sysBus.MapIO(PSG_BASE, PSG_END,
+			psgEngine.HandleRead,
+			psgEngine.HandleWrite)
+		sysBus.MapIO(PSG_PLUS_CTRL, PSG_PLUS_CTRL,
+			psgEngine.HandlePSGPlusRead,
+			psgEngine.HandlePSGPlusWrite)
+		sysBus.MapIO(PSG_PLAY_PTR, PSG_PLAY_STATUS+3,
+			psgPlayer.HandlePlayRead,
+			psgPlayer.HandlePlayWrite)
 
-	// Map SID2/SID3 registers for multi-SID playback
-	sysBus.MapIO(SID2_BASE, SID2_END,
-		sid2Engine.HandleRead,
-		sid2Engine.HandleWrite)
-	sysBus.MapIO(SID3_BASE, SID3_END,
-		sid3Engine.HandleRead,
-		sid3Engine.HandleWrite)
+		// Map SID registers
+		sysBus.MapIO(SID_BASE, SID_END,
+			sidEngine.HandleRead,
+			sidEngine.HandleWrite)
+		sysBus.MapIO(SID_PLAY_PTR, SID_SUBSONG,
+			sidPlayer.HandlePlayRead,
+			sidPlayer.HandlePlayWrite)
+
+		// Map SID2/SID3 registers for multi-SID playback
+		sysBus.MapIO(SID2_BASE, SID2_END,
+			sid2Engine.HandleRead,
+			sid2Engine.HandleWrite)
+		sysBus.MapIO(SID3_BASE, SID3_END,
+			sid3Engine.HandleRead,
+			sid3Engine.HandleWrite)
+	}
 
 	// Map TED registers
 	tedEngine := NewTEDEngine(soundChip, SAMPLE_RATE)
 	tedPlayer := NewTEDPlayer(tedEngine)
 	tedPlayer.AttachBus(sysBus)
-	sysBus.MapIO(TED_BASE, TED_END,
-		tedEngine.HandleRead,
-		tedEngine.HandleWrite)
-	sysBus.MapIO(TED_PLAY_PTR, TED_PLAY_STATUS+3,
-		tedPlayer.HandlePlayRead,
-		tedPlayer.HandlePlayWrite)
+	if !ieOnlyProfile {
+		sysBus.MapIO(TED_BASE, TED_END,
+			tedEngine.HandleRead,
+			tedEngine.HandleWrite)
+		sysBus.MapIO(TED_PLAY_PTR, TED_PLAY_STATUS+3,
+			tedPlayer.HandlePlayRead,
+			tedPlayer.HandlePlayWrite)
+	}
 
 	// Map AHX registers (Amiga AHX module player)
 	ahxPlayerCPU := NewAHXPlayer(soundChip, SAMPLE_RATE)
 	ahxPlayerCPU.AttachBus(sysBus)
-	sysBus.MapIO(AHX_BASE, AHX_SUBSONG,
-		ahxPlayerCPU.HandlePlayRead,
-		ahxPlayerCPU.HandlePlayWrite)
+	if !ieOnlyProfile {
+		sysBus.MapIO(AHX_BASE, AHX_SUBSONG,
+			ahxPlayerCPU.HandlePlayRead,
+			ahxPlayerCPU.HandlePlayWrite)
+	}
 
 	// Map POKEY registers (Atari POKEY chip for SAP playback in CPU modes)
 	pokeyEngine := NewPOKEYEngine(soundChip, SAMPLE_RATE)
 	pokeyPlayer := NewPOKEYPlayer(pokeyEngine)
 	pokeyPlayer.AttachBus(sysBus)
-	sysBus.MapIO(POKEY_BASE, POKEY_END,
-		pokeyEngine.HandleRead,
-		pokeyEngine.HandleWrite)
-	sysBus.MapIO(SAP_PLAY_PTR, SAP_SUBSONG,
-		pokeyPlayer.HandlePlayRead,
-		pokeyPlayer.HandlePlayWrite)
+	if !ieOnlyProfile {
+		sysBus.MapIO(POKEY_BASE, POKEY_END,
+			pokeyEngine.HandleRead,
+			pokeyEngine.HandleWrite)
+		sysBus.MapIO(SAP_PLAY_PTR, SAP_SUBSONG,
+			pokeyPlayer.HandlePlayRead,
+			pokeyPlayer.HandlePlayWrite)
+	}
 
-	// Map VGA registers (VGA is a standalone video device)
-	vgaEngine := NewVGAEngine(sysBus)
-	sysBus.MapIO(VGA_BASE, VGA_REG_END,
-		vgaEngine.HandleRead,
-		vgaEngine.HandleWrite)
-	sysBus.MapIO(VGA_VRAM_WINDOW, VGA_VRAM_WINDOW+VGA_VRAM_SIZE-1,
-		vgaEngine.HandleVRAMRead,
-		vgaEngine.HandleVRAMWrite)
-	sysBus.MapIO(VGA_TEXT_WINDOW, VGA_TEXT_WINDOW+VGA_TEXT_SIZE-1,
-		vgaEngine.HandleTextRead,
-		vgaEngine.HandleTextWrite)
+	var vgaEngine *VGAEngine
+	var ulaEngine *ULAEngine
+	var tedVideoEngine *TEDVideoEngine
+	var anticEngine *ANTICEngine
+	var voodooEngine *VoodooEngine
 
-	// Map ULA registers (ZX Spectrum video chip)
-	ulaEngine := NewULAEngine(sysBus)
-	sysBus.MapIO(ULA_BASE, ULA_REG_END,
-		ulaEngine.HandleRead,
-		ulaEngine.HandleWrite)
-	sysBus.MapIO(ULA_VRAM_BASE, ULA_VRAM_BASE+ULA_VRAM_SIZE-1,
-		ulaEngine.HandleBusVRAMRead,
-		ulaEngine.HandleBusVRAMWrite)
+	if !ieOnlyProfile {
+		// Map VGA registers (VGA is a standalone video device)
+		vgaEngine = NewVGAEngine(sysBus)
+		sysBus.MapIO(VGA_BASE, VGA_REG_END,
+			vgaEngine.HandleRead,
+			vgaEngine.HandleWrite)
+		sysBus.MapIO(VGA_VRAM_WINDOW, VGA_VRAM_WINDOW+VGA_VRAM_SIZE-1,
+			vgaEngine.HandleVRAMRead,
+			vgaEngine.HandleVRAMWrite)
+		sysBus.MapIO(VGA_TEXT_WINDOW, VGA_TEXT_WINDOW+VGA_TEXT_SIZE-1,
+			vgaEngine.HandleTextRead,
+			vgaEngine.HandleTextWrite)
 
-	// Map TED video registers (Commodore Plus/4 video chip)
-	tedVideoEngine := NewTEDVideoEngine(sysBus)
-	sysBus.MapIO(TED_VIDEO_BASE, TED_VIDEO_END,
-		tedVideoEngine.HandleRead,
-		tedVideoEngine.HandleWrite)
-	sysBus.MapIO(TED_V_VRAM_BASE, TED_V_VRAM_BASE+TED_V_VRAM_SIZE-1,
-		tedVideoEngine.HandleBusVRAMRead,
-		tedVideoEngine.HandleBusVRAMWrite)
+		// Map ULA registers (ZX Spectrum video chip)
+		ulaEngine = NewULAEngine(sysBus)
+		sysBus.MapIO(ULA_BASE, ULA_REG_END,
+			ulaEngine.HandleRead,
+			ulaEngine.HandleWrite)
+		sysBus.MapIO(ULA_VRAM_BASE, ULA_VRAM_BASE+ULA_VRAM_SIZE-1,
+			ulaEngine.HandleBusVRAMRead,
+			ulaEngine.HandleBusVRAMWrite)
 
-	// Map ANTIC video registers (Atari 8-bit video chip)
-	anticEngine := NewANTICEngine(sysBus)
-	sysBus.MapIO(ANTIC_BASE, ANTIC_END,
-		anticEngine.HandleRead,
-		anticEngine.HandleWrite)
-	// Map GTIA color registers (ANTIC's companion chip)
-	sysBus.MapIO(GTIA_BASE, GTIA_END,
-		anticEngine.HandleRead,
-		anticEngine.HandleWrite)
+		// Map TED video registers (Commodore Plus/4 video chip)
+		tedVideoEngine = NewTEDVideoEngine(sysBus)
+		sysBus.MapIO(TED_VIDEO_BASE, TED_VIDEO_END,
+			tedVideoEngine.HandleRead,
+			tedVideoEngine.HandleWrite)
+		sysBus.MapIO(TED_V_VRAM_BASE, TED_V_VRAM_BASE+TED_V_VRAM_SIZE-1,
+			tedVideoEngine.HandleBusVRAMRead,
+			tedVideoEngine.HandleBusVRAMWrite)
 
-	// Map Voodoo 3D graphics registers (3DFX SST-1 with Vulkan HLE)
-	voodooEngine, err := NewVoodooEngine(sysBus)
-	if err != nil {
-		fmt.Printf("Warning: Voodoo initialization failed: %v\n", err)
-	} else {
-		sysBus.MapIO(VOODOO_BASE, VOODOO_END,
-			voodooEngine.HandleRead,
-			voodooEngine.HandleWrite)
+		// Map ANTIC video registers (Atari 8-bit video chip)
+		anticEngine = NewANTICEngine(sysBus)
+		sysBus.MapIO(ANTIC_BASE, ANTIC_END,
+			anticEngine.HandleRead,
+			anticEngine.HandleWrite)
+		// Map GTIA color registers (ANTIC's companion chip)
+		sysBus.MapIO(GTIA_BASE, GTIA_END,
+			anticEngine.HandleRead,
+			anticEngine.HandleWrite)
+
+		// Map Voodoo 3D graphics registers (3DFX SST-1 with Vulkan HLE)
+		voodooEngine, err = NewVoodooEngine(sysBus)
+		if err != nil {
+			fmt.Printf("Warning: Voodoo initialization failed: %v\n", err)
+		} else {
+			sysBus.MapIO(VOODOO_BASE, VOODOO_END,
+				voodooEngine.HandleRead,
+				voodooEngine.HandleWrite)
+		}
 	}
 
 	// Create video compositor - owns the display output and blends video sources
 	compositor := NewVideoCompositor(videoChip.GetOutput())
-	compositor.RegisterSource(videoChip)      // Layer 0 - background
-	compositor.RegisterSource(vgaEngine)      // Layer 10 - VGA renders on top
-	compositor.RegisterSource(tedVideoEngine) // Layer 12 - TED video between VGA and ULA
-	compositor.RegisterSource(anticEngine)    // Layer 13 - ANTIC (Atari 8-bit)
-	compositor.RegisterSource(ulaEngine)      // Layer 15 - ULA renders on top of TED
+	compositor.RegisterSource(videoChip) // Layer 0 - background
+	if vgaEngine != nil {
+		compositor.RegisterSource(vgaEngine) // Layer 10 - VGA renders on top
+	}
+	if tedVideoEngine != nil {
+		compositor.RegisterSource(tedVideoEngine) // Layer 12 - TED video between VGA and ULA
+	}
+	if anticEngine != nil {
+		compositor.RegisterSource(anticEngine) // Layer 13 - ANTIC (Atari 8-bit)
+	}
+	if ulaEngine != nil {
+		compositor.RegisterSource(ulaEngine) // Layer 15 - ULA renders on top of TED
+	}
 	if voodooEngine != nil {
 		compositor.RegisterSource(voodooEngine) // Layer 20 - Voodoo 3D on top
 	}
@@ -910,6 +987,7 @@ func main() {
 	var cpuRunner EmulatorCPU
 	var startExecution bool
 	var ie64CPU *CPU64
+	var emuTOSLoader *EmuTOSLoader
 	var z80LoadAddr, z80Entry uint16
 	var cpu6502LoadAddr, cpu6502Entry uint16
 	var x86LoadAddr, x86Entry uint32
@@ -917,6 +995,9 @@ func main() {
 	// ProgramExecutor is created unconditionally so EXEC MMIO is always mapped.
 	// Its CPU pointer is set/updated when entering IE64 mode (initial or mode-switch).
 	progExec := NewProgramExecutor(sysBus, nil, videoChip, vgaEngine, voodooEngine, ".")
+	if gemdosHostRoot != "" {
+		progExec.SetGemdosConfig(gemdosHostRoot, gemdosDriveNum)
+	}
 	sysBus.MapIO(EXEC_BASE, EXEC_END, progExec.HandleRead, progExec.HandleWrite)
 
 	// State for runProgramWithFullReset
@@ -939,6 +1020,12 @@ func main() {
 			cpu.PerfEnabled = perfMode
 			return cpu, nil
 		case "m68k":
+			videoChip.SetBigEndianMode(true)
+			m68k := NewM68KCPU(sysBus)
+			runner := NewM68KRunner(m68k)
+			runner.PerfEnabled = perfMode
+			return runner, nil
+		case "emutos":
 			videoChip.SetBigEndianMode(true)
 			m68k := NewM68KCPU(sysBus)
 			runner := NewM68KRunner(m68k)
@@ -995,6 +1082,35 @@ func main() {
 		b, err := os.ReadFile(autoPath)
 		if err != nil {
 			return nil, "", fmt.Errorf("failed to read fallback BASIC image %s: %w", autoPath, err)
+		}
+		return b, autoPath, nil
+	}
+
+	loadEmuTOSImage := func() ([]byte, string, error) {
+		if emutosImage != "" {
+			b, err := os.ReadFile(emutosImage)
+			if err != nil {
+				return nil, "", fmt.Errorf("failed to read EmuTOS image %s: %w", emutosImage, err)
+			}
+			return b, emutosImage, nil
+		}
+		if filename != "" {
+			b, err := os.ReadFile(filename)
+			if err != nil {
+				return nil, "", fmt.Errorf("failed to read EmuTOS image %s: %w", filename, err)
+			}
+			return b, filename, nil
+		}
+		if len(embeddedEmuTOSImage) > 0 {
+			return append([]byte(nil), embeddedEmuTOSImage...), "", nil
+		}
+		autoPath := resolveDefaultEmuTOSImagePath()
+		if autoPath == "" {
+			return nil, "", fmt.Errorf("EmuTOS not embedded and no local ROM image found")
+		}
+		b, err := os.ReadFile(autoPath)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to read fallback EmuTOS image %s: %w", autoPath, err)
 		}
 		return b, autoPath, nil
 	}
@@ -1121,6 +1237,59 @@ func main() {
 			fmt.Printf("Starting M68K CPU with program: %s\n\n", filename)
 			m68kRunner.StartExecution()
 		}
+	} else if modeEmuTOS {
+		romBytes, romPath, err := loadEmuTOSImage()
+		if err != nil {
+			fmt.Printf("Error loading EmuTOS image: %v\n", err)
+			os.Exit(1)
+		}
+
+		// EmuTOS uses addresses 0x100000-0x3FFFFF as normal RAM (heap, stack).
+		// Remove the VRAM I/O mapping so writes go to bus memory, not VideoChip.
+		// The VideoChip reads from bus memory directly for display in EmuTOS mode.
+		sysBus.UnmapIO(VRAM_START, VRAM_START+VRAM_SIZE-1)
+		videoChip.SetBusMemory(sysBus.memory)
+		videoChip.SetBigEndianMode(true)
+		// Point VideoChip's GetFrame at bus memory so M68K VRAM writes are visible.
+		frameSize := 640 * 480 * 4 // IE native mode: 640x480 RGBA
+		videoChip.SetDirectVRAM(sysBus.memory[VRAM_START : VRAM_START+frameSize])
+		m68kCPU := NewM68KCPU(sysBus)
+		m68kRunner := NewM68KRunner(m68kCPU)
+		m68kRunner.PerfEnabled = perfMode
+		loader := NewEmuTOSLoader(sysBus, m68kCPU, videoChip)
+		if err := loader.LoadROM(romBytes); err != nil {
+			fmt.Printf("Error loading EmuTOS ROM: %v\n", err)
+			os.Exit(1)
+		}
+		if gemdosHostRoot != "" {
+			if err := loader.SetupGemdos(gemdosHostRoot, gemdosDriveNum); err != nil {
+				fmt.Printf("Warning: GEMDOS drive U: disabled: %v\n", err)
+			}
+		}
+
+		emuTOSLoader = loader
+		runtimeStatus.setCPUs(runtimeCPUM68K, nil, nil, m68kRunner, nil, nil, nil)
+		cpuRunner = m68kRunner
+		currentMode = "emutos"
+		monitor.RegisterCPU("M68K", NewDebugM68K(m68kCPU, m68kRunner))
+		startExecution = true
+		if romPath != "" {
+			currentPath = romPath
+		}
+		programBytes = append([]byte(nil), romBytes...)
+
+		// Hide system cursor — EmuTOS draws its own VDI cursor in VRAM
+		if hider, ok := videoChip.GetOutput().(SystemCursorHider); ok {
+			hider.HideSystemCursor()
+		}
+
+		videoChip.Start()
+		compositor.Start()
+		// EmuTOS uses IE-native video/audio only in this profile.
+		// Keep non-IE chips detached for clean bring-up.
+		loader.StartTimer()
+		fmt.Println("Starting EmuTOS on M68K")
+		m68kRunner.StartExecution()
 	} else if modeZ80 {
 		var parsedLoadAddr uint16
 		if loadAddr.set {
@@ -1297,15 +1466,36 @@ func main() {
 
 		var bytes []byte
 		var mode string
-		forceBasicBoot := path == ""
+		forceBasicBoot := false
 
-		if forceBasicBoot {
+		if path == "" {
+			// F10 hard reset: reload the original CLI boot mode, not the
+			// current mode. EmuTOS launched via BASIC's EMUTOS command
+			// should reset back to BASIC, not EmuTOS.
+			if modeEmuTOS {
+				var err error
+				bytes, path, err = loadEmuTOSImage()
+				if err != nil {
+					return err
+				}
+				mode = "emutos"
+			} else {
+				forceBasicBoot = true
+				var err error
+				bytes, path, err = loadBasicBootImage()
+				if err != nil {
+					return err
+				}
+				mode = "ie64"
+			}
+		} else if path == emutosSentinel {
+			// BASIC EMUTOS command: boot EmuTOS from embedded/flag/local ROM.
 			var err error
-			bytes, path, err = loadBasicBootImage()
+			bytes, path, err = loadEmuTOSImage()
 			if err != nil {
 				return err
 			}
-			mode = "ie64"
+			mode = "emutos"
 		} else {
 			var err error
 			bytes, err = os.ReadFile(path)
@@ -1337,15 +1527,27 @@ func main() {
 
 		// 1. Stop CPU
 		cpuRunner.Stop()
+		if emuTOSLoader != nil {
+			emuTOSLoader.Stop()
+			emuTOSLoader = nil
+		}
 
 		// 2. Stop compositor
 		compositor.Stop()
 
-		// 3. Stop render loops
-		vgaEngine.StopRenderLoop()
-		ulaEngine.StopRenderLoop()
-		tedVideoEngine.StopRenderLoop()
-		anticEngine.StopRenderLoop()
+		// 3. Stop render loops (engines are optional in -emutos profile)
+		if vgaEngine != nil {
+			vgaEngine.StopRenderLoop()
+		}
+		if ulaEngine != nil {
+			ulaEngine.StopRenderLoop()
+		}
+		if tedVideoEngine != nil {
+			tedVideoEngine.StopRenderLoop()
+		}
+		if anticEngine != nil {
+			anticEngine.StopRenderLoop()
+		}
 
 		// 4. Recreate CPU runner for a true cold boot, then update runtime status/progExec.
 		newRunner, err := createRunnerForMode(mode)
@@ -1364,6 +1566,9 @@ func main() {
 			runtimeStatus.setCPUs(runtimeCPUIE64, nil, cpu64, nil, nil, nil, nil)
 			progExec.SetCPU(cpu64)
 		case "m68k":
+			runtimeStatus.setCPUs(runtimeCPUM68K, nil, nil, newRunner.(*M68KRunner), nil, nil, nil)
+			progExec.SetCPU(nil)
+		case "emutos":
 			runtimeStatus.setCPUs(runtimeCPUM68K, nil, nil, newRunner.(*M68KRunner), nil, nil, nil)
 			progExec.SetCPU(nil)
 		case "z80":
@@ -1385,6 +1590,9 @@ func main() {
 		case "ie64":
 			monitor.RegisterCPU("IE64", NewDebugIE64(newRunner.(*CPU64)))
 		case "m68k":
+			r := newRunner.(*M68KRunner)
+			monitor.RegisterCPU("M68K", NewDebugM68K(r.cpu, r))
+		case "emutos":
 			r := newRunner.(*M68KRunner)
 			monitor.RegisterCPU("M68K", NewDebugM68K(r.cpu, r))
 		case "z80":
@@ -1413,12 +1621,40 @@ func main() {
 		// 7. Reset memory
 		sysBus.Reset()
 
+		// 7b. VRAM I/O mapping — must happen after sysBus.Reset().
+		if mode == "emutos" {
+			// EmuTOS: unmap VRAM so M68K writes go to bus memory directly.
+			sysBus.UnmapIO(VRAM_START, VRAM_START+VRAM_SIZE-1)
+			videoChip.SetBusMemory(sysBus.memory)
+			videoChip.SetBigEndianMode(true)
+			frameSize := 640 * 480 * 4
+			videoChip.SetDirectVRAM(sysBus.memory[VRAM_START : VRAM_START+frameSize])
+			if hider, ok := videoChip.GetOutput().(SystemCursorHider); ok {
+				hider.HideSystemCursor()
+			}
+		} else if currentMode == "emutos" {
+			// Leaving EmuTOS: restore VRAM I/O mapping and VideoChip defaults.
+			sysBus.MapIO(VRAM_START, VRAM_START+VRAM_SIZE-1,
+				videoChip.HandleRead, videoChip.HandleWrite)
+			sysBus.MapIOByte(VRAM_START, VRAM_START+VRAM_SIZE-1, videoChip.HandleWrite8)
+			videoChip.SetBigEndianMode(false)
+			videoChip.SetDirectVRAM(nil)
+		}
+
 		// 8. Reset video chips
 		videoChip.Reset()
-		vgaEngine.Reset()
-		ulaEngine.Reset()
-		tedVideoEngine.Reset()
-		anticEngine.Reset()
+		if vgaEngine != nil {
+			vgaEngine.Reset()
+		}
+		if ulaEngine != nil {
+			ulaEngine.Reset()
+		}
+		if tedVideoEngine != nil {
+			tedVideoEngine.Reset()
+		}
+		if anticEngine != nil {
+			anticEngine.Reset()
+		}
 		if voodooEngine != nil {
 			voodooEngine.Reset()
 		}
@@ -1467,10 +1703,27 @@ func main() {
 		programBytes = bytes
 		currentPath = path
 		currentMode = mode
-		reloadProgram = buildReloadClosure(mode, cpuRunner, bytes, sysBus)
+		if mode != "emutos" {
+			reloadProgram = buildReloadClosure(mode, cpuRunner, bytes, sysBus)
+		}
 
 		// 11. Load program
-		reloadProgram()
+		if mode == "emutos" {
+			r := cpuRunner.(*M68KRunner)
+			loader := NewEmuTOSLoader(sysBus, r.cpu, videoChip)
+			if err := loader.LoadROM(bytes); err != nil {
+				return fmt.Errorf("failed to load EmuTOS ROM: %w", err)
+			}
+			if gemdosHostRoot != "" {
+				if err := loader.SetupGemdos(gemdosHostRoot, gemdosDriveNum); err != nil {
+					fmt.Printf("Warning: GEMDOS drive U: disabled: %v\n", err)
+				}
+			}
+			loader.StartTimer()
+			emuTOSLoader = loader
+		} else {
+			reloadProgram()
+		}
 		if forceBasicBoot {
 			// Optional cleanup point: BASIC image is now loaded into reset state.
 			runtime.GC()
@@ -1478,14 +1731,24 @@ func main() {
 
 		// 12. Start peripherals
 		videoChip.Start()
-		soundChip.Start()
+		if mode != "emutos" {
+			soundChip.Start()
+		}
 
 		// 13. Start compositor + render loops
 		compositor.Start()
-		vgaEngine.StartRenderLoop()
-		ulaEngine.StartRenderLoop()
-		tedVideoEngine.StartRenderLoop()
-		anticEngine.StartRenderLoop()
+		if vgaEngine != nil {
+			vgaEngine.StartRenderLoop()
+		}
+		if ulaEngine != nil {
+			ulaEngine.StartRenderLoop()
+		}
+		if tedVideoEngine != nil {
+			tedVideoEngine.StartRenderLoop()
+		}
+		if anticEngine != nil {
+			anticEngine.StartRenderLoop()
+		}
 
 		// 14. Start CPU
 		cpuRunner.StartExecution()
@@ -1515,6 +1778,9 @@ func main() {
 	// Ensure RUN "file" (ProgramExecutor) uses the same launch path as IPC/F10
 	// so monitor/runtime state stays consistent across all entry points.
 	progExec.SetExternalLauncher(launchProgramOrScript)
+	progExec.SetEmuTOSBootLoader(func() error {
+		return runProgramWithFullReset(emutosSentinel)
+	})
 
 	// Wire F10 hard reset handler
 	if hr, ok := videoChip.GetOutput().(HardResettable); ok {
@@ -1574,14 +1840,31 @@ func main() {
 		}()
 	}
 
-	// Wait for window close
+	// Wait for window close (graphical mode), script completion, or CPU halt (EmuTOS headless).
+	waited := false
 	if waiter, ok := videoChip.GetOutput().(interface{ Done() <-chan struct{} }); ok {
 		<-waiter.Done()
+		waited = true
+	}
+	if !waited && scriptEngine != nil {
+		if ch := scriptEngine.Done(); ch != nil {
+			<-ch
+			waited = true
+		}
+	}
+	if !waited && emuTOSLoader != nil {
+		// Headless EmuTOS: block until the CPU stops running.
+		for emuTOSLoader.cpu.Running() {
+			time.Sleep(100 * time.Millisecond)
+		}
 	}
 
 	// Shut down terminal host (restores stdin to blocking) and render goroutines.
 	if scriptEngine != nil {
 		scriptEngine.Cancel()
+	}
+	if emuTOSLoader != nil {
+		emuTOSLoader.Stop()
 	}
 	if outputTicker != nil {
 		outputTicker.Stop()
@@ -1595,10 +1878,18 @@ func main() {
 	if videoTerm != nil {
 		videoTerm.Stop()
 	}
-	vgaEngine.StopRenderLoop()
-	ulaEngine.StopRenderLoop()
-	tedVideoEngine.StopRenderLoop()
-	anticEngine.StopRenderLoop()
+	if vgaEngine != nil {
+		vgaEngine.StopRenderLoop()
+	}
+	if ulaEngine != nil {
+		ulaEngine.StopRenderLoop()
+	}
+	if tedVideoEngine != nil {
+		tedVideoEngine.StopRenderLoop()
+	}
+	if anticEngine != nil {
+		anticEngine.StopRenderLoop()
+	}
 }
 
 func parseUint16Flag(value string) (uint16, error) {
@@ -1638,5 +1929,20 @@ func resolveDefaultBasicImagePath() string {
 		}
 	}
 
+	return ""
+}
+
+func resolveDefaultEmuTOSImagePath() string {
+	candidates := []string{
+		"etos256us.img",
+		"emutos.img",
+		"bin/etos256us.img",
+		"bin/emutos.img",
+	}
+	for _, p := range candidates {
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return p
+		}
+	}
 	return ""
 }

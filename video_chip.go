@@ -418,6 +418,7 @@ type VideoChip struct {
 	bus                       Bus32
 	busMemory                 []byte       // Cached reference to bus memory for lock-free reads
 	bigEndianMode             bool         // Read memory as big-endian (for M68K programs)
+	directVRAM                []byte       // When set, GetFrame returns this instead of frontBuffer
 	lastFrameStart            atomic.Int64 // Unix nanoseconds when current frame started
 	copperEnabled             bool
 	copperPtrStaged           uint32
@@ -470,6 +471,7 @@ type VideoChip struct {
 	bltMode7DvRow   uint32
 	bltMode7TexW    uint32
 	bltMode7TexH    uint32
+	blitterEnabled  bool
 
 	bltPending bool
 	bltErr     bool
@@ -567,13 +569,14 @@ func NewVideoChip(backend int) (*VideoChip, error) {
 	}
 
 	chip := &VideoChip{
-		output:       output,
-		currentMode:  MODE_640x480, // Default video mode
-		layer:        VIDEOCHIP_LAYER,
-		vsyncChan:    make(chan struct{}),
-		done:         make(chan struct{}),
-		frameCounter: 0,
-		prevVRAM:     make([]byte, VRAM_SIZE),
+		output:         output,
+		currentMode:    MODE_640x480, // Default video mode
+		layer:          VIDEOCHIP_LAYER,
+		vsyncChan:      make(chan struct{}),
+		done:           make(chan struct{}),
+		frameCounter:   0,
+		prevVRAM:       make([]byte, VRAM_SIZE),
+		blitterEnabled: true,
 	}
 	// Atomic fields default to false - no explicit init needed
 
@@ -614,6 +617,14 @@ func (chip *VideoChip) AttachBus(bus Bus32) {
 	chip.busMemory = bus.GetMemory() // Cache for lock-free reads
 }
 
+// SetBusMemory sets a direct reference to bus memory, used when VRAM I/O mapping
+// has been removed (e.g., EmuTOS mode where the VRAM address range is normal RAM).
+func (chip *VideoChip) SetBusMemory(mem []byte) {
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
+	chip.busMemory = mem
+}
+
 // SetBigEndianMode configures the video chip to read memory in big-endian format.
 // This is required for M68K programs where data (copper lists, etc.) is stored
 // in big-endian byte order.
@@ -621,6 +632,22 @@ func (chip *VideoChip) SetBigEndianMode(enabled bool) {
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 	chip.bigEndianMode = enabled
+}
+
+// SetDirectVRAM configures the video chip to return a slice of bus memory
+// for GetFrame() instead of its internal frontBuffer. This is used when VRAM
+// I/O is unmapped (e.g. EmuTOS mode) so the CPU writes directly to bus memory
+// and the VideoChip reads from the same location.
+func (chip *VideoChip) SetDirectVRAM(slice []byte) {
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
+	chip.directVRAM = slice
+}
+
+func (chip *VideoChip) SetBlitterEnabled(enabled bool) {
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
+	chip.blitterEnabled = enabled
 }
 
 func (chip *VideoChip) SetResolutionChangeCallback(cb func(w, h int)) {
@@ -1247,19 +1274,24 @@ func (chip *VideoChip) blitLineLocked(mode VideoMode) {
 
 func (chip *VideoChip) blitReadPixelLocked(addr uint32) uint32 {
 	if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
+		// directVRAM mode: read from busMemory (what GetFrame returns).
+		// VRAM byte order is always LE, matching the frontBuffer convention.
+		if chip.directVRAM != nil {
+			if chip.busMemory != nil && addr+4 <= uint32(len(chip.busMemory)) {
+				return binary.LittleEndian.Uint32(chip.busMemory[addr : addr+4])
+			}
+			return 0
+		}
 		offset := addr - BUFFER_OFFSET
 		// Read from frontBuffer if within display area
 		if offset+BYTES_PER_PIXEL <= uint32(len(chip.frontBuffer)) && offset%BYTES_PER_PIXEL == BUFFER_REMAINDER {
-			// Direct pointer access for performance
-			return *(*uint32)(unsafe.Pointer(&chip.frontBuffer[offset]))
+			// VRAM pixels are always stored as little-endian RGBA bytes.
+			return binary.LittleEndian.Uint32(chip.frontBuffer[offset : offset+4])
 		}
 		// For VRAM addresses beyond frontBuffer, fall back to busMemory
 		// This enables double-buffering by rendering to VRAM offset > one frame
 		if chip.busMemory != nil && addr+4 <= uint32(len(chip.busMemory)) {
-			if chip.bigEndianMode {
-				return binary.BigEndian.Uint32(chip.busMemory[addr : addr+4])
-			}
-			return *(*uint32)(unsafe.Pointer(&chip.busMemory[addr]))
+			return binary.LittleEndian.Uint32(chip.busMemory[addr : addr+4])
 		}
 		return 0
 	}
@@ -1297,13 +1329,24 @@ func (chip *VideoChip) busRead8Locked(addr uint32) uint8 {
 
 func (chip *VideoChip) blitWritePixelLocked(addr uint32, value uint32, mode VideoMode) {
 	if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
+		// directVRAM mode: write to busMemory (what GetFrame returns).
+		// VRAM byte order is always LE, matching the frontBuffer convention.
+		if chip.directVRAM != nil {
+			if chip.busMemory != nil && addr+4 <= uint32(len(chip.busMemory)) {
+				binary.LittleEndian.PutUint32(chip.busMemory[addr:addr+4], value)
+			}
+			if !chip.resetting && !chip.hasContent.Load() {
+				chip.hasContent.Store(true)
+			}
+			return
+		}
 		offset := addr - BUFFER_OFFSET
 		if offset+BYTES_PER_PIXEL > uint32(len(chip.frontBuffer)) || offset%BYTES_PER_PIXEL != BUFFER_REMAINDER {
 			chip.bltErr = true
 			return
 		}
-		// Direct pointer access for performance
-		*(*uint32)(unsafe.Pointer(&chip.frontBuffer[offset])) = value
+		// VRAM pixels are always stored as little-endian RGBA bytes.
+		binary.LittleEndian.PutUint32(chip.frontBuffer[offset:], value)
 		startPixel := offset / BYTES_PER_PIXEL
 		startX := int(startPixel) % mode.width
 		startY := int(startPixel) / mode.width
@@ -1691,10 +1734,15 @@ func (chip *VideoChip) HandleRead(addr uint32) uint32 {
 	default:
 		if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
 			offset := addr - ADDR_OFFSET
-			if offset+PIXEL_ALIGNMENT > uint32(len(chip.frontBuffer)) || (offset&PIXEL_ALIGN_MASK) != DEFAULT_RETURN {
-				return DEFAULT_RETURN
+			if offset+PIXEL_ALIGNMENT <= uint32(len(chip.frontBuffer)) && (offset&PIXEL_ALIGN_MASK) == DEFAULT_RETURN {
+				return binary.LittleEndian.Uint32(chip.frontBuffer[offset:])
 			}
-			return binary.LittleEndian.Uint32(chip.frontBuffer[offset:])
+			// Fallback: read from bus memory for addresses beyond frontBuffer
+			// or non-aligned accesses (M68K uses VRAM range for general data)
+			if chip.busMemory != nil && addr+4 <= uint32(len(chip.busMemory)) {
+				return binary.LittleEndian.Uint32(chip.busMemory[addr : addr+4])
+			}
+			return DEFAULT_RETURN
 		}
 	}
 	return DEFAULT_RETURN
@@ -1750,6 +1798,50 @@ func (chip *VideoChip) HandleWrite(addr uint32, value uint32) {
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 	chip.handleWriteLocked(addr, value)
+}
+
+// HandleWrite8 handles byte-wise writes into video MMIO/VRAM.
+// This is required for big-endian CPUs (e.g. M68K) that emit 8-bit writes
+// for 16/32-bit store operations.
+func (chip *VideoChip) HandleWrite8(addr uint32, value uint8) {
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
+
+	// Byte writes to VRAM must update the framebuffer directly.
+	if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
+		offset := addr - VRAM_START
+		if offset < uint32(len(chip.frontBuffer)) {
+			chip.frontBuffer[offset] = value
+			mode := VideoModes[chip.currentMode]
+			pixelIndex := int(offset) / BYTES_PER_PIXEL
+			x := pixelIndex % mode.width
+			y := pixelIndex / mode.width
+			chip.markRegionDirty(x, y)
+			if !chip.resetting && !chip.hasContent.Load() {
+				chip.hasContent.Store(true)
+			}
+		}
+		return
+	}
+
+	// For register writes, reconstruct the full 32-bit register value
+	// from mirrored bus bytes, applying CPU byte order.
+	if addr >= VIDEO_CTRL && addr <= VIDEO_REG_END {
+		base := addr &^ 0x3
+		var raw [4]byte
+		if chip.busMemory != nil && base+3 < uint32(len(chip.busMemory)) {
+			copy(raw[:], chip.busMemory[base:base+4])
+		}
+		raw[addr-base] = value
+
+		var assembled uint32
+		if chip.bigEndianMode {
+			assembled = binary.BigEndian.Uint32(raw[:])
+		} else {
+			assembled = binary.LittleEndian.Uint32(raw[:])
+		}
+		chip.handleWriteLocked(base, assembled)
+	}
 }
 
 func (chip *VideoChip) handleWriteLocked(addr uint32, value uint32) {
@@ -1864,6 +1956,7 @@ func (chip *VideoChip) handleWriteLocked(addr uint32, value uint32) {
 			// Write to frontBuffer if within display area
 			if offset+BYTES_PER_PIXEL <= uint32(len(chip.frontBuffer)) && offset%BYTES_PER_PIXEL == BUFFER_REMAINDER {
 				mode := VideoModes[chip.currentMode]
+				// VRAM pixels are always stored as little-endian RGBA bytes.
 				binary.LittleEndian.PutUint32(chip.frontBuffer[offset:], value)
 
 				startPixel := offset / BYTES_PER_PIXEL
@@ -1886,6 +1979,9 @@ func (chip *VideoChip) handleWriteLocked(addr uint32, value uint32) {
 func (chip *VideoChip) handleBlitterWriteLocked(addr uint32, value uint32) bool {
 	switch addr {
 	case BLT_CTRL:
+		if !chip.blitterEnabled {
+			return true
+		}
 		if value&bltCtrlIRQ != 0 {
 			chip.bltIrqEnabled = true
 		} else {
@@ -2249,6 +2345,10 @@ func (chip *VideoChip) GetFrame() []byte {
 	if !chip.enabled.Load() {
 		return nil
 	}
+	// When directVRAM is set (e.g. EmuTOS mode), return bus memory directly
+	if chip.directVRAM != nil {
+		return chip.directVRAM
+	}
 	// Return splash screen if no content has been written
 	if !chip.hasContent.Load() {
 		return chip.splashBuffer
@@ -2323,6 +2423,11 @@ func (chip *VideoChip) FinishFrame() []byte {
 	defer chip.mu.Unlock()
 
 	chip.copperManagedByCompositor = false // Release copper management back to refreshLoop
+
+	// When directVRAM is set (e.g. EmuTOS mode), return bus memory directly
+	if chip.directVRAM != nil {
+		return chip.directVRAM
+	}
 
 	// Return the current front buffer
 	return chip.frontBuffer

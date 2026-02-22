@@ -96,6 +96,7 @@ Version metadata (version, git commit, build date) is automatically injected via
 | `headless` | Disable GUI/audio/video backends (stubs only) |
 | `novulkan` | Disable Vulkan backend, use software Voodoo rasteriser |
 | `embed_basic` | Embed pre-assembled EhBASIC binary for `-basic` flag |
+| `embed_emutos` | Embed EmuTOS ROM image for `-emutos` flag and BASIC `EMUTOS` command |
 | `ie64` | IE64 assembler build tag |
 | `ie64dis` | IE64 disassembler build tag |
 | `m68k` | Enable M68K-specific tests |
@@ -476,7 +477,7 @@ make set-default-handler
 
 ### Release Artifacts
 
-Build release archives with `make release-all` (or individual targets like `make release-linux`). Each target builds both amd64 and arm64 archives with embedded EhBASIC and pre-assembled SDK demos.
+Build release archives with `make release-all` (or individual targets like `make release-linux`). Each target builds with embedded EhBASIC and EmuTOS ROM, plus pre-assembled SDK demos. The `EMUTOS` command is available at the BASIC prompt in release builds.
 
 Each archive contains: `IntuitionEngine` at the root, `sdk/bin/` with `ie32asm`, `ie64asm`, `ie32to64`, `ie64dis`, plus `README.md`, `CHANGELOG.md`, `DEVELOPERS.md`, and the full `sdk/` directory with pre-assembled demos and documentation.
 
@@ -539,4 +540,20 @@ go test -tags headless ./...
 # Build profiles still work
 go build -tags novulkan .
 CGO_ENABLED=0 go build -tags "novulkan headless" .
+```
+
+---
+
+# 14. EmuTOS Integration
+
+- Runtime flag: `-emutos` / `-emutos-image <path>`
+- ProgramExecutor extension mapping: `.tos`, `.img`
+- Loader/timer implementation: `emutos_loader.go`
+- SDK target stubs: `sdk/emutos/`
+- Documentation: `sdk/docs/ie_emutos.md`
+
+Build with embedded ROM:
+
+```bash
+make emutos
 ```

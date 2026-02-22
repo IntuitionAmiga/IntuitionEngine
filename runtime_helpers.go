@@ -34,6 +34,8 @@ func modeFromExtension(path string) (string, error) {
 		return "6502", nil
 	case ".ie68":
 		return "m68k", nil
+	case ".tos", ".img":
+		return "emutos", nil
 	case ".ie80":
 		return "z80", nil
 	case ".ie86":
@@ -57,6 +59,10 @@ func createCPURunner(mode string, sysBus *MachineBus, videoChip *VideoChip,
 		cpu := NewCPU64(sysBus)
 		return cpu, nil
 	case "m68k":
+		videoChip.SetBigEndianMode(true)
+		m68k := NewM68KCPU(sysBus)
+		return NewM68KRunner(m68k), nil
+	case "emutos":
 		videoChip.SetBigEndianMode(true)
 		m68k := NewM68KCPU(sysBus)
 		return NewM68KRunner(m68k), nil

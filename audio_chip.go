@@ -1301,10 +1301,12 @@ func (chip *SoundChip) applyFlexRegister(chIndex uint32, offset uint32, value ui
 	// Sync shadow buffer for bus-mapped channels (keeps shadow consistent regardless of write size)
 	if chIndex < 4 {
 		baseIdx := chIndex*FLEX_CH_STRIDE + offset
-		chip.flexShadow[baseIdx] = byte(value)
-		chip.flexShadow[baseIdx+1] = byte(value >> 8)
-		chip.flexShadow[baseIdx+2] = byte(value >> 16)
-		chip.flexShadow[baseIdx+3] = byte(value >> 24)
+		if baseIdx+3 < uint32(len(chip.flexShadow)) {
+			chip.flexShadow[baseIdx] = byte(value)
+			chip.flexShadow[baseIdx+1] = byte(value >> 8)
+			chip.flexShadow[baseIdx+2] = byte(value >> 16)
+			chip.flexShadow[baseIdx+3] = byte(value >> 24)
+		}
 	}
 
 	ch := chip.channels[chIndex]
@@ -1406,7 +1408,7 @@ func (chip *SoundChip) applyFlexRegister(chIndex uint32, offset uint32, value ui
 			ch.syncSource = nil
 		}
 	default:
-		log.Printf("invalid flex register offset: 0x%X", offset)
+		// Ignore writes to padding/unused offsets within a flex channel stride
 	}
 }
 

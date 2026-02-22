@@ -261,6 +261,13 @@ const (
 	TERM_CTRL           = 0xF0724    // Terminal control flags (bit 0: line input mode)
 	TERM_KEY_IN         = 0xF0728    // Read next raw key (dequeues)
 	TERM_KEY_STATUS     = 0xF072C    // Bit 0: raw key available
+	MOUSE_X             = 0xF0730    // Absolute mouse X position (16-bit in low bits)
+	MOUSE_Y             = 0xF0734    // Absolute mouse Y position (16-bit in low bits)
+	MOUSE_BUTTONS       = 0xF0738    // Bit 0=left, 1=right, 2=middle
+	MOUSE_STATUS        = 0xF073C    // Bit 0=changed since last read (clears on read)
+	SCAN_CODE           = 0xF0740    // Raw keyboard scancode dequeue
+	SCAN_STATUS         = 0xF0744    // Bit 0=scancode available
+	SCAN_MODIFIERS      = 0xF0748    // Bit 0=shift,1=ctrl,2=alt,3=capslock
 	TERM_SENTINEL       = 0xF07F0    // Write 0xDEAD to stop CPU (via OnSentinel callback)
 	TERMINAL_REGION_END = 0xF07FF    // Reserve 256 bytes for future expansion
 )

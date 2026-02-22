@@ -13,6 +13,22 @@
 # Directory structure
 BIN_DIR := ./bin
 SDK_BIN_DIR := ./sdk/bin
+EMUTOS_SRC_DIR ?= ../EmuTOS
+EMUTOS_ROM ?= ./etos256us.img
+EMUTOS_GIT_URL ?= https://github.com/IntuitionAmiga/EmuTOS.git
+EMUTOS_GIT_REF ?= master
+EMUTOS_BUILD_TARGET ?= 256
+EMUTOS_CPUFLAGS ?= -m68020
+EMUTOS_EXTRA_BIOS_SRC ?=
+EMUTOS_MACHINE_DEF ?= -DMACHINE_IE -DCONF_ATARI_HARDWARE=0 -DCONF_STRAM_SIZE=4*1024*1024 -DCONF_WITH_TTRAM=0 -DCONF_WITH_ALT_RAM=0 -DCONF_VRAM_ADDRESS=0x00100000
+EMUTOS_LINUX_GCC ?= m68k-linux-gnu-gcc-13
+EMUTOS_LINUX_OPTFLAGS ?= -Os -fno-ivopts -fno-tree-slsr
+EMUTOS_LINUX_WARNFLAGS ?= -Wall
+# Override when your EmuTOS tree needs custom build args.
+# Default "auto" chooses:
+# - m68k-atari-mint-gcc => make -C <src> <target>
+# - m68k-elf-gcc        => make -C <src> ELF=1 <target>
+EMUTOS_BUILD_CMD ?= auto
 
 # Detect number of CPU cores for parallel compilation
 NCORES := $(shell nproc)
@@ -162,6 +178,117 @@ basic: ie64asm
 	@$(NICE) -$(NICE_LEVEL) $(UPX) --lzma IntuitionEngine
 	@mv IntuitionEngine $(BIN_DIR)/
 	@echo "EhBASIC build complete - run with: $(BIN_DIR)/IntuitionEngine -basic"
+
+# Build with embedded BASIC + EmuTOS ROM (type EMUTOS at the BASIC prompt).
+.PHONY: basic-emutos
+basic-emutos: ie64asm emutos-rom
+	@echo "Assembling EhBASIC IE64 interpreter..."
+	@$(SDK_BIN_DIR)/ie64asm -I sdk/include sdk/examples/asm/ehbasic_ie64.asm
+	@echo "Building Intuition Engine with embedded BASIC + EmuTOS..."
+	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags "embed_basic embed_emutos" .
+	@echo "Stripping debug symbols..."
+	@$(NICE) -$(NICE_LEVEL) $(SSTRIP) -z IntuitionEngine
+	@echo "Applying UPX compression..."
+	@$(NICE) -$(NICE_LEVEL) $(UPX) --lzma IntuitionEngine
+	@mv IntuitionEngine $(BIN_DIR)/
+	@echo "BASIC+EmuTOS build complete - run with: $(BIN_DIR)/IntuitionEngine -basic"
+
+# Build with embedded EmuTOS ROM image (requires ./etos256us.img).
+.PHONY: emutos
+emutos: setup emutos-rom
+	@echo "Building Intuition Engine with embedded EmuTOS ROM..."
+	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags embed_emutos .
+	@echo "Stripping debug symbols..."
+	@$(NICE) -$(NICE_LEVEL) $(SSTRIP) -z IntuitionEngine
+	@echo "Applying UPX compression..."
+	@$(NICE) -$(NICE_LEVEL) $(UPX) --lzma IntuitionEngine
+	@mv IntuitionEngine $(BIN_DIR)/
+	@echo "EmuTOS build complete - run with: $(BIN_DIR)/IntuitionEngine -emutos"
+
+.PHONY: emutos-probe
+emutos-probe: emutos
+	@echo "Running EmuTOS boot probe script..."
+	@$(BIN_DIR)/IntuitionEngine -emutos -script ./sdk/scripts/emutos_boot_probe.ies
+
+.PHONY: gem-rotozoomer
+gem-rotozoomer:
+	@echo "Building GEM rotozoomer .PRG..."
+	@$(MKDIR) -p sdk/examples/prebuilt
+	vasmm68k_mot -Ftos -m68020 -devpac -Isdk/include \
+	  -o sdk/examples/prebuilt/rotozoomer_gem.prg \
+	  sdk/examples/asm/rotozoomer_gem.asm
+	@echo "GEM rotozoomer built: sdk/examples/prebuilt/rotozoomer_gem.prg"
+
+.PHONY: emutos-rom
+emutos-rom:
+	@if [ ! -d "$(EMUTOS_SRC_DIR)" ]; then \
+		if ! command -v git >/dev/null 2>&1; then \
+			echo "Error: git is required to clone EmuTOS source."; \
+			echo "Install git or provide a local source tree at $(EMUTOS_SRC_DIR)."; \
+			exit 1; \
+		fi; \
+		echo "Cloning EmuTOS source..."; \
+		echo "  URL: $(EMUTOS_GIT_URL)"; \
+		echo "  REF: $(EMUTOS_GIT_REF)"; \
+		git clone --depth 1 --branch "$(EMUTOS_GIT_REF)" "$(EMUTOS_GIT_URL)" "$(EMUTOS_SRC_DIR)"; \
+	fi
+	@echo "Building EmuTOS ROM from source tree: $(EMUTOS_SRC_DIR)"
+	@if command -v m68k-atari-mint-gcc >/dev/null 2>&1; then \
+		$(MAKE) -C "$(EMUTOS_SRC_DIR)" clean >/dev/null; \
+	elif command -v $(EMUTOS_LINUX_GCC) >/dev/null 2>&1 || command -v m68k-linux-gnu-gcc >/dev/null 2>&1 || command -v m68k-linux-gnu-gcc-13 >/dev/null 2>&1; then \
+		$(MAKE) -C "$(EMUTOS_SRC_DIR)" LINUX=1 clean >/dev/null; \
+	else \
+		$(MAKE) -C "$(EMUTOS_SRC_DIR)" clean >/dev/null; \
+	fi
+	@if [ "$(EMUTOS_BUILD_CMD)" = "auto" ]; then \
+		if command -v m68k-atari-mint-gcc >/dev/null 2>&1; then \
+			BUILD_CMD='$(MAKE) -C $(EMUTOS_SRC_DIR) CPUFLAGS=$(EMUTOS_CPUFLAGS) DEF="$(EMUTOS_MACHINE_DEF)" EXTRA_BIOS_SRC="$(EMUTOS_EXTRA_BIOS_SRC)" $(EMUTOS_BUILD_TARGET)'; \
+			echo "Using MiNT toolchain (m68k-atari-mint-gcc)"; \
+		elif command -v m68k-elf-gcc >/dev/null 2>&1; then \
+			BUILD_CMD='$(MAKE) -C $(EMUTOS_SRC_DIR) ELF=1 CPUFLAGS=$(EMUTOS_CPUFLAGS) DEF="$(EMUTOS_MACHINE_DEF)" EXTRA_BIOS_SRC="$(EMUTOS_EXTRA_BIOS_SRC)" $(EMUTOS_BUILD_TARGET)'; \
+			echo "Using ELF toolchain (m68k-elf-gcc)"; \
+		elif command -v $(EMUTOS_LINUX_GCC) >/dev/null 2>&1 || command -v m68k-linux-gnu-gcc >/dev/null 2>&1 || command -v m68k-linux-gnu-gcc-13 >/dev/null 2>&1; then \
+			if command -v $(EMUTOS_LINUX_GCC) >/dev/null 2>&1; then \
+				BUILD_CMD='$(MAKE) -C $(EMUTOS_SRC_DIR) ELF=1 TOOLCHAIN_PREFIX=m68k-linux-gnu- CC=$(EMUTOS_LINUX_GCC) CPUFLAGS=$(EMUTOS_CPUFLAGS) DEF="$(EMUTOS_MACHINE_DEF)" EXTRA_BIOS_SRC="$(EMUTOS_EXTRA_BIOS_SRC)" OPTFLAGS="$(EMUTOS_LINUX_OPTFLAGS)" WARNFLAGS="$(EMUTOS_LINUX_WARNFLAGS)" $(EMUTOS_BUILD_TARGET)'; \
+				echo "Using GNU/Linux M68K cross toolchain ($(EMUTOS_LINUX_GCC))"; \
+			elif command -v m68k-linux-gnu-gcc-13 >/dev/null 2>&1; then \
+				BUILD_CMD='$(MAKE) -C $(EMUTOS_SRC_DIR) ELF=1 TOOLCHAIN_PREFIX=m68k-linux-gnu- CC=m68k-linux-gnu-gcc-13 CPUFLAGS=$(EMUTOS_CPUFLAGS) DEF="$(EMUTOS_MACHINE_DEF)" EXTRA_BIOS_SRC="$(EMUTOS_EXTRA_BIOS_SRC)" OPTFLAGS="$(EMUTOS_LINUX_OPTFLAGS)" WARNFLAGS="$(EMUTOS_LINUX_WARNFLAGS)" $(EMUTOS_BUILD_TARGET)'; \
+				echo "Using GNU/Linux M68K cross toolchain (m68k-linux-gnu-gcc-13)"; \
+			else \
+				BUILD_CMD='$(MAKE) -C $(EMUTOS_SRC_DIR) ELF=1 TOOLCHAIN_PREFIX=m68k-linux-gnu- CPUFLAGS=$(EMUTOS_CPUFLAGS) DEF="$(EMUTOS_MACHINE_DEF)" EXTRA_BIOS_SRC="$(EMUTOS_EXTRA_BIOS_SRC)" OPTFLAGS="$(EMUTOS_LINUX_OPTFLAGS)" WARNFLAGS="$(EMUTOS_LINUX_WARNFLAGS)" $(EMUTOS_BUILD_TARGET)'; \
+				echo "Using GNU/Linux M68K cross toolchain (m68k-linux-gnu-gcc)"; \
+			fi; \
+		else \
+			echo "Error: EmuTOS requires a M68K cross-compiler."; \
+			echo "Missing m68k-atari-mint-gcc, m68k-elf-gcc, and m68k-linux-gnu-gcc."; \
+			echo "Install one, then re-run make emutos."; \
+			echo "Or override with a custom command:"; \
+			echo "  make emutos EMUTOS_BUILD_CMD='make -C $(EMUTOS_SRC_DIR) <target>'"; \
+			exit 1; \
+		fi; \
+	else \
+		BUILD_CMD='$(EMUTOS_BUILD_CMD)'; \
+	fi; \
+	echo "Build command: $$BUILD_CMD"; \
+	eval "$$BUILD_CMD"
+	@ROM_CANDIDATE=""; \
+	if [ -f "$(EMUTOS_SRC_DIR)/etos256us.img" ]; then \
+		ROM_CANDIDATE="$(EMUTOS_SRC_DIR)/etos256us.img"; \
+	elif ls "$(EMUTOS_SRC_DIR)"/etos*.img >/dev/null 2>&1; then \
+		ROM_CANDIDATE=$$(ls "$(EMUTOS_SRC_DIR)"/etos*.img | head -n 1); \
+	elif [ -f "$(EMUTOS_SRC_DIR)/emutos.img" ]; then \
+		ROM_CANDIDATE="$(EMUTOS_SRC_DIR)/emutos.img"; \
+	else \
+		ROM_CANDIDATE=$$(find "$(EMUTOS_SRC_DIR)" -type f -name '*.tos' | head -n 1); \
+	fi; \
+	if [ -z "$$ROM_CANDIDATE" ]; then \
+		echo "Error: build completed but no ROM image was found in $(EMUTOS_SRC_DIR)."; \
+		echo "Set EMUTOS_BUILD_CMD and/or copy ROM to $(EMUTOS_ROM)."; \
+		exit 1; \
+	fi; \
+	mkdir -p "$$(dirname "$(EMUTOS_ROM)")"; \
+	cp "$$ROM_CANDIDATE" "$(EMUTOS_ROM)"; \
+	echo "EmuTOS ROM prepared: $(EMUTOS_ROM) (from $$ROM_CANDIDATE)"
 
 # Build the IE64 disassembler
 ie64dis: setup
@@ -332,10 +459,17 @@ sdk: clean-sdk ie32asm ie64asm ie32to64 ie64dis
 			else SDK_FAILED=$$((SDK_FAILED+1)); fi; \
 		elif grep -ql 'ie68\.inc' "$$f" 2>/dev/null; then \
 			if command -v vasmm68k_mot >/dev/null 2>&1; then \
-				echo "  [M68K] $${base}.asm"; \
-				if (cd sdk/examples/asm && vasmm68k_mot -Fbin -m68020 -devpac -I ../../include -o $${base}.ie68 $${base}.asm); then \
-					SDK_BUILT=$$((SDK_BUILT+1)); \
-				else SDK_FAILED=$$((SDK_FAILED+1)); fi; \
+				if grep -q '\-Ftos' "$$f" 2>/dev/null; then \
+					echo "  [M68K/TOS] $${base}.asm"; \
+					if (cd sdk/examples/asm && vasmm68k_mot -Ftos -m68020 -devpac -I ../../include -o $${base}.prg $${base}.asm); then \
+						SDK_BUILT=$$((SDK_BUILT+1)); \
+					else SDK_FAILED=$$((SDK_FAILED+1)); fi; \
+				else \
+					echo "  [M68K] $${base}.asm"; \
+					if (cd sdk/examples/asm && vasmm68k_mot -Fbin -m68020 -devpac -I ../../include -o $${base}.ie68 $${base}.asm); then \
+						SDK_BUILT=$$((SDK_BUILT+1)); \
+					else SDK_FAILED=$$((SDK_FAILED+1)); fi; \
+				fi; \
 			else SDK_SKIPPED=$$((SDK_SKIPPED+1)); fi; \
 		elif grep -ql 'ie80\.inc' "$$f" 2>/dev/null; then \
 			if command -v vasmz80_std >/dev/null 2>&1; then \
@@ -375,13 +509,14 @@ sdk: clean-sdk ie32asm ie64asm ie32to64 ie64dis
 	mv sdk/examples/asm/*.ie80 sdk/examples/prebuilt/ 2>/dev/null || true; \
 	mv sdk/examples/asm/*.ie65 sdk/examples/prebuilt/ 2>/dev/null || true; \
 	mv sdk/examples/asm/*.ie86 sdk/examples/prebuilt/ 2>/dev/null || true; \
+	mv sdk/examples/asm/*.prg sdk/examples/prebuilt/ 2>/dev/null || true; \
 	echo ""; \
 	echo "SDK build complete: $${SDK_BUILT} assembled, $${SDK_SKIPPED} skipped, $${SDK_FAILED} failed"; \
 	ls sdk/examples/prebuilt/ 2>/dev/null || true
 
 # Build release archive for Linux (native architecture only)
 # Ebiten/Oto require CGO (GLFW/X11/ALSA), so cross-compilation is not supported.
-release-linux: setup sdk
+release-linux: setup sdk emutos-rom
 	@echo "=== Building Linux release ($(NATIVE_GOARCH)) ==="
 	@$(MKDIR) -p $(RELEASE_DIR)
 	@echo "Assembling EhBASIC IE64 ROM..."
@@ -390,7 +525,7 @@ release-linux: setup sdk
 	echo ""; \
 	echo "--- $$RELEASE_NAME ---"; \
 	echo "Building (native, full)..."; \
-	CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags embed_basic -o IntuitionEngine .; \
+	CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags "embed_basic embed_emutos" -o IntuitionEngine .; \
 	command -v $(SSTRIP) >/dev/null 2>&1 && $(SSTRIP) -z IntuitionEngine || true; \
 	command -v $(UPX) >/dev/null 2>&1 && $(UPX) --lzma IntuitionEngine || true; \
 	$(GO) build $(GO_FLAGS) -o ie32asm assembler/ie32asm.go; \
@@ -413,7 +548,7 @@ release-linux: setup sdk
 	echo "Created: $(RELEASE_DIR)/$$RELEASE_NAME.tar.xz"
 
 # Build release archives for Windows (amd64 + arm64, cross-compiled, no Vulkan)
-release-windows: setup sdk
+release-windows: setup sdk emutos-rom
 	@echo "=== Building Windows releases (amd64 + arm64) ==="
 	@$(MKDIR) -p $(RELEASE_DIR)
 	@echo "Assembling EhBASIC IE64 ROM..."
@@ -422,7 +557,7 @@ release-windows: setup sdk
 		RELEASE_NAME=$(APP_NAME)-$(APP_VERSION)-windows-$$goarch; \
 		echo ""; \
 		echo "--- $$RELEASE_NAME ---"; \
-		GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags "novulkan embed_basic" -o IntuitionEngine.exe .; \
+		GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags "novulkan embed_basic embed_emutos" -o IntuitionEngine.exe .; \
 		GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o ie32asm.exe assembler/ie32asm.go; \
 		GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm.exe assembler/ie64asm.go; \
 		GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o ie32to64.exe ./cmd/ie32to64/; \
@@ -594,6 +729,7 @@ help:
 	@echo "  ie64asm          - Build only the IE64 assembler"
 	@echo "  ie64dis          - Build only the IE64 disassembler"
 	@echo "  basic            - Build with embedded EhBASIC interpreter"
+	@echo "  emutos           - Build with embedded EmuTOS ROM (embed_emutos tag)"
 	@echo "  install          - Install binaries to $(INSTALL_BIN_DIR)"
 	@echo "  uninstall        - Remove installed binaries from $(INSTALL_BIN_DIR)"
 	@echo "  clean            - Remove all build artifacts"
@@ -613,6 +749,7 @@ help:
 	@echo "  robocop-65     - Build the Robocop 6502 demo (requires cc65)"
 	@echo "  robocop-68k    - Build the Robocop M68K demo (requires vasm)"
 	@echo "  robocop-z80    - Build the Robocop Z80 demo (requires vasm)"
+	@echo "  gem-rotozoomer - Build the GEM rotozoomer .PRG (requires vasm)"
 	@echo ""
 	@echo "IE65 (6502) targets:"
 	@echo "  gen-65-data    - Build the IE65 data generator tool"

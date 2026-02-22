@@ -23,6 +23,8 @@ func TestDetectExecType(t *testing.T) {
 		{name: "ie68", path: "prog.ie68", want: EXEC_TYPE_M68K},
 		{name: "ie80", path: "prog.ie80", want: EXEC_TYPE_Z80},
 		{name: "ie86", path: "prog.ie86", want: EXEC_TYPE_X86},
+		{name: "tos", path: "etos.tos", want: EXEC_TYPE_EMUTOS},
+		{name: "img", path: "etos256us.img", want: EXEC_TYPE_EMUTOS},
 		{name: "ies", path: "demo.ies", want: EXEC_TYPE_SCRIPT},
 		{name: "unknown", path: "prog.bin", want: EXEC_TYPE_NONE},
 	}
@@ -568,5 +570,79 @@ func TestEhBASIC_RunIES_Error(t *testing.T) {
 	}
 	if got := exec.HandleRead(EXEC_ERROR); got != EXEC_ERR_NOT_FOUND {
 		t.Fatalf("error=%d, want %d (NOT_FOUND)", got, EXEC_ERR_NOT_FOUND)
+	}
+}
+
+func testEmuTOSROM() []byte {
+	rom := make([]byte, emutosROM192K)
+	rom[0] = 0x00
+	rom[1] = 0x10
+	rom[2] = 0x00
+	rom[3] = 0x00
+	rom[4] = 0x00
+	rom[5] = 0xFC
+	rom[6] = 0x00
+	rom[7] = 0x08
+	return rom
+}
+
+func TestProgramExecutor_EmuTOS_StopsPreviousCPU(t *testing.T) {
+	bus := NewMachineBus()
+	ie64CPU := NewCPU64(bus)
+	ie64CPU.running.Store(true)
+	runtimeStatus.setCPUs(runtimeCPUIE64, nil, ie64CPU, nil, nil, nil, nil)
+
+	exec := NewProgramExecutor(bus, ie64CPU, nil, nil, nil, ".")
+	if err := exec.prepareAndLaunch(testEmuTOSROM(), EXEC_TYPE_EMUTOS); err != nil {
+		t.Fatalf("prepareAndLaunch EmuTOS failed: %v", err)
+	}
+	defer func() {
+		if exec.emuTOSLoader != nil {
+			exec.emuTOSLoader.Stop()
+		}
+		snap := runtimeStatus.snapshot()
+		if snap.m68k != nil {
+			snap.m68k.Stop()
+		}
+	}()
+
+	if ie64CPU.running.Load() {
+		t.Fatal("expected previous IE64 CPU to be stopped before EmuTOS launch")
+	}
+}
+
+func TestProgramExecutor_EmuTOS_TimerCleanup(t *testing.T) {
+	bus := NewMachineBus()
+	exec := NewProgramExecutor(bus, nil, nil, nil, nil, ".")
+
+	if err := exec.prepareAndLaunch(testEmuTOSROM(), EXEC_TYPE_EMUTOS); err != nil {
+		t.Fatalf("first EmuTOS launch failed: %v", err)
+	}
+	first := exec.emuTOSLoader
+	if first == nil {
+		t.Fatal("expected first loader to be stored")
+	}
+
+	if err := exec.prepareAndLaunch(testEmuTOSROM(), EXEC_TYPE_EMUTOS); err != nil {
+		t.Fatalf("second EmuTOS launch failed: %v", err)
+	}
+	defer func() {
+		if exec.emuTOSLoader != nil {
+			exec.emuTOSLoader.Stop()
+		}
+		snap := runtimeStatus.snapshot()
+		if snap.m68k != nil {
+			snap.m68k.Stop()
+		}
+	}()
+
+	if exec.emuTOSLoader == nil {
+		t.Fatal("expected second loader to be stored")
+	}
+	if exec.emuTOSLoader == first {
+		t.Fatal("expected loader replacement on relaunch")
+	}
+	if first.cancel != nil || first.timerDone != nil || first.vblankDone != nil {
+		t.Fatal("expected previous loader to be fully stopped and cleaned up")
 	}
 }

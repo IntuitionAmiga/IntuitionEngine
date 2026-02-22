@@ -35,6 +35,20 @@ type TerminalMMIO struct {
 	rawKeyTail int
 	rawKeyLen  int
 
+	// Mouse state, updated by graphical backends and read via MMIO.
+	mouseX       atomic.Int32
+	mouseY       atomic.Int32
+	mouseButtons atomic.Uint32
+	mouseChanged atomic.Bool
+
+	// Scancode ring buffer for raw keyboard make/break events.
+	scanBuf  [256]uint8
+	scanHead int
+	scanTail int
+	scanLen  int
+	// Bit 0=shift, 1=ctrl, 2=alt, 3=capslock
+	modifiers atomic.Uint32
+
 	// SentinelTriggered is set when TERM_SENTINEL receives 0xDEAD.
 	SentinelTriggered atomic.Bool
 
@@ -48,6 +62,11 @@ type TerminalMMIO struct {
 
 	// lastStatusRead stores unix nanos of the latest TERM_STATUS read.
 	lastStatusRead atomic.Int64
+}
+
+// TerminalMMIOSetter allows video backends to receive a terminal MMIO pointer.
+type TerminalMMIOSetter interface {
+	SetTerminalMMIO(tm *TerminalMMIO)
 }
 
 // NewTerminalMMIO creates a new terminal MMIO device with echo enabled.
@@ -143,6 +162,26 @@ func (tm *TerminalMMIO) HandleRead(addr uint32) uint32 {
 			return 1
 		}
 		return 0
+	case MOUSE_X:
+		return uint32(tm.mouseX.Load())
+	case MOUSE_Y:
+		return uint32(tm.mouseY.Load())
+	case MOUSE_BUTTONS:
+		return tm.mouseButtons.Load()
+	case MOUSE_STATUS:
+		if tm.mouseChanged.Swap(false) {
+			return 1
+		}
+		return 0
+	case SCAN_CODE:
+		return uint32(tm.dequeueScancodeLocked())
+	case SCAN_STATUS:
+		if tm.scanLen > 0 {
+			return 1
+		}
+		return 0
+	case SCAN_MODIFIERS:
+		return tm.modifiers.Load()
 
 	default:
 		return 0
@@ -201,6 +240,17 @@ func (tm *TerminalMMIO) EnqueueRawKey(b byte) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 	tm.enqueueRawKeyLocked(b)
+}
+
+func (tm *TerminalMMIO) EnqueueScancode(code uint8) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	if tm.scanLen >= len(tm.scanBuf) {
+		return
+	}
+	tm.scanBuf[tm.scanTail] = code
+	tm.scanTail = (tm.scanTail + 1) % len(tm.scanBuf)
+	tm.scanLen++
 }
 
 // RouteHostKey atomically checks line mode and routes the key to exactly one queue.
@@ -278,4 +328,14 @@ func (tm *TerminalMMIO) enqueueRawKeyLocked(b byte) {
 	tm.rawKeyBuf[tm.rawKeyTail] = b
 	tm.rawKeyTail = (tm.rawKeyTail + 1) % len(tm.rawKeyBuf)
 	tm.rawKeyLen++
+}
+
+func (tm *TerminalMMIO) dequeueScancodeLocked() uint8 {
+	if tm.scanLen == 0 {
+		return 0
+	}
+	code := tm.scanBuf[tm.scanHead]
+	tm.scanHead = (tm.scanHead + 1) % len(tm.scanBuf)
+	tm.scanLen--
+	return code
 }

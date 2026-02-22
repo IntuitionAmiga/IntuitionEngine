@@ -131,7 +131,7 @@ func (e *PSGEngine) Reset() {
 }
 
 // VideoChip.Reset restores video chip to cold boot state.
-// Preserves: output, layer, bus, busMemory, splashBuffer, bigEndianMode, onResolutionChange.
+// Preserves: output, layer, bus, busMemory, splashBuffer, bigEndianMode, directVRAM, onResolutionChange.
 func (vc *VideoChip) Reset() {
 	vc.mu.Lock()
 	defer vc.mu.Unlock()
@@ -470,6 +470,14 @@ func (t *TerminalMMIO) Reset() {
 	t.rawKeyHead = 0
 	t.rawKeyTail = 0
 	t.rawKeyLen = 0
+	t.mouseX.Store(0)
+	t.mouseY.Store(0)
+	t.mouseButtons.Store(0)
+	t.mouseChanged.Store(false)
+	t.scanHead = 0
+	t.scanTail = 0
+	t.scanLen = 0
+	t.modifiers.Store(0)
 	t.SentinelTriggered.Store(false)
 }
 

@@ -3301,6 +3301,9 @@ The Intuition Engine includes a full port of Lee Davison's Enhanced BASIC (EhBAS
 
 # Run with a custom BASIC binary
 ./bin/IntuitionEngine -basic-image path/to/custom.ie64
+
+# Boot EmuTOS from the BASIC prompt (requires 'make basic-emutos' build)
+# At the Ready prompt, type: EMUTOS
 ```
 
 ### Features
@@ -5273,6 +5276,7 @@ make                    # Build VM + assemblers
 make novulkan           # Build without Vulkan
 make headless           # Build for CI/testing (no display/audio)
 make basic              # Build with embedded EhBASIC interpreter
+make basic-emutos       # Build with embedded BASIC + EmuTOS ROM
 make sdk                # Sync includes + pre-assemble SDK demos
 make release-all        # Build release archives for all platforms
 go build ./...          # Quick dev build without compression
@@ -5472,3 +5476,17 @@ The `sdk/` directory contains a curated developer package with example programs,
 - [docs/toolchains.md](sdk/docs/toolchains.md) - Assembler toolchain reference
 - [docs/platform-compatibility.md](sdk/docs/platform-compatibility.md) - Platform support details
 - [docs/release-process.md](sdk/docs/release-process.md) - Release packaging
+
+## EmuTOS Mode
+
+Intuition Engine supports running EmuTOS directly on the IE M68K core.
+
+```bash
+# External ROM image
+./bin/IntuitionEngine -emutos-image etos256us.img
+
+# Or detect from extension through RUN/ProgramExecutor
+# RUN "emutos.img"
+```
+
+See `sdk/docs/ie_emutos.md` for the hardware map and integration notes.

@@ -38,7 +38,10 @@ sdk/
    Or from the EhBASIC prompt:
    ```basic
    RUN "sdk/examples/prebuilt/vga_text_hello.iex"
+   EMUTOS
    ```
+
+   The `EMUTOS` command boots the EmuTOS operating system (requires `make basic-emutos` build or a local `etos256us.img` file).
 
    You can also run Lua automation scripts:
    ```bash
@@ -215,3 +218,8 @@ The `sdk/include/` headers define the stable hardware register map for v1.x and 
 - [EhBASIC Guide](docs/ehbasic_ie64.md)
 - [IEScript Lua Automation](docs/iescript.md)
 - [IE32 to IE64 Migration](docs/ie32to64.md)
+
+## EmuTOS Porting Stubs
+
+The SDK includes EmuTOS machine-target scaffolding in `sdk/emutos/`.
+Use this together with `sdk/docs/ie_emutos.md` when wiring an EmuTOS tree to IE MMIO.

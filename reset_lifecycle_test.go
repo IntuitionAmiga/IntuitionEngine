@@ -143,6 +143,8 @@ func TestModeFromExtension(t *testing.T) {
 		{"program.ie64", "ie64", false},
 		{"program.ie65", "6502", false},
 		{"program.ie68", "m68k", false},
+		{"emutos.tos", "emutos", false},
+		{"emutos.img", "emutos", false},
 		{"program.ie80", "z80", false},
 		{"program.ie86", "x86", false},
 		{"program.ies", "script", false},
@@ -174,7 +176,7 @@ func TestCreateCPURunner(t *testing.T) {
 		t.Skipf("NewVideoChip failed (expected in headless): %v", err)
 	}
 
-	modes := []string{"ie32", "ie64", "m68k", "z80", "x86", "6502"}
+	modes := []string{"ie32", "ie64", "m68k", "emutos", "z80", "x86", "6502"}
 	for _, mode := range modes {
 		runner, err := createCPURunner(mode, bus, vc, nil, nil)
 		if err != nil {

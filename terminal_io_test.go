@@ -608,4 +608,126 @@ func TestTerminalMMIO_RegisterConstants(t *testing.T) {
 	if TERM_KEY_STATUS != 0xF072C {
 		t.Fatalf("TERM_KEY_STATUS mismatch: 0x%X", TERM_KEY_STATUS)
 	}
+	if MOUSE_X != 0xF0730 {
+		t.Fatalf("MOUSE_X mismatch: 0x%X", MOUSE_X)
+	}
+	if SCAN_CODE != 0xF0740 {
+		t.Fatalf("SCAN_CODE mismatch: 0x%X", SCAN_CODE)
+	}
+}
+
+func TestTerminalMMIO_MousePosition(t *testing.T) {
+	tm := NewTerminalMMIO()
+	tm.mouseX.Store(123)
+	tm.mouseY.Store(456)
+	if got := tm.HandleRead(MOUSE_X); got != 123 {
+		t.Fatalf("MOUSE_X got %d want 123", got)
+	}
+	if got := tm.HandleRead(MOUSE_Y); got != 456 {
+		t.Fatalf("MOUSE_Y got %d want 456", got)
+	}
+}
+
+func TestTerminalMMIO_MouseButtons(t *testing.T) {
+	tm := NewTerminalMMIO()
+	tm.mouseButtons.Store(0x5)
+	if got := tm.HandleRead(MOUSE_BUTTONS); got != 0x5 {
+		t.Fatalf("MOUSE_BUTTONS got 0x%X want 0x5", got)
+	}
+}
+
+func TestTerminalMMIO_MouseStatusClears(t *testing.T) {
+	tm := NewTerminalMMIO()
+	tm.mouseChanged.Store(true)
+	if got := tm.HandleRead(MOUSE_STATUS); got != 1 {
+		t.Fatalf("MOUSE_STATUS got %d want 1", got)
+	}
+	if got := tm.HandleRead(MOUSE_STATUS); got != 0 {
+		t.Fatalf("MOUSE_STATUS second read got %d want 0", got)
+	}
+}
+
+func TestTerminalMMIO_ScancodeEnqueue(t *testing.T) {
+	tm := NewTerminalMMIO()
+	tm.EnqueueScancode(0x1E)
+	if got := tm.HandleRead(SCAN_STATUS); got != 1 {
+		t.Fatalf("SCAN_STATUS got %d want 1", got)
+	}
+	if got := tm.HandleRead(SCAN_CODE); got != 0x1E {
+		t.Fatalf("SCAN_CODE got 0x%X want 0x1E", got)
+	}
+	if got := tm.HandleRead(SCAN_STATUS); got != 0 {
+		t.Fatalf("SCAN_STATUS after dequeue got %d want 0", got)
+	}
+}
+
+func TestTerminalMMIO_ScancodeMakeBreak(t *testing.T) {
+	tm := NewTerminalMMIO()
+	tm.EnqueueScancode(0x1E)
+	tm.EnqueueScancode(0x9E)
+	if got := tm.HandleRead(SCAN_CODE); got != 0x1E {
+		t.Fatalf("make scancode got 0x%X want 0x1E", got)
+	}
+	if got := tm.HandleRead(SCAN_CODE); got != 0x9E {
+		t.Fatalf("break scancode got 0x%X want 0x9E", got)
+	}
+}
+
+func TestTerminalMMIO_ScancodeModifiers(t *testing.T) {
+	tm := NewTerminalMMIO()
+	tm.modifiers.Store(0x7)
+	if got := tm.HandleRead(SCAN_MODIFIERS); got != 0x7 {
+		t.Fatalf("SCAN_MODIFIERS got 0x%X want 0x7", got)
+	}
+}
+
+func TestTerminalMMIO_ScancodeQueueOverflow(t *testing.T) {
+	tm := NewTerminalMMIO()
+	for i := range 256 {
+		tm.EnqueueScancode(uint8(i))
+	}
+	tm.EnqueueScancode(0xAA) // discard when full
+
+	count := 0
+	for tm.HandleRead(SCAN_STATUS)&1 != 0 {
+		_ = tm.HandleRead(SCAN_CODE)
+		count++
+	}
+	if count != 256 {
+		t.Fatalf("expected 256 scancodes, got %d", count)
+	}
+}
+
+func TestTerminalMMIO_MouseStatusOnlyOnChange(t *testing.T) {
+	tm := NewTerminalMMIO()
+	tm.mouseX.Store(100)
+	tm.mouseY.Store(100)
+	tm.mouseChanged.Store(false)
+	if got := tm.HandleRead(MOUSE_STATUS); got != 0 {
+		t.Fatalf("initial MOUSE_STATUS got %d want 0", got)
+	}
+
+	// Same position does not set changed.
+	oldX := tm.mouseX.Swap(100)
+	oldY := tm.mouseY.Swap(100)
+	if oldX != 100 || oldY != 100 {
+		t.Fatalf("unexpected prior coordinates: %d,%d", oldX, oldY)
+	}
+	if got := tm.HandleRead(MOUSE_STATUS); got != 0 {
+		t.Fatalf("same position MOUSE_STATUS got %d want 0", got)
+	}
+
+	// Position change sets changed and status clears on read.
+	oldX = tm.mouseX.Swap(101)
+	oldY = tm.mouseY.Swap(99)
+	if oldX == 101 && oldY == 99 {
+		t.Fatal("expected coordinates to change")
+	}
+	tm.mouseChanged.Store(true)
+	if got := tm.HandleRead(MOUSE_STATUS); got != 1 {
+		t.Fatalf("changed MOUSE_STATUS got %d want 1", got)
+	}
+	if got := tm.HandleRead(MOUSE_STATUS); got != 0 {
+		t.Fatalf("cleared MOUSE_STATUS got %d want 0", got)
+	}
 }

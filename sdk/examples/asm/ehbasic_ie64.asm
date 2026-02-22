@@ -257,6 +257,11 @@ repl_immediate:
     jsr     repl_check_new
     bnez    r8, repl_do_new
 
+    ; Check for EMUTOS command
+    la      r1, BASIC_LINE_BUF
+    jsr     repl_check_emutos
+    bnez    r8, repl_do_emutos
+
     ; Tokenise the input line
     la      r8, BASIC_LINE_BUF
     la      r9, 0x021100
@@ -348,6 +353,60 @@ repl_do_run:
 
 .run_file_error:
     la      r8, repl_msg_file_error
+    jsr     print_string
+    jsr     print_crlf
+    bra     repl_loop
+
+; ============================================================================
+; EMUTOS command handler - boot EmuTOS ROM
+; ============================================================================
+; Writes EXEC_OP_EMUTOS (2) to EXEC_CTRL, then polls EXEC_SESSION/EXEC_STATUS
+; with bounded loops. On error, prints ?EMUTOS NOT AVAILABLE.
+
+repl_do_emutos:
+    ; Read current session value before triggering executor
+    la      r1, EXEC_SESSION
+    load.l  r21, (r1)
+
+    ; Trigger EmuTOS boot (no filename needed)
+    la      r1, EXEC_CTRL
+    move.q  r2, #2
+    store.l r2, (r1)
+
+    ; Wait for EXEC_SESSION to advance (bounded poll)
+    move.q  r25, #0x200000
+.emu_wait_session:
+    la      r1, EXEC_SESSION
+    load.l  r22, (r1)
+    bne     r22, r21, .emu_wait_status
+    sub.q   r25, r25, #1
+    bnez    r25, .emu_wait_session
+    bra     .emu_error
+
+    ; Poll status for the new session (bounded)
+.emu_wait_status:
+    move.q  r25, #0x400000
+.emu_status_loop:
+    la      r1, EXEC_STATUS
+    load.l  r22, (r1)
+    move.q  r23, #1
+    beq     r22, r23, .emu_status_waiting
+    move.q  r23, #3
+    beq     r22, r23, .emu_error
+    move.q  r23, #2
+    beq     r22, r23, .emu_ok
+    bra     .emu_error
+
+.emu_status_waiting:
+    sub.q   r25, r25, #1
+    bnez    r25, .emu_status_loop
+    bra     .emu_error
+
+.emu_ok:
+    bra     repl_loop
+
+.emu_error:
+    la      r8, repl_msg_emutos_error
     jsr     print_string
     jsr     print_crlf
     bra     repl_loop
@@ -599,6 +658,65 @@ repl_check_new:
     rts
 
 ; ============================================================================
+; repl_check_emutos - Check if input is "EMUTOS" (case-insensitive)
+; ============================================================================
+; Input:  R1 = pointer to input buffer
+; Output: R8 = 1 if EMUTOS, 0 otherwise
+; Clobbers: R2-R5
+
+repl_check_emutos:
+    jsr     repl_skip_spaces
+
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x65               ; 'e'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x6D               ; 'm'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x75               ; 'u'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x74               ; 't'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x6F               ; 'o'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x73               ; 's'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    beqz    r2, .yes
+    move.q  r3, #0x20
+    beq     r2, r3, .yes
+    bra     .no
+
+.yes:
+    move.q  r8, #1
+    rts
+.no:
+    move.q  r8, r0
+    rts
+
+; ============================================================================
 ; repl_skip_spaces - Advance R1 past any space characters
 ; ============================================================================
 ; Input/Output: R1 = pointer (advanced past spaces)
@@ -629,6 +747,10 @@ repl_str_ready:
 
 repl_msg_file_error:
     dc.b    "?FILE ERROR", 0
+    align 4
+
+repl_msg_emutos_error:
+    dc.b    "?EMUTOS NOT AVAILABLE", 0
     align 4
 
 ; ============================================================================

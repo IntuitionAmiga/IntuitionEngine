@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"encoding/binary"
+	"testing"
+)
 
 func newBlitterTestRig(t *testing.T) (*VideoChip, *MachineBus) {
 	t.Helper()
@@ -282,6 +285,96 @@ func TestBlitterMaskedCopy(t *testing.T) {
 			}
 		} else if got != 0 {
 			t.Fatalf("expected masked skip at %d", i)
+		}
+	}
+}
+
+func TestVideoChip_BlitFill_BigEndian(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	video.SetBigEndianMode(true)
+	mode := VideoModes[video.currentMode]
+	dst := vramAddr(mode, 3, 4)
+	color := uint32(0x11223344)
+
+	bus.Write32(BLT_OP, bltOpFill)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 1)
+	bus.Write32(BLT_HEIGHT, 1)
+	bus.Write32(BLT_DST_STRIDE, uint32(mode.bytesPerRow))
+	bus.Write32(BLT_COLOR, color)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	offset := dst - BUFFER_OFFSET
+	got := video.frontBuffer[offset : offset+4]
+	want := []byte{0x11, 0x22, 0x33, 0x44}
+	for i := range 4 {
+		if got[i] != want[i] {
+			t.Fatalf("big-endian fill byte %d got 0x%02X want 0x%02X", i, got[i], want[i])
+		}
+	}
+}
+
+func TestVideoChip_BlitCopy_BigEndian(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	video.SetBigEndianMode(true)
+	mode := VideoModes[video.currentMode]
+
+	src := vramAddr(mode, 1, 1)
+	dst := vramAddr(mode, 8, 1)
+	color := uint32(0xA1B2C3D4)
+
+	bus.Write32(BLT_OP, bltOpFill)
+	bus.Write32(BLT_DST, src)
+	bus.Write32(BLT_WIDTH, 1)
+	bus.Write32(BLT_HEIGHT, 1)
+	bus.Write32(BLT_DST_STRIDE, uint32(mode.bytesPerRow))
+	bus.Write32(BLT_COLOR, color)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	bus.Write32(BLT_OP, bltOpCopy)
+	bus.Write32(BLT_SRC, src)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 1)
+	bus.Write32(BLT_HEIGHT, 1)
+	bus.Write32(BLT_SRC_STRIDE, uint32(mode.bytesPerRow))
+	bus.Write32(BLT_DST_STRIDE, uint32(mode.bytesPerRow))
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	srcOff := src - BUFFER_OFFSET
+	dstOff := dst - BUFFER_OFFSET
+	for i := range 4 {
+		if video.frontBuffer[srcOff+uint32(i)] != video.frontBuffer[dstOff+uint32(i)] {
+			t.Fatalf("big-endian copy mismatch at byte %d: src=0x%02X dst=0x%02X",
+				i, video.frontBuffer[srcOff+uint32(i)], video.frontBuffer[dstOff+uint32(i)])
+		}
+	}
+}
+
+func TestVideoChip_BlitFill_LittleEndian(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	video.SetBigEndianMode(false)
+	mode := VideoModes[video.currentMode]
+	dst := vramAddr(mode, 2, 2)
+	color := uint32(0x11223344)
+
+	bus.Write32(BLT_OP, bltOpFill)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 1)
+	bus.Write32(BLT_HEIGHT, 1)
+	bus.Write32(BLT_DST_STRIDE, uint32(mode.bytesPerRow))
+	bus.Write32(BLT_COLOR, color)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	offset := dst - BUFFER_OFFSET
+	got := video.frontBuffer[offset : offset+4]
+	want := []byte{0x44, 0x33, 0x22, 0x11}
+	for i := range 4 {
+		if got[i] != want[i] {
+			t.Fatalf("little-endian fill byte %d got 0x%02X want 0x%02X", i, got[i], want[i])
 		}
 	}
 }
@@ -809,5 +902,146 @@ func TestBlitterMode7NegativeCoordsWrap(t *testing.T) {
 	// So should read column 3
 	if got := video.HandleRead(dst); got != 0xFE {
 		t.Fatalf("expected wrap of -1 to 3 (0xFE), got 0x%X", got)
+	}
+}
+
+// newDirectVRAMTestRig creates a VideoChip+MachineBus configured for directVRAM mode
+// (as used by EmuTOS), with bigEndianMode enabled and VRAM I/O unmapped.
+func newDirectVRAMTestRig(t *testing.T) (*VideoChip, *MachineBus) {
+	t.Helper()
+	bus := NewMachineBus()
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("failed to create video chip: %v", err)
+	}
+	video.AttachBus(bus)
+	video.SetBigEndianMode(true)
+	bus.UnmapIO(VRAM_START, VRAM_START+VRAM_SIZE-1)
+	video.SetDirectVRAM(bus.memory[VRAM_START : VRAM_START+VRAM_SIZE])
+	bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+	return video, bus
+}
+
+func TestBlitterDirectVRAM_Fill(t *testing.T) {
+	video, bus := newDirectVRAMTestRig(t)
+
+	color := uint32(0xFF000000) // black with full alpha
+	dst := uint32(VRAM_START)
+
+	bus.Write32(BLT_OP, bltOpFill)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 4)
+	bus.Write32(BLT_HEIGHT, 2)
+	bus.Write32(BLT_DST_STRIDE, 2560)
+	bus.Write32(BLT_COLOR, color)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	// Verify the pixel was written to busMemory (not frontBuffer)
+	for y := range 2 {
+		for x := range 4 {
+			addr := VRAM_START + uint32(y*2560+x*4)
+			got := binary.LittleEndian.Uint32(bus.memory[addr : addr+4])
+			if got != color {
+				t.Fatalf("directVRAM fill at (%d,%d): got 0x%08X, want 0x%08X", x, y, got, color)
+			}
+		}
+	}
+
+	// Verify raw LE byte order: 0xFF000000 → [00, 00, 00, FF]
+	raw := bus.memory[VRAM_START : VRAM_START+4]
+	if raw[0] != 0x00 || raw[1] != 0x00 || raw[2] != 0x00 || raw[3] != 0xFF {
+		t.Fatalf("directVRAM fill raw bytes: got [%02X,%02X,%02X,%02X], want [00,00,00,FF]",
+			raw[0], raw[1], raw[2], raw[3])
+	}
+}
+
+func TestBlitterDirectVRAM_Copy(t *testing.T) {
+	video, bus := newDirectVRAMTestRig(t)
+
+	// Write source pixels to off-screen busMemory using BigEndian (M68K byte order).
+	// Non-VRAM reads in bigEndianMode use BigEndian, matching how the M68K CPU writes.
+	srcAddr := uint32(0x500000)
+	binary.BigEndian.PutUint32(bus.memory[srcAddr:], 0xDEADBEEF)
+	binary.BigEndian.PutUint32(bus.memory[srcAddr+4:], 0xCAFEBABE)
+
+	dst := uint32(VRAM_START)
+	bus.Write32(BLT_OP, bltOpCopy)
+	bus.Write32(BLT_SRC, srcAddr)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 2)
+	bus.Write32(BLT_HEIGHT, 1)
+	bus.Write32(BLT_SRC_STRIDE, 8)
+	bus.Write32(BLT_DST_STRIDE, 2560)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	got0 := binary.LittleEndian.Uint32(bus.memory[dst : dst+4])
+	got1 := binary.LittleEndian.Uint32(bus.memory[dst+4 : dst+8])
+	if got0 != 0xDEADBEEF {
+		t.Fatalf("directVRAM copy pixel 0: got 0x%08X, want 0xDEADBEEF", got0)
+	}
+	if got1 != 0xCAFEBABE {
+		t.Fatalf("directVRAM copy pixel 1: got 0x%08X, want 0xCAFEBABE", got1)
+	}
+}
+
+func TestBlitterDirectVRAM_Mode7(t *testing.T) {
+	video, bus := newDirectVRAMTestRig(t)
+
+	const (
+		BLT_MODE7_U0     = 0xF0058
+		BLT_MODE7_V0     = 0xF005C
+		BLT_MODE7_DU_COL = 0xF0060
+		BLT_MODE7_DV_COL = 0xF0064
+		BLT_MODE7_DU_ROW = 0xF0068
+		BLT_MODE7_DV_ROW = 0xF006C
+		BLT_MODE7_TEX_W  = 0xF0070
+		BLT_MODE7_TEX_H  = 0xF0074
+		BLT_OP_MODE7     = 5
+	)
+
+	// Setup 4x4 texture at off-screen address using BigEndian (M68K byte order).
+	// Non-VRAM reads in bigEndianMode use BigEndian, matching how the M68K CPU writes.
+	texAddr := uint32(0x500000)
+	for y := range 4 {
+		for x := range 4 {
+			off := texAddr + uint32(y*16+x*4)
+			binary.BigEndian.PutUint32(bus.memory[off:], 0xAA000000+uint32(y*4+x))
+		}
+	}
+
+	dst := uint32(VRAM_START)
+	bus.Write32(BLT_OP, BLT_OP_MODE7)
+	bus.Write32(BLT_SRC, texAddr)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 4)
+	bus.Write32(BLT_HEIGHT, 4)
+	bus.Write32(BLT_SRC_STRIDE, 16)
+	bus.Write32(BLT_DST_STRIDE, 2560)
+
+	// Identity transform
+	bus.Write32(BLT_MODE7_U0, 0)
+	bus.Write32(BLT_MODE7_V0, 0)
+	bus.Write32(BLT_MODE7_DU_COL, 0x10000)
+	bus.Write32(BLT_MODE7_DV_COL, 0)
+	bus.Write32(BLT_MODE7_DU_ROW, 0)
+	bus.Write32(BLT_MODE7_DV_ROW, 0x10000)
+	bus.Write32(BLT_MODE7_TEX_W, 3)
+	bus.Write32(BLT_MODE7_TEX_H, 3)
+
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	// Verify non-zero output in busMemory
+	for y := range 4 {
+		for x := range 4 {
+			addr := VRAM_START + uint32(y*2560+x*4)
+			got := binary.LittleEndian.Uint32(bus.memory[addr : addr+4])
+			expected := 0xAA000000 + uint32(y*4+x)
+			if got != expected {
+				t.Fatalf("directVRAM mode7 at (%d,%d): got 0x%08X, want 0x%08X", x, y, got, expected)
+			}
+		}
 	}
 }

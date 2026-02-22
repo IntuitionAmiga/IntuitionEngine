@@ -96,6 +96,14 @@ func (se *ScriptEngine) IsRunning() bool {
 	return se.running.Load()
 }
 
+// Done returns a channel that is closed when the current script finishes.
+// Returns nil if no script is running.
+func (se *ScriptEngine) Done() <-chan struct{} {
+	se.mu.Lock()
+	defer se.mu.Unlock()
+	return se.done
+}
+
 func (se *ScriptEngine) FreezeCount() int32 {
 	return se.freezeCount.Load()
 }
@@ -292,6 +300,20 @@ func (se *ScriptEngine) registerBit32(L *lua.LState) {
 
 func (se *ScriptEngine) onFrameComplete() {
 	se.frameCount.Add(1)
+
+	// EmuTOS on M68K relies on VBL (level 4) for periodic screen service.
+	// Deliver one VBL interrupt per composed frame when execution is in ROM space.
+	snap := runtimeStatus.snapshot()
+	if snap.selectedCPU == runtimeCPUM68K && snap.m68k != nil {
+		cpu := snap.m68k.CPU()
+		if cpu != nil && cpu.Running() {
+			pc := cpu.PC
+			if pc >= 0x00E00000 && pc < 0x00E80000 {
+				cpu.AssertInterrupt(4)
+			}
+		}
+	}
+
 	if se.recorder != nil {
 		se.recorder.OnFrame()
 	}

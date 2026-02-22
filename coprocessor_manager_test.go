@@ -877,11 +877,10 @@ func TestCoprocWorker6502StartStop(t *testing.T) {
 func TestCoprocWorkerM68KStartStop(t *testing.T) {
 	bus := NewMachineBus()
 
-	// M68K BRA.S -2 (infinite loop): 0x60FE
-	// Must be stored in big-endian in bus memory (M68K byte-swaps on fetch)
-	// M68K CPU does bits.ReverseBytes16 on fetch, so store LE bytes that
-	// will become 0x60FE after swap: store as 0xFE60
-	code := []byte{0xFE, 0x60}
+	// M68K BRA.S -2 (infinite loop): 0x60FE in big-endian
+	// Store as big-endian bytes: high byte 0x60 at lower address, low byte 0xFE at higher.
+	// LE uint16 read gives 0xFE60, ReverseBytes16 produces 0x60FE (BRA.S -2).
+	code := []byte{0x60, 0xFE}
 
 	worker, err := createM68KWorker(bus, code)
 	if err != nil {

@@ -65,15 +65,15 @@ func TestAbcdMemorySystematic(t *testing.T) {
 	tests := []M68KTestCase{
 		{
 			Name:     "ABCD_memory_simple",
-			AddrRegs: [8]uint32{0x1001, 0x2001, 0, 0, 0, 0, 0, 0x8000}, // A0, A1 point past data
+			AddrRegs: [8]uint32{0x1201, 0x2201, 0, 0, 0, 0, 0, 0x8000}, // A0, A1 point past data
 			InitialMem: map[uint32]interface{}{
-				0x1000: uint8(0x09), // Source
-				0x2000: uint8(0x01), // Destination
+				0x1200: uint8(0x09), // Source
+				0x2200: uint8(0x01), // Destination
 			},
 			// ABCD -(A0),-(A1): 1100 001 10000 1000 = 0xC308
 			Opcodes:      []uint16{0xC308},
-			ExpectedRegs: Regs("A0", uint32(0x1000), "A1", uint32(0x2000)),
-			ExpectedMem:  []MemoryExpectation{ExpectByte(0x2000, 0x10)},
+			ExpectedRegs: Regs("A0", uint32(0x1200), "A1", uint32(0x2200)),
+			ExpectedMem:  []MemoryExpectation{ExpectByte(0x2200, 0x10)},
 		},
 	}
 
@@ -130,15 +130,15 @@ func TestSbcdMemorySystematic(t *testing.T) {
 	tests := []M68KTestCase{
 		{
 			Name:     "SBCD_memory_simple",
-			AddrRegs: [8]uint32{0x1001, 0x2001, 0, 0, 0, 0, 0, 0x8000},
+			AddrRegs: [8]uint32{0x1201, 0x2201, 0, 0, 0, 0, 0, 0x8000},
 			InitialMem: map[uint32]interface{}{
-				0x1000: uint8(0x01), // Source (subtrahend)
-				0x2000: uint8(0x10), // Destination (minuend)
+				0x1200: uint8(0x01), // Source (subtrahend)
+				0x2200: uint8(0x10), // Destination (minuend)
 			},
 			// SBCD -(A0),-(A1): 1000 001 10000 1000 = 0x8308
 			Opcodes:      []uint16{0x8308},
-			ExpectedRegs: Regs("A0", uint32(0x1000), "A1", uint32(0x2000)),
-			ExpectedMem:  []MemoryExpectation{ExpectByte(0x2000, 0x09)},
+			ExpectedRegs: Regs("A0", uint32(0x1200), "A1", uint32(0x2200)),
+			ExpectedMem:  []MemoryExpectation{ExpectByte(0x2200, 0x09)},
 		},
 	}
 
@@ -195,13 +195,13 @@ func TestNbcdMemorySystematic(t *testing.T) {
 	tests := []M68KTestCase{
 		{
 			Name:     "NBCD_memory",
-			AddrRegs: [8]uint32{0x1000, 0, 0, 0, 0, 0, 0, 0x8000},
+			AddrRegs: [8]uint32{0x1200, 0, 0, 0, 0, 0, 0, 0x8000},
 			InitialMem: map[uint32]interface{}{
-				0x1000: uint8(0x23),
+				0x1200: uint8(0x23),
 			},
 			// NBCD (A0): 0100 1000 0001 0000 = 0x4810
 			Opcodes:       []uint16{0x4810},
-			ExpectedMem:   []MemoryExpectation{ExpectByte(0x1000, 0x77)},
+			ExpectedMem:   []MemoryExpectation{ExpectByte(0x1200, 0x77)},
 			ExpectedFlags: FlagsAll(-1, 0, -1, 1, 1), // Non-zero result, borrow
 		},
 	}
@@ -251,14 +251,14 @@ func TestPackMemorySystematic(t *testing.T) {
 	tests := []M68KTestCase{
 		{
 			Name:     "PACK_memory_no_adjust",
-			AddrRegs: [8]uint32{0x1002, 0x2001, 0, 0, 0, 0, 0, 0x8000}, // A0 past word, A1 past byte
+			AddrRegs: [8]uint32{0x1202, 0x2201, 0, 0, 0, 0, 0, 0x8000}, // A0 past word, A1 past byte
 			InitialMem: map[uint32]interface{}{
-				0x1000: uint16(0x0905), // Source word
+				0x1200: uint16(0x0905), // Source word
 			},
 			// PACK -(A0),-(A1),#0: 1000 001 10100 1000 = 0x8348
 			Opcodes:      []uint16{0x8348, 0x0000},
-			ExpectedRegs: Regs("A0", uint32(0x1000), "A1", uint32(0x2000)),
-			ExpectedMem:  []MemoryExpectation{ExpectByte(0x2000, 0x95)},
+			ExpectedRegs: Regs("A0", uint32(0x1200), "A1", uint32(0x2200)),
+			ExpectedMem:  []MemoryExpectation{ExpectByte(0x2200, 0x95)},
 		},
 	}
 
@@ -303,14 +303,14 @@ func TestUnpkMemorySystematic(t *testing.T) {
 	tests := []M68KTestCase{
 		{
 			Name:     "UNPK_memory_no_adjust",
-			AddrRegs: [8]uint32{0x1001, 0x2002, 0, 0, 0, 0, 0, 0x8000}, // A0 past byte, A1 past word
+			AddrRegs: [8]uint32{0x1201, 0x2202, 0, 0, 0, 0, 0, 0x8000}, // A0 past byte, A1 past word
 			InitialMem: map[uint32]interface{}{
-				0x1000: uint8(0x32), // Source byte
+				0x1200: uint8(0x32), // Source byte
 			},
 			// UNPK -(A0),-(A1),#0: 1000 001 11000 1000 = 0x8388
 			Opcodes:      []uint16{0x8388, 0x0000},
-			ExpectedRegs: Regs("A0", uint32(0x1000), "A1", uint32(0x2000)),
-			ExpectedMem:  []MemoryExpectation{ExpectWord(0x2000, 0x0302)},
+			ExpectedRegs: Regs("A0", uint32(0x1200), "A1", uint32(0x2200)),
+			ExpectedMem:  []MemoryExpectation{ExpectWord(0x2200, 0x0302)},
 		},
 	}
 
