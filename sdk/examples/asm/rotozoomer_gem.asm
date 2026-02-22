@@ -111,13 +111,17 @@ start:
                 bmi     exit_no_gem
 
                 bsr     generate_texture
+                bsr     start_music
                 bsr     open_window
                 tst.w   d0
-                bmi     exit_close_vdi
+                bmi     exit_stop_music
 
                 bsr     event_loop
 
+                bsr     stop_music
                 bsr     close_window
+exit_stop_music:
+                bsr     stop_music
 exit_close_vdi:
                 bsr     gem_exit
 exit_no_gem:
@@ -814,6 +818,18 @@ advance_animation:
                 rts
 
 ; ============================================================================
+; AHX MUSIC PLAYBACK
+; ============================================================================
+
+start_music:
+                PLAY_AHX_LOOP ahx_data,ahx_data_end-ahx_data
+                rts
+
+stop_music:
+                STOP_AHX
+                rts
+
+; ============================================================================
 ; GENERATE TEXTURE (256x256 Checkerboard)
 ; ============================================================================
 
@@ -960,6 +976,15 @@ recip_table:
                 dc.w    1149,1134,1119,1103,1087,1071,1055,1038,1022,1005,988,972,955,938,922,905
                 dc.w    889,873,858,842,827,812,797,782,768,754,740,727,714,701,689,676
                 dc.w    665,653,642,631,620,610,599,589,580,571,561,553,544,536,528,520
+
+; ============================================================================
+; AHX MUSIC DATA
+; ============================================================================
+
+                even
+ahx_data:
+                incbin  "../assets/music/chopper.ahx"
+ahx_data_end:
 
 ; ============================================================================
 ; BSS - Uninitialised Data
