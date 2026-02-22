@@ -45,6 +45,47 @@ else
     NATIVE_GOARCH := $(ARCH)
 endif
 
+# Cross-compiler detection for dual-architecture Linux release builds.
+# aarch64 host → cross-compile for amd64; x86_64 host → cross-compile for arm64.
+CROSS_SYSROOT := ./sysroot
+HAS_SYSROOT := $(wildcard $(CROSS_SYSROOT)/usr)
+
+ifeq ($(ARCH),aarch64)
+    CROSS_CC := x86_64-linux-gnu-gcc
+    CROSS_CXX := x86_64-linux-gnu-g++
+    CROSS_GOARCH := amd64
+    CROSS_PKG_CONFIG_LIBDIR := /usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+    CROSS_CGO_CFLAGS :=
+    CROSS_CGO_CXXFLAGS :=
+    CROSS_CGO_LDFLAGS :=
+else ifeq ($(ARCH),x86_64)
+    CROSS_GOARCH := arm64
+    # Auto-detect aarch64 cross-compiler (Debian/Ubuntu vs Tumbleweed naming)
+    ifneq ($(shell command -v aarch64-linux-gnu-gcc 2>/dev/null),)
+        CROSS_CC := aarch64-linux-gnu-gcc
+        CROSS_CXX := aarch64-linux-gnu-g++
+    else ifneq ($(shell command -v aarch64-suse-linux-gcc 2>/dev/null),)
+        CROSS_CC := aarch64-suse-linux-gcc
+        CROSS_CXX := aarch64-suse-linux-g++
+    else
+        CROSS_CC := aarch64-linux-gnu-gcc
+        CROSS_CXX := aarch64-linux-gnu-g++
+    endif
+    # Sysroot-based cross-compilation (Tumbleweed or manually populated sysroot)
+    ifneq ($(HAS_SYSROOT),)
+        CROSS_CGO_CFLAGS := --sysroot=$(CROSS_SYSROOT)
+        CROSS_CGO_CXXFLAGS := --sysroot=$(CROSS_SYSROOT)
+        CROSS_CGO_LDFLAGS := --sysroot=$(CROSS_SYSROOT)
+        CROSS_PKG_CONFIG_LIBDIR := $(CROSS_SYSROOT)/usr/lib64/pkgconfig:$(CROSS_SYSROOT)/usr/share/pkgconfig:$(CROSS_SYSROOT)/usr/lib/aarch64-linux-gnu/pkgconfig
+        CROSS_PKG_CONFIG_SYSROOT_DIR := $(CROSS_SYSROOT)
+    else
+        CROSS_CGO_CFLAGS :=
+        CROSS_CGO_CXXFLAGS :=
+        CROSS_CGO_LDFLAGS :=
+        CROSS_PKG_CONFIG_LIBDIR := /usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+    endif
+endif
+
 # Version metadata
 COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD_DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -80,7 +121,7 @@ RELEASE_DIR := ./release
 
 # Main targets
 .PHONY: all clean list install uninstall novulkan headless headless-novulkan
-.PHONY: sdk clean-sdk release-src release-sdk release-linux release-windows release-all players
+.PHONY: sdk clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-all players
 
 # Default target builds everything
 all: setup intuition-engine ie32asm ie64asm ie32to64 ie64dis
@@ -521,24 +562,27 @@ sdk: clean-sdk ie32asm ie64asm ie32to64 ie64dis
 	echo "SDK build complete: $${SDK_BUILT} assembled, $${SDK_SKIPPED} skipped, $${SDK_FAILED} failed"; \
 	ls sdk/examples/prebuilt/ 2>/dev/null || true
 
-# Build release archive for Linux (native architecture only)
-# Ebiten/Oto require CGO (GLFW/X11/ALSA), so cross-compilation is not supported.
-release-linux: setup sdk emutos-rom
-	@echo "=== Building Linux release ($(NATIVE_GOARCH)) ==="
-	@$(MKDIR) -p $(RELEASE_DIR)
-	@echo "Assembling EhBASIC IE64 ROM..."
-	@$(SDK_BIN_DIR)/ie64asm -I sdk/include sdk/examples/asm/ehbasic_ie64.asm
-	@RELEASE_NAME=$(APP_NAME)-$(APP_VERSION)-linux-$(NATIVE_GOARCH); \
+# Reusable macro for building a Linux release archive for a given architecture.
+# $(1) = GOARCH (amd64 or arm64)
+# $(2) = CC
+# $(3) = CXX
+# $(4) = extra env vars (CGO_CFLAGS, PKG_CONFIG_*, etc. — empty for native)
+define build-linux-release
+	@RELEASE_NAME=$(APP_NAME)-$(APP_VERSION)-linux-$(1); \
 	echo ""; \
 	echo "--- $$RELEASE_NAME ---"; \
-	echo "Building (native, full)..."; \
-	CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags "embed_basic embed_emutos" -o IntuitionEngine .; \
-	command -v $(SSTRIP) >/dev/null 2>&1 && $(SSTRIP) -z IntuitionEngine || true; \
-	command -v $(UPX) >/dev/null 2>&1 && $(UPX) --lzma IntuitionEngine || true; \
-	$(GO) build $(GO_FLAGS) -o ie32asm assembler/ie32asm.go; \
-	$(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm assembler/ie64asm.go; \
-	$(GO) build $(GO_FLAGS) -o ie32to64 ./cmd/ie32to64/; \
-	$(GO) build $(GO_FLAGS) -tags ie64dis -o ie64dis assembler/ie64dis.go; \
+	echo "Building main binary (GOARCH=$(1), CC=$(2))..."; \
+	CGO_ENABLED=1 CGO_JOBS=$(NCORES) CC=$(2) CXX=$(3) GOARCH=$(1) $(4) \
+		$(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags "embed_basic embed_emutos" -o IntuitionEngine .; \
+	if [ "$(1)" = "$(NATIVE_GOARCH)" ]; then \
+		command -v $(SSTRIP) >/dev/null 2>&1 && $(SSTRIP) -z IntuitionEngine || true; \
+		command -v $(UPX) >/dev/null 2>&1 && $(UPX) --lzma IntuitionEngine || true; \
+	fi; \
+	echo "Building SDK tools (pure Go, CGO_ENABLED=0)..."; \
+	CGO_ENABLED=0 GOARCH=$(1) $(GO) build $(GO_FLAGS) -o ie32asm assembler/ie32asm.go; \
+	CGO_ENABLED=0 GOARCH=$(1) $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm assembler/ie64asm.go; \
+	CGO_ENABLED=0 GOARCH=$(1) $(GO) build $(GO_FLAGS) -o ie32to64 ./cmd/ie32to64/; \
+	CGO_ENABLED=0 GOARCH=$(1) $(GO) build $(GO_FLAGS) -tags ie64dis -o ie64dis assembler/ie64dis.go; \
 	STAGING=$(RELEASE_DIR)/$$RELEASE_NAME; \
 	rm -rf $$STAGING; \
 	$(MKDIR) -p $$STAGING; \
@@ -553,6 +597,46 @@ release-linux: setup sdk emutos-rom
 	tar -C $(RELEASE_DIR) -cJf $(RELEASE_DIR)/$$RELEASE_NAME.tar.xz $$RELEASE_NAME; \
 	rm -rf $$STAGING; \
 	echo "Created: $(RELEASE_DIR)/$$RELEASE_NAME.tar.xz"
+endef
+
+# Cross-compilation env string for pkg-config isolation + sysroot flags.
+CROSS_ENV := CGO_CFLAGS="$(CROSS_CGO_CFLAGS)" CGO_CXXFLAGS="$(CROSS_CGO_CXXFLAGS)" CGO_LDFLAGS="$(CROSS_CGO_LDFLAGS)" PKG_CONFIG_PATH= PKG_CONFIG_LIBDIR="$(CROSS_PKG_CONFIG_LIBDIR)"
+ifneq ($(CROSS_PKG_CONFIG_SYSROOT_DIR),)
+    CROSS_ENV += PKG_CONFIG_SYSROOT_DIR="$(CROSS_PKG_CONFIG_SYSROOT_DIR)"
+endif
+
+# Build Linux release archives for both architectures (native + cross).
+release-linux: setup sdk emutos-rom
+	@echo "=== Building Linux releases (amd64 + arm64) ==="
+	@$(MKDIR) -p $(RELEASE_DIR)
+	@echo "Assembling EhBASIC IE64 ROM..."
+	@$(SDK_BIN_DIR)/ie64asm -I sdk/include sdk/examples/asm/ehbasic_ie64.asm
+	$(call build-linux-release,$(NATIVE_GOARCH),$(CC),$(CXX),)
+	$(call build-linux-release,$(CROSS_GOARCH),$(CROSS_CC),$(CROSS_CXX),$(CROSS_ENV))
+
+# Build Linux release archive for amd64 only.
+release-linux-amd64: setup sdk emutos-rom
+	@echo "=== Building Linux release (amd64) ==="
+	@$(MKDIR) -p $(RELEASE_DIR)
+	@echo "Assembling EhBASIC IE64 ROM..."
+	@$(SDK_BIN_DIR)/ie64asm -I sdk/include sdk/examples/asm/ehbasic_ie64.asm
+ifeq ($(NATIVE_GOARCH),amd64)
+	$(call build-linux-release,amd64,$(CC),$(CXX),)
+else
+	$(call build-linux-release,amd64,$(CROSS_CC),$(CROSS_CXX),$(CROSS_ENV))
+endif
+
+# Build Linux release archive for arm64 only.
+release-linux-arm64: setup sdk emutos-rom
+	@echo "=== Building Linux release (arm64) ==="
+	@$(MKDIR) -p $(RELEASE_DIR)
+	@echo "Assembling EhBASIC IE64 ROM..."
+	@$(SDK_BIN_DIR)/ie64asm -I sdk/include sdk/examples/asm/ehbasic_ie64.asm
+ifeq ($(NATIVE_GOARCH),arm64)
+	$(call build-linux-release,arm64,$(CC),$(CXX),)
+else
+	$(call build-linux-release,arm64,$(CROSS_CC),$(CROSS_CXX),$(CROSS_ENV))
+endif
 
 # Build release archives for Windows (amd64 + arm64, cross-compiled, no Vulkan)
 release-windows: setup sdk emutos-rom
@@ -747,7 +831,9 @@ help:
 	@echo "  sdk              - Sync includes and pre-assemble SDK demos"
 	@echo "  release-src      - Create source archive from git"
 	@echo "  release-sdk      - Create standalone SDK archive"
-	@echo "  release-linux    - Build Linux release archive (native arch)"
+	@echo "  release-linux       - Build Linux release archives (amd64 + arm64)"
+	@echo "  release-linux-amd64 - Build Linux release archive (amd64 only)"
+	@echo "  release-linux-arm64 - Build Linux release archive (arm64 only)"
 	@echo "  release-windows  - Build Windows release archives (amd64 + arm64)"
 	@echo "  release-all      - Build all release archives + SHA256SUMS"
 	@echo ""

@@ -17,6 +17,9 @@ SHA256SUMS
 *.tar.xz
 *.zip
 
+# Cross-compilation sysroot
+sysroot/
+
 # SDK build artifacts
 sdk/bin/
 sdk/examples/prebuilt/
