@@ -1,7 +1,7 @@
 # EmuTOS on Intuition Engine
 
 EmuTOS is a free GPLv2 replacement for Atari TOS with GEM desktop support.
-Intuition Engine runs EmuTOS directly on the IE M68K core and IE MMIO devices (no Atari ST chipset emulation).
+Intuition Engine runs EmuTOS directly on the IE M68K core with full access to all IE MMIO devices (no Atari ST chipset emulation). TOS .PRG programs can drive any hardware register including all audio chips (SoundChip, PSG, SID, POKEY, TED, AHX) and video chips (VideoChip, VGA, ULA, TED video, ANTIC/GTIA, Voodoo 3D).
 
 ## Current Status
 
@@ -83,13 +83,15 @@ Framebuffer base is `0x100000` at `640x480` (`stride=2560`).
 
 ## IE Hardware Map (EmuTOS target)
 
+EmuTOS has full access to the complete IE hardware map. The key registers for EmuTOS-specific I/O are listed below; see `registers.go` and `ie68.inc` for the full map.
+
 | Register | Address | Purpose |
 |---|---:|---|
 | `VIDEO_CTRL` | `0xF0000` | video enable |
 | `VIDEO_MODE` | `0xF0004` | `0=640x480` |
 | `VIDEO_STATUS` | `0xF0008` | bit 1 `in_vblank` |
-| `VRAM` | `0x100000+` | RGBA32 framebuffer |
-| `PSG` | `0xF0C00+` | YM2149 registers |
+| `BLT_OP` | `0xF0020` | blitter operation (fill, copy, Mode7) |
+| `TERM_OUT` | `0xF0700` | debug output |
 | `MOUSE_X` | `0xF0730` | absolute X |
 | `MOUSE_Y` | `0xF0734` | absolute Y |
 | `MOUSE_BUTTONS` | `0xF0738` | bit0=left bit1=right bit2=middle |
@@ -97,7 +99,19 @@ Framebuffer base is `0x100000` at `640x480` (`stride=2560`).
 | `SCAN_CODE` | `0xF0740` | dequeues make/break scancode |
 | `SCAN_STATUS` | `0xF0744` | bit0 available |
 | `SCAN_MODIFIERS` | `0xF0748` | bit0 shift bit1 ctrl bit2 alt bit3 caps |
-| `TERM_OUT` | `0xF0700` | debug output |
+| `AUDIO_CTRL` | `0xF0800` | SoundChip registers |
+| `PSG` | `0xF0C00+` | YM2149 PSG registers |
+| `SID` | `0xF0C40+` | SID registers |
+| `TED` | `0xF0C80+` | TED audio registers |
+| `POKEY` | `0xF0CC0+` | POKEY registers |
+| `AHX_PLAY_PTR` | `0xF0B84` | AHX module playback pointer |
+| `AHX_PLAY_LEN` | `0xF0B88` | AHX module data length |
+| `AHX_PLAY_CTRL` | `0xF0B8C` | AHX play control (bit0=start, bit1=stop, bit2=loop) |
+| `VGA_BASE` | `0xF1000+` | VGA registers |
+| `ULA_BASE` | `0xF2000+` | ULA registers |
+| `ANTIC_BASE` | `0xF2100+` | ANTIC/GTIA registers |
+| `VOODOO_BASE` | `0xF4000+` | Voodoo 3D registers |
+| `VRAM` | `0x100000+` | RGBA32 framebuffer (4MB) |
 
 ## GEM Application Programming (.PRG)
 
@@ -141,13 +155,14 @@ Key points for GEM blitter usage:
 
 ### Example: GEM Windowed Rotozoomer
 
-See `sdk/examples/asm/rotozoomer_gem.asm` for a complete GEM application that opens a window and renders an animated Mode7 rotozoomer inside it. It demonstrates:
+See `sdk/examples/asm/rotozoomer_gem.asm` for a complete GEM application that opens a window and renders an animated Mode7 rotozoomer with AHX music. It demonstrates:
 - TOS .PRG crt0 startup (basepage, Mshrink, stack setup)
 - GEM AES/VDI initialization (appl_init, v_opnvwk, wind_create/open)
 - evnt_multi event loop with MU_MESAG + MU_TIMER
 - WM_REDRAW rectangle list clipping protocol
 - WM_MOVED window repositioning
 - Hardware Mode7 blitter rendering into a GEM window
+- AHX music playback via MMIO (incbin + PLAY_AHX_LOOP macro)
 
 ## Monitor and Debugging
 

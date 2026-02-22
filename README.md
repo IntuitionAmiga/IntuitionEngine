@@ -5506,7 +5506,7 @@ Intuition Engine runs [EmuTOS](https://emutos.sourceforge.io/) directly on the I
 
 ### EmuTOS-Specific Hardware
 
-EmuTOS runs on the IE-native profile: VideoChip (640x480 RGBA), terminal MMIO for keyboard/mouse, and timer-driven interrupts. Non-IE peripherals (VGA, ULA, TED video, ANTIC, Voodoo, SID, POKEY) are detached to avoid I/O region conflicts.
+EmuTOS runs on the IE M68K core with full access to all IE hardware: VideoChip (640x480 RGBA), terminal MMIO for keyboard/mouse, timer-driven interrupts, and the complete audio/video peripheral set (SoundChip, PSG, SID, POKEY, TED, AHX, VGA, ULA, TED video, ANTIC/GTIA, Voodoo 3D). TOS .PRG programs can drive any MMIO register in the hardware map via `ie68.inc`.
 
 **Mouse MMIO** (0xF0730 - 0xF073C):
 
