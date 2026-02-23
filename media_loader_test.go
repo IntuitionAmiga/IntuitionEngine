@@ -35,7 +35,7 @@ func TestDetectMediaType(t *testing.T) {
 
 func TestMediaLoaderSanitizePath(t *testing.T) {
 	bus := NewMachineBus()
-	loader := NewMediaLoader(bus, nil, ".", nil, nil, nil, nil, nil)
+	loader := NewMediaLoader(bus, nil, ".", nil, nil, nil, nil, nil, nil)
 
 	if _, ok := loader.sanitizePathLocked("safe.sid"); !ok {
 		t.Fatalf("expected safe relative path to be accepted")
@@ -57,7 +57,7 @@ func TestMediaLoaderSanitizePath(t *testing.T) {
 func newMediaLoaderTestEnv(t *testing.T, baseDir string) (*MediaLoader, *MachineBus) {
 	t.Helper()
 	bus := NewMachineBus()
-	loader := NewMediaLoader(bus, nil, baseDir, nil, nil, nil, nil, nil)
+	loader := NewMediaLoader(bus, nil, baseDir, nil, nil, nil, nil, nil, nil)
 	return loader, bus
 }
 
@@ -282,7 +282,7 @@ func TestMediaLoader_SIDPlayback(t *testing.T) {
 	bus.MapIO(SID_BASE, SID_END, sidEngine.HandleRead, sidEngine.HandleWrite)
 	bus.MapIO(SID_PLAY_PTR, SID_PLAY_STATUS+3, sidPlayer.HandlePlayRead, sidPlayer.HandlePlayWrite)
 
-	loader := NewMediaLoader(bus, soundChip, ".", psgPlayer, sidPlayer, nil, nil, nil)
+	loader := NewMediaLoader(bus, soundChip, ".", psgPlayer, sidPlayer, nil, nil, nil, nil)
 	bus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END, loader.HandleRead, loader.HandleWrite)
 
 	// Mimic what EhBASIC does: write filename to bus, set MEDIA_NAME_PTR, trigger play
@@ -339,7 +339,7 @@ func TestMediaLoader_PSGTrackerPlayback(t *testing.T) {
 	bus.MapIO(PSG_BASE, PSG_END, psgEngine.HandleRead, psgEngine.HandleWrite)
 	bus.MapIO(PSG_PLAY_PTR, PSG_PLAY_STATUS+3, psgPlayer.HandlePlayRead, psgPlayer.HandlePlayWrite)
 
-	loader := NewMediaLoader(bus, soundChip, ".", psgPlayer, nil, nil, nil, nil)
+	loader := NewMediaLoader(bus, soundChip, ".", psgPlayer, nil, nil, nil, nil, nil)
 	bus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END, loader.HandleRead, loader.HandleWrite)
 
 	nameAddr := uint32(0x6FF000)
@@ -397,7 +397,7 @@ func TestMediaLoader_BusPath_SIDPlayback(t *testing.T) {
 	bus.MapIO(SID_BASE, SID_END, sidEngine.HandleRead, sidEngine.HandleWrite)
 	bus.MapIO(SID_PLAY_PTR, SID_PLAY_STATUS+3, sidPlayer.HandlePlayRead, sidPlayer.HandlePlayWrite)
 
-	loader := NewMediaLoader(bus, soundChip, ".", psgPlayer, sidPlayer, nil, nil, nil)
+	loader := NewMediaLoader(bus, soundChip, ".", psgPlayer, sidPlayer, nil, nil, nil, nil)
 	bus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END, loader.HandleRead, loader.HandleWrite)
 
 	// Use bus.Write32 — this is the actual path EhBASIC takes
@@ -455,7 +455,7 @@ func TestMediaLoader_AudioPipeline_PSG(t *testing.T) {
 	bus.MapIO(PSG_BASE, PSG_END, psgEngine.HandleRead, psgEngine.HandleWrite)
 	bus.MapIO(PSG_PLAY_PTR, PSG_PLAY_STATUS+3, psgPlayer.HandlePlayRead, psgPlayer.HandlePlayWrite)
 
-	loader := NewMediaLoader(bus, soundChip, ".", psgPlayer, nil, nil, nil, nil)
+	loader := NewMediaLoader(bus, soundChip, ".", psgPlayer, nil, nil, nil, nil, nil)
 	bus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END, loader.HandleRead, loader.HandleWrite)
 
 	nameAddr := uint32(0x6FF000)
@@ -521,7 +521,7 @@ func TestMediaLoader_AudioPipeline_SID(t *testing.T) {
 	bus.MapIO(SID_BASE, SID_END, sidEngine.HandleRead, sidEngine.HandleWrite)
 	bus.MapIO(SID_PLAY_PTR, SID_PLAY_STATUS+3, sidPlayer.HandlePlayRead, sidPlayer.HandlePlayWrite)
 
-	loader := NewMediaLoader(bus, soundChip, ".", nil, sidPlayer, nil, nil, nil)
+	loader := NewMediaLoader(bus, soundChip, ".", nil, sidPlayer, nil, nil, nil, nil)
 	bus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END, loader.HandleRead, loader.HandleWrite)
 
 	nameAddr := uint32(0x6FF000)

@@ -40,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **POKEY** (Atari): 4-channel with polynomial counters and high-pass filter. Supports `.sap` playback.
 - **TED** (Commodore Plus/4): 2-channel square wave audio.
 - **AHX** (Amiga): Tracker-based module playback.
+- **MOD** (ProTracker): 4-channel .mod file playback via SoundChip FLEX DAC mode with Amiga A500/A1200 filter emulation. MMIO registers at `$F0BC0-$F0BD7`, `-mod` CLI flag, MediaLoader auto-detection, and EhBASIC `SOUND MOD` commands.
 - **SN76489** support via VGM command `0x50` with clock-accurate frequency scaling to AY registers and dynamic noise-tracks-tone2.
 - PLUS enhanced modes for PSG, SID, POKEY, TED, and AHX with logarithmic volume curves.
 

@@ -1233,6 +1233,7 @@ Supported formats:
 | `.ym`, `.ay`, `.vgm`, `.vgz`, `.vtx`, `.sndh`, `.pt3`, `.pt2`, `.pt1`, `.stc`, `.sqt`, `.asc`, `.ftc` | PSG (AY-3-8910) |
 | `.ted`, `.prg` | TED (Commodore 16) |
 | `.ahx` | AHX (Amiga tracker) |
+| `.mod` | MOD (ProTracker) |
 
 `SOUND PLAY STOP` stops all audio engine playback.
 
@@ -2120,7 +2121,31 @@ REM ... later:
 AHX STOP
 ```
 
-### 7.7 Music File Playback
+### 7.7 MOD Player (ProTracker)
+
+The MOD player provides ProTracker .mod file playback using DAC mode on the SoundChip FLEX channels, with optional Amiga low-pass filter emulation.
+
+```basic
+REM Play a MOD file with A500 filter
+SOUND MOD FILTER 1                  : REM 0=none, 1=A500, 2=A1200
+SOUND MOD PLAY &H100000, 65536
+REM ... later:
+SOUND MOD STOP
+```
+
+**Checking playback status:**
+```basic
+IF MOD STATUS THEN PRINT "Playing"
+```
+
+**Filter models:**
+| Value | Model | Description |
+|-------|-------|-------------|
+| 0 | None | No filtering, raw output |
+| 1 | A500 | Amiga 500 RC filter (~4.5kHz) with LED filter |
+| 2 | A1200 | Amiga 1200 RC filter (~28kHz) with LED filter |
+
+### 7.8 Music File Playback
 
 The unified `SOUND PLAY` command provides the simplest way to play music files:
 
@@ -2140,6 +2165,7 @@ For low-level control, per-engine playback commands are also available:
 | `PSG PLAY` | .ay | ZX Spectrum/CPC |
 | `TED PLAY` | TED dumps | Commodore 16 |
 | `AHX PLAY` | .ahx | Amiga |
+| `SOUND MOD PLAY` | .mod | Amiga ProTracker |
 
 All players support `STOP` to halt playback. SID and SAP players support subsong selection.
 

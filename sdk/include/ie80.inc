@@ -587,6 +587,48 @@
 .set AHX_SUBSONG,0xF0B91
 
 ; ============================================================================
+; MOD AUDIO REGISTERS (ProTracker .mod player)
+;
+; The MOD player provides ProTracker/NoiseTracker .mod playback:
+; - 4-channel sample-based module playback
+; - Amiga filter emulation (A500 4.5kHz / A1200 28kHz low-pass)
+; - All standard ProTracker effects
+;
+; Usage:
+;   1. Embed MOD data in your program using incbin
+;   2. Set MOD_PLAY_PTR bytes to the address of the MOD data (little-endian)
+;   3. Set MOD_PLAY_LEN bytes to the size of the MOD data (little-endian)
+;   4. Optionally set MOD_FILTER_MODEL to select a filter (default 0=none)
+;   5. Write to MOD_PLAY_CTRL to start/stop playback
+;
+; MOD_PLAY_CTRL bits:
+;   bit 0 (0x01) - Start playback (write 1 to begin)
+;   bit 1 (0x02) - Stop playback (write 1 to stop)
+;   bit 2 (0x04) - Enable looping (set before starting)
+;
+; MOD_PLAY_STATUS bits:
+;   bit 0 (0x01) - Busy (1 = playing, 0 = stopped)
+;   bit 1 (0x02) - Error (1 = load/parse error)
+;
+; MOD_FILTER_MODEL values:
+;   0 = No filter
+;   1 = A500 (4.5kHz low-pass, classic Amiga 500)
+;   2 = A1200 (28kHz low-pass, Amiga 1200)
+; ============================================================================
+.set MOD_PLAY_PTR_0,0xF0BC0
+.set MOD_PLAY_PTR_1,0xF0BC1
+.set MOD_PLAY_PTR_2,0xF0BC2
+.set MOD_PLAY_PTR_3,0xF0BC3
+.set MOD_PLAY_LEN_0,0xF0BC4
+.set MOD_PLAY_LEN_1,0xF0BC5
+.set MOD_PLAY_LEN_2,0xF0BC6
+.set MOD_PLAY_LEN_3,0xF0BC7
+.set MOD_PLAY_CTRL,0xF0BC8
+.set MOD_PLAY_STATUS,0xF0BCC
+.set MOD_FILTER_MODEL,0xF0BD0
+.set MOD_POSITION,0xF0BD4
+
+; ============================================================================
 ; VGA VIDEO PORTS (IBM VGA compatible via port I/O)
 ;
 ; The VGA chip provides IBM PC-compatible graphics modes:
@@ -1698,6 +1740,50 @@
 .macro ENABLE_AHX_PLUS
     ld a,1
     ld (AHX_PLUS_CTRL),a
+.endm
+
+; ============================================================================
+; MOD PLAYER MACROS
+; ============================================================================
+
+; Set MOD data pointer (32-bit address)
+.macro SET_MOD_PTR addr
+    ld hl,\addr & 0xFFFF
+    ld (MOD_PLAY_PTR_0),hl
+    ld hl,\addr >> 16
+    ld (MOD_PLAY_PTR_2),hl
+.endm
+
+; Set MOD data length (32-bit)
+.macro SET_MOD_LEN len
+    ld hl,\len & 0xFFFF
+    ld (MOD_PLAY_LEN_0),hl
+    ld hl,\len >> 16
+    ld (MOD_PLAY_LEN_2),hl
+.endm
+
+; Start MOD playback (no loop)
+.macro START_MOD_PLAY
+    ld a,1
+    ld (MOD_PLAY_CTRL),a
+.endm
+
+; Start MOD playback with looping
+.macro START_MOD_LOOP
+    ld a,5
+    ld (MOD_PLAY_CTRL),a
+.endm
+
+; Stop MOD playback
+.macro STOP_MOD_PLAY
+    ld a,2
+    ld (MOD_PLAY_CTRL),a
+.endm
+
+; Set MOD filter model (0=none, 1=A500, 2=A1200)
+.macro SET_MOD_FILTER model
+    ld a,\model
+    ld (MOD_FILTER_MODEL),a
 .endm
 
 ; ============================================================================

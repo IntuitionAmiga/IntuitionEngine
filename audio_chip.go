@@ -87,7 +87,7 @@ const (
 // -------------------------------------------------------------------------------
 const (
 	FLEX_CH_BASE   = 0xF0A80
-	FLEX_CH_STRIDE = 0x40 // Must be >= highest offset (FLEX_OFF_SYNC=0x38) + 4
+	FLEX_CH_STRIDE = 0x40 // Must be >= highest offset (FLEX_OFF_DAC=0x3C) + 4
 	FLEX_CH_END    = FLEX_CH_BASE + (FLEX_CH_STRIDE * NUM_CHANNELS) - 1
 
 	FLEX_CH0_BASE = FLEX_CH_BASE
@@ -110,6 +110,7 @@ const (
 	FLEX_OFF_PHASE     = 0x30 // Reset phase position
 	FLEX_OFF_RINGMOD   = 0x34 // Ring modulation source (bit 7=enable, bits 0-2=source channel)
 	FLEX_OFF_SYNC      = 0x38 // Hard sync source (bit 7=enable, bits 0-2=source channel)
+	FLEX_OFF_DAC       = 0x3C // DAC mode: signed 8-bit sample value (bypasses waveform+envelope)
 )
 
 // ------------------------------------------------------------------------------
@@ -713,6 +714,7 @@ type Channel struct {
 	dutyCycle        float32 // Square wave duty cycle (0.0-1.0)
 	noisePhase       float32 // Phase accumulator for noise timing
 	noiseValue       float32 // Current noise generator output
+	dacValue         float32 // DAC mode sample value [-1.0, +0.992]
 	noiseFilter      float32 // Noise filter coefficient
 	noiseFilterState float32 // Noise filter state variable
 	noiseSR          uint32  // Noise shift register state
@@ -845,6 +847,7 @@ type Channel struct {
 	sidADSRBugsEnabled   bool // Enable 6581 ADSR bugs (delay bug, counter leak)
 	sidNoisePhaseLocked  bool // Clock noise LFSR on phase wrap (authentic SID timing)
 	sid6581FilterDistort bool // Enable 6581 filter distortion
+	dacMode              bool // DAC mode: bypass waveform+envelope, output dacValue directly
 
 	// SID rate counter state (for authentic ADSR timing)
 	sidEnvLevel         uint8                  // 8-bit envelope level (0-255)
@@ -1382,6 +1385,7 @@ func (chip *SoundChip) applyFlexRegister(chIndex uint32, offset uint32, value ui
 		}
 	case FLEX_OFF_WAVE_TYPE:
 		ch.waveType = int(value % NUM_WAVE_TYPES)
+		ch.dacMode = false
 	case FLEX_OFF_PWM_CTRL:
 		ch.pwmEnabled = (value & PWM_ENABLE_MASK) != 0
 		ch.pwmRate = float32(value&PWM_RATE_MASK) * PWM_RATE_SCALE
@@ -1398,6 +1402,9 @@ func (chip *SoundChip) applyFlexRegister(chIndex uint32, offset uint32, value ui
 		} else {
 			ch.ringModSource = nil
 		}
+	case FLEX_OFF_DAC:
+		ch.dacMode = true
+		ch.dacValue = float32(int8(byte(value))) / 128.0
 	case FLEX_OFF_SYNC:
 		if value&0x80 != 0 {
 			srcCh := int(value & 0x0F)
@@ -2257,7 +2264,15 @@ func (ch *Channel) generateSample() float32 {
 	//    - Hard sync if master channel set
 	// 5. Scale output by volume and envelope
 
-	if !ch.enabled || ch.frequency == 0 {
+	if !ch.enabled {
+		return 0
+	}
+	// DAC mode: output dacValue * volume directly.
+	// Bypasses envelope, sweep, waveform generation, Plus-mode, and per-channel filter.
+	if ch.dacMode {
+		return clampF32(ch.dacValue*ch.volume, MIN_SAMPLE, MAX_SAMPLE)
+	}
+	if ch.frequency == 0 {
 		return 0
 	}
 

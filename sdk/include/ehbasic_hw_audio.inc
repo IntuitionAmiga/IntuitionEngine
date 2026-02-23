@@ -62,6 +62,8 @@ hw_sound:
     beq     r1, r2, .snd_r_cmd
     move.q  r2, #0x53            ; 'S' (SWEEP / SYNC)
     beq     r1, r2, .snd_s_cmd
+    move.q  r2, #0x4D            ; 'M' (MOD)
+    beq     r1, r2, .snd_mod
     move.q  r2, #0x57            ; 'W' (WAVE)
     beq     r1, r2, .snd_wave
     ; Parse channel number
@@ -450,6 +452,11 @@ hw_sound:
     beq     r1, r2, .snd_sync
     ; Unrecognised S sub-command - fall through to done
     rts
+
+.snd_mod:
+    add.q   r17, r17, #1         ; skip 'M'
+    jsr     skip_alpha           ; skip "OD"
+    bra     hw_mod               ; global label
 
 .snd_freq_only:
     pop     r22
@@ -1438,6 +1445,79 @@ hw_sap:
     la      r1, SAP_PLAY_CTRL
     move.q  r2, #2
     store.l r2, (r1)
+    rts
+
+; ============================================================================
+; hw_mod - SOUND MOD PLAY/STOP/FILTER
+; ============================================================================
+
+hw_mod:
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    jsr     toupper
+    move.q  r2, #0x50            ; 'P' (PLAY)
+    beq     r1, r2, .mod_p_cmd
+    move.q  r2, #0x53            ; 'S' (STOP)
+    beq     r1, r2, .mod_stop
+    move.q  r2, #TK_STOP         ; STOP token
+    beq     r1, r2, .mod_stop
+    move.q  r2, #0x46            ; 'F' (FILTER)
+    beq     r1, r2, .mod_filter
+    rts
+
+.mod_p_cmd:
+    ; PLAY - skip keyword
+    add.q   r17, r17, #1
+    jsr     skip_alpha
+    jsr     exec_skip_spaces
+    ; Check for STOP after PLAY (SOUND MOD PLAY STOP)
+    load.b  r1, (r17)
+    jsr     toupper
+    move.q  r2, #0x53            ; 'S'
+    beq     r1, r2, .mod_stop
+    move.q  r2, #TK_STOP         ; STOP token
+    beq     r1, r2, .mod_stop
+    ; Evaluate addr expression
+    jsr     expr_eval
+    jsr     fp_int
+    jsr     fp_fix
+    la      r1, MOD_PLAY_PTR
+    store.l r8, (r1)
+    ; Check for comma (len parameter - required)
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x2C            ; ','
+    bne     r1, r2, .mod_play_start
+    add.q   r17, r17, #1
+    jsr     exec_skip_spaces
+    jsr     expr_eval
+    jsr     fp_int
+    jsr     fp_fix
+    la      r1, MOD_PLAY_LEN
+    store.l r8, (r1)
+.mod_play_start:
+    la      r1, MOD_PLAY_CTRL
+    move.q  r2, #1
+    store.l r2, (r1)
+    rts
+
+.mod_stop:
+    add.q   r17, r17, #1
+    jsr     skip_alpha
+    la      r1, MOD_PLAY_CTRL
+    move.q  r2, #2
+    store.l r2, (r1)
+    rts
+
+.mod_filter:
+    add.q   r17, r17, #1
+    jsr     skip_alpha
+    jsr     exec_skip_spaces
+    jsr     expr_eval
+    jsr     fp_int
+    jsr     fp_fix
+    la      r1, MOD_FILTER_MODEL
+    store.l r8, (r1)
     rts
 
 ; ============================================================================

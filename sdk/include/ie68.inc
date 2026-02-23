@@ -463,6 +463,73 @@ AHX_PLAY_CTRL   equ $F0B8C              ; Play control
 AHX_PLAY_STATUS equ $F0B90              ; Play status
 AHX_SUBSONG     equ $F0B91              ; Subsong selection (0-255)
 
+; ============================================================================
+; MOD AUDIO REGISTERS (ProTracker .mod player)
+;
+; The MOD player provides ProTracker/NoiseTracker .mod playback:
+; - 4-channel sample-based module playback
+; - Amiga filter emulation (A500 4.5kHz / A1200 28kHz low-pass)
+; - All standard ProTracker effects
+;
+; Usage:
+;   1. Embed MOD data in your program using incbin
+;   2. Set MOD_PLAY_PTR to the address of the MOD file data
+;   3. Set MOD_PLAY_LEN to the size of the MOD data in bytes
+;   4. Optionally set MOD_FILTER_MODEL to select a filter (default 0=none)
+;   5. Write to MOD_PLAY_CTRL to start/stop playback
+;
+; MOD_PLAY_CTRL bits:
+;   bit 0 ($01) - Start playback (write 1 to begin)
+;   bit 1 ($02) - Stop playback (write 1 to stop)
+;   bit 2 ($04) - Enable looping (set before starting)
+;
+; MOD_PLAY_STATUS bits:
+;   bit 0 ($01) - Busy (1 = playing, 0 = stopped)
+;   bit 1 ($02) - Error (1 = load/parse error)
+;
+; MOD_FILTER_MODEL values:
+;   0 = No filter
+;   1 = A500 (4.5kHz low-pass, classic Amiga 500)
+;   2 = A1200 (28kHz low-pass, Amiga 1200)
+; ============================================================================
+MOD_PLAY_PTR    equ $F0BC0              ; Pointer to MOD data in bus memory (32-bit)
+MOD_PLAY_LEN    equ $F0BC4              ; Length of MOD data (32-bit)
+MOD_PLAY_CTRL   equ $F0BC8              ; Play control (32-bit)
+MOD_PLAY_STATUS equ $F0BCC              ; Play status (32-bit)
+MOD_FILTER_MODEL equ $F0BD0             ; Filter model (32-bit)
+MOD_POSITION    equ $F0BD4              ; Current song position (32-bit, read-only)
+
+; ----------------------------------------------------------------------------
+; MOD Player Macros
+; ----------------------------------------------------------------------------
+
+; PLAY_MOD - Load and start MOD playback
+; Parameters:
+;   \ptr - Address of MOD data
+;   \len - Length of MOD data in bytes
+; Example: PLAY_MOD mod_data,mod_data_end-mod_data
+PLAY_MOD    macro
+    move.l  #\1,MOD_PLAY_PTR
+    move.l  #\2,MOD_PLAY_LEN
+    move.l  #1,MOD_PLAY_CTRL
+    endm
+
+; PLAY_MOD_LOOP - Load and start MOD playback with looping
+; Parameters:
+;   \ptr - Address of MOD data
+;   \len - Length of MOD data in bytes
+; Example: PLAY_MOD_LOOP mod_data,mod_data_end-mod_data
+PLAY_MOD_LOOP    macro
+    move.l  #\1,MOD_PLAY_PTR
+    move.l  #\2,MOD_PLAY_LEN
+    move.l  #5,MOD_PLAY_CTRL
+    endm
+
+; STOP_MOD - Stop MOD playback
+STOP_MOD    macro
+    move.l  #2,MOD_PLAY_CTRL
+    endm
+
 ; ----------------------------------------------------------------------------
 ; AHX Player Macros
 ; ----------------------------------------------------------------------------

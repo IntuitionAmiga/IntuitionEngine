@@ -36,6 +36,7 @@ Address Range       Size    Device              Constants File
 0xF0000-0xF0054     84B     Video Chip          video_chip.go
 0xF0700-0xF07FF     256B    Terminal/Serial     registers.go
 0xF0800-0xF0B3F     832B    Audio Chip          audio_chip.go
+0xF0BC0-0xF0BD7     24B     MOD Player          mod_constants.go
 0xF0C00-0xF0C1C     28B     PSG (AY-3-8910)     psg_constants.go
 0xF0D00-0xF0D1D     29B     POKEY               pokey_constants.go
 0xF0E00-0xF0E2D     45B     SID (6581/8580)     sid_constants.go

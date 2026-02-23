@@ -384,8 +384,61 @@ expr_primary:
     beq     r1, r2, .do_chip_status
 
 .not_func:
-    ; --- Intercept coprocessor functions (COCALL, COSTATUS) ---
+    ; --- Intercept MOD STATUS (raw-text, no token) ---
     or.q    r3, r1, #0x20        ; normalize to lowercase
+    move.q  r2, #0x6D            ; 'm'
+    bne     r3, r2, .check_co_funcs
+    load.b  r3, 1(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x6F            ; 'o'
+    bne     r3, r2, .check_co_funcs
+    load.b  r3, 2(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x64            ; 'd'
+    bne     r3, r2, .check_co_funcs
+    ; Found "MOD" - skip 3 chars, skip spaces, verify "STATUS"
+    add.q   r17, r17, #3
+    ; Skip spaces
+.mod_st_skip_sp:
+    load.b  r2, (r17)
+    move.q  r3, #0x20
+    bne     r2, r3, .mod_st_after_sp
+    add.q   r17, r17, #1
+    bra     .mod_st_skip_sp
+.mod_st_after_sp:
+    ; Check first char is 'S'
+    or.q    r2, r2, #0x20
+    move.q  r3, #0x73            ; 's'
+    bne     r2, r3, .mod_st_not_status
+    add.q   r17, r17, #1
+    ; Skip remaining alpha (TATUS...)
+.mod_st_skip_alpha:
+    load.b  r2, (r17)
+    move.q  r3, #0x41            ; 'A'
+    blt     r2, r3, .mod_st_done
+    move.q  r3, #0x5A            ; 'Z'
+    ble     r2, r3, .mod_st_next
+    move.q  r3, #0x61            ; 'a'
+    blt     r2, r3, .mod_st_done
+    move.q  r3, #0x7A            ; 'z'
+    bgt     r2, r3, .mod_st_done
+.mod_st_next:
+    add.q   r17, r17, #1
+    bra     .mod_st_skip_alpha
+.mod_st_done:
+    ; Read MOD_PLAY_STATUS, return bit 0 as FP32
+    move.l  r1, #MOD_PLAY_STATUS
+    load.l  r8, (r1)
+    and.q   r8, r8, #1
+    jsr     fp_float
+    rts
+.mod_st_not_status:
+    ; Not "STATUS" after "MOD" - back up 3 chars so variable parsing can try
+    sub.q   r17, r17, #3
+    bra     .check_var_range
+
+.check_co_funcs:
+    ; --- Intercept coprocessor functions (COCALL, COSTATUS) ---
     move.q  r2, #0x63            ; 'c'
     bne     r3, r2, .check_var_range
     load.b  r3, 1(r17)

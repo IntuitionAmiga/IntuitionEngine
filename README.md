@@ -62,13 +62,14 @@
    - 3.9 TED Registers
    - 3.10 TED Video Chip Registers
    - 3.11 AHX Module Player Registers
-   - 3.12 Hardware I/O Memory Map by CPU
-   - 3.13 VGA Video Chip
-   - 3.14 ULA Video Chip (ZX Spectrum)
-   - 3.15 ANTIC Video Chip (Atari 8-bit)
-   - 3.16 GTIA Color Control (Atari 8-bit)
-   - 3.17 Coprocessor Subsystem
-   - 3.18 Voodoo 3D Graphics
+   - 3.12 MOD Player Registers
+   - 3.13 Hardware I/O Memory Map by CPU
+   - 3.14 VGA Video Chip
+   - 3.15 ULA Video Chip (ZX Spectrum)
+   - 3.16 ANTIC Video Chip (Atari 8-bit)
+   - 3.17 GTIA Color Control (Atari 8-bit)
+   - 3.18 Coprocessor Subsystem
+   - 3.19 Voodoo 3D Graphics
 4. [IE32 CPU Architecture](#4-ie32-cpu-architecture)
    - 4.1 Register Set
    - 4.2 Status Flags
@@ -137,6 +138,7 @@
     - 11.6 SID Sound Chip
     - 11.7 TED Sound Chip
     - 11.8 AHX Sound Chip
+    - 11.9 MOD Player (ProTracker)
 12. [Video System](#12-video-system)
     - 12.1 Display Modes
     - 12.2 Framebuffer Organisation
@@ -186,6 +188,7 @@ Default core: **IE64**. Additional cores: **IE32, M68K, x86, Z80, 6502**.
 - **POKEY** (Atari) - Supports .sap playback
 - **SID** (6581/8580) - Supports .sid playback
 - **Amiga AHX** module playback
+- **ProTracker MOD** (.mod) - 4-channel Amiga module playback with A500/A1200 filter emulation
 
 ## Video System
 
@@ -234,6 +237,9 @@ Default core: **IE64**. Additional cores: **IE32, M68K, x86, Z80, 6502**.
 
 # Play SID music
 ./bin/IntuitionEngine -sid music.sid
+
+# Play ProTracker MOD music
+./bin/IntuitionEngine -mod music.mod
 
 # Run a Lua automation script alongside a program
 ./bin/IntuitionEngine -ie64 program.ie64 -script demo.ies
@@ -397,6 +403,7 @@ All hardware is accessed through memory-mapped registers in the `$F0000-$FFFFF` 
 | PSG | `$F0C00-$F0C1C` | AY-3-8910 registers and file playback |
 | POKEY | `$F0D00-$F0D1D` | Atari POKEY registers and SAP playback |
 | SID | `$F0E00-$F0E2D` | MOS 6581 registers and SID playback |
+| MOD | `$F0BC0-$F0BD7` | ProTracker .mod player with Amiga filters |
 | Banking | `$F700-$F7F0` | Bank window control (Z80/6502 only) |
 | VGA | `$F1000-$F13FF` | VGA mode, DAC, sequencer, CRTC, palette |
 | File I/O | `$F2200-$F221F` | Host filesystem access (LOAD/SAVE) |
@@ -427,6 +434,8 @@ The system's memory layout is designed to provide efficient access to both progr
 0x0F0820 - 0x0F0834: Filter registers
 0x0F0900 - 0x0F0A6F: Legacy synth registers (square/triangle/sine/noise/saw)
 0x0F0A80 - 0x0F0B7F: Flexible 4-channel synth registers (preferred)
+0x0F0B80 - 0x0F0B91: AHX module player registers
+0x0F0BC0 - 0x0F0BD7: MOD player registers (ProTracker .mod playback)
 0x0F0C00 - 0x0F0C0D: PSG registers (AY/YM synthesis)
 0x0F0C0E:            PSG+ control register
 0x0F0C10 - 0x0F0C1C: PSG playback control (AY/YM/VGM/SNDH; VGM includes SN76489)
@@ -914,7 +923,26 @@ AHX+ mode provides enhanced audio processing:
 - Authentic Amiga stereo panning (L-R-R-L pattern)
 - Hardware PWM mapping SquarePos to duty cycle
 
-## 3.12 Hardware I/O Memory Map by CPU
+## 3.12 MOD Player Registers (0x0F0BC0 - 0x0F0BD7)
+
+The MOD player provides ProTracker .mod file playback using DAC mode on the SoundChip FLEX channels, with optional Amiga-style low-pass filter emulation:
+
+```
+MOD Player Registers (0x0F0BC0 - 0x0F0BD7):
+0x0F0BC0: MOD_PLAY_PTR     - Pointer to MOD data in bus memory (32-bit)
+0x0F0BC4: MOD_PLAY_LEN     - Length of MOD data (32-bit)
+0x0F0BC8: MOD_PLAY_CTRL    - Control (bit0=start, bit1=stop, bit2=loop)
+0x0F0BCC: MOD_PLAY_STATUS  - Status (bit0=busy, bit1=error)
+0x0F0BD0: MOD_FILTER_MODEL - Filter model (0=none, 1=A500 4.5kHz, 2=A1200 28kHz)
+0x0F0BD4: MOD_POSITION     - Current song position (read-only)
+```
+
+Filter models emulate the original Amiga hardware low-pass characteristics:
+- **0 (None)**: No filtering, raw output
+- **1 (A500)**: Amiga 500 RC filter at ~4.5kHz cutoff with LED filter
+- **2 (A1200)**: Amiga 1200 RC filter at ~28kHz cutoff with LED filter
+
+## 3.13 Hardware I/O Memory Map by CPU
 
 All sound and video chips are accessible from all CPU architectures at different address ranges:
 
@@ -927,6 +955,7 @@ All sound and video chips are accessible from all CPU architectures at different
 | SID   | 0x0F0E00-0x0F0E1C | 0xE0/0xE1 | 0xE0/0xE1 | $D500-$D51C | MOS 6581/8580 compatible |
 | TED   | 0x0F0F00-0x0F0F05 | 0xF2/0xF3 | 0xF2/0xF3 | $D600-$D605 | Plus/4 compatible |
 | AHX   | 0x0F0B80-0x0F0B91 | -         | -         | $FB80-$FB91 | Amiga AHX/THX module player |
+| MOD   | 0x0F0BC0-0x0F0BD7 | -         | -         | $FBC0-$FBD7 | ProTracker .mod player |
 
 \* x86 POKEY uses ports 0xD0-0xD3 and 0xD8-0xDF (0xD4-0xD7 reserved for ANTIC/GTIA)
 
@@ -955,7 +984,7 @@ Example: `STA $D400` writes to PSG register 0.
 **IE32/IE64/M68K Direct:** Full 32-bit address space access.
 Example: `MOVE.B D0,($F0C00).L` writes to PSG register 0.
 
-## 3.13 VGA Video Chip (0x0F1000 - 0x0F13FF)
+## 3.14 VGA Video Chip (0x0F1000 - 0x0F13FF)
 
 The VGA chip provides IBM PC-compatible graphics modes, allowing classic PC demo effects and games:
 
@@ -1065,7 +1094,7 @@ The VGA chip integrates with the video compositor as a separate layer (layer 10)
 
 See section 12.9 (Video Compositor) for details on the compositing architecture and section 12.6 (Copper List Executor) for examples of copper-driven VGA palette manipulation.
 
-## 3.14 ULA Video Chip - ZX Spectrum (0x0F2000 - 0x0F200B)
+## 3.15 ULA Video Chip - ZX Spectrum (0x0F2000 - 0x0F200B)
 
 The ULA chip provides authentic ZX Spectrum video output, enabling classic Spectrum demos and games:
 
@@ -1195,7 +1224,7 @@ The ULA integrates with the video compositor as layer 15, rendering above both t
 
 The ULA provides its own frame timing through `SignalVSync()`, which handles the FLASH attribute timing (toggling every 32 frames). When disabled via `ULA_CTRL`, the chip returns nil frames to the compositor.
 
-## 3.15 ANTIC Video Chip - Atari 8-bit (0x0F2100 - 0x0F213F)
+## 3.16 ANTIC Video Chip - Atari 8-bit (0x0F2100 - 0x0F213F)
 
 The ANTIC (Alphanumeric Television Interface Controller) provides authentic Atari 8-bit computer video output, enabling classic Atari demos and games:
 
@@ -1376,7 +1405,7 @@ loop:
     bne loop
 ```
 
-## 3.16 GTIA Color Control (0x0F2140 - 0x0F216F)
+## 3.17 GTIA Color Control (0x0F2140 - 0x0F216F)
 
 The GTIA (Graphics Television Interface Adapter) companion chip handles color generation and player-missile graphics for Atari 8-bit systems. While ANTIC controls display timing and the display list, GTIA controls all color output.
 
@@ -1486,7 +1515,7 @@ The PRIOR register controls display priority and special GTIA modes:
     move.b  #$00,GTIA_COLBK     ; Black background
 ```
 
-## 3.17 Coprocessor Subsystem (0x0F2340 - 0x0F237F)
+## 3.18 Coprocessor Subsystem (0x0F2340 - 0x0F237F)
 
 The coprocessor subsystem allows any CPU to launch worker CPUs (IE32, 6502, M68K, Z80, x86) that run service binaries. Workers poll a shared mailbox ring buffer for requests, process them, and write results. The caller manages worker lifecycle and request routing via MMIO registers. Available in all CPU modes.
 
@@ -1630,7 +1659,7 @@ Complete caller examples are provided for all CPU architectures:
 | `sdk/examples/asm/coproc_caller_z80.asm` | Z80 | M68K | Gateway access via `STORE32` macros |
 | `sdk/examples/asm/coproc_caller_65.asm` | 6502 | IE32 | Gateway access via `STORE32` macros |
 
-## 3.18 Voodoo 3D Graphics (0x0F4000 - 0x0F43FF)
+## 3.19 Voodoo 3D Graphics (0x0F4000 - 0x0F43FF)
 
 The Voodoo chip emulates a 3DFX SST-1 graphics accelerator using High-Level Emulation (HLE). Instead of software rasterization, register writes are translated to GPU draw calls for hardware-accelerated 3D rendering with Vulkan (or software fallback).
 
@@ -3321,7 +3350,7 @@ The Intuition Engine includes a full port of Lee Davison's Enhanced BASIC (EhBAS
 - **Core language**: PRINT, LET, IF/THEN/ELSE, FOR/NEXT/STEP, WHILE/WEND, DO/LOOP, GOTO, GOSUB/RETURN, DATA/READ, INPUT, DIM (multi-dimensional arrays), string variables and operations
 - **Built-in functions**: ABS, INT, SQR, RND, SGN, SIN, COS, TAN, ATN, LOG, EXP, LEN, ASC, VAL, CHR$, LEFT$, RIGHT$, MID$, STR$, HEX$, BIN$, PEEK, POKE, USR, MAX, MIN, BITTST, FRE
 - **Video commands**: SCREEN, CLS, PLOT, LINE, CIRCLE, BOX, PALETTE, LOCATE, COLOR, SCROLL, VSYNC, plus ULA, TED, ANTIC/GTIA, and full Voodoo 3D pipeline (vertices, triangles, textures, Z-buffer, alpha blending, fog)
-- **Audio commands**: SOUND, ENVELOPE, GATE, WAVE, FILTER, REVERB, OVERDRIVE, SWEEP, SYNC, RINGMOD, plus PSG/SID/POKEY/TED/AHX playback and STATUS queries
+- **Audio commands**: SOUND, ENVELOPE, GATE, WAVE, FILTER, REVERB, OVERDRIVE, SWEEP, SYNC, RINGMOD, plus PSG/SID/POKEY/TED/AHX/MOD playback and STATUS queries
 - **System commands**: CALL (machine code subroutine), USR (call with return value), POKE8/PEEK8, DOKE/DEEK, WAIT, BLIT, COPPER, TRON/TROFF (trace mode)
 - **Coprocessor commands**: COSTART, COSTOP, COWAIT (worker lifecycle); COCALL(), COSTATUS() (async cross-CPU RPC to IE32/6502/M68K/Z80/x86 workers)
 - **Machine code interface**: CALL and USR use register-indirect JSR to invoke IE64 assembly routines; R8 carries return values
@@ -3329,7 +3358,7 @@ The Intuition Engine includes a full port of Lee Davison's Enhanced BASIC (EhBAS
 
 ### Common REPL Commands
 
-- `SOUND PLAY "music.ext" [,subsong]` starts music playback and auto-detects format by extension: `.sid`, `.ym`, `.ay`, `.sndh`, `.ted`, `.prg`, `.ahx` (stops any currently playing track first)
+- `SOUND PLAY "music.ext" [,subsong]` starts music playback and auto-detects format by extension: `.sid`, `.ym`, `.ay`, `.sndh`, `.ted`, `.prg`, `.ahx`, `.mod` (stops any currently playing track first)
 - `SOUND STOP` stops current music playback (`SOUND PLAY STOP` is also accepted)
 - `RUN` executes the current BASIC program; `RUN "program.ie64"` (or `.iex`/`.ie68`/`.ie86`/`.ie80`/`.bin`) loads and launches an external binary
 
@@ -4767,6 +4796,69 @@ ahx_data_end:
 - Set AHX_SUBSONG before starting to select a specific subsong (0-255)
 - Read AHX_PLAY_STATUS for busy/error flags
 - Speed 0 command in the module signals end of song
+
+## 11.9 MOD Player (ProTracker)
+
+The MOD player provides full ProTracker .mod file playback with 4-channel sample-based audio. MOD files are the classic Amiga music format, using PCM samples mixed in real time. The player outputs through the SoundChip FLEX channels in DAC mode.
+
+### Features:
+- Full ProTracker .mod file parsing (M.K., 4CHN, FLT4, and other 4-channel signatures)
+- 4-channel sample playback via SoundChip FLEX DAC mode
+- Amiga A500 and A1200 low-pass filter emulation with LED filter
+- Song position tracking
+- Loop support
+- MediaLoader integration (auto-detected by `.mod` extension)
+- `-mod` command line flag for direct playback
+- Status bar indicator "Amiga MOD"
+
+### .MOD File Playback:
+
+**M68K:**
+```assembly
+; Play a .mod file with A500 filter and looping
+    move.l  #1,MOD_FILTER_MODEL         ; A500 filter
+    move.l  #mod_data,MOD_PLAY_PTR
+    move.l  #(mod_data_end-mod_data),MOD_PLAY_LEN
+    move.l  #5,MOD_PLAY_CTRL            ; start + loop
+
+mod_data:
+    incbin  "music.mod"
+mod_data_end:
+```
+
+**Z80:**
+```assembly
+; Play a .mod file with looping
+    SET_MOD_FILTER 1                     ; A500 filter
+    SET_MOD_PTR mod_data
+    SET_MOD_LEN (mod_data_end-mod_data)
+    START_MOD_LOOP                       ; Start with looping
+
+mod_data:
+    incbin  "music.mod"
+mod_data_end:
+```
+
+**6502:**
+```assembly
+; Play a .mod file with looping
+    lda  #1
+    sta  MOD_FILTER_MODEL               ; A500 filter
+    STORE32 MOD_PLAY_PTR_0, mod_data
+    STORE32 MOD_PLAY_LEN_0, (mod_data_end-mod_data)
+    lda  #5                             ; bit0=start, bit2=loop
+    sta  MOD_PLAY_CTRL
+
+mod_data:
+    .incbin "music.mod"
+mod_data_end:
+```
+
+**Playback Control:**
+- Write `1` to MOD_PLAY_CTRL to start, `2` to stop, `5` to start with loop
+- Set MOD_FILTER_MODEL before starting to select a filter (0=none, 1=A500, 2=A1200)
+- Read MOD_PLAY_STATUS for busy/error flags
+- Read MOD_POSITION for the current song position
 
 # 12. Video System
 

@@ -18,6 +18,7 @@ type MediaLoader struct {
 	tedPlayer   *TEDPlayer
 	ahxPlayer   *AHXPlayer
 	pokeyPlayer *POKEYPlayer
+	modPlayer   *MODPlayer
 
 	namePtr uint32
 	subsong uint32
@@ -30,7 +31,7 @@ type MediaLoader struct {
 	mu sync.Mutex
 }
 
-func NewMediaLoader(bus *MachineBus, soundChip *SoundChip, baseDir string, psgPlayer *PSGPlayer, sidPlayer *SIDPlayer, tedPlayer *TEDPlayer, ahxPlayer *AHXPlayer, pokeyPlayer *POKEYPlayer) *MediaLoader {
+func NewMediaLoader(bus *MachineBus, soundChip *SoundChip, baseDir string, psgPlayer *PSGPlayer, sidPlayer *SIDPlayer, tedPlayer *TEDPlayer, ahxPlayer *AHXPlayer, pokeyPlayer *POKEYPlayer, modPlayer *MODPlayer) *MediaLoader {
 	absBase, err := filepath.Abs(baseDir)
 	if err != nil {
 		absBase = baseDir
@@ -44,6 +45,7 @@ func NewMediaLoader(bus *MachineBus, soundChip *SoundChip, baseDir string, psgPl
 		tedPlayer:   tedPlayer,
 		ahxPlayer:   ahxPlayer,
 		pokeyPlayer: pokeyPlayer,
+		modPlayer:   modPlayer,
 		status:      MEDIA_STATUS_IDLE,
 		typ:         MEDIA_TYPE_NONE,
 		errCode:     MEDIA_ERR_OK,
@@ -147,6 +149,38 @@ func (m *MediaLoader) loadAndStart(reqGen uint64, fullPath string, typ uint32, s
 		} else {
 			m.errCode = MEDIA_ERR_BAD_FORMAT
 		}
+		return
+	}
+
+	// MOD files can exceed MEDIA_STAGING_SIZE (64KB); load directly via player
+	if typ == MEDIA_TYPE_MOD {
+		m.mu.Lock()
+		if reqGen != m.reqGen {
+			m.mu.Unlock()
+			return
+		}
+		if m.modPlayer != nil {
+			m.mu.Unlock()
+			loadErr := m.modPlayer.Load(data)
+			m.mu.Lock()
+			if reqGen != m.reqGen {
+				m.mu.Unlock()
+				return
+			}
+			if loadErr != nil {
+				m.status = MEDIA_STATUS_ERROR
+				m.errCode = MEDIA_ERR_BAD_FORMAT
+				m.mu.Unlock()
+				return
+			}
+			if m.soundChip != nil && m.modPlayer.engine != nil {
+				m.soundChip.SetSampleTicker(m.modPlayer.engine)
+			}
+			m.modPlayer.Play()
+			m.status = MEDIA_STATUS_PLAYING
+			m.errCode = MEDIA_ERR_OK
+		}
+		m.mu.Unlock()
 		return
 	}
 
@@ -300,6 +334,9 @@ func (m *MediaLoader) stopPlayersOnly() {
 	if m.pokeyPlayer != nil {
 		m.pokeyPlayer.Stop()
 	}
+	if m.modPlayer != nil {
+		m.modPlayer.Stop()
+	}
 }
 
 func (m *MediaLoader) stopAll() {
@@ -351,6 +388,12 @@ func (m *MediaLoader) refreshStatusLocked() {
 			busy = m.pokeyPlayer.IsPlaying() || (status&0x1) != 0
 			playerErr = (status & 0x2) != 0
 		}
+	case MEDIA_TYPE_MOD:
+		if m.modPlayer != nil {
+			status := m.modPlayer.HandlePlayRead(MOD_PLAY_STATUS)
+			busy = m.modPlayer.IsPlaying() || (status&0x1) != 0
+			playerErr = (status & 0x2) != 0
+		}
 	}
 
 	if playerErr {
@@ -378,6 +421,8 @@ func detectMediaType(path string) uint32 {
 		return MEDIA_TYPE_AHX
 	case ".sap":
 		return MEDIA_TYPE_POKEY
+	case ".mod":
+		return MEDIA_TYPE_MOD
 	default:
 		return MEDIA_TYPE_NONE
 	}

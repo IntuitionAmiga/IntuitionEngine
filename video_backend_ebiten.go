@@ -966,6 +966,7 @@ func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
 	pokeyOn := s.pokey != nil && s.pokey.IsPlaying()
 	tedOn := s.tedEngine != nil && s.tedEngine.IsPlaying()
 	ahxOn := s.ahxEngine != nil && s.ahxEngine.IsPlaying()
+	modOn := s.modEngine != nil && s.modEngine.IsPlaying()
 
 	barHeight := 44
 	if barHeight >= eo.height {
@@ -1012,6 +1013,8 @@ func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
 		{name: "POKEY", enabled: pokeyOn},
 		{name: "|", enabled: false},
 		{name: "AHX", enabled: ahxOn},
+		{name: "|", enabled: false},
+		{name: "Amiga MOD", enabled: modOn},
 	})
 
 	legendColor := color.RGBA{160, 160, 160, 255}

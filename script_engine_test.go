@@ -118,9 +118,9 @@ func TestScriptEngine_AudioWriteReg(t *testing.T) {
 	t.Cleanup(sound.Stop)
 
 	bus.MapIO(AUDIO_CTRL, AUDIO_REG_END, sound.HandleRegisterRead, sound.HandleRegisterWrite)
-	runtimeStatus.setChips(nil, nil, nil, nil, nil, nil, sound, nil, nil, nil, nil, nil)
+	runtimeStatus.setChips(nil, nil, nil, nil, nil, nil, sound, nil, nil, nil, nil, nil, nil)
 	t.Cleanup(func() {
-		runtimeStatus.setChips(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		runtimeStatus.setChips(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	})
 
 	bus.Write32(FLEX_CH0_BASE+FLEX_OFF_VOL, 60)
@@ -378,7 +378,7 @@ func TestScriptEngine_MediaLoadUnsupported(t *testing.T) {
 	comp := NewVideoCompositor(nil)
 	se := NewScriptEngine(bus, comp, term)
 
-	loader := NewMediaLoader(bus, nil, t.TempDir(), nil, nil, nil, nil, nil)
+	loader := NewMediaLoader(bus, nil, t.TempDir(), nil, nil, nil, nil, nil, nil)
 	bus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END, loader.HandleRead, loader.HandleWrite)
 
 	if err := se.RunString(`media.load("clip.xyz")`, "media_unsupported"); err != nil {
@@ -405,7 +405,7 @@ func TestScriptEngine_MediaLoadNotFound(t *testing.T) {
 	comp := NewVideoCompositor(nil)
 	se := NewScriptEngine(bus, comp, term)
 
-	loader := NewMediaLoader(bus, nil, t.TempDir(), nil, nil, nil, nil, nil)
+	loader := NewMediaLoader(bus, nil, t.TempDir(), nil, nil, nil, nil, nil, nil)
 	bus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END, loader.HandleRead, loader.HandleWrite)
 
 	if err := se.RunString(`media.load("missing.sid")`, "media_not_found"); err != nil {
@@ -432,7 +432,7 @@ func TestScriptEngine_MediaStop(t *testing.T) {
 	comp := NewVideoCompositor(nil)
 	se := NewScriptEngine(bus, comp, term)
 
-	loader := NewMediaLoader(bus, nil, t.TempDir(), nil, nil, nil, nil, nil)
+	loader := NewMediaLoader(bus, nil, t.TempDir(), nil, nil, nil, nil, nil, nil)
 	bus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END, loader.HandleRead, loader.HandleWrite)
 	bus.Write32(MEDIA_NAME_PTR, 0x1000)
 	bus.Write32(MEDIA_STATUS, MEDIA_STATUS_PLAYING)

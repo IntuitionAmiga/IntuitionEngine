@@ -34,6 +34,7 @@ type runtimeStatusSnapshot struct {
 	pokey     *POKEYEngine
 	tedEngine *TEDEngine
 	ahxEngine *AHXEngine
+	modEngine *MODEngine
 
 	psgPlayer   *PSGPlayer
 	sidPlayer   *SIDPlayer
@@ -58,7 +59,7 @@ func (s *runtimeStatusStore) setCPUs(selectedCPU int, ie32 *CPU, ie64 *CPU64, m6
 	s.mu.Unlock()
 }
 
-func (s *runtimeStatusStore) setChips(video *VideoChip, vga *VGAEngine, ula *ULAEngine, tedVideo *TEDVideoEngine, antic *ANTICEngine, voodoo *VoodooEngine, sound *SoundChip, psg *PSGEngine, sid *SIDEngine, pokey *POKEYEngine, ted *TEDEngine, ahx *AHXEngine) {
+func (s *runtimeStatusStore) setChips(video *VideoChip, vga *VGAEngine, ula *ULAEngine, tedVideo *TEDVideoEngine, antic *ANTICEngine, voodoo *VoodooEngine, sound *SoundChip, psg *PSGEngine, sid *SIDEngine, pokey *POKEYEngine, ted *TEDEngine, ahx *AHXEngine, mod *MODEngine) {
 	s.mu.Lock()
 	s.video = video
 	s.vga = vga
@@ -72,6 +73,7 @@ func (s *runtimeStatusStore) setChips(video *VideoChip, vga *VGAEngine, ula *ULA
 	s.pokey = pokey
 	s.tedEngine = ted
 	s.ahxEngine = ahx
+	s.modEngine = mod
 	s.mu.Unlock()
 }
 

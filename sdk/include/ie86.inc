@@ -309,6 +309,21 @@ AHX_PLAY_STATUS equ 0xF0B90              ; Play status
 AHX_SUBSONG     equ 0xF0B91              ; Subsong selection (0-255)
 
 ; ============================================================================
+; MOD AUDIO REGISTERS (ProTracker .mod player)
+;
+; The MOD player provides ProTracker/NoiseTracker .mod playback:
+; - 4-channel sample-based module playback
+; - Amiga filter emulation (A500 4.5kHz / A1200 28kHz low-pass)
+; - All standard ProTracker effects
+; ============================================================================
+MOD_PLAY_PTR    equ 0xF0BC0              ; Pointer to MOD data in bus memory (32-bit)
+MOD_PLAY_LEN    equ 0xF0BC4              ; Length of MOD data (32-bit)
+MOD_PLAY_CTRL   equ 0xF0BC8              ; Play control (32-bit)
+MOD_PLAY_STATUS equ 0xF0BCC              ; Play status (32-bit)
+MOD_FILTER_MODEL equ 0xF0BD0             ; Filter model (32-bit)
+MOD_POSITION    equ 0xF0BD4              ; Current song position (32-bit, read-only)
+
+; ============================================================================
 ; VGA VIDEO REGISTERS (IBM VGA compatible)
 ; ============================================================================
 

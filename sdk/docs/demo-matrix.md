@@ -65,3 +65,4 @@ IE32, IE64, M68020, Z80, 6502, x86 (32-bit)
 - `.sid` - Commodore 64 SID tunes (PSID v1-v4, RSID)
 - `.sap` - Atari 8-bit SAP files (POKEY)
 - `.ahx` - Amiga AHX/THX tracker modules
+- `.mod` - ProTracker MOD modules (Amiga 4-channel)

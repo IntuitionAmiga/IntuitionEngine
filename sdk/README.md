@@ -125,7 +125,7 @@ IE32, IE64, M68020, Z80, 6502, x86 (32-bit)
 IEVideoChip (up to 1280x960 true color, default), VGA (text/Mode 13h/Mode 12h/ModeX), ULA (ZX Spectrum 256x192), TED (Commodore Plus/4 121 colors), ANTIC/GTIA (Atari 8-bit display lists), Voodoo SST-1 (3DFX hardware 3D), Copper coprocessor (per-scanline effects)
 
 ### Audio Engines
-IESoundChip (custom synthesizer), PSG/AY-3-8910, SID (Commodore 64), POKEY/SAP (Atari 8-bit), TED audio (Commodore Plus/4), AHX (Amiga tracker)
+IESoundChip (custom synthesizer), PSG/AY-3-8910, SID (Commodore 64), POKEY/SAP (Atari 8-bit), TED audio (Commodore Plus/4), AHX (Amiga tracker), MOD (ProTracker .mod player with Amiga filter emulation)
 
 ### SID Support
 
@@ -179,6 +179,10 @@ ZX Spectrum tracker formats are played back via Z80 CPU emulation. Each format h
 | FTC | `.ftc` | Fast Tracker (ZX) |
 
 Player routines are in `sdk/players/`. PT3/PT2/PT1, STC, and SQT use community reference players from [mborik/ayplayers](https://github.com/mborik/ayplayers) (assembled with `sjasmplus`). ASC and FTC use a generic player (assembled with `vasmz80_std`).
+
+### ProTracker MOD Support
+
+ProTracker `.mod` files are played back natively via the MOD player engine, which parses the module and outputs through the SoundChip FLEX channels in DAC mode. Amiga A500 and A1200 low-pass filter emulation is available via the `MOD_FILTER_MODEL` register.
 
 ## Build Scripts
 

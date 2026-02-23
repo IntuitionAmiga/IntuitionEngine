@@ -193,6 +193,7 @@ func main() {
 		tedPlus     bool
 		modeAHX     bool
 		ahxPlus     bool
+		modeMOD     bool
 		perfMode    bool
 		sidFile     string
 		sidDebug    int
@@ -234,6 +235,7 @@ func main() {
 	flagSet.BoolVar(&tedPlus, "ted+", false, "Enable TED+ enhancements")
 	flagSet.BoolVar(&modeAHX, "ahx", false, "Play AHX file (Amiga AHX module)")
 	flagSet.BoolVar(&ahxPlus, "ahx+", false, "Enable AHX+ enhanced mode")
+	flagSet.BoolVar(&modeMOD, "mod", false, "Play ProTracker MOD file (Amiga 4-channel)")
 	flagSet.BoolVar(&perfMode, "perf", false, "Enable performance measurement (MIPS reporting)")
 	flagSet.IntVar(&resWidth, "width", 0, "Override output width (0 = auto)")
 	flagSet.IntVar(&resHeight, "height", 0, "Override output height (0 = auto)")
@@ -253,7 +255,7 @@ func main() {
 		fmt.Println("Usage: ./intuition_engine [mode] [options] [filename]")
 		fmt.Println("Default (no mode/filename): start EhBASIC IE64.")
 		fmt.Println("Video: IEVideoChip, VGA, ULA, TED video, ANTIC/GTIA, 3DFX Voodoo.")
-		fmt.Println("Audio: IESoundChip, AY/YM/PSG, SID, POKEY, TED audio, Amiga AHX.")
+		fmt.Println("Audio: IESoundChip, AY/YM/PSG, SID, POKEY, TED audio, Amiga AHX, ProTracker MOD.")
 		flagSet.PrintDefaults()
 	}
 
@@ -364,6 +366,9 @@ func main() {
 	if modeAHX {
 		modeCount++
 	}
+	if modeMOD {
+		modeCount++
+	}
 	if modeCount == 0 && filename == "" {
 		modeBasic = true
 		modeIE64 = true
@@ -371,7 +376,7 @@ func main() {
 	}
 	useGraphicalTerm = modeBasic && !modeTerm
 	if modeCount != 1 {
-		fmt.Println("Error: select exactly one mode flag: -ie32, -ie64, -m68k, -emutos, -m6502, -z80, -x86, -basic, -psg, -psg+, -sid, -sid+, -pokey, -pokey+, -ted, -ted+, -ahx, or -ahx+")
+		fmt.Println("Error: select exactly one mode flag: -ie32, -ie64, -m68k, -emutos, -m6502, -z80, -x86, -basic, -psg, -psg+, -sid, -sid+, -pokey, -pokey+, -ted, -ted+, -ahx, -ahx+, or -mod")
 		os.Exit(1)
 	}
 	if modeBasic && filename != "" {
@@ -697,6 +702,33 @@ func main() {
 		os.Exit(0)
 	}
 
+	// MOD playback mode
+	if modeMOD {
+		if filename == "" {
+			fmt.Println("Error: MOD mode requires a MOD filename")
+			os.Exit(1)
+		}
+		modPlayerStandalone := NewMODPlayer(soundChip, SAMPLE_RATE)
+		soundChip.SetSampleTicker(modPlayerStandalone.engine)
+		data, err := os.ReadFile(filename)
+		if err != nil {
+			fmt.Printf("Error reading MOD file: %v\n", err)
+			os.Exit(1)
+		}
+		if err := modPlayerStandalone.Load(data); err != nil {
+			fmt.Printf("Error loading MOD file: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Playing: %s\n", filename)
+		soundChip.Start()
+		modPlayerStandalone.Play()
+		for modPlayerStandalone.IsPlaying() {
+			time.Sleep(100 * time.Millisecond)
+		}
+		soundChip.Stop()
+		os.Exit(0)
+	}
+
 	// Create system bus
 	sysBus := NewMachineBus()
 	psgPlayer.AttachBus(sysBus)
@@ -806,6 +838,13 @@ func main() {
 	sysBus.MapIO(AHX_BASE, AHX_SUBSONG,
 		ahxPlayerCPU.HandlePlayRead,
 		ahxPlayerCPU.HandlePlayWrite)
+
+	// Map MOD registers (ProTracker MOD player)
+	modPlayer := NewMODPlayer(soundChip, SAMPLE_RATE)
+	modPlayer.AttachBus(sysBus)
+	sysBus.MapIO(MOD_PLAY_PTR, MOD_END,
+		modPlayer.HandlePlayRead,
+		modPlayer.HandlePlayWrite)
 
 	// Map POKEY registers (Atari POKEY chip for SAP playback)
 	pokeyEngine := NewPOKEYEngine(soundChip, SAMPLE_RATE)
@@ -918,6 +957,7 @@ func main() {
 		pokeyEngine,
 		tedEngine,
 		ahxPlayerCPU.engine,
+		modPlayer.engine,
 	)
 	runtimeStatus.setPlayers(psgPlayer, sidPlayer, pokeyPlayer, tedPlayer)
 
@@ -947,7 +987,7 @@ func main() {
 	tedEngine.AttachBusMemory(busMem)
 
 	// Initialize unified SOUND PLAY media loader
-	mediaLoader := NewMediaLoader(sysBus, soundChip, ".", psgPlayer, sidPlayer, tedPlayer, ahxPlayerCPU, pokeyPlayer)
+	mediaLoader := NewMediaLoader(sysBus, soundChip, ".", psgPlayer, sidPlayer, tedPlayer, ahxPlayerCPU, pokeyPlayer, modPlayer)
 	sysBus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END, mediaLoader.HandleRead, mediaLoader.HandleWrite)
 
 	// Initialize coprocessor subsystem MMIO (available to all CPU modes)

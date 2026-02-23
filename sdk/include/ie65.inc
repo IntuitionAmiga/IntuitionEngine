@@ -517,6 +517,102 @@ AHX_PLAY_CTRL   = $FB8C         ; Play control (IE32 $F0B8C)
 AHX_PLAY_STATUS = $FB90         ; Play status (IE32 $F0B90)
 AHX_SUBSONG     = $FB91         ; Subsong selection (0-255)
 
+; ============================================================================
+; MOD AUDIO REGISTERS (ProTracker .mod player)
+;
+; The MOD player provides ProTracker/NoiseTracker .mod playback:
+; - 4-channel sample-based module playback
+; - Amiga filter emulation (A500 4.5kHz / A1200 28kHz low-pass)
+; - All standard ProTracker effects
+;
+; Usage:
+;   1. Embed MOD data in your program using .incbin
+;   2. Set MOD_PLAY_PTR bytes to the address of the MOD data (little-endian)
+;   3. Set MOD_PLAY_LEN bytes to the size of the MOD data (little-endian)
+;   4. Optionally set MOD_FILTER_MODEL to select a filter (default 0=none)
+;   5. Write to MOD_PLAY_CTRL to start/stop playback
+;
+; MOD_PLAY_CTRL bits:
+;   bit 0 ($01) - Start playback (write 1 to begin)
+;   bit 1 ($02) - Stop playback (write 1 to stop)
+;   bit 2 ($04) - Enable looping (set before starting)
+;
+; MOD_PLAY_STATUS bits:
+;   bit 0 ($01) - Busy (1 = playing, 0 = stopped)
+;   bit 1 ($02) - Error (1 = load/parse error)
+;
+; MOD_FILTER_MODEL values:
+;   0 = No filter
+;   1 = A500 (4.5kHz low-pass, classic Amiga 500)
+;   2 = A1200 (28kHz low-pass, Amiga 1200)
+;
+; For 6502: MOD registers are at $FBC0-$FBD7 (IE32 $F0BC0-$F0BD7)
+; ============================================================================
+MOD_PLAY_PTR_0  = $FBC0         ; Play pointer byte 0 (IE32 $F0BC0)
+MOD_PLAY_PTR_1  = $FBC1         ; Play pointer byte 1
+MOD_PLAY_PTR_2  = $FBC2         ; Play pointer byte 2
+MOD_PLAY_PTR_3  = $FBC3         ; Play pointer byte 3
+MOD_PLAY_LEN_0  = $FBC4         ; Play length byte 0 (IE32 $F0BC4)
+MOD_PLAY_LEN_1  = $FBC5         ; Play length byte 1
+MOD_PLAY_LEN_2  = $FBC6         ; Play length byte 2
+MOD_PLAY_LEN_3  = $FBC7         ; Play length byte 3
+MOD_PLAY_CTRL   = $FBC8         ; Play control (IE32 $F0BC8)
+MOD_PLAY_STATUS = $FBCC         ; Play status (IE32 $F0BCC)
+MOD_FILTER_MODEL = $FBD0        ; Filter model (IE32 $F0BD0)
+MOD_POSITION    = $FBD4         ; Current song position (IE32 $F0BD4, read-only)
+
+; ----------------------------------------------------------------------------
+; MOD Player Macros
+; ----------------------------------------------------------------------------
+
+; Set MOD data pointer (32-bit address)
+.macro SET_MOD_PTR addr
+    lda #<(addr)
+    sta MOD_PLAY_PTR_0
+    lda #>(addr)
+    sta MOD_PLAY_PTR_1
+    lda #^(addr)
+    sta MOD_PLAY_PTR_2
+    lda #.lobyte(.hiword(addr) >> 8)
+    sta MOD_PLAY_PTR_3
+.endmacro
+
+; Set MOD data length (32-bit)
+.macro SET_MOD_LEN len
+    lda #<(len)
+    sta MOD_PLAY_LEN_0
+    lda #>(len)
+    sta MOD_PLAY_LEN_1
+    lda #^(len)
+    sta MOD_PLAY_LEN_2
+    lda #.lobyte(.hiword(len) >> 8)
+    sta MOD_PLAY_LEN_3
+.endmacro
+
+; Start MOD playback (no loop)
+.macro START_MOD_PLAY
+    lda #1
+    sta MOD_PLAY_CTRL
+.endmacro
+
+; Start MOD playback with looping
+.macro START_MOD_LOOP
+    lda #5
+    sta MOD_PLAY_CTRL
+.endmacro
+
+; Stop MOD playback
+.macro STOP_MOD_PLAY
+    lda #2
+    sta MOD_PLAY_CTRL
+.endmacro
+
+; Set MOD filter model (0=none, 1=A500, 2=A1200)
+.macro SET_MOD_FILTER model
+    lda #(model)
+    sta MOD_FILTER_MODEL
+.endmacro
+
 ; ----------------------------------------------------------------------------
 ; AHX Player Macros
 ; ----------------------------------------------------------------------------

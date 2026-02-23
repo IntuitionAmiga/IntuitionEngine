@@ -38,6 +38,7 @@ All include files provide these categories of definitions:
 - POKEY: `POKEY_*`, `SAP_PLAY_*`
 - TED: `TED_*`
 - AHX: `AHX_*`
+- MOD: `MOD_PLAY_PTR`, `MOD_PLAY_LEN`, `MOD_PLAY_CTRL`, `MOD_PLAY_STATUS`, `MOD_FILTER_MODEL`, `MOD_POSITION`
 
 ### Memory Constants
 - `VRAM_START` - Start of video RAM

@@ -452,6 +452,42 @@
 .equ AHX_SUBSONG       0xF0B91          ; Subsong selection (0-255)
 
 ; ============================================================================
+; MOD AUDIO REGISTERS (ProTracker .mod player)
+;
+; The MOD player provides ProTracker/NoiseTracker .mod playback:
+; - 4-channel sample-based module playback
+; - Amiga filter emulation (A500 4.5kHz / A1200 28kHz low-pass)
+; - All standard ProTracker effects
+;
+; Usage:
+;   1. Embed MOD data in your program using .incbin
+;   2. Set MOD_PLAY_PTR to the address of the MOD file data
+;   3. Set MOD_PLAY_LEN to the size of the MOD data in bytes
+;   4. Optionally set MOD_FILTER_MODEL to select a filter (default 0=none)
+;   5. Write to MOD_PLAY_CTRL to start/stop playback
+;
+; MOD_PLAY_CTRL bits:
+;   bit 0 (0x01) - Start playback (write 1 to begin)
+;   bit 1 (0x02) - Stop playback (write 1 to stop)
+;   bit 2 (0x04) - Enable looping (set before starting)
+;
+; MOD_PLAY_STATUS bits:
+;   bit 0 (0x01) - Busy (1 = playing, 0 = stopped)
+;   bit 1 (0x02) - Error (1 = load/parse error)
+;
+; MOD_FILTER_MODEL values:
+;   0 = No filter
+;   1 = A500 (4.5kHz low-pass, classic Amiga 500)
+;   2 = A1200 (28kHz low-pass, Amiga 1200)
+; ============================================================================
+.equ MOD_PLAY_PTR      0xF0BC0          ; Pointer to MOD data in bus memory (32-bit)
+.equ MOD_PLAY_LEN      0xF0BC4          ; Length of MOD data (32-bit)
+.equ MOD_PLAY_CTRL     0xF0BC8          ; Play control (32-bit)
+.equ MOD_PLAY_STATUS   0xF0BCC          ; Play status (32-bit)
+.equ MOD_FILTER_MODEL  0xF0BD0          ; Filter model (32-bit)
+.equ MOD_POSITION      0xF0BD4          ; Current song position (32-bit, read-only)
+
+; ============================================================================
 ; VGA VIDEO REGISTERS (IBM VGA compatible)
 ;
 ; The VGA chip provides IBM PC-compatible graphics modes:
