@@ -572,30 +572,31 @@ define build-linux-release
 	echo ""; \
 	echo "--- $$RELEASE_NAME ---"; \
 	echo "Building main binary (GOARCH=$(1), CC=$(2))..."; \
+	rm -f IntuitionEngine ie32asm ie64asm ie32to64 ie64dis && \
 	CGO_ENABLED=1 CGO_JOBS=$(NCORES) CC=$(2) CXX=$(3) GOARCH=$(1) $(4) \
-		$(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags "embed_basic embed_emutos" -o IntuitionEngine .; \
+		$(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags "embed_basic embed_emutos" -o IntuitionEngine . && \
 	if [ "$(1)" = "$(NATIVE_GOARCH)" ]; then \
 		command -v $(SSTRIP) >/dev/null 2>&1 && $(SSTRIP) -z IntuitionEngine || true; \
 		command -v $(UPX) >/dev/null 2>&1 && $(UPX) --lzma IntuitionEngine || true; \
-	fi; \
-	echo "Building SDK tools (pure Go, CGO_ENABLED=0)..."; \
-	CGO_ENABLED=0 GOARCH=$(1) $(GO) build $(GO_FLAGS) -o ie32asm assembler/ie32asm.go; \
-	CGO_ENABLED=0 GOARCH=$(1) $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm assembler/ie64asm.go; \
-	CGO_ENABLED=0 GOARCH=$(1) $(GO) build $(GO_FLAGS) -o ie32to64 ./cmd/ie32to64/; \
-	CGO_ENABLED=0 GOARCH=$(1) $(GO) build $(GO_FLAGS) -tags ie64dis -o ie64dis assembler/ie64dis.go; \
-	STAGING=$(RELEASE_DIR)/$$RELEASE_NAME; \
-	rm -rf $$STAGING; \
-	$(MKDIR) -p $$STAGING; \
-	mv IntuitionEngine $$STAGING/; \
-	cp README.md CHANGELOG.md DEVELOPERS.md $$STAGING/; \
-	cp -r sdk $$STAGING/sdk; \
-	rm -rf $$STAGING/sdk/.git; \
-	rm -rf $$STAGING/sdk/bin; \
-	$(MKDIR) -p $$STAGING/sdk/bin; \
-	mv ie32asm ie64asm ie32to64 ie64dis $$STAGING/sdk/bin/; \
-	echo "Creating $$RELEASE_NAME.tar.xz..."; \
-	tar -C $(RELEASE_DIR) -cJf $(RELEASE_DIR)/$$RELEASE_NAME.tar.xz $$RELEASE_NAME; \
-	rm -rf $$STAGING; \
+	fi && \
+	echo "Building SDK tools (pure Go, CGO_ENABLED=0)..." && \
+	CGO_ENABLED=0 GOARCH=$(1) $(GO) build $(GO_FLAGS) -o ie32asm assembler/ie32asm.go && \
+	CGO_ENABLED=0 GOARCH=$(1) $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm assembler/ie64asm.go && \
+	CGO_ENABLED=0 GOARCH=$(1) $(GO) build $(GO_FLAGS) -o ie32to64 ./cmd/ie32to64/ && \
+	CGO_ENABLED=0 GOARCH=$(1) $(GO) build $(GO_FLAGS) -tags ie64dis -o ie64dis assembler/ie64dis.go && \
+	STAGING=$(RELEASE_DIR)/$$RELEASE_NAME && \
+	rm -rf $$STAGING && \
+	$(MKDIR) -p $$STAGING && \
+	mv IntuitionEngine $$STAGING/ && \
+	cp README.md CHANGELOG.md DEVELOPERS.md $$STAGING/ && \
+	cp -r sdk $$STAGING/sdk && \
+	rm -rf $$STAGING/sdk/.git && \
+	rm -rf $$STAGING/sdk/bin && \
+	$(MKDIR) -p $$STAGING/sdk/bin && \
+	mv ie32asm ie64asm ie32to64 ie64dis $$STAGING/sdk/bin/ && \
+	echo "Creating $$RELEASE_NAME.tar.xz..." && \
+	tar -C $(RELEASE_DIR) -cJf $(RELEASE_DIR)/$$RELEASE_NAME.tar.xz $$RELEASE_NAME && \
+	rm -rf $$STAGING && \
 	echo "Created: $(RELEASE_DIR)/$$RELEASE_NAME.tar.xz"
 endef
 
