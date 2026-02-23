@@ -14,7 +14,7 @@ require (
 require (
 	github.com/ebitengine/gomobile v0.0.0-20260211053922-3d992dae95d1 // indirect
 	github.com/ebitengine/hideconsole v1.0.0 // indirect
-	github.com/ebitengine/purego v0.9.1 // indirect
+	github.com/ebitengine/purego v0.10.0 // indirect
 	github.com/jezek/xgb v1.3.0 // indirect
 	github.com/yuin/gopher-lua v1.1.1
 	golang.org/x/exp/shiny v0.0.0-20260218203240-3dfff04db8fa // indirect
