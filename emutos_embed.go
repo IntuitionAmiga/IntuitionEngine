@@ -8,5 +8,5 @@ func init() {
 	compiledFeatures = append(compiledFeatures, "emutos:embedded")
 }
 
-//go:embed etos256us.img
+//go:embed sdk/examples/prebuilt/etos256us.img
 var embeddedEmuTOSImage []byte

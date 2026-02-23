@@ -14,7 +14,7 @@
 BIN_DIR := ./bin
 SDK_BIN_DIR := ./sdk/bin
 EMUTOS_SRC_DIR ?= ../EmuTOS
-EMUTOS_ROM ?= ./etos256us.img
+EMUTOS_ROM ?= ./sdk/examples/prebuilt/etos256us.img
 EMUTOS_GIT_URL ?= https://github.com/IntuitionAmiga/EmuTOS.git
 EMUTOS_GIT_REF ?= master
 EMUTOS_BUILD_TARGET ?= 256
@@ -211,6 +211,8 @@ ie32to64: setup
 basic: ie64asm
 	@echo "Assembling EhBASIC IE64 interpreter..."
 	@$(SDK_BIN_DIR)/ie64asm -I sdk/include sdk/examples/asm/ehbasic_ie64.asm
+	@$(MKDIR) -p sdk/examples/prebuilt
+	@mv sdk/examples/asm/ehbasic_ie64.ie64 sdk/examples/prebuilt/
 	@echo "Building Intuition Engine with embedded BASIC..."
 	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags embed_basic .
 	@echo "Stripping debug symbols..."
@@ -225,6 +227,8 @@ basic: ie64asm
 basic-emutos: ie64asm emutos-rom
 	@echo "Assembling EhBASIC IE64 interpreter..."
 	@$(SDK_BIN_DIR)/ie64asm -I sdk/include sdk/examples/asm/ehbasic_ie64.asm
+	@$(MKDIR) -p sdk/examples/prebuilt
+	@mv sdk/examples/asm/ehbasic_ie64.ie64 sdk/examples/prebuilt/
 	@echo "Building Intuition Engine with embedded BASIC + EmuTOS..."
 	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags "embed_basic embed_emutos" .
 	@echo "Stripping debug symbols..."
@@ -234,7 +238,7 @@ basic-emutos: ie64asm emutos-rom
 	@mv IntuitionEngine $(BIN_DIR)/
 	@echo "BASIC+EmuTOS build complete - run with: $(BIN_DIR)/IntuitionEngine -basic"
 
-# Build with embedded EmuTOS ROM image (requires ./etos256us.img).
+# Build with embedded EmuTOS ROM image.
 .PHONY: emutos
 emutos: setup emutos-rom
 	@echo "Building Intuition Engine with embedded EmuTOS ROM..."
@@ -610,8 +614,6 @@ endif
 release-linux: setup sdk emutos-rom
 	@echo "=== Building Linux releases (amd64 + arm64) ==="
 	@$(MKDIR) -p $(RELEASE_DIR)
-	@echo "Assembling EhBASIC IE64 ROM..."
-	@$(SDK_BIN_DIR)/ie64asm -I sdk/include sdk/examples/asm/ehbasic_ie64.asm
 	$(call build-linux-release,$(NATIVE_GOARCH),$(CC),$(CXX),)
 	$(call build-linux-release,$(CROSS_GOARCH),$(CROSS_CC),$(CROSS_CXX),$(CROSS_ENV))
 
@@ -619,8 +621,6 @@ release-linux: setup sdk emutos-rom
 release-linux-amd64: setup sdk emutos-rom
 	@echo "=== Building Linux release (amd64) ==="
 	@$(MKDIR) -p $(RELEASE_DIR)
-	@echo "Assembling EhBASIC IE64 ROM..."
-	@$(SDK_BIN_DIR)/ie64asm -I sdk/include sdk/examples/asm/ehbasic_ie64.asm
 ifeq ($(NATIVE_GOARCH),amd64)
 	$(call build-linux-release,amd64,$(CC),$(CXX),)
 else
@@ -631,8 +631,6 @@ endif
 release-linux-arm64: setup sdk emutos-rom
 	@echo "=== Building Linux release (arm64) ==="
 	@$(MKDIR) -p $(RELEASE_DIR)
-	@echo "Assembling EhBASIC IE64 ROM..."
-	@$(SDK_BIN_DIR)/ie64asm -I sdk/include sdk/examples/asm/ehbasic_ie64.asm
 ifeq ($(NATIVE_GOARCH),arm64)
 	$(call build-linux-release,arm64,$(CC),$(CXX),)
 else
@@ -643,8 +641,6 @@ endif
 release-windows: setup sdk emutos-rom
 	@echo "=== Building Windows releases (amd64 + arm64) ==="
 	@$(MKDIR) -p $(RELEASE_DIR)
-	@echo "Assembling EhBASIC IE64 ROM..."
-	@$(SDK_BIN_DIR)/ie64asm -I sdk/include sdk/examples/asm/ehbasic_ie64.asm
 	@for goarch in amd64 arm64; do \
 		RELEASE_NAME=$(APP_NAME)-$(APP_VERSION)-windows-$$goarch; \
 		echo ""; \
