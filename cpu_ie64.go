@@ -231,6 +231,12 @@ type CPU64 struct {
 	execMu     sync.Mutex
 	execDone   chan struct{}
 	execActive bool
+
+	// JIT compiler state (populated only when JIT is enabled)
+	jitEnabled bool
+	jitCache   *CodeCache
+	jitExecMem any // *ExecMem — uses any to avoid build tag dependency
+	jitCtx     *JITContext
 }
 
 // ------------------------------------------------------------------------------
@@ -418,6 +424,11 @@ func (cpu *CPU64) Reset() {
 	cpu.timerState.Store(TIMER_STOPPED)
 	cpu.timerEnabled.Store(false)
 	cpu.InstructionCount = 0
+
+	// Clear JIT code cache
+	if cpu.jitCache != nil {
+		cpu.jitCache.Invalidate()
+	}
 
 	// Reset FPU
 	if cpu.FPU != nil {
@@ -1192,7 +1203,7 @@ func (cpu *CPU64) StartExecution() {
 			close(cpu.execDone)
 			cpu.execMu.Unlock()
 		}()
-		cpu.Execute()
+		cpu.jitExecute()
 	}()
 }
 

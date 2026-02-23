@@ -205,6 +205,7 @@ func main() {
 		scale       int
 		fullscreen  bool
 		scriptFile  string
+		noJIT       bool
 	)
 
 	flagSet := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
@@ -239,6 +240,7 @@ func main() {
 	flagSet.IntVar(&scale, "scale", 1, "Integer window scale factor (1-4)")
 	flagSet.BoolVar(&fullscreen, "fullscreen", false, "Start in fullscreen mode")
 	flagSet.StringVar(&scriptFile, "script", "", "Run IES Lua script file after startup")
+	flagSet.BoolVar(&noJIT, "nojit", false, "Disable JIT compilation, use interpreter only")
 	var emutosDrive string
 	flagSet.StringVar(&emutosDrive, "emutos-drive", "", "Host directory to map as GEMDOS drive U: (default: ~/)")
 	flagSet.Bool("version", false, "Print version information and exit")
@@ -1124,6 +1126,7 @@ func main() {
 	} else if modeIE64 {
 		ie64CPU = NewCPU64(sysBus)
 		ie64CPU.PerfEnabled = perfMode
+		ie64CPU.jitEnabled = jitAvailable && !noJIT
 		runtimeStatus.setCPUs(runtimeCPUIE64, nil, ie64CPU, nil, nil, nil, nil)
 		progExec.SetCPU(ie64CPU)
 
