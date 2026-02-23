@@ -629,6 +629,21 @@
 .set MOD_POSITION,0xF0BD4
 
 ; ============================================================================
+; WAV AUDIO REGISTERS (PCM WAV player)
+; ============================================================================
+.set WAV_PLAY_PTR_0,0xF0BD8
+.set WAV_PLAY_PTR_1,0xF0BD9
+.set WAV_PLAY_PTR_2,0xF0BDA
+.set WAV_PLAY_PTR_3,0xF0BDB
+.set WAV_PLAY_LEN_0,0xF0BDC
+.set WAV_PLAY_LEN_1,0xF0BDD
+.set WAV_PLAY_LEN_2,0xF0BDE
+.set WAV_PLAY_LEN_3,0xF0BDF
+.set WAV_PLAY_CTRL,0xF0BE0
+.set WAV_PLAY_STATUS,0xF0BE4
+.set WAV_POSITION,0xF0BE8
+
+; ============================================================================
 ; VGA VIDEO PORTS (IBM VGA compatible via port I/O)
 ;
 ; The VGA chip provides IBM PC-compatible graphics modes:

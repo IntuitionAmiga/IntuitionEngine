@@ -194,6 +194,7 @@ func main() {
 		modeAHX     bool
 		ahxPlus     bool
 		modeMOD     bool
+		modeWAV     bool
 		perfMode    bool
 		sidFile     string
 		sidDebug    int
@@ -236,6 +237,7 @@ func main() {
 	flagSet.BoolVar(&modeAHX, "ahx", false, "Play AHX file (Amiga AHX module)")
 	flagSet.BoolVar(&ahxPlus, "ahx+", false, "Enable AHX+ enhanced mode")
 	flagSet.BoolVar(&modeMOD, "mod", false, "Play ProTracker MOD file (Amiga 4-channel)")
+	flagSet.BoolVar(&modeWAV, "wav", false, "Play WAV file (PCM audio)")
 	flagSet.BoolVar(&perfMode, "perf", false, "Enable performance measurement (MIPS reporting)")
 	flagSet.IntVar(&resWidth, "width", 0, "Override output width (0 = auto)")
 	flagSet.IntVar(&resHeight, "height", 0, "Override output height (0 = auto)")
@@ -255,7 +257,7 @@ func main() {
 		fmt.Println("Usage: ./intuition_engine [mode] [options] [filename]")
 		fmt.Println("Default (no mode/filename): start EhBASIC IE64.")
 		fmt.Println("Video: IEVideoChip, VGA, ULA, TED video, ANTIC/GTIA, 3DFX Voodoo.")
-		fmt.Println("Audio: IESoundChip, AY/YM/PSG, SID, POKEY, TED audio, Amiga AHX, ProTracker MOD.")
+		fmt.Println("Audio: IESoundChip, AY/YM/PSG, SID, POKEY, TED audio, Amiga AHX, ProTracker MOD, PCM WAV.")
 		flagSet.PrintDefaults()
 	}
 
@@ -369,6 +371,9 @@ func main() {
 	if modeMOD {
 		modeCount++
 	}
+	if modeWAV {
+		modeCount++
+	}
 	if modeCount == 0 && filename == "" {
 		modeBasic = true
 		modeIE64 = true
@@ -376,7 +381,7 @@ func main() {
 	}
 	useGraphicalTerm = modeBasic && !modeTerm
 	if modeCount != 1 {
-		fmt.Println("Error: select exactly one mode flag: -ie32, -ie64, -m68k, -emutos, -m6502, -z80, -x86, -basic, -psg, -psg+, -sid, -sid+, -pokey, -pokey+, -ted, -ted+, -ahx, -ahx+, or -mod")
+		fmt.Println("Error: select exactly one mode flag: -ie32, -ie64, -m68k, -emutos, -m6502, -z80, -x86, -basic, -psg, -psg+, -sid, -sid+, -pokey, -pokey+, -ted, -ted+, -ahx, -ahx+, -mod, or -wav")
 		os.Exit(1)
 	}
 	if modeBasic && filename != "" {
@@ -729,6 +734,33 @@ func main() {
 		os.Exit(0)
 	}
 
+	// WAV playback mode
+	if modeWAV {
+		if filename == "" {
+			fmt.Println("Error: WAV mode requires a WAV filename")
+			os.Exit(1)
+		}
+		wavPlayerStandalone := NewWAVPlayer(soundChip, SAMPLE_RATE)
+		soundChip.SetSampleTicker(wavPlayerStandalone.engine)
+		data, err := os.ReadFile(filename)
+		if err != nil {
+			fmt.Printf("Error reading WAV file: %v\n", err)
+			os.Exit(1)
+		}
+		if err := wavPlayerStandalone.Load(data); err != nil {
+			fmt.Printf("Error loading WAV file: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Playing: %s\n", filename)
+		soundChip.Start()
+		wavPlayerStandalone.Play()
+		for wavPlayerStandalone.IsPlaying() {
+			time.Sleep(100 * time.Millisecond)
+		}
+		soundChip.Stop()
+		os.Exit(0)
+	}
+
 	// Create system bus
 	sysBus := NewMachineBus()
 	psgPlayer.AttachBus(sysBus)
@@ -846,6 +878,13 @@ func main() {
 		modPlayer.HandlePlayRead,
 		modPlayer.HandlePlayWrite)
 
+	// Map WAV registers (PCM WAV player)
+	wavPlayer := NewWAVPlayer(soundChip, SAMPLE_RATE)
+	wavPlayer.AttachBus(sysBus)
+	sysBus.MapIO(WAV_PLAY_PTR, WAV_END,
+		wavPlayer.HandlePlayRead,
+		wavPlayer.HandlePlayWrite)
+
 	// Map POKEY registers (Atari POKEY chip for SAP playback)
 	pokeyEngine := NewPOKEYEngine(soundChip, SAMPLE_RATE)
 	pokeyPlayer := NewPOKEYPlayer(pokeyEngine)
@@ -958,6 +997,7 @@ func main() {
 		tedEngine,
 		ahxPlayerCPU.engine,
 		modPlayer.engine,
+		wavPlayer.engine,
 	)
 	runtimeStatus.setPlayers(psgPlayer, sidPlayer, pokeyPlayer, tedPlayer)
 
@@ -987,7 +1027,7 @@ func main() {
 	tedEngine.AttachBusMemory(busMem)
 
 	// Initialize unified SOUND PLAY media loader
-	mediaLoader := NewMediaLoader(sysBus, soundChip, ".", psgPlayer, sidPlayer, tedPlayer, ahxPlayerCPU, pokeyPlayer, modPlayer)
+	mediaLoader := NewMediaLoader(sysBus, soundChip, ".", psgPlayer, sidPlayer, tedPlayer, ahxPlayerCPU, pokeyPlayer, modPlayer, wavPlayer)
 	sysBus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END, mediaLoader.HandleRead, mediaLoader.HandleWrite)
 
 	// Initialize coprocessor subsystem MMIO (available to all CPU modes)

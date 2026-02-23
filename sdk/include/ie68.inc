@@ -499,6 +499,15 @@ MOD_PLAY_STATUS equ $F0BCC              ; Play status (32-bit)
 MOD_FILTER_MODEL equ $F0BD0             ; Filter model (32-bit)
 MOD_POSITION    equ $F0BD4              ; Current song position (32-bit, read-only)
 
+; ============================================================================
+; WAV AUDIO REGISTERS (PCM WAV player)
+; ============================================================================
+WAV_PLAY_PTR    equ $F0BD8              ; Pointer to WAV data in bus memory (32-bit)
+WAV_PLAY_LEN    equ $F0BDC              ; Length of WAV data (32-bit)
+WAV_PLAY_CTRL   equ $F0BE0              ; Play control (32-bit)
+WAV_PLAY_STATUS equ $F0BE4              ; Play status (32-bit)
+WAV_POSITION    equ $F0BE8              ; Current playback position (32-bit, read-only)
+
 ; ----------------------------------------------------------------------------
 ; MOD Player Macros
 ; ----------------------------------------------------------------------------
@@ -528,6 +537,29 @@ PLAY_MOD_LOOP    macro
 ; STOP_MOD - Stop MOD playback
 STOP_MOD    macro
     move.l  #2,MOD_PLAY_CTRL
+    endm
+
+; ----------------------------------------------------------------------------
+; WAV Player Macros
+; ----------------------------------------------------------------------------
+
+; PLAY_WAV - Load and start WAV playback
+PLAY_WAV    macro
+    move.l  #\1,WAV_PLAY_PTR
+    move.l  #\2,WAV_PLAY_LEN
+    move.l  #1,WAV_PLAY_CTRL
+    endm
+
+; PLAY_WAV_LOOP - Load and start WAV playback with looping
+PLAY_WAV_LOOP    macro
+    move.l  #\1,WAV_PLAY_PTR
+    move.l  #\2,WAV_PLAY_LEN
+    move.l  #5,WAV_PLAY_CTRL
+    endm
+
+; STOP_WAV - Stop WAV playback
+STOP_WAV    macro
+    move.l  #2,WAV_PLAY_CTRL
     endm
 
 ; ----------------------------------------------------------------------------

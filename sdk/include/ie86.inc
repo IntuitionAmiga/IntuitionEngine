@@ -324,6 +324,15 @@ MOD_FILTER_MODEL equ 0xF0BD0             ; Filter model (32-bit)
 MOD_POSITION    equ 0xF0BD4              ; Current song position (32-bit, read-only)
 
 ; ============================================================================
+; WAV AUDIO REGISTERS (PCM WAV player)
+; ============================================================================
+WAV_PLAY_PTR    equ 0xF0BD8              ; Pointer to WAV data in bus memory (32-bit)
+WAV_PLAY_LEN    equ 0xF0BDC              ; Length of WAV data (32-bit)
+WAV_PLAY_CTRL   equ 0xF0BE0              ; Play control (32-bit)
+WAV_PLAY_STATUS equ 0xF0BE4              ; Play status (32-bit)
+WAV_POSITION    equ 0xF0BE8              ; Current playback position (32-bit, read-only)
+
+; ============================================================================
 ; VGA VIDEO REGISTERS (IBM VGA compatible)
 ; ============================================================================
 

@@ -561,6 +561,22 @@ MOD_PLAY_STATUS = $FBCC         ; Play status (IE32 $F0BCC)
 MOD_FILTER_MODEL = $FBD0        ; Filter model (IE32 $F0BD0)
 MOD_POSITION    = $FBD4         ; Current song position (IE32 $F0BD4, read-only)
 
+; ============================================================================
+; WAV AUDIO REGISTERS (PCM WAV player)
+; For 6502: WAV registers are at $FBD8-$FBEB (IE32 $F0BD8-$F0BEB)
+; ============================================================================
+WAV_PLAY_PTR_0  = $FBD8         ; Play pointer byte 0 (IE32 $F0BD8)
+WAV_PLAY_PTR_1  = $FBD9         ; Play pointer byte 1
+WAV_PLAY_PTR_2  = $FBDA         ; Play pointer byte 2
+WAV_PLAY_PTR_3  = $FBDB         ; Play pointer byte 3
+WAV_PLAY_LEN_0  = $FBDC         ; Play length byte 0 (IE32 $F0BDC)
+WAV_PLAY_LEN_1  = $FBDD         ; Play length byte 1
+WAV_PLAY_LEN_2  = $FBDE         ; Play length byte 2
+WAV_PLAY_LEN_3  = $FBDF         ; Play length byte 3
+WAV_PLAY_CTRL   = $FBE0         ; Play control (IE32 $F0BE0)
+WAV_PLAY_STATUS = $FBE4         ; Play status (IE32 $F0BE4)
+WAV_POSITION    = $FBE8         ; Current playback position (IE32 $F0BE8, read-only)
+
 ; ----------------------------------------------------------------------------
 ; MOD Player Macros
 ; ----------------------------------------------------------------------------

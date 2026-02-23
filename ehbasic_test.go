@@ -4870,7 +4870,7 @@ func TestHW_Sound_Play_SID_EndToEnd(t *testing.T) {
 			h.bus.MapIO(SID_BASE, SID_END, sidEngine.HandleRead, sidEngine.HandleWrite)
 			h.bus.MapIO(SID_PLAY_PTR, SID_PLAY_STATUS+3, sidPlayer.HandlePlayRead, sidPlayer.HandlePlayWrite)
 
-			loader = NewMediaLoader(h.bus, soundChip, ".", psgPlayer, sidPlayer, nil, nil, nil, nil)
+			loader = NewMediaLoader(h.bus, soundChip, ".", psgPlayer, sidPlayer, nil, nil, nil, nil, nil)
 			h.bus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END, loader.HandleRead, loader.HandleWrite)
 		})
 

@@ -405,6 +405,21 @@ MOD_FILTER_MODEL  equ 0xF0BD0               ; Filter model (32-bit)
 MOD_POSITION      equ 0xF0BD4               ; Current song position (32-bit, read-only)
 
 ; ============================================================================
+; WAV AUDIO REGISTERS (PCM WAV player)
+;
+; Simple PCM .wav file playback:
+; - 8-bit unsigned and 16-bit signed PCM
+; - Automatic stereo-to-mono downmix
+; - Sample rate conversion with linear interpolation
+; ============================================================================
+
+WAV_PLAY_PTR      equ 0xF0BD8               ; Pointer to WAV data in bus memory (32-bit)
+WAV_PLAY_LEN      equ 0xF0BDC               ; Length of WAV data (32-bit)
+WAV_PLAY_CTRL     equ 0xF0BE0               ; Play control (32-bit)
+WAV_PLAY_STATUS   equ 0xF0BE4               ; Play status (32-bit)
+WAV_POSITION      equ 0xF0BE8               ; Current playback position (32-bit, read-only)
+
+; ============================================================================
 ; VGA VIDEO REGISTERS (IBM VGA compatible)
 ; ============================================================================
 
@@ -1585,6 +1600,43 @@ PLAY_MOD_LOOP macro
 ; Stop MOD playback (.l)
 STOP_MOD macro
     la      r1, MOD_PLAY_CTRL
+    li      r2, #2
+    store.l r2, (r1)
+    endm
+
+; ============================================================================
+; MACROS - WAV player helpers
+; ============================================================================
+
+; Load and start WAV playback (.l)
+PLAY_WAV macro
+    la      r1, WAV_PLAY_PTR
+    li      r2, #\1
+    store.l r2, (r1)
+    la      r1, WAV_PLAY_LEN
+    li      r2, #\2
+    store.l r2, (r1)
+    la      r1, WAV_PLAY_CTRL
+    li      r2, #1
+    store.l r2, (r1)
+    endm
+
+; Load and start WAV playback with looping (.l)
+PLAY_WAV_LOOP macro
+    la      r1, WAV_PLAY_PTR
+    li      r2, #\1
+    store.l r2, (r1)
+    la      r1, WAV_PLAY_LEN
+    li      r2, #\2
+    store.l r2, (r1)
+    la      r1, WAV_PLAY_CTRL
+    li      r2, #5
+    store.l r2, (r1)
+    endm
+
+; Stop WAV playback (.l)
+STOP_WAV macro
+    la      r1, WAV_PLAY_CTRL
     li      r2, #2
     store.l r2, (r1)
     endm

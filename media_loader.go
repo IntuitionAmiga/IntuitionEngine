@@ -19,6 +19,7 @@ type MediaLoader struct {
 	ahxPlayer   *AHXPlayer
 	pokeyPlayer *POKEYPlayer
 	modPlayer   *MODPlayer
+	wavPlayer   *WAVPlayer
 
 	namePtr uint32
 	subsong uint32
@@ -31,7 +32,7 @@ type MediaLoader struct {
 	mu sync.Mutex
 }
 
-func NewMediaLoader(bus *MachineBus, soundChip *SoundChip, baseDir string, psgPlayer *PSGPlayer, sidPlayer *SIDPlayer, tedPlayer *TEDPlayer, ahxPlayer *AHXPlayer, pokeyPlayer *POKEYPlayer, modPlayer *MODPlayer) *MediaLoader {
+func NewMediaLoader(bus *MachineBus, soundChip *SoundChip, baseDir string, psgPlayer *PSGPlayer, sidPlayer *SIDPlayer, tedPlayer *TEDPlayer, ahxPlayer *AHXPlayer, pokeyPlayer *POKEYPlayer, modPlayer *MODPlayer, wavPlayer *WAVPlayer) *MediaLoader {
 	absBase, err := filepath.Abs(baseDir)
 	if err != nil {
 		absBase = baseDir
@@ -46,6 +47,7 @@ func NewMediaLoader(bus *MachineBus, soundChip *SoundChip, baseDir string, psgPl
 		ahxPlayer:   ahxPlayer,
 		pokeyPlayer: pokeyPlayer,
 		modPlayer:   modPlayer,
+		wavPlayer:   wavPlayer,
 		status:      MEDIA_STATUS_IDLE,
 		typ:         MEDIA_TYPE_NONE,
 		errCode:     MEDIA_ERR_OK,
@@ -149,6 +151,38 @@ func (m *MediaLoader) loadAndStart(reqGen uint64, fullPath string, typ uint32, s
 		} else {
 			m.errCode = MEDIA_ERR_BAD_FORMAT
 		}
+		return
+	}
+
+	// WAV files can exceed MEDIA_STAGING_SIZE (64KB); load directly via player
+	if typ == MEDIA_TYPE_WAV {
+		m.mu.Lock()
+		if reqGen != m.reqGen {
+			m.mu.Unlock()
+			return
+		}
+		if m.wavPlayer != nil {
+			m.mu.Unlock()
+			loadErr := m.wavPlayer.Load(data)
+			m.mu.Lock()
+			if reqGen != m.reqGen {
+				m.mu.Unlock()
+				return
+			}
+			if loadErr != nil {
+				m.status = MEDIA_STATUS_ERROR
+				m.errCode = MEDIA_ERR_BAD_FORMAT
+				m.mu.Unlock()
+				return
+			}
+			if m.soundChip != nil && m.wavPlayer.engine != nil {
+				m.soundChip.SetSampleTicker(m.wavPlayer.engine)
+			}
+			m.wavPlayer.Play()
+			m.status = MEDIA_STATUS_PLAYING
+			m.errCode = MEDIA_ERR_OK
+		}
+		m.mu.Unlock()
 		return
 	}
 
@@ -337,6 +371,9 @@ func (m *MediaLoader) stopPlayersOnly() {
 	if m.modPlayer != nil {
 		m.modPlayer.Stop()
 	}
+	if m.wavPlayer != nil {
+		m.wavPlayer.Stop()
+	}
 }
 
 func (m *MediaLoader) stopAll() {
@@ -394,6 +431,12 @@ func (m *MediaLoader) refreshStatusLocked() {
 			busy = m.modPlayer.IsPlaying() || (status&0x1) != 0
 			playerErr = (status & 0x2) != 0
 		}
+	case MEDIA_TYPE_WAV:
+		if m.wavPlayer != nil {
+			status := m.wavPlayer.HandlePlayRead(WAV_PLAY_STATUS)
+			busy = m.wavPlayer.IsPlaying() || (status&0x1) != 0
+			playerErr = (status & 0x2) != 0
+		}
 	}
 
 	if playerErr {
@@ -423,6 +466,8 @@ func detectMediaType(path string) uint32 {
 		return MEDIA_TYPE_POKEY
 	case ".mod":
 		return MEDIA_TYPE_MOD
+	case ".wav":
+		return MEDIA_TYPE_WAV
 	default:
 		return MEDIA_TYPE_NONE
 	}

@@ -37,6 +37,7 @@ const (
 	MEDIA_TYPE_AHX
 	MEDIA_TYPE_POKEY
 	MEDIA_TYPE_MOD
+	MEDIA_TYPE_WAV
 )
 
 // Media error values.
