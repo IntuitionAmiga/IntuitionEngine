@@ -303,7 +303,7 @@ func (c *CPU_Z80) Execute() {
 					elapsed := now.Sub(c.perfStartTime).Seconds()
 					ips := float64(c.InstructionCount) / elapsed
 					mips := ips / 1_000_000
-					fmt.Printf("Z80: %.2f MIPS (%.0f instructions in %.1fs)\n", mips, float64(c.InstructionCount), elapsed)
+					fmt.Printf("\rZ80: %.2f MIPS (%.0f instructions in %.1fs)", mips, float64(c.InstructionCount), elapsed)
 					c.lastPerfReport = now
 				}
 			}

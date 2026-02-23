@@ -689,7 +689,7 @@ func (r *CPUX86Runner) Run() {
 					elapsed := now.Sub(r.perfStartTime).Seconds()
 					ips := float64(r.InstructionCount) / elapsed
 					mips := ips / 1_000_000
-					fmt.Printf("x86: %.2f MIPS (%.0f instructions in %.1fs)\n", mips, float64(r.InstructionCount), elapsed)
+					fmt.Printf("\rx86: %.2f MIPS (%.0f instructions in %.1fs)", mips, float64(r.InstructionCount), elapsed)
 					r.lastPerfReport = now
 				}
 			}
@@ -732,7 +732,7 @@ func (r *CPUX86Runner) Execute() {
 					elapsed := now.Sub(r.perfStartTime).Seconds()
 					ips := float64(r.InstructionCount) / elapsed
 					mips := ips / 1_000_000
-					fmt.Printf("x86: %.2f MIPS (%.0f instructions in %.1fs)\n", mips, float64(r.InstructionCount), elapsed)
+					fmt.Printf("\rx86: %.2f MIPS (%.0f instructions in %.1fs)", mips, float64(r.InstructionCount), elapsed)
 					r.lastPerfReport = now
 				}
 			}

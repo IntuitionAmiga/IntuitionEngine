@@ -494,7 +494,7 @@ func (cpu *CPU64) Execute() {
 				if now.Sub(cpu.lastPerfReport) >= time.Second {
 					elapsed := now.Sub(cpu.perfStartTime).Seconds()
 					mips := float64(cpu.InstructionCount) / elapsed / 1_000_000
-					fmt.Printf("IE64: %.2f MIPS (%.0f instructions in %.1fs)\n", mips, float64(cpu.InstructionCount), elapsed)
+					fmt.Printf("\rIE64: %.2f MIPS (%.0f instructions in %.1fs)", mips, float64(cpu.InstructionCount), elapsed)
 					cpu.lastPerfReport = now
 				}
 			}

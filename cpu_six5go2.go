@@ -1630,7 +1630,7 @@ func (cpu_6502 *CPU_6502) Execute() {
 				if elapsed > 0 {
 					ips := float64(cpu_6502.InstructionCount) / elapsed
 					mips := ips / 1_000_000
-					fmt.Printf("6502: %.2f MIPS (%.0f instructions in %.1fs)\n", mips, float64(cpu_6502.InstructionCount), elapsed)
+					fmt.Printf("\r6502: %.2f MIPS (%.0f instructions in %.1fs)", mips, float64(cpu_6502.InstructionCount), elapsed)
 				}
 				cpu_6502.lastPerfReport = now
 			}

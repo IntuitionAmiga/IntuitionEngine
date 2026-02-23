@@ -2447,7 +2447,7 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 				elapsed := now.Sub(cpu.perfStartTime).Seconds()
 				ips := float64(instructionCount) / elapsed
 				mips := ips / 1_000_000
-				fmt.Printf("M68K: %.2f MIPS (%.0f instructions in %.1fs)\n", mips, float64(instructionCount), elapsed)
+				fmt.Printf("\rM68K: %.2f MIPS (%.0f instructions in %.1fs)", mips, float64(instructionCount), elapsed)
 				cpu.lastPerfReport = now
 			}
 		}
