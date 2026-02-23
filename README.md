@@ -168,7 +168,7 @@ The Intuition Engine is a virtual machine that emulates a complete retro-style c
 | **Z80** | 8-bit | AF, BC, DE, HL + alternates, IX, IY | Full instruction set, interrupt modes |
 | **6502** | 8-bit | A, X, Y | NMOS instruction set, zero page optimisation |
 | **x86** | 32-bit | EAX-EDX, ESI, EDI, EBP, ESP | 8086 instructions + 32-bit registers, flat memory model |
-| **IE64** | 64-bit RISC | 32 general-purpose (R0=zero, R31=SP) | Native FP32 FPU, compare-and-branch, no flags register |
+| **IE64** | 64-bit RISC | 32 general-purpose (R0=zero, R31=SP) | ARM64 JIT compiler, native FP32 FPU, compare-and-branch, no flags register |
 
 Default core: **IE64**. Additional cores: **IE32, M68K, x86, Z80, 6502**.
 
@@ -239,7 +239,10 @@ Default core: **IE64**. Additional cores: **IE32, M68K, x86, Z80, 6502**.
 ./bin/IntuitionEngine -ie64 program.ie64 -script demo.ies
 
 # Run with performance measurement (MIPS reporting)
-./bin/IntuitionEngine -perf -m68k program.ie68
+./bin/IntuitionEngine -perf -ie64 program.ie64
+
+# Disable JIT compiler (use interpreter only)
+./bin/IntuitionEngine -nojit -ie64 program.ie64
 
 # Display options
 ./bin/IntuitionEngine -scale 2 -ie32 program.iex      # 2x window scaling
@@ -3291,6 +3294,8 @@ Note: The interrupt vector is currently set internally. Assembly-level vector pr
 - Compare-and-branch model (no flags register - unlike IE32, M68K, Z80, 6502, x86)
 - R0 is hardwired to zero (reads always return 0, writes are silently ignored)
 - `.l` operations zero-mask to 32 bits; use `.q` for full 64-bit arithmetic
+- JIT compilation is enabled by default on ARM64 Linux; use `-nojit` to force interpreter mode
+- JIT and interpreter produce identical results for all programs (verified by test suite)
 - Full ISA reference: [IE64_ISA.md](sdk/docs/IE64_ISA.md)
 - Assembly cookbook: [IE64_COOKBOOK.md](sdk/docs/IE64_COOKBOOK.md)
 
@@ -5351,13 +5356,14 @@ The x86 emulation provides a 32-bit flat memory model:
 
 The IE64 is a 64-bit RISC processor with a clean load-store architecture:
 
+- **JIT compiler**: Block-based ARM64 native code compilation with backward branch optimisation for native loops. Enabled by default on ARM64 Linux; disable with `-nojit`
 - **32 general-purpose registers**: R0 (hardwired zero) through R31 (stack pointer), all 64-bit
 - **Fixed 8-byte instruction format**: Consistent fetch/decode
 - **Compare-and-branch model**: No flags register; conditional branches embed register comparison
 - **Size-polymorphic operations**: .B/.W/.L/.Q suffixes on most instructions
 - **64-bit bus support**: Read64/Write64 with I/O region split semantics
 
-Execution cycle: Fetch (8 bytes) → Decode → Execute → Update PC → Check timer/interrupts
+Execution: JIT compiles basic blocks to native ARM64, caches them, and re-executes directly. Backward branches within a block execute as native loops with budget-based timer safety. Falls back to the interpreter for I/O, transcendental FPU ops, and unsupported platforms.
 
 ## 14.2 Memory Architecture
 

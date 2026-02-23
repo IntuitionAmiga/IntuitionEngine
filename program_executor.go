@@ -278,9 +278,10 @@ func (e *ProgramExecutor) prepareAndLaunch(data []byte, typ uint32) error {
 			e.videoChip.SetBigEndianMode(false)
 		}
 		cpu := NewCPU64(e.bus)
+		cpu.jitEnabled = jitAvailable
 		cpu.LoadProgramBytes(data)
 		runtimeStatus.setCPUs(runtimeCPUIE64, nil, cpu, nil, nil, nil, nil)
-		go cpu.Execute()
+		go cpu.jitExecute()
 		return nil
 
 	case EXEC_TYPE_6502:
