@@ -1789,7 +1789,10 @@ func emitBcc(cb *CodeBuffer, ji *JITInstr, instrPC uint32, cond byte, br *blockR
 			// SUB X7, X7, #bodySize (rollback — re-execution won't happen)
 			cb.Emit32(arm64SUB_imm(arm64RegLoopCount, arm64RegLoopCount, bodySize))
 			emitPackedPCAndCount(cb, uint64(targetPC), staticCount, br)
-			emitEpilogue(cb, writtenSoFar, br.used)
+			// Use br.written (not writtenSoFar): in a backward branch loop,
+			// instructions AFTER this branch may have executed in prior iterations,
+			// modifying registers not yet in writtenSoFar at this instruction index.
+			emitEpilogue(cb, br.written, br.used)
 
 			// skip: (not-taken fall through)
 			skipPC := cb.Len()
@@ -1803,7 +1806,13 @@ func emitBcc(cb *CodeBuffer, ji *JITInstr, instrPC uint32, cond byte, br *blockR
 	cb.Emit32(0) // placeholder for B.NOT_cond
 
 	emitPackedPCAndCount(cb, uint64(targetPC), staticCount, br)
-	emitEpilogue(cb, writtenSoFar, br.used)
+	// In a backward-branch block, prior loop iterations may have written
+	// registers that appear after this branch — use br.written to capture all.
+	exitRegs := writtenSoFar
+	if br.hasBackwardBranch {
+		exitRegs = br.written
+	}
+	emitEpilogue(cb, exitRegs, br.used)
 
 	skipPC := cb.Len()
 	cb.PatchUint32(skipOffset, arm64Bcond(cond^1, int32(skipPC-skipOffset)))

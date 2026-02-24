@@ -1964,6 +1964,7 @@ func parseUint16Flag(value string) (uint16, error) {
 
 func resolveDefaultBasicImagePath() string {
 	candidates := []string{
+		"sdk/examples/prebuilt/ehbasic_ie64.ie64",
 		"sdk/examples/asm/ehbasic_ie64.ie64",
 		"bin/ehbasic_ie64.ie64",
 		"ehbasic_ie64.ie64",

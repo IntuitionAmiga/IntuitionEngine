@@ -127,6 +127,11 @@ func (h *ehbasicTestHarness) readOutput() string {
 	return h.terminal.DrainOutput()
 }
 
+// execCPU runs the CPU using JIT or interpreter as configured.
+func (h *ehbasicTestHarness) execCPU() {
+	h.cpu.jitExecute()
+}
+
 // runCycles runs the CPU with a host timeout derived from maxCycles.
 // This is a safety bound, not an exact instruction counter.
 func (h *ehbasicTestHarness) runCycles(maxCycles int) {
@@ -134,7 +139,7 @@ func (h *ehbasicTestHarness) runCycles(maxCycles int) {
 
 	done := make(chan struct{})
 	go func() {
-		h.cpu.Execute()
+		h.execCPU()
 		close(done)
 	}()
 
@@ -160,7 +165,7 @@ func (h *ehbasicTestHarness) runUntilPrompt() string {
 
 	done := make(chan struct{})
 	go func() {
-		h.cpu.Execute()
+		h.execCPU()
 		close(done)
 	}()
 
@@ -5865,6 +5870,200 @@ func TestHW_BLoad_DoesNotResetProgramState(t *testing.T) {
 	out = strings.TrimSpace(strings.ReplaceAll(out, "\r", ""))
 	if !strings.Contains(out, "42") {
 		t.Fatalf("BLOAD should not reset BASIC state, output: %q", out)
+	}
+}
+
+func TestHW_LoadThenRun(t *testing.T) {
+	asmBin := buildAssembler(t)
+	tmpDir := t.TempDir()
+
+	// Load the actual rotozoomer_basic.bas, replacing GOTO loop with END
+	// and VSYNC with REM so it doesn't block in headless mode
+	rotozSrc := filepath.Join(repoRootDir(t), "sdk", "examples", "basic", "rotozoomer_basic.bas")
+	rotozContent, err := os.ReadFile(rotozSrc)
+	if err != nil {
+		t.Skipf("rotozoomer_basic.bas not found: %v", err)
+	}
+	modified := strings.ReplaceAll(string(rotozContent), "1240 GOTO 600", "1240 END")
+	modified = strings.ReplaceAll(modified, "1130 VSYNC", "1130 REM VSYNC")
+	if err := os.WriteFile(filepath.Join(tmpDir, "rotozoom.bas"), []byte(modified), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate REPL: exec_do_load in direct mode, then exec_run
+	body := `
+    ; --- LOAD via exec_line in direct mode (like REPL) ---
+    la      r8, .load_cmd
+    la      r9, 0x021100
+    jsr     tokenize
+    beqz    r8, .fail
+
+    add.q   r1, r16, #ST_DIRECT_MODE
+    move.q  r2, #1
+    store.l r2, (r1)
+    la      r17, 0x021100
+    move.q  r14, r0
+    jsr     exec_line
+
+    add.q   r1, r16, #ST_DIRECT_MODE
+    store.l r0, (r1)
+
+    ; --- RUN ---
+    jsr     exec_run
+    bra     .end
+
+.fail:
+    la      r8, .str_fail
+    jsr     print_string
+.end:
+    halt
+
+.load_cmd: dc.b "LOAD \"rotozoom.bas\"", 0
+    align 4
+.str_fail: dc.b "FAIL", 13, 10, 0
+    align 4
+`
+	binary := assembleExecTest(t, asmBin, body)
+	h := newEhbasicHarness(t)
+	fio := NewFileIODevice(h.bus, tmpDir)
+	h.bus.MapIO(FILE_IO_BASE, FILE_IO_END, fio.HandleRead, fio.HandleWrite)
+
+	h.loadBytes(binary)
+	h.runCycles(100_000_000)
+	out := h.readOutput()
+	t.Logf("Output:\n%s", out)
+
+	if !strings.Contains(out, "SID STATUS=") {
+		t.Errorf("exec_run after LOAD did not reach line 250 (SID STATUS print); got:\n%s", out)
+	}
+}
+
+// TestHW_LoadThenRun_REPL exercises the full REPL path:
+// cold_start → "Ready" → LOAD "file" → "Ready" → RUN → check output
+// This tests the actual REPL code path, not a synthetic exec_line+exec_run call.
+func TestHW_LoadThenRun_REPL(t *testing.T) {
+	asmBin := buildAssembler(t)
+	tmpDir := t.TempDir()
+
+	// Load the actual rotozoomer_basic.bas, modified for headless testing
+	rotozSrc := filepath.Join(repoRootDir(t), "sdk", "examples", "basic", "rotozoomer_basic.bas")
+	rotozContent, err2 := os.ReadFile(rotozSrc)
+	if err2 != nil {
+		// Fall back to a simple program
+		prog := "10 PRINT \"HELLO FROM RUN\"\n20 PRINT \"LINE TWO\"\n30 END\n"
+		if err := os.WriteFile(filepath.Join(tmpDir, "test.bas"), []byte(prog), 0644); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		modified := strings.ReplaceAll(string(rotozContent), "1240 GOTO 600", "1240 END")
+		modified = strings.ReplaceAll(modified, "1130 VSYNC", "1130 REM VSYNC")
+		if err := os.WriteFile(filepath.Join(tmpDir, "test.bas"), []byte(modified), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Assemble the full REPL binary
+	repoRoot := repoRootDir(t)
+	srcPath := filepath.Join(repoRoot, "sdk", "examples", "asm", "ehbasic_ie64.asm")
+	incDir := filepath.Join(repoRoot, "sdk", "include")
+	cmd := exec.Command(asmBin, "-I", incDir, srcPath)
+	cmd.Dir = tmpDir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("assembly failed: %v\n%s", err, out)
+	}
+
+	// Find the assembled binary
+	binPath := filepath.Join(tmpDir, "ehbasic_ie64.ie64")
+	if _, err := os.Stat(binPath); err != nil {
+		// Assembler may output next to the source
+		binPath = filepath.Join(repoRoot, "sdk", "examples", "asm", "ehbasic_ie64.ie64")
+	}
+	binary, err := os.ReadFile(binPath)
+	if err != nil {
+		t.Fatalf("failed to read assembled binary: %v", err)
+	}
+
+	// Set up harness with file I/O
+	h := newEhbasicHarness(t)
+	fio := NewFileIODevice(h.bus, tmpDir)
+	h.bus.MapIO(FILE_IO_BASE, FILE_IO_END, fio.HandleRead, fio.HandleWrite)
+
+	// Enable JIT to match the real binary's execution path
+	h.cpu.jitEnabled = true
+
+	h.loadBytes(binary)
+
+	// Wait for cold start "Ready" prompt
+	bootOutput := h.runUntilPrompt()
+	t.Logf("Boot output:\n%s", bootOutput)
+	if !strings.Contains(bootOutput, "Ready") {
+		t.Fatalf("did not get Ready prompt after boot; got:\n%s", bootOutput)
+	}
+
+	// LOAD the program
+	loadOutput := h.runCommand("LOAD \"test.bas\"")
+	t.Logf("LOAD output:\n%s", loadOutput)
+
+	// RUN the program
+	runOutput := h.runCommand("RUN")
+	t.Logf("RUN output:\n%s", runOutput)
+
+	// Check if the program ran at all - rotozoomer prints "SID STATUS=" at line 250
+	// For the simple fallback program, check for "HELLO FROM RUN"
+	if !strings.Contains(runOutput, "SID STATUS=") && !strings.Contains(runOutput, "HELLO FROM RUN") {
+		t.Errorf("RUN did not execute program; got:\n%s", runOutput)
+	}
+}
+
+// TestHW_JIT_LoadThenRun tests LOAD+RUN via the full REPL with JIT enabled.
+// Regression test for the backward branch budget exit register save bug:
+// conditional branch forward exits in backward-branch blocks must save
+// br.written (not writtenSoFar) since prior loop iterations may have
+// modified registers that appear after the branch instruction.
+func TestHW_JIT_LoadThenRun(t *testing.T) {
+	asmBin := buildAssembler(t)
+	tmpDir := t.TempDir()
+
+	// 200 lines exercises the JIT backward branch budget mechanism
+	var sb strings.Builder
+	for i := 1; i <= 200; i++ {
+		fmt.Fprintf(&sb, "%d REM line %d\n", i*10, i)
+	}
+	sb.WriteString("2010 PRINT \"JIT LOAD OK\"\n2020 END\n")
+	if err := os.WriteFile(filepath.Join(tmpDir, "test.bas"), []byte(sb.String()), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	repoRoot := repoRootDir(t)
+	srcPath := filepath.Join(repoRoot, "sdk", "examples", "asm", "ehbasic_ie64.asm")
+	incDir := filepath.Join(repoRoot, "sdk", "include")
+	cmd := exec.Command(asmBin, "-I", incDir, srcPath)
+	cmd.Dir = tmpDir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("assembly failed: %v\n%s", err, out)
+	}
+	binPath := filepath.Join(tmpDir, "ehbasic_ie64.ie64")
+	if _, err := os.Stat(binPath); err != nil {
+		binPath = filepath.Join(repoRoot, "sdk", "examples", "asm", "ehbasic_ie64.ie64")
+	}
+	bin, err := os.ReadFile(binPath)
+	if err != nil {
+		t.Fatalf("failed to read assembled binary: %v", err)
+	}
+
+	h := newEhbasicHarness(t)
+	fio := NewFileIODevice(h.bus, tmpDir)
+	h.bus.MapIO(FILE_IO_BASE, FILE_IO_END, fio.HandleRead, fio.HandleWrite)
+	h.cpu.jitEnabled = true
+	h.loadBytes(bin)
+
+	h.runUntilPrompt()
+	h.runCommand("LOAD \"test.bas\"")
+	runOutput := h.runCommand("RUN")
+	if !strings.Contains(runOutput, "JIT LOAD OK") {
+		t.Errorf("RUN after LOAD failed under JIT; got:\n%s", runOutput)
 	}
 }
 
