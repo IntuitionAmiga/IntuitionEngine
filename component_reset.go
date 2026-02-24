@@ -96,6 +96,10 @@ func (chip *SoundChip) Reset() {
 	// Clear byte accumulation shadow buffer
 	chip.flexShadow = [4 * FLEX_CH_STRIDE]byte{}
 
+	// Clear sample ticker and tap so stale playback engines don't survive reset
+	chip.sampleTicker.Store(&sampleTickerHolder{})
+	chip.sampleTap.Store(&sampleTapHolder{})
+
 	chip.enabled.Store(false)
 	chip.audioFrozen.Store(false)
 }
