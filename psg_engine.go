@@ -161,6 +161,18 @@ func (e *PSGEngine) ApplyFrame(frame []uint8) error {
 func (e *PSGEngine) SetEvents(events []PSGEvent, totalSamples uint64, loop bool, loopSample uint64) {
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
+	// Reset register state to prevent stale values from previous playback
+	// (e.g. mixer reg 7 from SNDH disabling tone channels in a subsequent VGM).
+	e.regs = [PSG_REG_COUNT]uint8{}
+	e.envLevel = 15
+	e.envDirection = -1
+	e.envSampleCounter = 0
+	e.envContinue = false
+	e.envAlternate = false
+	e.envAttack = false
+	e.envHoldRequest = false
+	e.envHoldActive = false
+	e.updateEnvPeriodSamples()
 	e.events = events
 	e.eventIndex = 0
 	e.currentSample = 0
@@ -214,6 +226,10 @@ func (e *PSGEngine) StopPlayback() {
 	e.eventIndex = 0
 	e.currentSample = 0
 	e.totalSamples = 0
+	// Reset channelsInit so the next song triggers fresh channel initialization.
+	// Without this, stale SoundChip channel state (gate, envelope, sidEnvelope)
+	// from the current song persists into the next one, causing silence.
+	e.channelsInit = false
 }
 
 func (e *PSGEngine) TickSample() {
@@ -360,6 +376,9 @@ func (e *PSGEngine) ensureChannelsInitialized() {
 	}
 
 	for ch := range 3 {
+		// Gate off first to clear stale envelope state from other engines (e.g. SID).
+		// This ensures the subsequent gate-on triggers a fresh attack phase.
+		e.writeChannel(ch, FLEX_OFF_CTRL, 0)
 		e.writeChannel(ch, FLEX_OFF_WAVE_TYPE, WAVE_SQUARE)
 		e.writeChannel(ch, FLEX_OFF_DUTY, 0x0080)
 		e.writeChannel(ch, FLEX_OFF_PWM_CTRL, 0)
@@ -367,15 +386,24 @@ func (e *PSGEngine) ensureChannelsInitialized() {
 		e.writeChannel(ch, FLEX_OFF_DEC, 0)
 		e.writeChannel(ch, FLEX_OFF_SUS, 255)
 		e.writeChannel(ch, FLEX_OFF_REL, 0)
+		// Clear SID envelope mode so standard ADSR is used
+		if sndCh := e.sound.channels[ch]; sndCh != nil {
+			sndCh.sidEnvelope = false
+		}
 		e.writeChannel(ch, FLEX_OFF_CTRL, 3)
 	}
 
+	// Gate off noise channel first too
+	e.writeChannel(3, FLEX_OFF_CTRL, 0)
 	e.writeChannel(3, FLEX_OFF_WAVE_TYPE, WAVE_NOISE)
 	e.writeChannel(3, FLEX_OFF_NOISEMODE, NOISE_MODE_PSG)
 	e.writeChannel(3, FLEX_OFF_ATK, 0)
 	e.writeChannel(3, FLEX_OFF_DEC, 0)
 	e.writeChannel(3, FLEX_OFF_SUS, 255)
 	e.writeChannel(3, FLEX_OFF_REL, 0)
+	if sndCh := e.sound.channels[3]; sndCh != nil {
+		sndCh.sidEnvelope = false
+	}
 	e.writeChannel(3, FLEX_OFF_CTRL, 3)
 
 	e.channelsInit = true

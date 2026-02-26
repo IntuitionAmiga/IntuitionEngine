@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 )
@@ -249,6 +250,7 @@ func (e *ProgramExecutor) launchProgram(fullPath string, data []byte, typ uint32
 
 func (e *ProgramExecutor) prepareAndLaunch(data []byte, typ uint32) error {
 	e.stopRunningCPUs()
+	runtime.GC()
 	if e.emuTOSLoader != nil {
 		e.emuTOSLoader.Stop()
 		e.emuTOSLoader = nil

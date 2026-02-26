@@ -1521,7 +1521,7 @@ func main() {
 		resetMu.Lock()
 		defer resetMu.Unlock()
 
-		if scriptEngine != nil {
+		if scriptEngine != nil && !scriptEngine.IsLoadingProgram() {
 			scriptEngine.Cancel()
 		}
 
@@ -1826,6 +1826,9 @@ func main() {
 	scriptEngine.SetExitFunc(func(code int) {
 		os.Exit(code)
 	})
+	if videoTerm != nil {
+		scriptEngine.SetVideoTerminal(videoTerm)
+	}
 	if sa, ok := videoChip.GetOutput().(interface{ SetScriptEngine(*ScriptEngine) }); ok {
 		sa.SetScriptEngine(scriptEngine)
 	}

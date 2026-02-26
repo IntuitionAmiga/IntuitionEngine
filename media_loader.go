@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 )
@@ -218,29 +219,34 @@ func (m *MediaLoader) loadAndStart(reqGen uint64, fullPath string, typ uint32, s
 		return
 	}
 
-	if len(data) > MEDIA_STAGING_SIZE {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		if reqGen != m.reqGen {
+	// SID, PSG, and POKEY use direct loading (LoadData*) and don't need
+	// the staging buffer. Only copy into staging for types that read from it.
+	needsStaging := typ != MEDIA_TYPE_SID && typ != MEDIA_TYPE_PSG && typ != MEDIA_TYPE_POKEY
+	if needsStaging {
+		if len(data) > MEDIA_STAGING_SIZE {
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			if reqGen != m.reqGen {
+				return
+			}
+			m.status = MEDIA_STATUS_ERROR
+			m.errCode = MEDIA_ERR_TOO_LARGE
 			return
 		}
-		m.status = MEDIA_STATUS_ERROR
-		m.errCode = MEDIA_ERR_TOO_LARGE
-		return
-	}
 
-	mem := m.bus.GetMemory()
-	if MEDIA_STAGING_END >= uint32(len(mem)) {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		if reqGen != m.reqGen {
+		mem := m.bus.GetMemory()
+		if MEDIA_STAGING_END >= uint32(len(mem)) {
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			if reqGen != m.reqGen {
+				return
+			}
+			m.status = MEDIA_STATUS_ERROR
+			m.errCode = MEDIA_ERR_BAD_FORMAT
 			return
 		}
-		m.status = MEDIA_STATUS_ERROR
-		m.errCode = MEDIA_ERR_BAD_FORMAT
-		return
+		copy(mem[MEDIA_STAGING_BASE:MEDIA_STAGING_BASE+uint32(len(data))], data)
 	}
-	copy(mem[MEDIA_STAGING_BASE:MEDIA_STAGING_BASE+uint32(len(data))], data)
 
 	m.mu.Lock()
 	if reqGen != m.reqGen {
@@ -374,6 +380,10 @@ func (m *MediaLoader) stopPlayersOnly() {
 	if m.wavPlayer != nil {
 		m.wavPlayer.Stop()
 	}
+	// Force GC to reclaim large event/frame slices released by player Stop()
+	// calls. Without this, deferred collection can spike during the next
+	// song's audio callback, causing choppy playback or memory pressure.
+	runtime.GC()
 }
 
 func (m *MediaLoader) stopAll() {

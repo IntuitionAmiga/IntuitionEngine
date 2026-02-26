@@ -198,11 +198,10 @@ func (tm *TerminalMMIO) HandleWrite(addr uint32, value uint32) {
 	switch addr {
 	case TERM_OUT, TERM_OUT_16BIT, TERM_OUT_SIGNEXT:
 		ch := byte(value & 0xFF)
+		tm.outputBuf = append(tm.outputBuf, ch)
 		if tm.onCharOutput != nil {
 			charFn = tm.onCharOutput
 			charArg = ch
-		} else {
-			tm.outputBuf = append(tm.outputBuf, ch)
 		}
 
 	case TERM_ECHO:

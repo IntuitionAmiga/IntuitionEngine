@@ -19,12 +19,13 @@ import (
 
 // ScriptEngine executes Lua automation scripts against the running emulator.
 type ScriptEngine struct {
-	bus        *MachineBus
-	compositor *VideoCompositor
-	terminal   *TerminalMMIO
-	monitor    *MachineMonitor
-	recorder   *VideoRecorder
-	luaOverlay *LuaOverlay
+	bus           *MachineBus
+	compositor    *VideoCompositor
+	terminal      *TerminalMMIO
+	monitor       *MachineMonitor
+	recorder      *VideoRecorder
+	luaOverlay    *LuaOverlay
+	videoTerminal *VideoTerminal
 
 	loadProgram func(string) error
 	hardReset   func() error
@@ -38,10 +39,11 @@ type ScriptEngine struct {
 	done      chan struct{}
 	lastError error
 
-	running     atomic.Bool
-	freezeCount atomic.Int32
-	frameCount  atomic.Uint64
-	lastYieldNS atomic.Int64
+	running        atomic.Bool
+	loadingProgram atomic.Bool
+	freezeCount    atomic.Int32
+	frameCount     atomic.Uint64
+	lastYieldNS    atomic.Int64
 
 	scratchMu   sync.Mutex
 	scratchNext uint32
@@ -94,6 +96,10 @@ func (se *ScriptEngine) SetExitFunc(fn func(int)) {
 	se.mu.Unlock()
 }
 
+func (se *ScriptEngine) IsLoadingProgram() bool {
+	return se.loadingProgram.Load()
+}
+
 func (se *ScriptEngine) SetLuaOverlay(o *LuaOverlay) {
 	se.mu.Lock()
 	se.luaOverlay = o
@@ -103,6 +109,12 @@ func (se *ScriptEngine) SetLuaOverlay(o *LuaOverlay) {
 func (se *ScriptEngine) SetMonitor(mon *MachineMonitor) {
 	se.mu.Lock()
 	se.monitor = mon
+	se.mu.Unlock()
+}
+
+func (se *ScriptEngine) SetVideoTerminal(vt *VideoTerminal) {
+	se.mu.Lock()
+	se.videoTerminal = vt
 	se.mu.Unlock()
 }
 
@@ -741,7 +753,10 @@ func (se *ScriptEngine) luaCPULoad() lua.LGFunction {
 			L.RaiseError("program loader not configured")
 			return 0
 		}
-		if err := loader(path); err != nil {
+		se.loadingProgram.Store(true)
+		err := loader(path)
+		se.loadingProgram.Store(false)
+		if err != nil {
 			L.RaiseError("%v", err)
 		}
 		return 0
@@ -1039,8 +1054,14 @@ func (se *ScriptEngine) luaMemFill() lua.LGFunction {
 func (se *ScriptEngine) luaTermType() lua.LGFunction {
 	return func(L *lua.LState) int {
 		s := L.CheckString(1)
-		for i := 0; i < len(s); i++ {
-			se.terminal.EnqueueByte(s[i])
+		if se.videoTerminal != nil {
+			for i := 0; i < len(s); i++ {
+				se.videoTerminal.HandleKeyInput(s[i])
+			}
+		} else {
+			for i := 0; i < len(s); i++ {
+				se.terminal.EnqueueByte(s[i])
+			}
 		}
 		return 0
 	}
@@ -1049,10 +1070,17 @@ func (se *ScriptEngine) luaTermType() lua.LGFunction {
 func (se *ScriptEngine) luaTermTypeLine() lua.LGFunction {
 	return func(L *lua.LState) int {
 		s := L.CheckString(1)
-		for i := 0; i < len(s); i++ {
-			se.terminal.EnqueueByte(s[i])
+		if se.videoTerminal != nil {
+			for i := 0; i < len(s); i++ {
+				se.videoTerminal.HandleKeyInput(s[i])
+			}
+			se.videoTerminal.HandleKeyInput('\n')
+		} else {
+			for i := 0; i < len(s); i++ {
+				se.terminal.EnqueueByte(s[i])
+			}
+			se.terminal.EnqueueByte('\n')
 		}
-		se.terminal.EnqueueByte('\n')
 		return 0
 	}
 }
