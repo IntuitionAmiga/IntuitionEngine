@@ -35,11 +35,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - ADSR envelopes, PWM, frequency sweep, hard sync, ring modulation.
   - Global filter (LP/HP/BP), overdrive, reverb.
   - 44.1kHz 32-bit floating-point processing.
-- **PSG** (AY-3-8910/YM2149): 3-channel square + noise with envelope generator. Supports `.ym`, `.ay`, `.vgm`, `.sndh` playback.
+- **PSG** (AY-3-8910/YM2149): 3-channel square + noise with envelope generator. Supports `.ym`, `.ay`, `.vgm`, `.vgz`, `.vtx`, `.sndh`, `.pt3`, `.pt2`, `.pt1`, `.stc`, `.sqt`, `.asc`, `.ftc` playback. ZX Spectrum tracker formats use Z80 emulation (PT2/PT3/STC/SQT) or native Go players (PT1/ASC/FTC).
 - **SID** (MOS 6581/8580): 3 voices with ADSR, ring modulation, hard sync, resonant filter. Supports `.sid` playback (PSID v1-v4, RSID). Multi-SID playback with up to 3 independent chips (9 voices), per-chip model selection from header flags.
 - **POKEY** (Atari): 4-channel with polynomial counters and high-pass filter. Supports `.sap` playback.
-- **TED** (Commodore Plus/4): 2-channel square wave audio.
+- **TED** (Commodore Plus/4): 2-channel square wave audio. Supports `.ted` file playback.
 - **AHX** (Amiga): Tracker-based module playback.
+- **WAV**: PCM audio playback via SoundChip FLEX DAC mode.
 - **MOD** (ProTracker): 4-channel .mod file playback via SoundChip FLEX DAC mode with Amiga A500/A1200 filter emulation. MMIO registers at `$F0BC0-$F0BD7`, `-mod` CLI flag, MediaLoader auto-detection, and EhBASIC `SOUND MOD` commands.
 - **SN76489** support via VGM command `0x50` with clock-accurate frequency scaling to AY registers and dynamic noise-tracks-tone2.
 - PLUS enhanced modes for PSG, SID, POKEY, TED, and AHX with logarithmic volume curves.
@@ -82,10 +83,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Feature introspection (`-features` flag).
 - Desktop entry and MIME type integration for `.ie*` files.
 
+#### IEScript Lua Automation
+- 11-module Lua API: `sys`, `cpu`, `mem`, `term`, `audio`, `video`, `repl`, `rec`, `dbg`, `coproc`, `media`.
+- `repl` module for programmatic overlay control (show/hide, print, clear, scroll).
+- `audio.psg_metadata()` and `audio.sid_metadata()` for querying song title, author, and system.
+- Frame-synchronised coroutine model with cooperative yielding.
+- MP4+AAC recording via FFmpeg, PNG screenshot capture.
+- Interactive F8 REPL overlay with command history and multiline input.
+
 #### SDK
 - `sdk/` developer package with curated examples, include files, and build scripts.
 - Rotozoomer demo series: one per CPU core (IE32, IE64, M68K, Z80, 6502, x86) plus EhBASIC.
 - Video chip showcase demos: VGA text, VGA Mode 13h fire, copper bands, ULA cube, TED plasma, ANTIC plasma, Voodoo 3D cube.
+- Voodoo 3D demos: mega demo, spinning cube, 3DFX logo flyby, filled triangle, textured tunnel.
+- Robocop intro demo across 4 CPUs (IE32, M68K, 6502, Z80) with copper rasterbars and blitter sprite.
+- Automated product demo script (`sdk/scripts/ie_product_demo.ies`) showcasing all 6 CPUs, 6 video chips, and 20 audio formats.
 - Coprocessor communication examples.
 - Per-target build scripts with environment variable overrides.
 

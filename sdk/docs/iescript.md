@@ -18,6 +18,7 @@ Scripts use the `.ies` extension.
    - [term](#term) — Terminal automation
    - [audio](#audio) — Sound chip and player controls
    - [video](#video) — Video chip, VGA, ULA, ANTIC/GTIA, TED, Voodoo, Copper, Blitter
+   - [repl](#repl) — REPL overlay control (show/hide, print, scroll)
    - [rec](#rec) — Recording and screenshots
    - [dbg](#dbg) — Monitor/debugger integration
    - [coproc](#coproc) — Coprocessor manager
@@ -543,6 +544,58 @@ video.voodoo_color(1, 0, 255, 0, 255)
 video.voodoo_color(2, 0, 0, 255, 255)
 video.voodoo_draw()
 video.voodoo_swap()
+```
+
+---
+
+## `repl`
+
+Programmatic control of the Lua REPL overlay. Use this module from scripts to display information, title cards, or scrolling text on-screen without affecting the underlying emulator display.
+
+`repl.show()` — Show the REPL overlay. Returns: nothing.
+
+`repl.hide()` — Hide the REPL overlay. Returns: nothing.
+
+`repl.is_open()` — Check whether the overlay is currently visible. Returns: boolean.
+
+`repl.print(text)` — Append a line of text to the overlay output buffer. Returns: nothing.
+
+`repl.clear()` — Clear the overlay output buffer. Returns: nothing.
+
+`repl.scroll_up(n)` — Scroll the overlay output up by `n` lines. Returns: nothing.
+
+`repl.scroll_down(n)` — Scroll the overlay output down by `n` lines. Returns: nothing.
+
+`repl.line_count()` — Get the total number of lines in the overlay output buffer. Returns: number.
+
+Example — title card:
+
+```lua
+repl.show()
+repl.clear()
+repl.print("  ================================================")
+repl.print("  Intuition Engine Demo")
+repl.print("  ================================================")
+sys.wait_ms(3000)
+repl.hide()
+```
+
+Example — scrolling source code listing:
+
+```lua
+local f = io.open("source.bas", "r")
+if f then
+    repl.show(); repl.clear()
+    for line in f:lines() do repl.print(line) end
+    f:close()
+    repl.scroll_up(repl.line_count())
+    for _ = 1, repl.line_count() do
+        repl.scroll_down(1)
+        sys.wait_ms(60)
+    end
+    sys.wait_ms(1500)
+    repl.hide()
+end
 ```
 
 ---
@@ -1090,7 +1143,7 @@ Recording relies on an FFmpeg subprocess. If FFmpeg crashes or is killed, the re
 
 ## Quick Reference
 
-Compact reference for all 209 API functions.
+Compact reference for all 217 API functions.
 
 ### sys (9)
 
@@ -1246,6 +1299,19 @@ Compact reference for all 209 API functions.
 | `video.wait_pixel(x, y, r, g, b, timeout_ms)` | boolean |
 | `video.wait_stable(n_frames, timeout_ms)` | boolean |
 | `video.wait_condition(fn, timeout_ms)` | boolean |
+
+### repl (8)
+
+| Function | Returns |
+|----------|---------|
+| `repl.show()` | — |
+| `repl.hide()` | — |
+| `repl.is_open()` | boolean |
+| `repl.print(text)` | — |
+| `repl.clear()` | — |
+| `repl.scroll_up(n)` | — |
+| `repl.scroll_down(n)` | — |
+| `repl.line_count()` | number |
 
 ### rec (5)
 

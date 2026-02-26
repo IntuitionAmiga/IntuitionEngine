@@ -108,6 +108,16 @@ Example BASIC program:
 70 VSYNC
 ```
 
+## Running the Product Demo
+
+The SDK includes a comprehensive automated product demo that showcases all 6 CPUs, 6 video chips, and 20 audio formats:
+
+```bash
+./bin/IntuitionEngine -basic -script sdk/scripts/ie_product_demo.ies
+```
+
+This Lua-scripted demo runs unattended for several minutes, demonstrating the BASIC rotozoomer, all prebuilt assembly demos with machine monitor tours, and every supported music format.
+
 ## Next Steps
 
 - [SDK README](../README.md) - Full SDK documentation with demo matrix
@@ -115,4 +125,5 @@ Example BASIC program:
 - [IE64 ISA](IE64_ISA.md) - IE64 instruction set reference
 - [IE64 Cookbook](IE64_COOKBOOK.md) - Common patterns and recipes
 - [EhBASIC Guide](ehbasic_ie64.md) - BASIC language reference
+- [IEScript Reference](iescript.md) - Lua automation API (11 modules)
 - [DEVELOPERS.md](../../DEVELOPERS.md) - Build profiles, testing, and contribution guide

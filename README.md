@@ -187,8 +187,10 @@ Default core: **IE64**. Additional cores: **IE32, M68K, x86, Z80, 6502**.
 - **AY/YM/PSG** (AY-3-8910/YM2149) - Supports .ym, .ay, .vgm, .vgz, .vtx, .sndh, .pt3, .pt2, .pt1, .stc, .sqt, .asc, .ftc playback (VGM includes SN76489 conversion; tracker formats use Z80 emulation)
 - **POKEY** (Atari) - Supports .sap playback
 - **SID** (6581/8580) - Supports .sid playback
+- **TED** (Commodore Plus/4) - Supports .ted playback
 - **Amiga AHX** module playback
 - **ProTracker MOD** (.mod) - 4-channel Amiga module playback with A500/A1200 filter emulation
+- **WAV** PCM audio via SoundChip FLEX DAC mode
 
 ## Video System
 
@@ -202,7 +204,7 @@ Default core: **IE64**. Additional cores: **IE32, M68K, x86, Z80, 6502**.
 ## Scripting
 
 - **IEScript** (Lua 5.1) automation engine for programmatic control of the entire emulator
-- 10 API modules: `cpu`, `mem`, `term`, `audio`, `video`, `dbg`, `rec`, `coproc`, `media`, `sys`
+- 11 API modules: `cpu`, `mem`, `term`, `audio`, `video`, `repl`, `dbg`, `rec`, `coproc`, `media`, `sys`
 - Frame-synchronised coroutine model, MP4+AAC recording via FFmpeg, interactive F8 REPL overlay
 - See [iescript.md](sdk/docs/iescript.md) for the full reference
 
