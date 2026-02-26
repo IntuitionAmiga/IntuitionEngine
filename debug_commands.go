@@ -144,8 +144,16 @@ func EvalAddress(expr string, cpu DebuggableCPU) (uint64, bool) {
 }
 
 // ExecuteCommand dispatches a parsed command to the appropriate handler.
-// Returns true if the monitor should exit.
+// Acquires m.mu for thread safety. Returns true if the monitor should exit.
 func (m *MachineMonitor) ExecuteCommand(input string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.executeCommand(input)
+}
+
+// executeCommand is the lock-free implementation of ExecuteCommand.
+// Caller must hold m.mu.
+func (m *MachineMonitor) executeCommand(input string) bool {
 	cmd := ParseCommand(input)
 	if cmd.Name == "" {
 		return false
@@ -1742,7 +1750,7 @@ func (m *MachineMonitor) cmdScript(cmd MonitorCommand) bool {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		if m.ExecuteCommand(line) {
+		if m.executeCommand(line) {
 			m.scriptDepth--
 			return true
 		}
@@ -1782,7 +1790,7 @@ func (m *MachineMonitor) executeMacro(cmds []string) bool {
 		return false
 	}
 
-	if slices.ContainsFunc(cmds, m.ExecuteCommand) {
+	if slices.ContainsFunc(cmds, m.executeCommand) {
 		m.scriptDepth--
 		return true
 	}

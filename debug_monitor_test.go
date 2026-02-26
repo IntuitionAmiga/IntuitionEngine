@@ -316,7 +316,9 @@ func TestCommandRegisterDisplay(t *testing.T) {
 
 	mon.mu.Lock()
 	mon.outputLines = nil
+	mon.mu.Unlock()
 	mon.ExecuteCommand("r")
+	mon.mu.Lock()
 	lines := mon.outputLines
 	mon.mu.Unlock()
 
@@ -349,7 +351,9 @@ func TestCommandDisassemble(t *testing.T) {
 
 	mon.mu.Lock()
 	mon.outputLines = nil
+	mon.mu.Unlock()
 	mon.ExecuteCommand("d")
+	mon.mu.Lock()
 	lines := mon.outputLines
 	mon.mu.Unlock()
 
@@ -368,7 +372,9 @@ func TestCommandMemoryDump(t *testing.T) {
 
 	mon.mu.Lock()
 	mon.outputLines = nil
+	mon.mu.Unlock()
 	mon.ExecuteCommand("m 100 1")
+	mon.mu.Lock()
 	lines := mon.outputLines
 	mon.mu.Unlock()
 
@@ -400,10 +406,7 @@ func TestCommandStep(t *testing.T) {
 	cpu.memory[PROG_START+1] = (1<<3 | 2<<1 | 1)
 	cpu.memory[PROG_START+4] = 42
 
-	mon.mu.Lock()
-	mon.outputLines = nil
 	mon.ExecuteCommand("s")
-	mon.mu.Unlock()
 
 	if cpu.regs[1] != 42 {
 		t.Errorf("After step, R1 = %d, expected 42", cpu.regs[1])
@@ -420,9 +423,7 @@ func TestCommandStep(t *testing.T) {
 func TestCommandGo(t *testing.T) {
 	mon, _ := newTestMonitor()
 
-	mon.mu.Lock()
 	exit := mon.ExecuteCommand("g")
-	mon.mu.Unlock()
 
 	if !exit {
 		t.Error("'g' command should signal exit")
@@ -436,9 +437,7 @@ func TestCommandGo(t *testing.T) {
 func TestCommandExit(t *testing.T) {
 	mon, _ := newTestMonitor()
 
-	mon.mu.Lock()
 	exit := mon.ExecuteCommand("x")
-	mon.mu.Unlock()
 
 	if !exit {
 		t.Error("'x' command should signal exit")
@@ -454,7 +453,9 @@ func TestCommandHelp(t *testing.T) {
 
 	mon.mu.Lock()
 	mon.outputLines = nil
+	mon.mu.Unlock()
 	mon.ExecuteCommand("?")
+	mon.mu.Lock()
 	lines := mon.outputLines
 	mon.mu.Unlock()
 
@@ -472,7 +473,9 @@ func TestCommandCpuList(t *testing.T) {
 
 	mon.mu.Lock()
 	mon.outputLines = nil
+	mon.mu.Unlock()
 	mon.ExecuteCommand("cpu")
+	mon.mu.Lock()
 	lines := mon.outputLines
 	mon.mu.Unlock()
 
@@ -499,9 +502,7 @@ func TestCommandCpuList(t *testing.T) {
 func TestBreakpointSetClearList(t *testing.T) {
 	mon, _ := newTestMonitor()
 
-	mon.mu.Lock()
 	mon.ExecuteCommand("b $1000")
-	mon.mu.Unlock()
 
 	entry := mon.FocusedCPU()
 	if entry == nil {
@@ -512,9 +513,7 @@ func TestBreakpointSetClearList(t *testing.T) {
 		t.Errorf("Expected breakpoint at $1000, got %v", bps)
 	}
 
-	mon.mu.Lock()
 	mon.ExecuteCommand("bc $1000")
-	mon.mu.Unlock()
 
 	bps = entry.CPU.ListBreakpoints()
 	if len(bps) != 0 {
@@ -522,11 +521,9 @@ func TestBreakpointSetClearList(t *testing.T) {
 	}
 
 	// Set multiple and clear all
-	mon.mu.Lock()
 	mon.ExecuteCommand("b $1000")
 	mon.ExecuteCommand("b $2000")
 	mon.ExecuteCommand("bc *")
-	mon.mu.Unlock()
 
 	bps = entry.CPU.ListBreakpoints()
 	if len(bps) != 0 {
@@ -541,9 +538,7 @@ func TestBreakpointSetClearList(t *testing.T) {
 func TestMemoryFill(t *testing.T) {
 	mon, cpu := newTestMonitor()
 
-	mon.mu.Lock()
 	mon.ExecuteCommand("f 1000 100F 42")
-	mon.mu.Unlock()
 
 	for i := range 16 {
 		if cpu.memory[0x1000+i] != 0x42 {
@@ -559,9 +554,7 @@ func TestMemoryFill(t *testing.T) {
 func TestMemoryWrite(t *testing.T) {
 	mon, cpu := newTestMonitor()
 
-	mon.mu.Lock()
 	mon.ExecuteCommand("w 1000 DE AD BE EF")
-	mon.mu.Unlock()
 
 	if cpu.memory[0x1000] != 0xDE || cpu.memory[0x1001] != 0xAD ||
 		cpu.memory[0x1002] != 0xBE || cpu.memory[0x1003] != 0xEF {
@@ -582,7 +575,9 @@ func TestMemoryHunt(t *testing.T) {
 
 	mon.mu.Lock()
 	mon.outputLines = nil
+	mon.mu.Unlock()
 	mon.ExecuteCommand("h 0 FFFF DE AD")
+	mon.mu.Lock()
 	lines := mon.outputLines
 	mon.mu.Unlock()
 
@@ -611,7 +606,9 @@ func TestMemoryCompare(t *testing.T) {
 
 	mon.mu.Lock()
 	mon.outputLines = nil
+	mon.mu.Unlock()
 	mon.ExecuteCommand("c 1000 100F 2000")
+	mon.mu.Lock()
 	lines := mon.outputLines
 	mon.mu.Unlock()
 
@@ -629,9 +626,7 @@ func TestMemoryTransfer(t *testing.T) {
 	cpu.memory[0x1000] = 0xDE
 	cpu.memory[0x1001] = 0xAD
 
-	mon.mu.Lock()
 	mon.ExecuteCommand("t 1000 1001 2000")
-	mon.mu.Unlock()
 
 	if cpu.memory[0x2000] != 0xDE || cpu.memory[0x2001] != 0xAD {
 		t.Errorf("Transfer failed: memory at $2000 = %02X %02X", cpu.memory[0x2000], cpu.memory[0x2001])
@@ -680,11 +675,9 @@ func TestStableCPUIDs(t *testing.T) {
 func TestCommandHistory(t *testing.T) {
 	mon, _ := newTestMonitor()
 
-	mon.mu.Lock()
 	mon.ExecuteCommand("r")
 	mon.ExecuteCommand("d")
 	mon.ExecuteCommand("m 0")
-	mon.mu.Unlock()
 
 	if len(mon.history) != 3 {
 		t.Errorf("Expected 3 history entries, got %d", len(mon.history))
@@ -1198,9 +1191,7 @@ func TestCPUSwitching(t *testing.T) {
 	}
 
 	// Switch by ID
-	mon.mu.Lock()
 	mon.ExecuteCommand("cpu 1")
-	mon.mu.Unlock()
 
 	focused = mon.FocusedCPU()
 	if focused == nil || focused.ID != id1 {
@@ -1208,9 +1199,7 @@ func TestCPUSwitching(t *testing.T) {
 	}
 
 	// Switch by label
-	mon.mu.Lock()
 	mon.ExecuteCommand("cpu ie64")
-	mon.mu.Unlock()
 
 	focused = mon.FocusedCPU()
 	if focused == nil || focused.ID != id0 {
@@ -1367,9 +1356,7 @@ func TestFreezeThawCPU(t *testing.T) {
 	mon.RegisterCPU("IE32", a2)
 
 	// Test freeze by label
-	mon.mu.Lock()
 	mon.ExecuteCommand("freeze ie64")
-	mon.mu.Unlock()
 	// IE64 is already not running, so no change expected
 	if a1.IsRunning() {
 		t.Error("IE64 should still not be running after freeze")
@@ -1378,7 +1365,9 @@ func TestFreezeThawCPU(t *testing.T) {
 	// Test thaw by ID
 	mon.mu.Lock()
 	mon.outputLines = nil
+	mon.mu.Unlock()
 	mon.ExecuteCommand("thaw 0")
+	mon.mu.Lock()
 	out := mon.outputLines
 	mon.mu.Unlock()
 
@@ -1413,7 +1402,9 @@ func TestFreezeThawAll(t *testing.T) {
 	// Freeze all
 	mon.mu.Lock()
 	mon.outputLines = nil
+	mon.mu.Unlock()
 	mon.ExecuteCommand("freeze *")
+	mon.mu.Lock()
 	out := mon.outputLines
 	mon.mu.Unlock()
 
@@ -1431,7 +1422,9 @@ func TestFreezeThawAll(t *testing.T) {
 	// Thaw all
 	mon.mu.Lock()
 	mon.outputLines = nil
+	mon.mu.Unlock()
 	mon.ExecuteCommand("thaw *")
+	mon.mu.Lock()
 	out = mon.outputLines
 	mon.mu.Unlock()
 
@@ -1483,7 +1476,9 @@ func TestRegisterChangeHighlight(t *testing.T) {
 	mon.mu.Lock()
 	mon.saveCurrentRegs()
 	mon.outputLines = nil
+	mon.mu.Unlock()
 	mon.ExecuteCommand("s")
+	mon.mu.Lock()
 	lines := mon.outputLines
 	mon.mu.Unlock()
 
@@ -1512,7 +1507,9 @@ func TestAutoDisassembleAfterStep(t *testing.T) {
 
 	mon.mu.Lock()
 	mon.outputLines = nil
+	mon.mu.Unlock()
 	mon.ExecuteCommand("s")
+	mon.mu.Lock()
 	lines := mon.outputLines
 	mon.mu.Unlock()
 
@@ -1537,7 +1534,9 @@ func TestCycleCountDisplay(t *testing.T) {
 
 	mon.mu.Lock()
 	mon.outputLines = nil
+	mon.mu.Unlock()
 	mon.ExecuteCommand("s")
+	mon.mu.Lock()
 	lines := mon.outputLines
 	mon.mu.Unlock()
 
@@ -2028,9 +2027,7 @@ func TestMonitorFaCommand(t *testing.T) {
 	mon, _ := newTestMonitor()
 	mon.soundChip = chip
 
-	mon.mu.Lock()
 	mon.ExecuteCommand("fa")
-	mon.mu.Unlock()
 
 	if !chip.audioFrozen.Load() {
 		t.Error("audioFrozen should be true after 'fa' command")
@@ -2047,9 +2044,7 @@ func TestMonitorTaCommand(t *testing.T) {
 	mon.soundChip = chip
 	chip.audioFrozen.Store(true)
 
-	mon.mu.Lock()
 	mon.ExecuteCommand("ta")
-	mon.mu.Unlock()
 
 	if chip.audioFrozen.Load() {
 		t.Error("audioFrozen should be false after 'ta' command")
@@ -3006,7 +3001,9 @@ func TestMonitorFaWithoutSoundChip(t *testing.T) {
 
 	mon.mu.Lock()
 	mon.outputLines = nil
+	mon.mu.Unlock()
 	mon.ExecuteCommand("fa")
+	mon.mu.Lock()
 	lines := mon.outputLines
 	mon.mu.Unlock()
 
@@ -3037,10 +3034,7 @@ func TestMonitorSaveLoadMemory(t *testing.T) {
 
 	tmpFile := filepath.Join(t.TempDir(), "test.bin")
 
-	mon.mu.Lock()
-	mon.outputLines = nil
 	mon.ExecuteCommand("save $5000 $5003 " + tmpFile)
-	mon.mu.Unlock()
 
 	// Verify file was created
 	data, err := os.ReadFile(tmpFile)
@@ -3055,10 +3049,7 @@ func TestMonitorSaveLoadMemory(t *testing.T) {
 	}
 
 	// Load at a different address
-	mon.mu.Lock()
-	mon.outputLines = nil
 	mon.ExecuteCommand("load " + tmpFile + " $6000")
-	mon.mu.Unlock()
 
 	if cpu.memory[0x6000] != 0xDE || cpu.memory[0x6001] != 0xAD {
 		t.Errorf("Loaded data at $6000 = %02X%02X, want DEAD", cpu.memory[0x6000], cpu.memory[0x6001])
@@ -3073,10 +3064,7 @@ func TestMonitorRunUntil(t *testing.T) {
 	mon, _ := newTestMonitor()
 	entry := mon.cpus[0]
 
-	mon.mu.Lock()
-	mon.outputLines = nil
 	exitMon := mon.ExecuteCommand("u $2000")
-	mon.mu.Unlock()
 
 	if !exitMon {
 		t.Error("Run-until should return true to exit monitor")
@@ -3211,10 +3199,7 @@ func TestConditionalBreakpointCommand(t *testing.T) {
 	mon, _ := newTestMonitor()
 	entry := mon.cpus[0]
 
-	mon.mu.Lock()
-	mon.outputLines = nil
 	mon.ExecuteCommand("b $1000 r1==$FF")
-	mon.mu.Unlock()
 
 	bps := entry.CPU.ListConditionalBreakpoints()
 	if len(bps) != 1 {
@@ -3251,9 +3236,7 @@ func TestWatchpointCommands(t *testing.T) {
 	entry := mon.cpus[0]
 
 	// Set watchpoint
-	mon.mu.Lock()
 	mon.ExecuteCommand("ww $5000")
-	mon.mu.Unlock()
 
 	wps := entry.CPU.ListWatchpoints()
 	if len(wps) != 1 || wps[0] != 0x5000 {
@@ -3263,7 +3246,9 @@ func TestWatchpointCommands(t *testing.T) {
 	// List watchpoints
 	mon.mu.Lock()
 	mon.outputLines = nil
+	mon.mu.Unlock()
 	mon.ExecuteCommand("wl")
+	mon.mu.Lock()
 	hasWatch := false
 	for _, line := range mon.outputLines {
 		if strings.Contains(line.Text, "5000") {
@@ -3276,9 +3261,7 @@ func TestWatchpointCommands(t *testing.T) {
 	}
 
 	// Clear watchpoint
-	mon.mu.Lock()
 	mon.ExecuteCommand("wc $5000")
-	mon.mu.Unlock()
 
 	wps = entry.CPU.ListWatchpoints()
 	if len(wps) != 0 {
@@ -3290,11 +3273,9 @@ func TestWatchpointClearAll(t *testing.T) {
 	mon, _ := newTestMonitor()
 	entry := mon.cpus[0]
 
-	mon.mu.Lock()
 	mon.ExecuteCommand("ww $5000")
 	mon.ExecuteCommand("ww $6000")
 	mon.ExecuteCommand("wc *")
-	mon.mu.Unlock()
 
 	wps := entry.CPU.ListWatchpoints()
 	if len(wps) != 0 {
@@ -3347,7 +3328,9 @@ func TestBacktraceCommand(t *testing.T) {
 
 	mon.mu.Lock()
 	mon.outputLines = nil
+	mon.mu.Unlock()
 	mon.ExecuteCommand("bt 1")
+	mon.mu.Lock()
 	hasAddr := false
 	for _, line := range mon.outputLines {
 		if strings.Contains(line.Text, "1234") {
@@ -3433,17 +3416,13 @@ func TestSaveLoadStateCommands(t *testing.T) {
 
 	tmpFile := filepath.Join(t.TempDir(), "test.iem")
 
-	mon.mu.Lock()
 	mon.ExecuteCommand("ss " + tmpFile)
-	mon.mu.Unlock()
 
 	// Modify state
 	cpu.PC = 0x9000
 	cpu.regs[1] = 0
 
-	mon.mu.Lock()
 	mon.ExecuteCommand("sl " + tmpFile)
-	mon.mu.Unlock()
 
 	if cpu.PC != 0x5000 {
 		t.Errorf("PC after sl = $%X, want $5000", cpu.PC)
@@ -3468,7 +3447,9 @@ func TestTraceRun(t *testing.T) {
 
 	mon.mu.Lock()
 	mon.outputLines = nil
+	mon.mu.Unlock()
 	mon.ExecuteCommand("trace 4")
+	mon.mu.Lock()
 	traceCount := 0
 	for _, line := range mon.outputLines {
 		if strings.Contains(line.Text, "nop") {
@@ -3504,32 +3485,42 @@ func TestTraceWriteHistory(t *testing.T) {
 		cpu.memory[PROG_START+uint32(i*8)] = OP_NOP64
 	}
 
-	mon.mu.Lock()
 	// Add a trace watch
 	mon.ExecuteCommand("trace watch add $5000")
+	mon.mu.Lock()
 	if !mon.traceWatches[0x5000] {
+		mon.mu.Unlock()
 		t.Error("Expected trace watch at $5000")
+	} else {
+		mon.mu.Unlock()
 	}
 
 	// List watches
+	mon.mu.Lock()
 	mon.outputLines = nil
+	mon.mu.Unlock()
 	mon.ExecuteCommand("trace watch list")
+	mon.mu.Lock()
 	hasWatch := false
 	for _, line := range mon.outputLines {
 		if strings.Contains(line.Text, "5000") {
 			hasWatch = true
 		}
 	}
+	mon.mu.Unlock()
 	if !hasWatch {
 		t.Error("Expected watch list to contain $5000")
 	}
 
 	// Remove watch
 	mon.ExecuteCommand("trace watch del $5000")
+	mon.mu.Lock()
 	if mon.traceWatches[0x5000] {
+		mon.mu.Unlock()
 		t.Error("Expected trace watch removed")
+	} else {
+		mon.mu.Unlock()
 	}
-	mon.mu.Unlock()
 }
 
 func TestTraceHistoryClear(t *testing.T) {
@@ -3537,24 +3528,30 @@ func TestTraceHistoryClear(t *testing.T) {
 
 	mon.mu.Lock()
 	mon.writeHistory[0x5000] = []WriteRecord{{PC: 0x1000, OldValue: 0, NewValue: 0xFF, StepNum: 1}}
-
 	mon.outputLines = nil
+	mon.mu.Unlock()
+
 	mon.ExecuteCommand("trace history show $5000")
+	mon.mu.Lock()
 	hasHistory := false
 	for _, line := range mon.outputLines {
 		if strings.Contains(line.Text, "1 writes") {
 			hasHistory = true
 		}
 	}
+	mon.mu.Unlock()
 	if !hasHistory {
 		t.Error("Expected history show to display write count")
 	}
 
 	mon.ExecuteCommand("trace history clear $5000")
+	mon.mu.Lock()
 	if len(mon.writeHistory[0x5000]) != 0 {
+		mon.mu.Unlock()
 		t.Error("Expected history cleared for $5000")
+	} else {
+		mon.mu.Unlock()
 	}
-	mon.mu.Unlock()
 }
 
 func TestTraceFile(t *testing.T) {
@@ -3566,17 +3563,22 @@ func TestTraceFile(t *testing.T) {
 
 	tmpFile := filepath.Join(t.TempDir(), "trace.log")
 
-	mon.mu.Lock()
 	mon.ExecuteCommand("trace file " + tmpFile)
+	mon.mu.Lock()
 	if mon.traceFile == nil {
+		mon.mu.Unlock()
 		t.Fatal("Expected trace file to be set")
 	}
+	mon.mu.Unlock()
 	mon.ExecuteCommand("trace 2")
 	mon.ExecuteCommand("trace file off")
+	mon.mu.Lock()
 	if mon.traceFile != nil {
+		mon.mu.Unlock()
 		t.Error("Expected trace file to be nil after 'off'")
+	} else {
+		mon.mu.Unlock()
 	}
-	mon.mu.Unlock()
 
 	data, err := os.ReadFile(tmpFile)
 	if err != nil {
@@ -3604,7 +3606,6 @@ func TestBackstep(t *testing.T) {
 	origPC := cpu.PC
 	origR1 := cpu.regs[1]
 
-	mon.mu.Lock()
 	// Step (should snapshot before stepping)
 	mon.ExecuteCommand("s")
 
@@ -3615,7 +3616,6 @@ func TestBackstep(t *testing.T) {
 
 	// Backstep
 	mon.ExecuteCommand("bs")
-	mon.mu.Unlock()
 
 	if cpu.PC != origPC {
 		t.Errorf("PC after backstep = $%X, want $%X", cpu.PC, origPC)
@@ -3630,7 +3630,9 @@ func TestBackstepEmptyHistory(t *testing.T) {
 
 	mon.mu.Lock()
 	mon.outputLines = nil
+	mon.mu.Unlock()
 	mon.ExecuteCommand("bs")
+	mon.mu.Lock()
 	hasError := false
 	for _, line := range mon.outputLines {
 		if strings.Contains(line.Text, "No step history") {
@@ -3709,7 +3711,9 @@ func TestIOViewCommand(t *testing.T) {
 	// List devices
 	mon.mu.Lock()
 	mon.outputLines = nil
+	mon.mu.Unlock()
 	mon.ExecuteCommand("io")
+	mon.mu.Lock()
 	hasDevices := false
 	for _, line := range mon.outputLines {
 		if strings.Contains(line.Text, "vga") || strings.Contains(line.Text, "Available") {
@@ -3728,7 +3732,9 @@ func TestIOViewDevice(t *testing.T) {
 
 	mon.mu.Lock()
 	mon.outputLines = nil
+	mon.mu.Unlock()
 	mon.ExecuteCommand("io video")
+	mon.mu.Lock()
 	hasRegs := false
 	for _, line := range mon.outputLines {
 		if strings.Contains(line.Text, "CTRL") || strings.Contains(line.Text, "VideoChip") {
@@ -3747,7 +3753,9 @@ func TestIOViewUnknownDevice(t *testing.T) {
 
 	mon.mu.Lock()
 	mon.outputLines = nil
+	mon.mu.Unlock()
 	mon.ExecuteCommand("io nonexistent")
+	mon.mu.Lock()
 	hasError := false
 	for _, line := range mon.outputLines {
 		if strings.Contains(line.Text, "Unknown device") {
@@ -3775,15 +3783,17 @@ func TestListIODevices(t *testing.T) {
 func TestHexEditorEnter(t *testing.T) {
 	mon, _ := newTestMonitor()
 
-	mon.mu.Lock()
 	mon.ExecuteCommand("e $5000")
+	mon.mu.Lock()
 	if mon.state != MonitorHexEdit {
+		mon.mu.Unlock()
 		t.Error("Expected state to be MonitorHexEdit")
-	}
-	if mon.hexEditAddr != 0x5000 {
+	} else if mon.hexEditAddr != 0x5000 {
+		mon.mu.Unlock()
 		t.Errorf("hexEditAddr = $%X, want $5000", mon.hexEditAddr)
+	} else {
+		mon.mu.Unlock()
 	}
-	mon.mu.Unlock()
 }
 
 func TestHexEditorSetNibble(t *testing.T) {
@@ -3861,9 +3871,7 @@ func TestScriptExecution(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "test.mon")
 	os.WriteFile(tmpFile, []byte("r pc $2000\nw $5000 FF\n"), 0644)
 
-	mon.mu.Lock()
 	mon.ExecuteCommand("script " + tmpFile)
-	mon.mu.Unlock()
 
 	if cpu.PC != 0x2000 {
 		t.Errorf("PC = $%X, want $2000 after script", cpu.PC)
@@ -3879,9 +3887,7 @@ func TestScriptComments(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "test.mon")
 	os.WriteFile(tmpFile, []byte("# This is a comment\n\nr pc $3000\n"), 0644)
 
-	mon.mu.Lock()
 	mon.ExecuteCommand("script " + tmpFile)
-	mon.mu.Unlock()
 
 	entry := mon.cpus[0]
 	pc := entry.CPU.GetPC()
@@ -3899,7 +3905,9 @@ func TestScriptRecursionLimit(t *testing.T) {
 
 	mon.mu.Lock()
 	mon.outputLines = nil
+	mon.mu.Unlock()
 	mon.ExecuteCommand("script " + tmpFile)
+	mon.mu.Lock()
 	hasLimit := false
 	for _, line := range mon.outputLines {
 		if strings.Contains(line.Text, "recursion limit") {
@@ -3916,17 +3924,18 @@ func TestScriptRecursionLimit(t *testing.T) {
 func TestMacroDefineAndRun(t *testing.T) {
 	mon, cpu := newTestMonitor()
 
-	mon.mu.Lock()
 	// Define a macro
 	mon.ExecuteCommand("macro test r pc $4000 ; w $5000 AA")
 
+	mon.mu.Lock()
 	if _, ok := mon.macros["test"]; !ok {
+		mon.mu.Unlock()
 		t.Fatal("Expected macro 'test' to be defined")
 	}
+	mon.mu.Unlock()
 
 	// Run the macro
 	mon.ExecuteCommand("test")
-	mon.mu.Unlock()
 
 	if cpu.PC != 0x4000 {
 		t.Errorf("PC = $%X, want $4000 after macro", cpu.PC)
@@ -4019,7 +4028,9 @@ func TestBreakpointListShowsConditions(t *testing.T) {
 
 	mon.mu.Lock()
 	mon.outputLines = nil
+	mon.mu.Unlock()
 	mon.ExecuteCommand("bl")
+	mon.mu.Lock()
 	hasCondition := false
 	for _, line := range mon.outputLines {
 		if strings.Contains(line.Text, "$3000") && strings.Contains(line.Text, "R1") {
@@ -4210,7 +4221,9 @@ func TestHelpCommand(t *testing.T) {
 
 	mon.mu.Lock()
 	mon.outputLines = nil
+	mon.mu.Unlock()
 	mon.ExecuteCommand("?")
+	mon.mu.Lock()
 	lineCount := len(mon.outputLines)
 	mon.mu.Unlock()
 
@@ -4228,7 +4241,9 @@ func TestUnknownCommand(t *testing.T) {
 
 	mon.mu.Lock()
 	mon.outputLines = nil
+	mon.mu.Unlock()
 	mon.ExecuteCommand("zzz")
+	mon.mu.Lock()
 	hasError := false
 	for _, line := range mon.outputLines {
 		if strings.Contains(line.Text, "Unknown command") {
@@ -4249,10 +4264,12 @@ func TestUnknownCommand(t *testing.T) {
 func TestMacroUnknownFallback(t *testing.T) {
 	mon, _ := newTestMonitor()
 
-	mon.mu.Lock()
 	// Command that's not a macro and not a known command
+	mon.mu.Lock()
 	mon.outputLines = nil
+	mon.mu.Unlock()
 	mon.ExecuteCommand("notamacro")
+	mon.mu.Lock()
 	hasUnknown := false
 	for _, line := range mon.outputLines {
 		if strings.Contains(line.Text, "Unknown command") {
@@ -4334,13 +4351,11 @@ func TestBreakpointClearWithExpression(t *testing.T) {
 	mon, _ := newTestMonitor()
 	entry := mon.cpus[0]
 
-	mon.mu.Lock()
 	mon.ExecuteCommand("b $1000")
 	if !entry.CPU.HasBreakpoint(0x1000) {
 		t.Fatal("Breakpoint should exist at $1000")
 	}
 	mon.ExecuteCommand("bc $1000")
-	mon.mu.Unlock()
 
 	if entry.CPU.HasBreakpoint(0x1000) {
 		t.Error("Breakpoint should be cleared")
@@ -4412,27 +4427,24 @@ func TestRunUntilPreservesExistingBreakpoint(t *testing.T) {
 	}
 
 	// Now do run-until to the same address
-	mon.mu.Lock()
 	mon.ExecuteCommand("u $2000")
 
 	// The breakpoint should still exist
 	if !entry.CPU.HasBreakpoint(0x2000) {
-		mon.mu.Unlock()
 		t.Fatal("Breakpoint at $2000 should still exist after run-until")
 	}
 
 	// The condition should be temporarily nil'd (so trapLoop fires unconditionally)
 	bp := entry.CPU.GetConditionalBreakpoint(0x2000)
 	if bp == nil {
-		mon.mu.Unlock()
 		t.Fatal("Breakpoint should exist")
 	}
 	if bp.Condition != nil {
-		mon.mu.Unlock()
 		t.Error("Condition should be temporarily nil during run-until")
 	}
 
 	// The original condition should be saved
+	mon.mu.Lock()
 	if mon.savedConditions[0] == nil || mon.savedConditions[0][0x2000] == nil {
 		mon.mu.Unlock()
 		t.Fatal("Original condition should be saved in savedConditions")
@@ -4443,8 +4455,9 @@ func TestRunUntilPreservesExistingBreakpoint(t *testing.T) {
 	if temps != nil && temps[0x2000] {
 		mon.mu.Unlock()
 		t.Error("Pre-existing breakpoint should not be marked as temp by run-until")
+	} else {
+		mon.mu.Unlock()
 	}
-	mon.mu.Unlock()
 
 	// Simulate hitting the breakpoint
 	ev := BreakpointEvent{CPUID: 0, Address: 0x2000}
@@ -4485,8 +4498,10 @@ func TestTraceRespectsBreakpointConditions(t *testing.T) {
 	// because r1 != $FF
 	mon.mu.Lock()
 	mon.outputLines = nil
+	mon.mu.Unlock()
 	mon.ExecuteCommand("trace #10")
 
+	mon.mu.Lock()
 	stoppedAtBP := false
 	for _, line := range mon.outputLines {
 		if strings.Contains(line.Text, "Trace stopped at breakpoint") {
@@ -4516,9 +4531,11 @@ func TestBackstepPerCPU(t *testing.T) {
 	a2 := NewDebugIE64(cpu2)
 	id0 := mon.RegisterCPU("cpu0", a1)
 	id1 := mon.RegisterCPU("cpu1", a2)
+	mon.mu.Lock()
 	mon.state = MonitorActive
 	mon.focusedID = id0
 	mon.saveCurrentRegs()
+	mon.mu.Unlock()
 
 	// Write a NOP for cpu1
 	cpu1.memory[PROG_START] = OP_NOP64
@@ -4532,22 +4549,22 @@ func TestBackstepPerCPU(t *testing.T) {
 	mon.mu.Lock()
 	mon.focusedID = id0
 	mon.saveCurrentRegs()
+	mon.mu.Unlock()
 	mon.ExecuteCommand("s")
 	pc0AfterStep := cpu1.PC
-	mon.mu.Unlock()
 
 	// Switch to cpu1 and step
 	mon.mu.Lock()
 	mon.focusedID = id1
 	mon.saveCurrentRegs()
-	mon.ExecuteCommand("s")
 	mon.mu.Unlock()
+	mon.ExecuteCommand("s")
 
 	// Now backstep on cpu1 - should only restore cpu1's state, not cpu0's
 	mon.mu.Lock()
 	mon.focusedID = id1
-	mon.ExecuteCommand("bs")
 	mon.mu.Unlock()
+	mon.ExecuteCommand("bs")
 
 	// cpu0 should still be at its post-step PC (not reverted)
 	if cpu1.PC != pc0AfterStep {
@@ -4579,9 +4596,9 @@ func TestResetCPUsClearsStepHistory(t *testing.T) {
 	cpu.memory[PROG_START] = OP_NOP64
 	cpu.PC = uint64(PROG_START)
 
-	mon.mu.Lock()
 	mon.ExecuteCommand("s")
 
+	mon.mu.Lock()
 	if len(mon.stepHistory[0]) == 0 {
 		mon.mu.Unlock()
 		t.Fatal("Expected step history after stepping")
@@ -4608,16 +4625,18 @@ func TestUnregisterCPUClearsStepHistory(t *testing.T) {
 	mon := NewMachineMonitor(bus)
 	adapter := NewDebugIE64(cpu)
 	id := mon.RegisterCPU("IE64", adapter)
+	mon.mu.Lock()
 	mon.state = MonitorActive
 	mon.focusedID = id
 	mon.saveCurrentRegs()
+	mon.mu.Unlock()
 
 	// Write a NOP and step
 	cpu.memory[PROG_START] = OP_NOP64
 	cpu.PC = uint64(PROG_START)
 
-	mon.mu.Lock()
 	mon.ExecuteCommand("s")
+	mon.mu.Lock()
 	if len(mon.stepHistory[id]) == 0 {
 		mon.mu.Unlock()
 		t.Fatal("Expected step history")
@@ -4655,20 +4674,16 @@ func TestRunUntilStopsWithConditionalBreakpoint(t *testing.T) {
 	}
 
 	// Run-until to the same address
-	mon.mu.Lock()
 	mon.ExecuteCommand("u $2000")
 
 	// The condition should now be nil (temporarily suspended)
 	bp = entry.CPU.GetConditionalBreakpoint(0x2000)
 	if bp == nil {
-		mon.mu.Unlock()
 		t.Fatal("Breakpoint should exist")
 	}
 	if bp.Condition != nil {
-		mon.mu.Unlock()
 		t.Error("Condition should be nil during run-until (so trapLoop fires unconditionally)")
 	}
-	mon.mu.Unlock()
 
 	// Simulate the hit
 	mon.handleBreakpointHit(BreakpointEvent{CPUID: 0, Address: 0x2000})
@@ -4698,18 +4713,18 @@ func TestBreakpointClearDiscardsSavedCondition(t *testing.T) {
 	cond, _ := ParseCondition("r1==$FF")
 	entry.CPU.SetConditionalBreakpoint(0x2000, cond)
 
-	mon.mu.Lock()
 	mon.ExecuteCommand("u $2000")
 
 	// Verify condition was saved
+	mon.mu.Lock()
 	if mon.savedConditions[0] == nil || mon.savedConditions[0][0x2000] == nil {
 		mon.mu.Unlock()
 		t.Fatal("Expected saved condition after run-until")
 	}
+	mon.mu.Unlock()
 
 	// User clears the breakpoint before it's hit
 	mon.ExecuteCommand("bc $2000")
-	mon.mu.Unlock()
 
 	// savedConditions for that address should be gone
 	mon.mu.Lock()
@@ -4728,17 +4743,17 @@ func TestBreakpointClearAllDiscardsSavedConditions(t *testing.T) {
 	cond, _ := ParseCondition("r1==$FF")
 	entry.CPU.SetConditionalBreakpoint(0x2000, cond)
 
-	mon.mu.Lock()
 	mon.ExecuteCommand("u $2000")
 
+	mon.mu.Lock()
 	if mon.savedConditions[0] == nil || mon.savedConditions[0][0x2000] == nil {
 		mon.mu.Unlock()
 		t.Fatal("Expected saved condition")
 	}
+	mon.mu.Unlock()
 
 	// Clear all breakpoints
 	mon.ExecuteCommand("bc *")
-	mon.mu.Unlock()
 
 	mon.mu.Lock()
 	if len(mon.savedConditions[0]) != 0 {

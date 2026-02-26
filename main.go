@@ -1823,6 +1823,9 @@ func main() {
 	scriptEngine.SetQuitFunc(func() {
 		os.Exit(0)
 	})
+	scriptEngine.SetExitFunc(func(code int) {
+		os.Exit(code)
+	})
 	if sa, ok := videoChip.GetOutput().(interface{ SetScriptEngine(*ScriptEngine) }); ok {
 		sa.SetScriptEngine(scriptEngine)
 	}

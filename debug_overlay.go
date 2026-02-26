@@ -482,7 +482,7 @@ func (o *MonitorOverlay) HandleInput() bool {
 		m.cursorPos = 0
 		m.scrollOffset = 0
 
-		if m.ExecuteCommand(input) {
+		if m.executeCommand(input) {
 			// Command requested exit
 			m.state = MonitorInactive
 			for id, entry := range m.cpus {

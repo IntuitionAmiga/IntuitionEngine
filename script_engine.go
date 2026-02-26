@@ -24,10 +24,12 @@ type ScriptEngine struct {
 	terminal   *TerminalMMIO
 	monitor    *MachineMonitor
 	recorder   *VideoRecorder
+	luaOverlay *LuaOverlay
 
 	loadProgram func(string) error
 	hardReset   func() error
 	quitFunc    func()
+	exitFunc    func(int)
 
 	frameChan chan struct{}
 
@@ -83,6 +85,18 @@ func (se *ScriptEngine) SetHardReset(fn func() error) {
 func (se *ScriptEngine) SetQuitFunc(fn func()) {
 	se.mu.Lock()
 	se.quitFunc = fn
+	se.mu.Unlock()
+}
+
+func (se *ScriptEngine) SetExitFunc(fn func(int)) {
+	se.mu.Lock()
+	se.exitFunc = fn
+	se.mu.Unlock()
+}
+
+func (se *ScriptEngine) SetLuaOverlay(o *LuaOverlay) {
+	se.mu.Lock()
+	se.luaOverlay = o
 	se.mu.Unlock()
 }
 
@@ -334,6 +348,7 @@ func (se *ScriptEngine) registerModules(L *lua.LState, ctx context.Context) {
 		"frame_time":  se.luaSysFrameTime(),
 		"fps":         se.luaSysFPS(),
 		"quit":        se.luaSysQuit(),
+		"exit":        se.luaSysExit(),
 	})
 	L.SetGlobal("sys", sys)
 
@@ -476,11 +491,24 @@ func (se *ScriptEngine) registerModules(L *lua.LState, ctx context.Context) {
 	rec := L.SetFuncs(L.NewTable(), map[string]lua.LGFunction{
 		"screenshot":   se.luaRecScreenshot(),
 		"start":        se.luaRecStart(),
+		"start_screen": se.luaRecStartScreen(),
 		"stop":         se.luaRecStop(),
 		"is_recording": se.luaRecIsRecording(),
 		"frame_count":  se.luaRecFrameCount(),
 	})
 	L.SetGlobal("rec", rec)
+
+	repl := L.SetFuncs(L.NewTable(), map[string]lua.LGFunction{
+		"show":        se.luaReplShow(),
+		"hide":        se.luaReplHide(),
+		"is_open":     se.luaReplIsOpen(),
+		"print":       se.luaReplPrint(),
+		"clear":       se.luaReplClear(),
+		"scroll_up":   se.luaReplScrollUp(),
+		"scroll_down": se.luaReplScrollDown(),
+		"line_count":  se.luaReplLineCount(),
+	})
+	L.SetGlobal("repl", repl)
 
 	dbg := L.SetFuncs(L.NewTable(), map[string]lua.LGFunction{
 		"open":                se.luaDbgOpen(),
@@ -682,6 +710,22 @@ func (se *ScriptEngine) luaSysQuit() lua.LGFunction {
 		se.mu.Unlock()
 		if quit != nil {
 			quit()
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaSysExit() lua.LGFunction {
+	return func(L *lua.LState) int {
+		code := L.OptInt(1, 0)
+		if se.recorder != nil && se.recorder.IsRecording() {
+			_ = se.recorder.Stop()
+		}
+		se.mu.Lock()
+		exit := se.exitFunc
+		se.mu.Unlock()
+		if exit != nil {
+			exit(code)
 		}
 		return 0
 	}
@@ -2336,6 +2380,124 @@ func (se *ScriptEngine) luaRecFrameCount() lua.LGFunction {
 		var n uint64
 		if se.recorder != nil {
 			n = se.recorder.FrameCount()
+		}
+		L.Push(lua.LNumber(n))
+		return 1
+	}
+}
+
+func (se *ScriptEngine) luaRecStartScreen() lua.LGFunction {
+	return func(L *lua.LState) int {
+		path := L.CheckString(1)
+		if se.recorder == nil {
+			L.RaiseError("recorder unavailable")
+			return 0
+		}
+		se.recorder.SetSoundChip(runtimeStatus.snapshot().sound)
+		if err := se.recorder.StartScreen(path); err != nil {
+			L.RaiseError("%v", err)
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaReplShow() lua.LGFunction {
+	return func(L *lua.LState) int {
+		se.mu.Lock()
+		overlay := se.luaOverlay
+		se.mu.Unlock()
+		if overlay != nil {
+			overlay.Show()
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaReplHide() lua.LGFunction {
+	return func(L *lua.LState) int {
+		se.mu.Lock()
+		overlay := se.luaOverlay
+		se.mu.Unlock()
+		if overlay != nil {
+			overlay.Hide()
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaReplIsOpen() lua.LGFunction {
+	return func(L *lua.LState) int {
+		se.mu.Lock()
+		overlay := se.luaOverlay
+		se.mu.Unlock()
+		v := false
+		if overlay != nil {
+			v = overlay.IsActive()
+		}
+		L.Push(lua.LBool(v))
+		return 1
+	}
+}
+
+func (se *ScriptEngine) luaReplPrint() lua.LGFunction {
+	return func(L *lua.LState) int {
+		text := L.CheckString(1)
+		se.mu.Lock()
+		overlay := se.luaOverlay
+		se.mu.Unlock()
+		if overlay != nil {
+			overlay.AppendLine(text)
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaReplClear() lua.LGFunction {
+	return func(L *lua.LState) int {
+		se.mu.Lock()
+		overlay := se.luaOverlay
+		se.mu.Unlock()
+		if overlay != nil {
+			overlay.Clear()
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaReplScrollUp() lua.LGFunction {
+	return func(L *lua.LState) int {
+		n := L.OptInt(1, 1)
+		se.mu.Lock()
+		overlay := se.luaOverlay
+		se.mu.Unlock()
+		if overlay != nil {
+			overlay.ScrollUp(n)
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaReplScrollDown() lua.LGFunction {
+	return func(L *lua.LState) int {
+		n := L.OptInt(1, 1)
+		se.mu.Lock()
+		overlay := se.luaOverlay
+		se.mu.Unlock()
+		if overlay != nil {
+			overlay.ScrollDown(n)
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaReplLineCount() lua.LGFunction {
+	return func(L *lua.LState) int {
+		se.mu.Lock()
+		overlay := se.luaOverlay
+		se.mu.Unlock()
+		n := 0
+		if overlay != nil {
+			n = overlay.LineCount()
 		}
 		L.Push(lua.LNumber(n))
 		return 1

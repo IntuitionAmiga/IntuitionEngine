@@ -20,6 +20,8 @@ type LuaOverlay struct {
 	scriptEngine *ScriptEngine
 	L            *lua.LState
 
+	mu sync.Mutex
+
 	active bool
 	glyphs [256][16]byte
 	image  *ebiten.Image
@@ -60,14 +62,76 @@ func (o *LuaOverlay) SetScriptEngine(se *ScriptEngine) {
 }
 
 func (o *LuaOverlay) Toggle() {
+	o.mu.Lock()
 	o.active = !o.active
+	o.mu.Unlock()
 }
 
 func (o *LuaOverlay) IsActive() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	return o.active
 }
 
+func (o *LuaOverlay) Show() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.active = true
+}
+
+func (o *LuaOverlay) Hide() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.active = false
+}
+
+func (o *LuaOverlay) AppendLine(s string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.output = append(o.output, s)
+	const max = 1000
+	if len(o.output) > max {
+		o.output = o.output[len(o.output)-max:]
+	}
+}
+
+func (o *LuaOverlay) Clear() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.output = o.output[:0]
+	o.scroll = 0
+}
+
+func (o *LuaOverlay) ScrollUp(n int) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.scroll += n
+	if max := len(o.output) - (overlayRows - 3); o.scroll > max {
+		o.scroll = max
+	}
+	if o.scroll < 0 {
+		o.scroll = 0
+	}
+}
+
+func (o *LuaOverlay) ScrollDown(n int) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.scroll -= n
+	if o.scroll < 0 {
+		o.scroll = 0
+	}
+}
+
+func (o *LuaOverlay) LineCount() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return len(o.output)
+}
+
 func (o *LuaOverlay) resetState() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	if o.L != nil {
 		o.L.Close()
 	}
@@ -80,7 +144,8 @@ func (o *LuaOverlay) resetState() {
 		for i := 1; i <= L.GetTop(); i++ {
 			args = append(args, L.Get(i).String())
 		}
-		o.appendOutput(strings.Join(args, " "))
+		// Called from L.DoString inside HandleInput which already holds o.mu.
+		o.appendOutputLocked(strings.Join(args, " "))
 		return 0
 	}))
 	if sysTbl, ok := L.GetGlobal("sys").(*lua.LTable); ok {
@@ -89,7 +154,7 @@ func (o *LuaOverlay) resetState() {
 			for i := 1; i <= L.GetTop(); i++ {
 				args = append(args, L.Get(i).String())
 			}
-			o.appendOutput(strings.Join(args, " "))
+			o.appendOutputLocked(strings.Join(args, " "))
 			return 0
 		})
 		sysTbl.RawSetString("print", fn)
@@ -106,7 +171,8 @@ func (o *LuaOverlay) resetState() {
 	o.multiline = false
 }
 
-func (o *LuaOverlay) appendOutput(s string) {
+// appendOutputLocked appends text to the output buffer. Caller must hold o.mu.
+func (o *LuaOverlay) appendOutputLocked(s string) {
 	for line := range strings.SplitSeq(strings.ReplaceAll(s, "\r\n", "\n"), "\n") {
 		o.output = append(o.output, line)
 	}
@@ -115,6 +181,14 @@ func (o *LuaOverlay) appendOutput(s string) {
 	}
 }
 
+// appendOutput acquires o.mu and appends text. Safe to call without holding the lock.
+func (o *LuaOverlay) appendOutput(s string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.appendOutputLocked(s)
+}
+
+// eval executes a Lua line in the REPL. Caller must hold o.mu.
 func (o *LuaOverlay) eval(line string) {
 	line = strings.TrimSpace(line)
 	if line == "" {
@@ -124,11 +198,11 @@ func (o *LuaOverlay) eval(line string) {
 		expr := strings.TrimSpace(after)
 		err := o.L.DoString("__repl_result = (" + expr + ")")
 		if err != nil {
-			o.appendOutput("error: " + err.Error())
+			o.appendOutputLocked("error: " + err.Error())
 			return
 		}
 		v := o.L.GetGlobal("__repl_result")
-		o.appendOutput(v.String())
+		o.appendOutputLocked(v.String())
 		o.L.SetGlobal("__repl_result", lua.LNil)
 		return
 	}
@@ -136,16 +210,16 @@ func (o *LuaOverlay) eval(line string) {
 		expr := strings.TrimSpace(after)
 		err := o.L.DoString("__repl_result = (" + expr + ")")
 		if err != nil {
-			o.appendOutput("error: " + err.Error())
+			o.appendOutputLocked("error: " + err.Error())
 			return
 		}
 		v := o.L.GetGlobal("__repl_result")
-		o.appendOutput(v.String())
+		o.appendOutputLocked(v.String())
 		o.L.SetGlobal("__repl_result", lua.LNil)
 		return
 	}
 	if err := o.L.DoString(line); err != nil {
-		o.appendOutput("error: " + err.Error())
+		o.appendOutputLocked("error: " + err.Error())
 	}
 }
 
@@ -157,6 +231,7 @@ func isMultilineIncomplete(err error) bool {
 	return strings.Contains(msg, "<eof>") || strings.Contains(msg, "unexpected EOF") || strings.Contains(msg, " at EOF:")
 }
 
+// submitInputLine processes a REPL input line. Caller must hold o.mu.
 func (o *LuaOverlay) submitInputLine(line string) {
 	if strings.TrimSpace(line) == "" && !o.multiline {
 		return
@@ -169,7 +244,7 @@ func (o *LuaOverlay) submitInputLine(line string) {
 	if o.multiline {
 		prefix = "...> "
 	}
-	o.appendOutput(prefix + line)
+	o.appendOutputLocked(prefix + line)
 	if o.multiline {
 		o.pendingLines = append(o.pendingLines, line)
 		combined := strings.Join(o.pendingLines, "\n")
@@ -177,7 +252,7 @@ func (o *LuaOverlay) submitInputLine(line string) {
 			if isMultilineIncomplete(err) {
 				return
 			}
-			o.appendOutput("error: " + err.Error())
+			o.appendOutputLocked("error: " + err.Error())
 			o.pendingLines = nil
 			o.multiline = false
 			return
@@ -193,7 +268,7 @@ func (o *LuaOverlay) submitInputLine(line string) {
 			o.multiline = true
 			return
 		}
-		o.appendOutput("error: " + err.Error())
+		o.appendOutputLocked("error: " + err.Error())
 		return
 	}
 	o.eval(line)
@@ -221,6 +296,9 @@ func (o *LuaOverlay) pasteClipboard() {
 }
 
 func (o *LuaOverlay) HandleInput() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
 	ctrl := ebiten.IsKeyPressed(ebiten.KeyControlLeft) || ebiten.IsKeyPressed(ebiten.KeyControlRight)
 	shift := ebiten.IsKeyPressed(ebiten.KeyShiftLeft) || ebiten.IsKeyPressed(ebiten.KeyShiftRight)
 
@@ -350,6 +428,20 @@ func (o *LuaOverlay) HandleInput() {
 }
 
 func (o *LuaOverlay) Draw(screen *ebiten.Image) {
+	// Snapshot all mutable fields under lock, then release lock before drawing
+	o.mu.Lock()
+	active := o.active
+	outputLines := append([]string(nil), o.output...)
+	scroll := o.scroll
+	multiline := o.multiline
+	inputRunes := append([]rune(nil), o.input...)
+	cursor := o.cursor
+	o.mu.Unlock()
+
+	if !active {
+		return
+	}
+
 	if o.image == nil {
 		o.image = ebiten.NewImage(overlayWidth, overlayHeight)
 	}
@@ -363,21 +455,21 @@ func (o *LuaOverlay) Draw(screen *ebiten.Image) {
 
 	lines := overlayRows - 3
 	start := 0
-	if len(o.output) > lines {
-		start = max(len(o.output)-lines-o.scroll, 0)
+	if len(outputLines) > lines {
+		start = max(len(outputLines)-lines-scroll, 0)
 	}
-	for i := 0; i < lines && start+i < len(o.output); i++ {
-		o.drawString(o.output[start+i], 0, 1+i, colorWhite)
+	for i := 0; i < lines && start+i < len(outputLines); i++ {
+		o.drawString(outputLines[start+i], 0, 1+i, colorWhite)
 	}
 
 	promptRow := overlayRows - 1
 	prefix := "lua> "
-	if o.multiline {
+	if multiline {
 		prefix = "...> "
 	}
-	prompt := prefix + string(o.input)
+	prompt := prefix + string(inputRunes)
 	o.drawString(prompt, 0, promptRow, colorWhite)
-	cursorCol := len(prefix) + o.cursor
+	cursorCol := len(prefix) + cursor
 	if cursorCol < overlayCols {
 		o.drawGlyph('_', cursorCol, promptRow, colorWhite, bg)
 	}

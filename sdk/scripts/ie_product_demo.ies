@@ -1,0 +1,429 @@
+-- Intuition Engine Product Demo Script (~480 lines)
+-- Fully automated showcase covering all 6 CPUs, 6 video chips, 19 audio formats,
+-- machine monitor, Lua scripting, EhBASIC, Voodoo 3D, copper coprocessor, retro chips.
+-- Records to MP4 with screen-capture mode (overlays visible in video).
+
+-- ============================================================================
+-- Setup: Paths and Constants
+-- ============================================================================
+
+local BASIC        = "sdk/examples/prebuilt/ehbasic_ie64.ie64"
+local P            = "sdk/examples/prebuilt/"
+local M            = "sdk/examples/assets/music/"
+local A            = "sdk/examples/assets/"
+
+-- ============================================================================
+-- Preflight Check: Verify all music files exist
+-- ============================================================================
+
+local MUSIC_FILES = {
+    M.."demo_sid.sid", M.."demo_pokey.sap", M.."demo_ted.ted",
+    M.."demo_sndh.sndh", M.."demo_sn76489.vgm", M.."demo_sn76489.vgz",
+    M.."demo_ay.ay", M.."demo_ym.ym", M.."demo_vtx.vtx",
+    M.."demo_pt3.pt3", M.."demo_pt2.pt2", M.."demo_pt1.pt1",
+    M.."demo_stc.stc", M.."demo_sqt.sqt", M.."demo_asc.asc",
+    M.."demo_ftc.ftc", M.."demo_ahx.ahx", M.."demo_mod.mod",
+    M.."demo_wav.wav",
+}
+
+local missing = {}
+for _, path in ipairs(MUSIC_FILES) do
+    local f = io.open(path, "r")
+    if f then f:close() else missing[#missing+1] = path end
+end
+
+if #missing > 0 then
+    sys.print("ERROR: Demo music files missing. Add to sdk/examples/assets/music/:")
+    for _, p in ipairs(missing) do sys.print("  " .. p) end
+    sys.print("See Section 3 of the plan for placeholder-to-track mapping.")
+    sys.exit(1)
+end
+
+-- ============================================================================
+-- Helper Functions
+-- ============================================================================
+
+-- Type character-by-character into BASIC terminal
+local function slow_type(s, ms)
+    ms = ms or 55
+    for i = 1, #s do term.type(s:sub(i,i)); sys.wait_ms(ms) end
+end
+
+-- Wait for BASIC "Ready." prompt; raises error on timeout
+local function wait_ready(ms)
+    assert(term.wait_output("Ready.", ms or 5000),
+        "BASIC not ready within " .. tostring(ms or 5000) .. "ms")
+end
+
+-- Switch back to EhBASIC and wait for prompt
+local function reset_to_basic()
+    media.stop()
+    cpu.load(BASIC)
+    sys.wait_ms(1500)
+    wait_ready(8000)
+    sys.wait_ms(300)
+end
+
+-- Show REPL overlay title card and wait
+local function title_card(lines, hold_s)
+    hold_s = hold_s or 3
+    repl.show(); repl.clear()
+    repl.print("  ================================================")
+    for _, l in ipairs(lines) do repl.print("  " .. l) end
+    repl.print("  ================================================")
+    sys.wait_ms(hold_s * 1000)
+    repl.hide()
+end
+
+-- Print many lines to REPL then slowly scroll through them
+local function repl_scroll(lines, delay_ms)
+    delay_ms = delay_ms or 200
+    repl.show(); repl.clear()
+    for _, l in ipairs(lines) do repl.print(l); sys.wait_ms(30) end
+    repl.scroll_up(repl.line_count())
+    for _ = 1, repl.line_count() do sys.wait_ms(delay_ms); repl.scroll_down(1) end
+    sys.wait_ms(400); repl.hide()
+end
+
+-- Load and run a demo binary, wait N seconds
+local function run_demo(path, secs)
+    media.stop(); cpu.load(path)
+    sys.wait_ms(600); sys.wait_frames(30)
+    if secs and secs > 0 then sys.wait_ms(secs * 1000) end
+end
+
+-- Open monitor, run commands with pauses, close
+local function monitor_tour(cmds)
+    dbg.open(); sys.wait_ms(500)
+    for _, e in ipairs(cmds) do
+        dbg.command(e[1]); sys.wait_ms(e[2] or 1800)
+    end
+    dbg.close(); sys.wait_ms(400)
+end
+
+-- ============================================================================
+-- Section 0: Opening - Start recording and title card
+-- ============================================================================
+
+rec.start_screen("ie_product_demo.mp4")
+title_card({"Intuition Engine — Retro Emulator", "Automated Feature Showcase"}, 8)
+
+-- ============================================================================
+-- Section 1: Lua Scripting Meta (18s)
+-- ============================================================================
+
+title_card({"Lua Scripting Showcase", "This script narrates itself"}, 2)
+local script_lines = {
+    "-- This product demo is 100% automated",
+    "-- driven by a single Lua script (this one).",
+    "-- No user interaction required.",
+    "",
+    "-- Features demonstrated:",
+    "  • 6 CPUs (IE32, IE64, M68K, 6502, Z80, x86)",
+    "  • 6 Video chips (VideoChip, VGA, ULA, TED, ANTIC, Voodoo 3D)",
+    "  • 19 Audio formats (SID, SAP, AHX, MOD, WAV, ZX trackers...)",
+    "  • Machine monitor debugger with live register view",
+    "  • EhBASIC interpreter with BLIT graphics",
+    "  • Copper coprocessor and DMA blitter",
+    "",
+    "-- Lua API provides programmatic control:",
+    "  cpu.load(path)    -- Load and execute program",
+    "  sys.wait_ms(n)    -- Wait N milliseconds",
+    "  rec.start_screen(path)  -- Screen-capture recording",
+    "  dbg.open/close()  -- Machine monitor control",
+    "  repl.show/hide()  -- REPL overlay visibility",
+}
+repl_scroll(script_lines, 150)
+
+-- ============================================================================
+-- Section 2: EhBASIC Showcase (30s)
+-- ============================================================================
+
+title_card({"EhBASIC Interpreter", "Live-coded on VideoChip"}, 2)
+reset_to_basic()
+
+local basic_commands = {
+    {"? 2+2*3",                              400},
+    {"? HEX$(65535)",                        400},
+    {"? BIN$(15)",                           400},
+    {"DIM A(4,4)",                           400},
+    {"FOR I=0 TO 3:FOR J=0 TO 3:A(I,J)=I+J:NEXT:NEXT", 600},
+    {"POKE &HF0000, 1",                      400},
+    {"FOR I=0 TO 15: BLIT FILL &H100000+I*65536, 256, (I OR 128)*0x01010100 : NEXT", 800},
+}
+
+for _, e in ipairs(basic_commands) do
+    slow_type(e[1], 45)
+    term.type("\n")
+    sys.wait_ms(e[2])
+end
+sys.wait_ms(2000)
+
+-- ============================================================================
+-- Section 3: Music Tour (19 distinct extensions, ~2m 30s)
+-- ============================================================================
+
+title_card({"Music Tour: 19 Formats", "All major retro music formats"}, 2)
+
+-- Group A: Classic synthesised chips (8s each)
+local music_groups_a = {
+    {M.."demo_sid.sid",     "SID (6581/8580) — Commodore 64"},
+    {M.."demo_pokey.sap",   "POKEY — Atari 8-bit"},
+    {M.."demo_ted.ted",     "TED — Commodore Plus/4"},
+    {M.."demo_sndh.sndh",   "YM2149 — Atari ST (also .snd)"},
+}
+
+for i, e in ipairs(music_groups_a) do
+    title_card({string.format("[%d/19] %s", i, e[2])}, 1)
+    slow_type('SOUND PLAY "'..e[1]..'"', 55)
+    term.type("\n"); sys.wait_ms(8000)
+    slow_type("SOUND PLAY STOP", 55)
+    term.type("\n"); wait_ready(2000)
+end
+
+-- Group B: VGM multi-chip logs (8s each)
+local music_groups_b = {
+    {M.."demo_sn76489.vgm",  "SN76489 — Sega SMS/Genesis (VGM)"},
+    {M.."demo_sn76489.vgz",  "SN76489 — VGM gzip compressed (VGZ)"},
+}
+
+for i, e in ipairs(music_groups_b) do
+    title_card({string.format("[%d/19] %s", i+4, e[2])}, 1)
+    slow_type('SOUND PLAY "'..e[1]..'"', 55)
+    term.type("\n"); sys.wait_ms(8000)
+    slow_type("SOUND PLAY STOP", 55)
+    term.type("\n"); wait_ready(2000)
+end
+
+-- Group C: AY/YM frame-dump formats (6s each)
+local music_groups_c = {
+    {M.."demo_ay.ay",       "AY-3-8910 (ZX Spectrum ZXAYEMUL)"},
+    {M.."demo_ym.ym",       "YM5/YM6 LHA-compressed"},
+    {M.."demo_vtx.vtx",     "VTX AY-3-8910 frame dump (also .vt)"},
+}
+
+for i, e in ipairs(music_groups_c) do
+    title_card({string.format("[%d/19] %s", i+6, e[2])}, 1)
+    slow_type('SOUND PLAY "'..e[1]..'"', 55)
+    term.type("\n"); sys.wait_ms(6000)
+    slow_type("SOUND PLAY STOP", 55)
+    term.type("\n"); wait_ready(1500)
+end
+
+-- Group D: ZX Spectrum tracker rapid-fire (4s each)
+title_card({"ZX Spectrum Tracker Suite", "7 formats, one AY chip"}, 2)
+
+local music_groups_d = {
+    {M.."demo_pt3.pt3",     "ProTracker 3 (Z80)"},
+    {M.."demo_pt2.pt2",     "ProTracker 2 (Z80)"},
+    {M.."demo_pt1.pt1",     "ProTracker 1 (native Go)"},
+    {M.."demo_stc.stc",     "Sound Tracker Compiled (Z80)"},
+    {M.."demo_sqt.sqt",     "SQ-Tracker (Z80)"},
+    {M.."demo_asc.asc",     "ASC Sound Master (native Go)"},
+    {M.."demo_ftc.ftc",     "Fast Tracker ZX (native Go)"},
+}
+
+for i, e in ipairs(music_groups_d) do
+    slow_type('SOUND PLAY "'..e[1]..'"', 55)
+    term.type("\n"); sys.wait_ms(4000)
+    slow_type("SOUND PLAY STOP", 55)
+    term.type("\n"); wait_ready(1500)
+end
+
+-- Group E: Amiga/PC formats (8s each)
+local music_groups_e = {
+    {M.."demo_ahx.ahx",     "AHX / HivelyTracker (Amiga)"},
+    {M.."demo_mod.mod",     "ProTracker MOD (Amiga 4-channel)"},
+    {M.."demo_wav.wav",     "PCM WAV (SoundChip FLEX DAC)"},
+}
+
+for i, e in ipairs(music_groups_e) do
+    title_card({string.format("[%d/19] %s", i+13, e[2])}, 1)
+    slow_type('SOUND PLAY "'..e[1]..'"', 55)
+    term.type("\n"); sys.wait_ms(8000)
+    slow_type("SOUND PLAY STOP", 55)
+    term.type("\n"); wait_ready(2000)
+end
+
+-- ============================================================================
+-- Section 4: Rotozoomer × 6 CPUs (72s)
+-- ============================================================================
+
+local rotoZoomers = {
+    {P.."rotozoomer.iex",        "IE32 — Intuition Engine 32-bit RISC"},
+    {P.."rotozoomer_ie64.ie64",  "IE64 — 64-bit RISC with JIT"},
+    {P.."rotozoomer_68k.ie68",   "M68K — Motorola 68020"},
+    {P.."rotozoomer_65.ie65",    "6502 — MOS 6502"},
+    {P.."rotozoomer_z80.ie80",   "Z80 — Zilog Z80"},
+    {P.."rotozoomer_x86.ie86",   "x86 — Intel 386 flat model"},
+}
+
+for i, rz in ipairs(rotoZoomers) do
+    title_card({string.format("Rotozoomer [%d/6]: %s", i, rz[2])}, 2)
+    run_demo(rz[1], 5)
+    monitor_tour({
+        {"r",       2000},
+        {"d",       2000},
+        {"m 0",     1800},
+        {"io",      1800},
+        {"bt",      1500},
+        {"trace 6", 2200},
+    })
+    sys.wait_ms(3000)
+end
+
+-- ============================================================================
+-- Section 5: Mandelbrot (IE64 JIT) (20s)
+-- ============================================================================
+
+title_card({"Mandelbrot Fractal", "IE64 JIT — Live Rendering"}, 2)
+run_demo("sdk/examples/asm/mandelbrot_ie64.ie64", 15)
+monitor_tour({
+    {"r",       2500},
+    {"d",       2000},
+})
+
+-- ============================================================================
+-- Section 6: Voodoo 3D Demos (55s)
+-- ============================================================================
+
+local voodoo_demos = {
+    {P.."voodoo_mega_demo.iex",           "Voodoo Mega Demo (IE32)",      18},
+    {P.."voodoo_cube_68k.ie68",           "Spinning Cube (M68K)",         12},
+    {P.."voodoo_3dfx_logo_68k.ie68",      "3DFX Logo Flyby (M68K)",       12},
+    {P.."voodoo_tunnel_z80.ie80",         "Textured Tunnel (Z80)",        10},
+}
+
+for i, v in ipairs(voodoo_demos) do
+    title_card({string.format("Voodoo 3D [%d/4] — %s", i, v[2])}, 1)
+    run_demo(v[1], v[3])
+end
+
+-- ============================================================================
+-- Section 7: Retro Chips (65s)
+-- ============================================================================
+
+title_card({"Retro Chips: Plasma & Gfx", "TED, Copper, ANTIC, ULA"}, 2)
+
+-- TED 121-color palette
+title_card({"TED 121-color Palette", "Commodore Plus/4"}, 1)
+run_demo(P.."ted_121_colors_68k.ie68", 18)
+
+-- Copper cube + M68K
+title_card({"Copper Coprocessor Cube", "M68K Graphics Engine"}, 1)
+run_demo(P.."rotating_cube_copper_68k.ie68", 18)
+
+-- ANTIC plasma (x86 demo)
+title_card({"ANTIC Plasma Display", "Atari Architecture Emulation"}, 1)
+run_demo(P.."antic_plasma_x86.ie86", 15)
+
+-- ULA cube (6502 demo)
+title_card({"ULA Cube Rendering", "ZX Spectrum ULA Chip"}, 1)
+run_demo(P.."ula_rotating_cube_65.ie65", 12)
+
+-- ============================================================================
+-- Section 8: VGA Tour (28s)
+-- ============================================================================
+
+title_card({"VGA Video Modes", "Mode 13h, Mode X, Mode 12h"}, 2)
+
+local vga_demos = {
+    {P.."vga_mode13h_fire.iex",    "Mode 13h — 320x200 256-color Fire",    10},
+    {P.."vga_modex_circles.iex",   "Mode X — 320x240 Planar Circles",      8},
+    {P.."vga_mode12h_bars.iex",    "Mode 12h — 640x480 16-color Bars",     8},
+}
+
+for i, v in ipairs(vga_demos) do
+    title_card({string.format("VGA [%d/3] — %s", i, v[2])}, 1)
+    run_demo(v[1], v[3])
+end
+
+-- ============================================================================
+-- Section 9: Robocop Intro (20s)
+-- ============================================================================
+
+title_card({"Robocop Intro", "IE32 then M68K — Copper Rasterbars"}, 2)
+run_demo(P.."robocop_intro.iex", 8)
+run_demo(P.."robocop_intro_68k.ie68", 10)
+
+-- ============================================================================
+-- Section 10: Coprocessor (18s)
+-- ============================================================================
+
+title_card({"Copper Coprocessor", "M68K Caller + Service Pair IPC"}, 2)
+run_demo(P.."coproc_caller_68k.ie68", 15)
+monitor_tour({
+    {"io", 2000},
+})
+
+-- ============================================================================
+-- Section 11: Monitor Deep-Dive (30s)
+-- ============================================================================
+
+reset_to_basic()
+title_card({"Machine Monitor Deep-Dive", "Live register & memory inspection"}, 2)
+
+slow_type("10 FOR I=1 TO 100: POKE &HF0800, I*2: NEXT I", 45)
+term.type("\n"); sys.wait_ms(300)
+slow_type("RUN", 45)
+term.type("\n"); wait_ready(1500)
+sys.wait_ms(3000)
+
+monitor_tour({
+    {"r",        2500},
+    {"d",        2200},
+    {"d 0x1000", 2000},
+    {"m 0",      2000},
+    {"m 0x1000", 1800},
+    {"io",       2200},
+    {"bt",       2000},
+    {"bl",       1500},
+    {"trace 8",  3000},
+})
+
+-- ============================================================================
+-- Section 12: BASIC Live Coding (22s)
+-- ============================================================================
+
+reset_to_basic()
+title_card({"BASIC Live Coding", "Rotozoomer Algorithm"}, 2)
+
+local code_lines = {
+    {"POKE &HF0000, 1",                                       400},
+    {"W=640: H=480: ANG=0",                                   300},
+    {"10 ANG=ANG+0.05",                                       300},
+    {"20 S=SIN(ANG)*64: C=COS(ANG)*64",                       300},
+    {"30 FOR Y=0 TO H-1 STEP 8",                              300},
+    {"40 FOR X=0 TO W-1 STEP 8",                              300},
+    {"50 COL=(INT((X*C-Y*S)/64) XOR INT((X*S+Y*C)/64)) AND 1",300},
+    {"60 BLIT FILL &H100000+((Y*W+X)*4),32,COL*&HFFFFFFFF",   300},
+    {"70 NEXT X: NEXT Y",                                     300},
+    {"80 WAIT &HF0008, 2: GOTO 10",                           300},
+    {"RUN",                                                   300},
+}
+
+for _, e in ipairs(code_lines) do
+    slow_type(e[1], 45)
+    term.type("\n")
+    sys.wait_ms(e[2])
+end
+sys.wait_ms(12000)
+
+-- ============================================================================
+-- Section 13: Credits and Shutdown
+-- ============================================================================
+
+title_card({
+    "Intuition Engine — Feature Summary:",
+    "  6 CPUs:   IE32, IE64, M68K, 6502, Z80, x86",
+    "  6 Video:  VideoChip, VGA, ULA, TED, ANTIC, Voodoo 3D",
+    "  19 Audio: SID, SAP, AHX, TED, AY, YM, VGM, MOD, WAV + ZX trackers",
+    "  Debug:    Machine Monitor, Trace, Breakpoints",
+    "  Script:   Lua IES automation",
+}, 8)
+
+media.stop()
+sys.wait_ms(1000)
+rec.stop()
+sys.wait_ms(2000)
+sys.quit()

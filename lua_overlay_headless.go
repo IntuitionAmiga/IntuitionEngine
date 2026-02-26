@@ -8,8 +8,15 @@ type LuaOverlay struct{}
 func NewLuaOverlay(_ *ScriptEngine) *LuaOverlay { return &LuaOverlay{} }
 func (o *LuaOverlay) SetScriptEngine(_ *ScriptEngine) {
 }
-func (o *LuaOverlay) Toggle()        {}
-func (o *LuaOverlay) IsActive() bool { return false }
-func (o *LuaOverlay) HandleInput()   {}
-func (o *LuaOverlay) Draw(_ any)     {}
-func (o *LuaOverlay) Close() error   { return nil }
+func (o *LuaOverlay) Toggle()             {}
+func (o *LuaOverlay) IsActive() bool      { return false }
+func (o *LuaOverlay) Show()               {}
+func (o *LuaOverlay) Hide()               {}
+func (o *LuaOverlay) AppendLine(_ string) {}
+func (o *LuaOverlay) Clear()              {}
+func (o *LuaOverlay) ScrollUp(_ int)      {}
+func (o *LuaOverlay) ScrollDown(_ int)    {}
+func (o *LuaOverlay) LineCount() int      { return 0 }
+func (o *LuaOverlay) HandleInput()        {}
+func (o *LuaOverlay) Draw(_ any)          {}
+func (o *LuaOverlay) Close() error        { return nil }

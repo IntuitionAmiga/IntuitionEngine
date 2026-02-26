@@ -83,6 +83,13 @@ type VideoRecorder struct {
 	sampleTap func(float32)
 	ring      *sampleRing
 
+	screenBufs     [3][]byte
+	screenWriteIdx int
+	screenReadIdx  int
+	screenShared   atomic.Int32
+	screenFrameCh  chan struct{}
+	useScreen      atomic.Bool
+
 	width  int
 	height int
 	fps    int
@@ -171,6 +178,11 @@ func (r *VideoRecorder) Start(path string) error {
 	doneCh := make(chan struct{})
 	waitDone := make(chan struct{})
 	frameCh := make(chan struct{}, recorderSignalDepth)
+	screenFrameCh := make(chan struct{}, 1)
+
+	// Pre-allocate screen capture buffers for triple-buffering
+	bufSize := w * h * 4
+	screenBufs := [3][]byte{make([]byte, bufSize), make([]byte, bufSize), make([]byte, bufSize)}
 
 	r.mu.Lock()
 	r.lastErr = nil
@@ -182,6 +194,11 @@ func (r *VideoRecorder) Start(path string) error {
 	r.doneCh = doneCh
 	r.waitDone = waitDone
 	r.frameCh = frameCh
+	r.screenFrameCh = screenFrameCh
+	r.screenBufs = screenBufs
+	r.screenWriteIdx = 0
+	r.screenShared.Store(1)
+	r.screenReadIdx = 2
 	r.ring = ring
 	r.width = w
 	r.height = h
@@ -200,7 +217,7 @@ func (r *VideoRecorder) Start(path string) error {
 	r.running.Store(true)
 
 	go r.waitProc(cmd, waitDone)
-	go r.loop(stopCh, frameCh, doneCh)
+	go r.loop(stopCh, frameCh, screenFrameCh, doneCh)
 	return nil
 }
 
@@ -215,8 +232,26 @@ func (r *VideoRecorder) waitProc(cmd *exec.Cmd, waitDone chan struct{}) {
 	close(waitDone)
 }
 
-func (r *VideoRecorder) loop(stopCh <-chan struct{}, frameCh <-chan struct{}, doneCh chan struct{}) {
+func (r *VideoRecorder) loop(stopCh <-chan struct{}, frameCh <-chan struct{}, screenFrameCh <-chan struct{}, doneCh chan struct{}) {
 	defer close(doneCh)
+	// Branch on mode at start: screen-capture or compositor
+	if r.useScreen.Load() {
+		// Screen-capture mode: only screenFrameCh drives writes
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-screenFrameCh:
+				if !r.running.Load() {
+					return
+				}
+				// Swap readIdx with shared to get latest frame
+				r.screenReadIdx = int(r.screenShared.Swap(int32(r.screenReadIdx)))
+				r.writeFrameData(r.screenBufs[r.screenReadIdx])
+			}
+		}
+	}
+	// Compositor mode: only frameCh drives writes
 	for {
 		select {
 		case <-stopCh:
@@ -231,13 +266,24 @@ func (r *VideoRecorder) loop(stopCh <-chan struct{}, frameCh <-chan struct{}, do
 }
 
 func (r *VideoRecorder) writeFrame() {
+	frame := r.compositor.GetCurrentFrame()
+	r.mu.Lock()
+	w, h := r.width, r.height
+	r.mu.Unlock()
+	if len(frame) < w*h*4 {
+		frame = make([]byte, w*h*4)
+	}
+	r.writeFrameData(frame[:w*h*4])
+}
+
+// writeFrameData writes one video frame and its corresponding audio samples to ffmpeg.
+// Used by both compositor mode (writeFrame) and screen-capture mode (loop).
+func (r *VideoRecorder) writeFrameData(pixels []byte) {
 	r.mu.Lock()
 	videoIn := r.videoIn
 	audioW := r.audioW
 	ring := r.ring
 	fps := r.fps
-	w := r.width
-	h := r.height
 	sound := r.sound
 	r.accNum += recorderAudioRate
 	targetSamples := r.accNum / fps
@@ -251,11 +297,7 @@ func (r *VideoRecorder) writeFrame() {
 		return
 	}
 
-	frame := r.compositor.GetCurrentFrame()
-	if len(frame) < w*h*4 {
-		frame = make([]byte, w*h*4)
-	}
-	if _, err := videoIn.Write(frame[:w*h*4]); err != nil {
+	if _, err := videoIn.Write(pixels); err != nil {
 		if r.running.Load() {
 			r.mu.Lock()
 			if r.lastErr == nil {
@@ -303,6 +345,7 @@ func (r *VideoRecorder) writeFrame() {
 
 func (r *VideoRecorder) Stop() error {
 	r.running.Store(false)
+	r.useScreen.Store(false)
 
 	r.mu.Lock()
 	if r.cmd == nil {
@@ -313,6 +356,7 @@ func (r *VideoRecorder) Stop() error {
 	stopCh := r.stopCh
 	doneCh := r.doneCh
 	frameCh := r.frameCh
+	screenFrameCh := r.screenFrameCh
 	videoIn := r.videoIn
 	audioW := r.audioW
 	audioR := r.audioR
@@ -323,12 +367,15 @@ func (r *VideoRecorder) Stop() error {
 	r.stopCh = nil
 	r.doneCh = nil
 	r.frameCh = nil
+	r.screenFrameCh = nil
 	r.videoIn = nil
 	r.audioW = nil
 	r.audioR = nil
 	r.ring = nil
 	r.sampleTap = nil
 	r.mu.Unlock()
+
+	_ = screenFrameCh // nilled on struct; loop exits via stopCh
 
 	if stopCh != nil {
 		close(stopCh)
@@ -398,4 +445,42 @@ func (r *VideoRecorder) OnFrame() {
 	case frameCh <- struct{}{}:
 	default:
 	}
+}
+
+func (r *VideoRecorder) PushScreenFrame(pixels []byte) {
+	if !r.running.Load() || !r.useScreen.Load() {
+		return
+	}
+	copy(r.screenBufs[r.screenWriteIdx], pixels)
+	// Swap write buffer with shared slot (give completed frame, get recycled buffer)
+	r.screenWriteIdx = int(r.screenShared.Swap(int32(r.screenWriteIdx)))
+	r.mu.Lock()
+	ch := r.screenFrameCh
+	r.mu.Unlock()
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- struct{}{}:
+	default: // signal already pending; consumer will get the latest frame on wake
+	}
+}
+
+func (r *VideoRecorder) IsRecordingScreen() bool {
+	return r.running.Load() && r.useScreen.Load()
+}
+
+func (r *VideoRecorder) StartScreen(path string) error {
+	if path == "" {
+		return fmt.Errorf("recording path is required")
+	}
+	if r.running.Load() {
+		return fmt.Errorf("recording already running")
+	}
+	r.useScreen.Store(true)
+	if err := r.Start(path); err != nil {
+		r.useScreen.Store(false)
+		return err
+	}
+	return nil
 }

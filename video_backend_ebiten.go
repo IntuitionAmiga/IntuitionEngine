@@ -73,6 +73,9 @@ type EbitenOutput struct {
 	luaOverlay       *LuaOverlay
 	termMMIO         *TerminalMMIO
 	hideSystemCursor bool
+
+	recorder         *VideoRecorder
+	screenCaptureBuf []byte
 }
 
 func NewEbitenOutput() (VideoOutput, error) {
@@ -389,9 +392,13 @@ func (eo *EbitenOutput) AttachMonitor(monitor *MachineMonitor) {
 func (eo *EbitenOutput) SetScriptEngine(scriptEngine *ScriptEngine) {
 	if eo.luaOverlay == nil {
 		eo.luaOverlay = NewLuaOverlay(scriptEngine)
-		return
+	} else {
+		eo.luaOverlay.SetScriptEngine(scriptEngine)
 	}
-	eo.luaOverlay.SetScriptEngine(scriptEngine)
+	if scriptEngine != nil {
+		scriptEngine.SetLuaOverlay(eo.luaOverlay)
+		eo.recorder = scriptEngine.recorder
+	}
 }
 
 func (eo *EbitenOutput) SetTerminalMMIO(tm *TerminalMMIO) {
@@ -835,6 +842,19 @@ func (eo *EbitenOutput) handleClipboardPaste() {
 }
 
 func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
+	// Defer screen-capture recording: reads pixels after all rendering is done
+	if eo.recorder != nil && eo.recorder.IsRecordingScreen() {
+		sw, sh := screen.Bounds().Dx(), screen.Bounds().Dy()
+		need := sw * sh * 4
+		if len(eo.screenCaptureBuf) < need {
+			eo.screenCaptureBuf = make([]byte, need)
+		}
+		defer func() {
+			screen.ReadPixels(eo.screenCaptureBuf[:need])
+			eo.recorder.PushScreenFrame(eo.screenCaptureBuf[:need])
+		}()
+	}
+
 	// When monitor is active, draw the overlay instead
 	if eo.monitorOverlay != nil && eo.monitorOverlay.monitor.IsActive() {
 		eo.monitorOverlay.Draw(screen)
