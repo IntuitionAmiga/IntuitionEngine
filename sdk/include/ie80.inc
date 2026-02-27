@@ -2840,6 +2840,9 @@
 .set COPROC_CPU_Z80,5
 .set COPROC_CPU_X86,6
 
+; System control
+.set SYS_GC_TRIGGER,0xF2380             ; Write any value to trigger GC
+
 ; ----- Coprocessor helper macros -----
 
 ; Start a coprocessor worker

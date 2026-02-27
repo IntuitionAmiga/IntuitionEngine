@@ -410,6 +410,7 @@ All hardware is accessed through memory-mapped registers in the `$F0000-$FFFFF` 
 | VGA | `$F1000-$F13FF` | VGA mode, DAC, sequencer, CRTC, palette |
 | File I/O | `$F2200-$F221F` | Host filesystem access (read/write); supports byte-level writes for 8-bit CPUs |
 | Coprocessor | `$F2340-$F237F` | Worker CPU lifecycle and async RPC |
+| System Control | `$F2380-$F2383` | GC trigger (write any value) |
 
 Additionally, VGA uses legacy PC-compatible memory windows:
 - `$A0000-$AFFFF`: VGA VRAM (64KB graphics memory)
@@ -453,6 +454,7 @@ The system's memory layout is designed to provide efficient access to both progr
 0x0F1000 - 0x0F13FF: VGA registers (IBM VGA emulation)
 0x0F2200 - 0x0F221F: File I/O registers (see below)
 0x0F2340 - 0x0F237F: Coprocessor MMIO registers
+0x0F2380 - 0x0F2383: System control (GC trigger)
 0x0A0000 - 0x0AFFFF: VGA VRAM window (Mode 13h/12h)
 0x0B8000 - 0x0BFFFF: VGA text buffer
 0x100000 - 0x5FFFFF: Video RAM (VRAM_START to VRAM_START + VRAM_SIZE)

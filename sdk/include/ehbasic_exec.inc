@@ -47,6 +47,10 @@ exec_run:
     add.q   r1, r16, #ST_DATA_PTR
     store.l r0, (r1)
 
+    ; Trigger GC before main execution loop starts
+    la      r1, SYS_GC_TRIGGER
+    store.l r0, (r1)
+
     ; Start at first line
     load.l  r14, (r16)           ; R14 = address of first line
     ; R14 is our "current line pointer" throughout execution

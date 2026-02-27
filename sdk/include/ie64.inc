@@ -1898,6 +1898,9 @@ COPROC_CPU_M68K       equ 4
 COPROC_CPU_Z80        equ 5
 COPROC_CPU_X86        equ 6
 
+; System control
+SYS_GC_TRIGGER        equ 0xF2380               ; Write any value to trigger GC
+
 ; ----- Coprocessor helper macros -----
 
 ; Start a coprocessor worker

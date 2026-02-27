@@ -1055,12 +1055,20 @@ func main() {
 	sysBus.MapIO(COPROC_BASE, COPROC_END, coprocMgr.HandleRead, coprocMgr.HandleWrite)
 	defer coprocMgr.StopAll()
 
+	// System control register: write-only GC trigger
+	sysBus.MapIO(SYS_GC_TRIGGER, SYS_GC_TRIGGER+3, nil, func(_ uint32, _ uint32) {
+		runtime.GC()
+	})
+
 	// Initialize Machine Monitor (debugger)
 	monitor := NewMachineMonitor(sysBus)
 	monitor.coprocMgr = coprocMgr
 	monitor.soundChip = soundChip
 	coprocMgr.monitor = monitor
 	monitor.StartBreakpointListener()
+
+	// All peripherals initialized — collect setup garbage before CPU boot.
+	runtime.GC()
 
 	// Initialize the selected CPU and optionally load program
 	var cpuRunner EmulatorCPU
@@ -1802,14 +1810,11 @@ func main() {
 			}
 			loader.StartTimer()
 			emuTOSLoader = loader
-			runtime.GC() // sweep BASIC/IE64 garbage before EmuTOS starts
 		} else {
 			reloadProgram()
 		}
-		if forceBasicBoot {
-			// Optional cleanup point: BASIC image is now loaded into reset state.
-			runtime.GC()
-		}
+		// Sweep all setup/teardown garbage before real-time peripherals restart.
+		runtime.GC()
 
 		// 12. Start peripherals
 		videoChip.Start()

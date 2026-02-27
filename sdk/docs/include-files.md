@@ -54,6 +54,9 @@ All include files provide these categories of definitions:
 - `FILE_STATUS` / `FILE_RESULT_LEN` / `FILE_ERROR_CODE` - Result registers
 - 8-bit CPUs (Z80/6502) use byte-addressable variants via bank3 window: `FIO_NAME_PTR_0`..`FIO_NAME_PTR_3`, `FIO_DATA_PTR_0`..`FIO_DATA_PTR_3`, `FIO_CTRL`, etc.
 
+### System Control
+- `SYS_GC_TRIGGER` - Write any value to trigger garbage collection at a safe point
+
 ## Per-CPU Details
 
 ### ie32.inc

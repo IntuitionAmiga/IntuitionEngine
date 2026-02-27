@@ -50,6 +50,7 @@ Address Range       Size    Device              Constants File
 0xF2300-0xF231F     32B     Media Loader        registers.go
 0xF2320-0xF233F     32B     Program Executor    registers.go
 0xF2340-0xF237F     64B     Coprocessor         coprocessor_constants.go
+0xF2380-0xF2383     4B      System Control      registers.go
 0xF4000-0xF43FF     1KB     Voodoo 3D Graphics  voodoo_constants.go
 
 0x100000-0x5FFFFF   5MB     Video RAM           video_chip.go (VRAM_START)
@@ -112,6 +113,9 @@ GTIA (0xF2140-0xF21B7) - antic_constants.go
 
 Coprocessor (0xF2340-0xF237F) - coprocessor_constants.go
   COPROC_CTRL, COPROC_STATUS, COPROC_PROGRAM_ADDR, COPROC_DATA_ADDR
+
+System Control (0xF2380-0xF2383) - registers.go
+  SYS_GC_TRIGGER (write-only, triggers garbage collection)
 
 Voodoo 3D Graphics (0xF4000-0xF43FF) - voodoo_constants.go
   VOODOO_STATUS, VOODOO_FB*, VOODOO_CLIP_*, VOODOO_TRI_*
@@ -209,6 +213,11 @@ const (
 	// Coprocessor region
 	COPROC_REGION_BASE = 0xF2340
 	COPROC_REGION_END  = 0xF237F
+
+	// System control region
+	SYS_CTRL_REGION_BASE = 0xF2380
+	SYS_CTRL_REGION_END  = 0xF2383
+	SYS_GC_TRIGGER       = 0xF2380
 
 	// Voodoo 3D graphics region
 	VOODOO_REGION_BASE = 0xF4000
@@ -327,6 +336,8 @@ func GetIORegion(addr uint32) string {
 		return "GTIA"
 	case addr >= COPROC_REGION_BASE && addr <= COPROC_REGION_END:
 		return "Coprocessor"
+	case addr >= SYS_CTRL_REGION_BASE && addr <= SYS_CTRL_REGION_END:
+		return "SystemControl"
 	case addr >= VOODOO_REGION_BASE && addr <= VOODOO_REGION_END:
 		return "Voodoo"
 	default:

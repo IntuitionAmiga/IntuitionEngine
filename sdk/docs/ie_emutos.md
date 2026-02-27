@@ -111,6 +111,7 @@ EmuTOS has full access to the complete IE hardware map. The key registers for Em
 | `ULA_BASE` | `0xF2000+` | ULA registers |
 | `ANTIC_BASE` | `0xF2100+` | ANTIC/GTIA registers |
 | `VOODOO_BASE` | `0xF4000+` | Voodoo 3D registers |
+| `SYS_GC_TRIGGER` | `0xF2380` | Write any value to trigger GC |
 | `VRAM` | `0x100000+` | RGBA32 framebuffer (5MB) |
 
 ## GEM Application Programming (.PRG)

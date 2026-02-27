@@ -2750,6 +2750,9 @@ COPROC_CPU_M68K       = 4
 COPROC_CPU_Z80        = 5
 COPROC_CPU_X86        = 6
 
+; System control
+SYS_GC_TRIGGER        = $F2380            ; Write any value to trigger GC
+
 ; ----- Coprocessor helper macros (ca65) -----
 
 ; Start a coprocessor worker

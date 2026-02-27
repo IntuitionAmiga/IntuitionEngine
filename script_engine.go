@@ -9,6 +9,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -183,6 +184,7 @@ func (se *ScriptEngine) runScript(script string, scriptName string) error {
 	}
 
 	se.Cancel()
+	runtime.GC() // Reclaim old Lua state + recorder buffers before new script
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})

@@ -2204,6 +2204,7 @@ All players support `STOP` to halt playback. SID and SAP players support subsong
 | `&HF2200`-`&HF221F` | File I/O |
 | `&HF2300`-`&HF231F` | Media Loader (SOUND PLAY) |
 | `&HF2320`-`&HF233F` | Program Executor (RUN "file") |
+| `&HF2380`-`&HF2383` | System Control (GC trigger) |
 | `&HF4000`-`&HF5000` | Voodoo 3DFX |
 
 ### EhBASIC Memory Layout
@@ -2496,6 +2497,14 @@ Used by `RUN "file"` to launch external CPU binaries.
 | `&HF232C` | EXEC_TYPE | R | 1=IE32, 2=IE64, 3=6502, 4=M68K, 5=Z80, 6=x86 |
 | `&HF2330` | EXEC_ERROR | R | 0=ok, 1=not-found, 2=unsupported, 3=path-invalid, 4=load-failed |
 | `&HF2334` | EXEC_SESSION | R | Monotonic session counter (increments per request) |
+
+### 9.15 System Control Registers (`&HF2380`-`&HF2383`)
+
+| Address | Name | R/W | Description |
+|---------|------|-----|-------------|
+| `&HF2380` | SYS_GC_TRIGGER | W | Write any value to trigger garbage collection |
+
+The GC trigger allows CPU-side code to request a garbage collection sweep at a safe moment. The `RUN` command writes to this register automatically before entering the main execution loop.
 
 ---
 
