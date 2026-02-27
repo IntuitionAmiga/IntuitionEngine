@@ -47,6 +47,7 @@ Address Range       Size    Device              Constants File
 0xF2100-0xF213F     64B     ANTIC (Atari 8-bit) antic_constants.go
 0xF2140-0xF21B7     120B    GTIA (Atari 8-bit)  antic_constants.go
 0xF2200-0xF221F     32B     File I/O            registers.go
+0xF2220-0xF225F     64B     AROS DOS Handler    aros_dos_constants.go
 0xF2300-0xF231F     32B     Media Loader        registers.go
 0xF2320-0xF233F     32B     Program Executor    registers.go
 0xF2340-0xF237F     64B     Coprocessor         coprocessor_constants.go
@@ -189,6 +190,10 @@ const (
 	// File I/O region
 	FILE_IO_REGION_BASE = 0xF2200
 	FILE_IO_REGION_END  = 0xF221F
+
+	// AROS DOS handler MMIO region
+	AROS_DOS_REGION_BASE = 0xF2220
+	AROS_DOS_REGION_END  = 0xF225F
 
 	// Unified media loader region
 	MEDIA_LOADER_REGION_BASE = 0xF2300

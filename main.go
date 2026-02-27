@@ -332,7 +332,7 @@ func main() {
 			arosHostRoot = home
 		}
 	}
-	_ = arosHostRoot // used in Phase 5 DOS interceptor
+	_ = arosHostRoot // used by AROS DOS interceptor below
 
 	// Resolve GEMDOS drive config for EmuTOS (always, since EmuTOS can be
 	// launched dynamically from BASIC or the program executor)
@@ -1417,6 +1417,14 @@ func main() {
 		if err := loader.LoadROM(romBytes); err != nil {
 			fmt.Printf("Error loading AROS ROM: %v\n", err)
 			os.Exit(1)
+		}
+
+		// Initialize AROS DOS interceptor for host filesystem access
+		arosDOS, dosErr := NewArosDOSDevice(sysBus, arosHostRoot)
+		if dosErr != nil {
+			fmt.Printf("Warning: AROS DOS device init failed: %v\n", dosErr)
+		} else {
+			sysBus.MapIO(AROS_DOS_REGION_BASE, AROS_DOS_REGION_END, arosDOS.HandleRead, arosDOS.HandleWrite)
 		}
 
 		arosLoader = loader
