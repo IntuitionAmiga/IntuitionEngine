@@ -94,7 +94,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### SDK
 - `sdk/` developer package with curated examples, include files, and build scripts.
 - Rotozoomer demo series: one per CPU core (IE32, IE64, M68K, Z80, 6502, x86) plus EhBASIC.
-- Video chip showcase demos: VGA text, VGA Mode 13h fire, copper bands, ULA cube, TED plasma, ANTIC plasma, Voodoo 3D cube.
+- Video chip showcase demos: VGA text, VGA Mode 13h fire, VGA Mode 12h bars, VGA Mode X circles, VGA text + SAP music, ULA cube, TED plasma, ANTIC plasma.
 - Voodoo 3D demos: mega demo, spinning cube, 3DFX logo flyby, filled triangle, textured tunnel.
 - Robocop intro demo across 4 CPUs (IE32, M68K, 6502, Z80) with copper rasterbars and blitter sprite.
 - Automated product demo script (`sdk/scripts/ie_product_demo.ies`) showcasing all 6 CPUs, 6 video chips, and 20 audio formats.

@@ -15,6 +15,13 @@ The rotozoomer is the canonical "hello world" demo: a hardware-accelerated rotat
 | `rotozoomer_65.asm` | 6502 | IEVideoChip | AHX | Mode7 blitter + Amiga tracker music |
 | `rotozoomer_x86.asm` | x86 | IEVideoChip | PSG | Mode7 blitter + AY-3-8910 music |
 | `rotozoomer_basic.bas` | IE64 (BASIC) | IEVideoChip | SID | Mode7 blitter from EhBASIC |
+| `rotozoomer_gem.asm` | M68K (EmuTOS) | IEVideoChip | -- | Mode7 blitter in a GEM desktop window (requires EmuTOS boot) |
+
+## Other Demos
+
+| Example | CPU | Video | Audio | Description |
+|---------|-----|-------|-------|-------------|
+| `mandelbrot_ie64.asm` | IE64 | IEVideoChip | -- | Real-time Mandelbrot fractal with fixed-point arithmetic |
 
 ## Video Chip Showcases
 
@@ -22,7 +29,6 @@ The rotozoomer is the canonical "hello world" demo: a hardware-accelerated rotat
 |---------|-----|-------|-------|-------------|
 | `vga_text_hello.asm` | IE32 | VGA (text) | -- | Simplest demo: coloured text on 80x25 screen |
 | `vga_mode13h_fire.asm` | IE32 | VGA (Mode 13h) | -- | Classic DOS-era 256-colour fire effect |
-| `copper_vga_bands.asm` | IE32 | VGA + Copper | -- | Amiga-style per-scanline palette manipulation |
 | `ula_rotating_cube_65.asm` | 6502 | ULA (Spectrum) | AHX | Wireframe 3D cube on ZX Spectrum display |
 | `ted_121_colors_68k.asm` | M68K | TED (Plus/4) | PSG | Full-screen plasma using all 121 TED colours |
 | `antic_plasma_x86.asm` | x86 | ANTIC/GTIA | SID | Atari 8-bit display list + Player/Missile graphics |
@@ -50,13 +56,13 @@ The rotozoomer is the canonical "hello world" demo: a hardware-accelerated rotat
 IE32, IE64, M68020, Z80, 6502, x86 (32-bit)
 
 ### Video Chips Covered
-- **IEVideoChip** (up to 1280x960 true colour) - rotozoomer series
-- **VGA** (text / Mode 13h) - text hello, fire effect, copper bands
+- **IEVideoChip** (up to 1280x960 true colour) - rotozoomer series, robocop intro
+- **VGA** (text / Mode 13h / Mode 12h / Mode X) - text hello, fire effect, circles, bars, SAP demo
 - **ULA** (ZX Spectrum 256x192) - rotating cube
 - **TED** (Commodore Plus/4 121 colours) - plasma
 - **ANTIC/GTIA** (Atari 8-bit display lists) - plasma
-- **Voodoo SST-1** (3DFX hardware 3D) - 3D cube
-- **Copper coprocessor** - VGA band manipulation
+- **Voodoo SST-1** (3DFX hardware 3D) - mega demo, cube, 3DFX logo, triangle, tunnel
+- **Copper coprocessor** - rotating cube with rasterbars, robocop intro
 
 ### Audio Engines Covered
 - **IESoundChip** (custom synthesiser) - available in all demos

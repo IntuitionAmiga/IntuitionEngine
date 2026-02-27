@@ -103,11 +103,23 @@ The rotozoomer is the canonical "hello world" demo: a hardware-accelerated rotat
 |---------|-----|-------|-------|-------------|
 | `vga_text_hello.asm` | IE32 | VGA (text) | -- | Simplest possible demo: colored text on 80x25 screen |
 | `vga_mode13h_fire.asm` | IE32 | VGA (Mode 13h) | -- | Classic DOS-era 256-color fire effect |
-| `copper_vga_bands.asm` | IE32 | VGA + Copper | -- | Amiga-style per-scanline palette manipulation |
+| `vga_modex_circles.asm` | IE32 | VGA (Mode X) | -- | Animated circles in 320x240 planar mode |
+| `vga_mode12h_bars.asm` | IE32 | VGA (Mode 12h) | -- | Color bars in 640x480 4-plane mode |
+| `vga_text_sap_demo.asm` | Z80 | VGA (text) | POKEY/SAP | VGA text mode with SAP music playback |
 | `ula_rotating_cube_65.asm` | 6502 | ULA (Spectrum) | AHX | Wireframe 3D cube on ZX Spectrum display |
 | `ted_121_colors_68k.asm` | M68K | TED (Plus/4) | PSG | Full-screen plasma using all 121 TED colors |
 | `antic_plasma_x86.asm` | x86 | ANTIC/GTIA | SID | Atari 8-bit display list + Player/Missile graphics |
+| `rotating_cube_copper_68k.asm` | M68K | IEVideoChip + Copper | -- | 3D cube with copper rasterbars |
+| `mandelbrot_ie64.asm` | IE64 | IEVideoChip | -- | Real-time Mandelbrot fractal |
+| `voodoo_mega_demo.asm` | IE32 | Voodoo 3D | SID | Textured 3D scenes with SID music |
 | `voodoo_cube_68k.asm` | M68K | Voodoo 3D | -- | Z-buffered 3D cube on 3DFX Voodoo hardware |
+| `voodoo_3dfx_logo_68k.asm` | M68K | Voodoo 3D | -- | Textured 3DFX logo flyby with fog |
+| `voodoo_triangle_68k.asm` | M68K | Voodoo 3D | -- | Flat-shaded triangle |
+| `voodoo_tunnel_z80.asm` | Z80 | Voodoo 3D | -- | Texture-mapped tunnel effect |
+| `robocop_intro.asm` | IE32 | IEVideoChip + Copper | -- | Copper rasterbars + blitter sprite |
+| `robocop_intro_68k.asm` | M68K | IEVideoChip + Copper | -- | Copper rasterbars + blitter sprite |
+| `robocop_intro_65.asm` | 6502 | IEVideoChip + Copper | -- | Copper rasterbars + blitter sprite |
+| `robocop_intro_z80.asm` | Z80 | IEVideoChip + Copper | -- | Copper rasterbars + blitter sprite |
 
 ### Coprocessor Communication
 
