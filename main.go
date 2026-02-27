@@ -25,6 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -170,6 +171,23 @@ func main() {
 	}
 
 	boilerPlate()
+
+	// Minimise GC pauses during audio/video processing to prevent dropouts.
+	// GOGC=2000 means heap grows 20x before triggering collection, trading
+	// memory for latency. Green Tea GC further reduces pause times.
+	debug.SetGCPercent(2000)
+
+	var memLimit int64
+	totalRAM := getSystemRAM()
+
+	if totalRAM >= 4<<30 {
+		memLimit = 8 << 30 // 8GB — capable machine (4GB+ RAM)
+	} else {
+		memLimit = int64(3.5 * 1024 * 1024 * 1024) // 3.5GB — fallback
+	}
+
+	debug.SetMemoryLimit(memLimit)
+	fmt.Fprintf(os.Stderr, "GC tuning: GOGC=2000, MemLimit=%dMB, arch=%s\n", memLimit>>20, runtime.GOARCH)
 
 	var (
 		modeIE32    bool
