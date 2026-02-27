@@ -250,6 +250,18 @@ emutos: setup emutos-rom
 	@mv IntuitionEngine $(BIN_DIR)/
 	@echo "EmuTOS build complete - run with: $(BIN_DIR)/IntuitionEngine -emutos"
 
+# Build with embedded AROS ROM image.
+.PHONY: aros
+aros: setup
+	@echo "Building Intuition Engine with embedded AROS ROM..."
+	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags embed_aros .
+	@echo "Stripping debug symbols..."
+	@$(NICE) -$(NICE_LEVEL) $(SSTRIP) -z IntuitionEngine
+	@echo "Applying UPX compression..."
+	@$(NICE) -$(NICE_LEVEL) $(UPX) --lzma IntuitionEngine
+	@mv IntuitionEngine $(BIN_DIR)/
+	@echo "AROS build complete - run with: $(BIN_DIR)/IntuitionEngine -aros"
+
 .PHONY: emutos-probe
 emutos-probe: emutos
 	@echo "Running EmuTOS boot probe script..."
@@ -818,6 +830,7 @@ help:
 	@echo "  ie64dis          - Build only the IE64 disassembler"
 	@echo "  basic            - Build with embedded EhBASIC interpreter"
 	@echo "  emutos           - Build with embedded EmuTOS ROM (embed_emutos tag)"
+	@echo "  aros             - Build with embedded AROS ROM (embed_aros tag)"
 	@echo "  install          - Install binaries to $(INSTALL_BIN_DIR)"
 	@echo "  uninstall        - Remove installed binaries from $(INSTALL_BIN_DIR)"
 	@echo "  clean            - Remove all build artifacts"

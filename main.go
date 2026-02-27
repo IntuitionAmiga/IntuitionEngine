@@ -180,6 +180,8 @@ func main() {
 		modeM68K    bool
 		modeEmuTOS  bool
 		emutosImage string
+		modeAROS    bool
+		arosImage   string
 		modeM6502   bool
 		modeZ80     bool
 		modeX86     bool
@@ -220,6 +222,8 @@ func main() {
 	flagSet.BoolVar(&modeM68K, "m68k", false, "Run M68K CPU mode")
 	flagSet.BoolVar(&modeEmuTOS, "emutos", false, "Run EmuTOS (M68K ROM)")
 	flagSet.StringVar(&emutosImage, "emutos-image", "", "Run EmuTOS from custom ROM image path")
+	flagSet.BoolVar(&modeAROS, "aros", false, "Run AROS (M68K Workbench)")
+	flagSet.StringVar(&arosImage, "aros-image", "", "Run AROS from custom ROM image path")
 	flagSet.BoolVar(&modeM6502, "m6502", false, "Run 6502 CPU mode")
 	flagSet.BoolVar(&modeZ80, "z80", false, "Run Z80 CPU mode")
 	flagSet.BoolVar(&modeX86, "x86", false, "Run x86 CPU mode (32-bit flat model)")
@@ -247,6 +251,8 @@ func main() {
 	flagSet.BoolVar(&noJIT, "nojit", false, "Disable JIT compilation, use interpreter only")
 	var emutosDrive string
 	flagSet.StringVar(&emutosDrive, "emutos-drive", "", "Host directory to map as GEMDOS drive U: (default: ~/)")
+	var arosDrive string
+	flagSet.StringVar(&arosDrive, "aros-drive", "", "Host directory for AROS DOS volume (default: ~/)")
 	flagSet.Bool("version", false, "Print version information and exit")
 	loadAddr.value = "0x0600"
 	flagSet.Var(&loadAddr, "load-addr", "6502/Z80 load address (hex or decimal, defaults: 6502=0x0600, Z80=0x0000)")
@@ -314,6 +320,19 @@ func main() {
 	if emutosImage != "" {
 		modeEmuTOS = true
 	}
+	// -aros-image implies -aros mode
+	if arosImage != "" {
+		modeAROS = true
+	}
+
+	// Resolve AROS drive config (host filesystem mapping)
+	arosHostRoot := arosDrive
+	if arosHostRoot == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			arosHostRoot = home
+		}
+	}
+	_ = arosHostRoot // used in Phase 5 DOS interceptor
 
 	// Resolve GEMDOS drive config for EmuTOS (always, since EmuTOS can be
 	// launched dynamically from BASIC or the program executor)
@@ -342,6 +361,9 @@ func main() {
 		modeCount++
 	}
 	if modeEmuTOS {
+		modeCount++
+	}
+	if modeAROS {
 		modeCount++
 	}
 	if modeM6502 {
@@ -1048,6 +1070,7 @@ func main() {
 	var startExecution bool
 	var ie64CPU *CPU64
 	var emuTOSLoader *EmuTOSLoader
+	var arosLoader *AROSLoader
 	var z80LoadAddr, z80Entry uint16
 	var cpu6502LoadAddr, cpu6502Entry uint16
 	var x86LoadAddr, x86Entry uint32
@@ -1085,7 +1108,7 @@ func main() {
 			runner := NewM68KRunner(m68k)
 			runner.PerfEnabled = perfMode
 			return runner, nil
-		case "emutos":
+		case "emutos", "aros":
 			videoChip.SetBigEndianMode(true)
 			m68k := NewM68KCPU(sysBus)
 			runner := NewM68KRunner(m68k)
@@ -1173,6 +1196,27 @@ func main() {
 			return nil, "", fmt.Errorf("failed to read fallback EmuTOS image %s: %w", autoPath, err)
 		}
 		return b, autoPath, nil
+	}
+
+	loadAROSImage := func() ([]byte, string, error) {
+		if arosImage != "" {
+			b, err := os.ReadFile(arosImage)
+			if err != nil {
+				return nil, "", fmt.Errorf("failed to read AROS image %s: %w", arosImage, err)
+			}
+			return b, arosImage, nil
+		}
+		if filename != "" {
+			b, err := os.ReadFile(filename)
+			if err != nil {
+				return nil, "", fmt.Errorf("failed to read AROS image %s: %w", filename, err)
+			}
+			return b, filename, nil
+		}
+		if len(embeddedAROSImage) > 0 {
+			return append([]byte(nil), embeddedAROSImage...), "", nil
+		}
+		return nil, "", fmt.Errorf("AROS not embedded and no ROM image specified")
 	}
 
 	if modeIE32 {
@@ -1351,6 +1395,51 @@ func main() {
 		// so EmuTOS .PRG programs have full hardware access.
 		loader.StartTimer()
 		fmt.Println("Starting EmuTOS on M68K")
+		m68kRunner.StartExecution()
+	} else if modeAROS {
+		romBytes, romPath, err := loadAROSImage()
+		if err != nil {
+			fmt.Printf("Error loading AROS image: %v\n", err)
+			os.Exit(1)
+		}
+
+		// AROS uses addresses 0x100000-0x5FFFFF as normal RAM.
+		// Remove the VRAM I/O mapping so writes go to bus memory, not VideoChip.
+		sysBus.UnmapIO(VRAM_START, VRAM_START+VRAM_SIZE-1)
+		videoChip.SetBusMemory(sysBus.memory)
+		videoChip.SetBigEndianMode(true)
+		frameSize := 640 * 480 * 4 // IE native mode: 640x480 RGBA
+		videoChip.SetDirectVRAM(sysBus.memory[VRAM_START : VRAM_START+frameSize])
+		m68kCPU := NewM68KCPU(sysBus)
+		m68kRunner := NewM68KRunner(m68kCPU)
+		m68kRunner.PerfEnabled = perfMode
+		loader := NewAROSLoader(sysBus, m68kCPU, videoChip)
+		if err := loader.LoadROM(romBytes); err != nil {
+			fmt.Printf("Error loading AROS ROM: %v\n", err)
+			os.Exit(1)
+		}
+
+		arosLoader = loader
+		runtimeStatus.setCPUs(runtimeCPUM68K, nil, nil, m68kRunner, nil, nil, nil)
+		cpuRunner = m68kRunner
+		currentMode = "aros"
+		monitor.RegisterCPU("M68K", NewDebugM68K(m68kCPU, m68kRunner))
+		startExecution = true
+		if romPath != "" {
+			currentPath = romPath
+		}
+		programBytes = append([]byte(nil), romBytes...)
+
+		// Hide system cursor — AROS draws its own Intuition cursor in VRAM
+		if hider, ok := videoChip.GetOutput().(SystemCursorHider); ok {
+			hider.HideSystemCursor()
+		}
+
+		videoChip.Start()
+		compositor.Start()
+		soundChip.Start()
+		loader.StartTimer()
+		fmt.Println("Starting AROS on M68K")
 		m68kRunner.StartExecution()
 	} else if modeZ80 {
 		var parsedLoadAddr uint16
@@ -1558,6 +1647,13 @@ func main() {
 				return err
 			}
 			mode = "emutos"
+		} else if path == arosSentinel {
+			var err error
+			bytes, path, err = loadAROSImage()
+			if err != nil {
+				return err
+			}
+			mode = "aros"
 		} else {
 			var err error
 			bytes, err = os.ReadFile(path)
@@ -1592,6 +1688,10 @@ func main() {
 		if emuTOSLoader != nil {
 			emuTOSLoader.Stop()
 			emuTOSLoader = nil
+		}
+		if arosLoader != nil {
+			arosLoader.Stop()
+			arosLoader = nil
 		}
 
 		// 2. Stop compositor
@@ -1630,7 +1730,7 @@ func main() {
 		case "m68k":
 			runtimeStatus.setCPUs(runtimeCPUM68K, nil, nil, newRunner.(*M68KRunner), nil, nil, nil)
 			progExec.SetCPU(nil)
-		case "emutos":
+		case "emutos", "aros":
 			runtimeStatus.setCPUs(runtimeCPUM68K, nil, nil, newRunner.(*M68KRunner), nil, nil, nil)
 			progExec.SetCPU(nil)
 		case "z80":
@@ -1684,8 +1784,8 @@ func main() {
 		sysBus.Reset()
 
 		// 7b. VRAM I/O mapping — must happen after sysBus.Reset().
-		if mode == "emutos" {
-			// EmuTOS: unmap VRAM so M68K writes go to bus memory directly.
+		if mode == "emutos" || mode == "aros" {
+			// M68K ROM mode: unmap VRAM so M68K writes go to bus memory directly.
 			sysBus.UnmapIO(VRAM_START, VRAM_START+VRAM_SIZE-1)
 			videoChip.SetBusMemory(sysBus.memory)
 			videoChip.SetBigEndianMode(true)
@@ -1694,8 +1794,8 @@ func main() {
 			if hider, ok := videoChip.GetOutput().(SystemCursorHider); ok {
 				hider.HideSystemCursor()
 			}
-		} else if currentMode == "emutos" {
-			// Leaving EmuTOS: restore VRAM I/O mapping and VideoChip defaults.
+		} else if currentMode == "emutos" || currentMode == "aros" {
+			// Leaving M68K ROM mode: restore VRAM I/O mapping and VideoChip defaults.
 			sysBus.MapIO(VRAM_START, VRAM_START+VRAM_SIZE-1,
 				videoChip.HandleRead, videoChip.HandleWrite)
 			sysBus.MapIOByte(VRAM_START, VRAM_START+VRAM_SIZE-1, videoChip.HandleWrite8)
@@ -1784,6 +1884,15 @@ func main() {
 			loader.StartTimer()
 			emuTOSLoader = loader
 			runtime.GC() // sweep BASIC/IE64 garbage before EmuTOS starts
+		} else if mode == "aros" {
+			r := cpuRunner.(*M68KRunner)
+			loader := NewAROSLoader(sysBus, r.cpu, videoChip)
+			if err := loader.LoadROM(bytes); err != nil {
+				return fmt.Errorf("failed to load AROS ROM: %w", err)
+			}
+			loader.StartTimer()
+			arosLoader = loader
+			runtime.GC()
 		} else {
 			reloadProgram()
 		}
@@ -1933,6 +2042,12 @@ func main() {
 			time.Sleep(100 * time.Millisecond)
 		}
 	}
+	if !waited && arosLoader != nil {
+		// Headless AROS: block until the CPU stops running.
+		for arosLoader.cpu.Running() {
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
 
 	// Shut down terminal host (restores stdin to blocking) and render goroutines.
 	if scriptEngine != nil {
@@ -1940,6 +2055,9 @@ func main() {
 	}
 	if emuTOSLoader != nil {
 		emuTOSLoader.Stop()
+	}
+	if arosLoader != nil {
+		arosLoader.Stop()
 	}
 	if outputTicker != nil {
 		outputTicker.Stop()
