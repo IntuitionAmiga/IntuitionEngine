@@ -68,6 +68,34 @@ func (f *FileIODevice) HandleWrite(addr uint32, val uint32) {
 	}
 }
 
+// HandleWrite8 handles byte-level MMIO writes to the File I/O region.
+// This allows 8-bit CPUs (Z80, 6502) to set 32-bit register values by writing
+// individual bytes. The byte offset within each 4-byte register determines
+// which bits are updated. Writing byte 0 of FILE_CTRL triggers the operation.
+func (f *FileIODevice) HandleWrite8(addr uint32, value uint8) {
+	base := addr &^ 3
+	shift := (addr & 3) * 8
+	mask := uint32(0xFF) << shift
+	assembled := uint32(value) << shift
+
+	switch base {
+	case FILE_NAME_PTR:
+		f.fileNamePtr = (f.fileNamePtr &^ mask) | assembled
+	case FILE_DATA_PTR:
+		f.fileDataPtr = (f.fileDataPtr &^ mask) | assembled
+	case FILE_DATA_LEN:
+		f.fileDataLen = (f.fileDataLen &^ mask) | assembled
+	case FILE_CTRL:
+		if addr == FILE_CTRL {
+			if value == FILE_OP_READ {
+				f.doRead()
+			} else if value == FILE_OP_WRITE {
+				f.doWrite()
+			}
+		}
+	}
+}
+
 // sanitizePath ensures the given path is safe and within baseDir.
 func (f *FileIODevice) sanitizePath(path string) (string, bool) {
 	// Reject absolute paths and paths containing ".."

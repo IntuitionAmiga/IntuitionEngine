@@ -18,9 +18,10 @@
 ; fixed-point animation, and IE64-specific programming patterns.
 ;
 ; === WHAT THIS DEMO DOES ===
-; Renders a full-screen (640x480) rotating and zooming checkerboard pattern
-; using the Mode7 hardware blitter. The texture tiles infinitely, creating
-; the classic "rotozoomer" effect seen in countless demoscene productions.
+; Renders a full-screen (640x480) rotating and zooming texture pattern
+; using the Mode7 hardware blitter. The texture (loaded from a pre-converted
+; 256x256 BGRA raw image) tiles infinitely, creating the classic "rotozoomer"
+; effect seen in countless demoscene productions.
 ; SAP music (Atari 8-bit POKEY format) plays in the background.
 ;
 ; === WHY MODE7 HARDWARE BLITTER (NOT SOFTWARE RENDERING) ===
@@ -95,15 +96,9 @@
 ;   0x900000    1.2MB    Back buffer for Mode7 render
 ;   0xF0000+    ---      Hardware I/O registers (video, blitter, audio)
 ;
-;   Texture layout (256x256 pixels, 4 bytes/pixel, stride = 1024 bytes):
-;   +----------+----------+
-;   |  WHITE   |  BLACK   |   <- top half: rows 0-127
-;   | 128x128  | 128x128  |
-;   +----------+----------+
-;   |  BLACK   |  WHITE   |   <- bottom half: rows 128-255
-;   | 128x128  | 128x128  |
-;   +----------+----------+
-;   Each quadrant is filled by a single BLIT FILL operation.
+;   Texture (256x256 BGRA) is embedded via incbin from a pre-converted
+;   raw file (rotozoomtexture.raw, converted from rotozoomtexture.png).
+;   At startup, BLIT COPY transfers it from the code segment to TEXTURE_BASE.
 ;
 ; === BUILD AND RUN ===
 ;
@@ -132,7 +127,7 @@ include "ie64.inc"
 ; The texture lives at 0x600000 -- above the 1MB VRAM region (0x100000) so
 ; there is no overlap between texture data and the display framebuffer.
 ; If the texture were placed inside VRAM, Mode7 reads and display reads
-; would compete, and writing the checkerboard would corrupt the display.
+; would compete, and writing the texture would corrupt the display.
 TEXTURE_BASE    equ 0x600000
 
 ; --- Double-Buffer Back Buffer ---
@@ -158,7 +153,7 @@ LINE_BYTES      set 2560                  ; 640 * 4 bytes per scanline
 ; The texture is 256x256 pixels, giving TEX_W_MASK = TEX_H_MASK = 255 for
 ; coordinate wrapping (bitwise AND). This enables infinite tiling: any
 ; texture coordinate automatically wraps to the 256x256 range, so the
-; checkerboard repeats seamlessly in all directions.
+; texture repeats seamlessly in all directions.
 TEX_STRIDE      equ 1024
 
 ; --- Animation Accumulator Increments (8.8 Fixed-Point) ---
@@ -224,13 +219,11 @@ start:
     la      r1, VIDEO_MODE
     store.l r0, (r1)
 
-    ; --- Generate Checkerboard Texture ---
-    ; Build a 256x256 checkerboard at TEXTURE_BASE using the blitter.
-    ; Why a checkerboard? It provides high contrast and clear visual
-    ; feedback for rotation/zoom -- you can immediately see if the
-    ; transform is wrong. It also tiles seamlessly (opposite corners match),
-    ; which is essential for the infinite-scrolling rotozoomer illusion.
-    jsr     generate_texture
+    ; --- Load Texture from Embedded Data ---
+    ; Copy the 256x256 BGRA texture (embedded via incbin) to TEXTURE_BASE
+    ; using a hardware BLIT COPY. The texture is a pre-converted raw image
+    ; from rotozoomtexture.png.
+    jsr     load_texture
 
     ; --- Clear Animation Accumulators ---
     ; Both accumulators start at 0, meaning angle_idx = 0 (no rotation)
@@ -337,123 +330,56 @@ wait_vsync:
     rts
 
 ; =============================================================================
-; GENERATE TEXTURE (256x256 CHECKERBOARD VIA 4x BLIT FILL)
+; LOAD TEXTURE (256x256 BGRA FROM EMBEDDED RAW DATA VIA BLIT COPY)
 ; =============================================================================
-; Creates a 256x256 checkerboard texture at TEXTURE_BASE using four
-; 128x128 BLIT FILL operations -- one per quadrant.
+; Copies the 256x256 BGRA texture from the embedded raw data (texture_data,
+; included via incbin) to TEXTURE_BASE (0x600000) using a single hardware
+; BLIT COPY operation.
 ;
-; Why 4x BLIT FILL instead of a software XOR pattern?
-;   1. Simpler: Each fill is a single blitter command (set dst, w, h,
-;      colour, stride, go). No loops, no conditionals, no XOR logic.
-;   2. Faster: The blitter fills memory at hardware speed. A software
-;      loop writing 256*256 = 65536 pixels would take thousands of cycles.
-;   3. Clearer: The intent is obvious -- fill four rectangles. A software
-;      XOR pattern requires understanding `(x^y) & 128` or similar tricks.
+; The raw data was pre-converted from rotozoomtexture.png (2048x2048 RGB)
+; to 256x256 BGRA format. The conversion is done offline to avoid runtime
+; PNG decoding overhead.
 ;
-; Quadrant layout and memory offsets:
-;
-;   +--------------------+--------------------+
-;   | Top-Left (WHITE)   | Top-Right (BLACK)  |
-;   | offset = 0         | offset = 128*4     |
-;   | 0x600000           | = +512 = 0x600200  |
-;   +--------------------+--------------------+
-;   | Bottom-Left (BLACK)| Bottom-Right (WHITE)|
-;   | offset = 128*1024  | offset = 128*1024  |
-;   | = +131072          |   + 128*4           |
-;   | = 0x620000         | = +131584           |
-;   |                    | = 0x620200          |
-;   +--------------------+--------------------+
-;
-;   Each row is TEX_STRIDE (1024) bytes apart (256 pixels * 4 bytes).
-;   Horizontal offset for right column: 128 pixels * 4 bytes = 512.
-;   Vertical offset for bottom row: 128 rows * 1024 bytes/row = 131072.
-;   Bottom-right = 131072 + 512 = 131584.
-;
-; The white colour is 0xFFFFFFFF (fully opaque white in BGRA).
-; The black colour is 0xFF000000 (fully opaque black -- note alpha is still
-; 0xFF; only the RGB channels are zeroed).
-;
-; After each BLIT FILL, we poll BLT_STATUS bit 1 (busy flag) to wait for
-; completion before issuing the next fill. This is essential because the
-; blitter is asynchronous -- writing BLT_CTRL=1 starts the operation and
-; returns immediately. If we started the next fill while the previous one
-; was still running, the registers would be overwritten mid-operation.
+; After the BLIT COPY, we poll BLT_STATUS bit 1 (busy flag) to wait for
+; completion. This is essential because the blitter is asynchronous --
+; writing BLT_CTRL=1 starts the operation and returns immediately.
 ; =============================================================================
-generate_texture:
-    ; --- Top-Left 128x128: WHITE ---
+load_texture:
     la      r1, BLT_OP
-    move.l  r2, #BLT_OP_FILL
+    move.l  r2, #BLT_OP_COPY
     store.l r2, (r1)
+
+    la      r1, BLT_SRC
+    la      r2, texture_data
+    store.l r2, (r1)
+
     la      r1, BLT_DST
     move.l  r2, #TEXTURE_BASE
     store.l r2, (r1)
+
     la      r1, BLT_WIDTH
-    li      r2, #128
+    li      r2, #256
     store.l r2, (r1)
+
     la      r1, BLT_HEIGHT
     store.l r2, (r1)
-    la      r1, BLT_COLOR
-    li      r2, #0xFFFFFFFF
-    store.l r2, (r1)
-    la      r1, BLT_DST_STRIDE
+
+    la      r1, BLT_SRC_STRIDE
     move.l  r2, #TEX_STRIDE
     store.l r2, (r1)
+
+    la      r1, BLT_DST_STRIDE
+    store.l r2, (r1)
+
     la      r1, BLT_CTRL
     li      r2, #1
     store.l r2, (r1)
+
     la      r3, BLT_STATUS
-.w1:
+.wait:
     load.l  r4, (r3)
     and.l   r4, r4, #2
-    bnez    r4, .w1
-
-    ; --- Top-Right 128x128: BLACK ---
-    ; Offset = 128 pixels * 4 bytes = 512 bytes from TEXTURE_BASE.
-    ; Width, height, stride carry over from the previous fill -- only
-    ; DST and COLOUR need updating. (BLT_OP also carries over as FILL.)
-    la      r1, BLT_DST
-    move.l  r2, #TEXTURE_BASE+512
-    store.l r2, (r1)
-    la      r1, BLT_COLOR
-    li      r2, #0xFF000000
-    store.l r2, (r1)
-    la      r1, BLT_CTRL
-    li      r2, #1
-    store.l r2, (r1)
-.w2:
-    load.l  r4, (r3)
-    and.l   r4, r4, #2
-    bnez    r4, .w2
-
-    ; --- Bottom-Left 128x128: BLACK ---
-    ; Offset = 128 rows * 1024 bytes/row = 131072 bytes from TEXTURE_BASE.
-    ; Colour carries over as BLACK from the top-right fill.
-    la      r1, BLT_DST
-    move.l  r2, #TEXTURE_BASE+131072
-    store.l r2, (r1)
-    la      r1, BLT_CTRL
-    li      r2, #1
-    store.l r2, (r1)
-.w3:
-    load.l  r4, (r3)
-    and.l   r4, r4, #2
-    bnez    r4, .w3
-
-    ; --- Bottom-Right 128x128: WHITE ---
-    ; Offset = 131072 + 512 = 131584 bytes from TEXTURE_BASE.
-    la      r1, BLT_DST
-    move.l  r2, #TEXTURE_BASE+131584
-    store.l r2, (r1)
-    la      r1, BLT_COLOR
-    li      r2, #0xFFFFFFFF
-    store.l r2, (r1)
-    la      r1, BLT_CTRL
-    li      r2, #1
-    store.l r2, (r1)
-.w4:
-    load.l  r4, (r3)
-    and.l   r4, r4, #2
-    bnez    r4, .w4
+    bnez    r4, .wait
 
     rts
 
@@ -1054,6 +980,16 @@ recip_table:
     dc.w    1149,1134,1119,1103,1087,1071,1055,1038,1022,1005,988,972,955,938,922,905
     dc.w    889,873,858,842,827,812,797,782,768,754,740,727,714,701,689,676
     dc.w    665,653,642,631,620,610,599,589,580,571,561,553,544,536,528,520
+
+; =============================================================================
+; TEXTURE DATA - 256x256 BGRA RAW IMAGE
+; =============================================================================
+; Pre-converted from rotozoomtexture.png (2048x2048 RGB, resized to 256x256,
+; converted to BGRA byte order). 256 * 256 * 4 = 262144 bytes.
+; At startup, load_texture copies this to TEXTURE_BASE via BLIT COPY.
+; =============================================================================
+texture_data:
+    incbin  "../assets/rotozoomtexture.raw"
 
 ; =============================================================================
 ; MUSIC DATA - SAP FORMAT (ATARI 8-BIT POKEY)

@@ -2749,6 +2749,55 @@
 .set VOODOO_FBZ_DITHER_2X2,0x0800           ; Use 2x2 dither pattern (vs 4x4)
 
 ; ============================================================================
+; FILE I/O REGISTERS (via bank3 window → bus 0xF2200-0xF221F)
+; ============================================================================
+;
+; The File I/O device allows loading files from the host filesystem into bus
+; memory. To access it from Z80, set bank3 = 0x0079 which maps the bank3
+; window ($6000-$7FFF) to bus address 0xF2000. The File I/O registers at
+; bus 0xF2200 then appear at Z80 address $6200.
+;
+; Usage:
+;   1. SET_BANK3 to FILE_IO_BANK (0x0079)
+;   2. Write filename address to FIO_NAME_PTR (4 bytes, little-endian)
+;   3. Write destination address to FIO_DATA_PTR (4 bytes, little-endian)
+;   4. Write FILE_OP_READ to FIO_CTRL to trigger the read
+;   5. Check FIO_STATUS for result (0=OK, 1=error)
+;
+; Register byte addresses (within bank3 window at $6200):
+.set FILE_IO_BANK,0x0079           ; Bank number for File I/O access
+
+.set FIO_NAME_PTR_0,0x6200         ; Filename pointer byte 0 (low)
+.set FIO_NAME_PTR_1,0x6201         ; Filename pointer byte 1
+.set FIO_NAME_PTR_2,0x6202         ; Filename pointer byte 2
+.set FIO_NAME_PTR_3,0x6203         ; Filename pointer byte 3 (high)
+.set FIO_DATA_PTR_0,0x6204         ; Data destination pointer byte 0 (low)
+.set FIO_DATA_PTR_1,0x6205         ; Data destination pointer byte 1
+.set FIO_DATA_PTR_2,0x6206         ; Data destination pointer byte 2
+.set FIO_DATA_PTR_3,0x6207         ; Data destination pointer byte 3 (high)
+.set FIO_DATA_LEN_0,0x6208         ; Data length byte 0 (for WRITE ops)
+.set FIO_DATA_LEN_1,0x6209         ; Data length byte 1
+.set FIO_DATA_LEN_2,0x620A         ; Data length byte 2
+.set FIO_DATA_LEN_3,0x620B         ; Data length byte 3
+.set FIO_CTRL,0x620C               ; Control: write FILE_OP_READ or FILE_OP_WRITE
+.set FIO_STATUS_0,0x6210           ; Status byte 0 (0=OK, 1=error)
+.set FIO_RESULT_LEN_0,0x6214       ; Result length byte 0
+.set FIO_RESULT_LEN_1,0x6215       ; Result length byte 1
+.set FIO_RESULT_LEN_2,0x6216       ; Result length byte 2
+.set FIO_RESULT_LEN_3,0x6217       ; Result length byte 3
+.set FIO_ERROR_CODE,0x6218         ; Error code byte 0
+
+; File I/O operations
+.set FILE_OP_READ,1                ; Read file to memory
+.set FILE_OP_WRITE,2               ; Write memory to file
+
+; File I/O error codes
+.set FILE_ERR_OK,0                 ; Success
+.set FILE_ERR_NOT_FOUND,1          ; File not found
+.set FILE_ERR_PERMISSION,2         ; Permission denied
+.set FILE_ERR_PATH_TRAVERSAL,3     ; Path traversal attempt blocked
+
+; ============================================================================
 ; COPROCESSOR REGISTERS (via gateway 0xF200-0xF23F → bus 0xF2340)
 ; ============================================================================
 
@@ -2829,6 +2878,41 @@
     STORE32 COPROC_TICKET \ticket
     STORE32 COPROC_TIMEOUT \timeoutMs
     STORE32 COPROC_CMD COPROC_CMD_WAIT_CMD
+.endm
+
+; ============================================================================
+; FILE I/O MACROS
+; ============================================================================
+
+; SET_FILE_IO_BANK — select bank3 to map File I/O registers at $6200
+.macro SET_FILE_IO_BANK
+    SET_BANK3 FILE_IO_BANK
+.endm
+
+; SET_FIO_PTR — write a 32-bit bus address to a File I/O pointer register
+; reg_base: FIO_NAME_PTR_0 or FIO_DATA_PTR_0
+; addr: 32-bit bus address value
+.macro SET_FIO_PTR reg_base addr
+    ld a,(\addr)&0xFF
+    ld (\reg_base),a
+    ld a,((\addr)>>8)&0xFF
+    ld (\reg_base+1),a
+    ld a,((\addr)>>16)&0xFF
+    ld (\reg_base+2),a
+    ld a,((\addr)>>24)&0xFF
+    ld (\reg_base+3),a
+.endm
+
+; FILE_READ — trigger a File I/O read operation
+.macro FILE_READ
+    ld a,FILE_OP_READ
+    ld (FIO_CTRL),a
+.endm
+
+; FILE_WRITE — trigger a File I/O write operation
+.macro FILE_WRITE
+    ld a,FILE_OP_WRITE
+    ld (FIO_CTRL),a
 .endm
 
 ; ============================================================================

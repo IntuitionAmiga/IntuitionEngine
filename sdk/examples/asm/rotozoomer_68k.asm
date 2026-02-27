@@ -197,15 +197,11 @@ start:
                 move.l  #1,VIDEO_CTRL
                 move.l  #0,VIDEO_MODE
 
-                ; --- Generate Checkerboard Texture ---
-                ; WHY A CHECKERBOARD?
-                ; The high-contrast black/white pattern makes the rotation
-                ; and zoom clearly visible. When the texture is static, it's
-                ; hard to perceive the effect. The checkerboard's sharp edges
-                ; and alternating colours make even subtle rotations obvious.
-                ; It's also the simplest non-trivial texture to generate
-                ; procedurally -- just 4 BLIT FILL calls.
-                bsr     generate_texture
+                ; --- Load Texture ---
+                ; Copy the 256x256 RGBA texture (embedded via incbin) to
+                ; TEXTURE_BASE using a hardware BLIT COPY. The texture is
+                ; pre-converted from rotozoomtexture.png.
+                bsr     load_texture
 
                 ; --- Initialise Animation Accumulators ---
                 ; Both accumulators start at zero. They will be incremented
@@ -287,100 +283,24 @@ wait_vsync:
                 rts
 
 ; ============================================================================
-; GENERATE TEXTURE (256x256 Checkerboard via 4x BLIT FILL)
+; LOAD TEXTURE (256x256 RGBA from Embedded Raw Data via BLIT COPY)
 ; ============================================================================
-; Creates a 256x256 checkerboard texture at TEXTURE_BASE using 4 hardware
-; BLIT FILL operations -- one for each 128x128 quadrant.
-;
-; WHY BLIT FILL INSTEAD OF SOFTWARE?
-; The BLIT FILL hardware fills memory at full bus bandwidth, much faster
-; than a CPU store loop. Four 128x128 fills complete nearly instantly
-; compared to a software loop over 65,536 pixels.
-;
-; WHY A CHECKERBOARD?
-; The 2x2 pattern of alternating white and black 128x128 blocks creates
-; maximum visual contrast. When rotated, the diagonal boundaries between
-; colours make the rotation angle obvious at any zoom level. The XOR
-; alternative (pixel[x][y] = ((x^y) & 128) ? white : black) would
-; produce the same result but requires per-pixel CPU computation.
-;
-; TEXTURE MEMORY LAYOUT (256 pixels wide, 4 bytes/pixel, stride=1024):
-;
-;   +----------+----------+
-;   |  WHITE   |  BLACK   |  Row 0-127
-;   | $FFFFFFFF| $FF000000|  (128 pixels each)
-;   |          |          |
-;   +----------+----------+
-;   |  BLACK   |  WHITE   |  Row 128-255
-;   | $FF000000| $FFFFFFFF|  (128 pixels each)
-;   |          |          |
-;   +----------+----------+
-;
-;   Base address offsets:
-;     Top-left:     TEXTURE_BASE + 0        = $600000
-;     Top-right:    TEXTURE_BASE + 512      = $600200  (128 pixels * 4 bytes)
-;     Bottom-left:  TEXTURE_BASE + 131072   = $620000  (128 rows * 1024 stride)
-;     Bottom-right: TEXTURE_BASE + 131584   = $620200  (128*1024 + 128*4)
-;
-;   Colour format is BGRA (32-bit):
-;     $FFFFFFFF = white (B=FF, G=FF, R=FF, A=FF)
-;     $FF000000 = black (B=00, G=00, R=00, A=FF)
-;
-; Each BLIT FILL writes to BLT_STATUS bit 1 (busy) while in progress.
-; We poll-wait for completion before starting the next fill to avoid
-; clobbering the blitter's state mid-operation.
+; Copies the 256x256 RGBA texture from embedded raw data (texture_data,
+; included via incbin) to TEXTURE_BASE using a single hardware BLIT COPY.
 ; ============================================================================
-generate_texture:
-                ; --- Top-left quadrant: 128x128 white ---
-                move.l  #BLT_OP_FILL,BLT_OP
+load_texture:
+                move.l  #BLT_OP_COPY,BLT_OP
+                lea     texture_data,a0
+                move.l  a0,BLT_SRC
                 move.l  #TEXTURE_BASE,BLT_DST
-                move.l  #128,BLT_WIDTH
-                move.l  #128,BLT_HEIGHT
-                move.l  #$FFFFFFFF,BLT_COLOR
+                move.l  #256,BLT_WIDTH
+                move.l  #256,BLT_HEIGHT
+                move.l  #TEX_STRIDE,BLT_SRC_STRIDE
                 move.l  #TEX_STRIDE,BLT_DST_STRIDE
                 move.l  #1,BLT_CTRL
 .w1:            move.l  BLT_STATUS,d0
                 andi.l  #2,d0
                 bne.s   .w1
-
-                ; --- Top-right quadrant: 128x128 black ---
-                ; Offset = 128 pixels * 4 bytes/pixel = 512 bytes from row start
-                move.l  #BLT_OP_FILL,BLT_OP
-                move.l  #TEXTURE_BASE+512,BLT_DST
-                move.l  #128,BLT_WIDTH
-                move.l  #128,BLT_HEIGHT
-                move.l  #$FF000000,BLT_COLOR
-                move.l  #TEX_STRIDE,BLT_DST_STRIDE
-                move.l  #1,BLT_CTRL
-.w2:            move.l  BLT_STATUS,d0
-                andi.l  #2,d0
-                bne.s   .w2
-
-                ; --- Bottom-left quadrant: 128x128 black ---
-                ; Offset = 128 rows * 1024 bytes/row = 131072 bytes
-                move.l  #BLT_OP_FILL,BLT_OP
-                move.l  #TEXTURE_BASE+131072,BLT_DST
-                move.l  #128,BLT_WIDTH
-                move.l  #128,BLT_HEIGHT
-                move.l  #$FF000000,BLT_COLOR
-                move.l  #TEX_STRIDE,BLT_DST_STRIDE
-                move.l  #1,BLT_CTRL
-.w3:            move.l  BLT_STATUS,d0
-                andi.l  #2,d0
-                bne.s   .w3
-
-                ; --- Bottom-right quadrant: 128x128 white ---
-                ; Offset = 131072 (128 rows) + 512 (128 pixels) = 131584
-                move.l  #BLT_OP_FILL,BLT_OP
-                move.l  #TEXTURE_BASE+131584,BLT_DST
-                move.l  #128,BLT_WIDTH
-                move.l  #128,BLT_HEIGHT
-                move.l  #$FFFFFFFF,BLT_COLOR
-                move.l  #TEX_STRIDE,BLT_DST_STRIDE
-                move.l  #1,BLT_CTRL
-.w4:            move.l  BLT_STATUS,d0
-                andi.l  #2,d0
-                bne.s   .w4
 
                 rts
 
@@ -880,6 +800,13 @@ recip_table:
 ; The "even" directive ensures 16-bit alignment for the incbin data,
 ; preventing potential bus alignment issues on M68K.
 ; ============================================================================
+; ============================================================================
+; TEXTURE DATA - 256x256 RGBA RAW IMAGE
+; ============================================================================
+                even
+texture_data:
+                incbin  "../assets/rotozoomtexture.raw"
+
                 even
 ted_data:
                 incbin  "../assets/music/chromatic_admiration.ted"

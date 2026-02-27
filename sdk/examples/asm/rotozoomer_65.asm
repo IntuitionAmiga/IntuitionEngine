@@ -16,7 +16,7 @@
 ;
 ; === WHAT THIS DEMO DOES ===
 ;
-; A real-time rotozoomer effect: a 256x256 checkerboard texture is rotated
+; A real-time rotozoomer effect: a 256x256 RGBA texture is loaded from disk and
 ; and zoomed smoothly using the hardware Mode 7 affine texture mapper. The
 ; CPU computes just 6 parameters per frame (u0, v0, du_col, dv_col,
 ; du_row, dv_row), and the blitter handles all 307,200 pixels (640x480).
@@ -99,7 +99,7 @@
 ;   ├──────────────────────────────────────────────────────┤
 ;   │ $100000  VRAM (front buffer) -- final display output  │
 ;   ├──────────────────────────────────────────────────────┤
-;   │ $600000  Texture (256x256 checkerboard, stride 1024)  │
+;   │ $600000  Texture (256x256 RGBA, stride 1024)           │
 ;   ├──────────────────────────────────────────────────────┤
 ;   │ $900000  Back buffer (Mode 7 renders here)            │
 ;   └──────────────────────────────────────────────────────┘
@@ -278,10 +278,12 @@ sign_flag:       .res 1          ; Signed multiply: counts negative operands
     lda #0
     sta VIDEO_MODE
 
-    ; --- Generate the checkerboard texture ---
-    ; Creates a 256x256 pixel checkerboard pattern at $600000 using
-    ; 4 hardware blitter FILL operations (one per quadrant).
-    jsr generate_texture
+    ; --- Load texture from disk ---
+    ; Loads a pre-rendered 256x256 RGBA texture from disk using the File I/O
+    ; device. This replaces the procedurally generated checkerboard with a
+    ; richer texture (rotozoomtexture.raw, same as the IE32/IE64/M68K/x86
+    ; versions). The File I/O device is accessed via bank3 switching.
+    jsr load_texture
 
     ; --- Initialise animation accumulators to zero ---
     ; Both angle and scale start at 0. The high byte (table index) = 0
@@ -358,84 +360,37 @@ loop:
 .endproc
 
 ; ============================================================================
-; GENERATE TEXTURE (256x256 checkerboard via 4x BLIT FILL)
+; LOAD TEXTURE (256x256 RGBA from disk via File I/O)
 ; ============================================================================
-; Creates a classic demoscene checkerboard texture using the hardware
-; blitter's FILL operation (BLT_OP = 1). Each quadrant is filled
-; separately:
+; Loads rotozoomtexture.raw (256x256, 32bpp RGBA, 262144 bytes) from disk
+; into bus memory at TEXTURE_BASE ($600000) using the File I/O device.
 ;
-;   ┌─────────────┬─────────────┐
-;   │   WHITE     │   BLACK     │  Row 0-127
-;   │  128x128    │  128x128    │
-;   │ $600000     │ $600200     │
-;   ├─────────────┼─────────────┤
-;   │   BLACK     │   WHITE     │  Row 128-255
-;   │  128x128    │  128x128    │
-;   │ $620000     │ $620200     │
-;   └─────────────┴─────────────┘
+; The 6502 can't incbin the 262KB texture (it would exceed the 64KB address
+; space). Instead we use bank3 switching to access the File I/O registers
+; at bus address $F2200, which appear in the bank3 window at $6200.
 ;
-; Address calculations:
-;   Top-left:     TEXTURE_BASE + 0 = $600000
-;   Top-right:    TEXTURE_BASE + 128*4 = $600000 + 512 = $600200
-;   Bottom-left:  TEXTURE_BASE + 128*1024 = $600000 + 131072 = $620000
-;   Bottom-right: TEXTURE_BASE + 128*1024 + 128*4 = $600000 + 131584 = $620200
-;
-; Each pixel is 4 bytes (RGBA). Stride = 256 * 4 = 1024 bytes.
-; The top-right offset is 128 pixels * 4 bytes = 512 bytes.
-; The bottom-left offset is 128 rows * 1024 bytes/row = 131072 bytes.
-;
-; Colours:
-;   White = $FFFFFFFF (RGBA: fully opaque white)
-;   Black = $FF000000 (RGBA: fully opaque black)
-;
-; WHY USE THE BLITTER FOR TEXTURE GENERATION?
-; The 6502 would need to write 256*256*4 = 262,144 bytes to create the
-; texture. At ~5 cycles per STA, that's over 1.3 million cycles just
-; for the stores. The blitter does it in hardware, essentially for free.
+; HOW IT WORKS:
+;   1. Select bank3 = $0079 to map File I/O registers at $6200
+;      Bus address = bank3 * $2000 + offset = $F2000 + $200 = $F2200
+;   2. Write the bus address of the filename string to FILE_NAME_PTR
+;   3. Write TEXTURE_BASE ($600000) to FILE_DATA_PTR
+;   4. Write FILE_OP_READ to FILE_CTRL to trigger the load
 ; ============================================================================
-.proc generate_texture
-    ; --- Top-left quadrant: 128x128 white ---
-    STORE32 BLT_OP, 1              ; BLT_OP = 1 = FILL operation
-    STORE32 BLT_DST_0, TEXTURE_BASE
-    STORE32 BLT_WIDTH_LO, 128
-    STORE32 BLT_HEIGHT_LO, 128
-    STORE32 BLT_COLOR_0, $FFFFFFFF ; Opaque white (ABGR: $FF,$FF,$FF,$FF)
-    STORE32 BLT_DST_STRIDE_LO, TEX_STRIDE
-    START_BLIT                      ; Trigger the blitter
-    WAIT_BLIT                       ; Spin until blitter finishes
+.proc load_texture
+    ; Select bank3 for File I/O access
+    SET_FILE_IO_BANK
 
-    ; --- Top-right quadrant: 128x128 black ---
-    ; Offset = 128 pixels * 4 bytes = 512 bytes from texture base
-    STORE32 BLT_OP, 1
-    STORE32 BLT_DST_0, TEXTURE_BASE+512
-    STORE32 BLT_WIDTH_LO, 128
-    STORE32 BLT_HEIGHT_LO, 128
-    STORE32 BLT_COLOR_0, $FF000000 ; Opaque black
-    STORE32 BLT_DST_STRIDE_LO, TEX_STRIDE
-    START_BLIT
-    WAIT_BLIT
+    ; Set FILE_NAME_PTR to point to the filename string in bus memory.
+    ; The filename string (texture_filename) is embedded in this binary at a
+    ; known address. Since the 6502 program is loaded at org 0, the string's
+    ; 6502 address equals its bus address.
+    SET_FIO_PTR FIO_NAME_PTR_0, texture_filename
 
-    ; --- Bottom-left quadrant: 128x128 black ---
-    ; Offset = 128 rows * 1024 bytes/row = 131072 bytes from texture base
-    STORE32 BLT_OP, 1
-    STORE32 BLT_DST_0, TEXTURE_BASE+131072
-    STORE32 BLT_WIDTH_LO, 128
-    STORE32 BLT_HEIGHT_LO, 128
-    STORE32 BLT_COLOR_0, $FF000000
-    STORE32 BLT_DST_STRIDE_LO, TEX_STRIDE
-    START_BLIT
-    WAIT_BLIT
+    ; Set FILE_DATA_PTR to TEXTURE_BASE where texture data will be loaded
+    SET_FIO_PTR FIO_DATA_PTR_0, TEXTURE_BASE
 
-    ; --- Bottom-right quadrant: 128x128 white ---
-    ; Offset = 131072 + 512 = 131584 bytes from texture base
-    STORE32 BLT_OP, 1
-    STORE32 BLT_DST_0, TEXTURE_BASE+131584
-    STORE32 BLT_WIDTH_LO, 128
-    STORE32 BLT_HEIGHT_LO, 128
-    STORE32 BLT_COLOR_0, $FFFFFFFF
-    STORE32 BLT_DST_STRIDE_LO, TEX_STRIDE
-    START_BLIT
-    WAIT_BLIT
+    ; Trigger the file read operation
+    FILE_READ
 
     rts
 .endproc
@@ -1209,7 +1164,7 @@ loop:
 .proc render_mode7
     ; --- Set up constant blitter parameters ---
     ; These don't change between frames but must be set each time
-    ; because other blitter operations (generate_texture, blit_to_front)
+    ; because other blitter operations (load_texture, blit_to_front)
     ; overwrite these registers.
     STORE32 BLT_OP, BLT_OP_MODE7_OP
     STORE32 BLT_SRC_0, TEXTURE_BASE
@@ -1503,6 +1458,14 @@ recip_table:
     .word 1149,1134,1119,1103,1087,1071,1055,1038,1022,1005,988,972,955,938,922,905
     .word 889,873,858,842,827,812,797,782,768,754,740,727,714,701,689,676
     .word 665,653,642,631,620,610,599,589,580,571,561,553,544,536,528,520
+
+; ============================================================================
+; TEXTURE FILENAME - Null-terminated path for File I/O
+; ============================================================================
+; This string is read by the File I/O device via bus.Read8() to locate the
+; texture file on disk. The path is relative to the engine's working directory.
+texture_filename:
+    .byte "sdk/examples/assets/rotozoomtexture.raw",0
 
 ; ============================================================================
 ; MUSIC DATA - PSG (AY-3-8910) Format

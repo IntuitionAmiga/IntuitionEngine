@@ -1038,6 +1038,36 @@ The Intuition Engine provides a memory-mapped File I/O device for reading and wr
 .fname:         dc.b    "hello.txt", 0
 ```
 
+### Byte-Level Access (Z80 / 6502)
+
+8-bit CPUs cannot write 32-bit values in a single instruction. The File I/O device supports byte-level writes: each 4-byte register can be written one byte at a time (little-endian), and the device assembles the bytes internally. Only writing byte 0 of `FILE_CTRL` triggers the operation.
+
+Access is via **bank3 switching** — set bank3 = `$0079` to map File I/O registers into the bank3 window at `$6200`:
+
+```
+Bank3 = $0079 → bus base = $0079 × $2000 = $F2000
+FILE_IO_BASE = $F2200 → offset = $200
+Z80/6502 address = $6000 + $200 = $6200
+```
+
+**Z80 example** (using `ie80.inc` macros):
+```asm
+    SET_FILE_IO_BANK                    ; bank3 = $0079
+    SET_FIO_PTR FIO_NAME_PTR_0 fname    ; write filename address
+    SET_FIO_PTR FIO_DATA_PTR_0 $600000  ; write destination address
+    FILE_READ                           ; trigger read
+```
+
+**6502 example** (using `ie65.inc` macros):
+```asm
+    SET_FILE_IO_BANK                    ; bank3 = $0079
+    SET_FIO_PTR FIO_NAME_PTR_0, fname   ; write filename address
+    SET_FIO_PTR FIO_DATA_PTR_0, $600000 ; write destination address
+    FILE_READ                           ; trigger read
+```
+
+See `ie80.inc` / `ie65.inc` for the full set of `FIO_*` register byte addresses and macros.
+
 ---
 
 ## 14. Floating Point Operations

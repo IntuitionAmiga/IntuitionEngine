@@ -20,7 +20,7 @@
 9 REM the SNES used for its famous "Mode 7" rotating/scaling
 10 REM backgrounds in games like F-Zero and Mario Kart.
 11 REM
-12 REM A 256x256 checkerboard texture is generated in memory, then
+12 REM A 256x256 texture is loaded from disk, then
 13 REM every frame the blitter rotates and zooms it across the full
 14 REM 640x480 display. SID music plays in the background.
 15 REM
@@ -76,38 +76,14 @@
 260 POKE8 &HF0E18, 15
 
 300 REM ================================================================
-301 REM  TEXTURE GENERATION (256x256 CHECKERBOARD)
+301 REM  TEXTURE LOADING (256x256 RGBA FROM DISK)
 302 REM ================================================================
-303 REM  We build a 2x2 checkerboard using four 128x128 BLIT FILL
-304 REM  operations. Each pixel is 4 bytes (32-bit ARGB), so one row
-305 REM  of the 256-pixel-wide texture is 1024 bytes (the stride).
-306 REM
-307 REM  TEXTURE LAYOUT:
-308 REM    +--- 128px ---+--- 128px ---+
-309 REM    |             |             |
-310 REM    |   WHITE     |   BLACK     |  top half
-311 REM    |  TB+0       |  TB+512     |
-312 REM    +-------------+-------------+
-313 REM    |             |             |
-314 REM    |   BLACK     |   WHITE     |  bottom half
-315 REM    |  TB+131072  |  TB+131584  |
-316 REM    +-------------+-------------+
-317 REM
-318 REM  ADDRESS CALCULATIONS:
-319 REM    TB+0      = top-left origin
-320 REM    TB+512    = 128 pixels * 4 bytes = 512 bytes right
-321 REM    TB+131072 = 128 rows * 1024 stride = one half-height down
-322 REM    TB+131584 = 131072 + 512 = bottom-right quadrant
-323 REM
-324 REM  WHY BLIT FILL?
-325 REM  Four hardware fills are faster and simpler than nested
-326 REM  FOR/NEXT loops POKEing 65,536 pixels individually.
+303 REM  Load the 256x256x4 (262,144 byte) RGBA texture from disk
+304 REM  into bus memory at TB. ST is the texture stride in bytes
+305 REM  (256 pixels * 4 bytes = 1024). Both TB and ST are used by
+306 REM  the Mode7 blit on line 1030.
 330 TB=&H600000: ST=1024
-340 W=&HFFFFFFFF: B=&HFF000000
-350 BLIT FILL TB, 128, 128, W, ST
-360 BLIT FILL TB+512, 128, 128, B, ST
-370 BLIT FILL TB+131072, 128, 128, B, ST
-380 BLIT FILL TB+131584, 128, 128, W, ST
+340 BLOAD "sdk/examples/assets/rotozoomtexture.raw", TB
 
 400 REM ================================================================
 401 REM  CONSTANTS AND ANIMATION STATE

@@ -11,8 +11,8 @@ The rotozoomer is the canonical "hello world" demo: a hardware-accelerated rotat
 | `rotozoomer.asm` | IE32 | IEVideoChip | AHX | Mode7 blitter + Amiga tracker music |
 | `rotozoomer_ie64.asm` | IE64 | IEVideoChip | SAP/POKEY | Mode7 blitter + Atari 8-bit music |
 | `rotozoomer_68k.asm` | M68K | IEVideoChip | TED audio | Mode7 blitter + C264 music |
-| `rotozoomer_z80.asm` | Z80 | IEVideoChip | SID | Mode7 blitter + C64 music |
-| `rotozoomer_65.asm` | 6502 | IEVideoChip | AHX | Mode7 blitter + Amiga tracker music |
+| `rotozoomer_z80.asm` | Z80 | IEVideoChip | SID | Mode7 blitter + C64 music; loads `rotozoomtexture.raw` via File I/O |
+| `rotozoomer_65.asm` | 6502 | IEVideoChip | AHX | Mode7 blitter + Amiga tracker music; loads `rotozoomtexture.raw` via File I/O |
 | `rotozoomer_x86.asm` | x86 | IEVideoChip | PSG | Mode7 blitter + AY-3-8910 music |
 | `rotozoomer_basic.bas` | IE64 (BASIC) | IEVideoChip | SID | Mode7 blitter from EhBASIC |
 | `rotozoomer_gem.asm` | M68K (EmuTOS) | IEVideoChip | -- | Mode7 blitter in a GEM desktop window (requires EmuTOS boot) — included in automated product demo |

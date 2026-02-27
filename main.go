@@ -1014,6 +1014,7 @@ func main() {
 	// Initialize File I/O
 	fileIO := NewFileIODevice(sysBus, ".") // Current directory as base
 	sysBus.MapIO(FILE_IO_BASE, FILE_IO_END, fileIO.HandleRead, fileIO.HandleWrite)
+	sysBus.MapIOByte(FILE_IO_BASE, FILE_IO_END, fileIO.HandleWrite8)
 
 	// Attach bus memory to sound engines and SoundChip so register writes
 	// during file playback are mirrored to raw memory, making them visible

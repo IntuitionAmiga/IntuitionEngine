@@ -103,14 +103,14 @@ start:
                 lea     12(sp),sp
 
                 ; --- Set up local stack ---
-                lea     stack_end(pc),sp
+                lea     stack_end,sp
 
                 ; --- Main application ---
                 bsr     gem_init
                 tst.w   d0
                 bmi     exit_no_gem
 
-                bsr     generate_texture
+                bsr     load_texture
                 bsr     start_music
                 bsr     open_window
                 tst.w   d0
@@ -374,7 +374,7 @@ event_loop:
                 move.w  #0,aes_intin+30         ; hicount
 
                 ; addrin[0] = message buffer
-                lea     msg_buf(pc),a0
+                lea     msg_buf,a0
                 move.l  a0,aes_addrin
                 bsr     aes_call
 
@@ -830,61 +830,25 @@ stop_music:
                 rts
 
 ; ============================================================================
-; GENERATE TEXTURE (256x256 Checkerboard)
+; LOAD TEXTURE (256x256 RGBA from Embedded Raw Data via BLIT COPY)
 ; ============================================================================
-
-generate_texture:
+load_texture:
                 ; Enable VideoChip (needed for blitter)
                 move.l  #1,VIDEO_CTRL
                 move.l  #0,VIDEO_MODE
 
-                ; Top-left: white
-                move.l  #BLT_OP_FILL,BLT_OP
+                move.l  #BLT_OP_COPY,BLT_OP
+                lea     texture_data,a0
+                move.l  a0,BLT_SRC
                 move.l  #TEXTURE_BASE,BLT_DST
-                move.l  #128,BLT_WIDTH
-                move.l  #128,BLT_HEIGHT
-                move.l  #$FFFFFFFF,BLT_COLOR
+                move.l  #256,BLT_WIDTH
+                move.l  #256,BLT_HEIGHT
+                move.l  #TEX_STRIDE,BLT_SRC_STRIDE
                 move.l  #TEX_STRIDE,BLT_DST_STRIDE
                 move.l  #1,BLT_CTRL
 .w1:            move.l  BLT_STATUS,d0
                 andi.l  #2,d0
                 bne.s   .w1
-
-                ; Top-right: black
-                move.l  #BLT_OP_FILL,BLT_OP
-                move.l  #TEXTURE_BASE+512,BLT_DST
-                move.l  #128,BLT_WIDTH
-                move.l  #128,BLT_HEIGHT
-                move.l  #$FF000000,BLT_COLOR
-                move.l  #TEX_STRIDE,BLT_DST_STRIDE
-                move.l  #1,BLT_CTRL
-.w2:            move.l  BLT_STATUS,d0
-                andi.l  #2,d0
-                bne.s   .w2
-
-                ; Bottom-left: black
-                move.l  #BLT_OP_FILL,BLT_OP
-                move.l  #TEXTURE_BASE+131072,BLT_DST
-                move.l  #128,BLT_WIDTH
-                move.l  #128,BLT_HEIGHT
-                move.l  #$FF000000,BLT_COLOR
-                move.l  #TEX_STRIDE,BLT_DST_STRIDE
-                move.l  #1,BLT_CTRL
-.w3:            move.l  BLT_STATUS,d0
-                andi.l  #2,d0
-                bne.s   .w3
-
-                ; Bottom-right: white
-                move.l  #BLT_OP_FILL,BLT_OP
-                move.l  #TEXTURE_BASE+131584,BLT_DST
-                move.l  #128,BLT_WIDTH
-                move.l  #128,BLT_HEIGHT
-                move.l  #$FFFFFFFF,BLT_COLOR
-                move.l  #TEX_STRIDE,BLT_DST_STRIDE
-                move.l  #1,BLT_CTRL
-.w4:            move.l  BLT_STATUS,d0
-                andi.l  #2,d0
-                bne.s   .w4
                 rts
 
 ; ============================================================================
@@ -980,6 +944,13 @@ recip_table:
 ; ============================================================================
 ; AHX MUSIC DATA
 ; ============================================================================
+
+; ============================================================================
+; TEXTURE DATA - 256x256 RGBA RAW IMAGE
+; ============================================================================
+                even
+texture_data:
+                incbin  "../assets/rotozoomtexture.raw"
 
                 even
 ahx_data:

@@ -271,11 +271,11 @@ start:
     LDA #0
     STA @VIDEO_MODE
 
-    ; --- Generate Texture ---
-    ; Build the 256x256 checkerboard using 4 hardware blitter FILL operations.
-    ; We do this once at startup; the texture persists in memory at 0x600000
-    ; for the entire duration of the demo.
-    JSR generate_texture
+    ; --- Load Texture ---
+    ; Copy the 256x256 RGBA texture (embedded via .incbin) to TEXTURE_BASE
+    ; using a hardware BLIT COPY. The texture is pre-converted from
+    ; rotozoomtexture.png.
+    JSR load_texture
 
     ; --- Initialise Animation State ---
     ; Both accumulators start at zero. The angle accumulator determines
@@ -370,118 +370,30 @@ wait_start:
     RTS
 
 ; ============================================================================
-; GENERATE TEXTURE (256x256 Checkerboard via 4x Hardware BLIT FILL)
+; LOAD TEXTURE (256x256 RGBA from Embedded Raw Data via BLIT COPY)
 ; ============================================================================
-; Creates the texture used by the Mode7 blitter for the rotozoomer effect.
-;
-; WHY 4x BLIT FILL?
-; The blitter's FILL operation (BLT_OP=1) fills a rectangular region with
-; a solid colour. A 2x2 checkerboard requires 4 filled quadrants:
-; two white (0xFFFFFFFF = opaque white in BGRA) and two black (0xFF000000
-; = opaque black). Each quadrant is 128x128 pixels.
-;
-; WHY NOT SOFTWARE FILL?
-; Filling 256*256*4 = 262,144 bytes in software would require a large
-; loop. The hardware blitter does it in a single operation per quadrant,
-; running in parallel with the CPU. We just need to wait for each fill
-; to complete (BLT_STATUS bit 1 = busy) before starting the next one,
-; since they share the same blitter registers.
-;
-; BLITTER REGISTER SETUP:
-;   BLT_OP         = 1 (FILL operation)
-;   BLT_DST        = destination address for this quadrant
-;   BLT_WIDTH      = 128 (pixels per row in this quadrant)
-;   BLT_HEIGHT     = 128 (rows in this quadrant)
-;   BLT_COLOR      = fill colour (32-bit BGRA)
-;   BLT_DST_STRIDE = 1024 (bytes per row in the FULL texture, not the
-;                    quadrant -- the blitter advances the destination
-;                    pointer by this amount after each row)
-;   BLT_CTRL       = 1 (trigger the blit)
+; Copies the 256x256 RGBA texture from embedded raw data (texture_data,
+; included via .incbin) to TEXTURE_BASE using a single hardware BLIT COPY.
 ; ============================================================================
-generate_texture:
-    ; --- Top-left 128x128: WHITE ---
-    ; This is the first quadrant. After triggering, we poll BLT_STATUS
-    ; bit 1 (mask=2) until it clears, indicating the blit is complete.
-    LDA #1
+load_texture:
+    LDA #BLT_OP_COPY
     STA @BLT_OP
+    LDA #texture_data
+    STA @BLT_SRC
     LDA #TEXTURE_BASE
     STA @BLT_DST
-    LDA #128
+    LDA #256
     STA @BLT_WIDTH
     STA @BLT_HEIGHT
-    LDA #0xFFFFFFFF
-    STA @BLT_COLOR
     LDA #TEX_STRIDE
+    STA @BLT_SRC_STRIDE
     STA @BLT_DST_STRIDE
     LDA #1
     STA @BLT_CTRL
-gt_w1:
+lt_w1:
     LDA @BLT_STATUS
     AND A, #2
-    JNZ A, gt_w1
-
-    ; --- Top-right 128x128: BLACK ---
-    ; TEX_TR = TEXTURE_BASE + 128*4 = TEXTURE_BASE + 0x200
-    ; The 0x200 offset skips 128 pixels (each 4 bytes) to reach column 128.
-    LDA #1
-    STA @BLT_OP
-    LDA #TEX_TR
-    STA @BLT_DST
-    LDA #128
-    STA @BLT_WIDTH
-    STA @BLT_HEIGHT
-    LDA #0xFF000000
-    STA @BLT_COLOR
-    LDA #TEX_STRIDE
-    STA @BLT_DST_STRIDE
-    LDA #1
-    STA @BLT_CTRL
-gt_w2:
-    LDA @BLT_STATUS
-    AND A, #2
-    JNZ A, gt_w2
-
-    ; --- Bottom-left 128x128: BLACK ---
-    ; TEX_BL = TEXTURE_BASE + 128*1024 = TEXTURE_BASE + 0x20000
-    ; The 0x20000 offset skips 128 rows (each 1024 bytes) to reach row 128.
-    LDA #1
-    STA @BLT_OP
-    LDA #TEX_BL
-    STA @BLT_DST
-    LDA #128
-    STA @BLT_WIDTH
-    STA @BLT_HEIGHT
-    LDA #0xFF000000
-    STA @BLT_COLOR
-    LDA #TEX_STRIDE
-    STA @BLT_DST_STRIDE
-    LDA #1
-    STA @BLT_CTRL
-gt_w3:
-    LDA @BLT_STATUS
-    AND A, #2
-    JNZ A, gt_w3
-
-    ; --- Bottom-right 128x128: WHITE ---
-    ; TEX_BR = TEXTURE_BASE + 0x20000 + 0x200
-    ; This completes the checkerboard: white diagonals, black diagonals.
-    LDA #1
-    STA @BLT_OP
-    LDA #TEX_BR
-    STA @BLT_DST
-    LDA #128
-    STA @BLT_WIDTH
-    STA @BLT_HEIGHT
-    LDA #0xFFFFFFFF
-    STA @BLT_COLOR
-    LDA #TEX_STRIDE
-    STA @BLT_DST_STRIDE
-    LDA #1
-    STA @BLT_CTRL
-gt_w4:
-    LDA @BLT_STATUS
-    AND A, #2
-    JNZ A, gt_w4
+    JNZ A, lt_w1
 
     RTS
 
@@ -1143,6 +1055,12 @@ recip_table:
 ; The ahx_data_end label immediately after the .incbin allows us to compute
 ; the file size at assemble time: size = ahx_data_end - ahx_data.
 ; ============================================================================
+; ============================================================================
+; TEXTURE DATA - 256x256 RGBA RAW IMAGE
+; ============================================================================
+texture_data:
+.incbin "../assets/rotozoomtexture.raw"
+
 ahx_data:
 .incbin "../assets/music/Fairlightz.ahx"
 ahx_data_end:

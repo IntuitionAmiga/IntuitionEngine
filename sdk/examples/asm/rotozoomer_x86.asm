@@ -214,11 +214,11 @@ start:
                 mov dword [VIDEO_CTRL], 1
                 mov dword [VIDEO_MODE], 0
 
-                ; --- Generate Checkerboard Texture ---
-                ; Create a 256x256 checkerboard pattern using 4 blitter fill
-                ; operations (one per 128x128 quadrant). This texture will be
-                ; mapped onto the screen by the Mode7 blitter every frame.
-                call generate_texture
+                ; --- Load Texture ---
+                ; Copy the 256x256 RGBA texture (embedded via incbin) to
+                ; TEXTURE_BASE using a hardware BLIT COPY. The texture is
+                ; pre-converted from rotozoomtexture.png.
+                call load_texture
 
                 ; --- Initialise Animation Accumulators ---
                 ; Both start at zero: angle_accum controls rotation, scale_accum
@@ -321,96 +321,24 @@ wait_vsync:
                 ret
 
 ; ============================================================================
-; GENERATE TEXTURE (256x256 Checkerboard via 4x BLIT FILL)
+; LOAD TEXTURE (256x256 RGBA from Embedded Raw Data via BLIT COPY)
 ; ============================================================================
-; Creates the texture that Mode7 will rotate and zoom. The checkerboard
-; pattern is ideal for a rotozoomer because:
-;   1. High contrast makes rotation clearly visible
-;   2. Regular grid lines show zoom distortion intuitively
-;   3. Tiling is seamless (the pattern wraps naturally at 256-pixel boundaries)
-;
-; WHY 4x BLIT FILL (NOT SOFTWARE):
-; The blitter hardware can fill a rectangular region with a solid colour in
-; a single operation, far faster than a CPU loop writing individual pixels.
-; We use 4 fills to create the 2x2 checkerboard pattern:
-;
-;   +-------+-------+      Each quadrant is 128x128 pixels (128x128x4 = 65536 bytes)
-;   | WHITE | BLACK |      Total texture: 256x256x4 = 262,144 bytes
-;   | (0,0) |(128,0)|
-;   +-------+-------+
-;   | BLACK | WHITE |
-;   |(0,128)|(128,128)|
-;   +-------+-------+
-;
-; WHY TEXTURE AT 0x600000, STRIDE 1024:
-; The texture lives above VRAM (0x100000) to avoid conflicts. Each pixel
-; is 4 bytes (BGRA), so a 256-pixel row = 256*4 = 1024 bytes stride.
-; The Mode7 blitter uses TEX_W_MASK=255 and TEX_H_MASK=255 to wrap
-; texture coordinates, creating infinite tiling from this 256x256 source.
-;
-; ADDRESS CALCULATIONS:
-;   Top-left  (0,0):     TEXTURE_BASE + 0*TEX_STRIDE + 0*4 = 0x600000
-;   Top-right (128,0):   TEXTURE_BASE + 0*TEX_STRIDE + 128*4 = 0x600000 + 512 = 0x600200
-;   Bottom-left (0,128): TEXTURE_BASE + 128*TEX_STRIDE + 0*4 = 0x600000 + 131072 = 0x620000
-;   Bottom-right (128,128): TEXTURE_BASE + 128*1024 + 128*4 = 0x600000 + 131584 = 0x620200
-;
-; WHY BLT_STATUS BIT 2 (mask value 2):
-; Bit 1 of BLT_STATUS indicates the blitter is busy. We poll until it
-; clears before issuing the next fill, because the blitter can only
-; process one operation at a time.
+; Copies the 256x256 RGBA texture from embedded raw data (texture_data,
+; included via incbin) to TEXTURE_BASE using a single hardware BLIT COPY.
 ; ============================================================================
 
-generate_texture:
-                ; --- Quadrant 1: Top-left 128x128 WHITE ---
-                mov dword [BLT_OP], BLT_OP_FILL
+load_texture:
+                mov dword [BLT_OP], BLT_OP_COPY
+                mov dword [BLT_SRC], texture_data
                 mov dword [BLT_DST], TEXTURE_BASE
-                mov dword [BLT_WIDTH], 128
-                mov dword [BLT_HEIGHT], 128
-                mov dword [BLT_COLOR], 0xFFFFFFFF
+                mov dword [BLT_WIDTH], 256
+                mov dword [BLT_HEIGHT], 256
+                mov dword [BLT_SRC_STRIDE], TEX_STRIDE
                 mov dword [BLT_DST_STRIDE], TEX_STRIDE
                 mov dword [BLT_CTRL], 1
 .w1:            mov eax, [BLT_STATUS]
                 test eax, 2
                 jnz .w1
-
-                ; --- Quadrant 2: Top-right 128x128 BLACK ---
-                ; Offset = 128 pixels * 4 bytes = 512 bytes from row start
-                mov dword [BLT_OP], BLT_OP_FILL
-                mov dword [BLT_DST], TEXTURE_BASE+512
-                mov dword [BLT_WIDTH], 128
-                mov dword [BLT_HEIGHT], 128
-                mov dword [BLT_COLOR], 0xFF000000
-                mov dword [BLT_DST_STRIDE], TEX_STRIDE
-                mov dword [BLT_CTRL], 1
-.w2:            mov eax, [BLT_STATUS]
-                test eax, 2
-                jnz .w2
-
-                ; --- Quadrant 3: Bottom-left 128x128 BLACK ---
-                ; Offset = 128 rows * 1024 bytes/row = 131072 bytes from texture base
-                mov dword [BLT_OP], BLT_OP_FILL
-                mov dword [BLT_DST], TEXTURE_BASE+131072
-                mov dword [BLT_WIDTH], 128
-                mov dword [BLT_HEIGHT], 128
-                mov dword [BLT_COLOR], 0xFF000000
-                mov dword [BLT_DST_STRIDE], TEX_STRIDE
-                mov dword [BLT_CTRL], 1
-.w3:            mov eax, [BLT_STATUS]
-                test eax, 2
-                jnz .w3
-
-                ; --- Quadrant 4: Bottom-right 128x128 WHITE ---
-                ; Offset = 128*1024 + 128*4 = 131072 + 512 = 131584
-                mov dword [BLT_OP], BLT_OP_FILL
-                mov dword [BLT_DST], TEXTURE_BASE+131584
-                mov dword [BLT_WIDTH], 128
-                mov dword [BLT_HEIGHT], 128
-                mov dword [BLT_COLOR], 0xFFFFFFFF
-                mov dword [BLT_DST_STRIDE], TEX_STRIDE
-                mov dword [BLT_CTRL], 1
-.w4:            mov eax, [BLT_STATUS]
-                test eax, 2
-                jnz .w4
 
                 ret
 
@@ -976,6 +904,12 @@ recip_table:
 ; INCBIN loads the raw file contents at this position in the binary.
 ; psg_data_end - psg_data gives the file size for PSG_PLAY_LEN.
 ; ============================================================================
+
+; ============================================================================
+; TEXTURE DATA - 256x256 RGBA RAW IMAGE
+; ============================================================================
+texture_data:
+                incbin "../assets/rotozoomtexture.raw"
 
 psg_data:
                 incbin "../assets/music/OverscanScreen.ym"

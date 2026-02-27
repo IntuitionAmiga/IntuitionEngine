@@ -1232,6 +1232,21 @@
 .equ VOODOO_FBZ_DITHER_2X2   0x0800         ; Use 2x2 dither pattern (vs 4x4)
 
 ; ============================================================================
+; FILE I/O REGISTERS (0xF2200-0xF221F)
+; ============================================================================
+
+.equ FILE_NAME_PTR      0xF2200       ; Pointer to null-terminated filename (W)
+.equ FILE_DATA_PTR      0xF2204       ; Pointer to data buffer (W)
+.equ FILE_DATA_LEN      0xF2208       ; Data length for WRITE (W)
+.equ FILE_CTRL          0xF220C       ; 1=READ, 2=WRITE (W triggers)
+.equ FILE_STATUS        0xF2210       ; 0=OK, 1=ERROR (R)
+.equ FILE_RESULT_LEN    0xF2214       ; Bytes actually read (R)
+.equ FILE_ERROR_CODE    0xF2218       ; 0=OK, 1=NOT_FOUND, 2=PERMISSION, 3=TRAVERSAL (R)
+
+.equ FILE_OP_READ       1
+.equ FILE_OP_WRITE      2
+
+; ============================================================================
 ; COPROCESSOR REGISTERS (0xF2340-0xF237F)
 ; ============================================================================
 

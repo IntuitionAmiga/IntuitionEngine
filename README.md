@@ -408,7 +408,7 @@ All hardware is accessed through memory-mapped registers in the `$F0000-$FFFFF` 
 | MOD | `$F0BC0-$F0BD7` | ProTracker .mod player with Amiga filters |
 | Banking | `$F700-$F7F0` | Bank window control (Z80/6502 only) |
 | VGA | `$F1000-$F13FF` | VGA mode, DAC, sequencer, CRTC, palette |
-| File I/O | `$F2200-$F221F` | Host filesystem access (LOAD/SAVE) |
+| File I/O | `$F2200-$F221F` | Host filesystem access (read/write); supports byte-level writes for 8-bit CPUs |
 | Coprocessor | `$F2340-$F237F` | Worker CPU lifecycle and async RPC |
 
 Additionally, VGA uses legacy PC-compatible memory windows:
@@ -451,7 +451,7 @@ The system's memory layout is designed to provide efficient access to both progr
 0x0F0F00 - 0x0F0F05: TED registers (Plus/4 audio)
 0x0F0F10 - 0x0F0F1C: TED playback control
 0x0F1000 - 0x0F13FF: VGA registers (IBM VGA emulation)
-0x0F2200 - 0x0F221F: File I/O registers
+0x0F2200 - 0x0F221F: File I/O registers (see below)
 0x0F2340 - 0x0F237F: Coprocessor MMIO registers
 0x0A0000 - 0x0AFFFF: VGA VRAM window (Mode 13h/12h)
 0x0B8000 - 0x0BFFFF: VGA text buffer
@@ -1517,7 +1517,29 @@ The PRIOR register controls display priority and special GTIA modes:
     move.b  #$00,GTIA_COLBK     ; Black background
 ```
 
-## 3.18 Coprocessor Subsystem (0x0F2340 - 0x0F237F)
+## 3.18 File I/O Device (0x0F2200 - 0x0F221F)
+
+The File I/O device provides sandboxed host filesystem access. Programs can read and write files within the engine's working directory.
+
+### MMIO Registers
+
+| Address | Name | R/W | Description |
+|---------|------|-----|-------------|
+| `$F2200` | `FILE_NAME_PTR` | W | Pointer to null-terminated filename in bus memory |
+| `$F2204` | `FILE_DATA_PTR` | W | Pointer to data buffer in bus memory |
+| `$F2208` | `FILE_DATA_LEN` | W | Data length in bytes (for WRITE operations) |
+| `$F220C` | `FILE_CTRL` | W | Write 1=READ, 2=WRITE (triggers the operation) |
+| `$F2210` | `FILE_STATUS` | R | 0=OK, 1=ERROR |
+| `$F2214` | `FILE_RESULT_LEN` | R | Number of bytes actually read |
+| `$F2218` | `FILE_ERROR_CODE` | R | 0=OK, 1=NOT_FOUND, 2=PERMISSION, 3=PATH_TRAVERSAL |
+
+### Byte-Level Access (Z80 / 6502)
+
+All registers support byte-level writes for 8-bit CPUs. Each 32-bit register can be written one byte at a time (little-endian); the device assembles bytes internally. Only writing byte 0 of `FILE_CTRL` triggers the operation.
+
+8-bit CPUs access File I/O via **bank3 switching** — set bank3 = `$0079` to map the registers into the bank3 window at `$6200`. The `ie80.inc` and `ie65.inc` include files provide `FIO_*` byte-address constants and convenience macros (`SET_FILE_IO_BANK`, `SET_FIO_PTR`, `FILE_READ`, `FILE_WRITE`).
+
+## 3.19 Coprocessor Subsystem (0x0F2340 - 0x0F237F)
 
 The coprocessor subsystem allows any CPU to launch worker CPUs (IE32, 6502, M68K, Z80, x86) that run service binaries. Workers poll a shared mailbox ring buffer for requests, process them, and write results. The caller manages worker lifecycle and request routing via MMIO registers. Available in all CPU modes.
 
@@ -1661,7 +1683,7 @@ Complete caller examples are provided for all CPU architectures:
 | `sdk/examples/asm/coproc_caller_z80.asm` | Z80 | M68K | Gateway access via `STORE32` macros |
 | `sdk/examples/asm/coproc_caller_65.asm` | 6502 | IE32 | Gateway access via `STORE32` macros |
 
-## 3.19 Voodoo 3D Graphics (0x0F4000 - 0x0F43FF)
+## 3.20 Voodoo 3D Graphics (0x0F4000 - 0x0F43FF)
 
 The Voodoo chip emulates a 3DFX SST-1 graphics accelerator using High-Level Emulation (HLE). Instead of software rasterization, register writes are translated to GPU draw calls for hardware-accelerated 3D rendering with Vulkan (or software fallback).
 

@@ -48,6 +48,12 @@ All include files provide these categories of definitions:
 ### Timer
 - `TIMER_CTRL` / `TIMER_COUNT` / `TIMER_RELOAD`
 
+### File I/O
+- `FILE_NAME_PTR` / `FILE_DATA_PTR` / `FILE_DATA_LEN` - Pointers and length (32-bit CPUs)
+- `FILE_CTRL` - Control register (write `FILE_OP_READ` or `FILE_OP_WRITE`)
+- `FILE_STATUS` / `FILE_RESULT_LEN` / `FILE_ERROR_CODE` - Result registers
+- 8-bit CPUs (Z80/6502) use byte-addressable variants via bank3 window: `FIO_NAME_PTR_0`..`FIO_NAME_PTR_3`, `FIO_DATA_PTR_0`..`FIO_DATA_PTR_3`, `FIO_CTRL`, etc.
+
 ## Per-CPU Details
 
 ### ie32.inc
@@ -123,7 +129,7 @@ zp_frame   .res 2    ; Frame counter
 zp_scratch .res 8    ; Scratch space
 ```
 
-**Macros:** `SET_BANK1`..`SET_BANK3`, `SET_VRAM_BANK`, `STORE16`, `STORE32`, `STORE32_ZP`, `WAIT_VBLANK`, `WAIT_BLIT`, `START_BLIT`, `SET_BLT_OP/WIDTH/HEIGHT/COLOR`, `SET_SRC_STRIDE`, `SET_DST_STRIDE`, `ADD16`, `INC16`, `CMP16`, AHX player macros, coprocessor helpers.
+**Macros:** `SET_BANK1`..`SET_BANK3`, `SET_VRAM_BANK`, `STORE16`, `STORE32`, `STORE32_ZP`, `WAIT_VBLANK`, `WAIT_BLIT`, `START_BLIT`, `SET_BLT_OP/WIDTH/HEIGHT/COLOR`, `SET_SRC_STRIDE`, `SET_DST_STRIDE`, `ADD16`, `INC16`, `CMP16`, AHX player macros, File I/O (`SET_FILE_IO_BANK`, `SET_FIO_PTR`, `FILE_READ`, `FILE_WRITE`), coprocessor helpers.
 
 ### ie80.inc
 
@@ -141,7 +147,7 @@ start:
     START_BLIT
 ```
 
-**Macros:** `SET_BANK1`..`SET_BANK3`, `SET_VRAM_BANK`, `STORE16`, `STORE32`, `WAIT_VBLANK`, `WAIT_BLIT`, `START_BLIT`, `SET_BLT_*`, `SET_COPPER_PTR`, PSG/SID/SAP/AHX player macros, `SID_WRITE`, `ADD_HL_IMM`, `CP_HL_IMM`, `INC16`, coprocessor helpers.
+**Macros:** `SET_BANK1`..`SET_BANK3`, `SET_VRAM_BANK`, `STORE16`, `STORE32`, `WAIT_VBLANK`, `WAIT_BLIT`, `START_BLIT`, `SET_BLT_*`, `SET_COPPER_PTR`, PSG/SID/SAP/AHX player macros, `SID_WRITE`, `ADD_HL_IMM`, `CP_HL_IMM`, `INC16`, File I/O (`SET_FILE_IO_BANK`, `SET_FIO_PTR`, `FILE_READ`, `FILE_WRITE`), coprocessor helpers.
 
 ### ie86.inc
 

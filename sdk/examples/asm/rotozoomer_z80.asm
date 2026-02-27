@@ -19,7 +19,7 @@
 ; Z80-specific workarounds, and fixed-point math on constrained hardware.
 ;
 ; === WHAT THIS DEMO DOES ===
-; 1. Generates a 256x256 checkerboard texture in off-screen memory
+; 1. Loads a 256x256 RGBA texture from disk via File I/O
 ; 2. Computes a per-frame affine transformation matrix (rotation + zoom)
 ; 3. Delegates the full 640x480 pixel transform to the Mode7 hardware blitter
 ; 4. Double-buffers through an off-screen back buffer to prevent tearing
@@ -206,12 +206,12 @@ start:
     xor a
     ld (VIDEO_MODE),a
 
-    ; --- Generate Checkerboard Texture ---
-    ; Creates a 256x256 checkerboard pattern using 4 BLIT FILL operations.
-    ; This texture will be read by the Mode7 blitter every frame as the
-    ; source for the affine transformation. The checkerboard is the classic
-    ; rotozoomer texture because it makes rotation and scaling clearly visible.
-    call generate_texture
+    ; --- Load Texture from Disk ---
+    ; Loads a pre-rendered 256x256 RGBA texture from disk using the File I/O
+    ; device. This replaces the procedurally generated checkerboard with a
+    ; richer texture (rotozoomtexture.raw, same as the IE32/IE64/M68K/x86
+    ; versions). The File I/O device is accessed via bank3 switching.
+    call load_texture
 
     ; --- Initialise Animation Accumulators ---
     ; Both accumulators start at zero. They are 16-bit values that wrap
@@ -323,61 +323,34 @@ main_loop:
 ; Each quadrant is a separate BLIT FILL operation. We can't fill the entire
 ; texture in one pass because the two colours alternate per quadrant.
 ;
-; WHY BLIT FILL INSTEAD OF CPU LOOPS: The Z80 would need to write
-; 256*256*4 = 262,144 bytes through MMIO one byte at a time. Even at
-; ~10 cycles per byte, that's ~2.6 million cycles (~0.65 seconds at 4MHz).
-; Four BLIT FILL operations complete in hardware almost instantly.
+; WHY LOAD FROM DISK: The Z80 can't incbin the 262KB texture (it would
+; exceed the 64KB address space). Instead we use the File I/O device to
+; load rotozoomtexture.raw at runtime. This gives us the same rich
+; purple/green texture used by the IE32, IE64, M68K, and x86 versions.
 ;
-; ADDRESS CALCULATIONS:
-;   Texture stride = 1024 bytes/row (256 pixels * 4 bytes/pixel)
-;   Top-left quadrant:     TEXTURE_BASE + 0         = 0x600000
-;   Top-right quadrant:    TEXTURE_BASE + 128*4     = 0x600000 + 512
-;   Bottom-left quadrant:  TEXTURE_BASE + 128*1024  = 0x600000 + 131072
-;   Bottom-right quadrant: TEXTURE_BASE + 128*1024 + 128*4 = 0x600000 + 131584
+; HOW IT WORKS:
+;   1. Select bank3 = 0x0079 to map File I/O registers at $6200
+;      Bus address = bank3 * 0x2000 + offset = 0xF2000 + 0x200 = 0xF2200
+;   2. Write the bus address of the filename string to FILE_NAME_PTR
+;   3. Write TEXTURE_BASE (0x600000) to FILE_DATA_PTR
+;   4. Write FILE_OP_READ to FILE_CTRL to trigger the load
+;   5. Check FILE_STATUS for success
 ; ============================================================================
-generate_texture:
-    ; --- Top-left 128x128: White (0xFFFFFFFF = opaque white RGBA) ---
-    SET_BLT_OP BLT_OP_FILL
-    SET_BLT_DST TEXTURE_BASE
-    SET_BLT_WIDTH 128
-    SET_BLT_HEIGHT 128
-    SET_BLT_COLOR 0xFFFFFFFF
-    SET_DST_STRIDE TEX_STRIDE
-    START_BLIT
-    WAIT_BLIT
+load_texture:
+    ; Select bank3 for File I/O access
+    SET_FILE_IO_BANK
 
-    ; --- Top-right 128x128: Black (0xFF000000 = opaque black RGBA) ---
-    ; Offset by 512 bytes = 128 pixels * 4 bytes/pixel to start at column 128.
-    SET_BLT_OP BLT_OP_FILL
-    SET_BLT_DST TEXTURE_BASE+512
-    SET_BLT_WIDTH 128
-    SET_BLT_HEIGHT 128
-    SET_BLT_COLOR 0xFF000000
-    SET_DST_STRIDE TEX_STRIDE
-    START_BLIT
-    WAIT_BLIT
+    ; Set FILE_NAME_PTR to point to the filename string in bus memory.
+    ; The filename string (texture_filename) is embedded in this binary at a
+    ; known address. Since the Z80 program is loaded at org 0, the string's
+    ; Z80 address equals its bus address.
+    SET_FIO_PTR FIO_NAME_PTR_0 texture_filename
 
-    ; --- Bottom-left 128x128: Black ---
-    ; Offset by 131072 bytes = 128 rows * 1024 bytes/row to start at row 128.
-    SET_BLT_OP BLT_OP_FILL
-    SET_BLT_DST TEXTURE_BASE+131072
-    SET_BLT_WIDTH 128
-    SET_BLT_HEIGHT 128
-    SET_BLT_COLOR 0xFF000000
-    SET_DST_STRIDE TEX_STRIDE
-    START_BLIT
-    WAIT_BLIT
+    ; Set FILE_DATA_PTR to TEXTURE_BASE where texture data will be loaded
+    SET_FIO_PTR FIO_DATA_PTR_0 TEXTURE_BASE
 
-    ; --- Bottom-right 128x128: White ---
-    ; Offset = 128*1024 + 128*4 = 131072 + 512 = 131584 (row 128, column 128).
-    SET_BLT_OP BLT_OP_FILL
-    SET_BLT_DST TEXTURE_BASE+131584
-    SET_BLT_WIDTH 128
-    SET_BLT_HEIGHT 128
-    SET_BLT_COLOR 0xFFFFFFFF
-    SET_DST_STRIDE TEX_STRIDE
-    START_BLIT
-    WAIT_BLIT
+    ; Trigger the file read operation
+    FILE_READ
 
     ret
 
@@ -1153,7 +1126,7 @@ neg32:
 render_mode7:
     ; Configure blitter for Mode7 affine transform operation
     SET_BLT_OP BLT_OP_MODE7
-    SET_BLT_SRC TEXTURE_BASE      ; Source: 256x256 checkerboard texture
+    SET_BLT_SRC TEXTURE_BASE      ; Source: 256x256 RGBA texture
     SET_BLT_DST BACK_BUFFER       ; Destination: off-screen back buffer
     SET_BLT_WIDTH RENDER_W         ; Output width: 640 pixels
     SET_BLT_HEIGHT RENDER_H        ; Output height: 480 pixels
@@ -1417,6 +1390,14 @@ recip_table:
     .word 1149,1134,1119,1103,1087,1071,1055,1038,1022,1005,988,972,955,938,922,905
     .word 889,873,858,842,827,812,797,782,768,754,740,727,714,701,689,676
     .word 665,653,642,631,620,610,599,589,580,571,561,553,544,536,528,520
+
+; ============================================================================
+; TEXTURE FILENAME - Null-terminated path for File I/O
+; ============================================================================
+; This string is read by the File I/O device via bus.Read8() to locate the
+; texture file on disk. The path is relative to the engine's working directory.
+texture_filename:
+    .byte "sdk/examples/assets/rotozoomtexture.raw",0
 
 ; ============================================================================
 ; SID MUSIC DATA - Embedded .sid File

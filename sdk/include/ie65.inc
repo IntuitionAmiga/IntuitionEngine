@@ -2660,6 +2660,54 @@ VOODOO_FBZ_DITHER_2X2   = $0800             ; Use 2x2 dither pattern (vs 4x4)
     zp_scratch: .res 8          ; Scratch space
 
 ; ============================================================================
+; FILE I/O REGISTERS (via bank3 window -> bus $F2200-$F221F)
+; ============================================================================
+;
+; The File I/O device allows loading files from the host filesystem into bus
+; memory. To access it from 6502, set bank3 = $0079 which maps the bank3
+; window ($6000-$7FFF) to bus address $F2000. The File I/O registers at
+; bus $F2200 then appear at 6502 address $6200.
+;
+; Usage:
+;   1. SET_BANK3 to FILE_IO_BANK ($0079)
+;   2. Write filename address to FIO_NAME_PTR (4 bytes, little-endian)
+;   3. Write destination address to FIO_DATA_PTR (4 bytes, little-endian)
+;   4. Write FILE_OP_READ to FIO_CTRL to trigger the read
+;   5. Check FIO_STATUS for result (0=OK, 1=error)
+
+FILE_IO_BANK        = $0079         ; Bank number for File I/O access
+
+FIO_NAME_PTR_0      = $6200         ; Filename pointer byte 0 (low)
+FIO_NAME_PTR_1      = $6201         ; Filename pointer byte 1
+FIO_NAME_PTR_2      = $6202         ; Filename pointer byte 2
+FIO_NAME_PTR_3      = $6203         ; Filename pointer byte 3 (high)
+FIO_DATA_PTR_0      = $6204         ; Data destination pointer byte 0 (low)
+FIO_DATA_PTR_1      = $6205         ; Data destination pointer byte 1
+FIO_DATA_PTR_2      = $6206         ; Data destination pointer byte 2
+FIO_DATA_PTR_3      = $6207         ; Data destination pointer byte 3 (high)
+FIO_DATA_LEN_0      = $6208         ; Data length byte 0 (for WRITE ops)
+FIO_DATA_LEN_1      = $6209         ; Data length byte 1
+FIO_DATA_LEN_2      = $620A         ; Data length byte 2
+FIO_DATA_LEN_3      = $620B         ; Data length byte 3
+FIO_CTRL            = $620C         ; Control: write FILE_OP_READ or FILE_OP_WRITE
+FIO_STATUS_0        = $6210         ; Status byte 0 (0=OK, 1=error)
+FIO_RESULT_LEN_0    = $6214         ; Result length byte 0
+FIO_RESULT_LEN_1    = $6215         ; Result length byte 1
+FIO_RESULT_LEN_2    = $6216         ; Result length byte 2
+FIO_RESULT_LEN_3    = $6217         ; Result length byte 3
+FIO_ERROR_CODE      = $6218         ; Error code byte 0
+
+; File I/O operations
+FILE_OP_READ        = 1             ; Read file to memory
+FILE_OP_WRITE       = 2             ; Write memory to file
+
+; File I/O error codes
+FILE_ERR_OK         = 0             ; Success
+FILE_ERR_NOT_FOUND  = 1             ; File not found
+FILE_ERR_PERMISSION = 2             ; Permission denied
+FILE_ERR_PATH_TRAVERSAL = 3         ; Path traversal attempt blocked
+
+; ============================================================================
 ; COPROCESSOR REGISTERS (via gateway $F200-$F23F -> bus $F2340)
 ; ============================================================================
 
@@ -2740,4 +2788,39 @@ COPROC_CPU_X86        = 6
     STORE32 COPROC_TICKET, ticket
     STORE32 COPROC_TIMEOUT, timeoutMs
     STORE32 COPROC_CMD, COPROC_CMD_WAIT_CMD
+.endmacro
+
+; ============================================================================
+; FILE I/O MACROS
+; ============================================================================
+
+; SET_FILE_IO_BANK - select bank3 to map File I/O registers at $6200
+.macro SET_FILE_IO_BANK
+    SET_BANK3 FILE_IO_BANK
+.endmacro
+
+; SET_FIO_PTR - write a 32-bit bus address to a File I/O pointer register
+; reg_base: FIO_NAME_PTR_0 or FIO_DATA_PTR_0
+; addr: 32-bit bus address value
+.macro SET_FIO_PTR reg_base, addr
+    lda #<(addr)
+    sta reg_base
+    lda #>(addr)
+    sta reg_base+1
+    lda #^(addr)
+    sta reg_base+2
+    lda #.lobyte(.hiword(addr) >> 8)
+    sta reg_base+3
+.endmacro
+
+; FILE_READ - trigger a File I/O read operation
+.macro FILE_READ
+    lda #FILE_OP_READ
+    sta FIO_CTRL
+.endmacro
+
+; FILE_WRITE - trigger a File I/O write operation
+.macro FILE_WRITE
+    lda #FILE_OP_WRITE
+    sta FIO_CTRL
 .endmacro
