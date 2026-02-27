@@ -1427,6 +1427,11 @@ func main() {
 			sysBus.MapIO(AROS_DOS_REGION_BASE, AROS_DOS_REGION_END, arosDOS.HandleRead, arosDOS.HandleWrite)
 		}
 
+		// Initialize AROS Audio DMA engine (Paula-compatible DMA → flex channel DAC)
+		arosDMA := NewArosAudioDMA(sysBus, soundChip, m68kCPU)
+		sysBus.MapIO(AROS_AUD_REGION_BASE, AROS_AUD_REGION_END, arosDMA.HandleRead, arosDMA.HandleWrite)
+		soundChip.SetSampleTicker(arosDMA)
+
 		arosLoader = loader
 		runtimeStatus.setCPUs(runtimeCPUM68K, nil, nil, m68kRunner, nil, nil, nil)
 		cpuRunner = m68kRunner
@@ -1898,6 +1903,10 @@ func main() {
 			if err := loader.LoadROM(bytes); err != nil {
 				return fmt.Errorf("failed to load AROS ROM: %w", err)
 			}
+			// Wire up audio DMA engine for mode switch path
+			arosDMA := NewArosAudioDMA(sysBus, soundChip, r.cpu)
+			sysBus.MapIO(AROS_AUD_REGION_BASE, AROS_AUD_REGION_END, arosDMA.HandleRead, arosDMA.HandleWrite)
+			soundChip.SetSampleTicker(arosDMA)
 			loader.StartTimer()
 			arosLoader = loader
 			runtime.GC()

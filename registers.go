@@ -48,6 +48,7 @@ Address Range       Size    Device              Constants File
 0xF2140-0xF21B7     120B    GTIA (Atari 8-bit)  antic_constants.go
 0xF2200-0xF221F     32B     File I/O            registers.go
 0xF2220-0xF225F     64B     AROS DOS Handler    aros_dos_constants.go
+0xF2260-0xF22AF     80B     AROS Audio DMA      aros_audio_constants.go
 0xF2300-0xF231F     32B     Media Loader        registers.go
 0xF2320-0xF233F     32B     Program Executor    registers.go
 0xF2340-0xF237F     64B     Coprocessor         coprocessor_constants.go
@@ -195,6 +196,10 @@ const (
 	AROS_DOS_REGION_BASE = 0xF2220
 	AROS_DOS_REGION_END  = 0xF225F
 
+	// AROS Audio DMA region (Paula-compatible DMA emulation)
+	AROS_AUD_REGION_BASE_REG = 0xF2260
+	AROS_AUD_REGION_END_REG  = 0xF22AF
+
 	// Unified media loader region
 	MEDIA_LOADER_REGION_BASE = 0xF2300
 	MEDIA_LOADER_REGION_END  = 0xF231F
@@ -322,6 +327,8 @@ func GetIORegion(addr uint32) string {
 		return "ULA"
 	case addr >= FILE_IO_REGION_BASE && addr <= FILE_IO_REGION_END:
 		return "FileIO"
+	case addr >= AROS_AUD_REGION_BASE_REG && addr <= AROS_AUD_REGION_END_REG:
+		return "AROSAudioDMA"
 	case addr >= MEDIA_LOADER_REGION_BASE && addr <= MEDIA_LOADER_REGION_END:
 		return "MediaLoader"
 	case addr >= EXEC_REGION_BASE && addr <= EXEC_REGION_END:

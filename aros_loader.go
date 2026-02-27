@@ -37,6 +37,7 @@ type AROSLoader struct {
 	vblankDone chan struct{}
 
 	l2Armed bool // Level 2: input devices
+	l3Armed bool // Level 3: audio DMA
 	l4Armed bool // Level 4: VBL (60Hz)
 	l5Armed bool // Level 5: system timer (200Hz)
 
@@ -113,6 +114,7 @@ func (l *AROSLoader) StartTimer() {
 	l.timerDone = make(chan struct{})
 	l.vblankDone = make(chan struct{})
 	l.l2Armed = false
+	l.l3Armed = false
 	l.l4Armed = false
 	l.l5Armed = false
 
@@ -163,15 +165,19 @@ func (l *AROSLoader) StartTimer() {
 // in the vector table. Only assert interrupts once handlers are installed to
 // avoid spurious exceptions during early boot.
 func (l *AROSLoader) refreshIRQArming() {
-	if l.l2Armed && l.l4Armed && l.l5Armed {
+	if l.l2Armed && l.l3Armed && l.l4Armed && l.l5Armed {
 		return
 	}
 
-	// AROS uses autovectors: L2→vector 26, L4→vector 28, L5→vector 29.
+	// AROS uses autovectors: L2→vector 26, L3→vector 27, L4→vector 28, L5→vector 29.
 	base := l.cpu.VBR
 	if !l.l2Armed {
 		vec2 := l.cpu.Read32(base + uint32(M68K_VEC_LEVEL2)*4)
 		l.l2Armed = isValidAROSVector(vec2)
+	}
+	if !l.l3Armed {
+		vec3 := l.cpu.Read32(base + uint32(M68K_VEC_LEVEL3)*4)
+		l.l3Armed = isValidAROSVector(vec3)
 	}
 	if !l.l4Armed {
 		vec4 := l.cpu.Read32(base + uint32(M68K_VEC_LEVEL4)*4)
