@@ -1,0 +1,64 @@
+-- Probe EmuTOS desktop layout to find drive icons and window positions.
+-- Run: IntuitionEngine -emutos -emutos-drive /tmp/ie_demo_drive -script THIS_FILE
+
+local function log(msg) sys.print("[probe] " .. msg) end
+
+os.execute("mkdir -p /tmp/ie_demo_drive")
+os.execute("cp sdk/examples/prebuilt/rotozoomer_gem.prg /tmp/ie_demo_drive/ROTOZOOM.PRG")
+
+log("Waiting for GEM desktop...")
+local deadline = sys.time_ms() + 15000
+while sys.time_ms() < deadline do
+    local r, g, b = video.get_pixel(400, 10)
+    if r + g + b > 0 then break end
+    sys.wait_ms(100)
+end
+log("Waiting 8s for full AES init...")
+sys.wait_ms(8000)
+
+local w, h = video.get_dimensions()
+log(string.format("Compositor: %dx%d", w, h))
+log("CPU running: " .. tostring(cpu.is_running()))
+
+-- Scan right side for ANY non-green pixel (icons are black+white on green desktop)
+log("=== Right side scan: any non-green pixel (x=560..790, y=20..300) ===")
+local found_regions = {}
+for y = 20, 300, 2 do
+    for x = 560, 790, 2 do
+        local r, g, b = video.get_pixel(x, y)
+        local is_green = (g > 200 and r < 50 and b < 50)
+        if not is_green then
+            log(string.format("  (%3d,%3d) = (%3d,%3d,%3d)", x, y, r, g, b))
+        end
+    end
+end
+
+-- Also scan the full width at a few y positions to find windows
+log("=== Full width scan at y=40 (just below menu bar) ===")
+for x = 0, w-1, 4 do
+    local r, g, b = video.get_pixel(x, y)
+    local is_green = (g > 200 and r < 50 and b < 50)
+    if not is_green then
+        log(string.format("  (%3d,%3d) = (%3d,%3d,%3d)", x, 40, r, g, b))
+    end
+end
+
+log("=== Full width scan at y=30 ===")
+for x = 0, w-1, 4 do
+    local r, g, b = video.get_pixel(x, 30)
+    local is_green = (g > 200 and r < 50 and b < 50)
+    if not is_green then
+        log(string.format("  (%3d,%3d) = (%3d,%3d,%3d)", x, 30, r, g, b))
+    end
+end
+
+-- Menu bar detail scan
+log("=== Menu bar y=0..25 at x=400 ===")
+for y = 0, 25 do
+    local r, g, b = video.get_pixel(400, y)
+    log(string.format("  (%3d,%3d) = (%3d,%3d,%3d)", 400, y, r, g, b))
+end
+
+log("=== Done ===")
+sys.wait_ms(200)
+sys.quit()

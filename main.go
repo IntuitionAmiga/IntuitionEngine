@@ -972,6 +972,7 @@ func main() {
 	}
 	videoChip.SetResolutionChangeCallback(func(w, h int) {
 		compositor.NotifyResolutionChange(w, h)
+		termMMIO.SetMouseNativeResolution(w, h)
 	})
 	if voodooEngine != nil {
 		voodooEngine.SetResolutionChangeCallback(func(w, h int) {
@@ -1782,6 +1783,7 @@ func main() {
 			}
 			loader.StartTimer()
 			emuTOSLoader = loader
+			runtime.GC() // sweep BASIC/IE64 garbage before EmuTOS starts
 		} else {
 			reloadProgram()
 		}
@@ -1816,6 +1818,7 @@ func main() {
 
 	scriptEngine = NewScriptEngine(sysBus, compositor, termMMIO)
 	scriptEngine.SetProgramLoader(runProgramWithFullReset)
+	scriptEngine.SetEmutosSentinel(emutosSentinel)
 	scriptEngine.SetHardReset(func() error {
 		return runProgramWithFullReset("")
 	})
@@ -1832,6 +1835,13 @@ func main() {
 	if sa, ok := videoChip.GetOutput().(interface{ SetScriptEngine(*ScriptEngine) }); ok {
 		sa.SetScriptEngine(scriptEngine)
 	}
+	scriptEngine.SetEmutosDriveFunc(func(path string, driveNum uint16) {
+		resetMu.Lock()
+		gemdosHostRoot = path
+		gemdosDriveNum = driveNum
+		resetMu.Unlock()
+		progExec.SetGemdosConfig(path, driveNum)
+	})
 
 	launchProgramOrScript := func(path string) error {
 		if strings.EqualFold(filepath.Ext(path), ".ies") {

@@ -1,0 +1,153 @@
+-- Tail test: Sections 9-12 of the product demo
+-- Run: ./IntuitionEngine -basic -script sdk/scripts/demo_tail_test.ies
+
+local BASIC        = "sdk/examples/prebuilt/ehbasic_ie64.ie64"
+local P            = "sdk/examples/prebuilt/"
+
+local function slow_type(s, ms)
+    ms = ms or 55
+    for i = 1, #s do term.type(s:sub(i,i)); sys.wait_ms(ms) end
+end
+
+local function wait_ready(ms)
+    assert(term.wait_output("Ready", ms or 5000),
+        "BASIC not ready within " .. tostring(ms or 5000) .. "ms")
+end
+
+local function reset_to_basic()
+    media.stop()
+    term.read()
+    cpu.load(BASIC)
+    sys.wait_ms(1500)
+    wait_ready(8000)
+    sys.wait_ms(300)
+end
+
+local function title_card(lines, hold_s)
+    hold_s = hold_s or 3
+    repl.show(); repl.clear()
+    repl.print("  ================================================")
+    for _, l in ipairs(lines) do repl.print("  " .. l) end
+    repl.print("  ================================================")
+    sys.wait_ms(hold_s * 1000)
+    repl.hide()
+end
+
+local function run_demo(path, secs)
+    media.stop(); audio.reset()
+    cpu.load(path)
+    sys.wait_ms(600); sys.wait_frames(30)
+    if secs and secs > 0 then sys.wait_ms(secs * 1000) end
+end
+
+local function monitor_tour(cmds)
+    dbg.open(); sys.wait_ms(500)
+    for _, e in ipairs(cmds) do
+        dbg.command(e[1]); sys.wait_ms(e[2] or 1800)
+    end
+    dbg.close(); sys.wait_ms(400)
+end
+
+-- ============================================================================
+-- Section 10: Monitor Deep-Dive (30s)
+-- ============================================================================
+
+reset_to_basic()
+title_card({"Machine Monitor Deep-Dive", "Live register & memory inspection"}, 2)
+
+slow_type("10 FOR I=1 TO 100: POKE &HF0800, I*2: NEXT I", 45)
+term.type("\n"); sys.wait_ms(300)
+slow_type("RUN", 45)
+term.type("\n"); wait_ready(1500)
+sys.wait_ms(3000)
+
+monitor_tour({
+    {"r",         2500},
+    {"d",         2200},
+    {"d 0x1000",  2000},
+    {"m 0",       2000},
+    {"m 0x1000",  1800},
+    {"io audio",  2200},
+    {"io video",  2000},
+    {"bt",        2000},
+    {"bl",        1500},
+    {"trace 8",   3000},
+})
+
+-- ============================================================================
+-- Section 11: EmuTOS GEM Desktop + Rotozoomer (~45s)
+-- ============================================================================
+
+title_card({
+    "EmuTOS — Atari ST Operating System",
+    "GEM Desktop + Windowed Rotozoomer (.PRG)",
+    "CPU: Motorola 68020 | Video: IEVideoChip",
+}, 3)
+
+-- Prepare GEMDOS drive with the PRG file
+os.execute("mkdir -p /tmp/ie_demo_drive")
+os.execute("cp sdk/examples/prebuilt/rotozoomer_gem.prg /tmp/ie_demo_drive/ROTOZOOM.PRG")
+sys.emutos_drive("/tmp/ie_demo_drive")
+
+-- Type "EMUTOS" into BASIC REPL for visual effect, then boot via cpu.load
+slow_type("EMUTOS", 55)
+sys.wait_ms(200)
+cpu.load("EMUTOS")
+
+-- Wait for GEM desktop (green background at center — unique to GEM, not BASIC)
+local gem_deadline = sys.time_ms() + 20000
+while sys.time_ms() < gem_deadline do
+    local r, g, b = video.get_pixel(400, 300)
+    if g > 200 and r < 50 and b < 50 then break end
+    sys.wait_ms(100)
+end
+sys.wait_ms(5000) -- wait for AES init
+
+-- Activate mouse handler with a click on empty desktop
+term.mouse_move(320, 300)
+sys.wait_ms(500)
+term.mouse_click(320, 300)
+sys.wait_ms(500)
+
+-- Double-click drive U: icon at TOS(35, 44)
+term.mouse_move(35, 44)
+sys.wait_ms(500)
+term.mouse_double_click(35, 44)
+sys.wait_ms(3000)
+
+-- Double-click ROTOZOOM.PRG icon at TOS(149, 155)
+term.mouse_move(149, 155)
+sys.wait_ms(500)
+term.mouse_double_click(149, 155)
+sys.wait_ms(5000)
+
+-- Watch the GEM windowed rotozoomer run
+sys.wait_ms(12000)
+
+-- Monitor tour while GEM app is running
+monitor_tour({
+    {"r",        2000},
+    {"d",        2000},
+    {"io video", 1800},
+})
+
+sys.wait_ms(3000)
+term.mouse_release()
+
+-- ============================================================================
+-- Section 12: Credits and Shutdown
+-- ============================================================================
+
+title_card({
+    "Intuition Engine — Feature Summary:",
+    "  6 CPUs:   IE32, IE64, M68K, 6502, Z80, x86",
+    "  6 Video:  VideoChip, VGA, ULA, TED, ANTIC, Voodoo 3D",
+    "  20 Audio: SID, SAP, AHX, TED, AY, YM, VGM, MOD, WAV + ZX trackers",
+    "  Debug:    Machine Monitor, Trace, Breakpoints",
+    "  Script:   Lua IES automation",
+}, 8)
+
+media.stop()
+sys.wait_ms(1000)
+sys.wait_ms(2000)
+sys.quit()

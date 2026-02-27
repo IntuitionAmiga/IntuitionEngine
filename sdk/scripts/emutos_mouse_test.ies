@@ -1,0 +1,69 @@
+-- Minimal mouse movement test for EmuTOS.
+-- Run: IntuitionEngine -emutos -script THIS_FILE
+
+local function log(msg) sys.print("[mouse] " .. msg) end
+
+log("Waiting for GEM desktop...")
+local deadline = sys.time_ms() + 15000
+while sys.time_ms() < deadline do
+    local r, g, b = video.get_pixel(400, 10)
+    if r + g + b > 0 then break end
+    sys.wait_ms(100)
+end
+log("Waiting 8s for full AES init...")
+sys.wait_ms(8000)
+
+log("CPU running: " .. tostring(cpu.is_running()))
+
+-- Read current MMIO mouse position via memory.read
+local mx = memory.read(0xF0730, 4)  -- MOUSE_X
+local my = memory.read(0xF0734, 4)  -- MOUSE_Y
+local mb = memory.read(0xF0738, 4)  -- MOUSE_BUTTONS
+log(string.format("Current MMIO mouse: x=%d y=%d buttons=%d", mx, my, mb))
+
+-- Test 1: Simple mouse_move to center of 640x480 screen
+log("=== Test 1: mouse_move(320, 240) ===")
+term.mouse_move(320, 240)
+sys.wait_ms(500)  -- let VBL handler process it
+
+mx = memory.read(0xF0730, 4)
+my = memory.read(0xF0734, 4)
+log(string.format("After move: MMIO x=%d y=%d", mx, my))
+
+-- Wait so user can see
+log("Waiting 3s - mouse should be at center...")
+sys.wait_ms(3000)
+
+-- Test 2: Move to top-left
+log("=== Test 2: mouse_move(50, 50) ===")
+term.mouse_move(50, 50)
+sys.wait_ms(500)
+mx = memory.read(0xF0730, 4)
+my = memory.read(0xF0734, 4)
+log(string.format("After move: MMIO x=%d y=%d", mx, my))
+log("Waiting 3s...")
+sys.wait_ms(3000)
+
+-- Test 3: Single click
+log("=== Test 3: mouse_click(320, 240) ===")
+term.mouse_click(320, 240)
+sys.wait_ms(500)
+mx = memory.read(0xF0730, 4)
+my = memory.read(0xF0734, 4)
+mb = memory.read(0xF0738, 4)
+log(string.format("After click: MMIO x=%d y=%d buttons=%d", mx, my, mb))
+log("Waiting 3s...")
+sys.wait_ms(3000)
+
+-- Test 4: Release mouse override and check
+log("=== Test 4: mouse_release ===")
+term.mouse_release()
+sys.wait_ms(500)
+mx = memory.read(0xF0730, 4)
+my = memory.read(0xF0734, 4)
+log(string.format("After release: MMIO x=%d y=%d (should show physical mouse pos)", mx, my))
+
+log("CPU running: " .. tostring(cpu.is_running()))
+log("=== Done ===")
+sys.wait_ms(200)
+sys.quit()

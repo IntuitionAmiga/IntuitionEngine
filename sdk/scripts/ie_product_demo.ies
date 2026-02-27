@@ -320,6 +320,7 @@ for i, rz in ipairs(rotoZoomers) do
         {"r",        2000},
         {"d",        2000},
         {"io video", 1800},
+        {"io audio", 1800},
         {"trace 6",  2200},
     })
     sys.wait_ms(3000)
@@ -521,7 +522,67 @@ monitor_tour({
 })
 
 -- ============================================================================
--- Section 11: Credits and Shutdown
+-- Section 11: EmuTOS GEM Desktop + Rotozoomer (~45s)
+-- ============================================================================
+
+title_card({
+    "EmuTOS — Atari ST Operating System",
+    "GEM Desktop + Windowed Rotozoomer (.PRG)",
+    "CPU: Motorola 68020 | Video: IEVideoChip",
+}, 3)
+
+-- Prepare GEMDOS drive with the PRG file
+os.execute("mkdir -p /tmp/ie_demo_drive")
+os.execute("cp sdk/examples/prebuilt/rotozoomer_gem.prg /tmp/ie_demo_drive/ROTOZOOM.PRG")
+sys.emutos_drive("/tmp/ie_demo_drive")
+
+-- Type "EMUTOS" into BASIC REPL for visual effect, then boot via cpu.load
+slow_type("EMUTOS", 55)
+sys.wait_ms(200)
+cpu.load("EMUTOS")
+
+-- Wait for GEM desktop (green background at center — unique to GEM, not BASIC)
+local gem_deadline = sys.time_ms() + 20000
+while sys.time_ms() < gem_deadline do
+    local r, g, b = video.get_pixel(400, 300)
+    if g > 200 and r < 50 and b < 50 then break end
+    sys.wait_ms(100)
+end
+sys.wait_ms(5000) -- wait for AES init
+
+-- Activate mouse handler with a click on empty desktop
+term.mouse_move(320, 300)
+sys.wait_ms(500)
+term.mouse_click(320, 300)
+sys.wait_ms(500)
+
+-- Double-click drive U: icon at TOS(35, 44)
+term.mouse_move(35, 44)
+sys.wait_ms(500)
+term.mouse_double_click(35, 44)
+sys.wait_ms(3000)
+
+-- Double-click ROTOZOOM.PRG icon at TOS(149, 155)
+term.mouse_move(149, 155)
+sys.wait_ms(500)
+term.mouse_double_click(149, 155)
+sys.wait_ms(5000)
+
+-- Watch the GEM windowed rotozoomer run
+sys.wait_ms(12000)
+
+-- Monitor tour while GEM app is running
+monitor_tour({
+    {"r",        2000},
+    {"d",        2000},
+    {"io video", 1800},
+})
+
+sys.wait_ms(3000)
+term.mouse_release()
+
+-- ============================================================================
+-- Section 12: Credits and Shutdown
 -- ============================================================================
 
 title_card({

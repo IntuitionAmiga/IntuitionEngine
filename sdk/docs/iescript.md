@@ -166,6 +166,8 @@ Timing, diagnostics, lifecycle.
 
 `sys.quit()` — Stop any active recording and shut down the emulator. Returns: nothing.
 
+`sys.emutos_drive(path)` — Set the GEMDOS drive U: host directory for the next EmuTOS boot. Updates both the program executor and the internal boot path so the next `EMUTOS` command (from BASIC) or EmuTOS mode switch will map drive U: to the specified directory. Returns: nothing.
+
 Example:
 
 ```lua
@@ -262,6 +264,16 @@ Terminal automation for driving the emulated terminal I/O.
 
 `term.wait_output(pattern, timeout_ms)` — Poll terminal output every 10 ms until `pattern` (a plain string, not a regex) is found or `timeout_ms` expires. Accumulates output across polls. Returns: boolean (`true` if pattern found, `false` on timeout).
 
+`term.mouse_move(x, y)` — Set the mouse position. Coordinates are clamped to the compositor frame bounds (negative values become 0, values beyond frame dimensions are clamped to the edge). Returns: nothing.
+
+`term.mouse_click(x, y [, button])` — Perform a single mouse click at (x, y). Coordinates are clamped to frame bounds. The optional `button` parameter specifies which button: 1 = left (default), 2 = right, 3 = both. The click holds the button for 50 ms then releases. Returns: nothing.
+
+`term.mouse_double_click(x, y [, button])` — Perform a double click at (x, y). Two clicks with a 100 ms gap between them (within the TOS double-click threshold). Coordinates are clamped, button values are the same as `mouse_click`. Returns: nothing.
+
+`term.scancode(code)` — Inject a raw Atari ST scancode (make or break) into the scancode ring buffer. Code must be 0..255. Returns: nothing.
+
+`term.key_press(code [, hold_ms])` — Inject a key press: enqueues the make code, waits `hold_ms` milliseconds (default 50), then enqueues the break code (make code OR 0x80). Code must be 0..127 (make codes only). Returns: nothing.
+
 Example:
 
 ```lua
@@ -271,6 +283,41 @@ if not ok then
   error("expected output not seen")
 end
 ```
+
+Mouse and keyboard example (EmuTOS GEM automation):
+
+```lua
+-- Move mouse to menu bar and click
+term.mouse_click(320, 5)
+sys.wait_ms(200)
+
+-- Double-click a drive icon
+term.mouse_double_click(600, 60)
+sys.wait_ms(1000)
+
+-- Press Enter key (Atari ST scancode 0x1C)
+term.key_press(keys.ENTER)
+```
+
+---
+
+## `keys`
+
+Global constant table of Atari ST scancodes for use with `term.scancode()` and `term.key_press()`. All values are make codes (0x00..0x7F).
+
+| Constant | Value | Constant | Value |
+|----------|-------|----------|-------|
+| `keys.ESCAPE` | 0x01 | `keys.BACKSPACE` | 0x0E |
+| `keys.TAB` | 0x0F | `keys.ENTER` | 0x1C |
+| `keys.SPACE` | 0x39 | `keys.LSHIFT` | 0x2A |
+| `keys.RSHIFT` | 0x36 | `keys.LCTRL` | 0x1D |
+| `keys.CAPSLOCK` | 0x3A | | |
+| `keys.F1`..`keys.F10` | 0x3B..0x44 | | |
+| `keys.UP` | 0x48 | `keys.DOWN` | 0x50 |
+| `keys.LEFT` | 0x4B | `keys.RIGHT` | 0x4D |
+| `keys.A`..`keys.Z` | (standard AT layout) | | |
+| `keys.DIGIT_0`..`keys.DIGIT_9` | 0x0B, 0x02..0x0A | | |
+| `keys.MINUS` | 0x0C | `keys.EQUAL` | 0x0D |
 
 ---
 
@@ -1143,9 +1190,9 @@ Recording relies on an FFmpeg subprocess. If FFmpeg crashes or is killed, the re
 
 ## Quick Reference
 
-Compact reference for all 217 API functions.
+Compact reference for all 223 API functions.
 
-### sys (9)
+### sys (10)
 
 | Function | Returns |
 |----------|---------|
@@ -1158,6 +1205,7 @@ Compact reference for all 217 API functions.
 | `sys.frame_time()` | number |
 | `sys.fps()` | number |
 | `sys.quit()` | — |
+| `sys.emutos_drive(path)` | — |
 
 ### cpu (8)
 
@@ -1186,7 +1234,7 @@ Compact reference for all 217 API functions.
 | `mem.write_block(addr, bytes)` | — |
 | `mem.fill(addr, len, value)` | — |
 
-### term (6)
+### term (11)
 
 | Function | Returns |
 |----------|---------|
@@ -1196,6 +1244,11 @@ Compact reference for all 217 API functions.
 | `term.clear()` | — |
 | `term.echo(on)` | — |
 | `term.wait_output(pattern, timeout_ms)` | boolean |
+| `term.mouse_move(x, y)` | — |
+| `term.mouse_click(x, y [, button])` | — |
+| `term.mouse_double_click(x, y [, button])` | — |
+| `term.scancode(code)` | — |
+| `term.key_press(code [, hold_ms])` | — |
 
 ### audio (28)
 

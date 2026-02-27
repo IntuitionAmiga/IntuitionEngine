@@ -36,10 +36,13 @@ type TerminalMMIO struct {
 	rawKeyLen  int
 
 	// Mouse state, updated by graphical backends and read via MMIO.
-	mouseX       atomic.Int32
-	mouseY       atomic.Int32
-	mouseButtons atomic.Uint32
-	mouseChanged atomic.Bool
+	mouseX        atomic.Int32
+	mouseY        atomic.Int32
+	mouseButtons  atomic.Uint32
+	mouseChanged  atomic.Bool
+	mouseOverride atomic.Bool  // when true, backend skips mouse updates (script owns mouse)
+	mouseNativeW  atomic.Int32 // native video source width (0 = use raw coordinates)
+	mouseNativeH  atomic.Int32 // native video source height
 
 	// Scancode ring buffer for raw keyboard make/break events.
 	scanBuf  [256]uint8
@@ -287,6 +290,14 @@ func (tm *TerminalMMIO) SetForceEchoOff(force bool) {
 	tm.mu.Lock()
 	tm.forceEchoOff = force
 	tm.mu.Unlock()
+}
+
+// SetMouseNativeResolution sets the native video source resolution for mouse
+// coordinate scaling. When set (w > 0), backends scale display-space coordinates
+// to native-space before writing MMIO registers.
+func (tm *TerminalMMIO) SetMouseNativeResolution(w, h int) {
+	tm.mouseNativeW.Store(int32(w))
+	tm.mouseNativeH.Store(int32(h))
 }
 
 // DrainOutput returns and clears the accumulated output buffer.

@@ -499,6 +499,21 @@ func (c *VideoCompositor) GetDimensions() (int, int) {
 	return c.frameWidth, c.frameHeight
 }
 
+// GetNativeSourceDimensions returns the first enabled video source's native
+// resolution. This may differ from the compositor output when upscaling
+// (e.g. VideoChip 640x480 → compositor 800x600). Falls back to compositor
+// dimensions if no source is enabled.
+func (c *VideoCompositor) GetNativeSourceDimensions() (int, int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, s := range c.sources {
+		if s.IsEnabled() {
+			return s.GetDimensions()
+		}
+	}
+	return c.frameWidth, c.frameHeight
+}
+
 // GetRefreshRate returns the output refresh rate in Hz.
 func (c *VideoCompositor) GetRefreshRate() int {
 	c.mu.Lock()

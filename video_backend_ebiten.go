@@ -560,26 +560,39 @@ func (eo *EbitenOutput) updateTerminalMMIOInput() {
 		return
 	}
 
-	mx, my := ebiten.CursorPosition()
-	newX := int32(max(0, min(mx, width-1)))
-	newY := int32(max(0, min(my, height-1)))
+	if !tm.mouseOverride.Load() {
+		mx, my := ebiten.CursorPosition()
 
-	var buttons uint32
-	if ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft) {
-		buttons |= 1
-	}
-	if ebiten.IsMouseButtonPressed(ebiten.MouseButtonRight) {
-		buttons |= 2
-	}
-	if ebiten.IsMouseButtonPressed(ebiten.MouseButtonMiddle) {
-		buttons |= 4
-	}
+		// Scale from display space to native video source space when upscaling.
+		nw := int(tm.mouseNativeW.Load())
+		nh := int(tm.mouseNativeH.Load())
+		if nw > 0 && nh > 0 && (nw != width || nh != height) {
+			mx = mx * nw / width
+			my = my * nh / height
+			width = nw
+			height = nh
+		}
 
-	oldX := tm.mouseX.Swap(newX)
-	oldY := tm.mouseY.Swap(newY)
-	oldButtons := tm.mouseButtons.Swap(buttons)
-	if oldX != newX || oldY != newY || oldButtons != buttons {
-		tm.mouseChanged.Store(true)
+		newX := int32(max(0, min(mx, width-1)))
+		newY := int32(max(0, min(my, height-1)))
+
+		var buttons uint32
+		if ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft) {
+			buttons |= 1
+		}
+		if ebiten.IsMouseButtonPressed(ebiten.MouseButtonRight) {
+			buttons |= 2
+		}
+		if ebiten.IsMouseButtonPressed(ebiten.MouseButtonMiddle) {
+			buttons |= 4
+		}
+
+		oldX := tm.mouseX.Swap(newX)
+		oldY := tm.mouseY.Swap(newY)
+		oldButtons := tm.mouseButtons.Swap(buttons)
+		if oldX != newX || oldY != newY || oldButtons != buttons {
+			tm.mouseChanged.Store(true)
+		}
 	}
 
 	for ebitenKey, stScancode := range ebitenToSTScancode {

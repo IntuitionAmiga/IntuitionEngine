@@ -27,10 +27,12 @@ type ScriptEngine struct {
 	luaOverlay    *LuaOverlay
 	videoTerminal *VideoTerminal
 
-	loadProgram func(string) error
-	hardReset   func() error
-	quitFunc    func()
-	exitFunc    func(int)
+	loadProgram    func(string) error
+	hardReset      func() error
+	quitFunc       func()
+	exitFunc       func(int)
+	setEmutosDrive func(string, uint16)
+	emutosSentinel string
 
 	frameChan chan struct{}
 
@@ -78,6 +80,12 @@ func (se *ScriptEngine) SetProgramLoader(fn func(string) error) {
 	se.mu.Unlock()
 }
 
+func (se *ScriptEngine) SetEmutosSentinel(s string) {
+	se.mu.Lock()
+	se.emutosSentinel = s
+	se.mu.Unlock()
+}
+
 func (se *ScriptEngine) SetHardReset(fn func() error) {
 	se.mu.Lock()
 	se.hardReset = fn
@@ -116,6 +124,19 @@ func (se *ScriptEngine) SetVideoTerminal(vt *VideoTerminal) {
 	se.mu.Lock()
 	se.videoTerminal = vt
 	se.mu.Unlock()
+}
+
+func (se *ScriptEngine) SetEmutosDriveFunc(fn func(string, uint16)) {
+	se.mu.Lock()
+	se.setEmutosDrive = fn
+	se.mu.Unlock()
+}
+
+func (se *ScriptEngine) sleepCtx(ctx context.Context, d time.Duration) {
+	select {
+	case <-ctx.Done():
+	case <-time.After(d):
+	}
 }
 
 func (se *ScriptEngine) IsRunning() bool {
@@ -351,16 +372,17 @@ func (se *ScriptEngine) onFrameComplete() {
 
 func (se *ScriptEngine) registerModules(L *lua.LState, ctx context.Context) {
 	sys := L.SetFuncs(L.NewTable(), map[string]lua.LGFunction{
-		"wait_frames": se.luaSysWaitFrames(ctx),
-		"wait_ms":     se.luaSysWaitMS(ctx),
-		"print":       se.luaSysPrint(),
-		"log":         se.luaSysLog(),
-		"time_ms":     se.luaSysTimeMS(),
-		"frame_count": se.luaSysFrameCount(),
-		"frame_time":  se.luaSysFrameTime(),
-		"fps":         se.luaSysFPS(),
-		"quit":        se.luaSysQuit(),
-		"exit":        se.luaSysExit(),
+		"wait_frames":  se.luaSysWaitFrames(ctx),
+		"wait_ms":      se.luaSysWaitMS(ctx),
+		"print":        se.luaSysPrint(),
+		"log":          se.luaSysLog(),
+		"time_ms":      se.luaSysTimeMS(),
+		"frame_count":  se.luaSysFrameCount(),
+		"frame_time":   se.luaSysFrameTime(),
+		"fps":          se.luaSysFPS(),
+		"quit":         se.luaSysQuit(),
+		"exit":         se.luaSysExit(),
+		"emutos_drive": se.luaSysEmutosDrive(),
 	})
 	L.SetGlobal("sys", sys)
 
@@ -390,12 +412,18 @@ func (se *ScriptEngine) registerModules(L *lua.LState, ctx context.Context) {
 	L.SetGlobal("mem", mem)
 
 	term := L.SetFuncs(L.NewTable(), map[string]lua.LGFunction{
-		"type":        se.luaTermType(),
-		"type_line":   se.luaTermTypeLine(),
-		"read":        se.luaTermRead(),
-		"clear":       se.luaTermClear(),
-		"echo":        se.luaTermEcho(),
-		"wait_output": se.luaTermWaitOutput(ctx),
+		"type":               se.luaTermType(),
+		"type_line":          se.luaTermTypeLine(),
+		"read":               se.luaTermRead(),
+		"clear":              se.luaTermClear(),
+		"echo":               se.luaTermEcho(),
+		"wait_output":        se.luaTermWaitOutput(ctx),
+		"mouse_move":         se.luaTermMouseMove(),
+		"mouse_click":        se.luaTermMouseClick(ctx),
+		"mouse_double_click": se.luaTermMouseDoubleClick(ctx),
+		"mouse_release":      se.luaTermMouseRelease(),
+		"scancode":           se.luaTermScancode(),
+		"key_press":          se.luaTermKeyPress(ctx),
 	})
 	L.SetGlobal("term", term)
 
@@ -603,6 +631,35 @@ func (se *ScriptEngine) registerModules(L *lua.LState, ctx context.Context) {
 		"error":        se.luaMediaError(),
 	})
 	L.SetGlobal("media", media)
+
+	keys := L.NewTable()
+	for _, kv := range []struct {
+		name string
+		code int
+	}{
+		{"ESCAPE", 0x01}, {"BACKSPACE", 0x0E}, {"TAB", 0x0F},
+		{"ENTER", 0x1C}, {"SPACE", 0x39},
+		{"LSHIFT", 0x2A}, {"RSHIFT", 0x36}, {"LCTRL", 0x1D},
+		{"CAPSLOCK", 0x3A},
+		{"F1", 0x3B}, {"F2", 0x3C}, {"F3", 0x3D}, {"F4", 0x3E},
+		{"F5", 0x3F}, {"F6", 0x40}, {"F7", 0x41}, {"F8", 0x42},
+		{"F9", 0x43}, {"F10", 0x44},
+		{"UP", 0x48}, {"DOWN", 0x50}, {"LEFT", 0x4B}, {"RIGHT", 0x4D},
+		{"A", 0x1E}, {"B", 0x30}, {"C", 0x2E}, {"D", 0x20},
+		{"E", 0x12}, {"F", 0x21}, {"G", 0x22}, {"H", 0x23},
+		{"I", 0x17}, {"J", 0x24}, {"K", 0x25}, {"L", 0x26},
+		{"M", 0x32}, {"N", 0x31}, {"O", 0x18}, {"P", 0x19},
+		{"Q", 0x10}, {"R", 0x13}, {"S", 0x1F}, {"T", 0x14},
+		{"U", 0x16}, {"V", 0x2F}, {"W", 0x11}, {"X", 0x2D},
+		{"Y", 0x15}, {"Z", 0x2C},
+		{"DIGIT_1", 0x02}, {"DIGIT_2", 0x03}, {"DIGIT_3", 0x04}, {"DIGIT_4", 0x05},
+		{"DIGIT_5", 0x06}, {"DIGIT_6", 0x07}, {"DIGIT_7", 0x08}, {"DIGIT_8", 0x09},
+		{"DIGIT_9", 0x0A}, {"DIGIT_0", 0x0B},
+		{"MINUS", 0x0C}, {"EQUAL", 0x0D},
+	} {
+		L.SetField(keys, kv.name, lua.LNumber(kv.code))
+	}
+	L.SetGlobal("keys", keys)
 }
 
 func (se *ScriptEngine) luaSysWaitFrames(ctx context.Context) lua.LGFunction {
@@ -743,15 +800,33 @@ func (se *ScriptEngine) luaSysExit() lua.LGFunction {
 	}
 }
 
+func (se *ScriptEngine) luaSysEmutosDrive() lua.LGFunction {
+	return func(L *lua.LState) int {
+		path := L.CheckString(1)
+		driveNum := uint16(L.OptInt(2, 20)) // default U: = drive 20
+		se.mu.Lock()
+		fn := se.setEmutosDrive
+		se.mu.Unlock()
+		if fn != nil {
+			fn(path, driveNum)
+		}
+		return 0
+	}
+}
+
 func (se *ScriptEngine) luaCPULoad() lua.LGFunction {
 	return func(L *lua.LState) int {
 		path := L.CheckString(1)
 		se.mu.Lock()
 		loader := se.loadProgram
+		sentinel := se.emutosSentinel
 		se.mu.Unlock()
 		if loader == nil {
 			L.RaiseError("program loader not configured")
 			return 0
+		}
+		if path == "EMUTOS" && sentinel != "" {
+			path = sentinel
 		}
 		se.loadingProgram.Store(true)
 		err := loader(path)
@@ -1148,6 +1223,124 @@ func (se *ScriptEngine) luaTermWaitOutput(ctx context.Context) lua.LGFunction {
 				}
 			}
 		}
+	}
+}
+
+func (se *ScriptEngine) clampMouse(x, y int) (int32, int32) {
+	if x < 0 {
+		x = 0
+	}
+	if y < 0 {
+		y = 0
+	}
+	if se.compositor != nil {
+		w, h := se.compositor.GetNativeSourceDimensions()
+		if w > 0 && x >= w {
+			x = w - 1
+		}
+		if h > 0 && y >= h {
+			y = h - 1
+		}
+	}
+	return int32(x), int32(y)
+}
+
+func validateMouseButton(L *lua.LState, argN int, val int) uint32 {
+	if val < 1 || val > 3 {
+		L.ArgError(argN, "button must be 1 (left), 2 (right), or 3 (both)")
+		return 0
+	}
+	return uint32(val)
+}
+
+func (se *ScriptEngine) luaTermMouseMove() lua.LGFunction {
+	return func(L *lua.LState) int {
+		cx, cy := se.clampMouse(L.CheckInt(1), L.CheckInt(2))
+		se.terminal.mouseOverride.Store(true)
+		se.terminal.mouseX.Store(cx)
+		se.terminal.mouseY.Store(cy)
+		se.terminal.mouseChanged.Store(true)
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaTermMouseClick(ctx context.Context) lua.LGFunction {
+	return func(L *lua.LState) int {
+		cx, cy := se.clampMouse(L.CheckInt(1), L.CheckInt(2))
+		btn := validateMouseButton(L, 3, L.OptInt(3, 1))
+		se.terminal.mouseOverride.Store(true)
+		se.terminal.mouseX.Store(cx)
+		se.terminal.mouseY.Store(cy)
+		se.terminal.mouseChanged.Store(true)
+		se.sleepCtx(ctx, 50*time.Millisecond)
+		se.terminal.mouseButtons.Store(btn)
+		se.terminal.mouseChanged.Store(true)
+		se.sleepCtx(ctx, 60*time.Millisecond)
+		se.terminal.mouseButtons.Store(0)
+		se.terminal.mouseChanged.Store(true)
+		se.sleepCtx(ctx, 50*time.Millisecond)
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaTermMouseDoubleClick(ctx context.Context) lua.LGFunction {
+	return func(L *lua.LState) int {
+		cx, cy := se.clampMouse(L.CheckInt(1), L.CheckInt(2))
+		btn := validateMouseButton(L, 3, L.OptInt(3, 1))
+		se.terminal.mouseOverride.Store(true)
+		// Move to position and let VBL register it
+		se.terminal.mouseX.Store(cx)
+		se.terminal.mouseY.Store(cy)
+		se.terminal.mouseChanged.Store(true)
+		se.sleepCtx(ctx, 50*time.Millisecond)
+		// Two quick clicks — short hold and gap for fast double-click
+		for range 2 {
+			se.terminal.mouseButtons.Store(btn)
+			se.terminal.mouseChanged.Store(true)
+			se.sleepCtx(ctx, 60*time.Millisecond)
+			se.terminal.mouseButtons.Store(0)
+			se.terminal.mouseChanged.Store(true)
+			se.sleepCtx(ctx, 80*time.Millisecond)
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaTermMouseRelease() lua.LGFunction {
+	return func(L *lua.LState) int {
+		se.terminal.mouseOverride.Store(false)
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaTermScancode() lua.LGFunction {
+	return func(L *lua.LState) int {
+		code := L.CheckInt(1)
+		if code < 0 || code > 255 {
+			L.ArgError(1, "scancode must be 0..255")
+			return 0
+		}
+		se.terminal.EnqueueScancode(uint8(code))
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaTermKeyPress(ctx context.Context) lua.LGFunction {
+	return func(L *lua.LState) int {
+		code := L.CheckInt(1)
+		if code < 0 || code > 127 {
+			L.ArgError(1, "scancode must be 0..127 (make code)")
+			return 0
+		}
+		hold := L.OptInt(2, 50)
+		if hold < 0 {
+			L.ArgError(2, "hold_ms must be >= 0")
+			return 0
+		}
+		se.terminal.EnqueueScancode(uint8(code))
+		se.sleepCtx(ctx, time.Duration(hold)*time.Millisecond)
+		se.terminal.EnqueueScancode(uint8(code) | 0x80)
+		return 0
 	}
 }
 

@@ -1,0 +1,17 @@
+-- Quick test: just wait and probe the GEM desktop
+sys.print("[test] mode=" .. cpu.mode())
+sys.print("[test] waiting 8s for desktop...")
+sys.wait_ms(8000)
+
+sys.print("[test] cpu running=" .. tostring(cpu.is_running()))
+
+local w, h = video.get_dimensions()
+sys.print(string.format("[test] frame: %dx%d", w, h))
+
+for y = 0, 400, 20 do
+    local r, g, b = video.get_pixel(320, y)
+    sys.print(string.format("[test] pixel(320,%3d) = (%3d,%3d,%3d)", y, r, g, b))
+end
+
+sys.print("[test] done")
+sys.quit()

@@ -1,0 +1,55 @@
+-- Test: Boot EmuTOS from BASIC via cpu.load, then drive-click
+-- Run: IntuitionEngine -basic -script THIS_FILE
+
+local function log(msg) sys.print("[test] " .. msg) end
+
+-- Setup drive
+os.execute("mkdir -p /tmp/ie_demo_drive")
+os.execute("cp sdk/examples/prebuilt/rotozoomer_gem.prg /tmp/ie_demo_drive/ROTOZOOM.PRG")
+sys.emutos_drive("/tmp/ie_demo_drive")
+
+-- Boot EmuTOS directly via cpu.load (preserves script context)
+log("Booting EmuTOS via cpu.load...")
+cpu.load("EMUTOS")
+
+-- Wait for GEM desktop (green background at center)
+log("Waiting for GEM desktop...")
+local deadline = sys.time_ms() + 20000
+while sys.time_ms() < deadline do
+    local r, g, b = video.get_pixel(400, 300)
+    if g > 200 and r < 50 and b < 50 then
+        log("GEM desktop detected!")
+        break
+    end
+    sys.wait_ms(100)
+end
+
+log("Waiting 5s for AES init...")
+sys.wait_ms(5000)
+
+-- Mouse activation
+log("Activation click at TOS(320,300)...")
+term.mouse_move(320, 300)
+sys.wait_ms(500)
+term.mouse_click(320, 300)
+sys.wait_ms(500)
+
+log("Double-clicking drive icon at TOS(35,44)...")
+term.mouse_move(35, 44)
+sys.wait_ms(500)
+term.mouse_double_click(35, 44)
+sys.wait_ms(3000)
+
+log("Double-clicking ROTOZOOM.PRG at TOS(149,155)...")
+term.mouse_move(149, 155)
+sys.wait_ms(500)
+term.mouse_double_click(149, 155)
+sys.wait_ms(5000)
+
+log("Watching rotozoomer...")
+sys.wait_ms(10000)
+
+term.mouse_release()
+log("=== Done ===")
+sys.wait_ms(200)
+sys.quit()

@@ -1,0 +1,70 @@
+-- EmuTOS GEM Desktop + Rotozoomer (.PRG) automation.
+-- Run: IntuitionEngine -emutos -emutos-drive /tmp/ie_demo_drive -script THIS_FILE
+
+local function log(msg) sys.print("[gem] " .. msg) end
+
+-- ============================================================================
+-- Setup
+-- ============================================================================
+log("=== EmuTOS GEM Rotozoomer ===")
+os.execute("mkdir -p /tmp/ie_demo_drive")
+os.execute("cp sdk/examples/prebuilt/rotozoomer_gem.prg /tmp/ie_demo_drive/ROTOZOOM.PRG")
+
+-- ============================================================================
+-- Wait for GEM desktop to render
+-- ============================================================================
+log("Waiting for GEM desktop...")
+local deadline = sys.time_ms() + 15000
+while sys.time_ms() < deadline do
+    local r, g, b = video.get_pixel(400, 10)
+    if r + g + b > 0 then break end
+    sys.wait_ms(100)
+end
+log("Waiting for AES init...")
+sys.wait_ms(5000)
+
+-- ============================================================================
+-- Hard-coded coordinates (TOS 640x480 space)
+-- From screenshot 2 (latest):
+--   DISK U icon:       TOS(35,44)  — confirmed working
+--   ROTOZOOM.PRG icon: comp(275,335) = TOS(220,268)
+-- ============================================================================
+local DRIVE_X, DRIVE_Y = 35, 44
+local FILE_X, FILE_Y = 149, 155
+
+-- ============================================================================
+-- Activate mouse, then open drive
+-- ============================================================================
+log("Activating mouse...")
+term.mouse_move(320, 300)
+sys.wait_ms(500)
+term.mouse_click(320, 300)
+sys.wait_ms(500)
+
+log("Double-clicking drive icon...")
+term.mouse_move(DRIVE_X, DRIVE_Y)
+sys.wait_ms(500)
+term.mouse_double_click(DRIVE_X, DRIVE_Y)
+sys.wait_ms(3000)
+
+-- ============================================================================
+-- Double-click ROTOZOOM.PRG to launch it
+-- ============================================================================
+log("Double-clicking ROTOZOOM.PRG...")
+term.mouse_move(FILE_X, FILE_Y)
+sys.wait_ms(500)
+term.mouse_double_click(FILE_X, FILE_Y)
+
+log("Waiting for PRG to launch...")
+sys.wait_ms(5000)
+
+-- ============================================================================
+-- Rotozoomer is running — let it render for a while
+-- ============================================================================
+log("ROTOZOOM.PRG launched!")
+sys.wait_ms(15000)
+
+term.mouse_release()
+log("=== Done ===")
+sys.wait_ms(200)
+sys.quit()
