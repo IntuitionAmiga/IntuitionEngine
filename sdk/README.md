@@ -116,10 +116,10 @@ The rotozoomer is the canonical "hello world" demo: a hardware-accelerated rotat
 | `voodoo_3dfx_logo_68k.asm` | M68K | Voodoo 3D | -- | Textured 3DFX logo flyby with fog |
 | `voodoo_triangle_68k.asm` | M68K | Voodoo 3D | -- | Flat-shaded triangle |
 | `voodoo_tunnel_z80.asm` | Z80 | Voodoo 3D | -- | Texture-mapped tunnel effect |
-| `robocop_intro.asm` | IE32 | IEVideoChip + Copper | -- | Copper rasterbars + blitter sprite |
-| `robocop_intro_68k.asm` | M68K | IEVideoChip + Copper | -- | Copper rasterbars + blitter sprite |
-| `robocop_intro_65.asm` | 6502 | IEVideoChip + Copper | -- | Copper rasterbars + blitter sprite |
-| `robocop_intro_z80.asm` | Z80 | IEVideoChip + Copper | -- | Copper rasterbars + blitter sprite |
+| `robocop_intro.asm` | IE32 | IEVideoChip + Copper | PSG | Copper rasterbars + blitter sprite + sine scrolltext |
+| `robocop_intro_68k.asm` | M68K | IEVideoChip + Copper | PSG | Copper rasterbars + blitter sprite + sine scrolltext |
+| `robocop_intro_65.asm` | 6502 | IEVideoChip + Copper | PSG | Copper rasterbars + blitter sprite + sine scrolltext |
+| `robocop_intro_z80.asm` | Z80 | IEVideoChip + Copper | PSG | Copper rasterbars + blitter sprite + sine scrolltext |
 
 ### Coprocessor Communication
 
