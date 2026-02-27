@@ -1318,12 +1318,9 @@ func (chip *VideoChip) blitReadPixelLocked(addr uint32) uint32 {
 		}
 		return 0
 	}
-	// Read directly from cached bus memory to avoid mutex deadlock
-	// Use big-endian byte order when bigEndianMode is set (for M68K programs)
+	// Non-VRAM pixel data (fonts, sprites loaded via incbin) is raw RGBA bytes
+	// with no endianness — always read as LE regardless of CPU mode.
 	if chip.busMemory != nil && addr+4 <= uint32(len(chip.busMemory)) {
-		if chip.bigEndianMode {
-			return binary.BigEndian.Uint32(chip.busMemory[addr : addr+4])
-		}
 		return *(*uint32)(unsafe.Pointer(&chip.busMemory[addr]))
 	}
 	return 0

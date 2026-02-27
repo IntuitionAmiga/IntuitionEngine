@@ -523,7 +523,7 @@ draw_scrolltext:
 
     ; Calculate Y with sine offset for wave motion
     LDA D
-    ADD A, @VAR_SCROLL_X
+    ADD A, @VAR_FRAME_ADDR
     AND A, #0xFF
     SHL A, #2
     ADD A, #SCROLL_SINE_ADDR

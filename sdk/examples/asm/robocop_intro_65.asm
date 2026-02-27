@@ -909,15 +909,10 @@ main_loop:
 @has_glyph:
 
     ; Calculate Y position with sine offset for wave motion
-    lda char_count
-    asl a                       ; * 2
-    asl a                       ; * 4
-    asl a                       ; * 8
-    asl a                       ; * 16
-    asl a                       ; * 32
+    lda char_x                  ; screen X pixel position (low byte)
     clc
-    adc scroll_x_lo             ; Add scroll position for animation
-    tay                         ; Y = sine table index
+    adc frame_lo                ; + frame counter (low byte)
+    tay                         ; Y = sine table index (& 0xFF implicit)
 
     ; Get signed 16-bit sine offset and add to baseline Y
     lda scroll_sine_lo,y
@@ -931,7 +926,7 @@ main_loop:
     ; Set up blitter for character
     jsr wait_blit
 
-    SET_BLT_OP BLT_OP_COPY
+    SET_BLT_OP BLT_OP_ALPHA
 
     ; Source = data_font_rgba + font_offset (32-bit addition)
     clc
@@ -1406,76 +1401,77 @@ copper_list:
     .dword COP_END
 
 ; ----------------------------------------------------------------------------
-; Scrolltext sine table for Y wave effect (256 entries, +/-20 pixels)
-; Split into low/high byte arrays. Pre-computed: sin(i * 2pi / 256) * 20
+; Scrolltext sine table for Y wave effect (256 entries, +/-18 pixels)
+; Split into low/high byte arrays. Pre-computed: sin(i * 2pi / 256) * 18
+; Values extracted from M68K reference (robocop_intro_68k.asm)
 ; ----------------------------------------------------------------------------
 scroll_sine_lo:
-    .byte $00, $00, $01, $01, $02, $02, $03, $03
-    .byte $04, $04, $05, $05, $06, $06, $07, $07
-    .byte $08, $08, $09, $09, $0A, $0A, $0A, $0B
-    .byte $0B, $0C, $0C, $0C, $0D, $0D, $0D, $0E
-    .byte $0E, $0E, $0E, $0F, $0F, $0F, $0F, $0F
-    .byte $10, $10, $10, $10, $10, $10, $10, $10
-    .byte $10, $10, $10, $10, $10, $10, $10, $10
-    .byte $10, $0F, $0F, $0F, $0F, $0F, $0E, $0E
-    .byte $0E, $0E, $0D, $0D, $0D, $0C, $0C, $0C
-    .byte $0B, $0B, $0A, $0A, $0A, $09, $09, $08
-    .byte $08, $07, $07, $06, $06, $05, $05, $04
-    .byte $04, $03, $03, $02, $02, $01, $01, $00
-    .byte $00, $00, $FF, $FF, $FE, $FE, $FD, $FD
-    .byte $FC, $FC, $FB, $FB, $FA, $FA, $F9, $F9
-    .byte $F8, $F8, $F7, $F7, $F6, $F6, $F6, $F5
-    .byte $F5, $F4, $F4, $F4, $F3, $F3, $F3, $F2
-    .byte $F2, $F2, $F2, $F1, $F1, $F1, $F1, $F1
-    .byte $F0, $F0, $F0, $F0, $F0, $F0, $F0, $F0
-    .byte $F0, $F0, $F0, $F0, $F0, $F0, $F0, $F0
-    .byte $F0, $F1, $F1, $F1, $F1, $F1, $F2, $F2
-    .byte $F2, $F2, $F3, $F3, $F3, $F4, $F4, $F4
-    .byte $F5, $F5, $F6, $F6, $F6, $F7, $F7, $F8
-    .byte $F8, $F9, $F9, $FA, $FA, $FB, $FB, $FC
-    .byte $FC, $FD, $FD, $FE, $FE, $FF, $FF, $00
-    .byte $00, $00, $01, $01, $02, $02, $03, $03
-    .byte $04, $04, $05, $05, $06, $06, $07, $07
-    .byte $08, $08, $09, $09, $0A, $0A, $0A, $0B
-    .byte $0B, $0C, $0C, $0C, $0D, $0D, $0D, $0E
-    .byte $0E, $0E, $0E, $0F, $0F, $0F, $0F, $0F
-    .byte $10, $10, $10, $10, $10, $10, $10, $10
-    .byte $10, $10, $10, $10, $10, $10, $10, $10
-    .byte $10, $0F, $0F, $0F, $0F, $0F, $0E, $0E
+    .byte $00,$00,$01,$01,$02,$02,$03,$03
+    .byte $04,$04,$05,$05,$06,$06,$06,$07
+    .byte $07,$08,$08,$09,$09,$09,$0A,$0A
+    .byte $0A,$0B,$0B,$0B,$0C,$0C,$0C,$0D
+    .byte $0D,$0D,$0D,$0E,$0E,$0E,$0E,$0F
+    .byte $0F,$0F,$0F,$0F,$10,$10,$10,$10
+    .byte $10,$11,$11,$11,$11,$11,$11,$11
+    .byte $11,$12,$12,$12,$12,$12,$12,$12
+    .byte $12,$12,$12,$12,$12,$12,$12,$12
+    .byte $12,$11,$11,$11,$11,$11,$11,$11
+    .byte $11,$10,$10,$10,$10,$10,$0F,$0F
+    .byte $0F,$0F,$0F,$0E,$0E,$0E,$0E,$0D
+    .byte $0D,$0D,$0D,$0C,$0C,$0C,$0B,$0B
+    .byte $0B,$0A,$0A,$0A,$09,$09,$09,$08
+    .byte $08,$07,$07,$06,$06,$06,$05,$05
+    .byte $04,$04,$03,$03,$02,$02,$01,$01
+    .byte $00,$00,$FF,$FF,$FE,$FE,$FD,$FD
+    .byte $FC,$FC,$FB,$FB,$FA,$FA,$FA,$F9
+    .byte $F9,$F8,$F8,$F7,$F7,$F7,$F6,$F6
+    .byte $F6,$F5,$F5,$F5,$F4,$F4,$F4,$F3
+    .byte $F3,$F3,$F3,$F2,$F2,$F2,$F2,$F1
+    .byte $F1,$F1,$F1,$F1,$F0,$F0,$F0,$F0
+    .byte $F0,$EF,$EF,$EF,$EF,$EF,$EF,$EF
+    .byte $EF,$EE,$EE,$EE,$EE,$EE,$EE,$EE
+    .byte $EE,$EE,$EE,$EE,$EE,$EE,$EE,$EE
+    .byte $EE,$EF,$EF,$EF,$EF,$EF,$EF,$EF
+    .byte $EF,$F0,$F0,$F0,$F0,$F0,$F1,$F1
+    .byte $F1,$F1,$F1,$F2,$F2,$F2,$F2,$F3
+    .byte $F3,$F3,$F3,$F4,$F4,$F4,$F5,$F5
+    .byte $F5,$F6,$F6,$F6,$F7,$F7,$F7,$F8
+    .byte $F8,$F9,$F9,$FA,$FA,$FA,$FB,$FB
+    .byte $FC,$FC,$FD,$FD,$FE,$FE,$FF,$FF
 
 scroll_sine_hi:
-    .byte $00, $00, $00, $00, $00, $00, $00, $00
-    .byte $00, $00, $00, $00, $00, $00, $00, $00
-    .byte $00, $00, $00, $00, $00, $00, $00, $00
-    .byte $00, $00, $00, $00, $00, $00, $00, $00
-    .byte $00, $00, $00, $00, $00, $00, $00, $00
-    .byte $00, $00, $00, $00, $00, $00, $00, $00
-    .byte $00, $00, $00, $00, $00, $00, $00, $00
-    .byte $00, $00, $00, $00, $00, $00, $00, $00
-    .byte $00, $00, $00, $00, $00, $00, $00, $00
-    .byte $00, $00, $00, $00, $00, $00, $00, $00
-    .byte $00, $00, $00, $00, $00, $00, $00, $00
-    .byte $00, $00, $00, $00, $00, $00, $00, $00
-    .byte $00, $00, $FF, $FF, $FF, $FF, $FF, $FF
-    .byte $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF
-    .byte $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF
-    .byte $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF
-    .byte $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF
-    .byte $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF
-    .byte $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF
-    .byte $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF
-    .byte $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF
-    .byte $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF
-    .byte $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF
-    .byte $FF, $FF, $FF, $FF, $FF, $FF, $FF, $00
-    .byte $00, $00, $00, $00, $00, $00, $00, $00
-    .byte $00, $00, $00, $00, $00, $00, $00, $00
-    .byte $00, $00, $00, $00, $00, $00, $00, $00
-    .byte $00, $00, $00, $00, $00, $00, $00, $00
-    .byte $00, $00, $00, $00, $00, $00, $00, $00
-    .byte $00, $00, $00, $00, $00, $00, $00, $00
-    .byte $00, $00, $00, $00, $00, $00, $00, $00
-    .byte $00, $00, $00, $00, $00, $00, $00, $00
+    .byte $00,$00,$00,$00,$00,$00,$00,$00
+    .byte $00,$00,$00,$00,$00,$00,$00,$00
+    .byte $00,$00,$00,$00,$00,$00,$00,$00
+    .byte $00,$00,$00,$00,$00,$00,$00,$00
+    .byte $00,$00,$00,$00,$00,$00,$00,$00
+    .byte $00,$00,$00,$00,$00,$00,$00,$00
+    .byte $00,$00,$00,$00,$00,$00,$00,$00
+    .byte $00,$00,$00,$00,$00,$00,$00,$00
+    .byte $00,$00,$00,$00,$00,$00,$00,$00
+    .byte $00,$00,$00,$00,$00,$00,$00,$00
+    .byte $00,$00,$00,$00,$00,$00,$00,$00
+    .byte $00,$00,$00,$00,$00,$00,$00,$00
+    .byte $00,$00,$00,$00,$00,$00,$00,$00
+    .byte $00,$00,$00,$00,$00,$00,$00,$00
+    .byte $00,$00,$00,$00,$00,$00,$00,$00
+    .byte $00,$00,$00,$00,$00,$00,$00,$00
+    .byte $00,$00,$FF,$FF,$FF,$FF,$FF,$FF
+    .byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
+    .byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
+    .byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
+    .byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
+    .byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
+    .byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
+    .byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
+    .byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
+    .byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
+    .byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
+    .byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
+    .byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
+    .byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
+    .byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
+    .byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
 
 ; ----------------------------------------------------------------------------
 ; Character lookup table - maps ASCII 32-127 to font byte offsets

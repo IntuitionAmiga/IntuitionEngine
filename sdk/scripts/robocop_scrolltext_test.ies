@@ -1,0 +1,29 @@
+-- ============================================================================
+-- Robocop Scrolltext Visual Test
+-- Loads each of the 4 CPU ports and captures screenshots for comparison.
+-- The scrolltext wave shape, amplitude, and alpha blending should match
+-- across all ports when compared to the 68k reference.
+-- ============================================================================
+
+local demos = {
+    { path = "sdk/examples/prebuilt/robocop_intro_68k.ie68", name = "68k (reference)" },
+    { path = "sdk/examples/prebuilt/robocop_intro.iex",      name = "IE32" },
+    { path = "sdk/examples/prebuilt/robocop_intro_65.ie65",  name = "6502" },
+    { path = "sdk/examples/prebuilt/robocop_intro_z80.ie80", name = "Z80" },
+}
+
+for i, demo in ipairs(demos) do
+    sys.print("[robocop test] Loading " .. demo.name .. ": " .. demo.path)
+    media.stop()
+    audio.reset()
+    cpu.load(demo.path)
+
+    -- Wait 120 frames (~2 seconds) for scrolltext to be visible
+    sys.wait_frames(120)
+
+    local outpath = "/tmp/robocop_test_" .. i .. "_" .. demo.name:gsub("[^%w]", "_") .. ".png"
+    rec.screenshot(outpath)
+    sys.print("[robocop test] Screenshot saved: " .. outpath)
+end
+
+sys.print("[robocop test] Done. Compare screenshots in /tmp/robocop_test_*.png")
