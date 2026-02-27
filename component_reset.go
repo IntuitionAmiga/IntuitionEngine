@@ -18,6 +18,8 @@ License: GPLv3 or later
 
 package main
 
+import "sync"
+
 // SoundChip.Reset restores audio to constructor defaults. Preserves OTO output.
 func (chip *SoundChip) Reset() {
 	chip.mu.Lock()
@@ -262,6 +264,14 @@ func (vc *VideoChip) Reset() {
 
 	// Reset blitter state
 	vc.bltBusy = false
+
+	// Reset CLUT8 palette state
+	vc.clutMode.Store(false)
+	clear(vc.clutPalette[:])
+	clear(vc.clutPaletteHW[:])
+	vc.palIndex = 0
+	vc.fbBase = 0
+	vc.clutWarnOnce = sync.Once{}
 }
 
 // VGAEngine.Reset restores VGA to power-on defaults.

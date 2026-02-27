@@ -100,6 +100,14 @@ const (
 	VIDEO_REG_OFFSET_BLT_MODE7_TEX_W  = 0x070
 	VIDEO_REG_OFFSET_BLT_MODE7_TEX_H  = 0x074
 
+	// CLUT8 palette mode registers
+	VIDEO_REG_OFFSET_PAL_INDEX  = 0x078
+	VIDEO_REG_OFFSET_PAL_DATA   = 0x07C
+	VIDEO_REG_OFFSET_COLOR_MODE = 0x080
+	VIDEO_REG_OFFSET_FB_BASE    = 0x084
+	VIDEO_REG_OFFSET_PAL_TABLE  = 0x088
+	VIDEO_REG_OFFSET_PAL_END    = 0x487
+
 	VIDEO_CTRL          = VIDEO_REG_BASE + VIDEO_REG_OFFSET_CTRL
 	VIDEO_MODE          = VIDEO_REG_BASE + VIDEO_REG_OFFSET_MODE
 	VIDEO_STATUS        = VIDEO_REG_BASE + VIDEO_REG_OFFSET_STATUS
@@ -130,7 +138,15 @@ const (
 	BLT_MODE7_DV_ROW    = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_MODE7_DV_ROW
 	BLT_MODE7_TEX_W     = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_MODE7_TEX_W
 	BLT_MODE7_TEX_H     = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_MODE7_TEX_H
-	VIDEO_REG_END       = BLT_MODE7_TEX_H + 3
+
+	// CLUT8 palette mode addresses
+	VIDEO_PAL_INDEX  = VIDEO_REG_BASE + VIDEO_REG_OFFSET_PAL_INDEX
+	VIDEO_PAL_DATA   = VIDEO_REG_BASE + VIDEO_REG_OFFSET_PAL_DATA
+	VIDEO_COLOR_MODE = VIDEO_REG_BASE + VIDEO_REG_OFFSET_COLOR_MODE
+	VIDEO_FB_BASE    = VIDEO_REG_BASE + VIDEO_REG_OFFSET_FB_BASE
+	VIDEO_PAL_TABLE  = VIDEO_REG_BASE + VIDEO_REG_OFFSET_PAL_TABLE
+	VIDEO_PAL_END    = VIDEO_REG_BASE + VIDEO_REG_OFFSET_PAL_END
+	VIDEO_REG_END    = VIDEO_PAL_END
 
 	VRAM_START_MB = 1 // VRAM starts at 1MB offset
 	VRAM_SIZE_MB  = 5 // 5MB of video memory
@@ -502,6 +518,15 @@ type VideoChip struct {
 	rasterY      uint32
 	rasterHeight uint32
 	rasterColor  uint32
+
+	// CLUT8 palette mode state
+	clutMode      atomic.Bool // true = CLUT8 indexed mode, false = RGBA32 direct
+	clutPalette   [256]uint32 // Pre-packed LE RGBA values for fast lookup
+	clutPaletteHW [256]uint32 // Raw 0x00RRGGBB values as written by guest
+	palIndex      uint32      // Auto-incrementing palette write index
+	clutFrame     []byte      // Conversion buffer (width*height*4 RGBA32)
+	fbBase        uint32      // Framebuffer base address in bus memory
+	clutWarnOnce  sync.Once   // Rate-limit out-of-range warnings
 }
 
 // VideoMode defines resolution and buffer parameters for a display mode
@@ -665,6 +690,66 @@ func (chip *VideoChip) SetDirectVRAM(slice []byte) {
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 	chip.directVRAM = slice
+}
+
+// setPaletteEntry unpacks a 0x00RRGGBB hardware value into a pre-packed
+// little-endian RGBA uint32 for fast CLUT8→RGBA32 conversion.
+func (chip *VideoChip) setPaletteEntry(index uint8, hwVal uint32) {
+	chip.clutPaletteHW[index] = hwVal
+	r := uint8((hwVal >> 16) & 0xFF)
+	g := uint8((hwVal >> 8) & 0xFF)
+	b := uint8(hwVal & 0xFF)
+	// Pack as LE RGBA: R at byte 0, G at byte 1, B at byte 2, A at byte 3
+	chip.clutPalette[index] = uint32(r) | uint32(g)<<8 | uint32(b)<<16 | 0xFF000000
+}
+
+// convertCLUT8Frame reads indexed pixels from bus memory at fbBase and
+// converts them to RGBA32 in clutFrame using the palette lookup table.
+func (chip *VideoChip) convertCLUT8Frame() {
+	mode := VideoModes[chip.currentMode]
+	pixelCount := uint32(mode.width * mode.height)
+	frameSize := int(pixelCount) * BYTES_PER_PIXEL
+
+	// Ensure clutFrame is allocated
+	if len(chip.clutFrame) != frameSize {
+		chip.clutFrame = make([]byte, frameSize)
+	}
+
+	fb := chip.fbBase
+	if chip.busMemory == nil || fb+pixelCount > uint32(len(chip.busMemory)) {
+		chip.clutWarnOnce.Do(func() {
+			fmt.Printf("CLUT8: fbBase 0x%X out of range (need %d bytes, bus has %d)\n",
+				fb, fb+pixelCount, len(chip.busMemory))
+		})
+		clear(chip.clutFrame)
+		return
+	}
+
+	src := chip.busMemory[fb : fb+pixelCount]
+	dst := chip.clutFrame
+	for i := uint32(0); i < pixelCount; i++ {
+		rgba := chip.clutPalette[src[i]]
+		off := i * BYTES_PER_PIXEL
+		*(*uint32)(unsafe.Pointer(&dst[off])) = rgba
+	}
+}
+
+// clutGetFrame returns the appropriate frame for CLUT8 or RGBA32 direct modes
+// when directVRAM is set. Called from both GetFrame() and FinishFrame().
+func (chip *VideoChip) clutGetFrame() []byte {
+	if chip.clutMode.Load() && chip.directVRAM != nil {
+		chip.convertCLUT8Frame()
+		return chip.clutFrame
+	}
+	if chip.directVRAM != nil && chip.fbBase != 0 {
+		mode := VideoModes[chip.currentMode]
+		frameSize := uint32(mode.width * mode.height * BYTES_PER_PIXEL)
+		fb := chip.fbBase
+		if chip.busMemory != nil && fb+frameSize <= uint32(len(chip.busMemory)) {
+			return chip.busMemory[fb : fb+frameSize]
+		}
+	}
+	return chip.directVRAM
 }
 
 func (chip *VideoChip) SetBlitterEnabled(enabled bool) {
@@ -1751,7 +1836,24 @@ func (chip *VideoChip) HandleRead(addr uint32) uint32 {
 		return readUint32Byte(chip.bltMode7TexHStaged, 2)
 	case BLT_MODE7_TEX_H + 3:
 		return readUint32Byte(chip.bltMode7TexHStaged, 3)
+	case VIDEO_PAL_INDEX:
+		return chip.palIndex
+	case VIDEO_COLOR_MODE:
+		return btou32(chip.clutMode.Load())
+	case VIDEO_FB_BASE:
+		return chip.fbBase
 	default:
+		// Handle palette table reads (0xF0088-0xF0487)
+		if addr >= VIDEO_PAL_TABLE && addr <= VIDEO_PAL_END {
+			entryOffset := addr - VIDEO_PAL_TABLE
+			if entryOffset%4 == 0 {
+				idx := entryOffset / 4
+				if idx < 256 {
+					return chip.clutPaletteHW[idx]
+				}
+			}
+			return 0
+		}
 		if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
 			offset := addr - ADDR_OFFSET
 			if offset+PIXEL_ALIGNMENT <= uint32(len(chip.frontBuffer)) && (offset&PIXEL_ALIGN_MASK) == DEFAULT_RETURN {
@@ -1844,8 +1946,8 @@ func (chip *VideoChip) HandleWrite8(addr uint32, value uint8) {
 		return
 	}
 
-	// For register writes, reconstruct the full 32-bit register value
-	// from mirrored bus bytes, applying CPU byte order.
+	// For register writes (including palette registers), reconstruct the
+	// full 32-bit register value from mirrored bus bytes, applying CPU byte order.
 	if addr >= VIDEO_CTRL && addr <= VIDEO_REG_END {
 		base := addr &^ 0x3
 		var raw [4]byte
@@ -1967,7 +2069,43 @@ func (chip *VideoChip) handleWriteLocked(addr uint32, value uint32) {
 		if value&rasterCtrlStart != 0 {
 			chip.drawRasterBandLocked()
 		}
+	case VIDEO_PAL_INDEX:
+		chip.palIndex = value & 0xFF
+	case VIDEO_PAL_DATA:
+		idx := uint8(chip.palIndex & 0xFF)
+		chip.setPaletteEntry(idx, value)
+		chip.palIndex = (chip.palIndex + 1) & 0xFF
+	case VIDEO_COLOR_MODE:
+		chip.clutMode.Store(value != 0)
+		if value != 0 {
+			// Lazily allocate CLUT8 conversion buffer
+			mode := VideoModes[chip.currentMode]
+			frameSize := mode.width * mode.height * BYTES_PER_PIXEL
+			if len(chip.clutFrame) != frameSize {
+				chip.clutFrame = make([]byte, frameSize)
+			}
+		}
+	case VIDEO_FB_BASE:
+		chip.fbBase = value
 	default:
+		// Handle palette table direct writes (0xF0088-0xF0487)
+		if addr >= VIDEO_PAL_TABLE && addr <= VIDEO_PAL_END {
+			entryOffset := addr - VIDEO_PAL_TABLE
+			if entryOffset%4 == 0 {
+				idx := uint8(entryOffset / 4)
+				chip.setPaletteEntry(idx, value)
+				// Mirror to busMemory for byte-write accumulation in HandleWrite8.
+				// Use the appropriate byte order so HandleWrite8 can reconstruct correctly.
+				if chip.busMemory != nil && addr+4 <= uint32(len(chip.busMemory)) {
+					if chip.bigEndianMode {
+						binary.BigEndian.PutUint32(chip.busMemory[addr:addr+4], value)
+					} else {
+						binary.LittleEndian.PutUint32(chip.busMemory[addr:addr+4], value)
+					}
+				}
+				return
+			}
+		}
 		if chip.handleBlitterWriteLocked(addr, value) {
 			return
 		}
@@ -2365,9 +2503,10 @@ func (chip *VideoChip) GetFrame() []byte {
 	if !chip.enabled.Load() {
 		return nil
 	}
-	// When directVRAM is set (e.g. EmuTOS mode), return bus memory directly
+	// When directVRAM is set (e.g. EmuTOS/AROS mode), use clutGetFrame
+	// which handles both CLUT8 conversion and fbBase redirection
 	if chip.directVRAM != nil {
-		return chip.directVRAM
+		return chip.clutGetFrame()
 	}
 	// Return splash screen if no content has been written
 	if !chip.hasContent.Load() {
@@ -2444,9 +2583,10 @@ func (chip *VideoChip) FinishFrame() []byte {
 
 	chip.copperManagedByCompositor = false // Release copper management back to refreshLoop
 
-	// When directVRAM is set (e.g. EmuTOS mode), return bus memory directly
+	// When directVRAM is set (e.g. EmuTOS/AROS mode), use clutGetFrame
+	// which handles both CLUT8 conversion and fbBase redirection
 	if chip.directVRAM != nil {
-		return chip.directVRAM
+		return chip.clutGetFrame()
 	}
 
 	// Return the current front buffer

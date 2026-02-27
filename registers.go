@@ -33,7 +33,7 @@ Address Range       Size    Device              Constants File
 0xA0000-0xAFFFF     64KB    VGA VRAM Window     vga_constants.go
 0xB8000-0xBFFFF     32KB    VGA Text Buffer     vga_constants.go
 
-0xF0000-0xF0054     84B     Video Chip          video_chip.go
+0xF0000-0xF0487     1160B   Video Chip (+palette) video_chip.go
 0xF0700-0xF07FF     256B    Terminal/Serial     registers.go
 0xF0800-0xF0B3F     832B    Audio Chip          audio_chip.go
 0xF0BC0-0xF0BD7     24B     MOD Player          mod_constants.go
@@ -52,6 +52,7 @@ Address Range       Size    Device              Constants File
 0xF2300-0xF231F     32B     Media Loader        registers.go
 0xF2320-0xF233F     32B     Program Executor    registers.go
 0xF2340-0xF237F     64B     Coprocessor         coprocessor_constants.go
+0xF2380-0xF239F     32B     Clipboard Bridge    clipboard_bridge_constants.go
 0xF4000-0xF43FF     1KB     Voodoo 3D Graphics  voodoo_constants.go
 
 0x100000-0x5FFFFF   5MB     Video RAM           video_chip.go (VRAM_START)
@@ -152,9 +153,9 @@ const (
 	IO_REGION_BASE = 0xF0000 // Start of I/O mapped region
 	IO_REGION_END  = 0xFFFFF // End of I/O mapped region
 
-	// Video chip region
+	// Video chip region (includes palette registers at 0xF0078-0xF0487)
 	VIDEO_REGION_BASE = 0xF0000
-	VIDEO_REGION_END  = 0xF0057
+	VIDEO_REGION_END  = 0xF0487
 
 	// Terminal/Serial region
 	TERMINAL_REGION_BASE = 0xF0700
@@ -219,6 +220,10 @@ const (
 	// Coprocessor region
 	COPROC_REGION_BASE = 0xF2340
 	COPROC_REGION_END  = 0xF237F
+
+	// Clipboard bridge region (AROS host clipboard exchange)
+	CLIP_BRIDGE_REGION_BASE = 0xF2380
+	CLIP_BRIDGE_REGION_END  = 0xF239F
 
 	// Voodoo 3D graphics region
 	VOODOO_REGION_BASE = 0xF4000
@@ -339,6 +344,8 @@ func GetIORegion(addr uint32) string {
 		return "GTIA"
 	case addr >= COPROC_REGION_BASE && addr <= COPROC_REGION_END:
 		return "Coprocessor"
+	case addr >= CLIP_BRIDGE_REGION_BASE && addr <= CLIP_BRIDGE_REGION_END:
+		return "ClipboardBridge"
 	case addr >= VOODOO_REGION_BASE && addr <= VOODOO_REGION_END:
 		return "Voodoo"
 	default:

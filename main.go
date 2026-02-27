@@ -1355,9 +1355,8 @@ func main() {
 		sysBus.UnmapIO(VRAM_START, VRAM_START+VRAM_SIZE-1)
 		videoChip.SetBusMemory(sysBus.memory)
 		videoChip.SetBigEndianMode(true)
-		// Point VideoChip's GetFrame at bus memory so M68K VRAM writes are visible.
-		frameSize := 640 * 480 * 4 // IE native mode: 640x480 RGBA
-		videoChip.SetDirectVRAM(sysBus.memory[VRAM_START : VRAM_START+frameSize])
+		// Point VideoChip's GetFrame at full VRAM so CLUT8 bitmaps at any offset work.
+		videoChip.SetDirectVRAM(sysBus.memory[VRAM_START : VRAM_START+VRAM_SIZE])
 		m68kCPU := NewM68KCPU(sysBus)
 		m68kRunner := NewM68KRunner(m68kCPU)
 		m68kRunner.PerfEnabled = perfMode
@@ -1408,8 +1407,8 @@ func main() {
 		sysBus.UnmapIO(VRAM_START, VRAM_START+VRAM_SIZE-1)
 		videoChip.SetBusMemory(sysBus.memory)
 		videoChip.SetBigEndianMode(true)
-		frameSize := 640 * 480 * 4 // IE native mode: 640x480 RGBA
-		videoChip.SetDirectVRAM(sysBus.memory[VRAM_START : VRAM_START+frameSize])
+		// Point VideoChip's GetFrame at full VRAM so CLUT8 bitmaps at any offset work.
+		videoChip.SetDirectVRAM(sysBus.memory[VRAM_START : VRAM_START+VRAM_SIZE])
 		m68kCPU := NewM68KCPU(sysBus)
 		m68kRunner := NewM68KRunner(m68kCPU)
 		m68kRunner.PerfEnabled = perfMode
@@ -1431,6 +1430,10 @@ func main() {
 		arosDMA := NewArosAudioDMA(sysBus, soundChip, m68kCPU)
 		sysBus.MapIO(AROS_AUD_REGION_BASE, AROS_AUD_REGION_END, arosDMA.HandleRead, arosDMA.HandleWrite)
 		soundChip.SetSampleTicker(arosDMA)
+
+		// Initialize clipboard bridge (host ↔ guest clipboard exchange)
+		clipBridge := NewClipboardBridge(sysBus)
+		sysBus.MapIO(CLIP_REGION_BASE, CLIP_REGION_END, clipBridge.HandleRead, clipBridge.HandleWrite)
 
 		arosLoader = loader
 		runtimeStatus.setCPUs(runtimeCPUM68K, nil, nil, m68kRunner, nil, nil, nil)
@@ -1802,8 +1805,7 @@ func main() {
 			sysBus.UnmapIO(VRAM_START, VRAM_START+VRAM_SIZE-1)
 			videoChip.SetBusMemory(sysBus.memory)
 			videoChip.SetBigEndianMode(true)
-			frameSize := 640 * 480 * 4
-			videoChip.SetDirectVRAM(sysBus.memory[VRAM_START : VRAM_START+frameSize])
+			videoChip.SetDirectVRAM(sysBus.memory[VRAM_START : VRAM_START+VRAM_SIZE])
 			if hider, ok := videoChip.GetOutput().(SystemCursorHider); ok {
 				hider.HideSystemCursor()
 			}
