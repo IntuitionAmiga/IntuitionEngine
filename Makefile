@@ -327,11 +327,20 @@ aros-rom:
 
 .PHONY: clean-aros
 clean-aros:
+	@if [ ! -d "$(AROS_BUILD_DIR)" ]; then \
+		echo "Nothing to clean — AROS build directory does not exist."; \
+		exit 0; \
+	fi
+	@echo "Cleaning AROS build artifacts (preserving crosstools)..."
+	@$(MAKE) -C "$(AROS_BUILD_DIR)" clean
+
+.PHONY: clean-aros-all
+clean-aros-all:
 	@RESOLVED=$$(cd "$(AROS_BUILD_DIR)" 2>/dev/null && pwd || echo ""); \
 	SRCBASE=$$(cd "$(AROS_SRC_DIR)" 2>/dev/null && pwd || echo ""); \
 	if [ -z "$$RESOLVED" ]; then \
-		echo "Error: AROS_BUILD_DIR does not exist or is not a directory: $(AROS_BUILD_DIR)"; \
-		exit 1; \
+		echo "Nothing to clean — AROS build directory does not exist."; \
+		exit 0; \
 	fi; \
 	if [ -z "$$SRCBASE" ] || ! echo "$$RESOLVED" | grep -q "^$$SRCBASE/"; then \
 		echo "Error: AROS_BUILD_DIR ($$RESOLVED) is not under AROS_SRC_DIR ($(AROS_SRC_DIR)) — refusing to delete."; \
