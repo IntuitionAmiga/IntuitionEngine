@@ -1216,7 +1216,15 @@ func main() {
 		if len(embeddedAROSImage) > 0 {
 			return append([]byte(nil), embeddedAROSImage...), "", nil
 		}
-		return nil, "", fmt.Errorf("AROS not embedded and no ROM image specified")
+		autoPath := resolveDefaultAROSImagePath()
+		if autoPath == "" {
+			return nil, "", fmt.Errorf("AROS not embedded and no ROM image specified")
+		}
+		b, err := os.ReadFile(autoPath)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to read AROS image %s: %w", autoPath, err)
+		}
+		return b, autoPath, nil
 	}
 
 	if modeIE32 {
@@ -2142,6 +2150,20 @@ func resolveDefaultBasicImagePath() string {
 		}
 	}
 
+	return ""
+}
+
+func resolveDefaultAROSImagePath() string {
+	candidates := []string{
+		"sdk/examples/prebuilt/aros-ie.rom",
+		"aros-ie.rom",
+		"bin/aros-ie.rom",
+	}
+	for _, p := range candidates {
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return p
+		}
+	}
 	return ""
 }
 
