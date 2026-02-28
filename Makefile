@@ -280,6 +280,8 @@ aros-rom:
 		echo "Cloning AROS source..."; \
 		git clone --depth 1 --branch "$(AROS_GIT_REF)" "$(AROS_GIT_URL)" "$(AROS_SRC_DIR)"; \
 	fi
+	@echo "Initialising AROS submodules..."
+	@git -C "$(AROS_SRC_DIR)" submodule update --init rom/dos/catalogs
 	@if [ ! -f "$(AROS_BUILD_DIR)/config/make.cfg" ]; then \
 		echo "Configuring AROS for ie-m68k..."; \
 		$(MKDIR) -p "$(AROS_BUILD_DIR)"; \
