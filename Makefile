@@ -331,8 +331,11 @@ clean-aros:
 		echo "Nothing to clean — AROS build directory does not exist."; \
 		exit 0; \
 	fi
-	@echo "Cleaning AROS build artifacts (preserving crosstools)..."
-	@$(MAKE) -C "$(AROS_BUILD_DIR)" clean
+	@echo "Cleaning AROS ROM objects (preserving crosstools + headers)..."
+	@GENDIR="$(AROS_BUILD_DIR)/bin/ie-m68k/gen"; \
+	rm -rf "$$GENDIR/boot" "$$GENDIR/rom" "$$GENDIR/arch" "$$GENDIR/compiler"
+	@rm -rf "$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"
+	@rm -f "$(AROS_ROM)"
 
 .PHONY: clean-aros-all
 clean-aros-all:
