@@ -30,6 +30,14 @@ EMUTOS_LINUX_WARNFLAGS ?= -Wall
 # - m68k-elf-gcc        => make -C <src> ELF=1 <target>
 EMUTOS_BUILD_CMD ?= auto
 
+# AROS build configuration
+AROS_SRC_DIR ?= ../AROS
+AROS_BUILD_DIR ?= $(AROS_SRC_DIR)/bin/ie-m68k
+AROS_ROM ?= ./sdk/examples/prebuilt/aros-ie.rom
+AROS_GIT_URL ?= https://github.com/IntuitionAmiga/AROS.git
+AROS_GIT_REF ?= master
+AROS_GCC_VER ?= 15.2.0
+
 # Detect number of CPU cores for parallel compilation
 NCORES := $(shell nproc)
 
@@ -252,7 +260,7 @@ emutos: setup emutos-rom
 
 # Build with embedded AROS ROM image.
 .PHONY: aros
-aros: setup
+aros: setup aros-rom
 	@echo "Building Intuition Engine with embedded AROS ROM..."
 	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags embed_aros .
 	@echo "Stripping debug symbols..."
@@ -261,6 +269,74 @@ aros: setup
 	@$(NICE) -$(NICE_LEVEL) $(UPX) --lzma IntuitionEngine
 	@mv IntuitionEngine $(BIN_DIR)/
 	@echo "AROS build complete - run with: $(BIN_DIR)/IntuitionEngine -aros"
+
+.PHONY: aros-rom
+aros-rom:
+	@if [ ! -d "$(AROS_SRC_DIR)" ]; then \
+		if ! command -v git >/dev/null 2>&1; then \
+			echo "Error: git is required to clone AROS source."; \
+			exit 1; \
+		fi; \
+		echo "Cloning AROS source..."; \
+		git clone --depth 1 --branch "$(AROS_GIT_REF)" "$(AROS_GIT_URL)" "$(AROS_SRC_DIR)"; \
+	fi
+	@if [ ! -f "$(AROS_BUILD_DIR)/config/make.cfg" ]; then \
+		echo "Configuring AROS for ie-m68k..."; \
+		$(MKDIR) -p "$(AROS_BUILD_DIR)"; \
+		AROS_CONFIGURE="$$(cd "$(AROS_SRC_DIR)" && pwd)/configure"; \
+		cd "$(AROS_BUILD_DIR)" && \
+		"$$AROS_CONFIGURE" --target=ie-m68k \
+			--with-cpu=68020 \
+			--with-gcc-version=$(AROS_GCC_VER) \
+			--enable-build-type=personal; \
+	fi
+	@echo "Building AROS ROM..."
+	@$(MAKE) -C "$(AROS_BUILD_DIR)" -j$(NCORES) kernel-ie-m68k-rom
+	@echo "Extracting ROM binaries..."
+	@AROS_TARGETDIR="$(AROS_BUILD_DIR)/bin/ie-m68k"; \
+	ROM_ELF="$$AROS_TARGETDIR/gen/boot/aros-ie-m68k-rom.elf"; \
+	EXT_ELF="$$AROS_TARGETDIR/gen/boot/aros-ie-m68k-ext.elf"; \
+	ROM_BIN="$(AROS_BUILD_DIR)/aros-ie-m68k-rom.bin"; \
+	EXT_BIN="$(AROS_BUILD_DIR)/aros-ie-m68k-ext.bin"; \
+	if [ ! -f "$$ROM_ELF" ]; then \
+		echo "Error: ROM ELF not found at $$ROM_ELF"; \
+		exit 1; \
+	fi; \
+	if command -v m68k-aros-objcopy >/dev/null 2>&1; then \
+		AROS_OBJCOPY="m68k-aros-objcopy"; \
+	else \
+		AROS_OBJCOPY="m68k-linux-gnu-objcopy"; \
+	fi; \
+	$$AROS_OBJCOPY --output-target binary \
+		--only-section=.rom --only-section=.ext \
+		--gap-fill 0xff "$$ROM_ELF" "$$ROM_BIN"; \
+	if [ -f "$$EXT_ELF" ]; then \
+		$$AROS_OBJCOPY --output-target binary \
+			--only-section=.rom --only-section=.ext \
+			--gap-fill 0xff "$$EXT_ELF" "$$EXT_BIN"; \
+	fi; \
+	$(MKDIR) -p "$$(dirname "$(AROS_ROM)")"; \
+	if [ -f "$$EXT_BIN" ]; then \
+		cat "$$ROM_BIN" "$$EXT_BIN" > "$(AROS_ROM)"; \
+	else \
+		cp "$$ROM_BIN" "$(AROS_ROM)"; \
+	fi; \
+	echo "AROS ROM prepared: $(AROS_ROM) ($$(wc -c < "$(AROS_ROM)") bytes)"
+
+.PHONY: clean-aros
+clean-aros:
+	@RESOLVED=$$(cd "$(AROS_BUILD_DIR)" 2>/dev/null && pwd || echo ""); \
+	SRCBASE=$$(cd "$(AROS_SRC_DIR)" 2>/dev/null && pwd || echo ""); \
+	if [ -z "$$RESOLVED" ]; then \
+		echo "Error: AROS_BUILD_DIR does not exist or is not a directory: $(AROS_BUILD_DIR)"; \
+		exit 1; \
+	fi; \
+	if [ -z "$$SRCBASE" ] || ! echo "$$RESOLVED" | grep -q "^$$SRCBASE/"; then \
+		echo "Error: AROS_BUILD_DIR ($$RESOLVED) is not under AROS_SRC_DIR ($(AROS_SRC_DIR)) — refusing to delete."; \
+		exit 1; \
+	fi; \
+	echo "Removing AROS build directory: $$RESOLVED"; \
+	rm -rf "$$RESOLVED"
 
 .PHONY: emutos-probe
 emutos-probe: emutos
