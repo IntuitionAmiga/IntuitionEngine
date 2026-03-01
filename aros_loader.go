@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"sync/atomic"
 	"time"
 )
 
@@ -94,6 +95,31 @@ func (l *AROSLoader) LoadROM(data []byte) error {
 	l.cpu.stackLowerBound = 0
 	l.cpu.stackUpperBound = DEFAULT_MEMORY_SIZE
 
+	// Enable Amiga INTENA emulation. AROS kernel_cpu.c uses
+	// move.w #$4000/$C000, $DFF09A to disable/enable the interrupt master
+	// gate during task switching. Without this, interrupts nest unboundedly
+	// when KrnSti drops IPL while the timer goroutine re-asserts level 5.
+	intena := &atomic.Bool{}
+	intena.Store(true) // Interrupts enabled at boot
+	l.cpu.AmigaINTENA = intena
+
+	// Debug watch: catch any writes to SysBase (address 4-7) or bus error vector (address 8-11)
+	// after boot setup. These should only be written once during krnPrepareExecBase.
+	var sysBaseWriteCount int
+	l.cpu.DebugWatchFn = func(addr, value, pc uint32, size int) {
+		if addr < 16 {
+			sysBaseWriteCount++
+			if sysBaseWriteCount > 100 {
+				if sysBaseWriteCount == 101 {
+					fmt.Printf("LOWMEM WATCH: suppressing further (>100 writes)\r\n")
+				}
+				return
+			}
+			fmt.Printf("LOWMEM WRITE: pc=%08X addr=%02X val=%08X size=%d sr=%04X sp=%08X\r\n",
+				pc, addr, value, size, l.cpu.SR, l.cpu.AddrRegs[7])
+		}
+	}
+
 	fmt.Printf("AROS vectors: mem[0]=%08X mem[4]=%08X a7=%08X pc=%08X\r\n",
 		l.cpu.Read32(0), l.cpu.Read32(M68K_RESET_VECTOR), l.cpu.AddrRegs[7], l.cpu.PC)
 	fmt.Printf("AROS ROM: %d bytes loaded at 0x%06X-0x%06X\r\n", len(data), base, end-1)
@@ -132,7 +158,7 @@ func (l *AROSLoader) StartTimer() {
 					continue
 				}
 				l.refreshIRQArming()
-				if l.l5Armed {
+				if l.l5Armed && (l.cpu.AmigaINTENA == nil || l.cpu.AmigaINTENA.Load()) {
 					l.cpu.AssertInterrupt(5)
 				}
 			}
@@ -153,7 +179,7 @@ func (l *AROSLoader) StartTimer() {
 					continue
 				}
 				l.refreshIRQArming()
-				if l.l4Armed {
+				if l.l4Armed && (l.cpu.AmigaINTENA == nil || l.cpu.AmigaINTENA.Load()) {
 					l.cpu.AssertInterrupt(4)
 				}
 			}

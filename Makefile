@@ -294,12 +294,9 @@ aros-rom:
 	fi
 	@echo "Building AROS ROM..."
 	@$(MAKE) -C "$(AROS_BUILD_DIR)" -j$(NCORES) kernel-ie-m68k-rom
-	@echo "Extracting ROM binaries..."
+	@echo "Extracting ROM binary..."
 	@AROS_TARGETDIR="$(AROS_BUILD_DIR)/bin/ie-m68k"; \
 	ROM_ELF="$$AROS_TARGETDIR/gen/boot/aros-ie-m68k-rom.elf"; \
-	EXT_ELF="$$AROS_TARGETDIR/gen/boot/aros-ie-m68k-ext.elf"; \
-	ROM_BIN="$(AROS_BUILD_DIR)/aros-ie-m68k-rom.bin"; \
-	EXT_BIN="$(AROS_BUILD_DIR)/aros-ie-m68k-ext.bin"; \
 	if [ ! -f "$$ROM_ELF" ]; then \
 		echo "Error: ROM ELF not found at $$ROM_ELF"; \
 		exit 1; \
@@ -309,20 +306,10 @@ aros-rom:
 	else \
 		AROS_OBJCOPY="m68k-linux-gnu-objcopy"; \
 	fi; \
-	$$AROS_OBJCOPY --output-target binary \
-		--only-section=.rom --only-section=.ext \
-		--gap-fill 0xff "$$ROM_ELF" "$$ROM_BIN"; \
-	if [ -f "$$EXT_ELF" ]; then \
-		$$AROS_OBJCOPY --output-target binary \
-			--only-section=.rom --only-section=.ext \
-			--gap-fill 0xff "$$EXT_ELF" "$$EXT_BIN"; \
-	fi; \
 	$(MKDIR) -p "$$(dirname "$(AROS_ROM)")"; \
-	if [ -f "$$EXT_BIN" ]; then \
-		cat "$$ROM_BIN" "$$EXT_BIN" > "$(AROS_ROM)"; \
-	else \
-		cp "$$ROM_BIN" "$(AROS_ROM)"; \
-	fi; \
+	$$AROS_OBJCOPY --output-target binary \
+		--only-section=.rom --only-section=.ext --only-section=.ss \
+		--gap-fill 0xff "$$ROM_ELF" "$(AROS_ROM)"; \
 	echo "AROS ROM prepared: $(AROS_ROM) ($$(wc -c < "$(AROS_ROM)") bytes)"
 
 .PHONY: clean-aros

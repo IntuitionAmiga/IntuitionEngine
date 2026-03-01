@@ -1425,7 +1425,6 @@ func main() {
 			fmt.Printf("Error loading AROS ROM: %v\n", err)
 			os.Exit(1)
 		}
-
 		// Initialize AROS DOS interceptor for host filesystem access
 		arosDOS, dosErr := NewArosDOSDevice(sysBus, arosHostRoot)
 		if dosErr != nil {

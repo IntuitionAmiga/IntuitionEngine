@@ -1855,12 +1855,17 @@ func (chip *VideoChip) HandleRead(addr uint32) uint32 {
 			return 0
 		}
 		if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
+			// directVRAM mode: always read from busMemory (CPU owns VRAM)
+			if chip.directVRAM != nil {
+				if chip.busMemory != nil && addr+4 <= uint32(len(chip.busMemory)) {
+					return binary.LittleEndian.Uint32(chip.busMemory[addr : addr+4])
+				}
+				return DEFAULT_RETURN
+			}
 			offset := addr - ADDR_OFFSET
 			if offset+PIXEL_ALIGNMENT <= uint32(len(chip.frontBuffer)) && (offset&PIXEL_ALIGN_MASK) == DEFAULT_RETURN {
 				return binary.LittleEndian.Uint32(chip.frontBuffer[offset:])
 			}
-			// Fallback: read from bus memory for addresses beyond frontBuffer
-			// or non-aligned accesses (M68K uses VRAM range for general data)
 			if chip.busMemory != nil && addr+4 <= uint32(len(chip.busMemory)) {
 				return binary.LittleEndian.Uint32(chip.busMemory[addr : addr+4])
 			}
@@ -1931,6 +1936,10 @@ func (chip *VideoChip) HandleWrite8(addr uint32, value uint8) {
 
 	// Byte writes to VRAM must update the framebuffer directly.
 	if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
+		// directVRAM mode: bus.memory is the source of truth, no frontBuffer update
+		if chip.directVRAM != nil {
+			return
+		}
 		offset := addr - VRAM_START
 		if offset < uint32(len(chip.frontBuffer)) {
 			chip.frontBuffer[offset] = value
@@ -2110,6 +2119,13 @@ func (chip *VideoChip) handleWriteLocked(addr uint32, value uint32) {
 			return
 		}
 		if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
+			// directVRAM mode: bus.memory is the source of truth, let bus handle writes
+			if chip.directVRAM != nil {
+				if chip.busMemory != nil && addr+4 <= uint32(len(chip.busMemory)) {
+					binary.LittleEndian.PutUint32(chip.busMemory[addr:addr+4], value)
+				}
+				return
+			}
 			offset := addr - BUFFER_OFFSET
 			// Write to frontBuffer if within display area
 			if offset+BYTES_PER_PIXEL <= uint32(len(chip.frontBuffer)) && offset%BYTES_PER_PIXEL == BUFFER_REMAINDER {
