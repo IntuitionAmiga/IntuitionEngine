@@ -21,13 +21,14 @@ sdk/
     basic/            EhBASIC examples
     assets/           Music files and binary data used by examples
   scripts/            Build helper scripts for each CPU target
+                      (incl. aros_*.ies test harnesses for AROS boot/input/path testing)
 ```
 
 ## Quick Start
 
-1. Build the VM and pre-assemble SDK demos:
+1. Build assemblers and pre-assemble SDK demos:
    ```bash
-   make sdk          # Builds assemblers, syncs includes, assembles demos into prebuilt/
+   make sdk          # Builds assemblers (ie32asm, ie64asm, ie32to64, ie64dis), assembles demos into prebuilt/
    ```
 
 2. Run a pre-assembled demo directly:
@@ -43,29 +44,37 @@ sdk/
 
    The `EMUTOS` command boots the EmuTOS operating system (requires `make basic-emutos` build or a local `etos256us.img` file).
 
-   You can also run Lua automation scripts:
+   Boot AROS (Amiga Workbench):
    ```bash
-   ./bin/IntuitionEngine -ie64 program.ie64 -script demo.ies
-   ```
-   Or from the EhBASIC prompt:
-   ```basic
-   RUN "demo.ies"
+   ./bin/IntuitionEngine -aros
+   ./bin/IntuitionEngine -aros -aros-drive ~/amiga-files
    ```
 
-## Scripting (IEScript)
-
-IEScript is the Lua 5.1 automation layer for Intuition Engine. Scripts use the `.ies` extension and provide programmatic control of the emulator via 11 API modules: `sys`, `cpu`, `mem`, `term`, `audio`, `video`, `repl`, `rec`, `dbg`, `coproc`, and `media`. Use cases include automated demo recording, test harnesses, and scripted debugging workflows. A comprehensive product demo script is included at `scripts/ie_product_demo.ies`. See [IEScript Lua Automation](docs/iescript.md) for the full reference.
+   Build AROS ROM from source with `make aros-rom`.
 
 3. Or build and run from source (IE32 VGA text mode):
    ```bash
    sdk/bin/ie32asm sdk/examples/asm/vga_text_hello.asm
-   ./bin/IntuitionEngine -ie32 vga_text_hello.iex
+   ./bin/IntuitionEngine -ie32 sdk/examples/asm/vga_text_hello.iex
    ```
 
 4. Build all examples with available toolchains:
    ```bash
    ./sdk/scripts/build-all.sh
    ```
+
+## Scripting (IEScript)
+
+IEScript is the Lua 5.1 automation layer for Intuition Engine. Scripts use the `.ies` extension and provide programmatic control of the emulator via 11 API modules: `sys`, `cpu`, `mem`, `term`, `audio`, `video`, `repl`, `rec`, `dbg`, `coproc`, and `media`. Use cases include automated demo recording, test harnesses, and scripted debugging workflows. A comprehensive product demo script is included at `scripts/ie_product_demo.ies`. See [IEScript Lua Automation](docs/iescript.md) for the full reference.
+
+```bash
+./bin/IntuitionEngine -ie64 program.ie64 -script demo.ies
+```
+
+Or from the EhBASIC prompt:
+```basic
+RUN "demo.ies"
+```
 
 ## Toolchain Requirements
 
@@ -177,20 +186,27 @@ SN76489 conversion maps tone channels 0-2 to AY channels A/B/C with frequency di
 
 ### Tracker Format Support
 
-ZX Spectrum tracker formats are played back via Z80 CPU emulation. Each format has a Z80 player routine (embedded in the engine) that reads the module data and drives AY registers at the correct tempo:
+ZX Spectrum tracker formats use two playback paths:
+
+**Z80 CPU emulation** — an embedded Z80 player routine reads the module data and drives AY registers at the correct tempo:
+
+| Format | Extension | Description |
+|--------|-----------|-------------|
+| PT3 | `.pt3` | ProTracker 3.x (Vortex Tracker II) |
+| PT2 | `.pt2` | ProTracker 2 |
+| STC | `.stc` | Sound Tracker Compiled |
+| SQT | `.sqt` | SQ-Tracker |
+
+Z80 player routines are in `sdk/players/`. PT3/PT2, STC, and SQT use community reference players from [mborik/ayplayers](https://github.com/mborik/ayplayers) (assembled with `sjasmplus`).
+
+**Native Go renderers** — these formats are parsed and rendered directly in Go without Z80 emulation:
 
 | Format | Extension | Description |
 |--------|-----------|-------------|
 | VTX | `.vtx` | Vortex Tracker (LH5-compressed YM register data) |
-| PT3 | `.pt3` | ProTracker 3.x (Vortex Tracker II) |
-| PT2 | `.pt2` | ProTracker 2 |
 | PT1 | `.pt1` | ProTracker 1 |
-| STC | `.stc` | Sound Tracker Compiled |
-| SQT | `.sqt` | SQ-Tracker |
 | ASC | `.asc` | ASC Sound Master |
 | FTC | `.ftc` | Fast Tracker (ZX) |
-
-Player routines are in `sdk/players/`. PT3/PT2/PT1, STC, and SQT use community reference players from [mborik/ayplayers](https://github.com/mborik/ayplayers) (assembled with `sjasmplus`). ASC and FTC use a generic player (assembled with `vasmz80_std`).
 
 ### ProTracker MOD Support
 
@@ -225,7 +241,8 @@ Environment variables for custom tool paths:
 
 ## Include File Stability
 
-The `sdk/include/` headers define the stable hardware register map for v1.x and are the canonical source of truth for all platform headers.
+The `sdk/include/` headers are the compatibility-facing register/macro surface for SDK users.
+Runtime Go constants/handlers are the implementation source of truth, and shared include/runtime constants are guarded by repository consistency tests (`sdk_include_consistency_test.go`).
 
 ## Further Documentation
 
@@ -236,6 +253,10 @@ The `sdk/include/` headers define the stable hardware register map for v1.x and 
 - [IEScript Lua Automation](docs/iescript.md)
 - [IE32 to IE64 Migration](docs/ie32to64.md)
 - [EmuTOS Integration Guide](docs/ie_emutos.md)
+
+## AROS Support
+
+AROS (Amiga Research Operating System) runs on the IE M68K core with a full Workbench desktop. Build the AROS ROM with `make aros-rom`, then boot with `./bin/IntuitionEngine -aros`. The AROS DOS handler maps a host directory as the IE: volume. Test harnesses in `scripts/aros_*.ies` cover boot, path resolution, and input handling.
 
 ## EmuTOS Porting Stubs
 

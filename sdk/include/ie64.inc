@@ -674,12 +674,14 @@ COP_MOVE_VGA_WINDEX   equ 0x40000000        ; Offset 0: DAC write index
 COP_MOVE_VGA_DATA     equ 0x40010000        ; Offset 1: DAC data (R,G,B seq)
 
 ; ============================================================================
-; TIMER REGISTERS
+; TIMER REGISTERS (DEPRECATED)
 ; ============================================================================
+; DEPRECATED: IE64 runtime timer state is internal and not MMIO-addressable.
+; These legacy symbols are kept for source compatibility only.
 
-TIMER_CTRL        equ 0x00F800              ; Timer control
-TIMER_COUNT       equ 0x00F804              ; Timer count
-TIMER_RELOAD      equ 0x00F808              ; Timer reload value
+TIMER_CTRL        equ 0x00F800              ; DEPRECATED: not implemented in current runtime
+TIMER_COUNT       equ 0x00F804              ; DEPRECATED: not implemented in current runtime
+TIMER_RELOAD      equ 0x00F808              ; DEPRECATED: not implemented in current runtime
 
 ; ============================================================================
 ; ZX SPECTRUM ULA VIDEO REGISTERS
@@ -1851,10 +1853,11 @@ MEDIA_ERROR       equ 0xF2314               ; 0=ok,1=not-found,2=bad/io,3=unsupp
 EXEC_NAME_PTR     equ 0xF2320               ; Pointer to null-terminated filename (W)
 EXEC_CTRL         equ 0xF2324               ; 1=execute (W)
 EXEC_STATUS       equ 0xF2328               ; 0=idle,1=loading,2=running,3=error (R)
-EXEC_TYPE         equ 0xF232C               ; 1=IE32,2=IE64,3=6502,4=M68K,5=Z80,6=x86 (R)
+EXEC_TYPE         equ 0xF232C               ; 0=none,1=IE32,2=IE64,3=6502,4=M68K,5=Z80,6=x86,7=EmuTOS,8=Script,9=AROS (R)
 EXEC_ERROR        equ 0xF2330               ; 0=ok,1=not-found,2=unsupported,3=path,4=load-failed (R)
 EXEC_SESSION      equ 0xF2334               ; Monotonic session id (R)
 EXEC_OP_EMUTOS    equ 2                     ; Write to EXEC_CTRL to boot EmuTOS
+EXEC_OP_AROS      equ 3                     ; Write to EXEC_CTRL to boot AROS
 
 ; ============================================================================
 ; COPROCESSOR REGISTERS (0xF2340-0xF237F)

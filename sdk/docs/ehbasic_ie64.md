@@ -647,6 +647,22 @@ If no ROM is available, prints `?EMUTOS NOT AVAILABLE`.
 
 Once EmuTOS is running, press F10 to perform a hard reset back to EmuTOS.
 
+### AROS
+
+Boot the AROS operating system from the BASIC prompt. This performs a full
+CPU mode switch from IE64 to M68K and loads the AROS ROM.
+
+```
+AROS
+```
+
+The ROM is resolved in this order:
+1. `-aros-image <path>` command-line flag
+2. Embedded ROM (if built with `make aros`)
+3. Local `aros-ie.rom` file in the working directory
+
+If no ROM is available, prints `?AROS NOT AVAILABLE`.
+
 ### END
 
 Terminate program execution.

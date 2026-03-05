@@ -33,6 +33,7 @@ type ScriptEngine struct {
 	exitFunc       func(int)
 	setEmutosDrive func(string, uint16)
 	emutosSentinel string
+	arosSentinel   string
 
 	frameChan chan struct{}
 
@@ -83,6 +84,12 @@ func (se *ScriptEngine) SetProgramLoader(fn func(string) error) {
 func (se *ScriptEngine) SetEmutosSentinel(s string) {
 	se.mu.Lock()
 	se.emutosSentinel = s
+	se.mu.Unlock()
+}
+
+func (se *ScriptEngine) SetArosSentinel(s string) {
+	se.mu.Lock()
+	se.arosSentinel = s
 	se.mu.Unlock()
 }
 
@@ -823,14 +830,17 @@ func (se *ScriptEngine) luaCPULoad() lua.LGFunction {
 		path := L.CheckString(1)
 		se.mu.Lock()
 		loader := se.loadProgram
-		sentinel := se.emutosSentinel
+		emutosSent := se.emutosSentinel
+		arosSent := se.arosSentinel
 		se.mu.Unlock()
 		if loader == nil {
 			L.RaiseError("program loader not configured")
 			return 0
 		}
-		if path == "EMUTOS" && sentinel != "" {
-			path = sentinel
+		if path == "EMUTOS" && emutosSent != "" {
+			path = emutosSent
+		} else if path == "AROS" && arosSent != "" {
+			path = arosSent
 		}
 		se.loadingProgram.Store(true)
 		err := loader(path)

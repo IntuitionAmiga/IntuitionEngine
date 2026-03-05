@@ -182,7 +182,7 @@ sys.print("frame_time:", sys.frame_time(), "ms")
 
 CPU lifecycle and mode.
 
-`cpu.load(path)` — Load a program binary from `path` into the active CPU. The file format must match the active CPU mode. Returns: nothing. Raises on error.
+`cpu.load(path)` — Load a program binary from `path` into the active CPU. The file format must match the active CPU mode. The special values `"EMUTOS"` and `"AROS"` trigger OS boot without a file path (ROM resolved via CLI flags or embedded image). Returns: nothing. Raises on error.
 
 `cpu.reset()` — Perform a hard reset of the emulator (all CPUs and devices). Returns: nothing. Raises on error.
 

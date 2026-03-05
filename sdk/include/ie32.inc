@@ -807,12 +807,14 @@
 .equ COP_MOVE_VGA_DATA     0x40010000    ; Offset 1: DAC data (R,G,B seq)
 
 ; ============================================================================
-; TIMER REGISTERS
+; TIMER REGISTERS (DEPRECATED)
 ; ============================================================================
+; DEPRECATED: IE32 runtime timer state is internal and not MMIO-addressable.
+; These legacy symbols are kept for source compatibility only.
 
-.equ TIMER_CTRL        0x00F800         ; Timer control
-.equ TIMER_COUNT       0x00F804         ; Timer count
-.equ TIMER_RELOAD      0x00F808         ; Timer reload value
+.equ TIMER_CTRL        0x00F800         ; DEPRECATED: not implemented in current runtime
+.equ TIMER_COUNT       0x00F804         ; DEPRECATED: not implemented in current runtime
+.equ TIMER_RELOAD      0x00F808         ; DEPRECATED: not implemented in current runtime
 
 ; ============================================================================
 ; ZX SPECTRUM ULA VIDEO REGISTERS

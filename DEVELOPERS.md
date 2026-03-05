@@ -22,6 +22,8 @@ For the SDK developer package, see [sdk/README.md](sdk/README.md).
 11. [Platform Support](#11-platform-support)
 12. [Packaging and Distribution](#12-packaging-and-distribution)
 13. [Contributing](#13-contributing)
+14. [EmuTOS Integration](#14-emutos-integration)
+15. [AROS Integration](#15-aros-integration)
 
 ---
 
@@ -584,3 +586,56 @@ make emutos-rom         # Build ROM from source (auto-clones EmuTOS repo, needs 
 ### GCC 13 -mshort Codegen Bug
 
 EmuTOS compiled with `-mshort` (2-byte `size_t`) triggers a GCC 13 bug: pointer arithmetic in `win_start()` produces displacement `$10804` instead of `$0804` (off by `$10000`). The last WNODE's `w_next` points past the array into FNODE memory, causing a bus error on desktop folder view switch. Workaround: `fixWnodeChain()` in `gemdos_intercept.go` patches the WNODE chain after directory enumeration.
+
+---
+
+# 15. AROS Integration
+
+AROS (Amiga Research Operating System) runs on the IE M68K core with a full Workbench desktop, Shell, and host filesystem access.
+
+### Runtime Flags
+
+| Flag | Description |
+|------|-------------|
+| `-aros` | Boot AROS from embedded or default ROM image |
+| `-aros-image <path>` | Boot AROS from external ROM image |
+| `-aros-drive <dir>` | Host directory mapped as IE: volume (default: `~/`) |
+
+### Key Files
+
+| File | Purpose |
+|------|---------|
+| `aros_loader.go` | ROM loading, memory layout, IRQ generation, input handling |
+| `aros_dos_intercept.go` | DOS handler MMIO filesystem bridge (IE: volume) |
+| `aros_dos_constants.go` | AmigaDOS action codes, error codes, lock types |
+| `aros_audio_dma.go` | Paula-compatible 4-channel DMA audio |
+| `aros_audio_constants.go` | Audio DMA register addresses |
+| `aros_embed.go` | `//go:embed` for ROM image (`embed_aros` tag) |
+| `aros_noembed.go` | Nil ROM fallback (`!embed_aros` tag) |
+
+### ProgramExecutor
+
+The `AROS` command at the BASIC prompt triggers boot via the `arosSentinel` path. AROS mode is selected by CLI flags (`-aros`, `-aros-image`), not file extension.
+
+### Memory Layout
+
+| Region | Range | Size |
+|--------|-------|------|
+| Chip RAM A | `0x000000-0x09DFFF` | 630KB |
+| Chip RAM B | `0x200000-0x6FFFFF` | 5MB |
+| ROM | `0x600000-0x7FFFFF` | 2MB |
+| Fast RAM | `0x800000-0x1DFFFFF` | 22MB |
+| VRAM | `0x1E00000-0x1FFFFFF` | 2MB |
+
+Total: 27.6MB (5.6MB chip + 22MB fast)
+
+### DOS Handler
+
+The DOS handler at MMIO `0xF2220-0xF225F` bridges AmigaDOS packet protocol to the host filesystem. Supported actions: LOCATE_OBJECT, FREE_LOCK, COPY_DIR (DupLock), EXAMINE_OBJECT, EXAMINE_NEXT, READ, WRITE, SEEK, FINDUPDATE, FINDINPUT, FINDOUTPUT, END, DELETE_OBJECT, RENAME_OBJECT, CREATE_DIR, SET_FILE_SIZE, SAME_LOCK, PARENT.
+
+### Build
+
+```bash
+make aros-rom           # Build AROS ROM + filesystem from source
+make aros               # Build VM with embedded AROS ROM
+```

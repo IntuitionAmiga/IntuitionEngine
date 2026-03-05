@@ -1992,6 +1992,7 @@ func main() {
 	scriptEngine = NewScriptEngine(sysBus, compositor, termMMIO)
 	scriptEngine.SetProgramLoader(runProgramWithFullReset)
 	scriptEngine.SetEmutosSentinel(emutosSentinel)
+	scriptEngine.SetArosSentinel(arosSentinel)
 	scriptEngine.SetHardReset(func() error {
 		return runProgramWithFullReset("")
 	})
@@ -2028,6 +2029,9 @@ func main() {
 	progExec.SetExternalLauncher(launchProgramOrScript)
 	progExec.SetEmuTOSBootLoader(func() error {
 		return runProgramWithFullReset(emutosSentinel)
+	})
+	progExec.SetAROSBootLoader(func() error {
+		return runProgramWithFullReset(arosSentinel)
 	})
 
 	// Wire F10 hard reset handler
