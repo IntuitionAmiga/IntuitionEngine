@@ -22,8 +22,10 @@ type ArosDOSDevice struct {
 	nextLock uint32
 
 	// File handle management: key → open file
-	handles    map[uint32]*os.File
-	nextHandle uint32
+	handles     map[uint32]*os.File
+	handleNames map[uint32]string // key → original name for diagnostics
+	handleRead  map[uint32]bool   // key → whether first read has occurred
+	nextHandle  uint32
 
 	// MMIO register shadow state
 	arg1 uint32
@@ -63,13 +65,15 @@ func NewArosDOSDevice(bus *MachineBus, hostRoot string) (*ArosDOSDevice, error) 
 	}
 
 	d := &ArosDOSDevice{
-		bus:        bus,
-		hostRoot:   absPath,
-		locks:      make(map[uint32]*adosLock),
-		nextLock:   1, // 0 means root/no-lock
-		handles:    make(map[uint32]*os.File),
-		nextHandle: 1,
-		debugTrace: false,
+		bus:         bus,
+		hostRoot:    absPath,
+		locks:       make(map[uint32]*adosLock),
+		nextLock:    1, // 0 means root/no-lock
+		handles:     make(map[uint32]*os.File),
+		handleNames: make(map[uint32]string),
+		handleRead:  make(map[uint32]bool),
+		nextHandle:  1,
+		debugTrace:  false,
 	}
 
 	// Pre-create root lock at key 0
@@ -123,6 +127,11 @@ func (d *ArosDOSDevice) dispatch(cmd uint32) {
 	d.res1 = ADOS_DOSFALSE
 	d.res2 = ADOS_ERR_NONE
 
+	if d.debugTrace && cmd != ADOS_CMD_READ && cmd != ADOS_CMD_SEEK && cmd != ADOS_CMD_WRITE {
+		fmt.Printf("[ADOS] dispatch cmd=%d arg1=0x%X arg2=0x%X arg3=0x%X arg4=0x%X\n",
+			cmd, d.arg1, d.arg2, d.arg3, d.arg4)
+	}
+
 	switch cmd {
 	case ADOS_CMD_LOCK:
 		d.cmdLock()
@@ -165,7 +174,7 @@ func (d *ArosDOSDevice) dispatch(cmd uint32) {
 	case ADOS_CMD_SET_FILESIZE:
 		d.cmdSetFileSize()
 	case ADOS_CMD_SET_PROTECT:
-		d.res1 = ADOS_DOSTRUE // no-op, always succeed
+		d.res1 = ADOS_DOSTRUE // no-op: iehandler doesn't forward protect bits
 	case ADOS_CMD_EXAMINE_FH:
 		d.cmdExamineFH()
 	default:
@@ -182,6 +191,10 @@ func (d *ArosDOSDevice) cmdLock() {
 
 	parent, ok := d.locks[parentKey]
 	if !ok {
+		if d.debugTrace {
+			name := d.readString(namePtr)
+			fmt.Printf("[ADOS] LOCK %q (parent=%d) → INVALID_LOCK\n", name, parentKey)
+		}
 		d.res2 = ADOS_ERROR_INVALID_LOCK
 		return
 	}
@@ -189,17 +202,19 @@ func (d *ArosDOSDevice) cmdLock() {
 	name := d.readString(namePtr)
 	hostPath, pathOK := d.resolvePath(parent.hostPath, name)
 	if !pathOK {
+		if d.debugTrace {
+			fmt.Printf("[ADOS] LOCK %q (parent=%d) → path resolve failed\n", name, parentKey)
+		}
 		d.res2 = ADOS_ERROR_OBJECT_NOT_FOUND
 		return
 	}
 
 	info, err := os.Stat(hostPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			d.res2 = ADOS_ERROR_OBJECT_NOT_FOUND
-		} else {
-			d.res2 = ADOS_ERROR_OBJECT_NOT_FOUND
+		if d.debugTrace {
+			fmt.Printf("[ADOS] LOCK %q (parent=%d, path=%q) → NOT_FOUND\n", name, parentKey, hostPath)
 		}
+		d.res2 = ADOS_ERROR_OBJECT_NOT_FOUND
 		return
 	}
 
@@ -212,7 +227,7 @@ func (d *ArosDOSDevice) cmdLock() {
 	}
 
 	if d.debugTrace {
-		fmt.Printf("[ADOS] LOCK %q → key=%d (dir=%v)\n", name, key, info.IsDir())
+		fmt.Printf("[ADOS] LOCK %q parent=%d → key=%d (dir=%v, host=%q)\n", name, parentKey, key, info.IsDir(), hostPath)
 	}
 
 	d.res1 = key
@@ -224,16 +239,17 @@ func (d *ArosDOSDevice) cmdUnlock() {
 		d.res1 = ADOS_DOSTRUE
 		return
 	}
+	if d.debugTrace {
+		if l, ok := d.locks[key]; ok {
+			fmt.Printf("[ADOS] UNLOCK key=%d (host=%q)\n", key, l.hostPath)
+		}
+	}
 	delete(d.locks, key)
 	d.res1 = ADOS_DOSTRUE
 }
 
 func (d *ArosDOSDevice) cmdDupLock() {
 	srcKey := d.arg1
-	if srcKey == 0 {
-		d.res1 = 0 // dup of root returns root
-		return
-	}
 	src, ok := d.locks[srcKey]
 	if !ok {
 		d.res2 = ADOS_ERROR_INVALID_LOCK
@@ -245,9 +261,12 @@ func (d *ArosDOSDevice) cmdDupLock() {
 	d.locks[key] = &adosLock{
 		hostPath: src.hostPath,
 		isDir:    src.isDir,
-		mode:     -2, // duplicated locks are always shared
+		mode:     -2, // AmigaDOS: DupLock always returns SHARED_LOCK
 	}
 	d.res1 = key
+	if d.debugTrace {
+		fmt.Printf("[ADOS] DUPLOCK src=%d → key=%d (host=%q)\n", srcKey, key, src.hostPath)
+	}
 }
 
 func (d *ArosDOSDevice) cmdSameLock() {
@@ -265,8 +284,19 @@ func (d *ArosDOSDevice) cmdSameLock() {
 
 	if path1 == path2 {
 		d.res1 = ADOS_LOCK_SAME
-	} else {
+		if d.debugTrace {
+			fmt.Printf("[ADOS] SAMELOCK %d vs %d → SAME (%q)\n", key1, key2, path1)
+		}
+	} else if strings.HasPrefix(path1, d.hostRoot) && strings.HasPrefix(path2, d.hostRoot) {
 		d.res1 = ADOS_LOCK_SAME_VOLUME
+		if d.debugTrace {
+			fmt.Printf("[ADOS] SAMELOCK %d vs %d → SAME_VOLUME (%q vs %q)\n", key1, key2, path1, path2)
+		}
+	} else {
+		d.res1 = ADOS_LOCK_DIFFERENT
+		if d.debugTrace {
+			fmt.Printf("[ADOS] SAMELOCK %d vs %d → DIFFERENT (%q vs %q)\n", key1, key2, path1, path2)
+		}
 	}
 }
 
@@ -342,6 +372,14 @@ func (d *ArosDOSDevice) cmdExamine() {
 		lock.dirIdx = 0
 	}
 
+	if d.debugTrace {
+		name := info.Name()
+		if lock.hostPath == d.hostRoot || name == "" || name == "." {
+			name = "IE"
+		}
+		fmt.Printf("[ADOS] EXAMINE key=%d → %q (dir=%v, size=%d, path=%s)\n", key, name, info.IsDir(), info.Size(), lock.hostPath)
+	}
+
 	d.res1 = ADOS_DOSTRUE
 }
 
@@ -376,6 +414,12 @@ func (d *ArosDOSDevice) cmdExNext() {
 	}
 
 	d.fillFIB(fibPtr, info, entryPath)
+
+	if d.debugTrace {
+		fmt.Printf("[ADOS] EXNEXT key=%d [%d] → %q (dir=%v, size=%d)\n",
+			key, lock.dirIdx-1, entry.Name(), info.IsDir(), info.Size())
+	}
+
 	d.res1 = ADOS_DOSTRUE
 }
 
@@ -385,17 +429,31 @@ func (d *ArosDOSDevice) cmdExamineFH() {
 
 	f, ok := d.handles[handleKey]
 	if !ok {
+		if d.debugTrace {
+			fmt.Printf("[ADOS] EXAMINE_FH handle=%d → INVALID_LOCK\n", handleKey)
+		}
 		d.res2 = ADOS_ERROR_INVALID_LOCK
 		return
 	}
 
 	info, err := f.Stat()
 	if err != nil {
+		if d.debugTrace {
+			fmt.Printf("[ADOS] EXAMINE_FH %q → stat error: %v\n", f.Name(), err)
+		}
 		d.res2 = ADOS_ERROR_OBJECT_NOT_FOUND
 		return
 	}
 
 	d.fillFIB(fibPtr, info, f.Name())
+	if d.debugTrace {
+		prot := uint32(d.bus.Read8(fibPtr+ADOS_FIB_PROTECTION)) << 24
+		prot |= uint32(d.bus.Read8(fibPtr+ADOS_FIB_PROTECTION+1)) << 16
+		prot |= uint32(d.bus.Read8(fibPtr+ADOS_FIB_PROTECTION+2)) << 8
+		prot |= uint32(d.bus.Read8(fibPtr + ADOS_FIB_PROTECTION + 3))
+		fmt.Fprintf(os.Stderr, "[ADOS] EXAMINE_FH handle=%d %q → prot=0x%08X fib@0x%08X\n",
+			handleKey, info.Name(), prot, fibPtr)
+	}
 	d.res1 = ADOS_DOSTRUE
 }
 
@@ -410,6 +468,10 @@ func (d *ArosDOSDevice) cmdFindInput() {
 		if parentKey == 0 {
 			parent = d.locks[0]
 		} else {
+			if d.debugTrace {
+				name := d.readString(namePtr)
+				fmt.Printf("[ADOS] FINDINPUT %q (parent=%d) → INVALID_LOCK\n", name, parentKey)
+			}
 			d.res2 = ADOS_ERROR_INVALID_LOCK
 			return
 		}
@@ -418,12 +480,18 @@ func (d *ArosDOSDevice) cmdFindInput() {
 	name := d.readString(namePtr)
 	hostPath, pathOK := d.resolvePath(parent.hostPath, name)
 	if !pathOK {
+		if d.debugTrace {
+			fmt.Printf("[ADOS] FINDINPUT %q (parent=%d) → path resolve failed\n", name, parentKey)
+		}
 		d.res2 = ADOS_ERROR_OBJECT_NOT_FOUND
 		return
 	}
 
 	f, err := os.Open(hostPath)
 	if err != nil {
+		if d.debugTrace {
+			fmt.Printf("[ADOS] FINDINPUT %q (parent=%d, path=%q) → %v\n", name, parentKey, hostPath, err)
+		}
 		if os.IsNotExist(err) {
 			d.res2 = ADOS_ERROR_OBJECT_NOT_FOUND
 		} else {
@@ -435,9 +503,11 @@ func (d *ArosDOSDevice) cmdFindInput() {
 	key := d.nextHandle
 	d.nextHandle++
 	d.handles[key] = f
+	d.handleNames[key] = name
+	d.handleRead[key] = false
 
 	if d.debugTrace {
-		fmt.Printf("[ADOS] FINDINPUT %q → handle=%d\n", name, key)
+		fmt.Printf("[ADOS] FINDINPUT %q (parent=%d, path=%q) → handle=%d\n", name, parentKey, hostPath, key)
 	}
 
 	d.res1 = key
@@ -473,6 +543,8 @@ func (d *ArosDOSDevice) cmdFindOutput() {
 	key := d.nextHandle
 	d.nextHandle++
 	d.handles[key] = f
+	d.handleNames[key] = name
+	d.handleRead[key] = false
 
 	if d.debugTrace {
 		fmt.Printf("[ADOS] FINDOUTPUT %q → handle=%d\n", name, key)
@@ -511,6 +583,8 @@ func (d *ArosDOSDevice) cmdFindUpdate() {
 	key := d.nextHandle
 	d.nextHandle++
 	d.handles[key] = f
+	d.handleNames[key] = name
+	d.handleRead[key] = false
 	d.res1 = key
 }
 
@@ -523,6 +597,9 @@ func (d *ArosDOSDevice) cmdRead() {
 	if !ok {
 		d.res1 = 0xFFFFFFFF // -1
 		d.res2 = ADOS_ERROR_INVALID_LOCK
+		if d.debugTrace {
+			fmt.Printf("[ADOS] READ handle=%d → INVALID_LOCK\n", handleKey)
+		}
 		return
 	}
 
@@ -538,6 +615,17 @@ func (d *ArosDOSDevice) cmdRead() {
 		d.res1 = 0 // EOF returns 0, not error
 	} else {
 		d.res1 = uint32(n)
+	}
+
+	// Log first read per handle — shows magic bytes for LoadSeg diagnosis
+	if d.debugTrace && n > 0 && !d.handleRead[handleKey] {
+		d.handleRead[handleKey] = true
+		magic := ""
+		if n >= 4 {
+			magic = fmt.Sprintf(" magic=%02x%02x%02x%02x", buf[0], buf[1], buf[2], buf[3])
+		}
+		fmt.Printf("[ADOS] FIRST_READ handle=%d %q len=%d n=%d%s\n",
+			handleKey, d.handleNames[handleKey], length, n, magic)
 	}
 }
 
@@ -576,6 +664,9 @@ func (d *ArosDOSDevice) cmdSeek() {
 	if !ok {
 		d.res1 = 0xFFFFFFFF // -1
 		d.res2 = ADOS_ERROR_INVALID_LOCK
+		if d.debugTrace {
+			fmt.Printf("[ADOS] SEEK handle=%d → INVALID_LOCK\n", handleKey)
+		}
 		return
 	}
 
@@ -584,6 +675,9 @@ func (d *ArosDOSDevice) cmdSeek() {
 	if err != nil {
 		d.res1 = 0xFFFFFFFF
 		d.res2 = ADOS_ERROR_SEEK_ERROR
+		if d.debugTrace {
+			fmt.Printf("[ADOS] SEEK handle=%d → SEEK_ERROR (get cur pos): %v\n", handleKey, err)
+		}
 		return
 	}
 
@@ -599,14 +693,23 @@ func (d *ArosDOSDevice) cmdSeek() {
 		whence = 1
 	}
 
-	_, err = f.Seek(offset, whence)
+	newPos, err := f.Seek(offset, whence)
 	if err != nil {
 		d.res1 = 0xFFFFFFFF
 		d.res2 = ADOS_ERROR_SEEK_ERROR
+		if d.debugTrace {
+			fmt.Printf("[ADOS] SEEK handle=%d offset=%d mode=%d(whence=%d) → SEEK_ERROR: %v\n",
+				handleKey, offset, mode, whence, err)
+		}
 		return
 	}
 
 	d.res1 = uint32(oldPos)
+
+	if d.debugTrace {
+		fmt.Printf("[ADOS] SEEK handle=%d offset=%d mode=0x%X(whence=%d) oldPos=%d → newPos=%d\n",
+			handleKey, offset, mode, whence, oldPos, newPos)
+	}
 }
 
 func (d *ArosDOSDevice) cmdClose() {
@@ -614,6 +717,8 @@ func (d *ArosDOSDevice) cmdClose() {
 	if f, ok := d.handles[handleKey]; ok {
 		f.Close()
 		delete(d.handles, handleKey)
+		delete(d.handleNames, handleKey)
+		delete(d.handleRead, handleKey)
 	}
 	d.res1 = ADOS_DOSTRUE
 }
@@ -898,8 +1003,11 @@ func (d *ArosDOSDevice) fillFIB(fibPtr uint32, info fs.FileInfo, hostPath string
 	d.writeBE32(fibPtr+ADOS_FIB_DISK_KEY, simpleHash(hostPath))
 
 	// fib_DirEntryType / fib_EntryType
+	isRoot := hostPath == d.hostRoot
 	var entryType uint32
-	if info.IsDir() {
+	if isRoot {
+		entryType = ADOS_ST_ROOT
+	} else if info.IsDir() {
 		entryType = ADOS_ST_USERDIR
 	} else {
 		entryType = ADOS_ST_FILE
@@ -908,20 +1016,22 @@ func (d *ArosDOSDevice) fillFIB(fibPtr uint32, info fs.FileInfo, hostPath string
 	d.writeBE32(fibPtr+ADOS_FIB_ENTRY_TYPE, entryType)
 
 	// fib_FileName (BSTR: length byte + chars, max 107 chars)
-	name := info.Name()
-	if name == "" || name == "." {
-		// Root directory
-		rel, err := filepath.Rel(d.hostRoot, hostPath)
-		if err == nil && rel != "." {
-			name = filepath.Base(rel)
-		} else {
+	var name string
+	if isRoot {
+		// Root directory: use the volume name, not the host dir name
+		name = "IE"
+	} else {
+		name = info.Name()
+		if name == "" || name == "." {
 			name = "IE"
 		}
 	}
 	d.writeBSTR(fibPtr+ADOS_FIB_FILE_NAME, name, 108)
 
-	// fib_Protection (0 = all bits clear = rwed)
-	d.writeBE32(fibPtr+ADOS_FIB_PROTECTION, 0)
+	// fib_Protection — files in S/ get FIBF_SCRIPT so Shell runs them
+	// via Execute. All other files get prot=0 (no special bits).
+	prot := d.detectProtection(info, hostPath)
+	d.writeBE32(fibPtr+ADOS_FIB_PROTECTION, prot)
 
 	// fib_Size
 	size := info.Size()
@@ -962,6 +1072,27 @@ func (d *ArosDOSDevice) fillDateStamp(addr uint32, t time.Time) {
 	d.writeBE32(addr, uint32(days))
 	d.writeBE32(addr+4, uint32(minutes))
 	d.writeBE32(addr+8, uint32(ticks))
+}
+
+// detectProtection determines AmigaDOS protection bits for a host file.
+// Files in the S/ directory get FIBF_SCRIPT so the Shell can run them via Execute.
+// All other non-directory files get protection=0 (no special bits).
+func (d *ArosDOSDevice) detectProtection(info fs.FileInfo, hostPath string) uint32 {
+	if info.IsDir() {
+		return 0
+	}
+
+	// Only files under the S/ directory should be marked as scripts.
+	// Use case-insensitive check since the host tree may use lowercase s/.
+	rel, err := filepath.Rel(d.hostRoot, hostPath)
+	if err == nil {
+		first, _, _ := strings.Cut(rel, string(filepath.Separator))
+		if strings.EqualFold(first, "S") {
+			return ADOS_FIBF_SCRIPT
+		}
+	}
+
+	return 0
 }
 
 // Close releases all open handles and locks.

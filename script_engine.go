@@ -230,6 +230,10 @@ func (se *ScriptEngine) validateScript(script string, name string) error {
 func (se *ScriptEngine) run(ctx context.Context, done chan struct{}, script string, scriptName string) {
 	defer func() {
 		se.running.Store(false)
+		// Release mouse override so the backend resumes hardware mouse updates.
+		if se.terminal != nil {
+			se.terminal.mouseOverride.Store(false)
+		}
 		se.mu.Lock()
 		if se.done == done {
 			se.done = nil
@@ -2749,12 +2753,56 @@ func (se *ScriptEngine) TakeScreenshot(path string) error {
 		}
 	}
 
+	// Composite software cursor if terminal MMIO is available (AROS/EmuTOS mode).
+	if se.terminal != nil && se.terminal.mouseOverride.Load() {
+		mx := int(se.terminal.mouseX.Load())
+		my := int(se.terminal.mouseY.Load())
+		drawSoftwareCursor(img, mx, my)
+	}
+
 	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 	return png.Encode(f, img)
+}
+
+// drawSoftwareCursor renders a classic Amiga-style arrow cursor onto an image.
+func drawSoftwareCursor(img *image.RGBA, mx, my int) {
+	cursor := [16][16]byte{
+		{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+		{1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+		{1, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+		{1, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+		{1, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+		{1, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+		{1, 2, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+		{1, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0},
+		{1, 2, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0},
+		{1, 2, 2, 2, 2, 2, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0},
+		{1, 2, 2, 1, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+		{1, 2, 1, 0, 1, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0},
+		{1, 1, 0, 0, 1, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0},
+		{1, 0, 0, 0, 0, 1, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0},
+		{0, 0, 0, 0, 0, 1, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0},
+		{0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0},
+	}
+	bounds := img.Bounds()
+	for cy := range 16 {
+		for cx := range 16 {
+			px, py := mx+cx, my+cy
+			if px < bounds.Min.X || px >= bounds.Max.X || py < bounds.Min.Y || py >= bounds.Max.Y {
+				continue
+			}
+			switch cursor[cy][cx] {
+			case 1:
+				img.SetRGBA(px, py, color.RGBA{0, 0, 0, 255})
+			case 2:
+				img.SetRGBA(px, py, color.RGBA{255, 255, 255, 255})
+			}
+		}
+	}
 }
 
 func (se *ScriptEngine) luaDbgOpen() lua.LGFunction {

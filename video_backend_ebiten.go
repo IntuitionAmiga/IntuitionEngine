@@ -76,6 +76,11 @@ type EbitenOutput struct {
 
 	recorder         *VideoRecorder
 	screenCaptureBuf []byte
+
+	// Software cursor overlay for modes that hide the system cursor (EmuTOS).
+	// AROS draws its own Intuition cursor in VRAM — set noSoftwareCursor to avoid duplicate.
+	cursorImage      *ebiten.Image
+	noSoftwareCursor bool
 }
 
 func NewEbitenOutput() (VideoOutput, error) {
@@ -445,6 +450,58 @@ func (eo *EbitenOutput) SetMiddleMouseHandler(fn func()) {
 
 func (eo *EbitenOutput) HideSystemCursor() {
 	eo.hideSystemCursor = true
+	eo.initSoftwareCursor()
+}
+
+func (eo *EbitenOutput) DisableSoftwareCursor() {
+	eo.noSoftwareCursor = true
+}
+
+// initSoftwareCursor creates a classic Amiga-style arrow cursor image.
+func (eo *EbitenOutput) initSoftwareCursor() {
+	// 16x16 Amiga-style arrow cursor: 1=black outline, 2=white fill, 3=orange highlight
+	const curW, curH = 16, 16
+	cursor := [curH][curW]byte{
+		{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+		{1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+		{1, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+		{1, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+		{1, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+		{1, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+		{1, 2, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+		{1, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0},
+		{1, 2, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0},
+		{1, 2, 2, 2, 2, 2, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0},
+		{1, 2, 2, 1, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+		{1, 2, 1, 0, 1, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0},
+		{1, 1, 0, 0, 1, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0},
+		{1, 0, 0, 0, 0, 1, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0},
+		{0, 0, 0, 0, 0, 1, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0},
+		{0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0},
+	}
+	pixels := make([]byte, curW*curH*4)
+	for y := range curH {
+		for x := range curW {
+			off := (y*curW + x) * 4
+			switch cursor[y][x] {
+			case 0: // transparent
+				pixels[off+3] = 0
+			case 1: // black outline
+				pixels[off+0] = 0
+				pixels[off+1] = 0
+				pixels[off+2] = 0
+				pixels[off+3] = 255
+			case 2: // white fill
+				pixels[off+0] = 255
+				pixels[off+1] = 255
+				pixels[off+2] = 255
+				pixels[off+3] = 255
+			}
+		}
+	}
+	img := ebiten.NewImage(curW, curH)
+	img.WritePixels(pixels)
+	eo.cursorImage = img
 }
 
 func (eo *EbitenOutput) emitByte(b byte) {
@@ -542,6 +599,86 @@ var ebitenToSTScancode = map[ebiten.Key]uint8{
 	ebiten.KeyArrowDown:    0x50,
 }
 
+// ebitenToAmigaRawkey maps Ebiten keys to Amiga rawkey codes.
+// Used when TerminalMMIO.amigaScancodeMode is set (AROS boot).
+var ebitenToAmigaRawkey = map[ebiten.Key]uint8{
+	ebiten.KeyBackquote:    0x00,
+	ebiten.Key1:            0x01,
+	ebiten.Key2:            0x02,
+	ebiten.Key3:            0x03,
+	ebiten.Key4:            0x04,
+	ebiten.Key5:            0x05,
+	ebiten.Key6:            0x06,
+	ebiten.Key7:            0x07,
+	ebiten.Key8:            0x08,
+	ebiten.Key9:            0x09,
+	ebiten.Key0:            0x0A,
+	ebiten.KeyMinus:        0x0B,
+	ebiten.KeyEqual:        0x0C,
+	ebiten.KeyBackslash:    0x0D,
+	ebiten.KeyQ:            0x10,
+	ebiten.KeyW:            0x11,
+	ebiten.KeyE:            0x12,
+	ebiten.KeyR:            0x13,
+	ebiten.KeyT:            0x14,
+	ebiten.KeyY:            0x15,
+	ebiten.KeyU:            0x16,
+	ebiten.KeyI:            0x17,
+	ebiten.KeyO:            0x18,
+	ebiten.KeyP:            0x19,
+	ebiten.KeyBracketLeft:  0x1A,
+	ebiten.KeyBracketRight: 0x1B,
+	ebiten.KeyA:            0x20,
+	ebiten.KeyS:            0x21,
+	ebiten.KeyD:            0x22,
+	ebiten.KeyF:            0x23,
+	ebiten.KeyG:            0x24,
+	ebiten.KeyH:            0x25,
+	ebiten.KeyJ:            0x26,
+	ebiten.KeyK:            0x27,
+	ebiten.KeyL:            0x28,
+	ebiten.KeySemicolon:    0x29,
+	ebiten.KeyApostrophe:   0x2A,
+	ebiten.KeyZ:            0x31,
+	ebiten.KeyX:            0x32,
+	ebiten.KeyC:            0x33,
+	ebiten.KeyV:            0x34,
+	ebiten.KeyB:            0x35,
+	ebiten.KeyN:            0x36,
+	ebiten.KeyM:            0x37,
+	ebiten.KeyComma:        0x38,
+	ebiten.KeyPeriod:       0x39,
+	ebiten.KeySlash:        0x3A,
+	ebiten.KeySpace:        0x40,
+	ebiten.KeyBackspace:    0x41,
+	ebiten.KeyTab:          0x42,
+	ebiten.KeyEnter:        0x44,
+	ebiten.KeyEscape:       0x45,
+	ebiten.KeyDelete:       0x46,
+	ebiten.KeyArrowUp:      0x4C,
+	ebiten.KeyArrowDown:    0x4D,
+	ebiten.KeyArrowRight:   0x4E,
+	ebiten.KeyArrowLeft:    0x4F,
+	ebiten.KeyF1:           0x50,
+	ebiten.KeyF2:           0x51,
+	ebiten.KeyF3:           0x52,
+	ebiten.KeyF4:           0x53,
+	ebiten.KeyF5:           0x54,
+	ebiten.KeyF6:           0x55,
+	ebiten.KeyF7:           0x56,
+	ebiten.KeyF8:           0x57,
+	ebiten.KeyF9:           0x58,
+	ebiten.KeyF10:          0x59,
+	ebiten.KeyShiftLeft:    0x60,
+	ebiten.KeyShiftRight:   0x61,
+	ebiten.KeyCapsLock:     0x62,
+	ebiten.KeyControlLeft:  0x63,
+	ebiten.KeyAltLeft:      0x64,
+	ebiten.KeyAltRight:     0x65,
+	ebiten.KeyMetaLeft:     0x66,
+	ebiten.KeyMetaRight:    0x67,
+}
+
 func shouldRepeat(key ebiten.Key) bool {
 	dur := inpututil.KeyPressDuration(key)
 	if dur < keyRepeatDelay {
@@ -595,12 +732,16 @@ func (eo *EbitenOutput) updateTerminalMMIOInput() {
 		}
 	}
 
-	for ebitenKey, stScancode := range ebitenToSTScancode {
+	scancodeMap := ebitenToSTScancode
+	if tm.amigaScancodeMode.Load() {
+		scancodeMap = ebitenToAmigaRawkey
+	}
+	for ebitenKey, code := range scancodeMap {
 		if inpututil.IsKeyJustPressed(ebitenKey) {
-			tm.EnqueueScancode(stScancode)
+			tm.EnqueueScancode(code)
 		}
 		if inpututil.IsKeyJustReleased(ebitenKey) {
-			tm.EnqueueScancode(stScancode | 0x80)
+			tm.EnqueueScancode(code | 0x80)
 		}
 	}
 
@@ -897,6 +1038,17 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 	showStatusBar := eo.showStatusBar
 	eo.bufferMutex.RUnlock()
 	screen.DrawImage(eo.window, nil)
+
+	// Draw software cursor when the system cursor is hidden (EmuTOS mode).
+	// AROS draws its own Intuition cursor in VRAM, so skip when noSoftwareCursor is set.
+	if eo.cursorImage != nil && eo.termMMIO != nil && !eo.noSoftwareCursor {
+		mx := float64(eo.termMMIO.mouseX.Load())
+		my := float64(eo.termMMIO.mouseY.Load())
+		op := &ebiten.DrawImageOptions{}
+		op.GeoM.Translate(mx, my)
+		screen.DrawImage(eo.cursorImage, op)
+	}
+
 	if showStatusBar {
 		eo.drawRuntimeStatusBar(screen)
 	}

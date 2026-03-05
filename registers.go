@@ -285,6 +285,7 @@ const (
 	SCAN_CODE           = 0xF0740    // Raw keyboard scancode dequeue
 	SCAN_STATUS         = 0xF0744    // Bit 0=scancode available
 	SCAN_MODIFIERS      = 0xF0748    // Bit 0=shift,1=ctrl,2=alt,3=capslock
+	RTC_EPOCH           = 0xF0750    // Read: host UTC seconds since Unix epoch
 	TERM_SENTINEL       = 0xF07F0    // Write 0xDEAD to stop CPU (via OnSentinel callback)
 	TERMINAL_REGION_END = 0xF07FF    // Reserve 256 bytes for future expansion
 )

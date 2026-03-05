@@ -325,14 +325,27 @@ func main() {
 		modeAROS = true
 	}
 
-	// Resolve AROS drive config (host filesystem mapping)
+	// Resolve AROS drive config (host filesystem mapping).
+	// When -aros-drive is not set, search for the AROS build output tree
+	// (same auto-discovery pattern as ROM resolution).
 	arosHostRoot := arosDrive
 	if arosHostRoot == "" {
-		if home, err := os.UserHomeDir(); err == nil {
-			arosHostRoot = home
+		arosDriveCandidates := []string{
+			"AROS/bin/ie-m68k/bin/ie-m68k/AROS",
+			"../AROS/bin/ie-m68k/bin/ie-m68k/AROS",
+		}
+		for _, p := range arosDriveCandidates {
+			if info, err := os.Stat(p); err == nil && info.IsDir() {
+				arosHostRoot = p
+				break
+			}
+		}
+		if arosHostRoot == "" {
+			if home, err := os.UserHomeDir(); err == nil {
+				arosHostRoot = home
+			}
 		}
 	}
-	_ = arosHostRoot // used by AROS DOS interceptor below
 
 	// Resolve GEMDOS drive config for EmuTOS (always, since EmuTOS can be
 	// launched dynamically from BASIC or the program executor)
@@ -1415,8 +1428,11 @@ func main() {
 		sysBus.UnmapIO(VRAM_START, VRAM_START+VRAM_SIZE-1)
 		videoChip.SetBusMemory(sysBus.memory)
 		videoChip.SetBigEndianMode(true)
-		// Point VideoChip's GetFrame at full VRAM so CLUT8 bitmaps at any offset work.
-		videoChip.SetDirectVRAM(sysBus.memory[VRAM_START : VRAM_START+VRAM_SIZE])
+		// AROS VRAM is at the top of the 32MB bus (0x1E00000-0x1FFFFFF).
+		// SetDirectVRAM enables direct-VRAM mode (CLUT8 reads via busMemory).
+		const arosVRAMBase = 0x1E00000
+		const arosVRAMSize = 0x200000
+		videoChip.SetDirectVRAM(sysBus.memory[arosVRAMBase : arosVRAMBase+arosVRAMSize])
 		m68kCPU := NewM68KCPU(sysBus)
 		m68kRunner := NewM68KRunner(m68kCPU)
 		m68kRunner.PerfEnabled = perfMode
@@ -1431,6 +1447,7 @@ func main() {
 			fmt.Printf("Warning: AROS DOS device init failed: %v\n", dosErr)
 		} else {
 			sysBus.MapIO(AROS_DOS_REGION_BASE, AROS_DOS_REGION_END, arosDOS.HandleRead, arosDOS.HandleWrite)
+			fmt.Printf("AROS DOS: IE: → %s\r\n", arosHostRoot)
 		}
 
 		// Initialize AROS Audio DMA engine (Paula-compatible DMA → flex channel DAC)
@@ -1457,6 +1474,17 @@ func main() {
 		if hider, ok := videoChip.GetOutput().(SystemCursorHider); ok {
 			hider.HideSystemCursor()
 		}
+		// Disable the emulator's software cursor overlay — AROS draws its own
+		if disabler, ok := videoChip.GetOutput().(SoftwareCursorDisabler); ok {
+			disabler.DisableSoftwareCursor()
+		}
+
+		// AROS HIDDs expect Amiga rawkey scancodes, not PC/AT scancodes
+		termMMIO.amigaScancodeMode.Store(true)
+
+		// Unlock compositor resolution so the iegfx HIDD's IE_VideoSetMode(640x480)
+		// propagates correctly during boot (default lock is 800x600).
+		compositor.UnlockResolution()
 
 		videoChip.Start()
 		compositor.Start()
@@ -1912,10 +1940,20 @@ func main() {
 			if err := loader.LoadROM(bytes); err != nil {
 				return fmt.Errorf("failed to load AROS ROM: %w", err)
 			}
-			// Wire up audio DMA engine for mode switch path
+			// Wire up DOS device for host filesystem access
+			if arosDOS, dosErr := NewArosDOSDevice(sysBus, arosHostRoot); dosErr == nil {
+				sysBus.MapIO(AROS_DOS_REGION_BASE, AROS_DOS_REGION_END, arosDOS.HandleRead, arosDOS.HandleWrite)
+				fmt.Printf("AROS DOS: IE: → %s\r\n", arosHostRoot)
+			}
+			// Wire up audio DMA engine
 			arosDMA := NewArosAudioDMA(sysBus, soundChip, r.cpu)
 			sysBus.MapIO(AROS_AUD_REGION_BASE, AROS_AUD_REGION_END, arosDMA.HandleRead, arosDMA.HandleWrite)
 			soundChip.SetSampleTicker(arosDMA)
+			// Wire up clipboard bridge
+			clipBridge := NewClipboardBridge(sysBus)
+			sysBus.MapIO(CLIP_REGION_BASE, CLIP_REGION_END, clipBridge.HandleRead, clipBridge.HandleWrite)
+			// AROS HIDDs expect Amiga rawkey scancodes
+			termMMIO.amigaScancodeMode.Store(true)
 			loader.StartTimer()
 			arosLoader = loader
 			runtime.GC()

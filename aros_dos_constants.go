@@ -83,6 +83,7 @@ const (
 	ADOS_OFFSET_END       = 1
 
 	ADOS_ST_FILE    = 0xFFFFFFFD // -3
+	ADOS_ST_ROOT    = 1          // root directory of filesystem
 	ADOS_ST_USERDIR = 2
 
 	ADOS_LOCK_SAME        = 0
@@ -108,6 +109,14 @@ const (
 	ADOS_FIB_OWNER_GID      = 226
 	ADOS_FIB_RESERVED       = 228
 	ADOS_FIB_TOTAL_SIZE     = 260
+)
+
+// AmigaDOS protection bit flags (fib_Protection)
+// Note: FIBF_READ/WRITE/EXECUTE/DELETE are ACTIVE-LOW (set = denied)
+// while FIBF_SCRIPT/PURE/ARCHIVE are ACTIVE-HIGH (set = enabled).
+const (
+	ADOS_FIBF_EXECUTE = 1 << 1 // Set = NOT executable
+	ADOS_FIBF_SCRIPT  = 1 << 6 // Set = file is a script
 )
 
 // InfoData field offsets (36 bytes total, big-endian in guest memory)

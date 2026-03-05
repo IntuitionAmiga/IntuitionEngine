@@ -2355,13 +2355,14 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 					ipl := uint32((cpu.SR & M68K_SR_IPL) >> M68K_SR_SHIFT)
 					for level := uint32(7); level >= 1; level-- {
 						if pending&(1<<level) != 0 && cpu.interruptInService&(1<<level) == 0 && (level > ipl || level == 7) {
-							cpu.stopped.Store(false)
-							cpu.ProcessInterrupt(uint8(level))
-							cpu.interruptInService |= 1 << level
-							for {
-								old := cpu.pendingInterrupt.Load()
-								if cpu.pendingInterrupt.CompareAndSwap(old, old&^(1<<level)) {
-									break
+							if cpu.ProcessInterrupt(uint8(level)) {
+								cpu.stopped.Store(false)
+								cpu.interruptInService |= 1 << level
+								for {
+									old := cpu.pendingInterrupt.Load()
+									if cpu.pendingInterrupt.CompareAndSwap(old, old&^(1<<level)) {
+										break
+									}
 								}
 							}
 							break
@@ -2431,12 +2432,13 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 					if !cpu.inException.Load() {
 						for level := uint32(7); level >= 1; level-- {
 							if pending&(1<<level) != 0 && cpu.interruptInService&(1<<level) == 0 && (level > ipl || level == 7) {
-								cpu.ProcessInterrupt(uint8(level))
-								cpu.interruptInService |= 1 << level
-								for {
-									old := cpu.pendingInterrupt.Load()
-									if cpu.pendingInterrupt.CompareAndSwap(old, old&^(1<<level)) {
-										break
+								if cpu.ProcessInterrupt(uint8(level)) {
+									cpu.interruptInService |= 1 << level
+									for {
+										old := cpu.pendingInterrupt.Load()
+										if cpu.pendingInterrupt.CompareAndSwap(old, old&^(1<<level)) {
+											break
+										}
 									}
 								}
 								break
@@ -3638,17 +3640,25 @@ func (cpu *M68KCPU) ProcessException(vector uint8) {
 	cpu.cycleCounter += M68K_CYCLE_EXCEPTION
 	cpu.inException.Store(false)
 }
-func (cpu *M68KCPU) ProcessInterrupt(level uint8) {
+
+// ProcessInterrupt attempts to deliver an interrupt at the given level.
+// Returns true if the interrupt was actually delivered, false if blocked
+// by INTENA or IPL masking. Callers must only clear pending bits and set
+// interruptInService when this returns true — otherwise the interrupt
+// stays pending for delivery when conditions change.
+func (cpu *M68KCPU) ProcessInterrupt(level uint8) bool {
 	// Amiga INTENA master gate: when disabled, no interrupts are delivered.
 	// This prevents nested interrupts during AROS task switching.
+	// Return false so the caller leaves the pending bit set — matching
+	// real Amiga INTREQ behavior where pending bits survive INTENA masking.
 	if cpu.AmigaINTENA != nil && !cpu.AmigaINTENA.Load() {
-		return
+		return false
 	}
 
 	// Ignore if current interrupt mask is higher
 	currentIPL := uint8((cpu.SR & M68K_SR_IPL) >> M68K_SR_SHIFT)
 	if level <= currentIPL && level < M68K_VEC_LEVEL7-M68K_VEC_LEVEL1+1 {
-		return
+		return false
 	}
 
 	// Level 7 is non-maskable
@@ -3683,7 +3693,9 @@ func (cpu *M68KCPU) ProcessInterrupt(level uint8) {
 		// Interrupt entry is complete here; do not latch inException.
 		// Leaving it set blocks follow-on exceptions and causes deferral loops.
 		cpu.inException.Store(false)
+		return true
 	}
+	return false
 }
 func (cpu *M68KCPU) ProcessTerminalOutput(value uint32) {
 	// Extract the character to print (least significant byte)
@@ -10257,6 +10269,9 @@ func (cpu *M68KCPU) ExecRTE() {
 		cpu.Pop16()
 	}
 
+	// Clear interrupt in-service bit when returning from an autovector handler.
+	// The format word's low 12 bits contain the vector offset (vector * 4).
+	// Autovectors for levels 1-7 are vectors 25-31 (offsets 0x64-0x7C).
 	// Clear interrupt in-service bit when returning from an autovector handler.
 	// The format word's low 12 bits contain the vector offset (vector * 4).
 	// Autovectors for levels 1-7 are vectors 25-31 (offsets 0x64-0x7C).

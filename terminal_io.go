@@ -52,6 +52,10 @@ type TerminalMMIO struct {
 	// Bit 0=shift, 1=ctrl, 2=alt, 3=capslock
 	modifiers atomic.Uint32
 
+	// amigaScancodeMode selects Amiga rawkey encoding for the scancode ring buffer.
+	// When true, the Ebiten backend enqueues Amiga rawkeys instead of PC/AT scancodes.
+	amigaScancodeMode atomic.Bool
+
 	// SentinelTriggered is set when TERM_SENTINEL receives 0xDEAD.
 	SentinelTriggered atomic.Bool
 
@@ -185,6 +189,9 @@ func (tm *TerminalMMIO) HandleRead(addr uint32) uint32 {
 		return 0
 	case SCAN_MODIFIERS:
 		return tm.modifiers.Load()
+
+	case RTC_EPOCH:
+		return uint32(time.Now().Unix())
 
 	default:
 		return 0

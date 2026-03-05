@@ -158,14 +158,21 @@ func (l *AROSLoader) StartTimer() {
 					continue
 				}
 				l.refreshIRQArming()
-				if l.l5Armed && (l.cpu.AmigaINTENA == nil || l.cpu.AmigaINTENA.Load()) {
+				// Always assert if armed — don't gate on INTENA here.
+				// ProcessInterrupt checks INTENA at delivery time.
+				// Asserting unconditionally matches real Amiga INTREQ
+				// behavior: bits stay pending even when INTENA masks
+				// delivery, and fire immediately when re-enabled.
+				if l.l5Armed {
 					l.cpu.AssertInterrupt(5)
 				}
 			}
 		}
 	}()
 
-	// VBL goroutine: 16.667ms tick (60Hz) → Level 4 autovector.
+	// VBL goroutine: 16.667ms tick (60Hz) → Level 4 autovector + Level 2 input polling.
+	// Level 2 (PORTS) handles keyboard/mouse input on real Amiga hardware.
+	// Assert it at VBL rate so AROS's input.device processes mouse/key events.
 	go func() {
 		defer close(l.vblankDone)
 		ticker := time.NewTicker(16_666_667 * time.Nanosecond)
@@ -179,7 +186,10 @@ func (l *AROSLoader) StartTimer() {
 					continue
 				}
 				l.refreshIRQArming()
-				if l.l4Armed && (l.cpu.AmigaINTENA == nil || l.cpu.AmigaINTENA.Load()) {
+				if l.l2Armed {
+					l.cpu.AssertInterrupt(2)
+				}
+				if l.l4Armed {
 					l.cpu.AssertInterrupt(4)
 				}
 			}
