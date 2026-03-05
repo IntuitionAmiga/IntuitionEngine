@@ -21,6 +21,8 @@ type ProgramExecutor struct {
 	launchExternal func(path string) error
 	// loadEmuTOS boots EmuTOS without a filename (ROM is resolved by main).
 	loadEmuTOS func() error
+	// loadAROS boots AROS without a filename (ROM is resolved by main).
+	loadAROS func() error
 
 	// GEMDOS drive mapping for EmuTOS mode
 	gemdosHostRoot string
@@ -68,6 +70,15 @@ func (e *ProgramExecutor) SetEmuTOSBootLoader(fn func() error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.loadEmuTOS = fn
+}
+
+// SetAROSBootLoader configures a callback that boots AROS from the
+// embedded ROM, -aros-image flag, or local ROM file. Called when BASIC
+// writes EXEC_OP_AROS to EXEC_CTRL.
+func (e *ProgramExecutor) SetAROSBootLoader(fn func() error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.loadAROS = fn
 }
 
 // SetGemdosConfig sets the GEMDOS drive mapping for EmuTOS mode reloads.
@@ -118,6 +129,8 @@ func (e *ProgramExecutor) HandleWrite(addr uint32, val uint32) {
 			e.startExecute()
 		} else if val == EXEC_OP_EMUTOS {
 			e.startEmuTOS()
+		} else if val == EXEC_OP_AROS {
+			e.startAROS()
 		}
 	}
 }
@@ -185,6 +198,37 @@ func (e *ProgramExecutor) startEmuTOS() {
 	session := e.session
 	e.status = EXEC_STATUS_LOADING
 	e.typ = EXEC_TYPE_EMUTOS
+	e.errCode = EXEC_ERR_OK
+	e.mu.Unlock()
+
+	go func() {
+		if err := loader(); err != nil {
+			e.failSession(session, EXEC_ERR_LOAD_FAILED)
+			return
+		}
+		e.mu.Lock()
+		if session == e.session {
+			e.status = EXEC_STATUS_RUNNING
+			e.errCode = EXEC_ERR_OK
+		}
+		e.mu.Unlock()
+	}()
+}
+
+func (e *ProgramExecutor) startAROS() {
+	e.mu.Lock()
+	loader := e.loadAROS
+	if loader == nil {
+		e.status = EXEC_STATUS_ERROR
+		e.errCode = EXEC_ERR_LOAD_FAILED
+		e.typ = EXEC_TYPE_AROS
+		e.mu.Unlock()
+		return
+	}
+	e.session++
+	session := e.session
+	e.status = EXEC_STATUS_LOADING
+	e.typ = EXEC_TYPE_AROS
 	e.errCode = EXEC_ERR_OK
 	e.mu.Unlock()
 

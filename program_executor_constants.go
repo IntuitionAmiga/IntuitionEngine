@@ -17,6 +17,7 @@ const (
 const (
 	EXEC_OP_EXECUTE = 1
 	EXEC_OP_EMUTOS  = 2
+	EXEC_OP_AROS    = 3
 )
 
 const (
@@ -36,6 +37,7 @@ const (
 	EXEC_TYPE_X86
 	EXEC_TYPE_EMUTOS
 	EXEC_TYPE_SCRIPT
+	EXEC_TYPE_AROS
 )
 
 const (

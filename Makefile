@@ -30,6 +30,14 @@ EMUTOS_LINUX_WARNFLAGS ?= -Wall
 # - m68k-elf-gcc        => make -C <src> ELF=1 <target>
 EMUTOS_BUILD_CMD ?= auto
 
+# AROS build configuration
+AROS_SRC_DIR ?= ../AROS
+AROS_BUILD_DIR ?= $(AROS_SRC_DIR)/bin/ie-m68k
+AROS_ROM ?= ./sdk/examples/prebuilt/aros-ie.rom
+AROS_GIT_URL ?= https://github.com/IntuitionAmiga/AROS.git
+AROS_GIT_REF ?= master
+AROS_GCC_VER ?= 15.2.0
+
 # Detect number of CPU cores for parallel compilation
 NCORES := $(shell nproc)
 
@@ -249,6 +257,281 @@ emutos: setup emutos-rom
 	@$(NICE) -$(NICE_LEVEL) $(UPX) --lzma IntuitionEngine
 	@mv IntuitionEngine $(BIN_DIR)/
 	@echo "EmuTOS build complete - run with: $(BIN_DIR)/IntuitionEngine -emutos"
+
+# Build with embedded AROS ROM image.
+.PHONY: aros
+aros: setup aros-rom
+	@echo "Building Intuition Engine with embedded AROS ROM..."
+	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags embed_aros .
+	@echo "Stripping debug symbols..."
+	@$(NICE) -$(NICE_LEVEL) $(SSTRIP) -z IntuitionEngine
+	@echo "Applying UPX compression..."
+	@$(NICE) -$(NICE_LEVEL) $(UPX) --lzma IntuitionEngine
+	@mv IntuitionEngine $(BIN_DIR)/
+	@echo "AROS build complete - run with: $(BIN_DIR)/IntuitionEngine -aros"
+
+.PHONY: aros-rom
+aros-rom:
+	@if [ ! -d "$(AROS_SRC_DIR)" ]; then \
+		if ! command -v git >/dev/null 2>&1; then \
+			echo "Error: git is required to clone AROS source."; \
+			exit 1; \
+		fi; \
+		echo "Cloning AROS source..."; \
+		git clone --depth 1 --branch "$(AROS_GIT_REF)" "$(AROS_GIT_URL)" "$(AROS_SRC_DIR)"; \
+	fi
+	@echo "Initialising AROS submodules (catalogs, tests, etc.)..."
+	@git -C "$(AROS_SRC_DIR)" submodule update --init --recursive
+	@if [ ! -f "$(AROS_BUILD_DIR)/config/make.cfg" ]; then \
+		echo "Configuring AROS for ie-m68k..."; \
+		$(MKDIR) -p "$(AROS_BUILD_DIR)"; \
+		AROS_CONFIGURE="$$(cd "$(AROS_SRC_DIR)" && pwd)/configure"; \
+		cd "$(AROS_BUILD_DIR)" && \
+		"$$AROS_CONFIGURE" --target=ie-m68k \
+			--with-cpu=68020 \
+			--with-gcc-version=$(AROS_GCC_VER) \
+			--enable-build-type=personal; \
+	fi
+	@echo "Building AROS ROM..."
+	@# Regenerate linker include files to pick up mmakefile.src changes
+	@rm -f "$(AROS_BUILD_DIR)/bin/ie-m68k/gen/rom_objs.ld" \
+		"$(AROS_BUILD_DIR)/bin/ie-m68k/gen/ext_objs.ld" 2>/dev/null || true
+	@$(MAKE) -C "$(AROS_BUILD_DIR)" -j$(NCORES) kernel-ie-m68k-rom
+	@echo "Building AROS workbench components (S/, C/, Fonts/)..."
+	@# Fix m68k-amiga workbench-c targets: scope them to amiga arch only.
+	@# Without this, workbench-c-m68k pulls in amiga-specific gdbstub/SetPatch for ALL
+	@# m68k targets (including IE). The fix: rename workbench-c-m68k → workbench-c-amiga-m68k
+	@# and wire via workbench-c-amiga, then drop the bare CPU-level dep from workbench/c/.
+	@sed -i 's/workbench-c-m68k/workbench-c-amiga-m68k/g' \
+		"$(AROS_SRC_DIR)/arch/m68k-amiga/c/mmakefile.src" 2>/dev/null || true
+	@if ! grep -q 'workbench-c-amiga :' "$(AROS_SRC_DIR)/arch/m68k-amiga/c/mmakefile.src" 2>/dev/null; then \
+		sed -i '1a #MM- workbench-c-amiga : workbench-c-amiga-m68k' \
+			"$(AROS_SRC_DIR)/arch/m68k-amiga/c/mmakefile.src" 2>/dev/null || true; \
+	fi
+	@# Remove bare workbench-c-$(AROS_TARGET_CPU) dep so IE doesn't inherit amiga targets
+	@sed -i '/#MM.*workbench-c-\$$(AROS_TARGET_CPU) /d' \
+		"$(AROS_SRC_DIR)/workbench/c/mmakefile.src" 2>/dev/null || true
+	@sed -i '/#MM.*workbench-c-\$$(AROS_TARGET_CPU)-quick/d' \
+		"$(AROS_SRC_DIR)/workbench/c/mmakefile.src" 2>/dev/null || true
+	@# Disable workbench-c-r and workbench-c-loadresource: broken catalog builds
+	@sed -i 's/^#MM- workbench-c : workbench-c-r$$/#disabled: workbench-c-r (broken catalog build)/' \
+		"$(AROS_SRC_DIR)/workbench/c/R/mmakefile.src" 2>/dev/null || true
+	@sed -i 's/^#MM- workbench-c : workbench-c-loadresource$$/#disabled: workbench-c-loadresource (broken catalog build)/' \
+		"$(AROS_SRC_DIR)/workbench/c/LoadResource/mmakefile.src" 2>/dev/null || true
+	@# Regenerate mmakefiles after patching sources
+	@rm -f "$(AROS_BUILD_DIR)/workbench/c/mmakefile" \
+		"$(AROS_BUILD_DIR)/arch/m68k-amiga/c/mmakefile" \
+		"$(AROS_BUILD_DIR)/workbench/c/R/mmakefile" \
+		"$(AROS_BUILD_DIR)/workbench/c/LoadResource/mmakefile" 2>/dev/null || true
+	@echo "Building complete AROS workbench (all libs, classes, tools, prefs, devices)..."
+	@$(MAKE) -C "$(AROS_BUILD_DIR)" -j$(NCORES) workbench-complete 2>&1 || \
+		echo "  Warning: workbench-complete had some failures (non-fatal)"
+	@echo "Building additional targets not in workbench-complete..."
+	@$(MAKE) -C "$(AROS_BUILD_DIR)" -j$(NCORES) \
+		compiler-stdcio \
+		workbench-images-themes \
+		kernel-ie-m68k-ahidrv 2>&1 || \
+		echo "  Warning: additional targets had failures (non-fatal)"
+	@echo "Installing stock AROS Startup-Sequence..."
+	@cp -f "$(AROS_SRC_DIR)/workbench/s/Startup-Sequence" \
+		"$(AROS_BUILD_DIR)/bin/ie-m68k/AROS/S/Startup-Sequence"
+	@echo "Creating AROS directory structure..."
+	@AROSDIR="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
+	for dir in WBStartup System System/Images Tools Tools/Commodities Utilities Demos Rexxc \
+		Classes Classes/datatypes Classes/Gadgets Classes/Zune \
+		Libs/Zune \
+		Prefs Prefs/Presets/Themes Locale Locale/Languages Locale/Countries Locale/Flags \
+		Storage Storage/DataTypes Storage/DOSDrivers Storage/Keymaps Storage/Monitors \
+		Devs/Monitors Devs/AHI Devs/DataTypes Devs/Keymaps Devs/DOSDrivers Devs/Printers; do \
+		$(MKDIR) -p "$$AROSDIR/$$dir"; \
+	done
+	@echo "Building AROS icons..."
+	@ILBMTOICON="$(AROS_BUILD_DIR)/bin/$$(uname -s | tr A-Z a-z)-$$(uname -m)/tools/ilbmtoicon"; \
+	AROSDIR="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
+	MASON_WB="$(AROS_SRC_DIR)/images/IconSets/Mason/workbench"; \
+	MASON_EA="$(AROS_SRC_DIR)/images/IconSets/Mason/workbench/Prefs/Env-Archive"; \
+	if [ -x "$$ILBMTOICON" ]; then \
+		echo "  Building directory icons (Mason workbench set)..."; \
+		for name in Demos Developer Devs Fonts Locale Prefs Storage System Tools Utilities; do \
+			src="$$MASON_WB/$${name}.info.src"; \
+			png="$$MASON_WB/$${name}.png"; \
+			if [ -f "$$src" ] && [ -f "$$png" ]; then \
+				$$ILBMTOICON --png "$$src" "$$png" "$$AROSDIR/$${name}.info"; \
+			fi; \
+		done; \
+		echo "  Building fallback drawer icons (Mason def_Drawer)..."; \
+		for name in WBStartup Classes; do \
+			src="$$MASON_EA/def_Drawer.info.src"; \
+			png="$$MASON_EA/def_Drawer.png"; \
+			if [ -f "$$src" ] && [ -f "$$png" ]; then \
+				$$ILBMTOICON --png "$$src" "$$png" "$$AROSDIR/$${name}.info"; \
+			fi; \
+		done; \
+		echo "  Building Prefs program icons (Mason Prefs set)..."; \
+		MASON_PREFS="$$MASON_WB/Prefs"; \
+		for name in Font Input Locale Palette Pointer Printer ReqTools ScreenMode Serial Time Wanderer Zune; do \
+			src="$$MASON_PREFS/$${name}.info.src"; \
+			png="$$MASON_PREFS/$${name}.png"; \
+			if [ -f "$$src" ] && [ -f "$$png" ]; then \
+				$$ILBMTOICON --png "$$src" "$$png" "$$AROSDIR/Prefs/$${name}.info"; \
+			fi; \
+		done; \
+		for name in Appearance Asl BoingIconBar Editor IControl Network PSI Trackdisk; do \
+			src="$$MASON_EA/def_Tool.info.src"; \
+			png="$$MASON_EA/def_Tool.png"; \
+			if [ -f "$$src" ] && [ -f "$$png" ] && [ -f "$$AROSDIR/Prefs/$${name}" ]; then \
+				$$ILBMTOICON --png "$$src" "$$png" "$$AROSDIR/Prefs/$${name}.info"; \
+			fi; \
+		done; \
+		echo "  Building Tools program icons (Mason Tools set)..."; \
+		MASON_TOOLS="$$MASON_WB/Tools"; \
+		for name in Calculator HDToolBox WiMP; do \
+			src="$$MASON_TOOLS/$${name}.info.src"; \
+			png="$$MASON_TOOLS/$${name}.png"; \
+			if [ -f "$$src" ] && [ -f "$$png" ]; then \
+				$$ILBMTOICON --png "$$src" "$$png" "$$AROSDIR/Tools/$${name}.info"; \
+			fi; \
+		done; \
+		for name in Editor KeyShow ScreenGrabber ShowConfig SysExplorer BoingIconBar; do \
+			src="$$MASON_EA/def_Tool.info.src"; \
+			png="$$MASON_EA/def_Tool.png"; \
+			if [ -f "$$src" ] && [ -f "$$png" ] && [ -f "$$AROSDIR/Tools/$${name}" ]; then \
+				$$ILBMTOICON --png "$$src" "$$png" "$$AROSDIR/Tools/$${name}.info"; \
+			fi; \
+		done; \
+		echo "  Building Commodities icons (Mason Commodities set)..."; \
+		MASON_COMM="$$MASON_WB/Tools/Commodities"; \
+		for name in AutoPoint Blanker ClickToFront Exchange Opaque; do \
+			src="$$MASON_COMM/$${name}.info.src"; \
+			png="$$MASON_COMM/$${name}.png"; \
+			if [ -f "$$src" ] && [ -f "$$png" ]; then \
+				$$ILBMTOICON --png "$$src" "$$png" "$$AROSDIR/Tools/Commodities/$${name}.info"; \
+			fi; \
+		done; \
+		for name in ASCIITable AltKeyQ DepthMenu NoCapsLock; do \
+			src="$$MASON_EA/def_Tool.info.src"; \
+			png="$$MASON_EA/def_Tool.png"; \
+			if [ -f "$$src" ] && [ -f "$$png" ] && [ -f "$$AROSDIR/Tools/Commodities/$${name}" ]; then \
+				$$ILBMTOICON --png "$$src" "$$png" "$$AROSDIR/Tools/Commodities/$${name}.info"; \
+			fi; \
+		done; \
+		echo "  Building Utilities icons (Mason Utilities set)..."; \
+		MASON_UTIL="$$MASON_WB/Utilities"; \
+		for name in Clock Installer More MultiView; do \
+			src="$$MASON_UTIL/$${name}.info.src"; \
+			png="$$MASON_UTIL/$${name}.png"; \
+			if [ -f "$$src" ] && [ -f "$$png" ]; then \
+				$$ILBMTOICON --png "$$src" "$$png" "$$AROSDIR/Utilities/$${name}.info"; \
+			fi; \
+		done; \
+		for name in Help; do \
+			src="$$MASON_EA/def_Tool.info.src"; \
+			png="$$MASON_EA/def_Tool.png"; \
+			if [ -f "$$src" ] && [ -f "$$png" ] && [ -f "$$AROSDIR/Utilities/$${name}" ]; then \
+				$$ILBMTOICON --png "$$src" "$$png" "$$AROSDIR/Utilities/$${name}.info"; \
+			fi; \
+		done; \
+		echo "  Building System icons (Mason System set)..."; \
+		MASON_SYS="$$MASON_WB/system"; \
+		for name in Format FixFonts; do \
+			src="$$MASON_SYS/$${name}.info.src"; \
+			png="$$MASON_SYS/$${name}.png"; \
+			if [ -f "$$src" ] && [ -f "$$png" ]; then \
+				$$ILBMTOICON --png "$$src" "$$png" "$$AROSDIR/System/$${name}.info"; \
+			fi; \
+		done; \
+		for name in About CLI Find FTManager Snoopy SysMon VMM Wanderer Workbook; do \
+			src="$$MASON_EA/def_Tool.info.src"; \
+			png="$$MASON_EA/def_Tool.png"; \
+			if [ -f "$$src" ] && [ -f "$$png" ] && [ -f "$$AROSDIR/System/$${name}" ]; then \
+				$$ILBMTOICON --png "$$src" "$$png" "$$AROSDIR/System/$${name}.info"; \
+			fi; \
+		done; \
+		echo "  Building default type icons (Mason Env-Archive set)..."; \
+		$(MKDIR) -p "$$AROSDIR/Prefs/Env-Archive/SYS"; \
+		for src in "$$MASON_EA"/*.info.src; do \
+			base=$$(basename "$$src" .info.src); \
+			png="$$MASON_EA/$${base}.png"; \
+			if [ -f "$$png" ]; then \
+				$$ILBMTOICON --png "$$src" "$$png" "$$AROSDIR/Prefs/Env-Archive/SYS/$${base}.info"; \
+			fi; \
+		done; \
+		echo "  Removing icons for non-user drawers..."; \
+		for name in boot C Libs S T Rexxc; do \
+			rm -f "$$AROSDIR/$${name}.info"; \
+		done; \
+		echo "  Built $$(ls "$$AROSDIR"/*.info 2>/dev/null | wc -l) directory icons, $$(ls "$$AROSDIR/Prefs/Env-Archive/SYS"/*.info 2>/dev/null | wc -l) default icons"; \
+	else \
+		echo "  Warning: ilbmtoicon not found, skipping icon build"; \
+	fi
+	@echo "Copying Zune classes to Libs/Zune/ for lddemon..."
+	@AROSDIR="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
+	if [ -d "$$AROSDIR/Classes/Zune" ]; then \
+		cp -f "$$AROSDIR/Classes/Zune/"*.mcc "$$AROSDIR/Libs/Zune/" 2>/dev/null; \
+		cp -f "$$AROSDIR/Classes/Zune/"*.mcp "$$AROSDIR/Libs/Zune/" 2>/dev/null; \
+		cp -f "$$AROSDIR/Classes/Zune/"*.mui "$$AROSDIR/Libs/Zune/" 2>/dev/null; \
+		echo "  Copied $$(ls "$$AROSDIR/Libs/Zune/" 2>/dev/null | wc -l) Zune classes to Libs/Zune/"; \
+	fi
+	@echo "Extracting ROM binary..."
+	@AROS_TARGETDIR="$(AROS_BUILD_DIR)/bin/ie-m68k"; \
+	ROM_ELF="$$AROS_TARGETDIR/gen/boot/aros-ie-m68k-rom.elf"; \
+	if [ ! -f "$$ROM_ELF" ]; then \
+		echo "Error: ROM ELF not found at $$ROM_ELF"; \
+		exit 1; \
+	fi; \
+	if command -v m68k-aros-objcopy >/dev/null 2>&1; then \
+		AROS_OBJCOPY="m68k-aros-objcopy"; \
+	else \
+		AROS_OBJCOPY="m68k-linux-gnu-objcopy"; \
+	fi; \
+	$(MKDIR) -p "$$(dirname "$(AROS_ROM)")"; \
+	$$AROS_OBJCOPY --output-target binary \
+		--only-section=.rom --only-section=.ext --only-section=.ss \
+		--gap-fill 0xff "$$ROM_ELF" "$(AROS_ROM)"; \
+	echo "AROS ROM prepared: $(AROS_ROM) ($$(wc -c < "$(AROS_ROM)") bytes)"
+	@echo "Installing AHI artifacts..."
+	@AROSDIR="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
+	GENDIR="$(AROS_BUILD_DIR)/bin/ie-m68k/gen"; \
+	$(MKDIR) -p "$$AROSDIR/Devs/AHI"; \
+	if [ -f "$$GENDIR/workbench/devs/AHI/Device/ahi.device" ]; then \
+		cp "$$GENDIR/workbench/devs/AHI/Device/ahi.device" "$$AROSDIR/Devs/ahi.device"; \
+		echo "  Installed ahi.device"; \
+	fi; \
+	if [ -f "$$AROSDIR/Libs/ie-audio.library" ]; then \
+		cp "$$AROSDIR/Libs/ie-audio.library" "$$AROSDIR/Devs/AHI/ie-audio.audio"; \
+		echo "  Installed ie-audio.audio"; \
+	fi
+	@echo "Checking AHI artifacts..."
+	@AROSDIR="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
+	for f in "$$AROSDIR/Devs/ahi.device" "$$AROSDIR/Devs/AHI/ie-audio.audio"; do \
+		if [ ! -f "$$f" ]; then echo "Warning: AHI artifact missing: $$f (AHI may not be functional)"; fi; \
+	done
+
+.PHONY: clean-aros
+clean-aros:
+	@if [ ! -d "$(AROS_BUILD_DIR)" ]; then \
+		echo "Nothing to clean — AROS build directory does not exist."; \
+		exit 0; \
+	fi
+	@echo "Cleaning AROS ROM link + module objects..."
+	@GENDIR="$(AROS_BUILD_DIR)/bin/ie-m68k/gen"; \
+	rm -rf "$$GENDIR/boot" "$$GENDIR/rom"
+	@rm -f "$(AROS_ROM)"
+
+.PHONY: clean-aros-all
+clean-aros-all:
+	@RESOLVED=$$(cd "$(AROS_BUILD_DIR)" 2>/dev/null && pwd || echo ""); \
+	SRCBASE=$$(cd "$(AROS_SRC_DIR)" 2>/dev/null && pwd || echo ""); \
+	if [ -z "$$RESOLVED" ]; then \
+		echo "Nothing to clean — AROS build directory does not exist."; \
+		exit 0; \
+	fi; \
+	if [ -z "$$SRCBASE" ] || ! echo "$$RESOLVED" | grep -q "^$$SRCBASE/"; then \
+		echo "Error: AROS_BUILD_DIR ($$RESOLVED) is not under AROS_SRC_DIR ($(AROS_SRC_DIR)) — refusing to delete."; \
+		exit 1; \
+	fi; \
+	echo "Removing AROS build directory: $$RESOLVED"; \
+	rm -rf "$$RESOLVED"
 
 .PHONY: emutos-probe
 emutos-probe: emutos
@@ -818,6 +1101,7 @@ help:
 	@echo "  ie64dis          - Build only the IE64 disassembler"
 	@echo "  basic            - Build with embedded EhBASIC interpreter"
 	@echo "  emutos           - Build with embedded EmuTOS ROM (embed_emutos tag)"
+	@echo "  aros             - Build with embedded AROS ROM (embed_aros tag)"
 	@echo "  install          - Install binaries to $(INSTALL_BIN_DIR)"
 	@echo "  uninstall        - Remove installed binaries from $(INSTALL_BIN_DIR)"
 	@echo "  clean            - Remove all build artifacts"

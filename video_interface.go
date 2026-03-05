@@ -127,6 +127,12 @@ type SystemCursorHider interface {
 	HideSystemCursor()
 }
 
+// SoftwareCursorDisabler disables the emulator's software cursor overlay.
+// Used by AROS which draws its own Intuition cursor in VRAM.
+type SoftwareCursorDisabler interface {
+	DisableSoftwareCursor()
+}
+
 // ScanlineAware is implemented by video sources that support per-scanline rendering.
 // This enables copper-style raster effects where register changes take effect
 // at specific scanline positions.

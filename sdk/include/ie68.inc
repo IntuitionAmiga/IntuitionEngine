@@ -1020,12 +1020,14 @@ COP_MOVE_VGA_WINDEX  equ $40000000          ; Offset 0: DAC write index
 COP_MOVE_VGA_DATA    equ $40010000          ; Offset 1: DAC data (R,G,B seq)
 
 ; ============================================================================
-; TIMER REGISTERS
+; TIMER REGISTERS (DEPRECATED)
 ; ============================================================================
+; DEPRECATED: IE32/IE64 runtime timer state is internal and not MMIO-addressable.
+; These legacy symbols are kept for source compatibility only.
 
-TIMER_CTRL      equ $00F800             ; Timer control
-TIMER_COUNT     equ $00F804             ; Timer count
-TIMER_RELOAD    equ $00F808             ; Timer reload value
+TIMER_CTRL      equ $00F800             ; DEPRECATED: not implemented in current runtime
+TIMER_COUNT     equ $00F804             ; DEPRECATED: not implemented in current runtime
+TIMER_RELOAD    equ $00F808             ; DEPRECATED: not implemented in current runtime
 
 ; ============================================================================
 ; MACROS

@@ -573,6 +573,88 @@ func TestEhBASIC_RunIES_Error(t *testing.T) {
 	}
 }
 
+func TestProgramExecutor_AROS_NilLoader(t *testing.T) {
+	bus := NewMachineBus()
+	ie64CPU := NewCPU64(bus)
+	exec := NewProgramExecutor(bus, ie64CPU, nil, nil, nil, ".")
+
+	exec.HandleWrite(EXEC_CTRL, EXEC_OP_AROS)
+
+	if got := exec.HandleRead(EXEC_STATUS); got != EXEC_STATUS_ERROR {
+		t.Fatalf("status=%d, want %d (ERROR)", got, EXEC_STATUS_ERROR)
+	}
+	if got := exec.HandleRead(EXEC_ERROR); got != EXEC_ERR_LOAD_FAILED {
+		t.Fatalf("error=%d, want %d (LOAD_FAILED)", got, EXEC_ERR_LOAD_FAILED)
+	}
+	if got := exec.HandleRead(EXEC_TYPE); got != EXEC_TYPE_AROS {
+		t.Fatalf("type=%d, want %d (AROS)", got, EXEC_TYPE_AROS)
+	}
+}
+
+func TestProgramExecutor_AROS_Success(t *testing.T) {
+	bus := NewMachineBus()
+	ie64CPU := NewCPU64(bus)
+	exec := NewProgramExecutor(bus, ie64CPU, nil, nil, nil, ".")
+
+	exec.SetAROSBootLoader(func() error { return nil })
+
+	s0 := exec.HandleRead(EXEC_SESSION)
+	exec.HandleWrite(EXEC_CTRL, EXEC_OP_AROS)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if exec.HandleRead(EXEC_STATUS) == EXEC_STATUS_RUNNING {
+			break
+		}
+		runtime.Gosched()
+	}
+
+	if got := exec.HandleRead(EXEC_STATUS); got != EXEC_STATUS_RUNNING {
+		t.Fatalf("status=%d, want %d (RUNNING)", got, EXEC_STATUS_RUNNING)
+	}
+	if got := exec.HandleRead(EXEC_SESSION); got <= s0 {
+		t.Fatalf("session=%d, want > %d", got, s0)
+	}
+	if got := exec.HandleRead(EXEC_TYPE); got != EXEC_TYPE_AROS {
+		t.Fatalf("type=%d, want %d (AROS)", got, EXEC_TYPE_AROS)
+	}
+}
+
+func TestProgramExecutor_AROS_LoaderError(t *testing.T) {
+	bus := NewMachineBus()
+	ie64CPU := NewCPU64(bus)
+	exec := NewProgramExecutor(bus, ie64CPU, nil, nil, nil, ".")
+
+	exec.SetAROSBootLoader(func() error { return errors.New("no ROM") })
+
+	exec.HandleWrite(EXEC_CTRL, EXEC_OP_AROS)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		s := exec.HandleRead(EXEC_STATUS)
+		if s == EXEC_STATUS_ERROR {
+			break
+		}
+		runtime.Gosched()
+	}
+
+	if got := exec.HandleRead(EXEC_STATUS); got != EXEC_STATUS_ERROR {
+		t.Fatalf("status=%d, want %d (ERROR)", got, EXEC_STATUS_ERROR)
+	}
+	if got := exec.HandleRead(EXEC_ERROR); got != EXEC_ERR_LOAD_FAILED {
+		t.Fatalf("error=%d, want %d (LOAD_FAILED)", got, EXEC_ERR_LOAD_FAILED)
+	}
+}
+
+func TestProgramExecutor_AROS_Constants(t *testing.T) {
+	if EXEC_OP_AROS != 3 {
+		t.Fatalf("EXEC_OP_AROS=%d, want 3", EXEC_OP_AROS)
+	}
+	if EXEC_TYPE_AROS != 9 {
+		t.Fatalf("EXEC_TYPE_AROS=%d, want 9", EXEC_TYPE_AROS)
+	}
+}
+
 func testEmuTOSROM() []byte {
 	rom := make([]byte, emutosROM192K)
 	rom[0] = 0x00

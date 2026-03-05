@@ -223,7 +223,7 @@ const (
 	M68K_EXT_BD_SIZE          = 2
 	M68K_EXT_SCALE_START_BIT  = 9 // Enables array indexing without separate multiply instruction
 	M68K_EXT_SCALE_SIZE       = 2
-	M68K_EXT_INDIRECTION_MASK = 0x03
+	M68K_EXT_INDIRECTION_MASK = 0x07
 	M68K_EXT_REG_MASK         = 0x0F
 	M68K_EXT_REG_TYPE_BIT     = 15 // Distinguishes address vs data register
 	M68K_EXT_SIZE_BIT         = 11 // Determines word vs long index
@@ -617,16 +617,17 @@ type M68KCPU struct {
 	ISP  uint32 // Interrupt Stack Pointer (68020+)
 
 	// Cache Line 2 (64 bytes) - Execution Context
-	cycleCounter     uint32    // Enables accurate timing for cycle-exact emulation
-	prefetchQueue    [4]uint16 // Real hardware hides memory latency with prefetch
-	prefetchSize     uint8
-	currentIR        uint16
-	pendingInterrupt atomic.Uint32 // Bitmask: bit N means interrupt level N asserted
-	pendingException atomic.Uint32 // Deferred exceptions (atomic for lock-free access)
-	inException      atomic.Bool   // Prevents double-fault situations (atomic for lock-free access)
-	stackLowerBound  uint32        // Detects stack corruption early
-	stackUpperBound  uint32        // Detects stack corruption early
-	_padding2        [33]byte      // Cache line alignment reduces false sharing
+	cycleCounter       uint32    // Enables accurate timing for cycle-exact emulation
+	prefetchQueue      [4]uint16 // Real hardware hides memory latency with prefetch
+	prefetchSize       uint8
+	currentIR          uint16
+	pendingInterrupt   atomic.Uint32 // Bitmask: bit N means interrupt level N asserted
+	pendingException   atomic.Uint32 // Deferred exceptions (atomic for lock-free access)
+	inException        atomic.Bool   // Prevents double-fault situations (atomic for lock-free access)
+	stackLowerBound    uint32        // Detects stack corruption early
+	stackUpperBound    uint32        // Detects stack corruption early
+	interruptInService uint32        // Bitmask: bit N = level N handler is active (prevents nesting)
+	_padding2          [33]byte      // Cache line alignment reduces false sharing
 
 	// Cache Lines 3+ - Bus Interface (lock-free design like IE32)
 	bus Bus32
@@ -678,6 +679,11 @@ type M68KCPU struct {
 	InstructionCount uint64    // Total instructions executed
 	perfStartTime    time.Time // When execution started
 	lastPerfReport   time.Time // Last time we printed stats
+
+	// Amiga INTENA master enable (nil = no INTENA emulation, used for AROS).
+	// On Amiga, INTENA ($DFF09A) bit 14 gates all interrupt delivery.
+	// AROS kernel_cpu.c uses move.w #$4000/$C000 to disable/enable.
+	AmigaINTENA *atomic.Bool
 
 	// Debug write watchpoint (set from tests, nil = disabled)
 	DebugWatchFn func(addr, value, pc uint32, size int)
@@ -1395,16 +1401,17 @@ func (cpu *M68KCPU) decodeGroup4(opcode uint16) {
 		}
 	}
 
-	// CHK
-	if (opcode & 0xF1C0) == M68K_CHK {
+	// CHK.W: 0100 rrr 110 <ea> (masked 0x4180)
+	// CHK.L: 0100 rrr 100 <ea> (masked 0x4100) — 68020+
+	if chkMasked := opcode & 0xF1C0; chkMasked == M68K_CHK || chkMasked == 0x4100 {
 		reg := (opcode >> 9) & 0x7
 		mode := (opcode >> 3) & 0x7
 		xreg := opcode & 0x7
 		var size int
 		if (opcode & 0x0080) != 0 {
-			size = M68K_SIZE_LONG
+			size = M68K_SIZE_WORD // CHK.W: bits 8-6 = 110, bit 7 set
 		} else {
-			size = M68K_SIZE_WORD
+			size = M68K_SIZE_LONG // CHK.L: bits 8-6 = 100, bit 7 clear
 		}
 		cpu.ExecChk(reg, mode, xreg, size)
 		return
@@ -2347,13 +2354,15 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 				if pending != 0 && !cpu.inException.Load() {
 					ipl := uint32((cpu.SR & M68K_SR_IPL) >> M68K_SR_SHIFT)
 					for level := uint32(7); level >= 1; level-- {
-						if pending&(1<<level) != 0 && (level > ipl || level == 7) {
-							cpu.stopped.Store(false)
-							cpu.ProcessInterrupt(uint8(level))
-							for {
-								old := cpu.pendingInterrupt.Load()
-								if cpu.pendingInterrupt.CompareAndSwap(old, old&^(1<<level)) {
-									break
+						if pending&(1<<level) != 0 && cpu.interruptInService&(1<<level) == 0 && (level > ipl || level == 7) {
+							if cpu.ProcessInterrupt(uint8(level)) {
+								cpu.stopped.Store(false)
+								cpu.interruptInService |= 1 << level
+								for {
+									old := cpu.pendingInterrupt.Load()
+									if cpu.pendingInterrupt.CompareAndSwap(old, old&^(1<<level)) {
+										break
+									}
 								}
 							}
 							break
@@ -2422,12 +2431,14 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 					ipl := uint32((cpu.SR & M68K_SR_IPL) >> M68K_SR_SHIFT)
 					if !cpu.inException.Load() {
 						for level := uint32(7); level >= 1; level-- {
-							if pending&(1<<level) != 0 && (level > ipl || level == 7) {
-								cpu.ProcessInterrupt(uint8(level))
-								for {
-									old := cpu.pendingInterrupt.Load()
-									if cpu.pendingInterrupt.CompareAndSwap(old, old&^(1<<level)) {
-										break
+							if pending&(1<<level) != 0 && cpu.interruptInService&(1<<level) == 0 && (level > ipl || level == 7) {
+								if cpu.ProcessInterrupt(uint8(level)) {
+									cpu.interruptInService |= 1 << level
+									for {
+										old := cpu.pendingInterrupt.Load()
+										if cpu.pendingInterrupt.CompareAndSwap(old, old&^(1<<level)) {
+											break
+										}
 									}
 								}
 								break
@@ -2747,6 +2758,25 @@ func (cpu *M68KCPU) Write16(addr uint32, value uint16) {
 	if addr < 0xA0000 {
 		*(*uint16)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr))) = bits.ReverseBytes16(value)
 		return
+	}
+
+	// Amiga INTENA register emulation for AROS compatibility.
+	// AROS kernel writes move.w #$C000/$4000, $DFF09A to enable/disable
+	// the interrupt master gate. Without this, interrupts nest unboundedly
+	// during task switching (KrnSti drops IPL, timer re-asserts).
+	if addr == 0xDFF09A && cpu.AmigaINTENA != nil {
+		// Amiga INTENA protocol: bit 15 = SET(1)/CLEAR(0), bit 14 = master enable
+		if value&0x8000 != 0 {
+			// SET command
+			if value&0x4000 != 0 {
+				cpu.AmigaINTENA.Store(true)
+			}
+		} else {
+			// CLEAR command
+			if value&0x4000 != 0 {
+				cpu.AmigaINTENA.Store(false)
+			}
+		}
 	}
 
 	// I/O register path - pass original value (not byte-swapped).
@@ -3145,185 +3175,80 @@ func (cpu *M68KCPU) GetIndexWithExtWords(extWord uint16, baseAddr uint32, isAreg
 	}
 
 	// Full format (bit 8 = 1): 68020 extended addressing
-	// Extract extension word fields using our constants
 	bs := (extWord >> M68K_EXT_BS_BIT) & 0x01
 	is := (extWord >> M68K_EXT_IS_BIT) & 0x01
 	bd := (extWord >> M68K_EXT_BD_START_BIT) & ((1 << M68K_EXT_BD_SIZE) - 1)
 	scale := (extWord >> M68K_EXT_SCALE_START_BIT) & ((1 << M68K_EXT_SCALE_SIZE) - 1)
+	iis := extWord & M68K_EXT_INDIRECTION_MASK // Full 3-bit I/IS field
 
 	idxReg := (extWord >> 12) & 0x07
 	idxType := (extWord >> M68K_EXT_REG_TYPE_BIT) & 0x01
 	idxSize := (extWord >> M68K_EXT_SIZE_BIT) & 0x01
 
-	var address uint32 = 0
-
-	// Add base register if not suppressed
-	if bs == 0 {
-		address = baseAddr
-	}
-
-	// Add base displacement (68020 encoding: 00=reserved, 01=null, 10=word, 11=long)
-	switch bd {
-	case 0: // Reserved
-		break
-	case 1: // Null displacement
-		break
-	case 2: // Word displacement
-		displacement := int16(cpu.Fetch16())
-		address += uint32(displacement)
-	case 3: // Long displacement
-		address += cpu.Fetch32()
-	}
-
-	// Add index register if not suppressed
+	// Compute scaled index value (not added to address yet —
+	// pre-indexed adds it before the indirect read, post-indexed after)
+	var idxValue uint32
 	if is == 0 {
-		var idxValue uint32
 		if idxType == M68K_EXT_DATA_REG_TYPE {
 			idxValue = cpu.DataRegs[idxReg&0x07]
 		} else {
 			idxValue = cpu.AddrRegs[idxReg&0x07]
 		}
-
 		if idxSize == 0 {
-			// Sign extend word to long
-			if (idxValue & 0x8000) != 0 {
-				idxValue = (idxValue & 0xFFFF) | 0xFFFF0000
-			} else {
-				idxValue &= 0x0000FFFF
-			}
+			idxValue = uint32(int32(int16(idxValue)))
 		}
-
-		// Apply scaling
 		idxValue <<= scale
-
-		address += idxValue
 	}
 
-	// Check if there's an additional indirect level
-	indLevel := extWord & M68K_EXT_INDIRECTION_MASK
-	if indLevel != 0 {
-		// Implement memory indirect addressing
-		switch indLevel {
-		case 1: // [bd,An,Xn] - Memory indirect preindexed
-			// Read the address at the computed address
-			indirectAddr := cpu.Read32(address)
+	// Base = base register (if not suppressed) + base displacement
+	var address uint32
+	if bs == 0 {
+		address = baseAddr
+	}
+	switch bd {
+	case 2: // Word displacement
+		address += uint32(int16(cpu.Fetch16()))
+	case 3: // Long displacement
+		address += cpu.Fetch32()
+	}
 
-			// Get outer displacement if available
-			if (extWord & 0x04) != 0 { // Check od bit
-				switch extWord & 0x03 {
-				case 0: // No displacement
-					break
-				case 1: // Word-sized outer displacement
-					// Sign-extend word displacement
-					displacement := int16(cpu.Fetch16())
-					indirectAddr += uint32(displacement)
-				case 2: // Long-sized outer displacement
-					indirectAddr += cpu.Fetch32()
-				default:
-					cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
-					return 0
-				}
-			}
+	// I/IS field (bits 2-0) encodes indirection mode AND outer displacement size:
+	//   0:   No memory indirect action
+	//   1-3: Preindexed  — EA = [base+bd+Xn] + od  (od: 1=null, 2=word, 3=long)
+	//   4:   Reserved
+	//   5-7: Postindexed — EA = [base+bd] + Xn + od (od: 5=null, 6=word, 7=long)
+	switch {
+	case iis == 0:
+		// No indirection: base + bd + Xn
+		return address + idxValue
 
-			return indirectAddr
-
-		case 2: // [bd,An],Xn - Memory indirect postindexed
-			// First get the intermediate indirect address
-			indirectAddr := cpu.Read32(address)
-
-			// Apply outer displacement if needed
-			if (extWord & 0x04) != 0 { // Check od bit
-				switch extWord & 0x03 {
-				case 0: // No displacement
-					break
-				case 1: // Word-sized outer displacement
-					// Sign-extend word displacement
-					displacement := int16(cpu.Fetch16())
-					indirectAddr += uint32(displacement)
-				case 2: // Long-sized outer displacement
-					indirectAddr += cpu.Fetch32()
-				default:
-					cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
-					return 0
-				}
-			}
-
-			// Then apply the index register
-			if is == 0 {
-				var idxValue uint32
-				if idxType == M68K_EXT_DATA_REG_TYPE {
-					idxValue = cpu.DataRegs[idxReg&0x07]
-				} else {
-					idxValue = cpu.AddrRegs[idxReg&0x07]
-				}
-
-				if idxSize == 0 {
-					// Sign extend word to long
-					if (idxValue & 0x8000) != 0 {
-						idxValue = (idxValue & 0xFFFF) | 0xFFFF0000
-					} else {
-						idxValue &= 0x0000FFFF
-					}
-				}
-
-				// Apply scaling
-				idxValue <<= scale
-
-				indirectAddr += idxValue
-			}
-
-			return indirectAddr
-
-		case 3: // [bd] - Memory indirect with base register suppressed
-			// Read the address at the base displacement
-			indirectAddr := cpu.Read32(address)
-
-			// Handle outer displacement if present
-			if (extWord & 0x04) != 0 { // Check od bit
-				switch extWord & 0x03 {
-				case 0: // No displacement
-					break
-				case 1: // Word-sized outer displacement
-					// Sign-extend word displacement
-					displacement := int16(cpu.Fetch16())
-					indirectAddr += uint32(displacement)
-				case 2: // Long-sized outer displacement
-					indirectAddr += cpu.Fetch32()
-				default:
-					cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
-					return 0
-				}
-			}
-
-			// Add index register if not suppressed
-			if is == 0 {
-				var idxValue uint32
-				if idxType == M68K_EXT_DATA_REG_TYPE {
-					idxValue = cpu.DataRegs[idxReg&0x07]
-				} else {
-					idxValue = cpu.AddrRegs[idxReg&0x07]
-				}
-
-				if idxSize == 0 {
-					// Sign extend word to long
-					if (idxValue & 0x8000) != 0 {
-						idxValue = (idxValue & 0xFFFF) | 0xFFFF0000
-					} else {
-						idxValue &= 0x0000FFFF
-					}
-				}
-
-				// Apply scaling
-				idxValue <<= scale
-
-				indirectAddr += idxValue
-			}
-
-			return indirectAddr
+	case iis <= 3:
+		// Preindexed: index added BEFORE the indirect memory read
+		indirectAddr := cpu.Read32(address + idxValue)
+		switch iis {
+		case 2:
+			indirectAddr += uint32(int16(cpu.Fetch16()))
+		case 3:
+			indirectAddr += cpu.Fetch32()
 		}
-	}
+		return indirectAddr
 
-	return address
+	case iis >= 5:
+		// Postindexed: index added AFTER the indirect memory read
+		indirectAddr := cpu.Read32(address)
+		indirectAddr += idxValue
+		switch iis {
+		case 6:
+			indirectAddr += uint32(int16(cpu.Fetch16()))
+		case 7:
+			indirectAddr += cpu.Fetch32()
+		}
+		return indirectAddr
+
+	default:
+		// Reserved (iis == 4)
+		return address + idxValue
+	}
 }
 func (cpu *M68KCPU) GetEACycles(mode, reg uint16) uint32 {
 	switch mode {
@@ -3662,6 +3587,16 @@ func (cpu *M68KCPU) ProcessException(vector uint8) {
 	oldSR := cpu.SR
 	oldPC := cpu.PC
 
+	// Pre-instruction exceptions (privilege violation, illegal instruction,
+	// Line A/F emulators) save the address of the faulting instruction, not
+	// the already-advanced PC. On 68020, the saved PC must point to the
+	// first word of the instruction so that trap handlers (e.g. AROS
+	// Exec/Supervisor) can identify the faulting instruction.
+	switch vector {
+	case M68K_VEC_ILLEGAL_INSTR, M68K_VEC_PRIVILEGE, M68K_VEC_LINE_A, M68K_VEC_LINE_F:
+		oldPC = cpu.lastExecPC
+	}
+
 	// RESET doesn't push state because stack may be corrupted
 	if vector == M68K_VEC_RESET {
 		cpu.SR = M68K_SR_S | M68K_SR_IPL
@@ -3705,11 +3640,25 @@ func (cpu *M68KCPU) ProcessException(vector uint8) {
 	cpu.cycleCounter += M68K_CYCLE_EXCEPTION
 	cpu.inException.Store(false)
 }
-func (cpu *M68KCPU) ProcessInterrupt(level uint8) {
+
+// ProcessInterrupt attempts to deliver an interrupt at the given level.
+// Returns true if the interrupt was actually delivered, false if blocked
+// by INTENA or IPL masking. Callers must only clear pending bits and set
+// interruptInService when this returns true — otherwise the interrupt
+// stays pending for delivery when conditions change.
+func (cpu *M68KCPU) ProcessInterrupt(level uint8) bool {
+	// Amiga INTENA master gate: when disabled, no interrupts are delivered.
+	// This prevents nested interrupts during AROS task switching.
+	// Return false so the caller leaves the pending bit set — matching
+	// real Amiga INTREQ behavior where pending bits survive INTENA masking.
+	if cpu.AmigaINTENA != nil && !cpu.AmigaINTENA.Load() {
+		return false
+	}
+
 	// Ignore if current interrupt mask is higher
 	currentIPL := uint8((cpu.SR & M68K_SR_IPL) >> M68K_SR_SHIFT)
 	if level <= currentIPL && level < M68K_VEC_LEVEL7-M68K_VEC_LEVEL1+1 {
-		return
+		return false
 	}
 
 	// Level 7 is non-maskable
@@ -3724,26 +3673,29 @@ func (cpu *M68KCPU) ProcessInterrupt(level uint8) {
 		// Process as exception using autovector
 		vector := M68K_VEC_LEVEL1 + level - 1
 
-		// Save PC and SR
+		// Enter supervisor mode before pushing the exception frame.
+		// On real 68020, S is set and T0/T1 cleared before the frame push.
+		// This must happen before pushExceptionFrame so that nested
+		// interrupts see S=1 and don't re-swap stacks (which would
+		// overwrite USP with SSP and load a stale SSP value).
 		if (cpu.SR & M68K_SR_S) == 0 {
 			cpu.swapStacksForMode(true)
 		}
+		cpu.SR |= M68K_SR_S
+		cpu.SR &= ^uint16(M68K_SR_T0 | M68K_SR_T1)
+
 		cpu.pushExceptionFrame(oldSR, cpu.PC, uint8(vector), M68K_FRAME_FMT_0)
 
 		// Get new PC from vector table
 		vecAddr := cpu.VBR + uint32(vector)*M68K_LONG_SIZE
 		cpu.PC = cpu.Read32(vecAddr)
 
-		// Set supervisor mode
-		cpu.SR |= M68K_SR_S
-
-		// Disable tracing during exception handling
-		cpu.SR &= ^uint16(M68K_SR_T0 | M68K_SR_T1)
-
 		// Interrupt entry is complete here; do not latch inException.
 		// Leaving it set blocks follow-on exceptions and causes deferral loops.
 		cpu.inException.Store(false)
+		return true
 	}
+	return false
 }
 func (cpu *M68KCPU) ProcessTerminalOutput(value uint32) {
 	// Extract the character to print (least significant byte)
@@ -10315,6 +10267,19 @@ func (cpu *M68KCPU) ExecRTE() {
 	remainingWords := words - 4
 	for range remainingWords {
 		cpu.Pop16()
+	}
+
+	// Clear interrupt in-service bit when returning from an autovector handler.
+	// The format word's low 12 bits contain the vector offset (vector * 4).
+	// Autovectors for levels 1-7 are vectors 25-31 (offsets 0x64-0x7C).
+	// Clear interrupt in-service bit when returning from an autovector handler.
+	// The format word's low 12 bits contain the vector offset (vector * 4).
+	// Autovectors for levels 1-7 are vectors 25-31 (offsets 0x64-0x7C).
+	vecOffset := formatWord & 0xFFF
+	vec := vecOffset >> 2
+	if vec >= M68K_VEC_LEVEL1 && vec <= M68K_VEC_LEVEL7 {
+		level := vec - M68K_VEC_LEVEL1 + 1
+		cpu.interruptInService &= ^(uint32(1) << level)
 	}
 
 	oldSupervisor := (cpu.SR & M68K_SR_S) != 0

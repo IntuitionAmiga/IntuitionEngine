@@ -33,7 +33,7 @@ Address Range       Size    Device              Constants File
 0xA0000-0xAFFFF     64KB    VGA VRAM Window     vga_constants.go
 0xB8000-0xBFFFF     32KB    VGA Text Buffer     vga_constants.go
 
-0xF0000-0xF0054     84B     Video Chip          video_chip.go
+0xF0000-0xF0487     1160B   Video Chip (+palette) video_chip.go
 0xF0700-0xF07FF     256B    Terminal/Serial     registers.go
 0xF0800-0xF0B3F     832B    Audio Chip          audio_chip.go
 0xF0BC0-0xF0BD7     24B     MOD Player          mod_constants.go
@@ -47,10 +47,12 @@ Address Range       Size    Device              Constants File
 0xF2100-0xF213F     64B     ANTIC (Atari 8-bit) antic_constants.go
 0xF2140-0xF21B7     120B    GTIA (Atari 8-bit)  antic_constants.go
 0xF2200-0xF221F     32B     File I/O            registers.go
+0xF2220-0xF225F     64B     AROS DOS Handler    aros_dos_constants.go
+0xF2260-0xF22AF     80B     AROS Audio DMA      aros_audio_constants.go
 0xF2300-0xF231F     32B     Media Loader        registers.go
 0xF2320-0xF233F     32B     Program Executor    registers.go
 0xF2340-0xF237F     64B     Coprocessor         coprocessor_constants.go
-0xF2380-0xF2383     4B      System Control      registers.go
+0xF2380-0xF239F     32B     Clipboard Bridge    clipboard_bridge_constants.go
 0xF4000-0xF43FF     1KB     Voodoo 3D Graphics  voodoo_constants.go
 
 0x100000-0x5FFFFF   5MB     Video RAM           video_chip.go (VRAM_START)
@@ -114,9 +116,6 @@ GTIA (0xF2140-0xF21B7) - antic_constants.go
 Coprocessor (0xF2340-0xF237F) - coprocessor_constants.go
   COPROC_CTRL, COPROC_STATUS, COPROC_PROGRAM_ADDR, COPROC_DATA_ADDR
 
-System Control (0xF2380-0xF2383) - registers.go
-  SYS_GC_TRIGGER (write-only, triggers garbage collection)
-
 Voodoo 3D Graphics (0xF4000-0xF43FF) - voodoo_constants.go
   VOODOO_STATUS, VOODOO_FB*, VOODOO_CLIP_*, VOODOO_TRI_*
   VOODOO_TEXTURE_*, VOODOO_FOG_*, VOODOO_ALPHA_*
@@ -154,9 +153,9 @@ const (
 	IO_REGION_BASE = 0xF0000 // Start of I/O mapped region
 	IO_REGION_END  = 0xFFFFF // End of I/O mapped region
 
-	// Video chip region
+	// Video chip region (includes palette registers at 0xF0078-0xF0487)
 	VIDEO_REGION_BASE = 0xF0000
-	VIDEO_REGION_END  = 0xF0057
+	VIDEO_REGION_END  = 0xF0487
 
 	// Terminal/Serial region
 	TERMINAL_REGION_BASE = 0xF0700
@@ -194,6 +193,14 @@ const (
 	FILE_IO_REGION_BASE = 0xF2200
 	FILE_IO_REGION_END  = 0xF221F
 
+	// AROS DOS handler MMIO region
+	AROS_DOS_REGION_BASE = 0xF2220
+	AROS_DOS_REGION_END  = 0xF225F
+
+	// AROS Audio DMA region (Paula-compatible DMA emulation)
+	AROS_AUD_REGION_BASE_REG = 0xF2260
+	AROS_AUD_REGION_END_REG  = 0xF22AF
+
 	// Unified media loader region
 	MEDIA_LOADER_REGION_BASE = 0xF2300
 	MEDIA_LOADER_REGION_END  = 0xF231F
@@ -214,10 +221,9 @@ const (
 	COPROC_REGION_BASE = 0xF2340
 	COPROC_REGION_END  = 0xF237F
 
-	// System control region
-	SYS_CTRL_REGION_BASE = 0xF2380
-	SYS_CTRL_REGION_END  = 0xF2383
-	SYS_GC_TRIGGER       = 0xF2380
+	// Clipboard bridge region (AROS host clipboard exchange)
+	CLIP_BRIDGE_REGION_BASE = 0xF2380
+	CLIP_BRIDGE_REGION_END  = 0xF239F
 
 	// Voodoo 3D graphics region
 	VOODOO_REGION_BASE = 0xF4000
@@ -279,6 +285,7 @@ const (
 	SCAN_CODE           = 0xF0740    // Raw keyboard scancode dequeue
 	SCAN_STATUS         = 0xF0744    // Bit 0=scancode available
 	SCAN_MODIFIERS      = 0xF0748    // Bit 0=shift,1=ctrl,2=alt,3=capslock
+	RTC_EPOCH           = 0xF0750    // Read: host UTC seconds since Unix epoch
 	TERM_SENTINEL       = 0xF07F0    // Write 0xDEAD to stop CPU (via OnSentinel callback)
 	TERMINAL_REGION_END = 0xF07FF    // Reserve 256 bytes for future expansion
 )
@@ -326,6 +333,8 @@ func GetIORegion(addr uint32) string {
 		return "ULA"
 	case addr >= FILE_IO_REGION_BASE && addr <= FILE_IO_REGION_END:
 		return "FileIO"
+	case addr >= AROS_AUD_REGION_BASE_REG && addr <= AROS_AUD_REGION_END_REG:
+		return "AROSAudioDMA"
 	case addr >= MEDIA_LOADER_REGION_BASE && addr <= MEDIA_LOADER_REGION_END:
 		return "MediaLoader"
 	case addr >= EXEC_REGION_BASE && addr <= EXEC_REGION_END:
@@ -336,8 +345,8 @@ func GetIORegion(addr uint32) string {
 		return "GTIA"
 	case addr >= COPROC_REGION_BASE && addr <= COPROC_REGION_END:
 		return "Coprocessor"
-	case addr >= SYS_CTRL_REGION_BASE && addr <= SYS_CTRL_REGION_END:
-		return "SystemControl"
+	case addr >= CLIP_BRIDGE_REGION_BASE && addr <= CLIP_BRIDGE_REGION_END:
+		return "ClipboardBridge"
 	case addr >= VOODOO_REGION_BASE && addr <= VOODOO_REGION_END:
 		return "Voodoo"
 	default:

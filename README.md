@@ -151,11 +151,9 @@
     - 12.9 Video Compositor
 13. [Developer's Guide](#13-developers-guide)
 14. [Implementation Details](#14-implementation-details)
-15. [EmuTOS Mode](#15-emutos-mode)
-    - 14.1 CPU Emulation
-    - 14.2 Memory Architecture
-    - 14.3 Audio System Architecture
 15. [Platform Support and Building](#15-platform-support-and-building)
+16. [EmuTOS Mode](#16-emutos-mode)
+17. [AROS Mode](#17-aros-mode)
 
 # 1. System Overview
 
@@ -239,9 +237,35 @@ Default core: **IE64**. Additional cores: **IE32, M68K, x86, Z80, 6502**.
 
 # Play SID music
 ./bin/IntuitionEngine -sid music.sid
+./bin/IntuitionEngine -sid-pal music.sid    # Force PAL timing
+./bin/IntuitionEngine -sid-ntsc music.sid   # Force NTSC timing
+
+# Play POKEY/SAP music (Atari 8-bit)
+./bin/IntuitionEngine -pokey music.sap
+
+# Play TED music (Commodore Plus/4)
+./bin/IntuitionEngine -ted music.prg
+
+# Play AHX music (Amiga tracker)
+./bin/IntuitionEngine -ahx module.ahx
+
+# Play WAV audio
+./bin/IntuitionEngine -wav audio.wav
 
 # Play ProTracker MOD music
 ./bin/IntuitionEngine -mod music.mod
+
+# Enhanced audio modes (4x oversampling, filtering, drive, ambience)
+./bin/IntuitionEngine -psg+ music.ym
+./bin/IntuitionEngine -sid+ music.sid
+./bin/IntuitionEngine -pokey+ music.sap
+./bin/IntuitionEngine -ahx+ module.ahx
+
+# Boot EmuTOS (GEM desktop)
+./bin/IntuitionEngine -emutos
+
+# Boot AROS (Amiga Workbench)
+./bin/IntuitionEngine -aros
 
 # Run a Lua automation script alongside a program
 ./bin/IntuitionEngine -ie64 program.ie64 -script demo.ies
@@ -280,7 +304,8 @@ CPU modes that execute binaries (`-ie32`, `-ie64`, `-m68k`, `-m6502`, `-z80`, `-
 
 Opening an `*.ie*` file while Intuition Engine is already running sends the file to the running instance via Unix domain socket IPC. The running instance performs a full hardware reset and loads the new binary. If the file uses a different CPU architecture (e.g., opening a `.ie80` Z80 binary while an IE32 program is running), the CPU mode switches automatically.
 
-Supported extensions: `.ie32`/`.iex` (IE32), `.ie64` (IE64), `.ie65` (6502), `.ie68` (M68K), `.ie80` (Z80), `.ie86` (X86), `.ies` (IEScript Lua automation).
+Supported extensions: `.ie32`/`.iex` (IE32), `.ie64` (IE64), `.ie65` (6502), `.ie68` (M68K), `.ie80` (Z80), `.ie86` (X86), `.tos`/`.img` (EmuTOS), `.ies` (IEScript Lua automation).
+AROS boot is selected via CLI mode (`-aros`, optional `-aros-image`), not by file extension.
 
 ## 1.6 Desktop Integration
 
@@ -433,7 +458,8 @@ The system's memory layout is designed to provide efficient access to both progr
 0x0F0700 - 0x0F072F: Terminal/Serial output
 0x0F0730 - 0x0F073C: Mouse registers (X, Y, Buttons, Status)
 0x0F0740 - 0x0F0748: Scancode registers (Code, Status, Modifiers)
-0x0F0800 - 0x0F080C: Timer registers
+0x0F0750:            RTC_EPOCH (host UTC seconds since Unix epoch)
+0x0F0800 - 0x0F080C: Legacy timer alias window (deprecated, no stable MMIO control ABI)
 0x0F0820 - 0x0F0834: Filter registers
 0x0F0900 - 0x0F0A6F: Legacy synth registers (square/triangle/sine/noise/saw)
 0x0F0A80 - 0x0F0B7F: Flexible 4-channel synth registers (preferred)
@@ -458,6 +484,8 @@ The system's memory layout is designed to provide efficient access to both progr
 0x0A0000 - 0x0AFFFF: VGA VRAM window (Mode 13h/12h)
 0x0B8000 - 0x0BFFFF: VGA text buffer
 0x100000 - 0x5FFFFF: Video RAM (VRAM_START to VRAM_START + VRAM_SIZE)
+0x800000 - 0x1DFFFFF: AROS Fast Memory (22MB, AROS mode only)
+0x1E00000 - 0x1FFFFFF: AROS Video RAM (2MB, AROS mode only)
 0x200000 - 0x27FFFF: Coprocessor worker region (IE32, 512KB)
 0x280000 - 0x2FFFFF: Coprocessor worker region (M68K, 512KB)
 0x300000 - 0x30FFFF: Coprocessor worker region (6502, 64KB)
@@ -552,16 +580,12 @@ Example (mid-frame mode switch):
     .long (3 << 30)                            ; END
 ```
 
-## 3.4 Timer Registers (0x0F0800 - 0x0F080C)
+## 3.4 CPU Timer State (Internal)
 
-```
-0x0F0800: TIMER_CTRL   - Timer control (0 = disabled, 1 = enabled)
-0x0F0804: TIMER_COUNT  - Current timer value (decrements automatically)
-0x0F0808: TIMER_PERIOD - Timer reload value
-0x0F080C: TIMER_STATUS - Timer status (read-only)
-```
+IE32 and IE64 use CPU-internal countdown timers managed by atomic fields on their CPU structs.
+The timer decrements once per `SAMPLE_RATE` instructions, can raise interrupts on expiry, and auto-reloads from its period when enabled.
 
-The timer generates an interrupt when TIMER_COUNT reaches zero and automatically reloads from TIMER_PERIOD.
+Legacy timer symbols in some include files are retained for compatibility but are deprecated; there is no stable public MMIO timer control ABI in current runtime.
 
 ## 3.5 Sound Registers
 
@@ -2488,16 +2512,7 @@ The system implements a simple but effective interrupt system:
     - Interrupts are disabled until RTI
 
 4. **Timer Interrupts**
-   The system timer can generate periodic interrupts:
-
-```assembly
-; Configure timer interrupt
-LOAD A, #44100     ; Set period (1 second at 44.1kHz)
-STORE A, @0xF0808  ; Write to TIMER_PERIOD
-LOAD A, #1
-STORE A, @0xF0800  ; Enable timer
-SEI                ; Enable interrupts
-```
+   IE32/IE64 can generate periodic interrupts from their internal countdown timer. Programs should initialise the IRQ vector and enable interrupts with `SEI`.
 
 ## 4.8 Compatibility Notes
 
@@ -2612,7 +2627,7 @@ The loader seeds these vectors for raw binaries; custom binaries may overwrite t
 - Cycle-accurate instruction timing
 - Use Klaus tests to validate D-flag behavior
 - Use `-m6502` flag to run 6502 binaries
-- `--load-addr` sets the load address (default 0x0600)
+- `--load-addr` sets the load address (default 0x0600 for raw binaries, 0x0800 for `.ie65` files)
 - `--entry` sets the entry address (defaults to load address)
 
 # 6. Zilog Z80 CPU
@@ -3095,8 +3110,7 @@ IRET      ; Return from interrupt
 - Use `-x86` flag to run x86 binaries
 - File extension: `.ie86`
 - Use NASM or FASM for assembly with `ie86.inc` include file
-- `--load-addr` sets the load address (default 0x00000000)
-- `--entry` sets the entry point (defaults to load address)
+- Programs always load at address 0x00000000 and begin execution there
 
 **Memory Model:**
 
@@ -3412,23 +3426,19 @@ Every assembly program follows this basic structure:
 
 ```assembly
 ; Program header with description
-; Example: Simple counter program
-.equ TIMER_CTRL, 0xF0800    ; Define hardware constants
-.equ TIMER_PERIOD, 0xF0808  ; using symbolic names
+; Example: Simple colour toggle program
+.equ VIDEO_MODE, 0xF0004    ; Define hardware constants
 
 start:                     ; Main entry point
-    LOAD A, #0             ; Initialise counter
-    JSR setup_timer        ; Call timer setup
+    LOAD A, #0             ; Initialise mode index
+    JSR set_video_mode
 main_loop:
-    JSR check_timer        ; Check timer status
+    JSR update_mode        ; Update mode state
     JMP main_loop          ; Continue main loop
 
 ; Subroutines follow main program
-setup_timer:
-    LOAD A, #44100         ; ~1Hz timer period
-    STORE A, @TIMER_PERIOD
-    LOAD A, #1
-    STORE A, @TIMER_CTRL
+set_video_mode:
+    STORE A, @VIDEO_MODE
     RTS
 ```
 
@@ -3505,8 +3515,7 @@ isr_handler:
     PUSH A              ; Save registers
     PUSH X
 
-    LOAD A, @TIMER_COUNT
-    JSR process_timer  ; Handle timer event
+    JSR process_irq_event
 
     POP X              ; Restore registers
     POP A
@@ -5607,7 +5616,7 @@ The `sdk/` directory contains a curated developer package with example programs,
 - [docs/platform-compatibility.md](sdk/docs/platform-compatibility.md) - Platform support details
 - [docs/release-process.md](sdk/docs/release-process.md) - Release packaging
 
-# 15. EmuTOS Mode
+# 16. EmuTOS Mode
 
 Intuition Engine runs [EmuTOS](https://emutos.sourceforge.io/) directly on the IE M68K core, providing a complete GEM desktop environment with file browser, mouse/keyboard input, and host filesystem access.
 
@@ -5664,3 +5673,47 @@ make emutos-rom         # Build EmuTOS ROM from source (auto-clones if needed)
 ```
 
 See [sdk/docs/ie_emutos.md](sdk/docs/ie_emutos.md) for the full hardware map, build instructions, and GEM programming guide.
+
+# 17. AROS Mode
+
+Intuition Engine runs [AROS](https://aros.sourceforge.io/) (Amiga Research Operating System) on the IE M68K core, providing a full Amiga Workbench desktop with Shell, file management, and host filesystem access.
+
+```bash
+# Boot AROS (embedded ROM, requires 'make aros' build)
+./bin/IntuitionEngine -aros
+
+# Boot from external ROM image
+./bin/IntuitionEngine -aros-image aros.img
+
+# Map a host directory as the IE: volume
+./bin/IntuitionEngine -aros -aros-drive /path/to/files
+```
+
+### AROS Memory Layout
+
+| Region | Range | Size |
+|--------|-------|------|
+| Chip RAM A | `0x000000-0x09DFFF` | 630KB |
+| Chip RAM B | `0x200000-0x6FFFFF` | 5MB |
+| ROM | `0x600000-0x7FFFFF` | 2MB |
+| Fast RAM | `0x800000-0x1DFFFFF` | 22MB |
+| VRAM | `0x1E00000-0x1FFFFFF` | 2MB |
+
+Total: 27.6MB (5.6MB chip + 22MB fast memory).
+
+### What Works
+
+- Full Workbench desktop with 12+ tasks and graphical file browser
+- Shell commands (Path, Dir, List, Copy, MakeDir, Delete, Rename, etc.)
+- DOS handler: host filesystem bridge as IE: volume via MMIO at 0xF2220
+- Multi-resolution display: 640x480, 800x600, 1024x768, 1280x960 (CLUT8/RGBA32)
+- Amiga rawkey scancode input, software cursor overlay
+- battclock.resource via RTC_EPOCH MMIO register (0xF0750)
+- Paula-compatible 4-channel audio DMA
+
+### Build Targets
+
+```bash
+make aros-rom           # Build AROS ROM + filesystem from source
+make aros               # Build VM with embedded AROS ROM
+```

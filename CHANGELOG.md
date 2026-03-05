@@ -5,6 +5,13 @@ All notable changes to Intuition Engine are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `AROS` command at the BASIC prompt to boot AROS (mirrors existing `EMUTOS` command)
+- `EXEC_OP_AROS` (3) ProgramExecutor opcode and `EXEC_TYPE_AROS` (9) type constant
+- `cpu.load("AROS")` support in IE Script Engine
+
 ## [1.0.0] - 2026-02-15
 
 ### Added
@@ -12,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### CPU Cores
 - **IE64** (64-bit RISC): 32 registers, native FP32 FPU, compare-and-branch architecture, no flags register. Default core.
 - **IE32** (32-bit RISC): 16 registers, fixed 8-byte instructions.
-- **M68020** (Motorola 68020): 95%+ instruction coverage with 68881/68882 FPU support.
+- **M68020** (Motorola 68020): 95%+ instruction coverage with 68881/68882 FPU support. Interrupt delivery fix: `ProcessInterrupt` returns bool, INTREQ-style pending register for level-based interrupts.
 - **Z80** (Zilog): Full instruction set with interrupt modes 0/1/2.
 - **6502** (MOS): NMOS instruction set with zero page optimisation.
 - **x86** (Intel 32-bit): 8086 instructions with 32-bit registers, flat memory model, x87 FPU (387 scope).
@@ -29,6 +36,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - DMA blitter with copy, fill, line draw, and Mode7 (SNES-style rotation/scaling).
 - Video compositor for multi-chip overlay rendering.
 - Dirty rectangle tracking for efficient updates.
+- Software cursor overlay with `SoftwareCursorDisabler` interface for composited mouse pointer.
+- Multi-resolution IEGfx HIDD for AROS: 640x480, 800x600, 1024x768, 1280x960 in CLUT8 and RGBA32.
 
 #### Audio System
 - **IESoundChip**: 9-channel custom synthesiser (5 dedicated + 4 flexible waveform channels).
@@ -42,6 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **AHX** (Amiga): Tracker-based module playback.
 - **WAV**: PCM audio playback via SoundChip FLEX DAC mode.
 - **MOD** (ProTracker): 4-channel .mod file playback via SoundChip FLEX DAC mode with Amiga A500/A1200 filter emulation. MMIO registers at `$F0BC0-$F0BD7`, `-mod` CLI flag, MediaLoader auto-detection, and EhBASIC `SOUND MOD` commands.
+- **AROS Audio DMA**: Paula-compatible 4-channel DMA audio routed through SoundChip FLEX DAC channels.
 - **SN76489** support via VGM command `0x50` with clock-accurate frequency scaling to AY registers and dynamic noise-tracks-tone2.
 - PLUS enhanced modes for PSG, SID, POKEY, TED, and AHX with logarithmic volume curves.
 
@@ -79,6 +89,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Build System
 - Build profiles: `full` (default), `novulkan` (software Voodoo), `headless` (CI/testing), `headless-novulkan` (CGO_ENABLED=0 portable).
+- `make aros-rom` target for building AROS ROM and filesystem from source.
 - Version metadata injection via ldflags (`-version` flag).
 - Feature introspection (`-features` flag).
 - Desktop entry and MIME type integration for `.ie*` files.
@@ -108,6 +119,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - F10 hard reset with full runtime state rebuild.
 - Ebiten runtime status bar with live CPU/chip state (F12 toggle).
 - Multi-resolution support, fullscreen mode, and display scaling.
+
+#### AROS Support
+- AROS boot with full Workbench desktop (12 tasks, 27.6MB RAM: 5.6MB chip + 22MB fast).
+- DOS handler: MMIO filesystem bridge at 0xF2220, host directory as IE: volume (lock/unlock/examine/read/write/seek/delete/rename/createdir/setfilesize/samelock).
+- battclock.resource via RTC_EPOCH MMIO register (0xF0750) providing host UTC seconds.
+- Amiga rawkey scancode mode for keyboard input.
+- Memory layout: 5.6MB chip + 22MB fast, VRAM at 0x1E00000 (2MB).
+- Full workbench build system (`make aros-rom`) producing ROM + filesystem with 48 libs, 35 Zune classes, 115 C commands, 90 datatypes.
+- IEScript test harnesses: `aros_boot_test.ies`, `aros_path_test.ies`.
 
 #### Documentation
 - Complete technical reference in README.md (6 CPUs, memory map, hardware registers, sound system, video system).

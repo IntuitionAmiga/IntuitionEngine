@@ -2334,7 +2334,7 @@
 ; - FLASH attribute: swaps INK/PAPER at ~1.6Hz
 ;
 ; For Z80: ULA is accessed via port I/O at port 0xFE (authentic Spectrum)
-; Writing to port 0xFE: bits 0-2 = border color, bit 3 = MIC, bit 4 = EAR
+; Current runtime behavior: bits 0-2 set border color; bits 3-4 are ignored.
 ; VRAM is at 0x4000 (same as authentic ZX Spectrum)
 ;
 ; Non-linear bitmap addressing formula:
