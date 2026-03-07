@@ -3,7 +3,7 @@
 
 run_fpu_arith_shard:
                 lea     ct_shard_name_fpu_arith(pc),a0
-                bsr     ct_enter_shard
+                jsr     ct_enter_shard
                 bsr     case_fpu_arith_fmul
                 bsr     case_fpu_arith_fdiv
                 bsr     case_fpu_arith_fsqrt
@@ -35,13 +35,14 @@ case_fpu_arith_fmul:
                 bne.s   .fail
                 cmpi.l  #$00000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FMUL FP2,FP0",0
 .input:
@@ -70,13 +71,14 @@ case_fpu_arith_fdiv:
                 bne.s   .fail
                 cmpi.l  #$00000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FDIV FP3,FP0",0
 .input:
@@ -104,13 +106,14 @@ case_fpu_arith_fsqrt:
                 bne.s   .fail
                 cmpi.l  #$00000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FSQRT FP0",0
 .input:
@@ -137,13 +140,14 @@ case_fpu_arith_fsub:
                 bne.s   .fail
                 cmpi.l  #$00000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FSUB FP1,FP0",0
 .input:
@@ -172,13 +176,14 @@ case_fpu_arith_fmod:
                 bne.s   .fail
                 cmpi.l  #$00000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FMOD FP1,FP0",0
 .input:
@@ -207,13 +212,14 @@ case_fpu_arith_frem:
                 bne.s   .fail
                 cmpi.l  #$00000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FREM FP1,FP0",0
 .input:
@@ -242,13 +248,14 @@ case_fpu_arith_fscale:
                 bne.s   .fail
                 cmpi.l  #$00000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FSCALE FP1,FP0",0
 .input:
@@ -277,13 +284,14 @@ case_fpu_arith_fsgldiv:
                 bne.s   .fail
                 cmpi.l  #$00000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FSGLDIV FP1,FP0",0
 .input:
@@ -312,13 +320,14 @@ case_fpu_arith_fsglmul:
                 bne.s   .fail
                 cmpi.l  #$00000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FSGLMUL FP1,FP0",0
 .input:

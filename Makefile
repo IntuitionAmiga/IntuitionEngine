@@ -645,6 +645,18 @@ gen-65-data: setup
 	@$(GO) build $(GO_FLAGS) -o $(BIN_DIR)/gen_65_data ./tools/gen_65_data
 	@echo "IE65 data generator build complete"
 
+# Generate and assemble bare-metal M68K CPU test suite (flat binary for Go tests)
+.PHONY: cputest-bin
+cputest-bin:
+	@echo "Generating M68K CPU test cases..."
+	@$(GO) run ./cmd/gen_m68k_cputest
+	@echo "Assembling bare-metal CPU test suite..."
+	@vasmm68k_mot -Fbin -m68020 -m68881 -devpac \
+		-I sdk/cputest/include \
+		-o sdk/cputest/cputest_suite.bin \
+		sdk/cputest/cputest_suite_bare.asm
+	@echo "Bare-metal CPU test binary: sdk/cputest/cputest_suite.bin"
+
 # Assemble an IE65 (6502) program using ca65/ld65
 # Usage: make ie65asm SRC=assembler/robocop_intro_65.asm
 ie65asm:
@@ -1145,6 +1157,7 @@ help:
 	@echo "IE65 (6502) targets:"
 	@echo "  gen-65-data    - Build the IE65 data generator tool"
 	@echo "  ie65asm        - Assemble an IE65 program (SRC=file.asm)"
+	@echo "  cputest-bin    - Generate and assemble bare-metal M68K CPU test binary"
 	@echo ""
 	@echo "IE80 (Z80) targets:"
 	@echo "  ie80asm        - Assemble an IE80 program (SRC=file.asm)"

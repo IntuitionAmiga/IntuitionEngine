@@ -2448,6 +2448,7 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 				}
 
 			}
+
 		}
 
 		// Performance monitoring

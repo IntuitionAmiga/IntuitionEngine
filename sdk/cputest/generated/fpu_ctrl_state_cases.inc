@@ -3,7 +3,7 @@
 
 run_fpu_ctrl_state_shard:
                 lea     ct_shard_name_fpu_ctrl_state(pc),a0
-                bsr     ct_enter_shard
+                jsr     ct_enter_shard
                 bsr     case_fpu_ctrl_fint_rn_3_5
                 bsr     case_fpu_ctrl_fint_rz_3_5
                 bsr     case_fpu_ctrl_fint_rp_3_5
@@ -42,13 +42,14 @@ case_fpu_ctrl_fint_rn_3_5:
                 bne.s   .fail
                 cmpi.l  #$00000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FINT 3.5 RN->4.0",0
 .input:
@@ -76,13 +77,14 @@ case_fpu_ctrl_fint_rz_3_5:
                 bne.s   .fail
                 cmpi.l  #$00000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FINT 3.5 RZ->3.0",0
 .input:
@@ -110,13 +112,14 @@ case_fpu_ctrl_fint_rp_3_5:
                 bne.s   .fail
                 cmpi.l  #$00000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FINT 3.5 RP->4.0",0
 .input:
@@ -144,13 +147,14 @@ case_fpu_ctrl_fint_rm_3_5:
                 bne.s   .fail
                 cmpi.l  #$00000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FINT 3.5 RM->3.0",0
 .input:
@@ -178,13 +182,14 @@ case_fpu_ctrl_fint_rn_neg2_5:
                 bne.s   .fail
                 cmpi.l  #$08000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FINT -2.5 RN->-2.0",0
 .input:
@@ -212,13 +217,14 @@ case_fpu_ctrl_fint_rz_neg2_5:
                 bne.s   .fail
                 cmpi.l  #$08000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FINT -2.5 RZ->-2.0",0
 .input:
@@ -246,13 +252,14 @@ case_fpu_ctrl_fint_rp_neg2_5:
                 bne.s   .fail
                 cmpi.l  #$08000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FINT -2.5 RP->-2.0",0
 .input:
@@ -280,13 +287,14 @@ case_fpu_ctrl_fint_rm_neg2_5:
                 bne.s   .fail
                 cmpi.l  #$08000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FINT -2.5 RM->-3.0",0
 .input:
@@ -309,13 +317,14 @@ case_fpu_ctrl_fpcr_roundtrip:
                 bne.s   .fail
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "FPCR round-trip",0
 .input:
@@ -336,13 +345,14 @@ case_fpu_ctrl_fpsr_roundtrip:
                 bne.s   .fail
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "FPSR round-trip",0
 .input:
@@ -362,13 +372,14 @@ case_fpu_ctrl_fpiar_roundtrip:
                 bne.s   .fail
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "FPIAR round-trip",0
 .input:
@@ -385,13 +396,14 @@ case_fpu_ctrl_fcmp_gt:
                 andi.l  #$0C000000,d0
                 cmpi.l  #$00000000,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "FCMP 42>10 FPSR N=0,Z=0",0
 .input:
@@ -412,13 +424,14 @@ case_fpu_ctrl_fcmp_lt:
                 andi.l  #$08000000,d0
                 cmpi.l  #$08000000,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "FCMP 10<42 FPSR N=1",0
 .input:
@@ -439,13 +452,14 @@ case_fpu_ctrl_fcmp_eq:
                 andi.l  #$04000000,d0
                 cmpi.l  #$04000000,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "FCMP 42==42 FPSR Z=1",0
 .input:
@@ -464,13 +478,14 @@ case_fpu_ctrl_fcmp_nan:
                 andi.l  #$01000000,d0
                 cmpi.l  #$01000000,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "FCMP NaN FPSR NaN=1",0
 .input:

@@ -1,18 +1,13 @@
 # M68K CPU Test Suite
 
-This directory contains the portable AmigaOS-compatible 68020/FPU CPU test harness described in the project plan.
-
-Current state:
-
-- The runtime harness is real assembly and writes failure-only reports to `RAM:cputest`.
-- Test shards are generated from a Go catalog so the repetitive instruction matrix can scale without making the Amiga-side source host-dependent.
-- The initial catalog is representative rather than exhaustive. It establishes the build, runtime, sharding, and reporting pipeline that future catalog expansion will reuse.
+Bare-metal 68020/FPU CPU validation suite. Test cases are generated from a Go catalog, assembled with vasm into a flat binary, and executed directly on the Go M68K emulator via `go test`.
 
 Layout:
 
-- `include/`: common runtime and generated shard manifest.
+- `include/cputest_runtime_bare.inc`: bare-metal runtime (memory-mapped result reporting).
+- `include/cputest_manifest.inc`: generated shard table and expected total.
 - `generated/`: emitted case bodies from `cmd/gen_m68k_cputest`.
-- `cputest_*.asm`: suite and shard entrypoints that can be assembled independently.
+- `cputest_suite_bare.asm`: top-level assembly (includes runtime + manifest + all shards).
 
 Generate the case includes:
 
@@ -20,10 +15,16 @@ Generate the case includes:
 go run ./cmd/gen_m68k_cputest
 ```
 
-Build the suite and shards:
+Build the binary:
 
 ```bash
-./sdk/scripts/build-cputest.sh
+make cputest-bin
 ```
 
-The emitted sources remain plain Motorola syntax and can be reassembled on an Amiga with a suitable `vasmm68k_mot` setup. For FPU-enabled binaries, the build uses `-m68881`.
+Run the tests:
+
+```bash
+go test -tags "headless m68k_test" -v -run TestM68KCPUTestSuite
+```
+
+Each of the 437 cases appears as a named subtest. Failures include case name, input description, expected values, and actual values read from the binary's embedded strings.

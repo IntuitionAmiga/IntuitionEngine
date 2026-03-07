@@ -3,7 +3,7 @@
 
 run_core_shift_bit_shard:
                 lea     ct_shard_name_core_shift_bit(pc),a0
-                bsr     ct_enter_shard
+                jsr     ct_enter_shard
                 bsr     case_core_shift_bit_asl
                 bsr     case_core_shift_bit_lsr
                 bsr     case_core_shift_bit_rol
@@ -31,13 +31,14 @@ case_core_shift_bit_asl:
                 bne.s   .fail
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "ASL.L #1,D0",0
 .input:
@@ -58,13 +59,14 @@ case_core_shift_bit_lsr:
                 bne.s   .fail
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "LSR.L #1,D0",0
 .input:
@@ -85,13 +87,14 @@ case_core_shift_bit_rol:
                 bne.s   .fail
                 cmpi.w  #$0001,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "ROL.L #1,D0",0
 .input:
@@ -112,13 +115,14 @@ case_core_shift_bit_btst:
                 bne.s   .fail
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BTST #0,D0",0
 .input:
@@ -139,13 +143,14 @@ case_core_shift_bit_bset:
                 bne.s   .fail
                 cmpi.w  #$0004,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BSET #0,D0",0
 .input:
@@ -166,13 +171,14 @@ case_core_shift_bit_bchg_imm:
                 bne.s   .fail
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BCHG #0,D0",0
 .input:
@@ -193,13 +199,14 @@ case_core_shift_bit_bclr_imm:
                 bne.s   .fail
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BCLR #0,D0",0
 .input:
@@ -220,13 +227,14 @@ case_core_shift_bit_bchg_reg:
                 bne.s   .fail
                 cmpi.w  #$0004,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BCHG D1,D0",0
 .input:
@@ -248,13 +256,14 @@ case_core_shift_bit_bclr_reg:
                 bne.s   .fail
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BCLR D1,D0",0
 .input:

@@ -163,7 +163,7 @@ func shardSupervisorCtrl() shard {
 		ActualMode: "exception", ExpectTrap: true, TrapVector: 8,
 		Setup: []string{
 			"moveq   #8,d0",
-			"bsr     ct_install_trap_handler",
+			"jsr     ct_install_trap_handler",
 			// Set resume address so handler skips past the faulting MOVEC
 			"lea     .priv_resume(pc),a0",
 			"move.l  a0,ct_trap_resume",
@@ -189,7 +189,7 @@ func shardSupervisorCtrl() shard {
 		ActualMode: "exception", ExpectTrap: true, TrapVector: 8,
 		Setup: []string{
 			"moveq   #8,d0",
-			"bsr     ct_install_trap_handler",
+			"jsr     ct_install_trap_handler",
 			"lea     .sr_priv_resume(pc),a0",
 			"move.l  a0,ct_trap_resume",
 			"move.w  #$0000,-(sp)",
@@ -199,7 +199,7 @@ func shardSupervisorCtrl() shard {
 		Body: []string{
 			"rte",
 			".sr_priv_user:",
-			"move.w  #$2000,sr",   // attempt to set S bit — privilege violation
+			"move.w  #$2000,sr", // attempt to set S bit — privilege violation
 			".sr_priv_resume:",
 		},
 	})

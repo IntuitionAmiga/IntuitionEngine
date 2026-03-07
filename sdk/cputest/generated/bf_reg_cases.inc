@@ -3,7 +3,7 @@
 
 run_bf_reg_shard:
                 lea     ct_shard_name_bf_reg(pc),a0
-                bsr     ct_enter_shard
+                jsr     ct_enter_shard
                 bsr     case_bf_reg_bftst_0_8_ff
                 bsr     case_bf_reg_bftst_0_32_zero
                 bsr     case_bf_reg_bftst_24_8_ff
@@ -47,13 +47,14 @@ case_bf_reg_bftst_0_8_ff:
                 andi.w  #$000C,d1
                 cmpi.w  #$0008,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BFTST D0{0:8}",0
 .input:
@@ -71,13 +72,14 @@ case_bf_reg_bftst_0_32_zero:
                 andi.w  #$000C,d1
                 cmpi.w  #$0004,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BFTST D0{0:32}",0
 .input:
@@ -95,13 +97,14 @@ case_bf_reg_bftst_24_8_ff:
                 andi.w  #$000C,d1
                 cmpi.w  #$0008,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BFTST D0{24:8}",0
 .input:
@@ -119,13 +122,14 @@ case_bf_reg_bftst_8_16_ffff:
                 andi.w  #$000C,d1
                 cmpi.w  #$0008,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BFTST D0{8:16}",0
 .input:
@@ -147,13 +151,14 @@ case_bf_reg_bfextu_0_8:
                 bne.s   .fail
                 cmpi.w  #$0008,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BFEXTU D0{0:8},D1",0
 .input:
@@ -175,13 +180,14 @@ case_bf_reg_bfextu_16_16:
                 bne.s   .fail
                 cmpi.w  #$0008,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BFEXTU D0{16:16},D1",0
 .input:
@@ -203,13 +209,14 @@ case_bf_reg_bfextu_0_32:
                 bne.s   .fail
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BFEXTU D0{0:32},D1",0
 .input:
@@ -231,13 +238,14 @@ case_bf_reg_bfextu_0_1:
                 bne.s   .fail
                 cmpi.w  #$0008,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BFEXTU D0{0:1},D1",0
 .input:
@@ -259,13 +267,14 @@ case_bf_reg_bfexts_0_8_neg:
                 bne.s   .fail
                 cmpi.w  #$0008,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BFEXTS D0{0:8},D1",0
 .input:
@@ -287,13 +296,14 @@ case_bf_reg_bfexts_0_8_pos:
                 bne.s   .fail
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BFEXTS D0{0:8},D1",0
 .input:
@@ -315,13 +325,14 @@ case_bf_reg_bfexts_16_8:
                 bne.s   .fail
                 cmpi.w  #$0008,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BFEXTS D0{16:8},D1",0
 .input:
@@ -342,13 +353,14 @@ case_bf_reg_bfset_8_8:
                 bne.s   .fail
                 cmpi.w  #$0004,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BFSET D0{8:8}",0
 .input:
@@ -369,13 +381,14 @@ case_bf_reg_bfset_0_32:
                 bne.s   .fail
                 cmpi.w  #$0004,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BFSET D0{0:32}",0
 .input:
@@ -396,13 +409,14 @@ case_bf_reg_bfchg_0_32:
                 bne.s   .fail
                 cmpi.w  #$0008,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BFCHG D0{0:32}",0
 .input:
@@ -423,13 +437,14 @@ case_bf_reg_bfchg_0_8:
                 bne.s   .fail
                 cmpi.w  #$0008,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BFCHG D0{0:8}",0
 .input:
@@ -450,13 +465,14 @@ case_bf_reg_bfclr_0_8:
                 bne.s   .fail
                 cmpi.w  #$0008,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BFCLR D0{0:8}",0
 .input:
@@ -477,13 +493,14 @@ case_bf_reg_bfclr_16_16:
                 bne.s   .fail
                 cmpi.w  #$0008,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BFCLR D0{16:16}",0
 .input:
@@ -505,13 +522,14 @@ case_bf_reg_bfffo_zero:
                 bne.s   .fail
                 cmpi.w  #$0004,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BFFFO D0{0:32},D1 all-zero",0
 .input:
@@ -533,13 +551,14 @@ case_bf_reg_bfffo_allones:
                 bne.s   .fail
                 cmpi.w  #$0008,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BFFFO D0{0:32},D1 all-ones",0
 .input:
@@ -561,13 +580,14 @@ case_bf_reg_bfffo_mid:
                 bne.s   .fail
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BFFFO D0{0:32},D1 bit 16",0
 .input:
@@ -589,13 +609,14 @@ case_bf_reg_bfffo_offset8:
                 bne.s   .fail
                 cmpi.w  #$0008,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BFFFO D0{8:16},D1",0
 .input:
@@ -617,13 +638,14 @@ case_bf_reg_bfins_0_32:
                 bne.s   .fail
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BFINS D1,D0{0:32}",0
 .input:
@@ -645,13 +667,14 @@ case_bf_reg_bfins_0_8:
                 bne.s   .fail
                 cmpi.w  #$0008,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BFINS D1,D0{0:8}",0
 .input:
@@ -673,13 +696,14 @@ case_bf_reg_bfins_16_8:
                 bne.s   .fail
                 cmpi.w  #$0008,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BFINS D1,D0{16:8}",0
 .input:
@@ -703,13 +727,14 @@ case_bf_reg_bfextu_dyn:
                 bne.s   .fail
                 cmpi.w  #$0008,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BFEXTU D0{D2:D3},D1",0
 .input:
@@ -732,13 +757,14 @@ case_bf_reg_bfextu_dyn_offset_mask:
                 bne.s   .fail
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BFEXTU D0{D2:8},D1 upper bits",0
 .input:
@@ -761,13 +787,14 @@ case_bf_reg_bfextu_dyn_offset_wrap:
                 bne.s   .fail
                 cmpi.w  #$0008,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BFEXTU D0{D2:8},D1 wrap",0
 .input:
@@ -790,13 +817,14 @@ case_bf_reg_bfextu_dyn_width_zero:
                 bne.s   .fail
                 cmpi.w  #$0008,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "BFEXTU D0{0:D3},D1 width=0(32)",0
 .input:

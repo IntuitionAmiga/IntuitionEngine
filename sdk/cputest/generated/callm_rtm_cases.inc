@@ -3,7 +3,7 @@
 
 run_callm_rtm_shard:
                 lea     ct_shard_name_callm_rtm(pc),a0
-                bsr     ct_enter_shard
+                jsr     ct_enter_shard
                 bsr     case_callm_rtm_rtm_d0
                 bsr     case_callm_rtm_rtm_a0
                 bsr     case_callm_rtm_callm_a0
@@ -18,24 +18,27 @@ ct_shard_name_callm_rtm:
 
 case_callm_rtm_rtm_d0:
                 moveq   #11,d0
-                bsr     ct_install_trap_handler
+                jsr     ct_install_trap_handler
                 lea     .rtm_d0_resume(pc),a1
                 move.l  a1,ct_trap_resume
                 dc.w    $06C0
                 .rtm_d0_resume:
-                bsr     ct_restore_trap_handler
-                bsr     ct_check_trap_taken
+                jsr     ct_restore_trap_handler
+                jsr     ct_check_trap_taken
                 tst.l   d0
                 beq.s   .fail
                 cmpi.l  #11,ct_trap_vector
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                move.l  ct_trap_taken,d0
+                move.l  ct_trap_vector,d1
+                jsr     ct_fail_exception
 .name:
                 dc.b    "RTM D0 (020)",0
 .input:
@@ -46,24 +49,27 @@ case_callm_rtm_rtm_d0:
 
 case_callm_rtm_rtm_a0:
                 moveq   #11,d0
-                bsr     ct_install_trap_handler
+                jsr     ct_install_trap_handler
                 lea     .rtm_a0_resume(pc),a1
                 move.l  a1,ct_trap_resume
                 dc.w    $06C8
                 .rtm_a0_resume:
-                bsr     ct_restore_trap_handler
-                bsr     ct_check_trap_taken
+                jsr     ct_restore_trap_handler
+                jsr     ct_check_trap_taken
                 tst.l   d0
                 beq.s   .fail
                 cmpi.l  #11,ct_trap_vector
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                move.l  ct_trap_taken,d0
+                move.l  ct_trap_vector,d1
+                jsr     ct_fail_exception
 .name:
                 dc.b    "RTM A0 (020)",0
 .input:
@@ -74,25 +80,28 @@ case_callm_rtm_rtm_a0:
 
 case_callm_rtm_callm_a0:
                 moveq   #11,d0
-                bsr     ct_install_trap_handler
+                jsr     ct_install_trap_handler
                 lea     .callm_a0_resume(pc),a1
                 move.l  a1,ct_trap_resume
                 lea     .callm_target(pc),a0
                 dc.w    $06D0,$0000
                 .callm_a0_resume:
-                bsr     ct_restore_trap_handler
-                bsr     ct_check_trap_taken
+                jsr     ct_restore_trap_handler
+                jsr     ct_check_trap_taken
                 tst.l   d0
                 beq.s   .fail
                 cmpi.l  #11,ct_trap_vector
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                move.l  ct_trap_taken,d0
+                move.l  ct_trap_vector,d1
+                jsr     ct_fail_exception
 .name:
                 dc.b    "CALLM #0,(A0) (020)",0
 .input:
@@ -106,25 +115,28 @@ case_callm_rtm_callm_a0:
 
 case_callm_rtm_callm_d16:
                 moveq   #11,d0
-                bsr     ct_install_trap_handler
+                jsr     ct_install_trap_handler
                 lea     .callm_d16_resume(pc),a1
                 move.l  a1,ct_trap_resume
                 lea     .callm_d16_base(pc),a0
                 dc.w    $06E8,$0004,$0004
                 .callm_d16_resume:
-                bsr     ct_restore_trap_handler
-                bsr     ct_check_trap_taken
+                jsr     ct_restore_trap_handler
+                jsr     ct_check_trap_taken
                 tst.l   d0
                 beq.s   .fail
                 cmpi.l  #11,ct_trap_vector
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                move.l  ct_trap_taken,d0
+                move.l  ct_trap_vector,d1
+                jsr     ct_fail_exception
 .name:
                 dc.b    "CALLM #4,4(A0) (020)",0
 .input:
@@ -139,24 +151,27 @@ case_callm_rtm_callm_d16:
 
 case_callm_rtm_rtm_d7:
                 moveq   #11,d0
-                bsr     ct_install_trap_handler
+                jsr     ct_install_trap_handler
                 lea     .rtm_d7_resume(pc),a1
                 move.l  a1,ct_trap_resume
                 dc.w    $06C7
                 .rtm_d7_resume:
-                bsr     ct_restore_trap_handler
-                bsr     ct_check_trap_taken
+                jsr     ct_restore_trap_handler
+                jsr     ct_check_trap_taken
                 tst.l   d0
                 beq.s   .fail
                 cmpi.l  #11,ct_trap_vector
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                move.l  ct_trap_taken,d0
+                move.l  ct_trap_vector,d1
+                jsr     ct_fail_exception
 .name:
                 dc.b    "RTM D7 (020)",0
 .input:
@@ -167,24 +182,27 @@ case_callm_rtm_rtm_d7:
 
 case_callm_rtm_rtm_a7:
                 moveq   #11,d0
-                bsr     ct_install_trap_handler
+                jsr     ct_install_trap_handler
                 lea     .rtm_a7_resume(pc),a1
                 move.l  a1,ct_trap_resume
                 dc.w    $06CF
                 .rtm_a7_resume:
-                bsr     ct_restore_trap_handler
-                bsr     ct_check_trap_taken
+                jsr     ct_restore_trap_handler
+                jsr     ct_check_trap_taken
                 tst.l   d0
                 beq.s   .fail
                 cmpi.l  #11,ct_trap_vector
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                move.l  ct_trap_taken,d0
+                move.l  ct_trap_vector,d1
+                jsr     ct_fail_exception
 .name:
                 dc.b    "RTM A7 (020)",0
 .input:

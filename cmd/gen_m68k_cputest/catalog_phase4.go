@@ -19,7 +19,7 @@ func shardTrapBasic() shard {
 		ID: "trap_basic_trap0", Shard: s, Kind: kindInt,
 		Name: "TRAP #0", Input: "TRAP #0", Expected: "trap taken",
 		ActualMode: "exception", ExpectTrap: true, TrapVector: 32,
-		Setup: []string{"moveq   #32,d0", "bsr     ct_install_trap_handler"},
+		Setup: []string{"moveq   #32,d0", "jsr     ct_install_trap_handler"},
 		Body:  []string{"trap    #0"},
 	})
 
@@ -28,7 +28,7 @@ func shardTrapBasic() shard {
 		ID: "trap_basic_trap1", Shard: s, Kind: kindInt,
 		Name: "TRAP #1", Input: "TRAP #1", Expected: "trap taken",
 		ActualMode: "exception", ExpectTrap: true, TrapVector: 33,
-		Setup: []string{"moveq   #33,d0", "bsr     ct_install_trap_handler"},
+		Setup: []string{"moveq   #33,d0", "jsr     ct_install_trap_handler"},
 		Body:  []string{"trap    #1"},
 	})
 
@@ -37,7 +37,7 @@ func shardTrapBasic() shard {
 		ID: "trap_basic_trap2", Shard: s, Kind: kindInt,
 		Name: "TRAP #2", Input: "TRAP #2", Expected: "trap taken",
 		ActualMode: "exception", ExpectTrap: true, TrapVector: 34,
-		Setup: []string{"moveq   #34,d0", "bsr     ct_install_trap_handler"},
+		Setup: []string{"moveq   #34,d0", "jsr     ct_install_trap_handler"},
 		Body:  []string{"trap    #2"},
 	})
 
@@ -46,7 +46,7 @@ func shardTrapBasic() shard {
 		ID: "trap_basic_trap3", Shard: s, Kind: kindInt,
 		Name: "TRAP #3", Input: "TRAP #3", Expected: "trap taken",
 		ActualMode: "exception", ExpectTrap: true, TrapVector: 35,
-		Setup: []string{"moveq   #35,d0", "bsr     ct_install_trap_handler"},
+		Setup: []string{"moveq   #35,d0", "jsr     ct_install_trap_handler"},
 		Body:  []string{"trap    #3"},
 	})
 
@@ -57,7 +57,7 @@ func shardTrapBasic() shard {
 		ActualMode: "exception", ExpectTrap: true, TrapVector: 7,
 		Setup: []string{
 			"moveq   #7,d0",
-			"bsr     ct_install_trap_handler",
+			"jsr     ct_install_trap_handler",
 			"move.w  #$0002,ccr", // set V flag
 		},
 		Body: []string{"trapv"},
@@ -70,7 +70,7 @@ func shardTrapBasic() shard {
 		ActualMode: "exception", ExpectTrap: false, TrapVector: 7,
 		Setup: []string{
 			"moveq   #7,d0",
-			"bsr     ct_install_trap_handler",
+			"jsr     ct_install_trap_handler",
 			"moveq   #0,d0",
 			"move.w  d0,ccr", // clear all flags
 		},
@@ -84,7 +84,7 @@ func shardTrapBasic() shard {
 		ActualMode: "exception", ExpectTrap: false, TrapVector: 7,
 		Setup: []string{
 			"moveq   #7,d0",
-			"bsr     ct_install_trap_handler",
+			"jsr     ct_install_trap_handler",
 		},
 		Body: []string{"dc.w    $51FA,$0000"}, // TRAPF.W #0
 	})
@@ -96,7 +96,7 @@ func shardTrapBasic() shard {
 		ActualMode: "exception", ExpectTrap: true, TrapVector: 7,
 		Setup: []string{
 			"moveq   #7,d0",
-			"bsr     ct_install_trap_handler",
+			"jsr     ct_install_trap_handler",
 		},
 		Body: []string{"dc.w    $50FA,$0000"}, // TRAPT.W #0
 	})
@@ -108,7 +108,7 @@ func shardTrapBasic() shard {
 		ActualMode: "exception", ExpectTrap: false, TrapVector: 7,
 		Setup: []string{
 			"moveq   #7,d0",
-			"bsr     ct_install_trap_handler",
+			"jsr     ct_install_trap_handler",
 		},
 		Body: []string{"dc.w    $51FB,$0000,$0000"}, // TRAPF.L #0
 	})
@@ -120,7 +120,7 @@ func shardTrapBasic() shard {
 		ActualMode: "exception", ExpectTrap: true, TrapVector: 7,
 		Setup: []string{
 			"moveq   #7,d0",
-			"bsr     ct_install_trap_handler",
+			"jsr     ct_install_trap_handler",
 		},
 		Body: []string{"dc.w    $50FC"}, // TRAPT (no operand)
 	})
@@ -133,7 +133,7 @@ func shardTrapBasic() shard {
 		ActualMode: "exception", ExpectTrap: false, TrapVector: 6,
 		Setup: []string{
 			"moveq   #6,d0",
-			"bsr     ct_install_trap_handler",
+			"jsr     ct_install_trap_handler",
 			"moveq   #5,d0",
 			"moveq   #10,d1",
 		},
@@ -147,7 +147,7 @@ func shardTrapBasic() shard {
 		ActualMode: "exception", ExpectTrap: true, TrapVector: 6,
 		Setup: []string{
 			"moveq   #6,d0",
-			"bsr     ct_install_trap_handler",
+			"jsr     ct_install_trap_handler",
 			"moveq   #-1,d0",
 			"moveq   #10,d1",
 		},
@@ -161,7 +161,7 @@ func shardTrapBasic() shard {
 		ActualMode: "exception", ExpectTrap: true, TrapVector: 6,
 		Setup: []string{
 			"moveq   #6,d0",
-			"bsr     ct_install_trap_handler",
+			"jsr     ct_install_trap_handler",
 			"moveq   #15,d0",
 			"moveq   #10,d1",
 		},
@@ -178,7 +178,7 @@ func shardTrapBasic() shard {
 		ActualMode: "exception", ExpectTrap: false, TrapVector: 6,
 		Setup: []string{
 			"moveq   #6,d0",
-			"bsr     ct_install_trap_handler",
+			"jsr     ct_install_trap_handler",
 			"moveq   #100,d0",
 			"move.l  #200,d1",
 		},
@@ -192,7 +192,7 @@ func shardTrapBasic() shard {
 		ActualMode: "exception", ExpectTrap: true, TrapVector: 6,
 		Setup: []string{
 			"moveq   #6,d0",
-			"bsr     ct_install_trap_handler",
+			"jsr     ct_install_trap_handler",
 			"move.l  #300,d0",
 			"move.l  #200,d1",
 		},
@@ -372,7 +372,7 @@ func shardCHK2CMP2() shard {
 		ActualMode: "exception", ExpectTrap: false, TrapVector: 6,
 		Setup: []string{
 			"moveq   #6,d0",
-			"bsr     ct_install_trap_handler",
+			"jsr     ct_install_trap_handler",
 			"lea     .bounds_b(pc),a0",
 			"moveq   #$30,d0",
 		},
@@ -388,7 +388,7 @@ func shardCHK2CMP2() shard {
 		ActualMode: "exception", ExpectTrap: true, TrapVector: 6,
 		Setup: []string{
 			"moveq   #6,d0",
-			"bsr     ct_install_trap_handler",
+			"jsr     ct_install_trap_handler",
 			"lea     .bounds_b(pc),a0",
 			"moveq   #$60,d0",
 		},
@@ -404,7 +404,7 @@ func shardCHK2CMP2() shard {
 		ActualMode: "exception", ExpectTrap: false, TrapVector: 6,
 		Setup: []string{
 			"moveq   #6,d0",
-			"bsr     ct_install_trap_handler",
+			"jsr     ct_install_trap_handler",
 			"lea     .bounds_l(pc),a0",
 			"move.l  #$00003000,d0",
 		},
@@ -420,7 +420,7 @@ func shardCHK2CMP2() shard {
 		ActualMode: "exception", ExpectTrap: true, TrapVector: 6,
 		Setup: []string{
 			"moveq   #6,d0",
-			"bsr     ct_install_trap_handler",
+			"jsr     ct_install_trap_handler",
 			"lea     .bounds_l(pc),a0",
 			"move.l  #$00006000,d0",
 		},

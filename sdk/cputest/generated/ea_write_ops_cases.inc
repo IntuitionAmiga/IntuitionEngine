@@ -3,7 +3,7 @@
 
 run_ea_write_ops_shard:
                 lea     ct_shard_name_ea_write_ops(pc),a0
-                bsr     ct_enter_shard
+                jsr     ct_enter_shard
                 bsr     case_ea_write_add_an_ind
                 bsr     case_ea_write_add_an_postinc
                 bsr     case_ea_write_add_an_predec
@@ -39,13 +39,14 @@ case_ea_write_add_an_ind:
                 andi.w  #$0000,d1
                 cmp.l   #$11223344,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "ADD.L D0,(A0)",0
 .input:
@@ -74,13 +75,14 @@ case_ea_write_add_an_postinc:
                 andi.w  #$0000,d1
                 cmp.l   #$11223344,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "ADD.L D0,(A0)+",0
 .input:
@@ -109,13 +111,14 @@ case_ea_write_add_an_predec:
                 andi.w  #$0000,d1
                 cmp.l   #$11223344,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "ADD.L D0,-(A0)",0
 .input:
@@ -144,13 +147,14 @@ case_ea_write_add_d16_an:
                 andi.w  #$0000,d1
                 cmp.l   #$11223344,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "ADD.L D0,4(A0)",0
 .input:
@@ -176,13 +180,14 @@ case_ea_write_add_abs_l:
                 andi.w  #$0000,d1
                 cmp.l   #$11223344,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "ADD.L D0,$00008100",0
 .input:
@@ -212,13 +217,14 @@ case_ea_write_clr_an_ind:
                 bne.s   .fail
                 cmpi.w  #$0004,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "CLR.L (A0)",0
 .input:
@@ -248,13 +254,14 @@ case_ea_write_clr_d16_an:
                 bne.s   .fail
                 cmpi.w  #$0004,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "CLR.L 4(A0)",0
 .input:
@@ -283,13 +290,14 @@ case_ea_write_clr_abs_l:
                 bne.s   .fail
                 cmpi.w  #$0004,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "CLR.L $00008100",0
 .input:
@@ -319,13 +327,14 @@ case_ea_write_neg_an_ind:
                 bne.s   .fail
                 cmpi.w  #$0009,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "NEG.L (A0)",0
 .input:
@@ -355,13 +364,14 @@ case_ea_write_neg_d16_an:
                 bne.s   .fail
                 cmpi.w  #$0009,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "NEG.L 4(A0)",0
 .input:
@@ -391,13 +401,14 @@ case_ea_write_not_an_ind:
                 bne.s   .fail
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "NOT.L (A0)",0
 .input:
@@ -427,13 +438,14 @@ case_ea_write_not_d16_an:
                 bne.s   .fail
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "NOT.L 4(A0)",0
 .input:
@@ -459,13 +471,14 @@ case_ea_write_tst_an_ind:
                 andi.w  #$000F,d1
                 cmpi.w  #$0008,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "TST.L (A0)",0
 .input:
@@ -491,13 +504,14 @@ case_ea_write_tst_d16_an:
                 andi.w  #$000F,d1
                 cmpi.w  #$0008,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "TST.L 4(A0)",0
 .input:
@@ -525,13 +539,14 @@ case_ea_write_bset_an:
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "BSET D1,(A0)",0
 .input:
@@ -559,13 +574,14 @@ case_ea_write_bset_d16:
                 andi.w  #$0000,d1
                 cmp.l   #$00000008,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "BSET D1,4(A0)",0
 .input:

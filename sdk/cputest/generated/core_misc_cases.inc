@@ -3,7 +3,7 @@
 
 run_core_misc_shard:
                 lea     ct_shard_name_core_misc(pc),a0
-                bsr     ct_enter_shard
+                jsr     ct_enter_shard
                 bsr     case_core_misc_clr
                 bsr     case_core_misc_tst
                 bsr     case_core_misc_swap
@@ -30,13 +30,14 @@ case_core_misc_clr:
                 bne.s   .fail
                 cmpi.w  #$0004,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "CLR.L D0",0
 .input:
@@ -57,13 +58,14 @@ case_core_misc_tst:
                 bne.s   .fail
                 cmpi.w  #$0008,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "TST.L D0",0
 .input:
@@ -84,13 +86,14 @@ case_core_misc_swap:
                 bne.s   .fail
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "SWAP D0",0
 .input:
@@ -111,13 +114,14 @@ case_core_misc_extw:
                 bne.s   .fail
                 cmpi.w  #$0008,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "EXT.W D0",0
 .input:
@@ -138,13 +142,14 @@ case_core_misc_neg:
                 bne.s   .fail
                 cmpi.w  #$0009,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "NEG.L D0",0
 .input:
@@ -165,13 +170,14 @@ case_core_misc_extl:
                 bne.s   .fail
                 cmpi.w  #$0008,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "EXT.L D0",0
 .input:
@@ -189,13 +195,14 @@ case_core_misc_exg:
                 andi.w  #$0000,d1
                 cmp.l   #$89ABCDEF,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "EXG D0,D1",0
 .input:
@@ -216,13 +223,14 @@ case_core_misc_tas:
                 bne.s   .fail
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "TAS D0",0
 .input:

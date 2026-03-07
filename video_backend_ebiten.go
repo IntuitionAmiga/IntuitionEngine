@@ -1158,6 +1158,7 @@ func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
 	ahxOn := s.ahxEngine != nil && s.ahxEngine.IsPlaying()
 	modOn := s.modEngine != nil && s.modEngine.IsPlaying()
 	wavOn := s.wavEngine != nil && s.wavEngine.IsPlaying()
+	paulaOn := s.paulaDMA != nil && s.paulaDMA.enabled.Load()
 
 	barHeight := 44
 	if barHeight >= eo.height {
@@ -1205,9 +1206,11 @@ func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
 		{name: "|", enabled: false},
 		{name: "AHX", enabled: ahxOn},
 		{name: "|", enabled: false},
-		{name: "Amiga MOD", enabled: modOn},
+		{name: "MOD", enabled: modOn},
 		{name: "|", enabled: false},
-		{name: "PCM WAV", enabled: wavOn},
+		{name: "WAV", enabled: wavOn},
+		{name: "|", enabled: false},
+		{name: "PAULA", enabled: paulaOn},
 	})
 
 	legendColor := color.RGBA{160, 160, 160, 255}

@@ -1465,6 +1465,7 @@ func main() {
 		arosDMA := NewArosAudioDMA(sysBus, soundChip, m68kCPU)
 		sysBus.MapIO(AROS_AUD_REGION_BASE, AROS_AUD_REGION_END, arosDMA.HandleRead, arosDMA.HandleWrite)
 		soundChip.SetSampleTicker(arosDMA)
+		runtimeStatus.setPaulaDMA(arosDMA)
 
 		// Initialize clipboard bridge (host ↔ guest clipboard exchange)
 		clipBridge := NewClipboardBridge(sysBus)
@@ -1966,6 +1967,7 @@ func main() {
 			arosDMA := NewArosAudioDMA(sysBus, soundChip, r.cpu)
 			sysBus.MapIO(AROS_AUD_REGION_BASE, AROS_AUD_REGION_END, arosDMA.HandleRead, arosDMA.HandleWrite)
 			soundChip.SetSampleTicker(arosDMA)
+			runtimeStatus.setPaulaDMA(arosDMA)
 			// Wire up clipboard bridge
 			clipBridge := NewClipboardBridge(sysBus)
 			sysBus.MapIO(CLIP_REGION_BASE, CLIP_REGION_END, clipBridge.HandleRead, clipBridge.HandleWrite)

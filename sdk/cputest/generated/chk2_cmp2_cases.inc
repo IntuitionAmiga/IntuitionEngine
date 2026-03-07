@@ -3,7 +3,7 @@
 
 run_chk2_cmp2_shard:
                 lea     ct_shard_name_chk2_cmp2(pc),a0
-                bsr     ct_enter_shard
+                jsr     ct_enter_shard
                 bsr     case_chk2_cmp2_cmp2b_inrange
                 bsr     case_chk2_cmp2_cmp2b_outrange
                 bsr     case_chk2_cmp2_cmp2b_lower
@@ -34,13 +34,14 @@ case_chk2_cmp2_cmp2b_inrange:
                 andi.w  #$0005,d1
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "CMP2.B in range",0
 .input:
@@ -62,13 +63,14 @@ case_chk2_cmp2_cmp2b_outrange:
                 andi.w  #$0001,d1
                 cmpi.w  #$0001,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "CMP2.B out of range",0
 .input:
@@ -90,13 +92,14 @@ case_chk2_cmp2_cmp2b_lower:
                 andi.w  #$0005,d1
                 cmpi.w  #$0004,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "CMP2.B exact lower",0
 .input:
@@ -118,13 +121,14 @@ case_chk2_cmp2_cmp2b_upper:
                 andi.w  #$0005,d1
                 cmpi.w  #$0004,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "CMP2.B exact upper",0
 .input:
@@ -146,13 +150,14 @@ case_chk2_cmp2_cmp2w_inrange:
                 andi.w  #$0005,d1
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "CMP2.W in range",0
 .input:
@@ -174,13 +179,14 @@ case_chk2_cmp2_cmp2w_outrange:
                 andi.w  #$0001,d1
                 cmpi.w  #$0001,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "CMP2.W out of range",0
 .input:
@@ -202,13 +208,14 @@ case_chk2_cmp2_cmp2l_inrange:
                 andi.w  #$0005,d1
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "CMP2.L in range",0
 .input:
@@ -230,13 +237,14 @@ case_chk2_cmp2_cmp2l_outrange:
                 andi.w  #$0001,d1
                 cmpi.w  #$0001,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "CMP2.L out of range",0
 .input:
@@ -250,21 +258,24 @@ case_chk2_cmp2_cmp2l_outrange:
 
 case_chk2_cmp2_chk2b_inrange:
                 moveq   #6,d0
-                bsr     ct_install_trap_handler
+                jsr     ct_install_trap_handler
                 lea     .bounds_b(pc),a0
                 moveq   #$30,d0
                 dc.w    $00D0,$0800
-                bsr     ct_restore_trap_handler
-                bsr     ct_check_trap_taken
+                jsr     ct_restore_trap_handler
+                jsr     ct_check_trap_taken
                 tst.l   d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                move.l  ct_trap_taken,d0
+                move.l  ct_trap_vector,d1
+                jsr     ct_fail_exception
 .name:
                 dc.b    "CHK2.B in range",0
 .input:
@@ -278,23 +289,26 @@ case_chk2_cmp2_chk2b_inrange:
 
 case_chk2_cmp2_chk2b_outrange:
                 moveq   #6,d0
-                bsr     ct_install_trap_handler
+                jsr     ct_install_trap_handler
                 lea     .bounds_b(pc),a0
                 moveq   #$60,d0
                 dc.w    $00D0,$0800
-                bsr     ct_restore_trap_handler
-                bsr     ct_check_trap_taken
+                jsr     ct_restore_trap_handler
+                jsr     ct_check_trap_taken
                 tst.l   d0
                 beq.s   .fail
                 cmpi.l  #6,ct_trap_vector
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                move.l  ct_trap_taken,d0
+                move.l  ct_trap_vector,d1
+                jsr     ct_fail_exception
 .name:
                 dc.b    "CHK2.B out of range",0
 .input:
@@ -308,21 +322,24 @@ case_chk2_cmp2_chk2b_outrange:
 
 case_chk2_cmp2_chk2l_inrange:
                 moveq   #6,d0
-                bsr     ct_install_trap_handler
+                jsr     ct_install_trap_handler
                 lea     .bounds_l(pc),a0
                 move.l  #$00003000,d0
                 dc.w    $04D0,$0800
-                bsr     ct_restore_trap_handler
-                bsr     ct_check_trap_taken
+                jsr     ct_restore_trap_handler
+                jsr     ct_check_trap_taken
                 tst.l   d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                move.l  ct_trap_taken,d0
+                move.l  ct_trap_vector,d1
+                jsr     ct_fail_exception
 .name:
                 dc.b    "CHK2.L in range",0
 .input:
@@ -336,23 +353,26 @@ case_chk2_cmp2_chk2l_inrange:
 
 case_chk2_cmp2_chk2l_outrange:
                 moveq   #6,d0
-                bsr     ct_install_trap_handler
+                jsr     ct_install_trap_handler
                 lea     .bounds_l(pc),a0
                 move.l  #$00006000,d0
                 dc.w    $04D0,$0800
-                bsr     ct_restore_trap_handler
-                bsr     ct_check_trap_taken
+                jsr     ct_restore_trap_handler
+                jsr     ct_check_trap_taken
                 tst.l   d0
                 beq.s   .fail
                 cmpi.l  #6,ct_trap_vector
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                move.l  ct_trap_taken,d0
+                move.l  ct_trap_vector,d1
+                jsr     ct_fail_exception
 .name:
                 dc.b    "CHK2.L out of range",0
 .input:
@@ -376,13 +396,14 @@ case_chk2_cmp2_cmp2b_areg:
                 andi.w  #$0005,d1
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "CMP2.B (A0),A0 addr reg",0
 .input:
@@ -404,13 +425,14 @@ case_chk2_cmp2_cmp2b_below:
                 andi.w  #$0001,d1
                 cmpi.w  #$0001,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "CMP2.B below lower",0
 .input:

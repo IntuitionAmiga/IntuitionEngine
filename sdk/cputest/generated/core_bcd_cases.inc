@@ -3,7 +3,7 @@
 
 run_core_bcd_shard:
                 lea     ct_shard_name_core_bcd(pc),a0
-                bsr     ct_enter_shard
+                jsr     ct_enter_shard
                 bsr     case_core_bcd_abcd
                 bsr     case_core_bcd_sbcd
                 bsr     case_core_bcd_nbcd
@@ -24,13 +24,14 @@ case_core_bcd_abcd:
                 andi.w  #$0000,d1
                 cmp.l   #$00000010,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "ABCD D0,D1",0
 .input:
@@ -50,13 +51,14 @@ case_core_bcd_sbcd:
                 andi.w  #$0000,d1
                 cmp.l   #$00000009,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "SBCD D0,D1",0
 .input:
@@ -75,13 +77,14 @@ case_core_bcd_nbcd:
                 andi.w  #$0000,d1
                 cmp.l   #$00000077,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "NBCD D0",0
 .input:

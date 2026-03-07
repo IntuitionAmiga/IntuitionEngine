@@ -3,7 +3,7 @@
 
 run_fpu_formats_shard:
                 lea     ct_shard_name_fpu_formats(pc),a0
-                bsr     ct_enter_shard
+                jsr     ct_enter_shard
                 bsr     case_fpu_fmt_fmove_l_to_fp
                 bsr     case_fpu_fmt_fmove_fp_to_l
                 bsr     case_fpu_fmt_fmove_l_zero
@@ -45,13 +45,14 @@ case_fpu_fmt_fmove_l_to_fp:
                 bne.s   .fail
                 cmpi.l  #$00000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FMOVE.L (A0),FP0 int->fp",0
 .input:
@@ -73,13 +74,14 @@ case_fpu_fmt_fmove_fp_to_l:
                 andi.w  #$0000,d1
                 cmp.l   #$0000002A,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "FMOVE.L FP0,(A0) fp->int",0
 .input:
@@ -108,13 +110,14 @@ case_fpu_fmt_fmove_l_zero:
                 bne.s   .fail
                 cmpi.l  #$04000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FMOVE.L (A0),FP0 zero",0
 .input:
@@ -141,13 +144,14 @@ case_fpu_fmt_fmove_l_neg:
                 bne.s   .fail
                 cmpi.l  #$08000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FMOVE.L (A0),FP0 negative",0
 .input:
@@ -174,13 +178,14 @@ case_fpu_fmt_fmoved_load:
                 bne.s   .fail
                 cmpi.l  #$00000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FMOVE.D (A0),FP0",0
 .input:
@@ -209,13 +214,14 @@ case_fpu_fmt_fmoved_roundtrip:
                 bne.s   .fail
                 cmpi.l  #$00000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FMOVE.D round-trip",0
 .input:
@@ -246,13 +252,14 @@ case_fpu_fmt_fmoves_load:
                 bne.s   .fail
                 cmpi.l  #$00000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FMOVE.S (A0),FP0",0
 .input:
@@ -282,13 +289,14 @@ case_fpu_fmt_fmoves_roundtrip:
                 bne.s   .fail
                 cmpi.l  #$00000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FMOVE.S round-trip",0
 .input:
@@ -322,13 +330,14 @@ case_fpu_fmt_int_roundtrip:
                 bne.s   .fail
                 cmpi.l  #$00000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FMOVE.L int round-trip",0
 .input:
@@ -359,13 +368,14 @@ case_fpu_fmt_fmovew_load:
                 bne.s   .fail
                 cmpi.l  #$00000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FMOVE.W (A0),FP0",0
 .input:
@@ -392,13 +402,14 @@ case_fpu_fmt_fmovew_neg:
                 bne.s   .fail
                 cmpi.l  #$08000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FMOVE.W (A0),FP0 neg",0
 .input:
@@ -425,13 +436,14 @@ case_fpu_fmt_fmoveb_load:
                 bne.s   .fail
                 cmpi.l  #$00000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FMOVE.B (A0),FP0",0
 .input:
@@ -457,13 +469,14 @@ case_fpu_fmt_fmovecr_pi:
                 bne.s   .fail
                 cmpi.l  #$00000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FMOVECR pi",0
 .input:
@@ -486,13 +499,14 @@ case_fpu_fmt_fmovecr_log10_2:
                 bne.s   .fail
                 cmpi.l  #$00000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FMOVECR log10(2)",0
 .input:
@@ -515,13 +529,14 @@ case_fpu_fmt_fmovecr_ln2:
                 bne.s   .fail
                 cmpi.l  #$00000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FMOVECR ln(2)",0
 .input:
@@ -544,13 +559,14 @@ case_fpu_fmt_fmovecr_10:
                 bne.s   .fail
                 cmpi.l  #$00000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FMOVECR 10^1",0
 .input:
@@ -567,13 +583,14 @@ case_fpu_fmt_fcmp_nan_unordered:
                 andi.l  #$01000000,d0
                 cmpi.l  #$01000000,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "FCMP NaN unordered",0
 .input:
@@ -601,13 +618,14 @@ case_fpu_fmt_fsqrt_zero:
                 bne.s   .fail
                 cmpi.l  #$04000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FSQRT(0)=+0",0
 .input:
@@ -633,13 +651,14 @@ case_fpu_fmt_fabs_neg:
                 bne.s   .fail
                 cmpi.l  #$00000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FABS(-42)=42",0
 .input:
@@ -665,13 +684,14 @@ case_fpu_fmt_fneg_pos:
                 bne.s   .fail
                 cmpi.l  #$08000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FNEG(42)=-42",0
 .input:

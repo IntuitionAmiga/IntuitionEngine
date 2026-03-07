@@ -611,7 +611,8 @@ func (d *ArosDOSDevice) cmdRead() {
 	n, err := f.Read(buf)
 	if n > 0 {
 		for i := 0; i < n; i++ {
-			d.bus.Write8(bufPtr+uint32(i), buf[i])
+			writeAddr := bufPtr + uint32(i)
+			d.bus.Write8(writeAddr, buf[i])
 		}
 	}
 
@@ -1129,24 +1130,30 @@ func (d *ArosDOSDevice) fillDateStamp(addr uint32, t time.Time) {
 }
 
 // detectProtection determines AmigaDOS protection bits for a host file.
-// Files in the S/ directory get FIBF_SCRIPT so the Shell can run them via Execute.
-// All other non-directory files get protection=0 (no special bits).
+// Maps host Unix execute permission to Amiga executable status. Files in
+// the S/ directory also get FIBF_SCRIPT so the Shell can run them via Execute.
+// AmigaDOS uses negative logic for RWED: bit set = permission DENIED.
 func (d *ArosDOSDevice) detectProtection(info fs.FileInfo, hostPath string) uint32 {
 	if info.IsDir() {
 		return 0
 	}
 
-	// Only files under the S/ directory should be marked as scripts.
-	// Use case-insensitive check since the host tree may use lowercase s/.
+	var prot uint32
+	// If the host file lacks user-execute permission, deny Amiga execute.
+	if info.Mode()&0o100 == 0 {
+		prot |= ADOS_FIBF_EXECUTE
+	}
+
+	// Files under the S/ directory get the SCRIPT bit so Shell runs them via Execute.
 	rel, err := filepath.Rel(d.hostRoot, hostPath)
 	if err == nil {
 		first, _, _ := strings.Cut(rel, string(filepath.Separator))
 		if strings.EqualFold(first, "S") {
-			return ADOS_FIBF_SCRIPT
+			prot |= ADOS_FIBF_SCRIPT
 		}
 	}
 
-	return 0
+	return prot
 }
 
 // Close releases all open handles and locks.

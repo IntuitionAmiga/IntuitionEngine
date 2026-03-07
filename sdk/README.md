@@ -224,7 +224,7 @@ Individual target scripts and a master build-all:
 ./sdk/scripts/build-z80.sh               # All Z80 examples
 ./sdk/scripts/build-6502.sh              # All 6502 examples
 ./sdk/scripts/build-x86.sh               # All x86 examples
-./sdk/scripts/build-cputest.sh            # M68K 68020/FPU CPU validation suite
+make cputest-bin                          # M68K 68020/FPU CPU validation suite (bare-metal binary)
 ./sdk/scripts/build-all.sh               # Everything (skips missing toolchains)
 
 # Build a single file:

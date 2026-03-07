@@ -3,7 +3,7 @@
 
 run_fpu_cond_shard:
                 lea     ct_shard_name_fpu_cond(pc),a0
-                bsr     ct_enter_shard
+                jsr     ct_enter_shard
                 bsr     case_fpu_cond_fbeq_taken
                 bsr     case_fpu_cond_fbeq_not
                 bsr     case_fpu_cond_fbne_taken
@@ -53,13 +53,14 @@ case_fpu_cond_fbeq_taken:
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "FBEQ taken (eq)",0
 .input:
@@ -85,13 +86,14 @@ case_fpu_cond_fbeq_not:
                 andi.w  #$0000,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "FBEQ not taken (gt)",0
 .input:
@@ -119,13 +121,14 @@ case_fpu_cond_fbne_taken:
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "FBNE taken (gt)",0
 .input:
@@ -153,13 +156,14 @@ case_fpu_cond_fbne_not:
                 andi.w  #$0000,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "FBNE not taken (eq)",0
 .input:
@@ -185,13 +189,14 @@ case_fpu_cond_fbogt_taken:
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "FBOGT taken (gt)",0
 .input:
@@ -219,13 +224,14 @@ case_fpu_cond_fbogt_not:
                 andi.w  #$0000,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "FBOGT not taken (lt)",0
 .input:
@@ -253,13 +259,14 @@ case_fpu_cond_fbolt_taken:
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "FBOLT taken (lt)",0
 .input:
@@ -287,13 +294,14 @@ case_fpu_cond_fbolt_not:
                 andi.w  #$0000,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "FBOLT not taken (gt)",0
 .input:
@@ -321,13 +329,14 @@ case_fpu_cond_fboge_gt:
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "FBOGE taken (gt)",0
 .input:
@@ -355,13 +364,14 @@ case_fpu_cond_fboge_eq:
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "FBOGE taken (eq)",0
 .input:
@@ -387,13 +397,14 @@ case_fpu_cond_fbole_lt:
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "FBOLE taken (lt)",0
 .input:
@@ -421,13 +432,14 @@ case_fpu_cond_fbole_eq:
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "FBOLE taken (eq)",0
 .input:
@@ -453,13 +465,14 @@ case_fpu_cond_fbor_taken:
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "FBOR taken (ordered)",0
 .input:
@@ -487,13 +500,14 @@ case_fpu_cond_fbun_nan:
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "FBUN taken (NaN)",0
 .input:
@@ -521,13 +535,14 @@ case_fpu_cond_fbun_not:
                 andi.w  #$0000,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "FBUN not taken (ordered)",0
 .input:
@@ -552,13 +567,14 @@ case_fpu_cond_fseq_true:
                 andi.w  #$0000,d1
                 cmp.l   #$000000FF,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "FSEQ D0 (eq->$FF)",0
 .input:
@@ -581,13 +597,14 @@ case_fpu_cond_fseq_false:
                 andi.w  #$0000,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "FSEQ D0 (gt->$00)",0
 .input:
@@ -612,13 +629,14 @@ case_fpu_cond_fsne_true:
                 andi.w  #$0000,d1
                 cmp.l   #$000000FF,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "FSNE D0 (gt->$FF)",0
 .input:
@@ -643,13 +661,14 @@ case_fpu_cond_fsne_false:
                 andi.w  #$0000,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "FSNE D0 (eq->$00)",0
 .input:
@@ -672,13 +691,14 @@ case_fpu_cond_fsogt_true:
                 andi.w  #$0000,d1
                 cmp.l   #$000000FF,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "FSOGT D0 (gt->$FF)",0
 .input:
@@ -703,13 +723,14 @@ case_fpu_cond_fsolt_false:
                 andi.w  #$0000,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "FSOLT D0 (gt->$00)",0
 .input:
@@ -734,13 +755,14 @@ case_fpu_cond_fst_true:
                 andi.w  #$0000,d1
                 cmp.l   #$000000FF,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "FST D0 (always->$FF)",0
 .input:
@@ -765,13 +787,14 @@ case_fpu_cond_fsf_false:
                 andi.w  #$0000,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "FSF D0 (never->$00)",0
 .input:
@@ -799,13 +822,14 @@ case_fpu_cond_fdbeq_loop:
                 andi.w  #$0000,d1
                 cmp.l   #$00000003,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "FDBEQ loop count=3",0
 .input:
@@ -833,13 +857,14 @@ case_fpu_cond_fdbeq_exit:
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "FDBEQ exit (eq)",0
 .input:
@@ -865,13 +890,14 @@ case_fpu_cond_fdbne_loop:
                 andi.w  #$0000,d1
                 cmp.l   #$00000002,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "FDBNE loop count=2",0
 .input:
@@ -894,13 +920,14 @@ case_fpu_cond_fdbt_exit:
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "FDBT always exits",0
 .input:
@@ -921,13 +948,14 @@ case_fpu_cond_fdbf_count:
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "FDBF count-only loop",0
 .input:

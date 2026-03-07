@@ -3,7 +3,7 @@
 
 run_fpu_trans_shard:
                 lea     ct_shard_name_fpu_trans(pc),a0
-                bsr     ct_enter_shard
+                jsr     ct_enter_shard
                 bsr     case_fpu_trans_fsin
                 bsr     case_fpu_trans_ftst_neg
                 bsr     case_fpu_trans_ftst_zero
@@ -36,13 +36,14 @@ case_fpu_trans_fsin:
                 bne.s   .fail
                 cmpi.l  #$00000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FSIN FP0",0
 .input:
@@ -68,13 +69,14 @@ case_fpu_trans_ftst_neg:
                 bne.s   .fail
                 cmpi.l  #$08000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FTST FP0 negative",0
 .input:
@@ -100,13 +102,14 @@ case_fpu_trans_ftst_zero:
                 bne.s   .fail
                 cmpi.l  #$04000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FTST FP0 zero",0
 .input:
@@ -132,13 +135,14 @@ case_fpu_trans_ftst_inf:
                 bne.s   .fail
                 cmpi.l  #$02000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FTST FP0 +inf",0
 .input:
@@ -164,13 +168,14 @@ case_fpu_trans_ftst_nan:
                 bne.s   .fail
                 cmpi.l  #$01000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FTST FP0 NaN",0
 .input:
@@ -196,13 +201,14 @@ case_fpu_trans_fsinh:
                 bne.s   .fail
                 cmpi.l  #$04000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FSINH FP0",0
 .input:
@@ -228,13 +234,14 @@ case_fpu_trans_ftanh:
                 bne.s   .fail
                 cmpi.l  #$04000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FTANH FP0",0
 .input:
@@ -260,13 +267,14 @@ case_fpu_trans_fatan:
                 bne.s   .fail
                 cmpi.l  #$04000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FATAN FP0",0
 .input:
@@ -292,13 +300,14 @@ case_fpu_trans_fasin:
                 bne.s   .fail
                 cmpi.l  #$04000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FASIN FP0",0
 .input:
@@ -324,13 +333,14 @@ case_fpu_trans_facos:
                 bne.s   .fail
                 cmpi.l  #$04000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FACOS FP0",0
 .input:
@@ -356,13 +366,14 @@ case_fpu_trans_fcosh:
                 bne.s   .fail
                 cmpi.l  #$00000000,d2
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_fp64
+                jsr     ct_fail_fp64
 .name:
                 dc.b    "FCOSH FP0",0
 .input:

@@ -3,7 +3,7 @@
 
 run_muldiv_020_shard:
                 lea     ct_shard_name_muldiv_020(pc),a0
-                bsr     ct_enter_shard
+                jsr     ct_enter_shard
                 bsr     case_muldiv020_mulu_l_simple
                 bsr     case_muldiv020_mulu_l_overflow_z
                 bsr     case_muldiv020_mulu_l_large
@@ -47,13 +47,14 @@ case_muldiv020_mulu_l_simple:
                 bne.s   .fail
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "MULU.L D1,D0 100*200=20000",0
 .input:
@@ -75,13 +76,14 @@ case_muldiv020_mulu_l_overflow_z:
                 bne.s   .fail
                 cmpi.w  #$0004,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "MULU.L D1,D0 overflow->0",0
 .input:
@@ -103,13 +105,14 @@ case_muldiv020_mulu_l_large:
                 bne.s   .fail
                 cmpi.w  #$0008,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "MULU.L D1,D0 $FFFF*$FFFF",0
 .input:
@@ -131,13 +134,14 @@ case_muldiv020_mulu_l_64bit:
                 move.l  d2,d1
                 cmp.l   #$00000001,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_multi_reg
+                jsr     ct_fail_multi_reg
 .name:
                 dc.b    "MULU.L D1,D2:D0 64-bit",0
 .input:
@@ -159,13 +163,14 @@ case_muldiv020_mulu_l_64bit_power:
                 move.l  d2,d1
                 cmp.l   #$00000001,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_multi_reg
+                jsr     ct_fail_multi_reg
 .name:
                 dc.b    "MULU.L D1,D2:D0 $80000000*2",0
 .input:
@@ -187,13 +192,14 @@ case_muldiv020_mulu_l_64bit_zero:
                 move.l  d2,d1
                 cmp.l   #$00000000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_multi_reg
+                jsr     ct_fail_multi_reg
 .name:
                 dc.b    "MULU.L D1,D2:D0 zero",0
 .input:
@@ -215,13 +221,14 @@ case_muldiv020_muls_l_neg_neg:
                 bne.s   .fail
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "MULS.L D1,D0 (-2)*(-3)=6",0
 .input:
@@ -243,13 +250,14 @@ case_muldiv020_muls_l_neg_pos:
                 bne.s   .fail
                 cmpi.w  #$0008,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "MULS.L D1,D0 (-5)*10=-50",0
 .input:
@@ -271,13 +279,14 @@ case_muldiv020_muls_l_zero:
                 bne.s   .fail
                 cmpi.w  #$0004,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "MULS.L D1,D0 0*(-1)=0",0
 .input:
@@ -299,13 +308,14 @@ case_muldiv020_muls_l_64bit_pos:
                 move.l  d2,d1
                 cmp.l   #$00000000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_multi_reg
+                jsr     ct_fail_multi_reg
 .name:
                 dc.b    "MULS.L D1,D2:D0 $7FFFFFFF*2",0
 .input:
@@ -327,13 +337,14 @@ case_muldiv020_muls_l_64bit_neg:
                 move.l  d2,d1
                 cmp.l   #$FFFFFFFF,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_multi_reg
+                jsr     ct_fail_multi_reg
 .name:
                 dc.b    "MULS.L D1,D2:D0 $80000000*2",0
 .input:
@@ -355,13 +366,14 @@ case_muldiv020_muls_l_64bit_neg1sq:
                 move.l  d2,d1
                 cmp.l   #$00000000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_multi_reg
+                jsr     ct_fail_multi_reg
 .name:
                 dc.b    "MULS.L D1,D2:D0 (-1)*(-1)",0
 .input:
@@ -383,13 +395,14 @@ case_muldiv020_divu_l_simple:
                 bne.s   .fail
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "DIVU.L D1,D0 20000/100=200",0
 .input:
@@ -411,13 +424,14 @@ case_muldiv020_divu_l_remainder:
                 move.l  d2,d1
                 cmp.l   #$00000002,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_multi_reg
+                jsr     ct_fail_multi_reg
 .name:
                 dc.b    "DIVU.L D1,D2:D0 17/5 q=3 r=2",0
 .input:
@@ -439,13 +453,14 @@ case_muldiv020_divu_l_large:
                 bne.s   .fail
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "DIVU.L D1,D0 $80000000/2",0
 .input:
@@ -467,13 +482,14 @@ case_muldiv020_divu_l_zero_quot:
                 bne.s   .fail
                 cmpi.w  #$0004,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "DIVU.L D1,D0 0/5=0",0
 .input:
@@ -484,23 +500,26 @@ case_muldiv020_divu_l_zero_quot:
 
 case_muldiv020_divu_l_divzero:
                 moveq   #5,d0
-                bsr     ct_install_trap_handler
+                jsr     ct_install_trap_handler
                 moveq   #100,d0
                 moveq   #0,d1
                 dc.w    $4C41,$0000
-                bsr     ct_restore_trap_handler
-                bsr     ct_check_trap_taken
+                jsr     ct_restore_trap_handler
+                jsr     ct_check_trap_taken
                 tst.l   d0
                 beq.s   .fail
                 cmpi.l  #5,ct_trap_vector
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                move.l  ct_trap_taken,d0
+                move.l  ct_trap_vector,d1
+                jsr     ct_fail_exception
 .name:
                 dc.b    "DIVU.L D1,D0 div-by-zero",0
 .input:
@@ -522,13 +541,14 @@ case_muldiv020_divs_l_neg_div:
                 bne.s   .fail
                 cmpi.w  #$0008,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "DIVS.L D1,D0 -100/10=-10",0
 .input:
@@ -550,13 +570,14 @@ case_muldiv020_divs_l_neg_divisor:
                 bne.s   .fail
                 cmpi.w  #$0008,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "DIVS.L D1,D0 100/(-10)=-10",0
 .input:
@@ -578,13 +599,14 @@ case_muldiv020_divs_l_remainder:
                 move.l  d2,d1
                 cmp.l   #$FFFFFFFE,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_multi_reg
+                jsr     ct_fail_multi_reg
 .name:
                 dc.b    "DIVS.L D1,D2:D0 -17/5 q=-3 r=-2",0
 .input:
@@ -606,13 +628,14 @@ case_muldiv020_divs_l_zero_quot:
                 bne.s   .fail
                 cmpi.w  #$0004,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "DIVS.L D1,D0 0/(-1)=0",0
 .input:
@@ -623,23 +646,26 @@ case_muldiv020_divs_l_zero_quot:
 
 case_muldiv020_divs_l_divzero:
                 moveq   #5,d0
-                bsr     ct_install_trap_handler
+                jsr     ct_install_trap_handler
                 moveq   #50,d0
                 moveq   #0,d1
                 dc.w    $4C41,$0800
-                bsr     ct_restore_trap_handler
-                bsr     ct_check_trap_taken
+                jsr     ct_restore_trap_handler
+                jsr     ct_check_trap_taken
                 tst.l   d0
                 beq.s   .fail
                 cmpi.l  #5,ct_trap_vector
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                move.l  ct_trap_taken,d0
+                move.l  ct_trap_vector,d1
+                jsr     ct_fail_exception
 .name:
                 dc.b    "DIVS.L D1,D0 div-by-zero",0
 .input:
@@ -661,13 +687,14 @@ case_muldiv020_mulu_l_nflag:
                 bne.s   .fail
                 cmpi.w  #$0008,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "MULU.L D1,D0 N flag",0
 .input:
@@ -689,13 +716,14 @@ case_muldiv020_divu_l_rem_check:
                 move.l  d2,d1
                 cmp.l   #$00000001,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_multi_reg
+                jsr     ct_fail_multi_reg
 .name:
                 dc.b    "DIVU.L D1,D2:D0 7/3 q=2 r=1",0
 .input:

@@ -3,7 +3,7 @@
 
 run_ea_020_memindir_shard:
                 lea     ct_shard_name_ea_020_memindir(pc),a0
-                bsr     ct_enter_shard
+                jsr     ct_enter_shard
                 bsr     case_ea_020_mi_pre_no_od
                 bsr     case_ea_020_mi_pre_odw
                 bsr     case_ea_020_mi_pre_odl
@@ -40,13 +40,14 @@ case_ea_020_mi_pre_no_od:
                 andi.w  #$0000,d1
                 cmp.l   #$DEADBEEF,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "MOVE.L ([bd,A0,D1.L]),D0",0
 .input:
@@ -74,13 +75,14 @@ case_ea_020_mi_pre_odw:
                 andi.w  #$0000,d1
                 cmp.l   #$CAFEBABE,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "MOVE.L ([bd,A0,D1.L],od.w),D0",0
 .input:
@@ -109,13 +111,14 @@ case_ea_020_mi_pre_odl:
                 andi.w  #$0000,d1
                 cmp.l   #$0BADF00D,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "MOVE.L ([bd,A0,D1.L],od.l),D0",0
 .input:
@@ -144,13 +147,14 @@ case_ea_020_mi_post_no_od:
                 andi.w  #$0000,d1
                 cmp.l   #$AABBCCDD,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "MOVE.L ([bd,A0],D1.L),D0",0
 .input:
@@ -179,13 +183,14 @@ case_ea_020_mi_post_odw:
                 andi.w  #$0000,d1
                 cmp.l   #$55667788,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "MOVE.L ([bd,A0],D1.L,od.w),D0",0
 .input:
@@ -214,13 +219,14 @@ case_ea_020_mi_post_odl:
                 andi.w  #$0000,d1
                 cmp.l   #$0BADF00D,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "MOVE.L ([bd,A0],D1.L,od.l),D0",0
 .input:
@@ -252,13 +258,14 @@ case_ea_020_mi_pre_scale4:
                 andi.w  #$0000,d1
                 cmp.l   #$CAFEBABE,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "MOVE.L ([bd,A0,D1.L*4]),D0",0
 .input:
@@ -287,13 +294,14 @@ case_ea_020_mi_post_scale2:
                 andi.w  #$0000,d1
                 cmp.l   #$AABBCCDD,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "MOVE.L ([bd,A0],D1.L*2),D0",0
 .input:
@@ -322,13 +330,14 @@ case_ea_020_mi_pre_bdl:
                 andi.w  #$0000,d1
                 cmp.l   #$12345678,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "MOVE.L ([bd.l,A0,D1.L]),D0",0
 .input:
@@ -356,13 +365,14 @@ case_ea_020_mi_post_is:
                 andi.w  #$0000,d1
                 cmp.l   #$9ABCDEF0,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "MOVE.L ([bd,A0],IS),D0",0
 .input:
@@ -389,13 +399,14 @@ case_ea_020_mi_pre_an_index:
                 andi.w  #$0000,d1
                 cmp.l   #$DEADBEEF,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "MOVE.L ([bd,A0,A1.L]),D0",0
 .input:
@@ -425,13 +436,14 @@ case_ea_020_mi_pre_neg_odw:
                 andi.w  #$0000,d1
                 cmp.l   #$AABBCCDD,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "MOVE.L ([bd,A0],od.w) neg od",0
 .input:
@@ -460,13 +472,14 @@ case_ea_020_mi_post_s8_odw:
                 andi.w  #$0000,d1
                 cmp.l   #$55667788,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "MOVE.L ([A0],D1.L*8,od.w),D0",0
 .input:
@@ -495,13 +508,14 @@ case_ea_020_mi_post_bdl_odl:
                 andi.w  #$0000,d1
                 cmp.l   #$AABBCCDD,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "MOVE.L ([bd.l,A0],D1.L,od.l),D0",0
 .input:
@@ -534,13 +548,14 @@ case_ea_020_mi_pre_bs_odw:
                 andi.w  #$0000,d1
                 cmp.l   #$DEADBEEF,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "MOVE.L ([D1.L*4,BS],od.w),D0",0
 .input:
@@ -568,13 +583,14 @@ case_ea_020_mi_post_s4_bdl:
                 andi.w  #$0000,d1
                 cmp.l   #$55667788,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "MOVE.L ([bd.l,A0],D1.L*4,od.w),D0",0
 .input:
@@ -602,13 +618,14 @@ case_ea_020_mi_pre_bdw_nonzero:
                 andi.w  #$0000,d1
                 cmp.l   #$12345678,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "MOVE.L ([bd.w,A0,D1.L]),D0 bd=4",0
 .input:

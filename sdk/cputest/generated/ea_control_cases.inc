@@ -3,7 +3,7 @@
 
 run_ea_control_shard:
                 lea     ct_shard_name_ea_control(pc),a0
-                bsr     ct_enter_shard
+                jsr     ct_enter_shard
                 bsr     case_ea_ctrl_jmp_an
                 bsr     case_ea_ctrl_jmp_d16
                 bsr     case_ea_ctrl_jmp_absl
@@ -28,13 +28,14 @@ case_ea_ctrl_jmp_an:
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "JMP (A0)",0
 .input:
@@ -55,13 +56,14 @@ case_ea_ctrl_jmp_d16:
                 andi.w  #$0000,d1
                 cmp.l   #$00000002,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "JMP 4(A0)",0
 .input:
@@ -85,13 +87,14 @@ case_ea_ctrl_jmp_absl:
                 andi.w  #$0000,d1
                 cmp.l   #$00000003,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "JMP abs.L",0
 .input:
@@ -115,13 +118,14 @@ case_ea_ctrl_jsr_an:
                 andi.w  #$0000,d1
                 cmp.l   #$00000005,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "JSR (A0)",0
 .input:
@@ -147,13 +151,14 @@ case_ea_ctrl_jsr_d16:
                 andi.w  #$0000,d1
                 cmp.l   #$00000005,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "JSR 4(A0)",0
 .input:
@@ -176,13 +181,14 @@ case_ea_ctrl_jsr_pcdisp:
                 andi.w  #$0000,d1
                 cmp.l   #$00000005,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "JSR (d16,PC)",0
 .input:

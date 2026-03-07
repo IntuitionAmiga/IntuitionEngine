@@ -3,7 +3,7 @@
 
 run_core_move_ctrl_shard:
                 lea     ct_shard_name_core_move_ctrl(pc),a0
-                bsr     ct_enter_shard
+                jsr     ct_enter_shard
                 bsr     case_core_move_ctrl_move_long
                 bsr     case_core_move_ctrl_movea_word
                 bsr     case_core_move_ctrl_lea_disp
@@ -36,13 +36,14 @@ case_core_move_ctrl_move_long:
                 bne.s   .fail
                 cmpi.w  #$0008,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "MOVE.L D0,D1",0
 .input:
@@ -59,13 +60,14 @@ case_core_move_ctrl_movea_word:
                 move.l  a0,d0
                 cmp.l   #$FFFF8000,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "MOVEA.W D0,A0",0
 .input:
@@ -82,13 +84,14 @@ case_core_move_ctrl_lea_disp:
                 move.l  a2,d0
                 cmp.l   #$00002010,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "LEA (16,A0),A2",0
 .input:
@@ -107,13 +110,14 @@ case_core_move_ctrl_pea:
                 move.l  (sp),d0
                 cmp.l   #$00002000,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "PEA (A0)",0
 .input:
@@ -132,13 +136,14 @@ case_core_move_ctrl_seq:
                 andi.w  #$0000,d1
                 cmp.l   #$000000FF,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "SEQ D0",0
 .input:
@@ -155,13 +160,14 @@ case_core_move_ctrl_move_ccr:
                 andi.w  #$001F,d1
                 cmpi.w  #$001F,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "MOVE D0,CCR",0
 .input:
@@ -180,13 +186,14 @@ case_core_move_ctrl_move_from_ccr:
                 andi.w  #$0000,d1
                 cmp.l   #$0000001F,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "MOVE CCR,D0",0
 .input:
@@ -204,13 +211,14 @@ case_core_move_ctrl_move_from_sr:
                 andi.w  #$0000,d1
                 cmp.l   #$00002F1F,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "MOVE SR,D0",0
 .input:
@@ -230,13 +238,14 @@ case_core_move_ctrl_move_sr_to_mem:
                 andi.w  #$0000,d1
                 cmp.l   #$00002A1F,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "MOVE SR,(A0)",0
 .input:
@@ -256,13 +265,14 @@ case_core_move_ctrl_ori_ccr:
                 andi.w  #$001F,d1
                 cmpi.w  #$0015,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "ORI #$0015,CCR",0
 .input:
@@ -279,13 +289,14 @@ case_core_move_ctrl_eori_ccr:
                 andi.w  #$001F,d1
                 cmpi.w  #$001A,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "EORI #$000F,CCR",0
 .input:
@@ -304,13 +315,14 @@ case_core_move_ctrl_sne:
                 andi.w  #$0000,d1
                 cmp.l   #$000000FF,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "SNE D0",0
 .input:
@@ -332,13 +344,14 @@ case_core_move_ctrl_movem_mem_to_regs:
                 andi.w  #$0000,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "MOVEM.L (A0),D0-D1",0
 .input:

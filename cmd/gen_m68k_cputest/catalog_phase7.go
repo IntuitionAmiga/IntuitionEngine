@@ -203,7 +203,7 @@ func shardMulDiv020() shard {
 		ActualMode: "exception", ExpectTrap: true, TrapVector: 5,
 		Setup: []string{
 			"moveq   #5,d0",
-			"bsr     ct_install_trap_handler",
+			"jsr     ct_install_trap_handler",
 			"moveq   #100,d0",
 			"moveq   #0,d1",
 		},
@@ -259,7 +259,7 @@ func shardMulDiv020() shard {
 		ActualMode: "exception", ExpectTrap: true, TrapVector: 5,
 		Setup: []string{
 			"moveq   #5,d0",
-			"bsr     ct_install_trap_handler",
+			"jsr     ct_install_trap_handler",
 			"moveq   #50,d0",
 			"moveq   #0,d1",
 		},
@@ -683,7 +683,7 @@ func shardCALLMRTM() shard {
 		ActualMode: "exception", ExpectTrap: true, TrapVector: 11,
 		Setup: []string{
 			"moveq   #11,d0",
-			"bsr     ct_install_trap_handler",
+			"jsr     ct_install_trap_handler",
 			"lea     .rtm_d0_resume(pc),a1",
 			"move.l  a1,ct_trap_resume",
 		},
@@ -702,7 +702,7 @@ func shardCALLMRTM() shard {
 		ActualMode: "exception", ExpectTrap: true, TrapVector: 11,
 		Setup: []string{
 			"moveq   #11,d0",
-			"bsr     ct_install_trap_handler",
+			"jsr     ct_install_trap_handler",
 			"lea     .rtm_a0_resume(pc),a1",
 			"move.l  a1,ct_trap_resume",
 		},
@@ -722,7 +722,7 @@ func shardCALLMRTM() shard {
 		ActualMode: "exception", ExpectTrap: true, TrapVector: 11,
 		Setup: []string{
 			"moveq   #11,d0",
-			"bsr     ct_install_trap_handler",
+			"jsr     ct_install_trap_handler",
 			"lea     .callm_a0_resume(pc),a1",
 			"move.l  a1,ct_trap_resume",
 			"lea     .callm_target(pc),a0",
@@ -747,7 +747,7 @@ func shardCALLMRTM() shard {
 		ActualMode: "exception", ExpectTrap: true, TrapVector: 11,
 		Setup: []string{
 			"moveq   #11,d0",
-			"bsr     ct_install_trap_handler",
+			"jsr     ct_install_trap_handler",
 			"lea     .callm_d16_resume(pc),a1",
 			"move.l  a1,ct_trap_resume",
 			"lea     .callm_d16_base(pc),a0",
@@ -772,7 +772,7 @@ func shardCALLMRTM() shard {
 		ActualMode: "exception", ExpectTrap: true, TrapVector: 11,
 		Setup: []string{
 			"moveq   #11,d0",
-			"bsr     ct_install_trap_handler",
+			"jsr     ct_install_trap_handler",
 			"lea     .rtm_d7_resume(pc),a1",
 			"move.l  a1,ct_trap_resume",
 		},
@@ -790,7 +790,7 @@ func shardCALLMRTM() shard {
 		ActualMode: "exception", ExpectTrap: true, TrapVector: 11,
 		Setup: []string{
 			"moveq   #11,d0",
-			"bsr     ct_install_trap_handler",
+			"jsr     ct_install_trap_handler",
 			"lea     .rtm_a7_resume(pc),a1",
 			"move.l  a1,ct_trap_resume",
 		},

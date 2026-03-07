@@ -3,7 +3,7 @@
 
 run_core_flow_shard:
                 lea     ct_shard_name_core_flow(pc),a0
-                bsr     ct_enter_shard
+                jsr     ct_enter_shard
                 bsr     case_core_flow_bra_taken
                 bsr     case_core_flow_bsr_rts
                 bsr     case_core_flow_dbra
@@ -28,13 +28,14 @@ case_core_flow_bra_taken:
                 andi.w  #$0000,d1
                 cmp.l   #$00000002,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "BRA.s taken path",0
 .input:
@@ -57,13 +58,14 @@ case_core_flow_bsr_rts:
                 andi.w  #$0000,d1
                 cmp.l   #$00000002,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "BSR/RTS local subroutine",0
 .input:
@@ -83,13 +85,14 @@ case_core_flow_dbra:
                 andi.w  #$0000,d1
                 cmp.l   #$00000002,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "DBRA loop count",0
 .input:
@@ -110,13 +113,14 @@ case_core_flow_bne_not_taken:
                 andi.w  #$0000,d1
                 cmp.l   #$00000002,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "BNE.s not taken",0
 .input:
@@ -138,13 +142,14 @@ case_core_flow_beq_taken:
                 andi.w  #$0000,d1
                 cmp.l   #$00000003,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "BEQ.s taken",0
 .input:
@@ -165,13 +170,14 @@ case_core_flow_jmp_indirect:
                 andi.w  #$0000,d1
                 cmp.l   #$00000003,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "JMP (A0)",0
 .input:
@@ -195,13 +201,14 @@ case_core_flow_jsr_indirect:
                 andi.w  #$0000,d1
                 cmp.l   #$00000004,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "JSR (A0)",0
 .input:

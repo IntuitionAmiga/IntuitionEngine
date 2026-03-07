@@ -3,7 +3,7 @@
 
 run_cas_ops_shard:
                 lea     ct_shard_name_cas_ops(pc),a0
-                bsr     ct_enter_shard
+                jsr     ct_enter_shard
                 bsr     case_cas_ops_casl_match
                 bsr     case_cas_ops_casl_mismatch
                 bsr     case_cas_ops_casl_match_z
@@ -37,13 +37,14 @@ case_cas_ops_casl_match:
                 move.l  d3,d1
                 cmp.l   #$00005678,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_multi_reg
+                jsr     ct_fail_multi_reg
 .name:
                 dc.b    "CAS.L match->swap",0
 .input:
@@ -68,13 +69,14 @@ case_cas_ops_casl_mismatch:
                 move.l  d3,d1
                 cmp.l   #$00001234,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_multi_reg
+                jsr     ct_fail_multi_reg
 .name:
                 dc.b    "CAS.L mismatch->Dc update",0
 .input:
@@ -98,13 +100,14 @@ case_cas_ops_casl_match_z:
                 andi.w  #$0004,d1
                 cmpi.w  #$0004,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "CAS.L match Z=1",0
 .input:
@@ -128,13 +131,14 @@ case_cas_ops_casl_mismatch_noz:
                 andi.w  #$0004,d1
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "CAS.L mismatch Z=0",0
 .input:
@@ -159,13 +163,14 @@ case_cas_ops_casw_match:
                 andi.w  #$0000,d1
                 cmp.l   #$00001234,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "CAS.W match->swap",0
 .input:
@@ -189,13 +194,14 @@ case_cas_ops_casw_mismatch:
                 andi.w  #$0000,d1
                 cmp.l   #$0000ABCD,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "CAS.W mismatch->Dc update",0
 .input:
@@ -220,13 +226,14 @@ case_cas_ops_casb_match:
                 andi.w  #$0000,d1
                 cmp.l   #$000000AA,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "CAS.B match->swap",0
 .input:
@@ -250,13 +257,14 @@ case_cas_ops_casb_mismatch:
                 andi.w  #$0000,d1
                 cmp.l   #$00000055,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "CAS.B mismatch->Dc update",0
 .input:
@@ -280,13 +288,14 @@ case_cas_ops_casl_zero_match:
                 andi.w  #$0000,d1
                 cmp.l   #$DEADBEEF,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "CAS.L zero match",0
 .input:
@@ -316,13 +325,14 @@ case_cas_ops_cas2l_both_match:
                 move.l  d5,d1
                 cmp.l   #$22222222,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_multi_reg
+                jsr     ct_fail_multi_reg
 .name:
                 dc.b    "CAS2.L both match->swap",0
 .input:
@@ -353,13 +363,14 @@ case_cas_ops_cas2l_first_mismatch:
                 move.l  d1,d1
                 cmp.l   #$BBBBBBBB,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_multi_reg
+                jsr     ct_fail_multi_reg
 .name:
                 dc.b    "CAS2.L first mismatch->no swap",0
 .input:
@@ -390,13 +401,14 @@ case_cas_ops_cas2l_second_mismatch:
                 move.l  d1,d1
                 cmp.l   #$BBBBBBBB,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_multi_reg
+                jsr     ct_fail_multi_reg
 .name:
                 dc.b    "CAS2.L second mismatch->no swap",0
 .input:
@@ -431,13 +443,14 @@ case_cas_ops_cas2w_both_match:
                 move.l  d5,d1
                 cmp.l   #$00002222,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_multi_reg
+                jsr     ct_fail_multi_reg
 .name:
                 dc.b    "CAS2.W both match->swap",0
 .input:
@@ -464,13 +477,14 @@ case_cas_ops_casl_diff_regs:
                 andi.w  #$0000,d1
                 cmp.l   #$0000BEEF,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "CAS.L D2,D3,(A0) match",0
 .input:

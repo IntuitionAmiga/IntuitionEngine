@@ -3,7 +3,7 @@
 
 run_supervisor_ctrl_shard:
                 lea     ct_shard_name_supervisor_ctrl(pc),a0
-                bsr     ct_enter_shard
+                jsr     ct_enter_shard
                 bsr     case_sup_ctrl_movec_vbr_write
                 bsr     case_sup_ctrl_movec_cacr_roundtrip
                 bsr     case_sup_ctrl_movec_sfc_write
@@ -37,13 +37,14 @@ case_sup_ctrl_movec_vbr_write:
                 bne.s   .fail
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "MOVEC D0,VBR round-trip",0
 .input:
@@ -68,13 +69,14 @@ case_sup_ctrl_movec_cacr_roundtrip:
                 bne.s   .fail
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "MOVEC CACR round-trip",0
 .input:
@@ -95,13 +97,14 @@ case_sup_ctrl_movec_sfc_write:
                 bne.s   .fail
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "MOVEC D0,SFC round-trip",0
 .input:
@@ -122,13 +125,14 @@ case_sup_ctrl_movec_dfc_write:
                 bne.s   .fail
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "MOVEC D0,DFC round-trip",0
 .input:
@@ -149,13 +153,14 @@ case_sup_ctrl_move_usp:
                 bne.s   .fail
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "MOVE A0,USP / MOVE USP,A1",0
 .input:
@@ -174,13 +179,14 @@ case_sup_ctrl_moves_write:
                 andi.w  #$0000,d1
                 cmp.l   #$DEADBEEF,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "MOVES.L D0,(A0) (020)",0
 .input:
@@ -201,13 +207,14 @@ case_sup_ctrl_moves_read:
                 andi.w  #$0000,d1
                 cmp.l   #$12345678,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "MOVES.L (A0),D0 (020)",0
 .input:
@@ -221,7 +228,7 @@ case_sup_ctrl_moves_read:
 
 case_sup_ctrl_priv_violation:
                 moveq   #8,d0
-                bsr     ct_install_trap_handler
+                jsr     ct_install_trap_handler
                 lea     .priv_resume(pc),a0
                 move.l  a0,ct_trap_resume
                 move.w  #$0000,-(sp)
@@ -231,19 +238,22 @@ case_sup_ctrl_priv_violation:
                 .priv_user_code:
                 dc.w    $4E7A,$0801
                 .priv_resume:
-                bsr     ct_restore_trap_handler
-                bsr     ct_check_trap_taken
+                jsr     ct_restore_trap_handler
+                jsr     ct_check_trap_taken
                 tst.l   d0
                 beq.s   .fail
                 cmpi.l  #8,ct_trap_vector
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                move.l  ct_trap_taken,d0
+                move.l  ct_trap_vector,d1
+                jsr     ct_fail_exception
 .name:
                 dc.b    "Privilege violation (user mode MOVEC)",0
 .input:
@@ -254,7 +264,7 @@ case_sup_ctrl_priv_violation:
 
 case_sup_ctrl_move_sr_priv:
                 moveq   #8,d0
-                bsr     ct_install_trap_handler
+                jsr     ct_install_trap_handler
                 lea     .sr_priv_resume(pc),a0
                 move.l  a0,ct_trap_resume
                 move.w  #$0000,-(sp)
@@ -264,19 +274,22 @@ case_sup_ctrl_move_sr_priv:
                 .sr_priv_user:
                 move.w  #$2000,sr
                 .sr_priv_resume:
-                bsr     ct_restore_trap_handler
-                bsr     ct_check_trap_taken
+                jsr     ct_restore_trap_handler
+                jsr     ct_check_trap_taken
                 tst.l   d0
                 beq.s   .fail
                 cmpi.l  #8,ct_trap_vector
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                move.l  ct_trap_taken,d0
+                move.l  ct_trap_vector,d1
+                jsr     ct_fail_exception
 .name:
                 dc.b    "MOVE to SR priv violation",0
 .input:

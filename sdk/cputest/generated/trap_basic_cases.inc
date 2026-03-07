@@ -3,7 +3,7 @@
 
 run_trap_basic_shard:
                 lea     ct_shard_name_trap_basic(pc),a0
-                bsr     ct_enter_shard
+                jsr     ct_enter_shard
                 bsr     case_trap_basic_trap0
                 bsr     case_trap_basic_trap1
                 bsr     case_trap_basic_trap2
@@ -27,21 +27,24 @@ ct_shard_name_trap_basic:
 
 case_trap_basic_trap0:
                 moveq   #32,d0
-                bsr     ct_install_trap_handler
+                jsr     ct_install_trap_handler
                 trap    #0
-                bsr     ct_restore_trap_handler
-                bsr     ct_check_trap_taken
+                jsr     ct_restore_trap_handler
+                jsr     ct_check_trap_taken
                 tst.l   d0
                 beq.s   .fail
                 cmpi.l  #32,ct_trap_vector
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                move.l  ct_trap_taken,d0
+                move.l  ct_trap_vector,d1
+                jsr     ct_fail_exception
 .name:
                 dc.b    "TRAP #0",0
 .input:
@@ -52,21 +55,24 @@ case_trap_basic_trap0:
 
 case_trap_basic_trap1:
                 moveq   #33,d0
-                bsr     ct_install_trap_handler
+                jsr     ct_install_trap_handler
                 trap    #1
-                bsr     ct_restore_trap_handler
-                bsr     ct_check_trap_taken
+                jsr     ct_restore_trap_handler
+                jsr     ct_check_trap_taken
                 tst.l   d0
                 beq.s   .fail
                 cmpi.l  #33,ct_trap_vector
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                move.l  ct_trap_taken,d0
+                move.l  ct_trap_vector,d1
+                jsr     ct_fail_exception
 .name:
                 dc.b    "TRAP #1",0
 .input:
@@ -77,21 +83,24 @@ case_trap_basic_trap1:
 
 case_trap_basic_trap2:
                 moveq   #34,d0
-                bsr     ct_install_trap_handler
+                jsr     ct_install_trap_handler
                 trap    #2
-                bsr     ct_restore_trap_handler
-                bsr     ct_check_trap_taken
+                jsr     ct_restore_trap_handler
+                jsr     ct_check_trap_taken
                 tst.l   d0
                 beq.s   .fail
                 cmpi.l  #34,ct_trap_vector
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                move.l  ct_trap_taken,d0
+                move.l  ct_trap_vector,d1
+                jsr     ct_fail_exception
 .name:
                 dc.b    "TRAP #2",0
 .input:
@@ -102,21 +111,24 @@ case_trap_basic_trap2:
 
 case_trap_basic_trap3:
                 moveq   #35,d0
-                bsr     ct_install_trap_handler
+                jsr     ct_install_trap_handler
                 trap    #3
-                bsr     ct_restore_trap_handler
-                bsr     ct_check_trap_taken
+                jsr     ct_restore_trap_handler
+                jsr     ct_check_trap_taken
                 tst.l   d0
                 beq.s   .fail
                 cmpi.l  #35,ct_trap_vector
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                move.l  ct_trap_taken,d0
+                move.l  ct_trap_vector,d1
+                jsr     ct_fail_exception
 .name:
                 dc.b    "TRAP #3",0
 .input:
@@ -127,22 +139,25 @@ case_trap_basic_trap3:
 
 case_trap_basic_trapv_taken:
                 moveq   #7,d0
-                bsr     ct_install_trap_handler
+                jsr     ct_install_trap_handler
                 move.w  #$0002,ccr
                 trapv
-                bsr     ct_restore_trap_handler
-                bsr     ct_check_trap_taken
+                jsr     ct_restore_trap_handler
+                jsr     ct_check_trap_taken
                 tst.l   d0
                 beq.s   .fail
                 cmpi.l  #7,ct_trap_vector
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                move.l  ct_trap_taken,d0
+                move.l  ct_trap_vector,d1
+                jsr     ct_fail_exception
 .name:
                 dc.b    "TRAPV V=1",0
 .input:
@@ -153,21 +168,24 @@ case_trap_basic_trapv_taken:
 
 case_trap_basic_trapv_not_taken:
                 moveq   #7,d0
-                bsr     ct_install_trap_handler
+                jsr     ct_install_trap_handler
                 moveq   #0,d0
                 move.w  d0,ccr
                 trapv
-                bsr     ct_restore_trap_handler
-                bsr     ct_check_trap_taken
+                jsr     ct_restore_trap_handler
+                jsr     ct_check_trap_taken
                 tst.l   d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                move.l  ct_trap_taken,d0
+                move.l  ct_trap_vector,d1
+                jsr     ct_fail_exception
 .name:
                 dc.b    "TRAPV V=0",0
 .input:
@@ -178,19 +196,22 @@ case_trap_basic_trapv_not_taken:
 
 case_trap_basic_trapf_w:
                 moveq   #7,d0
-                bsr     ct_install_trap_handler
+                jsr     ct_install_trap_handler
                 dc.w    $51FA,$0000
-                bsr     ct_restore_trap_handler
-                bsr     ct_check_trap_taken
+                jsr     ct_restore_trap_handler
+                jsr     ct_check_trap_taken
                 tst.l   d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                move.l  ct_trap_taken,d0
+                move.l  ct_trap_vector,d1
+                jsr     ct_fail_exception
 .name:
                 dc.b    "TRAPF.W (020)",0
 .input:
@@ -201,21 +222,24 @@ case_trap_basic_trapf_w:
 
 case_trap_basic_trapt_w:
                 moveq   #7,d0
-                bsr     ct_install_trap_handler
+                jsr     ct_install_trap_handler
                 dc.w    $50FA,$0000
-                bsr     ct_restore_trap_handler
-                bsr     ct_check_trap_taken
+                jsr     ct_restore_trap_handler
+                jsr     ct_check_trap_taken
                 tst.l   d0
                 beq.s   .fail
                 cmpi.l  #7,ct_trap_vector
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                move.l  ct_trap_taken,d0
+                move.l  ct_trap_vector,d1
+                jsr     ct_fail_exception
 .name:
                 dc.b    "TRAPT.W (020)",0
 .input:
@@ -226,19 +250,22 @@ case_trap_basic_trapt_w:
 
 case_trap_basic_trapf_l:
                 moveq   #7,d0
-                bsr     ct_install_trap_handler
+                jsr     ct_install_trap_handler
                 dc.w    $51FB,$0000,$0000
-                bsr     ct_restore_trap_handler
-                bsr     ct_check_trap_taken
+                jsr     ct_restore_trap_handler
+                jsr     ct_check_trap_taken
                 tst.l   d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                move.l  ct_trap_taken,d0
+                move.l  ct_trap_vector,d1
+                jsr     ct_fail_exception
 .name:
                 dc.b    "TRAPF.L (020)",0
 .input:
@@ -249,21 +276,24 @@ case_trap_basic_trapf_l:
 
 case_trap_basic_trapt_no_op:
                 moveq   #7,d0
-                bsr     ct_install_trap_handler
+                jsr     ct_install_trap_handler
                 dc.w    $50FC
-                bsr     ct_restore_trap_handler
-                bsr     ct_check_trap_taken
+                jsr     ct_restore_trap_handler
+                jsr     ct_check_trap_taken
                 tst.l   d0
                 beq.s   .fail
                 cmpi.l  #7,ct_trap_vector
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                move.l  ct_trap_taken,d0
+                move.l  ct_trap_vector,d1
+                jsr     ct_fail_exception
 .name:
                 dc.b    "TRAPT (020)",0
 .input:
@@ -274,21 +304,24 @@ case_trap_basic_trapt_no_op:
 
 case_trap_basic_chk_w_inbounds:
                 moveq   #6,d0
-                bsr     ct_install_trap_handler
+                jsr     ct_install_trap_handler
                 moveq   #5,d0
                 moveq   #10,d1
                 chk.w   d1,d0
-                bsr     ct_restore_trap_handler
-                bsr     ct_check_trap_taken
+                jsr     ct_restore_trap_handler
+                jsr     ct_check_trap_taken
                 tst.l   d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                move.l  ct_trap_taken,d0
+                move.l  ct_trap_vector,d1
+                jsr     ct_fail_exception
 .name:
                 dc.b    "CHK.W in-bounds",0
 .input:
@@ -299,23 +332,26 @@ case_trap_basic_chk_w_inbounds:
 
 case_trap_basic_chk_w_neg:
                 moveq   #6,d0
-                bsr     ct_install_trap_handler
+                jsr     ct_install_trap_handler
                 moveq   #-1,d0
                 moveq   #10,d1
                 chk.w   d1,d0
-                bsr     ct_restore_trap_handler
-                bsr     ct_check_trap_taken
+                jsr     ct_restore_trap_handler
+                jsr     ct_check_trap_taken
                 tst.l   d0
                 beq.s   .fail
                 cmpi.l  #6,ct_trap_vector
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                move.l  ct_trap_taken,d0
+                move.l  ct_trap_vector,d1
+                jsr     ct_fail_exception
 .name:
                 dc.b    "CHK.W D0<0",0
 .input:
@@ -326,23 +362,26 @@ case_trap_basic_chk_w_neg:
 
 case_trap_basic_chk_w_over:
                 moveq   #6,d0
-                bsr     ct_install_trap_handler
+                jsr     ct_install_trap_handler
                 moveq   #15,d0
                 moveq   #10,d1
                 chk.w   d1,d0
-                bsr     ct_restore_trap_handler
-                bsr     ct_check_trap_taken
+                jsr     ct_restore_trap_handler
+                jsr     ct_check_trap_taken
                 tst.l   d0
                 beq.s   .fail
                 cmpi.l  #6,ct_trap_vector
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                move.l  ct_trap_taken,d0
+                move.l  ct_trap_vector,d1
+                jsr     ct_fail_exception
 .name:
                 dc.b    "CHK.W D0>bound",0
 .input:
@@ -353,21 +392,24 @@ case_trap_basic_chk_w_over:
 
 case_trap_basic_chk_l_inbounds:
                 moveq   #6,d0
-                bsr     ct_install_trap_handler
+                jsr     ct_install_trap_handler
                 moveq   #100,d0
                 move.l  #200,d1
                 dc.w    $4101
-                bsr     ct_restore_trap_handler
-                bsr     ct_check_trap_taken
+                jsr     ct_restore_trap_handler
+                jsr     ct_check_trap_taken
                 tst.l   d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                move.l  ct_trap_taken,d0
+                move.l  ct_trap_vector,d1
+                jsr     ct_fail_exception
 .name:
                 dc.b    "CHK.L in-bounds (020)",0
 .input:
@@ -378,23 +420,26 @@ case_trap_basic_chk_l_inbounds:
 
 case_trap_basic_chk_l_over:
                 moveq   #6,d0
-                bsr     ct_install_trap_handler
+                jsr     ct_install_trap_handler
                 move.l  #300,d0
                 move.l  #200,d1
                 dc.w    $4101
-                bsr     ct_restore_trap_handler
-                bsr     ct_check_trap_taken
+                jsr     ct_restore_trap_handler
+                jsr     ct_check_trap_taken
                 tst.l   d0
                 beq.s   .fail
                 cmpi.l  #6,ct_trap_vector
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                move.l  ct_trap_taken,d0
+                move.l  ct_trap_vector,d1
+                jsr     ct_fail_exception
 .name:
                 dc.b    "CHK.L D0>bound (020)",0
 .input:

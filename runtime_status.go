@@ -36,6 +36,7 @@ type runtimeStatusSnapshot struct {
 	ahxEngine *AHXEngine
 	modEngine *MODEngine
 	wavEngine *WAVEngine
+	paulaDMA  *ArosAudioDMA
 
 	psgPlayer   *PSGPlayer
 	sidPlayer   *SIDPlayer
@@ -76,6 +77,12 @@ func (s *runtimeStatusStore) setChips(video *VideoChip, vga *VGAEngine, ula *ULA
 	s.ahxEngine = ahx
 	s.modEngine = mod
 	s.wavEngine = wav
+	s.mu.Unlock()
+}
+
+func (s *runtimeStatusStore) setPaulaDMA(dma *ArosAudioDMA) {
+	s.mu.Lock()
+	s.paulaDMA = dma
 	s.mu.Unlock()
 }
 

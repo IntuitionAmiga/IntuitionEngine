@@ -3,7 +3,7 @@
 
 run_exception_return_shard:
                 lea     ct_shard_name_exception_return(pc),a0
-                bsr     ct_enter_shard
+                jsr     ct_enter_shard
                 bsr     case_exc_ret_rte_fmt0
                 bsr     case_exc_ret_rte_sr_restore
                 bsr     case_exc_ret_rte_supervisor
@@ -32,13 +32,14 @@ case_exc_ret_rte_fmt0:
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "RTE format $0",0
 .input:
@@ -58,13 +59,14 @@ case_exc_ret_rte_sr_restore:
                 andi.w  #$001F,d1
                 cmpi.w  #$001F,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "RTE SR restore",0
 .input:
@@ -84,13 +86,14 @@ case_exc_ret_rte_supervisor:
                 andi.w  #$2000,d1
                 cmpi.w  #$2000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "RTE supervisor preserved",0
 .input:
@@ -111,13 +114,14 @@ case_exc_ret_rtr_ccr:
                 andi.w  #$001F,d1
                 cmpi.w  #$001F,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "RTR restores CCR",0
 .input:
@@ -136,13 +140,14 @@ case_exc_ret_rtr_no_super:
                 andi.w  #$2000,d1
                 cmpi.w  #$2000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "RTR leaves S unchanged",0
 .input:
@@ -162,13 +167,14 @@ case_exc_ret_rtr_clear:
                 andi.w  #$001F,d1
                 cmpi.w  #$0000,d1
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_sr
+                jsr     ct_fail_reg_sr
 .name:
                 dc.b    "RTR clears CCR",0
 .input:
@@ -191,13 +197,14 @@ case_exc_ret_rte_vec32:
                 andi.w  #$0000,d1
                 cmp.l   #$00000042,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "RTE format $0 vec 32",0
 .input:
@@ -221,13 +228,14 @@ case_exc_ret_rte_fmt2:
                 andi.w  #$0000,d1
                 cmp.l   #$000000AA,d0
                 bne.s   .fail
-                addq.l  #1,ct_pass_count
+                lea     .name(pc),a0
+                jsr     ct_log_pass
                 rts
 .fail:
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
-                bsr     ct_fail_reg_only
+                jsr     ct_fail_reg_only
 .name:
                 dc.b    "RTE format $2",0
 .input:

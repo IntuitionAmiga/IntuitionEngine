@@ -1,55 +1,28 @@
-; IntuitionEngine M68K CPU test suite.
+; Bare-metal M68K CPU test suite (no AmigaOS dependencies).
+; Runs on raw M68K emulator via Go test driver.
+; Assembled with: vasmm68k_mot -Fbin -m68020 -m68881 -devpac -I include -o cputest_suite.bin cputest_suite_bare.asm
 
-                include "cputest_runtime.inc"
+                org     $1000
+                bra     start
+
+                include "cputest_runtime_bare.inc"
                 include "cputest_manifest.inc"
 
-                xref    run_bf_mem_shard
-                xref    run_bf_reg_shard
-                xref    run_callm_rtm_shard
-                xref    run_cas_ops_shard
-                xref    run_chk2_cmp2_shard
-                xref    run_core_020_shard
-                xref    run_core_alu_shard
-                xref    run_core_bcd_shard
-                xref    run_core_flow_shard
-                xref    run_core_misc_shard
-                xref    run_core_move_ctrl_shard
-                xref    run_core_move_ea_shard
-                xref    run_core_shift_bit_shard
-                xref    run_ea_020_brief_shard
-                xref    run_ea_020_full_shard
-                xref    run_ea_020_memindir_shard
-                xref    run_ea_control_shard
-                xref    run_ea_read_ops_shard
-                xref    run_ea_write_ops_shard
-                xref    run_exception_return_shard
-                xref    run_fpu_arith_shard
-                xref    run_fpu_cond_shard
-                xref    run_fpu_ctrl_state_shard
-                xref    run_fpu_data_shard
-                xref    run_fpu_formats_shard
-                xref    run_fpu_trans_shard
-                xref    run_fpu_unary_shard
-                xref    run_muldiv_020_shard
-                xref    run_supervisor_ctrl_shard
-                xref    run_trap_basic_shard
-                xref    ct_set_expected_total
-
-                section text,code
-
 start:
-                bsr     ct_set_expected_total
-                bsr     ct_init
-                lea     ct_suite_shards(pc),a0
+                jsr     ct_init
+                jsr     ct_set_expected_total
+                lea     ct_suite_shards,a5
 .next:
-                movea.l (a0)+,a1
+                move.l  (a5)+,d0
                 beq.s   .done
+                movea.l d0,a1
+                move.l  a5,-(sp)
                 jsr     (a1)
+                movea.l (sp)+,a5
                 bra.s   .next
 .done:
-                bsr     ct_finish
-                moveq   #0,d0
-                rts
+                jsr     ct_finish
+.halt:          bra.s   .halt
 
                 include "../cputest/generated/bf_mem_cases.inc"
                 include "../cputest/generated/bf_reg_cases.inc"
