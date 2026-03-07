@@ -10746,7 +10746,7 @@ func (cpu *M68KCPU) GetBitFieldParameters(ext uint16, isMemory bool) BFParameter
 
 	// Get offset (from register or immediate)
 	if (ext & M68K_BF_OFFSET_REG) != 0 {
-		offsetReg := (ext & M68K_BF_OFFSET_MASK) >> 6
+		offsetReg := (ext >> 6) & 0x07
 		if isMemory {
 			// Memory: full signed 32-bit offset (M68K manual: offset relative to EA)
 			rawOff := int32(cpu.DataRegs[offsetReg])
