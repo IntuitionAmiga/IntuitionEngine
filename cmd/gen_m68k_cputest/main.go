@@ -52,6 +52,7 @@ type testCase struct {
 	ExpectTrap    bool
 	TrapVector    int
 	DataPool      []string // raw asm lines emitted after the case
+	MusashiSkip   bool     // skip in Musashi-compatible builds (unsupported FPU ops)
 }
 
 type shard struct {
@@ -65,6 +66,13 @@ type shard struct {
 // ---------------------------------------------------------------------------
 
 func main() {
+	musashiCompat := false
+	for _, arg := range os.Args[1:] {
+		if arg == "-musashi" {
+			musashiCompat = true
+		}
+	}
+
 	root, err := os.Getwd()
 	if err != nil {
 		fail(err)
@@ -75,6 +83,9 @@ func main() {
 	}
 
 	shards := buildCatalog()
+	if musashiCompat {
+		shards = filterMusashi(shards)
+	}
 	totalCases := 0
 	for _, shard := range shards {
 		totalCases += len(shard.Cases)
@@ -96,6 +107,23 @@ func main() {
 // ---------------------------------------------------------------------------
 // Catalog assembly
 // ---------------------------------------------------------------------------
+
+func filterMusashi(shards []shard) []shard {
+	var out []shard
+	for _, sh := range shards {
+		var cases []testCase
+		for _, tc := range sh.Cases {
+			if !tc.MusashiSkip {
+				cases = append(cases, tc)
+			}
+		}
+		if len(cases) > 0 {
+			sh.Cases = cases
+			out = append(out, sh)
+		}
+	}
+	return out
+}
 
 func buildCatalog() []shard {
 	var shards []shard
@@ -191,8 +219,9 @@ func renderCase(buf *bytes.Buffer, tc testCase) {
 func renderIntCheck(buf *bytes.Buffer, tc testCase) {
 	switch tc.ActualMode {
 	case "custom_d1_sr":
+		buf.WriteString("                move.w  sr,-(sp)\n")
 		buf.WriteString("                move.l  d1,d0\n")
-		buf.WriteString("                move.w  sr,d1\n")
+		buf.WriteString("                move.w  (sp)+,d1\n")
 		fmt.Fprintf(buf, "                andi.w  #$%04X,d1\n", tc.SRMask)
 		fmt.Fprintf(buf, "                cmp.l   #$%08X,d0\n", tc.ExpectValue)
 		buf.WriteString("                bne.s   .fail\n")
@@ -252,8 +281,9 @@ func renderIntCheck(buf *bytes.Buffer, tc testCase) {
 		fmt.Fprintf(buf, "                cmpi.l  #$%08X,d0\n", tc.ExpectFPSR)
 		buf.WriteString("                bne.s   .fail\n")
 	default: // "regsr", "regonly"
+		buf.WriteString("                move.w  sr,-(sp)\n")
 		fmt.Fprintf(buf, "                move.l  %s,d0\n", strings.ToUpper(tc.ExpectReg))
-		buf.WriteString("                move.w  sr,d1\n")
+		buf.WriteString("                move.w  (sp)+,d1\n")
 		fmt.Fprintf(buf, "                andi.w  #$%04X,d1\n", tc.SRMask)
 		fmt.Fprintf(buf, "                cmp.l   #$%08X,d0\n", tc.ExpectValue)
 		buf.WriteString("                bne.s   .fail\n")
@@ -262,10 +292,16 @@ func renderIntCheck(buf *bytes.Buffer, tc testCase) {
 			buf.WriteString("                bne.s   .fail\n")
 		}
 	}
+	if tc.ActualMode == "custom_sp_mem" {
+		buf.WriteString("                move.l  a5,sp\n")
+	}
 	buf.WriteString("                lea     .name(pc),a0\n")
 	buf.WriteString("                jsr     ct_log_pass\n")
 	buf.WriteString("                rts\n")
 	buf.WriteString(".fail:\n")
+	if tc.ActualMode == "custom_sp_mem" {
+		buf.WriteString("                move.l  a5,sp\n")
+	}
 	buf.WriteString("                lea     .name(pc),a0\n")
 	buf.WriteString("                lea     .input(pc),a1\n")
 	buf.WriteString("                lea     .expected(pc),a2\n")
@@ -367,4 +403,10 @@ func regsr(shard, id, name, input, expected, reg string, val uint32, srMask, exp
 
 func regonly(shard, id, name, input, expected, reg string, val uint32, setup, body []string, pool ...string) testCase {
 	return intCase(shard, id, name, input, expected, "regonly", reg, val, 0, 0, setup, body, pool...)
+}
+
+// musashiSkip marks a test case as unsupported by Musashi (filtered in -musashi mode).
+func musashiSkip(tc testCase) testCase {
+	tc.MusashiSkip = true
+	return tc
 }

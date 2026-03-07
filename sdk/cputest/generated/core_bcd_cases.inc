@@ -19,8 +19,9 @@ case_core_bcd_abcd:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $C300
+                move.w  sr,-(sp)
                 move.l  D1,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000010,d0
                 bne.s   .fail
@@ -46,8 +47,9 @@ case_core_bcd_sbcd:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $8300
+                move.w  sr,-(sp)
                 move.l  D1,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000009,d0
                 bne.s   .fail
@@ -72,8 +74,9 @@ case_core_bcd_nbcd:
                 moveq   #0,d1
                 move.w  d1,ccr
                 dc.w    $4800
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000077,d0
                 bne.s   .fail

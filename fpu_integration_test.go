@@ -390,7 +390,7 @@ func TestFPU_IllegalOpcodeRaisesLineF(t *testing.T) {
 
 	for _, op := range invalidOps {
 		cpu.PC = 0x2000
-		cpu.execFPUGeneral(op)
+		cpu.execFPURegToReg(op)
 		if cpu.PC != 0x4000 {
 			t.Fatalf("op 0x%02X did not raise LINE_F", op)
 		}
@@ -410,7 +410,7 @@ func TestFPU_FMOVECR_AfterJumpTable(t *testing.T) {
 	}
 	for i, tc := range cases {
 		cmdWord := uint16(0x5C00 | (uint16(i&7) << 7) | uint16(tc.rom))
-		cpu.execFPUGeneral(cmdWord)
+		cpu.execFPURegToReg(cmdWord)
 		if got := cpu.FPU.GetFP64(i & 7); math.Abs(got-tc.want) > 1e-15 {
 			t.Fatalf("rom 0x%02X got %v want %v", tc.rom, got, tc.want)
 		}

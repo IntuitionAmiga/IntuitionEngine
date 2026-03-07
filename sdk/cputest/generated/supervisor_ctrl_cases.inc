@@ -30,8 +30,9 @@ case_sup_ctrl_movec_vbr_write:
                 move.l  d2,d0
                 dc.w    $4E7B,$0801
                 move.w  d3,sr
+                move.w  sr,-(sp)
                 move.l  d1,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00001000,d0
                 bne.s   .fail
@@ -62,8 +63,9 @@ case_sup_ctrl_movec_cacr_roundtrip:
                 dc.w    $4E7A,$1002
                 move.l  d2,d0
                 dc.w    $4E7B,$0002
+                move.w  sr,-(sp)
                 move.l  d1,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
@@ -90,8 +92,9 @@ case_sup_ctrl_movec_sfc_write:
                 dc.w    $4E7B,$0000
                 moveq   #0,d1
                 dc.w    $4E7A,$1000
+                move.w  sr,-(sp)
                 move.l  d1,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000005,d0
                 bne.s   .fail
@@ -118,8 +121,9 @@ case_sup_ctrl_movec_dfc_write:
                 dc.w    $4E7B,$0001
                 moveq   #0,d1
                 dc.w    $4E7A,$1001
+                move.w  sr,-(sp)
                 move.l  d1,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000003,d0
                 bne.s   .fail
@@ -146,8 +150,9 @@ case_sup_ctrl_move_usp:
                 dc.w    $4E60
                 dc.w    $4E69
                 move.l  a1,d1
+                move.w  sr,-(sp)
                 move.l  d1,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00012345,d0
                 bne.s   .fail
@@ -174,8 +179,9 @@ case_sup_ctrl_moves_write:
                 lea     .moves_buf(pc),a0
                 dc.w    $0E90,$0800
                 move.l  (a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$DEADBEEF,d0
                 bne.s   .fail
@@ -202,8 +208,9 @@ case_sup_ctrl_moves_read:
                 lea     .moves_rdbuf(pc),a0
                 moveq   #0,d0
                 dc.w    $0E90,$0000
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$12345678,d0
                 bne.s   .fail

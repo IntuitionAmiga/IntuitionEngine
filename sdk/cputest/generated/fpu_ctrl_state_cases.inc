@@ -310,8 +310,9 @@ case_fpu_ctrl_fpcr_roundtrip:
                 fmove.l d0,fpcr
                 fmove.l fpcr,d1
                 fmove.l #$00000000,fpcr
+                move.w  sr,-(sp)
                 move.l  d1,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000030,d0
                 bne.s   .fail
@@ -338,8 +339,9 @@ case_fpu_ctrl_fpsr_roundtrip:
                 fmove.l d0,fpsr
                 fmove.l fpsr,d1
                 fmove.l #$00000000,fpsr
+                move.w  sr,-(sp)
                 move.l  d1,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$08000000,d0
                 bne.s   .fail
@@ -365,8 +367,9 @@ case_fpu_ctrl_fpiar_roundtrip:
                 move.l  #$00012345,d0
                 fmove.l d0,fpiar
                 fmove.l fpiar,d1
+                move.w  sr,-(sp)
                 move.l  d1,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00012345,d0
                 bne.s   .fail

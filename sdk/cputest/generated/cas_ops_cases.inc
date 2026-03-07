@@ -158,8 +158,9 @@ case_cas_ops_casw_match:
                 dc.w    $0CD0,$0040
                 moveq   #0,d0
                 move.w  (a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00001234,d0
                 bne.s   .fail
@@ -189,8 +190,9 @@ case_cas_ops_casw_mismatch:
                 move.l  #$00002222,d1
                 dc.w    $0CD0,$0040
                 andi.l  #$0000FFFF,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$0000ABCD,d0
                 bne.s   .fail
@@ -221,8 +223,9 @@ case_cas_ops_casb_match:
                 dc.w    $0AD0,$0040
                 moveq   #0,d0
                 move.b  (a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$000000AA,d0
                 bne.s   .fail
@@ -252,8 +255,9 @@ case_cas_ops_casb_mismatch:
                 move.l  #$000000AA,d1
                 dc.w    $0AD0,$0040
                 andi.l  #$000000FF,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000055,d0
                 bne.s   .fail
@@ -283,8 +287,9 @@ case_cas_ops_casl_zero_match:
                 move.l  #$DEADBEEF,d1
                 dc.w    $0ED0,$0040
                 move.l  (a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$DEADBEEF,d0
                 bne.s   .fail
@@ -472,8 +477,9 @@ case_cas_ops_casl_diff_regs:
                 move.l  #$0000BEEF,d3
                 dc.w    $0ED0,$00C2
                 move.l  (a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$0000BEEF,d0
                 bne.s   .fail

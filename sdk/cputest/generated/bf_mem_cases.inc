@@ -103,8 +103,9 @@ case_bf_mem_bfextu_0_8:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $E9D0,$1008
+                move.w  sr,-(sp)
                 move.l  D1,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000C,d1
                 cmp.l   #$000000AB,d0
                 bne.s   .fail
@@ -135,8 +136,9 @@ case_bf_mem_bfextu_4_8:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $E9D0,$1108
+                move.w  sr,-(sp)
                 move.l  D1,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000C,d1
                 cmp.l   #$000000BC,d0
                 bne.s   .fail
@@ -167,8 +169,9 @@ case_bf_mem_bfextu_0_32:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $E9D0,$1000
+                move.w  sr,-(sp)
                 move.l  D1,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000C,d1
                 cmp.l   #$ABCDEF01,d0
                 bne.s   .fail
@@ -199,8 +202,9 @@ case_bf_mem_bfextu_12_16:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $E9D0,$1310
+                move.w  sr,-(sp)
                 move.l  D1,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000C,d1
                 cmp.l   #$0000DEF0,d0
                 bne.s   .fail
@@ -231,8 +235,9 @@ case_bf_mem_bfextu_4_32:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $E9D0,$1100
+                move.w  sr,-(sp)
                 move.l  D1,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000C,d1
                 cmp.l   #$BCDEF012,d0
                 bne.s   .fail
@@ -263,8 +268,9 @@ case_bf_mem_bfexts_0_8:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $EBD0,$1008
+                move.w  sr,-(sp)
                 move.l  D1,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000C,d1
                 cmp.l   #$FFFFFFAB,d0
                 bne.s   .fail
@@ -295,8 +301,9 @@ case_bf_mem_bfexts_8_8:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $EBD0,$1208
+                move.w  sr,-(sp)
                 move.l  D1,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000C,d1
                 cmp.l   #$FFFFFFCD,d0
                 bne.s   .fail
@@ -327,8 +334,9 @@ case_bf_mem_bfchg_0_8:
                 move.l  #$23456789,4(a0)
                 dc.w    $EAD0,$0008
                 move.l  (a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$54CDEF01,d0
                 bne.s   .fail
@@ -357,8 +365,9 @@ case_bf_mem_bfchg_0_32:
                 move.l  #$23456789,4(a0)
                 dc.w    $EAD0,$0000
                 move.l  (a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$543210FE,d0
                 bne.s   .fail
@@ -387,8 +396,9 @@ case_bf_mem_bfclr_0_8:
                 move.l  #$23456789,4(a0)
                 dc.w    $ECD0,$0008
                 move.l  (a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00CDEF01,d0
                 bne.s   .fail
@@ -417,8 +427,9 @@ case_bf_mem_bfclr_8_16:
                 move.l  #$23456789,4(a0)
                 dc.w    $ECD0,$0210
                 move.l  (a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$AB000001,d0
                 bne.s   .fail
@@ -447,8 +458,9 @@ case_bf_mem_bfset_0_8:
                 move.l  #$23456789,4(a0)
                 dc.w    $EED0,$0008
                 move.l  (a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$FFCDEF01,d0
                 bne.s   .fail
@@ -477,8 +489,9 @@ case_bf_mem_bfset_16_16:
                 move.l  #$23456789,4(a0)
                 dc.w    $EED0,$0410
                 move.l  (a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$ABCDFFFF,d0
                 bne.s   .fail
@@ -507,8 +520,9 @@ case_bf_mem_bfffo_0_32:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $EDD0,$1000
+                move.w  sr,-(sp)
                 move.l  d1,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000C,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
@@ -541,8 +555,9 @@ case_bf_mem_bfffo_zero:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $EDD0,$1000
+                move.w  sr,-(sp)
                 move.l  d1,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000C,d1
                 cmp.l   #$00000020,d0
                 bne.s   .fail
@@ -575,8 +590,9 @@ case_bf_mem_bfffo_bit15:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $EDD0,$1000
+                move.w  sr,-(sp)
                 move.l  d1,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000C,d1
                 cmp.l   #$0000000F,d0
                 bne.s   .fail
@@ -608,8 +624,9 @@ case_bf_mem_bfins_0_8:
                 move.l  #$000000FF,d1
                 dc.w    $EFD0,$1008
                 move.l  (a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$FF000000,d0
                 bne.s   .fail
@@ -639,8 +656,9 @@ case_bf_mem_bfins_0_32:
                 move.l  #$DEADBEEF,d1
                 dc.w    $EFD0,$1000
                 move.l  (a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$DEADBEEF,d0
                 bne.s   .fail
@@ -670,8 +688,9 @@ case_bf_mem_bfins_8_8:
                 move.l  #$000000AB,d1
                 dc.w    $EFD0,$1208
                 move.l  (a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$12AB3400,d0
                 bne.s   .fail
@@ -701,8 +720,9 @@ case_bf_mem_bfins_4_32:
                 move.l  #$12345678,d1
                 dc.w    $EFD0,$1100
                 move.l  (a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$F1234567,d0
                 bne.s   .fail
@@ -732,8 +752,9 @@ case_bf_mem_bfextu_dyn_off:
                 moveq   #0,d4
                 move.w  d4,ccr
                 dc.w    $E9D0,$1888
+                move.w  sr,-(sp)
                 move.l  D1,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000C,d1
                 cmp.l   #$000000CD,d0
                 bne.s   .fail
@@ -766,8 +787,9 @@ case_bf_mem_bfextu_dyn_both:
                 moveq   #0,d4
                 move.w  d4,ccr
                 dc.w    $E9D0,$18A3
+                move.w  sr,-(sp)
                 move.l  D1,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000C,d1
                 cmp.l   #$0000ABCD,d0
                 bne.s   .fail
@@ -799,8 +821,9 @@ case_bf_mem_bfextu_dyn_off32:
                 moveq   #0,d4
                 move.w  d4,ccr
                 dc.w    $E9D0,$1888
+                move.w  sr,-(sp)
                 move.l  D1,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000C,d1
                 cmp.l   #$00000023,d0
                 bne.s   .fail
@@ -832,8 +855,9 @@ case_bf_mem_bfextu_dyn_neg_off:
                 moveq   #0,d4
                 move.w  d4,ccr
                 dc.w    $E9D0,$1888
+                move.w  sr,-(sp)
                 move.l  D1,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000C,d1
                 cmp.l   #$000000AB,d0
                 bne.s   .fail
@@ -864,8 +888,9 @@ case_bf_mem_bfset_4_8:
                 move.l  #$00000000,4(a0)
                 dc.w    $EED0,$0108
                 move.l  (a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$0FF00000,d0
                 bne.s   .fail
@@ -894,8 +919,9 @@ case_bf_mem_bfclr_4_8:
                 move.l  #$FFFFFFFF,4(a0)
                 dc.w    $ECD0,$0108
                 move.l  (a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$F00FFFFF,d0
                 bne.s   .fail
@@ -924,8 +950,9 @@ case_bf_mem_bfchg_4_8:
                 move.l  #$00000000,4(a0)
                 dc.w    $EAD0,$0108
                 move.l  (a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$F0F0FF00,d0
                 bne.s   .fail
@@ -955,8 +982,9 @@ case_bf_mem_bfins_4_8:
                 move.l  #$000000CC,d1
                 dc.w    $EFD0,$1108
                 move.l  (a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$0CC00000,d0
                 bne.s   .fail

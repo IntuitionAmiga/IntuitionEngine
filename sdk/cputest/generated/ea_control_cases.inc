@@ -23,8 +23,9 @@ case_ea_ctrl_jmp_an:
                 moveq   #$77,d0
                 .jmp_an_tgt:
                 moveq   #1,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
@@ -47,12 +48,13 @@ case_ea_ctrl_jmp_an:
 case_ea_ctrl_jmp_d16:
                 moveq   #0,d0
                 lea     .jmp_d16_base(pc),a0
-                jmp     4(a0)
+                jmp     2(a0)
                 .jmp_d16_base:
                 moveq   #$77,d0
                 moveq   #2,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000002,d0
                 bne.s   .fail
@@ -65,9 +67,9 @@ case_ea_ctrl_jmp_d16:
                 lea     .expected(pc),a2
                 jsr     ct_fail_reg_only
 .name:
-                dc.b    "JMP 4(A0)",0
+                dc.b    "JMP 2(A0)",0
 .input:
-                dc.b    "JMP 4(A0)",0
+                dc.b    "JMP 2(A0)",0
 .expected:
                 dc.b    "D0=$00000002",0
                 even
@@ -75,15 +77,17 @@ case_ea_ctrl_jmp_d16:
 case_ea_ctrl_jmp_absl:
                 moveq   #0,d0
                 lea     .jmp_absl_tgt(pc),a0
-                move.l  a0,d2
+                lea     .jmp_absl_addr(pc),a1
+                move.l  a0,(a1)
                 dc.w    $4EF9
                 .jmp_absl_addr:
                 dc.l    0
                 moveq   #$77,d0
                 .jmp_absl_tgt:
                 moveq   #3,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000003,d0
                 bne.s   .fail
@@ -113,8 +117,9 @@ case_ea_ctrl_jsr_an:
                 addq.l  #3,d0
                 rts
                 .jsr_an_done:
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000005,d0
                 bne.s   .fail
@@ -146,8 +151,9 @@ case_ea_ctrl_jsr_d16:
                 addq.l  #3,d0
                 rts
                 .jsr_d16_done:
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000005,d0
                 bne.s   .fail
@@ -176,8 +182,9 @@ case_ea_ctrl_jsr_pcdisp:
                 addq.l  #3,d0
                 rts
                 .jsr_pcdisp_done:
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000005,d0
                 bne.s   .fail

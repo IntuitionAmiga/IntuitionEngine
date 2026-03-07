@@ -419,6 +419,12 @@ func (fpu *M68881FPU) FLOGN(src, dst int) {
 	fpu.setCC64(fpu.fp[dst])
 }
 
+// FLOGNP1 calculates ln(x+1) for FPsrc and stores in FPdst
+func (fpu *M68881FPU) FLOGNP1(src, dst int) {
+	fpu.fp[dst] = math.Log1p(fpu.fp[src])
+	fpu.setCC64(fpu.fp[dst])
+}
+
 // FLOG2 calculates base-2 logarithm of FPsrc and stores in FPdst
 func (fpu *M68881FPU) FLOG2(src, dst int) {
 	fpu.fp[dst] = math.Log2(fpu.fp[src])
@@ -428,6 +434,12 @@ func (fpu *M68881FPU) FLOG2(src, dst int) {
 // FETOX calculates e^x for FPsrc and stores in FPdst
 func (fpu *M68881FPU) FETOX(src, dst int) {
 	fpu.fp[dst] = math.Exp(fpu.fp[src])
+	fpu.setCC64(fpu.fp[dst])
+}
+
+// FETOXM1 calculates e^x - 1 for FPsrc and stores in FPdst
+func (fpu *M68881FPU) FETOXM1(src, dst int) {
+	fpu.fp[dst] = math.Expm1(fpu.fp[src])
 	fpu.setCC64(fpu.fp[dst])
 }
 

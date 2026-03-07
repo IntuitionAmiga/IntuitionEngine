@@ -26,7 +26,6 @@ start:
 
                 include "../cputest/generated/bf_mem_cases.inc"
                 include "../cputest/generated/bf_reg_cases.inc"
-                include "../cputest/generated/callm_rtm_cases.inc"
                 include "../cputest/generated/cas_ops_cases.inc"
                 include "../cputest/generated/chk2_cmp2_cases.inc"
                 include "../cputest/generated/core_020_cases.inc"

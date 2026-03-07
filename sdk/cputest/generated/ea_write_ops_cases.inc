@@ -34,8 +34,9 @@ case_ea_write_add_an_ind:
                 lea     .dst_buf(pc),a0
                 add.l   d0,(a0)
                 move.l  (a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$11223344,d0
                 bne.s   .fail
@@ -70,8 +71,9 @@ case_ea_write_add_an_postinc:
                 lea     .dst_buf(pc),a0
                 add.l   d0,(a0)+
                 move.l  -(a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$11223344,d0
                 bne.s   .fail
@@ -106,8 +108,9 @@ case_ea_write_add_an_predec:
                 lea     .dst_buf+4(pc),a0
                 add.l   d0,-(a0)
                 move.l  (a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$11223344,d0
                 bne.s   .fail
@@ -142,8 +145,9 @@ case_ea_write_add_d16_an:
                 lea     .dst_buf(pc),a0
                 add.l   d0,4(a0)
                 move.l  4(a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$11223344,d0
                 bne.s   .fail
@@ -175,8 +179,9 @@ case_ea_write_add_abs_l:
                 move.l  #$11223344,d0
                 add.l   d0,$00008100
                 move.l  $00008100,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$11223344,d0
                 bne.s   .fail
@@ -210,8 +215,9 @@ case_ea_write_clr_an_ind:
                 move.w  d1,ccr
                 clr.l   (a0)
                 move.l  (a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
@@ -247,8 +253,9 @@ case_ea_write_clr_d16_an:
                 move.w  d1,ccr
                 clr.l   4(a0)
                 move.l  4(a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
@@ -283,8 +290,9 @@ case_ea_write_clr_abs_l:
                 move.w  d1,ccr
                 clr.l   $00008100
                 move.l  $00008100,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
@@ -316,16 +324,19 @@ case_ea_write_clr_abs_l:
 case_ea_write_neg_an_ind:
                 lea     .dst_buf(pc),a0
                 move.l  #$00000001,(a0)
-                moveq   #0,d1
-                move.w  d1,ccr
+                moveq   #0,d2
+                move.w  d2,ccr
                 neg.l   (a0)
+                move.w  sr,d3
                 move.l  (a0),d0
+                move.w  d3,ccr
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
-                andi.w  #$000F,d1
+                move.w  (sp)+,d1
+                andi.w  #$001F,d1
                 cmp.l   #$FFFFFFFF,d0
                 bne.s   .fail
-                cmpi.w  #$0009,d1
+                cmpi.w  #$0019,d1
                 bne.s   .fail
                 lea     .name(pc),a0
                 jsr     ct_log_pass
@@ -340,7 +351,7 @@ case_ea_write_neg_an_ind:
 .input:
                 dc.b    "NEG.L (A0) initial: [ea]=$00000001",0
 .expected:
-                dc.b    "D0=$FFFFFFFF SR(N+X)=$0009",0
+                dc.b    "D0=$FFFFFFFF SR(XNVC)=$0019",0
                 even
 .dst_buf:
                 dc.l    $00000000
@@ -353,16 +364,19 @@ case_ea_write_neg_an_ind:
 case_ea_write_neg_d16_an:
                 lea     .dst_buf(pc),a0
                 move.l  #$00000001,4(a0)
-                moveq   #0,d1
-                move.w  d1,ccr
+                moveq   #0,d2
+                move.w  d2,ccr
                 neg.l   4(a0)
+                move.w  sr,d3
                 move.l  4(a0),d0
+                move.w  d3,ccr
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
-                andi.w  #$000F,d1
+                move.w  (sp)+,d1
+                andi.w  #$001F,d1
                 cmp.l   #$FFFFFFFF,d0
                 bne.s   .fail
-                cmpi.w  #$0009,d1
+                cmpi.w  #$0019,d1
                 bne.s   .fail
                 lea     .name(pc),a0
                 jsr     ct_log_pass
@@ -377,7 +391,7 @@ case_ea_write_neg_d16_an:
 .input:
                 dc.b    "NEG.L 4(A0) initial: [ea]=$00000001",0
 .expected:
-                dc.b    "D0=$FFFFFFFF SR(N+X)=$0009",0
+                dc.b    "D0=$FFFFFFFF SR(XNVC)=$0019",0
                 even
 .dst_buf:
                 dc.l    $00000000
@@ -394,8 +408,9 @@ case_ea_write_not_an_ind:
                 move.w  d1,ccr
                 not.l   (a0)
                 move.l  (a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$00FF00FF,d0
                 bne.s   .fail
@@ -431,8 +446,9 @@ case_ea_write_not_d16_an:
                 move.w  d1,ccr
                 not.l   4(a0)
                 move.l  4(a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$00FF00FF,d0
                 bne.s   .fail
@@ -534,8 +550,9 @@ case_ea_write_bset_an:
                 bset    d1,(a0)
                 moveq   #0,d0
                 move.b  (a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
@@ -569,8 +586,9 @@ case_ea_write_bset_d16:
                 bset    d1,4(a0)
                 moveq   #0,d0
                 move.b  4(a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000008,d0
                 bne.s   .fail

@@ -24,8 +24,9 @@ case_core_shift_bit_asl:
                 moveq   #0,d1
                 move.w  d1,ccr
                 dc.w    $E380
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$00000002,d0
                 bne.s   .fail
@@ -52,8 +53,9 @@ case_core_shift_bit_lsr:
                 moveq   #0,d1
                 move.w  d1,ccr
                 dc.w    $E288
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$00000002,d0
                 bne.s   .fail
@@ -80,8 +82,9 @@ case_core_shift_bit_rol:
                 moveq   #0,d1
                 move.w  d1,ccr
                 dc.w    $E398
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
@@ -108,8 +111,9 @@ case_core_shift_bit_btst:
                 moveq   #0,d1
                 move.w  d1,ccr
                 dc.w    $0800,$0000
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0004,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
@@ -136,8 +140,9 @@ case_core_shift_bit_bset:
                 moveq   #0,d1
                 move.w  d1,ccr
                 dc.w    $08C0,$0000
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0004,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
@@ -164,8 +169,9 @@ case_core_shift_bit_bchg_imm:
                 moveq   #0,d1
                 move.w  d1,ccr
                 dc.w    $0840,$0000
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0004,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
@@ -192,8 +198,9 @@ case_core_shift_bit_bclr_imm:
                 moveq   #0,d1
                 move.w  d1,ccr
                 dc.w    $0880,$0000
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0004,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
@@ -220,8 +227,9 @@ case_core_shift_bit_bchg_reg:
                 moveq   #3,d1
                 move.w  d0,ccr
                 dc.w    $0340
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0004,d1
                 cmp.l   #$00000008,d0
                 bne.s   .fail
@@ -249,8 +257,9 @@ case_core_shift_bit_bclr_reg:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $0380
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0004,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail

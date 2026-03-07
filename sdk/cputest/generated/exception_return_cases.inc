@@ -27,8 +27,9 @@ case_exc_ret_rte_fmt0:
                 moveq   #$77,d0
                 .rte_target:
                 moveq   #1,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
@@ -192,8 +193,9 @@ case_exc_ret_rte_vec32:
                 moveq   #$77,d0
                 .rte_v32_target:
                 moveq   #$42,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000042,d0
                 bne.s   .fail
@@ -223,8 +225,9 @@ case_exc_ret_rte_fmt2:
                 moveq   #$77,d0
                 .rte_f2_target:
                 move.l  #$000000AA,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$000000AA,d0
                 bne.s   .fail

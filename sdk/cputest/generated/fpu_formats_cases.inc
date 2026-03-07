@@ -69,8 +69,9 @@ case_fpu_fmt_fmove_fp_to_l:
                 lea     .int_buf(pc),a0
                 fmove.l fp0,(a0)
                 move.l  (a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$0000002A,d0
                 bne.s   .fail

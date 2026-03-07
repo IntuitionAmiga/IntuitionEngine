@@ -1005,6 +1005,14 @@ func (cpu *M68KCPU) decodeGroup0(opcode uint16) {
 		return
 	}
 
+	// CAS2 — 0x0CFC (word) and 0x0EFC (long)
+	// Must be checked before CAS since CAS's broad mask (0xF9C0) would match CAS2 opcodes
+	if opcode == 0x0CFC || opcode == 0x0EFC {
+		opmode := (opcode >> 9) & 0x3
+		cpu.ExecCas2(opmode)
+		return
+	}
+
 	// CAS - Lock-free synchronisation (all sizes: byte 0x0AC0, word 0x0CC0, long 0x0EC0)
 	// Must be checked before immediate instructions: CAS.W matches CMPI, CAS.L matches MOVES
 	// The size!=0 check excludes BSET immediate (0x08C0) which shares the same bit pattern
@@ -1013,13 +1021,6 @@ func (cpu *M68KCPU) decodeGroup0(opcode uint16) {
 		mode := (opcode >> 3) & 0x7
 		reg := opcode & 0x7
 		cpu.ExecCas(opmode, mode, reg)
-		return
-	}
-
-	// CAS2
-	if opcode == M68K_CAS2 {
-		opmode := (opcode >> 9) & 0x3
-		cpu.ExecCas2(opmode)
 		return
 	}
 
@@ -1505,6 +1506,14 @@ func (cpu *M68KCPU) decodeGroup4(opcode uint16) {
 		return
 	}
 
+	// TAS — must be checked before TST because TST's 0xFF00 mask catches TAS (0x4AC0)
+	if (opcode & 0xFFC0) == M68K_TAS {
+		mode := (opcode >> 3) & 0x7
+		reg := opcode & 0x7
+		cpu.ExecTas(mode, reg)
+		return
+	}
+
 	// TST
 	if (opcode & 0xFF00) == M68K_TST {
 		size := (opcode >> 6) & 0x3
@@ -1525,14 +1534,6 @@ func (cpu *M68KCPU) decodeGroup4(opcode uint16) {
 	if (opcode & 0xFFF8) == M68K_UNLK {
 		reg := opcode & 0x7
 		cpu.ExecUnlk(reg)
-		return
-	}
-
-	// TAS
-	if (opcode & 0xFFC0) == M68K_TAS {
-		mode := (opcode >> 3) & 0x7
-		reg := opcode & 0x7
-		cpu.ExecTas(mode, reg)
 		return
 	}
 
@@ -4470,14 +4471,14 @@ func (cpu *M68KCPU) ExecMoves() {
 	reg := opcode & 0x7
 
 	// Extract direction and register from extension word
-	direction := (extWord >> 11) & 0x1 // 0=reg to mem, 1=mem to reg
+	direction := (extWord >> 11) & 0x1 // 0=EA to reg, 1=reg to EA
 	regNum := (extWord >> 12) & 0xF
 	isDataReg := (regNum & 0x8) == 0
 	regIndex := regNum & 0x7
 
 	// Address space specification for OS memory managers
 	// Uses SFC for read, DFC for write to control address space access
-	if direction == 0 {
+	if direction == 1 {
 		// Move register to memory (using DFC)
 		var value uint32
 		if isDataReg {
@@ -4517,17 +4518,6 @@ func (cpu *M68KCPU) ExecMoves() {
 		}
 
 		if isDataReg {
-			// Sign-extend byte and word values for data registers
-			switch size {
-			case M68K_SIZE_BYTE:
-				if (value & 0x80) != 0 {
-					value |= 0xFFFFFF00
-				}
-			case M68K_SIZE_WORD:
-				if (value & 0x8000) != 0 {
-					value |= 0xFFFF0000
-				}
-			}
 			cpu.DataRegs[regIndex] = value
 		} else {
 			cpu.AddrRegs[regIndex] = value
@@ -7915,9 +7905,17 @@ func (cpu *M68KCPU) ExecMulL(mode, xreg uint16) {
 	// Set condition codes
 	cpu.SR &= ^uint16(M68K_SR_N | M68K_SR_Z | M68K_SR_V | M68K_SR_C)
 
-	// Z flag - all bits of result must be zero
-	if result64 == 0 {
-		cpu.SR |= M68K_SR_Z
+	// Z flag
+	if resultHigh {
+		// 64-bit form: Z set if both Dh and Dl are zero
+		if resultHi == 0 && resultLow == 0 {
+			cpu.SR |= M68K_SR_Z
+		}
+	} else {
+		// 32-bit form: Z set if Dl is zero
+		if resultLow == 0 {
+			cpu.SR |= M68K_SR_Z
+		}
 	}
 
 	// N flag - based on MSB of result
@@ -8608,6 +8606,16 @@ func (cpu *M68KCPU) ExecOr(reg, opmode, mode, xreg uint16) {
 			// Data register direct
 			source = cpu.DataRegs[xreg]
 			cpu.cycleCounter += M68K_CYCLE_REG
+		} else if mode == 7 && xreg == 4 {
+			// Immediate
+			if size == M68K_SIZE_BYTE {
+				source = uint32(cpu.Fetch16() & 0xFF)
+			} else if size == M68K_SIZE_WORD {
+				source = uint32(cpu.Fetch16())
+			} else {
+				source = cpu.Fetch32()
+			}
+			cpu.cycleCounter += M68K_CYCLE_FETCH
 		} else {
 			// Memory source
 			addr, postInc := cpu.resolveEAWithPrePost(mode, xreg, size)
@@ -10421,16 +10429,17 @@ func (cpu *M68KCPU) ExecCas(opmode, mode, reg uint16) {
 	var mask uint32
 	var sizeCycles uint32
 
+	// CAS encoding uses size bits 1=byte, 2=word, 3=long (not 0/1/2)
 	switch opmode {
-	case M68K_SIZE_BYTE: // Byte
+	case 1: // Byte
 		size = M68K_SIZE_BYTE
 		mask = 0xFF
 		sizeCycles = 12
-	case M68K_SIZE_WORD: // Word
+	case 2: // Word
 		size = M68K_SIZE_WORD
 		mask = 0xFFFF
 		sizeCycles = 12
-	case M68K_SIZE_LONG: // Long
+	case 3: // Long
 		size = M68K_SIZE_LONG
 		mask = 0xFFFFFFFF
 		sizeCycles = 20
@@ -10545,15 +10554,16 @@ func (cpu *M68KCPU) ExecCas2(opmode uint16) {
 	var mask uint32
 	var sizeCycles uint32
 
+	// CAS2 encoding uses size bits 2=word, 3=long (1=byte is illegal for CAS2)
 	switch opmode {
-	case M68K_SIZE_BYTE: // Byte (not valid for CAS2)
+	case 1: // Byte (not valid for CAS2)
 		cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
 		return
-	case M68K_SIZE_WORD: // Word
+	case 2: // Word
 		size = M68K_SIZE_WORD
 		mask = 0xFFFF
 		sizeCycles = 20
-	case M68K_SIZE_LONG: // Long
+	case 3: // Long
 		size = M68K_SIZE_LONG
 		mask = 0xFFFFFFFF
 		sizeCycles = 30
@@ -11190,6 +11200,8 @@ var fpuOpTable = func() [128]func(*M68881FPU, int, int) {
 	table[FPU_OP_FINTRZ] = (*M68881FPU).FINTRZ
 	table[FPU_OP_FSQRT] = (*M68881FPU).FSQRT
 	table[FPU_OP_FTANH] = (*M68881FPU).FTANH
+	table[FPU_OP_FLOGNP1] = (*M68881FPU).FLOGNP1
+	table[FPU_OP_FETOXM1] = (*M68881FPU).FETOXM1
 	table[FPU_OP_FATAN] = (*M68881FPU).FATAN
 	table[FPU_OP_FASIN] = (*M68881FPU).FASIN
 	table[FPU_OP_FATANH] = (*M68881FPU).FATANH
@@ -11224,45 +11236,34 @@ var fpuOpTable = func() [128]func(*M68881FPU, int, int) {
 
 // ExecFPUInstruction decodes and executes an FPU instruction
 func (cpu *M68KCPU) ExecFPUInstruction(opcode uint16) {
-	// Store instruction address for FPIAR
-	cpu.FPU.FPIAR = cpu.PC - M68K_WORD_SIZE
+	instrAddr := cpu.PC - M68K_WORD_SIZE
 
-	// Type field determines instruction class
+	// 68881/68882 type field (bits 8:6 of opcode):
+	//   000 = General (all FPU ops: reg-reg, mem-reg, reg-mem, control, FMOVEM)
+	//   001 = FDBcc / FScc / FTRAPcc
+	//   010 = FBcc (word displacement)
+	//   011 = FBcc (long displacement)
+	//   100 = FSAVE
+	//   101 = FRESTORE
 	typeField := (opcode >> 6) & 0x7
 
 	switch typeField {
 	case 0:
-		// General FPU operations: FPm to FPn or special
+		// All general FPU operations — sub-type determined by cmdWord bits 15:13
 		cmdWord := cpu.Fetch16()
-		cpu.execFPUGeneral(cmdWord)
+		// FPIAR is updated for data operations only, not control register moves
+		// Control/FMOVEM are cmdWord bit 15=1
+		if (cmdWord & 0x8000) == 0 {
+			cpu.FPU.FPIAR = instrAddr
+		}
+		cpu.execFPUGeneral(opcode, cmdWord)
 
 	case 1:
-		// FMOVE to FP register from memory (various formats)
-		cmdWord := cpu.Fetch16()
-		cpu.execFPUMemToReg(opcode, cmdWord)
+		// FDBcc / FScc / FTRAPcc — no FPIAR update
+		cpu.execFPUConditional(opcode)
 
-	case 2:
-		// FPU operations with memory source
-		cmdWord := cpu.Fetch16()
-		cpu.execFPUMemOp(opcode, cmdWord)
-
-	case 3:
-		// FMOVE from FP register to memory
-		cmdWord := cpu.Fetch16()
-		cpu.execFPURegToMem(opcode, cmdWord)
-
-	case 4:
-		// FMOVEM - Move multiple FP registers
-		cmdWord := cpu.Fetch16()
-		cpu.execFMOVEM(opcode, cmdWord)
-
-	case 5:
-		// FMOVEM control registers
-		cmdWord := cpu.Fetch16()
-		cpu.execFMOVEMControl(opcode, cmdWord)
-
-	case 6, 7:
-		// Conditional branch/set
+	case 2, 3:
+		// FBcc (word or long displacement) — no FPIAR update
 		cpu.execFPUConditional(opcode)
 
 	default:
@@ -11270,23 +11271,119 @@ func (cpu *M68KCPU) ExecFPUInstruction(opcode uint16) {
 	}
 }
 
-// execFPUGeneral handles register-to-register FPU operations
-func (cpu *M68KCPU) execFPUGeneral(cmdWord uint16) {
-	// Check for FMOVECR first - it has a special encoding (010111 in bits 15-10)
-	if (cmdWord & 0xFC00) == 0x5C00 {
-		dstReg := int((cmdWord >> 7) & 0x7)
-		romAddr := uint8(cmdWord & 0x7F)
-		cpu.FPU.FMOVECR(romAddr, dstReg)
-		return
+// execFPUGeneral handles all type 000 FPU operations.
+// The command word bits 15:13 determine the sub-type:
+//
+//	000 = register-to-register operation
+//	001 = EA-to-register operation (memory source)
+//	010 = FMOVECR (special: bits 15:10 = 010111)
+//	011 = FMOVE FPn → memory
+//	100 = FMOVE EA → control register(s)
+//	101 = FMOVE control register(s) → EA
+//	110 = FMOVEM EA → FP data registers
+//	111 = FMOVEM FP data registers → EA
+func (cpu *M68KCPU) execFPUGeneral(opcode, cmdWord uint16) {
+	if (cmdWord & 0x8000) == 0 {
+		// Bit 15 = 0: general operations
+		rm := (cmdWord >> 14) & 1
+		if rm == 0 {
+			// R/M=0: register-to-register
+			cpu.execFPURegToReg(cmdWord)
+		} else {
+			// R/M=1: EA source
+			dir := (cmdWord >> 13) & 1
+			if dir == 0 {
+				// FMOVECR check (bits 15:10 = 010111)
+				if (cmdWord & 0xFC00) == 0x5C00 {
+					dstReg := int((cmdWord >> 7) & 0x7)
+					romAddr := uint8(cmdWord & 0x7F)
+					cpu.FPU.FMOVECR(romAddr, dstReg)
+				} else {
+					// EA → FP register (FMOVE, FADD, FSUB, etc. with memory source)
+					cpu.execFPUEAToReg(opcode, cmdWord)
+				}
+			} else {
+				// FP register → EA (FMOVE FPn to memory)
+				cpu.execFPURegToMem(opcode, cmdWord)
+			}
+		}
+	} else {
+		// Bit 15 = 1: control register and FMOVEM operations
+		switch (cmdWord >> 13) & 3 {
+		case 0: // FMOVE EA → control register(s)
+			cpu.execFMOVEMControl(opcode, cmdWord)
+		case 1: // FMOVE control register(s) → EA
+			cpu.execFMOVEMControl(opcode, cmdWord)
+		case 2: // FMOVEM EA → FP data registers
+			cpu.execFMOVEM(opcode, cmdWord)
+		case 3: // FMOVEM FP data registers → EA
+			cpu.execFMOVEM(opcode, cmdWord)
+		}
 	}
+}
 
-	// Format: R/M=0, src=FP reg (bits 12-10), dst=FP reg (bits 9-7), opcode (bits 6-0)
+// execFPURegToReg handles register-to-register FPU operations (cmdWord bits 15:13 = 000)
+func (cpu *M68KCPU) execFPURegToReg(cmdWord uint16) {
 	srcReg := int((cmdWord >> 10) & 0x7)
 	dstReg := int((cmdWord >> 7) & 0x7)
 	op := cmdWord & 0x7F
 
 	if fn := fpuOpTable[op]; fn != nil {
 		fn(cpu.FPU, srcReg, dstReg)
+	} else {
+		cpu.ProcessException(M68K_VEC_LINE_F)
+	}
+}
+
+// execFPUEAToReg handles EA-to-register FPU operations (cmdWord bits 15:13 = 001)
+func (cpu *M68KCPU) execFPUEAToReg(opcode, cmdWord uint16) {
+	mode := (opcode >> 3) & 0x7
+	reg := opcode & 0x7
+	srcFormat := (cmdWord >> 10) & 0x7
+	dstReg := int((cmdWord >> 7) & 0x7)
+	op := cmdWord & 0x7F
+
+	ea := cpu.GetEffectiveAddress(mode, reg)
+
+	// Read source value based on format
+	var value float64
+	switch srcFormat {
+	case 0: // Long integer
+		value = float64(int32(cpu.Read32(ea)))
+	case 1: // Single precision
+		value = float64(math.Float32frombits(cpu.Read32(ea)))
+	case 2: // Extended precision (96-bit)
+		ext := cpu.readExtendedReal96(ea)
+		cpu.FPU.SetFromExtendedReal(dstReg, ext)
+		if op == FPU_OP_FMOVE {
+			cpu.FPU.setCC64(cpu.FPU.GetFP64(dstReg))
+			return
+		}
+		value = cpu.FPU.GetFP64(dstReg)
+	case 4: // Word integer
+		value = float64(int16(cpu.Read16(ea)))
+	case 5: // Double precision
+		hi := cpu.Read32(ea)
+		lo := cpu.Read32(ea + 4)
+		value = math.Float64frombits(uint64(hi)<<32 | uint64(lo))
+	case 6: // Byte integer
+		value = float64(int8(cpu.Read8(ea)))
+	default:
+		value = 0.0
+	}
+
+	if op == FPU_OP_FMOVE {
+		cpu.FPU.SetFP64(dstReg, value)
+		cpu.FPU.setCC64(value)
+		return
+	}
+
+	// For arithmetic ops, load value into scratch register and dispatch
+	if fn := fpuOpTable[op]; fn != nil {
+		savedFP := cpu.FPU.GetFP64(7)
+		cpu.FPU.SetFP64(7, value)
+		fn(cpu.FPU, 7, dstReg)
+		cpu.FPU.SetFP64(7, savedFP)
 	} else {
 		cpu.ProcessException(M68K_VEC_LINE_F)
 	}
@@ -11449,26 +11546,26 @@ func (cpu *M68KCPU) execFPURegToMem(opcode, cmdWord uint16) {
 func (cpu *M68KCPU) execFMOVEM(opcode, cmdWord uint16) {
 	mode := (opcode >> 3) & 0x7
 	reg := opcode & 0x7
-	direction := (cmdWord >> 13) & 0x1 // 0=to memory, 1=from memory
+	dr := (cmdWord >> 13) & 0x1 // 0=EA→FP regs, 1=FP regs→EA
 	regList := cmdWord & 0xFF
 
 	// Calculate effective address
 	ea := cpu.GetEffectiveAddress(mode, reg)
 
-	if direction == 0 {
-		// FP registers to memory
-		for i := range 8 {
-			if (regList & (1 << (7 - i))) != 0 {
-				cpu.writeExtendedReal96(ea, cpu.FPU.GetExtendedReal(i))
-				ea += 12 // Extended precision takes 12 bytes
-			}
-		}
-	} else {
-		// Memory to FP registers
+	if dr == 0 {
+		// EA → FP registers
 		for i := range 8 {
 			if (regList & (1 << (7 - i))) != 0 {
 				cpu.FPU.SetFromExtendedReal(i, cpu.readExtendedReal96(ea))
 				ea += 12
+			}
+		}
+	} else {
+		// FP registers → EA
+		for i := range 8 {
+			if (regList & (1 << (7 - i))) != 0 {
+				cpu.writeExtendedReal96(ea, cpu.FPU.GetExtendedReal(i))
+				ea += 12 // Extended precision takes 12 bytes
 			}
 		}
 	}
@@ -11478,26 +11575,55 @@ func (cpu *M68KCPU) execFMOVEM(opcode, cmdWord uint16) {
 func (cpu *M68KCPU) execFMOVEMControl(opcode, cmdWord uint16) {
 	mode := (opcode >> 3) & 0x7
 	reg := opcode & 0x7
-	direction := (cmdWord >> 13) & 0x1 // 0=to memory, 1=from memory
-	regList := (cmdWord >> 10) & 0x7   // FPCR, FPSR, FPIAR
+	dr := (cmdWord >> 13) & 0x1      // 0=EA→ctrl, 1=ctrl→EA
+	regList := (cmdWord >> 10) & 0x7 // FPCR, FPSR, FPIAR
+
+	if mode == 0 {
+		// Data register direct — special handling
+		if dr == 0 {
+			// Dn → control register(s)
+			val := cpu.DataRegs[reg]
+			if (regList & 0x4) != 0 {
+				cpu.FPU.FPCR = val
+			}
+			if (regList & 0x2) != 0 {
+				cpu.FPU.FPSR = val
+			}
+			if (regList & 0x1) != 0 {
+				cpu.FPU.FPIAR = val
+			}
+		} else {
+			// Control register → Dn (first matching register wins)
+			if (regList & 0x4) != 0 {
+				cpu.DataRegs[reg] = cpu.FPU.FPCR
+			} else if (regList & 0x2) != 0 {
+				cpu.DataRegs[reg] = cpu.FPU.FPSR
+			} else if (regList & 0x1) != 0 {
+				cpu.DataRegs[reg] = cpu.FPU.FPIAR
+			}
+		}
+		return
+	}
+
+	if dr == 0 && mode == 7 && reg == 4 {
+		// Immediate → control registers
+		val := cpu.Fetch32()
+		if (regList & 0x4) != 0 {
+			cpu.FPU.FPCR = val
+		}
+		if (regList & 0x2) != 0 {
+			cpu.FPU.FPSR = val
+		}
+		if (regList & 0x1) != 0 {
+			cpu.FPU.FPIAR = val
+		}
+		return
+	}
 
 	ea := cpu.GetEffectiveAddress(mode, reg)
 
-	if direction == 0 {
-		// Control registers to memory/data register
-		if (regList & 0x4) != 0 { // FPCR
-			cpu.Write32(ea, cpu.FPU.FPCR)
-			ea += 4
-		}
-		if (regList & 0x2) != 0 { // FPSR
-			cpu.Write32(ea, cpu.FPU.FPSR)
-			ea += 4
-		}
-		if (regList & 0x1) != 0 { // FPIAR
-			cpu.Write32(ea, cpu.FPU.FPIAR)
-		}
-	} else {
-		// Memory/data register to control registers
+	if dr == 0 {
+		// EA → control registers
 		if (regList & 0x4) != 0 { // FPCR
 			cpu.FPU.FPCR = cpu.Read32(ea)
 			ea += 4
@@ -11509,31 +11635,98 @@ func (cpu *M68KCPU) execFMOVEMControl(opcode, cmdWord uint16) {
 		if (regList & 0x1) != 0 { // FPIAR
 			cpu.FPU.FPIAR = cpu.Read32(ea)
 		}
+	} else {
+		// Control registers → EA
+		if (regList & 0x4) != 0 { // FPCR
+			cpu.Write32(ea, cpu.FPU.FPCR)
+			ea += 4
+		}
+		if (regList & 0x2) != 0 { // FPSR
+			cpu.Write32(ea, cpu.FPU.FPSR)
+			ea += 4
+		}
+		if (regList & 0x1) != 0 { // FPIAR
+			cpu.Write32(ea, cpu.FPU.FPIAR)
+		}
 	}
 }
 
 // execFPUConditional handles FPU conditional instructions (FBcc, FScc, FDBcc)
 func (cpu *M68KCPU) execFPUConditional(opcode uint16) {
-	condCode := opcode & 0x3F
+	typeField := (opcode >> 6) & 0x7
 
-	// Evaluate FPU condition
-	condTrue := cpu.evalFPUCondition(condCode)
+	switch typeField {
+	case 1:
+		// FScc / FDBcc / FTRAPcc — condition code is in extension word bits 5:0
+		// At entry, cpu.PC is at opcode_addr + 2 (opcode already fetched)
+		branchBase := cpu.PC // opcode_addr + 2 — used for FDBcc displacement
+		extWord := cpu.Fetch16()
+		condCode := extWord & 0x3F
+		condTrue := cpu.evalFPUCondition(condCode)
 
-	if (opcode & 0x0040) != 0 {
-		// FScc - Set byte on condition
 		mode := (opcode >> 3) & 0x7
 		reg := opcode & 0x7
-		ea := cpu.GetEffectiveAddress(mode, reg)
-		if condTrue {
-			cpu.Write8(ea, 0xFF)
+
+		if mode == 1 {
+			// FDBcc — decrement and branch
+			// Same formula as regular DBcc: target = opcode_addr + 2 + displacement
+			if !condTrue {
+				dn := cpu.DataRegs[reg]
+				dn = (dn & 0xFFFF0000) | ((dn - 1) & 0xFFFF)
+				cpu.DataRegs[reg] = dn
+				if (dn & 0xFFFF) != 0xFFFF {
+					displacement := int16(cpu.Fetch16())
+					cpu.PC = uint32(int32(branchBase) + int32(displacement))
+				} else {
+					cpu.PC += M68K_WORD_SIZE // skip displacement
+				}
+			} else {
+				cpu.PC += M68K_WORD_SIZE // skip displacement
+			}
+		} else if mode == 7 && reg >= 2 {
+			// FTRAPcc
+			switch reg {
+			case 2:
+				cpu.Fetch16() // skip word operand
+			case 3:
+				cpu.Fetch32() // skip long operand
+			case 4:
+				// no operand
+			}
+			if condTrue {
+				cpu.ProcessException(M68K_VEC_TRAPV)
+			}
 		} else {
-			cpu.Write8(ea, 0x00)
+			// FScc — set byte on condition
+			var val byte
+			if condTrue {
+				val = 0xFF
+			}
+			if mode == 0 {
+				// Data register direct — set low byte
+				cpu.DataRegs[reg] = (cpu.DataRegs[reg] & 0xFFFFFF00) | uint32(val)
+			} else {
+				ea := cpu.GetEffectiveAddress(mode, reg)
+				cpu.Write8(ea, val)
+			}
 		}
-	} else {
-		// FBcc - Branch on condition
+
+	case 2:
+		// FBcc (word displacement) — condition code is in opcode bits 5:0
+		condCode := opcode & 0x3F
+		condTrue := cpu.evalFPUCondition(condCode)
 		displacement := int16(cpu.Fetch16())
 		if condTrue {
 			cpu.PC = uint32(int32(cpu.PC) + int32(displacement) - M68K_WORD_SIZE)
+		}
+
+	case 3:
+		// FBcc (long displacement) — condition code is in opcode bits 5:0
+		condCode := opcode & 0x3F
+		condTrue := cpu.evalFPUCondition(condCode)
+		displacement := int32(cpu.Fetch32())
+		if condTrue {
+			cpu.PC = uint32(int32(cpu.PC) + displacement - int32(M68K_LONG_SIZE))
 		}
 	}
 }

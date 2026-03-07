@@ -23,8 +23,9 @@ case_core_flow_bra_taken:
                 moveq   #$55,d0
                 .taken:
                 addq.l  #1,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000002,d0
                 bne.s   .fail
@@ -53,8 +54,9 @@ case_core_flow_bsr_rts:
                 addq.l  #1,d0
                 rts
                 .done:
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000002,d0
                 bne.s   .fail
@@ -80,8 +82,9 @@ case_core_flow_dbra:
                 .loop:
                 addq.l  #1,d0
                 dbra    d1,.loop
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000002,d0
                 bne.s   .fail
@@ -108,8 +111,9 @@ case_core_flow_bne_not_taken:
                 bne.s   .skip
                 addq.l  #1,d0
                 .skip:
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000002,d0
                 bne.s   .fail
@@ -137,8 +141,9 @@ case_core_flow_beq_taken:
                 moveq   #$55,d0
                 .taken:
                 addq.l  #2,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000003,d0
                 bne.s   .fail
@@ -165,8 +170,9 @@ case_core_flow_jmp_indirect:
                 moveq   #$77,d0
                 .target:
                 addq.l  #2,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000003,d0
                 bne.s   .fail
@@ -196,8 +202,9 @@ case_core_flow_jsr_indirect:
                 addq.l  #2,d0
                 rts
                 .done:
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000004,d0
                 bne.s   .fail

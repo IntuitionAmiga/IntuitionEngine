@@ -29,8 +29,9 @@ case_core_move_ctrl_move_long:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $2200
+                move.w  sr,-(sp)
                 move.l  d1,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$FFFFFFFF,d0
                 bne.s   .fail
@@ -101,6 +102,7 @@ case_core_move_ctrl_lea_disp:
                 even
 
 case_core_move_ctrl_pea:
+                move.l  sp,a5
                 move.l  #$00002000,a0
                 move.l  #$00009000,sp
                 dc.w    $4850
@@ -110,10 +112,12 @@ case_core_move_ctrl_pea:
                 move.l  (sp),d0
                 cmp.l   #$00002000,d0
                 bne.s   .fail
+                move.l  a5,sp
                 lea     .name(pc),a0
                 jsr     ct_log_pass
                 rts
 .fail:
+                move.l  a5,sp
                 lea     .name(pc),a0
                 lea     .input(pc),a1
                 lea     .expected(pc),a2
@@ -131,8 +135,9 @@ case_core_move_ctrl_seq:
                 moveq   #4,d1
                 move.w  d1,ccr
                 dc.w    $57C0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$000000FF,d0
                 bne.s   .fail
@@ -177,12 +182,13 @@ case_core_move_ctrl_move_ccr:
                 even
 
 case_core_move_ctrl_move_from_ccr:
+                moveq   #0,d0
                 moveq   #$1F,d1
                 move.w  d1,ccr
-                moveq   #0,d0
                 dc.w    $42C0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$0000001F,d0
                 bne.s   .fail
@@ -203,13 +209,14 @@ case_core_move_ctrl_move_from_ccr:
                 even
 
 case_core_move_ctrl_move_from_sr:
-                move.w  #$2F1F,sr
                 moveq   #0,d0
+                move.w  #$271F,sr
                 dc.w    $40C0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
-                cmp.l   #$00002F1F,d0
+                cmp.l   #$0000271F,d0
                 bne.s   .fail
                 lea     .name(pc),a0
                 jsr     ct_log_pass
@@ -222,21 +229,22 @@ case_core_move_ctrl_move_from_sr:
 .name:
                 dc.b    "MOVE SR,D0",0
 .input:
-                dc.b    "opcode=$40C0 initial: SR=$2F1F",0
+                dc.b    "opcode=$40C0 initial: SR=$271F",0
 .expected:
-                dc.b    "D0=$00002F1F",0
+                dc.b    "D0=$0000271F",0
                 even
 
 case_core_move_ctrl_move_sr_to_mem:
                 lea     .sr_mem(pc),a0
-                move.w  #$2A1F,sr
+                move.w  #$221F,sr
                 dc.w    $40D0
                 moveq   #0,d0
                 move.w  (a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
-                cmp.l   #$00002A1F,d0
+                cmp.l   #$0000221F,d0
                 bne.s   .fail
                 lea     .name(pc),a0
                 jsr     ct_log_pass
@@ -249,9 +257,9 @@ case_core_move_ctrl_move_sr_to_mem:
 .name:
                 dc.b    "MOVE SR,(A0)",0
 .input:
-                dc.b    "opcode=$40D0 initial: SR=$2A1F A0=mem",0
+                dc.b    "opcode=$40D0 initial: SR=$221F A0=mem",0
 .expected:
-                dc.b    "D0=$00002A1F",0
+                dc.b    "D0=$0000221F",0
                 even
 .sr_mem:
                 dc.w    $0000
@@ -310,8 +318,9 @@ case_core_move_ctrl_sne:
                 moveq   #0,d1
                 move.w  d1,ccr
                 dc.w    $56C0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$000000FF,d0
                 bne.s   .fail
@@ -339,8 +348,9 @@ case_core_move_ctrl_movem_mem_to_regs:
                 eori.l  #$11223344,d0
                 eori.l  #$55667788,d1
                 or.l    d1,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail

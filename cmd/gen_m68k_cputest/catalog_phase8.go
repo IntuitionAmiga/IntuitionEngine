@@ -447,7 +447,8 @@ func shardFPUCond() shard {
 	// -----------------------------------------------------------------------
 
 	// 17. FDBEQ: condition false (gt), D1=2 → loops 3 times, D0 counts iterations
-	cases = append(cases, regonly(s, "fpu_cond_fdbeq_loop", "FDBEQ loop count=3",
+	// All FDBcc tests are musashiSkip: Musashi doesn't implement FDBcc (only FScc mode 0/5)
+	cases = append(cases, musashiSkip(regonly(s, "fpu_cond_fdbeq_loop", "FDBEQ loop count=3",
 		"FDBEQ D1,.loop (gt, D1=2, counts 3 iterations)", "D0=$00000003",
 		"d0", 0x00000003,
 		[]string{
@@ -461,11 +462,11 @@ func shardFPUCond() shard {
 			".loop_fdbeq:",
 			"addq.l  #1,d0",
 			"dc.w    $F249,$0001", // FDBEQ D1, displacement
-			"dc.w    $FFF8",       // displacement back to .loop_fdbeq (-8 bytes relative)
-		}, fp("42", "10")...))
+			"dc.w    $FFFC",       // displacement = target - (opcode_addr+2) = -4
+		}, fp("42", "10")...)))
 
 	// 18. FDBEQ: condition true (eq) → exits immediately, no loop
-	cases = append(cases, regonly(s, "fpu_cond_fdbeq_exit", "FDBEQ exit (eq)",
+	cases = append(cases, musashiSkip(regonly(s, "fpu_cond_fdbeq_exit", "FDBEQ exit (eq)",
 		"FDBEQ D1,.loop (eq, exits immediately)", "D0=$00000001",
 		"d0", 0x00000001,
 		[]string{
@@ -479,11 +480,11 @@ func shardFPUCond() shard {
 			".loop_fdbeq2:",
 			"addq.l  #1,d0",
 			"dc.w    $F249,$0001", // FDBEQ D1
-			"dc.w    $FFF8",       // displacement back
-		}, fp("42")...))
+			"dc.w    $FFFC",       // displacement = target - (opcode_addr+2) = -4
+		}, fp("42")...)))
 
 	// 19. FDBNE: condition false (eq), D1=1 → loops 2 times
-	cases = append(cases, regonly(s, "fpu_cond_fdbne_loop", "FDBNE loop count=2",
+	cases = append(cases, musashiSkip(regonly(s, "fpu_cond_fdbne_loop", "FDBNE loop count=2",
 		"FDBNE D1,.loop (eq, D1=1)", "D0=$00000002",
 		"d0", 0x00000002,
 		[]string{
@@ -497,11 +498,11 @@ func shardFPUCond() shard {
 			".loop_fdbne:",
 			"addq.l  #1,d0",
 			"dc.w    $F249,$000E", // FDBNE D1
-			"dc.w    $FFF8",
-		}, fp("42")...))
+			"dc.w    $FFFC",       // displacement = target - (opcode_addr+2) = -4
+		}, fp("42")...)))
 
 	// 20. FDBT: condition T always true → never loops, exits immediately
-	cases = append(cases, regonly(s, "fpu_cond_fdbt_exit", "FDBT always exits",
+	cases = append(cases, musashiSkip(regonly(s, "fpu_cond_fdbt_exit", "FDBT always exits",
 		"FDBT D1,.loop (T, always exits)", "D0=$00000001",
 		"d0", 0x00000001,
 		[]string{
@@ -512,11 +513,11 @@ func shardFPUCond() shard {
 			".loop_fdbt:",
 			"addq.l  #1,d0",
 			"dc.w    $F249,$000F", // FDBT D1
-			"dc.w    $FFF8",
-		}))
+			"dc.w    $FFFC",       // displacement = target - (opcode_addr+2) = -4
+		})))
 
 	// 21. FDBF: condition F always false → pure count loop, D1=0 → loops 1 time
-	cases = append(cases, regonly(s, "fpu_cond_fdbf_count", "FDBF count-only loop",
+	cases = append(cases, musashiSkip(regonly(s, "fpu_cond_fdbf_count", "FDBF count-only loop",
 		"FDBF D1,.loop (F, D1=0, loops 1 time)", "D0=$00000001",
 		"d0", 0x00000001,
 		[]string{
@@ -527,8 +528,8 @@ func shardFPUCond() shard {
 			".loop_fdbf:",
 			"addq.l  #1,d0",
 			"dc.w    $F249,$0000", // FDBF D1
-			"dc.w    $FFF8",
-		}))
+			"dc.w    $FFFC",       // displacement = target - (opcode_addr+2) = -4
+		})))
 
 	return shard{Name: s, Title: "FPU Conditionals", Cases: cases}
 }

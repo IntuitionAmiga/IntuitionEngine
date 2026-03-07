@@ -158,8 +158,9 @@ case_ea_read_lea_pcdisp:
                 lea     .lea_pc_target(pc),a0
                 move.l  a2,d0
                 sub.l   a0,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
@@ -188,8 +189,9 @@ case_ea_read_lea_pcidx:
                 lea     .lea_pcidx_base+4(pc),a0
                 move.l  a2,d0
                 sub.l   a0,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
@@ -218,8 +220,9 @@ case_ea_read_pea_an:
                 pea     (a0)
                 move.l  (sp)+,d0
                 eori.l  #$00005000,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
@@ -244,8 +247,9 @@ case_ea_read_pea_d16:
                 pea     16(a0)
                 move.l  (sp)+,d0
                 eori.l  #$00005010,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
@@ -271,8 +275,9 @@ case_ea_read_pea_idx:
                 pea     4(a0,d1.l)
                 move.l  (sp)+,d0
                 eori.l  #$0000500C,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
@@ -296,8 +301,9 @@ case_ea_read_pea_absl:
                 pea     $00012345
                 move.l  (sp)+,d0
                 eori.l  #$00012345,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
@@ -323,8 +329,9 @@ case_ea_read_add_an_ind:
                 move.w  d2,ccr
                 lea     .src_data(pc),a0
                 add.l   (a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$11223344,d0
                 bne.s   .fail
@@ -359,8 +366,9 @@ case_ea_read_add_d16_an:
                 move.w  d2,ccr
                 lea     .src_data(pc),a0
                 add.l   4(a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$55667788,d0
                 bne.s   .fail
@@ -394,8 +402,9 @@ case_ea_read_add_imm:
                 moveq   #0,d2
                 move.w  d2,ccr
                 add.l   #$AABBCCDD,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$AABBCCDD,d0
                 bne.s   .fail
@@ -430,12 +439,13 @@ case_ea_read_sub_an_ind:
                 move.w  d2,ccr
                 lea     .src_data(pc),a0
                 sub.l   (a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
-                andi.w  #$000F,d1
+                move.w  (sp)+,d1
+                andi.w  #$001F,d1
                 cmp.l   #$EEDDCCBC,d0
                 bne.s   .fail
-                cmpi.w  #$0008,d1
+                cmpi.w  #$0019,d1
                 bne.s   .fail
                 lea     .name(pc),a0
                 jsr     ct_log_pass
@@ -466,12 +476,13 @@ case_ea_read_sub_d16_an:
                 move.w  d2,ccr
                 lea     .src_data(pc),a0
                 sub.l   4(a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
-                andi.w  #$000F,d1
+                move.w  (sp)+,d1
+                andi.w  #$001F,d1
                 cmp.l   #$AA998878,d0
                 bne.s   .fail
-                cmpi.w  #$0008,d1
+                cmpi.w  #$0019,d1
                 bne.s   .fail
                 lea     .name(pc),a0
                 jsr     ct_log_pass
@@ -501,12 +512,13 @@ case_ea_read_sub_imm:
                 moveq   #0,d2
                 move.w  d2,ccr
                 sub.l   #$AABBCCDD,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
-                andi.w  #$000F,d1
+                move.w  (sp)+,d1
+                andi.w  #$001F,d1
                 cmp.l   #$55443323,d0
                 bne.s   .fail
-                cmpi.w  #$0000,d1
+                cmpi.w  #$0011,d1
                 bne.s   .fail
                 lea     .name(pc),a0
                 jsr     ct_log_pass
@@ -635,8 +647,9 @@ case_ea_read_and_an_ind:
                 move.w  d2,ccr
                 lea     .src_data(pc),a0
                 and.l   (a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$11223344,d0
                 bne.s   .fail
@@ -671,8 +684,9 @@ case_ea_read_and_d16_an:
                 move.w  d2,ccr
                 lea     .src_data(pc),a0
                 and.l   4(a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$55667788,d0
                 bne.s   .fail
@@ -706,8 +720,9 @@ case_ea_read_and_imm:
                 moveq   #0,d2
                 move.w  d2,ccr
                 and.l   #$AABBCCDD,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$AABBCCDD,d0
                 bne.s   .fail
@@ -742,8 +757,9 @@ case_ea_read_or_an_ind:
                 move.w  d2,ccr
                 lea     .src_data(pc),a0
                 or.l   (a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$11223344,d0
                 bne.s   .fail
@@ -778,8 +794,9 @@ case_ea_read_or_d16_an:
                 move.w  d2,ccr
                 lea     .src_data(pc),a0
                 or.l   4(a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$55667788,d0
                 bne.s   .fail
@@ -813,8 +830,9 @@ case_ea_read_or_imm:
                 moveq   #0,d2
                 move.w  d2,ccr
                 or.l   #$AABBCCDD,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$AABBCCDD,d0
                 bne.s   .fail
@@ -845,16 +863,12 @@ case_ea_read_or_imm:
 
 case_ea_read_btst_an:
                 lea     .src_data(pc),a0
+                moveq   #1,d1
                 moveq   #0,d0
-                moveq   #0,d1
                 move.w  d0,ccr
                 btst    d1,(a0)
-                move.l  (a0),d0
-                move.l  D0,d0
                 move.w  sr,d1
                 andi.w  #$0004,d1
-                cmp.l   #$11223344,d0
-                bne.s   .fail
                 cmpi.w  #$0004,d1
                 bne.s   .fail
                 lea     .name(pc),a0
@@ -868,7 +882,7 @@ case_ea_read_btst_an:
 .name:
                 dc.b    "BTST D1,(A0)",0
 .input:
-                dc.b    "BTST D1,(A0) bit 0 of $44=0",0
+                dc.b    "BTST D1,(A0) bit 1 of $11=0",0
 .expected:
                 dc.b    "Z=1",0
                 even
@@ -882,16 +896,12 @@ case_ea_read_btst_an:
 
 case_ea_read_btst_d16:
                 lea     .src_data(pc),a0
+                moveq   #1,d1
                 moveq   #0,d0
-                moveq   #0,d1
                 move.w  d0,ccr
                 btst    d1,4(a0)
-                move.l  4(a0),d0
-                move.l  D0,d0
                 move.w  sr,d1
                 andi.w  #$0004,d1
-                cmp.l   #$55667788,d0
-                bne.s   .fail
                 cmpi.w  #$0004,d1
                 bne.s   .fail
                 lea     .name(pc),a0
@@ -905,7 +915,7 @@ case_ea_read_btst_d16:
 .name:
                 dc.b    "BTST D1,4(A0)",0
 .input:
-                dc.b    "BTST D1,4(A0) bit 0 of $88=0",0
+                dc.b    "BTST D1,4(A0) bit 1 of $55=0",0
 .expected:
                 dc.b    "Z=1",0
                 even

@@ -38,8 +38,9 @@ case_ea_020_brief_scale1_w:
                 lea     .brief_data(pc),a0
                 moveq   #4,d1
                 move.l  0(a0,d1.w),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$55667788,d0
                 bne.s   .fail
@@ -74,8 +75,9 @@ case_ea_020_brief_scale2_w:
                 lea     .brief_data(pc),a0
                 moveq   #4,d1
                 move.l  0(a0,d1.w*2),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$AABBCCDD,d0
                 bne.s   .fail
@@ -110,8 +112,9 @@ case_ea_020_brief_scale4_w:
                 lea     .brief_data(pc),a0
                 moveq   #2,d1
                 move.l  0(a0,d1.w*4),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$AABBCCDD,d0
                 bne.s   .fail
@@ -146,8 +149,9 @@ case_ea_020_brief_scale8_w:
                 lea     .brief_data(pc),a0
                 moveq   #1,d1
                 move.l  0(a0,d1.w*8),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$AABBCCDD,d0
                 bne.s   .fail
@@ -182,8 +186,9 @@ case_ea_020_brief_scale1_l:
                 lea     .brief_data(pc),a0
                 moveq   #8,d1
                 move.l  0(a0,d1.l),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$AABBCCDD,d0
                 bne.s   .fail
@@ -218,8 +223,9 @@ case_ea_020_brief_scale2_l:
                 lea     .brief_data(pc),a0
                 moveq   #4,d1
                 move.l  0(a0,d1.l*2),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$AABBCCDD,d0
                 bne.s   .fail
@@ -254,8 +260,9 @@ case_ea_020_brief_scale4_l:
                 lea     .brief_data(pc),a0
                 moveq   #3,d1
                 move.l  0(a0,d1.l*4),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$DEADBEEF,d0
                 bne.s   .fail
@@ -290,8 +297,9 @@ case_ea_020_brief_scale8_l:
                 lea     .brief_data(pc),a0
                 moveq   #2,d1
                 move.l  0(a0,d1.l*8),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$CAFEBABE,d0
                 bne.s   .fail
@@ -326,8 +334,9 @@ case_ea_020_brief_disp_scale4:
                 lea     .brief_data(pc),a0
                 moveq   #2,d1
                 move.l  4(a0,d1.l*4),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$DEADBEEF,d0
                 bne.s   .fail
@@ -362,8 +371,9 @@ case_ea_020_brief_an_index:
                 lea     .brief_data(pc),a0
                 move.l  #12,a1
                 move.l  0(a0,a1.l),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$DEADBEEF,d0
                 bne.s   .fail
@@ -398,8 +408,9 @@ case_ea_020_brief_an_idx_scale4:
                 lea     .brief_data(pc),a0
                 move.l  #3,a1
                 move.l  0(a0,a1.l*4),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$DEADBEEF,d0
                 bne.s   .fail
@@ -434,8 +445,9 @@ case_ea_020_brief_zero_disp:
                 lea     .brief_data(pc),a0
                 moveq   #16,d1
                 move.l  0(a0,d1.l),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$CAFEBABE,d0
                 bne.s   .fail
@@ -471,8 +483,9 @@ case_ea_020_brief_max_pos_disp:
                 suba.l  #127,a0
                 moveq   #0,d1
                 move.l  127(a0,d1.l),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$11223344,d0
                 bne.s   .fail
@@ -508,8 +521,9 @@ case_ea_020_brief_neg_disp:
                 adda.l  #8,a0
                 moveq   #0,d1
                 move.l  -4(a0,d1.l),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$55667788,d0
                 bne.s   .fail
@@ -545,8 +559,9 @@ case_ea_020_brief_max_neg_disp:
                 adda.l  #128,a0
                 moveq   #0,d1
                 move.l  -128(a0,d1.l),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$11223344,d0
                 bne.s   .fail
@@ -580,8 +595,9 @@ case_ea_020_brief_max_neg_disp:
 case_ea_020_brief_pc_dn_w:
                 moveq   #4,d1
                 move.l  .brief_pc_data(pc,d1.w),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$55667788,d0
                 bne.s   .fail
@@ -608,8 +624,9 @@ case_ea_020_brief_pc_dn_w:
 case_ea_020_brief_pc_dn_l_s4:
                 moveq   #1,d1
                 move.l  .brief_pc_s4_data(pc,d1.l*4),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$55667788,d0
                 bne.s   .fail
@@ -638,8 +655,9 @@ case_ea_020_brief_w_signext:
                 adda.l  #4,a0
                 move.l  #$0000FFFC,d1
                 move.l  0(a0,d1.w),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$11223344,d0
                 bne.s   .fail
@@ -674,8 +692,9 @@ case_ea_020_brief_l_large_idx:
                 lea     .brief_data(pc),a0
                 moveq   #20,d1
                 move.l  0(a0,d1.l),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$0BADF00D,d0
                 bne.s   .fail
@@ -710,8 +729,9 @@ case_ea_020_brief_disp_scale2_w:
                 lea     .brief_data(pc),a0
                 moveq   #2,d1
                 move.l  4(a0,d1.w*2),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$AABBCCDD,d0
                 bne.s   .fail
@@ -770,8 +790,9 @@ case_ea_020_brief_combined:
                 lea     .brief_data(pc),a0
                 moveq   #6,d1
                 move.l  8(a0,d1.l*2),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$0BADF00D,d0
                 bne.s   .fail
@@ -806,8 +827,9 @@ case_ea_020_brief_d7_index:
                 lea     .brief_data(pc),a0
                 moveq   #3,d7
                 move.l  0(a0,d7.l*4),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$DEADBEEF,d0
                 bne.s   .fail
@@ -842,8 +864,9 @@ case_ea_020_brief_a3_base:
                 lea     .brief_data(pc),a3
                 moveq   #8,d1
                 move.l  4(a3,d1.l),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$DEADBEEF,d0
                 bne.s   .fail

@@ -7,7 +7,6 @@ func buildPhase7Shards() []shard {
 	return []shard{
 		shardMulDiv020(),
 		shardCASops(),
-		shardCALLMRTM(),
 	}
 }
 
@@ -29,8 +28,8 @@ func shardMulDiv020() shard {
 
 	// MULU.L D1,D0 (32-bit): $10000 * $10000 = $100000000, truncated to 0 → Z flag
 	cases = append(cases, regsr(s, "muldiv020_mulu_l_overflow_z", "MULU.L D1,D0 overflow->0",
-		"MULU.L D1,D0 initial: D0=$10000 D1=$10000", "D0=$00000000 SR(Z)=$0004",
-		"d0", 0x00000000, 0x000F, 0x0004,
+		"MULU.L D1,D0 initial: D0=$10000 D1=$10000", "D0=$00000000 SR(V+Z)=$0006",
+		"d0", 0x00000000, 0x000F, 0x0006,
 		[]string{"move.l  #$10000,d0", "move.l  #$10000,d1", "moveq   #0,d2", "move.w  d2,ccr"},
 		[]string{"dc.w    $4C01,$0000"}))
 

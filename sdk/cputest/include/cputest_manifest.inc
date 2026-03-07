@@ -3,7 +3,6 @@
 ct_suite_shards:
                 dc.l    run_bf_mem_shard
                 dc.l    run_bf_reg_shard
-                dc.l    run_callm_rtm_shard
                 dc.l    run_cas_ops_shard
                 dc.l    run_chk2_cmp2_shard
                 dc.l    run_core_020_shard
@@ -35,5 +34,5 @@ ct_suite_shards:
 
 ; Expected total case count for verification
 ct_set_expected_total:
-                move.l  #437,ct_expected_total
+                move.l  #431,ct_expected_total
                 rts

@@ -657,6 +657,12 @@ cputest-bin:
 		sdk/cputest/cputest_suite_bare.asm
 	@echo "Bare-metal CPU test binary: sdk/cputest/cputest_suite.bin"
 
+# Validate CPU test expected values against Musashi reference 68020 core
+.PHONY: cputest-musashi
+cputest-musashi:
+	@echo "Validating CPU test suite against Musashi reference core..."
+	@CGO_ENABLED=1 $(GO) test -tags "headless musashi m68k_test" -v -run TestM68KCPUTestSuiteMusashi -timeout 300s
+
 # Assemble an IE65 (6502) program using ca65/ld65
 # Usage: make ie65asm SRC=assembler/robocop_intro_65.asm
 ie65asm:
@@ -1157,7 +1163,8 @@ help:
 	@echo "IE65 (6502) targets:"
 	@echo "  gen-65-data    - Build the IE65 data generator tool"
 	@echo "  ie65asm        - Assemble an IE65 program (SRC=file.asm)"
-	@echo "  cputest-bin    - Generate and assemble bare-metal M68K CPU test binary"
+	@echo "  cputest-bin      - Generate and assemble bare-metal M68K CPU test binary"
+	@echo "  cputest-musashi  - Validate CPU test expected values against Musashi 68020"
 	@echo ""
 	@echo "IE80 (Z80) targets:"
 	@echo "  ie80asm        - Assemble an IE80 program (SRC=file.asm)"

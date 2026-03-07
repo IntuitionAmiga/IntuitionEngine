@@ -23,8 +23,9 @@ case_core_alu_moveq_zero:
                 moveq   #0,d1
                 move.w  d1,ccr
                 dc.w    $7000
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
@@ -51,8 +52,9 @@ case_core_alu_addq_word:
                 moveq   #0,d1
                 move.w  d1,ccr
                 dc.w    $5240
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$00000006,d0
                 bne.s   .fail
@@ -80,8 +82,9 @@ case_core_alu_add_long:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $D081
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$00000015,d0
                 bne.s   .fail
@@ -109,8 +112,9 @@ case_core_alu_sub_long:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $9081
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$00000010,d0
                 bne.s   .fail
@@ -138,8 +142,9 @@ case_core_alu_and_long:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $C081
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$00005600,d0
                 bne.s   .fail
@@ -167,8 +172,9 @@ case_core_alu_or_long:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $8081
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$FFFFFFFF,d0
                 bne.s   .fail
@@ -196,8 +202,9 @@ case_core_alu_eor_long:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $B380
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$55555555,d0
                 bne.s   .fail
@@ -224,8 +231,9 @@ case_core_alu_not_long:
                 moveq   #0,d1
                 move.w  d1,ccr
                 dc.w    $4680
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$FFFFFFFF,d0
                 bne.s   .fail

@@ -44,13 +44,13 @@ func shardBFReg() shard {
 		[]string{"dc.w    $E8C0,$0608"}))
 
 	// BFTST D0{8:16} with D0=$00FFFF00 → field=$FFFF → N=1
-	// ext: offset=8=00010 in 10:6, width=16=10000 in 4:0
-	// = 0000_0_00010_0_10000 = $0090
+	// ext: offset=8=01000 in 10:6, width=16=10000 in 4:0
+	// = 0000_0_01000_0_10000 = $0210
 	cases = append(cases, intCase(s, "bf_reg_bftst_8_16_ffff", "BFTST D0{8:16}",
 		"D0=$00FFFF00 offset=8 width=16", "SR: N=1 Z=0",
 		"custom_sr_only", "", 0, 0x000C, 0x0008,
 		[]string{"move.l  #$00FFFF00,d0", "moveq   #0,d2", "move.w  d2,ccr"},
-		[]string{"dc.w    $E8C0,$0090"}))
+		[]string{"dc.w    $E8C0,$0210"}))
 
 	// -----------------------------------------------------------------------
 	// BFEXTU register
@@ -66,13 +66,13 @@ func shardBFReg() shard {
 		[]string{"dc.w    $E9C0,$1008"}))
 
 	// BFEXTU D0{16:16},D1 with D0=$1234ABCD → D1=$0000ABCD
-	// ext: D1=0001, offset=16=00100 in 10:6, width=16=10000 in 4:0
-	// = 0001_0_00100_0_10000 = $1110
+	// ext: D1=0001, offset=16=10000 in 10:6, width=16=10000 in 4:0
+	// = 0001_0_10000_0_10000 = $1410
 	cases = append(cases, regsr(s, "bf_reg_bfextu_16_16", "BFEXTU D0{16:16},D1",
 		"D0=$1234ABCD offset=16 width=16", "D1=$0000ABCD SR: N=1",
 		"d1", 0x0000ABCD, 0x000C, 0x0008,
 		[]string{"move.l  #$1234ABCD,d0", "moveq   #0,d1", "moveq   #0,d2", "move.w  d2,ccr"},
-		[]string{"dc.w    $E9C0,$1110"}))
+		[]string{"dc.w    $E9C0,$1410"}))
 
 	// BFEXTU D0{0:32},D1 with D0=$12345678 → D1=$12345678 (width=0 means 32)
 	// ext: D1=0001, offset=0, width=0 → $1000
@@ -110,13 +110,13 @@ func shardBFReg() shard {
 		[]string{"dc.w    $EBC0,$1008"}))
 
 	// BFEXTS D0{16:8},D1 with D0=$0000FF00 → field=$FF → D1=$FFFFFFFF
-	// ext: D1=0001, offset=16=00100, width=8=01000 → $1110... wait:
-	// = 0001_0_00100_0_01000 = $1108
+	// ext: D1=0001, offset=16=10000, width=8=01000
+	// = 0001_0_10000_0_01000 = $1408
 	cases = append(cases, regsr(s, "bf_reg_bfexts_16_8", "BFEXTS D0{16:8},D1",
 		"D0=$0000FF00 offset=16 width=8", "D1=$FFFFFFFF SR: N=1",
 		"d1", 0xFFFFFFFF, 0x000C, 0x0008,
 		[]string{"move.l  #$0000FF00,d0", "moveq   #0,d1", "moveq   #0,d2", "move.w  d2,ccr"},
-		[]string{"dc.w    $EBC0,$1108"}))
+		[]string{"dc.w    $EBC0,$1408"}))
 
 	// -----------------------------------------------------------------------
 	// BFSET register
@@ -174,13 +174,13 @@ func shardBFReg() shard {
 		[]string{"dc.w    $ECC0,$0008"}))
 
 	// BFCLR D0{16:16} with D0=$1234FFFF → D0=$12340000
-	// ext: offset=16=00100 in 10:6, width=16=10000 in 4:0
-	// = 0000_0_00100_0_10000 = $0110
+	// ext: offset=16=10000 in 10:6, width=16=10000 in 4:0
+	// = 0000_0_10000_0_10000 = $0410
 	cases = append(cases, regsr(s, "bf_reg_bfclr_16_16", "BFCLR D0{16:16}",
 		"D0=$1234FFFF offset=16 width=16", "D0=$12340000 SR: N=1",
 		"d0", 0x12340000, 0x000C, 0x0008,
 		[]string{"move.l  #$1234FFFF,d0", "moveq   #0,d2", "move.w  d2,ccr"},
-		[]string{"dc.w    $ECC0,$0110"}))
+		[]string{"dc.w    $ECC0,$0410"}))
 
 	// -----------------------------------------------------------------------
 	// BFFFO register
@@ -271,13 +271,13 @@ func shardBFReg() shard {
 		[]string{"dc.w    $EFC0,$1008"}))
 
 	// BFINS D1,D0{16:8} with D1=$000000CD, D0=$12340078 → D0=$1234CD78
-	// ext: D1=0001, offset=16=00100 in 10:6, width=8=01000
-	// = 0001_0_00100_0_01000 = $1108
+	// ext: D1=0001, offset=16=10000 in 10:6, width=8=01000
+	// = 0001_0_10000_0_01000 = $1408
 	cases = append(cases, regsr(s, "bf_reg_bfins_16_8", "BFINS D1,D0{16:8}",
 		"D1=$000000CD D0=$12340078 offset=16 width=8", "D0=$1234CD78 SR: N=1",
 		"d0", 0x1234CD78, 0x000C, 0x0008,
 		[]string{"move.l  #$12340078,d0", "move.l  #$000000CD,d1", "moveq   #0,d2", "move.w  d2,ccr"},
-		[]string{"dc.w    $EFC0,$1108"}))
+		[]string{"dc.w    $EFC0,$1408"}))
 
 	// -----------------------------------------------------------------------
 	// Dynamic offset/width via registers

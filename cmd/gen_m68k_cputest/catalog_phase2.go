@@ -150,26 +150,49 @@ func shardEAReadOps() shard {
 				expectedVal = ea.val
 			}
 			id := fmt.Sprintf("ea_read_%s_%s", strings.ToLower(op.mnemonic), ea.suffix)
+			srMask := uint16(0x001F) // XNZVC
+			srExpect := flagsFor(expectedVal)
+			if op.mnemonic == "SUB" {
+				srExpect = subFlagsFor(ea.val)
+			} else if op.mnemonic == "ADD" {
+				// ADD 0+val: no carry/borrow, X=0
+				srMask = 0x000F
+			} else {
+				// AND, OR: logical ops don't affect X
+				srMask = 0x000F
+			}
 			cases = append(cases, regsr(s, id,
 				fmt.Sprintf("%s.L %s,D0", op.mnemonic, ea.name),
 				fmt.Sprintf("%s.L %s,D0 initial: D0 set", op.mnemonic, ea.name),
 				fmt.Sprintf("D0=$%08X", expectedVal),
-				"d0", expectedVal, 0x000F, flagsFor(expectedVal),
+				"d0", expectedVal, srMask, srExpect,
 				setupLines,
 				[]string{ea.body}, srcData...))
 		}
 	}
 
 	// BTST Dn,(An) and BTST Dn,d16(An)
-	cases = append(cases, regsr(s, "ea_read_btst_an", "BTST D1,(A0)",
-		"BTST D1,(A0) bit 0 of $44=0", "Z=1", "d0", 0x11223344, 0x0004, 0x0004,
-		[]string{"lea     .src_data(pc),a0", "moveq   #0,d0", "moveq   #0,d1", "move.w  d0,ccr"},
-		[]string{"btst    d1,(a0)", "move.l  (a0),d0"}, srcData...))
+	// Memory is big-endian: dc.l $11223344 → byte at (A0) is $11 (0001_0001)
+	// Bit 1 of $11 is 0 → Z=1. Use custom_sr_only to avoid readback clobbering SR.
+	cases = append(cases, testCase{
+		ID: "ea_read_btst_an", Shard: s, Kind: kindInt,
+		Name: "BTST D1,(A0)", Input: "BTST D1,(A0) bit 1 of $11=0", Expected: "Z=1",
+		ActualMode: "custom_sr_only", SRMask: 0x0004, ExpectSR: 0x0004,
+		Setup:    []string{"lea     .src_data(pc),a0", "moveq   #1,d1", "moveq   #0,d0", "move.w  d0,ccr"},
+		Body:     []string{"btst    d1,(a0)"},
+		DataPool: srcData,
+	})
 
-	cases = append(cases, regsr(s, "ea_read_btst_d16", "BTST D1,4(A0)",
-		"BTST D1,4(A0) bit 0 of $88=0", "Z=1", "d0", 0x55667788, 0x0004, 0x0004,
-		[]string{"lea     .src_data(pc),a0", "moveq   #0,d0", "moveq   #0,d1", "move.w  d0,ccr"},
-		[]string{"btst    d1,4(a0)", "move.l  4(a0),d0"}, srcData...))
+	// dc.l $55667788 at offset 4 → byte at 4(A0) is $55 (0101_0101)
+	// Bit 1 of $55 is 0 → Z=1
+	cases = append(cases, testCase{
+		ID: "ea_read_btst_d16", Shard: s, Kind: kindInt,
+		Name: "BTST D1,4(A0)", Input: "BTST D1,4(A0) bit 1 of $55=0", Expected: "Z=1",
+		ActualMode: "custom_sr_only", SRMask: 0x0004, ExpectSR: 0x0004,
+		Setup:    []string{"lea     .src_data(pc),a0", "moveq   #1,d1", "moveq   #0,d0", "move.w  d0,ccr"},
+		Body:     []string{"btst    d1,4(a0)"},
+		DataPool: srcData,
+	})
 
 	return shard{Name: s, Title: "EA Read Ops", Cases: cases}
 }
@@ -182,6 +205,22 @@ func flagsFor(val uint32) uint16 {
 		return 0x0008 // N
 	}
 	return 0x0000
+}
+
+// subFlagsFor returns XNZVC flags for SUB.L: result = 0 - val.
+func subFlagsFor(val uint32) uint16 {
+	result := uint32(0) - val
+	var flags uint16
+	if result == 0 {
+		flags |= 0x0004 // Z
+	}
+	if result&0x80000000 != 0 {
+		flags |= 0x0008 // N
+	}
+	if val != 0 {
+		flags |= 0x0011 // X + C (borrow from 0)
+	}
+	return flags
 }
 
 func shardEAWriteOps() shard {
@@ -244,22 +283,28 @@ func shardEAWriteOps() shard {
 	}
 
 	// NEG.L <ea>
+	// Body saves SR right after NEG (before readback clobbers it), then reads back to d1.
+	// custom_d1_sr checks d1 (result) and d1's SR field (saved on stack by body).
 	for _, ea := range []struct {
 		suffix, name string
 		setup        []string
-		body         string
+		negBody      string
 		readback     string
 	}{
 		{"an_ind", "(A0)", []string{"lea     .dst_buf(pc),a0", "move.l  #$00000001,(a0)"}, "neg.l   (a0)", "move.l  (a0),d0"},
 		{"d16_an", "4(A0)", []string{"lea     .dst_buf(pc),a0", "move.l  #$00000001,4(a0)"}, "neg.l   4(a0)", "move.l  4(a0),d0"},
 	} {
 		id := fmt.Sprintf("ea_write_neg_%s", ea.suffix)
+		// Check memory result via mem32 mode + separate SR check isn't possible.
+		// Instead: use regsr with body that saves/restores SR around the readback.
+		// Body: neg.l (a0) / move.w sr,d3 / move.l (a0),d0 / move.w d3,ccr
+		// This way: d0 has readback, SR has the NEG flags (restored from d3)
 		cases = append(cases, regsr(s, id,
 			fmt.Sprintf("NEG.L %s", ea.name),
 			fmt.Sprintf("NEG.L %s initial: [ea]=$00000001", ea.name),
-			"D0=$FFFFFFFF SR(N+X)=$0009", "d0", 0xFFFFFFFF, 0x000F, 0x0009,
-			append(ea.setup, "moveq   #0,d1", "move.w  d1,ccr"),
-			[]string{ea.body, ea.readback}, dstData...))
+			"D0=$FFFFFFFF SR(XNVC)=$0019", "d0", 0xFFFFFFFF, 0x001F, 0x0019,
+			append(ea.setup, "moveq   #0,d2", "move.w  d2,ccr"),
+			[]string{ea.negBody, "move.w  sr,d3", ea.readback, "move.w  d3,ccr"}, dstData...))
 	}
 
 	// NOT.L <ea>
@@ -328,18 +373,17 @@ func shardEAControl() shard {
 		[]string{"moveq   #0,d0", "lea     .jmp_an_tgt(pc),a0"},
 		[]string{"jmp     (a0)", "moveq   #$77,d0", ".jmp_an_tgt:", "moveq   #1,d0"}))
 	// JMP d16(An)
-	cases = append(cases, regonly(s, "ea_ctrl_jmp_d16", "JMP 4(A0)",
-		"JMP 4(A0)", "D0=$00000002", "d0", 0x00000002,
+	cases = append(cases, regonly(s, "ea_ctrl_jmp_d16", "JMP 2(A0)",
+		"JMP 2(A0)", "D0=$00000002", "d0", 0x00000002,
 		[]string{"moveq   #0,d0", "lea     .jmp_d16_base(pc),a0"},
-		[]string{"jmp     4(a0)", ".jmp_d16_base:", "moveq   #$77,d0", "moveq   #2,d0"}))
-	// JMP abs.W
-	// Can't use abs.W for JMP in our test context (address depends on load), use abs.L
+		[]string{"jmp     2(a0)", ".jmp_d16_base:", "moveq   #$77,d0", "moveq   #2,d0"}))
+	// JMP abs.L — self-modify to patch target address at runtime
 	cases = append(cases, regonly(s, "ea_ctrl_jmp_absl", "JMP abs.L",
 		"JMP (label).L", "D0=$00000003", "d0", 0x00000003,
 		[]string{"moveq   #0,d0"},
-		[]string{"lea     .jmp_absl_tgt(pc),a0", "move.l  a0,d2", "dc.w    $4EF9", ".jmp_absl_addr:", "dc.l    0",
+		[]string{"lea     .jmp_absl_tgt(pc),a0", "lea     .jmp_absl_addr(pc),a1", "move.l  a0,(a1)",
+			"dc.w    $4EF9", ".jmp_absl_addr:", "dc.l    0",
 			"moveq   #$77,d0", ".jmp_absl_tgt:", "moveq   #3,d0"},
-		// Self-modify: write target address. Actually let's use a simpler approach.
 	))
 
 	// JSR (An)

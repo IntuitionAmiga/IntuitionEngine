@@ -40,8 +40,9 @@ case_muldiv020_mulu_l_simple:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $4C01,$0000
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$00004E20,d0
                 bne.s   .fail
@@ -69,12 +70,13 @@ case_muldiv020_mulu_l_overflow_z:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $4C01,$0000
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
-                cmpi.w  #$0004,d1
+                cmpi.w  #$0006,d1
                 bne.s   .fail
                 lea     .name(pc),a0
                 jsr     ct_log_pass
@@ -89,7 +91,7 @@ case_muldiv020_mulu_l_overflow_z:
 .input:
                 dc.b    "MULU.L D1,D0 initial: D0=$10000 D1=$10000",0
 .expected:
-                dc.b    "D0=$00000000 SR(Z)=$0004",0
+                dc.b    "D0=$00000000 SR(V+Z)=$0006",0
                 even
 
 case_muldiv020_mulu_l_large:
@@ -98,8 +100,9 @@ case_muldiv020_mulu_l_large:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $4C01,$0000
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$FFFE0001,d0
                 bne.s   .fail
@@ -214,8 +217,9 @@ case_muldiv020_muls_l_neg_neg:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $4C01,$0800
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$00000006,d0
                 bne.s   .fail
@@ -243,8 +247,9 @@ case_muldiv020_muls_l_neg_pos:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $4C01,$0800
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$FFFFFFCE,d0
                 bne.s   .fail
@@ -272,8 +277,9 @@ case_muldiv020_muls_l_zero:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $4C01,$0800
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
@@ -388,8 +394,9 @@ case_muldiv020_divu_l_simple:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $4C41,$0000
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$000000C8,d0
                 bne.s   .fail
@@ -446,8 +453,9 @@ case_muldiv020_divu_l_large:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $4C41,$0000
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$40000000,d0
                 bne.s   .fail
@@ -475,8 +483,9 @@ case_muldiv020_divu_l_zero_quot:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $4C41,$0000
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
@@ -534,8 +543,9 @@ case_muldiv020_divs_l_neg_div:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $4C41,$0800
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$FFFFFFF6,d0
                 bne.s   .fail
@@ -563,8 +573,9 @@ case_muldiv020_divs_l_neg_divisor:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $4C41,$0800
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$FFFFFFF6,d0
                 bne.s   .fail
@@ -621,8 +632,9 @@ case_muldiv020_divs_l_zero_quot:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $4C41,$0800
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
@@ -680,8 +692,9 @@ case_muldiv020_mulu_l_nflag:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $4C01,$0000
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$C0000000,d0
                 bne.s   .fail

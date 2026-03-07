@@ -48,8 +48,9 @@ case_fpu_cond_fbeq_taken:
                 .taken_fpu_cond_fbeq_taken:
                 moveq   #1,d0
                 .done_fpu_cond_fbeq_taken:
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
@@ -81,8 +82,9 @@ case_fpu_cond_fbeq_not:
                 .taken_fpu_cond_fbeq_not:
                 moveq   #1,d0
                 .done_fpu_cond_fbeq_not:
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
@@ -116,8 +118,9 @@ case_fpu_cond_fbne_taken:
                 .taken_fpu_cond_fbne_taken:
                 moveq   #1,d0
                 .done_fpu_cond_fbne_taken:
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
@@ -151,8 +154,9 @@ case_fpu_cond_fbne_not:
                 .taken_fpu_cond_fbne_not:
                 moveq   #1,d0
                 .done_fpu_cond_fbne_not:
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
@@ -184,8 +188,9 @@ case_fpu_cond_fbogt_taken:
                 .taken_fpu_cond_fbogt_taken:
                 moveq   #1,d0
                 .done_fpu_cond_fbogt_taken:
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
@@ -219,8 +224,9 @@ case_fpu_cond_fbogt_not:
                 .taken_fpu_cond_fbogt_not:
                 moveq   #1,d0
                 .done_fpu_cond_fbogt_not:
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
@@ -254,8 +260,9 @@ case_fpu_cond_fbolt_taken:
                 .taken_fpu_cond_fbolt_taken:
                 moveq   #1,d0
                 .done_fpu_cond_fbolt_taken:
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
@@ -289,8 +296,9 @@ case_fpu_cond_fbolt_not:
                 .taken_fpu_cond_fbolt_not:
                 moveq   #1,d0
                 .done_fpu_cond_fbolt_not:
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
@@ -324,8 +332,9 @@ case_fpu_cond_fboge_gt:
                 .taken_fpu_cond_fboge_gt:
                 moveq   #1,d0
                 .done_fpu_cond_fboge_gt:
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
@@ -359,8 +368,9 @@ case_fpu_cond_fboge_eq:
                 .taken_fpu_cond_fboge_eq:
                 moveq   #1,d0
                 .done_fpu_cond_fboge_eq:
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
@@ -392,8 +402,9 @@ case_fpu_cond_fbole_lt:
                 .taken_fpu_cond_fbole_lt:
                 moveq   #1,d0
                 .done_fpu_cond_fbole_lt:
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
@@ -427,8 +438,9 @@ case_fpu_cond_fbole_eq:
                 .taken_fpu_cond_fbole_eq:
                 moveq   #1,d0
                 .done_fpu_cond_fbole_eq:
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
@@ -460,8 +472,9 @@ case_fpu_cond_fbor_taken:
                 .taken_fpu_cond_fbor_taken:
                 moveq   #1,d0
                 .done_fpu_cond_fbor_taken:
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
@@ -495,8 +508,9 @@ case_fpu_cond_fbun_nan:
                 .taken_fbun_nan:
                 moveq   #1,d0
                 .done_fbun_nan:
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
@@ -530,8 +544,9 @@ case_fpu_cond_fbun_not:
                 .taken_fpu_cond_fbun_not:
                 moveq   #1,d0
                 .done_fpu_cond_fbun_not:
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
@@ -562,8 +577,9 @@ case_fpu_cond_fseq_true:
                 fcmp.x  fp1,fp0
                 dc.w    $F240,$0001
                 andi.l  #$000000FF,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$000000FF,d0
                 bne.s   .fail
@@ -592,8 +608,9 @@ case_fpu_cond_fseq_false:
                 fcmp.x  fp1,fp0
                 dc.w    $F240,$0001
                 andi.l  #$000000FF,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
@@ -624,8 +641,9 @@ case_fpu_cond_fsne_true:
                 fcmp.x  fp1,fp0
                 dc.w    $F240,$000E
                 andi.l  #$000000FF,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$000000FF,d0
                 bne.s   .fail
@@ -656,8 +674,9 @@ case_fpu_cond_fsne_false:
                 fcmp.x  fp1,fp0
                 dc.w    $F240,$000E
                 andi.l  #$000000FF,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
@@ -686,8 +705,9 @@ case_fpu_cond_fsogt_true:
                 fcmp.x  fp1,fp0
                 dc.w    $F240,$0002
                 andi.l  #$000000FF,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$000000FF,d0
                 bne.s   .fail
@@ -718,8 +738,9 @@ case_fpu_cond_fsolt_false:
                 fcmp.x  fp1,fp0
                 dc.w    $F240,$0004
                 andi.l  #$000000FF,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
@@ -750,8 +771,9 @@ case_fpu_cond_fst_true:
                 fcmp.x  fp1,fp0
                 dc.w    $F240,$000F
                 andi.l  #$000000FF,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$000000FF,d0
                 bne.s   .fail
@@ -782,8 +804,9 @@ case_fpu_cond_fsf_false:
                 fcmp.x  fp1,fp0
                 dc.w    $F240,$0000
                 andi.l  #$000000FF,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
@@ -816,9 +839,10 @@ case_fpu_cond_fdbeq_loop:
                 .loop_fdbeq:
                 addq.l  #1,d0
                 dc.w    $F249,$0001
-                dc.w    $FFF8
+                dc.w    $FFFC
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000003,d0
                 bne.s   .fail
@@ -851,9 +875,10 @@ case_fpu_cond_fdbeq_exit:
                 .loop_fdbeq2:
                 addq.l  #1,d0
                 dc.w    $F249,$0001
-                dc.w    $FFF8
+                dc.w    $FFFC
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
@@ -884,9 +909,10 @@ case_fpu_cond_fdbne_loop:
                 .loop_fdbne:
                 addq.l  #1,d0
                 dc.w    $F249,$000E
-                dc.w    $FFF8
+                dc.w    $FFFC
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000002,d0
                 bne.s   .fail
@@ -914,9 +940,10 @@ case_fpu_cond_fdbt_exit:
                 .loop_fdbt:
                 addq.l  #1,d0
                 dc.w    $F249,$000F
-                dc.w    $FFF8
+                dc.w    $FFFC
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail
@@ -942,9 +969,10 @@ case_fpu_cond_fdbf_count:
                 .loop_fdbf:
                 addq.l  #1,d0
                 dc.w    $F249,$0000
-                dc.w    $FFF8
+                dc.w    $FFFC
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000001,d0
                 bne.s   .fail

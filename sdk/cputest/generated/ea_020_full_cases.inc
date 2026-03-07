@@ -38,8 +38,9 @@ case_ea_020_full_bdw_d1l:
                 dc.w    $2030
                 dc.w    $1920
                 dc.w    $0004
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$DEADBEEF,d0
                 bne.s   .fail
@@ -76,8 +77,9 @@ case_ea_020_full_bdl_d1l:
                 dc.w    $2030
                 dc.w    $1930
                 dc.l    $0000000C
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$DEADBEEF,d0
                 bne.s   .fail
@@ -114,8 +116,9 @@ case_ea_020_full_scale2:
                 dc.w    $2030
                 dc.w    $1B20
                 dc.w    $0000
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$AABBCCDD,d0
                 bne.s   .fail
@@ -152,8 +155,9 @@ case_ea_020_full_scale4:
                 dc.w    $2030
                 dc.w    $1D20
                 dc.w    $0000
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$DEADBEEF,d0
                 bne.s   .fail
@@ -190,8 +194,9 @@ case_ea_020_full_scale8:
                 dc.w    $2030
                 dc.w    $1F20
                 dc.w    $0000
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$CAFEBABE,d0
                 bne.s   .fail
@@ -228,8 +233,9 @@ case_ea_020_full_is_suppress:
                 dc.w    $2030
                 dc.w    $1960
                 dc.w    $000C
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$DEADBEEF,d0
                 bne.s   .fail
@@ -266,8 +272,9 @@ case_ea_020_full_bs_suppress:
                 addq.l  #8,d1
                 dc.w    $2030
                 dc.w    $1990
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$AABBCCDD,d0
                 bne.s   .fail
@@ -303,8 +310,9 @@ case_ea_020_full_bd_null:
                 moveq   #12,d1
                 dc.w    $2030
                 dc.w    $1910
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$DEADBEEF,d0
                 bne.s   .fail
@@ -342,8 +350,9 @@ case_ea_020_full_neg_bdw:
                 dc.w    $2030
                 dc.w    $1920
                 dc.w    $FFFC
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$55667788,d0
                 bne.s   .fail
@@ -380,8 +389,9 @@ case_ea_020_full_idx_w:
                 dc.w    $2030
                 dc.w    $1120
                 dc.w    $0000
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$55667788,d0
                 bne.s   .fail
@@ -418,8 +428,9 @@ case_ea_020_full_an_index:
                 dc.w    $2030
                 dc.w    $9920
                 dc.w    $0000
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$DEADBEEF,d0
                 bne.s   .fail
@@ -453,8 +464,9 @@ case_ea_020_full_an_index:
 case_ea_020_full_bs_is:
                 clr.l   $00008200
                 move.l  $00008200,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
@@ -480,8 +492,9 @@ case_ea_020_full_bdl_scale4:
                 dc.w    $2030
                 dc.w    $1D30
                 dc.l    $00000004
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$DEADBEEF,d0
                 bne.s   .fail
@@ -518,8 +531,9 @@ case_ea_020_full_bdw_scale8:
                 dc.w    $2030
                 dc.w    $1F20
                 dc.w    $0004
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$DEADBEEF,d0
                 bne.s   .fail
@@ -583,8 +597,9 @@ case_ea_020_full_neg_bdl:
                 dc.w    $2030
                 dc.w    $1930
                 dc.l    $FFFFFFF8
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$DEADBEEF,d0
                 bne.s   .fail
@@ -621,8 +636,9 @@ case_ea_020_full_is_with_scale:
                 dc.w    $2030
                 dc.w    $1D60
                 dc.w    $000C
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$DEADBEEF,d0
                 bne.s   .fail
@@ -685,8 +701,9 @@ case_ea_020_full_bdw_zero:
                 dc.w    $2030
                 dc.w    $1920
                 dc.w    $0000
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$CAFEBABE,d0
                 bne.s   .fail
@@ -723,8 +740,9 @@ case_ea_020_full_d2w_scale2:
                 dc.w    $2030
                 dc.w    $2320
                 dc.w    $0004
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$AABBCCDD,d0
                 bne.s   .fail
@@ -761,8 +779,9 @@ case_ea_020_full_a2_idx_s4:
                 dc.w    $2030
                 dc.w    $AD20
                 dc.w    $0000
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$DEADBEEF,d0
                 bne.s   .fail
@@ -799,8 +818,9 @@ case_ea_020_full_pc_bdw:
                 move.l  a0,d2
                 ; Read using An-indirect with full format instead
                 move.l  (a0,d1.l),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$DEADBEEF,d0
                 bne.s   .fail

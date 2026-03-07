@@ -64,13 +64,18 @@ func (r failRecord) FormatActual() string {
 	}
 }
 
-func readCString(cpu *M68KCPU, addr uint32) string {
+type memReader interface {
+	Read8(addr uint32) byte
+	Read32(addr uint32) uint32
+}
+
+func readCString(m memReader, addr uint32) string {
 	if addr == 0 {
 		return "<nil>"
 	}
 	var buf []byte
 	for {
-		b := cpu.Read8(addr)
+		b := m.Read8(addr)
 		if b == 0 {
 			break
 		}
@@ -83,15 +88,15 @@ func readCString(cpu *M68KCPU, addr uint32) string {
 	return string(buf)
 }
 
-func readFailRecord(cpu *M68KCPU, addr uint32) failRecord {
+func readFailRecord(m memReader, addr uint32) failRecord {
 	return failRecord{
-		NamePtr:   cpu.Read32(addr),
-		InputPtr:  cpu.Read32(addr + 4),
-		ExpectPtr: cpu.Read32(addr + 8),
-		ActualD0:  cpu.Read32(addr + 12),
-		ActualD1:  cpu.Read32(addr + 16),
-		ActualD2:  cpu.Read32(addr + 20),
-		FailType:  cpu.Read32(addr + 24),
+		NamePtr:   m.Read32(addr),
+		InputPtr:  m.Read32(addr + 4),
+		ExpectPtr: m.Read32(addr + 8),
+		ActualD0:  m.Read32(addr + 12),
+		ActualD1:  m.Read32(addr + 16),
+		ActualD2:  m.Read32(addr + 20),
+		FailType:  m.Read32(addr + 24),
 	}
 }
 

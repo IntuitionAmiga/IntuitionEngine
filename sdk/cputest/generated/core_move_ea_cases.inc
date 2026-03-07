@@ -29,8 +29,9 @@ case_core_move_ea_src_indirect:
                 moveq   #0,d1
                 move.w  d1,ccr
                 move.l  (a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$11223344,d0
                 bne.s   .fail
@@ -64,11 +65,12 @@ case_core_move_ea_src_postinc:
                 move.l  (a0)+,d0
                 eori.l  #$11223344,d0
                 move.l  a0,d1
-                lea     .src_data_end(pc),a1
+                lea     .src_data+4(pc),a1
                 sub.l   a1,d1
                 or.l    d1,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
@@ -98,13 +100,14 @@ case_core_move_ea_src_predec:
                 lea     .src_data_end(pc),a0
                 moveq   #0,d0
                 move.l  -(a0),d0
-                eori.l  #$11223344,d0
+                eori.l  #$AABBCCDD,d0
                 move.l  a0,d1
-                lea     .src_data(pc),a1
+                lea     .src_data+8(pc),a1
                 sub.l   a1,d1
                 or.l    d1,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
@@ -136,8 +139,9 @@ case_core_move_ea_src_disp16:
                 moveq   #0,d1
                 move.w  d1,ccr
                 move.l  4(a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$55667788,d0
                 bne.s   .fail
@@ -171,9 +175,10 @@ case_core_move_ea_src_index:
                 moveq   #4,d1
                 moveq   #0,d2
                 move.w  d2,ccr
-                move.l  8(a0,d1.w),d0
+                move.l  4(a0,d1.w),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$AABBCCDD,d0
                 bne.s   .fail
@@ -188,9 +193,9 @@ case_core_move_ea_src_index:
                 lea     .expected(pc),a2
                 jsr     ct_fail_reg_sr
 .name:
-                dc.b    "MOVE.L 8(A0,D1.W),D0",0
+                dc.b    "MOVE.L 4(A0,D1.W),D0",0
 .input:
-                dc.b    "mnemonic=MOVE.L src=8(A0,D1.W) dest=D0",0
+                dc.b    "mnemonic=MOVE.L src=4(A0,D1.W) dest=D0",0
 .expected:
                 dc.b    "D0=$AABBCCDD SR(masked)=$0008",0
                 even
@@ -206,8 +211,9 @@ case_core_move_ea_src_pcdisp:
                 moveq   #0,d1
                 move.w  d1,ccr
                 move.l  .pc_src(pc),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$CAFEBABE,d0
                 bne.s   .fail
@@ -237,8 +243,9 @@ case_core_move_ea_src_pcindex:
                 moveq   #0,d2
                 move.w  d2,ccr
                 move.l  .pc_index_base(pc,d1.w),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$0BADF00D,d0
                 bne.s   .fail
@@ -268,8 +275,9 @@ case_core_move_ea_src_immediate:
                 moveq   #0,d1
                 move.w  d1,ccr
                 move.l  #$12345678,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$12345678,d0
                 bne.s   .fail
@@ -296,8 +304,9 @@ case_core_move_ea_dst_indirect:
                 move.l  #$11223344,d0
                 move.l  d0,(a0)
                 move.l  (a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$11223344,d0
                 bne.s   .fail
@@ -330,11 +339,12 @@ case_core_move_ea_dst_postinc:
                 move.l  -4(a0),d0
                 eori.l  #$11223344,d0
                 move.l  a0,d1
-                lea     .dst_data_end(pc),a1
+                lea     .dst_data+4(pc),a1
                 sub.l   a1,d1
                 or.l    d1,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
@@ -367,11 +377,12 @@ case_core_move_ea_dst_predec:
                 move.l  (a0),d0
                 eori.l  #$11223344,d0
                 move.l  a0,d1
-                lea     .dst_data(pc),a1
+                lea     .dst_data+8(pc),a1
                 sub.l   a1,d1
                 or.l    d1,d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
@@ -402,8 +413,9 @@ case_core_move_ea_dst_disp16:
                 move.l  #$55667788,d0
                 move.l  d0,4(a0)
                 move.l  4(a0),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$55667788,d0
                 bne.s   .fail
@@ -433,10 +445,11 @@ case_core_move_ea_dst_index:
                 lea     .dst_data(pc),a0
                 moveq   #4,d1
                 move.l  #$AABBCCDD,d0
-                move.l  d0,8(a0,d1.w)
-                move.l  8(a0,d1.w),d0
+                move.l  d0,4(a0,d1.w)
+                move.l  4(a0,d1.w),d0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$AABBCCDD,d0
                 bne.s   .fail
@@ -449,9 +462,9 @@ case_core_move_ea_dst_index:
                 lea     .expected(pc),a2
                 jsr     ct_fail_reg_only
 .name:
-                dc.b    "MOVE.L D0,8(A0,D1.W)",0
+                dc.b    "MOVE.L D0,4(A0,D1.W)",0
 .input:
-                dc.b    "mnemonic=MOVE.L src=D0 dest=8(A0,D1.W)",0
+                dc.b    "mnemonic=MOVE.L src=D0 dest=4(A0,D1.W)",0
 .expected:
                 dc.b    "D0(readback)=$AABBCCDD",0
                 even

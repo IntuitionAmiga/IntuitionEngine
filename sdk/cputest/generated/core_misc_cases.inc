@@ -23,8 +23,9 @@ case_core_misc_clr:
                 moveq   #0,d1
                 move.w  d1,ccr
                 dc.w    $4280
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$00000000,d0
                 bne.s   .fail
@@ -51,8 +52,9 @@ case_core_misc_tst:
                 moveq   #0,d1
                 move.w  d1,ccr
                 dc.w    $4A80
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$80000000,d0
                 bne.s   .fail
@@ -79,8 +81,9 @@ case_core_misc_swap:
                 moveq   #0,d1
                 move.w  d1,ccr
                 dc.w    $4840
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$56781234,d0
                 bne.s   .fail
@@ -107,8 +110,9 @@ case_core_misc_extw:
                 moveq   #0,d1
                 move.w  d1,ccr
                 dc.w    $4880
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$0000FF80,d0
                 bne.s   .fail
@@ -135,8 +139,9 @@ case_core_misc_neg:
                 moveq   #0,d1
                 move.w  d1,ccr
                 dc.w    $4480
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$FFFFFF00,d0
                 bne.s   .fail
@@ -163,8 +168,9 @@ case_core_misc_extl:
                 moveq   #0,d1
                 move.w  d1,ccr
                 dc.w    $48C0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$FFFF8000,d0
                 bne.s   .fail
@@ -190,8 +196,9 @@ case_core_misc_exg:
                 move.l  #$12345678,d0
                 move.l  #$89ABCDEF,d1
                 dc.w    $C141
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$89ABCDEF,d0
                 bne.s   .fail
@@ -216,8 +223,9 @@ case_core_misc_tas:
                 moveq   #0,d1
                 move.w  d1,ccr
                 dc.w    $4AC0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$00000081,d0
                 bne.s   .fail

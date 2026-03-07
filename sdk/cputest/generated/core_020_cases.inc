@@ -25,9 +25,10 @@ case_core_020_bfextu_cross_byte:
                 moveq   #0,d1
                 moveq   #0,d2
                 move.w  d2,ccr
-                dc.w    $E9D0,$1048
+                dc.w    $E9D0,$1108
+                move.w  sr,-(sp)
                 move.l  D1,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$000000BC,d0
                 bne.s   .fail
@@ -44,7 +45,7 @@ case_core_020_bfextu_cross_byte:
 .name:
                 dc.b    "BFEXTU (A0){4:8},D1",0
 .input:
-                dc.b    "opcode=$E9D0/$1048 initial: A0=case_data D1=$00000000 MEM[case_data]=$ABCD",0
+                dc.b    "opcode=$E9D0/$1108 initial: A0=case_data D1=$00000000 MEM[case_data]=$ABCD",0
 .expected:
                 dc.b    "D1=$000000BC SR(masked)=$0008",0
                 even
@@ -55,11 +56,12 @@ case_core_020_bfextu_cross_byte:
 case_core_020_pack_reg:
                 moveq   #$45,d0
                 move.l  #$FFFFFFFF,d1
-                dc.w    $8140,$0000
+                dc.w    $8340,$0000
+                move.w  sr,-(sp)
                 move.l  D1,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
-                cmp.l   #$FFFFFF45,d0
+                cmp.l   #$FFFFFF05,d0
                 bne.s   .fail
                 lea     .name(pc),a0
                 jsr     ct_log_pass
@@ -72,17 +74,18 @@ case_core_020_pack_reg:
 .name:
                 dc.b    "PACK D0,D1,#0",0
 .input:
-                dc.b    "opcode=$8140/$0000 initial: D0=$00000045 D1=$FFFFFFFF",0
+                dc.b    "opcode=$8340/$0000 initial: D0=$00000045 D1=$FFFFFFFF",0
 .expected:
-                dc.b    "D1=$FFFFFF45",0
+                dc.b    "D1=$FFFFFF05",0
                 even
 
 case_core_020_unpk_reg:
                 moveq   #$45,d0
                 moveq   #0,d1
                 dc.w    $8380,$0000
+                move.w  sr,-(sp)
                 move.l  D1,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$0000,d1
                 cmp.l   #$00000405,d0
                 bne.s   .fail
@@ -107,12 +110,13 @@ case_core_020_bfchg_reg:
                 moveq   #0,d1
                 move.w  d1,ccr
                 dc.w    $EAC0,$0008
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
-                cmp.l   #$12345655,d0
+                cmp.l   #$ED3456AA,d0
                 bne.s   .fail
-                cmpi.w  #$0008,d1
+                cmpi.w  #$0000,d1
                 bne.s   .fail
                 lea     .name(pc),a0
                 jsr     ct_log_pass
@@ -127,7 +131,7 @@ case_core_020_bfchg_reg:
 .input:
                 dc.b    "opcode=$EAC0/$0008 initial: D0=$123456AA",0
 .expected:
-                dc.b    "D0=$12345655 SR(masked)=$0008",0
+                dc.b    "D0=$ED3456AA SR(masked)=$0000",0
                 even
 
 case_core_020_bfclr_reg:
@@ -135,10 +139,11 @@ case_core_020_bfclr_reg:
                 moveq   #0,d1
                 move.w  d1,ccr
                 dc.w    $ECC0,$0408
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
-                cmp.l   #$1200FF78,d0
+                cmp.l   #$12340078,d0
                 bne.s   .fail
                 cmpi.w  #$0008,d1
                 bne.s   .fail
@@ -155,7 +160,7 @@ case_core_020_bfclr_reg:
 .input:
                 dc.b    "opcode=$ECC0/$0408 initial: D0=$1234FF78",0
 .expected:
-                dc.b    "D0=$1200FF78 SR(masked)=$0008",0
+                dc.b    "D0=$12340078 SR(masked)=$0008",0
                 even
 
 case_core_020_bfffo_reg:
@@ -164,8 +169,9 @@ case_core_020_bfffo_reg:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $EDC0,$1000
+                move.w  sr,-(sp)
                 move.l  d1,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$00000008,d0
                 bne.s   .fail
@@ -193,10 +199,11 @@ case_core_020_bfins_reg:
                 moveq   #0,d2
                 move.w  d2,ccr
                 dc.w    $EFC0,$1208
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
-                cmp.l   #$1234AB78,d0
+                cmp.l   #$12AB5678,d0
                 bne.s   .fail
                 cmpi.w  #$0008,d1
                 bne.s   .fail
@@ -213,7 +220,7 @@ case_core_020_bfins_reg:
 .input:
                 dc.b    "opcode=$EFC0/$1208 initial: D0=$12345678 D1=$000000AB",0
 .expected:
-                dc.b    "D0=$1234AB78 SR(masked)=$0008",0
+                dc.b    "D0=$12AB5678 SR(masked)=$0008",0
                 even
 
 case_core_020_extb_long:
@@ -221,8 +228,9 @@ case_core_020_extb_long:
                 moveq   #0,d1
                 move.w  d1,ccr
                 dc.w    $49C0
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$FFFFFF80,d0
                 bne.s   .fail
@@ -249,9 +257,10 @@ case_core_020_mulu_long:
                 move.l  #2000,d1
                 moveq   #0,d2
                 move.w  d2,ccr
-                dc.w    $4C01,$0800
+                dc.w    $4C01,$0000
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$001E8480,d0
                 bne.s   .fail
@@ -268,7 +277,7 @@ case_core_020_mulu_long:
 .name:
                 dc.b    "MULU.L D1,D0",0
 .input:
-                dc.b    "opcode=$4C01/$0800 initial: D0=1000 D1=2000",0
+                dc.b    "opcode=$4C01/$0000 initial: D0=1000 D1=2000",0
 .expected:
                 dc.b    "D0=$001E8480 SR(masked)=$0000",0
                 even
@@ -278,9 +287,10 @@ case_core_020_divu_long:
                 move.l  #10,d1
                 moveq   #0,d2
                 move.w  d2,ccr
-                dc.w    $4C01,$0000
+                dc.w    $4C41,$0000
+                move.w  sr,-(sp)
                 move.l  D0,d0
-                move.w  sr,d1
+                move.w  (sp)+,d1
                 andi.w  #$000F,d1
                 cmp.l   #$000007D0,d0
                 bne.s   .fail
@@ -297,7 +307,7 @@ case_core_020_divu_long:
 .name:
                 dc.b    "DIVU.L D1,D0",0
 .input:
-                dc.b    "opcode=$4C01/$0000 initial: D0=20000 D1=10",0
+                dc.b    "opcode=$4C41/$0000 initial: D0=20000 D1=10",0
 .expected:
                 dc.b    "D0=$000007D0 SR(masked)=$0000",0
                 even
