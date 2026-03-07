@@ -1852,6 +1852,12 @@ func main() {
 			videoChip.SetBusMemory(sysBus.memory)
 			videoChip.SetBigEndianMode(true)
 			videoChip.SetDirectVRAM(sysBus.memory[VRAM_START : VRAM_START+VRAM_SIZE])
+			if mode == "aros" {
+				// AROS draws its own Intuition cursor — disable Go-side software cursor
+				if disabler, ok := videoChip.GetOutput().(SoftwareCursorDisabler); ok {
+					disabler.DisableSoftwareCursor()
+				}
+			}
 			if hider, ok := videoChip.GetOutput().(SystemCursorHider); ok {
 				hider.HideSystemCursor()
 			}

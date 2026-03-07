@@ -450,7 +450,12 @@ func (eo *EbitenOutput) SetMiddleMouseHandler(fn func()) {
 
 func (eo *EbitenOutput) HideSystemCursor() {
 	eo.hideSystemCursor = true
-	eo.initSoftwareCursor()
+	if eo.running {
+		ebiten.SetCursorMode(ebiten.CursorModeHidden)
+	}
+	if !eo.noSoftwareCursor {
+		eo.initSoftwareCursor()
+	}
 }
 
 func (eo *EbitenOutput) DisableSoftwareCursor() {
