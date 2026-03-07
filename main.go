@@ -333,11 +333,22 @@ func main() {
 		arosDriveCandidates := []string{
 			"AROS/bin/ie-m68k/bin/ie-m68k/AROS",
 			"../AROS/bin/ie-m68k/bin/ie-m68k/AROS",
+			"AROS",
 		}
 		for _, p := range arosDriveCandidates {
 			if info, err := os.Stat(p); err == nil && info.IsDir() {
 				arosHostRoot = p
 				break
+			}
+		}
+		// Exe-relative lookup (for release archives where CWD != exe dir)
+		if arosHostRoot == "" {
+			if exe, err := os.Executable(); err == nil {
+				exeDir := filepath.Dir(exe)
+				p := filepath.Join(exeDir, "AROS")
+				if info, err := os.Stat(p); err == nil && info.IsDir() {
+					arosHostRoot = p
+				}
 			}
 		}
 		if arosHostRoot == "" {
@@ -1470,13 +1481,13 @@ func main() {
 		}
 		programBytes = append([]byte(nil), romBytes...)
 
-		// Hide system cursor — AROS draws its own Intuition cursor in VRAM
-		if hider, ok := videoChip.GetOutput().(SystemCursorHider); ok {
-			hider.HideSystemCursor()
-		}
 		// Disable the emulator's software cursor overlay — AROS draws its own
 		if disabler, ok := videoChip.GetOutput().(SoftwareCursorDisabler); ok {
 			disabler.DisableSoftwareCursor()
+		}
+		// Hide system cursor — AROS draws its own Intuition cursor in VRAM
+		if hider, ok := videoChip.GetOutput().(SystemCursorHider); ok {
+			hider.HideSystemCursor()
 		}
 
 		// AROS HIDDs expect Amiga rawkey scancodes, not PC/AT scancodes

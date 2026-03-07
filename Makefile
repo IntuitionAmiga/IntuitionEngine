@@ -369,7 +369,7 @@ aros-rom:
 		done; \
 		echo "  Building Prefs program icons (Mason Prefs set)..."; \
 		MASON_PREFS="$$MASON_WB/Prefs"; \
-		for name in Font Input Locale Palette Pointer Printer ReqTools ScreenMode Serial Time Wanderer Zune; do \
+		for name in Font Input Locale Palette Pointer Printer ReqTools ScreenMode Serial Time Zune; do \
 			src="$$MASON_PREFS/$${name}.info.src"; \
 			png="$$MASON_PREFS/$${name}.png"; \
 			if [ -f "$$src" ] && [ -f "$$png" ]; then \
@@ -440,7 +440,7 @@ aros-rom:
 				$$ILBMTOICON --png "$$src" "$$png" "$$AROSDIR/System/$${name}.info"; \
 			fi; \
 		done; \
-		for name in About CLI Find FTManager Snoopy SysMon VMM Wanderer Workbook; do \
+		for name in About CLI Find FTManager Snoopy SysMon VMM Workbook; do \
 			src="$$MASON_EA/def_Tool.info.src"; \
 			png="$$MASON_EA/def_Tool.png"; \
 			if [ -f "$$src" ] && [ -f "$$png" ] && [ -f "$$AROSDIR/System/$${name}" ]; then \
@@ -463,6 +463,15 @@ aros-rom:
 		echo "  Built $$(ls "$$AROSDIR"/*.info 2>/dev/null | wc -l) directory icons, $$(ls "$$AROSDIR/Prefs/Env-Archive/SYS"/*.info 2>/dev/null | wc -l) default icons"; \
 	else \
 		echo "  Warning: ilbmtoicon not found, skipping icon build"; \
+	fi
+	@echo "Cleaning up Wanderer artifacts (using Workbook desktop)..."
+	@AROSDIR="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
+	rm -rf "$$AROSDIR/Prefs/Env-Archive/SYS/Wanderer" "$$AROSDIR/System/Wanderer" "$$AROSDIR/System/Wanderer.info"
+	@echo "Merging DataTypes into lowercase datatypes dir..."
+	@AROSDIR="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
+	if [ -d "$$AROSDIR/Classes/DataTypes" ] && [ -d "$$AROSDIR/Classes/datatypes" ]; then \
+		cp -f "$$AROSDIR/Classes/DataTypes/"* "$$AROSDIR/Classes/datatypes/" 2>/dev/null; \
+		echo "  Merged $$(ls "$$AROSDIR/Classes/datatypes/" 2>/dev/null | wc -l) datatypes"; \
 	fi
 	@echo "Copying Zune classes to Libs/Zune/ for lddemon..."
 	@AROSDIR="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
@@ -861,7 +870,7 @@ define build-linux-release
 	echo "Building main binary (GOARCH=$(1), CC=$(2))..."; \
 	rm -f IntuitionEngine ie32asm ie64asm ie32to64 ie64dis && \
 	CGO_ENABLED=1 CGO_JOBS=$(NCORES) CC=$(2) CXX=$(3) GOARCH=$(1) $(4) \
-		$(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags "embed_basic embed_emutos" -o IntuitionEngine . && \
+		$(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags "embed_basic embed_emutos embed_aros" -o IntuitionEngine . && \
 	if [ "$(1)" = "$(NATIVE_GOARCH)" ]; then \
 		command -v $(SSTRIP) >/dev/null 2>&1 && $(SSTRIP) -z IntuitionEngine || true; \
 		command -v $(UPX) >/dev/null 2>&1 && $(UPX) --lzma IntuitionEngine || true; \
@@ -881,6 +890,10 @@ define build-linux-release
 	rm -rf $$STAGING/sdk/bin && \
 	$(MKDIR) -p $$STAGING/sdk/bin && \
 	mv ie32asm ie64asm ie32to64 ie64dis $$STAGING/sdk/bin/ && \
+	AROS_WB="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
+	if [ -d "$$AROS_WB" ]; then \
+		cp -r "$$AROS_WB" $$STAGING/AROS; \
+	fi && \
 	echo "Creating $$RELEASE_NAME.tar.xz..." && \
 	tar -C $(RELEASE_DIR) -cJf $(RELEASE_DIR)/$$RELEASE_NAME.tar.xz $$RELEASE_NAME && \
 	rm -rf $$STAGING && \
@@ -894,14 +907,14 @@ ifneq ($(CROSS_PKG_CONFIG_SYSROOT_DIR),)
 endif
 
 # Build Linux release archives for both architectures (native + cross).
-release-linux: setup sdk emutos-rom
+release-linux: setup sdk emutos-rom aros-rom
 	@echo "=== Building Linux releases (amd64 + arm64) ==="
 	@$(MKDIR) -p $(RELEASE_DIR)
 	$(call build-linux-release,$(NATIVE_GOARCH),$(CC),$(CXX),)
 	$(call build-linux-release,$(CROSS_GOARCH),$(CROSS_CC),$(CROSS_CXX),$(CROSS_ENV))
 
 # Build Linux release archive for amd64 only.
-release-linux-amd64: setup sdk emutos-rom
+release-linux-amd64: setup sdk emutos-rom aros-rom
 	@echo "=== Building Linux release (amd64) ==="
 	@$(MKDIR) -p $(RELEASE_DIR)
 ifeq ($(NATIVE_GOARCH),amd64)
@@ -911,7 +924,7 @@ else
 endif
 
 # Build Linux release archive for arm64 only.
-release-linux-arm64: setup sdk emutos-rom
+release-linux-arm64: setup sdk emutos-rom aros-rom
 	@echo "=== Building Linux release (arm64) ==="
 	@$(MKDIR) -p $(RELEASE_DIR)
 ifeq ($(NATIVE_GOARCH),arm64)
@@ -921,14 +934,14 @@ else
 endif
 
 # Build release archives for Windows (amd64 + arm64, cross-compiled, no Vulkan)
-release-windows: setup sdk emutos-rom
+release-windows: setup sdk emutos-rom aros-rom
 	@echo "=== Building Windows releases (amd64 + arm64) ==="
 	@$(MKDIR) -p $(RELEASE_DIR)
 	@for goarch in amd64 arm64; do \
 		RELEASE_NAME=$(APP_NAME)-$(APP_VERSION)-windows-$$goarch; \
 		echo ""; \
 		echo "--- $$RELEASE_NAME ---"; \
-		GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags "novulkan embed_basic embed_emutos" -o IntuitionEngine.exe .; \
+		GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags "novulkan embed_basic embed_emutos embed_aros" -o IntuitionEngine.exe .; \
 		GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o ie32asm.exe assembler/ie32asm.go; \
 		GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm.exe assembler/ie64asm.go; \
 		GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o ie32to64.exe ./cmd/ie32to64/; \
@@ -943,6 +956,10 @@ release-windows: setup sdk emutos-rom
 		rm -rf $$STAGING/sdk/bin; \
 		$(MKDIR) -p $$STAGING/sdk/bin; \
 		mv ie32asm.exe ie64asm.exe ie32to64.exe ie64dis.exe $$STAGING/sdk/bin/; \
+		AROS_WB="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
+		if [ -d "$$AROS_WB" ]; then \
+			cp -r "$$AROS_WB" $$STAGING/AROS; \
+		fi; \
 		echo "Creating $$RELEASE_NAME.zip..."; \
 		(cd $(RELEASE_DIR) && zip -rq $$RELEASE_NAME.zip $$RELEASE_NAME); \
 		rm -rf $$STAGING; \

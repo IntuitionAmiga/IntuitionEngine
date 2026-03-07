@@ -36,6 +36,9 @@ type ArosDOSDevice struct {
 	res2 uint32
 
 	debugTrace bool
+
+	// dirNameCache maps directory path → (lowercase name → actual name on disk)
+	dirNameCache map[string]map[string]string
 }
 
 type adosLock struct {
@@ -65,15 +68,16 @@ func NewArosDOSDevice(bus *MachineBus, hostRoot string) (*ArosDOSDevice, error) 
 	}
 
 	d := &ArosDOSDevice{
-		bus:         bus,
-		hostRoot:    absPath,
-		locks:       make(map[uint32]*adosLock),
-		nextLock:    1, // 0 means root/no-lock
-		handles:     make(map[uint32]*os.File),
-		handleNames: make(map[uint32]string),
-		handleRead:  make(map[uint32]bool),
-		nextHandle:  1,
-		debugTrace:  false,
+		bus:          bus,
+		hostRoot:     absPath,
+		locks:        make(map[uint32]*adosLock),
+		nextLock:     1, // 0 means root/no-lock
+		handles:      make(map[uint32]*os.File),
+		handleNames:  make(map[uint32]string),
+		handleRead:   make(map[uint32]bool),
+		nextHandle:   1,
+		debugTrace:   false,
+		dirNameCache: make(map[string]map[string]string),
 	}
 
 	// Pre-create root lock at key 0
@@ -981,7 +985,8 @@ func (d *ArosDOSDevice) resolvePath(parentHost string, amigaName string) (string
 		return base, true
 	}
 
-	fullPath := filepath.Join(base, name)
+	// Walk path components with case-insensitive matching (AmigaDOS is case-insensitive)
+	fullPath := d.caseInsensitiveResolve(base, name)
 	fullPath = filepath.Clean(fullPath)
 
 	// Security check: must stay within hostRoot
@@ -990,6 +995,55 @@ func (d *ArosDOSDevice) resolvePath(parentHost string, amigaName string) (string
 	}
 
 	return fullPath, true
+}
+
+// caseInsensitiveResolve walks path components case-insensitively from base.
+// Uses a cached directory listing to avoid repeated os.ReadDir calls.
+func (d *ArosDOSDevice) caseInsensitiveResolve(base string, relPath string) string {
+	components := strings.Split(relPath, string(filepath.Separator))
+	current := base
+
+	for _, comp := range components {
+		if comp == "" || comp == "." {
+			continue
+		}
+
+		// Try exact match first (fast path, no syscall for cached negative)
+		exact := filepath.Join(current, comp)
+		if _, err := os.Stat(exact); err == nil {
+			current = exact
+			continue
+		}
+
+		// Look up in cache
+		actual := d.resolveNameInDir(current, comp)
+		current = filepath.Join(current, actual)
+	}
+
+	return current
+}
+
+// resolveNameInDir returns the actual on-disk name matching comp case-insensitively.
+func (d *ArosDOSDevice) resolveNameInDir(dir string, comp string) string {
+	lowerComp := strings.ToLower(comp)
+
+	cache, ok := d.dirNameCache[dir]
+	if !ok {
+		// Build cache for this directory
+		cache = make(map[string]string)
+		entries, err := os.ReadDir(dir)
+		if err == nil {
+			for _, e := range entries {
+				cache[strings.ToLower(e.Name())] = e.Name()
+			}
+		}
+		d.dirNameCache[dir] = cache
+	}
+
+	if actual, found := cache[lowerComp]; found {
+		return actual
+	}
+	return comp // not found — use as-is (for create operations)
 }
 
 // fillFIB fills a FileInfoBlock structure in guest memory.
