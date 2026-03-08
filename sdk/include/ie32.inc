@@ -69,6 +69,11 @@
 .equ BLT_MODE7_DV_ROW  0xF006C          ; Mode7 dV/dRow
 .equ BLT_MODE7_TEX_W   0xF0070          ; Mode7 Texture Width Mask
 .equ BLT_MODE7_TEX_H   0xF0074          ; Mode7 Texture Height Mask
+.equ BLT_FLAGS          0xF0488          ; Blitter Flags
+.equ BLT_FG             0xF048C          ; Blitter Foreground Color
+.equ BLT_BG             0xF0490          ; Blitter Background Color
+.equ BLT_MASK_MOD       0xF0494          ; Blitter Mask Modulo
+.equ BLT_MASK_SRCX      0xF0498          ; Blitter Mask Source X
 
 ; Raster registers
 .equ VIDEO_RASTER_Y       0xF0048       ; Raster Y position (32-bit)
@@ -768,6 +773,17 @@
 .equ BLT_OP_MASKED     3                ; Copy with mask
 .equ BLT_OP_ALPHA      4                ; Alpha blending
 .equ BLT_OP_MODE7      5                ; Affine texture mapping
+.equ BLT_OP_COLOR_EXPAND 6              ; Color expansion blit
+
+; BLT_FLAGS bit definitions
+.equ BLT_FLAGS_BPP_RGBA32     0x00      ; Bits 0-1: 4 bytes per pixel (default)
+.equ BLT_FLAGS_BPP_CLUT8      0x01      ; Bits 0-1: 1 byte per pixel
+.equ BLT_FLAGS_BPP_MASK       0x03      ; Bits 0-1: BPP mode mask
+.equ BLT_FLAGS_DRAWMODE_SHIFT 4         ; Bits 4-7: draw mode shift
+.equ BLT_FLAGS_DRAWMODE_MASK  0xF0      ; Bits 4-7: draw mode mask (16 raster ops)
+.equ BLT_FLAGS_JAM1           0x100     ; Bit 8: color expand skips BG pixels
+.equ BLT_FLAGS_INVERT_TMPL    0x200     ; Bit 9: invert template bits
+.equ BLT_FLAGS_INVERT_MODE    0x400     ; Bit 10: XOR dst for set template bits
 
 ; Background color (black with alpha)
 .equ BACKGROUND        0xFF000000       ; BGRA: Black, full alpha

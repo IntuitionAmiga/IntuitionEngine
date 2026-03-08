@@ -1045,3 +1045,477 @@ func TestBlitterDirectVRAM_Mode7(t *testing.T) {
 		}
 	}
 }
+
+// ============================================================
+// New tests for CLUT8, draw modes, and color expansion
+// ============================================================
+
+func TestBlitterCLUT8Fill(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	mode := VideoModes[MODE_640x480]
+
+	// Fill a 4x2 rectangle with CLUT8 index 42
+	dst := uint32(VRAM_START + 100) // offset into VRAM
+	bus.Write32(BLT_OP, bltOpFill)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 4)
+	bus.Write32(BLT_HEIGHT, 2)
+	bus.Write32(BLT_DST_STRIDE, uint32(mode.width)) // CLUT8: 1 byte per pixel, stride = width
+	bus.Write32(BLT_COLOR, 42)
+	bus.Write32(BLT_FLAGS, IE_BLT_MAKE_FLAGS(bltFlagsBPP_CLUT8, 0x03)) // CLUT8 + Copy mode
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	// Verify bytes
+	for y := range 2 {
+		for x := range 4 {
+			off := dst - BUFFER_OFFSET + uint32(y*mode.width+x)
+			if video.frontBuffer[off] != 42 {
+				t.Fatalf("CLUT8 fill at (%d,%d): got %d, want 42", x, y, video.frontBuffer[off])
+			}
+		}
+	}
+}
+
+func TestBlitterCLUT8Copy(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	mode := VideoModes[MODE_640x480]
+
+	// Write source CLUT8 data
+	src := uint32(VRAM_START)
+	srcOff := src - BUFFER_OFFSET
+	for i := range 8 {
+		video.frontBuffer[srcOff+uint32(i)] = uint8(10 + i)
+	}
+
+	dst := uint32(VRAM_START + 1000)
+	bus.Write32(BLT_OP, bltOpCopy)
+	bus.Write32(BLT_SRC, src)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 4)
+	bus.Write32(BLT_HEIGHT, 2)
+	bus.Write32(BLT_SRC_STRIDE, uint32(mode.width))
+	bus.Write32(BLT_DST_STRIDE, uint32(mode.width))
+	bus.Write32(BLT_FLAGS, IE_BLT_MAKE_FLAGS(bltFlagsBPP_CLUT8, 0x03))
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	// Verify
+	dstOff := dst - BUFFER_OFFSET
+	for y := range 2 {
+		for x := range 4 {
+			srcByte := video.frontBuffer[srcOff+uint32(y*mode.width+x)]
+			dstByte := video.frontBuffer[dstOff+uint32(y*mode.width+x)]
+			if dstByte != srcByte {
+				t.Fatalf("CLUT8 copy at (%d,%d): got %d, want %d", x, y, dstByte, srcByte)
+			}
+		}
+	}
+}
+
+func TestBlitterDrawModes(t *testing.T) {
+	mode := VideoModes[MODE_640x480]
+
+	// Test XOR draw mode (0x06) with fill
+	video, bus := newBlitterTestRig(t)
+
+	// Pre-fill destination with a known value
+	dst := uint32(VRAM_START)
+	dstOff := dst - BUFFER_OFFSET
+	binary.LittleEndian.PutUint32(video.frontBuffer[dstOff:], 0xFF00FF00)
+
+	bus.Write32(BLT_OP, bltOpFill)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 1)
+	bus.Write32(BLT_HEIGHT, 1)
+	bus.Write32(BLT_DST_STRIDE, uint32(mode.bytesPerRow))
+	bus.Write32(BLT_COLOR, 0xFFFFFFFF)                                  // XOR with all-ones
+	bus.Write32(BLT_FLAGS, IE_BLT_MAKE_FLAGS(bltFlagsBPP_RGBA32, 0x06)) // XOR mode
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	got := binary.LittleEndian.Uint32(video.frontBuffer[dstOff:])
+	want := uint32(0x00FF00FF) // 0xFF00FF00 XOR 0xFFFFFFFF
+	if got != want {
+		t.Fatalf("XOR draw mode: got 0x%08X, want 0x%08X", got, want)
+	}
+}
+
+func TestBlitterColorExpand(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	mode := VideoModes[MODE_640x480]
+
+	// Template: 1 byte = 0b10110000 = bits 7,5,4 set = pixels 0,2,3 are FG
+	// (MSB-first: bit 7 = leftmost pixel)
+	tmplAddr := uint32(0x50000)
+	bus.memory[tmplAddr] = 0xB0 // 10110000
+
+	fg := uint32(0xFF0000FF) // red with alpha
+	bg := uint32(0x0000FF00) // green no alpha
+
+	dst := uint32(VRAM_START)
+	bus.Write32(BLT_OP, bltOpColorExpand)
+	bus.Write32(BLT_MASK, tmplAddr)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 8)
+	bus.Write32(BLT_HEIGHT, 1)
+	bus.Write32(BLT_MASK_MOD, 1) // 1 byte per row
+	bus.Write32(BLT_MASK_SRCX, 0)
+	bus.Write32(BLT_DST_STRIDE, uint32(mode.bytesPerRow))
+	bus.Write32(BLT_FG, fg)
+	bus.Write32(BLT_BG, bg)
+	// JAM2 (opaque), RGBA32, Copy mode
+	bus.Write32(BLT_FLAGS, IE_BLT_MAKE_FLAGS(bltFlagsBPP_RGBA32, 0x03))
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	// Template 0xB0 = 10110000:
+	// Pixel 0: bit 7 = 1 -> FG
+	// Pixel 1: bit 6 = 0 -> BG
+	// Pixel 2: bit 5 = 1 -> FG
+	// Pixel 3: bit 4 = 1 -> FG
+	// Pixel 4: bit 3 = 0 -> BG
+	// Pixel 5: bit 2 = 0 -> BG
+	// Pixel 6: bit 1 = 0 -> BG
+	// Pixel 7: bit 0 = 0 -> BG
+	expected := [8]uint32{fg, bg, fg, fg, bg, bg, bg, bg}
+	dstOff := dst - BUFFER_OFFSET
+	for i, want := range expected {
+		got := binary.LittleEndian.Uint32(video.frontBuffer[dstOff+uint32(i*4):])
+		if got != want {
+			t.Fatalf("ColorExpand pixel %d: got 0x%08X, want 0x%08X", i, got, want)
+		}
+	}
+}
+
+func TestBlitterColorExpandJAM1(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	mode := VideoModes[MODE_640x480]
+
+	// Pre-fill destination
+	dst := uint32(VRAM_START)
+	dstOff := dst - BUFFER_OFFSET
+	for i := range 8 {
+		binary.LittleEndian.PutUint32(video.frontBuffer[dstOff+uint32(i*4):], 0xDEADBEEF)
+	}
+
+	// Template: 0xA0 = 10100000: pixels 0,2 are FG; rest unchanged
+	tmplAddr := uint32(0x50000)
+	bus.memory[tmplAddr] = 0xA0
+
+	fg := uint32(0xFF0000FF)
+	bus.Write32(BLT_OP, bltOpColorExpand)
+	bus.Write32(BLT_MASK, tmplAddr)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 4)
+	bus.Write32(BLT_HEIGHT, 1)
+	bus.Write32(BLT_MASK_MOD, 1)
+	bus.Write32(BLT_MASK_SRCX, 0)
+	bus.Write32(BLT_DST_STRIDE, uint32(mode.bytesPerRow))
+	bus.Write32(BLT_FG, fg)
+	bus.Write32(BLT_BG, 0)
+	bus.Write32(BLT_FLAGS, IE_BLT_MAKE_FLAGS(bltFlagsBPP_RGBA32, 0x03)|bltFlagsJAM1)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	// Pixel 0: FG, Pixel 1: unchanged (0xDEADBEEF), Pixel 2: FG, Pixel 3: unchanged
+	expected := [4]uint32{fg, 0xDEADBEEF, fg, 0xDEADBEEF}
+	for i, want := range expected {
+		got := binary.LittleEndian.Uint32(video.frontBuffer[dstOff+uint32(i*4):])
+		if got != want {
+			t.Fatalf("ColorExpandJAM1 pixel %d: got 0x%08X, want 0x%08X", i, got, want)
+		}
+	}
+}
+
+func TestBlitterColorExpandInvert(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	mode := VideoModes[MODE_640x480]
+
+	// Pre-fill destination
+	dst := uint32(VRAM_START)
+	dstOff := dst - BUFFER_OFFSET
+	binary.LittleEndian.PutUint32(video.frontBuffer[dstOff:], 0xFF00FF00)
+	binary.LittleEndian.PutUint32(video.frontBuffer[dstOff+4:], 0xFF00FF00)
+
+	// Template: 0x80 = 10000000: pixel 0 set, pixel 1 clear
+	tmplAddr := uint32(0x50000)
+	bus.memory[tmplAddr] = 0x80
+
+	bus.Write32(BLT_OP, bltOpColorExpand)
+	bus.Write32(BLT_MASK, tmplAddr)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 2)
+	bus.Write32(BLT_HEIGHT, 1)
+	bus.Write32(BLT_MASK_MOD, 1)
+	bus.Write32(BLT_MASK_SRCX, 0)
+	bus.Write32(BLT_DST_STRIDE, uint32(mode.bytesPerRow))
+	bus.Write32(BLT_FG, 0)
+	bus.Write32(BLT_BG, 0)
+	bus.Write32(BLT_FLAGS, IE_BLT_MAKE_FLAGS(bltFlagsBPP_RGBA32, 0x03)|bltFlagsInvertMode)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	// Pixel 0: XOR with 0xFFFFFFFF -> 0x00FF00FF
+	// Pixel 1: unchanged -> 0xFF00FF00
+	got0 := binary.LittleEndian.Uint32(video.frontBuffer[dstOff:])
+	got1 := binary.LittleEndian.Uint32(video.frontBuffer[dstOff+4:])
+	if got0 != 0x00FF00FF {
+		t.Fatalf("Invert pixel 0: got 0x%08X, want 0x00FF00FF", got0)
+	}
+	if got1 != 0xFF00FF00 {
+		t.Fatalf("Invert pixel 1: got 0x%08X, want 0xFF00FF00", got1)
+	}
+}
+
+func TestBlitterFlagsRegisterAccess(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	_ = video
+
+	// Test that BLT_FLAGS, BLT_FG, BLT_BG, BLT_MASK_MOD, BLT_MASK_SRCX are readable via MMIO
+	bus.Write32(BLT_FLAGS, 0x0731)
+	bus.Write32(BLT_FG, 0xAABBCCDD)
+	bus.Write32(BLT_BG, 0x11223344)
+	bus.Write32(BLT_MASK_MOD, 0x100)
+	bus.Write32(BLT_MASK_SRCX, 7)
+
+	// Verify readback through MMIO (not internal fields)
+	if got := video.HandleRead(BLT_FLAGS); got != 0x0731 {
+		t.Fatalf("BLT_FLAGS readback: got 0x%X, want 0x0731", got)
+	}
+	if got := video.HandleRead(BLT_FG); got != 0xAABBCCDD {
+		t.Fatalf("BLT_FG readback: got 0x%X, want 0xAABBCCDD", got)
+	}
+	if got := video.HandleRead(BLT_BG); got != 0x11223344 {
+		t.Fatalf("BLT_BG readback: got 0x%X, want 0x11223344", got)
+	}
+	if got := video.HandleRead(BLT_MASK_MOD); got != 0x100 {
+		t.Fatalf("BLT_MASK_MOD readback: got 0x%X, want 0x100", got)
+	}
+	if got := video.HandleRead(BLT_MASK_SRCX); got != 7 {
+		t.Fatalf("BLT_MASK_SRCX readback: got 0x%X, want 7", got)
+	}
+
+	// Test sub-register byte readback
+	bus.Write32(BLT_FLAGS, 0x12345678)
+	if got := video.HandleRead(BLT_FLAGS + 1); got != 0x56 {
+		t.Fatalf("BLT_FLAGS+1 readback: got 0x%X, want 0x56", got)
+	}
+	if got := video.HandleRead(BLT_FLAGS + 2); got != 0x34 {
+		t.Fatalf("BLT_FLAGS+2 readback: got 0x%X, want 0x34", got)
+	}
+	if got := video.HandleRead(BLT_FLAGS + 3); got != 0x12 {
+		t.Fatalf("BLT_FLAGS+3 readback: got 0x%X, want 0x12", got)
+	}
+}
+
+// IE_BLT_MAKE_FLAGS mirrors the C macro for test use
+const (
+	IE_BLT_MAKE_FLAGS_FN = 0 // placeholder — use the function below
+)
+
+func IE_BLT_MAKE_FLAGS(bpp uint32, drawmode uint32) uint32 {
+	return (bpp & 0x03) | ((drawmode & 0x0F) << 4)
+}
+
+func TestBlitterLineExtended(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	mode := VideoModes[video.currentMode]
+
+	// Use extended line mode: BLT_FLAGS != 0, BLT_DST = base, BLT_WIDTH = endpoint.
+	// Draw a horizontal line from (5,10) to (9,10) into VRAM.
+	base := uint32(VRAM_START)
+	stride := uint32(mode.width * 4)
+	flags := IE_BLT_MAKE_FLAGS(bltFlagsBPP_RGBA32, 0x03) // RGBA32 + Copy
+	color := uint32(0xFFAABBCC)
+
+	bus.Write32(BLT_OP, bltOpLine)
+	bus.Write32(BLT_SRC, (10<<16)|5)    // start: x0=5, y0=10
+	bus.Write32(BLT_WIDTH, (10<<16)|9)  // end:   x1=9, y1=10
+	bus.Write32(BLT_DST, base)          // framebuffer base
+	bus.Write32(BLT_DST_STRIDE, stride) // row stride
+	bus.Write32(BLT_COLOR, color)
+	bus.Write32(BLT_FLAGS, flags)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+
+	video.RunBlitterForTest()
+
+	// Verify all 5 pixels of the horizontal line
+	for x := 5; x <= 9; x++ {
+		addr := VRAM_START + uint32((10*mode.width+x)*4)
+		if got := video.HandleRead(addr); got != color {
+			t.Fatalf("extended line pixel at %d,10: got 0x%X, want 0x%X", x, got, color)
+		}
+	}
+
+	// Verify pixel outside the line was not written
+	addr := VRAM_START + uint32((10*mode.width+4)*4)
+	if got := video.HandleRead(addr); got != 0 {
+		t.Fatalf("pixel at 4,10 should be 0, got 0x%X", got)
+	}
+}
+
+func TestBlitterLineExtendedDrawMode(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	mode := VideoModes[video.currentMode]
+
+	// Pre-fill a pixel at (3,3) with a known value via frontBuffer
+	pixAddr := VRAM_START + uint32((3*mode.width+3)*4)
+	pixOff := pixAddr - BUFFER_OFFSET
+	binary.LittleEndian.PutUint32(video.frontBuffer[pixOff:], 0xFF00FF00)
+
+	// Draw a single-pixel line at (3,3) to (3,3) with XOR draw mode
+	base := uint32(VRAM_START)
+	stride := uint32(mode.width * 4)
+	flags := IE_BLT_MAKE_FLAGS(bltFlagsBPP_RGBA32, 0x06) // RGBA32 + Xor
+
+	bus.Write32(BLT_OP, bltOpLine)
+	bus.Write32(BLT_SRC, (3<<16)|3)
+	bus.Write32(BLT_WIDTH, (3<<16)|3)
+	bus.Write32(BLT_DST, base)
+	bus.Write32(BLT_DST_STRIDE, stride)
+	bus.Write32(BLT_COLOR, 0xFFFFFFFF) // XOR with all-ones
+	bus.Write32(BLT_FLAGS, flags)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+
+	video.RunBlitterForTest()
+
+	// XOR: 0xFF00FF00 ^ 0xFFFFFFFF = 0x00FF00FF
+	want := uint32(0x00FF00FF)
+	if got := video.HandleRead(pixAddr); got != want {
+		t.Fatalf("XOR line pixel at 3,3: got 0x%X, want 0x%X", got, want)
+	}
+}
+
+func TestBlitterLineExtendedCustomBase(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	_ = VideoModes[video.currentMode]
+
+	// Use an offset base address (simulating a bitmap not at VRAM_START)
+	// Place our "bitmap" 1000 pixels into VRAM
+	baseOffset := uint32(1000 * 4) // 1000 pixels * 4 bpp
+	base := uint32(VRAM_START) + baseOffset
+	bitmapWidth := 100 // 100-pixel wide bitmap
+	stride := uint32(bitmapWidth * 4)
+	flags := IE_BLT_MAKE_FLAGS(bltFlagsBPP_RGBA32, 0x03) // Copy
+	color := uint32(0xDEADBEEF)
+
+	// Draw vertical line from (2,0) to (2,3) in the offset bitmap
+	bus.Write32(BLT_OP, bltOpLine)
+	bus.Write32(BLT_SRC, (0<<16)|2)   // start: x=2, y=0
+	bus.Write32(BLT_WIDTH, (3<<16)|2) // end:   x=2, y=3
+	bus.Write32(BLT_DST, base)
+	bus.Write32(BLT_DST_STRIDE, stride)
+	bus.Write32(BLT_COLOR, color)
+	bus.Write32(BLT_FLAGS, flags)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+
+	video.RunBlitterForTest()
+
+	// Verify 4 pixels of the vertical line at x=2
+	for y := 0; y <= 3; y++ {
+		addr := base + uint32(y*bitmapWidth*4+2*4)
+		if got := video.HandleRead(addr); got != color {
+			t.Fatalf("custom base line pixel at 2,%d: got 0x%X, want 0x%X", y, got, color)
+		}
+	}
+
+	// Verify adjacent pixel was not written
+	addr := base + uint32(0*bitmapWidth*4+3*4) // (3,0)
+	if got := video.HandleRead(addr); got != 0 {
+		t.Fatalf("pixel at 3,0 should be 0, got 0x%X", got)
+	}
+}
+
+// TestBlitterLineExtendedClipping validates that callers must pre-clip
+// coordinates before using extended line mode, since the blitter itself
+// does no viewport clipping. This mirrors what the AROS DrawLine override
+// does with Cohen-Sutherland clipping before calling IE_BlitLineEx.
+func TestBlitterLineExtendedClipping(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+
+	// Set up a small 10x10 bitmap at an offset in VRAM.
+	bitmapW := 10
+	bitmapH := 10
+	bpp := 4
+	stride := uint32(bitmapW * bpp)
+	base := uint32(VRAM_START + 0x10000) // offset so we can detect underflow writes
+	color := uint32(0xAABBCCDD)
+	flags := IE_BLT_MAKE_FLAGS(bltFlagsBPP_RGBA32, 0x03)
+
+	// Subtest 1: Pre-clipped line — only the visible segment is submitted.
+	// A line from (2,2) to (2,7) clipped to rect (0,0)-(9,4) becomes (2,2)-(2,4).
+	// Simulate what the AROS driver does after Cohen-Sutherland clipping.
+	bus.Write32(BLT_OP, bltOpLine)
+	bus.Write32(BLT_SRC, (2<<16)|2)   // start: (2,2)
+	bus.Write32(BLT_WIDTH, (4<<16)|2) // clipped end: (2,4)
+	bus.Write32(BLT_DST, base)
+	bus.Write32(BLT_DST_STRIDE, stride)
+	bus.Write32(BLT_COLOR, color)
+	bus.Write32(BLT_FLAGS, flags)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	// Pixels at y=2,3,4 should be drawn
+	for y := 2; y <= 4; y++ {
+		addr := base + uint32(y*bitmapW*bpp+2*bpp)
+		if got := video.HandleRead(addr); got != color {
+			t.Fatalf("clipped line pixel at 2,%d: got 0x%X, want 0x%X", y, got, color)
+		}
+	}
+
+	// Pixels at y=5,6,7 should NOT be drawn (clipped away)
+	for y := 5; y <= 7; y++ {
+		addr := base + uint32(y*bitmapW*bpp+2*bpp)
+		if got := video.HandleRead(addr); got != 0 {
+			t.Fatalf("pixel at 2,%d should be 0 (clipped), got 0x%X", y, got)
+		}
+	}
+
+	// Subtest 2: Fully rejected line — no pixels should be drawn.
+	// A line completely outside the clip rect is not submitted at all.
+	// The AROS driver's cs_clip_line returns FALSE, so IE_BlitLineEx is never called.
+	// We verify that NOT calling the blitter means no stale pixels appear.
+	video2, bus2 := newBlitterTestRig(t)
+	base2 := uint32(VRAM_START + 0x10000)
+
+	// Don't call the blitter (simulating full rejection) — verify all pixels are zero.
+	for y := 0; y < bitmapH; y++ {
+		for x := 0; x < bitmapW; x++ {
+			addr := base2 + uint32(y*bitmapW*bpp+x*bpp)
+			if got := video2.HandleRead(addr); got != 0 {
+				t.Fatalf("rejected line: pixel at %d,%d should be 0, got 0x%X", x, y, got)
+			}
+		}
+	}
+	_ = bus2 // bus2 used only to construct the test rig
+
+	// Subtest 3: Verify that unclipped coordinates WOULD write outside the
+	// intended 10x10 region — proving clipping is necessary.
+	// Draw a line from (2,2) to (2,15) WITHOUT clipping into a fresh bitmap.
+	video3, bus3 := newBlitterTestRig(t)
+	base3 := uint32(VRAM_START + 0x10000)
+
+	bus3.Write32(BLT_OP, bltOpLine)
+	bus3.Write32(BLT_SRC, (2<<16)|2)    // start: (2,2)
+	bus3.Write32(BLT_WIDTH, (15<<16)|2) // end: (2,15) — extends past bitmap height
+	bus3.Write32(BLT_DST, base3)
+	bus3.Write32(BLT_DST_STRIDE, stride)
+	bus3.Write32(BLT_COLOR, color)
+	bus3.Write32(BLT_FLAGS, flags)
+	bus3.Write32(BLT_CTRL, bltCtrlStart)
+	video3.RunBlitterForTest()
+
+	// Without clipping, pixels at y=10..15 are written OUTSIDE the 10x10 bitmap.
+	// This proves that the caller MUST clip — the blitter itself does not.
+	outsidePixels := 0
+	for y := 10; y <= 15; y++ {
+		addr := base3 + uint32(y*bitmapW*bpp+2*bpp)
+		if got := video3.HandleRead(addr); got == color {
+			outsidePixels++
+		}
+	}
+	if outsidePixels == 0 {
+		t.Fatal("expected unclipped line to write pixels outside bitmap bounds, but none found — clipping contract test is invalid")
+	}
+}

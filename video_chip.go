@@ -108,6 +108,13 @@ const (
 	VIDEO_REG_OFFSET_PAL_TABLE  = 0x088
 	VIDEO_REG_OFFSET_PAL_END    = 0x487
 
+	// Extended blitter registers (BPP mode, draw modes, color expansion)
+	VIDEO_REG_OFFSET_BLT_FLAGS     = 0x488
+	VIDEO_REG_OFFSET_BLT_FG        = 0x48C
+	VIDEO_REG_OFFSET_BLT_BG        = 0x490
+	VIDEO_REG_OFFSET_BLT_MASK_MOD  = 0x494
+	VIDEO_REG_OFFSET_BLT_MASK_SRCX = 0x498
+
 	VIDEO_CTRL          = VIDEO_REG_BASE + VIDEO_REG_OFFSET_CTRL
 	VIDEO_MODE          = VIDEO_REG_BASE + VIDEO_REG_OFFSET_MODE
 	VIDEO_STATUS        = VIDEO_REG_BASE + VIDEO_REG_OFFSET_STATUS
@@ -146,7 +153,15 @@ const (
 	VIDEO_FB_BASE    = VIDEO_REG_BASE + VIDEO_REG_OFFSET_FB_BASE
 	VIDEO_PAL_TABLE  = VIDEO_REG_BASE + VIDEO_REG_OFFSET_PAL_TABLE
 	VIDEO_PAL_END    = VIDEO_REG_BASE + VIDEO_REG_OFFSET_PAL_END
-	VIDEO_REG_END    = VIDEO_PAL_END
+
+	// Extended blitter register addresses
+	BLT_FLAGS     = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_FLAGS
+	BLT_FG        = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_FG
+	BLT_BG        = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_BG
+	BLT_MASK_MOD  = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_MASK_MOD
+	BLT_MASK_SRCX = VIDEO_REG_BASE + VIDEO_REG_OFFSET_BLT_MASK_SRCX
+
+	VIDEO_REG_END = BLT_MASK_SRCX + 3 // 0xF049B
 
 	VRAM_START_MB = 1 // VRAM starts at 1MB offset
 	VRAM_SIZE_MB  = 5 // 5MB of video memory
@@ -197,6 +212,19 @@ const (
 	bltOpMaskedCopy
 	bltOpAlphaCopy // Copy only pixels with alpha > 0 (for transparency)
 	bltOpMode7     // Affine texture mapping
+	bltOpColorExpand
+)
+
+// BLT_FLAGS bit definitions
+const (
+	bltFlagsBPPMask       = 0x03 // Bits 0-1: BPP (0=RGBA32 4bpp, 1=CLUT8 1bpp)
+	bltFlagsBPP_RGBA32    = 0x00
+	bltFlagsBPP_CLUT8     = 0x01
+	bltFlagsDrawModeMask  = 0xF0 // Bits 4-7: draw mode (16 raster ops)
+	bltFlagsDrawModeShift = 4
+	bltFlagsJAM1          = 1 << 8  // Bit 8: JAM1 mode (template: skip BG pixels)
+	bltFlagsInvertTmpl    = 1 << 9  // Bit 9: invert template bits before processing
+	bltFlagsInvertMode    = 1 << 10 // Bit 10: XOR dst with all-ones for set template bits
 )
 
 const (
@@ -492,6 +520,11 @@ type VideoChip struct {
 	bltMode7DvRowStaged uint32
 	bltMode7TexWStaged  uint32
 	bltMode7TexHStaged  uint32
+	bltFlagsStaged      uint32
+	bltFGStaged         uint32
+	bltBGStaged         uint32
+	bltMaskModStaged    uint32
+	bltMaskSrcXStaged   uint32
 
 	bltOp           uint32
 	bltSrc          uint32
@@ -510,6 +543,11 @@ type VideoChip struct {
 	bltMode7DvRow   uint32
 	bltMode7TexW    uint32
 	bltMode7TexH    uint32
+	bltFlags        uint32
+	bltFG           uint32
+	bltBG           uint32
+	bltMaskMod      uint32
+	bltMaskSrcX     uint32
 	blitterEnabled  bool
 
 	bltPending bool
@@ -988,6 +1026,45 @@ func (chip *VideoChip) markRegionDirty(x, y int) {
 	chip.markTileDirtyAtomic(x, y)
 }
 
+// markRectDirty marks all tiles covered by a rectangle as dirty in one pass.
+func (chip *VideoChip) markRectDirty(x, y, w, h int) {
+	tw := int(chip.tileWidth)
+	th := int(chip.tileHeight)
+	if tw <= 0 || th <= 0 {
+		return
+	}
+	tileX0 := x / tw
+	tileY0 := y / th
+	tileX1 := (x + w - 1) / tw
+	tileY1 := (y + h - 1) / th
+	if tileX0 < 0 {
+		tileX0 = 0
+	}
+	if tileY0 < 0 {
+		tileY0 = 0
+	}
+	if tileX1 >= DIRTY_GRID_COLS {
+		tileX1 = DIRTY_GRID_COLS - 1
+	}
+	if tileY1 >= DIRTY_GRID_ROWS {
+		tileY1 = DIRTY_GRID_ROWS - 1
+	}
+	for ty := tileY0; ty <= tileY1; ty++ {
+		for tx := tileX0; tx <= tileX1; tx++ {
+			bitIndex := ty*DIRTY_GRID_COLS + tx
+			wordIndex := bitIndex / DIRTY_BITS_PER_WORD
+			bitOffset := uint(bitIndex % DIRTY_BITS_PER_WORD)
+			for {
+				old := chip.dirtyBitmap[wordIndex].Load()
+				newVal := old | (1 << bitOffset)
+				if old == newVal || chip.dirtyBitmap[wordIndex].CompareAndSwap(old, newVal) {
+					break
+				}
+			}
+		}
+	}
+}
+
 func (chip *VideoChip) refreshLoop() {
 	/*
 	   refreshLoop handles periodic display updates at the configured refresh rate.
@@ -1138,9 +1215,68 @@ func (chip *VideoChip) executeBlitterLocked(mode VideoMode) {
 		chip.blitAlphaCopyLocked(mode)
 	case bltOpMode7:
 		chip.blitMode7Locked(mode)
+	case bltOpColorExpand:
+		chip.blitColorExpandLocked(mode)
 	default:
 		chip.blitCopyLocked(mode)
 	}
+}
+
+// applyDrawMode applies one of 16 standard raster ops to src and dst pixels.
+func applyDrawMode(src, dst uint32, mode int) uint32 {
+	switch mode {
+	case 0x00: // Clear
+		return 0
+	case 0x01: // And
+		return src & dst
+	case 0x02: // AndReverse
+		return src & ^dst
+	case 0x03: // Copy
+		return src
+	case 0x04: // AndInverted
+		return ^src & dst
+	case 0x05: // NoOp
+		return dst
+	case 0x06: // Xor
+		return src ^ dst
+	case 0x07: // Or
+		return src | dst
+	case 0x08: // Nor
+		return ^(src | dst)
+	case 0x09: // Equiv
+		return ^(src ^ dst)
+	case 0x0A: // Invert
+		return ^dst
+	case 0x0B: // OrReverse
+		return src | ^dst
+	case 0x0C: // CopyInverted
+		return ^src
+	case 0x0D: // OrInverted
+		return ^src | dst
+	case 0x0E: // Nand
+		return ^(src & dst)
+	case 0x0F: // Set
+		return 0xFFFFFFFF
+	default:
+		return src
+	}
+}
+
+// bppFromFlags returns bytes per pixel from BLT_FLAGS (1 for CLUT8, 4 for RGBA32).
+func bppFromFlags(flags uint32) int {
+	if flags&bltFlagsBPPMask == bltFlagsBPP_CLUT8 {
+		return 1
+	}
+	return 4
+}
+
+// drawModeFromFlags extracts the draw mode (0-15) from BLT_FLAGS.
+// When BLT_FLAGS is 0 (default/legacy), returns Copy mode (0x03) for backward compatibility.
+func drawModeFromFlags(flags uint32) int {
+	if flags == 0 {
+		return 0x03
+	}
+	return int((flags & bltFlagsDrawModeMask) >> bltFlagsDrawModeShift)
 }
 
 func (chip *VideoChip) blitFillLocked(mode VideoMode) {
@@ -1149,17 +1285,185 @@ func (chip *VideoChip) blitFillLocked(mode VideoMode) {
 	if width <= 0 || height <= 0 {
 		return
 	}
+
+	bpp := bppFromFlags(chip.bltFlags)
+	drawMode := drawModeFromFlags(chip.bltFlags)
 	stride := chip.bltDstStrideRun
 	if stride == 0 {
-		stride = chip.defaultStride(chip.bltDst, width, mode)
+		if bpp == 1 {
+			stride = chip.defaultStrideBPP(chip.bltDst, width, 1, mode)
+		} else {
+			stride = chip.defaultStride(chip.bltDst, width, mode)
+		}
+	}
+	color := chip.bltColor
+
+	// Non-copy draw mode: per-pixel read-modify-write
+	if drawMode != 0x03 {
+		rowAddr := chip.bltDst
+		for range height {
+			addr := rowAddr
+			for range width {
+				if bpp == 1 {
+					dst := uint32(chip.blitRead8Locked(addr))
+					result := applyDrawMode(color&0xFF, dst, drawMode)
+					chip.blitWrite8Locked(addr, uint8(result), mode)
+					addr++
+				} else {
+					dst := chip.blitReadPixelLocked(addr)
+					result := applyDrawMode(color, dst, drawMode)
+					chip.blitWritePixelLocked(addr, result, mode)
+					addr += BYTES_PER_PIXEL
+				}
+			}
+			rowAddr += stride
+		}
+		return
 	}
 
-	rowAddr := chip.bltDst
+	// Copy draw mode: bulk fill
+	dst := chip.bltDst
+	if bpp == 1 {
+		chip.blitBulkFill8Locked(dst, width, height, stride, uint8(color), mode)
+	} else {
+		chip.blitBulkFill32Locked(dst, width, height, stride, color, mode)
+	}
+}
+
+// blitBulkFill32Locked fills a rectangle with a 32-bit color using bulk operations.
+func (chip *VideoChip) blitBulkFill32Locked(dst uint32, width, height int, stride, color uint32, mode VideoMode) {
+	rowBytes := uint32(width * BYTES_PER_PIXEL)
+
+	if chip.directVRAM != nil && dst >= VRAM_START && dst < VRAM_START+VRAM_SIZE {
+		// directVRAM path: write to busMemory
+		if chip.busMemory == nil {
+			return
+		}
+		endAddr := dst + stride*uint32(height-1) + rowBytes
+		if endAddr > uint32(len(chip.busMemory)) {
+			return
+		}
+		// Fill first row
+		addr := dst
+		for range width {
+			binary.LittleEndian.PutUint32(chip.busMemory[addr:addr+4], color)
+			addr += BYTES_PER_PIXEL
+		}
+		// Copy first row to remaining rows
+		firstRow := chip.busMemory[dst : dst+rowBytes]
+		rowAddr := dst + stride
+		for y := 1; y < height; y++ {
+			copy(chip.busMemory[rowAddr:rowAddr+rowBytes], firstRow)
+			rowAddr += stride
+		}
+		if !chip.resetting && !chip.hasContent.Load() {
+			chip.hasContent.Store(true)
+		}
+		return
+	}
+
+	if dst >= VRAM_START && dst < VRAM_START+VRAM_SIZE {
+		// frontBuffer path
+		offset := dst - BUFFER_OFFSET
+		bufLen := uint32(len(chip.frontBuffer))
+		lastOffset := offset + stride*uint32(height-1) + rowBytes
+		if lastOffset > bufLen || offset%BYTES_PER_PIXEL != BUFFER_REMAINDER {
+			chip.bltErr = true
+			return
+		}
+		// Fill first row
+		addr := offset
+		for range width {
+			binary.LittleEndian.PutUint32(chip.frontBuffer[addr:], color)
+			addr += BYTES_PER_PIXEL
+		}
+		// Copy first row to remaining rows
+		firstRow := chip.frontBuffer[offset : offset+rowBytes]
+		rowOff := offset + stride
+		for y := 1; y < height; y++ {
+			copy(chip.frontBuffer[rowOff:rowOff+rowBytes], firstRow)
+			rowOff += stride
+		}
+		// Mark dirty rectangle
+		startPixel := offset / BYTES_PER_PIXEL
+		startX := int(startPixel) % mode.width
+		startY := int(startPixel) / mode.width
+		chip.markRectDirty(startX, startY, width, height)
+		if !chip.resetting && !chip.hasContent.Load() {
+			chip.hasContent.Store(true)
+		}
+		return
+	}
+
+	// Non-VRAM: per-pixel bus writes
+	rowAddr := dst
 	for range height {
 		addr := rowAddr
 		for range width {
-			chip.blitWritePixelLocked(addr, chip.bltColor, mode)
+			chip.bus.Write32(addr, color)
 			addr += BYTES_PER_PIXEL
+		}
+		rowAddr += stride
+	}
+}
+
+// blitBulkFill8Locked fills a rectangle with an 8-bit color using bulk operations.
+func (chip *VideoChip) blitBulkFill8Locked(dst uint32, width, height int, stride uint32, color uint8, mode VideoMode) {
+	rowBytes := uint32(width)
+
+	if chip.directVRAM != nil && dst >= VRAM_START && dst < VRAM_START+VRAM_SIZE {
+		if chip.busMemory == nil {
+			return
+		}
+		endAddr := dst + stride*uint32(height-1) + rowBytes
+		if endAddr > uint32(len(chip.busMemory)) {
+			return
+		}
+		rowAddr := dst
+		for range height {
+			for i := range width {
+				chip.busMemory[rowAddr+uint32(i)] = color
+			}
+			rowAddr += stride
+		}
+		if !chip.resetting && !chip.hasContent.Load() {
+			chip.hasContent.Store(true)
+		}
+		return
+	}
+
+	if dst >= VRAM_START && dst < VRAM_START+VRAM_SIZE {
+		offset := dst - BUFFER_OFFSET
+		bufLen := uint32(len(chip.frontBuffer))
+		lastOffset := offset + stride*uint32(height-1) + rowBytes
+		if lastOffset > bufLen {
+			chip.bltErr = true
+			return
+		}
+		rowOff := offset
+		for range height {
+			for i := range width {
+				chip.frontBuffer[rowOff+uint32(i)] = color
+			}
+			rowOff += stride
+		}
+		// Dirty tracking uses pixel coords; CLUT8 pixels are 1 byte each
+		startX := int(offset) % mode.width
+		startY := int(offset) / mode.width
+		chip.markRectDirty(startX, startY, width, height)
+		if !chip.resetting && !chip.hasContent.Load() {
+			chip.hasContent.Store(true)
+		}
+		return
+	}
+
+	// Non-VRAM: per-byte bus writes
+	rowAddr := dst
+	for range height {
+		addr := rowAddr
+		for range width {
+			chip.bus.Write8(addr, color)
+			addr++
 		}
 		rowAddr += stride
 	}
@@ -1171,25 +1475,149 @@ func (chip *VideoChip) blitCopyLocked(mode VideoMode) {
 	if width <= 0 || height <= 0 {
 		return
 	}
+
+	bpp := bppFromFlags(chip.bltFlags)
+	drawMode := drawModeFromFlags(chip.bltFlags)
+	bytesPerPx := uint32(bpp)
+
 	srcStride := chip.bltSrcStrideRun
 	if srcStride == 0 {
-		srcStride = chip.defaultStride(chip.bltSrc, width, mode)
+		if bpp == 1 {
+			srcStride = chip.defaultStrideBPP(chip.bltSrc, width, 1, mode)
+		} else {
+			srcStride = chip.defaultStride(chip.bltSrc, width, mode)
+		}
 	}
 	dstStride := chip.bltDstStrideRun
 	if dstStride == 0 {
-		dstStride = chip.defaultStride(chip.bltDst, width, mode)
+		if bpp == 1 {
+			dstStride = chip.defaultStrideBPP(chip.bltDst, width, 1, mode)
+		} else {
+			dstStride = chip.defaultStride(chip.bltDst, width, mode)
+		}
 	}
 
+	// Non-copy draw mode: per-pixel read-modify-write
+	if drawMode != 0x03 {
+		srcRow := chip.bltSrc
+		dstRow := chip.bltDst
+		for range height {
+			srcAddr := srcRow
+			dstAddr := dstRow
+			for range width {
+				if bpp == 1 {
+					src := uint32(chip.blitRead8Locked(srcAddr))
+					dst := uint32(chip.blitRead8Locked(dstAddr))
+					result := applyDrawMode(src, dst, drawMode)
+					chip.blitWrite8Locked(dstAddr, uint8(result), mode)
+				} else {
+					src := chip.blitReadPixelLocked(srcAddr)
+					dst := chip.blitReadPixelLocked(dstAddr)
+					result := applyDrawMode(src, dst, drawMode)
+					chip.blitWritePixelLocked(dstAddr, result, mode)
+				}
+				srcAddr += bytesPerPx
+				dstAddr += bytesPerPx
+			}
+			srcRow += srcStride
+			dstRow += dstStride
+		}
+		return
+	}
+
+	// Copy draw mode: try bulk path for VRAM
+	src := chip.bltSrc
+	dst := chip.bltDst
+	rowBytes := uint32(width) * bytesPerPx
+
+	// Both in directVRAM busMemory
+	if chip.directVRAM != nil && chip.busMemory != nil &&
+		src >= VRAM_START && src < VRAM_START+VRAM_SIZE &&
+		dst >= VRAM_START && dst < VRAM_START+VRAM_SIZE {
+		srcEnd := src + srcStride*uint32(height-1) + rowBytes
+		dstEnd := dst + dstStride*uint32(height-1) + rowBytes
+		if srcEnd <= uint32(len(chip.busMemory)) && dstEnd <= uint32(len(chip.busMemory)) {
+			// Overlap detection: copy forward or backward
+			if dst > src && dst < src+srcStride*uint32(height) {
+				// Backward (bottom to top)
+				srcRow := src + srcStride*uint32(height-1)
+				dstRow := dst + dstStride*uint32(height-1)
+				for y := height - 1; y >= 0; y-- {
+					copy(chip.busMemory[dstRow:dstRow+rowBytes], chip.busMemory[srcRow:srcRow+rowBytes])
+					srcRow -= srcStride
+					dstRow -= dstStride
+				}
+			} else {
+				// Forward (top to bottom)
+				srcRow := src
+				dstRow := dst
+				for range height {
+					copy(chip.busMemory[dstRow:dstRow+rowBytes], chip.busMemory[srcRow:srcRow+rowBytes])
+					srcRow += srcStride
+					dstRow += dstStride
+				}
+			}
+			if !chip.resetting && !chip.hasContent.Load() {
+				chip.hasContent.Store(true)
+			}
+			return
+		}
+	}
+
+	// Both in frontBuffer (non-directVRAM VRAM)
+	if chip.directVRAM == nil &&
+		src >= VRAM_START && src < VRAM_START+VRAM_SIZE &&
+		dst >= VRAM_START && dst < VRAM_START+VRAM_SIZE {
+		srcOff := src - BUFFER_OFFSET
+		dstOff := dst - BUFFER_OFFSET
+		bufLen := uint32(len(chip.frontBuffer))
+		srcEnd := srcOff + srcStride*uint32(height-1) + rowBytes
+		dstEnd := dstOff + dstStride*uint32(height-1) + rowBytes
+		if srcEnd <= bufLen && dstEnd <= bufLen {
+			if dstOff > srcOff && dstOff < srcOff+srcStride*uint32(height) {
+				srcRow := srcOff + srcStride*uint32(height-1)
+				dstRow := dstOff + dstStride*uint32(height-1)
+				for y := height - 1; y >= 0; y-- {
+					copy(chip.frontBuffer[dstRow:dstRow+rowBytes], chip.frontBuffer[srcRow:srcRow+rowBytes])
+					srcRow -= srcStride
+					dstRow -= dstStride
+				}
+			} else {
+				srcRow := srcOff
+				dstRow := dstOff
+				for range height {
+					copy(chip.frontBuffer[dstRow:dstRow+rowBytes], chip.frontBuffer[srcRow:srcRow+rowBytes])
+					srcRow += srcStride
+					dstRow += dstStride
+				}
+			}
+			startPixel := dstOff / bytesPerPx
+			startX := int(startPixel) % mode.width
+			startY := int(startPixel) / mode.width
+			chip.markRectDirty(startX, startY, width, height)
+			if !chip.resetting && !chip.hasContent.Load() {
+				chip.hasContent.Store(true)
+			}
+			return
+		}
+	}
+
+	// Fallback: per-pixel copy
 	srcRow := chip.bltSrc
 	dstRow := chip.bltDst
 	for range height {
 		srcAddr := srcRow
 		dstAddr := dstRow
 		for range width {
-			value := chip.blitReadPixelLocked(srcAddr)
-			chip.blitWritePixelLocked(dstAddr, value, mode)
-			srcAddr += BYTES_PER_PIXEL
-			dstAddr += BYTES_PER_PIXEL
+			if bpp == 1 {
+				v := chip.blitRead8Locked(srcAddr)
+				chip.blitWrite8Locked(dstAddr, v, mode)
+			} else {
+				value := chip.blitReadPixelLocked(srcAddr)
+				chip.blitWritePixelLocked(dstAddr, value, mode)
+			}
+			srcAddr += bytesPerPx
+			dstAddr += bytesPerPx
 		}
 		srcRow += srcStride
 		dstRow += dstStride
@@ -1343,10 +1771,42 @@ func isValidMask(mask uint32) bool {
 }
 
 func (chip *VideoChip) blitLineLocked(mode VideoMode) {
+	flags := chip.bltFlags
+	bpp := bppFromFlags(flags)
+	drawMode := drawModeFromFlags(flags)
+
+	var base uint32
+	var stride int
+	var clipW, clipH int
 	x0 := int(uint16(chip.bltSrc & 0xFFFF))
 	y0 := int(uint16((chip.bltSrc >> 16) & 0xFFFF))
-	x1 := int(uint16(chip.bltDst & 0xFFFF))
-	y1 := int(uint16((chip.bltDst >> 16) & 0xFFFF))
+	var x1, y1 int
+
+	if flags != 0 {
+		// Extended mode: BLT_DST = framebuffer base, BLT_WIDTH = packed endpoint,
+		// BLT_DST_STRIDE = row stride.
+		base = chip.bltDst
+		x1 = int(uint16(chip.bltWidth & 0xFFFF))
+		y1 = int(uint16((chip.bltWidth >> 16) & 0xFFFF))
+		if chip.bltDstStrideRun != 0 {
+			stride = int(chip.bltDstStrideRun)
+		} else {
+			stride = int(chip.defaultStrideBPP(base, mode.width, bpp, mode))
+		}
+		// No viewport clipping in extended mode — the caller must provide
+		// pre-clipped coordinates. Pixel writes are still bounds-checked
+		// by blitWritePixelLocked/blitWrite8Locked against VRAM/buffer limits.
+		clipW = 0x7FFF
+		clipH = 0x7FFF
+	} else {
+		// Legacy mode: BLT_DST = packed endpoint, base = VRAM_START.
+		x1 = int(uint16(chip.bltDst & 0xFFFF))
+		y1 = int(uint16((chip.bltDst >> 16) & 0xFFFF))
+		base = VRAM_START
+		stride = mode.width * bpp
+		clipW = mode.width
+		clipH = mode.height
+	}
 
 	dx := absInt(x1 - x0)
 	dy := absInt(y1 - y0)
@@ -1361,9 +1821,22 @@ func (chip *VideoChip) blitLineLocked(mode VideoMode) {
 	err := dx - dy
 
 	for {
-		if x0 >= 0 && x0 < mode.width && y0 >= 0 && y0 < mode.height {
-			addr := VRAM_START + uint32((y0*mode.width+x0)*BYTES_PER_PIXEL)
-			chip.blitWritePixelLocked(addr, chip.bltColor, mode)
+		if x0 >= 0 && x0 < clipW && y0 >= 0 && y0 < clipH {
+			addr := base + uint32(y0*stride+x0*bpp)
+			color := chip.bltColor
+			if bpp == 1 {
+				if drawMode != 0x03 {
+					dst := uint32(chip.blitRead8Locked(addr))
+					color = applyDrawMode(color&0xFF, dst, drawMode)
+				}
+				chip.blitWrite8Locked(addr, uint8(color&0xFF), mode)
+			} else {
+				if drawMode != 0x03 {
+					dst := chip.blitReadPixelLocked(addr)
+					color = applyDrawMode(color, dst, drawMode)
+				}
+				chip.blitWritePixelLocked(addr, color, mode)
+			}
 		}
 		if x0 == x1 && y0 == y1 {
 			break
@@ -1469,6 +1942,149 @@ func (chip *VideoChip) defaultStride(addr uint32, width int, mode VideoMode) uin
 		return uint32(mode.bytesPerRow)
 	}
 	return uint32(width * BYTES_PER_PIXEL)
+}
+
+func (chip *VideoChip) defaultStrideBPP(addr uint32, width, bpp int, mode VideoMode) uint32 {
+	if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
+		if bpp == 1 {
+			return uint32(mode.width)
+		}
+		return uint32(mode.bytesPerRow)
+	}
+	return uint32(width * bpp)
+}
+
+// blitRead8Locked reads a single byte from bus memory for CLUT8 operations.
+func (chip *VideoChip) blitRead8Locked(addr uint32) uint8 {
+	if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
+		if chip.directVRAM != nil {
+			if chip.busMemory != nil && addr < uint32(len(chip.busMemory)) {
+				return chip.busMemory[addr]
+			}
+			return 0
+		}
+		offset := addr - BUFFER_OFFSET
+		if offset < uint32(len(chip.frontBuffer)) {
+			return chip.frontBuffer[offset]
+		}
+		if chip.busMemory != nil && addr < uint32(len(chip.busMemory)) {
+			return chip.busMemory[addr]
+		}
+		return 0
+	}
+	if chip.busMemory != nil && addr < uint32(len(chip.busMemory)) {
+		return chip.busMemory[addr]
+	}
+	return 0
+}
+
+// blitWrite8Locked writes a single byte for CLUT8 operations.
+func (chip *VideoChip) blitWrite8Locked(addr uint32, value uint8, mode VideoMode) {
+	if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
+		if chip.directVRAM != nil {
+			if chip.busMemory != nil && addr < uint32(len(chip.busMemory)) {
+				chip.busMemory[addr] = value
+			}
+			if !chip.resetting && !chip.hasContent.Load() {
+				chip.hasContent.Store(true)
+			}
+			return
+		}
+		offset := addr - BUFFER_OFFSET
+		if offset >= uint32(len(chip.frontBuffer)) {
+			chip.bltErr = true
+			return
+		}
+		chip.frontBuffer[offset] = value
+		// Dirty tracking: treat CLUT8 pixel coords as byte offset / mode.width
+		px := int(offset) % mode.width
+		py := int(offset) / mode.width
+		chip.markRegionDirty(px, py)
+		if !chip.resetting && !chip.hasContent.Load() {
+			chip.hasContent.Store(true)
+		}
+		return
+	}
+	chip.bus.Write8(addr, value)
+}
+
+// blitColorExpandLocked expands a 1-bit template to colored pixels.
+func (chip *VideoChip) blitColorExpandLocked(mode VideoMode) {
+	width := int(chip.bltWidth)
+	height := int(chip.bltHeight)
+	if width <= 0 || height <= 0 {
+		return
+	}
+
+	bpp := bppFromFlags(chip.bltFlags)
+	bytesPerPx := uint32(bpp)
+	jam1 := chip.bltFlags&bltFlagsJAM1 != 0
+	invertTmpl := chip.bltFlags&bltFlagsInvertTmpl != 0
+	invertMode := chip.bltFlags&bltFlagsInvertMode != 0
+	fg := chip.bltFG
+	bg := chip.bltBG
+	maskAddr := chip.bltMask
+	maskMod := chip.bltMaskMod
+	maskSrcX := int(chip.bltMaskSrcX)
+
+	dstStride := chip.bltDstStrideRun
+	if dstStride == 0 {
+		if bpp == 1 {
+			dstStride = chip.defaultStrideBPP(chip.bltDst, width, 1, mode)
+		} else {
+			dstStride = chip.defaultStride(chip.bltDst, width, mode)
+		}
+	}
+
+	dstRow := chip.bltDst
+	for y := range height {
+		_ = y
+		dstAddr := dstRow
+		for x := range width {
+			// Read template bit (MSB-first: bit 7 of first byte = leftmost pixel)
+			bitX := maskSrcX + x
+			byteIdx := uint32(bitX / 8)
+			bitIdx := uint(7 - (bitX % 8)) // MSB-first
+			tmplByte := chip.busRead8Locked(maskAddr + byteIdx)
+			bit := (tmplByte >> bitIdx) & 1
+			if invertTmpl {
+				bit ^= 1
+			}
+
+			if invertMode {
+				// Invert mode: XOR destination with all-ones for set bits
+				if bit == 1 {
+					if bpp == 1 {
+						dst := uint32(chip.blitRead8Locked(dstAddr))
+						chip.blitWrite8Locked(dstAddr, uint8(dst^0xFF), mode)
+					} else {
+						dst := chip.blitReadPixelLocked(dstAddr)
+						chip.blitWritePixelLocked(dstAddr, dst^0xFFFFFFFF, mode)
+					}
+				}
+				// bit == 0: leave destination unchanged
+			} else if bit == 1 {
+				// Set bit: write foreground
+				if bpp == 1 {
+					chip.blitWrite8Locked(dstAddr, uint8(fg), mode)
+				} else {
+					chip.blitWritePixelLocked(dstAddr, fg, mode)
+				}
+			} else if !jam1 {
+				// Clear bit in JAM2 mode: write background
+				if bpp == 1 {
+					chip.blitWrite8Locked(dstAddr, uint8(bg), mode)
+				} else {
+					chip.blitWritePixelLocked(dstAddr, bg, mode)
+				}
+			}
+			// JAM1 + bit==0: leave destination unchanged
+
+			dstAddr += bytesPerPx
+		}
+		maskAddr += maskMod
+		dstRow += dstStride
+	}
 }
 
 func (chip *VideoChip) advanceCopperFrameLocked(mode VideoMode) {
@@ -1692,6 +2308,16 @@ func (chip *VideoChip) HandleRead(addr uint32) uint32 {
 		return chip.bltMode7TexWStaged
 	case BLT_MODE7_TEX_H:
 		return chip.bltMode7TexHStaged
+	case BLT_FLAGS:
+		return chip.bltFlagsStaged
+	case BLT_FG:
+		return chip.bltFGStaged
+	case BLT_BG:
+		return chip.bltBGStaged
+	case BLT_MASK_MOD:
+		return chip.bltMaskModStaged
+	case BLT_MASK_SRCX:
+		return chip.bltMaskSrcXStaged
 	case COPPER_PC + 1:
 		return readUint32Byte(chip.copperPC, 1)
 	case COPPER_PC + 2:
@@ -1836,6 +2462,36 @@ func (chip *VideoChip) HandleRead(addr uint32) uint32 {
 		return readUint32Byte(chip.bltMode7TexHStaged, 2)
 	case BLT_MODE7_TEX_H + 3:
 		return readUint32Byte(chip.bltMode7TexHStaged, 3)
+	case BLT_FLAGS + 1:
+		return readUint32Byte(chip.bltFlagsStaged, 1)
+	case BLT_FLAGS + 2:
+		return readUint32Byte(chip.bltFlagsStaged, 2)
+	case BLT_FLAGS + 3:
+		return readUint32Byte(chip.bltFlagsStaged, 3)
+	case BLT_FG + 1:
+		return readUint32Byte(chip.bltFGStaged, 1)
+	case BLT_FG + 2:
+		return readUint32Byte(chip.bltFGStaged, 2)
+	case BLT_FG + 3:
+		return readUint32Byte(chip.bltFGStaged, 3)
+	case BLT_BG + 1:
+		return readUint32Byte(chip.bltBGStaged, 1)
+	case BLT_BG + 2:
+		return readUint32Byte(chip.bltBGStaged, 2)
+	case BLT_BG + 3:
+		return readUint32Byte(chip.bltBGStaged, 3)
+	case BLT_MASK_MOD + 1:
+		return readUint32Byte(chip.bltMaskModStaged, 1)
+	case BLT_MASK_MOD + 2:
+		return readUint32Byte(chip.bltMaskModStaged, 2)
+	case BLT_MASK_MOD + 3:
+		return readUint32Byte(chip.bltMaskModStaged, 3)
+	case BLT_MASK_SRCX + 1:
+		return readUint32Byte(chip.bltMaskSrcXStaged, 1)
+	case BLT_MASK_SRCX + 2:
+		return readUint32Byte(chip.bltMaskSrcXStaged, 2)
+	case BLT_MASK_SRCX + 3:
+		return readUint32Byte(chip.bltMaskSrcXStaged, 3)
 	case VIDEO_PAL_INDEX:
 		return chip.palIndex
 	case VIDEO_COLOR_MODE:
@@ -2186,6 +2842,11 @@ func (chip *VideoChip) handleBlitterWriteLocked(addr uint32, value uint32) bool 
 		chip.bltMode7DvRow = chip.bltMode7DvRowStaged
 		chip.bltMode7TexW = chip.bltMode7TexWStaged
 		chip.bltMode7TexH = chip.bltMode7TexHStaged
+		chip.bltFlags = chip.bltFlagsStaged
+		chip.bltFG = chip.bltFGStaged
+		chip.bltBG = chip.bltBGStaged
+		chip.bltMaskMod = chip.bltMaskModStaged
+		chip.bltMaskSrcX = chip.bltMaskSrcXStaged
 		chip.bltPending = true
 		// Run blitter immediately (synchronous) so CPU doesn't wait for next frame
 		mode := VideoModes[chip.currentMode]
@@ -2394,6 +3055,66 @@ func (chip *VideoChip) handleBlitterWriteLocked(addr uint32, value uint32) bool 
 		return true
 	case BLT_MODE7_TEX_H + 3:
 		chip.bltMode7TexHStaged = writeUint32Byte(chip.bltMode7TexHStaged, value, 3)
+		return true
+	case BLT_FLAGS:
+		chip.bltFlagsStaged = value
+		return true
+	case BLT_FLAGS + 1:
+		chip.bltFlagsStaged = writeUint32Byte(chip.bltFlagsStaged, value, 1)
+		return true
+	case BLT_FLAGS + 2:
+		chip.bltFlagsStaged = writeUint32Word(chip.bltFlagsStaged, value, 2)
+		return true
+	case BLT_FLAGS + 3:
+		chip.bltFlagsStaged = writeUint32Byte(chip.bltFlagsStaged, value, 3)
+		return true
+	case BLT_FG:
+		chip.bltFGStaged = value
+		return true
+	case BLT_FG + 1:
+		chip.bltFGStaged = writeUint32Byte(chip.bltFGStaged, value, 1)
+		return true
+	case BLT_FG + 2:
+		chip.bltFGStaged = writeUint32Word(chip.bltFGStaged, value, 2)
+		return true
+	case BLT_FG + 3:
+		chip.bltFGStaged = writeUint32Byte(chip.bltFGStaged, value, 3)
+		return true
+	case BLT_BG:
+		chip.bltBGStaged = value
+		return true
+	case BLT_BG + 1:
+		chip.bltBGStaged = writeUint32Byte(chip.bltBGStaged, value, 1)
+		return true
+	case BLT_BG + 2:
+		chip.bltBGStaged = writeUint32Word(chip.bltBGStaged, value, 2)
+		return true
+	case BLT_BG + 3:
+		chip.bltBGStaged = writeUint32Byte(chip.bltBGStaged, value, 3)
+		return true
+	case BLT_MASK_MOD:
+		chip.bltMaskModStaged = value
+		return true
+	case BLT_MASK_MOD + 1:
+		chip.bltMaskModStaged = writeUint32Byte(chip.bltMaskModStaged, value, 1)
+		return true
+	case BLT_MASK_MOD + 2:
+		chip.bltMaskModStaged = writeUint32Word(chip.bltMaskModStaged, value, 2)
+		return true
+	case BLT_MASK_MOD + 3:
+		chip.bltMaskModStaged = writeUint32Byte(chip.bltMaskModStaged, value, 3)
+		return true
+	case BLT_MASK_SRCX:
+		chip.bltMaskSrcXStaged = value
+		return true
+	case BLT_MASK_SRCX + 1:
+		chip.bltMaskSrcXStaged = writeUint32Byte(chip.bltMaskSrcXStaged, value, 1)
+		return true
+	case BLT_MASK_SRCX + 2:
+		chip.bltMaskSrcXStaged = writeUint32Word(chip.bltMaskSrcXStaged, value, 2)
+		return true
+	case BLT_MASK_SRCX + 3:
+		chip.bltMaskSrcXStaged = writeUint32Byte(chip.bltMaskSrcXStaged, value, 3)
 		return true
 	default:
 		return false

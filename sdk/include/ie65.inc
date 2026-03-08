@@ -103,6 +103,40 @@ BLT_MODE7_TEX_H_1 = $F075
 BLT_MODE7_TEX_H_2 = $F076
 BLT_MODE7_TEX_H_3 = $F077
 BLT_OP_MODE7      = 5             ; Affine texture mapping
+BLT_FLAGS_0       = $F488         ; Blitter Flags byte 0
+BLT_FLAGS_1       = $F489
+BLT_FLAGS_2       = $F48A
+BLT_FLAGS_3       = $F48B
+BLT_FG_0          = $F48C         ; Blitter Foreground Color byte 0
+BLT_FG_1          = $F48D
+BLT_FG_2          = $F48E
+BLT_FG_3          = $F48F
+BLT_BG_0          = $F490         ; Blitter Background Color byte 0
+BLT_BG_1          = $F491
+BLT_BG_2          = $F492
+BLT_BG_3          = $F493
+BLT_MASK_MOD_0    = $F494         ; Blitter Mask Modulo byte 0
+BLT_MASK_MOD_1    = $F495
+BLT_MASK_MOD_2    = $F496
+BLT_MASK_MOD_3    = $F497
+BLT_MASK_SRCX_0   = $F498         ; Blitter Mask Source X byte 0
+BLT_MASK_SRCX_1   = $F499
+BLT_MASK_SRCX_2   = $F49A
+BLT_MASK_SRCX_3   = $F49B
+BLT_OP_COLOR_EXPAND = 6           ; Color expansion blit
+
+; BLT_FLAGS bit definitions
+BLT_FLAGS_BPP_RGBA32     = $00   ; Bits 0-1: 4 bytes per pixel (default)
+BLT_FLAGS_BPP_CLUT8      = $01   ; Bits 0-1: 1 byte per pixel
+BLT_FLAGS_BPP_MASK       = $03   ; Bits 0-1: BPP mode mask
+BLT_FLAGS_DRAWMODE_SHIFT = 4     ; Bits 4-7: draw mode shift
+BLT_FLAGS_DRAWMODE_MASK  = $F0   ; Bits 4-7: draw mode mask (16 raster ops)
+; Note: JAM1/INVERT_TMPL/INVERT_MODE are bits 8-10 (>8 bits),
+; use multi-byte writes to BLT_FLAGS for these values.
+BLT_FLAGS_JAM1_LO        = $00   ; Bit 8: low byte = $00
+BLT_FLAGS_JAM1_HI        = $01   ; Bit 8: high byte (BLT_FLAGS+1) = $01
+BLT_FLAGS_INVERT_TMPL_HI = $02   ; Bit 9: high byte (BLT_FLAGS+1) = $02
+BLT_FLAGS_INVERT_MODE_HI = $04   ; Bit 10: high byte (BLT_FLAGS+1) = $04
 
 ; Raster registers
 VIDEO_RASTER_Y_LO     = $F048   ; Raster Y position (low)
@@ -1453,6 +1487,7 @@ BLT_OP_LINE     = 2             ; Draw line
 BLT_OP_MASKED   = 3             ; Copy with mask
 BLT_OP_ALPHA    = 4             ; Alpha blending
 BLT_OP_MODE7_OP = 5             ; Affine texture mapping
+BLT_OP_COLOR_EXPAND_OP = 6      ; Color expansion blit
 
 ; Background color (black with alpha)
 BACKGROUND_0    = $00           ; Blue

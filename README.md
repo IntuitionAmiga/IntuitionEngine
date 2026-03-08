@@ -454,7 +454,7 @@ The system's memory layout is designed to provide efficient access to both progr
 ```
 0x000000 - 0x000FFF: System vectors (including interrupt vector)
 0x001000 - 0x0EFFFF: Program space
-0x0F0000 - 0x0F0077: Video registers (copper, blitter, raster control, Mode7)
+0x0F0000 - 0x0F049B: Video registers (copper, blitter, raster, Mode7, extended blitter)
 0x0F0700 - 0x0F072F: Terminal/Serial output
 0x0F0730 - 0x0F073C: Mouse registers (X, Y, Buttons, Status)
 0x0F0740 - 0x0F0748: Scancode registers (Code, Status, Modifiers)
@@ -553,6 +553,12 @@ Programs begin loading at 0x1000, providing:
 0x0F006C: BLT_MODE7_DV_ROW - Mode7 V delta per row (signed 16.16)
 0x0F0070: BLT_MODE7_TEX_W - Mode7 texture width mask (2^n-1)
 0x0F0074: BLT_MODE7_TEX_H - Mode7 texture height mask (2^n-1)
+0x0F0488: BLT_FLAGS    - Extended flags: BPP (bits 0-1), draw mode (bits 4-7),
+                         JAM1 (bit 8), invert template (bit 9), invert mode (bit 10)
+0x0F048C: BLT_FG       - Foreground color for color expansion
+0x0F0490: BLT_BG       - Background color for color expansion
+0x0F0494: BLT_MASK_MOD - Template row modulo in bytes (color expansion)
+0x0F0498: BLT_MASK_SRCX- Starting X bit offset in template (color expansion)
 
 Available Video Modes:
 MODE_640x480  = 0x00
@@ -5192,17 +5198,18 @@ copper_list:
 
 ## 12.7 DMA Blitter
 
-The DMA blitter performs rectangle copy/fill and line drawing. Registers are written via memory-mapped I/O, and the blitter operates on VRAM addresses (RGBA, 4 bytes/pixel).
+The DMA blitter performs rectangle copy/fill, line drawing, and color expansion. Registers are written via memory-mapped I/O. The blitter supports both RGBA32 (4 bytes/pixel) and CLUT8 (1 byte/pixel) modes, 16 raster draw modes, and template-based text rendering.
 
 **Synchronous Execution**: The blitter runs immediately when `BLT_CTRL` is written with bit0 set. This ensures blitter operations complete before the CPU continues, allowing safe drawing during VBlank without race conditions.
 
 Operations (`BLT_OP`):
 - `0`: COPY
 - `1`: FILL
-- `2`: LINE (coordinates packed into `BLT_SRC`/`BLT_DST`)
+- `2`: LINE (coordinates packed into `BLT_SRC`/`BLT_DST`; extended mode below)
 - `3`: MASKED COPY (1-bit mask, LSB-first per byte)
 - `4`: ALPHA (alpha-aware copy with source alpha blending)
 - `5`: MODE7 (affine texture mapping with 16.16 UV coordinates)
+- `6`: COLOR_EXPAND (1-bit template to colored pixels; see Extended Registers below)
 
 Line coordinates:
 - `BLT_SRC`: x0 (low 16 bits), y0 (high 16 bits)
@@ -5272,6 +5279,53 @@ Example UV mapping values:
 ```
 
 The blitter defaults `BLT_SRC_STRIDE`/`BLT_DST_STRIDE` to the current mode row bytes when the address is in VRAM, otherwise it uses `width*4`. If an unaligned VRAM address is used, `BLT_STATUS.bit0` is set.
+
+### Extended Blitter Registers
+
+The extended registers at `0xF0488-0xF049B` add BPP mode selection, draw modes, and color expansion for hardware-accelerated text rendering and CLUT8 framebuffers.
+
+| Register | Address | Description |
+|----------|---------|-------------|
+| `BLT_FLAGS` | `0xF0488` | BPP mode, draw mode, and color expansion flags (see below) |
+| `BLT_FG` | `0xF048C` | Foreground color for color expansion |
+| `BLT_BG` | `0xF0490` | Background color for color expansion |
+| `BLT_MASK_MOD` | `0xF0494` | Template row modulo in bytes (color expansion) |
+| `BLT_MASK_SRCX` | `0xF0498` | Starting X bit offset in template (color expansion) |
+
+**BLT_FLAGS bit layout:**
+
+| Bits | Name | Values |
+|------|------|--------|
+| 0-1 | BPP mode | `0` = RGBA32 (4 bpp, default), `1` = CLUT8 (1 bpp) |
+| 4-7 | Draw mode | 16 standard raster ops (0=Clear, 3=Copy, 6=Xor, 10=Invert, 15=Set) |
+| 8 | JAM1 | Color expand: skip BG pixels (transparent text) |
+| 9 | Invert template | Flip all template bits before processing |
+| 10 | Invert mode | XOR destination with all-ones for set template bits (ignore FG/BG) |
+
+When `BLT_FLAGS=0` (default), the blitter uses Copy mode with RGBA32 — fully backward compatible with existing programs.
+
+**Color Expansion (op 6)**: Reads a 1-bit template from `BLT_MASK` and expands each bit to a colored pixel at `BLT_DST`. Template bits are MSB-first (Amiga convention: bit 7 of first byte = leftmost pixel). Three modes:
+
+- **JAM2** (bits 8,10 clear): bit=1 writes FG color, bit=0 writes BG color
+- **JAM1** (bit 8 set): bit=1 writes FG color, bit=0 leaves destination unchanged
+- **Invert** (bit 10 set): bit=1 XORs destination with all-ones, bit=0 unchanged
+
+**CLUT8 mode**: When BPP=1, FILL writes 1 byte per pixel and COPY transfers 1 byte per pixel. `BLT_COLOR`/`BLT_FG`/`BLT_BG` use the low byte as a palette index.
+
+**Extended line mode (op 2 with `BLT_FLAGS != 0`)**: When `BLT_FLAGS` is non-zero, the LINE operation uses a different register layout to support arbitrary framebuffer addresses and draw modes:
+
+| Register | Extended line usage |
+|----------|-------------------|
+| `BLT_SRC` | Start point: `(y0 << 16) \| x0` (same as legacy) |
+| `BLT_WIDTH` | End point: `(y1 << 16) \| x1` (repurposed from width) |
+| `BLT_DST` | Framebuffer base address (not endpoint) |
+| `BLT_DST_STRIDE` | Row stride in bytes |
+| `BLT_COLOR` | Line color |
+| `BLT_FLAGS` | BPP + draw mode (must be non-zero to activate extended mode) |
+
+When `BLT_FLAGS=0` (legacy mode), `BLT_DST` holds the endpoint and the line is drawn into the active VRAM framebuffer at `VRAM_START`.
+
+**Clipping**: In extended mode the blitter does not perform viewport clipping — callers must provide pre-clipped coordinates. Pixel writes are still bounds-checked against VRAM limits (out-of-range addresses are silently dropped).
 
 ## 12.8 Raster Band Fill
 

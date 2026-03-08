@@ -31,6 +31,17 @@ All include files provide these categories of definitions:
 - `BLT_OP_MASKED` - Masked copy (transparency)
 - `BLT_OP_ALPHA` - Alpha-blended copy
 - `BLT_OP_MODE7` - SNES-style rotation/scaling
+- `BLT_OP_COLOR_EXPAND` - 1-bit template to colored pixels (text rendering)
+
+### Extended Blitter Registers
+- `BLT_FLAGS` / `BLT_FG` / `BLT_BG` / `BLT_MASK_MOD` / `BLT_MASK_SRCX` - BPP mode, draw modes, color expansion
+
+### BLT_FLAGS Bit Definitions
+- `BLT_FLAGS_BPP_RGBA32` / `BLT_FLAGS_BPP_CLUT8` / `BLT_FLAGS_BPP_MASK` - Pixel format (bits 0-1)
+- `BLT_FLAGS_DRAWMODE_SHIFT` / `BLT_FLAGS_DRAWMODE_MASK` - Raster draw mode (bits 4-7)
+- `BLT_FLAGS_JAM1` - Color expand: skip BG pixels (bit 8)
+- `BLT_FLAGS_INVERT_TMPL` - Invert template bits (bit 9)
+- `BLT_FLAGS_INVERT_MODE` - XOR destination for set template bits (bit 10)
 
 ### Audio Registers
 - PSG: `PSG_REG_*`, `PSG_PLAY_*`

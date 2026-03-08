@@ -399,6 +399,22 @@ The copper coprocessor is internal to VideoChip but can write to any MMIO-mapped
 - `copperIOBase` resets to `VIDEO_REG_BASE` at the start of each frame
 - The compositor's `ScanlineAware` interface orchestrates this: `StartFrame()` -> `ProcessScanline(y)` -> `FinishFrame()`
 
+### Extended Blitter: BPP Modes, Draw Modes, and Color Expansion
+
+The blitter supports two pixel formats via `BLT_FLAGS` (`0xF0488`): RGBA32 (4 bpp, default) and CLUT8 (1 bpp). Bits 4-7 select one of 16 raster draw modes (Clear, And, Copy, Xor, Invert, etc.) applied per pixel during FILL and COPY operations. When `BLT_FLAGS=0`, the blitter defaults to Copy mode with RGBA32 for full backward compatibility.
+
+The color expansion operation (`BLT_OP=6`) renders 1-bit glyph templates into colored pixels for hardware-accelerated text. It reads a template from `BLT_MASK`, uses `BLT_FG`/`BLT_BG` (`0xF048C`/`0xF0490`) as foreground/background colors, and supports three modes: JAM2 (opaque — set bits write FG, clear bits write BG), JAM1 (transparent — only set bits write FG), and Invert (set bits XOR the destination). `BLT_MASK_MOD` (`0xF0494`) sets the template row stride and `BLT_MASK_SRCX` (`0xF0498`) provides sub-byte bit alignment for glyph fragments. Template bits are MSB-first (Amiga convention).
+
+Line drawing (`BLT_OP=2`) supports an extended mode when `BLT_FLAGS != 0`: `BLT_DST` becomes the framebuffer base address, `BLT_WIDTH` holds the packed endpoint coordinates `(y1<<16)|x1`, and `BLT_DST_STRIDE` sets the row stride. This allows line drawing into arbitrary bitmaps (not just the active framebuffer) with BPP awareness and all 16 draw modes. When `BLT_FLAGS=0`, legacy behavior is preserved (endpoint in `BLT_DST`, base at `VRAM_START`). In extended mode the blitter does not clip — callers must provide pre-clipped coordinates (the AROS driver uses Cohen-Sutherland clipping before calling the blitter).
+
+| Register | Address | Description |
+|----------|---------|-------------|
+| `BLT_FLAGS` | `0xF0488` | BPP (bits 0-1), draw mode (bits 4-7), JAM1/invert flags (bits 8-10) |
+| `BLT_FG` | `0xF048C` | Foreground color for color expansion |
+| `BLT_BG` | `0xF0490` | Background color for color expansion |
+| `BLT_MASK_MOD` | `0xF0494` | Template row modulo (bytes per row) |
+| `BLT_MASK_SRCX` | `0xF0498` | Starting X bit offset in template |
+
 ### Mode7 Affine Texture Unit
 
 The blitter's Mode7 operation (`bltOpMode7`) implements SNES-style affine texture mapping as a DMA blitter mode within VideoChip. It uses 8 dedicated MMIO registers (`0xF0058-0xF0074`):

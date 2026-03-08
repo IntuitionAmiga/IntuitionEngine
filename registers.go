@@ -153,9 +153,9 @@ const (
 	IO_REGION_BASE = 0xF0000 // Start of I/O mapped region
 	IO_REGION_END  = 0xFFFFF // End of I/O mapped region
 
-	// Video chip region (includes palette registers at 0xF0078-0xF0487)
+	// Video chip region (includes palette registers at 0xF0078-0xF0487 and extended blitter at 0xF0488-0xF049B)
 	VIDEO_REGION_BASE = 0xF0000
-	VIDEO_REGION_END  = 0xF0487
+	VIDEO_REGION_END  = 0xF049B
 
 	// Terminal/Serial region
 	TERMINAL_REGION_BASE = 0xF0700
