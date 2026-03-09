@@ -1,6 +1,6 @@
 package main
 
-// Coprocessor MMIO Registers (0xF2340-0xF237F)
+// Coprocessor MMIO Registers (0xF2340-0xF238F)
 const (
 	COPROC_BASE = 0xF2340
 
@@ -19,7 +19,14 @@ const (
 	COPROC_NAME_PTR      = COPROC_BASE + 0x30 // Pointer to service filename string
 	COPROC_WORKER_STATE  = COPROC_BASE + 0x34 // Bitmask of running workers (read-only)
 
-	COPROC_END = COPROC_BASE + 0x3F
+	// Extended registers (IE64 coprocessor support)
+	COPROC_STATS_OPS         = COPROC_BASE + 0x38 // Total ops dispatched (read-only)
+	COPROC_STATS_BYTES       = COPROC_BASE + 0x3C // Total bytes processed (read-only)
+	COPROC_IRQ_CTRL          = COPROC_BASE + 0x40 // IRQ enable/disable (write bit 0), status (read)
+	COPROC_DISPATCH_OVERHEAD = COPROC_BASE + 0x44 // Calibrated overhead in nanoseconds (read-only)
+	COPROC_COMPLETED_TICKET  = COPROC_BASE + 0x48 // Last completed ticket ID (read-only)
+
+	COPROC_END = COPROC_BASE + 0x4F
 )
 
 // Coprocessor commands (written to COPROC_CMD)
@@ -66,13 +73,13 @@ const (
 // 0xF0200 via translateIO8Bit, which is an unused gap - safe to reserve.
 const (
 	COPROC_GATEWAY_BASE = 0xF200 // Z80/6502 address for COPROC_CMD
-	COPROC_GATEWAY_END  = 0xF23F // Z80/6502 address for COPROC_END
+	COPROC_GATEWAY_END  = 0xF24F // Z80/6502 address for COPROC_END
 )
 
-// Mailbox shared RAM (0x820000-0x820FFF, 4KB)
+// Mailbox shared RAM (0x820000-0x8217FF, 6KB for 6 CPU rings)
 const (
 	MAILBOX_BASE = 0x820000
-	MAILBOX_SIZE = 0x1000
+	MAILBOX_SIZE = 0x1800
 	MAILBOX_END  = MAILBOX_BASE + MAILBOX_SIZE - 1
 
 	// Ring buffer layout
@@ -126,9 +133,13 @@ const (
 	WORKER_X86_BASE = 0x320000
 	WORKER_X86_END  = 0x39FFFF
 	WORKER_X86_SIZE = WORKER_X86_END - WORKER_X86_BASE + 1
+
+	WORKER_IE64_BASE = 0x3A0000
+	WORKER_IE64_END  = 0x41FFFF
+	WORKER_IE64_SIZE = WORKER_IE64_END - WORKER_IE64_BASE + 1
 )
 
-// cpuTypeToIndex maps EXEC_TYPE_* constants to ring index (0-4).
+// cpuTypeToIndex maps EXEC_TYPE_* constants to ring index (0-5).
 // Returns -1 for invalid/unsupported types.
 func cpuTypeToIndex(cpuType uint32) int {
 	switch cpuType {
@@ -142,6 +153,8 @@ func cpuTypeToIndex(cpuType uint32) int {
 		return 3
 	case EXEC_TYPE_X86:
 		return 4
+	case EXEC_TYPE_IE64:
+		return 5
 	default:
 		return -1
 	}

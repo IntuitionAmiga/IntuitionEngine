@@ -190,7 +190,7 @@ func TestCoprocessorTicketMonotonicity(t *testing.T) {
 func TestCoprocessorInvalidCPUType(t *testing.T) {
 	_, mgr := newTestBusAndManager(t)
 
-	for _, ct := range []uint32{0, EXEC_TYPE_IE64, 7, 99} {
+	for _, ct := range []uint32{0, 7, 99} {
 		mgr.mu.Lock()
 		mgr.cpuType = ct
 		mgr.cmdStart()

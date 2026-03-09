@@ -1403,6 +1403,9 @@ func main() {
 			}
 		}
 
+		coprocMgr.SetIRQTarget(m68kCPU)
+		coprocMgr.StartCompletionWatcher()
+
 		emuTOSLoader = loader
 		runtimeStatus.setCPUs(runtimeCPUM68K, nil, nil, m68kRunner, nil, nil, nil)
 		cpuRunner = m68kRunner
@@ -1470,6 +1473,10 @@ func main() {
 		// Initialize clipboard bridge (host ↔ guest clipboard exchange)
 		clipBridge := NewClipboardBridge(sysBus)
 		sysBus.MapIO(CLIP_REGION_BASE, CLIP_REGION_END, clipBridge.HandleRead, clipBridge.HandleWrite)
+
+		// Wire up IE64 coprocessor completion interrupts to M68K CPU
+		coprocMgr.SetIRQTarget(m68kCPU)
+		coprocMgr.StartCompletionWatcher()
 
 		arosLoader = loader
 		runtimeStatus.setCPUs(runtimeCPUM68K, nil, nil, m68kRunner, nil, nil, nil)

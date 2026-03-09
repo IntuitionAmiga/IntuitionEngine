@@ -2743,7 +2743,7 @@ FILE_ERR_PERMISSION = 2             ; Permission denied
 FILE_ERR_PATH_TRAVERSAL = 3         ; Path traversal attempt blocked
 
 ; ============================================================================
-; COPROCESSOR REGISTERS (via gateway $F200-$F23F -> bus $F2340)
+; COPROCESSOR REGISTERS (via gateway $F200-$F24F -> bus $F2340)
 ; ============================================================================
 
 ; Gateway register addresses (6502 address space)
@@ -2761,6 +2761,11 @@ COPROC_RESP_CAP       = $F228            ; Response buffer capacity (W)
 COPROC_TIMEOUT        = $F22C            ; Timeout ms (W)
 COPROC_NAME_PTR       = $F230            ; Pointer to service filename (W)
 COPROC_WORKER_STATE   = $F234            ; Bitmask of running workers (R)
+COPROC_STATS_OPS      = $F238            ; Total ops dispatched (R)
+COPROC_STATS_BYTES    = $F23C            ; Total bytes processed (R)
+COPROC_IRQ_CTRL       = $F240            ; IRQ enable/disable bit 0 (R/W)
+COPROC_DISPATCH_OVERHEAD = $F244         ; Calibrated overhead ns (R)
+COPROC_COMPLETED_TICKET = $F248          ; Last completed ticket (R)
 
 ; Command values
 COPROC_CMD_START      = 1                ; Start worker from file
@@ -2784,6 +2789,9 @@ COPROC_CPU_6502       = 3
 COPROC_CPU_M68K       = 4
 COPROC_CPU_Z80        = 5
 COPROC_CPU_X86        = 6
+
+; Execution type (matches EXEC_TYPE register)
+EXEC_TYPE_IE64        = 2
 
 ; System control
 SYS_GC_TRIGGER        = $F2380            ; Write any value to trigger GC

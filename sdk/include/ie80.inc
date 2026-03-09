@@ -2832,7 +2832,7 @@
 .set FILE_ERR_PATH_TRAVERSAL,3     ; Path traversal attempt blocked
 
 ; ============================================================================
-; COPROCESSOR REGISTERS (via gateway 0xF200-0xF23F → bus 0xF2340)
+; COPROCESSOR REGISTERS (via gateway 0xF200-0xF24F → bus 0xF2340)
 ; ============================================================================
 
 ; Gateway register addresses (Z80 address space)
@@ -2850,6 +2850,11 @@
 .set COPROC_TIMEOUT,0xF22C              ; Timeout ms (W)
 .set COPROC_NAME_PTR,0xF230             ; Pointer to service filename (W)
 .set COPROC_WORKER_STATE,0xF234          ; Bitmask of running workers (R)
+.set COPROC_STATS_OPS,0xF238            ; Total ops dispatched (R)
+.set COPROC_STATS_BYTES,0xF23C          ; Total bytes processed (R)
+.set COPROC_IRQ_CTRL,0xF240             ; IRQ enable/disable bit 0 (R/W)
+.set COPROC_DISPATCH_OVERHEAD,0xF244    ; Calibrated overhead ns (R)
+.set COPROC_COMPLETED_TICKET,0xF248     ; Last completed ticket (R)
 
 ; Command values
 .set COPROC_CMD_START,1                  ; Start worker from file
@@ -2873,6 +2878,9 @@
 .set COPROC_CPU_M68K,4
 .set COPROC_CPU_Z80,5
 .set COPROC_CPU_X86,6
+
+; Execution type (matches EXEC_TYPE register)
+.set EXEC_TYPE_IE64,2
 
 ; System control
 .set SYS_GC_TRIGGER,0xF2380             ; Write any value to trigger GC

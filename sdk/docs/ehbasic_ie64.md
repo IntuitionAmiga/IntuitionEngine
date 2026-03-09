@@ -1598,6 +1598,33 @@ COS(x)
 
 Returns the cosine of `x` (in radians).
 
+### COSTATS
+
+```
+COSTATS(field)
+```
+
+Returns a coprocessor statistics value as a numeric result. The `field` parameter selects which statistic to read:
+
+| Field | Description |
+|-------|-------------|
+| 0 | Total operations dispatched |
+| 1 | Total bytes processed |
+| 2 | Dispatch overhead in nanoseconds (calibrated on first IE64 worker start) |
+| 3 | Last completed ticket ID |
+| 4 | IRQ enabled (1 = enabled, 0 = disabled) |
+
+Returns 0 for invalid field numbers.
+
+**Example:**
+```basic
+PRINT COSTATS(0)            : REM prints total operations dispatched
+PRINT COSTATS(2)            : REM prints calibrated dispatch overhead in ns
+IF COSTATS(4) THEN PRINT "IRQ enabled"
+```
+
+See also: [COCALL](#cocall), [COSTATUS](#costatus), [COSTART](#costart).
+
 ### DEEK
 
 ```

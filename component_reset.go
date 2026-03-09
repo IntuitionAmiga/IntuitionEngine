@@ -640,6 +640,11 @@ func (m *CoprocessorManager) Reset() {
 	m.timeout = 0
 	m.namePtr = 0
 	m.workerState = 0
+	m.opsDispatched = 0
+	m.bytesProcessed = 0
+	m.completionIRQEnabled.Store(false)
+	m.completedTicket.Store(0)
+	m.dispatchOverheadNs.Store(0)
 }
 
 // PSGPlayer.Reset stops playback and clears metadata.

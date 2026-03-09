@@ -1876,7 +1876,7 @@ EXEC_OP_EMUTOS    equ 2                     ; Write to EXEC_CTRL to boot EmuTOS
 EXEC_OP_AROS      equ 3                     ; Write to EXEC_CTRL to boot AROS
 
 ; ============================================================================
-; COPROCESSOR REGISTERS (0xF2340-0xF237F)
+; COPROCESSOR REGISTERS (0xF2340-0xF238F)
 ; ============================================================================
 
 COPROC_CMD            equ 0xF2340               ; Command register (W triggers)
@@ -1893,6 +1893,11 @@ COPROC_RESP_CAP       equ 0xF2368               ; Response buffer capacity (W)
 COPROC_TIMEOUT        equ 0xF236C               ; Timeout ms (W)
 COPROC_NAME_PTR       equ 0xF2370               ; Pointer to service filename (W)
 COPROC_WORKER_STATE   equ 0xF2374               ; Bitmask of running workers (R)
+COPROC_STATS_OPS      equ 0xF2378               ; Total ops dispatched (R)
+COPROC_STATS_BYTES    equ 0xF237C               ; Total bytes processed (R)
+COPROC_IRQ_CTRL       equ 0xF2380               ; IRQ enable/disable bit 0 (R/W)
+COPROC_DISPATCH_OVERHEAD equ 0xF2384            ; Calibrated overhead ns (R)
+COPROC_COMPLETED_TICKET equ 0xF2388             ; Last completed ticket (R)
 
 ; Coprocessor command values
 COPROC_CMD_START      equ 1                     ; Start worker from file

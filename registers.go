@@ -51,8 +51,8 @@ Address Range       Size    Device              Constants File
 0xF2260-0xF22AF     80B     AROS Audio DMA      aros_audio_constants.go
 0xF2300-0xF231F     32B     Media Loader        registers.go
 0xF2320-0xF233F     32B     Program Executor    registers.go
-0xF2340-0xF237F     64B     Coprocessor         coprocessor_constants.go
-0xF2380-0xF239F     32B     Clipboard Bridge    clipboard_bridge_constants.go
+0xF2340-0xF238F     80B     Coprocessor         coprocessor_constants.go
+0xF2390-0xF23AF     32B     Clipboard Bridge    clipboard_bridge_constants.go
 0xF4000-0xF43FF     1KB     Voodoo 3D Graphics  voodoo_constants.go
 
 0x100000-0x5FFFFF   5MB     Video RAM           video_chip.go (VRAM_START)
@@ -219,11 +219,11 @@ const (
 
 	// Coprocessor region
 	COPROC_REGION_BASE = 0xF2340
-	COPROC_REGION_END  = 0xF237F
+	COPROC_REGION_END  = 0xF238F
 
 	// Clipboard bridge region (AROS host clipboard exchange)
-	CLIP_BRIDGE_REGION_BASE = 0xF2380
-	CLIP_BRIDGE_REGION_END  = 0xF239F
+	CLIP_BRIDGE_REGION_BASE = 0xF2390
+	CLIP_BRIDGE_REGION_END  = 0xF23AF
 
 	// Voodoo 3D graphics region
 	VOODOO_REGION_BASE = 0xF4000

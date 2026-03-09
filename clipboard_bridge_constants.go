@@ -1,13 +1,13 @@
 package main
 
-// Clipboard Bridge MMIO Registers (0xF2380-0xF239F)
+// Clipboard Bridge MMIO Registers (0xF2390-0xF23AF)
 //
 // This MMIO region bridges the host OS clipboard with AROS applications.
 // The guest writes a data pointer and length, then writes a command to CTRL
 // to trigger a read (host→guest) or write (guest→host) operation.
 const (
-	CLIP_REGION_BASE = 0xF2380
-	CLIP_REGION_END  = 0xF239F
+	CLIP_REGION_BASE = 0xF2390
+	CLIP_REGION_END  = 0xF23AF
 
 	CLIP_DATA_PTR   = CLIP_REGION_BASE + 0x00 // Guest RAM pointer for clipboard data
 	CLIP_DATA_LEN   = CLIP_REGION_BASE + 0x04 // Data length in bytes

@@ -237,6 +237,9 @@ type CPU64 struct {
 	jitCache   *CodeCache
 	jitExecMem any // *ExecMem — uses any to avoid build tag dependency
 	jitCtx     *JITContext
+
+	// Coprocessor mode: allows PC outside PROG_START..STACK_START
+	CoprocMode bool
 }
 
 // ------------------------------------------------------------------------------
@@ -469,7 +472,7 @@ func (cpu *CPU64) DetachDirectVRAM() {
 // ------------------------------------------------------------------------------
 
 func (cpu *CPU64) Execute() {
-	if cpu.PC < PROG_START || cpu.PC >= STACK_START {
+	if !cpu.CoprocMode && (cpu.PC < PROG_START || cpu.PC >= STACK_START) {
 		fmt.Printf("IE64: Invalid initial PC value: 0x%08x\n", cpu.PC)
 		cpu.running.Store(false)
 		return

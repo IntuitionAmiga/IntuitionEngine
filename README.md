@@ -491,8 +491,9 @@ The system's memory layout is designed to provide efficient access to both progr
 0x300000 - 0x30FFFF: Coprocessor worker region (6502, 64KB)
 0x310000 - 0x31FFFF: Coprocessor worker region (Z80, 64KB)
 0x320000 - 0x39FFFF: Coprocessor worker region (x86, 512KB)
+0x3A0000 - 0x41FFFF: Coprocessor worker region (IE64, 512KB)
 0x400000 - 0x7FFFFF: User data buffers (coprocessor request/response data)
-0x820000 - 0x820FFF: Coprocessor mailbox shared RAM (4KB, ring buffers)
+0x820000 - 0x8217FF: Coprocessor mailbox shared RAM (6KB, ring buffers)
 ```
 
 ## 3.1 System Vector Table (0x000000 - 0x000FFF)
@@ -1571,9 +1572,9 @@ All registers support byte-level writes for 8-bit CPUs. Each 32-bit register can
 
 8-bit CPUs access File I/O via **bank3 switching** — set bank3 = `$0079` to map the registers into the bank3 window at `$6200`. The `ie80.inc` and `ie65.inc` include files provide `FIO_*` byte-address constants and convenience macros (`SET_FILE_IO_BANK`, `SET_FIO_PTR`, `FILE_READ`, `FILE_WRITE`).
 
-## 3.19 Coprocessor Subsystem (0x0F2340 - 0x0F237F)
+## 3.19 Coprocessor Subsystem (0x0F2340 - 0x0F238F)
 
-The coprocessor subsystem allows any CPU to launch worker CPUs (IE32, 6502, M68K, Z80, x86) that run service binaries. Workers poll a shared mailbox ring buffer for requests, process them, and write results. The caller manages worker lifecycle and request routing via MMIO registers. Available in all CPU modes.
+The coprocessor subsystem allows any CPU to launch worker CPUs (IE32, IE64, 6502, M68K, Z80, x86) that run service binaries. Workers poll a shared mailbox ring buffer for requests, process them, and write results. The caller manages worker lifecycle and request routing via MMIO registers. Available in all CPU modes.
 
 ### MMIO Registers
 
@@ -1593,6 +1594,11 @@ The coprocessor subsystem allows any CPU to launch worker CPUs (IE32, 6502, M68K
 | 0xF236C | COPROC_TIMEOUT | W | Timeout in ms |
 | 0xF2370 | COPROC_NAME_PTR | W | Service filename pointer |
 | 0xF2374 | COPROC_WORKER_STATE | R | Bitmask of running workers |
+| 0xF2378 | COPROC_STATS_OPS | R | Total operations dispatched (all workers, counted at enqueue) |
+| 0xF237C | COPROC_STATS_BYTES | R | Total bytes processed (all workers, counted at enqueue) |
+| 0xF2380 | COPROC_IRQ_CTRL | R/W | Completion interrupt control (bit 0=enable, Level 6/INTB_COPER) |
+| 0xF2384 | COPROC_DISPATCH_OVERHEAD | R | Calibrated dispatch overhead in nanoseconds |
+| 0xF2388 | COPROC_COMPLETED_TICKET | R | Ticket ID of last completed job (for IRQ handler) |
 
 ### Byte-Level MMIO Access
 
@@ -1642,9 +1648,9 @@ IE32, IE64, M68K, and x86 CPUs access `0xF2340` directly (no gateway needed).
 | 4 | Timeout |
 | 5 | Worker down |
 
-### Shared Mailbox RAM (0x820000 - 0x820FFF)
+### Shared Mailbox RAM (0x820000 - 0x8217FF)
 
-4KB ring buffer region shared between the Go manager and all worker CPUs. Contains 5 rings (one per supported CPU type), each 768 bytes with 16 request/response descriptor slots. Workers are loaded into dedicated, non-overlapping memory regions (0x200000-0x39FFFF). User data buffers for request/response payloads should be placed at 0x400000-0x7FFFFF.
+6KB ring buffer region shared between the Go manager and all worker CPUs. Contains 6 rings (one per supported CPU type), each 768 bytes with 16 request/response descriptor slots. Workers are loaded into dedicated, non-overlapping memory regions (0x200000-0x41FFFF). User data buffers for request/response payloads should be placed at 0x400000-0x7FFFFF.
 
 ### Access by CPU Type
 
@@ -5764,6 +5770,7 @@ Total: 27.6MB (5.6MB chip + 22MB fast memory).
 - Amiga rawkey scancode input, software cursor overlay
 - battclock.resource via RTC_EPOCH MMIO register (0xF0750)
 - Paula-compatible 4-channel audio DMA
+- iewarp.library: AROS shared library that offloads compute to the IE64 coprocessor
 
 ### Build Targets
 

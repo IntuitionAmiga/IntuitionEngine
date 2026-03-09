@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -64,6 +65,20 @@ type CoprocessorManager struct {
 	timeout      uint32
 	namePtr      uint32
 	workerState  uint32
+
+	// Stats tracking
+	opsDispatched  uint32
+	bytesProcessed uint64
+
+	// Completion interrupt support
+	completionIRQEnabled atomic.Bool
+	completedTicket      atomic.Uint32
+	irqTargetCPU         *M68KCPU
+	watcherRunning       atomic.Bool
+	watcherDone          chan struct{}
+
+	// Adaptive threshold calibration
+	dispatchOverheadNs atomic.Uint64
 }
 
 // NewCoprocessorManager creates a new coprocessor manager.
@@ -75,13 +90,73 @@ func NewCoprocessorManager(bus *MachineBus, baseDir string) *CoprocessorManager 
 		completions: make(map[uint32]*CoprocCompletion),
 	}
 	// Initialize ring headers in mailbox RAM
-	for i := range 5 {
+	for i := range 6 {
 		base := ringBaseAddr(i)
 		bus.Write8(base+RING_HEAD_OFFSET, 0)
 		bus.Write8(base+RING_TAIL_OFFSET, 0)
 		bus.Write8(base+RING_CAPACITY_OFFSET, RING_CAPACITY)
 	}
 	return mgr
+}
+
+// SetIRQTarget sets the M68K CPU that receives completion interrupts.
+func (m *CoprocessorManager) SetIRQTarget(cpu *M68KCPU) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.irqTargetCPU = cpu
+}
+
+// StartCompletionWatcher launches the background goroutine that monitors
+// ring buffers for completed tickets and fires M68K interrupts.
+func (m *CoprocessorManager) StartCompletionWatcher() {
+	if m.watcherRunning.Swap(true) {
+		return
+	}
+	m.watcherDone = make(chan struct{})
+	go m.completionWatcherLoop()
+}
+
+// StopCompletionWatcher stops the background watcher goroutine.
+func (m *CoprocessorManager) StopCompletionWatcher() {
+	if !m.watcherRunning.Swap(false) {
+		return
+	}
+	<-m.watcherDone
+}
+
+func (m *CoprocessorManager) completionWatcherLoop() {
+	defer close(m.watcherDone)
+	ticker := time.NewTicker(100 * time.Microsecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if !m.watcherRunning.Load() {
+				return
+			}
+			m.scanForCompletions()
+		}
+	}
+}
+
+func (m *CoprocessorManager) scanForCompletions() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for ticket, comp := range m.completions {
+		if comp.status != COPROC_TICKET_PENDING && comp.status != COPROC_TICKET_RUNNING {
+			continue
+		}
+		status := m.scanTicketStatus(ticket)
+		if status == COPROC_TICKET_PENDING || status == COPROC_TICKET_RUNNING {
+			continue
+		}
+		comp.status = status
+		m.completedTicket.Store(ticket)
+		if m.completionIRQEnabled.Load() && m.irqTargetCPU != nil {
+			m.irqTargetCPU.AssertInterrupt(6)
+		}
+	}
 }
 
 // readReg returns the shadow register value for a given aligned register base address.
@@ -115,6 +190,19 @@ func (m *CoprocessorManager) readReg(regBase uint32) uint32 {
 		return m.namePtr
 	case COPROC_WORKER_STATE:
 		return m.computeWorkerState()
+	case COPROC_STATS_OPS:
+		return m.opsDispatched
+	case COPROC_STATS_BYTES:
+		return uint32(m.bytesProcessed)
+	case COPROC_IRQ_CTRL:
+		if m.completionIRQEnabled.Load() {
+			return 1
+		}
+		return 0
+	case COPROC_DISPATCH_OVERHEAD:
+		return uint32(m.dispatchOverheadNs.Load())
+	case COPROC_COMPLETED_TICKET:
+		return m.completedTicket.Load()
 	default:
 		return 0
 	}
@@ -143,6 +231,8 @@ func (m *CoprocessorManager) writeReg(regBase, val uint32) {
 		m.timeout = val
 	case COPROC_NAME_PTR:
 		m.namePtr = val
+	case COPROC_IRQ_CTRL:
+		m.completionIRQEnabled.Store(val&1 != 0)
 	}
 }
 
@@ -286,6 +376,57 @@ func (m *CoprocessorManager) cmdStart() {
 
 	m.cmdStatus = COPROC_STATUS_OK
 	m.cmdError = COPROC_ERR_NONE
+
+	// Auto-calibrate dispatch overhead on first IE64 worker start
+	if cpuType == EXEC_TYPE_IE64 && m.dispatchOverheadNs.Load() == 0 {
+		go m.calibrateDispatchOverhead()
+	}
+}
+
+// calibrateDispatchOverhead measures the round-trip time for a no-op
+// coprocessor request (op=0) and stores the result in dispatchOverheadNs.
+// Called once on the first IE64 worker start.
+func (m *CoprocessorManager) calibrateDispatchOverhead() {
+	// Give the worker goroutine a moment to start executing
+	time.Sleep(5 * time.Millisecond)
+
+	start := time.Now()
+
+	// Enqueue NOP under lock, then immediately release — no shadow register
+	// save/restore needed. We only touch shadow regs briefly for the enqueue,
+	// and poll the ticket directly via scanTicketStatus (lock-free ring scan).
+	m.mu.Lock()
+	m.cpuType = EXEC_TYPE_IE64
+	m.op = 0 // NOP
+	m.reqPtr = 0
+	m.reqLen = 0
+	m.respPtr = 0
+	m.respCap = 0
+	m.cmdEnqueue()
+	ticket := m.ticket
+	ok := m.cmdStatus == COPROC_STATUS_OK
+	m.mu.Unlock()
+
+	if !ok || ticket == 0 {
+		return
+	}
+
+	// Poll directly without touching shadow registers — avoids race with
+	// concurrent MMIO writes from M68K while we hold/release mu.
+	deadline := time.Now().Add(1 * time.Second)
+	for {
+		status := m.scanTicketStatus(ticket)
+		if status != COPROC_TICKET_PENDING && status != COPROC_TICKET_RUNNING {
+			break
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(100 * time.Microsecond)
+	}
+
+	elapsed := time.Since(start)
+	m.dispatchOverheadNs.Store(uint64(elapsed.Nanoseconds()))
 }
 
 func (m *CoprocessorManager) cmdStop() {
@@ -354,7 +495,7 @@ func (m *CoprocessorManager) cmdEnqueue() {
 	m.bus.Write32(entryAddr+REQ_TICKET_OFF, ticket)
 	m.bus.Write32(entryAddr+REQ_CPU_TYPE_OFF, m.cpuType)
 	m.bus.Write32(entryAddr+REQ_OP_OFF, m.op)
-	m.bus.Write32(entryAddr+REQ_FLAGS_OFF, 0)
+	m.bus.Write32(entryAddr+REQ_FLAGS_OFF, m.timeout)
 	m.bus.Write32(entryAddr+REQ_REQ_PTR_OFF, m.reqPtr)
 	m.bus.Write32(entryAddr+REQ_REQ_LEN_OFF, m.reqLen)
 	m.bus.Write32(entryAddr+REQ_RESP_PTR_OFF, m.respPtr)
@@ -378,6 +519,10 @@ func (m *CoprocessorManager) cmdEnqueue() {
 		created: time.Now(),
 	}
 
+	// Track stats
+	m.opsDispatched++
+	m.bytesProcessed += uint64(m.reqLen)
+
 	m.ticket = ticket
 	m.cmdStatus = COPROC_STATUS_OK
 	m.cmdError = COPROC_ERR_NONE
@@ -385,6 +530,13 @@ func (m *CoprocessorManager) cmdEnqueue() {
 
 func (m *CoprocessorManager) cmdPoll() {
 	ticket := m.ticket
+	// Ticket 0 is the "already complete" sentinel (fallback path)
+	if ticket == 0 {
+		m.ticketStatus = COPROC_TICKET_OK
+		m.cmdStatus = COPROC_STATUS_OK
+		m.cmdError = COPROC_ERR_NONE
+		return
+	}
 	comp, ok := m.completions[ticket]
 	if !ok {
 		m.ticketStatus = COPROC_TICKET_ERROR
@@ -425,6 +577,13 @@ func (m *CoprocessorManager) cmdPoll() {
 
 func (m *CoprocessorManager) cmdWait() {
 	ticket := m.ticket
+	// Ticket 0 is the "already complete" sentinel (fallback path)
+	if ticket == 0 {
+		m.ticketStatus = COPROC_TICKET_OK
+		m.cmdStatus = COPROC_STATUS_OK
+		m.cmdError = COPROC_ERR_NONE
+		return
+	}
 	timeoutMs := m.timeout
 	if timeoutMs == 0 {
 		timeoutMs = 1000
@@ -472,7 +631,7 @@ func (m *CoprocessorManager) cmdWait() {
 
 // scanTicketStatus scans all ring response slots to find the status for a ticket.
 func (m *CoprocessorManager) scanTicketStatus(ticket uint32) uint32 {
-	for i := range 5 {
+	for i := range 6 {
 		ringBase := ringBaseAddr(i)
 		for slot := range uint32(RING_CAPACITY) {
 			respAddr := ringBase + RING_RESPONSES_OFFSET + slot*RESP_DESC_SIZE
@@ -560,6 +719,8 @@ func (m *CoprocessorManager) createWorker(cpuType uint32, data []byte) (*CoprocW
 		return createZ80Worker(m.bus, data)
 	case EXEC_TYPE_X86:
 		return createX86Worker(m.bus, data)
+	case EXEC_TYPE_IE64:
+		return createIE64Worker(m.bus, data)
 	default:
 		return nil, fmt.Errorf("unsupported CPU type: %d", cpuType)
 	}
@@ -640,6 +801,8 @@ func coprocLabel(cpuType uint32) string {
 		return "coproc:Z80"
 	case EXEC_TYPE_X86:
 		return "coproc:X86"
+	case EXEC_TYPE_IE64:
+		return "coproc:IE64"
 	default:
 		return fmt.Sprintf("coproc:type%d", cpuType)
 	}
@@ -672,8 +835,10 @@ func (m *CoprocessorManager) GetActiveWorkers() []CoprocDebugInfo {
 	return result
 }
 
-// StopAll stops all running workers. Called during shutdown.
+// StopAll stops all running workers and the completion watcher. Called during shutdown.
 func (m *CoprocessorManager) StopAll() {
+	m.StopCompletionWatcher()
+
 	m.mu.Lock()
 	var toStop []struct {
 		cpuType uint32

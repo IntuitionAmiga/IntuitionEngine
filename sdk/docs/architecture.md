@@ -640,8 +640,8 @@ SID, SAP, and AHX players support subsong selection for multi-tune files. Each p
 | `0xF2260-0xF22AF` | 80B | AROS Audio DMA (Paula) |
 | `0xF2300-0xF231F` | 32B | Media Loader |
 | `0xF2320-0xF233F` | 32B | Program Executor |
-| `0xF2340-0xF237F` | 64B | Coprocessor Manager |
-| `0xF2380-0xF239F` | 32B | Clipboard Bridge |
+| `0xF2340-0xF238F` | 80B | Coprocessor Manager |
+| `0xF2390-0xF239F` | 16B | Clipboard Bridge |
 | `0xF4000-0xF43FF` | 1KB | Voodoo 3D Registers |
 | `0xF4140-0xF423F` | 256B | Voodoo Fog Table (64 entries × 4B) |
 | `0xF5000-0x104FFF` | 64KB | Voodoo Texture Memory |
@@ -658,8 +658,9 @@ Additional special regions used by the coprocessor subsystem:
 | `0x300000-0x30FFFF` | 64KB | Coprocessor: 6502 worker memory |
 | `0x310000-0x31FFFF` | 64KB | Coprocessor: Z80 worker memory |
 | `0x320000-0x39FFFF` | 512KB | Coprocessor: x86 worker memory |
+| `0x3A0000-0x41FFFF` | 512KB | Coprocessor: IE64 worker memory |
 | `0x800000` | 64KB | Media loader staging buffer |
-| `0x820000-0x820FFF` | 4KB | Coprocessor mailbox ring buffers |
+| `0x820000-0x8217FF` | 6KB | Coprocessor mailbox ring buffers |
 
 ## 6. I/O Peripherals
 
@@ -673,8 +674,8 @@ graph LR
         TERM["Terminal/Serial<br/>0xF0700-0xF07FF<br/>Input ring buffer, echo,<br/>raw keys, mouse, scancodes"]
         FIO["File I/O<br/>0xF2200-0xF221F<br/>Name/data ptrs, R/W ops,<br/>sandboxed"]
         PEXEC["Program Executor<br/>0xF2320-0xF233F<br/>CPU mode detect,<br/>full reset orchestration<br/>EXEC_OP: 1=Execute, 2=EmuTOS, 3=AROS"]
-        COPRO["Coprocessor Manager<br/>0xF2340-0xF237F<br/>5 worker CPU types,<br/>ticket-based dispatch"]
-        CLIP["Clipboard Bridge<br/>0xF2380-0xF239F<br/>Data ptr/len, get/put"]
+        COPRO["Coprocessor Manager<br/>0xF2340-0xF238F<br/>6 worker CPU types,<br/>ticket-based dispatch"]
+        CLIP["Clipboard Bridge<br/>0xF2390-0xF239F<br/>Data ptr/len, get/put"]
         DOS["DOS Handler<br/>0xF2220-0xF225F<br/>AmigaDOS packet protocol,<br/>lock/file handles,<br/>ACTION_SAME_LOCK,<br/>DupLock of root (key=0)"]
         MEDIA["Media Loader<br/>0xF2300-0xF231F<br/>Format detection,<br/>player dispatch"]
         LUA["Lua Scripting<br/>F8 REPL, bus access,<br/>video recording"]
@@ -715,9 +716,7 @@ graph LR
 
 ### Coprocessor Worker Dispatch
 
-The coprocessor manager supports 5 worker CPU types (IE32, 6502, M68K, Z80, x86) with ticket-based job dispatch and mailbox ring buffers at `0x820000`. Each worker type has its own dedicated memory region (see memory map above). The main CPU enqueues work via MMIO writes; workers execute independently and post results back through their mailbox slots.
-
-**Note**: `EXEC_TYPE_IE64` (type 2) is defined in `program_executor_constants.go` and in all `.inc` files as `COPROC_CPU_IE64 = 2`, but no IE64 coprocessor worker is currently implemented — the `createWorker` switch does not handle it. Only IE32, 6502, M68K, Z80, and x86 workers exist.
+The coprocessor manager supports 6 worker CPU types (IE32, IE64, 6502, M68K, Z80, x86) with ticket-based job dispatch and mailbox ring buffers at `0x820000`. Each worker type has its own dedicated memory region (see memory map above). The main CPU enqueues work via MMIO writes; workers execute independently and post results back through their mailbox slots. When `COPROC_IRQ_CTRL` bit 0 is set, the coprocessor fires a Level 6 completion interrupt (INTB_COPER) on job completion, with the finished ticket ID readable from `COPROC_COMPLETED_TICKET`.
 
 ### Lua Scripting
 

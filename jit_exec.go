@@ -58,7 +58,7 @@ func (cpu *CPU64) interpretOne() {
 // ExecuteJIT is the main JIT execution loop. It replaces Execute() when
 // JIT compilation is enabled.
 func (cpu *CPU64) ExecuteJIT() {
-	if cpu.PC < PROG_START || cpu.PC >= STACK_START {
+	if !cpu.CoprocMode && (cpu.PC < PROG_START || cpu.PC >= STACK_START) {
 		fmt.Printf("IE64 JIT: Invalid initial PC value: 0x%08x\n", cpu.PC)
 		cpu.running.Store(false)
 		return

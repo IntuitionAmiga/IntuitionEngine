@@ -258,7 +258,7 @@ Runtime Go constants/handlers are the implementation source of truth, and shared
 
 ## AROS Support
 
-AROS (Amiga Research Operating System) runs on the IE M68K core with a full Workbench desktop. Build the AROS ROM with `make aros-rom`, then boot with `./bin/IntuitionEngine -aros`. The AROS DOS handler maps a host directory as the IE: volume. Test harnesses in `scripts/aros_*.ies` cover boot, path resolution, and input handling.
+AROS (Amiga Research Operating System) runs on the IE M68K core with a full Workbench desktop. Build the AROS ROM with `make aros-rom`, then boot with `./bin/IntuitionEngine -aros`. The AROS DOS handler maps a host directory as the IE: volume. Test harnesses in `scripts/aros_*.ies` cover boot, path resolution, and input handling. The `iewarp.library` AROS shared library offloads compute-intensive tasks to the IE64 coprocessor.
 
 ## EmuTOS Porting Stubs
 

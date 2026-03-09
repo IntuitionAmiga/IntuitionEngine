@@ -8,6 +8,7 @@
 ; Function handlers (called from expr_atom):
 ;   COCALL(cpuType, op, reqPtr, reqLen, respPtr, respCap) - Enqueue request
 ;   COSTATUS(ticket)                                       - Poll ticket status
+;   COSTATS(field)                                          - Read coproc stats register
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 
@@ -15,7 +16,7 @@
 ; exec_do_costart - COSTART cpuType, "serviceFile"
 ; ============================================================================
 ; Starts a coprocessor worker for the given CPU type.
-; cpuType: 1=IE32, 3=6502, 4=M68K, 5=Z80, 6=x86
+; cpuType: 1=IE32, 2=IE64, 3=6502, 4=M68K, 5=Z80, 6=x86
 ; serviceFile: path to service binary (string expression)
 
 exec_do_costart:
@@ -334,4 +335,81 @@ fn_costatus:
     bne     r1, r2, .costatus_ret
     add.q   r17, r17, #1
 .costatus_ret:
+    rts
+
+; ============================================================================
+; fn_costats - COSTATS(field)
+; ============================================================================
+; Reads a coprocessor stats register and returns the value as FP32.
+; field: 0=ops dispatched, 1=bytes processed, 2=dispatch overhead (ns),
+;        3=completed ticket, 4=IRQ enabled
+;
+; MMIO registers:
+;   COPROC_STATS_OPS         (0xF2378)  field 0
+;   COPROC_STATS_BYTES       (0xF237C)  field 1
+;   COPROC_DISPATCH_OVERHEAD (0xF2384)  field 2
+;   COPROC_COMPLETED_TICKET  (0xF2388)  field 3
+;   COPROC_IRQ_CTRL          (0xF2380)  field 4
+
+fn_costats:
+    ; '(' already consumed by caller - skip spaces
+    jsr     exec_skip_spaces
+
+    ; Parse field expression
+    jsr     expr_eval
+    jsr     fp_int
+    jsr     fp_fix
+    ; R8 = field number
+
+    ; Dispatch by field number
+    beqz    r8, .costats_ops
+    move.l  r1, #1
+    beq     r8, r1, .costats_bytes
+    move.l  r1, #2
+    beq     r8, r1, .costats_overhead
+    move.l  r1, #3
+    beq     r8, r1, .costats_completed
+    move.l  r1, #4
+    beq     r8, r1, .costats_irq
+
+    ; Invalid field — return 0
+    move.q  r8, r0
+    bra     .costats_close
+
+.costats_ops:
+    la      r1, COPROC_STATS_OPS
+    load.l  r8, (r1)
+    bra     .costats_convert
+
+.costats_bytes:
+    la      r1, COPROC_STATS_BYTES
+    load.l  r8, (r1)
+    bra     .costats_convert
+
+.costats_overhead:
+    la      r1, COPROC_DISPATCH_OVERHEAD
+    load.l  r8, (r1)
+    bra     .costats_convert
+
+.costats_completed:
+    la      r1, COPROC_COMPLETED_TICKET
+    load.l  r8, (r1)
+    bra     .costats_convert
+
+.costats_irq:
+    la      r1, COPROC_IRQ_CTRL
+    load.l  r8, (r1)
+
+.costats_convert:
+    ; Convert to FP32
+    jsr     fp_float
+
+.costats_close:
+    ; Skip closing ')'
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x29            ; ')'
+    bne     r1, r2, .costats_ret
+    add.q   r17, r17, #1
+.costats_ret:
     rts

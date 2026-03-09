@@ -631,6 +631,7 @@ func (se *ScriptEngine) registerModules(L *lua.LState, ctx context.Context) {
 		"wait":     se.luaCoprocWait(),
 		"workers":  se.luaCoprocWorkers(),
 		"response": se.luaCoprocResponse(),
+		"stats":    se.luaCoprocStats(),
 	})
 	L.SetGlobal("coproc", coproc)
 
@@ -3887,6 +3888,8 @@ func coprocCPUTypeFromString(v string) uint32 {
 		return EXEC_TYPE_Z80
 	case "x86":
 		return EXEC_TYPE_X86
+	case "ie64":
+		return EXEC_TYPE_IE64
 	default:
 		return EXEC_TYPE_NONE
 	}
@@ -3968,7 +3971,7 @@ func (se *ScriptEngine) coprocRunCommand(cmd uint32) (uint32, uint32) {
 }
 
 func (se *ScriptEngine) coprocFindResponse(ticket uint32) (uint32, uint32, uint32, bool) {
-	for i := range 5 {
+	for i := range 6 {
 		ringBase := ringBaseAddr(i)
 		for slot := range uint32(RING_CAPACITY) {
 			reqAddr := ringBase + RING_ENTRIES_OFFSET + slot*REQ_DESC_SIZE
@@ -4000,7 +4003,7 @@ func (se *ScriptEngine) readRawBytes(addr uint32, n uint32) string {
 func (se *ScriptEngine) luaCoprocStart() lua.LGFunction {
 	return func(L *lua.LState) int {
 		cpuType := coprocCPUTypeFromString(L.CheckString(1))
-		if cpuType == EXEC_TYPE_NONE || cpuType == EXEC_TYPE_IE64 {
+		if cpuType == EXEC_TYPE_NONE {
 			L.RaiseError("unsupported coprocessor cpu_type")
 			return 0
 		}
@@ -4022,7 +4025,7 @@ func (se *ScriptEngine) luaCoprocStart() lua.LGFunction {
 func (se *ScriptEngine) luaCoprocStop() lua.LGFunction {
 	return func(L *lua.LState) int {
 		cpuType := coprocCPUTypeFromString(L.CheckString(1))
-		if cpuType == EXEC_TYPE_NONE || cpuType == EXEC_TYPE_IE64 {
+		if cpuType == EXEC_TYPE_NONE {
 			L.RaiseError("unsupported coprocessor cpu_type")
 			return 0
 		}
@@ -4038,7 +4041,7 @@ func (se *ScriptEngine) luaCoprocStop() lua.LGFunction {
 func (se *ScriptEngine) luaCoprocEnqueue() lua.LGFunction {
 	return func(L *lua.LState) int {
 		cpuType := coprocCPUTypeFromString(L.CheckString(1))
-		if cpuType == EXEC_TYPE_NONE || cpuType == EXEC_TYPE_IE64 {
+		if cpuType == EXEC_TYPE_NONE {
 			L.RaiseError("unsupported coprocessor cpu_type")
 			return 0
 		}
@@ -4157,6 +4160,18 @@ func (se *ScriptEngine) luaCoprocResponse() lua.LGFunction {
 			return 1
 		}
 		L.Push(lua.LString(se.readRawBytes(respPtr, respLen)))
+		return 1
+	}
+}
+
+func (se *ScriptEngine) luaCoprocStats() lua.LGFunction {
+	return func(L *lua.LState) int {
+		t := L.NewTable()
+		t.RawSetString("ops", lua.LNumber(se.bus.Read32(COPROC_STATS_OPS)))
+		t.RawSetString("bytes", lua.LNumber(se.bus.Read32(COPROC_STATS_BYTES)))
+		t.RawSetString("overhead_ns", lua.LNumber(se.bus.Read32(COPROC_DISPATCH_OVERHEAD)))
+		t.RawSetString("completed_ticket", lua.LNumber(se.bus.Read32(COPROC_COMPLETED_TICKET)))
+		L.Push(t)
 		return 1
 	}
 }

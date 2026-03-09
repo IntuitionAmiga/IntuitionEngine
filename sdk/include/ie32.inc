@@ -1265,7 +1265,7 @@
 .equ FILE_OP_WRITE      2
 
 ; ============================================================================
-; COPROCESSOR REGISTERS (0xF2340-0xF237F)
+; COPROCESSOR REGISTERS (0xF2340-0xF238F)
 ; ============================================================================
 
 ; Register addresses
@@ -1283,6 +1283,11 @@
 .equ COPROC_TIMEOUT        0xF236C       ; Timeout ms (W)
 .equ COPROC_NAME_PTR       0xF2370       ; Pointer to service filename (W)
 .equ COPROC_WORKER_STATE   0xF2374       ; Bitmask of running workers (R)
+.equ COPROC_STATS_OPS      0xF2378       ; Total ops dispatched (R)
+.equ COPROC_STATS_BYTES    0xF237C       ; Total bytes processed (R)
+.equ COPROC_IRQ_CTRL       0xF2380       ; IRQ enable/disable bit 0 (R/W)
+.equ COPROC_DISPATCH_OVERHEAD 0xF2384    ; Calibrated overhead ns (R)
+.equ COPROC_COMPLETED_TICKET 0xF2388     ; Last completed ticket (R)
 
 ; Command values
 .equ COPROC_CMD_START      1             ; Start worker from file
