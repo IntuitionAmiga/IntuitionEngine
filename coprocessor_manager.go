@@ -650,6 +650,13 @@ func (m *CoprocessorManager) scanTicketStatus(ticket uint32) uint32 {
 	return COPROC_TICKET_PENDING
 }
 
+// IsWorkerRunning returns true if the given EXEC_TYPE_* worker is active.
+func (m *CoprocessorManager) IsWorkerRunning(cpuType uint32) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.workers[cpuType] != nil
+}
+
 func (m *CoprocessorManager) computeWorkerState() uint32 {
 	var state uint32
 	for i := uint32(1); i <= 6; i++ {

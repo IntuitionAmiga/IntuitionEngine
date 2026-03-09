@@ -1143,6 +1143,28 @@ func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
 	x86On := (s.selectedCPU == runtimeCPUX86 && s.x86 != nil && s.x86.IsRunning()) || playX86
 	cpu65On := (s.selectedCPU == runtimeCPU6502 && s.cpu65 != nil && s.cpu65.IsRunning()) || play6502
 
+	// Coprocessor workers also light up their CPU indicators
+	if cm := s.coprocManager; cm != nil {
+		if cm.IsWorkerRunning(EXEC_TYPE_IE32) {
+			ie32On = true
+		}
+		if cm.IsWorkerRunning(EXEC_TYPE_IE64) {
+			ie64On = true
+		}
+		if cm.IsWorkerRunning(EXEC_TYPE_M68K) {
+			m68kOn = true
+		}
+		if cm.IsWorkerRunning(EXEC_TYPE_Z80) {
+			z80On = true
+		}
+		if cm.IsWorkerRunning(EXEC_TYPE_X86) {
+			x86On = true
+		}
+		if cm.IsWorkerRunning(EXEC_TYPE_6502) {
+			cpu65On = true
+		}
+	}
+
 	videoOn := s.video != nil && s.video.IsEnabled()
 	vgaOn := s.vga != nil && s.vga.IsEnabled()
 	ulaOn := s.ula != nil && s.ula.IsEnabled()

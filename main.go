@@ -1081,6 +1081,7 @@ func main() {
 	coprocMgr := NewCoprocessorManager(sysBus, ".")
 	sysBus.MapIO(COPROC_BASE, COPROC_END, coprocMgr.HandleRead, coprocMgr.HandleWrite)
 	defer coprocMgr.StopAll()
+	runtimeStatus.setCoprocManager(coprocMgr)
 
 	// Initialize Machine Monitor (debugger)
 	monitor := NewMachineMonitor(sysBus)

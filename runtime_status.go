@@ -42,6 +42,8 @@ type runtimeStatusSnapshot struct {
 	sidPlayer   *SIDPlayer
 	pokeyPlayer *POKEYPlayer
 	tedPlayer   *TEDPlayer
+
+	coprocManager *CoprocessorManager
 }
 
 type runtimeStatusStore struct {
@@ -83,6 +85,12 @@ func (s *runtimeStatusStore) setChips(video *VideoChip, vga *VGAEngine, ula *ULA
 func (s *runtimeStatusStore) setPaulaDMA(dma *ArosAudioDMA) {
 	s.mu.Lock()
 	s.paulaDMA = dma
+	s.mu.Unlock()
+}
+
+func (s *runtimeStatusStore) setCoprocManager(cm *CoprocessorManager) {
+	s.mu.Lock()
+	s.coprocManager = cm
 	s.mu.Unlock()
 }
 
