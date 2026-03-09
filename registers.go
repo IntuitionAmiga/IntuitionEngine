@@ -53,6 +53,7 @@ Address Range       Size    Device              Constants File
 0xF2320-0xF233F     32B     Program Executor    registers.go
 0xF2340-0xF238F     80B     Coprocessor         coprocessor_constants.go
 0xF2390-0xF23AF     32B     Clipboard Bridge    clipboard_bridge_constants.go
+0xF23B0-0xF23BF     16B     Coprocessor Monitor coprocessor_constants.go
 0xF4000-0xF43FF     1KB     Voodoo 3D Graphics  voodoo_constants.go
 
 0x100000-0x5FFFFF   5MB     Video RAM           video_chip.go (VRAM_START)
@@ -225,6 +226,10 @@ const (
 	CLIP_BRIDGE_REGION_BASE = 0xF2390
 	CLIP_BRIDGE_REGION_END  = 0xF23AF
 
+	// Coprocessor extended monitor registers (after clipboard bridge)
+	COPROC_EXT_REGION_BASE = 0xF23B0
+	COPROC_EXT_REGION_END  = 0xF23BF
+
 	// Voodoo 3D graphics region
 	VOODOO_REGION_BASE = 0xF4000
 	VOODOO_REGION_END  = 0xF43FF
@@ -347,6 +352,8 @@ func GetIORegion(addr uint32) string {
 		return "Coprocessor"
 	case addr >= CLIP_BRIDGE_REGION_BASE && addr <= CLIP_BRIDGE_REGION_END:
 		return "ClipboardBridge"
+	case addr >= COPROC_EXT_REGION_BASE && addr <= COPROC_EXT_REGION_END:
+		return "Coprocessor"
 	case addr >= VOODOO_REGION_BASE && addr <= VOODOO_REGION_END:
 		return "Voodoo"
 	default:

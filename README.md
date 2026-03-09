@@ -434,7 +434,8 @@ All hardware is accessed through memory-mapped registers in the `$F0000-$FFFFF` 
 | Banking | `$F700-$F7F0` | Bank window control (Z80/6502 only) |
 | VGA | `$F1000-$F13FF` | VGA mode, DAC, sequencer, CRTC, palette |
 | File I/O | `$F2200-$F221F` | Host filesystem access (read/write); supports byte-level writes for 8-bit CPUs |
-| Coprocessor | `$F2340-$F237F` | Worker CPU lifecycle and async RPC |
+| Coprocessor | `$F2340-$F238F` | Worker CPU lifecycle and async RPC |
+| Coprocessor Ext | `$F23B0-$F23BF` | Monitor registers (ring depth, uptime, busy%, reset) |
 | System Control | `$F2380-$F2383` | GC trigger (write any value) |
 
 Additionally, VGA uses legacy PC-compatible memory windows:
@@ -479,8 +480,9 @@ The system's memory layout is designed to provide efficient access to both progr
 0x0F0F10 - 0x0F0F1C: TED playback control
 0x0F1000 - 0x0F13FF: VGA registers (IBM VGA emulation)
 0x0F2200 - 0x0F221F: File I/O registers (see below)
-0x0F2340 - 0x0F237F: Coprocessor MMIO registers
-0x0F2380 - 0x0F2383: System control (GC trigger)
+0x0F2340 - 0x0F238F: Coprocessor MMIO registers
+0x0F2390 - 0x0F239F: Clipboard bridge
+0x0F23B0 - 0x0F23BF: Coprocessor extended monitor registers
 0x0A0000 - 0x0AFFFF: VGA VRAM window (Mode 13h/12h)
 0x0B8000 - 0x0BFFFF: VGA text buffer
 0x100000 - 0x5FFFFF: Video RAM (VRAM_START to VRAM_START + VRAM_SIZE)
@@ -1572,7 +1574,7 @@ All registers support byte-level writes for 8-bit CPUs. Each 32-bit register can
 
 8-bit CPUs access File I/O via **bank3 switching** — set bank3 = `$0079` to map the registers into the bank3 window at `$6200`. The `ie80.inc` and `ie65.inc` include files provide `FIO_*` byte-address constants and convenience macros (`SET_FILE_IO_BANK`, `SET_FIO_PTR`, `FILE_READ`, `FILE_WRITE`).
 
-## 3.19 Coprocessor Subsystem (0x0F2340 - 0x0F238F)
+## 3.19 Coprocessor Subsystem (0x0F2340 - 0x0F238F, 0x0F23B0 - 0x0F23BF)
 
 The coprocessor subsystem allows any CPU to launch worker CPUs (IE32, IE64, 6502, M68K, Z80, x86) that run service binaries. Workers poll a shared mailbox ring buffer for requests, process them, and write results. The caller manages worker lifecycle and request routing via MMIO registers. Available in all CPU modes.
 
@@ -1599,6 +1601,17 @@ The coprocessor subsystem allows any CPU to launch worker CPUs (IE32, IE64, 6502
 | 0xF2380 | COPROC_IRQ_CTRL | R/W | Completion interrupt control (bit 0=enable, Level 6/INTB_COPER) |
 | 0xF2384 | COPROC_DISPATCH_OVERHEAD | R | Calibrated dispatch overhead in nanoseconds |
 | 0xF2388 | COPROC_COMPLETED_TICKET | R | Ticket ID of last completed job (for IRQ handler) |
+
+#### Extended Monitor Registers (0xF23B0 - 0xF23BF)
+
+| Address | Name | R/W | Description |
+|---------|------|-----|-------------|
+| 0xF23B0 | COPROC_RING_DEPTH | R | IE64 ring buffer occupancy (0-16) |
+| 0xF23B4 | COPROC_WORKER_UPTIME | R | Seconds since IE64 worker started (0 if stopped) |
+| 0xF23B8 | COPROC_STATS_RESET | W | Write 1 to zero all Go-side stats + busy buckets |
+| 0xF23BC | COPROC_BUSY_PCT | R | Worker busy % over last 1 second (0-100) |
+
+These registers are in a separate MMIO range after the clipboard bridge (0xF2390-0xF23AF). They are used by the IEWarpMon monitoring application. See `sdk/docs/iewarpmon.md`.
 
 ### Byte-Level MMIO Access
 

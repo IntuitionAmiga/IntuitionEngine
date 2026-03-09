@@ -641,7 +641,8 @@ SID, SAP, and AHX players support subsong selection for multi-tune files. Each p
 | `0xF2300-0xF231F` | 32B | Media Loader |
 | `0xF2320-0xF233F` | 32B | Program Executor |
 | `0xF2340-0xF238F` | 80B | Coprocessor Manager |
-| `0xF2390-0xF239F` | 16B | Clipboard Bridge |
+| `0xF2390-0xF23AF` | 32B | Clipboard Bridge |
+| `0xF23B0-0xF23BF` | 16B | Coprocessor Extended (monitor registers) |
 | `0xF4000-0xF43FF` | 1KB | Voodoo 3D Registers |
 | `0xF4140-0xF423F` | 256B | Voodoo Fog Table (64 entries × 4B) |
 | `0xF5000-0x104FFF` | 64KB | Voodoo Texture Memory |
@@ -674,8 +675,8 @@ graph LR
         TERM["Terminal/Serial<br/>0xF0700-0xF07FF<br/>Input ring buffer, echo,<br/>raw keys, mouse, scancodes"]
         FIO["File I/O<br/>0xF2200-0xF221F<br/>Name/data ptrs, R/W ops,<br/>sandboxed"]
         PEXEC["Program Executor<br/>0xF2320-0xF233F<br/>CPU mode detect,<br/>full reset orchestration<br/>EXEC_OP: 1=Execute, 2=EmuTOS, 3=AROS"]
-        COPRO["Coprocessor Manager<br/>0xF2340-0xF238F<br/>6 worker CPU types,<br/>ticket-based dispatch"]
-        CLIP["Clipboard Bridge<br/>0xF2390-0xF239F<br/>Data ptr/len, get/put"]
+        COPRO["Coprocessor Manager<br/>0xF2340-0xF238F + 0xF23B0-0xF23BF<br/>6 worker CPU types,<br/>ticket-based dispatch + monitor"]
+        CLIP["Clipboard Bridge<br/>0xF2390-0xF23AF<br/>Data ptr/len, get/put"]
         DOS["DOS Handler<br/>0xF2220-0xF225F<br/>AmigaDOS packet protocol,<br/>lock/file handles,<br/>ACTION_SAME_LOCK,<br/>DupLock of root (key=0)"]
         MEDIA["Media Loader<br/>0xF2300-0xF231F<br/>Format detection,<br/>player dispatch"]
         LUA["Lua Scripting<br/>F8 REPL, bus access,<br/>video recording"]

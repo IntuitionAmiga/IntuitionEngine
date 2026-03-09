@@ -514,3 +514,199 @@ func TestIE64CompletedTicket(t *testing.T) {
 		t.Fatalf("completed ticket = %d, want 42", ct)
 	}
 }
+
+// newTestBusAndManagerExt creates a bus+manager with both the base and extended
+// coprocessor MMIO ranges mapped.
+func newTestBusAndManagerExt(t *testing.T) (*MachineBus, *CoprocessorManager) {
+	t.Helper()
+	bus, mgr := newTestBusAndManager(t)
+	bus.MapIO(COPROC_EXT_BASE, COPROC_EXT_END, mgr.HandleRead, mgr.HandleWrite)
+	return bus, mgr
+}
+
+func TestCoprocRingDepth(t *testing.T) {
+	bus, mgr := newTestBusAndManagerExt(t)
+	defer mgr.StopAll()
+
+	tmpDir := t.TempDir()
+	mgr.baseDir = tmpDir
+
+	// Start worker with HALT binary (registers the worker slot)
+	binPath := filepath.Join(tmpDir, "halt.ie64")
+	if err := os.WriteFile(binPath, buildIE64HaltBinary(), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Prevent auto-calibration from consuming a ring slot
+	mgr.dispatchOverheadNs.Store(1)
+
+	writeString(bus, 0x90000, "halt.ie64")
+	bus.Write32(COPROC_CPU_TYPE, EXEC_TYPE_IE64)
+	bus.Write32(COPROC_NAME_PTR, 0x90000)
+	bus.Write32(COPROC_CMD, COPROC_CMD_START)
+	if bus.Read32(COPROC_CMD_STATUS) != COPROC_STATUS_OK {
+		t.Fatalf("start failed: err=%d", bus.Read32(COPROC_CMD_ERROR))
+	}
+
+	// Ring should be empty
+	depth := bus.Read32(COPROC_RING_DEPTH)
+	if depth != 0 {
+		t.Fatalf("initial ring depth = %d, want 0", depth)
+	}
+
+	// Enqueue first request
+	bus.Write32(COPROC_CPU_TYPE, EXEC_TYPE_IE64)
+	bus.Write32(COPROC_OP, 0)
+	bus.Write32(COPROC_REQ_PTR, 0x80000)
+	bus.Write32(COPROC_REQ_LEN, 32)
+	bus.Write32(COPROC_RESP_PTR, 0x81000)
+	bus.Write32(COPROC_RESP_CAP, 32)
+	bus.Write32(COPROC_CMD, COPROC_CMD_ENQUEUE)
+	if bus.Read32(COPROC_CMD_STATUS) != COPROC_STATUS_OK {
+		t.Fatalf("enqueue 1 failed: err=%d", bus.Read32(COPROC_CMD_ERROR))
+	}
+
+	depth = bus.Read32(COPROC_RING_DEPTH)
+	if depth != 1 {
+		t.Fatalf("after 1 enqueue, ring depth = %d, want 1", depth)
+	}
+
+	// Enqueue second request
+	bus.Write32(COPROC_CPU_TYPE, EXEC_TYPE_IE64)
+	bus.Write32(COPROC_OP, 0)
+	bus.Write32(COPROC_REQ_PTR, 0x80100)
+	bus.Write32(COPROC_REQ_LEN, 64)
+	bus.Write32(COPROC_RESP_PTR, 0x81100)
+	bus.Write32(COPROC_RESP_CAP, 64)
+	bus.Write32(COPROC_CMD, COPROC_CMD_ENQUEUE)
+	if bus.Read32(COPROC_CMD_STATUS) != COPROC_STATUS_OK {
+		t.Fatalf("enqueue 2 failed: err=%d", bus.Read32(COPROC_CMD_ERROR))
+	}
+
+	depth = bus.Read32(COPROC_RING_DEPTH)
+	if depth != 2 {
+		t.Fatalf("after 2 enqueues, ring depth = %d, want 2", depth)
+	}
+}
+
+func TestCoprocWorkerUptime(t *testing.T) {
+	bus, mgr := newTestBusAndManagerExt(t)
+	defer mgr.StopAll()
+
+	// Before any worker starts, uptime should be 0
+	uptime := bus.Read32(COPROC_WORKER_UPTIME)
+	if uptime != 0 {
+		t.Fatalf("uptime before worker start = %d, want 0", uptime)
+	}
+
+	tmpDir := t.TempDir()
+	mgr.baseDir = tmpDir
+
+	// Build a NOP-loop binary so the worker stays alive
+	var nopLoop []byte
+	nopLoop = append(nopLoop, buildIE64Instr(OP_NOP64, 0, 0, 0, 0, 0, false)...)
+	nopLoop = append(nopLoop, buildIE64Instr(OP_BEQ, 0, IE64_SIZE_Q, 0, 0, u32(-8), false)...)
+	binPath := filepath.Join(tmpDir, "noploop.ie64")
+	if err := os.WriteFile(binPath, nopLoop, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	writeString(bus, 0x90000, "noploop.ie64")
+	bus.Write32(COPROC_CPU_TYPE, EXEC_TYPE_IE64)
+	bus.Write32(COPROC_NAME_PTR, 0x90000)
+	bus.Write32(COPROC_CMD, COPROC_CMD_START)
+	if bus.Read32(COPROC_CMD_STATUS) != COPROC_STATUS_OK {
+		t.Fatalf("start failed: err=%d", bus.Read32(COPROC_CMD_ERROR))
+	}
+
+	// Sleep briefly, then read uptime — it's in seconds so will likely be 0,
+	// but must not error and must be >= 0
+	time.Sleep(100 * time.Millisecond)
+	uptime = bus.Read32(COPROC_WORKER_UPTIME)
+	// uint32 is always >= 0; just verify it reads without panic
+
+	// Stop worker and verify uptime resets to 0
+	bus.Write32(COPROC_CPU_TYPE, EXEC_TYPE_IE64)
+	bus.Write32(COPROC_CMD, COPROC_CMD_STOP)
+	if bus.Read32(COPROC_CMD_STATUS) != COPROC_STATUS_OK {
+		t.Fatal("stop failed")
+	}
+	time.Sleep(10 * time.Millisecond)
+
+	uptime = bus.Read32(COPROC_WORKER_UPTIME)
+	if uptime != 0 {
+		t.Fatalf("uptime after worker stop = %d, want 0", uptime)
+	}
+	_ = uptime // suppress unused warning
+}
+
+func TestCoprocStatsReset(t *testing.T) {
+	bus, mgr := newTestBusAndManagerExt(t)
+	defer mgr.StopAll()
+
+	tmpDir := t.TempDir()
+	mgr.baseDir = tmpDir
+
+	// Start worker with HALT binary
+	binPath := filepath.Join(tmpDir, "halt.ie64")
+	if err := os.WriteFile(binPath, buildIE64HaltBinary(), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Prevent auto-calibration from consuming a ring slot
+	mgr.dispatchOverheadNs.Store(1)
+
+	writeString(bus, 0x90000, "halt.ie64")
+	bus.Write32(COPROC_CPU_TYPE, EXEC_TYPE_IE64)
+	bus.Write32(COPROC_NAME_PTR, 0x90000)
+	bus.Write32(COPROC_CMD, COPROC_CMD_START)
+	if bus.Read32(COPROC_CMD_STATUS) != COPROC_STATUS_OK {
+		t.Fatalf("start failed: err=%d", bus.Read32(COPROC_CMD_ERROR))
+	}
+
+	// Enqueue a request to increment stats
+	bus.Write32(COPROC_CPU_TYPE, EXEC_TYPE_IE64)
+	bus.Write32(COPROC_OP, 0)
+	bus.Write32(COPROC_REQ_PTR, 0x80000)
+	bus.Write32(COPROC_REQ_LEN, 256)
+	bus.Write32(COPROC_RESP_PTR, 0x81000)
+	bus.Write32(COPROC_RESP_CAP, 64)
+	bus.Write32(COPROC_CMD, COPROC_CMD_ENQUEUE)
+	if bus.Read32(COPROC_CMD_STATUS) != COPROC_STATUS_OK {
+		t.Fatalf("enqueue failed: err=%d", bus.Read32(COPROC_CMD_ERROR))
+	}
+
+	// Verify stats are non-zero
+	ops := bus.Read32(COPROC_STATS_OPS)
+	if ops == 0 {
+		t.Fatal("expected COPROC_STATS_OPS > 0 after enqueue")
+	}
+	bytes := bus.Read32(COPROC_STATS_BYTES)
+	if bytes == 0 {
+		t.Fatal("expected COPROC_STATS_BYTES > 0 after enqueue")
+	}
+
+	// Write 1 to COPROC_STATS_RESET to clear stats
+	bus.Write32(COPROC_STATS_RESET, 1)
+
+	// Verify stats are zeroed
+	ops = bus.Read32(COPROC_STATS_OPS)
+	if ops != 0 {
+		t.Fatalf("after stats reset, COPROC_STATS_OPS = %d, want 0", ops)
+	}
+	bytes = bus.Read32(COPROC_STATS_BYTES)
+	if bytes != 0 {
+		t.Fatalf("after stats reset, COPROC_STATS_BYTES = %d, want 0", bytes)
+	}
+}
+
+func TestCoprocBusyPct(t *testing.T) {
+	bus, mgr := newTestBusAndManagerExt(t)
+	defer mgr.StopAll()
+
+	// With no workers running, busy% should be 0
+	pct := bus.Read32(COPROC_BUSY_PCT)
+	if pct != 0 {
+		t.Fatalf("idle COPROC_BUSY_PCT = %d, want 0", pct)
+	}
+}

@@ -2856,6 +2856,9 @@
 .set COPROC_DISPATCH_OVERHEAD,0xF244    ; Calibrated overhead ns (R)
 .set COPROC_COMPLETED_TICKET,0xF248     ; Last completed ticket (R)
 
+; Extended monitor registers (0xF23B0-0xF23BF) are 32-bit only and NOT
+; accessible from the Z80 I/O gateway.  Use IE64/M68K for these registers.
+
 ; Command values
 .set COPROC_CMD_START,1                  ; Start worker from file
 .set COPROC_CMD_STOP,2                   ; Stop worker

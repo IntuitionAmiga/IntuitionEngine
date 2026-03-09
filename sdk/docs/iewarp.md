@@ -243,6 +243,61 @@ Fill a rectangular region with a gradient from `startColor` to `endColor`. `dire
 
 **LVO**: -138 (slot 23)
 
+#### IEWarpScroll
+
+```c
+ULONG IEWarpScroll(APTR fb, UWORD width, UWORD height, UWORD xMin, UWORD yMin,
+                    WORD dx, WORD dy, UWORD stride)
+                    /* (A0, D0, D1, D2, D3, D4, D5, D6) */
+```
+
+Scroll a rectangular region of a framebuffer by `(dx, dy)` pixels, filling the exposed area with the background color. `fb` is the base of the framebuffer, `width`/`height` define the scroll area, `xMin`/`yMin` the top-left corner, and `stride` the row pitch in bytes.
+
+**LVO**: -234 (slot 39)
+
+#### IEWarpGlyphRender
+
+```c
+ULONG IEWarpGlyphRender(APTR descs, ULONG count, APTR dst, ULONG dstStride,
+                          APTR alphaData)
+                          /* (A0, D0, A1, D1, A2) */
+```
+
+Batch-render `count` font glyphs described by an array of 16-byte `GlyphDesc` structures. Each descriptor specifies destination X/Y, source alpha offset, glyph width/height, and foreground color. `dst` is the framebuffer base, `dstStride` is the row pitch, and `alphaData` points to the packed 8-bit alpha maps for all glyphs.
+
+**LVO**: -240 (slot 40)
+
+#### IEWarpAreaFill
+
+```c
+ULONG IEWarpAreaFill(APTR vertices, ULONG count, APTR dstBase, ULONG stride)
+                      /* (A0, D0, A1, D1) */
+```
+
+Fill a polygon defined by `count` vertex pairs (WORD x, WORD y) in the `vertices` array. The polygon is rendered into the framebuffer at `dstBase` with row pitch `stride` using the even-odd fill rule.
+
+**LVO**: -246 (slot 41)
+
+#### IEWarpWorkerStop
+
+```c
+VOID IEWarpWorkerStop()  /* () */
+```
+
+Stop the IE64 coprocessor worker and update the library's internal `workerRunning` flag. All subsequent iewarp dispatch calls will fall back to M68K until `IEWarpWorkerStart` is called. Use this instead of raw MMIO `IE_COPROC_CMD_STOP` to keep the library in sync.
+
+**LVO**: -252 (slot 42)
+
+#### IEWarpWorkerStart
+
+```c
+VOID IEWarpWorkerStart()  /* () */
+```
+
+Restart the IE64 coprocessor worker using the service binary path from library init. Programs `IE_COPROC_NAME_PTR` before issuing START and updates the library's `workerRunning` flag on success.
+
+**LVO**: -258 (slot 43)
+
 ### Control Operations
 
 #### IEWarpBatchBegin
@@ -324,12 +379,169 @@ struct IEWarpStats
     ULONG overheadNs;       /* Dispatch overhead in nanoseconds */
     ULONG completedTicket;  /* Last completed ticket */
     ULONG threshold;        /* Current adaptive threshold in bytes */
+    ULONG ringDepth;        /* IE64 ring buffer occupancy (0-16) */
+    ULONG ringHighWater;    /* Peak ring occupancy since last reset */
+    ULONG uptimeSecs;       /* Seconds since IE64 worker started */
+    ULONG irqEnabled;       /* Completion IRQ enabled flag */
+    ULONG workerState;      /* Bitmask of running workers */
+    ULONG busyPct;          /* Worker busy % over last 1 second (0-100) */
 };
 ```
 
-Fields `ops` and `bytes` are read from MMIO registers `COPROC_STATS_OPS` (0xF2378) and `COPROC_STATS_BYTES` (0xF237C). `overheadNs` comes from `COPROC_DISPATCH_OVERHEAD` (0xF2384). `completedTicket` from `COPROC_COMPLETED_TICKET` (0xF2388). `threshold` is the library's local calibrated value.
+Fields `ops` and `bytes` are read from MMIO registers `COPROC_STATS_OPS` (0xF2378) and `COPROC_STATS_BYTES` (0xF237C). `overheadNs` comes from `COPROC_DISPATCH_OVERHEAD` (0xF2384). `completedTicket` from `COPROC_COMPLETED_TICKET` (0xF2388). `threshold` is the library's local calibrated value. `ringDepth`, `uptimeSecs`, and `busyPct` come from the extended monitor registers at `0xF23B0-0xF23BC`. `ringHighWater` is tracked library-side. `irqEnabled` and `workerState` come from `COPROC_IRQ_CTRL` and `COPROC_WORKER_STATE`.
 
 **LVO**: -174 (slot 29)
+
+### Monitoring and Diagnostics
+
+The following functions support the IEWarpMon coprocessor monitor application. See `sdk/docs/iewarpmon.md` for the full user guide.
+
+#### IEWarpSetCaller
+
+```c
+VOID IEWarpSetCaller(ULONG callerID)  /* (D0) */
+```
+
+Tag the current task with a caller ID for per-consumer attribution. Call immediately before each iewarp dispatch. Caller IDs are defined as `IEWARP_CALLER_*` constants (EXEC=1, GRAPHICS=2, IEGFX=3, CGFX=4, AHI=5, ICON=6, MATH=7, MUI=8, FREETYPE=9, DATATYPES=10, APP=11). Allocates a task slot (up to 32) if not already present.
+
+**LVO**: -180 (slot 30)
+
+#### IEWarpGetOpStats
+
+```c
+ULONG IEWarpGetOpStats(APTR buf, ULONG maxOps)  /* (A0, D0) */
+```
+
+Copy per-operation counters into `buf` (array of `IEWarpOpCounter` structs). Returns `maxOps`. All entries are copied preserving index — `buf[i]` corresponds to operation code `i`. Entries with zero accel and fallback counts are unused ops.
+
+```c
+struct IEWarpOpCounter
+{
+    ULONG accelCount;       /* Dispatched to IE64 */
+    ULONG accelBytes;
+    ULONG fallbackCount;    /* Fell back to M68K */
+    ULONG fallbackBytes;
+};
+```
+
+**LVO**: -186 (slot 31)
+
+#### IEWarpGetCallerStats
+
+```c
+ULONG IEWarpGetCallerStats(APTR buf, ULONG maxEntries)  /* (A0, D0) */
+```
+
+Copy per-caller (per-consumer-library) counters into `buf` (array of `IEWarpCallerEntry` structs). Returns the number of active entries.
+
+```c
+struct IEWarpCallerEntry
+{
+    ULONG callerID;         /* IEWARP_CALLER_* */
+    ULONG ops;
+    ULONG bytes;
+};
+```
+
+**LVO**: -192 (slot 32)
+
+#### IEWarpGetTaskStats
+
+```c
+ULONG IEWarpGetTaskStats(APTR buf, ULONG maxEntries)  /* (A0, D0) */
+```
+
+Copy per-task counters into `buf` (array of `IEWarpTaskEntry` structs). Returns the number of active entries. Slot 0 is "(overflow)" for tasks that couldn't be allocated a dedicated slot. Dead tasks are not automatically reclaimed — use `IEWarpResetAllStats()` to clear.
+
+```c
+struct IEWarpTaskEntry
+{
+    struct Task *task;      /* NULL = free slot */
+    char         name[32];
+    ULONG        ops;
+    ULONG        bytes;
+};
+```
+
+**LVO**: -198 (slot 33)
+
+#### IEWarpGetErrorStats
+
+```c
+ULONG IEWarpGetErrorStats(APTR buf)  /* (A0) */
+```
+
+Copy error counters into `buf` (an `IEWarpErrorStats` struct). Returns 0.
+
+```c
+struct IEWarpErrorStats
+{
+    ULONG queueFull;
+    ULONG workerDown;
+    ULONG staleTicket;
+    ULONG enqueueFail;
+};
+```
+
+**LVO**: -204 (slot 34)
+
+#### IEWarpGetBatchStats
+
+```c
+ULONG IEWarpGetBatchStats(APTR buf)  /* (A0) */
+```
+
+Copy batch statistics into `buf` (an `IEWarpBatchStats` struct). Returns 0.
+
+```c
+struct IEWarpBatchStats
+{
+    ULONG batchCount;       /* Completed BatchBegin/BatchEnd brackets */
+    ULONG totalBatchedOps;  /* Total ops inside all batches */
+    ULONG maxBatchSize;     /* Largest single batch */
+    ULONG currentBatchOps;  /* Ops in current open batch (0 if not batching) */
+};
+```
+
+**LVO**: -210 (slot 35)
+
+#### IEWarpGetWaiterInfo
+
+```c
+ULONG IEWarpGetWaiterInfo(APTR buf, ULONG maxEntries)  /* (A0, D0) */
+```
+
+Copy active waiter slot information into `buf` (array of `IEWarpWaiterInfo` structs). Returns the number of active waiters (tasks currently blocked in `IEWarpWait`).
+
+```c
+struct IEWarpWaiterInfo
+{
+    char   taskName[32];
+    ULONG  ticket;
+};
+```
+
+**LVO**: -216 (slot 36)
+
+#### IEWarpSetThreshold
+
+```c
+VOID IEWarpSetThreshold(ULONG threshold)  /* (D0) */
+```
+
+Override the adaptive threshold. Operations smaller than `threshold` bytes are handled by M68K fallback code. Use in conjunction with the Operations tab in IEWarpMon to tune the accel/fallback balance interactively.
+
+**LVO**: -222 (slot 37)
+
+#### IEWarpResetAllStats
+
+```c
+VOID IEWarpResetAllStats()  /* () */
+```
+
+Clear all statistics on both AROS and Go sides. Resets per-op counters, per-task slots, per-caller stats, error counters, batch stats, ring high-water mark, and Go-side global counters + busy buckets. Reset is best-effort, not epoch-atomic — transient mixed-epoch values may appear for one 250ms update cycle. Task slots (except overflow slot 0) are freed.
+
+**LVO**: -228 (slot 38)
 
 ## Operation Codes
 
@@ -618,6 +830,7 @@ Each ring has 768 bytes (`RING_STRIDE = 0x300`):
 | Mailbox (6 CPU rings) | 0x790000 - 0x7917FF | 6 KB |
 | IE64 ring (index 5) | 0x790F00 - 0x7911FF | 768 bytes |
 | Coprocessor MMIO | 0xF2340 - 0xF238F | 80 bytes |
+| Coprocessor Extended | 0xF23B0 - 0xF23BF | 16 bytes |
 
 ### Coprocessor MMIO Register Map
 
@@ -642,6 +855,15 @@ Each ring has 768 bytes (`RING_STRIDE = 0x300`):
 | 0xF2380 | COPROC_IRQ_CTRL | R/W | IRQ enable (bit 0) |
 | 0xF2384 | COPROC_DISPATCH_OVERHEAD | R | Calibrated overhead (ns) |
 | 0xF2388 | COPROC_COMPLETED_TICKET | R | Last completed ticket |
+
+#### Extended Monitor Registers (0xF23B0 - 0xF23BF)
+
+| Address | Name | Access | Description |
+|---------|------|--------|-------------|
+| 0xF23B0 | COPROC_RING_DEPTH | R | IE64 ring buffer occupancy (0-16) |
+| 0xF23B4 | COPROC_WORKER_UPTIME | R | Seconds since IE64 worker started |
+| 0xF23B8 | COPROC_STATS_RESET | W | Write 1 to zero Go-side stats + busy buckets |
+| 0xF23BC | COPROC_BUSY_PCT | R | Worker busy % (rolling 1s, 10x100ms buckets) |
 
 ### Coprocessor Commands
 
@@ -679,6 +901,7 @@ Each ring has 768 bytes (`RING_STRIDE = 0x300`):
 | `sdk/examples/asm/iewarp_service.asm` | IE64 worker source (poll loop + op handlers) |
 | `coprocessor_constants.go` | Go-side MMIO addresses, ring layout, worker regions |
 | `AROS/arch/m68k-ie/include/ie_hwreg.h` | C MMIO register definitions |
+| `AROS/arch/m68k-ie/utilities/IEWarpMon/` | IEWarpMon coprocessor monitor (MUI app) |
 
 ## Endianness
 
@@ -794,3 +1017,15 @@ At 50us overhead, the threshold is approximately 1400 bytes (rounded up to 2048 
 ### Pipelining
 
 The ring buffer holds 16 slots, allowing up to 16 operations to be queued without the M68K blocking. In batch mode (`IEWarpBatchBegin` / `IEWarpBatchEnd`), the M68K enqueues multiple operations and waits only once at the end. This hides dispatch latency and keeps the IE64 worker continuously busy. For workloads like ScrollRaster (copy + fill), the two operations execute back-to-back on the IE64 while the M68K continues other work.
+
+## IEWarpMon
+
+IEWarpMon is a SysMon-style MUI application that provides real-time visibility into IE64 coprocessor activity. It uses the monitoring functions (slots 30-38) and extended MMIO registers to display:
+
+- **Summary**: Worker status, uptime, busy%, throughput (ops/sec, bytes/sec), ring buffer health, errors, batch stats
+- **Operations**: Per-op accel/fallback counts with acceleration percentage — the key metric for threshold tuning
+- **Tasks**: Per-AROS-task breakdown of coprocessor usage
+- **Libraries**: Per-consumer-library attribution (exec, IEGfx, graphics, cgfx, AHI, etc.)
+- **Waiters**: Tasks currently blocked in IEWarpWait
+
+See `sdk/docs/iewarpmon.md` for the full user guide.

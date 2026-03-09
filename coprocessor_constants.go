@@ -27,6 +27,14 @@ const (
 	COPROC_COMPLETED_TICKET  = COPROC_BASE + 0x48 // Last completed ticket ID (read-only)
 
 	COPROC_END = COPROC_BASE + 0x4F
+
+	// Extended monitor registers (after clipboard bridge gap at 0xF2390-0xF23AF)
+	COPROC_EXT_BASE      = 0xF23B0
+	COPROC_RING_DEPTH    = 0xF23B0 // IE64 ring occupancy: (head-tail+cap)%cap (R)
+	COPROC_WORKER_UPTIME = 0xF23B4 // Seconds since IE64 worker started (R)
+	COPROC_STATS_RESET   = 0xF23B8 // Write 1 to zero global stats + busy buckets (W)
+	COPROC_BUSY_PCT      = 0xF23BC // Worker busy % over last 1s, 0-100 (R)
+	COPROC_EXT_END       = 0xF23BF
 )
 
 // Coprocessor commands (written to COPROC_CMD)

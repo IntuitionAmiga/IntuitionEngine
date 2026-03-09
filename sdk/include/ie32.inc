@@ -1289,6 +1289,12 @@
 .equ COPROC_DISPATCH_OVERHEAD 0xF2384    ; Calibrated overhead ns (R)
 .equ COPROC_COMPLETED_TICKET 0xF2388     ; Last completed ticket (R)
 
+; Extended monitor registers (0xF23B0-0xF23BF, after clipboard bridge)
+.equ COPROC_RING_DEPTH,     0xF23B0             ; IE64 ring occupancy (R)
+.equ COPROC_WORKER_UPTIME,  0xF23B4             ; Seconds since IE64 worker started (R)
+.equ COPROC_STATS_RESET,    0xF23B8             ; Write 1 to zero stats (W)
+.equ COPROC_BUSY_PCT,       0xF23BC             ; Worker busy % 0-100 (R)
+
 ; Command values
 .equ COPROC_CMD_START      1             ; Start worker from file
 .equ COPROC_CMD_STOP       2             ; Stop worker

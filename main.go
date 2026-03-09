@@ -1080,6 +1080,7 @@ func main() {
 	// Initialize coprocessor subsystem MMIO (available to all CPU modes)
 	coprocMgr := NewCoprocessorManager(sysBus, ".")
 	sysBus.MapIO(COPROC_BASE, COPROC_END, coprocMgr.HandleRead, coprocMgr.HandleWrite)
+	sysBus.MapIO(COPROC_EXT_BASE, COPROC_EXT_END, coprocMgr.HandleRead, coprocMgr.HandleWrite)
 	defer coprocMgr.StopAll()
 	runtimeStatus.setCoprocManager(coprocMgr)
 

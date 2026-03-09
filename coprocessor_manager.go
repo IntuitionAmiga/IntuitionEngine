@@ -39,6 +39,12 @@ type CoprocCompletion struct {
 	created    time.Time
 }
 
+// busyBucket tracks busy/idle nanoseconds for a 100ms window.
+type busyBucket struct {
+	busyNs uint64
+	idleNs uint64
+}
+
 // CoprocessorManager handles coprocessor MMIO, worker lifecycle, and ticket routing.
 type CoprocessorManager struct {
 	bus     *MachineBus
@@ -79,6 +85,16 @@ type CoprocessorManager struct {
 
 	// Adaptive threshold calibration
 	dispatchOverheadNs atomic.Uint64
+
+	// Worker start time for uptime tracking
+	workerStartTime [7]time.Time
+
+	// Rolling busy% tracking (10x100ms buckets = 1 second window)
+	busyBuckets       [10]busyBucket
+	busyBucketIdx     int
+	busyRotateCounter int
+	lastTransition    time.Time
+	workerBusy        bool
 }
 
 // NewCoprocessorManager creates a new coprocessor manager.
@@ -135,6 +151,27 @@ func (m *CoprocessorManager) completionWatcherLoop() {
 				return
 			}
 			m.scanForCompletions()
+			// Rotate busy% buckets every ~100ms (1000 ticks x 100us)
+			m.mu.Lock()
+			m.busyRotateCounter++
+			if m.busyRotateCounter >= 1000 {
+				m.busyRotateCounter = 0
+				// Flush partial elapsed time into current bucket
+				now := time.Now()
+				if m.workerBusy {
+					elapsed := uint64(now.Sub(m.lastTransition).Nanoseconds())
+					m.busyBuckets[m.busyBucketIdx].busyNs += elapsed
+					m.lastTransition = now
+				} else if !m.lastTransition.IsZero() {
+					elapsed := uint64(now.Sub(m.lastTransition).Nanoseconds())
+					m.busyBuckets[m.busyBucketIdx].idleNs += elapsed
+					m.lastTransition = now
+				}
+				// Advance to next bucket and clear it
+				m.busyBucketIdx = (m.busyBucketIdx + 1) % 10
+				m.busyBuckets[m.busyBucketIdx] = busyBucket{}
+			}
+			m.mu.Unlock()
 		}
 	}
 }
@@ -143,12 +180,14 @@ func (m *CoprocessorManager) scanForCompletions() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	anyPending := false
 	for ticket, comp := range m.completions {
 		if comp.status != COPROC_TICKET_PENDING && comp.status != COPROC_TICKET_RUNNING {
 			continue
 		}
 		status := m.scanTicketStatus(ticket)
 		if status == COPROC_TICKET_PENDING || status == COPROC_TICKET_RUNNING {
+			anyPending = true
 			continue
 		}
 		comp.status = status
@@ -156,6 +195,14 @@ func (m *CoprocessorManager) scanForCompletions() {
 		if m.completionIRQEnabled.Load() && m.irqTargetCPU != nil {
 			m.irqTargetCPU.AssertInterrupt(6)
 		}
+	}
+
+	// Transition busy -> idle when all completions are resolved
+	if !anyPending && m.workerBusy {
+		elapsed := uint64(time.Now().Sub(m.lastTransition).Nanoseconds())
+		m.busyBuckets[m.busyBucketIdx].busyNs += elapsed
+		m.lastTransition = time.Now()
+		m.workerBusy = false
 	}
 }
 
@@ -203,6 +250,29 @@ func (m *CoprocessorManager) readReg(regBase uint32) uint32 {
 		return uint32(m.dispatchOverheadNs.Load())
 	case COPROC_COMPLETED_TICKET:
 		return m.completedTicket.Load()
+	case COPROC_RING_DEPTH:
+		idx := cpuTypeToIndex(EXEC_TYPE_IE64)
+		if idx < 0 {
+			return 0
+		}
+		ringBase := ringBaseAddr(idx)
+		head := uint32(m.bus.Read8(ringBase + RING_HEAD_OFFSET))
+		tail := uint32(m.bus.Read8(ringBase + RING_TAIL_OFFSET))
+		cap := uint32(m.bus.Read8(ringBase + RING_CAPACITY_OFFSET))
+		if cap == 0 {
+			return 0
+		}
+		return (head - tail + cap) % cap
+	case COPROC_WORKER_UPTIME:
+		start := m.workerStartTime[EXEC_TYPE_IE64]
+		if m.workers[EXEC_TYPE_IE64] != nil && !start.IsZero() {
+			return uint32(time.Since(start).Seconds())
+		}
+		return 0
+	case COPROC_BUSY_PCT:
+		return m.computeBusyPct()
+	case COPROC_STATS_RESET:
+		return 0
 	default:
 		return 0
 	}
@@ -233,6 +303,18 @@ func (m *CoprocessorManager) writeReg(regBase, val uint32) {
 		m.namePtr = val
 	case COPROC_IRQ_CTRL:
 		m.completionIRQEnabled.Store(val&1 != 0)
+	case COPROC_STATS_RESET:
+		if val == 1 {
+			m.opsDispatched = 0
+			m.bytesProcessed = 0
+			m.busyBuckets = [10]busyBucket{}
+			m.busyBucketIdx = 0
+			m.busyRotateCounter = 0
+			// Reset transition state so busy% starts fresh from this point
+			m.lastTransition = time.Now()
+			// workerBusy keeps its current value — if the worker IS busy,
+			// we just reset the epoch so elapsed time accrues from now.
+		}
 	}
 }
 
@@ -354,6 +436,7 @@ func (m *CoprocessorManager) cmdStart() {
 		return
 	}
 	m.workers[cpuType] = worker
+	m.workerStartTime[cpuType] = time.Now()
 	mon := m.monitor
 
 	// Register with monitor outside mu, then recheck ownership.
@@ -446,6 +529,7 @@ func (m *CoprocessorManager) cmdStop() {
 	}
 
 	m.workers[cpuType] = nil
+	m.workerStartTime[cpuType] = time.Time{}
 	m.mu.Unlock()
 	m.stopWorkerAndUnregister(cpuType, worker)
 	m.mu.Lock()
@@ -528,6 +612,12 @@ func (m *CoprocessorManager) cmdEnqueue() {
 	// Track stats
 	m.opsDispatched++
 	m.bytesProcessed += uint64(m.reqLen)
+
+	// Track busy transition for busy% computation
+	if !m.workerBusy {
+		m.lastTransition = time.Now()
+		m.workerBusy = true
+	}
 
 	m.ticket = ticket
 	m.cmdStatus = COPROC_STATUS_OK
@@ -665,6 +755,19 @@ func (m *CoprocessorManager) computeWorkerState() uint32 {
 		}
 	}
 	return state
+}
+
+func (m *CoprocessorManager) computeBusyPct() uint32 {
+	var totalBusy, totalIdle uint64
+	for i := range 10 {
+		totalBusy += m.busyBuckets[i].busyNs
+		totalIdle += m.busyBuckets[i].idleNs
+	}
+	total := totalBusy + totalIdle
+	if total == 0 {
+		return 0
+	}
+	return uint32(totalBusy * 100 / total)
 }
 
 func (m *CoprocessorManager) readFileName(ptr uint32) string {

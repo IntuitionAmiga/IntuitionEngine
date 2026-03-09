@@ -1838,6 +1838,12 @@ COPROC_IRQ_CTRL       equ $F2380         ; IRQ enable/disable bit 0 (R/W)
 COPROC_DISPATCH_OVERHEAD equ $F2384      ; Calibrated overhead ns (R)
 COPROC_COMPLETED_TICKET equ $F2388       ; Last completed ticket (R)
 
+; Extended monitor registers ($F23B0-$F23BF, after clipboard bridge)
+COPROC_RING_DEPTH     equ $F23B0                ; IE64 ring occupancy (R)
+COPROC_WORKER_UPTIME  equ $F23B4                ; Seconds since IE64 worker started (R)
+COPROC_STATS_RESET    equ $F23B8                ; Write 1 to zero stats (W)
+COPROC_BUSY_PCT       equ $F23BC                ; Worker busy % 0-100 (R)
+
 ; Command values
 COPROC_CMD_START      equ 1              ; Start worker from file
 COPROC_CMD_STOP       equ 2              ; Stop worker

@@ -549,6 +549,10 @@ var ioDevices = map[string]*IODeviceDesc{
 			{"COPROC_IRQ_CTRL", 0xF2380, 4, "RW"},
 			{"COPROC_DISP_OVHD", 0xF2384, 4, "RO"},
 			{"COPROC_COMP_TKT", 0xF2388, 4, "RO"},
+			{"COPROC_RING_DEP", 0xF23B0, 4, "RO"},
+			{"COPROC_WKR_UPTM", 0xF23B4, 4, "RO"},
+			{"COPROC_STAT_RST", 0xF23B8, 4, "WO"},
+			{"COPROC_BUSY_PCT", 0xF23BC, 4, "RO"},
 		},
 	},
 	"voodoo": {
