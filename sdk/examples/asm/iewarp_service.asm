@@ -37,7 +37,7 @@ include "ie64.inc"
 
 WORKER_IE64_BASE  equ 0x3A0000
 
-MAILBOX_BASE      equ 0x820000
+MAILBOX_BASE      equ 0x790000
 RING_STRIDE       equ 0x300
 RING_INDEX        equ 5                          ; IE64 is ring index 5
 RING_BASE         equ MAILBOX_BASE + (RING_INDEX * RING_STRIDE)

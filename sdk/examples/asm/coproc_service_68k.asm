@@ -58,11 +58,11 @@
 ;
 ; === MEMORY MAP ===
 ; $280000          Code entry point (WORKER_M68K_BASE)
-; $820000          Mailbox base (MAILBOX_BASE)
-; $820600          Ring 2 head pointer (M68K is ring index 2)
-; $820601          Ring 2 tail pointer
-; $820608+tail*32  Request entry descriptors (32 bytes each)
-; $820808+tail*16  Response descriptors (16 bytes each)
+; $790000          Mailbox base (MAILBOX_BASE)
+; $790600          Ring 2 head pointer (M68K is ring index 2)
+; $790601          Ring 2 tail pointer
+; $790608+tail*32  Request entry descriptors (32 bytes each)
+; $790808+tail*16  Response descriptors (16 bytes each)
 ;
 ; === BUILD AND RUN ===
 ; vasmm68k_mot -Fbin -m68020 -devpac -o coproc_service_68k.ie68 coproc_service_68k.asm
@@ -80,11 +80,11 @@
 ; ============================================================================
 ;
 ; The M68K is assigned ring index 2, so its ring lives at mailbox base
-; + 2 * $300 = $820600. Each ring has 16 entry slots (32 bytes each)
+; + 2 * $300 = $790600. Each ring has 16 entry slots (32 bytes each)
 ; starting at offset +8, and 16 response slots (16 bytes each) starting
 ; at offset +$208.
 
-RING_BASE   equ $820600
+RING_BASE   equ $790600
 ENTRIES     equ RING_BASE+8
 RESPONSES   equ RING_BASE+$208
 

@@ -100,10 +100,10 @@
 ; starting at offset +8, and 16 response slots (16 bytes each) starting
 ; at offset +$208.
 
-.equ RING_HEAD   0x820000
-.equ RING_TAIL   0x820001
-.equ ENTRIES     0x820008
-.equ RESPONSES   0x820208
+.equ RING_HEAD   0x790000
+.equ RING_TAIL   0x790001
+.equ ENTRIES     0x790008
+.equ RESPONSES   0x790208
 
 ; ============================================================================
 ; REGISTER ALLOCATION

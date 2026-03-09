@@ -477,6 +477,12 @@ func (m *CoprocessorManager) cmdEnqueue() {
 	ringBase := ringBaseAddr(cpuIdx)
 	head := m.bus.Read8(ringBase + RING_HEAD_OFFSET)
 	capacity := m.bus.Read8(ringBase + RING_CAPACITY_OFFSET)
+	if capacity == 0 {
+		m.ticket = 0
+		m.cmdStatus = COPROC_STATUS_ERROR
+		m.cmdError = COPROC_ERR_QUEUE_FULL
+		return
+	}
 	nextHead := (head + 1) % capacity
 	tail := m.bus.Read8(ringBase + RING_TAIL_OFFSET)
 	if nextHead == tail {

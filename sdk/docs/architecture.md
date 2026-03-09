@@ -660,7 +660,7 @@ Additional special regions used by the coprocessor subsystem:
 | `0x320000-0x39FFFF` | 512KB | Coprocessor: x86 worker memory |
 | `0x3A0000-0x41FFFF` | 512KB | Coprocessor: IE64 worker memory |
 | `0x800000` | 64KB | Media loader staging buffer |
-| `0x820000-0x8217FF` | 6KB | Coprocessor mailbox ring buffers |
+| `0x790000-0x7917FF` | 6KB | Coprocessor mailbox ring buffers |
 
 ## 6. I/O Peripherals
 
@@ -716,7 +716,7 @@ graph LR
 
 ### Coprocessor Worker Dispatch
 
-The coprocessor manager supports 6 worker CPU types (IE32, IE64, 6502, M68K, Z80, x86) with ticket-based job dispatch and mailbox ring buffers at `0x820000`. Each worker type has its own dedicated memory region (see memory map above). The main CPU enqueues work via MMIO writes; workers execute independently and post results back through their mailbox slots. When `COPROC_IRQ_CTRL` bit 0 is set, the coprocessor fires a Level 6 completion interrupt (INTB_COPER) on job completion, with the finished ticket ID readable from `COPROC_COMPLETED_TICKET`.
+The coprocessor manager supports 6 worker CPU types (IE32, IE64, 6502, M68K, Z80, x86) with ticket-based job dispatch and mailbox ring buffers at `0x790000`. Each worker type has its own dedicated memory region (see memory map above). The main CPU enqueues work via MMIO writes; workers execute independently and post results back through their mailbox slots. When `COPROC_IRQ_CTRL` bit 0 is set, the coprocessor fires a Level 6 completion interrupt (INTB_COPER) on job completion, with the finished ticket ID readable from `COPROC_COMPLETED_TICKET`.
 
 ### Lua Scripting
 

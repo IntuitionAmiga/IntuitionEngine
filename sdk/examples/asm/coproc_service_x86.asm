@@ -59,11 +59,11 @@
 ;
 ; === MEMORY MAP ===
 ; $320000          Code entry point (WORKER_X86_BASE)
-; $820000          Mailbox base (MAILBOX_BASE)
-; $820C00          Ring 4 head pointer (x86 is ring index 4)
-; $820C01          Ring 4 tail pointer
-; $820C08+tail*32  Request entry descriptors (32 bytes each)
-; $820E08+tail*16  Response descriptors (16 bytes each)
+; $790000          Mailbox base (MAILBOX_BASE)
+; $790C00          Ring 4 head pointer (x86 is ring index 4)
+; $790C01          Ring 4 tail pointer
+; $790C08+tail*32  Request entry descriptors (32 bytes each)
+; $790E08+tail*16  Response descriptors (16 bytes each)
 ;
 ; === BUILD AND RUN ===
 ; sdk/bin/ie32asm sdk/examples/asm/coproc_service_x86.asm
@@ -82,11 +82,11 @@
 ; ============================================================================
 ;
 ; The x86 is assigned ring index 4, so its ring lives at mailbox base
-; + 4 * $300 = $820C00. Each ring has 16 entry slots (32 bytes each)
+; + 4 * $300 = $790C00. Each ring has 16 entry slots (32 bytes each)
 ; starting at offset +8, and 16 response slots (16 bytes each) starting
 ; at offset +$208.
 
-RING_BASE   equ 0x820C00
+RING_BASE   equ 0x790C00
 ENTRIES     equ RING_BASE + 0x08
 RESPONSES   equ RING_BASE + 0x208
 

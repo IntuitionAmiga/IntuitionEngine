@@ -493,7 +493,7 @@ The system's memory layout is designed to provide efficient access to both progr
 0x320000 - 0x39FFFF: Coprocessor worker region (x86, 512KB)
 0x3A0000 - 0x41FFFF: Coprocessor worker region (IE64, 512KB)
 0x400000 - 0x7FFFFF: User data buffers (coprocessor request/response data)
-0x820000 - 0x8217FF: Coprocessor mailbox shared RAM (6KB, ring buffers)
+0x790000 - 0x7917FF: Coprocessor mailbox shared RAM (6KB, ring buffers)
 ```
 
 ## 3.1 System Vector Table (0x000000 - 0x000FFF)
@@ -1648,7 +1648,7 @@ IE32, IE64, M68K, and x86 CPUs access `0xF2340` directly (no gateway needed).
 | 4 | Timeout |
 | 5 | Worker down |
 
-### Shared Mailbox RAM (0x820000 - 0x8217FF)
+### Shared Mailbox RAM (0x790000 - 0x7917FF)
 
 6KB ring buffer region shared between the Go manager and all worker CPUs. Contains 6 rings (one per supported CPU type), each 768 bytes with 16 request/response descriptor slots. Workers are loaded into dedicated, non-overlapping memory regions (0x200000-0x41FFFF). User data buffers for request/response payloads should be placed at 0x400000-0x7FFFFF.
 

@@ -668,7 +668,7 @@ type M68KCPU struct {
 	stopCallLogCount       uint32
 	// Coprocessor mode: skip byte-swap for shared data regions (mailbox, user data)
 	// When true, Read16/Read32/Write16/Write32 return/accept LE values directly
-	// for addresses in the mailbox (0x820000-0x820FFF) and user data (0x400000-0x7FFFFF)
+	// for addresses in the mailbox (0x790000-0x790FFF) and user data (0x400000-0x7FFFFF)
 	CoprocMode bool
 
 	// GEMDOS trap interception for EmuTOS filesystem access
@@ -2571,13 +2571,13 @@ func (cpu *M68KCPU) DumpRegisters() {
 }
 
 // isCoprocSharedAddr returns true if the address is in a coprocessor shared data
-// region where byte-swap should be skipped: mailbox (0x820000-0x820FFF) or user
+// region where byte-swap should be skipped: mailbox (0x790000-0x791800) or user
 // data buffers (0x400000-0x7FFFFF). Worker code regions are NOT included - instruction
 // fetch must still byte-swap for correct BE opcode decoding.
 func (cpu *M68KCPU) isCoprocSharedAddr(addr uint32) bool {
 	return cpu.CoprocMode &&
 		((addr >= 0x400000 && addr < 0x800000) ||
-			(addr >= 0x820000 && addr < 0x821000))
+			(addr >= 0x790000 && addr < 0x792000))
 }
 
 func (cpu *M68KCPU) Read8(addr uint32) uint8 {

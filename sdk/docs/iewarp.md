@@ -615,8 +615,8 @@ Each ring has 768 bytes (`RING_STRIDE = 0x300`):
 | Region | Address Range | Size |
 |--------|--------------|------|
 | IE64 Worker code/data | 0x3A0000 - 0x41FFFF | 512 KB |
-| Mailbox (6 CPU rings) | 0x820000 - 0x8217FF | 6 KB |
-| IE64 ring (index 5) | 0x820F00 - 0x8211FF | 768 bytes |
+| Mailbox (6 CPU rings) | 0x790000 - 0x7917FF | 6 KB |
+| IE64 ring (index 5) | 0x790F00 - 0x7911FF | 768 bytes |
 | Coprocessor MMIO | 0xF2340 - 0xF238F | 80 bytes |
 
 ### Coprocessor MMIO Register Map
@@ -686,7 +686,7 @@ No byte-swapping is required anywhere in the iewarp pipeline. Each data path is 
 
 - **MMIO register writes**: The M68K I/O path for addresses in the range `0xF0000`-`0x100000` passes values through without byte-swap. When the M68K CPU writes a ULONG to `COPROC_OP` (0xF2358), the Go-side MMIO handler receives the value directly. The coprocessor registers are defined as host-native integers, not byte buffers.
 
-- **Ring buffer (0x820000)**: Ring buffer descriptors are written by the Go-side coprocessor manager in little-endian format. The IE64 CPU reads memory in native LE order. Since both sides agree on LE, request and response descriptors are read correctly without conversion.
+- **Ring buffer (0x790000)**: Ring buffer descriptors are written by the Go-side coprocessor manager in little-endian format. The IE64 CPU reads memory in native LE order. Since both sides agree on LE, request and response descriptors are read correctly without conversion.
 
 - **Bulk data at reqPtr/respPtr**: Memory operations (memcpy, memset, memmove) treat data as opaque bytes. The IE64 worker copies bytes from source to destination without interpreting them, so byte order is irrelevant. VRAM pixel data is stored in LE format because the IEGfx HIDD works in bus-native LE throughout (RGBA32 pixels are written as `uint32` via the blitter, which is LE on the bus).
 

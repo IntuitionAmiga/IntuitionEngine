@@ -76,9 +76,12 @@ const (
 	COPROC_GATEWAY_END  = 0xF24F // Z80/6502 address for COPROC_END
 )
 
-// Mailbox shared RAM (0x820000-0x8217FF, 6KB for 6 CPU rings)
+// Mailbox shared RAM (0x790000-0x7917FF, 6KB for 6 CPU rings)
+// Placed in the ROM region gap (after BSS/data at 0x780000-0x78FFFF,
+// before ROM region end at 0x7FFFFF) to avoid overlap with AROS
+// fast memory (0x800000-0x1DFFFFF).
 const (
-	MAILBOX_BASE = 0x820000
+	MAILBOX_BASE = 0x790000
 	MAILBOX_SIZE = 0x1800
 	MAILBOX_END  = MAILBOX_BASE + MAILBOX_SIZE - 1
 
