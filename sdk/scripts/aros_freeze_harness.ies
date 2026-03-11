@@ -1,0 +1,652 @@
+-- aros_freeze_harness.ies - Canonical AROS boot freeze investigation harness
+--
+-- Phase 1: Script-only forensic sampler with freeze signature classification.
+-- Phase 2 extensions: reads IRQ diagnostic MMIO (0xF23C0-0xF23DF) when available.
+--
+-- Usage: Set SCENARIO below then run:
+--   IntuitionEngine -aros -script sdk/scripts/aros_freeze_harness.ies
+--
+-- Scenarios:
+--   "idle"    - Boot, wait 30s, monitor 30s (no input)
+--   "mouse"   - Boot, wait 10s, scripted mouse movement 30s
+--   "click"   - Boot, wait 10s, clicks/right-clicks/double-clicks 30s
+--   "mixed"   - All above combined over 60s
+
+-- ============================================================================
+-- Configuration
+-- ============================================================================
+
+local SCENARIO           = "idle"   -- Change per run: "idle", "mouse", "click", "mixed"
+local RUN_ID             = 1        -- Increment for each run of the same scenario
+local BOOT_WAIT_MS       = 15000    -- Wait for AROS to fully boot
+local SAMPLE_INTERVAL_MS = 100      -- Sampling period
+local MAX_SAMPLES        = 600      -- Max samples (60s at 100ms)
+
+-- Freeze signature thresholds
+local STUCK_PC_N         = 5        -- Consecutive same-PC samples for STUCK_PC
+local STUCK_STOP_N       = 5        -- Consecutive STOP samples for STUCK_STOP
+local IDN_STUCK_N        = 3        -- IDNest > 0 consecutive for IDN_STUCK
+local TDN_STUCK_N        = 3        -- TDNest > 0 consecutive for TDN_STUCK
+local IPL_HIGH_N         = 3        -- IPL >= 7 consecutive for IPL_HIGH
+local NO_TASK_SWITCH_N   = 20       -- ThisTask unchanged (not STOP) for NO_TASK_SWITCH
+local NO_HEARTBEAT_N     = 10       -- No progress for NO_HEARTBEAT
+local EXCEPTION_LOOP_N   = 10       -- PC in small range for EXCEPTION_LOOP
+
+-- Pointer validation range (AROS guest RAM)
+local VALID_LO = 0x1000
+local VALID_HI = 0x2000000
+
+-- ExecBase offsets (AROS m68k)
+local THISTASK_OFF   = 0x114
+local IDNEST_OFF     = 0x126
+local TDNEST_OFF     = 0x127
+local TASKREADY_OFF  = 0x196
+local TASKWAIT_OFF   = 0x1A4
+
+-- IRQ diagnostic MMIO (Phase 2)
+local IRQ_DIAG_ISR       = 0xF23C0
+local IRQ_DIAG_FLAGS     = 0xF23C4
+local IRQ_DIAG_PENDING   = 0xF23C8
+local IRQ_DIAG_COUNTERS  = 0xF23CC
+local IRQ_DIAG_BLOCKED   = 0xF23D0
+local IRQ_DIAG_RTE       = 0xF23D4
+local IRQ_DIAG_STOP_SPNS = 0xF23D8
+local IRQ_DIAG_WATCHDOG  = 0xF23DC
+
+local STOP_OPCODE = 0x4E72
+
+-- ============================================================================
+-- Helpers
+-- ============================================================================
+
+local band   = bit32.band
+local bor    = bit32.bor
+local rshift = bit32.rshift
+local lshift = bit32.lshift
+local floor  = math.floor
+
+-- Byte-swap 32-bit value (bus is LE, M68K is BE)
+local function be32(v)
+    local b0 = v % 256; v = floor(v / 256)
+    local b1 = v % 256; v = floor(v / 256)
+    local b2 = v % 256; v = floor(v / 256)
+    local b3 = v % 256
+    return b0 * 16777216 + b1 * 65536 + b2 * 256 + b3
+end
+
+-- Byte-swap 16-bit value
+local function be16(v)
+    return bor(lshift(band(v, 0xFF), 8), rshift(band(v, 0xFF00), 8))
+end
+
+local function valid_ptr(v)
+    return v >= VALID_LO and v < VALID_HI
+end
+
+-- Read a big-endian 32-bit value from M68K memory (requires freeze)
+local function mread32(addr)
+    return be32(mem.read32(addr))
+end
+
+-- Read a C string from M68K memory (requires freeze)
+local function readstr(addr, maxlen)
+    maxlen = maxlen or 63
+    local s = {}
+    for i = 0, maxlen do
+        local b = mem.read8(addr + i)
+        if b == 0 then break end
+        if b >= 32 and b < 127 then
+            s[#s + 1] = string.char(b)
+        end
+    end
+    return table.concat(s)
+end
+
+-- Count nodes in an Exec MinList (requires freeze)
+local function count_list(list_addr)
+    local count = 0
+    local node = mread32(list_addr)  -- lh_Head
+    for _ = 1, 200 do
+        if not valid_ptr(node) then break end
+        local succ = mread32(node)  -- ln_Succ
+        if succ == 0 then break end
+        count = count + 1
+        node = succ
+    end
+    return count
+end
+
+-- Get task name from task pointer (requires freeze)
+local function get_task_name(task_ptr)
+    if not valid_ptr(task_ptr) then return "<invalid>" end
+    local name_ptr = mread32(task_ptr + 10)
+    if not valid_ptr(name_ptr) then return "<noname>" end
+    return readstr(name_ptr, 40)
+end
+
+-- ============================================================================
+-- Logging
+-- ============================================================================
+
+local LOG_FILE = string.format("sdk/scripts/aros_freeze_%s_%d.log", SCENARIO, RUN_ID)
+local logf = io.open(LOG_FILE, "w")
+local function log(s) logf:write(s .. "\n"); logf:flush() end
+
+log("=== AROS Freeze Harness ===")
+log(string.format("scenario=%s run=%d boot_wait=%dms interval=%dms max=%d",
+    SCENARIO, RUN_ID, BOOT_WAIT_MS, SAMPLE_INTERVAL_MS, MAX_SAMPLES))
+log(string.format("date=%s", os.date("%Y-%m-%d %H:%M:%S")))
+
+-- ============================================================================
+-- Phase 2 diagnostic register detection
+-- ============================================================================
+
+local has_irq_diag = false
+
+local function detect_irq_diag()
+    local flags = mem.read32(IRQ_DIAG_FLAGS)
+    local rte = mem.read32(IRQ_DIAG_RTE)
+    if flags ~= 0 or rte ~= 0 then
+        has_irq_diag = true
+    end
+end
+
+-- ============================================================================
+-- Sample collection
+-- ============================================================================
+
+local samples = {}   -- Ring buffer of last 20 samples for incident packets
+local sample_idx = 0
+local SAMPLE_RING = 20
+
+-- Streak counters for freeze signatures
+local streak_same_pc   = 0
+local streak_stop      = 0
+local streak_idn       = 0
+local streak_tdn       = 0
+local streak_ipl_high  = 0
+local streak_no_switch = 0
+local streak_no_hbeat  = 0
+local streak_exc_loop  = 0
+
+local prev_pc       = nil
+local prev_task     = nil
+local prev_rdy      = nil
+local prev_wait     = nil
+local prev_rte      = nil  -- Track RTE counter for idle detection
+local pc_min_range  = 0xFFFFFFFF
+local pc_max_range  = 0
+
+local freeze_detected = false
+local freeze_sig      = nil
+local freeze_time     = 0
+
+local start_ms = sys.time_ms()
+
+local function collect_sample(sample_num)
+    cpu.freeze()
+
+    local pc = dbg.get_pc()
+    local sr = dbg.get_reg("sr")
+    local sp = dbg.get_reg("a7")
+    local ipl = band(rshift(sr, 8), 7)
+
+    -- Read opcode at PC (need be16 for M68K)
+    local raw_op = 0
+    if pc >= VALID_LO and pc < VALID_HI then
+        raw_op = be16(mem.read16(pc))
+    elseif pc >= 0x600000 and pc < 0x800000 then
+        raw_op = be16(mem.read16(pc))
+    end
+
+    -- BUG FIX: STOP advances PC past itself before halting, so opcode check
+    -- misses the stopped state. Use FLAGS bit0 from IRQ diagnostics (Phase 2)
+    -- as primary, opcode check as fallback for Phase 1.
+    local is_stop = 0
+    local irq_flags = 0
+    local irq_rte = 0
+    local irq_str = ""
+
+    if has_irq_diag then
+        local isr     = mem.read32(IRQ_DIAG_ISR)
+        irq_flags     = mem.read32(IRQ_DIAG_FLAGS)
+        local pending = mem.read32(IRQ_DIAG_PENDING)
+        local cntrs   = mem.read32(IRQ_DIAG_COUNTERS)
+        local blocked = mem.read32(IRQ_DIAG_BLOCKED)
+        irq_rte       = mem.read32(IRQ_DIAG_RTE)
+        local spins   = mem.read32(IRQ_DIAG_STOP_SPNS)
+        local wdog    = mem.read32(IRQ_DIAG_WATCHDOG)
+
+        -- FLAGS bit0 = CPU stopped (authoritative STOP state)
+        is_stop = band(irq_flags, 1)
+
+        irq_str = string.format(" isr=%08X fl=%08X pend=%08X cnt=%08X blk=%08X rte=%d spns=%d wdog=%d",
+            isr, irq_flags, pending, cntrs, blocked, irq_rte, spins, wdog)
+    else
+        -- Phase 1 fallback: opcode check (imperfect — misses STOP-then-advance)
+        is_stop = (raw_op == STOP_OPCODE) and 1 or 0
+    end
+
+    -- ExecBase and Exec fields
+    local sysbase = mread32(4)
+    local idn, tdn = -99, -99
+    local this_task = 0
+    local task_name = "?"
+    local rdy_count, wait_count = -1, -1
+
+    if valid_ptr(sysbase) then
+        local ir = mem.read8(sysbase + IDNEST_OFF)
+        local tr = mem.read8(sysbase + TDNEST_OFF)
+        idn = ir > 127 and ir - 256 or ir
+        tdn = tr > 127 and tr - 256 or tr
+
+        this_task = mread32(sysbase + THISTASK_OFF)
+        task_name = get_task_name(this_task)
+
+        rdy_count = count_list(sysbase + TASKREADY_OFF)
+        wait_count = count_list(sysbase + TASKWAIT_OFF)
+    end
+
+    local task_chg = (prev_task ~= nil and this_task ~= prev_task) and 1 or 0
+
+    local elapsed = sys.time_ms() - start_ms
+
+    cpu.resume()
+
+    -- Build sample record
+    local s = {
+        t        = elapsed,
+        pc       = pc,
+        op       = raw_op,
+        sr       = sr,
+        sp       = sp,
+        ipl      = ipl,
+        is_stop  = is_stop,
+        task     = task_name,
+        task_ptr = this_task,
+        idn      = idn,
+        tdn      = tdn,
+        rdy      = rdy_count,
+        wait     = wait_count,
+        task_chg = task_chg,
+        irq_rte  = irq_rte,
+    }
+
+    -- Store in ring buffer
+    sample_idx = (sample_idx % SAMPLE_RING) + 1
+    samples[sample_idx] = s
+
+    -- Log structured line
+    local line = string.format(
+        "t=%d pc=%08X op=%04X sr=%04X sp=%08X ipl=%d task=%s idn=%d tdn=%d rdy=%d wait=%d is_stop=%d task_chg=%d%s",
+        elapsed, pc, raw_op, sr, sp, ipl, task_name, idn, tdn, rdy_count, wait_count, is_stop, task_chg, irq_str)
+    log(line)
+
+    -- ====================================================================
+    -- Freeze signature detection
+    -- ====================================================================
+
+    -- STUCK_PC: same PC for N consecutive samples
+    if prev_pc ~= nil and pc == prev_pc then
+        streak_same_pc = streak_same_pc + 1
+    else
+        streak_same_pc = 0
+    end
+
+    -- STUCK_STOP: in STOP state for N consecutive samples
+    if is_stop == 1 then
+        streak_stop = streak_stop + 1
+    else
+        streak_stop = 0
+    end
+
+    -- IDN_STUCK: IDNest > 0 for N consecutive
+    if idn > 0 then
+        streak_idn = streak_idn + 1
+    else
+        streak_idn = 0
+    end
+
+    -- TDN_STUCK: TDNest > 0 for N consecutive
+    if tdn > 0 then
+        streak_tdn = streak_tdn + 1
+    else
+        streak_tdn = 0
+    end
+
+    -- IPL_HIGH: IPL >= 7 for N consecutive
+    if ipl >= 7 then
+        streak_ipl_high = streak_ipl_high + 1
+    else
+        streak_ipl_high = 0
+    end
+
+    -- NO_TASK_SWITCH: same ThisTask, not at STOP, for N consecutive
+    if is_stop == 0 and prev_task ~= nil and this_task == prev_task then
+        streak_no_switch = streak_no_switch + 1
+    else
+        streak_no_switch = 0
+    end
+
+    -- EXCEPTION_LOOP: PC in small range (<256 bytes) over N+ samples
+    if prev_pc ~= nil then
+        pc_min_range = math.min(pc_min_range, pc)
+        pc_max_range = math.max(pc_max_range, pc)
+        if (pc_max_range - pc_min_range) < 256 then
+            streak_exc_loop = streak_exc_loop + 1
+        else
+            streak_exc_loop = 0
+            pc_min_range = pc
+            pc_max_range = pc
+        end
+    end
+
+    -- NO_HEARTBEAT: no progress across multiple dimensions.
+    -- RTE counter increasing = interrupts being serviced = system alive (even if PC is parked).
+    local heartbeat = false
+    if task_chg == 1 then heartbeat = true end
+    if prev_rdy ~= nil and rdy_count ~= prev_rdy then heartbeat = true end
+    if prev_wait ~= nil and wait_count ~= prev_wait then heartbeat = true end
+    if prev_pc ~= nil and pc ~= prev_pc then heartbeat = true end
+    if has_irq_diag and prev_rte ~= nil and irq_rte ~= prev_rte then heartbeat = true end
+    if heartbeat then
+        streak_no_hbeat = 0
+    else
+        streak_no_hbeat = streak_no_hbeat + 1
+    end
+
+    -- Classify freeze
+    local sig = nil
+
+    -- STUCK_STOP with healthy interrupt delivery = legitimate idle, not a freeze.
+    -- RTE counter increasing between samples proves interrupts are being serviced.
+    local rte_alive = has_irq_diag and prev_rte ~= nil and irq_rte > prev_rte
+
+    if streak_same_pc >= STUCK_PC_N and is_stop == 1 then
+        if rte_alive then
+            -- Healthy idle: STOP + interrupts firing. Not a freeze.
+            sig = nil
+        elseif streak_no_hbeat >= NO_HEARTBEAT_N then
+            sig = "STUCK_STOP+NO_HEARTBEAT"
+        else
+            -- STOP but no RTE data (Phase 1) or RTE stalled — suspicious
+            if not has_irq_diag then
+                -- Phase 1: can't distinguish idle from freeze at STOP
+                sig = "STUCK_STOP"
+            else
+                -- Phase 2: RTE not increasing while in STOP = genuine freeze
+                sig = "STUCK_STOP+RTE_STALLED"
+            end
+        end
+    elseif streak_same_pc >= STUCK_PC_N then
+        sig = "STUCK_PC"
+    end
+
+    if not sig and streak_idn >= IDN_STUCK_N then sig = "IDN_STUCK" end
+    if not sig and streak_tdn >= TDN_STUCK_N then sig = "TDN_STUCK" end
+    if not sig and streak_ipl_high >= IPL_HIGH_N then sig = "IPL_HIGH" end
+    if not sig and streak_no_switch >= NO_TASK_SWITCH_N then sig = "NO_TASK_SWITCH" end
+    if not sig and streak_no_hbeat >= NO_HEARTBEAT_N and not rte_alive then sig = "NO_HEARTBEAT" end
+    if not sig and streak_exc_loop >= EXCEPTION_LOOP_N then sig = "EXCEPTION_LOOP" end
+
+    -- Save state for next sample
+    prev_pc   = pc
+    prev_task = this_task
+    prev_rdy  = rdy_count
+    prev_wait = wait_count
+    prev_rte  = irq_rte
+
+    return sig, s
+end
+
+-- ============================================================================
+-- Freeze dump (full incident packet)
+-- ============================================================================
+
+local function dump_freeze(sig, sample)
+    log("========================================")
+    log(string.format("*** FREEZE DETECTED: %s ***", sig))
+    log(string.format("scenario=%s run=%d t=%d boot+%dms",
+        SCENARIO, RUN_ID, sample.t, sample.t))
+    log(string.format("cluster_key: pc=%08X task=%s idn=%d tdn=%d ipl=%d stop=%d",
+        sample.pc, sample.task, sample.idn, sample.tdn, sample.ipl, sample.is_stop))
+
+    -- Full register dump (use individual reads — dbg.get_regs returns uppercase keys)
+    cpu.freeze()
+
+    log(string.format("  D0=%08X D1=%08X D2=%08X D3=%08X",
+        dbg.get_reg("d0"), dbg.get_reg("d1"), dbg.get_reg("d2"), dbg.get_reg("d3")))
+    log(string.format("  D4=%08X D5=%08X D6=%08X D7=%08X",
+        dbg.get_reg("d4"), dbg.get_reg("d5"), dbg.get_reg("d6"), dbg.get_reg("d7")))
+    log(string.format("  A0=%08X A1=%08X A2=%08X A3=%08X",
+        dbg.get_reg("a0"), dbg.get_reg("a1"), dbg.get_reg("a2"), dbg.get_reg("a3")))
+    log(string.format("  A4=%08X A5=%08X A6=%08X A7=%08X",
+        dbg.get_reg("a4"), dbg.get_reg("a5"), dbg.get_reg("a6"), dbg.get_reg("a7")))
+    log(string.format("  PC=%08X SR=%04X USP=%08X SSP=%08X",
+        dbg.get_reg("pc"), dbg.get_reg("sr"), dbg.get_reg("usp"), dbg.get_reg("ssp")))
+
+    -- Stack dump (8 longwords from SP)
+    local sp = sample.sp
+    log("  Stack:")
+    for j = 0, 7 do
+        local sa = sp + j * 4
+        if sa > 0 and sa < VALID_HI then
+            log(string.format("    [SP+%02X] = %08X", j * 4, mread32(sa)))
+        end
+    end
+
+    -- Disassembly around PC
+    log("  Disasm:")
+    local ok, dis = pcall(dbg.disasm, sample.pc > 16 and sample.pc - 16 or 0, 12)
+    if ok and dis then
+        for _, entry in ipairs(dis) do
+            local marker = (entry.addr == sample.pc) and ">>>" or "   "
+            log(string.format("    %s %08X  %s  %s", marker, entry.addr, entry.hex, entry.mnemonic))
+        end
+    end
+
+    -- Vector table dump (autovectors 25-31)
+    log("  Autovectors:")
+    for vec = 25, 31 do
+        local vaddr = vec * 4
+        local handler = mread32(vaddr)
+        log(string.format("    L%d (vec %d @ 0x%02X) = %08X", vec - 24, vec, vaddr, handler))
+    end
+
+    -- Task lists
+    local sysbase = mread32(4)
+    if valid_ptr(sysbase) then
+        log("  TaskReady list:")
+        local node = mread32(sysbase + TASKREADY_OFF)
+        for i = 1, 20 do
+            if not valid_ptr(node) then break end
+            local succ = mread32(node)
+            if succ == 0 then break end
+            local name = get_task_name(node)
+            local pri = mem.read8(node + 9)
+            if pri > 127 then pri = pri - 256 end
+            log(string.format("    [%d] %s (pri=%d)", i, name, pri))
+            node = succ
+        end
+
+        log("  TaskWait list:")
+        node = mread32(sysbase + TASKWAIT_OFF)
+        for i = 1, 30 do
+            if not valid_ptr(node) then break end
+            local succ = mread32(node)
+            if succ == 0 then break end
+            local name = get_task_name(node)
+            log(string.format("    [%d] %s", i, name))
+            node = succ
+        end
+    end
+
+    -- Phase 2 IRQ diagnostics
+    if has_irq_diag then
+        log("  IRQ Diagnostics:")
+        log(string.format("    ISR=%08X FLAGS=%08X PENDING=%08X",
+            mem.read32(IRQ_DIAG_ISR), mem.read32(IRQ_DIAG_FLAGS), mem.read32(IRQ_DIAG_PENDING)))
+        log(string.format("    COUNTERS=%08X BLOCKED=%08X RTE=%d",
+            mem.read32(IRQ_DIAG_COUNTERS), mem.read32(IRQ_DIAG_BLOCKED), mem.read32(IRQ_DIAG_RTE)))
+        log(string.format("    STOP_SPINS=%d WATCHDOG=%d",
+            mem.read32(IRQ_DIAG_STOP_SPNS), mem.read32(IRQ_DIAG_WATCHDOG)))
+    end
+
+    cpu.resume()
+
+    -- Screenshot
+    local ss_file = string.format("freeze_%s_%d_%d.png", SCENARIO, RUN_ID, sample.t)
+    local ok2, err = pcall(rec.screenshot, ss_file)
+    if ok2 then
+        log(string.format("  screenshot=%s", ss_file))
+    else
+        log(string.format("  screenshot failed: %s", tostring(err)))
+    end
+
+    -- Recent sample history
+    log("  Recent samples (last " .. SAMPLE_RING .. "):")
+    for i = 1, SAMPLE_RING do
+        local idx = ((sample_idx - SAMPLE_RING + i - 1) % SAMPLE_RING) + 1
+        local s = samples[idx]
+        if s then
+            log(string.format("    t=%d pc=%08X op=%04X ipl=%d task=%s idn=%d tdn=%d rdy=%d wait=%d stop=%d rte=%d",
+                s.t, s.pc, s.op, s.ipl, s.task, s.idn, s.tdn, s.rdy, s.wait, s.is_stop, s.irq_rte or 0))
+        end
+    end
+
+    log("========================================")
+end
+
+-- ============================================================================
+-- Scenario input generators
+-- ============================================================================
+
+local input_step = 0
+
+local function do_mouse_input()
+    input_step = input_step + 1
+    local phase = input_step % 40
+    if phase < 10 then
+        term.mouse_move(64 + phase * 50, 100)
+    elseif phase < 20 then
+        term.mouse_move(550, 100 + (phase - 10) * 40)
+    elseif phase < 30 then
+        term.mouse_move(550 - (phase - 20) * 50, 400)
+    else
+        term.mouse_move(64, 400 - (phase - 30) * 40)
+    end
+end
+
+local function do_click_input()
+    input_step = input_step + 1
+    local phase = input_step % 20
+
+    if phase == 1 then
+        term.mouse_click(320, 300, 1)
+    elseif phase == 2 then
+        term.mouse_release()
+    elseif phase == 5 then
+        term.mouse_click(320, 300, 2)
+    elseif phase == 7 then
+        term.mouse_release()
+    elseif phase == 10 then
+        term.mouse_double_click(100, 200, 1)
+    elseif phase == 12 then
+        term.mouse_release()
+    elseif phase == 15 then
+        term.mouse_click(320, 12, 1)
+    elseif phase == 16 then
+        term.mouse_release()
+    end
+end
+
+local function do_mixed_input()
+    input_step = input_step + 1
+    if input_step % 3 == 0 then
+        do_click_input()
+    else
+        do_mouse_input()
+    end
+end
+
+-- ============================================================================
+-- Main execution
+-- ============================================================================
+
+sys.print("AROS Freeze Harness: scenario=" .. SCENARIO .. " run=" .. RUN_ID)
+sys.print("Waiting " .. BOOT_WAIT_MS .. "ms for boot...")
+
+sys.wait_ms(BOOT_WAIT_MS)
+
+-- Detect Phase 2 diagnostic registers
+detect_irq_diag()
+if has_irq_diag then
+    log("Phase 2 IRQ diagnostics: AVAILABLE")
+else
+    log("Phase 2 IRQ diagnostics: not detected (Phase 1 only)")
+end
+
+log("--- Sampling started ---")
+
+-- Determine scenario timing
+local scenario_input_fn = nil
+local input_start_sample = 0
+
+if SCENARIO == "idle" then
+    scenario_input_fn = nil
+    MAX_SAMPLES = 300   -- 30s
+elseif SCENARIO == "mouse" then
+    scenario_input_fn = do_mouse_input
+    input_start_sample = 0
+elseif SCENARIO == "click" then
+    scenario_input_fn = do_click_input
+    input_start_sample = 0
+elseif SCENARIO == "mixed" then
+    scenario_input_fn = do_mixed_input
+    input_start_sample = 0
+    MAX_SAMPLES = 600   -- 60s
+end
+
+local freeze_count = 0
+
+for i = 1, MAX_SAMPLES do
+    if scenario_input_fn and i >= input_start_sample then
+        scenario_input_fn()
+    end
+
+    sys.wait_ms(SAMPLE_INTERVAL_MS)
+
+    local sig, s = collect_sample(i)
+
+    if sig then
+        if not freeze_detected then
+            freeze_detected = true
+            freeze_sig = sig
+            freeze_time = s.t
+            freeze_count = freeze_count + 1
+            dump_freeze(sig, s)
+            sys.print(string.format("*** FREEZE #%d: %s at t=%dms pc=%08X task=%s ***",
+                freeze_count, sig, s.t, s.pc, s.task))
+        end
+    else
+        if freeze_detected then
+            log(string.format("--- Progress resumed at t=%d (was %s) ---", s.t, freeze_sig))
+            freeze_detected = false
+            freeze_sig = nil
+        end
+    end
+end
+
+-- ============================================================================
+-- Summary
+-- ============================================================================
+
+log("--- Sampling complete ---")
+log(string.format("Total samples: %d, Freeze incidents: %d", MAX_SAMPLES, freeze_count))
+if freeze_count == 0 then
+    log("RESULT: No freeze detected in this run")
+end
+log("=== Harness complete ===")
+logf:close()
+
+sys.print(string.format("Harness complete: %d samples, %d freezes. Log: %s", MAX_SAMPLES, freeze_count, LOG_FILE))

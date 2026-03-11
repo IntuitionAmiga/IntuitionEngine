@@ -258,3 +258,46 @@ func (l *AROSLoader) stopTimers() {
 func (l *AROSLoader) Stop() {
 	l.stopTimers()
 }
+
+// MapIRQDiagnostics registers read-only MMIO at 0xF23C0-0xF23DF exposing
+// M68K CPU interrupt diagnostic counters for freeze investigation scripts.
+func (l *AROSLoader) MapIRQDiagnostics() {
+	cpu := l.cpu
+	l.bus.MapIO(IRQ_DIAG_REGION_BASE, IRQ_DIAG_REGION_END,
+		func(addr uint32) uint32 {
+			switch addr {
+			case IRQ_DIAG_ISR:
+				return cpu.interruptInService
+			case IRQ_DIAG_FLAGS:
+				var flags uint32
+				if cpu.stopped.Load() {
+					flags |= 1
+				}
+				if cpu.inException.Load() {
+					flags |= 2
+				}
+				if cpu.AmigaINTENA != nil && cpu.AmigaINTENA.Load() {
+					flags |= 4
+				}
+				if cpu.running.Load() {
+					flags |= 8
+				}
+				return flags
+			case IRQ_DIAG_PENDING:
+				return cpu.pendingInterrupt.Load()
+			case IRQ_DIAG_COUNTERS:
+				return (cpu.irqL4Delivered.Load() << 16) | (cpu.irqL5Delivered.Load() & 0xFFFF)
+			case IRQ_DIAG_BLOCKED:
+				return (cpu.irqL4Blocked.Load() << 16) | (cpu.irqL5Blocked.Load() & 0xFFFF)
+			case IRQ_DIAG_RTE:
+				return cpu.rteCount.Load()
+			case IRQ_DIAG_STOP_SPINS:
+				return cpu.stopSpinCount.Load()
+			case IRQ_DIAG_WATCHDOG:
+				return cpu.stopWatchdogHits.Load()
+			}
+			return 0
+		},
+		nil, // read-only
+	)
+}

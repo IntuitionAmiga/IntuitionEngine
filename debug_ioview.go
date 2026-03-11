@@ -555,6 +555,19 @@ var ioDevices = map[string]*IODeviceDesc{
 			{"COPROC_BUSY_PCT", 0xF23BC, 4, "RO"},
 		},
 	},
+	"irqdiag": {
+		Name: "IRQ Diagnostics",
+		Registers: []IORegisterDesc{
+			{"IRQ_DIAG_ISR", 0xF23C0, 4, "RO"},
+			{"IRQ_DIAG_FLAGS", 0xF23C4, 4, "RO"},
+			{"IRQ_DIAG_PENDING", 0xF23C8, 4, "RO"},
+			{"IRQ_DIAG_COUNTERS", 0xF23CC, 4, "RO"},
+			{"IRQ_DIAG_BLOCKED", 0xF23D0, 4, "RO"},
+			{"IRQ_DIAG_RTE", 0xF23D4, 4, "RO"},
+			{"IRQ_DIAG_STOP_SPINS", 0xF23D8, 4, "RO"},
+			{"IRQ_DIAG_WATCHDOG", 0xF23DC, 4, "RO"},
+		},
+	},
 	"voodoo": {
 		Name: "Voodoo",
 		Registers: []IORegisterDesc{

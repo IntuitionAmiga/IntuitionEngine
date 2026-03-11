@@ -54,6 +54,7 @@ Address Range       Size    Device              Constants File
 0xF2340-0xF238F     80B     Coprocessor         coprocessor_constants.go
 0xF2390-0xF23AF     32B     Clipboard Bridge    clipboard_bridge_constants.go
 0xF23B0-0xF23BF     16B     Coprocessor Monitor coprocessor_constants.go
+0xF23C0-0xF23DF     32B     IRQ Diagnostics     registers.go
 0xF4000-0xF43FF     1KB     Voodoo 3D Graphics  voodoo_constants.go
 
 0x100000-0x5FFFFF   5MB     Video RAM           video_chip.go (VRAM_START)
@@ -229,6 +230,18 @@ const (
 	// Coprocessor extended monitor registers (after clipboard bridge)
 	COPROC_EXT_REGION_BASE = 0xF23B0
 	COPROC_EXT_REGION_END  = 0xF23BF
+
+	// IRQ diagnostic registers (AROS freeze investigation)
+	IRQ_DIAG_REGION_BASE = 0xF23C0
+	IRQ_DIAG_REGION_END  = 0xF23DF
+	IRQ_DIAG_ISR         = 0xF23C0 // interruptInService bitmask (R)
+	IRQ_DIAG_FLAGS       = 0xF23C4 // bit0=stopped, bit1=inException, bit2=INTENA, bit3=running (R)
+	IRQ_DIAG_PENDING     = 0xF23C8 // pendingInterrupt.Load() (R)
+	IRQ_DIAG_COUNTERS    = 0xF23CC // L5 delivered (low16) + L4 delivered (high16) (R)
+	IRQ_DIAG_BLOCKED     = 0xF23D0 // L5 blocked (low16) + L4 blocked (high16) (R)
+	IRQ_DIAG_RTE         = 0xF23D4 // RTE count (R)
+	IRQ_DIAG_STOP_SPINS  = 0xF23D8 // Consecutive STOP iterations without wake (R)
+	IRQ_DIAG_WATCHDOG    = 0xF23DC // Latched watchdog event count (R)
 
 	// Voodoo 3D graphics region
 	VOODOO_REGION_BASE = 0xF4000

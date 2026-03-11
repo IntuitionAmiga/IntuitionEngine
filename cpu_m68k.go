@@ -626,7 +626,7 @@ type M68KCPU struct {
 	inException        atomic.Bool   // Prevents double-fault situations (atomic for lock-free access)
 	stackLowerBound    uint32        // Detects stack corruption early
 	stackUpperBound    uint32        // Detects stack corruption early
-	interruptInService uint32        // Bitmask: bit N = level N handler is active (prevents nesting)
+	interruptInService uint32        // Diagnostic only: tracks which levels have been entered (not used for gating)
 	_padding2          [33]byte      // Cache line alignment reduces false sharing
 
 	// Cache Lines 3+ - Bus Interface (lock-free design like IE32)
@@ -684,6 +684,15 @@ type M68KCPU struct {
 	// On Amiga, INTENA ($DFF09A) bit 14 gates all interrupt delivery.
 	// AROS kernel_cpu.c uses move.w #$4000/$C000 to disable/enable.
 	AmigaINTENA *atomic.Bool
+
+	// IRQ diagnostic counters (AROS freeze investigation, exposed via MMIO at 0xF23C0)
+	irqL4Delivered   atomic.Uint32
+	irqL5Delivered   atomic.Uint32
+	irqL4Blocked     atomic.Uint32
+	irqL5Blocked     atomic.Uint32
+	rteCount         atomic.Uint32
+	stopSpinCount    atomic.Uint32 // consecutive STOP iterations without wake
+	stopWatchdogHits atomic.Uint32 // latched count: increments each time stopSpinCount >= 5000
 
 	// Debug write watchpoint (set from tests, nil = disabled)
 	DebugWatchFn func(addr, value, pc uint32, size int)
@@ -2343,31 +2352,52 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 	for cpu.running.Load() {
 	innerLoop:
 		for range 4096 {
-			// STOP state: only interrupts can resume execution
+			// STOP state: real 68020 continuously samples IPL pins and wakes
+			// when an interrupt exceeds the SR mask. No inException gating —
+			// the only criteria are IPL comparison and INTENA (modelling Paula).
 			if cpu.stopped.Load() {
 				pendingException := cpu.pendingException.Load()
-				if pendingException != 0 && !cpu.inException.Load() {
+				if pendingException != 0 {
 					cpu.pendingException.Store(0)
+					cpu.stopped.Store(false)
+					cpu.stopSpinCount.Store(0)
 					cpu.ProcessException(uint8(pendingException))
 				}
 
+				woke := false
 				pending := cpu.pendingInterrupt.Load()
-				if pending != 0 && !cpu.inException.Load() {
+				if pending != 0 {
 					ipl := uint32((cpu.SR & M68K_SR_IPL) >> M68K_SR_SHIFT)
 					for level := uint32(7); level >= 1; level-- {
-						if pending&(1<<level) != 0 && cpu.interruptInService&(1<<level) == 0 && (level > ipl || level == 7) {
+						if pending&(1<<level) != 0 && (level > ipl || level == 7) {
+							// Clear stopped BEFORE delivery so no external
+							// observer sees {stopped=true, PC=vector} intermediate state.
+							cpu.stopped.Store(false)
+							cpu.stopSpinCount.Store(0)
 							if cpu.ProcessInterrupt(uint8(level)) {
-								cpu.stopped.Store(false)
-								cpu.interruptInService |= 1 << level
+								woke = true
 								for {
 									old := cpu.pendingInterrupt.Load()
 									if cpu.pendingInterrupt.CompareAndSwap(old, old&^(1<<level)) {
 										break
 									}
 								}
+							} else {
+								// INTENA blocked delivery — go back to STOP.
+								// Real 68020 would simply not see the IPL
+								// (Paula wouldn't assert it with INTENA off).
+								cpu.stopped.Store(true)
 							}
 							break
 						}
+					}
+				}
+
+				// STOP watchdog: track consecutive spins without wake
+				if !woke {
+					spins := cpu.stopSpinCount.Add(1)
+					if spins >= 5000 && spins%5000 == 0 {
+						cpu.stopWatchdogHits.Add(1)
 					}
 				}
 
@@ -2420,9 +2450,16 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 			instructionCount++
 
 			// Process interrupts every 256 instructions.
+			// Real 68020 checks IPL between instructions with no inException gating.
+			// If STOP just executed on this instruction, defer to the STOP
+			// handler at the top of the loop — delivering an interrupt here
+			// would modify SR/PC while stopped=true, causing a deadlock.
 			if instructionCount&0xFF == 0 {
+				if cpu.stopped.Load() {
+					break innerLoop
+				}
 				pendingException := cpu.pendingException.Load()
-				if pendingException != 0 && !cpu.inException.Load() {
+				if pendingException != 0 {
 					cpu.pendingException.Store(0)
 					cpu.ProcessException(uint8(pendingException))
 				}
@@ -2430,20 +2467,17 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 				pending := cpu.pendingInterrupt.Load()
 				if pending != 0 {
 					ipl := uint32((cpu.SR & M68K_SR_IPL) >> M68K_SR_SHIFT)
-					if !cpu.inException.Load() {
-						for level := uint32(7); level >= 1; level-- {
-							if pending&(1<<level) != 0 && cpu.interruptInService&(1<<level) == 0 && (level > ipl || level == 7) {
-								if cpu.ProcessInterrupt(uint8(level)) {
-									cpu.interruptInService |= 1 << level
-									for {
-										old := cpu.pendingInterrupt.Load()
-										if cpu.pendingInterrupt.CompareAndSwap(old, old&^(1<<level)) {
-											break
-										}
+					for level := uint32(7); level >= 1; level-- {
+						if pending&(1<<level) != 0 && (level > ipl || level == 7) {
+							if cpu.ProcessInterrupt(uint8(level)) {
+								for {
+									old := cpu.pendingInterrupt.Load()
+									if cpu.pendingInterrupt.CompareAndSwap(old, old&^(1<<level)) {
+										break
 									}
 								}
-								break
 							}
+							break
 						}
 					}
 				}
@@ -3645,21 +3679,31 @@ func (cpu *M68KCPU) ProcessException(vector uint8) {
 
 // ProcessInterrupt attempts to deliver an interrupt at the given level.
 // Returns true if the interrupt was actually delivered, false if blocked
-// by INTENA or IPL masking. Callers must only clear pending bits and set
-// interruptInService when this returns true — otherwise the interrupt
-// stays pending for delivery when conditions change.
+// by INTENA (Paula gate) or IPL masking (SR). Callers must only clear
+// pending bits when this returns true — otherwise the interrupt stays
+// pending for delivery when conditions change.
 func (cpu *M68KCPU) ProcessInterrupt(level uint8) bool {
 	// Amiga INTENA master gate: when disabled, no interrupts are delivered.
 	// This prevents nested interrupts during AROS task switching.
 	// Return false so the caller leaves the pending bit set — matching
 	// real Amiga INTREQ behavior where pending bits survive INTENA masking.
 	if cpu.AmigaINTENA != nil && !cpu.AmigaINTENA.Load() {
+		if level == 4 {
+			cpu.irqL4Blocked.Add(1)
+		} else if level == 5 {
+			cpu.irqL5Blocked.Add(1)
+		}
 		return false
 	}
 
 	// Ignore if current interrupt mask is higher
 	currentIPL := uint8((cpu.SR & M68K_SR_IPL) >> M68K_SR_SHIFT)
 	if level <= currentIPL && level < M68K_VEC_LEVEL7-M68K_VEC_LEVEL1+1 {
+		if level == 4 {
+			cpu.irqL4Blocked.Add(1)
+		} else if level == 5 {
+			cpu.irqL5Blocked.Add(1)
+		}
 		return false
 	}
 
@@ -3695,6 +3739,14 @@ func (cpu *M68KCPU) ProcessInterrupt(level uint8) bool {
 		// Interrupt entry is complete here; do not latch inException.
 		// Leaving it set blocks follow-on exceptions and causes deferral loops.
 		cpu.inException.Store(false)
+
+		// IRQ diagnostic counters
+		if level == 4 {
+			cpu.irqL4Delivered.Add(1)
+		} else if level == 5 {
+			cpu.irqL5Delivered.Add(1)
+		}
+
 		return true
 	}
 	return false
@@ -10260,6 +10312,7 @@ func (cpu *M68KCPU) ExecRTE() {
 			cpu.swapStacksForMode(newSupervisor)
 		}
 		cpu.inException.Store(false)
+		cpu.rteCount.Add(1)
 		cpu.cycleCounter += M68K_CYCLE_RTE
 		return
 	}
@@ -10278,19 +10331,6 @@ func (cpu *M68KCPU) ExecRTE() {
 		cpu.Pop16()
 	}
 
-	// Clear interrupt in-service bit when returning from an autovector handler.
-	// The format word's low 12 bits contain the vector offset (vector * 4).
-	// Autovectors for levels 1-7 are vectors 25-31 (offsets 0x64-0x7C).
-	// Clear interrupt in-service bit when returning from an autovector handler.
-	// The format word's low 12 bits contain the vector offset (vector * 4).
-	// Autovectors for levels 1-7 are vectors 25-31 (offsets 0x64-0x7C).
-	vecOffset := formatWord & 0xFFF
-	vec := vecOffset >> 2
-	if vec >= M68K_VEC_LEVEL1 && vec <= M68K_VEC_LEVEL7 {
-		level := vec - M68K_VEC_LEVEL1 + 1
-		cpu.interruptInService &= ^(uint32(1) << level)
-	}
-
 	oldSupervisor := (cpu.SR & M68K_SR_S) != 0
 	newSupervisor := (newSR & M68K_SR_S) != 0
 	cpu.SR = newSR
@@ -10298,6 +10338,7 @@ func (cpu *M68KCPU) ExecRTE() {
 		cpu.swapStacksForMode(newSupervisor)
 	}
 	cpu.inException.Store(false)
+	cpu.rteCount.Add(1)
 	cpu.cycleCounter += M68K_CYCLE_RTE
 }
 func (cpu *M68KCPU) ExecSTOP() {
@@ -10305,7 +10346,8 @@ func (cpu *M68KCPU) ExecSTOP() {
 		cpu.ProcessException(M68K_VEC_PRIVILEGE)
 		return
 	}
-	cpu.SR = cpu.Fetch16()
+	newSR := cpu.Fetch16()
+	cpu.SR = newSR
 	cpu.stopped.Store(true)
 }
 func (cpu *M68KCPU) ExecRESET() {

@@ -1476,6 +1476,9 @@ func main() {
 		clipBridge := NewClipboardBridge(sysBus)
 		sysBus.MapIO(CLIP_REGION_BASE, CLIP_REGION_END, clipBridge.HandleRead, clipBridge.HandleWrite)
 
+		// IRQ diagnostic registers for freeze investigation scripts
+		loader.MapIRQDiagnostics()
+
 		// Wire up IE64 coprocessor completion interrupts to M68K CPU
 		coprocMgr.SetIRQTarget(m68kCPU)
 		coprocMgr.StartCompletionWatcher()
@@ -1980,6 +1983,8 @@ func main() {
 			// Wire up clipboard bridge
 			clipBridge := NewClipboardBridge(sysBus)
 			sysBus.MapIO(CLIP_REGION_BASE, CLIP_REGION_END, clipBridge.HandleRead, clipBridge.HandleWrite)
+			// IRQ diagnostic registers for freeze investigation scripts
+			loader.MapIRQDiagnostics()
 			// AROS HIDDs expect Amiga rawkey scancodes
 			termMMIO.amigaScancodeMode.Store(true)
 			loader.StartTimer()
