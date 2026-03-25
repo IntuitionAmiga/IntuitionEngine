@@ -145,7 +145,7 @@ graph LR
         IE64_RF["Register File<br/>32 x 64-bit (R0=zero)"]
         IE64_ALU["ALU"]
         IE64_FPU["FPU<br/>16 x float32"]
-        IE64_JIT["JIT Compiler<br/>ARM64 emitter"]
+        IE64_JIT["JIT Compiler<br/>ARM64 + x86-64"]
         IE64_TMR["Timer"]
         IE64_IRQ["Interrupt Ctrl"]
     end
@@ -221,7 +221,7 @@ There is no stable bus/MMIO timer control ABI at present. Legacy include symbols
 | Extension | CPU | Address Space | Notes |
 |-----------|-----|---------------|-------|
 | `.iex` / `.ie32` | IE32 | 32-bit (32MB) | Native RISC, 8-byte fixed instructions |
-| `.ie64` | IE64 | 32-bit (32MB) | 64-bit RISC, R0=zero, JIT on ARM64 |
+| `.ie64` | IE64 | 32-bit (32MB) | 64-bit RISC, R0=zero, JIT on ARM64 + x86-64 |
 | `.ie68` | M68K | 24-bit (16MB) | 68020, big-endian with LE bus adapter |
 | `.ie65` | 6502 | 16-bit (64KB) | Bank windows for 32MB bus access |
 | `.ie80` | Z80 | 16-bit (64KB) | Bank windows + port I/O bridge |
@@ -840,6 +840,7 @@ Audio: OTO hardware callback drives sample generation at 44.1kHz -- no IE-owned 
 | `cpu_ie64.go` | IE64 CPU + interpreter |
 | `fpu_ie64.go` | IE64 FPU (16 x float32) |
 | `jit_emit_arm64.go` | IE64 JIT ARM64 emitter |
+| `jit_emit_amd64.go` | IE64 JIT x86-64 emitter |
 | `cpu_m68k.go` | M68K 68020 |
 | `fpu_m68881.go` | M68881 FPU (8 x float64) |
 | `cpu_z80.go` | Z80 |

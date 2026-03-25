@@ -8,3 +8,6 @@ package main
 func (cpu *CPU64) jitExecute() {
 	cpu.Execute()
 }
+
+// freeJIT is a no-op on non-JIT platforms.
+func (cpu *CPU64) freeJIT() {}

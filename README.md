@@ -168,7 +168,7 @@ The Intuition Engine is a virtual machine that emulates a complete retro-style c
 | **Z80** | 8-bit | AF, BC, DE, HL + alternates, IX, IY | Full instruction set, interrupt modes |
 | **6502** | 8-bit | A, X, Y | NMOS instruction set, zero page optimisation |
 | **x86** | 32-bit | EAX-EDX, ESI, EDI, EBP, ESP | 8086 instructions + 32-bit registers, flat memory model |
-| **IE64** | 64-bit RISC | 32 general-purpose (R0=zero, R31=SP) | ARM64 JIT compiler, native FP32 FPU, compare-and-branch, no flags register |
+| **IE64** | 64-bit RISC | 32 general-purpose (R0=zero, R31=SP) | ARM64/x86-64 JIT compiler, native FP32 FPU, compare-and-branch, no flags register |
 
 Default core: **IE64**. Additional cores: **IE32, M68K, x86, Z80, 6502**.
 
@@ -3363,7 +3363,7 @@ Note: The interrupt vector is currently set internally. Assembly-level vector pr
 - Compare-and-branch model (no flags register - unlike IE32, M68K, Z80, 6502, x86)
 - R0 is hardwired to zero (reads always return 0, writes are silently ignored)
 - `.l` operations zero-mask to 32 bits; use `.q` for full 64-bit arithmetic
-- JIT compilation is enabled by default on ARM64 Linux; use `-nojit` to force interpreter mode
+- JIT compilation is enabled by default on ARM64 and x86-64 Linux; use `-nojit` to force interpreter mode
 - JIT and interpreter produce identical results for all programs (verified by test suite)
 - Full ISA reference: [IE64_ISA.md](sdk/docs/IE64_ISA.md)
 - Assembly cookbook: [IE64_COOKBOOK.md](sdk/docs/IE64_COOKBOOK.md)
@@ -5483,7 +5483,7 @@ The x86 emulation provides a 32-bit flat memory model:
 
 The IE64 is a 64-bit RISC processor with a clean load-store architecture:
 
-- **JIT compiler**: Block-based ARM64 native code compilation with backward branch optimisation for native loops. Enabled by default on ARM64 Linux; disable with `-nojit`
+- **JIT compiler**: Block-based native code compilation (ARM64 and x86-64) with backward branch optimisation for native loops. Enabled by default on ARM64 and x86-64 Linux; disable with `-nojit`
 - **32 general-purpose registers**: R0 (hardwired zero) through R31 (stack pointer), all 64-bit
 - **Fixed 8-byte instruction format**: Consistent fetch/decode
 - **Compare-and-branch model**: No flags register; conditional branches embed register comparison
