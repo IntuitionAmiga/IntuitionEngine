@@ -422,7 +422,19 @@ go test -tags headless -run='^$' -bench 'BenchmarkIE64_.*_JIT' -benchtime 3s ./.
 go test -tags headless -run='^$' -bench 'BenchmarkIE64_.*_Interpreter' -benchtime 3s ./...
 ```
 
-Benchmarks report ns/op and instructions/op. JIT benchmarks skip automatically on platforms without JIT support. See `ie64_benchmark_test.go` for detailed documentation of each workload and its instruction mix.
+Benchmarks report ns/op and instructions/op. MIPS can be derived: `MIPS = instructions/op / ns/op * 1000`. JIT benchmarks skip automatically on platforms without JIT support. See `ie64_benchmark_test.go` for detailed documentation of each workload and its instruction mix.
+
+Reference results on Intel Core i5-8365U @ 1.60 GHz (x86-64 JIT, `benchtime 3s`):
+
+| Workload | Interpreter | JIT | Speedup |
+|---|---|---|---|
+| ALU | 1,058 µs | 157 µs | 6.7x |
+| FPU | 1,242 µs | 372 µs | 3.3x |
+| Memory | 813 µs | 105 µs | 7.7x |
+| Mixed | 1,227 µs | 159 µs | 7.7x |
+| Call/Return | 583 µs | 7,036 µs | 0.08x |
+
+The Call benchmark is intentionally JIT-hostile (JSR/RTS exit the native block on every call). See [sdk/docs/IE64_JIT.md](sdk/docs/IE64_JIT.md) for full analysis.
 
 ---
 

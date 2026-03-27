@@ -343,10 +343,24 @@ Mid-block RTI/WAIT tests use manual scan+compile (no HALT stripping) to verify b
 
 ### Benchmarking
 
-The benchmark suite in `ie64_benchmark_test.go` measures throughput for five workload categories (ALU, FPU, Memory, Mixed, Call/Return) through both the interpreter and JIT:
+The benchmark suite in `ie64_benchmark_test.go` measures throughput for five workload categories through both the interpreter and JIT:
 
 ```bash
 go test -tags headless -run='^$' -bench BenchmarkIE64_ -benchtime 3s ./...
 ```
 
-Each benchmark reports ns/op and instructions/op. See the file for detailed documentation of each workload's instruction mix and expected performance characteristics.
+Each benchmark reports ns/op and instructions/op. MIPS can be derived: `MIPS = instructions/op / ns/op * 1000`. See the file for detailed documentation of each workload's instruction mix.
+
+#### Reference Results
+
+Measured on an Intel Core i5-8365U @ 1.60 GHz (4C/8T, Whiskey Lake, 2019) running Linux amd64, `benchtime 3s`:
+
+| Workload | Interpreter | JIT | Speedup | Interp MIPS | JIT MIPS |
+|---|---|---|---|---|---|
+| ALU (ADD/SUB/MUL/AND/OR/LSL) | 1,058 µs | 157 µs | **6.7x** | 85 | 574 |
+| FPU (FADD/FSUB/FMUL/FDIV) | 1,242 µs | 372 µs | **3.3x** | 56 | 188 |
+| Memory (LOAD/STORE sequential) | 813 µs | 105 µs | **7.7x** | 74 | 569 |
+| Mixed (ALU+FP+Memory) | 1,227 µs | 159 µs | **7.7x** | 65 | 503 |
+| Call (JSR/RTS loop) | 583 µs | 7,036 µs | **0.08x** | 86 | 7 |
+
+The Call workload is intentionally JIT-hostile: every JSR and RTS terminates the native block, so each iteration pays dispatcher unpack, cache lookup, and prologue/epilogue twice. This isolates block-transition overhead and represents the worst case for the JIT. All other workloads compile into a single native block with a backward branch loop, where the JIT delivers 3-8x speedup over the interpreter.
