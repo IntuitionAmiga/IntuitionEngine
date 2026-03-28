@@ -1131,12 +1131,18 @@ func main() {
 		case "m68k":
 			videoChip.SetBigEndianMode(true)
 			m68k := NewM68KCPU(sysBus)
+			if noJIT {
+				m68k.m68kJitEnabled = false
+			}
 			runner := NewM68KRunner(m68k)
 			runner.PerfEnabled = perfMode
 			return runner, nil
 		case "emutos", "aros":
 			videoChip.SetBigEndianMode(true)
 			m68k := NewM68KCPU(sysBus)
+			if noJIT {
+				m68k.m68kJitEnabled = false
+			}
 			runner := NewM68KRunner(m68k)
 			runner.PerfEnabled = perfMode
 			return runner, nil
@@ -1359,6 +1365,9 @@ func main() {
 
 		m68kRunner := NewM68KRunner(m68kCPU)
 		m68kRunner.PerfEnabled = perfMode
+		if noJIT {
+			m68kCPU.m68kJitEnabled = false
+		}
 		runtimeStatus.setCPUs(runtimeCPUM68K, nil, nil, m68kRunner, nil, nil, nil)
 
 		cpuRunner = m68kRunner
@@ -1394,6 +1403,9 @@ func main() {
 		m68kCPU := NewM68KCPU(sysBus)
 		m68kRunner := NewM68KRunner(m68kCPU)
 		m68kRunner.PerfEnabled = perfMode
+		if noJIT {
+			m68kCPU.m68kJitEnabled = false
+		}
 		loader := NewEmuTOSLoader(sysBus, m68kCPU, videoChip)
 		if err := loader.LoadROM(romBytes); err != nil {
 			fmt.Printf("Error loading EmuTOS ROM: %v\n", err)
@@ -1452,6 +1464,9 @@ func main() {
 		m68kCPU := NewM68KCPU(sysBus)
 		m68kRunner := NewM68KRunner(m68kCPU)
 		m68kRunner.PerfEnabled = perfMode
+		if noJIT {
+			m68kCPU.m68kJitEnabled = false
+		}
 		loader := NewAROSLoader(sysBus, m68kCPU, videoChip)
 		if err := loader.LoadROM(romBytes); err != nil {
 			fmt.Printf("Error loading AROS ROM: %v\n", err)

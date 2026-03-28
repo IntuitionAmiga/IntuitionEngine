@@ -9,8 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - x86-64 JIT compiler backend for IE64 (amd64/linux), matching ARM64 backend feature parity
-- `sdk/docs/IE64_JIT.md` — comprehensive JIT technical reference covering both backends
+- x86-64 JIT compiler backend for M68020 (amd64/linux): translates 68020 basic blocks to native x86-64 with big-endian memory handling, CCR in dedicated register, code page bitmap for self-mod detection, within-block backward branch optimisation with budget
+- `sdk/docs/IE64_JIT.md` — comprehensive JIT technical reference covering both IE64 backends
+- `sdk/docs/M68K_JIT.md` — M68020 JIT technical reference
+- M68K JIT benchmark suite (`m68k_jit_benchmark_test.go`): ALU, MemCopy, Call workloads comparing interpreter vs JIT
 - JIT section in DEVELOPERS.md with testing guide
+
+### Changed
+- M68K CPU: corrected 68EC020 references to 68020 (32-bit address bus)
+- M68K_ADDRESS_MASK changed from 0x00FFFFFF to 0xFFFFFFFF (full 32-bit addressing)
+- M68KRunner.Execute() now routes through JIT when enabled
 - `AROS` command at the BASIC prompt to boot AROS (mirrors existing `EMUTOS` command)
 - `EXEC_OP_AROS` (3) ProgramExecutor opcode and `EXEC_TYPE_AROS` (9) type constant
 - `cpu.load("AROS")` support in IE Script Engine

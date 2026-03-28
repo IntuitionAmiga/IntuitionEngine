@@ -707,3 +707,34 @@ go test -v -run TestJIT_ -tags headless ./...
 | `jit_exec.go` | Dispatcher loop, timer handling |
 | `jit_call.go` | Native code invocation via `runtime.cgocall` |
 | `jit_mmap.go` | Executable memory allocation (mmap RWX) |
+
+## M68020 JIT
+
+The M68020 CPU core includes a JIT compiler (amd64/linux only; ARM64 planned). It handles variable-length instructions, big-endian memory with byte-swap, 12+ addressing modes, and a 5-bit condition code register (XNZVC). JIT is enabled by default on supported platforms and disabled with `-nojit`.
+
+For full technical details, see [sdk/docs/M68K_JIT.md](sdk/docs/M68K_JIT.md).
+
+### Running M68K JIT Tests
+
+```bash
+# Infrastructure tests (scanner, length calc, liveness)
+go test -v -run TestM68KJIT_ -tags headless ./...
+
+# x86-64 emitter tests
+go test -v -run TestM68KJIT_AMD64_ -tags headless ./...
+
+# Integration tests (full dispatcher)
+go test -v -run TestM68KJIT_Exec_ -tags headless ./...
+
+# Benchmarks (JIT vs interpreter)
+go test -tags headless -run='^$' -bench 'BenchmarkM68K_.*_(JIT|Interpreter)' -benchtime 3s ./...
+```
+
+### M68K JIT Source Files
+
+| File | Purpose |
+|------|---------|
+| `jit_m68k_common.go` | M68KJITContext, block scanner, instruction length calculator |
+| `jit_m68k_emit_amd64.go` | x86-64 code emitter (4 mapped registers, CCR in R14) |
+| `jit_m68k_exec.go` | Dispatcher loop with STOP/interrupt/exception semantics |
+| `jit_m68k_dispatch.go` | Platform routing |
