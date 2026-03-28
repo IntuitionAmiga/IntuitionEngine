@@ -200,19 +200,6 @@ func amd64TEST_reg_imm32(cb *CodeBuffer, dst byte, imm uint32) {
 	cb.Emit32(imm)
 }
 
-// amd64TEST_reg_imm8 emits TEST reg8, imm8 (byte test on low byte of register).
-// Only works correctly for AL, CL, DL, BL (or with REX for SPL, BPL, SIL, DIL, R8B-R15B).
-func amd64TEST_reg_imm8(cb *CodeBuffer, reg byte, imm byte) {
-	if reg == amd64RAX {
-		// TEST AL, imm8: A8 imm8
-		cb.EmitBytes(0xA8, imm)
-		return
-	}
-	// Need REX for regs >= 4 to access SPL/BPL/SIL/DIL/R8B-R15B
-	emitREX(cb, false, 0, reg)
-	cb.EmitBytes(0xF6, modRM(3, 0, reg), imm)
-}
-
 // amd64ADD_mem32_imm32 emits ADD DWORD [base + disp], imm32.
 func amd64ADD_mem32_imm32(cb *CodeBuffer, base byte, disp int32, imm int32) {
 	emitMemOp(cb, false, 0x81, 0, base, disp) // /0 = ADD
@@ -469,12 +456,6 @@ func emit6502NOP(_ *CodeBuffer) {
 func amd64SHR_imm32(cb *CodeBuffer, dst byte, imm8 byte) {
 	emitREX(cb, false, 0, dst)
 	cb.EmitBytes(0xC1, modRM(3, 5, dst), imm8)
-}
-
-// amd64TEST_reg_reg32 emits TEST r32, r32 (32-bit).
-func amd64TEST_reg_reg32(cb *CodeBuffer, dst, src byte) {
-	emitREX(cb, false, src, dst)
-	cb.EmitBytes(0x85, modRM(3, src, dst))
 }
 
 // amd64OR_reg_imm32 emits OR r32, imm32.
