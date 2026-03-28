@@ -21,6 +21,7 @@ type CPU6502Runner struct {
 	loadAddr    uint16
 	entry       uint16
 	PerfEnabled bool
+	JITEnabled  bool
 
 	execMu     sync.Mutex
 	execDone   chan struct{}
@@ -83,7 +84,8 @@ func (r *CPU6502Runner) Reset() {
 
 func (r *CPU6502Runner) Execute() {
 	r.cpu.PerfEnabled = r.PerfEnabled
-	r.cpu.Execute()
+	r.cpu.jitEnabled = r.JITEnabled
+	r.cpu.jit6502Execute()
 }
 
 func (r *CPU6502Runner) CPU() *CPU_6502 {

@@ -249,6 +249,14 @@ type CPU_6502 struct {
 	InstructionCount uint64    // Total instructions executed
 	perfStartTime    time.Time // When execution started
 	lastPerfReport   time.Time // Last time we printed stats
+
+	// JIT compiler state
+	jitEnabled     bool
+	jitPersist     bool // when true, freeJIT6502() is no-op (benchmarks)
+	jitCache       *CodeCache
+	jitExecMem     any // *ExecMem
+	jitCtx         *JIT6502Context
+	codePageBitmap [256]byte // self-mod detection: one byte per 6502 page
 }
 
 // Running returns the execution state (thread-safe)
