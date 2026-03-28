@@ -1,4 +1,5 @@
 *.bin
+!sdk/players/*.bin
 /bin
 .gitignore
 .git/
