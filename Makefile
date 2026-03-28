@@ -103,7 +103,7 @@ GO_FLAGS := -ldflags "-s -w -X main.Version=$(APP_VERSION) -X main.Commit=$(COMM
 
 # Commands and tools
 GO := go
-SSTRIP := sstrip
+SSTRIP := true
 UPX := upx
 MKDIR := mkdir
 NICE := nice
@@ -326,6 +326,9 @@ aros-rom:
 	@echo "Building complete AROS workbench (all libs, classes, tools, prefs, devices)..."
 	@$(MAKE) -C "$(AROS_BUILD_DIR)" -j$(NCORES) workbench-complete 2>&1 || \
 		echo "  Warning: workbench-complete had some failures (non-fatal)"
+	@echo "Ensuring Zune classes are built (may have been skipped by Mesa failure)..."
+	@$(MAKE) -C "$(AROS_BUILD_DIR)" -j$(NCORES) workbench-classes-zune 2>&1 || \
+		echo "  Warning: workbench-classes-zune had some failures (non-fatal)"
 	@echo "Building additional targets not in workbench-complete..."
 	@$(MAKE) -C "$(AROS_BUILD_DIR)" -j$(NCORES) \
 		compiler-stdcio \
@@ -333,6 +336,7 @@ aros-rom:
 		kernel-ie-m68k-ahidrv 2>&1 || \
 		echo "  Warning: additional targets had failures (non-fatal)"
 	@echo "Installing stock AROS Startup-Sequence..."
+	@mkdir -p "$(AROS_BUILD_DIR)/bin/ie-m68k/AROS/S"
 	@cp -f "$(AROS_SRC_DIR)/workbench/s/Startup-Sequence" \
 		"$(AROS_BUILD_DIR)/bin/ie-m68k/AROS/S/Startup-Sequence"
 	@echo "Creating AROS directory structure..."
@@ -490,6 +494,10 @@ aros-rom:
 	fi; \
 	if command -v m68k-aros-objcopy >/dev/null 2>&1; then \
 		AROS_OBJCOPY="m68k-aros-objcopy"; \
+	elif command -v m68k-atari-mint-objcopy >/dev/null 2>&1; then \
+		AROS_OBJCOPY="m68k-atari-mint-objcopy"; \
+	elif command -v m68k-suse-linux-objcopy >/dev/null 2>&1; then \
+		AROS_OBJCOPY="m68k-suse-linux-objcopy"; \
 	else \
 		AROS_OBJCOPY="m68k-linux-gnu-objcopy"; \
 	fi; \
@@ -572,11 +580,12 @@ emutos-rom:
 	@echo "Building EmuTOS ROM from source tree: $(EMUTOS_SRC_DIR)"
 	@if command -v m68k-atari-mint-gcc >/dev/null 2>&1; then \
 		$(MAKE) -C "$(EMUTOS_SRC_DIR)" clean >/dev/null; \
-	elif command -v $(EMUTOS_LINUX_GCC) >/dev/null 2>&1 || command -v m68k-linux-gnu-gcc >/dev/null 2>&1 || command -v m68k-linux-gnu-gcc-13 >/dev/null 2>&1; then \
+	elif command -v $(EMUTOS_LINUX_GCC) >/dev/null 2>&1 || command -v m68k-linux-gnu-gcc >/dev/null 2>&1 || command -v m68k-linux-gnu-gcc-13 >/dev/null 2>&1 || command -v m68k-suse-linux-gcc >/dev/null 2>&1; then \
 		$(MAKE) -C "$(EMUTOS_SRC_DIR)" LINUX=1 clean >/dev/null; \
 	else \
 		$(MAKE) -C "$(EMUTOS_SRC_DIR)" clean >/dev/null; \
 	fi
+	@mkdir -p "$(EMUTOS_SRC_DIR)/obj"
 	@if [ "$(EMUTOS_BUILD_CMD)" = "auto" ]; then \
 		if command -v m68k-atari-mint-gcc >/dev/null 2>&1; then \
 			BUILD_CMD='$(MAKE) -C $(EMUTOS_SRC_DIR) CPUFLAGS=$(EMUTOS_CPUFLAGS) DEF="$(EMUTOS_MACHINE_DEF)" EXTRA_BIOS_SRC="$(EMUTOS_EXTRA_BIOS_SRC)" $(EMUTOS_BUILD_TARGET)'; \
@@ -584,20 +593,23 @@ emutos-rom:
 		elif command -v m68k-elf-gcc >/dev/null 2>&1; then \
 			BUILD_CMD='$(MAKE) -C $(EMUTOS_SRC_DIR) ELF=1 CPUFLAGS=$(EMUTOS_CPUFLAGS) DEF="$(EMUTOS_MACHINE_DEF)" EXTRA_BIOS_SRC="$(EMUTOS_EXTRA_BIOS_SRC)" $(EMUTOS_BUILD_TARGET)'; \
 			echo "Using ELF toolchain (m68k-elf-gcc)"; \
-		elif command -v $(EMUTOS_LINUX_GCC) >/dev/null 2>&1 || command -v m68k-linux-gnu-gcc >/dev/null 2>&1 || command -v m68k-linux-gnu-gcc-13 >/dev/null 2>&1; then \
+		elif command -v $(EMUTOS_LINUX_GCC) >/dev/null 2>&1 || command -v m68k-linux-gnu-gcc >/dev/null 2>&1 || command -v m68k-linux-gnu-gcc-13 >/dev/null 2>&1 || command -v m68k-suse-linux-gcc >/dev/null 2>&1; then \
 			if command -v $(EMUTOS_LINUX_GCC) >/dev/null 2>&1; then \
 				BUILD_CMD='$(MAKE) -C $(EMUTOS_SRC_DIR) ELF=1 TOOLCHAIN_PREFIX=m68k-linux-gnu- CC=$(EMUTOS_LINUX_GCC) CPUFLAGS=$(EMUTOS_CPUFLAGS) DEF="$(EMUTOS_MACHINE_DEF)" EXTRA_BIOS_SRC="$(EMUTOS_EXTRA_BIOS_SRC)" OPTFLAGS="$(EMUTOS_LINUX_OPTFLAGS)" WARNFLAGS="$(EMUTOS_LINUX_WARNFLAGS)" $(EMUTOS_BUILD_TARGET)'; \
 				echo "Using GNU/Linux M68K cross toolchain ($(EMUTOS_LINUX_GCC))"; \
 			elif command -v m68k-linux-gnu-gcc-13 >/dev/null 2>&1; then \
 				BUILD_CMD='$(MAKE) -C $(EMUTOS_SRC_DIR) ELF=1 TOOLCHAIN_PREFIX=m68k-linux-gnu- CC=m68k-linux-gnu-gcc-13 CPUFLAGS=$(EMUTOS_CPUFLAGS) DEF="$(EMUTOS_MACHINE_DEF)" EXTRA_BIOS_SRC="$(EMUTOS_EXTRA_BIOS_SRC)" OPTFLAGS="$(EMUTOS_LINUX_OPTFLAGS)" WARNFLAGS="$(EMUTOS_LINUX_WARNFLAGS)" $(EMUTOS_BUILD_TARGET)'; \
 				echo "Using GNU/Linux M68K cross toolchain (m68k-linux-gnu-gcc-13)"; \
+			elif command -v m68k-suse-linux-gcc >/dev/null 2>&1; then \
+				BUILD_CMD='$(MAKE) -C $(EMUTOS_SRC_DIR) ELF=1 TOOLCHAIN_PREFIX=m68k-suse-linux- CC=m68k-suse-linux-gcc CPUFLAGS=$(EMUTOS_CPUFLAGS) DEF="$(EMUTOS_MACHINE_DEF)" EXTRA_BIOS_SRC="$(EMUTOS_EXTRA_BIOS_SRC)" OPTFLAGS="$(EMUTOS_LINUX_OPTFLAGS)" WARNFLAGS="$(EMUTOS_LINUX_WARNFLAGS)" $(EMUTOS_BUILD_TARGET)'; \
+				echo "Using openSUSE M68K cross toolchain (m68k-suse-linux-gcc)"; \
 			else \
 				BUILD_CMD='$(MAKE) -C $(EMUTOS_SRC_DIR) ELF=1 TOOLCHAIN_PREFIX=m68k-linux-gnu- CPUFLAGS=$(EMUTOS_CPUFLAGS) DEF="$(EMUTOS_MACHINE_DEF)" EXTRA_BIOS_SRC="$(EMUTOS_EXTRA_BIOS_SRC)" OPTFLAGS="$(EMUTOS_LINUX_OPTFLAGS)" WARNFLAGS="$(EMUTOS_LINUX_WARNFLAGS)" $(EMUTOS_BUILD_TARGET)'; \
 				echo "Using GNU/Linux M68K cross toolchain (m68k-linux-gnu-gcc)"; \
 			fi; \
 		else \
 			echo "Error: EmuTOS requires a M68K cross-compiler."; \
-			echo "Missing m68k-atari-mint-gcc, m68k-elf-gcc, and m68k-linux-gnu-gcc."; \
+			echo "Missing m68k-atari-mint-gcc, m68k-elf-gcc, m68k-linux-gnu-gcc, and m68k-suse-linux-gcc."; \
 			echo "Install one, then re-run make emutos."; \
 			echo "Or override with a custom command:"; \
 			echo "  make emutos EMUTOS_BUILD_CMD='make -C $(EMUTOS_SRC_DIR) <target>'"; \

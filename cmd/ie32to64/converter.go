@@ -222,10 +222,10 @@ func (c *Converter) ConvertLine(rawLine string) []string {
 	}
 
 	// Capture leading whitespace
-	indent := ""
+	var indent strings.Builder
 	for i := 0; i < len(rawLine); i++ {
 		if rawLine[i] == ' ' || rawLine[i] == '\t' {
-			indent += string(rawLine[i])
+			indent.WriteString(string(rawLine[i]))
 		} else {
 			break
 		}
@@ -245,14 +245,14 @@ func (c *Converter) ConvertLine(rawLine string) []string {
 		return []string{""}
 
 	case LineLabel:
-		return []string{indent + code + commentSuffix}
+		return []string{indent.String() + code + commentSuffix}
 
 	case LineDirective:
 		converted := c.ConvertDirective(code)
-		return []string{indent + converted + commentSuffix}
+		return []string{indent.String() + converted + commentSuffix}
 
 	case LineInstruction:
-		lines := c.convertInstruction(code, indent)
+		lines := c.convertInstruction(code, indent.String())
 		// Attach comment to the first output line
 		if comment != "" && len(lines) > 0 {
 			lines[0] = lines[0] + commentSuffix

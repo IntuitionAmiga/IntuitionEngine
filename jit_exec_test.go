@@ -364,3 +364,119 @@ func TestJIT_vs_Interpreter_BackwardBranch(t *testing.T) {
 		t.Errorf("R2 = %d, want 500500", jitCPU.regs[2])
 	}
 }
+
+// TestJIT_FCVTFI_Bail verifies that FCVTFI (float→int) correctly bails to
+// the interpreter through the full dispatcher loop. On x86-64 this exercises
+// the NeedIOFallback handoff; on ARM64 it runs natively but should produce
+// the same result.
+func TestJIT_FCVTFI_Bail(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+	cpu.jitEnabled = true
+
+	// Set F2 = 42.0 (0x42280000)
+	cpu.FPU.FPRegs[2] = 0x42280000
+
+	// Program: FCVTFI R1, F2; HALT
+	// FCVTFI is the first instruction — on x86-64 this hits needsFallback=false
+	// (only HALT/WAIT/RTI trigger needsFallback at block entry), so the JIT
+	// compiles it but emits a bail. The dispatcher re-executes via interpretOne().
+	offset := uint32(PROG_START)
+	copy(cpu.memory[offset:], ie64Instr(OP_FCVTFI, 1, 0, 0, 2, 0, 0))
+	offset += 8
+	copy(cpu.memory[offset:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	done := make(chan struct{})
+	go func() {
+		cpu.ExecuteJIT()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		cpu.running.Store(false)
+		<-done
+		t.Fatal("timed out")
+	}
+
+	if cpu.regs[1] != 42 {
+		t.Fatalf("R1 = %d, want 42", cpu.regs[1])
+	}
+}
+
+// TestJIT_FCVTFI_Saturate verifies FCVTFI overflow saturation through the
+// dispatcher. Positive overflow should produce MaxInt32 (2147483647).
+func TestJIT_FCVTFI_Saturate(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+	cpu.jitEnabled = true
+
+	// F2 = 1e20 (way above MaxInt32) → bit pattern 0x60AD78EC
+	cpu.FPU.FPRegs[2] = 0x60AD78EC
+
+	offset := uint32(PROG_START)
+	copy(cpu.memory[offset:], ie64Instr(OP_FCVTFI, 1, 0, 0, 2, 0, 0))
+	offset += 8
+	copy(cpu.memory[offset:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	done := make(chan struct{})
+	go func() {
+		cpu.ExecuteJIT()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		cpu.running.Store(false)
+		<-done
+		t.Fatal("timed out")
+	}
+
+	// Interpreter saturates positive overflow to MaxInt32
+	want := uint64(0x7FFFFFFF) // MaxInt32
+	if cpu.regs[1] != want {
+		t.Fatalf("R1 = 0x%X, want 0x%X (MaxInt32 saturation)", cpu.regs[1], want)
+	}
+
+	// IO exception flag should be set
+	if cpu.FPU.FPSR&IE64_FPU_EX_IO == 0 {
+		t.Fatal("FPSR IO exception flag should be set after overflow")
+	}
+}
+
+// TestJIT_FINT_Bail verifies that FINT (round to integer) correctly bails
+// to the interpreter and produces the right result through the dispatcher.
+func TestJIT_FINT_Bail(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+	cpu.jitEnabled = true
+
+	// F2 = 2.7 (0x402CCCCD), FPCR mode 0 = nearest → F1 = 3.0 (0x40400000)
+	cpu.FPU.FPRegs[2] = 0x402CCCCD
+	cpu.FPU.FPCR = 0 // nearest rounding
+
+	offset := uint32(PROG_START)
+	copy(cpu.memory[offset:], ie64Instr(OP_FINT, 1, 0, 0, 2, 0, 0))
+	offset += 8
+	copy(cpu.memory[offset:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	done := make(chan struct{})
+	go func() {
+		cpu.ExecuteJIT()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		cpu.running.Store(false)
+		<-done
+		t.Fatal("timed out")
+	}
+
+	if cpu.FPU.FPRegs[1] != 0x40400000 {
+		t.Fatalf("F1 = 0x%08X, want 0x40400000 (3.0, nearest rounding)", cpu.FPU.FPRegs[1])
+	}
+}

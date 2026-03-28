@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- x86-64 JIT compiler backend for IE64 (amd64/linux), matching ARM64 backend feature parity
+- `sdk/docs/IE64_JIT.md` — comprehensive JIT technical reference covering both backends
+- JIT section in DEVELOPERS.md with testing guide
 - `AROS` command at the BASIC prompt to boot AROS (mirrors existing `EMUTOS` command)
 - `EXEC_OP_AROS` (3) ProgramExecutor opcode and `EXEC_TYPE_AROS` (9) type constant
 - `cpu.load("AROS")` support in IE Script Engine

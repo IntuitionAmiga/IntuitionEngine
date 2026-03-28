@@ -24,6 +24,7 @@ For the SDK developer package, see [sdk/README.md](sdk/README.md).
 13. [Contributing](#13-contributing)
 14. [EmuTOS Integration](#14-emutos-integration)
 15. [AROS Integration](#15-aros-integration)
+16. [JIT Compilation](#16-jit-compilation)
 
 ---
 
@@ -403,6 +404,38 @@ go test -tags videolong -run TestFireEffect
 | TestMandelbrot | Fractal visualisation |
 | TestParticles | Physics-based particles |
 
+### IE64 Benchmarks
+
+The IE64 benchmark suite measures CPU throughput through both the interpreter and JIT compiler across five workload categories: integer ALU, floating-point, memory access, mixed, and subroutine call/return.
+
+```bash
+# Run all IE64 benchmarks (skip normal tests with -run='^$')
+go test -tags headless -run='^$' -bench BenchmarkIE64_ -benchtime 3s -count 3 ./...
+
+# Compare JIT vs interpreter
+go test -tags headless -run='^$' -bench 'BenchmarkIE64_(ALU|FPU|Memory|Mixed|Call)' -benchtime 3s ./...
+
+# Run only JIT benchmarks
+go test -tags headless -run='^$' -bench 'BenchmarkIE64_.*_JIT' -benchtime 3s ./...
+
+# Run only interpreter benchmarks
+go test -tags headless -run='^$' -bench 'BenchmarkIE64_.*_Interpreter' -benchtime 3s ./...
+```
+
+Benchmarks report ns/op and instructions/op. MIPS can be derived: `MIPS = instructions/op / ns/op * 1000`. JIT benchmarks skip automatically on platforms without JIT support. See `ie64_benchmark_test.go` for detailed documentation of each workload and its instruction mix.
+
+Reference results on Intel Core i5-8365U @ 1.60 GHz (x86-64 JIT, `benchtime 3s`):
+
+| Workload | Interpreter | JIT | Speedup |
+|---|---|---|---|
+| ALU | 1,058 µs | 157 µs | 6.7x |
+| FPU | 1,242 µs | 372 µs | 3.3x |
+| Memory | 813 µs | 105 µs | 7.7x |
+| Mixed | 1,227 µs | 159 µs | 7.7x |
+| Call/Return | 583 µs | 7,036 µs | 0.08x |
+
+The Call benchmark is intentionally JIT-hostile (JSR/RTS exit the native block on every call). See [sdk/docs/IE64_JIT.md](sdk/docs/IE64_JIT.md) for full analysis.
+
 ---
 
 # 10. Debugging
@@ -639,3 +672,38 @@ The DOS handler at MMIO `0xF2220-0xF225F` bridges AmigaDOS packet protocol to th
 make aros-rom           # Build AROS ROM + filesystem from source
 make aros               # Build VM with embedded AROS ROM
 ```
+
+---
+
+# 16. JIT Compilation
+
+The IE64 CPU core includes a JIT compiler that translates IE64 machine code into native ARM64 or x86-64 instructions at runtime. JIT is enabled by default on supported platforms (Linux/arm64, Linux/amd64) and can be disabled with `-nojit`.
+
+For full technical details (register mappings, return-channel contract, I/O dual-path, FPU categories, backward branch budget, fallback rules), see [sdk/docs/IE64_JIT.md](sdk/docs/IE64_JIT.md).
+
+## Running JIT Tests
+
+```bash
+# x86-64 backend tests (on amd64)
+go test -v -run TestAMD64_ -tags headless ./...
+
+# ARM64 backend tests (on arm64)
+go test -v -run TestARM64_ -tags headless ./...
+
+# JIT-vs-interpreter parity (verifies JIT matches interpreter output)
+go test -v -run TestJIT_vs_Interpreter -tags headless ./...
+
+# Shared infrastructure (block scanner, code cache, register analysis)
+go test -v -run TestJIT_ -tags headless ./...
+```
+
+## JIT Source Files
+
+| File | Purpose |
+|------|---------|
+| `jit_common.go` | JITContext, CodeBuffer, block scanner, register analysis, code cache |
+| `jit_emit_arm64.go` | ARM64 code emitter (15 mapped registers) |
+| `jit_emit_amd64.go` | x86-64 code emitter (5 mapped registers) |
+| `jit_exec.go` | Dispatcher loop, timer handling |
+| `jit_call.go` | Native code invocation via `runtime.cgocall` |
+| `jit_mmap.go` | Executable memory allocation (mmap RWX) |

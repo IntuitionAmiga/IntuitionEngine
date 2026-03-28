@@ -234,6 +234,7 @@ type CPU64 struct {
 
 	// JIT compiler state (populated only when JIT is enabled)
 	jitEnabled bool
+	jitPersist bool // when true, freeJIT() is a no-op (used by benchmarks)
 	jitCache   *CodeCache
 	jitExecMem any // *ExecMem — uses any to avoid build tag dependency
 	jitCtx     *JITContext

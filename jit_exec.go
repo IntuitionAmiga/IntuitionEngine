@@ -38,8 +38,12 @@ func (cpu *CPU64) initJIT() error {
 	return nil
 }
 
-// freeJIT releases all JIT resources.
+// freeJIT releases all JIT resources. If jitPersist is set (used by benchmarks),
+// the code cache and exec memory are kept alive for reuse across runs.
 func (cpu *CPU64) freeJIT() {
+	if cpu.jitPersist {
+		return
+	}
 	if em := cpu.getJITExecMem(); em != nil {
 		em.Free()
 		cpu.jitExecMem = nil
