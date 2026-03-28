@@ -701,6 +701,14 @@ type M68KCPU struct {
 	DebugTraceEnabled bool
 	debugTraceBuffer  [256]debugTraceEntry
 	debugTraceIdx     uint8
+
+	// JIT compiler state
+	m68kJitEnabled    bool
+	m68kJitPersist    bool // keep code cache alive across benchmark iterations
+	m68kJitExecMem    any  // *ExecMem (typed via accessor)
+	m68kJitCache      *CodeCache
+	m68kJitCtx        *M68KJITContext
+	m68kJitCodeBitmap []byte // code page bitmap for self-mod detection
 }
 
 type debugTraceEntry struct {

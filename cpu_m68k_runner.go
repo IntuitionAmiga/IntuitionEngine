@@ -12,6 +12,8 @@ type M68KRunner struct {
 }
 
 func NewM68KRunner(cpu *M68KCPU) *M68KRunner {
+	// Enable JIT by default on supported platforms
+	cpu.m68kJitEnabled = m68kJitAvailable
 	return &M68KRunner{cpu: cpu}
 }
 
@@ -25,7 +27,7 @@ func (r *M68KRunner) Reset() {
 
 func (r *M68KRunner) Execute() {
 	r.cpu.PerfEnabled = r.PerfEnabled
-	r.cpu.ExecuteInstruction()
+	r.cpu.m68kJitExecute()
 }
 
 func (r *M68KRunner) CPU() *M68KCPU {
