@@ -712,18 +712,23 @@ go test -v -run TestJIT_ -tags headless ./...
 
 The M68020 CPU core includes a JIT compiler (amd64/linux only; ARM64 planned). It handles variable-length instructions, big-endian memory with byte-swap, 12+ addressing modes, and a 5-bit condition code register (XNZVC). JIT is enabled by default on supported platforms and disabled with `-nojit`.
 
+Key optimisations:
+- **Block chaining**: Direct JMP rel32 between compiled blocks (BRA/JMP/JSR/BSR/RTS/Bcc/DBcc), avoiding Go dispatcher overhead. Budget counter (64 blocks) for interrupt safety.
+- **Lazy CCR**: Defers flag extraction from host EFLAGS, using direct x86 Jcc for M68K branch conditions. Eliminates ~12 instructions per flag-setter.
+- **2-entry MRU RTS cache**: Fast subroutine returns without dispatcher round-trip.
+
 For full technical details, see [sdk/docs/M68K_JIT.md](sdk/docs/M68K_JIT.md).
 
 ### Running M68K JIT Tests
 
 ```bash
-# Infrastructure tests (scanner, length calc, liveness)
+# Infrastructure tests (scanner, length calc, liveness, chain infrastructure)
 go test -v -run TestM68KJIT_ -tags headless ./...
 
 # x86-64 emitter tests
 go test -v -run TestM68KJIT_AMD64_ -tags headless ./...
 
-# Integration tests (full dispatcher)
+# Integration tests (full dispatcher with chaining)
 go test -v -run TestM68KJIT_Exec_ -tags headless ./...
 
 # Benchmarks (JIT vs interpreter)
@@ -734,7 +739,9 @@ go test -tags headless -run='^$' -bench 'BenchmarkM68K_.*_(JIT|Interpreter)' -be
 
 | File | Purpose |
 |------|---------|
-| `jit_m68k_common.go` | M68KJITContext, block scanner, instruction length calculator |
-| `jit_m68k_emit_amd64.go` | x86-64 code emitter (4 mapped registers, CCR in R14) |
-| `jit_m68k_exec.go` | Dispatcher loop with STOP/interrupt/exception semantics |
+| `jit_m68k_common.go` | M68KJITContext (with chain/RTS cache fields), block scanner, instruction length calculator |
+| `jit_m68k_emit_amd64.go` | x86-64 code emitter: chain entry/exit, lazy CCR, 4 mapped registers |
+| `jit_m68k_exec.go` | Dispatcher: chain patching, budget init, RTS cache, STOP/interrupt semantics |
 | `jit_m68k_dispatch.go` | Platform routing |
+| `jit_common.go` | JITBlock (with chainEntry/chainSlots), CodeCache.PatchChainsTo, chainSlot |
+| `jit_mmap.go` | ExecMem + PatchRel32At for runtime chain patching |

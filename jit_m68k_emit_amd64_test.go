@@ -995,3 +995,116 @@ func TestM68KJIT_AMD64_PEA_Disp(t *testing.T) {
 		t.Errorf("PEA: pushed = 0x%08X, want 0x2010", pushed)
 	}
 }
+
+// ===========================================================================
+// Lazy CCR Tests (Stage 5)
+// ===========================================================================
+
+// TestM68KJIT_AMD64_LazyCCR_XPreserved verifies that X flag is preserved
+// across logical operations in lazy CCR mode.
+func TestM68KJIT_AMD64_LazyCCR_XPreserved(t *testing.T) {
+	r := newM68KJITTestRig(t)
+	r.cpu.DataRegs[0] = 0xFFFFFFFF
+	r.cpu.DataRegs[1] = 1
+
+	// ADD.L D1,D0 → 0 with C=1, X=1; AND.L D0,D0 (=0, should preserve X)
+	// ADD: 0xD081; AND.L D0,D0: 0xC080 (1100 000 000 000 000)
+	r.compileAndRun(t, 0x1000, 0xD081, 0xC080)
+
+	// X flag should be set (from ADD's carry, preserved by AND)
+	if r.cpu.SR&M68K_SR_X == 0 {
+		t.Error("X flag should be preserved across AND (set by ADD carry)")
+	}
+	// C and V should be cleared by AND
+	if r.cpu.SR&M68K_SR_C != 0 {
+		t.Error("C flag should be cleared by AND")
+	}
+	if r.cpu.SR&M68K_SR_V != 0 {
+		t.Error("V flag should be cleared by AND")
+	}
+}
+
+// TestM68KJIT_AMD64_LazyCCR_BlockExit verifies that lazy CCR is correctly
+// materialized into SR at block exit.
+func TestM68KJIT_AMD64_LazyCCR_BlockExit(t *testing.T) {
+	r := newM68KJITTestRig(t)
+	r.cpu.DataRegs[0] = 0
+
+	// TST.L D0 (result is 0 → Z=1, N=0)
+	// TST.L D0: 0x4A80
+	r.compileAndRun(t, 0x1000, 0x4A80)
+
+	// Z should be set at block exit
+	if r.cpu.SR&M68K_SR_Z == 0 {
+		t.Error("Z flag should be set for TST of zero (materialized at block exit)")
+	}
+	if r.cpu.SR&M68K_SR_N != 0 {
+		t.Error("N flag should be clear for TST of zero")
+	}
+}
+
+// TestM68KJIT_AMD64_LazyCCR_XInitFromPrologue verifies that the X flag
+// stack slot is correctly seeded from SR on block entry.
+func TestM68KJIT_AMD64_LazyCCR_XInitFromPrologue(t *testing.T) {
+	r := newM68KJITTestRig(t)
+	// Set X=1 in SR before block entry
+	r.cpu.SR |= M68K_SR_X
+	r.cpu.DataRegs[0] = 0xFF
+
+	// AND.L D0,D0 — logical op, X should be preserved from incoming SR
+	// AND.L D0,D0: 0xC080
+	r.compileAndRun(t, 0x1000, 0xC080)
+
+	// X should still be set (seeded from prologue, preserved by AND)
+	if r.cpu.SR&M68K_SR_X == 0 {
+		t.Error("X flag should be preserved from incoming SR through AND (logical op)")
+	}
+}
+
+// TestM68KJIT_AMD64_LazyCCR_CMP_PreservesX verifies that CMP does NOT
+// overwrite the X flag. X should be preserved from the previous arithmetic op.
+func TestM68KJIT_AMD64_LazyCCR_CMP_PreservesX(t *testing.T) {
+	r := newM68KJITTestRig(t)
+	r.cpu.DataRegs[0] = 0xFFFFFFFF
+	r.cpu.DataRegs[1] = 1
+	r.cpu.DataRegs[2] = 5
+	r.cpu.DataRegs[3] = 5
+
+	// ADD.L D1,D0 → carry, X=1; CMP.L D3,D2 → equal, X should stay 1
+	// ADD: 0xD081; CMP.L D3,D2: 0xB483 (1011 010 010 000 011)
+	r.compileAndRun(t, 0x1000, 0xD081, 0xB483)
+
+	// X must be 1 (from ADD's carry, preserved by CMP)
+	if r.cpu.SR&M68K_SR_X == 0 {
+		t.Error("X flag should be 1 (set by ADD carry, preserved by CMP)")
+	}
+	// Z must be 1 (from CMP of equal values)
+	if r.cpu.SR&M68K_SR_Z == 0 {
+		t.Error("Z flag should be 1 (CMP of equal values)")
+	}
+	// C must be 0 (CMP 5-5 = 0, no borrow)
+	if r.cpu.SR&M68K_SR_C != 0 {
+		t.Error("C flag should be 0 (CMP 5-5 has no borrow)")
+	}
+}
+
+// TestM68KJIT_AMD64_LazyCCR_XInitFromPrologue2 verifies X preservation
+// with a block that has no arithmetic ops (only logical), ensuring the
+// prologue seeds [RSP+24] correctly.
+func TestM68KJIT_AMD64_LazyCCR_XInitFromPrologue2(t *testing.T) {
+	r := newM68KJITTestRig(t)
+	// Set X=1 in SR
+	r.cpu.SR |= M68K_SR_X
+	r.cpu.DataRegs[0] = 0
+
+	// MOVEQ #0,D1 — sets Z=1, N=0, V=0, C=0, X unchanged
+	r.compileAndRun(t, 0x1000, 0x7200)
+
+	// X should still be 1 (from incoming SR, preserved by MOVEQ which is logical)
+	if r.cpu.SR&M68K_SR_X == 0 {
+		t.Error("X flag should be preserved from incoming SR through MOVEQ")
+	}
+	if r.cpu.SR&M68K_SR_Z == 0 {
+		t.Error("Z flag should be set for MOVEQ #0")
+	}
+}
