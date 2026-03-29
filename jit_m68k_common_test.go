@@ -6,6 +6,7 @@ package main
 
 import (
 	"testing"
+	"unsafe"
 )
 
 // ===========================================================================
@@ -663,5 +664,149 @@ func TestM68KJIT_DetectNoBackwardBranch(t *testing.T) {
 
 	if m68kDetectBackwardBranches(instrs, 0x1000) {
 		t.Error("should NOT detect backward branch: BEQ.B +4 is forward")
+	}
+}
+
+// ===========================================================================
+// Block Chaining Infrastructure Tests (Stage 1)
+// ===========================================================================
+
+func TestM68KJIT_ContextChainOffsets(t *testing.T) {
+	var ctx M68KJITContext
+	base := uintptr(unsafe.Pointer(&ctx))
+
+	tests := []struct {
+		name   string
+		field  uintptr
+		expect uintptr
+	}{
+		{"ChainBudget", uintptr(unsafe.Pointer(&ctx.ChainBudget)) - base, m68kCtxOffChainBudget},
+		{"ChainCount", uintptr(unsafe.Pointer(&ctx.ChainCount)) - base, m68kCtxOffChainCount},
+		{"RTSCache0PC", uintptr(unsafe.Pointer(&ctx.RTSCache0PC)) - base, m68kCtxOffRTSCache0PC},
+		{"RTSCache0Addr", uintptr(unsafe.Pointer(&ctx.RTSCache0Addr)) - base, m68kCtxOffRTSCache0Addr},
+		{"RTSCache1PC", uintptr(unsafe.Pointer(&ctx.RTSCache1PC)) - base, m68kCtxOffRTSCache1PC},
+		{"RTSCache1Addr", uintptr(unsafe.Pointer(&ctx.RTSCache1Addr)) - base, m68kCtxOffRTSCache1Addr},
+	}
+	for _, tc := range tests {
+		if tc.field != tc.expect {
+			t.Errorf("%s: offset %d, want %d", tc.name, tc.field, tc.expect)
+		}
+	}
+}
+
+func TestM68KJIT_ChainSlotTracking(t *testing.T) {
+	block := &JITBlock{
+		startPC:    0x1000,
+		endPC:      0x100A,
+		instrCount: 3,
+		execAddr:   0xDEAD0000,
+		execSize:   64,
+		chainEntry: 0xDEAD0020,
+		chainSlots: []chainSlot{
+			{targetPC: 0x2000, patchAddr: 0xDEAD0010},
+			{targetPC: 0x3000, patchAddr: 0xDEAD0030},
+		},
+	}
+
+	if block.chainEntry != 0xDEAD0020 {
+		t.Errorf("chainEntry: got %x, want %x", block.chainEntry, 0xDEAD0020)
+	}
+	if len(block.chainSlots) != 2 {
+		t.Fatalf("chainSlots length: got %d, want 2", len(block.chainSlots))
+	}
+	if block.chainSlots[0].targetPC != 0x2000 {
+		t.Errorf("slot[0].targetPC: got %x, want %x", block.chainSlots[0].targetPC, 0x2000)
+	}
+	if block.chainSlots[1].patchAddr != 0xDEAD0030 {
+		t.Errorf("slot[1].patchAddr: got %x, want %x", block.chainSlots[1].patchAddr, 0xDEAD0030)
+	}
+}
+
+func TestM68KJIT_CodeCachePatchChains(t *testing.T) {
+	// Allocate real executable memory so PatchRel32At can write
+	em, err := AllocExecMem(4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer em.Free()
+
+	// Write a block A with a JMP rel32 (0xE9 + 4-byte displacement)
+	// The displacement initially points to itself (displacement = 0)
+	codeA := []byte{
+		0x90,                         // NOP (padding to get interesting offsets)
+		0xE9, 0x00, 0x00, 0x00, 0x00, // JMP rel32 (displacement at offset 1+1=2 from start)
+	}
+	addrA, err := em.Write(codeA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	patchAddr := addrA + 2 // address of the 4-byte displacement
+
+	// Write a block B (the chain target)
+	codeB := []byte{0x90, 0xC3} // NOP + RET
+	addrB, err := em.Write(codeB)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blockA := &JITBlock{
+		startPC:    0x1000,
+		endPC:      0x1006,
+		instrCount: 1,
+		execAddr:   addrA,
+		execSize:   len(codeA),
+		chainSlots: []chainSlot{
+			{targetPC: 0x2000, patchAddr: patchAddr},
+		},
+	}
+	blockB := &JITBlock{
+		startPC:    0x2000,
+		endPC:      0x2004,
+		instrCount: 1,
+		execAddr:   addrB,
+		execSize:   len(codeB),
+		chainEntry: addrB, // chain entry = start of block B
+	}
+
+	cc := NewCodeCache()
+	cc.Put(blockA)
+	cc.Put(blockB)
+
+	// Patch chains: block A's exit targeting 0x2000 should be patched to block B's chainEntry
+	cc.PatchChainsTo(0x2000, blockB.chainEntry)
+
+	// Verify the displacement was patched correctly
+	// Expected: target - (patchAddr + 4)
+	expectedDisp := int32(blockB.chainEntry) - int32(patchAddr+4)
+	patchBytes := (*[4]byte)(unsafe.Pointer(patchAddr))
+	gotDisp := int32(patchBytes[0]) | int32(patchBytes[1])<<8 | int32(patchBytes[2])<<16 | int32(patchBytes[3])<<24
+	if gotDisp != expectedDisp {
+		t.Errorf("patched displacement: got %d, want %d", gotDisp, expectedDisp)
+	}
+}
+
+func TestM68KJIT_CodeCacheInvalidateChains(t *testing.T) {
+	cc := NewCodeCache()
+	cc.Put(&JITBlock{
+		startPC:    0x1000,
+		chainEntry: 0xDEAD0000,
+		chainSlots: []chainSlot{{targetPC: 0x2000, patchAddr: 0xBEEF0000}},
+	})
+	cc.Put(&JITBlock{
+		startPC:    0x2000,
+		chainEntry: 0xDEAD1000,
+	})
+
+	cc.Invalidate()
+
+	// After invalidation, cache should be empty — chain slots are unreachable
+	if cc.Get(0x1000) != nil {
+		t.Error("block 0x1000 should be gone after Invalidate")
+	}
+	if cc.Get(0x2000) != nil {
+		t.Error("block 0x2000 should be gone after Invalidate")
+	}
+	if len(cc.Blocks()) != 0 {
+		t.Errorf("Blocks() should be empty, got %d entries", len(cc.Blocks()))
 	}
 }

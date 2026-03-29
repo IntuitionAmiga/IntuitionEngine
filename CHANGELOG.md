@@ -10,8 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - x86-64 JIT compiler backend for IE64 (amd64/linux), matching ARM64 backend feature parity
 - x86-64 JIT compiler backend for M68020 (amd64/linux): translates 68020 basic blocks to native x86-64 with big-endian memory handling, CCR in dedicated register, code page bitmap for self-mod detection, within-block backward branch optimisation with budget
+- M68K JIT block chaining: direct block-to-block jumps via patchable JMP rel32, eliminating Go dispatcher overhead for BRA/JMP/JSR/BSR/RTS/Bcc/DBcc with known targets
+- M68K JIT 2-entry MRU RTS inline cache for fast subroutine returns without dispatcher round-trip
+- M68K JIT lazy CCR: defers flag extraction from host EFLAGS into R14, uses direct x86 Jcc for M68K branch conditions (eliminates ~12 instructions per flag-setter)
+- M68K JIT chain budget system (64 blocks per native call) for interrupt-safe chained execution
 - `sdk/docs/IE64_JIT.md` — comprehensive JIT technical reference covering both IE64 backends
-- `sdk/docs/M68K_JIT.md` — M68020 JIT technical reference
+- `sdk/docs/M68K_JIT.md` — M68020 JIT technical reference (block chaining, lazy CCR, RTS cache)
 - M68K JIT benchmark suite (`m68k_jit_benchmark_test.go`): ALU, MemCopy, Call workloads comparing interpreter vs JIT
 - JIT section in DEVELOPERS.md with testing guide
 

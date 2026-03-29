@@ -28,15 +28,83 @@ The M68020 JIT compiler translates basic blocks of 68020 machine code into nativ
                                    [m68kCompileBlock()]
                                         |
                                    [Cache + bitmap mark]
+                                   [Patch chains (bidirectional)]
                                         |
                                    [callNative()]
                                         |
-                                   [Read RetPC/RetCount]
+                                   [Chained execution: Block→Block→...]
+                                   [via patchable JMP rel32]
                                         |
-                              [NeedInval? → invalidate]
+                                   [Return on budget exhaustion]
+                                   [or NeedInval / NeedIOFallback]
+                                        |
+                              [Read RetPC/RetCount]
+                              [NeedInval? → invalidate + clear RTS cache]
                               [NeedIOFallback? → StepOne()]
                               [Check interrupts/exceptions]
 ```
+
+## Block Chaining
+
+The JIT uses direct block-to-block chaining to eliminate Go dispatcher overhead between blocks. Each compiled block has two entry points:
+
+- **Full entry** (`execAddr`): Called by `callNative()`. Pushes callee-saved registers, loads base pointers, falls through to chain entry.
+- **Chain entry** (`chainEntry`): Lightweight entry for chained transitions. Reloads mapped registers and CCR from memory, but does NOT push callee-saved registers (they were pushed by the first block's full entry).
+
+Block terminators with statically-known targets (BRA, JMP abs, JSR abs, BSR, Bcc external, DBcc external) emit chain exits instead of full epilogues:
+
+1. Store mapped registers and merge CCR to SR (lightweight epilogue)
+2. Accumulate instruction count into `ChainCount`
+3. Decrement `ChainBudget` (initialised to 64); if exhausted → return to Go
+4. Check `NeedInval`; if set → return to Go
+5. Patchable `JMP rel32` to target block's chain entry
+
+The `JMP rel32` is initially unchained (points to the unchained exit path). When the target block is compiled, the dispatcher patches the displacement to jump directly to the target's chain entry. Patching is bidirectional: new blocks patch existing blocks' exits, and their own exits are patched against already-cached targets.
+
+### RTS Inline Cache
+
+RTS uses a 2-entry MRU (most recently used) cache in M68KJITContext. Before each `callNative()`, the dispatcher updates the cache with the current block's PC and chain entry:
+
+```
+entry1 ← entry0  (shift)
+entry0 ← {block.startPC, block.chainEntry}
+```
+
+In RTS-emitted code, the popped return address is compared against both entries. On hit, RTS chains directly to the matching chain entry. On miss, it returns to the Go dispatcher.
+
+### Interrupt Safety
+
+The chain budget (64 blocks) limits how many blocks execute in a single native call before returning to Go for interrupt/exception checking. This amortises the Go overhead while ensuring responsive interrupt delivery.
+
+## Lazy CCR (Condition Code Register)
+
+The JIT defers CCR extraction from host EFLAGS into R14. After x86-64 arithmetic (ADD/SUB/CMP/NEG) and logical (AND/OR/EOR/TEST) operations, the host flags map directly to M68K conditions:
+
+| M68K | x86 Jcc | M68K | x86 Jcc |
+|------|---------|------|---------|
+| BEQ | JE | BNE | JNE |
+| BCS | JB | BCC | JAE |
+| BMI | JS | BPL | JNS |
+| BVS | JO | BVC | JNO |
+| BGE | JGE | BLT | JL |
+| BGT | JG | BLE | JLE |
+| BHI | JA | BLS | JBE |
+
+**Flag state tracking** at compile time:
+
+- `flagsMaterialized`: R14 holds valid 5-bit CCR
+- `flagsLiveArith`: EFLAGS live from ADD/SUB/NEG; X saved to `[RSP+24]`
+- `flagsLiveLogi`: EFLAGS live from AND/OR/EOR/MOVE/TST; V=0, C=0 implicit
+
+**Rules:**
+1. After arithmetic op: save X (CF) to stack slot via `SETB [RSP+24]`, set `flagsLiveArith`
+2. After CMP: set `flagsLiveArith` (X unchanged, stack slot untouched)
+3. After logical op: set `flagsLiveLogi` (no emission)
+4. Before Bcc/DBcc/Scc: use direct x86 Jcc (no SETcc extraction needed)
+5. Before non-flag EFLAGS clobbers (LEA, PEA, LINK, UNLK, ADDA, SUBA): materialize R14
+6. At block exit: materialize R14 before merging to SR
+
+This eliminates ~12 instructions of SETcc/SHL/OR extraction per flag-setting instruction in common sequences like CMP;BEQ or ADD;DBRA.
 
 ## File Inventory
 
@@ -45,19 +113,19 @@ The M68020 JIT compiler translates basic blocks of 68020 machine code into nativ
 | File | Build tag | Purpose |
 |------|-----------|---------|
 | `jit_m68k_common.go` | (none) | M68KJITContext, block scanner, instruction length calculator, liveness analysis |
-| `jit_m68k_emit_amd64.go` | `amd64 && linux` | x86-64 native code emitter for all supported instructions |
-| `jit_m68k_exec.go` | `amd64 && linux` | JIT dispatcher loop with STOP/interrupt/exception semantics |
+| `jit_m68k_emit_amd64.go` | `amd64 && linux` | x86-64 native code emitter: instructions, chain entry/exit, lazy CCR |
+| `jit_m68k_exec.go` | `amd64 && linux` | JIT dispatcher: chain patching, budget management, RTS cache, STOP/interrupt handling |
 | `jit_m68k_dispatch.go` | `amd64 && linux` | Routes `m68kJitExecute()` through JIT or interpreter |
 | `jit_m68k_dispatch_stub.go` | `!amd64 \|\| !linux` | Interpreter fallback for non-JIT platforms |
-| `jit_common.go` | (none) | Shared: CodeBuffer, CodeCache, JITBlock, ExecMem (reused from IE64) |
+| `jit_common.go` | (none) | Shared: CodeBuffer, CodeCache, JITBlock, chainSlot (reused from IE64) |
 | `jit_call.go` | `(amd64 \|\| arm64) && linux` | `callNative()` via `runtime.cgocall` (reused from IE64) |
-| `jit_mmap.go` | `(amd64 \|\| arm64) && linux` | Executable memory allocator (reused from IE64) |
+| `jit_mmap.go` | `(amd64 \|\| arm64) && linux` | Executable memory allocator + `PatchRel32At` (reused from IE64) |
 
 ### Tests
 
 | File | Build tag | Purpose |
 |------|-----------|---------|
-| `jit_m68k_common_test.go` | `amd64 && linux` | Instruction length calculator, block scanner, liveness analysis, terminator/fallback detection |
+| `jit_m68k_common_test.go` | `amd64 && linux` | Instruction length, block scanner, liveness, terminators, chain infrastructure |
 | `jit_m68k_emit_amd64_test.go` | `amd64 && linux` | x86-64 emitter unit tests (individual instruction verification) |
 | `jit_m68k_exec_test.go` | `amd64 && linux` | Integration tests through full JIT dispatcher |
 | `m68k_jit_benchmark_test.go` | `amd64 && linux` | JIT vs interpreter comparative benchmarks (ALU, MemCopy, Call) |
@@ -78,6 +146,12 @@ Offset  Field               Description
 56      RetPC               Next PC after block execution
 60      RetCount            Instructions retired in block
 64      CodePageBitmapPtr   Pointer to code page bitmap
+72      ChainBudget         Blocks remaining before Go return (init=64)
+76      ChainCount          Accumulated instruction count during chaining
+80      RTSCache0PC         MRU entry 0: M68K PC
+88      RTSCache0Addr       MRU entry 0: chain entry address
+96      RTSCache1PC         MRU entry 1: M68K PC
+104     RTSCache1Addr       MRU entry 1: chain entry address
 ```
 
 ## Register Mapping (x86-64)
@@ -88,7 +162,7 @@ Offset  Field               Description
 | RBP | D1 | Callee-saved, mapped |
 | R12 | A0 | Callee-saved, mapped |
 | R13 | A7/SP | Callee-saved, mapped |
-| R14 | CCR | Callee-saved, 5-bit XNZVC |
+| R14 | CCR | Callee-saved, 5-bit XNZVC (lazy: may be stale when EFLAGS live) |
 | R15 | — | JITContext pointer |
 | RDI | — | &DataRegs[0] |
 | RSI | — | &cpu.memory[0] |
@@ -96,9 +170,9 @@ Offset  Field               Description
 | R9 | — | &AddrRegs[0] |
 | RAX,RCX,RDX,R10,R11 | — | Scratch |
 
-## CCR (Condition Code Register)
+Stack frame: 40 bytes (`[RSP+0]`=ctx backup, `[RSP+8]`=SR pointer, `[RSP+16]`=loop counter, `[RSP+24]`=X flag byte for lazy CCR).
 
-Maintained in R14 as a 5-bit value matching M68K SR bits 0-4:
+## CCR (Condition Code Register)
 
 | Bit | Flag | Updated by |
 |-----|------|------------|
@@ -108,7 +182,7 @@ Maintained in R14 as a 5-bit value matching M68K SR bits 0-4:
 | 3 | N (Negative) | All flag-modifying instructions |
 | 4 | X (Extend) | ADD, SUB, NEG, shifts (X=C) |
 
-Extraction uses SETcc instructions to capture all flags before any SHL/OR clobbers them.
+With lazy CCR, extraction into R14 is deferred until needed. The X flag is saved to `[RSP+24]` by arithmetic ops; logical ops leave it unchanged. Materialization happens at block exits and before non-flag EFLAGS-clobbering instructions.
 
 ## Memory Access
 
@@ -117,7 +191,7 @@ Extraction uses SETcc instructions to capture all flags before any SHL/OR clobbe
 
 ## Self-Modifying Code Detection
 
-Uses a heap-allocated code page bitmap (`(memSize+4095)>>12` bytes, 4KB pages). When a block is cached, its pages are marked in the bitmap. Store instructions in JIT-compiled code check the bitmap after each write; writes to code pages set `NeedInval`, triggering full cache flush and bitmap clear on return to the dispatcher.
+Uses a heap-allocated code page bitmap (`(memSize+4095)>>12` bytes, 4KB pages). When a block is cached, its pages are marked in the bitmap. Store instructions in JIT-compiled code check the bitmap after each write; writes to code pages set `NeedInval`, triggering full cache flush, bitmap clear, and RTS cache clear on return to the dispatcher.
 
 ## Backward Branch Optimisation
 
@@ -153,8 +227,8 @@ Intel i5-8365U @ 1.60 GHz, Go 1.26, `go test -tags headless -bench BenchmarkM68K
 
 | Workload | Interpreter | JIT | Speedup |
 |----------|-------------|-----|---------|
-| ALU (MOVEQ+ADD+SUB+AND+OR+ADDQ+SWAP in DBRA loop) | 2.6 ms | 361 us | 7.2x |
-| MemCopy (MOVE.L (A0)+,(A1)+ in DBRA loop) | 775 us | 203 us | 3.8x |
-| Call (JSR+RTS in loop) | 1.2 ms | 9.7 ms | 0.13x |
+| ALU (MOVEQ+ADD+SUB+AND+OR+ADDQ+SWAP in DBRA loop) | 729 us | 40 us | **18.1x** |
+| MemCopy (MOVE.L (A0)+,(A1)+ in DBRA loop) | 264 us | 52 us | **5.1x** |
+| Call (JSR+RTS in loop) | 389 us | 421 us | 0.9x |
 
-Call workloads are slower under JIT because JSR/RTS are block terminators that exit to the dispatcher every iteration. This is expected for cross-block control flow.
+Block chaining eliminates Go dispatcher overhead for JSR/RTS/BRA/JMP, bringing Call from 0.09x (pre-chaining) to near-parity. Lazy CCR eliminates ~12 instructions of flag extraction per flag-setter, giving the 18x ALU speedup.

@@ -436,12 +436,21 @@ func (cb *CodeBuffer) PatchUint32(offset int, val uint32) {
 // Code Cache
 // ===========================================================================
 
+// chainSlot records a patchable exit point in a JIT block that can be
+// redirected to jump directly to the target block's chain entry.
+type chainSlot struct {
+	targetPC  uint32  // M68K PC this exit targets (static, 0 = dynamic/unknown)
+	patchAddr uintptr // address of the JMP rel32 displacement in ExecMem to patch
+}
+
 type JITBlock struct {
 	startPC    uint32
 	endPC      uint32
 	instrCount int
 	execAddr   uintptr
 	execSize   int
+	chainEntry uintptr     // lightweight entry point for chained transitions
+	chainSlots []chainSlot // patchable exit points for block chaining
 }
 
 type CodeCache struct {
@@ -472,6 +481,24 @@ func (cc *CodeCache) InvalidateRange(lo, hi uint32) {
 	for pc, block := range cc.blocks {
 		if block.endPC > lo && block.startPC < hi {
 			delete(cc.blocks, pc)
+		}
+	}
+}
+
+// Blocks returns the underlying block map for iteration (e.g. chain patching).
+func (cc *CodeCache) Blocks() map[uint32]*JITBlock {
+	return cc.blocks
+}
+
+// PatchChainsTo scans all cached blocks for chain slots targeting targetPC
+// and patches them to jump to chainEntry via rel32 displacement overwrite.
+func (cc *CodeCache) PatchChainsTo(targetPC uint32, chainEntry uintptr) {
+	for _, block := range cc.blocks {
+		for i := range block.chainSlots {
+			slot := &block.chainSlots[i]
+			if slot.targetPC == targetPC && slot.patchAddr != 0 {
+				PatchRel32At(slot.patchAddr, chainEntry)
+			}
 		}
 	}
 }

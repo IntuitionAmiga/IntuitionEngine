@@ -196,21 +196,50 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 					}
 				}
 			}
+
+			// Patch chain slots bidirectionally:
+			// 1. Existing blocks exiting to this block → patch their slots to our chainEntry
+			if block.chainEntry != 0 {
+				cpu.m68kJitCache.PatchChainsTo(block.startPC, block.chainEntry)
+			}
+			// 2. This block's exits targeting already-cached blocks → patch our slots
+			for i := range block.chainSlots {
+				slot := &block.chainSlots[i]
+				if target := cpu.m68kJitCache.Get(slot.targetPC); target != nil && target.chainEntry != 0 {
+					PatchRel32At(slot.patchAddr, target.chainEntry)
+				}
+			}
 			diagCacheMisses++
 		} else {
 			diagCacheHits++
 		}
 
+		// Update 2-entry MRU RTS cache: shift entry 0 → entry 1, write new to entry 0.
+		// When RTS pops a return address, it checks both entries for a chain hit.
+		if block.chainEntry != 0 {
+			ctx.RTSCache1PC = ctx.RTSCache0PC
+			ctx.RTSCache1Addr = ctx.RTSCache0Addr
+			ctx.RTSCache0PC = block.startPC
+			ctx.RTSCache0Addr = block.chainEntry
+		}
+
 		// Execute native code block
 		ctx.NeedInval = 0
 		ctx.NeedIOFallback = 0
+		ctx.ChainBudget = 64 // blocks before returning to Go for interrupt check
+		ctx.ChainCount = 0
 		callNative(block.execAddr, uintptr(unsafe.Pointer(ctx)))
 
 		// Read return values from context
 		cpu.PC = ctx.RetPC
 		executed := uint64(ctx.RetCount)
 		if executed == 0 {
-			executed = uint64(block.instrCount) // safety fallback
+			// ChainCount may have accumulated instructions from chained blocks
+			if ctx.ChainCount > 0 {
+				executed = uint64(ctx.ChainCount)
+			} else {
+				executed = uint64(block.instrCount) // safety fallback
+			}
 		}
 
 		// Self-modifying code: invalidate cache
@@ -220,6 +249,11 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 			ctx.NeedInval = 0
 			// Clear code page bitmap
 			clear(cpu.m68kJitCodeBitmap)
+			// Clear RTS inline cache (old chainEntry addresses are now invalid)
+			ctx.RTSCache0PC = 0
+			ctx.RTSCache0Addr = 0
+			ctx.RTSCache1PC = 0
+			ctx.RTSCache1Addr = 0
 		}
 
 		// I/O fallback: re-execute the bailing instruction via interpreter

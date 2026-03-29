@@ -26,6 +26,14 @@ type M68KJITContext struct {
 	RetPC             uint32  // 56: next PC after block execution
 	RetCount          uint32  // 60: instructions retired in block
 	CodePageBitmapPtr uintptr // 64: pointer to heap-allocated code page bitmap
+	ChainBudget       uint32  // 72: blocks remaining before returning to Go (init=64)
+	ChainCount        uint32  // 76: accumulated instruction count during chaining
+	RTSCache0PC       uint32  // 80: MRU entry 0 - M68K PC
+	_pad0             uint32  // 84: padding for alignment
+	RTSCache0Addr     uintptr // 88: MRU entry 0 - chain entry address
+	RTSCache1PC       uint32  // 96: MRU entry 1 - M68K PC
+	_pad1             uint32  // 100: padding for alignment
+	RTSCache1Addr     uintptr // 104: MRU entry 1 - chain entry address
 }
 
 // M68KJITContext field offsets (must match struct layout above)
@@ -42,6 +50,12 @@ const (
 	m68kCtxOffRetPC             = 56
 	m68kCtxOffRetCount          = 60
 	m68kCtxOffCodePageBitmapPtr = 64
+	m68kCtxOffChainBudget       = 72
+	m68kCtxOffChainCount        = 76
+	m68kCtxOffRTSCache0PC       = 80
+	m68kCtxOffRTSCache0Addr     = 88 // MRU entry 0
+	m68kCtxOffRTSCache1PC       = 96
+	m68kCtxOffRTSCache1Addr     = 104 // MRU entry 1
 )
 
 // m68kJitAvailable is set to true at init time on platforms that support JIT.

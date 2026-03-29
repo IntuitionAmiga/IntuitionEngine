@@ -69,3 +69,15 @@ func (em *ExecMem) Free() {
 func (em *ExecMem) Used() int {
 	return em.used
 }
+
+// PatchRel32At overwrites a 4-byte relative displacement at patchAddr in
+// executable memory so that a JMP/Jcc rel32 at (patchAddr-1) branches to
+// targetAddr. The displacement is: target - (patchAddr + 4).
+func PatchRel32At(patchAddr, targetAddr uintptr) {
+	disp := int32(targetAddr - (patchAddr + 4))
+	p := (*[4]byte)(unsafe.Pointer(patchAddr))
+	p[0] = byte(disp)
+	p[1] = byte(disp >> 8)
+	p[2] = byte(disp >> 16)
+	p[3] = byte(disp >> 24)
+}

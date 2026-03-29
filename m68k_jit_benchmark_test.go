@@ -312,3 +312,143 @@ func BenchmarkM68K_Call_JIT(b *testing.B) {
 	}
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
 }
+
+// ===========================================================================
+// Chain-Specific Benchmarks
+// ===========================================================================
+
+// BenchmarkM68K_Chain_BRA benchmarks two blocks BRA-ing to each other,
+// measuring pure block chaining overhead.
+func buildM68KChainBRAProgram(cpu *M68KCPU) (startPC uint32, instrPerIter int) {
+	startPC = 0x1000
+
+	w := func(pc uint32, ops ...uint16) {
+		for _, op := range ops {
+			cpu.memory[pc] = byte(op >> 8)
+			cpu.memory[pc+1] = byte(op)
+			pc += 2
+		}
+	}
+
+	// Block A at 0x1000: SUBQ #1,D7; BEQ STOP; BRA 0x2000
+	// Block B at 0x2000: SUBQ #1,D7; BEQ STOP; BRA 0x1000
+	// STOP at 0x3000
+
+	// Block A at 0x1000: SUBQ(2B) + BEQ.W(4B) + BRA.W(4B) = 10 bytes
+	// BEQ.W at 0x1002: instrPC+2=0x1004, target 0x3000, disp=0x1FFC
+	// BRA.W at 0x1006: instrPC+2=0x1008, target 0x2000, disp=0x0FF8
+	w(0x1000, 0x5387, 0x6700, 0x1FFC, 0x6000, 0x0FF8)
+
+	// Block B at 0x2000: SUBQ(2B) + BEQ.W(4B) + BRA.W(4B) = 10 bytes
+	// BEQ.W at 0x2002: instrPC+2=0x2004, target 0x3000, disp=0x0FFC
+	// BRA.W at 0x2006: instrPC+2=0x2008, target 0x1000, disp=0xEFF8
+	w(0x2000, 0x5387, 0x6700, 0x0FFC, 0x6000, 0xEFF8)
+
+	// STOP at 0x3000
+	w(0x3000, 0x4E72, 0x2700)
+
+	cpu.DataRegs[7] = uint32(m68kBenchIterations)
+	return startPC, 3 // SUBQ + BEQ + BRA per iteration (2 iterations per pair)
+}
+
+func BenchmarkM68K_Chain_BRA_JIT(b *testing.B) {
+	if !m68kJitAvailable {
+		b.Skip("M68K JIT not available on this platform")
+	}
+	cpu := setupM68KJITBenchCPU()
+	startPC, instrPerIter := buildM68KChainBRAProgram(cpu)
+	totalInstrs := m68kBenchIterations * instrPerIter
+
+	cpu.m68kJitEnabled = true
+	cpu.m68kJitPersist = true
+	runM68KBenchJIT(cpu, startPC)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cpu.DataRegs[7] = uint32(m68kBenchIterations)
+		runM68KBenchJIT(cpu, startPC)
+	}
+	b.ReportMetric(float64(totalInstrs), "instructions/op")
+}
+
+func BenchmarkM68K_Chain_BRA_Interpreter(b *testing.B) {
+	cpu := setupM68KJITBenchCPU()
+	startPC, instrPerIter := buildM68KChainBRAProgram(cpu)
+	totalInstrs := m68kBenchIterations * instrPerIter
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cpu.DataRegs[7] = uint32(m68kBenchIterations)
+		runM68KBenchInterpreter(cpu, startPC)
+	}
+	b.ReportMetric(float64(totalInstrs), "instructions/op")
+}
+
+// BenchmarkM68K_LazyCCR_CMP_Bcc benchmarks CMP+BEQ in a tight loop,
+// measuring the benefit of lazy CCR (direct Jcc from host EFLAGS).
+func buildM68KLazyCCRProgram(cpu *M68KCPU) (startPC uint32, instrPerIter int) {
+	startPC = 0x1000
+	pc := startPC
+
+	w := func(ops ...uint16) {
+		for _, op := range ops {
+			cpu.memory[pc] = byte(op >> 8)
+			cpu.memory[pc+1] = byte(op)
+			pc += 2
+		}
+	}
+
+	// D0 counts up, D1 = target (never reached), D7 = loop counter
+	cpu.DataRegs[0] = 0
+	cpu.DataRegs[1] = 0xFFFFFFFF // never equal
+
+	w(0x3E3C, uint16(m68kBenchIterations-1)) // MOVE.W #iter-1,D7
+
+	loopTop := pc
+	w(0x5280) // ADDQ.L #1,D0
+	w(0xB081) // CMP.L D1,D0
+	w(0x6702) // BEQ.B +2 (never taken)
+	w(0x4E71) // NOP (fall-through target)
+
+	disp := int16(int32(loopTop) - int32(pc) - 2)
+	w(0x51CF, uint16(disp)) // DBRA D7,loop
+
+	w(0x4E72, 0x2700) // STOP
+
+	return startPC, 5 // ADDQ + CMP + BEQ + NOP + DBRA per iteration
+}
+
+func BenchmarkM68K_LazyCCR_CMP_Bcc_JIT(b *testing.B) {
+	if !m68kJitAvailable {
+		b.Skip("M68K JIT not available on this platform")
+	}
+	cpu := setupM68KJITBenchCPU()
+	startPC, instrPerIter := buildM68KLazyCCRProgram(cpu)
+	totalInstrs := m68kBenchIterations * instrPerIter
+
+	cpu.m68kJitEnabled = true
+	cpu.m68kJitPersist = true
+	runM68KBenchJIT(cpu, startPC)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cpu.DataRegs[0] = 0
+		cpu.DataRegs[1] = 0xFFFFFFFF
+		runM68KBenchJIT(cpu, startPC)
+	}
+	b.ReportMetric(float64(totalInstrs), "instructions/op")
+}
+
+func BenchmarkM68K_LazyCCR_CMP_Bcc_Interpreter(b *testing.B) {
+	cpu := setupM68KJITBenchCPU()
+	startPC, instrPerIter := buildM68KLazyCCRProgram(cpu)
+	totalInstrs := m68kBenchIterations * instrPerIter
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cpu.DataRegs[0] = 0
+		cpu.DataRegs[1] = 0xFFFFFFFF
+		runM68KBenchInterpreter(cpu, startPC)
+	}
+	b.ReportMetric(float64(totalInstrs), "instructions/op")
+}
