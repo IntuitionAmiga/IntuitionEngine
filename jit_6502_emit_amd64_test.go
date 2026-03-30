@@ -2007,3 +2007,142 @@ func TestJIT6502_AMD64_ChainExit_JSR(t *testing.T) {
 		t.Error("expected chain slot targeting $0700 from JSR")
 	}
 }
+
+// ===========================================================================
+// Lazy N/Z Flag Tests
+// ===========================================================================
+
+func TestJIT6502_AMD64_LazyNZ_DEX_BNE(t *testing.T) {
+	// DEX; BNE tight loop — the primary beneficiary of lazy flags.
+	rig := newJIT6502TestRig(t)
+	defer rig.cleanup()
+
+	rig.cpu.PC = 0x0600
+	rig.cpu.X = 0x05
+	// LDX #$05; DEX; BNE -3; BRK
+	rig.compileAndRun(t, []byte{0xA2, 0x05, 0xCA, 0xD0, 0xFD, 0x00}, 0x0600)
+	if rig.cpu.X != 0x00 {
+		t.Errorf("X = 0x%02X, want 0x00", rig.cpu.X)
+	}
+}
+
+func TestJIT6502_AMD64_LazyNZ_LDA_STA_BNE(t *testing.T) {
+	// LDA; STA (flag-neutral); BNE reads deferred Z from LDA
+	rig := newJIT6502TestRig(t)
+	defer rig.cleanup()
+
+	rig.cpu.PC = 0x0600
+	// LDA #$00; STA $10; BNE +2; LDA #$42; BRK
+	rig.compileAndRun(t, []byte{
+		0xA9, 0x00, // LDA #$00 — Z=1
+		0x85, 0x10, // STA $10 (no flag change)
+		0xD0, 0x02, // BNE +2 (should NOT branch, Z=1)
+		0xA9, 0x42, // LDA #$42
+		0x00, // BRK
+	}, 0x0600)
+	if rig.cpu.A != 0x42 {
+		t.Errorf("A = 0x%02X, want 0x42 (BNE should not branch when Z=1)", rig.cpu.A)
+	}
+}
+
+func TestJIT6502_AMD64_LazyNZ_PHP_Materialization(t *testing.T) {
+	// LDA #0; PHP — verify Z=1 in pushed SR
+	rig := newJIT6502TestRig(t)
+	defer rig.cleanup()
+
+	rig.cpu.PC = 0x0600
+	rig.cpu.SP = 0xFF
+	// LDA #$00; PHP; BRK
+	rig.compileAndRun(t, []byte{0xA9, 0x00, 0x08, 0x00}, 0x0600)
+
+	// PHP pushes SR with B and U set. Z should be set.
+	pushedSR := rig.bus.Read8(0x01FF) // SP was FF, PHP decrements to FE, stores at 01FF
+	if pushedSR&0x02 == 0 {
+		t.Errorf("pushed SR = 0x%02X, Z bit should be set (LDA #0)", pushedSR)
+	}
+}
+
+func TestJIT6502_AMD64_LazyNZ_BMI_Direct(t *testing.T) {
+	// LDA #$80; BMI should branch (N=1 from pending)
+	rig := newJIT6502TestRig(t)
+	defer rig.cleanup()
+
+	rig.cpu.PC = 0x0600
+	// LDA #$80; BMI +2; LDA #$00; BRK
+	rig.compileAndRun(t, []byte{
+		0xA9, 0x80, // LDA #$80 — N=1
+		0x30, 0x02, // BMI +2 (should branch)
+		0xA9, 0x00, // LDA #$00 (skipped)
+		0x00, // BRK
+	}, 0x0600)
+	if rig.cpu.A != 0x80 {
+		t.Errorf("A = 0x%02X, want 0x80 (BMI should have branched over LDA #$00)", rig.cpu.A)
+	}
+}
+
+func TestJIT6502_AMD64_LazyNZ_ADC_BEQ(t *testing.T) {
+	// ADC producing zero; BEQ should branch
+	rig := newJIT6502TestRig(t)
+	defer rig.cleanup()
+
+	rig.cpu.PC = 0x0600
+	rig.cpu.SR = 0x01 // C=1
+	// LDA #$FF; ADC #$00 → $FF + $00 + C(1) = $100 = $00 with carry. Z=1
+	// BEQ +2; LDA #$42; BRK
+	rig.compileAndRun(t, []byte{
+		0xA9, 0xFF, // LDA #$FF
+		0x69, 0x00, // ADC #$00 (+C=1 → A=$00, C=1, Z=1)
+		0xF0, 0x02, // BEQ +2 (should branch)
+		0xA9, 0x42, // LDA #$42 (skipped)
+		0x00, // BRK
+	}, 0x0600)
+	if rig.cpu.A != 0x00 {
+		t.Errorf("A = 0x%02X, want 0x00 (BEQ should have branched)", rig.cpu.A)
+	}
+}
+
+func TestJIT6502_AMD64_LazyNZ_PendingThenBail(t *testing.T) {
+	// LDA #$00 sets Z=1 pending, then LDA $D200 bails (I/O page).
+	// The bail epilogue must materialize the pending Z=1 into SR before
+	// returning to Go, so the interpreter sees correct flags.
+	rig := newJIT6502TestRig(t)
+	defer rig.cleanup()
+
+	rig.cpu.PC = 0x0600
+	// LDA #$00; LDA $D200; BRK
+	rig.compileAndRun(t, []byte{
+		0xA9, 0x00, // LDA #$00 → Z=1 pending
+		0xAD, 0x00, 0xD2, // LDA $D200 → bail (I/O page)
+		0x00, // BRK
+	}, 0x0600)
+
+	if rig.ctx.NeedBail != 1 {
+		t.Fatalf("NeedBail = %d, want 1", rig.ctx.NeedBail)
+	}
+	// After bail, SR must have Z=1 from the LDA #$00 that preceded the bail
+	if rig.cpu.SR&0x02 == 0 {
+		t.Errorf("SR = 0x%02X, Z bit should be set (pending from LDA #$00 before bail)", rig.cpu.SR)
+	}
+}
+
+func TestJIT6502_AMD64_LazyNZ_PLP_ClearsPending(t *testing.T) {
+	// LDA #0 (Z=1 pending); PLP clears pending; BEQ uses PLP'd flags
+	rig := newJIT6502TestRig(t)
+	defer rig.cleanup()
+
+	rig.cpu.PC = 0x0600
+	rig.cpu.SP = 0xFD
+	// Pre-push SR with Z=0 onto stack at $01FE
+	rig.bus.Write8(0x01FE, 0x20) // U bit set, Z=0
+	// LDA #$00; PLP; BEQ +2; LDA #$42; BRK
+	rig.compileAndRun(t, []byte{
+		0xA9, 0x00, // LDA #$00 — Z=1 pending
+		0x28,       // PLP — pulls SR=$20 (Z=0), clears pending
+		0xF0, 0x02, // BEQ +2 (should NOT branch — PLP set Z=0)
+		0xA9, 0x42, // LDA #$42
+		0x00, // BRK
+	}, 0x0600)
+	if rig.cpu.A != 0x42 {
+		t.Errorf("A = 0x%02X, want 0x42 (BEQ should not branch after PLP with Z=0)", rig.cpu.A)
+	}
+}
