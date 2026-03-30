@@ -499,6 +499,53 @@ func TestJIT6502_Exec_Reset_DuringExecution(t *testing.T) {
 }
 
 // ===========================================================================
+// Lazy N/Z Through RTS Cache Hit
+// ===========================================================================
+
+func TestJIT6502_Exec_LazyNZ_RTS_CacheHit(t *testing.T) {
+	// Verify that lazy N/Z flags are materialized correctly when RTS chains
+	// through the MRU cache back to the caller. The sequence:
+	//   Main: JSR sub; BEQ skip; LDA #$FF; JAM; skip: LDA #$42; JAM
+	//   Sub:  LDA #$00; RTS
+	// LDA #$00 in the sub sets Z=1 pending. RTS must materialize N/Z before
+	// chaining back to the caller so that BEQ sees Z=1 and branches.
+	bus := NewMachineBus()
+	cpu := NewCPU_6502(bus)
+	cpu.SetRDYLine(true)
+
+	// Main at $0600: JSR $0620; BEQ +3; LDA #$FF; JAM; LDA #$42; JAM
+	bus.Write8(0x0600, 0x20) // JSR $0620
+	bus.Write8(0x0601, 0x20)
+	bus.Write8(0x0602, 0x06)
+	bus.Write8(0x0603, 0xF0) // BEQ +3 (skip over LDA #$FF + JAM → $0608)
+	bus.Write8(0x0604, 0x03)
+	bus.Write8(0x0605, 0xA9) // LDA #$FF (not taken path)
+	bus.Write8(0x0606, 0xFF)
+	bus.Write8(0x0607, haltOpcode)
+	bus.Write8(0x0608, 0xA9) // skip: LDA #$42 (taken path)
+	bus.Write8(0x0609, 0x42)
+	bus.Write8(0x060A, haltOpcode)
+
+	// Subroutine at $0620: LDA #$00; RTS
+	bus.Write8(0x0620, 0xA9) // LDA #$00 → Z=1 pending
+	bus.Write8(0x0621, 0x00)
+	bus.Write8(0x0622, 0x60) // RTS → must materialize Z=1 before chain
+
+	cpu.PC = 0x0600
+	cpu.SP = 0xFF
+	cpu.SetRunning(true)
+	cpu.jitEnabled = true
+	cpu.ExecuteJIT6502()
+
+	// If lazy N/Z materialization works correctly through RTS chain,
+	// BEQ sees Z=1 from the subroutine's LDA #$00 and branches to $0608.
+	// A should be $42.
+	if cpu.A != 0x42 {
+		t.Errorf("A = 0x%02X, want 0x42 (BEQ after RTS should see Z=1 from subroutine)", cpu.A)
+	}
+}
+
+// ===========================================================================
 // Runner Integration Tests
 // ===========================================================================
 

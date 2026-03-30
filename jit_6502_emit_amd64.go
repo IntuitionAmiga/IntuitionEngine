@@ -358,7 +358,7 @@ func emit6502StorePC(cb *CodeBuffer, baseReg byte) {
 // emit6502BailEpilogue emits the NeedBail exit path. This stores all registers back,
 // sets RetPC to instrPC (re-execute this instruction), RetCount to instrsSoFar,
 // flushes cycles, sets NeedBail=1, and returns.
-func emit6502BailEpilogue(cb *CodeBuffer, instrPC uint32, instrsSoFar uint32, pendingCycles uint32) {
+func emit6502BailEpilogue(cb *CodeBuffer, instrPC uint32, instrsSoFar uint32, pendingCycles uint32, nzPending bool, nzReg byte) {
 	// Flush any pending cycles to the accumulator
 	if pendingCycles > 0 {
 		if pendingCycles <= 127 {
@@ -375,6 +375,10 @@ func emit6502BailEpilogue(cb *CodeBuffer, instrPC uint32, instrsSoFar uint32, pe
 	amd64MOV_mem8(cb, amd64RAX, int32(cpu6502OffY), j65RegY)
 	amd64MOV_mem8(cb, amd64RAX, int32(cpu6502OffSP), j65RegSP)
 	emit6502StorePC(cb, amd64RAX)
+	// Materialize deferred N/Z before storing SR
+	if nzPending {
+		emit6502UpdateNZ(cb, nzReg)
+	}
 	amd64MOV_mem8(cb, amd64RAX, int32(cpu6502OffSR), j65RegSR)
 
 	// Set NeedBail, RetPC, RetCount (merged with ChainCount), RetCycles in context
@@ -404,7 +408,7 @@ func emit6502BailEpilogue(cb *CodeBuffer, instrPC uint32, instrsSoFar uint32, pe
 // emit6502InvalEpilogue emits the NeedInval exit path. The store has already
 // completed, so RetPC is the NEXT instruction's PC, RetCount includes this instruction,
 // and cycles include this instruction's cost.
-func emit6502InvalEpilogue(cb *CodeBuffer, nextPC uint32, instrsSoFar uint32, pendingCycles uint32) {
+func emit6502InvalEpilogue(cb *CodeBuffer, nextPC uint32, instrsSoFar uint32, pendingCycles uint32, nzPending bool, nzReg byte) {
 	// Flush pending cycles
 	if pendingCycles > 0 {
 		if pendingCycles <= 127 {
@@ -421,6 +425,10 @@ func emit6502InvalEpilogue(cb *CodeBuffer, nextPC uint32, instrsSoFar uint32, pe
 	amd64MOV_mem8(cb, amd64RAX, int32(cpu6502OffY), j65RegY)
 	amd64MOV_mem8(cb, amd64RAX, int32(cpu6502OffSP), j65RegSP)
 	emit6502StorePC(cb, amd64RAX)
+	// Materialize deferred N/Z before storing SR
+	if nzPending {
+		emit6502UpdateNZ(cb, nzReg)
+	}
 	amd64MOV_mem8(cb, amd64RAX, int32(cpu6502OffSR), j65RegSR)
 
 	// Set NeedInval, RetPC, RetCount (merged with ChainCount), RetCycles in context
@@ -497,7 +505,7 @@ func emit6502ChainEntry(cb *CodeBuffer, hasBackwardBranch bool) int {
 //  4. Check NeedInval; if set → unchained exit
 //  5. Patchable JMP rel32 (initially to unchained exit)
 //  6. Unchained exit: store regs, set RetPC/RetCount, full pop/ret
-func emit6502ChainExit(cb *CodeBuffer, targetPC uint32, instrCount uint32, pendingCycles *uint32) j65ChainExitInfo {
+func emit6502ChainExit(cb *CodeBuffer, targetPC uint32, instrCount uint32, pendingCycles *uint32, nzPending bool, nzReg byte) j65ChainExitInfo {
 	flushPendingCycles(cb, pendingCycles)
 
 	// Load ctx pointer
@@ -505,12 +513,14 @@ func emit6502ChainExit(cb *CodeBuffer, targetPC uint32, instrCount uint32, pendi
 
 	// Accumulate instruction count: ChainCount += instrCount
 	amd64MOV_reg_mem32(cb, amd64RAX, amd64RCX, int32(j65CtxOffChainCount))
-	if instrCount <= 127 {
-		amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, int32(instrCount)) // ADD EAX, instrCount
-	} else {
-		amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, int32(instrCount))
-	}
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, int32(instrCount)) // ADD EAX, instrCount
 	amd64MOV_mem_reg32(cb, amd64RCX, int32(j65CtxOffChainCount), amd64RAX)
+
+	// Materialize deferred N/Z before budget/inval checks.
+	// Covers both the chained path (next block reads R15) and unchained path (stores R15).
+	if nzPending {
+		emit6502UpdateNZ(cb, nzReg)
+	}
 
 	// DEC DWORD [RCX + ChainBudget]
 	amd64DEC_mem32(cb, amd64RCX, int32(j65CtxOffChainBudget))
@@ -535,7 +545,7 @@ func emit6502ChainExit(cb *CodeBuffer, targetPC uint32, instrCount uint32, pendi
 	patchRel32(cb, jmpDispOffset, unchainedLabel) // initial target = unchained
 
 	// Emit unchained exit
-	emit6502UnchainedExitImm(cb, targetPC)
+	emit6502UnchainedExitImm(cb, targetPC, false, 0) // NZ already materialized above
 
 	return j65ChainExitInfo{
 		targetPC:      targetPC,
@@ -545,7 +555,11 @@ func emit6502ChainExit(cb *CodeBuffer, targetPC uint32, instrCount uint32, pendi
 
 // emit6502UnchainedExitImm emits a full exit sequence with a static RetPC.
 // Stores all 6502 registers to CPU struct, writes RetPC/RetCount/RetCycles, returns.
-func emit6502UnchainedExitImm(cb *CodeBuffer, retPC uint32) {
+func emit6502UnchainedExitImm(cb *CodeBuffer, retPC uint32, nzPending bool, nzReg byte) {
+	// Materialize deferred N/Z before storing SR
+	if nzPending {
+		emit6502UpdateNZ(cb, nzReg)
+	}
 	// Store registers back to CPU struct
 	amd64MOV_reg_mem(cb, amd64RAX, amd64RSP, int32(j65OffCpuPtr))
 	amd64MOV_mem8(cb, amd64RAX, int32(cpu6502OffA), j65RegA)
@@ -578,7 +592,11 @@ func emit6502UnchainedExitImm(cb *CodeBuffer, retPC uint32) {
 
 // emit6502UnchainedExitReg emits a full exit with RetPC from a host register (e.g. R10D).
 // Used by RTS and JMP indirect where the target PC is computed at runtime.
-func emit6502UnchainedExitReg(cb *CodeBuffer, pcReg byte) {
+func emit6502UnchainedExitReg(cb *CodeBuffer, pcReg byte, nzPending bool, nzReg byte) {
+	// Materialize deferred N/Z before storing SR
+	if nzPending {
+		emit6502UpdateNZ(cb, nzReg)
+	}
 	// Store registers back to CPU struct
 	amd64MOV_reg_mem(cb, amd64RAX, amd64RSP, int32(j65OffCpuPtr))
 	amd64MOV_mem8(cb, amd64RAX, int32(cpu6502OffA), j65RegA)
@@ -718,6 +736,36 @@ func emit6502UpdateNZ(cb *CodeBuffer, resultReg byte) {
 
 	// .not_neg:
 	patchRel32(cb, notNegOff, cb.Len())
+}
+
+// ===========================================================================
+// Lazy N/Z Flag Tracking
+// ===========================================================================
+
+// j65NZState tracks deferred N/Z flag computation at compile time.
+// When nzPending is true, the N and Z bits in R15 (j65RegSR) are stale;
+// the authoritative byte result lives in nzReg. Materialization writes
+// N/Z into R15 from nzReg. C and V in R15 are always current.
+type j65NZState struct {
+	nzPending bool // true if N/Z in R15 are stale
+	nzReg     byte // callee-saved host register holding the byte result
+}
+
+// j65SetNZPending marks N/Z as deferred from the given callee-saved register.
+func j65SetNZPending(nz *j65NZState, reg byte) {
+	nz.nzPending = true
+	nz.nzReg = reg
+}
+
+// j65MaterializeNZ emits code to flush deferred N/Z into R15.
+// If no flags are pending, emits nothing.
+func j65MaterializeNZ(cb *CodeBuffer, nz *j65NZState) {
+	if !nz.nzPending {
+		return
+	}
+	emit6502UpdateNZ(cb, nz.nzReg)
+	nz.nzPending = false
+	nz.nzReg = 0
 }
 
 // ===========================================================================
@@ -899,6 +947,8 @@ type bailInfo struct {
 	instrPC       uint32
 	instrIdx      int
 	pendingCycles uint32
+	nzPending     bool // lazy N/Z state at this bail point
+	nzReg         byte // register holding deferred N/Z result
 }
 
 // invalInfo records a deferred NeedInval epilogue.
@@ -907,6 +957,8 @@ type invalInfo struct {
 	nextPC        uint32 // next instruction's PC (store already completed)
 	instrIdx      int    // including this instruction
 	pendingCycles uint32 // including this instruction's cycles
+	nzPending     bool   // lazy N/Z state at this inval point
+	nzReg         byte   // register holding deferred N/Z result
 }
 
 // emit6502Load emits a load from the given addressing mode into dstReg.
@@ -915,7 +967,8 @@ type invalInfo struct {
 // emits the conditional +1 cycle check.
 func emit6502Load(cb *CodeBuffer, dstReg byte, opcode byte, operand uint16,
 	instrPC uint32, instrIdx int, pendingCycles uint32,
-	bails *[]bailInfo, isLoadWithPageCross bool) {
+	bails *[]bailInfo, isLoadWithPageCross bool,
+	nzPending bool, nzReg byte) {
 
 	switch opcode {
 	// === Immediate ===
@@ -927,7 +980,7 @@ func emit6502Load(cb *CodeBuffer, dstReg byte, opcode byte, operand uint16,
 		emit6502AddrZP(cb, byte(operand))
 		bailOff := emit6502ZPPageCheck(cb, 0)
 		*bails = append(*bails, bailInfo{
-			offsets: []int{bailOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
+			offsets: []int{bailOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
 		})
 		amd64MOVZX_B_memSIB(cb, dstReg, j65RegMem, amd64RAX)
 
@@ -936,7 +989,7 @@ func emit6502Load(cb *CodeBuffer, dstReg byte, opcode byte, operand uint16,
 		emit6502AddrZPX(cb, byte(operand))
 		bailOff := emit6502ZPPageCheck(cb, 0)
 		*bails = append(*bails, bailInfo{
-			offsets: []int{bailOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
+			offsets: []int{bailOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
 		})
 		amd64MOVZX_B_memSIB(cb, dstReg, j65RegMem, amd64RAX)
 
@@ -945,7 +998,7 @@ func emit6502Load(cb *CodeBuffer, dstReg byte, opcode byte, operand uint16,
 		emit6502AddrZPY(cb, byte(operand))
 		bailOff := emit6502ZPPageCheck(cb, 0)
 		*bails = append(*bails, bailInfo{
-			offsets: []int{bailOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
+			offsets: []int{bailOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
 		})
 		amd64MOVZX_B_memSIB(cb, dstReg, j65RegMem, amd64RAX)
 
@@ -954,7 +1007,7 @@ func emit6502Load(cb *CodeBuffer, dstReg byte, opcode byte, operand uint16,
 		emit6502AddrAbs(cb, operand)
 		fpOff := emit6502FullFastPathCheck(cb)
 		*bails = append(*bails, bailInfo{
-			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
+			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
 		})
 		amd64MOVZX_B_memSIB(cb, dstReg, j65RegMem, amd64RAX)
 
@@ -963,7 +1016,7 @@ func emit6502Load(cb *CodeBuffer, dstReg byte, opcode byte, operand uint16,
 		emit6502AddrAbsX(cb, operand)
 		fpOff := emit6502FullFastPathCheck(cb)
 		*bails = append(*bails, bailInfo{
-			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
+			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
 		})
 		amd64MOVZX_B_memSIB(cb, dstReg, j65RegMem, amd64RAX)
 		if isLoadWithPageCross {
@@ -975,7 +1028,7 @@ func emit6502Load(cb *CodeBuffer, dstReg byte, opcode byte, operand uint16,
 		emit6502AddrAbsY(cb, operand)
 		fpOff := emit6502FullFastPathCheck(cb)
 		*bails = append(*bails, bailInfo{
-			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
+			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
 		})
 		amd64MOVZX_B_memSIB(cb, dstReg, j65RegMem, amd64RAX)
 		if isLoadWithPageCross {
@@ -987,7 +1040,7 @@ func emit6502Load(cb *CodeBuffer, dstReg byte, opcode byte, operand uint16,
 		emit6502AddrIndX(cb, byte(operand))
 		fpOff := emit6502FullFastPathCheck(cb)
 		*bails = append(*bails, bailInfo{
-			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
+			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
 		})
 		amd64MOVZX_B_memSIB(cb, dstReg, j65RegMem, amd64RAX)
 
@@ -996,7 +1049,7 @@ func emit6502Load(cb *CodeBuffer, dstReg byte, opcode byte, operand uint16,
 		emit6502AddrIndY(cb, byte(operand))
 		fpOff := emit6502FullFastPathCheck(cb)
 		*bails = append(*bails, bailInfo{
-			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
+			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
 		})
 		amd64MOVZX_B_memSIB(cb, dstReg, j65RegMem, amd64RAX)
 		if isLoadWithPageCross {
@@ -1009,7 +1062,8 @@ func emit6502Load(cb *CodeBuffer, dstReg byte, opcode byte, operand uint16,
 // Adds bail targets for fast-path check failures and inval targets for self-mod detection.
 func emit6502Store(cb *CodeBuffer, srcReg byte, opcode byte, operand uint16,
 	instrPC uint32, instrIdx int, pendingCycles uint32, instrCycles uint32,
-	bails *[]bailInfo, invals *[]invalInfo, nextPC uint32) {
+	bails *[]bailInfo, invals *[]invalInfo, nextPC uint32,
+	nzPending bool, nzReg byte) {
 
 	switch opcode {
 	// === Zero Page ===
@@ -1017,12 +1071,12 @@ func emit6502Store(cb *CodeBuffer, srcReg byte, opcode byte, operand uint16,
 		emit6502AddrZP(cb, byte(operand))
 		bailOff := emit6502ZPPageCheck(cb, 0)
 		*bails = append(*bails, bailInfo{
-			offsets: []int{bailOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
+			offsets: []int{bailOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
 		})
 		amd64MOV_memSIB_reg8(cb, j65RegMem, amd64RAX, srcReg)
 		invalOff := emit6502SelfModCheck(cb)
 		*invals = append(*invals, invalInfo{
-			offsets: []int{invalOff}, nextPC: nextPC, instrIdx: instrIdx + 1, pendingCycles: pendingCycles + instrCycles,
+			offsets: []int{invalOff}, nextPC: nextPC, instrIdx: instrIdx + 1, pendingCycles: pendingCycles + instrCycles, nzPending: nzPending, nzReg: nzReg,
 		})
 
 	// === Zero Page,X ===
@@ -1030,12 +1084,12 @@ func emit6502Store(cb *CodeBuffer, srcReg byte, opcode byte, operand uint16,
 		emit6502AddrZPX(cb, byte(operand))
 		bailOff := emit6502ZPPageCheck(cb, 0)
 		*bails = append(*bails, bailInfo{
-			offsets: []int{bailOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
+			offsets: []int{bailOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
 		})
 		amd64MOV_memSIB_reg8(cb, j65RegMem, amd64RAX, srcReg)
 		invalOff := emit6502SelfModCheck(cb)
 		*invals = append(*invals, invalInfo{
-			offsets: []int{invalOff}, nextPC: nextPC, instrIdx: instrIdx + 1, pendingCycles: pendingCycles + instrCycles,
+			offsets: []int{invalOff}, nextPC: nextPC, instrIdx: instrIdx + 1, pendingCycles: pendingCycles + instrCycles, nzPending: nzPending, nzReg: nzReg,
 		})
 
 	// === Zero Page,Y ===
@@ -1043,12 +1097,12 @@ func emit6502Store(cb *CodeBuffer, srcReg byte, opcode byte, operand uint16,
 		emit6502AddrZPY(cb, byte(operand))
 		bailOff := emit6502ZPPageCheck(cb, 0)
 		*bails = append(*bails, bailInfo{
-			offsets: []int{bailOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
+			offsets: []int{bailOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
 		})
 		amd64MOV_memSIB_reg8(cb, j65RegMem, amd64RAX, srcReg)
 		invalOff := emit6502SelfModCheck(cb)
 		*invals = append(*invals, invalInfo{
-			offsets: []int{invalOff}, nextPC: nextPC, instrIdx: instrIdx + 1, pendingCycles: pendingCycles + instrCycles,
+			offsets: []int{invalOff}, nextPC: nextPC, instrIdx: instrIdx + 1, pendingCycles: pendingCycles + instrCycles, nzPending: nzPending, nzReg: nzReg,
 		})
 
 	// === Absolute ===
@@ -1056,12 +1110,12 @@ func emit6502Store(cb *CodeBuffer, srcReg byte, opcode byte, operand uint16,
 		emit6502AddrAbs(cb, operand)
 		fpOff := emit6502FullFastPathCheck(cb)
 		*bails = append(*bails, bailInfo{
-			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
+			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
 		})
 		amd64MOV_memSIB_reg8(cb, j65RegMem, amd64RAX, srcReg)
 		invalOff := emit6502SelfModCheck(cb)
 		*invals = append(*invals, invalInfo{
-			offsets: []int{invalOff}, nextPC: nextPC, instrIdx: instrIdx + 1, pendingCycles: pendingCycles + instrCycles,
+			offsets: []int{invalOff}, nextPC: nextPC, instrIdx: instrIdx + 1, pendingCycles: pendingCycles + instrCycles, nzPending: nzPending, nzReg: nzReg,
 		})
 
 	// === Absolute,X ===
@@ -1069,12 +1123,12 @@ func emit6502Store(cb *CodeBuffer, srcReg byte, opcode byte, operand uint16,
 		emit6502AddrAbsX(cb, operand)
 		fpOff := emit6502FullFastPathCheck(cb)
 		*bails = append(*bails, bailInfo{
-			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
+			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
 		})
 		amd64MOV_memSIB_reg8(cb, j65RegMem, amd64RAX, srcReg)
 		invalOff := emit6502SelfModCheck(cb)
 		*invals = append(*invals, invalInfo{
-			offsets: []int{invalOff}, nextPC: nextPC, instrIdx: instrIdx + 1, pendingCycles: pendingCycles + instrCycles,
+			offsets: []int{invalOff}, nextPC: nextPC, instrIdx: instrIdx + 1, pendingCycles: pendingCycles + instrCycles, nzPending: nzPending, nzReg: nzReg,
 		})
 
 	// === Absolute,Y ===
@@ -1082,12 +1136,12 @@ func emit6502Store(cb *CodeBuffer, srcReg byte, opcode byte, operand uint16,
 		emit6502AddrAbsY(cb, operand)
 		fpOff := emit6502FullFastPathCheck(cb)
 		*bails = append(*bails, bailInfo{
-			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
+			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
 		})
 		amd64MOV_memSIB_reg8(cb, j65RegMem, amd64RAX, srcReg)
 		invalOff := emit6502SelfModCheck(cb)
 		*invals = append(*invals, invalInfo{
-			offsets: []int{invalOff}, nextPC: nextPC, instrIdx: instrIdx + 1, pendingCycles: pendingCycles + instrCycles,
+			offsets: []int{invalOff}, nextPC: nextPC, instrIdx: instrIdx + 1, pendingCycles: pendingCycles + instrCycles, nzPending: nzPending, nzReg: nzReg,
 		})
 
 	// === (Indirect,X) ===
@@ -1095,12 +1149,12 @@ func emit6502Store(cb *CodeBuffer, srcReg byte, opcode byte, operand uint16,
 		emit6502AddrIndX(cb, byte(operand))
 		fpOff := emit6502FullFastPathCheck(cb)
 		*bails = append(*bails, bailInfo{
-			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
+			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
 		})
 		amd64MOV_memSIB_reg8(cb, j65RegMem, amd64RAX, srcReg)
 		invalOff := emit6502SelfModCheck(cb)
 		*invals = append(*invals, invalInfo{
-			offsets: []int{invalOff}, nextPC: nextPC, instrIdx: instrIdx + 1, pendingCycles: pendingCycles + instrCycles,
+			offsets: []int{invalOff}, nextPC: nextPC, instrIdx: instrIdx + 1, pendingCycles: pendingCycles + instrCycles, nzPending: nzPending, nzReg: nzReg,
 		})
 
 	// === (Indirect),Y ===
@@ -1108,12 +1162,12 @@ func emit6502Store(cb *CodeBuffer, srcReg byte, opcode byte, operand uint16,
 		emit6502AddrIndY(cb, byte(operand))
 		fpOff := emit6502FullFastPathCheck(cb)
 		*bails = append(*bails, bailInfo{
-			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
+			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
 		})
 		amd64MOV_memSIB_reg8(cb, j65RegMem, amd64RAX, srcReg)
 		invalOff := emit6502SelfModCheck(cb)
 		*invals = append(*invals, invalInfo{
-			offsets: []int{invalOff}, nextPC: nextPC, instrIdx: instrIdx + 1, pendingCycles: pendingCycles + instrCycles,
+			offsets: []int{invalOff}, nextPC: nextPC, instrIdx: instrIdx + 1, pendingCycles: pendingCycles + instrCycles, nzPending: nzPending, nzReg: nzReg,
 		})
 	}
 }
@@ -1146,6 +1200,8 @@ type branchExit struct {
 	targetPC      uint32 // 6502 target PC
 	instrCount    uint32 // instructions retired including this branch
 	pendingCycles uint32 // cycles including branch penalties
+	nzPending     bool   // lazy N/Z state at this branch exit
+	nzReg         byte   // register holding deferred N/Z result
 }
 
 // j65BranchInfo describes a 6502 conditional branch's flag test.
@@ -1180,7 +1236,8 @@ func findInstrByPC(instrs []JIT6502Instr, targetOffset uint16) int {
 // Returns branchFixup for internal forward, branchExit for external, or handles backward inline.
 func emit6502ConditionalBranch(cb *CodeBuffer, ji *JIT6502Instr, startPC uint16,
 	instrIdx int, pendingCycles uint32, instrs []JIT6502Instr, instrOffsets []int,
-	hasBackward bool, fwdFixups *[]branchFixup, extExits *[]branchExit) {
+	hasBackward bool, fwdFixups *[]branchFixup, extExits *[]branchExit,
+	nz *j65NZState) {
 
 	bi := j65BranchTable[ji.opcode]
 	instrPC := startPC + ji.pcOffset
@@ -1195,15 +1252,39 @@ func emit6502ConditionalBranch(cb *CodeBuffer, ji *JIT6502Instr, startPC uint16,
 		targetIdx = findInstrByPC(instrs, uint16(targetOffset))
 	}
 
-	// Emit: TEST R15D, flagBit
-	amd64TEST_reg_imm32(cb, j65RegSR, bi.flagBit)
+	// Emit conditional test. For N/Z flags with pending state, test the
+	// pending register directly instead of materializing into R15.
+	isNZFlag := bi.flagBit == 0x02 || bi.flagBit == 0x80
+	useDirect := isNZFlag && nz.nzPending
 
-	// Emit conditional jump that skips the TAKEN path (jump if NOT taken)
 	var notTakenCond byte
-	if bi.takenIfSet {
-		notTakenCond = amd64CondE // JZ = skip if flag is NOT set
+	if useDirect {
+		if bi.flagBit == 0x02 { // Z flag (BEQ/BNE)
+			amd64TEST_reg_reg32(cb, nz.nzReg, nz.nzReg) // ZF = (result == 0)
+			if bi.takenIfSet {
+				notTakenCond = amd64CondNE // skip taken if NOT zero (Z=0)
+			} else {
+				notTakenCond = amd64CondE // skip taken if zero (Z=1)
+			}
+		} else { // N flag (BMI/BPL), flagBit == 0x80
+			amd64TEST_reg_imm32(cb, nz.nzReg, 0x80) // check bit 7
+			if bi.takenIfSet {
+				notTakenCond = amd64CondE // skip taken if bit 7 NOT set (N=0)
+			} else {
+				notTakenCond = amd64CondNE // skip taken if bit 7 IS set (N=1)
+			}
+		}
 	} else {
-		notTakenCond = amd64CondNE // JNZ = skip if flag IS set
+		// C/V flags or N/Z not pending — materialize if needed, test R15
+		if isNZFlag {
+			j65MaterializeNZ(cb, nz)
+		}
+		amd64TEST_reg_imm32(cb, j65RegSR, bi.flagBit)
+		if bi.takenIfSet {
+			notTakenCond = amd64CondE // JZ = skip if flag NOT set
+		} else {
+			notTakenCond = amd64CondNE // JNZ = skip if flag IS set
+		}
 	}
 	notTakenOff := amd64Jcc_rel32(cb, notTakenCond)
 
@@ -1233,7 +1314,9 @@ func emit6502ConditionalBranch(cb *CodeBuffer, ji *JIT6502Instr, startPC uint16,
 				jmpOffset:     budgetBailOff,
 				targetPC:      uint32(targetPC),
 				instrCount:    uint32(instrIdx + 1),
-				pendingCycles: pendingCycles, // cycles already accumulated
+				pendingCycles: pendingCycles,
+				nzPending:     nz.nzPending,
+				nzReg:         nz.nzReg,
 			})
 		}
 
@@ -1255,6 +1338,8 @@ func emit6502ConditionalBranch(cb *CodeBuffer, ji *JIT6502Instr, startPC uint16,
 			targetPC:      uint32(targetPC),
 			instrCount:    uint32(instrIdx + 1),
 			pendingCycles: exitCycles,
+			nzPending:     nz.nzPending,
+			nzReg:         nz.nzReg,
 		})
 	}
 
@@ -1274,22 +1359,23 @@ func amd64CMP_mem32_imm32(cb *CodeBuffer, base byte, disp int32, imm int32) {
 
 // emit6502JMP_Abs emits JMP absolute ($4C). Block terminator.
 // Returns chain exit info for patching.
-func emit6502JMP_Abs(cb *CodeBuffer, targetPC uint16, instrCount uint32, pendingCycles *uint32) j65ChainExitInfo {
-	return emit6502ChainExit(cb, uint32(targetPC), instrCount, pendingCycles)
+func emit6502JMP_Abs(cb *CodeBuffer, targetPC uint16, instrCount uint32, pendingCycles *uint32, nzPending bool, nzReg byte) j65ChainExitInfo {
+	return emit6502ChainExit(cb, uint32(targetPC), instrCount, pendingCycles, nzPending, nzReg)
 }
 
 // emit6502JMP_Ind emits JMP indirect ($6C). Block terminator.
 // Handles the 6502 page-crossing bug: if low byte of pointer is $FF,
 // the high byte is read from $xx00 (same page) instead of $xx00+$100.
 func emit6502JMP_Ind(cb *CodeBuffer, operand uint16, instrCount uint32,
-	pendingCycles *uint32, bails *[]bailInfo, instrPC uint32, instrIdx int, curPending uint32) {
+	pendingCycles *uint32, bails *[]bailInfo, instrPC uint32, instrIdx int, curPending uint32,
+	nzPending bool, nzReg byte) {
 
 	// Load the pointer address
 	amd64MOV_reg_imm32(cb, amd64RAX, uint32(operand))
 
 	// Fast-path check for the pointer read
 	fpOff := emit6502FullFastPathCheck(cb)
-	*bails = append(*bails, bailInfo{[]int{fpOff}, instrPC, instrIdx, curPending})
+	*bails = append(*bails, bailInfo{[]int{fpOff}, instrPC, instrIdx, curPending, nzPending, nzReg})
 
 	// Read low byte of target
 	amd64MOVZX_B_memSIB(cb, amd64R10, j65RegMem, amd64RAX)
@@ -1300,7 +1386,7 @@ func emit6502JMP_Ind(cb *CodeBuffer, operand uint16, instrCount uint32,
 	amd64MOV_reg_imm32(cb, amd64RAX, uint32(highAddr))
 	// Check fast-path for high byte too
 	fpOff2 := emit6502FullFastPathCheck(cb)
-	*bails = append(*bails, bailInfo{[]int{fpOff2}, instrPC, instrIdx, curPending})
+	*bails = append(*bails, bailInfo{[]int{fpOff2}, instrPC, instrIdx, curPending, nzPending, nzReg})
 
 	amd64MOVZX_B_memSIB(cb, amd64R11, j65RegMem, amd64RAX)
 
@@ -1318,13 +1404,13 @@ func emit6502JMP_Ind(cb *CodeBuffer, operand uint16, instrCount uint32,
 	amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, int32(instrCount)) // ADD EAX, instrCount
 	amd64MOV_mem_reg32(cb, amd64RCX, int32(j65CtxOffChainCount), amd64RAX)
 
-	emit6502UnchainedExitReg(cb, amd64R10)
+	emit6502UnchainedExitReg(cb, amd64R10, nzPending, nzReg)
 }
 
 // emit6502JSR emits JSR ($20). Block terminator.
 // Pushes PC+2 (address of last byte of JSR) to stack, sets PC to target.
 // Returns chain exit info for patching.
-func emit6502JSR(cb *CodeBuffer, targetPC uint16, returnAddr uint16, instrCount uint32, pendingCycles *uint32) j65ChainExitInfo {
+func emit6502JSR(cb *CodeBuffer, targetPC uint16, returnAddr uint16, instrCount uint32, pendingCycles *uint32, nzPending bool, nzReg byte) j65ChainExitInfo {
 	// Push return address high byte
 	amd64MOVZX_B(cb, amd64RAX, j65RegSP)
 	amd64OR_reg_imm32_32bit(cb, amd64RAX, 0x0100)
@@ -1340,12 +1426,12 @@ func emit6502JSR(cb *CodeBuffer, targetPC uint16, returnAddr uint16, instrCount 
 	amd64MOV_memSIB_reg8(cb, j65RegMem, amd64RAX, amd64RCX)
 	amd64DEC_reg8(cb, j65RegSP)
 
-	return emit6502ChainExit(cb, uint32(targetPC), instrCount, pendingCycles)
+	return emit6502ChainExit(cb, uint32(targetPC), instrCount, pendingCycles, nzPending, nzReg)
 }
 
 // emit6502RTS emits RTS ($60). Block terminator.
 // Pulls PC from stack, adds 1. Checks 2-entry MRU RTS cache for chain hit.
-func emit6502RTS(cb *CodeBuffer, instrCount uint32, pendingCycles *uint32) {
+func emit6502RTS(cb *CodeBuffer, instrCount uint32, pendingCycles *uint32, nzPending bool, nzReg byte) {
 	// Pull low byte
 	amd64INC_reg8(cb, j65RegSP)
 	amd64MOVZX_B(cb, amd64RAX, j65RegSP)
@@ -1374,6 +1460,11 @@ func emit6502RTS(cb *CodeBuffer, instrCount uint32, pendingCycles *uint32) {
 	amd64MOV_reg_mem32(cb, amd64RAX, amd64RCX, int32(j65CtxOffChainCount))
 	amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, int32(instrCount)) // ADD EAX, instrCount
 	amd64MOV_mem_reg32(cb, amd64RCX, int32(j65CtxOffChainCount), amd64RAX)
+
+	// Materialize deferred N/Z before cache check / chain / unchained exit
+	if nzPending {
+		emit6502UpdateNZ(cb, nzReg)
+	}
 
 	// === 2-entry MRU RTS cache check ===
 	// Check entry 0: CMP R10D, [RCX + RTSCache0PC]
@@ -1411,7 +1502,7 @@ func emit6502RTS(cb *CodeBuffer, instrCount uint32, pendingCycles *uint32) {
 	patchRel32(cb, miss1Off, cb.Len())
 	patchRel32(cb, budgetOff, cb.Len())
 	patchRel32(cb, invalOff, cb.Len())
-	emit6502UnchainedExitReg(cb, amd64R10)
+	emit6502UnchainedExitReg(cb, amd64R10, false, 0) // NZ already materialized above
 }
 
 // ===========================================================================
@@ -1477,13 +1568,32 @@ func emit6502ShiftFlags(cb *CodeBuffer, resultReg byte) {
 	patchRel32(cb, notNegOff, cb.Len())
 }
 
+// emit6502ShiftFlagsCOnly extracts only the Carry flag after a shift/rotate.
+// N/Z are deferred — the caller must call j65SetNZPending. Used for accumulator shifts.
+func emit6502ShiftFlagsCOnly(cb *CodeBuffer, resultReg byte) {
+	// Capture carry from shift
+	cb.EmitBytes(0x0F, 0x92, modRM(3, 0, amd64RCX)) // SETC CL
+
+	// Zero-extend result
+	amd64MOVZX_B(cb, resultReg, resultReg)
+
+	// Clear only C in SR (preserve N, Z for lazy deferral)
+	amd64AND_reg_imm32_32bit(cb, j65RegSR, 0xFE) // ~0x01
+
+	// Set C from CL
+	amd64MOVZX_B(cb, amd64RCX, amd64RCX)
+	emitREX(cb, false, amd64RCX, j65RegSR)
+	cb.EmitBytes(0x09, modRM(3, amd64RCX, j65RegSR)) // OR R15D, ECX
+	// N/Z deferred — caller sets j65SetNZPending
+}
+
 // ===========================================================================
 // ASL — Arithmetic Shift Left
 // ===========================================================================
 
 func emit6502ASL_A(cb *CodeBuffer) {
-	emit6502ShiftByte(cb, j65RegA, 4) // SHL BL, 1
-	emit6502ShiftFlags(cb, j65RegA)
+	emit6502ShiftByte(cb, j65RegA, 4)    // SHL BL, 1
+	emit6502ShiftFlagsCOnly(cb, j65RegA) // N/Z deferred by caller
 }
 
 func emit6502ASL_Mem(cb *CodeBuffer) {
@@ -1523,8 +1633,8 @@ func emit6502ASL_Mem(cb *CodeBuffer) {
 // ===========================================================================
 
 func emit6502LSR_A(cb *CodeBuffer) {
-	emit6502ShiftByte(cb, j65RegA, 5) // SHR BL, 1
-	emit6502ShiftFlags(cb, j65RegA)
+	emit6502ShiftByte(cb, j65RegA, 5)    // SHR BL, 1
+	emit6502ShiftFlagsCOnly(cb, j65RegA) // N/Z deferred by caller
 }
 
 func emit6502LSR_Mem(cb *CodeBuffer) {
@@ -1562,8 +1672,8 @@ func emit6502ROL_A(cb *CodeBuffer) {
 	emitREX(cb, false, 0, j65RegSR)
 	cb.EmitBytes(0x0F, 0xBA, modRM(3, 4, j65RegSR), 0x00) // BT R15D, 0
 
-	emit6502ShiftByte(cb, j65RegA, 2) // RCL BL, 1
-	emit6502ShiftFlags(cb, j65RegA)
+	emit6502ShiftByte(cb, j65RegA, 2)    // RCL BL, 1
+	emit6502ShiftFlagsCOnly(cb, j65RegA) // N/Z deferred by caller
 }
 
 func emit6502ROL_Mem(cb *CodeBuffer) {
@@ -1604,8 +1714,8 @@ func emit6502ROR_A(cb *CodeBuffer) {
 	emitREX(cb, false, 0, j65RegSR)
 	cb.EmitBytes(0x0F, 0xBA, modRM(3, 4, j65RegSR), 0x00) // BT R15D, 0
 
-	emit6502ShiftByte(cb, j65RegA, 3) // RCR BL, 1
-	emit6502ShiftFlags(cb, j65RegA)
+	emit6502ShiftByte(cb, j65RegA, 3)    // RCR BL, 1
+	emit6502ShiftFlagsCOnly(cb, j65RegA) // N/Z deferred by caller
 }
 
 func emit6502ROR_Mem(cb *CodeBuffer) {
@@ -1653,7 +1763,7 @@ func emit6502PHA(cb *CodeBuffer) {
 	amd64DEC_reg8(cb, j65RegSP)
 }
 
-// emit6502PLA emits PLA (pull A from stack, update N/Z).
+// emit6502PLA emits PLA (pull A from stack). N/Z deferred by caller.
 func emit6502PLA(cb *CodeBuffer) {
 	// SP++
 	amd64INC_reg8(cb, j65RegSP)
@@ -1662,8 +1772,7 @@ func emit6502PLA(cb *CodeBuffer) {
 	amd64OR_reg_imm32_32bit(cb, amd64RAX, 0x0100)
 	// Load A = BYTE [RSI + RAX]
 	amd64MOVZX_B_memSIB(cb, j65RegA, j65RegMem, amd64RAX)
-	// Update N, Z
-	emit6502UpdateNZ(cb, j65RegA)
+	// N/Z deferred — caller sets j65SetNZPending(&nz, j65RegA)
 }
 
 // emit6502PHP emits PHP (push processor status with B and U set).
@@ -1706,7 +1815,8 @@ func emit6502PLP(cb *CodeBuffer) {
 // Returns true if page-crossing check was emitted (for loads with variable cycles).
 func emit6502LoadOperandToEAX(cb *CodeBuffer, opcode byte, operand uint16,
 	instrPC uint32, instrIdx int, pendingCycles uint32,
-	bails *[]bailInfo, emitPageCross bool) {
+	bails *[]bailInfo, emitPageCross bool,
+	nzPending bool, nzReg byte) {
 
 	mode := (opcode >> 2) & 7
 	switch mode {
@@ -1715,22 +1825,22 @@ func emit6502LoadOperandToEAX(cb *CodeBuffer, opcode byte, operand uint16,
 	case 1: // Zero Page
 		emit6502AddrZP(cb, byte(operand))
 		bailOff := emit6502ZPPageCheck(cb, 0)
-		*bails = append(*bails, bailInfo{[]int{bailOff}, instrPC, instrIdx, pendingCycles})
+		*bails = append(*bails, bailInfo{[]int{bailOff}, instrPC, instrIdx, pendingCycles, nzPending, nzReg})
 		amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 	case 5: // Zero Page,X
 		emit6502AddrZPX(cb, byte(operand))
 		bailOff := emit6502ZPPageCheck(cb, 0)
-		*bails = append(*bails, bailInfo{[]int{bailOff}, instrPC, instrIdx, pendingCycles})
+		*bails = append(*bails, bailInfo{[]int{bailOff}, instrPC, instrIdx, pendingCycles, nzPending, nzReg})
 		amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 	case 3: // Absolute
 		emit6502AddrAbs(cb, operand)
 		fpOff := emit6502FullFastPathCheck(cb)
-		*bails = append(*bails, bailInfo{[]int{fpOff}, instrPC, instrIdx, pendingCycles})
+		*bails = append(*bails, bailInfo{[]int{fpOff}, instrPC, instrIdx, pendingCycles, nzPending, nzReg})
 		amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 	case 7: // Absolute,X
 		emit6502AddrAbsX(cb, operand)
 		fpOff := emit6502FullFastPathCheck(cb)
-		*bails = append(*bails, bailInfo{[]int{fpOff}, instrPC, instrIdx, pendingCycles})
+		*bails = append(*bails, bailInfo{[]int{fpOff}, instrPC, instrIdx, pendingCycles, nzPending, nzReg})
 		amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 		if emitPageCross {
 			emit6502PageCrossCheck(cb)
@@ -1738,7 +1848,7 @@ func emit6502LoadOperandToEAX(cb *CodeBuffer, opcode byte, operand uint16,
 	case 6: // Absolute,Y
 		emit6502AddrAbsY(cb, operand)
 		fpOff := emit6502FullFastPathCheck(cb)
-		*bails = append(*bails, bailInfo{[]int{fpOff}, instrPC, instrIdx, pendingCycles})
+		*bails = append(*bails, bailInfo{[]int{fpOff}, instrPC, instrIdx, pendingCycles, nzPending, nzReg})
 		amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 		if emitPageCross {
 			emit6502PageCrossCheck(cb)
@@ -1746,12 +1856,12 @@ func emit6502LoadOperandToEAX(cb *CodeBuffer, opcode byte, operand uint16,
 	case 0: // (Indirect,X)
 		emit6502AddrIndX(cb, byte(operand))
 		fpOff := emit6502FullFastPathCheck(cb)
-		*bails = append(*bails, bailInfo{[]int{fpOff}, instrPC, instrIdx, pendingCycles})
+		*bails = append(*bails, bailInfo{[]int{fpOff}, instrPC, instrIdx, pendingCycles, nzPending, nzReg})
 		amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 	case 4: // (Indirect),Y
 		emit6502AddrIndY(cb, byte(operand))
 		fpOff := emit6502FullFastPathCheck(cb)
-		*bails = append(*bails, bailInfo{[]int{fpOff}, instrPC, instrIdx, pendingCycles})
+		*bails = append(*bails, bailInfo{[]int{fpOff}, instrPC, instrIdx, pendingCycles, nzPending, nzReg})
 		amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 		if emitPageCross {
 			emit6502PageCrossCheck(cb)
@@ -1785,8 +1895,8 @@ func emit6502ADCFlags(cb *CodeBuffer) {
 	// Zero-extend result
 	amd64MOVZX_B(cb, j65RegA, j65RegA) // EBX = zero-extended BL
 
-	// Clear C, Z, V, N in SR
-	amd64AND_reg_imm32_32bit(cb, j65RegSR, 0x3C) // keep I, D, B, U only
+	// Clear C, V in SR (preserve N, Z for lazy deferral; also preserve I, D, B, U)
+	amd64AND_reg_imm32_32bit(cb, j65RegSR, 0xBE) // ~(0x01|0x40) = 0xBE
 
 	// Set C from CL
 	amd64MOVZX_B(cb, amd64RCX, amd64RCX)
@@ -1799,16 +1909,7 @@ func emit6502ADCFlags(cb *CodeBuffer) {
 	emitREX(cb, false, amd64RDX, j65RegSR)
 	cb.EmitBytes(0x09, modRM(3, amd64RDX, j65RegSR)) // OR R15D, EDX
 
-	// Set N, Z from result (in EBX)
-	amd64TEST_reg_reg32(cb, j65RegA, j65RegA)
-	notZeroOff := amd64Jcc_rel32(cb, amd64CondNE)
-	amd64OR_reg_imm32_32bit(cb, j65RegSR, 0x02)
-	patchRel32(cb, notZeroOff, cb.Len())
-
-	amd64TEST_reg_imm32(cb, j65RegA, 0x80)
-	notNegOff := amd64Jcc_rel32(cb, amd64CondE)
-	amd64OR_reg_imm32_32bit(cb, j65RegSR, int32(NEGATIVE_FLAG))
-	patchRel32(cb, notNegOff, cb.Len())
+	// N/Z deferred — caller sets j65SetNZPending(&nz, j65RegA)
 }
 
 // emit6502DecimalBailCheck emits a check for decimal mode (D flag).
@@ -1844,8 +1945,8 @@ func emit6502SBCFlags(cb *CodeBuffer) {
 	// Zero-extend result
 	amd64MOVZX_B(cb, j65RegA, j65RegA)
 
-	// Clear C, Z, V, N
-	amd64AND_reg_imm32_32bit(cb, j65RegSR, 0x3C)
+	// Clear C, V in SR (preserve N, Z for lazy deferral; also preserve I, D, B, U)
+	amd64AND_reg_imm32_32bit(cb, j65RegSR, 0xBE) // ~(0x01|0x40) = 0xBE
 
 	// C = !borrow = !CL (6502: C=1 if no borrow)
 	// XOR CL, 1
@@ -1860,16 +1961,7 @@ func emit6502SBCFlags(cb *CodeBuffer) {
 	emitREX(cb, false, amd64RDX, j65RegSR)
 	cb.EmitBytes(0x09, modRM(3, amd64RDX, j65RegSR))
 
-	// N, Z from result
-	amd64TEST_reg_reg32(cb, j65RegA, j65RegA)
-	notZeroOff := amd64Jcc_rel32(cb, amd64CondNE)
-	amd64OR_reg_imm32_32bit(cb, j65RegSR, 0x02)
-	patchRel32(cb, notZeroOff, cb.Len())
-
-	amd64TEST_reg_imm32(cb, j65RegA, 0x80)
-	notNegOff := amd64Jcc_rel32(cb, amd64CondE)
-	amd64OR_reg_imm32_32bit(cb, j65RegSR, int32(NEGATIVE_FLAG))
-	patchRel32(cb, notNegOff, cb.Len())
+	// N/Z deferred — caller sets j65SetNZPending(&nz, j65RegA)
 }
 
 // ===========================================================================
@@ -1921,9 +2013,7 @@ func emit6502LogicOp(cb *CodeBuffer, aluOpcode byte) {
 	// Perform 32-bit operation (both zero-extended, result stays zero-extended)
 	emitREX(cb, false, amd64RAX, j65RegA)
 	cb.EmitBytes(aluOpcode, modRM(3, amd64RAX, j65RegA)) // OP EBX, EAX
-
-	// Update N, Z (C and V unchanged for logic ops)
-	emit6502UpdateNZ(cb, j65RegA)
+	// N/Z deferred — caller sets j65SetNZPending(&nz, j65RegA)
 }
 
 // ===========================================================================
@@ -2007,6 +2097,7 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 	var fwdFixups []branchFixup
 	var extExits []branchExit
 	var chainExits []j65ChainExitInfo
+	var nz j65NZState
 
 	instrOffsets := make([]int, len(instrs))
 
@@ -2030,9 +2121,10 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 	}
 
 	for i := range instrs {
-		// Flush pending cycles at branch targets so forward/backward branches
-		// land with an accurate runtime cycle accumulator
+		// Flush pending cycles and materialize deferred N/Z at branch targets
+		// so forward/backward branches land with accurate state
 		if branchTargets[i] {
+			j65MaterializeNZ(cb, &nz)
 			flushPendingCycles(cb, &pendingCycles)
 		}
 
@@ -2058,8 +2150,8 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 		case 0xA9, 0xA5, 0xB5, 0xAD, 0xBD, 0xB9, 0xA1, 0xB1:
 			isPageCross := ji.opcode == 0xBD || ji.opcode == 0xB9 || ji.opcode == 0xB1
 			emit6502Load(cb, j65RegA, ji.opcode, ji.operand,
-				uint32(instrPC), i, pendingCycles, &bails, isPageCross)
-			emit6502UpdateNZ(cb, j65RegA)
+				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg)
+			j65SetNZPending(&nz, j65RegA)
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2068,8 +2160,8 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 		case 0xA2, 0xA6, 0xB6, 0xAE, 0xBE:
 			isPageCross := ji.opcode == 0xBE
 			emit6502Load(cb, j65RegX, ji.opcode, ji.operand,
-				uint32(instrPC), i, pendingCycles, &bails, isPageCross)
-			emit6502UpdateNZ(cb, j65RegX)
+				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg)
+			j65SetNZPending(&nz, j65RegX)
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2078,8 +2170,8 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 		case 0xA0, 0xA4, 0xB4, 0xAC, 0xBC:
 			isPageCross := ji.opcode == 0xBC
 			emit6502Load(cb, j65RegY, ji.opcode, ji.operand,
-				uint32(instrPC), i, pendingCycles, &bails, isPageCross)
-			emit6502UpdateNZ(cb, j65RegY)
+				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg)
+			j65SetNZPending(&nz, j65RegY)
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2087,7 +2179,7 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 		// ================================================================
 		case 0x85, 0x95, 0x8D, 0x9D, 0x99, 0x81, 0x91:
 			emit6502Store(cb, j65RegA, ji.opcode, ji.operand,
-				uint32(instrPC), i, pendingCycles, baseCycles, &bails, &invals, nextPC)
+				uint32(instrPC), i, pendingCycles, baseCycles, &bails, &invals, nextPC, nz.nzPending, nz.nzReg)
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2095,7 +2187,7 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 		// ================================================================
 		case 0x86, 0x96, 0x8E:
 			emit6502Store(cb, j65RegX, ji.opcode, ji.operand,
-				uint32(instrPC), i, pendingCycles, baseCycles, &bails, &invals, nextPC)
+				uint32(instrPC), i, pendingCycles, baseCycles, &bails, &invals, nextPC, nz.nzPending, nz.nzReg)
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2103,7 +2195,7 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 		// ================================================================
 		case 0x84, 0x94, 0x8C:
 			emit6502Store(cb, j65RegY, ji.opcode, ji.operand,
-				uint32(instrPC), i, pendingCycles, baseCycles, &bails, &invals, nextPC)
+				uint32(instrPC), i, pendingCycles, baseCycles, &bails, &invals, nextPC, nz.nzPending, nz.nzReg)
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2112,10 +2204,11 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 		case 0x69, 0x65, 0x75, 0x6D, 0x7D, 0x79, 0x61, 0x71:
 			isPageCross := ji.opcode == 0x7D || ji.opcode == 0x79 || ji.opcode == 0x71
 			decBailOff := emit6502DecimalBailCheck(cb)
-			bails = append(bails, bailInfo{[]int{decBailOff}, uint32(instrPC), i, pendingCycles})
+			bails = append(bails, bailInfo{[]int{decBailOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 			emit6502LoadOperandToEAX(cb, ji.opcode, ji.operand,
-				uint32(instrPC), i, pendingCycles, &bails, isPageCross)
+				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg)
 			emit6502ADCFlags(cb)
+			j65SetNZPending(&nz, j65RegA)
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2124,10 +2217,11 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 		case 0xE9, 0xE5, 0xF5, 0xED, 0xFD, 0xF9, 0xE1, 0xF1:
 			isPageCross := ji.opcode == 0xFD || ji.opcode == 0xF9 || ji.opcode == 0xF1
 			decBailOff := emit6502DecimalBailCheck(cb)
-			bails = append(bails, bailInfo{[]int{decBailOff}, uint32(instrPC), i, pendingCycles})
+			bails = append(bails, bailInfo{[]int{decBailOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 			emit6502LoadOperandToEAX(cb, ji.opcode, ji.operand,
-				uint32(instrPC), i, pendingCycles, &bails, isPageCross)
+				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg)
 			emit6502SBCFlags(cb)
+			j65SetNZPending(&nz, j65RegA)
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2136,8 +2230,9 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 		case 0x29, 0x25, 0x35, 0x2D, 0x3D, 0x39, 0x21, 0x31:
 			isPageCross := ji.opcode == 0x3D || ji.opcode == 0x39 || ji.opcode == 0x31
 			emit6502LoadOperandToEAX(cb, ji.opcode, ji.operand,
-				uint32(instrPC), i, pendingCycles, &bails, isPageCross)
+				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg)
 			emit6502LogicOp(cb, 0x21) // AND
+			j65SetNZPending(&nz, j65RegA)
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2146,8 +2241,9 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 		case 0x09, 0x05, 0x15, 0x0D, 0x1D, 0x19, 0x01, 0x11:
 			isPageCross := ji.opcode == 0x1D || ji.opcode == 0x19 || ji.opcode == 0x11
 			emit6502LoadOperandToEAX(cb, ji.opcode, ji.operand,
-				uint32(instrPC), i, pendingCycles, &bails, isPageCross)
+				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg)
 			emit6502LogicOp(cb, 0x09) // OR
+			j65SetNZPending(&nz, j65RegA)
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2156,8 +2252,9 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 		case 0x49, 0x45, 0x55, 0x4D, 0x5D, 0x59, 0x41, 0x51:
 			isPageCross := ji.opcode == 0x5D || ji.opcode == 0x59 || ji.opcode == 0x51
 			emit6502LoadOperandToEAX(cb, ji.opcode, ji.operand,
-				uint32(instrPC), i, pendingCycles, &bails, isPageCross)
+				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg)
 			emit6502LogicOp(cb, 0x31) // XOR
+			j65SetNZPending(&nz, j65RegA)
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2166,8 +2263,9 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 		case 0xC9, 0xC5, 0xD5, 0xCD, 0xDD, 0xD9, 0xC1, 0xD1:
 			isPageCross := ji.opcode == 0xDD || ji.opcode == 0xD9 || ji.opcode == 0xD1
 			emit6502LoadOperandToEAX(cb, ji.opcode, ji.operand,
-				uint32(instrPC), i, pendingCycles, &bails, isPageCross)
+				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg)
 			emit6502CompareFlags(cb, j65RegA)
+			nz.nzPending = false // CMP eagerly sets N/Z in R15
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2181,15 +2279,16 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 			case 0xE4: // zero page
 				emit6502AddrZP(cb, byte(ji.operand))
 				bailOff := emit6502ZPPageCheck(cb, 0)
-				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles})
+				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 				amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 			case 0xEC: // absolute
 				emit6502AddrAbs(cb, ji.operand)
 				fpOff := emit6502FullFastPathCheck(cb)
-				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles})
+				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 				amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 			}
 			emit6502CompareFlags(cb, j65RegX)
+			nz.nzPending = false // CPX eagerly sets N/Z
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2202,15 +2301,16 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 			case 0xC4: // zero page
 				emit6502AddrZP(cb, byte(ji.operand))
 				bailOff := emit6502ZPPageCheck(cb, 0)
-				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles})
+				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 				amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 			case 0xCC: // absolute
 				emit6502AddrAbs(cb, ji.operand)
 				fpOff := emit6502FullFastPathCheck(cb)
-				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles})
+				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 				amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 			}
 			emit6502CompareFlags(cb, j65RegY)
+			nz.nzPending = false // CPY eagerly sets N/Z
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2221,23 +2321,24 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 			case 0xE6: // INC zp
 				emit6502AddrZP(cb, byte(ji.operand))
 				bailOff := emit6502ZPPageCheck(cb, 0)
-				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles})
+				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 			case 0xF6: // INC zp,X
 				emit6502AddrZPX(cb, byte(ji.operand))
 				bailOff := emit6502ZPPageCheck(cb, 0)
-				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles})
+				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 			case 0xEE: // INC abs
 				emit6502AddrAbs(cb, ji.operand)
 				fpOff := emit6502FullFastPathCheck(cb)
-				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles})
+				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 			case 0xFE: // INC abs,X
 				emit6502AddrAbsX(cb, ji.operand)
 				fpOff := emit6502FullFastPathCheck(cb)
-				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles})
+				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 			}
 			emit6502IncDecMem(cb, true)
+			nz.nzPending = false // INC mem eagerly sets N/Z
 			invalOff := emit6502SelfModCheck(cb)
-			invals = append(invals, invalInfo{[]int{invalOff}, nextPC, i + 1, pendingCycles + baseCycles})
+			invals = append(invals, invalInfo{[]int{invalOff}, nextPC, i + 1, pendingCycles + baseCycles, nz.nzPending, nz.nzReg})
 			pendingCycles += baseCycles
 
 		case 0xC6, 0xD6, 0xCE, 0xDE: // DEC zp, zp+X, abs, abs+X
@@ -2245,23 +2346,24 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 			case 0xC6:
 				emit6502AddrZP(cb, byte(ji.operand))
 				bailOff := emit6502ZPPageCheck(cb, 0)
-				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles})
+				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 			case 0xD6:
 				emit6502AddrZPX(cb, byte(ji.operand))
 				bailOff := emit6502ZPPageCheck(cb, 0)
-				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles})
+				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 			case 0xCE:
 				emit6502AddrAbs(cb, ji.operand)
 				fpOff := emit6502FullFastPathCheck(cb)
-				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles})
+				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 			case 0xDE:
 				emit6502AddrAbsX(cb, ji.operand)
 				fpOff := emit6502FullFastPathCheck(cb)
-				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles})
+				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 			}
 			emit6502IncDecMem(cb, false)
+			nz.nzPending = false // DEC mem eagerly sets N/Z
 			invalOff := emit6502SelfModCheck(cb)
-			invals = append(invals, invalInfo{[]int{invalOff}, nextPC, i + 1, pendingCycles + baseCycles})
+			invals = append(invals, invalInfo{[]int{invalOff}, nextPC, i + 1, pendingCycles + baseCycles, nz.nzPending, nz.nzReg})
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2270,22 +2372,22 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 		case 0xE8: // INX
 			amd64ALU_reg_imm32_32bit(cb, 0, j65RegX, 1) // ADD EBP, 1
 			amd64AND_reg_imm32_32bit(cb, j65RegX, 0xFF)
-			emit6502UpdateNZ(cb, j65RegX)
+			j65SetNZPending(&nz, j65RegX)
 			pendingCycles += baseCycles
 		case 0xC8: // INY
 			amd64ALU_reg_imm32_32bit(cb, 0, j65RegY, 1)
 			amd64AND_reg_imm32_32bit(cb, j65RegY, 0xFF)
-			emit6502UpdateNZ(cb, j65RegY)
+			j65SetNZPending(&nz, j65RegY)
 			pendingCycles += baseCycles
 		case 0xCA: // DEX
 			amd64ALU_reg_imm32_32bit(cb, 5, j65RegX, 1) // SUB EBP, 1
 			amd64AND_reg_imm32_32bit(cb, j65RegX, 0xFF)
-			emit6502UpdateNZ(cb, j65RegX)
+			j65SetNZPending(&nz, j65RegX)
 			pendingCycles += baseCycles
 		case 0x88: // DEY
 			amd64ALU_reg_imm32_32bit(cb, 5, j65RegY, 1)
 			amd64AND_reg_imm32_32bit(cb, j65RegY, 0xFF)
-			emit6502UpdateNZ(cb, j65RegY)
+			j65SetNZPending(&nz, j65RegY)
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2294,16 +2396,18 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 		case 0x24: // BIT zp
 			emit6502AddrZP(cb, byte(ji.operand))
 			bailOff := emit6502ZPPageCheck(cb, 0)
-			bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles})
+			bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 			amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 			emit6502BITFlags(cb)
+			nz.nzPending = false // BIT eagerly sets N/Z/V
 			pendingCycles += baseCycles
 		case 0x2C: // BIT abs
 			emit6502AddrAbs(cb, ji.operand)
 			fpOff := emit6502FullFastPathCheck(cb)
-			bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles})
+			bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 			amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 			emit6502BITFlags(cb)
+			nz.nzPending = false // BIT eagerly sets N/Z/V
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2311,29 +2415,31 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 		// ================================================================
 		case 0x0A: // ASL A
 			emit6502ASL_A(cb)
+			j65SetNZPending(&nz, j65RegA)
 			pendingCycles += baseCycles
 		case 0x06, 0x16, 0x0E, 0x1E: // ASL memory
 			switch ji.opcode {
 			case 0x06:
 				emit6502AddrZP(cb, byte(ji.operand))
 				bailOff := emit6502ZPPageCheck(cb, 0)
-				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles})
+				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 			case 0x16:
 				emit6502AddrZPX(cb, byte(ji.operand))
 				bailOff := emit6502ZPPageCheck(cb, 0)
-				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles})
+				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 			case 0x0E:
 				emit6502AddrAbs(cb, ji.operand)
 				fpOff := emit6502FullFastPathCheck(cb)
-				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles})
+				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 			case 0x1E:
 				emit6502AddrAbsX(cb, ji.operand)
 				fpOff := emit6502FullFastPathCheck(cb)
-				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles})
+				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 			}
 			emit6502ASL_Mem(cb)
+			nz.nzPending = false // memory shift eagerly sets N/Z
 			invalOff := emit6502SelfModCheck(cb)
-			invals = append(invals, invalInfo{[]int{invalOff}, nextPC, i + 1, pendingCycles + baseCycles})
+			invals = append(invals, invalInfo{[]int{invalOff}, nextPC, i + 1, pendingCycles + baseCycles, nz.nzPending, nz.nzReg})
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2341,29 +2447,31 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 		// ================================================================
 		case 0x4A: // LSR A
 			emit6502LSR_A(cb)
+			j65SetNZPending(&nz, j65RegA)
 			pendingCycles += baseCycles
 		case 0x46, 0x56, 0x4E, 0x5E: // LSR memory
 			switch ji.opcode {
 			case 0x46:
 				emit6502AddrZP(cb, byte(ji.operand))
 				bailOff := emit6502ZPPageCheck(cb, 0)
-				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles})
+				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 			case 0x56:
 				emit6502AddrZPX(cb, byte(ji.operand))
 				bailOff := emit6502ZPPageCheck(cb, 0)
-				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles})
+				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 			case 0x4E:
 				emit6502AddrAbs(cb, ji.operand)
 				fpOff := emit6502FullFastPathCheck(cb)
-				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles})
+				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 			case 0x5E:
 				emit6502AddrAbsX(cb, ji.operand)
 				fpOff := emit6502FullFastPathCheck(cb)
-				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles})
+				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 			}
 			emit6502LSR_Mem(cb)
+			nz.nzPending = false
 			invalOff := emit6502SelfModCheck(cb)
-			invals = append(invals, invalInfo{[]int{invalOff}, nextPC, i + 1, pendingCycles + baseCycles})
+			invals = append(invals, invalInfo{[]int{invalOff}, nextPC, i + 1, pendingCycles + baseCycles, nz.nzPending, nz.nzReg})
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2371,29 +2479,31 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 		// ================================================================
 		case 0x2A: // ROL A
 			emit6502ROL_A(cb)
+			j65SetNZPending(&nz, j65RegA)
 			pendingCycles += baseCycles
 		case 0x26, 0x36, 0x2E, 0x3E: // ROL memory
 			switch ji.opcode {
 			case 0x26:
 				emit6502AddrZP(cb, byte(ji.operand))
 				bailOff := emit6502ZPPageCheck(cb, 0)
-				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles})
+				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 			case 0x36:
 				emit6502AddrZPX(cb, byte(ji.operand))
 				bailOff := emit6502ZPPageCheck(cb, 0)
-				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles})
+				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 			case 0x2E:
 				emit6502AddrAbs(cb, ji.operand)
 				fpOff := emit6502FullFastPathCheck(cb)
-				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles})
+				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 			case 0x3E:
 				emit6502AddrAbsX(cb, ji.operand)
 				fpOff := emit6502FullFastPathCheck(cb)
-				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles})
+				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 			}
 			emit6502ROL_Mem(cb)
+			nz.nzPending = false
 			invalOff := emit6502SelfModCheck(cb)
-			invals = append(invals, invalInfo{[]int{invalOff}, nextPC, i + 1, pendingCycles + baseCycles})
+			invals = append(invals, invalInfo{[]int{invalOff}, nextPC, i + 1, pendingCycles + baseCycles, nz.nzPending, nz.nzReg})
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2401,29 +2511,31 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 		// ================================================================
 		case 0x6A: // ROR A
 			emit6502ROR_A(cb)
+			j65SetNZPending(&nz, j65RegA)
 			pendingCycles += baseCycles
 		case 0x66, 0x76, 0x6E, 0x7E: // ROR memory
 			switch ji.opcode {
 			case 0x66:
 				emit6502AddrZP(cb, byte(ji.operand))
 				bailOff := emit6502ZPPageCheck(cb, 0)
-				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles})
+				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 			case 0x76:
 				emit6502AddrZPX(cb, byte(ji.operand))
 				bailOff := emit6502ZPPageCheck(cb, 0)
-				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles})
+				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 			case 0x6E:
 				emit6502AddrAbs(cb, ji.operand)
 				fpOff := emit6502FullFastPathCheck(cb)
-				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles})
+				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 			case 0x7E:
 				emit6502AddrAbsX(cb, ji.operand)
 				fpOff := emit6502FullFastPathCheck(cb)
-				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles})
+				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 			}
 			emit6502ROR_Mem(cb)
+			nz.nzPending = false
 			invalOff := emit6502SelfModCheck(cb)
-			invals = append(invals, invalInfo{[]int{invalOff}, nextPC, i + 1, pendingCycles + baseCycles})
+			invals = append(invals, invalInfo{[]int{invalOff}, nextPC, i + 1, pendingCycles + baseCycles, nz.nzPending, nz.nzReg})
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2434,12 +2546,15 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 			pendingCycles += baseCycles
 		case 0x68: // PLA
 			emit6502PLA(cb)
+			j65SetNZPending(&nz, j65RegA)
 			pendingCycles += baseCycles
 		case 0x08: // PHP
+			j65MaterializeNZ(cb, &nz) // PHP reads full SR
 			emit6502PHP(cb)
 			pendingCycles += baseCycles
 		case 0x28: // PLP
 			emit6502PLP(cb)
+			nz.nzPending = false // PLP overwrites entire SR
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2477,7 +2592,7 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 			// the branch adds its taken penalty and jumps back.
 			flushPendingCycles(cb, &pendingCycles)
 			emit6502ConditionalBranch(cb, ji, startPC, i, pendingCycles,
-				instrs, instrOffsets, hasBackward, &fwdFixups, &extExits)
+				instrs, instrOffsets, hasBackward, &fwdFixups, &extExits, &nz)
 			// No pendingCycles += baseCycles (baseCycles is 0 for branches)
 
 		// ================================================================
@@ -2485,7 +2600,7 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 		// ================================================================
 		case 0x4C:
 			pendingCycles += baseCycles
-			ce := emit6502JMP_Abs(cb, ji.operand, uint32(i+1), &pendingCycles)
+			ce := emit6502JMP_Abs(cb, ji.operand, uint32(i+1), &pendingCycles, nz.nzPending, nz.nzReg)
 			chainExits = append(chainExits, ce)
 			goto done
 
@@ -2495,7 +2610,8 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 		case 0x6C:
 			pendingCycles += baseCycles
 			emit6502JMP_Ind(cb, ji.operand, uint32(i+1), &pendingCycles,
-				&bails, uint32(instrPC), i, pendingCycles)
+				&bails, uint32(instrPC), i, pendingCycles,
+				nz.nzPending, nz.nzReg)
 			goto done
 
 		// ================================================================
@@ -2504,7 +2620,7 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 		case 0x20:
 			pendingCycles += baseCycles
 			returnAddr := instrPC + 2 // address of last byte of JSR instruction
-			ce := emit6502JSR(cb, ji.operand, returnAddr, uint32(i+1), &pendingCycles)
+			ce := emit6502JSR(cb, ji.operand, returnAddr, uint32(i+1), &pendingCycles, nz.nzPending, nz.nzReg)
 			chainExits = append(chainExits, ce)
 			goto done
 
@@ -2513,26 +2629,31 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 		// ================================================================
 		case 0x60:
 			pendingCycles += baseCycles
-			emit6502RTS(cb, uint32(i+1), &pendingCycles)
+			emit6502RTS(cb, uint32(i+1), &pendingCycles, nz.nzPending, nz.nzReg)
 			goto done
 
 		// ================================================================
 		// Transfer Instructions
 		// ================================================================
 		case 0xAA: // TAX
-			emit6502Transfer(cb, j65RegX, j65RegA, true)
+			emit6502Transfer(cb, j65RegX, j65RegA, false)
+			j65SetNZPending(&nz, j65RegX)
 			pendingCycles += baseCycles
 		case 0x8A: // TXA
-			emit6502Transfer(cb, j65RegA, j65RegX, true)
+			emit6502Transfer(cb, j65RegA, j65RegX, false)
+			j65SetNZPending(&nz, j65RegA)
 			pendingCycles += baseCycles
 		case 0xA8: // TAY
-			emit6502Transfer(cb, j65RegY, j65RegA, true)
+			emit6502Transfer(cb, j65RegY, j65RegA, false)
+			j65SetNZPending(&nz, j65RegY)
 			pendingCycles += baseCycles
 		case 0x98: // TYA
-			emit6502Transfer(cb, j65RegA, j65RegY, true)
+			emit6502Transfer(cb, j65RegA, j65RegY, false)
+			j65SetNZPending(&nz, j65RegA)
 			pendingCycles += baseCycles
 		case 0xBA: // TSX
-			emit6502Transfer(cb, j65RegX, j65RegSP, true)
+			emit6502Transfer(cb, j65RegX, j65RegSP, false)
+			j65SetNZPending(&nz, j65RegX)
 			pendingCycles += baseCycles
 		case 0x9A: // TXS (no flag update)
 			emit6502Transfer(cb, j65RegSP, j65RegX, false)
@@ -2541,7 +2662,7 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 		default:
 			// Unimplemented opcode — bail to interpreter.
 			flushPendingCycles(cb, &pendingCycles)
-			emit6502BailEpilogue(cb, uint32(instrPC), uint32(i), 0)
+			emit6502BailEpilogue(cb, uint32(instrPC), uint32(i), 0, nz.nzPending, nz.nzReg)
 			goto done
 		}
 	}
@@ -2551,7 +2672,7 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 	{
 		lastInstr := &instrs[len(instrs)-1]
 		endPC := uint32(startPC) + uint32(lastInstr.pcOffset) + uint32(lastInstr.length)
-		ce := emit6502ChainExit(cb, endPC, uint32(len(instrs)), &pendingCycles)
+		ce := emit6502ChainExit(cb, endPC, uint32(len(instrs)), &pendingCycles, nz.nzPending, nz.nzReg)
 		chainExits = append(chainExits, ce)
 	}
 
@@ -2567,7 +2688,7 @@ done:
 	for _, be := range extExits {
 		target := cb.Len()
 		patchRel32(cb, be.jmpOffset, target)
-		ce := emit6502ChainExit(cb, be.targetPC, be.instrCount, &be.pendingCycles)
+		ce := emit6502ChainExit(cb, be.targetPC, be.instrCount, &be.pendingCycles, be.nzPending, be.nzReg)
 		chainExits = append(chainExits, ce)
 	}
 
@@ -2577,7 +2698,7 @@ done:
 		for _, off := range bi.offsets {
 			patchRel32(cb, off, target)
 		}
-		emit6502BailEpilogue(cb, bi.instrPC, uint32(bi.instrIdx), bi.pendingCycles)
+		emit6502BailEpilogue(cb, bi.instrPC, uint32(bi.instrIdx), bi.pendingCycles, bi.nzPending, bi.nzReg)
 	}
 
 	// Emit deferred NeedInval epilogues
@@ -2586,7 +2707,7 @@ done:
 		for _, off := range ii.offsets {
 			patchRel32(cb, off, target)
 		}
-		emit6502InvalEpilogue(cb, ii.nextPC, uint32(ii.instrIdx), ii.pendingCycles)
+		emit6502InvalEpilogue(cb, ii.nextPC, uint32(ii.instrIdx), ii.pendingCycles, ii.nzPending, ii.nzReg)
 	}
 	cb.Resolve()
 	code := cb.Bytes()
