@@ -1845,3 +1845,165 @@ func TestJIT6502_AMD64_RegisterEdgeCases(t *testing.T) {
 		t.Errorf("SR = 0x%02X, want 0x00", rig.cpu.SR)
 	}
 }
+
+// ===========================================================================
+// Block Chaining Tests
+// ===========================================================================
+
+func TestJIT6502_AMD64_ChainExit_JMPAbs(t *testing.T) {
+	// Compile a block ending in JMP abs and verify chainSlots are populated.
+	rig := newJIT6502TestRig(t)
+	defer rig.cleanup()
+
+	// NOP; JMP $1234
+	mem := rig.cpu.fastAdapter.memDirect
+	mem[0x0600] = 0xEA // NOP
+	mem[0x0601] = 0x4C // JMP $1234
+	mem[0x0602] = 0x34
+	mem[0x0603] = 0x12
+
+	instrs := jit6502ScanBlock(mem, 0x0600, len(mem))
+	block, err := compileBlock6502(instrs, 0x0600, rig.execMem, &rig.cpu.codePageBitmap)
+	if err != nil {
+		t.Fatalf("compileBlock6502: %v", err)
+	}
+
+	if block.chainEntry == 0 {
+		t.Error("chainEntry should be non-zero")
+	}
+
+	// Should have at least one chain slot targeting $1234
+	found := false
+	for _, slot := range block.chainSlots {
+		if slot.targetPC == 0x1234 {
+			found = true
+			if slot.patchAddr == 0 {
+				t.Error("chain slot patchAddr should be non-zero")
+			}
+		}
+	}
+	if !found {
+		t.Error("expected chain slot targeting $1234 from JMP abs")
+	}
+}
+
+func TestJIT6502_AMD64_ChainExit_DefaultFallthrough(t *testing.T) {
+	// Compile a block that ends by size limit (no terminator) and verify
+	// the default fallthrough creates a chain slot.
+	rig := newJIT6502TestRig(t)
+	defer rig.cleanup()
+
+	// LDA #$42 followed by an uncompilable opcode (block ends before it)
+	mem := rig.cpu.fastAdapter.memDirect
+	mem[0x0600] = 0xA9 // LDA #$42
+	mem[0x0601] = 0x42
+	mem[0x0602] = 0xA7 // LAX zp (undocumented, not compilable)
+	mem[0x0603] = 0x10
+
+	instrs := jit6502ScanBlock(mem, 0x0600, len(mem))
+	if len(instrs) != 1 {
+		t.Fatalf("expected 1 instruction, got %d", len(instrs))
+	}
+
+	block, err := compileBlock6502(instrs, 0x0600, rig.execMem, &rig.cpu.codePageBitmap)
+	if err != nil {
+		t.Fatalf("compileBlock6502: %v", err)
+	}
+
+	// Default fallthrough should create a chain slot targeting endPC = $0602
+	found := false
+	for _, slot := range block.chainSlots {
+		if slot.targetPC == 0x0602 {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected chain slot targeting $0602 from default fallthrough")
+	}
+}
+
+func TestJIT6502_AMD64_BidirectionalPatching(t *testing.T) {
+	// Compile block A (JMP $0610) then block B at $0610.
+	// After B is compiled, A's chain slot should be patched to B's chainEntry.
+	rig := newJIT6502TestRig(t)
+	defer rig.cleanup()
+
+	mem := rig.cpu.fastAdapter.memDirect
+
+	// Block A at $0600: NOP; JMP $0610
+	mem[0x0600] = 0xEA // NOP
+	mem[0x0601] = 0x4C // JMP $0610
+	mem[0x0602] = 0x10
+	mem[0x0603] = 0x06
+
+	// Block B at $0610: NOP; BRK (block is just NOP, BRK excluded)
+	mem[0x0610] = 0xEA // NOP
+	mem[0x0611] = 0x00 // BRK
+
+	cache := NewCodeCache()
+
+	// Compile and cache block A
+	instrsA := jit6502ScanBlock(mem, 0x0600, len(mem))
+	blockA, err := compileBlock6502(instrsA, 0x0600, rig.execMem, &rig.cpu.codePageBitmap)
+	if err != nil {
+		t.Fatalf("compile block A: %v", err)
+	}
+	cache.Put(blockA)
+
+	// Compile and cache block B
+	instrsB := jit6502ScanBlock(mem, 0x0610, len(mem))
+	blockB, err := compileBlock6502(instrsB, 0x0610, rig.execMem, &rig.cpu.codePageBitmap)
+	if err != nil {
+		t.Fatalf("compile block B: %v", err)
+	}
+	cache.Put(blockB)
+
+	// Bidirectional patching (as done in the execution loop)
+	if blockB.chainEntry != 0 {
+		cache.PatchChainsTo(blockB.startPC, blockB.chainEntry)
+	}
+
+	// Verify: block A should have a chain slot targeting $0610 that is now patched
+	foundPatched := false
+	for _, slot := range blockA.chainSlots {
+		if slot.targetPC == 0x0610 && slot.patchAddr != 0 {
+			// Read the JMP rel32 displacement at patchAddr
+			p := (*[4]byte)(unsafe.Pointer(slot.patchAddr))
+			disp := int32(uint32(p[0]) | uint32(p[1])<<8 | uint32(p[2])<<16 | uint32(p[3])<<24)
+			target := uintptr(int64(slot.patchAddr) + 4 + int64(disp))
+			if target == blockB.chainEntry {
+				foundPatched = true
+			}
+		}
+	}
+	if !foundPatched {
+		t.Error("block A's chain slot targeting $0610 should be patched to block B's chainEntry")
+	}
+}
+
+func TestJIT6502_AMD64_ChainExit_JSR(t *testing.T) {
+	// Compile a block with JSR and verify chain slot is created.
+	rig := newJIT6502TestRig(t)
+	defer rig.cleanup()
+
+	mem := rig.cpu.fastAdapter.memDirect
+	mem[0x0600] = 0x20 // JSR $0700
+	mem[0x0601] = 0x00
+	mem[0x0602] = 0x07
+
+	instrs := jit6502ScanBlock(mem, 0x0600, len(mem))
+	block, err := compileBlock6502(instrs, 0x0600, rig.execMem, &rig.cpu.codePageBitmap)
+	if err != nil {
+		t.Fatalf("compileBlock6502: %v", err)
+	}
+
+	found := false
+	for _, slot := range block.chainSlots {
+		if slot.targetPC == 0x0700 {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected chain slot targeting $0700 from JSR")
+	}
+}

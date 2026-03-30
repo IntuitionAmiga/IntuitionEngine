@@ -436,12 +436,20 @@ func (cb *CodeBuffer) PatchUint32(offset int, val uint32) {
 // Code Cache
 // ===========================================================================
 
+// chainSlot records a patchable chain exit point within a compiled block.
+type chainSlot struct {
+	targetPC  uint32  // 6502/IE64 PC this exit targets
+	patchAddr uintptr // address of JMP rel32 displacement in ExecMem
+}
+
 type JITBlock struct {
 	startPC    uint32
 	endPC      uint32
 	instrCount int
 	execAddr   uintptr
 	execSize   int
+	chainEntry uintptr     // lightweight entry point for chained transitions (0 = none)
+	chainSlots []chainSlot // patchable exit points
 }
 
 type CodeCache struct {
@@ -474,4 +482,64 @@ func (cc *CodeCache) InvalidateRange(lo, hi uint32) {
 			delete(cc.blocks, pc)
 		}
 	}
+}
+
+// PatchChainsTo scans all cached blocks for chain slots targeting targetPC
+// and patches their JMP rel32 to jump to chainEntry.
+func (cc *CodeCache) PatchChainsTo(targetPC uint32, chainEntry uintptr) {
+	for _, block := range cc.blocks {
+		for _, slot := range block.chainSlots {
+			if slot.targetPC == targetPC && slot.patchAddr != 0 {
+				PatchRel32At(slot.patchAddr, chainEntry)
+			}
+		}
+	}
+}
+
+// UnpatchChainsInRange resets chain slots that target any block whose
+// [startPC, endPC) overlaps [lo, hi). This must match the same overlap
+// condition used by InvalidateRange, so that every block about to be removed
+// has all inbound chain jumps reset to their unchained fallback first.
+// Must be called BEFORE InvalidateRange.
+func (cc *CodeCache) UnpatchChainsInRange(lo, hi uint32) {
+	// Collect the startPCs of all blocks that will be removed.
+	var doomed []uint32
+	for _, block := range cc.blocks {
+		if block.endPC > lo && block.startPC < hi {
+			doomed = append(doomed, block.startPC)
+		}
+	}
+	if len(doomed) == 0 {
+		return
+	}
+
+	// Build a set for O(1) lookup.
+	doomedSet := make(map[uint32]struct{}, len(doomed))
+	for _, pc := range doomed {
+		doomedSet[pc] = struct{}{}
+	}
+
+	// Unpatch every chain slot in every surviving block that targets a doomed block.
+	for _, block := range cc.blocks {
+		for _, slot := range block.chainSlots {
+			if slot.patchAddr == 0 {
+				continue
+			}
+			if _, ok := doomedSet[slot.targetPC]; ok {
+				PatchRel32At(slot.patchAddr, slot.patchAddr+4)
+			}
+		}
+	}
+}
+
+// PatchRel32At writes a relative 32-bit displacement at patchAddr so that
+// a JMP/Jcc at (patchAddr-1) jumps to targetAddr. The displacement is
+// relative to the end of the 4-byte field (patchAddr+4).
+func PatchRel32At(patchAddr, targetAddr uintptr) {
+	disp := int32(targetAddr - (patchAddr + 4))
+	p := (*[4]byte)(unsafe.Pointer(patchAddr))
+	p[0] = byte(disp)
+	p[1] = byte(disp >> 8)
+	p[2] = byte(disp >> 16)
+	p[3] = byte(disp >> 24)
 }

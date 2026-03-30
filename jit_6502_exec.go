@@ -169,22 +169,61 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 			var err error
 			block, err = compileBlock6502(instrs, pc, execMem, &cpu.codePageBitmap)
 			if err != nil {
-				// Compilation failed — interpret one instruction and continue
-				cpu.interpret6502One()
-				if perfEnabled {
-					cpu.InstructionCount++
+				// ExecMem likely exhausted — full reset and retry once
+				cpu.jitCache.Invalidate()
+				execMem.Reset()
+				for i := range cpu.codePageBitmap {
+					cpu.codePageBitmap[i] = 0
 				}
-				diagFallbackInstr++
-				if !cpu.running.Load() {
-					break
+				ctx.RTSCache0PC = 0
+				ctx.RTSCache0Addr = 0
+				ctx.RTSCache1PC = 0
+				ctx.RTSCache1Addr = 0
+				block, err = compileBlock6502(instrs, pc, execMem, &cpu.codePageBitmap)
+				if err != nil {
+					// Genuine failure — interpret one instruction and continue
+					cpu.interpret6502One()
+					if perfEnabled {
+						cpu.InstructionCount++
+					}
+					diagFallbackInstr++
+					if !cpu.running.Load() {
+						break
+					}
+					continue
 				}
-				continue
 			}
 			cpu.jitCache.Put(block)
+
+			// Bidirectional chain patching:
+			// 1. Existing blocks exiting to this block → patch their slots
+			if block.chainEntry != 0 {
+				cpu.jitCache.PatchChainsTo(block.startPC, block.chainEntry)
+			}
+			// 2. This block's exits targeting already-cached blocks → patch our slots
+			for i := range block.chainSlots {
+				slot := &block.chainSlots[i]
+				if target := cpu.jitCache.Get(slot.targetPC); target != nil && target.chainEntry != 0 {
+					PatchRel32At(slot.patchAddr, target.chainEntry)
+				}
+			}
+
 			diagCacheMisses++
 		} else {
 			diagCacheHits++
 		}
+
+		// Update 2-entry MRU RTS cache before execution
+		if block.chainEntry != 0 {
+			ctx.RTSCache1PC = ctx.RTSCache0PC
+			ctx.RTSCache1Addr = ctx.RTSCache0Addr
+			ctx.RTSCache0PC = block.startPC
+			ctx.RTSCache0Addr = block.chainEntry
+		}
+
+		// Initialize chain budget and count for this entry into native code
+		ctx.ChainBudget = 64
+		ctx.ChainCount = 0
 
 		// Execute the native code block
 		callNative(block.execAddr, uintptr(unsafe.Pointer(ctx)))
@@ -194,17 +233,27 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 		cpu.Cycles += ctx.RetCycles
 		ctx.RetCycles = 0
 		executed := ctx.RetCount
+		if executed == 0 && ctx.ChainCount > 0 {
+			executed = ctx.ChainCount
+		}
 		ctx.RetCount = 0
 
-		// ── Handle NeedInval (self-mod: store completed, just invalidate) ──
+		// ── Handle NeedInval (self-mod: page-granular invalidation) ──
 		if ctx.NeedInval != 0 {
-			cpu.jitCache.Invalidate()
-			execMem.Reset()
-			// Clear code page bitmap
-			for i := range cpu.codePageBitmap {
-				cpu.codePageBitmap[i] = 0
-			}
+			page := ctx.InvalPage
+			lo := page << 8
+			hi := lo + 256
+			// Unpatch chain slots targeting invalidated range, then remove blocks
+			cpu.jitCache.UnpatchChainsInRange(lo, hi)
+			cpu.jitCache.InvalidateRange(lo, hi)
+			// Conservative: leave codePageBitmap stale (false positives are safe).
+			// Stale entries cleared on full ExecMem exhaustion reset.
 			ctx.NeedInval = 0
+			// Clear RTS cache (invalidated blocks may have had chain entries)
+			ctx.RTSCache0PC = 0
+			ctx.RTSCache0Addr = 0
+			ctx.RTSCache1PC = 0
+			ctx.RTSCache1Addr = 0
 		}
 
 		// ── Handle NeedBail (re-execute current instruction via interpreter) ──

@@ -19,7 +19,7 @@ package main
 // RSI     --    memDirect base pointer
 // RDI     --    JIT6502Context pointer (saved to [RSP+0] in prologue)
 // R8      --    ioPageBitmap pointer
-// R9      --    FastPathLimit (0x2000)
+// R9      --    (free — was FastPathLimit, now using directPageBitmap on stack)
 // RAX     --    Scratch
 // RCX     --    Scratch
 // RDX     --    Scratch
@@ -37,7 +37,7 @@ const (
 	j65RegMem      = amd64RSI // memDirect base pointer
 	j65RegCtx      = amd64RDI // JIT6502Context pointer (on entry; saved to stack)
 	j65RegIO       = amd64R8  // ioPageBitmap pointer
-	j65RegLimit    = amd64R9  // FastPathLimit
+	j65RegLimit    = amd64R9  // (free — was FastPathLimit, now unused)
 	j65RegScratch  = amd64RAX // General scratch
 	j65RegScratch2 = amd64RCX // Scratch (also shift count CL)
 	j65RegScratch3 = amd64RDX // Scratch
@@ -46,17 +46,16 @@ const (
 )
 
 // Stack frame layout:
-// 6 callee-saved pushes (48 bytes) + SUB RSP,32 = 80 bytes
-// + 8 bytes return address = 88 bytes (not 16-aligned)
-// Actually: 6 pushes = 48, + ret addr = 56, + SUB 32 = 88 — need 40 for 16-byte alignment
-// 6 pushes (48) + ret (8) = 56. 56 + 40 = 96 (divisible by 16). Good.
+// 6 callee-saved pushes (48 bytes) + return address (8) = 56 bytes.
+// SUB RSP, 40 → total 96 = 16-byte aligned.
 const (
-	j65FrameSize    = 40 // SUB RSP, 40 (makes total stack 96 = 16-byte aligned)
-	j65OffCtxPtr    = 0  // [RSP+0] = saved JIT6502Context pointer
-	j65OffCpuPtr    = 8  // [RSP+8] = CpuPtr (from context)
-	j65OffCycles    = 16 // [RSP+16] = cycle accumulator (uint32)
-	j65OffLoopCount = 20 // [RSP+20] = backward branch budget counter (uint32)
-	j65OffCodePage  = 24 // [RSP+24] = CodePageBitmapPtr (from context)
+	j65FrameSize     = 40 // SUB RSP, 40 (makes total stack 96 = 16-byte aligned)
+	j65OffCtxPtr     = 0  // [RSP+0] = saved JIT6502Context pointer (8 bytes)
+	j65OffCpuPtr     = 8  // [RSP+8] = CpuPtr (from context) (8 bytes)
+	j65OffCycles     = 16 // [RSP+16] = cycle accumulator (uint32)
+	j65OffLoopCount  = 20 // [RSP+20] = backward branch budget counter (uint32)
+	j65OffCodePage   = 24 // [RSP+24] = CodePageBitmapPtr (from context) (8 bytes)
+	j65OffDirectPage = 32 // [RSP+32] = DirectPageBitmapPtr (from context) (8 bytes)
 )
 
 // ===========================================================================
@@ -264,9 +263,8 @@ func emit6502Prologue(cb *CodeBuffer, hasBackwardBranch bool) {
 	amd64MOV_mem_reg(cb, amd64RSP, int32(j65OffCtxPtr), j65RegCtx) // [RSP+0] = RDI (ctx)
 
 	// Load pointers from JIT6502Context
-	amd64MOV_reg_mem(cb, j65RegMem, j65RegCtx, int32(j65CtxOffMemPtr))            // RSI = MemPtr
-	amd64MOV_reg_mem(cb, j65RegIO, j65RegCtx, int32(j65CtxOffIOBitmapPtr))        // R8 = IOBitmapPtr
-	amd64MOV_reg_mem32(cb, j65RegLimit, j65RegCtx, int32(j65CtxOffFastPathLimit)) // R9d = FastPathLimit
+	amd64MOV_reg_mem(cb, j65RegMem, j65RegCtx, int32(j65CtxOffMemPtr))     // RSI = MemPtr
+	amd64MOV_reg_mem(cb, j65RegIO, j65RegCtx, int32(j65CtxOffIOBitmapPtr)) // R8 = IOBitmapPtr
 
 	// Save CpuPtr to stack
 	amd64MOV_reg_mem(cb, amd64RAX, j65RegCtx, int32(j65CtxOffCpuPtr)) // RAX = CpuPtr
@@ -275,6 +273,10 @@ func emit6502Prologue(cb *CodeBuffer, hasBackwardBranch bool) {
 	// Save CodePageBitmapPtr to stack
 	amd64MOV_reg_mem(cb, amd64RCX, j65RegCtx, int32(j65CtxOffCodePageBitmap))
 	amd64MOV_mem_reg(cb, amd64RSP, int32(j65OffCodePage), amd64RCX) // [RSP+24] = CodePageBitmapPtr
+
+	// Save DirectPageBitmapPtr to stack
+	amd64MOV_reg_mem(cb, amd64RCX, j65RegCtx, int32(j65CtxOffDirectPageBitmapPtr))
+	amd64MOV_mem_reg(cb, amd64RSP, int32(j65OffDirectPage), amd64RCX) // [RSP+32] = DirectPageBitmapPtr
 
 	// Zero cycle accumulator
 	amd64MOV_mem_imm32(cb, amd64RSP, int32(j65OffCycles), 0) // [RSP+16] = 0
@@ -375,11 +377,14 @@ func emit6502BailEpilogue(cb *CodeBuffer, instrPC uint32, instrsSoFar uint32, pe
 	emit6502StorePC(cb, amd64RAX)
 	amd64MOV_mem8(cb, amd64RAX, int32(cpu6502OffSR), j65RegSR)
 
-	// Set NeedBail, RetPC, RetCount, RetCycles in context
+	// Set NeedBail, RetPC, RetCount (merged with ChainCount), RetCycles in context
 	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(j65OffCtxPtr))
 	amd64MOV_mem_imm32(cb, amd64RCX, int32(j65CtxOffNeedBail), 1)
 	amd64MOV_mem_imm32(cb, amd64RCX, int32(j65CtxOffRetPC), instrPC)
-	amd64MOV_mem_imm32(cb, amd64RCX, int32(j65CtxOffRetCount), instrsSoFar)
+	// RetCount = ChainCount + instrsSoFar (merge prior chained count)
+	amd64MOV_reg_mem32(cb, amd64RAX, amd64RCX, int32(j65CtxOffChainCount))
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, int32(instrsSoFar)) // ADD EAX, instrsSoFar
+	amd64MOV_mem_reg32(cb, amd64RCX, int32(j65CtxOffRetCount), amd64RAX)
 
 	// Flush cycle accumulator
 	amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, int32(j65OffCycles))
@@ -418,17 +423,186 @@ func emit6502InvalEpilogue(cb *CodeBuffer, nextPC uint32, instrsSoFar uint32, pe
 	emit6502StorePC(cb, amd64RAX)
 	amd64MOV_mem8(cb, amd64RAX, int32(cpu6502OffSR), j65RegSR)
 
-	// Set NeedInval, RetPC, RetCount, RetCycles in context
+	// Set NeedInval, RetPC, RetCount (merged with ChainCount), RetCycles in context
 	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(j65OffCtxPtr))
 	amd64MOV_mem_imm32(cb, amd64RCX, int32(j65CtxOffNeedInval), 1)
 	amd64MOV_mem_imm32(cb, amd64RCX, int32(j65CtxOffRetPC), nextPC)
-	amd64MOV_mem_imm32(cb, amd64RCX, int32(j65CtxOffRetCount), instrsSoFar)
+	// RetCount = ChainCount + instrsSoFar (merge prior chained count)
+	amd64MOV_reg_mem32(cb, amd64RAX, amd64RCX, int32(j65CtxOffChainCount))
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, int32(instrsSoFar)) // ADD EAX, instrsSoFar
+	amd64MOV_mem_reg32(cb, amd64RCX, int32(j65CtxOffRetCount), amd64RAX)
 
 	// Flush cycle accumulator
 	amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, int32(j65OffCycles))
 	amd64MOV_mem_reg(cb, amd64RCX, int32(j65CtxOffRetCycles), amd64RAX)
 
 	// Stack cleanup and return
+	amd64ALU_reg_imm32(cb, 0, amd64RSP, int32(j65FrameSize))
+	amd64POP(cb, amd64R15)
+	amd64POP(cb, amd64R14)
+	amd64POP(cb, amd64R13)
+	amd64POP(cb, amd64R12)
+	amd64POP(cb, amd64RBP)
+	amd64POP(cb, amd64RBX)
+	amd64RET(cb)
+}
+
+// ===========================================================================
+// x86-64 Encoding Helpers for Block Chaining
+// ===========================================================================
+
+// amd64DEC_mem32 emits DEC DWORD [base+disp]. Opcode FF /1.
+func amd64DEC_mem32(cb *CodeBuffer, base byte, disp int32) {
+	emitMemOp(cb, false, 0xFF, 1, base, disp)
+}
+
+// amd64ALU_mem_imm8 emits an ALU op with [base+disp], imm8.
+// Opcode 0x83, reg field = aluOp. Sign-extends imm8 to 32 bits.
+func amd64ALU_mem_imm8(cb *CodeBuffer, aluOp byte, base byte, disp int32, imm8 int8) {
+	emitMemOp(cb, false, 0x83, aluOp, base, disp)
+	cb.EmitBytes(byte(imm8))
+}
+
+// amd64ALU_reg_mem32_cmp emits CMP reg32, [base + disp] (opcode 0x3B).
+func amd64ALU_reg_mem32_cmp(cb *CodeBuffer, reg, base byte, disp int32) {
+	emitMemOp(cb, false, 0x3B, reg, base, disp)
+}
+
+// ===========================================================================
+// Block Chaining: Chain Entry / Chain Exit / Unchained Exit
+// ===========================================================================
+
+// j65ChainExitInfo records a chain exit point for later patching.
+type j65ChainExitInfo struct {
+	targetPC      uint32 // 6502 PC this exit targets
+	jmpDispOffset int    // offset within CodeBuffer of the JMP rel32 displacement
+}
+
+// emit6502ChainEntry emits the lightweight chain entry point. Chained blocks
+// JMP directly here, skipping the full prologue. Since all 6502 state lives in
+// callee-saved registers, no register loads are needed.
+func emit6502ChainEntry(cb *CodeBuffer, hasBackwardBranch bool) int {
+	entryOff := cb.Len()
+	if hasBackwardBranch {
+		amd64MOV_mem_imm32(cb, amd64RSP, int32(j65OffLoopCount), 0)
+	}
+	return entryOff
+}
+
+// emit6502ChainExit emits a chain exit sequence for a block terminator with a
+// statically known target PC. The sequence:
+//  1. Flush pending cycles
+//  2. Accumulate instruction count into ChainCount
+//  3. Decrement ChainBudget; if exhausted → unchained exit
+//  4. Check NeedInval; if set → unchained exit
+//  5. Patchable JMP rel32 (initially to unchained exit)
+//  6. Unchained exit: store regs, set RetPC/RetCount, full pop/ret
+func emit6502ChainExit(cb *CodeBuffer, targetPC uint32, instrCount uint32, pendingCycles *uint32) j65ChainExitInfo {
+	flushPendingCycles(cb, pendingCycles)
+
+	// Load ctx pointer
+	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(j65OffCtxPtr))
+
+	// Accumulate instruction count: ChainCount += instrCount
+	amd64MOV_reg_mem32(cb, amd64RAX, amd64RCX, int32(j65CtxOffChainCount))
+	if instrCount <= 127 {
+		amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, int32(instrCount)) // ADD EAX, instrCount
+	} else {
+		amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, int32(instrCount))
+	}
+	amd64MOV_mem_reg32(cb, amd64RCX, int32(j65CtxOffChainCount), amd64RAX)
+
+	// DEC DWORD [RCX + ChainBudget]
+	amd64DEC_mem32(cb, amd64RCX, int32(j65CtxOffChainBudget))
+
+	// JLE .unchained (budget exhausted — signed, now <= 0)
+	unchainedOff1 := amd64Jcc_rel32(cb, amd64CondLE)
+
+	// CMP DWORD [RCX + NeedInval], 0
+	amd64ALU_mem_imm8(cb, 7, amd64RCX, int32(j65CtxOffNeedInval), 0) // /7 = CMP
+	// JNE .unchained (self-mod detected)
+	unchainedOff2 := amd64Jcc_rel32(cb, amd64CondNE)
+
+	// Patchable JMP rel32 — initially jumps to .unchained
+	jmpOff := cb.Len()
+	cb.EmitBytes(0xE9, 0, 0, 0, 0) // JMP rel32 (placeholder)
+	jmpDispOffset := jmpOff + 1    // displacement starts after opcode byte
+
+	// .unchained label
+	unchainedLabel := cb.Len()
+	patchRel32(cb, unchainedOff1, unchainedLabel)
+	patchRel32(cb, unchainedOff2, unchainedLabel)
+	patchRel32(cb, jmpDispOffset, unchainedLabel) // initial target = unchained
+
+	// Emit unchained exit
+	emit6502UnchainedExitImm(cb, targetPC)
+
+	return j65ChainExitInfo{
+		targetPC:      targetPC,
+		jmpDispOffset: jmpDispOffset,
+	}
+}
+
+// emit6502UnchainedExitImm emits a full exit sequence with a static RetPC.
+// Stores all 6502 registers to CPU struct, writes RetPC/RetCount/RetCycles, returns.
+func emit6502UnchainedExitImm(cb *CodeBuffer, retPC uint32) {
+	// Store registers back to CPU struct
+	amd64MOV_reg_mem(cb, amd64RAX, amd64RSP, int32(j65OffCpuPtr))
+	amd64MOV_mem8(cb, amd64RAX, int32(cpu6502OffA), j65RegA)
+	amd64MOV_mem8(cb, amd64RAX, int32(cpu6502OffX), j65RegX)
+	amd64MOV_mem8(cb, amd64RAX, int32(cpu6502OffY), j65RegY)
+	amd64MOV_mem8(cb, amd64RAX, int32(cpu6502OffSP), j65RegSP)
+	emit6502StorePC(cb, amd64RAX)
+	amd64MOV_mem8(cb, amd64RAX, int32(cpu6502OffSR), j65RegSR)
+
+	// Write context fields: RetPC, RetCount from ChainCount, RetCycles
+	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(j65OffCtxPtr))
+	amd64MOV_mem_imm32(cb, amd64RCX, int32(j65CtxOffRetPC), retPC)
+	// RetCount = ChainCount (already accumulated)
+	amd64MOV_reg_mem32(cb, amd64RAX, amd64RCX, int32(j65CtxOffChainCount))
+	amd64MOV_mem_reg32(cb, amd64RCX, int32(j65CtxOffRetCount), amd64RAX)
+	// RetCycles from accumulator
+	amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, int32(j65OffCycles))
+	amd64MOV_mem_reg(cb, amd64RCX, int32(j65CtxOffRetCycles), amd64RAX)
+
+	// Full stack cleanup and return
+	amd64ALU_reg_imm32(cb, 0, amd64RSP, int32(j65FrameSize))
+	amd64POP(cb, amd64R15)
+	amd64POP(cb, amd64R14)
+	amd64POP(cb, amd64R13)
+	amd64POP(cb, amd64R12)
+	amd64POP(cb, amd64RBP)
+	amd64POP(cb, amd64RBX)
+	amd64RET(cb)
+}
+
+// emit6502UnchainedExitReg emits a full exit with RetPC from a host register (e.g. R10D).
+// Used by RTS and JMP indirect where the target PC is computed at runtime.
+func emit6502UnchainedExitReg(cb *CodeBuffer, pcReg byte) {
+	// Store registers back to CPU struct
+	amd64MOV_reg_mem(cb, amd64RAX, amd64RSP, int32(j65OffCpuPtr))
+	amd64MOV_mem8(cb, amd64RAX, int32(cpu6502OffA), j65RegA)
+	amd64MOV_mem8(cb, amd64RAX, int32(cpu6502OffX), j65RegX)
+	amd64MOV_mem8(cb, amd64RAX, int32(cpu6502OffY), j65RegY)
+	amd64MOV_mem8(cb, amd64RAX, int32(cpu6502OffSP), j65RegSP)
+	// Store PC from pcReg as 16-bit word
+	cb.EmitBytes(0x66) // operand size prefix
+	emitREX(cb, false, pcReg, amd64RAX)
+	cb.EmitBytes(0x89, modRM(0, pcReg, amd64RAX)) // MOV WORD [RAX], pcRegW
+	amd64MOV_mem8(cb, amd64RAX, int32(cpu6502OffSR), j65RegSR)
+
+	// Write context fields
+	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(j65OffCtxPtr))
+	// RetPC from pcReg
+	amd64MOV_mem_reg32(cb, amd64RCX, int32(j65CtxOffRetPC), pcReg)
+	// RetCount = ChainCount
+	amd64MOV_reg_mem32(cb, amd64RAX, amd64RCX, int32(j65CtxOffChainCount))
+	amd64MOV_mem_reg32(cb, amd64RCX, int32(j65CtxOffRetCount), amd64RAX)
+	// RetCycles
+	amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, int32(j65OffCycles))
+	amd64MOV_mem_reg(cb, amd64RCX, int32(j65CtxOffRetCycles), amd64RAX)
+
+	// Full stack cleanup and return
 	amd64ALU_reg_imm32(cb, 0, amd64RSP, int32(j65FrameSize))
 	amd64POP(cb, amd64R15)
 	amd64POP(cb, amd64R14)
@@ -550,72 +724,26 @@ func emit6502UpdateNZ(cb *CodeBuffer, resultReg byte) {
 // Fast-Path Memory Check
 // ===========================================================================
 
-// emit6502CheckFastPath emits the fast-path check for the address in EAX.
-// If addr >= FastPathLimit or ioPageBitmap[addr>>8] is set, jumps to bailOff.
-// Returns the offset that needs to be patched with the bail target.
-// Clobbers: ECX.
-func emit6502CheckFastPath(cb *CodeBuffer) (bailOff1, bailOff2 int) {
-	// CMP EAX, R9D  (addr vs FastPathLimit)
-	amd64CMP_reg_imm32(cb, amd64RAX, 0) // placeholder — actually use CMP EAX, R9D
-	// Oops, I need CMP r32, r32. Let me use the existing ALU helper.
-	// Actually, let me re-do: CMP EAX, R9D is ALU_reg_reg32 with CMP opcode
-	return 0, 0 // placeholder
-}
+// emit6502FullFastPathCheck emits the fast-path check for addr in EAX using
+// the directPageBitmap. If directPageBitmap[addr>>8] != 0, jumps to bail.
+// Returns a single offset that needs to be patched to the bail target.
+// Clobbers: ECX, R9. Does NOT clobber RDX (preserved for page-cross checks).
+func emit6502FullFastPathCheck(cb *CodeBuffer) int {
+	// ECX = addr >> 8 (page number)
+	amd64MOV_reg_reg32(cb, amd64RCX, amd64RAX)
+	amd64SHR_imm32(cb, amd64RCX, 8)
 
-// emit6502FastPathCheckInline emits the fast-path check inline.
-// Address is in EAX. If check fails, jumps to the returned offsets (to be patched).
-// Clobbers: ECX.
-func emit6502FastPathCheckInline(cb *CodeBuffer) (bailOff int) {
-	// CMP EAX, R9D  — unsigned comparison, addr vs FastPathLimit (0x2000)
-	emitREX(cb, false, j65RegLimit, amd64RAX)
-	cb.EmitBytes(0x39, modRM(3, j65RegLimit, amd64RAX)) // CMP EAX, R9D
+	// R9 = directPageBitmap pointer (from stack). R9 is free since FastPathLimit was removed.
+	amd64MOV_reg_mem(cb, amd64R9, amd64RSP, int32(j65OffDirectPage))
 
-	// JAE .bail  — if addr >= limit, bail
-	bail1Off := amd64Jcc_rel32(cb, amd64CondAE)
-
-	// Check ioPageBitmap[addr >> 8]
-	amd64MOV_reg_reg32(cb, amd64RCX, amd64RAX) // ECX = addr
-	amd64SHR_imm32(cb, amd64RCX, 8)            // ECX = page number
-
-	// MOVZX ECX, BYTE [R8 + RCX]  — load ioPageBitmap[page]
-	amd64MOVZX_B_memSIB(cb, amd64RCX, j65RegIO, amd64RCX)
+	// MOVZX ECX, BYTE [R9 + RCX]
+	amd64MOVZX_B_memSIB(cb, amd64RCX, amd64R9, amd64RCX)
 
 	// TEST ECX, ECX
 	amd64TEST_reg_reg32(cb, amd64RCX, amd64RCX)
 
-	// JNZ .bail  — if I/O page, bail
-	bail2Off := amd64Jcc_rel32(cb, amd64CondNE)
-
-	// Both bail offsets need to jump to the same bail target.
-	// Return the first one; we'll patch both.
-	// Actually, let me return them in a struct... or just return the bail offsets
-	// and patch them both at once. Let me use a simpler approach: jump to a common label.
-
-	// Actually, both checks jump to the same bail. Let me chain them:
-	// JAE .bail jumps to bail1Off
-	// JNZ .bail jumps to bail2Off
-	// Both need to point to the same bail target.
-	_ = bail1Off
-	_ = bail2Off
-	return bail1Off // caller patches both
-}
-
-// emit6502FullFastPathCheck emits the full fast-path check for addr in EAX.
-// Returns two offsets that both need to be patched to point to the bail target.
-func emit6502FullFastPathCheck(cb *CodeBuffer) (off1, off2 int) {
-	// CMP EAX, R9D
-	emitREX(cb, false, j65RegLimit, amd64RAX)
-	cb.EmitBytes(0x39, modRM(3, j65RegLimit, amd64RAX))
-	off1 = amd64Jcc_rel32(cb, amd64CondAE) // JAE bail
-
-	// ioPageBitmap check
-	amd64MOV_reg_reg32(cb, amd64RCX, amd64RAX)
-	amd64SHR_imm32(cb, amd64RCX, 8)
-	amd64MOVZX_B_memSIB(cb, amd64RCX, j65RegIO, amd64RCX)
-	amd64TEST_reg_reg32(cb, amd64RCX, amd64RCX)
-	off2 = amd64Jcc_rel32(cb, amd64CondNE) // JNZ bail
-
-	return
+	// JNZ bail
+	return amd64Jcc_rel32(cb, amd64CondNE)
 }
 
 // emit6502ZPPageCheck emits the ioPageBitmap check for a specific ZP page (0).
@@ -746,6 +874,11 @@ func emit6502SelfModCheck(cb *CodeBuffer) int {
 	amd64MOV_reg_reg32(cb, amd64RCX, amd64RAX) // ECX = addr
 	amd64SHR_imm32(cb, amd64RCX, 8)            // ECX = page number
 
+	// Store page number to ctx.InvalPage (unconditional, cheap — needed for
+	// page-granular invalidation if we actually trigger NeedInval)
+	amd64MOV_reg_mem(cb, amd64RDX, amd64RSP, int32(j65OffCtxPtr))         // RDX = ctx
+	amd64MOV_mem_reg32(cb, amd64RDX, int32(j65CtxOffInvalPage), amd64RCX) // ctx.InvalPage = page
+
 	// Load CodePageBitmapPtr from stack
 	amd64MOV_reg_mem(cb, amd64RDX, amd64RSP, int32(j65OffCodePage)) // RDX = bitmap ptr
 
@@ -819,18 +952,18 @@ func emit6502Load(cb *CodeBuffer, dstReg byte, opcode byte, operand uint16,
 	// === Absolute ===
 	case 0xAD, 0xAE, 0xAC: // LDA/LDX/LDY abs
 		emit6502AddrAbs(cb, operand)
-		off1, off2 := emit6502FullFastPathCheck(cb)
+		fpOff := emit6502FullFastPathCheck(cb)
 		*bails = append(*bails, bailInfo{
-			offsets: []int{off1, off2}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
+			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
 		})
 		amd64MOVZX_B_memSIB(cb, dstReg, j65RegMem, amd64RAX)
 
 	// === Absolute,X ===
 	case 0xBD, 0xBC: // LDA/LDY abs,X
 		emit6502AddrAbsX(cb, operand)
-		off1, off2 := emit6502FullFastPathCheck(cb)
+		fpOff := emit6502FullFastPathCheck(cb)
 		*bails = append(*bails, bailInfo{
-			offsets: []int{off1, off2}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
+			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
 		})
 		amd64MOVZX_B_memSIB(cb, dstReg, j65RegMem, amd64RAX)
 		if isLoadWithPageCross {
@@ -840,9 +973,9 @@ func emit6502Load(cb *CodeBuffer, dstReg byte, opcode byte, operand uint16,
 	// === Absolute,Y ===
 	case 0xB9, 0xBE: // LDA/LDX abs,Y
 		emit6502AddrAbsY(cb, operand)
-		off1, off2 := emit6502FullFastPathCheck(cb)
+		fpOff := emit6502FullFastPathCheck(cb)
 		*bails = append(*bails, bailInfo{
-			offsets: []int{off1, off2}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
+			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
 		})
 		amd64MOVZX_B_memSIB(cb, dstReg, j65RegMem, amd64RAX)
 		if isLoadWithPageCross {
@@ -852,18 +985,18 @@ func emit6502Load(cb *CodeBuffer, dstReg byte, opcode byte, operand uint16,
 	// === (Indirect,X) ===
 	case 0xA1: // LDA (ind,X)
 		emit6502AddrIndX(cb, byte(operand))
-		off1, off2 := emit6502FullFastPathCheck(cb)
+		fpOff := emit6502FullFastPathCheck(cb)
 		*bails = append(*bails, bailInfo{
-			offsets: []int{off1, off2}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
+			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
 		})
 		amd64MOVZX_B_memSIB(cb, dstReg, j65RegMem, amd64RAX)
 
 	// === (Indirect),Y ===
 	case 0xB1: // LDA (ind),Y
 		emit6502AddrIndY(cb, byte(operand))
-		off1, off2 := emit6502FullFastPathCheck(cb)
+		fpOff := emit6502FullFastPathCheck(cb)
 		*bails = append(*bails, bailInfo{
-			offsets: []int{off1, off2}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
+			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
 		})
 		amd64MOVZX_B_memSIB(cb, dstReg, j65RegMem, amd64RAX)
 		if isLoadWithPageCross {
@@ -921,9 +1054,9 @@ func emit6502Store(cb *CodeBuffer, srcReg byte, opcode byte, operand uint16,
 	// === Absolute ===
 	case 0x8D, 0x8E, 0x8C: // STA/STX/STY abs
 		emit6502AddrAbs(cb, operand)
-		off1, off2 := emit6502FullFastPathCheck(cb)
+		fpOff := emit6502FullFastPathCheck(cb)
 		*bails = append(*bails, bailInfo{
-			offsets: []int{off1, off2}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
+			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
 		})
 		amd64MOV_memSIB_reg8(cb, j65RegMem, amd64RAX, srcReg)
 		invalOff := emit6502SelfModCheck(cb)
@@ -934,9 +1067,9 @@ func emit6502Store(cb *CodeBuffer, srcReg byte, opcode byte, operand uint16,
 	// === Absolute,X ===
 	case 0x9D: // STA abs,X
 		emit6502AddrAbsX(cb, operand)
-		off1, off2 := emit6502FullFastPathCheck(cb)
+		fpOff := emit6502FullFastPathCheck(cb)
 		*bails = append(*bails, bailInfo{
-			offsets: []int{off1, off2}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
+			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
 		})
 		amd64MOV_memSIB_reg8(cb, j65RegMem, amd64RAX, srcReg)
 		invalOff := emit6502SelfModCheck(cb)
@@ -947,9 +1080,9 @@ func emit6502Store(cb *CodeBuffer, srcReg byte, opcode byte, operand uint16,
 	// === Absolute,Y ===
 	case 0x99: // STA abs,Y
 		emit6502AddrAbsY(cb, operand)
-		off1, off2 := emit6502FullFastPathCheck(cb)
+		fpOff := emit6502FullFastPathCheck(cb)
 		*bails = append(*bails, bailInfo{
-			offsets: []int{off1, off2}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
+			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
 		})
 		amd64MOV_memSIB_reg8(cb, j65RegMem, amd64RAX, srcReg)
 		invalOff := emit6502SelfModCheck(cb)
@@ -960,9 +1093,9 @@ func emit6502Store(cb *CodeBuffer, srcReg byte, opcode byte, operand uint16,
 	// === (Indirect,X) ===
 	case 0x81: // STA (ind,X)
 		emit6502AddrIndX(cb, byte(operand))
-		off1, off2 := emit6502FullFastPathCheck(cb)
+		fpOff := emit6502FullFastPathCheck(cb)
 		*bails = append(*bails, bailInfo{
-			offsets: []int{off1, off2}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
+			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
 		})
 		amd64MOV_memSIB_reg8(cb, j65RegMem, amd64RAX, srcReg)
 		invalOff := emit6502SelfModCheck(cb)
@@ -973,9 +1106,9 @@ func emit6502Store(cb *CodeBuffer, srcReg byte, opcode byte, operand uint16,
 	// === (Indirect),Y ===
 	case 0x91: // STA (ind),Y
 		emit6502AddrIndY(cb, byte(operand))
-		off1, off2 := emit6502FullFastPathCheck(cb)
+		fpOff := emit6502FullFastPathCheck(cb)
 		*bails = append(*bails, bailInfo{
-			offsets: []int{off1, off2}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
+			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles,
 		})
 		amd64MOV_memSIB_reg8(cb, j65RegMem, amd64RAX, srcReg)
 		invalOff := emit6502SelfModCheck(cb)
@@ -1140,9 +1273,9 @@ func amd64CMP_mem32_imm32(cb *CodeBuffer, base byte, disp int32, imm int32) {
 // ===========================================================================
 
 // emit6502JMP_Abs emits JMP absolute ($4C). Block terminator.
-func emit6502JMP_Abs(cb *CodeBuffer, targetPC uint16, instrCount uint32, pendingCycles *uint32) {
-	flushPendingCycles(cb, pendingCycles)
-	emit6502Epilogue(cb, uint32(targetPC), instrCount)
+// Returns chain exit info for patching.
+func emit6502JMP_Abs(cb *CodeBuffer, targetPC uint16, instrCount uint32, pendingCycles *uint32) j65ChainExitInfo {
+	return emit6502ChainExit(cb, uint32(targetPC), instrCount, pendingCycles)
 }
 
 // emit6502JMP_Ind emits JMP indirect ($6C). Block terminator.
@@ -1155,8 +1288,8 @@ func emit6502JMP_Ind(cb *CodeBuffer, operand uint16, instrCount uint32,
 	amd64MOV_reg_imm32(cb, amd64RAX, uint32(operand))
 
 	// Fast-path check for the pointer read
-	off1, off2 := emit6502FullFastPathCheck(cb)
-	*bails = append(*bails, bailInfo{[]int{off1, off2}, instrPC, instrIdx, curPending})
+	fpOff := emit6502FullFastPathCheck(cb)
+	*bails = append(*bails, bailInfo{[]int{fpOff}, instrPC, instrIdx, curPending})
 
 	// Read low byte of target
 	amd64MOVZX_B_memSIB(cb, amd64R10, j65RegMem, amd64RAX)
@@ -1166,8 +1299,8 @@ func emit6502JMP_Ind(cb *CodeBuffer, operand uint16, instrCount uint32,
 	highAddr := (operand & 0xFF00) | ((operand + 1) & 0x00FF)
 	amd64MOV_reg_imm32(cb, amd64RAX, uint32(highAddr))
 	// Check fast-path for high byte too
-	off3, off4 := emit6502FullFastPathCheck(cb)
-	*bails = append(*bails, bailInfo{[]int{off3, off4}, instrPC, instrIdx, curPending})
+	fpOff2 := emit6502FullFastPathCheck(cb)
+	*bails = append(*bails, bailInfo{[]int{fpOff2}, instrPC, instrIdx, curPending})
 
 	amd64MOVZX_B_memSIB(cb, amd64R11, j65RegMem, amd64RAX)
 
@@ -1176,41 +1309,22 @@ func emit6502JMP_Ind(cb *CodeBuffer, operand uint16, instrCount uint32,
 	emitREX(cb, false, amd64R11, amd64R10)
 	cb.EmitBytes(0x09, modRM(3, amd64R11, amd64R10)) // OR R10D, R11D
 
-	// targetPC in R10D
+	// targetPC in R10D — dynamic target, cannot chain
 	flushPendingCycles(cb, pendingCycles)
 
-	// Store registers and exit with PC from R10D
-	amd64MOV_reg_mem(cb, amd64RAX, amd64RSP, int32(j65OffCpuPtr))
-	amd64MOV_mem8(cb, amd64RAX, int32(cpu6502OffA), j65RegA)
-	amd64MOV_mem8(cb, amd64RAX, int32(cpu6502OffX), j65RegX)
-	amd64MOV_mem8(cb, amd64RAX, int32(cpu6502OffY), j65RegY)
-	amd64MOV_mem8(cb, amd64RAX, int32(cpu6502OffSP), j65RegSP)
-	// Store PC from R10D as 16-bit
-	cb.EmitBytes(0x66) // operand size prefix
-	emitREX(cb, false, amd64R10, amd64RAX)
-	cb.EmitBytes(0x89, modRM(0, amd64R10, amd64RAX)) // MOV WORD [RAX], R10W
-	amd64MOV_mem8(cb, amd64RAX, int32(cpu6502OffSR), j65RegSR)
-
+	// Accumulate this block's instruction count into ChainCount before unchained exit
 	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(j65OffCtxPtr))
-	// RetPC from R10D
-	amd64MOV_mem_reg32(cb, amd64RCX, int32(j65CtxOffRetPC), amd64R10)
-	amd64MOV_mem_imm32(cb, amd64RCX, int32(j65CtxOffRetCount), instrCount)
-	amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, int32(j65OffCycles))
-	amd64MOV_mem_reg(cb, amd64RCX, int32(j65CtxOffRetCycles), amd64RAX)
+	amd64MOV_reg_mem32(cb, amd64RAX, amd64RCX, int32(j65CtxOffChainCount))
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, int32(instrCount)) // ADD EAX, instrCount
+	amd64MOV_mem_reg32(cb, amd64RCX, int32(j65CtxOffChainCount), amd64RAX)
 
-	amd64ALU_reg_imm32(cb, 0, amd64RSP, int32(j65FrameSize))
-	amd64POP(cb, amd64R15)
-	amd64POP(cb, amd64R14)
-	amd64POP(cb, amd64R13)
-	amd64POP(cb, amd64R12)
-	amd64POP(cb, amd64RBP)
-	amd64POP(cb, amd64RBX)
-	amd64RET(cb)
+	emit6502UnchainedExitReg(cb, amd64R10)
 }
 
 // emit6502JSR emits JSR ($20). Block terminator.
 // Pushes PC+2 (address of last byte of JSR) to stack, sets PC to target.
-func emit6502JSR(cb *CodeBuffer, targetPC uint16, returnAddr uint16, instrCount uint32, pendingCycles *uint32) {
+// Returns chain exit info for patching.
+func emit6502JSR(cb *CodeBuffer, targetPC uint16, returnAddr uint16, instrCount uint32, pendingCycles *uint32) j65ChainExitInfo {
 	// Push return address high byte
 	amd64MOVZX_B(cb, amd64RAX, j65RegSP)
 	amd64OR_reg_imm32_32bit(cb, amd64RAX, 0x0100)
@@ -1226,12 +1340,11 @@ func emit6502JSR(cb *CodeBuffer, targetPC uint16, returnAddr uint16, instrCount 
 	amd64MOV_memSIB_reg8(cb, j65RegMem, amd64RAX, amd64RCX)
 	amd64DEC_reg8(cb, j65RegSP)
 
-	flushPendingCycles(cb, pendingCycles)
-	emit6502Epilogue(cb, uint32(targetPC), instrCount)
+	return emit6502ChainExit(cb, uint32(targetPC), instrCount, pendingCycles)
 }
 
 // emit6502RTS emits RTS ($60). Block terminator.
-// Pulls PC from stack, adds 1.
+// Pulls PC from stack, adds 1. Checks 2-entry MRU RTS cache for chain hit.
 func emit6502RTS(cb *CodeBuffer, instrCount uint32, pendingCycles *uint32) {
 	// Pull low byte
 	amd64INC_reg8(cb, j65RegSP)
@@ -1254,32 +1367,51 @@ func emit6502RTS(cb *CodeBuffer, instrCount uint32, pendingCycles *uint32) {
 
 	flushPendingCycles(cb, pendingCycles)
 
-	// Emit epilogue with dynamic PC from R10D
-	amd64MOV_reg_mem(cb, amd64RAX, amd64RSP, int32(j65OffCpuPtr))
-	amd64MOV_mem8(cb, amd64RAX, int32(cpu6502OffA), j65RegA)
-	amd64MOV_mem8(cb, amd64RAX, int32(cpu6502OffX), j65RegX)
-	amd64MOV_mem8(cb, amd64RAX, int32(cpu6502OffY), j65RegY)
-	amd64MOV_mem8(cb, amd64RAX, int32(cpu6502OffSP), j65RegSP)
-	// Store PC from R10D
-	cb.EmitBytes(0x66)
-	emitREX(cb, false, amd64R10, amd64RAX)
-	cb.EmitBytes(0x89, modRM(0, amd64R10, amd64RAX)) // MOV WORD [RAX], R10W
-	amd64MOV_mem8(cb, amd64RAX, int32(cpu6502OffSR), j65RegSR)
-
+	// Load ctx for cache check and chain count
 	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(j65OffCtxPtr))
-	amd64MOV_mem_reg32(cb, amd64RCX, int32(j65CtxOffRetPC), amd64R10)
-	amd64MOV_mem_imm32(cb, amd64RCX, int32(j65CtxOffRetCount), instrCount)
-	amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, int32(j65OffCycles))
-	amd64MOV_mem_reg(cb, amd64RCX, int32(j65CtxOffRetCycles), amd64RAX)
 
-	amd64ALU_reg_imm32(cb, 0, amd64RSP, int32(j65FrameSize))
-	amd64POP(cb, amd64R15)
-	amd64POP(cb, amd64R14)
-	amd64POP(cb, amd64R13)
-	amd64POP(cb, amd64R12)
-	amd64POP(cb, amd64RBP)
-	amd64POP(cb, amd64RBX)
-	amd64RET(cb)
+	// Accumulate instruction count before potential chain
+	amd64MOV_reg_mem32(cb, amd64RAX, amd64RCX, int32(j65CtxOffChainCount))
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, int32(instrCount)) // ADD EAX, instrCount
+	amd64MOV_mem_reg32(cb, amd64RCX, int32(j65CtxOffChainCount), amd64RAX)
+
+	// === 2-entry MRU RTS cache check ===
+	// Check entry 0: CMP R10D, [RCX + RTSCache0PC]
+	amd64ALU_reg_mem32_cmp(cb, amd64R10, amd64RCX, int32(j65CtxOffRTSCache0PC))
+	miss0Off := amd64Jcc_rel32(cb, amd64CondNE) // JNE .check1
+
+	// Entry 0 hit: load chain addr
+	amd64MOV_reg_mem(cb, amd64R11, amd64RCX, int32(j65CtxOffRTSCache0Addr))
+	hitOff := amd64JMP_rel32(cb) // JMP .hit
+
+	// .check1: Check entry 1
+	patchRel32(cb, miss0Off, cb.Len())
+	amd64ALU_reg_mem32_cmp(cb, amd64R10, amd64RCX, int32(j65CtxOffRTSCache1PC))
+	miss1Off := amd64Jcc_rel32(cb, amd64CondNE) // JNE .miss
+
+	// Entry 1 hit: load chain addr
+	amd64MOV_reg_mem(cb, amd64R11, amd64RCX, int32(j65CtxOffRTSCache1Addr))
+
+	// .hit: chain budget/inval check, then JMP R11
+	patchRel32(cb, hitOff, cb.Len())
+
+	// DEC ChainBudget
+	amd64DEC_mem32(cb, amd64RCX, int32(j65CtxOffChainBudget))
+	budgetOff := amd64Jcc_rel32(cb, amd64CondLE) // JLE .miss (reuse miss path)
+
+	// Check NeedInval
+	amd64ALU_mem_imm8(cb, 7, amd64RCX, int32(j65CtxOffNeedInval), 0) // CMP [RCX+NeedInval], 0
+	invalOff := amd64Jcc_rel32(cb, amd64CondNE)                      // JNE .miss
+
+	// JMP R11 (chain to target)
+	emitREX(cb, true, 0, amd64R11)
+	cb.EmitBytes(0xFF, modRM(3, 4, amd64R11)) // JMP R11
+
+	// .miss: unchained exit with R10D
+	patchRel32(cb, miss1Off, cb.Len())
+	patchRel32(cb, budgetOff, cb.Len())
+	patchRel32(cb, invalOff, cb.Len())
+	emit6502UnchainedExitReg(cb, amd64R10)
 }
 
 // ===========================================================================
@@ -1592,34 +1724,34 @@ func emit6502LoadOperandToEAX(cb *CodeBuffer, opcode byte, operand uint16,
 		amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 	case 3: // Absolute
 		emit6502AddrAbs(cb, operand)
-		off1, off2 := emit6502FullFastPathCheck(cb)
-		*bails = append(*bails, bailInfo{[]int{off1, off2}, instrPC, instrIdx, pendingCycles})
+		fpOff := emit6502FullFastPathCheck(cb)
+		*bails = append(*bails, bailInfo{[]int{fpOff}, instrPC, instrIdx, pendingCycles})
 		amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 	case 7: // Absolute,X
 		emit6502AddrAbsX(cb, operand)
-		off1, off2 := emit6502FullFastPathCheck(cb)
-		*bails = append(*bails, bailInfo{[]int{off1, off2}, instrPC, instrIdx, pendingCycles})
+		fpOff := emit6502FullFastPathCheck(cb)
+		*bails = append(*bails, bailInfo{[]int{fpOff}, instrPC, instrIdx, pendingCycles})
 		amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 		if emitPageCross {
 			emit6502PageCrossCheck(cb)
 		}
 	case 6: // Absolute,Y
 		emit6502AddrAbsY(cb, operand)
-		off1, off2 := emit6502FullFastPathCheck(cb)
-		*bails = append(*bails, bailInfo{[]int{off1, off2}, instrPC, instrIdx, pendingCycles})
+		fpOff := emit6502FullFastPathCheck(cb)
+		*bails = append(*bails, bailInfo{[]int{fpOff}, instrPC, instrIdx, pendingCycles})
 		amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 		if emitPageCross {
 			emit6502PageCrossCheck(cb)
 		}
 	case 0: // (Indirect,X)
 		emit6502AddrIndX(cb, byte(operand))
-		off1, off2 := emit6502FullFastPathCheck(cb)
-		*bails = append(*bails, bailInfo{[]int{off1, off2}, instrPC, instrIdx, pendingCycles})
+		fpOff := emit6502FullFastPathCheck(cb)
+		*bails = append(*bails, bailInfo{[]int{fpOff}, instrPC, instrIdx, pendingCycles})
 		amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 	case 4: // (Indirect),Y
 		emit6502AddrIndY(cb, byte(operand))
-		off1, off2 := emit6502FullFastPathCheck(cb)
-		*bails = append(*bails, bailInfo{[]int{off1, off2}, instrPC, instrIdx, pendingCycles})
+		fpOff := emit6502FullFastPathCheck(cb)
+		*bails = append(*bails, bailInfo{[]int{fpOff}, instrPC, instrIdx, pendingCycles})
 		amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 		if emitPageCross {
 			emit6502PageCrossCheck(cb)
@@ -1866,11 +1998,15 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 	hasBackward := jit6502DetectBackwardBranches(instrs, startPC)
 	emit6502Prologue(cb, hasBackward)
 
+	// Chain entry point — chained blocks JMP here, skipping the prologue
+	chainEntryOff := emit6502ChainEntry(cb, hasBackward)
+
 	var pendingCycles uint32
 	var bails []bailInfo
 	var invals []invalInfo
 	var fwdFixups []branchFixup
 	var extExits []branchExit
+	var chainExits []j65ChainExitInfo
 
 	instrOffsets := make([]int, len(instrs))
 
@@ -2049,8 +2185,8 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 				amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 			case 0xEC: // absolute
 				emit6502AddrAbs(cb, ji.operand)
-				off1, off2 := emit6502FullFastPathCheck(cb)
-				bails = append(bails, bailInfo{[]int{off1, off2}, uint32(instrPC), i, pendingCycles})
+				fpOff := emit6502FullFastPathCheck(cb)
+				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles})
 				amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 			}
 			emit6502CompareFlags(cb, j65RegX)
@@ -2070,8 +2206,8 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 				amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 			case 0xCC: // absolute
 				emit6502AddrAbs(cb, ji.operand)
-				off1, off2 := emit6502FullFastPathCheck(cb)
-				bails = append(bails, bailInfo{[]int{off1, off2}, uint32(instrPC), i, pendingCycles})
+				fpOff := emit6502FullFastPathCheck(cb)
+				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles})
 				amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 			}
 			emit6502CompareFlags(cb, j65RegY)
@@ -2092,12 +2228,12 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles})
 			case 0xEE: // INC abs
 				emit6502AddrAbs(cb, ji.operand)
-				off1, off2 := emit6502FullFastPathCheck(cb)
-				bails = append(bails, bailInfo{[]int{off1, off2}, uint32(instrPC), i, pendingCycles})
+				fpOff := emit6502FullFastPathCheck(cb)
+				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles})
 			case 0xFE: // INC abs,X
 				emit6502AddrAbsX(cb, ji.operand)
-				off1, off2 := emit6502FullFastPathCheck(cb)
-				bails = append(bails, bailInfo{[]int{off1, off2}, uint32(instrPC), i, pendingCycles})
+				fpOff := emit6502FullFastPathCheck(cb)
+				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles})
 			}
 			emit6502IncDecMem(cb, true)
 			invalOff := emit6502SelfModCheck(cb)
@@ -2116,12 +2252,12 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles})
 			case 0xCE:
 				emit6502AddrAbs(cb, ji.operand)
-				off1, off2 := emit6502FullFastPathCheck(cb)
-				bails = append(bails, bailInfo{[]int{off1, off2}, uint32(instrPC), i, pendingCycles})
+				fpOff := emit6502FullFastPathCheck(cb)
+				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles})
 			case 0xDE:
 				emit6502AddrAbsX(cb, ji.operand)
-				off1, off2 := emit6502FullFastPathCheck(cb)
-				bails = append(bails, bailInfo{[]int{off1, off2}, uint32(instrPC), i, pendingCycles})
+				fpOff := emit6502FullFastPathCheck(cb)
+				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles})
 			}
 			emit6502IncDecMem(cb, false)
 			invalOff := emit6502SelfModCheck(cb)
@@ -2164,8 +2300,8 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 			pendingCycles += baseCycles
 		case 0x2C: // BIT abs
 			emit6502AddrAbs(cb, ji.operand)
-			off1, off2 := emit6502FullFastPathCheck(cb)
-			bails = append(bails, bailInfo{[]int{off1, off2}, uint32(instrPC), i, pendingCycles})
+			fpOff := emit6502FullFastPathCheck(cb)
+			bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles})
 			amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 			emit6502BITFlags(cb)
 			pendingCycles += baseCycles
@@ -2188,12 +2324,12 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles})
 			case 0x0E:
 				emit6502AddrAbs(cb, ji.operand)
-				off1, off2 := emit6502FullFastPathCheck(cb)
-				bails = append(bails, bailInfo{[]int{off1, off2}, uint32(instrPC), i, pendingCycles})
+				fpOff := emit6502FullFastPathCheck(cb)
+				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles})
 			case 0x1E:
 				emit6502AddrAbsX(cb, ji.operand)
-				off1, off2 := emit6502FullFastPathCheck(cb)
-				bails = append(bails, bailInfo{[]int{off1, off2}, uint32(instrPC), i, pendingCycles})
+				fpOff := emit6502FullFastPathCheck(cb)
+				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles})
 			}
 			emit6502ASL_Mem(cb)
 			invalOff := emit6502SelfModCheck(cb)
@@ -2218,12 +2354,12 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles})
 			case 0x4E:
 				emit6502AddrAbs(cb, ji.operand)
-				off1, off2 := emit6502FullFastPathCheck(cb)
-				bails = append(bails, bailInfo{[]int{off1, off2}, uint32(instrPC), i, pendingCycles})
+				fpOff := emit6502FullFastPathCheck(cb)
+				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles})
 			case 0x5E:
 				emit6502AddrAbsX(cb, ji.operand)
-				off1, off2 := emit6502FullFastPathCheck(cb)
-				bails = append(bails, bailInfo{[]int{off1, off2}, uint32(instrPC), i, pendingCycles})
+				fpOff := emit6502FullFastPathCheck(cb)
+				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles})
 			}
 			emit6502LSR_Mem(cb)
 			invalOff := emit6502SelfModCheck(cb)
@@ -2248,12 +2384,12 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles})
 			case 0x2E:
 				emit6502AddrAbs(cb, ji.operand)
-				off1, off2 := emit6502FullFastPathCheck(cb)
-				bails = append(bails, bailInfo{[]int{off1, off2}, uint32(instrPC), i, pendingCycles})
+				fpOff := emit6502FullFastPathCheck(cb)
+				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles})
 			case 0x3E:
 				emit6502AddrAbsX(cb, ji.operand)
-				off1, off2 := emit6502FullFastPathCheck(cb)
-				bails = append(bails, bailInfo{[]int{off1, off2}, uint32(instrPC), i, pendingCycles})
+				fpOff := emit6502FullFastPathCheck(cb)
+				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles})
 			}
 			emit6502ROL_Mem(cb)
 			invalOff := emit6502SelfModCheck(cb)
@@ -2278,12 +2414,12 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 				bails = append(bails, bailInfo{[]int{bailOff}, uint32(instrPC), i, pendingCycles})
 			case 0x6E:
 				emit6502AddrAbs(cb, ji.operand)
-				off1, off2 := emit6502FullFastPathCheck(cb)
-				bails = append(bails, bailInfo{[]int{off1, off2}, uint32(instrPC), i, pendingCycles})
+				fpOff := emit6502FullFastPathCheck(cb)
+				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles})
 			case 0x7E:
 				emit6502AddrAbsX(cb, ji.operand)
-				off1, off2 := emit6502FullFastPathCheck(cb)
-				bails = append(bails, bailInfo{[]int{off1, off2}, uint32(instrPC), i, pendingCycles})
+				fpOff := emit6502FullFastPathCheck(cb)
+				bails = append(bails, bailInfo{[]int{fpOff}, uint32(instrPC), i, pendingCycles})
 			}
 			emit6502ROR_Mem(cb)
 			invalOff := emit6502SelfModCheck(cb)
@@ -2349,7 +2485,8 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 		// ================================================================
 		case 0x4C:
 			pendingCycles += baseCycles
-			emit6502JMP_Abs(cb, ji.operand, uint32(i+1), &pendingCycles)
+			ce := emit6502JMP_Abs(cb, ji.operand, uint32(i+1), &pendingCycles)
+			chainExits = append(chainExits, ce)
 			goto done
 
 		// ================================================================
@@ -2367,7 +2504,8 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 		case 0x20:
 			pendingCycles += baseCycles
 			returnAddr := instrPC + 2 // address of last byte of JSR instruction
-			emit6502JSR(cb, ji.operand, returnAddr, uint32(i+1), &pendingCycles)
+			ce := emit6502JSR(cb, ji.operand, returnAddr, uint32(i+1), &pendingCycles)
+			chainExits = append(chainExits, ce)
 			goto done
 
 		// ================================================================
@@ -2408,14 +2546,13 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 		}
 	}
 
-	// Flush remaining cycles
-	flushPendingCycles(cb, &pendingCycles)
-
-	// Emit epilogue with next PC after block
+	// Default fallthrough: block ended without a terminator (size limit, next opcode not compilable).
+	// Emit a chain exit to the next sequential PC so straight-line code chains block to block.
 	{
 		lastInstr := &instrs[len(instrs)-1]
 		endPC := uint32(startPC) + uint32(lastInstr.pcOffset) + uint32(lastInstr.length)
-		emit6502Epilogue(cb, endPC, uint32(len(instrs)))
+		ce := emit6502ChainExit(cb, endPC, uint32(len(instrs)), &pendingCycles)
+		chainExits = append(chainExits, ce)
 	}
 
 done:
@@ -2426,11 +2563,12 @@ done:
 		}
 	}
 
-	// Emit deferred branch exit epilogues (external branch targets)
+	// Emit deferred branch exit epilogues (external branch targets) as chain exits
 	for _, be := range extExits {
 		target := cb.Len()
 		patchRel32(cb, be.jmpOffset, target)
-		emit6502Epilogue(cb, be.targetPC, be.instrCount)
+		ce := emit6502ChainExit(cb, be.targetPC, be.instrCount, &be.pendingCycles)
+		chainExits = append(chainExits, ce)
 	}
 
 	// Emit deferred bail epilogues (cold code at end of block)
@@ -2464,11 +2602,22 @@ done:
 		codePageBitmap[page&0xFF] = 1
 	}
 
+	// Build chain slots from chain exit info (convert CodeBuffer offsets to absolute addresses)
+	var slots []chainSlot
+	for _, ce := range chainExits {
+		slots = append(slots, chainSlot{
+			targetPC:  ce.targetPC,
+			patchAddr: addr + uintptr(ce.jmpDispOffset),
+		})
+	}
+
 	return &JITBlock{
 		startPC:    uint32(startPC),
 		endPC:      uint32(lastByte) + 1, // first byte after block (for cache invalidation)
 		instrCount: len(instrs),
 		execAddr:   addr,
 		execSize:   len(code),
+		chainEntry: addr + uintptr(chainEntryOff),
+		chainSlots: slots,
 	}, nil
 }

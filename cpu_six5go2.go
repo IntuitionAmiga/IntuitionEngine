@@ -251,12 +251,13 @@ type CPU_6502 struct {
 	lastPerfReport   time.Time // Last time we printed stats
 
 	// JIT compiler state
-	jitEnabled     bool
-	jitPersist     bool // when true, freeJIT6502() is no-op (benchmarks)
-	jitCache       *CodeCache
-	jitExecMem     any // *ExecMem
-	jitCtx         *JIT6502Context
-	codePageBitmap [256]byte // self-mod detection: one byte per 6502 page
+	jitEnabled       bool
+	jitPersist       bool // when true, freeJIT6502() is no-op (benchmarks)
+	jitCache         *CodeCache
+	jitExecMem       any // *ExecMem
+	jitCtx           *JIT6502Context
+	codePageBitmap   [256]byte // self-mod detection: one byte per 6502 page
+	directPageBitmap [256]byte // JIT fast-path: 0=memDirect ok, 1=bail to interpreter
 }
 
 // Running returns the execution state (thread-safe)
