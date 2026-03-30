@@ -6,6 +6,7 @@ package main
 
 import (
 	"testing"
+	"unsafe"
 )
 
 // ===========================================================================
@@ -391,6 +392,161 @@ func TestCodeCache_Replace(t *testing.T) {
 	got := cc.Get(0x1000)
 	if got.instrCount != 8 {
 		t.Fatalf("expected replaced block with instrCount=8, got %d", got.instrCount)
+	}
+}
+
+func TestCodeCache_PatchChainsTo(t *testing.T) {
+	cc := NewCodeCache()
+
+	// Create a block with a chain slot targeting $2000
+	execMem, err := AllocExecMem(4096)
+	if err != nil {
+		t.Fatalf("AllocExecMem: %v", err)
+	}
+	defer execMem.Free()
+
+	// Write a dummy JMP rel32 (E9 00 00 00 00) into exec memory
+	code := []byte{0xE9, 0x00, 0x00, 0x00, 0x00, 0x90, 0x90, 0x90} // JMP rel32 + padding
+	addr, err := execMem.Write(code)
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	block := &JITBlock{
+		startPC: 0x1000,
+		endPC:   0x1010,
+		chainSlots: []chainSlot{
+			{targetPC: 0x2000, patchAddr: addr + 1}, // +1 to skip the E9 opcode
+		},
+	}
+	cc.Put(block)
+
+	// Patch chains targeting $2000 to jump to address (addr + 100)
+	targetEntry := addr + 100
+	cc.PatchChainsTo(0x2000, targetEntry)
+
+	// Verify the displacement was patched
+	p := (*[4]byte)(unsafe.Pointer(block.chainSlots[0].patchAddr))
+	disp := int32(uint32(p[0]) | uint32(p[1])<<8 | uint32(p[2])<<16 | uint32(p[3])<<24)
+	actualTarget := uintptr(int64(block.chainSlots[0].patchAddr) + 4 + int64(disp))
+	if actualTarget != targetEntry {
+		t.Errorf("patched target = 0x%X, want 0x%X", actualTarget, targetEntry)
+	}
+}
+
+func TestCodeCache_UnpatchChainsInRange(t *testing.T) {
+	cc := NewCodeCache()
+
+	execMem, err := AllocExecMem(4096)
+	if err != nil {
+		t.Fatalf("AllocExecMem: %v", err)
+	}
+	defer execMem.Free()
+
+	// Write: JMP rel32 (to somewhere far away) + NOP padding (the unchained fallback)
+	code := []byte{0xE9, 0x00, 0x00, 0x00, 0x00, 0x90, 0x90, 0x90}
+	addr, err := execMem.Write(code)
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	patchAddr := addr + 1 // displacement field
+
+	// First patch to some far target
+	PatchRel32At(patchAddr, addr+1000)
+
+	blockA := &JITBlock{
+		startPC: 0x1000,
+		endPC:   0x1010,
+		chainSlots: []chainSlot{
+			{targetPC: 0x2000, patchAddr: patchAddr},
+		},
+	}
+	cc.Put(blockA)
+
+	// Add the target block that will be removed
+	blockB := &JITBlock{
+		startPC: 0x2000,
+		endPC:   0x2010,
+	}
+	cc.Put(blockB)
+
+	// Unpatch chains to blocks overlapping $2000-$2100 (block B will be found)
+	cc.UnpatchChainsInRange(0x2000, 0x2100)
+
+	// The JMP should now point to patchAddr+4 (the byte right after the displacement)
+	p := (*[4]byte)(unsafe.Pointer(patchAddr))
+	disp := int32(uint32(p[0]) | uint32(p[1])<<8 | uint32(p[2])<<16 | uint32(p[3])<<24)
+	actualTarget := uintptr(int64(patchAddr) + 4 + int64(disp))
+	expected := patchAddr + 4 // unchained fallback = next instruction
+	if actualTarget != expected {
+		t.Errorf("unpatched target = 0x%X, want 0x%X (unchained fallback)", actualTarget, expected)
+	}
+}
+
+func TestCodeCache_UnpatchChainsInRange_CrossPage(t *testing.T) {
+	// A block spanning pages 0x11-0x12 (startPC=$1100, endPC=$1205).
+	// Another block (A) has a chain slot targeting $1100 (block B's startPC).
+	// Invalidating page 0x12 ($1200-$1300) should remove block B AND unpatch A's slot,
+	// even though A's targetPC ($1100) is outside the invalidated page range.
+	cc := NewCodeCache()
+
+	execMem, err := AllocExecMem(4096)
+	if err != nil {
+		t.Fatalf("AllocExecMem: %v", err)
+	}
+	defer execMem.Free()
+
+	// Write dummy JMP rel32 for block A's chain slot
+	code := []byte{0xE9, 0x00, 0x00, 0x00, 0x00, 0x90, 0x90, 0x90}
+	addr, err := execMem.Write(code)
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	patchAddr := addr + 1
+
+	// Patch A's slot to point somewhere far (simulating a live chain to B)
+	PatchRel32At(patchAddr, addr+500)
+
+	blockA := &JITBlock{
+		startPC: 0x0600,
+		endPC:   0x0610,
+		chainSlots: []chainSlot{
+			{targetPC: 0x1100, patchAddr: patchAddr}, // targets block B's startPC
+		},
+	}
+	cc.Put(blockA)
+
+	// Block B spans pages 0x11 and 0x12
+	blockB := &JITBlock{
+		startPC: 0x1100,
+		endPC:   0x1205, // extends into page 0x12
+	}
+	cc.Put(blockB)
+
+	// Invalidate page 0x12 ($1200-$1300).
+	// Block B overlaps this range so it will be removed.
+	// A's chain slot targets $1100 which is OUTSIDE $1200-$1300.
+	// The fix ensures A's slot is still unpatched because B is being removed.
+	cc.UnpatchChainsInRange(0x1200, 0x1300)
+	cc.InvalidateRange(0x1200, 0x1300)
+
+	// Verify block B was removed
+	if cc.Get(0x1100) != nil {
+		t.Error("block B should have been removed (overlaps invalidated range)")
+	}
+
+	// Verify block A survived
+	if cc.Get(0x0600) == nil {
+		t.Error("block A should have survived")
+	}
+
+	// Verify A's chain slot was unpatched (points to unchained fallback)
+	p := (*[4]byte)(unsafe.Pointer(patchAddr))
+	disp := int32(uint32(p[0]) | uint32(p[1])<<8 | uint32(p[2])<<16 | uint32(p[3])<<24)
+	actualTarget := uintptr(int64(patchAddr) + 4 + int64(disp))
+	expected := patchAddr + 4 // unchained fallback
+	if actualTarget != expected {
+		t.Errorf("A's chain slot should be unpatched: target=0x%X, want 0x%X", actualTarget, expected)
 	}
 }
 

@@ -28,6 +28,14 @@ func TestJIT6502_ContextFieldOffsets(t *testing.T) {
 		{"RetPC", uintptr(unsafe.Pointer(&ctx.RetPC)) - base, j65CtxOffRetPC},
 		{"RetCount", uintptr(unsafe.Pointer(&ctx.RetCount)) - base, j65CtxOffRetCount},
 		{"FastPathLimit", uintptr(unsafe.Pointer(&ctx.FastPathLimit)) - base, j65CtxOffFastPathLimit},
+		{"ChainBudget", uintptr(unsafe.Pointer(&ctx.ChainBudget)) - base, j65CtxOffChainBudget},
+		{"ChainCount", uintptr(unsafe.Pointer(&ctx.ChainCount)) - base, j65CtxOffChainCount},
+		{"InvalPage", uintptr(unsafe.Pointer(&ctx.InvalPage)) - base, j65CtxOffInvalPage},
+		{"RTSCache0PC", uintptr(unsafe.Pointer(&ctx.RTSCache0PC)) - base, j65CtxOffRTSCache0PC},
+		{"RTSCache0Addr", uintptr(unsafe.Pointer(&ctx.RTSCache0Addr)) - base, j65CtxOffRTSCache0Addr},
+		{"RTSCache1PC", uintptr(unsafe.Pointer(&ctx.RTSCache1PC)) - base, j65CtxOffRTSCache1PC},
+		{"RTSCache1Addr", uintptr(unsafe.Pointer(&ctx.RTSCache1Addr)) - base, j65CtxOffRTSCache1Addr},
+		{"DirectPageBitmapPtr", uintptr(unsafe.Pointer(&ctx.DirectPageBitmapPtr)) - base, j65CtxOffDirectPageBitmapPtr},
 	}
 
 	for _, tt := range tests {
@@ -85,6 +93,71 @@ func TestJIT6502_ContextConstruction(t *testing.T) {
 	}
 	if ctx.FastPathLimit != jit6502FastPathLimit {
 		t.Errorf("FastPathLimit = 0x%X, want 0x%X", ctx.FastPathLimit, jit6502FastPathLimit)
+	}
+	if ctx.DirectPageBitmapPtr == 0 {
+		t.Error("DirectPageBitmapPtr is zero")
+	}
+}
+
+// ===========================================================================
+// DirectPageBitmap Tests
+// ===========================================================================
+
+func TestJIT6502_DirectPageBitmap_Ranges(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU_6502(bus)
+	cpu.SetRDYLine(true)
+	cpu.initDirectPageBitmap()
+
+	// Pages $00-$1F should be direct (low RAM)
+	for page := 0; page < 0x20; page++ {
+		if cpu.directPageBitmap[page] != 0 {
+			t.Errorf("page $%02X should be direct (low RAM), got bail", page)
+		}
+	}
+
+	// Pages $20-$7F should bail (bank windows)
+	for page := 0x20; page <= 0x7F; page++ {
+		if cpu.directPageBitmap[page] != 1 {
+			t.Errorf("page $%02X should bail (bank window), got direct", page)
+		}
+	}
+
+	// Pages $80-$BF should bail (VRAM window)
+	for page := 0x80; page <= 0xBF; page++ {
+		if cpu.directPageBitmap[page] != 1 {
+			t.Errorf("page $%02X should bail (VRAM window), got direct", page)
+		}
+	}
+
+	// Pages $C0-$CF should be direct (RAM above VRAM)
+	for page := 0xC0; page <= 0xCF; page++ {
+		if cpu.directPageBitmap[page] != 0 {
+			t.Errorf("page $%02X should be direct (RAM above VRAM), got bail", page)
+		}
+	}
+
+	// I/O pages (ioTable handlers) should bail
+	ioPages := []int{0xD2, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8, 0xF7}
+	for _, page := range ioPages {
+		if cpu.directPageBitmap[page] != 1 {
+			t.Errorf("page $%02X should bail (I/O handler), got direct", page)
+		}
+	}
+
+	// Non-I/O pages in $D0-$EF should be direct
+	nonIOPages := []int{0xD0, 0xD1, 0xD3, 0xD9, 0xDA, 0xE0, 0xEF}
+	for _, page := range nonIOPages {
+		if cpu.directPageBitmap[page] != 0 {
+			t.Errorf("page $%02X should be direct (non-I/O), got bail", page)
+		}
+	}
+
+	// Pages $F0-$FF should bail (I/O translation region)
+	for page := 0xF0; page <= 0xFF; page++ {
+		if cpu.directPageBitmap[page] != 1 {
+			t.Errorf("page $%02X should bail (I/O translation), got direct", page)
+		}
 	}
 }
 

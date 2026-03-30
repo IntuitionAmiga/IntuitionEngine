@@ -13,31 +13,48 @@ import (
 // JIT6502Context is passed to every JIT-compiled 6502 block as its sole argument.
 // On ARM64 it arrives in X0; on x86-64 in RDI.
 type JIT6502Context struct {
-	MemPtr            uintptr // 0:  &adapter.memDirect[0]
-	IOBitmapPtr       uintptr // 8:  &adapter.ioPageBitmap[0] ([]bool, 1 byte per entry)
-	CpuPtr            uintptr // 16: &cpu (CPU_6502 struct pointer)
-	CodePageBitmapPtr uintptr // 24: &codePageBitmap[0] (256 bytes, one per 6502 page)
-	RetCycles         uint64  // 32: accumulated cycles for this block execution
-	NeedBail          uint32  // 40: re-execute current instruction via interpreter
-	NeedInval         uint32  // 44: self-modification detected (store completed, invalidate cache)
-	RetPC             uint32  // 48: next PC (bail: current instr PC; inval: next instr PC; normal: next PC)
-	RetCount          uint32  // 52: instructions retired before bail/exit point
-	FastPathLimit     uint32  // 56: 0x2000 (Tier 1 upper bound for direct memory)
-	_pad              uint32  // 60: alignment padding
+	MemPtr              uintptr // 0:  &adapter.memDirect[0]
+	IOBitmapPtr         uintptr // 8:  &adapter.ioPageBitmap[0] ([]bool, 1 byte per entry)
+	CpuPtr              uintptr // 16: &cpu (CPU_6502 struct pointer)
+	CodePageBitmapPtr   uintptr // 24: &codePageBitmap[0] (256 bytes, one per 6502 page)
+	RetCycles           uint64  // 32: accumulated cycles for this block execution
+	NeedBail            uint32  // 40: re-execute current instruction via interpreter
+	NeedInval           uint32  // 44: self-modification detected (store completed, invalidate cache)
+	RetPC               uint32  // 48: next PC (bail: current instr PC; inval: next instr PC; normal: next PC)
+	RetCount            uint32  // 52: instructions retired before bail/exit point
+	FastPathLimit       uint32  // 56: 0x2000 (legacy, no longer used in fast path check)
+	ChainBudget         uint32  // 60: blocks remaining before returning to Go for interrupt check
+	ChainCount          uint32  // 64: accumulated instruction count during chaining
+	InvalPage           uint32  // 68: page number that triggered NeedInval (for granular invalidation)
+	RTSCache0PC         uint32  // 72: MRU RTS cache entry 0 — 6502 PC
+	_pad1               uint32  // 76: alignment padding
+	RTSCache0Addr       uintptr // 80: MRU RTS cache entry 0 — chain entry address
+	RTSCache1PC         uint32  // 88: MRU RTS cache entry 1 — 6502 PC
+	_pad2               uint32  // 92: alignment padding
+	RTSCache1Addr       uintptr // 96: MRU RTS cache entry 1 — chain entry address
+	DirectPageBitmapPtr uintptr // 104: &directPageBitmap[0] (256 bytes, 0=direct 1=bail)
 }
 
 // JIT6502Context field offsets (must match struct layout above)
 const (
-	j65CtxOffMemPtr         = 0
-	j65CtxOffIOBitmapPtr    = 8
-	j65CtxOffCpuPtr         = 16
-	j65CtxOffCodePageBitmap = 24
-	j65CtxOffRetCycles      = 32
-	j65CtxOffNeedBail       = 40
-	j65CtxOffNeedInval      = 44
-	j65CtxOffRetPC          = 48
-	j65CtxOffRetCount       = 52
-	j65CtxOffFastPathLimit  = 56
+	j65CtxOffMemPtr              = 0
+	j65CtxOffIOBitmapPtr         = 8
+	j65CtxOffCpuPtr              = 16
+	j65CtxOffCodePageBitmap      = 24
+	j65CtxOffRetCycles           = 32
+	j65CtxOffNeedBail            = 40
+	j65CtxOffNeedInval           = 44
+	j65CtxOffRetPC               = 48
+	j65CtxOffRetCount            = 52
+	j65CtxOffFastPathLimit       = 56
+	j65CtxOffChainBudget         = 60
+	j65CtxOffChainCount          = 64
+	j65CtxOffInvalPage           = 68
+	j65CtxOffRTSCache0PC         = 72
+	j65CtxOffRTSCache0Addr       = 80
+	j65CtxOffRTSCache1PC         = 88
+	j65CtxOffRTSCache1Addr       = 96
+	j65CtxOffDirectPageBitmapPtr = 104
 )
 
 // CPU_6502 struct field offsets (from CpuPtr). Must match cpu_six5go2.go layout.
@@ -57,10 +74,44 @@ const jit6502FastPathLimit = 0x2000
 // jit6502Available is set to true at init time on platforms that support 6502 JIT.
 var jit6502Available bool
 
+// initDirectPageBitmap computes which 6502 pages can be accessed via memDirect[addr]
+// without translation. This must be called after SealMappings() — the bitmap depends
+// on post-seal I/O page stability and is never recomputed.
+func (cpu *CPU_6502) initDirectPageBitmap() {
+	for page := 0; page < 256; page++ {
+		direct := true
+		if page >= 0x20 && page <= 0x7F {
+			direct = false // bank windows ($2000-$7FFF) require translation
+		}
+		if page >= 0x80 && page <= 0xBF {
+			direct = false // VRAM window ($8000-$BFFF) requires translation
+		}
+		if page >= 0xF0 {
+			direct = false // I/O translation region ($F000-$FFFF)
+		}
+		if cpu.fastAdapter != nil {
+			// Check MachineBus ioPageBitmap (set by MapIO/MapIOByte)
+			if page < len(cpu.fastAdapter.ioPageBitmap) && cpu.fastAdapter.ioPageBitmap[page] {
+				direct = false
+			}
+			// Check adapter's ioTable (pages with I/O handlers like POKEY, VGA, etc.)
+			if cpu.fastAdapter.ioTable[page].read != nil || cpu.fastAdapter.ioTable[page].write != nil {
+				direct = false
+			}
+		}
+		if direct {
+			cpu.directPageBitmap[page] = 0
+		} else {
+			cpu.directPageBitmap[page] = 1
+		}
+	}
+}
+
 func newJIT6502Context(cpu *CPU_6502) *JIT6502Context {
 	if cpu.fastAdapter == nil {
 		return nil
 	}
+	cpu.initDirectPageBitmap()
 	ctx := &JIT6502Context{
 		MemPtr:        uintptr(unsafe.Pointer(&cpu.fastAdapter.memDirect[0])),
 		CpuPtr:        uintptr(unsafe.Pointer(cpu)),
@@ -70,6 +121,7 @@ func newJIT6502Context(cpu *CPU_6502) *JIT6502Context {
 		ctx.IOBitmapPtr = uintptr(unsafe.Pointer(&cpu.fastAdapter.ioPageBitmap[0]))
 	}
 	ctx.CodePageBitmapPtr = uintptr(unsafe.Pointer(&cpu.codePageBitmap[0]))
+	ctx.DirectPageBitmapPtr = uintptr(unsafe.Pointer(&cpu.directPageBitmap[0]))
 	return ctx
 }
 
