@@ -68,8 +68,9 @@
    - 3.15 ULA Video Chip (ZX Spectrum)
    - 3.16 ANTIC Video Chip (Atari 8-bit)
    - 3.17 GTIA Color Control (Atari 8-bit)
-   - 3.18 Coprocessor Subsystem
-   - 3.19 Voodoo 3D Graphics
+   - 3.18 File I/O Device
+   - 3.19 Coprocessor Subsystem
+   - 3.20 Voodoo 3D Graphics
 4. [IE32 CPU Architecture](#4-ie32-cpu-architecture)
    - 4.1 Register Set
    - 4.2 Status Flags
@@ -175,8 +176,9 @@ Default core: **IE64**. Additional cores: **IE32, M68K, x86, Z80, 6502**.
 ## Audio Capabilities
 
 **Custom Synthesizer:**
-- 5 dedicated waveform channels (square, triangle, sine, noise, sawtooth)
-- 4 flexible channels with selectable waveforms
+- 10-channel synth engine (4 base + 3 SID2 + 3 SID3 for multi-SID playback)
+- 5 legacy register blocks (square, triangle, sine, noise, sawtooth)
+- 4 flexible channels with selectable waveforms (uniform register interface)
 - ADSR envelopes, PWM, frequency sweep, hard sync, ring modulation
 - Global filter (LP/HP/BP), overdrive, reverb
 - 44.1kHz, 32-bit floating-point processing
@@ -192,7 +194,7 @@ Default core: **IE64**. Additional cores: **IE32, M68K, x86, Z80, 6502**.
 
 ## Video System
 
-- Resolutions: 640×480, 800×600, 1024×768
+- Resolutions: 640×480, 800×600, 1024×768, 1280×960 (default)
 - 32-bit RGBA framebuffer with double buffering
 - Copper coprocessor for raster effects
 - DMA blitter for fast copy/fill/line operations
@@ -237,8 +239,8 @@ Default core: **IE64**. Additional cores: **IE32, M68K, x86, Z80, 6502**.
 
 # Play SID music
 ./bin/IntuitionEngine -sid music.sid
-./bin/IntuitionEngine -sid-pal music.sid    # Force PAL timing
-./bin/IntuitionEngine -sid-ntsc music.sid   # Force NTSC timing
+./bin/IntuitionEngine -sid music.sid -sid-pal    # Force PAL timing
+./bin/IntuitionEngine -sid music.sid -sid-ntsc   # Force NTSC timing
 
 # Play POKEY/SAP music (Atari 8-bit)
 ./bin/IntuitionEngine -pokey music.sap
@@ -259,6 +261,7 @@ Default core: **IE64**. Additional cores: **IE32, M68K, x86, Z80, 6502**.
 ./bin/IntuitionEngine -psg+ music.ym
 ./bin/IntuitionEngine -sid+ music.sid
 ./bin/IntuitionEngine -pokey+ music.sap
+./bin/IntuitionEngine -ted+ music.prg
 ./bin/IntuitionEngine -ahx+ module.ahx
 
 # Boot EmuTOS (GEM desktop)
@@ -284,7 +287,7 @@ Default core: **IE64**. Additional cores: **IE32, M68K, x86, Z80, 6502**.
 # Version information
 ./bin/IntuitionEngine -version
 
-# List compiled feature flags and build profile
+# List compiled feature flags and runtime info
 ./bin/IntuitionEngine -features
 ```
 
@@ -293,7 +296,7 @@ CPU modes that execute binaries (`-ie32`, `-ie64`, `-m68k`, `-m6502`, `-z80`, `-
 ## 1.4 Ebiten Window Controls
 
 - `F9`: Open the Machine Monitor (debugger) - freezes all CPUs, shows registers and disassembly. See [iemon.md](sdk/docs/iemon.md) for full documentation.
-- `F10`: Hard reset - performs a full power-on hardware reset and boots IE64 BASIC
+- `F10`: Hard reset - performs a full power-on hardware reset (reloads EmuTOS if started in EmuTOS mode, otherwise boots IE64 BASIC)
 - `F11`: Toggle fullscreen mode
 - `F12`: Toggle the runtime status bar
 - `Page Up` / `Page Down`: Scroll terminal scrollback buffer
@@ -302,10 +305,10 @@ CPU modes that execute binaries (`-ie32`, `-ie64`, `-m68k`, `-m6502`, `-z80`, `-
 
 ## 1.5 Single-Instance Mode
 
-Opening an `*.ie*` file while Intuition Engine is already running sends the file to the running instance via Unix domain socket IPC. The running instance performs a full hardware reset and loads the new binary. If the file uses a different CPU architecture (e.g., opening a `.ie80` Z80 binary while an IE32 program is running), the CPU mode switches automatically.
+Opening an `*.ie*` file while Intuition Engine is already running sends the file to the running instance via Unix domain socket IPC. For binary files, the running instance performs a full hardware reset and loads the new binary. If the file uses a different CPU architecture (e.g., opening a `.ie80` Z80 binary while an IE32 program is running), the CPU mode switches automatically. For `.ies` files, the script is executed without a hardware reset.
 
-Supported extensions: `.ie32`/`.iex` (IE32), `.ie64` (IE64), `.ie65` (6502), `.ie68` (M68K), `.ie80` (Z80), `.ie86` (X86), `.tos`/`.img` (EmuTOS), `.ies` (IEScript Lua automation).
-AROS boot is selected via CLI mode (`-aros`, optional `-aros-image`), not by file extension.
+Supported extensions: `.ie32`/`.iex` (IE32), `.ie64` (IE64), `.ie65` (6502), `.ie68` (M68K), `.ie80` (Z80), `.ie86` (X86), `.ies` (IEScript Lua automation).
+EmuTOS (`.tos`/`.img`) and AROS boot are CLI-only modes (`-emutos`, `-aros`) and are not supported via single-instance IPC.
 
 ## 1.6 Desktop Integration
 
@@ -407,9 +410,9 @@ All CPU cores (IE32, IE64, M68K, Z80, 6502, x86) share the same memory space thr
    └─────────┘
 ```
 
-The video compositor blends output from the VideoChip (layer 0) and VGA (layer 10) into a single display, enabling mixed-mode effects. The copper coprocessor can target both video systems via SETBASE for per-scanline raster effects.
+The video compositor blends output from all enabled video sources (VideoChip=0, VGA=10, TED=12, ANTIC/GTIA=13, ULA=15, Voodoo=20) into a single display using layer ordering. The copper coprocessor can target any video system via SETBASE for per-scanline raster effects.
 
-The custom audio synthesizer is the core of the sound system. PSG, POKEY, and SID registers are mapped to the custom synth, providing authentic register-level compatibility with high-quality 44.1kHz output. File players (.ym, .ay, .vgm/vgz, .sid, .sap, etc.) execute embedded CPU code that writes to these mapped registers. VGM files containing SN76489 data (Sega Master System, Game Gear) are automatically converted to AY register writes during parsing.
+The custom audio synthesizer is the core of the sound system. PSG, POKEY, and SID registers are mapped to the custom synth, providing authentic register-level compatibility with high-quality 44.1kHz output. File players drive the synth via register writes: some formats (.ay, .sndh, .sid, .sap, .ted, tracker modules) execute embedded CPU code (Z80, M68K, or 6502), while others (.ym, .vgm/vgz) are rendered from parsed register events in Go. VGM files containing SN76489 data (Sega Master System, Game Gear) are automatically converted to AY register writes during parsing.
 
 ### Bus Layers
 
@@ -424,19 +427,20 @@ All hardware is accessed through memory-mapped registers in the `$F0000-$FFFFF` 
 
 | Subsystem | Address Range | Description |
 |-----------|---------------|-------------|
-| Video | `$F0000-$F0058` | Display control, copper, blitter, raster |
-| Timer | `$F0800-$F080C` | System timer with interrupt support |
-| Custom Audio | `$F0820-$F0B3F` | Filter, channels, effects, flex synth |
+| Video | `$F0000-$F049B` | Display control, copper, blitter, raster, CLUT8 palette, extended blitter |
+| Custom Audio | `$F0800-$F0B7F` | Audio control, envelope shape, filter, legacy channels, flex synth |
 | PSG | `$F0C00-$F0C1C` | AY-3-8910 registers and file playback |
 | POKEY | `$F0D00-$F0D1D` | Atari POKEY registers and SAP playback |
 | SID | `$F0E00-$F0E2D` | MOS 6581 registers and SID playback |
 | MOD | `$F0BC0-$F0BD7` | ProTracker .mod player with Amiga filters |
-| Banking | `$F700-$F7F0` | Bank window control (Z80/6502 only) |
+| Banking | `$F700-$F7F0` | Bank window control (Z80/6502/x86) |
 | VGA | `$F1000-$F13FF` | VGA mode, DAC, sequencer, CRTC, palette |
 | File I/O | `$F2200-$F221F` | Host filesystem access (read/write); supports byte-level writes for 8-bit CPUs |
-| Coprocessor | `$F2340-$F238F` | Worker CPU lifecycle and async RPC |
+| AROS DOS | `$F2220-$F225F` | AROS DOS handler bridge (AROS mode only) |
+| AROS Audio | `$F2260-$F22AF` | Paula-compatible 4-channel DMA audio (AROS mode only) |
+| Media Loader | `$F2300-$F231F` | Media file auto-detection and loading |
+| Coprocessor | `$F2340-$F238F` | Worker CPU lifecycle, async RPC, IRQ control |
 | Coprocessor Ext | `$F23B0-$F23BF` | Monitor registers (ring depth, uptime, busy%, reset) |
-| System Control | `$F2380-$F2383` | GC trigger (write any value) |
 
 Additionally, VGA uses legacy PC-compatible memory windows:
 - `$A0000-$AFFFF`: VGA VRAM (64KB graphics memory)
@@ -466,6 +470,7 @@ The system's memory layout is designed to provide efficient access to both progr
 0x0F0A80 - 0x0F0B7F: Flexible 4-channel synth registers (preferred)
 0x0F0B80 - 0x0F0B91: AHX module player registers
 0x0F0BC0 - 0x0F0BD7: MOD player registers (ProTracker .mod playback)
+0x0F0BD8 - 0x0F0BEB: WAV player registers (PCM .wav playback)
 0x0F0C00 - 0x0F0C0D: PSG registers (AY/YM synthesis)
 0x0F0C0E:            PSG+ control register
 0x0F0C10 - 0x0F0C1C: PSG playback control (AY/YM/VGM/SNDH; VGM includes SN76489)
@@ -476,12 +481,14 @@ The system's memory layout is designed to provide efficient access to both progr
 0x0F0E19:            SID+ control register
 0x0F0E1A - 0x0F0E1C: SID read-only registers (OSC3, ENV3)
 0x0F0E20 - 0x0F0E2D: SID playback control (.SID file playback)
+0x0F0E30 - 0x0F0E4C: SID2 registers (multi-SID, voices 4-6)
+0x0F0E50 - 0x0F0E6C: SID3 registers (multi-SID, voices 7-9)
 0x0F0F00 - 0x0F0F05: TED registers (Plus/4 audio)
 0x0F0F10 - 0x0F0F1C: TED playback control
 0x0F1000 - 0x0F13FF: VGA registers (IBM VGA emulation)
 0x0F2200 - 0x0F221F: File I/O registers (see below)
 0x0F2340 - 0x0F238F: Coprocessor MMIO registers
-0x0F2390 - 0x0F239F: Clipboard bridge
+0x0F2390 - 0x0F23AF: Clipboard bridge (AROS mode, see below)
 0x0F23B0 - 0x0F23BF: Coprocessor extended monitor registers
 0x0A0000 - 0x0AFFFF: VGA VRAM window (Mode 13h/12h)
 0x0B8000 - 0x0BFFFF: VGA text buffer
@@ -556,6 +563,11 @@ Programs begin loading at 0x1000, providing:
 0x0F006C: BLT_MODE7_DV_ROW - Mode7 V delta per row (signed 16.16)
 0x0F0070: BLT_MODE7_TEX_W - Mode7 texture width mask (2^n-1)
 0x0F0074: BLT_MODE7_TEX_H - Mode7 texture height mask (2^n-1)
+0x0F0078: VIDEO_PAL_INDEX  - CLUT8 palette entry selector (auto-incrementing after data write)
+0x0F007C: VIDEO_PAL_DATA   - CLUT8 palette data (0x00RRGGBB, increments index)
+0x0F0080: VIDEO_COLOR_MODE - Color mode (0=RGBA32, non-zero=CLUT8 indexed)
+0x0F0084: VIDEO_FB_BASE    - Framebuffer base address for indirect access
+0x0F0088-0x0F0487: VIDEO_PAL_TABLE - 256 palette entries (direct access, 4 bytes each)
 0x0F0488: BLT_FLAGS    - Extended flags: BPP (bits 0-1), draw mode (bits 4-7),
                          JAM1 (bit 8), invert template (bit 9), invert mode (bit 10)
 0x0F048C: BLT_FG       - Foreground color for color expansion
@@ -727,6 +739,7 @@ Per-Channel Register Offsets:
   +0x30: PHASE      - Reset phase position
   +0x34: RINGMOD    - Ring modulation source (bit7=enable, bits0-2=source channel)
   +0x38: SYNC       - Hard sync source (bit7=enable, bits0-2=source channel)
+  +0x3C: DAC        - DAC mode: signed 8-bit sample (bypasses waveform and envelope)
 ```
 
 Example: Configure channel 1 as a sawtooth wave at 440Hz:
@@ -854,6 +867,15 @@ SID Player Registers (0x0F0E20 - 0x0F0E2D):
 
 These registers allow CPU code to trigger .SID file playback from RAM, similar to the PSG and SAP player registers. The embedded 6502 code in the SID file is executed by the internal 6502 emulator at the correct frame rate (50Hz PAL or ~60Hz NTSC).
 
+### Multi-SID Registers (SID2/SID3)
+
+For .SID files with Sid2Addr/Sid3Addr in PSID v3/v4 headers, the engine instantiates additional SID chips with independent register sets. Each secondary SID maps to 3 SoundChip channels (SID2 = channels 4-6, SID3 = channels 7-9). The SID model (6581/8580) is extracted per-chip from the header flags.
+
+```
+SID2 Registers (0x0F0E30 - 0x0F0E4C): Same layout as primary SID (voices 4-6)
+SID3 Registers (0x0F0E50 - 0x0F0E6C): Same layout as primary SID (voices 7-9)
+```
+
 ## 3.9 TED Sound Chip Registers (0x0F0F00 - 0x0F0F1F)
 
 The TED (Text Editing Device) chip from the Commodore Plus/4 provides simple 2-voice square wave synthesis:
@@ -895,6 +917,8 @@ The TED chip also provides video capabilities from the Commodore Plus/4:
 - 121 colors (16 hues × 8 luminances)
 - Hardware cursor support
 - Compositor layer 12 (between VGA=10 and ULA=15)
+
+**Current limitations:** Only text mode is implemented. Control register bits for bitmap mode (BMM), extended color mode (ECM), multicolor mode (MCM), fine scrolling (XSCROLL/YSCROLL), row/column select (RSEL/CSEL), and character/video base address registers are accepted but have no effect on rendering.
 
 ```
 TED Video Registers (0x0F0F20 - 0x0F0F5F, 4-byte aligned for copper):
@@ -976,8 +1000,26 @@ MOD Player Registers (0x0F0BC0 - 0x0F0BD7):
 
 Filter models emulate the original Amiga hardware low-pass characteristics:
 - **0 (None)**: No filtering, raw output
-- **1 (A500)**: Amiga 500 RC filter at ~4.5kHz cutoff with LED filter
-- **2 (A1200)**: Amiga 1200 RC filter at ~28kHz cutoff with LED filter
+- **1 (A500)**: Amiga 500 RC filter at ~4.5kHz cutoff with LED filter (~3.3kHz 2-pole Butterworth)
+- **2 (A1200)**: Amiga 1200 RC filter at ~28kHz cutoff with LED filter (~3.3kHz 2-pole Butterworth)
+
+## 3.12b WAV Player Registers (0x0F0BD8 - 0x0F0BEB)
+
+The WAV player provides PCM .wav file playback via the SoundChip FLEX DAC mode. Supports 8-bit unsigned and 16-bit signed PCM; stereo files are automatically downmixed to mono. Sample rate conversion uses linear interpolation.
+
+```
+WAV Player Registers (0x0F0BD8 - 0x0F0BEB):
+0x0F0BD8: WAV_PLAY_PTR    - Pointer to WAV data in bus memory (32-bit)
+0x0F0BDC: WAV_PLAY_LEN    - Length of WAV data (32-bit)
+0x0F0BE0: WAV_PLAY_CTRL   - Control (bit0=start, bit1=stop, bit2=loop)
+0x0F0BE4: WAV_PLAY_STATUS - Status (bit0=busy, bit1=error)
+0x0F0BE8: WAV_POSITION    - Current playback position (read-only)
+```
+
+**Playback Control:**
+- Write `1` to WAV_PLAY_CTRL to start, `2` to stop, `5` to start with loop
+- Read WAV_PLAY_STATUS for busy/error flags
+- The entire WAV file must fit in bus memory (not streaming)
 
 ## 3.13 Hardware I/O Memory Map by CPU
 
@@ -985,28 +1027,32 @@ All sound and video chips are accessible from all CPU architectures at different
 
 ### Sound Chips
 
-| Chip  | IE32/IE64/M68K         | Z80 Ports | x86 Ports | 6502        | Notes |
-|-------|-------------------|-----------|-----------|-------------|-------|
-| PSG   | 0x0F0C00-0x0F0C0D | 0xF0/0xF1 | 0xF0/0xF1 | $D400-$D40D | AY-3-8910/YM2149 compatible |
-| POKEY | 0x0F0D00-0x0F0D09 | 0xD0/0xD1 | 0xD0-0xD3* | $D200-$D209 | Atari 8-bit compatible |
-| SID   | 0x0F0E00-0x0F0E1C | 0xE0/0xE1 | 0xE0/0xE1 | $D500-$D51C | MOS 6581/8580 compatible |
-| TED   | 0x0F0F00-0x0F0F05 | 0xF2/0xF3 | 0xF2/0xF3 | $D600-$D605 | Plus/4 compatible |
-| AHX   | 0x0F0B80-0x0F0B91 | -         | -         | $FB80-$FB91 | Amiga AHX/THX module player |
-| MOD   | 0x0F0BC0-0x0F0BD7 | -         | -         | $FBC0-$FBD7 | ProTracker .mod player |
+| Chip  | IE32/IE64/M68K         | Z80 | x86 | 6502        | Notes |
+|-------|-------------------|-----|-----|-------------|-------|
+| Custom Synth | 0x0F0820-0x0F0B7F | Memory $F820-$FB7F | Memory | $F820-$FB7F | Filter, legacy channels, flex channels |
+| AHX   | 0x0F0B80-0x0F0B91 | Memory $FB80-$FB91 | Memory | $FB80-$FB91 | .ahx module player |
+| MOD   | 0x0F0BC0-0x0F0BD7 | Memory $FBC0-$FBD7 | Memory | $FBC0-$FBD7 | .mod ProTracker player |
+| WAV   | 0x0F0BD8-0x0F0BEB | Memory $FBD8-$FBEB | Memory | $FBD8-$FBEB | .wav PCM player |
+| PSG   | 0x0F0C00-0x0F0C1C | Ports 0xF0/0xF1 + Memory $FC10-$FC1C | Ports 0xF0/0xF1 | $D400-$D41C | Synth + .ym/.ay/.vgm/.vgz/.vtx/.sndh/.pt3/.pt2/.pt1/.stc/.sqt/.asc/.ftc player |
+| POKEY | 0x0F0D00-0x0F0D1D | Ports 0xD0/0xD1 + Memory $FD10-$FD1D | Ports 0xD0-0xD3* | $D200-$D21D | Synth + .sap player |
+| SID   | 0x0F0E00-0x0F0E6C | Ports 0xE0/0xE1 + Memory $FE20-$FE6C | Ports 0xE0/0xE1 | $D500-$D56C | Synth + .sid player + SID2/SID3 multi-SID |
+| TED   | 0x0F0F00-0x0F0F1C | Ports 0xF2/0xF3 + Memory $FF10-$FF1C | Ports 0xF2/0xF3 | $D600-$D61C | Synth + .ted/.prg player |
 
 \* x86 POKEY uses ports 0xD0-0xD3 and 0xD8-0xDF (0xD4-0xD7 reserved for ANTIC/GTIA)
 
+Z80 and x86 access the custom synth and player control registers via memory-mapped I/O: addresses $F000-$FFFF translate to bus $F0000-$F0FFF. Classic sound chip synthesis registers (PSG, POKEY, SID, TED) use dedicated port I/O for register select/data access; their playback control registers use memory-mapped I/O.
+
 ### Video Chips
 
-| Chip      | IE32/IE64/M68K         | Z80 Ports   | x86 Ports     | 6502        | Notes |
-|-----------|-------------------|-------------|---------------|-------------|-------|
-| VideoChip | 0x0F0000-0x0F0077 | Memory      | Memory        | $F000-$F077 | Custom copper/blitter |
-| TED Video | 0x0F0F20-0x0F0F5F | 0xF2/0xF3   | 0xF2/0xF3     | $D620-$D62F | Plus/4 (idx 0x20-0x2F) |
-| VGA       | 0x0F1000-0x0F13FF | 0xA0-0xAC   | 0x3C4-0x3DA   | $D700-$D70A | IBM VGA compatible |
-| Voodoo    | 0x0F4000-0x0F43FF | Memory      | Memory        | Memory      | 3DFX SST-1 3D accelerator |
-| ANTIC     | 0x0F2100-0x0F213F | 0xD4/0xD5   | 0xD4/0xD5     | $D400-$D40F | Atari 8-bit video |
-| GTIA      | 0x0F2140-0x0F21B7 | 0xD6/0xD7   | 0xD6/0xD7     | $D000-$D01F | Atari 8-bit color + P/M |
-| ULA       | 0x0F2000-0x0F200B | 0xFE        | 0xFE          | $D800-$D80B | ZX Spectrum compatible |
+| Chip      | IE32/IE64/M68K         | Z80   | x86     | 6502        | Notes |
+|-----------|-------------------|-------|---------|-------------|-------|
+| VideoChip | 0x0F0000-0x0F0077 | Memory $F000-$F077 | Memory | $F000-$F077 | Custom copper/blitter |
+| TED Video | 0x0F0F20-0x0F0F5F | Ports 0xF2/0xF3   | Ports 0xF2/0xF3 | $D620-$D62F | Plus/4 (idx 0x20-0x2F) |
+| VGA       | 0x0F1000-0x0F13FF | Ports 0xA0-0xAC   | Ports 0x3C4-0x3DA | $D700-$D70A | IBM VGA compatible |
+| Voodoo    | 0x0F4000-0x0F43FF | Ports 0xB0-0xB7   | Memory | Memory | 3DFX SST-1 3D accelerator |
+| ANTIC     | 0x0F2100-0x0F213F | Ports 0xD4/0xD5 | Ports 0xD4/0xD5 | $D400-$D40F | Atari 8-bit video |
+| GTIA      | 0x0F2140-0x0F21B7 | Ports 0xD6/0xD7 | Ports 0xD6/0xD7 | $D000-$D01F | Atari 8-bit color + P/M |
+| ULA       | 0x0F2000-0x0F200B | Port 0xFE       | Port 0xFE       | $D800-$D80B | ZX Spectrum compatible |
 
 Note: 6502 has PSG at $D400 which overlaps with ANTIC's authentic Atari address. Use M68K/Z80/x86 for ANTIC access when PSG is in use.
 
@@ -1617,9 +1663,9 @@ These registers are in a separate MMIO range after the clipboard bridge (0xF2390
 
 All registers support byte-level reads and writes. This allows 8-bit CPUs to program 32-bit registers using four single-byte writes. Registers are aligned to 4-byte boundaries: sub-register byte offsets are computed as `addr & 3`. Writes to bytes 1-3 of a register perform read-modify-write on the shadow register. Command dispatch only fires when byte 0 of COPROC_CMD is written - writes to bytes 1-3 of COPROC_CMD do not trigger dispatch. This means the CMD register must be written last in any sequence.
 
-### 16-bit CPU Gateway (0xF200 - 0xF23F)
+### 16-bit CPU Gateway (0xF200 - 0xF24F)
 
-Z80 and 6502 CPUs have 16-bit address spaces and cannot directly reach `0xF2340`. A gateway window at `0xF200-0xF23F` transparently redirects reads and writes to the coprocessor MMIO:
+Z80 and 6502 CPUs have 16-bit address spaces and cannot directly reach `0xF2340`. A gateway window at `0xF200-0xF24F` transparently redirects reads and writes to the coprocessor MMIO:
 
 | Gateway Address | Maps To | Register |
 |----------------|---------|----------|
@@ -1637,6 +1683,11 @@ Z80 and 6502 CPUs have 16-bit address spaces and cannot directly reach `0xF2340`
 | 0xF22C | 0xF236C | COPROC_TIMEOUT |
 | 0xF230 | 0xF2370 | COPROC_NAME_PTR |
 | 0xF234 | 0xF2374 | COPROC_WORKER_STATE |
+| 0xF238 | 0xF2378 | COPROC_STATS_OPS |
+| 0xF23C | 0xF237C | COPROC_STATS_BYTES |
+| 0xF240 | 0xF2380 | COPROC_IRQ_CTRL |
+| 0xF244 | 0xF2384 | COPROC_DISPATCH_OVERHEAD |
+| 0xF248 | 0xF2388 | COPROC_COMPLETED_TICKET |
 
 IE32, IE64, M68K, and x86 CPUs access `0xF2340` directly (no gateway needed).
 
@@ -1734,6 +1785,19 @@ Complete caller examples are provided for all CPU architectures:
 | `sdk/examples/asm/coproc_caller_z80.asm` | Z80 | M68K | Gateway access via `STORE32` macros |
 | `sdk/examples/asm/coproc_caller_65.asm` | 6502 | IE32 | Gateway access via `STORE32` macros |
 
+## 3.19b Clipboard Bridge (0x0F2390 - 0x0F23AF, AROS mode)
+
+The clipboard bridge provides host OS clipboard access for AROS applications.
+
+| Address | Name | R/W | Description |
+|---------|------|-----|-------------|
+| `$F2390` | `CLIP_DATA_PTR` | W | Guest RAM pointer for clipboard data |
+| `$F2394` | `CLIP_DATA_LEN` | W | Data length in bytes |
+| `$F2398` | `CLIP_CTRL` | W | Command: 1=read from host, 2=write to host |
+| `$F239C` | `CLIP_STATUS` | R | 0=ready, 1=busy, 2=empty, 3=error |
+| `$F23A0` | `CLIP_RESULT_LEN` | R | Bytes actually read/written |
+| `$F23A4` | `CLIP_FORMAT` | W | Format: 0=text, 1=IFF (currently text-only; IFF format accepted but not honored) |
+
 ## 3.20 Voodoo 3D Graphics (0x0F4000 - 0x0F43FF)
 
 The Voodoo chip emulates a 3DFX SST-1 graphics accelerator using High-Level Emulation (HLE). Instead of software rasterization, register writes are translated to GPU draw calls for hardware-accelerated 3D rendering with Vulkan (or software fallback).
@@ -1749,13 +1813,14 @@ The Voodoo chip emulates a 3DFX SST-1 graphics accelerator using High-Level Emul
 - Chroma key transparency (discard fragments matching key color)
 - Configurable alpha blending with 9 blend factors per source/dest
 - Texture mapping with per-vertex UV coordinates and color modulation
-- Color combine modes (iterated, texture, modulate, add, decal) via fbzColorPath
-- Depth-based fog with configurable fog color (linear blend based on vertex Z)
+- Color combine modes (iterated, texture, modulate, add, decal) via fbzColorPath (register stored; backend integration pending)
+- Depth-based fog with configurable fog color (register stored; backend integration pending)
 - Ordered dithering with 4x4 or 2x2 Bayer matrices for reduced banding
 - Point sampling with wrap/clamp addressing modes
+- Texture formats: ARGB8888 (default), with register definitions for paletted, ARGB1555, ARGB4444, and others (upload currently assumes RGBA)
 - Dynamic pipeline state with automatic pipeline caching for performance
 - Scissor clipping
-- 800x600 default, up to 1280x960
+- 640x480 default, up to 800x600
 - Compositor layer 20 (renders on top of all 2D chips)
 
 ### Register Map
@@ -1792,13 +1857,16 @@ Command Registers:
 0x0F4110: VOODOO_FBZ_MODE        - Depth test/write/dither configuration
 0x0F4118: VOODOO_CLIP_LEFT_RIGHT - Scissor rectangle X bounds
 0x0F411C: VOODOO_CLIP_LOW_Y_HIGH - Scissor rectangle Y bounds
+0x0F4120: VOODOO_NOP_CMD         - No operation (synchronization)
 0x0F4124: VOODOO_FAST_FILL_CMD   - Clear framebuffer with COLOR0
 0x0F4128: VOODOO_SWAP_BUFFER_CMD - Swap front/back buffers
 
 Configuration:
+0x0F41C4: VOODOO_FOG_COLOR   - Fog color (0x00RRGGBB)
+0x0F41C8: VOODOO_ZA_COLOR    - Z/A constant color
 0x0F41CC: VOODOO_CHROMA_KEY  - Chroma key color (0x00RRGGBB)
-0x0F41D0: VOODOO_FOG_COLOR   - Fog color (0x00RRGGBB)
 0x0F41D8: VOODOO_COLOR0      - Fill color for FAST_FILL_CMD (ARGB)
+0x0F41DC: VOODOO_COLOR1      - Constant color 1
 0x0F4214: VOODOO_VIDEO_DIM   - Video dimensions (width<<16 | height)
 
 Texture Mapping (0x0F4300 - 0x0F433F):
@@ -1806,7 +1874,7 @@ Texture Mapping (0x0F4300 - 0x0F433F):
 0x0F430C: VOODOO_TEX_BASE0    - Texture base address (LOD 0)
 0x0F4330: VOODOO_TEX_WIDTH    - Texture width for upload (IE extension)
 0x0F4334: VOODOO_TEX_HEIGHT   - Texture height for upload (IE extension)
-0x0F4338: VOODOO_TEX_UPLOAD   - Write to trigger texture upload (IE extension)
+0x0F4338: VOODOO_TEX_UPLOAD   - Write to trigger texture upload (IE extension, RGBA data)
 
 Texture Memory (0x0F5000 - 0x0F5FFF):
 0x0F5000: VOODOO_TEXMEM_BASE  - Texture memory base (64KB)
@@ -1819,7 +1887,7 @@ Texture Memory (0x0F5000 - 0x0F5FFF):
 
 ```nasm
 ; x86 32-bit - direct access to Voodoo registers
-mov dword [0xF4100], (640 << 16) | 480    ; VOODOO_VIDEO_DIM
+mov dword [0xF4214], (640 << 16) | 480    ; VOODOO_VIDEO_DIM
 mov dword [0xF4110], 0x0310               ; VOODOO_FBZ_MODE
 mov dword [0xF4080], 0                    ; VOODOO_TRIANGLE_CMD
 ```
@@ -1848,11 +1916,11 @@ mov dword [0xF4080], 0                    ; VOODOO_TRIANGLE_CMD
 3. Trigger upload via TEX_UPLOAD register - emulator copies from CPU RAM
 
 ```z80
-; Z80 Example: Write 640x480 to VOODOO_VIDEO_DIM (offset 0x100)
-    ld a, 0x00
-    out (0xB0), a           ; Offset low = 0x00
-    ld a, 0x01
-    out (0xB1), a           ; Offset high = 0x01 (offset = 0x100)
+; Z80 Example: Write 640x480 to VOODOO_VIDEO_DIM (offset 0x214)
+    ld a, 0x14
+    out (0xB0), a           ; Offset low = 0x14
+    ld a, 0x02
+    out (0xB1), a           ; Offset high = 0x02 (offset = 0x214)
     ld a, 0xE0
     out (0xB2), a           ; Height low (480 & 0xFF)
     ld a, 0x01
@@ -1983,6 +2051,8 @@ Example: Use magenta (255, 0, 255) as transparent color:
 | 6 | TEX_CLAMP_T | Clamp T (V) coordinate (vs wrap) |
 | 8-11 | TEX_FORMAT | Texture format (see table below) |
 
+**Note:** Only enable and clamp bits are currently forwarded to the rendering backend. Filtering defaults to point sampling; texture upload assumes RGBA data regardless of TEX_FORMAT.
+
 ### Texture Formats
 
 | Value | Name | Description |
@@ -1992,6 +2062,8 @@ Example: Use magenta (255, 0, 255) as transparent color:
 | 8 | ARGB1555 | 16-bit ARGB 1555 |
 | 9 | ARGB4444 | 16-bit ARGB 4444 |
 | 10 | ARGB8888 | 32-bit ARGB 8888 (default) |
+
+**Note:** Texture upload currently processes all data as RGBA. Format selection is stored but does not yet affect upload conversion.
 
 ### Texture Coordinates
 
@@ -2068,7 +2140,7 @@ The `VOODOO_FOG_MODE` register (0x0F4108) enables depth-based fog blending. When
 | 5 | FOG_DITHER | Apply dithering to fog |
 | 6 | FOG_ZONES | Enable fog zones (table-based fog) |
 
-The fog color is set in `VOODOO_FOG_COLOR` (0x0F41D0) using the format 0x00RRGGBB.
+The fog color is set in `VOODOO_FOG_COLOR` (0x0F41C4) using the format 0x00RRGGBB.
 
 Fog blending formula: `output.rgb = mix(color.rgb, fogColor.rgb, fogFactor)`
 
@@ -2355,7 +2427,7 @@ While the register naming suggests traditional roles (like X/Y/Z for indexing), 
 **Special Registers:**
 ```
 PC - Program Counter (32-bit)
-SP - Stack Pointer (32-bit, initialised to 0xE0000)
+SP - Stack Pointer (32-bit, initialised to 0x9F000)
 ```
 
 ## 4.2 Status Flags
@@ -2514,7 +2586,7 @@ HALT (0xFF) ; Stop execution
 - All memory-mapped devices (video, audio, PSG/POKEY/SID, terminal) are accessible
 - I/O region: 0x0F0000 - 0x0FFFFF
 - VRAM access: 0x100000 - 0x5FFFFF (direct 32-bit addressing)
-- Stack grows downward from 0xE0000
+- Stack grows downward from 0x9F000
 
 ## 4.7 Interrupt Handling
 
@@ -2742,16 +2814,24 @@ The Z80 implements a comprehensive instruction set including:
 - The Z80 uses the shared system bus
 - Native 16-bit address space (0x0000-0xFFFF)
 - Z80 `IN/OUT` ports map to the 16-bit address space as memory-mapped registers
-- VRAM access via banking similar to 6502
+- VRAM access via banking at 0x8000-0xBFFF (16KB window, bank register at 0xF7F0)
+- Extended bank windows: Bank 1 (0x2000, 8KB), Bank 2 (0x4000, 8KB), Bank 3 (0x6000, 8KB)
+- Bank control registers: 0xF700-0xF705
 
-**Port-Based Audio Chip Access:**
-| Chip  | Ports   |
-|-------|---------|
-| PSG   | 0xF0-0xF1 |
-| POKEY | 0xD0-0xD1 |
-| SID   | 0xE0-0xE1 |
+**Port-Based Chip Access:**
+| Chip   | Ports       | Description |
+|--------|-------------|-------------|
+| PSG    | 0xF0-0xF1   | Register select, data |
+| POKEY  | 0xD0-0xD1   | Register select, data |
+| SID    | 0xE0-0xE1   | Register select, data |
+| TED    | 0xF2-0xF3   | Register select, data (audio + video indices 0x20-0x2F) |
+| ANTIC  | 0xD4-0xD5   | Register select, data |
+| GTIA   | 0xD6-0xD7   | Register select, data |
+| ULA    | 0xFE        | Border color / key status |
+| VGA    | 0xA0-0xAC   | VGA register access |
+| Voodoo | 0xB0-0xB7   | Address/data ports for 32-bit Voodoo register writes |
 
-First port selects the register, second port reads/writes data.
+First port selects the register, second port reads/writes data (except ULA which uses a single port, and Voodoo which uses an address/data accumulator).
 
 ## 6.6 Interrupts
 
@@ -2922,6 +3002,13 @@ CAS, CAS2
 | FSQRT | Square root |
 | FINT | Integer part |
 | FINTRZ | Integer part (round to zero) |
+| FMOD | Modulo |
+| FREM | IEEE remainder |
+| FSCALE | Scale by power of 2 |
+| FSGLDIV | Single-precision divide |
+| FSGLMUL | Single-precision multiply |
+| FGETEXP | Extract exponent |
+| FGETMAN | Extract mantissa |
 
 ### Transcendental Functions:
 | Instruction | Description |
@@ -2932,13 +3019,16 @@ CAS, CAS2
 | FASIN | Arc sine |
 | FACOS | Arc cosine |
 | FATAN | Arc tangent |
+| FATANH | Inverse hyperbolic tangent |
 | FSINH | Hyperbolic sine |
 | FCOSH | Hyperbolic cosine |
 | FTANH | Hyperbolic tangent |
 | FLOG10 | Base-10 logarithm |
 | FLOGN | Natural logarithm |
+| FLOGNP1 | ln(1+x) |
 | FLOG2 | Base-2 logarithm |
 | FETOX | e^x |
+| FETOXM1 | e^x - 1 |
 | FTWOTOX | 2^x |
 | FTENTOX | 10^x |
 
@@ -3249,6 +3339,7 @@ Size suffixes: `.b` (8-bit), `.w` (16-bit), `.l` (32-bit), `.q` (64-bit)
 | `LSL` | Logical shift left |
 | `LSR` | Logical shift right |
 | `ASR` | Arithmetic shift right |
+| `CLZ` | Count leading zeros (32-bit) |
 
 ### Branches (Compare-and-Branch)
 
@@ -3341,8 +3432,9 @@ The IE64 includes a dedicated hardware Floating-Point Unit (FPU) for IEEE-754 si
 - **FPSR**: Status register containing overwritten condition codes (N, Z, I, NaN) and sticky exception flags (IO, DZ, OE, UE).
 - **FPCR**: Control register for setting the rounding mode (Nearest, Zero, Floor, Ceil).
 
-### Native FPU Instructions (29)
+### Native FPU Instructions (30)
 - **Arithmetic**: FADD, FSUB, FMUL, FDIV, FMOD, FABS, FNEG, FSQRT, FINT
+- **Compare**: FCMP (three-way compare: returns -1, 0, or +1 in integer register Rd)
 - **Transcendentals**: FSIN, FCOS, FTAN, FATAN, FLOG, FEXP, FPOW
 - **Movement/Conversion**: FMOV, FLOAD, FSTORE, FCVTIF (int→float), FCVTFI (float→int), FMOVI, FMOVO (bitwise reinterpret)
 - **Status/Constants**: FMOVSR, FMOVCR, FMOVSC, FMOVCC, FMOVECR (load ROM Pi, e, etc.)
@@ -3388,7 +3480,7 @@ Note: The interrupt vector is currently set internally. Assembly-level vector pr
 - Compare-and-branch model (no flags register - unlike IE32, M68K, Z80, 6502, x86)
 - R0 is hardwired to zero (reads always return 0, writes are silently ignored)
 - `.l` operations zero-mask to 32 bits; use `.q` for full 64-bit arithmetic
-- JIT compilation is enabled by default on ARM64 and x86-64 Linux; use `-nojit` to force interpreter mode
+- JIT compilation is enabled by default on supported platforms (x86-64 and ARM64); use `-nojit` to force interpreter mode. On x86-64, M68K, 6502, and x86 cores also have JIT backends
 - JIT and interpreter produce identical results for all programs (verified by test suite)
 - Full ISA reference: [IE64_ISA.md](sdk/docs/IE64_ISA.md)
 - Assembly cookbook: [IE64_COOKBOOK.md](sdk/docs/IE64_COOKBOOK.md)
@@ -3423,9 +3515,9 @@ The Intuition Engine includes a full port of Lee Davison's Enhanced BASIC (EhBAS
 
 ### Common REPL Commands
 
-- `SOUND PLAY "music.ext" [,subsong]` starts music playback and auto-detects format by extension: `.sid`, `.ym`, `.ay`, `.sndh`, `.ted`, `.prg`, `.ahx`, `.mod` (stops any currently playing track first)
+- `SOUND PLAY "music.ext" [,subsong]` starts music playback and auto-detects format by extension: `.sid`, `.ym`, `.ay`, `.vgm`, `.vgz`, `.vtx`, `.sndh`, `.pt3`, `.pt2`, `.pt1`, `.stc`, `.sqt`, `.asc`, `.ftc`, `.sap`, `.ted`, `.prg`, `.ahx`, `.mod`, `.wav` (stops any currently playing track first)
 - `SOUND STOP` stops current music playback (`SOUND PLAY STOP` is also accepted)
-- `RUN` executes the current BASIC program; `RUN "program.ie64"` (or `.iex`/`.ie68`/`.ie86`/`.ie80`/`.bin`) loads and launches an external binary
+- `RUN` executes the current BASIC program; `RUN "program.ie64"` (or `.iex`/`.ie32`/`.ie68`/`.ie86`/`.ie80`/`.ie65`) loads and launches an external binary
 
 ### Example
 
@@ -3549,14 +3641,15 @@ isr_handler:
 
 # 11. Sound System
 
-The Intuition Engine provides a powerful custom audio synthesizer alongside three emulated classic sound chips. The custom audio chip offers modern synthesis capabilities while maintaining the retro aesthetic.
+The Intuition Engine provides a powerful custom audio synthesizer alongside four emulated classic sound chips (PSG, POKEY, SID, TED). The custom audio chip offers modern synthesis capabilities while maintaining the retro aesthetic.
 
 ## Custom Audio Chip Overview
 
-The custom audio chip is a 4-channel synthesizer with advanced features:
+The custom audio chip is a 10-channel synthesizer with advanced features:
 
-- **5 Dedicated Waveform Channels**: Square, Triangle, Sine, Noise, Sawtooth
-- **4 Flexible Synth Channels**: Any waveform type per channel
+- **4 Base Channels**: Square, Triangle, Sine, Noise (sawtooth available via legacy register alias on channel 0)
+- **6 SID Extension Channels**: 3 SID2 + 3 SID3 for multi-SID .sid file playback
+- **4 Flexible Synth Channels**: Uniform register interface, any waveform type per channel
 - **Per-Voice ADSR Envelopes**: 16-bit attack/decay/release times, 8-bit sustain level
 - **Pulse Width Modulation**: Variable duty cycle with automatic LFO
 - **Frequency Sweep**: Portamento and pitch bend effects
@@ -3651,20 +3744,26 @@ Each dedicated channel has a similar register layout:
 
 #### Flexible Channel Registers
 
-Each flexible channel is 48 bytes ($30) with full synthesis control:
+Each flexible channel is 64 bytes ($40) with full synthesis control:
 
 | Offset | Name | Description |
 |--------|------|-------------|
 | +$00 | FREQ | Frequency (16.8 fixed-point Hz, value = Hz * 256) |
 | +$04 | VOL | Volume 0-255 (32-bit) |
-| +$08 | WAVE | Waveform type (see below) |
-| +$0C | CTRL | Control bits (same as dedicated channels) |
-| +$10 | ATTACK | Attack time in ms (16-bit) |
-| +$14 | DECAY | Decay time in ms (16-bit) |
-| +$18 | SUSTAIN | Sustain level 0-255 (16-bit) |
-| +$1C | RELEASE | Release time in ms (16-bit) |
-| +$20 | DUTY | Duty cycle for square wave |
-| +$24 | PAN | Stereo pan (-128 to 127, signed) |
+| +$08 | CTRL | Control bits (same as dedicated channels) |
+| +$0C | DUTY | Duty cycle for square wave |
+| +$10 | SWEEP | Frequency sweep control |
+| +$14 | ATK | Attack time in ms (16-bit) |
+| +$18 | DEC | Decay time in ms (16-bit) |
+| +$1C | SUS | Sustain level 0-255 (16-bit) |
+| +$20 | REL | Release time in ms (16-bit) |
+| +$24 | WAVE_TYPE | Waveform selection (0=square, 1=triangle, 2=sine, 3=noise, 4=saw) |
+| +$28 | PWM_CTRL | PWM modulation control |
+| +$2C | NOISEMODE | Noise mode (0=white, 1=periodic, 2=metallic, 3=PSG-style) |
+| +$30 | PHASE | Reset phase position |
+| +$34 | RINGMOD | Ring modulation source (bit7=enable, bits0-2=source channel) |
+| +$38 | SYNC | Hard sync source (bit7=enable, bits0-2=source channel) |
+| +$3C | DAC | DAC mode: signed 8-bit sample (bypasses waveform and envelope) |
 
 **Waveform Types:**
 | Value | Name | Description |
@@ -4862,9 +4961,11 @@ ahx_data_end:
 The MOD player provides full ProTracker .mod file playback with 4-channel sample-based audio. MOD files are the classic Amiga music format, using PCM samples mixed in real time. The player outputs through the SoundChip FLEX channels in DAC mode.
 
 ### Features:
-- Full ProTracker .mod file parsing (M.K., 4CHN, FLT4, and other 4-channel signatures)
+- Full ProTracker .mod file parsing (M.K., 4CHN, FLT4, M!K! signatures)
 - 4-channel sample playback via SoundChip FLEX DAC mode
 - Amiga A500 and A1200 low-pass filter emulation with LED filter
+- ProTracker effects: arpeggio (0), portamento up/down (1/2), tone portamento (3), vibrato (4), vol+tone slide (5/6), sample offset (9), volume slide (A), position jump (B), set volume (C), pattern break (D), set speed/BPM (F)
+- Extended effects (Exy): LED filter (E0), fine porta up/down (E1/E2), set finetune (E5), retrigger (E9), fine vol slide (EA/EB), note cut (EC), note delay (ED), pattern delay (EE)
 - Song position tracking
 - Loop support
 - MediaLoader integration (auto-detected by `.mod` extension)
@@ -5413,7 +5514,11 @@ Each video source has a layer number that determines compositing order (higher l
 | Source | Layer | Description |
 |--------|-------|-------------|
 | VideoChip | 0 | Base layer with copper coprocessor |
-| VGA | 10 | Overlays on top of VideoChip |
+| VGA | 10 | IBM VGA compatible modes |
+| TED Video | 12 | Commodore Plus/4 video |
+| ANTIC/GTIA | 13 | Atari 8-bit video |
+| ULA | 15 | ZX Spectrum video |
+| Voodoo 3D | 20 | 3DFX SST-1 accelerator |
 
 ### Per-Scanline Rendering
 
@@ -5483,14 +5588,14 @@ For the complete developer guide covering building, testing, toolchains, include
 ### Quick Build
 
 ```bash
-make                    # Build VM + assemblers
+make                    # Build VM + all SDK tools (assemblers, disassembler, transpiler)
 make novulkan           # Build without Vulkan
 make headless           # Build for CI/testing (no display/audio)
 make basic              # Build with embedded EhBASIC interpreter
 make basic-emutos       # Build with embedded BASIC + EmuTOS ROM
 make sdk                # Sync includes + pre-assemble SDK demos
 make release-all        # Build release archives for all platforms
-go build ./...          # Quick dev build without compression
+go build ./...          # Quick compile check (output in cwd, not bin/)
 ```
 
 See [DEVELOPERS.md](DEVELOPERS.md) for the complete development workflow, running programs (all CPU modes and music playback), assembler include files, and debugging techniques. See also [docs/include-files.md](sdk/docs/include-files.md) for a detailed include file reference.
@@ -5517,6 +5622,7 @@ Execution cycle: Fetch (8 bytes) → Decode → Execute → Update PC → Check 
 
 The 68020 emulation provides 95%+ instruction coverage:
 
+- **JIT compiler**: Block-based native code compilation on x86-64; enabled by default on supported platforms, disable with `-nojit`
 - **8 data registers** (D0-D7) and **8 address registers** (A0-A7)
 - **Full addressing mode support**: All 18 68020 addressing modes
 - **Supervisor/user modes**: Privilege separation
@@ -5556,7 +5662,7 @@ The x86 emulation provides a 32-bit flat memory model:
 
 The IE64 is a 64-bit RISC processor with a clean load-store architecture:
 
-- **JIT compiler**: Block-based native code compilation (ARM64 and x86-64) with backward branch optimisation for native loops. Enabled by default on ARM64 and x86-64 Linux; disable with `-nojit`
+- **JIT compiler**: Block-based native code compilation (ARM64 and x86-64) with backward branch optimisation for native loops. Enabled by default on supported platforms (amd64/arm64 Linux); disable with `-nojit`
 - **32 general-purpose registers**: R0 (hardwired zero) through R31 (stack pointer), all 64-bit
 - **Fixed 8-byte instruction format**: Consistent fetch/decode
 - **Compare-and-branch model**: No flags register; conditional branches embed register comparison
@@ -5582,7 +5688,7 @@ All CPUs share a unified 32MB address space through the MachineBus:
 | System | `$000000-$000FFF` | Vectors, system data |
 | Program | `$001000-$0EFFFF` | User program space |
 | I/O | `$0F0000-$0FFFFF` | Hardware registers |
-| VRAM | `$100000-$1FFFFF` | Video RAM |
+| VRAM | `$100000-$5FFFFF` | Video RAM (5MB) |
 
 ### Bank Windows (8-bit CPUs)
 
@@ -5696,7 +5802,7 @@ Intuition Engine runs [EmuTOS](https://emutos.sourceforge.io/) directly on the I
 ### Quick Start
 
 ```bash
-# Embedded ROM (requires 'make emutos' or 'make basic-emutos' build)
+# Boot EmuTOS (embedded ROM, or auto-discovers etos256us.img / emutos.img locally)
 ./bin/IntuitionEngine -emutos
 
 # External ROM image
@@ -5752,7 +5858,7 @@ See [sdk/docs/ie_emutos.md](sdk/docs/ie_emutos.md) for the full hardware map, bu
 Intuition Engine runs [AROS](https://aros.sourceforge.io/) (Amiga Research Operating System) on the IE M68K core, providing a full Amiga Workbench desktop with Shell, file management, and host filesystem access.
 
 ```bash
-# Boot AROS (embedded ROM, requires 'make aros' build)
+# Boot AROS (embedded ROM, or auto-discovers aros-ie.rom locally)
 ./bin/IntuitionEngine -aros
 
 # Boot from external ROM image
@@ -5764,15 +5870,15 @@ Intuition Engine runs [AROS](https://aros.sourceforge.io/) (Amiga Research Opera
 
 ### AROS Memory Layout
 
-| Region | Range | Size |
-|--------|-------|------|
-| Chip RAM A | `0x000000-0x09DFFF` | 630KB |
-| Chip RAM B | `0x200000-0x6FFFFF` | 5MB |
-| ROM | `0x600000-0x7FFFFF` | 2MB |
-| Fast RAM | `0x800000-0x1DFFFFF` | 22MB |
-| VRAM | `0x1E00000-0x1FFFFFF` | 2MB |
+| Region | Range | Size | Notes |
+|--------|-------|------|-------|
+| Chip RAM A | `0x000000-0x09DFFF` | 630KB | |
+| Chip RAM B | `0x200000-0x6FFFFF` | 5MB | Upper 1MB overlaid by ROM |
+| ROM | `0x600000-0x7FFFFF` | 2MB | Overlays `0x600000-0x6FFFFF` of Chip RAM B |
+| Fast RAM | `0x800000-0x1DFFFFF` | 22MB | |
+| VRAM | `0x1E00000-0x1FFFFFF` | 2MB | |
 
-Total: 27.6MB (5.6MB chip + 22MB fast memory).
+Total: 27.6MB (5.6MB chip + 22MB fast memory). ROM overlays the top of the Chip RAM B address range, similar to real Amiga hardware. VRAM is separate.
 
 ### What Works
 
@@ -5782,8 +5888,31 @@ Total: 27.6MB (5.6MB chip + 22MB fast memory).
 - Multi-resolution display: 640x480, 800x600, 1024x768, 1280x960 (CLUT8/RGBA32)
 - Amiga rawkey scancode input, software cursor overlay
 - battclock.resource via RTC_EPOCH MMIO register (0xF0750)
-- Paula-compatible 4-channel audio DMA
+- Paula-compatible 4-channel audio DMA (see registers below)
 - iewarp.library: AROS shared library that offloads compute to the IE64 coprocessor
+
+### Paula DMA Audio Registers (0xF2260 - 0xF22AF)
+
+Paula-compatible 4-channel sample DMA. The M68K audio.device writes sample pointers, lengths, periods, and volumes to per-channel registers, then enables DMA via DMACON. The engine reads sample bytes from guest RAM at the correct rate and outputs them via SoundChip FLEX DAC at 44.1kHz.
+
+**Per-Channel Registers** (4 channels × 16 bytes, CH0=0xF2260, CH1=0xF2270, CH2=0xF2280, CH3=0xF2290):
+
+| Offset | Name | Description |
+|--------|------|-------------|
+| +$00 | AUDxPTR | Sample pointer in guest RAM (32-bit) |
+| +$04 | AUDxLEN | Length in words (1 word = 2 bytes, Paula-style) |
+| +$08 | AUDxPER | Period (frequency = 3546895 / period, PAL clock) |
+| +$0C | AUDxVOL | Volume (0-64, Paula-compatible) |
+
+**Global Registers:**
+
+| Address | Name | Description |
+|---------|------|-------------|
+| `$F22A0` | DMACON | DMA control: bit 15=set/clear mode, bits 0-3=channel enables |
+| `$F22A4` | STATUS | Completion flags: bits 0-3 per channel (write-to-clear) |
+| `$F22A8` | INTENA | Interrupt enable: bit 15=set/clear, bits 0-3=channel enables |
+
+Buffer completion triggers a Level 3 interrupt (M68K autovector 27) when the corresponding INTENA bit is set.
 
 ### Build Targets
 
