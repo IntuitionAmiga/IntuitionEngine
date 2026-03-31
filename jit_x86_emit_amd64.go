@@ -105,15 +105,16 @@ const (
 
 type x86CompileState struct {
 	flagState      x86FlagState
-	regMap         [8]byte // guest reg -> host reg (0 = spilled)
-	tier           int     // 0 = Tier 1, 1 = Tier 2
-	flagsNeeded    []bool  // per-instruction: true if this instruction's flags are consumed
-	isLoop         bool    // block contains a backward Jcc to its own startPC
-	loopStartLabel int     // code buffer offset of loop body start (after prologue)
-	instrPerIter   int     // number of guest instructions per loop iteration
-	dirtyMask      byte    // bit i set = guest reg i was written and needs store-back
-	ioBitmap       []byte  // I/O bitmap for compile-time page checks (nil if unavailable)
-	codeBitmap     []byte  // code page bitmap for compile-time self-mod elision
+	regMap         [8]byte         // guest reg -> host reg (0 = spilled)
+	tier           int             // 0 = Tier 1, 1 = Tier 2
+	flagsNeeded    []bool          // per-instruction: true if this instruction's flags are consumed
+	isLoop         bool            // block contains a backward Jcc to its own startPC
+	loopStartLabel int             // code buffer offset of loop body start (after prologue)
+	instrPerIter   int             // number of guest instructions per loop iteration
+	dirtyMask      byte            // bit i set = guest reg i was written and needs store-back
+	ioBitmap       []byte          // I/O bitmap for compile-time page checks (nil if unavailable)
+	codeBitmap     []byte          // code page bitmap for compile-time self-mod elision
+	host           x86HostFeatures // detected host CPU features for optimal encoding selection
 }
 
 // x86DefaultRegMap returns the Tier 1 fixed register mapping.
@@ -809,11 +810,11 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 
 	// Grp2 shifts: Eb,Ib (0xC0), Ev,Ib (0xC1), Eb,1 (0xD0), Ev,1 (0xD1), Eb,CL (0xD2), Ev,CL (0xD3)
 	case op == 0xC1:
-		return x86EmitGrp2_Ev_Ib(cb, ji, memory, cs)
+		return x86EmitGrp2_Ev_Ib(cb, ji, memory, cs, instrIdx)
 	case op == 0xD1:
-		return x86EmitGrp2_Ev_1(cb, ji, cs)
+		return x86EmitGrp2_Ev_1(cb, ji, cs, instrIdx)
 	case op == 0xD3:
-		return x86EmitGrp2_Ev_CL(cb, ji, cs)
+		return x86EmitGrp2_Ev_CL(cb, ji, cs, instrIdx)
 
 	// Grp3: Eb (0xF6) and Ev (0xF7) -- NOT/NEG/MUL/IMUL/DIV/IDIV + TEST
 	case op == 0xF7:
@@ -1308,12 +1309,55 @@ func x86EmitDEC_r32(cb *CodeBuffer, ji *X86JITInstr, cs *x86CompileState) bool {
 }
 
 // ===========================================================================
+// VEX Encoding Helpers (for BMI2, AVX2)
+// ===========================================================================
+
+// emitVEX3 emits a 3-byte VEX prefix.
+// pp: 00=none, 01=66, 10=F3, 11=F2
+// mmmmm: opcode map (00001=0F, 00010=0F38, 00011=0F3A)
+// W: REX.W equivalent (0 for 32-bit, 1 for 64-bit)
+// vvvv: source register (inverted, 4 bits)
+// L: vector length (0=128/scalar, 1=256)
+// reg: ModR/M reg field register (for REX.R)
+// rm: ModR/M r/m field register (for REX.B)
+func emitVEX3(cb *CodeBuffer, pp, mmmmm, W, vvvv, L, reg, rm byte) {
+	// Byte 0: 0xC4
+	cb.EmitBytes(0xC4)
+	// Byte 1: ~R.~X.~B.mmmmm
+	R := byte(0)
+	if isExtReg(reg) {
+		R = 1
+	}
+	B := byte(0)
+	if isExtReg(rm) {
+		B = 1
+	}
+	b1 := ((^R & 1) << 7) | (1 << 6) | ((^B & 1) << 5) | (mmmmm & 0x1F)
+	cb.EmitBytes(b1)
+	// Byte 2: W.~vvvv.L.pp
+	b2 := ((W & 1) << 7) | ((^vvvv & 0xF) << 3) | ((L & 1) << 2) | (pp & 3)
+	cb.EmitBytes(b2)
+}
+
+// emitBMI2Shift emits a BMI2 SHLX/SHRX/SARX instruction (non-flag-affecting shift).
+// pp: 01=SHLX(66), 11=SHRX(F2), 10=SARX(F3)
+// dst, src: guest register values loaded into host registers
+// countReg: host register holding the shift count
+func emitBMI2Shift(cb *CodeBuffer, pp byte, dst, src, countReg byte) {
+	// VEX.LZ.{pp}.0F38.W0 F7 /r
+	emitVEX3(cb, pp, 0x02, 0, countReg, 0, dst, src) // mmmmm=2 = 0F38
+	cb.EmitBytes(0xF7, modRM(3, dst, src))
+}
+
+// ===========================================================================
 // Grp2 Shift/Rotate Emitters
 // ===========================================================================
 
 // x86EmitGrp2_Ev_Ib handles Grp2 Ev, Ib (0xC1) -- register mode only.
 // Sub-ops: 0=ROL, 1=ROR, 2=RCL, 3=RCR, 4=SHL, 5=SHR, 7=SAR
-func x86EmitGrp2_Ev_Ib(cb *CodeBuffer, ji *X86JITInstr, memory []byte, cs *x86CompileState) bool {
+// When BMI2 is available and flags output is dead, uses SHLX/SHRX/SARX
+// (non-flag-affecting) to preserve host EFLAGS across the shift.
+func x86EmitGrp2_Ev_Ib(cb *CodeBuffer, ji *X86JITInstr, memory []byte, cs *x86CompileState, instrIdx int) bool {
 	if !ji.hasModRM || ji.modrm>>6 != 3 {
 		return false
 	}
@@ -1324,7 +1368,27 @@ func x86EmitGrp2_Ev_Ib(cb *CodeBuffer, ji *X86JITInstr, memory []byte, cs *x86Co
 
 	x86EmitLoadGuestReg32(cb, amd64R8, dstReg)
 
-	// Emit shift: C1 /op imm8 on R8d
+	// BMI2 path: use SHLX/SHRX/SARX when flags aren't needed
+	flagsDead := instrIdx < len(cs.flagsNeeded) && !cs.flagsNeeded[instrIdx]
+	if cs.host.HasBMI2 && flagsDead && (shiftOp == 4 || shiftOp == 5 || shiftOp == 7) {
+		// Load shift count into a scratch register
+		amd64MOV_reg_imm32(cb, amd64RCX, uint32(imm))
+		var pp byte
+		switch shiftOp {
+		case 4:
+			pp = 0x01 // SHLX: VEX.66
+		case 5:
+			pp = 0x03 // SHRX: VEX.F2
+		case 7:
+			pp = 0x02 // SARX: VEX.F3
+		}
+		emitBMI2Shift(cb, pp, amd64R8, amd64R8, amd64RCX)
+		// Flags NOT modified -- preserve prior flag state
+		x86EmitStoreGuestReg32(cb, dstReg, amd64R8)
+		return true
+	}
+
+	// Standard path: flags-affecting shift
 	emitREX(cb, false, 0, amd64R8)
 	cb.EmitBytes(0xC1, modRM(3, shiftOp, amd64R8), imm)
 
@@ -1334,7 +1398,7 @@ func x86EmitGrp2_Ev_Ib(cb *CodeBuffer, ji *X86JITInstr, memory []byte, cs *x86Co
 }
 
 // x86EmitGrp2_Ev_1 handles Grp2 Ev, 1 (0xD1) -- register mode only.
-func x86EmitGrp2_Ev_1(cb *CodeBuffer, ji *X86JITInstr, cs *x86CompileState) bool {
+func x86EmitGrp2_Ev_1(cb *CodeBuffer, ji *X86JITInstr, cs *x86CompileState, instrIdx int) bool {
 	if !ji.hasModRM || ji.modrm>>6 != 3 {
 		return false
 	}
@@ -1342,6 +1406,24 @@ func x86EmitGrp2_Ev_1(cb *CodeBuffer, ji *X86JITInstr, cs *x86CompileState) bool
 	dstReg := ji.modrm & 7
 
 	x86EmitLoadGuestReg32(cb, amd64R8, dstReg)
+
+	// BMI2 path for SHL/SHR/SAR by 1 when flags dead
+	flagsDead := instrIdx < len(cs.flagsNeeded) && !cs.flagsNeeded[instrIdx]
+	if cs.host.HasBMI2 && flagsDead && (shiftOp == 4 || shiftOp == 5 || shiftOp == 7) {
+		amd64MOV_reg_imm32(cb, amd64RCX, 1)
+		var pp byte
+		switch shiftOp {
+		case 4:
+			pp = 0x01
+		case 5:
+			pp = 0x03
+		case 7:
+			pp = 0x02
+		}
+		emitBMI2Shift(cb, pp, amd64R8, amd64R8, amd64RCX)
+		x86EmitStoreGuestReg32(cb, dstReg, amd64R8)
+		return true
+	}
 
 	emitREX(cb, false, 0, amd64R8)
 	cb.EmitBytes(0xD1, modRM(3, shiftOp, amd64R8))
@@ -1352,7 +1434,7 @@ func x86EmitGrp2_Ev_1(cb *CodeBuffer, ji *X86JITInstr, cs *x86CompileState) bool
 }
 
 // x86EmitGrp2_Ev_CL handles Grp2 Ev, CL (0xD3) -- register mode only.
-func x86EmitGrp2_Ev_CL(cb *CodeBuffer, ji *X86JITInstr, cs *x86CompileState) bool {
+func x86EmitGrp2_Ev_CL(cb *CodeBuffer, ji *X86JITInstr, cs *x86CompileState, instrIdx int) bool {
 	if !ji.hasModRM || ji.modrm>>6 != 3 {
 		return false
 	}
@@ -1360,8 +1442,24 @@ func x86EmitGrp2_Ev_CL(cb *CodeBuffer, ji *X86JITInstr, cs *x86CompileState) boo
 	dstReg := ji.modrm & 7
 
 	x86EmitLoadGuestReg32(cb, amd64R8, dstReg)
-	// Load guest ECX into host CL for shift count
-	x86EmitLoadGuestReg32(cb, amd64RCX, 1) // guest ECX
+	x86EmitLoadGuestReg32(cb, amd64RCX, 1) // guest ECX = shift count
+
+	// BMI2 path for SHL/SHR/SAR by CL when flags dead
+	flagsDead := instrIdx < len(cs.flagsNeeded) && !cs.flagsNeeded[instrIdx]
+	if cs.host.HasBMI2 && flagsDead && (shiftOp == 4 || shiftOp == 5 || shiftOp == 7) {
+		var pp byte
+		switch shiftOp {
+		case 4:
+			pp = 0x01
+		case 5:
+			pp = 0x03
+		case 7:
+			pp = 0x02
+		}
+		emitBMI2Shift(cb, pp, amd64R8, amd64R8, amd64RCX)
+		x86EmitStoreGuestReg32(cb, dstReg, amd64R8)
+		return true
+	}
 
 	emitREX(cb, false, 0, amd64R8)
 	cb.EmitBytes(0xD3, modRM(3, shiftOp, amd64R8))
@@ -1980,6 +2078,10 @@ func x86EmitCMOVcc(cb *CodeBuffer, ji *X86JITInstr, cond byte, cs *x86CompileSta
 }
 
 // x86EmitBSx handles BSF/BSR Gv, Ev (0x0F BC/BD) -- register mode only.
+// x86EmitBSx handles BSF/BSR (0x0F BC/BD) -- register mode only.
+// When LZCNT is available, uses TZCNT/LZCNT for better throughput (no false
+// dependency on destination register). Preserves BSF/BSR zero-input semantics:
+// on zero input, destination is unchanged and ZF=1.
 func x86EmitBSx(cb *CodeBuffer, ji *X86JITInstr, op2 byte, cs *x86CompileState) bool {
 	if !ji.hasModRM || ji.modrm>>6 != 3 {
 		return false
@@ -1989,7 +2091,54 @@ func x86EmitBSx(cb *CodeBuffer, ji *X86JITInstr, op2 byte, cs *x86CompileState) 
 
 	x86EmitLoadGuestReg32(cb, amd64R10, srcReg)
 
-	// BSF/BSR R8d, R10d
+	if cs.host.HasLZCNT {
+		// TZCNT/LZCNT path with zero-input preservation:
+		// 1. TEST R10, R10
+		// 2. JZ zero_case (ZF=1, skip destination write)
+		// 3. TZCNT/LZCNT R8, R10
+		// 4. For BSR: XOR R8, 31 (convert LZCNT to bit position)
+		// 5. Store result
+		// 6. JMP done
+		// 7. zero_case: (destination unchanged, ZF already set by TEST)
+		// 8. done:
+
+		emitREX(cb, false, amd64R10, amd64R10)
+		cb.EmitBytes(0x85, modRM(3, amd64R10, amd64R10)) // TEST R10d, R10d
+		zeroJmp := amd64Jcc_rel32(cb, amd64CondE)        // JZ zero_case
+
+		// Non-zero path: use TZCNT or LZCNT
+		if op2 == 0xBC {
+			// TZCNT R8d, R10d: F3 0F BC /r
+			cb.EmitBytes(0xF3)
+			emitREX(cb, false, amd64R8, amd64R10)
+			cb.EmitBytes(0x0F, 0xBC, modRM(3, amd64R8, amd64R10))
+		} else {
+			// LZCNT R8d, R10d: F3 0F BD /r
+			cb.EmitBytes(0xF3)
+			emitREX(cb, false, amd64R8, amd64R10)
+			cb.EmitBytes(0x0F, 0xBD, modRM(3, amd64R8, amd64R10))
+			// Convert LZCNT result to BSR result: bit_pos = 31 - lzcnt
+			amd64ALU_reg_imm32_32bit(cb, 6, amd64R8, 31) // XOR R8d, 31
+		}
+
+		x86EmitStoreGuestReg32(cb, dstReg, amd64R8)
+		doneJmp := amd64JMP_rel32(cb)
+
+		// zero_case: destination unchanged (ZF=1 from TEST)
+		zeroLabel := cb.Len()
+		patchRel32(cb, zeroJmp, zeroLabel)
+
+		doneLabel := cb.Len()
+		patchRel32(cb, doneJmp, doneLabel)
+
+		cs.flagState = x86FlagsLiveLogic
+		return true
+	}
+
+	// Standard BSF/BSR path (no LZCNT)
+	// Note: standard BSF/BSR on x86 already leave dest unchanged on zero input
+	// and set ZF=1, so no special handling needed.
+	x86EmitLoadGuestReg32(cb, amd64R8, dstReg) // pre-load dest for preservation
 	emitREX(cb, false, amd64R8, amd64R10)
 	cb.EmitBytes(0x0F, op2, modRM(3, amd64R8, amd64R10))
 
@@ -2510,6 +2659,8 @@ func x86EmitUpdateFSWTop(cb *CodeBuffer, topReg byte) {
 
 // x86EmitREP_MOVSB emits a native loop for REP MOVSB (byte copy ESI->EDI, ECX times).
 func x86EmitREP_MOVSB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
+	// DF check: bail to interpreter if DF=1 (reverse direction)
+	x86EmitDFCheck(cb, ji.opcodePC, instrIdx)
 	x86EmitLoadGuestReg32(cb, amd64RCX, 1) // count
 	x86EmitLoadGuestReg32(cb, amd64R8, 6)  // src
 	x86EmitLoadGuestReg32(cb, amd64R10, 7) // dst
@@ -2529,23 +2680,62 @@ func x86EmitREP_MOVSB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 	slowJmpDst := amd64Jcc_rel32(cb, amd64CondNE)
 	amd64MOV_reg_mem32(cb, amd64R8, amd64RSP, 0) // restore src again after 2nd check
 
-	// Fast path: both ranges safe, skip per-iteration masking
-	amd64MOV_reg_reg32(cb, amd64R11, amd64R8)
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, int32(x86AddressMask)) // mask src once
-	amd64MOV_reg_reg32(cb, amd64RDX, amd64R10)
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64RDX, int32(x86AddressMask)) // mask dst once
-	fastLoopLabel := cb.Len()
-	x86EmitMemLoad8(cb, amd64RAX, amd64R11)
-	x86EmitMemStore8(cb, amd64RDX, amd64RAX)
-	emitREX(cb, false, amd64R11, amd64R11)
-	cb.EmitBytes(0xFF, modRM(3, 0, amd64R11)) // INC R11
-	emitREX(cb, false, amd64RDX, amd64RDX)
-	cb.EmitBytes(0xFF, modRM(3, 0, amd64RDX)) // INC RDX
-	amd64ALU_reg_imm32_32bit(cb, 5, amd64RCX, 1)
-	fastLoopJmp := amd64Jcc_rel32(cb, amd64CondNE)
-	patchRel32(cb, fastLoopJmp, fastLoopLabel)
-	amd64MOV_reg_reg32(cb, amd64R8, amd64R11)  // update ESI
-	amd64MOV_reg_reg32(cb, amd64R10, amd64RDX) // update EDI
+	// Fast path: both ranges safe
+	if x86CurrentCS != nil && x86CurrentCS.host.HasERMS {
+		// Hardware REP MOVSB: save RSI, set up RDI/RSI/RCX, REP MOVSB, restore
+		amd64MOV_mem_reg(cb, amd64RSP, 24, x86AMD64RegMemBase) // save RSI
+
+		// RSI = memBase + masked_src
+		amd64MOV_reg_reg32(cb, amd64R11, amd64R8)
+		amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, int32(x86AddressMask))
+		amd64MOV_reg_reg(cb, x86AMD64RegMemBase, x86AMD64RegMemBase) // keep RSI as 64-bit
+		// Actually need: host RSI = memBase + masked_src_offset
+		amd64MOV_reg_mem(cb, amd64RDX, amd64RSP, 24)   // RDX = original RSI (memBase)
+		amd64MOV_reg_reg(cb, amd64RSI, amd64RDX)       // host RSI = memBase
+		amd64ALU_reg_reg(cb, 0x01, amd64RSI, amd64R11) // RSI += masked_src
+
+		// RDI = memBase + masked_dst
+		amd64MOV_reg_reg32(cb, amd64R11, amd64R10)
+		amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, int32(x86AddressMask))
+		amd64MOV_reg_reg(cb, amd64RDI, amd64RDX)       // RDI = memBase
+		amd64ALU_reg_reg(cb, 0x01, amd64RDI, amd64R11) // RDI += masked_dst
+
+		// RCX already has count
+		cb.EmitBytes(0xFC)       // CLD
+		cb.EmitBytes(0xF3, 0xA4) // REP MOVSB
+
+		// Save post-REP RSI (source) and RDI (dest) before restoring memBase
+		amd64MOV_reg_reg(cb, amd64R11, amd64RSI) // R11 = post-REP source pointer
+		amd64MOV_reg_reg(cb, amd64RDX, amd64RDI) // RDX = post-REP dest pointer
+
+		// Restore RSI (memBase)
+		amd64MOV_reg_mem(cb, x86AMD64RegMemBase, amd64RSP, 24)
+
+		// Compute new guest offsets: postPtr - memBase
+		amd64ALU_reg_reg(cb, 0x29, amd64R11, x86AMD64RegMemBase) // R11 = postSrc - memBase = new ESI
+		amd64ALU_reg_reg(cb, 0x29, amd64RDX, x86AMD64RegMemBase) // RDX = postDst - memBase = new EDI
+		amd64MOV_reg_reg32(cb, amd64R8, amd64R11)                // R8 = new guest ESI
+		amd64MOV_reg_reg32(cb, amd64R10, amd64RDX)               // R10 = new guest EDI
+		amd64XOR_reg_reg32(cb, amd64RCX, amd64RCX)               // ECX = 0
+	} else {
+		// Scalar fast path: no per-iteration masking
+		amd64MOV_reg_reg32(cb, amd64R11, amd64R8)
+		amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, int32(x86AddressMask))
+		amd64MOV_reg_reg32(cb, amd64RDX, amd64R10)
+		amd64ALU_reg_imm32_32bit(cb, 4, amd64RDX, int32(x86AddressMask))
+		fastLoopLabel := cb.Len()
+		x86EmitMemLoad8(cb, amd64RAX, amd64R11)
+		x86EmitMemStore8(cb, amd64RDX, amd64RAX)
+		emitREX(cb, false, amd64R11, amd64R11)
+		cb.EmitBytes(0xFF, modRM(3, 0, amd64R11))
+		emitREX(cb, false, amd64RDX, amd64RDX)
+		cb.EmitBytes(0xFF, modRM(3, 0, amd64RDX))
+		amd64ALU_reg_imm32_32bit(cb, 5, amd64RCX, 1)
+		fastLoopJmp := amd64Jcc_rel32(cb, amd64CondNE)
+		patchRel32(cb, fastLoopJmp, fastLoopLabel)
+		amd64MOV_reg_reg32(cb, amd64R8, amd64R11)
+		amd64MOV_reg_reg32(cb, amd64R10, amd64RDX)
+	}
 	fastDoneJmp := amd64JMP_rel32(cb)
 
 	// Slow path: restore src from stack, then per-iteration masking
@@ -2578,6 +2768,7 @@ func x86EmitREP_MOVSB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 
 // x86EmitREP_MOVSD emits a native loop for REP MOVSD (dword copy ESI->EDI, ECX times).
 func x86EmitREP_MOVSD(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
+	x86EmitDFCheck(cb, ji.opcodePC, instrIdx)
 	x86EmitLoadGuestReg32(cb, amd64RCX, 1)
 	x86EmitLoadGuestReg32(cb, amd64R8, 6)
 	x86EmitLoadGuestReg32(cb, amd64R10, 7)
@@ -2640,6 +2831,31 @@ func x86EmitREP_MOVSD(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 	return true
 }
 
+// x86EmitDFCheck emits a runtime check of the guest Direction Flag (DF, bit 10 of Flags).
+// If DF=1, returns false (bails to interpreter). If DF=0, continues.
+// Returns the JNZ offset for patching if the caller wants to handle the bail inline,
+// or -1 if the check is skipped.
+func x86EmitDFCheck(cb *CodeBuffer, retPC uint32, instrIdx int) {
+	// Load guest Flags from context
+	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFlagsPtr))
+	amd64MOV_reg_mem32(cb, amd64RAX, amd64RAX, 0) // EAX = *FlagsPtr
+
+	// TEST EAX, (1 << 10) = 0x400 (DF bit)
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, 0) // dummy to not affect actual value
+	// Actually: TEST EAX, 0x400
+	emitREX(cb, false, 0, amd64RAX)
+	cb.EmitBytes(0xF7, modRM(3, 0, amd64RAX)) // TEST EAX, imm32
+	cb.Emit32(0x400)                          // DF = bit 10
+
+	// If DF=1: bail via deferred stub
+	if x86CurrentBails != nil {
+		jccOff := amd64Jcc_rel32(cb, amd64CondNE) // JNZ = DF is set
+		*x86CurrentBails = append(*x86CurrentBails, x86DeferredBail{
+			jccOffset: jccOff, retPC: retPC, instrIdx: instrIdx, kind: 0,
+		})
+	}
+}
+
 // x86EmitRangePageCheck emits code to scan IO bitmap pages from baseReg to
 // baseReg + countReg*stride - 1. Sets ZF=1 if all pages safe, ZF=0 (NE) if any unsafe.
 // Clobbers R8 and R11. baseReg and countReg are NOT modified.
@@ -2700,6 +2916,7 @@ func x86EmitRangePageCheck(cb *CodeBuffer, baseReg byte, countReg byte, stride i
 // x86EmitREP_STOSB emits a native loop for REP STOSB (fill EDI with AL, ECX times).
 // Includes range-safety fast path: verifies all destination pages are non-I/O upfront.
 func x86EmitREP_STOSB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
+	x86EmitDFCheck(cb, ji.opcodePC, instrIdx)
 	x86EmitLoadGuestReg32(cb, amd64RCX, 1) // count
 	x86EmitLoadGuestReg32(cb, amd64R10, 7) // dst
 	x86EmitLoadGuestReg32(cb, amd64RAX, 0) // AL (low byte of EAX)
@@ -2737,27 +2954,68 @@ func x86EmitREP_STOSB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 	scanLoopJmp := amd64Jcc_rel32(cb, amd64CondBE)
 	patchRel32(cb, scanLoopJmp, scanLabel) // JBE scan (unsigned <= )
 
-	// All pages safe → fast loop (no per-iteration mask needed, but still mask base once)
+	// All pages safe → mask base once, then fast loop
 	amd64MOV_reg_reg32(cb, amd64R11, amd64R10)
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, int32(x86AddressMask)) // mask base
-	// R11 = masked base address. Fast loop: just increment and store.
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, int32(x86AddressMask)) // R11 = masked base
+
+	// Hardware REP STOSB fast path: when ERMS available and DF=0, use native REP STOSB
+	if x86CurrentCS != nil && x86CurrentCS.host.HasERMS {
+		// Save RSI (our memory base) to stack
+		amd64MOV_mem_reg(cb, amd64RSP, 24, x86AMD64RegMemBase) // [RSP+24] = RSI
+
+		// Set up for native REP STOSB: RDI = memBase + masked_dest, AL = fill, RCX = count
+		amd64MOV_reg_reg(cb, amd64RDI, x86AMD64RegMemBase)
+		amd64ALU_reg_reg(cb, 0x01, amd64RDI, amd64R11) // RDI = RSI + masked_offset
+
+		// CLD (ensure host DF=0 -- we already checked guest DF=0)
+		cb.EmitBytes(0xFC) // CLD
+
+		// REP STOSB: F3 AA
+		cb.EmitBytes(0xF3, 0xAA)
+
+		// Restore RSI
+		amd64MOV_reg_mem(cb, x86AMD64RegMemBase, amd64RSP, 24)
+
+		// Update guest EDI: R10 = R11 + bytes_written. Since RCX=0 after REP,
+		// RDI = original RDI + count. We can compute: R10 = RDI - memBase
+		amd64MOV_reg_reg(cb, amd64R10, amd64RDI)
+		amd64ALU_reg_reg(cb, 0x29, amd64R10, x86AMD64RegMemBase) // R10 = RDI - RSI
+		// ECX is already 0 from REP
+		amd64XOR_reg_reg32(cb, amd64RCX, amd64RCX)
+
+		fastDoneJmp := amd64JMP_rel32(cb)
+		_ = fastDoneJmp
+
+		// Slow path (some pages are I/O)
+		slowLabel := cb.Len()
+		patchRel32(cb, slowJmp, slowLabel)
+		slowLoopLabel := cb.Len()
+		amd64MOV_reg_reg32(cb, amd64R11, amd64R10)
+		amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, int32(x86AddressMask))
+		x86EmitMemStore8(cb, amd64R11, amd64RAX)
+		amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, 1)
+		amd64ALU_reg_imm32_32bit(cb, 5, amd64RCX, 1)
+		slowLoopJmp := amd64Jcc_rel32(cb, amd64CondNE)
+		patchRel32(cb, slowLoopJmp, slowLoopLabel)
+
+		doneLabel := cb.Len()
+		patchRel32(cb, doneJmp, doneLabel)
+		patchRel32(cb, fastDoneJmp, doneLabel)
+
+		x86EmitStoreGuestReg32(cb, 1, amd64RCX)
+		x86EmitStoreGuestReg32(cb, 7, amd64R10)
+		return true
+	}
+
+	// Scalar fast path: byte loop without per-iteration masking
 	fastLoopLabel := cb.Len()
-	// MOV [RSI + R11], AL
 	x86EmitMemStore8(cb, amd64R11, amd64RAX)
 	emitREX(cb, false, amd64R11, amd64R11)
 	cb.EmitBytes(0xFF, modRM(3, 0, amd64R11))    // INC R11d
 	amd64ALU_reg_imm32_32bit(cb, 5, amd64RCX, 1) // DEC count
 	fastLoopJmpBack := amd64Jcc_rel32(cb, amd64CondNE)
 	patchRel32(cb, fastLoopJmpBack, fastLoopLabel)
-	// Update EDI: R10 += original count (count is now 0, so EDI = original + count)
-	// Actually ECX is 0 now. We need the original count. Compute: EDI_new = R11 masked.
-	// R11 = masked base + count (the last incremented value). But we need to set R10 = original R10 + original count.
-	// Simpler: R10 += (original_count). But we lost original_count since ECX is 0.
-	// Solution: save original count before the loop. Use stack slot or compute from R11.
-	// R11 = masked(EDI) + original_count. R10 = EDI. new_EDI = EDI + original_count = R10 + (R11 - masked(R10))
-	// This is getting complex. Simpler: just set R10 = R11 (the masked incremented value).
-	// This loses the upper bits of EDI, but since we mask in the store anyway, it's fine.
-	amd64MOV_reg_reg32(cb, amd64R10, amd64R11) // EDI = last written address + 1
+	amd64MOV_reg_reg32(cb, amd64R10, amd64R11)
 	fastDoneJmp := amd64JMP_rel32(cb)
 
 	// Slow path: per-iteration masked loop (original behavior)
@@ -2785,6 +3043,7 @@ func x86EmitREP_STOSB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 
 // x86EmitREP_STOSD emits a native loop for REP STOSD (fill EDI with EAX, ECX times).
 func x86EmitREP_STOSD(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
+	x86EmitDFCheck(cb, ji.opcodePC, instrIdx)
 	x86EmitLoadGuestReg32(cb, amd64RCX, 1)
 	x86EmitLoadGuestReg32(cb, amd64R10, 7)
 	x86EmitLoadGuestReg32(cb, amd64RAX, 0)
@@ -2836,7 +3095,8 @@ func x86EmitREP_STOSD(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 
 // x86EmitREP_CMPSB emits REPE/REPNE CMPSB: compare ESI vs EDI bytes, ECX times.
 func x86EmitREP_CMPSB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int, cs *x86CompileState) bool {
-	isRepNE := ji.prefixes&x86PrefRepNE != 0 // REPNE: stop when equal; REPE: stop when not equal
+	x86EmitDFCheck(cb, ji.opcodePC, instrIdx)
+	isRepNE := ji.prefixes&x86PrefRepNE != 0
 
 	x86EmitLoadGuestReg32(cb, amd64RCX, 1) // count
 	x86EmitLoadGuestReg32(cb, amd64R8, 6)  // ESI
@@ -2907,6 +3167,7 @@ func x86EmitREP_CMPSB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int, cs *x86Comp
 
 // x86EmitREP_SCASB emits REPE/REPNE SCASB: scan EDI for AL match, ECX times.
 func x86EmitREP_SCASB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int, cs *x86CompileState) bool {
+	x86EmitDFCheck(cb, ji.opcodePC, instrIdx)
 	isRepNE := ji.prefixes&x86PrefRepNE != 0
 
 	x86EmitLoadGuestReg32(cb, amd64RCX, 1) // count
@@ -3369,9 +3630,10 @@ func x86CompileBlock(instrs []X86JITInstr, startPC uint32, execMem *ExecMem, mem
 	cs := &x86CompileState{flagState: x86FlagsDead, tier: compileTier, dirtyMask: br.written}
 
 	// Pass bitmaps for compile-time page safety checks (if available from CPU)
-	// These are set by the execution loop before calling CompileBlock
+	// Pass bitmaps and host features for compile-time optimizations
 	cs.ioBitmap = x86CompileIOBitmap
 	cs.codeBitmap = x86CompileCodeBitmap
+	cs.host = x86Host
 
 	// Set up register mapping based on tier
 	if compileTier >= 1 {
@@ -3546,6 +3808,7 @@ func x86CompileRegion(region *x86Region, execMem *ExecMem, memory []byte) (*JITB
 	cs.flagsNeeded = x86PeepholeFlags(allInstrs)
 	cs.ioBitmap = x86CompileIOBitmap
 	cs.codeBitmap = x86CompileCodeBitmap
+	cs.host = x86Host
 
 	x86CurrentCS = cs
 	defer func() { x86CurrentCS = nil }()

@@ -480,6 +480,47 @@ func TestX86JIT_SHL_r32_CL(t *testing.T) {
 }
 
 // ===========================================================================
+// BMI2 Non-Flag-Affecting Shift Tests
+// ===========================================================================
+
+func TestX86JIT_BMI2_SHL_imm(t *testing.T) {
+	if !x86Host.HasBMI2 {
+		t.Skip("BMI2 not available on this CPU")
+	}
+	r := newX86JITTestRig(t)
+	r.cpu.EAX = 1
+
+	// SHL EAX, 4 (C1 E0 04) -- should use SHLX when flags not needed
+	// Followed by HLT (no flag consumer), so flagsNeeded should be false
+	r.compileAndRun(t, 0x1000, 0xC1, 0xE0, 0x04)
+
+	if r.cpu.EAX != 16 {
+		t.Errorf("EAX = %d, want 16", r.cpu.EAX)
+	}
+}
+
+func TestX86JIT_BMI2_FlagPreserve(t *testing.T) {
+	if !x86Host.HasBMI2 {
+		t.Skip("BMI2 not available on this CPU")
+	}
+	r := newX86JITTestRig(t)
+	r.cpu.EAX = 1
+
+	// SHL EAX, 3 followed by ADD EAX, 0 -- the SHL's flags are dead because
+	// ADD overwrites them. Verifies SHLX is used (no flag clobber) when the
+	// next flag-producing instruction makes this shift's flags dead.
+	r.compileAndRun(t, 0x1000,
+		0xC1, 0xE0, 0x03, // SHL EAX, 3 (flags dead -- ADD below overwrites)
+		0x83, 0xC0, 0x00, // ADD EAX, 0 (overwrites flags)
+		0xF4, // HLT
+	)
+
+	if r.cpu.EAX != 8 {
+		t.Errorf("EAX = %d, want 8 (1 << 3)", r.cpu.EAX)
+	}
+}
+
+// ===========================================================================
 // Phase 5: NOT/NEG Tests
 // ===========================================================================
 
@@ -960,6 +1001,113 @@ func TestX86JIT_BSR(t *testing.T) {
 
 	if r.cpu.EAX != 7 {
 		t.Errorf("EAX = %d, want 7 (highest set bit of 0x80)", r.cpu.EAX)
+	}
+}
+
+// ===========================================================================
+// LZCNT/TZCNT Tests
+// ===========================================================================
+
+func TestX86JIT_BSF_NonZero_TZCNT(t *testing.T) {
+	if !x86Host.HasLZCNT {
+		t.Skip("LZCNT/TZCNT not available")
+	}
+	r := newX86JITTestRig(t)
+	r.cpu.EBX = 0x80 // bit 7
+
+	// BSF EAX, EBX: 0F BC C3
+	r.compileAndRun(t, 0x1000, 0x0F, 0xBC, 0xC3)
+
+	if r.cpu.EAX != 7 {
+		t.Errorf("EAX = %d, want 7", r.cpu.EAX)
+	}
+}
+
+func TestX86JIT_BSR_NonZero_LZCNT(t *testing.T) {
+	if !x86Host.HasLZCNT {
+		t.Skip("LZCNT/TZCNT not available")
+	}
+	r := newX86JITTestRig(t)
+	r.cpu.EBX = 0x80 // bit 7
+
+	// BSR EAX, EBX: 0F BD C3
+	r.compileAndRun(t, 0x1000, 0x0F, 0xBD, 0xC3)
+
+	if r.cpu.EAX != 7 {
+		t.Errorf("EAX = %d, want 7", r.cpu.EAX)
+	}
+}
+
+func TestX86JIT_BSF_Zero_DestUnchanged(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.EAX = 0x42 // pre-set destination
+	r.cpu.EBX = 0    // zero source
+
+	// BSF EAX, EBX: 0F BC C3 -- EAX should remain 0x42 on zero input
+	r.compileAndRun(t, 0x1000, 0x0F, 0xBC, 0xC3)
+
+	if r.cpu.EAX != 0x42 {
+		t.Errorf("EAX = 0x%X, want 0x42 (destination unchanged on zero input)", r.cpu.EAX)
+	}
+}
+
+// ===========================================================================
+// Hardware REP (ERMS) Tests
+// ===========================================================================
+
+func TestX86JIT_ERMS_STOSB_Large(t *testing.T) {
+	if !x86Host.HasERMS {
+		t.Skip("ERMS not available")
+	}
+	r := newX86JITTestRig(t)
+	r.cpu.EAX = 0xAB // fill byte
+	r.cpu.ECX = 128  // large count, exercises ERMS hardware REP path
+	r.cpu.EDI = 0x5000
+
+	// REP STOSB: F3 AA -- on ERMS CPUs this uses native hardware REP STOSB
+	r.compileAndRun(t, 0x1000, 0xF3, 0xAA)
+
+	for i := uint32(0); i < 128; i++ {
+		if r.cpu.memory[0x5000+i] != 0xAB {
+			t.Errorf("memory[0x%X] = 0x%02X, want 0xAB", 0x5000+i, r.cpu.memory[0x5000+i])
+			break
+		}
+	}
+	if r.cpu.ECX != 0 {
+		t.Errorf("ECX = %d, want 0", r.cpu.ECX)
+	}
+}
+
+func TestX86JIT_ERMS_MOVSB_Large(t *testing.T) {
+	if !x86Host.HasERMS {
+		t.Skip("ERMS not available")
+	}
+	r := newX86JITTestRig(t)
+	// Write source data
+	for i := byte(0); i < 128; i++ {
+		r.cpu.memory[0x5000+uint32(i)] = i + 1
+	}
+	r.cpu.ESI = 0x5000
+	r.cpu.EDI = 0x6000
+	r.cpu.ECX = 128
+
+	// REP MOVSB -- on ERMS CPUs uses native hardware REP MOVSB
+	r.compileAndRun(t, 0x1000, 0xF3, 0xA4)
+
+	for i := uint32(0); i < 128; i++ {
+		if r.cpu.memory[0x6000+i] != byte(i+1) {
+			t.Errorf("memory[0x%X] = 0x%02X, want 0x%02X", 0x6000+i, r.cpu.memory[0x6000+i], byte(i+1))
+			break
+		}
+	}
+	if r.cpu.ECX != 0 {
+		t.Errorf("ECX = %d, want 0", r.cpu.ECX)
+	}
+	if r.cpu.ESI != 0x5080 { // 0x5000 + 128
+		t.Errorf("ESI = 0x%X, want 0x5080", r.cpu.ESI)
+	}
+	if r.cpu.EDI != 0x6080 { // 0x6000 + 128
+		t.Errorf("EDI = 0x%X, want 0x6080", r.cpu.EDI)
 	}
 }
 

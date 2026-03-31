@@ -1002,6 +1002,27 @@ func TestX86PeepholeFlags_DecJnz(t *testing.T) {
 }
 
 // ===========================================================================
+// Host Feature Detection Tests
+// ===========================================================================
+
+func TestX86HostFeatures_Detect(t *testing.T) {
+	// Should not panic and should return a valid struct
+	f := detectX86HostFeatures()
+	t.Logf("Host features: BMI1=%v BMI2=%v AVX2=%v LZCNT=%v ERMS=%v FSRM=%v",
+		f.HasBMI1, f.HasBMI2, f.HasAVX2, f.HasLZCNT, f.HasERMS, f.HasFSRM)
+}
+
+func TestX86HostFeatures_PackageLevelInit(t *testing.T) {
+	// x86Host should be initialized by init(). Access all fields to verify struct.
+	_ = x86Host.HasBMI1
+	_ = x86Host.HasBMI2
+	_ = x86Host.HasAVX2
+	_ = x86Host.HasLZCNT
+	_ = x86Host.HasERMS
+	_ = x86Host.HasFSRM
+}
+
+// ===========================================================================
 // I/O Bitmap Tests
 // ===========================================================================
 

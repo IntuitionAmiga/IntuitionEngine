@@ -10,12 +10,12 @@
 //   - Mixed:   Interleaved ALU, memory, and branches
 //   - String:  REP STOSB fill operation
 //
-// Reference results (i5-8365U, 30s runs):
+// Reference results (i5-8365U, same-session 10s runs, with ERMS/BMI2/LZCNT):
 //
-//   ALU:    Interpreter 26 MIPS -> JIT 2,321 MIPS (89x)
-//   Memory: Interpreter 18 MIPS -> JIT 1,113 MIPS (61x)
-//   Mixed:  Interpreter 18 MIPS -> JIT 1,442 MIPS (80x)
-//   String: Interpreter 82us   -> JIT 3.9us       (21x)
+//   ALU:    Interpreter 25.8 MIPS -> JIT 2,397 MIPS (93x)
+//   Memory: Interpreter 19.0 MIPS -> JIT 1,251 MIPS (66x)
+//   Mixed:  Interpreter 17.7 MIPS -> JIT 1,761 MIPS (99x)
+//   String: Interpreter 79.5us    -> JIT 0.92us      (86x)
 //
 // Usage:
 //

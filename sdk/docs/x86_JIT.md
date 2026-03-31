@@ -67,9 +67,12 @@ The x86 JIT compiler translates basic blocks of x86 machine code (8086 base + 38
 | File | Build Tag | Purpose |
 |------|-----------|---------|
 | `jit_x86_common.go` | none | X86JITContext, X86JITInstr, block scanner, instruction length calculator, fallback tables, I/O bitmap builder, peephole optimizer, Tier 2 register allocator, multi-block region formation |
-| `jit_x86_common_test.go` | none | Scanner, length calculator, context offset, bitmap, peephole, Tier 2 allocator tests |
-| `jit_x86_emit_amd64.go` | `amd64 && linux` | x86-64 host emitters: prologue/epilogue, per-instruction emitters, EFLAGS passthrough, 8-bit register helpers, block chaining, deferred bail stubs, self-loop compilation, region compilation, REP range-safety, x87 FPU emitters |
-| `jit_x86_emit_amd64_test.go` | `amd64 && linux` | Per-instruction emitter tests, memory operand tests, FPU tests, REP tests |
+| `jit_x86_common_test.go` | none | Scanner, length calculator, context offset, bitmap, peephole, Tier 2 allocator, host feature detection tests |
+| `jit_x86_cpuid.go` | `amd64 && linux` | Runtime CPUID host feature detection (BMI1, BMI2, AVX2, LZCNT, ERMS, FSRM) |
+| `jit_x86_cpuid_amd64.s` | `amd64` | Assembly CPUID instruction wrapper |
+| `jit_x86_cpuid_stub.go` | `!amd64 || !linux` | CPUID stub for non-amd64 platforms (all features false) |
+| `jit_x86_emit_amd64.go` | `amd64 && linux` | x86-64 host emitters: prologue/epilogue, per-instruction emitters, EFLAGS passthrough, 8-bit register helpers, block chaining, deferred bail stubs, self-loop compilation, region compilation, REP range-safety, VEX/BMI2 encoding, x87 FPU emitters |
+| `jit_x86_emit_amd64_test.go` | `amd64 && linux` | Per-instruction emitter tests, memory operand tests, FPU tests, REP tests, BMI2/LZCNT/ERMS tests |
 | `jit_x86_exec.go` | `(amd64 || arm64) && linux` | X86ExecuteJIT main loop, init/free lifecycle, hot-block detection, chain patching, RTS cache management, profile counters |
 | `jit_x86_exec_test.go` | `(amd64 || arm64) && linux` | Integration tests: HLT, multi-instruction, JIT-vs-interpreter equivalence, chaining, self-mod detection, dispatch, CMP/TEST+Jcc fusion, multi-block region |
 | `jit_x86_dispatch.go` | `(amd64 || arm64) && linux` | Sets `x86JitAvailable = true`, routing function |
@@ -236,7 +239,7 @@ Compile-time tracking via `x86FlagState`:
 | `x86FlagsLiveInc` | Host EFLAGS valid from INC/DEC (CF preserved from prior) |
 | `x86FlagsMaterialized` | Guest Flags word is up-to-date |
 
-Jcc instructions emit native conditional branches directly when flags are live. CMP/TEST followed by Jcc works naturally -- the CMP/TEST sets `flagsLiveArith`/`flagsLiveLogic` and the Jcc emitter checks for live flags. When flags are dead, the Jcc bails to the interpreter.
+Jcc instructions emit native conditional branches directly when flags are live. CMP/TEST followed by Jcc works naturally -- the CMP/TEST sets `flagsLiveArith`/`flagsLiveLogic` and the Jcc emitter checks for live flags. When flags are not live, the Jcc emitter returns false at compile time, causing the block compiler to truncate the block before the Jcc. The Go dispatch loop then handles the Jcc via the interpreter on the next iteration. This is a compile-time fallback (shorter compiled block), not a runtime bail from compiled native code.
 
 ### Peephole Dead-Flag Analysis
 
@@ -425,11 +428,11 @@ Multi-block regions are preferred (3+ blocks with linear successor chain). Singl
 ## Testing
 
 ```bash
-# Run all x86 JIT tests (113 tests)
-go test -tags headless -run 'TestX86JIT_|TestX86InstrLength|TestX86ScanBlock|TestX86IsBlockTerminator|TestX86NeedsFallback|TestBuildX86IOBitmap|TestX86AnalyzeBlockRegs|TestSyncJIT|TestX86JITContext|TestX86PeepholeFlags|TestX86Tier2' -v -count=1
+# Run all x86 JIT tests (122 tests)
+go test -tags headless -run 'TestX86JIT_|TestX86InstrLength|TestX86ScanBlock|TestX86IsBlockTerminator|TestX86NeedsFallback|TestBuildX86IOBitmap|TestX86AnalyzeBlockRegs|TestSyncJIT|TestX86JITContext|TestX86PeepholeFlags|TestX86Tier2|TestX86HostFeatures' -v -count=1
 
-# Run benchmarks (30 seconds per workload)
-go test -tags headless -run='^$' -bench 'BenchmarkX86JIT_' -benchtime 30s -count=1
+# Run benchmarks (10 seconds per workload, same-session for fair ratios)
+go test -tags headless -run='^$' -bench 'BenchmarkX86JIT_' -benchtime 10s -count=1
 
 # Quick benchmark (3 seconds)
 go test -tags headless -run='^$' -bench 'BenchmarkX86JIT_(ALU|Mixed)_JIT' -benchtime 3s
@@ -446,8 +449,9 @@ go test -tags headless -run='^$' -bench 'BenchmarkX86JIT_(ALU|Mixed)_JIT' -bench
 | Fallback detection | 1 | Segment/far/INT/IO fallback |
 | Register analysis | 3 | Read/written bitmasks, Tier 2 allocator |
 | I/O bitmap | 4 | TranslateIO, bank control, VRAM, clean RAM |
+| Host feature detection | 2 | CPUID detection, package-level init |
 | Peephole | 3 | Dead flags, live flags, DEC+JNZ |
-| Emitter unit tests | 40+ | Per-instruction: emit, execute, verify state |
+| Emitter unit tests | 45+ | Per-instruction: emit, execute, verify state (incl. BMI2, LZCNT/TZCNT, ERMS) |
 | Integration tests | 16 | Full programs via JIT, equivalence vs interpreter, CMP/TEST+Jcc fusion, multi-block region |
 | Chain tests | 4 | JMP/CALL/multi-block/rel32 chaining |
 | Self-mod test | 1 | Write to code region, verify cache invalidation |
@@ -459,16 +463,43 @@ go test -tags headless -run='^$' -bench 'BenchmarkX86JIT_(ALU|Mixed)_JIT' -bench
 
 **Platform:** Intel Core i5-8365U @ 1.60GHz, Linux amd64, Go 1.24
 
-30-second runs, `go test -tags headless -bench BenchmarkX86JIT_ -benchtime 30s`:
+Same-session measurements (warm CPU, mains power, `benchtime 10s`):
 
 | Workload | Interpreter ns/op | JIT ns/op | Interpreter MIPS | JIT MIPS | Speedup |
 |----------|------------------|----------|-----------------|---------|---------|
-| **ALU** (10K-iteration register loop) | 3,452,038 | 38,776 | 26.1 | 2,321 | **89x** |
-| **Memory** (10K store/load loop) | 3,262,925 | 53,893 | 18.4 | 1,113 | **61x** |
-| **Mixed** (ALU + memory + shifts) | 4,982,548 | 62,396 | 18.1 | 1,442 | **80x** |
-| **String** (REP STOSB 10K bytes) | 81,979 | 3,933 | -- | -- | **21x** |
+| **ALU** (10K-iteration register loop) | 3,487,308 | 37,558 | 25.8 | 2,397 | **93x** |
+| **Memory** (10K store/load loop) | 3,153,375 | 47,950 | 19.0 | 1,251 | **66x** |
+| **Mixed** (ALU + memory + shifts) | 5,081,658 | 51,125 | 17.7 | 1,761 | **99x** |
+| **String** (REP STOSB 10K bytes) | 79,538 | 920 | -- | -- | **86x** |
 
-ALU and Mixed benchmarks benefit most from self-loop native compilation which eliminates ~10,000 Go-native round-trips per benchmark run, replacing them with ~3 (at budget=4095). String benchmark benefits from REP range-safety fast path (upfront page verification, no per-iteration masking).
+ALU and Mixed benchmarks benefit most from self-loop native compilation which eliminates ~10,000 Go-native round-trips per benchmark run, replacing them with ~3 (at budget=4095). String benchmark benefits from ERMS hardware REP STOSB on proven-safe pages (native string instruction instead of JIT byte loop, 4.3x faster than pre-ERMS JIT loop).
+
+---
+
+## Host Feature Detection
+
+At JIT init, `detectX86HostFeatures()` queries CPUID to detect available host CPU extensions. Features are stored in `x86HostFeatures` and passed to emitters via `x86CompileState.host`. Detection uses a local assembly CPUID helper (`jit_x86_cpuid_amd64.s`) with no external dependencies.
+
+| Feature | CPUID Leaf | Used For |
+|---------|-----------|----------|
+| BMI1 | Leaf 7, EBX bit 3 | ANDN, BEXTR, TZCNT |
+| BMI2 | Leaf 7, EBX bit 8 | SHLX/SHRX/SARX non-flag-affecting shifts |
+| AVX2 | Leaf 7, EBX bit 5 | Future: 32-byte bulk memory ops |
+| LZCNT | Leaf 0x80000001, ECX bit 5 | TZCNT for BSF, LZCNT for BSR (no false dependency) |
+| ERMS | Leaf 7, EBX bit 9 | Hardware REP MOVSB/STOSB for proven-safe ranges |
+| FSRM | Leaf 7, EDX bit 4 | Future: fast short REP MOVSB (Ice Lake+) |
+
+### BMI2 Shift Optimization
+
+When `HasBMI2` is true and the peephole dead-flag analysis determines a shift instruction's flag output has no consumer (`flagsNeeded[i] == false`), the emitter uses VEX-encoded SHLX/SHRX/SARX instead of standard SHL/SHR/SAR. These BMI2 shifts do not modify EFLAGS, preserving any prior flag state across the shift. Applies to Grp2 Ev,Ib (0xC1) with shift ops 4 (SHL), 5 (SHR), 7 (SAR).
+
+### LZCNT/TZCNT for BSF/BSR
+
+When `HasLZCNT` is true, BSF uses TZCNT and BSR uses LZCNT for better throughput (no false dependency on the destination register). Zero-input semantics are preserved: a TEST+JZ checks for zero before the TZCNT/LZCNT, leaving the destination unchanged and ZF=1 on zero input (matching the interpreter's behavior at `cpu_x86_grp.go:1167`). For BSR via LZCNT, the result is converted with `XOR dst, 31` to match BSR's bit-position convention.
+
+### Hardware REP STOSB/MOVSB (ERMS)
+
+When `HasERMS` is true and the page range is proven safe (all pages non-I/O), REP STOSB and REP MOVSB use native hardware string instructions instead of JIT byte loops. The emitter saves the RSI memory base register to a stack slot, sets up host RDI/RSI/RCX for the native REP instruction, executes CLD + REP STOSB/MOVSB, restores RSI, and computes updated guest ESI/EDI from the post-REP host register values. Only used when guest DF=0 (checked at emitter entry; DF=1 bails to interpreter).
 
 ---
 
@@ -490,10 +521,16 @@ ALU and Mixed benchmarks benefit most from self-loop native compilation which el
 - Profile-guided promotion (I/O bail rate, hysteresis)
 - Peephole dead-flag analysis on all compilations
 - CMP/TEST + Jcc fusion via native EFLAGS passthrough
+- Runtime CPUID host feature detection (BMI1, BMI2, AVX2, LZCNT, ERMS, FSRM)
+- BMI2 SHLX/SHRX/SARX for non-flag-affecting shifts when flag output is dead
+- TZCNT/LZCNT for BSF/BSR with zero-input destination preservation
+- DF (Direction Flag) check on all REP string emitters (bail to interpreter if DF=1)
+- Hardware REP STOSB/MOVSB on ERMS CPUs for proven-safe ranges (native string ops)
 
 ### Deferred
 
 - ARM64 backend
+- AVX2 bulk memory for REP STOS/MOVS (VMOVDQU 32-byte loops)
 - Native RET chaining via RTS cache (infrastructure exists in X86JITContext, not yet consumed by native code)
 - Jcc two-way chain slots (taken + not-taken for inter-block conditional branches)
 - Loop memory-check hoisting for linear base+stride patterns
