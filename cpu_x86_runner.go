@@ -130,6 +130,16 @@ func NewX86BusAdapterWithVoodoo(bus *MachineBus, vga *VGAEngine, voodoo *VoodooE
 	return &X86BusAdapter{bus: bus, psgRegSelect: 0, vgaEngine: vga, voodooEngine: voodoo}
 }
 
+// GetMemory returns the underlying memory slice for direct JIT access.
+func (b *X86BusAdapter) GetMemory() []byte {
+	return b.bus.GetMemory()
+}
+
+// GetMachineBus returns the underlying MachineBus for bitmap construction.
+func (b *X86BusAdapter) GetMachineBus() *MachineBus {
+	return b.bus
+}
+
 // translateIO translates I/O addresses for the system bus
 // Non-I/O addresses pass through unchanged
 func (b *X86BusAdapter) translateIO(addr uint32) uint32 {

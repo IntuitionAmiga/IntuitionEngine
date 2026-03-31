@@ -85,6 +85,18 @@ type CPU_X86 struct {
 	// Register pointer array for O(1) lookup (avoids switch overhead)
 	// Order: EAX, ECX, EDX, EBX, ESP, EBP, ESI, EDI
 	regs32 [8]*uint32
+
+	// JIT compiler fields
+	jitRegs        [8]uint32 // Register file in x86 encoding order: EAX(0),ECX(1),EDX(2),EBX(3),ESP(4),EBP(5),ESI(6),EDI(7)
+	jitSegRegs     [6]uint16 // Segment registers in encoding order: ES(0),CS(1),SS(2),DS(3),FS(4),GS(5)
+	memory         []byte    // Direct memory access (from MachineBus.GetMemory())
+	x86JitEnabled  bool
+	x86JitPersist  bool // keep code cache alive across benchmark iterations
+	x86JitExecMem  any  // *ExecMem (typed via accessor)
+	x86JitCache    *CodeCache
+	x86JitCtx      *X86JITContext
+	x86JitIOBitmap []byte // I/O page bitmap (256-byte granularity)
+	x86JitCodeBM   []byte // code page bitmap for self-mod detection
 }
 
 // Flag bit positions
@@ -192,6 +204,51 @@ func (c *CPU_X86) Reset() {
 	if c.FPU != nil {
 		c.FPU.Reset()
 	}
+}
+
+// syncJITRegsFromNamed copies named register fields into the jitRegs array
+// (x86 encoding order: EAX=0, ECX=1, EDX=2, EBX=3, ESP=4, EBP=5, ESI=6, EDI=7).
+func (c *CPU_X86) syncJITRegsFromNamed() {
+	c.jitRegs[0] = c.EAX
+	c.jitRegs[1] = c.ECX
+	c.jitRegs[2] = c.EDX
+	c.jitRegs[3] = c.EBX
+	c.jitRegs[4] = c.ESP
+	c.jitRegs[5] = c.EBP
+	c.jitRegs[6] = c.ESI
+	c.jitRegs[7] = c.EDI
+}
+
+// syncJITRegsToNamed copies the jitRegs array back into named register fields.
+func (c *CPU_X86) syncJITRegsToNamed() {
+	c.EAX = c.jitRegs[0]
+	c.ECX = c.jitRegs[1]
+	c.EDX = c.jitRegs[2]
+	c.EBX = c.jitRegs[3]
+	c.ESP = c.jitRegs[4]
+	c.EBP = c.jitRegs[5]
+	c.ESI = c.jitRegs[6]
+	c.EDI = c.jitRegs[7]
+}
+
+// syncJITSegRegsFromNamed copies named segment register fields into the jitSegRegs array.
+func (c *CPU_X86) syncJITSegRegsFromNamed() {
+	c.jitSegRegs[0] = c.ES
+	c.jitSegRegs[1] = c.CS
+	c.jitSegRegs[2] = c.SS
+	c.jitSegRegs[3] = c.DS
+	c.jitSegRegs[4] = c.FS
+	c.jitSegRegs[5] = c.GS
+}
+
+// syncJITSegRegsToNamed copies the jitSegRegs array back into named segment register fields.
+func (c *CPU_X86) syncJITSegRegsToNamed() {
+	c.ES = c.jitSegRegs[0]
+	c.CS = c.jitSegRegs[1]
+	c.SS = c.jitSegRegs[2]
+	c.DS = c.jitSegRegs[3]
+	c.FS = c.jitSegRegs[4]
+	c.GS = c.jitSegRegs[5]
 }
 
 // Running returns the execution state (thread-safe)

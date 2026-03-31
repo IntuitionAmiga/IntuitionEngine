@@ -58,38 +58,6 @@ const (
 	j65OffDirectPage = 32 // [RSP+32] = DirectPageBitmapPtr (from context) (8 bytes)
 )
 
-// ===========================================================================
-// Additional x86-64 Encoding Helpers for 6502 JIT
-// ===========================================================================
-
-// amd64MOVZX_B_mem emits MOVZX dst32, BYTE [base + disp].
-func amd64MOVZX_B_mem(cb *CodeBuffer, dst, base byte, disp int32) {
-	emitREX(cb, false, dst, base)
-	cb.EmitBytes(0x0F, 0xB6)
-	baseBits := regBits(base)
-	needsSIB := baseBits == 4
-	if disp == 0 && baseBits != 5 {
-		if needsSIB {
-			cb.EmitBytes(modRM(0, dst, 4), sibByte(0, 4, base))
-		} else {
-			cb.EmitBytes(modRM(0, dst, base))
-		}
-	} else if disp >= -128 && disp <= 127 {
-		if needsSIB {
-			cb.EmitBytes(modRM(1, dst, 4), sibByte(0, 4, base), byte(int8(disp)))
-		} else {
-			cb.EmitBytes(modRM(1, dst, base), byte(int8(disp)))
-		}
-	} else {
-		if needsSIB {
-			cb.EmitBytes(modRM(2, dst, 4), sibByte(0, 4, base))
-		} else {
-			cb.EmitBytes(modRM(2, dst, base))
-		}
-		cb.Emit32(uint32(disp))
-	}
-}
-
 // amd64MOVZX_W_mem emits MOVZX dst32, WORD [base + disp].
 func amd64MOVZX_W_mem(cb *CodeBuffer, dst, base byte, disp int32) {
 	emitREX(cb, false, dst, base)
@@ -440,27 +408,6 @@ func emit6502InvalEpilogue(cb *CodeBuffer, nextPC uint32, instrsSoFar uint32, pe
 	amd64POP(cb, amd64RBP)
 	amd64POP(cb, amd64RBX)
 	amd64RET(cb)
-}
-
-// ===========================================================================
-// x86-64 Encoding Helpers for Block Chaining
-// ===========================================================================
-
-// amd64DEC_mem32 emits DEC DWORD [base+disp]. Opcode FF /1.
-func amd64DEC_mem32(cb *CodeBuffer, base byte, disp int32) {
-	emitMemOp(cb, false, 0xFF, 1, base, disp)
-}
-
-// amd64ALU_mem_imm8 emits an ALU op with [base+disp], imm8.
-// Opcode 0x83, reg field = aluOp. Sign-extends imm8 to 32 bits.
-func amd64ALU_mem_imm8(cb *CodeBuffer, aluOp byte, base byte, disp int32, imm8 int8) {
-	emitMemOp(cb, false, 0x83, aluOp, base, disp)
-	cb.EmitBytes(byte(imm8))
-}
-
-// amd64ALU_reg_mem32_cmp emits CMP reg32, [base + disp] (opcode 0x3B).
-func amd64ALU_reg_mem32_cmp(cb *CodeBuffer, reg, base byte, disp int32) {
-	emitMemOp(cb, false, 0x3B, reg, base, disp)
 }
 
 // ===========================================================================

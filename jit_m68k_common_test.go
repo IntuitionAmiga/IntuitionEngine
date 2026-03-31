@@ -806,7 +806,7 @@ func TestM68KJIT_CodeCacheInvalidateChains(t *testing.T) {
 	if cc.Get(0x2000) != nil {
 		t.Error("block 0x2000 should be gone after Invalidate")
 	}
-	if len(cc.Blocks()) != 0 {
-		t.Errorf("Blocks() should be empty, got %d entries", len(cc.Blocks()))
+	if len(cc.blocks) != 0 {
+		t.Errorf("blocks should be empty, got %d entries", len(cc.blocks))
 	}
 }

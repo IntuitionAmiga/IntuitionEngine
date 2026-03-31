@@ -443,13 +443,20 @@ type chainSlot struct {
 }
 
 type JITBlock struct {
-	startPC    uint32
-	endPC      uint32
-	instrCount int
-	execAddr   uintptr
-	execSize   int
-	chainEntry uintptr     // lightweight entry point for chained transitions (0 = none)
-	chainSlots []chainSlot // patchable exit points
+	startPC        uint32
+	endPC          uint32
+	instrCount     int
+	execAddr       uintptr
+	execSize       int
+	chainEntry     uintptr     // lightweight entry point for chained transitions (0 = none)
+	chainSlots     []chainSlot // patchable exit points
+	execCount      uint32      // execution count for hot-block detection (Tier 2)
+	tier           int         // compilation tier (0=Tier 1, 1=Tier 2)
+	regMap         [8]byte     // x86 JIT: guest-to-host register mapping for chain compatibility
+	chainHits      uint32      // times this block was entered via chain (not Go dispatch)
+	unchainedExits uint32      // times this block exited via unchained path
+	ioBails        uint32      // times this block triggered I/O fallback
+	lastPromoteAt  uint32      // exec count when last promoted (hysteresis)
 }
 
 type CodeCache struct {
@@ -530,16 +537,4 @@ func (cc *CodeCache) UnpatchChainsInRange(lo, hi uint32) {
 			}
 		}
 	}
-}
-
-// PatchRel32At writes a relative 32-bit displacement at patchAddr so that
-// a JMP/Jcc at (patchAddr-1) jumps to targetAddr. The displacement is
-// relative to the end of the 4-byte field (patchAddr+4).
-func PatchRel32At(patchAddr, targetAddr uintptr) {
-	disp := int32(targetAddr - (patchAddr + 4))
-	p := (*[4]byte)(unsafe.Pointer(patchAddr))
-	p[0] = byte(disp)
-	p[1] = byte(disp >> 8)
-	p[2] = byte(disp >> 16)
-	p[3] = byte(disp >> 24)
 }
