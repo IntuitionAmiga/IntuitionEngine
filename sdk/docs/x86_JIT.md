@@ -77,7 +77,7 @@ The x86 JIT compiler translates basic blocks of x86 machine code (8086 base + 38
 | `jit_x86_exec_test.go` | `(amd64 || arm64) && linux` | Integration tests: HLT, multi-instruction, JIT-vs-interpreter equivalence, chaining, self-mod detection, dispatch, CMP/TEST+Jcc fusion, multi-block region |
 | `jit_x86_dispatch.go` | `(amd64 || arm64) && linux` | Sets `x86JitAvailable = true`, routing function |
 | `jit_x86_dispatch_stub.go` | `!(amd64 || arm64) || !linux` | Fallback stubs for unsupported platforms |
-| `x86_jit_benchmark_test.go` | `(amd64 || arm64) && linux` | ALU/Memory/Mixed/String benchmark suite with Interpreter/JIT variants |
+| `x86_jit_benchmark_test.go` | `amd64 && linux` | ALU/Memory/Mixed/String benchmark suite with Interpreter/JIT variants |
 
 ---
 

@@ -597,7 +597,7 @@ func x86EmitPrologue(cb *CodeBuffer, cs *x86CompileState) {
 	amd64PUSH(cb, amd64R15)
 
 	// Allocate stack frame
-	amd64ALU_reg_imm32(cb, 5, amd64RSP, int32(x86AMD64FrameSize)) // SUB RSP, 24
+	amd64ALU_reg_imm32(cb, 5, amd64RSP, int32(x86AMD64FrameSize)) // SUB RSP, 40
 
 	// Save JITContext pointer to R15 (callee-saved)
 	amd64MOV_reg_reg(cb, x86AMD64RegCtx, amd64RDI) // R15 = RDI
@@ -641,7 +641,7 @@ func x86EmitEpilogue(cb *CodeBuffer, cs *x86CompileState) {
 	}
 
 	// Deallocate stack frame
-	amd64ALU_reg_imm32(cb, 0, amd64RSP, int32(x86AMD64FrameSize)) // ADD RSP, 24
+	amd64ALU_reg_imm32(cb, 0, amd64RSP, int32(x86AMD64FrameSize)) // ADD RSP, 40
 
 	// Restore callee-saved registers
 	amd64POP(cb, amd64R15)
@@ -3545,7 +3545,7 @@ func x86EmitLightweightEpilogue(cb *CodeBuffer) {
 
 // x86EmitFullEpilogueEnd emits the stack frame dealloc + callee-saved pop + RET.
 func x86EmitFullEpilogueEnd(cb *CodeBuffer) {
-	amd64ALU_reg_imm32(cb, 0, amd64RSP, int32(x86AMD64FrameSize)) // ADD RSP, 24
+	amd64ALU_reg_imm32(cb, 0, amd64RSP, int32(x86AMD64FrameSize)) // ADD RSP, 40
 	amd64POP(cb, amd64R15)
 	amd64POP(cb, amd64R14)
 	amd64POP(cb, amd64R13)

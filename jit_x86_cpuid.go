@@ -43,15 +43,11 @@ func detectX86HostFeatures() x86HostFeatures {
 	}
 
 	// CPUID leaf 7, subleaf 0: structured extended feature flags
-	_, ebx7, _, _ := cpuidRaw(7, 0)
+	_, ebx7, _, edx7 := cpuidRaw(7, 0)
 	f.HasBMI1 = ebx7&(1<<3) != 0 // EBX bit 3
 	f.HasAVX2 = ebx7&(1<<5) != 0 // EBX bit 5
 	f.HasBMI2 = ebx7&(1<<8) != 0 // EBX bit 8
 	f.HasERMS = ebx7&(1<<9) != 0 // EBX bit 9
-	f.HasFSRM = ebx7&(1<<4) != 0 // EBX bit 4 (actually EDX bit 4 for FSRM -- fix below)
-
-	// FSRM is actually in CPUID leaf 7 subleaf 0, EDX bit 4 (not EBX)
-	_, _, _, edx7 := cpuidRaw(7, 0)
 	f.HasFSRM = edx7&(1<<4) != 0 // EDX bit 4
 
 	// CPUID leaf 0x80000001: extended feature flags
