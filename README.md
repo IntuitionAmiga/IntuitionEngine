@@ -764,12 +764,14 @@ STORE A, @0x0F0AB8      ; CH1 CTRL = enable
 0x0F0C02-0x0F0C0D: PSG registers (direct access)
 0x0F0C0E: PSG_PLUS_CTRL    - PSG+ mode (0=standard, 1=enhanced)
 
-PSG Playback Control:
-0x0F0C10: PSG_PLAY_PTR    - Pointer to PSG data (32-bit)
-0x0F0C14: PSG_PLAY_LEN    - Length of PSG data (32-bit)
+PSG Playback Control (supports .ym, .ay, .vgm, .vgz, .vtx, .sndh, .pt3, .pt2, .pt1, .stc, .sqt, .asc, .ftc):
+0x0F0C10: PSG_PLAY_PTR    - Pointer to music file data in bus memory (32-bit)
+0x0F0C14: PSG_PLAY_LEN    - Length of music file data (32-bit)
 0x0F0C18: PSG_PLAY_CTRL   - Control (bit0=start, bit1=stop, bit2=loop)
 0x0F0C1C: PSG_PLAY_STATUS - Status (bit0=busy, bit1=error)
 ```
+
+Embed the file data in your program, set PTR/LEN, then write to CTRL. Format is auto-detected from file headers. Formats using embedded CPU code (.ay, .sndh, tracker modules) execute via internal Z80 or M68K emulation. Register-dump formats (.ym) and timed-event formats (.vgm/.vgz) are rendered natively. VGM files containing SN76489 data are automatically converted to AY register writes.
 
 ## 3.7 POKEY Sound Chip Registers (0x0F0D00 - 0x0F0D1D)
 
@@ -805,13 +807,15 @@ AUDC Distortion Modes (bits 5-7):
 0xC0: 4-bit poly only (buzzy)
 0xE0: 17-bit + pulse
 
-SAP Player Registers (0x0F0D10 - 0x0F0D1D):
-0x0F0D10: SAP_PLAY_PTR    - Pointer to SAP data (32-bit)
-0x0F0D14: SAP_PLAY_LEN    - Length of SAP data (32-bit)
+SAP Player Registers (0x0F0D10 - 0x0F0D1D, supports .sap Atari 8-bit music):
+0x0F0D10: SAP_PLAY_PTR    - Pointer to .sap file data in bus memory (32-bit)
+0x0F0D14: SAP_PLAY_LEN    - Length of .sap file data (32-bit)
 0x0F0D18: SAP_PLAY_CTRL   - Control (bit0=start, bit1=stop, bit2=loop)
 0x0F0D1C: SAP_PLAY_STATUS - Status (bit0=busy, bit1=error)
 0x0F0D1D: SAP_SUBSONG     - Subsong selection (0-255)
 ```
+
+SAP TYPE B files are supported: the embedded 6502 INIT routine is called once, then the PLAYER routine is called each frame to drive POKEY registers.
 
 ## 3.8 SID Sound Chip Registers (0x0F0E00 - 0x0F0E2D)
 
@@ -857,9 +861,9 @@ bit 5: Band-pass filter
 bit 6: High-pass filter
 bit 7: Disconnect voice 3 from output
 
-SID Player Registers (0x0F0E20 - 0x0F0E2D):
-0x0F0E20: SID_PLAY_PTR    - Pointer to .SID data (32-bit)
-0x0F0E24: SID_PLAY_LEN    - Length of .SID data (32-bit)
+SID Player Registers (0x0F0E20 - 0x0F0E2D, supports .sid C64 music):
+0x0F0E20: SID_PLAY_PTR    - Pointer to .sid file data in bus memory (32-bit)
+0x0F0E24: SID_PLAY_LEN    - Length of .sid file data (32-bit)
 0x0F0E28: SID_PLAY_CTRL   - Control (bit0=start, bit1=stop, bit2=loop)
 0x0F0E2C: SID_PLAY_STATUS - Status (bit0=busy, bit1=error)
 0x0F0E2D: SID_SUBSONG     - Subsong selection (0-255)
@@ -896,9 +900,9 @@ TED_SND_CTRL bits:
   Bit 4: Voice 1 enable
   Bits 0-3: Volume (0-8, where 8 is maximum)
 
-TED Player Registers (0x0F0F10 - 0x0F0F1C):
-0x0F0F10: TED_PLAY_PTR    - Pointer to .TED data (32-bit)
-0x0F0F14: TED_PLAY_LEN    - Length of .TED data (32-bit)
+TED Player Registers (0x0F0F10 - 0x0F0F1C, supports .ted/.prg Plus/4 music):
+0x0F0F10: TED_PLAY_PTR    - Pointer to .ted/.prg file data in bus memory (32-bit)
+0x0F0F14: TED_PLAY_LEN    - Length of file data (32-bit)
 0x0F0F18: TED_PLAY_CTRL   - Control (bit0=start, bit1=stop, bit2=loop)
 0x0F0F1C: TED_PLAY_STATUS - Status (bit0=busy, bit1=error)
 ```
