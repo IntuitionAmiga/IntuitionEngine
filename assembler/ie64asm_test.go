@@ -157,12 +157,19 @@ const (
 	opFMOVSC  = 0x7B
 	opFMOVCC  = 0x7C
 
-	opNOP  = 0xE0
-	opHALT = 0xE1
-	opSEI  = 0xE2
-	opCLI  = 0xE3
-	opRTI  = 0xE4
-	opWAIT = 0xE5
+	opNOP      = 0xE0
+	opHALT     = 0xE1
+	opSEI      = 0xE2
+	opCLI      = 0xE3
+	opRTI      = 0xE4
+	opWAIT     = 0xE5
+	opMTCR     = 0xE6
+	opMFCR     = 0xE7
+	opERET     = 0xE8
+	opTLBFLUSH = 0xE9
+	opTLBINVAL = 0xEA
+	opSYSCALL  = 0xEB
+	opSMODE    = 0xEC
 )
 
 // assertBytes compares actual binary output with expected bytes at a given
@@ -1626,3 +1633,83 @@ var _ = strings.TrimSpace
 var _ = os.TempDir
 var _ = filepath.Join
 var _ = binary.LittleEndian
+
+// ===========================================================================
+// MMU Instruction Assembly Tests
+// ===========================================================================
+
+func TestIE64Asm_MMU_NoOperand(t *testing.T) {
+	// eret, tlbflush: no operands
+	for _, tc := range []struct {
+		mnem   string
+		opcode byte
+	}{
+		{"eret", opERET},
+		{"tlbflush", opTLBFLUSH},
+	} {
+		bin := assembleString(t, tc.mnem)
+		assertLen(t, bin, 8, tc.mnem)
+		want := encodeInstr(tc.opcode, 0, 0, 0, 0, 0, 0)
+		assertBytes(t, bin, 0, want, tc.mnem)
+	}
+}
+
+func TestIE64Asm_MTCR(t *testing.T) {
+	bin := assembleString(t, "mtcr cr0, r5")
+	assertLen(t, bin, 8, "mtcr")
+	// rd=CR0=0, rs=5
+	want := encodeInstr(opMTCR, 0, 0, 0, 5, 0, 0)
+	assertBytes(t, bin, 0, want, "mtcr cr0, r5")
+}
+
+func TestIE64Asm_MFCR(t *testing.T) {
+	bin := assembleString(t, "mfcr r5, cr0")
+	assertLen(t, bin, 8, "mfcr")
+	// rd=5, rs=CR0=0
+	want := encodeInstr(opMFCR, 5, 0, 0, 0, 0, 0)
+	assertBytes(t, bin, 0, want, "mfcr r5, cr0")
+}
+
+func TestIE64Asm_TLBINVAL(t *testing.T) {
+	bin := assembleString(t, "tlbinval r3")
+	assertLen(t, bin, 8, "tlbinval")
+	want := encodeInstr(opTLBINVAL, 0, 0, 0, 3, 0, 0)
+	assertBytes(t, bin, 0, want, "tlbinval r3")
+}
+
+func TestIE64Asm_SYSCALL(t *testing.T) {
+	bin := assembleString(t, "syscall #42")
+	assertLen(t, bin, 8, "syscall")
+	want := encodeInstr(opSYSCALL, 0, 0, 1, 0, 0, 42)
+	assertBytes(t, bin, 0, want, "syscall #42")
+}
+
+func TestIE64Asm_SMODE(t *testing.T) {
+	bin := assembleString(t, "smode r1")
+	assertLen(t, bin, 8, "smode")
+	want := encodeInstr(opSMODE, 1, 0, 0, 0, 0, 0)
+	assertBytes(t, bin, 0, want, "smode r1")
+}
+
+func TestIE64Asm_CRNames(t *testing.T) {
+	// Test that symbolic CR names work
+	cases := []struct {
+		src string
+		cr  byte
+	}{
+		{"mtcr cr0, r1", 0},
+		{"mtcr ptbr, r1", 0},
+		{"mtcr cr1, r1", 1},
+		{"mtcr fault_addr, r1", 1},
+		{"mtcr cr4, r1", 4},
+		{"mtcr trap_vec, r1", 4},
+		{"mtcr cr5, r1", 5},
+		{"mtcr mmu_ctrl, r1", 5},
+	}
+	for _, tc := range cases {
+		bin := assembleString(t, tc.src)
+		assertLen(t, bin, 8, tc.src)
+		want := encodeInstr(opMTCR, tc.cr, 0, 0, 1, 0, 0)
+		assertBytes(t, bin, 0, want, tc.src)
+	}
+}

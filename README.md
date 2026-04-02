@@ -123,6 +123,7 @@
    - 9.7 Interrupt Handling
    - 9.8 Compatibility Notes
    - 9.9 EhBASIC IE64
+   - 9.10 Memory Management Unit (MMU)
 10. [Assembly Language Reference](#10-assembly-language-reference)
     - 10.1 Basic Program Structure
     - 10.2 Assembler Directives
@@ -169,7 +170,7 @@ The Intuition Engine is a virtual machine that emulates a complete retro-style c
 | **Z80** | 8-bit | AF, BC, DE, HL + alternates, IX, IY | Full instruction set, interrupt modes, x86-64 JIT with block chaining |
 | **6502** | 8-bit | A, X, Y | NMOS instruction set, zero page optimisation |
 | **x86** | 32-bit | EAX-EDX, ESI, EDI, EBP, ESP | 8086 instructions + 32-bit registers, flat memory model |
-| **IE64** | 64-bit RISC | 32 general-purpose (R0=zero, R31=SP) | ARM64/x86-64 JIT compiler, native FP32 FPU, compare-and-branch, no flags register |
+| **IE64** | 64-bit RISC | 32 general-purpose (R0=zero, R31=SP) | ARM64/x86-64 JIT compiler, native FP32 FPU, compare-and-branch, no flags register, MMU with paged virtual memory and user/supervisor privilege levels |
 
 Default core: **IE64**. Additional cores: **IE32, M68K, x86, Z80, 6502**.
 
@@ -3382,6 +3383,18 @@ All conditional branches compare two registers directly - no flags register:
 | `RTI` | Return from interrupt |
 | `WAIT` | Wait for specified microseconds |
 
+### MMU / Privilege
+
+| Mnemonic | Description |
+|----------|-------------|
+| `MTCR CRn, Rs` | Move register to control register (supervisor only) |
+| `MFCR Rd, CRn` | Move control register to register (supervisor only) |
+| `ERET` | Exception return: PC = FAULT_PC, switch to user mode (supervisor only) |
+| `TLBFLUSH` | Flush entire software TLB (supervisor only) |
+| `TLBINVAL Rs` | Invalidate TLB entry for virtual address in Rs (supervisor only) |
+| `SYSCALL #imm32` | Trap to supervisor mode with syscall number in imm32 |
+| `SMODE Rd` | Read current privilege mode into Rd (1=supervisor, 0=user) |
+
 ### Pseudo-Instructions
 
 The `ie64asm` assembler provides these convenience pseudo-instructions:
@@ -3534,6 +3547,21 @@ The Intuition Engine includes a full port of Lee Davison's Enhanced BASIC (EhBAS
 ```
 
 Full reference: [ehbasic_ie64.md](sdk/docs/ehbasic_ie64.md)
+
+## 9.10 Memory Management Unit (MMU)
+
+The IE64 includes a minimal MMU for memory protection and virtual address translation, designed to support microkernel operating systems.
+
+- **Paged virtual memory**: 4 KiB pages, single-level page table (8192 entries, 64 KiB)
+- **Privilege levels**: Supervisor (boot default) and User. Mode transitions only via trap entry (SYSCALL, faults) and ERET
+- **Per-page permissions**: Present, Read, Write, Execute (NX), User-accessible
+- **W^X support**: Execute bit serves as NX — code pages are executable+read-only, data/stack pages are writable+non-executable
+- **Software TLB**: 64-entry direct-mapped cache of page table translations
+- **6 control registers**: Page table base (PTBR), fault address, fault cause, fault PC, trap vector, MMU control
+- **7 instructions**: MTCR, MFCR, ERET, TLBFLUSH, TLBINVAL, SYSCALL, SMODE
+- **JIT compatible**: JIT compiler works with MMU enabled (Stage 1: memory ops bail to interpreter)
+
+Full reference: [IE64_ISA.md §12](sdk/docs/IE64_ISA.md) | Programming examples: [IE64_COOKBOOK.md](sdk/docs/IE64_COOKBOOK.md)
 
 # 10. Assembly Language Reference
 

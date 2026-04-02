@@ -172,11 +172,18 @@ const (
 	OP64_FMOVCC  = 0x7C
 	OP64_NOP     = 0xE0
 
-	OP64_HALT = 0xE1
-	OP64_SEI  = 0xE2
-	OP64_CLI  = 0xE3
-	OP64_RTI  = 0xE4
-	OP64_WAIT = 0xE5
+	OP64_HALT     = 0xE1
+	OP64_SEI      = 0xE2
+	OP64_CLI      = 0xE3
+	OP64_RTI      = 0xE4
+	OP64_WAIT     = 0xE5
+	OP64_MTCR     = 0xE6
+	OP64_MFCR     = 0xE7
+	OP64_ERET     = 0xE8
+	OP64_TLBFLUSH = 0xE9
+	OP64_TLBINVAL = 0xEA
+	OP64_SYSCALL  = 0xEB
+	OP64_SMODE    = 0xEC
 )
 
 // Size codes
@@ -2251,6 +2258,22 @@ func (a *IE64Assembler) assembleInstruction(trimmed string, program []byte) erro
 	case "wait":
 		instr, err = a.asmWait(operands)
 
+	// MMU / Privilege
+	case "mtcr":
+		instr, err = a.asmMTCR(operands)
+	case "mfcr":
+		instr, err = a.asmMFCR(operands)
+	case "eret":
+		instr = encodeInstruction(OP64_ERET, 0, 0, 0, 0, 0, 0)
+	case "tlbflush":
+		instr = encodeInstruction(OP64_TLBFLUSH, 0, 0, 0, 0, 0, 0)
+	case "tlbinval":
+		instr, err = a.asmTLBINVAL(operands)
+	case "syscall":
+		instr, err = a.asmSYSCALL(operands)
+	case "smode":
+		instr, err = a.asmSMODE(operands)
+
 	default:
 		return fmt.Errorf("unknown instruction: %s", base)
 	}
@@ -2847,4 +2870,100 @@ func (a *IE64Assembler) asmFP_Status(opcode byte, operands []string, isWrite boo
 		return encodeInstruction(opcode, 0, SIZE_L, 0, reg, 0, 0), nil
 	}
 	return encodeInstruction(opcode, reg, SIZE_L, 0, 0, 0, 0), nil
+}
+
+// ===========================================================================
+// MMU / Privilege Instructions
+// ===========================================================================
+
+// parseCR parses a control register name (cr0-cr5 or symbolic names).
+func parseCR(name string) (byte, bool) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	switch name {
+	case "cr0", "ptbr":
+		return 0, true
+	case "cr1", "fault_addr":
+		return 1, true
+	case "cr2", "fault_cause":
+		return 2, true
+	case "cr3", "fault_pc":
+		return 3, true
+	case "cr4", "trap_vec":
+		return 4, true
+	case "cr5", "mmu_ctrl":
+		return 5, true
+	}
+	return 0, false
+}
+
+// asmMTCR assembles: mtcr cr#, rs
+func (a *IE64Assembler) asmMTCR(operands []string) ([]byte, error) {
+	if len(operands) != 2 {
+		return nil, fmt.Errorf("mtcr requires 2 operands (cr#, rs)")
+	}
+	cr, ok := parseCR(operands[0])
+	if !ok {
+		return nil, fmt.Errorf("mtcr: invalid control register: %s", operands[0])
+	}
+	rs, ok := parseRegister(strings.TrimSpace(operands[1]))
+	if !ok {
+		return nil, fmt.Errorf("mtcr: invalid source register: %s", operands[1])
+	}
+	return encodeInstruction(OP64_MTCR, cr, 0, 0, rs, 0, 0), nil
+}
+
+// asmMFCR assembles: mfcr rd, cr#
+func (a *IE64Assembler) asmMFCR(operands []string) ([]byte, error) {
+	if len(operands) != 2 {
+		return nil, fmt.Errorf("mfcr requires 2 operands (rd, cr#)")
+	}
+	rd, ok := parseRegister(strings.TrimSpace(operands[0]))
+	if !ok {
+		return nil, fmt.Errorf("mfcr: invalid destination register: %s", operands[0])
+	}
+	cr, ok := parseCR(operands[1])
+	if !ok {
+		return nil, fmt.Errorf("mfcr: invalid control register: %s", operands[1])
+	}
+	return encodeInstruction(OP64_MFCR, rd, 0, 0, cr, 0, 0), nil
+}
+
+// asmTLBINVAL assembles: tlbinval rs
+func (a *IE64Assembler) asmTLBINVAL(operands []string) ([]byte, error) {
+	if len(operands) != 1 {
+		return nil, fmt.Errorf("tlbinval requires 1 operand (rs)")
+	}
+	rs, ok := parseRegister(strings.TrimSpace(operands[0]))
+	if !ok {
+		return nil, fmt.Errorf("tlbinval: invalid register: %s", operands[0])
+	}
+	return encodeInstruction(OP64_TLBINVAL, 0, 0, 0, rs, 0, 0), nil
+}
+
+// asmSYSCALL assembles: syscall #imm32
+func (a *IE64Assembler) asmSYSCALL(operands []string) ([]byte, error) {
+	if len(operands) != 1 {
+		return nil, fmt.Errorf("syscall requires 1 operand (#number)")
+	}
+	src := strings.TrimSpace(operands[0])
+	if !strings.HasPrefix(src, "#") {
+		return nil, fmt.Errorf("syscall requires immediate operand (#number)")
+	}
+	val, err := a.evalExpr(strings.TrimSpace(src[1:]))
+	if err != nil {
+		return nil, fmt.Errorf("syscall number: %v", err)
+	}
+	return encodeInstruction(OP64_SYSCALL, 0, 0, 1, 0, 0, uint32(val)), nil
+}
+
+// asmSMODE assembles: smode rd
+func (a *IE64Assembler) asmSMODE(operands []string) ([]byte, error) {
+	if len(operands) != 1 {
+		return nil, fmt.Errorf("smode requires 1 operand (rd)")
+	}
+	rd, ok := parseRegister(strings.TrimSpace(operands[0]))
+	if !ok {
+		return nil, fmt.Errorf("smode: invalid register: %s", operands[0])
+	}
+	return encodeInstruction(OP64_SMODE, rd, 0, 0, 0, 0, 0), nil
 }

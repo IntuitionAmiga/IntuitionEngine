@@ -76,6 +76,7 @@ type JITInstr struct {
 	xbit     byte
 	rs       byte
 	rt       byte
+	mmuBail  bool // when true, emit bail-to-interpreter instead of native memory access
 	imm32    uint32
 	pcOffset uint32 // byte offset from block start
 }
@@ -91,6 +92,10 @@ func isBlockTerminator(opcode byte) bool {
 	switch opcode {
 	case OP_BRA, OP_JMP, OP_JSR64, OP_RTS64, OP_JSR_IND, OP_HALT64, OP_RTI64, OP_WAIT64:
 		return true
+	// MMU/privilege opcodes: all are block terminators to ensure they are always
+	// the last instruction, so the dispatcher re-enters with updated state.
+	case OP_SYSCALL, OP_ERET, OP_MTCR, OP_MFCR, OP_TLBFLUSH, OP_TLBINVAL, OP_SMODE:
+		return true
 	}
 	return false
 }
@@ -105,6 +110,45 @@ func scanBlock(memory []byte, startPC uint32) []JITInstr {
 
 	for len(instrs) < jitMaxBlockSize {
 		if pc+IE64_INSTR_SIZE > memSize {
+			break
+		}
+
+		instr := binary.LittleEndian.Uint64(memory[pc:])
+		opcode := byte(instr)
+		byte1 := byte(instr >> 8)
+		byte2 := byte(instr >> 16)
+		byte3 := byte(instr >> 24)
+		imm32 := uint32(instr >> 32)
+
+		ji := JITInstr{
+			opcode:   opcode,
+			rd:       byte1 >> 3,
+			size:     (byte1 >> 1) & 0x03,
+			xbit:     byte1 & 1,
+			rs:       byte2 >> 3,
+			rt:       byte3 >> 3,
+			imm32:    imm32,
+			pcOffset: pc - startPC,
+		}
+		instrs = append(instrs, ji)
+
+		if isBlockTerminator(opcode) {
+			break
+		}
+		pc += IE64_INSTR_SIZE
+	}
+
+	return instrs
+}
+
+// scanBlockWithLimit is like scanBlock but stops at maxPC (exclusive).
+// Used when MMU is enabled to prevent scanning across page boundaries.
+func scanBlockWithLimit(memory []byte, startPC, maxPC uint32) []JITInstr {
+	instrs := make([]JITInstr, 0, 32)
+	pc := startPC
+
+	for len(instrs) < jitMaxBlockSize {
+		if pc+IE64_INSTR_SIZE > maxPC {
 			break
 		}
 
@@ -154,6 +198,11 @@ func needsFallback(instrs []JITInstr) bool {
 	}
 	// RTI needs interpreter (complex interrupt state management)
 	if op == OP_RTI64 {
+		return true
+	}
+	// MMU/privilege opcodes need interpreter (they mutate CPU state)
+	switch op {
+	case OP_SYSCALL, OP_ERET, OP_MTCR, OP_MFCR, OP_TLBFLUSH, OP_TLBINVAL, OP_SMODE:
 		return true
 	}
 	return false

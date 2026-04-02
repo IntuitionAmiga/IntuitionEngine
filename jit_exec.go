@@ -52,6 +52,19 @@ func (cpu *CPU64) freeJIT() {
 	cpu.jitCtx = nil
 }
 
+// compileBlockMMU wraps compileBlock, marking all guest-memory-touching
+// instructions for interpreter bail. Used when MMU is enabled.
+func compileBlockMMU(instrs []JITInstr, startPC uint32, execMem *ExecMem) (*JITBlock, error) {
+	for i := range instrs {
+		switch instrs[i].opcode {
+		case OP_LOAD, OP_STORE, OP_FLOAD, OP_FSTORE,
+			OP_JSR64, OP_RTS64, OP_PUSH64, OP_POP64, OP_JSR_IND:
+			instrs[i].mmuBail = true
+		}
+	}
+	return compileBlock(instrs, startPC, execMem)
+}
+
 // interpretOne executes one IE64 instruction at cpu.PC using the interpreter.
 // Unlike StepOne(), this is designed to be called from within the JIT execution
 // loop for instructions that can't be JIT-compiled (FPU, WAIT, HALT).
@@ -102,29 +115,57 @@ func (cpu *CPU64) ExecuteJIT() {
 			break
 		}
 
-		pc := uint32(cpu.PC & IE64_ADDR_MASK)
+		// MMU state change: flush cache before any block lookup
+		// This must be at the TOP of the loop because interpretOne() paths
+		// (needsFallback, compilation failure) use continue and skip post-callNative checks.
+		if cpu.jitNeedInval {
+			cpu.jitCache.Invalidate()
+			execMem.Reset()
+			cpu.jitNeedInval = false
+		}
 
-		// Bounds check
-		if uint64(pc)+IE64_INSTR_SIZE > uint64(len(cpu.memory)) {
-			fmt.Printf("IE64 JIT: PC out of bounds: 0x%08X\n", pc)
+		pcVirt := uint32(cpu.PC & IE64_ADDR_MASK)
+
+		// MMU: translate virtual PC to physical for block fetch
+		pcPhys := pcVirt
+		if cpu.mmuEnabled {
+			phys, fault, cause := cpu.translateAddr(pcVirt, ACCESS_EXEC)
+			if fault {
+				cpu.trapFault(cause, pcVirt)
+				continue // re-enter loop at trap handler PC
+			}
+			pcPhys = phys
+		}
+
+		// Bounds check (on physical address)
+		if uint64(pcPhys)+IE64_INSTR_SIZE > uint64(len(cpu.memory)) {
+			fmt.Printf("IE64 JIT: PC out of bounds: 0x%08X\n", pcPhys)
 			cpu.running.Store(false)
 			break
 		}
 
-		// Check for HALT at current PC before doing anything
-		opcode := cpu.memory[pc]
+		// Check for HALT at current PC (physical)
+		opcode := cpu.memory[pcPhys]
 		if opcode == OP_HALT64 {
 			cpu.running.Store(false)
 			break
 		}
 
-		// Try to get a cached block
-		block := cpu.jitCache.Get(pc)
+		// Cache is keyed by virtual PC
+		block := cpu.jitCache.Get(pcVirt)
 		if block == nil {
-			// Scan and potentially compile a new block
-			instrs := scanBlock(cpu.memory, pc)
+			// Scan from physical memory
+			var instrs []JITInstr
+			if cpu.mmuEnabled {
+				// Page boundary limit: don't scan past end of current 4 KiB page
+				pageEnd := (pcPhys & ^uint32(MMU_PAGE_MASK)) + MMU_PAGE_SIZE
+				instrs = scanBlockWithLimit(cpu.memory, pcPhys, pageEnd)
+			} else {
+				instrs = scanBlock(cpu.memory, pcPhys)
+			}
+
 			if needsFallback(instrs) {
-				// FPU, WAIT, RTI — use interpreter for single instruction
+				// FPU, WAIT, RTI, MMU ops — use interpreter for single instruction
 				cpu.interpretOne()
 				cpu.InstructionCount++
 				diagFallbackInstr++
@@ -135,7 +176,12 @@ func (cpu *CPU64) ExecuteJIT() {
 			}
 
 			var err error
-			block, err = compileBlock(instrs, pc, execMem)
+			if cpu.mmuEnabled {
+				// Compile with virtual startPC (branch offsets are virtual)
+				block, err = compileBlockMMU(instrs, pcVirt, execMem)
+			} else {
+				block, err = compileBlock(instrs, pcPhys, execMem)
+			}
 			if err != nil {
 				// Compilation failed (e.g., exec mem exhausted) — interpret
 				cpu.interpretOne()

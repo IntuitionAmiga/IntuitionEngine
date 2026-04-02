@@ -824,8 +824,16 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint32, isLast b
 	// Memory Access
 	// ======================================================================
 	case OP_LOAD:
+		if ji.mmuBail {
+			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+			return
+		}
 		emitLOAD(cb, ji, instrPC, br, writtenSoFar)
 	case OP_STORE:
+		if ji.mmuBail {
+			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+			return
+		}
 		emitSTORE(cb, ji, instrPC, br, writtenSoFar)
 
 	// ======================================================================
@@ -896,14 +904,34 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint32, isLast b
 	// Subroutine / Stack
 	// ======================================================================
 	case OP_JSR64:
+		if ji.mmuBail {
+			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+			return
+		}
 		emitJSR(cb, ji, instrPC, br)
 	case OP_RTS64:
+		if ji.mmuBail {
+			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+			return
+		}
 		emitRTS(cb, br, ji.pcOffset/IE64_INSTR_SIZE+1)
 	case OP_PUSH64:
+		if ji.mmuBail {
+			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+			return
+		}
 		emitPUSH(cb, ji)
 	case OP_POP64:
+		if ji.mmuBail {
+			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+			return
+		}
 		emitPOP(cb, ji)
 	case OP_JSR_IND:
+		if ji.mmuBail {
+			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+			return
+		}
 		emitJSR_IND(cb, ji, instrPC, br, ji.pcOffset/IE64_INSTR_SIZE+1)
 
 	// ======================================================================
@@ -978,8 +1006,16 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint32, isLast b
 	// FPU — Memory
 	// ======================================================================
 	case OP_FLOAD:
+		if ji.mmuBail {
+			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+			return
+		}
 		emitFLOAD(cb, ji, instrPC, br, writtenSoFar)
 	case OP_FSTORE:
+		if ji.mmuBail {
+			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+			return
+		}
 		emitFSTORE(cb, ji, instrPC, br, writtenSoFar)
 
 	// ======================================================================
@@ -987,6 +1023,11 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint32, isLast b
 	// ======================================================================
 	case OP_FMOD, OP_FSIN, OP_FCOS, OP_FTAN, OP_FATAN, OP_FLOG, OP_FEXP, OP_FPOW:
 		emitFPUBail(cb, ji, instrPC, br, writtenSoFar)
+
+	// MMU/privilege opcodes: always bail to interpreter
+	case OP_MTCR, OP_MFCR, OP_ERET, OP_TLBFLUSH, OP_TLBINVAL, OP_SYSCALL, OP_SMODE:
+		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+		return
 	}
 }
 

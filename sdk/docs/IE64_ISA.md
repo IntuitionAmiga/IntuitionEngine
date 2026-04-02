@@ -28,6 +28,7 @@ Intuition Engine 64-bit RISC CPU -- Complete ISA Specification
 9. [Interrupt/Timer System](#9-interrupttimer-system)
 10. [64-bit Constant Loading](#10-64-bit-constant-loading)
 11. [Assembly Language Quick Reference](#11-assembly-language-quick-reference)
+12. [Memory Management Unit](#12-memory-management-unit)
 
 ---
 
@@ -1039,6 +1040,203 @@ dc.b "hello; world" ; the semicolon in the string is literal
 
 ---
 
+## 12. Memory Management Unit
+
+The IE64 includes an optional single-level paged MMU that provides virtual-to-physical address translation, page-level access control, and a supervisor/user privilege model. When enabled, all instruction fetches, loads, and stores are translated through a software-managed page table. The MMU is disabled on reset; supervisor code must build a page table and explicitly enable translation.
+
+### 12.1 Privilege Levels
+
+The IE64 operates in one of two privilege levels:
+
+| Level | MMU_CTRL.1 | Description |
+|-------|------------|-------------|
+| Supervisor | 1 | Full access. Can execute MTCR, MFCR, ERET, TLBFLUSH, TLBINVAL. Can access all pages regardless of U bit. |
+| User | 0 | Restricted. Privileged instructions cause a fault (cause code 5). Can only access pages with U=1. |
+
+On reset the CPU is in supervisor mode. Transitioning to user mode is done via ERET (which clears supervisor mode and jumps to FAULT_PC). Returning to supervisor mode occurs only via a trap (fault or SYSCALL), which implicitly sets supervisor mode before jumping to the trap vector. The SMODE instruction reads the current mode into a register for introspection.
+
+### 12.2 Control Registers
+
+Six control registers manage the MMU. They are accessed via MTCR (write) and MFCR (read).
+
+| CR | Name | R/W | Description |
+|----|------|-----|-------------|
+| CR0 | PTBR | RW | Page Table Base Register. Physical address of the page table. |
+| CR1 | FAULT_ADDR | RW | Virtual address that caused the most recent fault, or the syscall number (imm32) for SYSCALL. Writable so handlers can communicate information back. |
+| CR2 | FAULT_CAUSE | RW | Cause code of the most recent fault (see 12.7). Writable for handler flexibility. |
+| CR3 | FAULT_PC | RW | PC saved at trap entry. Used by ERET to resume. **Writable**: trap handlers must be able to modify this before ERET (e.g., to skip a faulting instruction or redirect execution). |
+| CR4 | TRAP_VEC | RW | Physical address of the trap handler entry point. Jumped to on any fault or SYSCALL. |
+| CR5 | MMU_CTRL | Special | Bit 0: MMU enable (RW). Bit 1: supervisor mode (read-only, managed by hardware). All other bits reserved. |
+
+**PTBR** must point to the start of the page table in physical memory. The page table is 64 KiB (8192 entries x 8 bytes) and must be naturally aligned.
+
+**TRAP_VEC** must be set before enabling the MMU, or faults will jump to address 0.
+
+**MMU_CTRL** bit 0 is the master enable. Writing 1 activates translation for all subsequent memory accesses. Bit 1 (supervisor mode) is read-only; it reflects the current privilege level and cannot be written by MTCR.
+
+### 12.3 Page Table Format
+
+The MMU uses a single-level page table with 8192 entries, covering a 13-bit virtual page number (VPN) space. Each page is 4 KiB (12-bit offset). The page table occupies 64 KiB of contiguous physical memory.
+
+```
+Page Table (64 KiB at PTBR):
+  Entry 0:      PTE for VPN 0x0000
+  Entry 1:      PTE for VPN 0x0001
+  ...
+  Entry 8191:   PTE for VPN 0x1FFF
+```
+
+Each entry is 8 bytes (64 bits), addressed as `PTBR + VPN * 8`.
+
+### 12.4 Page Table Entry (PTE) Format
+
+```
+Bit:  63                       26  25            13  12    5  4  3  2  1  0
+     +---------------------------+----------------+--------+--+--+--+--+--+
+     |        reserved (0)       |   PPN (13 bits)|  rsvd  | U|NX| W| R| P|
+     +---------------------------+----------------+--------+--+--+--+--+--+
+```
+
+| Bit(s) | Name | Description |
+|--------|------|-------------|
+| 0 | P (Present) | Page is mapped. If P=0, any access faults with cause 0. |
+| 1 | R (Read) | Read permission. If R=0, loads fault with cause 1. |
+| 2 | W (Write) | Write permission. If W=0, stores fault with cause 2. |
+| 3 | NX (No-Execute) | Execute permission inverted. If NX=1, instruction fetch faults with cause 3. (X = !NX) |
+| 4 | U (User) | User-accessible. If U=0, user-mode access faults with cause 4. |
+| 12:5 | -- | Reserved, must be 0. |
+| 25:13 | PPN | Physical Page Number (13 bits). Physical address = PPN << 12 | offset. |
+| 63:26 | -- | Reserved, must be 0. |
+
+### 12.5 Virtual Address Format
+
+```
+Bit:  24                    12  11                 0
+     +-----------------------+---------------------+
+     |    VPN (13 bits)      |   Offset (12 bits)  |
+     +-----------------------+---------------------+
+```
+
+- **VPN** (bits 24:12): Index into the page table. 13 bits = 8192 pages.
+- **Offset** (bits 11:0): Byte offset within the 4 KiB page. Passed through untranslated.
+- Physical address = `(PTE.PPN << 12) | (VA & 0xFFF)`.
+
+The 25-bit virtual address space covers 32 MB, matching the IE64 physical address space.
+
+### 12.6 MMU Instructions
+
+Seven new opcodes in the System range. All except SYSCALL are privileged (supervisor-only); executing them in user mode faults with cause code 5 (privilege violation).
+
+| Mnemonic | Opcode | Syntax | Operation | Privilege |
+|----------|--------|--------|-----------|-----------|
+| MTCR | `0xE6` | `mtcr CRn, Rs` | `CR[Rd] = Rs` | Supervisor |
+| MFCR | `0xE7` | `mfcr Rd, CRn` | `Rd = CR[Rs]` | Supervisor |
+| ERET | `0xE8` | `eret` | `PC = CR3 (FAULT_PC); supervisor = false` | Supervisor |
+| TLBFLUSH | `0xE9` | `tlbflush` | Flush entire TLB + invalidate JIT cache | Supervisor |
+| TLBINVAL | `0xEA` | `tlbinval Rs` | Invalidate TLB entry for VA in Rs + invalidate JIT cache | Supervisor |
+| SYSCALL | `0xEB` | `syscall #imm32` | Trap to supervisor; syscall number from imm32 | Any |
+| SMODE | `0xEC` | `smode Rd` | `Rd = 1` if supervisor, `Rd = 0` if user | Any |
+
+**MTCR** (opcode `0xE6`):
+- Writes the value of general-purpose register Rs to control register CRn.
+- The CR index is encoded in the Rd field (0-5).
+- All CRs are writable except MMU_CTRL bit 1 (supervisor mode), which is silently ignored on write. This means trap handlers can modify FAULT_PC (CR3) before ERET to redirect execution.
+- Writing to PTBR or MMU_CTRL bit 0 invalidates the JIT code cache and flushes the TLB.
+
+**MFCR** (opcode `0xE7`):
+- Reads control register CRn into general-purpose register Rd.
+- The CR index is encoded in the Rs field (0-5).
+
+**ERET** (opcode `0xE8`):
+- Returns from a trap handler. Sets PC to the value saved in CR3 (FAULT_PC) and switches to user mode.
+- Does not pop the stack. The trap entry does not push to the stack.
+- The handler can modify FAULT_PC via MTCR before ERET to redirect execution.
+- For SYSCALL traps, FAULT_PC = PC+8 (instruction after SYSCALL), so ERET resumes at the next instruction.
+- For fault traps, FAULT_PC = faulting PC, so ERET re-executes the faulting instruction (the handler must fix the cause first).
+
+**TLBFLUSH** (opcode `0xE9`):
+- Invalidates all 64 entries of the software TLB.
+- Must be executed after bulk page table modifications.
+
+**TLBINVAL** (opcode `0xEA`):
+- Invalidates the single TLB entry corresponding to the virtual address in Rs.
+- Used after modifying a single page table entry.
+
+**SYSCALL** (opcode `0xEB`):
+- Initiates a synchronous trap to supervisor mode.
+- The syscall number is the instruction's imm32 field (encoded with xbit=1). The handler reads it from CR1 (FAULT_ADDR) via MFCR.
+- Saves PC+8 to CR3 (FAULT_PC), imm32 to CR1 (FAULT_ADDR), cause code 6 to CR2 (FAULT_CAUSE).
+- Sets supervisor mode and jumps to CR4 (TRAP_VEC).
+- Convention: syscall arguments are passed in R1-R6; return values in R1.
+- Can be executed in both user and supervisor mode.
+
+**SMODE** (opcode `0xEC`):
+- Reads the current privilege mode into Rd: 1 = supervisor, 0 = user.
+- This is a query instruction, not a mode-switching instruction. Mode is changed only by trap entry (sets supervisor) and ERET (clears supervisor).
+- Can be executed in both user and supervisor mode.
+
+#### Encoding
+
+All seven opcodes use the standard 8-byte IE64 instruction format:
+
+```
+MTCR:     [0xE6] [CRn<<3 | 0 | 0] [Rs<<3] [0] [0 0 0 0]       ; Rd field = CR index
+MFCR:     [0xE7] [Rd<<3 | 0 | 0]  [CRn<<3] [0] [0 0 0 0]      ; Rs field = CR index
+ERET:     [0xE8] [0] [0] [0] [0 0 0 0]
+TLBFLUSH: [0xE9] [0] [0] [0] [0 0 0 0]
+TLBINVAL: [0xEA] [0] [Rs<<3] [0] [0 0 0 0]                     ; Rs = register holding VPN
+SYSCALL:  [0xEB] [0 | 0 | 1] [0] [0] [imm32 LE]                ; xbit=1, syscall # in imm32
+SMODE:    [0xEC] [Rd<<3 | 0 | 0] [0] [0] [0 0 0 0]             ; Rd = destination register
+```
+
+### 12.7 Trap Model
+
+Traps are raised by faults (translation errors, permission violations) and by the SYSCALL instruction. On any trap:
+
+1. CR1 (FAULT_ADDR) is set to the faulting virtual address (for faults) or the syscall number (for SYSCALL).
+2. CR2 (FAULT_CAUSE) is set to the cause code.
+3. CR3 (FAULT_PC) is set to the relevant PC (see below).
+4. The CPU switches to supervisor mode.
+5. PC is set to CR4 (TRAP_VEC).
+
+**Differentiated PC save:**
+- **SYSCALL**: CR3 = PC + 8 (address of the instruction *after* SYSCALL). ERET resumes execution past the syscall.
+- **Faults**: CR3 = faulting PC (address of the instruction that caused the fault). ERET re-executes the faulting instruction after the handler fixes the page table.
+
+This distinction means trap handlers do not need to adjust the return address; ERET always restores CR3 directly.
+
+### 12.8 Fault Cause Codes
+
+| Code | Name | Trigger |
+|------|------|---------|
+| 0 | Page Not Present | Access to a page with P=0. |
+| 1 | Read Denied | Load from a page with R=0. |
+| 2 | Write Denied | Store to a page with W=0. |
+| 3 | Execute Denied | Instruction fetch from a page with NX=1. |
+| 4 | User/Supervisor | User-mode access to a page with U=0. |
+| 5 | Privilege Violation | User-mode execution of a privileged instruction (MTCR, MFCR, ERET, TLBFLUSH, TLBINVAL). |
+| 6 | Syscall | SYSCALL instruction executed. |
+
+### 12.9 Translation Lookaside Buffer (TLB)
+
+The MMU maintains a 64-entry direct-mapped software TLB to cache page table lookups.
+
+- **Indexing**: `TLB[VPN & 63]`. Each entry stores the VPN tag and the full PTE.
+- **Lookup**: On every translated access, the TLB is checked first. On a hit (VPN tag matches), the cached PTE is used. On a miss, the page table is walked, the PTE is loaded, permission checks are performed, and the result is cached in the TLB.
+- **Invalidation**: TLBFLUSH clears all 64 entries. TLBINVAL clears only the entry matching the given VA's VPN. Writing PTBR or MMU_CTRL via MTCR also flushes the entire TLB.
+- **Coherency**: The TLB is not automatically coherent with page table memory. After modifying a PTE in memory, software must execute TLBINVAL for the affected page (or TLBFLUSH for bulk changes) before the new mapping takes effect.
+
+### 12.10 W^X Security Model
+
+The IE64 MMU enforces a Write XOR Execute policy at the page level. A page may be writable or executable, but not both simultaneously:
+
+- **Code pages**: P=1, R=1, W=0, NX=0 (readable + executable, not writable).
+- **Data/stack pages**: P=1, R=1, W=1, NX=1 (readable + writable, not executable).
+
+This prevents code injection attacks: an attacker who can write to memory cannot execute that memory, and executable memory cannot be modified. To load new code, supervisor software must map the target pages as writable, write the code, then remap as executable (with appropriate TLB invalidation between steps).
+
+---
+
 ## Appendix A: Opcode Map
 
 ### A.1 Opcode Summary Table
@@ -1117,6 +1315,13 @@ dc.b "hello; world" ; the semicolon in the string is literal
 | 0xE3   | `$E3`  | CLI      | System | (none) |
 | 0xE4   | `$E4`  | RTI      | System | (none) |
 | 0xE5   | `$E5`  | WAIT     | System | #usec |
+| 0xE6   | `$E6`  | MTCR     | MMU | CRn, Rs |
+| 0xE7   | `$E7`  | MFCR     | MMU | Rd, CRn |
+| 0xE8   | `$E8`  | ERET     | MMU | (none) |
+| 0xE9   | `$E9`  | TLBFLUSH | MMU | (none) |
+| 0xEA   | `$EA`  | TLBINVAL | MMU | Rs |
+| 0xEB   | `$EB`  | SYSCALL  | MMU | #imm32 |
+| 0xEC   | `$EC`  | SMODE    | MMU | Rd |
 
 ### A.2 Opcode Ranges
 
@@ -1130,6 +1335,7 @@ dc.b "hello; world" ; the semicolon in the string is literal
 | `$50-$54` | Subroutine / Stack |
 | `$60-$7C` | Floating Point (FPU) |
 | `$E0-$E5` | System |
+| `$E6-$EC` | MMU |
 
 Any opcode not listed above causes the CPU to print an error message and halt execution.
 

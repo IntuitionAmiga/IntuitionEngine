@@ -23,6 +23,7 @@ package main
 
 import (
 	"encoding/binary"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -722,5 +723,76 @@ func TestIE64Dis_JSR_Indirect_Displacement(t *testing.T) {
 	_, asm := FormatInstruction(d)
 	if !strings.Contains(asm, "jsr 16(r5)") {
 		t.Errorf("expected 'jsr 16(r5)', got %q", asm)
+	}
+}
+
+// ===========================================================================
+// MMU Instruction Disassembly Tests
+// ===========================================================================
+
+func TestIE64Dis_MMU(t *testing.T) {
+	tests := []struct {
+		name     string
+		instr    []byte
+		contains string
+	}{
+		{
+			name:     "ERET",
+			instr:    encodeInstr(dis64_ERET, 0, 0, 0, 0, 0, 0),
+			contains: "eret",
+		},
+		{
+			name:     "TLBFLUSH",
+			instr:    encodeInstr(dis64_TLBFLUSH, 0, 0, 0, 0, 0, 0),
+			contains: "tlbflush",
+		},
+		{
+			name:     "MTCR cr0, r5",
+			instr:    encodeInstr(dis64_MTCR, 0, 0, 0, 5, 0, 0),
+			contains: "mtcr cr0, r5",
+		},
+		{
+			name:     "MFCR r5, cr0",
+			instr:    encodeInstr(dis64_MFCR, 5, 0, 0, 0, 0, 0),
+			contains: "mfcr r5, cr0",
+		},
+		{
+			name:     "TLBINVAL r3",
+			instr:    encodeInstr(dis64_TLBINVAL, 0, 0, 0, 3, 0, 0),
+			contains: "tlbinval r3",
+		},
+		{
+			name:     "SYSCALL #42",
+			instr:    encodeInstr(dis64_SYSCALL, 0, 0, 1, 0, 0, 42),
+			contains: "syscall #42",
+		},
+		{
+			name:     "SMODE r1",
+			instr:    encodeInstr(dis64_SMODE, 1, 0, 0, 0, 0, 0),
+			contains: "smode r1",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d := Decode(tc.instr, 0x1000)
+			_, asm := FormatInstruction(d)
+			if !strings.Contains(asm, tc.contains) {
+				t.Errorf("expected %q, got %q", tc.contains, asm)
+			}
+		})
+	}
+}
+
+func TestIE64Dis_CRFormatting(t *testing.T) {
+	// Test that CR numbers render correctly in disassembly
+	for cr := byte(0); cr < 6; cr++ {
+		instr := encodeInstr(dis64_MTCR, cr, 0, 0, 1, 0, 0)
+		d := Decode(instr, 0x1000)
+		_, asm := FormatInstruction(d)
+		expected := fmt.Sprintf("mtcr cr%d, r1", cr)
+		if !strings.Contains(asm, expected) {
+			t.Errorf("CR%d: expected %q, got %q", cr, expected, asm)
+		}
 	}
 }
