@@ -87,6 +87,64 @@ const (
 )
 
 // ------------------------------------------------------------------------------
+// IE64 MMU Constants
+// ------------------------------------------------------------------------------
+const (
+	MMU_PAGE_SIZE  = 0x1000                               // 4 KiB virtual pages
+	MMU_PAGE_SHIFT = 12                                   // log2(MMU_PAGE_SIZE)
+	MMU_PAGE_MASK  = MMU_PAGE_SIZE - 1                    // offset mask within page
+	MMU_NUM_PAGES  = (IE64_ADDR_MASK + 1) / MMU_PAGE_SIZE // 8192 pages in 32MB
+)
+
+// PTE permission bits (64-bit page table entry)
+const (
+	PTE_P = 1 << 0 // Present
+	PTE_R = 1 << 1 // Read permission
+	PTE_W = 1 << 2 // Write permission
+	PTE_X = 1 << 3 // Execute permission (0 = non-executable / NX)
+	PTE_U = 1 << 4 // User-accessible (0 = supervisor only)
+	PTE_A = 1 << 5 // Accessed (set by hardware on any access)
+	PTE_D = 1 << 6 // Dirty (set by hardware on write)
+)
+
+// PTE physical page number field
+const (
+	PTE_PPN_SHIFT = 13     // PPN starts at bit 13
+	PTE_PPN_MASK  = 0x1FFF // 13-bit PPN (8192 pages)
+)
+
+// Control register indices for MTCR/MFCR
+const (
+	CR_PTBR        = 0 // Page Table Base Register (physical address)
+	CR_FAULT_ADDR  = 1 // Virtual address that caused last fault
+	CR_FAULT_CAUSE = 2 // Fault cause code
+	CR_FAULT_PC    = 3 // PC saved at trap entry
+	CR_TRAP_VEC    = 4 // Trap handler vector address
+	CR_MMU_CTRL    = 5 // Bit 0 = MMU enable (RW), Bit 1 = supervisor mode (RO)
+	CR_TP          = 6 // Thread Pointer (user-readable, supervisor-writable)
+	CR_COUNT       = 7 // Number of control registers
+)
+
+// Fault cause codes
+const (
+	FAULT_NOT_PRESENT  = 0 // PTE P bit = 0
+	FAULT_READ_DENIED  = 1 // PTE R bit = 0 on read access
+	FAULT_WRITE_DENIED = 2 // PTE W bit = 0 on write access
+	FAULT_EXEC_DENIED  = 3 // PTE X bit = 0 on instruction fetch
+	FAULT_USER_SUPER   = 4 // PTE U bit = 0 in user mode
+	FAULT_PRIV         = 5 // Privileged instruction in user mode
+	FAULT_SYSCALL      = 6 // SYSCALL instruction
+	FAULT_MISALIGNED   = 7 // Misaligned atomic access
+)
+
+// Memory access types for translateAddr
+const (
+	ACCESS_READ  = 0
+	ACCESS_WRITE = 1
+	ACCESS_EXEC  = 2
+)
+
+// ------------------------------------------------------------------------------
 // IE64 Opcodes
 // ------------------------------------------------------------------------------
 const (
@@ -178,6 +236,23 @@ const (
 	OP_CLI64  = 0xE3 // Clear interrupt enable
 	OP_RTI64  = 0xE4 // Return from interrupt
 	OP_WAIT64 = 0xE5 // Wait (microseconds in imm32)
+
+	// MMU / Privilege (privileged except SYSCALL and SMODE)
+	OP_MTCR     = 0xE6 // Move To Control Register (rd=CR#, rs=src_reg)
+	OP_MFCR     = 0xE7 // Move From Control Register (rd=dest_reg, rs=CR#)
+	OP_ERET     = 0xE8 // Exception Return (PC = faultPC, switch to user mode)
+	OP_TLBFLUSH = 0xE9 // Flush entire software TLB + invalidate JIT cache
+	OP_TLBINVAL = 0xEA // Invalidate single TLB entry (rs=vpn_reg)
+	OP_SYSCALL  = 0xEB // Trap into supervisor (imm32 = syscall number)
+	OP_SMODE    = 0xEC // Read current mode into Rd (0=user, 1=supervisor)
+
+	// Atomic Memory RMW (always 64-bit, naturally aligned)
+	OP_CAS  = 0xED // Compare-and-swap: old=[addr]; if old==rd then [addr]=rt; rd=old
+	OP_XCHG = 0xEE // Exchange: old=[addr]; [addr]=rt; rd=old
+	OP_FAA  = 0xEF // Fetch-and-add: old=[addr]; [addr]=old+rt; rd=old
+	OP_FAND = 0xF0 // Fetch-and-and: old=[addr]; [addr]=old&rt; rd=old
+	OP_FOR  = 0xF1 // Fetch-and-or:  old=[addr]; [addr]=old|rt; rd=old
+	OP_FXOR = 0xF2 // Fetch-and-xor: old=[addr]; [addr]=old^rt; rd=old
 )
 
 // ------------------------------------------------------------------------------
@@ -241,6 +316,19 @@ type CPU64 struct {
 
 	// Coprocessor mode: allows PC outside PROG_START..STACK_START
 	CoprocMode bool
+
+	// MMU state
+	mmuEnabled     bool         // MMU translation active
+	supervisorMode bool         // true = supervisor, false = user
+	ptbr           uint32       // Page Table Base Register (physical address)
+	trapVector     uint64       // Trap handler entry point
+	faultPC        uint64       // PC saved at trap entry
+	faultAddr      uint32       // Virtual address that caused fault
+	faultCause     uint32       // Fault cause code
+	trapped        bool         // Set by memory helpers on MMU fault; checked by Execute/StepOne
+	jitNeedInval   bool         // Set by MMU ops; consumed by JIT dispatcher
+	tlb            [64]TLBEntry // 64-entry direct-mapped software TLB
+	threadPointer  uint64       // Thread Pointer (CR_TP)
 }
 
 // ------------------------------------------------------------------------------
@@ -249,15 +337,116 @@ type CPU64 struct {
 
 func NewCPU64(bus *MachineBus) *CPU64 {
 	cpu := &CPU64{
-		PC:     PROG_START,
-		bus:    bus,
-		memory: bus.GetMemory(),
-		FPU:    NewIE64FPU(),
+		PC:             PROG_START,
+		bus:            bus,
+		memory:         bus.GetMemory(),
+		supervisorMode: true, // Boot in supervisor mode
+		FPU:            NewIE64FPU(),
 	}
 	cpu.memBase = unsafe.Pointer(&cpu.memory[0])
 	cpu.regs[31] = STACK_START // R31 is the stack pointer
 	cpu.running.Store(true)
 	return cpu
+}
+
+// ------------------------------------------------------------------------------
+// Trap Helpers (MMU)
+// ------------------------------------------------------------------------------
+
+// trapFault handles involuntary traps (page fault, privilege violation).
+// Saves PC of the faulting instruction so ERET re-executes it.
+func (cpu *CPU64) trapFault(cause uint32, addr uint32) {
+	cpu.faultPC = cpu.PC // re-execute on ERET
+	cpu.faultAddr = addr
+	cpu.faultCause = cause
+	cpu.supervisorMode = true
+	cpu.PC = cpu.trapVector
+}
+
+// trapSyscall handles SYSCALL. Saves PC+8 so ERET skips the SYSCALL.
+// The syscall number (imm32) is stored in faultAddr for the handler to read
+// via MFCR CR1. User convention: arguments in R1-R6 before SYSCALL.
+func (cpu *CPU64) trapSyscall(syscallNum uint32) {
+	cpu.faultPC = cpu.PC + IE64_INSTR_SIZE // skip SYSCALL on ERET
+	cpu.faultAddr = syscallNum             // handler reads via MFCR CR_FAULT_ADDR
+	cpu.faultCause = FAULT_SYSCALL
+	cpu.supervisorMode = true
+	cpu.PC = cpu.trapVector
+}
+
+// requireSupervisor checks privilege; returns true if in supervisor mode.
+// If in user mode, fires a privilege violation trap and returns false.
+func (cpu *CPU64) requireSupervisor() bool {
+	if cpu.supervisorMode {
+		return true
+	}
+	cpu.trapFault(FAULT_PRIV, 0)
+	return false
+}
+
+// ------------------------------------------------------------------------------
+// Atomic Memory RMW Helper
+// ------------------------------------------------------------------------------
+
+// execAtomic performs an atomic read-modify-write on a 64-bit aligned address.
+// op selects the operation: OP_CAS, OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR.
+// Sets cpu.trapped on fault (misalignment, MMU, I/O region).
+func (cpu *CPU64) execAtomic(rd, rs, rt byte, imm32 uint32, op byte) {
+	addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
+
+	// Alignment check (must be 8-byte aligned)
+	if addr&7 != 0 {
+		cpu.trapFault(FAULT_MISALIGNED, addr)
+		cpu.trapped = true
+		return
+	}
+
+	// Reject I/O region (atomics are only meaningful on RAM)
+	if addr >= IO_REGION_START {
+		cpu.trapFault(FAULT_MISALIGNED, addr)
+		cpu.trapped = true
+		return
+	}
+
+	// MMU translation
+	if cpu.mmuEnabled {
+		phys, fault, cause := cpu.translateAddr(addr, ACCESS_WRITE)
+		if fault {
+			cpu.trapFault(cause, addr)
+			cpu.trapped = true
+			return
+		}
+		addr = phys
+	}
+
+	// Bounds check
+	if uint64(addr)+8 > uint64(len(cpu.memory)) {
+		cpu.trapFault(FAULT_MISALIGNED, addr)
+		cpu.trapped = true
+		return
+	}
+
+	base := unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr))
+	old := *(*uint64)(base)
+
+	switch op {
+	case OP_CAS:
+		if old == cpu.regs[rd] {
+			*(*uint64)(base) = cpu.regs[rt]
+		}
+	case OP_XCHG:
+		*(*uint64)(base) = cpu.regs[rt]
+	case OP_FAA:
+		*(*uint64)(base) = old + cpu.regs[rt]
+	case OP_FAND:
+		*(*uint64)(base) = old & cpu.regs[rt]
+	case OP_FOR:
+		*(*uint64)(base) = old | cpu.regs[rt]
+	case OP_FXOR:
+		*(*uint64)(base) = old ^ cpu.regs[rt]
+	}
+
+	cpu.setReg(rd, old)
 }
 
 // ------------------------------------------------------------------------------
@@ -290,6 +479,17 @@ func maskToSize(val uint64, size byte) uint64 {
 // ------------------------------------------------------------------------------
 
 func (cpu *CPU64) loadMem(addr uint32, size byte) uint64 {
+	// MMU translation
+	if cpu.mmuEnabled {
+		phys, fault, cause := cpu.translateAddr(addr, ACCESS_READ)
+		if fault {
+			cpu.trapFault(cause, addr)
+			cpu.trapped = true
+			return 0
+		}
+		addr = phys
+	}
+
 	// VRAM direct read fast path (VRAM addresses are above IO_REGION_START)
 	if cpu.vramDirect != nil && addr >= cpu.vramStart && addr < cpu.vramEnd {
 		offset := addr - cpu.vramStart
@@ -336,6 +536,17 @@ func (cpu *CPU64) loadMem(addr uint32, size byte) uint64 {
 }
 
 func (cpu *CPU64) storeMem(addr uint32, val uint64, size byte) {
+	// MMU translation
+	if cpu.mmuEnabled {
+		phys, fault, cause := cpu.translateAddr(addr, ACCESS_WRITE)
+		if fault {
+			cpu.trapFault(cause, addr)
+			cpu.trapped = true
+			return
+		}
+		addr = phys
+	}
+
 	// VRAM direct write fast path (VRAM addresses are above IO_REGION_START)
 	if cpu.vramDirect != nil && addr >= cpu.vramStart && addr < cpu.vramEnd {
 		offset := addr - cpu.vramStart
@@ -434,6 +645,18 @@ func (cpu *CPU64) Reset() {
 		cpu.jitCache.Invalidate()
 	}
 
+	// Reset MMU state
+	cpu.mmuEnabled = false
+	cpu.supervisorMode = true
+	cpu.ptbr = 0
+	cpu.trapVector = 0
+	cpu.faultPC = 0
+	cpu.faultAddr = 0
+	cpu.faultCause = 0
+	cpu.trapped = false
+	cpu.jitNeedInval = false
+	cpu.threadPointer = 0
+
 	// Reset FPU
 	if cpu.FPU != nil {
 		cpu.FPU.FPSR = 0
@@ -517,6 +740,17 @@ func (cpu *CPU64) Execute() {
 
 		// Mask PC to 32MB address space
 		pc32 := uint32(cpu.PC & IE64_ADDR_MASK)
+
+		// MMU translation for instruction fetch
+		if cpu.mmuEnabled {
+			phys, fault, cause := cpu.translateAddr(pc32, ACCESS_EXEC)
+			if fault {
+				cpu.trapFault(cause, pc32)
+				continue
+			}
+			pc32 = phys
+		}
+
 		if uint64(pc32)+8 > memSize {
 			fmt.Printf("IE64: PC out of bounds during fetch: PC=0x%08X mem=%d\n", pc32, memSize)
 			cpu.running.Store(false)
@@ -563,12 +797,17 @@ func (cpu *CPU64) Execute() {
 							cpu.inInterrupt.Store(true)
 							cpu.regs[31] -= 8
 							sp := uint32(cpu.regs[31])
-							if uint64(sp)+8 > memSize {
+							if !cpu.mmuStackWrite(sp, cpu.PC, memBase, memSize) {
+								if cpu.trapped {
+									cpu.trapped = false
+									cpu.regs[31] += 8
+									cpu.inInterrupt.Store(false)
+									continue
+								}
 								cpu.running.Store(false)
 								running = false
 								continue
 							}
-							*(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(sp))) = cpu.PC
 							cpu.PC = cpu.interruptVector
 						}
 						// Reload timer if still enabled (handler may have disabled it)
@@ -617,11 +856,19 @@ func (cpu *CPU64) Execute() {
 			if rd != 0 {
 				addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
 				cpu.regs[rd] = cpu.loadMem(addr, size)
+				if cpu.trapped {
+					cpu.trapped = false
+					continue
+				}
 			}
 
 		case OP_STORE:
 			addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
 			cpu.storeMem(addr, maskToSize(cpu.regs[rd], size), size)
+			if cpu.trapped {
+				cpu.trapped = false
+				continue
+			}
 
 		case OP_ADD:
 			if rd != 0 {
@@ -803,44 +1050,61 @@ func (cpu *CPU64) Execute() {
 		case OP_JSR64:
 			cpu.regs[31] -= 8
 			sp := uint32(cpu.regs[31])
-			if uint64(sp)+8 > memSize {
+			if !cpu.mmuStackWrite(sp, cpu.PC+IE64_INSTR_SIZE, memBase, memSize) {
+				if cpu.trapped {
+					cpu.trapped = false
+					cpu.regs[31] += 8 // undo SP decrement on fault
+					continue
+				}
 				cpu.running.Store(false)
 				running = false
 				continue
 			}
-			*(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(sp))) = cpu.PC + IE64_INSTR_SIZE
 			cpu.PC = uint64(int64(cpu.PC) + int64(int32(imm32)))
 			continue
 
 		case OP_RTS64:
 			sp := uint32(cpu.regs[31])
-			if uint64(sp)+8 > memSize {
+			val, ok := cpu.mmuStackRead(sp, memBase, memSize)
+			if !ok {
+				if cpu.trapped {
+					cpu.trapped = false
+					continue
+				}
 				cpu.running.Store(false)
 				running = false
 				continue
 			}
-			cpu.PC = *(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(sp)))
+			cpu.PC = val
 			cpu.regs[31] += 8
 			continue
 
 		case OP_PUSH64:
 			cpu.regs[31] -= 8
 			sp := uint32(cpu.regs[31])
-			if uint64(sp)+8 > memSize {
+			if !cpu.mmuStackWrite(sp, cpu.regs[rs], memBase, memSize) {
+				if cpu.trapped {
+					cpu.trapped = false
+					cpu.regs[31] += 8
+					continue
+				}
 				cpu.running.Store(false)
 				running = false
 				continue
 			}
-			*(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(sp))) = cpu.regs[rs]
 
 		case OP_POP64:
 			sp := uint32(cpu.regs[31])
-			if uint64(sp)+8 > memSize {
+			val, ok := cpu.mmuStackRead(sp, memBase, memSize)
+			if !ok {
+				if cpu.trapped {
+					cpu.trapped = false
+					continue
+				}
 				cpu.running.Store(false)
 				running = false
 				continue
 			}
-			val := *(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(sp)))
 			if rd != 0 {
 				cpu.regs[rd] = val
 			}
@@ -849,12 +1113,16 @@ func (cpu *CPU64) Execute() {
 		case OP_JSR_IND:
 			cpu.regs[31] -= 8
 			sp := uint32(cpu.regs[31])
-			if uint64(sp)+8 > memSize {
+			if !cpu.mmuStackWrite(sp, cpu.PC+IE64_INSTR_SIZE, memBase, memSize) {
+				if cpu.trapped {
+					cpu.trapped = false
+					cpu.regs[31] += 8
+					continue
+				}
 				cpu.running.Store(false)
 				running = false
 				continue
 			}
-			*(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(sp))) = cpu.PC + IE64_INSTR_SIZE
 			target := uint64(int64(cpu.regs[rs]) + int64(int32(imm32)))
 			cpu.PC = target & IE64_ADDR_MASK
 			continue
@@ -879,10 +1147,16 @@ func (cpu *CPU64) Execute() {
 			if rd > 15 {
 				goto invalid_freg
 			}
-			addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
-			val := uint32(cpu.loadMem(addr, IE64_SIZE_L))
-			cpu.FPU.FPRegs[rd] = val
-			cpu.FPU.setConditionCodesBits(val)
+			{
+				addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
+				val := uint32(cpu.loadMem(addr, IE64_SIZE_L))
+				if cpu.trapped {
+					cpu.trapped = false
+					continue
+				}
+				cpu.FPU.FPRegs[rd] = val
+				cpu.FPU.setConditionCodesBits(val)
+			}
 
 		case OP_FSTORE:
 			if cpu.FPU == nil {
@@ -893,6 +1167,10 @@ func (cpu *CPU64) Execute() {
 			}
 			addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
 			cpu.storeMem(addr, uint64(cpu.FPU.FPRegs[rd]), IE64_SIZE_L)
+			if cpu.trapped {
+				cpu.trapped = false
+				continue
+			}
 
 		case OP_FADD:
 			if cpu.FPU == nil {
@@ -1149,12 +1427,17 @@ func (cpu *CPU64) Execute() {
 
 		case OP_RTI64:
 			sp := uint32(cpu.regs[31])
-			if uint64(sp)+8 > memSize {
+			val, ok := cpu.mmuStackRead(sp, memBase, memSize)
+			if !ok {
+				if cpu.trapped {
+					cpu.trapped = false
+					continue
+				}
 				cpu.running.Store(false)
 				running = false
 				continue
 			}
-			cpu.PC = *(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(sp)))
+			cpu.PC = val
 			cpu.regs[31] += 8
 			cpu.inInterrupt.Store(false)
 			continue
@@ -1162,6 +1445,121 @@ func (cpu *CPU64) Execute() {
 		case OP_WAIT64:
 			if imm32 > 0 {
 				time.Sleep(time.Duration(imm32) * time.Microsecond)
+			}
+
+		// ------------------------------------------------------------------
+		// MMU / Privilege
+		// ------------------------------------------------------------------
+
+		case OP_MTCR:
+			if !cpu.requireSupervisor() {
+				continue // trap was fired, PC is now at trap handler
+			}
+			crIdx := rd
+			val := cpu.regs[rs]
+			switch crIdx {
+			case CR_PTBR:
+				cpu.ptbr = uint32(val)
+				cpu.tlbFlush()
+				cpu.jitNeedInval = true
+			case CR_FAULT_ADDR:
+				cpu.faultAddr = uint32(val)
+			case CR_FAULT_CAUSE:
+				cpu.faultCause = uint32(val)
+			case CR_FAULT_PC:
+				cpu.faultPC = val
+			case CR_TRAP_VEC:
+				cpu.trapVector = val
+			case CR_MMU_CTRL:
+				// Bit 0 = mmuEnabled (writable), Bit 1 = supervisor (read-only, ignored)
+				newMMU := val&1 != 0
+				if newMMU != cpu.mmuEnabled {
+					cpu.mmuEnabled = newMMU
+					cpu.tlbFlush()
+					cpu.jitNeedInval = true
+				}
+			case CR_TP:
+				cpu.threadPointer = val
+			}
+
+		case OP_MFCR:
+			// CR_TP is readable from user mode; all others require supervisor
+			crIdx := rs
+			if crIdx != CR_TP && !cpu.requireSupervisor() {
+				continue
+			}
+			var val uint64
+			switch crIdx {
+			case CR_PTBR:
+				val = uint64(cpu.ptbr)
+			case CR_FAULT_ADDR:
+				val = uint64(cpu.faultAddr)
+			case CR_FAULT_CAUSE:
+				val = uint64(cpu.faultCause)
+			case CR_FAULT_PC:
+				val = cpu.faultPC
+			case CR_TRAP_VEC:
+				val = cpu.trapVector
+			case CR_MMU_CTRL:
+				val = 0
+				if cpu.mmuEnabled {
+					val |= 1
+				}
+				if cpu.supervisorMode {
+					val |= 2
+				}
+			case CR_TP:
+				val = cpu.threadPointer
+			}
+			if rd != 0 {
+				cpu.regs[rd] = val
+			}
+
+		case OP_ERET:
+			if !cpu.requireSupervisor() {
+				continue
+			}
+			cpu.PC = cpu.faultPC
+			cpu.supervisorMode = false
+			continue // PC was set explicitly
+
+		case OP_TLBFLUSH:
+			if !cpu.requireSupervisor() {
+				continue
+			}
+			cpu.tlbFlush()
+			cpu.jitNeedInval = true
+
+		case OP_TLBINVAL:
+			if !cpu.requireSupervisor() {
+				continue
+			}
+			vpn := uint16(cpu.regs[rs] >> MMU_PAGE_SHIFT)
+			cpu.tlbInvalidate(vpn)
+			cpu.jitNeedInval = true
+
+		case OP_SYSCALL:
+			cpu.trapSyscall(imm32)
+			continue // PC was set to trapVector
+
+		case OP_SMODE:
+			if rd != 0 {
+				if cpu.supervisorMode {
+					cpu.regs[rd] = 1
+				} else {
+					cpu.regs[rd] = 0
+				}
+			}
+
+		// ------------------------------------------------------------------
+		// Atomic Memory RMW
+		// ------------------------------------------------------------------
+
+		case OP_CAS, OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR:
+			cpu.execAtomic(rd, rs, rt, imm32, opcode)
+			if cpu.trapped {
+				cpu.trapped = false
+				continue
 			}
 
 		default:
@@ -1231,6 +1629,17 @@ func (cpu *CPU64) StepOne() int {
 	memBase := unsafe.Pointer(&cpu.memory[0])
 
 	pc32 := uint32(cpu.PC & IE64_ADDR_MASK)
+
+	// MMU translation for instruction fetch
+	if cpu.mmuEnabled {
+		phys, fault, cause := cpu.translateAddr(pc32, ACCESS_EXEC)
+		if fault {
+			cpu.trapFault(cause, pc32)
+			return 1 // trap consumed a cycle
+		}
+		pc32 = phys
+	}
+
 	if uint64(pc32)+8 > memSize {
 		return 0
 	}
@@ -1285,10 +1694,18 @@ func (cpu *CPU64) StepOne() int {
 		if rd != 0 {
 			addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
 			cpu.regs[rd] = cpu.loadMem(addr, size)
+			if cpu.trapped {
+				cpu.trapped = false
+				pcAdvanced = true // trap set PC
+			}
 		}
 	case OP_STORE:
 		addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
 		cpu.storeMem(addr, maskToSize(cpu.regs[rd], size), size)
+		if cpu.trapped {
+			cpu.trapped = false
+			pcAdvanced = true
+		}
 	case OP_ADD:
 		if rd != 0 {
 			cpu.regs[rd] = maskToSize(cpu.regs[rs]+operand3, size)
@@ -1443,42 +1860,62 @@ func (cpu *CPU64) StepOne() int {
 	case OP_JSR64:
 		cpu.regs[31] -= 8
 		sp := uint32(cpu.regs[31])
-		if uint64(sp)+8 <= memSize {
-			*(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(sp))) = cpu.PC + IE64_INSTR_SIZE
+		if !cpu.mmuStackWrite(sp, cpu.PC+IE64_INSTR_SIZE, memBase, memSize) {
+			if cpu.trapped {
+				cpu.trapped = false
+				cpu.regs[31] += 8
+			}
+			pcAdvanced = true
+		} else {
 			cpu.PC = uint64(int64(cpu.PC) + int64(int32(imm32)))
+			pcAdvanced = true
 		}
-		pcAdvanced = true
 	case OP_RTS64:
 		sp := uint32(cpu.regs[31])
-		if uint64(sp)+8 <= memSize {
-			cpu.PC = *(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(sp)))
+		val, ok := cpu.mmuStackRead(sp, memBase, memSize)
+		if ok {
+			cpu.PC = val
 			cpu.regs[31] += 8
+		} else if cpu.trapped {
+			cpu.trapped = false
 		}
 		pcAdvanced = true
 	case OP_PUSH64:
 		cpu.regs[31] -= 8
 		sp := uint32(cpu.regs[31])
-		if uint64(sp)+8 <= memSize {
-			*(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(sp))) = cpu.regs[rs]
+		if !cpu.mmuStackWrite(sp, cpu.regs[rs], memBase, memSize) {
+			if cpu.trapped {
+				cpu.trapped = false
+				cpu.regs[31] += 8
+				pcAdvanced = true // trap set PC
+			}
 		}
 	case OP_POP64:
 		sp := uint32(cpu.regs[31])
-		if uint64(sp)+8 <= memSize {
-			val := *(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(sp)))
+		val, ok := cpu.mmuStackRead(sp, memBase, memSize)
+		if ok {
 			if rd != 0 {
 				cpu.regs[rd] = val
 			}
 			cpu.regs[31] += 8
+		} else if cpu.trapped {
+			cpu.trapped = false
+			pcAdvanced = true // trap set PC
 		}
 	case OP_JSR_IND:
 		cpu.regs[31] -= 8
 		sp := uint32(cpu.regs[31])
-		if uint64(sp)+8 <= memSize {
-			*(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(sp))) = cpu.PC + IE64_INSTR_SIZE
+		if !cpu.mmuStackWrite(sp, cpu.PC+IE64_INSTR_SIZE, memBase, memSize) {
+			if cpu.trapped {
+				cpu.trapped = false
+				cpu.regs[31] += 8
+			}
+			pcAdvanced = true
+		} else {
 			target := uint64(int64(cpu.regs[rs]) + int64(int32(imm32)))
 			cpu.PC = target & IE64_ADDR_MASK
+			pcAdvanced = true
 		}
-		pcAdvanced = true
 	case OP_FMOV:
 		if cpu.FPU != nil && rd <= 15 && rs <= 15 {
 			cpu.FPU.FPRegs[rd&0x0F] = cpu.FPU.FPRegs[rs&0x0F]
@@ -1487,13 +1924,22 @@ func (cpu *CPU64) StepOne() int {
 		if cpu.FPU != nil && rd <= 15 {
 			addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
 			val := uint32(cpu.loadMem(addr, IE64_SIZE_L))
-			cpu.FPU.FPRegs[rd] = val
-			cpu.FPU.setConditionCodesBits(val)
+			if cpu.trapped {
+				cpu.trapped = false
+				pcAdvanced = true
+			} else {
+				cpu.FPU.FPRegs[rd] = val
+				cpu.FPU.setConditionCodesBits(val)
+			}
 		}
 	case OP_FSTORE:
 		if cpu.FPU != nil && rd <= 15 {
 			addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
 			cpu.storeMem(addr, uint64(cpu.FPU.FPRegs[rd]), IE64_SIZE_L)
+			if cpu.trapped {
+				cpu.trapped = false
+				pcAdvanced = true
+			}
 		}
 	case OP_FADD:
 		if cpu.FPU != nil && rd <= 15 && rs <= 15 && rt <= 15 {
@@ -1623,14 +2069,125 @@ func (cpu *CPU64) StepOne() int {
 		cpu.interruptEnabled.Store(false)
 	case OP_RTI64:
 		sp := uint32(cpu.regs[31])
-		if uint64(sp)+8 <= memSize {
-			cpu.PC = *(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(sp)))
+		val, ok := cpu.mmuStackRead(sp, memBase, memSize)
+		if ok {
+			cpu.PC = val
 			cpu.regs[31] += 8
 			cpu.inInterrupt.Store(false)
+		} else if cpu.trapped {
+			cpu.trapped = false
 		}
 		pcAdvanced = true
 	case OP_WAIT64:
 		// In step mode, just skip the wait
+
+	// MMU / Privilege
+	case OP_MTCR:
+		if !cpu.requireSupervisor() {
+			pcAdvanced = true // trap set PC
+		} else {
+			crIdx := rd
+			val := cpu.regs[rs]
+			switch crIdx {
+			case CR_PTBR:
+				cpu.ptbr = uint32(val)
+				cpu.tlbFlush()
+				cpu.jitNeedInval = true
+			case CR_FAULT_ADDR:
+				cpu.faultAddr = uint32(val)
+			case CR_FAULT_CAUSE:
+				cpu.faultCause = uint32(val)
+			case CR_FAULT_PC:
+				cpu.faultPC = val
+			case CR_TRAP_VEC:
+				cpu.trapVector = val
+			case CR_MMU_CTRL:
+				newMMU := val&1 != 0
+				if newMMU != cpu.mmuEnabled {
+					cpu.mmuEnabled = newMMU
+					cpu.tlbFlush()
+					cpu.jitNeedInval = true
+				}
+			case CR_TP:
+				cpu.threadPointer = val
+			}
+		}
+	case OP_MFCR:
+		// CR_TP is readable from user mode; all others require supervisor
+		crIdx := rs
+		if crIdx != CR_TP && !cpu.requireSupervisor() {
+			pcAdvanced = true
+		} else {
+			var val uint64
+			switch crIdx {
+			case CR_PTBR:
+				val = uint64(cpu.ptbr)
+			case CR_FAULT_ADDR:
+				val = uint64(cpu.faultAddr)
+			case CR_FAULT_CAUSE:
+				val = uint64(cpu.faultCause)
+			case CR_FAULT_PC:
+				val = cpu.faultPC
+			case CR_TRAP_VEC:
+				val = cpu.trapVector
+			case CR_MMU_CTRL:
+				val = 0
+				if cpu.mmuEnabled {
+					val |= 1
+				}
+				if cpu.supervisorMode {
+					val |= 2
+				}
+			case CR_TP:
+				val = cpu.threadPointer
+			}
+			if rd != 0 {
+				cpu.regs[rd] = val
+			}
+		}
+	case OP_ERET:
+		if !cpu.requireSupervisor() {
+			pcAdvanced = true
+		} else {
+			cpu.PC = cpu.faultPC
+			cpu.supervisorMode = false
+			pcAdvanced = true
+		}
+	case OP_TLBFLUSH:
+		if !cpu.requireSupervisor() {
+			pcAdvanced = true
+		} else {
+			cpu.tlbFlush()
+			cpu.jitNeedInval = true
+		}
+	case OP_TLBINVAL:
+		if !cpu.requireSupervisor() {
+			pcAdvanced = true
+		} else {
+			vpn := uint16(cpu.regs[rs] >> MMU_PAGE_SHIFT)
+			cpu.tlbInvalidate(vpn)
+			cpu.jitNeedInval = true
+		}
+	case OP_SYSCALL:
+		cpu.trapSyscall(imm32)
+		pcAdvanced = true
+	case OP_SMODE:
+		if rd != 0 {
+			if cpu.supervisorMode {
+				cpu.regs[rd] = 1
+			} else {
+				cpu.regs[rd] = 0
+			}
+		}
+
+	// Atomic Memory RMW
+	case OP_CAS, OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR:
+		cpu.execAtomic(rd, rs, rt, imm32, opcode)
+		if cpu.trapped {
+			cpu.trapped = false
+			pcAdvanced = true
+		}
+
 	default:
 		return 0
 	}

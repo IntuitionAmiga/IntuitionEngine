@@ -815,8 +815,16 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint32, isLast b
 	// Memory Access
 	// ======================================================================
 	case OP_LOAD:
+		if ji.mmuBail {
+			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+			return
+		}
 		emitLOAD_AMD64(cb, ji, instrPC, br, writtenSoFar)
 	case OP_STORE:
+		if ji.mmuBail {
+			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+			return
+		}
 		emitSTORE_AMD64(cb, ji, instrPC, br, writtenSoFar)
 
 	// ======================================================================
@@ -847,14 +855,34 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint32, isLast b
 	// Subroutine / Stack
 	// ======================================================================
 	case OP_JSR64:
+		if ji.mmuBail {
+			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+			return
+		}
 		emitJSR_AMD64(cb, ji, instrPC, br)
 	case OP_RTS64:
+		if ji.mmuBail {
+			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+			return
+		}
 		emitRTS_AMD64(cb, br, ji.pcOffset/IE64_INSTR_SIZE+1)
 	case OP_PUSH64:
+		if ji.mmuBail {
+			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+			return
+		}
 		emitPUSH_AMD64(cb, ji)
 	case OP_POP64:
+		if ji.mmuBail {
+			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+			return
+		}
 		emitPOP_AMD64(cb, ji)
 	case OP_JSR_IND:
+		if ji.mmuBail {
+			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+			return
+		}
 		emitJSR_IND_AMD64(cb, ji, instrPC, br, ji.pcOffset/IE64_INSTR_SIZE+1)
 
 	// ======================================================================
@@ -923,8 +951,16 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint32, isLast b
 	// FPU — Memory
 	// ======================================================================
 	case OP_FLOAD:
+		if ji.mmuBail {
+			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+			return
+		}
 		emitFLOAD_AMD64(cb, ji, instrPC, br, writtenSoFar)
 	case OP_FSTORE:
+		if ji.mmuBail {
+			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+			return
+		}
 		emitFSTORE_AMD64(cb, ji, instrPC, br, writtenSoFar)
 
 	// ======================================================================
@@ -932,6 +968,16 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint32, isLast b
 	// ======================================================================
 	case OP_FMOD, OP_FSIN, OP_FCOS, OP_FTAN, OP_FATAN, OP_FLOG, OP_FEXP, OP_FPOW:
 		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+
+	// MMU/privilege opcodes: always bail to interpreter
+	case OP_MTCR, OP_MFCR, OP_ERET, OP_TLBFLUSH, OP_TLBINVAL, OP_SYSCALL, OP_SMODE:
+		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+		return
+
+	// Atomic RMW: always bail to interpreter
+	case OP_CAS, OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR:
+		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+		return
 
 	default:
 		amd64NOP(cb)

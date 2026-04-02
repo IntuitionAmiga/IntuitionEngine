@@ -33,48 +33,61 @@ import (
 // Opcode constants (local to avoid cross-build-tag dependency)
 // ---------------------------------------------------------------------
 const (
-	dis64_MOVE  = 0x01
-	dis64_MOVT  = 0x02
-	dis64_MOVEQ = 0x03
-	dis64_LEA   = 0x04
-	dis64_LOAD  = 0x10
-	dis64_STORE = 0x11
-	dis64_ADD   = 0x20
-	dis64_SUB   = 0x21
-	dis64_MULU  = 0x22
-	dis64_MULS  = 0x23
-	dis64_DIVU  = 0x24
-	dis64_DIVS  = 0x25
-	dis64_MOD   = 0x26
-	dis64_NEG   = 0x27
-	dis64_AND   = 0x30
-	dis64_OR    = 0x31
-	dis64_EOR   = 0x32
-	dis64_NOT   = 0x33
-	dis64_LSL   = 0x34
-	dis64_LSR   = 0x35
-	dis64_ASR   = 0x36
-	dis64_BRA   = 0x40
-	dis64_BEQ   = 0x41
-	dis64_BNE   = 0x42
-	dis64_BLT   = 0x43
-	dis64_BGE   = 0x44
-	dis64_BGT   = 0x45
-	dis64_BLE   = 0x46
-	dis64_BHI   = 0x47
-	dis64_BLS   = 0x48
-	dis64_JMP   = 0x49
-	dis64_JSR   = 0x50
-	dis64_RTS   = 0x51
-	dis64_PUSH  = 0x52
-	dis64_POP   = 0x53
-	dis64_JSRI  = 0x54
-	dis64_NOP   = 0xE0
-	dis64_HALT  = 0xE1
-	dis64_SEI   = 0xE2
-	dis64_CLI   = 0xE3
-	dis64_RTI   = 0xE4
-	dis64_WAIT  = 0xE5
+	dis64_MOVE     = 0x01
+	dis64_MOVT     = 0x02
+	dis64_MOVEQ    = 0x03
+	dis64_LEA      = 0x04
+	dis64_LOAD     = 0x10
+	dis64_STORE    = 0x11
+	dis64_ADD      = 0x20
+	dis64_SUB      = 0x21
+	dis64_MULU     = 0x22
+	dis64_MULS     = 0x23
+	dis64_DIVU     = 0x24
+	dis64_DIVS     = 0x25
+	dis64_MOD      = 0x26
+	dis64_NEG      = 0x27
+	dis64_AND      = 0x30
+	dis64_OR       = 0x31
+	dis64_EOR      = 0x32
+	dis64_NOT      = 0x33
+	dis64_LSL      = 0x34
+	dis64_LSR      = 0x35
+	dis64_ASR      = 0x36
+	dis64_BRA      = 0x40
+	dis64_BEQ      = 0x41
+	dis64_BNE      = 0x42
+	dis64_BLT      = 0x43
+	dis64_BGE      = 0x44
+	dis64_BGT      = 0x45
+	dis64_BLE      = 0x46
+	dis64_BHI      = 0x47
+	dis64_BLS      = 0x48
+	dis64_JMP      = 0x49
+	dis64_JSR      = 0x50
+	dis64_RTS      = 0x51
+	dis64_PUSH     = 0x52
+	dis64_POP      = 0x53
+	dis64_JSRI     = 0x54
+	dis64_NOP      = 0xE0
+	dis64_HALT     = 0xE1
+	dis64_SEI      = 0xE2
+	dis64_CLI      = 0xE3
+	dis64_RTI      = 0xE4
+	dis64_WAIT     = 0xE5
+	dis64_MTCR     = 0xE6
+	dis64_MFCR     = 0xE7
+	dis64_ERET     = 0xE8
+	dis64_TLBFLUSH = 0xE9
+	dis64_TLBINVAL = 0xEA
+	dis64_SYSCALL  = 0xEB
+	dis64_SMODE    = 0xEC
+	dis64_CAS      = 0xED
+	dis64_XCHG     = 0xEE
+	dis64_FAA      = 0xEF
+	dis64_FAND     = 0xF0
+	dis64_FOR      = 0xF1
+	dis64_FXOR     = 0xF2
 )
 
 // Instruction size in bytes
@@ -85,48 +98,61 @@ const dis64InstrSize = 8
 // ---------------------------------------------------------------------
 
 var opcodeNames = map[byte]string{
-	dis64_MOVE:  "move",
-	dis64_MOVT:  "movt",
-	dis64_MOVEQ: "moveq",
-	dis64_LEA:   "lea",
-	dis64_LOAD:  "load",
-	dis64_STORE: "store",
-	dis64_ADD:   "add",
-	dis64_SUB:   "sub",
-	dis64_MULU:  "mulu",
-	dis64_MULS:  "muls",
-	dis64_DIVU:  "divu",
-	dis64_DIVS:  "divs",
-	dis64_MOD:   "mod",
-	dis64_NEG:   "neg",
-	dis64_AND:   "and",
-	dis64_OR:    "or",
-	dis64_EOR:   "eor",
-	dis64_NOT:   "not",
-	dis64_LSL:   "lsl",
-	dis64_LSR:   "lsr",
-	dis64_ASR:   "asr",
-	dis64_BRA:   "bra",
-	dis64_BEQ:   "beq",
-	dis64_BNE:   "bne",
-	dis64_BLT:   "blt",
-	dis64_BGE:   "bge",
-	dis64_BGT:   "bgt",
-	dis64_BLE:   "ble",
-	dis64_BHI:   "bhi",
-	dis64_BLS:   "bls",
-	dis64_JMP:   "jmp",
-	dis64_JSR:   "jsr",
-	dis64_RTS:   "rts",
-	dis64_PUSH:  "push",
-	dis64_POP:   "pop",
-	dis64_JSRI:  "jsr",
-	dis64_NOP:   "nop",
-	dis64_HALT:  "halt",
-	dis64_SEI:   "sei",
-	dis64_CLI:   "cli",
-	dis64_RTI:   "rti",
-	dis64_WAIT:  "wait",
+	dis64_MOVE:     "move",
+	dis64_MOVT:     "movt",
+	dis64_MOVEQ:    "moveq",
+	dis64_LEA:      "lea",
+	dis64_LOAD:     "load",
+	dis64_STORE:    "store",
+	dis64_ADD:      "add",
+	dis64_SUB:      "sub",
+	dis64_MULU:     "mulu",
+	dis64_MULS:     "muls",
+	dis64_DIVU:     "divu",
+	dis64_DIVS:     "divs",
+	dis64_MOD:      "mod",
+	dis64_NEG:      "neg",
+	dis64_AND:      "and",
+	dis64_OR:       "or",
+	dis64_EOR:      "eor",
+	dis64_NOT:      "not",
+	dis64_LSL:      "lsl",
+	dis64_LSR:      "lsr",
+	dis64_ASR:      "asr",
+	dis64_BRA:      "bra",
+	dis64_BEQ:      "beq",
+	dis64_BNE:      "bne",
+	dis64_BLT:      "blt",
+	dis64_BGE:      "bge",
+	dis64_BGT:      "bgt",
+	dis64_BLE:      "ble",
+	dis64_BHI:      "bhi",
+	dis64_BLS:      "bls",
+	dis64_JMP:      "jmp",
+	dis64_JSR:      "jsr",
+	dis64_RTS:      "rts",
+	dis64_PUSH:     "push",
+	dis64_POP:      "pop",
+	dis64_JSRI:     "jsr",
+	dis64_NOP:      "nop",
+	dis64_HALT:     "halt",
+	dis64_SEI:      "sei",
+	dis64_CLI:      "cli",
+	dis64_RTI:      "rti",
+	dis64_WAIT:     "wait",
+	dis64_MTCR:     "mtcr",
+	dis64_MFCR:     "mfcr",
+	dis64_ERET:     "eret",
+	dis64_TLBFLUSH: "tlbflush",
+	dis64_TLBINVAL: "tlbinval",
+	dis64_SYSCALL:  "syscall",
+	dis64_SMODE:    "smode",
+	dis64_CAS:      "cas",
+	dis64_XCHG:     "xchg",
+	dis64_FAA:      "faa",
+	dis64_FAND:     "fand",
+	dis64_FOR:      "for",
+	dis64_FXOR:     "fxor",
 }
 
 // ---------------------------------------------------------------------
@@ -144,6 +170,28 @@ func regName(r byte) string {
 		return "sp"
 	}
 	return fmt.Sprintf("r%d", r)
+}
+
+// crName returns the symbolic name of a control register.
+func crName(cr byte) string {
+	switch cr {
+	case 0:
+		return "cr0"
+	case 1:
+		return "cr1"
+	case 2:
+		return "cr2"
+	case 3:
+		return "cr3"
+	case 4:
+		return "cr4"
+	case 5:
+		return "cr5"
+	case 6:
+		return "cr6"
+	default:
+		return fmt.Sprintf("cr%d", cr)
+	}
 }
 
 // ---------------------------------------------------------------------
@@ -195,7 +243,10 @@ func isSized(op byte) bool {
 	case dis64_NOP, dis64_HALT, dis64_SEI, dis64_CLI, dis64_RTI, dis64_WAIT,
 		dis64_BRA, dis64_BEQ, dis64_BNE, dis64_BLT, dis64_BGE, dis64_BGT,
 		dis64_BLE, dis64_BHI, dis64_BLS, dis64_JMP, dis64_JSR, dis64_RTS,
-		dis64_MOVT, dis64_MOVEQ, dis64_LEA, dis64_PUSH, dis64_POP, dis64_JSRI:
+		dis64_MOVT, dis64_MOVEQ, dis64_LEA, dis64_PUSH, dis64_POP, dis64_JSRI,
+		dis64_MTCR, dis64_MFCR, dis64_ERET, dis64_TLBFLUSH, dis64_TLBINVAL,
+		dis64_SYSCALL, dis64_SMODE,
+		dis64_CAS, dis64_XCHG, dis64_FAA, dis64_FAND, dis64_FOR, dis64_FXOR:
 		return false
 	}
 	return true
@@ -245,7 +296,8 @@ func FormatInstruction(d DecodedInstruction) (string, string) {
 	// System instructions with no operands
 	case d.Opcode == dis64_NOP || d.Opcode == dis64_HALT ||
 		d.Opcode == dis64_SEI || d.Opcode == dis64_CLI ||
-		d.Opcode == dis64_RTI:
+		d.Opcode == dis64_RTI ||
+		d.Opcode == dis64_ERET || d.Opcode == dis64_TLBFLUSH:
 		return hexBytes, mnemonic
 
 	// RTS: no operands
@@ -255,6 +307,37 @@ func FormatInstruction(d DecodedInstruction) (string, string) {
 	// WAIT: imm32 operand
 	case d.Opcode == dis64_WAIT:
 		return hexBytes, fmt.Sprintf("%s #%d", mnemonic, d.Imm32)
+
+	// MTCR: cr#, Rs
+	case d.Opcode == dis64_MTCR:
+		return hexBytes, fmt.Sprintf("%s %s, %s", mnemonic, crName(d.Rd), regName(d.Rs))
+
+	// MFCR: Rd, cr#
+	case d.Opcode == dis64_MFCR:
+		return hexBytes, fmt.Sprintf("%s %s, %s", mnemonic, regName(d.Rd), crName(d.Rs))
+
+	// TLBINVAL: Rs
+	case d.Opcode == dis64_TLBINVAL:
+		return hexBytes, fmt.Sprintf("%s %s", mnemonic, regName(d.Rs))
+
+	// SYSCALL: #imm32
+	case d.Opcode == dis64_SYSCALL:
+		return hexBytes, fmt.Sprintf("%s #%d", mnemonic, d.Imm32)
+
+	// SMODE: Rd
+	case d.Opcode == dis64_SMODE:
+		return hexBytes, fmt.Sprintf("%s %s", mnemonic, regName(d.Rd))
+
+	// Atomic RMW: rd, disp(rs), rt
+	case d.Opcode == dis64_CAS || d.Opcode == dis64_XCHG ||
+		d.Opcode == dis64_FAA || d.Opcode == dis64_FAND ||
+		d.Opcode == dis64_FOR || d.Opcode == dis64_FXOR:
+		if d.Imm32 != 0 {
+			return hexBytes, fmt.Sprintf("%s %s, %d(%s), %s", mnemonic,
+				regName(d.Rd), int32(d.Imm32), regName(d.Rs), regName(d.Rt))
+		}
+		return hexBytes, fmt.Sprintf("%s %s, (%s), %s", mnemonic,
+			regName(d.Rd), regName(d.Rs), regName(d.Rt))
 
 	// MOVE: Rd, Rs or Rd, #imm
 	case d.Opcode == dis64_MOVE:

@@ -1944,3 +1944,519 @@ func TestIE64_FPU_Integration(t *testing.T) {
 		}
 	})
 }
+
+// ===========================================================================
+// MMU Phase 1: Privilege Mode and Trap Model
+// ===========================================================================
+
+func TestIE64_DefaultSupervisorMode(t *testing.T) {
+	rig := newIE64TestRig()
+	if !rig.cpu.supervisorMode {
+		t.Fatal("new CPU should start in supervisor mode")
+	}
+}
+
+func TestIE64_SMODE_ReadsMode(t *testing.T) {
+	rig := newIE64TestRig()
+
+	// In supervisor mode, SMODE R1 should return 1
+	rig.executeOne(ie64Instr(OP_SMODE, 1, 0, 0, 0, 0, 0))
+	if rig.cpu.regs[1] != 1 {
+		t.Fatalf("SMODE in supervisor: got %d, want 1", rig.cpu.regs[1])
+	}
+}
+
+func TestIE64_SYSCALL_SavesNextPC(t *testing.T) {
+	rig := newIE64TestRig()
+
+	// Set up trap vector to point to a HALT
+	trapAddr := uint64(0x8000)
+	rig.cpu.trapVector = trapAddr
+	copy(rig.cpu.memory[trapAddr:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	// SYSCALL at PROG_START
+	rig.loadInstructions(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, 42))
+	rig.cpu.running.Store(true)
+	rig.cpu.Execute()
+
+	// faultPC should be PROG_START + 8 (next instruction, not SYSCALL itself)
+	expectedPC := uint64(PROG_START) + IE64_INSTR_SIZE
+	if rig.cpu.faultPC != expectedPC {
+		t.Fatalf("SYSCALL faultPC = 0x%X, want 0x%X", rig.cpu.faultPC, expectedPC)
+	}
+}
+
+func TestIE64_SYSCALL_FaultCause6(t *testing.T) {
+	rig := newIE64TestRig()
+	trapAddr := uint64(0x8000)
+	rig.cpu.trapVector = trapAddr
+	copy(rig.cpu.memory[trapAddr:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.loadInstructions(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, 99))
+	rig.cpu.running.Store(true)
+	rig.cpu.Execute()
+
+	if rig.cpu.faultCause != FAULT_SYSCALL {
+		t.Fatalf("SYSCALL faultCause = %d, want %d", rig.cpu.faultCause, FAULT_SYSCALL)
+	}
+}
+
+func TestIE64_SYSCALL_JumpsToTrapVec(t *testing.T) {
+	rig := newIE64TestRig()
+	trapAddr := uint64(0x8000)
+	rig.cpu.trapVector = trapAddr
+
+	// Trap handler: MOVE.L R2, #0xBEEF then HALT
+	copy(rig.cpu.memory[trapAddr:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0xBEEF))
+	copy(rig.cpu.memory[trapAddr+8:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.loadInstructions(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, 0))
+	rig.cpu.running.Store(true)
+	rig.cpu.Execute()
+
+	if rig.cpu.regs[2] != 0xBEEF {
+		t.Fatalf("trap handler did not execute: R2 = 0x%X, want 0xBEEF", rig.cpu.regs[2])
+	}
+}
+
+func TestIE64_SYSCALL_StoresSyscallNum(t *testing.T) {
+	rig := newIE64TestRig()
+	trapAddr := uint64(0x8000)
+	rig.cpu.trapVector = trapAddr
+	copy(rig.cpu.memory[trapAddr:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.loadInstructions(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, 42))
+	rig.cpu.running.Store(true)
+	rig.cpu.Execute()
+
+	// Syscall number stored in faultAddr (readable via MFCR CR_FAULT_ADDR)
+	if rig.cpu.faultAddr != 42 {
+		t.Fatalf("SYSCALL faultAddr = %d, want 42", rig.cpu.faultAddr)
+	}
+}
+
+func TestIE64_ERET_RestoresFaultPC(t *testing.T) {
+	rig := newIE64TestRig()
+
+	// Set up: we're in supervisor mode. Set faultPC, then ERET.
+	targetPC := uint64(0x4000)
+	rig.cpu.faultPC = targetPC
+
+	// ERET will set PC = faultPC, then HALT at targetPC
+	copy(rig.cpu.memory[targetPC:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.loadInstructions(ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0))
+	rig.cpu.CoprocMode = true // allow PC outside normal range
+	rig.cpu.running.Store(true)
+	rig.cpu.Execute()
+
+	if rig.cpu.PC != targetPC {
+		t.Fatalf("ERET PC = 0x%X, want 0x%X", rig.cpu.PC, targetPC)
+	}
+}
+
+func TestIE64_ERET_SwitchesToUser(t *testing.T) {
+	rig := newIE64TestRig()
+	rig.cpu.faultPC = PROG_START + IE64_INSTR_SIZE // point past ERET
+
+	// After ERET: SMODE R1 (will read mode), then HALT
+	rig.loadInstructions(
+		ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0),
+		ie64Instr(OP_SMODE, 1, 0, 0, 0, 0, 0),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+	)
+	rig.cpu.running.Store(true)
+	rig.cpu.Execute()
+
+	if rig.cpu.regs[1] != 0 {
+		t.Fatalf("after ERET, SMODE should return 0 (user), got %d", rig.cpu.regs[1])
+	}
+}
+
+func TestIE64_MTCR_InUserMode_Traps(t *testing.T) {
+	rig := newIE64TestRig()
+	trapAddr := uint64(0x8000)
+	rig.cpu.trapVector = trapAddr
+	copy(rig.cpu.memory[trapAddr:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	// Switch to user mode via ERET, then try MTCR
+	rig.cpu.faultPC = PROG_START + IE64_INSTR_SIZE // past ERET
+
+	rig.loadInstructions(
+		ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0),
+		ie64Instr(OP_MTCR, CR_PTBR, 0, 0, 1, 0, 0),
+	)
+	rig.cpu.running.Store(true)
+	rig.cpu.Execute()
+
+	if rig.cpu.faultCause != FAULT_PRIV {
+		t.Fatalf("MTCR in user mode: faultCause = %d, want %d", rig.cpu.faultCause, FAULT_PRIV)
+	}
+}
+
+func TestIE64_PrivViolation_SavesFaultingPC(t *testing.T) {
+	rig := newIE64TestRig()
+	trapAddr := uint64(0x8000)
+	rig.cpu.trapVector = trapAddr
+	copy(rig.cpu.memory[trapAddr:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	// Switch to user mode, then MTCR which will trap
+	rig.cpu.faultPC = PROG_START + IE64_INSTR_SIZE
+
+	mtcrPC := uint64(PROG_START) + IE64_INSTR_SIZE // PC of the MTCR instruction
+	rig.loadInstructions(
+		ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0),
+		ie64Instr(OP_MTCR, CR_PTBR, 0, 0, 1, 0, 0),
+	)
+	rig.cpu.running.Store(true)
+	rig.cpu.Execute()
+
+	// faultPC should be the PC of the MTCR (faulting instruction), not PC+8
+	if rig.cpu.faultPC != mtcrPC {
+		t.Fatalf("priv violation faultPC = 0x%X, want 0x%X", rig.cpu.faultPC, mtcrPC)
+	}
+}
+
+func TestIE64_MFCR_ReadsCR(t *testing.T) {
+	rig := newIE64TestRig()
+
+	// Set up known values
+	rig.cpu.ptbr = 0x10000
+	rig.cpu.faultAddr = 0xDEAD
+	rig.cpu.faultCause = 3
+	rig.cpu.faultPC = 0xCAFE
+	rig.cpu.trapVector = 0xF00D
+
+	tests := []struct {
+		cr   byte
+		want uint64
+	}{
+		{CR_PTBR, 0x10000},
+		{CR_FAULT_ADDR, 0xDEAD},
+		{CR_FAULT_CAUSE, 3},
+		{CR_FAULT_PC, 0xCAFE},
+		{CR_TRAP_VEC, 0xF00D},
+	}
+
+	for _, tt := range tests {
+		rig2 := newIE64TestRig()
+		rig2.cpu.ptbr = rig.cpu.ptbr
+		rig2.cpu.faultAddr = rig.cpu.faultAddr
+		rig2.cpu.faultCause = rig.cpu.faultCause
+		rig2.cpu.faultPC = rig.cpu.faultPC
+		rig2.cpu.trapVector = rig.cpu.trapVector
+
+		rig2.executeOne(ie64Instr(OP_MFCR, 1, 0, 0, tt.cr, 0, 0))
+		if rig2.cpu.regs[1] != tt.want {
+			t.Errorf("MFCR CR%d: got 0x%X, want 0x%X", tt.cr, rig2.cpu.regs[1], tt.want)
+		}
+	}
+}
+
+func TestIE64_MTCR_WritesFaultPC(t *testing.T) {
+	rig := newIE64TestRig()
+
+	// Set R1 = 0x5000, then MTCR CR_FAULT_PC, R1
+	rig.executeN(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x5000),
+		ie64Instr(OP_MTCR, CR_FAULT_PC, 0, 0, 1, 0, 0),
+	)
+
+	if rig.cpu.faultPC != 0x5000 {
+		t.Fatalf("MTCR CR_FAULT_PC: got 0x%X, want 0x5000", rig.cpu.faultPC)
+	}
+}
+
+func TestIE64_SyscallEretRoundTrip(t *testing.T) {
+	rig := newIE64TestRig()
+	trapAddr := uint64(0x8000)
+	rig.cpu.trapVector = trapAddr
+
+	// Trap handler: just ERET back
+	copy(rig.cpu.memory[trapAddr:], ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0))
+
+	// Program: SYSCALL, then MOVE R2 #0xAA, then HALT
+	// SYSCALL saves PC+8 = address of MOVE instruction
+	// ERET returns to MOVE, R2 gets set, then HALT
+	rig.loadInstructions(
+		ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, 1),
+		ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0xAA),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+	)
+	rig.cpu.running.Store(true)
+	rig.cpu.Execute()
+
+	if rig.cpu.regs[2] != 0xAA {
+		t.Fatalf("syscall/ERET round trip: R2 = 0x%X, want 0xAA", rig.cpu.regs[2])
+	}
+}
+
+func TestIE64_MMU_CTRL_Bit1ReadOnly(t *testing.T) {
+	rig := newIE64TestRig()
+
+	// Use StepOne to avoid Execute loop issues when MMU is enabled without page tables
+	// Step 1: MOVE R1, #3 (both bits set)
+	rig.loadInstructions(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 3),
+		ie64Instr(OP_MTCR, CR_MMU_CTRL, 0, 0, 1, 0, 0),
+	)
+	rig.cpu.StepOne() // MOVE
+	rig.cpu.StepOne() // MTCR
+
+	if !rig.cpu.mmuEnabled {
+		t.Fatal("MMU_CTRL bit 0 should be writable")
+	}
+	if !rig.cpu.supervisorMode {
+		t.Fatal("MMU_CTRL bit 1 write should be ignored (still supervisor)")
+	}
+
+	// Test that writing 0 to bit 1 doesn't clear supervisor mode
+	rig2 := newIE64TestRig()
+	rig2.loadInstructions(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0),
+		ie64Instr(OP_MTCR, CR_MMU_CTRL, 0, 0, 1, 0, 0),
+	)
+	rig2.cpu.StepOne()
+	rig2.cpu.StepOne()
+	if !rig2.cpu.supervisorMode {
+		t.Fatal("writing 0 to MMU_CTRL should not clear supervisor mode")
+	}
+}
+
+func TestIE64_MMU_CTRL_Bit1Readable(t *testing.T) {
+	rig := newIE64TestRig()
+
+	// Read MMU_CTRL - should have bit 1 set (supervisor mode)
+	rig.executeOne(ie64Instr(OP_MFCR, 1, 0, 0, CR_MMU_CTRL, 0, 0))
+	if rig.cpu.regs[1]&2 == 0 {
+		t.Fatal("MFCR MMU_CTRL should reflect supervisor mode in bit 1")
+	}
+}
+
+// ===========================================================================
+// Atomic Memory RMW Operations
+// ===========================================================================
+
+// atomicTestAddr returns an 8-byte aligned address in the data region.
+func atomicTestAddr() uint32 { return 0x3000 }
+
+func TestIE64_CAS_BasicSwap(t *testing.T) {
+	rig := newIE64TestRig()
+	addr := atomicTestAddr()
+	// Memory[addr] = 100
+	binary.LittleEndian.PutUint64(rig.cpu.memory[addr:], 100)
+	// R1 = addr, R2 = 100 (compare), R3 = 200 (new)
+	rig.executeN(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, addr),
+		ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 100),
+		ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 200),
+		ie64Instr(OP_CAS, 2, 0, 0, 1, 3, 0), // cas r2, (r1), r3
+	)
+	got := binary.LittleEndian.Uint64(rig.cpu.memory[addr:])
+	if got != 200 {
+		t.Fatalf("CAS swap: mem = %d, want 200", got)
+	}
+	if rig.cpu.regs[2] != 100 {
+		t.Fatalf("CAS old: R2 = %d, want 100", rig.cpu.regs[2])
+	}
+}
+
+func TestIE64_CAS_NoSwap(t *testing.T) {
+	rig := newIE64TestRig()
+	addr := atomicTestAddr()
+	binary.LittleEndian.PutUint64(rig.cpu.memory[addr:], 100)
+	// R2 = 999 (mismatch), R3 = 200
+	rig.executeN(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, addr),
+		ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 999),
+		ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 200),
+		ie64Instr(OP_CAS, 2, 0, 0, 1, 3, 0),
+	)
+	got := binary.LittleEndian.Uint64(rig.cpu.memory[addr:])
+	if got != 100 {
+		t.Fatalf("CAS no-swap: mem = %d, want 100", got)
+	}
+	if rig.cpu.regs[2] != 100 {
+		t.Fatalf("CAS old: R2 = %d, want 100 (old value)", rig.cpu.regs[2])
+	}
+}
+
+func TestIE64_XCHG_Basic(t *testing.T) {
+	rig := newIE64TestRig()
+	addr := atomicTestAddr()
+	binary.LittleEndian.PutUint64(rig.cpu.memory[addr:], 0xDEAD)
+	rig.executeN(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, addr),
+		ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0xBEEF),
+		ie64Instr(OP_XCHG, 2, 0, 0, 1, 3, 0),
+	)
+	got := binary.LittleEndian.Uint64(rig.cpu.memory[addr:])
+	if got != 0xBEEF {
+		t.Fatalf("XCHG: mem = 0x%X, want 0xBEEF", got)
+	}
+	if rig.cpu.regs[2] != 0xDEAD {
+		t.Fatalf("XCHG old: R2 = 0x%X, want 0xDEAD", rig.cpu.regs[2])
+	}
+}
+
+func TestIE64_FAA_Basic(t *testing.T) {
+	rig := newIE64TestRig()
+	addr := atomicTestAddr()
+	binary.LittleEndian.PutUint64(rig.cpu.memory[addr:], 10)
+	rig.executeN(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, addr),
+		ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 5),
+		ie64Instr(OP_FAA, 2, 0, 0, 1, 3, 0),
+	)
+	got := binary.LittleEndian.Uint64(rig.cpu.memory[addr:])
+	if got != 15 {
+		t.Fatalf("FAA: mem = %d, want 15", got)
+	}
+	if rig.cpu.regs[2] != 10 {
+		t.Fatalf("FAA old: R2 = %d, want 10", rig.cpu.regs[2])
+	}
+}
+
+func TestIE64_FAND_Basic(t *testing.T) {
+	rig := newIE64TestRig()
+	addr := atomicTestAddr()
+	binary.LittleEndian.PutUint64(rig.cpu.memory[addr:], 0xFF)
+	rig.executeN(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, addr),
+		ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0x0F),
+		ie64Instr(OP_FAND, 2, 0, 0, 1, 3, 0),
+	)
+	got := binary.LittleEndian.Uint64(rig.cpu.memory[addr:])
+	if got != 0x0F {
+		t.Fatalf("FAND: mem = 0x%X, want 0x0F", got)
+	}
+	if rig.cpu.regs[2] != 0xFF {
+		t.Fatalf("FAND old: R2 = 0x%X, want 0xFF", rig.cpu.regs[2])
+	}
+}
+
+func TestIE64_FOR_Basic(t *testing.T) {
+	rig := newIE64TestRig()
+	addr := atomicTestAddr()
+	binary.LittleEndian.PutUint64(rig.cpu.memory[addr:], 0xF0)
+	rig.executeN(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, addr),
+		ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0x0F),
+		ie64Instr(OP_FOR, 2, 0, 0, 1, 3, 0),
+	)
+	got := binary.LittleEndian.Uint64(rig.cpu.memory[addr:])
+	if got != 0xFF {
+		t.Fatalf("FOR: mem = 0x%X, want 0xFF", got)
+	}
+	if rig.cpu.regs[2] != 0xF0 {
+		t.Fatalf("FOR old: R2 = 0x%X, want 0xF0", rig.cpu.regs[2])
+	}
+}
+
+func TestIE64_FXOR_Basic(t *testing.T) {
+	rig := newIE64TestRig()
+	addr := atomicTestAddr()
+	binary.LittleEndian.PutUint64(rig.cpu.memory[addr:], 0xFF)
+	rig.executeN(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, addr),
+		ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0xF0),
+		ie64Instr(OP_FXOR, 2, 0, 0, 1, 3, 0),
+	)
+	got := binary.LittleEndian.Uint64(rig.cpu.memory[addr:])
+	if got != 0x0F {
+		t.Fatalf("FXOR: mem = 0x%X, want 0x0F", got)
+	}
+	if rig.cpu.regs[2] != 0xFF {
+		t.Fatalf("FXOR old: R2 = 0x%X, want 0xFF", rig.cpu.regs[2])
+	}
+}
+
+func TestIE64_Atomic_MisalignedFault(t *testing.T) {
+	rig := newIE64TestRig()
+	trapAddr := uint64(0x8000)
+	rig.cpu.trapVector = trapAddr
+	copy(rig.cpu.memory[trapAddr:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	// Use misaligned address (0x3001, not 8-byte aligned)
+	rig.loadInstructions(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x3001),
+		ie64Instr(OP_CAS, 2, 0, 0, 1, 3, 0),
+	)
+	rig.cpu.running.Store(true)
+	rig.cpu.Execute()
+
+	if rig.cpu.faultCause != FAULT_MISALIGNED {
+		t.Fatalf("misaligned atomic: cause = %d, want %d", rig.cpu.faultCause, FAULT_MISALIGNED)
+	}
+}
+
+func TestIE64_Atomic_RdZero(t *testing.T) {
+	rig := newIE64TestRig()
+	addr := atomicTestAddr()
+	// Memory = 0 (matches R0 which is always 0)
+	binary.LittleEndian.PutUint64(rig.cpu.memory[addr:], 0)
+	rig.executeN(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, addr),
+		ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 42),
+		ie64Instr(OP_CAS, 0, 0, 0, 1, 3, 0), // cas r0, (r1), r3 — compare with R0=0
+	)
+	got := binary.LittleEndian.Uint64(rig.cpu.memory[addr:])
+	if got != 42 {
+		t.Fatalf("CAS R0: mem = %d, want 42 (0 matched R0)", got)
+	}
+	if rig.cpu.regs[0] != 0 {
+		t.Fatal("R0 should still be 0")
+	}
+}
+
+func TestIE64_Atomic_WithDisplacement(t *testing.T) {
+	rig := newIE64TestRig()
+	addr := atomicTestAddr()
+	// R1 = addr - 16, displacement = 16, effective addr = addr
+	binary.LittleEndian.PutUint64(rig.cpu.memory[addr:], 50)
+	rig.executeN(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, addr-16),
+		ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 7),
+		ie64Instr(OP_FAA, 2, 0, 0, 1, 3, 16), // faa r2, 16(r1), r3
+	)
+	got := binary.LittleEndian.Uint64(rig.cpu.memory[addr:])
+	if got != 57 {
+		t.Fatalf("FAA disp: mem = %d, want 57", got)
+	}
+	if rig.cpu.regs[2] != 50 {
+		t.Fatalf("FAA disp old: R2 = %d, want 50", rig.cpu.regs[2])
+	}
+}
+
+// ===========================================================================
+// TLS Register (CR_TP)
+// ===========================================================================
+
+func TestIE64_CR_TP_Write(t *testing.T) {
+	rig := newIE64TestRig()
+	rig.executeN(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x50000),
+		ie64Instr(OP_MTCR, CR_TP, 0, 0, 1, 0, 0),
+	)
+	if rig.cpu.threadPointer != 0x50000 {
+		t.Fatalf("CR_TP write: got 0x%X, want 0x50000", rig.cpu.threadPointer)
+	}
+}
+
+func TestIE64_CR_TP_Read(t *testing.T) {
+	rig := newIE64TestRig()
+	rig.cpu.threadPointer = 0xABCD
+	rig.executeOne(ie64Instr(OP_MFCR, 1, 0, 0, CR_TP, 0, 0))
+	if rig.cpu.regs[1] != 0xABCD {
+		t.Fatalf("CR_TP read: got 0x%X, want 0xABCD", rig.cpu.regs[1])
+	}
+}
+
+func TestIE64_CR_TP_Reset(t *testing.T) {
+	rig := newIE64TestRig()
+	rig.cpu.threadPointer = 0x1234
+	rig.cpu.Reset()
+	if rig.cpu.threadPointer != 0 {
+		t.Fatalf("CR_TP after reset: got 0x%X, want 0", rig.cpu.threadPointer)
+	}
+}

@@ -1169,3 +1169,415 @@ Notes:
 - Memory access (`fload`/`fstore`) is strictly 4-byte.
 - `fmovecr` provides high-precision constants like Pi and e from internal ROM.
 - Exception flags in FPSR are sticky; use `fmovsc` to clear them. `fmovsc` automatically masks reserved bits.
+
+---
+
+## MMU Programming
+
+The IE64 MMU provides virtual memory with page-level access control. These examples
+show common kernel-level patterns for initializing and using the MMU. All MMU setup
+code runs in supervisor mode (the default after reset).
+
+See `IE64_ISA.md` section 12 for the full MMU specification.
+
+### 1. Kernel Bootstrap: Identity-Mapped Page Table
+
+Set up a page table that maps every virtual page to the same physical page (identity
+mapping), install the trap handler, and enable the MMU.
+
+```asm
+; Constants
+PAGE_TABLE      equ $00100000       ; 64 KiB page table at 1 MB
+TRAP_HANDLER    equ $00002000       ; trap vector address
+PTE_CODE        equ $07             ; P=1, R=1, W=1, NX=0 (RWX for bootstrap)
+PTE_SHIFT       equ 13             ; PPN starts at bit 13
+
+; Build identity-mapped page table: PTE[i] = (i << 13) | flags
+; 8192 entries x 8 bytes = 64 KiB
+
+                la      r1, PAGE_TABLE  ; r1 = page table base
+                move.q  r2, #0          ; r2 = VPN index (0..8191)
+                move.q  r3, #8192       ; r3 = entry count
+.build_pt:
+                ; PTE = (VPN << PTE_SHIFT) | PTE_CODE
+                lsl.q   r4, r2, #PTE_SHIFT
+                or.q    r4, r4, #PTE_CODE
+                ; Store PTE at PAGE_TABLE + VPN * 8
+                lsl.q   r5, r2, #3      ; r5 = VPN * 8
+                add.q   r5, r5, r1      ; r5 = &PTE[VPN]
+                store.q r4, (r5)
+                add.q   r2, r2, #1
+                blt     r2, r3, .build_pt
+
+; Set trap vector (CR4)
+                la      r1, TRAP_HANDLER
+                mtcr    cr4, r1
+
+; Set page table base (CR0)
+                la      r1, PAGE_TABLE
+                mtcr    cr0, r1
+
+; Enable MMU (CR5 bit 0)
+                move.q  r1, #1
+                mtcr    cr5, r1
+
+; MMU is now active. All memory accesses go through the page table.
+; With identity mapping, virtual addresses equal physical addresses.
+```
+
+Notes:
+- The page table must be set up in physical memory before enabling the MMU.
+- TRAP_VEC must be configured before enabling translation, or a fault will jump to
+  address 0.
+- The bootstrap uses RWX pages for simplicity. Production kernels should apply W^X
+  permissions (see example 4).
+
+### 2. Syscall Handler
+
+User programs invoke `syscall rN` to request kernel services. The syscall number is
+passed in Rs and saved to CR1 (FAULT_ADDR) by hardware. The kernel reads it with MFCR.
+
+```asm
+; Trap handler entry point (at TRAP_HANDLER)
+; Hardware has already:
+;   - Saved PC+8 to CR3 (FAULT_PC)
+;   - Saved syscall number to CR1 (FAULT_ADDR)
+;   - Saved cause code 6 to CR2 (FAULT_CAUSE)
+;   - Switched to supervisor mode
+
+trap_entry:
+                ; Check if this is a syscall (cause == 6)
+                mfcr    r1, cr2         ; r1 = fault cause
+                move.q  r2, #6
+                bne     r1, r2, .not_syscall
+
+                ; It's a syscall -- read the syscall number
+                mfcr    r1, cr1         ; r1 = syscall number (from Rs)
+
+                ; Dispatch based on syscall number
+                beqz    r1, .sys_exit
+                move.q  r2, #1
+                beq     r1, r2, .sys_write
+                move.q  r2, #2
+                beq     r1, r2, .sys_read
+                bra     .sys_unknown
+
+.sys_exit:
+                halt
+
+.sys_write:
+                ; ... handle write syscall ...
+                eret                    ; return to instruction after syscall
+
+.sys_read:
+                ; ... handle read syscall ...
+                eret                    ; return to instruction after syscall
+
+.sys_unknown:
+                eret                    ; ignore unknown syscalls
+
+.not_syscall:
+                ; Handle faults (see example 3)
+                bra     fault_handler
+```
+
+User-mode syscall invocation:
+
+```asm
+; Request syscall 1 (write)
+                move.q  r1, #1
+                syscall r1              ; traps to kernel; resumes here on eret
+```
+
+Notes:
+- ERET resumes at PC+8 (the instruction after SYSCALL) because hardware saved PC+8
+  to FAULT_PC.
+- The trap handler runs in supervisor mode with full access to all pages and
+  privileged instructions.
+
+### 3. Page Fault Handler
+
+When a fault occurs (cause codes 0-5), FAULT_PC holds the faulting instruction's PC.
+The handler reads FAULT_ADDR to determine which virtual address faulted, maps the
+page, invalidates the stale TLB entry, and returns. ERET re-executes the faulting
+instruction, which now succeeds.
+
+```asm
+fault_handler:
+                ; Read fault information
+                mfcr    r1, cr1         ; r1 = faulting virtual address
+                mfcr    r2, cr2         ; r2 = fault cause code
+
+                ; Check for page-not-present (cause 0)
+                bnez    r2, .not_page_fault
+
+                ; Extract VPN from faulting address: VPN = (addr >> 12) & 0x1FFF
+                lsr.q   r3, r1, #12     ; r3 = VPN
+                and.q   r3, r3, #$1FFF
+
+                ; Allocate a physical page (kernel-specific logic)
+                ; For this example, assume alloc_page returns PPN in r8
+                push    r1
+                push    r3
+                jsr     alloc_page      ; r8 = allocated PPN
+                pop     r3
+                pop     r1
+
+                ; Build PTE: (PPN << 13) | P | R | W | NX
+                ; Map as data page: P=1, R=1, W=1, NX=1
+                lsl.q   r4, r8, #13     ; shift PPN into position
+                or.q    r4, r4, #$1B    ; flags: P|R|W|NX|U = 11011 = $1B
+
+                ; Write PTE to page table
+                mfcr    r5, cr0         ; r5 = PTBR
+                lsl.q   r6, r3, #3      ; r6 = VPN * 8
+                add.q   r6, r6, r5      ; r6 = &PTE[VPN]
+                store.q r4, (r6)
+
+                ; Invalidate the TLB entry for this VA
+                tlbinval r1
+
+                ; Return to re-execute the faulting instruction
+                eret
+
+.not_page_fault:
+                ; Handle other fault types (permission errors, etc.)
+                ; For simplicity, halt on unhandled faults
+                halt
+```
+
+Notes:
+- ERET re-executes the faulting instruction because hardware saved the faulting PC
+  (not PC+8) to FAULT_PC.
+- TLBINVAL is required after writing the PTE; without it, the TLB may still cache the
+  old (not-present) entry.
+- `alloc_page` is a kernel routine that manages the physical page free list. Its
+  implementation is outside the scope of this example.
+
+### 4. W^X Page Mappings
+
+The IE64 MMU enforces Write XOR Execute: a page may be writable or executable, but
+not both. This prevents code injection by ensuring that writable memory cannot be
+executed.
+
+```asm
+; PTE flag constants
+PTE_P           equ 1               ; Present
+PTE_R           equ 2               ; Read
+PTE_W           equ 4               ; Write
+PTE_NX          equ 8               ; No-Execute
+PTE_U           equ 16              ; User-accessible
+
+; Code page: readable + executable (not writable)
+; Flags = P | R | U = 1 | 2 | 16 = 19 ($13)
+CODE_FLAGS      equ PTE_P | PTE_R | PTE_U
+
+; Data/stack page: readable + writable (not executable)
+; Flags = P | R | W | NX | U = 1 | 2 | 4 | 8 | 16 = 31 ($1F)
+DATA_FLAGS      equ PTE_P | PTE_R | PTE_W | PTE_NX | PTE_U
+
+; Map VPN in r1 as a code page with PPN in r2
+map_code_page:
+                lsl.q   r3, r2, #13     ; PPN << 13
+                or.q    r3, r3, #CODE_FLAGS
+                mfcr    r4, cr0         ; PTBR
+                lsl.q   r5, r1, #3      ; VPN * 8
+                add.q   r5, r5, r4
+                store.q r3, (r5)
+                tlbinval r1             ; flush stale TLB entry
+                rts
+
+; Map VPN in r1 as a data page with PPN in r2
+map_data_page:
+                lsl.q   r3, r2, #13
+                or.q    r3, r3, #DATA_FLAGS
+                mfcr    r4, cr0
+                lsl.q   r5, r1, #3
+                add.q   r5, r5, r4
+                store.q r3, (r5)
+                tlbinval r1
+                rts
+```
+
+To load new code into memory (e.g., a dynamic loader), the kernel must:
+
+```asm
+; 1. Map target page as writable (for writing code bytes)
+                move.q  r1, r16         ; r1 = target VPN
+                move.q  r2, r17         ; r2 = target PPN
+                jsr     map_data_page
+
+; 2. Write code bytes to the page
+                ; ... store instructions to the mapped page ...
+
+; 3. Remap as executable (W^X transition)
+                move.q  r1, r16
+                move.q  r2, r17
+                jsr     map_code_page
+
+; The page is now executable but no longer writable.
+```
+
+Notes:
+- Code pages have NX=0 (executable) and W=0 (not writable).
+- Data and stack pages have NX=1 (not executable) and W=1 (writable).
+- Both types have R=1 (readable) and U=1 (user-accessible).
+- The W^X transition (writable -> executable) requires TLBINVAL after remapping to
+  ensure the TLB does not serve stale permissions.
+- Supervisor code can also use pages without the U bit for kernel-only mappings.
+
+### 5. Spinlock Using CAS
+
+A simple test-and-set spinlock built on the CAS (compare-and-swap) instruction.
+
+```asm
+; Lock structure: a single 64-bit word at a known address.
+; 0 = unlocked, 1 = locked.
+; r16 = pointer to lock (must be 8-byte aligned)
+
+acquire_lock:
+                move.q  r1, #0          ; r1 = expected (unlocked)
+                move.q  r2, #1          ; r2 = desired (locked)
+.spin:
+                cas     r1, (r16), r2   ; old = [lock]; if old==0 then [lock]=1; r1=old
+                bnez    r1, .spin_wait  ; if r1 != 0, lock was held -- retry
+                rts                     ; lock acquired
+
+.spin_wait:
+                ; Backoff: re-read with a plain LOAD to avoid bus contention
+                load.q  r1, (r16)
+                bnez    r1, .spin_wait  ; spin on read until lock appears free
+                move.q  r1, #0          ; reset expected value
+                bra     .spin           ; try CAS again
+
+release_lock:
+                store.q r0, (r16)       ; write 0 (r0 = hardwired zero) to unlock
+                rts
+```
+
+Notes:
+- CAS returns the old value in Rd regardless of success. If `old == expected`, the
+  swap occurred and the lock is acquired. Otherwise the caller must retry.
+- The spin-wait loop uses a plain LOAD to avoid hammering the bus with CAS operations.
+- All atomic operations are 64-bit and require 8-byte aligned addresses. A misaligned
+  address traps with FAULT_MISALIGNED (cause code 7).
+
+### 6. Atomic Counter Using FAA
+
+Atomically increment a shared counter and retrieve the previous value.
+
+```asm
+; r16 = pointer to 64-bit counter (8-byte aligned)
+; Returns old counter value in r8.
+
+atomic_increment:
+                move.q  r1, #1
+                faa     r8, (r16), r1   ; old = [counter]; [counter] = old + 1; r8 = old
+                rts
+
+atomic_decrement:
+                moveq   r1, #-1         ; r1 = -1 (sign-extended)
+                faa     r8, (r16), r1   ; old = [counter]; [counter] = old + (-1); r8 = old
+                rts
+```
+
+Notes:
+- FAA (fetch-and-add) returns the value *before* the addition. To get the value
+  *after*, add the operand to the returned value: `add.q r8, r8, r1`.
+- Useful for reference counting, sequence numbers, and statistics counters.
+
+### 7. Thread-Local Storage Access
+
+The TP (Thread Pointer) register is CR6. It is readable from user mode via MFCR,
+allowing efficient TLS access without a syscall.
+
+```asm
+; Kernel sets TP for each thread during context switch:
+;   mtcr cr6, r1        ; r1 = TLS base for this thread (supervisor only)
+
+; User-mode TLS access pattern:
+; Read a 64-bit value at TLS offset 16.
+
+                mfcr    r1, tp          ; r1 = TLS base (user-readable)
+                load.q  r2, 16(r1)     ; r2 = TLS[2] (offset 16)
+
+; Write a 64-bit value to TLS offset 24.
+
+                mfcr    r1, tp
+                store.q r3, 24(r1)     ; TLS[3] = r3
+```
+
+Notes:
+- `mfcr Rd, tp` is an alias for `mfcr Rd, cr6`. Both forms are accepted by the
+  assembler.
+- MFCR for CR6 is the only control register read permitted in user mode. All other
+  CR reads fault with cause code 5 (privilege violation).
+- The kernel must set CR6 via `mtcr cr6, Rs` (supervisor-only) before entering user
+  mode. Typically this is done during thread creation or context switch.
+
+### 8. A/D Bit Inspection for Page Reclamation
+
+The MMU sets the Accessed (A) and Dirty (D) bits in each PTE during address
+translation. The kernel reads these bits to make page reclamation decisions.
+
+```asm
+; PTE flag bit positions
+PTE_A           equ $20             ; bit 5: Accessed
+PTE_D           equ $40             ; bit 6: Dirty
+PTE_AD_MASK     equ $60             ; bits 5-6: A|D
+
+; Check A/D bits for page at VPN in r1.
+; r16 = PTBR (from mfcr cr0)
+; Returns: r8 = A|D bits (isolated)
+
+check_page_ad:
+                lsl.q   r2, r1, #3      ; r2 = VPN * 8
+                add.q   r2, r2, r16     ; r2 = &PTE[VPN]
+                load.q  r3, (r2)        ; r3 = PTE
+                and.q   r8, r3, #PTE_AD_MASK ; r8 = A|D bits
+                rts
+
+; Clear A/D bits for a page (kernel page scanner).
+; r1 = VPN, r16 = PTBR
+
+clear_page_ad:
+                lsl.q   r2, r1, #3
+                add.q   r2, r2, r16
+                load.q  r3, (r2)        ; read current PTE
+                move.q  r4, #PTE_AD_MASK
+                not.q   r4, r4          ; r4 = ~(A|D)
+                and.q   r3, r3, r4      ; clear A and D bits
+                store.q r3, (r2)        ; write PTE back
+                tlbinval r1             ; flush TLB entry so stale A/D are not cached
+                rts
+```
+
+Page reclamation decision logic:
+
+```asm
+; Scan pages and categorize for reclamation.
+; For each candidate VPN in r1:
+
+                jsr     check_page_ad
+                ; r8 has the A|D bits
+
+                ; Not accessed: prime candidate for eviction
+                and.q   r2, r8, #PTE_A
+                beqz    r2, .evict_candidate
+
+                ; Accessed but not dirty: second choice (clean page, cheap to reclaim)
+                and.q   r2, r8, #PTE_D
+                beqz    r2, .clean_candidate
+
+                ; Accessed and dirty: must write back before reclaiming
+                bra     .dirty_candidate
+```
+
+Notes:
+- A is set on any access (read, write, or instruction fetch). D is set only on writes.
+- After clearing A/D bits, the kernel waits one scan interval and re-checks. Pages
+  with A still clear have not been accessed and are safe to reclaim.
+- Always flush the TLB entry after modifying a PTE in memory. The TLB caches the old
+  A/D values and will not re-read the page table until invalidated.
+- Page tables must reside in normal RAM (below IO_REGION_START). This is an
+  architectural constraint for A/D write-back correctness.

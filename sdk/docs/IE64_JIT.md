@@ -274,6 +274,7 @@ The JIT falls back to the interpreter in these cases:
 | HALT, WAIT, RTI mid-block | Emitted as bail-to-interpreter (set NeedIOFallback, epilogue) |
 | I/O page memory access | Dual-path: bail to interpreter on I/O bitmap hit |
 | FPU transcendentals | Always bail to interpreter |
+| Atomic RMW (CAS, XCHG, FAA, FAND, FOR, FXOR) | Always bail to interpreter (MMU-on and MMU-off) |
 | FINT (x86-64 only) | Bail to interpreter (ROUNDSS requires SSE4.1) |
 | FCVTFI (x86-64 only) | Bail to interpreter (saturating + NaN semantics) |
 | ExecMem exhausted | `compileBlock` returns error, dispatcher calls `interpretOne()` |
@@ -364,3 +365,56 @@ Measured on an Intel Core i5-8365U @ 1.60 GHz (4C/8T, Whiskey Lake, 2019) runnin
 | Call (JSR/RTS loop) | 583 µs | 7,036 µs | **0.08x** | 86 | 7 |
 
 The Call workload is intentionally JIT-hostile: every JSR and RTS terminates the native block, so each iteration pays dispatcher unpack, cache lookup, and prologue/epilogue twice. This isolates block-transition overhead and represents the worst case for the JIT. All other workloads compile into a single native block with a backward branch loop, where the JIT delivers 3-8x speedup over the interpreter.
+
+---
+
+## MMU Integration
+
+When the IE64 MMU is enabled (MMU_CTRL bit 0 = 1), the JIT compiler adapts its behavior to maintain correct virtual memory semantics. The current implementation is Stage 1: a conservative bail-to-interpreter strategy that prioritises correctness over performance.
+
+### Stage 1: Interpreter Bail for Memory Operations
+
+When MMU is active, the JIT compiler sets the `mmuBail` flag during block compilation via the `compileBlockMMU` wrapper. With this flag set, all 15 memory-touching and atomic instructions are emitted as immediate bail-to-interpreter exits rather than inline memory accesses:
+
+- **LOAD, STORE** (general-purpose memory access)
+- **PUSH, POP** (stack operations)
+- **JSR, RTS** (subroutine call/return -- both touch the stack)
+- **FLOAD, FSTORE** (FPU memory access)
+- **RTI** (pops return address from stack)
+- **CAS, XCHG, FAA, FAND, FOR, FXOR** (atomic memory RMW operations)
+
+Each bailed instruction packs the current PC and retired instruction count into the return channel, stores back any modified registers, and returns to the dispatcher. The dispatcher then re-executes that single instruction through the interpreter, which performs full virtual address translation and permission checking.
+
+Non-memory instructions (ALU, FPU arithmetic, branches, moves) are still compiled to native code and execute at full JIT speed within the block.
+
+**Note on atomics**: The six atomic memory operations (CAS, XCHG, FAA, FAND, FOR, FXOR) always bail to the interpreter regardless of whether the MMU is enabled. They are infrequent synchronisation operations where correctness outweighs compilation overhead. The bail applies in both MMU-on and MMU-off modes.
+
+### Block Fetch and Page Boundaries
+
+Block scanning requires special handling under MMU:
+
+- **Virtual PC translation**: Before scanning a block, the virtual PC is translated to a physical address through the MMU page table. The physical address is used to read instruction bytes from memory.
+- **Cache key**: The code cache is keyed by the **virtual** PC, not the physical address. This ensures correct behavior when the same physical page is mapped at different virtual addresses.
+- **Page boundary limit**: Blocks are limited to the current 4 KiB page. If a block scan reaches a page boundary (offset 0xFFF within the page), the block is terminated even if no terminator instruction has been encountered. This prevents a single block from spanning two virtual pages that may have different physical mappings or permissions.
+
+### Cache Invalidation
+
+The JIT code cache must be flushed whenever the virtual-to-physical mapping changes. The following operations set the `jitNeedInval` flag, which causes the dispatcher to flush the code cache and reset the executable memory allocator before the next block lookup:
+
+- **MTCR to PTBR** (CR0): The page table base has changed; all cached translations are stale.
+- **MTCR to MMU_CTRL** (CR5): The MMU enable state has changed; cached blocks may have been compiled under different assumptions.
+- **TLBFLUSH**: Bulk TLB invalidation implies page table changes that affect translation.
+- **TLBINVAL**: Single-page TLB invalidation. Conservatively flushes the entire code cache (a targeted invalidation would require reverse-mapping virtual addresses to cached blocks).
+
+### Block Terminators
+
+All 7 MMU instructions (MTCR, MFCR, ERET, TLBFLUSH, TLBINVAL, SYSCALL, SMODE) are block terminators. The block scanner ends the current block when any of these opcodes is encountered. This ensures that:
+
+- Privilege level changes (SMODE, SYSCALL, ERET) take effect before the next block is compiled.
+- Cache invalidations (MTCR, TLBFLUSH, TLBINVAL) are processed by the dispatcher between blocks.
+- Control flow changes (ERET, SYSCALL) are handled correctly.
+
+### Future Stages
+
+- **Stage 2: Inline TLB check.** Emit a TLB lookup directly in the native code for each memory access. On TLB hit, perform the access inline with no dispatcher overhead. On TLB miss, bail to the interpreter for a full page table walk. This would recover most of the JIT speedup for memory-heavy workloads under MMU.
+- **Stage 3: ASID-aware cache.** Tag code cache entries with an Address Space Identifier so that context switches between processes do not require a full cache flush. This would reduce the cost of MTCR to PTBR in multi-process scenarios.

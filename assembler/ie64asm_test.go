@@ -23,6 +23,7 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -157,12 +158,25 @@ const (
 	opFMOVSC  = 0x7B
 	opFMOVCC  = 0x7C
 
-	opNOP  = 0xE0
-	opHALT = 0xE1
-	opSEI  = 0xE2
-	opCLI  = 0xE3
-	opRTI  = 0xE4
-	opWAIT = 0xE5
+	opNOP      = 0xE0
+	opHALT     = 0xE1
+	opSEI      = 0xE2
+	opCLI      = 0xE3
+	opRTI      = 0xE4
+	opWAIT     = 0xE5
+	opMTCR     = 0xE6
+	opMFCR     = 0xE7
+	opERET     = 0xE8
+	opTLBFLUSH = 0xE9
+	opTLBINVAL = 0xEA
+	opSYSCALL  = 0xEB
+	opSMODE    = 0xEC
+	opCAS      = 0xED
+	opXCHG     = 0xEE
+	opFAA      = 0xEF
+	opFAND     = 0xF0
+	opFOR      = 0xF1
+	opFXOR     = 0xF2
 )
 
 // assertBytes compares actual binary output with expected bytes at a given
@@ -1626,3 +1640,129 @@ var _ = strings.TrimSpace
 var _ = os.TempDir
 var _ = filepath.Join
 var _ = binary.LittleEndian
+
+// ===========================================================================
+// MMU Instruction Assembly Tests
+// ===========================================================================
+
+func TestIE64Asm_MMU_NoOperand(t *testing.T) {
+	// eret, tlbflush: no operands
+	for _, tc := range []struct {
+		mnem   string
+		opcode byte
+	}{
+		{"eret", opERET},
+		{"tlbflush", opTLBFLUSH},
+	} {
+		bin := assembleString(t, tc.mnem)
+		assertLen(t, bin, 8, tc.mnem)
+		want := encodeInstr(tc.opcode, 0, 0, 0, 0, 0, 0)
+		assertBytes(t, bin, 0, want, tc.mnem)
+	}
+}
+
+func TestIE64Asm_MTCR(t *testing.T) {
+	bin := assembleString(t, "mtcr cr0, r5")
+	assertLen(t, bin, 8, "mtcr")
+	// rd=CR0=0, rs=5
+	want := encodeInstr(opMTCR, 0, 0, 0, 5, 0, 0)
+	assertBytes(t, bin, 0, want, "mtcr cr0, r5")
+}
+
+func TestIE64Asm_MFCR(t *testing.T) {
+	bin := assembleString(t, "mfcr r5, cr0")
+	assertLen(t, bin, 8, "mfcr")
+	// rd=5, rs=CR0=0
+	want := encodeInstr(opMFCR, 5, 0, 0, 0, 0, 0)
+	assertBytes(t, bin, 0, want, "mfcr r5, cr0")
+}
+
+func TestIE64Asm_TLBINVAL(t *testing.T) {
+	bin := assembleString(t, "tlbinval r3")
+	assertLen(t, bin, 8, "tlbinval")
+	want := encodeInstr(opTLBINVAL, 0, 0, 0, 3, 0, 0)
+	assertBytes(t, bin, 0, want, "tlbinval r3")
+}
+
+func TestIE64Asm_SYSCALL(t *testing.T) {
+	bin := assembleString(t, "syscall #42")
+	assertLen(t, bin, 8, "syscall")
+	want := encodeInstr(opSYSCALL, 0, 0, 1, 0, 0, 42)
+	assertBytes(t, bin, 0, want, "syscall #42")
+}
+
+func TestIE64Asm_SMODE(t *testing.T) {
+	bin := assembleString(t, "smode r1")
+	assertLen(t, bin, 8, "smode")
+	want := encodeInstr(opSMODE, 1, 0, 0, 0, 0, 0)
+	assertBytes(t, bin, 0, want, "smode r1")
+}
+
+func TestIE64Asm_CRNames(t *testing.T) {
+	// Test that symbolic CR names work
+	cases := []struct {
+		src string
+		cr  byte
+	}{
+		{"mtcr cr0, r1", 0},
+		{"mtcr ptbr, r1", 0},
+		{"mtcr cr1, r1", 1},
+		{"mtcr fault_addr, r1", 1},
+		{"mtcr cr4, r1", 4},
+		{"mtcr trap_vec, r1", 4},
+		{"mtcr cr5, r1", 5},
+		{"mtcr mmu_ctrl, r1", 5},
+	}
+	for _, tc := range cases {
+		bin := assembleString(t, tc.src)
+		assertLen(t, bin, 8, tc.src)
+		want := encodeInstr(opMTCR, tc.cr, 0, 0, 1, 0, 0)
+		assertBytes(t, bin, 0, want, tc.src)
+	}
+}
+
+// ===========================================================================
+// Atomic Memory RMW Assembly Tests
+// ===========================================================================
+
+func TestIE64Asm_CAS(t *testing.T) {
+	bin := assembleString(t, "cas r2, (r1), r3")
+	assertLen(t, bin, 8, "cas")
+	want := encodeInstr(opCAS, 2, 0, 0, 1, 3, 0)
+	assertBytes(t, bin, 0, want, "cas r2, (r1), r3")
+}
+
+func TestIE64Asm_CAS_WithDisp(t *testing.T) {
+	bin := assembleString(t, "cas r2, 16(r1), r3")
+	assertLen(t, bin, 8, "cas disp")
+	want := encodeInstr(opCAS, 2, 0, 0, 1, 3, 16)
+	assertBytes(t, bin, 0, want, "cas r2, 16(r1), r3")
+}
+
+func TestIE64Asm_AllAtomics(t *testing.T) {
+	ops := []struct {
+		mnem   string
+		opcode byte
+	}{
+		{"cas", opCAS},
+		{"xchg", opXCHG},
+		{"faa", opFAA},
+		{"fand", opFAND},
+		{"for", opFOR},
+		{"fxor", opFXOR},
+	}
+	for _, tc := range ops {
+		src := fmt.Sprintf("%s r4, (r5), r6", tc.mnem)
+		bin := assembleString(t, src)
+		assertLen(t, bin, 8, tc.mnem)
+		want := encodeInstr(tc.opcode, 4, 0, 0, 5, 6, 0)
+		assertBytes(t, bin, 0, want, src)
+	}
+}
+
+func TestIE64Asm_MFCR_TP(t *testing.T) {
+	bin := assembleString(t, "mfcr r1, tp")
+	assertLen(t, bin, 8, "mfcr tp")
+	want := encodeInstr(opMFCR, 1, 0, 0, 6, 0, 0) // CR_TP = 6
+	assertBytes(t, bin, 0, want, "mfcr r1, tp")
+}

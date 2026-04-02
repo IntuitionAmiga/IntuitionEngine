@@ -43,6 +43,11 @@ var ie64OpcodeNames = map[byte]string{
 	OP_FMOVSC: "fmovsc", OP_FMOVCC: "fmovcc",
 	OP_NOP64: "nop", OP_HALT64: "halt", OP_SEI64: "sei", OP_CLI64: "cli",
 	OP_RTI64: "rti", OP_WAIT64: "wait",
+	OP_MTCR: "mtcr", OP_MFCR: "mfcr", OP_ERET: "eret",
+	OP_TLBFLUSH: "tlbflush", OP_TLBINVAL: "tlbinval",
+	OP_SYSCALL: "syscall", OP_SMODE: "smode",
+	OP_CAS: "cas", OP_XCHG: "xchg", OP_FAA: "faa",
+	OP_FAND: "fand", OP_FOR: "for", OP_FXOR: "fxor",
 }
 
 var ie64SizeSuffix = [4]string{".b", ".w", ".l", ".q"}
@@ -67,7 +72,9 @@ func ie64IsSized(op byte) bool {
 	case OP_NOP64, OP_HALT64, OP_SEI64, OP_CLI64, OP_RTI64, OP_WAIT64,
 		OP_BRA, OP_BEQ, OP_BNE, OP_BLT, OP_BGE, OP_BGT,
 		OP_BLE, OP_BHI, OP_BLS, OP_JMP, OP_JSR64, OP_RTS64,
-		OP_MOVT, OP_MOVEQ, OP_LEA, OP_PUSH64, OP_POP64, OP_JSR_IND:
+		OP_MOVT, OP_MOVEQ, OP_LEA, OP_PUSH64, OP_POP64, OP_JSR_IND,
+		OP_MTCR, OP_MFCR, OP_ERET, OP_TLBFLUSH, OP_TLBINVAL, OP_SYSCALL, OP_SMODE,
+		OP_CAS, OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR:
 		return false
 	}
 	// FPU instructions are not sized in the same way
@@ -138,7 +145,8 @@ func ie64FormatInstruction(d ie64Decoded) (string, string) {
 	switch {
 	case d.Opcode == OP_NOP64 || d.Opcode == OP_HALT64 ||
 		d.Opcode == OP_SEI64 || d.Opcode == OP_CLI64 ||
-		d.Opcode == OP_RTI64:
+		d.Opcode == OP_RTI64 ||
+		d.Opcode == OP_ERET || d.Opcode == OP_TLBFLUSH:
 		return hexBytes, mnemonic
 
 	case d.Opcode == OP_RTS64:
@@ -146,6 +154,27 @@ func ie64FormatInstruction(d ie64Decoded) (string, string) {
 
 	case d.Opcode == OP_WAIT64:
 		return hexBytes, fmt.Sprintf("%s #%d", mnemonic, d.Imm32)
+
+	case d.Opcode == OP_MTCR:
+		return hexBytes, fmt.Sprintf("%s cr%d, %s", mnemonic, d.Rd, ie64RegName(d.Rs))
+	case d.Opcode == OP_MFCR:
+		return hexBytes, fmt.Sprintf("%s %s, cr%d", mnemonic, ie64RegName(d.Rd), d.Rs)
+	case d.Opcode == OP_TLBINVAL:
+		return hexBytes, fmt.Sprintf("%s %s", mnemonic, ie64RegName(d.Rs))
+	case d.Opcode == OP_SYSCALL:
+		return hexBytes, fmt.Sprintf("%s #%d", mnemonic, d.Imm32)
+	case d.Opcode == OP_SMODE:
+		return hexBytes, fmt.Sprintf("%s %s", mnemonic, ie64RegName(d.Rd))
+
+	case d.Opcode == OP_CAS || d.Opcode == OP_XCHG ||
+		d.Opcode == OP_FAA || d.Opcode == OP_FAND ||
+		d.Opcode == OP_FOR || d.Opcode == OP_FXOR:
+		if d.Imm32 != 0 {
+			return hexBytes, fmt.Sprintf("%s %s, %d(%s), %s", mnemonic,
+				ie64RegName(d.Rd), int32(d.Imm32), ie64RegName(d.Rs), ie64RegName(d.Rt))
+		}
+		return hexBytes, fmt.Sprintf("%s %s, (%s), %s", mnemonic,
+			ie64RegName(d.Rd), ie64RegName(d.Rs), ie64RegName(d.Rt))
 
 	case d.Opcode == OP_MOVE:
 		if d.Xbit == 1 {
