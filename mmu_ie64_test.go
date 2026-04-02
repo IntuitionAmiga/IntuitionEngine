@@ -1111,3 +1111,394 @@ func TestMMU_StackProtection(t *testing.T) {
 		t.Fatalf("stack protection: cause = %d, want %d", cpu.faultCause, FAULT_USER_SUPER)
 	}
 }
+
+// ===========================================================================
+// Atomic Operations + MMU
+// ===========================================================================
+
+func TestMMU_CAS_WithTranslation(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	setupIdentityMMU(cpu, 160)
+
+	// Map virtual page 3 -> physical page 7
+	writePTE(cpu, 3, makePTE(7, PTE_P|PTE_R|PTE_W|PTE_X|PTE_U))
+
+	// Write value at physical 0x7000
+	binary.LittleEndian.PutUint64(cpu.memory[0x7000:], 100)
+
+	// CAS through virtual 0x3000
+	rig.executeN(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x3000),
+		ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 100),
+		ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 200),
+		ie64Instr(OP_CAS, 2, 0, 0, 1, 3, 0),
+	)
+
+	got := binary.LittleEndian.Uint64(cpu.memory[0x7000:])
+	if got != 200 {
+		t.Fatalf("MMU CAS: phys 0x7000 = %d, want 200", got)
+	}
+}
+
+func TestMMU_Atomic_PageFault(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	setupIdentityMMU(cpu, 160)
+
+	trapAddr := uint64(0x9000)
+	cpu.trapVector = trapAddr
+	copy(cpu.memory[trapAddr:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	// Unmap page 4
+	writePTE(cpu, 4, 0)
+
+	rig.loadInstructions(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x4000),
+		ie64Instr(OP_CAS, 2, 0, 0, 1, 3, 0),
+	)
+	cpu.running.Store(true)
+	cpu.Execute()
+
+	if cpu.faultCause != FAULT_NOT_PRESENT {
+		t.Fatalf("atomic page fault: cause = %d, want %d", cpu.faultCause, FAULT_NOT_PRESENT)
+	}
+}
+
+func TestMMU_Atomic_WritePermissionDenied(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	setupIdentityMMU(cpu, 160)
+
+	trapAddr := uint64(0x9000)
+	cpu.trapVector = trapAddr
+	copy(cpu.memory[trapAddr:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	// Page 4: read-only (no W)
+	writePTE(cpu, 4, makePTE(4, PTE_P|PTE_R|PTE_X|PTE_U))
+
+	rig.loadInstructions(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x4000),
+		ie64Instr(OP_FAA, 2, 0, 0, 1, 3, 0),
+	)
+	cpu.running.Store(true)
+	cpu.Execute()
+
+	if cpu.faultCause != FAULT_WRITE_DENIED {
+		t.Fatalf("atomic write denied: cause = %d, want %d", cpu.faultCause, FAULT_WRITE_DENIED)
+	}
+}
+
+func TestMMU_Atomic_MisalignedWithMMU(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	setupIdentityMMU(cpu, 160)
+
+	trapAddr := uint64(0x9000)
+	cpu.trapVector = trapAddr
+	copy(cpu.memory[trapAddr:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	// Misalignment is checked before MMU translation
+	rig.loadInstructions(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x3001),
+		ie64Instr(OP_CAS, 2, 0, 0, 1, 3, 0),
+	)
+	cpu.running.Store(true)
+	cpu.Execute()
+
+	if cpu.faultCause != FAULT_MISALIGNED {
+		t.Fatalf("MMU misaligned: cause = %d, want %d", cpu.faultCause, FAULT_MISALIGNED)
+	}
+}
+
+// ===========================================================================
+// TLS Register — User Mode Access
+// ===========================================================================
+
+func TestIE64_CR_TP_UserRead(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	setupIdentityMMU(cpu, 160)
+
+	cpu.threadPointer = 0x77777
+
+	// ERET to user mode, then MFCR r5, cr6 should succeed
+	cpu.faultPC = PROG_START + IE64_INSTR_SIZE
+	rig.loadInstructions(
+		ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0),
+		ie64Instr(OP_MFCR, 5, 0, 0, CR_TP, 0, 0),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+	)
+	cpu.running.Store(true)
+	cpu.Execute()
+
+	if cpu.regs[5] != 0x77777 {
+		t.Fatalf("user CR_TP read: R5 = 0x%X, want 0x77777", cpu.regs[5])
+	}
+}
+
+func TestIE64_CR_TP_UserWriteTraps(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	setupIdentityMMU(cpu, 160)
+
+	trapAddr := uint64(0x9000)
+	cpu.trapVector = trapAddr
+	copy(cpu.memory[trapAddr:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	// ERET to user mode, then MTCR cr6, r1 should trap
+	cpu.faultPC = PROG_START + IE64_INSTR_SIZE
+	rig.loadInstructions(
+		ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0),
+		ie64Instr(OP_MTCR, CR_TP, 0, 0, 1, 0, 0),
+	)
+	cpu.running.Store(true)
+	cpu.Execute()
+
+	if cpu.faultCause != FAULT_PRIV {
+		t.Fatalf("user CR_TP write: cause = %d, want %d", cpu.faultCause, FAULT_PRIV)
+	}
+}
+
+func TestIE64_CR_TP_OtherCR_StillDenied(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	setupIdentityMMU(cpu, 160)
+
+	trapAddr := uint64(0x9000)
+	cpu.trapVector = trapAddr
+	copy(cpu.memory[trapAddr:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	// ERET to user, MFCR r1, cr0 should still fault
+	cpu.faultPC = PROG_START + IE64_INSTR_SIZE
+	rig.loadInstructions(
+		ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0),
+		ie64Instr(OP_MFCR, 1, 0, 0, CR_PTBR, 0, 0),
+	)
+	cpu.running.Store(true)
+	cpu.Execute()
+
+	if cpu.faultCause != FAULT_PRIV {
+		t.Fatalf("user MFCR PTBR: cause = %d, want %d", cpu.faultCause, FAULT_PRIV)
+	}
+}
+
+// ===========================================================================
+// A/D Bits in Page Table Entries
+// ===========================================================================
+
+// readPTEFlags reads the PTE flags byte for a given VPN from the page table.
+func readPTEFlags(cpu *CPU64, vpn uint16) byte {
+	pteAddr := cpu.ptbr + uint32(vpn)*8
+	pte := binary.LittleEndian.Uint64(cpu.memory[pteAddr:])
+	_, flags := parsePTE(pte)
+	return flags
+}
+
+func TestMMU_AD_PTE_RoundTrip(t *testing.T) {
+	// makePTE with A|D, parsePTE extracts them
+	pte := makePTE(42, PTE_P|PTE_R|PTE_W|PTE_A|PTE_D)
+	ppn, flags := parsePTE(pte)
+	if ppn != 42 {
+		t.Fatalf("PPN = %d, want 42", ppn)
+	}
+	if flags&PTE_A == 0 {
+		t.Fatal("A bit not set")
+	}
+	if flags&PTE_D == 0 {
+		t.Fatal("D bit not set")
+	}
+}
+
+func TestMMU_AD_AccessedOnRead(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	setupIdentityMMU(cpu, 160)
+
+	vpn := uint16(3)
+	// Verify A is not set initially
+	flags := readPTEFlags(cpu, vpn)
+	if flags&PTE_A != 0 {
+		t.Fatal("A should not be set before access")
+	}
+
+	// LOAD from page 3
+	rig.executeN(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(vpn)<<MMU_PAGE_SHIFT),
+		ie64Instr(OP_LOAD, 2, IE64_SIZE_L, 0, 1, 0, 0),
+	)
+
+	flags = readPTEFlags(cpu, vpn)
+	if flags&PTE_A == 0 {
+		t.Fatal("A bit should be set after read")
+	}
+}
+
+func TestMMU_AD_AccessedOnExec(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	setupIdentityMMU(cpu, 160)
+
+	// The PROG_START page should get A set during instruction fetch
+	progVPN := uint16(PROG_START >> MMU_PAGE_SHIFT)
+
+	rig.executeOne(ie64Instr(OP_NOP64, 0, 0, 0, 0, 0, 0))
+
+	flags := readPTEFlags(cpu, progVPN)
+	if flags&PTE_A == 0 {
+		t.Fatal("A bit should be set after exec fetch")
+	}
+}
+
+func TestMMU_AD_DirtyOnWrite(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	setupIdentityMMU(cpu, 160)
+
+	vpn := uint16(3)
+
+	rig.executeN(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(vpn)<<MMU_PAGE_SHIFT),
+		ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0xFF),
+		ie64Instr(OP_STORE, 2, IE64_SIZE_L, 0, 1, 0, 0),
+	)
+
+	flags := readPTEFlags(cpu, vpn)
+	if flags&PTE_A == 0 {
+		t.Fatal("A bit should be set after write")
+	}
+	if flags&PTE_D == 0 {
+		t.Fatal("D bit should be set after write")
+	}
+}
+
+func TestMMU_AD_ReadDoesNotSetDirty(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	setupIdentityMMU(cpu, 160)
+
+	vpn := uint16(3)
+
+	rig.executeN(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(vpn)<<MMU_PAGE_SHIFT),
+		ie64Instr(OP_LOAD, 2, IE64_SIZE_L, 0, 1, 0, 0),
+	)
+
+	flags := readPTEFlags(cpu, vpn)
+	if flags&PTE_A == 0 {
+		t.Fatal("A should be set after read")
+	}
+	if flags&PTE_D != 0 {
+		t.Fatal("D should NOT be set after read-only access")
+	}
+}
+
+func TestMMU_AD_AlreadySet(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	setupIdentityMMU(cpu, 160)
+
+	vpn := uint16(3)
+	// Pre-set A|D in PTE
+	writePTE(cpu, vpn, makePTE(vpn, PTE_P|PTE_R|PTE_W|PTE_X|PTE_U|PTE_A|PTE_D))
+
+	// Save original PTE
+	pteAddr := cpu.ptbr + uint32(vpn)*8
+	origPTE := binary.LittleEndian.Uint64(cpu.memory[pteAddr:])
+
+	// Access the page
+	rig.executeN(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(vpn)<<MMU_PAGE_SHIFT),
+		ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0xFF),
+		ie64Instr(OP_STORE, 2, IE64_SIZE_L, 0, 1, 0, 0),
+	)
+
+	// PTE should be unchanged (A|D already set, no write-back needed)
+	newPTE := binary.LittleEndian.Uint64(cpu.memory[pteAddr:])
+	if origPTE != newPTE {
+		t.Fatalf("PTE changed when A|D already set: 0x%X -> 0x%X", origPTE, newPTE)
+	}
+}
+
+func TestMMU_AD_TLBHitUpdates(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	setupIdentityMMU(cpu, 160)
+
+	vpn := uint16(3)
+
+	// First access: TLB miss, fills TLB, sets A
+	rig.executeN(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(vpn)<<MMU_PAGE_SHIFT),
+		ie64Instr(OP_LOAD, 2, IE64_SIZE_L, 0, 1, 0, 0),
+	)
+
+	flags := readPTEFlags(cpu, vpn)
+	if flags&PTE_A == 0 {
+		t.Fatal("A not set after first read")
+	}
+
+	// Second access: TLB hit, STORE should set D
+	rig2 := newIE64TestRig()
+	rig2.cpu = cpu // reuse same CPU with warm TLB
+	rig2.bus = rig.bus
+	rig2.loadInstructions(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(vpn)<<MMU_PAGE_SHIFT),
+		ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0xFF),
+		ie64Instr(OP_STORE, 2, IE64_SIZE_L, 0, 1, 0, 0),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+	)
+	cpu.running.Store(true)
+	cpu.Execute()
+
+	flags = readPTEFlags(cpu, vpn)
+	if flags&PTE_D == 0 {
+		t.Fatal("D not set after TLB-hit write")
+	}
+}
+
+func TestMMU_AD_KernelClearsAD(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	setupIdentityMMU(cpu, 160)
+
+	vpn := uint16(3)
+
+	// Access to set A|D
+	rig.executeN(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(vpn)<<MMU_PAGE_SHIFT),
+		ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0xFF),
+		ie64Instr(OP_STORE, 2, IE64_SIZE_L, 0, 1, 0, 0),
+	)
+
+	flags := readPTEFlags(cpu, vpn)
+	if flags&(PTE_A|PTE_D) == 0 {
+		t.Fatal("A|D should be set")
+	}
+
+	// Kernel clears A|D
+	writePTE(cpu, vpn, makePTE(vpn, PTE_P|PTE_R|PTE_W|PTE_X|PTE_U))
+	cpu.tlbFlush()
+
+	flags = readPTEFlags(cpu, vpn)
+	if flags&(PTE_A|PTE_D) != 0 {
+		t.Fatal("A|D should be cleared")
+	}
+
+	// Next access should re-set A
+	rig2 := newIE64TestRig()
+	rig2.cpu = cpu
+	rig2.bus = rig.bus
+	rig2.loadInstructions(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(vpn)<<MMU_PAGE_SHIFT),
+		ie64Instr(OP_LOAD, 2, IE64_SIZE_L, 0, 1, 0, 0),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+	)
+	cpu.running.Store(true)
+	cpu.Execute()
+
+	flags = readPTEFlags(cpu, vpn)
+	if flags&PTE_A == 0 {
+		t.Fatal("A should be re-set after kernel cleared it")
+	}
+}

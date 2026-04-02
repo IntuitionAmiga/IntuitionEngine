@@ -274,6 +274,7 @@ The JIT falls back to the interpreter in these cases:
 | HALT, WAIT, RTI mid-block | Emitted as bail-to-interpreter (set NeedIOFallback, epilogue) |
 | I/O page memory access | Dual-path: bail to interpreter on I/O bitmap hit |
 | FPU transcendentals | Always bail to interpreter |
+| Atomic RMW (CAS, XCHG, FAA, FAND, FOR, FXOR) | Always bail to interpreter (MMU-on and MMU-off) |
 | FINT (x86-64 only) | Bail to interpreter (ROUNDSS requires SSE4.1) |
 | FCVTFI (x86-64 only) | Bail to interpreter (saturating + NaN semantics) |
 | ExecMem exhausted | `compileBlock` returns error, dispatcher calls `interpretOne()` |
@@ -373,17 +374,20 @@ When the IE64 MMU is enabled (MMU_CTRL bit 0 = 1), the JIT compiler adapts its b
 
 ### Stage 1: Interpreter Bail for Memory Operations
 
-When MMU is active, the JIT compiler sets the `mmuBail` flag during block compilation via the `compileBlockMMU` wrapper. With this flag set, all 9 memory-touching instructions are emitted as immediate bail-to-interpreter exits rather than inline memory accesses:
+When MMU is active, the JIT compiler sets the `mmuBail` flag during block compilation via the `compileBlockMMU` wrapper. With this flag set, all 15 memory-touching and atomic instructions are emitted as immediate bail-to-interpreter exits rather than inline memory accesses:
 
 - **LOAD, STORE** (general-purpose memory access)
 - **PUSH, POP** (stack operations)
 - **JSR, RTS** (subroutine call/return -- both touch the stack)
 - **FLOAD, FSTORE** (FPU memory access)
 - **RTI** (pops return address from stack)
+- **CAS, XCHG, FAA, FAND, FOR, FXOR** (atomic memory RMW operations)
 
 Each bailed instruction packs the current PC and retired instruction count into the return channel, stores back any modified registers, and returns to the dispatcher. The dispatcher then re-executes that single instruction through the interpreter, which performs full virtual address translation and permission checking.
 
 Non-memory instructions (ALU, FPU arithmetic, branches, moves) are still compiled to native code and execute at full JIT speed within the block.
+
+**Note on atomics**: The six atomic memory operations (CAS, XCHG, FAA, FAND, FOR, FXOR) always bail to the interpreter regardless of whether the MMU is enabled. They are infrequent synchronisation operations where correctness outweighs compilation overhead. The bail applies in both MMU-on and MMU-off modes.
 
 ### Block Fetch and Page Boundaries
 

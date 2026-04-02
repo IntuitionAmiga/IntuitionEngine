@@ -96,6 +96,9 @@ func isBlockTerminator(opcode byte) bool {
 	// the last instruction, so the dispatcher re-enters with updated state.
 	case OP_SYSCALL, OP_ERET, OP_MTCR, OP_MFCR, OP_TLBFLUSH, OP_TLBINVAL, OP_SMODE:
 		return true
+	// Atomic RMW: block terminators because they can trap (alignment, MMU)
+	case OP_CAS, OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR:
+		return true
 	}
 	return false
 }
@@ -203,6 +206,11 @@ func needsFallback(instrs []JITInstr) bool {
 	// MMU/privilege opcodes need interpreter (they mutate CPU state)
 	switch op {
 	case OP_SYSCALL, OP_ERET, OP_MTCR, OP_MFCR, OP_TLBFLUSH, OP_TLBINVAL, OP_SMODE:
+		return true
+	}
+	// Atomic RMW always interpreted (infrequent sync ops)
+	switch op {
+	case OP_CAS, OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR:
 		return true
 	}
 	return false

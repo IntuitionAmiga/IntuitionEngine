@@ -2232,3 +2232,231 @@ func TestIE64_MMU_CTRL_Bit1Readable(t *testing.T) {
 		t.Fatal("MFCR MMU_CTRL should reflect supervisor mode in bit 1")
 	}
 }
+
+// ===========================================================================
+// Atomic Memory RMW Operations
+// ===========================================================================
+
+// atomicTestAddr returns an 8-byte aligned address in the data region.
+func atomicTestAddr() uint32 { return 0x3000 }
+
+func TestIE64_CAS_BasicSwap(t *testing.T) {
+	rig := newIE64TestRig()
+	addr := atomicTestAddr()
+	// Memory[addr] = 100
+	binary.LittleEndian.PutUint64(rig.cpu.memory[addr:], 100)
+	// R1 = addr, R2 = 100 (compare), R3 = 200 (new)
+	rig.executeN(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, addr),
+		ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 100),
+		ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 200),
+		ie64Instr(OP_CAS, 2, 0, 0, 1, 3, 0), // cas r2, (r1), r3
+	)
+	got := binary.LittleEndian.Uint64(rig.cpu.memory[addr:])
+	if got != 200 {
+		t.Fatalf("CAS swap: mem = %d, want 200", got)
+	}
+	if rig.cpu.regs[2] != 100 {
+		t.Fatalf("CAS old: R2 = %d, want 100", rig.cpu.regs[2])
+	}
+}
+
+func TestIE64_CAS_NoSwap(t *testing.T) {
+	rig := newIE64TestRig()
+	addr := atomicTestAddr()
+	binary.LittleEndian.PutUint64(rig.cpu.memory[addr:], 100)
+	// R2 = 999 (mismatch), R3 = 200
+	rig.executeN(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, addr),
+		ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 999),
+		ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 200),
+		ie64Instr(OP_CAS, 2, 0, 0, 1, 3, 0),
+	)
+	got := binary.LittleEndian.Uint64(rig.cpu.memory[addr:])
+	if got != 100 {
+		t.Fatalf("CAS no-swap: mem = %d, want 100", got)
+	}
+	if rig.cpu.regs[2] != 100 {
+		t.Fatalf("CAS old: R2 = %d, want 100 (old value)", rig.cpu.regs[2])
+	}
+}
+
+func TestIE64_XCHG_Basic(t *testing.T) {
+	rig := newIE64TestRig()
+	addr := atomicTestAddr()
+	binary.LittleEndian.PutUint64(rig.cpu.memory[addr:], 0xDEAD)
+	rig.executeN(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, addr),
+		ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0xBEEF),
+		ie64Instr(OP_XCHG, 2, 0, 0, 1, 3, 0),
+	)
+	got := binary.LittleEndian.Uint64(rig.cpu.memory[addr:])
+	if got != 0xBEEF {
+		t.Fatalf("XCHG: mem = 0x%X, want 0xBEEF", got)
+	}
+	if rig.cpu.regs[2] != 0xDEAD {
+		t.Fatalf("XCHG old: R2 = 0x%X, want 0xDEAD", rig.cpu.regs[2])
+	}
+}
+
+func TestIE64_FAA_Basic(t *testing.T) {
+	rig := newIE64TestRig()
+	addr := atomicTestAddr()
+	binary.LittleEndian.PutUint64(rig.cpu.memory[addr:], 10)
+	rig.executeN(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, addr),
+		ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 5),
+		ie64Instr(OP_FAA, 2, 0, 0, 1, 3, 0),
+	)
+	got := binary.LittleEndian.Uint64(rig.cpu.memory[addr:])
+	if got != 15 {
+		t.Fatalf("FAA: mem = %d, want 15", got)
+	}
+	if rig.cpu.regs[2] != 10 {
+		t.Fatalf("FAA old: R2 = %d, want 10", rig.cpu.regs[2])
+	}
+}
+
+func TestIE64_FAND_Basic(t *testing.T) {
+	rig := newIE64TestRig()
+	addr := atomicTestAddr()
+	binary.LittleEndian.PutUint64(rig.cpu.memory[addr:], 0xFF)
+	rig.executeN(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, addr),
+		ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0x0F),
+		ie64Instr(OP_FAND, 2, 0, 0, 1, 3, 0),
+	)
+	got := binary.LittleEndian.Uint64(rig.cpu.memory[addr:])
+	if got != 0x0F {
+		t.Fatalf("FAND: mem = 0x%X, want 0x0F", got)
+	}
+	if rig.cpu.regs[2] != 0xFF {
+		t.Fatalf("FAND old: R2 = 0x%X, want 0xFF", rig.cpu.regs[2])
+	}
+}
+
+func TestIE64_FOR_Basic(t *testing.T) {
+	rig := newIE64TestRig()
+	addr := atomicTestAddr()
+	binary.LittleEndian.PutUint64(rig.cpu.memory[addr:], 0xF0)
+	rig.executeN(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, addr),
+		ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0x0F),
+		ie64Instr(OP_FOR, 2, 0, 0, 1, 3, 0),
+	)
+	got := binary.LittleEndian.Uint64(rig.cpu.memory[addr:])
+	if got != 0xFF {
+		t.Fatalf("FOR: mem = 0x%X, want 0xFF", got)
+	}
+	if rig.cpu.regs[2] != 0xF0 {
+		t.Fatalf("FOR old: R2 = 0x%X, want 0xF0", rig.cpu.regs[2])
+	}
+}
+
+func TestIE64_FXOR_Basic(t *testing.T) {
+	rig := newIE64TestRig()
+	addr := atomicTestAddr()
+	binary.LittleEndian.PutUint64(rig.cpu.memory[addr:], 0xFF)
+	rig.executeN(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, addr),
+		ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0xF0),
+		ie64Instr(OP_FXOR, 2, 0, 0, 1, 3, 0),
+	)
+	got := binary.LittleEndian.Uint64(rig.cpu.memory[addr:])
+	if got != 0x0F {
+		t.Fatalf("FXOR: mem = 0x%X, want 0x0F", got)
+	}
+	if rig.cpu.regs[2] != 0xFF {
+		t.Fatalf("FXOR old: R2 = 0x%X, want 0xFF", rig.cpu.regs[2])
+	}
+}
+
+func TestIE64_Atomic_MisalignedFault(t *testing.T) {
+	rig := newIE64TestRig()
+	trapAddr := uint64(0x8000)
+	rig.cpu.trapVector = trapAddr
+	copy(rig.cpu.memory[trapAddr:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	// Use misaligned address (0x3001, not 8-byte aligned)
+	rig.loadInstructions(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x3001),
+		ie64Instr(OP_CAS, 2, 0, 0, 1, 3, 0),
+	)
+	rig.cpu.running.Store(true)
+	rig.cpu.Execute()
+
+	if rig.cpu.faultCause != FAULT_MISALIGNED {
+		t.Fatalf("misaligned atomic: cause = %d, want %d", rig.cpu.faultCause, FAULT_MISALIGNED)
+	}
+}
+
+func TestIE64_Atomic_RdZero(t *testing.T) {
+	rig := newIE64TestRig()
+	addr := atomicTestAddr()
+	// Memory = 0 (matches R0 which is always 0)
+	binary.LittleEndian.PutUint64(rig.cpu.memory[addr:], 0)
+	rig.executeN(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, addr),
+		ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 42),
+		ie64Instr(OP_CAS, 0, 0, 0, 1, 3, 0), // cas r0, (r1), r3 — compare with R0=0
+	)
+	got := binary.LittleEndian.Uint64(rig.cpu.memory[addr:])
+	if got != 42 {
+		t.Fatalf("CAS R0: mem = %d, want 42 (0 matched R0)", got)
+	}
+	if rig.cpu.regs[0] != 0 {
+		t.Fatal("R0 should still be 0")
+	}
+}
+
+func TestIE64_Atomic_WithDisplacement(t *testing.T) {
+	rig := newIE64TestRig()
+	addr := atomicTestAddr()
+	// R1 = addr - 16, displacement = 16, effective addr = addr
+	binary.LittleEndian.PutUint64(rig.cpu.memory[addr:], 50)
+	rig.executeN(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, addr-16),
+		ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 7),
+		ie64Instr(OP_FAA, 2, 0, 0, 1, 3, 16), // faa r2, 16(r1), r3
+	)
+	got := binary.LittleEndian.Uint64(rig.cpu.memory[addr:])
+	if got != 57 {
+		t.Fatalf("FAA disp: mem = %d, want 57", got)
+	}
+	if rig.cpu.regs[2] != 50 {
+		t.Fatalf("FAA disp old: R2 = %d, want 50", rig.cpu.regs[2])
+	}
+}
+
+// ===========================================================================
+// TLS Register (CR_TP)
+// ===========================================================================
+
+func TestIE64_CR_TP_Write(t *testing.T) {
+	rig := newIE64TestRig()
+	rig.executeN(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x50000),
+		ie64Instr(OP_MTCR, CR_TP, 0, 0, 1, 0, 0),
+	)
+	if rig.cpu.threadPointer != 0x50000 {
+		t.Fatalf("CR_TP write: got 0x%X, want 0x50000", rig.cpu.threadPointer)
+	}
+}
+
+func TestIE64_CR_TP_Read(t *testing.T) {
+	rig := newIE64TestRig()
+	rig.cpu.threadPointer = 0xABCD
+	rig.executeOne(ie64Instr(OP_MFCR, 1, 0, 0, CR_TP, 0, 0))
+	if rig.cpu.regs[1] != 0xABCD {
+		t.Fatalf("CR_TP read: got 0x%X, want 0xABCD", rig.cpu.regs[1])
+	}
+}
+
+func TestIE64_CR_TP_Reset(t *testing.T) {
+	rig := newIE64TestRig()
+	rig.cpu.threadPointer = 0x1234
+	rig.cpu.Reset()
+	if rig.cpu.threadPointer != 0 {
+		t.Fatalf("CR_TP after reset: got 0x%X, want 0", rig.cpu.threadPointer)
+	}
+}

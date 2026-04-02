@@ -18,7 +18,7 @@ func makePTE(ppn uint16, flags byte) uint64 {
 
 // parsePTE extracts the physical page number and permission flags from a PTE.
 func parsePTE(pte uint64) (ppn uint16, flags byte) {
-	flags = byte(pte & 0x1F) // bits 4:0
+	flags = byte(pte & 0x7F) // bits 6:0 (P|R|W|X|U|A|D)
 	ppn = uint16((pte >> PTE_PPN_SHIFT) & PTE_PPN_MASK)
 	return
 }
@@ -123,6 +123,27 @@ func (cpu *CPU64) translateAddr(vaddr uint32, accessType byte) (physAddr uint32,
 	// Check user/supervisor access
 	if !cpu.supervisorMode && flags&PTE_U == 0 {
 		return 0, true, FAULT_USER_SUPER
+	}
+
+	// Set A/D bits if not already set (page tables must be in normal RAM)
+	{
+		needA := flags&PTE_A == 0
+		needD := accessType == ACCESS_WRITE && flags&PTE_D == 0
+		if needA || needD {
+			newFlags := flags | PTE_A
+			if accessType == ACCESS_WRITE {
+				newFlags |= PTE_D
+			}
+			// Write back updated PTE to page table in RAM (bounds-checked)
+			pteAddr := cpu.ptbr + uint32(vpn)*8
+			if uint64(pteAddr)+8 <= uint64(len(cpu.memory)) {
+				pte := binary.LittleEndian.Uint64(cpu.memory[pteAddr:])
+				pte = (pte &^ 0x7F) | uint64(newFlags)
+				binary.LittleEndian.PutUint64(cpu.memory[pteAddr:], pte)
+			}
+			// Refresh TLB entry with updated flags
+			cpu.tlbInsert(vpn, ppn, newFlags)
+		}
 	}
 
 	physAddr = (uint32(ppn) << MMU_PAGE_SHIFT) | offset

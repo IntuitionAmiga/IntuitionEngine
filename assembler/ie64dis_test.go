@@ -796,3 +796,48 @@ func TestIE64Dis_CRFormatting(t *testing.T) {
 		}
 	}
 }
+
+// ===========================================================================
+// Atomic Memory RMW Disassembly Tests
+// ===========================================================================
+
+func TestIE64Dis_AllAtomics(t *testing.T) {
+	ops := []struct {
+		opcode byte
+		mnem   string
+	}{
+		{dis64_CAS, "cas"},
+		{dis64_XCHG, "xchg"},
+		{dis64_FAA, "faa"},
+		{dis64_FAND, "fand"},
+		{dis64_FOR, "for"},
+		{dis64_FXOR, "fxor"},
+	}
+	for _, tc := range ops {
+		instr := encodeInstr(tc.opcode, 2, 0, 0, 1, 3, 0)
+		d := Decode(instr, 0x1000)
+		_, asm := FormatInstruction(d)
+		expected := fmt.Sprintf("%s r2, (r1), r3", tc.mnem)
+		if !strings.Contains(asm, expected) {
+			t.Errorf("%s: expected %q, got %q", tc.mnem, expected, asm)
+		}
+	}
+}
+
+func TestIE64Dis_Atomic_WithDisp(t *testing.T) {
+	instr := encodeInstr(dis64_CAS, 2, 0, 0, 1, 3, 16)
+	d := Decode(instr, 0x1000)
+	_, asm := FormatInstruction(d)
+	if !strings.Contains(asm, "cas r2, 16(r1), r3") {
+		t.Errorf("CAS with disp: expected 'cas r2, 16(r1), r3', got %q", asm)
+	}
+}
+
+func TestIE64Dis_MFCR_CR6(t *testing.T) {
+	instr := encodeInstr(dis64_MFCR, 1, 0, 0, 6, 0, 0) // CR6 = TP
+	d := Decode(instr, 0x1000)
+	_, asm := FormatInstruction(d)
+	if !strings.Contains(asm, "mfcr r1, cr6") {
+		t.Errorf("MFCR CR6: expected 'mfcr r1, cr6', got %q", asm)
+	}
+}

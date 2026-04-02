@@ -1057,7 +1057,7 @@ On reset the CPU is in supervisor mode. Transitioning to user mode is done via E
 
 ### 12.2 Control Registers
 
-Six control registers manage the MMU. They are accessed via MTCR (write) and MFCR (read).
+Seven control registers manage the MMU and thread state. They are accessed via MTCR (write) and MFCR (read).
 
 | CR | Name | R/W | Description |
 |----|------|-----|-------------|
@@ -1067,6 +1067,7 @@ Six control registers manage the MMU. They are accessed via MTCR (write) and MFC
 | CR3 | FAULT_PC | RW | PC saved at trap entry. Used by ERET to resume. **Writable**: trap handlers must be able to modify this before ERET (e.g., to skip a faulting instruction or redirect execution). |
 | CR4 | TRAP_VEC | RW | Physical address of the trap handler entry point. Jumped to on any fault or SYSCALL. |
 | CR5 | MMU_CTRL | Special | Bit 0: MMU enable (RW). Bit 1: supervisor mode (read-only, managed by hardware). All other bits reserved. |
+| CR6 | TP | RW | Thread Pointer. User-readable via MFCR (exception to the normal supervisor-only rule). Writable only in supervisor mode via MTCR. Intended for thread-local storage (TLS) base address. |
 
 **PTBR** must point to the start of the page table in physical memory. The page table is 64 KiB (8192 entries x 8 bytes) and must be naturally aligned.
 
@@ -1091,10 +1092,10 @@ Each entry is 8 bytes (64 bits), addressed as `PTBR + VPN * 8`.
 ### 12.4 Page Table Entry (PTE) Format
 
 ```
-Bit:  63                       26  25            13  12    5  4  3  2  1  0
-     +---------------------------+----------------+--------+--+--+--+--+--+
-     |        reserved (0)       |   PPN (13 bits)|  rsvd  | U|NX| W| R| P|
-     +---------------------------+----------------+--------+--+--+--+--+--+
+Bit:  63                       26  25            13  12  7  6  5  4  3  2  1  0
+     +---------------------------+----------------+-----+--+--+--+--+--+--+--+
+     |        reserved (0)       |   PPN (13 bits)| rsvd| D| A| U| X| W| R| P|
+     +---------------------------+----------------+-----+--+--+--+--+--+--+--+
 ```
 
 | Bit(s) | Name | Description |
@@ -1102,11 +1103,22 @@ Bit:  63                       26  25            13  12    5  4  3  2  1  0
 | 0 | P (Present) | Page is mapped. If P=0, any access faults with cause 0. |
 | 1 | R (Read) | Read permission. If R=0, loads fault with cause 1. |
 | 2 | W (Write) | Write permission. If W=0, stores fault with cause 2. |
-| 3 | NX (No-Execute) | Execute permission inverted. If NX=1, instruction fetch faults with cause 3. (X = !NX) |
+| 3 | X (Execute) | Execute permission. If X=0, instruction fetch faults with cause 3. |
 | 4 | U (User) | User-accessible. If U=0, user-mode access faults with cause 4. |
-| 12:5 | -- | Reserved, must be 0. |
+| 5 | A (Accessed) | Set by hardware on any successful translation (read, write, or execute). |
+| 6 | D (Dirty) | Set by hardware on write access. Only set when the access is a store; reads and fetches do not set D. |
+| 12:7 | -- | Reserved, must be 0. |
 | 25:13 | PPN | Physical Page Number (13 bits). Physical address = PPN << 12 | offset. |
 | 63:26 | -- | Reserved, must be 0. |
+
+**A/D bit semantics:**
+
+- The A and D bits are set by the MMU hardware in the `translateAddr` path, after all permission checks have passed. Both the TLB-hit and TLB-miss paths perform A/D updates.
+- A is set on every successful translation regardless of access type (read, write, execute).
+- D is set only on write accesses.
+- The bits are written back to the page table entry in memory only when they change (i.e., when the bit was previously 0). This avoids unnecessary memory writes on repeated accesses to the same page.
+- **Architectural constraint**: Page tables must reside in normal RAM (below `IO_REGION_START`). The A/D write-back performs a direct memory store to the PTE; if the page table were in an I/O region, the write-back would corrupt device registers.
+- Kernel software clears A/D bits by rewriting the PTE directly in memory and then flushing the TLB (via `TLBFLUSH` or `TLBINVAL`) to ensure the cached TLB entry is also updated. This is the basis for page reclamation and working-set estimation algorithms.
 
 ### 12.5 Virtual Address Format
 
@@ -1125,12 +1137,12 @@ The 25-bit virtual address space covers 32 MB, matching the IE64 physical addres
 
 ### 12.6 MMU Instructions
 
-Seven new opcodes in the System range. All except SYSCALL are privileged (supervisor-only); executing them in user mode faults with cause code 5 (privilege violation).
+Seven new opcodes in the System range. All except SYSCALL and SMODE are privileged (supervisor-only); executing them in user mode faults with cause code 5 (privilege violation). MFCR has a special exception: reading CR6 (TP) is permitted in user mode.
 
 | Mnemonic | Opcode | Syntax | Operation | Privilege |
 |----------|--------|--------|-----------|-----------|
 | MTCR | `0xE6` | `mtcr CRn, Rs` | `CR[Rd] = Rs` | Supervisor |
-| MFCR | `0xE7` | `mfcr Rd, CRn` | `Rd = CR[Rs]` | Supervisor |
+| MFCR | `0xE7` | `mfcr Rd, CRn` | `Rd = CR[Rs]` | Supervisor (CR6/TP: Any) |
 | ERET | `0xE8` | `eret` | `PC = CR3 (FAULT_PC); supervisor = false` | Supervisor |
 | TLBFLUSH | `0xE9` | `tlbflush` | Flush entire TLB + invalidate JIT cache | Supervisor |
 | TLBINVAL | `0xEA` | `tlbinval Rs` | Invalidate TLB entry for VA in Rs + invalidate JIT cache | Supervisor |
@@ -1139,13 +1151,14 @@ Seven new opcodes in the System range. All except SYSCALL are privileged (superv
 
 **MTCR** (opcode `0xE6`):
 - Writes the value of general-purpose register Rs to control register CRn.
-- The CR index is encoded in the Rd field (0-5).
+- The CR index is encoded in the Rd field (0-6).
 - All CRs are writable except MMU_CTRL bit 1 (supervisor mode), which is silently ignored on write. This means trap handlers can modify FAULT_PC (CR3) before ERET to redirect execution.
 - Writing to PTBR or MMU_CTRL bit 0 invalidates the JIT code cache and flushes the TLB.
 
 **MFCR** (opcode `0xE7`):
 - Reads control register CRn into general-purpose register Rd.
-- The CR index is encoded in the Rs field (0-5).
+- The CR index is encoded in the Rs field (0-6).
+- **User-mode exception**: MFCR is normally supervisor-only, but reading CR6 (TP) is permitted in user mode. This allows user-space threads to access thread-local storage without a syscall. All other CR indices fault with cause code 5 (privilege violation) in user mode.
 
 **ERET** (opcode `0xE8`):
 - Returns from a trap handler. Sets PC to the value saved in CR3 (FAULT_PC) and switches to user mode.
@@ -1180,8 +1193,8 @@ Seven new opcodes in the System range. All except SYSCALL are privileged (superv
 All seven opcodes use the standard 8-byte IE64 instruction format:
 
 ```
-MTCR:     [0xE6] [CRn<<3 | 0 | 0] [Rs<<3] [0] [0 0 0 0]       ; Rd field = CR index
-MFCR:     [0xE7] [Rd<<3 | 0 | 0]  [CRn<<3] [0] [0 0 0 0]      ; Rs field = CR index
+MTCR:     [0xE6] [CRn<<3 | 0 | 0] [Rs<<3] [0] [0 0 0 0]       ; Rd field = CR index (0-6)
+MFCR:     [0xE7] [Rd<<3 | 0 | 0]  [CRn<<3] [0] [0 0 0 0]      ; Rs field = CR index (0-6)
 ERET:     [0xE8] [0] [0] [0] [0 0 0 0]
 TLBFLUSH: [0xE9] [0] [0] [0] [0 0 0 0]
 TLBINVAL: [0xEA] [0] [Rs<<3] [0] [0 0 0 0]                     ; Rs = register holding VPN
@@ -1212,10 +1225,11 @@ This distinction means trap handlers do not need to adjust the return address; E
 | 0 | Page Not Present | Access to a page with P=0. |
 | 1 | Read Denied | Load from a page with R=0. |
 | 2 | Write Denied | Store to a page with W=0. |
-| 3 | Execute Denied | Instruction fetch from a page with NX=1. |
+| 3 | Execute Denied | Instruction fetch from a page with X=0. |
 | 4 | User/Supervisor | User-mode access to a page with U=0. |
 | 5 | Privilege Violation | User-mode execution of a privileged instruction (MTCR, MFCR, ERET, TLBFLUSH, TLBINVAL). |
 | 6 | Syscall | SYSCALL instruction executed. |
+| 7 | Misaligned | Atomic memory operation (CAS, XCHG, FAA, FAND, FOR, FXOR) with address not 8-byte aligned. |
 
 ### 12.9 Translation Lookaside Buffer (TLB)
 
@@ -1230,10 +1244,53 @@ The MMU maintains a 64-entry direct-mapped software TLB to cache page table look
 
 The IE64 MMU enforces a Write XOR Execute policy at the page level. A page may be writable or executable, but not both simultaneously:
 
-- **Code pages**: P=1, R=1, W=0, NX=0 (readable + executable, not writable).
-- **Data/stack pages**: P=1, R=1, W=1, NX=1 (readable + writable, not executable).
+- **Code pages**: P=1, R=1, W=0, X=1 (readable + executable, not writable).
+- **Data/stack pages**: P=1, R=1, W=1, X=0 (readable + writable, not executable).
 
 This prevents code injection attacks: an attacker who can write to memory cannot execute that memory, and executable memory cannot be modified. To load new code, supervisor software must map the target pages as writable, write the code, then remap as executable (with appropriate TLB invalidation between steps).
+
+### 12.11 Atomic Memory Operations
+
+The IE64 provides six atomic read-modify-write (RMW) instructions for lock-free synchronisation. These instructions use a dedicated encoding form that repurposes all three register fields and the immediate field:
+
+#### Encoding: Memory RMW Form
+
+```
+Byte:    0         1              2              3            4    5    6    7
+       +--------+----------+----------+----------+------+------+------+------+
+       | Opcode | Rd<<3|0|0| Rs<<3    | Rt<<3    |       imm32 (LE)         |
+       +--------+----------+----------+----------+------+------+------+------+
+```
+
+- **Rd**: Destination register (receives the old value read from memory)
+- **Rs**: Base register (memory address source)
+- **Rt**: Operand register (value to swap, add, or use in bitwise operation)
+- **imm32**: Signed displacement added to Rs to form the effective address
+
+Effective address: `addr = uint32(int64(Rs) + int64(int32(imm32)))`
+
+#### Instruction Table
+
+| Mnemonic | Opcode | Syntax | Operation |
+|----------|--------|--------|-----------|
+| CAS      | `0xED` | `cas Rd, disp(Rs), Rt` | `old = [addr]; if old == Rd then [addr] = Rt; Rd = old` |
+| XCHG     | `0xEE` | `xchg Rd, disp(Rs), Rt` | `old = [addr]; [addr] = Rt; Rd = old` |
+| FAA      | `0xEF` | `faa Rd, disp(Rs), Rt` | `old = [addr]; [addr] = old + Rt; Rd = old` |
+| FAND     | `0xF0` | `fand Rd, disp(Rs), Rt` | `old = [addr]; [addr] = old & Rt; Rd = old` |
+| FOR      | `0xF1` | `for Rd, disp(Rs), Rt` | `old = [addr]; [addr] = old \| Rt; Rd = old` |
+| FXOR     | `0xF2` | `fxor Rd, disp(Rs), Rt` | `old = [addr]; [addr] = old ^ Rt; Rd = old` |
+
+When the displacement is zero, the assembler accepts `(Rs)` syntax: `cas Rd, (Rs), Rt`.
+
+#### Semantics
+
+- **Size**: Always 64-bit (`.Q`). No size suffix is accepted; atomic operations operate on naturally-aligned 64-bit words only.
+- **Alignment**: The effective address must be 8-byte aligned (`addr & 7 == 0`). A misaligned address causes a trap with FAULT_MISALIGNED (cause code 7).
+- **I/O rejection**: Atomic operations are rejected if the effective address falls within the I/O region (`addr >= IO_REGION_START`). Attempting an atomic operation on an I/O address causes a trap.
+- **Ordering**: All atomic operations are sequentially consistent. They act as full memory barriers.
+- **MMU**: When the MMU is enabled, the effective address is translated as an `ACCESS_WRITE` operation through the normal page table translation path. A/D bits are set accordingly.
+- **CAS (Compare-And-Swap)**: Reads the 64-bit value at `[addr]` into a temporary. If the temporary equals the current value of Rd, the value of Rt is written to `[addr]`. Regardless of whether the swap occurred, Rd receives the old value from memory. This allows the caller to detect success by comparing the returned old value against the expected value.
+- **JIT**: Atomic instructions always bail to the interpreter, even when the MMU is disabled. They are infrequent synchronisation operations where correctness outweighs compilation overhead.
 
 ---
 
@@ -1322,6 +1379,12 @@ This prevents code injection attacks: an attacker who can write to memory cannot
 | 0xEA   | `$EA`  | TLBINVAL | MMU | Rs |
 | 0xEB   | `$EB`  | SYSCALL  | MMU | #imm32 |
 | 0xEC   | `$EC`  | SMODE    | MMU | Rd |
+| 0xED   | `$ED`  | CAS      | Atomic | Rd, disp(Rs), Rt |
+| 0xEE   | `$EE`  | XCHG     | Atomic | Rd, disp(Rs), Rt |
+| 0xEF   | `$EF`  | FAA      | Atomic | Rd, disp(Rs), Rt |
+| 0xF0   | `$F0`  | FAND     | Atomic | Rd, disp(Rs), Rt |
+| 0xF1   | `$F1`  | FOR      | Atomic | Rd, disp(Rs), Rt |
+| 0xF2   | `$F2`  | FXOR     | Atomic | Rd, disp(Rs), Rt |
 
 ### A.2 Opcode Ranges
 
@@ -1336,6 +1399,7 @@ This prevents code injection attacks: an attacker who can write to memory cannot
 | `$60-$7C` | Floating Point (FPU) |
 | `$E0-$E5` | System |
 | `$E6-$EC` | MMU |
+| `$ED-$F2` | Atomic Memory Operations |
 
 Any opcode not listed above causes the CPU to print an error message and halt execution.
 

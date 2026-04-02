@@ -23,6 +23,7 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -170,6 +171,12 @@ const (
 	opTLBINVAL = 0xEA
 	opSYSCALL  = 0xEB
 	opSMODE    = 0xEC
+	opCAS      = 0xED
+	opXCHG     = 0xEE
+	opFAA      = 0xEF
+	opFAND     = 0xF0
+	opFOR      = 0xF1
+	opFXOR     = 0xF2
 )
 
 // assertBytes compares actual binary output with expected bytes at a given
@@ -1712,4 +1719,50 @@ func TestIE64Asm_CRNames(t *testing.T) {
 		want := encodeInstr(opMTCR, tc.cr, 0, 0, 1, 0, 0)
 		assertBytes(t, bin, 0, want, tc.src)
 	}
+}
+
+// ===========================================================================
+// Atomic Memory RMW Assembly Tests
+// ===========================================================================
+
+func TestIE64Asm_CAS(t *testing.T) {
+	bin := assembleString(t, "cas r2, (r1), r3")
+	assertLen(t, bin, 8, "cas")
+	want := encodeInstr(opCAS, 2, 0, 0, 1, 3, 0)
+	assertBytes(t, bin, 0, want, "cas r2, (r1), r3")
+}
+
+func TestIE64Asm_CAS_WithDisp(t *testing.T) {
+	bin := assembleString(t, "cas r2, 16(r1), r3")
+	assertLen(t, bin, 8, "cas disp")
+	want := encodeInstr(opCAS, 2, 0, 0, 1, 3, 16)
+	assertBytes(t, bin, 0, want, "cas r2, 16(r1), r3")
+}
+
+func TestIE64Asm_AllAtomics(t *testing.T) {
+	ops := []struct {
+		mnem   string
+		opcode byte
+	}{
+		{"cas", opCAS},
+		{"xchg", opXCHG},
+		{"faa", opFAA},
+		{"fand", opFAND},
+		{"for", opFOR},
+		{"fxor", opFXOR},
+	}
+	for _, tc := range ops {
+		src := fmt.Sprintf("%s r4, (r5), r6", tc.mnem)
+		bin := assembleString(t, src)
+		assertLen(t, bin, 8, tc.mnem)
+		want := encodeInstr(tc.opcode, 4, 0, 0, 5, 6, 0)
+		assertBytes(t, bin, 0, want, src)
+	}
+}
+
+func TestIE64Asm_MFCR_TP(t *testing.T) {
+	bin := assembleString(t, "mfcr r1, tp")
+	assertLen(t, bin, 8, "mfcr tp")
+	want := encodeInstr(opMFCR, 1, 0, 0, 6, 0, 0) // CR_TP = 6
+	assertBytes(t, bin, 0, want, "mfcr r1, tp")
 }

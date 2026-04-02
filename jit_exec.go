@@ -58,7 +58,8 @@ func compileBlockMMU(instrs []JITInstr, startPC uint32, execMem *ExecMem) (*JITB
 	for i := range instrs {
 		switch instrs[i].opcode {
 		case OP_LOAD, OP_STORE, OP_FLOAD, OP_FSTORE,
-			OP_JSR64, OP_RTS64, OP_PUSH64, OP_POP64, OP_JSR_IND:
+			OP_JSR64, OP_RTS64, OP_PUSH64, OP_POP64, OP_JSR_IND,
+			OP_CAS, OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR:
 			instrs[i].mmuBail = true
 		}
 	}

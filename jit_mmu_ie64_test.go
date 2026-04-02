@@ -331,3 +331,80 @@ func TestJIT_MMU_SyscallRoundTrip(t *testing.T) {
 		t.Fatalf("JIT syscall round trip: R2 = 0x%X, want 0xDD", cpu.regs[2])
 	}
 }
+
+// ===========================================================================
+// Atomic RMW + JIT
+// ===========================================================================
+
+func TestJIT_CAS_NoMMU(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	cpu.jitEnabled = true
+
+	addr := uint32(0x3000)
+	binary.LittleEndian.PutUint64(cpu.memory[addr:], 100)
+
+	rig.loadInstructions(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, addr),
+		ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 100),
+		ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 200),
+		ie64Instr(OP_CAS, 2, 0, 0, 1, 3, 0),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+	)
+	cpu.running.Store(true)
+	cpu.jitExecute()
+
+	got := binary.LittleEndian.Uint64(cpu.memory[addr:])
+	if got != 200 {
+		t.Fatalf("JIT CAS: mem = %d, want 200", got)
+	}
+	if cpu.regs[2] != 100 {
+		t.Fatalf("JIT CAS old: R2 = %d, want 100", cpu.regs[2])
+	}
+}
+
+func TestJIT_CAS_WithMMU(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	cpu.jitEnabled = true
+	setupIdentityMMU(cpu, 160)
+
+	writePTE(cpu, 3, makePTE(7, PTE_P|PTE_R|PTE_W|PTE_X|PTE_U))
+	binary.LittleEndian.PutUint64(cpu.memory[0x7000:], 100)
+
+	rig.loadInstructions(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x3000),
+		ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 100),
+		ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 200),
+		ie64Instr(OP_CAS, 2, 0, 0, 1, 3, 0),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+	)
+	cpu.running.Store(true)
+	cpu.jitExecute()
+
+	got := binary.LittleEndian.Uint64(cpu.memory[0x7000:])
+	if got != 200 {
+		t.Fatalf("JIT+MMU CAS: phys = %d, want 200", got)
+	}
+}
+
+func TestJIT_Atomic_MisalignedFaultJIT(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	cpu.jitEnabled = true
+
+	trapAddr := uint64(0x8000)
+	cpu.trapVector = trapAddr
+	copy(cpu.memory[trapAddr:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.loadInstructions(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x3001),
+		ie64Instr(OP_CAS, 2, 0, 0, 1, 3, 0),
+	)
+	cpu.running.Store(true)
+	cpu.jitExecute()
+
+	if cpu.faultCause != FAULT_MISALIGNED {
+		t.Fatalf("JIT misaligned: cause = %d, want %d", cpu.faultCause, FAULT_MISALIGNED)
+	}
+}

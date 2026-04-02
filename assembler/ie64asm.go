@@ -184,6 +184,12 @@ const (
 	OP64_TLBINVAL = 0xEA
 	OP64_SYSCALL  = 0xEB
 	OP64_SMODE    = 0xEC
+	OP64_CAS      = 0xED
+	OP64_XCHG     = 0xEE
+	OP64_FAA      = 0xEF
+	OP64_FAND     = 0xF0
+	OP64_FOR      = 0xF1
+	OP64_FXOR     = 0xF2
 )
 
 // Size codes
@@ -2274,6 +2280,20 @@ func (a *IE64Assembler) assembleInstruction(trimmed string, program []byte) erro
 	case "smode":
 		instr, err = a.asmSMODE(operands)
 
+	// Atomic memory RMW
+	case "cas":
+		instr, err = a.asmAtomic(OP64_CAS, operands)
+	case "xchg":
+		instr, err = a.asmAtomic(OP64_XCHG, operands)
+	case "faa":
+		instr, err = a.asmAtomic(OP64_FAA, operands)
+	case "fand":
+		instr, err = a.asmAtomic(OP64_FAND, operands)
+	case "for":
+		instr, err = a.asmAtomic(OP64_FOR, operands)
+	case "fxor":
+		instr, err = a.asmAtomic(OP64_FXOR, operands)
+
 	default:
 		return fmt.Errorf("unknown instruction: %s", base)
 	}
@@ -2892,6 +2912,8 @@ func parseCR(name string) (byte, bool) {
 		return 4, true
 	case "cr5", "mmu_ctrl":
 		return 5, true
+	case "cr6", "tp":
+		return 6, true
 	}
 	return 0, false
 }
@@ -2966,4 +2988,28 @@ func (a *IE64Assembler) asmSMODE(operands []string) ([]byte, error) {
 		return nil, fmt.Errorf("smode: invalid register: %s", operands[0])
 	}
 	return encodeInstruction(OP64_SMODE, rd, 0, 0, 0, 0, 0), nil
+}
+
+// ===========================================================================
+// Atomic Memory RMW Instructions
+// ===========================================================================
+
+// asmAtomic assembles: cas rd, disp(rs), rt  (memory RMW form)
+func (a *IE64Assembler) asmAtomic(opcode byte, operands []string) ([]byte, error) {
+	if len(operands) != 3 {
+		return nil, fmt.Errorf("atomic instruction requires 3 operands (rd, disp(rs), rt)")
+	}
+	rd, ok := parseRegister(strings.TrimSpace(operands[0]))
+	if !ok {
+		return nil, fmt.Errorf("atomic: invalid destination register: %s", operands[0])
+	}
+	disp, rs, err := a.parseDispReg(strings.TrimSpace(operands[1]))
+	if err != nil {
+		return nil, fmt.Errorf("atomic: invalid address operand: %v", err)
+	}
+	rt, ok := parseRegister(strings.TrimSpace(operands[2]))
+	if !ok {
+		return nil, fmt.Errorf("atomic: invalid operand register: %s", operands[2])
+	}
+	return encodeInstruction(opcode, rd, 0, 0, rs, rt, uint32(disp)), nil
 }

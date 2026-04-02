@@ -974,6 +974,11 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint32, isLast b
 		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
 		return
 
+	// Atomic RMW: always bail to interpreter
+	case OP_CAS, OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR:
+		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+		return
+
 	default:
 		amd64NOP(cb)
 	}

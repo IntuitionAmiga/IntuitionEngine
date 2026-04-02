@@ -103,6 +103,8 @@ const (
 	PTE_W = 1 << 2 // Write permission
 	PTE_X = 1 << 3 // Execute permission (0 = non-executable / NX)
 	PTE_U = 1 << 4 // User-accessible (0 = supervisor only)
+	PTE_A = 1 << 5 // Accessed (set by hardware on any access)
+	PTE_D = 1 << 6 // Dirty (set by hardware on write)
 )
 
 // PTE physical page number field
@@ -119,7 +121,8 @@ const (
 	CR_FAULT_PC    = 3 // PC saved at trap entry
 	CR_TRAP_VEC    = 4 // Trap handler vector address
 	CR_MMU_CTRL    = 5 // Bit 0 = MMU enable (RW), Bit 1 = supervisor mode (RO)
-	CR_COUNT       = 6 // Number of control registers
+	CR_TP          = 6 // Thread Pointer (user-readable, supervisor-writable)
+	CR_COUNT       = 7 // Number of control registers
 )
 
 // Fault cause codes
@@ -131,6 +134,7 @@ const (
 	FAULT_USER_SUPER   = 4 // PTE U bit = 0 in user mode
 	FAULT_PRIV         = 5 // Privileged instruction in user mode
 	FAULT_SYSCALL      = 6 // SYSCALL instruction
+	FAULT_MISALIGNED   = 7 // Misaligned atomic access
 )
 
 // Memory access types for translateAddr
@@ -241,6 +245,14 @@ const (
 	OP_TLBINVAL = 0xEA // Invalidate single TLB entry (rs=vpn_reg)
 	OP_SYSCALL  = 0xEB // Trap into supervisor (imm32 = syscall number)
 	OP_SMODE    = 0xEC // Read current mode into Rd (0=user, 1=supervisor)
+
+	// Atomic Memory RMW (always 64-bit, naturally aligned)
+	OP_CAS  = 0xED // Compare-and-swap: old=[addr]; if old==rd then [addr]=rt; rd=old
+	OP_XCHG = 0xEE // Exchange: old=[addr]; [addr]=rt; rd=old
+	OP_FAA  = 0xEF // Fetch-and-add: old=[addr]; [addr]=old+rt; rd=old
+	OP_FAND = 0xF0 // Fetch-and-and: old=[addr]; [addr]=old&rt; rd=old
+	OP_FOR  = 0xF1 // Fetch-and-or:  old=[addr]; [addr]=old|rt; rd=old
+	OP_FXOR = 0xF2 // Fetch-and-xor: old=[addr]; [addr]=old^rt; rd=old
 )
 
 // ------------------------------------------------------------------------------
@@ -316,6 +328,7 @@ type CPU64 struct {
 	trapped        bool         // Set by memory helpers on MMU fault; checked by Execute/StepOne
 	jitNeedInval   bool         // Set by MMU ops; consumed by JIT dispatcher
 	tlb            [64]TLBEntry // 64-entry direct-mapped software TLB
+	threadPointer  uint64       // Thread Pointer (CR_TP)
 }
 
 // ------------------------------------------------------------------------------
@@ -369,6 +382,71 @@ func (cpu *CPU64) requireSupervisor() bool {
 	}
 	cpu.trapFault(FAULT_PRIV, 0)
 	return false
+}
+
+// ------------------------------------------------------------------------------
+// Atomic Memory RMW Helper
+// ------------------------------------------------------------------------------
+
+// execAtomic performs an atomic read-modify-write on a 64-bit aligned address.
+// op selects the operation: OP_CAS, OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR.
+// Sets cpu.trapped on fault (misalignment, MMU, I/O region).
+func (cpu *CPU64) execAtomic(rd, rs, rt byte, imm32 uint32, op byte) {
+	addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
+
+	// Alignment check (must be 8-byte aligned)
+	if addr&7 != 0 {
+		cpu.trapFault(FAULT_MISALIGNED, addr)
+		cpu.trapped = true
+		return
+	}
+
+	// Reject I/O region (atomics are only meaningful on RAM)
+	if addr >= IO_REGION_START {
+		cpu.trapFault(FAULT_MISALIGNED, addr)
+		cpu.trapped = true
+		return
+	}
+
+	// MMU translation
+	if cpu.mmuEnabled {
+		phys, fault, cause := cpu.translateAddr(addr, ACCESS_WRITE)
+		if fault {
+			cpu.trapFault(cause, addr)
+			cpu.trapped = true
+			return
+		}
+		addr = phys
+	}
+
+	// Bounds check
+	if uint64(addr)+8 > uint64(len(cpu.memory)) {
+		cpu.trapFault(FAULT_MISALIGNED, addr)
+		cpu.trapped = true
+		return
+	}
+
+	base := unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr))
+	old := *(*uint64)(base)
+
+	switch op {
+	case OP_CAS:
+		if old == cpu.regs[rd] {
+			*(*uint64)(base) = cpu.regs[rt]
+		}
+	case OP_XCHG:
+		*(*uint64)(base) = cpu.regs[rt]
+	case OP_FAA:
+		*(*uint64)(base) = old + cpu.regs[rt]
+	case OP_FAND:
+		*(*uint64)(base) = old & cpu.regs[rt]
+	case OP_FOR:
+		*(*uint64)(base) = old | cpu.regs[rt]
+	case OP_FXOR:
+		*(*uint64)(base) = old ^ cpu.regs[rt]
+	}
+
+	cpu.setReg(rd, old)
 }
 
 // ------------------------------------------------------------------------------
@@ -577,6 +655,7 @@ func (cpu *CPU64) Reset() {
 	cpu.faultCause = 0
 	cpu.trapped = false
 	cpu.jitNeedInval = false
+	cpu.threadPointer = 0
 
 	// Reset FPU
 	if cpu.FPU != nil {
@@ -1399,13 +1478,16 @@ func (cpu *CPU64) Execute() {
 					cpu.tlbFlush()
 					cpu.jitNeedInval = true
 				}
+			case CR_TP:
+				cpu.threadPointer = val
 			}
 
 		case OP_MFCR:
-			if !cpu.requireSupervisor() {
+			// CR_TP is readable from user mode; all others require supervisor
+			crIdx := rs
+			if crIdx != CR_TP && !cpu.requireSupervisor() {
 				continue
 			}
-			crIdx := rs
 			var val uint64
 			switch crIdx {
 			case CR_PTBR:
@@ -1426,6 +1508,8 @@ func (cpu *CPU64) Execute() {
 				if cpu.supervisorMode {
 					val |= 2
 				}
+			case CR_TP:
+				val = cpu.threadPointer
 			}
 			if rd != 0 {
 				cpu.regs[rd] = val
@@ -1465,6 +1549,17 @@ func (cpu *CPU64) Execute() {
 				} else {
 					cpu.regs[rd] = 0
 				}
+			}
+
+		// ------------------------------------------------------------------
+		// Atomic Memory RMW
+		// ------------------------------------------------------------------
+
+		case OP_CAS, OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR:
+			cpu.execAtomic(rd, rs, rt, imm32, opcode)
+			if cpu.trapped {
+				cpu.trapped = false
+				continue
 			}
 
 		default:
@@ -2013,13 +2108,16 @@ func (cpu *CPU64) StepOne() int {
 					cpu.tlbFlush()
 					cpu.jitNeedInval = true
 				}
+			case CR_TP:
+				cpu.threadPointer = val
 			}
 		}
 	case OP_MFCR:
-		if !cpu.requireSupervisor() {
+		// CR_TP is readable from user mode; all others require supervisor
+		crIdx := rs
+		if crIdx != CR_TP && !cpu.requireSupervisor() {
 			pcAdvanced = true
 		} else {
-			crIdx := rs
 			var val uint64
 			switch crIdx {
 			case CR_PTBR:
@@ -2040,6 +2138,8 @@ func (cpu *CPU64) StepOne() int {
 				if cpu.supervisorMode {
 					val |= 2
 				}
+			case CR_TP:
+				val = cpu.threadPointer
 			}
 			if rd != 0 {
 				cpu.regs[rd] = val
@@ -2078,6 +2178,14 @@ func (cpu *CPU64) StepOne() int {
 			} else {
 				cpu.regs[rd] = 0
 			}
+		}
+
+	// Atomic Memory RMW
+	case OP_CAS, OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR:
+		cpu.execAtomic(rd, rs, rt, imm32, opcode)
+		if cpu.trapped {
+			cpu.trapped = false
+			pcAdvanced = true
 		}
 
 	default:

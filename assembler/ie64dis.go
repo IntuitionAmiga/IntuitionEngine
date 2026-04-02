@@ -82,6 +82,12 @@ const (
 	dis64_TLBINVAL = 0xEA
 	dis64_SYSCALL  = 0xEB
 	dis64_SMODE    = 0xEC
+	dis64_CAS      = 0xED
+	dis64_XCHG     = 0xEE
+	dis64_FAA      = 0xEF
+	dis64_FAND     = 0xF0
+	dis64_FOR      = 0xF1
+	dis64_FXOR     = 0xF2
 )
 
 // Instruction size in bytes
@@ -141,6 +147,12 @@ var opcodeNames = map[byte]string{
 	dis64_TLBINVAL: "tlbinval",
 	dis64_SYSCALL:  "syscall",
 	dis64_SMODE:    "smode",
+	dis64_CAS:      "cas",
+	dis64_XCHG:     "xchg",
+	dis64_FAA:      "faa",
+	dis64_FAND:     "fand",
+	dis64_FOR:      "for",
+	dis64_FXOR:     "fxor",
 }
 
 // ---------------------------------------------------------------------
@@ -175,6 +187,8 @@ func crName(cr byte) string {
 		return "cr4"
 	case 5:
 		return "cr5"
+	case 6:
+		return "cr6"
 	default:
 		return fmt.Sprintf("cr%d", cr)
 	}
@@ -231,7 +245,8 @@ func isSized(op byte) bool {
 		dis64_BLE, dis64_BHI, dis64_BLS, dis64_JMP, dis64_JSR, dis64_RTS,
 		dis64_MOVT, dis64_MOVEQ, dis64_LEA, dis64_PUSH, dis64_POP, dis64_JSRI,
 		dis64_MTCR, dis64_MFCR, dis64_ERET, dis64_TLBFLUSH, dis64_TLBINVAL,
-		dis64_SYSCALL, dis64_SMODE:
+		dis64_SYSCALL, dis64_SMODE,
+		dis64_CAS, dis64_XCHG, dis64_FAA, dis64_FAND, dis64_FOR, dis64_FXOR:
 		return false
 	}
 	return true
@@ -312,6 +327,17 @@ func FormatInstruction(d DecodedInstruction) (string, string) {
 	// SMODE: Rd
 	case d.Opcode == dis64_SMODE:
 		return hexBytes, fmt.Sprintf("%s %s", mnemonic, regName(d.Rd))
+
+	// Atomic RMW: rd, disp(rs), rt
+	case d.Opcode == dis64_CAS || d.Opcode == dis64_XCHG ||
+		d.Opcode == dis64_FAA || d.Opcode == dis64_FAND ||
+		d.Opcode == dis64_FOR || d.Opcode == dis64_FXOR:
+		if d.Imm32 != 0 {
+			return hexBytes, fmt.Sprintf("%s %s, %d(%s), %s", mnemonic,
+				regName(d.Rd), int32(d.Imm32), regName(d.Rs), regName(d.Rt))
+		}
+		return hexBytes, fmt.Sprintf("%s %s, (%s), %s", mnemonic,
+			regName(d.Rd), regName(d.Rs), regName(d.Rt))
 
 	// MOVE: Rd, Rs or Rd, #imm
 	case d.Opcode == dis64_MOVE:

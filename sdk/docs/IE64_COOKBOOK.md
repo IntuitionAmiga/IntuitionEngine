@@ -1425,3 +1425,159 @@ Notes:
 - The W^X transition (writable -> executable) requires TLBINVAL after remapping to
   ensure the TLB does not serve stale permissions.
 - Supervisor code can also use pages without the U bit for kernel-only mappings.
+
+### 5. Spinlock Using CAS
+
+A simple test-and-set spinlock built on the CAS (compare-and-swap) instruction.
+
+```asm
+; Lock structure: a single 64-bit word at a known address.
+; 0 = unlocked, 1 = locked.
+; r16 = pointer to lock (must be 8-byte aligned)
+
+acquire_lock:
+                move.q  r1, #0          ; r1 = expected (unlocked)
+                move.q  r2, #1          ; r2 = desired (locked)
+.spin:
+                cas     r1, (r16), r2   ; old = [lock]; if old==0 then [lock]=1; r1=old
+                bnez    r1, .spin_wait  ; if r1 != 0, lock was held -- retry
+                rts                     ; lock acquired
+
+.spin_wait:
+                ; Backoff: re-read with a plain LOAD to avoid bus contention
+                load.q  r1, (r16)
+                bnez    r1, .spin_wait  ; spin on read until lock appears free
+                move.q  r1, #0          ; reset expected value
+                bra     .spin           ; try CAS again
+
+release_lock:
+                store.q r0, (r16)       ; write 0 (r0 = hardwired zero) to unlock
+                rts
+```
+
+Notes:
+- CAS returns the old value in Rd regardless of success. If `old == expected`, the
+  swap occurred and the lock is acquired. Otherwise the caller must retry.
+- The spin-wait loop uses a plain LOAD to avoid hammering the bus with CAS operations.
+- All atomic operations are 64-bit and require 8-byte aligned addresses. A misaligned
+  address traps with FAULT_MISALIGNED (cause code 7).
+
+### 6. Atomic Counter Using FAA
+
+Atomically increment a shared counter and retrieve the previous value.
+
+```asm
+; r16 = pointer to 64-bit counter (8-byte aligned)
+; Returns old counter value in r8.
+
+atomic_increment:
+                move.q  r1, #1
+                faa     r8, (r16), r1   ; old = [counter]; [counter] = old + 1; r8 = old
+                rts
+
+atomic_decrement:
+                moveq   r1, #-1         ; r1 = -1 (sign-extended)
+                faa     r8, (r16), r1   ; old = [counter]; [counter] = old + (-1); r8 = old
+                rts
+```
+
+Notes:
+- FAA (fetch-and-add) returns the value *before* the addition. To get the value
+  *after*, add the operand to the returned value: `add.q r8, r8, r1`.
+- Useful for reference counting, sequence numbers, and statistics counters.
+
+### 7. Thread-Local Storage Access
+
+The TP (Thread Pointer) register is CR6. It is readable from user mode via MFCR,
+allowing efficient TLS access without a syscall.
+
+```asm
+; Kernel sets TP for each thread during context switch:
+;   mtcr cr6, r1        ; r1 = TLS base for this thread (supervisor only)
+
+; User-mode TLS access pattern:
+; Read a 64-bit value at TLS offset 16.
+
+                mfcr    r1, tp          ; r1 = TLS base (user-readable)
+                load.q  r2, 16(r1)     ; r2 = TLS[2] (offset 16)
+
+; Write a 64-bit value to TLS offset 24.
+
+                mfcr    r1, tp
+                store.q r3, 24(r1)     ; TLS[3] = r3
+```
+
+Notes:
+- `mfcr Rd, tp` is an alias for `mfcr Rd, cr6`. Both forms are accepted by the
+  assembler.
+- MFCR for CR6 is the only control register read permitted in user mode. All other
+  CR reads fault with cause code 5 (privilege violation).
+- The kernel must set CR6 via `mtcr cr6, Rs` (supervisor-only) before entering user
+  mode. Typically this is done during thread creation or context switch.
+
+### 8. A/D Bit Inspection for Page Reclamation
+
+The MMU sets the Accessed (A) and Dirty (D) bits in each PTE during address
+translation. The kernel reads these bits to make page reclamation decisions.
+
+```asm
+; PTE flag bit positions
+PTE_A           equ $20             ; bit 5: Accessed
+PTE_D           equ $40             ; bit 6: Dirty
+PTE_AD_MASK     equ $60             ; bits 5-6: A|D
+
+; Check A/D bits for page at VPN in r1.
+; r16 = PTBR (from mfcr cr0)
+; Returns: r8 = A|D bits (isolated)
+
+check_page_ad:
+                lsl.q   r2, r1, #3      ; r2 = VPN * 8
+                add.q   r2, r2, r16     ; r2 = &PTE[VPN]
+                load.q  r3, (r2)        ; r3 = PTE
+                and.q   r8, r3, #PTE_AD_MASK ; r8 = A|D bits
+                rts
+
+; Clear A/D bits for a page (kernel page scanner).
+; r1 = VPN, r16 = PTBR
+
+clear_page_ad:
+                lsl.q   r2, r1, #3
+                add.q   r2, r2, r16
+                load.q  r3, (r2)        ; read current PTE
+                move.q  r4, #PTE_AD_MASK
+                not.q   r4, r4          ; r4 = ~(A|D)
+                and.q   r3, r3, r4      ; clear A and D bits
+                store.q r3, (r2)        ; write PTE back
+                tlbinval r1             ; flush TLB entry so stale A/D are not cached
+                rts
+```
+
+Page reclamation decision logic:
+
+```asm
+; Scan pages and categorize for reclamation.
+; For each candidate VPN in r1:
+
+                jsr     check_page_ad
+                ; r8 has the A|D bits
+
+                ; Not accessed: prime candidate for eviction
+                and.q   r2, r8, #PTE_A
+                beqz    r2, .evict_candidate
+
+                ; Accessed but not dirty: second choice (clean page, cheap to reclaim)
+                and.q   r2, r8, #PTE_D
+                beqz    r2, .clean_candidate
+
+                ; Accessed and dirty: must write back before reclaiming
+                bra     .dirty_candidate
+```
+
+Notes:
+- A is set on any access (read, write, or instruction fetch). D is set only on writes.
+- After clearing A/D bits, the kernel waits one scan interval and re-checks. Pages
+  with A still clear have not been accessed and are safe to reclaim.
+- Always flush the TLB entry after modifying a PTE in memory. The TLB caches the old
+  A/D values and will not re-read the page table until invalidated.
+- Page tables must reside in normal RAM (below IO_REGION_START). This is an
+  architectural constraint for A/D write-back correctness.

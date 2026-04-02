@@ -1028,6 +1028,11 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint32, isLast b
 	case OP_MTCR, OP_MFCR, OP_ERET, OP_TLBFLUSH, OP_TLBINVAL, OP_SYSCALL, OP_SMODE:
 		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
 		return
+
+	// Atomic RMW: always bail to interpreter
+	case OP_CAS, OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR:
+		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+		return
 	}
 }
 

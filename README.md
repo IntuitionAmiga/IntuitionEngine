@@ -170,7 +170,7 @@ The Intuition Engine is a virtual machine that emulates a complete retro-style c
 | **Z80** | 8-bit | AF, BC, DE, HL + alternates, IX, IY | Full instruction set, interrupt modes, x86-64 JIT with block chaining |
 | **6502** | 8-bit | A, X, Y | NMOS instruction set, zero page optimisation |
 | **x86** | 32-bit | EAX-EDX, ESI, EDI, EBP, ESP | 8086 instructions + 32-bit registers, flat memory model |
-| **IE64** | 64-bit RISC | 32 general-purpose (R0=zero, R31=SP) | ARM64/x86-64 JIT compiler, native FP32 FPU, compare-and-branch, no flags register, MMU with paged virtual memory and user/supervisor privilege levels |
+| **IE64** | 64-bit RISC | 32 general-purpose (R0=zero, R31=SP) | ARM64/x86-64 JIT compiler, native FP32 FPU, compare-and-branch, no flags register, MMU with paged virtual memory and user/supervisor privilege levels, atomic memory operations (CAS/XCHG/FAA), TLS register |
 
 Default core: **IE64**. Additional cores: **IE32, M68K, x86, Z80, 6502**.
 
@@ -3395,6 +3395,19 @@ All conditional branches compare two registers directly - no flags register:
 | `SYSCALL #imm32` | Trap to supervisor mode with syscall number in imm32 |
 | `SMODE Rd` | Read current privilege mode into Rd (1=supervisor, 0=user) |
 
+### Atomic Memory Operations
+
+| Mnemonic | Description |
+|----------|-------------|
+| `CAS Rd, disp(Rs), Rt` | Compare-and-swap: if [addr]==Rd then [addr]=Rt; Rd=old value |
+| `XCHG Rd, disp(Rs), Rt` | Exchange: [addr]=Rt; Rd=old value |
+| `FAA Rd, disp(Rs), Rt` | Fetch-and-add: [addr]+=Rt; Rd=old value |
+| `FAND Rd, disp(Rs), Rt` | Fetch-and-and: [addr]&=Rt; Rd=old value |
+| `FOR Rd, disp(Rs), Rt` | Fetch-and-or: [addr]\|=Rt; Rd=old value |
+| `FXOR Rd, disp(Rs), Rt` | Fetch-and-xor: [addr]^=Rt; Rd=old value |
+
+All atomic operations are 64-bit, sequentially consistent, and require 8-byte aligned addresses. Misaligned access traps with FAULT_MISALIGNED (cause 7).
+
 ### Pseudo-Instructions
 
 The `ie64asm` assembler provides these convenience pseudo-instructions:
@@ -3554,11 +3567,12 @@ The IE64 includes a minimal MMU for memory protection and virtual address transl
 
 - **Paged virtual memory**: 4 KiB pages, single-level page table (8192 entries, 64 KiB)
 - **Privilege levels**: Supervisor (boot default) and User. Mode transitions only via trap entry (SYSCALL, faults) and ERET
-- **Per-page permissions**: Present, Read, Write, Execute (NX), User-accessible
-- **W^X support**: Execute bit serves as NX — code pages are executable+read-only, data/stack pages are writable+non-executable
+- **Per-page permissions**: Present, Read, Write, Execute, User-accessible, Accessed (A), Dirty (D)
+- **A/D bits**: Hardware-maintained Accessed and Dirty bits in each PTE for page reclamation and working-set estimation
+- **W^X support**: Pages with X=0 are non-executable — code pages are X=1,W=0; data/stack pages are W=1,X=0
 - **Software TLB**: 64-entry direct-mapped cache of page table translations
-- **6 control registers**: Page table base (PTBR), fault address, fault cause, fault PC, trap vector, MMU control
-- **7 instructions**: MTCR, MFCR, ERET, TLBFLUSH, TLBINVAL, SYSCALL, SMODE
+- **7 control registers**: Page table base (PTBR), fault address, fault cause, fault PC, trap vector, MMU control, thread pointer (TP, user-readable)
+- **7 MMU instructions**: MTCR, MFCR, ERET, TLBFLUSH, TLBINVAL, SYSCALL, SMODE
 - **JIT compatible**: JIT compiler works with MMU enabled (Stage 1: memory ops bail to interpreter)
 
 Full reference: [IE64_ISA.md §12](sdk/docs/IE64_ISA.md) | Programming examples: [IE64_COOKBOOK.md](sdk/docs/IE64_COOKBOOK.md)
