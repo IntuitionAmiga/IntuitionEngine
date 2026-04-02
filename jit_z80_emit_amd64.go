@@ -339,14 +339,43 @@ func z80EmitFlags_ADD(buf *CodeBuffer, flagMask uint8) {
 		buf.EmitBytes(0x41, 0x80, 0xCA, 0x04) // OR R10B, 0x04
 	}
 
-	// N = 0 (already clear), C flag: TODO (Phase 6)
+	// N = 0 (already clear in R10)
+
+	// C flag for ADD: carry = (result < oldA) unsigned.
+	// DL may have been clobbered by PV computation above, but CL still has
+	// the original operand. Use: carry = (AL + (~CL) < 0xFF) ... actually
+	// simpler: recompute from CL. ADD overflow iff (0x100 - CL) <= (0xFF - AL + 1)
+	// No — cleanest: just re-add and check. But DL is clobbered.
+	// Alternative: save oldA to [RSP+z80OffCycles] before PV clobbers DL.
+	// For simplicity and correctness, capture carry from the ADD instruction
+	// itself. The caller must set [RSP+z80OffCycles] = carry (0 or 1) before
+	// calling this function. See z80EmitCarryCapture.
+	if flagMask&uint8(z80FlagC) != 0 {
+		// Read saved carry from [RSP+z80OffCycles]
+		buf.EmitBytes(0x0F, 0xB6, 0x4C, 0x24, byte(z80OffCycles)) // MOVZX ECX, BYTE [RSP+16]
+		buf.EmitBytes(0x41, 0x08, 0xCA)                           // OR R10B, CL
+	}
 
 	// Store F: MOV BPL, R10B
 	buf.EmitBytes(0x44, 0x88, 0xD5)
 }
 
+// z80EmitCarryCapture emits code to save the host carry flag to [RSP+z80OffCycles].
+// Must be called IMMEDIATELY after an ADD/SUB instruction, before any instruction
+// that clobbers host EFLAGS (MOVZX, TEST, CMP, etc.).
+func z80EmitCarryCapture(buf *CodeBuffer) {
+	// SETB [RSP+z80OffCycles] — set byte to 1 if CF=1 (carry/borrow)
+	buf.EmitBytes(0x0F, 0x92, 0x44, 0x24, byte(z80OffCycles))
+}
+
+// z80EmitBorrowCapture emits code to save the host borrow flag to [RSP+z80OffCycles].
+// For SUB/SBC/CP, the host CF represents borrow (CF=1 means borrow occurred).
+func z80EmitBorrowCapture(buf *CodeBuffer) {
+	z80EmitCarryCapture(buf) // same instruction — CF=1 after SUB means borrow
+}
+
 // z80EmitFlags_SUB emits Z80 flag computation for SUB/CP A,val.
-// Same register convention as ADD but N=1.
+// Same register convention as ADD but N=1. Carry is borrow (already captured).
 func z80EmitFlags_SUB(buf *CodeBuffer, flagMask uint8) {
 	z80EmitFlags_ADD(buf, flagMask)
 	if flagMask&uint8(z80FlagN) != 0 {
@@ -1435,6 +1464,9 @@ func z80EmitBaseInstructionEx(buf *CodeBuffer, instr *JITZ80Instr, instrPC, next
 				buf.EmitBytes(0x88, 0xDA)
 				buf.EmitBytes(0x88, 0xC1)
 				buf.EmitBytes(0x00, modRM(3, z80Scratch1, z80RegA))
+				if emitFlags != 0 {
+					z80EmitCarryCapture(buf)
+				}
 				amd64MOVZX_B(buf, z80Scratch1, z80RegA)
 				if emitFlags != 0 {
 					z80EmitFlags_ADD(buf, emitFlags)
@@ -1446,6 +1478,9 @@ func z80EmitBaseInstructionEx(buf *CodeBuffer, instr *JITZ80Instr, instrPC, next
 				buf.EmitBytes(0x24, 0x01)
 				buf.EmitBytes(0x00, 0xC1)
 				buf.EmitBytes(0x00, 0xCB)
+				if emitFlags != 0 {
+					z80EmitCarryCapture(buf)
+				}
 				amd64MOVZX_B(buf, z80Scratch1, z80RegA)
 				if emitFlags != 0 {
 					z80EmitFlags_ADD(buf, emitFlags)
@@ -1454,6 +1489,9 @@ func z80EmitBaseInstructionEx(buf *CodeBuffer, instr *JITZ80Instr, instrPC, next
 				buf.EmitBytes(0x88, 0xDA)
 				buf.EmitBytes(0x88, 0xC1)
 				buf.EmitBytes(0x28, modRM(3, z80Scratch1, z80RegA))
+				if emitFlags != 0 {
+					z80EmitBorrowCapture(buf)
+				}
 				amd64MOVZX_B(buf, z80Scratch1, z80RegA)
 				if emitFlags != 0 {
 					z80EmitFlags_SUB(buf, emitFlags)
@@ -1465,6 +1503,9 @@ func z80EmitBaseInstructionEx(buf *CodeBuffer, instr *JITZ80Instr, instrPC, next
 				buf.EmitBytes(0x24, 0x01)
 				buf.EmitBytes(0x00, 0xC1)
 				buf.EmitBytes(0x28, 0xCB)
+				if emitFlags != 0 {
+					z80EmitBorrowCapture(buf)
+				}
 				amd64MOVZX_B(buf, z80Scratch1, z80RegA)
 				if emitFlags != 0 {
 					z80EmitFlags_SUB(buf, emitFlags)
@@ -1493,6 +1534,7 @@ func z80EmitBaseInstructionEx(buf *CodeBuffer, instr *JITZ80Instr, instrPC, next
 				buf.EmitBytes(0x88, 0xD0)
 				buf.EmitBytes(0x28, 0xC8)
 				if emitFlags != 0 {
+					z80EmitBorrowCapture(buf)
 					z80EmitFlags_SUB(buf, emitFlags)
 				}
 			}
@@ -1614,6 +1656,7 @@ func z80EmitBaseInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC, nextIn
 		}
 		buf.EmitBytes(0x00, modRM(3, z80Scratch1, z80RegA)) // ADD BL, AL
 		if emitFlags != 0 {
+			z80EmitCarryCapture(buf)
 			amd64MOVZX_B(buf, z80Scratch1, z80RegA) // result to AL for flags
 			z80EmitFlags_ADD(buf, emitFlags)
 		}
@@ -1629,6 +1672,9 @@ func z80EmitBaseInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC, nextIn
 		buf.EmitBytes(0x24, 0x01)             // AND AL, 0x01
 		buf.EmitBytes(0x00, 0xC1)             // ADD CL, AL (operand += carry)
 		buf.EmitBytes(0x00, 0xCB)             // ADD BL, CL (A += operand+carry)
+		if emitFlags != 0 {
+			z80EmitCarryCapture(buf)
+		}
 		amd64MOVZX_B(buf, z80Scratch1, z80RegA)
 		if emitFlags != 0 {
 			z80EmitFlags_ADD(buf, emitFlags)
@@ -1644,6 +1690,7 @@ func z80EmitBaseInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC, nextIn
 		}
 		buf.EmitBytes(0x28, modRM(3, z80Scratch1, z80RegA))
 		if emitFlags != 0 {
+			z80EmitBorrowCapture(buf)
 			amd64MOVZX_B(buf, z80Scratch1, z80RegA)
 			z80EmitFlags_SUB(buf, emitFlags)
 		}
@@ -1658,6 +1705,9 @@ func z80EmitBaseInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC, nextIn
 		buf.EmitBytes(0x24, 0x01)
 		buf.EmitBytes(0x00, 0xC1) // ADD CL, AL (operand += carry)
 		buf.EmitBytes(0x28, 0xCB) // SUB BL, CL (A -= operand+carry)
+		if emitFlags != 0 {
+			z80EmitBorrowCapture(buf)
+		}
 		amd64MOVZX_B(buf, z80Scratch1, z80RegA)
 		if emitFlags != 0 {
 			z80EmitFlags_SUB(buf, emitFlags)
@@ -1702,6 +1752,7 @@ func z80EmitBaseInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC, nextIn
 		buf.EmitBytes(0x88, 0xD0) // MOV AL, DL (oldA)
 		buf.EmitBytes(0x28, 0xC8) // SUB AL, CL
 		if emitFlags != 0 {
+			z80EmitBorrowCapture(buf)
 			z80EmitFlags_SUB(buf, emitFlags)
 		}
 
@@ -2189,6 +2240,9 @@ func z80EmitALU_A_imm(buf *CodeBuffer, aluOp byte, imm byte, emitFlags uint8) {
 		amd64MOV_reg_imm32(buf, z80Scratch1, uint32(imm))
 		buf.EmitBytes(0x88, 0xC1)                           // MOV CL, AL
 		buf.EmitBytes(0x00, modRM(3, z80Scratch1, z80RegA)) // ADD BL, AL
+		if emitFlags != 0 {
+			z80EmitCarryCapture(buf)
+		}
 		amd64MOVZX_B(buf, z80Scratch1, z80RegA)
 		if emitFlags != 0 {
 			z80EmitFlags_ADD(buf, emitFlags)
@@ -2198,6 +2252,9 @@ func z80EmitALU_A_imm(buf *CodeBuffer, aluOp byte, imm byte, emitFlags uint8) {
 		amd64MOV_reg_imm32(buf, z80Scratch1, uint32(imm))
 		buf.EmitBytes(0x88, 0xC1)
 		buf.EmitBytes(0x28, modRM(3, z80Scratch1, z80RegA))
+		if emitFlags != 0 {
+			z80EmitBorrowCapture(buf)
+		}
 		amd64MOVZX_B(buf, z80Scratch1, z80RegA)
 		if emitFlags != 0 {
 			z80EmitFlags_SUB(buf, emitFlags)
@@ -2230,6 +2287,7 @@ func z80EmitALU_A_imm(buf *CodeBuffer, aluOp byte, imm byte, emitFlags uint8) {
 		buf.EmitBytes(0x88, 0xD0) // MOV AL, DL (oldA for subtraction)
 		buf.EmitBytes(0x28, 0xC8) // SUB AL, CL
 		if emitFlags != 0 {
+			z80EmitBorrowCapture(buf)
 			z80EmitFlags_SUB(buf, emitFlags)
 		}
 	case 1: // ADC A,n — A += n + C
@@ -2243,6 +2301,9 @@ func z80EmitALU_A_imm(buf *CodeBuffer, aluOp byte, imm byte, emitFlags uint8) {
 		amd64MOV_reg_imm32(buf, z80Scratch1, uint32(imm))
 		buf.EmitBytes(0x88, 0xC1) // MOV CL, AL (operand)
 		buf.EmitBytes(0x00, modRM(3, z80Scratch1, z80RegA))
+		if emitFlags != 0 {
+			z80EmitCarryCapture(buf)
+		}
 		amd64MOVZX_B(buf, z80Scratch1, z80RegA)
 		if emitFlags != 0 {
 			z80EmitFlags_ADD(buf, emitFlags)
@@ -2255,6 +2316,9 @@ func z80EmitALU_A_imm(buf *CodeBuffer, aluOp byte, imm byte, emitFlags uint8) {
 		amd64MOV_reg_imm32(buf, z80Scratch1, uint32(imm))
 		buf.EmitBytes(0x88, 0xC1)
 		buf.EmitBytes(0x28, modRM(3, z80Scratch1, z80RegA))
+		if emitFlags != 0 {
+			z80EmitBorrowCapture(buf)
+		}
 		amd64MOVZX_B(buf, z80Scratch1, z80RegA)
 		if emitFlags != 0 {
 			z80EmitFlags_SUB(buf, emitFlags)
@@ -3450,6 +3514,9 @@ func z80EmitDDFDInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC uint16,
 				buf.EmitBytes(0x88, 0xC1) // MOV CL, AL (operand)
 			}
 			buf.EmitBytes(0x00, modRM(3, z80Scratch1, z80RegA)) // ADD BL, AL
+			if emitFlags != 0 {
+				z80EmitCarryCapture(buf)
+			}
 			amd64MOVZX_B(buf, z80Scratch1, z80RegA)
 			if emitFlags != 0 {
 				z80EmitFlags_ADD(buf, emitFlags)
@@ -3460,6 +3527,9 @@ func z80EmitDDFDInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC uint16,
 				buf.EmitBytes(0x88, 0xC1)
 			}
 			buf.EmitBytes(0x28, modRM(3, z80Scratch1, z80RegA))
+			if emitFlags != 0 {
+				z80EmitBorrowCapture(buf)
+			}
 			amd64MOVZX_B(buf, z80Scratch1, z80RegA)
 			if emitFlags != 0 {
 				z80EmitFlags_SUB(buf, emitFlags)
@@ -3488,6 +3558,7 @@ func z80EmitDDFDInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC uint16,
 				buf.EmitBytes(0x88, 0xC1)
 				buf.EmitBytes(0x88, 0xD0) // MOV AL, DL
 				buf.EmitBytes(0x28, 0xC8) // SUB AL, CL
+				z80EmitBorrowCapture(buf)
 				z80EmitFlags_SUB(buf, emitFlags)
 			}
 		}

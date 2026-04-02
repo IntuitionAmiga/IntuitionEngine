@@ -2594,11 +2594,11 @@ func TestZ80JIT_Exec_ALU_EquivalenceSweep(t *testing.T) {
 				if rJIT.cpu.A != rInterp.cpu.A {
 					t.Errorf("A mismatch: JIT=0x%02X, Interp=0x%02X", rJIT.cpu.A, rInterp.cpu.A)
 				}
-				// Mask out C and PV flags for comparison: the JIT has a known
-				// carry flag accuracy issue for ADD/SUB which also affects
-				// overflow computation (see z80_jit.md Future Work).
-				// Also mask Y/X (bits 5,3) — undocumented flags not yet emitted.
-				const flagMask = ^byte(z80FlagC | z80FlagPV | z80FlagY | z80FlagX)
+				// Mask out Y/X (bits 5,3) — undocumented flags not emitted by JIT.
+				// C flag is now tested (carry capture implemented).
+				// PV is still masked: overflow depends on signed interpretation
+				// and the JIT's PV computation has edge cases for ADC/SBC.
+				const flagMask = ^byte(z80FlagPV | z80FlagY | z80FlagX)
 				jitF := rJIT.cpu.F & flagMask
 				interpF := rInterp.cpu.F & flagMask
 				if jitF != interpF {

@@ -4,8 +4,13 @@
 
 package main
 
+import "runtime"
+
 func init() {
-	z80JitAvailable = true
+	// Z80 JIT is only functional on amd64. The arm64 emitter is a stub
+	// that does not execute instructions — enabling it would silently
+	// skip execution. Guard here so arm64 falls back to the interpreter.
+	z80JitAvailable = runtime.GOARCH == "amd64"
 }
 
 // z80JitExecute routes Z80 execution through JIT or interpreter based on

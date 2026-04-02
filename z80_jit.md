@@ -321,7 +321,6 @@ Run: `go test -tags headless -run TestZ80JIT ./...`
 - **Tier-2 register unpacking (D2 — primary remaining lever):** The 3-4x gap to the 6502 JIT is caused by Z80 packed register pairs (B:C in R12W, D:E in R13W, H:L in R14W). Each high-byte read (B, D, H) costs 2 host instructions (MOVZX+SHR). A tier-2 compiler could unpack hot blocks' registers into individual byte slots (stack or repurposed scratch registers), eliminating extraction overhead. `execCount` tracking is already wired; needs: promotion threshold check, tier-2 compile function with unpacked register allocation, tier-1/tier-2 equivalence tests.
 - **6502-style N/Z flag deferral:** The 6502 JIT defers N/Z to a "pending register" (zero materialization cost). The Z80 always materializes into BPL. Deferring Z80's Z flag to the result register and testing it directly at conditional branches would save ~14 bytes per flag-producing instruction before a branch.
 - **CP+branch fusion (D3):** Fuse `CP r; JR Z,target` into a single compare-and-branch using host flags.
-- **Carry flag accuracy:** ADD/SUB carry from host CF (currently computed from operands)
-- **ARM64 emitter:** Full native emission (currently stub — planned for ARM64 laptop)
+- **ARM64 emitter:** Full native emission (currently stub, disabled on arm64 — planned for ARM64 laptop)
 - **Targeted banked-write invalidation:** Physical code page bitmap instead of full flush
 - **Undocumented IXH/IXL:** DD-prefixed 8-bit register operations
