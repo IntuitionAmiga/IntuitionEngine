@@ -35,6 +35,7 @@ const (
 type CPUZ80Config struct {
 	LoadAddr     uint16
 	Entry        uint16
+	JITEnabled   bool          // Enable Z80 JIT compiler (x86-64/ARM64)
 	VGAEngine    *VGAEngine    // Optional VGA engine for port I/O
 	VoodooEngine *VoodooEngine // Optional Voodoo engine for port I/O
 }
@@ -45,6 +46,7 @@ type CPUZ80Runner struct {
 	loadAddr    uint16
 	entry       uint16
 	PerfEnabled bool
+	JITEnabled  bool // Expose JIT enable to callers
 
 	execMu     sync.Mutex
 	execDone   chan struct{}
@@ -630,11 +632,14 @@ func NewCPUZ80Runner(bus *MachineBus, config CPUZ80Config) *CPUZ80Runner {
 		z80Bus = NewZ80BusAdapter(bus)
 	}
 
+	cpu := NewCPU_Z80(z80Bus)
+	cpu.jitEnabled = config.JITEnabled
 	return &CPUZ80Runner{
-		cpu:      NewCPU_Z80(z80Bus),
-		bus:      bus,
-		loadAddr: loadAddr,
-		entry:    config.Entry,
+		cpu:        cpu,
+		bus:        bus,
+		loadAddr:   loadAddr,
+		entry:      config.Entry,
+		JITEnabled: config.JITEnabled,
 	}
 }
 
@@ -675,7 +680,7 @@ func (r *CPUZ80Runner) Reset() {
 
 func (r *CPUZ80Runner) Execute() {
 	r.cpu.PerfEnabled = r.PerfEnabled
-	r.cpu.Execute()
+	r.cpu.z80JitExecute()
 }
 
 func (r *CPUZ80Runner) CPU() *CPU_Z80 {

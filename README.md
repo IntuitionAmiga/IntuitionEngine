@@ -166,7 +166,7 @@ The Intuition Engine is a virtual machine that emulates a complete retro-style c
 |-----|--------------|-----------|----------|
 | **IE32** | 32-bit RISC | 16 general-purpose (A-H, S-W, X-Z) | Fixed 8-byte instructions, simple and fast |
 | **M68K** | 32-bit CISC | 8 data (D0-D7), 8 address (A0-A7) | 95%+ instruction coverage, FPU support |
-| **Z80** | 8-bit | AF, BC, DE, HL + alternates, IX, IY | Full instruction set, interrupt modes |
+| **Z80** | 8-bit | AF, BC, DE, HL + alternates, IX, IY | Full instruction set, interrupt modes, x86-64 JIT with block chaining |
 | **6502** | 8-bit | A, X, Y | NMOS instruction set, zero page optimisation |
 | **x86** | 32-bit | EAX-EDX, ESI, EDI, EBP, ESP | 8086 instructions + 32-bit registers, flat memory model |
 | **IE64** | 64-bit RISC | 32 general-purpose (R0=zero, R31=SP) | ARM64/x86-64 JIT compiler, native FP32 FPU, compare-and-branch, no flags register |
@@ -3484,7 +3484,7 @@ Note: The interrupt vector is currently set internally. Assembly-level vector pr
 - Compare-and-branch model (no flags register - unlike IE32, M68K, Z80, 6502, x86)
 - R0 is hardwired to zero (reads always return 0, writes are silently ignored)
 - `.l` operations zero-mask to 32 bits; use `.q` for full 64-bit arithmetic
-- JIT compilation is enabled by default on supported platforms (x86-64 and ARM64); use `-nojit` to force interpreter mode. On x86-64, M68K, 6502, and x86 cores also have JIT backends
+- JIT compilation is enabled by default on supported platforms (x86-64 and ARM64); use `-nojit` to force interpreter mode. On x86-64, M68K, Z80, 6502, and x86 cores also have JIT backends
 - JIT and interpreter produce identical results for all programs (verified by test suite)
 - Full ISA reference: [IE64_ISA.md](sdk/docs/IE64_ISA.md)
 - Assembly cookbook: [IE64_COOKBOOK.md](sdk/docs/IE64_COOKBOOK.md)
@@ -5643,6 +5643,7 @@ The Z80 emulation provides complete instruction set support:
 - **Index registers**: IX, IY with displacement addressing
 - **Interrupt modes**: IM 0, IM 1, IM 2
 - **I/O port access**: IN/OUT instructions mapped to hardware
+- **JIT compiler** (x86-64): Block-based native compilation with block chaining, RTS cache for CALL/RET, lazy flag elimination, and unchecked memory access for qualifying DJNZ loops. 2.7x-10.9x speedup over interpreter.
 
 ### MOS 6502
 

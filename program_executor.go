@@ -374,6 +374,7 @@ func (e *ProgramExecutor) prepareAndLaunch(data []byte, typ uint32) error {
 		runner := NewCPUZ80Runner(e.bus, CPUZ80Config{
 			LoadAddr:     0,
 			Entry:        0,
+			JITEnabled:   z80JitAvailable,
 			VGAEngine:    e.vgaEngine,
 			VoodooEngine: e.voodooEngine,
 		})

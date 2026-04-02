@@ -1151,6 +1151,7 @@ func main() {
 			runner := NewCPUZ80Runner(sysBus, CPUZ80Config{
 				LoadAddr:     z80LoadAddr,
 				Entry:        z80Entry,
+				JITEnabled:   !noJIT,
 				VGAEngine:    vgaEngine,
 				VoodooEngine: voodooEngine,
 			})
@@ -1556,6 +1557,7 @@ func main() {
 		z80CPU := NewCPUZ80Runner(sysBus, CPUZ80Config{
 			LoadAddr:     parsedLoadAddr,
 			Entry:        parsedEntry,
+			JITEnabled:   !noJIT,
 			VGAEngine:    vgaEngine,
 			VoodooEngine: voodooEngine,
 		})

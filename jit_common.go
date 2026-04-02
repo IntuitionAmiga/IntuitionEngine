@@ -457,6 +457,7 @@ type JITBlock struct {
 	unchainedExits uint32      // times this block exited via unchained path
 	ioBails        uint32      // times this block triggered I/O fallback
 	lastPromoteAt  uint32      // exec count when last promoted (hysteresis)
+	rIncrements    int         // Z80: total R register increments for this block
 }
 
 type CodeCache struct {
