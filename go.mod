@@ -16,7 +16,7 @@ require (
 	github.com/ebitengine/hideconsole v1.0.0 // indirect
 	github.com/ebitengine/purego v0.10.0 // indirect
 	github.com/jezek/xgb v1.3.0 // indirect
-	github.com/yuin/gopher-lua v1.1.1
+	github.com/yuin/gopher-lua v1.1.2
 	golang.org/x/exp/shiny v0.0.0-20260312153236-7ab1446f8b90 // indirect
 	golang.org/x/mobile v0.0.0-20260312152759-81488f6aeb60 // indirect
 	golang.org/x/sync v0.20.0 // indirect
