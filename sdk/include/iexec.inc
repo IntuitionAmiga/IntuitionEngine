@@ -39,6 +39,7 @@ SYS_MAP_VRAM      equ 29
 SYS_DEBUG         equ 30
 SYS_SEND_MSG_BULK equ 31
 SYS_RECV_MSG_BULK equ 32
+SYS_DEBUG_PUTCHAR equ 33          ; Debug: print character (R1=char)
 
 ; ===========================================================================
 ; Error Codes
@@ -116,7 +117,7 @@ USER_TASK0_DATA   equ 0x602000    ; Task 0 data page
 USER_TASK1_CODE   equ 0x610000    ; Task 1 code page (physical)
 USER_TASK1_STACK  equ 0x611000    ; Task 1 stack page
 USER_TASK1_DATA   equ 0x612000    ; Task 1 data page
-USER_CODE_SIZE    equ 40          ; 5 instructions x 8 bytes
+USER_CODE_SIZE    equ 64          ; 8 instructions x 8 bytes (print + delay + yield + loop)
 
 ; VPNs for user pages (addr >> 12)
 USER_TASK0_CODE_VPN  equ 0x600   ; 0x600000 >> 12
@@ -146,3 +147,9 @@ MMU_PAGE_SIZE     equ 0x1000      ; 4 KiB
 MMU_PAGE_SHIFT    equ 12
 MMU_NUM_PAGES     equ 8192
 KERN_PAGES        equ 384         ; Pages 0-383 are kernel-mapped
+
+; ===========================================================================
+; Scheduler / Debug
+; ===========================================================================
+
+IEXEC_HEARTBEAT_INTERVAL equ 64   ; Print '.' every N timer ticks

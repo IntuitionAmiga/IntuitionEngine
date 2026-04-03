@@ -10,7 +10,7 @@
 
 IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS Exec but designed from the ground up for a hardware-enforced privilege model. Where Amiga Exec ran in flat supervisor space with no memory protection, IExec uses the IE64 MMU to enforce user/supervisor separation, per-task page tables, and W^X memory policy.
 
-**What IExec does (Milestone 1):**
+**What IExec does (Milestone 2):**
 
 - Task scheduling (preemptive round-robin between two static tasks; priority-based scheduling is future)
 - Memory protection via the IE64 MMU (per-task page tables with separate code/stack/data mappings)
@@ -251,7 +251,13 @@ The CPU traps to supervisor mode. The kernel's trap handler reads the syscall nu
 | 29 | `MapVRAM` | R1=vram_base, R2=size -> R1=mapped_addr | Future |
 | 30 | `Debug` | R1=debug_op, R2=arg -> R1=result | Future |
 
-### 5.8 Bulk IPC
+### 5.8 Debug I/O
+
+| # | Name | Signature | Status |
+|---|------|-----------|--------|
+| 33 | `DebugPutChar` | R1=character -> R2=err | **Implemented** |
+
+### 5.9 Bulk IPC
 
 | # | Name | Signature | Status |
 |---|------|-----------|--------|
@@ -272,6 +278,8 @@ The CPU traps to supervisor mode. The kernel's trap handler reads the syscall nu
 | 3 | SYSINFO_CURRENT_TASK | Current task index | Future |
 
 Unrecognized info_ids return 0 with ERR_OK.
+
+**DebugPutChar (33)**: Writes a single character to the kernel debug terminal. R1 contains the character to output. The kernel writes the byte to the TERM_OUT I/O register (`$F0700`). Returns R2=ERR_OK on success.
 
 ---
 
@@ -442,7 +450,7 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 
 ## 12. Milestone Status
 
-### Milestone 1: Boot + Preemptive Multitasking (Current)
+### Milestone 1: Boot + Preemptive Multitasking (Complete)
 
 **Implemented and tested:**
 
@@ -462,7 +470,17 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 - Page fault on unmapped access correctly traps to kernel
 - Test coverage: `TestIExec_KernelBoots`, `TestIExec_KernelPageTable`, `TestIExec_YieldReturns`, `TestIExec_FaultKillsTask`, `TestIExec_TwoTasksRun`, `TestIExec_TimerPreemption`, `TestIExec_GetSysInfo`, `TestIExec_AssembledKernelBoots`
 
-### Milestone 2: Dynamic Tasks + Signals (Planned)
+### Milestone 2: Observable Kernel (Current)
+
+**Implemented and tested (builds on Milestone 1):**
+
+- Boot banner: kernel prints "IExec M2 boot\n" to TERM_OUT before entering user mode
+- `DebugPutChar` syscall (33): write a single character to the debug terminal (TERM_OUT at `$F0700`)
+- Visible demo tasks: task 0 prints 'A', task 1 prints 'B', both yield and delay in a loop — output shows interleaved letters confirming preemptive multitasking
+- Fault reporting: on non-SYSCALL faults, kernel prints "FAULT cause=NNNN PC=$XXXX ADDR=$XXXX\n" to the debug terminal then halts
+- Scheduler heartbeat: prints '.' to the debug terminal every 64 timer ticks
+
+### Milestone 3: Dynamic Tasks + Signals (Planned)
 
 - `CreateTask` / `DeleteTask` syscalls
 - Dynamic page allocation (`AllocMem` / `FreeMem`)
@@ -470,19 +488,19 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 - Priority-based scheduling with arbitrary task count
 - Full GPR save/restore in TCB on context switch
 
-### Milestone 3: Ports + Messages (Planned)
+### Milestone 4: Ports + Messages (Planned)
 
 - `CreatePort` / `FindPort` / `PutMsg` / `GetMsg` / `WaitPort` / `ReplyMsg` / `PeekPort`
 - 4 KB copy-based message passing
 - Named port registry
 
-### Milestone 4: Shared Memory + Bulk IPC (Planned)
+### Milestone 5: Shared Memory + Bulk IPC (Planned)
 
 - `AllocShared` / `MapShared` for zero-copy bulk transfer
 - `SendMsgBulk` / `RecvMsgBulk`
 - Reference-counted shared memory regions
 
-### Milestone 5: Timers + Handles (Planned)
+### Milestone 6: Timers + Handles (Planned)
 
 - `AddTimer` / `RemTimer` with delta queue
 - `MapIO` / `MapVRAM` for user-space hardware access

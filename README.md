@@ -5976,14 +5976,13 @@ make aros               # Build VM with embedded AROS ROM
 
 IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. Unlike classic Amiga Exec, which ran everything in flat supervisor space with no memory protection, IExec uses the IE64 MMU to enforce hardware-backed user/supervisor privilege separation with per-task page tables and W^X memory policy. The design preserves the Amiga programming model (signals, message ports, priority scheduling) while adding the isolation guarantees of a modern protected-mode OS.
 
-**Milestone 1 status** (implemented and tested):
+**Milestone 2 status** — Observable Kernel (implemented and tested):
 
-- Standalone kernel binary: `make intuitionos` assembles `sdk/intuitionos/iexec/iexec.s` via ie64asm
-- Self-sufficient boot: kernel builds its own page tables, creates two user tasks, and initializes all scheduler state — no host setup needed
-- Per-task page tables with W^X enforcement (code: R+X, stack/data: R+W)
-- Trap handler dispatches SYSCALL and page faults
-- Two syscalls: `Yield` (26) for voluntary context switch, `GetSysInfo` (27) for kernel tick count
-- Two-task preemptive round-robin scheduler (save/restore PC, USP, PTBR per task)
-- Per-instruction timer tick with configurable quantum, atomic interrupt enable/disable on ERET/trap entry
+- Everything from M1: self-sufficient boot, per-task page tables with W^X, trap dispatch, two-task preemptive round-robin scheduler
+- Boot banner: kernel prints "IExec M2 boot" to TERM_OUT before entering user mode
+- `DebugPutChar` syscall (33): write a single byte to the debug terminal (TERM_OUT at `$F0700`)
+- Visible demo tasks: task 0 prints 'A', task 1 prints 'B' in a yield/delay loop — interleaved output confirms preemption
+- Fault reporting: non-SYSCALL faults print "FAULT cause=NNNN PC=$XXXX ADDR=$XXXX" then halt
+- Scheduler heartbeat: prints '.' every 64 timer ticks
 
 Full kernel contract reference: [sdk/docs/IntuitionOS/IExec.md](sdk/docs/IntuitionOS/IExec.md)

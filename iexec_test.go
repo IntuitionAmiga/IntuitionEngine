@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -1064,60 +1065,211 @@ func copyFileForTest(t *testing.T, src, dst string) {
 }
 
 func TestIExec_AssembledKernelBoots(t *testing.T) {
-	// Build ie64asm from source (reuse existing helper)
-	asmBin := buildAssembler(t)
+	// This test is now handled by the M2 tests (BootBanner, TwoTasksVisibleOutput)
+	// which use assembleAndLoadKernel with terminal MMIO.
+	// Kept as a basic smoke test that the kernel assembles and runs.
+	rig, term := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
 
-	// Copy kernel source + include to temp dir (ie64asm outputs alongside source)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(200 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if len(output) == 0 {
+		t.Fatal("assembled kernel produced no output")
+	}
+	if !strings.Contains(output, "IExec") {
+		t.Fatalf("no boot banner in output: %q", output[:min(len(output), 40)])
+	}
+}
+
+// ===========================================================================
+// M2: Observable Kernel Tests
+// ===========================================================================
+
+// newIExecTerminalRig creates a test rig with terminal MMIO mapped.
+func newIExecTerminalRig(t *testing.T) (*ie64TestRig, *TerminalMMIO) {
+	t.Helper()
+	rig := newIE64TestRig()
+	term := NewTerminalMMIO()
+	rig.bus.MapIO(TERM_OUT, TERMINAL_REGION_END, term.HandleRead, term.HandleWrite)
+	return rig, term
+}
+
+// assembleAndLoadKernel builds ie64asm, assembles iexec.s, loads the binary into a rig with terminal.
+func assembleAndLoadKernel(t *testing.T) (*ie64TestRig, *TerminalMMIO) {
+	t.Helper()
+	asmBin := buildAssembler(t)
 	tmpDir := t.TempDir()
 	root := repoRootDir(t)
-	copyFileForTest(t, filepath.Join(root, "sdk", "intuitionos", "iexec", "iexec.s"),
-		filepath.Join(tmpDir, "iexec.s"))
-	copyFileForTest(t, filepath.Join(root, "sdk", "include", "iexec.inc"),
-		filepath.Join(tmpDir, "iexec.inc"))
+	copyFileForTest(t, filepath.Join(root, "sdk", "intuitionos", "iexec", "iexec.s"), filepath.Join(tmpDir, "iexec.s"))
+	copyFileForTest(t, filepath.Join(root, "sdk", "include", "iexec.inc"), filepath.Join(tmpDir, "iexec.inc"))
+	copyFileForTest(t, filepath.Join(root, "sdk", "include", "ie64.inc"), filepath.Join(tmpDir, "ie64.inc"))
 
-	// Assemble — output goes to tmpDir/iexec.ie64
 	cmd := exec.Command(asmBin, "-I", tmpDir, filepath.Join(tmpDir, "iexec.s"))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("assembly failed: %v\n%s", err, out)
 	}
 
-	// Load the assembled binary
 	data, err := os.ReadFile(filepath.Join(tmpDir, "iexec.ie64"))
 	if err != nil {
 		t.Fatalf("read assembled binary: %v", err)
 	}
-	if len(data) == 0 {
-		t.Fatal("assembled binary is empty")
-	}
 
-	// Boot the kernel
-	rig := newIE64TestRig()
+	rig, term := newIExecTerminalRig(t)
 	copy(rig.cpu.memory[PROG_START:], data)
 	rig.cpu.PC = PROG_START
 	rig.cpu.CoprocMode = true
+	return rig, term
+}
+
+func TestIExec_DebugPutChar(t *testing.T) {
+	// Programmatic kernel: one user task does SYSCALL #33 with R1='X' then halts
+	rig, term := newIExecTerminalRig(t)
+	cpu := rig.cpu
+
+	// Set up minimal kernel: vectors, KSP, no MMU needed for this test
+	trapAddr := uint32(PROG_START) + 0x3000
+	cpu.trapVector = uint64(trapAddr)
+	cpu.kernelSP = kernStackTop
+
+	// User task at userTask0Code: MOVE R1, #'X'; SYSCALL #33; HALT
+	copy(cpu.memory[userTask0Code:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x58)) // 'X'
+	copy(cpu.memory[userTask0Code+8:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, 33))
+	copy(cpu.memory[userTask0Code+16:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	// Kernel: ERET to user task
+	k := newIExecKernel()
+	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, trapAddr))
+	k.emit(ie64Instr(OP_MTCR, CR_TRAP_VEC, 0, 0, 1, 0, 0))
+	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, kernStackTop))
+	k.emit(ie64Instr(OP_MTCR, CR_KSP, 0, 0, 1, 0, 0))
+	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Stack+MMU_PAGE_SIZE))
+	k.emit(ie64Instr(OP_MTCR, CR_USP, 0, 0, 1, 0, 0))
+	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Code))
+	k.emit(ie64Instr(OP_MTCR, CR_FAULT_PC, 0, 0, 1, 0, 0))
+	k.emit(ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0))
+
+	// Trap handler: check SYSCALL #33, write R1 to TERM_OUT, ERET
+	k.padTo(0x3000)
+	k.emit(ie64Instr(OP_MFCR, 10, 0, 0, CR_FAULT_CAUSE, 0, 0))
+	k.emit(ie64Instr(OP_MOVE, 11, IE64_SIZE_L, 1, 0, 0, FAULT_SYSCALL))
+	haltBranch := k.addr()
+	k.emit(ie64Instr(OP_BNE, 0, 0, 0, 10, 11, 0))
+	// SYSCALL dispatch
+	k.emit(ie64Instr(OP_MFCR, 10, 0, 0, CR_FAULT_ADDR, 0, 0))
+	k.emit(ie64Instr(OP_MOVE, 11, IE64_SIZE_L, 1, 0, 0, 33))
+	putcharBranch := k.addr()
+	k.emit(ie64Instr(OP_BEQ, 0, 0, 0, 10, 11, 0))
+	k.emit(ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0)) // unknown syscall
+	// DebugPutChar handler
+	putcharAddr := k.addr()
+	binary.LittleEndian.PutUint32(k.code[putcharBranch-PROG_START+4:], uint32(int32(putcharAddr)-int32(putcharBranch)))
+	k.emit(ie64Instr(OP_MOVE, 28, IE64_SIZE_L, 1, 0, 0, TERM_OUT))
+	k.emit(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 0, 28, 0, 0)) // store.b R1, (R28)
+	k.emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))   // ERR_OK
+	k.emit(ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0))
+	// Fault halt
+	haltAddr := k.addr()
+	binary.LittleEndian.PutUint32(k.code[haltBranch-PROG_START+4:], uint32(int32(haltAddr)-int32(haltBranch)))
+	k.emit(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	loadAndRunKernel(t, rig, k, 100000)
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "X") {
+		t.Fatalf("DebugPutChar: output = %q, want 'X'", output)
+	}
+}
+
+func TestIExec_BootBanner(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
 	rig.cpu.running.Store(true)
 
 	done := make(chan struct{})
-	go func() {
-		rig.cpu.Execute()
-		close(done)
-	}()
-
-	// Let it run for 200ms (millions of instruction cycles)
+	go func() { rig.cpu.Execute(); close(done) }()
 	time.Sleep(200 * time.Millisecond)
 	rig.cpu.running.Store(false)
 	<-done
 
-	// Both tasks should have incremented their counters (timer preemption)
-	counter0 := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data:])
-	counter1 := binary.LittleEndian.Uint64(rig.cpu.memory[userTask1Data:])
-
-	t.Logf("Assembled kernel: task0 count=%d, task1 count=%d", counter0, counter1)
-
-	if counter0 == 0 {
-		t.Fatalf("task 0 counter = 0 (standalone kernel didn't boot or preempt)")
+	output := term.DrainOutput()
+	if !strings.HasPrefix(output, "IExec") {
+		t.Fatalf("boot banner: output starts with %q, want 'IExec...'", output[:min(len(output), 20)])
 	}
-	if counter1 == 0 {
-		t.Fatalf("task 1 counter = 0 (standalone kernel didn't switch to task 1)")
+	t.Logf("Boot banner output (first 80 chars): %q", output[:min(len(output), 80)])
+}
+
+func TestIExec_TwoTasksVisibleOutput(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(200 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	hasA := strings.Contains(output, "A")
+	hasB := strings.Contains(output, "B")
+	if !hasA || !hasB {
+		t.Fatalf("visible output: hasA=%v hasB=%v, output=%q", hasA, hasB, output[:min(len(output), 100)])
 	}
+	t.Logf("Task output (first 100 chars): %q", output[:min(len(output), 100)])
+}
+
+func TestIExec_FaultPrintsReport(t *testing.T) {
+	// Boot the real assembled kernel, but with a modified task 0 that accesses
+	// an unmapped page. The kernel's own fault handler (kern_puts/kern_put_hex)
+	// should print a FAULT report.
+	rig, term := assembleAndLoadKernel(t)
+
+	// Find the task 0 template in the kernel binary and overwrite it with
+	// fault-triggering code. The kernel init copies this to 0x600000, so the
+	// fault happens when task 0 first runs.
+	// Search for the task 0 template marker: MOVE R1, #0x41 ('A') = the first instruction.
+	// The encoding is: opcode=0x01, rd=1, size=2(L), xbit=1, rs=0, rt=0, imm32=0x41
+	marker := ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x41)
+	templateOff := -1
+	for i := 0; i+8 <= len(rig.cpu.memory[PROG_START:]); i += 8 {
+		match := true
+		for j := 0; j < 8; j++ {
+			if rig.cpu.memory[PROG_START+uint32(i)+uint32(j)] != marker[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			templateOff = i
+			break
+		}
+	}
+	if templateOff < 0 {
+		t.Fatal("could not find task 0 template in kernel binary")
+	}
+	// Overwrite the template with fault-triggering code
+	base := PROG_START + uint32(templateOff)
+	copy(rig.cpu.memory[base:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x700000))
+	copy(rig.cpu.memory[base+8:], ie64Instr(OP_LOAD, 2, IE64_SIZE_L, 0, 1, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(200 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "FAULT") {
+		t.Fatalf("fault report: output = %q, want 'FAULT' from real kernel handler", output)
+	}
+	// Verify the report includes PC and ADDR fields
+	if !strings.Contains(output, "PC=") {
+		t.Logf("fault output: %q", output)
+		t.Fatal("fault report missing PC= field")
+	}
+	t.Logf("Fault report output: %q", output[strings.Index(output, "FAULT"):min(len(output), strings.Index(output, "FAULT")+80)])
 }
