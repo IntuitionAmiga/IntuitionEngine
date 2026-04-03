@@ -43,7 +43,7 @@ The IE64 is a 64-bit RISC load-store CPU designed for the Intuition Engine platf
 - **Condition model**: Compare-and-branch (no flags register)
 - **Register file**: 32 general-purpose 64-bit registers (R0 hardwired to zero)
 - **Address space**: 32MB physical, masked via `PC & 0x1FFFFFF`
-- **Stack**: Full-descending, 8-byte aligned, R31 serves as stack pointer
+- **Stack**: Full-descending, R31 serves as stack pointer. Hardware enforces 8-byte granularity for PUSH/POP; the IntuitionOS ABI requires 16-byte alignment at call boundaries (see [`IE64_ABI.md`](IE64_ABI.md))
 - **Interrupt model**: Single vector, maskable, with timer support
 
 ---

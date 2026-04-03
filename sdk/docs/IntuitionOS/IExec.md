@@ -10,14 +10,14 @@
 
 IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS Exec but designed from the ground up for a hardware-enforced privilege model. Where Amiga Exec ran in flat supervisor space with no memory protection, IExec uses the IE64 MMU to enforce user/supervisor separation, per-task page tables, and W^X memory policy.
 
-**What IExec does (Milestone 3):**
+**What IExec does (Milestone 4):**
 
 - Task scheduling (preemptive round-robin between two static tasks; priority-based scheduling is future)
 - Memory protection via the IE64 MMU (per-task page tables with separate code/stack/data mappings)
 - Trap and interrupt dispatch (syscall entry, fault handling, timer preemption)
 - Context switching (save/restore PC, USP, and PTBR per task; full GPR save/restore is future)
 - Inter-task signalling: per-task 32-bit signal mask with AllocSignal/FreeSignal/Signal/Wait, deadlock detection
-- Inter-task communication via ports and messages (future)
+- Inter-task communication via message ports: CreatePort/PutMsg/GetMsg/WaitPort with fixed-size 16-byte messages and SIGF_PORT-based wakeup
 
 **What IExec does not do:**
 
@@ -157,11 +157,13 @@ The CPU traps to supervisor mode. The kernel's trap handler reads the syscall nu
 | R4 | Argument 4 | No |
 | R5 | Argument 5 | No |
 | R6 | Argument 6 | No |
-| R7-R30 | Caller's registers | Yes (preserved) |
+| R7-R30 | Caller's registers | **Not yet** (see below) |
 | R31 (SP) | Stack pointer | Yes (preserved via USP) |
 | R0 | Zero register (hardwired) | N/A |
 
-**Future**: The kernel will save and restore the full GPR set (R1-R30) in the TCB on every context switch, not just PC and USP.
+**Current limitation (IExec M2):** The kernel does not yet save or restore R1-R30 in the TCB. The syscall dispatch logic clobbers R10-R16 internally. User code must assume all registers except R1, R2, and SP are unreliable after a syscall.
+
+**Target:** A future IExec milestone will save and restore the full GPR set (R1-R30) in the TCB on every context switch, at which point callee-saved registers (R13-R15 per the [IE64 ABI v0](../IE64_ABI.md)) will be reliably preserved across syscalls.
 
 ### 4.3 Return Convention
 
@@ -220,11 +222,11 @@ The CPU traps to supervisor mode. The kernel's trap handler reads the syscall nu
 
 | # | Name | Signature | Status |
 |---|------|-----------|--------|
-| 15 | `CreatePort` | R1=name_ptr (0=anonymous) -> R1=port_handle | Future |
+| 15 | `CreatePort` | (no args) -> R1=port_id (0-3), R2=err | **Implemented** |
 | 16 | `FindPort` | R1=name_ptr -> R1=port_handle | Future |
-| 17 | `PutMsg` | R1=port_handle, R2=msg_ptr, R3=msg_len -> R2=err | Future |
-| 18 | `GetMsg` | R1=port_handle, R2=buf_ptr, R3=buf_len -> R1=actual_len | Future |
-| 19 | `WaitPort` | R1=port_handle -> R1=signal_mask | Future |
+| 17 | `PutMsg` | R1=port_id, R2=msg_type, R3=msg_data -> R2=err | **Implemented** |
+| 18 | `GetMsg` | R1=port_id -> R1=msg_type, R2=msg_data, R3=err | **Implemented** |
+| 19 | `WaitPort` | R1=port_id -> R1=msg_type, R2=msg_data, R3=err | **Implemented** |
 | 20 | `ReplyMsg` | R1=port_handle, R2=msg_ptr, R3=msg_len -> R2=err | Future |
 | 21 | `PeekPort` | R1=port_handle -> R1=msg_count | Future |
 
@@ -319,7 +321,7 @@ Signals are a 32-bit bitmask per task, directly inherited from the Amiga Exec mo
 
 ---
 
-## 7. Port/Message Model (Future)
+## 7. Port/Message Model
 
 Ports are kernel-managed FIFO message queues, modeled after Amiga MsgPorts.
 
@@ -489,7 +491,7 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 - Fault reporting: on non-SYSCALL faults, kernel prints "FAULT cause=NNNN PC=$XXXX ADDR=$XXXX\n" to the debug terminal then halts
 - Scheduler heartbeat: prints '.' to the debug terminal every 64 timer ticks
 
-### Milestone 3: Signals (Current)
+### Milestone 3: Signals (Complete)
 
 **Implemented and tested (builds on Milestone 2):**
 
@@ -501,26 +503,38 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 - Scheduler skips tasks in WAITING state; shared restore path delivers Wait return values when `sig_wait != 0`
 - Deadlock detection: when all tasks are in WAITING state with no external wake source, kernel prints "DEADLOCK: no runnable tasks" and halts
 
-### Milestone 4: Dynamic Tasks (Planned)
+### Milestone 4: Message Ports (Current)
+
+**Implemented and tested (builds on Milestone 3):**
+
+- `CreatePort` syscall (15): creates an anonymous message port owned by the calling task. Returns R1=port ID (0-3), R2=err. Returns ERR_NOMEM if all 4 port slots are occupied.
+- `PutMsg` syscall (17): send a fixed-size message to a port. R1=port ID, R2=msg_type, R3=msg_data. Any task may send to any valid port. Enqueues a 16-byte message (4 bytes type, 4 bytes src_task, 8 bytes data) into the port's FIFO. Sets SIGF_PORT (signal bit 0) on the owning task and wakes the owner if it is in WAITING state. Returns R2=ERR_BADARG if the port ID is invalid, R2=ERR_AGAIN if the FIFO is full (4 messages max).
+- `GetMsg` syscall (18): dequeue a message from a port. R1=port ID. Returns R1=msg_type, R2=msg_data, R3=err. Only the port owner may call GetMsg (returns R3=ERR_PERM otherwise). Returns R3=ERR_AGAIN if the FIFO is empty.
+- `WaitPort` syscall (19): blocking receive from a port. R1=port ID. Returns R1=msg_type, R2=msg_data, R3=err. Owner only (R3=ERR_PERM otherwise). Semantics: if messages are available, dequeues and returns immediately. Otherwise calls Wait(SIGF_PORT) and rechecks on wake -- this loop handles spurious wakes from other ports sharing the same signal bit.
+- Fixed-size message model: all messages are 16 bytes (4-byte type, 4-byte source task ID, 8-byte data payload). Register-based ABI with no memory-to-memory copy.
+- Port capacity: 4 ports per system, 4-message FIFO per port.
+- SIGF_PORT wakeup: PutMsg sets signal bit 0 on the port owner, integrating with the existing Signal/Wait infrastructure from Milestone 3.
+
+### Milestone 5: Dynamic Tasks (Planned)
 
 - `CreateTask` / `DeleteTask` syscalls
 - Dynamic page allocation (`AllocMem` / `FreeMem`)
 - Priority-based scheduling with arbitrary task count
 - Full GPR save/restore in TCB on context switch
 
-### Milestone 5: Ports + Messages (Planned)
+### Milestone 6: Named Ports + Reply Protocol (Planned)
 
-- `CreatePort` / `FindPort` / `PutMsg` / `GetMsg` / `WaitPort` / `ReplyMsg` / `PeekPort`
-- 4 KB copy-based message passing
+- `FindPort` / `ReplyMsg` / `PeekPort`
 - Named port registry
+- Reply port convention for request/response patterns
 
-### Milestone 6: Shared Memory + Bulk IPC (Planned)
+### Milestone 7: Shared Memory + Bulk IPC (Planned)
 
 - `AllocShared` / `MapShared` for zero-copy bulk transfer
 - `SendMsgBulk` / `RecvMsgBulk`
 - Reference-counted shared memory regions
 
-### Milestone 7: Timers + Handles (Planned)
+### Milestone 8: Timers + Handles (Planned)
 
 - `AddTimer` / `RemTimer` with delta queue
 - `MapIO` / `MapVRAM` for user-space hardware access

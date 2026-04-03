@@ -177,6 +177,8 @@ iexec_start:
     store.l r0, KD_TASK_SIG_WAIT(r2)       ; task 0 sig_wait = 0
     store.l r0, KD_TASK_SIG_RECV(r2)       ; task 0 sig_recv = 0
     store.b r0, KD_TASK_STATE(r2)          ; task 0 state = READY (0)
+    move.b  r1, #WAITPORT_NONE
+    store.b r1, KD_TASK_WAITPORT(r2)       ; task 0 waitport_id = NONE
 
     ; Task 1: PC, USP, signals, state
     move.l  r1, #USER_TASK1_CODE
@@ -190,12 +192,27 @@ iexec_start:
     store.l r0, KD_TASK_SIG_WAIT(r2)
     store.l r0, KD_TASK_SIG_RECV(r2)
     store.b r0, KD_TASK_STATE(r2)
+    move.b  r1, #WAITPORT_NONE
+    store.b r1, KD_TASK_WAITPORT(r2)       ; task 1 waitport_id = NONE
 
     ; PTBR array
     move.l  r1, #USER_PT0_BASE
     store.q r1, KD_PTBR0(r12)
     move.l  r1, #USER_PT1_BASE
     store.q r1, KD_PTBR1(r12)
+
+    ; ---------------------------------------------------------------
+    ; 6b. Initialize port slots (all invalid)
+    ; ---------------------------------------------------------------
+    move.l  r2, #KERN_DATA_BASE
+    add     r2, r2, #KD_PORT_BASE      ; R2 = &port[0]
+    move.l  r4, #0                      ; port counter
+.port_init_loop:
+    store.b r0, KD_PORT_VALID(r2)      ; valid = 0
+    add     r2, r2, #KD_PORT_STRIDE
+    add     r4, r4, #1
+    move.l  r5, #KD_PORT_MAX
+    blt     r4, r5, .port_init_loop
 
     ; ---------------------------------------------------------------
     ; 7. Enable MMU
@@ -335,6 +352,18 @@ trap_handler:
 
     move.l  r11, #SYS_WAIT
     beq     r10, r11, .do_wait
+
+    move.l  r11, #SYS_CREATE_PORT
+    beq     r10, r11, .do_create_port
+
+    move.l  r11, #SYS_PUT_MSG
+    beq     r10, r11, .do_put_msg
+
+    move.l  r11, #SYS_GET_MSG
+    beq     r10, r11, .do_get_msg
+
+    move.l  r11, #SYS_WAIT_PORT
+    beq     r10, r11, .do_wait_port
 
     move.q  r2, #ERR_BADARG
     eret
@@ -565,13 +594,13 @@ trap_handler:
     move.q  r16, #1
     sub     r13, r16, r13           ; next = 1 - current
 
-    ; Check if next task is READY
+    ; Check if next task is runnable (not WAITING)
     lsl     r17, r13, #5
     add     r17, r17, #KD_TASK_BASE
     add     r17, r17, r12
     load.b  r18, KD_TASK_STATE(r17)
-    move.l  r19, #TASK_READY
-    bne     r18, r19, .wait_deadlock
+    move.l  r19, #TASK_WAITING
+    beq     r18, r19, .wait_deadlock
 
     ; Switch to next task
     store.q r13, (r12)              ; current_task = next
@@ -583,10 +612,237 @@ trap_handler:
     halt
 
 ; ============================================================================
+; Message Port Syscalls
+; ============================================================================
+
+; --- CreatePort ---
+; Returns R1=portID (0-3), R2=err
+.do_create_port:
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r13, (r12)              ; current_task
+    ; Scan for unused port slot
+    move.l  r20, #0                 ; port index
+    move.l  r21, #KERN_DATA_BASE
+    add     r21, r21, #KD_PORT_BASE ; R21 = &port[0]
+.create_scan:
+    move.l  r22, #KD_PORT_MAX
+    bge     r20, r22, .create_full
+    load.b  r23, KD_PORT_VALID(r21)
+    beqz    r23, .create_found
+    add     r21, r21, #KD_PORT_STRIDE
+    add     r20, r20, #1
+    bra     .create_scan
+.create_found:
+    move.b  r23, #1
+    store.b r23, KD_PORT_VALID(r21)     ; valid = 1
+    store.b r13, KD_PORT_OWNER(r21)     ; owner = current_task
+    store.b r0, KD_PORT_COUNT(r21)      ; count = 0
+    store.b r0, KD_PORT_HEAD(r21)       ; head = 0
+    store.b r0, KD_PORT_TAIL(r21)       ; tail = 0
+    move.q  r1, r20                      ; R1 = portID
+    move.q  r2, #ERR_OK
+    eret
+.create_full:
+    move.q  r2, #ERR_NOMEM
+    eret
+
+; --- PutMsg ---
+; R1=portID, R2=msg_type, R3=msg_data → R2=err
+.do_put_msg:
+    ; Validate portID
+    move.l  r22, #KD_PORT_MAX
+    bge     r1, r22, .putmsg_badarg
+    ; Compute port address: R21 = KERN_DATA_BASE + KD_PORT_BASE + portID * KD_PORT_STRIDE
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r13, (r12)                  ; current_task (for src_task)
+    move.l  r21, #KERN_DATA_BASE
+    add     r21, r21, #KD_PORT_BASE
+    move.l  r20, #KD_PORT_STRIDE
+    mulu    r20, r1, r20
+    add     r21, r21, r20               ; R21 = &port[portID]
+    ; Check valid
+    load.b  r23, KD_PORT_VALID(r21)
+    beqz    r23, .putmsg_badarg
+    ; Check FIFO not full (count < 4)
+    load.b  r24, KD_PORT_COUNT(r21)
+    move.l  r25, #KD_PORT_FIFO_SIZE
+    bge     r24, r25, .putmsg_full
+    ; Enqueue: compute message slot address
+    ; slot = port_base + KD_PORT_MSGS + tail * KD_MSG_SIZE
+    load.b  r25, KD_PORT_TAIL(r21)
+    move.l  r26, #KD_MSG_SIZE
+    mulu    r26, r25, r26               ; tail * 16
+    add     r26, r26, r21
+    add     r26, r26, #KD_PORT_MSGS     ; R26 = &msg_slot
+    ; Write message fields
+    store.l r2, KD_MSG_TYPE(r26)        ; mn_Type = R2
+    store.l r13, KD_MSG_SRC(r26)        ; mn_SrcTask = current_task
+    store.q r3, KD_MSG_DATA(r26)        ; mn_Data = R3
+    ; Advance tail (mod 4)
+    add     r25, r25, #1
+    and     r25, r25, #3               ; tail = (tail + 1) & 3
+    store.b r25, KD_PORT_TAIL(r21)
+    ; Increment count
+    add     r24, r24, #1
+    store.b r24, KD_PORT_COUNT(r21)
+    ; Signal port owner with SIGF_PORT
+    load.b  r27, KD_PORT_OWNER(r21)    ; owner task ID
+    lsl     r28, r27, #5
+    add     r28, r28, #KD_TASK_BASE
+    add     r28, r28, r12              ; R28 = &TCB[owner]
+    load.l  r29, KD_TASK_SIG_RECV(r28)
+    or      r29, r29, #SIGF_PORT
+    store.l r29, KD_TASK_SIG_RECV(r28)
+    ; If owner is WAITING on SIGF_PORT, set READY
+    load.b  r30, KD_TASK_STATE(r28)
+    move.l  r20, #TASK_WAITING
+    bne     r30, r20, .putmsg_done
+    load.l  r20, KD_TASK_SIG_WAIT(r28)
+    and     r20, r20, #SIGF_PORT
+    beqz    r20, .putmsg_done
+    move.b  r30, #TASK_READY
+    store.b r30, KD_TASK_STATE(r28)
+.putmsg_done:
+    move.q  r2, #ERR_OK
+    eret
+.putmsg_badarg:
+    move.q  r2, #ERR_BADARG
+    eret
+.putmsg_full:
+    move.q  r2, #ERR_AGAIN
+    eret
+
+; --- GetMsg ---
+; R1=portID → R1=msg_type, R2=msg_data, R3=err
+.do_get_msg:
+    move.l  r22, #KD_PORT_MAX
+    bge     r1, r22, .getmsg_badarg
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r13, (r12)
+    ; Compute port address
+    move.l  r21, #KERN_DATA_BASE
+    add     r21, r21, #KD_PORT_BASE
+    move.l  r20, #KD_PORT_STRIDE
+    mulu    r20, r1, r20
+    add     r21, r21, r20
+    ; Check valid
+    load.b  r23, KD_PORT_VALID(r21)
+    beqz    r23, .getmsg_badarg
+    ; Check ownership
+    load.b  r24, KD_PORT_OWNER(r21)
+    bne     r13, r24, .getmsg_perm
+    ; Check count > 0
+    load.b  r25, KD_PORT_COUNT(r21)
+    beqz    r25, .getmsg_empty
+    ; Dequeue: read message at head
+    load.b  r26, KD_PORT_HEAD(r21)
+    move.l  r27, #KD_MSG_SIZE
+    mulu    r27, r26, r27
+    add     r27, r27, r21
+    add     r27, r27, #KD_PORT_MSGS     ; R27 = &msg_slot
+    load.l  r1, KD_MSG_TYPE(r27)        ; R1 = msg_type
+    load.q  r2, KD_MSG_DATA(r27)        ; R2 = msg_data
+    ; Advance head (mod 4)
+    add     r26, r26, #1
+    and     r26, r26, #3
+    store.b r26, KD_PORT_HEAD(r21)
+    ; Decrement count
+    sub     r25, r25, #1
+    store.b r25, KD_PORT_COUNT(r21)
+    move.q  r3, #ERR_OK
+    eret
+.getmsg_badarg:
+    move.q  r3, #ERR_BADARG
+    eret
+.getmsg_perm:
+    move.q  r3, #ERR_PERM
+    eret
+.getmsg_empty:
+    move.q  r3, #ERR_AGAIN
+    eret
+
+; --- WaitPort ---
+; R1=portID → R1=msg_type, R2=msg_data, R3=err
+; Loop: check port, if empty Wait(SIGF_PORT), recheck.
+.do_wait_port:
+    ; Save portID in R5 (not clobbered by Wait internals)
+    move.q  r5, r1
+.waitport_loop:
+    ; Compute port address
+    move.l  r22, #KD_PORT_MAX
+    bge     r5, r22, .waitport_badarg
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r13, (r12)
+    move.l  r21, #KERN_DATA_BASE
+    add     r21, r21, #KD_PORT_BASE
+    move.l  r20, #KD_PORT_STRIDE
+    mulu    r20, r5, r20
+    add     r21, r21, r20
+    ; Check valid + ownership
+    load.b  r23, KD_PORT_VALID(r21)
+    beqz    r23, .waitport_badarg
+    load.b  r24, KD_PORT_OWNER(r21)
+    bne     r13, r24, .waitport_perm
+    ; Check count > 0
+    load.b  r25, KD_PORT_COUNT(r21)
+    bnez    r25, .waitport_dequeue
+    ; Empty — block on SIGF_PORT with WaitPort flag
+    lsl     r15, r13, #5
+    add     r15, r15, #KD_TASK_BASE
+    add     r15, r15, r12
+    move.l  r22, #SIGF_PORT
+    store.l r22, KD_TASK_SIG_WAIT(r15)
+    store.b r5, KD_TASK_WAITPORT(r15)      ; mark as WaitPort (portID in R5)
+    move.b  r22, #TASK_WAITING
+    store.b r22, KD_TASK_STATE(r15)
+    mfcr    r14, cr3
+    store.q r14, KD_TASK_PC(r15)
+    mfcr    r14, cr12
+    store.q r14, KD_TASK_USP(r15)
+    ; Find next READY task
+    move.q  r16, #1
+    sub     r13, r16, r13
+    lsl     r17, r13, #5
+    add     r17, r17, #KD_TASK_BASE
+    add     r17, r17, r12
+    load.b  r18, KD_TASK_STATE(r17)
+    move.l  r19, #TASK_WAITING
+    beq     r18, r19, .waitport_deadlock
+    store.q r13, (r12)
+    bra     restore_task
+.waitport_dequeue:
+    ; Dequeue (same as GetMsg)
+    load.b  r26, KD_PORT_HEAD(r21)
+    move.l  r27, #KD_MSG_SIZE
+    mulu    r27, r26, r27
+    add     r27, r27, r21
+    add     r27, r27, #KD_PORT_MSGS
+    load.l  r1, KD_MSG_TYPE(r27)
+    load.q  r2, KD_MSG_DATA(r27)
+    add     r26, r26, #1
+    and     r26, r26, #3
+    store.b r26, KD_PORT_HEAD(r21)
+    load.b  r25, KD_PORT_COUNT(r21)
+    sub     r25, r25, #1
+    store.b r25, KD_PORT_COUNT(r21)
+    move.q  r3, #ERR_OK
+    eret
+.waitport_badarg:
+    move.q  r3, #ERR_BADARG
+    eret
+.waitport_perm:
+    move.q  r3, #ERR_PERM
+    eret
+.waitport_deadlock:
+    la      r8, deadlock_msg
+    jsr     kern_puts
+    halt
+
+; ============================================================================
 ; Shared Task Restore (used by yield, wait, and interrupt handlers)
 ; ============================================================================
 ; Entry: R13 = next task index, R12 = KERN_DATA_BASE
-; Loads PC, USP, PTBR from TCB. Checks signal_wait for Wait delivery.
+; Loads PC, USP, PTBR from TCB. Checks signal_wait for Wait/WaitPort delivery.
 
 restore_task:
     lsl     r15, r13, #5
@@ -613,7 +869,12 @@ restore_task:
     load.l  r18, KD_TASK_SIG_WAIT(r15)
     beqz    r18, .restore_normal
 
-    ; Wait delivery: compute matched signals
+    ; Check if this was a WaitPort block (waitport_id != WAITPORT_NONE)
+    load.b  r23, KD_TASK_WAITPORT(r15)
+    move.l  r24, #WAITPORT_NONE
+    bne     r23, r24, .restore_waitport
+
+    ; Plain Wait delivery: compute matched signals
     load.l  r20, KD_TASK_SIG_RECV(r15)
     and     r21, r20, r18           ; matched = recv & wait
 
@@ -635,6 +896,80 @@ restore_task:
 
 .restore_normal:
     eret
+
+; --- WaitPort resume: dequeue message from port r23 ---
+.restore_waitport:
+    ; Compute port address
+    move.l  r21, #KERN_DATA_BASE
+    add     r21, r21, #KD_PORT_BASE
+    move.l  r20, #KD_PORT_STRIDE
+    mulu    r20, r23, r20
+    add     r21, r21, r20               ; R21 = &port[waitport_id]
+
+    ; Check count > 0 (spurious wake if another port got SIGF_PORT)
+    load.b  r25, KD_PORT_COUNT(r21)
+    beqz    r25, .restore_waitport_spurious
+
+    ; Message available — dequeue
+    load.b  r26, KD_PORT_HEAD(r21)
+    move.l  r27, #KD_MSG_SIZE
+    mulu    r27, r26, r27
+    add     r27, r27, r21
+    add     r27, r27, #KD_PORT_MSGS
+    load.l  r1, KD_MSG_TYPE(r27)
+    load.q  r2, KD_MSG_DATA(r27)
+    add     r26, r26, #1
+    and     r26, r26, #3
+    store.b r26, KD_PORT_HEAD(r21)
+    sub     r25, r25, #1
+    store.b r25, KD_PORT_COUNT(r21)
+
+    ; Clear wait state
+    store.l r0, KD_TASK_SIG_WAIT(r15)
+    move.b  r24, #WAITPORT_NONE
+    store.b r24, KD_TASK_WAITPORT(r15)
+    move.b  r22, #TASK_RUNNING
+    store.b r22, KD_TASK_STATE(r15)
+
+    ; Clear consumed SIGF_PORT from recv
+    load.l  r20, KD_TASK_SIG_RECV(r15)
+    move.l  r24, #SIGF_PORT
+    not     r22, r24
+    and     r20, r20, r22
+    store.l r20, KD_TASK_SIG_RECV(r15)
+
+    move.q  r3, #ERR_OK
+    eret
+
+.restore_waitport_spurious:
+    ; Port empty — spurious wake from different port sharing SIGF_PORT.
+    ; Clear consumed signal, re-block, switch to other task.
+    load.l  r20, KD_TASK_SIG_RECV(r15)
+    move.l  r24, #SIGF_PORT
+    not     r22, r24
+    and     r20, r20, r22
+    store.l r20, KD_TASK_SIG_RECV(r15)
+
+    ; Re-block (state=WAITING; signal_wait and waitport_id remain set)
+    move.b  r22, #TASK_WAITING
+    store.b r22, KD_TASK_STATE(r15)
+
+    ; Find other task
+    move.q  r16, #1
+    sub     r13, r16, r13
+    lsl     r17, r13, #5
+    add     r17, r17, #KD_TASK_BASE
+    add     r17, r17, r12
+    load.b  r18, KD_TASK_STATE(r17)
+    move.l  r19, #TASK_WAITING
+    beq     r18, r19, .restore_waitport_deadlock
+    store.q r13, (r12)
+    bra     restore_task
+
+.restore_waitport_deadlock:
+    la      r8, deadlock_msg
+    jsr     kern_puts
+    halt
 
 ; ============================================================================
 ; Interrupt Handler (Timer Preemption)
@@ -691,35 +1026,40 @@ intr_handler:
 ; User Task Templates (copied to user code pages during init)
 ; ============================================================================
 
-; Task 0: print 'A', Signal task 1 (bit 16), Wait for signal from task 1 (bit 17)
-; Signal-synchronized: produces clean alternating A/B output.
+; Task 0: Create port, yield (let task 1 create its port), then IPC loop
+; Port-based request/reply: Exec-style IPC demonstration.
+; Task 0 gets portID=0, task 1 gets portID=1 (allocated sequentially).
+; Port IDs are immediate constants — no register save across syscalls needed.
 user_task0_template:
+    syscall #SYS_CREATE_PORT        ; R1 = portID (0)
+    move.q  r1, r1                  ; NOP (keeps template at 12 instructions)
+    syscall #SYS_YIELD              ; let task 1 create its port
 .t0_loop:
     move.l  r1, #0x41              ; 'A'
     syscall #SYS_DEBUG_PUTCHAR
-    ; Signal task 1 with bit 16
-    move.l  r1, #1                 ; taskID = 1
-    move.l  r2, #0x10000           ; mask = 1<<16
-    syscall #SYS_SIGNAL
-    ; Wait for bit 17 from task 1
-    move.l  r1, #0x20000           ; mask = 1<<17
-    syscall #SYS_WAIT
+    move.l  r1, #1                 ; target port 1
+    move.l  r2, #1                 ; msg_type = request
+    move.l  r3, #0                 ; msg_data
+    syscall #SYS_PUT_MSG
+    move.l  r1, #0                 ; own portID (immediate, ABI-safe)
+    syscall #SYS_WAIT_PORT
     bra     .t0_loop
 user_task0_template_end:
 
-; Task 1: Wait for signal from task 0 (bit 16), print 'B', Signal task 0 (bit 17)
+; Task 1: Create port, yield (sync), then WaitPort/print/reply loop
 user_task1_template:
+    syscall #SYS_CREATE_PORT        ; R1 = portID (1)
+    move.q  r1, r1                  ; NOP (keeps template at 12 instructions)
+    syscall #SYS_YIELD              ; let task 0 start sending
 .t1_loop:
-    ; Wait for bit 16 from task 0
-    move.l  r1, #0x10000           ; mask = 1<<16
-    syscall #SYS_WAIT
-    ; Print 'B'
+    move.l  r1, #1                 ; own portID (immediate, ABI-safe)
+    syscall #SYS_WAIT_PORT
     move.l  r1, #0x42              ; 'B'
     syscall #SYS_DEBUG_PUTCHAR
-    ; Signal task 0 with bit 17
-    move.l  r1, #0                 ; taskID = 0
-    move.l  r2, #0x20000           ; mask = 1<<17
-    syscall #SYS_SIGNAL
+    move.l  r1, #0                 ; target port 0
+    move.l  r2, #2                 ; msg_type = reply
+    move.l  r3, #0                 ; msg_data
+    syscall #SYS_PUT_MSG
     bra     .t1_loop
 user_task1_template_end:
 
@@ -728,7 +1068,7 @@ user_task1_template_end:
 ; ============================================================================
 
 boot_banner:
-    dc.b    "IExec M2 boot", 0x0A, 0
+    dc.b    "IExec M4 boot", 0x0A, 0
     align   4
 
 fault_msg_prefix:

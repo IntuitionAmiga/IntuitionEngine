@@ -11,8 +11,22 @@ Assembly uses 68K-flavored lowercase syntax with `.b`/`.w`/`.l`/`.q` size suffix
 
 ## Register Conventions
 
-The following calling/register rules are **project ABI conventions** used by IE64
-examples. They are not enforced by CPU hardware instructions.
+> **Note:** This cookbook and all its examples use a legacy register
+> convention that predates the IntuitionOS IE64 ABI v0 and differs from
+> it. The differences affect register roles, argument passing, callee-saved
+> sets, stack alignment, and TLS assumptions throughout the file.
+>
+> The IntuitionOS ABI (see [`IE64_ABI.md`](IE64_ABI.md)) is the normative
+> document for IntuitionOS code. It uses R1-R6 for arguments, R1-R2 for
+> returns, R13-R15 as callee-saved, and 16-byte stack alignment at call
+> boundaries. New IntuitionOS code should follow the ABI, not this cookbook's
+> conventions.
+>
+> The legacy convention below is retained so that existing cookbook examples
+> remain self-consistent and readable.
+
+The following calling/register rules are **legacy cookbook conventions** used by
+pre-ABI IE64 examples. They are not enforced by CPU hardware instructions.
 
 | Register | Purpose |
 |----------|---------|
@@ -167,10 +181,11 @@ must be preserved by the called function.
 > **Conventions vs ISA guarantees**
 > - **ISA-guaranteed behavior**: `jsr`/`rts`/`push`/`pop` stack mechanics, register
 >   widths, and branch semantics (as defined in `IE64_ISA.md`).
-> - **Project ABI convention (this cookbook)**: which registers are caller-saved vs
->   callee-saved, argument register assignments, and return-value registers.
-> - You may define a different ABI for a project, but all code in that project must
->   follow it consistently.
+> - **Legacy cookbook convention (these examples)**: which registers are caller-saved
+>   vs callee-saved, argument register assignments, and return-value registers.
+>   These examples use the pre-ABI convention (R8-R15 args, R16-R27 callee-saved).
+> - **IntuitionOS ABI v0** ([`IE64_ABI.md`](IE64_ABI.md)): the normative calling
+>   convention for IntuitionOS. New OS code should follow the ABI.
 
 ### Leaf function (no nested calls, no callee-saved registers used)
 
@@ -216,11 +231,9 @@ Notes:
 - `push` and `pop` always operate on 8-byte (quad) values.
 - Push/pop order must be symmetric: push in forward order, pop in reverse order
   (LIFO).
-- `r1`-`r15` and `r28`-`r30` are caller-saved; a callee may freely destroy them.
-- `r16`-`r27` are callee-saved; if used, they must be pushed in the prologue and
-  popped in the epilogue.
-- Arguments are passed in `r8`-`r15`; return values in `r8` (or `r8`:`r9` for
-  128-bit results).
+- These examples use the **legacy cookbook convention** (R8-R15 args, R16-R27
+  callee-saved). The IntuitionOS ABI v0 uses R1-R6 for arguments, R1-R2 for
+  returns, and R13-R15 as callee-saved. See [`IE64_ABI.md`](IE64_ABI.md).
 
 ---
 
@@ -993,6 +1006,8 @@ Notes:
   add.q sp, sp, #32    ; deallocate locals
   ```
 - Keep `sp` 8-byte aligned at all times for quad-word load/store correctness.
+  (The IntuitionOS ABI v0 requires 16-byte alignment at call boundaries;
+  see [`IE64_ABI.md`](IE64_ABI.md).)
 
 ---
 
@@ -1234,8 +1249,9 @@ Notes:
 
 ### 2. Syscall Handler
 
-User programs invoke `syscall rN` to request kernel services. The syscall number is
-passed in Rs and saved to CR1 (FAULT_ADDR) by hardware. The kernel reads it with MFCR.
+User programs invoke `syscall #N` to request kernel services. The syscall number is
+encoded in the imm32 field and saved to CR1 (FAULT_ADDR) by hardware. The kernel
+reads it with MFCR.
 
 ```asm
 ; Trap handler entry point (at TRAP_HANDLER)
@@ -1492,8 +1508,10 @@ The TP (Thread Pointer) register is CR6. It is readable from user mode via MFCR,
 allowing efficient TLS access without a syscall.
 
 ```asm
-; Kernel sets TP for each thread during context switch:
-;   mtcr cr6, r1        ; r1 = TLS base for this thread (supervisor only)
+; Target behavior (not yet implemented in IExec M2):
+; Kernel will set TP for each task during context switch:
+;   mtcr cr6, r1        ; r1 = TLS base for this task (supervisor only)
+; Currently CR6 is zero at task startup. See IE64_ABI.md section 9.
 
 ; User-mode TLS access pattern:
 ; Read a 64-bit value at TLS offset 16.

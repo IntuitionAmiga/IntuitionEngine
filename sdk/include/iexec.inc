@@ -102,6 +102,7 @@ KD_TASK_SIG_ALLOC equ 16          ; allocated signal bits (4 bytes)
 KD_TASK_SIG_WAIT  equ 20          ; signals being waited for (4 bytes, 0 if not waiting)
 KD_TASK_SIG_RECV  equ 24          ; pending received signals (4 bytes)
 KD_TASK_STATE     equ 28          ; task state byte: 0=READY, 1=RUNNING, 2=WAITING
+KD_TASK_WAITPORT  equ 29          ; WaitPort port ID (0xFF = not in WaitPort)
 ; Pre-computed offsets for task 0 and task 1
 KD_TASK0_PC       equ 64          ; KD_TASK_BASE + 0*32 + 0
 KD_TASK0_USP      equ 72          ; KD_TASK_BASE + 0*32 + 8
@@ -115,6 +116,36 @@ KD_PTBR1          equ 136         ; KD_PTBR_BASE + 8
 TASK_READY        equ 0
 TASK_RUNNING      equ 1
 TASK_WAITING      equ 2
+; Signal bit constants
+SIGF_PORT         equ 1           ; Bit 0: message arrived at a port
+; WaitPort sentinel
+WAITPORT_NONE     equ 0xFF        ; not blocked in WaitPort
+
+; ===========================================================================
+; Message Port Layout (M4)
+; ===========================================================================
+; 4 ports max, 72 bytes each, starting at offset 144 in kernel data
+; Each port: 8-byte header + 4 × 16-byte messages (FIFO)
+
+KD_PORT_BASE      equ 144         ; start of port array (after PTBR array)
+KD_PORT_STRIDE    equ 72          ; bytes per port
+KD_PORT_MAX       equ 4           ; max number of ports
+KD_PORT_FIFO_SIZE equ 4           ; messages per port FIFO
+
+; Port header field offsets (relative to port base)
+KD_PORT_VALID     equ 0           ; 1=active, 0=unused (1 byte)
+KD_PORT_OWNER     equ 1           ; owning task ID (1 byte)
+KD_PORT_COUNT     equ 2           ; messages in FIFO, 0-4 (1 byte)
+KD_PORT_HEAD      equ 3           ; read index, 0-3 (1 byte)
+KD_PORT_TAIL      equ 4           ; write index, 0-3 (1 byte)
+KD_PORT_MSGS      equ 8           ; start of message array (4 × 16 bytes)
+
+; Message field offsets (relative to message base, 16 bytes per message)
+KD_MSG_TYPE       equ 0           ; application-defined type (4 bytes)
+KD_MSG_SRC        equ 4           ; sender task ID (4 bytes)
+KD_MSG_DATA       equ 8           ; payload data (8 bytes)
+KD_MSG_SIZE       equ 16          ; bytes per message
+
 ; System signal allocation mask (bits 0-15 pre-allocated)
 SIG_SYSTEM_MASK   equ 0xFFFF
 
@@ -130,7 +161,7 @@ USER_TASK0_DATA   equ 0x602000    ; Task 0 data page
 USER_TASK1_CODE   equ 0x610000    ; Task 1 code page (physical)
 USER_TASK1_STACK  equ 0x611000    ; Task 1 stack page
 USER_TASK1_DATA   equ 0x612000    ; Task 1 data page
-USER_CODE_SIZE    equ 64          ; 8 instructions x 8 bytes (print + delay + yield + loop)
+USER_CODE_SIZE    equ 96          ; 12 instructions x 8 bytes (port-based request/reply)
 
 ; VPNs for user pages (addr >> 12)
 USER_TASK0_CODE_VPN  equ 0x600   ; 0x600000 >> 12

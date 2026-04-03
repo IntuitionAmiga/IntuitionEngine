@@ -3390,7 +3390,7 @@ All conditional branches compare two registers directly - no flags register:
 | Mnemonic | Description |
 |----------|-------------|
 | `MTCR CRn, Rs` | Move register to control register (supervisor only) |
-| `MFCR Rd, CRn` | Move control register to register (supervisor only) |
+| `MFCR Rd, CRn` | Move control register to register (supervisor only; CR6/TP is readable from user mode) |
 | `ERET` | Exception return: PC = FAULT_PC, switch to user mode (supervisor only) |
 | `TLBFLUSH` | Flush entire software TLB (supervisor only) |
 | `TLBINVAL Rs` | Invalidate TLB entry for virtual address in Rs (supervisor only) |
@@ -3542,7 +3542,7 @@ The Intuition Engine includes a full port of Lee Davison's Enhanced BASIC (EhBAS
 - **Audio commands**: SOUND, ENVELOPE, GATE, WAVE, FILTER, REVERB, OVERDRIVE, SWEEP, SYNC, RINGMOD, plus PSG/SID/POKEY/TED/AHX/MOD playback and STATUS queries
 - **System commands**: CALL (machine code subroutine), USR (call with return value), POKE8/PEEK8, DOKE/DEEK, WAIT, BLIT, COPPER, TRON/TROFF (trace mode)
 - **Coprocessor commands**: COSTART, COSTOP, COWAIT (worker lifecycle); COCALL(), COSTATUS() (async cross-CPU RPC to IE32/6502/M68K/Z80/x86 workers)
-- **Machine code interface**: CALL and USR use register-indirect JSR to invoke IE64 assembly routines; R8 carries return values
+- **Machine code interface**: CALL and USR use register-indirect JSR to invoke IE64 assembly routines; R8 carries return values (EhBASIC convention; see [`IE64_ABI.md`](sdk/docs/IE64_ABI.md) for IntuitionOS ABI)
 - **Terminal editor**: Insert mode with character shifting, key repeat, Ctrl shortcuts (A/E/K/U/L), Ctrl+Arrow word movement, command history (Ctrl+Up/Down), Page Up/Down and mouse wheel scrollback navigation, Shift+Arrow text selection with clipboard copy/cut/paste (Ctrl+Shift+C/X/V)
 
 ### Common REPL Commands
@@ -5976,14 +5976,14 @@ make aros               # Build VM with embedded AROS ROM
 
 IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. Unlike classic Amiga Exec, which ran everything in flat supervisor space with no memory protection, IExec uses the IE64 MMU to enforce hardware-backed user/supervisor privilege separation with per-task page tables and W^X memory policy. The design preserves the Amiga programming model (signals, message ports, priority scheduling) while adding the isolation guarantees of a modern protected-mode OS.
 
-**Milestone 3 status** — Signals (implemented and tested):
+**Milestone 4 status** — Message Ports (implemented and tested):
 
-- Everything from M1/M2: self-sufficient boot, per-task page tables with W^X, trap dispatch, two-task preemptive round-robin scheduler, boot banner, DebugPutChar, fault reporting, scheduler heartbeat
-- `AllocSignal` syscall (11): allocate a signal bit from the user range (bits 16-31), with auto-assign support
-- `FreeSignal` syscall (12): release a previously allocated signal bit
-- `Signal` syscall (13): send signals to another task — sets bits in target's pending signal word, wakes WAITING targets when signals match
-- `Wait` syscall (14): block until matching signals arrive, returns received signal mask
-- Per-task 32-bit signal mask: `sig_alloc`, `sig_wait`, `sig_recv` fields; scheduler skips WAITING tasks
-- Deadlock detection: kernel prints "DEADLOCK: no runnable tasks" and halts when all tasks are blocked with no external wake source
+- Everything from M1-M3: self-sufficient boot, per-task page tables with W^X, trap dispatch, two-task preemptive round-robin scheduler, boot banner, DebugPutChar, fault reporting, scheduler heartbeat, AllocSignal/FreeSignal/Signal/Wait, deadlock detection
+- `CreatePort` syscall (15): creates an anonymous port owned by the calling task; returns port ID (0-3)
+- `PutMsg` syscall (17): send a fixed-size message to a port; any task may send; sets SIGF_PORT (bit 0) on owner and wakes WAITING owner
+- `GetMsg` syscall (18): dequeue a message from an owned port; returns msg_type, msg_data, err
+- `WaitPort` syscall (19): blocking receive — dequeues if available, otherwise Wait(SIGF_PORT) with recheck loop for spurious wakes
+- Fixed-size 16-byte messages (4-byte type, 4-byte source task, 8-byte data) with register-based ABI — no memory-to-memory copy
+- 4 ports max, 4-message FIFO per port, SIGF_PORT-based wakeup integrating with the M3 signal infrastructure
 
 Full kernel contract reference: [sdk/docs/IntuitionOS/IExec.md](sdk/docs/IntuitionOS/IExec.md)
