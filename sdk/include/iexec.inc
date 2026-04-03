@@ -90,20 +90,33 @@ KD_CURRENT_TASK   equ 0           ; uint64: current task index (0 or 1)
 KD_TICK_COUNT     equ 8           ; uint64: tick counter
 KD_NUM_TASKS      equ 16          ; uint64: number of tasks
 
-; Per-task state (simplified layout for milestone 1)
-; Two tasks stored at: KERN_DATA_BASE + 64 + (task * 16)
-; Each task: 8 bytes PC + 8 bytes USP
+; Per-task state (M3: signals)
+; Two tasks stored at: KERN_DATA_BASE + 64 + (task * 32)
+; Each task: 32 bytes { PC(8), USP(8), sig_alloc(4), sig_wait(4), sig_recv(4), state(1), pad(3) }
 KD_TASK_BASE      equ 64          ; offset of task state array
-KD_TASK_STRIDE    equ 16          ; bytes per task entry
+KD_TASK_STRIDE    equ 32          ; bytes per task entry
+; Per-task field offsets (relative to task base)
+KD_TASK_PC        equ 0           ; saved PC (8 bytes)
+KD_TASK_USP       equ 8           ; saved user SP (8 bytes)
+KD_TASK_SIG_ALLOC equ 16          ; allocated signal bits (4 bytes)
+KD_TASK_SIG_WAIT  equ 20          ; signals being waited for (4 bytes, 0 if not waiting)
+KD_TASK_SIG_RECV  equ 24          ; pending received signals (4 bytes)
+KD_TASK_STATE     equ 28          ; task state byte: 0=READY, 1=RUNNING, 2=WAITING
 ; Pre-computed offsets for task 0 and task 1
-KD_TASK0_PC       equ 64          ; KD_TASK_BASE + 0*16 + 0
-KD_TASK0_USP      equ 72          ; KD_TASK_BASE + 0*16 + 8
-KD_TASK1_PC       equ 80          ; KD_TASK_BASE + 1*16 + 0
-KD_TASK1_USP      equ 88          ; KD_TASK_BASE + 1*16 + 8
-; PTBR per task at: KERN_DATA_BASE + 96 + (task * 8)
-KD_PTBR_BASE      equ 96          ; offset of PTBR array
-KD_PTBR0          equ 96          ; KD_PTBR_BASE + 0
-KD_PTBR1          equ 104         ; KD_PTBR_BASE + 8
+KD_TASK0_PC       equ 64          ; KD_TASK_BASE + 0*32 + 0
+KD_TASK0_USP      equ 72          ; KD_TASK_BASE + 0*32 + 8
+KD_TASK1_PC       equ 96          ; KD_TASK_BASE + 1*32 + 0
+KD_TASK1_USP      equ 104         ; KD_TASK_BASE + 1*32 + 8
+; PTBR per task at: KERN_DATA_BASE + 128 + (task * 8)
+KD_PTBR_BASE      equ 128         ; offset of PTBR array
+KD_PTBR0          equ 128         ; KD_PTBR_BASE + 0
+KD_PTBR1          equ 136         ; KD_PTBR_BASE + 8
+; Task state constants
+TASK_READY        equ 0
+TASK_RUNNING      equ 1
+TASK_WAITING      equ 2
+; System signal allocation mask (bits 0-15 pre-allocated)
+SIG_SYSTEM_MASK   equ 0xFFFF
 
 ; ===========================================================================
 ; User Space Layout

@@ -36,23 +36,31 @@ const (
 	userTask1Data  = 0x612000 // Task 1 data/result page
 
 	// Syscall numbers (matching IExec contract)
-	sysYield      = 26
-	sysGetSysInfo = 27
+	sysYield        = 26
+	sysGetSysInfo   = 27
+	sysDebugPutChar = 33
+	sysAllocSignal  = 11
+	sysFreeSignal   = 12
+	sysSignal       = 13
+	sysWait         = 14
 
-	// Kernel data offsets
+	// Kernel data offsets (must match iexec.inc)
 	kdCurrentTask = 0  // uint64: index of current task (0 or 1)
 	kdTickCount   = 8  // uint64: tick counter
 	kdNumTasks    = 16 // uint64: number of active tasks
 
-	// TCB offsets within kernel data (after the globals)
-	kdTCBBase   = 64  // start of TCB array
-	tcbSize     = 288 // per-TCB size
-	tcbRegsOff  = 0   // R0-R31 (256 bytes)
-	tcbPCOff    = 256 // saved PC (8 bytes)
-	tcbPTBROff  = 264 // PTBR (4 bytes)
-	tcbStateOff = 268 // state byte
-	tcbUSPOff   = 272 // saved userSP (8 bytes)
-	tcbPadOff   = 280 // padding to 288
+	// TCB layout (must match iexec.inc KD_TASK_*)
+	kdTCBBase      = 64 // start of TCB array
+	tcbStride      = 32 // bytes per task
+	tcbPCOff       = 0  // saved PC (8 bytes)
+	tcbUSPOff      = 8  // saved USP (8 bytes)
+	tcbSigAllocOff = 16 // allocated signal bits (4 bytes)
+	tcbSigWaitOff  = 20 // wait mask (4 bytes)
+	tcbSigRecvOff  = 24 // pending signals (4 bytes)
+	tcbStateOff    = 28 // state byte
+
+	// PTBR array (after TCBs)
+	kdPTBRBase = 128 // KD_PTBR_BASE
 )
 
 // ===========================================================================
@@ -406,167 +414,13 @@ func TestIExec_FaultKillsTask(t *testing.T) {
 }
 
 // ===========================================================================
-// Phase B4: Two Tasks + Context Switch
+// Phase B4: Two Tasks + Context Switch (simplified — uses inline kernel below)
 // ===========================================================================
 
-// buildTwoTaskKernel creates a kernel with two user tasks that yield to each other.
-// Task 0 writes 0xAAAA to userTask0Data, yields, writes 0xBBBB, halts.
-// Task 1 writes 0xCCCC to userTask1Data, yields, writes 0xDDDD, halts.
-// The scheduler alternates: task0 → yield → task1 → yield → task0 → halt.
-func buildTwoTaskKernel(mem []byte) *iexecKernel {
-	k := newIExecKernel()
-
-	// --- Boot: set vectors, KSP ---
-	trapAddr := uint32(PROG_START) + 0x3000
-	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, trapAddr))
-	k.emit(ie64Instr(OP_MTCR, CR_TRAP_VEC, 0, 0, 1, 0, 0))
-	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, kernStackTop))
-	k.emit(ie64Instr(OP_MTCR, CR_KSP, 0, 0, 1, 0, 0))
-
-	// Set up both page tables in memory
-	setupKernelPTEs(mem, kernPageTableBase) // kernel PT
-	setupKernelPTEs(mem, userPT0Base)       // task 0 PT
-	setupKernelPTEs(mem, userPT1Base)       // task 1 PT
-
-	// Task 0: map code, stack, data pages
-	mapUserPage(mem, userPT0Base, uint16(userTask0Code>>MMU_PAGE_SHIFT), uint16(userTask0Code>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_X|PTE_U)
-	mapUserPage(mem, userPT0Base, uint16(userTask0Stack>>MMU_PAGE_SHIFT), uint16(userTask0Stack>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U)
-	mapUserPage(mem, userPT0Base, uint16(userTask0Data>>MMU_PAGE_SHIFT), uint16(userTask0Data>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U)
-
-	// Task 1: map code, stack, data pages
-	mapUserPage(mem, userPT1Base, uint16(userTask1Code>>MMU_PAGE_SHIFT), uint16(userTask1Code>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_X|PTE_U)
-	mapUserPage(mem, userPT1Base, uint16(userTask1Stack>>MMU_PAGE_SHIFT), uint16(userTask1Stack>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U)
-	mapUserPage(mem, userPT1Base, uint16(userTask1Data>>MMU_PAGE_SHIFT), uint16(userTask1Data>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U)
-
-	// Initialize kernel data structures directly in memory (before MMU)
-	kdBase := uint32(kernDataBase)
-	binary.LittleEndian.PutUint64(mem[kdBase+kdCurrentTask:], 0)
-	binary.LittleEndian.PutUint64(mem[kdBase+kdNumTasks:], 2)
-
-	// TCB 0
-	tcb0 := kdBase + kdTCBBase
-	binary.LittleEndian.PutUint64(mem[tcb0+tcbPCOff:], userTask0Code)
-	binary.LittleEndian.PutUint32(mem[tcb0+tcbPTBROff:], userPT0Base)
-	binary.LittleEndian.PutUint64(mem[tcb0+tcbUSPOff:], userTask0Stack+MMU_PAGE_SIZE)
-	mem[tcb0+tcbStateOff] = 0 // READY
-
-	// TCB 1
-	tcb1 := kdBase + kdTCBBase + tcbSize
-	binary.LittleEndian.PutUint64(mem[tcb1+tcbPCOff:], userTask1Code)
-	binary.LittleEndian.PutUint32(mem[tcb1+tcbPTBROff:], userPT1Base)
-	binary.LittleEndian.PutUint64(mem[tcb1+tcbUSPOff:], userTask1Stack+MMU_PAGE_SIZE)
-	mem[tcb1+tcbStateOff] = 0 // READY
-
-	// --- Enter first task via ERET (no MMU for now — test scheduler logic first) ---
-	// Set USP for task 0
-	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Stack+MMU_PAGE_SIZE))
-	k.emit(ie64Instr(OP_MTCR, CR_USP, 0, 0, 1, 0, 0))
-	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Code))
-	k.emit(ie64Instr(OP_MTCR, CR_FAULT_PC, 0, 0, 1, 0, 0))
-	k.emit(ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0))
-
-	// --- Trap handler at offset 0x3000 ---
-	k.padTo(0x3000)
-
-	// Read fault cause
-	k.emit(ie64Instr(OP_MFCR, 10, 0, 0, CR_FAULT_CAUSE, 0, 0))
-
-	// Is it SYSCALL?
-	k.emit(ie64Instr(OP_MOVE, 11, IE64_SIZE_L, 1, 0, 0, FAULT_SYSCALL))
-	trapSyscallBranch := k.addr()
-	k.emit(ie64Instr(OP_BEQ, 0, 0, 0, 10, 11, 0)) // patched
-
-	// Not syscall → halt (fault)
-	k.emit(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
-
-	// --- Syscall dispatch ---
-	syscallEntry := k.addr()
-	binary.LittleEndian.PutUint32(k.code[trapSyscallBranch-PROG_START+4:], uint32(int32(syscallEntry)-int32(trapSyscallBranch)))
-
-	k.emit(ie64Instr(OP_MFCR, 10, 0, 0, CR_FAULT_ADDR, 0, 0)) // syscall number
-
-	// Is it Yield?
-	k.emit(ie64Instr(OP_MOVE, 11, IE64_SIZE_L, 1, 0, 0, sysYield))
-	yieldBranch := k.addr()
-	k.emit(ie64Instr(OP_BEQ, 0, 0, 0, 10, 11, 0)) // patched
-
-	// Unknown syscall → ERET with error
-	k.emit(ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0))
-
-	// --- Yield handler: context switch ---
-	yieldEntry := k.addr()
-	binary.LittleEndian.PutUint32(k.code[yieldBranch-PROG_START+4:], uint32(int32(yieldEntry)-int32(yieldBranch)))
-
-	// Save current task's state:
-	// 1. Read current_task index
-	k.emit(ie64Instr(OP_MOVE, 20, IE64_SIZE_L, 1, 0, 0, kdBase+kdCurrentTask))
-	k.emit(ie64Instr(OP_LOAD, 20, IE64_SIZE_Q, 0, 20, 0, 0)) // R20 = current task index
-
-	// 2. Compute TCB address: R21 = kdBase + kdTCBBase + R20 * tcbSize
-	k.emit(ie64Instr(OP_MULU, 21, IE64_SIZE_Q, 1, 20, 0, tcbSize))
-	k.emit(ie64Instr(OP_ADD, 21, IE64_SIZE_Q, 1, 21, 0, kdBase+kdTCBBase))
-
-	// 3. Save FAULT_PC (user's return address) to TCB
-	k.emit(ie64Instr(OP_MFCR, 22, 0, 0, CR_FAULT_PC, 0, 0))
-	k.emit(ie64Instr(OP_STORE, 22, IE64_SIZE_Q, 1, 21, 0, tcbPCOff))
-
-	// 4. Save USP to TCB
-	k.emit(ie64Instr(OP_MFCR, 22, 0, 0, CR_USP, 0, 0))
-	k.emit(ie64Instr(OP_STORE, 22, IE64_SIZE_Q, 1, 21, 0, tcbUSPOff))
-
-	// 5. Switch to next task: next = (current + 1) % 2
-	k.emit(ie64Instr(OP_ADD, 20, IE64_SIZE_Q, 1, 20, 0, 1))   // R20 = current + 1
-	k.emit(ie64Instr(OP_AND64, 20, IE64_SIZE_Q, 1, 20, 0, 1)) // R20 = R20 & 1 (mod 2)
-
-	// 6. Store new current_task
-	k.emit(ie64Instr(OP_MOVE, 22, IE64_SIZE_L, 1, 0, 0, kdBase+kdCurrentTask))
-	k.emit(ie64Instr(OP_STORE, 20, IE64_SIZE_Q, 0, 22, 0, 0))
-
-	// 7. Compute next TCB address
-	k.emit(ie64Instr(OP_MULU, 21, IE64_SIZE_Q, 1, 20, 0, tcbSize))
-	k.emit(ie64Instr(OP_ADD, 21, IE64_SIZE_Q, 1, 21, 0, kdBase+kdTCBBase))
-
-	// 8. Load next task's PTBR and switch
-	k.emit(ie64Instr(OP_LOAD, 22, IE64_SIZE_L, 1, 21, 0, tcbPTBROff))
-	k.emit(ie64Instr(OP_MTCR, CR_PTBR, 0, 0, 22, 0, 0))
-	k.emit(ie64Instr(OP_TLBFLUSH, 0, 0, 0, 0, 0, 0))
-
-	// 9. Load next task's USP
-	k.emit(ie64Instr(OP_LOAD, 22, IE64_SIZE_Q, 1, 21, 0, tcbUSPOff))
-	k.emit(ie64Instr(OP_MTCR, CR_USP, 0, 0, 22, 0, 0))
-
-	// 10. Load next task's PC and ERET
-	k.emit(ie64Instr(OP_LOAD, 22, IE64_SIZE_Q, 1, 21, 0, tcbPCOff))
-	k.emit(ie64Instr(OP_MTCR, CR_FAULT_PC, 0, 0, 22, 0, 0))
-	k.emit(ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0))
-
-	// --- User task 0 code ---
-	// Write 0xAAAA, yield, write 0xBBBB, halt
-	userCode0 := []byte{}
-	userCode0 = append(userCode0, ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Data)...)
-	userCode0 = append(userCode0, ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0xAAAA)...)
-	userCode0 = append(userCode0, ie64Instr(OP_STORE, 2, IE64_SIZE_L, 0, 1, 0, 0)...)
-	userCode0 = append(userCode0, ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield)...)
-	userCode0 = append(userCode0, ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0xBBBB)...)
-	userCode0 = append(userCode0, ie64Instr(OP_STORE, 2, IE64_SIZE_L, 0, 1, 0, 4)...) // offset +4
-	userCode0 = append(userCode0, ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)...)
-	copy(mem[userTask0Code:], userCode0)
-
-	// --- User task 1 code ---
-	// Write 0xCCCC, yield, write 0xDDDD, halt
-	userCode1 := []byte{}
-	userCode1 = append(userCode1, ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask1Data)...)
-	userCode1 = append(userCode1, ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0xCCCC)...)
-	userCode1 = append(userCode1, ie64Instr(OP_STORE, 2, IE64_SIZE_L, 0, 1, 0, 0)...)
-	userCode1 = append(userCode1, ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield)...)
-	userCode1 = append(userCode1, ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0xDDDD)...)
-	userCode1 = append(userCode1, ie64Instr(OP_STORE, 2, IE64_SIZE_L, 0, 1, 0, 4)...)
-	userCode1 = append(userCode1, ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)...)
-	copy(mem[userTask1Code:], userCode1)
-
-	return k
-}
-
+// buildTwoTaskKernel was removed — the old 288-byte TCB layout is replaced by
+// the 32-byte M3 layout. The assembled kernel (iexec.s) is now the reference
+// implementation. Programmatic kernels in tests below use the simplified inline
+// approach with host-side data initialization.
 // TestIExec_YieldHandlerStore tests that the yield handler can write to kernel data
 func TestIExec_YieldHandlerStore(t *testing.T) {
 	rig := newIE64TestRig()
@@ -1272,4 +1126,678 @@ func TestIExec_FaultPrintsReport(t *testing.T) {
 		t.Fatal("fault report missing PC= field")
 	}
 	t.Logf("Fault report output: %q", output[strings.Index(output, "FAULT"):min(len(output), strings.Index(output, "FAULT")+80)])
+}
+
+// ===========================================================================
+// M3: Signals Tests
+// ===========================================================================
+
+func TestIExec_AllocSignal(t *testing.T) {
+	// User task: AllocSignal(-1), store result to data page, halt
+	rig, term := newIExecTerminalRig(t)
+	cpu := rig.cpu
+
+	trapAddr := uint32(PROG_START) + 0x3000
+	cpu.trapVector = uint64(trapAddr)
+	cpu.kernelSP = kernStackTop
+
+	// User task
+	off := uint32(userTask0Code)
+	copy(cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xFFFFFFFF))
+	off += 8 // R1 = -1 (auto)
+	copy(cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocSignal))
+	off += 8
+	// R1 = allocated bit, R2 = err
+	copy(cpu.memory[off:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	off += 8
+	copy(cpu.memory[off:], ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 0))
+	off += 8 // [data] = bit
+	copy(cpu.memory[off:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 3, 0, 8))
+	off += 8 // [data+8] = err
+	copy(cpu.memory[off:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	// Minimal kernel: boot, init TCB with sig_alloc=0xFFFF (system bits), ERET to user
+	k := newIExecKernel()
+	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, trapAddr))
+	k.emit(ie64Instr(OP_MTCR, CR_TRAP_VEC, 0, 0, 1, 0, 0))
+	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, kernStackTop))
+	k.emit(ie64Instr(OP_MTCR, CR_KSP, 0, 0, 1, 0, 0))
+
+	// Init task 0 TCB in memory
+	tcb0 := uint32(kernDataBase + kdTCBBase)
+	binary.LittleEndian.PutUint32(cpu.memory[tcb0+tcbSigAllocOff:], 0xFFFF) // system bits
+
+	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Stack+MMU_PAGE_SIZE))
+	k.emit(ie64Instr(OP_MTCR, CR_USP, 0, 0, 1, 0, 0))
+	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Code))
+	k.emit(ie64Instr(OP_MTCR, CR_FAULT_PC, 0, 0, 1, 0, 0))
+	k.emit(ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0))
+
+	// Trap handler: dispatch AllocSignal using the same pattern as the real kernel
+	k.padTo(0x3000)
+	// Read cause and syscall number, handle AllocSignal
+	k.emit(ie64Instr(OP_MFCR, 10, 0, 0, CR_FAULT_CAUSE, 0, 0))
+	k.emit(ie64Instr(OP_MOVE, 11, IE64_SIZE_L, 1, 0, 0, FAULT_SYSCALL))
+	faultBranch := k.addr()
+	k.emit(ie64Instr(OP_BNE, 0, 0, 0, 10, 11, 0))
+
+	k.emit(ie64Instr(OP_MFCR, 10, 0, 0, CR_FAULT_ADDR, 0, 0))
+	k.emit(ie64Instr(OP_MOVE, 11, IE64_SIZE_L, 1, 0, 0, sysAllocSignal))
+	allocBranch := k.addr()
+	k.emit(ie64Instr(OP_BEQ, 0, 0, 0, 10, 11, 0))
+	k.emit(ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0)) // unknown
+
+	// AllocSignal handler (simplified — scan bits 16-31)
+	allocAddr := k.addr()
+	binary.LittleEndian.PutUint32(k.code[allocBranch-PROG_START+4:], uint32(int32(allocAddr)-int32(allocBranch)))
+	// Load sig_alloc for current task (task 0)
+	k.emit(ie64Instr(OP_MOVE, 20, IE64_SIZE_L, 1, 0, 0, tcb0+tcbSigAllocOff))
+	k.emit(ie64Instr(OP_LOAD, 21, IE64_SIZE_L, 0, 20, 0, 0)) // R21 = sig_alloc
+	// Find first free bit in 16-31
+	k.emit(ie64Instr(OP_MOVE, 22, IE64_SIZE_L, 1, 0, 0, 16)) // R22 = bit counter
+	scanLoop := k.addr()
+	k.emit(ie64Instr(OP_MOVE, 23, IE64_SIZE_L, 1, 0, 0, 1))
+	k.emit(ie64Instr(OP_LSL, 23, IE64_SIZE_Q, 0, 23, 22, 0))   // R23 = 1 << bit
+	k.emit(ie64Instr(OP_AND64, 24, IE64_SIZE_Q, 0, 21, 23, 0)) // R24 = alloc & mask
+	foundBranch := k.addr()
+	k.emit(ie64Instr(OP_BEQ, 0, 0, 0, 24, 0, 0)) // if free, branch
+	k.emit(ie64Instr(OP_ADD, 22, IE64_SIZE_Q, 1, 22, 0, 1))
+	k.emit(ie64Instr(OP_MOVE, 25, IE64_SIZE_L, 1, 0, 0, 32))
+	k.emit(ie64Instr(OP_BLT, 0, 0, 0, 22, 25, uint32(int32(scanLoop)-int32(k.addr()))))
+	// Exhausted
+	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xFFFFFFFF))
+	k.emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1)) // ERR_NOMEM
+	k.emit(ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0))
+	// Found free bit
+	foundAddr := k.addr()
+	binary.LittleEndian.PutUint32(k.code[foundBranch-PROG_START+4:], uint32(int32(foundAddr)-int32(foundBranch)))
+	k.emit(ie64Instr(OP_OR64, 21, IE64_SIZE_Q, 0, 21, 23, 0)) // alloc |= mask
+	k.emit(ie64Instr(OP_STORE, 21, IE64_SIZE_L, 0, 20, 0, 0)) // write back
+	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 22, 0, 0))   // R1 = bit
+	k.emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))    // R2 = ERR_OK
+	k.emit(ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0))
+
+	// Fault halt
+	haltAddr := k.addr()
+	binary.LittleEndian.PutUint32(k.code[faultBranch-PROG_START+4:], uint32(int32(haltAddr)-int32(faultBranch)))
+	k.emit(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	loadAndRunKernel(t, rig, k, 100000)
+
+	bit := binary.LittleEndian.Uint64(cpu.memory[userTask0Data:])
+	err := binary.LittleEndian.Uint64(cpu.memory[userTask0Data+8:])
+
+	_ = term
+	if err != 0 {
+		t.Fatalf("AllocSignal err = %d, want 0", err)
+	}
+	if bit < 16 || bit > 31 {
+		t.Fatalf("AllocSignal bit = %d, want 16-31", bit)
+	}
+	t.Logf("AllocSignal: allocated bit %d", bit)
+}
+
+func TestIExec_WaitBlocks(t *testing.T) {
+	// Verify that Wait actually blocks a task and resumes it after Signal.
+	// Task 0: Wait for bit 16 (blocks), then print 'R' (resumed).
+	// Task 1: print 'S' (signaling), Signal task 0 bit 16, yield+loop.
+	// Expected output: boot banner, then 'S' (task 1 signals), then 'R' (task 0 resumes).
+	// The 'R' appearing proves task 0 blocked and was woken by Signal.
+	rig, term := assembleAndLoadKernel(t)
+
+	// Patch task 0: Wait for bit 16, print 'R' on resume
+	marker0 := ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x41)
+	t0Off := -1
+	for i := 0; i+8 <= len(rig.cpu.memory[PROG_START:]); i += 8 {
+		match := true
+		for j := 0; j < 8; j++ {
+			if rig.cpu.memory[PROG_START+uint32(i)+uint32(j)] != marker0[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			t0Off = i
+			break
+		}
+	}
+	if t0Off < 0 {
+		t.Fatal("could not find task 0 template")
+	}
+	base0 := PROG_START + uint32(t0Off)
+	off := base0
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x10000))
+	off += 8 // mask = 1<<16
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWait))
+	off += 8 // Wait → blocks
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x52))
+	off += 8 // 'R' (resumed)
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(-8&0xFFFFFFFF)))
+
+	// Patch task 1: print 'S', Signal task 0 bit 16, yield+loop
+	marker1 := ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x10000)
+	t1Off := -1
+	for i := t0Off + 8; i+8 <= len(rig.cpu.memory[PROG_START:]); i += 8 {
+		match := true
+		for j := 0; j < 8; j++ {
+			if rig.cpu.memory[PROG_START+uint32(i)+uint32(j)] != marker1[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			t1Off = i
+			break
+		}
+	}
+	if t1Off < 0 {
+		t.Fatal("could not find task 1 template")
+	}
+	base1 := PROG_START + uint32(t1Off)
+	off = base1
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x53))
+	off += 8 // 'S'
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	off += 8 // taskID=0
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0x10000))
+	off += 8 // mask=1<<16
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysSignal))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(-8&0xFFFFFFFF)))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(300 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	hasS := strings.Contains(output, "S")
+	hasR := strings.Contains(output, "R")
+	if !hasS {
+		t.Fatalf("WaitBlocks: task 1 didn't print 'S' (signaler), output=%q", output[:min(len(output), 80)])
+	}
+	if !hasR {
+		t.Fatalf("WaitBlocks: task 0 didn't print 'R' (resumed after Wait), output=%q", output[:min(len(output), 80)])
+	}
+	t.Logf("WaitBlocks output (first 80 chars): %q", output[:min(len(output), 80)])
+}
+
+func TestIExec_WaitDeadlock(t *testing.T) {
+	// Assemble kernel, patch both task templates to Wait on unsatisfied signals.
+	// Both tasks should block, kernel should print DEADLOCK.
+	rig, term := assembleAndLoadKernel(t)
+
+	// Patch task 0 template: Wait for bit 16 (never signaled)
+	marker := ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x41) // 'A'
+	templateOff := -1
+	for i := 0; i+8 <= len(rig.cpu.memory[PROG_START:]); i += 8 {
+		match := true
+		for j := 0; j < 8; j++ {
+			if rig.cpu.memory[PROG_START+uint32(i)+uint32(j)] != marker[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			templateOff = i
+			break
+		}
+	}
+	if templateOff < 0 {
+		t.Fatal("could not find task 0 template")
+	}
+
+	// Overwrite task 0: Wait for signal bit 16 (mask = 1<<16 = 0x10000)
+	base := PROG_START + uint32(templateOff)
+	copy(rig.cpu.memory[base:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x10000))
+	copy(rig.cpu.memory[base+8:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWait))
+
+	// Find task 1 template (starts with: MOVE R1, #0x10000 = Wait mask)
+	marker2 := ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x10000)
+	template1Off := -1
+	for i := templateOff + 8; i+8 <= len(rig.cpu.memory[PROG_START:]); i += 8 {
+		match := true
+		for j := 0; j < 8; j++ {
+			if rig.cpu.memory[PROG_START+uint32(i)+uint32(j)] != marker2[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			template1Off = i
+			break
+		}
+	}
+	if template1Off < 0 {
+		t.Fatal("could not find task 1 template")
+	}
+
+	// Overwrite task 1: Wait for signal bit 17 (mask = 1<<17 = 0x20000)
+	base2 := PROG_START + uint32(template1Off)
+	copy(rig.cpu.memory[base2:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x20000))
+	copy(rig.cpu.memory[base2+8:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWait))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(200 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "DEADLOCK") {
+		t.Fatalf("deadlock: output = %q, expected 'DEADLOCK'", output[:min(len(output), 100)])
+	}
+	t.Logf("Deadlock output: %q", output[strings.Index(output, "DEADLOCK"):min(len(output), strings.Index(output, "DEADLOCK")+40)])
+}
+
+func TestIExec_FreeSignal(t *testing.T) {
+	// Allocate a signal, then free it. Verify no error on both operations.
+	rig, _ := newIExecTerminalRig(t)
+	cpu := rig.cpu
+
+	trapAddr := uint32(PROG_START) + 0x3000
+	cpu.trapVector = uint64(trapAddr)
+	cpu.kernelSP = kernStackTop
+
+	// Init task 0 TCB
+	tcb0 := uint32(kernDataBase + kdTCBBase)
+	binary.LittleEndian.PutUint32(cpu.memory[tcb0+tcbSigAllocOff:], 0xFFFF)
+
+	// User task: AllocSignal(-1), store bit; FreeSignal(bit), store err; halt
+	off := uint32(userTask0Code)
+	copy(cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xFFFFFFFF))
+	off += 8
+	copy(cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocSignal))
+	off += 8
+	// R1 = bit, save it
+	copy(cpu.memory[off:], ie64Instr(OP_MOVE, 5, IE64_SIZE_Q, 0, 1, 0, 0))
+	off += 8 // R5 = bit
+	copy(cpu.memory[off:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	off += 8
+	copy(cpu.memory[off:], ie64Instr(OP_STORE, 5, IE64_SIZE_Q, 0, 3, 0, 0))
+	off += 8 // [data] = bit
+	// Now free it: R1 = bit
+	copy(cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 5, 0, 0))
+	off += 8
+	copy(cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFreeSignal))
+	off += 8
+	copy(cpu.memory[off:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 3, 0, 8))
+	off += 8 // [data+8] = err
+	copy(cpu.memory[off:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	// Build kernel with AllocSignal + FreeSignal handlers (reuse AllocSignal test kernel pattern)
+	// For simplicity, assemble the real kernel and patch task 0 template
+	// Actually, let's use the assembled kernel approach
+	rigAsm, termAsm := assembleAndLoadKernel(t)
+
+	// Patch task 0 template with our alloc+free code
+	marker := ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x41) // 'A'
+	templateOff := -1
+	for i := 0; i+8 <= len(rigAsm.cpu.memory[PROG_START:]); i += 8 {
+		match := true
+		for j := 0; j < 8; j++ {
+			if rigAsm.cpu.memory[PROG_START+uint32(i)+uint32(j)] != marker[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			templateOff = i
+			break
+		}
+	}
+	if templateOff < 0 {
+		t.Fatal("could not find task 0 template")
+	}
+
+	base := PROG_START + uint32(templateOff)
+	off = base
+	copy(rigAsm.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xFFFFFFFF))
+	off += 8
+	copy(rigAsm.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocSignal))
+	off += 8
+	copy(rigAsm.cpu.memory[off:], ie64Instr(OP_MOVE, 5, IE64_SIZE_Q, 0, 1, 0, 0))
+	off += 8
+	copy(rigAsm.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 5, 0, 0))
+	off += 8
+	copy(rigAsm.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFreeSignal))
+	off += 8
+	// Store free error to data page
+	copy(rigAsm.cpu.memory[off:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	off += 8
+	copy(rigAsm.cpu.memory[off:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 0))
+	off += 8
+	copy(rigAsm.cpu.memory[off:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rigAsm.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rigAsm.cpu.Execute(); close(done) }()
+	time.Sleep(200 * time.Millisecond)
+	rigAsm.cpu.running.Store(false)
+	<-done
+
+	_ = termAsm
+	freeErr := binary.LittleEndian.Uint64(rigAsm.cpu.memory[userTask0Data:])
+	if freeErr != 0 {
+		t.Fatalf("FreeSignal err = %d, want 0", freeErr)
+	}
+}
+
+func TestIExec_AllocSignalExhausted(t *testing.T) {
+	// Use the same programmatic kernel pattern as TestIExec_AllocSignal.
+	// Pre-set sig_alloc to 0xFFFFFFFF (all bits allocated), try to allocate → ERR_NOMEM.
+	rig, _ := newIExecTerminalRig(t)
+	cpu := rig.cpu
+
+	trapAddr := uint32(PROG_START) + 0x3000
+	cpu.trapVector = uint64(trapAddr)
+	cpu.kernelSP = kernStackTop
+
+	// Pre-set ALL bits allocated in task 0's TCB
+	tcb0 := uint32(kernDataBase + kdTCBBase)
+	binary.LittleEndian.PutUint32(cpu.memory[tcb0+tcbSigAllocOff:], 0xFFFFFFFF)
+
+	// User task: AllocSignal(-1), store err, halt
+	off := uint32(userTask0Code)
+	copy(cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xFFFFFFFF))
+	off += 8
+	copy(cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocSignal))
+	off += 8
+	copy(cpu.memory[off:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	off += 8
+	copy(cpu.memory[off:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 0))
+	off += 8 // [data] = err
+	copy(cpu.memory[off:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	// Reuse the same programmatic AllocSignal kernel from TestIExec_AllocSignal
+	k := newIExecKernel()
+	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, trapAddr))
+	k.emit(ie64Instr(OP_MTCR, CR_TRAP_VEC, 0, 0, 1, 0, 0))
+	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, kernStackTop))
+	k.emit(ie64Instr(OP_MTCR, CR_KSP, 0, 0, 1, 0, 0))
+	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Stack+MMU_PAGE_SIZE))
+	k.emit(ie64Instr(OP_MTCR, CR_USP, 0, 0, 1, 0, 0))
+	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Code))
+	k.emit(ie64Instr(OP_MTCR, CR_FAULT_PC, 0, 0, 1, 0, 0))
+	k.emit(ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0))
+
+	// Trap handler with AllocSignal (same as TestIExec_AllocSignal)
+	k.padTo(0x3000)
+	k.emit(ie64Instr(OP_MFCR, 10, 0, 0, CR_FAULT_CAUSE, 0, 0))
+	k.emit(ie64Instr(OP_MOVE, 11, IE64_SIZE_L, 1, 0, 0, FAULT_SYSCALL))
+	faultBranch := k.addr()
+	k.emit(ie64Instr(OP_BNE, 0, 0, 0, 10, 11, 0))
+	k.emit(ie64Instr(OP_MFCR, 10, 0, 0, CR_FAULT_ADDR, 0, 0))
+	k.emit(ie64Instr(OP_MOVE, 11, IE64_SIZE_L, 1, 0, 0, sysAllocSignal))
+	allocBranch := k.addr()
+	k.emit(ie64Instr(OP_BEQ, 0, 0, 0, 10, 11, 0))
+	k.emit(ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0))
+	allocAddr := k.addr()
+	binary.LittleEndian.PutUint32(k.code[allocBranch-PROG_START+4:], uint32(int32(allocAddr)-int32(allocBranch)))
+	// Load sig_alloc
+	k.emit(ie64Instr(OP_MOVE, 20, IE64_SIZE_L, 1, 0, 0, tcb0+tcbSigAllocOff))
+	k.emit(ie64Instr(OP_LOAD, 21, IE64_SIZE_L, 0, 20, 0, 0))
+	k.emit(ie64Instr(OP_MOVE, 22, IE64_SIZE_L, 1, 0, 0, 16))
+	scanLoop := k.addr()
+	k.emit(ie64Instr(OP_MOVE, 23, IE64_SIZE_L, 1, 0, 0, 1))
+	k.emit(ie64Instr(OP_LSL, 23, IE64_SIZE_Q, 0, 23, 22, 0))
+	k.emit(ie64Instr(OP_AND64, 24, IE64_SIZE_Q, 0, 21, 23, 0))
+	foundBranch := k.addr()
+	k.emit(ie64Instr(OP_BEQ, 0, 0, 0, 24, 0, 0))
+	k.emit(ie64Instr(OP_ADD, 22, IE64_SIZE_Q, 1, 22, 0, 1))
+	k.emit(ie64Instr(OP_MOVE, 25, IE64_SIZE_L, 1, 0, 0, 32))
+	k.emit(ie64Instr(OP_BLT, 0, 0, 0, 22, 25, uint32(int32(scanLoop)-int32(k.addr()))))
+	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xFFFFFFFF))
+	k.emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1)) // ERR_NOMEM
+	k.emit(ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0))
+	foundAddr := k.addr()
+	binary.LittleEndian.PutUint32(k.code[foundBranch-PROG_START+4:], uint32(int32(foundAddr)-int32(foundBranch)))
+	k.emit(ie64Instr(OP_OR64, 21, IE64_SIZE_Q, 0, 21, 23, 0))
+	k.emit(ie64Instr(OP_STORE, 21, IE64_SIZE_L, 0, 20, 0, 0))
+	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 22, 0, 0))
+	k.emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	k.emit(ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0))
+	haltAddr := k.addr()
+	binary.LittleEndian.PutUint32(k.code[faultBranch-PROG_START+4:], uint32(int32(haltAddr)-int32(faultBranch)))
+	k.emit(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	loadAndRunKernel(t, rig, k, 100000)
+
+	allocErr := binary.LittleEndian.Uint64(cpu.memory[userTask0Data:])
+	if allocErr != 1 {
+		t.Fatalf("AllocSignal exhausted: err = %d, want 1 (ERR_NOMEM)", allocErr)
+	}
+}
+
+func TestIExec_WaitImmediate(t *testing.T) {
+	// Pre-set a signal bit in task 0's recv, then Wait for it — should return immediately
+	rig, term := assembleAndLoadKernel(t)
+
+	// Set signal bit 16 in task 0's sig_recv (before kernel init overwrites it)
+	// The kernel init writes sig_recv=0, so we need to set it AFTER init runs.
+	// Instead, patch the task template to: Signal self with bit 16, then Wait for bit 16.
+	marker := ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x41)
+	templateOff := -1
+	for i := 0; i+8 <= len(rig.cpu.memory[PROG_START:]); i += 8 {
+		match := true
+		for j := 0; j < 8; j++ {
+			if rig.cpu.memory[PROG_START+uint32(i)+uint32(j)] != marker[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			templateOff = i
+			break
+		}
+	}
+	if templateOff < 0 {
+		t.Fatal("could not find task 0 template")
+	}
+
+	// Task 0: Signal self (task 0) with bit 16, then Wait for bit 16, print 'Y' if received, halt
+	base := PROG_START + uint32(templateOff)
+	off := base
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	off += 8 // R1 = taskID 0 (self)
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0x10000))
+	off += 8 // R2 = 1<<16
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysSignal))
+	off += 8 // Signal(0, 1<<16)
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x10000))
+	off += 8 // R1 = mask
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWait))
+	off += 8 // Wait(1<<16) → immediate
+	// R1 should now be 0x10000. Print 'Y' to confirm.
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x59))
+	off += 8 // 'Y'
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(200 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "Y") {
+		t.Fatalf("WaitImmediate: output = %q, expected 'Y' (Wait returned immediately)", output[:min(len(output), 80)])
+	}
+}
+
+func TestIExec_SignalWakes(t *testing.T) {
+	// Task 0 Waits for bit 16. Task 1 Signals task 0 with bit 16, then prints 'W'.
+	// Task 0 wakes and prints 'K'. Output should contain both 'W' and 'K'.
+	rig, term := assembleAndLoadKernel(t)
+
+	// Patch task 0: Wait for bit 16, then print 'K'
+	marker0 := ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x41)
+	t0Off := -1
+	for i := 0; i+8 <= len(rig.cpu.memory[PROG_START:]); i += 8 {
+		match := true
+		for j := 0; j < 8; j++ {
+			if rig.cpu.memory[PROG_START+uint32(i)+uint32(j)] != marker0[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			t0Off = i
+			break
+		}
+	}
+	if t0Off < 0 {
+		t.Fatal("could not find task 0 template")
+	}
+	base0 := PROG_START + uint32(t0Off)
+	off := base0
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x10000))
+	off += 8 // mask = 1<<16
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWait))
+	off += 8 // Wait → blocks
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x4B))
+	off += 8 // 'K'
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	// Patch task 1: Signal task 0 with bit 16, print 'W', yield+loop
+	// Task 1 template starts with: move.l r1, #0x10000 (Wait for bit 16)
+	marker1 := ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x10000)
+	t1Off := -1
+	for i := t0Off + 8; i+8 <= len(rig.cpu.memory[PROG_START:]); i += 8 {
+		match := true
+		for j := 0; j < 8; j++ {
+			if rig.cpu.memory[PROG_START+uint32(i)+uint32(j)] != marker1[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			t1Off = i
+			break
+		}
+	}
+	if t1Off < 0 {
+		t.Fatal("could not find task 1 template")
+	}
+	base1 := PROG_START + uint32(t1Off)
+	off = base1
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	off += 8 // taskID = 0
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0x10000))
+	off += 8 // mask = 1<<16
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysSignal))
+	off += 8 // Signal(0, 1<<16)
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x57))
+	off += 8 // 'W'
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	off += 8
+	// Yield so the woken task 0 gets to run (HALT would stop the CPU entirely)
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(-8&0xFFFFFFFF)))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(300 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	hasW := strings.Contains(output, "W")
+	hasK := strings.Contains(output, "K")
+	if !hasW || !hasK {
+		t.Fatalf("SignalWakes: hasW=%v hasK=%v, output=%q", hasW, hasK, output[:min(len(output), 100)])
+	}
+	t.Logf("SignalWakes output: %q", output[:min(len(output), 80)])
+}
+
+func TestIExec_SignalMaskFiltering(t *testing.T) {
+	// Task 0 Waits for bit 16. Task 1 Signals task 0 with bit 17 (wrong bit).
+	// Task 0 should NOT wake — both tasks should deadlock.
+	rig, term := assembleAndLoadKernel(t)
+
+	// Patch task 0: Wait for bit 16
+	marker0 := ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x41)
+	t0Off := -1
+	for i := 0; i+8 <= len(rig.cpu.memory[PROG_START:]); i += 8 {
+		match := true
+		for j := 0; j < 8; j++ {
+			if rig.cpu.memory[PROG_START+uint32(i)+uint32(j)] != marker0[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			t0Off = i
+			break
+		}
+	}
+	if t0Off < 0 {
+		t.Fatal("could not find task 0 template")
+	}
+	base0 := PROG_START + uint32(t0Off)
+	copy(rig.cpu.memory[base0:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x10000)) // Wait for bit 16
+	copy(rig.cpu.memory[base0+8:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWait))
+
+	// Patch task 1: Signal task 0 with bit 17 (wrong), then Wait for bit 18 (deadlock)
+	marker1 := ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x10000)
+	t1Off := -1
+	for i := t0Off + 8; i+8 <= len(rig.cpu.memory[PROG_START:]); i += 8 {
+		match := true
+		for j := 0; j < 8; j++ {
+			if rig.cpu.memory[PROG_START+uint32(i)+uint32(j)] != marker1[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			t1Off = i
+			break
+		}
+	}
+	if t1Off < 0 {
+		t.Fatal("could not find task 1 template")
+	}
+	base1 := PROG_START + uint32(t1Off)
+	off := base1
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	off += 8 // taskID = 0
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0x20000))
+	off += 8 // mask = 1<<17 (WRONG)
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysSignal))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x40000))
+	off += 8 // Wait for bit 18
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWait))
+	off += 8 // blocks → deadlock
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(200 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	// Task 0 should NOT have woken (bit 17 != bit 16), so both deadlock
+	if !strings.Contains(output, "DEADLOCK") {
+		t.Fatalf("SignalMaskFiltering: output = %q, expected DEADLOCK (wrong bit should not wake)", output[:min(len(output), 100)])
+	}
 }

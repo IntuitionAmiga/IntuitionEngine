@@ -10,13 +10,14 @@
 
 IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS Exec but designed from the ground up for a hardware-enforced privilege model. Where Amiga Exec ran in flat supervisor space with no memory protection, IExec uses the IE64 MMU to enforce user/supervisor separation, per-task page tables, and W^X memory policy.
 
-**What IExec does (Milestone 2):**
+**What IExec does (Milestone 3):**
 
 - Task scheduling (preemptive round-robin between two static tasks; priority-based scheduling is future)
 - Memory protection via the IE64 MMU (per-task page tables with separate code/stack/data mappings)
 - Trap and interrupt dispatch (syscall entry, fault handling, timer preemption)
 - Context switching (save/restore PC, USP, and PTBR per task; full GPR save/restore is future)
-- Inter-task communication via signals, ports, and messages (future)
+- Inter-task signalling: per-task 32-bit signal mask with AllocSignal/FreeSignal/Signal/Wait, deadlock detection
+- Inter-task communication via ports and messages (future)
 
 **What IExec does not do:**
 
@@ -210,10 +211,10 @@ The CPU traps to supervisor mode. The kernel's trap handler reads the syscall nu
 
 | # | Name | Signature | Status |
 |---|------|-----------|--------|
-| 11 | `AllocSignal` | R1=bit_hint (-1=any) -> R1=bit_num | Future |
-| 12 | `FreeSignal` | R1=bit_num -> R2=err | Future |
-| 13 | `Signal` | R1=task_handle, R2=signal_mask -> R2=err | Future |
-| 14 | `Wait` | R1=signal_mask -> R1=received_mask | Future |
+| 11 | `AllocSignal` | R1=bit_hint (-1=any) -> R1=bit_num, R2=err | **Implemented** |
+| 12 | `FreeSignal` | R1=bit_num -> R2=err | **Implemented** |
+| 13 | `Signal` | R1=task_id, R2=signal_mask -> R2=err | **Implemented** |
+| 14 | `Wait` | R1=signal_mask -> R1=received_mask | **Implemented** |
 
 ### 5.4 Ports and Messages
 
@@ -281,11 +282,19 @@ Unrecognized info_ids return 0 with ERR_OK.
 
 **DebugPutChar (33)**: Writes a single character to the kernel debug terminal. R1 contains the character to output. The kernel writes the byte to the TERM_OUT I/O register (`$F0700`). Returns R2=ERR_OK on success.
 
+**AllocSignal (11)**: Allocates a signal bit from the user range (bits 16-31). R1 contains a bit hint: pass the desired bit number, or -1 to let the kernel auto-assign the lowest free bit. Returns R1=allocated bit number (16-31), R2=ERR_OK on success. Returns R2=ERR_NOMEM if no bits are available, or R2=ERR_BADARG if the hint is out of range or already allocated.
+
+**FreeSignal (12)**: Releases a previously allocated signal bit. R1 contains the bit number to free. Returns R2=ERR_OK on success, R2=ERR_BADARG if the bit is not in the user range or was not allocated.
+
+**Signal (13)**: Sends signals to another task. R1=target task ID, R2=signal mask. The kernel OR's the mask into the target task's `sig_recv` (pending signals). If the target is in WAITING state and any newly-set bit matches its `sig_wait` mask, the target is moved to READY and will receive the matched signals as the return value of its pending `Wait` call. Returns R2=ERR_OK on success, R2=ERR_BADARG if the target task ID is invalid.
+
+**Wait (14)**: Blocks the calling task until matching signals arrive. R1=signal mask (the set of signals to wait for). The kernel checks `sig_recv & mask`; if any bits match immediately, they are cleared from `sig_recv` and returned in R1 without blocking. Otherwise the task's state is set to WAITING with `sig_wait=mask`, and the scheduler selects another task. When a matching `Signal` arrives, the task is woken and R1 contains the received signal bits.
+
 ---
 
-## 6. Signal Model (Future)
+## 6. Signal Model
 
-Signals are a 32-bit bitmask per task, directly inherited from the Amiga Exec model.
+Signals are a 32-bit bitmask per task, directly inherited from the Amiga Exec model. Implemented in Milestone 3.
 
 ### 6.1 Bit Allocation
 
@@ -470,7 +479,7 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 - Page fault on unmapped access correctly traps to kernel
 - Test coverage: `TestIExec_KernelBoots`, `TestIExec_KernelPageTable`, `TestIExec_YieldReturns`, `TestIExec_FaultKillsTask`, `TestIExec_TwoTasksRun`, `TestIExec_TimerPreemption`, `TestIExec_GetSysInfo`, `TestIExec_AssembledKernelBoots`
 
-### Milestone 2: Observable Kernel (Current)
+### Milestone 2: Observable Kernel (Complete)
 
 **Implemented and tested (builds on Milestone 1):**
 
@@ -480,27 +489,38 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 - Fault reporting: on non-SYSCALL faults, kernel prints "FAULT cause=NNNN PC=$XXXX ADDR=$XXXX\n" to the debug terminal then halts
 - Scheduler heartbeat: prints '.' to the debug terminal every 64 timer ticks
 
-### Milestone 3: Dynamic Tasks + Signals (Planned)
+### Milestone 3: Signals (Current)
+
+**Implemented and tested (builds on Milestone 2):**
+
+- `AllocSignal` syscall (11): allocate a signal bit from the user range (bits 16-31); R1=bit hint (-1 for auto-assign), returns R1=allocated bit number, R2=err
+- `FreeSignal` syscall (12): release a previously allocated signal bit; R1=bit to free, returns R2=err
+- `Signal` syscall (13): send signals to another task; R1=target task ID, R2=signal mask — sets bits in target's pending signal word, wakes a WAITING target if signals match its wait mask
+- `Wait` syscall (14): block until matching signals arrive; R1=signal mask, blocks the calling task (state transitions to WAITING), returns R1=received signals when woken
+- Per-task signal state: `sig_alloc` (allocated bit mask), `sig_wait` (wait mask), `sig_recv` (pending/received signals), task state (READY/RUNNING/WAITING)
+- Scheduler skips tasks in WAITING state; shared restore path delivers Wait return values when `sig_wait != 0`
+- Deadlock detection: when all tasks are in WAITING state with no external wake source, kernel prints "DEADLOCK: no runnable tasks" and halts
+
+### Milestone 4: Dynamic Tasks (Planned)
 
 - `CreateTask` / `DeleteTask` syscalls
 - Dynamic page allocation (`AllocMem` / `FreeMem`)
-- Signal model (`AllocSignal`, `FreeSignal`, `Signal`, `Wait`)
 - Priority-based scheduling with arbitrary task count
 - Full GPR save/restore in TCB on context switch
 
-### Milestone 4: Ports + Messages (Planned)
+### Milestone 5: Ports + Messages (Planned)
 
 - `CreatePort` / `FindPort` / `PutMsg` / `GetMsg` / `WaitPort` / `ReplyMsg` / `PeekPort`
 - 4 KB copy-based message passing
 - Named port registry
 
-### Milestone 5: Shared Memory + Bulk IPC (Planned)
+### Milestone 6: Shared Memory + Bulk IPC (Planned)
 
 - `AllocShared` / `MapShared` for zero-copy bulk transfer
 - `SendMsgBulk` / `RecvMsgBulk`
 - Reference-counted shared memory regions
 
-### Milestone 6: Timers + Handles (Planned)
+### Milestone 7: Timers + Handles (Planned)
 
 - `AddTimer` / `RemTimer` with delta queue
 - `MapIO` / `MapVRAM` for user-space hardware access

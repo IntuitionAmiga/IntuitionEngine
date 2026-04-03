@@ -5976,13 +5976,14 @@ make aros               # Build VM with embedded AROS ROM
 
 IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. Unlike classic Amiga Exec, which ran everything in flat supervisor space with no memory protection, IExec uses the IE64 MMU to enforce hardware-backed user/supervisor privilege separation with per-task page tables and W^X memory policy. The design preserves the Amiga programming model (signals, message ports, priority scheduling) while adding the isolation guarantees of a modern protected-mode OS.
 
-**Milestone 2 status** — Observable Kernel (implemented and tested):
+**Milestone 3 status** — Signals (implemented and tested):
 
-- Everything from M1: self-sufficient boot, per-task page tables with W^X, trap dispatch, two-task preemptive round-robin scheduler
-- Boot banner: kernel prints "IExec M2 boot" to TERM_OUT before entering user mode
-- `DebugPutChar` syscall (33): write a single byte to the debug terminal (TERM_OUT at `$F0700`)
-- Visible demo tasks: task 0 prints 'A', task 1 prints 'B' in a yield/delay loop — interleaved output confirms preemption
-- Fault reporting: non-SYSCALL faults print "FAULT cause=NNNN PC=$XXXX ADDR=$XXXX" then halt
-- Scheduler heartbeat: prints '.' every 64 timer ticks
+- Everything from M1/M2: self-sufficient boot, per-task page tables with W^X, trap dispatch, two-task preemptive round-robin scheduler, boot banner, DebugPutChar, fault reporting, scheduler heartbeat
+- `AllocSignal` syscall (11): allocate a signal bit from the user range (bits 16-31), with auto-assign support
+- `FreeSignal` syscall (12): release a previously allocated signal bit
+- `Signal` syscall (13): send signals to another task — sets bits in target's pending signal word, wakes WAITING targets when signals match
+- `Wait` syscall (14): block until matching signals arrive, returns received signal mask
+- Per-task 32-bit signal mask: `sig_alloc`, `sig_wait`, `sig_recv` fields; scheduler skips WAITING tasks
+- Deadlock detection: kernel prints "DEADLOCK: no runnable tasks" and halts when all tasks are blocked with no external wake source
 
 Full kernel contract reference: [sdk/docs/IntuitionOS/IExec.md](sdk/docs/IntuitionOS/IExec.md)
