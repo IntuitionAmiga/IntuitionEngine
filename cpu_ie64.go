@@ -115,14 +115,20 @@ const (
 
 // Control register indices for MTCR/MFCR
 const (
-	CR_PTBR        = 0 // Page Table Base Register (physical address)
-	CR_FAULT_ADDR  = 1 // Virtual address that caused last fault
-	CR_FAULT_CAUSE = 2 // Fault cause code
-	CR_FAULT_PC    = 3 // PC saved at trap entry
-	CR_TRAP_VEC    = 4 // Trap handler vector address
-	CR_MMU_CTRL    = 5 // Bit 0 = MMU enable (RW), Bit 1 = supervisor mode (RO)
-	CR_TP          = 6 // Thread Pointer (user-readable, supervisor-writable)
-	CR_COUNT       = 7 // Number of control registers
+	CR_PTBR         = 0  // Page Table Base Register (physical address)
+	CR_FAULT_ADDR   = 1  // Virtual address that caused last fault
+	CR_FAULT_CAUSE  = 2  // Fault cause code
+	CR_FAULT_PC     = 3  // PC saved at trap entry
+	CR_TRAP_VEC     = 4  // Trap handler vector address
+	CR_MMU_CTRL     = 5  // Bit 0 = MMU enable (RW), Bit 1 = supervisor mode (RO)
+	CR_TP           = 6  // Thread Pointer (user-readable, supervisor-writable)
+	CR_INTR_VEC     = 7  // Interrupt vector (MMU-mode timer interrupts)
+	CR_KSP          = 8  // Kernel Stack Pointer (auto-swap on user→supervisor)
+	CR_TIMER_PERIOD = 9  // Timer reload period (instruction cycles)
+	CR_TIMER_COUNT  = 10 // Current timer countdown
+	CR_TIMER_CTRL   = 11 // Bit 0 = timer enable, Bit 1 = interrupt enable
+	CR_USP          = 12 // Saved User Stack Pointer (for context switch)
+	CR_COUNT        = 13 // Number of control registers
 )
 
 // Fault cause codes
@@ -135,6 +141,7 @@ const (
 	FAULT_PRIV         = 5 // Privileged instruction in user mode
 	FAULT_SYSCALL      = 6 // SYSCALL instruction
 	FAULT_MISALIGNED   = 7 // Misaligned atomic access
+	FAULT_TIMER        = 8 // Timer interrupt (via INTR_VEC)
 )
 
 // Memory access types for translateAddr
@@ -320,8 +327,10 @@ type CPU64 struct {
 	// MMU state
 	mmuEnabled     bool         // MMU translation active
 	supervisorMode bool         // true = supervisor, false = user
+	previousMode   bool         // privilege level before last trap/interrupt entry
 	ptbr           uint32       // Page Table Base Register (physical address)
 	trapVector     uint64       // Trap handler entry point
+	intrVector     uint64       // Interrupt vector (CR_INTR_VEC, for MMU-mode interrupts)
 	faultPC        uint64       // PC saved at trap entry
 	faultAddr      uint32       // Virtual address that caused fault
 	faultCause     uint32       // Fault cause code
@@ -329,6 +338,8 @@ type CPU64 struct {
 	jitNeedInval   bool         // Set by MMU ops; consumed by JIT dispatcher
 	tlb            [64]TLBEntry // 64-entry direct-mapped software TLB
 	threadPointer  uint64       // Thread Pointer (CR_TP)
+	kernelSP       uint64       // Kernel Stack Pointer (CR_KSP)
+	userSP         uint64       // Saved User Stack Pointer (CR_USP)
 }
 
 // ------------------------------------------------------------------------------
@@ -353,13 +364,27 @@ func NewCPU64(bus *MachineBus) *CPU64 {
 // Trap Helpers (MMU)
 // ------------------------------------------------------------------------------
 
+// trapEntry performs the common trap/interrupt entry sequence:
+// saves previous mode, switches stack if coming from user mode, sets supervisor,
+// and disables interrupts. ERET re-enables interrupts when returning to user mode.
+func (cpu *CPU64) trapEntry() {
+	cpu.previousMode = cpu.supervisorMode
+	if !cpu.supervisorMode {
+		// User → supervisor: swap stacks
+		cpu.userSP = cpu.regs[31]
+		cpu.regs[31] = cpu.kernelSP
+	}
+	cpu.supervisorMode = true
+	cpu.interruptEnabled.Store(false) // atomically disable interrupts on entry
+}
+
 // trapFault handles involuntary traps (page fault, privilege violation).
 // Saves PC of the faulting instruction so ERET re-executes it.
 func (cpu *CPU64) trapFault(cause uint32, addr uint32) {
+	cpu.trapEntry()
 	cpu.faultPC = cpu.PC // re-execute on ERET
 	cpu.faultAddr = addr
 	cpu.faultCause = cause
-	cpu.supervisorMode = true
 	cpu.PC = cpu.trapVector
 }
 
@@ -367,10 +392,10 @@ func (cpu *CPU64) trapFault(cause uint32, addr uint32) {
 // The syscall number (imm32) is stored in faultAddr for the handler to read
 // via MFCR CR1. User convention: arguments in R1-R6 before SYSCALL.
 func (cpu *CPU64) trapSyscall(syscallNum uint32) {
+	cpu.trapEntry()
 	cpu.faultPC = cpu.PC + IE64_INSTR_SIZE // skip SYSCALL on ERET
 	cpu.faultAddr = syscallNum             // handler reads via MFCR CR_FAULT_ADDR
 	cpu.faultCause = FAULT_SYSCALL
-	cpu.supervisorMode = true
 	cpu.PC = cpu.trapVector
 }
 
@@ -648,14 +673,18 @@ func (cpu *CPU64) Reset() {
 	// Reset MMU state
 	cpu.mmuEnabled = false
 	cpu.supervisorMode = true
+	cpu.previousMode = false
 	cpu.ptbr = 0
 	cpu.trapVector = 0
+	cpu.intrVector = 0
 	cpu.faultPC = 0
 	cpu.faultAddr = 0
 	cpu.faultCause = 0
 	cpu.trapped = false
 	cpu.jitNeedInval = false
 	cpu.threadPointer = 0
+	cpu.kernelSP = 0
+	cpu.userSP = 0
 
 	// Reset FPU
 	if cpu.FPU != nil {
@@ -780,20 +809,31 @@ func (cpu *CPU64) Execute() {
 			operand3 = cpu.regs[rt]
 		}
 
-		// Timer handling with lock-free atomics
+		// Timer handling: decrement TIMER_COUNT every instruction cycle.
+		// When it reaches 0, fire interrupt and reload from TIMER_PERIOD.
 		if cpu.timerEnabled.Load() {
-			cpu.cycleCounter++
-			if cpu.cycleCounter >= SAMPLE_RATE {
-				cpu.cycleCounter = 0
-
-				count := cpu.timerCount.Load()
-				if count > 0 {
-					newCount := count - 1
-					cpu.timerCount.Store(newCount)
-					if newCount == 0 {
-						cpu.timerState.Store(TIMER_EXPIRED)
-						// Inline handleInterrupt - uses memBase/memSize locals
-						if cpu.interruptEnabled.Load() && !cpu.inInterrupt.Load() {
+			count := cpu.timerCount.Load()
+			if count > 0 {
+				newCount := count - 1
+				cpu.timerCount.Store(newCount)
+				if newCount == 0 {
+					cpu.timerState.Store(TIMER_EXPIRED)
+					// Reload timer before dispatching interrupt (handler may disable it)
+					if cpu.timerEnabled.Load() {
+						cpu.timerCount.Store(cpu.timerPeriod.Load())
+					}
+					// Handle timer interrupt
+					if cpu.interruptEnabled.Load() && !cpu.inInterrupt.Load() {
+						if cpu.mmuEnabled && cpu.intrVector != 0 {
+							// ERET-model interrupt entry (unified with trap path)
+							cpu.trapEntry()
+							cpu.faultPC = cpu.PC
+							cpu.faultAddr = 0
+							cpu.faultCause = FAULT_TIMER
+							cpu.PC = cpu.intrVector
+							continue // re-enter loop at interrupt handler
+						} else {
+							// Legacy push-PC/RTI model (MMU off or INTR_VEC not set)
 							cpu.inInterrupt.Store(true)
 							cpu.regs[31] -= 8
 							sp := uint32(cpu.regs[31])
@@ -809,18 +849,16 @@ func (cpu *CPU64) Execute() {
 								continue
 							}
 							cpu.PC = cpu.interruptVector
-						}
-						// Reload timer if still enabled (handler may have disabled it)
-						if cpu.timerEnabled.Load() {
-							cpu.timerCount.Store(cpu.timerPeriod.Load())
+							continue // re-enter loop at interrupt handler
 						}
 					}
-				} else {
-					period := cpu.timerPeriod.Load()
-					if period > 0 {
-						cpu.timerCount.Store(period)
-						cpu.timerState.Store(TIMER_RUNNING)
-					}
+				}
+			} else {
+				// Auto-start: if count is 0 but period is set, load initial count
+				period := cpu.timerPeriod.Load()
+				if period > 0 {
+					cpu.timerCount.Store(period)
+					cpu.timerState.Store(TIMER_RUNNING)
 				}
 			}
 		}
@@ -1480,6 +1518,19 @@ func (cpu *CPU64) Execute() {
 				}
 			case CR_TP:
 				cpu.threadPointer = val
+			case CR_INTR_VEC:
+				cpu.intrVector = val
+			case CR_KSP:
+				cpu.kernelSP = val
+			case CR_TIMER_PERIOD:
+				cpu.timerPeriod.Store(val)
+			case CR_TIMER_COUNT:
+				cpu.timerCount.Store(val)
+			case CR_TIMER_CTRL:
+				cpu.timerEnabled.Store(val&1 != 0)
+				cpu.interruptEnabled.Store(val&2 != 0)
+			case CR_USP:
+				cpu.userSP = val
 			}
 
 		case OP_MFCR:
@@ -1510,6 +1561,24 @@ func (cpu *CPU64) Execute() {
 				}
 			case CR_TP:
 				val = cpu.threadPointer
+			case CR_INTR_VEC:
+				val = cpu.intrVector
+			case CR_KSP:
+				val = cpu.kernelSP
+			case CR_TIMER_PERIOD:
+				val = cpu.timerPeriod.Load()
+			case CR_TIMER_COUNT:
+				val = cpu.timerCount.Load()
+			case CR_TIMER_CTRL:
+				val = 0
+				if cpu.timerEnabled.Load() {
+					val |= 1
+				}
+				if cpu.interruptEnabled.Load() {
+					val |= 2
+				}
+			case CR_USP:
+				val = cpu.userSP
 			}
 			if rd != 0 {
 				cpu.regs[rd] = val
@@ -1520,7 +1589,16 @@ func (cpu *CPU64) Execute() {
 				continue
 			}
 			cpu.PC = cpu.faultPC
-			cpu.supervisorMode = false
+			if !cpu.previousMode {
+				// Returning to user mode: swap stack and atomically re-enable interrupts.
+				// This eliminates the SEI/ERET race: no interrupt can fire between
+				// enabling interrupts and leaving supervisor mode.
+				cpu.kernelSP = cpu.regs[31]
+				cpu.regs[31] = cpu.userSP
+				cpu.supervisorMode = false
+				cpu.interruptEnabled.Store(true)
+			}
+			// If previousMode was true, stay in supervisor mode (interrupts stay disabled)
 			continue // PC was set explicitly
 
 		case OP_TLBFLUSH:
@@ -2110,6 +2188,19 @@ func (cpu *CPU64) StepOne() int {
 				}
 			case CR_TP:
 				cpu.threadPointer = val
+			case CR_INTR_VEC:
+				cpu.intrVector = val
+			case CR_KSP:
+				cpu.kernelSP = val
+			case CR_TIMER_PERIOD:
+				cpu.timerPeriod.Store(val)
+			case CR_TIMER_COUNT:
+				cpu.timerCount.Store(val)
+			case CR_TIMER_CTRL:
+				cpu.timerEnabled.Store(val&1 != 0)
+				cpu.interruptEnabled.Store(val&2 != 0)
+			case CR_USP:
+				cpu.userSP = val
 			}
 		}
 	case OP_MFCR:
@@ -2140,6 +2231,24 @@ func (cpu *CPU64) StepOne() int {
 				}
 			case CR_TP:
 				val = cpu.threadPointer
+			case CR_INTR_VEC:
+				val = cpu.intrVector
+			case CR_KSP:
+				val = cpu.kernelSP
+			case CR_TIMER_PERIOD:
+				val = cpu.timerPeriod.Load()
+			case CR_TIMER_COUNT:
+				val = cpu.timerCount.Load()
+			case CR_TIMER_CTRL:
+				val = 0
+				if cpu.timerEnabled.Load() {
+					val |= 1
+				}
+				if cpu.interruptEnabled.Load() {
+					val |= 2
+				}
+			case CR_USP:
+				val = cpu.userSP
 			}
 			if rd != 0 {
 				cpu.regs[rd] = val
@@ -2150,7 +2259,12 @@ func (cpu *CPU64) StepOne() int {
 			pcAdvanced = true
 		} else {
 			cpu.PC = cpu.faultPC
-			cpu.supervisorMode = false
+			if !cpu.previousMode {
+				cpu.kernelSP = cpu.regs[31]
+				cpu.regs[31] = cpu.userSP
+				cpu.supervisorMode = false
+				cpu.interruptEnabled.Store(true)
+			}
 			pcAdvanced = true
 		}
 	case OP_TLBFLUSH:

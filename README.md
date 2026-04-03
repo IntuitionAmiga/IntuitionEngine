@@ -38,6 +38,7 @@
 | [sdk/docs/platform-compatibility.md](sdk/docs/platform-compatibility.md) | Platform support and build profiles |
 | [sdk/docs/release-process.md](sdk/docs/release-process.md) | Release packaging guide |
 | [sdk/docs/ie_emutos.md](sdk/docs/ie_emutos.md) | EmuTOS integration guide (GEM desktop on IE) |
+| [sdk/docs/IntuitionOS/IExec.md](sdk/docs/IntuitionOS/IExec.md) | IExec microkernel contract reference |
 
 # Table of Contents
 
@@ -156,6 +157,7 @@
 15. [Platform Support and Building](#15-platform-support-and-building)
 16. [EmuTOS Mode](#16-emutos-mode)
 17. [AROS Mode](#17-aros-mode)
+18. [IntuitionOS](#18-intuitionos)
 
 # 1. System Overview
 
@@ -3571,8 +3573,10 @@ The IE64 includes a minimal MMU for memory protection and virtual address transl
 - **A/D bits**: Hardware-maintained Accessed and Dirty bits in each PTE for page reclamation and working-set estimation
 - **W^X support**: Pages with X=0 are non-executable — code pages are X=1,W=0; data/stack pages are W=1,X=0
 - **Software TLB**: 64-entry direct-mapped cache of page table translations
-- **7 control registers**: Page table base (PTBR), fault address, fault cause, fault PC, trap vector, MMU control, thread pointer (TP, user-readable)
+- **13 control registers**: Page table base (PTBR), fault address/cause/PC, trap vector, MMU control, thread pointer (TP), interrupt vector (INTR_VEC), kernel/user stack pointers (KSP/USP), timer period/count/control
 - **7 MMU instructions**: MTCR, MFCR, ERET, TLBFLUSH, TLBINVAL, SYSCALL, SMODE
+- **Automatic stack switching**: Kernel/user stack separation via KSP/USP on privilege transitions
+- **Unified timer interrupts**: ERET-based timer delivery when MMU is enabled (legacy RTI model when MMU is off)
 - **JIT compatible**: JIT compiler works with MMU enabled (Stage 1: memory ops bail to interpreter)
 
 Full reference: [IE64_ISA.md §12](sdk/docs/IE64_ISA.md) | Programming examples: [IE64_COOKBOOK.md](sdk/docs/IE64_COOKBOOK.md)
@@ -5967,3 +5971,19 @@ Buffer completion triggers a Level 3 interrupt (M68K autovector 27) when the cor
 make aros-rom           # Build AROS ROM + filesystem from source
 make aros               # Build VM with embedded AROS ROM
 ```
+
+# 18. IntuitionOS
+
+IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. Unlike classic Amiga Exec, which ran everything in flat supervisor space with no memory protection, IExec uses the IE64 MMU to enforce hardware-backed user/supervisor privilege separation with per-task page tables and W^X memory policy. The design preserves the Amiga programming model (signals, message ports, priority scheduling) while adding the isolation guarantees of a modern protected-mode OS.
+
+**Milestone 1 status** (implemented and tested):
+
+- Standalone kernel binary: `make intuitionos` assembles `sdk/intuitionos/iexec/iexec.s` via ie64asm
+- Self-sufficient boot: kernel builds its own page tables, creates two user tasks, and initializes all scheduler state — no host setup needed
+- Per-task page tables with W^X enforcement (code: R+X, stack/data: R+W)
+- Trap handler dispatches SYSCALL and page faults
+- Two syscalls: `Yield` (26) for voluntary context switch, `GetSysInfo` (27) for kernel tick count
+- Two-task preemptive round-robin scheduler (save/restore PC, USP, PTBR per task)
+- Per-instruction timer tick with configurable quantum, atomic interrupt enable/disable on ERET/trap entry
+
+Full kernel contract reference: [sdk/docs/IntuitionOS/IExec.md](sdk/docs/IntuitionOS/IExec.md)

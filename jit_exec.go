@@ -237,12 +237,16 @@ func (cpu *CPU64) ExecuteJIT() {
 			}
 		}
 
-		// Timer check
+		// Timer check: decrement by number of executed instructions
 		if cpu.timerEnabled.Load() {
-			cpu.cycleCounter += executed
-			if cpu.cycleCounter >= SAMPLE_RATE {
-				cpu.cycleCounter = 0
-				cpu.handleTimerJIT()
+			count := cpu.timerCount.Load()
+			if count > 0 {
+				if executed >= count {
+					cpu.timerCount.Store(0)
+					cpu.handleTimerJIT()
+				} else {
+					cpu.timerCount.Store(count - executed)
+				}
 			}
 		}
 
@@ -275,34 +279,33 @@ func (cpu *CPU64) ExecuteJIT() {
 	}
 }
 
-// handleTimerJIT handles timer interrupt checking at JIT block boundaries.
+// handleTimerJIT handles timer expiry at JIT block boundaries.
+// Called when TIMER_COUNT has reached 0.
 func (cpu *CPU64) handleTimerJIT() {
-	count := cpu.timerCount.Load()
-	if count > 0 {
-		newCount := count - 1
-		cpu.timerCount.Store(newCount)
-		if newCount == 0 {
-			cpu.timerState.Store(TIMER_EXPIRED)
-			if cpu.interruptEnabled.Load() && !cpu.inInterrupt.Load() {
-				cpu.inInterrupt.Store(true)
-				cpu.regs[31] -= 8
-				sp := uint32(cpu.regs[31])
-				memSize := uint64(len(cpu.memory))
-				if uint64(sp)+8 <= memSize {
-					memBase := unsafe.Pointer(&cpu.memory[0])
-					*(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(sp))) = cpu.PC
-					cpu.PC = cpu.interruptVector
-				}
-			}
-			if cpu.timerEnabled.Load() {
-				cpu.timerCount.Store(cpu.timerPeriod.Load())
+	cpu.timerState.Store(TIMER_EXPIRED)
+	if cpu.interruptEnabled.Load() && !cpu.inInterrupt.Load() {
+		if cpu.mmuEnabled && cpu.intrVector != 0 {
+			// ERET-model interrupt entry
+			cpu.trapEntry()
+			cpu.faultPC = cpu.PC
+			cpu.faultAddr = 0
+			cpu.faultCause = FAULT_TIMER
+			cpu.PC = cpu.intrVector
+		} else {
+			// Legacy push-PC/RTI model
+			cpu.inInterrupt.Store(true)
+			cpu.regs[31] -= 8
+			sp := uint32(cpu.regs[31])
+			memSize := uint64(len(cpu.memory))
+			if uint64(sp)+8 <= memSize {
+				memBase := unsafe.Pointer(&cpu.memory[0])
+				*(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(sp))) = cpu.PC
+				cpu.PC = cpu.interruptVector
 			}
 		}
-	} else {
-		period := cpu.timerPeriod.Load()
-		if period > 0 {
-			cpu.timerCount.Store(period)
-			cpu.timerState.Store(TIMER_RUNNING)
-		}
+	}
+	// Reload timer
+	if cpu.timerEnabled.Load() {
+		cpu.timerCount.Store(cpu.timerPeriod.Load())
 	}
 }

@@ -2914,6 +2914,18 @@ func parseCR(name string) (byte, bool) {
 		return 5, true
 	case "cr6", "tp":
 		return 6, true
+	case "cr7", "intr_vec":
+		return 7, true
+	case "cr8", "ksp":
+		return 8, true
+	case "cr9", "timer_period":
+		return 9, true
+	case "cr10", "timer_count":
+		return 10, true
+	case "cr11", "timer_ctrl":
+		return 11, true
+	case "cr12", "usp":
+		return 12, true
 	}
 	return 0, false
 }

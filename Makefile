@@ -214,6 +214,13 @@ ie32to64: setup
 	@mv ie32to64 $(SDK_BIN_DIR)/
 	@echo "IE32-to-IE64 converter build complete"
 
+# Assemble the IExec microkernel
+.PHONY: intuitionos
+intuitionos: ie64asm
+	@echo "Assembling IExec kernel..."
+	@$(SDK_BIN_DIR)/ie64asm -I sdk/include sdk/intuitionos/iexec/iexec.s
+	@echo "IExec kernel assembled: sdk/intuitionos/iexec/iexec.ie64"
+
 # Build with embedded EhBASIC BASIC interpreter
 .PHONY: basic
 basic: ie64asm

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // ===========================================================================
@@ -2458,5 +2459,481 @@ func TestIE64_CR_TP_Reset(t *testing.T) {
 	rig.cpu.Reset()
 	if rig.cpu.threadPointer != 0 {
 		t.Fatalf("CR_TP after reset: got 0x%X, want 0", rig.cpu.threadPointer)
+	}
+}
+
+// ===========================================================================
+// CR7-CR12: INTR_VEC, KSP, Timer CRs, USP
+// ===========================================================================
+
+func TestIE64_CR_INTR_VEC_ReadWrite(t *testing.T) {
+	rig := newIE64TestRig()
+	rig.executeN(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x7000),
+		ie64Instr(OP_MTCR, CR_INTR_VEC, 0, 0, 1, 0, 0),
+	)
+	if rig.cpu.intrVector != 0x7000 {
+		t.Fatalf("INTR_VEC write: got 0x%X, want 0x7000", rig.cpu.intrVector)
+	}
+	rig2 := newIE64TestRig()
+	rig2.cpu.intrVector = 0x8888
+	rig2.executeOne(ie64Instr(OP_MFCR, 2, 0, 0, CR_INTR_VEC, 0, 0))
+	if rig2.cpu.regs[2] != 0x8888 {
+		t.Fatalf("INTR_VEC read: got 0x%X, want 0x8888", rig2.cpu.regs[2])
+	}
+}
+
+func TestIE64_CR_KSP_ReadWrite(t *testing.T) {
+	rig := newIE64TestRig()
+	rig.executeN(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x90000),
+		ie64Instr(OP_MTCR, CR_KSP, 0, 0, 1, 0, 0),
+	)
+	if rig.cpu.kernelSP != 0x90000 {
+		t.Fatalf("KSP write: got 0x%X, want 0x90000", rig.cpu.kernelSP)
+	}
+}
+
+func TestIE64_CR_TimerRegs_ReadWrite(t *testing.T) {
+	rig := newIE64TestRig()
+
+	// Write TIMER_PERIOD via MTCR
+	rig.cpu.StepOne() // skip to known state
+	rig.loadInstructions(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 1000),
+		ie64Instr(OP_MTCR, CR_TIMER_PERIOD, 0, 0, 1, 0, 0),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+	)
+	rig.cpu.running.Store(true)
+	rig.cpu.Execute()
+
+	if rig.cpu.timerPeriod.Load() != 1000 {
+		t.Fatalf("TIMER_PERIOD: got %d, want 1000", rig.cpu.timerPeriod.Load())
+	}
+}
+
+func TestIE64_CR_USP_ReadWrite(t *testing.T) {
+	rig := newIE64TestRig()
+	rig.executeN(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x50000),
+		ie64Instr(OP_MTCR, CR_USP, 0, 0, 1, 0, 0),
+	)
+	if rig.cpu.userSP != 0x50000 {
+		t.Fatalf("USP write: got 0x%X, want 0x50000", rig.cpu.userSP)
+	}
+	rig2 := newIE64TestRig()
+	rig2.cpu.userSP = 0x77777
+	rig2.executeOne(ie64Instr(OP_MFCR, 3, 0, 0, CR_USP, 0, 0))
+	if rig2.cpu.regs[3] != 0x77777 {
+		t.Fatalf("USP read: got 0x%X, want 0x77777", rig2.cpu.regs[3])
+	}
+}
+
+func TestIE64_KSP_StackSwitch_OnSyscall(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	setupIdentityMMU(cpu, 160)
+
+	trapAddr := uint64(0x9000)
+	cpu.trapVector = trapAddr
+	cpu.kernelSP = 0x9F000 // kernel stack at top of kernel region
+
+	// Trap handler: read SP (should be kernel SP), store in R10, then HALT
+	copy(cpu.memory[trapAddr:], ie64Instr(OP_MOVE, 10, IE64_SIZE_Q, 0, 31, 0, 0)) // R10 = SP
+	copy(cpu.memory[trapAddr+8:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	// Set user SP different from kernel SP
+	userStackAddr := uint64(0x80000)
+	cpu.faultPC = PROG_START + IE64_INSTR_SIZE // past ERET
+
+	rig.loadInstructions(
+		ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0),                                // switch to user mode
+		ie64Instr(OP_MOVE, 31, IE64_SIZE_L, 1, 0, 0, uint32(userStackAddr)), // set user SP
+		ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, 26),                            // SYSCALL → trap handler
+	)
+	cpu.running.Store(true)
+	cpu.Execute()
+
+	// Handler should see kernel SP, not user SP
+	if cpu.regs[10] != 0x9F000 {
+		t.Fatalf("trap handler SP = 0x%X, want 0x9F000 (kernel SP)", cpu.regs[10])
+	}
+	// User SP should be saved
+	if cpu.userSP != userStackAddr {
+		t.Fatalf("saved userSP = 0x%X, want 0x%X", cpu.userSP, userStackAddr)
+	}
+}
+
+func TestIE64_KSP_StackRestore_OnERET(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	setupIdentityMMU(cpu, 160)
+
+	trapAddr := uint64(0x9000)
+	cpu.trapVector = trapAddr
+	cpu.kernelSP = 0x9F000
+
+	// Trap handler: just ERET
+	copy(cpu.memory[trapAddr:], ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0))
+
+	// User program: SYSCALL, then read SP into R10, HALT
+	cpu.faultPC = PROG_START + IE64_INSTR_SIZE
+	rig.loadInstructions(
+		ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0),
+		ie64Instr(OP_MOVE, 31, IE64_SIZE_L, 1, 0, 0, 0x80000), // user SP = 0x80000
+		ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, 26),              // trap → handler → ERET
+		ie64Instr(OP_MOVE, 10, IE64_SIZE_Q, 0, 31, 0, 0),      // R10 = SP (should be user SP)
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+	)
+	cpu.running.Store(true)
+	cpu.Execute()
+
+	// After ERET, SP should be restored to user value
+	if cpu.regs[10] != 0x80000 {
+		t.Fatalf("restored user SP = 0x%X, want 0x80000", cpu.regs[10])
+	}
+}
+
+func TestIE64_KSP_NoSwitch_FromSupervisor(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+
+	// Already in supervisor mode. Set KSP to something different from current SP.
+	cpu.kernelSP = 0x90000
+	origSP := cpu.regs[31] // current SP
+
+	trapAddr := uint64(0x8000)
+	cpu.trapVector = trapAddr
+	// Handler: read SP into R10, HALT
+	copy(cpu.memory[trapAddr:], ie64Instr(OP_MOVE, 10, IE64_SIZE_Q, 0, 31, 0, 0))
+	copy(cpu.memory[trapAddr+8:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	// SYSCALL from supervisor mode
+	rig.loadInstructions(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, 26))
+	cpu.running.Store(true)
+	cpu.Execute()
+
+	// SP should NOT have been swapped to KSP (already in supervisor)
+	if cpu.regs[10] != origSP {
+		t.Fatalf("supervisor SYSCALL SP = 0x%X, want 0x%X (unchanged)", cpu.regs[10], origSP)
+	}
+	if !cpu.previousMode {
+		t.Fatal("previousMode should be true (was in supervisor)")
+	}
+}
+
+func TestIE64_PreviousMode_UserToSuper(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	setupIdentityMMU(cpu, 160)
+
+	trapAddr := uint64(0x9000)
+	cpu.trapVector = trapAddr
+	cpu.kernelSP = 0x9F000
+	copy(cpu.memory[trapAddr:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	// ERET to user, then SYSCALL
+	cpu.faultPC = PROG_START + IE64_INSTR_SIZE
+	rig.loadInstructions(
+		ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0),
+		ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, 26),
+	)
+	cpu.running.Store(true)
+	cpu.Execute()
+
+	if cpu.previousMode != false {
+		t.Fatal("previousMode should be false (trapped from user mode)")
+	}
+}
+
+func TestIE64_SEI_CLI_BackedByTimerCtrl(t *testing.T) {
+	rig := newIE64TestRig()
+
+	// SEI sets interrupt enable
+	rig.executeOne(ie64Instr(OP_SEI64, 0, 0, 0, 0, 0, 0))
+	if !rig.cpu.interruptEnabled.Load() {
+		t.Fatal("SEI should enable interrupts")
+	}
+
+	// Read TIMER_CTRL — bit 1 should be set
+	rig.executeOne(ie64Instr(OP_MFCR, 1, 0, 0, CR_TIMER_CTRL, 0, 0))
+	if rig.cpu.regs[1]&2 == 0 {
+		t.Fatal("TIMER_CTRL bit 1 should reflect SEI")
+	}
+
+	// CLI clears interrupt enable
+	rig.executeOne(ie64Instr(OP_CLI64, 0, 0, 0, 0, 0, 0))
+	if rig.cpu.interruptEnabled.Load() {
+		t.Fatal("CLI should disable interrupts")
+	}
+}
+
+func TestIE64_TimerCtrl_BacksSEICLI(t *testing.T) {
+	rig := newIE64TestRig()
+
+	// Write TIMER_CTRL with bit 1 set (enable interrupts)
+	rig.loadInstructions(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 2), // bit 1 = interrupt enable
+		ie64Instr(OP_MTCR, CR_TIMER_CTRL, 0, 0, 1, 0, 0),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+	)
+	rig.cpu.running.Store(true)
+	rig.cpu.Execute()
+
+	if !rig.cpu.interruptEnabled.Load() {
+		t.Fatal("MTCR TIMER_CTRL bit 1 should enable interrupts")
+	}
+
+	// Clear bit 1
+	rig2 := newIE64TestRig()
+	rig2.loadInstructions(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0),
+		ie64Instr(OP_MTCR, CR_TIMER_CTRL, 0, 0, 1, 0, 0),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+	)
+	rig2.cpu.running.Store(true)
+	rig2.cpu.Execute()
+
+	if rig2.cpu.interruptEnabled.Load() {
+		t.Fatal("MTCR TIMER_CTRL bit 1=0 should disable interrupts")
+	}
+}
+
+func TestIE64_PreviousMode_SuperToSuper(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	// Already in supervisor mode. SYSCALL should set previousMode=true.
+	trapAddr := uint64(0x8000)
+	cpu.trapVector = trapAddr
+	cpu.kernelSP = kernStackTop
+
+	// Handler: just ERET. Since previousMode=true, stays in supervisor.
+	copy(cpu.memory[trapAddr:], ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0))
+
+	// ERET returns to faultPC = PROG_START+8 (instruction after SYSCALL).
+	// Put SMODE there to check we're still in supervisor mode.
+	rig.loadInstructions(
+		ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, 26), // → trap handler → ERET → next instr
+		ie64Instr(OP_SMODE, 5, 0, 0, 0, 0, 0),    // SMODE R5 (should be 1 = supervisor)
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+	)
+	cpu.running.Store(true)
+	cpu.Execute()
+
+	if cpu.regs[5] != 1 {
+		t.Fatalf("after ERET from supervisor trap, SMODE = %d, want 1 (still supervisor)", cpu.regs[5])
+	}
+}
+
+func TestIE64_TimerInterrupt_ERETModel(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	setupIdentityMMU(cpu, 160)
+
+	// Set INTR_VEC to a handler that writes FAULT_CAUSE to a known location then halts
+	intrAddr := uint64(0x8000)
+	cpu.intrVector = intrAddr
+	cpu.kernelSP = kernStackTop
+
+	copy(cpu.memory[intrAddr:], ie64Instr(OP_MFCR, 10, 0, 0, CR_FAULT_CAUSE, 0, 0))
+	copy(cpu.memory[intrAddr+8:], ie64Instr(OP_MOVE, 11, IE64_SIZE_L, 1, 0, 0, kernDataBase))
+	copy(cpu.memory[intrAddr+16:], ie64Instr(OP_STORE, 10, IE64_SIZE_Q, 0, 11, 0, 0))
+	copy(cpu.memory[intrAddr+24:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	// User task: busy-loop
+	userPC := uint32(userTask0Code)
+	mapUserPage(cpu.memory, cpu.ptbr, uint16(userPC>>MMU_PAGE_SHIFT), uint16(userPC>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_X|PTE_U)
+	copy(cpu.memory[userPC:], ie64Instr(OP_BRA, 0, 0, 0, 0, 0, 0)) // infinite loop
+
+	// Program timer: fire after 100 instructions
+	cpu.timerPeriod.Store(100)
+	cpu.timerCount.Store(100)
+	cpu.timerEnabled.Store(true)
+	cpu.interruptEnabled.Store(true)
+
+	// ERET to user mode
+	cpu.faultPC = uint64(userPC)
+	cpu.userSP = userTask0Stack + MMU_PAGE_SIZE
+	cpu.PC = PROG_START
+	copy(cpu.memory[PROG_START:], ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0))
+	cpu.running.Store(true)
+	cpu.CoprocMode = true
+
+	// Run via Execute() briefly
+	done := make(chan struct{})
+	go func() { cpu.Execute(); close(done) }()
+	time.Sleep(50 * time.Millisecond)
+	cpu.running.Store(false)
+	<-done
+
+	cause := binary.LittleEndian.Uint64(cpu.memory[kernDataBase:])
+	if cause != FAULT_TIMER {
+		t.Fatalf("ERET-model timer: cause = %d, want %d (FAULT_TIMER)", cause, FAULT_TIMER)
+	}
+}
+
+func TestIE64_TimerInterrupt_LegacyModel(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	// MMU off, INTR_VEC=0 → legacy push-PC/RTI model
+
+	// Set interruptVector (the old field, used by legacy model)
+	intrAddr := uint64(0x8000)
+	cpu.interruptVector = intrAddr
+
+	// Handler: write 0xDEAD to kernDataBase, RTI
+	copy(cpu.memory[intrAddr:], ie64Instr(OP_MOVE, 10, IE64_SIZE_L, 1, 0, 0, 0xDEAD))
+	copy(cpu.memory[intrAddr+8:], ie64Instr(OP_MOVE, 11, IE64_SIZE_L, 1, 0, 0, kernDataBase))
+	copy(cpu.memory[intrAddr+16:], ie64Instr(OP_STORE, 10, IE64_SIZE_L, 0, 11, 0, 0))
+	copy(cpu.memory[intrAddr+24:], ie64Instr(OP_RTI64, 0, 0, 0, 0, 0, 0))
+
+	// Program: busy-loop, then after interrupt+RTI, check marker
+	// Use a moderate timer period so the loop runs a bit before the interrupt
+	cpu.timerPeriod.Store(100)
+	cpu.timerCount.Store(100)
+	cpu.timerEnabled.Store(true)
+	cpu.interruptEnabled.Store(true)
+
+	// Simple busy-loop program that eventually halts
+	rig.loadInstructions(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0),
+		ie64Instr(OP_ADD, 1, IE64_SIZE_Q, 1, 1, 0, 1),
+		ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 500),
+		ie64Instr(OP_BLT, 0, 0, 0, 1, 2, uint32(-16&0xFFFFFFFF)),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+	)
+	cpu.running.Store(true)
+	cpu.Execute()
+
+	marker := binary.LittleEndian.Uint32(cpu.memory[kernDataBase:])
+	if marker != 0xDEAD {
+		t.Logf("DEBUG: PC=0x%X R1=%d R31(SP)=0x%X timerCount=%d timerEnabled=%v intEnabled=%v inInterrupt=%v interruptVector=0x%X",
+			cpu.PC, cpu.regs[1], cpu.regs[31], cpu.timerCount.Load(), cpu.timerEnabled.Load(),
+			cpu.interruptEnabled.Load(), cpu.inInterrupt.Load(), cpu.interruptVector)
+		// Check what's at the interrupt vector
+		if cpu.interruptVector > 0 && cpu.interruptVector+32 <= uint64(len(cpu.memory)) {
+			iv := cpu.interruptVector
+			t.Logf("DEBUG: instr at interruptVector 0x%X: opcode=0x%02X 0x%02X 0x%02X 0x%02X",
+				iv, cpu.memory[iv], cpu.memory[iv+1], cpu.memory[iv+2], cpu.memory[iv+3])
+		}
+		// Check what's at current PC
+		t.Logf("DEBUG: instr at PC 0x%X: opcode=0x%02X", cpu.PC, cpu.memory[cpu.PC])
+		// Check stack for saved PC
+		sp := uint32(cpu.regs[31])
+		if sp >= 8 {
+			savedPC := binary.LittleEndian.Uint64(cpu.memory[sp-8:])
+			t.Logf("DEBUG: savedPC at SP-8 (0x%X) = 0x%X", sp-8, savedPC)
+		}
+		t.Fatalf("legacy timer: marker = 0x%X, want 0xDEAD", marker)
+	}
+}
+
+func TestIE64_FAULT_TIMER_CauseCode(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	setupIdentityMMU(cpu, 160)
+
+	intrAddr := uint64(0x8000)
+	cpu.intrVector = intrAddr
+	cpu.kernelSP = kernStackTop
+
+	// Handler: just HALT (we check cpu.faultCause directly)
+	copy(cpu.memory[intrAddr:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	userPC := uint32(userTask0Code)
+	mapUserPage(cpu.memory, cpu.ptbr, uint16(userPC>>MMU_PAGE_SHIFT), uint16(userPC>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_X|PTE_U)
+	copy(cpu.memory[userPC:], ie64Instr(OP_BRA, 0, 0, 0, 0, 0, 0))
+
+	cpu.timerPeriod.Store(50)
+	cpu.timerCount.Store(50)
+	cpu.timerEnabled.Store(true)
+	cpu.interruptEnabled.Store(true)
+
+	cpu.faultPC = uint64(userPC)
+	cpu.userSP = userTask0Stack + MMU_PAGE_SIZE
+	copy(cpu.memory[PROG_START:], ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0))
+	cpu.PC = PROG_START
+	cpu.CoprocMode = true
+	cpu.running.Store(true)
+
+	done := make(chan struct{})
+	go func() { cpu.Execute(); close(done) }()
+	time.Sleep(50 * time.Millisecond)
+	cpu.running.Store(false)
+	<-done
+
+	if cpu.faultCause != FAULT_TIMER {
+		t.Fatalf("faultCause = %d, want %d", cpu.faultCause, FAULT_TIMER)
+	}
+}
+
+func TestIE64_TimerCR_Programs_Timer(t *testing.T) {
+	rig := newIE64TestRig()
+
+	// Program timer via CRs, verify it fires
+	trapAddr := uint64(0x8000)
+	rig.cpu.trapVector = trapAddr
+	rig.cpu.interruptVector = trapAddr
+	// Handler: write 0xBEEF to kernDataBase, HALT
+	copy(rig.cpu.memory[trapAddr:], ie64Instr(OP_MOVE, 10, IE64_SIZE_L, 1, 0, 0, 0xBEEF))
+	copy(rig.cpu.memory[trapAddr+8:], ie64Instr(OP_MOVE, 11, IE64_SIZE_L, 1, 0, 0, kernDataBase))
+	copy(rig.cpu.memory[trapAddr+16:], ie64Instr(OP_STORE, 10, IE64_SIZE_L, 0, 11, 0, 0))
+	copy(rig.cpu.memory[trapAddr+24:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	// Kernel programs timer via MTCR, then busy-loops
+	rig.loadInstructions(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 500),
+		ie64Instr(OP_MTCR, CR_TIMER_PERIOD, 0, 0, 1, 0, 0),
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 500),
+		ie64Instr(OP_MTCR, CR_TIMER_COUNT, 0, 0, 1, 0, 0),
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 3), // timer + interrupt enable
+		ie64Instr(OP_MTCR, CR_TIMER_CTRL, 0, 0, 1, 0, 0),
+		// Busy-loop until timer fires
+		ie64Instr(OP_BRA, 0, 0, 0, 0, 0, 0),
+	)
+	rig.cpu.running.Store(true)
+	rig.cpu.Execute()
+
+	marker := binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase:])
+	if marker != 0xBEEF {
+		t.Fatalf("timer CR programming: marker = 0x%X, want 0xBEEF", marker)
+	}
+}
+
+func TestIE64_USP_SavedOnTrap(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	setupIdentityMMU(cpu, 160)
+
+	trapAddr := uint64(0x9000)
+	cpu.trapVector = trapAddr
+	cpu.kernelSP = kernStackTop
+
+	// Handler: read USP via MFCR, store to kernDataBase, HALT
+	copy(cpu.memory[trapAddr:], ie64Instr(OP_MFCR, 10, 0, 0, CR_USP, 0, 0))
+	copy(cpu.memory[trapAddr+8:], ie64Instr(OP_MOVE, 11, IE64_SIZE_L, 1, 0, 0, kernDataBase))
+	copy(cpu.memory[trapAddr+16:], ie64Instr(OP_STORE, 10, IE64_SIZE_Q, 0, 11, 0, 0))
+	copy(cpu.memory[trapAddr+24:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	// Set user SP to a known value, ERET to user, user does SYSCALL
+	cpu.userSP = 0x77000
+	cpu.faultPC = PROG_START + IE64_INSTR_SIZE
+
+	// User code at PROG_START+8: set SP to 0x88000 then SYSCALL
+	userCodePC := uint32(PROG_START + IE64_INSTR_SIZE)
+	mapUserPage(cpu.memory, cpu.ptbr, uint16(userCodePC>>MMU_PAGE_SHIFT), uint16(userCodePC>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_X|PTE_U)
+
+	rig.loadInstructions(
+		ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0),
+		ie64Instr(OP_MOVE, 31, IE64_SIZE_L, 1, 0, 0, 0x88000), // set user SP
+		ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, 26),
+	)
+	cpu.running.Store(true)
+	cpu.Execute()
+
+	// The trap handler should see USP = 0x88000 (the value user set R31 to)
+	savedUSP := binary.LittleEndian.Uint64(cpu.memory[kernDataBase:])
+	if savedUSP != 0x88000 {
+		t.Fatalf("USP after trap = 0x%X, want 0x88000", savedUSP)
 	}
 }

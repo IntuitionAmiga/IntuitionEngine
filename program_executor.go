@@ -23,6 +23,8 @@ type ProgramExecutor struct {
 	loadEmuTOS func() error
 	// loadAROS boots AROS without a filename (ROM is resolved by main).
 	loadAROS func() error
+	// loadIExec boots the IExec microkernel (ROM is resolved by main).
+	loadIExec func() error
 
 	// GEMDOS drive mapping for EmuTOS mode
 	gemdosHostRoot string
@@ -131,6 +133,8 @@ func (e *ProgramExecutor) HandleWrite(addr uint32, val uint32) {
 			e.startEmuTOS()
 		} else if val == EXEC_OP_AROS {
 			e.startAROS()
+		} else if val == EXEC_OP_IEXEC {
+			e.startIExec()
 		}
 	}
 }
@@ -229,6 +233,45 @@ func (e *ProgramExecutor) startAROS() {
 	session := e.session
 	e.status = EXEC_STATUS_LOADING
 	e.typ = EXEC_TYPE_AROS
+	e.errCode = EXEC_ERR_OK
+	e.mu.Unlock()
+
+	go func() {
+		if err := loader(); err != nil {
+			e.failSession(session, EXEC_ERR_LOAD_FAILED)
+			return
+		}
+		e.mu.Lock()
+		if session == e.session {
+			e.status = EXEC_STATUS_RUNNING
+			e.errCode = EXEC_ERR_OK
+		}
+		e.mu.Unlock()
+	}()
+}
+
+// SetIExecBootLoader configures a callback that boots the IExec microkernel.
+// Called when BASIC writes EXEC_OP_IEXEC to EXEC_CTRL.
+func (e *ProgramExecutor) SetIExecBootLoader(fn func() error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.loadIExec = fn
+}
+
+func (e *ProgramExecutor) startIExec() {
+	e.mu.Lock()
+	loader := e.loadIExec
+	if loader == nil {
+		e.status = EXEC_STATUS_ERROR
+		e.errCode = EXEC_ERR_LOAD_FAILED
+		e.typ = EXEC_TYPE_IEXEC
+		e.mu.Unlock()
+		return
+	}
+	e.session++
+	session := e.session
+	e.status = EXEC_STATUS_LOADING
+	e.typ = EXEC_TYPE_IEXEC
 	e.errCode = EXEC_ERR_OK
 	e.mu.Unlock()
 

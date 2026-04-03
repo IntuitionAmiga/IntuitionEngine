@@ -33,6 +33,7 @@ import (
 // emutosSentinel is a non-filesystem path passed to runProgramWithFullReset
 // to trigger EmuTOS boot without a filename (ROM resolved via loadEmuTOSImage).
 const emutosSentinel = "\x00emutos\x00"
+const intuitionOSSentinel = "\x00intuitionos\x00"
 
 // Version metadata injected at build time via ldflags.
 var (
@@ -1260,6 +1261,30 @@ func main() {
 		return b, autoPath, nil
 	}
 
+	loadIntuitionOSImage := func() ([]byte, string, error) {
+		// Search candidate paths for the assembled IExec kernel binary
+		candidates := []string{
+			"sdk/intuitionos/iexec/iexec.ie64", // repo root
+			"iexec.ie64",                       // current directory
+			"bin/iexec.ie64",                   // bin directory
+			"sdk/examples/prebuilt/iexec.ie64", // prebuilt location
+		}
+		// Also try relative to the executable location
+		if exePath, err := os.Executable(); err == nil {
+			exeDir := filepath.Dir(exePath)
+			candidates = append(candidates,
+				filepath.Join(exeDir, "iexec.ie64"),
+				filepath.Join(exeDir, "..", "sdk", "intuitionos", "iexec", "iexec.ie64"),
+			)
+		}
+		for _, p := range candidates {
+			if b, err := os.ReadFile(p); err == nil {
+				return b, p, nil
+			}
+		}
+		return nil, "", fmt.Errorf("IntuitionOS kernel not found (run 'make intuitionos' to build)")
+	}
+
 	if modeIE32 {
 		ie32CPU := NewCPU(sysBus)
 		ie32CPU.PerfEnabled = perfMode
@@ -1746,6 +1771,13 @@ func main() {
 				return err
 			}
 			mode = "aros"
+		} else if path == intuitionOSSentinel {
+			var err error
+			bytes, path, err = loadIntuitionOSImage()
+			if err != nil {
+				return err
+			}
+			mode = "ie64"
 		} else {
 			var err error
 			bytes, err = os.ReadFile(path)
@@ -2082,6 +2114,9 @@ func main() {
 	})
 	progExec.SetAROSBootLoader(func() error {
 		return runProgramWithFullReset(arosSentinel)
+	})
+	progExec.SetIExecBootLoader(func() error {
+		return runProgramWithFullReset(intuitionOSSentinel)
 	})
 
 	// Wire F10 hard reset handler

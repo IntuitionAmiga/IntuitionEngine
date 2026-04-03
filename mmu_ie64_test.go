@@ -1098,8 +1098,11 @@ func TestMMU_StackProtection(t *testing.T) {
 	stackPage := uint16((STACK_START - 8) >> MMU_PAGE_SHIFT)
 	writePTE(cpu, stackPage, makePTE(stackPage, PTE_P|PTE_R|PTE_W|PTE_X)) // no U
 
-	// Switch to user mode, then try JSR (which pushes to stack)
+	// Switch to user mode with SP pointing at the supervisor-only stack page.
+	// ERET will restore userSP into R31, so set userSP to the supervisor stack.
 	cpu.faultPC = PROG_START + IE64_INSTR_SIZE
+	cpu.userSP = STACK_START   // points to supervisor-only page
+	cpu.kernelSP = STACK_START // need a valid KSP for the ERET
 	rig.loadInstructions(
 		ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0),
 		ie64Instr(OP_JSR64, 0, 0, 1, 0, 0, 8), // try to push to supervisor-only stack

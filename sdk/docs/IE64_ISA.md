@@ -492,8 +492,8 @@ All stack operations use 64-bit (8-byte) transfers regardless of size suffix. Th
 |----------|--------|--------|-----------|-----|------|
 | NOP      | `0xE0` | `nop` | No operation; PC += 8 | N | -- |
 | HALT     | `0xE1` | `halt` | Stops execution | N | -- |
-| SEI      | `0xE2` | `sei` | Enable interrupts (`interruptEnabled = true`) | N | -- |
-| CLI      | `0xE3` | `cli` | Disable interrupts (`interruptEnabled = false`) | N | -- |
+| SEI      | `0xE2` | `sei` | Enable interrupts (set TIMER_CTRL bit 1) | N | -- |
+| CLI      | `0xE3` | `cli` | Disable interrupts (clear TIMER_CTRL bit 1) | N | -- |
 | RTI      | `0xE4` | `rti` | Return from interrupt | Read | Q |
 | WAIT     | `0xE5` | `wait #usec` | Sleep for `imm32` microseconds; PC += 8 | N | -- |
 
@@ -502,12 +502,14 @@ All stack operations use 64-bit (8-byte) transfers regardless of size suffix. Th
 - The PC is not advanced.
 
 **SEI** (opcode `0xE2`):
-- Atomically sets the interrupt-enabled flag to true.
+- Sets the interrupt-enable bit (bit 1) in TIMER_CTRL (CR11).
 - The next timer expiration after SEI will trigger an interrupt. Expirations that occurred while interrupts were disabled are not queued or replayed.
+- SEI is an alias for setting TIMER_CTRL bit 1; the same state can be written directly via MTCR.
 
 **CLI** (opcode `0xE3`):
-- Atomically sets the interrupt-enabled flag to false.
+- Clears the interrupt-enable bit (bit 1) in TIMER_CTRL (CR11).
 - The timer continues running and counting, but expirations are silently discarded (not queued for later delivery).
+- CLI is an alias for clearing TIMER_CTRL bit 1; the same state can be written directly via MTCR.
 
 **RTI** (opcode `0xE4`):
 - Reads the 64-bit return address from mem[SP].
@@ -781,16 +783,40 @@ The following describes the internal CPU mechanics when an interrupt fires:
 6. `RTI` pops the return address: `PC = mem[SP]; SP += 8`.
 7. `RTI` clears `inInterrupt`, re-enabling interrupt delivery.
 
-> **Implementation note**: The interrupt mechanism exists and functions at the Go implementation level (`handleInterrupt()` does push PC and jump to `interruptVector`). However, since there is no assembly-level way to set `interruptVector` to a non-zero value, user programs cannot currently utilize timer interrupts. Host/test code can set the vector directly on the CPU struct (e.g., `cpu.interruptVector = addr`), though this field is unexported and internal.
+> **Implementation note**: When the MMU is enabled and INTR_VEC (CR7) is nonzero, the unified timer interrupt model is used (see section 12.12). Timer interrupts save PC to FAULT_PC, set FAULT_CAUSE=8, perform automatic stack switching, and jump to INTR_VEC. The handler returns via ERET. When the MMU is off or INTR_VEC is zero, the legacy model is used: `handleInterrupt()` pushes PC and jumps to `interruptVector`, returning via RTI.
 
-### 9.5 Interrupt Programming Pattern (Aspirational)
+### 9.5 Interrupt Programming Patterns
 
-> **Not yet functional**: The following pattern shows the *intended* future usage of interrupt vectors. In the current implementation, `interruptVector` is an internal CPU field that cannot be set from assembly. The `dc.q` at `$0000` writes to memory but has no effect on the CPU's `interruptVector` field. This example is retained to document the planned design; it will become functional when a memory-mapped vector table or a dedicated instruction is added.
+#### 9.5.1 Unified Model (MMU enabled)
+
+When the MMU is enabled, timer interrupts can be delivered through INTR_VEC (CR7) using the ERET-based trap model. The handler uses the same return path as syscalls and faults:
 
 ```
-    org $0000
-    dc.q isr_handler       ; (reserved) interrupt vector at $0000
+    ; Kernel initialization (supervisor mode)
+    move.l r1, #kernel_stack_top
+    mtcr 8, r1              ; KSP = kernel stack
+    move.l r1, #timer_handler
+    mtcr 7, r1              ; INTR_VEC = handler address
+    move.l r1, #44100
+    mtcr 9, r1              ; TIMER_PERIOD = 44100 cycles
+    move.l r1, #3
+    mtcr 11, r1             ; TIMER_CTRL = enable + interrupt enable
+    ; ... set up page table, enable MMU, ERET to user mode ...
 
+timer_handler:
+    push r1
+    push r2
+    ; ... handle timer interrupt ...
+    pop r2
+    pop r1
+    eret                    ; return to interrupted code (stack auto-restored)
+```
+
+#### 9.5.2 Legacy Model (MMU disabled)
+
+Without the MMU, timer interrupts use the classic push-PC/RTI mechanism:
+
+```
     org $1000
 start:
     sei                     ; enable interrupts
@@ -806,12 +832,14 @@ isr_handler:
     rti                     ; return and re-enable interrupts
 ```
 
+> **Note**: In the legacy model, `interruptVector` is an internal CPU field. Host/test code can set the vector directly on the CPU struct (e.g., `cpu.interruptVector = addr`), though this field is unexported and internal.
+
 ### 9.6 SEI/CLI Semantics
 
 | Instruction | Effect |
 |-------------|--------|
-| SEI | Sets `interruptEnabled = true`. The timer continues running; the next expiration after SEI will trigger an interrupt. Note: expirations that occurred while interrupts were disabled are not queued or replayed. |
-| CLI | Sets `interruptEnabled = false`. Timer continues running and counting, but interrupts are not delivered. |
+| SEI | Sets TIMER_CTRL (CR11) bit 1, enabling interrupt delivery. The timer continues running; the next expiration after SEI will trigger an interrupt. Note: expirations that occurred while interrupts were disabled are not queued or replayed. |
+| CLI | Clears TIMER_CTRL (CR11) bit 1, disabling interrupt delivery. Timer continues running and counting, but interrupts are not delivered. |
 
 Interrupts do not nest: if `inInterrupt` is true, no new interrupt is delivered regardless of the `interruptEnabled` flag.
 
@@ -1057,7 +1085,7 @@ On reset the CPU is in supervisor mode. Transitioning to user mode is done via E
 
 ### 12.2 Control Registers
 
-Seven control registers manage the MMU and thread state. They are accessed via MTCR (write) and MFCR (read).
+Thirteen control registers manage the MMU, thread state, timer, and stack switching. They are accessed via MTCR (write) and MFCR (read).
 
 | CR | Name | R/W | Description |
 |----|------|-----|-------------|
@@ -1068,6 +1096,12 @@ Seven control registers manage the MMU and thread state. They are accessed via M
 | CR4 | TRAP_VEC | RW | Physical address of the trap handler entry point. Jumped to on any fault or SYSCALL. |
 | CR5 | MMU_CTRL | Special | Bit 0: MMU enable (RW). Bit 1: supervisor mode (read-only, managed by hardware). All other bits reserved. |
 | CR6 | TP | RW | Thread Pointer. User-readable via MFCR (exception to the normal supervisor-only rule). Writable only in supervisor mode via MTCR. Intended for thread-local storage (TLS) base address. |
+| CR7 | INTR_VEC | RW | Interrupt vector address. When MMU is enabled and INTR_VEC is nonzero, timer interrupts use the unified ERET-based entry model instead of the legacy push-PC/RTI model. Supervisor-only. |
+| CR8 | KSP | RW | Kernel Stack Pointer. Automatically swapped with R31 on user-to-supervisor transitions. Supervisor-only. |
+| CR9 | TIMER_PERIOD | RW | Timer reload period in instruction-cycle units. Supervisor-only. |
+| CR10 | TIMER_COUNT | RW | Current timer countdown value. Supervisor-only. |
+| CR11 | TIMER_CTRL | RW | Bit 0 = timer enable, Bit 1 = interrupt enable. SEI/CLI are aliases for setting/clearing bit 1. Supervisor-only. |
+| CR12 | USP | RW | Saved User Stack Pointer. Readable/writable in supervisor mode for context switch. Set automatically on user-to-supervisor transition. Supervisor-only. |
 
 **PTBR** must point to the start of the page table in physical memory. The page table is 64 KiB (8192 entries x 8 bytes) and must be naturally aligned.
 
@@ -1137,7 +1171,7 @@ The 25-bit virtual address space covers 32 MB, matching the IE64 physical addres
 
 ### 12.6 MMU Instructions
 
-Seven new opcodes in the System range. All except SYSCALL and SMODE are privileged (supervisor-only); executing them in user mode faults with cause code 5 (privilege violation). MFCR has a special exception: reading CR6 (TP) is permitted in user mode.
+Seven opcodes in the System range. All except SYSCALL and SMODE are privileged (supervisor-only); executing them in user mode faults with cause code 5 (privilege violation). MFCR has a special exception: reading CR6 (TP) is permitted in user mode.
 
 | Mnemonic | Opcode | Syntax | Operation | Privilege |
 |----------|--------|--------|-----------|-----------|
@@ -1151,17 +1185,19 @@ Seven new opcodes in the System range. All except SYSCALL and SMODE are privileg
 
 **MTCR** (opcode `0xE6`):
 - Writes the value of general-purpose register Rs to control register CRn.
-- The CR index is encoded in the Rd field (0-6).
+- The CR index is encoded in the Rd field (0-12).
 - All CRs are writable except MMU_CTRL bit 1 (supervisor mode), which is silently ignored on write. This means trap handlers can modify FAULT_PC (CR3) before ERET to redirect execution.
 - Writing to PTBR or MMU_CTRL bit 0 invalidates the JIT code cache and flushes the TLB.
 
 **MFCR** (opcode `0xE7`):
 - Reads control register CRn into general-purpose register Rd.
-- The CR index is encoded in the Rs field (0-6).
+- The CR index is encoded in the Rs field (0-12).
 - **User-mode exception**: MFCR is normally supervisor-only, but reading CR6 (TP) is permitted in user mode. This allows user-space threads to access thread-local storage without a syscall. All other CR indices fault with cause code 5 (privilege violation) in user mode.
 
 **ERET** (opcode `0xE8`):
-- Returns from a trap handler. Sets PC to the value saved in CR3 (FAULT_PC) and switches to user mode.
+- Returns from a trap handler. Sets PC to the value saved in CR3 (FAULT_PC).
+- If the previous mode (before the trap) was user: saves R31 to KSP (CR8), restores R31 from USP (CR12), and switches to user mode.
+- If the previous mode was supervisor: stays in supervisor mode with no stack swap.
 - Does not pop the stack. The trap entry does not push to the stack.
 - The handler can modify FAULT_PC via MTCR before ERET to redirect execution.
 - For SYSCALL traps, FAULT_PC = PC+8 (instruction after SYSCALL), so ERET resumes at the next instruction.
@@ -1193,8 +1229,8 @@ Seven new opcodes in the System range. All except SYSCALL and SMODE are privileg
 All seven opcodes use the standard 8-byte IE64 instruction format:
 
 ```
-MTCR:     [0xE6] [CRn<<3 | 0 | 0] [Rs<<3] [0] [0 0 0 0]       ; Rd field = CR index (0-6)
-MFCR:     [0xE7] [Rd<<3 | 0 | 0]  [CRn<<3] [0] [0 0 0 0]      ; Rs field = CR index (0-6)
+MTCR:     [0xE6] [CRn<<3 | 0 | 0] [Rs<<3] [0] [0 0 0 0]       ; Rd field = CR index (0-12)
+MFCR:     [0xE7] [Rd<<3 | 0 | 0]  [CRn<<3] [0] [0 0 0 0]      ; Rs field = CR index (0-12)
 ERET:     [0xE8] [0] [0] [0] [0 0 0 0]
 TLBFLUSH: [0xE9] [0] [0] [0] [0 0 0 0]
 TLBINVAL: [0xEA] [0] [Rs<<3] [0] [0 0 0 0]                     ; Rs = register holding VPN
@@ -1209,8 +1245,9 @@ Traps are raised by faults (translation errors, permission violations) and by th
 1. CR1 (FAULT_ADDR) is set to the faulting virtual address (for faults) or the syscall number (for SYSCALL).
 2. CR2 (FAULT_CAUSE) is set to the cause code.
 3. CR3 (FAULT_PC) is set to the relevant PC (see below).
-4. The CPU switches to supervisor mode.
-5. PC is set to CR4 (TRAP_VEC).
+4. Automatic stack switching occurs: user R31 is saved to USP (CR12), R31 is loaded from KSP (CR8). See section 12.11.
+5. The CPU switches to supervisor mode.
+6. PC is set to CR4 (TRAP_VEC).
 
 **Differentiated PC save:**
 - **SYSCALL**: CR3 = PC + 8 (address of the instruction *after* SYSCALL). ERET resumes execution past the syscall.
@@ -1230,6 +1267,7 @@ This distinction means trap handlers do not need to adjust the return address; E
 | 5 | Privilege Violation | User-mode execution of a privileged instruction (MTCR, MFCR, ERET, TLBFLUSH, TLBINVAL). |
 | 6 | Syscall | SYSCALL instruction executed. |
 | 7 | Misaligned | Atomic memory operation (CAS, XCHG, FAA, FAND, FOR, FXOR) with address not 8-byte aligned. |
+| 8 | Timer Interrupt | Timer interrupt (delivered via INTR_VEC when MMU enabled). |
 
 ### 12.9 Translation Lookaside Buffer (TLB)
 
@@ -1249,7 +1287,50 @@ The IE64 MMU enforces a Write XOR Execute policy at the page level. A page may b
 
 This prevents code injection attacks: an attacker who can write to memory cannot execute that memory, and executable memory cannot be modified. To load new code, supervisor software must map the target pages as writable, write the code, then remap as executable (with appropriate TLB invalidation between steps).
 
-### 12.11 Atomic Memory Operations
+### 12.11 Automatic Stack Switching
+
+The IE64 provides automatic kernel/user stack separation via KSP (CR8) and USP (CR12). On any user-to-supervisor transition (SYSCALL, fault, or timer interrupt):
+
+1. The previous privilege mode is saved internally.
+2. The current user R31 (stack pointer) is saved to USP (CR12).
+3. R31 is loaded from KSP (CR8), giving the handler a kernel stack.
+4. The CPU switches to supervisor mode.
+
+On ERET:
+
+1. If the previous mode was user: R31 is saved to KSP (CR8), R31 is restored from USP (CR12), and the CPU returns to user mode.
+2. If the previous mode was supervisor: the CPU stays in supervisor mode with no stack swap.
+
+This allows trap handlers to execute on a dedicated kernel stack without any software stack-switching prologue. The kernel must initialize KSP (via MTCR) before entering user mode for the first time.
+
+### 12.12 Unified Timer Interrupt Model
+
+The IE64 supports two timer interrupt models, selected automatically based on the MMU state and INTR_VEC (CR7):
+
+**Unified model** (MMU enabled, INTR_VEC nonzero):
+
+Timer interrupts are delivered through the same trap mechanism as faults and SYSCALLs:
+
+1. PC is saved to CR3 (FAULT_PC).
+2. CR2 (FAULT_CAUSE) is set to 8 (FAULT_TIMER).
+3. Automatic stack switching occurs (user R31 saved to USP, R31 loaded from KSP).
+4. The CPU switches to supervisor mode.
+5. PC is set to INTR_VEC (CR7).
+
+The handler returns via ERET, which restores the stack and privilege mode automatically. This model eliminates the need for RTI and provides a consistent trap-return path for all supervisor entry points.
+
+**Legacy model** (MMU disabled, or INTR_VEC is zero):
+
+Timer interrupts use the classic push-PC/RTI mechanism:
+
+1. The current PC is pushed onto the stack: `SP -= 8; mem[SP] = PC`.
+2. The `inInterrupt` flag is set (prevents nesting).
+3. PC is set to `interruptVector`.
+4. The handler returns via RTI, which pops PC and clears `inInterrupt`.
+
+This model is retained for backwards compatibility with programs that do not use the MMU.
+
+### 12.13 Atomic Memory Operations
 
 The IE64 provides six atomic read-modify-write (RMW) instructions for lock-free synchronisation. These instructions use a dedicated encoding form that repurposes all three register fields and the immediate field:
 

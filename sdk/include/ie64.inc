@@ -1874,6 +1874,7 @@ EXEC_ERROR        equ 0xF2330               ; 0=ok,1=not-found,2=unsupported,3=p
 EXEC_SESSION      equ 0xF2334               ; Monotonic session id (R)
 EXEC_OP_EMUTOS    equ 2                     ; Write to EXEC_CTRL to boot EmuTOS
 EXEC_OP_AROS      equ 3                     ; Write to EXEC_CTRL to boot AROS
+EXEC_OP_IEXEC     equ 4                     ; Write to EXEC_CTRL to boot IntuitionOS
 
 ; ============================================================================
 ; COPROCESSOR REGISTERS (0xF2340-0xF238F)

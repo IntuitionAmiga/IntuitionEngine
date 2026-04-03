@@ -267,6 +267,11 @@ repl_immediate:
     jsr     repl_check_aros
     bnez    r8, repl_do_aros
 
+    ; Check for INTUITIONOS command
+    la      r1, BASIC_LINE_BUF
+    jsr     repl_check_intuitionos
+    bnez    r8, repl_do_intuitionos
+
     ; Tokenise the input line
     la      r8, BASIC_LINE_BUF
     la      r9, 0x021100
@@ -466,6 +471,59 @@ repl_do_aros:
 
 .aros_error:
     la      r8, repl_msg_aros_error
+    jsr     print_string
+    jsr     print_crlf
+    bra     repl_loop
+
+; ----------------------------------------------------------------------------
+; INTUITIONOS command handler
+; Writes EXEC_OP_IEXEC (4) to EXEC_CTRL, then polls status.
+; ----------------------------------------------------------------------------
+
+repl_do_intuitionos:
+    ; Read current session value before triggering executor
+    la      r1, EXEC_SESSION
+    load.l  r21, (r1)
+
+    ; Trigger IntuitionOS boot
+    la      r1, EXEC_CTRL
+    move.q  r2, #4
+    store.l r2, (r1)
+
+    ; Wait for EXEC_SESSION to advance (bounded poll)
+    move.q  r25, #0x200000
+.ios_wait_session:
+    la      r1, EXEC_SESSION
+    load.l  r22, (r1)
+    bne     r22, r21, .ios_wait_status
+    sub.q   r25, r25, #1
+    bnez    r25, .ios_wait_session
+    bra     .ios_error
+
+    ; Poll status for the new session (bounded)
+.ios_wait_status:
+    move.q  r25, #0x400000
+.ios_status_loop:
+    la      r1, EXEC_STATUS
+    load.l  r22, (r1)
+    move.q  r23, #1
+    beq     r22, r23, .ios_status_waiting
+    move.q  r23, #3
+    beq     r22, r23, .ios_error
+    move.q  r23, #2
+    beq     r22, r23, .ios_ok
+    bra     .ios_error
+
+.ios_status_waiting:
+    sub.q   r25, r25, #1
+    bnez    r25, .ios_status_loop
+    bra     .ios_error
+
+.ios_ok:
+    bra     repl_loop
+
+.ios_error:
+    la      r8, repl_msg_intuitionos_error
     jsr     print_string
     jsr     print_crlf
     bra     repl_loop
@@ -823,6 +881,96 @@ repl_check_aros:
     rts
 
 ; ============================================================================
+; repl_check_intuitionos - Check if input is "INTUITIONOS" (case-insensitive)
+; ============================================================================
+; Input:  R1 = pointer to input buffer
+; Output: R8 = 1 if INTUITIONOS, 0 otherwise
+; Clobbers: R2-R5
+
+repl_check_intuitionos:
+    jsr     repl_skip_spaces
+
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x69               ; 'i'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x6E               ; 'n'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x74               ; 't'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x75               ; 'u'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x69               ; 'i'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x74               ; 't'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x69               ; 'i'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x6F               ; 'o'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x6E               ; 'n'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x6F               ; 'o'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x73               ; 's'
+    bne     r2, r3, .no
+
+    ; Check word boundary (next char must be NUL or space)
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    beqz    r2, .yes
+    move.q  r3, #0x20
+    beq     r2, r3, .yes
+    bra     .no
+
+.yes:
+    move.q  r8, #1
+    rts
+.no:
+    move.q  r8, r0
+    rts
+
+; ============================================================================
 ; repl_skip_spaces - Advance R1 past any space characters
 ; ============================================================================
 ; Input/Output: R1 = pointer (advanced past spaces)
@@ -861,6 +1009,10 @@ repl_msg_emutos_error:
 
 repl_msg_aros_error:
     dc.b    "?AROS NOT AVAILABLE", 0
+    align 4
+
+repl_msg_intuitionos_error:
+    dc.b    "?INTUITIONOS NOT AVAILABLE", 0
     align 4
 
 ; ============================================================================
