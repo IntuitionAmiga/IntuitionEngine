@@ -121,7 +121,7 @@ iexec_start:
     ; Copy child task template to task 0's data page (for CreateTask demo)
     move.l  r1, #child_task_template
     move.l  r2, #USER_DATA_BASE         ; 0x602000 (task 0 data page)
-    move.l  r3, #32                      ; 4 instructions = 32 bytes
+    move.l  r3, #88                      ; 11 instructions = 88 bytes
     move.l  r4, #0
 .copy_child:
     add     r5, r1, r4
@@ -139,6 +139,7 @@ iexec_start:
     store.q r0, KD_TICK_COUNT(r12)
     move.q  r1, #2
     store.q r1, KD_NUM_TASKS(r12)       ; 2 boot tasks
+    store.q r0, KD_NONCE_COUNTER(r12)   ; nonce counter = 0
 
     ; --- Init boot tasks (0 and 1) as READY ---
     move.l  r2, #KERN_DATA_BASE
@@ -220,6 +221,61 @@ iexec_start:
     add     r4, r4, #1
     move.l  r5, #KD_PORT_MAX
     blt     r4, r5, .port_init_loop
+
+    ; ---------------------------------------------------------------
+    ; 6c. Zero M6 kernel data structures (bitmap, region table, shmem table)
+    ; ---------------------------------------------------------------
+    ; Zero page bitmap (800 bytes at KD_PAGE_BITMAP)
+    move.l  r2, #KERN_DATA_BASE
+    add     r2, r2, #KD_PAGE_BITMAP     ; r2 = bitmap start
+    move.l  r3, #KD_PAGE_BITMAP_SZ
+    lsr     r3, r3, #3                  ; r3 = 800/8 = 100 quad-words
+    move.l  r4, #0
+.zero_bitmap:
+    store.q r0, (r2)
+    add     r2, r2, #8
+    add     r4, r4, #1
+    blt     r4, r3, .zero_bitmap
+
+    ; Zero region table (1024 bytes at KD_REGION_TABLE)
+    move.l  r2, #KERN_DATA_BASE
+    add     r2, r2, #KD_REGION_TABLE
+    move.l  r3, #128                    ; 1024/8 = 128 quad-words
+    move.l  r4, #0
+.zero_regions:
+    store.q r0, (r2)
+    add     r2, r2, #8
+    add     r4, r4, #1
+    blt     r4, r3, .zero_regions
+
+    ; Zero shared object table (128 bytes at KD_SHMEM_TABLE)
+    move.l  r2, #KERN_DATA_BASE
+    add     r2, r2, #KD_SHMEM_TABLE
+    move.l  r3, #16                     ; 128/8 = 16 quad-words
+    move.l  r4, #0
+.zero_shmem:
+    store.q r0, (r2)
+    add     r2, r2, #8
+    add     r4, r4, #1
+    blt     r4, r3, .zero_shmem
+
+    ; ---------------------------------------------------------------
+    ; 6d. Extend kernel PT: map allocation pool pages (0x700-0x1FFF)
+    ;     as supervisor P|R|W for MEMF_CLEAR zeroing
+    ; ---------------------------------------------------------------
+    move.l  r2, #KERN_PAGE_TABLE
+    move.l  r4, #ALLOC_POOL_BASE        ; start page = 0x700
+    move.l  r6, #ALLOC_POOL_BASE
+    move.l  r7, #ALLOC_POOL_PAGES
+    add     r6, r6, r7                  ; end page = 0x700 + 6400 = 0x2000
+.kern_pool_map:
+    lsl     r3, r4, #13                 ; PPN << 13
+    or      r3, r3, #0x07              ; P|R|W (supervisor only)
+    lsl     r5, r4, #3                  ; offset in PT = page * 8
+    add     r5, r5, r2
+    store.q r3, (r5)
+    add     r4, r4, #1
+    blt     r4, r6, .kern_pool_map
 
     ; ---------------------------------------------------------------
     ; 7. Enable MMU
@@ -322,27 +378,35 @@ kern_put_hex:
 ; Clobbers: R16-R21
 
 find_next_runnable:
-    move.q  r16, r13                    ; save starting point
+    ; Scan all MAX_TASKS slots starting from (current+1), wrapping around.
+    ; If none found (including current), deadlock. The scan covers current+1
+    ; through current (inclusive) = all MAX_TASKS slots.
+    move.q  r16, r13                    ; save original
     move.l  r17, #0                     ; iteration counter
-.fnr_loop:
-    add     r13, r13, #1
+    add     r13, r13, #1               ; start from next slot
     move.l  r18, #MAX_TASKS
-    blt     r13, r18, .fnr_nowrap
-    move.l  r13, #0                     ; wrap around
-.fnr_nowrap:
-    add     r17, r17, #1
-    move.l  r18, #MAX_TASKS
-    bge     r17, r18, .fnr_deadlock     ; scanned all slots — none runnable
+    blt     r13, r18, .fnr_check
+    move.l  r13, #0                     ; wrap
+.fnr_check:
     ; Check task[r13].state
     lsl     r19, r13, #5
     add     r19, r19, #KD_TASK_BASE
     add     r19, r19, r12
     load.b  r20, KD_TASK_STATE(r19)
     move.l  r21, #TASK_WAITING
-    beq     r20, r21, .fnr_loop         ; skip WAITING
+    beq     r20, r21, .fnr_next         ; skip WAITING
     move.l  r21, #TASK_FREE
-    beq     r20, r21, .fnr_loop         ; skip FREE
-    rts                                 ; R13 = next runnable task
+    beq     r20, r21, .fnr_next         ; skip FREE
+    rts                                 ; R13 = runnable task (may be same as original)
+.fnr_next:
+    add     r17, r17, #1
+    move.l  r18, #MAX_TASKS
+    bge     r17, r18, .fnr_deadlock     ; checked all MAX_TASKS slots — none runnable
+    add     r13, r13, #1
+    move.l  r18, #MAX_TASKS
+    blt     r13, r18, .fnr_check
+    move.l  r13, #0                     ; wrap
+    bra     .fnr_check
 .fnr_deadlock:
     la      r8, deadlock_msg
     jsr     kern_puts
@@ -420,6 +484,254 @@ build_user_pt:
     lsl     r5, r8, #3
     add     r5, r5, r7
     store.q r3, (r5)
+    rts
+
+; ============================================================================
+; Page Allocator (M6)
+; ============================================================================
+
+; alloc_pages: allocate N contiguous physical pages from the pool.
+; Input:  R1 = number of pages requested
+; Output: R1 = base PPN (absolute page number, not pool-relative), R2 = ERR_OK
+;         On failure: R1 = 0, R2 = ERR_NOMEM
+; Clobbers: R3-R9
+alloc_pages:
+    move.l  r3, #KERN_DATA_BASE
+    add     r3, r3, #KD_PAGE_BITMAP    ; r3 = bitmap base addr
+    move.l  r4, #0                     ; r4 = bit index (0..ALLOC_POOL_PAGES-1)
+    move.l  r5, #ALLOC_POOL_PAGES      ; r5 = total bits
+.ap_scan:
+    bge     r4, r5, .ap_fail           ; exhausted bitmap
+    ; Check if N contiguous bits starting at r4 are all free (0)
+    move.q  r6, r4                     ; r6 = candidate start
+    move.q  r7, r4                     ; r7 = scan cursor
+    add     r8, r4, r1                 ; r8 = candidate end (exclusive)
+    bgt     r8, r5, .ap_fail           ; would exceed pool
+.ap_check_bit:
+    bge     r7, r8, .ap_found          ; all bits free
+    ; Read bit r7: byte = bitmap[r7/8], bit = r7 % 8
+    lsr     r9, r7, #3                 ; r9 = byte index
+    add     r9, r9, r3                 ; r9 = &bitmap[byte]
+    load.b  r9, (r9)                   ; r9 = bitmap byte
+    and     r2, r7, #7                 ; r2 = bit position (0-7)
+    lsr     r9, r9, r2                 ; shift target bit to position 0
+    and     r9, r9, #1
+    bnez    r9, .ap_skip               ; bit is set (page in use)
+    add     r7, r7, #1
+    bra     .ap_check_bit
+.ap_skip:
+    ; Skip to bit after the occupied one
+    add     r4, r7, #1
+    bra     .ap_scan
+.ap_found:
+    ; Mark bits r6..r6+r1-1 as used
+    move.q  r4, r6                     ; r4 = start bit
+    add     r8, r6, r1                 ; r8 = end bit (exclusive)
+.ap_mark:
+    bge     r4, r8, .ap_done
+    ; Set bit r4: bitmap[r4/8] |= (1 << (r4 % 8))
+    lsr     r9, r4, #3                 ; byte index
+    add     r7, r9, r3                 ; r7 = &bitmap[byte]
+    load.b  r9, (r7)                   ; current byte
+    and     r2, r4, #7                 ; bit position
+    move.l  r6, #1
+    lsl     r6, r6, r2                 ; mask = 1 << bit
+    or      r9, r9, r6                 ; set bit
+    store.b r9, (r7)
+    add     r4, r4, #1
+    ; Restore r6 = original start bit (it was clobbered)
+    sub     r6, r8, r1
+    bra     .ap_mark
+.ap_done:
+    ; Return base PPN = ALLOC_POOL_BASE + start_bit
+    sub     r6, r8, r1                 ; r6 = start bit (re-derive)
+    move.l  r1, #ALLOC_POOL_BASE
+    add     r1, r1, r6                 ; R1 = absolute PPN
+    move.q  r2, #ERR_OK
+    rts
+.ap_fail:
+    move.q  r1, #0
+    move.q  r2, #ERR_NOMEM
+    rts
+
+; free_pages: release N contiguous physical pages back to the pool.
+; Input:  R1 = base PPN (absolute page number)
+;         R2 = number of pages to free
+; Clobbers: R3-R7
+free_pages:
+    move.l  r3, #KERN_DATA_BASE
+    add     r3, r3, #KD_PAGE_BITMAP    ; r3 = bitmap base addr
+    ; Convert absolute PPN to pool-relative bit index
+    move.l  r4, #ALLOC_POOL_BASE
+    sub     r4, r1, r4                 ; r4 = start bit
+    add     r5, r4, r2                 ; r5 = end bit (exclusive)
+.fp_loop:
+    bge     r4, r5, .fp_done
+    ; Clear bit r4: bitmap[r4/8] &= ~(1 << (r4 % 8))
+    lsr     r6, r4, #3                 ; byte index
+    add     r7, r6, r3                 ; r7 = &bitmap[byte]
+    load.b  r6, (r7)                   ; current byte
+    and     r2, r4, #7                 ; bit position (clobbers R2 but we saved count in R5)
+    move.l  r1, #1
+    lsl     r1, r1, r2                 ; mask = 1 << bit
+    move.l  r2, #0xFF
+    sub     r2, r2, r1                 ; NOT mask (complement via 0xFF - mask, works for single byte)
+    and     r6, r6, r2                 ; clear bit
+    store.b r6, (r7)
+    add     r4, r4, #1
+    bra     .fp_loop
+.fp_done:
+    rts
+
+; count_free_pages: count the number of free (0) bits in the page bitmap.
+; Output: R1 = number of free pages
+; Clobbers: R2-R6
+count_free_pages:
+    move.l  r2, #KERN_DATA_BASE
+    add     r2, r2, #KD_PAGE_BITMAP    ; r2 = bitmap base
+    move.l  r3, #KD_PAGE_BITMAP_SZ     ; r3 = 800 bytes
+    move.q  r1, #0                     ; r1 = free count
+    move.l  r4, #0                     ; r4 = byte index
+.cfp_byte:
+    bge     r4, r3, .cfp_done
+    add     r5, r2, r4
+    load.b  r5, (r5)                   ; r5 = bitmap byte
+    ; Count zero bits = 8 - popcount(byte)
+    move.l  r6, #0                     ; bit counter
+.cfp_bit:
+    move.l  r7, #8
+    bge     r6, r7, .cfp_next_byte
+    move.l  r7, #1
+    lsl     r7, r7, r6
+    and     r7, r7, r5
+    bnez    r7, .cfp_bit_set
+    add     r1, r1, #1                 ; free bit found
+.cfp_bit_set:
+    add     r6, r6, #1
+    bra     .cfp_bit
+.cfp_next_byte:
+    add     r4, r4, #1
+    bra     .cfp_byte
+.cfp_done:
+    ; Adjust: last 0 bits past ALLOC_POOL_PAGES (6400 bits = 800 bytes exact, no adjustment needed)
+    rts
+
+; ============================================================================
+; Memory Mapping Helpers (M6)
+; ============================================================================
+
+; map_pages: write PTEs for contiguous pages into a task's page table.
+; Input:  R1 = PT base address (physical)
+;         R2 = VA of first page
+;         R3 = PPN of first physical page
+;         R4 = number of pages
+;         R5 = PTE flags (e.g. P|R|W|U = 0x17)
+; Clobbers: R6-R9
+map_pages:
+    move.l  r6, #0                     ; counter
+.mp_loop:
+    bge     r6, r4, .mp_done
+    ; Compute VPN = VA >> 12
+    add     r7, r3, r6                 ; r7 = PPN + i
+    lsl     r8, r7, #13               ; PPN << 13
+    or      r8, r8, r5                 ; PTE = (PPN << 13) | flags
+    ; Compute PTE offset: (VA >> 12 + i) * 8
+    lsr     r9, r2, #12               ; base VPN
+    add     r9, r9, r6                 ; VPN + i
+    lsl     r9, r9, #3                ; * 8
+    add     r9, r9, r1                 ; &PT[VPN+i]
+    store.q r8, (r9)
+    add     r6, r6, #1
+    bra     .mp_loop
+.mp_done:
+    rts
+
+; unmap_pages: clear PTEs for contiguous pages in a task's page table.
+; Input:  R1 = PT base address (physical)
+;         R2 = VA of first page
+;         R3 = number of pages
+; Clobbers: R4-R6
+unmap_pages:
+    move.l  r4, #0                     ; counter
+.ump_loop:
+    bge     r4, r3, .ump_done
+    lsr     r5, r2, #12               ; base VPN
+    add     r5, r5, r4                 ; VPN + i
+    lsl     r5, r5, #3                ; * 8
+    add     r5, r5, r1                 ; &PT[VPN+i]
+    store.q r0, (r5)                   ; clear PTE
+    add     r4, r4, #1
+    bra     .ump_loop
+.ump_done:
+    rts
+
+; find_free_va: find a gap in the task's dynamic VA window for N pages.
+; Input:  R1 = task_id
+;         R2 = number of pages needed
+; Output: R1 = VA of the gap, R2 = ERR_OK
+;         On failure: R1 = 0, R2 = ERR_NOMEM
+; Clobbers: R3-R16
+;
+; Algorithm: scan region table, collect used VA ranges, find first gap.
+; Simple approach: try each page-aligned VA in the task's window,
+; check if it overlaps any existing region.
+find_free_va:
+    ; Compute task's dynamic VA window
+    move.l  r3, #USER_DYN_STRIDE
+    mulu    r3, r1, r3                 ; r3 = task_id * stride
+    move.l  r4, #USER_DYN_BASE
+    add     r4, r4, r3                 ; r4 = window start VA
+    move.l  r5, #USER_DYN_PAGES
+    lsl     r5, r5, #12               ; r5 = window size in bytes
+    add     r5, r5, r4                 ; r5 = window end VA (exclusive)
+    ; Compute task's region table base
+    move.l  r6, #KERN_DATA_BASE
+    move.l  r7, #KD_REGION_TASK_SZ
+    mulu    r7, r1, r7                 ; r7 = task_id * region_task_sz
+    add     r6, r6, #KD_REGION_TABLE
+    add     r6, r6, r7                 ; r6 = &region_table[task_id][0]
+    ; r2 = pages needed, compute size in bytes
+    lsl     r7, r2, #12               ; r7 = needed_bytes
+    ; Try candidate VA = window start, stepping by page size
+    move.q  r8, r4                     ; r8 = candidate VA
+.ffv_try:
+    ; Would candidate + needed exceed window?
+    add     r9, r8, r7                 ; r9 = candidate end
+    bgt     r9, r5, .ffv_fail          ; exceeds window
+    ; Check if candidate overlaps any active region
+    move.l  r10, #0                    ; region index
+.ffv_check_region:
+    move.l  r11, #KD_REGION_MAX
+    bge     r10, r11, .ffv_found       ; no overlap with any region
+    ; Compute region entry address
+    move.l  r12, #KD_REGION_STRIDE
+    mulu    r12, r10, r12
+    add     r12, r12, r6               ; r12 = &region[i]
+    ; Check type
+    load.b  r13, KD_REG_TYPE(r12)
+    beqz    r13, .ffv_next_region      ; REGION_FREE, skip
+    ; Load region VA and size
+    load.l  r14, KD_REG_VA(r12)        ; region VA
+    load.w  r15, KD_REG_PAGES(r12)     ; region page count
+    lsl     r15, r15, #12              ; region size in bytes
+    add     r16, r14, r15              ; region end VA
+    ; Check overlap: candidate [r8, r9) vs region [r14, r16)
+    ; Overlap if: candidate_start < region_end AND region_start < candidate_end
+    bge     r8, r16, .ffv_next_region  ; candidate starts after region ends
+    bge     r14, r9, .ffv_next_region  ; region starts after candidate ends
+    ; Overlap detected — advance candidate past this region
+    move.q  r8, r16                    ; candidate = region end
+    bra     .ffv_try                   ; retry with new candidate
+.ffv_next_region:
+    add     r10, r10, #1
+    bra     .ffv_check_region
+.ffv_found:
+    move.q  r1, r8                     ; R1 = VA
+    move.q  r2, #ERR_OK
+    rts
+.ffv_fail:
+    move.q  r1, #0
+    move.q  r2, #ERR_NOMEM
     rts
 
 ; ============================================================================
@@ -526,6 +838,15 @@ trap_handler:
     move.l  r11, #SYS_EXIT_TASK
     beq     r10, r11, .do_exit_task
 
+    move.l  r11, #SYS_ALLOC_MEM
+    beq     r10, r11, .do_alloc_mem
+
+    move.l  r11, #SYS_FREE_MEM
+    beq     r10, r11, .do_free_mem
+
+    move.l  r11, #SYS_MAP_SHARED
+    beq     r10, r11, .do_map_shared
+
     move.q  r2, #ERR_BADARG
     eret
 
@@ -567,9 +888,28 @@ trap_handler:
 
 ; --- GetSysInfo ---
 .do_getsysinfo:
+    move.l  r11, #SYSINFO_TOTAL_PAGES
+    beq     r1, r11, .info_total_pages
+    move.l  r11, #SYSINFO_FREE_PAGES
+    beq     r1, r11, .info_free_pages
     move.l  r11, #SYSINFO_TICK_COUNT
     beq     r1, r11, .info_ticks
+    move.l  r11, #SYSINFO_CURRENT_TASK
+    beq     r1, r11, .info_current_task
     move.q  r1, #0
+    move.q  r2, #ERR_OK
+    eret
+.info_total_pages:
+    move.l  r1, #ALLOC_POOL_PAGES
+    move.q  r2, #ERR_OK
+    eret
+.info_free_pages:
+    jsr     count_free_pages        ; R1 = free count
+    move.q  r2, #ERR_OK
+    eret
+.info_current_task:
+    move.l  r11, #KERN_DATA_BASE
+    load.q  r1, (r11)                  ; current_task
     move.q  r2, #ERR_OK
     eret
 .info_ticks:
@@ -1145,6 +1485,424 @@ trap_handler:
     bra     restore_task
 
 ; ============================================================================
+; AllocMem (SYS_ALLOC_MEM = 1)
+; ============================================================================
+; R1 = size (bytes), R2 = flags (MEMF_PUBLIC | MEMF_CLEAR, or 0)
+; Returns: R1 = VA, R2 = err, R3 = share_handle (if MEMF_PUBLIC)
+
+.do_alloc_mem:
+    ; Save user args
+    move.q  r24, r1                     ; r24 = size
+    move.q  r25, r2                     ; r25 = flags
+
+    ; Step 1: Validate size > 0
+    beqz    r24, .am_badarg
+
+    ; Step 2: Compute page count = (size + 0xFFF) >> 12
+    ; Guard against overflow: if size > 0xFFFFF000, the add wraps and produces
+    ; a small/zero page count. Reject sizes above 1 MiB (USER_DYN_PAGES * PAGE_SIZE).
+    move.l  r11, #USER_DYN_PAGES
+    lsl     r11, r11, #12               ; r11 = max bytes (256 * 4096 = 1 MiB)
+    bgt     r24, r11, .am_toolarge      ; reject before add can overflow
+    add     r20, r24, #0xFFF
+    lsr     r20, r20, #12               ; r20 = page count (safe, no overflow possible)
+
+    ; Step 3: Validate pages <= USER_DYN_PAGES (256) — redundant but defense-in-depth
+    move.l  r11, #USER_DYN_PAGES
+    bgt     r20, r11, .am_toolarge
+
+    ; Step 4: If MEMF_PUBLIC, find free shared object slot (check only)
+    move.q  r26, #0                     ; r26 = shmem slot (-1 = not public)
+    and     r11, r25, #MEMF_PUBLIC
+    beqz    r11, .am_skip_shmem_check
+    move.l  r14, #KERN_DATA_BASE
+    add     r14, r14, #KD_SHMEM_TABLE
+    move.l  r15, #0
+.am_find_shmem:
+    move.l  r11, #KD_SHMEM_MAX
+    bge     r15, r11, .am_nomem         ; no free shmem slot
+    move.l  r11, #KD_SHMEM_STRIDE
+    mulu    r11, r15, r11
+    add     r16, r14, r11
+    load.b  r11, KD_SHM_VALID(r16)
+    beqz    r11, .am_found_shmem
+    add     r15, r15, #1
+    bra     .am_find_shmem
+.am_found_shmem:
+    move.q  r26, r16                    ; r26 = &shmem[slot]
+    move.q  r27, r15                    ; r27 = slot index (save for handle)
+.am_skip_shmem_check:
+
+    ; Step 5: Find free region slot in caller's region table
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r13, (r12)                  ; r13 = current_task
+    move.l  r14, #KERN_DATA_BASE
+    add     r14, r14, #KD_REGION_TABLE
+    move.l  r11, #KD_REGION_TASK_SZ
+    mulu    r11, r13, r11
+    add     r14, r14, r11               ; r14 = &region_table[task][0]
+    move.l  r15, #0                     ; region slot index
+.am_find_region:
+    move.l  r11, #KD_REGION_MAX
+    bge     r15, r11, .am_nomem         ; no free slot
+    move.l  r11, #KD_REGION_STRIDE
+    mulu    r11, r15, r11
+    add     r16, r14, r11               ; r16 = &region[i]
+    load.b  r11, KD_REG_TYPE(r16)
+    bnez    r11, .am_find_region_next
+    bra     .am_found_region
+.am_find_region_next:
+    add     r15, r15, #1
+    bra     .am_find_region
+.am_found_region:
+    ; r15 = free slot index, r16 = &region[slot]
+    ; Save region pointer for commit phase
+    move.q  r21, r16                    ; r21 = &region[slot]
+
+    ; Step 6: Allocate physical pages
+    move.q  r1, r20                     ; R1 = page count
+    jsr     alloc_pages                 ; R1 = base PPN, R2 = err
+    bnez    r2, .am_nomem               ; alloc failed
+    move.q  r22, r1                     ; r22 = base PPN
+
+    ; Step 7: Find free VA gap
+    move.q  r1, r13                     ; R1 = task_id
+    move.q  r2, r20                     ; R2 = pages needed
+    jsr     find_free_va                ; R1 = VA, R2 = err
+    bnez    r2, .am_rollback_pages      ; VA search failed → free pages
+    move.q  r23, r1                     ; r23 = VA
+
+    ; === COMMIT PHASE (no failures past this point) ===
+
+    ; Step 8: Map pages into caller's page table as P|R|W|U
+    move.l  r12, #KERN_DATA_BASE
+    ; Get caller's PTBR from the PTBR array
+    lsl     r1, r13, #3                 ; task * 8
+    add     r1, r1, #KD_PTBR_BASE
+    add     r1, r1, r12
+    load.q  r1, (r1)                    ; R1 = PT base
+    move.q  r2, r23                     ; R2 = VA
+    move.q  r3, r22                     ; R3 = PPN
+    move.q  r4, r20                     ; R4 = page count
+    move.l  r5, #0x17                   ; R5 = P|R|W|U (no X — W^X)
+    jsr     map_pages
+
+    ; Step 9: If MEMF_CLEAR, zero the pages
+    lsr     r11, r25, #16               ; r11 = flags >> 16
+    and     r11, r11, #1                ; bit 0 of upper half = MEMF_CLEAR
+    beqz    r11, .am_skip_clear
+
+    ; Switch to kernel PT for zeroing (pool pages only mapped in kernel PT)
+    ; Use R28 for PTBR save (R27 holds shmem slot index, needed for MEMF_PUBLIC)
+    mfcr    r28, cr0                    ; save current PTBR
+    move.l  r1, #KERN_PAGE_TABLE
+    mtcr    cr0, r1
+    tlbflush
+
+    ; Zero pages: base physical addr = PPN * 4096
+    lsl     r1, r22, #12               ; r1 = physical address
+    lsl     r2, r20, #12               ; r2 = total bytes
+    add     r2, r2, r1                  ; r2 = end address
+.am_zero:
+    bge     r1, r2, .am_zero_done
+    store.q r0, (r1)
+    add     r1, r1, #8
+    bra     .am_zero
+.am_zero_done:
+    ; Restore caller's PTBR
+    mtcr    cr0, r28
+    tlbflush
+.am_skip_clear:
+
+    ; Step 10: MEMF_PUBLIC → create shared object with nonce handle
+    move.q  r3, #0                      ; share_handle = 0 (default for private)
+    and     r11, r25, #MEMF_PUBLIC
+    beqz    r11, .am_fill_region        ; not public → skip
+
+    ; Generate nonce from monotonic counter (guarantees uniqueness even within same tick)
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r11, KD_NONCE_COUNTER(r12)
+    add     r11, r11, #1               ; increment counter
+    store.q r11, KD_NONCE_COUNTER(r12) ; write back
+    eor     r11, r11, r27              ; XOR slot index (spread across slots)
+    and     r11, r11, #0xFFFFFF        ; mask to 24 bits
+
+    ; Fill shared object entry
+    move.b  r9, #1
+    store.b r9, KD_SHM_VALID(r26)       ; valid = 1
+    store.b r9, KD_SHM_REFCOUNT(r26)    ; refcount = 1
+    store.b r13, KD_SHM_CREATOR(r26)    ; creator = current_task
+    store.w r22, KD_SHM_PPN(r26)        ; base PPN
+    store.w r20, KD_SHM_PAGES(r26)      ; page count
+    store.l r11, KD_SHM_NONCE(r26)      ; nonce
+
+    ; Build handle = (nonce << 8) | slot
+    lsl     r3, r11, #8
+    or      r3, r3, r27                 ; R3 = share_handle
+
+.am_fill_region:
+    ; Step 11: Fill region table entry
+    store.l r23, KD_REG_VA(r21)         ; base VA
+    store.w r22, KD_REG_PPN(r21)        ; base PPN
+    store.w r20, KD_REG_PAGES(r21)      ; page count
+    ; Set type based on MEMF_PUBLIC
+    and     r11, r25, #MEMF_PUBLIC
+    bnez    r11, .am_type_shared
+    move.b  r11, #REGION_PRIVATE
+    bra     .am_store_type
+.am_type_shared:
+    move.b  r11, #REGION_SHARED
+    store.b r27, KD_REG_SHMID(r21)      ; shmem slot index
+.am_store_type:
+    store.b r11, KD_REG_TYPE(r21)
+    store.b r25, KD_REG_FLAGS(r21)      ; flags (low byte)
+
+    ; Step 12: TLB flush
+    tlbflush
+
+    ; Return VA in R1, ERR_OK in R2, share_handle in R3
+    move.q  r1, r23
+    move.q  r2, #ERR_OK
+    eret
+
+.am_rollback_pages:
+    move.q  r1, r22                     ; base PPN
+    move.q  r2, r20                     ; page count
+    jsr     free_pages
+    bra     .am_nomem
+
+.am_badarg:
+    move.q  r1, #0
+    move.q  r2, #ERR_BADARG
+    move.q  r3, #0
+    eret
+
+.am_toolarge:
+    move.q  r1, #0
+    move.q  r2, #ERR_TOOLARGE
+    move.q  r3, #0
+    eret
+
+.am_nomem:
+    move.q  r1, #0
+    move.q  r2, #ERR_NOMEM
+    move.q  r3, #0
+    eret
+
+; ============================================================================
+; FreeMem (SYS_FREE_MEM = 2)
+; ============================================================================
+; R1 = addr (VA), R2 = size (bytes, must match allocation)
+; Returns: R2 = err
+
+.do_free_mem:
+    move.q  r24, r1                     ; r24 = addr
+    move.q  r25, r2                     ; r25 = size
+
+    ; Compute expected page count
+    add     r20, r25, #0xFFF
+    lsr     r20, r20, #12               ; r20 = page count from size
+
+    ; Find matching region in caller's table
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r13, (r12)                  ; current_task
+    move.l  r14, #KERN_DATA_BASE
+    add     r14, r14, #KD_REGION_TABLE
+    move.l  r11, #KD_REGION_TASK_SZ
+    mulu    r11, r13, r11
+    add     r14, r14, r11               ; r14 = &region_table[task][0]
+
+    move.l  r15, #0                     ; region index
+.fm_find:
+    move.l  r11, #KD_REGION_MAX
+    bge     r15, r11, .fm_badarg        ; not found
+    move.l  r11, #KD_REGION_STRIDE
+    mulu    r11, r15, r11
+    add     r16, r14, r11               ; r16 = &region[i]
+    load.b  r11, KD_REG_TYPE(r16)
+    beqz    r11, .fm_find_next          ; skip FREE slots
+    ; Check if VA matches
+    load.l  r17, KD_REG_VA(r16)
+    beq     r17, r24, .fm_found
+.fm_find_next:
+    add     r15, r15, #1
+    bra     .fm_find
+
+.fm_found:
+    ; Validate size matches
+    load.w  r18, KD_REG_PAGES(r16)      ; stored page count
+    bne     r18, r20, .fm_badarg        ; size mismatch
+
+    ; Unmap from caller's page table
+    lsl     r1, r13, #3
+    add     r1, r1, #KD_PTBR_BASE
+    move.l  r11, #KERN_DATA_BASE
+    add     r1, r1, r11
+    load.q  r1, (r1)                    ; R1 = PT base
+    move.q  r2, r24                     ; R2 = VA
+    move.q  r3, r18                     ; R3 = page count
+    jsr     unmap_pages
+
+    ; Check region type
+    load.b  r11, KD_REG_TYPE(r16)
+    move.l  r17, #REGION_SHARED
+    beq     r11, r17, .fm_shared
+
+    ; PRIVATE: free physical pages
+    load.w  r1, KD_REG_PPN(r16)         ; base PPN
+    move.q  r2, r18                     ; page count
+    jsr     free_pages
+    bra     .fm_cleanup_region
+
+.fm_shared:
+    ; SHARED: decrement refcount, maybe free backing pages
+    load.b  r19, KD_REG_SHMID(r16)     ; slot index
+    move.l  r11, #KD_SHMEM_STRIDE
+    mulu    r11, r19, r11
+    move.l  r17, #KERN_DATA_BASE
+    add     r17, r17, #KD_SHMEM_TABLE
+    add     r17, r17, r11               ; r17 = &shmem[slot]
+
+    load.b  r11, KD_SHM_REFCOUNT(r17)
+    sub     r11, r11, #1
+    store.b r11, KD_SHM_REFCOUNT(r17)
+    bnez    r11, .fm_cleanup_region     ; refcount > 0, object survives
+
+    ; Refcount reached 0: free backing pages and invalidate object
+    load.w  r1, KD_SHM_PPN(r17)
+    load.w  r2, KD_SHM_PAGES(r17)
+    jsr     free_pages
+    store.b r0, KD_SHM_VALID(r17)       ; invalidate
+
+.fm_cleanup_region:
+    ; Mark region as FREE
+    store.b r0, KD_REG_TYPE(r16)
+    tlbflush
+    move.q  r2, #ERR_OK
+    eret
+
+.fm_badarg:
+    move.q  r2, #ERR_BADARG
+    eret
+
+; ============================================================================
+; MapShared (SYS_MAP_SHARED = 4)
+; ============================================================================
+; R1 = share_handle (opaque 32-bit: nonce<<8 | slot)
+; Returns: R1 = VA, R2 = err
+
+.do_map_shared:
+    move.q  r24, r1                     ; r24 = handle
+
+    ; Decode handle: slot = handle & 0xFF, nonce = (handle >> 8) & 0xFFFFFF
+    and     r20, r24, #0xFF             ; r20 = slot
+    lsr     r21, r24, #8               ; r21 = nonce (upper 24 bits)
+
+    ; Validate slot < KD_SHMEM_MAX
+    move.l  r11, #KD_SHMEM_MAX
+    bge     r20, r11, .ms_badhandle
+
+    ; Look up shared object
+    move.l  r14, #KERN_DATA_BASE
+    add     r14, r14, #KD_SHMEM_TABLE
+    move.l  r11, #KD_SHMEM_STRIDE
+    mulu    r11, r20, r11
+    add     r14, r14, r11               ; r14 = &shmem[slot]
+
+    ; Check valid
+    load.b  r11, KD_SHM_VALID(r14)
+    beqz    r11, .ms_badhandle
+
+    ; Check nonce matches
+    load.l  r11, KD_SHM_NONCE(r14)
+    and     r11, r11, #0xFFFFFF         ; mask to 24 bits
+    bne     r11, r21, .ms_badhandle
+
+    ; Find free region slot in caller's table
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r13, (r12)                  ; current_task
+    move.l  r15, #KERN_DATA_BASE
+    add     r15, r15, #KD_REGION_TABLE
+    move.l  r11, #KD_REGION_TASK_SZ
+    mulu    r11, r13, r11
+    add     r15, r15, r11               ; r15 = &region_table[task][0]
+    move.l  r16, #0
+.ms_find_region:
+    move.l  r11, #KD_REGION_MAX
+    bge     r16, r11, .ms_nomem
+    move.l  r11, #KD_REGION_STRIDE
+    mulu    r11, r16, r11
+    add     r17, r15, r11
+    load.b  r11, KD_REG_TYPE(r17)
+    beqz    r11, .ms_found_region
+    add     r16, r16, #1
+    bra     .ms_find_region
+.ms_found_region:
+    ; r17 = &region[free_slot]
+    move.q  r22, r17                    ; save for commit
+
+    ; Save values that find_free_va clobbers (R3-R16)
+    move.q  r28, r14                    ; r28 = shmem ptr (save R14)
+    move.q  r29, r13                    ; r29 = current_task (save R13)
+
+    ; Find free VA gap
+    move.q  r1, r13                     ; task_id
+    load.w  r2, KD_SHM_PAGES(r14)      ; pages from shared object
+    move.q  r23, r2                     ; save page count
+    jsr     find_free_va
+    bnez    r2, .ms_nomem
+    move.q  r25, r1                     ; r25 = VA
+
+    ; Restore saved values
+    move.q  r14, r28                    ; restore shmem ptr
+    move.q  r13, r29                    ; restore current_task
+
+    ; === COMMIT ===
+
+    ; Map shared pages into caller's PT
+    lsl     r1, r13, #3
+    add     r1, r1, #KD_PTBR_BASE
+    move.l  r11, #KERN_DATA_BASE
+    add     r1, r1, r11
+    load.q  r1, (r1)                    ; R1 = PT base
+    move.q  r2, r25                     ; R2 = VA
+    load.w  r3, KD_SHM_PPN(r14)        ; R3 = PPN from shared object
+    move.q  r4, r23                     ; R4 = page count
+    move.l  r5, #0x17                   ; R5 = P|R|W|U
+    jsr     map_pages
+
+    ; Increment refcount
+    load.b  r11, KD_SHM_REFCOUNT(r14)
+    add     r11, r11, #1
+    store.b r11, KD_SHM_REFCOUNT(r14)
+
+    ; Fill region entry
+    store.l r25, KD_REG_VA(r22)
+    load.w  r11, KD_SHM_PPN(r14)
+    store.w r11, KD_REG_PPN(r22)
+    store.w r23, KD_REG_PAGES(r22)
+    move.b  r11, #REGION_SHARED
+    store.b r11, KD_REG_TYPE(r22)
+    store.b r20, KD_REG_SHMID(r22)      ; slot index
+    move.b  r11, #MEMF_PUBLIC
+    store.b r11, KD_REG_FLAGS(r22)
+
+    tlbflush
+    move.q  r1, r25                     ; VA
+    move.q  r2, #ERR_OK
+    eret
+
+.ms_badhandle:
+    move.q  r1, #0
+    move.q  r2, #ERR_BADHANDLE
+    eret
+
+.ms_nomem:
+    move.q  r1, #0
+    move.q  r2, #ERR_NOMEM
+    eret
+
+; ============================================================================
 ; kill_task_cleanup: clean up task R13, mark FREE.
 ; Input: R13 = task to kill, R12 = KERN_DATA_BASE
 ; Clobbers: R15-R24
@@ -1181,6 +1939,84 @@ kill_task_cleanup:
     add     r21, r21, #1
     bra     .ktc_port_scan
 .ktc_done:
+    ; M6: Clean up memory regions for this task
+    move.l  r20, #KERN_DATA_BASE
+    add     r20, r20, #KD_REGION_TABLE
+    move.l  r21, #KD_REGION_TASK_SZ
+    mulu    r21, r13, r21
+    add     r20, r20, r21               ; r20 = &region_table[task][0]
+    move.l  r21, #0                     ; region index
+.ktc_region_scan:
+    move.l  r22, #KD_REGION_MAX
+    bge     r21, r22, .ktc_mem_done
+    move.l  r22, #KD_REGION_STRIDE
+    mulu    r22, r21, r22
+    add     r23, r20, r22               ; r23 = &region[i]
+    load.b  r22, KD_REG_TYPE(r23)
+    beqz    r22, .ktc_region_next       ; skip FREE
+
+    ; Unmap from task's page table
+    ; Need PTBR for this task
+    lsl     r1, r13, #3
+    add     r1, r1, #KD_PTBR_BASE
+    add     r1, r1, r12
+    load.q  r1, (r1)                    ; PT base
+    load.l  r2, KD_REG_VA(r23)          ; VA
+    load.w  r3, KD_REG_PAGES(r23)       ; page count
+    jsr     unmap_pages
+
+    ; Check type for page freeing
+    load.b  r22, KD_REG_TYPE(r23)
+    move.l  r24, #REGION_PRIVATE
+    bne     r22, r24, .ktc_region_shared
+
+    ; PRIVATE: free physical pages
+    load.w  r1, KD_REG_PPN(r23)
+    load.w  r2, KD_REG_PAGES(r23)
+    jsr     free_pages
+    bra     .ktc_region_clear
+
+.ktc_region_shared:
+    ; SHARED: decrement refcount
+    load.b  r24, KD_REG_SHMID(r23)
+    move.l  r22, #KD_SHMEM_STRIDE
+    mulu    r22, r24, r22
+    move.l  r1, #KERN_DATA_BASE
+    add     r1, r1, #KD_SHMEM_TABLE
+    add     r1, r1, r22                 ; r1 = &shmem[slot]
+    load.b  r22, KD_SHM_REFCOUNT(r1)
+    sub     r22, r22, #1
+    store.b r22, KD_SHM_REFCOUNT(r1)
+    bnez    r22, .ktc_region_clear      ; refcount > 0
+
+    ; Last reference: free backing pages and invalidate
+    load.w  r2, KD_SHM_PAGES(r1)
+    load.w  r1, KD_SHM_PPN(r1)         ; NOTE: clobbers r1, but we saved shmem addr... need to re-derive
+    ; Actually r1 was the shmem addr, load PPN first
+    ; Let me fix: save shmem ptr
+    ; Re-derive: r24 = slot, compute shmem addr again
+    move.l  r22, #KD_SHMEM_STRIDE
+    mulu    r22, r24, r22
+    move.l  r1, #KERN_DATA_BASE
+    add     r1, r1, #KD_SHMEM_TABLE
+    add     r1, r1, r22                 ; r1 = &shmem[slot] again
+    load.w  r2, KD_SHM_PAGES(r1)       ; page count (save first)
+    move.q  r3, r2                      ; r3 = pages
+    load.w  r2, KD_SHM_PPN(r1)         ; PPN
+    move.q  r4, r1                      ; r4 = shmem ptr (save)
+    move.q  r1, r2                      ; R1 = PPN
+    move.q  r2, r3                      ; R2 = pages
+    jsr     free_pages
+    store.b r0, KD_SHM_VALID(r4)        ; invalidate
+
+.ktc_region_clear:
+    store.b r0, KD_REG_TYPE(r23)        ; mark region FREE
+
+.ktc_region_next:
+    add     r21, r21, #1
+    bra     .ktc_region_scan
+
+.ktc_mem_done:
     rts
 
 ; ============================================================================
@@ -1316,13 +2152,6 @@ intr_handler:
     add     r10, r10, #1
     store.q r10, KD_TICK_COUNT(r12)
 
-    ; Heartbeat: print '.' every IEXEC_HEARTBEAT_INTERVAL ticks
-    and     r11, r10, #IEXEC_HEARTBEAT_INTERVAL-1
-    bnez    r11, .no_heartbeat
-    move.q  r8, #0x2E              ; '.'
-    jsr     kern_put_char
-.no_heartbeat:
-
     ; Context switch
     load.q  r13, (r12)              ; current_task
 
@@ -1352,26 +2181,26 @@ intr_handler:
 ; User Task Templates (copied to user code pages during init)
 ; ============================================================================
 
-; Task 0 (M5 demo): Create port, create child task, print 'A' + yield loop.
+; Task 0 (M6 demo): AllocMem(MEMF_PUBLIC|MEMF_CLEAR), write 'S' to shared page,
+; CreateTask with share_handle as arg0, print 'A' + yield loop.
 ; Child code is pre-loaded into task 0's data page during boot init.
 ; 12 instructions = 96 bytes. 'A' marker at instruction 5 (byte 40).
 user_task0_template:
-    syscall #SYS_CREATE_PORT        ; 0: create port (gets port 0)
-    move.l  r1, #USER_DATA_BASE    ; 1: source_ptr = data page (child code)
-    move.l  r2, #32                ; 2: code_size = 4 instructions
-    move.l  r3, #0                 ; 3: arg0 = 0
-    syscall #SYS_CREATE_TASK       ; 4: create child task
-.t0_loop:
-    move.l  r1, #0x41              ; 5: 'A' ← findTaskTemplates marker
-    syscall #SYS_DEBUG_PUTCHAR     ; 6
-    syscall #SYS_YIELD             ; 7
-    bra     .t0_loop               ; 8
-    move.q  r0, r0                 ; 9: pad
-    move.q  r0, r0                 ; 10: pad
-    move.q  r0, r0                 ; 11: pad
+    move.l  r1, #0x1000             ; 0: size = 4096 (one page)
+    move.l  r2, #0x10001            ; 1: MEMF_PUBLIC | MEMF_CLEAR
+    syscall #SYS_ALLOC_MEM          ; 2: R1=VA, R3=share_handle
+    move.l  r4, #0x53               ; 3: R4 = 'S'
+    store.b r4, (r1)                ; 4: [VA] = 'S' (R1 still has VA from AllocMem)
+    move.l  r1, #0x41               ; 5: 'A' ← findTaskTemplates marker (clobbers R1)
+    move.l  r1, #USER_DATA_BASE     ; 6: source = child code on data page
+    move.l  r2, #88                 ; 7: code_size = 11 instructions (child template)
+    syscall #SYS_CREATE_TASK        ; 8: R3 still = share_handle (arg0)
+    move.l  r1, #0x41               ; 9: reload 'A' for print
+    syscall #SYS_DEBUG_PUTCHAR      ; 10: print 'A'
+    syscall #SYS_EXIT_TASK          ; 11: exit cleanly
 user_task0_template_end:
 
-; Task 1 (M5 demo): simple yield loop printing 'B'.
+; Task 1 (M6 demo): simple yield loop printing 'B'.
 ; 12 instructions = 96 bytes.
 user_task1_template:
 .t1_loop:
@@ -1391,13 +2220,24 @@ user_task1_template_end:
 
 ; Child task code (copied to task 0's data page during boot init).
 ; CreateTask copies this from the data page to the child's code page.
-; 4 instructions = 32 bytes. Prints 'C', yields, loops.
+; 11 instructions = 88 bytes. Maps shared memory via arg0 handle, reads 'S', prints it, exits.
 child_task_template:
-.child_loop:
-    move.l  r1, #0x43              ; 'C'
-    syscall #SYS_DEBUG_PUTCHAR
-    syscall #SYS_YIELD
-    bra     .child_loop             ; loop back to start
+    ; Get own task ID to compute data page VA
+    move.l  r1, #SYSINFO_CURRENT_TASK  ; 0: info_id = 3
+    syscall #SYS_GET_SYS_INFO         ; 1: R1 = task_id
+    ; Compute data page VA = USER_DATA_BASE + task_id * USER_SLOT_STRIDE
+    move.l  r5, #USER_SLOT_STRIDE     ; 2
+    mulu    r5, r1, r5                ; 3: R5 = task_id * stride
+    move.l  r6, #USER_DATA_BASE       ; 4
+    add     r5, r5, r6                ; 5: R5 = data page VA
+    ; Load arg0 (share_handle) from data page offset 0
+    load.q  r1, (r5)                  ; 6: R1 = share_handle
+    ; MapShared(handle) → R1 = mapped VA
+    syscall #SYS_MAP_SHARED           ; 7
+    ; Read 'S' from shared memory and print it
+    load.b  r1, (r1)                  ; 8: R1 = [mapped VA] = 'S'
+    syscall #SYS_DEBUG_PUTCHAR        ; 9: print 'S'
+    syscall #SYS_EXIT_TASK            ; 10: exit cleanly
 child_task_template_end:
 
 ; ============================================================================
@@ -1405,7 +2245,7 @@ child_task_template_end:
 ; ============================================================================
 
 boot_banner:
-    dc.b    "IExec M5 boot", 0x0A, 0
+    dc.b    "IExec M6 boot", 0x0A, 0
     align   4
 
 fault_msg_prefix:
@@ -1433,5 +2273,5 @@ panic_msg:
     align   4
 
 ; ============================================================================
-; End of IExec M5
+; End of IExec M6
 ; ============================================================================

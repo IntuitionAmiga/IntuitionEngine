@@ -44,6 +44,9 @@ const (
 	userTask1Data  = userDataBase + userSlotStride  // 0x612000
 
 	// Syscall numbers (matching IExec contract)
+	sysAllocMem     = 1
+	sysFreeMem      = 2
+	sysMapShared    = 4
 	sysCreateTask   = 5
 	sysAllocSignal  = 11
 	sysFreeSignal   = 12
@@ -89,6 +92,51 @@ const (
 
 	// Signal bit for port
 	sigfPort = 1 // SIGF_PORT = bit 0
+
+	// M6: Memory allocation constants (must match iexec.inc)
+	memfAny    = 0x00000
+	memfPublic = 0x00001
+	memfClear  = 0x10000
+
+	allocPoolBase  = 0x700 // first allocable page number
+	allocPoolPages = 6400  // pages 0x700-0x1FFF
+
+	userDynBase   = 0x800000 // dynamic allocation VA base
+	userDynStride = 0x100000 // 1 MB per task window
+	userDynPages  = 256      // max pages per task dynamic window
+
+	kdPageBitmap   = 672 // page allocation bitmap (800 bytes)
+	kdPageBitmapSz = 800
+
+	kdRegionTable  = 1472 // region table base
+	kdRegionStride = 16
+	kdRegionMax    = 8
+	kdRegionTaskSz = 128 // 8 regions x 16 bytes per task
+
+	// Region entry fields
+	kdRegVA    = 0
+	kdRegPPN   = 4
+	kdRegPages = 6
+	kdRegType  = 8
+	kdRegShmID = 9
+	kdRegFlags = 10
+
+	regionFree    = 0
+	regionPrivate = 1
+	regionShared  = 2
+
+	// Shared object table
+	kdShmemTable  = 2496
+	kdShmemStride = 16
+	kdShmemMax    = 8
+
+	// Shared object fields
+	kdShmValid    = 0
+	kdShmRefcount = 1
+	kdShmCreator  = 2
+	kdShmPPN      = 4
+	kdShmPages    = 6
+	kdShmNonce    = 8
 )
 
 // ===========================================================================
@@ -135,6 +183,12 @@ func setupKernelPTEs(mem []byte, ptBase uint32) {
 	}
 	// Also map VRAM region pages 384-1535 ($180000-$5FFFFF) supervisor-only
 	for page := uint16(384); page < 1536; page++ {
+		pte := makePTE(page, PTE_P|PTE_R|PTE_W)
+		off := ptBase + uint32(page)*8
+		binary.LittleEndian.PutUint64(mem[off:], pte)
+	}
+	// M6: map allocation pool pages (0x700-0x1FFF) supervisor P|R|W
+	for page := uint16(allocPoolBase); page < uint16(allocPoolBase+allocPoolPages); page++ {
 		pte := makePTE(page, PTE_P|PTE_R|PTE_W)
 		off := ptBase + uint32(page)*8
 		binary.LittleEndian.PutUint64(mem[off:], pte)
@@ -419,9 +473,10 @@ func TestIExec_FaultKillsTask(t *testing.T) {
 	k.emit(ie64Instr(OP_MTCR, CR_MMU_CTRL, 0, 0, 1, 0, 0))
 
 	// Try to ERET to unmapped user page (will fault on instruction fetch)
-	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x700000)) // unmapped address
+	// Use 0x680000 (page 0x680) — in the gap between VRAM (0x600) and pool (0x700)
+	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x680000)) // unmapped address
 	k.emit(ie64Instr(OP_MTCR, CR_USP, 0, 0, 1, 0, 0))
-	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x700000))
+	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x680000))
 	k.emit(ie64Instr(OP_MTCR, CR_FAULT_PC, 0, 0, 1, 0, 0))
 	k.emit(ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0))
 
@@ -1115,6 +1170,34 @@ func TestIExec_BootBanner(t *testing.T) {
 	t.Logf("Boot banner output (first 80 chars): %q", output[:min(len(output), 80)])
 }
 
+func TestIExec_SingleTaskNoDeadlock(t *testing.T) {
+	// Regression: when task 0 and child exit, task 1 is the only runnable task.
+	// Timer interrupts must NOT trigger false DEADLOCK — find_next_runnable must
+	// include the current task in its scan.
+	rig, term := assembleAndLoadKernel(t)
+	t0Start, _ := findTaskTemplates(t, rig.cpu.memory)
+
+	// Patch task 0: just ExitTask immediately (makes task 1 the sole survivor)
+	copy(rig.cpu.memory[t0Start:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	copy(rig.cpu.memory[t0Start+8:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExitTask))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	t.Logf("SingleTaskNoDeadlock output (first 80 chars): %q", output[:min(len(output), 80)])
+	if strings.Contains(output, "DEADLOCK") {
+		t.Fatalf("false DEADLOCK with single runnable task")
+	}
+	if !strings.Contains(output, "B") {
+		t.Fatalf("task 1 did not print 'B': %q", output[:min(len(output), 80)])
+	}
+}
+
 func TestIExec_TwoTasksVisibleOutput(t *testing.T) {
 	rig, term := assembleAndLoadKernel(t)
 	rig.cpu.running.Store(true)
@@ -1162,6 +1245,832 @@ func TestIExec_TwoTasksVisibleOutput_WithVRAM(t *testing.T) {
 	hasB := strings.Contains(output, "B")
 	if !hasA || !hasB {
 		t.Fatalf("visible output with VRAM mapped: hasA=%v hasB=%v, output=%q", hasA, hasB, output[:min(len(output), 100)])
+	}
+}
+
+func TestIExec_GetSysInfo_TotalPages(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+
+	// Patch task 0: GetSysInfo(SYSINFO_TOTAL_PAGES=0) → store result → halt
+	t0Start, _ := findTaskTemplates(t, rig.cpu.memory)
+	pc := t0Start
+	copy(rig.cpu.memory[pc:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))                // R1 = 0 (TOTAL_PAGES)
+	copy(rig.cpu.memory[pc+8:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo))         // syscall
+	copy(rig.cpu.memory[pc+16:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data)) // R3 = data page
+	copy(rig.cpu.memory[pc+24:], ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 0))            // [data] = R1
+	copy(rig.cpu.memory[pc+32:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 8))            // [data+8] = R2
+	copy(rig.cpu.memory[pc+40:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	result := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data:])
+	errCode := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+8:])
+	t.Logf("GetSysInfo TOTAL_PAGES: result=%d err=%d", result, errCode)
+	if result != allocPoolPages {
+		t.Fatalf("TOTAL_PAGES = %d, want %d", result, allocPoolPages)
+	}
+	if errCode != 0 {
+		t.Fatalf("err = %d, want ERR_OK (0)", errCode)
+	}
+}
+
+func TestIExec_GetSysInfo_FreePages(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+
+	// Patch task 0: GetSysInfo(SYSINFO_FREE_PAGES=1) → store result → halt
+	t0Start, _ := findTaskTemplates(t, rig.cpu.memory)
+	pc := t0Start
+	copy(rig.cpu.memory[pc:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 1))                // R1 = 1 (FREE_PAGES)
+	copy(rig.cpu.memory[pc+8:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo))         // syscall
+	copy(rig.cpu.memory[pc+16:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data)) // R3 = data page
+	copy(rig.cpu.memory[pc+24:], ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 0))            // [data] = R1
+	copy(rig.cpu.memory[pc+32:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 8))            // [data+8] = R2
+	copy(rig.cpu.memory[pc+40:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	result := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data:])
+	errCode := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+8:])
+	t.Logf("GetSysInfo FREE_PAGES: result=%d err=%d", result, errCode)
+	if result != allocPoolPages {
+		t.Fatalf("FREE_PAGES at boot = %d, want %d (all free)", result, allocPoolPages)
+	}
+	if errCode != 0 {
+		t.Fatalf("err = %d, want ERR_OK (0)", errCode)
+	}
+}
+
+// ===========================================================================
+// M6: AllocMem Tests
+// ===========================================================================
+
+func TestIExec_AllocMem_Basic(t *testing.T) {
+	// Task 0: AllocMem(4096, 0) → write 0xDEADBEEF to VA → read back → store to data page → halt
+	rig, _ := assembleAndLoadKernel(t)
+	t0Start, _ := findTaskTemplates(t, rig.cpu.memory)
+	pc := t0Start
+	// R1 = 4096 (one page), R2 = 0 (no flags)
+	copy(rig.cpu.memory[pc:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	copy(rig.cpu.memory[pc+8:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	copy(rig.cpu.memory[pc+16:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	// R1 = VA, R2 = err. Store err to data page first
+	copy(rig.cpu.memory[pc+24:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	copy(rig.cpu.memory[pc+32:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 0)) // [data+0] = err
+	copy(rig.cpu.memory[pc+40:], ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 8)) // [data+8] = VA
+	// Write 0xDEADBEEF to allocated VA
+	copy(rig.cpu.memory[pc+48:], ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0xDEADBEEF))
+	copy(rig.cpu.memory[pc+56:], ie64Instr(OP_STORE, 4, IE64_SIZE_L, 0, 1, 0, 0)) // [VA] = 0xDEADBEEF
+	// Read back from VA
+	copy(rig.cpu.memory[pc+64:], ie64Instr(OP_LOAD, 5, IE64_SIZE_L, 0, 1, 0, 0))   // R5 = [VA]
+	copy(rig.cpu.memory[pc+72:], ie64Instr(OP_STORE, 5, IE64_SIZE_Q, 0, 3, 0, 16)) // [data+16] = readback
+	copy(rig.cpu.memory[pc+80:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	errCode := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data:])
+	va := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+8:])
+	readback := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+16:])
+	t.Logf("AllocMem_Basic: err=%d VA=0x%X readback=0x%X", errCode, va, readback)
+
+	if errCode != 0 {
+		t.Fatalf("AllocMem returned err=%d, want ERR_OK", errCode)
+	}
+	if va < userDynBase || va >= userDynBase+userDynStride {
+		t.Fatalf("VA=0x%X outside task 0 dynamic window [0x%X, 0x%X)", va, userDynBase, userDynBase+userDynStride)
+	}
+	if readback != 0xDEADBEEF {
+		t.Fatalf("readback=0x%X, want 0xDEADBEEF", readback)
+	}
+}
+
+func TestIExec_AllocMem_Clear(t *testing.T) {
+	// AllocMem with MEMF_CLEAR, verify page is zeroed
+	rig, _ := assembleAndLoadKernel(t)
+	t0Start, _ := findTaskTemplates(t, rig.cpu.memory)
+	pc := t0Start
+	// R1 = 4096, R2 = MEMF_CLEAR (0x10000)
+	copy(rig.cpu.memory[pc:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	copy(rig.cpu.memory[pc+8:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, uint32(memfClear)))
+	copy(rig.cpu.memory[pc+16:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	// Store err and VA
+	copy(rig.cpu.memory[pc+24:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	copy(rig.cpu.memory[pc+32:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 0)) // err
+	copy(rig.cpu.memory[pc+40:], ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 8)) // VA
+	// Read first 8 bytes from allocated page
+	copy(rig.cpu.memory[pc+48:], ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 1, 0, 0))
+	copy(rig.cpu.memory[pc+56:], ie64Instr(OP_STORE, 5, IE64_SIZE_Q, 0, 3, 0, 16)) // [data+16] = first qword
+	// Read last 8 bytes (offset 4088)
+	copy(rig.cpu.memory[pc+64:], ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 1, 0, 4088))
+	copy(rig.cpu.memory[pc+72:], ie64Instr(OP_STORE, 5, IE64_SIZE_Q, 0, 3, 0, 24)) // [data+24] = last qword
+	copy(rig.cpu.memory[pc+80:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	errCode := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data:])
+	va := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+8:])
+	first := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+16:])
+	last := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+24:])
+	t.Logf("AllocMem_Clear: err=%d VA=0x%X first=0x%X last=0x%X", errCode, va, first, last)
+
+	if errCode != 0 {
+		t.Fatalf("AllocMem returned err=%d", errCode)
+	}
+	if first != 0 {
+		t.Fatalf("MEMF_CLEAR: first qword = 0x%X, want 0", first)
+	}
+	if last != 0 {
+		t.Fatalf("MEMF_CLEAR: last qword = 0x%X, want 0", last)
+	}
+}
+
+func TestIExec_GetSysInfo_AfterAlloc(t *testing.T) {
+	// AllocMem 1 page, then GetSysInfo(FREE_PAGES) should return allocPoolPages - 1
+	rig, _ := assembleAndLoadKernel(t)
+	t0Start, _ := findTaskTemplates(t, rig.cpu.memory)
+	pc := t0Start
+	// AllocMem(4096, 0)
+	copy(rig.cpu.memory[pc:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	copy(rig.cpu.memory[pc+8:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	copy(rig.cpu.memory[pc+16:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	// GetSysInfo(FREE_PAGES=1)
+	copy(rig.cpu.memory[pc+24:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 1))
+	copy(rig.cpu.memory[pc+32:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo))
+	// Store result
+	copy(rig.cpu.memory[pc+40:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	copy(rig.cpu.memory[pc+48:], ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 0))
+	copy(rig.cpu.memory[pc+56:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	freePages := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data:])
+	t.Logf("GetSysInfo_AfterAlloc: free_pages=%d (expected %d)", freePages, allocPoolPages-1)
+	if freePages != allocPoolPages-1 {
+		t.Fatalf("FREE_PAGES after 1-page alloc = %d, want %d", freePages, allocPoolPages-1)
+	}
+}
+
+// ===========================================================================
+// M6: FreeMem Tests
+// ===========================================================================
+
+func TestIExec_FreeMem_Basic(t *testing.T) {
+	// AllocMem 1 page, FreeMem it, verify FREE_PAGES restored
+	rig, _ := assembleAndLoadKernel(t)
+	t0Start, _ := findTaskTemplates(t, rig.cpu.memory)
+	pc := t0Start
+	// AllocMem(4096, 0)
+	copy(rig.cpu.memory[pc:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))    // 0
+	copy(rig.cpu.memory[pc+8:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))     // 1
+	copy(rig.cpu.memory[pc+16:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem)) // 2
+	// Save VA in R8 (high reg, survives syscalls including count_free_pages which clobbers R2-R7)
+	copy(rig.cpu.memory[pc+24:], ie64Instr(OP_MOVE, 8, IE64_SIZE_Q, 0, 1, 0, 0)) // 3: R8=VA
+	// FreeMem(VA, 4096)
+	copy(rig.cpu.memory[pc+32:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 4096)) // 4
+	copy(rig.cpu.memory[pc+40:], ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 8, 0, 0))    // 5: R1=VA
+	copy(rig.cpu.memory[pc+48:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFreeMem))  // 6
+	// Store FreeMem err. Use R9 for data ptr (survives all syscalls)
+	copy(rig.cpu.memory[pc+56:], ie64Instr(OP_MOVE, 9, IE64_SIZE_L, 1, 0, 0, userTask0Data)) // 7: R9=dataptr
+	copy(rig.cpu.memory[pc+64:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 9, 0, 0))            // 8: [data]=err
+	// GetSysInfo(FREE_PAGES)
+	copy(rig.cpu.memory[pc+72:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 1))      // 9
+	copy(rig.cpu.memory[pc+80:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo)) // 10
+	copy(rig.cpu.memory[pc+88:], ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 9, 0, 8))     // 11: [data+8]=free
+	copy(rig.cpu.memory[pc+96:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))              // 12
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	freeErr := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data:])
+	freePages := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+8:])
+	t.Logf("FreeMem_Basic: err=%d freePages=%d", freeErr, freePages)
+
+	if freeErr != 0 {
+		t.Fatalf("FreeMem returned err=%d, want ERR_OK", freeErr)
+	}
+	if freePages != allocPoolPages {
+		t.Fatalf("FREE_PAGES after alloc+free = %d, want %d (fully restored)", freePages, allocPoolPages)
+	}
+}
+
+func TestIExec_FreeMem_BadSize(t *testing.T) {
+	// AllocMem 1 page, then FreeMem with wrong size → ERR_BADARG
+	rig, _ := assembleAndLoadKernel(t)
+	t0Start, _ := findTaskTemplates(t, rig.cpu.memory)
+	pc := t0Start
+	copy(rig.cpu.memory[pc:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	copy(rig.cpu.memory[pc+8:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	copy(rig.cpu.memory[pc+16:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	// FreeMem(VA, 8192) — wrong size
+	copy(rig.cpu.memory[pc+24:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 8192))
+	copy(rig.cpu.memory[pc+32:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFreeMem))
+	copy(rig.cpu.memory[pc+40:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	copy(rig.cpu.memory[pc+48:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 0))
+	copy(rig.cpu.memory[pc+56:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	freeErr := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data:])
+	t.Logf("FreeMem_BadSize: err=%d", freeErr)
+	if freeErr != 3 { // ERR_BADARG
+		t.Fatalf("FreeMem with wrong size returned err=%d, want ERR_BADARG (3)", freeErr)
+	}
+}
+
+func TestIExec_FreeMem_RoundedSizeMatch(t *testing.T) {
+	// AllocMem(5000) allocates 2 pages. FreeMem(addr, 8192) should succeed
+	// because both 5000 and 8192 round to 2 pages. The allocator is page-granular.
+	rig, _ := assembleAndLoadKernel(t)
+	t0Start, _ := findTaskTemplates(t, rig.cpu.memory)
+	pc := t0Start
+	// AllocMem(5000, 0) → 2 pages
+	copy(rig.cpu.memory[pc:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 5000))    // 0
+	copy(rig.cpu.memory[pc+8:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))     // 1
+	copy(rig.cpu.memory[pc+16:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem)) // 2
+	copy(rig.cpu.memory[pc+24:], ie64Instr(OP_MOVE, 8, IE64_SIZE_Q, 0, 1, 0, 0))    // 3: R8=VA
+	// FreeMem(VA, 8192) — different byte size but same page count (2)
+	copy(rig.cpu.memory[pc+32:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 8192))          // 4
+	copy(rig.cpu.memory[pc+40:], ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 8, 0, 0))             // 5: R1=VA
+	copy(rig.cpu.memory[pc+48:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFreeMem))           // 6
+	copy(rig.cpu.memory[pc+56:], ie64Instr(OP_MOVE, 9, IE64_SIZE_L, 1, 0, 0, userTask0Data)) // 7: R9=data
+	copy(rig.cpu.memory[pc+64:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 9, 0, 0))            // 8: err
+	// GetSysInfo(FREE_PAGES) to verify pages restored
+	copy(rig.cpu.memory[pc+72:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 1))      // 9
+	copy(rig.cpu.memory[pc+80:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo)) // 10
+	copy(rig.cpu.memory[pc+88:], ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 9, 0, 8))     // 11
+	copy(rig.cpu.memory[pc+96:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))              // 12
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	freeErr := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data:])
+	freePages := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+8:])
+	t.Logf("FreeMem_RoundedSizeMatch: err=%d freePages=%d", freeErr, freePages)
+
+	if freeErr != 0 {
+		t.Fatalf("FreeMem(5000-byte alloc, 8192-byte free) returned err=%d, want ERR_OK (same page count)", freeErr)
+	}
+	if freePages != allocPoolPages {
+		t.Fatalf("FREE_PAGES = %d, want %d (fully restored)", freePages, allocPoolPages)
+	}
+}
+
+// ===========================================================================
+// M6: Shared Memory Tests
+// ===========================================================================
+
+func TestIExec_AllocMem_Public(t *testing.T) {
+	// AllocMem with MEMF_PUBLIC, verify handle returned in R3
+	rig, _ := assembleAndLoadKernel(t)
+	t0Start, _ := findTaskTemplates(t, rig.cpu.memory)
+	pc := t0Start
+	copy(rig.cpu.memory[pc:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	copy(rig.cpu.memory[pc+8:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, uint32(memfPublic)))
+	copy(rig.cpu.memory[pc+16:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	copy(rig.cpu.memory[pc+24:], ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	copy(rig.cpu.memory[pc+32:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 4, 0, 0))  // err
+	copy(rig.cpu.memory[pc+40:], ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 4, 0, 8))  // VA
+	copy(rig.cpu.memory[pc+48:], ie64Instr(OP_STORE, 3, IE64_SIZE_Q, 0, 4, 0, 16)) // handle
+	copy(rig.cpu.memory[pc+56:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	errCode := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data:])
+	va := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+8:])
+	handle := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+16:])
+	t.Logf("AllocMem_Public: err=%d VA=0x%X handle=0x%X", errCode, va, handle)
+
+	if errCode != 0 {
+		t.Fatalf("AllocMem(MEMF_PUBLIC) returned err=%d", errCode)
+	}
+	if handle == 0 {
+		t.Fatalf("share_handle is 0, expected non-zero opaque handle")
+	}
+	// Slot should be in low 8 bits
+	slot := handle & 0xFF
+	if slot >= uint64(kdShmemMax) {
+		t.Fatalf("handle slot=%d >= max=%d", slot, kdShmemMax)
+	}
+}
+
+func TestIExec_MapShared_Basic(t *testing.T) {
+	// Parent allocs MEMF_PUBLIC, writes 'X'. Sends handle to child via port message.
+	// Child receives handle, MapShared, reads 'X', prints it.
+	rig, term := assembleAndLoadKernel(t)
+	t0Start, _ := findTaskTemplates(t, rig.cpu.memory)
+	pc := t0Start
+
+	// Task 0 template (12 instructions = 96 bytes):
+	// AllocMem(MEMF_PUBLIC) → write 'X' → CreateTask(child, handle_as_arg0) → print 'P' → halt
+	copy(rig.cpu.memory[pc:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))                           // 0
+	copy(rig.cpu.memory[pc+8:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, uint32(memfPublic|memfClear))) // 1
+	copy(rig.cpu.memory[pc+16:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))                        // 2: R1=VA, R3=handle
+	copy(rig.cpu.memory[pc+24:], ie64Instr(OP_MOVE, 8, IE64_SIZE_Q, 0, 3, 0, 0))                           // 3: R8=handle (save)
+	copy(rig.cpu.memory[pc+32:], ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x58))                        // 4: R4='X'
+	copy(rig.cpu.memory[pc+40:], ie64Instr(OP_STORE, 4, IE64_SIZE_B, 0, 1, 0, 0))                          // 5: [VA]='X'
+	// CreateTask(child, 80, handle) — pass handle as arg0
+	copy(rig.cpu.memory[pc+48:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Data+88)) // 6
+	copy(rig.cpu.memory[pc+56:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 80))               // 7: 10 instructions
+	copy(rig.cpu.memory[pc+64:], ie64Instr(OP_MOVE, 3, IE64_SIZE_Q, 0, 8, 0, 0))                // 8: R3=handle as arg0
+	copy(rig.cpu.memory[pc+72:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))           // 9
+	copy(rig.cpu.memory[pc+80:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x50))             // 10: 'P'
+	copy(rig.cpu.memory[pc+88:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))         // 11
+
+	// Extra parent instructions past template (written to physical code page)
+	physExtra := uint32(userTask0Code + 96)
+	copy(rig.cpu.memory[physExtra:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield)) // 12
+	copy(rig.cpu.memory[physExtra+8:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))       // 13
+
+	// Child code at userTask0Data+88 (10 instructions = 80 bytes):
+	// GetSysInfo(CURRENT_TASK) → compute data VA → load arg0 (handle) → MapShared → read → print → exit
+	childPC := uint32(userTask0Data + 88)
+	copy(rig.cpu.memory[childPC:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 3))        // 0: SYSINFO_CURRENT_TASK
+	copy(rig.cpu.memory[childPC+8:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo)) // 1: R1=task_id
+	// Compute data VA = USER_DATA_BASE + task_id * USER_SLOT_STRIDE
+	copy(rig.cpu.memory[childPC+16:], ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, userSlotStride)) // 2
+	copy(rig.cpu.memory[childPC+24:], ie64Instr(OP_MULU, 5, IE64_SIZE_Q, 0, 1, 5, 0))              // 3: R5=task_id*stride
+	copy(rig.cpu.memory[childPC+32:], ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, userDataBase))   // 4
+	copy(rig.cpu.memory[childPC+40:], ie64Instr(OP_ADD, 5, IE64_SIZE_Q, 0, 5, 6, 0))               // 5: R5=data_va
+	copy(rig.cpu.memory[childPC+48:], ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 5, 0, 0))              // 6: R1=arg0=handle
+	copy(rig.cpu.memory[childPC+56:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysMapShared))          // 7: R1=mapped VA
+	copy(rig.cpu.memory[childPC+64:], ie64Instr(OP_LOAD, 1, IE64_SIZE_B, 0, 1, 0, 0))              // 8: R1=[VA]='X'
+	copy(rig.cpu.memory[childPC+72:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))       // 9: print
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	t.Logf("MapShared_Basic output: %q", output[:min(len(output), 80)])
+	if !strings.Contains(output, "X") {
+		t.Fatalf("child did not print 'X' from shared memory, output=%q", output[:min(len(output), 100)])
+	}
+}
+
+func TestIExec_MapShared_BadHandle(t *testing.T) {
+	// MapShared with invalid handle → ERR_BADHANDLE
+	rig, _ := assembleAndLoadKernel(t)
+	t0Start, _ := findTaskTemplates(t, rig.cpu.memory)
+	pc := t0Start
+	copy(rig.cpu.memory[pc:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xDEAD)) // bogus handle
+	copy(rig.cpu.memory[pc+8:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysMapShared))
+	copy(rig.cpu.memory[pc+16:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	copy(rig.cpu.memory[pc+24:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 0))
+	copy(rig.cpu.memory[pc+32:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	errCode := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data:])
+	t.Logf("MapShared_BadHandle: err=%d", errCode)
+	if errCode != 2 { // ERR_BADHANDLE
+		t.Fatalf("MapShared(bogus) returned err=%d, want ERR_BADHANDLE (2)", errCode)
+	}
+}
+
+func TestIExec_ExitCleanup_Memory(t *testing.T) {
+	// Child allocates private memory, exits. Verify FREE_PAGES restored.
+	rig, _ := assembleAndLoadKernel(t)
+	t0Start, _ := findTaskTemplates(t, rig.cpu.memory)
+	pc := t0Start
+
+	// Task 0: CreateTask(child, 56, 0) → yield → GetSysInfo(FREE_PAGES) → store → halt
+	copy(rig.cpu.memory[pc:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Data+88))
+	copy(rig.cpu.memory[pc+8:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 56)) // 7 instructions
+	copy(rig.cpu.memory[pc+16:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	copy(rig.cpu.memory[pc+24:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))
+	// Yield a few times to let child run and exit
+	copy(rig.cpu.memory[pc+32:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	copy(rig.cpu.memory[pc+40:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	copy(rig.cpu.memory[pc+48:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	// GetSysInfo(FREE_PAGES)
+	copy(rig.cpu.memory[pc+56:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 1))
+	copy(rig.cpu.memory[pc+64:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo))
+	copy(rig.cpu.memory[pc+72:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	copy(rig.cpu.memory[pc+80:], ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 0))
+	copy(rig.cpu.memory[pc+88:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	// Child: AllocMem(4096, 0) → ExitTask
+	childPC := uint32(userTask0Data + 88)
+	copy(rig.cpu.memory[childPC:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	copy(rig.cpu.memory[childPC+8:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	copy(rig.cpu.memory[childPC+16:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	copy(rig.cpu.memory[childPC+24:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	copy(rig.cpu.memory[childPC+32:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	copy(rig.cpu.memory[childPC+40:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExitTask))
+	copy(rig.cpu.memory[childPC+48:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	freePages := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data:])
+	t.Logf("ExitCleanup_Memory: freePages=%d (expected %d)", freePages, allocPoolPages)
+	if freePages != allocPoolPages {
+		t.Fatalf("FREE_PAGES after child alloc+exit = %d, want %d (fully restored)", freePages, allocPoolPages)
+	}
+}
+
+func TestIExec_AllocMem_MultiPage(t *testing.T) {
+	// Allocate 4 pages (16384 bytes), write 0xAA to first byte and 0xBB to
+	// first byte of last page (offset 12288), read both back, verify.
+	rig, _ := assembleAndLoadKernel(t)
+	t0Start, _ := findTaskTemplates(t, rig.cpu.memory)
+	pc := t0Start
+
+	// AllocMem(16384, 0)
+	copy(rig.cpu.memory[pc:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 16384))   // 0
+	copy(rig.cpu.memory[pc+8:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))     // 1
+	copy(rig.cpu.memory[pc+16:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem)) // 2: R1=VA, R2=err
+	// Save VA in R8, err in R9
+	copy(rig.cpu.memory[pc+24:], ie64Instr(OP_MOVE, 8, IE64_SIZE_Q, 0, 1, 0, 0)) // 3: R8=VA
+	copy(rig.cpu.memory[pc+32:], ie64Instr(OP_MOVE, 9, IE64_SIZE_Q, 0, 2, 0, 0)) // 4: R9=err
+	// Write 0xAA to [VA+0]
+	copy(rig.cpu.memory[pc+40:], ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0xAA)) // 5
+	copy(rig.cpu.memory[pc+48:], ie64Instr(OP_STORE, 4, IE64_SIZE_B, 0, 8, 0, 0))   // 6: [VA+0]=0xAA
+	// Write 0xBB to [VA+12288]
+	copy(rig.cpu.memory[pc+56:], ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0xBB))   // 7
+	copy(rig.cpu.memory[pc+64:], ie64Instr(OP_STORE, 4, IE64_SIZE_B, 0, 8, 0, 12288)) // 8: [VA+12288]=0xBB
+	// Read back both
+	copy(rig.cpu.memory[pc+72:], ie64Instr(OP_LOAD, 5, IE64_SIZE_B, 0, 8, 0, 0))     // 9: R5=[VA+0]
+	copy(rig.cpu.memory[pc+80:], ie64Instr(OP_LOAD, 6, IE64_SIZE_B, 0, 8, 0, 12288)) // 10: R6=[VA+12288]
+	// Store results to data page
+	copy(rig.cpu.memory[pc+88:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data)) // 11
+	// Extra instructions past template boundary
+	physExtra := uint32(userTask0Code + 96)
+	copy(rig.cpu.memory[physExtra:], ie64Instr(OP_STORE, 9, IE64_SIZE_Q, 0, 3, 0, 0))     // 12: [data+0]=err
+	copy(rig.cpu.memory[physExtra+8:], ie64Instr(OP_STORE, 5, IE64_SIZE_Q, 0, 3, 0, 8))   // 13: [data+8]=first
+	copy(rig.cpu.memory[physExtra+16:], ie64Instr(OP_STORE, 6, IE64_SIZE_Q, 0, 3, 0, 16)) // 14: [data+16]=last
+	copy(rig.cpu.memory[physExtra+24:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))           // 15
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	errCode := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data:])
+	first := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+8:])
+	last := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+16:])
+	t.Logf("AllocMem_MultiPage: err=%d first=0x%X last=0x%X", errCode, first, last)
+
+	if errCode != 0 {
+		t.Fatalf("AllocMem(16384) returned err=%d, want ERR_OK", errCode)
+	}
+	if first != 0xAA {
+		t.Fatalf("first byte readback=0x%X, want 0xAA", first)
+	}
+	if last != 0xBB {
+		t.Fatalf("last page first byte readback=0x%X, want 0xBB", last)
+	}
+}
+
+func TestIExec_FreeMem_Reuse(t *testing.T) {
+	// Allocate 1 page, free it, allocate 1 page again. Verify second
+	// allocation succeeds and FREE_PAGES = allocPoolPages - 1.
+	rig, _ := assembleAndLoadKernel(t)
+	t0Start, _ := findTaskTemplates(t, rig.cpu.memory)
+	pc := t0Start
+
+	// AllocMem(4096, 0)
+	copy(rig.cpu.memory[pc:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))    // 0
+	copy(rig.cpu.memory[pc+8:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))     // 1
+	copy(rig.cpu.memory[pc+16:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem)) // 2: R1=VA
+	// Save VA in R8
+	copy(rig.cpu.memory[pc+24:], ie64Instr(OP_MOVE, 8, IE64_SIZE_Q, 0, 1, 0, 0)) // 3: R8=VA
+	// FreeMem(VA, 4096)
+	copy(rig.cpu.memory[pc+32:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 4096)) // 4
+	copy(rig.cpu.memory[pc+40:], ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 8, 0, 0))    // 5: R1=VA
+	copy(rig.cpu.memory[pc+48:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFreeMem))  // 6
+	// AllocMem(4096, 0) again
+	copy(rig.cpu.memory[pc+56:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096)) // 7
+	copy(rig.cpu.memory[pc+64:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))    // 8
+	copy(rig.cpu.memory[pc+72:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem)) // 9: R1=VA2, R2=err2
+	// Save err2 in R9
+	copy(rig.cpu.memory[pc+80:], ie64Instr(OP_MOVE, 9, IE64_SIZE_Q, 0, 2, 0, 0)) // 10: R9=err2
+	// GetSysInfo(FREE_PAGES=1)
+	copy(rig.cpu.memory[pc+88:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 1)) // 11
+	// Extra instructions past template boundary
+	physExtra := uint32(userTask0Code + 96)
+	copy(rig.cpu.memory[physExtra:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo))           // 12
+	copy(rig.cpu.memory[physExtra+8:], ie64Instr(OP_MOVE, 10, IE64_SIZE_Q, 0, 1, 0, 0))             // 13: R10=freePages
+	copy(rig.cpu.memory[physExtra+16:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data)) // 14
+	copy(rig.cpu.memory[physExtra+24:], ie64Instr(OP_STORE, 9, IE64_SIZE_Q, 0, 3, 0, 0))            // 15: [data+0]=err2
+	copy(rig.cpu.memory[physExtra+32:], ie64Instr(OP_STORE, 10, IE64_SIZE_Q, 0, 3, 0, 8))           // 16: [data+8]=freePages
+	copy(rig.cpu.memory[physExtra+40:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))                     // 17
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	err2 := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data:])
+	freePages := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+8:])
+	t.Logf("FreeMem_Reuse: err2=%d freePages=%d (expected %d)", err2, freePages, allocPoolPages-1)
+
+	if err2 != 0 {
+		t.Fatalf("second AllocMem returned err=%d, want ERR_OK", err2)
+	}
+	if freePages != allocPoolPages-1 {
+		t.Fatalf("FREE_PAGES after alloc-free-alloc = %d, want %d", freePages, allocPoolPages-1)
+	}
+}
+
+func TestIExec_FreeMem_BadAddr(t *testing.T) {
+	// FreeMem with address that was never allocated → ERR_BADARG
+	rig, _ := assembleAndLoadKernel(t)
+	t0Start, _ := findTaskTemplates(t, rig.cpu.memory)
+	pc := t0Start
+
+	// FreeMem(0x800000, 4096) — no prior allocation
+	copy(rig.cpu.memory[pc:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userDynBase))      // 0
+	copy(rig.cpu.memory[pc+8:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 4096))           // 1
+	copy(rig.cpu.memory[pc+16:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFreeMem))           // 2: R2=err
+	copy(rig.cpu.memory[pc+24:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data)) // 3
+	copy(rig.cpu.memory[pc+32:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 0))            // 4: [data+0]=err
+	copy(rig.cpu.memory[pc+40:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))                     // 5
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	errCode := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data:])
+	t.Logf("FreeMem_BadAddr: err=%d", errCode)
+	if errCode != 3 { // ERR_BADARG
+		t.Fatalf("FreeMem(unallocated) returned err=%d, want ERR_BADARG (3)", errCode)
+	}
+}
+
+func TestIExec_MapShared_Refcount(t *testing.T) {
+	// Allocate MEMF_PUBLIC (refcount=1), FreeMem it, verify FREE_PAGES fully
+	// restored (all pages returned to pool when refcount drops to 0).
+	rig, _ := assembleAndLoadKernel(t)
+	t0Start, _ := findTaskTemplates(t, rig.cpu.memory)
+	pc := t0Start
+
+	// AllocMem(4096, MEMF_PUBLIC)
+	copy(rig.cpu.memory[pc:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))                 // 0
+	copy(rig.cpu.memory[pc+8:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, uint32(memfPublic))) // 1
+	copy(rig.cpu.memory[pc+16:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))              // 2: R1=VA
+	// Save VA in R8
+	copy(rig.cpu.memory[pc+24:], ie64Instr(OP_MOVE, 8, IE64_SIZE_Q, 0, 1, 0, 0)) // 3: R8=VA
+	// FreeMem(VA, 4096)
+	copy(rig.cpu.memory[pc+32:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 4096)) // 4
+	copy(rig.cpu.memory[pc+40:], ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 8, 0, 0))    // 5: R1=VA
+	copy(rig.cpu.memory[pc+48:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFreeMem))  // 6: R2=err
+	// Save FreeMem err in R9
+	copy(rig.cpu.memory[pc+56:], ie64Instr(OP_MOVE, 9, IE64_SIZE_Q, 0, 2, 0, 0)) // 7: R9=freeErr
+	// GetSysInfo(FREE_PAGES=1)
+	copy(rig.cpu.memory[pc+64:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 1))      // 8
+	copy(rig.cpu.memory[pc+72:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo)) // 9: R1=freePages
+	// Store results
+	copy(rig.cpu.memory[pc+80:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data)) // 10
+	copy(rig.cpu.memory[pc+88:], ie64Instr(OP_STORE, 9, IE64_SIZE_Q, 0, 3, 0, 0))            // 11: [data+0]=freeErr
+	// Extra past template
+	physExtra := uint32(userTask0Code + 96)
+	copy(rig.cpu.memory[physExtra:], ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 8)) // 12: [data+8]=freePages
+	copy(rig.cpu.memory[physExtra+8:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))        // 13
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	freeErr := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data:])
+	freePages := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+8:])
+	t.Logf("MapShared_Refcount: freeErr=%d freePages=%d (expected %d)", freeErr, freePages, allocPoolPages)
+
+	if freeErr != 0 {
+		t.Fatalf("FreeMem(MEMF_PUBLIC alloc) returned err=%d, want ERR_OK", freeErr)
+	}
+	if freePages != allocPoolPages {
+		t.Fatalf("FREE_PAGES after public alloc+free = %d, want %d (fully restored)", freePages, allocPoolPages)
+	}
+}
+
+func TestIExec_MapShared_StaleHandle(t *testing.T) {
+	// Allocate MEMF_PUBLIC → H1, FreeMem, allocate MEMF_PUBLIC again → H2.
+	// MapShared(H1) should fail with ERR_BADHANDLE because nonce changed.
+	rig, _ := assembleAndLoadKernel(t)
+	t0Start, _ := findTaskTemplates(t, rig.cpu.memory)
+	pc := t0Start
+
+	// AllocMem(4096, MEMF_PUBLIC) → R1=VA1, R3=H1
+	copy(rig.cpu.memory[pc:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))                 // 0
+	copy(rig.cpu.memory[pc+8:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, uint32(memfPublic))) // 1
+	copy(rig.cpu.memory[pc+16:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))              // 2
+	// Save VA1 in R8, H1 in R9
+	copy(rig.cpu.memory[pc+24:], ie64Instr(OP_MOVE, 8, IE64_SIZE_Q, 0, 1, 0, 0)) // 3: R8=VA1
+	copy(rig.cpu.memory[pc+32:], ie64Instr(OP_MOVE, 9, IE64_SIZE_Q, 0, 3, 0, 0)) // 4: R9=H1
+	// FreeMem(VA1, 4096)
+	copy(rig.cpu.memory[pc+40:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 4096)) // 5
+	copy(rig.cpu.memory[pc+48:], ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 8, 0, 0))    // 6: R1=VA1
+	copy(rig.cpu.memory[pc+56:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFreeMem))  // 7
+	// AllocMem(4096, MEMF_PUBLIC) again → R3=H2
+	copy(rig.cpu.memory[pc+64:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))               // 8
+	copy(rig.cpu.memory[pc+72:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, uint32(memfPublic))) // 9
+	copy(rig.cpu.memory[pc+80:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))               // 10
+	// Save H2 in R10
+	copy(rig.cpu.memory[pc+88:], ie64Instr(OP_MOVE, 10, IE64_SIZE_Q, 0, 3, 0, 0)) // 11: R10=H2
+	// Extra past template
+	physExtra := uint32(userTask0Code + 96)
+	// MapShared(H1) — stale handle
+	copy(rig.cpu.memory[physExtra:], ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 9, 0, 0))       // 12: R1=H1
+	copy(rig.cpu.memory[physExtra+8:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysMapShared)) // 13: R2=err
+	// Store results
+	copy(rig.cpu.memory[physExtra+16:], ie64Instr(OP_MOVE, 11, IE64_SIZE_Q, 0, 2, 0, 0))            // 14: R11=mapErr
+	copy(rig.cpu.memory[physExtra+24:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data)) // 15
+	copy(rig.cpu.memory[physExtra+32:], ie64Instr(OP_STORE, 11, IE64_SIZE_Q, 0, 3, 0, 0))           // 16: [data+0]=mapErr
+	copy(rig.cpu.memory[physExtra+40:], ie64Instr(OP_STORE, 9, IE64_SIZE_Q, 0, 3, 0, 8))            // 17: [data+8]=H1
+	copy(rig.cpu.memory[physExtra+48:], ie64Instr(OP_STORE, 10, IE64_SIZE_Q, 0, 3, 0, 16))          // 18: [data+16]=H2
+	copy(rig.cpu.memory[physExtra+56:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))                     // 19
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	mapErr := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data:])
+	h1 := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+8:])
+	h2 := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+16:])
+	t.Logf("MapShared_StaleHandle: mapErr=%d H1=0x%X H2=0x%X", mapErr, h1, h2)
+
+	if h1 == h2 {
+		t.Fatalf("H1==H2 (nonce collision should be impossible with monotonic counter)")
+	}
+	if mapErr != 2 { // ERR_BADHANDLE
+		t.Fatalf("MapShared(stale H1) returned err=%d, want ERR_BADHANDLE (2)", mapErr)
+	}
+}
+
+func TestIExec_AllocMem_OOM(t *testing.T) {
+	// Exhaust region table: allocate 8 single-page regions, then try a 9th.
+	// The 9th should fail with ERR_NOMEM (region table full).
+	rig, _ := assembleAndLoadKernel(t)
+	t0Start, _ := findTaskTemplates(t, rig.cpu.memory)
+	pc := t0Start
+
+	// 8 allocations of 1 page each (3 instructions per alloc = 24 instructions)
+	// Instructions 0-11 go in the template (96 bytes)
+	for i := 0; i < 4; i++ {
+		off := uint32(i * 24) // 3 instructions per alloc, 8 bytes each
+		copy(rig.cpu.memory[pc+off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+		copy(rig.cpu.memory[pc+off+8:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+		copy(rig.cpu.memory[pc+off+16:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	}
+	// Instructions 12-23 go past template boundary
+	physExtra := uint32(userTask0Code + 96)
+	for i := 0; i < 4; i++ {
+		off := uint32(i * 24)
+		copy(rig.cpu.memory[physExtra+off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+		copy(rig.cpu.memory[physExtra+off+8:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+		copy(rig.cpu.memory[physExtra+off+16:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	}
+	// 9th allocation attempt (instruction 24-26)
+	off9 := uint32(4 * 24) // offset within extra region
+	copy(rig.cpu.memory[physExtra+off9:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	copy(rig.cpu.memory[physExtra+off9+8:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	copy(rig.cpu.memory[physExtra+off9+16:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	// R2 = err from 9th alloc. Store it.
+	copy(rig.cpu.memory[physExtra+off9+24:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	copy(rig.cpu.memory[physExtra+off9+32:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 0))
+	copy(rig.cpu.memory[physExtra+off9+40:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	errCode := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data:])
+	t.Logf("AllocMem_OOM: err=%d (expected ERR_NOMEM=1)", errCode)
+	if errCode != 1 { // ERR_NOMEM
+		t.Fatalf("9th AllocMem returned err=%d, want ERR_NOMEM (1)", errCode)
+	}
+}
+
+func TestIExec_SharedMem_IPC(t *testing.T) {
+	// Parent allocates MEMF_PUBLIC, writes 'Z' to shared page.
+	// Creates child with handle as arg0. Child reads arg0 from its data page,
+	// calls MapShared, reads 'Z', prints it. Verify 'Z' in terminal output.
+	rig, term := assembleAndLoadKernel(t)
+	t0Start, _ := findTaskTemplates(t, rig.cpu.memory)
+	pc := t0Start
+
+	// Parent template (12 instructions):
+	// AllocMem(MEMF_PUBLIC|MEMF_CLEAR) → write 'Z' → CreateTask(child, handle) → yield → halt
+	copy(rig.cpu.memory[pc:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))                           // 0
+	copy(rig.cpu.memory[pc+8:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, uint32(memfPublic|memfClear))) // 1
+	copy(rig.cpu.memory[pc+16:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))                        // 2: R1=VA, R3=handle
+	// Save handle in R8, VA in R9
+	copy(rig.cpu.memory[pc+24:], ie64Instr(OP_MOVE, 8, IE64_SIZE_Q, 0, 3, 0, 0)) // 3: R8=handle
+	copy(rig.cpu.memory[pc+32:], ie64Instr(OP_MOVE, 9, IE64_SIZE_Q, 0, 1, 0, 0)) // 4: R9=VA
+	// Write 'Z' to shared page
+	copy(rig.cpu.memory[pc+40:], ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x5A)) // 5: R4='Z'
+	copy(rig.cpu.memory[pc+48:], ie64Instr(OP_STORE, 4, IE64_SIZE_B, 0, 9, 0, 0))   // 6: [VA]='Z'
+	// CreateTask(child, 80, handle_as_arg0)
+	copy(rig.cpu.memory[pc+56:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Data+88)) // 7
+	copy(rig.cpu.memory[pc+64:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 80))               // 8: 10 instructions
+	copy(rig.cpu.memory[pc+72:], ie64Instr(OP_MOVE, 3, IE64_SIZE_Q, 0, 8, 0, 0))                // 9: R3=handle as arg0
+	copy(rig.cpu.memory[pc+80:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))           // 10
+	// Yield to let child run
+	copy(rig.cpu.memory[pc+88:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield)) // 11
+	// Extra parent instructions past template
+	physExtra := uint32(userTask0Code + 96)
+	copy(rig.cpu.memory[physExtra:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield)) // 12
+	copy(rig.cpu.memory[physExtra+8:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))       // 13
+
+	// Child code at userTask0Data+88 (10 instructions = 80 bytes):
+	// GetSysInfo(CURRENT_TASK) → compute data VA → load arg0 → MapShared → read 'Z' → print → exit
+	childPC := uint32(userTask0Data + 88)
+	copy(rig.cpu.memory[childPC:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 3))        // 0: SYSINFO_CURRENT_TASK
+	copy(rig.cpu.memory[childPC+8:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo)) // 1: R1=task_id
+	// Compute data VA = USER_DATA_BASE + task_id * USER_SLOT_STRIDE
+	copy(rig.cpu.memory[childPC+16:], ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, userSlotStride)) // 2
+	copy(rig.cpu.memory[childPC+24:], ie64Instr(OP_MULU, 5, IE64_SIZE_Q, 0, 1, 5, 0))              // 3: R5=task_id*stride
+	copy(rig.cpu.memory[childPC+32:], ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, userDataBase))   // 4
+	copy(rig.cpu.memory[childPC+40:], ie64Instr(OP_ADD, 5, IE64_SIZE_Q, 0, 5, 6, 0))               // 5: R5=data_va
+	// Load arg0 (handle) from child's data page offset 0
+	copy(rig.cpu.memory[childPC+48:], ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 5, 0, 0))     // 6: R1=handle
+	copy(rig.cpu.memory[childPC+56:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysMapShared)) // 7: R1=mapped VA
+	// Read 'Z' from shared VA and print it
+	copy(rig.cpu.memory[childPC+64:], ie64Instr(OP_LOAD, 1, IE64_SIZE_B, 0, 1, 0, 0))        // 8: R1=[VA]='Z'
+	copy(rig.cpu.memory[childPC+72:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar)) // 9: print 'Z'
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	t.Logf("SharedMem_IPC output: %q", output[:min(len(output), 80)])
+	if !strings.Contains(output, "Z") {
+		t.Fatalf("child did not print 'Z' from shared memory IPC, output=%q", output[:min(len(output), 100)])
 	}
 }
 
@@ -2297,7 +3206,7 @@ func TestIExec_RoundRobin_3Tasks(t *testing.T) {
 	t0, t1 := findTaskTemplates(t, rig.cpu.memory)
 
 	// Child code at task 0's data page: print 'C', yield, loop
-	childOff := uint32(userTask0Data + 64)                                             // offset 64: past boot child template
+	childOff := uint32(userTask0Data + 88)                                             // offset 80: past boot child template
 	copy(rig.cpu.memory[childOff:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x43)) // 'C'
 	childOff += 8
 	copy(rig.cpu.memory[childOff:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
@@ -2308,7 +3217,7 @@ func TestIExec_RoundRobin_3Tasks(t *testing.T) {
 
 	// Patch task 0: CreateTask, then print 'A', yield, loop
 	off := t0
-	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Data+64))
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Data+88))
 	off += 8
 	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 32))
 	off += 8
@@ -2368,7 +3277,7 @@ func TestIExec_CreateTask_Basic(t *testing.T) {
 
 	// Write the child code into task 0's data page (0x602000).
 	// Child code: print 'C', yield, loop
-	childOff := uint32(userTask0Data + 64)                                             // offset 64: past boot child template
+	childOff := uint32(userTask0Data + 88)                                             // offset 80: past boot child template
 	copy(rig.cpu.memory[childOff:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x43)) // 'C'
 	childOff += 8
 	copy(rig.cpu.memory[childOff:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
@@ -2381,7 +3290,7 @@ func TestIExec_CreateTask_Basic(t *testing.T) {
 	// Patch task 0: CreateTask(source=data_page, size=32, arg0=0), then print 'P', yield loop
 	off := t0
 	// R1 = source_ptr (task 0 data page + 64, past boot child template)
-	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Data+64))
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Data+88))
 	off += 8
 	// R2 = code_size
 	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, childCodeSize))
@@ -2425,7 +3334,7 @@ func TestIExec_ExitTask(t *testing.T) {
 	t0, _ := findTaskTemplates(t, rig.cpu.memory)
 
 	// Child code: print 'X', ExitTask
-	childOff := uint32(userTask0Data + 64)                                             // offset 64: past boot child template
+	childOff := uint32(userTask0Data + 88)                                             // offset 80: past boot child template
 	copy(rig.cpu.memory[childOff:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x58)) // 'X'
 	childOff += 8
 	copy(rig.cpu.memory[childOff:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
@@ -2436,7 +3345,7 @@ func TestIExec_ExitTask(t *testing.T) {
 
 	// Patch task 0: CreateTask, then print 'P' in a loop
 	off := t0
-	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Data+64))
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Data+88))
 	off += 8
 	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 32))
 	off += 8
@@ -2482,7 +3391,7 @@ func TestIExec_FaultedTaskCleanup(t *testing.T) {
 	t0, _ := findTaskTemplates(t, rig.cpu.memory)
 
 	// Child code: print 'F', then access address 0x700000 (unmapped) → fault
-	childOff := uint32(userTask0Data + 64)                                             // offset 64: past boot child template
+	childOff := uint32(userTask0Data + 88)                                             // offset 80: past boot child template
 	copy(rig.cpu.memory[childOff:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x46)) // 'F'
 	childOff += 8
 	copy(rig.cpu.memory[childOff:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
@@ -2493,7 +3402,7 @@ func TestIExec_FaultedTaskCleanup(t *testing.T) {
 
 	// Patch task 0: CreateTask, then print 'P' in loop
 	off := t0
-	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Data+64))
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Data+88))
 	off += 8
 	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 32))
 	off += 8
@@ -2549,7 +3458,7 @@ func TestIExec_FaultedTask_SupervisorAddr(t *testing.T) {
 	t0, _ := findTaskTemplates(t, rig.cpu.memory)
 
 	// Child code: jump to kernel address 0x1000 → exec fault (user has no X there)
-	childOff := uint32(userTask0Data + 64)
+	childOff := uint32(userTask0Data + 88)
 	copy(rig.cpu.memory[childOff:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x1000))
 	childOff += 8
 	// Use indirect branch: load addr into R1, then BRA via computed jump.
@@ -2568,13 +3477,13 @@ func TestIExec_FaultedTask_SupervisorAddr(t *testing.T) {
 	// Child entry PC = USER_CODE_BASE + 2*USER_SLOT_STRIDE = 0x620000.
 	// We want to branch to 0x1000.
 	// BRA offset = target - (current_PC) = 0x1000 - 0x620000 = -0x61F000
-	childOff = uint32(userTask0Data + 64)
+	childOff = uint32(userTask0Data + 88)
 	brTarget := int32(0x1000) - int32(userCodeBase+2*userSlotStride) // = -0x61F000
 	copy(rig.cpu.memory[childOff:], ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(brTarget)))
 
 	// Patch task 0: CreateTask(child), then print 'P' + yield loop
 	off := t0
-	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Data+64))
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Data+88))
 	off += 8
 	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 8))
 	off += 8 // 1 instruction
@@ -2673,7 +3582,7 @@ func TestIExec_CreateTask_MaxTasks(t *testing.T) {
 
 	// User task: CreateTask(source=data_page, size=16, arg0=0), store R2 to data page, halt
 	off := uint32(userTask0Code)
-	copy(cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Data+64))
+	copy(cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Data+88))
 	off += 8
 	copy(cpu.memory[off:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 16))
 	off += 8
@@ -2716,7 +3625,7 @@ func TestIExec_CreateTask_MaxTasks(t *testing.T) {
 	t0, _ := findTaskTemplates(t, rig2.cpu.memory)
 
 	// Child code: yield forever
-	childOff := uint32(userTask0Data + 64) // offset 64: past boot child template
+	childOff := uint32(userTask0Data + 88) // offset 80: past boot child template
 	copy(rig2.cpu.memory[childOff:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
 	childOff += 8
 	copy(rig2.cpu.memory[childOff:], ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(-8&0xFFFFFFFF)))
@@ -2742,7 +3651,7 @@ func TestIExec_CreateTask_MaxTasks(t *testing.T) {
 	loopPC := off2
 	copy(rig2.cpu.memory[off2:], ie64Instr(OP_PUSH64, 6, 0, 0, 0, 0, 0))
 	off2 += 8
-	copy(rig2.cpu.memory[off2:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Data+64))
+	copy(rig2.cpu.memory[off2:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Data+88))
 	off2 += 8
 	copy(rig2.cpu.memory[off2:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 16))
 	off2 += 8
@@ -2782,7 +3691,7 @@ func TestIExec_ExitTask_PortCleanup(t *testing.T) {
 	t0, _ := findTaskTemplates(t, rig.cpu.memory)
 
 	// Child code: CreatePort, ExitTask
-	childOff := uint32(userTask0Data + 64) // offset 64: past boot child template
+	childOff := uint32(userTask0Data + 88) // offset 80: past boot child template
 	copy(rig.cpu.memory[childOff:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
 	childOff += 8
 	copy(rig.cpu.memory[childOff:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
@@ -2792,7 +3701,7 @@ func TestIExec_ExitTask_PortCleanup(t *testing.T) {
 	// Patch task 0: CreateTask, yield a few times to let child run and exit,
 	// then check port count (by trying CreatePort — if child's port was freed, we get it)
 	off := t0
-	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Data+64))
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Data+88))
 	off += 8
 	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 24))
 	off += 8
@@ -2844,7 +3753,7 @@ func TestIExec_CreateTask_IPC(t *testing.T) {
 	// are overwritten), then creates child, then WaitPort(0).
 	// Child: PutMsg to port 0 with type='M', then ExitTask.
 
-	childOff := uint32(userTask0Data + 64) // offset 64: past boot child template
+	childOff := uint32(userTask0Data + 88) // offset 80: past boot child template
 	// PutMsg(port=0, type='M', data=0)
 	copy(rig.cpu.memory[childOff:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
 	childOff += 8
@@ -2863,7 +3772,7 @@ func TestIExec_CreateTask_IPC(t *testing.T) {
 	off := t0
 	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
 	off += 8 // → port 0
-	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Data+64))
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Data+88))
 	off += 8
 	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, childCodeSize))
 	off += 8

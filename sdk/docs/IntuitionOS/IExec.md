@@ -10,11 +10,13 @@
 
 IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS Exec but designed from the ground up for a hardware-enforced privilege model. Where Amiga Exec ran in flat supervisor space with no memory protection, IExec uses the IE64 MMU to enforce user/supervisor separation, per-task page tables, and W^X memory policy.
 
-**What IExec does (Milestone 5):**
+**What IExec does (Milestone 6):**
 
-- Task scheduling (preemptive round-robin between two static tasks; priority-based scheduling is future)
-- Memory protection via the IE64 MMU (per-task page tables with separate code/stack/data mappings)
-- Trap and interrupt dispatch (syscall entry, fault handling, timer preemption)
+- Preemptive round-robin scheduling across up to 8 dynamic tasks (CreateTask/ExitTask with slot reuse)
+- Memory protection via the IE64 MMU (per-task page tables with separate code/stack/data mappings, W^X enforcement)
+- Dynamic memory allocation: AllocMem/FreeMem with Amiga-style MEMF_ flags (MEMF_PUBLIC, MEMF_CLEAR), page-granular physical page pool (6400 pages / 25 MB), per-task VA windows
+- Shared memory via MEMF_PUBLIC with opaque capability handles (MapShared), reference-counted cleanup on task exit
+- Trap and interrupt dispatch (syscall entry, fault handling with privilege split, timer preemption)
 - Context switching (save/restore PC, USP, and PTBR per task; full GPR save/restore is future)
 - Inter-task signalling: per-task 32-bit signal mask with AllocSignal/FreeSignal/Signal/Wait, deadlock detection
 - Inter-task communication via message ports: CreatePort/PutMsg/GetMsg/WaitPort with fixed-size 16-byte messages and SIGF_PORT-based wakeup
@@ -84,9 +86,9 @@ IExec enforces a write-XOR-execute policy:
 - **Data/stack pages**: `P|R|W|U` -- readable and writable, not executable
 - A page fault is raised if user code attempts to write to an X page or execute from a W page
 
-### 2.5 Shared Memory (Future)
+### 2.5 Shared Memory
 
-Shared memory regions will be created via `AllocShared` and mapped into a second task's address space via `MapShared`. Both tasks see the same physical pages. The kernel tracks reference counts and unmaps on `FreeMem` or task exit.
+Shared memory regions are created via `AllocMem(MEMF_PUBLIC)`, which returns a VA and an opaque share handle in R3. Another task maps the region by calling `MapShared(share_handle)`. Both tasks see the same physical pages. The kernel tracks reference counts; `FreeMem` on a shared mapping removes the caller's mapping and decrements the refcount. Physical pages are freed when the last mapping is removed or the last mapping task exits. Share handles encode a 24-bit nonce derived from a monotonic kernel counter, guaranteeing that reusing a slot always produces a different handle. Stale handles are rejected with `ERR_BADHANDLE`.
 
 ---
 
@@ -190,12 +192,12 @@ The CPU traps to supervisor mode. The kernel's trap handler reads the syscall nu
 
 | # | Name | Signature | Status |
 |---|------|-----------|--------|
-| 1 | `AllocMem` | R1=size, R2=flags -> R1=addr | Future |
-| 2 | `FreeMem` | R1=addr, R2=size -> R2=err | Future |
-| 3 | `AllocShared` | R1=size, R2=flags -> R1=handle | Future |
-| 4 | `MapShared` | R1=handle, R2=addr_hint -> R1=addr | Future |
+| 1 | `AllocMem` | R1=size, R2=flags -> R1=addr, R2=err, R3=share_handle | **Implemented** |
+| 2 | `FreeMem` | R1=addr, R2=size -> R2=err | **Implemented** |
+| 3 | `AllocShared` | R1=size, R2=flags -> R1=handle | Reserved |
+| 4 | `MapShared` | R1=share_handle -> R1=addr, R2=err | **Implemented** |
 
-`AllocMem` flags: bit 0 = zero-fill, bit 1 = align to page boundary. The allocator manages user-space pages, updating the calling task's page table.
+`AllocMem` flags: MEMF_PUBLIC (bit 0) = shareable across tasks, MEMF_CLEAR (bit 16) = zero-fill. Matches classic Amiga MEMF_ conventions. All allocations are page-granular (4 KiB). `FreeMem` size is also page-granular: the kernel rounds size up to pages and compares the page count against the allocation's page count. Any size that rounds to the same number of pages is accepted (e.g., both 5000 and 8192 free a 2-page allocation).
 
 ### 5.2 Task Management
 
@@ -275,10 +277,10 @@ The CPU traps to supervisor mode. The kernel's trap handler reads the syscall nu
 
 | info_id | Name | Returns | Status |
 |---------|------|---------|--------|
-| 0 | SYSINFO_TOTAL_PAGES | Total pages in system | Future |
-| 1 | SYSINFO_FREE_PAGES | Free pages available | Future |
+| 0 | SYSINFO_TOTAL_PAGES | Total pages in system (6400) | **Implemented** |
+| 1 | SYSINFO_FREE_PAGES | Free pages available | **Implemented** |
 | 2 | SYSINFO_TICK_COUNT | Kernel tick count (incremented on each timer interrupt) | **Implemented** |
-| 3 | SYSINFO_CURRENT_TASK | Current task index | Future |
+| 3 | SYSINFO_CURRENT_TASK | Current task index | **Implemented** |
 
 Unrecognized info_ids return 0 with ERR_OK.
 
@@ -449,7 +451,7 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 | `AddTask()` with `tc_SPLower`/`tc_SPUpper` | `CreateTask` with kernel-allocated pages | Stack is a mapped page region, not a raw pointer range |
 | `Signal()`/`Wait()` with 32-bit mask | Same API, same 32-bit mask | Unchanged -- the model is perfect as-is |
 | `MsgPort` + `Message` (linked list in shared memory) | Kernel-managed ports with copy-in/copy-out | No shared-memory message headers; kernel copies payload for safety |
-| `AllocMem()`/`FreeMem()` from memory pools | `AllocMem` backed by page allocator + per-task mapping | Returns virtual addresses; kernel manages physical page pool |
+| `AllocMem()`/`FreeMem()` from memory pools | `AllocMem`/`FreeMem` backed by page allocator + per-task mapping; `MEMF_PUBLIC` with opaque share handles | Returns virtual addresses; kernel manages physical page pool; sharing via capability handles not flat pointers |
 | `Exec->ThisTask` | `FindTask(0)` or `GetTaskInfo` | No direct pointer to TCB from user space |
 | `Forbid()`/`Permit()` (disable scheduling) | Not provided | Tasks cannot disable preemption; kernel controls scheduling |
 | `Disable()`/`Enable()` (disable interrupts) | Not available to user mode | Only kernel uses `CLI64`/`SEI64` internally |
@@ -486,9 +488,9 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 
 **Implemented and tested (builds on Milestone 1):**
 
-- Boot banner: kernel prints "IExec M5 boot\n" to TERM_OUT before entering user mode
+- Boot banner: kernel prints "IExec M6 boot\n" to TERM_OUT before entering user mode
 - `DebugPutChar` syscall (33): write a single character to the debug terminal (TERM_OUT at `$F0700`)
-- Visible demo tasks: task 0 prints 'A', task 1 prints 'B', both yield and delay in a loop — output shows interleaved letters confirming preemptive multitasking
+- Visible demo tasks: task 0 allocates shared memory (MEMF_PUBLIC), writes 'S', creates a child task with the share handle as arg0, prints 'A', and exits. The child maps the shared memory, reads and prints 'S', and exits. Task 1 prints 'B' in a yield loop. Expected output: "ABS" followed by repeating B's, confirming dynamic tasks, shared memory, and preemptive scheduling
 - Fault reporting: on non-SYSCALL faults, kernel prints "FAULT cause=NNNN PC=$XXXX ADDR=$XXXX\n" to the debug terminal then halts
 - Scheduler heartbeat: prints '.' to the debug terminal every 64 timer ticks
 
@@ -516,7 +518,7 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 - Port capacity: 4 ports per system, 4-message FIFO per port.
 - SIGF_PORT wakeup: PutMsg sets signal bit 0 on the port owner, integrating with the existing Signal/Wait infrastructure from Milestone 3.
 
-### Milestone 5: Dynamic Tasks (Current)
+### Milestone 5: Dynamic Tasks (Complete)
 
 **Implemented and tested (builds on Milestone 4):**
 
@@ -528,13 +530,21 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 - Kernel page table extended with supervisor-only mappings for all user pages, enabling CreateTask to copy code across address spaces.
 - TASK_FREE (state=3) replaces the old REMOVED concept: the slot is empty and immediately reusable.
 
-### Milestone 6: Named Ports + Reply Protocol (Planned)
+### Milestone 6: Memory Allocation + Shared Memory (Current)
 
-### Milestone 6: Memory Allocation / Shared Memory (Planned)
+**Implemented and tested (builds on Milestone 5):**
 
-- `AllocMem` / `FreeMem` syscalls
-- Dynamic page allocation beyond fixed slots
-- Shared memory for zero-copy IPC
+- `AllocMem` syscall (1): allocate private or shared pages. R1=size, R2=flags (MEMF_PUBLIC, MEMF_CLEAR), returns R1=VA, R2=err, R3=share_handle (if MEMF_PUBLIC). Page-granular (4 KiB minimum). Kernel manages physical page pool and per-task virtual address windows.
+- `FreeMem` syscall (2): free allocated memory. R1=addr, R2=size (must round to the same page count as the original allocation; the allocator is page-granular). Unmaps pages from caller's page table. For shared mappings, decrements refcount; physical pages freed when last reference removed.
+- `MapShared` syscall (4): map a shared memory region by handle. R1=share_handle (opaque capability from AllocMem MEMF_PUBLIC), returns R1=mapped VA, R2=err. Validates handle nonce to reject stale/invalid handles.
+- Physical page allocator: bitmap-based contiguous allocation from 6400-page pool ($700000-$1FFFFFF).
+- Per-task dynamic VA windows: each task gets 1 MB (256 pages) at $800000+task_id*$100000.
+- MEMF_ flags: MEMF_PUBLIC (bit 0, classic Amiga), MEMF_CLEAR (bit 16, classic Amiga zero-fill).
+- Share handles: 32-bit opaque capabilities encoding 24-bit nonce (from monotonic kernel counter) + 8-bit slot. Guarantees stale handles are always rejected.
+- Task exit cleanup: all private regions freed, all shared mappings unmapped with refcount decremented.
+- `GetSysInfo` extended: SYSINFO_TOTAL_PAGES (0) returns 6400, SYSINFO_FREE_PAGES (1) returns current free count, SYSINFO_CURRENT_TASK (3) returns calling task's ID.
+- W^X preserved: all dynamic pages mapped as P|R|W|U (no execute).
+- Validate-then-commit: all syscalls structured to avoid partial state on error, with explicit rollback for page allocation failures.
 
 ### Milestone 7: Named Ports + Reply Protocol (Planned)
 
@@ -548,7 +558,7 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 - `SendMsgBulk` / `RecvMsgBulk`
 - Reference-counted shared memory regions
 
-### Milestone 8: Timers + Handles (Planned)
+### Milestone 9: Timers + Handles (Planned)
 
 - `AddTimer` / `RemTimer` with delta queue
 - `MapIO` / `MapVRAM` for user-space hardware access

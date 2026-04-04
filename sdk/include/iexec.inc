@@ -89,17 +89,21 @@ KERN_STACK_TOP    equ 0x09F000    ; Kernel stack top
 ; ---------------------------------------------------------------------------
 ; Kernel Data Offsets (at KERN_DATA_BASE)
 ; ---------------------------------------------------------------------------
-; Layout (M5, 8 tasks):
-;   +0:   current_task (8)
-;   +8:   tick_count (8)
-;   +16:  num_tasks (8)
-;   +64:  TCB[0..7] (8 x 32 = 256 bytes)   → ends at 320
-;   +320: PTBR[0..7] (8 x 8 = 64 bytes)    → ends at 384
-;   +384: Port[0..3] (4 x 72 = 288 bytes)  → ends at 672
+; Layout (M6, 8 tasks):
+;   +0:    current_task (8)
+;   +8:    tick_count (8)
+;   +16:   num_tasks (8)
+;   +64:   TCB[0..7] (8 x 32 = 256 bytes)              → ends at 320
+;   +320:  PTBR[0..7] (8 x 8 = 64 bytes)               → ends at 384
+;   +384:  Port[0..3] (4 x 72 = 288 bytes)              → ends at 672
+;   +672:  Page bitmap (800 bytes)                       → ends at 1472
+;   +1472: Region table (8 tasks x 8 x 16 = 1024 bytes) → ends at 2496
+;   +2496: Shared object table (8 x 16 = 128 bytes)     → ends at 2624
 
 KD_CURRENT_TASK   equ 0           ; uint64: current task index
 KD_TICK_COUNT     equ 8           ; uint64: tick counter
 KD_NUM_TASKS      equ 16          ; uint64: number of active tasks
+KD_NONCE_COUNTER  equ 24          ; uint64: monotonic counter for share handle nonces
 
 ; ---------------------------------------------------------------------------
 ; Task Control Block (TCB) — 32 bytes per task
@@ -206,6 +210,72 @@ MMU_PAGE_SIZE     equ 0x1000      ; 4 KiB
 MMU_PAGE_SHIFT    equ 12
 MMU_NUM_PAGES     equ 8192
 KERN_PAGES        equ 384         ; Pages 0-383 are kernel-mapped
+
+; ===========================================================================
+; Memory Allocation (M6)
+; ===========================================================================
+
+; MEMF_ flags (Amiga-style)
+MEMF_ANY          equ 0x00000     ; any memory (private, the default)
+MEMF_PUBLIC       equ 0x00001     ; bit 0: shareable (classic Amiga)
+MEMF_CLEAR        equ 0x10000     ; bit 16: zero-fill (classic Amiga)
+
+; Physical page allocator
+ALLOC_POOL_BASE   equ 0x700       ; first allocable page number
+ALLOC_POOL_PAGES  equ 6400        ; pages 0x700-0x1FFF
+
+; Dynamic VA layout (per-task windows for AllocMem)
+USER_DYN_BASE     equ 0x800000    ; dynamic allocation VA base
+USER_DYN_STRIDE   equ 0x100000    ; 1 MB per task window (256 pages)
+USER_DYN_PAGES    equ 256         ; max pages per task dynamic window
+
+; ---------------------------------------------------------------------------
+; Page Bitmap — 800 bytes at kernel data offset 672
+; ---------------------------------------------------------------------------
+; Bit N = 1 means page (ALLOC_POOL_BASE + N) is in use.
+
+KD_PAGE_BITMAP    equ 672         ; page allocation bitmap
+KD_PAGE_BITMAP_SZ equ 800         ; 6400 bits = 800 bytes
+
+; ---------------------------------------------------------------------------
+; Region Table — 8 tasks x 8 regions x 16 bytes = 1024 bytes
+; ---------------------------------------------------------------------------
+; Address: KERN_DATA_BASE + KD_REGION_TABLE + (task_id * KD_REGION_TASK_SZ) + (i * KD_REGION_STRIDE)
+
+KD_REGION_TABLE   equ 1472        ; region table base
+KD_REGION_STRIDE  equ 16          ; bytes per region entry
+KD_REGION_MAX     equ 8           ; max regions per task
+KD_REGION_TASK_SZ equ 128         ; 8 regions x 16 bytes per task
+
+; Region entry fields (relative to entry base)
+KD_REG_VA         equ 0           ; base VA (4 bytes)
+KD_REG_PPN        equ 4           ; base PPN (2 bytes)
+KD_REG_PAGES      equ 6           ; page count (2 bytes)
+KD_REG_TYPE       equ 8           ; 0=free, 1=private, 2=shared
+KD_REG_SHMID      equ 9           ; shared object slot index (1 byte)
+KD_REG_FLAGS      equ 10          ; MEMF_ flags low byte (1 byte)
+
+; Region types
+REGION_FREE       equ 0
+REGION_PRIVATE    equ 1
+REGION_SHARED     equ 2
+
+; ---------------------------------------------------------------------------
+; Shared Object Table — 8 entries x 16 bytes = 128 bytes
+; ---------------------------------------------------------------------------
+; Address: KERN_DATA_BASE + KD_SHMEM_TABLE + (slot * KD_SHMEM_STRIDE)
+
+KD_SHMEM_TABLE    equ 2496        ; shared object table base
+KD_SHMEM_STRIDE   equ 16          ; bytes per shared object entry
+KD_SHMEM_MAX      equ 8           ; max shared objects system-wide
+
+; Shared object entry fields (relative to entry base)
+KD_SHM_VALID      equ 0           ; 1=active, 0=unused (1 byte)
+KD_SHM_REFCOUNT   equ 1           ; active mappings (1 byte)
+KD_SHM_CREATOR    equ 2           ; creating task ID (1 byte)
+KD_SHM_PPN        equ 4           ; base PPN (2 bytes)
+KD_SHM_PAGES      equ 6           ; page count (2 bytes)
+KD_SHM_NONCE      equ 8           ; 24-bit nonce for handle validation (4 bytes)
 
 ; ===========================================================================
 ; Scheduler / Debug

@@ -5976,13 +5976,13 @@ make aros               # Build VM with embedded AROS ROM
 
 IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. Unlike classic Amiga Exec, which ran everything in flat supervisor space with no memory protection, IExec uses the IE64 MMU to enforce hardware-backed user/supervisor privilege separation with per-task page tables and W^X memory policy. The design preserves the Amiga programming model (signals, message ports, priority scheduling) while adding the isolation guarantees of a modern protected-mode OS.
 
-**Milestone 5 status** — Dynamic Tasks (implemented and tested):
+**Milestone 6 status** — Memory Allocation + Shared Memory (implemented and tested):
 
-- Everything from M1-M4: self-sufficient boot, per-task page tables with W^X, trap dispatch, preemptive round-robin scheduler, boot banner, DebugPutChar, fault reporting, scheduler heartbeat, AllocSignal/FreeSignal/Signal/Wait, deadlock detection, CreatePort/PutMsg/GetMsg/WaitPort message ports
-- `CreateTask` syscall (5): dynamically create a new task at runtime from code in the caller's address space; kernel builds a per-task page table, copies code, and starts the child in user mode; up to 8 concurrent tasks
-- `ExitTask` syscall (34): terminate the current task, clean up owned ports and signals, free the slot
-- Round-robin scheduler across 8 task slots with `find_next_runnable` subroutine
-- Fault cleanup with privilege split: user-mode faults kill only the faulting task; supervisor-mode faults halt with KERNEL PANIC
-- Slot-based physical memory allocation: each task slot gets pre-reserved code, stack, data, and page table pages
+- Everything from M1-M5: self-sufficient boot, per-task page tables with W^X, trap dispatch, preemptive round-robin, signals, message ports, dynamic task creation/exit
+- `AllocMem` syscall (1): Amiga-style page allocator with MEMF_PUBLIC (shareable) and MEMF_CLEAR (zero-fill) flags; bitmap-based physical page pool (6400 pages / 25 MB); per-task 1 MB dynamic VA windows
+- `FreeMem` syscall (2): Amiga-style (addr, size) deallocation; unmaps pages, frees physical memory; shared mappings decrement refcount
+- `MapShared` syscall (4): map a MEMF_PUBLIC region into caller's space via opaque share handle (24-bit nonce capability); validates handle to reject stale/invalid references
+- Task exit cleanup extended: all private regions freed, shared mappings unmapped with refcount management
+- `GetSysInfo` extended: SYSINFO_TOTAL_PAGES, SYSINFO_FREE_PAGES, SYSINFO_CURRENT_TASK
 
 Full kernel contract reference: [sdk/docs/IntuitionOS/IExec.md](sdk/docs/IntuitionOS/IExec.md)
