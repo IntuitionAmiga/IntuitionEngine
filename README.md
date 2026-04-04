@@ -5976,13 +5976,13 @@ make aros               # Build VM with embedded AROS ROM
 
 IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. Unlike classic Amiga Exec, which ran everything in flat supervisor space with no memory protection, IExec uses the IE64 MMU to enforce hardware-backed user/supervisor privilege separation with per-task page tables and W^X memory policy. The design preserves the Amiga programming model (signals, message ports, priority scheduling) while adding the isolation guarantees of a modern protected-mode OS.
 
-**Milestone 6 status** — Memory Allocation + Shared Memory (implemented and tested):
+**Milestone 7 status** — Named Ports + Reply Protocol (implemented and tested):
 
-- Everything from M1-M5: self-sufficient boot, per-task page tables with W^X, trap dispatch, preemptive round-robin, signals, message ports, dynamic task creation/exit
-- `AllocMem` syscall (1): Amiga-style page allocator with MEMF_PUBLIC (shareable) and MEMF_CLEAR (zero-fill) flags; bitmap-based physical page pool (6400 pages / 25 MB); per-task 1 MB dynamic VA windows
-- `FreeMem` syscall (2): Amiga-style (addr, size) deallocation; unmaps pages, frees physical memory; shared mappings decrement refcount
-- `MapShared` syscall (4): map a MEMF_PUBLIC region into caller's space via opaque share handle (24-bit nonce capability); validates handle to reject stale/invalid references
-- Task exit cleanup extended: all private regions freed, shared mappings unmapped with refcount management
-- `GetSysInfo` extended: SYSINFO_TOTAL_PAGES, SYSINFO_FREE_PAGES, SYSINFO_CURRENT_TASK
+- Everything from M1-M6: self-sufficient boot, per-task page tables with W^X, trap dispatch, preemptive round-robin, signals, message ports, dynamic task creation/exit, AllocMem/FreeMem/MapShared with MEMF_ flags and capability handles
+- Named public MsgPorts: `CreatePort(name, PF_PUBLIC)` with up to 16-byte ASCII names; `FindPort` for case-insensitive discovery (Amiga-style)
+- Request/reply messaging: 32-byte messages with type, data0, data1, reply_port, and share_handle fields; `ReplyMsg` syscall for Exec-style service pattern
+- Safe user pointer validation: kernel checks PTEs before reading user-provided name pointers
+- 8 ports (up from 4), 160 bytes each; port cleanup on task exit clears names from FindPort
+- New error codes: ERR_EXISTS (duplicate public port name), ERR_FULL (FIFO full)
 
 Full kernel contract reference: [sdk/docs/IntuitionOS/IExec.md](sdk/docs/IntuitionOS/IExec.md)

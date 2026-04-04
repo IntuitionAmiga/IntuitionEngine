@@ -10,7 +10,7 @@
 
 IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS Exec but designed from the ground up for a hardware-enforced privilege model. Where Amiga Exec ran in flat supervisor space with no memory protection, IExec uses the IE64 MMU to enforce user/supervisor separation, per-task page tables, and W^X memory policy.
 
-**What IExec does (Milestone 6):**
+**What IExec does (Milestone 7):**
 
 - Preemptive round-robin scheduling across up to 8 dynamic tasks (CreateTask/ExitTask with slot reuse)
 - Memory protection via the IE64 MMU (per-task page tables with separate code/stack/data mappings, W^X enforcement)
@@ -19,7 +19,10 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
 - Trap and interrupt dispatch (syscall entry, fault handling with privilege split, timer preemption)
 - Context switching (save/restore PC, USP, and PTBR per task; full GPR save/restore is future)
 - Inter-task signalling: per-task 32-bit signal mask with AllocSignal/FreeSignal/Signal/Wait, deadlock detection
-- Inter-task communication via message ports: CreatePort/PutMsg/GetMsg/WaitPort with fixed-size 16-byte messages and SIGF_PORT-based wakeup
+- Named public MsgPorts with CreatePort(name, PF_PUBLIC) and FindPort discovery (case-insensitive, up to 8 ports)
+- Request/reply messaging: 32-byte messages with data0, data1, reply_port, and share_handle fields
+- ReplyMsg for Exec-style service pattern; PutMsg/GetMsg/WaitPort with full message ABI
+- Safe user pointer validation (PTE check before kernel reads from user memory)
 
 **What IExec does not do:**
 
@@ -182,7 +185,9 @@ The CPU traps to supervisor mode. The kernel's trap handler reads the syscall nu
 | 4 | `ERR_NOTFOUND` | Named object not found |
 | 5 | `ERR_PERM` | Operation not permitted |
 | 6 | `ERR_AGAIN` | Resource temporarily unavailable (e.g., no message on port) |
-| 7 | `ERR_TOOLARGE` | Message or allocation too large |
+| 7 | `ERR_TOOLARGE` | Allocation too large |
+| 8 | `ERR_EXISTS` | Named object already exists (e.g., duplicate public port name) |
+| 9 | `ERR_FULL` | Fixed-capacity resource is full (e.g., port message FIFO) |
 
 ---
 
@@ -223,13 +228,19 @@ The CPU traps to supervisor mode. The kernel's trap handler reads the syscall nu
 
 | # | Name | Signature | Status |
 |---|------|-----------|--------|
-| 15 | `CreatePort` | (no args) -> R1=port_id (0-3), R2=err | **Implemented** |
-| 16 | `FindPort` | R1=name_ptr -> R1=port_handle | Future |
-| 17 | `PutMsg` | R1=port_id, R2=msg_type, R3=msg_data -> R2=err | **Implemented** |
-| 18 | `GetMsg` | R1=port_id -> R1=msg_type, R2=msg_data, R3=err | **Implemented** |
-| 19 | `WaitPort` | R1=port_id -> R1=msg_type, R2=msg_data, R3=err | **Implemented** |
-| 20 | `ReplyMsg` | R1=port_handle, R2=msg_ptr, R3=msg_len -> R2=err | Future |
+| 15 | `CreatePort` | R1=name_ptr (0=anon), R2=flags -> R1=port_id (0-7), R2=err | **Implemented (M7)** |
+| 16 | `FindPort` | R1=name_ptr -> R1=port_id, R2=err | **Implemented (M7)** |
+| 17 | `PutMsg` | R1=port_id, R2=type, R3=data0, R4=data1, R5=reply_port, R6=share_handle -> R2=err | **Implemented (M7)** |
+| 18 | `GetMsg` | R1=port_id -> R1=type, R2=data0, R3=err, R4=data1, R5=reply_port, R6=share_handle | **Implemented (M7)** |
+| 19 | `WaitPort` | R1=port_id -> (same as GetMsg, blocks if empty) | **Implemented (M7)** |
+| 20 | `ReplyMsg` | R1=reply_port, R2=type, R3=data0, R4=data1, R5=share_handle -> R2=err | **Implemented (M7)** |
 | 21 | `PeekPort` | R1=port_handle -> R1=msg_count | Future |
+
+**Port naming (M7):** Ports can be created with a name (up to 16 bytes, ASCII) and the `PF_PUBLIC` flag. Public named ports are discoverable via `FindPort` (case-insensitive matching). Anonymous ports (name_ptr=0) are private and not findable. Duplicate public names return `ERR_EXISTS`. Ports are cleaned up on task exit (name and flags cleared, removed from FindPort).
+
+**Message format (M7):** Messages are 32 bytes, kernel-copied, with type (4B), sender (4B), data0 (8B), data1 (8B), reply_port (2B, 0xFFFF=none), and share_handle (4B, 0=none). `ReplyMsg` is a convenience wrapper that sends to the reply_port with share_handle support.
+
+**User pointer safety:** CreatePort and FindPort validate user-provided name pointers by checking PTEs before reading. Invalid pointers return `ERR_BADARG` instead of crashing the kernel.
 
 ### 5.5 Timers
 
@@ -337,17 +348,20 @@ Each port has:
 
 ### 7.2 Message Passing
 
-Messages are copied by the kernel. `PutMsg` copies up to 4 KB from the sender's address space into a kernel buffer and enqueues it. `GetMsg` copies the next message from the kernel buffer into the receiver's address space. This copy-based model avoids shared-memory complexity for small messages.
+Messages are fixed-size (32 bytes) and kernel-copied. Each message contains: type (4 bytes), sender task ID (4 bytes), data0 (8 bytes), data1 (8 bytes), reply_port (2 bytes, 0xFFFF = none), and share_handle (4 bytes, 0 = none). `PutMsg` writes the message directly into the target port's kernel-managed FIFO (4 slots per port). `GetMsg` dequeues the oldest message and returns all fields in R1-R6. This fixed-size model is simple and assembly-friendly.
 
-For bulk data transfer, `SendMsgBulk` and `RecvMsgBulk` use shared memory handles instead of copying, allowing zero-copy transfer of large buffers between tasks that have mapped the same shared region.
+For bulk data transfer, use shared memory: the sender includes a share_handle in the message (from `AllocMem(MEMF_PUBLIC)`), and the receiver calls `MapShared` to access the shared region. This is the protected-Amiga equivalent of "I gave you a pointer."
 
 ### 7.3 Reply Protocol
 
 The reply pattern follows Amiga convention:
-1. Sender calls `PutMsg` to a target port
-2. Receiver calls `GetMsg` or `WaitPort` + `GetMsg`
-3. Receiver processes the message, then calls `ReplyMsg` to the sender's reply port
-4. Sender waits on its reply port's signal bit
+1. Client creates a private reply port
+2. Client calls `PutMsg` to a named service port, including its reply_port in R5
+3. Server calls `WaitPort` on its service port, receives the request with reply_port in R5
+4. Server calls `ReplyMsg(reply_port, type, data0, data1, share_handle)` to send the response
+5. Client calls `WaitPort` on its reply port, receives the reply
+
+This is the same request/reply model used by AmigaOS devices and libraries, adapted for a protected kernel with explicit memory sharing.
 
 ---
 
@@ -450,7 +464,8 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 | Flat supervisor space, no MMU | Per-task page tables, MMU-enforced user/supervisor | Hardware protection; tasks cannot corrupt each other or the kernel |
 | `AddTask()` with `tc_SPLower`/`tc_SPUpper` | `CreateTask` with kernel-allocated pages | Stack is a mapped page region, not a raw pointer range |
 | `Signal()`/`Wait()` with 32-bit mask | Same API, same 32-bit mask | Unchanged -- the model is perfect as-is |
-| `MsgPort` + `Message` (linked list in shared memory) | Kernel-managed ports with copy-in/copy-out | No shared-memory message headers; kernel copies payload for safety |
+| `MsgPort` + `Message` (linked list in shared memory) | Named kernel-managed ports with 32-byte copy-in/copy-out messages | No shared-memory message headers; kernel copies payload for safety; named public ports discoverable via FindPort (case-insensitive, Amiga-style) |
+| `FindPort()` + `PutMsg()`/`GetMsg()` service pattern | `FindPort` + `PutMsg`/`WaitPort`/`ReplyMsg` with reply_port and share_handle | Same Exec service model: create named port, client discovers it, sends request, server replies. Share handles can be carried in messages for protected memory handoff. |
 | `AllocMem()`/`FreeMem()` from memory pools | `AllocMem`/`FreeMem` backed by page allocator + per-task mapping; `MEMF_PUBLIC` with opaque share handles | Returns virtual addresses; kernel manages physical page pool; sharing via capability handles not flat pointers |
 | `Exec->ThisTask` | `FindTask(0)` or `GetTaskInfo` | No direct pointer to TCB from user space |
 | `Forbid()`/`Permit()` (disable scheduling) | Not provided | Tasks cannot disable preemption; kernel controls scheduling |
@@ -488,11 +503,10 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 
 **Implemented and tested (builds on Milestone 1):**
 
-- Boot banner: kernel prints "IExec M6 boot\n" to TERM_OUT before entering user mode
+- Boot banner: kernel prints "IExec M7 boot\n" to TERM_OUT before entering user mode
 - `DebugPutChar` syscall (33): write a single character to the debug terminal (TERM_OUT at `$F0700`)
-- Visible demo tasks: task 0 allocates shared memory (MEMF_PUBLIC), writes 'S', creates a child task with the share handle as arg0, prints 'A', and exits. The child maps the shared memory, reads and prints 'S', and exits. Task 1 prints 'B' in a yield loop. Expected output: "ABS" followed by repeating B's, confirming dynamic tasks, shared memory, and preemptive scheduling
+- Visible demo tasks (M7): task 0 creates a named "ECHO" port (PF_PUBLIC), allocates shared memory (MEMF_PUBLIC|MEMF_CLEAR), writes "HI" to the shared page, then waits for a request. Task 1 discovers the port via FindPort, sends a request with its reply port, receives a reply carrying the share handle, calls MapShared, and prints the first byte ('H') from shared memory. Task 1 then enters an idle yield loop to keep the system alive. Expected output: "H" after the boot banner, confirming named ports, request/reply messaging, and shared-memory handoff through messages.
 - Fault reporting: on non-SYSCALL faults, kernel prints "FAULT cause=NNNN PC=$XXXX ADDR=$XXXX\n" to the debug terminal then halts
-- Scheduler heartbeat: prints '.' to the debug terminal every 64 timer ticks
 
 ### Milestone 3: Signals (Complete)
 
@@ -506,17 +520,16 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 - Scheduler skips tasks in WAITING state; shared restore path delivers Wait return values when `sig_wait != 0`
 - Deadlock detection: when all tasks are in WAITING state with no external wake source, kernel prints "DEADLOCK: no runnable tasks" and halts
 
-### Milestone 4: Message Ports
+### Milestone 4: Message Ports (Complete)
 
-**Implemented and tested (builds on Milestone 3):**
+**Implemented and tested (builds on Milestone 3). Note: ABI and capacity updated in M7.**
 
-- `CreatePort` syscall (15): creates an anonymous message port owned by the calling task. Returns R1=port ID (0-3), R2=err. Returns ERR_NOMEM if all 4 port slots are occupied.
-- `PutMsg` syscall (17): send a fixed-size message to a port. R1=port ID, R2=msg_type, R3=msg_data. Any task may send to any valid port. Enqueues a 16-byte message (4 bytes type, 4 bytes src_task, 8 bytes data) into the port's FIFO. Sets SIGF_PORT (signal bit 0) on the owning task and wakes the owner if it is in WAITING state. Returns R2=ERR_BADARG if the port ID is invalid, R2=ERR_AGAIN if the FIFO is full (4 messages max).
-- `GetMsg` syscall (18): dequeue a message from a port. R1=port ID. Returns R1=msg_type, R2=msg_data, R3=err. Only the port owner may call GetMsg (returns R3=ERR_PERM otherwise). Returns R3=ERR_AGAIN if the FIFO is empty.
-- `WaitPort` syscall (19): blocking receive from a port. R1=port ID. Returns R1=msg_type, R2=msg_data, R3=err. Owner only (R3=ERR_PERM otherwise). Semantics: if messages are available, dequeues and returns immediately. Otherwise calls Wait(SIGF_PORT) and rechecks on wake -- this loop handles spurious wakes from other ports sharing the same signal bit.
-- Fixed-size message model: all messages are 16 bytes (4-byte type, 4-byte source task ID, 8-byte data payload). Register-based ABI with no memory-to-memory copy.
-- Port capacity: 4 ports per system, 4-message FIFO per port.
-- SIGF_PORT wakeup: PutMsg sets signal bit 0 on the port owner, integrating with the existing Signal/Wait infrastructure from Milestone 3.
+- `CreatePort` syscall (15): creates a message port owned by the calling task. M7 extended with name/flags parameters (see M7 section).
+- `PutMsg` syscall (17): send a fixed-size message to a port. M7 extended to 32-byte messages with data0, data1, reply_port, share_handle fields.
+- `GetMsg` syscall (18): dequeue a message from a port. Owner only (ERR_PERM otherwise). Returns ERR_AGAIN if empty.
+- `WaitPort` syscall (19): blocking receive. Same returns as GetMsg but blocks if empty. Handles spurious wakes from other ports sharing SIGF_PORT.
+- SIGF_PORT wakeup: PutMsg sets signal bit 0 on the port owner, integrating with Signal/Wait.
+- Port capacity: 8 ports per system (M7, was 4), 4-message FIFO per port, 32-byte messages (M7, was 16).
 
 ### Milestone 5: Dynamic Tasks (Complete)
 
@@ -530,7 +543,7 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 - Kernel page table extended with supervisor-only mappings for all user pages, enabling CreateTask to copy code across address spaces.
 - TASK_FREE (state=3) replaces the old REMOVED concept: the slot is empty and immediately reusable.
 
-### Milestone 6: Memory Allocation + Shared Memory (Current)
+### Milestone 6: Memory Allocation + Shared Memory (Complete)
 
 **Implemented and tested (builds on Milestone 5):**
 
@@ -546,19 +559,21 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 - W^X preserved: all dynamic pages mapped as P|R|W|U (no execute).
 - Validate-then-commit: all syscalls structured to avoid partial state on error, with explicit rollback for page allocation failures.
 
-### Milestone 7: Named Ports + Reply Protocol (Planned)
+### Milestone 7: Named Ports + Reply Protocol (Current)
 
-- `FindPort` / `ReplyMsg` / `PeekPort`
-- Named port registry
-- Reply port convention for request/response patterns
+**Implemented and tested (builds on Milestone 6):**
 
-### Milestone 8: Shared Memory + Bulk IPC (Planned)
+- **Named public ports**: `CreatePort` extended with R1=name_ptr, R2=flags (PF_PUBLIC). Names are up to 16 bytes, ASCII, zero-padded. Public named ports are discoverable via `FindPort`. Anonymous ports (name_ptr=0) remain private. Duplicate public names return ERR_EXISTS. Validate-then-commit: slot not marked valid until all validation passes.
+- **FindPort** syscall (16): R1=name_ptr → R1=port_id, R2=err. Case-insensitive name matching (Amiga-style). Returns ERR_NOTFOUND if no public port matches.
+- **ReplyMsg** syscall (20): R1=reply_port, R2=type, R3=data0, R4=data1, R5=share_handle → R2=err. Convenience wrapper over PutMsg to the reply port. Enables Exec-style request/reply service pattern.
+- **32-byte messages**: enlarged from 16 bytes. Fields: type (4B), sender (4B), data0 (8B), data1 (8B), reply_port (2B, 0xFFFF=none), share_handle (4B, 0=none). PutMsg/GetMsg/WaitPort ABI extended with R4-R6 for the new fields.
+- **8 ports** (up from 4): 160-byte port struct with 32-byte header (valid, owner, count, head, tail, flags, name[16]) + 4×32-byte message FIFO.
+- **User pointer safety**: CreatePort and FindPort validate user-provided name pointers by checking PTEs (P|R|U bits) before reading from user memory. Bad pointers return ERR_BADARG instead of crashing the kernel.
+- **Port cleanup on exit**: kill_task_cleanup clears name and flags on port invalidation, removing dead ports from FindPort immediately.
+- **New error codes**: ERR_EXISTS (8) for duplicate public port names, ERR_FULL (9) for FIFO-full condition (distinct from ERR_NOMEM).
+- **Kernel data layout shift**: port array grew from 288 to 1280 bytes; bitmap, region table, and shmem table offsets shifted accordingly.
 
-- `AllocShared` / `MapShared` for zero-copy bulk transfer
-- `SendMsgBulk` / `RecvMsgBulk`
-- Reference-counted shared memory regions
-
-### Milestone 9: Timers + Handles (Planned)
+### Milestone 8: Timers + Handles (Planned)
 
 - `AddTimer` / `RemTimer` with delta queue
 - `MapIO` / `MapVRAM` for user-space hardware access

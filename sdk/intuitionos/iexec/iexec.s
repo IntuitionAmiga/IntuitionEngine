@@ -1,9 +1,10 @@
 ; ============================================================================
-; IExec.library - IE64 Microkernel Nucleus (M5: Dynamic Tasks)
+; IExec.library - IE64 Microkernel Nucleus (M7: Named Ports + Reply Protocol)
 ; ============================================================================
 ;
 ; Amiga Exec-inspired protected microkernel for the IE64 CPU.
-; M5: Dynamic task creation/exit, 8-task round-robin scheduler, fault cleanup.
+; M7: Named public MsgPorts, FindPort discovery, request/reply messaging,
+;     shared-memory handoff through messages.
 ;
 ; Build:    sdk/bin/ie64asm -I sdk/include sdk/intuitionos/iexec/iexec.s
 ; Run:      bin/IntuitionEngine -ie64 iexec.ie64
@@ -210,13 +211,19 @@ iexec_start:
     store.q r1, (r5)                    ; PTBR[1]
 
     ; ---------------------------------------------------------------
-    ; 6b. Initialize port slots (all invalid)
+    ; 6b. Initialize port slots (all invalid, M7: 8 ports x 160 bytes)
     ; ---------------------------------------------------------------
     move.l  r2, #KERN_DATA_BASE
     add     r2, r2, #KD_PORT_BASE       ; R2 = &port[0]
     move.l  r4, #0
 .port_init_loop:
     store.b r0, KD_PORT_VALID(r2)       ; valid = 0
+    store.b r0, KD_PORT_FLAGS(r2)       ; flags = 0
+    ; Zero name field (16 bytes = 2 quad-words)
+    store.q r0, KD_PORT_NAME(r2)
+    add     r6, r2, #KD_PORT_NAME
+    add     r6, r6, #8
+    store.q r0, (r6)
     add     r2, r2, #KD_PORT_STRIDE
     add     r4, r4, #1
     move.l  r5, #KD_PORT_MAX
@@ -735,6 +742,153 @@ find_free_va:
     rts
 
 ; ============================================================================
+; M7: Port Name Helpers
+; ============================================================================
+
+; safe_copy_user_name: validate PTE and copy up to 16 bytes from user VA
+;   to kernel scratch buffer at KERN_DATA_BASE + KD_NAME_SCRATCH.
+; Input:  R1 = user VA (name pointer), R13 = current_task (for PTBR lookup)
+; Output: R23 = 0 on success, ERR_BADARG on failure
+; Clobbers: R14, R16, R17, R18, R19, R23, R24, R25, R26
+safe_copy_user_name:
+    push    r1
+    ; --- Validate PTE for first page ---
+    ; Compute VPN = VA >> 12
+    lsr     r14, r1, #12               ; R14 = VPN of name_ptr
+    ; Load caller's PTBR from PTBR array
+    move.l  r16, #KERN_DATA_BASE
+    lsl     r17, r13, #3               ; task_id * 8
+    add     r17, r17, #KD_PTBR_BASE
+    add     r17, r17, r16
+    load.q  r17, (r17)                 ; R17 = caller's PT base address
+    ; Load PTE at PT[VPN]
+    lsl     r18, r14, #3               ; VPN * 8 (PTE offset)
+    add     r18, r18, r17
+    load.q  r18, (r18)                 ; R18 = PTE
+    ; Check P|R|U (0x13)
+    and     r19, r18, #0x13
+    move.l  r24, #0x13
+    bne     r19, r24, .scun_bad
+
+    ; --- Validate PTE for last byte's page (name_ptr + 15) ---
+    pop     r1
+    push    r1
+    add     r14, r1, #15
+    lsr     r14, r14, #12               ; VPN of name_ptr+15
+    lsl     r18, r14, #3
+    add     r18, r18, r17
+    load.q  r18, (r18)
+    and     r19, r18, #0x13
+    bne     r19, r24, .scun_bad
+
+    ; --- Copy up to 16 bytes to scratch buffer ---
+    pop     r1                          ; restore user VA
+    move.l  r25, #KERN_DATA_BASE
+    add     r25, r25, #KD_NAME_SCRATCH  ; R25 = &scratch
+    move.l  r26, #0                     ; byte counter
+.scun_copy:
+    move.l  r24, #PORT_NAME_LEN
+    bge     r26, r24, .scun_ok
+    add     r14, r1, r26
+    load.b  r14, (r14)                  ; read byte from user memory
+    add     r18, r25, r26
+    store.b r14, (r18)                  ; write to scratch
+    beqz    r14, .scun_pad              ; NUL → zero-pad rest
+    add     r26, r26, #1
+    bra     .scun_copy
+.scun_pad:
+    ; Zero remaining bytes
+    add     r26, r26, #1
+.scun_pad_loop:
+    move.l  r24, #PORT_NAME_LEN
+    bge     r26, r24, .scun_ok
+    add     r18, r25, r26
+    store.b r0, (r18)
+    add     r26, r26, #1
+    bra     .scun_pad_loop
+.scun_ok:
+    move.q  r23, #0                     ; success
+    rts
+.scun_bad:
+    pop     r1                          ; balance stack
+    move.q  r23, #ERR_BADARG
+    rts
+
+; case_insensitive_cmp: compare two 16-byte buffers case-insensitively
+; Input:  R24 = ptr_a, R25 = ptr_b
+; Output: R23 = 0 if match, 1 if mismatch
+; Clobbers: R14, R16, R17, R18, R23, R26
+case_insensitive_cmp:
+    move.l  r26, #0                     ; byte counter
+.cic_loop:
+    move.l  r18, #PORT_NAME_LEN
+    bge     r26, r18, .cic_match
+    add     r14, r24, r26
+    load.b  r14, (r14)                  ; byte_a
+    add     r16, r25, r26
+    load.b  r16, (r16)                  ; byte_b
+    ; To upper: if 0x61 <= b <= 0x7A, subtract 0x20
+    move.l  r17, #0x61
+    blt     r14, r17, .cic_a_done
+    move.l  r17, #0x7B
+    bge     r14, r17, .cic_a_done
+    sub     r14, r14, #0x20
+.cic_a_done:
+    move.l  r17, #0x61
+    blt     r16, r17, .cic_b_done
+    move.l  r17, #0x7B
+    bge     r16, r17, .cic_b_done
+    sub     r16, r16, #0x20
+.cic_b_done:
+    bne     r14, r16, .cic_mismatch
+    add     r26, r26, #1
+    bra     .cic_loop
+.cic_match:
+    move.q  r23, #0
+    rts
+.cic_mismatch:
+    move.q  r23, #1
+    rts
+
+; check_name_unique: scan ports for a duplicate public name
+; Input:  scratch buffer at KERN_DATA_BASE + KD_NAME_SCRATCH already filled
+; Output: R23 = 0 if unique, 1 if duplicate found
+; Clobbers: R14, R16, R17, R18, R19, R20, R23, R24, R25, R26
+check_name_unique:
+    move.l  r19, #0                     ; port index
+    move.l  r20, #KERN_DATA_BASE
+    add     r20, r20, #KD_PORT_BASE     ; R20 = &port[0]
+.cnu_loop:
+    move.l  r18, #KD_PORT_MAX
+    bge     r19, r18, .cnu_unique
+    load.b  r14, KD_PORT_VALID(r20)
+    beqz    r14, .cnu_next
+    load.b  r14, KD_PORT_FLAGS(r20)
+    and     r14, r14, #PF_PUBLIC
+    beqz    r14, .cnu_next
+    ; Compare: port name at R20+KD_PORT_NAME vs scratch buffer
+    move.q  r24, r20
+    add     r24, r24, #KD_PORT_NAME     ; ptr_a = port name
+    move.l  r25, #KERN_DATA_BASE
+    add     r25, r25, #KD_NAME_SCRATCH  ; ptr_b = scratch
+    push    r19
+    push    r20
+    jsr     case_insensitive_cmp        ; R23 = 0 if match
+    pop     r20
+    pop     r19
+    beqz    r23, .cnu_dup               ; match found → duplicate
+.cnu_next:
+    add     r20, r20, #KD_PORT_STRIDE
+    add     r19, r19, #1
+    bra     .cnu_loop
+.cnu_unique:
+    move.q  r23, #0
+    rts
+.cnu_dup:
+    move.q  r23, #1
+    rts
+
+; ============================================================================
 ; Trap Handler
 ; ============================================================================
 
@@ -823,6 +977,9 @@ trap_handler:
     move.l  r11, #SYS_CREATE_PORT
     beq     r10, r11, .do_create_port
 
+    move.l  r11, #SYS_FIND_PORT
+    beq     r10, r11, .do_find_port
+
     move.l  r11, #SYS_PUT_MSG
     beq     r10, r11, .do_put_msg
 
@@ -831,6 +988,9 @@ trap_handler:
 
     move.l  r11, #SYS_WAIT_PORT
     beq     r10, r11, .do_wait_port
+
+    move.l  r11, #SYS_REPLY_MSG
+    beq     r10, r11, .do_reply_msg
 
     move.l  r11, #SYS_CREATE_TASK
     beq     r10, r11, .do_create_task
@@ -1101,12 +1261,17 @@ trap_handler:
 ; Message Port Syscalls
 ; ============================================================================
 
-; --- CreatePort ---
-; Returns R1=portID (0-3), R2=err
+; --- CreatePort (M7) ---
+; R1=name_ptr (0=anonymous), R2=flags → R1=portID (0-7), R2=err
 .do_create_port:
     move.l  r12, #KERN_DATA_BASE
     load.q  r13, (r12)              ; current_task
-    ; Scan for unused port slot
+    ; Save inputs
+    move.q  r7, r1                  ; R7 = name_ptr
+    move.q  r8, r2                  ; R8 = flags
+
+    ; --- Validation phase (no side effects) ---
+    ; 1. Find free port slot
     move.l  r20, #0                 ; port index
     move.l  r21, #KERN_DATA_BASE
     add     r21, r21, #KD_PORT_BASE ; R21 = &port[0]
@@ -1114,26 +1279,142 @@ trap_handler:
     move.l  r22, #KD_PORT_MAX
     bge     r20, r22, .create_full
     load.b  r23, KD_PORT_VALID(r21)
-    beqz    r23, .create_found
+    beqz    r23, .create_slot_found
     add     r21, r21, #KD_PORT_STRIDE
     add     r20, r20, #1
     bra     .create_scan
-.create_found:
+.create_slot_found:
+    ; R20 = slot index, R21 = &port[slot]. Do NOT write valid=1 yet.
+    ; 2. If name_ptr == 0, force-clear PF_PUBLIC and skip name validation
+    ;    (anonymous ports are always private per the documented model)
+    bnez    r7, .create_named
+    move.l  r23, #PF_PUBLIC
+    not     r23, r23
+    and     r8, r8, r23             ; clear PF_PUBLIC from flags
+    bra     .create_commit
+.create_named:
+
+    ; 3. Validate user pointer and copy name to scratch buffer
+    move.q  r1, r7                  ; R1 = name_ptr for safe_copy_user_name
+    push    r20
+    push    r21
+    push    r8
+    jsr     safe_copy_user_name     ; R23 = 0 on success, ERR_BADARG on failure
+    pop     r8
+    pop     r21
+    pop     r20
+    bnez    r23, .create_badarg
+
+    ; 4. If PF_PUBLIC, check name uniqueness
+    and     r23, r8, #PF_PUBLIC
+    beqz    r23, .create_commit
+    push    r20
+    push    r21
+    push    r8
+    jsr     check_name_unique       ; R23 = 0 if unique, 1 if dup
+    pop     r8
+    pop     r21
+    pop     r20
+    bnez    r23, .create_exists
+
+    ; --- Commit phase (no failures possible) ---
+.create_commit:
     move.b  r23, #1
     store.b r23, KD_PORT_VALID(r21)     ; valid = 1
     store.b r13, KD_PORT_OWNER(r21)     ; owner = current_task
     store.b r0, KD_PORT_COUNT(r21)      ; count = 0
     store.b r0, KD_PORT_HEAD(r21)       ; head = 0
     store.b r0, KD_PORT_TAIL(r21)       ; tail = 0
+    store.b r8, KD_PORT_FLAGS(r21)      ; flags
+    ; Zero name field
+    store.q r0, KD_PORT_NAME(r21)
+    add     r23, r21, #KD_PORT_NAME
+    add     r23, r23, #8
+    store.q r0, (r23)
+    ; If named, copy from scratch buffer to port name
+    beqz    r7, .create_done
+    move.l  r14, #KERN_DATA_BASE
+    add     r14, r14, #KD_NAME_SCRATCH  ; R14 = &scratch
+    add     r16, r21, #KD_PORT_NAME     ; R16 = &port.name
+    ; Copy 16 bytes (2 quad-words)
+    load.q  r17, (r14)
+    store.q r17, (r16)
+    add     r14, r14, #8
+    add     r16, r16, #8
+    load.q  r17, (r14)
+    store.q r17, (r16)
+.create_done:
     move.q  r1, r20                      ; R1 = portID
     move.q  r2, #ERR_OK
     eret
 .create_full:
     move.q  r2, #ERR_NOMEM
     eret
+.create_badarg:
+    move.q  r2, #ERR_BADARG
+    eret
+.create_exists:
+    move.q  r2, #ERR_EXISTS
+    eret
+
+; --- FindPort (M7) ---
+; R1=name_ptr → R1=portID, R2=err
+.do_find_port:
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r13, (r12)              ; current_task
+    ; Validate and copy user name to scratch buffer
+    push    r1
+    jsr     safe_copy_user_name     ; R23 = 0 on success
+    pop     r1
+    bnez    r23, .findport_badarg
+    ; Scan all ports for public name match
+    move.l  r19, #0                 ; port index
+    move.l  r20, #KERN_DATA_BASE
+    add     r20, r20, #KD_PORT_BASE
+.findport_loop:
+    move.l  r18, #KD_PORT_MAX
+    bge     r19, r18, .findport_notfound
+    load.b  r14, KD_PORT_VALID(r20)
+    beqz    r14, .findport_next
+    load.b  r14, KD_PORT_FLAGS(r20)
+    and     r14, r14, #PF_PUBLIC
+    beqz    r14, .findport_next
+    ; Compare port name against scratch
+    move.q  r24, r20
+    add     r24, r24, #KD_PORT_NAME
+    move.l  r25, #KERN_DATA_BASE
+    add     r25, r25, #KD_NAME_SCRATCH
+    push    r19
+    push    r20
+    jsr     case_insensitive_cmp    ; R23 = 0 if match
+    pop     r20
+    pop     r19
+    beqz    r23, .findport_found
+.findport_next:
+    add     r20, r20, #KD_PORT_STRIDE
+    add     r19, r19, #1
+    bra     .findport_loop
+.findport_found:
+    move.q  r1, r19                 ; R1 = portID
+    move.q  r2, #ERR_OK
+    eret
+.findport_notfound:
+    move.q  r2, #ERR_NOTFOUND
+    eret
+.findport_badarg:
+    move.q  r2, #ERR_BADARG
+    eret
+
+; --- ReplyMsg (M7) ---
+; R1=reply_port_id, R2=msg_type, R3=data0, R4=data1, R5=share_handle → R2=err
+; Implemented as PutMsg with share_handle moved to R6 and reply_port set to NONE
+.do_reply_msg:
+    move.q  r6, r5                  ; R6 = share_handle (was R5)
+    move.l  r5, #REPLY_PORT_NONE    ; R5 = 0xFFFF (no reply-to-reply)
+    ; Fall through to PutMsg
 
 ; --- PutMsg ---
-; R1=portID, R2=msg_type, R3=msg_data → R2=err
+; R1=portID, R2=msg_type, R3=data0, R4=data1, R5=reply_port, R6=share_handle → R2=err
 .do_put_msg:
     ; Validate portID
     move.l  r22, #KD_PORT_MAX
@@ -1160,10 +1441,13 @@ trap_handler:
     mulu    r26, r25, r26               ; tail * 16
     add     r26, r26, r21
     add     r26, r26, #KD_PORT_MSGS     ; R26 = &msg_slot
-    ; Write message fields
+    ; Write message fields (32 bytes)
     store.l r2, KD_MSG_TYPE(r26)        ; mn_Type = R2
     store.l r13, KD_MSG_SRC(r26)        ; mn_SrcTask = current_task
-    store.q r3, KD_MSG_DATA(r26)        ; mn_Data = R3
+    store.q r3, KD_MSG_DATA0(r26)       ; mn_Data0 = R3
+    store.q r4, KD_MSG_DATA1(r26)       ; mn_Data1 = R4
+    store.w r5, KD_MSG_REPLY_PORT(r26)  ; mn_ReplyPort = R5
+    store.l r6, KD_MSG_SHARE_HDL(r26)   ; mn_ShareHandle = R6
     ; Advance tail (mod 4)
     add     r25, r25, #1
     and     r25, r25, #3               ; tail = (tail + 1) & 3
@@ -1195,11 +1479,11 @@ trap_handler:
     move.q  r2, #ERR_BADARG
     eret
 .putmsg_full:
-    move.q  r2, #ERR_AGAIN
+    move.q  r2, #ERR_FULL
     eret
 
 ; --- GetMsg ---
-; R1=portID → R1=msg_type, R2=msg_data, R3=err
+; R1=portID → R1=msg_type, R2=data0, R3=err, R4=data1, R5=reply_port, R6=share_handle
 .do_get_msg:
     move.l  r22, #KD_PORT_MAX
     bge     r1, r22, .getmsg_badarg
@@ -1227,7 +1511,10 @@ trap_handler:
     add     r27, r27, r21
     add     r27, r27, #KD_PORT_MSGS     ; R27 = &msg_slot
     load.l  r1, KD_MSG_TYPE(r27)        ; R1 = msg_type
-    load.q  r2, KD_MSG_DATA(r27)        ; R2 = msg_data
+    load.q  r2, KD_MSG_DATA0(r27)       ; R2 = data0
+    load.q  r4, KD_MSG_DATA1(r27)       ; R4 = data1
+    load.w  r5, KD_MSG_REPLY_PORT(r27)  ; R5 = reply_port
+    load.l  r6, KD_MSG_SHARE_HDL(r27)   ; R6 = share_handle
     ; Advance head (mod 4)
     add     r26, r26, #1
     and     r26, r26, #3
@@ -1248,7 +1535,7 @@ trap_handler:
     eret
 
 ; --- WaitPort ---
-; R1=portID → R1=msg_type, R2=msg_data, R3=err
+; R1=portID → R1=msg_type, R2=data0, R3=err, R4=data1, R5=reply_port, R6=share_handle
 ; Loop: check port, if empty Wait(SIGF_PORT), recheck.
 .do_wait_port:
     ; Save portID in R5 (not clobbered by Wait internals)
@@ -1290,14 +1577,17 @@ trap_handler:
     store.q r13, (r12)
     bra     restore_task
 .waitport_dequeue:
-    ; Dequeue (same as GetMsg)
+    ; Dequeue (same as GetMsg, 32-byte message)
     load.b  r26, KD_PORT_HEAD(r21)
     move.l  r27, #KD_MSG_SIZE
     mulu    r27, r26, r27
     add     r27, r27, r21
     add     r27, r27, #KD_PORT_MSGS
     load.l  r1, KD_MSG_TYPE(r27)
-    load.q  r2, KD_MSG_DATA(r27)
+    load.q  r2, KD_MSG_DATA0(r27)
+    load.q  r4, KD_MSG_DATA1(r27)
+    load.w  r5, KD_MSG_REPLY_PORT(r27)
+    load.l  r6, KD_MSG_SHARE_HDL(r27)
     add     r26, r26, #1
     and     r26, r26, #3
     store.b r26, KD_PORT_HEAD(r21)
@@ -1934,6 +2224,11 @@ kill_task_cleanup:
     bne     r13, r24, .ktc_port_next
     store.b r0, KD_PORT_VALID(r20)
     store.b r0, KD_PORT_COUNT(r20)
+    store.b r0, KD_PORT_FLAGS(r20)       ; M7: clear flags (removes from FindPort)
+    store.q r0, KD_PORT_NAME(r20)        ; M7: clear name (bytes 0-7)
+    add     r22, r20, #KD_PORT_NAME
+    add     r22, r22, #8
+    store.q r0, (r22)                    ; M7: clear name (bytes 8-15)
 .ktc_port_next:
     add     r20, r20, #KD_PORT_STRIDE
     add     r21, r21, #1
@@ -2091,14 +2386,17 @@ restore_task:
     load.b  r25, KD_PORT_COUNT(r21)
     beqz    r25, .restore_waitport_spurious
 
-    ; Message available — dequeue
+    ; Message available — dequeue (32-byte message)
     load.b  r26, KD_PORT_HEAD(r21)
     move.l  r27, #KD_MSG_SIZE
     mulu    r27, r26, r27
     add     r27, r27, r21
     add     r27, r27, #KD_PORT_MSGS
     load.l  r1, KD_MSG_TYPE(r27)
-    load.q  r2, KD_MSG_DATA(r27)
+    load.q  r2, KD_MSG_DATA0(r27)
+    load.q  r4, KD_MSG_DATA1(r27)
+    load.w  r5, KD_MSG_REPLY_PORT(r27)
+    load.l  r6, KD_MSG_SHARE_HDL(r27)
     add     r26, r26, #1
     and     r26, r26, #3
     store.b r26, KD_PORT_HEAD(r21)
@@ -2185,36 +2483,84 @@ intr_handler:
 ; CreateTask with share_handle as arg0, print 'A' + yield loop.
 ; Child code is pre-loaded into task 0's data page during boot init.
 ; 12 instructions = 96 bytes. 'A' marker at instruction 5 (byte 40).
+; Task 0 (M7 demo): ECHO service with shared-memory reply.
+; Creates named "ECHO" port, allocates MEMF_PUBLIC shared memory, writes "HI",
+; waits for request, replies with share_handle. Proves named ports + request/reply
+; + share-handle-in-message handoff.
+; 24 instructions = 192 bytes.
 user_task0_template:
-    move.l  r1, #0x1000             ; 0: size = 4096 (one page)
-    move.l  r2, #0x10001            ; 1: MEMF_PUBLIC | MEMF_CLEAR
-    syscall #SYS_ALLOC_MEM          ; 2: R1=VA, R3=share_handle
-    move.l  r4, #0x53               ; 3: R4 = 'S'
-    store.b r4, (r1)                ; 4: [VA] = 'S' (R1 still has VA from AllocMem)
-    move.l  r1, #0x41               ; 5: 'A' ← findTaskTemplates marker (clobbers R1)
-    move.l  r1, #USER_DATA_BASE     ; 6: source = child code on data page
-    move.l  r2, #88                 ; 7: code_size = 11 instructions (child template)
-    syscall #SYS_CREATE_TASK        ; 8: R3 still = share_handle (arg0)
-    move.l  r1, #0x41               ; 9: reload 'A' for print
-    syscall #SYS_DEBUG_PUTCHAR      ; 10: print 'A'
-    syscall #SYS_EXIT_TASK          ; 11: exit cleanly
+    ; Write "ECHO\0" to data page at offset 128
+    move.l  r7, #USER_DATA_BASE
+    add     r7, r7, #128            ; 0-1: R7 = &data[128]
+    move.l  r8, #0x4F484345         ; 2: "ECHO" in little-endian
+    store.l r8, (r7)                ; 3: write "ECHO"
+    store.b r0, 4(r7)               ; 4: NUL terminator
+    move.l  r1, #0x41               ; 5: 'A' ← findTaskTemplates marker
+    ; CreatePort("ECHO", PF_PUBLIC)
+    move.l  r1, r7                  ; 6: R1 = name_ptr
+    move.l  r2, #PF_PUBLIC          ; 7: R2 = flags
+    syscall #SYS_CREATE_PORT        ; 8: → R1=portID (always 0, first port)
+    ; AllocMem(4096, MEMF_PUBLIC|MEMF_CLEAR)
+    move.l  r1, #0x1000             ; 9: size = 4096
+    move.l  r2, #0x10001            ; 10: MEMF_PUBLIC | MEMF_CLEAR
+    syscall #SYS_ALLOC_MEM          ; 11: → R1=VA, R3=share_handle
+    ; Write "HI" to shared memory (MEMF_CLEAR ensures NUL at +2)
+    move.l  r8, #0x4948             ; 12: "HI" in LE
+    store.w r8, (r1)                ; 13: write "HI"
+    ; Save share_handle to data page (survives WaitPort context switch)
+    move.l  r8, #USER_DATA_BASE     ; 14
+    store.q r3, 256(r8)             ; 15: data[256] = share_handle
+    ; WaitPort(port 0) → receives request with R5=reply_port
+    move.q  r1, r0                  ; 16: R1 = 0 (echo_port is always port 0)
+    syscall #SYS_WAIT_PORT          ; 17: blocks → R5=reply_port
+    ; ReplyMsg(reply_port, type='!', share_handle from data page)
+    move.q  r1, r5                  ; 18: R1 = reply_port
+    move.l  r2, #0x21               ; 19: type = '!'
+    move.l  r8, #USER_DATA_BASE     ; 20
+    load.q  r5, 256(r8)             ; 21: R5 = share_handle
+    syscall #SYS_REPLY_MSG          ; 22: reply with handle
+    syscall #SYS_EXIT_TASK          ; 23: done
 user_task0_template_end:
 
-; Task 1 (M6 demo): simple yield loop printing 'B'.
-; 12 instructions = 96 bytes.
+; Task 1 (M7 demo): ECHO client with shared-memory read.
+; Finds "ECHO" port, sends request with reply port, receives reply with
+; share_handle, maps shared memory, reads and prints greeting string.
+; Proves FindPort + request/reply + MapShared from message handle.
+; 24 instructions = 192 bytes.
 user_task1_template:
-.t1_loop:
-    move.l  r1, #0x42              ; 0: 'B'
-    syscall #SYS_DEBUG_PUTCHAR     ; 1
-    syscall #SYS_YIELD             ; 2
-    bra     .t1_loop               ; 3
-    move.q  r0, r0                 ; 4-11: pad
-    move.q  r0, r0
-    move.q  r0, r0
-    move.q  r0, r0
-    move.q  r0, r0
-    move.q  r0, r0
-    move.q  r0, r0
+    ; Write "ECHO\0" to data page at offset 128 (task 1 data = $612000)
+    move.l  r7, #0x612080              ; 0: R7 = task1_data + 128
+    move.l  r8, #0x4F484345            ; 1: "ECHO"
+    store.l r8, (r7)                   ; 2: write name
+    store.b r0, 4(r7)                  ; 3: NUL
+    ; CreatePort(anonymous) → reply port
+    move.q  r1, r0                     ; 4: R1=0 (anonymous)
+    move.q  r2, r0                     ; 5: R2=0 (no flags)
+    syscall #SYS_CREATE_PORT           ; 6: → R1=reply_portID
+    move.q  r9, r1                     ; 7: save reply_port in R9
+    ; FindPort("ECHO")
+    move.q  r1, r7                     ; 8: R1 = name_ptr
+    syscall #SYS_FIND_PORT             ; 9: → R1=echo_portID
+    ; PutMsg(echo_port, type='Q', reply_port=R9)
+    move.l  r2, #0x51                  ; 10: type = 'Q' (R1 = echo_port from FindPort)
+    move.q  r5, r9                     ; 11: R5 = reply_port
+    move.q  r6, r0                     ; 12: R6 = 0 (no share_handle outbound)
+    syscall #SYS_PUT_MSG               ; 13: send request
+    ; WaitPort(reply_port) → R6=share_handle from reply
+    move.q  r1, r9                     ; 14: R1 = reply_port
+    syscall #SYS_WAIT_PORT             ; 15: → R6=share_handle
+    ; MapShared(share_handle) → R1=mapped_VA
+    move.q  r1, r6                     ; 16: R1 = share_handle from reply
+    syscall #SYS_MAP_SHARED            ; 17: → R1=mapped_VA
+    ; Read first byte from shared memory and print it
+    load.b  r1, (r1)                   ; 18: R1 = 'H' (from "HI" in shared mem)
+    syscall #SYS_DEBUG_PUTCHAR         ; 19: print 'H'
+    ; Idle loop (keeps a runnable task so the kernel doesn't deadlock)
+.t1_idle:
+    syscall #SYS_YIELD                 ; 20
+    bra     .t1_idle                   ; 21
+    ; Pad to 24 instructions
+    move.q  r0, r0                     ; 22-23: nop
     move.q  r0, r0
 user_task1_template_end:
 
@@ -2245,7 +2591,7 @@ child_task_template_end:
 ; ============================================================================
 
 boot_banner:
-    dc.b    "IExec M6 boot", 0x0A, 0
+    dc.b    "IExec M7 boot", 0x0A, 0
     align   4
 
 fault_msg_prefix:

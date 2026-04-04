@@ -54,6 +54,8 @@ ERR_NOTFOUND      equ 4
 ERR_PERM          equ 5
 ERR_AGAIN         equ 6
 ERR_TOOLARGE      equ 7
+ERR_EXISTS        equ 8
+ERR_FULL          equ 9
 
 ; ===========================================================================
 ; Fault Causes
@@ -89,21 +91,23 @@ KERN_STACK_TOP    equ 0x09F000    ; Kernel stack top
 ; ---------------------------------------------------------------------------
 ; Kernel Data Offsets (at KERN_DATA_BASE)
 ; ---------------------------------------------------------------------------
-; Layout (M6, 8 tasks):
+; Layout (M7, 8 tasks):
 ;   +0:    current_task (8)
 ;   +8:    tick_count (8)
 ;   +16:   num_tasks (8)
+;   +24:   nonce_counter (8)
 ;   +64:   TCB[0..7] (8 x 32 = 256 bytes)              → ends at 320
 ;   +320:  PTBR[0..7] (8 x 8 = 64 bytes)               → ends at 384
-;   +384:  Port[0..3] (4 x 72 = 288 bytes)              → ends at 672
-;   +672:  Page bitmap (800 bytes)                       → ends at 1472
-;   +1472: Region table (8 tasks x 8 x 16 = 1024 bytes) → ends at 2496
-;   +2496: Shared object table (8 x 16 = 128 bytes)     → ends at 2624
+;   +384:  Port[0..7] (8 x 160 = 1280 bytes)            → ends at 1664
+;   +1664: Page bitmap (800 bytes)                       → ends at 2464
+;   +2464: Region table (8 tasks x 8 x 16 = 1024 bytes) → ends at 3488
+;   +3488: Shared object table (8 x 16 = 128 bytes)     → ends at 3616
 
 KD_CURRENT_TASK   equ 0           ; uint64: current task index
 KD_TICK_COUNT     equ 8           ; uint64: tick counter
 KD_NUM_TASKS      equ 16          ; uint64: number of active tasks
 KD_NONCE_COUNTER  equ 24          ; uint64: monotonic counter for share handle nonces
+KD_NAME_SCRATCH   equ 32          ; 16-byte scratch buffer for port name operations
 
 ; ---------------------------------------------------------------------------
 ; Task Control Block (TCB) — 32 bytes per task
@@ -146,29 +150,41 @@ SIG_SYSTEM_MASK   equ 0xFFFF
 KD_PTBR_BASE      equ 320         ; offset of PTBR array (after 8 TCBs)
 
 ; ===========================================================================
-; Message Port Layout (M4)
+; Message Port Layout (M7)
 ; ===========================================================================
-; 4 ports max, 72 bytes each, starting at offset 384 in kernel data
-; Each port: 8-byte header + 4 × 16-byte messages (FIFO)
+; 8 ports max, 160 bytes each, starting at offset 384 in kernel data
+; Each port: 32-byte header (with name) + 4 × 32-byte messages (FIFO)
 
 KD_PORT_BASE      equ 384         ; start of port array (after PTBR array)
-KD_PORT_STRIDE    equ 72          ; bytes per port
-KD_PORT_MAX       equ 4           ; max number of ports
+KD_PORT_STRIDE    equ 160         ; bytes per port
+KD_PORT_MAX       equ 8           ; max number of ports
 KD_PORT_FIFO_SIZE equ 4           ; messages per port FIFO
 
-; Port header field offsets (relative to port base)
+; Port header field offsets (relative to port base, 32-byte header)
 KD_PORT_VALID     equ 0           ; 1=active, 0=unused (1 byte)
 KD_PORT_OWNER     equ 1           ; owning task ID (1 byte)
 KD_PORT_COUNT     equ 2           ; messages in FIFO, 0-4 (1 byte)
 KD_PORT_HEAD      equ 3           ; read index, 0-3 (1 byte)
 KD_PORT_TAIL      equ 4           ; write index, 0-3 (1 byte)
-KD_PORT_MSGS      equ 8           ; start of message array (4 × 16 bytes)
+KD_PORT_FLAGS     equ 5           ; port flags (PF_PUBLIC etc.) (1 byte)
+KD_PORT_NAME      equ 8           ; port name, 16 bytes, zero-padded ASCII
+KD_PORT_MSGS      equ 32          ; start of message array (4 × 32 bytes)
 
-; Message field offsets (relative to message base, 16 bytes per message)
+; Port flags
+PF_PUBLIC         equ 1           ; port is publicly discoverable via FindPort
+PORT_NAME_LEN     equ 16          ; max port name length (bytes)
+
+; Message field offsets (relative to message base, 32 bytes per message)
 KD_MSG_TYPE       equ 0           ; application-defined type (4 bytes)
 KD_MSG_SRC        equ 4           ; sender task ID (4 bytes)
-KD_MSG_DATA       equ 8           ; payload data (8 bytes)
-KD_MSG_SIZE       equ 16          ; bytes per message
+KD_MSG_DATA0      equ 8           ; payload data word 0 (8 bytes)
+KD_MSG_DATA1      equ 16          ; payload data word 1 (8 bytes)
+KD_MSG_REPLY_PORT equ 24          ; reply port ID, 0xFFFF=none (2 bytes)
+KD_MSG_SHARE_HDL  equ 26          ; share handle, 0=none (4 bytes)
+KD_MSG_SIZE       equ 32          ; bytes per message
+
+; Reply port sentinel
+REPLY_PORT_NONE   equ 0xFFFF      ; no reply port
 
 ; ===========================================================================
 ; User Space Layout (M5: slot-based, 8 tasks)
@@ -184,7 +200,7 @@ USER_CODE_BASE    equ 0x600000    ; Task code pages (physical)
 USER_STACK_BASE   equ 0x601000    ; Task stack pages
 USER_DATA_BASE    equ 0x602000    ; Task data pages
 USER_SLOT_STRIDE  equ 0x10000     ; 64 KiB between task slots
-USER_CODE_SIZE    equ 96          ; 12 instructions x 8 bytes (boot template)
+USER_CODE_SIZE    equ 192         ; 24 instructions x 8 bytes (boot template)
 
 ; VPN bases (addr >> 12)
 USER_CODE_VPN_BASE  equ 0x600    ; 0x600000 >> 12
@@ -230,11 +246,11 @@ USER_DYN_STRIDE   equ 0x100000    ; 1 MB per task window (256 pages)
 USER_DYN_PAGES    equ 256         ; max pages per task dynamic window
 
 ; ---------------------------------------------------------------------------
-; Page Bitmap — 800 bytes at kernel data offset 672
+; Page Bitmap — 800 bytes at kernel data offset 1664
 ; ---------------------------------------------------------------------------
 ; Bit N = 1 means page (ALLOC_POOL_BASE + N) is in use.
 
-KD_PAGE_BITMAP    equ 672         ; page allocation bitmap
+KD_PAGE_BITMAP    equ 1664        ; page allocation bitmap
 KD_PAGE_BITMAP_SZ equ 800         ; 6400 bits = 800 bytes
 
 ; ---------------------------------------------------------------------------
@@ -242,7 +258,7 @@ KD_PAGE_BITMAP_SZ equ 800         ; 6400 bits = 800 bytes
 ; ---------------------------------------------------------------------------
 ; Address: KERN_DATA_BASE + KD_REGION_TABLE + (task_id * KD_REGION_TASK_SZ) + (i * KD_REGION_STRIDE)
 
-KD_REGION_TABLE   equ 1472        ; region table base
+KD_REGION_TABLE   equ 2464        ; region table base
 KD_REGION_STRIDE  equ 16          ; bytes per region entry
 KD_REGION_MAX     equ 8           ; max regions per task
 KD_REGION_TASK_SZ equ 128         ; 8 regions x 16 bytes per task
@@ -265,7 +281,7 @@ REGION_SHARED     equ 2
 ; ---------------------------------------------------------------------------
 ; Address: KERN_DATA_BASE + KD_SHMEM_TABLE + (slot * KD_SHMEM_STRIDE)
 
-KD_SHMEM_TABLE    equ 2496        ; shared object table base
+KD_SHMEM_TABLE    equ 3488        ; shared object table base
 KD_SHMEM_STRIDE   equ 16          ; bytes per shared object entry
 KD_SHMEM_MAX      equ 8           ; max shared objects system-wide
 
