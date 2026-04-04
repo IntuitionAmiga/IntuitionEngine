@@ -45,10 +45,10 @@ The IE64 addresses a 32 MB physical address space. IExec partitions it as follow
 |--------|---------------|------|--------|---------|
 | Kernel code + data | `$000000-$09FFFF` | 640 KB | Supervisor only | Kernel binary, page tables, TCBs, kernel stack |
 | Hardware I/O (low) | `$0A0000-$0FFFFF` | 384 KB | Supervisor (identity-mapped) | Terminal MMIO, low I/O registers |
-| VRAM / high I/O | `$100000-$5FFFFF` | 5 MB | Supervisor (partially mapped) | Video framebuffer, tile maps, sprite data |
+| VRAM / high I/O | `$100000-$5FFFFF` | 5 MB | Supervisor (partially mapped) | Video memory and higher MMIO space |
 | User space | `$600000-$1FFFFFF` | 26 MB | User (per-task mapped) | Task code, data, stacks, heap, shared memory |
 
-**Kernel page table**: Identity-maps pages 0-383 (`$000000-$17FFFF`) as supervisor-only (P|R|W|X, no U). This covers the kernel region, low hardware I/O (including terminal MMIO at `$F0700` = page `$F0`), and the lower portion of VRAM/high I/O. Regions above `$17FFFF` are not mapped by the kernel PT — user-space drivers will gain access via `MapIO`/`MapVRAM` syscalls in a future milestone. User pages are only mapped in per-task page tables, not the kernel PT.
+**Kernel page table**: Identity-maps pages 0-383 (`$000000-$17FFFF`) as supervisor-only (P|R|W|X, no U). This covers the kernel region, low hardware I/O (including terminal MMIO at `$F0700` = page `$F0`), and the lower portion of VRAM/high I/O. Regions above `$17FFFF` are not mapped by the kernel PT - user-space drivers will gain access via `MapIO`/`MapVRAM` syscalls in a future milestone. User pages are only mapped in per-task page tables, not the kernel PT.
 
 ### 2.2 Kernel Memory Layout (Detail)
 
@@ -99,11 +99,11 @@ Shared memory regions are created via `AllocMem(MEMF_PUBLIC)`, which returns a V
 
 ### 3.1 Task Creation
 
-Tasks 0 and 1 are created statically at boot time. From Milestone 5, additional tasks can be created at runtime via `CreateTask` (syscall #5). The kernel allocates a TCB slot, builds a per-task page table, copies code from the caller's address space, and starts the child in user mode. Tasks exit via `ExitTask` (syscall #34), which cleans up ports and signals and frees the slot.
+At boot, the kernel loads bundled program images into free task slots via the internal `load_program` helper. From Milestone 5 onward, additional tasks can also be created at runtime via `CreateTask` (syscall #5). The kernel allocates a TCB slot, builds a per-task page table, copies code from the caller's address space, and starts the child in user mode. Tasks exit via `ExitTask` (syscall #34), which cleans up ports and signals and frees the slot.
 
 ### 3.2 Task Control Block (TCB)
 
-**Milestone 1 (simplified)**: Each task is described by a minimal per-task record. GPR save/restore is not yet implemented — user tasks must reload their own registers after yield.
+**Milestone 1 (simplified)**: Each task is described by a minimal per-task record. GPR save/restore is not yet implemented - user tasks must reload their own registers after yield.
 
 | Offset | Size | Field | Description |
 |--------|------|-------|-------------|
@@ -165,7 +165,7 @@ The CPU traps to supervisor mode. The kernel's trap handler reads the syscall nu
 | R31 (SP) | Stack pointer | Yes (preserved via USP) |
 | R0 | Zero register (hardwired) | N/A |
 
-**Current limitation (IExec M2):** The kernel does not yet save or restore R1-R30 in the TCB. The syscall dispatch logic clobbers R10-R16 internally. User code must assume all registers except R1, R2, and SP are unreliable after a syscall.
+**Current limitation (IExec M8):** The kernel does not yet save or restore R1-R30 in the TCB. The syscall dispatch logic clobbers R10-R16 internally. User code must assume all registers except R1, R2, and SP are unreliable after a syscall.
 
 **Target:** A future IExec milestone will save and restore the full GPR set (R1-R30) in the TCB on every context switch, at which point callee-saved registers (R13-R15 per the [IE64 ABI v0](../IE64_ABI.md)) will be reliably preserved across syscalls.
 
@@ -406,52 +406,50 @@ Each task has a per-task handle table mapping 32-bit handles to kernel objects. 
 
 ## 10. Bootstrap Sequence
 
-The kernel boots in supervisor mode at `$1000` (PROG_START) and performs the following steps:
+The M8 kernel boots in supervisor mode at `$1000` (PROG_START) and performs the following steps:
 
 ```
- 1. MOVE R1, #trap_handler_addr
-    MTCR CR_TRAP_VEC, R1           ; Set trap vector (syscall + fault entry)
+ 1. Set trap vector, interrupt vector, and kernel stack pointer
 
- 2. MOVE R1, #intr_handler_addr
-    MTCR CR_INTR_VEC, R1           ; Set interrupt vector (timer preemption)
+ 2. Build the kernel page table at $10000:
+    - Identity-map pages 0-383 ($000000-$17FFFF) as supervisor-only
 
- 3. MOVE R1, #$9F000
-    MTCR CR_KSP, R1                ; Set kernel stack pointer
+ 3. Initialize kernel data:
+    - current_task = 0
+    - tick_count = 0
+    - num_tasks = 0
+    - all 8 TCB slots = FREE
+    - all 8 ports = invalid
 
- 4. Build kernel page table at $10000:
-    - Identity-map pages 0-383 ($000000-$17FFFF) as P|R|W|X (supervisor only)
-    - Add supervisor-only mappings for all user pages ($600000+) as P|R|W
-      (enables CreateTask cross-address-space code copy)
+ 4. Enable the MMU using the kernel page table
 
- 5. Build per-task page tables at $100000 + i*$10000 (up to 8 tasks):
-    - Copy kernel supervisor mappings (pages 0-383 + user page supervisor entries)
-    - Add user-accessible pages for this task's code (P|R|X|U),
-      stack (P|R|W|U), and data (P|R|W|U)
+ 5. Print the boot banner:
+    - "IExec M8 boot"
 
- 6. MOVE R1, #$10000
-    MTCR CR_PTBR, R1               ; Set page table base register
-    MOVE R1, #1
-    MTCR CR_MMU_CTRL, R1           ; Enable MMU
+ 6. Iterate the static program table:
+    - validate each bundled image header
+    - find a free task slot
+    - copy code/data into that slot's user pages
+    - build the slot's page table
+    - initialize the slot's TCB and PTBR entry
+    - increment num_tasks
+    - skip invalid images and continue
 
- 7. Program hardware timer:
-    MTCR CR_TIMER_PERIOD, #period  ; Timer period (ticks per quantum)
-    MTCR CR_TIMER_COUNT, #period   ; Initial count
-    MTCR CR_TIMER_CTRL, #3         ; Enable timer + enable interrupts
+ 7. Program the hardware timer:
+    - set period
+    - set initial count
+    - enable timer + interrupts
 
- 8. Initialize TCBs for each task (PC, USP, PTBR, state=READY)
+ 8. If num_tasks == 0:
+    - print "PANIC: no programs loaded"
+    - halt
 
- 9. Switch to task 0's page table:
-    MTCR CR_PTBR, task0_ptbr
-    TLBFLUSH
+ 9. Switch to the first loaded task's PTBR, USP, and PC
 
-10. Set user entry point and stack:
-    MTCR CR_USP, task0_stack_top
-    MTCR CR_FAULT_PC, task0_entry
-
-11. ERET                            ; Enter user mode at task 0's entry point
+10. Execute ERET to enter user mode
 ```
 
-After ERET, the kernel only runs in response to traps (SYSCALL, page faults) and interrupts (timer).
+After `ERET`, the kernel only runs in response to traps (syscalls, page faults) and interrupts (timer).
 
 ---
 
@@ -463,7 +461,7 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 |--------------------|------------------|--------------|
 | Flat supervisor space, no MMU | Per-task page tables, MMU-enforced user/supervisor | Hardware protection; tasks cannot corrupt each other or the kernel |
 | `AddTask()` with `tc_SPLower`/`tc_SPUpper` | `CreateTask` with kernel-allocated pages | Stack is a mapped page region, not a raw pointer range |
-| `Signal()`/`Wait()` with 32-bit mask | Same API, same 32-bit mask | Unchanged -- the model is perfect as-is |
+| `Signal()`/`Wait()` with 32-bit mask | Same API, same 32-bit mask | Unchanged - the model is perfect as-is |
 | `MsgPort` + `Message` (linked list in shared memory) | Named kernel-managed ports with 32-byte copy-in/copy-out messages | No shared-memory message headers; kernel copies payload for safety; named public ports discoverable via FindPort (case-insensitive, Amiga-style) |
 | `FindPort()` + `PutMsg()`/`GetMsg()` service pattern | `FindPort` + `PutMsg`/`WaitPort`/`ReplyMsg` with reply_port and share_handle | Same Exec service model: create named port, client discovers it, sends request, server replies. Share handles can be carried in messages for protected memory handoff. |
 | `AllocMem()`/`FreeMem()` from memory pools | `AllocMem`/`FreeMem` backed by page allocator + per-task mapping; `MEMF_PUBLIC` with opaque share handles | Returns virtual addresses; kernel manages physical page pool; sharing via capability handles not flat pointers |
@@ -484,7 +482,7 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 **Implemented and tested:**
 
 - Standalone kernel binary (`make intuitionos` assembles `sdk/intuitionos/iexec/iexec.s`)
-- Self-sufficient boot: kernel builds its own page tables, creates user tasks, and initializes all scheduler state — no host-side setup required
+- Self-sufficient boot: kernel builds its own page tables, creates user tasks, and initializes all scheduler state - no host-side setup required
 - Kernel boots at `$1000` in supervisor mode with MMU off, performs all init, then enables MMU
 - Kernel page table: identity-mapped supervisor pages (0-383)
 - Per-task page tables: copies kernel mappings + adds user code/stack/data pages with U bit
@@ -503,9 +501,9 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 
 **Implemented and tested (builds on Milestone 1):**
 
-- Boot banner: kernel prints "IExec M8 boot\n" to TERM_OUT before entering user mode
+- Boot banner and early debug terminal output were introduced here. The current banner text is `"IExec M8 boot\n"` because later milestones kept extending the same kernel image.
 - `DebugPutChar` syscall (33): write a single character to the debug terminal (TERM_OUT at `$F0700`)
-- Visible demo (M8): 4 bundled user-space services loaded at boot: CONSOLE (text output service), ECHO (request/reply + shared memory), CLOCK (periodic tick output), CLIENT (ECHO exerciser). All visible output originates from loaded user programs via the CONSOLE service. Expected output: ONLINE announcements with task IDs, "CLIENT: REQUESTING...", "ECHO: REPLY OK", "SHARED: HELLO FROM ECHO", then periodic dots from CLOCK.
+- Milestone 2 originally used simple built-in demo tasks for visible output. The richer four-service demo belongs to Milestone 8.
 - Fault reporting: on non-SYSCALL faults, kernel prints "FAULT cause=NNNN PC=$XXXX ADDR=$XXXX\n" to the debug terminal then halts
 
 ### Milestone 3: Signals (Complete)
@@ -514,7 +512,7 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 
 - `AllocSignal` syscall (11): allocate a signal bit from the user range (bits 16-31); R1=bit hint (-1 for auto-assign), returns R1=allocated bit number, R2=err
 - `FreeSignal` syscall (12): release a previously allocated signal bit; R1=bit to free, returns R2=err
-- `Signal` syscall (13): send signals to another task; R1=target task ID, R2=signal mask — sets bits in target's pending signal word, wakes a WAITING target if signals match its wait mask
+- `Signal` syscall (13): send signals to another task; R1=target task ID, R2=signal mask - sets bits in target's pending signal word, wakes a WAITING target if signals match its wait mask
 - `Wait` syscall (14): block until matching signals arrive; R1=signal mask, blocks the calling task (state transitions to WAITING), returns R1=received signals when woken
 - Per-task signal state: `sig_alloc` (allocated bit mask), `sig_wait` (wait mask), `sig_recv` (pending/received signals), task state (READY/RUNNING/WAITING)
 - Scheduler skips tasks in WAITING state; shared restore path delivers Wait return values when `sig_wait != 0`
@@ -577,15 +575,15 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 
 **Implemented and tested (builds on Milestone 7):**
 
-- **IE64 program image format**: 32-byte fixed header (magic "IE64PROG", code_size, data_size, flags) followed by code and data sections. No ELF, no relocations, no entry offset — entry is always code offset 0. Max one page (4 KiB) each for code and data.
+- **IE64 program image format**: 32-byte fixed header (magic "IE64PROG", code_size, data_size, flags) followed by code and data sections. No ELF, no relocations, no entry offset - entry is always code offset 0. Max one page (4 KiB) each for code and data.
 - **Static program table**: kernel-embedded array of (image_ptr, image_size) entries, sentinel-terminated. Boot code iterates the table and calls `load_program` for each entry.
-- **Boot-time loader** (`load_program`): validates image header (magic, sizes, alignment, truncation check), finds free task slot, copies code and data to task pages, builds page table, initializes TCB. Validate-then-commit pattern. Not a syscall — kernel-internal only.
+- **Boot-time loader** (`load_program`): validates image header (magic, sizes, alignment, truncation check), finds free task slot, copies code and data to task pages, builds page table, initializes TCB. Validate-then-commit pattern. Not a syscall - kernel-internal only.
 - **Standard startup preamble**: programs compute own base addresses via `GetSysInfo(CURRENT_TASK)` + slot arithmetic. No startup arguments in registers (GPRs don't survive initial dispatch). Data page starts with image data section at offset 0.
 - **4 bundled user-space services**:
-  - **CONSOLE**: creates public "CONSOLE" port, prints own ONLINE banner directly, loops receiving messages and printing data0 as chars. Text output service — all programs send through CONSOLE.
-  - **ECHO**: finds CONSOLE, announces online, creates "ECHO" port, allocates shared memory with greeting string, waits for request, replies with share_handle.
-  - **CLOCK**: finds CONSOLE, announces online, polls tick_count via GetSysInfo, sends '.' to CONSOLE every 128 ticks. Polling-based (no timer syscall yet).
-  - **CLIENT**: finds CONSOLE and ECHO, announces online, sends request to ECHO, receives share_handle in reply, MapShared, sends "SHARED: " + greeting chars to CONSOLE.
+- **CONSOLE**: creates public "CONSOLE" port, prints own ONLINE banner directly, loops receiving messages and printing data0 as chars. Text output service - all programs send through CONSOLE.
+- **ECHO**: finds CONSOLE, announces online, creates "ECHO" port, allocates shared memory with greeting string, waits for request, replies with share_handle.
+- **CLOCK**: finds CONSOLE, announces online, polls tick_count via GetSysInfo, sends '.' to CONSOLE every 32 ticks. Polling-based (no timer syscall yet).
+- **CLIENT**: finds CONSOLE and ECHO, announces online, sends request to ECHO, receives share_handle in reply, `MapShared`, then sends "SHARED: " + greeting chars to CONSOLE.
 - **All visible output from user space**: kernel only prints boot banner. Every service announcement, request/reply narration, and periodic tick comes from loaded user programs.
 - **Retired**: hardcoded task templates (user_task0_template, user_task1_template, child_task_template), USER_CODE_SIZE constant. Kernel is now mechanism-only.
 
