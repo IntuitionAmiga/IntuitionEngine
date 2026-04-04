@@ -1085,7 +1085,7 @@ On reset the CPU is in supervisor mode. Transitioning to user mode is done via E
 
 ### 12.2 Control Registers
 
-Thirteen control registers manage the MMU, thread state, timer, and stack switching. They are accessed via MTCR (write) and MFCR (read).
+Fourteen control registers manage the MMU, thread state, timer, stack switching, and trap state. They are accessed via MTCR (write) and MFCR (read).
 
 | CR | Name | R/W | Description |
 |----|------|-----|-------------|
@@ -1102,6 +1102,7 @@ Thirteen control registers manage the MMU, thread state, timer, and stack switch
 | CR10 | TIMER_COUNT | RW | Current timer countdown value. Supervisor-only. |
 | CR11 | TIMER_CTRL | RW | Bit 0 = timer enable, Bit 1 = interrupt enable. SEI/CLI are aliases for setting/clearing bit 1. Supervisor-only. |
 | CR12 | USP | RW | Saved User Stack Pointer. Readable/writable in supervisor mode for context switch. Set automatically on user-to-supervisor transition. Supervisor-only. |
+| CR13 | PREV_MODE | RO | Previous privilege mode saved by `trapEntry`: 0 = trap came from user mode, 1 = trap came from supervisor mode. Read-only; set automatically on any trap/interrupt entry. Used by fault handlers to distinguish user faults (kill task) from kernel faults (panic). |
 
 **PTBR** must point to the start of the page table in physical memory. The page table is 64 KiB (8192 entries x 8 bytes) and must be naturally aligned.
 

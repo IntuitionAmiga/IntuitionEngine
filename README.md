@@ -5976,14 +5976,13 @@ make aros               # Build VM with embedded AROS ROM
 
 IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. Unlike classic Amiga Exec, which ran everything in flat supervisor space with no memory protection, IExec uses the IE64 MMU to enforce hardware-backed user/supervisor privilege separation with per-task page tables and W^X memory policy. The design preserves the Amiga programming model (signals, message ports, priority scheduling) while adding the isolation guarantees of a modern protected-mode OS.
 
-**Milestone 4 status** — Message Ports (implemented and tested):
+**Milestone 5 status** — Dynamic Tasks (implemented and tested):
 
-- Everything from M1-M3: self-sufficient boot, per-task page tables with W^X, trap dispatch, two-task preemptive round-robin scheduler, boot banner, DebugPutChar, fault reporting, scheduler heartbeat, AllocSignal/FreeSignal/Signal/Wait, deadlock detection
-- `CreatePort` syscall (15): creates an anonymous port owned by the calling task; returns port ID (0-3)
-- `PutMsg` syscall (17): send a fixed-size message to a port; any task may send; sets SIGF_PORT (bit 0) on owner and wakes WAITING owner
-- `GetMsg` syscall (18): dequeue a message from an owned port; returns msg_type, msg_data, err
-- `WaitPort` syscall (19): blocking receive — dequeues if available, otherwise Wait(SIGF_PORT) with recheck loop for spurious wakes
-- Fixed-size 16-byte messages (4-byte type, 4-byte source task, 8-byte data) with register-based ABI — no memory-to-memory copy
-- 4 ports max, 4-message FIFO per port, SIGF_PORT-based wakeup integrating with the M3 signal infrastructure
+- Everything from M1-M4: self-sufficient boot, per-task page tables with W^X, trap dispatch, preemptive round-robin scheduler, boot banner, DebugPutChar, fault reporting, scheduler heartbeat, AllocSignal/FreeSignal/Signal/Wait, deadlock detection, CreatePort/PutMsg/GetMsg/WaitPort message ports
+- `CreateTask` syscall (5): dynamically create a new task at runtime from code in the caller's address space; kernel builds a per-task page table, copies code, and starts the child in user mode; up to 8 concurrent tasks
+- `ExitTask` syscall (34): terminate the current task, clean up owned ports and signals, free the slot
+- Round-robin scheduler across 8 task slots with `find_next_runnable` subroutine
+- Fault cleanup with privilege split: user-mode faults kill only the faulting task; supervisor-mode faults halt with KERNEL PANIC
+- Slot-based physical memory allocation: each task slot gets pre-reserved code, stack, data, and page table pages
 
 Full kernel contract reference: [sdk/docs/IntuitionOS/IExec.md](sdk/docs/IntuitionOS/IExec.md)

@@ -10,7 +10,7 @@
 
 IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS Exec but designed from the ground up for a hardware-enforced privilege model. Where Amiga Exec ran in flat supervisor space with no memory protection, IExec uses the IE64 MMU to enforce user/supervisor separation, per-task page tables, and W^X memory policy.
 
-**What IExec does (Milestone 4):**
+**What IExec does (Milestone 5):**
 
 - Task scheduling (preemptive round-robin between two static tasks; priority-based scheduling is future)
 - Memory protection via the IE64 MMU (per-task page tables with separate code/stack/data mappings)
@@ -39,11 +39,11 @@ The IE64 addresses a 32 MB physical address space. IExec partitions it as follow
 | Region | Address Range | Size | Access | Purpose |
 |--------|---------------|------|--------|---------|
 | Kernel code + data | `$000000-$09FFFF` | 640 KB | Supervisor only | Kernel binary, page tables, TCBs, kernel stack |
-| Hardware I/O | `$0A0000-$0FFFFF` | 384 KB | Unmapped in M1 | Memory-mapped video, audio, timer registers |
-| VRAM | `$100000-$5FFFFF` | 5 MB | Unmapped in M1 | Video framebuffer, tile maps, sprite data |
+| Hardware I/O (low) | `$0A0000-$0FFFFF` | 384 KB | Supervisor (identity-mapped) | Terminal MMIO, low I/O registers |
+| VRAM / high I/O | `$100000-$5FFFFF` | 5 MB | Supervisor (partially mapped) | Video framebuffer, tile maps, sprite data |
 | User space | `$600000-$1FFFFFF` | 26 MB | User (per-task mapped) | Task code, data, stacks, heap, shared memory |
 
-**Milestone 1 kernel page table**: Identity-maps pages 0-383 (`$000000-$17FFFF`) as supervisor-only (P|R|W|X, no U). I/O and VRAM regions at `$A0000+` are not mapped by the kernel — user-space drivers will gain access via `MapIO`/`MapVRAM` syscalls in a future milestone. User pages are only mapped in per-task page tables, not the kernel PT.
+**Kernel page table**: Identity-maps pages 0-383 (`$000000-$17FFFF`) as supervisor-only (P|R|W|X, no U). This covers the kernel region, low hardware I/O (including terminal MMIO at `$F0700` = page `$F0`), and the lower portion of VRAM/high I/O. Regions above `$17FFFF` are not mapped by the kernel PT — user-space drivers will gain access via `MapIO`/`MapVRAM` syscalls in a future milestone. User pages are only mapped in per-task page tables, not the kernel PT.
 
 ### 2.2 Kernel Memory Layout (Detail)
 
@@ -54,11 +54,10 @@ Within the supervisor region:
 | Vector table | `$000000-$000FFF` | 4 KB | Reserved (IE64 hardware vectors) |
 | Kernel code | `$001000-$00FFFF` | 60 KB | Kernel text (boots at `$1000`) |
 | Kernel page table | `$010000-$01FFFF` | 64 KB | 8192 PTEs x 8 bytes |
-| Kernel data | `$020000-$02FFFF` | 64 KB | Scheduler state, TCB array |
-| Task 0 page table | `$030000-$03FFFF` | 64 KB | Per-task page table |
-| Task 1 page table | `$040000-$04FFFF` | 64 KB | Per-task page table |
-| (additional PTs) | `$050000-$09EFFF` | 320 KB | Room for ~5 more task page tables |
+| Kernel data | `$020000-$02FFFF` | 64 KB | Scheduler state, TCB array (8 tasks), PTBR array, ports |
+| (reserved) | `$030000-$09EFFF` | 448 KB | Available for future kernel use |
 | Kernel stack | `$09F000` (top) | 4 KB | Grows downward |
+| Task page tables | `$100000-$17FFFF` | 512 KB | 8 per-task PTs at `$100000 + i*$10000` |
 
 ### 2.3 Per-Task Page Tables
 
@@ -95,7 +94,7 @@ Shared memory regions will be created via `AllocShared` and mapped into a second
 
 ### 3.1 Task Creation
 
-In Milestone 1, tasks are created statically at boot time. The kernel pre-builds TCBs and page tables for a fixed number of tasks before entering user mode. Dynamic `CreateTask` is planned for a future milestone.
+Tasks 0 and 1 are created statically at boot time. From Milestone 5, additional tasks can be created at runtime via `CreateTask` (syscall #5). The kernel allocates a TCB slot, builds a per-task page table, copies code from the caller's address space, and starts the child in user mode. Tasks exit via `ExitTask` (syscall #34), which cleans up ports and signals and frees the slot.
 
 ### 3.2 Task Control Block (TCB)
 
@@ -117,18 +116,18 @@ PTBR per task is stored in a separate array (KD_PTBR_BASE).
 | 0 | `READY` | Eligible to run; in the ready queue |
 | 1 | `RUNNING` | Currently executing on the CPU |
 | 2 | `WAITING` | Blocked on a signal, port, or timer (future) |
-| 3 | `REMOVED` | Terminated; TCB pending cleanup |
+| 3 | `FREE` | Slot is unused and immediately reusable |
 
 ### 3.4 Priority Scheduling
 
-The scheduler maintains a ready queue ordered by priority. Within the same priority level, tasks are scheduled round-robin. The current implementation uses a simple two-task alternation (toggle between task 0 and task 1). Priority-based scheduling with arbitrary task counts is planned.
+The scheduler uses round-robin across all task slots (MAX_TASKS = 8). It scans from the current task's slot forward, skipping WAITING and FREE slots, and selects the next READY or RUNNING task. Priority-based scheduling is planned for a future milestone.
 
 ### 3.5 Context Switch Sequence
 
 On a context switch (triggered by `Yield` syscall or timer preemption):
 
 1. **Save current task**: Read `FAULT_PC` and `USP` from control registers; store into the current task's TCB along with any dirty GPRs
-2. **Select next task**: Advance the scheduler (currently: toggle `current_task` between 0 and 1)
+2. **Select next task**: Round-robin scan across MAX_TASKS slots, skipping WAITING and FREE
 3. **Restore next task**: Load the next task's TCB; write `FAULT_PC`, `USP`, and `PTBR` to control registers
 4. **Flush TLB**: Execute `TLBFLUSH` to invalidate stale address translations
 5. **Return to user mode**: Execute `ERET`, which restores PC from `FAULT_PC`, switches to user privilege, and swaps to the user stack pointer
@@ -202,7 +201,7 @@ The CPU traps to supervisor mode. The kernel's trap handler reads the syscall nu
 
 | # | Name | Signature | Status |
 |---|------|-----------|--------|
-| 5 | `CreateTask` | R1=entry_pc, R2=stack_size, R3=priority -> R1=task_handle | Future |
+| 5 | `CreateTask` | R1=source_ptr, R2=code_size, R3=arg0 -> R1=task_id, R2=err | **Implemented** |
 | 6 | `DeleteTask` | R1=task_handle -> R2=err | Future |
 | 7 | `FindTask` | R1=name_ptr (0=self) -> R1=task_handle | Future |
 | 8 | `SetTaskPri` | R1=task_handle, R2=priority -> R1=old_pri | Future |
@@ -259,6 +258,7 @@ The CPU traps to supervisor mode. The kernel's trap handler reads the syscall nu
 | # | Name | Signature | Status |
 |---|------|-----------|--------|
 | 33 | `DebugPutChar` | R1=character -> R2=err | **Implemented** |
+| 34 | `ExitTask` | R1=exit_code (ignored) -> never returns | **Implemented** |
 
 ### 5.9 Bulk IPC
 
@@ -404,11 +404,12 @@ The kernel boots in supervisor mode at `$1000` (PROG_START) and performs the fol
 
  4. Build kernel page table at $10000:
     - Identity-map pages 0-383 ($000000-$17FFFF) as P|R|W|X (supervisor only)
-    - Identity-map pages 384-1535 ($180000-$5FFFFF) as P|R|W (VRAM, supervisor only)
+    - Add supervisor-only mappings for all user pages ($600000+) as P|R|W
+      (enables CreateTask cross-address-space code copy)
 
- 5. Build per-task page tables at $30000, $40000, ...:
-    - Copy kernel supervisor mappings (pages 0-1535)
-    - Add user-accessible pages for each task's code (P|R|X|U),
+ 5. Build per-task page tables at $100000 + i*$10000 (up to 8 tasks):
+    - Copy kernel supervisor mappings (pages 0-383 + user page supervisor entries)
+    - Add user-accessible pages for this task's code (P|R|X|U),
       stack (P|R|W|U), and data (P|R|W|U)
 
  6. MOVE R1, #$10000
@@ -485,7 +486,7 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 
 **Implemented and tested (builds on Milestone 1):**
 
-- Boot banner: kernel prints "IExec M2 boot\n" to TERM_OUT before entering user mode
+- Boot banner: kernel prints "IExec M5 boot\n" to TERM_OUT before entering user mode
 - `DebugPutChar` syscall (33): write a single character to the debug terminal (TERM_OUT at `$F0700`)
 - Visible demo tasks: task 0 prints 'A', task 1 prints 'B', both yield and delay in a loop — output shows interleaved letters confirming preemptive multitasking
 - Fault reporting: on non-SYSCALL faults, kernel prints "FAULT cause=NNNN PC=$XXXX ADDR=$XXXX\n" to the debug terminal then halts
@@ -503,7 +504,7 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 - Scheduler skips tasks in WAITING state; shared restore path delivers Wait return values when `sig_wait != 0`
 - Deadlock detection: when all tasks are in WAITING state with no external wake source, kernel prints "DEADLOCK: no runnable tasks" and halts
 
-### Milestone 4: Message Ports (Current)
+### Milestone 4: Message Ports
 
 **Implemented and tested (builds on Milestone 3):**
 
@@ -515,20 +516,33 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 - Port capacity: 4 ports per system, 4-message FIFO per port.
 - SIGF_PORT wakeup: PutMsg sets signal bit 0 on the port owner, integrating with the existing Signal/Wait infrastructure from Milestone 3.
 
-### Milestone 5: Dynamic Tasks (Planned)
+### Milestone 5: Dynamic Tasks (Current)
 
-- `CreateTask` / `DeleteTask` syscalls
-- Dynamic page allocation (`AllocMem` / `FreeMem`)
-- Priority-based scheduling with arbitrary task count
-- Full GPR save/restore in TCB on context switch
+**Implemented and tested (builds on Milestone 4):**
+
+- `CreateTask` syscall (5): dynamically create a new task at runtime. R1=source_ptr (VA in caller's space), R2=code_size (bytes, max 4096), R3=arg0 (written to child's data page at offset 0). Returns R1=task_id (0-7), R2=err. The kernel validates the source range (must be within the caller's own 3-page user region), finds a FREE TCB slot, builds a per-task page table, copies code to the child's code page, and starts the child in READY state. Returns ERR_NOMEM if all 8 slots are occupied, ERR_BADARG if source_ptr/code_size is invalid.
+- `ExitTask` syscall (34): terminate the current task. R1=exit_code (ignored in M5). Marks the task's TCB as FREE, clears all signal state, invalidates any ports owned by the task, and switches to the next runnable task. Never returns.
+- Round-robin scheduler: supports up to 8 concurrent tasks (MAX_TASKS=8). `find_next_runnable` scans slots in round-robin order, skipping WAITING and FREE. All 5 context-switch sites (yield, wait, waitport, timer, spurious-wake) use this unified subroutine.
+- Fault cleanup with privilege split: user-mode faults (faultPC in user range) kill the faulting task and continue scheduling; supervisor-mode faults (faultPC in kernel range) print "KERNEL PANIC" and halt.
+- Slot-based memory allocation: task i gets pre-reserved physical pages at fixed addresses (code: 0x600000+i*0x10000, stack: 0x601000+i*0x10000, data: 0x602000+i*0x10000, page table: 0x100000+i*0x10000).
+- Kernel page table extended with supervisor-only mappings for all user pages, enabling CreateTask to copy code across address spaces.
+- TASK_FREE (state=3) replaces the old REMOVED concept: the slot is empty and immediately reusable.
 
 ### Milestone 6: Named Ports + Reply Protocol (Planned)
+
+### Milestone 6: Memory Allocation / Shared Memory (Planned)
+
+- `AllocMem` / `FreeMem` syscalls
+- Dynamic page allocation beyond fixed slots
+- Shared memory for zero-copy IPC
+
+### Milestone 7: Named Ports + Reply Protocol (Planned)
 
 - `FindPort` / `ReplyMsg` / `PeekPort`
 - Named port registry
 - Reply port convention for request/response patterns
 
-### Milestone 7: Shared Memory + Bulk IPC (Planned)
+### Milestone 8: Shared Memory + Bulk IPC (Planned)
 
 - `AllocShared` / `MapShared` for zero-copy bulk transfer
 - `SendMsgBulk` / `RecvMsgBulk`

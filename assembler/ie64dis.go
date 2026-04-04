@@ -201,6 +201,8 @@ func crName(cr byte) string {
 		return "cr11"
 	case 12:
 		return "cr12"
+	case 13:
+		return "cr13"
 	default:
 		return fmt.Sprintf("cr%d", cr)
 	}

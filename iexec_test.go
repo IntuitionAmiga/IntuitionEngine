@@ -22,30 +22,44 @@ const (
 	kernPageTableBase = 0x10000 // Kernel page table (64 KiB)
 	kernDataBase      = 0x20000 // Kernel data (TCBs, state)
 	kernStackTop      = 0x9F000 // Kernel stack top
+	maxTasks          = 8       // MAX_TASKS
 
-	// User task page table bases (separate page tables per task)
-	userPT0Base = 0x30000 // Task 0 page table
-	userPT1Base = 0x40000 // Task 1 page table
+	// User task page table base (M5: slot-based at 0x100000 + i*0x10000)
+	userPTBase     = 0x100000 // USER_PT_BASE
+	userSlotStride = 0x10000  // USER_SLOT_STRIDE (64 KiB between slots)
 
-	// User task physical pages (mapped into user virtual space)
-	userTask0Code  = 0x600000 // Task 0 code (physical = virtual, identity for simplicity)
-	userTask0Stack = 0x601000 // Task 0 stack (1 page)
-	userTask0Data  = 0x602000 // Task 0 data/result page
-	userTask1Code  = 0x610000 // Task 1 code
-	userTask1Stack = 0x611000 // Task 1 stack
-	userTask1Data  = 0x612000 // Task 1 data/result page
+	// User task physical pages (slot-based: base + i * userSlotStride)
+	userCodeBase  = 0x600000 // USER_CODE_BASE
+	userStackBase = 0x601000 // USER_STACK_BASE
+	userDataBase  = 0x602000 // USER_DATA_BASE
+
+	// Convenience aliases for boot tasks (backward compat with existing tests)
+	userPT0Base    = userPTBase                     // 0x100000
+	userPT1Base    = userPTBase + userSlotStride    // 0x110000
+	userTask0Code  = userCodeBase                   // 0x600000
+	userTask0Stack = userStackBase                  // 0x601000
+	userTask0Data  = userDataBase                   // 0x602000
+	userTask1Code  = userCodeBase + userSlotStride  // 0x610000
+	userTask1Stack = userStackBase + userSlotStride // 0x611000
+	userTask1Data  = userDataBase + userSlotStride  // 0x612000
 
 	// Syscall numbers (matching IExec contract)
-	sysYield        = 26
-	sysGetSysInfo   = 27
-	sysDebugPutChar = 33
+	sysCreateTask   = 5
 	sysAllocSignal  = 11
 	sysFreeSignal   = 12
 	sysSignal       = 13
 	sysWait         = 14
+	sysCreatePort   = 15
+	sysPutMsg       = 17
+	sysGetMsg       = 18
+	sysWaitPort     = 19
+	sysYield        = 26
+	sysGetSysInfo   = 27
+	sysDebugPutChar = 33
+	sysExitTask     = 34
 
 	// Kernel data offsets (must match iexec.inc)
-	kdCurrentTask = 0  // uint64: index of current task (0 or 1)
+	kdCurrentTask = 0  // uint64: index of current task
 	kdTickCount   = 8  // uint64: tick counter
 	kdNumTasks    = 16 // uint64: number of active tasks
 
@@ -59,17 +73,17 @@ const (
 	tcbSigRecvOff  = 24 // pending signals (4 bytes)
 	tcbStateOff    = 28 // state byte
 
-	// PTBR array (after TCBs)
-	kdPTBRBase = 128 // KD_PTBR_BASE
+	// Task states
+	taskReady   = 0
+	taskRunning = 1
+	taskWaiting = 2
+	taskFree    = 3
 
-	// Port syscalls
-	sysCreatePort = 15
-	sysPutMsg     = 17
-	sysGetMsg     = 18
-	sysWaitPort   = 19
+	// PTBR array (after 8 TCBs: 64 + 8*32 = 320)
+	kdPTBRBase = 320 // KD_PTBR_BASE
 
 	// Port layout (must match iexec.inc)
-	kdPortBase   = 144 // KD_PORT_BASE
+	kdPortBase   = 384 // KD_PORT_BASE (after 8 PTBRs: 320 + 8*8 = 384)
 	kdPortStride = 72  // KD_PORT_STRIDE
 	kdPortMax    = 4
 
@@ -1018,8 +1032,8 @@ func findTaskTemplates(t *testing.T, mem []byte) (t0Start, t1Start uint32) {
 	if t0MarkerOff < 0 {
 		t.Fatal("could not find task 0 'A' marker")
 	}
-	// 'A' is at instruction 4 (byte 24) from template start
-	t0Start = PROG_START + uint32(t0MarkerOff) - 24
+	// 'A' is at instruction 5 (byte 40) from template start
+	t0Start = PROG_START + uint32(t0MarkerOff) - 40
 	// Task 1 template starts 96 bytes after task 0
 	t1Start = t0Start + 96
 	return
@@ -2239,4 +2253,615 @@ func TestIExec_PutMsg_Full(t *testing.T) {
 	if errVal != 6 { // ERR_AGAIN
 		t.Fatalf("PutMsg full: err = %d, want 6 (ERR_AGAIN)", errVal)
 	}
+}
+
+// ===========================================================================
+// M5: Round-Robin Scheduler Test
+// ===========================================================================
+
+func TestIExec_RoundRobin_3Tasks(t *testing.T) {
+	// Task 0 creates a child (task 2) via CreateTask. All 3 tasks print
+	// distinct markers and yield. Verify all 3 get CPU time.
+	rig, term := assembleAndLoadKernel(t)
+	t0, t1 := findTaskTemplates(t, rig.cpu.memory)
+
+	// Child code at task 0's data page: print 'C', yield, loop
+	childOff := uint32(userTask0Data + 64)                                             // offset 64: past boot child template
+	copy(rig.cpu.memory[childOff:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x43)) // 'C'
+	childOff += 8
+	copy(rig.cpu.memory[childOff:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	childOff += 8
+	copy(rig.cpu.memory[childOff:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	childOff += 8
+	copy(rig.cpu.memory[childOff:], ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(-24&0xFFFFFFFF)))
+
+	// Patch task 0: CreateTask, then print 'A', yield, loop
+	off := t0
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Data+64))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 32))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))
+	off += 8
+	loopA := off
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x41))
+	off += 8 // 'A'
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	off += 8
+	brOff := int32(loopA) - int32(off)
+	copy(rig.cpu.memory[off:], ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(brOff)))
+
+	// Patch task 1: print 'B', yield, loop
+	off = t1
+	loopB := off
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x42))
+	off += 8 // 'B'
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	off += 8
+	brOff = int32(loopB) - int32(off)
+	copy(rig.cpu.memory[off:], ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(brOff)))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(400 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	hasA := strings.Contains(output, "A")
+	hasB := strings.Contains(output, "B")
+	hasC := strings.Contains(output, "C")
+	if !hasA || !hasB || !hasC {
+		t.Fatalf("RoundRobin 3 tasks: A=%v B=%v C=%v output=%q", hasA, hasB, hasC, output[:min(len(output), 100)])
+	}
+	t.Logf("RoundRobin output: %q", output[:min(len(output), 80)])
+}
+
+// ===========================================================================
+// M5: Dynamic Tasks Tests
+// ===========================================================================
+
+func TestIExec_CreateTask_Basic(t *testing.T) {
+	// Task 0 writes child code to its data page, then calls CreateTask.
+	// Child (task 2) prints 'C' and yields forever.
+	// Verify 'C' appears in output.
+	rig, term := assembleAndLoadKernel(t)
+	t0, _ := findTaskTemplates(t, rig.cpu.memory)
+
+	// Write the child code into task 0's data page (0x602000).
+	// Child code: print 'C', yield, loop
+	childOff := uint32(userTask0Data + 64)                                             // offset 64: past boot child template
+	copy(rig.cpu.memory[childOff:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x43)) // 'C'
+	childOff += 8
+	copy(rig.cpu.memory[childOff:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	childOff += 8
+	copy(rig.cpu.memory[childOff:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	childOff += 8
+	copy(rig.cpu.memory[childOff:], ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(-8&0xFFFFFFFF)))
+	childCodeSize := uint32(32) // 4 instructions
+
+	// Patch task 0: CreateTask(source=data_page, size=32, arg0=0), then print 'P', yield loop
+	off := t0
+	// R1 = source_ptr (task 0 data page + 64, past boot child template)
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Data+64))
+	off += 8
+	// R2 = code_size
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, childCodeSize))
+	off += 8
+	// R3 = arg0
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	off += 8
+	// syscall CreateTask
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))
+	off += 8
+	// Print 'P' (parent created child)
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x50))
+	off += 8 // 'P'
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(-8&0xFFFFFFFF)))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(400 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "P") {
+		t.Fatalf("CreateTask: parent did not print 'P': %q", output[:min(len(output), 100)])
+	}
+	if !strings.Contains(output, "C") {
+		t.Fatalf("CreateTask: child did not print 'C': %q", output[:min(len(output), 100)])
+	}
+	t.Logf("CreateTask output: %q", output[:min(len(output), 80)])
+}
+
+func TestIExec_ExitTask(t *testing.T) {
+	// Task 0 creates a child. Child prints 'X', calls ExitTask.
+	// Task 0 continues printing 'P'. System does not deadlock.
+	rig, term := assembleAndLoadKernel(t)
+	t0, _ := findTaskTemplates(t, rig.cpu.memory)
+
+	// Child code: print 'X', ExitTask
+	childOff := uint32(userTask0Data + 64)                                             // offset 64: past boot child template
+	copy(rig.cpu.memory[childOff:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x58)) // 'X'
+	childOff += 8
+	copy(rig.cpu.memory[childOff:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	childOff += 8
+	copy(rig.cpu.memory[childOff:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0)) // exit_code=0
+	childOff += 8
+	copy(rig.cpu.memory[childOff:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExitTask))
+
+	// Patch task 0: CreateTask, then print 'P' in a loop
+	off := t0
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Data+64))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 32))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))
+	off += 8
+	loopStart := off
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x50))
+	off += 8 // 'P'
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	off += 8
+	brOff := int32(loopStart) - int32(off)
+	copy(rig.cpu.memory[off:], ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(brOff)))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(400 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "X") {
+		t.Fatalf("ExitTask: child did not print 'X': %q", output[:min(len(output), 100)])
+	}
+	// 'P' should appear multiple times (task 0 continues after child exits)
+	if strings.Count(output, "P") < 2 {
+		t.Fatalf("ExitTask: parent did not continue after child exit: %q", output[:min(len(output), 100)])
+	}
+	if strings.Contains(output, "DEADLOCK") {
+		t.Fatal("ExitTask: system deadlocked after child exit")
+	}
+	t.Logf("ExitTask output: %q", output[:min(len(output), 80)])
+}
+
+func TestIExec_FaultedTaskCleanup(t *testing.T) {
+	// Task 0 creates a child that deliberately faults (accesses unmapped page).
+	// Kernel should kill the child and continue running task 0.
+	rig, term := assembleAndLoadKernel(t)
+	t0, _ := findTaskTemplates(t, rig.cpu.memory)
+
+	// Child code: print 'F', then access address 0x700000 (unmapped) → fault
+	childOff := uint32(userTask0Data + 64)                                             // offset 64: past boot child template
+	copy(rig.cpu.memory[childOff:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x46)) // 'F'
+	childOff += 8
+	copy(rig.cpu.memory[childOff:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	childOff += 8
+	copy(rig.cpu.memory[childOff:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x700000)) // unmapped addr
+	childOff += 8
+	copy(rig.cpu.memory[childOff:], ie64Instr(OP_LOAD, 2, IE64_SIZE_Q, 0, 1, 0, 0)) // load → fault
+
+	// Patch task 0: CreateTask, then print 'P' in loop
+	off := t0
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Data+64))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 32))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))
+	off += 8
+	loopStart := off
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x50))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	off += 8
+	brOff := int32(loopStart) - int32(off)
+	copy(rig.cpu.memory[off:], ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(brOff)))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(400 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	// Child printed 'F' before faulting
+	if !strings.Contains(output, "F") {
+		t.Fatalf("FaultCleanup: child did not print 'F': %q", output[:min(len(output), 100)])
+	}
+	// Fault report should appear
+	if !strings.Contains(output, "FAULT") {
+		t.Fatalf("FaultCleanup: no FAULT report: %q", output[:min(len(output), 200)])
+	}
+	// Should NOT contain KERNEL PANIC (user-mode fault)
+	if strings.Contains(output, "KERNEL PANIC") {
+		t.Fatal("FaultCleanup: user fault triggered KERNEL PANIC instead of task kill")
+	}
+	// Parent continues after child fault
+	if strings.Count(output, "P") < 2 {
+		t.Fatalf("FaultCleanup: parent did not continue: %q", output[:min(len(output), 200)])
+	}
+	if strings.Contains(output, "DEADLOCK") {
+		t.Fatal("FaultCleanup: system deadlocked")
+	}
+	t.Logf("FaultCleanup output: %q", output[:min(len(output), 120)])
+}
+
+func TestIExec_FaultedTask_SupervisorAddr(t *testing.T) {
+	// A user task that jumps to a supervisor address (e.g., 0x1000) should be
+	// killed as a user-mode fault, NOT trigger KERNEL PANIC. The privilege split
+	// must use previousMode (CR13), not the faultPC address range.
+	rig, term := assembleAndLoadKernel(t)
+	t0, _ := findTaskTemplates(t, rig.cpu.memory)
+
+	// Child code: jump to kernel address 0x1000 → exec fault (user has no X there)
+	childOff := uint32(userTask0Data + 64)
+	copy(rig.cpu.memory[childOff:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x1000))
+	childOff += 8
+	// Use indirect branch: load addr into R1, then BRA via computed jump.
+	// Actually, IE64 doesn't have indirect branch. Use STORE to a code page and run it?
+	// Simpler: write a BRA with offset that lands at 0x1000 from the child's PC.
+	// Child code page = 0x620000 (slot 2). PC at instruction 1 = 0x620008.
+	// Target = 0x1000. Offset = 0x1000 - 0x620008 = negative huge number.
+	// That won't work with 32-bit signed offset? Actually BRA uses 32-bit signed.
+	// 0x1000 - 0x620010 = -0x61F010 = fits in 32 bits.
+	// But easier: just do a load from an address that triggers a fault with PC in kernel range.
+	// No — FAULT_PC for a LOAD fault is the user PC, not the loaded address.
+	// For an EXEC fault, FAULT_PC = the address being executed.
+	// To get an exec fault at a low address, the user task needs to jump there.
+	// IE64 has no indirect jump? Let me use the BRA instruction with a computed offset.
+	//
+	// Child entry PC = USER_CODE_BASE + 2*USER_SLOT_STRIDE = 0x620000.
+	// We want to branch to 0x1000.
+	// BRA offset = target - (current_PC) = 0x1000 - 0x620000 = -0x61F000
+	childOff = uint32(userTask0Data + 64)
+	brTarget := int32(0x1000) - int32(userCodeBase+2*userSlotStride) // = -0x61F000
+	copy(rig.cpu.memory[childOff:], ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(brTarget)))
+
+	// Patch task 0: CreateTask(child), then print 'P' + yield loop
+	off := t0
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Data+64))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 8))
+	off += 8 // 1 instruction
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))
+	off += 8
+	loopStart := off
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x50))
+	off += 8 // 'P'
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	off += 8
+	brOff := int32(loopStart) - int32(off)
+	copy(rig.cpu.memory[off:], ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(brOff)))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(400 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	// Should NOT contain KERNEL PANIC — this was a user task, not a kernel fault
+	if strings.Contains(output, "KERNEL PANIC") {
+		t.Fatal("User fault at supervisor address incorrectly triggered KERNEL PANIC")
+	}
+	// Should contain FAULT report (user fault killed the child)
+	if !strings.Contains(output, "FAULT") {
+		t.Fatalf("Expected FAULT report for user exec fault: %q", output[:min(len(output), 200)])
+	}
+	// Parent should continue
+	if strings.Count(output, "P") < 2 {
+		t.Fatalf("Parent did not continue after child fault: %q", output[:min(len(output), 200)])
+	}
+	t.Logf("Supervisor-addr fault output: %q", output[:min(len(output), 120)])
+}
+
+func TestIExec_CreateTask_BadSource(t *testing.T) {
+	// Task 0 calls CreateTask with source_ptr outside its region → ERR_BADARG.
+	rig, _ := assembleAndLoadKernel(t)
+	t0, _ := findTaskTemplates(t, rig.cpu.memory)
+
+	// Patch task 0: CreateTask with bad source_ptr (0x700000 = unmapped)
+	off := t0
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x700000))
+	off += 8 // bad ptr
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 32))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))
+	off += 8
+	// R2 = err. Store to data page.
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 4, 0, 0))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(300 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	errVal := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data:])
+	if errVal != 3 { // ERR_BADARG
+		t.Fatalf("CreateTask bad source: err = %d, want 3 (ERR_BADARG)", errVal)
+	}
+}
+
+func TestIExec_CreateTask_MaxTasks(t *testing.T) {
+	// Use a programmatic kernel: pre-fill all 8 TCB slots as non-FREE,
+	// then task 0 calls CreateTask → ERR_NOMEM.
+	rig, _ := newIExecTerminalRig(t)
+	cpu := rig.cpu
+
+	trapAddr := uint32(PROG_START) + 0x3000
+	cpu.trapVector = uint64(trapAddr)
+	cpu.kernelSP = kernStackTop
+
+	// Pre-fill TCB: task 0 = running (READY), tasks 1-7 = WAITING (occupied)
+	binary.LittleEndian.PutUint64(cpu.memory[kernDataBase:], 0) // current_task = 0
+	for i := 0; i < maxTasks; i++ {
+		tcbAddr := uint32(kernDataBase + kdTCBBase + i*tcbStride)
+		if i == 0 {
+			cpu.memory[tcbAddr+tcbStateOff] = taskReady
+		} else {
+			cpu.memory[tcbAddr+tcbStateOff] = taskWaiting // occupied, not FREE
+		}
+	}
+
+	// User task: CreateTask(source=data_page, size=16, arg0=0), store R2 to data page, halt
+	off := uint32(userTask0Code)
+	copy(cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Data+64))
+	off += 8
+	copy(cpu.memory[off:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 16))
+	off += 8
+	copy(cpu.memory[off:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	off += 8
+	copy(cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))
+	off += 8
+	copy(cpu.memory[off:], ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	off += 8
+	copy(cpu.memory[off:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 4, 0, 0))
+	off += 8
+	copy(cpu.memory[off:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	// Write some child code to data page (needs to be there for validation)
+	copy(cpu.memory[userTask0Data:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+	copy(cpu.memory[userTask0Data+8:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	// Build the assembled kernel and extract its CreateTask handler.
+	// Actually, for a programmatic test we need the full CreateTask handler.
+	// The simplest approach: use the assembled kernel but patch boot init's
+	// free-task loop to set WAITING instead of FREE.
+	//
+	// Even simpler: just use the assembled kernel and overwrite the TCBs
+	// AFTER boot runs, by making task 0's first instruction a Yield that
+	// lets us intercept. But we can't intercept...
+	//
+	// Simplest: build assembled kernel, but patch the "init_free_tasks" loop
+	// to store TASK_WAITING instead of TASK_FREE.
+	// The loop has "move.b r1, #TASK_FREE" = move.b r1, #3.
+	// We change the immediate to #2 (TASK_WAITING).
+	//
+	// This is fragile but effective. Let's use the assembled kernel approach instead.
+
+	// Actually, the programmatic kernel needs the FULL CreateTask handler which
+	// is too complex to reproduce here. Let me use the assembled kernel with
+	// a different approach: make task 0 save/restore the counter via the stack.
+
+	// Scrap the programmatic approach. Use assembled kernel with stack save/restore.
+	rig2, _ := assembleAndLoadKernel(t)
+	t0, _ := findTaskTemplates(t, rig2.cpu.memory)
+
+	// Child code: yield forever
+	childOff := uint32(userTask0Data + 64) // offset 64: past boot child template
+	copy(rig2.cpu.memory[childOff:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	childOff += 8
+	copy(rig2.cpu.memory[childOff:], ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(-8&0xFFFFFFFF)))
+
+	// Task 0: loop CreateTask 7 times using PUSH/POP to save counter across syscalls
+	// 1. move.l r6, #0                    ; counter
+	// .loop:
+	// 2. push r6                           ; save counter (SP preserved by ABI)
+	// 3. move.l r1, #userTask0Data
+	// 4. move.l r2, #16
+	// 5. move.l r3, #0
+	// 6. syscall CreateTask
+	// 7. pop r6                            ; restore counter
+	// 8. move.l r4, #(userTask0Data+48)
+	// 9. store.q r2, (r4)                 ; save last err
+	// 10. add r6, r6, #1
+	// 11. move.l r7, #7
+	// 12. blt r6, r7, .loop              ; branch to instruction 2
+	// = 12 instructions, 96 bytes exactly
+	off2 := t0
+	copy(rig2.cpu.memory[off2:], ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, 0))
+	off2 += 8
+	loopPC := off2
+	copy(rig2.cpu.memory[off2:], ie64Instr(OP_PUSH64, 6, 0, 0, 0, 0, 0))
+	off2 += 8
+	copy(rig2.cpu.memory[off2:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Data+64))
+	off2 += 8
+	copy(rig2.cpu.memory[off2:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 16))
+	off2 += 8
+	copy(rig2.cpu.memory[off2:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	off2 += 8
+	copy(rig2.cpu.memory[off2:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))
+	off2 += 8
+	copy(rig2.cpu.memory[off2:], ie64Instr(OP_POP64, 6, 0, 0, 0, 0, 0))
+	off2 += 8
+	copy(rig2.cpu.memory[off2:], ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, userTask0Data+48))
+	off2 += 8
+	copy(rig2.cpu.memory[off2:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 4, 0, 0))
+	off2 += 8
+	copy(rig2.cpu.memory[off2:], ie64Instr(OP_ADD, 6, IE64_SIZE_Q, 1, 6, 0, 1))
+	off2 += 8
+	copy(rig2.cpu.memory[off2:], ie64Instr(OP_MOVE, 7, IE64_SIZE_L, 1, 0, 0, 7))
+	off2 += 8
+	brOff := int32(loopPC) - int32(off2)
+	copy(rig2.cpu.memory[off2:], ie64Instr(OP_BLT, 0, 0, 0, 6, 7, uint32(brOff)))
+
+	rig2.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig2.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig2.cpu.running.Store(false)
+	<-done
+
+	errVal := binary.LittleEndian.Uint64(rig2.cpu.memory[userTask0Data+48:])
+	if errVal != 1 { // ERR_NOMEM
+		t.Fatalf("CreateTask max tasks: err = %d, want 1 (ERR_NOMEM)", errVal)
+	}
+}
+
+func TestIExec_ExitTask_PortCleanup(t *testing.T) {
+	// Child creates a port, then exits. Verify the port is invalidated.
+	rig, _ := assembleAndLoadKernel(t)
+	t0, _ := findTaskTemplates(t, rig.cpu.memory)
+
+	// Child code: CreatePort, ExitTask
+	childOff := uint32(userTask0Data + 64) // offset 64: past boot child template
+	copy(rig.cpu.memory[childOff:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	childOff += 8
+	copy(rig.cpu.memory[childOff:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	childOff += 8
+	copy(rig.cpu.memory[childOff:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExitTask))
+
+	// Patch task 0: CreateTask, yield a few times to let child run and exit,
+	// then check port count (by trying CreatePort — if child's port was freed, we get it)
+	off := t0
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Data+64))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 24))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))
+	off += 8
+	// Yield several times to let child create port then exit
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(400 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	// Check kernel data: the port created by the child should be invalidated
+	// The child was task 2 (first free slot). It created the 3rd port (ports 0,1 taken by boot tasks).
+	// Actually boot tasks' demo code creates ports 0 and 1. Child gets port 2.
+	// After ExitTask, port 2's valid byte should be 0.
+	portAddr := uint32(kernDataBase + kdPortBase + 2*kdPortStride) // port 2
+	valid := rig.cpu.memory[portAddr]
+	if valid != 0 {
+		t.Fatalf("ExitTask port cleanup: port 2 valid = %d, want 0 (invalidated)", valid)
+	}
+}
+
+func TestIExec_CreateTask_IPC(t *testing.T) {
+	// Parent creates child. Child prints 'C', sends a message to parent's port, exits.
+	// Parent does WaitPort, receives message, prints msg_type as char.
+	// If msg_type = 0x4D ('M'), we see 'M' in output proving IPC worked.
+	rig, term := assembleAndLoadKernel(t)
+	t0, _ := findTaskTemplates(t, rig.cpu.memory)
+
+	// Child code (at task 0's data page):
+	// CreatePort (gets port 2), print 'C', PutMsg(port=0, type='M', data=0), ExitTask
+	// Note: parent is task 0, owns port 0 (from boot template's CreatePort).
+	// But wait — we're overwriting task 0's template. Task 0 won't run its original
+	// CreatePort. We need task 0 to create its own port first.
+	//
+	// Strategy: task 0 creates port (gets port 0 since boot tasks' original templates
+	// are overwritten), then creates child, then WaitPort(0).
+	// Child: PutMsg to port 0 with type='M', then ExitTask.
+
+	childOff := uint32(userTask0Data + 64) // offset 64: past boot child template
+	// PutMsg(port=0, type='M', data=0)
+	copy(rig.cpu.memory[childOff:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	childOff += 8
+	copy(rig.cpu.memory[childOff:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0x4D))
+	childOff += 8 // 'M'
+	copy(rig.cpu.memory[childOff:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	childOff += 8
+	copy(rig.cpu.memory[childOff:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	childOff += 8
+	copy(rig.cpu.memory[childOff:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	childOff += 8
+	copy(rig.cpu.memory[childOff:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExitTask))
+	childCodeSize := uint32(48)
+
+	// Patch task 0: CreatePort, CreateTask(child), WaitPort(0), print R1 (should be 'M'), halt
+	off := t0
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	off += 8 // → port 0
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Data+64))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, childCodeSize))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	off += 8 // portID=0
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	off += 8
+	// R1 = msg_type from dequeued message. Print it.
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	off += 8
+	// Need one more instruction — we're at 8 instructions × 8 = 64 bytes.
+	// With the new templates at 96 bytes, we have room for 4 more.
+	copy(rig.cpu.memory[off:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	// 'M' proves the child sent msg_type=0x4D and parent dequeued it via WaitPort
+	if !strings.Contains(output, "M") {
+		t.Fatalf("CreateTask IPC: 'M' not found (msg not received): %q", output[:min(len(output), 120)])
+	}
+	t.Logf("CreateTask IPC output: %q", output[:min(len(output), 80)])
 }

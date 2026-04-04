@@ -128,7 +128,8 @@ const (
 	CR_TIMER_COUNT  = 10 // Current timer countdown
 	CR_TIMER_CTRL   = 11 // Bit 0 = timer enable, Bit 1 = interrupt enable
 	CR_USP          = 12 // Saved User Stack Pointer (for context switch)
-	CR_COUNT        = 13 // Number of control registers
+	CR_PREV_MODE    = 13 // Previous privilege mode (0=user, 1=supervisor) saved by trapEntry
+	CR_COUNT        = 14 // Number of control registers
 )
 
 // Fault cause codes
@@ -1579,6 +1580,10 @@ func (cpu *CPU64) Execute() {
 				}
 			case CR_USP:
 				val = cpu.userSP
+			case CR_PREV_MODE:
+				if cpu.previousMode {
+					val = 1
+				}
 			}
 			if rd != 0 {
 				cpu.regs[rd] = val
@@ -2249,6 +2254,10 @@ func (cpu *CPU64) StepOne() int {
 				}
 			case CR_USP:
 				val = cpu.userSP
+			case CR_PREV_MODE:
+				if cpu.previousMode {
+					val = 1
+				}
 			}
 			if rd != 0 {
 				cpu.regs[rd] = val

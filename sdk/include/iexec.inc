@@ -40,6 +40,7 @@ SYS_DEBUG         equ 30
 SYS_SEND_MSG_BULK equ 31
 SYS_RECV_MSG_BULK equ 32
 SYS_DEBUG_PUTCHAR equ 33          ; Debug: print character (R1=char)
+SYS_EXIT_TASK     equ 34          ; Exit current task (R1=exit_code, ignored)
 
 ; ===========================================================================
 ; Error Codes
@@ -85,49 +86,68 @@ KERN_PAGE_TABLE   equ 0x010000    ; Kernel page table (64 KiB)
 KERN_DATA_BASE    equ 0x020000    ; Kernel data structures
 KERN_STACK_TOP    equ 0x09F000    ; Kernel stack top
 
-; Kernel data offsets
-KD_CURRENT_TASK   equ 0           ; uint64: current task index (0 or 1)
-KD_TICK_COUNT     equ 8           ; uint64: tick counter
-KD_NUM_TASKS      equ 16          ; uint64: number of tasks
+; ---------------------------------------------------------------------------
+; Kernel Data Offsets (at KERN_DATA_BASE)
+; ---------------------------------------------------------------------------
+; Layout (M5, 8 tasks):
+;   +0:   current_task (8)
+;   +8:   tick_count (8)
+;   +16:  num_tasks (8)
+;   +64:  TCB[0..7] (8 x 32 = 256 bytes)   → ends at 320
+;   +320: PTBR[0..7] (8 x 8 = 64 bytes)    → ends at 384
+;   +384: Port[0..3] (4 x 72 = 288 bytes)  → ends at 672
 
-; Per-task state (M3: signals)
-; Two tasks stored at: KERN_DATA_BASE + 64 + (task * 32)
-; Each task: 32 bytes { PC(8), USP(8), sig_alloc(4), sig_wait(4), sig_recv(4), state(1), pad(3) }
+KD_CURRENT_TASK   equ 0           ; uint64: current task index
+KD_TICK_COUNT     equ 8           ; uint64: tick counter
+KD_NUM_TASKS      equ 16          ; uint64: number of active tasks
+
+; ---------------------------------------------------------------------------
+; Task Control Block (TCB) — 32 bytes per task
+; ---------------------------------------------------------------------------
+; Address: KERN_DATA_BASE + KD_TASK_BASE + (task_id * KD_TASK_STRIDE)
+
+MAX_TASKS         equ 8           ; maximum concurrent tasks
+
 KD_TASK_BASE      equ 64          ; offset of task state array
 KD_TASK_STRIDE    equ 32          ; bytes per task entry
-; Per-task field offsets (relative to task base)
+
+; Per-task field offsets (relative to TCB base)
 KD_TASK_PC        equ 0           ; saved PC (8 bytes)
 KD_TASK_USP       equ 8           ; saved user SP (8 bytes)
 KD_TASK_SIG_ALLOC equ 16          ; allocated signal bits (4 bytes)
 KD_TASK_SIG_WAIT  equ 20          ; signals being waited for (4 bytes, 0 if not waiting)
 KD_TASK_SIG_RECV  equ 24          ; pending received signals (4 bytes)
-KD_TASK_STATE     equ 28          ; task state byte: 0=READY, 1=RUNNING, 2=WAITING
+KD_TASK_STATE     equ 28          ; task state byte
 KD_TASK_WAITPORT  equ 29          ; WaitPort port ID (0xFF = not in WaitPort)
-; Pre-computed offsets for task 0 and task 1
-KD_TASK0_PC       equ 64          ; KD_TASK_BASE + 0*32 + 0
-KD_TASK0_USP      equ 72          ; KD_TASK_BASE + 0*32 + 8
-KD_TASK1_PC       equ 96          ; KD_TASK_BASE + 1*32 + 0
-KD_TASK1_USP      equ 104         ; KD_TASK_BASE + 1*32 + 8
-; PTBR per task at: KERN_DATA_BASE + 128 + (task * 8)
-KD_PTBR_BASE      equ 128         ; offset of PTBR array
-KD_PTBR0          equ 128         ; KD_PTBR_BASE + 0
-KD_PTBR1          equ 136         ; KD_PTBR_BASE + 8
+
 ; Task state constants
 TASK_READY        equ 0
 TASK_RUNNING      equ 1
 TASK_WAITING      equ 2
+TASK_FREE         equ 3           ; slot is unused and reusable
+
 ; Signal bit constants
 SIGF_PORT         equ 1           ; Bit 0: message arrived at a port
 ; WaitPort sentinel
 WAITPORT_NONE     equ 0xFF        ; not blocked in WaitPort
 
+; System signal allocation mask (bits 0-15 pre-allocated)
+SIG_SYSTEM_MASK   equ 0xFFFF
+
+; ---------------------------------------------------------------------------
+; PTBR Array — 8 bytes per task
+; ---------------------------------------------------------------------------
+; Address: KERN_DATA_BASE + KD_PTBR_BASE + (task_id * 8)
+
+KD_PTBR_BASE      equ 320         ; offset of PTBR array (after 8 TCBs)
+
 ; ===========================================================================
 ; Message Port Layout (M4)
 ; ===========================================================================
-; 4 ports max, 72 bytes each, starting at offset 144 in kernel data
+; 4 ports max, 72 bytes each, starting at offset 384 in kernel data
 ; Each port: 8-byte header + 4 × 16-byte messages (FIFO)
 
-KD_PORT_BASE      equ 144         ; start of port array (after PTBR array)
+KD_PORT_BASE      equ 384         ; start of port array (after PTBR array)
 KD_PORT_STRIDE    equ 72          ; bytes per port
 KD_PORT_MAX       equ 4           ; max number of ports
 KD_PORT_FIFO_SIZE equ 4           ; messages per port FIFO
@@ -146,30 +166,25 @@ KD_MSG_SRC        equ 4           ; sender task ID (4 bytes)
 KD_MSG_DATA       equ 8           ; payload data (8 bytes)
 KD_MSG_SIZE       equ 16          ; bytes per message
 
-; System signal allocation mask (bits 0-15 pre-allocated)
-SIG_SYSTEM_MASK   equ 0xFFFF
-
 ; ===========================================================================
-; User Space Layout
+; User Space Layout (M5: slot-based, 8 tasks)
 ; ===========================================================================
+; Task i page table: USER_PT_BASE + i * USER_SLOT_STRIDE
+; Task i code page:  USER_CODE_BASE + i * USER_SLOT_STRIDE
+; Task i stack page: USER_STACK_BASE + i * USER_SLOT_STRIDE
+; Task i data page:  USER_DATA_BASE + i * USER_SLOT_STRIDE
+; Task i code VPN:   USER_CODE_VPN_BASE + i * USER_VPN_STRIDE
 
-USER_PT0_BASE     equ 0x030000    ; Task 0 page table (64 KiB)
-USER_PT1_BASE     equ 0x040000    ; Task 1 page table (64 KiB)
-USER_TASK0_CODE   equ 0x600000    ; Task 0 code page (physical)
-USER_TASK0_STACK  equ 0x601000    ; Task 0 stack page
-USER_TASK0_DATA   equ 0x602000    ; Task 0 data page
-USER_TASK1_CODE   equ 0x610000    ; Task 1 code page (physical)
-USER_TASK1_STACK  equ 0x611000    ; Task 1 stack page
-USER_TASK1_DATA   equ 0x612000    ; Task 1 data page
-USER_CODE_SIZE    equ 96          ; 12 instructions x 8 bytes (port-based request/reply)
+USER_PT_BASE      equ 0x100000    ; Task page tables (each 64 KiB)
+USER_CODE_BASE    equ 0x600000    ; Task code pages (physical)
+USER_STACK_BASE   equ 0x601000    ; Task stack pages
+USER_DATA_BASE    equ 0x602000    ; Task data pages
+USER_SLOT_STRIDE  equ 0x10000     ; 64 KiB between task slots
+USER_CODE_SIZE    equ 96          ; 12 instructions x 8 bytes (boot template)
 
-; VPNs for user pages (addr >> 12)
-USER_TASK0_CODE_VPN  equ 0x600   ; 0x600000 >> 12
-USER_TASK0_STACK_VPN equ 0x601
-USER_TASK0_DATA_VPN  equ 0x602
-USER_TASK1_CODE_VPN  equ 0x610   ; 0x610000 >> 12
-USER_TASK1_STACK_VPN equ 0x611
-USER_TASK1_DATA_VPN  equ 0x612
+; VPN bases (addr >> 12)
+USER_CODE_VPN_BASE  equ 0x600    ; 0x600000 >> 12
+USER_VPN_STRIDE     equ 0x10     ; 0x10000 >> 12
 
 ; ===========================================================================
 ; PTE Flags

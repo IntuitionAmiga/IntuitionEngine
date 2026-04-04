@@ -2926,6 +2926,8 @@ func parseCR(name string) (byte, bool) {
 		return 11, true
 	case "cr12", "usp":
 		return 12, true
+	case "cr13", "prev_mode":
+		return 13, true
 	}
 	return 0, false
 }
