@@ -1134,6 +1134,37 @@ func TestIExec_TwoTasksVisibleOutput(t *testing.T) {
 	t.Logf("Task output (first 100 chars): %q", output[:min(len(output), 100)])
 }
 
+func TestIExec_TwoTasksVisibleOutput_WithVRAM(t *testing.T) {
+	// Regression test: the live VM maps VRAM I/O at 0x100000-0x5FFFFF which
+	// overlaps the IExec kernel's task page tables at 0x100000-0x17FFFF.
+	// Without MMIO64PolicySplit, 64-bit PTE writes are silently dropped
+	// by the Fault policy, corrupting all page tables.
+	rig, term := assembleAndLoadKernel(t)
+
+	// Map VRAM I/O region like the live VM does (overlaps task page tables)
+	dummyRead := func(addr uint32) uint32 { return 0 }
+	dummyWrite := func(addr uint32, value uint32) {}
+	rig.bus.MapIO(VRAM_START, VRAM_START+VRAM_SIZE-1, dummyRead, dummyWrite)
+
+	// IE64 uses store.q for PTE writes; must split into 32-bit halves
+	rig.bus.SetLegacyMMIO64Policy(MMIO64PolicySplit)
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(200 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	t.Logf("VRAM output (first 100 chars): %q", output[:min(len(output), 100)])
+	hasA := strings.Contains(output, "A")
+	hasB := strings.Contains(output, "B")
+	if !hasA || !hasB {
+		t.Fatalf("visible output with VRAM mapped: hasA=%v hasB=%v, output=%q", hasA, hasB, output[:min(len(output), 100)])
+	}
+}
+
 func TestIExec_FaultPrintsReport(t *testing.T) {
 	// Boot the real assembled kernel, but with a modified task 0 that accesses
 	// an unmapped page. The kernel's own fault handler (kern_puts/kern_put_hex)

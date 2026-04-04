@@ -1315,6 +1315,7 @@ func main() {
 		}
 
 	} else if modeIE64 {
+		sysBus.SetLegacyMMIO64Policy(MMIO64PolicySplit)
 		ie64CPU = NewCPU64(sysBus)
 		ie64CPU.PerfEnabled = perfMode
 		ie64CPU.jitEnabled = jitAvailable && !noJIT
