@@ -200,7 +200,7 @@ USER_CODE_BASE    equ 0x600000    ; Task code pages (physical)
 USER_STACK_BASE   equ 0x601000    ; Task stack pages
 USER_DATA_BASE    equ 0x602000    ; Task data pages
 USER_SLOT_STRIDE  equ 0x10000     ; 64 KiB between task slots
-USER_CODE_SIZE    equ 192         ; 24 instructions x 8 bytes (boot template)
+USER_CODE_SIZE    equ 192         ; DEPRECATED: M7 boot template size (removed in M8)
 
 ; VPN bases (addr >> 12)
 USER_CODE_VPN_BASE  equ 0x600    ; 0x600000 >> 12
@@ -298,3 +298,25 @@ KD_SHM_NONCE      equ 8           ; 24-bit nonce for handle validation (4 bytes)
 ; ===========================================================================
 
 IEXEC_HEARTBEAT_INTERVAL equ 64   ; Print '.' every N timer ticks
+
+; ===========================================================================
+; IE64 Program Image Format (M8)
+; ===========================================================================
+; 32-byte fixed header, then code bytes, then data bytes.
+; Entry point is always code offset 0. No relocations.
+
+IMG_MAGIC_LO      equ 0x34364549  ; "IE64" as LE uint32 (bytes: 49 45 36 34)
+IMG_MAGIC_HI      equ 0x474F5250  ; "PROG" as LE uint32 (bytes: 50 52 4F 47)
+IMG_HEADER_SIZE   equ 32
+IMG_OFF_MAGIC     equ 0           ; 8 bytes: magic "IE64PROG"
+IMG_OFF_CODE_SIZE equ 8           ; 4 bytes: code section size (max 4096)
+IMG_OFF_DATA_SIZE equ 12          ; 4 bytes: data section size (max 4096, 0=none)
+IMG_OFF_FLAGS     equ 16          ; 4 bytes: reserved flags (0 for M8)
+
+; Program table entry (24 bytes per entry, sentinel has image_ptr=0)
+PROGTAB_ENTRY_SIZE equ 24
+PROGTAB_OFF_PTR    equ 0          ; 8 bytes: pointer to image in kernel memory
+PROGTAB_OFF_SIZE   equ 8          ; 8 bytes: total image size (header + code + data)
+
+; Clock interval for polling CLOCK service
+CLOCK_INTERVAL    equ 32          ; ticks between '.' output

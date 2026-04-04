@@ -1,10 +1,10 @@
 ; ============================================================================
-; IExec.library - IE64 Microkernel Nucleus (M7: Named Ports + Reply Protocol)
+; IExec.library - IE64 Microkernel Nucleus (M8: Bundled User Programs)
 ; ============================================================================
 ;
 ; Amiga Exec-inspired protected microkernel for the IE64 CPU.
-; M7: Named public MsgPorts, FindPort discovery, request/reply messaging,
-;     shared-memory handoff through messages.
+; M8: Tiny ROM-style image format, static program table, boot-time loader.
+;     All visible output from user-space services (CONSOLE, ECHO, CLOCK, CLIENT).
 ;
 ; Build:    sdk/bin/ie64asm -I sdk/include sdk/intuitionos/iexec/iexec.s
 ; Run:      bin/IntuitionEngine -ie64 iexec.ie64
@@ -83,102 +83,16 @@ iexec_start:
 .kern_user_map_done:
 
     ; ---------------------------------------------------------------
-    ; 4. Build user page tables for boot tasks (0 and 1)
-    ;    Copy kernel PT entries (pages 0-383 + user supervisor pages)
-    ;    then add user-accessible entries for this task's 3 pages.
-    ; ---------------------------------------------------------------
-    move.l  r10, #0
-    jsr     build_user_pt               ; build task 0 PT
-    move.l  r10, #1
-    jsr     build_user_pt               ; build task 1 PT
-
-    ; ---------------------------------------------------------------
-    ; 5. Copy user task code to physical pages (MMU still off)
-    ; ---------------------------------------------------------------
-    move.l  r1, #user_task0_template
-    move.l  r2, #USER_CODE_BASE         ; 0x600000
-    move.l  r3, #USER_CODE_SIZE
-    move.l  r4, #0
-.copy_task0:
-    add     r5, r1, r4
-    load.q  r6, (r5)
-    add     r5, r2, r4
-    store.q r6, (r5)
-    add     r4, r4, #8
-    blt     r4, r3, .copy_task0
-
-    move.l  r1, #user_task1_template
-    move.l  r2, #USER_CODE_BASE
-    add     r2, r2, #USER_SLOT_STRIDE   ; 0x610000
-    move.l  r4, #0
-.copy_task1:
-    add     r5, r1, r4
-    load.q  r6, (r5)
-    add     r5, r2, r4
-    store.q r6, (r5)
-    add     r4, r4, #8
-    blt     r4, r3, .copy_task1
-
-    ; Copy child task template to task 0's data page (for CreateTask demo)
-    move.l  r1, #child_task_template
-    move.l  r2, #USER_DATA_BASE         ; 0x602000 (task 0 data page)
-    move.l  r3, #88                      ; 11 instructions = 88 bytes
-    move.l  r4, #0
-.copy_child:
-    add     r5, r1, r4
-    load.q  r6, (r5)
-    add     r5, r2, r4
-    store.q r6, (r5)
-    add     r4, r4, #8
-    blt     r4, r3, .copy_child
-
-    ; ---------------------------------------------------------------
-    ; 6. Initialize task state at KERN_DATA_BASE (MMU still off)
+    ; 4. Initialize kernel data (MMU still off)
     ; ---------------------------------------------------------------
     move.l  r12, #KERN_DATA_BASE
     store.q r0, (r12)                   ; current_task = 0
     store.q r0, KD_TICK_COUNT(r12)
-    move.q  r1, #2
-    store.q r1, KD_NUM_TASKS(r12)       ; 2 boot tasks
+    store.q r0, KD_NUM_TASKS(r12)       ; 0 tasks (loader increments)
     store.q r0, KD_NONCE_COUNTER(r12)   ; nonce counter = 0
 
-    ; --- Init boot tasks (0 and 1) as READY ---
-    move.l  r2, #KERN_DATA_BASE
-    add     r2, r2, #KD_TASK_BASE       ; r2 = &TCB[0]
-
-    ; Task 0
-    move.l  r1, #USER_CODE_BASE         ; PC = 0x600000
-    store.q r1, KD_TASK_PC(r2)
-    move.l  r1, #USER_STACK_BASE
-    add     r1, r1, #MMU_PAGE_SIZE      ; USP = stack page top
-    store.q r1, KD_TASK_USP(r2)
-    move.l  r1, #SIG_SYSTEM_MASK
-    store.l r1, KD_TASK_SIG_ALLOC(r2)
-    store.l r0, KD_TASK_SIG_WAIT(r2)
-    store.l r0, KD_TASK_SIG_RECV(r2)
-    store.b r0, KD_TASK_STATE(r2)       ; READY = 0
-    move.b  r1, #WAITPORT_NONE
-    store.b r1, KD_TASK_WAITPORT(r2)
-
-    ; Task 1
-    add     r2, r2, #KD_TASK_STRIDE     ; r2 = &TCB[1]
-    move.l  r1, #USER_CODE_BASE
-    add     r1, r1, #USER_SLOT_STRIDE   ; PC = 0x610000
-    store.q r1, KD_TASK_PC(r2)
-    move.l  r1, #USER_STACK_BASE
-    add     r1, r1, #USER_SLOT_STRIDE
-    add     r1, r1, #MMU_PAGE_SIZE      ; USP = 0x612000
-    store.q r1, KD_TASK_USP(r2)
-    move.l  r1, #SIG_SYSTEM_MASK
-    store.l r1, KD_TASK_SIG_ALLOC(r2)
-    store.l r0, KD_TASK_SIG_WAIT(r2)
-    store.l r0, KD_TASK_SIG_RECV(r2)
-    store.b r0, KD_TASK_STATE(r2)       ; READY = 0
-    move.b  r1, #WAITPORT_NONE
-    store.b r1, KD_TASK_WAITPORT(r2)
-
-    ; --- Init tasks 2-7 as FREE ---
-    move.l  r4, #2                      ; start from task 2
+    ; --- Init all 8 task slots as FREE ---
+    move.l  r4, #0
 .init_free_tasks:
     move.l  r6, #MAX_TASKS
     bge     r4, r6, .init_free_done
@@ -198,17 +112,6 @@ iexec_start:
     add     r4, r4, #1
     bra     .init_free_tasks
 .init_free_done:
-
-    ; --- PTBR array (at new offset KD_PTBR_BASE = 320) ---
-    move.l  r12, #KERN_DATA_BASE
-    move.l  r1, #USER_PT_BASE           ; 0x100000 (task 0 PT)
-    store.q r1, KD_PTBR_BASE(r12)
-    move.l  r1, #USER_PT_BASE
-    add     r1, r1, #USER_SLOT_STRIDE   ; 0x110000 (task 1 PT)
-    move.l  r5, #KD_PTBR_BASE
-    add     r5, r5, #8
-    add     r5, r5, r12
-    store.q r1, (r5)                    ; PTBR[1]
 
     ; ---------------------------------------------------------------
     ; 6b. Initialize port slots (all invalid, M7: 8 ports x 160 bytes)
@@ -299,7 +202,21 @@ iexec_start:
     jsr     kern_puts
 
     ; ---------------------------------------------------------------
-    ; 9. Program timer
+    ; 9. Load bundled programs from program_table (M8)
+    ; ---------------------------------------------------------------
+    la      r30, program_table          ; r30 = table cursor
+.boot_load_loop:
+    load.q  r7, PROGTAB_OFF_PTR(r30)   ; r7 = image_ptr
+    beqz    r7, .boot_load_done         ; sentinel: ptr == 0
+    load.q  r8, PROGTAB_OFF_SIZE(r30)   ; r8 = image_size
+    jsr     load_program                ; → R1=task_id, R2=err
+    ; (errors silently skipped — load_program returns ERR_BADARG/ERR_NOMEM)
+    add     r30, r30, #PROGTAB_ENTRY_SIZE
+    bra     .boot_load_loop
+.boot_load_done:
+
+    ; ---------------------------------------------------------------
+    ; 10. Program timer
     ; ---------------------------------------------------------------
     move.l  r1, #10000
     mtcr    cr9, r1
@@ -309,21 +226,27 @@ iexec_start:
     mtcr    cr11, r1
 
     ; ---------------------------------------------------------------
-    ; 10. Enter first user task (task 0)
+    ; 11. Enter first user task (task 0 = first loaded program)
     ; ---------------------------------------------------------------
     move.l  r12, #KERN_DATA_BASE
-    ; Load task 0 USP from TCB[0]
+    load.q  r1, KD_NUM_TASKS(r12)
+    beqz    r1, .boot_no_tasks          ; no programs loaded → panic
+
     move.l  r15, #KERN_DATA_BASE
     add     r15, r15, #KD_TASK_BASE     ; &TCB[0]
     load.q  r1, KD_TASK_USP(r15)
     mtcr    cr12, r1
     load.q  r1, KD_TASK_PC(r15)
     mtcr    cr3, r1
-    ; Load PTBR[0]
     load.q  r1, KD_PTBR_BASE(r12)
     mtcr    cr0, r1
     tlbflush
     eret
+
+.boot_no_tasks:
+    la      r8, no_tasks_msg
+    jsr     kern_puts
+    halt
 
 ; ============================================================================
 ; Kernel Output Helpers
@@ -491,6 +414,212 @@ build_user_pt:
     lsl     r5, r8, #3
     add     r5, r5, r7
     store.q r3, (r5)
+    rts
+
+; ============================================================================
+; Program Loader (M8: boot-time only, not a syscall)
+; ============================================================================
+; load_program: Load a bundled IE64 program image into a free task slot.
+; Input:  R7 = image_ptr (address of image in kernel memory)
+;         R8 = image_size (total bytes: header + code + data)
+; Output: R1 = task_id, R2 = ERR_OK
+;         On failure: R1 = 0, R2 = ERR_BADARG or ERR_NOMEM
+; Clobbers: R1-R9, R14-R27
+; Must be called with kernel PT active (boot context).
+
+load_program:
+    push    r7
+    push    r8
+
+    ; --- Validation (no side effects) ---
+
+    ; 1. Check image_size >= IMG_HEADER_SIZE (32)
+    move.l  r11, #IMG_HEADER_SIZE
+    blt     r8, r11, .lp_badarg
+
+    ; 2. Check magic (8 bytes at image_ptr)
+    load.l  r14, (r7)                   ; low 32 bits
+    move.l  r15, #IMG_MAGIC_LO
+    bne     r14, r15, .lp_badarg
+    load.l  r14, 4(r7)                  ; high 32 bits
+    move.l  r15, #IMG_MAGIC_HI
+    bne     r14, r15, .lp_badarg
+
+    ; 3. Load code_size, validate > 0, <= 4096, 8-byte aligned
+    load.l  r20, IMG_OFF_CODE_SIZE(r7)  ; r20 = code_size
+    beqz    r20, .lp_badarg
+    move.l  r11, #MMU_PAGE_SIZE
+    bgt     r20, r11, .lp_badarg
+    and     r14, r20, #7                ; check 8-byte alignment
+    bnez    r14, .lp_badarg
+
+    ; 4. Load data_size, validate <= 4096
+    load.l  r21, IMG_OFF_DATA_SIZE(r7)  ; r21 = data_size
+    bgt     r21, r11, .lp_badarg
+
+    ; 5. Check image_size >= 32 + code_size + data_size
+    move.l  r14, #IMG_HEADER_SIZE
+    add     r14, r14, r20
+    add     r14, r14, r21               ; r14 = required size
+    bgt     r14, r8, .lp_badarg         ; truncated image
+
+    ; 6. Find free TCB slot
+    move.l  r22, #0                     ; r22 = candidate slot
+    move.l  r12, #KERN_DATA_BASE
+.lp_scan:
+    move.l  r11, #MAX_TASKS
+    bge     r22, r11, .lp_nomem
+    lsl     r15, r22, #5
+    add     r15, r15, #KD_TASK_BASE
+    add     r15, r15, r12
+    load.b  r16, KD_TASK_STATE(r15)
+    move.l  r11, #TASK_FREE
+    beq     r16, r11, .lp_slot_found
+    add     r22, r22, #1
+    bra     .lp_scan
+.lp_slot_found:
+    ; r22 = task_id, r15 = &TCB[task_id], r20 = code_size, r21 = data_size
+
+    ; --- Commit (no failures past this point) ---
+
+    ; 7. Already on kernel PT (boot context), no switch needed.
+
+    ; 8. Zero child's code page (4096 bytes)
+    move.l  r11, #USER_SLOT_STRIDE
+    mulu    r11, r22, r11               ; r11 = task_id * stride
+    move.l  r23, #USER_CODE_BASE
+    add     r23, r23, r11               ; r23 = child code page addr
+    move.l  r4, #0
+    move.l  r6, #MMU_PAGE_SIZE
+.lp_zero_code:
+    bge     r4, r6, .lp_zero_code_done
+    add     r5, r23, r4
+    store.q r0, (r5)
+    add     r4, r4, #8
+    bra     .lp_zero_code
+.lp_zero_code_done:
+
+    ; 9. Copy code_size bytes from image_ptr+32 to code page
+    pop     r8                          ; restore image_size (needed later)
+    pop     r7                          ; restore image_ptr
+    push    r7                          ; re-save for later
+    push    r8
+    add     r14, r7, #IMG_HEADER_SIZE   ; r14 = code source addr
+    move.l  r4, #0
+.lp_copy_code:
+    bge     r4, r20, .lp_copy_code_done
+    add     r5, r14, r4
+    load.q  r6, (r5)
+    add     r5, r23, r4
+    store.q r6, (r5)
+    add     r4, r4, #8
+    bra     .lp_copy_code
+.lp_copy_code_done:
+
+    ; 10. If data_size > 0: zero data page, copy data
+    beqz    r21, .lp_skip_data
+
+    ; Zero data page
+    move.l  r11, #USER_SLOT_STRIDE
+    mulu    r11, r22, r11
+    move.l  r24, #USER_DATA_BASE
+    add     r24, r24, r11               ; r24 = child data page addr
+    move.l  r4, #0
+    move.l  r6, #MMU_PAGE_SIZE
+.lp_zero_data:
+    bge     r4, r6, .lp_zero_data_done
+    add     r5, r24, r4
+    store.q r0, (r5)
+    add     r4, r4, #8
+    bra     .lp_zero_data
+.lp_zero_data_done:
+
+    ; Copy data_size bytes from image_ptr+32+code_size to data page (byte-by-byte,
+    ; because data_size is not required to be 8-byte aligned)
+    add     r14, r7, #IMG_HEADER_SIZE
+    add     r14, r14, r20               ; r14 = data source addr
+    move.l  r4, #0
+.lp_copy_data:
+    bge     r4, r21, .lp_copy_data_done
+    add     r5, r14, r4
+    load.b  r6, (r5)
+    add     r5, r24, r4
+    store.b r6, (r5)
+    add     r4, r4, #1
+    bra     .lp_copy_data
+.lp_copy_data_done:
+
+.lp_skip_data:
+    ; 11. Build child's page table
+    move.q  r10, r22                    ; r10 = task_id
+    jsr     build_user_pt
+
+    ; 12. Initialize TCB
+    move.l  r12, #KERN_DATA_BASE
+    lsl     r15, r22, #5
+    add     r15, r15, #KD_TASK_BASE
+    add     r15, r15, r12               ; r15 = &TCB[task_id]
+
+    ; PC = USER_CODE_BASE + task_id * stride
+    move.l  r11, #USER_SLOT_STRIDE
+    mulu    r11, r22, r11
+    move.l  r14, #USER_CODE_BASE
+    add     r14, r14, r11
+    store.q r14, KD_TASK_PC(r15)
+
+    ; USP = USER_STACK_BASE + task_id * stride + PAGE_SIZE
+    move.l  r14, #USER_STACK_BASE
+    add     r14, r14, r11
+    add     r14, r14, #MMU_PAGE_SIZE
+    store.q r14, KD_TASK_USP(r15)
+
+    ; Signals
+    move.l  r14, #SIG_SYSTEM_MASK
+    store.l r14, KD_TASK_SIG_ALLOC(r15)
+    store.l r0, KD_TASK_SIG_WAIT(r15)
+    store.l r0, KD_TASK_SIG_RECV(r15)
+
+    ; State = READY
+    store.b r0, KD_TASK_STATE(r15)
+
+    ; WaitPort = NONE
+    move.b  r14, #WAITPORT_NONE
+    store.b r14, KD_TASK_WAITPORT(r15)
+
+    ; 13. Set PTBR[task_id]
+    move.l  r11, #USER_SLOT_STRIDE
+    mulu    r11, r22, r11
+    move.l  r14, #USER_PT_BASE
+    add     r14, r14, r11               ; r14 = task PT base
+    lsl     r16, r22, #3
+    add     r16, r16, #KD_PTBR_BASE
+    add     r16, r16, r12
+    store.q r14, (r16)
+
+    ; 14. Increment num_tasks
+    load.q  r14, KD_NUM_TASKS(r12)
+    add     r14, r14, #1
+    store.q r14, KD_NUM_TASKS(r12)
+
+    ; 15. Return success
+    pop     r8
+    pop     r7
+    move.q  r1, r22                     ; R1 = task_id
+    move.l  r2, #ERR_OK
+    rts
+
+.lp_badarg:
+    pop     r8
+    pop     r7
+    move.q  r1, r0
+    move.l  r2, #ERR_BADARG
+    rts
+
+.lp_nomem:
+    pop     r8
+    pop     r7
+    move.q  r1, r0
+    move.l  r2, #ERR_NOMEM
     rts
 
 ; ============================================================================
@@ -921,6 +1050,8 @@ trap_handler:
     move.l  r12, #KERN_DATA_BASE
     load.q  r8, (r12)
     jsr     kern_put_hex
+    move.q  r8, #0x0D
+    jsr     kern_put_char
     move.q  r8, #0x0A
     jsr     kern_put_char
     ; Kill the faulting task
@@ -946,6 +1077,8 @@ trap_handler:
     jsr     kern_puts
     mfcr    r8, cr1
     jsr     kern_put_hex
+    move.q  r8, #0x0D
+    jsr     kern_put_char
     move.q  r8, #0x0A
     jsr     kern_put_char
     halt
@@ -1856,9 +1989,12 @@ trap_handler:
     move.q  r22, r1                     ; r22 = base PPN
 
     ; Step 7: Find free VA gap
+    ; NOTE: find_free_va clobbers R3-R16, so save R13 (current_task)
+    push    r13
     move.q  r1, r13                     ; R1 = task_id
     move.q  r2, r20                     ; R2 = pages needed
     jsr     find_free_va                ; R1 = VA, R2 = err
+    pop     r13                         ; restore current_task
     bnez    r2, .am_rollback_pages      ; VA search failed → free pages
     move.q  r23, r1                     ; r23 = VA
 
@@ -2476,122 +2612,850 @@ intr_handler:
     eret
 
 ; ============================================================================
-; User Task Templates (copied to user code pages during init)
+; Program Table (M8: static list of bundled program images)
 ; ============================================================================
+; Each entry: 24 bytes (image_ptr, image_size, reserved).
+; Sentinel: image_ptr = 0.
+; Order determines launch order (and thus task slot assignment).
 
-; Task 0 (M6 demo): AllocMem(MEMF_PUBLIC|MEMF_CLEAR), write 'S' to shared page,
-; CreateTask with share_handle as arg0, print 'A' + yield loop.
-; Child code is pre-loaded into task 0's data page during boot init.
-; 12 instructions = 96 bytes. 'A' marker at instruction 5 (byte 40).
-; Task 0 (M7 demo): ECHO service with shared-memory reply.
-; Creates named "ECHO" port, allocates MEMF_PUBLIC shared memory, writes "HI",
-; waits for request, replies with share_handle. Proves named ports + request/reply
-; + share-handle-in-message handoff.
-; 24 instructions = 192 bytes.
-user_task0_template:
-    ; Write "ECHO\0" to data page at offset 128
-    move.l  r7, #USER_DATA_BASE
-    add     r7, r7, #128            ; 0-1: R7 = &data[128]
-    move.l  r8, #0x4F484345         ; 2: "ECHO" in little-endian
-    store.l r8, (r7)                ; 3: write "ECHO"
-    store.b r0, 4(r7)               ; 4: NUL terminator
-    move.l  r1, #0x41               ; 5: 'A' ← findTaskTemplates marker
-    ; CreatePort("ECHO", PF_PUBLIC)
-    move.l  r1, r7                  ; 6: R1 = name_ptr
-    move.l  r2, #PF_PUBLIC          ; 7: R2 = flags
-    syscall #SYS_CREATE_PORT        ; 8: → R1=portID (always 0, first port)
-    ; AllocMem(4096, MEMF_PUBLIC|MEMF_CLEAR)
-    move.l  r1, #0x1000             ; 9: size = 4096
-    move.l  r2, #0x10001            ; 10: MEMF_PUBLIC | MEMF_CLEAR
-    syscall #SYS_ALLOC_MEM          ; 11: → R1=VA, R3=share_handle
-    ; Write "HI" to shared memory (MEMF_CLEAR ensures NUL at +2)
-    move.l  r8, #0x4948             ; 12: "HI" in LE
-    store.w r8, (r1)                ; 13: write "HI"
-    ; Save share_handle to data page (survives WaitPort context switch)
-    move.l  r8, #USER_DATA_BASE     ; 14
-    store.q r3, 256(r8)             ; 15: data[256] = share_handle
-    ; WaitPort(port 0) → receives request with R5=reply_port
-    move.q  r1, r0                  ; 16: R1 = 0 (echo_port is always port 0)
-    syscall #SYS_WAIT_PORT          ; 17: blocks → R5=reply_port
-    ; ReplyMsg(reply_port, type='!', share_handle from data page)
-    move.q  r1, r5                  ; 18: R1 = reply_port
-    move.l  r2, #0x21               ; 19: type = '!'
-    move.l  r8, #USER_DATA_BASE     ; 20
-    load.q  r5, 256(r8)             ; 21: R5 = share_handle
-    syscall #SYS_REPLY_MSG          ; 22: reply with handle
-    syscall #SYS_EXIT_TASK          ; 23: done
-user_task0_template_end:
+program_table:
+    dc.q    prog_console
+    dc.q    prog_console_end - prog_console
+    dc.q    0
+    dc.q    prog_echo
+    dc.q    prog_echo_end - prog_echo
+    dc.q    0
+    dc.q    prog_clock
+    dc.q    prog_clock_end - prog_clock
+    dc.q    0
+    dc.q    prog_client
+    dc.q    prog_client_end - prog_client
+    dc.q    0
+    ; sentinel
+    dc.q    0
+    dc.q    0
+    dc.q    0
 
-; Task 1 (M7 demo): ECHO client with shared-memory read.
-; Finds "ECHO" port, sends request with reply port, receives reply with
-; share_handle, maps shared memory, reads and prints greeting string.
-; Proves FindPort + request/reply + MapShared from message handle.
-; 24 instructions = 192 bytes.
-user_task1_template:
-    ; Write "ECHO\0" to data page at offset 128 (task 1 data = $612000)
-    move.l  r7, #0x612080              ; 0: R7 = task1_data + 128
-    move.l  r8, #0x4F484345            ; 1: "ECHO"
-    store.l r8, (r7)                   ; 2: write name
-    store.b r0, 4(r7)                  ; 3: NUL
-    ; CreatePort(anonymous) → reply port
-    move.q  r1, r0                     ; 4: R1=0 (anonymous)
-    move.q  r2, r0                     ; 5: R2=0 (no flags)
-    syscall #SYS_CREATE_PORT           ; 6: → R1=reply_portID
-    move.q  r9, r1                     ; 7: save reply_port in R9
-    ; FindPort("ECHO")
-    move.q  r1, r7                     ; 8: R1 = name_ptr
-    syscall #SYS_FIND_PORT             ; 9: → R1=echo_portID
-    ; PutMsg(echo_port, type='Q', reply_port=R9)
-    move.l  r2, #0x51                  ; 10: type = 'Q' (R1 = echo_port from FindPort)
-    move.q  r5, r9                     ; 11: R5 = reply_port
-    move.q  r6, r0                     ; 12: R6 = 0 (no share_handle outbound)
-    syscall #SYS_PUT_MSG               ; 13: send request
-    ; WaitPort(reply_port) → R6=share_handle from reply
-    move.q  r1, r9                     ; 14: R1 = reply_port
-    syscall #SYS_WAIT_PORT             ; 15: → R6=share_handle
-    ; MapShared(share_handle) → R1=mapped_VA
-    move.q  r1, r6                     ; 16: R1 = share_handle from reply
-    syscall #SYS_MAP_SHARED            ; 17: → R1=mapped_VA
-    ; Read first byte from shared memory and print it
-    load.b  r1, (r1)                   ; 18: R1 = 'H' (from "HI" in shared mem)
-    syscall #SYS_DEBUG_PUTCHAR         ; 19: print 'H'
-    ; Idle loop (keeps a runnable task so the kernel doesn't deadlock)
-.t1_idle:
-    syscall #SYS_YIELD                 ; 20
-    bra     .t1_idle                   ; 21
-    ; Pad to 24 instructions
-    move.q  r0, r0                     ; 22-23: nop
-    move.q  r0, r0
-user_task1_template_end:
+; ============================================================================
+; Bundled Program Images (M8)
+; ============================================================================
+; Each image: 32-byte header + code + optional data.
+; Programs use the standard preamble to compute their own base addresses.
+;
+; Data section layout per program (copied to data page offset 0 by loader):
+;   +0:   port name strings and other initial data
+;   +128: scratch area (saved registers, port IDs, etc.)
 
-; Child task code (copied to task 0's data page during boot init).
-; CreateTask copies this from the data page to the child's code page.
-; 11 instructions = 88 bytes. Maps shared memory via arg0 handle, reads 'S', prints it, exits.
-child_task_template:
-    ; Get own task ID to compute data page VA
-    move.l  r1, #SYSINFO_CURRENT_TASK  ; 0: info_id = 3
-    syscall #SYS_GET_SYS_INFO         ; 1: R1 = task_id
-    ; Compute data page VA = USER_DATA_BASE + task_id * USER_SLOT_STRIDE
-    move.l  r5, #USER_SLOT_STRIDE     ; 2
-    mulu    r5, r1, r5                ; 3: R5 = task_id * stride
-    move.l  r6, #USER_DATA_BASE       ; 4
-    add     r5, r5, r6                ; 5: R5 = data page VA
-    ; Load arg0 (share_handle) from data page offset 0
-    load.q  r1, (r5)                  ; 6: R1 = share_handle
-    ; MapShared(handle) → R1 = mapped VA
-    syscall #SYS_MAP_SHARED           ; 7
-    ; Read 'S' from shared memory and print it
-    load.b  r1, (r1)                  ; 8: R1 = [mapped VA] = 'S'
-    syscall #SYS_DEBUG_PUTCHAR        ; 9: print 'S'
-    syscall #SYS_EXIT_TASK            ; 10: exit cleanly
-child_task_template_end:
+; ---------------------------------------------------------------------------
+; CONSOLE — text output service
+; ---------------------------------------------------------------------------
+; Creates public "CONSOLE" port. Prints own ONLINE line directly (via
+; DebugPutChar since it can't message itself). Then loops: WaitPort,
+; print data0 low byte via DebugPutChar.
+
+prog_console:
+    ; Header
+    dc.l    IMG_MAGIC_LO, IMG_MAGIC_HI
+    dc.l    prog_console_code_end - prog_console_code   ; code_size
+    dc.l    prog_console_data_end - prog_console_data   ; data_size
+    dc.l    0                           ; flags
+    ds.b    12                          ; reserved
+prog_console_code:
+    ; === Preamble: compute data page base (preemption-safe) ===
+    ; The context switcher only saves PC + USP, NOT GPRs. A timer interrupt
+    ; between GetSysInfo and the stack save can corrupt intermediate registers.
+    ; We verify task_id consistency and double-check the R29 computation.
+    sub     sp, sp, #16                 ; reserve [sp]=R29, [sp+8]=task_id scratch
+.con_preamble:
+    move.l  r1, #SYSINFO_CURRENT_TASK
+    syscall #SYS_GET_SYS_INFO           ; R1 = task_id
+    store.q r1, 8(sp)                   ; save task_id immediately after eret
+    move.l  r1, #SYSINFO_CURRENT_TASK
+    syscall #SYS_GET_SYS_INFO           ; R1 = task_id (verify)
+    load.q  r28, 8(sp)
+    bne     r1, r28, .con_preamble      ; mismatch → retry
+    ; R1 = verified task_id. Compute R29 twice and compare.
+    move.l  r28, #USER_SLOT_STRIDE
+    mulu    r28, r1, r28
+    move.l  r29, #USER_DATA_BASE
+    add     r29, r29, r28
+    store.q r29, (sp)                   ; save first computation
+    load.q  r1, 8(sp)                   ; re-load verified task_id
+    move.l  r28, #USER_SLOT_STRIDE
+    mulu    r28, r1, r28
+    move.l  r29, #USER_DATA_BASE
+    add     r29, r29, r28
+    load.q  r28, (sp)
+    bne     r29, r28, .con_preamble     ; R29 mismatch → retry
+    store.q r29, (sp)                   ; confirmed correct
+    ; Save task_id to data[128] for ONLINE line
+    load.q  r1, 8(sp)
+    store.q r1, 128(r29)                ; data[128] = task_id
+
+    ; === Create "CONSOLE" port ===
+    ; Name "CONSOLE\0" is in data section at offset 0
+    move.q  r1, r29                     ; R1 = name_ptr (data[0] = "CONSOLE")
+    move.l  r2, #PF_PUBLIC              ; flags
+    syscall #SYS_CREATE_PORT            ; → R1 = port_id
+    load.q  r29, (sp)                   ; reload R29 after syscall
+    ; Save console_port to data[136]
+    store.q r1, 136(r29)
+
+    ; === Print "CONSOLE ONLINE [Tn]\n" directly via DebugPutChar ===
+    ; (CONSOLE can't message itself, so it prints its own banner)
+    add     r20, r29, #16               ; r20 = &data[16] = "CONSOLE ONLINE [T"
+.con_banner_loop:
+    load.b  r1, (r20)
+    beqz    r1, .con_banner_id
+    store.q r20, 8(sp)                  ; save R20 to stack scratch slot
+    syscall #SYS_DEBUG_PUTCHAR
+    load.q  r29, (sp)                   ; reload R29 after syscall
+    load.q  r20, 8(sp)                  ; reload R20 from stack
+    add     r20, r20, #1
+    bra     .con_banner_loop
+.con_banner_id:
+    ; Print task_id as ASCII digit
+    load.q  r29, (sp)                   ; reload R29 (may have been clobbered)
+    load.q  r1, 128(r29)               ; task_id
+    add     r1, r1, #0x30              ; ASCII '0' + id
+    syscall #SYS_DEBUG_PUTCHAR
+    ; Print "]\r\n"
+    move.l  r1, #0x5D                   ; ']'
+    syscall #SYS_DEBUG_PUTCHAR
+    move.l  r1, #0x0D                   ; '\r'
+    syscall #SYS_DEBUG_PUTCHAR
+    move.l  r1, #0x0A                   ; '\n'
+    syscall #SYS_DEBUG_PUTCHAR
+    move.l  r1, #0x41                   ; findProgramImages marker 'A'
+
+    ; === Main loop: receive and print ===
+.con_msg_loop:
+    ; WaitPort(console_port)
+    load.q  r29, (sp)                   ; reload R29 before use
+    load.q  r1, 136(r29)               ; R1 = console_port
+    syscall #SYS_WAIT_PORT              ; → R2 = data0 (char)
+    ; Print data0 low byte
+    move.q  r1, r2                      ; char from data0
+    syscall #SYS_DEBUG_PUTCHAR
+    bra     .con_msg_loop
+prog_console_code_end:
+
+prog_console_data:
+    dc.b    "CONSOLE", 0               ; offset 0: port name (8 bytes)
+    ds.b    8                           ; padding to offset 16
+    dc.b    "CONSOLE ONLINE [T", 0     ; offset 16: banner string
+    ; offset 128+ is scratch (task_id, port_id, etc.) — zeroed by loader
+prog_console_data_end:
+    align   8
+prog_console_end:
+
+; ---------------------------------------------------------------------------
+; ECHO — request/reply + shared memory service
+; ---------------------------------------------------------------------------
+; Finds CONSOLE, announces "ECHO ONLINE [Tn]\n".
+; Creates public "ECHO" port. Allocates shared memory with greeting string.
+; Waits for request, replies with share_handle.
+; Sends "ECHO: REPLY OK\n" to CONSOLE. Yield-idles.
+
+prog_echo:
+    ; Header
+    dc.l    IMG_MAGIC_LO, IMG_MAGIC_HI
+    dc.l    prog_echo_code_end - prog_echo_code
+    dc.l    prog_echo_data_end - prog_echo_data
+    dc.l    0
+    ds.b    12
+prog_echo_code:
+    ; === Preamble: compute data page base (preemption-safe) ===
+    sub     sp, sp, #16
+.echo_preamble:
+    move.l  r1, #SYSINFO_CURRENT_TASK
+    syscall #SYS_GET_SYS_INFO
+    store.q r1, 8(sp)
+    move.l  r1, #SYSINFO_CURRENT_TASK
+    syscall #SYS_GET_SYS_INFO
+    load.q  r28, 8(sp)
+    bne     r1, r28, .echo_preamble
+    move.l  r28, #USER_SLOT_STRIDE
+    mulu    r28, r1, r28
+    move.l  r29, #USER_DATA_BASE
+    add     r29, r29, r28
+    store.q r29, (sp)
+    load.q  r1, 8(sp)
+    move.l  r28, #USER_SLOT_STRIDE
+    mulu    r28, r1, r28
+    move.l  r29, #USER_DATA_BASE
+    add     r29, r29, r28
+    load.q  r28, (sp)
+    bne     r29, r28, .echo_preamble
+    store.q r29, (sp)
+    load.q  r1, 8(sp)
+    store.q r1, 128(r29)
+
+    ; === Find CONSOLE port ===
+    move.q  r1, r29                     ; R1 = &data[0] = "CONSOLE"
+    syscall #SYS_FIND_PORT              ; R1 = console_port, R2 = err
+    load.q  r29, (sp)                   ; reload R29 after syscall
+    bnez    r2, .echo_idle              ; FindPort failed → idle safely
+    store.q r1, 136(r29)                ; data[136] = console_port
+
+    ; === Send "ECHO ONLINE [Tn]\n" to CONSOLE ===
+    add     r20, r29, #16               ; r20 = &data[16] = "ECHO ONLINE [T"
+.echo_online_loop:
+    load.b  r1, (r20)
+    beqz    r1, .echo_online_id
+    store.q r20, 8(sp)                  ; save R20 to stack scratch slot
+.echo_online_retry:
+    load.q  r20, 8(sp)                  ; (re)load R20 for char read
+    load.b  r3, (r20)                   ; R3 = char (data0)
+    move.l  r2, #0                      ; R2 = msg_type = 0
+    move.q  r4, r0                      ; R4 = 0
+    move.l  r5, #REPLY_PORT_NONE        ; R5 = no reply
+    move.q  r6, r0                      ; R6 = no share handle
+    load.q  r1, 136(r29)               ; R1 = console_port
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)                   ; reload R29 after syscall
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .echo_online_full
+    load.q  r20, 8(sp)                  ; reload R20 from stack
+    add     r20, r20, #1
+    bra     .echo_online_loop
+.echo_online_full:
+    syscall #SYS_YIELD                  ; FIFO full: yield to let CONSOLE drain
+    load.q  r29, (sp)                   ; reload R29 after yield
+    bra     .echo_online_retry          ; retry same character
+.echo_online_id:
+    ; Send task_id digit
+.echo_id_retry:
+    load.q  r3, 128(r29)               ; task_id
+    add     r3, r3, #0x30              ; ASCII digit
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r1, 136(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)                   ; reload R29 after syscall
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .echo_id_full
+    bra     .echo_bracket
+.echo_id_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .echo_id_retry
+.echo_bracket:
+    ; Send ']'
+.echo_bracket_retry:
+    move.l  r3, #0x5D
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r1, 136(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)                   ; reload R29 after syscall
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .echo_bracket_full
+    bra     .echo_newline
+.echo_bracket_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .echo_bracket_retry
+.echo_newline:
+    ; Send '\r\n'
+.echo_cr_retry:
+    move.l  r3, #0x0D
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r1, 136(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .echo_cr_full
+    bra     .echo_newline_retry
+.echo_cr_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .echo_cr_retry
+.echo_newline_retry:
+    move.l  r3, #0x0A
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r1, 136(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)                   ; reload R29 after syscall
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .echo_newline_full
+    bra     .echo_banner_done
+.echo_newline_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .echo_newline_retry
+.echo_banner_done:
+
+    ; === Create "ECHO" port ===
+    add     r1, r29, #8                 ; R1 = &data[8] = "ECHO"
+    move.l  r2, #PF_PUBLIC
+    syscall #SYS_CREATE_PORT            ; R1 = echo_port
+    load.q  r29, (sp)                   ; reload R29 after syscall
+    store.q r1, 152(r29)                ; data[152] = echo_port
+
+    ; === AllocMem for shared greeting ===
+    move.l  r1, #0x1000
+    move.l  r2, #0x10001                ; MEMF_PUBLIC | MEMF_CLEAR
+    syscall #SYS_ALLOC_MEM              ; R1 = VA, R3 = share_handle
+    load.q  r29, (sp)                   ; reload R29 after syscall
+    store.q r3, 160(r29)                ; data[160] = share_handle
+    store.q r1, 168(r29)                ; data[168] = shared_va
+
+    ; Write "HELLO FROM ECHO\n" to shared memory
+    ; Copy from data section string at offset 48
+    add     r20, r29, #48              ; r20 = &data[48] = greeting src
+    load.q  r21, 168(r29)              ; r21 = shared_va (dest)
+.echo_copy_greeting:
+    load.b  r14, (r20)
+    store.b r14, (r21)
+    beqz    r14, .echo_copy_done
+    add     r20, r20, #1
+    add     r21, r21, #1
+    bra     .echo_copy_greeting
+.echo_copy_done:
+
+    ; === WaitPort(echo_port) — wait for client request ===
+    load.q  r1, 152(r29)               ; R1 = echo_port
+    syscall #SYS_WAIT_PORT              ; → R5 = reply_port
+    load.q  r29, (sp)                   ; reload R29 after syscall
+
+    ; === ReplyMsg with share_handle ===
+    move.q  r1, r5                      ; R1 = reply_port
+    move.l  r2, #0x52                   ; type = 'R'
+    move.q  r3, r0
+    move.q  r4, r0
+    load.q  r5, 160(r29)               ; R5 = share_handle
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)                   ; reload R29 after syscall
+
+    ; === Send "ECHO: REPLY OK\n" to CONSOLE ===
+    add     r20, r29, #72              ; r20 = &data[72] = reply-ok string
+.echo_reply_ok_loop:
+    load.b  r1, (r20)
+    beqz    r1, .echo_idle
+    store.q r20, 8(sp)                  ; save R20 to stack scratch slot
+.echo_reply_retry:
+    load.q  r20, 8(sp)
+    load.b  r3, (r20)
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r1, 136(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)                   ; reload R29 after syscall
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .echo_reply_full
+    load.q  r20, 8(sp)                  ; reload R20 from stack
+    add     r20, r20, #1
+    bra     .echo_reply_ok_loop
+.echo_reply_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .echo_reply_retry
+
+.echo_idle:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)                   ; reload R29 after syscall
+    bra     .echo_idle
+prog_echo_code_end:
+
+prog_echo_data:
+    dc.b    "CONSOLE", 0               ; offset 0: for FindPort
+    dc.b    "ECHO", 0, 0, 0, 0         ; offset 8: port name (pad to 8)
+    dc.b    "ECHO ONLINE [T", 0        ; offset 16: banner (15 bytes)
+    ds.b    17                          ; pad to offset 48
+    dc.b    "HELLO FROM ECHO", 0x0D, 0x0A, 0 ; offset 48: greeting (18 bytes, ends at 66)
+    ds.b    6                           ; pad to offset 72
+    dc.b    "ECHO: REPLY OK", 0x0D, 0x0A, 0  ; offset 72: reply-ok string
+prog_echo_data_end:
+    align   8
+prog_echo_end:
+
+; ---------------------------------------------------------------------------
+; CLOCK — periodic tick output via CONSOLE (polling, temporary)
+; ---------------------------------------------------------------------------
+; Finds CONSOLE, announces "CLOCK ONLINE [Tn]\n".
+; Polls tick_count, sends '.' every CLOCK_INTERVAL ticks.
+
+prog_clock:
+    ; Header
+    dc.l    IMG_MAGIC_LO, IMG_MAGIC_HI
+    dc.l    prog_clock_code_end - prog_clock_code
+    dc.l    prog_clock_data_end - prog_clock_data
+    dc.l    0
+    ds.b    12
+prog_clock_code:
+    ; === Preamble: compute data page base (preemption-safe) ===
+    sub     sp, sp, #16
+.clk_preamble:
+    move.l  r1, #SYSINFO_CURRENT_TASK
+    syscall #SYS_GET_SYS_INFO
+    store.q r1, 8(sp)
+    move.l  r1, #SYSINFO_CURRENT_TASK
+    syscall #SYS_GET_SYS_INFO
+    load.q  r28, 8(sp)
+    bne     r1, r28, .clk_preamble
+    move.l  r28, #USER_SLOT_STRIDE
+    mulu    r28, r1, r28
+    move.l  r29, #USER_DATA_BASE
+    add     r29, r29, r28
+    store.q r29, (sp)
+    load.q  r1, 8(sp)
+    move.l  r28, #USER_SLOT_STRIDE
+    mulu    r28, r1, r28
+    move.l  r29, #USER_DATA_BASE
+    add     r29, r29, r28
+    load.q  r28, (sp)
+    bne     r29, r28, .clk_preamble
+    store.q r29, (sp)
+    load.q  r1, 8(sp)
+    store.q r1, 128(r29)
+
+    ; === Find CONSOLE ===
+    move.q  r1, r29                     ; &data[0] = "CONSOLE"
+    syscall #SYS_FIND_PORT
+    load.q  r29, (sp)                   ; reload R29 after syscall
+    bnez    r2, .clk_idle               ; FindPort failed → idle safely
+    store.q r1, 136(r29)                ; data[136] = console_port
+
+    ; === Send "CLOCK ONLINE [Tn]\n" to CONSOLE ===
+    add     r20, r29, #16               ; &data[16] = "CLOCK ONLINE [T"
+.clk_online_loop:
+    load.b  r1, (r20)
+    beqz    r1, .clk_online_id
+    store.q r20, 8(sp)                  ; save R20 to stack scratch slot
+.clk_online_retry:
+    load.q  r20, 8(sp)
+    load.b  r3, (r20)
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r1, 136(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)                   ; reload R29 after syscall
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .clk_online_full
+    load.q  r20, 8(sp)                  ; reload R20 from stack
+    add     r20, r20, #1
+    bra     .clk_online_loop
+.clk_online_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .clk_online_retry
+.clk_online_id:
+    ; task_id digit
+.clk_id_retry:
+    load.q  r3, 128(r29)
+    add     r3, r3, #0x30
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r1, 136(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .clk_id_full
+    bra     .clk_bracket
+.clk_id_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .clk_id_retry
+.clk_bracket:
+    ; ']'
+.clk_bracket_retry:
+    move.l  r3, #0x5D
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r1, 136(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .clk_bracket_full
+    bra     .clk_newline
+.clk_bracket_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .clk_bracket_retry
+.clk_newline:
+    ; '\r\n'
+.clk_cr_retry:
+    move.l  r3, #0x0D
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r1, 136(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .clk_cr_full
+    bra     .clk_newline_retry
+.clk_cr_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .clk_cr_retry
+.clk_newline_retry:
+    move.l  r3, #0x0A
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r1, 136(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .clk_newline_full
+    bra     .clk_banner_done
+.clk_newline_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .clk_newline_retry
+.clk_banner_done:
+
+    ; === Init tick counter ===
+    move.l  r1, #SYSINFO_TICK_COUNT
+    syscall #SYS_GET_SYS_INFO           ; R1 = current tick
+    load.q  r29, (sp)                   ; reload R29 after syscall
+    store.q r1, 152(r29)                ; data[152] = last_tick
+
+    ; === Tick loop ===
+.clk_loop:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)                   ; reload R29 after Yield
+    move.l  r1, #SYSINFO_TICK_COUNT
+    syscall #SYS_GET_SYS_INFO           ; R1 = current_tick
+    load.q  r29, (sp)                   ; reload R29 after GetSysInfo
+    load.q  r14, 152(r29)              ; r14 = last_tick
+    sub     r15, r1, r14                ; r15 = elapsed
+    move.l  r16, #CLOCK_INTERVAL
+    blt     r15, r16, .clk_loop         ; not enough ticks yet
+    ; Enough ticks — send '.'
+    store.q r1, 152(r29)                ; update last_tick
+.clk_dot_retry:
+    move.l  r3, #0x2E                   ; '.'
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r1, 136(r29)               ; console_port
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)                   ; reload R29 after PutMsg
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .clk_dot_full
+    bra     .clk_loop
+.clk_dot_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .clk_dot_retry
+.clk_idle:
+    syscall #SYS_YIELD
+    bra     .clk_idle
+prog_clock_code_end:
+
+prog_clock_data:
+    dc.b    "CONSOLE", 0               ; offset 0: for FindPort
+    ds.b    8                           ; pad to offset 16
+    dc.b    "CLOCK ONLINE [T", 0       ; offset 16: banner
+prog_clock_data_end:
+    align   8
+prog_clock_end:
+
+; ---------------------------------------------------------------------------
+; CLIENT — one-shot ECHO exerciser
+; ---------------------------------------------------------------------------
+; Finds CONSOLE, announces "CLIENT ONLINE [Tn]\n".
+; Sends "CLIENT: REQUESTING...\n" to CONSOLE.
+; Finds ECHO, sends request with reply port, receives share_handle in reply.
+; MapShared, sends "SHARED: " + greeting chars to CONSOLE.
+
+prog_client:
+    ; Header
+    dc.l    IMG_MAGIC_LO, IMG_MAGIC_HI
+    dc.l    prog_client_code_end - prog_client_code
+    dc.l    prog_client_data_end - prog_client_data
+    dc.l    0
+    ds.b    12
+prog_client_code:
+    ; === Preamble: compute data page base (preemption-safe) ===
+    sub     sp, sp, #16
+.cli_preamble:
+    move.l  r1, #SYSINFO_CURRENT_TASK
+    syscall #SYS_GET_SYS_INFO
+    store.q r1, 8(sp)
+    move.l  r1, #SYSINFO_CURRENT_TASK
+    syscall #SYS_GET_SYS_INFO
+    load.q  r28, 8(sp)
+    bne     r1, r28, .cli_preamble
+    move.l  r28, #USER_SLOT_STRIDE
+    mulu    r28, r1, r28
+    move.l  r29, #USER_DATA_BASE
+    add     r29, r29, r28
+    store.q r29, (sp)
+    load.q  r1, 8(sp)
+    move.l  r28, #USER_SLOT_STRIDE
+    mulu    r28, r1, r28
+    move.l  r29, #USER_DATA_BASE
+    add     r29, r29, r28
+    load.q  r28, (sp)
+    bne     r29, r28, .cli_preamble
+    store.q r29, (sp)
+    load.q  r1, 8(sp)
+    store.q r1, 128(r29)
+
+    ; === Find CONSOLE ===
+    move.q  r1, r29                     ; &data[0] = "CONSOLE"
+    syscall #SYS_FIND_PORT
+    load.q  r29, (sp)                   ; reload R29 after syscall
+    bnez    r2, .cli_idle               ; FindPort failed → idle safely
+    store.q r1, 136(r29)
+
+    ; === Send "CLIENT ONLINE [Tn]\n" ===
+    add     r20, r29, #16               ; &data[16]
+.cli_online_loop:
+    load.b  r1, (r20)
+    beqz    r1, .cli_online_id
+    store.q r20, 8(sp)                  ; save R20 to stack scratch slot
+.cli_online_retry:
+    load.q  r20, 8(sp)
+    load.b  r3, (r20)
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r1, 136(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .cli_online_full
+    load.q  r20, 8(sp)
+    add     r20, r20, #1
+    bra     .cli_online_loop
+.cli_online_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .cli_online_retry
+.cli_online_id:
+.cli_id_retry:
+    load.q  r3, 128(r29)
+    add     r3, r3, #0x30
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r1, 136(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .cli_id_full
+    bra     .cli_bracket
+.cli_id_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .cli_id_retry
+.cli_bracket:
+.cli_bracket_retry:
+    move.l  r3, #0x5D
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r1, 136(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .cli_bracket_full
+    bra     .cli_newline
+.cli_bracket_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .cli_bracket_retry
+.cli_newline:
+.cli_cr_retry:
+    move.l  r3, #0x0D
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r1, 136(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .cli_cr_full
+    bra     .cli_newline_retry
+.cli_cr_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .cli_cr_retry
+.cli_newline_retry:
+    move.l  r3, #0x0A
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r1, 136(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .cli_newline_full
+    bra     .cli_banner_done
+.cli_newline_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .cli_newline_retry
+.cli_banner_done:
+
+    ; === Send "CLIENT: REQUESTING...\n" ===
+    add     r20, r29, #48
+.cli_req_loop:
+    load.b  r1, (r20)
+    beqz    r1, .cli_req_done
+    store.q r20, 8(sp)
+.cli_req_retry:
+    load.q  r20, 8(sp)
+    load.b  r3, (r20)
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r1, 136(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .cli_req_full
+    load.q  r20, 8(sp)
+    add     r20, r20, #1
+    bra     .cli_req_loop
+.cli_req_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .cli_req_retry
+.cli_req_done:
+
+    ; === Create anonymous reply port ===
+    move.q  r1, r0                      ; anonymous
+    move.q  r2, r0
+    syscall #SYS_CREATE_PORT            ; R1 = reply_port
+    load.q  r29, (sp)                   ; reload R29 after syscall
+    store.q r1, 152(r29)                ; data[152] = reply_port
+
+    ; === Find ECHO ===
+    add     r1, r29, #8                 ; &data[8] = "ECHO"
+    syscall #SYS_FIND_PORT              ; R1 = echo_port, R2 = err
+    load.q  r29, (sp)                   ; reload R29 after syscall
+    bnez    r2, .cli_idle               ; FindPort("ECHO") failed → idle safely
+
+    ; === PutMsg to ECHO with reply_port ===
+    move.l  r2, #0x51                   ; type = 'Q'
+    move.q  r3, r0
+    move.q  r4, r0
+    load.q  r5, 152(r29)               ; R5 = reply_port
+    move.q  r6, r0
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)                   ; reload R29 after syscall
+
+    ; === WaitPort(reply_port) → R6 = share_handle ===
+    load.q  r1, 152(r29)
+    syscall #SYS_WAIT_PORT              ; R6 = share_handle
+    load.q  r29, (sp)                   ; reload R29 after syscall
+
+    ; === MapShared ===
+    move.q  r1, r6
+    syscall #SYS_MAP_SHARED             ; R1 = mapped_va
+    load.q  r29, (sp)                   ; reload R29 after syscall
+    store.q r1, 160(r29)                ; data[160] = mapped_va
+
+    ; === Send "SHARED: " to CONSOLE ===
+    add     r20, r29, #80
+.cli_shared_prefix_loop:
+    load.b  r1, (r20)
+    beqz    r1, .cli_shared_data
+    store.q r20, 8(sp)
+.cli_prefix_retry:
+    load.q  r20, 8(sp)
+    load.b  r3, (r20)
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r1, 136(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .cli_prefix_full
+    load.q  r20, 8(sp)
+    add     r20, r20, #1
+    bra     .cli_shared_prefix_loop
+.cli_prefix_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .cli_prefix_retry
+
+.cli_shared_data:
+    ; === Send chars from mapped shared memory ===
+    load.q  r20, 160(r29)              ; r20 = mapped_va
+.cli_shared_loop:
+    load.b  r1, (r20)
+    beqz    r1, .cli_idle
+    store.q r20, 8(sp)
+.cli_shared_retry:
+    load.q  r20, 8(sp)
+    load.b  r3, (r20)
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r1, 136(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .cli_shared_full
+    load.q  r20, 8(sp)
+    add     r20, r20, #1
+    bra     .cli_shared_loop
+.cli_shared_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .cli_shared_retry
+
+.cli_idle:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)                   ; reload R29 after syscall
+    bra     .cli_idle
+prog_client_code_end:
+
+prog_client_data:
+    dc.b    "CONSOLE", 0               ; offset 0
+    dc.b    "ECHO", 0, 0, 0, 0         ; offset 8 (pad to 16)
+    dc.b    "CLIENT ONLINE [T", 0       ; offset 16 (17 bytes)
+    ds.b    15                          ; pad to offset 48
+    dc.b    "CLIENT: REQUESTING...", 0x0D, 0x0A, 0  ; offset 48 (24 bytes, ends at 72)
+    ds.b    8                           ; pad to offset 80
+    dc.b    "SHARED: ", 0              ; offset 80
+prog_client_data_end:
+    align   8
+prog_client_end:
 
 ; ============================================================================
 ; Data: Strings
 ; ============================================================================
 
 boot_banner:
-    dc.b    "IExec M7 boot", 0x0A, 0
+    dc.b    "IExec M8 boot", 0x0D, 0x0A, 0
     align   4
 
 fault_msg_prefix:
@@ -2607,7 +3471,7 @@ fault_msg_addr:
     align   4
 
 deadlock_msg:
-    dc.b    "DEADLOCK: no runnable tasks", 0x0A, 0
+    dc.b    "DEADLOCK: no runnable tasks", 0x0D, 0x0A, 0
     align   4
 
 fault_msg_task:
@@ -2618,6 +3482,10 @@ panic_msg:
     dc.b    "KERNEL PANIC: ", 0
     align   4
 
+no_tasks_msg:
+    dc.b    "PANIC: no programs loaded", 0x0D, 0x0A, 0
+    align   4
+
 ; ============================================================================
-; End of IExec M6
+; End of IExec M8
 ; ============================================================================

@@ -10,7 +10,7 @@
 
 IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS Exec but designed from the ground up for a hardware-enforced privilege model. Where Amiga Exec ran in flat supervisor space with no memory protection, IExec uses the IE64 MMU to enforce user/supervisor separation, per-task page tables, and W^X memory policy.
 
-**What IExec does (Milestone 7):**
+**What IExec does (Milestone 8):**
 
 - Preemptive round-robin scheduling across up to 8 dynamic tasks (CreateTask/ExitTask with slot reuse)
 - Memory protection via the IE64 MMU (per-task page tables with separate code/stack/data mappings, W^X enforcement)
@@ -503,9 +503,9 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 
 **Implemented and tested (builds on Milestone 1):**
 
-- Boot banner: kernel prints "IExec M7 boot\n" to TERM_OUT before entering user mode
+- Boot banner: kernel prints "IExec M8 boot\n" to TERM_OUT before entering user mode
 - `DebugPutChar` syscall (33): write a single character to the debug terminal (TERM_OUT at `$F0700`)
-- Visible demo tasks (M7): task 0 creates a named "ECHO" port (PF_PUBLIC), allocates shared memory (MEMF_PUBLIC|MEMF_CLEAR), writes "HI" to the shared page, then waits for a request. Task 1 discovers the port via FindPort, sends a request with its reply port, receives a reply carrying the share handle, calls MapShared, and prints the first byte ('H') from shared memory. Task 1 then enters an idle yield loop to keep the system alive. Expected output: "H" after the boot banner, confirming named ports, request/reply messaging, and shared-memory handoff through messages.
+- Visible demo (M8): 4 bundled user-space services loaded at boot: CONSOLE (text output service), ECHO (request/reply + shared memory), CLOCK (periodic tick output), CLIENT (ECHO exerciser). All visible output originates from loaded user programs via the CONSOLE service. Expected output: ONLINE announcements with task IDs, "CLIENT: REQUESTING...", "ECHO: REPLY OK", "SHARED: HELLO FROM ECHO", then periodic dots from CLOCK.
 - Fault reporting: on non-SYSCALL faults, kernel prints "FAULT cause=NNNN PC=$XXXX ADDR=$XXXX\n" to the debug terminal then halts
 
 ### Milestone 3: Signals (Complete)
@@ -559,7 +559,7 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 - W^X preserved: all dynamic pages mapped as P|R|W|U (no execute).
 - Validate-then-commit: all syscalls structured to avoid partial state on error, with explicit rollback for page allocation failures.
 
-### Milestone 7: Named Ports + Reply Protocol (Current)
+### Milestone 7: Named Ports + Reply Protocol (Complete)
 
 **Implemented and tested (builds on Milestone 6):**
 
@@ -573,7 +573,23 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 - **New error codes**: ERR_EXISTS (8) for duplicate public port names, ERR_FULL (9) for FIFO-full condition (distinct from ERR_NOMEM).
 - **Kernel data layout shift**: port array grew from 288 to 1280 bytes; bitmap, region table, and shmem table offsets shifted accordingly.
 
-### Milestone 8: Timers + Handles (Planned)
+### Milestone 8: Bundled User Programs + Tiny Loader (Current)
+
+**Implemented and tested (builds on Milestone 7):**
+
+- **IE64 program image format**: 32-byte fixed header (magic "IE64PROG", code_size, data_size, flags) followed by code and data sections. No ELF, no relocations, no entry offset — entry is always code offset 0. Max one page (4 KiB) each for code and data.
+- **Static program table**: kernel-embedded array of (image_ptr, image_size) entries, sentinel-terminated. Boot code iterates the table and calls `load_program` for each entry.
+- **Boot-time loader** (`load_program`): validates image header (magic, sizes, alignment, truncation check), finds free task slot, copies code and data to task pages, builds page table, initializes TCB. Validate-then-commit pattern. Not a syscall — kernel-internal only.
+- **Standard startup preamble**: programs compute own base addresses via `GetSysInfo(CURRENT_TASK)` + slot arithmetic. No startup arguments in registers (GPRs don't survive initial dispatch). Data page starts with image data section at offset 0.
+- **4 bundled user-space services**:
+  - **CONSOLE**: creates public "CONSOLE" port, prints own ONLINE banner directly, loops receiving messages and printing data0 as chars. Text output service — all programs send through CONSOLE.
+  - **ECHO**: finds CONSOLE, announces online, creates "ECHO" port, allocates shared memory with greeting string, waits for request, replies with share_handle.
+  - **CLOCK**: finds CONSOLE, announces online, polls tick_count via GetSysInfo, sends '.' to CONSOLE every 128 ticks. Polling-based (no timer syscall yet).
+  - **CLIENT**: finds CONSOLE and ECHO, announces online, sends request to ECHO, receives share_handle in reply, MapShared, sends "SHARED: " + greeting chars to CONSOLE.
+- **All visible output from user space**: kernel only prints boot banner. Every service announcement, request/reply narration, and periodic tick comes from loaded user programs.
+- **Retired**: hardcoded task templates (user_task0_template, user_task1_template, child_task_template), USER_CODE_SIZE constant. Kernel is now mechanism-only.
+
+### Milestone 9: Timers + Handles (Planned)
 
 - `AddTimer` / `RemTimer` with delta queue
 - `MapIO` / `MapVRAM` for user-space hardware access

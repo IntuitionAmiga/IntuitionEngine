@@ -5976,13 +5976,14 @@ make aros               # Build VM with embedded AROS ROM
 
 IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. Unlike classic Amiga Exec, which ran everything in flat supervisor space with no memory protection, IExec uses the IE64 MMU to enforce hardware-backed user/supervisor privilege separation with per-task page tables and W^X memory policy. The design preserves the Amiga programming model (signals, message ports, priority scheduling) while adding the isolation guarantees of a modern protected-mode OS.
 
-**Milestone 7 status** — Named Ports + Reply Protocol (implemented and tested):
+**Milestone 8 status** — Bundled User Programs + Tiny Loader (implemented and tested):
 
-- Everything from M1-M6: self-sufficient boot, per-task page tables with W^X, trap dispatch, preemptive round-robin, signals, message ports, dynamic task creation/exit, AllocMem/FreeMem/MapShared with MEMF_ flags and capability handles
-- Named public MsgPorts: `CreatePort(name, PF_PUBLIC)` with up to 16-byte ASCII names; `FindPort` for case-insensitive discovery (Amiga-style)
-- Request/reply messaging: 32-byte messages with type, data0, data1, reply_port, and share_handle fields; `ReplyMsg` syscall for Exec-style service pattern
-- Safe user pointer validation: kernel checks PTEs before reading user-provided name pointers
-- 8 ports (up from 4), 160 bytes each; port cleanup on task exit clears names from FindPort
-- New error codes: ERR_EXISTS (duplicate public port name), ERR_FULL (FIFO full)
+- Everything from M1-M7: self-sufficient boot, per-task page tables with W^X, trap dispatch, preemptive round-robin, signals, named message ports with FindPort discovery, request/reply messaging, dynamic task creation/exit, AllocMem/FreeMem/MapShared with capability handles
+- Tiny ROM-style IE64 program image format: 32-byte header (magic, code_size, data_size, flags) + code + data; no ELF, no relocations
+- Static program table in kernel image; boot-time loader creates tasks from bundled images
+- 4 bundled user-space services: CONSOLE (text output), ECHO (request/reply + shared memory), CLOCK (periodic ticks), CLIENT (ECHO exerciser)
+- All visible output originates from loaded user-space programs via the CONSOLE service
+- Standard startup preamble: programs compute own base addresses via GetSysInfo
+- Retired hardcoded task templates; kernel is now mechanism-only (load, schedule, IPC)
 
 Full kernel contract reference: [sdk/docs/IntuitionOS/IExec.md](sdk/docs/IntuitionOS/IExec.md)
