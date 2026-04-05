@@ -41,6 +41,9 @@ SYS_SEND_MSG_BULK equ 31
 SYS_RECV_MSG_BULK equ 32
 SYS_DEBUG_PUTCHAR equ 33          ; Debug: print character (R1=char)
 SYS_EXIT_TASK     equ 34          ; Exit current task (R1=exit_code, ignored)
+SYS_EXEC_PROGRAM  equ 35          ; Launch bundled program (R1=index, R2=args_ptr, R3=args_len)
+SYS_OPEN_LIBRARY  equ 36          ; OpenLibrary (R1=name_ptr, R2=version) → R1=handle, R2=err
+SYS_READ_INPUT    equ 37          ; Read terminal line (R1=buf_ptr, R2=max_len) → R1=bytes_read, R2=err
 
 ; ===========================================================================
 ; Error Codes
@@ -127,6 +130,7 @@ KD_TASK_SIG_WAIT  equ 20          ; signals being waited for (4 bytes, 0 if not 
 KD_TASK_SIG_RECV  equ 24          ; pending received signals (4 bytes)
 KD_TASK_STATE     equ 28          ; task state byte
 KD_TASK_WAITPORT  equ 29          ; WaitPort port ID (0xFF = not in WaitPort)
+KD_TASK_GPR_SAVED equ 30          ; 1 = GPRs saved on user stack by timer (M9)
 
 ; Task state constants
 TASK_READY        equ 0
@@ -275,6 +279,7 @@ KD_REG_FLAGS      equ 10          ; MEMF_ flags low byte (1 byte)
 REGION_FREE       equ 0
 REGION_PRIVATE    equ 1
 REGION_SHARED     equ 2
+REGION_IO         equ 3            ; I/O mapping (M9): unmap on cleanup, don't free pages
 
 ; ---------------------------------------------------------------------------
 ; Shared Object Table — 8 entries x 16 bytes = 128 bytes
@@ -318,5 +323,48 @@ PROGTAB_ENTRY_SIZE equ 24
 PROGTAB_OFF_PTR    equ 0          ; 8 bytes: pointer to image in kernel memory
 PROGTAB_OFF_SIZE   equ 8          ; 8 bytes: total image size (header + code + data)
 
-; Clock interval for polling CLOCK service
+; Clock interval for polling CLOCK service (M8, removed in M9)
 CLOCK_INTERVAL    equ 32          ; ticks between '.' output
+
+; ===========================================================================
+; M9: exec.library Extensions
+; ===========================================================================
+
+; Program table boot count
+PROGTAB_BOOT_COUNT equ 3          ; First N entries auto-load at boot
+
+; Terminal I/O page (for SYS_MAP_IO)
+TERM_IO_PAGE      equ 0xF0        ; Physical page 0xF0 = address 0xF0000
+
+; Argument passing (SYS_EXEC_PROGRAM)
+DATA_ARGS_OFFSET  equ 3072        ; Offset in data page for command args
+DATA_ARGS_MAX     equ 256         ; Max arg string length (bytes)
+
+; console.handler message types
+CON_MSG_CHAR      equ 0           ; Print single char (data0 low byte)
+CON_MSG_READLINE  equ 2           ; Request line input (reply_port, share_handle)
+
+; dos.library protocol opcodes
+DOS_OPEN          equ 1           ; Open file (data0=mode, share=name)
+DOS_READ          equ 2           ; Read file (data0=handle, data1=max, share=buf)
+DOS_WRITE         equ 3           ; Write file (data0=handle, data1=len, share=buf)
+DOS_CLOSE         equ 4           ; Close file (data0=handle)
+DOS_DIR           equ 5           ; List directory (share=result buf)
+DOS_RUN           equ 6           ; Run program (data0=index, share=args)
+
+; DOS open modes
+DOS_MODE_READ     equ 0
+DOS_MODE_WRITE    equ 1
+
+; DOS error codes (returned in reply msg type field)
+DOS_OK            equ 0
+DOS_ERR_NOTFOUND  equ 1
+DOS_ERR_FULL      equ 3
+DOS_ERR_BADHANDLE equ 4
+DOS_ERR_NOMEM     equ 6
+
+; DOS filesystem limits
+DOS_MAX_FILES     equ 16          ; Max files in RAM:
+DOS_NAME_LEN      equ 16          ; Max filename length
+DOS_FILE_SIZE     equ 4096        ; Max bytes per file (1 page)
+DOS_MAX_HANDLES   equ 8           ; Max simultaneous open handles

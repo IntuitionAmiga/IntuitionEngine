@@ -1586,11 +1586,11 @@ func (bus *MachineBus) read32Half(addr uint32) uint32 {
 		if bus.legacyMMIO64Policy == MMIO64PolicyFault {
 			return 0
 		}
-		// Split policy: use legacy callback
+		// Split policy: use legacy callback if available, else fall through to RAM
 		if region.onRead != nil {
 			return region.onRead(addr)
 		}
-		return 0
+		// onRead is nil — fall through to plain RAM read below
 	}
 
 	// Plain RAM

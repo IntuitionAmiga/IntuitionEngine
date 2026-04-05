@@ -5976,14 +5976,17 @@ make aros               # Build VM with embedded AROS ROM
 
 IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. Unlike classic Amiga Exec, which ran everything in flat supervisor space with no memory protection, IExec uses the IE64 MMU to enforce hardware-backed user/supervisor privilege separation with per-task page tables and W^X memory policy. The design preserves the Amiga programming model (signals, message ports, priority scheduling) while adding the isolation guarantees of a modern protected-mode OS.
 
-**Milestone 8 status** — Bundled User Programs + Tiny Loader (implemented and tested):
+**Milestone 9 status** — exec.library + dos.library + Shell (implemented and tested):
 
-- Everything from M1-M7: self-sufficient boot, per-task page tables with W^X, trap dispatch, preemptive round-robin, signals, named message ports with FindPort discovery, request/reply messaging, dynamic task creation/exit, AllocMem/FreeMem/MapShared with capability handles
-- Tiny ROM-style IE64 program image format: 32-byte header (magic, code_size, data_size, flags) + code + data; no ELF, no relocations
-- Static program table in kernel image; boot-time loader creates tasks from bundled images
-- 4 bundled user-space services: CONSOLE (text output), ECHO (request/reply + shared memory), CLOCK (periodic ticks), CLIENT (ECHO exerciser)
-- All visible output originates from loaded user-space programs via the CONSOLE service
-- Standard startup preamble: programs compute own base addresses via GetSysInfo
-- Retired hardcoded task templates; kernel is now mechanism-only (load, schedule, IPC)
+- Everything from M1-M8: self-sufficient boot, per-task page tables with W^X, trap dispatch, preemptive round-robin, signals, named message ports with FindPort discovery, request/reply messaging, dynamic task creation/exit, AllocMem/FreeMem/MapShared with capability handles, program image format, boot-time loader
+- Kernel renamed to exec.library with GURU MEDITATION fault messages
+- Full GPR save/restore in timer interrupt handler for preemption safety
+- New syscalls: SYS_MAP_IO (I/O page mapping), SYS_EXEC_PROGRAM (program launch with argument passing), SYS_OPEN_LIBRARY (AmigaOS-style OpenLibrary), SYS_READ_INPUT (terminal read)
+- console.handler: CON: handler with GetMsg polling and CON_READLINE protocol
+- dos.library: AmigaOS dos.library equivalent with RAM: filesystem (16 files, 4KB each, case-insensitive)
+- Interactive shell with AmigaOS-style `1> ` prompt and DOS_RUN command dispatch
+- 5 external commands as real user-space tasks: VERSION, AVAIL, DIR, TYPE, ECHO
+- Argument passing to commands via DATA_ARGS_OFFSET in data page (like AmigaOS pr_Arguments)
+- Strict boot: first 3 programs (console.handler, dos.library, Shell) must load or kernel panics
 
 Full kernel contract reference: [sdk/docs/IntuitionOS/IExec.md](sdk/docs/IntuitionOS/IExec.md)

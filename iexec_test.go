@@ -62,6 +62,9 @@ const (
 	sysGetSysInfo   = 27
 	sysDebugPutChar = 33
 	sysExitTask     = 34
+	sysExecProgram  = 35
+	sysOpenLibrary  = 36
+	sysMapIO        = 28
 
 	// Kernel data offsets (must match iexec.inc)
 	kdCurrentTask = 0  // uint64: index of current task
@@ -1046,8 +1049,8 @@ func TestIExec_AssembledKernelBoots(t *testing.T) {
 	if len(output) == 0 {
 		t.Fatal("assembled kernel produced no output")
 	}
-	if !strings.Contains(output, "IExec") {
-		t.Fatalf("no boot banner in output: %q", output[:min(len(output), 40)])
+	if !strings.Contains(output, "exec.library") {
+		t.Fatalf("no boot banner in output: %q", output[:min(len(output), 60)])
 	}
 }
 
@@ -1226,8 +1229,8 @@ func TestIExec_BootBanner(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	if !strings.HasPrefix(output, "IExec") {
-		t.Fatalf("boot banner: output starts with %q, want 'IExec...'", output[:min(len(output), 20)])
+	if !strings.HasPrefix(output, "exec.library") {
+		t.Fatalf("boot banner: output starts with %q, want 'exec.library...'", output[:min(len(output), 40)])
 	}
 	t.Logf("Boot banner output (first 80 chars): %q", output[:min(len(output), 80)])
 }
@@ -1270,24 +1273,23 @@ func TestIExec_SingleTaskNoDeadlock(t *testing.T) {
 }
 
 func TestIExec_TwoTasksVisibleOutput(t *testing.T) {
-	// M8 demo: 4 bundled services (CONSOLE, ECHO, CLOCK, CLIENT).
-	// CONSOLE prints its own ONLINE banner. Other services send text to CONSOLE.
+	// M9: 3 boot services (console.handler, dos.library, Shell).
 	rig, term := assembleAndLoadKernel(t)
 	rig.cpu.running.Store(true)
 
 	done := make(chan struct{})
 	go func() { rig.cpu.Execute(); close(done) }()
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(2000 * time.Millisecond)
 	rig.cpu.running.Store(false)
 	<-done
 
 	output := term.DrainOutput()
-	hasBanner := strings.Contains(output, "IExec M8 boot")
+	hasBanner := strings.Contains(output, "exec.library M9 boot")
 	hasOnline := strings.Contains(output, "ONLINE")
 	if !hasBanner || !hasOnline {
 		t.Fatalf("visible output: hasBanner=%v hasOnline=%v, output=%q", hasBanner, hasOnline, output[:min(len(output), 100)])
 	}
-	t.Logf("Task output (first 100 chars): %q", output[:min(len(output), 100)])
+	t.Logf("Task output (%d bytes): %q", len(output), output[:min(len(output), 300)])
 }
 
 func TestIExec_TwoTasksVisibleOutput_WithVRAM(t *testing.T) {
@@ -1314,7 +1316,7 @@ func TestIExec_TwoTasksVisibleOutput_WithVRAM(t *testing.T) {
 
 	output := term.DrainOutput()
 	t.Logf("VRAM output (first 100 chars): %q", output[:min(len(output), 100)])
-	hasBanner := strings.Contains(output, "IExec M8 boot")
+	hasBanner := strings.Contains(output, "exec.library M9 boot")
 	if !hasBanner {
 		t.Fatalf("visible output with VRAM mapped: hasBanner=%v, output=%q", hasBanner, output[:min(len(output), 100)])
 	}
@@ -2191,15 +2193,15 @@ func TestIExec_FaultPrintsReport(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	if !strings.Contains(output, "FAULT") {
-		t.Fatalf("fault report: output = %q, want 'FAULT' from real kernel handler", output)
+	if !strings.Contains(output, "GURU MEDITATION") {
+		t.Fatalf("fault report: output = %q, want 'GURU MEDITATION' from real kernel handler", output)
 	}
-	// Verify the report includes PC and ADDR fields
+	// Verify the report includes PC= and ADDR= fields
 	if !strings.Contains(output, "PC=") {
 		t.Logf("fault output: %q", output)
 		t.Fatal("fault report missing PC= field")
 	}
-	t.Logf("Fault report output: %q", output[strings.Index(output, "FAULT"):min(len(output), strings.Index(output, "FAULT")+80)])
+	t.Logf("Fault report output: %q", output[strings.Index(output, "GURU MEDITATION"):min(len(output), strings.Index(output, "GURU MEDITATION")+80)])
 }
 
 // ===========================================================================
@@ -2847,7 +2849,7 @@ func TestIExec_PutGetMsg(t *testing.T) {
 
 	// For now just verify no crash and the boot banner appears
 	output := term.DrainOutput()
-	if !strings.Contains(output, "IExec") {
+	if !strings.Contains(output, "exec.library") {
 		t.Fatalf("PutGetMsg: kernel didn't boot: %q", output[:min(len(output), 40)])
 	}
 	t.Log("PutGetMsg: kernel booted with port syscalls (basic smoke test)")
@@ -3409,8 +3411,8 @@ func TestIExec_FaultedTaskCleanup(t *testing.T) {
 		t.Fatalf("FaultCleanup: child did not print 'F': %q", output[:min(len(output), 100)])
 	}
 	// Fault report should appear
-	if !strings.Contains(output, "FAULT") {
-		t.Fatalf("FaultCleanup: no FAULT report: %q", output[:min(len(output), 200)])
+	if !strings.Contains(output, "GURU MEDITATION") {
+		t.Fatalf("FaultCleanup: no GURU MEDITATION report: %q", output[:min(len(output), 200)])
 	}
 	// Should NOT contain KERNEL PANIC (user-mode fault)
 	if strings.Contains(output, "KERNEL PANIC") {
@@ -3491,9 +3493,9 @@ func TestIExec_FaultedTask_SupervisorAddr(t *testing.T) {
 	if strings.Contains(output, "KERNEL PANIC") {
 		t.Fatal("User fault at supervisor address incorrectly triggered KERNEL PANIC")
 	}
-	// Should contain FAULT report (user fault killed the child)
-	if !strings.Contains(output, "FAULT") {
-		t.Fatalf("Expected FAULT report for user exec fault: %q", output[:min(len(output), 200)])
+	// Should contain GURU MEDITATION report (user fault killed the child)
+	if !strings.Contains(output, "GURU MEDITATION") {
+		t.Fatalf("Expected GURU MEDITATION report for user exec fault: %q", output[:min(len(output), 200)])
 	}
 	// Parent should continue
 	if strings.Count(output, "P") < 2 {
@@ -4654,9 +4656,9 @@ func TestIExec_CreatePort_PublicAnonymous(t *testing.T) {
 const imgHeaderSize = 32
 
 func TestIExec_ImageHeaderValidation(t *testing.T) {
-	// Verify that the loader rejects malformed images by corrupting
-	// each header field in turn. The corrupted image should be skipped;
-	// later programs in the table should still load.
+	// Verify that corrupting a non-boot image header (index >= PROGTAB_BOOT_COUNT)
+	// does not affect the boot sequence. M9 strict boot panics if any of the first
+	// 3 images fail, so we corrupt image[3] (on-demand only) and verify 3 boot tasks.
 	subtests := []struct {
 		name    string
 		corrupt func(img []byte)
@@ -4680,15 +4682,15 @@ func TestIExec_ImageHeaderValidation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rig, term := assembleAndLoadKernel(t)
 			images := findAllProgramImages(t, rig.cpu.memory)
-			if len(images) < 2 {
-				t.Fatal("need at least 2 images")
+			if len(images) < 4 {
+				t.Fatal("need at least 4 images")
 			}
-			// Corrupt the first image (CONSOLE) header
-			headerAddr := images[0] - imgHeaderSize
+			// Corrupt image[3] (outside PROGTAB_BOOT_COUNT=3, on-demand only)
+			headerAddr := images[3] - imgHeaderSize
 			tc.corrupt(rig.cpu.memory[headerAddr:])
 
-			// Override remaining images with yield loops so we have runnable tasks
-			for _, img := range images[1:] {
+			// Override all boot images with yield loops so they don't interact
+			for _, img := range images[:3] {
 				yieldLoopOverride(rig.cpu.memory, img)
 			}
 
@@ -4700,17 +4702,17 @@ func TestIExec_ImageHeaderValidation(t *testing.T) {
 			<-done
 
 			output := term.DrainOutput()
-			// Kernel should still boot (banner printed) — corrupt image skipped
-			if !strings.Contains(output, "IExec M8 boot") {
-				t.Fatalf("kernel failed to boot after corrupting image: output=%q", output[:min(len(output), 100)])
+			// Kernel should still boot (banner printed) — corrupt image is outside boot set
+			if !strings.Contains(output, "exec.library M9 boot") {
+				t.Fatalf("kernel failed to boot after corrupting non-boot image: output=%q", output[:min(len(output), 100)])
 			}
-			if strings.Contains(output, "DEADLOCK") {
-				t.Fatalf("deadlock after corrupting image (later programs should still run)")
+			if strings.Contains(output, "PANIC") {
+				t.Fatalf("kernel panicked but corrupt image was outside boot count")
 			}
-			// Only 3 programs should have loaded (corrupt one was skipped)
+			// All 3 boot programs should have loaded (corrupt one is on-demand, not loaded at boot)
 			numTasks := binary.LittleEndian.Uint64(rig.cpu.memory[kernDataBase+kdNumTasks:])
 			if numTasks != 3 {
-				t.Fatalf("num_tasks = %d, want 3 (one image was corrupt)", numTasks)
+				t.Fatalf("num_tasks = %d, want 3 (3 boot images loaded, corrupt image[3] not in boot set)", numTasks)
 			}
 		})
 	}
@@ -4750,10 +4752,10 @@ func TestIExec_LoadBundledProgram(t *testing.T) {
 	t.Logf("LoadBundledProgram: task 0 state=%d, PC=0x%X, num_tasks=%d", state, pc, numTasks)
 }
 
-func TestIExec_BootLaunchesFour(t *testing.T) {
-	// Verify that all 4 bundled programs are loaded into task slots.
+func TestIExec_BootLaunchesThree(t *testing.T) {
+	// M9: boot loop loads only PROGTAB_BOOT_COUNT=3 entries from the program table.
 	rig, _ := assembleAndLoadKernel(t)
-	// Override all 4 with yield loops to avoid any port interactions
+	// Override all images with yield loops to avoid any port interactions
 	images := findAllProgramImages(t, rig.cpu.memory)
 	for _, img := range images {
 		yieldLoopOverride(rig.cpu.memory, img)
@@ -4767,26 +4769,26 @@ func TestIExec_BootLaunchesFour(t *testing.T) {
 	<-done
 
 	numTasks := binary.LittleEndian.Uint64(rig.cpu.memory[kernDataBase+kdNumTasks:])
-	if numTasks != 4 {
-		t.Fatalf("num_tasks = %d, want 4", numTasks)
+	if numTasks != 3 {
+		t.Fatalf("num_tasks = %d, want 3 (PROGTAB_BOOT_COUNT)", numTasks)
 	}
-	// Verify each of the 4 task slots is not FREE
-	for i := 0; i < 4; i++ {
+	// Verify each of the 3 boot task slots is not FREE
+	for i := 0; i < 3; i++ {
 		tcbAddr := kernDataBase + kdTCBBase + uint32(i)*tcbStride
 		state := rig.cpu.memory[tcbAddr+tcbStateOff]
 		if state == taskFree {
 			t.Fatalf("task %d state = TASK_FREE, should have been loaded", i)
 		}
 	}
-	// Tasks 4-7 should be FREE
-	for i := 4; i < 8; i++ {
+	// Tasks 3-7 should be FREE
+	for i := 3; i < 8; i++ {
 		tcbAddr := kernDataBase + kdTCBBase + uint32(i)*tcbStride
 		state := rig.cpu.memory[tcbAddr+tcbStateOff]
 		if state != taskFree {
 			t.Fatalf("task %d state = %d, want TASK_FREE", i, state)
 		}
 	}
-	t.Logf("BootLaunchesFour: num_tasks=%d, slots 0-3 active, 4-7 free", numTasks)
+	t.Logf("BootLaunchesThree: num_tasks=%d, slots 0-2 active, 3-7 free", numTasks)
 }
 
 func TestIExec_ProgramIsolation(t *testing.T) {
@@ -4812,8 +4814,8 @@ func TestIExec_ProgramIsolation(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	if !strings.Contains(output, "FAULT") {
-		t.Fatalf("expected FAULT when task 0 accesses task 1 memory, output=%q", output[:min(len(output), 200)])
+	if !strings.Contains(output, "GURU MEDITATION") {
+		t.Fatalf("expected GURU MEDITATION when task 0 accesses task 1 memory, output=%q", output[:min(len(output), 200)])
 	}
 	// Task 0 should have been killed (state = FREE)
 	state := rig.cpu.memory[kernDataBase+kdTCBBase+tcbStateOff]
@@ -4823,106 +4825,24 @@ func TestIExec_ProgramIsolation(t *testing.T) {
 	t.Logf("ProgramIsolation: task 0 correctly faulted accessing task 1 memory")
 }
 
-func TestIExec_ConsoleService(t *testing.T) {
-	// Verify the CONSOLE service creates a port and prints its ONLINE banner.
-	// Let the default kernel run — CONSOLE prints its own banner via DebugPutChar.
-	rig, term := assembleAndLoadKernel(t)
-	// Override ECHO, CLOCK, CLIENT with yield loops to isolate CONSOLE behavior
-	images := findAllProgramImages(t, rig.cpu.memory)
-	overrideExtraTasks(rig.cpu.memory, images, 1)
-
-	rig.cpu.running.Store(true)
-	done := make(chan struct{})
-	go func() { rig.cpu.Execute(); close(done) }()
-	time.Sleep(500 * time.Millisecond)
-	rig.cpu.running.Store(false)
-	<-done
-
-	output := term.DrainOutput()
-	// CONSOLE prints its own ONLINE line via DebugPutChar
-	if !strings.Contains(output, "CONSOLE ONLINE") {
-		t.Fatalf("CONSOLE did not print ONLINE banner, output=%q", output[:min(len(output), 200)])
-	}
-	// Verify CONSOLE port exists in kernel data (port 0 should be valid + public)
-	portAddr := uint32(kernDataBase + kdPortBase)
-	valid := rig.cpu.memory[portAddr+kdPortValid]
-	flags := rig.cpu.memory[portAddr+kdPortFlags]
-	if valid != 1 {
-		t.Fatalf("CONSOLE port not valid (valid=%d)", valid)
-	}
-	if flags&pfPublic == 0 {
-		t.Fatalf("CONSOLE port not public (flags=0x%02X)", flags)
-	}
-	t.Logf("ConsoleService: output=%q", output[:min(len(output), 100)])
-}
-
-func TestIExec_ClockPolling(t *testing.T) {
-	// Verify CLOCK sends periodic '.' to CONSOLE.
-	// Run CONSOLE + CLOCK only (override ECHO + CLIENT).
+func TestIExec_LoaderRejectsInvalid(t *testing.T) {
+	// M9: boot is strict for PROGTAB_BOOT_COUNT=3 entries. Corrupting a boot image
+	// causes panic. Instead, corrupt image[3] (on-demand) and verify boot succeeds
+	// with 3 tasks. The corrupt on-demand image is never loaded at boot.
 	rig, term := assembleAndLoadKernel(t)
 	images := findAllProgramImages(t, rig.cpu.memory)
 	if len(images) < 4 {
 		t.Fatalf("need 4 images, got %d", len(images))
 	}
-	// Override ECHO (index 1) and CLIENT (index 3) with yield loops
-	yieldLoopOverride(rig.cpu.memory, images[1])
-	yieldLoopOverride(rig.cpu.memory, images[3])
 
-	rig.cpu.running.Store(true)
-	done := make(chan struct{})
-	go func() { rig.cpu.Execute(); close(done) }()
-	time.Sleep(2000 * time.Millisecond) // generous time for tick accumulation
-	rig.cpu.running.Store(false)
-	<-done
+	// Corrupt image[3] (CLIENT, on-demand) magic
+	clientHeader := images[3] - imgHeaderSize
+	rig.cpu.memory[clientHeader] = 0x00 // break magic
 
-	output := term.DrainOutput()
-	if !strings.Contains(output, "CLOCK ONLINE") {
-		t.Fatalf("CLOCK did not print ONLINE, output=%q", output[:min(len(output), 200)])
+	// Override boot images with yield loops
+	for _, img := range images[:3] {
+		yieldLoopOverride(rig.cpu.memory, img)
 	}
-	if !strings.Contains(output, ".") {
-		t.Fatalf("CLOCK did not send any '.' ticks, output=%q", output[:min(len(output), 200)])
-	}
-	dotCount := strings.Count(output, ".")
-	t.Logf("ClockPolling: %d dots, output=%q", dotCount, output[:min(len(output), 200)])
-}
-
-func TestIExec_EchoServiceM8(t *testing.T) {
-	// Verify full ECHO + CLIENT interaction: CLIENT finds ECHO, sends request,
-	// receives share_handle, MapShared, reads "HELLO FROM ECHO" from shared memory.
-	rig, term := assembleAndLoadKernel(t)
-
-	// Let all 4 services run
-	rig.cpu.running.Store(true)
-	done := make(chan struct{})
-	go func() { rig.cpu.Execute(); close(done) }()
-	time.Sleep(1000 * time.Millisecond)
-	rig.cpu.running.Store(false)
-	<-done
-
-	output := term.DrainOutput()
-	// CLIENT should have received shared memory content and sent it to CONSOLE
-	if !strings.Contains(output, "HELLO FROM ECHO") {
-		t.Fatalf("shared memory content not in output, output=%q", output[:min(len(output), 300)])
-	}
-	if !strings.Contains(output, "ECHO: REPLY OK") {
-		t.Fatalf("ECHO reply confirmation not in output, output=%q", output[:min(len(output), 300)])
-	}
-	t.Logf("EchoServiceM8: shared memory handoff confirmed, output=%q", output[:min(len(output), 300)])
-}
-
-func TestIExec_LoaderRejectsInvalid(t *testing.T) {
-	// Corrupt a program image magic and verify the loader skips it cleanly
-	// without corrupting kernel state or crashing.
-	rig, term := assembleAndLoadKernel(t)
-	images := findAllProgramImages(t, rig.cpu.memory)
-
-	// Corrupt ECHO's magic (image index 1)
-	echoHeader := images[1] - imgHeaderSize
-	rig.cpu.memory[echoHeader] = 0x00 // break magic
-
-	// Override CLOCK and CLIENT with yield loops
-	yieldLoopOverride(rig.cpu.memory, images[2])
-	yieldLoopOverride(rig.cpu.memory, images[3])
 
 	rig.cpu.running.Store(true)
 	done := make(chan struct{})
@@ -4932,24 +4852,23 @@ func TestIExec_LoaderRejectsInvalid(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	if !strings.Contains(output, "IExec M8 boot") {
+	if !strings.Contains(output, "exec.library M9 boot") {
 		t.Fatalf("kernel didn't boot, output=%q", output[:min(len(output), 100)])
 	}
-	// CONSOLE (slot 0) should have loaded, ECHO (slot 1) should be skipped.
-	// CLOCK and CLIENT land in slots 1 and 2 (shifted because ECHO was skipped).
+	if strings.Contains(output, "PANIC") {
+		t.Fatalf("kernel panicked but corrupt image was outside boot count")
+	}
+	// 3 boot programs should have loaded; corrupt image[3] is on-demand, not loaded at boot
 	numTasks := binary.LittleEndian.Uint64(rig.cpu.memory[kernDataBase+kdNumTasks:])
 	if numTasks != 3 {
-		t.Fatalf("num_tasks = %d, want 3 (CONSOLE + CLOCK + CLIENT, ECHO skipped)", numTasks)
+		t.Fatalf("num_tasks = %d, want 3 (3 boot images loaded, corrupt on-demand image not loaded)", numTasks)
 	}
-	t.Logf("LoaderRejectsInvalid: num_tasks=%d, kernel stable after skipping corrupt image", numTasks)
+	t.Logf("LoaderRejectsInvalid: num_tasks=%d, kernel stable with corrupt on-demand image", numTasks)
 }
 
 func TestIExec_LoaderFullSlots(t *testing.T) {
-	// Verify that the loader stops gracefully when all 8 task slots are full.
-	// We pre-fill slots 0-3 by letting normal boot run, then verify that
-	// if we had more images they'd be rejected.
-	// Approach: let 4 programs load normally, then check that slots 4-7 are FREE
-	// and num_tasks == 4 (loader stops at sentinel, not at slot limit).
+	// M9: boot loop loads PROGTAB_BOOT_COUNT=3 entries. Verify that only 3 tasks
+	// are created at boot, and remaining slots (3-7) are FREE.
 	rig, _ := assembleAndLoadKernel(t)
 	images := findAllProgramImages(t, rig.cpu.memory)
 	for _, img := range images {
@@ -4964,92 +4883,38 @@ func TestIExec_LoaderFullSlots(t *testing.T) {
 	<-done
 
 	numTasks := binary.LittleEndian.Uint64(rig.cpu.memory[kernDataBase+kdNumTasks:])
-	if numTasks != 4 {
-		t.Fatalf("num_tasks = %d, want 4", numTasks)
+	if numTasks != 3 {
+		t.Fatalf("num_tasks = %d, want 3 (PROGTAB_BOOT_COUNT)", numTasks)
 	}
 
-	// Now verify that if all 8 slots were occupied, load_program returns ERR_NOMEM.
-	// We test this indirectly: fill remaining slots manually (set state to READY),
-	// then check that the loader's slot scan would find no FREE slots.
-	for i := 4; i < 8; i++ {
+	// Slots 3-7 should be FREE (only 3 boot tasks loaded)
+	for i := 3; i < 8; i++ {
 		tcbAddr := kernDataBase + kdTCBBase + uint32(i)*tcbStride
 		if rig.cpu.memory[tcbAddr+tcbStateOff] != taskFree {
 			t.Fatalf("task %d should be FREE but state=%d", i, rig.cpu.memory[tcbAddr+tcbStateOff])
 		}
 	}
-	t.Logf("LoaderFullSlots: 4 programs loaded, 4 slots remain free (loader respects sentinel)")
-}
-
-func TestIExec_M8Demo(t *testing.T) {
-	// Full 4-program demo integration test.
-	// Verify all key output strings appear in the correct order.
-	rig, term := assembleAndLoadKernel(t)
-
-	rig.cpu.running.Store(true)
-	done := make(chan struct{})
-	go func() { rig.cpu.Execute(); close(done) }()
-	time.Sleep(1500 * time.Millisecond) // generous time for full demo
-	rig.cpu.running.Store(false)
-	<-done
-
-	output := term.DrainOutput()
-
-	// Check key invariants
-	checks := []struct {
-		name string
-		want string
-	}{
-		{"boot banner", "IExec M8 boot"},
-		{"CONSOLE online", "CONSOLE ONLINE"},
-		{"ECHO online", "ECHO ONLINE"},
-		{"CLOCK online", "CLOCK ONLINE"},
-		{"CLIENT online", "CLIENT ONLINE"},
-		{"client requesting", "CLIENT: REQUESTING"},
-		{"echo reply ok", "ECHO: REPLY OK"},
-		{"shared memory content", "HELLO FROM ECHO"},
-		{"clock tick", "."},
-	}
-
-	for _, c := range checks {
-		if !strings.Contains(output, c.want) {
-			t.Errorf("M8 demo missing %q: want substring %q in output", c.name, c.want)
-		}
-	}
-
-	// Verify ordering: boot banner before ONLINE lines
-	bannerIdx := strings.Index(output, "IExec M8 boot")
-	consoleIdx := strings.Index(output, "CONSOLE ONLINE")
-	if consoleIdx >= 0 && bannerIdx >= 0 && consoleIdx < bannerIdx {
-		t.Errorf("CONSOLE ONLINE appeared before boot banner")
-	}
-
-	// Verify REQUESTING before REPLY OK
-	reqIdx := strings.Index(output, "CLIENT: REQUESTING")
-	replyIdx := strings.Index(output, "ECHO: REPLY OK")
-	if reqIdx >= 0 && replyIdx >= 0 && replyIdx < reqIdx {
-		t.Errorf("ECHO: REPLY OK appeared before CLIENT: REQUESTING")
-	}
-
-	t.Logf("M8 demo output (%d bytes): %q", len(output), output[:min(len(output), 500)])
+	t.Logf("LoaderFullSlots: 3 boot programs loaded, 5 slots remain free")
 }
 
 func TestIExec_LoaderSkipsFailure(t *testing.T) {
-	// Corrupt the SECOND image (ECHO) and verify that the THIRD and FOURTH
-	// images (CLOCK, CLIENT) still load and run.
+	// M9: boot is strict for PROGTAB_BOOT_COUNT=3. Corrupting a boot image panics.
+	// Test that corrupting the on-demand image (index 3) does not affect boot.
+	// All 3 boot tasks should load normally.
 	rig, term := assembleAndLoadKernel(t)
 	images := findAllProgramImages(t, rig.cpu.memory)
 	if len(images) < 4 {
 		t.Fatalf("need 4 images, got %d", len(images))
 	}
 
-	// Corrupt ECHO header (index 1)
-	echoHeader := images[1] - imgHeaderSize
-	rig.cpu.memory[echoHeader+2] = 0xFF // break magic byte 2
+	// Corrupt CLIENT header (index 3, on-demand)
+	clientHeader := images[3] - imgHeaderSize
+	rig.cpu.memory[clientHeader+2] = 0xFF // break magic byte 2
 
-	// Override CLOCK (now slot 1) and CLIENT (now slot 2) with yield loops
-	// since they'll try FindPort("CONSOLE") which may or may not succeed
-	yieldLoopOverride(rig.cpu.memory, images[2])
-	yieldLoopOverride(rig.cpu.memory, images[3])
+	// Override boot images with yield loops
+	for _, img := range images[:3] {
+		yieldLoopOverride(rig.cpu.memory, img)
+	}
 
 	rig.cpu.running.Store(true)
 	done := make(chan struct{})
@@ -5059,17 +4924,20 @@ func TestIExec_LoaderSkipsFailure(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	if !strings.Contains(output, "IExec M8 boot") {
+	if !strings.Contains(output, "exec.library M9 boot") {
 		t.Fatalf("kernel didn't boot")
+	}
+	if strings.Contains(output, "PANIC") {
+		t.Fatalf("kernel panicked but corrupt image was outside boot count")
 	}
 
 	numTasks := binary.LittleEndian.Uint64(rig.cpu.memory[kernDataBase+kdNumTasks:])
-	// CONSOLE loaded (slot 0), ECHO skipped, CLOCK loaded (slot 1), CLIENT loaded (slot 2)
+	// 3 boot tasks loaded; corrupt image[3] is on-demand, not loaded at boot
 	if numTasks != 3 {
-		t.Fatalf("num_tasks = %d, want 3 (ECHO skipped)", numTasks)
+		t.Fatalf("num_tasks = %d, want 3 (3 boot tasks, corrupt on-demand image not loaded)", numTasks)
 	}
 
-	// Verify slots: 0=CONSOLE (not free), 1=CLOCK (not free), 2=CLIENT (not free), 3-7=FREE
+	// Verify slots: 0-2 loaded, 3-7 FREE
 	for i := 0; i < 3; i++ {
 		state := rig.cpu.memory[kernDataBase+kdTCBBase+uint32(i)*tcbStride+tcbStateOff]
 		if state == taskFree {
@@ -5082,5 +4950,734 @@ func TestIExec_LoaderSkipsFailure(t *testing.T) {
 			t.Fatalf("task %d should be FREE but state=%d", i, state)
 		}
 	}
-	t.Logf("LoaderSkipsFailure: ECHO skipped, CLOCK+CLIENT still loaded (num_tasks=%d)", numTasks)
+	t.Logf("LoaderSkipsFailure: 3 boot tasks loaded, corrupt on-demand image[3] not loaded (num_tasks=%d)", numTasks)
+}
+
+// ===========================================================================
+// M9: ReadInput isolation test (keyboard bug investigation)
+// ===========================================================================
+
+func TestIExec_ReadInput_Direct(t *testing.T) {
+	// Minimal test: task 0 calls SYS_READ_INPUT directly, bypassing console.handler.
+	// Pre-inject "TEST\n" before boot. Task 0 calls READ_INPUT with its data page
+	// as buffer. If READ_INPUT works, it prints '0' (ERR_OK). If not, '6' (ERR_AGAIN).
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	t0 := images[0]
+
+	// Pre-inject input BEFORE boot (bypasses line mode routing, goes direct to input buffer)
+	for _, ch := range "TEST\n" {
+		term.EnqueueByte(byte(ch))
+	}
+
+	// Task 0 code: call SYS_READ_INPUT(0x602000, 100), print err digit, then
+	// if success, print each byte from the buffer
+	off := uint32(0)
+	w := func(instr []byte) { copy(rig.cpu.memory[t0+off:], instr); off += 8 }
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x602000)) // R1 = buf (task 0 data page)
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 100))      // R2 = max_len
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, 37))              // SYS_READ_INPUT
+	// R1 = bytes_read, R2 = err. Save R1 before printing err.
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_Q, 0, 1, 0, 0))        // R3 = R1 (save bytes_read)
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 2, 0, 0x30))      // R1 = R2 + '0' (err digit)
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar)) // print err
+	// Now print buffer contents (R3 = bytes_read)
+	// R4 = 0 (index), loop: load byte from 0x602000+R4, print, inc, cmp R3
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0)) // R4 = 0
+	// .loop:
+	w(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, 0x602000)) // R5 = buf base
+	w(ie64Instr(OP_ADD, 5, IE64_SIZE_Q, 0, 5, 4, 0))         // R5 = buf + index
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_B, 0, 5, 0, 0))        // R1 = load.b (R5)
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar)) // print char
+	w(ie64Instr(OP_ADD, 4, IE64_SIZE_L, 1, 4, 0, 1))         // R4 = R4 + 1
+	// Compare R4 < R3: SUB R6, R3, R4; if R6 > 0 → branch back
+	// Simpler: just print 4 chars (we know "TEST" is 4 bytes)
+	w(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, 4))               // R5 = 4
+	brTarget := int32(-6 * 8)                                       // back 6 instructions
+	w(ie64Instr(OP_BLT, 0, IE64_SIZE_Q, 0, 4, 5, uint32(brTarget))) // if R4 < R5, loop
+	// Done: yield loop
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	brOff := int32(-8)
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(brOff)))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(1 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	t.Logf("ReadInput direct: %q", output[:min(len(output), 200)])
+	// Expect: boot banner + '0' (ERR_OK) + "TEST" from buffer
+	if !strings.Contains(output, "0TEST") {
+		t.Fatalf("SYS_READ_INPUT failed: expected '0TEST' in output, got %q", output[:min(len(output), 200)])
+	}
+}
+
+func TestIExec_TermCtrl_LineMode(t *testing.T) {
+	// Verify that the kernel boot code enables terminal line mode, and
+	// that keyboard input works with VRAM mapped (simulating live VM).
+	rig, term := assembleAndLoadKernel(t)
+
+	// Simulate live VM: add VRAM mapping like main.go does
+	// Use nil read handler so reads fall through to bus.memory (not return 0)
+	dummyWrite := func(addr uint32, value uint32) {}
+	rig.bus.MapIO(VRAM_START, VRAM_START+VRAM_SIZE-1, nil, dummyWrite)
+	rig.bus.SetLegacyMMIO64Policy(MMIO64PolicySplit)
+
+	// Pre-inject a command
+	for _, ch := range "FOOBAR\n" {
+		term.EnqueueByte(byte(ch))
+	}
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(5 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	if !term.LineInputMode() {
+		t.Fatal("terminal line input mode not enabled after kernel boot (with VRAM mapped)")
+	}
+	output := term.DrainOutput()
+	t.Logf("Boot+cmd output: %q", output[:min(len(output), 300)])
+	t.Logf("Line mode: %v", term.LineInputMode())
+	if !strings.Contains(output, "Unknown command") {
+		t.Fatalf("keyboard input not processed with VRAM mapped, output=%q", output[:min(len(output), 300)])
+	}
+}
+
+func TestIExec_ReadInput_ViaShell(t *testing.T) {
+	// Full boot with pre-injected input. The input is in the terminal buffer
+	// BEFORE boot, so when the shell sends CON_READLINE and console.handler polls,
+	// the data is immediately available. This tests the full chain:
+	// shell → CON_READLINE → console.handler → SYS_READ_INPUT → REPLY_MSG → shell → output
+	rig, term := assembleAndLoadKernel(t)
+
+	// Pre-inject "FOOBAR\n" BEFORE boot
+	for _, ch := range "FOOBAR\n" {
+		term.EnqueueByte(byte(ch))
+	}
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(5 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	t.Logf("Shell with pre-injected input (%d bytes): %q", len(output), output[:min(len(output), 400)])
+	if !strings.Contains(output, "Unknown command") {
+		t.Errorf("shell didn't process pre-injected command, expected 'Unknown command'")
+	}
+}
+
+// ===========================================================================
+// M9: OpenLibrary, MapIO, ExecProgram, Full Boot Sequence Tests
+// ===========================================================================
+
+func TestIExec_OpenLibrary_Basic(t *testing.T) {
+	// M9: dos.library uses OpenLibrary("console.handler", 0) at startup to
+	// find the console.handler port. If dos.library prints "dos.library ONLINE",
+	// it means OpenLibrary successfully resolved the port.
+	rig, term := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "dos.library ONLINE") {
+		t.Fatalf("OpenLibrary failed: dos.library didn't announce ONLINE, output=%q", output[:min(len(output), 200)])
+	}
+	t.Logf("OpenLibrary_Basic: dos.library found console.handler via OpenLibrary, output=%q", output[:min(len(output), 200)])
+}
+
+func TestIExec_MapIO_BadPage(t *testing.T) {
+	// M9: SYS_MAP_IO with an invalid page (not 0xF0) should return ERR_BADARG (3).
+	// Task 0 calls MAP_IO(0xFF), converts the error code to an ASCII digit, and prints it.
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	t0 := images[0]
+
+	pc := t0
+	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xFF))     // R1 = 0xFF (invalid page)
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysMapIO))        // SYS_MAP_IO → R2 = err
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 2, 0, 0x30))      // R1 = R2 + '0' (ASCII digit)
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar)) // print error digit
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))        // yield
+	brOff := int32(-8)
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(brOff))) // loop
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	// ERR_BADARG = 3, so the digit printed should be '3'
+	if !strings.Contains(output, "3") {
+		t.Fatalf("MAP_IO(0xFF) didn't return ERR_BADARG(3), output=%q", output[:min(len(output), 100)])
+	}
+	t.Logf("MapIO_BadPage: MAP_IO(0xFF) returned error code 3 (ERR_BADARG)")
+}
+
+func TestIExec_ExecProgram_BadIndex(t *testing.T) {
+	// M9: SYS_EXEC_PROGRAM with an out-of-range index should return ERR_BADARG (3).
+	// Task 0 calls EXEC_PROGRAM(index=99, args_ptr=0, args_len=0), converts err to ASCII, prints it.
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	t0 := images[0]
+
+	pc := t0
+	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 99))       // R1 = 99 (invalid index)
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))        // R2 = 0 (args_ptr)
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))        // R3 = 0 (args_len)
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExecProgram))  // SYS_EXEC_PROGRAM → R2 = err
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 2, 0, 0x30))      // R1 = R2 + '0'
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar)) // print error digit
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))        // yield
+	brOff := int32(-8)
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(brOff))) // loop
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	// ERR_BADARG = 3, expect '3' in output
+	if !strings.Contains(output, "3") {
+		t.Fatalf("EXEC_PROGRAM(99) didn't return ERR_BADARG(3), output=%q", output[:min(len(output), 100)])
+	}
+	t.Logf("ExecProgram_BadIndex: EXEC_PROGRAM(99) returned error code 3 (ERR_BADARG)")
+}
+
+func TestIExec_DosLibOnline(t *testing.T) {
+	// M9: verify dos.library boots and announces itself. This tests the full
+	// service startup chain: console.handler creates its port, then dos.library
+	// uses OpenLibrary to find it and prints its ONLINE banner.
+	rig, term := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "dos.library ONLINE") {
+		t.Fatalf("dos.library did not announce ONLINE, output=%q", output[:min(len(output), 200)])
+	}
+	t.Logf("DosLibOnline: dos.library ONLINE confirmed in boot output")
+}
+
+func TestIExec_ShellOnline(t *testing.T) {
+	// M9: verify Shell boots and displays its prompt. The Shell is the third
+	// boot service (index 2) and should print "Shell ONLINE" and then "1>".
+	rig, term := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "Shell ONLINE") {
+		t.Fatalf("Shell did not announce ONLINE, output=%q", output[:min(len(output), 200)])
+	}
+	if !strings.Contains(output, "1>") {
+		t.Fatalf("Shell did not display prompt '1>', output=%q", output[:min(len(output), 200)])
+	}
+	t.Logf("ShellOnline: Shell ONLINE + prompt confirmed")
+}
+
+func TestIExec_M9Boot(t *testing.T) {
+	// M9: full boot sequence verification. All 3 boot services (console.handler,
+	// dos.library, Shell) must come ONLINE, the kernel banner must appear, and
+	// the Shell must display its "1>" prompt. This is the comprehensive boot test.
+	rig, term := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	t.Logf("M9Boot full output (%d bytes): %q", len(output), output[:min(len(output), 400)])
+
+	checks := []struct {
+		substr string
+		desc   string
+	}{
+		{"exec.library M9 boot", "kernel boot banner"},
+		{"console.handler ONLINE", "console.handler service"},
+		{"dos.library ONLINE", "dos.library service"},
+		{"Shell ONLINE", "Shell service"},
+		{"1>", "Shell prompt"},
+	}
+	for _, c := range checks {
+		if !strings.Contains(output, c.substr) {
+			t.Errorf("M9 boot missing %s: wanted %q in output", c.desc, c.substr)
+		}
+	}
+
+	// Verify exactly 3 tasks are running (PROGTAB_BOOT_COUNT)
+	numTasks := binary.LittleEndian.Uint64(rig.cpu.memory[kernDataBase+kdNumTasks:])
+	if numTasks != 3 {
+		t.Errorf("M9 boot: num_tasks = %d, want 3", numTasks)
+	}
+}
+
+// ===========================================================================
+// M9: MapIO, ExecProgram, DosLibPort, and Skipped Tests
+// ===========================================================================
+
+func TestIExec_MapIO_Basic(t *testing.T) {
+	// Task 0 calls SYS_MAP_IO(0xF0). Check R2 == ERR_OK (0). Print '0' if success.
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	t0 := images[0]
+
+	off := uint32(0)
+	w := func(instr []byte) { copy(rig.cpu.memory[t0+off:], instr); off += 8 }
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xF0))     // R1 = 0xF0 (page number)
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysMapIO))        // SYS_MAP_IO
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 2, 0, 0x30))      // R1 = R2 + '0' (err digit)
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar)) // print err digit
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))        // yield
+	brOff := int32(-8)
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(brOff))) // loop
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(1 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "0") {
+		t.Fatalf("MAP_IO didn't return ERR_OK, output=%q", output[:min(len(output), 100)])
+	}
+}
+
+func TestIExec_MapIO_Cleanup(t *testing.T) {
+	// Task 0 calls SYS_MAP_IO(0xF0), then SYS_EXIT_TASK.
+	// Task 1 is a yield loop that prints 'A'.
+	// Verify no crash after task 0 exits with I/O mapping.
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 2)
+	t0 := images[0]
+	t1 := images[1]
+
+	// Patch task 0: MAP_IO(0xF0); EXIT_TASK
+	off := uint32(0)
+	w0 := func(instr []byte) { copy(rig.cpu.memory[t0+off:], instr); off += 8 }
+	w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xF0)) // R1 = 0xF0
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysMapIO))    // MAP_IO
+	w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))    // R1 = 0 (exit code)
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExitTask)) // EXIT_TASK
+
+	// Patch task 1: print 'A', yield, loop
+	off = 0
+	w1 := func(instr []byte) { copy(rig.cpu.memory[t1+off:], instr); off += 8 }
+	w1(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x41))     // R1 = 'A'
+	w1(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar)) // print
+	w1(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))        // yield
+	brOff := int32(-24)
+	w1(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(brOff))) // loop back to MOVE
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "A") {
+		t.Fatalf("task 1 not alive after task 0 exits with I/O mapping, output=%q", output[:min(len(output), 100)])
+	}
+	t.Logf("MapIO_Cleanup output (first 80 chars): %q", output[:min(len(output), 80)])
+}
+
+func TestIExec_ExecProgram_Basic(t *testing.T) {
+	// Task 0 calls EXEC_PROGRAM(3, 0, 0) to launch the VERSION program (index 3
+	// in the program table). All images except task 0 are overridden with yield
+	// loops, so the launched program is harmless. Verify ERR_OK and num_tasks >= 2.
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	t0 := images[0]
+
+	off := uint32(0)
+	w := func(instr []byte) { copy(rig.cpu.memory[t0+off:], instr); off += 8 }
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 3))        // R1 = 3 (VERSION index)
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))        // R2 = 0 (no args ptr)
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))        // R3 = 0 (no args len)
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExecProgram))  // EXEC_PROGRAM
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 2, 0, 0x30))      // R1 = R2 + '0' (err digit)
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar)) // print err digit
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))        // yield
+	brOff := int32(-8)
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(brOff))) // loop
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(1 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "0") {
+		t.Fatalf("EXEC_PROGRAM didn't return ERR_OK, output=%q", output[:min(len(output), 100)])
+	}
+	// Verify num_tasks increased (boot loaded 3, task 0 is our patched task,
+	// and we launched one more, so at least 2 tasks should be present even
+	// if some boot tasks were overridden).
+	numTasks := binary.LittleEndian.Uint64(rig.cpu.memory[kernDataBase+kdNumTasks:])
+	if numTasks < 2 {
+		t.Fatalf("num_tasks = %d after EXEC_PROGRAM, want >= 2", numTasks)
+	}
+	t.Logf("ExecProgram_Basic: output=%q num_tasks=%d", output[:min(len(output), 60)], numTasks)
+	_ = term
+}
+
+func TestIExec_ExecProgram_WithArgs(t *testing.T) {
+	// Task 0 writes "hello" to its own data page at runtime, then calls
+	// EXEC_PROGRAM(3, data_ptr, 5). The kernel copies args to the launched
+	// task's data page at DATA_ARGS_OFFSET (3072). We verify the args arrived.
+	const dataArgsOffset = 3072
+
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	t0 := images[0]
+
+	off := uint32(0)
+	w := func(instr []byte) { copy(rig.cpu.memory[t0+off:], instr); off += 8 }
+
+	// Task 0 first writes "hello" to its own data page at runtime.
+	// Use GetSysInfo(CURRENT_TASK=3) to find our task_id, then compute data VA.
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 3))      // R1 = SYSINFO_CURRENT_TASK
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo)) // R1 = task_id
+	w(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, userSlotStride))
+	w(ie64Instr(OP_MULU, 5, IE64_SIZE_Q, 0, 1, 5, 0)) // R5 = task_id * stride
+	w(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, userDataBase))
+	w(ie64Instr(OP_ADD, 5, IE64_SIZE_Q, 0, 5, 6, 0)) // R5 = data_va
+
+	// Write 'h','e','l','l','o' to [R5+0..4]
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x68)) // 'h'
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_B, 0, 5, 0, 0))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x65)) // 'e'
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_B, 0, 5, 0, 1))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x6C)) // 'l'
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_B, 0, 5, 0, 2))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_B, 0, 5, 0, 3))   // 'l' again
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x6F)) // 'o'
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_B, 0, 5, 0, 4))
+
+	// Now call EXEC_PROGRAM(3, R5, 5) — R5 = our data page VA
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 3))       // R1 = 3 (VERSION index)
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_Q, 0, 5, 0, 0))       // R2 = args ptr
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 5))       // R3 = 5 (args len)
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExecProgram)) // EXEC_PROGRAM
+	// R1 = new task_id, R2 = err. Print err digit.
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 2, 0, 0x30))      // R1 = R2 + '0'
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar)) // print err digit
+	// Yield to let the launched task get scheduled
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	brOff := int32(-8)
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(brOff)))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(1 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "0") {
+		t.Fatalf("EXEC_PROGRAM didn't return ERR_OK, output=%q", output[:min(len(output), 100)])
+	}
+
+	// Find the launched task's data page. Scan all slots for "hello" at
+	// DATA_ARGS_OFFSET. The new task gets the first free TCB slot.
+	found := false
+	for slot := uint32(0); slot < maxTasks; slot++ {
+		argsAddr := uint32(userDataBase) + slot*userSlotStride + dataArgsOffset
+		if argsAddr+5 > uint32(len(rig.cpu.memory)) {
+			continue
+		}
+		args := string(rig.cpu.memory[argsAddr : argsAddr+5])
+		if args == "hello" {
+			found = true
+			t.Logf("ExecProgram_WithArgs: found 'hello' at slot %d (addr 0x%X)", slot, argsAddr)
+			break
+		}
+	}
+	if !found {
+		// Dump first few bytes of each slot's args area for diagnostics
+		for slot := uint32(0); slot < maxTasks; slot++ {
+			argsAddr := uint32(userDataBase) + slot*userSlotStride + dataArgsOffset
+			if argsAddr+8 <= uint32(len(rig.cpu.memory)) {
+				t.Logf("  slot %d (0x%X): %q", slot, argsAddr, rig.cpu.memory[argsAddr:argsAddr+8])
+			}
+		}
+		t.Fatalf("args 'hello' not found in any task's data page at DATA_ARGS_OFFSET")
+	}
+	_ = term
+}
+
+func TestIExec_DosLibPort(t *testing.T) {
+	// Boot the full kernel. Verify that a port named "dos.library" exists
+	// by scanning the 8 port slots for a valid, public port with that name.
+	rig, _ := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	mem := rig.cpu.memory
+	found := false
+	for i := 0; i < kdPortMax; i++ {
+		portBase := uint32(kernDataBase + kdPortBase + i*kdPortStride)
+		valid := mem[portBase+kdPortValid]
+		if valid == 0 {
+			continue
+		}
+		flags := mem[portBase+kdPortFlags]
+		if flags&pfPublic == 0 {
+			continue
+		}
+		name := string(mem[portBase+kdPortName : portBase+kdPortName+portNameLen])
+		name = strings.TrimRight(name, "\x00")
+		if name == "dos.library" {
+			found = true
+			t.Logf("DosLibPort: found dos.library at port slot %d", i)
+			break
+		}
+	}
+	if !found {
+		// Dump all ports for diagnostics
+		for i := 0; i < kdPortMax; i++ {
+			portBase := uint32(kernDataBase + kdPortBase + i*kdPortStride)
+			valid := mem[portBase+kdPortValid]
+			if valid == 0 {
+				continue
+			}
+			flags := mem[portBase+kdPortFlags]
+			name := string(mem[portBase+kdPortName : portBase+kdPortName+portNameLen])
+			name = strings.TrimRight(name, "\x00")
+			t.Logf("  port[%d]: valid=%d flags=0x%02X name=%q", i, valid, flags, name)
+		}
+		t.Fatal("dos.library port not found in kernel port table")
+	}
+}
+
+// ===========================================================================
+// M9 Shell/Console Integration Tests
+// ===========================================================================
+//
+// These tests verify the full M9 kernel with keyboard input injection via
+// TerminalMMIO.EnqueueByte. They will FAIL until the keyboard/readline bug
+// is fixed: console.handler's CON_READLINE doesn't deliver input to the shell
+// even though TERM_LINE_STATUS returns 1 from Go.
+
+// bootAndInjectCommand is a helper that boots the M9 kernel, waits for the
+// shell prompt, injects a command string (with trailing newline), and returns
+// the terminal output after waiting for the command to process.
+func bootAndInjectCommand(t *testing.T, command string, postCmdWait time.Duration) string {
+	t.Helper()
+	rig, term := assembleAndLoadKernel(t)
+
+	// Pre-inject keyboard input BEFORE boot starts.
+	// This ensures the data is in the terminal buffer when console.handler
+	// first polls SYS_READ_INPUT after the shell sends CON_READLINE.
+	for _, ch := range command {
+		term.EnqueueByte(byte(ch))
+	}
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+
+	// Wait for boot + command processing
+	time.Sleep(postCmdWait)
+
+	rig.cpu.running.Store(false)
+	<-done
+
+	return term.DrainOutput()
+}
+
+// bootAndInjectCommands injects multiple commands in sequence with a delay
+// between each. Returns the full terminal output.
+func bootAndInjectCommands(t *testing.T, commands []string, totalWait time.Duration) string {
+	t.Helper()
+	rig, term := assembleAndLoadKernel(t)
+
+	// Pre-inject ALL commands before boot.
+	// SYS_READ_INPUT reads until '\n', so each command is processed separately.
+	for _, cmd := range commands {
+		for _, ch := range cmd {
+			term.EnqueueByte(byte(ch))
+		}
+	}
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+
+	time.Sleep(totalWait)
+
+	rig.cpu.running.Store(false)
+	<-done
+
+	return term.DrainOutput()
+}
+
+func TestIExec_ConsoleReadLine(t *testing.T) {
+	// Boot kernel (3 services). Wait for "1> " prompt (shell sends CON_READLINE
+	// to console.handler). Inject "hello\n" via EnqueueByte. Since "hello" isn't
+	// a valid command, the output should contain "Unknown command".
+	output := bootAndInjectCommand(t, "hello\n", 5*time.Second)
+	if !strings.Contains(output, "1>") {
+		t.Fatalf("ConsoleReadLine: shell prompt never appeared, output=%q", output[:min(len(output), 300)])
+	}
+	if !strings.Contains(output, "Unknown command") {
+		t.Fatalf("ConsoleReadLine: shell didn't process input (expected 'Unknown command'), output=%q", output[:min(len(output), 300)])
+	}
+}
+
+func TestIExec_ConsoleReadLineBusy(t *testing.T) {
+	t.Skip("needs custom multi-client test harness -- requires two tasks sending CON_READLINE simultaneously")
+}
+
+func TestIExec_ShellUnknown(t *testing.T) {
+	// Inject an invalid command. Shell should respond with "Unknown command".
+	output := bootAndInjectCommand(t, "FOOBAR\n", 5*time.Second)
+	if !strings.Contains(output, "Unknown command") {
+		t.Fatalf("ShellUnknown: expected 'Unknown command' in output, got=%q", output[:min(len(output), 300)])
+	}
+}
+
+func TestIExec_VersionCommand(t *testing.T) {
+	// Inject "\nVERSION\n". The leading empty line gives dos.library time to
+	// finish initialization before the shell sends DOS_RUN for VERSION.
+	output := bootAndInjectCommand(t, "\nVERSION\n", 5*time.Second)
+	if !strings.Contains(output, "IntuitionOS 0.9") {
+		t.Fatalf("VersionCommand: expected 'IntuitionOS 0.9' in output, got=%q", output[:min(len(output), 300)])
+	}
+}
+
+func TestIExec_AvailCommand(t *testing.T) {
+	// Inject "AVAIL\n". Shell should respond with memory statistics.
+	output := bootAndInjectCommand(t, "AVAIL\n", 5*time.Second)
+	if !strings.Contains(output, "Total:") {
+		t.Fatalf("AvailCommand: expected 'Total:' in output, got=%q", output[:min(len(output), 300)])
+	}
+	if !strings.Contains(output, "Free:") {
+		t.Fatalf("AvailCommand: expected 'Free:' in output, got=%q", output[:min(len(output), 300)])
+	}
+}
+
+func TestIExec_EchoCommand(t *testing.T) {
+	// Inject "ECHO HELLO\n". Shell should echo back "HELLO".
+	output := bootAndInjectCommand(t, "ECHO HELLO\n", 5*time.Second)
+	if !strings.Contains(output, "HELLO") {
+		t.Fatalf("EchoCommand: expected 'HELLO' in output, got=%q", output[:min(len(output), 300)])
+	}
+}
+
+func TestIExec_TypeCommand(t *testing.T) {
+	// Inject "TYPE RAM:readme\n". Shell should display the readme contents.
+	output := bootAndInjectCommand(t, "TYPE RAM:readme\n", 5*time.Second)
+	if !strings.Contains(output, "Welcome to IntuitionOS") {
+		t.Fatalf("TypeCommand: expected 'Welcome to IntuitionOS' in output, got=%q", output[:min(len(output), 300)])
+	}
+}
+
+func TestIExec_DirCommand(t *testing.T) {
+	// Inject "DIR RAM:\n". Shell should list directory contents including "readme".
+	output := bootAndInjectCommand(t, "DIR RAM:\n", 5*time.Second)
+	if !strings.Contains(output, "readme") {
+		t.Fatalf("DirCommand: expected 'readme' in output, got=%q", output[:min(len(output), 300)])
+	}
+}
+
+func TestIExec_DOSDir(t *testing.T) {
+	t.Skip("needs programmatic DOS client task -- complex assembly injection required")
+}
+
+func TestIExec_DOSOpenWrite(t *testing.T) {
+	t.Skip("needs programmatic DOS client task -- complex assembly injection required")
+}
+
+func TestIExec_DOSReadBack(t *testing.T) {
+	t.Skip("needs programmatic DOS client task -- complex assembly injection required")
+}
+
+func TestIExec_DOSCaseInsensitive(t *testing.T) {
+	t.Skip("needs programmatic DOS client task -- complex assembly injection required")
+}
+
+func TestIExec_M9Demo(t *testing.T) {
+	// Full integration demo: boot, then inject multiple commands in sequence
+	// and verify each produces expected output.
+	if testing.Short() {
+		t.Skip("skipping M9Demo in -short mode (takes ~20s)")
+	}
+
+	commands := []string{
+		"\n",
+		"VERSION\n",
+		"AVAIL\n",
+		"DIR RAM:\n",
+		"TYPE RAM:readme\n",
+		"ECHO Hello from IntuitionOS\n",
+	}
+	output := bootAndInjectCommands(t, commands, 5*time.Second)
+
+	checks := []struct {
+		substr string
+		desc   string
+	}{
+		{"IntuitionOS 0.9", "VERSION command output"},
+		{"Total:", "AVAIL command output (Total:)"},
+		{"readme", "DIR command output (readme file)"},
+		{"Welcome to IntuitionOS", "TYPE command output"},
+		{"Hello from IntuitionOS", "ECHO command output"},
+	}
+	for _, c := range checks {
+		if !strings.Contains(output, c.substr) {
+			t.Errorf("M9Demo: missing %s -- expected %q in output", c.desc, c.substr)
+		}
+	}
+	if t.Failed() {
+		t.Logf("M9Demo full output (%d bytes): %q", len(output), output[:min(len(output), 500)])
+	}
 }

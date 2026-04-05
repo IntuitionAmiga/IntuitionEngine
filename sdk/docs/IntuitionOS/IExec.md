@@ -10,23 +10,32 @@
 
 IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS Exec but designed from the ground up for a hardware-enforced privilege model. Where Amiga Exec ran in flat supervisor space with no memory protection, IExec uses the IE64 MMU to enforce user/supervisor separation, per-task page tables, and W^X memory policy.
 
-**What IExec does (Milestone 8):**
+**What IExec does (Milestone 9):**
 
 - Preemptive round-robin scheduling across up to 8 dynamic tasks (CreateTask/ExitTask with slot reuse)
 - Memory protection via the IE64 MMU (per-task page tables with separate code/stack/data mappings, W^X enforcement)
 - Dynamic memory allocation: AllocMem/FreeMem with Amiga-style MEMF_ flags (MEMF_PUBLIC, MEMF_CLEAR), page-granular physical page pool (6400 pages / 25 MB), per-task VA windows
 - Shared memory via MEMF_PUBLIC with opaque capability handles (MapShared), reference-counted cleanup on task exit
 - Trap and interrupt dispatch (syscall entry, fault handling with privilege split, timer preemption)
-- Context switching (save/restore PC, USP, and PTBR per task; full GPR save/restore is future)
+- Context switching (save/restore PC, USP, PTBR, and full GPR set per task)
 - Inter-task signalling: per-task 32-bit signal mask with AllocSignal/FreeSignal/Signal/Wait, deadlock detection
 - Named public MsgPorts with CreatePort(name, PF_PUBLIC) and FindPort discovery (case-insensitive, up to 8 ports)
 - Request/reply messaging: 32-byte messages with data0, data1, reply_port, and share_handle fields
 - ReplyMsg for Exec-style service pattern; PutMsg/GetMsg/WaitPort with full message ABI
 - Safe user pointer validation (PTE check before kernel reads from user memory)
+- Kernel renamed to exec.library; GURU MEDITATION fault messages
+- AmigaOS-style OpenLibrary syscall for library discovery
+- I/O page mapping via MapIO syscall (REGION_IO type)
+- SYS_EXEC_PROGRAM with argument passing via DATA_ARGS_OFFSET
+- SYS_READ_INPUT for kernel-mode terminal read
+- console.handler: CON: handler with GetMsg polling and CON_READLINE protocol
+- dos.library: AmigaOS dos.library equivalent with RAM: filesystem (16 files, 4KB each, case-insensitive)
+- Interactive shell with command dispatch via DOS_RUN
+- 5 external commands as real user-space tasks: VERSION, AVAIL, DIR, TYPE, ECHO
 
 **What IExec does not do:**
 
-- Filesystem access (handled by DOS.library or host-side intercepts)
+- Filesystem access beyond RAM: (handled by DOS.library or host-side intercepts for persistent storage)
 - Device drivers (hardware chips are memory-mapped; drivers live in user space)
 - Graphics or audio (handled by respective chip subsystems)
 - Dynamic loading (executables are loaded before boot; future: user-space loader)
@@ -165,9 +174,7 @@ The CPU traps to supervisor mode. The kernel's trap handler reads the syscall nu
 | R31 (SP) | Stack pointer | Yes (preserved via USP) |
 | R0 | Zero register (hardwired) | N/A |
 
-**Current limitation (IExec M8):** The kernel does not yet save or restore R1-R30 in the TCB. The syscall dispatch logic clobbers R10-R16 internally. User code must assume all registers except R1, R2, and SP are unreliable after a syscall.
-
-**Target:** A future IExec milestone will save and restore the full GPR set (R1-R30) in the TCB on every context switch, at which point callee-saved registers (R13-R15 per the [IE64 ABI v0](../IE64_ABI.md)) will be reliably preserved across syscalls.
+**IExec M9:** The timer interrupt handler now performs full GPR save/restore (R1-R30) for preemption safety. Syscall dispatch still clobbers R10-R16 internally, so user code should not rely on those registers surviving a syscall.
 
 ### 4.3 Return Convention
 
@@ -262,7 +269,7 @@ The CPU traps to supervisor mode. The kernel's trap handler reads the syscall nu
 |---|------|-----------|--------|
 | 26 | `Yield` | (no args) -> (returns after reschedule) | **Implemented** |
 | 27 | `GetSysInfo` | R1=info_id -> R1=value | **Implemented** |
-| 28 | `MapIO` | R1=io_base, R2=size -> R1=mapped_addr | Future |
+| 28 | `MapIO` | R1=io_base, R2=size -> R1=mapped_addr | **Implemented (M9)** |
 | 29 | `MapVRAM` | R1=vram_base, R2=size -> R1=mapped_addr | Future |
 | 30 | `Debug` | R1=debug_op, R2=arg -> R1=result | Future |
 
@@ -279,6 +286,20 @@ The CPU traps to supervisor mode. The kernel's trap handler reads the syscall nu
 |---|------|-----------|--------|
 | 31 | `SendMsgBulk` | R1=port_handle, R2=shmem_handle, R3=offset, R4=len -> R2=err | Future |
 | 32 | `RecvMsgBulk` | R1=port_handle, R2=shmem_handle, R3=offset, R4=buf_len -> R1=actual_len | Future |
+
+### 5.10 Program Execution and Libraries (M9)
+
+| # | Name | Signature | Status |
+|---|------|-----------|--------|
+| 35 | `ExecProgram` | R1=prog_index, R2=args_ptr, R3=args_len -> R1=task_id, R2=err | **Implemented (M9)** |
+| 36 | `OpenLibrary` | R1=name_ptr, R2=version -> R1=lib_base, R2=err | **Implemented (M9)** |
+| 37 | `ReadInput` | R1=buf_ptr, R2=buf_size -> R1=bytes_read, R2=err | **Implemented (M9)** |
+
+**ExecProgram (35)**: Loads and starts a bundled program from the static program table. R1=program table index (0-based integer), R2=args_ptr (user VA pointing to null-terminated argument string, or 0 for no args), R3=args_len (byte count of arguments, max 256, or 0 for no args). Arguments are copied to the child task's data page at DATA_ARGS_OFFSET (like AmigaOS `pr_Arguments`). Returns R1=new task_id, R2=err.
+
+**OpenLibrary (36)**: AmigaOS-style library discovery. R1=name_ptr (library name, e.g., "dos.library"), R2=minimum version. Returns R1=library base (port ID or equivalent handle), R2=err.
+
+**ReadInput (37)**: Kernel-mode terminal read. Reads input from the terminal device into a user buffer. R1=buf_ptr, R2=buf_size. Returns R1=bytes read, R2=err.
 
 ### Implemented Syscall Details
 
@@ -406,7 +427,7 @@ Each task has a per-task handle table mapping 32-bit handles to kernel objects. 
 
 ## 10. Bootstrap Sequence
 
-The M8 kernel boots in supervisor mode at `$1000` (PROG_START) and performs the following steps:
+The M9 kernel boots in supervisor mode at `$1000` (PROG_START) and performs the following steps:
 
 ```
  1. Set trap vector, interrupt vector, and kernel stack pointer
@@ -424,7 +445,7 @@ The M8 kernel boots in supervisor mode at `$1000` (PROG_START) and performs the 
  4. Enable the MMU using the kernel page table
 
  5. Print the boot banner:
-    - "IExec M8 boot"
+    - "exec.library M9 boot"
 
  6. Iterate the static program table:
     - validate each bundled image header
@@ -435,18 +456,21 @@ The M8 kernel boots in supervisor mode at `$1000` (PROG_START) and performs the 
     - increment num_tasks
     - skip invalid images and continue
 
- 7. Program the hardware timer:
+ 7. Strict boot check: the first PROGTAB_BOOT_COUNT (3) programs
+    must load successfully or the kernel panics with GURU MEDITATION
+
+ 8. Program the hardware timer:
     - set period
     - set initial count
     - enable timer + interrupts
 
- 8. If num_tasks == 0:
-    - print "PANIC: no programs loaded"
+ 9. If num_tasks == 0:
+    - print "GURU MEDITATION: no programs loaded"
     - halt
 
- 9. Switch to the first loaded task's PTBR, USP, and PC
+10. Switch to the first loaded task's PTBR, USP, and PC
 
-10. Execute ERET to enter user mode
+11. Execute ERET to enter user mode
 ```
 
 After `ERET`, the kernel only runs in response to traps (syscalls, page faults) and interrupts (timer).
@@ -469,7 +493,7 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 | `Forbid()`/`Permit()` (disable scheduling) | Not provided | Tasks cannot disable preemption; kernel controls scheduling |
 | `Disable()`/`Enable()` (disable interrupts) | Not available to user mode | Only kernel uses `CLI64`/`SEI64` internally |
 | `SysBase` at address 4 | No equivalent | Kernel is not addressable from user space |
-| `OpenLibrary()`/`CloseLibrary()` | Not provided (future: user-space shared libraries) | No jump table / library base mechanism yet |
+| `OpenLibrary()`/`CloseLibrary()` | `OpenLibrary` syscall (M9) for library discovery | Returns port ID / handle for named library; no jump table mechanism yet |
 | Device I/O (`DoIO`/`SendIO`) | `MapIO`/`MapVRAM` + direct register access | User tasks access hardware registers through mapped pages |
 | `tc_Node.ln_Pri` scheduling | Priority field in TCB, same semantics | Round-robin within same priority level |
 
@@ -501,10 +525,10 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 
 **Implemented and tested (builds on Milestone 1):**
 
-- Boot banner and early debug terminal output were introduced here. The current banner text is `"IExec M8 boot\n"` because later milestones kept extending the same kernel image.
+- Boot banner and early debug terminal output were introduced here. The current banner text is `"exec.library M9 boot\n"` because later milestones kept extending the same kernel image.
 - `DebugPutChar` syscall (33): write a single character to the debug terminal (TERM_OUT at `$F0700`)
 - Milestone 2 originally used simple built-in demo tasks for visible output. The richer four-service demo belongs to Milestone 8.
-- Fault reporting: on non-SYSCALL faults, kernel prints "FAULT cause=NNNN PC=$XXXX ADDR=$XXXX\n" to the debug terminal then halts
+- Fault reporting: on non-SYSCALL faults, kernel prints a GURU MEDITATION message (replaced plain FAULT format in M9) to the debug terminal then halts
 
 ### Milestone 3: Signals (Complete)
 
@@ -571,7 +595,7 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 - **New error codes**: ERR_EXISTS (8) for duplicate public port names, ERR_FULL (9) for FIFO-full condition (distinct from ERR_NOMEM).
 - **Kernel data layout shift**: port array grew from 288 to 1280 bytes; bitmap, region table, and shmem table offsets shifted accordingly.
 
-### Milestone 8: Bundled User Programs + Tiny Loader (Current)
+### Milestone 8: Bundled User Programs + Tiny Loader (Complete)
 
 **Implemented and tested (builds on Milestone 7):**
 
@@ -587,9 +611,46 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 - **All visible output from user space**: kernel only prints boot banner. Every service announcement, request/reply narration, and periodic tick comes from loaded user programs.
 - **Retired**: hardcoded task templates (user_task0_template, user_task1_template, child_task_template), USER_CODE_SIZE constant. Kernel is now mechanism-only.
 
-### Milestone 9: Timers + Handles (Planned)
+### Milestone 9: exec.library + dos.library + Shell (Current)
+
+**Implemented and tested (builds on Milestone 8):**
+
+- **Kernel renamed to exec.library**: boot banner is now `"exec.library M9 boot"`. Reflects the Amiga convention of the kernel being a library.
+- **GURU MEDITATION fault messages**: replaced plain FAULT format with Amiga-style GURU MEDITATION messages for all kernel faults and panics.
+- **Full GPR save/restore in timer interrupt**: the preemption handler now saves and restores R1-R30, ensuring preemption safety for all user-space tasks.
+- **Strict boot**: the first PROGTAB_BOOT_COUNT (3) programs (console.handler, dos.library, Shell) must load successfully or the kernel panics.
+- **New syscalls**:
+  - `SYS_MAP_IO` (28): maps I/O pages into user task address space with new REGION_IO (3) region type.
+  - `SYS_EXEC_PROGRAM` (35): loads and starts a bundled program by table index (R1=index, R2=args_ptr, R3=args_len). Arguments are copied to the child task's data page at DATA_ARGS_OFFSET (like AmigaOS `pr_Arguments`).
+  - `SYS_OPEN_LIBRARY` (36): AmigaOS-style `OpenLibrary` for library/service discovery by name.
+  - `SYS_READ_INPUT` (37): kernel-mode terminal read for interactive input.
+- **console.handler**: CON: handler task (Task 0). Creates public port, services output via GetMsg polling, supports CON_READLINE protocol for interactive line input.
+- **dos.library**: AmigaOS dos.library equivalent (Task 1). Provides a RAM: filesystem with 16 files, 4 KB each, case-insensitive filenames. Supports DOS_RUN command dispatch for launching external commands.
+- **Shell**: interactive command shell (Task 2). Reads input via console.handler, dispatches commands to dos.library via DOS_RUN. Displays `1> ` prompt (AmigaOS-style).
+- **5 external commands**: VERSION, AVAIL, DIR, TYPE, ECHO. All are real user-space tasks loaded from the program table (no shell builtins). Arguments are passed via DATA_ARGS_OFFSET in the data page.
+- **Demo output**:
+  ```
+  exec.library M9 boot
+  console.handler ONLINE [Task 0]
+  dos.library ONLINE [Task 1]
+  Shell ONLINE [Task 2]
+  IntuitionOS M9
+  1> VERSION
+  IntuitionOS 0.9 (exec.library M9)
+  1> AVAIL
+  Total: 25600 KB  Free: 25536 KB
+  1> DIR RAM:
+  readme                 28
+  1> TYPE RAM:readme
+  Welcome to IntuitionOS M9
+  1> ECHO Hello from IntuitionOS
+  Hello from IntuitionOS
+  1> 
+  ```
+
+### Milestone 10: Timers + Handles (Planned)
 
 - `AddTimer` / `RemTimer` with delta queue
-- `MapIO` / `MapVRAM` for user-space hardware access
+- `MapVRAM` for user-space video memory access
 - Unified handle table (`CloseHandle` / `DupHandle`)
 - `Debug` syscall for kernel diagnostics

@@ -1,10 +1,10 @@
 ; ============================================================================
-; IExec.library - IE64 Microkernel Nucleus (M8: Bundled User Programs)
+; exec.library - IE64 Microkernel Nucleus (M9: dos.library + RAM: + Shell)
 ; ============================================================================
 ;
 ; Amiga Exec-inspired protected microkernel for the IE64 CPU.
-; M8: Tiny ROM-style image format, static program table, boot-time loader.
-;     All visible output from user-space services (CONSOLE, ECHO, CLOCK, CLIENT).
+; M9: dos.library, RAM: filesystem, interactive shell, external commands.
+;     OpenLibrary discovery, console.handler CON:, all commands as user tasks.
 ;
 ; Build:    sdk/bin/ie64asm -I sdk/include sdk/intuitionos/iexec/iexec.s
 ; Run:      bin/IntuitionEngine -ie64 iexec.ie64
@@ -109,6 +109,7 @@ iexec_start:
     store.b r1, KD_TASK_STATE(r5)
     move.b  r1, #WAITPORT_NONE
     store.b r1, KD_TASK_WAITPORT(r5)
+    store.b r0, KD_TASK_GPR_SAVED(r5)   ; no GPRs on stack initially
     add     r4, r4, #1
     bra     .init_free_tasks
 .init_free_done:
@@ -202,18 +203,37 @@ iexec_start:
     jsr     kern_puts
 
     ; ---------------------------------------------------------------
-    ; 9. Load bundled programs from program_table (M8)
+    ; 9. Load boot programs from program_table (M9: strict for first N)
     ; ---------------------------------------------------------------
     la      r30, program_table          ; r30 = table cursor
+    move.l  r29, #0                     ; boot entry counter
 .boot_load_loop:
+    move.l  r11, #PROGTAB_BOOT_COUNT
+    bge     r29, r11, .boot_load_done   ; loaded all required boot programs
     load.q  r7, PROGTAB_OFF_PTR(r30)   ; r7 = image_ptr
-    beqz    r7, .boot_load_done         ; sentinel: ptr == 0
+    beqz    r7, .boot_load_fail         ; sentinel before boot count → fail
     load.q  r8, PROGTAB_OFF_SIZE(r30)   ; r8 = image_size
+    push    r30                         ; save table cursor (load_program clobbers R14-R27)
+    push    r29                         ; save counter
     jsr     load_program                ; → R1=task_id, R2=err
-    ; (errors silently skipped — load_program returns ERR_BADARG/ERR_NOMEM)
+    pop     r29                         ; restore counter
+    pop     r30                         ; restore cursor
+    bnez    r2, .boot_load_fail         ; strict: any failure → panic
     add     r30, r30, #PROGTAB_ENTRY_SIZE
+    add     r29, r29, #1
     bra     .boot_load_loop
+.boot_load_fail:
+    la      r8, boot_fail_msg
+    jsr     kern_puts
+    halt
 .boot_load_done:
+
+    ; ---------------------------------------------------------------
+    ; 9b. Enable terminal line input mode
+    ; ---------------------------------------------------------------
+    la      r28, TERM_CTRL
+    move.l  r1, #1
+    store.l r1, (r28)                  ; line mode = 1
 
     ; ---------------------------------------------------------------
     ; 10. Program timer
@@ -585,6 +605,7 @@ load_program:
     ; WaitPort = NONE
     move.b  r14, #WAITPORT_NONE
     store.b r14, KD_TASK_WAITPORT(r15)
+    store.b r0, KD_TASK_GPR_SAVED(r15)  ; no GPRs saved initially
 
     ; 13. Set PTBR[task_id]
     move.l  r11, #USER_SLOT_STRIDE
@@ -1140,6 +1161,18 @@ trap_handler:
     move.l  r11, #SYS_MAP_SHARED
     beq     r10, r11, .do_map_shared
 
+    move.l  r11, #SYS_EXEC_PROGRAM
+    beq     r10, r11, .do_exec_program
+
+    move.l  r11, #SYS_OPEN_LIBRARY
+    beq     r10, r11, .do_open_library
+
+    move.l  r11, #SYS_MAP_IO
+    beq     r10, r11, .do_map_io
+
+    move.l  r11, #SYS_READ_INPUT
+    beq     r10, r11, .do_read_input
+
     move.q  r2, #ERR_BADARG
     eret
 
@@ -1164,6 +1197,7 @@ trap_handler:
     store.q r14, KD_TASK_PC(r15)
     mfcr    r14, cr12
     store.q r14, KD_TASK_USP(r15)
+    store.b r0, KD_TASK_GPR_SAVED(r15)  ; M9: clear stale GPR frame flag
 
     ; Find next runnable task (round-robin scan)
     jsr     find_next_runnable          ; R13 = next runnable (or halts)
@@ -1382,6 +1416,7 @@ trap_handler:
     store.q r14, KD_TASK_PC(r15)
     mfcr    r14, cr12
     store.q r14, KD_TASK_USP(r15)
+    store.b r0, KD_TASK_GPR_SAVED(r15)  ; M9: clear stale GPR frame flag
 
     ; Find next runnable task (round-robin)
     jsr     find_next_runnable          ; R13 = next (or halts if deadlock)
@@ -1705,6 +1740,7 @@ trap_handler:
     store.q r14, KD_TASK_PC(r15)
     mfcr    r14, cr12
     store.q r14, KD_TASK_USP(r15)
+    store.b r0, KD_TASK_GPR_SAVED(r15)  ; M9: clear stale GPR frame flag
     ; Find next runnable task (round-robin)
     jsr     find_next_runnable          ; R13 = next (or halts if deadlock)
     store.q r13, (r12)
@@ -2329,6 +2365,297 @@ trap_handler:
     eret
 
 ; ============================================================================
+; SYS_READ_INPUT (M9) — Read line from terminal input buffer
+; ============================================================================
+; R1 = destination buffer (user VA), R2 = max_len
+; Returns: R1 = bytes_read, R2 = ERR_OK (line ready) or ERR_AGAIN (no line)
+; Reads directly from TERM_IN/TERM_LINE_STATUS (kernel-mode I/O access).
+; This bypasses the MMU/MAP_IO path which has dispatch issues.
+.do_read_input:
+    move.q  r20, r1                     ; r20 = user buffer ptr
+    move.q  r21, r2                     ; r21 = max_len
+
+    ; Validate buffer ptr is in user address space
+    move.l  r11, #0x600000              ; USER_CODE_BASE
+    blt     r20, r11, .ri_badarg        ; below user space
+
+    ; Check TERM_LINE_STATUS — direct read from physical I/O register
+    la      r28, TERM_LINE_STATUS       ; r28 = 0xF070C
+    load.l  r14, (r28)
+    and     r14, r14, #1
+    beqz    r14, .ri_no_line            ; no complete line
+
+    ; Line is ready — read chars from TERM_IN into user buffer
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r13, (r12)                  ; current_task
+    move.l  r22, #0                     ; byte count
+    la      r23, TERM_IN                ; TERM_IN physical addr (0xF0708)
+    la      r24, TERM_STATUS            ; TERM_STATUS physical addr (0xF0704)
+
+.ri_read_loop:
+    ; Check max_len
+    bge     r22, r21, .ri_done
+
+    ; Check TERM_STATUS bit 0 = data available
+    load.l  r14, (r24)
+    and     r14, r14, #1
+    beqz    r14, .ri_done               ; no more chars
+
+    ; Read char from TERM_IN
+    load.l  r14, (r23)                  ; dequeue char
+
+    ; Skip \r
+    move.l  r15, #0x0D
+    beq     r14, r15, .ri_read_loop
+
+    ; Check for \n = end of line
+    move.l  r15, #0x0A
+    beq     r14, r15, .ri_done
+
+    ; Write char to user buffer (using user PT for addressing)
+    add     r15, r20, r22              ; dest addr = user_buf + count
+    store.b r14, (r15)                  ; write to user space
+    add     r22, r22, #1
+    bra     .ri_read_loop
+
+.ri_done:
+    ; Null-terminate
+    add     r15, r20, r22
+    store.b r0, (r15)
+    move.q  r1, r22                     ; R1 = bytes_read
+    move.q  r2, #ERR_OK
+    eret
+
+.ri_no_line:
+    move.q  r1, #0
+    move.q  r2, #ERR_AGAIN
+    eret
+
+.ri_badarg:
+    move.q  r1, #0
+    move.q  r2, #ERR_BADARG
+    eret
+
+; ============================================================================
+; SYS_OPEN_LIBRARY (M9) — AmigaOS-style OpenLibrary
+; ============================================================================
+; R1 = name_ptr, R2 = version (ignored in M9)
+; Returns: R1 = library handle (port ID), R2 = error
+; Implementation: identical to FindPort (searches public ports by name).
+.do_open_library:
+    bra     .do_find_port               ; same logic, version in R2 ignored
+
+; ============================================================================
+; SYS_MAP_IO (M9) — Map I/O page into user space
+; ============================================================================
+; R1 = physical page number (only 0xF0 allowed for M9)
+; Returns: R1 = mapped VA, R2 = error
+.do_map_io:
+    move.q  r24, r1                     ; r24 = requested physical page
+
+    ; Validate: only terminal I/O page (0xF0) allowed for M9
+    move.l  r11, #TERM_IO_PAGE
+    bne     r24, r11, .mio_badarg
+
+    ; Get current task
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r13, (r12)
+
+    ; Find free region slot for this task
+    move.l  r14, #KERN_DATA_BASE
+    add     r14, r14, #KD_REGION_TABLE
+    move.l  r11, #KD_REGION_TASK_SZ
+    mulu    r11, r13, r11
+    add     r14, r14, r11               ; r14 = &region_table[task][0]
+    move.l  r15, #0
+.mio_find_region:
+    move.l  r11, #KD_REGION_MAX
+    bge     r15, r11, .mio_nomem
+    move.l  r11, #KD_REGION_STRIDE
+    mulu    r11, r15, r11
+    add     r16, r14, r11
+    load.b  r11, KD_REG_TYPE(r16)
+    beqz    r11, .mio_found_region
+    add     r15, r15, #1
+    bra     .mio_find_region
+.mio_found_region:
+    move.q  r21, r16                    ; r21 = &region[slot]
+
+    ; Find free VA in task's dynamic window
+    push    r13
+    move.q  r1, r13                     ; task_id
+    move.l  r2, #1                      ; 1 page
+    jsr     find_free_va                ; R1 = VA, R2 = err
+    pop     r13
+    bnez    r2, .mio_nomem
+    move.q  r23, r1                     ; r23 = VA
+
+    ; Map the I/O page: P|R|W|U = 0x17 (no X)
+    move.l  r12, #KERN_DATA_BASE
+    lsl     r1, r13, #3
+    add     r1, r1, #KD_PTBR_BASE
+    add     r1, r1, r12
+    load.q  r1, (r1)                    ; R1 = PT base
+    move.q  r2, r23                     ; R2 = VA
+    move.q  r3, r24                     ; R3 = PPN (0xF0)
+    move.l  r4, #1                      ; R4 = 1 page
+    move.l  r5, #0x17                   ; R5 = P|R|W|U
+    jsr     map_pages
+
+    ; Fill region entry: type = REGION_IO (don't free on cleanup)
+    store.l r23, KD_REG_VA(r21)
+    store.w r24, KD_REG_PPN(r21)
+    move.w  r11, #1
+    store.w r11, KD_REG_PAGES(r21)
+    move.b  r11, #REGION_IO
+    store.b r11, KD_REG_TYPE(r21)
+
+    tlbflush
+    move.q  r1, r23                     ; return VA
+    move.q  r2, #ERR_OK
+    eret
+
+.mio_badarg:
+    move.q  r1, #0
+    move.q  r2, #ERR_BADARG
+    eret
+.mio_nomem:
+    move.q  r1, #0
+    move.q  r2, #ERR_NOMEM
+    eret
+
+; ============================================================================
+; SYS_EXEC_PROGRAM (M9) — Launch bundled program with optional args
+; ============================================================================
+; R1 = program table index (0-based)
+; R2 = args_ptr (in caller's space, 0 = no args)
+; R3 = args_len (max DATA_ARGS_MAX, 0 = no args)
+; Returns: R1 = new task_id, R2 = error
+.do_exec_program:
+    move.q  r24, r1                     ; r24 = requested index
+    move.q  r25, r2                     ; r25 = args_ptr (user VA)
+    move.q  r26, r3                     ; r26 = args_len
+
+    ; Validate args_ptr is in user address space
+    beqz    r25, .ep_args_ok            ; null ptr = no args (handled later)
+    move.l  r11, #0x600000              ; USER_CODE_BASE (lowest user addr)
+    blt     r25, r11, .ep_badarg_norestore ; below user space
+.ep_args_ok:
+
+    ; Validate args_len <= DATA_ARGS_MAX
+    move.l  r11, #DATA_ARGS_MAX
+    bgt     r26, r11, .ep_badarg
+
+    ; Save caller's PTBR (we need to switch to kernel PT for load_program,
+    ; and also need caller's PT to read args from user space)
+    mfcr    r28, cr0                    ; r28 = caller PTBR
+
+    ; Walk program table to find the entry at index r24
+    la      r30, program_table
+    move.l  r20, #0
+.ep_scan:
+    load.q  r7, PROGTAB_OFF_PTR(r30)
+    beqz    r7, .ep_badarg_norestore    ; hit sentinel before index
+    beq     r20, r24, .ep_found
+    add     r30, r30, #PROGTAB_ENTRY_SIZE
+    add     r20, r20, #1
+    bra     .ep_scan
+.ep_found:
+    ; r7 = image_ptr, load size
+    load.q  r8, PROGTAB_OFF_SIZE(r30)
+
+    ; Switch to kernel PT for load_program
+    move.l  r11, #KERN_PAGE_TABLE
+    mtcr    cr0, r11
+    tlbflush
+
+    ; Save args info on stack before load_program (it clobbers everything)
+    push    r25                         ; args_ptr
+    push    r26                         ; args_len
+    push    r28                         ; caller PTBR
+
+    jsr     load_program                ; R1 = task_id, R2 = err
+
+    pop     r28                         ; caller PTBR
+    pop     r26                         ; args_len
+    pop     r25                         ; args_ptr
+
+    ; Check if load_program failed
+    bnez    r2, .ep_fail
+
+    ; R1 = new task_id. Copy args if present.
+    move.q  r22, r1                     ; r22 = new task_id (save)
+    beqz    r26, .ep_no_args            ; no args to copy
+    beqz    r25, .ep_no_args            ; null ptr
+
+    ; Compute destination: new task's data page + DATA_ARGS_OFFSET
+    move.l  r11, #USER_SLOT_STRIDE
+    mulu    r11, r22, r11
+    move.l  r14, #USER_DATA_BASE
+    add     r14, r14, r11
+    add     r14, r14, #DATA_ARGS_OFFSET ; r14 = dest addr (phys, kernel-mapped)
+
+    ; Phase 1: Read args from caller's space into kernel stack buffer
+    ; Switch to caller's PT once, read all bytes, switch back
+    mtcr    cr0, r28                    ; caller's PT
+    tlbflush
+    ; Use kernel stack as temp buffer (below current KSP)
+    ; r31 = kernel SP. Write args at r31-256..r31-1
+    sub     r15, r31, #256              ; r15 = temp buffer base on kernel stack
+    move.l  r4, #0
+.ep_read_args:
+    bge     r4, r26, .ep_read_done
+    add     r5, r25, r4
+    load.b  r6, (r5)                    ; read from caller's VA
+    add     r5, r15, r4
+    store.b r6, (r5)                    ; write to kernel stack buffer
+    add     r4, r4, #1
+    bra     .ep_read_args
+.ep_read_done:
+
+    ; Phase 2: Write from kernel stack to new task's data page (kernel PT)
+    move.l  r11, #KERN_PAGE_TABLE
+    mtcr    cr0, r11
+    tlbflush
+    move.l  r4, #0
+.ep_write_args:
+    bge     r4, r26, .ep_args_term
+    add     r5, r15, r4
+    load.b  r6, (r5)                    ; read from kernel stack buffer
+    add     r5, r14, r4
+    store.b r6, (r5)                    ; write to dest
+    add     r4, r4, #1
+    bra     .ep_write_args
+.ep_args_term:
+    ; Null-terminate
+    add     r5, r14, r26
+    store.b r0, (r5)                    ; null terminator
+
+.ep_no_args:
+    ; Restore caller's PTBR
+    mtcr    cr0, r28
+    tlbflush
+    move.q  r1, r22                     ; R1 = new task_id
+    move.q  r2, #ERR_OK
+    eret
+
+.ep_fail:
+    ; load_program failed, R2 already has error
+    mtcr    cr0, r28
+    tlbflush
+    move.q  r1, #0
+    eret
+
+.ep_badarg:
+    ; Need to restore PTBR if we saved it
+    mtcr    cr0, r28
+    tlbflush
+.ep_badarg_norestore:
+    move.q  r1, #0
+    move.q  r2, #ERR_BADARG
+    eret
+
+; ============================================================================
 ; kill_task_cleanup: clean up task R13, mark FREE.
 ; Input: R13 = task to kill, R12 = KERN_DATA_BASE
 ; Clobbers: R15-R24
@@ -2398,6 +2725,8 @@ kill_task_cleanup:
 
     ; Check type for page freeing
     load.b  r22, KD_REG_TYPE(r23)
+    move.l  r24, #REGION_IO
+    beq     r22, r24, .ktc_region_clear ; I/O: unmap only, don't free pages
     move.l  r24, #REGION_PRIVATE
     bne     r22, r24, .ktc_region_shared
 
@@ -2507,6 +2836,56 @@ restore_task:
     move.q  r2, #ERR_OK
 
 .restore_normal:
+    ; Check if GPRs were saved on user stack (timer preemption)
+    load.b  r14, KD_TASK_GPR_SAVED(r15)
+    beqz    r14, .restore_no_gprs   ; no GPR frame → just eret
+
+    ; Clear the flag
+    store.b r0, KD_TASK_GPR_SAVED(r15)
+
+    ; Restore ALL GPRs from user stack (M9 preemption safety)
+    ; USP in cr12 points to GPR frame base (adjusted USP from save)
+    mfcr    r14, cr12               ; r14 = GPR frame base
+    load.q  r1,   0(r14)
+    load.q  r2,   8(r14)
+    load.q  r3,  16(r14)
+    load.q  r4,  24(r14)
+    load.q  r5,  32(r14)
+    load.q  r6,  40(r14)
+    load.q  r7,  48(r14)
+    load.q  r8,  56(r14)
+    load.q  r9,  64(r14)
+    load.q  r10, 72(r14)
+    load.q  r11, 80(r14)
+    load.q  r12, 88(r14)
+    load.q  r13, 96(r14)
+    ; skip r14 for now
+    load.q  r15, 112(r14)
+    load.q  r16, 120(r14)
+    load.q  r17, 128(r14)
+    load.q  r18, 136(r14)
+    load.q  r19, 144(r14)
+    load.q  r20, 152(r14)
+    load.q  r21, 160(r14)
+    load.q  r22, 168(r14)
+    load.q  r23, 176(r14)
+    load.q  r24, 184(r14)
+    load.q  r25, 192(r14)
+    load.q  r26, 200(r14)
+    load.q  r27, 208(r14)
+    load.q  r28, 216(r14)
+    load.q  r29, 224(r14)
+    load.q  r30, 232(r14)
+    load.q  r31, 240(r14)
+    ; Restore original USP (frame base + 248) and R14
+    push    r14                     ; save frame base on kernel stack
+    add     r14, r14, #248          ; r14 = original USP
+    mtcr    cr12, r14               ; restore original USP
+    pop     r14                     ; frame base back in r14
+    load.q  r14, 104(r14)          ; restore user R14
+    eret
+
+.restore_no_gprs:
     eret
 
 ; --- WaitPort resume: dequeue message from port r23 ---
@@ -2579,6 +2958,47 @@ restore_task:
 ; ============================================================================
 
 intr_handler:
+    ; --- Save user GPRs on user stack FIRST (M9: preemption safety) ---
+    ; We need R14 for addressing. Use kernel stack to save R14 temporarily.
+    push    r14                     ; save user R14 on kernel stack
+    mfcr    r14, cr12               ; r14 = user SP
+    sub     r14, r14, #248          ; frame for R1-R31 (31 × 8)
+    store.q r1,   0(r14)
+    store.q r2,   8(r14)
+    store.q r3,  16(r14)
+    store.q r4,  24(r14)
+    store.q r5,  32(r14)
+    store.q r6,  40(r14)
+    store.q r7,  48(r14)
+    store.q r8,  56(r14)
+    store.q r9,  64(r14)
+    store.q r10, 72(r14)
+    store.q r11, 80(r14)
+    store.q r12, 88(r14)
+    store.q r13, 96(r14)
+    pop     r1                      ; r1 = user R14 (saved on kernel stack)
+    store.q r1, 104(r14)            ; save user R14
+    store.q r15, 112(r14)
+    store.q r16, 120(r14)
+    store.q r17, 128(r14)
+    store.q r18, 136(r14)
+    store.q r19, 144(r14)
+    store.q r20, 152(r14)
+    store.q r21, 160(r14)
+    store.q r22, 168(r14)
+    store.q r23, 176(r14)
+    store.q r24, 184(r14)
+    store.q r25, 192(r14)
+    store.q r26, 200(r14)
+    store.q r27, 208(r14)
+    store.q r28, 216(r14)
+    store.q r29, 224(r14)
+    store.q r30, 232(r14)
+    store.q r31, 240(r14)
+    ; r14 = adjusted user SP (with GPR frame). Save for later.
+    move.q  r28, r14                ; r28 = adjusted user SP
+
+    ; --- Now proceed with normal interrupt handling ---
     move.l  r12, #KERN_DATA_BASE
 
     ; Increment tick count
@@ -2589,14 +3009,15 @@ intr_handler:
     ; Context switch
     load.q  r13, (r12)              ; current_task
 
-    ; Save current task
+    ; Save current task PC and adjusted USP
     lsl     r15, r13, #5
     add     r15, r15, #KD_TASK_BASE
     add     r15, r15, r12
     mfcr    r14, cr3
     store.q r14, KD_TASK_PC(r15)
-    mfcr    r14, cr12
-    store.q r14, KD_TASK_USP(r15)
+    store.q r28, KD_TASK_USP(r15)   ; save adjusted USP (GPR frame below)
+    move.b  r14, #1
+    store.b r14, KD_TASK_GPR_SAVED(r15)  ; flag: GPRs on stack
 
     ; Find next runnable task (round-robin)
     jsr     find_next_runnable          ; R13 = next (or halts if deadlock)
@@ -2609,6 +3030,42 @@ intr_handler:
     bra     restore_task
 
 .intr_stay:
+    ; Same task continues — restore ALL GPRs from user stack
+    ; R28 has the adjusted USP (frame base)
+    move.q  r14, r28                ; r14 = GPR frame base
+    load.q  r1,   0(r14)
+    load.q  r2,   8(r14)
+    load.q  r3,  16(r14)
+    load.q  r4,  24(r14)
+    load.q  r5,  32(r14)
+    load.q  r6,  40(r14)
+    load.q  r7,  48(r14)
+    load.q  r8,  56(r14)
+    load.q  r9,  64(r14)
+    load.q  r10, 72(r14)
+    load.q  r11, 80(r14)
+    load.q  r12, 88(r14)
+    load.q  r13, 96(r14)
+    ; skip r14 for now (we're using it)
+    load.q  r15, 112(r14)
+    load.q  r16, 120(r14)
+    load.q  r17, 128(r14)
+    load.q  r18, 136(r14)
+    load.q  r19, 144(r14)
+    load.q  r20, 152(r14)
+    load.q  r21, 160(r14)
+    load.q  r22, 168(r14)
+    load.q  r23, 176(r14)
+    load.q  r24, 184(r14)
+    load.q  r25, 192(r14)
+    load.q  r26, 200(r14)
+    load.q  r27, 208(r14)
+    load.q  r28, 216(r14)
+    load.q  r29, 224(r14)
+    load.q  r30, 232(r14)
+    load.q  r31, 240(r14)
+    load.q  r14, 104(r14)          ; restore R14 last (clobbers our frame pointer)
+    ; CR12 (USP) stays at original value — no adjustment needed
     eret
 
 ; ============================================================================
@@ -2622,14 +3079,27 @@ program_table:
     dc.q    prog_console
     dc.q    prog_console_end - prog_console
     dc.q    0
-    dc.q    prog_echo
-    dc.q    prog_echo_end - prog_echo
+    dc.q    prog_doslib
+    dc.q    prog_doslib_end - prog_doslib
     dc.q    0
-    dc.q    prog_clock
-    dc.q    prog_clock_end - prog_clock
+    dc.q    prog_shell
+    dc.q    prog_shell_end - prog_shell
     dc.q    0
-    dc.q    prog_client
-    dc.q    prog_client_end - prog_client
+    ; --- On-demand programs (launched via SYS_EXEC_PROGRAM) ---
+    dc.q    prog_version
+    dc.q    prog_version_end - prog_version
+    dc.q    0
+    dc.q    prog_avail
+    dc.q    prog_avail_end - prog_avail
+    dc.q    0
+    dc.q    prog_dir
+    dc.q    prog_dir_end - prog_dir
+    dc.q    0
+    dc.q    prog_type
+    dc.q    prog_type_end - prog_type
+    dc.q    0
+    dc.q    prog_echo_cmd
+    dc.q    prog_echo_cmd_end - prog_echo_cmd
     dc.q    0
     ; sentinel
     dc.q    0
@@ -2647,11 +3117,23 @@ program_table:
 ;   +128: scratch area (saved registers, port IDs, etc.)
 
 ; ---------------------------------------------------------------------------
-; CONSOLE — text output service
+; console.handler — CON: handler (M9)
 ; ---------------------------------------------------------------------------
-; Creates public "CONSOLE" port. Prints own ONLINE line directly (via
-; DebugPutChar since it can't message itself). Then loops: WaitPort,
-; print data0 low byte via DebugPutChar.
+; AmigaOS-style CON: handler. Owns keyboard input AND screen output.
+; Registers as "console.handler" port. Maps terminal I/O via SYS_MAP_IO.
+; Polling loop: GetMsg (non-blocking) for output + readline requests,
+; polls keyboard when a readline is pending.
+;
+; Data page layout:
+;   0:   "console.handler\0" (16 bytes, port name)
+;   16:  "console.handler ONLINE [Task\0" (banner)
+;   128: task_id (8 bytes)
+;   136: console_port (8 bytes)
+;   144: term_io_va (8 bytes, from MAP_IO)
+;   152: readline_reply_port (8 bytes)
+;   160: readline_share_handle (4 bytes + padding)
+;   168: readline_mapped_va (8 bytes, cached MapShared)
+;   176: readline_pending (1 byte)
 
 prog_console:
     ; Header
@@ -2662,110 +3144,2305 @@ prog_console:
     ds.b    12                          ; reserved
 prog_console_code:
     ; === Preamble: compute data page base (preemption-safe) ===
-    ; The context switcher only saves PC + USP, NOT GPRs. A timer interrupt
-    ; between GetSysInfo and the stack save can corrupt intermediate registers.
-    ; We verify task_id consistency and double-check the R29 computation.
-    sub     sp, sp, #16                 ; reserve [sp]=R29, [sp+8]=task_id scratch
+    sub     sp, sp, #16                 ; reserve [sp]=R29, [sp+8]=scratch
 .con_preamble:
     move.l  r1, #SYSINFO_CURRENT_TASK
     syscall #SYS_GET_SYS_INFO           ; R1 = task_id
-    store.q r1, 8(sp)                   ; save task_id immediately after eret
+    store.q r1, 8(sp)                   ; save task_id
     move.l  r1, #SYSINFO_CURRENT_TASK
     syscall #SYS_GET_SYS_INFO           ; R1 = task_id (verify)
     load.q  r28, 8(sp)
     bne     r1, r28, .con_preamble      ; mismatch → retry
-    ; R1 = verified task_id. Compute R29 twice and compare.
     move.l  r28, #USER_SLOT_STRIDE
     mulu    r28, r1, r28
     move.l  r29, #USER_DATA_BASE
     add     r29, r29, r28
-    store.q r29, (sp)                   ; save first computation
-    load.q  r1, 8(sp)                   ; re-load verified task_id
+    store.q r29, (sp)                   ; save R29 first computation
+    load.q  r1, 8(sp)
     move.l  r28, #USER_SLOT_STRIDE
     mulu    r28, r1, r28
     move.l  r29, #USER_DATA_BASE
     add     r29, r29, r28
     load.q  r28, (sp)
-    bne     r29, r28, .con_preamble     ; R29 mismatch → retry
+    bne     r29, r28, .con_preamble     ; mismatch → retry
     store.q r29, (sp)                   ; confirmed correct
-    ; Save task_id to data[128] for ONLINE line
     load.q  r1, 8(sp)
     store.q r1, 128(r29)                ; data[128] = task_id
 
-    ; === Create "CONSOLE" port ===
-    ; Name "CONSOLE\0" is in data section at offset 0
-    move.q  r1, r29                     ; R1 = name_ptr (data[0] = "CONSOLE")
-    move.l  r2, #PF_PUBLIC              ; flags
-    syscall #SYS_CREATE_PORT            ; → R1 = port_id
-    load.q  r29, (sp)                   ; reload R29 after syscall
-    ; Save console_port to data[136]
-    store.q r1, 136(r29)
+    ; === Terminal line mode ===
+    ; SYS_READ_INPUT handles terminal I/O in kernel mode, no MAP_IO needed.
+    ; Line mode is already the default for the terminal.
 
-    ; === Print "CONSOLE ONLINE [Tn]\n" directly via DebugPutChar ===
-    ; (CONSOLE can't message itself, so it prints its own banner)
-    add     r20, r29, #16               ; r20 = &data[16] = "CONSOLE ONLINE [T"
+    ; === Create "console.handler" port ===
+    load.q  r29, (sp)
+    move.q  r1, r29                     ; R1 = name_ptr (data[0])
+    move.l  r2, #PF_PUBLIC
+    syscall #SYS_CREATE_PORT            ; R1 = port_id
+    load.q  r29, (sp)
+    store.q r1, 136(r29)                ; data[136] = console_port
+
+    ; === Clear readline_pending flag ===
+    store.b r0, 176(r29)
+
+    ; === Print "console.handler ONLINE [Taskn]\r\n" via DebugPutChar ===
+    add     r20, r29, #16               ; r20 = &data[16] = banner string
 .con_banner_loop:
     load.b  r1, (r20)
     beqz    r1, .con_banner_id
-    store.q r20, 8(sp)                  ; save R20 to stack scratch slot
+    store.q r20, 8(sp)
     syscall #SYS_DEBUG_PUTCHAR
-    load.q  r29, (sp)                   ; reload R29 after syscall
-    load.q  r20, 8(sp)                  ; reload R20 from stack
+    load.q  r29, (sp)
+    load.q  r20, 8(sp)
     add     r20, r20, #1
     bra     .con_banner_loop
 .con_banner_id:
-    ; Print task_id as ASCII digit
-    load.q  r29, (sp)                   ; reload R29 (may have been clobbered)
+    load.q  r29, (sp)
     load.q  r1, 128(r29)               ; task_id
-    add     r1, r1, #0x30              ; ASCII '0' + id
+    add     r1, r1, #0x30              ; ASCII '0'
     syscall #SYS_DEBUG_PUTCHAR
-    ; Print "]\r\n"
     move.l  r1, #0x5D                   ; ']'
     syscall #SYS_DEBUG_PUTCHAR
     move.l  r1, #0x0D                   ; '\r'
     syscall #SYS_DEBUG_PUTCHAR
     move.l  r1, #0x0A                   ; '\n'
     syscall #SYS_DEBUG_PUTCHAR
-    move.l  r1, #0x41                   ; findProgramImages marker 'A'
 
-    ; === Main loop: receive and print ===
-.con_msg_loop:
-    ; WaitPort(console_port)
-    load.q  r29, (sp)                   ; reload R29 before use
-    load.q  r1, 136(r29)               ; R1 = console_port
-    syscall #SYS_WAIT_PORT              ; → R2 = data0 (char)
-    ; Print data0 low byte
+    ; === Main polling loop ===
+.con_poll_loop:
+    ; --- Try to get a message (non-blocking) ---
+    load.q  r29, (sp)
+    load.q  r1, 136(r29)               ; console_port
+    syscall #SYS_GET_MSG                ; R1=type, R2=data0, R3=err, R4=data1, R5=reply_port, R6=share_handle
+    load.q  r29, (sp)
+    bnez    r3, .con_no_msg             ; R3 != ERR_OK → no message (ERR_AGAIN)
+
+    ; --- Got a message. Dispatch on type. ---
+    ; R1=type, R2=data0, R5=reply_port, R6=share_handle
+    beqz    r1, .con_print_char         ; type 0 = CON_MSG_CHAR
+
+    move.l  r11, #CON_MSG_READLINE
+    beq     r1, r11, .con_readline_req
+
+    ; Unknown type — ignore, loop back
+    bra     .con_poll_loop
+
+    ; --- CON_MSG_CHAR: print data0 low byte ---
+.con_print_char:
     move.q  r1, r2                      ; char from data0
     syscall #SYS_DEBUG_PUTCHAR
-    bra     .con_msg_loop
+    load.q  r29, (sp)
+    bra     .con_poll_loop
+
+    ; --- CON_MSG_READLINE request ---
+.con_readline_req:
+    ; Save reply_port and share_handle before checking pending flag
+    load.q  r29, (sp)
+    store.q r5, 8(sp)                   ; save reply_port to stack scratch
+    store.l r6, 160(r29)                ; save share_handle to data[160]
+
+    ; Check if readline is already pending
+    load.b  r20, 176(r29)              ; readline_pending
+    bnez    r20, .con_readline_busy     ; already pending → reject
+
+    ; Accept readline request
+    load.q  r5, 8(sp)                  ; restore reply_port
+    store.q r5, 152(r29)               ; data[152] = readline_reply_port
+    ; share_handle already saved at data[160]
+
+    ; MapShared on first use (check if cached VA is 0)
+    load.q  r20, 168(r29)             ; readline_mapped_va
+    bnez    r20, .con_readline_mapped  ; already mapped
+
+    ; First time: MapShared to get VA
+    load.l  r1, 160(r29)              ; share_handle
+    syscall #SYS_MAP_SHARED            ; R1 = VA, R2 = err
+    load.q  r29, (sp)
+    beqz    r1, .con_poll_loop         ; MapShared failed, drop request
+    store.q r1, 168(r29)              ; cache mapped VA
+
+.con_readline_mapped:
+    ; Set readline_pending = 1
+    move.b  r20, #1
+    store.b r20, 176(r29)
+    bra     .con_poll_loop
+
+    ; --- Reject: readline already pending → reply with ERR_AGAIN ---
+.con_readline_busy:
+    load.q  r5, 8(sp)                 ; reply_port from stack
+    move.q  r1, r5                     ; R1 = reply_port_id
+    move.l  r2, #ERR_AGAIN             ; R2 = type = error code
+    move.q  r3, r0                     ; R3 = data0 = 0
+    move.q  r4, r0                     ; R4 = data1 = 0
+    move.q  r5, r0                     ; R5 = share_handle = 0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .con_poll_loop
+
+    ; --- No message: check if readline pending + keyboard ready ---
+.con_no_msg:
+    load.b  r20, 176(r29)             ; readline_pending
+    beqz    r20, .con_yield            ; not pending → just yield
+
+    ; Use SYS_READ_INPUT to read a line from terminal (kernel-mode I/O)
+    ; Read directly into the shared buffer (readline_mapped_va)
+    load.q  r1, 168(r29)              ; R1 = readline_mapped_va (shared buffer)
+    move.l  r2, #126                   ; R2 = max_len
+    syscall #SYS_READ_INPUT            ; R1=bytes_read, R2=err
+    load.q  r29, (sp)
+    bnez    r2, .con_yield             ; ERR_AGAIN = no line ready yet
+
+    ; Line was read into shared buffer. R1 = byte count.
+    move.q  r25, r1                    ; save byte count
+
+    ; Reply to readline requester
+    load.q  r1, 152(r29)              ; readline_reply_port
+    move.l  r2, #0                     ; type = 0 (success)
+    move.q  r3, r25                    ; data0 = byte count
+    move.q  r4, r0                     ; data1 = 0
+    move.q  r5, r0                     ; share_handle = 0
+    syscall #SYS_REPLY_MSG
+
+    ; Clear readline_pending
+    load.q  r29, (sp)
+    store.b r0, 176(r29)
+    bra     .con_poll_loop
+
+.con_yield:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .con_poll_loop
+
 prog_console_code_end:
 
 prog_console_data:
-    dc.b    "CONSOLE", 0               ; offset 0: port name (8 bytes)
-    ds.b    8                           ; padding to offset 16
-    dc.b    "CONSOLE ONLINE [T", 0     ; offset 16: banner string
+    dc.b    "console.handler", 0       ; offset 0: port name (16 bytes exactly)
+    dc.b    "console.handler ONLINE [Task ", 0  ; offset 16: banner string (29 bytes)
     ; offset 128+ is scratch (task_id, port_id, etc.) — zeroed by loader
 prog_console_data_end:
     align   8
 prog_console_end:
 
 ; ---------------------------------------------------------------------------
-; ECHO — request/reply + shared memory service
+; dos.library — RAM: filesystem service (M9)
 ; ---------------------------------------------------------------------------
-; Finds CONSOLE, announces "ECHO ONLINE [Tn]\n".
-; Creates public "ECHO" port. Allocates shared memory with greeting string.
-; Waits for request, replies with share_handle.
-; Sends "ECHO: REPLY OK\n" to CONSOLE. Yield-idles.
+; Amiga-style dos.library: in-memory filesystem with Open/Read/Write/Close/Dir.
+; Registers as "dos.library" public port. Discovers console.handler via
+; OpenLibrary. Handles DOS_OPEN, DOS_READ, DOS_WRITE, DOS_CLOSE, DOS_DIR,
+; DOS_RUN requests from any task via shared-memory message passing.
+;
+; Data page layout:
+;   0:   "console.handler\0"       (16 bytes, for OpenLibrary)
+;   16:  "dos.library\0"           (16 bytes, port name for CreatePort)
+;   32:  "dos.library ONLINE [Task\0" (22 bytes + 10 pad = 32 bytes, banner)
+;   64:  padding (64 bytes)
+;   128: task_id (8)
+;   136: console_port (8)
+;   144: dos_port (8)
+;   152: storage_va (8)    — 64KB AllocMem for file data (16 × 4KB slots)
+;   160: caller_share_handle (8, cached)
+;   168: caller_mapped_va (8, cached MapShared result)
+;   176: open_handles[8] (1 byte each: file_index, 0xFF=unused)
+;   184: reserved (8)
+;   192: File table: 16 entries × 28 bytes = 448 bytes (ends at 640)
+;         Each entry: name[16], offset(4), size(4), capacity(4)
+;   640: "readme\0" + pad (16 bytes, scratch for pre-create)
+;   656: "Welcome to IntuitionOS M9\r\n\0" (29 bytes, pre-create content)
+;   688: scratch: saved reply_port (8)
+;   696: scratch: saved msg_type (8)
+;   704: scratch: saved data0 (8)
+;   712: scratch: saved data1 (8)
+;   720: scratch: saved share_handle (8)
 
-prog_echo:
+prog_doslib:
     ; Header
     dc.l    IMG_MAGIC_LO, IMG_MAGIC_HI
-    dc.l    prog_echo_code_end - prog_echo_code
-    dc.l    prog_echo_data_end - prog_echo_data
+    dc.l    prog_doslib_code_end - prog_doslib_code
+    dc.l    prog_doslib_data_end - prog_doslib_data
     dc.l    0
     ds.b    12
-prog_echo_code:
-    ; === Preamble: compute data page base (preemption-safe) ===
+prog_doslib_code:
+
+    ; =====================================================================
+    ; Preamble: compute data page base (preemption-safe double-check)
+    ; =====================================================================
+    sub     sp, sp, #16
+.dos_preamble:
+    move.l  r1, #SYSINFO_CURRENT_TASK
+    syscall #SYS_GET_SYS_INFO          ; R1 = task_id
+    store.q r1, 8(sp)
+    move.l  r1, #SYSINFO_CURRENT_TASK
+    syscall #SYS_GET_SYS_INFO          ; R1 = task_id (verify)
+    load.q  r28, 8(sp)
+    bne     r1, r28, .dos_preamble
+    move.l  r28, #USER_SLOT_STRIDE
+    mulu    r28, r1, r28
+    move.l  r29, #USER_DATA_BASE
+    add     r29, r29, r28
+    store.q r29, (sp)
+    load.q  r1, 8(sp)
+    move.l  r28, #USER_SLOT_STRIDE
+    mulu    r28, r1, r28
+    move.l  r29, #USER_DATA_BASE
+    add     r29, r29, r28
+    load.q  r28, (sp)
+    bne     r29, r28, .dos_preamble
+    store.q r29, (sp)
+    load.q  r1, 8(sp)
+    store.q r1, 128(r29)               ; data[128] = task_id
+
+    ; =====================================================================
+    ; OpenLibrary("console.handler", 0) with retry until found
+    ; =====================================================================
+.dos_openlib_retry:
+    load.q  r29, (sp)
+    move.q  r1, r29                     ; R1 = &data[0] = "console.handler"
+    move.q  r2, r0                      ; R2 = version 0
+    syscall #SYS_OPEN_LIBRARY           ; R1 = handle (port_id), R2 = err
+    load.q  r29, (sp)
+    bnez    r2, .dos_openlib_wait
+    store.q r1, 136(r29)               ; data[136] = console_port
+    bra     .dos_send_banner
+.dos_openlib_wait:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .dos_openlib_retry
+
+    ; =====================================================================
+    ; Send "dos.library ONLINE [Taskn]\r\n" banner to console.handler
+    ; =====================================================================
+.dos_send_banner:
+    add     r20, r29, #32              ; r20 = &data[32] = banner string
+.dos_ban_loop:
+    load.b  r1, (r20)
+    beqz    r1, .dos_ban_id
+    store.q r20, 8(sp)
+.dos_ban_retry:
+    load.q  r20, 8(sp)
+    load.b  r3, (r20)                   ; data0 = char
+    move.l  r2, #0                      ; type = CON_MSG_CHAR
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r29, (sp)
+    load.q  r1, 136(r29)               ; console_port
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .dos_ban_full
+    load.q  r20, 8(sp)
+    add     r20, r20, #1
+    bra     .dos_ban_loop
+.dos_ban_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .dos_ban_retry
+.dos_ban_id:
+    ; Send task_id digit + "]\r\n"
+.dos_bid_retry:
+    load.q  r29, (sp)
+    load.q  r3, 128(r29)
+    add     r3, r3, #0x30              ; ASCII '0'+id
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r1, 136(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .dos_bid_full
+    bra     .dos_bid_bracket
+.dos_bid_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .dos_bid_retry
+.dos_bid_bracket:
+.dos_brk_retry:
+    move.l  r3, #0x5D                   ; ']'
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r29, (sp)
+    load.q  r1, 136(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .dos_brk_full
+    bra     .dos_cr
+.dos_brk_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .dos_brk_retry
+.dos_cr:
+.dos_cr_retry:
+    move.l  r3, #0x0D
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r29, (sp)
+    load.q  r1, 136(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .dos_cr_full
+    bra     .dos_lf
+.dos_cr_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .dos_cr_retry
+.dos_lf:
+.dos_lf_retry:
+    move.l  r3, #0x0A
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r29, (sp)
+    load.q  r1, 136(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .dos_lf_full
+    bra     .dos_banner_done
+.dos_lf_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .dos_lf_retry
+.dos_banner_done:
+
+    ; =====================================================================
+    ; CreatePort("dos.library", PF_PUBLIC)
+    ; =====================================================================
+    load.q  r29, (sp)
+    add     r1, r29, #16               ; R1 = &data[16] = "dos.library"
+    move.l  r2, #PF_PUBLIC
+    syscall #SYS_CREATE_PORT           ; R1 = port_id
+    load.q  r29, (sp)
+    store.q r1, 144(r29)               ; data[144] = dos_port
+
+    ; =====================================================================
+    ; AllocMem(0x10000, MEMF_CLEAR) — 64KB for file storage (16 × 4KB)
+    ; =====================================================================
+    move.l  r1, #0x10000               ; 64KB
+    move.l  r2, #MEMF_CLEAR
+    syscall #SYS_ALLOC_MEM             ; R1 = VA, R2 = err, R3 = share_handle
+    load.q  r29, (sp)
+    store.q r1, 152(r29)               ; data[152] = storage_va
+
+    ; =====================================================================
+    ; Initialize open_handles[0..7] = 0xFF (all unused)
+    ; =====================================================================
+    move.l  r14, #0xFF
+    store.b r14, 176(r29)
+    store.b r14, 177(r29)
+    store.b r14, 178(r29)
+    store.b r14, 179(r29)
+    store.b r14, 180(r29)
+    store.b r14, 181(r29)
+    store.b r14, 182(r29)
+    store.b r14, 183(r29)
+
+    ; =====================================================================
+    ; Pre-create "readme" file at file table entry 0
+    ; =====================================================================
+    ; Copy filename from data[640] to file_table[0].name (data[192])
+    add     r20, r29, #640             ; src = &data[640] = "readme"
+    add     r21, r29, #192             ; dst = &file_table[0].name
+    move.l  r14, #0
+.dos_cpname:
+    load.b  r15, (r20)
+    store.b r15, (r21)
+    beqz    r15, .dos_cpname_done
+    add     r20, r20, #1
+    add     r21, r21, #1
+    add     r14, r14, #1
+    move.l  r28, #15
+    blt     r14, r28, .dos_cpname
+.dos_cpname_done:
+    ; Set file_table[0].offset = 0 (already zero from init)
+    ; Set file_table[0].size = 28 (length of welcome message)
+    move.l  r14, #28
+    store.l r14, 212(r29)              ; data[192+20] = size = 28
+    ; Set file_table[0].capacity = 4096
+    move.l  r14, #4096
+    store.l r14, 216(r29)              ; data[192+24] = capacity = 4096
+
+    ; Copy welcome message from data[656] to storage_va+0
+    add     r20, r29, #656             ; src = welcome message
+    load.q  r21, 152(r29)              ; dst = storage_va
+.dos_cpwelcome:
+    load.b  r15, (r20)
+    store.b r15, (r21)
+    beqz    r15, .dos_init_done
+    add     r20, r20, #1
+    add     r21, r21, #1
+    bra     .dos_cpwelcome
+.dos_init_done:
+
+    ; =====================================================================
+    ; Main loop: WaitPort(dos_port) → dispatch on message type
+    ; =====================================================================
+.dos_main_loop:
+    load.q  r29, (sp)
+    load.q  r1, 144(r29)               ; R1 = dos_port
+    syscall #SYS_WAIT_PORT              ; R1=type R2=data0 R3=err R4=data1 R5=reply R6=share
+    load.q  r29, (sp)
+
+    ; Save message fields to data page scratch
+    store.q r5, 688(r29)               ; saved reply_port
+    store.q r1, 696(r29)               ; saved type (opcode)
+    store.q r2, 704(r29)               ; saved data0
+    store.q r4, 712(r29)               ; saved data1
+    store.q r6, 720(r29)               ; saved share_handle
+
+    ; --- Map caller's shared buffer (re-map if share_handle changed) ---
+    load.l  r14, 728(r29)              ; cached share_handle
+    load.l  r15, 720(r29)              ; incoming share_handle
+    beq     r14, r15, .dos_have_buf    ; same handle → use cached VA
+    ; Different handle or first time: do MapShared
+    store.l r15, 728(r29)              ; update cached handle
+    move.q  r1, r15                    ; R1 = new share_handle
+    syscall #SYS_MAP_SHARED            ; R1 = VA, R2 = err
+    load.q  r29, (sp)
+    beqz    r1, .dos_reply_err         ; MapShared failed
+    store.q r1, 168(r29)              ; update cached VA
+.dos_have_buf:
+
+.dos_dispatch:
+    load.q  r14, 696(r29)              ; r14 = opcode
+    move.l  r28, #DOS_DIR
+    beq     r14, r28, .dos_do_dir
+    move.l  r28, #DOS_OPEN
+    beq     r14, r28, .dos_do_open
+    move.l  r28, #DOS_READ
+    beq     r14, r28, .dos_do_read
+    move.l  r28, #DOS_WRITE
+    beq     r14, r28, .dos_do_write
+    move.l  r28, #DOS_CLOSE
+    beq     r14, r28, .dos_do_close
+    move.l  r28, #DOS_RUN
+    beq     r14, r28, .dos_do_run
+    ; Unknown opcode → reply with error and loop
+    bra     .dos_reply_err
+
+    ; =================================================================
+    ; DOS_DIR (type=5): format directory listing into caller's buffer
+    ; =================================================================
+.dos_do_dir:
+    load.q  r20, 168(r29)              ; r20 = dest (caller's shared buffer)
+    move.q  r21, r0                     ; r21 = total bytes written
+    move.l  r22, #0                     ; r22 = file table index
+.dos_dir_entry:
+    move.l  r28, #DOS_MAX_FILES
+    bge     r22, r28, .dos_dir_done
+    ; Compute entry base: data[192] + index * 28
+    move.l  r14, #28
+    mulu    r14, r22, r14
+    add     r14, r14, #192
+    add     r14, r29, r14               ; r14 = &file_table[index]
+    load.b  r15, (r14)                  ; first byte of name
+    beqz    r15, .dos_dir_next          ; empty entry → skip
+    ; Copy name chars until null (max 16)
+    move.q  r16, r14                    ; r16 = name pointer
+    move.l  r17, #0                     ; name char count
+.dos_dir_cpname:
+    load.b  r15, (r16)
+    beqz    r15, .dos_dir_pad
+    store.b r15, (r20)
+    add     r20, r20, #1
+    add     r21, r21, #1
+    add     r16, r16, #1
+    add     r17, r17, #1
+    move.l  r28, #16
+    blt     r17, r28, .dos_dir_cpname
+.dos_dir_pad:
+    ; Pad with spaces to column 16
+    move.l  r28, #16
+    bge     r17, r28, .dos_dir_size
+    move.l  r15, #0x20                  ; ' '
+    store.b r15, (r20)
+    add     r20, r20, #1
+    add     r21, r21, #1
+    add     r17, r17, #1
+    bra     .dos_dir_pad
+.dos_dir_size:
+    ; Read file size from entry+20, write decimal digits
+    load.l  r15, 20(r14)               ; r15 = file size
+    ; Simple decimal: divide by powers of 10 (max 4096, so 4 digits)
+    ; Write thousands digit
+    move.l  r28, #1000
+    divu    r16, r15, r28               ; r16 = thousands
+    mulu    r17, r16, r28
+    sub     r15, r15, r17
+    add     r16, r16, #0x30
+    store.b r16, (r20)
+    add     r20, r20, #1
+    add     r21, r21, #1
+    ; Hundreds
+    move.l  r28, #100
+    divu    r16, r15, r28
+    mulu    r17, r16, r28
+    sub     r15, r15, r17
+    add     r16, r16, #0x30
+    store.b r16, (r20)
+    add     r20, r20, #1
+    add     r21, r21, #1
+    ; Tens
+    move.l  r28, #10
+    divu    r16, r15, r28
+    mulu    r17, r16, r28
+    sub     r15, r15, r17
+    add     r16, r16, #0x30
+    store.b r16, (r20)
+    add     r20, r20, #1
+    add     r21, r21, #1
+    ; Ones
+    add     r15, r15, #0x30
+    store.b r15, (r20)
+    add     r20, r20, #1
+    add     r21, r21, #1
+    ; Write "\r\n"
+    move.l  r15, #0x0D
+    store.b r15, (r20)
+    add     r20, r20, #1
+    add     r21, r21, #1
+    move.l  r15, #0x0A
+    store.b r15, (r20)
+    add     r20, r20, #1
+    add     r21, r21, #1
+.dos_dir_next:
+    add     r22, r22, #1
+    bra     .dos_dir_entry
+.dos_dir_done:
+    ; Null-terminate
+    store.b r0, (r20)
+    ; Reply with data0 = bytes written
+    load.q  r1, 688(r29)               ; reply_port
+    move.l  r2, #DOS_OK                 ; type = success
+    move.q  r3, r21                     ; data0 = bytes written
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+
+    ; =================================================================
+    ; DOS_OPEN (type=1): open file by name from shared buffer
+    ; =================================================================
+    ; data0 = mode (READ=0, WRITE=1), filename in caller's shared buffer
+.dos_do_open:
+    load.q  r20, 704(r29)              ; r20 = mode
+    load.q  r23, 168(r29)              ; r23 = mapped VA (filename pointer)
+
+    ; --- Search file table for matching name (case-insensitive) ---
+    move.l  r22, #0                     ; r22 = file table index
+.dos_open_search:
+    move.l  r28, #DOS_MAX_FILES
+    bge     r22, r28, .dos_open_notfound
+    ; Compute entry base
+    move.l  r14, #28
+    mulu    r14, r22, r14
+    add     r14, r14, #192
+    add     r14, r29, r14               ; r14 = &file_table[index]
+    load.b  r15, (r14)
+    beqz    r15, .dos_open_snext        ; empty entry → skip
+    ; Case-insensitive compare: r14=table name, r23=request name
+    move.q  r16, r14                    ; r16 = table name ptr
+    move.q  r17, r23                    ; r17 = request name ptr
+    move.l  r18, #0                     ; char index
+.dos_open_cmp:
+    load.b  r24, (r16)
+    load.b  r25, (r17)
+    ; Lowercase both if A-Z
+    move.l  r28, #0x41
+    blt     r24, r28, .dos_ocmp_skip1
+    move.l  r28, #0x5A
+    bgt     r24, r28, .dos_ocmp_skip1
+    or      r24, r24, #0x20
+.dos_ocmp_skip1:
+    move.l  r28, #0x41
+    blt     r25, r28, .dos_ocmp_skip2
+    move.l  r28, #0x5A
+    bgt     r25, r28, .dos_ocmp_skip2
+    or      r25, r25, #0x20
+.dos_ocmp_skip2:
+    bne     r24, r25, .dos_open_snext   ; mismatch → try next
+    beqz    r24, .dos_open_found        ; both null → match
+    add     r16, r16, #1
+    add     r17, r17, #1
+    add     r18, r18, #1
+    move.l  r28, #16
+    blt     r18, r28, .dos_open_cmp
+    ; Reached 16 chars without null → treat as match
+    bra     .dos_open_found
+.dos_open_snext:
+    add     r22, r22, #1
+    bra     .dos_open_search
+
+.dos_open_notfound:
+    ; If mode == WRITE, create new file entry
+    bnez    r20, .dos_open_create
+    ; Mode READ, file not found → error
+    bra     .dos_reply_err
+
+.dos_open_create:
+    ; Find first empty file table slot
+    move.l  r22, #0
+.dos_create_scan:
+    move.l  r28, #DOS_MAX_FILES
+    bge     r22, r28, .dos_open_full
+    move.l  r14, #28
+    mulu    r14, r22, r14
+    add     r14, r14, #192
+    add     r14, r29, r14
+    load.b  r15, (r14)
+    beqz    r15, .dos_create_slot       ; found empty slot
+    add     r22, r22, #1
+    bra     .dos_create_scan
+.dos_open_full:
+    bra     .dos_reply_full
+
+.dos_create_slot:
+    ; r14 = entry base, r22 = slot index
+    ; Copy filename from shared buffer to entry name[16]
+    move.q  r16, r23                    ; src = request name
+    move.q  r17, r14                    ; dst = entry name
+    move.l  r18, #0
+.dos_cpy_fname:
+    load.b  r15, (r16)
+    store.b r15, (r17)
+    beqz    r15, .dos_cpy_fname_done
+    add     r16, r16, #1
+    add     r17, r17, #1
+    add     r18, r18, #1
+    move.l  r28, #15
+    blt     r18, r28, .dos_cpy_fname
+    store.b r0, (r17)                   ; force null at position 15
+.dos_cpy_fname_done:
+    ; Set offset = slot * 4096
+    move.l  r15, #4096
+    mulu    r15, r22, r15
+    store.l r15, 16(r14)               ; entry.offset = slot * 4096
+    ; Set size = 0 (new file)
+    store.l r0, 20(r14)                ; entry.size = 0
+    ; Set capacity = 4096
+    move.l  r15, #4096
+    store.l r15, 24(r14)               ; entry.capacity = 4096
+
+.dos_open_found:
+    ; r22 = file table index of found/created entry
+    ; Find free handle slot
+    move.l  r18, #0
+.dos_find_handle:
+    move.l  r28, #DOS_MAX_HANDLES
+    bge     r18, r28, .dos_open_full_h
+    add     r14, r29, #176
+    add     r14, r14, r18
+    load.b  r15, (r14)
+    move.l  r28, #0xFF
+    beq     r15, r28, .dos_got_handle
+    add     r18, r18, #1
+    bra     .dos_find_handle
+.dos_open_full_h:
+    bra     .dos_reply_full
+
+.dos_got_handle:
+    ; r18 = handle index, r22 = file index
+    ; Store file_index in handles[handle]
+    add     r14, r29, #176
+    add     r14, r14, r18
+    store.b r22, (r14)
+    ; Reply: type=DOS_OK, data0=handle
+    load.q  r1, 688(r29)
+    move.l  r2, #DOS_OK
+    move.q  r3, r18                     ; data0 = handle
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+
+    ; =================================================================
+    ; DOS_READ (type=2): read file data into caller's shared buffer
+    ; =================================================================
+    ; data0 = handle, data1 = max_bytes
+.dos_do_read:
+    load.q  r18, 704(r29)              ; r18 = handle
+    load.q  r19, 712(r29)              ; r19 = max_bytes
+    ; Validate handle
+    move.l  r28, #DOS_MAX_HANDLES
+    bge     r18, r28, .dos_read_badh
+    add     r14, r29, #176
+    add     r14, r14, r18
+    load.b  r22, (r14)                  ; r22 = file_index
+    move.l  r28, #0xFF
+    beq     r22, r28, .dos_read_badh
+    ; Get file entry
+    move.l  r14, #28
+    mulu    r14, r22, r14
+    add     r14, r14, #192
+    add     r14, r29, r14               ; r14 = &file_table[file_index]
+    load.l  r15, 16(r14)               ; r15 = offset within storage
+    load.l  r16, 20(r14)               ; r16 = file size
+    ; Clamp max_bytes to file size
+    blt     r19, r16, .dos_read_clamp
+    move.q  r19, r16
+.dos_read_clamp:
+    ; Copy from storage_va + offset to caller's shared buffer
+    load.q  r20, 152(r29)              ; storage_va
+    add     r20, r20, r15               ; src = storage_va + file_offset
+    load.q  r21, 168(r29)              ; dst = caller's mapped buffer
+    move.q  r17, r0                     ; bytes copied = 0
+.dos_read_copy:
+    bge     r17, r19, .dos_read_reply
+    load.b  r15, (r20)
+    store.b r15, (r21)
+    add     r20, r20, #1
+    add     r21, r21, #1
+    add     r17, r17, #1
+    bra     .dos_read_copy
+.dos_read_reply:
+    load.q  r1, 688(r29)
+    move.l  r2, #DOS_OK
+    move.q  r3, r17                     ; data0 = bytes read
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+.dos_read_badh:
+    bra     .dos_reply_badh
+
+    ; =================================================================
+    ; DOS_WRITE (type=3): write data from caller's buffer to file
+    ; =================================================================
+    ; data0 = handle, data1 = byte_count
+.dos_do_write:
+    load.q  r18, 704(r29)              ; r18 = handle
+    load.q  r19, 712(r29)              ; r19 = byte_count
+    ; Validate handle
+    move.l  r28, #DOS_MAX_HANDLES
+    bge     r18, r28, .dos_write_badh
+    add     r14, r29, #176
+    add     r14, r14, r18
+    load.b  r22, (r14)                  ; r22 = file_index
+    move.l  r28, #0xFF
+    beq     r22, r28, .dos_write_badh
+    ; Get file entry
+    move.l  r14, #28
+    mulu    r14, r22, r14
+    add     r14, r14, #192
+    add     r14, r29, r14               ; r14 = &file_table[file_index]
+    load.l  r15, 16(r14)               ; r15 = offset within storage
+    load.l  r16, 24(r14)               ; r16 = capacity
+    ; Clamp byte_count to capacity
+    blt     r19, r16, .dos_write_clamp
+    move.q  r19, r16
+.dos_write_clamp:
+    ; Copy from caller's shared buffer to storage_va + offset
+    load.q  r20, 168(r29)              ; src = caller's mapped buffer
+    load.q  r21, 152(r29)              ; storage_va
+    add     r21, r21, r15               ; dst = storage_va + file_offset
+    move.q  r17, r0                     ; bytes copied = 0
+.dos_write_copy:
+    bge     r17, r19, .dos_write_done
+    load.b  r15, (r20)
+    store.b r15, (r21)
+    add     r20, r20, #1
+    add     r21, r21, #1
+    add     r17, r17, #1
+    bra     .dos_write_copy
+.dos_write_done:
+    ; Update file size
+    move.l  r14, #28
+    mulu    r14, r22, r14
+    add     r14, r14, #192
+    add     r14, r29, r14
+    store.l r19, 20(r14)               ; entry.size = byte_count
+    ; Reply
+    load.q  r1, 688(r29)
+    move.l  r2, #DOS_OK
+    move.q  r3, r17                     ; data0 = bytes written
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+.dos_write_badh:
+    bra     .dos_reply_badh
+
+    ; =================================================================
+    ; DOS_CLOSE (type=4): close a file handle
+    ; =================================================================
+    ; data0 = handle
+.dos_do_close:
+    load.q  r18, 704(r29)              ; r18 = handle
+    move.l  r28, #DOS_MAX_HANDLES
+    bge     r18, r28, .dos_close_badh
+    add     r14, r29, #176
+    add     r14, r14, r18
+    load.b  r15, (r14)
+    move.l  r28, #0xFF
+    beq     r15, r28, .dos_close_badh
+    ; Mark handle as unused
+    move.l  r15, #0xFF
+    store.b r15, (r14)
+    ; Reply success
+    load.q  r1, 688(r29)
+    move.l  r2, #DOS_OK
+    move.q  r3, r0                      ; data0 = 0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+.dos_close_badh:
+    bra     .dos_reply_badh
+
+    ; =================================================================
+    ; DOS_RUN (type=6): launch a bundled program with args
+    ; =================================================================
+    ; data0 = prog_table_index, args in caller's shared buffer
+.dos_do_run:
+    load.q  r18, 704(r29)              ; r18 = prog_table_index
+    load.q  r20, 168(r29)              ; r20 = caller's mapped buffer (args)
+    ; Compute args length (scan for null)
+    move.q  r21, r20
+    move.q  r22, r0                     ; length counter
+.dos_run_arglen:
+    load.b  r15, (r21)
+    beqz    r15, .dos_run_exec
+    add     r21, r21, #1
+    add     r22, r22, #1
+    move.l  r28, #DATA_ARGS_MAX
+    blt     r22, r28, .dos_run_arglen
+.dos_run_exec:
+    move.q  r1, r18                     ; R1 = prog index
+    move.q  r2, r20                     ; R2 = args_ptr (in our mapped buf)
+    move.q  r3, r22                     ; R3 = args_len
+    syscall #SYS_EXEC_PROGRAM           ; R1 = task_id, R2 = err
+    load.q  r29, (sp)
+    move.q  r14, r1                     ; save task_id
+    move.q  r15, r2                     ; save err
+    ; Reply: type=err, data0=task_id
+    load.q  r1, 688(r29)
+    move.q  r2, r15                     ; type = err code (0=ok)
+    move.q  r3, r14                     ; data0 = task_id
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+
+    ; =================================================================
+    ; Shared reply blocks (saves code space by consolidating duplicates)
+    ; =================================================================
+.dos_reply_badh:
+    load.q  r1, 688(r29)
+    move.l  r2, #DOS_ERR_BADHANDLE
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+.dos_reply_full:
+    load.q  r1, 688(r29)
+    move.l  r2, #DOS_ERR_FULL
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+.dos_reply_err:
+    load.q  r1, 688(r29)
+    move.l  r2, #DOS_ERR_NOTFOUND
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+
+prog_doslib_code_end:
+
+prog_doslib_data:
+    ; --- Offset 0: "console.handler\0" (16 bytes) ---
+    dc.b    "console.handler", 0
+    ; --- Offset 16: "dos.library\0" + pad to 16 bytes ---
+    dc.b    "dos.library", 0, 0, 0, 0, 0
+    ; --- Offset 32: banner "dos.library ONLINE [Task \0" (26 bytes, ends at 58) ---
+    dc.b    "dos.library ONLINE [Task ", 0
+    ds.b    6                           ; pad to offset 64
+    ; --- Offset 64: padding to 128 ---
+    ds.b    64
+    ; --- Offset 128: task_id (8) ---
+    ds.b    8
+    ; --- Offset 136: console_port (8) ---
+    ds.b    8
+    ; --- Offset 144: dos_port (8) ---
+    ds.b    8
+    ; --- Offset 152: storage_va (8) ---
+    ds.b    8
+    ; --- Offset 160: caller_share_handle (8) ---
+    ds.b    8
+    ; --- Offset 168: caller_mapped_va (8) ---
+    ds.b    8
+    ; --- Offset 176: open_handles[8] ---
+    ds.b    8
+    ; --- Offset 184: reserved (8) ---
+    ds.b    8
+    ; --- Offset 192: file table (16 entries × 28 bytes = 448 bytes, ends at 640) ---
+    ds.b    448
+    ; --- Offset 640: pre-create filename "readme\0" + pad to 16 ---
+    dc.b    "readme", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    ; --- Offset 656: pre-create content ---
+    dc.b    "Welcome to IntuitionOS M9", 0x0D, 0x0A, 0
+prog_doslib_data_end:
+    align   8
+prog_doslib_end:
+
+; ---------------------------------------------------------------------------
+; SHELL — interactive command shell (M9)
+; ---------------------------------------------------------------------------
+; Opens console.handler and dos.library via OpenLibrary.
+; Reads lines from console, parses command, launches external programs via
+; DOS_RUN, or prints "Unknown command\r\n".
+;
+; Data page layout:
+;   0:   "console.handler\0"   (16 bytes)
+;   16:  "dos.library\0"       (16 bytes, padded)
+;   32:  "Shell ONLINE [Task\0"   (16 bytes, banner prefix)
+;   48:  "IntuitionOS M9\r\n\0" (17 bytes + pad = 32 bytes)
+;   80:  "1> \0"               (4 bytes + pad = 8 bytes)
+;   88:  "Unknown command\r\n\0" (18 bytes + pad)
+;   128: task_id               (8 bytes)
+;   136: console_port          (8 bytes)
+;   144: dos_port              (8 bytes)
+;   152: reply_port            (8 bytes)
+;   160: shared_buf_va         (8 bytes)
+;   168: shared_buf_handle     (4 bytes + pad)
+;   192: command name table    (5 x 8 bytes = 40 bytes)
+;   232: command index table   (5 bytes)
+;   240: line buffer           (128 bytes)
+
+prog_shell:
+    ; Header
+    dc.l    IMG_MAGIC_LO, IMG_MAGIC_HI
+    dc.l    prog_shell_code_end - prog_shell_code
+    dc.l    prog_shell_data_end - prog_shell_data
+    dc.l    0
+    ds.b    12
+prog_shell_code:
+
+    ; =====================================================================
+    ; Preamble: compute data page base (preemption-safe double-check)
+    ; =====================================================================
+    sub     sp, sp, #16
+.sh_preamble:
+    move.l  r1, #SYSINFO_CURRENT_TASK
+    syscall #SYS_GET_SYS_INFO
+    store.q r1, 8(sp)
+    move.l  r1, #SYSINFO_CURRENT_TASK
+    syscall #SYS_GET_SYS_INFO
+    load.q  r28, 8(sp)
+    bne     r1, r28, .sh_preamble
+    move.l  r28, #USER_SLOT_STRIDE
+    mulu    r28, r1, r28
+    move.l  r29, #USER_DATA_BASE
+    add     r29, r29, r28
+    store.q r29, (sp)
+    load.q  r1, 8(sp)
+    move.l  r28, #USER_SLOT_STRIDE
+    mulu    r28, r1, r28
+    move.l  r29, #USER_DATA_BASE
+    add     r29, r29, r28
+    load.q  r28, (sp)
+    bne     r29, r28, .sh_preamble
+    store.q r29, (sp)
+    load.q  r1, 8(sp)
+    store.q r1, 128(r29)               ; data[128] = task_id
+
+    ; =====================================================================
+    ; OpenLibrary("console.handler", 0) with retry
+    ; =====================================================================
+.sh_open_con_retry:
+    load.q  r29, (sp)
+    move.q  r1, r29                     ; R1 = &data[0] = "console.handler"
+    move.q  r2, r0                      ; version 0
+    syscall #SYS_OPEN_LIBRARY
+    load.q  r29, (sp)
+    beqz    r2, .sh_open_con_ok
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .sh_open_con_retry
+.sh_open_con_ok:
+    store.q r1, 136(r29)               ; data[136] = console_port
+
+    ; =====================================================================
+    ; OpenLibrary("dos.library", 0) with retry
+    ; =====================================================================
+.sh_open_dos_retry:
+    load.q  r29, (sp)
+    add     r1, r29, #16                ; R1 = &data[16] = "dos.library"
+    move.q  r2, r0
+    syscall #SYS_OPEN_LIBRARY
+    load.q  r29, (sp)
+    beqz    r2, .sh_open_dos_ok
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .sh_open_dos_retry
+.sh_open_dos_ok:
+    store.q r1, 144(r29)               ; data[144] = dos_port
+
+    ; =====================================================================
+    ; CreatePort(anonymous, flags=0)
+    ; =====================================================================
+    move.q  r1, r0
+    move.q  r2, r0
+    syscall #SYS_CREATE_PORT
+    load.q  r29, (sp)
+    store.q r1, 152(r29)               ; data[152] = reply_port
+
+    ; =====================================================================
+    ; AllocMem(0x1000, MEMF_PUBLIC | MEMF_CLEAR)
+    ; =====================================================================
+    move.l  r1, #0x1000
+    move.l  r2, #0x10001               ; MEMF_PUBLIC | MEMF_CLEAR
+    syscall #SYS_ALLOC_MEM             ; R1=VA, R2=err, R3=share_handle
+    load.q  r29, (sp)
+    store.q r1, 160(r29)               ; data[160] = shared_buf_va
+    store.l r3, 168(r29)               ; data[168] = shared_buf_handle
+
+    ; =====================================================================
+    ; Send "Shell ONLINE [Taskn]\r\n" banner
+    ; =====================================================================
+    add     r20, r29, #32              ; &data[32] = "Shell ONLINE [Task"
+    jsr     .sh_send_string
+    load.q  r29, (sp)
+    ; task_id digit
+.sh_ban_id_retry:
+    load.q  r29, (sp)
+    load.q  r3, 128(r29)
+    add     r3, r3, #0x30               ; ASCII digit
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r1, 136(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .sh_ban_id_full
+    bra     .sh_ban_bracket
+.sh_ban_id_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .sh_ban_id_retry
+.sh_ban_bracket:
+    ; ']'
+.sh_ban_brk_retry:
+    move.l  r3, #0x5D
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r29, (sp)
+    load.q  r1, 136(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .sh_ban_brk_full
+    bra     .sh_ban_cr
+.sh_ban_brk_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .sh_ban_brk_retry
+.sh_ban_cr:
+    ; '\r'
+.sh_ban_cr_retry:
+    move.l  r3, #0x0D
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r29, (sp)
+    load.q  r1, 136(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .sh_ban_cr_full
+    bra     .sh_ban_lf
+.sh_ban_cr_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .sh_ban_cr_retry
+.sh_ban_lf:
+    ; '\n'
+.sh_ban_lf_retry:
+    move.l  r3, #0x0A
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r29, (sp)
+    load.q  r1, 136(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .sh_ban_lf_full
+    bra     .sh_ban_done
+.sh_ban_lf_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .sh_ban_lf_retry
+.sh_ban_done:
+
+    ; =====================================================================
+    ; Send "IntuitionOS M9\r\n" to console
+    ; =====================================================================
+    load.q  r29, (sp)
+    add     r20, r29, #56              ; "IntuitionOS M9\r\n" at offset 56
+    jsr     .sh_send_string
+
+    ; =====================================================================
+    ; Main loop
+    ; =====================================================================
+.sh_main_loop:
+    ; Send prompt "1> "
+    load.q  r29, (sp)
+    add     r20, r29, #80
+    jsr     .sh_send_string
+
+    ; Send CON_READLINE request to console.handler (with ERR_FULL retry)
+.sh_readline_retry:
+    load.q  r29, (sp)
+    move.l  r2, #CON_MSG_READLINE       ; type
+    move.q  r3, r0                      ; data0 = 0
+    move.q  r4, r0                      ; data1 = 0
+    load.q  r5, 152(r29)               ; reply_port
+    load.l  r6, 168(r29)               ; share_handle
+    load.q  r1, 136(r29)               ; console_port
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .sh_readline_full
+    bra     .sh_readline_sent
+.sh_readline_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .sh_readline_retry
+.sh_readline_sent:
+
+    ; WaitPort(reply_port) → R2=data0=byte_count
+    load.q  r1, 152(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+    ; R2 = byte_count
+    store.q r2, 8(sp)                  ; save byte_count to scratch
+
+    ; Copy line from shared_buf_va to data[240..366], null-terminate
+    load.q  r14, 160(r29)             ; r14 = shared_buf_va (source)
+    add     r15, r29, #240             ; r15 = &data[240] (dest)
+    load.q  r16, 8(sp)                ; r16 = byte_count
+    move.l  r17, #0                    ; counter
+.sh_copy_line:
+    bge     r17, r16, .sh_copy_done
+    move.l  r18, #126
+    bge     r17, r18, .sh_copy_done
+    add     r19, r14, r17
+    load.b  r20, (r19)
+    add     r19, r15, r17
+    store.b r20, (r19)
+    add     r17, r17, #1
+    bra     .sh_copy_line
+.sh_copy_done:
+    ; Null-terminate
+    add     r19, r15, r17
+    store.b r0, (r19)
+
+    ; Strip trailing CR/LF from line buffer
+    add     r15, r29, #240             ; r15 = &data[240]
+.sh_strip_trail:
+    beqz    r17, .sh_strip_done
+    sub     r18, r17, #1
+    add     r19, r15, r18
+    load.b  r20, (r19)
+    move.l  r21, #0x0D
+    beq     r20, r21, .sh_strip_char
+    move.l  r21, #0x0A
+    beq     r20, r21, .sh_strip_char
+    bra     .sh_strip_done
+.sh_strip_char:
+    store.b r0, (r19)
+    move.q  r17, r18
+    bra     .sh_strip_trail
+.sh_strip_done:
+
+    ; If line is empty, re-prompt
+    add     r15, r29, #240
+    load.b  r20, (r15)
+    beqz    r20, .sh_main_loop
+
+    ; =====================================================================
+    ; Parse first word: scan for space or null in line buffer
+    ; =====================================================================
+    add     r15, r29, #240             ; r15 = line buffer start
+    move.q  r16, r15                   ; r16 = scan pointer
+.sh_scan_word:
+    load.b  r17, (r16)
+    beqz    r17, .sh_word_end
+    move.l  r18, #0x20                 ; space
+    beq     r17, r18, .sh_word_end
+    add     r16, r16, #1
+    bra     .sh_scan_word
+.sh_word_end:
+    ; r15 = start of word, r16 = end of word (points to space or null)
+    sub     r17, r16, r15              ; r17 = word length
+
+    ; =====================================================================
+    ; Compare against command table (5 entries, case-insensitive)
+    ; =====================================================================
+    move.l  r18, #0                    ; r18 = command index (0..4)
+.sh_cmd_loop:
+    move.l  r19, #5
+    bge     r18, r19, .sh_cmd_unknown
+
+    ; Compute command name addr: data[192 + r18 * 8]
+    lsl     r19, r18, #3
+    add     r19, r19, #192
+    add     r19, r19, r29              ; r19 = &cmd_name[i]
+
+    ; Compare word_len chars case-insensitively
+    ; First check cmd name length matches word length
+    move.l  r20, #0                    ; char index
+.sh_cmp_char:
+    bge     r20, r17, .sh_cmp_end_check ; checked all word chars
+    add     r21, r15, r20              ; &line[i]
+    load.b  r22, (r21)                 ; line char
+    add     r21, r19, r20              ; &cmd[i]
+    load.b  r23, (r21)                 ; cmd char
+    beqz    r23, .sh_cmd_next          ; cmd shorter than word → no match
+    ; Uppercase both: if in 'a'-'z' range, clear bit 5 (AND with 0xDF)
+    move.l  r24, #0x61                 ; 'a'
+    move.l  r25, #0x7A                 ; 'z'
+    blt     r22, r24, .sh_cmp_skip_upper1
+    bgt     r22, r25, .sh_cmp_skip_upper1
+    and     r22, r22, #0xDF
+.sh_cmp_skip_upper1:
+    blt     r23, r24, .sh_cmp_skip_upper2
+    bgt     r23, r25, .sh_cmp_skip_upper2
+    and     r23, r23, #0xDF
+.sh_cmp_skip_upper2:
+    bne     r22, r23, .sh_cmd_next     ; mismatch
+    add     r20, r20, #1
+    bra     .sh_cmp_char
+.sh_cmp_end_check:
+    ; Word matches so far; check that cmd_name[word_len] == 0
+    add     r21, r19, r17
+    load.b  r22, (r21)
+    bnez    r22, .sh_cmd_next          ; cmd has more chars → no match
+    bra     .sh_cmd_found
+.sh_cmd_next:
+    add     r18, r18, #1
+    bra     .sh_cmd_loop
+
+.sh_cmd_unknown:
+    ; Send "Unknown command\r\n"
+    load.q  r29, (sp)
+    add     r20, r29, #88
+    jsr     .sh_send_string
+    bra     .sh_main_loop
+
+.sh_cmd_found:
+    ; r18 = command table index (0..4)
+    ; Look up program_table index from data[232 + r18]
+    add     r19, r29, #232
+    add     r19, r19, r18
+    load.b  r20, (r19)                 ; r20 = prog_table_index
+    store.q r20, 8(sp)                 ; save prog index to scratch
+
+    ; Copy args (rest of line after command+space) to shared_buf_va
+    ; r16 points to space or null after command word
+    load.b  r17, (r16)
+    beqz    r17, .sh_no_args
+    add     r16, r16, #1               ; skip space
+.sh_no_args:
+    ; r16 = start of args (or points to null)
+    load.q  r14, 160(r29)             ; r14 = shared_buf_va
+    move.l  r17, #0
+.sh_copy_args:
+    load.b  r18, (r16)
+    store.b r18, (r14)
+    beqz    r18, .sh_args_done
+    add     r16, r16, #1
+    add     r14, r14, #1
+    add     r17, r17, #1
+    move.l  r19, #DATA_ARGS_MAX
+    blt     r17, r19, .sh_copy_args
+    store.b r0, (r14)                  ; force null-terminate
+.sh_args_done:
+
+    ; Send DOS_RUN to dos.library
+    load.q  r29, (sp)
+    load.q  r3, 8(sp)                 ; data0 = prog_index
+    move.l  r2, #DOS_RUN               ; type = DOS_RUN
+    move.q  r4, r0                      ; data1 = 0
+    load.q  r5, 152(r29)               ; reply_port
+    load.l  r6, 168(r29)               ; share_handle
+    load.q  r1, 144(r29)               ; dos_port
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+
+    ; WaitPort(reply_port) for dos.library acknowledgement
+    load.q  r1, 152(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+
+    ; Yield 200 times to let command finish
+    move.l  r20, #200
+    store.q r20, 8(sp)
+.sh_delay:
+    load.q  r20, 8(sp)
+    beqz    r20, .sh_delay_done
+    sub     r20, r20, #1
+    store.q r20, 8(sp)
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .sh_delay
+.sh_delay_done:
+    bra     .sh_main_loop
+
+    ; =====================================================================
+    ; send_string subroutine: R20 = string addr, console port from data[136]
+    ; Clobbers R1-R6, R20. After return, R29 is valid (reloaded from sp).
+    ; =====================================================================
+; .sh_send_string: send null-terminated string at R20 to console.handler.
+; Called via jsr — has its own 16-byte stack frame.
+; Stack layout: [sp]=local R29, [sp+8]=R20 save, [sp+16]=return addr, [sp+24]=caller R29
+; Clobbers R1-R6, R20, R28. R29 reloaded from caller frame.
+.sh_send_string:
+    sub     sp, sp, #16                 ; subroutine frame: [sp]=R29, [sp+8]=R20
+    load.q  r29, 24(sp)                ; load R29 from caller's [sp] (skip 16 local + 8 retaddr)
+    store.q r29, (sp)                   ; cache R29 in our frame
+.sh_ss_loop:
+    ; R20 must be valid here (set by caller or by post-PutMsg reload)
+    ; Save R20 immediately, then re-read from saved copy for safety
+    store.q r20, 8(sp)                  ; save R20 to scratch
+    load.q  r20, 8(sp)                  ; reload (survives context switch at store.q boundary)
+    load.b  r1, (r20)
+    beqz    r1, .sh_ss_done
+.sh_ss_retry:
+    load.q  r20, 8(sp)
+    load.b  r3, (r20)                   ; data0 = char
+    move.l  r2, #0                      ; type = CON_MSG_CHAR
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r29, (sp)
+    load.q  r1, 136(r29)               ; console_port
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .sh_ss_full
+    load.q  r20, 8(sp)
+    add     r20, r20, #1
+    bra     .sh_ss_loop
+.sh_ss_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .sh_ss_retry
+.sh_ss_done:
+    add     sp, sp, #16                 ; tear down subroutine frame
+    rts
+
+prog_shell_code_end:
+
+prog_shell_data:
+    ; --- Offset 0: "console.handler\0" (16 bytes) ---
+    dc.b    "console.handler", 0
+    ; --- Offset 16: "dos.library\0" + pad to 32 ---
+    dc.b    "dos.library", 0, 0, 0, 0, 0
+    ; --- Offset 32: "Shell ONLINE [Task \0" (20 bytes, ends at 52) ---
+    dc.b    "Shell ONLINE [Task ", 0
+    ds.b    4                           ; pad to offset 56
+    ; --- Offset 56: "IntuitionOS M9\r\n\0" (17 bytes, ends at 73) ---
+    dc.b    "IntuitionOS M9", 0x0D, 0x0A, 0
+    ds.b    7                           ; pad to offset 80
+    ; --- Offset 80: "1> \0" (4 bytes) + pad to 88 ---
+    dc.b    "1> ", 0
+    ds.b    4                           ; pad to offset 88
+    ; --- Offset 88: "Unknown command\r\n\0" (18 bytes, ends at 106) + pad to 128 ---
+    dc.b    "Unknown command", 0x0D, 0x0A, 0
+    ds.b    22                          ; pad to offset 128
+    ; --- Offset 128: task_id (8 bytes) ---
+    ds.b    8
+    ; --- Offset 136: console_port (8 bytes) ---
+    ds.b    8
+    ; --- Offset 144: dos_port (8 bytes) ---
+    ds.b    8
+    ; --- Offset 152: reply_port (8 bytes) ---
+    ds.b    8
+    ; --- Offset 160: shared_buf_va (8 bytes) ---
+    ds.b    8
+    ; --- Offset 168: shared_buf_handle (4 bytes) + pad ---
+    ds.b    8
+    ; --- Offset 176: padding to 192 ---
+    ds.b    16
+    ; --- Offset 192: command name table (5 x 8 bytes) ---
+    dc.b    "VERSION", 0               ; 192 (8 bytes)
+    dc.b    "AVAIL", 0, 0, 0           ; 200 (8 bytes)
+    dc.b    "DIR", 0, 0, 0, 0, 0       ; 208 (8 bytes)
+    dc.b    "TYPE", 0, 0, 0, 0         ; 216 (8 bytes)
+    dc.b    "ECHO", 0, 0, 0, 0         ; 224 (8 bytes)
+    ; --- Offset 232: command index table (5 bytes) ---
+    dc.b    3                           ; VERSION = prog_table_index 3
+    dc.b    4                           ; AVAIL = prog_table_index 4
+    dc.b    5                           ; DIR = prog_table_index 5
+    dc.b    6                           ; TYPE = prog_table_index 6
+    dc.b    7                           ; ECHO = prog_table_index 7
+    ds.b    3                           ; pad to offset 240
+    ; --- Offset 240: line buffer (128 bytes) ---
+    ds.b    128
+prog_shell_data_end:
+    align   8
+prog_shell_end:
+
+; ---------------------------------------------------------------------------
+; VERSION — display system version string
+; ---------------------------------------------------------------------------
+; Opens console.handler, sends version string, exits.
+
+prog_version:
+    ; Header
+    dc.l    IMG_MAGIC_LO, IMG_MAGIC_HI
+    dc.l    prog_version_code_end - prog_version_code
+    dc.l    prog_version_data_end - prog_version_data
+    dc.l    0
+    ds.b    12
+prog_version_code:
+
+    ; === DEBUG: emit 'V' to confirm task launched ===
+    move.l  r1, #0x56
+    syscall #SYS_DEBUG_PUTCHAR
+
+    ; === Preamble ===
+    sub     sp, sp, #16
+.ver_preamble:
+    move.l  r1, #SYSINFO_CURRENT_TASK
+    syscall #SYS_GET_SYS_INFO
+    store.q r1, 8(sp)
+    move.l  r1, #SYSINFO_CURRENT_TASK
+    syscall #SYS_GET_SYS_INFO
+    load.q  r28, 8(sp)
+    bne     r1, r28, .ver_preamble
+    move.l  r28, #USER_SLOT_STRIDE
+    mulu    r28, r1, r28
+    move.l  r29, #USER_DATA_BASE
+    add     r29, r29, r28
+    store.q r29, (sp)
+    load.q  r1, 8(sp)
+    move.l  r28, #USER_SLOT_STRIDE
+    mulu    r28, r1, r28
+    move.l  r29, #USER_DATA_BASE
+    add     r29, r29, r28
+    load.q  r28, (sp)
+    bne     r29, r28, .ver_preamble
+    store.q r29, (sp)
+
+    ; === OpenLibrary("console.handler", 0) ===
+.ver_open_retry:
+    load.q  r29, (sp)
+    move.q  r1, r29                     ; &data[0] = "console.handler"
+    move.l  r2, #0
+    syscall #SYS_OPEN_LIBRARY
+    load.q  r29, (sp)
+    beqz    r2, .ver_open_ok
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .ver_open_retry
+.ver_open_ok:
+    store.q r1, 16(r29)                ; data[16] = console_port
+
+    ; === Send version string ===
+    add     r20, r29, #32              ; &data[32] = "IntuitionOS 0.9 ..."
+    jsr     .ver_send_string
+
+    ; === ExitTask ===
+    move.q  r1, r0
+    syscall #SYS_EXIT_TASK
+
+    ; === send_string subroutine ===
+.ver_send_string:
+    sub     sp, sp, #16                 ; subroutine frame: [sp]=R29, [sp+8]=R20
+    load.q  r29, 24(sp)                ; load R29 from caller's [sp] (skip 16 local + 8 retaddr)
+    store.q r29, (sp)                   ; cache R29 in our frame
+.ver_ss_loop:
+    load.b  r1, (r20)
+    beqz    r1, .ver_ss_done
+    store.q r20, 8(sp)
+.ver_ss_retry:
+    load.q  r20, 8(sp)
+    load.b  r3, (r20)
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r29, (sp)
+    load.q  r1, 16(r29)               ; console_port
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .ver_ss_full
+    load.q  r20, 8(sp)
+    add     r20, r20, #1
+    bra     .ver_ss_loop
+.ver_ss_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .ver_ss_retry
+.ver_ss_done:
+    add     sp, sp, #16                 ; tear down subroutine frame
+    rts
+
+prog_version_code_end:
+
+prog_version_data:
+    ; --- Offset 0: "console.handler\0" (16 bytes) ---
+    dc.b    "console.handler", 0
+    ; --- Offset 16: console_port (8 bytes) ---
+    ds.b    8
+    ; --- Offset 24: padding to 32 ---
+    ds.b    8
+    ; --- Offset 32: version string ---
+    dc.b    "IntuitionOS 0.9 (exec.library M9)", 0x0D, 0x0A, 0
+prog_version_data_end:
+    align   8
+prog_version_end:
+
+; ---------------------------------------------------------------------------
+; AVAIL — display memory availability
+; ---------------------------------------------------------------------------
+; Opens console.handler, queries total/free pages, prints KB values.
+
+prog_avail:
+    ; Header
+    dc.l    IMG_MAGIC_LO, IMG_MAGIC_HI
+    dc.l    prog_avail_code_end - prog_avail_code
+    dc.l    prog_avail_data_end - prog_avail_data
+    dc.l    0
+    ds.b    12
+prog_avail_code:
+
+    ; === Preamble ===
+    sub     sp, sp, #16
+.av_preamble:
+    move.l  r1, #SYSINFO_CURRENT_TASK
+    syscall #SYS_GET_SYS_INFO
+    store.q r1, 8(sp)
+    move.l  r1, #SYSINFO_CURRENT_TASK
+    syscall #SYS_GET_SYS_INFO
+    load.q  r28, 8(sp)
+    bne     r1, r28, .av_preamble
+    move.l  r28, #USER_SLOT_STRIDE
+    mulu    r28, r1, r28
+    move.l  r29, #USER_DATA_BASE
+    add     r29, r29, r28
+    store.q r29, (sp)
+    load.q  r1, 8(sp)
+    move.l  r28, #USER_SLOT_STRIDE
+    mulu    r28, r1, r28
+    move.l  r29, #USER_DATA_BASE
+    add     r29, r29, r28
+    load.q  r28, (sp)
+    bne     r29, r28, .av_preamble
+    store.q r29, (sp)
+
+    ; === OpenLibrary("console.handler", 0) ===
+.av_open_retry:
+    load.q  r29, (sp)
+    move.q  r1, r29
+    move.l  r2, #0
+    syscall #SYS_OPEN_LIBRARY
+    load.q  r29, (sp)
+    beqz    r2, .av_open_ok
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .av_open_retry
+.av_open_ok:
+    store.q r1, 64(r29)                ; data[64] = console_port
+
+    ; === Send "Total: " ===
+    add     r20, r29, #16
+    jsr     .av_send_string
+
+    ; === GetSysInfo(TOTAL_PAGES) → multiply by 4 for KB ===
+    move.l  r1, #SYSINFO_TOTAL_PAGES
+    syscall #SYS_GET_SYS_INFO
+    load.q  r29, (sp)
+    lsl     r1, r1, #2                 ; pages * 4 = KB (4KB pages)
+    ; Format and send decimal number
+    store.q r1, 8(sp)                  ; save value
+    jsr     .av_print_number
+
+    ; === Send " KB  Free: " ===
+    load.q  r29, (sp)
+    add     r20, r29, #24
+    jsr     .av_send_string
+
+    ; === GetSysInfo(FREE_PAGES) → multiply by 4 for KB ===
+    move.l  r1, #SYSINFO_FREE_PAGES
+    syscall #SYS_GET_SYS_INFO
+    load.q  r29, (sp)
+    lsl     r1, r1, #2                 ; pages * 4 = KB
+    store.q r1, 8(sp)
+    jsr     .av_print_number
+
+    ; === Send " KB\r\n" ===
+    load.q  r29, (sp)
+    add     r20, r29, #36
+    jsr     .av_send_string
+
+    ; === ExitTask ===
+    move.q  r1, r0
+    syscall #SYS_EXIT_TASK
+
+    ; =================================================================
+    ; print_number: print decimal value from 8(sp) to console
+    ; Uses data[80..95] as digit scratch buffer
+    ; =================================================================
+.av_print_number:
+    sub     sp, sp, #16                 ; subroutine frame: [sp]=R29, [sp+8]=scratch
+    load.q  r29, 24(sp)                ; load R29 from caller's [sp] (skip 16 local + 8 retaddr)
+    store.q r29, (sp)                   ; cache R29 in our frame
+    load.q  r14, 32(sp)                ; r14 = value (caller's 8(sp) = local+16 + retaddr+8 + 8 = 32)
+    add     r15, r29, #80              ; r15 = scratch buffer base
+    add     r16, r15, #15             ; r16 = write pointer (end of buffer)
+    store.b r0, (r16)                  ; null-terminate
+    ; Special case: value == 0
+    bnez    r14, .av_divloop
+    sub     r16, r16, #1
+    move.l  r17, #0x30
+    store.b r17, (r16)
+    bra     .av_send_digits
+.av_divloop:
+    beqz    r14, .av_send_digits
+    ; r14 / 10: repeated subtraction (simple, small numbers)
+    move.q  r17, r0                    ; quotient
+    move.q  r18, r14                   ; remainder
+.av_div10:
+    move.l  r19, #10
+    blt     r18, r19, .av_div10_done
+    sub     r18, r18, #10
+    add     r17, r17, #1
+    bra     .av_div10
+.av_div10_done:
+    ; r17 = quotient, r18 = remainder (digit)
+    add     r18, r18, #0x30            ; ASCII digit
+    sub     r16, r16, #1
+    store.b r18, (r16)
+    move.q  r14, r17                   ; value = quotient
+    bra     .av_divloop
+.av_send_digits:
+    ; r16 points to first digit
+    move.q  r20, r16
+    jsr     .av_send_string
+    add     sp, sp, #16                 ; tear down subroutine frame
+    rts
+
+    ; === send_string subroutine ===
+.av_send_string:
+    sub     sp, sp, #16                 ; subroutine frame: [sp]=R29, [sp+8]=R20
+    load.q  r29, 24(sp)                ; load R29 from caller's [sp] (skip 16 local + 8 retaddr)
+    store.q r29, (sp)                   ; cache R29 in our frame
+.av_ss_loop:
+    load.b  r1, (r20)
+    beqz    r1, .av_ss_done
+    store.q r20, 8(sp)
+.av_ss_retry:
+    load.q  r20, 8(sp)
+    load.b  r3, (r20)
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r29, (sp)
+    load.q  r1, 64(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .av_ss_full
+    load.q  r20, 8(sp)
+    add     r20, r20, #1
+    bra     .av_ss_loop
+.av_ss_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .av_ss_retry
+.av_ss_done:
+    add     sp, sp, #16                 ; tear down subroutine frame
+    rts
+
+prog_avail_code_end:
+
+prog_avail_data:
+    ; --- Offset 0: "console.handler\0" (16 bytes) ---
+    dc.b    "console.handler", 0
+    ; --- Offset 16: "Total: \0" (8 bytes) ---
+    dc.b    "Total: ", 0
+    ; --- Offset 24: " KB  Free: \0" (12 bytes) ---
+    dc.b    " KB  Free: ", 0
+    ; --- Offset 36: " KB\r\n\0" + pad to 64 ---
+    dc.b    " KB", 0x0D, 0x0A, 0
+    ds.b    21                          ; pad to offset 64
+    ; --- Offset 64: console_port (8 bytes) ---
+    ds.b    8
+    ; --- Offset 72: padding to 80 ---
+    ds.b    8
+    ; --- Offset 80: digit scratch buffer (16 bytes) ---
+    ds.b    16
+prog_avail_data_end:
+    align   8
+prog_avail_end:
+
+; ---------------------------------------------------------------------------
+; DIR — list RAM: filesystem contents
+; ---------------------------------------------------------------------------
+; Opens console + dos, sends DOS_DIR, prints result or "RAM: is empty".
+
+prog_dir:
+    ; Header
+    dc.l    IMG_MAGIC_LO, IMG_MAGIC_HI
+    dc.l    prog_dir_code_end - prog_dir_code
+    dc.l    prog_dir_data_end - prog_dir_data
+    dc.l    0
+    ds.b    12
+prog_dir_code:
+
+    ; === Preamble ===
+    sub     sp, sp, #16
+.dir_preamble:
+    move.l  r1, #SYSINFO_CURRENT_TASK
+    syscall #SYS_GET_SYS_INFO
+    store.q r1, 8(sp)
+    move.l  r1, #SYSINFO_CURRENT_TASK
+    syscall #SYS_GET_SYS_INFO
+    load.q  r28, 8(sp)
+    bne     r1, r28, .dir_preamble
+    move.l  r28, #USER_SLOT_STRIDE
+    mulu    r28, r1, r28
+    move.l  r29, #USER_DATA_BASE
+    add     r29, r29, r28
+    store.q r29, (sp)
+    load.q  r1, 8(sp)
+    move.l  r28, #USER_SLOT_STRIDE
+    mulu    r28, r1, r28
+    move.l  r29, #USER_DATA_BASE
+    add     r29, r29, r28
+    load.q  r28, (sp)
+    bne     r29, r28, .dir_preamble
+    store.q r29, (sp)
+
+    ; === OpenLibrary("console.handler", 0) ===
+.dir_open_con_retry:
+    load.q  r29, (sp)
+    move.q  r1, r29
+    move.l  r2, #0
+    syscall #SYS_OPEN_LIBRARY
+    load.q  r29, (sp)
+    beqz    r2, .dir_open_con_ok
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .dir_open_con_retry
+.dir_open_con_ok:
+    store.q r1, 64(r29)                ; data[64] = console_port
+
+    ; === OpenLibrary("dos.library", 0) ===
+.dir_open_dos_retry:
+    load.q  r29, (sp)
+    add     r1, r29, #16
+    move.l  r2, #0
+    syscall #SYS_OPEN_LIBRARY
+    load.q  r29, (sp)
+    beqz    r2, .dir_open_dos_ok
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .dir_open_dos_retry
+.dir_open_dos_ok:
+    store.q r1, 72(r29)                ; data[72] = dos_port
+
+    ; === CreatePort(anonymous) ===
+    move.q  r1, r0
+    move.q  r2, r0
+    syscall #SYS_CREATE_PORT
+    load.q  r29, (sp)
+    store.q r1, 80(r29)                ; data[80] = reply_port
+
+    ; === AllocMem(0x1000, MEMF_PUBLIC | MEMF_CLEAR) ===
+    move.l  r1, #0x1000
+    move.l  r2, #0x10001
+    syscall #SYS_ALLOC_MEM
+    load.q  r29, (sp)
+    store.q r1, 88(r29)                ; data[88] = shared_buf_va
+    store.l r3, 96(r29)                ; data[96] = share_handle
+
+    ; === Send DOS_DIR to dos.library ===
+    move.l  r2, #DOS_DIR                ; type = DOS_DIR
+    move.q  r3, r0                      ; data0 = 0
+    move.q  r4, r0                      ; data1 = 0
+    load.q  r5, 80(r29)                ; reply_port
+    load.l  r6, 96(r29)                ; share_handle
+    load.q  r1, 72(r29)                ; dos_port
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+
+    ; === WaitPort(reply_port) → R2=data0=bytes_written ===
+    load.q  r1, 80(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+    ; R2 = bytes_written
+    store.q r2, 8(sp)                  ; save bytes_written
+
+    beqz    r2, .dir_empty
+
+    ; === Send bytes_written chars from shared_buf_va ===
+    load.q  r14, 88(r29)              ; r14 = shared_buf_va
+    load.q  r15, 8(sp)                ; r15 = bytes_written
+    move.l  r16, #0
+.dir_print_loop:
+    bge     r16, r15, .dir_done
+    add     r17, r14, r16
+    load.b  r18, (r17)
+    store.q r16, 8(sp)                 ; save counter
+    ; Send char
+.dir_char_retry:
+    load.q  r29, (sp)
+    load.q  r16, 8(sp)
+    load.q  r14, 88(r29)
+    add     r17, r14, r16
+    load.b  r3, (r17)                  ; data0 = char
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r1, 64(r29)               ; console_port
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .dir_char_full
+    load.q  r16, 8(sp)
+    add     r16, r16, #1
+    store.q r16, 8(sp)
+    load.q  r29, (sp)
+    load.q  r15, 88(r29)              ; reload bytes count — use scratch differently
+    ; Actually we need bytes_written still, recalculate:
+    ; We stored bytes_written earlier but clobbered 8(sp) with counter.
+    ; Let's use the fact that shared_buf ends with null; just check char != 0
+    load.b  r18, (r17)
+    bnez    r18, .dir_print_loop
+    bra     .dir_done
+.dir_char_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .dir_char_retry
+
+.dir_empty:
+    ; Send "RAM: is empty\r\n"
+    load.q  r29, (sp)
+    add     r20, r29, #32
+    jsr     .dir_send_string
+    bra     .dir_done
+
+.dir_done:
+    move.q  r1, r0
+    syscall #SYS_EXIT_TASK
+
+    ; === send_string subroutine ===
+.dir_send_string:
+    sub     sp, sp, #16                 ; subroutine frame: [sp]=R29, [sp+8]=R20
+    load.q  r29, 24(sp)                ; load R29 from caller's [sp] (skip 16 local + 8 retaddr)
+    store.q r29, (sp)                   ; cache R29 in our frame
+.dir_ss_loop:
+    load.b  r1, (r20)
+    beqz    r1, .dir_ss_done
+    store.q r20, 8(sp)
+.dir_ss_retry:
+    load.q  r20, 8(sp)
+    load.b  r3, (r20)
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r29, (sp)
+    load.q  r1, 64(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .dir_ss_full
+    load.q  r20, 8(sp)
+    add     r20, r20, #1
+    bra     .dir_ss_loop
+.dir_ss_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .dir_ss_retry
+.dir_ss_done:
+    add     sp, sp, #16                 ; tear down subroutine frame
+    rts
+
+prog_dir_code_end:
+
+prog_dir_data:
+    ; --- Offset 0: "console.handler\0" (16 bytes) ---
+    dc.b    "console.handler", 0
+    ; --- Offset 16: "dos.library\0" + pad to 32 ---
+    dc.b    "dos.library", 0, 0, 0, 0, 0
+    ; --- Offset 32: "RAM: is empty\r\n\0" + pad to 64 ---
+    dc.b    "RAM: is empty", 0x0D, 0x0A, 0
+    ds.b    16                          ; pad to offset 64
+    ; --- Offset 64: console_port (8 bytes) ---
+    ds.b    8
+    ; --- Offset 72: dos_port (8 bytes) ---
+    ds.b    8
+    ; --- Offset 80: reply_port (8 bytes) ---
+    ds.b    8
+    ; --- Offset 88: shared_buf_va (8 bytes) ---
+    ds.b    8
+    ; --- Offset 96: share_handle (4 bytes) + pad ---
+    ds.b    8
+prog_dir_data_end:
+    align   8
+prog_dir_end:
+
+; ---------------------------------------------------------------------------
+; TYPE — display contents of a RAM: file
+; ---------------------------------------------------------------------------
+; Opens console + dos, strips "RAM:" prefix, opens/reads/prints file.
+
+prog_type:
+    ; Header
+    dc.l    IMG_MAGIC_LO, IMG_MAGIC_HI
+    dc.l    prog_type_code_end - prog_type_code
+    dc.l    prog_type_data_end - prog_type_data
+    dc.l    0
+    ds.b    12
+prog_type_code:
+
+    ; === Preamble ===
+    sub     sp, sp, #16
+.typ_preamble:
+    move.l  r1, #SYSINFO_CURRENT_TASK
+    syscall #SYS_GET_SYS_INFO
+    store.q r1, 8(sp)
+    move.l  r1, #SYSINFO_CURRENT_TASK
+    syscall #SYS_GET_SYS_INFO
+    load.q  r28, 8(sp)
+    bne     r1, r28, .typ_preamble
+    move.l  r28, #USER_SLOT_STRIDE
+    mulu    r28, r1, r28
+    move.l  r29, #USER_DATA_BASE
+    add     r29, r29, r28
+    store.q r29, (sp)
+    load.q  r1, 8(sp)
+    move.l  r28, #USER_SLOT_STRIDE
+    mulu    r28, r1, r28
+    move.l  r29, #USER_DATA_BASE
+    add     r29, r29, r28
+    load.q  r28, (sp)
+    bne     r29, r28, .typ_preamble
+    store.q r29, (sp)
+
+    ; === Read args from data[DATA_ARGS_OFFSET] ===
+    add     r14, r29, #DATA_ARGS_OFFSET ; r14 = args pointer
+    ; Check if args is empty
+    load.b  r15, (r14)
+    beqz    r15, .typ_no_file
+
+    ; === Strip "RAM:" prefix (case-insensitive) ===
+    ; Compare first 4 bytes against "RAM:"
+    load.b  r15, (r14)
+    ; Uppercase it
+    move.l  r16, #0x61
+    move.l  r17, #0x7A
+    blt     r15, r16, .typ_chk_r
+    bgt     r15, r17, .typ_chk_r
+    and     r15, r15, #0xDF
+.typ_chk_r:
+    move.l  r16, #0x52                 ; 'R'
+    bne     r15, r16, .typ_no_strip
+    add     r18, r14, #1
+    load.b  r15, (r18)
+    move.l  r16, #0x61
+    move.l  r17, #0x7A
+    blt     r15, r16, .typ_chk_a
+    bgt     r15, r17, .typ_chk_a
+    and     r15, r15, #0xDF
+.typ_chk_a:
+    move.l  r16, #0x41                 ; 'A'
+    bne     r15, r16, .typ_no_strip
+    add     r18, r14, #2
+    load.b  r15, (r18)
+    move.l  r16, #0x61
+    move.l  r17, #0x7A
+    blt     r15, r16, .typ_chk_m
+    bgt     r15, r17, .typ_chk_m
+    and     r15, r15, #0xDF
+.typ_chk_m:
+    move.l  r16, #0x4D                 ; 'M'
+    bne     r15, r16, .typ_no_strip
+    add     r18, r14, #3
+    load.b  r15, (r18)
+    move.l  r16, #0x3A                 ; ':'
+    bne     r15, r16, .typ_no_strip
+    add     r14, r14, #4               ; strip "RAM:" prefix
+.typ_no_strip:
+    ; r14 = filename pointer (in data page args area)
+    ; Save filename pointer
+    store.q r14, 8(sp)
+
+    ; === OpenLibrary("console.handler", 0) ===
+.typ_open_con_retry:
+    load.q  r29, (sp)
+    move.q  r1, r29
+    move.l  r2, #0
+    syscall #SYS_OPEN_LIBRARY
+    load.q  r29, (sp)
+    beqz    r2, .typ_open_con_ok
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .typ_open_con_retry
+.typ_open_con_ok:
+    store.q r1, 64(r29)                ; data[64] = console_port
+
+    ; === OpenLibrary("dos.library", 0) ===
+.typ_open_dos_retry:
+    load.q  r29, (sp)
+    add     r1, r29, #16
+    move.l  r2, #0
+    syscall #SYS_OPEN_LIBRARY
+    load.q  r29, (sp)
+    beqz    r2, .typ_open_dos_ok
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .typ_open_dos_retry
+.typ_open_dos_ok:
+    store.q r1, 72(r29)                ; data[72] = dos_port
+
+    ; === CreatePort(anonymous) ===
+    move.q  r1, r0
+    move.q  r2, r0
+    syscall #SYS_CREATE_PORT
+    load.q  r29, (sp)
+    store.q r1, 80(r29)                ; data[80] = reply_port
+
+    ; === AllocMem(0x1000, MEMF_PUBLIC | MEMF_CLEAR) ===
+    move.l  r1, #0x1000
+    move.l  r2, #0x10001
+    syscall #SYS_ALLOC_MEM
+    load.q  r29, (sp)
+    store.q r1, 88(r29)                ; data[88] = shared_buf_va
+    store.l r3, 96(r29)                ; data[96] = share_handle
+
+    ; === Copy bare filename to shared_buf_va ===
+    load.q  r14, 8(sp)                ; filename pointer (saved earlier)
+    load.q  r15, 88(r29)              ; shared_buf_va
+    move.l  r16, #0
+.typ_copy_name:
+    add     r17, r14, r16
+    load.b  r18, (r17)
+    add     r17, r15, r16
+    store.b r18, (r17)
+    beqz    r18, .typ_copy_name_done
+    add     r16, r16, #1
+    move.l  r19, #255
+    blt     r16, r19, .typ_copy_name
+    add     r17, r15, r16
+    store.b r0, (r17)                  ; force null-terminate
+.typ_copy_name_done:
+
+    ; === DOS_OPEN(READ) ===
+    load.q  r29, (sp)
+    move.l  r2, #DOS_OPEN               ; type = DOS_OPEN
+    move.l  r3, #DOS_MODE_READ           ; data0 = mode READ
+    move.q  r4, r0                      ; data1 = 0
+    load.q  r5, 80(r29)                ; reply_port
+    load.l  r6, 96(r29)                ; share_handle (has filename)
+    load.q  r1, 72(r29)                ; dos_port
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+
+    ; === WaitPort → R1=type(error), R2=data0(handle) ===
+    load.q  r1, 80(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+    ; R1 = type (0=ok, non-zero=error), R2 = data0 (handle or error code)
+    bnez    r1, .typ_not_found
+    ; Save file handle
+    store.q r2, 104(r29)               ; data[104] = file_handle
+
+    ; === DOS_READ ===
+    move.l  r2, #DOS_READ               ; type = DOS_READ
+    load.q  r3, 104(r29)               ; data0 = handle
+    move.l  r4, #4096                   ; data1 = max bytes
+    load.q  r5, 80(r29)                ; reply_port
+    load.l  r6, 96(r29)                ; share_handle (buf)
+    load.q  r1, 72(r29)                ; dos_port
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+
+    ; === WaitPort → R2=data0=bytes_read ===
+    load.q  r1, 80(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+    store.q r2, 112(r29)               ; save bytes_read to data[112]
+
+    ; === Send bytes from shared_buf_va to console ===
+    move.l  r16, #0
+    store.q r16, 8(sp)                 ; loop counter in 8(sp)
+.typ_print_loop:
+    load.q  r29, (sp)
+    load.q  r16, 8(sp)                ; reload counter
+    load.q  r15, 112(r29)             ; reload bytes_read from data[112]
+    bge     r16, r15, .typ_close
+.typ_print_retry:
+    load.q  r29, (sp)
+    load.q  r16, 8(sp)
+    load.q  r14, 88(r29)
+    add     r17, r14, r16
+    load.b  r3, (r17)
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r1, 64(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .typ_print_full
+    load.q  r16, 8(sp)
+    add     r16, r16, #1
+    store.q r16, 8(sp)
+    bra     .typ_print_loop
+.typ_print_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .typ_print_retry
+
+.typ_close:
+    ; === DOS_CLOSE ===
+    load.q  r29, (sp)
+    move.l  r2, #DOS_CLOSE
+    load.q  r3, 104(r29)               ; data0 = handle
+    move.q  r4, r0
+    load.q  r5, 80(r29)                ; reply_port
+    move.q  r6, r0                      ; no share needed
+    load.q  r1, 72(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+
+    load.q  r1, 80(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+
+    ; === ExitTask ===
+    move.q  r1, r0
+    syscall #SYS_EXIT_TASK
+
+.typ_not_found:
+    ; Send "File not found\r\n"
+    load.q  r29, (sp)
+    add     r20, r29, #40
+    jsr     .typ_send_string
+    move.q  r1, r0
+    syscall #SYS_EXIT_TASK
+
+.typ_no_file:
+    ; No filename given — just exit
+    move.q  r1, r0
+    syscall #SYS_EXIT_TASK
+
+    ; === send_string subroutine ===
+.typ_send_string:
+    sub     sp, sp, #16                 ; subroutine frame: [sp]=R29, [sp+8]=R20
+    load.q  r29, 24(sp)                ; load R29 from caller's [sp] (skip 16 local + 8 retaddr)
+    store.q r29, (sp)                   ; cache R29 in our frame
+.typ_ss_loop:
+    load.b  r1, (r20)
+    beqz    r1, .typ_ss_done
+    store.q r20, 8(sp)
+.typ_ss_retry:
+    load.q  r20, 8(sp)
+    load.b  r3, (r20)
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r29, (sp)
+    load.q  r1, 64(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .typ_ss_full
+    load.q  r20, 8(sp)
+    add     r20, r20, #1
+    bra     .typ_ss_loop
+.typ_ss_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .typ_ss_retry
+.typ_ss_done:
+    add     sp, sp, #16                 ; tear down subroutine frame
+    rts
+
+prog_type_code_end:
+
+prog_type_data:
+    ; --- Offset 0: "console.handler\0" (16 bytes) ---
+    dc.b    "console.handler", 0
+    ; --- Offset 16: "dos.library\0" + pad to 32 ---
+    dc.b    "dos.library", 0, 0, 0, 0, 0
+    ; --- Offset 32: "RAM:\0" + pad to 40 ---
+    dc.b    "RAM:", 0, 0, 0, 0
+    ; --- Offset 40: "File not found\r\n\0" + pad to 64 ---
+    dc.b    "File not found", 0x0D, 0x0A, 0
+    ds.b    7                           ; pad to offset 64
+    ; --- Offset 64: console_port (8 bytes) ---
+    ds.b    8
+    ; --- Offset 72: dos_port (8 bytes) ---
+    ds.b    8
+    ; --- Offset 80: reply_port (8 bytes) ---
+    ds.b    8
+    ; --- Offset 88: shared_buf_va (8 bytes) ---
+    ds.b    8
+    ; --- Offset 96: share_handle (4 bytes) + pad ---
+    ds.b    8
+    ; --- Offset 104: file_handle (8 bytes) ---
+    ds.b    8
+    ; --- Offset 112: bytes_read (8 bytes) ---
+    ds.b    8
+prog_type_data_end:
+    align   8
+prog_type_end:
+
+; ---------------------------------------------------------------------------
+; ECHO — echo arguments to console
+; ---------------------------------------------------------------------------
+; Opens console.handler, reads args from data[DATA_ARGS_OFFSET], sends to
+; console, appends \r\n, exits.
+
+prog_echo_cmd:
+    ; Header
+    dc.l    IMG_MAGIC_LO, IMG_MAGIC_HI
+    dc.l    prog_echo_cmd_code_end - prog_echo_cmd_code
+    dc.l    prog_echo_cmd_data_end - prog_echo_cmd_data
+    dc.l    0
+    ds.b    12
+prog_echo_cmd_code:
+
+    ; === Preamble ===
     sub     sp, sp, #16
 .echo_preamble:
     move.l  r1, #SYSINFO_CURRENT_TASK
@@ -2788,678 +5465,121 @@ prog_echo_code:
     load.q  r28, (sp)
     bne     r29, r28, .echo_preamble
     store.q r29, (sp)
-    load.q  r1, 8(sp)
-    store.q r1, 128(r29)
 
-    ; === Find CONSOLE port ===
-    move.q  r1, r29                     ; R1 = &data[0] = "CONSOLE"
-    syscall #SYS_FIND_PORT              ; R1 = console_port, R2 = err
-    load.q  r29, (sp)                   ; reload R29 after syscall
-    bnez    r2, .echo_idle              ; FindPort failed → idle safely
-    store.q r1, 136(r29)                ; data[136] = console_port
-
-    ; === Send "ECHO ONLINE [Tn]\n" to CONSOLE ===
-    add     r20, r29, #16               ; r20 = &data[16] = "ECHO ONLINE [T"
-.echo_online_loop:
-    load.b  r1, (r20)
-    beqz    r1, .echo_online_id
-    store.q r20, 8(sp)                  ; save R20 to stack scratch slot
-.echo_online_retry:
-    load.q  r20, 8(sp)                  ; (re)load R20 for char read
-    load.b  r3, (r20)                   ; R3 = char (data0)
-    move.l  r2, #0                      ; R2 = msg_type = 0
-    move.q  r4, r0                      ; R4 = 0
-    move.l  r5, #REPLY_PORT_NONE        ; R5 = no reply
-    move.q  r6, r0                      ; R6 = no share handle
-    load.q  r1, 136(r29)               ; R1 = console_port
-    syscall #SYS_PUT_MSG
-    load.q  r29, (sp)                   ; reload R29 after syscall
-    move.l  r28, #ERR_FULL
-    beq     r2, r28, .echo_online_full
-    load.q  r20, 8(sp)                  ; reload R20 from stack
-    add     r20, r20, #1
-    bra     .echo_online_loop
-.echo_online_full:
-    syscall #SYS_YIELD                  ; FIFO full: yield to let CONSOLE drain
-    load.q  r29, (sp)                   ; reload R29 after yield
-    bra     .echo_online_retry          ; retry same character
-.echo_online_id:
-    ; Send task_id digit
-.echo_id_retry:
-    load.q  r3, 128(r29)               ; task_id
-    add     r3, r3, #0x30              ; ASCII digit
+    ; === OpenLibrary("console.handler", 0) ===
+.echo_open_retry:
+    load.q  r29, (sp)
+    move.q  r1, r29
     move.l  r2, #0
-    move.q  r4, r0
-    move.l  r5, #REPLY_PORT_NONE
-    move.q  r6, r0
-    load.q  r1, 136(r29)
-    syscall #SYS_PUT_MSG
-    load.q  r29, (sp)                   ; reload R29 after syscall
-    move.l  r28, #ERR_FULL
-    beq     r2, r28, .echo_id_full
-    bra     .echo_bracket
-.echo_id_full:
+    syscall #SYS_OPEN_LIBRARY
+    load.q  r29, (sp)
+    beqz    r2, .echo_open_ok
     syscall #SYS_YIELD
     load.q  r29, (sp)
-    bra     .echo_id_retry
-.echo_bracket:
-    ; Send ']'
-.echo_bracket_retry:
-    move.l  r3, #0x5D
-    move.l  r2, #0
-    move.q  r4, r0
-    move.l  r5, #REPLY_PORT_NONE
-    move.q  r6, r0
-    load.q  r1, 136(r29)
-    syscall #SYS_PUT_MSG
-    load.q  r29, (sp)                   ; reload R29 after syscall
-    move.l  r28, #ERR_FULL
-    beq     r2, r28, .echo_bracket_full
-    bra     .echo_newline
-.echo_bracket_full:
-    syscall #SYS_YIELD
+    bra     .echo_open_retry
+.echo_open_ok:
+    store.q r1, 16(r29)                ; data[16] = console_port
+
+    ; === Read args from data[DATA_ARGS_OFFSET] and send to console ===
+    add     r20, r29, #DATA_ARGS_OFFSET
+    jsr     .echo_send_string
+
+    ; === Send \r\n ===
     load.q  r29, (sp)
-    bra     .echo_bracket_retry
-.echo_newline:
-    ; Send '\r\n'
 .echo_cr_retry:
     move.l  r3, #0x0D
     move.l  r2, #0
     move.q  r4, r0
     move.l  r5, #REPLY_PORT_NONE
     move.q  r6, r0
-    load.q  r1, 136(r29)
+    load.q  r29, (sp)
+    load.q  r1, 16(r29)
     syscall #SYS_PUT_MSG
     load.q  r29, (sp)
     move.l  r28, #ERR_FULL
     beq     r2, r28, .echo_cr_full
-    bra     .echo_newline_retry
+    bra     .echo_lf
 .echo_cr_full:
     syscall #SYS_YIELD
     load.q  r29, (sp)
     bra     .echo_cr_retry
-.echo_newline_retry:
+.echo_lf:
+.echo_lf_retry:
     move.l  r3, #0x0A
     move.l  r2, #0
     move.q  r4, r0
     move.l  r5, #REPLY_PORT_NONE
     move.q  r6, r0
-    load.q  r1, 136(r29)
+    load.q  r29, (sp)
+    load.q  r1, 16(r29)
     syscall #SYS_PUT_MSG
-    load.q  r29, (sp)                   ; reload R29 after syscall
+    load.q  r29, (sp)
     move.l  r28, #ERR_FULL
-    beq     r2, r28, .echo_newline_full
-    bra     .echo_banner_done
-.echo_newline_full:
+    beq     r2, r28, .echo_lf_full
+    bra     .echo_exit
+.echo_lf_full:
     syscall #SYS_YIELD
     load.q  r29, (sp)
-    bra     .echo_newline_retry
-.echo_banner_done:
+    bra     .echo_lf_retry
 
-    ; === Create "ECHO" port ===
-    add     r1, r29, #8                 ; R1 = &data[8] = "ECHO"
-    move.l  r2, #PF_PUBLIC
-    syscall #SYS_CREATE_PORT            ; R1 = echo_port
-    load.q  r29, (sp)                   ; reload R29 after syscall
-    store.q r1, 152(r29)                ; data[152] = echo_port
+.echo_exit:
+    move.q  r1, r0
+    syscall #SYS_EXIT_TASK
 
-    ; === AllocMem for shared greeting ===
-    move.l  r1, #0x1000
-    move.l  r2, #0x10001                ; MEMF_PUBLIC | MEMF_CLEAR
-    syscall #SYS_ALLOC_MEM              ; R1 = VA, R3 = share_handle
-    load.q  r29, (sp)                   ; reload R29 after syscall
-    store.q r3, 160(r29)                ; data[160] = share_handle
-    store.q r1, 168(r29)                ; data[168] = shared_va
-
-    ; Write "HELLO FROM ECHO\n" to shared memory
-    ; Copy from data section string at offset 48
-    add     r20, r29, #48              ; r20 = &data[48] = greeting src
-    load.q  r21, 168(r29)              ; r21 = shared_va (dest)
-.echo_copy_greeting:
-    load.b  r14, (r20)
-    store.b r14, (r21)
-    beqz    r14, .echo_copy_done
-    add     r20, r20, #1
-    add     r21, r21, #1
-    bra     .echo_copy_greeting
-.echo_copy_done:
-
-    ; === WaitPort(echo_port) — wait for client request ===
-    load.q  r1, 152(r29)               ; R1 = echo_port
-    syscall #SYS_WAIT_PORT              ; → R5 = reply_port
-    load.q  r29, (sp)                   ; reload R29 after syscall
-
-    ; === ReplyMsg with share_handle ===
-    move.q  r1, r5                      ; R1 = reply_port
-    move.l  r2, #0x52                   ; type = 'R'
-    move.q  r3, r0
-    move.q  r4, r0
-    load.q  r5, 160(r29)               ; R5 = share_handle
-    syscall #SYS_REPLY_MSG
-    load.q  r29, (sp)                   ; reload R29 after syscall
-
-    ; === Send "ECHO: REPLY OK\n" to CONSOLE ===
-    add     r20, r29, #72              ; r20 = &data[72] = reply-ok string
-.echo_reply_ok_loop:
+    ; === send_string subroutine ===
+.echo_send_string:
+    sub     sp, sp, #16                 ; subroutine frame: [sp]=R29, [sp+8]=R20
+    load.q  r29, 24(sp)                ; load R29 from caller's [sp] (skip 16 local + 8 retaddr)
+    store.q r29, (sp)                   ; cache R29 in our frame
+.echo_ss_loop:
     load.b  r1, (r20)
-    beqz    r1, .echo_idle
-    store.q r20, 8(sp)                  ; save R20 to stack scratch slot
-.echo_reply_retry:
-    load.q  r20, 8(sp)
-    load.b  r3, (r20)
-    move.l  r2, #0
-    move.q  r4, r0
-    move.l  r5, #REPLY_PORT_NONE
-    move.q  r6, r0
-    load.q  r1, 136(r29)
-    syscall #SYS_PUT_MSG
-    load.q  r29, (sp)                   ; reload R29 after syscall
-    move.l  r28, #ERR_FULL
-    beq     r2, r28, .echo_reply_full
-    load.q  r20, 8(sp)                  ; reload R20 from stack
-    add     r20, r20, #1
-    bra     .echo_reply_ok_loop
-.echo_reply_full:
-    syscall #SYS_YIELD
-    load.q  r29, (sp)
-    bra     .echo_reply_retry
-
-.echo_idle:
-    syscall #SYS_YIELD
-    load.q  r29, (sp)                   ; reload R29 after syscall
-    bra     .echo_idle
-prog_echo_code_end:
-
-prog_echo_data:
-    dc.b    "CONSOLE", 0               ; offset 0: for FindPort
-    dc.b    "ECHO", 0, 0, 0, 0         ; offset 8: port name (pad to 8)
-    dc.b    "ECHO ONLINE [T", 0        ; offset 16: banner (15 bytes)
-    ds.b    17                          ; pad to offset 48
-    dc.b    "HELLO FROM ECHO", 0x0D, 0x0A, 0 ; offset 48: greeting (18 bytes, ends at 66)
-    ds.b    6                           ; pad to offset 72
-    dc.b    "ECHO: REPLY OK", 0x0D, 0x0A, 0  ; offset 72: reply-ok string
-prog_echo_data_end:
-    align   8
-prog_echo_end:
-
-; ---------------------------------------------------------------------------
-; CLOCK — periodic tick output via CONSOLE (polling, temporary)
-; ---------------------------------------------------------------------------
-; Finds CONSOLE, announces "CLOCK ONLINE [Tn]\n".
-; Polls tick_count, sends '.' every CLOCK_INTERVAL ticks.
-
-prog_clock:
-    ; Header
-    dc.l    IMG_MAGIC_LO, IMG_MAGIC_HI
-    dc.l    prog_clock_code_end - prog_clock_code
-    dc.l    prog_clock_data_end - prog_clock_data
-    dc.l    0
-    ds.b    12
-prog_clock_code:
-    ; === Preamble: compute data page base (preemption-safe) ===
-    sub     sp, sp, #16
-.clk_preamble:
-    move.l  r1, #SYSINFO_CURRENT_TASK
-    syscall #SYS_GET_SYS_INFO
-    store.q r1, 8(sp)
-    move.l  r1, #SYSINFO_CURRENT_TASK
-    syscall #SYS_GET_SYS_INFO
-    load.q  r28, 8(sp)
-    bne     r1, r28, .clk_preamble
-    move.l  r28, #USER_SLOT_STRIDE
-    mulu    r28, r1, r28
-    move.l  r29, #USER_DATA_BASE
-    add     r29, r29, r28
-    store.q r29, (sp)
-    load.q  r1, 8(sp)
-    move.l  r28, #USER_SLOT_STRIDE
-    mulu    r28, r1, r28
-    move.l  r29, #USER_DATA_BASE
-    add     r29, r29, r28
-    load.q  r28, (sp)
-    bne     r29, r28, .clk_preamble
-    store.q r29, (sp)
-    load.q  r1, 8(sp)
-    store.q r1, 128(r29)
-
-    ; === Find CONSOLE ===
-    move.q  r1, r29                     ; &data[0] = "CONSOLE"
-    syscall #SYS_FIND_PORT
-    load.q  r29, (sp)                   ; reload R29 after syscall
-    bnez    r2, .clk_idle               ; FindPort failed → idle safely
-    store.q r1, 136(r29)                ; data[136] = console_port
-
-    ; === Send "CLOCK ONLINE [Tn]\n" to CONSOLE ===
-    add     r20, r29, #16               ; &data[16] = "CLOCK ONLINE [T"
-.clk_online_loop:
-    load.b  r1, (r20)
-    beqz    r1, .clk_online_id
-    store.q r20, 8(sp)                  ; save R20 to stack scratch slot
-.clk_online_retry:
-    load.q  r20, 8(sp)
-    load.b  r3, (r20)
-    move.l  r2, #0
-    move.q  r4, r0
-    move.l  r5, #REPLY_PORT_NONE
-    move.q  r6, r0
-    load.q  r1, 136(r29)
-    syscall #SYS_PUT_MSG
-    load.q  r29, (sp)                   ; reload R29 after syscall
-    move.l  r28, #ERR_FULL
-    beq     r2, r28, .clk_online_full
-    load.q  r20, 8(sp)                  ; reload R20 from stack
-    add     r20, r20, #1
-    bra     .clk_online_loop
-.clk_online_full:
-    syscall #SYS_YIELD
-    load.q  r29, (sp)
-    bra     .clk_online_retry
-.clk_online_id:
-    ; task_id digit
-.clk_id_retry:
-    load.q  r3, 128(r29)
-    add     r3, r3, #0x30
-    move.l  r2, #0
-    move.q  r4, r0
-    move.l  r5, #REPLY_PORT_NONE
-    move.q  r6, r0
-    load.q  r1, 136(r29)
-    syscall #SYS_PUT_MSG
-    load.q  r29, (sp)
-    move.l  r28, #ERR_FULL
-    beq     r2, r28, .clk_id_full
-    bra     .clk_bracket
-.clk_id_full:
-    syscall #SYS_YIELD
-    load.q  r29, (sp)
-    bra     .clk_id_retry
-.clk_bracket:
-    ; ']'
-.clk_bracket_retry:
-    move.l  r3, #0x5D
-    move.l  r2, #0
-    move.q  r4, r0
-    move.l  r5, #REPLY_PORT_NONE
-    move.q  r6, r0
-    load.q  r1, 136(r29)
-    syscall #SYS_PUT_MSG
-    load.q  r29, (sp)
-    move.l  r28, #ERR_FULL
-    beq     r2, r28, .clk_bracket_full
-    bra     .clk_newline
-.clk_bracket_full:
-    syscall #SYS_YIELD
-    load.q  r29, (sp)
-    bra     .clk_bracket_retry
-.clk_newline:
-    ; '\r\n'
-.clk_cr_retry:
-    move.l  r3, #0x0D
-    move.l  r2, #0
-    move.q  r4, r0
-    move.l  r5, #REPLY_PORT_NONE
-    move.q  r6, r0
-    load.q  r1, 136(r29)
-    syscall #SYS_PUT_MSG
-    load.q  r29, (sp)
-    move.l  r28, #ERR_FULL
-    beq     r2, r28, .clk_cr_full
-    bra     .clk_newline_retry
-.clk_cr_full:
-    syscall #SYS_YIELD
-    load.q  r29, (sp)
-    bra     .clk_cr_retry
-.clk_newline_retry:
-    move.l  r3, #0x0A
-    move.l  r2, #0
-    move.q  r4, r0
-    move.l  r5, #REPLY_PORT_NONE
-    move.q  r6, r0
-    load.q  r1, 136(r29)
-    syscall #SYS_PUT_MSG
-    load.q  r29, (sp)
-    move.l  r28, #ERR_FULL
-    beq     r2, r28, .clk_newline_full
-    bra     .clk_banner_done
-.clk_newline_full:
-    syscall #SYS_YIELD
-    load.q  r29, (sp)
-    bra     .clk_newline_retry
-.clk_banner_done:
-
-    ; === Init tick counter ===
-    move.l  r1, #SYSINFO_TICK_COUNT
-    syscall #SYS_GET_SYS_INFO           ; R1 = current tick
-    load.q  r29, (sp)                   ; reload R29 after syscall
-    store.q r1, 152(r29)                ; data[152] = last_tick
-
-    ; === Tick loop ===
-.clk_loop:
-    syscall #SYS_YIELD
-    load.q  r29, (sp)                   ; reload R29 after Yield
-    move.l  r1, #SYSINFO_TICK_COUNT
-    syscall #SYS_GET_SYS_INFO           ; R1 = current_tick
-    load.q  r29, (sp)                   ; reload R29 after GetSysInfo
-    load.q  r14, 152(r29)              ; r14 = last_tick
-    sub     r15, r1, r14                ; r15 = elapsed
-    move.l  r16, #CLOCK_INTERVAL
-    blt     r15, r16, .clk_loop         ; not enough ticks yet
-    ; Enough ticks — send '.'
-    store.q r1, 152(r29)                ; update last_tick
-.clk_dot_retry:
-    move.l  r3, #0x2E                   ; '.'
-    move.l  r2, #0
-    move.q  r4, r0
-    move.l  r5, #REPLY_PORT_NONE
-    move.q  r6, r0
-    load.q  r1, 136(r29)               ; console_port
-    syscall #SYS_PUT_MSG
-    load.q  r29, (sp)                   ; reload R29 after PutMsg
-    move.l  r28, #ERR_FULL
-    beq     r2, r28, .clk_dot_full
-    bra     .clk_loop
-.clk_dot_full:
-    syscall #SYS_YIELD
-    load.q  r29, (sp)
-    bra     .clk_dot_retry
-.clk_idle:
-    syscall #SYS_YIELD
-    bra     .clk_idle
-prog_clock_code_end:
-
-prog_clock_data:
-    dc.b    "CONSOLE", 0               ; offset 0: for FindPort
-    ds.b    8                           ; pad to offset 16
-    dc.b    "CLOCK ONLINE [T", 0       ; offset 16: banner
-prog_clock_data_end:
-    align   8
-prog_clock_end:
-
-; ---------------------------------------------------------------------------
-; CLIENT — one-shot ECHO exerciser
-; ---------------------------------------------------------------------------
-; Finds CONSOLE, announces "CLIENT ONLINE [Tn]\n".
-; Sends "CLIENT: REQUESTING...\n" to CONSOLE.
-; Finds ECHO, sends request with reply port, receives share_handle in reply.
-; MapShared, sends "SHARED: " + greeting chars to CONSOLE.
-
-prog_client:
-    ; Header
-    dc.l    IMG_MAGIC_LO, IMG_MAGIC_HI
-    dc.l    prog_client_code_end - prog_client_code
-    dc.l    prog_client_data_end - prog_client_data
-    dc.l    0
-    ds.b    12
-prog_client_code:
-    ; === Preamble: compute data page base (preemption-safe) ===
-    sub     sp, sp, #16
-.cli_preamble:
-    move.l  r1, #SYSINFO_CURRENT_TASK
-    syscall #SYS_GET_SYS_INFO
-    store.q r1, 8(sp)
-    move.l  r1, #SYSINFO_CURRENT_TASK
-    syscall #SYS_GET_SYS_INFO
-    load.q  r28, 8(sp)
-    bne     r1, r28, .cli_preamble
-    move.l  r28, #USER_SLOT_STRIDE
-    mulu    r28, r1, r28
-    move.l  r29, #USER_DATA_BASE
-    add     r29, r29, r28
-    store.q r29, (sp)
-    load.q  r1, 8(sp)
-    move.l  r28, #USER_SLOT_STRIDE
-    mulu    r28, r1, r28
-    move.l  r29, #USER_DATA_BASE
-    add     r29, r29, r28
-    load.q  r28, (sp)
-    bne     r29, r28, .cli_preamble
-    store.q r29, (sp)
-    load.q  r1, 8(sp)
-    store.q r1, 128(r29)
-
-    ; === Find CONSOLE ===
-    move.q  r1, r29                     ; &data[0] = "CONSOLE"
-    syscall #SYS_FIND_PORT
-    load.q  r29, (sp)                   ; reload R29 after syscall
-    bnez    r2, .cli_idle               ; FindPort failed → idle safely
-    store.q r1, 136(r29)
-
-    ; === Send "CLIENT ONLINE [Tn]\n" ===
-    add     r20, r29, #16               ; &data[16]
-.cli_online_loop:
-    load.b  r1, (r20)
-    beqz    r1, .cli_online_id
-    store.q r20, 8(sp)                  ; save R20 to stack scratch slot
-.cli_online_retry:
-    load.q  r20, 8(sp)
-    load.b  r3, (r20)
-    move.l  r2, #0
-    move.q  r4, r0
-    move.l  r5, #REPLY_PORT_NONE
-    move.q  r6, r0
-    load.q  r1, 136(r29)
-    syscall #SYS_PUT_MSG
-    load.q  r29, (sp)
-    move.l  r28, #ERR_FULL
-    beq     r2, r28, .cli_online_full
-    load.q  r20, 8(sp)
-    add     r20, r20, #1
-    bra     .cli_online_loop
-.cli_online_full:
-    syscall #SYS_YIELD
-    load.q  r29, (sp)
-    bra     .cli_online_retry
-.cli_online_id:
-.cli_id_retry:
-    load.q  r3, 128(r29)
-    add     r3, r3, #0x30
-    move.l  r2, #0
-    move.q  r4, r0
-    move.l  r5, #REPLY_PORT_NONE
-    move.q  r6, r0
-    load.q  r1, 136(r29)
-    syscall #SYS_PUT_MSG
-    load.q  r29, (sp)
-    move.l  r28, #ERR_FULL
-    beq     r2, r28, .cli_id_full
-    bra     .cli_bracket
-.cli_id_full:
-    syscall #SYS_YIELD
-    load.q  r29, (sp)
-    bra     .cli_id_retry
-.cli_bracket:
-.cli_bracket_retry:
-    move.l  r3, #0x5D
-    move.l  r2, #0
-    move.q  r4, r0
-    move.l  r5, #REPLY_PORT_NONE
-    move.q  r6, r0
-    load.q  r1, 136(r29)
-    syscall #SYS_PUT_MSG
-    load.q  r29, (sp)
-    move.l  r28, #ERR_FULL
-    beq     r2, r28, .cli_bracket_full
-    bra     .cli_newline
-.cli_bracket_full:
-    syscall #SYS_YIELD
-    load.q  r29, (sp)
-    bra     .cli_bracket_retry
-.cli_newline:
-.cli_cr_retry:
-    move.l  r3, #0x0D
-    move.l  r2, #0
-    move.q  r4, r0
-    move.l  r5, #REPLY_PORT_NONE
-    move.q  r6, r0
-    load.q  r1, 136(r29)
-    syscall #SYS_PUT_MSG
-    load.q  r29, (sp)
-    move.l  r28, #ERR_FULL
-    beq     r2, r28, .cli_cr_full
-    bra     .cli_newline_retry
-.cli_cr_full:
-    syscall #SYS_YIELD
-    load.q  r29, (sp)
-    bra     .cli_cr_retry
-.cli_newline_retry:
-    move.l  r3, #0x0A
-    move.l  r2, #0
-    move.q  r4, r0
-    move.l  r5, #REPLY_PORT_NONE
-    move.q  r6, r0
-    load.q  r1, 136(r29)
-    syscall #SYS_PUT_MSG
-    load.q  r29, (sp)
-    move.l  r28, #ERR_FULL
-    beq     r2, r28, .cli_newline_full
-    bra     .cli_banner_done
-.cli_newline_full:
-    syscall #SYS_YIELD
-    load.q  r29, (sp)
-    bra     .cli_newline_retry
-.cli_banner_done:
-
-    ; === Send "CLIENT: REQUESTING...\n" ===
-    add     r20, r29, #48
-.cli_req_loop:
-    load.b  r1, (r20)
-    beqz    r1, .cli_req_done
+    beqz    r1, .echo_ss_done
     store.q r20, 8(sp)
-.cli_req_retry:
+.echo_ss_retry:
     load.q  r20, 8(sp)
     load.b  r3, (r20)
     move.l  r2, #0
     move.q  r4, r0
     move.l  r5, #REPLY_PORT_NONE
     move.q  r6, r0
-    load.q  r1, 136(r29)
+    load.q  r29, (sp)
+    load.q  r1, 16(r29)
     syscall #SYS_PUT_MSG
     load.q  r29, (sp)
     move.l  r28, #ERR_FULL
-    beq     r2, r28, .cli_req_full
+    beq     r2, r28, .echo_ss_full
     load.q  r20, 8(sp)
     add     r20, r20, #1
-    bra     .cli_req_loop
-.cli_req_full:
+    bra     .echo_ss_loop
+.echo_ss_full:
     syscall #SYS_YIELD
     load.q  r29, (sp)
-    bra     .cli_req_retry
-.cli_req_done:
+    bra     .echo_ss_retry
+.echo_ss_done:
+    add     sp, sp, #16                 ; tear down subroutine frame
+    rts
 
-    ; === Create anonymous reply port ===
-    move.q  r1, r0                      ; anonymous
-    move.q  r2, r0
-    syscall #SYS_CREATE_PORT            ; R1 = reply_port
-    load.q  r29, (sp)                   ; reload R29 after syscall
-    store.q r1, 152(r29)                ; data[152] = reply_port
+prog_echo_cmd_code_end:
 
-    ; === Find ECHO ===
-    add     r1, r29, #8                 ; &data[8] = "ECHO"
-    syscall #SYS_FIND_PORT              ; R1 = echo_port, R2 = err
-    load.q  r29, (sp)                   ; reload R29 after syscall
-    bnez    r2, .cli_idle               ; FindPort("ECHO") failed → idle safely
-
-    ; === PutMsg to ECHO with reply_port ===
-    move.l  r2, #0x51                   ; type = 'Q'
-    move.q  r3, r0
-    move.q  r4, r0
-    load.q  r5, 152(r29)               ; R5 = reply_port
-    move.q  r6, r0
-    syscall #SYS_PUT_MSG
-    load.q  r29, (sp)                   ; reload R29 after syscall
-
-    ; === WaitPort(reply_port) → R6 = share_handle ===
-    load.q  r1, 152(r29)
-    syscall #SYS_WAIT_PORT              ; R6 = share_handle
-    load.q  r29, (sp)                   ; reload R29 after syscall
-
-    ; === MapShared ===
-    move.q  r1, r6
-    syscall #SYS_MAP_SHARED             ; R1 = mapped_va
-    load.q  r29, (sp)                   ; reload R29 after syscall
-    store.q r1, 160(r29)                ; data[160] = mapped_va
-
-    ; === Send "SHARED: " to CONSOLE ===
-    add     r20, r29, #80
-.cli_shared_prefix_loop:
-    load.b  r1, (r20)
-    beqz    r1, .cli_shared_data
-    store.q r20, 8(sp)
-.cli_prefix_retry:
-    load.q  r20, 8(sp)
-    load.b  r3, (r20)
-    move.l  r2, #0
-    move.q  r4, r0
-    move.l  r5, #REPLY_PORT_NONE
-    move.q  r6, r0
-    load.q  r1, 136(r29)
-    syscall #SYS_PUT_MSG
-    load.q  r29, (sp)
-    move.l  r28, #ERR_FULL
-    beq     r2, r28, .cli_prefix_full
-    load.q  r20, 8(sp)
-    add     r20, r20, #1
-    bra     .cli_shared_prefix_loop
-.cli_prefix_full:
-    syscall #SYS_YIELD
-    load.q  r29, (sp)
-    bra     .cli_prefix_retry
-
-.cli_shared_data:
-    ; === Send chars from mapped shared memory ===
-    load.q  r20, 160(r29)              ; r20 = mapped_va
-.cli_shared_loop:
-    load.b  r1, (r20)
-    beqz    r1, .cli_idle
-    store.q r20, 8(sp)
-.cli_shared_retry:
-    load.q  r20, 8(sp)
-    load.b  r3, (r20)
-    move.l  r2, #0
-    move.q  r4, r0
-    move.l  r5, #REPLY_PORT_NONE
-    move.q  r6, r0
-    load.q  r1, 136(r29)
-    syscall #SYS_PUT_MSG
-    load.q  r29, (sp)
-    move.l  r28, #ERR_FULL
-    beq     r2, r28, .cli_shared_full
-    load.q  r20, 8(sp)
-    add     r20, r20, #1
-    bra     .cli_shared_loop
-.cli_shared_full:
-    syscall #SYS_YIELD
-    load.q  r29, (sp)
-    bra     .cli_shared_retry
-
-.cli_idle:
-    syscall #SYS_YIELD
-    load.q  r29, (sp)                   ; reload R29 after syscall
-    bra     .cli_idle
-prog_client_code_end:
-
-prog_client_data:
-    dc.b    "CONSOLE", 0               ; offset 0
-    dc.b    "ECHO", 0, 0, 0, 0         ; offset 8 (pad to 16)
-    dc.b    "CLIENT ONLINE [T", 0       ; offset 16 (17 bytes)
-    ds.b    15                          ; pad to offset 48
-    dc.b    "CLIENT: REQUESTING...", 0x0D, 0x0A, 0  ; offset 48 (24 bytes, ends at 72)
-    ds.b    8                           ; pad to offset 80
-    dc.b    "SHARED: ", 0              ; offset 80
-prog_client_data_end:
+prog_echo_cmd_data:
+    ; --- Offset 0: "console.handler\0" (16 bytes) ---
+    dc.b    "console.handler", 0
+    ; --- Offset 16: console_port (8 bytes) ---
+    ds.b    8
+prog_echo_cmd_data_end:
     align   8
-prog_client_end:
+prog_echo_cmd_end:
 
 ; ============================================================================
 ; Data: Strings
 ; ============================================================================
 
 boot_banner:
-    dc.b    "IExec M8 boot", 0x0D, 0x0A, 0
+    dc.b    "exec.library M9 boot", 0x0D, 0x0A, 0
     align   4
 
 fault_msg_prefix:
-    dc.b    "FAULT cause=", 0
+    dc.b    "GURU MEDITATION cause=", 0
     align   4
 
 fault_msg_pc:
@@ -3484,6 +5604,10 @@ panic_msg:
 
 no_tasks_msg:
     dc.b    "PANIC: no programs loaded", 0x0D, 0x0A, 0
+    align   4
+
+boot_fail_msg:
+    dc.b    "PANIC: boot program failed", 0x0D, 0x0A, 0
     align   4
 
 ; ============================================================================
