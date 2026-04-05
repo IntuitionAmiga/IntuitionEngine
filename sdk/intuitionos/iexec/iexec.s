@@ -4382,6 +4382,30 @@ prog_shell_code:
     bra     .sh_strip_trail
 .sh_strip_done:
 
+    ; Strip prompt "1> " from line if present (GUI terminal includes it)
+    add     r15, r29, #240
+    load.b  r20, (r15)
+    move.l  r21, #0x31                  ; '1'
+    bne     r20, r21, .sh_no_prompt_strip
+    load.b  r20, 1(r15)
+    move.l  r21, #0x3E                  ; '>'
+    bne     r20, r21, .sh_no_prompt_strip
+    load.b  r20, 2(r15)
+    move.l  r21, #0x20                  ; ' '
+    bne     r20, r21, .sh_no_prompt_strip
+    ; Line starts with "1> " — skip 3 chars
+    add     r15, r29, #243              ; data[240+3]
+    ; Copy remainder back to data[240] (shift left by 3)
+    add     r14, r29, #240
+.sh_prompt_copy:
+    load.b  r20, (r15)
+    store.b r20, (r14)
+    beqz    r20, .sh_no_prompt_strip
+    add     r15, r15, #1
+    add     r14, r14, #1
+    bra     .sh_prompt_copy
+.sh_no_prompt_strip:
+
     ; If line is empty, re-prompt
     add     r15, r29, #240
     load.b  r20, (r15)

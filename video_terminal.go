@@ -425,14 +425,6 @@ func (vt *VideoTerminal) handleInputByteLocked(b byte, lineMode bool) bool {
 		if lineMode {
 			_, absRow := vt.screen.CursorPos()
 			line := vt.screen.ReadLine(absRow)
-			// Strip prompt: only enqueue the user-typed portion (after inputStartCol)
-			startCol := 0
-			if vt.inputActive && absRow == vt.inputStartRow {
-				startCol = vt.inputStartCol
-			}
-			if startCol < len(line) {
-				line = line[startCol:]
-			}
 			for i := 0; i < len(line); i++ {
 				vt.term.EnqueueByte(line[i])
 			}
