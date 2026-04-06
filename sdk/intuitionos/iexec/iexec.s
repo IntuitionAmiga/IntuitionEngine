@@ -2323,7 +2323,12 @@ trap_handler:
 ; MapShared (SYS_MAP_SHARED = 4)
 ; ============================================================================
 ; R1 = share_handle (opaque 32-bit: nonce<<8 | slot)
-; Returns: R1 = VA, R2 = err
+; Returns: R1 = VA, R2 = err, R3 = page count of the share
+;
+; The page count is returned so user-space services (e.g. dos.library)
+; can clamp byte_count parameters from clients to the actual mapped
+; size, preventing reads/writes past the mapped region. Backwards
+; compatible: M9/M10 callers that ignored R3 keep working.
 
 .do_map_shared:
     move.q  r24, r1                     ; r24 = handle
@@ -2422,18 +2427,21 @@ trap_handler:
     store.b r11, KD_REG_FLAGS(r22)
 
     tlbflush
-    move.q  r1, r25                     ; VA
-    move.q  r2, #ERR_OK
+    move.q  r1, r25                     ; R1 = VA
+    move.q  r2, #ERR_OK                 ; R2 = err
+    move.q  r3, r23                     ; R3 = page count (saved at line ~2385)
     eret
 
 .ms_badhandle:
     move.q  r1, #0
     move.q  r2, #ERR_BADHANDLE
+    move.q  r3, #0
     eret
 
 .ms_nomem:
     move.q  r1, #0
     move.q  r2, #ERR_NOMEM
+    move.q  r3, #0
     eret
 
 ; ============================================================================
@@ -2536,10 +2544,23 @@ trap_handler:
     move.q  r24, r1                     ; r24 = requested base PPN
     move.q  r25, r2                     ; r25 = requested page count
 
+    ; Reject high-bit-set PPN or count up front. The bounds checks below
+    ; use signed bgt/bge/blt; without these guards, a caller passing
+    ; R2 = 0x8000_0000_0000_0000 would make the (PPN+count) sum interpret
+    ; as a signed-negative value and bypass the bgt check.
+    bltz    r24, .mio_badarg
+    bltz    r25, .mio_badarg
+
     ; Backwards compat: page_count = 0 means 1 (M9/M10 callers)
     bnez    r25, .mio_count_set
     move.l  r25, #1
 .mio_count_set:
+
+    ; Cap page count to 0x500 (1280 = full 5 MB VRAM range). With this
+    ; cap and PPN ≤ 0x5FF (enforced below), the sum (PPN+count) is
+    ; provably ≤ 0xAFF, well within positive int64.
+    move.l  r11, #0x500
+    bgt     r25, r11, .mio_badarg
 
     ; Validate against allowlist.
     ; Fast path: (0xF0, 1) — preserves the M9/M10 single-page chip-register call.
@@ -3972,10 +3993,19 @@ prog_doslib_code:
     ; Different handle or first time: do MapShared
     store.l r15, 984(r29)              ; update cached handle
     move.q  r1, r15                    ; R1 = new share_handle
-    syscall #SYS_MAP_SHARED            ; R1 = VA, R2 = err
+    syscall #SYS_MAP_SHARED            ; R1=VA R2=err R3=share_pages
+    move.q  r24, r3                    ; preserve R3 across r29 reload
     load.q  r29, (sp)
     beqz    r1, .dos_reply_err         ; MapShared failed
-    store.q r1, 168(r29)              ; update cached VA
+    ; Reject shares smaller than DOS_FILE_SIZE. Defense-in-depth: today
+    ; AllocMem rounds up to ≥1 page (4096B = DOS_FILE_SIZE) so this never
+    ; triggers, but if a future change to DOS_FILE_SIZE or AllocMem
+    ; breaks that invariant, DOS_READ/WRITE could otherwise read/write
+    ; past the mapped share and fault dos.library.
+    move.l  r11, #1                    ; min pages = DOS_FILE_SIZE / PAGE_SIZE
+    blt     r24, r11, .dos_reply_badarg
+    store.q r1, 168(r29)               ; update cached VA
+    store.q r24, 184(r29)              ; cache share_pages
 .dos_have_buf:
 
 .dos_dispatch:
@@ -4002,7 +4032,16 @@ prog_doslib_code:
     load.q  r20, 168(r29)              ; r20 = dest (caller's shared buffer)
     move.q  r21, r0                     ; r21 = total bytes written
     move.l  r22, #0                     ; r22 = file table index
+    ; Compute share_bytes - 50 reserve into r24 (max ~50 bytes per entry:
+    ; 32 name pad + 4 size digits + 2 CRLF + 12 slack/NUL). Defense-in-depth
+    ; against a small share that can't fit the full directory listing —
+    ; without this, dos.library would walk past the mapped region and fault.
+    load.q  r24, 184(r29)              ; cached share_pages
+    lsl     r24, r24, #12              ; r24 = share_bytes
+    sub     r24, r24, #50              ; r24 = safe write ceiling
 .dos_dir_entry:
+    ; Stop if we don't have room for another entry
+    bge     r21, r24, .dos_dir_done
     move.l  r28, #DOS_MAX_FILES
     bge     r22, r28, .dos_dir_done
     ; Compute entry base: data[192] + index * 44
@@ -4261,6 +4300,16 @@ prog_doslib_code:
     blt     r19, r16, .dos_read_clamp
     move.q  r19, r16
 .dos_read_clamp:
+    ; Clamp max_bytes to share size in bytes (share_pages << 12).
+    ; Defense-in-depth against the DOS_READ "small share, big read"
+    ; pattern where dos.library would otherwise write past the mapped
+    ; region and fault. The cached share_pages at data[184] is set by
+    ; the main loop after MapShared returns R3.
+    load.q  r24, 184(r29)              ; cached share_pages
+    lsl     r24, r24, #12              ; r24 = share_bytes
+    blt     r19, r24, .dos_read_share_ok
+    move.q  r19, r24
+.dos_read_share_ok:
     ; Copy from storage_va + offset to caller's shared buffer
     load.q  r20, 152(r29)              ; storage_va
     add     r20, r20, r15               ; src = storage_va + file_offset
@@ -4312,6 +4361,16 @@ prog_doslib_code:
     blt     r19, r16, .dos_write_clamp
     move.q  r19, r16
 .dos_write_clamp:
+    ; Clamp byte_count to share size in bytes (share_pages << 12).
+    ; Defense-in-depth: a small share + large byte_count claim would
+    ; otherwise make the copy loop read past the mapped region and
+    ; fault dos.library. The cached share_pages at data[184] is set
+    ; by the main loop after MapShared returns R3.
+    load.q  r24, 184(r29)              ; cached share_pages
+    lsl     r24, r24, #12              ; r24 = share_bytes
+    blt     r19, r24, .dos_write_share_ok
+    move.q  r19, r24
+.dos_write_share_ok:
     ; Copy from caller's shared buffer to storage_va + offset
     load.q  r20, 168(r29)              ; src = caller's mapped buffer
     load.q  r21, 152(r29)              ; storage_va
@@ -4404,7 +4463,9 @@ prog_doslib_code:
 .dos_resolve_no_colon:
     ; No colon found — check default mode
     beqz    r18, .dos_resolve_bare_ret  ; mode=0 → bare name, return unchanged
-    ; mode=1 → prepend "C/" to name, write to scratch at data[960]
+    ; mode=1 → prepend "C/" to name, write to scratch at data[1000].
+    ; Reuses the bounded shared copy loop instead of an inline unbounded
+    ; loop (the original was vulnerable to a long unprefixed name).
     add     r17, r29, #1000
     move.l  r16, #0x43                  ; 'C'
     store.b r16, (r17)
@@ -4413,15 +4474,8 @@ prog_doslib_code:
     store.b r16, (r17)
     add     r17, r17, #1
     move.q  r14, r23                    ; src = original name
-.dos_resolve_prepend_c:
-    load.b  r16, (r14)
-    store.b r16, (r17)
-    beqz    r16, .dos_resolve_prepend_done
-    add     r14, r14, #1
-    add     r17, r17, #1
-    bra     .dos_resolve_prepend_c
-.dos_resolve_prepend_done:
-    add     r23, r29, #1000              ; return scratch buffer as resolved name
+    move.l  r19, #29                    ; cap: 32 - 2 (prefix) - 1 (NUL)
+    bra     .dos_resolve_copy_rest
 .dos_resolve_bare_ret:
     rts
 .dos_resolve_has_colon:
@@ -4469,6 +4523,7 @@ prog_doslib_code:
     store.b r16, (r17)
     add     r17, r17, #1
     add     r14, r23, #2                ; src = past "C:"
+    move.l  r19, #29                    ; cap: 32 - 2 (prefix) - 1 (NUL)
     bra     .dos_resolve_copy_rest
 
 .dos_resolve_pfx_s:
@@ -4481,13 +4536,26 @@ prog_doslib_code:
     store.b r16, (r17)
     add     r17, r17, #1
     add     r14, r23, #2                ; src = past "S:"
+    move.l  r19, #29                    ; cap: 32 - 2 (prefix) - 1 (NUL)
+    ; Shared bounded copy loop. r14 = src, r17 = dst (in scratch),
+    ; r19 = max remaining payload bytes (set by each prefix branch
+    ; to (31 - prefix_len) so the buffer always has room for the
+    ; trailing NUL terminator). On src NUL OR exhausted r19, write
+    ; a NUL at r17 and return. The 32-byte scratch at data[1000]
+    ; is the M10 resolver scratch; without this cap a long
+    ; user-supplied name (e.g. "C:" + 200 'A' chars) would walk
+    ; past the scratch into the M11 seed-name strings and beyond.
 .dos_resolve_copy_rest:
     load.b  r16, (r14)
+    beqz    r16, .dos_resolve_copy_term  ; src NUL → terminate
+    beqz    r19, .dos_resolve_copy_term  ; out of room → truncate + terminate
     store.b r16, (r17)
-    beqz    r16, .dos_resolve_copy_done
     add     r14, r14, #1
     add     r17, r17, #1
+    sub     r19, r19, #1
     bra     .dos_resolve_copy_rest
+.dos_resolve_copy_term:
+    store.b r0, (r17)                    ; write NUL terminator (r0 = hardwired 0)
 .dos_resolve_copy_done:
     add     r23, r29, #1000              ; return scratch as resolved name
     rts
@@ -4541,6 +4609,7 @@ prog_doslib_code:
     store.b r16, (r17)
     add     r17, r17, #1
     add     r14, r23, #5                ; src = past "LIBS:"
+    move.l  r19, #26                    ; cap: 32 - 5 (prefix) - 1 (NUL)
     bra     .dos_resolve_copy_rest
 
 .dos_check_devs:
@@ -4578,6 +4647,7 @@ prog_doslib_code:
     store.b r16, (r17)
     add     r17, r17, #1
     add     r14, r23, #5                ; src = past "DEVS:"
+    move.l  r19, #26                    ; cap: 32 - 5 (prefix) - 1 (NUL)
     bra     .dos_resolve_copy_rest
 
     ; ----------------------------------------------------------------
@@ -4664,6 +4734,7 @@ prog_doslib_code:
     store.b r16, (r17)
     add     r17, r17, #1
     add     r14, r23, #10               ; src = past "RESOURCES:"
+    move.l  r19, #21                    ; cap: 32 - 10 (prefix) - 1 (NUL)
     bra     .dos_resolve_copy_rest
 
 .dos_resolve_done:
@@ -4738,14 +4809,25 @@ prog_doslib_code:
     ; image_size = entry.size
     load.l  r23, 36(r14)               ; r23 = image_size
 
-    ; 5. Find args: scan past command name null in shared buffer
+    ; 5. Find args: scan past command name null in shared buffer.
+    ; Bounded scan — without a length cap, a malicious caller could
+    ; send a shared buffer with no terminator and walk dos.library
+    ; off the mapped page (faulting the service). DATA_ARGS_MAX (256)
+    ; is the same upper bound used by the args-length scan below; a
+    ; command name longer than that is treated as malformed input
+    ; and routed to the DOS_ERR_NOTFOUND reply.
     load.q  r20, 168(r29)              ; original shared buffer
     move.q  r16, r20
+    move.l  r24, #0                    ; r24 = scan counter
 .dos_run_skip_cmd:
     load.b  r15, (r16)
     beqz    r15, .dos_run_args_start
     add     r16, r16, #1
-    bra     .dos_run_skip_cmd
+    add     r24, r24, #1
+    move.l  r28, #DATA_ARGS_MAX
+    blt     r24, r28, .dos_run_skip_cmd
+    ; Hit cap without finding a NUL — malformed request, bail out.
+    bra     .dos_run_notfound
 .dos_run_args_start:
     add     r16, r16, #1               ; skip the null → args start
     ; Compute args_len (scan for second null)
@@ -4794,6 +4876,15 @@ prog_doslib_code:
 .dos_reply_full:
     load.q  r1, 944(r29)
     move.l  r2, #DOS_ERR_FULL
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+.dos_reply_badarg:
+    load.q  r1, 944(r29)
+    move.l  r2, #DOS_ERR_BADARG
     move.q  r3, r0
     move.q  r4, r0
     move.q  r5, r0

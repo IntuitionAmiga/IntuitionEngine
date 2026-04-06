@@ -379,6 +379,7 @@ DOS_MODE_WRITE    equ 1
 ; DOS error codes (returned in reply msg type field)
 DOS_OK            equ 0
 DOS_ERR_NOTFOUND  equ 1
+DOS_ERR_BADARG    equ 2
 DOS_ERR_FULL      equ 3
 DOS_ERR_BADHANDLE equ 4
 DOS_ERR_NOMEM     equ 6

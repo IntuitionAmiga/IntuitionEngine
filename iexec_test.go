@@ -5622,6 +5622,537 @@ func TestIExec_MapIO_M11_BackCompat(t *testing.T) {
 	}
 }
 
+// TestIExec_MapIO_M11_SignedOverflow verifies the post-M11 hardening
+// against a 64-bit signed overflow in the SYS_MAP_IO bounds check.
+// Constructs R2 = 0x80000000_00000000 (high bit set) by combining MOVE
+// (low half = 0) with MOVT (high half = 0x80000000). Without the bltz
+// guard added in this fix, the (PPN+count) sum would be interpreted as
+// a signed-negative value and bypass the bgt check, allocating a stale
+// region table entry. With the fix, the request is rejected up front
+// with ERR_BADARG.
+func TestIExec_MapIO_M11_SignedOverflow(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	t0 := images[0]
+
+	off := uint32(0)
+	w := func(instr []byte) { copy(rig.cpu.memory[t0+off:], instr); off += 8 }
+	// R1 = 0x100 (valid VRAM PPN base)
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x100))
+	// R2 = 0x80000000_00000000: low half 0, high half 0x80000000
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVT, 2, IE64_SIZE_L, 1, 0, 0, 0x80000000))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysMapIO))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 2, 0, 0x30))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	brOff := int32(-8)
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(brOff)))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(1 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	// errBadarg = 3, so '0' + 3 = '3'
+	if !strings.Contains(output, "3") {
+		t.Fatalf("MAP_IO with R2 high-bit-set should return ERR_BADARG (3), got=%q",
+			output[:min(len(output), 100)])
+	}
+}
+
+// TestIExec_MapIO_M11_OverCap verifies the post-M11 hardening's page-count
+// cap. R1=0x100, R2=0x501 (one over the 0x500 cap) should be rejected even
+// though PPN+count = 0x601 > 0x600 would also catch it. This double-defense
+// makes the bounds check robust against future changes.
+func TestIExec_MapIO_M11_OverCap(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	t0 := images[0]
+
+	off := uint32(0)
+	w := func(instr []byte) { copy(rig.cpu.memory[t0+off:], instr); off += 8 }
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x100))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0x501))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysMapIO))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 2, 0, 0x30))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	brOff := int32(-8)
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(brOff)))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(1 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "3") {
+		t.Fatalf("MAP_IO with count > 0x500 should return ERR_BADARG (3), got=%q",
+			output[:min(len(output), 100)])
+	}
+}
+
+// TestIExec_DosRun_NoNulInBuffer verifies the post-M11 hardening of the
+// DOS_RUN command-name scan loop. A malicious client can AllocMem a
+// MEMF_PUBLIC buffer, fill it with non-NUL bytes, and send DOS_RUN with
+// the share_handle. Without the bound added in this fix, dos.library's
+// .dos_run_skip_cmd loop would scan past the mapped page and page-fault
+// the service. With the fix, the scan caps at DATA_ARGS_MAX (256) and
+// dos.library replies DOS_ERR_NOTFOUND.
+//
+// Test verifies (a) the test client's reply.type stored at offset 200
+// is DOS_ERR_NOTFOUND (1), proving dos.library survived and replied,
+// AND (b) the dos.library public port still exists in the kernel port
+// table after the malicious request, proving the service didn't crash.
+func TestIExec_DosRun_NoNulInBuffer(t *testing.T) {
+	const (
+		userTask2Data = userDataBase + 2*userSlotStride
+		offDosPort    = 128
+		offReplyPrt   = 136
+		offBufferVA   = 144
+		offShareHdl   = 152
+		offRunReply   = 200 // reply.type stored here
+	)
+
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	// Override the SHELL slot with our test client. console.handler (task 0)
+	// and dos.library (task 1) run normally.
+	shellCode := images[len(images)-1]
+
+	off := shellCode
+	w := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+
+	// === Preamble: compute task's data page VA into R29 ===
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 3))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo))
+	w(ie64Instr(OP_MOVE, 28, IE64_SIZE_L, 1, 0, 0, userSlotStride))
+	w(ie64Instr(OP_MULU, 28, IE64_SIZE_Q, 0, 1, 28, 0))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, userDataBase))
+	w(ie64Instr(OP_ADD, 29, IE64_SIZE_Q, 0, 28, 29, 0))
+
+	// Stack frame for r29 reload across syscalls
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+
+	// === Step 1: FindPort("dos.library") with retry ===
+	findLoop := off
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, 16)) // data[16] = "dos.library"
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFindPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	beqInstr := off
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	bra1 := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(findLoop)-int32(bra1))))
+	foundDos := off
+	delta := int32(foundDos) - int32(beqInstr)
+	copy(rig.cpu.memory[beqInstr:], ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, uint32(delta)))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offDosPort))
+
+	// === Step 2: CreatePort(name=0) — anonymous reply port ===
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offReplyPrt))
+
+	// === Step 3: AllocMem(4096, MEMF_PUBLIC|MEMF_CLEAR) ===
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0x10001))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offBufferVA))
+	w(ie64Instr(OP_STORE, 3, IE64_SIZE_Q, 1, 29, 0, offShareHdl))
+
+	// === Step 4: Fill ALL 4096 bytes of the buffer with 'A' (0x41).
+	// MEMF_CLEAR initializes to 0, so we overwrite. We only need to ensure
+	// the first DATA_ARGS_MAX (256) bytes have no NUL — fill 4096 to be
+	// thorough and to ensure no helpful zero is just past the cap.
+	// Use a simple loop: r4 = base, r5 = end, r6 = 'A'.
+	w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, offBufferVA))
+	w(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, 4096))
+	w(ie64Instr(OP_ADD, 5, IE64_SIZE_Q, 0, 4, 5, 0)) // r5 = base + 4096
+	w(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, 0x41))
+	fillLoop := off
+	w(ie64Instr(OP_STORE, 6, IE64_SIZE_B, 0, 4, 0, 0))
+	w(ie64Instr(OP_ADD, 4, IE64_SIZE_Q, 1, 4, 0, 1))
+	bltInstr := off
+	w(ie64Instr(OP_BLT, 0, 0, 0, 4, 5, uint32(int32(fillLoop)-int32(bltInstr))))
+
+	// === Step 5: Send DOS_RUN with the all-A buffer ===
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 6)) // DOS_RUN
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_LOAD, 6, IE64_SIZE_L, 0, 29, 0, offShareHdl))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+
+	// === Step 6: WaitPort for reply ===
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offRunReply)) // store reply.type
+
+	// === Step 7: Yield forever ===
+	yieldLoop := off
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	endBra := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldLoop)-int32(endBra))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(3 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	// Verify dos.library port still exists (service survived)
+	mem := rig.cpu.memory
+	dosAlive := false
+	for i := 0; i < kdPortMax; i++ {
+		portBase := uint32(kernDataBase + kdPortBase + i*kdPortStride)
+		if mem[portBase+kdPortValid] == 0 {
+			continue
+		}
+		if mem[portBase+kdPortFlags]&pfPublic == 0 {
+			continue
+		}
+		name := strings.TrimRight(string(mem[portBase+kdPortName:portBase+kdPortName+portNameLen]), "\x00")
+		if name == "dos.library" {
+			dosAlive = true
+			break
+		}
+	}
+	if !dosAlive {
+		t.Fatal("dos.library port not found after malicious DOS_RUN — service crashed (the bound on .dos_run_skip_cmd is missing or broken)")
+	}
+
+	// Verify reply.type stored at offset 200 is DOS_ERR_NOTFOUND (1)
+	reply := uint32(mem[userTask2Data+offRunReply]) |
+		uint32(mem[userTask2Data+offRunReply+1])<<8 |
+		uint32(mem[userTask2Data+offRunReply+2])<<16 |
+		uint32(mem[userTask2Data+offRunReply+3])<<24
+	const dosErrNotFound = 1
+	if reply != dosErrNotFound {
+		t.Errorf("expected reply.type = DOS_ERR_NOTFOUND (%d), got %d", dosErrNotFound, reply)
+	}
+	t.Logf("DOS_RUN with no-NUL buffer: dos.library survived, reply.type=%d (expected %d)",
+		reply, dosErrNotFound)
+}
+
+// dosLibSharePagesAddr is the physical address of dos.library's
+// cached share_pages field at data[184]. dos.library has 2 code pages,
+// so its data page 0 starts at USER_CODE_BASE + 1*USER_SLOT_STRIDE +
+// 0x3000 = 0x613000, and data[184] is at 0x6130B8. Tests use this
+// address to poke a small share_pages value into dos.library's cache,
+// simulating the "small mapped share, oversized DOS_READ/DOS_WRITE
+// count" condition that the M11+ clamps in DOS_READ/DOS_WRITE/DOS_DIR
+// are designed to defend against. AllocMem currently always returns
+// ≥1 page, so the only way to exercise the clamps is to override the
+// cached value directly from the test goroutine between two CPU
+// Execute runs (after dos.library has cached share_pages from a real
+// MapShared, but before the next operation reads it).
+const dosLibSharePagesAddr = 0x613000 + 184
+
+// runDOSShareClampTest is a helper that builds a programmatic test client
+// (overriding the shell slot), runs the kernel up to a yield gap after
+// DOS_OPEN's reply, pauses, pokes dos.library's cached share_pages to
+// the target value, resumes, and lets the client send the follow-up
+// op (DOS_READ or DOS_WRITE) which should be clamped. The test then
+// verifies (a) dos.library port is still alive, and (b) the bytes
+// returned in the reply match the clamped value.
+//
+// emit builds the test client at offset shellCode using the supplied
+// emitFollowOp function to inject the operation under test (READ/WRITE)
+// after the OPEN+yield gap. The follow-op should leave reply.data0
+// (bytes count) at offset 200 in the test client's data page.
+func runDOSShareClampTest(t *testing.T, openFilename []byte, openMode uint32, pokeSharePages byte, emitFollowOp func(w func([]byte))) uint32 {
+	t.Helper()
+	const (
+		offDosPort  = 128
+		offReplyPrt = 136
+		offBufferVA = 144
+		offShareHdl = 152
+		offResult   = 200 // bytes_read or bytes_written
+	)
+
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	shellCode := images[len(images)-1]
+
+	off := shellCode
+	w := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+
+	// === Preamble: compute task's data page VA into R29 ===
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 3))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo))
+	w(ie64Instr(OP_MOVE, 28, IE64_SIZE_L, 1, 0, 0, userSlotStride))
+	w(ie64Instr(OP_MULU, 28, IE64_SIZE_Q, 0, 1, 28, 0))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, userDataBase))
+	w(ie64Instr(OP_ADD, 29, IE64_SIZE_Q, 0, 28, 29, 0))
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+
+	// === Step 1: FindPort("dos.library") with retry ===
+	findLoop := off
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, 16))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFindPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	beqInstr := off
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	bra1 := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(findLoop)-int32(bra1))))
+	foundDos := off
+	delta := int32(foundDos) - int32(beqInstr)
+	copy(rig.cpu.memory[beqInstr:], ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, uint32(delta)))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offDosPort))
+
+	// === Step 2: CreatePort(NULL) → reply port ===
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offReplyPrt))
+
+	// === Step 3: AllocMem(4096, MEMF_PUBLIC|MEMF_CLEAR) ===
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0x10001))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offBufferVA))
+	w(ie64Instr(OP_STORE, 3, IE64_SIZE_Q, 1, 29, 0, offShareHdl))
+
+	// === Step 4: Write filename + NUL to buffer ===
+	w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, offBufferVA))
+	for i, b := range openFilename {
+		w(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, uint32(b)))
+		w(ie64Instr(OP_STORE, 5, IE64_SIZE_B, 0, 4, 0, uint32(i)))
+	}
+	// NUL terminator
+	w(ie64Instr(OP_STORE, 0, IE64_SIZE_B, 0, 4, 0, uint32(len(openFilename))))
+
+	// === Step 5: DOS_OPEN(mode) ===
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1)) // DOS_OPEN
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, openMode))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_LOAD, 6, IE64_SIZE_L, 0, 29, 0, offShareHdl))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	// Save handle (R2 = data0 = handle) at offset 168 for follow-op
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 168))
+
+	// === Step 6: Spin on sentinel at data[256] until the test goroutine
+	// pokes it non-zero. Yields between checks. Reliable barrier between
+	// "DOS_OPEN done" and "do follow-op" — independent of yield rate.
+	spinTop := off
+	w(ie64Instr(OP_LOAD, 24, IE64_SIZE_B, 0, 29, 0, 256)) // r24 = data[256]
+	beqSpin := off
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 24, 0, 0)) // patched: branch FORWARD over yield to past-spin if r24 != 0
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	braSpinBack := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(spinTop)-int32(braSpinBack))))
+	pastSpin := off
+	// We want: if r24 == 0, fall through to yield + loop. If r24 != 0,
+	// branch to pastSpin. BEQ branches when EQUAL, so we need to invert:
+	// use BNE to branch to pastSpin when r24 != 0.
+	bneOff := int32(pastSpin) - int32(beqSpin)
+	copy(rig.cpu.memory[beqSpin:], ie64Instr(OP_BNE, 0, 0, 0, 24, 0, uint32(bneOff)))
+
+	// === Step 7: Caller-supplied follow-op (DOS_READ or DOS_WRITE) ===
+	emitFollowOp(w)
+
+	// === Step 8: Yield forever ===
+	finalYield := off
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	finalEnd := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(finalYield)-int32(finalEnd))))
+
+	// Run the kernel for ~1s — long enough for the test client to
+	// finish DOS_OPEN and enter the sentinel-spin loop.
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(1 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	// Poke dos.library's cached share_pages (data[184], 8 bytes LE).
+	rig.cpu.memory[dosLibSharePagesAddr] = pokeSharePages
+	for i := 1; i < 8; i++ {
+		rig.cpu.memory[dosLibSharePagesAddr+i] = 0
+	}
+	// Poke the test client's sentinel at data[256] = 1 to release the
+	// spin loop and let the follow-op fire.
+	const userTask2DataLocal = userDataBase + 2*userSlotStride
+	rig.cpu.memory[userTask2DataLocal+256] = 1
+
+	// Resume to let the follow-op run, then halt.
+	rig.cpu.running.Store(true)
+	done2 := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done2) }()
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done2
+
+	// Verify dos.library port is still alive.
+	mem := rig.cpu.memory
+	dosAlive := false
+	for i := 0; i < kdPortMax; i++ {
+		portBase := uint32(kernDataBase + kdPortBase + i*kdPortStride)
+		if mem[portBase+kdPortValid] == 0 {
+			continue
+		}
+		if mem[portBase+kdPortFlags]&pfPublic == 0 {
+			continue
+		}
+		name := strings.TrimRight(string(mem[portBase+kdPortName:portBase+kdPortName+portNameLen]), "\x00")
+		if name == "dos.library" {
+			dosAlive = true
+			break
+		}
+	}
+	if !dosAlive {
+		t.Fatal("dos.library port not found after share-clamp test — service crashed")
+	}
+
+	// Read result (bytes_read or bytes_written) from test client's
+	// data page at offset 200. Test client is in task 2 (shell slot).
+	const userTask2Data = userDataBase + 2*userSlotStride
+	result := uint32(mem[userTask2Data+offResult]) |
+		uint32(mem[userTask2Data+offResult+1])<<8 |
+		uint32(mem[userTask2Data+offResult+2])<<16 |
+		uint32(mem[userTask2Data+offResult+3])<<24
+	return result
+}
+
+// TestIExec_DOSWrite_ShareClamp verifies that DOS_WRITE clamps byte_count
+// to (share_pages << 12) and does NOT walk past the mapped share when
+// the cached share size is smaller than the requested byte count. We
+// poke dos.library's cached share_pages to 0 between the OPEN and
+// WRITE so the WRITE clamps to 0 bytes. Without the clamp, dos.library
+// would copy 4096 bytes from the source share — fine here because the
+// share IS 4096 bytes, but the test verifies the clamp logic itself.
+func TestIExec_DOSWrite_ShareClamp(t *testing.T) {
+	emitWrite := func(w func([]byte)) {
+		const offBufferVA = 144
+		const offReplyPrt = 136
+		const offShareHdl = 152
+		const offDosPort = 128
+		// Fill buffer with "TESTDATA" so the write has data
+		w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, offBufferVA))
+		bytes := []byte{0x54, 0x45, 0x53, 0x54, 0x44, 0x41, 0x54, 0x41}
+		for i, b := range bytes {
+			w(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, uint32(b)))
+			w(ie64Instr(OP_STORE, 5, IE64_SIZE_B, 0, 4, 0, uint32(i)))
+		}
+		// PutMsg DOS_WRITE(handle, byte_count=4096)
+		w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+		w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 3))    // DOS_WRITE
+		w(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, 168)) // handle
+		w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 4096)) // byte_count
+		w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+		w(ie64Instr(OP_LOAD, 6, IE64_SIZE_L, 0, 29, 0, offShareHdl))
+		w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+		w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+		// WaitPort: R1=err, R2=bytes_written
+		w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+		w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+		w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+		w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 200)) // bytes_written
+	}
+
+	// Poke share_pages = 0 → clamp byte_count to 0 → bytes_written = 0
+	// Use "scratch" + WRITE mode so the file is created fresh.
+	bytesWritten := runDOSShareClampTest(t, []byte("scratch"), 1, 0, emitWrite)
+	if bytesWritten != 0 {
+		t.Errorf("DOS_WRITE with share_pages=0 should clamp byte_count to 0, got bytes_written=%d", bytesWritten)
+	}
+	t.Logf("DOS_WRITE share clamp: share_pages=0 → bytes_written=%d", bytesWritten)
+}
+
+// TestIExec_DOSRead_ShareClamp verifies that DOS_READ clamps max_bytes to
+// (share_pages << 12) before copying file data into the caller's share.
+// Same pattern as TestIExec_DOSWrite_ShareClamp: open a file, yield to
+// give the test goroutine a window to poke share_pages = 0, then DOS_READ
+// with max_bytes = 4096 and verify bytes_read = 0.
+func TestIExec_DOSRead_ShareClamp(t *testing.T) {
+	emitRead := func(w func([]byte)) {
+		const offReplyPrt = 136
+		const offShareHdl = 152
+		const offDosPort = 128
+		// PutMsg DOS_READ(handle, max_bytes=4096)
+		w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+		w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 2))    // DOS_READ
+		w(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, 168)) // handle
+		w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 4096)) // max_bytes
+		w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+		w(ie64Instr(OP_LOAD, 6, IE64_SIZE_L, 0, 29, 0, offShareHdl))
+		w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+		w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+		// WaitPort: R1=err, R2=bytes_read
+		w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+		w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+		w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+		w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 200)) // bytes_read
+	}
+
+	// Poke share_pages = 0 → clamp max_bytes to 0 → bytes_read = 0.
+	// Use "readme" + READ mode: readme is a pre-seeded file with non-zero
+	// size (~28 bytes), so without the share clamp DOS_READ would return
+	// 28 bytes. With the clamp, it returns 0.
+	bytesRead := runDOSShareClampTest(t, []byte("readme"), 0, 0, emitRead)
+	if bytesRead != 0 {
+		t.Errorf("DOS_READ with share_pages=0 should clamp max_bytes to 0, got bytes_read=%d", bytesRead)
+	}
+	t.Logf("DOS_READ share clamp: share_pages=0 → bytes_read=%d", bytesRead)
+}
+
+// TestIExec_DosResolve_LongName verifies the post-M11 hardening of the
+// dos.library prefix resolver. Sends a TYPE command with a 200-character
+// filename after "C:". Without the bounded copy fix, the resolver would
+// overflow the 32-byte scratch buffer at data[1000] in dos.library's
+// data page (the M10-era unbounded copy_rest loop). With the fix, the
+// resolved name is truncated to 32 bytes and dos.library returns
+// DOS_ERR_NOTFOUND, which TYPE prints as "File not found".
+func TestIExec_DosResolve_LongName(t *testing.T) {
+	longName := strings.Repeat("A", 200)
+	cmd := "TYPE C:" + longName + "\n"
+	output := bootAndInjectCommand(t, cmd, 5*time.Second)
+	// Must not crash (kernel still alive, prompt eventually returned)
+	if !strings.Contains(output, "exec.library M11 boot") {
+		t.Fatalf("kernel didn't boot, output=%q", output[:min(len(output), 200)])
+	}
+	// Must reach a NOT_FOUND-class error path, not a memory corruption
+	// crash. TYPE prints "File not found" on DOS_ERR_NOTFOUND.
+	if !strings.Contains(output, "File not found") {
+		t.Errorf("expected 'File not found' for long filename, got=%q",
+			output[:min(len(output), 600)])
+	}
+}
+
 func TestIExec_MapIO_Cleanup(t *testing.T) {
 	// Task 0 calls SYS_MAP_IO(0xF0), then SYS_EXIT_TASK.
 	// Task 1 is a yield loop that prints 'A'.

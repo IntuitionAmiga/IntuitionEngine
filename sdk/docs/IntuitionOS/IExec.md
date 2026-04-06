@@ -208,7 +208,7 @@ The CPU traps to supervisor mode. The kernel's trap handler reads the syscall nu
 | 1 | `AllocMem` | R1=size, R2=flags -> R1=addr, R2=err, R3=share_handle | **Implemented** |
 | 2 | `FreeMem` | R1=addr, R2=size -> R2=err | **Implemented** |
 | 3 | `AllocShared` | R1=size, R2=flags -> R1=handle | Reserved |
-| 4 | `MapShared` | R1=share_handle -> R1=addr, R2=err | **Implemented** |
+| 4 | `MapShared` | R1=share_handle -> R1=addr, R2=err, R3=share_pages | **Implemented (M11 extended)** |
 
 `AllocMem` flags: MEMF_PUBLIC (bit 0) = shareable across tasks, MEMF_CLEAR (bit 16) = zero-fill. Matches classic Amiga MEMF_ conventions. All allocations are page-granular (4 KiB). `FreeMem` size is also page-granular: the kernel rounds size up to pages and compares the page count against the allocation's page count. Any size that rounds to the same number of pages is accepted (e.g., both 5000 and 8192 free a 2-page allocation).
 
@@ -576,9 +576,9 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 
 - `AllocMem` syscall (1): allocate private or shared pages. R1=size, R2=flags (MEMF_PUBLIC, MEMF_CLEAR), returns R1=VA, R2=err, R3=share_handle (if MEMF_PUBLIC). Page-granular (4 KiB minimum). Kernel manages physical page pool and per-task virtual address windows.
 - `FreeMem` syscall (2): free allocated memory. R1=addr, R2=size (must round to the same page count as the original allocation; the allocator is page-granular). Unmaps pages from caller's page table. For shared mappings, decrements refcount; physical pages freed when last reference removed.
-- `MapShared` syscall (4): map a shared memory region by handle. R1=share_handle (opaque capability from AllocMem MEMF_PUBLIC), returns R1=mapped VA, R2=err. Validates handle nonce to reject stale/invalid handles.
+- `MapShared` syscall (4): map a shared memory region by handle. R1=share_handle (opaque capability from AllocMem MEMF_PUBLIC), returns R1=mapped VA, R2=err, R3=share_pages (page count of the share, returned so user-space services can clamp byte counts to the actual mapped size — added in M11). Validates handle nonce to reject stale/invalid handles.
 - Physical page allocator: bitmap-based contiguous allocation from 6400-page pool ($700000-$1FFFFFF).
-- Per-task dynamic VA windows: each task gets 1 MB (256 pages) at $800000+task_id*$100000.
+- Per-task dynamic VA windows: each task gets 3 MB (768 pages) at $800000+task_id*$300000 (M11 stride).
 - MEMF_ flags: MEMF_PUBLIC (bit 0, classic Amiga), MEMF_CLEAR (bit 16, classic Amiga zero-fill).
 - Share handles: 32-bit opaque capabilities encoding 24-bit nonce (from monotonic kernel counter) + 8-bit slot. Guarantees stale handles are always rejected.
 - Task exit cleanup: all private regions freed, all shared mappings unmapped with refcount decremented.
