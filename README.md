@@ -3056,7 +3056,7 @@ The FPU provides built-in constants:
 ## 7.6 Memory and I/O Integration
 
 - Uses shared 32MB system bus
-- 24-bit address mask (16MB accessible via address bus)
+- 32-bit address bus (full 4GB addressable)
 - Big-endian byte order
 - I/O region: 0x00F00000 - 0x00FFFFFF
 - VRAM: 0x00100000 - 0x004FFFFF (direct access)
@@ -3093,7 +3093,7 @@ Vectors 64-255: User Defined
 ## 7.8 Compatibility Notes
 
 - 95%+ instruction coverage (68020 + 68881/68882)
-- 68EC020 variant (no MMU)
+- Full 68020 with 32-bit addressing (no MMU)
 - Big-endian byte order (converted from host)
 - F-line opcodes route to FPU when present
 - Use `-m68k` flag to run M68K binaries
@@ -5668,7 +5668,7 @@ The IE32 is a custom 32-bit RISC processor designed for simplicity and performan
 
 Execution cycle: Fetch (8 bytes) → Decode → Execute → Update PC → Check interrupts
 
-### Motorola 68EC020
+### Motorola 68020
 
 The 68020 emulation provides 95%+ instruction coverage:
 

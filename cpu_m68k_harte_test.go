@@ -234,7 +234,7 @@ func SetupHarteCPUState(cpu *M68KCPU, state HarteState) {
 	// Setup prefetch queue - write instruction words to memory at PC
 	// The prefetch contains the instruction word(s) that should be at PC
 	// Write directly in big-endian format (don't use cpu.Write16 which does endian swap)
-	// Mask PC to 24-bit address space
+	// Mask PC for Harte test compatibility (test data may use addresses beyond our memory)
 	maskedPC := state.PC & M68K_ADDRESS_MASK
 	for i, word := range state.Prefetch {
 		addr := maskedPC + uint32(i*2)
@@ -247,10 +247,10 @@ func SetupHarteCPUState(cpu *M68KCPU, state HarteState) {
 
 	// Setup RAM contents - each entry is [address, byte_value]
 	// Write directly to memory to avoid any endian conversion
-	// Mask addresses to 24-bit address space (68000 has 24-bit address bus)
+	// Mask addresses for Harte test compatibility (test data from 68000 suite)
 	for _, entry := range state.RAM {
 		if len(entry) >= 2 {
-			addr := entry[0] & M68K_ADDRESS_MASK // Mask to 24-bit
+			addr := entry[0] & M68K_ADDRESS_MASK
 			value := uint8(entry[1])
 			if addr < uint32(len(cpu.memory)) {
 				cpu.memory[addr] = value
@@ -324,7 +324,7 @@ func VerifyHarteFinalState(cpu *M68KCPU, expected HarteState, testName string) H
 		mismatch("SR: got 0x%04X, want 0x%04X", cpu.SR, uint16(expected.SR))
 	}
 
-	// Check PC (mask to 24-bit address space for comparison)
+	// Check PC (mask for Harte test compatibility — test data from 68000 suite)
 	maskedGotPC := cpu.PC & M68K_ADDRESS_MASK
 	maskedWantPC := expected.PC & M68K_ADDRESS_MASK
 	if maskedGotPC != maskedWantPC {
@@ -332,10 +332,10 @@ func VerifyHarteFinalState(cpu *M68KCPU, expected HarteState, testName string) H
 	}
 
 	// Check RAM contents - read directly from memory to avoid endian conversion
-	// Mask addresses to 24-bit address space (68000 has 24-bit address bus)
+	// Mask addresses for Harte test compatibility (test data from 68000 suite)
 	for _, entry := range expected.RAM {
 		if len(entry) >= 2 {
-			addr := entry[0] & M68K_ADDRESS_MASK // Mask to 24-bit
+			addr := entry[0] & M68K_ADDRESS_MASK
 			expectedVal := uint8(entry[1])
 			var actualVal uint8
 			if addr < uint32(len(cpu.memory)) {
@@ -485,7 +485,7 @@ func RunHarteTestFile(t *testing.T, filename string) {
 	var failures []string
 
 	for _, tc := range tests {
-		// Skip 68020-incompatible tests (24-bit address wrapping, indexed modes, etc.)
+		// Skip tests incompatible with our 68020 (68000-specific behavior, out-of-range addresses)
 		if is68020IncompatibleTest(tc) {
 			skipped++
 			continue

@@ -76,6 +76,25 @@ iexec_start:
     bra     .kern_user_map
 .kern_user_map_done:
 
+    ; 3b'. Extend kernel PT: identity-map task PT region
+    ;      (USER_PT_BASE .. USER_PT_BASE + MAX_TASKS * USER_SLOT_STRIDE)
+    ;      as supervisor P|R|W. Required because USER_PT_BASE = $680000 is
+    ;      outside the kernel-mapped range (pages 0..KERN_PAGES-1, phase 3a)
+    ;      AND outside the user-slot range (pages USER_CODE_VPN_BASE..,
+    ;      phase 3b), so it must be mapped explicitly here so the kernel
+    ;      can read/write task page tables after the MMU is enabled.
+    move.l  r2, #KERN_PAGE_TABLE
+    move.l  r4, #USER_PT_PAGE_BASE       ; start page (= USER_PT_BASE >> 12)
+    move.l  r6, #USER_PT_PAGE_END        ; end page exclusive
+.kern_userpt_map:
+    lsl     r3, r4, #13                  ; PPN << 13
+    or      r3, r3, #0x07                ; P|R|W (supervisor only)
+    lsl     r5, r4, #3                   ; offset in PT = page * 8
+    add     r5, r5, r2
+    store.q r3, (r5)
+    add     r4, r4, #1
+    blt     r4, r6, .kern_userpt_map
+
     ; ---------------------------------------------------------------
     ; 4. Initialize kernel data (MMU still off)
     ; ---------------------------------------------------------------
@@ -395,7 +414,7 @@ build_user_pt:
     mulu    r9, r9, r8
     add     r6, r6, r9                  ; end VPN
 .bup_copy_user_loop:
-    bge     r4, r6, .bup_add_user_pages
+    bge     r4, r6, .bup_copy_userpt
     lsl     r5, r4, #3
     add     r8, r5, r2
     load.q  r3, (r8)
@@ -403,6 +422,25 @@ build_user_pt:
     store.q r3, (r9)
     add     r4, r4, #1
     bra     .bup_copy_user_loop
+
+.bup_copy_userpt:
+    ; Copy supervisor-only user-PT region entries (VPN USER_PT_PAGE_BASE..
+    ; USER_PT_PAGE_END). Required because the kernel walks each task's PT
+    ; from kernel-supervisor mode while running on the task's own PTBR
+    ; (e.g. safe_copy_user_name does load.q on PTBR + VPN*8). Without
+    ; copying these mappings, the kernel faults the moment it touches a
+    ; task PT after the user-PT region was relocated to $680000.
+    move.l  r4, #USER_PT_PAGE_BASE
+    move.l  r6, #USER_PT_PAGE_END
+.bup_copy_userpt_loop:
+    bge     r4, r6, .bup_add_user_pages
+    lsl     r5, r4, #3
+    add     r8, r5, r2
+    load.q  r3, (r8)
+    add     r9, r5, r7
+    store.q r3, (r9)
+    add     r4, r4, #1
+    bra     .bup_copy_userpt_loop
 
 .bup_add_user_pages:
     ; Add user-accessible entries for THIS task's pages

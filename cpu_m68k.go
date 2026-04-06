@@ -1,4 +1,4 @@
-// cpu_m68k.go - Motorola 68EC020 CPU emulation for the Intuition Engine
+// cpu_m68k.go - Motorola 68020 CPU emulation for the Intuition Engine
 
 /*
  ██▓ ███▄    █ ▄▄▄█████▓ █    ██  ██▓▄▄▄█████▓ ██▓ ▒█████   ███▄    █    ▓█████  ███▄    █   ▄████  ██▓ ███▄    █ ▓█████
@@ -19,16 +19,15 @@ License: GPLv3 or later
 */
 
 /*
-cpu_m68k.go - Motorola 68EC020 CPU Emulation for the Intuition Engine
+cpu_m68k.go - Motorola 68020 CPU Emulation for the Intuition Engine
 
-This module implements a Motorola 68EC020 CPU emulator with 90%+ instruction
+This module implements a Motorola 68020 CPU emulator with 90%+ instruction
 coverage, supervisor/user mode separation, hardware interrupts, and memory-mapped I/O.
-The 68EC020 is the embedded variant of the 68020 without MMU. Amiga 1200 ftw!
 
 Architectural Features:
 - 8 data registers (D0-D7) and 8 address registers (A0-A7, with A7 as stack pointer)
 - 32-bit internal and external data paths
-- 16MB linear address space (24-bit addressing, no MMU)
+- 32-bit linear address space
 - 32-bit programme counter with word alignment
 - 16-bit status register (system byte + condition codes)
 - Supervisor/user mode privilege separation with exception-based transitions
@@ -155,7 +154,7 @@ const (
 	M68K_ENTRY_POINT  = 0x00001000 // Avoids collision with exception vector table
 	M68K_IO_BASE      = 0x00F00000 // Memory-mapped I/O begins here
 	M68K_IO_LIMIT     = 0x00FFFFFF // Last accessible I/O address
-	M68K_ADDRESS_MASK = 0x00FFFFFF // 68000/68EC020 has 24-bit address bus
+	M68K_ADDRESS_MASK = 0xFFFFFFFF // 68020 has 32-bit address bus
 )
 
 // ------------------------------------------------------------------------------

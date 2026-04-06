@@ -199,7 +199,15 @@ REPLY_PORT_NONE   equ 0xFFFF      ; no reply port
 ; Task i data page:  USER_DATA_BASE + i * USER_SLOT_STRIDE
 ; Task i code VPN:   USER_CODE_VPN_BASE + i * USER_VPN_STRIDE
 
-USER_PT_BASE      equ 0x100000    ; Task page tables (each 64 KiB)
+; USER_PT_BASE was originally 0x100000 but that physical range is mapped by
+; the host VideoChip MMIO (VRAM at $100000-$5FFFFF). Kernel PTE writes to the
+; old base were dispatched to the framebuffer instead of RAM, leaving zero-
+; alpha "pixels" that the compositor skipped, producing a black trailing line
+; on every kernel-printed boot banner row. The PTs are now placed in the gap
+; between the user code/stack/data slot block ($600000-$67FFFF) and the page
+; allocator pool ($700000+). MAX_TASKS * USER_SLOT_STRIDE = 8 * 0x10000 =
+; 0x80000, so the region exactly fills $680000-$6FFFFF.
+USER_PT_BASE      equ 0x680000    ; Task page tables (each 64 KiB)
 USER_CODE_BASE    equ 0x600000    ; Task code pages (physical)
 USER_STACK_BASE   equ 0x601000    ; Task stack pages
 USER_DATA_BASE    equ 0x602000    ; Task data pages
@@ -209,6 +217,12 @@ USER_CODE_SIZE    equ 192         ; DEPRECATED: M7 boot template size (removed i
 ; VPN bases (addr >> 12)
 USER_CODE_VPN_BASE  equ 0x600    ; 0x600000 >> 12
 USER_VPN_STRIDE     equ 0x10     ; 0x10000 >> 12
+
+; Page-number bounds for the user-PT region. Kept in sync with USER_PT_BASE
+; and MAX_TASKS * USER_SLOT_STRIDE so the kernel boot can extend the kernel
+; PT to cover this region (see iexec.s phase 3b' kern_userpt_map).
+USER_PT_PAGE_BASE   equ 0x680    ; USER_PT_BASE >> MMU_PAGE_SHIFT
+USER_PT_PAGE_END    equ 0x700    ; (USER_PT_BASE + MAX_TASKS * USER_SLOT_STRIDE) >> MMU_PAGE_SHIFT
 
 ; ===========================================================================
 ; PTE Flags

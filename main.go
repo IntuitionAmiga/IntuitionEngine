@@ -1137,6 +1137,9 @@ func main() {
 			}
 			runner := NewM68KRunner(m68k)
 			runner.PerfEnabled = perfMode
+			if noJIT {
+				m68k.m68kJitEnabled = false
+			}
 			return runner, nil
 		case "emutos", "aros":
 			videoChip.SetBigEndianMode(true)
@@ -1146,6 +1149,9 @@ func main() {
 			}
 			runner := NewM68KRunner(m68k)
 			runner.PerfEnabled = perfMode
+			if noJIT {
+				m68k.m68kJitEnabled = false
+			}
 			return runner, nil
 		case "z80":
 			videoChip.SetBigEndianMode(false)

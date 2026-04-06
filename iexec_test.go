@@ -24,8 +24,13 @@ const (
 	kernStackTop      = 0x9F000 // Kernel stack top
 	maxTasks          = 8       // MAX_TASKS
 
-	// User task page table base (M5: slot-based at 0x100000 + i*0x10000)
-	userPTBase     = 0x100000 // USER_PT_BASE
+	// User task page table base. Was 0x100000 originally but that range
+	// collides with the host VideoChip MMIO at $100000-$5FFFFF (VRAM),
+	// causing kernel PTE writes to land in the framebuffer. Relocated to
+	// 0x680000, which sits in the gap between the user code/stack/data
+	// slot block (0x600000-0x67FFFF) and the page allocator pool
+	// (0x700000+). See sdk/include/iexec.inc for the canonical definition.
+	userPTBase     = 0x680000 // USER_PT_BASE
 	userSlotStride = 0x10000  // USER_SLOT_STRIDE (64 KiB between slots)
 
 	// User task physical pages (slot-based: base + i * userSlotStride)
@@ -1315,19 +1320,25 @@ func TestIExec_TwoTasksVisibleOutput(t *testing.T) {
 }
 
 func TestIExec_TwoTasksVisibleOutput_WithVRAM(t *testing.T) {
-	// Regression test: the live VM maps VRAM I/O at 0x100000-0x5FFFFF which
-	// overlaps the IExec kernel's task page tables at 0x100000-0x17FFFF.
-	// Without MMIO64PolicySplit, 64-bit PTE writes are silently dropped
-	// by the Fault policy, corrupting all page tables.
+	// Regression test: the live VM maps VRAM I/O at $100000-$5FFFFF, the
+	// same range that previously held the IExec task page tables. After the
+	// M10+ relocation of USER_PT_BASE to $680000, kernel boot must complete
+	// cleanly with VRAM mapped AND the default Fault MMIO64 policy — i.e.
+	// without needing the SetLegacyMMIO64Policy(MMIO64PolicySplit) workaround
+	// that previously hid the overlap by splitting 64-bit PTE writes into
+	// two 32-bit halves dispatched to the framebuffer.
 	rig, term := assembleAndLoadKernel(t)
 
-	// Map VRAM I/O region like the live VM does (overlaps task page tables)
+	// Map VRAM I/O region like the live VM does. With the relocation,
+	// USER_PT_BASE no longer overlaps this range, so kernel PTE writes go
+	// to RAM instead of the MMIO sink.
 	dummyRead := func(addr uint32) uint32 { return 0 }
 	dummyWrite := func(addr uint32, value uint32) {}
 	rig.bus.MapIO(VRAM_START, VRAM_START+VRAM_SIZE-1, dummyRead, dummyWrite)
 
-	// IE64 uses store.q for PTE writes; must split into 32-bit halves
-	rig.bus.SetLegacyMMIO64Policy(MMIO64PolicySplit)
+	// Intentionally do NOT call SetLegacyMMIO64Policy here. If the overlap
+	// ever returns, the default Fault policy will drop 64-bit PTE writes
+	// and the kernel will fail to print its banner.
 
 	rig.cpu.running.Store(true)
 	done := make(chan struct{})
@@ -1341,6 +1352,158 @@ func TestIExec_TwoTasksVisibleOutput_WithVRAM(t *testing.T) {
 	hasBanner := strings.Contains(output, "exec.library M10 boot")
 	if !hasBanner {
 		t.Fatalf("visible output with VRAM mapped: hasBanner=%v, output=%q", hasBanner, output[:min(len(output), 100)])
+	}
+}
+
+// TestIExec_KernelPT_UserPTRegionMapped boots the kernel and inspects the
+// kernel page table entries for the new user-PT region (pages
+// USER_PT_PAGE_BASE..USER_PT_PAGE_END) to confirm that the boot-time
+// "phase 3b'" mapping loop in iexec.s actually wrote them. Without those
+// PTEs the kernel will fault with FAULT_NOT_PRESENT (cause=0) the first
+// time it walks a task PT (e.g. in safe_copy_user_name).
+func TestIExec_KernelPT_UserPTRegionMapped(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(50 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	const kernPT = 0x10000
+	const ptePPNShift = 13
+	const ptePresent = 1
+	const startPage = 0x680
+	const endPage = 0x700
+
+	// Read PTEs for pages startPage..endPage in the kernel PT and
+	// confirm they have P bit set and PPN equal to the page number.
+	missing := 0
+	for page := startPage; page < endPage; page++ {
+		off := kernPT + page*8
+		if off+8 > len(rig.cpu.memory) {
+			t.Fatalf("PT entry for page 0x%X out of memory range (0x%X)", page, off)
+		}
+		pte := binary.LittleEndian.Uint64(rig.cpu.memory[off:])
+		if pte&ptePresent == 0 {
+			if missing < 5 {
+				t.Errorf("kernel PT entry for page 0x%X (offset 0x%X) is not present: pte=0x%X", page, off, pte)
+			}
+			missing++
+			continue
+		}
+		ppn := (pte >> ptePPNShift) & 0x1FFF
+		if int(ppn) != page {
+			t.Errorf("kernel PT entry for page 0x%X has wrong PPN 0x%X (pte=0x%X)", page, ppn, pte)
+		}
+	}
+	if missing > 0 {
+		t.Fatalf("%d/%d kernel PT entries for user-PT region are not present (phase 3b' loop did not run, or wrote elsewhere)", missing, endPage-startPage)
+	}
+}
+
+// TestIExec_UserPTBase_DoesNotOverlapVRAM is a static guard ensuring the
+// task page table region (USER_PT_BASE .. USER_PT_BASE + MAX_TASKS *
+// USER_SLOT_STRIDE) does not overlap either the host VRAM region or the
+// user code/stack/data slot block. If anyone moves USER_PT_BASE back into
+// $100000-$5FFFFF (VRAM) or into $600000-$67FFFF (the slot block), kernel
+// PTE writes would be silently dispatched to the framebuffer or trample
+// task code; this test catches that at compile-test time.
+func TestIExec_UserPTBase_DoesNotOverlapVRAM(t *testing.T) {
+	const ptEnd = userPTBase + maxTasks*userSlotStride
+	if userPTBase < VRAM_START+VRAM_SIZE && ptEnd > VRAM_START {
+		t.Fatalf("USER_PT_BASE region [0x%X..0x%X) overlaps VRAM [0x%X..0x%X)",
+			userPTBase, ptEnd, VRAM_START, VRAM_START+VRAM_SIZE)
+	}
+	const slotEnd = userCodeBase + maxTasks*userSlotStride
+	if userPTBase < slotEnd && ptEnd > userCodeBase {
+		t.Fatalf("USER_PT_BASE region [0x%X..0x%X) overlaps user slot block [0x%X..0x%X)",
+			userPTBase, ptEnd, userCodeBase, slotEnd)
+	}
+}
+
+// TestIExec_BootBanner_NoArtifact wires a real VideoChip + VideoTerminal
+// into the IExec test rig, boots the kernel, then walks the chip front
+// buffer for each kernel-printed banner row and asserts that every pixel
+// in the trailing region (past the longest banner text) equals bgColor.
+//
+// Before the M10+ relocation of USER_PT_BASE out of VRAM, kernel PTE
+// writes landed in the framebuffer with alpha=0, which the compositor
+// later skipped, leaving black trailing strips on every banner row. This
+// test would catch that regression by failing on the first non-bgColor
+// pixel with a precise (x, y) coordinate and the offending value.
+func TestIExec_BootBanner_NoArtifact(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+
+	// Wire a real VideoChip + VideoTerminal to the rig's terminal MMIO.
+	// NewVideoTerminal calls clearScreen (filling chip.frontBuffer with
+	// bgColor) and registers vt.processChar as the term's char-output
+	// callback, so any kernel write to TERM_OUT renders a glyph cell.
+	chip, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	vt := NewVideoTerminal(chip, term)
+	defer vt.Stop()
+
+	// Map the chip's VRAM range into the rig's bus exactly as the live VM
+	// does. With USER_PT_BASE relocated to $680000, no kernel PTE write
+	// should land in this range.
+	rig.bus.MapIO(VRAM_START, VRAM_START+VRAM_SIZE-1, chip.HandleRead, chip.HandleWrite)
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	// Sanity check: the kernel actually printed banners through TERM_OUT
+	// (which means processChar fired and rendered into chip.frontBuffer).
+	output := term.DrainOutput()
+	if !strings.Contains(output, "exec.library M10 boot") {
+		t.Fatalf("kernel did not print boot banner; output=%q", output[:min(len(output), 100)])
+	}
+	if !strings.Contains(output, "ONLINE") {
+		t.Fatalf("kernel did not print any task ONLINE banners; output=%q", output[:min(len(output), 200)])
+	}
+
+	// Walk the trailing region of each banner row. The longest expected
+	// banner is "IntuitionOS 0.10 (exec.library M10)" at 35 chars; sample
+	// from column 40 (320 px) to the right edge to give margin.
+	const startCol = 40
+	const numBannerRows = 7 // exec, console, dos, shell, IntuitionOS Mn, IntuitionOS x.y, IntuitionOS Mn ready
+	mode := VideoModes[chip.currentMode]
+	stride := mode.bytesPerRow
+	width := mode.width
+	fb := chip.GetFrontBuffer()
+	x0 := startCol * terminalGlyphWidth
+
+	bg := vt.bgColor
+	failures := 0
+	for row := 0; row < numBannerRows; row++ {
+		baseY := row * terminalGlyphHeight
+		for sy := 0; sy < terminalGlyphHeight; sy++ {
+			y := baseY + sy
+			rowBase := y * stride
+			for x := x0; x < width; x++ {
+				idx := rowBase + x*4
+				if idx+4 > len(fb) {
+					break
+				}
+				c := uint32(fb[idx]) | uint32(fb[idx+1])<<8 | uint32(fb[idx+2])<<16 | uint32(fb[idx+3])<<24
+				if c != bg {
+					if failures < 5 {
+						t.Errorf("trailing pixel @ banner row %d (x=%d, y=%d) = 0x%08X, want bgColor 0x%08X", row, x, y, c, bg)
+					}
+					failures++
+				}
+			}
+		}
+	}
+	if failures > 0 {
+		t.Fatalf("%d trailing pixels diverged from bgColor across banner rows 0..%d (USER_PT_BASE may be writing into the framebuffer)", failures, numBannerRows-1)
 	}
 }
 
