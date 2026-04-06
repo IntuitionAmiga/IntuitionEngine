@@ -10,7 +10,7 @@
 
 IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS Exec but designed from the ground up for a hardware-enforced privilege model. Where Amiga Exec ran in flat supervisor space with no memory protection, IExec uses the IE64 MMU to enforce user/supervisor separation, per-task page tables, and W^X memory policy.
 
-**What IExec does (Milestone 9):**
+**What IExec does (Milestone 10):**
 
 - Preemptive round-robin scheduling across up to 8 dynamic tasks (CreateTask/ExitTask with slot reuse)
 - Memory protection via the IE64 MMU (per-task page tables with separate code/stack/data mappings, W^X enforcement)
@@ -26,12 +26,13 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
 - Kernel renamed to exec.library; GURU MEDITATION fault messages
 - AmigaOS-style OpenLibrary syscall for library discovery
 - I/O page mapping via MapIO syscall (REGION_IO type)
-- SYS_EXEC_PROGRAM with argument passing via DATA_ARGS_OFFSET
+- **`SYS_EXEC_PROGRAM` takes a user-space image pointer** (M10): kernel creates tasks from user-provided IE64PROG images. Runs entirely under the caller's PT (no PT switching). `validate_user_range` checks both P and U bits on every page in the requested range. Legacy index path retained for M9 compatibility.
+- **Multi-page code and data in `load_program`** (M10): up to 2 code pages (8 KB) and 4 data pages (16 KB) per task. dos.library is itself a 2-code-page program, with 3 data pages containing embedded command images.
 - SYS_READ_INPUT for kernel-mode terminal read
 - console.handler: CON: handler with GetMsg polling and CON_READLINE protocol
-- dos.library: AmigaOS dos.library equivalent with RAM: filesystem (16 files, 4KB each, case-insensitive)
-- Interactive shell with command dispatch via DOS_RUN
-- 5 external commands as real user-space tasks: VERSION, AVAIL, DIR, TYPE, ECHO
+- **dos.library**: AmigaOS dos.library equivalent with RAM: filesystem (16 files, 4 KB each, case-insensitive, 32-byte filenames). M10 adds: assign table (RAM:, C:, S:), name-based command resolution (`resolve_command_name` defaults to C:, `resolve_file_name` defaults to bare), embedded command images, init-time seeding into the RAM file store, and boot-race-free port creation (CreatePort deferred until after seeding).
+- **Shell**: interactive command shell that sends raw command names to dos.library via DOS_RUN (no shell-side command table). Executes `S:Startup-Sequence` automatically at boot if present, then drops to the interactive prompt.
+- **5 external commands** as DOS-loaded executables: VERSION, AVAIL, DIR, TYPE, ECHO. Stored as files in RAM under `C:`, launched by name through dos.library — not by program table index.
 
 **What IExec does not do:**
 
@@ -287,15 +288,19 @@ The CPU traps to supervisor mode. The kernel's trap handler reads the syscall nu
 | 31 | `SendMsgBulk` | R1=port_handle, R2=shmem_handle, R3=offset, R4=len -> R2=err | Future |
 | 32 | `RecvMsgBulk` | R1=port_handle, R2=shmem_handle, R3=offset, R4=buf_len -> R1=actual_len | Future |
 
-### 5.10 Program Execution and Libraries (M9)
+### 5.10 Program Execution and Libraries (M9, ABI redesigned in M10)
 
 | # | Name | Signature | Status |
 |---|------|-----------|--------|
-| 35 | `ExecProgram` | R1=prog_index, R2=args_ptr, R3=args_len -> R1=task_id, R2=err | **Implemented (M9)** |
+| 35 | `ExecProgram` | R1=image_ptr, R2=image_size, R3=args_ptr, R4=args_len -> R1=task_id, R2=err | **Implemented (M9, redesigned M10)** |
 | 36 | `OpenLibrary` | R1=name_ptr, R2=version -> R1=lib_base, R2=err | **Implemented (M9)** |
 | 37 | `ReadInput` | R1=buf_ptr, R2=buf_size -> R1=bytes_read, R2=err | **Implemented (M9)** |
 
-**ExecProgram (35)**: Loads and starts a bundled program from the static program table. R1=program table index (0-based integer), R2=args_ptr (user VA pointing to null-terminated argument string, or 0 for no args), R3=args_len (byte count of arguments, max 256, or 0 for no args). Arguments are copied to the child task's data page at DATA_ARGS_OFFSET (like AmigaOS `pr_Arguments`). Returns R1=new task_id, R2=err.
+**ExecProgram (35)** -- M10 ABI: Creates a new task from a user-provided IE64PROG image. R1=image_ptr (user VA pointing to a complete IE64PROG image, e.g. an entry in dos.library's RAM file store; must be ≥ `0x600000`), R2=image_size (total bytes including 32-byte header, code, and data; valid range 32..24608, matching `load_program`'s max of header + 8 KiB code + 16 KiB data), R3=args_ptr (user VA pointing to null-terminated argument string in the caller's address space, or 0 for no args), R4=args_len (byte count of arguments, max 256, or 0 for no args). The handler runs entirely under the **caller's** page table (no PT switching): every page in `[image_ptr, image_ptr+image_size)` and `[args_ptr, args_ptr+args_len)` is validated via `validate_user_range` (checks both **P** and **U** PTE bits), then `load_program` is called directly to copy the image into a free task slot. Arguments are copied to the new task's data page at `DATA_ARGS_OFFSET` (like AmigaOS `pr_Arguments`). Returns R1=new task_id, R2=err. Returns `ERR_BADARG` for unmapped/kernel-only ranges, oversize images, args_len > 256, or pointer arithmetic overflow.
+
+**Legacy index path** (M9 compatibility): If R1 < `0x600000`, the handler treats R1 as a program table index and uses the M9 ABI (R2=args_ptr, R3=args_len, R4 ignored). The program table walk + PT-switching path is preserved for this case, but **M10 hardens it** with the same `validate_user_range` check on the args range that the new ABI uses (the M9 path only checked the lower bound and would fault the kernel on unmapped or supervisor-only pages above `0x600000`). With M10 the program table only contains the 3 boot services (console.handler, dos.library, Shell), so legacy index access is effectively limited to those slots; production code uses the new pointer ABI exclusively. The legacy path will be removed in a future milestone.
+
+**`validate_user_range` subroutine**: Walks the caller's page table once per page in the requested byte range. For each VPN, loads the PTE and checks `(pte & 0x11) == 0x11` (P bit + U bit set). Rejects unmapped pages, kernel-only pages, and pointer-arithmetic overflows. Returns R1=0 on success or 1 (ERR_BADARG) on any failure.
 
 **OpenLibrary (36)**: AmigaOS-style library discovery. R1=name_ptr (library name, e.g., "dos.library"), R2=minimum version. Returns R1=library base (port ID or equivalent handle), R2=err.
 
@@ -427,7 +432,7 @@ Each task has a per-task handle table mapping 32-bit handles to kernel objects. 
 
 ## 10. Bootstrap Sequence
 
-The M9 kernel boots in supervisor mode at `$1000` (PROG_START) and performs the following steps:
+The M10 kernel boots in supervisor mode at `$1000` (PROG_START) and performs the following steps:
 
 ```
  1. Set trap vector, interrupt vector, and kernel stack pointer
@@ -445,7 +450,7 @@ The M9 kernel boots in supervisor mode at `$1000` (PROG_START) and performs the 
  4. Enable the MMU using the kernel page table
 
  5. Print the boot banner:
-    - "exec.library M9 boot"
+    - "exec.library M10 boot"
 
  6. Iterate the static program table:
     - validate each bundled image header
@@ -525,7 +530,7 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 
 **Implemented and tested (builds on Milestone 1):**
 
-- Boot banner and early debug terminal output were introduced here. The current banner text is `"exec.library M9 boot\n"` because later milestones kept extending the same kernel image.
+- Boot banner and early debug terminal output were introduced here. The current banner text is `"exec.library M10 boot\n"` because later milestones kept extending the same kernel image.
 - `DebugPutChar` syscall (33): write a single character to the debug terminal (TERM_OUT at `$F0700`)
 - Milestone 2 originally used simple built-in demo tasks for visible output. The richer four-service demo belongs to Milestone 8.
 - Fault reporting: on non-SYSCALL faults, kernel prints a GURU MEDITATION message (replaced plain FAULT format in M9) to the debug terminal then halts
@@ -611,44 +616,101 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 - **All visible output from user space**: kernel only prints boot banner. Every service announcement, request/reply narration, and periodic tick comes from loaded user programs.
 - **Retired**: hardcoded task templates (user_task0_template, user_task1_template, child_task_template), USER_CODE_SIZE constant. Kernel is now mechanism-only.
 
-### Milestone 9: exec.library + dos.library + Shell (Current)
+### Milestone 9: exec.library + dos.library + Shell (Complete)
 
 **Implemented and tested (builds on Milestone 8):**
 
-- **Kernel renamed to exec.library**: boot banner is now `"exec.library M9 boot"`. Reflects the Amiga convention of the kernel being a library.
+- **Kernel renamed to exec.library**: boot banner is now `"exec.library M9 boot"` (later updated to M10). Reflects the Amiga convention of the kernel being a library.
 - **GURU MEDITATION fault messages**: replaced plain FAULT format with Amiga-style GURU MEDITATION messages for all kernel faults and panics.
 - **Full GPR save/restore in timer interrupt**: the preemption handler now saves and restores R1-R30, ensuring preemption safety for all user-space tasks.
 - **Strict boot**: the first PROGTAB_BOOT_COUNT (3) programs (console.handler, dos.library, Shell) must load successfully or the kernel panics.
 - **New syscalls**:
   - `SYS_MAP_IO` (28): maps I/O pages into user task address space with new REGION_IO (3) region type.
-  - `SYS_EXEC_PROGRAM` (35): loads and starts a bundled program by table index (R1=index, R2=args_ptr, R3=args_len). Arguments are copied to the child task's data page at DATA_ARGS_OFFSET (like AmigaOS `pr_Arguments`).
+  - `SYS_EXEC_PROGRAM` (35): loads and starts a bundled program by table index (R1=index, R2=args_ptr, R3=args_len). Arguments are copied to the child task's data page at DATA_ARGS_OFFSET (like AmigaOS `pr_Arguments`). **Note**: ABI redesigned in M10 to take a user-space image pointer instead of an index.
   - `SYS_OPEN_LIBRARY` (36): AmigaOS-style `OpenLibrary` for library/service discovery by name.
   - `SYS_READ_INPUT` (37): kernel-mode terminal read for interactive input.
 - **console.handler**: CON: handler task (Task 0). Creates public port, services output via GetMsg polling, supports CON_READLINE protocol for interactive line input.
 - **dos.library**: AmigaOS dos.library equivalent (Task 1). Provides a RAM: filesystem with 16 files, 4 KB each, case-insensitive filenames. Supports DOS_RUN command dispatch for launching external commands.
 - **Shell**: interactive command shell (Task 2). Reads input via console.handler, dispatches commands to dos.library via DOS_RUN. Displays `1> ` prompt (AmigaOS-style).
 - **5 external commands**: VERSION, AVAIL, DIR, TYPE, ECHO. All are real user-space tasks loaded from the program table (no shell builtins). Arguments are passed via DATA_ARGS_OFFSET in the data page.
-- **Demo output**:
-  ```
-  exec.library M9 boot
-  console.handler ONLINE [Task 0]
-  dos.library ONLINE [Task 1]
-  Shell ONLINE [Task 2]
-  IntuitionOS M9
-  1> VERSION
-  IntuitionOS 0.9 (exec.library M9)
-  1> AVAIL
-  Total: 25600 KB  Free: 25536 KB
-  1> DIR RAM:
-  readme                 28
-  1> TYPE RAM:readme
-  Welcome to IntuitionOS M9
-  1> ECHO Hello from IntuitionOS
-  Hello from IntuitionOS
-  1> 
-  ```
 
-### Milestone 10: Timers + Handles (Planned)
+### Milestone 10: DOS-Loaded Programs + Assigns + Startup-Sequence (Current)
+
+**Implemented and tested (builds on Milestone 9):**
+
+M10 transitions the system from kernel-dispatched command indices to user-space DOS-loaded executables. The kernel gets simpler (the program table walk is gone for on-demand programs); all new functionality lives in dos.library and the shell. The boot demo now looks like a self-booting AmigaOS-style protected microkernel, with dos.library executing `S:Startup-Sequence` automatically before dropping to the shell prompt.
+
+**Kernel changes (gets simpler):**
+
+- **`SYS_EXEC_PROGRAM` ABI redesigned**: now takes a user-space image pointer instead of a program table index. New signature: `R1=image_ptr (user VA, ≥0x600000), R2=image_size, R3=args_ptr, R4=args_len → R1=task_id, R2=err`. Runs entirely under the caller's PT (no PT switching). Legacy index-based path retained for `R1<0x600000` (M9 compat, used only by tests; production code uses the new ABI). The kernel no longer walks the program table for on-demand loads.
+- **`validate_user_range` subroutine**: walks the caller's page table and checks both **P (present) AND U (user-accessible)** bits for every page in `[ptr, ptr+size)`. Rejects unmapped pages, kernel-only pages, and overflow ranges with `ERR_BADARG`. Used by `SYS_EXEC_PROGRAM` to validate the image and args byte ranges before passing them to `load_program`.
+- **Multi-page code and data in `load_program`**: code_size cap raised from 4096 to 8192 (up to 2 code pages); data_size cap raised from 4096 to 16384 (up to 4 data pages). `load_program` computes `code_pages` and `data_pages` from the image header, zeros and copies the right number of bytes, and passes both counts to `build_user_pt`. dos.library exercises both: it has 2 code pages (5744 bytes) and 3 data pages (9428 bytes including embedded command images).
+- **`build_user_pt` parameterized**: takes `R9=code_pages` and `R11=data_pages`, loops to map `code_pages` PTEs at VPN+0..VPN+(code_pages-1) as P|X|U, then a stack PTE at VPN+code_pages, then `data_pages` PTEs at VPN+code_pages+1..VPN+code_pages+data_pages as P|R|W|U.
+- **Boot-time kernel PT now maps all 16 VPNs per task slot** (was only 3: code/stack/data). The full slot stride is mapped supervisor-only so the kernel can access any task's pages regardless of code_pages/data_pages choice.
+- **Program table shrunk**: from 8 entries + sentinel to 3 entries + sentinel (boot services only). VERSION/AVAIL/DIR/TYPE/ECHO entries removed — they now live inside dos.library's data section as embedded images.
+
+**dos.library changes (gets smarter):**
+
+- **Assign table**: static assigns inside dos.library map volume names to internal path prefixes:
+  - `RAM:` → bare name (no prefix, e.g. `RAM:readme` → `readme`)
+  - `C:` → `C/` prefix (e.g. `C:Version` → `C/Version`)
+  - `S:` → `S/` prefix (e.g. `S:Startup-Sequence` → `S/Startup-Sequence`)
+- **Two name resolution subroutines**:
+  - `resolve_command_name` (used by `DOS_RUN`): if no colon found, default to **C:** (prepend `C/`). Matches AmigaOS command search path behavior.
+  - `resolve_file_name` (used by `DOS_OPEN`/`READ`/`WRITE`/`DIR`): if no colon found, **bare name** (no prefix). Matches AmigaOS file access behavior.
+  - Both share an assign-resolution core that strips the volume part and rewrites with the mapped prefix into a 32-byte scratch buffer in dos.library's data page.
+- **`DOS_NAME_LEN` increased from 16 to 32**: file table entry grows from 28 to 44 bytes (16 entries × 44 = 704 bytes). Required to hold names like `S/Startup-Sequence` (18 chars).
+- **DOS_RUN redesigned**: takes a command name in the shared buffer (format: `"command_name\0args_string\0"`) instead of a program table index. Resolves the name through the C: assign, looks it up in the file table, computes `image_ptr = storage_va + entry.offset`, and calls `SYS_EXEC_PROGRAM` with the new ABI. Replies with `DOS_ERR_NOTFOUND` if the name does not resolve to a stored file.
+- **Embedded command images + seeding**: dos.library's multi-page data section contains the raw IE64PROG bytes for VERSION, AVAIL, DIR, TYPE, ECHO, plus the `S/Startup-Sequence` script text. At init, `dos_seed_one` walks each embedded image, allocates a file table slot, copies the name from the seed strings area, and copies the image bytes from the data pages to the AllocMem'd 64 KB storage region. The kernel never sees this — it's entirely user-space DOS internals.
+- **Boot race prevention**: dos.library defers `CreatePort("dos.library")` until **after** seeding is complete. The port becoming visible IS the readiness signal. Shell's `OpenLibrary("dos.library")` retry loop blocks until the port exists, which guarantees all files (`C/Version`, `S/Startup-Sequence`, etc.) are already in RAM when the shell first talks to dos.library. This is the same pattern AmigaOS uses: a library is not discoverable until it is fully initialized.
+
+**Shell changes (gets simpler):**
+
+- **No more command table**: the shell's hardcoded command name → program table index mapping (data[192-236] in M9) is gone. The shell parses the first word of the input line and sends the raw command name to dos.library via `DOS_RUN`. dos.library is now solely responsible for command resolution.
+- **`DOS_ERR_NOTFOUND` handling**: if dos.library replies that the command does not exist, the shell prints `"Unknown command\r\n"`.
+- **`S:Startup-Sequence` execution at boot**: after the shell announces itself online, it calls `DOS_OPEN("S:Startup-Sequence", READ)` via dos.library. If found, it reads the script content (up to 256 bytes) into a shell-local script buffer, sets a `script_mode` flag, and the main loop reads each newline-terminated line from the script buffer instead of calling `CON_READLINE`. Each line goes through the same parse + dispatch path as a typed command. When the script ends, `script_mode` is cleared and the shell falls through to interactive mode. If the script is missing, the shell skips to the prompt without error (graceful fallback).
+
+**Demo output (M10 boot, no user input required):**
+
+```
+exec.library M10 boot
+console.handler ONLINE [Task 0]
+dos.library ONLINE [Task 1]
+Shell ONLINE [Task 2]
+IntuitionOS M10
+IntuitionOS 0.10 (exec.library M10)        <- VERSION run by S:Startup-Sequence
+IntuitionOS M10 ready                       <- ECHO run by S:Startup-Sequence
+1> 
+```
+
+User can then type interactively:
+
+```
+1> VERSION
+IntuitionOS 0.10 (exec.library M10)
+1> DIR RAM:
+readme                          0028
+C/Version                       0590
+C/Avail                         0991
+C/Dir                           1168
+C/Type                          1752
+C/Echo                          0792
+S/Startup-Sequence              0035
+1> TYPE S:Startup-Sequence
+VERSION
+ECHO IntuitionOS M10 ready
+1> ECHO Hello from IntuitionOS
+Hello from IntuitionOS
+1> 
+```
+
+**M9 features removed in M10:**
+
+- Shell command name table (data[192-231]) and command index table (data[232-236])
+- Program table entries 3-7 (on-demand commands) - the table is now boot-services-only
+- The 2-phase PT switching dance in `SYS_EXEC_PROGRAM` (no longer needed - the new ABI runs entirely under the caller's PT)
+
+### Milestone 11: Timers + Handles (Planned)
 
 - `AddTimer` / `RemTimer` with delta queue
 - `MapVRAM` for user-space video memory access

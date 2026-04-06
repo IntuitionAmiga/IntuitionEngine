@@ -5976,17 +5976,30 @@ make aros               # Build VM with embedded AROS ROM
 
 IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. Unlike classic Amiga Exec, which ran everything in flat supervisor space with no memory protection, IExec uses the IE64 MMU to enforce hardware-backed user/supervisor privilege separation with per-task page tables and W^X memory policy. The design preserves the Amiga programming model (signals, message ports, priority scheduling) while adding the isolation guarantees of a modern protected-mode OS.
 
-**Milestone 9 status** — exec.library + dos.library + Shell (implemented and tested):
+**Milestone 10 status** — DOS-loaded programs + assigns + Startup-Sequence (implemented and tested):
 
-- Everything from M1-M8: self-sufficient boot, per-task page tables with W^X, trap dispatch, preemptive round-robin, signals, named message ports with FindPort discovery, request/reply messaging, dynamic task creation/exit, AllocMem/FreeMem/MapShared with capability handles, program image format, boot-time loader
-- Kernel renamed to exec.library with GURU MEDITATION fault messages
-- Full GPR save/restore in timer interrupt handler for preemption safety
-- New syscalls: SYS_MAP_IO (I/O page mapping), SYS_EXEC_PROGRAM (program launch with argument passing), SYS_OPEN_LIBRARY (AmigaOS-style OpenLibrary), SYS_READ_INPUT (terminal read)
-- console.handler: CON: handler with GetMsg polling and CON_READLINE protocol
-- dos.library: AmigaOS dos.library equivalent with RAM: filesystem (16 files, 4KB each, case-insensitive)
-- Interactive shell with AmigaOS-style `1> ` prompt and DOS_RUN command dispatch
-- 5 external commands as real user-space tasks: VERSION, AVAIL, DIR, TYPE, ECHO
-- Argument passing to commands via DATA_ARGS_OFFSET in data page (like AmigaOS pr_Arguments)
-- Strict boot: first 3 programs (console.handler, dos.library, Shell) must load or kernel panics
+- Everything from M1-M9: self-sufficient boot, per-task page tables with W^X, trap dispatch, preemptive round-robin, signals, named message ports with FindPort discovery, request/reply messaging, dynamic task creation/exit, AllocMem/FreeMem/MapShared with capability handles, GURU MEDITATION fault messages, console.handler, dos.library RAM: filesystem, interactive shell, 5 external commands
+- **`SYS_EXEC_PROGRAM` ABI redesigned**: now takes a user-space image pointer (`R1=image_ptr, R2=image_size, R3=args_ptr, R4=args_len`). Runs entirely under the caller's PT (no PT switching). Legacy index path retained for M9 compatibility.
+- **`validate_user_range` subroutine**: walks the caller's page table and checks **both P and U** bits on every page in `[ptr, ptr+size)`. Rejects unmapped pages, kernel-only pages, and pointer-arithmetic overflow with `ERR_BADARG`.
+- **Multi-page code and data in `load_program`**: up to 2 code pages (8 KB) and 4 data pages (16 KB) per task. dos.library is the first 2-code-page program (5744 bytes code, 9428 bytes data including embedded command images).
+- **dos.library assign table**: static assigns map `RAM:` → bare name, `C:` → `C/` prefix, `S:` → `S/` prefix. Two resolution subroutines: `resolve_command_name` (default C:, used by DOS_RUN) and `resolve_file_name` (default bare, used by DOS_OPEN/READ/WRITE/DIR).
+- **DOS_RUN takes a command name**, not a program table index. dos.library resolves the name through the C: assign, looks it up in the RAM file store, and launches the matching IE64PROG image via the new `SYS_EXEC_PROGRAM` ABI.
+- **Embedded command images + init-time seeding**: VERSION, AVAIL, DIR, TYPE, ECHO live as raw IE64PROG bytes in dos.library's data pages. At init, dos.library seeds them into its 64 KB AllocMem'd RAM file store as `C/Version`, `C/Avail`, `C/Dir`, `C/Type`, `C/Echo`. The `S/Startup-Sequence` script is seeded the same way.
+- **Boot race prevention**: dos.library defers `CreatePort("dos.library")` until after seeding is complete. The port becoming visible IS the readiness signal — the shell's `OpenLibrary("dos.library")` retry loop blocks until the port exists, which guarantees all seeded files are in RAM before the shell first talks to dos.library.
+- **`DOS_NAME_LEN` increased from 16 to 32**: file table entry grows from 28 to 44 bytes. Required for paths like `S/Startup-Sequence`.
+- **Shell loses its command table**: parses the first word and sends the raw command name to dos.library via DOS_RUN. Handles `DOS_ERR_NOTFOUND` as "Unknown command".
+- **`S:Startup-Sequence` execution at boot**: shell opens the script via DOS, reads it into a script buffer, and executes each newline-terminated line through the same dispatch path as a typed command. Falls through to the interactive prompt when the script ends. Missing script is graceful (skips to prompt).
+- **Program table shrunk** to 3 boot entries + sentinel (was 8 + sentinel). Command images no longer occupy program table slots — they live in dos.library's data section as embedded files.
+- **Demo boot output (no user input)**:
+  ```
+  exec.library M10 boot
+  console.handler ONLINE [Task 0]
+  dos.library ONLINE [Task 1]
+  Shell ONLINE [Task 2]
+  IntuitionOS M10
+  IntuitionOS 0.10 (exec.library M10)        <- VERSION run by S:Startup-Sequence
+  IntuitionOS M10 ready                       <- ECHO run by S:Startup-Sequence
+  1>
+  ```
 
 Full kernel contract reference: [sdk/docs/IntuitionOS/IExec.md](sdk/docs/IntuitionOS/IExec.md)

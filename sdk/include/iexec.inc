@@ -41,7 +41,7 @@ SYS_SEND_MSG_BULK equ 31
 SYS_RECV_MSG_BULK equ 32
 SYS_DEBUG_PUTCHAR equ 33          ; Debug: print character (R1=char)
 SYS_EXIT_TASK     equ 34          ; Exit current task (R1=exit_code, ignored)
-SYS_EXEC_PROGRAM  equ 35          ; Launch bundled program (R1=index, R2=args_ptr, R3=args_len)
+SYS_EXEC_PROGRAM  equ 35          ; Launch program (R1=image_ptr, R2=image_size, R3=args_ptr, R4=args_len) [legacy: R1<0x600000=index]
 SYS_OPEN_LIBRARY  equ 36          ; OpenLibrary (R1=name_ptr, R2=version) → R1=handle, R2=err
 SYS_READ_INPUT    equ 37          ; Read terminal line (R1=buf_ptr, R2=max_len) → R1=bytes_read, R2=err
 
@@ -365,6 +365,6 @@ DOS_ERR_NOMEM     equ 6
 
 ; DOS filesystem limits
 DOS_MAX_FILES     equ 16          ; Max files in RAM:
-DOS_NAME_LEN      equ 16          ; Max filename length
+DOS_NAME_LEN      equ 32          ; Max filename length (supports "S/Startup-Sequence" etc.)
 DOS_FILE_SIZE     equ 4096        ; Max bytes per file (1 page)
 DOS_MAX_HANDLES   equ 8           ; Max simultaneous open handles

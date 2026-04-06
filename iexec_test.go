@@ -1159,6 +1159,28 @@ func overrideExtraTasks(mem []byte, images []uint32, startIdx int) {
 	}
 }
 
+// patchImageToSinglePage rewrites a program image's IE64PROG header so that
+// load_program treats it as a single-page code, single-page data program.
+// imageCodeStart is the address returned by findAllProgramImages (start of
+// the code section, which is header_start + 32). Sets code_size = newCodeSize
+// and data_size = 0.
+//
+// M10 NOTE: dos.library has 2 code pages (5744 bytes) which shifts task 1's
+// stack/data VAs. M9-era tests that use task 1 with the M9 layout (stack at
+// VPN+1, data at VPN+2) need to call this on images[1] to force a 1-code-page
+// layout, otherwise they end up writing to/reading from the wrong VAs.
+func patchImageToSinglePage(mem []byte, imageCodeStart uint32, newCodeSize uint32) {
+	if newCodeSize&7 != 0 {
+		panic("patchImageToSinglePage: newCodeSize must be 8-byte aligned")
+	}
+	if newCodeSize == 0 || newCodeSize > 4096 {
+		panic("patchImageToSinglePage: newCodeSize must be in (0, 4096]")
+	}
+	headerStart := imageCodeStart - 32
+	binary.LittleEndian.PutUint32(mem[headerStart+8:], newCodeSize)
+	binary.LittleEndian.PutUint32(mem[headerStart+12:], 0) // data_size = 0
+}
+
 func TestIExec_DebugPutChar(t *testing.T) {
 	// Programmatic kernel: one user task does SYSCALL #33 with R1='X' then halts
 	rig, term := newIExecTerminalRig(t)
@@ -1284,7 +1306,7 @@ func TestIExec_TwoTasksVisibleOutput(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	hasBanner := strings.Contains(output, "exec.library M9 boot")
+	hasBanner := strings.Contains(output, "exec.library M10 boot")
 	hasOnline := strings.Contains(output, "ONLINE")
 	if !hasBanner || !hasOnline {
 		t.Fatalf("visible output: hasBanner=%v hasOnline=%v, output=%q", hasBanner, hasOnline, output[:min(len(output), 100)])
@@ -1316,7 +1338,7 @@ func TestIExec_TwoTasksVisibleOutput_WithVRAM(t *testing.T) {
 
 	output := term.DrainOutput()
 	t.Logf("VRAM output (first 100 chars): %q", output[:min(len(output), 100)])
-	hasBanner := strings.Contains(output, "exec.library M9 boot")
+	hasBanner := strings.Contains(output, "exec.library M10 boot")
 	if !hasBanner {
 		t.Fatalf("visible output with VRAM mapped: hasBanner=%v, output=%q", hasBanner, output[:min(len(output), 100)])
 	}
@@ -3023,6 +3045,8 @@ func TestIExec_GetMsg_NotOwner(t *testing.T) {
 	images := findAllProgramImages(t, rig.cpu.memory)
 	t0, t1 := images[0], images[1]
 	overrideExtraTasks(rig.cpu.memory, images, 2)
+	// M10: dos.library has 2 code pages, force task 1 back to 1-page layout
+	patchImageToSinglePage(rig.cpu.memory, t1, 64)
 
 	// Task 0: CreatePort(anonymous), yield forever
 	off := t0
@@ -3880,6 +3904,8 @@ func TestIExec_FindPort_Basic(t *testing.T) {
 	images := findAllProgramImages(t, rig.cpu.memory)
 	t0, t1 := images[0], images[1]
 	overrideExtraTasks(rig.cpu.memory, images, 2)
+	// M10: dos.library has 2 code pages, force task 1 back to 1-page layout
+	patchImageToSinglePage(rig.cpu.memory, t1, 64)
 
 	// Write "ECHO\0" to both tasks' data pages at offset 128 (past boot child template)
 	copy(rig.cpu.memory[userTask0Stack+128:], []byte("ECHO\x00"))
@@ -3943,6 +3969,8 @@ func TestIExec_FindPort_CaseInsensitive(t *testing.T) {
 	images := findAllProgramImages(t, rig.cpu.memory)
 	t0, t1 := images[0], images[1]
 	overrideExtraTasks(rig.cpu.memory, images, 2)
+	// M10: dos.library has 2 code pages, force task 1 back to 1-page layout
+	patchImageToSinglePage(rig.cpu.memory, t1, 64)
 
 	// Write "ECHO\0" to task 0's data page, "echo\0" to task 1's data page (offset 128, past boot template)
 	copy(rig.cpu.memory[userTask0Stack+128:], []byte("ECHO\x00"))
@@ -4100,6 +4128,8 @@ func TestIExec_PrivatePort_NotFindable(t *testing.T) {
 	images := findAllProgramImages(t, rig.cpu.memory)
 	t0, t1 := images[0], images[1]
 	overrideExtraTasks(rig.cpu.memory, images, 2)
+	// M10: dos.library has 2 code pages, force task 1 back to 1-page layout
+	patchImageToSinglePage(rig.cpu.memory, t1, 64)
 
 	// Write "TEST\0" to task 1's data page at offset 128 (past boot template) for the FindPort search
 	copy(rig.cpu.memory[userTask1Stack+128:], []byte("TEST\x00"))
@@ -4377,6 +4407,8 @@ func TestIExec_DeletePublicPort_RemovesName(t *testing.T) {
 	images := findAllProgramImages(t, rig.cpu.memory)
 	t0, t1 := images[0], images[1]
 	overrideExtraTasks(rig.cpu.memory, images, 2)
+	// M10: dos.library has 2 code pages, force task 1 back to 1-page layout
+	patchImageToSinglePage(rig.cpu.memory, t1, 64)
 
 	// Write "ECHO\0" to both tasks' data pages at offset 128 (past boot child template)
 	copy(rig.cpu.memory[userTask0Stack+128:], []byte("ECHO\x00"))
@@ -4703,7 +4735,7 @@ func TestIExec_ImageHeaderValidation(t *testing.T) {
 
 			output := term.DrainOutput()
 			// Kernel should still boot (banner printed) — corrupt image is outside boot set
-			if !strings.Contains(output, "exec.library M9 boot") {
+			if !strings.Contains(output, "exec.library M10 boot") {
 				t.Fatalf("kernel failed to boot after corrupting non-boot image: output=%q", output[:min(len(output), 100)])
 			}
 			if strings.Contains(output, "PANIC") {
@@ -4852,7 +4884,7 @@ func TestIExec_LoaderRejectsInvalid(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	if !strings.Contains(output, "exec.library M9 boot") {
+	if !strings.Contains(output, "exec.library M10 boot") {
 		t.Fatalf("kernel didn't boot, output=%q", output[:min(len(output), 100)])
 	}
 	if strings.Contains(output, "PANIC") {
@@ -4924,7 +4956,7 @@ func TestIExec_LoaderSkipsFailure(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	if !strings.Contains(output, "exec.library M9 boot") {
+	if !strings.Contains(output, "exec.library M10 boot") {
 		t.Fatalf("kernel didn't boot")
 	}
 	if strings.Contains(output, "PANIC") {
@@ -5132,6 +5164,49 @@ func TestIExec_MapIO_BadPage(t *testing.T) {
 	t.Logf("MapIO_BadPage: MAP_IO(0xFF) returned error code 3 (ERR_BADARG)")
 }
 
+// TestIExec_ExecProgram_LegacyBadArgs verifies the M10 fix: the legacy
+// (index-based) ExecProgram path now also validates the args_ptr range
+// via validate_user_range. Previously the legacy path only checked the
+// lower bound (>= USER_CODE_BASE) and could fault the kernel on dereference.
+// Task 0 calls EXEC_PROGRAM(index=0, args_ptr=0x6F0000, args_len=10).
+// 0x6F0000 is in the user VA range (>= 0x600000) but corresponds to a
+// task slot beyond MAX_TASKS=8 — no PTE is mapped there in any task PT.
+func TestIExec_ExecProgram_LegacyBadArgs(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	t0 := images[0]
+
+	pc := t0
+	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))        // R1 = 0 (valid index)
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0x6F0000)) // R2 = unmapped user VA
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 10))       // R3 = args_len
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExecProgram))  // expect ERR_BADARG
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 2, 0, 0x30))      // R1 = err + '0'
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar)) // print
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	brOff := int32(-8)
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(brOff)))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	// ERR_BADARG = 3. The kernel must NOT have faulted (no GURU MEDITATION).
+	if strings.Contains(output, "GURU") {
+		t.Fatalf("ExecProgram_LegacyBadArgs: kernel faulted on bad args_ptr (legacy path validation broken), output=%q", output[:min(len(output), 200)])
+	}
+	if !strings.Contains(output, "3") {
+		t.Fatalf("ExecProgram_LegacyBadArgs: expected ERR_BADARG '3', got=%q", output[:min(len(output), 200)])
+	}
+	t.Logf("ExecProgram_LegacyBadArgs: legacy path correctly rejected unmapped args_ptr with ERR_BADARG")
+}
+
 func TestIExec_ExecProgram_BadIndex(t *testing.T) {
 	// M9: SYS_EXEC_PROGRAM with an out-of-range index should return ERR_BADARG (3).
 	// Task 0 calls EXEC_PROGRAM(index=99, args_ptr=0, args_len=0), converts err to ASCII, prints it.
@@ -5207,7 +5282,7 @@ func TestIExec_ShellOnline(t *testing.T) {
 	t.Logf("ShellOnline: Shell ONLINE + prompt confirmed")
 }
 
-func TestIExec_M9Boot(t *testing.T) {
+func TestIExec_M10Boot(t *testing.T) {
 	// M9: full boot sequence verification. All 3 boot services (console.handler,
 	// dos.library, Shell) must come ONLINE, the kernel banner must appear, and
 	// the Shell must display its "1>" prompt. This is the comprehensive boot test.
@@ -5220,13 +5295,13 @@ func TestIExec_M9Boot(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	t.Logf("M9Boot full output (%d bytes): %q", len(output), output[:min(len(output), 400)])
+	t.Logf("M10Boot full output (%d bytes): %q", len(output), output[:min(len(output), 400)])
 
 	checks := []struct {
 		substr string
 		desc   string
 	}{
-		{"exec.library M9 boot", "kernel boot banner"},
+		{"exec.library M10 boot", "kernel boot banner"},
 		{"console.handler ONLINE", "console.handler service"},
 		{"dos.library ONLINE", "dos.library service"},
 		{"Shell ONLINE", "Shell service"},
@@ -5234,14 +5309,15 @@ func TestIExec_M9Boot(t *testing.T) {
 	}
 	for _, c := range checks {
 		if !strings.Contains(output, c.substr) {
-			t.Errorf("M9 boot missing %s: wanted %q in output", c.desc, c.substr)
+			t.Errorf("M10 boot missing %s: wanted %q in output", c.desc, c.substr)
 		}
 	}
 
-	// Verify exactly 3 tasks are running (PROGTAB_BOOT_COUNT)
+	// Verify at least 3 tasks (PROGTAB_BOOT_COUNT). M10 may have additional
+	// tasks from Startup-Sequence execution (VERSION, ECHO).
 	numTasks := binary.LittleEndian.Uint64(rig.cpu.memory[kernDataBase+kdNumTasks:])
-	if numTasks != 3 {
-		t.Errorf("M9 boot: num_tasks = %d, want 3", numTasks)
+	if numTasks < 3 {
+		t.Errorf("M10 boot: num_tasks = %d, want >= 3", numTasks)
 	}
 }
 
@@ -5320,55 +5396,13 @@ func TestIExec_MapIO_Cleanup(t *testing.T) {
 	t.Logf("MapIO_Cleanup output (first 80 chars): %q", output[:min(len(output), 80)])
 }
 
-func TestIExec_ExecProgram_Basic(t *testing.T) {
-	// Task 0 calls EXEC_PROGRAM(3, 0, 0) to launch the VERSION program (index 3
-	// in the program table). All images except task 0 are overridden with yield
-	// loops, so the launched program is harmless. Verify ERR_OK and num_tasks >= 2.
-	rig, term := assembleAndLoadKernel(t)
-	images := findAllProgramImages(t, rig.cpu.memory)
-	overrideExtraTasks(rig.cpu.memory, images, 1)
-	t0 := images[0]
-
-	off := uint32(0)
-	w := func(instr []byte) { copy(rig.cpu.memory[t0+off:], instr); off += 8 }
-	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 3))        // R1 = 3 (VERSION index)
-	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))        // R2 = 0 (no args ptr)
-	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))        // R3 = 0 (no args len)
-	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExecProgram))  // EXEC_PROGRAM
-	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 2, 0, 0x30))      // R1 = R2 + '0' (err digit)
-	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar)) // print err digit
-	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))        // yield
-	brOff := int32(-8)
-	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(brOff))) // loop
-
-	rig.cpu.running.Store(true)
-	done := make(chan struct{})
-	go func() { rig.cpu.Execute(); close(done) }()
-	time.Sleep(1 * time.Second)
-	rig.cpu.running.Store(false)
-	<-done
-
-	output := term.DrainOutput()
-	if !strings.Contains(output, "0") {
-		t.Fatalf("EXEC_PROGRAM didn't return ERR_OK, output=%q", output[:min(len(output), 100)])
-	}
-	// Verify num_tasks increased (boot loaded 3, task 0 is our patched task,
-	// and we launched one more, so at least 2 tasks should be present even
-	// if some boot tasks were overridden).
-	numTasks := binary.LittleEndian.Uint64(rig.cpu.memory[kernDataBase+kdNumTasks:])
-	if numTasks < 2 {
-		t.Fatalf("num_tasks = %d after EXEC_PROGRAM, want >= 2", numTasks)
-	}
-	t.Logf("ExecProgram_Basic: output=%q num_tasks=%d", output[:min(len(output), 60)], numTasks)
-	_ = term
-}
-
-func TestIExec_ExecProgram_WithArgs(t *testing.T) {
-	// Task 0 writes "hello" to its own data page at runtime, then calls
-	// EXEC_PROGRAM(3, data_ptr, 5). The kernel copies args to the launched
-	// task's data page at DATA_ARGS_OFFSET (3072). We verify the args arrived.
-	const dataArgsOffset = 3072
-
+// TestIExec_ExecProgram_NewABI verifies the M10 SYS_EXEC_PROGRAM pointer-based ABI:
+// task 0 builds a tiny IE64PROG image in its own data page (a user-accessible VA
+// >= 0x600000), then calls SYS_EXEC_PROGRAM with R1=image_ptr, R2=image_size.
+// The launched task prints 'Z' via DEBUG_PUTCHAR and exits. We verify both that
+// the syscall returned ERR_OK ('0' digit from task 0) AND that the launched task
+// actually ran ('Z' in the output).
+func TestIExec_ExecProgram_NewABI(t *testing.T) {
 	rig, term := assembleAndLoadKernel(t)
 	images := findAllProgramImages(t, rig.cpu.memory)
 	overrideExtraTasks(rig.cpu.memory, images, 1)
@@ -5377,35 +5411,67 @@ func TestIExec_ExecProgram_WithArgs(t *testing.T) {
 	off := uint32(0)
 	w := func(instr []byte) { copy(rig.cpu.memory[t0+off:], instr); off += 8 }
 
-	// Task 0 first writes "hello" to its own data page at runtime.
-	// Use GetSysInfo(CURRENT_TASK=3) to find our task_id, then compute data VA.
-	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 3))      // R1 = SYSINFO_CURRENT_TASK
+	// === Phase A: compute task 0's data page VA ===
+	// task_id via SYSINFO_CURRENT_TASK = 3, then data_va = USER_DATA_BASE + tid*stride
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 3))
 	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo)) // R1 = task_id
 	w(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, userSlotStride))
 	w(ie64Instr(OP_MULU, 5, IE64_SIZE_Q, 0, 1, 5, 0)) // R5 = task_id * stride
 	w(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, userDataBase))
 	w(ie64Instr(OP_ADD, 5, IE64_SIZE_Q, 0, 5, 6, 0)) // R5 = data_va
 
-	// Write 'h','e','l','l','o' to [R5+0..4]
-	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x68)) // 'h'
-	w(ie64Instr(OP_STORE, 4, IE64_SIZE_B, 0, 5, 0, 0))
-	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x65)) // 'e'
-	w(ie64Instr(OP_STORE, 4, IE64_SIZE_B, 0, 5, 0, 1))
-	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x6C)) // 'l'
-	w(ie64Instr(OP_STORE, 4, IE64_SIZE_B, 0, 5, 0, 2))
-	w(ie64Instr(OP_STORE, 4, IE64_SIZE_B, 0, 5, 0, 3))   // 'l' again
-	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x6F)) // 'o'
-	w(ie64Instr(OP_STORE, 4, IE64_SIZE_B, 0, 5, 0, 4))
+	// === Phase B: write IE64PROG header at R5 ===
+	// magic_lo (0x34364549 = "IE64") at R5+0
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x34364549))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 0, 5, 0, 0))
+	// magic_hi (0x474F5250 = "PROG") at R5+4
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x474F5250))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 0, 5, 0, 4))
+	// code_size = 24 (3 instructions × 8 bytes) at R5+8
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 24))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 0, 5, 0, 8))
+	// data_size = 0 at R5+12
+	w(ie64Instr(OP_STORE, 0, IE64_SIZE_L, 0, 5, 0, 12))
+	// flags = 0 at R5+16 (data page already zero from boot, but be explicit)
+	w(ie64Instr(OP_STORE, 0, IE64_SIZE_L, 0, 5, 0, 16))
 
-	// Now call EXEC_PROGRAM(3, R5, 5) — R5 = our data page VA
-	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 3))       // R1 = 3 (VERSION index)
-	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_Q, 0, 5, 0, 0))       // R2 = args ptr
-	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 5))       // R3 = 5 (args len)
-	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExecProgram)) // EXEC_PROGRAM
-	// R1 = new task_id, R2 = err. Print err digit.
-	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 2, 0, 0x30))      // R1 = R2 + '0'
-	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar)) // print err digit
-	// Yield to let the launched task get scheduled
+	// === Phase C: write the launched program's code at R5+32 ===
+	// Encode 3 instructions to a uint64 each, then store with STORE_Q.
+	loadZ := ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x5A) // 'Z'
+	doPutchar := ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar)
+	doExit := ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExitTask)
+	loadZQ := binary.LittleEndian.Uint64(loadZ)
+	doPutcharQ := binary.LittleEndian.Uint64(doPutchar)
+	doExitQ := binary.LittleEndian.Uint64(doExit)
+
+	// Store loadZ at R5+32 (split into two move.l + store.l for the 64-bit value)
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(loadZQ&0xFFFFFFFF)))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 0, 5, 0, 32))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(loadZQ>>32)))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 0, 5, 0, 36))
+	// Store doPutchar at R5+40
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(doPutcharQ&0xFFFFFFFF)))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 0, 5, 0, 40))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(doPutcharQ>>32)))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 0, 5, 0, 44))
+	// Store doExit at R5+48
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(doExitQ&0xFFFFFFFF)))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 0, 5, 0, 48))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(doExitQ>>32)))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 0, 5, 0, 52))
+
+	// === Phase D: SYS_EXEC_PROGRAM(R1=R5, R2=56, R3=0, R4=0) ===
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 5, 0, 0)) // R1 = data_va (image_ptr)
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 56))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExecProgram)) // R1=task_id, R2=err
+
+	// Print err digit ('0' on success)
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 2, 0, 0x30))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+
+	// Yield-loop forever (let the launched task get scheduled and run)
 	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
 	brOff := int32(-8)
 	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(brOff)))
@@ -5419,11 +5485,188 @@ func TestIExec_ExecProgram_WithArgs(t *testing.T) {
 
 	output := term.DrainOutput()
 	if !strings.Contains(output, "0") {
-		t.Fatalf("EXEC_PROGRAM didn't return ERR_OK, output=%q", output[:min(len(output), 100)])
+		t.Fatalf("ExecProgram_NewABI: ERR_OK '0' digit not in output, got=%q", output[:min(len(output), 100)])
+	}
+	if !strings.Contains(output, "Z") {
+		t.Fatalf("ExecProgram_NewABI: launched task did not print 'Z', got=%q", output[:min(len(output), 100)])
+	}
+	t.Logf("ExecProgram_NewABI: output=%q", output[:min(len(output), 80)])
+}
+
+// TestIExec_ExecProgram_NewABI_BadPtr verifies that the new ABI rejects an
+// unmapped user pointer with ERR_BADARG (3). Task 0 calls SYS_EXEC_PROGRAM
+// with R1=0x700000 — that VA is in the alloc pool's physical range but is
+// NOT mapped in task 0's PT (alloc'd memory only appears via AllocMem).
+// validate_user_range must walk the PT, find no entry for 0x700, and reject.
+func TestIExec_ExecProgram_NewABI_BadPtr(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	t0 := images[0]
+
+	off := uint32(0)
+	w := func(instr []byte) { copy(rig.cpu.memory[t0+off:], instr); off += 8 }
+
+	// SYS_EXEC_PROGRAM(R1=0x700000, R2=64, R3=0, R4=0) — image_ptr is unmapped
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x700000))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 64))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExecProgram))
+	// Print err digit. ERR_BADARG = 3 → '3'.
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 2, 0, 0x30))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	brOff := int32(-8)
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(brOff)))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "3") {
+		t.Fatalf("ExecProgram_NewABI_BadPtr: expected ERR_BADARG '3' in output, got=%q", output[:min(len(output), 100)])
+	}
+	t.Logf("ExecProgram_NewABI_BadPtr: output=%q", output[:min(len(output), 80)])
+}
+
+// TestIExec_ExecProgram_NewABI_BadSize verifies that an oversized image_size
+// is rejected with ERR_BADARG. The new ABI cap is 24608 (header + 8KB code +
+// 16KB data). We pass 32768 which exceeds it.
+func TestIExec_ExecProgram_NewABI_BadSize(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	t0 := images[0]
+
+	off := uint32(0)
+	w := func(instr []byte) { copy(rig.cpu.memory[t0+off:], instr); off += 8 }
+
+	// SYS_EXEC_PROGRAM(R1=0x602000, R2=32768, R3=0, R4=0) — oversize
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x602000))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 32768))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExecProgram))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 2, 0, 0x30))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	brOff := int32(-8)
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(brOff)))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "3") {
+		t.Fatalf("ExecProgram_NewABI_BadSize: expected ERR_BADARG '3' in output, got=%q", output[:min(len(output), 100)])
+	}
+	t.Logf("ExecProgram_NewABI_BadSize: output=%q", output[:min(len(output), 80)])
+}
+
+// TestIExec_ExecProgram_NewABI_WithArgs verifies that args passed through
+// the new pointer-based ABI land in the launched task's data page at
+// DATA_ARGS_OFFSET. Task 0 builds an image AND a 5-byte "hello" args buffer
+// in its data page, then calls SYS_EXEC_PROGRAM with both pointers in user
+// space (>= 0x600000). After yielding, we scan all task slots' data pages
+// at DATA_ARGS_OFFSET for the "hello" string.
+func TestIExec_ExecProgram_NewABI_WithArgs(t *testing.T) {
+	const dataArgsOffset = 3072
+
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	t0 := images[0]
+
+	off := uint32(0)
+	w := func(instr []byte) { copy(rig.cpu.memory[t0+off:], instr); off += 8 }
+
+	// Compute data_va = USER_DATA_BASE + task_id * stride
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 3))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo))
+	w(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, userSlotStride))
+	w(ie64Instr(OP_MULU, 5, IE64_SIZE_Q, 0, 1, 5, 0))
+	w(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, userDataBase))
+	w(ie64Instr(OP_ADD, 5, IE64_SIZE_Q, 0, 5, 6, 0)) // R5 = data_va
+
+	// Write IE64PROG header at R5
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x34364549))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 0, 5, 0, 0))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x474F5250))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 0, 5, 0, 4))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 16)) // code_size = 16 (2 instr)
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 0, 5, 0, 8))
+	w(ie64Instr(OP_STORE, 0, IE64_SIZE_L, 0, 5, 0, 12)) // data_size = 0
+	w(ie64Instr(OP_STORE, 0, IE64_SIZE_L, 0, 5, 0, 16)) // flags = 0
+
+	// Code at R5+32: print 'X', exit
+	loadX := ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x58)
+	doExit := ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExitTask)
+	loadXQ := binary.LittleEndian.Uint64(loadX)
+	doExitQ := binary.LittleEndian.Uint64(doExit)
+	// We don't actually print here — just exit. The DEBUG_PUTCHAR is unnecessary
+	// because we verify args via memory inspection, not output.
+	_ = doExit
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(loadXQ&0xFFFFFFFF)))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 0, 5, 0, 32))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(loadXQ>>32)))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 0, 5, 0, 36))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(doExitQ&0xFFFFFFFF)))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 0, 5, 0, 40))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(doExitQ>>32)))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 0, 5, 0, 44))
+
+	// Write "hello" args at R5+64 (after image, well within data page)
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x68)) // 'h'
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_B, 0, 5, 0, 64))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x65)) // 'e'
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_B, 0, 5, 0, 65))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x6C)) // 'l'
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_B, 0, 5, 0, 66))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_B, 0, 5, 0, 67))  // 'l' again
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x6F)) // 'o'
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_B, 0, 5, 0, 68))
+
+	// Compute args_ptr = R5 + 64 → R6
+	w(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, 64))
+	w(ie64Instr(OP_ADD, 6, IE64_SIZE_Q, 0, 5, 6, 0)) // R6 = R5 + 64
+
+	// SYS_EXEC_PROGRAM(R1=R5, R2=48, R3=R6, R4=5)
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 5, 0, 0))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 48))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_Q, 0, 6, 0, 0))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 5))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExecProgram))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 2, 0, 0x30))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	brOff := int32(-8)
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(brOff)))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(1 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "0") {
+		t.Fatalf("ExecProgram_NewABI_WithArgs: ERR_OK '0' not in output, got=%q", output[:min(len(output), 100)])
 	}
 
-	// Find the launched task's data page. Scan all slots for "hello" at
-	// DATA_ARGS_OFFSET. The new task gets the first free TCB slot.
+	// Scan all task slots for "hello" at DATA_ARGS_OFFSET in the data page.
+	// Note: data page address depends on code_pages of the launched task.
+	// For our 16-byte (1-page) code program, data is at code+0x2000 (the
+	// classic USER_DATA_BASE offset).
 	found := false
 	for slot := uint32(0); slot < maxTasks; slot++ {
 		argsAddr := uint32(userDataBase) + slot*userSlotStride + dataArgsOffset
@@ -5433,12 +5676,11 @@ func TestIExec_ExecProgram_WithArgs(t *testing.T) {
 		args := string(rig.cpu.memory[argsAddr : argsAddr+5])
 		if args == "hello" {
 			found = true
-			t.Logf("ExecProgram_WithArgs: found 'hello' at slot %d (addr 0x%X)", slot, argsAddr)
+			t.Logf("ExecProgram_NewABI_WithArgs: found 'hello' at slot %d (addr 0x%X)", slot, argsAddr)
 			break
 		}
 	}
 	if !found {
-		// Dump first few bytes of each slot's args area for diagnostics
 		for slot := uint32(0); slot < maxTasks; slot++ {
 			argsAddr := uint32(userDataBase) + slot*userSlotStride + dataArgsOffset
 			if argsAddr+8 <= uint32(len(rig.cpu.memory)) {
@@ -5447,7 +5689,6 @@ func TestIExec_ExecProgram_WithArgs(t *testing.T) {
 		}
 		t.Fatalf("args 'hello' not found in any task's data page at DATA_ARGS_OFFSET")
 	}
-	_ = term
 }
 
 func TestIExec_DosLibPort(t *testing.T) {
@@ -5589,8 +5830,8 @@ func TestIExec_VersionCommand(t *testing.T) {
 	// Inject "\nVERSION\n". The leading empty line gives dos.library time to
 	// finish initialization before the shell sends DOS_RUN for VERSION.
 	output := bootAndInjectCommand(t, "\nVERSION\n", 5*time.Second)
-	if !strings.Contains(output, "IntuitionOS 0.9") {
-		t.Fatalf("VersionCommand: expected 'IntuitionOS 0.9' in output, got=%q", output[:min(len(output), 300)])
+	if !strings.Contains(output, "IntuitionOS 0.10") {
+		t.Fatalf("VersionCommand: expected 'IntuitionOS 0.10' in output, got=%q", output[:min(len(output), 300)])
 	}
 }
 
@@ -5621,35 +5862,337 @@ func TestIExec_TypeCommand(t *testing.T) {
 	}
 }
 
+// M10: TYPE through the S: assign reads the seeded Startup-Sequence script.
+// This verifies (1) S: assign resolution, (2) DOS_OPEN/READ on a seeded text
+// file, and (3) the script content matches what dos.library copied at boot.
+func TestIExec_TypeStartupSequence(t *testing.T) {
+	output := bootAndInjectCommand(t, "TYPE S:Startup-Sequence\n", 5*time.Second)
+	if !strings.Contains(output, "VERSION") {
+		t.Fatalf("TypeStartupSequence: expected 'VERSION' in output, got=%q", output[:min(len(output), 300)])
+	}
+	if !strings.Contains(output, "ECHO IntuitionOS M10 ready") {
+		t.Errorf("TypeStartupSequence: expected 'ECHO IntuitionOS M10 ready' in output, got=%q", output[:min(len(output), 300)])
+	}
+}
+
 func TestIExec_DirCommand(t *testing.T) {
-	// Inject "DIR RAM:\n". Shell should list directory contents including "readme".
+	// Inject "DIR RAM:\n". Shell should list directory contents including "readme"
+	// (slot 0) and the M10-seeded C/* and S/Startup-Sequence files.
 	output := bootAndInjectCommand(t, "DIR RAM:\n", 5*time.Second)
 	if !strings.Contains(output, "readme") {
 		t.Fatalf("DirCommand: expected 'readme' in output, got=%q", output[:min(len(output), 300)])
 	}
+	if !strings.Contains(output, "C/Version") {
+		t.Errorf("DirCommand: expected 'C/Version' (M10 seeded command), got=%q", output[:min(len(output), 300)])
+	}
+	if !strings.Contains(output, "S/Startup-Sequence") {
+		t.Errorf("DirCommand: expected 'S/Startup-Sequence' (M10 seeded script), got=%q", output[:min(len(output), 300)])
+	}
 }
 
-func TestIExec_DOSDir(t *testing.T) {
-	t.Skip("needs programmatic DOS client task -- complex assembly injection required")
-}
+// === DOS direct-operation test coverage map ===
+//
+// DOS_OPEN(WRITE), DOS_WRITE, DOS_OPEN(READ), DOS_READ, DOS_CLOSE are all
+// exercised DIRECTLY (programmatic client task talking to dos.library via
+// raw messages) by TestIExec_DOSOpenWrite, which performs a full write→
+// close→read→close round-trip and verifies the bytes round-trip correctly.
+//
+// They are ALSO exercised end-to-end through the shell command tests:
+//   - DOS_OPEN(READ)/DOS_READ/DOS_CLOSE: TestIExec_TypeCommand,
+//     TestIExec_TypeStartupSequence
+//   - DOS_DIR: TestIExec_DirCommand
+//   - DOS_RUN: TestIExec_VersionCommand, TestIExec_AvailCommand,
+//     TestIExec_EchoCommand, TestIExec_M10Demo, TestIExec_CaseInsensitiveCommand
+//
+// Case-insensitive name matching: TestIExec_CaseInsensitiveCommand explicitly
+// types lowercase "version" to match the seeded "C/Version" file.
 
+// TestIExec_DOSOpenWrite is a direct programmatic-client test for the
+// DOS_OPEN(WRITE) → DOS_WRITE → DOS_CLOSE → DOS_OPEN(READ) → DOS_READ
+// → DOS_CLOSE round-trip. It overrides the shell (task 2) with a custom
+// task that talks to dos.library directly via messages, bypassing the
+// shell's command dispatch path. This is the only direct test of the
+// write-side DOS protocol — read-side ops are also covered indirectly
+// by TestIExec_TypeCommand and TestIExec_TypeStartupSequence.
+//
+// Test layout (task 2 == shell slot, with shell's code overridden):
+//  1. FindPort("dos.library") with retry until ready
+//  2. CreatePort(anonymous reply port)
+//  3. AllocMem(4096, MEMF_PUBLIC|MEMF_CLEAR) for shared buffer
+//  4. Write filename "scratch\0" to shared buffer
+//  5. PutMsg(DOS_OPEN, mode=WRITE) + WaitPort → save handle
+//  6. Overwrite shared buffer with "TESTDATA"
+//  7. PutMsg(DOS_WRITE, handle, 8) + WaitPort
+//  8. PutMsg(DOS_CLOSE, handle) + WaitPort
+//  9. Write "scratch\0" again, PutMsg(DOS_OPEN, mode=READ) → save handle2
+//  10. PutMsg(DOS_READ, handle2, 8) + WaitPort
+//  11. Copy 8 bytes from shared buffer to data page offset 200
+//  12. PutMsg(DOS_CLOSE, handle2) + WaitPort
+//  13. Yield-loop forever; test inspects task 2's data page
+//
+// Verification: data page offset 200 should contain "TESTDATA".
+// Each step also stores the syscall result (R1 = err) at known offsets
+// for diagnostic purposes if the test fails.
 func TestIExec_DOSOpenWrite(t *testing.T) {
-	t.Skip("needs programmatic DOS client task -- complex assembly injection required")
+	const (
+		userTask2Data = userDataBase + 2*userSlotStride // 0x622000
+		// Data page offsets used by the test client:
+		offDosPort  = 128 // dos_port_id (8 bytes)
+		offReplyPrt = 136 // reply_port_id (8 bytes)
+		offBufferVA = 144 // shared buffer VA (8 bytes)
+		offShareHdl = 152 // share_handle (8 bytes)
+		offOpenErr  = 160 // err from DOS_OPEN(WRITE) (8 bytes)
+		offHandle1  = 168 // file handle from DOS_OPEN(WRITE) (8 bytes)
+		offWriteErr = 176 // err from DOS_WRITE (8 bytes)
+		offBytesWr  = 184 // bytes written (8 bytes)
+		offReadErr  = 192 // err from DOS_READ (8 bytes)
+		offReadback = 200 // 8 bytes read back from file
+	)
+
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	// Don't override anything else — console.handler (task 0) and
+	// dos.library (task 1) must run normally. We override only the SHELL
+	// (last image) with our test client.
+	shellCode := images[len(images)-1]
+
+	off := shellCode
+	w := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+
+	// === Preamble: compute task's data page VA into R29 ===
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 3))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo)) // R1 = task_id
+	w(ie64Instr(OP_MOVE, 28, IE64_SIZE_L, 1, 0, 0, userSlotStride))
+	w(ie64Instr(OP_MULU, 28, IE64_SIZE_Q, 0, 1, 28, 0)) // R28 = task * stride
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, userDataBase))
+	w(ie64Instr(OP_ADD, 29, IE64_SIZE_Q, 0, 28, 29, 0)) // R29 = data_va
+
+	// Establish a 16-byte stack frame and store r29 at (sp) for reload after syscalls
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+
+	// === Step 1: FindPort("dos.library") with retry ===
+	// data[16] in shell's data section is "dos.library\0" — preserved by load_program
+	findLoop := off
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))  // r29 = data_va
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, 16))   // r1 = data_va + 16 = "dos.library"
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFindPort)) // R1=port, R2=err
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))  // reload r29
+	// If r2 == 0 (R0 hardwired), branch to found. Otherwise yield and retry.
+	beqInstr := off
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, 0)) // beq r2, r0, .found (patched)
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	bra1 := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(findLoop)-int32(bra1))))
+	foundDos := off
+	// Patch BEQ to jump to foundDos (backpatch the branch offset)
+	delta := int32(foundDos) - int32(beqInstr)
+	copy(rig.cpu.memory[beqInstr:], ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, uint32(delta)))
+	// Save dos_port_id at data[offDosPort]
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offDosPort))
+
+	// === Step 2: CreatePort(name=0, flags=0) — anonymous reply port ===
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort)) // R1=port_id
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offReplyPrt))
+
+	// === Step 3: AllocMem(4096, MEMF_PUBLIC|MEMF_CLEAR) ===
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0x10001)) // PUBLIC|CLEAR
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))    // R1=VA, R3=share_handle
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offBufferVA))
+	w(ie64Instr(OP_STORE, 3, IE64_SIZE_Q, 1, 29, 0, offShareHdl))
+
+	// Helper inline: write 8-byte string "scratch\0" at buffer
+	writeScratchName := func() {
+		w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, offBufferVA))
+		// scratch\0 = 0x73 0x63 0x72 0x61 0x74 0x63 0x68 0x00
+		bytes := []byte{0x73, 0x63, 0x72, 0x61, 0x74, 0x63, 0x68, 0x00}
+		for i, b := range bytes {
+			w(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, uint32(b)))
+			w(ie64Instr(OP_STORE, 5, IE64_SIZE_B, 0, 4, 0, uint32(i)))
+		}
+	}
+	// Helper inline: write 8-byte string "TESTDATA" at buffer
+	writeTestData := func() {
+		w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, offBufferVA))
+		bytes := []byte{0x54, 0x45, 0x53, 0x54, 0x44, 0x41, 0x54, 0x41}
+		for i, b := range bytes {
+			w(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, uint32(b)))
+			w(ie64Instr(OP_STORE, 5, IE64_SIZE_B, 0, 4, 0, uint32(i)))
+		}
+	}
+
+	// === Step 4: Write "scratch\0" to buffer ===
+	writeScratchName()
+
+	// === Step 5: DOS_OPEN(WRITE) ===
+	// PutMsg(R1=dos_port, R2=type=DOS_OPEN, R3=data0=mode=WRITE, R4=0, R5=reply, R6=share)
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1)) // DOS_OPEN
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 1)) // mode=WRITE
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_LOAD, 6, IE64_SIZE_L, 0, 29, 0, offShareHdl))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	// WaitPort(reply_port) → R1=type=err, R2=data0=handle
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offOpenErr))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offHandle1))
+
+	// === Step 6: Write "TESTDATA" to buffer ===
+	writeTestData()
+
+	// === Step 7: DOS_WRITE(handle, 8 bytes) ===
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 3)) // DOS_WRITE
+	w(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, offHandle1))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 8)) // byte_count
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_LOAD, 6, IE64_SIZE_L, 0, 29, 0, offShareHdl))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offWriteErr))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offBytesWr))
+
+	// === Step 8: DOS_CLOSE(handle1) ===
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 4)) // DOS_CLOSE
+	w(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, offHandle1))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+
+	// === Step 9: Write "scratch\0" again, DOS_OPEN(READ) ===
+	writeScratchName()
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1)) // DOS_OPEN
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0)) // mode=READ
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_LOAD, 6, IE64_SIZE_L, 0, 29, 0, offShareHdl))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	// Save handle2 (overwrite handle1's slot — we no longer need it)
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offHandle1))
+
+	// === Step 10: Zero buffer + DOS_READ ===
+	w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, offBufferVA))
+	w(ie64Instr(OP_STORE, 0, IE64_SIZE_Q, 0, 4, 0, 0)) // zero 8 bytes
+
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 2)) // DOS_READ
+	w(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, offHandle1))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 8)) // max_bytes
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_LOAD, 6, IE64_SIZE_L, 0, 29, 0, offShareHdl))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offReadErr))
+
+	// === Step 11: Copy 8 bytes from shared buffer to data[offReadback] ===
+	w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, offBufferVA))
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 4, 0, 0))
+	w(ie64Instr(OP_STORE, 5, IE64_SIZE_Q, 1, 29, 0, offReadback))
+
+	// === Step 12: DOS_CLOSE(handle2) ===
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 4)) // DOS_CLOSE
+	w(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, offHandle1))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+
+	// === Step 13: Yield-loop forever ===
+	loopHere := off
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	bra2 := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(loopHere)-int32(bra2))))
+
+	// Make sure shell's image header is large enough to cover our code.
+	// Shell originally had code_size=3256 in M10. Our test client is roughly
+	// (off - shellCode) bytes — fits well within 3256.
+	clientSize := off - shellCode
+	t.Logf("DOSOpenWrite: test client = %d bytes (shell budget = 3256)", clientSize)
+	if clientSize > 3256 {
+		t.Fatalf("test client too large: %d > 3256", clientSize)
+	}
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	mem := rig.cpu.memory
+	openErr := binary.LittleEndian.Uint64(mem[userTask2Data+offOpenErr:])
+	handle1 := binary.LittleEndian.Uint64(mem[userTask2Data+offHandle1:])
+	writeErr := binary.LittleEndian.Uint64(mem[userTask2Data+offWriteErr:])
+	bytesWr := binary.LittleEndian.Uint64(mem[userTask2Data+offBytesWr:])
+	readErr := binary.LittleEndian.Uint64(mem[userTask2Data+offReadErr:])
+	readback := mem[userTask2Data+offReadback : userTask2Data+offReadback+8]
+
+	t.Logf("DOSOpenWrite: openErr=%d handle1=%d writeErr=%d bytesWr=%d readErr=%d readback=%q",
+		openErr, handle1, writeErr, bytesWr, readErr, string(readback))
+
+	if openErr != 0 {
+		t.Fatalf("DOS_OPEN(WRITE) returned err=%d, want 0", openErr)
+	}
+	if writeErr != 0 {
+		t.Fatalf("DOS_WRITE returned err=%d, want 0", writeErr)
+	}
+	if bytesWr != 8 {
+		t.Errorf("DOS_WRITE wrote %d bytes, want 8", bytesWr)
+	}
+	if readErr != 0 {
+		t.Fatalf("DOS_READ returned err=%d, want 0", readErr)
+	}
+	if string(readback) != "TESTDATA" {
+		t.Fatalf("read-back content = %q, want \"TESTDATA\"", string(readback))
+	}
 }
 
-func TestIExec_DOSReadBack(t *testing.T) {
-	t.Skip("needs programmatic DOS client task -- complex assembly injection required")
+// TestIExec_CaseInsensitiveCommand explicitly verifies case-insensitive
+// command resolution by typing a lowercase command name. The seeded file
+// is "C/Version" but the user types "version" — the resolver must match.
+func TestIExec_CaseInsensitiveCommand(t *testing.T) {
+	output := bootAndInjectCommand(t, "version\n", 5*time.Second)
+	if !strings.Contains(output, "IntuitionOS 0.10") {
+		t.Fatalf("CaseInsensitiveCommand: lowercase 'version' did not match 'C/Version', got=%q", output[:min(len(output), 300)])
+	}
 }
 
-func TestIExec_DOSCaseInsensitive(t *testing.T) {
-	t.Skip("needs programmatic DOS client task -- complex assembly injection required")
-}
-
-func TestIExec_M9Demo(t *testing.T) {
+func TestIExec_M10Demo(t *testing.T) {
 	// Full integration demo: boot, then inject multiple commands in sequence
 	// and verify each produces expected output.
 	if testing.Short() {
-		t.Skip("skipping M9Demo in -short mode (takes ~20s)")
+		t.Skip("skipping M10Demo in -short mode (takes ~20s)")
 	}
 
 	commands := []string{
@@ -5666,7 +6209,7 @@ func TestIExec_M9Demo(t *testing.T) {
 		substr string
 		desc   string
 	}{
-		{"IntuitionOS 0.9", "VERSION command output"},
+		{"IntuitionOS 0.10", "VERSION command output"},
 		{"Total:", "AVAIL command output (Total:)"},
 		{"readme", "DIR command output (readme file)"},
 		{"Welcome to IntuitionOS", "TYPE command output"},
@@ -5674,10 +6217,10 @@ func TestIExec_M9Demo(t *testing.T) {
 	}
 	for _, c := range checks {
 		if !strings.Contains(output, c.substr) {
-			t.Errorf("M9Demo: missing %s -- expected %q in output", c.desc, c.substr)
+			t.Errorf("M10Demo: missing %s -- expected %q in output", c.desc, c.substr)
 		}
 	}
 	if t.Failed() {
-		t.Logf("M9Demo full output (%d bytes): %q", len(output), output[:min(len(output), 500)])
+		t.Logf("M10Demo full output (%d bytes): %q", len(output), output[:min(len(output), 500)])
 	}
 }

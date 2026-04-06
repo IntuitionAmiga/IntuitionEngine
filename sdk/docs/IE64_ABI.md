@@ -111,19 +111,20 @@ The syscall ABI is separate from the function calling convention.
 | Caller-saved regs  | May be clobbered by the kernel            |
 | Callee-saved regs  | See note below                            |
 
-**Current implementation (IExec M2):** The kernel's syscall dispatch logic
-uses R10-R16 internally. Callee-saved registers (R13-R15) are **not yet
-preserved** across syscalls. The kernel does not save or restore GPRs in the
-TCB during syscall handling.
+**Current implementation (IExec M9 onwards):** The kernel's syscall dispatch
+logic uses R10-R16 internally. Callee-saved registers (R13-R15) are **not
+preserved** across syscalls — the kernel does not save or restore GPRs in
+the TCB on the syscall entry path. (Timer interrupts DO save/restore the
+full GPR set as of M9; this section is about explicit syscalls only.)
 
-**ABI v0 target:** Once the kernel implements full GPR save/restore in the
-TCB, callee-saved registers (R13-R15) and SP will be preserved across
-syscalls. Until then, user code must treat all registers except R1, R2, and
-SP as potentially clobbered after a syscall.
+**ABI v0 target:** Once the kernel implements full GPR save/restore on the
+syscall entry path, callee-saved registers (R13-R15) and SP will be
+preserved across syscalls. Until then, user code must treat all registers
+except R1, R2, and SP as potentially clobbered after a syscall.
 
 After syscall return, R1 and R2 contain the return values. SP is preserved
 (via automatic USP swap). All other registers must be assumed clobbered
-until the kernel implements full GPR preservation.
+until the kernel implements full GPR preservation in the syscall path.
 
 C code must reach syscalls through wrapper functions that save any live
 caller-saved state before issuing SYSCALL.
@@ -153,7 +154,7 @@ A task must not return past its entry point. Falling off the end of a task
 entry function is undefined behavior.
 
 A task must exit by one of:
-- A syscall (e.g., a future `ExitTask` syscall)
+- The `ExitTask` syscall (#34) — implemented since M5
 - `HALT` instruction (early bootstrap and demo code only)
 
 ## 8. Trap and Interrupt Preservation Contract
@@ -170,20 +171,18 @@ After a syscall returns to user mode via `ERET`:
 
 ### 8.2 Interrupt Return
 
-**Current implementation (IExec M2):** The kernel saves only PC and USP to the
-TCB on timer interrupt. GPRs R1-R30 are **not saved or restored**. The kernel's
-interrupt dispatch logic clobbers R10-R16 and other registers internally.
+**Current implementation (IExec M9 onwards):** The kernel saves and restores
+the full GPR set (R1-R31) on the user stack across timer interrupts. PC, USP,
+PTBR, and all GPRs are preserved across preemption. Code that is preempted by
+the timer resumes with its register state intact.
 
-**ABI v0 rule:** User code must assume that any GPR classified as caller-saved
-(R1-R12) may be clobbered by a preemptive context switch. Callee-saved
-registers (R13-R15) are also not preserved by the current kernel
-implementation.
+**ABI v0 rule:** All user-visible GPRs (R1-R31) are preserved across timer
+interrupt preemption. User code does not need to defensively reload registers
+after a yield point — the timer interrupt is transparent.
 
-**Target behavior:** A future IExec milestone will save and restore the full
-GPR set (R1-R30) in the TCB on every context switch. Once implemented, the ABI
-guarantee will be strengthened to: all user-visible GPRs are preserved across
-interrupt return. Until then, code that may be preempted must tolerate register
-loss.
+**Note:** The explicit syscall path (Section 5) is separate and still
+clobbers R10-R16 internally. Only timer interrupts have full GPR preservation.
+A future milestone may extend GPR preservation to the syscall path as well.
 
 ### 8.3 Fault Delivery
 
