@@ -524,9 +524,10 @@ load_program:
     and     r14, r20, #7                ; check 8-byte alignment
     bnez    r14, .lp_badarg
 
-    ; 4. Load data_size, validate <= 16384
+    ; 4. Load data_size, validate <= 20480 (M11: bumped from 16384 to allow
+    ;    dos.library to grow to 5 data pages for embedded service images)
     load.l  r21, IMG_OFF_DATA_SIZE(r7)  ; r21 = data_size
-    move.l  r11, #16384
+    move.l  r11, #20480
     bgt     r21, r11, .lp_badarg
 
     ; 5. Check image_size >= 32 + code_size + data_size
@@ -2517,17 +2518,48 @@ trap_handler:
     bra     .do_find_port               ; same logic, version in R2 ignored
 
 ; ============================================================================
-; SYS_MAP_IO (M9) — Map I/O page into user space
+; SYS_MAP_IO (M9, extended in M11) — Map I/O pages into user space
 ; ============================================================================
-; R1 = physical page number (only 0xF0 allowed for M9)
-; Returns: R1 = mapped VA, R2 = error
+; R1 = base physical page number
+; R2 = page count (0 is treated as 1 for M9/M10 backwards compatibility)
+; Returns: R1 = mapped VA (base), R2 = error
+;
+; Allowlist (any other (PPN, count) combination → ERR_BADARG):
+;   (0xF0, 1)                         — chip register page (terminal/input/video MMIO)
+;   PPN in [0x100, 0x5FF],            — any contiguous slice of the 5 MB VRAM range
+;   count in [1, 0x600 - PPN]         (ends at most at PPN 0x5FF inclusive)
+;
+; The mapping consumes ONE region-table entry covering all `count` pages, so
+; large mappings (e.g. 300 pages for a 640x480x4 framebuffer) do not exhaust
+; the per-task 8-slot region table.
 .do_map_io:
-    move.q  r24, r1                     ; r24 = requested physical page
+    move.q  r24, r1                     ; r24 = requested base PPN
+    move.q  r25, r2                     ; r25 = requested page count
 
-    ; Validate: only terminal I/O page (0xF0) allowed for M9
-    move.l  r11, #TERM_IO_PAGE
-    bne     r24, r11, .mio_badarg
+    ; Backwards compat: page_count = 0 means 1 (M9/M10 callers)
+    bnez    r25, .mio_count_set
+    move.l  r25, #1
+.mio_count_set:
 
+    ; Validate against allowlist.
+    ; Fast path: (0xF0, 1) — preserves the M9/M10 single-page chip-register call.
+    move.l  r11, #TERM_IO_PAGE          ; 0xF0
+    bne     r24, r11, .mio_check_vram
+    move.l  r11, #1
+    bne     r25, r11, .mio_badarg       ; (0xF0, count) only allows count=1
+    bra     .mio_validated
+
+.mio_check_vram:
+    ; VRAM range: PPN in [0x100, 0x5FF], PPN+count <= 0x600
+    move.l  r11, #0x100
+    blt     r24, r11, .mio_badarg
+    move.l  r11, #0x600
+    bge     r24, r11, .mio_badarg
+    add     r11, r24, r25
+    move.l  r12, #0x600
+    bgt     r11, r12, .mio_badarg
+
+.mio_validated:
     ; Get current task
     move.l  r12, #KERN_DATA_BASE
     load.q  r13, (r12)
@@ -2552,37 +2584,36 @@ trap_handler:
 .mio_found_region:
     move.q  r21, r16                    ; r21 = &region[slot]
 
-    ; Find free VA in task's dynamic window
+    ; Find free VA range (r25 pages) in task's dynamic window
     push    r13
     move.q  r1, r13                     ; task_id
-    move.l  r2, #1                      ; 1 page
+    move.q  r2, r25                     ; pages needed
     jsr     find_free_va                ; R1 = VA, R2 = err
     pop     r13
     bnez    r2, .mio_nomem
-    move.q  r23, r1                     ; r23 = VA
+    move.q  r23, r1                     ; r23 = base VA
 
-    ; Map the I/O page: P|R|W|U = 0x17 (no X)
+    ; Map the I/O pages: P|R|W|U = 0x17 (no X)
     move.l  r12, #KERN_DATA_BASE
     lsl     r1, r13, #3
     add     r1, r1, #KD_PTBR_BASE
     add     r1, r1, r12
     load.q  r1, (r1)                    ; R1 = PT base
-    move.q  r2, r23                     ; R2 = VA
-    move.q  r3, r24                     ; R3 = PPN (0xF0)
-    move.l  r4, #1                      ; R4 = 1 page
+    move.q  r2, r23                     ; R2 = base VA
+    move.q  r3, r24                     ; R3 = base PPN
+    move.q  r4, r25                     ; R4 = page count
     move.l  r5, #0x17                   ; R5 = P|R|W|U
     jsr     map_pages
 
-    ; Fill region entry: type = REGION_IO (don't free on cleanup)
+    ; Fill region entry: type = REGION_IO (don't free pages on cleanup)
     store.l r23, KD_REG_VA(r21)
     store.w r24, KD_REG_PPN(r21)
-    move.w  r11, #1
-    store.w r11, KD_REG_PAGES(r21)
+    store.w r25, KD_REG_PAGES(r21)
     move.b  r11, #REGION_IO
     store.b r11, KD_REG_TYPE(r21)
 
     tlbflush
-    move.q  r1, r23                     ; return VA
+    move.q  r1, r23                     ; return base VA
     move.q  r2, #ERR_OK
     eret
 
@@ -3804,6 +3835,18 @@ prog_doslib_code:
     load.q  r29, (sp)
     add     r20, r29, #980
     jsr     .dos_seed_one
+    ; Seed DEVS/input.device (slot 7) — M11
+    load.q  r29, (sp)
+    add     r20, r29, #1032
+    jsr     .dos_seed_one
+    ; Seed LIBS/graphics.library (slot 8) — M11
+    load.q  r29, (sp)
+    add     r20, r29, #1050
+    jsr     .dos_seed_one
+    ; Seed C/GfxDemo (slot 9) — M11
+    load.q  r29, (sp)
+    add     r20, r29, #1072
+    jsr     .dos_seed_one
     bra     .dos_seed_done
 
     ; -----------------------------------------------------------------
@@ -4407,7 +4450,7 @@ prog_doslib_code:
 .dos_resolve_check_c:
     ; Check for "C:" (1 char before colon)
     move.l  r17, #1
-    bne     r15, r17, .dos_resolve_done
+    bne     r15, r17, .dos_resolve_check_4ch     ; M11: chain to LIBS/DEVS
     load.b  r16, (r23)
     or      r16, r16, #0x20
     move.l  r17, #0x63                  ; 'c'
@@ -4448,6 +4491,180 @@ prog_doslib_code:
 .dos_resolve_copy_done:
     add     r23, r29, #1000              ; return scratch as resolved name
     rts
+
+    ; ----------------------------------------------------------------
+    ; M11: 4-char prefix check — handles LIBS: and DEVS:
+    ; ----------------------------------------------------------------
+.dos_resolve_check_4ch:
+    move.l  r17, #4
+    bne     r15, r17, .dos_resolve_check_9ch
+    load.b  r16, (r23)
+    or      r16, r16, #0x20
+    move.l  r17, #0x6C                  ; 'l'
+    beq     r16, r17, .dos_check_libs
+    move.l  r17, #0x64                  ; 'd'
+    beq     r16, r17, .dos_check_devs
+    bra     .dos_resolve_check_9ch
+
+.dos_check_libs:
+    ; Verify "ibs"
+    add     r14, r23, #1
+    load.b  r16, (r14)
+    or      r16, r16, #0x20
+    move.l  r17, #0x69                  ; 'i'
+    bne     r16, r17, .dos_resolve_check_9ch
+    add     r14, r23, #2
+    load.b  r16, (r14)
+    or      r16, r16, #0x20
+    move.l  r17, #0x62                  ; 'b'
+    bne     r16, r17, .dos_resolve_check_9ch
+    add     r14, r23, #3
+    load.b  r16, (r14)
+    or      r16, r16, #0x20
+    move.l  r17, #0x73                  ; 's'
+    bne     r16, r17, .dos_resolve_check_9ch
+    ; Match: emit "LIBS/" + remainder
+    add     r17, r29, #1000
+    move.l  r16, #0x4C                  ; 'L'
+    store.b r16, (r17)
+    add     r17, r17, #1
+    move.l  r16, #0x49                  ; 'I'
+    store.b r16, (r17)
+    add     r17, r17, #1
+    move.l  r16, #0x42                  ; 'B'
+    store.b r16, (r17)
+    add     r17, r17, #1
+    move.l  r16, #0x53                  ; 'S'
+    store.b r16, (r17)
+    add     r17, r17, #1
+    move.l  r16, #0x2F                  ; '/'
+    store.b r16, (r17)
+    add     r17, r17, #1
+    add     r14, r23, #5                ; src = past "LIBS:"
+    bra     .dos_resolve_copy_rest
+
+.dos_check_devs:
+    ; Verify "evs"
+    add     r14, r23, #1
+    load.b  r16, (r14)
+    or      r16, r16, #0x20
+    move.l  r17, #0x65                  ; 'e'
+    bne     r16, r17, .dos_resolve_check_9ch
+    add     r14, r23, #2
+    load.b  r16, (r14)
+    or      r16, r16, #0x20
+    move.l  r17, #0x76                  ; 'v'
+    bne     r16, r17, .dos_resolve_check_9ch
+    add     r14, r23, #3
+    load.b  r16, (r14)
+    or      r16, r16, #0x20
+    move.l  r17, #0x73                  ; 's'
+    bne     r16, r17, .dos_resolve_check_9ch
+    ; Match: emit "DEVS/" + remainder
+    add     r17, r29, #1000
+    move.l  r16, #0x44                  ; 'D'
+    store.b r16, (r17)
+    add     r17, r17, #1
+    move.l  r16, #0x45                  ; 'E'
+    store.b r16, (r17)
+    add     r17, r17, #1
+    move.l  r16, #0x56                  ; 'V'
+    store.b r16, (r17)
+    add     r17, r17, #1
+    move.l  r16, #0x53                  ; 'S'
+    store.b r16, (r17)
+    add     r17, r17, #1
+    move.l  r16, #0x2F                  ; '/'
+    store.b r16, (r17)
+    add     r17, r17, #1
+    add     r14, r23, #5                ; src = past "DEVS:"
+    bra     .dos_resolve_copy_rest
+
+    ; ----------------------------------------------------------------
+    ; M11: 9-char prefix check — handles RESOURCES:
+    ; ----------------------------------------------------------------
+.dos_resolve_check_9ch:
+    move.l  r17, #9
+    bne     r15, r17, .dos_resolve_done
+    ; Verify "esources" at offsets 1..8 (offset 0 = 'r' check first)
+    load.b  r16, (r23)
+    or      r16, r16, #0x20
+    move.l  r17, #0x72                  ; 'r'
+    bne     r16, r17, .dos_resolve_done
+    add     r14, r23, #1
+    load.b  r16, (r14)
+    or      r16, r16, #0x20
+    move.l  r17, #0x65                  ; 'e'
+    bne     r16, r17, .dos_resolve_done
+    add     r14, r23, #2
+    load.b  r16, (r14)
+    or      r16, r16, #0x20
+    move.l  r17, #0x73                  ; 's'
+    bne     r16, r17, .dos_resolve_done
+    add     r14, r23, #3
+    load.b  r16, (r14)
+    or      r16, r16, #0x20
+    move.l  r17, #0x6F                  ; 'o'
+    bne     r16, r17, .dos_resolve_done
+    add     r14, r23, #4
+    load.b  r16, (r14)
+    or      r16, r16, #0x20
+    move.l  r17, #0x75                  ; 'u'
+    bne     r16, r17, .dos_resolve_done
+    add     r14, r23, #5
+    load.b  r16, (r14)
+    or      r16, r16, #0x20
+    move.l  r17, #0x72                  ; 'r'
+    bne     r16, r17, .dos_resolve_done
+    add     r14, r23, #6
+    load.b  r16, (r14)
+    or      r16, r16, #0x20
+    move.l  r17, #0x63                  ; 'c'
+    bne     r16, r17, .dos_resolve_done
+    add     r14, r23, #7
+    load.b  r16, (r14)
+    or      r16, r16, #0x20
+    move.l  r17, #0x65                  ; 'e'
+    bne     r16, r17, .dos_resolve_done
+    add     r14, r23, #8
+    load.b  r16, (r14)
+    or      r16, r16, #0x20
+    move.l  r17, #0x73                  ; 's'
+    bne     r16, r17, .dos_resolve_done
+    ; Match: emit "RESOURCES/" + remainder
+    add     r17, r29, #1000
+    move.l  r16, #0x52                  ; 'R'
+    store.b r16, (r17)
+    add     r17, r17, #1
+    move.l  r16, #0x45                  ; 'E'
+    store.b r16, (r17)
+    add     r17, r17, #1
+    move.l  r16, #0x53                  ; 'S'
+    store.b r16, (r17)
+    add     r17, r17, #1
+    move.l  r16, #0x4F                  ; 'O'
+    store.b r16, (r17)
+    add     r17, r17, #1
+    move.l  r16, #0x55                  ; 'U'
+    store.b r16, (r17)
+    add     r17, r17, #1
+    move.l  r16, #0x52                  ; 'R'
+    store.b r16, (r17)
+    add     r17, r17, #1
+    move.l  r16, #0x43                  ; 'C'
+    store.b r16, (r17)
+    add     r17, r17, #1
+    move.l  r16, #0x45                  ; 'E'
+    store.b r16, (r17)
+    add     r17, r17, #1
+    move.l  r16, #0x53                  ; 'S'
+    store.b r16, (r17)
+    add     r17, r17, #1
+    move.l  r16, #0x2F                  ; '/'
+    store.b r16, (r17)
+    add     r17, r17, #1
+    add     r14, r23, #10               ; src = past "RESOURCES:"
+    bra     .dos_resolve_copy_rest
 
 .dos_resolve_done:
     ; Unknown volume — return unchanged
@@ -4626,7 +4843,7 @@ prog_doslib_data:
     ; --- Offset 896: pre-create filename "readme\0" + pad to 16 ---
     dc.b    "readme", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
     ; --- Offset 912: pre-create content ---
-    dc.b    "Welcome to IntuitionOS M10", 0x0D, 0x0A, 0
+    dc.b    "Welcome to IntuitionOS M11", 0x0D, 0x0A, 0
     ; --- Offset 941: pad 1 byte ---
     ds.b    1
     ; --- Offset 942: seed file names ---
@@ -4639,9 +4856,13 @@ prog_doslib_data:
     ds.b    1                           ; pad to 1000
     ; --- Offset 1000: name resolution scratch buffer (32 bytes) ---
     ds.b    32
+    ; --- Offset 1032: M11 seed names ---
+    dc.b    "DEVS/input.device", 0      ; 1032 (18 bytes) → 1050
+    dc.b    "LIBS/graphics.library", 0  ; 1050 (22 bytes) → 1072
+    dc.b    "C/GfxDemo", 0              ; 1072 (10 bytes) → 1082
     ; --- Pad to 4096 (page boundary) ---
-    ; 1032 → 4096: 3064 bytes padding
-    ds.b    3064
+    ; 1082 → 4096: 3014 bytes padding
+    ds.b    3014
 
 ; ---------------------------------------------------------------------------
 ; Embedded command images (VERSION, AVAIL, DIR, TYPE, ECHO)
@@ -4750,7 +4971,7 @@ prog_version_data:
     ; --- Offset 24: padding to 32 ---
     ds.b    8
     ; --- Offset 32: version string ---
-    dc.b    "IntuitionOS 0.10 (exec.library M10)", 0x0D, 0x0A, 0
+    dc.b    "IntuitionOS 0.11 (exec.library M11)", 0x0D, 0x0A, 0
 prog_version_data_end:
     align   8
 prog_version_end:
@@ -5603,9 +5824,1120 @@ prog_echo_cmd_data_end:
 prog_echo_cmd_end:
 
 seed_startup:
+    dc.b    "DEVS:input.device", 0x0A
+    dc.b    "LIBS:graphics.library", 0x0A
     dc.b    "VERSION", 0x0A
-    dc.b    "ECHO IntuitionOS M10 ready", 0x0A, 0
+    dc.b    "ECHO IntuitionOS M11 ready", 0x0A, 0
 seed_startup_end:
+    align   8
+
+; ---------------------------------------------------------------------------
+; input.device — keyboard/mouse event service (M11)
+; ---------------------------------------------------------------------------
+; Polls SCAN_*/MOUSE_* registers (mapped via SYS_MAP_IO with the M11
+; range-aware extension), pushes INPUT_EVENT messages to a single registered
+; subscriber port. Single subscriber for M11; multi-subscriber fan-out is M12
+; work in intuition.library.
+;
+; Protocol: see iexec.inc INPUT_OPEN / INPUT_CLOSE / INPUT_EVENT.
+; Data layout:
+;   0:   "console.handler\0"  (16 bytes — unused, kept for standard layout)
+;   16:  "input.device\0"     (16 bytes, padded — port name)
+;   32:  banner string        (32 bytes — "input.device ONLINE [Task ")
+;   64:  padding              (64 bytes)
+;   128: task_id              (8 bytes)
+;   136: (unused)             (8 bytes)
+;   144: input_port           (8 bytes — own port_id)
+;   152: chip_mmio_va         (8 bytes — from SYS_MAP_IO)
+;   160: subscriber_port      (8 bytes, 0 = none)
+;   168: last_mouse_x         (4 bytes)
+;   172: last_mouse_y         (4 bytes)
+;   176: last_mouse_buttons   (4 bytes)
+;   180: event_seq            (4 bytes — monotonic event counter)
+;   184: padding              (8 bytes)
+prog_input_device:
+    dc.l    IMG_MAGIC_LO, IMG_MAGIC_HI
+    dc.l    prog_input_device_code_end - prog_input_device_code
+    dc.l    prog_input_device_data_end - prog_input_device_data
+    dc.l    0
+    ds.b    12
+prog_input_device_code:
+
+    ; ===== Preamble: compute data page base (preempt-safe) =====
+    sub     sp, sp, #16
+.idev_preamble:
+    move.l  r1, #SYSINFO_CURRENT_TASK
+    syscall #SYS_GET_SYS_INFO
+    store.q r1, 8(sp)
+    move.l  r1, #SYSINFO_CURRENT_TASK
+    syscall #SYS_GET_SYS_INFO
+    load.q  r28, 8(sp)
+    bne     r1, r28, .idev_preamble
+    move.l  r28, #USER_SLOT_STRIDE
+    mulu    r28, r1, r28
+    move.l  r29, #USER_DATA_BASE
+    add     r29, r29, r28
+    store.q r29, (sp)
+    load.q  r1, 8(sp)
+    move.l  r28, #USER_SLOT_STRIDE
+    mulu    r28, r1, r28
+    move.l  r29, #USER_DATA_BASE
+    add     r29, r29, r28
+    load.q  r28, (sp)
+    bne     r29, r28, .idev_preamble
+    store.q r29, (sp)
+    load.q  r1, 8(sp)
+    store.q r1, 128(r29)               ; data[128] = task_id
+
+    ; ===== SYS_MAP_IO(R1=0xF0, R2=1) =====
+    ; Maps the chip register page (terminal/input/video MMIO).
+    move.l  r1, #TERM_IO_PAGE
+    move.l  r2, #1
+    syscall #SYS_MAP_IO
+    load.q  r29, (sp)
+    bnez    r2, .idev_halt
+    store.q r1, 152(r29)               ; data[152] = chip_mmio_va
+
+    ; ===== CreatePort("input.device") =====
+    add     r1, r29, #16
+    move.l  r2, #PF_PUBLIC
+    syscall #SYS_CREATE_PORT
+    load.q  r29, (sp)
+    bnez    r2, .idev_halt
+    store.q r1, 144(r29)               ; data[144] = input_port
+
+    ; ===== Print banner via SYS_DEBUG_PUTCHAR =====
+    add     r20, r29, #32              ; r20 = &data[32] = banner
+.idev_ban_loop:
+    load.b  r1, (r20)
+    beqz    r1, .idev_ban_id
+    store.q r20, 8(sp)
+    syscall #SYS_DEBUG_PUTCHAR
+    load.q  r29, (sp)
+    load.q  r20, 8(sp)
+    add     r20, r20, #1
+    bra     .idev_ban_loop
+.idev_ban_id:
+    load.q  r29, (sp)
+    load.q  r1, 128(r29)
+    add     r1, r1, #0x30              ; '0' + task_id
+    syscall #SYS_DEBUG_PUTCHAR
+    move.l  r1, #0x5D                  ; ']'
+    syscall #SYS_DEBUG_PUTCHAR
+    move.l  r1, #0x0D
+    syscall #SYS_DEBUG_PUTCHAR
+    move.l  r1, #0x0A
+    syscall #SYS_DEBUG_PUTCHAR
+
+    ; ===== Main loop =====
+.idev_main:
+    load.q  r29, (sp)
+
+    ; --- Try to get a message (non-blocking) ---
+    load.q  r1, 144(r29)               ; input_port
+    syscall #SYS_GET_MSG               ; R1=type R2=data0 R3=err R4=data1 R5=reply R6=share
+    bnez    r3, .idev_poll             ; ERR_AGAIN → no msg
+
+    ; --- Got message: dispatch ---
+    move.q  r24, r2                    ; r24 = data0 (subscriber port for OPEN)
+    move.q  r25, r5                    ; r25 = reply_port
+
+    move.l  r28, #INPUT_OPEN
+    beq     r1, r28, .idev_do_open
+    move.l  r28, #INPUT_CLOSE
+    beq     r1, r28, .idev_do_close
+    bra     .idev_main                 ; unknown opcode, drop
+
+.idev_do_open:
+    load.q  r29, (sp)
+    load.q  r14, 160(r29)              ; current subscriber
+    bnez    r14, .idev_open_busy
+    store.q r24, 160(r29)              ; subscriber = data0
+    move.q  r1, r25                    ; reply_port
+    move.l  r2, #INPUT_ERR_OK
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    bra     .idev_main
+
+.idev_open_busy:
+    move.q  r1, r25
+    move.l  r2, #INPUT_ERR_BUSY
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    bra     .idev_main
+
+.idev_do_close:
+    load.q  r29, (sp)
+    store.q r0, 160(r29)               ; clear subscriber
+    move.q  r1, r25
+    move.l  r2, #INPUT_ERR_OK
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    bra     .idev_main
+
+    ; --- No message: poll input registers ---
+.idev_poll:
+    load.q  r29, (sp)
+    load.q  r24, 160(r29)              ; subscriber
+    beqz    r24, .idev_yield           ; no subscriber → just yield
+    load.q  r25, 152(r29)              ; chip_mmio_va
+
+    ; --- Drain keyboard scancodes ---
+.idev_kbd_drain:
+    add     r14, r25, #0x744           ; SCAN_STATUS
+    load.l  r14, (r14)
+    and     r14, r14, #1
+    beqz    r14, .idev_kbd_done
+    add     r15, r25, #0x740           ; SCAN_CODE (read auto-dequeues)
+    load.l  r15, (r15)
+    add     r16, r25, #0x748           ; SCAN_MODIFIERS
+    load.l  r16, (r16)
+
+    ; Build event word: (IE_KEY_DOWN<<24) | (scancode<<16) | (modifiers<<8)
+    move.l  r17, #IE_KEY_DOWN
+    lsl     r17, r17, #24
+    and     r15, r15, #0xFF
+    lsl     r15, r15, #16
+    or      r17, r17, r15
+    and     r16, r16, #0xFF
+    lsl     r16, r16, #8
+    or      r17, r17, r16
+
+    ; Build mn_Data1: (mx16<<48) | (my16<<32) | event_seq32
+    add     r18, r25, #0x730           ; MOUSE_X
+    load.l  r18, (r18)
+    and     r18, r18, #0xFFFF
+    lsl     r18, r18, #48
+    add     r19, r25, #0x734           ; MOUSE_Y
+    load.l  r19, (r19)
+    and     r19, r19, #0xFFFF
+    lsl     r19, r19, #32
+    or      r18, r18, r19
+    load.l  r19, 180(r29)
+    add     r19, r19, #1
+    store.l r19, 180(r29)
+    or      r18, r18, r19
+
+    ; PutMsg(subscriber, INPUT_EVENT, r17, r18, NONE, 0)
+    move.q  r1, r24
+    move.l  r2, #INPUT_EVENT
+    move.q  r3, r17
+    move.q  r4, r18
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    load.q  r24, 160(r29)              ; reload subscriber
+    beqz    r24, .idev_yield
+    load.q  r25, 152(r29)
+    bra     .idev_kbd_drain
+
+.idev_kbd_done:
+    ; --- Mouse: check status (reading clears change flag) ---
+    add     r14, r25, #0x73C           ; MOUSE_STATUS
+    load.l  r14, (r14)
+    and     r14, r14, #1
+    beqz    r14, .idev_yield
+
+    add     r15, r25, #0x730           ; MOUSE_X
+    load.l  r15, (r15)
+    and     r15, r15, #0xFFFF
+    add     r16, r25, #0x734           ; MOUSE_Y
+    load.l  r16, (r16)
+    and     r16, r16, #0xFFFF
+    add     r17, r25, #0x738           ; MOUSE_BUTTONS
+    load.l  r17, (r17)
+    and     r17, r17, #0xFF
+
+    load.l  r18, 168(r29)              ; last_mouse_x
+    load.l  r19, 172(r29)              ; last_mouse_y
+    load.l  r20, 176(r29)              ; last_mouse_buttons
+
+    ; --- Position changed? Emit IE_MOUSE_MOVE ---
+    bne     r15, r18, .idev_mv_emit
+    bne     r16, r19, .idev_mv_emit
+    bra     .idev_mv_check_btn
+
+.idev_mv_emit:
+    move.l  r21, #IE_MOUSE_MOVE
+    lsl     r21, r21, #24
+    move.q  r22, r15
+    lsl     r22, r22, #48
+    move.q  r23, r16
+    lsl     r23, r23, #32
+    or      r22, r22, r23
+    load.l  r19, 180(r29)
+    add     r19, r19, #1
+    store.l r19, 180(r29)
+    or      r22, r22, r19
+    move.q  r1, r24
+    move.l  r2, #INPUT_EVENT
+    move.q  r3, r21
+    move.q  r4, r22
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    load.q  r24, 160(r29)
+    beqz    r24, .idev_save_state
+    load.l  r20, 176(r29)              ; reload last_buttons (mouse coords r15/r16 unchanged in r registers)
+
+.idev_mv_check_btn:
+    ; --- Buttons changed? Emit IE_MOUSE_BTN ---
+    beq     r17, r20, .idev_save_state
+    move.l  r21, #IE_MOUSE_BTN
+    lsl     r21, r21, #24
+    move.q  r23, r17
+    lsl     r23, r23, #16
+    or      r21, r21, r23
+    move.q  r22, r15
+    lsl     r22, r22, #48
+    move.q  r23, r16
+    lsl     r23, r23, #32
+    or      r22, r22, r23
+    load.l  r19, 180(r29)
+    add     r19, r19, #1
+    store.l r19, 180(r29)
+    or      r22, r22, r19
+    move.q  r1, r24
+    move.l  r2, #INPUT_EVENT
+    move.q  r3, r21
+    move.q  r4, r22
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+
+.idev_save_state:
+    store.l r15, 168(r29)
+    store.l r16, 172(r29)
+    store.l r17, 176(r29)
+
+.idev_yield:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .idev_main
+
+.idev_halt:
+    syscall #SYS_YIELD
+    bra     .idev_halt
+prog_input_device_code_end:
+
+prog_input_device_data:
+    dc.b    "console.handler", 0
+    dc.b    "input.device", 0, 0, 0, 0
+    dc.b    "input.device ONLINE [Task ", 0
+    ds.b    5                           ; pad to offset 64
+    ds.b    64                          ; pad to offset 128
+    ds.b    8                           ; 128: task_id
+    ds.b    8                           ; 136: (unused)
+    ds.b    8                           ; 144: input_port
+    ds.b    8                           ; 152: chip_mmio_va
+    ds.b    8                           ; 160: subscriber_port
+    ds.b    4                           ; 168: last_mouse_x
+    ds.b    4                           ; 172: last_mouse_y
+    ds.b    4                           ; 176: last_mouse_buttons
+    ds.b    4                           ; 180: event_seq
+    ds.b    8                           ; 184: pad
+prog_input_device_data_end:
+    align   8
+prog_input_device_end:
+
+; ---------------------------------------------------------------------------
+; graphics.library — fullscreen RGBA32 display service (M11)
+; ---------------------------------------------------------------------------
+; Maps the chip register page (0xF0) and the 640x480x4 VRAM range
+; (PPNs 0x100..0x22B = 300 pages = 1228800 bytes), creates the
+; "graphics.library" port, then services requests synchronously.
+;
+; Single surface only for M11 (USER_DYN_PAGES=768 doesn't fit two persistent
+; surface mappings + persistent VRAM). Client double-buffering deferred to M12.
+;
+; Protocol: see iexec.inc GFX_* constants.
+prog_graphics_library:
+    dc.l    IMG_MAGIC_LO, IMG_MAGIC_HI
+    dc.l    prog_gfxlib_code_end - prog_gfxlib_code
+    dc.l    prog_gfxlib_data_end - prog_gfxlib_data
+    dc.l    0
+    ds.b    12
+prog_gfxlib_code:
+
+    ; ===== Preamble =====
+    sub     sp, sp, #16
+.gfx_preamble:
+    move.l  r1, #SYSINFO_CURRENT_TASK
+    syscall #SYS_GET_SYS_INFO
+    store.q r1, 8(sp)
+    move.l  r1, #SYSINFO_CURRENT_TASK
+    syscall #SYS_GET_SYS_INFO
+    load.q  r28, 8(sp)
+    bne     r1, r28, .gfx_preamble
+    move.l  r28, #USER_SLOT_STRIDE
+    mulu    r28, r1, r28
+    move.l  r29, #USER_DATA_BASE
+    add     r29, r29, r28
+    store.q r29, (sp)
+    load.q  r1, 8(sp)
+    move.l  r28, #USER_SLOT_STRIDE
+    mulu    r28, r1, r28
+    move.l  r29, #USER_DATA_BASE
+    add     r29, r29, r28
+    load.q  r28, (sp)
+    bne     r29, r28, .gfx_preamble
+    store.q r29, (sp)
+    load.q  r1, 8(sp)
+    store.q r1, 128(r29)               ; data[128] = task_id
+
+    ; ===== SYS_MAP_IO chip register page =====
+    move.l  r1, #TERM_IO_PAGE
+    move.l  r2, #1
+    syscall #SYS_MAP_IO
+    load.q  r29, (sp)
+    bnez    r2, .gfx_halt
+    store.q r1, 152(r29)               ; data[152] = chip_mmio_va
+
+    ; ===== SYS_MAP_IO VRAM (PPN 0x100, 300 pages = 640x480x4) =====
+    move.l  r1, #0x100
+    move.l  r2, #300
+    syscall #SYS_MAP_IO
+    load.q  r29, (sp)
+    bnez    r2, .gfx_halt
+    store.q r1, 160(r29)               ; data[160] = vram_va
+
+    ; ===== CreatePort("graphics.library") =====
+    add     r1, r29, #16
+    move.l  r2, #PF_PUBLIC
+    syscall #SYS_CREATE_PORT
+    load.q  r29, (sp)
+    bnez    r2, .gfx_halt
+    store.q r1, 144(r29)               ; data[144] = port_id
+
+    ; ===== Print banner via SYS_DEBUG_PUTCHAR =====
+    add     r20, r29, #32              ; r20 = &data[32] = banner
+.gfx_ban_loop:
+    load.b  r1, (r20)
+    beqz    r1, .gfx_ban_id
+    store.q r20, 8(sp)
+    syscall #SYS_DEBUG_PUTCHAR
+    load.q  r29, (sp)
+    load.q  r20, 8(sp)
+    add     r20, r20, #1
+    bra     .gfx_ban_loop
+.gfx_ban_id:
+    load.q  r29, (sp)
+    load.q  r1, 128(r29)
+    add     r1, r1, #0x30
+    syscall #SYS_DEBUG_PUTCHAR
+    move.l  r1, #0x5D                  ; ']'
+    syscall #SYS_DEBUG_PUTCHAR
+    move.l  r1, #0x0D
+    syscall #SYS_DEBUG_PUTCHAR
+    move.l  r1, #0x0A
+    syscall #SYS_DEBUG_PUTCHAR
+
+    ; ===== Main loop: WaitPort + dispatch =====
+.gfx_main:
+    load.q  r29, (sp)
+    load.q  r1, 144(r29)               ; port_id
+    syscall #SYS_WAIT_PORT             ; R1=type R2=data0 R3=err R4=data1 R5=reply R6=share
+    load.q  r29, (sp)
+    bnez    r3, .gfx_main              ; error → loop
+
+    ; Save message fields to scratch (200..239)
+    store.q r1, 200(r29)               ; type
+    store.q r2, 208(r29)               ; data0
+    store.q r4, 216(r29)               ; data1
+    store.q r5, 224(r29)               ; reply_port
+    store.q r6, 232(r29)               ; share_handle
+
+    ; Dispatch
+    move.l  r28, #GFX_ENUMERATE_ADAPTERS
+    beq     r1, r28, .gfx_h_enum_adapt
+    move.l  r28, #GFX_GET_ADAPTER_INFO
+    beq     r1, r28, .gfx_h_get_adapt
+    move.l  r28, #GFX_ENUMERATE_MODES
+    beq     r1, r28, .gfx_h_enum_modes
+    move.l  r28, #GFX_GET_MODE_INFO
+    beq     r1, r28, .gfx_h_get_mode
+    move.l  r28, #GFX_OPEN_DISPLAY
+    beq     r1, r28, .gfx_h_open_disp
+    move.l  r28, #GFX_CLOSE_DISPLAY
+    beq     r1, r28, .gfx_h_close_disp
+    move.l  r28, #GFX_REGISTER_SURFACE
+    beq     r1, r28, .gfx_h_reg_surf
+    move.l  r28, #GFX_UNREGISTER_SURFACE
+    beq     r1, r28, .gfx_h_unreg_surf
+    move.l  r28, #GFX_PRESENT
+    beq     r1, r28, .gfx_h_present
+    bra     .gfx_reply_bad_handle
+
+    ; ----- ENUMERATE_ADAPTERS: data0=1 -----
+.gfx_h_enum_adapt:
+    move.l  r2, #GFX_ERR_OK
+    move.l  r3, #1                     ; 1 adapter
+    move.q  r4, r0
+    bra     .gfx_reply
+
+    ; ----- GET_ADAPTER_INFO: data0=(1<<16), data1=CAP_RGBA32 -----
+.gfx_h_get_adapt:
+    ; Validate adapter_id == 0
+    load.q  r14, 208(r29)
+    bnez    r14, .gfx_reply_bad_handle
+    move.l  r2, #GFX_ERR_OK
+    move.l  r3, #0x10000               ; version 1.0 (major<<16)
+    move.l  r4, #GFX_CAP_RGBA32
+    bra     .gfx_reply
+
+    ; ----- ENUMERATE_MODES: data0=1 -----
+.gfx_h_enum_modes:
+    load.q  r14, 208(r29)
+    bnez    r14, .gfx_reply_bad_handle
+    move.l  r2, #GFX_ERR_OK
+    move.l  r3, #1                     ; 1 mode
+    move.q  r4, r0
+    bra     .gfx_reply
+
+    ; ----- GET_MODE_INFO: data0=(640<<16)|480, data1=(1<<32)|2560 -----
+.gfx_h_get_mode:
+    load.q  r14, 208(r29)              ; adapter_id
+    bnez    r14, .gfx_reply_bad_handle
+    load.q  r14, 216(r29)              ; mode_id
+    bnez    r14, .gfx_reply_bad_handle
+    ; data0 = (640<<16) | 480
+    move.l  r3, #640
+    lsl     r3, r3, #16
+    or      r3, r3, #480
+    ; data1 = (FMT_RGBA32 << 32) | 2560
+    move.l  r4, #GFX_FMT_RGBA32
+    lsl     r4, r4, #32
+    or      r4, r4, #2560
+    move.l  r2, #GFX_ERR_OK
+    bra     .gfx_reply
+
+    ; ----- OPEN_DISPLAY(0, 0): set chip mode, enable chip, mark open -----
+.gfx_h_open_disp:
+    load.q  r14, 208(r29)              ; adapter_id
+    bnez    r14, .gfx_reply_bad_mode
+    load.q  r14, 216(r29)              ; mode_id
+    bnez    r14, .gfx_reply_bad_mode
+    load.b  r14, 168(r29)              ; display_open
+    bnez    r14, .gfx_reply_busy
+    ; Set VIDEO_MODE = MODE_640x480 (= 0)
+    load.q  r15, 152(r29)              ; chip_mmio_va
+    add     r16, r15, #4               ; VIDEO_MODE
+    store.l r0, (r16)
+    ; Set VIDEO_CTRL = 1 to ENABLE the chip. Writing 0 to VIDEO_CTRL
+    ; DISABLES the chip per video_chip.go:2653 (the constant name
+    ; CTRL_DISABLE_FLAG=0 is misleading — non-zero enables, zero disables).
+    move.l  r17, #1
+    store.l r17, (r15)
+    ; Mark display open
+    move.b  r14, #1
+    store.b r14, 168(r29)
+    move.l  r2, #GFX_ERR_OK
+    move.l  r3, #1                     ; display_handle = 1
+    move.q  r4, r0
+    bra     .gfx_reply
+
+    ; ----- CLOSE_DISPLAY(handle): clear flag, drop surface, disable chip -----
+.gfx_h_close_disp:
+    load.q  r14, 208(r29)              ; display_handle
+    move.l  r28, #1
+    bne     r14, r28, .gfx_reply_bad_handle
+    store.b r0, 168(r29)               ; display_open = 0
+    store.b r0, 176(r29)               ; surface_in_use = 0 (drop on close)
+    ; Reset chip mode to 800x600 default and disable scanout. The next
+    ; OpenDisplay will re-enable with VIDEO_CTRL=1. This makes CloseDisplay
+    ; observable on the chip and mitigates the M11 wart (crashed
+    ; graphics.library leaving graphics mode active) for the clean-exit path.
+    load.q  r15, 152(r29)              ; chip_mmio_va
+    add     r16, r15, #4               ; VIDEO_MODE
+    move.l  r17, #1                    ; MODE_800x600 (DEFAULT_VIDEO_MODE)
+    store.l r17, (r16)
+    ; VIDEO_CTRL = 0 disables the chip (CTRL_DISABLE_FLAG = 0).
+    store.l r0, (r15)
+    move.l  r2, #GFX_ERR_OK
+    move.q  r3, r0
+    move.q  r4, r0
+    bra     .gfx_reply
+
+    ; ----- REGISTER_SURFACE: MapShared, store, return handle=1 -----
+.gfx_h_reg_surf:
+    load.q  r14, 208(r29)              ; display_handle
+    move.l  r28, #1
+    bne     r14, r28, .gfx_reply_bad_handle
+    load.b  r14, 168(r29)              ; display_open
+    beqz    r14, .gfx_reply_bad_handle
+    load.b  r14, 176(r29)              ; surface_in_use
+    bnez    r14, .gfx_reply_busy       ; already have one (single surface for M11)
+    ; MapShared(share_handle)
+    load.l  r1, 232(r29)               ; share_handle
+    syscall #SYS_MAP_SHARED            ; R1=mapped_va R2=err
+    load.q  r29, (sp)
+    bnez    r2, .gfx_reply_bad_format
+    store.q r1, 184(r29)               ; surface_mapped_va
+    load.l  r14, 232(r29)              ; share_handle
+    store.l r14, 180(r29)              ; surface_share_handle
+    store.l r0, 192(r29)               ; present_seq = 0
+    ; Unpack dimensions from saved data1: (w<<48)|(h<<32)|(fmt<<16)|stride
+    load.q  r14, 216(r29)              ; saved data1
+    move.q  r15, r14
+    lsr     r15, r15, #48
+    and     r15, r15, #0xFFFF          ; width
+    store.l r15, 240(r29)
+    move.q  r15, r14
+    lsr     r15, r15, #32
+    and     r15, r15, #0xFFFF          ; height
+    store.l r15, 244(r29)
+    move.q  r15, r14
+    lsr     r15, r15, #16
+    and     r15, r15, #0xFFFF          ; format
+    store.l r15, 248(r29)
+    move.q  r15, r14
+    and     r15, r15, #0xFFFF          ; stride (bytes)
+    store.l r15, 252(r29)
+    move.b  r14, #1
+    store.b r14, 176(r29)              ; surface_in_use
+    move.l  r2, #GFX_ERR_OK
+    move.l  r3, #1                     ; surface_handle = 1
+    move.q  r4, r0
+    bra     .gfx_reply
+
+    ; ----- UNREGISTER_SURFACE -----
+.gfx_h_unreg_surf:
+    load.q  r14, 208(r29)              ; surface_handle
+    move.l  r28, #1
+    bne     r14, r28, .gfx_reply_bad_handle
+    store.b r0, 176(r29)               ; clear in_use
+    move.l  r2, #GFX_ERR_OK
+    move.q  r3, r0
+    move.q  r4, r0
+    bra     .gfx_reply
+
+    ; ----- PRESENT: memcpy surface → VRAM, return present_seq -----
+.gfx_h_present:
+    load.q  r14, 208(r29)              ; surface_handle
+    move.l  r28, #1
+    bne     r14, r28, .gfx_reply_bad_handle
+    load.b  r14, 176(r29)              ; surface_in_use
+    beqz    r14, .gfx_reply_bad_handle
+    ; Compute byte count = stride * height (per stored surface dims)
+    load.l  r17, 252(r29)              ; stride (bytes)
+    load.l  r18, 244(r29)              ; height
+    mulu    r16, r17, r18              ; r16 = byte count
+    load.q  r14, 184(r29)              ; src = surface_mapped_va
+    load.q  r15, 160(r29)              ; dst = vram_va
+.gfx_present_copy:
+    beqz    r16, .gfx_present_done
+    load.q  r17, (r14)
+    store.q r17, (r15)
+    add     r14, r14, #8
+    add     r15, r15, #8
+    sub     r16, r16, #8
+    bra     .gfx_present_copy
+.gfx_present_done:
+    ; Increment present_seq, reply with new value
+    load.l  r14, 192(r29)
+    add     r14, r14, #1
+    store.l r14, 192(r29)
+    move.l  r2, #GFX_ERR_OK
+    move.q  r3, r14                    ; reply data0 = present_seq
+    move.q  r4, r0
+    bra     .gfx_reply
+
+    ; ----- Common reply paths -----
+.gfx_reply_bad_handle:
+    move.l  r2, #GFX_ERR_BAD_HANDLE
+    move.q  r3, r0
+    move.q  r4, r0
+    bra     .gfx_reply
+.gfx_reply_bad_mode:
+    move.l  r2, #GFX_ERR_BAD_MODE
+    move.q  r3, r0
+    move.q  r4, r0
+    bra     .gfx_reply
+.gfx_reply_bad_format:
+    move.l  r2, #GFX_ERR_BAD_FORMAT
+    move.q  r3, r0
+    move.q  r4, r0
+    bra     .gfx_reply
+.gfx_reply_busy:
+    move.l  r2, #GFX_ERR_BUSY
+    move.q  r3, r0
+    move.q  r4, r0
+    bra     .gfx_reply
+
+.gfx_reply:
+    ; R2 = err code (used as msg_type per project convention)
+    ; R3 = data0, R4 = data1
+    load.q  r1, 224(r29)               ; reply_port
+    move.q  r5, r0                     ; share_handle = 0
+    syscall #SYS_REPLY_MSG
+    bra     .gfx_main
+
+.gfx_halt:
+    syscall #SYS_YIELD
+    bra     .gfx_halt
+prog_gfxlib_code_end:
+
+prog_gfxlib_data:
+    ; offset 0:  "console.handler\0" (16) — unused, kept for convention
+    dc.b    "console.handler", 0
+    ; offset 16: port name "graphics.library" (exactly 16, NO trailing null)
+    dc.b    "graphics.library"
+    ; offset 32: banner "graphics.library ONLINE [Task " + null + pad to 64
+    dc.b    "graphics.library ONLINE [Task ", 0
+    ds.b    1                           ; pad to offset 64
+    ds.b    64                          ; pad to offset 128
+    ds.b    8                           ; 128: task_id
+    ds.b    8                           ; 136: (unused)
+    ds.b    8                           ; 144: port_id
+    ds.b    8                           ; 152: chip_mmio_va
+    ds.b    8                           ; 160: vram_va
+    ds.b    8                           ; 168: display_open (1) + pad
+    ds.b    4                           ; 176: surface_in_use (1) + pad (3)
+    ds.b    4                           ; 180: surface_share_handle (4)
+    ds.b    8                           ; 184: surface_mapped_va (8)
+    ds.b    8                           ; 192: present_seq (4) + pad
+    ds.b    8                           ; 200: msg type
+    ds.b    8                           ; 208: msg data0
+    ds.b    8                           ; 216: msg data1
+    ds.b    8                           ; 224: msg reply_port
+    ds.b    8                           ; 232: msg share_handle
+    ds.b    4                           ; 240: surface_width
+    ds.b    4                           ; 244: surface_height
+    ds.b    4                           ; 248: surface_format
+    ds.b    4                           ; 252: surface_stride
+prog_gfxlib_data_end:
+    align   8
+prog_gfxlib_end:
+
+; ---------------------------------------------------------------------------
+; C/GfxDemo — minimal graphics.library client (M11)
+; ---------------------------------------------------------------------------
+; Opens graphics.library + input.device, allocates a 640x480 RGBA32 surface,
+; registers it, fills with a solid color, presents once, then waits for
+; Escape (scancode 0x01) and exits cleanly.
+prog_gfxdemo:
+    dc.l    IMG_MAGIC_LO, IMG_MAGIC_HI
+    dc.l    prog_gfxdemo_code_end - prog_gfxdemo_code
+    dc.l    prog_gfxdemo_data_end - prog_gfxdemo_data
+    dc.l    0
+    ds.b    12
+prog_gfxdemo_code:
+
+    ; ===== Preamble =====
+    sub     sp, sp, #16
+.gd_preamble:
+    move.l  r1, #SYSINFO_CURRENT_TASK
+    syscall #SYS_GET_SYS_INFO
+    store.q r1, 8(sp)
+    move.l  r1, #SYSINFO_CURRENT_TASK
+    syscall #SYS_GET_SYS_INFO
+    load.q  r28, 8(sp)
+    bne     r1, r28, .gd_preamble
+    move.l  r28, #USER_SLOT_STRIDE
+    mulu    r28, r1, r28
+    move.l  r29, #USER_DATA_BASE
+    add     r29, r29, r28
+    store.q r29, (sp)
+    load.q  r1, 8(sp)
+    move.l  r28, #USER_SLOT_STRIDE
+    mulu    r28, r1, r28
+    move.l  r29, #USER_DATA_BASE
+    add     r29, r29, r28
+    load.q  r28, (sp)
+    bne     r29, r28, .gd_preamble
+    store.q r29, (sp)
+    load.q  r1, 8(sp)
+    store.q r1, 128(r29)               ; data[128] = task_id
+
+    ; ===== OpenLibrary("graphics.library") with retry =====
+.gd_open_gfx:
+    load.q  r29, (sp)
+    add     r1, r29, #16               ; "graphics.library"
+    move.l  r2, #0
+    syscall #SYS_OPEN_LIBRARY
+    load.q  r29, (sp)
+    beqz    r2, .gd_gfx_ok
+    syscall #SYS_YIELD
+    bra     .gd_open_gfx
+.gd_gfx_ok:
+    store.q r1, 136(r29)               ; data[136] = graphics_port
+
+    ; ===== OpenLibrary("input.device") with retry =====
+.gd_open_in:
+    load.q  r29, (sp)
+    add     r1, r29, #32               ; "input.device"
+    move.l  r2, #0
+    syscall #SYS_OPEN_LIBRARY
+    load.q  r29, (sp)
+    beqz    r2, .gd_in_ok
+    syscall #SYS_YIELD
+    bra     .gd_open_in
+.gd_in_ok:
+    store.q r1, 144(r29)               ; data[144] = input_port
+
+    ; ===== AllocMem(1228800, MEMF_PUBLIC|MEMF_CLEAR) =====
+    move.l  r1, #1228800
+    move.l  r2, #0x10001               ; MEMF_PUBLIC | MEMF_CLEAR
+    syscall #SYS_ALLOC_MEM             ; R1=va R2=err R3=share_handle
+    load.q  r29, (sp)
+    bnez    r2, .gd_halt
+    store.q r1, 152(r29)               ; data[152] = surface_va
+    store.l r3, 160(r29)               ; data[160] = surface_share_handle
+
+    ; ===== CreatePort(NULL) → reply_port (anonymous) =====
+    move.q  r1, r0
+    move.l  r2, #0
+    syscall #SYS_CREATE_PORT
+    load.q  r29, (sp)
+    bnez    r2, .gd_halt
+    store.q r1, 168(r29)               ; data[168] = reply_port
+
+    ; ===== CreatePort(NULL) → my_input_port (anonymous) =====
+    move.q  r1, r0
+    move.l  r2, #0
+    syscall #SYS_CREATE_PORT
+    load.q  r29, (sp)
+    bnez    r2, .gd_halt
+    store.q r1, 176(r29)               ; data[176] = my_input_port
+
+    ; ===== Send GFX_OPEN_DISPLAY(adapter=0, mode=0) =====
+    load.q  r1, 136(r29)               ; graphics_port
+    move.l  r2, #GFX_OPEN_DISPLAY
+    move.q  r3, r0                     ; data0 = adapter_id 0
+    move.q  r4, r0                     ; data1 = mode_id 0
+    load.q  r5, 168(r29)               ; reply_port
+    move.q  r6, r0
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    bnez    r2, .gd_halt
+    ; WaitPort for reply
+    load.q  r1, 168(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+    bnez    r3, .gd_halt
+    bnez    r1, .gd_halt               ; r1 = err code (must be GFX_ERR_OK = 0)
+    store.q r2, 184(r29)               ; data[184] = display_handle
+
+    ; ===== Send GFX_REGISTER_SURFACE =====
+    ; data1 = (640<<48) | (480<<32) | (1<<16) | 2560
+    load.q  r1, 136(r29)
+    move.l  r2, #GFX_REGISTER_SURFACE
+    load.q  r3, 184(r29)               ; data0 = display_handle
+    move.q  r4, #640
+    lsl     r4, r4, #48
+    move.q  r14, #480
+    lsl     r14, r14, #32
+    or      r4, r4, r14
+    move.q  r14, #1                    ; format
+    lsl     r14, r14, #16
+    or      r4, r4, r14
+    or      r4, r4, #2560              ; stride bytes
+    load.q  r5, 168(r29)               ; reply_port
+    load.l  r6, 160(r29)               ; share_handle
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    bnez    r2, .gd_halt
+    load.q  r1, 168(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+    bnez    r3, .gd_halt
+    bnez    r1, .gd_halt
+    store.q r2, 192(r29)               ; data[192] = surface_handle
+
+    ; ===== Send INPUT_OPEN(my_input_port) =====
+    load.q  r1, 144(r29)               ; input_port
+    move.l  r2, #INPUT_OPEN
+    load.q  r3, 176(r29)               ; data0 = my_input_port
+    move.q  r4, r0
+    load.q  r5, 168(r29)               ; reply_port
+    move.q  r6, r0
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    bnez    r2, .gd_halt
+    load.q  r1, 168(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+    bnez    r3, .gd_halt
+    bnez    r1, .gd_halt
+
+    ; ===== Initialize bouncing rect + mouse pointer state =====
+    move.l  r14, #100
+    store.l r14, 208(r29)              ; rect_x = 100
+    move.l  r14, #80
+    store.l r14, 212(r29)              ; rect_y = 80
+    move.l  r14, #4
+    store.l r14, 216(r29)              ; rect_vx = +4
+    move.l  r14, #3
+    store.l r14, 220(r29)              ; rect_vy = +3
+    move.l  r14, #320
+    store.l r14, 224(r29)              ; mouse_x = 320 (center)
+    move.l  r14, #240
+    store.l r14, 228(r29)              ; mouse_y = 240
+
+    ; ===== Animation loop: backdrop + rect + pointer + present + drain =====
+.gd_frame:
+    load.q  r29, (sp)
+
+    ; --- Fill backdrop (dark navy 0xFF202060) ---
+    load.q  r14, 152(r29)              ; surface_va
+    move.l  r15, #1228800
+    move.l  r16, #0xFF202060
+.gd_fill_bg:
+    beqz    r15, .gd_fill_bg_done
+    store.l r16, (r14)
+    add     r14, r14, #4
+    sub     r15, r15, #4
+    bra     .gd_fill_bg
+.gd_fill_bg_done:
+
+    ; --- Draw 32x32 bouncing rectangle (white) ---
+    load.q  r14, 152(r29)              ; surface_va base
+    load.l  r15, 208(r29)              ; rect_x
+    load.l  r16, 212(r29)              ; rect_y
+    move.l  r17, #0xFFFFFFFF           ; white
+    ; pixel addr = surface + y*2560 + x*4
+    move.l  r18, #2560
+    mulu    r19, r16, r18
+    lsl     r20, r15, #2
+    add     r19, r19, r20
+    add     r19, r19, r14              ; r19 = top-left pixel addr
+    move.l  r20, #32                   ; rows
+.gd_rect_row:
+    beqz    r20, .gd_rect_done
+    move.q  r22, r19                   ; row start
+    move.l  r21, #32                   ; cols
+.gd_rect_col:
+    beqz    r21, .gd_rect_row_done
+    store.l r17, (r22)
+    add     r22, r22, #4
+    sub     r21, r21, #1
+    bra     .gd_rect_col
+.gd_rect_row_done:
+    add     r19, r19, #2560            ; next row
+    sub     r20, r20, #1
+    bra     .gd_rect_row
+.gd_rect_done:
+
+    ; --- Draw 16x16 mouse pointer (green) ---
+    load.q  r14, 152(r29)
+    load.l  r15, 224(r29)              ; mouse_x
+    load.l  r16, 228(r29)              ; mouse_y
+    ; Clamp mouse to surface bounds [0, 624] / [0, 464]
+    move.l  r28, #624
+    ble     r15, r28, .gd_mp_x_ok
+    move.l  r15, #624
+.gd_mp_x_ok:
+    bgez    r15, .gd_mp_x_pos
+    move.l  r15, #0
+.gd_mp_x_pos:
+    move.l  r28, #464
+    ble     r16, r28, .gd_mp_y_ok
+    move.l  r16, #464
+.gd_mp_y_ok:
+    bgez    r16, .gd_mp_y_pos
+    move.l  r16, #0
+.gd_mp_y_pos:
+    move.l  r17, #0xFF00FF00           ; green
+    move.l  r18, #2560
+    mulu    r19, r16, r18
+    lsl     r20, r15, #2
+    add     r19, r19, r20
+    add     r19, r19, r14
+    move.l  r20, #16
+.gd_mp_row:
+    beqz    r20, .gd_mp_done
+    move.q  r22, r19
+    move.l  r21, #16
+.gd_mp_col:
+    beqz    r21, .gd_mp_row_done
+    store.l r17, (r22)
+    add     r22, r22, #4
+    sub     r21, r21, #1
+    bra     .gd_mp_col
+.gd_mp_row_done:
+    add     r19, r19, #2560
+    sub     r20, r20, #1
+    bra     .gd_mp_row
+.gd_mp_done:
+
+    ; --- Send GFX_PRESENT and wait for reply ---
+    load.q  r1, 136(r29)
+    move.l  r2, #GFX_PRESENT
+    load.q  r3, 192(r29)
+    move.q  r4, r0
+    load.q  r5, 168(r29)
+    move.q  r6, r0
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    load.q  r1, 168(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+
+    ; Mark "frame presented" in data[200] for tests
+    move.l  r14, #1
+    store.l r14, 200(r29)
+
+    ; --- Update bouncing rect: x += vx, bounce at [0, 608] ---
+    load.l  r14, 208(r29)
+    load.l  r15, 216(r29)
+    add     r14, r14, r15
+    move.l  r28, #608
+    ble     r14, r28, .gd_x_low_check
+    ; rect_x > 608: clamp + flip
+    move.l  r14, #608
+    sub     r15, r0, r15
+    bra     .gd_x_save
+.gd_x_low_check:
+    bgez    r14, .gd_x_save
+    move.l  r14, #0
+    sub     r15, r0, r15
+.gd_x_save:
+    store.l r14, 208(r29)
+    store.l r15, 216(r29)
+
+    load.l  r14, 212(r29)
+    load.l  r15, 220(r29)
+    add     r14, r14, r15
+    move.l  r28, #448
+    ble     r14, r28, .gd_y_low_check
+    move.l  r14, #448
+    sub     r15, r0, r15
+    bra     .gd_y_save
+.gd_y_low_check:
+    bgez    r14, .gd_y_save
+    move.l  r14, #0
+    sub     r15, r0, r15
+.gd_y_save:
+    store.l r14, 212(r29)
+    store.l r15, 220(r29)
+
+    ; --- Drain input events until queue empty ---
+.gd_drain:
+    load.q  r29, (sp)
+    load.q  r1, 176(r29)               ; my_input_port
+    syscall #SYS_GET_MSG
+    load.q  r29, (sp)
+    bnez    r3, .gd_drain_done         ; ERR_AGAIN → no more events
+
+    move.l  r28, #INPUT_EVENT
+    bne     r1, r28, .gd_drain         ; ignore non-events
+
+    move.q  r14, r2
+    lsr     r14, r14, #24
+    and     r14, r14, #0xFF            ; event type
+
+    move.l  r28, #IE_KEY_DOWN
+    beq     r14, r28, .gd_handle_key
+    move.l  r28, #IE_MOUSE_MOVE
+    beq     r14, r28, .gd_handle_move
+    bra     .gd_drain                  ; ignore other event types
+
+.gd_handle_key:
+    move.q  r14, r2
+    lsr     r14, r14, #16
+    and     r14, r14, #0xFF            ; scancode
+    move.l  r28, #1                    ; Escape
+    beq     r14, r28, .gd_exit
+    bra     .gd_drain
+
+.gd_handle_move:
+    ; mn_Data1 (R4) = (mx16<<48)|(my16<<32)|seq32
+    move.q  r14, r4
+    lsr     r14, r14, #48
+    and     r14, r14, #0xFFFF
+    store.l r14, 224(r29)              ; mouse_x
+    move.q  r14, r4
+    lsr     r14, r14, #32
+    and     r14, r14, #0xFFFF
+    store.l r14, 228(r29)              ; mouse_y
+    bra     .gd_drain
+
+.gd_drain_done:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .gd_frame
+
+.gd_exit:
+    ; ===== Cleanup: INPUT_CLOSE → UNREGISTER → CLOSE_DISPLAY → ExitTask =====
+    load.q  r1, 144(r29)
+    move.l  r2, #INPUT_CLOSE
+    move.q  r3, r0
+    move.q  r4, r0
+    load.q  r5, 168(r29)
+    move.q  r6, r0
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    load.q  r1, 168(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+
+    load.q  r1, 136(r29)
+    move.l  r2, #GFX_UNREGISTER_SURFACE
+    load.q  r3, 192(r29)
+    move.q  r4, r0
+    load.q  r5, 168(r29)
+    move.q  r6, r0
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    load.q  r1, 168(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+
+    load.q  r1, 136(r29)
+    move.l  r2, #GFX_CLOSE_DISPLAY
+    load.q  r3, 184(r29)
+    move.q  r4, r0
+    load.q  r5, 168(r29)
+    move.q  r6, r0
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    load.q  r1, 168(r29)
+    syscall #SYS_WAIT_PORT
+
+    move.q  r1, r0
+    syscall #SYS_EXIT_TASK
+
+.gd_halt:
+    syscall #SYS_YIELD
+    bra     .gd_halt
+prog_gfxdemo_code_end:
+
+prog_gfxdemo_data:
+    dc.b    "console.handler", 0
+    dc.b    "graphics.library"          ; offset 16, exactly 16 chars, NO trailing null
+    dc.b    "input.device", 0, 0, 0, 0  ; offset 32, padded to 16
+    dc.b    "GfxDemo M11", 0            ; offset 48
+    ds.b    4                           ; pad to 64
+    ds.b    64                          ; 64-127: padding
+    ds.b    8                           ; 128: task_id
+    ds.b    8                           ; 136: graphics_port
+    ds.b    8                           ; 144: input_port
+    ds.b    8                           ; 152: surface_va
+    ds.b    8                           ; 160: surface_share_handle (4) + pad
+    ds.b    8                           ; 168: reply_port
+    ds.b    8                           ; 176: my_input_port
+    ds.b    8                           ; 184: display_handle
+    ds.b    8                           ; 192: surface_handle
+    ds.b    8                           ; 200: presented_flag (4) + pad
+    ds.b    4                           ; 208: rect_x
+    ds.b    4                           ; 212: rect_y
+    ds.b    4                           ; 216: rect_vx
+    ds.b    4                           ; 220: rect_vy
+    ds.b    4                           ; 224: mouse_x
+    ds.b    4                           ; 228: mouse_y
+    ds.b    8                           ; 232: pad to 8-byte
+prog_gfxdemo_data_end:
+    align   8
+prog_gfxdemo_end:
 
 prog_doslib_data_end:
     align   8
@@ -5808,10 +7140,10 @@ prog_shell_code:
 .sh_ban_done:
 
     ; =====================================================================
-    ; Send "IntuitionOS M10\r\n" to console
+    ; Send "IntuitionOS M11\r\n" to console
     ; =====================================================================
     load.q  r29, (sp)
-    add     r20, r29, #56              ; "IntuitionOS M10\r\n" at offset 56
+    add     r20, r29, #56              ; "IntuitionOS M11\r\n" at offset 56
     jsr     .sh_send_string
 
     ; =====================================================================
@@ -6241,8 +7573,8 @@ prog_shell_data:
     ; --- Offset 32: "Shell ONLINE [Task \0" (20 bytes, ends at 52) ---
     dc.b    "Shell ONLINE [Task ", 0
     ds.b    4                           ; pad to offset 56
-    ; --- Offset 56: "IntuitionOS M10\r\n\0" (18 bytes, ends at 74) ---
-    dc.b    "IntuitionOS M10", 0x0D, 0x0A, 0
+    ; --- Offset 56: "IntuitionOS M11\r\n\0" (18 bytes, ends at 74) ---
+    dc.b    "IntuitionOS M11", 0x0D, 0x0A, 0
     ds.b    6                           ; pad to offset 80
     ; --- Offset 80: "1> \0" (4 bytes) + pad to 88 ---
     dc.b    "1> ", 0
@@ -6281,7 +7613,7 @@ prog_shell_end:
 ; ============================================================================
 
 boot_banner:
-    dc.b    "exec.library M10 boot", 0x0D, 0x0A, 0
+    dc.b    "exec.library M11 boot", 0x0D, 0x0A, 0
     align   4
 
 fault_msg_prefix:

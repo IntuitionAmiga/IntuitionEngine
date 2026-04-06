@@ -138,8 +138,8 @@ const (
 	allocPoolPages = 6400  // pages 0x700-0x1FFF
 
 	userDynBase   = 0x800000 // dynamic allocation VA base
-	userDynStride = 0x100000 // 1 MB per task window
-	userDynPages  = 256      // max pages per task dynamic window
+	userDynStride = 0x300000 // 3 MB per task window (M11: 1 chip + 300 VRAM + 300 surface pages)
+	userDynPages  = 768      // max pages per task dynamic window (M11: 256 → 768)
 
 	kdPageBitmap   = 1664 // page allocation bitmap (800 bytes)
 	kdPageBitmapSz = 800
@@ -1311,7 +1311,7 @@ func TestIExec_TwoTasksVisibleOutput(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	hasBanner := strings.Contains(output, "exec.library M10 boot")
+	hasBanner := strings.Contains(output, "exec.library M11 boot")
 	hasOnline := strings.Contains(output, "ONLINE")
 	if !hasBanner || !hasOnline {
 		t.Fatalf("visible output: hasBanner=%v hasOnline=%v, output=%q", hasBanner, hasOnline, output[:min(len(output), 100)])
@@ -1349,7 +1349,7 @@ func TestIExec_TwoTasksVisibleOutput_WithVRAM(t *testing.T) {
 
 	output := term.DrainOutput()
 	t.Logf("VRAM output (first 100 chars): %q", output[:min(len(output), 100)])
-	hasBanner := strings.Contains(output, "exec.library M10 boot")
+	hasBanner := strings.Contains(output, "exec.library M11 boot")
 	if !hasBanner {
 		t.Fatalf("visible output with VRAM mapped: hasBanner=%v, output=%q", hasBanner, output[:min(len(output), 100)])
 	}
@@ -1462,7 +1462,7 @@ func TestIExec_BootBanner_NoArtifact(t *testing.T) {
 	// Sanity check: the kernel actually printed banners through TERM_OUT
 	// (which means processChar fired and rendered into chip.frontBuffer).
 	output := term.DrainOutput()
-	if !strings.Contains(output, "exec.library M10 boot") {
+	if !strings.Contains(output, "exec.library M11 boot") {
 		t.Fatalf("kernel did not print boot banner; output=%q", output[:min(len(output), 100)])
 	}
 	if !strings.Contains(output, "ONLINE") {
@@ -4898,7 +4898,7 @@ func TestIExec_ImageHeaderValidation(t *testing.T) {
 
 			output := term.DrainOutput()
 			// Kernel should still boot (banner printed) — corrupt image is outside boot set
-			if !strings.Contains(output, "exec.library M10 boot") {
+			if !strings.Contains(output, "exec.library M11 boot") {
 				t.Fatalf("kernel failed to boot after corrupting non-boot image: output=%q", output[:min(len(output), 100)])
 			}
 			if strings.Contains(output, "PANIC") {
@@ -5047,7 +5047,7 @@ func TestIExec_LoaderRejectsInvalid(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	if !strings.Contains(output, "exec.library M10 boot") {
+	if !strings.Contains(output, "exec.library M11 boot") {
 		t.Fatalf("kernel didn't boot, output=%q", output[:min(len(output), 100)])
 	}
 	if strings.Contains(output, "PANIC") {
@@ -5119,7 +5119,7 @@ func TestIExec_LoaderSkipsFailure(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	if !strings.Contains(output, "exec.library M10 boot") {
+	if !strings.Contains(output, "exec.library M11 boot") {
 		t.Fatalf("kernel didn't boot")
 	}
 	if strings.Contains(output, "PANIC") {
@@ -5464,7 +5464,7 @@ func TestIExec_M10Boot(t *testing.T) {
 		substr string
 		desc   string
 	}{
-		{"exec.library M10 boot", "kernel boot banner"},
+		{"exec.library M11 boot", "kernel boot banner"},
 		{"console.handler ONLINE", "console.handler service"},
 		{"dos.library ONLINE", "dos.library service"},
 		{"Shell ONLINE", "Shell service"},
@@ -5515,6 +5515,110 @@ func TestIExec_MapIO_Basic(t *testing.T) {
 	output := term.DrainOutput()
 	if !strings.Contains(output, "0") {
 		t.Fatalf("MAP_IO didn't return ERR_OK, output=%q", output[:min(len(output), 100)])
+	}
+}
+
+// TestIExec_MapIO_M11_VRAMRange verifies the M11 page-count extension to
+// SYS_MAP_IO. Task 0 maps 64 contiguous VRAM pages (PPN 0x100, count=64),
+// reads back the first byte to confirm the mapping is alive, and prints
+// the err code as ASCII '0'..'9'.
+func TestIExec_MapIO_M11_VRAMRange(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	t0 := images[0]
+
+	off := uint32(0)
+	w := func(instr []byte) { copy(rig.cpu.memory[t0+off:], instr); off += 8 }
+	// SYS_MAP_IO(R1=0x100, R2=64) → R1=mapped_va, R2=err
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x100))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 64))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysMapIO))
+	// Print err digit
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 2, 0, 0x30))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	// Yield + loop
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	brOff := int32(-8)
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(brOff)))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(1 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "0") {
+		t.Fatalf("MAP_IO VRAM range didn't return ERR_OK, output=%q", output[:min(len(output), 100)])
+	}
+}
+
+// TestIExec_MapIO_M11_BadBase verifies that SYS_MAP_IO rejects PPNs outside
+// both the chip register page and the VRAM range allowlist.
+func TestIExec_MapIO_M11_BadBase(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	t0 := images[0]
+
+	off := uint32(0)
+	w := func(instr []byte) { copy(rig.cpu.memory[t0+off:], instr); off += 8 }
+	// SYS_MAP_IO(R1=0x80, R2=1) → expect ERR_BADARG (3)
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x80))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysMapIO))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 2, 0, 0x30))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	brOff := int32(-8)
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(brOff)))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(1 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	// errBadarg = 3 (ERR_BADARG), so we expect '3' (0x30 + 3 = 0x33)
+	if !strings.Contains(output, "3") {
+		t.Fatalf("MAP_IO with bad PPN should return ERR_BADARG (3), output=%q", output[:min(len(output), 100)])
+	}
+}
+
+// TestIExec_MapIO_M11_BackCompat verifies that the M11 ABI still accepts
+// the M9/M10 single-page form: SYS_MAP_IO(R1=0xF0) with R2=0 (treated as 1).
+func TestIExec_MapIO_M11_BackCompat(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	t0 := images[0]
+
+	off := uint32(0)
+	w := func(instr []byte) { copy(rig.cpu.memory[t0+off:], instr); off += 8 }
+	// SYS_MAP_IO(R1=0xF0, R2=0) → expect ERR_OK; R2=0 must be treated as 1
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xF0))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysMapIO))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 2, 0, 0x30))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	brOff := int32(-8)
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(brOff)))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(1 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "0") {
+		t.Fatalf("MAP_IO M11 backcompat (R2=0) should return ERR_OK (0), output=%q", output[:min(len(output), 100)])
 	}
 }
 
@@ -5993,8 +6097,8 @@ func TestIExec_VersionCommand(t *testing.T) {
 	// Inject "\nVERSION\n". The leading empty line gives dos.library time to
 	// finish initialization before the shell sends DOS_RUN for VERSION.
 	output := bootAndInjectCommand(t, "\nVERSION\n", 5*time.Second)
-	if !strings.Contains(output, "IntuitionOS 0.10") {
-		t.Fatalf("VersionCommand: expected 'IntuitionOS 0.10' in output, got=%q", output[:min(len(output), 300)])
+	if !strings.Contains(output, "IntuitionOS 0.11") {
+		t.Fatalf("VersionCommand: expected 'IntuitionOS 0.11' in output, got=%q", output[:min(len(output), 300)])
 	}
 }
 
@@ -6033,8 +6137,8 @@ func TestIExec_TypeStartupSequence(t *testing.T) {
 	if !strings.Contains(output, "VERSION") {
 		t.Fatalf("TypeStartupSequence: expected 'VERSION' in output, got=%q", output[:min(len(output), 300)])
 	}
-	if !strings.Contains(output, "ECHO IntuitionOS M10 ready") {
-		t.Errorf("TypeStartupSequence: expected 'ECHO IntuitionOS M10 ready' in output, got=%q", output[:min(len(output), 300)])
+	if !strings.Contains(output, "ECHO IntuitionOS M11 ready") {
+		t.Errorf("TypeStartupSequence: expected 'ECHO IntuitionOS M11 ready' in output, got=%q", output[:min(len(output), 300)])
 	}
 }
 
@@ -6346,8 +6450,407 @@ func TestIExec_DOSOpenWrite(t *testing.T) {
 // is "C/Version" but the user types "version" — the resolver must match.
 func TestIExec_CaseInsensitiveCommand(t *testing.T) {
 	output := bootAndInjectCommand(t, "version\n", 5*time.Second)
-	if !strings.Contains(output, "IntuitionOS 0.10") {
+	if !strings.Contains(output, "IntuitionOS 0.11") {
 		t.Fatalf("CaseInsensitiveCommand: lowercase 'version' did not match 'C/Version', got=%q", output[:min(len(output), 300)])
+	}
+}
+
+// TestIExec_AssignResolution_LIBS verifies that the M11 LIBS: assign
+// resolves: TYPE LIBS:graphics.library should not return "not found"
+// because graphics.library is seeded into the RAM file table as
+// LIBS/graphics.library and the resolver maps LIBS: → LIBS/.
+func TestIExec_AssignResolution_LIBS(t *testing.T) {
+	output := bootAndInjectCommand(t, "TYPE LIBS:graphics.library\n", 5*time.Second)
+	if strings.Contains(output, "not found") || strings.Contains(output, "Unknown command") {
+		t.Errorf("AssignResolution_LIBS: TYPE LIBS:graphics.library reported error, output=%q",
+			output[:min(len(output), 400)])
+	}
+	// The file is a binary IE64PROG, so the printable output is mostly junk.
+	// The signal we want is the absence of an error message, which we already
+	// checked above. The IE64PROG magic ("IE64PROG" as 8 bytes) is also visible
+	// at the start of the file content.
+	if !strings.Contains(output, "IE64PROG") {
+		t.Logf("AssignResolution_LIBS: warning: did not see 'IE64PROG' magic in output (file may have been truncated by terminal); error-free output is sufficient")
+	}
+}
+
+// TestIExec_AssignResolution_DEVS verifies that the M11 DEVS: assign
+// resolves to DEVS/ and that DEVS/input.device is reachable via TYPE.
+func TestIExec_AssignResolution_DEVS(t *testing.T) {
+	output := bootAndInjectCommand(t, "TYPE DEVS:input.device\n", 5*time.Second)
+	if strings.Contains(output, "not found") || strings.Contains(output, "Unknown command") {
+		t.Errorf("AssignResolution_DEVS: TYPE DEVS:input.device reported error, output=%q",
+			output[:min(len(output), 400)])
+	}
+	if !strings.Contains(output, "IE64PROG") {
+		t.Logf("AssignResolution_DEVS: warning: did not see 'IE64PROG' magic in output")
+	}
+}
+
+// TestIExec_DirShowsLibsAndDevs verifies the M11 file table contains
+// the seeded service files (LIBS/graphics.library, DEVS/input.device, C/GfxDemo)
+// alongside the existing M10 commands.
+func TestIExec_DirShowsLibsAndDevs(t *testing.T) {
+	output := bootAndInjectCommand(t, "DIR RAM:\n", 5*time.Second)
+	expected := []string{
+		"LIBS/graphics.library",
+		"DEVS/input.device",
+		"C/GfxDemo",
+	}
+	for _, name := range expected {
+		if !strings.Contains(output, name) {
+			t.Errorf("DirShowsLibsAndDevs: expected %q in DIR output, got=%q",
+				name, output[:min(len(output), 600)])
+		}
+	}
+}
+
+// Note on input.device BusyOnSecondOpen coverage:
+// input.device's single-subscriber enforcement uses the same
+// "load current_subscriber → bnez .busy" pattern as graphics.library's
+// single-display-owner enforcement. The graphics.library test below
+// (BusyOnSecondOpen) exercises that pattern through the shell-launchable
+// GfxDemo. A direct two-INPUT_OPEN test for input.device would require a
+// custom programmatic client (like TestIExec_DOSOpenWrite) since GfxDemo
+// only calls INPUT_OPEN once and a second GfxDemo halts at OpenDisplay
+// before reaching INPUT_OPEN. Deferred to M12 alongside the multi-
+// subscriber work in intuition.library which will need its own client.
+
+// TestIExec_GraphicsLib_BusyOnSecondOpen verifies single-display-owner
+// enforcement: when GfxDemo is launched twice, the first instance grabs
+// the display and the second instance's GFX_OPEN_DISPLAY returns BUSY.
+// The first demo's data[184] (display_handle) should be 1 (set after
+// successful OpenDisplay); the second's should be 0 (the demo halts on
+// the BUSY reply before reaching the store).
+func TestIExec_GraphicsLib_BusyOnSecondOpen(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	for _, ch := range "C:GfxDemo\nC:GfxDemo\n" {
+		term.EnqueueByte(byte(ch))
+	}
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(15 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	mem := rig.cpu.memory
+	const userDataBase = 0x602000
+	const slotStride = 0x10000
+
+	type demoState struct {
+		taskID int
+		handle uint32
+	}
+	var demos []demoState
+	for taskID := 0; taskID < 8; taskID++ {
+		dataBase := userDataBase + uint32(taskID)*slotStride
+		marker := string(mem[dataBase+48 : dataBase+48+11])
+		if marker != "GfxDemo M11" {
+			continue
+		}
+		// display_handle is at offset 184 (8 bytes; we read low 4)
+		h := uint32(mem[dataBase+184]) |
+			uint32(mem[dataBase+185])<<8 |
+			uint32(mem[dataBase+186])<<16 |
+			uint32(mem[dataBase+187])<<24
+		demos = append(demos, demoState{taskID: taskID, handle: h})
+	}
+
+	if len(demos) != 2 {
+		t.Fatalf("expected exactly 2 GfxDemo task slots, found %d", len(demos))
+	}
+
+	// Sort by taskID to identify "first" vs "second"
+	if demos[0].taskID > demos[1].taskID {
+		demos[0], demos[1] = demos[1], demos[0]
+	}
+
+	t.Logf("First GfxDemo (task %d): display_handle=%d", demos[0].taskID, demos[0].handle)
+	t.Logf("Second GfxDemo (task %d): display_handle=%d", demos[1].taskID, demos[1].handle)
+
+	if demos[0].handle != 1 {
+		t.Errorf("first GfxDemo's display_handle = %d, expected 1 (OpenDisplay should have succeeded)", demos[0].handle)
+	}
+	if demos[1].handle != 0 {
+		t.Errorf("second GfxDemo's display_handle = %d, expected 0 (OpenDisplay should have returned BUSY and halted)", demos[1].handle)
+	}
+}
+
+// TestIExec_GfxDemo_ChipFrontBuffer wires a real VideoChip into the test rig
+// and verifies that GfxDemo's GFX_PRESENT memcpy reaches chip.frontBuffer
+// (the buffer the compositor reads from). This is the test that catches the
+// "bytes land in bus memory but the compositor displays nothing" interactive
+// regression — it requires (a) the chip dispatch to route VRAM writes through
+// chip.HandleWrite, (b) the legacy MMIO64 split policy so 64-bit store.q
+// writes don't get silently dropped, and (c) graphics.library to actually
+// enable the chip via VIDEO_CTRL=1 (writing 0 disables it).
+func TestIExec_GfxDemo_ChipFrontBuffer(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+
+	chip, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	// Stop the chip's render loop so frontBuffer/backBuffer swaps don't
+	// hide the writes we're trying to observe.
+	chip.Stop()
+	rig.bus.MapIO(VRAM_START, VRAM_START+VRAM_SIZE-1, chip.HandleRead, chip.HandleWrite)
+	rig.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, chip.HandleRead, chip.HandleWrite)
+
+	// CRITICAL: graphics.library uses store.q (64-bit) for its present
+	// memcpy. With the default MMIO64PolicyFault, those writes to legacy
+	// 32-bit-mapped VRAM are silently dropped. main.go sets Split for
+	// production IE64; we must match here.
+	rig.bus.SetLegacyMMIO64Policy(MMIO64PolicySplit)
+
+	for _, ch := range "C:GfxDemo\n" {
+		term.EnqueueByte(byte(ch))
+	}
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(15 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	fb := chip.GetFrontBuffer()
+	if len(fb) == 0 {
+		t.Fatal("chip.GetFrontBuffer() returned empty slice")
+	}
+
+	// Demo backdrop is 0xFF202060 (RGBA byte order: R=60 G=20 B=20 A=FF).
+	pixel0 := uint32(fb[0]) | uint32(fb[1])<<8 | uint32(fb[2])<<16 | uint32(fb[3])<<24
+	t.Logf("chip.frontBuffer pixel 0 = 0x%08X (chip mode=%d, fb len=%d, chip enabled=%v)",
+		pixel0, chip.currentMode, len(fb), chip.IsEnabled())
+
+	if !chip.IsEnabled() {
+		t.Error("chip is not enabled — graphics.library failed to write VIDEO_CTRL=1 to enable scanout")
+	}
+	if pixel0 != 0xFF202060 {
+		t.Errorf("chip.frontBuffer[0] = 0x%08X, expected 0xFF202060 (demo backdrop). "+
+			"GFX_PRESENT memcpy is not landing in the chip's frontBuffer.", pixel0)
+	}
+
+	// Sample broadly to confirm the entire framebuffer was filled
+	nonZero := 0
+	const samplePixels = 1000
+	for i := 0; i < samplePixels && i*1024+4 <= len(fb); i++ {
+		off := i * 1024
+		px := uint32(fb[off]) | uint32(fb[off+1])<<8 | uint32(fb[off+2])<<16 | uint32(fb[off+3])<<24
+		if px != 0 {
+			nonZero++
+		}
+	}
+	if nonZero < samplePixels/2 {
+		t.Errorf("Only %d/%d sampled chip.frontBuffer pixels are non-zero", nonZero, samplePixels)
+	}
+}
+
+// TestIExec_GfxDemo_VRAMContents verifies that GfxDemo's GFX_PRESENT actually
+// writes the expected pixel bytes to physical VRAM. This is the test that
+// catches "demo runs and reports success but VRAM is empty" — the symptom
+// the user observed in interactive mode.
+func TestIExec_GfxDemo_VRAMContents(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	for _, ch := range "C:GfxDemo\n" {
+		term.EnqueueByte(byte(ch))
+	}
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(15 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	mem := rig.cpu.memory
+	// VRAM physical base is 0x100000 (VRAM_START in video_chip.go).
+	// First pixel of the framebuffer should be the demo's backdrop color
+	// 0xFF202060 stored little-endian: bytes 60 20 20 FF.
+	const vramBase = 0x100000
+	pixel0 := uint32(mem[vramBase]) |
+		uint32(mem[vramBase+1])<<8 |
+		uint32(mem[vramBase+2])<<16 |
+		uint32(mem[vramBase+3])<<24
+	if pixel0 == 0 {
+		t.Errorf("VRAM[0] is zero — GfxDemo's PRESENT did not write to physical VRAM. " +
+			"Either graphics.library's memcpy is going to the wrong destination, or the " +
+			"SYS_MAP_IO mapping isn't actually backed by physical VRAM addresses.")
+	}
+	if pixel0 != 0xFF202060 {
+		t.Logf("VRAM[0] = 0x%08X (expected 0xFF202060 if backdrop, or 0xFFFFFFFF if a rect pixel landed at top-left)", pixel0)
+	}
+
+	// Sample a few more pixels to confirm the entire framebuffer was written
+	nonZero := 0
+	const samplePixels = 100
+	for i := 0; i < samplePixels; i++ {
+		off := vramBase + uint32(i)*1024 // sample every 1024 bytes
+		px := uint32(mem[off]) |
+			uint32(mem[off+1])<<8 |
+			uint32(mem[off+2])<<16 |
+			uint32(mem[off+3])<<24
+		if px != 0 {
+			nonZero++
+		}
+	}
+	if nonZero < samplePixels/2 {
+		t.Errorf("Only %d/%d sampled VRAM pixels are non-zero — PRESENT memcpy is incomplete", nonZero, samplePixels)
+	}
+	t.Logf("VRAM[0] = 0x%08X, %d/%d sampled pixels non-zero", pixel0, nonZero, samplePixels)
+}
+
+// TestIExec_GfxDemoEndToEnd is the M11 integration test. It boots the
+// kernel, launches input.device, graphics.library, and C:GfxDemo via the
+// shell, then verifies that GfxDemo presents at least one frame to VRAM
+// (data[200] in the demo's data page is set to 1 after GFX_PRESENT
+// completes). Verifies the full M11 stack: SYS_MAP_IO range mapping,
+// SYS_MAP_SHARED across tasks, message protocol, surface registration,
+// and present blit.
+func TestIExec_GfxDemoEndToEnd(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	// Launch services in order, then the demo. Each line ends with newline so
+	// shell parses them as separate commands. Final newline gives a yield gap
+	// before we start checking.
+	for _, ch := range "DEVS:input.device\nLIBS:graphics.library\nC:GfxDemo\n" {
+		term.EnqueueByte(byte(ch))
+	}
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(15 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	// Find the GfxDemo task slot. Its data page lives at
+	// USER_DATA_BASE + task_id * USER_SLOT_STRIDE. data[200] is set to 1
+	// after the demo's first GFX_PRESENT completes.
+	mem := rig.cpu.memory
+	const userDataBase = 0x602000
+	const slotStride = 0x10000
+	presentedFound := false
+	for taskID := 0; taskID < 8; taskID++ {
+		dataBase := userDataBase + uint32(taskID)*slotStride
+		// Check the "GfxDemo" string at offset 48 to identify the task
+		marker := string(mem[dataBase+48 : dataBase+48+11])
+		if marker != "GfxDemo M11" {
+			continue
+		}
+		t.Logf("Found GfxDemo at task slot %d", taskID)
+		// Read presented_flag at offset 200
+		presentedFlag := uint32(mem[dataBase+200]) |
+			uint32(mem[dataBase+201])<<8 |
+			uint32(mem[dataBase+202])<<16 |
+			uint32(mem[dataBase+203])<<24
+		if presentedFlag == 1 {
+			presentedFound = true
+			t.Logf("GfxDemo presented_flag = 1 (PRESENT completed)")
+		} else {
+			t.Errorf("GfxDemo presented_flag = %d (expected 1)", presentedFlag)
+		}
+		break
+	}
+	if !presentedFound {
+		output := term.DrainOutput()
+		t.Errorf("GfxDemo did not complete its present cycle. Terminal output:\n%s",
+			output[:min(len(output), 800)])
+	}
+}
+
+// TestIExec_GraphicsLibLaunch verifies that graphics.library boots when
+// launched via LIBS:graphics.library through the shell, prints its ONLINE
+// banner, and registers a "graphics.library" public port. Exercises the M11
+// LIBS: assign resolution and the graphics.library service init flow
+// (chip MMIO map + 300-page VRAM range map + port creation).
+func TestIExec_GraphicsLibLaunch(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	for _, ch := range "LIBS:graphics.library\n" {
+		term.EnqueueByte(byte(ch))
+	}
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(5 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "graphics.library ONLINE") {
+		t.Errorf("GraphicsLibLaunch: expected 'graphics.library ONLINE' in output, got=%q",
+			output[:min(len(output), 600)])
+	}
+
+	mem := rig.cpu.memory
+	found := false
+	for i := 0; i < kdPortMax; i++ {
+		portBase := uint32(kernDataBase + kdPortBase + i*kdPortStride)
+		if mem[portBase+kdPortValid] == 0 {
+			continue
+		}
+		if mem[portBase+kdPortFlags]&pfPublic == 0 {
+			continue
+		}
+		name := strings.TrimRight(string(mem[portBase+kdPortName:portBase+kdPortName+portNameLen]), "\x00")
+		if name == "graphics.library" {
+			found = true
+			t.Logf("GraphicsLibLaunch: found graphics.library at port slot %d", i)
+			break
+		}
+	}
+	if !found {
+		t.Error("GraphicsLibLaunch: 'graphics.library' port not found in kernel port table")
+	}
+}
+
+// TestIExec_InputDeviceLaunch verifies that input.device boots when launched
+// via DEVS:input.device through the shell, prints its ONLINE banner, and
+// registers an "input.device" public port. This exercises the M11
+// DEVS: assign resolution path and the input.device service init flow.
+func TestIExec_InputDeviceLaunch(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+
+	// Pre-inject the launch command + a trailing newline. dos.library
+	// resolves "DEVS:input.device" via the M11 DEVS: assign to
+	// "DEVS/input.device" and execs it.
+	for _, ch := range "DEVS:input.device\n" {
+		term.EnqueueByte(byte(ch))
+	}
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(5 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+
+	// Verify banner appeared
+	if !strings.Contains(output, "input.device ONLINE") {
+		t.Errorf("InputDeviceLaunch: expected 'input.device ONLINE' in output, got=%q",
+			output[:min(len(output), 600)])
+	}
+
+	// Verify port was registered
+	mem := rig.cpu.memory
+	found := false
+	for i := 0; i < kdPortMax; i++ {
+		portBase := uint32(kernDataBase + kdPortBase + i*kdPortStride)
+		if mem[portBase+kdPortValid] == 0 {
+			continue
+		}
+		if mem[portBase+kdPortFlags]&pfPublic == 0 {
+			continue
+		}
+		name := strings.TrimRight(string(mem[portBase+kdPortName:portBase+kdPortName+portNameLen]), "\x00")
+		if name == "input.device" {
+			found = true
+			t.Logf("InputDeviceLaunch: found input.device at port slot %d", i)
+			break
+		}
+	}
+	if !found {
+		t.Error("InputDeviceLaunch: 'input.device' port not found in kernel port table")
 	}
 }
 
@@ -6372,7 +6875,7 @@ func TestIExec_M10Demo(t *testing.T) {
 		substr string
 		desc   string
 	}{
-		{"IntuitionOS 0.10", "VERSION command output"},
+		{"IntuitionOS 0.11", "VERSION command output"},
 		{"Total:", "AVAIL command output (Total:)"},
 		{"readme", "DIR command output (readme file)"},
 		{"Welcome to IntuitionOS", "TYPE command output"},

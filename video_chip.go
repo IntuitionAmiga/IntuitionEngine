@@ -2577,7 +2577,6 @@ func (chip *VideoChip) HandleWrite(addr uint32, value uint32) {
 		Thread Safety:
 		A full mutex lock is acquired during the write operation.
 	*/
-
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 	chip.handleWriteLocked(addr, value)

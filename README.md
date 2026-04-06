@@ -5976,29 +5976,30 @@ make aros               # Build VM with embedded AROS ROM
 
 IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. Unlike classic Amiga Exec, which ran everything in flat supervisor space with no memory protection, IExec uses the IE64 MMU to enforce hardware-backed user/supervisor privilege separation with per-task page tables and W^X memory policy. The design preserves the Amiga programming model (signals, message ports, priority scheduling) while adding the isolation guarantees of a modern protected-mode OS.
 
-**Milestone 10 status** — DOS-loaded programs + assigns + Startup-Sequence (implemented and tested):
+**Milestone 11 status** — input.device + graphics.library + fullscreen demo (implemented and tested):
 
-- Everything from M1-M9: self-sufficient boot, per-task page tables with W^X, trap dispatch, preemptive round-robin, signals, named message ports with FindPort discovery, request/reply messaging, dynamic task creation/exit, AllocMem/FreeMem/MapShared with capability handles, GURU MEDITATION fault messages, console.handler, dos.library RAM: filesystem, interactive shell, 5 external commands
-- **`SYS_EXEC_PROGRAM` ABI redesigned**: now takes a user-space image pointer (`R1=image_ptr, R2=image_size, R3=args_ptr, R4=args_len`). Runs entirely under the caller's PT (no PT switching). Legacy index path retained for M9 compatibility.
-- **`validate_user_range` subroutine**: walks the caller's page table and checks **both P and U** bits on every page in `[ptr, ptr+size)`. Rejects unmapped pages, kernel-only pages, and pointer-arithmetic overflow with `ERR_BADARG`.
-- **Multi-page code and data in `load_program`**: up to 2 code pages (8 KB) and 4 data pages (16 KB) per task. dos.library is the first 2-code-page program (5744 bytes code, 9428 bytes data including embedded command images).
-- **dos.library assign table**: static assigns map `RAM:` → bare name, `C:` → `C/` prefix, `S:` → `S/` prefix. Two resolution subroutines: `resolve_command_name` (default C:, used by DOS_RUN) and `resolve_file_name` (default bare, used by DOS_OPEN/READ/WRITE/DIR).
-- **DOS_RUN takes a command name**, not a program table index. dos.library resolves the name through the C: assign, looks it up in the RAM file store, and launches the matching IE64PROG image via the new `SYS_EXEC_PROGRAM` ABI.
-- **Embedded command images + init-time seeding**: VERSION, AVAIL, DIR, TYPE, ECHO live as raw IE64PROG bytes in dos.library's data pages. At init, dos.library seeds them into its 64 KB AllocMem'd RAM file store as `C/Version`, `C/Avail`, `C/Dir`, `C/Type`, `C/Echo`. The `S/Startup-Sequence` script is seeded the same way.
-- **Boot race prevention**: dos.library defers `CreatePort("dos.library")` until after seeding is complete. The port becoming visible IS the readiness signal — the shell's `OpenLibrary("dos.library")` retry loop blocks until the port exists, which guarantees all seeded files are in RAM before the shell first talks to dos.library.
-- **`DOS_NAME_LEN` increased from 16 to 32**: file table entry grows from 28 to 44 bytes. Required for paths like `S/Startup-Sequence`.
-- **Shell loses its command table**: parses the first word and sends the raw command name to dos.library via DOS_RUN. Handles `DOS_ERR_NOTFOUND` as "Unknown command".
-- **`S:Startup-Sequence` execution at boot**: shell opens the script via DOS, reads it into a script buffer, and executes each newline-terminated line through the same dispatch path as a typed command. Falls through to the interactive prompt when the script ends. Missing script is graceful (skips to prompt).
-- **Program table shrunk** to 3 boot entries + sentinel (was 8 + sentinel). Command images no longer occupy program table slots — they live in dos.library's data section as embedded files.
+- Everything from M1-M10: self-sufficient boot, per-task page tables with W^X, trap dispatch, preemptive round-robin, signals, named message ports with FindPort discovery, request/reply messaging, dynamic task creation/exit, AllocMem/FreeMem/MapShared with capability handles, GURU MEDITATION fault messages, console.handler, dos.library RAM: filesystem with assigns, interactive shell, S:Startup-Sequence execution, DOS-loaded programs
+- **`SYS_MAP_IO` extended to take a page count** (`R1=base_ppn, R2=page_count → R1=mapped_va, R2=err`). Range-aware allowlist: `(0xF0, 1)` for chip MMIO and `[0x100, 0x5FF]` for any contiguous slice of the 5 MB VRAM range. One region slot per mapping (graphics.library maps 300 VRAM pages in a single call). Backwards-compatible: `R2=0` is treated as `R2=1` for M9/M10 callers.
+- **`USER_DYN_PAGES` bumped from 256 to 768** (`USER_DYN_STRIDE` 1 MB → 3 MB). Required to fit graphics.library's 1 chip + 300 VRAM + 300 surface = 601 page mapping. The 8x3MB layout uses VA `0x800000-0x2000000` — the top of the 32 MB VA space.
+- **`load_program` data-size cap raised from 16384 to 20480** (5 data pages). Required for dos.library to grow to 5 data pages embedding the new M11 service images.
+- **dos.library assigns extended**: `LIBS:`, `DEVS:`, `RESOURCES:` added to the assign table. Resolved by extending `.dos_resolve_has_colon` with 4-char (LIBS/DEVS) and 9-char (RESOURCES) length checks.
+- **Three new embedded service images** in dos.library's data section: `LIBS/graphics.library`, `DEVS/input.device`, `C/GfxDemo`. Seeded into the RAM file table at init time.
+- **`S:Startup-Sequence` updated**: now launches `DEVS:input.device` and `LIBS:graphics.library` before VERSION, so the M11 services are running by the time the user gets the prompt.
+- **input.device** — keyboard/mouse event service. Maps page 0xF0 once via `SYS_MAP_IO`, polls `SCAN_*`/`MOUSE_*` registers, push-delivers `INPUT_EVENT` messages to a single registered subscriber port. Event format: `mn_Data0 = (event_type<<24)|(code<<16)|(modifiers<<8)|flags`, `mn_Data1 = (mouse_x16<<48)|(mouse_y16<<32)|event_seq32`. Mouse-move coalescing is a free property of the polling architecture.
+- **graphics.library** — fullscreen RGBA32 display service. Maps page 0xF0 (chip) and a 300-page VRAM range. Object model: enumerable adapters/modes, opaque display/surface handles, single-display owner, single-surface for M11. Client allocates surface buffer with `MEMF_PUBLIC`, hands the share_handle to graphics.library via `GFX_REGISTER_SURFACE`. Present is a synchronous CPU memcpy from the mapped surface to VRAM, replying with a per-surface monotonic `present_seq` counter. `mn_Data1` reserves a packed dirty rect for future rect-bounded copies.
+- **C/GfxDemo** — minimal graphics client. Opens the M11 services, allocates a 1.2 MB surface, registers it, fills with a solid color, presents once, then waits for Escape and exits cleanly. Exercises the full M11 stack end-to-end.
+- **Forward-compatible by design**: present takes a packed dirty rect (M11 always sends 0 = full frame), mode table queryable via `GFX_ENUMERATE_MODES`/`GFX_GET_MODE_INFO`, opaque handles, explicit per-surface stride, `GFX_WAIT_VBLANK` and `GFX_PRESENT_ASYNC` reserved in opcode space.
 - **Demo boot output (no user input)**:
   ```
-  exec.library M10 boot
+  exec.library M11 boot
   console.handler ONLINE [Task 0]
   dos.library ONLINE [Task 1]
   Shell ONLINE [Task 2]
-  IntuitionOS M10
-  IntuitionOS 0.10 (exec.library M10)        <- VERSION run by S:Startup-Sequence
-  IntuitionOS M10 ready                       <- ECHO run by S:Startup-Sequence
+  IntuitionOS M11
+  input.device ONLINE [Task 3]              <- launched by S:Startup-Sequence
+  graphics.library ONLINE [Task 4]          <- launched by S:Startup-Sequence
+  IntuitionOS 0.11 (exec.library M11)        <- VERSION run by S:Startup-Sequence
+  IntuitionOS M11 ready                       <- ECHO run by S:Startup-Sequence
   1>
   ```
 

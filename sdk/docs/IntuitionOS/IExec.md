@@ -270,8 +270,8 @@ The CPU traps to supervisor mode. The kernel's trap handler reads the syscall nu
 |---|------|-----------|--------|
 | 26 | `Yield` | (no args) -> (returns after reschedule) | **Implemented** |
 | 27 | `GetSysInfo` | R1=info_id -> R1=value | **Implemented** |
-| 28 | `MapIO` | R1=io_base, R2=size -> R1=mapped_addr | **Implemented (M9)** |
-| 29 | `MapVRAM` | R1=vram_base, R2=size -> R1=mapped_addr | Future |
+| 28 | `MapIO` | R1=base_ppn, R2=page_count -> R1=mapped_va, R2=err | **Implemented (M9, extended in M11)** |
+| 29 | `MapVRAM` | (subsumed by `MapIO` VRAM allowlist) | Subsumed |
 | 30 | `Debug` | R1=debug_op, R2=arg -> R1=result | Future |
 
 ### 5.8 Debug I/O
@@ -634,7 +634,7 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 - **Shell**: interactive command shell (Task 2). Reads input via console.handler, dispatches commands to dos.library via DOS_RUN. Displays `1> ` prompt (AmigaOS-style).
 - **5 external commands**: VERSION, AVAIL, DIR, TYPE, ECHO. All are real user-space tasks loaded from the program table (no shell builtins). Arguments are passed via DATA_ARGS_OFFSET in the data page.
 
-### Milestone 10: DOS-Loaded Programs + Assigns + Startup-Sequence (Current)
+### Milestone 10: DOS-Loaded Programs + Assigns + Startup-Sequence (Complete)
 
 **Implemented and tested (builds on Milestone 9):**
 
@@ -710,9 +710,91 @@ Hello from IntuitionOS
 - Program table entries 3-7 (on-demand commands) - the table is now boot-services-only
 - The 2-phase PT switching dance in `SYS_EXEC_PROGRAM` (no longer needed - the new ABI runs entirely under the caller's PT)
 
-### Milestone 11: Timers + Handles (Planned)
+### Milestone 11: input.device + graphics.library + Fullscreen Demo (Current)
 
-- `AddTimer` / `RemTimer` with delta queue
-- `MapVRAM` for user-space video memory access
-- Unified handle table (`CloseHandle` / `DupHandle`)
-- `Debug` syscall for kernel diagnostics
+**Implemented and tested (builds on Milestone 10):**
+
+M11 takes the next step toward an Amiga-shaped graphical OS: interactive input and a fullscreen graphics surface, both as **user-space services**. After M11 the system boots into text mode, runs `S:Startup-Sequence` (which now also launches `DEVS:input.device` and `LIBS:graphics.library`), and a graphical client (`C:GfxDemo`) can open a 640x480 RGBA32 framebuffer, draw into a shared surface, present, and receive keyboard/mouse events through a registered event port. No compositor, no windows, no `intuition.library` yet — those are M12.
+
+**Kernel changes (one targeted handler refinement, no new syscalls):**
+
+- **`SYS_MAP_IO` extended to take a page count.** New ABI: `R1 = base_ppn, R2 = page_count → R1 = mapped_va, R2 = err`. The legacy single-page form (`R2 = 0`) is preserved for M9/M10 callers — `R2 = 0` is treated as `R2 = 1`.
+- **Range-aware allowlist**: only two PPN windows are accepted: `(0xF0, 1)` for the chip register page (terminal/input/video MMIO) and `[0x100, 0x5FF]` for any contiguous slice of the 5 MB VRAM range. Anything else returns `ERR_BADARG`.
+- **One region slot for the whole mapping**: a 300-page VRAM mapping consumes exactly one entry in the per-task region table (8 slots), not 300. Required because graphics.library maps the full 640x480x4 framebuffer in a single call.
+- **`USER_DYN_PAGES` bumped from 256 to 768** (`USER_DYN_STRIDE` 1 MB → 3 MB). Required for graphics.library to simultaneously map 1 chip + 300 VRAM + 300 surface pages = 601 pages. The 8x3MB layout uses VA `0x800000-0x2000000` — the top of the 32 MB VA space. Double-buffering (2 client surfaces) does not fit in 768 pages and is deferred to M12.
+- **`load_program` data-size cap raised from 16384 to 20480** (5 data pages). Required for dos.library to grow to 5 data pages embedding the new `LIBS/graphics.library`, `DEVS/input.device`, and `C/GfxDemo` images.
+- No new syscalls. No new region types. No new TCB fields. No VA layout overhaul beyond the dynamic window stride bump.
+
+**dos.library changes (additional namespaces, additional seeds):**
+
+- **Three new assign entries**: `LIBS:` → `LIBS/`, `DEVS:` → `DEVS/`, `RESOURCES:` → `RESOURCES/`. Resolved by extending the existing `.dos_resolve_has_colon` chain with a 4-char check (LIBS/DEVS) and a 9-char check (RESOURCES). All three follow the same "uppercase prefix + slash + remainder" pattern.
+- **Three new embedded service images**: `LIBS/graphics.library`, `DEVS/input.device`, `C/GfxDemo`. Embedded in dos.library's data section after the existing M10 command images and seeded into the RAM file table at init time via `dos_seed_one`. dos.library now has 5 data pages (was 3).
+- **`S:Startup-Sequence` updated**: now launches `DEVS:input.device` and `LIBS:graphics.library` before printing the version banner and the M11 ready message. The shell's existing fire-and-forget DOS_RUN-with-delay is sufficient to start long-running service tasks; banner ordering is naturally serialized through `SYS_DEBUG_PUTCHAR`.
+- The strict-boot kernel program table is **unchanged at 3 entries** (console.handler, dos.library, shell). M11 services live in dos.library's seeded RAM filesystem, not in the kernel image. Single source of truth.
+
+**input.device — keyboard/mouse event service (new in M11):**
+
+- **MMIO source registers** (chip page 0xF0):
+  - `SCAN_CODE` (0xF0740, dequeues a raw scancode), `SCAN_STATUS` (0xF0744 bit 0), `SCAN_MODIFIERS` (0xF0748). Use these for keyboard, NOT `TERM_KEY_*` which is the cooked terminal queue owned by console.handler.
+  - `MOUSE_X` / `MOUSE_Y` / `MOUSE_BUTTONS` / `MOUSE_STATUS` (0xF0730-0xF073F).
+- **Event push protocol**: clients call `INPUT_OPEN` (data0 = client port_id) to register a single subscriber. input.device polls registers on its scheduler quantum and `PutMsg`'s `INPUT_EVENT` messages into the registered client port whenever scancodes dequeue or mouse state changes.
+- **Single subscriber for M11.** A second `INPUT_OPEN` while one is registered returns `INPUT_ERR_BUSY`. Multi-subscriber fan-out is M12 work in `intuition.library`.
+- **Event message format**: `mn_Type = INPUT_EVENT`, `mn_Data0 = (event_type<<24)|(code<<16)|(modifiers<<8)|flags`, `mn_Data1 = (mouse_x16<<48)|(mouse_y16<<32)|event_seq32`. The 32-bit event sequence number in the low half of `mn_Data1` is a per-device monotonic counter useful for debugging dropped events and (later) coalescing.
+- **Mouse-move coalescing is a free property of the polling architecture**: input.device emits at most one `IE_MOUSE_MOVE` per poll cycle, carrying the latest position. Multiple raw moves between polls naturally collapse.
+
+**graphics.library — fullscreen RGBA32 display service (new in M11):**
+
+- **Maps page 0xF0 once** (chip MMIO — same page used by input.device; both can map it because `SYS_MAP_IO` allows multiple tasks to map the same I/O page).
+- **Maps 300 VRAM pages once** (`SYS_MAP_IO(0x100, 300)` = 1228800 bytes). One region slot. Persistent for the lifetime of graphics.library.
+- **Object model**:
+  - Adapter: enumerable; M11 has 1 adapter (the `IEVideoChip`).
+  - Mode: queryable mode table; M11 has 1 mode (`{mode_id=0, width=640, height=480, format=RGBA32, stride=2560}`).
+  - Display: opened by `(adapter_id, mode_id)`; M11 only `(0, 0)` succeeds. Single display owner for M11. `display_handle = 1`.
+  - Surface: client owns the buffer (allocated with `MEMF_PUBLIC`), passes the share_handle in `GFX_REGISTER_SURFACE`. graphics.library does `MapShared` and caches the mapped VA. Single surface for M11 (VA budget — see kernel section). `surface_handle = 1`.
+- **Present**: full-frame CPU memcpy from the mapped surface VA to the mapped VRAM VA (1228800 bytes). Synchronous reply with `present_seq` (per-surface monotonic counter). Forward-compatible: `mn_Data1` reserves a packed dirty rect for future rect-bounded copies (M11 always sends 0 = full frame).
+- **Mode set**: `GFX_OPEN_DISPLAY` writes `MODE_640x480` (= 0) to `VIDEO_MODE` and enables the chip with `VIDEO_CTRL = 1`. (Note: the constant `CTRL_DISABLE_FLAG = 0` in `video_chip.go` and its accompanying comment are misleading — the actual chip code at `video_chip.go:2653` enables the chip when `value != 0`, so writing `1` enables and writing `0` disables. Existing examples like `mandelbrot_ie64.asm` and `rotozoomer.asm` use the same `VIDEO_CTRL = 1` convention.) `GFX_CLOSE_DISPLAY` resets `VIDEO_MODE` to `MODE_800x600` (the default) and writes `VIDEO_CTRL = 0` to disable scanout, so the next `GFX_OPEN_DISPLAY` re-enables cleanly.
+- **Internal layering**: M11 ships graphics.library as a single monolithic service block — IEVideo-specific MMIO writes are inlined directly into the message-dispatch handlers. The plan called for a generic display/service layer plus a backend vtable (`init`, `set_mode`, `restore_mode`, `present_full`, `present_rect`, `shutdown`) so M12+ adapters could plug in cleanly, but that refactor is **deferred to M12** and will happen naturally when a second adapter driver is introduced.
+- **Future-proof opcode space**: `GFX_WAIT_VBLANK` (`0x209`) and `GFX_PRESENT_ASYNC` (`0x20A`) are reserved in the constants table but not implemented in M11.
+
+**C/GfxDemo — minimal graphics client (new in M11):**
+
+- Opens `graphics.library` and `input.device` (with retry, since they may not be up yet when GfxDemo is launched from the Startup-Sequence sequence).
+- `AllocMem(1228800, MEMF_PUBLIC|MEMF_CLEAR)` for the client surface; sends `GFX_REGISTER_SURFACE` with the share_handle.
+- Sends `INPUT_OPEN` with its own (anonymous private) port to subscribe to events.
+- Fills the surface with a solid color, sends one `GFX_PRESENT`, then enters its main event loop.
+- Drains the event port; on `IE_KEY_DOWN` with scancode 0x01 (Escape), cleans up (`INPUT_CLOSE`, `GFX_UNREGISTER_SURFACE`, `GFX_CLOSE_DISPLAY`) and calls `SYS_EXIT_TASK`.
+- Demo intentionally minimal (no animation, no font rendering); it exists to exercise the full M11 stack end-to-end.
+
+**Demo output (M11 boot, no user input required):**
+
+```
+exec.library M11 boot
+console.handler ONLINE [Task 0]
+dos.library ONLINE [Task 1]
+Shell ONLINE [Task 2]
+IntuitionOS M11
+input.device ONLINE [Task 3]
+graphics.library ONLINE [Task 4]
+IntuitionOS 0.11 (exec.library M11)
+IntuitionOS M11 ready
+1>
+```
+
+The user can then type `GFXDEMO` to launch `C/GfxDemo`, which fills the framebuffer with a solid color and waits for Escape.
+
+**Ownership and cleanup contract:**
+
+- Display ownership: graphics.library tracks a single `display_open` flag. `GFX_OPEN_DISPLAY` while open returns `GFX_ERR_BUSY`. `GFX_CLOSE_DISPLAY` clears the flag and drops the registered surface.
+- Surface ownership: M11 stores one surface entry. `GFX_REGISTER_SURFACE` while one is in use returns `GFX_ERR_BUSY`. `GFX_UNREGISTER_SURFACE` clears the entry.
+- Subscriber ownership: input.device tracks a single `subscriber_port`. `INPUT_OPEN` while a subscriber is registered returns `INPUT_ERR_BUSY`. `INPUT_CLOSE` clears the subscription.
+- On client task exit: existing M9 region cleanup unmaps any AllocMem'd surface buffers and tears down ports. graphics.library's surface table can be left holding a stale entry until the client cleans up explicitly or until graphics.library detects via failed `MapShared` reuse — M11 does not auto-reap stale surface entries.
+- **Known wart (crash path only)**: clean shutdown via `GFX_CLOSE_DISPLAY` does reset `VIDEO_MODE` to `MODE_800x600` and writes `VIDEO_CTRL = 0`, so a well-behaved client returns the chip to a sane state. But if `graphics.library` itself crashes or exits abnormally before reaching `CloseDisplay`, the kernel unmaps its VRAM region without touching `VIDEO_MODE`/`VIDEO_CTRL` — the system is left in graphics mode with no service running until the next boot. M12 can fix this with either a kernel hook on chip-page tasks or an init-task that resets the chip before relaunching graphics.library.
+
+### Milestone 12: intuition.library + Compositor + Windowing (Planned)
+
+- `intuition.library` on top of `graphics.library`
+- Compositor and damage tracking
+- Multiple windows per screen
+- Multi-subscriber input fan-out via intuition's IDCMP
+- Double buffering (requires either VA layout overhaul or kernel-mediated blit syscall)
+- Optional: clean recovery from `graphics.library` crashes (chip-page reset hook)

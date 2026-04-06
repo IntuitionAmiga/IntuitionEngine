@@ -258,10 +258,16 @@ MEMF_CLEAR        equ 0x10000     ; bit 16: zero-fill (classic Amiga)
 ALLOC_POOL_BASE   equ 0x700       ; first allocable page number
 ALLOC_POOL_PAGES  equ 6400        ; pages 0x700-0x1FFF
 
-; Dynamic VA layout (per-task windows for AllocMem)
+; Dynamic VA layout (per-task windows for AllocMem and SYS_MAP_IO)
+; M11: stride bumped to 3 MB so graphics.library can simultaneously map:
+;   1 chip register page + 300 VRAM pages + 300 client surface pages = 601 pages.
+; The 8x3MB layout uses VA 0x800000-0x2000000 — exactly the top of the 32 MB
+; VA space. This is the M11 ceiling: any further growth requires either a VA
+; layout overhaul or a kernel-mediated blit syscall. Double-buffering (2
+; client surfaces) does NOT fit in 768 pages and is deferred to M12.
 USER_DYN_BASE     equ 0x800000    ; dynamic allocation VA base
-USER_DYN_STRIDE   equ 0x100000    ; 1 MB per task window (256 pages)
-USER_DYN_PAGES    equ 256         ; max pages per task dynamic window
+USER_DYN_STRIDE   equ 0x300000    ; 3 MB per task window (768 pages)
+USER_DYN_PAGES    equ 768         ; max pages per task dynamic window
 
 ; ---------------------------------------------------------------------------
 ; Page Bitmap — 800 bytes at kernel data offset 1664
@@ -382,3 +388,53 @@ DOS_MAX_FILES     equ 16          ; Max files in RAM:
 DOS_NAME_LEN      equ 32          ; Max filename length (supports "S/Startup-Sequence" etc.)
 DOS_FILE_SIZE     equ 4096        ; Max bytes per file (1 page)
 DOS_MAX_HANDLES   equ 8           ; Max simultaneous open handles
+
+; ===========================================================================
+; M11: input.device protocol
+; ===========================================================================
+; mn_Type opcodes
+INPUT_OPEN        equ 0x100        ; Register subscriber port (data0 = port_id)
+INPUT_CLOSE       equ 0x101        ; Drop subscriber registration
+INPUT_EVENT       equ 0x102        ; Push: data0 = encoded event, data1 = (mx<<48)|(my<<32)|seq32
+
+; Event types (high byte of mn_Data0 in INPUT_EVENT messages)
+IE_KEY_DOWN       equ 1
+IE_KEY_UP         equ 2            ; Reserved; M11 chip only emits make codes
+IE_MOUSE_MOVE     equ 3
+IE_MOUSE_BTN      equ 4
+
+; input.device error codes
+INPUT_ERR_OK      equ 0
+INPUT_ERR_BUSY    equ 1            ; Subscriber already registered
+INPUT_ERR_BADARG  equ 2
+
+; ===========================================================================
+; M11: graphics.library protocol
+; ===========================================================================
+; mn_Type opcodes
+GFX_ENUMERATE_ADAPTERS equ 0x200    ; → data0 = adapter count
+GFX_GET_ADAPTER_INFO   equ 0x201    ; data0 = adapter_id → data0=version<<16|0, data1=caps
+GFX_ENUMERATE_MODES    equ 0x202    ; data0 = adapter_id → data0 = mode count
+GFX_GET_MODE_INFO      equ 0x203    ; data0=adapter, data1=mode → data0=(w<<16)|h, data1=(fmt<<32)|stride
+GFX_OPEN_DISPLAY       equ 0x204    ; data0=adapter, data1=mode → data0 = display_handle
+GFX_CLOSE_DISPLAY      equ 0x205    ; data0 = display_handle
+GFX_REGISTER_SURFACE   equ 0x206    ; data0=display, data1=(w<<48)|(h<<32)|(fmt<<16)|stride_words, share=surface_share → data0=surface_handle
+GFX_UNREGISTER_SURFACE equ 0x207    ; data0 = surface_handle
+GFX_PRESENT            equ 0x208    ; data0 = surface_handle, data1 = dirty rect (0=full) → data0 = present_seq
+
+; Pixel formats
+GFX_FMT_RGBA32    equ 1
+
+; Adapter capability flags
+GFX_CAP_RGBA32    equ 0x0001
+
+; graphics.library error codes
+GFX_ERR_OK        equ 0
+GFX_ERR_BUSY      equ 1            ; Display already owned, or surface table full
+GFX_ERR_BAD_MODE  equ 2
+GFX_ERR_BAD_HANDLE equ 3
+GFX_ERR_BAD_FORMAT equ 4
+
+; Reserved for M12 — defined now so the opcode space doesn't get reused
+; GFX_WAIT_VBLANK    equ 0x209
+; GFX_PRESENT_ASYNC  equ 0x20A
