@@ -1240,8 +1240,10 @@ trap_handler:
     move.l  r11, #SYS_MAP_IO
     beq     r10, r11, .do_map_io
 
-    move.l  r11, #SYS_READ_INPUT
-    beq     r10, r11, .do_read_input
+    ; M11.5: SYS_READ_INPUT (slot 37) removed. Terminal MMIO is now mapped
+    ; into console.handler via SYS_MAP_IO and the read loop is inlined in
+    ; console.handler's CON_MSG_READLINE handler. Slot 37 falls through to
+    ; ERR_BADARG below, same as any other unallocated number.
 
     move.q  r2, #ERR_BADARG
     eret
@@ -2445,85 +2447,31 @@ trap_handler:
     eret
 
 ; ============================================================================
-; SYS_READ_INPUT (M9) — Read line from terminal input buffer
+; SYS_READ_INPUT (slot 37) — REMOVED in M11.5
 ; ============================================================================
-; R1 = destination buffer (user VA), R2 = max_len
-; Returns: R1 = bytes_read, R2 = ERR_OK (line ready) or ERR_AGAIN (no line)
-; Reads directly from TERM_IN/TERM_LINE_STATUS (kernel-mode I/O access).
-; This bypasses the MMU/MAP_IO path which has dispatch issues.
-.do_read_input:
-    move.q  r20, r1                     ; r20 = user buffer ptr
-    move.q  r21, r2                     ; r21 = max_len
-
-    ; Validate buffer ptr is in user address space
-    move.l  r11, #0x600000              ; USER_CODE_BASE
-    blt     r20, r11, .ri_badarg        ; below user space
-
-    ; Check TERM_LINE_STATUS — direct read from physical I/O register
-    la      r28, TERM_LINE_STATUS       ; r28 = 0xF070C
-    load.l  r14, (r28)
-    and     r14, r14, #1
-    beqz    r14, .ri_no_line            ; no complete line
-
-    ; Line is ready — read chars from TERM_IN into user buffer
-    move.l  r12, #KERN_DATA_BASE
-    load.q  r13, (r12)                  ; current_task
-    move.l  r22, #0                     ; byte count
-    la      r23, TERM_IN                ; TERM_IN physical addr (0xF0708)
-    la      r24, TERM_STATUS            ; TERM_STATUS physical addr (0xF0704)
-
-.ri_read_loop:
-    ; Check max_len
-    bge     r22, r21, .ri_done
-
-    ; Check TERM_STATUS bit 0 = data available
-    load.l  r14, (r24)
-    and     r14, r14, #1
-    beqz    r14, .ri_done               ; no more chars
-
-    ; Read char from TERM_IN
-    load.l  r14, (r23)                  ; dequeue char
-
-    ; Skip \r
-    move.l  r15, #0x0D
-    beq     r14, r15, .ri_read_loop
-
-    ; Check for \n = end of line
-    move.l  r15, #0x0A
-    beq     r14, r15, .ri_done
-
-    ; Write char to user buffer (using user PT for addressing)
-    add     r15, r20, r22              ; dest addr = user_buf + count
-    store.b r14, (r15)                  ; write to user space
-    add     r22, r22, #1
-    bra     .ri_read_loop
-
-.ri_done:
-    ; Null-terminate
-    add     r15, r20, r22
-    store.b r0, (r15)
-    move.q  r1, r22                     ; R1 = bytes_read
-    move.q  r2, #ERR_OK
-    eret
-
-.ri_no_line:
-    move.q  r1, #0
-    move.q  r2, #ERR_AGAIN
-    eret
-
-.ri_badarg:
-    move.q  r1, #0
-    move.q  r2, #ERR_BADARG
-    eret
+; The kernel-side line-input helper has been removed. console.handler now
+; maps page 0xF0 directly via SYS_MAP_IO and inlines the terminal MMIO read
+; loop in its CON_MSG_READLINE handler. Slot 37 falls through the dispatcher
+; chain to ERR_BADARG. See sdk/docs/IntuitionOS/IExec.md "Exec Boundary"
+; for the rationale; the regression guard is TestIExec_ReadInput_RemovedReturnsBadarg.
 
 ; ============================================================================
-; SYS_OPEN_LIBRARY (M9) — AmigaOS-style OpenLibrary
+; SYS_OPEN_LIBRARY (slot 36) — binary-compat redirect to SYS_FIND_PORT (M11.5)
 ; ============================================================================
-; R1 = name_ptr, R2 = version (ignored in M9)
+; R1 = name_ptr, R2 = version (ignored)
 ; Returns: R1 = library handle (port ID), R2 = error
-; Implementation: identical to FindPort (searches public ports by name).
+;
+; M11.5: This slot is no longer a distinct programming model. New IntuitionOS
+; assembly source must call SYS_FIND_PORT directly. The slot is retained as a
+; one-instruction redirect so that any out-of-tree binary or third-party tool
+; hardcoded to raw syscall number 36 continues to work. Future milestones
+; must NOT add new behavior here — see sdk/docs/IntuitionOS/IExec.md
+; "Exec Boundary" for the rationale and the syscall admission rule.
+;
+; Regression guard: TestIExec_OpenLibrary_DispatcherCollapse pins the contract
+; that slot 36 produces identical results to slot 16 for the same name.
 .do_open_library:
-    bra     .do_find_port               ; same logic, version in R2 ignored
+    bra     .do_find_port               ; binary-compat redirect, version in R2 ignored
 
 ; ============================================================================
 ; SYS_MAP_IO (M9, extended in M11) — Map I/O pages into user space
@@ -3415,9 +3363,24 @@ prog_console_code:
     load.q  r1, 8(sp)
     store.q r1, 128(r29)                ; data[128] = task_id
 
-    ; === Terminal line mode ===
-    ; SYS_READ_INPUT handles terminal I/O in kernel mode, no MAP_IO needed.
-    ; Line mode is already the default for the terminal.
+    ; === Map terminal MMIO page (M11.5: console.handler now owns terminal I/O) ===
+    ; SYS_MAP_IO(0xF0, 1) maps physical page 0xF0 (TERM_*, SCAN_*, MOUSE_*, video MMIO)
+    ; into our user address space. The returned VA is cached at data[144] and is the
+    ; base for the inlined readline loop in .con_no_msg below. M11.5 removed the
+    ; legacy SYS_READ_INPUT kernel helper; line input is now read from MMIO directly
+    ; here in user mode.
+    move.l  r1, #0xF0                   ; R1 = base PPN
+    move.l  r2, #1                      ; R2 = page count
+    syscall #SYS_MAP_IO                 ; R1 = mapped VA, R2 = err
+    load.q  r29, (sp)
+    bnez    r2, .con_mapio_failed       ; non-zero err is unrecoverable
+    store.q r1, 144(r29)                ; data[144] = term_io_va
+    bra     .con_after_mapio
+.con_mapio_failed:
+    ; Cannot recover — exit task. Subsequent FindPort retries by clients will
+    ; eventually fail when no console.handler port exists.
+    syscall #SYS_EXIT_TASK
+.con_after_mapio:
 
     ; === Create "console.handler" port ===
     load.q  r29, (sp)
@@ -3529,16 +3492,56 @@ prog_console_code:
     load.b  r20, 176(r29)             ; readline_pending
     beqz    r20, .con_yield            ; not pending → just yield
 
-    ; Use SYS_READ_INPUT to read a line from terminal (kernel-mode I/O)
-    ; Read directly into the shared buffer (readline_mapped_va)
-    load.q  r1, 168(r29)              ; R1 = readline_mapped_va (shared buffer)
-    move.l  r2, #126                   ; R2 = max_len
-    syscall #SYS_READ_INPUT            ; R1=bytes_read, R2=err
-    load.q  r29, (sp)
-    bnez    r2, .con_yield             ; ERR_AGAIN = no line ready yet
+    ; M11.5: Inline terminal MMIO read loop (formerly SYS_READ_INPUT in kernel).
+    ; Reads from page 0xF0 via the cached VA at data[144]. Layout within the
+    ; mapped page (matches the physical TERM_* register addresses):
+    ;   +0x70C TERM_LINE_STATUS   (bit 0 = complete line ready)
+    ;   +0x704 TERM_STATUS        (bit 0 = char available)
+    ;   +0x708 TERM_IN            (read dequeues one char)
+    ; Destination is the readline_mapped_va shared buffer at data[168].
+    load.q  r28, 144(r29)             ; r28 = term_io_va (page 0xF0 base)
+    load.q  r20, 168(r29)             ; r20 = dest buffer VA
+    move.l  r21, #126                 ; r21 = max_len
 
-    ; Line was read into shared buffer. R1 = byte count.
-    move.q  r25, r1                    ; save byte count
+    ; Check TERM_LINE_STATUS — bail with ERR_AGAIN if no complete line yet
+    add     r24, r28, #0x70C           ; r24 = &TERM_LINE_STATUS
+    load.l  r14, (r24)
+    and     r14, r14, #1
+    beqz    r14, .con_yield            ; no complete line — yield and retry
+
+    ; Line is ready — drain TERM_IN until \n or buffer full
+    add     r23, r28, #0x708           ; r23 = &TERM_IN
+    add     r24, r28, #0x704           ; r24 = &TERM_STATUS
+    move.l  r22, #0                    ; r22 = byte count
+
+.con_ri_loop:
+    bge     r22, r21, .con_ri_done    ; max_len reached
+
+    load.l  r14, (r24)                ; TERM_STATUS
+    and     r14, r14, #1
+    beqz    r14, .con_ri_done          ; no more chars (shouldn't happen mid-line)
+
+    load.l  r14, (r23)                ; dequeue char from TERM_IN
+
+    move.l  r15, #0x0D                 ; '\r' — skip
+    beq     r14, r15, .con_ri_loop
+
+    move.l  r15, #0x0A                 ; '\n' — end of line
+    beq     r14, r15, .con_ri_done
+
+    add     r15, r20, r22              ; dest = buffer + count
+    store.b r14, (r15)
+    add     r22, r22, #1
+    bra     .con_ri_loop
+
+.con_ri_done:
+    ; Null-terminate
+    add     r15, r20, r22
+    store.b r0, (r15)
+
+    ; Restore data page pointer (r29) and use byte count from r22
+    load.q  r29, (sp)
+    move.q  r25, r22                   ; save byte count
 
     ; Reply to readline requester
     load.q  r1, 152(r29)              ; readline_reply_port
@@ -3645,7 +3648,7 @@ prog_doslib_code:
     load.q  r29, (sp)
     move.q  r1, r29                     ; R1 = &data[0] = "console.handler"
     move.q  r2, r0                      ; R2 = version 0
-    syscall #SYS_OPEN_LIBRARY           ; R1 = handle (port_id), R2 = err
+    syscall #SYS_FIND_PORT             ; R1 = handle (port_id), R2 = err
     load.q  r29, (sp)
     bnez    r2, .dos_openlib_wait
     store.q r1, 136(r29)               ; data[136] = console_port
@@ -5002,7 +5005,7 @@ prog_version_code:
     load.q  r29, (sp)
     move.q  r1, r29                     ; &data[0] = "console.handler"
     move.l  r2, #0
-    syscall #SYS_OPEN_LIBRARY
+    syscall #SYS_FIND_PORT  
     load.q  r29, (sp)
     beqz    r2, .ver_open_ok
     syscall #SYS_YIELD
@@ -5062,7 +5065,7 @@ prog_version_data:
     ; --- Offset 24: padding to 32 ---
     ds.b    8
     ; --- Offset 32: version string ---
-    dc.b    "IntuitionOS 0.11 (exec.library M11)", 0x0D, 0x0A, 0
+    dc.b    "IntuitionOS 0.11 (exec.library M11.5)", 0x0D, 0x0A, 0
 prog_version_data_end:
     align   8
 prog_version_end:
@@ -5110,7 +5113,7 @@ prog_avail_code:
     load.q  r29, (sp)
     move.q  r1, r29
     move.l  r2, #0
-    syscall #SYS_OPEN_LIBRARY
+    syscall #SYS_FIND_PORT  
     load.q  r29, (sp)
     beqz    r2, .av_open_ok
     syscall #SYS_YIELD
@@ -5295,7 +5298,7 @@ prog_dir_code:
     load.q  r29, (sp)
     move.q  r1, r29
     move.l  r2, #0
-    syscall #SYS_OPEN_LIBRARY
+    syscall #SYS_FIND_PORT  
     load.q  r29, (sp)
     beqz    r2, .dir_open_con_ok
     syscall #SYS_YIELD
@@ -5309,7 +5312,7 @@ prog_dir_code:
     load.q  r29, (sp)
     add     r1, r29, #16
     move.l  r2, #0
-    syscall #SYS_OPEN_LIBRARY
+    syscall #SYS_FIND_PORT  
     load.q  r29, (sp)
     beqz    r2, .dir_open_dos_ok
     syscall #SYS_YIELD
@@ -5552,7 +5555,7 @@ prog_type_code:
     load.q  r29, (sp)
     move.q  r1, r29
     move.l  r2, #0
-    syscall #SYS_OPEN_LIBRARY
+    syscall #SYS_FIND_PORT  
     load.q  r29, (sp)
     beqz    r2, .typ_open_con_ok
     syscall #SYS_YIELD
@@ -5566,7 +5569,7 @@ prog_type_code:
     load.q  r29, (sp)
     add     r1, r29, #16
     move.l  r2, #0
-    syscall #SYS_OPEN_LIBRARY
+    syscall #SYS_FIND_PORT  
     load.q  r29, (sp)
     beqz    r2, .typ_open_dos_ok
     syscall #SYS_YIELD
@@ -5815,7 +5818,7 @@ prog_echo_cmd_code:
     load.q  r29, (sp)
     move.q  r1, r29
     move.l  r2, #0
-    syscall #SYS_OPEN_LIBRARY
+    syscall #SYS_FIND_PORT  
     load.q  r29, (sp)
     beqz    r2, .echo_open_ok
     syscall #SYS_YIELD
@@ -5918,7 +5921,8 @@ seed_startup:
     dc.b    "DEVS:input.device", 0x0A
     dc.b    "LIBS:graphics.library", 0x0A
     dc.b    "VERSION", 0x0A
-    dc.b    "ECHO IntuitionOS M11 ready", 0x0A, 0
+    dc.b    "ECHO IntuitionOS M11 ready", 0x0A
+    dc.b    "ECHO All visible services are running in user space", 0x0A, 0
 seed_startup_end:
     align   8
 
@@ -6654,7 +6658,7 @@ prog_gfxdemo_code:
     load.q  r29, (sp)
     add     r1, r29, #16               ; "graphics.library"
     move.l  r2, #0
-    syscall #SYS_OPEN_LIBRARY
+    syscall #SYS_FIND_PORT  
     load.q  r29, (sp)
     beqz    r2, .gd_gfx_ok
     syscall #SYS_YIELD
@@ -6667,7 +6671,7 @@ prog_gfxdemo_code:
     load.q  r29, (sp)
     add     r1, r29, #32               ; "input.device"
     move.l  r2, #0
-    syscall #SYS_OPEN_LIBRARY
+    syscall #SYS_FIND_PORT  
     load.q  r29, (sp)
     beqz    r2, .gd_in_ok
     syscall #SYS_YIELD
@@ -7102,7 +7106,7 @@ prog_shell_code:
     load.q  r29, (sp)
     move.q  r1, r29                     ; R1 = &data[0] = "console.handler"
     move.q  r2, r0                      ; version 0
-    syscall #SYS_OPEN_LIBRARY
+    syscall #SYS_FIND_PORT  
     load.q  r29, (sp)
     beqz    r2, .sh_open_con_ok
     syscall #SYS_YIELD
@@ -7118,7 +7122,7 @@ prog_shell_code:
     load.q  r29, (sp)
     add     r1, r29, #16                ; R1 = &data[16] = "dos.library"
     move.q  r2, r0
-    syscall #SYS_OPEN_LIBRARY
+    syscall #SYS_FIND_PORT  
     load.q  r29, (sp)
     beqz    r2, .sh_open_dos_ok
     syscall #SYS_YIELD

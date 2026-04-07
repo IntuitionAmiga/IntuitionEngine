@@ -69,6 +69,7 @@ const (
 	sysExitTask     = 34
 	sysExecProgram  = 35
 	sysOpenLibrary  = 36
+	sysReadInput    = 37 // M11.5: removed; slot now returns ERR_BADARG via dispatcher fall-through
 	sysMapIO        = 28
 
 	// Kernel data offsets (must match iexec.inc)
@@ -5148,68 +5149,18 @@ func TestIExec_LoaderSkipsFailure(t *testing.T) {
 	t.Logf("LoaderSkipsFailure: 3 boot tasks loaded, corrupt on-demand image[3] not loaded (num_tasks=%d)", numTasks)
 }
 
-// ===========================================================================
-// M9: ReadInput isolation test (keyboard bug investigation)
-// ===========================================================================
-
-func TestIExec_ReadInput_Direct(t *testing.T) {
-	// Minimal test: task 0 calls SYS_READ_INPUT directly, bypassing console.handler.
-	// Pre-inject "TEST\n" before boot. Task 0 calls READ_INPUT with its data page
-	// as buffer. If READ_INPUT works, it prints '0' (ERR_OK). If not, '6' (ERR_AGAIN).
-	rig, term := assembleAndLoadKernel(t)
-	images := findAllProgramImages(t, rig.cpu.memory)
-	overrideExtraTasks(rig.cpu.memory, images, 1)
-	t0 := images[0]
-
-	// Pre-inject input BEFORE boot (bypasses line mode routing, goes direct to input buffer)
-	for _, ch := range "TEST\n" {
-		term.EnqueueByte(byte(ch))
-	}
-
-	// Task 0 code: call SYS_READ_INPUT(0x602000, 100), print err digit, then
-	// if success, print each byte from the buffer
-	off := uint32(0)
-	w := func(instr []byte) { copy(rig.cpu.memory[t0+off:], instr); off += 8 }
-	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x602000)) // R1 = buf (task 0 data page)
-	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 100))      // R2 = max_len
-	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, 37))              // SYS_READ_INPUT
-	// R1 = bytes_read, R2 = err. Save R1 before printing err.
-	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_Q, 0, 1, 0, 0))        // R3 = R1 (save bytes_read)
-	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 2, 0, 0x30))      // R1 = R2 + '0' (err digit)
-	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar)) // print err
-	// Now print buffer contents (R3 = bytes_read)
-	// R4 = 0 (index), loop: load byte from 0x602000+R4, print, inc, cmp R3
-	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0)) // R4 = 0
-	// .loop:
-	w(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, 0x602000)) // R5 = buf base
-	w(ie64Instr(OP_ADD, 5, IE64_SIZE_Q, 0, 5, 4, 0))         // R5 = buf + index
-	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_B, 0, 5, 0, 0))        // R1 = load.b (R5)
-	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar)) // print char
-	w(ie64Instr(OP_ADD, 4, IE64_SIZE_L, 1, 4, 0, 1))         // R4 = R4 + 1
-	// Compare R4 < R3: SUB R6, R3, R4; if R6 > 0 → branch back
-	// Simpler: just print 4 chars (we know "TEST" is 4 bytes)
-	w(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, 4))               // R5 = 4
-	brTarget := int32(-6 * 8)                                       // back 6 instructions
-	w(ie64Instr(OP_BLT, 0, IE64_SIZE_Q, 0, 4, 5, uint32(brTarget))) // if R4 < R5, loop
-	// Done: yield loop
-	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
-	brOff := int32(-8)
-	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(brOff)))
-
-	rig.cpu.running.Store(true)
-	done := make(chan struct{})
-	go func() { rig.cpu.Execute(); close(done) }()
-	time.Sleep(1 * time.Second)
-	rig.cpu.running.Store(false)
-	<-done
-
-	output := term.DrainOutput()
-	t.Logf("ReadInput direct: %q", output[:min(len(output), 200)])
-	// Expect: boot banner + '0' (ERR_OK) + "TEST" from buffer
-	if !strings.Contains(output, "0TEST") {
-		t.Fatalf("SYS_READ_INPUT failed: expected '0TEST' in output, got %q", output[:min(len(output), 200)])
-	}
-}
+// M11.5: TestIExec_ReadInput_Direct removed.
+//
+// That test exercised the bare SYS_READ_INPUT kernel helper from a synthetic
+// task — i.e. it tested an internal kernel helper, not a user-visible feature.
+// In M11.5 the helper is gone: console.handler now maps page 0xF0 directly
+// via SYS_MAP_IO and inlines the terminal MMIO read loop in its
+// CON_MSG_READLINE handler. The user-visible behavior (line input via the
+// readline message protocol) is covered end-to-end by:
+//   - TestIExec_ConsoleReadLine        (round-trip readline message protocol)
+//   - TestIExec_ReadInput_ViaShell     (full shell→console.handler→MMIO chain)
+//   - TestIExec_ShellOnline            (boot path with new console.handler init)
+//   - TestIExec_ReadInput_RemovedReturnsBadarg (negative test: slot 37 = ERR_BADARG)
 
 func TestIExec_TermCtrl_LineMode(t *testing.T) {
 	// Verify that the kernel boot code enables terminal line mode, and
@@ -5249,7 +5200,9 @@ func TestIExec_ReadInput_ViaShell(t *testing.T) {
 	// Full boot with pre-injected input. The input is in the terminal buffer
 	// BEFORE boot, so when the shell sends CON_READLINE and console.handler polls,
 	// the data is immediately available. This tests the full chain:
-	// shell → CON_READLINE → console.handler → SYS_READ_INPUT → REPLY_MSG → shell → output
+	// shell → CON_READLINE → console.handler (inlined MMIO read of page 0xF0) → REPLY_MSG → shell → output
+	// (M11.5: console.handler now reads TERM_* registers directly via its own
+	// SYS_MAP_IO mapping; the kernel-side SYS_READ_INPUT helper has been removed.)
 	rig, term := assembleAndLoadKernel(t)
 
 	// Pre-inject "FOOBAR\n" BEFORE boot
@@ -5292,6 +5245,176 @@ func TestIExec_OpenLibrary_Basic(t *testing.T) {
 		t.Fatalf("OpenLibrary failed: dos.library didn't announce ONLINE, output=%q", output[:min(len(output), 200)])
 	}
 	t.Logf("OpenLibrary_Basic: dos.library found console.handler via OpenLibrary, output=%q", output[:min(len(output), 200)])
+}
+
+// TestIExec_OpenLibrary_DispatcherCollapse pins the M11.5 contract that
+// SYS_OPEN_LIBRARY (slot 36) is functionally identical to SYS_FIND_PORT (slot 16):
+// both syscalls, given the same public port name, return the same handle.
+// Slot 36 is retained as a binary-compat redirect even after the source-level
+// migration of boot programs to SYS_FIND_PORT.
+//
+// This is a regression guard, not a failing-first test in the strict sense:
+// .do_open_library is already a `bra .do_find_port` in the kernel today, so
+// the test passes against the pre-Phase-2 tree. After Phase 2 migrates the
+// in-tree boot programs to use SYS_FIND_PORT directly, this test continues to
+// guarantee that any out-of-tree binary or third-party tooling hardcoded to
+// raw syscall number 36 still works.
+//
+// Single-task design (modeled on TestIExec_MapIO_BadPage): task 0 is the test
+// itself. It creates a public port "X", then calls FindPort("X") and
+// OpenLibrary("X") in sequence and prints both error codes plus a Y/N
+// comparison via DebugPutChar. We assert the printed pattern in the terminal
+// output rather than relying on multi-task data-page reads, which the M11
+// boot layout makes fragile (see TestIExec_FindPort_Basic which passes
+// vacuously with task0=task1=0).
+func TestIExec_OpenLibrary_DispatcherCollapse(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	t0 := images[0]
+
+	// Write "X\0" to task 0's stack page at offset 128 (past boot child template)
+	copy(rig.cpu.memory[userTask0Stack+128:], []byte("X\x00"))
+
+	// Task 0 sequence:
+	//   CreatePort("X", PF_PUBLIC)  → R1=portA0; STORE.Q to data+8
+	//   FindPort("X")               → R1=portA, R2=errA; STORE.Q to data+16, +24
+	//   OpenLibrary("X", 0) [#36]   → R1=portB, R2=errB; STORE.Q to data+32, +40
+	//   STORE.Q sentinel 0xCAFE to data+0 (proves the task ran to completion)
+	//   yield loop
+	//
+	// Per IE64_ABI.md only R1, R2, SP are preserved across syscalls, so we
+	// must spill to memory immediately after each syscall.
+	pc := t0
+	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
+
+	// CreatePort("X", PF_PUBLIC)
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Stack+128))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, pfPublic))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 3, 0, 8))  // portA0 → data+8
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 3, 0, 48)) // errCreate → data+48
+
+	// FindPort("X")
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Stack+128))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFindPort))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 3, 0, 16)) // portA → data+16
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 3, 0, 24)) // errA  → data+24
+
+	// OpenLibrary("X", 0) — raw syscall slot 36
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Stack+128))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibrary))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 3, 0, 32)) // portB → data+32
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 3, 0, 40)) // errB  → data+40
+
+	// Sentinel: 0xCAFE → data+0
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xCAFE))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 3, 0, 0))
+
+	// Yield loop
+	yieldPC := pc
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC)-int32(pc))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	sentinel := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+0:])
+	if sentinel != 0xCAFE {
+		t.Fatalf("task 0 didn't reach sentinel write (sentinel=0x%X) — task may have faulted or never been scheduled", sentinel)
+	}
+	portA0 := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+8:])
+	portA := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+16:])
+	errA := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+24:])
+	portB := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+32:])
+	errB := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+40:])
+	errCreate := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+48:])
+
+	if errCreate != 0 {
+		t.Fatalf("CreatePort(\"X\", PF_PUBLIC) failed: errCreate=%d", errCreate)
+	}
+	if errA != 0 {
+		t.Fatalf("FindPort(slot 16) errA = %d, want 0 (port \"X\" was just created)", errA)
+	}
+	if errB != 0 {
+		t.Fatalf("OpenLibrary(slot 36) errB = %d, want 0 — slot 36 must remain a working binary-compat redirect to FindPort", errB)
+	}
+	if portA != portB {
+		t.Fatalf("dispatcher collapse violated: FindPort(16)=%d, OpenLibrary(36)=%d, must be identical", portA, portB)
+	}
+	if portA != portA0 {
+		t.Fatalf("FindPort/OpenLibrary returned portID=%d but CreatePort created portID=%d (different ports!)", portA, portA0)
+	}
+	t.Logf("OpenLibrary_DispatcherCollapse: slot 16 (FindPort) and slot 36 (OpenLibrary) both returned portID=%d for the just-created public port \"X\"", portA)
+}
+
+// TestIExec_ReadInput_RemovedReturnsBadarg pins the M11.5 contract that
+// SYS_READ_INPUT (slot 37) is no longer a kernel handler. The terminal-MMIO
+// read loop has been moved into console.handler (which now maps page 0xF0
+// directly via SYS_MAP_IO and inlines the read loop in its CON_MSG_READLINE
+// handler). Slot 37 falls through the dispatcher chain and returns ERR_BADARG
+// (3) — the same behavior as any other unallocated syscall number.
+//
+// This test must FAIL against the pre-Phase-3 tree (where .do_read_input
+// still exists and returns either ERR_OK or ERR_AGAIN), and PASS after the
+// migration. It is the failing-first test for Phase 3 of M11.5.
+//
+// We do NOT pre-stage a complete line in the terminal: an unmigrated kernel
+// would return ERR_AGAIN (6, "no line ready") which is not 3, but the test
+// would still distinguish migrated from unmigrated by virtue of ERR_BADARG.
+// To eliminate any ambiguity, we explicitly assert R2 == ERR_BADARG (3).
+func TestIExec_ReadInput_RemovedReturnsBadarg(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	t0 := images[0]
+
+	// Task 0:
+	//   syscall #37 with R1=user buffer (stack page), R2=64
+	//   STORE.Q R2 (err) → data+8
+	//   STORE.Q sentinel 0xCAFE → data+0
+	//   yield loop
+	pc := t0
+	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Stack+128)) // R1 = buffer ptr (user VA)
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 64))                 // R2 = max_len
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysReadInput))              // raw slot 37
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 3, 0, 8)) // err → data+8
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xCAFE))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 3, 0, 0)) // sentinel → data+0
+	yieldPC := pc
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC)-int32(pc))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	sentinel := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+0:])
+	if sentinel != 0xCAFE {
+		t.Fatalf("task 0 didn't reach sentinel write (sentinel=0x%X) — task may have faulted or never been scheduled", sentinel)
+	}
+	err := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+8:])
+	const errBadarg = 3
+	if err != errBadarg {
+		t.Fatalf("SYS_READ_INPUT (slot 37) returned err=%d; want ERR_BADARG (%d). Slot 37 must be a dispatcher hole after the M11.5 migration moved terminal MMIO into console.handler.", err, errBadarg)
+	}
+	t.Logf("ReadInput_RemovedReturnsBadarg: slot 37 correctly returns ERR_BADARG (3) — terminal MMIO is now console.handler-owned")
 }
 
 func TestIExec_MapIO_BadPage(t *testing.T) {

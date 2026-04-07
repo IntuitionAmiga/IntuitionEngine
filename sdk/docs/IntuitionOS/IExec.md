@@ -24,12 +24,11 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
 - ReplyMsg for Exec-style service pattern; PutMsg/GetMsg/WaitPort with full message ABI
 - Safe user pointer validation (PTE check before kernel reads from user memory)
 - Kernel renamed to exec.library; GURU MEDITATION fault messages
-- AmigaOS-style OpenLibrary syscall for library discovery
+- AmigaOS-style `OpenLibrary` for library discovery — **M11.5**: source-level alias for `SYS_FIND_PORT`; the kernel ABI is one slot smaller. Slot 36 is retained as a one-instruction binary-compat redirect to `.do_find_port` so any pre-M11.5 IE64 binary still links. New code uses `SYS_FIND_PORT` directly. See § 5.11 "Exec Boundary".
 - I/O page mapping via MapIO syscall (REGION_IO type)
-- **`SYS_EXEC_PROGRAM` takes a user-space image pointer** (M10): kernel creates tasks from user-provided IE64PROG images. Runs entirely under the caller's PT (no PT switching). `validate_user_range` checks both P and U bits on every page in the requested range. Legacy index path retained for M9 compatibility.
+- **`SYS_EXEC_PROGRAM` takes a user-space image pointer** (M10): kernel creates tasks from user-provided IE64PROG images. Runs entirely under the caller's PT (no PT switching). `validate_user_range` checks both P and U bits on every page in the requested range. Legacy index path retained for M9 compatibility (documented as `legacy` in M11.5; removal deferred to M12).
 - **Multi-page code and data in `load_program`** (M10): up to 2 code pages (8 KB) and 4 data pages (16 KB) per task. dos.library is itself a 2-code-page program, with 3 data pages containing embedded command images.
-- SYS_READ_INPUT for kernel-mode terminal read
-- console.handler: CON: handler with GetMsg polling and CON_READLINE protocol
+- console.handler: CON: handler with GetMsg polling and CON_READLINE protocol — **M11.5**: console.handler now owns terminal MMIO directly via its own `SYS_MAP_IO(0xF0, 1)` mapping and inlines the readline MMIO loop. The former kernel-side `SYS_READ_INPUT` (slot 37) is removed; slot 37 is an unallocated hole that returns `ERR_BADARG`.
 - **dos.library**: AmigaOS dos.library equivalent with RAM: filesystem (16 files, 4 KB each, case-insensitive, 32-byte filenames). M10 adds: assign table (RAM:, C:, S:), name-based command resolution (`resolve_command_name` defaults to C:, `resolve_file_name` defaults to bare), embedded command images, init-time seeding into the RAM file store, and boot-race-free port creation (CreatePort deferred until after seeding).
 - **Shell**: interactive command shell that sends raw command names to dos.library via DOS_RUN (no shell-side command table). Executes `S:Startup-Sequence` automatically at boot if present, then drops to the interactive prompt.
 - **5 external commands** as DOS-loaded executables: VERSION, AVAIL, DIR, TYPE, ECHO. Stored as files in RAM under `C:`, launched by name through dos.library — not by program table index.
@@ -205,10 +204,10 @@ The CPU traps to supervisor mode. The kernel's trap handler reads the syscall nu
 
 | # | Name | Signature | Status |
 |---|------|-----------|--------|
-| 1 | `AllocMem` | R1=size, R2=flags -> R1=addr, R2=err, R3=share_handle | **Implemented** |
-| 2 | `FreeMem` | R1=addr, R2=size -> R2=err | **Implemented** |
-| 3 | `AllocShared` | R1=size, R2=flags -> R1=handle | Reserved |
-| 4 | `MapShared` | R1=share_handle -> R1=addr, R2=err, R3=share_pages | **Implemented (M11 extended)** |
+| 1 | `AllocMem` | R1=size, R2=flags -> R1=addr, R2=err, R3=share_handle | **Implemented** (`nucleus`) |
+| 2 | `FreeMem` | R1=addr, R2=size -> R2=err | **Implemented** (`nucleus`) |
+| 3 | -- | -- | Removed M11.5 (was `AllocShared`; slot is now an unallocated hole) |
+| 4 | `MapShared` | R1=share_handle -> R1=addr, R2=err, R3=share_pages | **Implemented (M11 extended)** (`nucleus`) |
 
 `AllocMem` flags: MEMF_PUBLIC (bit 0) = shareable across tasks, MEMF_CLEAR (bit 16) = zero-fill. Matches classic Amiga MEMF_ conventions. All allocations are page-granular (4 KiB). `FreeMem` size is also page-granular: the kernel rounds size up to pages and compares the page count against the allocation's page count. Any size that rounds to the same number of pages is accepted (e.g., both 5000 and 8192 free a 2-page allocation).
 
@@ -216,33 +215,33 @@ The CPU traps to supervisor mode. The kernel's trap handler reads the syscall nu
 
 | # | Name | Signature | Status |
 |---|------|-----------|--------|
-| 5 | `CreateTask` | R1=source_ptr, R2=code_size, R3=arg0 -> R1=task_id, R2=err | **Implemented** |
-| 6 | `DeleteTask` | R1=task_handle -> R2=err | Future |
-| 7 | `FindTask` | R1=name_ptr (0=self) -> R1=task_handle | Future |
-| 8 | `SetTaskPri` | R1=task_handle, R2=priority -> R1=old_pri | Future |
-| 9 | `SetTP` | R1=value -> (sets thread pointer register) | Future |
-| 10 | `GetTaskInfo` | R1=task_handle, R2=info_id -> R1=value | Future |
+| 5 | `CreateTask` | R1=source_ptr, R2=code_size, R3=arg0 -> R1=task_id, R2=err | **Implemented** (`nucleus`) |
+| 6 | -- | -- | Removed M11.5 (was `DeleteTask`; unallocated hole) |
+| 7 | -- | -- | Removed M11.5 (was `FindTask`; unallocated hole) |
+| 8 | -- | -- | Removed M11.5 (was `SetTaskPri`; unallocated hole) |
+| 9 | -- | -- | Removed M11.5 (was `SetTP`; unallocated hole) |
+| 10 | -- | -- | Removed M11.5 (was `GetTaskInfo`; unallocated hole) |
 
 ### 5.3 Signals
 
 | # | Name | Signature | Status |
 |---|------|-----------|--------|
-| 11 | `AllocSignal` | R1=bit_hint (-1=any) -> R1=bit_num, R2=err | **Implemented** |
-| 12 | `FreeSignal` | R1=bit_num -> R2=err | **Implemented** |
-| 13 | `Signal` | R1=task_id, R2=signal_mask -> R2=err | **Implemented** |
-| 14 | `Wait` | R1=signal_mask -> R1=received_mask | **Implemented** |
+| 11 | `AllocSignal` | R1=bit_hint (-1=any) -> R1=bit_num, R2=err | **Implemented** (`nucleus`) |
+| 12 | `FreeSignal` | R1=bit_num -> R2=err | **Implemented** (`nucleus`) |
+| 13 | `Signal` | R1=task_id, R2=signal_mask -> R2=err | **Implemented** (`nucleus`) |
+| 14 | `Wait` | R1=signal_mask -> R1=received_mask | **Implemented** (`nucleus`) |
 
 ### 5.4 Ports and Messages
 
 | # | Name | Signature | Status |
 |---|------|-----------|--------|
-| 15 | `CreatePort` | R1=name_ptr (0=anon), R2=flags -> R1=port_id (0-7), R2=err | **Implemented (M7)** |
-| 16 | `FindPort` | R1=name_ptr -> R1=port_id, R2=err | **Implemented (M7)** |
-| 17 | `PutMsg` | R1=port_id, R2=type, R3=data0, R4=data1, R5=reply_port, R6=share_handle -> R2=err | **Implemented (M7)** |
-| 18 | `GetMsg` | R1=port_id -> R1=type, R2=data0, R3=err, R4=data1, R5=reply_port, R6=share_handle | **Implemented (M7)** |
-| 19 | `WaitPort` | R1=port_id -> (same as GetMsg, blocks if empty) | **Implemented (M7)** |
-| 20 | `ReplyMsg` | R1=reply_port, R2=type, R3=data0, R4=data1, R5=share_handle -> R2=err | **Implemented (M7)** |
-| 21 | `PeekPort` | R1=port_handle -> R1=msg_count | Future |
+| 15 | `CreatePort` | R1=name_ptr (0=anon), R2=flags -> R1=port_id (0-7), R2=err | **Implemented (M7)** (`nucleus`) |
+| 16 | `FindPort` | R1=name_ptr -> R1=port_id, R2=err | **Implemented (M7)** (`nucleus`) — also reachable as `OpenLibrary` (alias) and via slot 36 binary-compat redirect |
+| 17 | `PutMsg` | R1=port_id, R2=type, R3=data0, R4=data1, R5=reply_port, R6=share_handle -> R2=err | **Implemented (M7)** (`nucleus`) |
+| 18 | `GetMsg` | R1=port_id -> R1=type, R2=data0, R3=err, R4=data1, R5=reply_port, R6=share_handle | **Implemented (M7)** (`nucleus`) |
+| 19 | `WaitPort` | R1=port_id -> (same as GetMsg, blocks if empty) | **Implemented (M7)** (`nucleus`) |
+| 20 | `ReplyMsg` | R1=reply_port, R2=type, R3=data0, R4=data1, R5=share_handle -> R2=err | **Implemented (M7)** (`nucleus`) |
+| 21 | -- | -- | Removed M11.5 (was `PeekPort`; unallocated hole) |
 
 **Port naming (M7):** Ports can be created with a name (up to 16 bytes, ASCII) and the `PF_PUBLIC` flag. Public named ports are discoverable via `FindPort` (case-insensitive matching). Anonymous ports (name_ptr=0) are private and not findable. Duplicate public names return `ERR_EXISTS`. Ports are cleaned up on task exit (name and flags cleared, removed from FindPort).
 
@@ -254,47 +253,47 @@ The CPU traps to supervisor mode. The kernel's trap handler reads the syscall nu
 
 | # | Name | Signature | Status |
 |---|------|-----------|--------|
-| 22 | `AddTimer` | R1=ticks, R2=signal_mask -> R1=timer_handle | Future |
-| 23 | `RemTimer` | R1=timer_handle -> R2=err | Future |
+| 22 | -- | -- | Removed M11.5 (was `AddTimer`; unallocated hole) |
+| 23 | -- | -- | Removed M11.5 (was `RemTimer`; unallocated hole) |
 
 ### 5.6 Handles
 
 | # | Name | Signature | Status |
 |---|------|-----------|--------|
-| 24 | `CloseHandle` | R1=handle -> R2=err | Future |
-| 25 | `DupHandle` | R1=handle -> R1=new_handle | Future |
+| 24 | -- | -- | Removed M11.5 (was `CloseHandle`; unallocated hole) |
+| 25 | -- | -- | Removed M11.5 (was `DupHandle`; unallocated hole) |
 
 ### 5.7 System
 
 | # | Name | Signature | Status |
 |---|------|-----------|--------|
-| 26 | `Yield` | (no args) -> (returns after reschedule) | **Implemented** |
-| 27 | `GetSysInfo` | R1=info_id -> R1=value | **Implemented** |
-| 28 | `MapIO` | R1=base_ppn, R2=page_count -> R1=mapped_va, R2=err | **Implemented (M9, extended in M11)** |
-| 29 | `MapVRAM` | (subsumed by `MapIO` VRAM allowlist) | Subsumed |
-| 30 | `Debug` | R1=debug_op, R2=arg -> R1=result | Future |
+| 26 | `Yield` | (no args) -> (returns after reschedule) | **Implemented** (`nucleus`) |
+| 27 | `GetSysInfo` | R1=info_id -> R1=value | **Implemented** (`nucleus`) |
+| 28 | `MapIO` | R1=base_ppn, R2=page_count -> R1=mapped_va, R2=err | **Implemented (M9, extended in M11)** (`nucleus`, see "Known impurities") |
+| 29 | -- | -- | Removed M11.5 (was `MapVRAM`; subsumed by `MapIO`'s VRAM allowlist; unallocated hole) |
+| 30 | -- | -- | Removed M11.5 (was `Debug`; unallocated hole) |
 
 ### 5.8 Debug I/O
 
 | # | Name | Signature | Status |
 |---|------|-----------|--------|
-| 33 | `DebugPutChar` | R1=character -> R2=err | **Implemented** |
-| 34 | `ExitTask` | R1=exit_code (ignored) -> never returns | **Implemented** |
+| 33 | `DebugPutChar` | R1=character -> R2=err | **Implemented** (`bootstrap` — kernel bring-up / panic only, not for app code) |
+| 34 | `ExitTask` | R1=exit_code (ignored) -> never returns | **Implemented** (`nucleus`) |
 
 ### 5.9 Bulk IPC
 
 | # | Name | Signature | Status |
 |---|------|-----------|--------|
-| 31 | `SendMsgBulk` | R1=port_handle, R2=shmem_handle, R3=offset, R4=len -> R2=err | Future |
-| 32 | `RecvMsgBulk` | R1=port_handle, R2=shmem_handle, R3=offset, R4=buf_len -> R1=actual_len | Future |
+| 31 | -- | -- | Removed M11.5 (was `SendMsgBulk`; unallocated hole) |
+| 32 | -- | -- | Removed M11.5 (was `RecvMsgBulk`; unallocated hole) |
 
-### 5.10 Program Execution and Libraries (M9, ABI redesigned in M10)
+### 5.10 Program Execution and Libraries (M9, ABI redesigned in M10, boundary frozen in M11.5)
 
 | # | Name | Signature | Status |
 |---|------|-----------|--------|
-| 35 | `ExecProgram` | R1=image_ptr, R2=image_size, R3=args_ptr, R4=args_len -> R1=task_id, R2=err | **Implemented (M9, redesigned M10)** |
-| 36 | `OpenLibrary` | R1=name_ptr, R2=version -> R1=lib_base, R2=err | **Implemented (M9)** |
-| 37 | `ReadInput` | R1=buf_ptr, R2=buf_size -> R1=bytes_read, R2=err | **Implemented (M9)** |
+| 35 | `ExecProgram` | R1=image_ptr, R2=image_size, R3=args_ptr, R4=args_len -> R1=task_id, R2=err | **Implemented (M9, redesigned M10)** (`nucleus`; legacy `R1 < 0x600000` index path is `legacy`, removal deferred to M12) |
+| 36 | `OpenLibrary` | R1=name_ptr -> R1=port_id, R2=err | **Binary-compat redirect to `SYS_FIND_PORT` (M11.5)**. Source-level alias (`SYS_OPEN_LIBRARY equ SYS_FIND_PORT`); kernel slot 36 dispatches to `.do_find_port` via a one-instruction redirect so older IE64 binaries still link. New code uses `SYS_FIND_PORT` directly. |
+| 37 | -- | -- | Removed M11.5 (was `ReadInput`; terminal MMIO inlined into `console.handler` via `SYS_MAP_IO(0xF0, 1)`. Slot returns `ERR_BADARG`; guarded by `TestIExec_ReadInput_RemovedReturnsBadarg`.) |
 
 **ExecProgram (35)** -- M10 ABI: Creates a new task from a user-provided IE64PROG image. R1=image_ptr (user VA pointing to a complete IE64PROG image, e.g. an entry in dos.library's RAM file store; must be ≥ `0x600000`), R2=image_size (total bytes including 32-byte header, code, and data; valid range 32..24608, matching `load_program`'s max of header + 8 KiB code + 16 KiB data), R3=args_ptr (user VA pointing to null-terminated argument string in the caller's address space, or 0 for no args), R4=args_len (byte count of arguments, max 256, or 0 for no args). The handler runs entirely under the **caller's** page table (no PT switching): every page in `[image_ptr, image_ptr+image_size)` and `[args_ptr, args_ptr+args_len)` is validated via `validate_user_range` (checks both **P** and **U** PTE bits), then `load_program` is called directly to copy the image into a free task slot. Arguments are copied to the new task's data page at `DATA_ARGS_OFFSET` (like AmigaOS `pr_Arguments`). Returns R1=new task_id, R2=err. Returns `ERR_BADARG` for unmapped/kernel-only ranges, oversize images, args_len > 256, or pointer arithmetic overflow.
 
@@ -302,9 +301,9 @@ The CPU traps to supervisor mode. The kernel's trap handler reads the syscall nu
 
 **`validate_user_range` subroutine**: Walks the caller's page table once per page in the requested byte range. For each VPN, loads the PTE and checks `(pte & 0x11) == 0x11` (P bit + U bit set). Rejects unmapped pages, kernel-only pages, and pointer-arithmetic overflows. Returns R1=0 on success or 1 (ERR_BADARG) on any failure.
 
-**OpenLibrary (36)**: AmigaOS-style library discovery. R1=name_ptr (library name, e.g., "dos.library"), R2=minimum version. Returns R1=library base (port ID or equivalent handle), R2=err.
+**OpenLibrary (36) — M11.5 binary-compat redirect**: Originally a distinct M9 syscall for AmigaOS-style library discovery. M11.5 collapsed it into `SYS_FIND_PORT`: `SYS_OPEN_LIBRARY equ SYS_FIND_PORT` in `iexec.inc`, so all new assembly compiles to slot 16 directly. The kernel dispatcher slot 36 is retained as a one-instruction redirect (`bra .do_find_port`) so any IE64 binary that hardcoded the number 36 still works. Calling slot 36 produces an identical result to calling slot 16. Guarded by `TestIExec_OpenLibrary_DispatcherCollapse`. See § 5.11 "Exec Boundary".
 
-**ReadInput (37)**: Kernel-mode terminal read. Reads input from the terminal device into a user buffer. R1=buf_ptr, R2=buf_size. Returns R1=bytes read, R2=err.
+**ReadInput (37) — REMOVED in M11.5**: Originally a kernel-mode helper that read `TERM_LINE_STATUS` / `TERM_STATUS` / `TERM_IN` from page `0xF0` into a user buffer on behalf of `console.handler`. M11.5 deletes the kernel handler. `console.handler` now calls `SYS_MAP_IO(0xF0, 1)` at init time, caches the returned VA, and inlines the MMIO read loop directly into its `CON_MSG_READLINE` path. The `CON_MSG_READLINE` request/reply protocol is unchanged, so existing readline clients keep working without modification. Slot 37 is an unallocated hole and falls through to `ERR_BADARG`. Guarded by `TestIExec_ReadInput_RemovedReturnsBadarg`. See § 5.11.7.
 
 ### Implemented Syscall Details
 
@@ -330,6 +329,60 @@ Unrecognized info_ids return 0 with ERR_OK.
 **Signal (13)**: Sends signals to another task. R1=target task ID, R2=signal mask. The kernel OR's the mask into the target task's `sig_recv` (pending signals). If the target is in WAITING state and any newly-set bit matches its `sig_wait` mask, the target is moved to READY and will receive the matched signals as the return value of its pending `Wait` call. Returns R2=ERR_OK on success, R2=ERR_BADARG if the target task ID is invalid.
 
 **Wait (14)**: Blocks the calling task until matching signals arrive. R1=signal mask (the set of signals to wait for). The kernel checks `sig_recv & mask`; if any bits match immediately, they are cleared from `sig_recv` and returned in R1 without blocking. Otherwise the task's state is set to WAITING with `sig_wait=mask`, and the scheduler selects another task. When a matching `Signal` arrives, the task is woken and R1 contains the received signal bits.
+
+### 5.11 Exec Boundary (M11.5)
+
+By Milestone 11.5 the IntuitionOS userland is Amiga-shaped: a protected nucleus (`exec.library`) plus user-space libraries, devices, handlers, and resources (`dos.library`, `console.handler`, `input.device`, `graphics.library`, and — in M12 — `intuition.library`). M11.5 freezes the syscall surface so M12 can build on top of a stable, justifiable boundary instead of accreting new bring-up shortcuts.
+
+**5.11.1 Boundary statement.** `exec.library` owns *mechanisms* — task lifecycle, scheduling, signals, message ports, memory mapping, shared memory, MMIO mapping, fault handling. *Policy* belongs in user-space libraries, devices, handlers, and resources: `dos.library`, `console.handler`, `input.device`, `graphics.library`, and (M12+) `intuition.library`. Anything that can be a message protocol must be a message protocol.
+
+**5.11.2 Syscall admission rule.** A new syscall is justified only if **both** of the following are true:
+
+1. It requires the kernel's privileged state — page tables, scheduler queues, trap frames, IRQ routing, MMU operations, or MMIO allowlist enforcement, **AND**
+2. It cannot be expressed as a message to a user-space service without a bootstrap deadlock or circular dependency.
+
+If either condition fails, the feature belongs in a library, device, handler, or resource protocol — not in the syscall surface.
+
+**5.11.3 Syscall classification table.** Mirrors the category tags in `sdk/include/iexec.inc` so the two cannot drift.
+
+| # | Name | Category | Notes |
+|---|------|----------|-------|
+| 1 | `AllocMem` | `nucleus` | Page-table install |
+| 2 | `FreeMem` | `nucleus` | Page-table uninstall |
+| 4 | `MapShared` | `nucleus` | Page-table install of shared object |
+| 5 | `CreateTask` | `nucleus` | TCB allocation, page-table build |
+| 11 | `AllocSignal` | `nucleus` | Per-task signal mask owned by kernel |
+| 12 | `FreeSignal` | `nucleus` | Per-task signal mask owned by kernel |
+| 13 | `Signal` | `nucleus` | Cross-task wakeup, scheduler state |
+| 14 | `Wait` | `nucleus` | Blocking on scheduler state |
+| 15 | `CreatePort` | `nucleus` | Public name registry, kernel-managed FIFO |
+| 16 | `FindPort` | `nucleus` | Public name registry — also reachable as `OpenLibrary` (alias) |
+| 17 | `PutMsg` | `nucleus` | Cross-task copy with PTE validation |
+| 18 | `GetMsg` | `nucleus` | Kernel-managed FIFO |
+| 19 | `WaitPort` | `nucleus` | Blocking on kernel-managed FIFO |
+| 20 | `ReplyMsg` | `nucleus` | Reply-port redirect with share-handle handoff |
+| 26 | `Yield` | `nucleus` | Scheduler entry |
+| 27 | `GetSysInfo` | `nucleus` | Kernel-internal counters |
+| 28 | `MapIO` | `nucleus` | Page-table install with MMIO allowlist (see 5.11.4) |
+| 33 | `DebugPutChar` | `bootstrap` | Single-character debug output to terminal MMIO. Used by the kernel boot banner and panic path **before** `console.handler` is alive. Not part of the normal app programming model — apps use `console.handler` via `CON_MSG_CHAR`. Scheduled to remain forever as the panic-time fallback. |
+| 34 | `ExitTask` | `nucleus` | Frees TCB, ports, signals, regions |
+| 35 | `ExecProgram` | `nucleus` (M10 ABI) / `legacy` (M9 index branch, removal deferred to M12) | M10 takes a user-VA `image_ptr`; the legacy `R1 < 0x600000` index path is preserved for boot-services lookup but documented as `legacy` in M11.5 to forbid new uses. M12 will rewrite the boot path for `intuition.library` and remove the index branch in that test churn. |
+| 36 | `OpenLibrary` | `nucleus` (binary-compat redirect to slot 16) | Source-level alias for `SYS_FIND_PORT`; slot 36 dispatches to `.do_find_port` via a one-instruction redirect so any IE64 binary hardcoded to call number 36 still works. New code uses `SYS_FIND_PORT` directly. The Amiga-shaped programming model (`OpenLibrary("dos.library")`) is preserved at the assembler level; the kernel ABI is one slot smaller. |
+
+Slots 3, 6–10, 21–25, 29–32, and 37 are unallocated holes (former syscalls removed in M11.5). The dispatcher's existing fall-through path returns `ERR_BADARG` for any call to a hole. The hole numbers are never reused, so any IE64 binary that called these numbers continues to fail in the same predictable way.
+
+**5.11.4 Known impurities.** `SYS_MAP_IO` is a legitimate `nucleus` primitive — only the kernel can install user PTEs for MMIO regions safely. However, the current allowlist hardcodes IEVideoChip-specific knowledge (page `0xF0` for chip registers, range `[0x100..0x5FF]` for the 5 MB VRAM window) inside Exec, which is policy leaking into the nucleus. The pure-microkernel solution is a `hardware.resource` user-space service that arbitrates physical regions, with the kernel only enforcing "you can map what `hardware.resource` told us you can." That refactor is out of scope for M11.5 because it has a non-trivial bootstrap-ordering problem (the kernel needs to allow MMIO mapping before any user-space service is alive). M11.5 documents the wart honestly and constrains future device additions to extend the existing allowlist rather than invent new MMIO syscalls.
+
+**5.11.5 The nucleus is disciplined, not closed.** Future milestones may add syscalls that satisfy the admission rule. The following are explicitly *acceptable* additions in upcoming milestones, named in advance so the freeze does not become a self-imposed straitjacket:
+
+- **Kernel→user interrupt/event delivery.** Replaces input.device's polling, enables a real `WaitVBlank`. Requires kernel-side IRQ routing and per-task signal injection — cannot be done from user space.
+- **Per-task fault handler registration.** Lets a service recover from a client's bad pointer instead of taking down both. Requires kernel-side trap-frame modification.
+- **Timed wait on signal objects.** Replaces the current `SYS_DELAY` + polling pattern. Requires kernel-side timer-queue insertion.
+- **Cleanup hook on service-task death.** Lets `graphics.library` restore text mode after a crash — fixes the M11 wart where a crashed graphics.library leaves the chip in graphics mode. Requires kernel-side death-callback dispatch.
+
+**5.11.6 OpenLibrary rationale.** Classic AmigaOS implemented `OpenLibrary` as an `exec.library` jump-table call, not a trap. IntuitionOS now expresses it as a source-level alias for `FindPort` — `OpenLibrary("dos.library")` and `FindPort("dos.library")` produce the same syscall (number 16). The Amiga-shaped programming surface is preserved at the assembler level; the kernel ABI is one entry-point smaller. Slot 36 in the dispatcher is retained as a one-instruction redirect to `.do_find_port` so any IE64 binary compiled before M11.5 (which would have called number 36) continues to work. A regression test (`TestIExec_OpenLibrary_DispatcherCollapse`) guards the contract that calling slot 36 produces an identical result to calling slot 16.
+
+**5.11.7 Console.handler MMIO ownership change.** Before M11.5, `console.handler`'s `CON_MSG_READLINE` path called the kernel-side `SYS_READ_INPUT` (slot 37), which read `TERM_LINE_STATUS` / `TERM_STATUS` / `TERM_IN` (page `0xF0`) on behalf of the handler. M11.5 deletes that syscall: `console.handler` now calls `SYS_MAP_IO(0xF0, 1)` at init time, caches the returned VA, and inlines the MMIO read loop directly into its readline handler. The change is invisible to clients — the `CON_MSG_READLINE` request/reply protocol is unchanged. Slot 37 is now an unallocated hole and returns `ERR_BADARG`, guarded by `TestIExec_ReadInput_RemovedReturnsBadarg`. This is the canonical example of the boundary statement at work: terminal line input is policy, not mechanism, so it lives in `console.handler`, not in `exec.library`.
 
 ---
 
@@ -498,7 +551,7 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 | `Forbid()`/`Permit()` (disable scheduling) | Not provided | Tasks cannot disable preemption; kernel controls scheduling |
 | `Disable()`/`Enable()` (disable interrupts) | Not available to user mode | Only kernel uses `CLI64`/`SEI64` internally |
 | `SysBase` at address 4 | No equivalent | Kernel is not addressable from user space |
-| `OpenLibrary()`/`CloseLibrary()` | `OpenLibrary` syscall (M9) for library discovery | Returns port ID / handle for named library; no jump table mechanism yet |
+| `OpenLibrary()`/`CloseLibrary()` | Source-level alias for `FindPort` (M11.5; was a distinct M9 syscall) | `OpenLibrary("dos.library")` and `FindPort("dos.library")` produce the same syscall (number 16). Slot 36 is retained as a binary-compat redirect to `.do_find_port`. The Amiga-shaped programming model is preserved at the assembler level; the kernel ABI is one slot smaller. |
 | Device I/O (`DoIO`/`SendIO`) | `MapIO`/`MapVRAM` + direct register access | User tasks access hardware registers through mapped pages |
 | `tc_Node.ln_Pri` scheduling | Priority field in TCB, same semantics | Round-robin within same priority level |
 
@@ -624,11 +677,11 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 - **GURU MEDITATION fault messages**: replaced plain FAULT format with Amiga-style GURU MEDITATION messages for all kernel faults and panics.
 - **Full GPR save/restore in timer interrupt**: the preemption handler now saves and restores R1-R30, ensuring preemption safety for all user-space tasks.
 - **Strict boot**: the first PROGTAB_BOOT_COUNT (3) programs (console.handler, dos.library, Shell) must load successfully or the kernel panics.
-- **New syscalls**:
-  - `SYS_MAP_IO` (28): maps I/O pages into user task address space with new REGION_IO (3) region type.
-  - `SYS_EXEC_PROGRAM` (35): loads and starts a bundled program by table index (R1=index, R2=args_ptr, R3=args_len). Arguments are copied to the child task's data page at DATA_ARGS_OFFSET (like AmigaOS `pr_Arguments`). **Note**: ABI redesigned in M10 to take a user-space image pointer instead of an index.
-  - `SYS_OPEN_LIBRARY` (36): AmigaOS-style `OpenLibrary` for library/service discovery by name.
-  - `SYS_READ_INPUT` (37): kernel-mode terminal read for interactive input.
+- **New syscalls** (as shipped in M9; later evolved — see M10/M11/M11.5 sections):
+  - `SYS_MAP_IO` (28): maps I/O pages into user task address space with new REGION_IO (3) region type. Extended in M11 to take a page count.
+  - `SYS_EXEC_PROGRAM` (35): originally loaded a bundled program by table index (R1=index, R2=args_ptr, R3=args_len). Arguments are copied to the child task's data page at DATA_ARGS_OFFSET (like AmigaOS `pr_Arguments`). **Note**: ABI redesigned in M10 to take a user-space image pointer instead of an index. The legacy `R1 < 0x600000` index branch is retained for M9 boot-services compatibility but is documented as `legacy` in M11.5; removal is deferred to M12.
+  - `SYS_OPEN_LIBRARY` (36): added in M9 as a distinct AmigaOS-style `OpenLibrary` syscall. **M11.5 collapsed it**: it is now a source-level alias for `SYS_FIND_PORT` (`SYS_OPEN_LIBRARY equ SYS_FIND_PORT` in `iexec.inc`). Slot 36 in the kernel dispatcher is retained as a one-instruction binary-compat redirect to `.do_find_port` so any IE64 binary that hardcoded the number 36 still works. New code uses `SYS_FIND_PORT` directly. See § 5.11 "Exec Boundary" for the rationale.
+  - `SYS_READ_INPUT` (37): added in M9 as a kernel-mode terminal read on behalf of `console.handler`. **Removed in M11.5**: terminal MMIO is now mapped directly by `console.handler` via `SYS_MAP_IO(0xF0, 1)`, and the readline MMIO loop is inlined into `console.handler`'s `CON_MSG_READLINE` path. The kernel handler is gone; slot 37 is an unallocated hole that returns `ERR_BADARG`. The `CON_MSG_READLINE` request/reply protocol is unchanged, so existing readline clients (the shell, all M9/M10/M11 readline tests) keep working without modification.
 - **console.handler**: CON: handler task (Task 0). Creates public port, services output via GetMsg polling, supports CON_READLINE protocol for interactive line input.
 - **dos.library**: AmigaOS dos.library equivalent (Task 1). Provides a RAM: filesystem with 16 files, 4 KB each, case-insensitive filenames. Supports DOS_RUN command dispatch for launching external commands.
 - **Shell**: interactive command shell (Task 2). Reads input via console.handler, dispatches commands to dos.library via DOS_RUN. Displays `1> ` prompt (AmigaOS-style).
@@ -710,7 +763,7 @@ Hello from IntuitionOS
 - Program table entries 3-7 (on-demand commands) - the table is now boot-services-only
 - The 2-phase PT switching dance in `SYS_EXEC_PROGRAM` (no longer needed - the new ABI runs entirely under the caller's PT)
 
-### Milestone 11: input.device + graphics.library + Fullscreen Demo (Current)
+### Milestone 11: input.device + graphics.library + Fullscreen Demo (Complete)
 
 **Implemented and tested (builds on Milestone 10):**
 
@@ -789,6 +842,76 @@ The user can then type `GFXDEMO` to launch `C/GfxDemo`, which fills the framebuf
 - Subscriber ownership: input.device tracks a single `subscriber_port`. `INPUT_OPEN` while a subscriber is registered returns `INPUT_ERR_BUSY`. `INPUT_CLOSE` clears the subscription.
 - On client task exit: existing M9 region cleanup unmaps any AllocMem'd surface buffers and tears down ports. graphics.library's surface table can be left holding a stale entry until the client cleans up explicitly or until graphics.library detects via failed `MapShared` reuse — M11 does not auto-reap stale surface entries.
 - **Known wart (crash path only)**: clean shutdown via `GFX_CLOSE_DISPLAY` does reset `VIDEO_MODE` to `MODE_800x600` and writes `VIDEO_CTRL = 0`, so a well-behaved client returns the chip to a sane state. But if `graphics.library` itself crashes or exits abnormally before reaching `CloseDisplay`, the kernel unmaps its VRAM region without touching `VIDEO_MODE`/`VIDEO_CTRL` — the system is left in graphics mode with no service running until the next boot. M12 can fix this with either a kernel hook on chip-page tasks or an init-task that resets the chip before relaunching graphics.library.
+
+### Milestone 11.5: Exec Boundary Cleanup (Complete)
+
+**Implemented and tested (builds on Milestone 11):**
+
+M11.5 is a freeze milestone, not a feature milestone. After M11 the userland is Amiga-shaped (exec.library nucleus + user-space `dos.library`, `console.handler`, `input.device`, `graphics.library`), but the syscall surface still reflected every bring-up shortcut taken since M0 — 37 `SYS_*` constants of which only 22 had handlers, plus several live ones (`SYS_OPEN_LIBRARY`, `SYS_READ_INPUT`) that were bootstrap conveniences with no remaining justification. M11.5 prunes the boundary so the docs describe what the kernel actually enforces, before M12 (intuition.library + compositor) starts adding pressure.
+
+**Header cleanup (`sdk/include/iexec.inc`):**
+
+- **15 dead constants deleted.** `SYS_ALLOC_SHARED`, `SYS_DELETE_TASK`, `SYS_FIND_TASK`, `SYS_SET_TASK_PRI`, `SYS_SET_TP`, `SYS_GET_TASK_INFO`, `SYS_PEEK_PORT`, `SYS_ADD_TIMER`, `SYS_REM_TIMER`, `SYS_CLOSE_HANDLE`, `SYS_DUP_HANDLE`, `SYS_MAP_VRAM`, `SYS_DEBUG`, `SYS_SEND_MSG_BULK`, `SYS_RECV_MSG_BULK` had no dispatcher entries — they were ABI residue. Removed from the header; slot numbers preserved as unallocated holes. Repo-wide grep confirmed zero callers.
+- **Category tags added.** Every surviving syscall is annotated `nucleus`, `bootstrap`, or `legacy` so the classification is machine-checkable from the source of truth, not just documented in IExec.md.
+- **`SYS_OPEN_LIBRARY` collapsed to `SYS_FIND_PORT`.** Source-level alias (`SYS_OPEN_LIBRARY equ SYS_FIND_PORT`); the dispatcher slot 36 is retained as a one-instruction redirect (`bra .do_find_port`) for binary compatibility with any IE64 binary that hardcoded the number 36. The "deletion" is conceptual: 36 is no longer a distinct programming-model entry, but the dispatcher slot stays.
+- **`SYS_READ_INPUT` removed.** The kernel handler at the former `.do_read_input` is deleted. Slot 37 is now an unallocated hole and falls through to `ERR_BADARG`.
+
+**Console.handler MMIO ownership change (`sdk/intuitionos/iexec/iexec.s`):**
+
+- `console.handler` now calls `SYS_MAP_IO(0xF0, 1)` at init time and caches the returned VA in its data page (`data[144]`).
+- The terminal MMIO read loop (formerly the body of the kernel-side `.do_read_input`) is inlined directly into `console.handler`'s `CON_MSG_READLINE` handler. Absolute physical addresses (`TERM_LINE_STATUS = 0xF070C`, `TERM_STATUS = 0xF0704`, `TERM_IN = 0xF0708`) are rebased onto the cached VA.
+- Existing yield-between-polls behavior absorbs the no-line-ready case naturally. The `CON_MSG_READLINE` request/reply protocol is unchanged, so all existing readline-using code (the shell, the seven existing readline tests) keeps working without modification.
+- This is the canonical "policy moves to user space, mechanism stays in the kernel" example. Terminal line input is policy.
+
+**Boot programs migrated to `SYS_FIND_PORT` (`sdk/intuitionos/iexec/iexec.s`):**
+
+- Every `syscall #SYS_OPEN_LIBRARY` call site in the boot programs (12 sites in `dos.library`, `console.handler`, `input.device`, `graphics.library`, `shell`, `C/GfxDemo`) is rewritten as `syscall #SYS_FIND_PORT`. Source-level identity in the assembled output (the alias makes them the same number), but new readers of the boot programs see the canonical name.
+
+**Documentation:**
+
+- This file's section 5.11 "Exec Boundary" adds the boundary statement, the syscall admission rule, the classification table (mirrors `iexec.inc` annotations), the `SYS_MAP_IO` allowlist impurity acknowledgement, the "nucleus is disciplined not closed" list of acceptable future additions, the OpenLibrary rationale, and the console.handler MMIO ownership change.
+- `README.md` § 18 IntuitionOS: M11.5 status block replaces M11.
+
+**TDD discipline:**
+
+Every behavior-changing phase landed test-first.
+
+- `TestIExec_OpenLibrary_DispatcherCollapse` — calls raw slot 36 and raw slot 16 with the same port name and asserts identical results. Guards the binary-compat redirect contract going forward.
+- `TestIExec_ReadInput_RemovedReturnsBadarg` — calls raw slot 37 and asserts `ERR_BADARG`. Guards that the slot is no longer reachable.
+- The seven existing `SYS_READ_INPUT`-adjacent tests (covering shell readline, console handler, startup-sequence reading) continue to pass against the new console.handler-owned MMIO path with no modifications. `TestIExec_ReadInput_Direct` (which exercised the kernel helper directly) was deleted as a test of a now-removed implementation detail.
+
+**Startup-Sequence change (user-visible artifact):**
+
+The seeded `S:Startup-Sequence` adds one trailing line:
+
+```
+ECHO All visible services are running in user space
+```
+
+so the M11.5 boot output ends with:
+
+```
+exec.library M11 boot
+console.handler ONLINE [Task 0]
+dos.library ONLINE [Task 1]
+Shell ONLINE [Task 2]
+IntuitionOS M11
+input.device ONLINE [Task 3]
+graphics.library ONLINE [Task 4]
+IntuitionOS 0.11 (exec.library M11.5)
+IntuitionOS M11 ready
+All visible services are running in user space
+1>
+```
+
+**What M11.5 explicitly does NOT do:**
+
+- No removal of the `SYS_EXEC_PROGRAM` legacy `R1 < 0x600000` index branch — deferred to M12 where the boot path will be rewritten for `intuition.library` and the test churn is already happening. Documented as `legacy` in M11.5 to forbid new uses.
+- No removal of `SYS_DEBUG_PUTCHAR` — kept as `bootstrap` category, still required for kernel boot banner and panic output before `console.handler` is alive.
+- No `hardware.resource` refactor of `SYS_MAP_IO`'s allowlist — documented as a known wart in 5.11.4, deferred indefinitely.
+- No new syscalls. By definition.
+- No changes to message protocols, port format, AllocMem semantics, or any user-space service API.
+- No renumbering of any surviving syscall — IE64 binaries are compiled against numbers, not names.
 
 ### Milestone 12: intuition.library + Compositor + Windowing (Planned)
 

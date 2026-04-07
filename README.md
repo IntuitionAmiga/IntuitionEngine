@@ -5976,7 +5976,36 @@ make aros               # Build VM with embedded AROS ROM
 
 IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. Unlike classic Amiga Exec, which ran everything in flat supervisor space with no memory protection, IExec uses the IE64 MMU to enforce hardware-backed user/supervisor privilege separation with per-task page tables and W^X memory policy. The design preserves the Amiga programming model (signals, message ports, priority scheduling) while adding the isolation guarantees of a modern protected-mode OS.
 
-**Milestone 11 status** — input.device + graphics.library + fullscreen demo (implemented and tested):
+**Milestone 11.5 status** — Exec boundary cleanup (implemented and tested):
+
+- **Exec boundary frozen.** Syscall admission rule documented; surviving syscalls categorized as `nucleus` / `bootstrap` / `legacy` in `sdk/include/iexec.inc` and the IExec contract reference. New syscalls only land if they require kernel-privileged state AND cannot be expressed as a message to a user-space service.
+- **16 dead or redundant syscall slots removed.** 15 reserved-but-unimplemented constants (`SYS_ALLOC_SHARED`, `SYS_DELETE_TASK`, `SYS_FIND_TASK`, `SYS_SET_TASK_PRI`, `SYS_SET_TP`, `SYS_GET_TASK_INFO`, `SYS_PEEK_PORT`, `SYS_ADD_TIMER`, `SYS_REM_TIMER`, `SYS_CLOSE_HANDLE`, `SYS_DUP_HANDLE`, `SYS_MAP_VRAM`, `SYS_DEBUG`, `SYS_SEND_MSG_BULK`, `SYS_RECV_MSG_BULK`) are deleted from the header; the slot numbers remain unallocated holes that fall through to `ERR_BADARG`. `SYS_READ_INPUT` (slot 37) is also removed — see below.
+- **`SYS_OPEN_LIBRARY` collapsed to `SYS_FIND_PORT`.** `SYS_OPEN_LIBRARY` is now a source-level alias (`equ SYS_FIND_PORT`) in `iexec.inc`. Slot 36 in the kernel dispatcher is retained as a one-instruction binary-compat redirect to `.do_find_port`, so any IE64 binary hardcoded to syscall number 36 still works. New code uses `SYS_FIND_PORT` directly. Guarded by `TestIExec_OpenLibrary_DispatcherCollapse`.
+- **Console.handler now owns terminal MMIO directly.** Previously the kernel exposed `SYS_READ_INPUT` (slot 37), which read `TERM_LINE_STATUS` / `TERM_STATUS` / `TERM_IN` from page `0xF0` on behalf of console.handler. M11.5 deletes the kernel handler. Console.handler now calls `SYS_MAP_IO(0xF0, 1)` at init time, caches the returned VA, and inlines the MMIO read loop into its `CON_MSG_READLINE` path. No client-visible change — the readline message protocol is unchanged. Slot 37 falls through to `ERR_BADARG`, guarded by `TestIExec_ReadInput_RemovedReturnsBadarg`.
+- **`SYS_MAP_IO` allowlist documented as a known impurity.** `SYS_MAP_IO` is a legitimate nucleus primitive, but its allowlist hardcodes IEVideoChip-specific knowledge (page `0xF0`, VRAM range `[0x100..0x5FF]`) inside Exec — that is policy leaking into the nucleus. The pure-microkernel solution is a future `hardware.resource` user-space service that arbitrates physical regions; its bootstrap-ordering problem keeps it out of M11.5. The wart is documented and constrains future device additions to extend the existing allowlist rather than invent new MMIO syscalls.
+- **`SYS_EXEC_PROGRAM` legacy index path is documented as `legacy` and scheduled for removal in M12.** 41 tests touch `ExecProgram` and the discriminator (`R1 < 0x600000` → table lookup) is load-bearing for any test that loads programs by index. M12 will rewrite the boot-path for `intuition.library` anyway; the legacy-path removal lands in that test churn instead of M11.5.
+- **`Startup-Sequence` extended.** The seeded `S:Startup-Sequence` adds one trailing `ECHO All visible services are running in user space` line — the milestone's user-visible artifact at the prompt.
+- **No new syscalls. No protocol changes. No renumbering of any surviving syscall.** IE64 binaries are compiled against numbers, not names, so the surviving syscall numbers remain stable forever.
+- **Demo boot output (no user input)**:
+  ```
+  exec.library M11 boot
+  console.handler ONLINE [Task 0]
+  dos.library ONLINE [Task 1]
+  Shell ONLINE [Task 2]
+  IntuitionOS M11
+  input.device ONLINE [Task 3]              <- launched by S:Startup-Sequence
+  graphics.library ONLINE [Task 4]          <- launched by S:Startup-Sequence
+  IntuitionOS 0.11 (exec.library M11.5)     <- VERSION run by S:Startup-Sequence
+  IntuitionOS M11 ready                     <- ECHO run by S:Startup-Sequence
+  All visible services are running in user space  <- ECHO run by S:Startup-Sequence (M11.5)
+  1>
+  ```
+
+Full kernel contract reference: [sdk/docs/IntuitionOS/IExec.md](sdk/docs/IntuitionOS/IExec.md)
+
+<details>
+<summary>Milestone 11 status (complete) — input.device + graphics.library + fullscreen demo</summary>
+
 
 - Everything from M1-M10: self-sufficient boot, per-task page tables with W^X, trap dispatch, preemptive round-robin, signals, named message ports with FindPort discovery, request/reply messaging, dynamic task creation/exit, AllocMem/FreeMem/MapShared with capability handles, GURU MEDITATION fault messages, console.handler, dos.library RAM: filesystem with assigns, interactive shell, S:Startup-Sequence execution, DOS-loaded programs
 - **`SYS_MAP_IO` extended to take a page count** (`R1=base_ppn, R2=page_count → R1=mapped_va, R2=err`). Range-aware allowlist: `(0xF0, 1)` for chip MMIO and `[0x100, 0x5FF]` for any contiguous slice of the 5 MB VRAM range. One region slot per mapping (graphics.library maps 300 VRAM pages in a single call). Backwards-compatible: `R2=0` is treated as `R2=1` for M9/M10 callers.
@@ -6003,4 +6032,4 @@ IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. 
   1>
   ```
 
-Full kernel contract reference: [sdk/docs/IntuitionOS/IExec.md](sdk/docs/IntuitionOS/IExec.md)
+</details>

@@ -6,44 +6,60 @@
 ; ===========================================================================
 ; Syscall Numbers (IExec contract)
 ; ===========================================================================
+;
+; Category tags (M11.5 — see sdk/docs/IntuitionOS/IExec.md "Exec Boundary"):
+;
+;   nucleus   — privileged primitive, will exist forever
+;   bootstrap — kernel bring-up / panic only, not part of normal app model
+;   legacy    — kept for compatibility, scheduled for removal in a future milestone
+;
+; A new syscall is justified only if (1) it requires the kernel's privileged
+; state and (2) it cannot be expressed as a message to a user-space service
+; without a bootstrap deadlock. Otherwise the feature belongs in a library,
+; device, handler, or resource — not in the syscall surface.
+;
+; Reserved holes are former syscalls removed in M11.5. Their numbers are
+; preserved (never reused) so existing IE64 binaries that called these
+; numbers continue to fail in the same predictable way (ERR_BADARG via the
+; dispatcher's fall-through path).
 
-SYS_ALLOC_MEM     equ 1
-SYS_FREE_MEM      equ 2
-SYS_ALLOC_SHARED  equ 3
-SYS_MAP_SHARED    equ 4
-SYS_CREATE_TASK   equ 5
-SYS_DELETE_TASK   equ 6
-SYS_FIND_TASK     equ 7
-SYS_SET_TASK_PRI  equ 8
-SYS_SET_TP        equ 9
-SYS_GET_TASK_INFO equ 10
-SYS_ALLOC_SIGNAL  equ 11
-SYS_FREE_SIGNAL   equ 12
-SYS_SIGNAL        equ 13
-SYS_WAIT          equ 14
-SYS_CREATE_PORT   equ 15
-SYS_FIND_PORT     equ 16
-SYS_PUT_MSG       equ 17
-SYS_GET_MSG       equ 18
-SYS_WAIT_PORT     equ 19
-SYS_REPLY_MSG     equ 20
-SYS_PEEK_PORT     equ 21
-SYS_ADD_TIMER     equ 22
-SYS_REM_TIMER     equ 23
-SYS_CLOSE_HANDLE  equ 24
-SYS_DUP_HANDLE    equ 25
-SYS_YIELD         equ 26
-SYS_GET_SYS_INFO  equ 27
-SYS_MAP_IO        equ 28
-SYS_MAP_VRAM      equ 29
-SYS_DEBUG         equ 30
-SYS_SEND_MSG_BULK equ 31
-SYS_RECV_MSG_BULK equ 32
-SYS_DEBUG_PUTCHAR equ 33          ; Debug: print character (R1=char)
-SYS_EXIT_TASK     equ 34          ; Exit current task (R1=exit_code, ignored)
-SYS_EXEC_PROGRAM  equ 35          ; Launch program (R1=image_ptr, R2=image_size, R3=args_ptr, R4=args_len) [legacy: R1<0x600000=index]
-SYS_OPEN_LIBRARY  equ 36          ; OpenLibrary (R1=name_ptr, R2=version) → R1=handle, R2=err
-SYS_READ_INPUT    equ 37          ; Read terminal line (R1=buf_ptr, R2=max_len) → R1=bytes_read, R2=err
+SYS_ALLOC_MEM     equ 1            ; nucleus
+SYS_FREE_MEM      equ 2            ; nucleus
+; (slot 3 reserved — was SYS_ALLOC_SHARED, removed M11.5: never had a handler)
+SYS_MAP_SHARED    equ 4            ; nucleus
+SYS_CREATE_TASK   equ 5            ; nucleus
+; (slot 6 reserved — was SYS_DELETE_TASK, removed M11.5: never had a handler)
+; (slot 7 reserved — was SYS_FIND_TASK, removed M11.5: never had a handler)
+; (slot 8 reserved — was SYS_SET_TASK_PRI, removed M11.5: never had a handler)
+; (slot 9 reserved — was SYS_SET_TP, removed M11.5: never had a handler)
+; (slot 10 reserved — was SYS_GET_TASK_INFO, removed M11.5: never had a handler)
+SYS_ALLOC_SIGNAL  equ 11           ; nucleus
+SYS_FREE_SIGNAL   equ 12           ; nucleus
+SYS_SIGNAL        equ 13           ; nucleus
+SYS_WAIT          equ 14           ; nucleus
+SYS_CREATE_PORT   equ 15           ; nucleus
+SYS_FIND_PORT     equ 16           ; nucleus
+SYS_PUT_MSG       equ 17           ; nucleus
+SYS_GET_MSG       equ 18           ; nucleus
+SYS_WAIT_PORT     equ 19           ; nucleus
+SYS_REPLY_MSG     equ 20           ; nucleus
+; (slot 21 reserved — was SYS_PEEK_PORT, removed M11.5: never had a handler)
+; (slot 22 reserved — was SYS_ADD_TIMER, removed M11.5: never had a handler)
+; (slot 23 reserved — was SYS_REM_TIMER, removed M11.5: never had a handler)
+; (slot 24 reserved — was SYS_CLOSE_HANDLE, removed M11.5: never had a handler)
+; (slot 25 reserved — was SYS_DUP_HANDLE, removed M11.5: never had a handler)
+SYS_YIELD         equ 26           ; nucleus
+SYS_GET_SYS_INFO  equ 27           ; nucleus
+SYS_MAP_IO        equ 28           ; nucleus  (allowlist is a known impurity — see IExec.md)
+; (slot 29 reserved — was SYS_MAP_VRAM, removed M11.5: superseded by SYS_MAP_IO range mapping)
+; (slot 30 reserved — was SYS_DEBUG, removed M11.5: never had a handler)
+; (slot 31 reserved — was SYS_SEND_MSG_BULK, removed M11.5: never had a handler)
+; (slot 32 reserved — was SYS_RECV_MSG_BULK, removed M11.5: never had a handler)
+SYS_DEBUG_PUTCHAR equ 33           ; bootstrap (kernel bring-up / panic only, not for app code)
+SYS_EXIT_TASK     equ 34           ; nucleus
+SYS_EXEC_PROGRAM  equ 35           ; nucleus  (legacy R1<0x600000 index branch — removal deferred to M12)
+SYS_OPEN_LIBRARY  equ 36           ; nucleus  (binary-compat redirect to SYS_FIND_PORT — see iexec.s .do_open_library)
+; (slot 37 reserved — was SYS_READ_INPUT, removed M11.5: terminal MMIO inlined into console.handler via SYS_MAP_IO)
 
 ; ===========================================================================
 ; Error Codes
