@@ -5450,14 +5450,12 @@ func TestIExec_MapIO_BadPage(t *testing.T) {
 	t.Logf("MapIO_BadPage: MAP_IO(0xFF) returned error code 3 (ERR_BADARG)")
 }
 
-// TestIExec_ExecProgram_LegacyBadArgs verifies the M10 fix: the legacy
-// (index-based) ExecProgram path now also validates the args_ptr range
-// via validate_user_range. Previously the legacy path only checked the
-// lower bound (>= USER_CODE_BASE) and could fault the kernel on dereference.
-// Task 0 calls EXEC_PROGRAM(index=0, args_ptr=0x6F0000, args_len=10).
-// 0x6F0000 is in the user VA range (>= 0x600000) but corresponds to a
-// task slot beyond MAX_TASKS=8 — no PTE is mapped there in any task PT.
-func TestIExec_ExecProgram_LegacyBadArgs(t *testing.T) {
+// TestIExec_ExecProgram_LegacyIndexReturnsBadarg verifies the M11.6 removal of
+// the legacy SYS_EXEC_PROGRAM index branch. Any R1 < USER_CODE_BASE (0x600000)
+// must be rejected with ERR_BADARG instead of being treated as a built-in
+// program-table index. R1=0 was previously the valid index for prog_console;
+// after M11.6 it must NOT launch console.handler and must return ERR_BADARG.
+func TestIExec_ExecProgram_LegacyIndexReturnsBadarg(t *testing.T) {
 	rig, term := assembleAndLoadKernel(t)
 	images := findAllProgramImages(t, rig.cpu.memory)
 	overrideExtraTasks(rig.cpu.memory, images, 1)
@@ -5465,12 +5463,15 @@ func TestIExec_ExecProgram_LegacyBadArgs(t *testing.T) {
 
 	pc := t0
 	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
-	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))        // R1 = 0 (valid index)
-	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0x6F0000)) // R2 = unmapped user VA
-	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 10))       // R3 = args_len
-	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExecProgram))  // expect ERR_BADARG
-	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 2, 0, 0x30))      // R1 = err + '0'
-	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar)) // print
+	// R1 = 0 — formerly the valid index for prog_console; must now be rejected
+	// as below USER_CODE_BASE.
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExecProgram)) // R2 = err
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 2, 0, 0x30))     // R1 = err + '0'
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
 	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
 	brOff := int32(-8)
 	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(brOff)))
@@ -5483,49 +5484,16 @@ func TestIExec_ExecProgram_LegacyBadArgs(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	// ERR_BADARG = 3. The kernel must NOT have faulted (no GURU MEDITATION).
-	if strings.Contains(output, "GURU") {
-		t.Fatalf("ExecProgram_LegacyBadArgs: kernel faulted on bad args_ptr (legacy path validation broken), output=%q", output[:min(len(output), 200)])
+	// Two assertions:
+	//  1. console.handler must NOT have been launched (legacy index 0 is dead)
+	//  2. ERR_BADARG (3) must appear in the output
+	if strings.Contains(output, "console.handler ONLINE") {
+		t.Fatalf("ExecProgram_LegacyIndexReturnsBadarg: legacy index path still active — R1=0 launched console.handler, output=%q", output[:min(len(output), 200)])
 	}
 	if !strings.Contains(output, "3") {
-		t.Fatalf("ExecProgram_LegacyBadArgs: expected ERR_BADARG '3', got=%q", output[:min(len(output), 200)])
+		t.Fatalf("ExecProgram_LegacyIndexReturnsBadarg: expected ERR_BADARG '3' in output, got=%q", output[:min(len(output), 200)])
 	}
-	t.Logf("ExecProgram_LegacyBadArgs: legacy path correctly rejected unmapped args_ptr with ERR_BADARG")
-}
-
-func TestIExec_ExecProgram_BadIndex(t *testing.T) {
-	// M9: SYS_EXEC_PROGRAM with an out-of-range index should return ERR_BADARG (3).
-	// Task 0 calls EXEC_PROGRAM(index=99, args_ptr=0, args_len=0), converts err to ASCII, prints it.
-	rig, term := assembleAndLoadKernel(t)
-	images := findAllProgramImages(t, rig.cpu.memory)
-	overrideExtraTasks(rig.cpu.memory, images, 1)
-	t0 := images[0]
-
-	pc := t0
-	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
-	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 99))       // R1 = 99 (invalid index)
-	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))        // R2 = 0 (args_ptr)
-	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))        // R3 = 0 (args_len)
-	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExecProgram))  // SYS_EXEC_PROGRAM → R2 = err
-	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 2, 0, 0x30))      // R1 = R2 + '0'
-	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar)) // print error digit
-	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))        // yield
-	brOff := int32(-8)
-	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(brOff))) // loop
-
-	rig.cpu.running.Store(true)
-	done := make(chan struct{})
-	go func() { rig.cpu.Execute(); close(done) }()
-	time.Sleep(500 * time.Millisecond)
-	rig.cpu.running.Store(false)
-	<-done
-
-	output := term.DrainOutput()
-	// ERR_BADARG = 3, expect '3' in output
-	if !strings.Contains(output, "3") {
-		t.Fatalf("EXEC_PROGRAM(99) didn't return ERR_BADARG(3), output=%q", output[:min(len(output), 100)])
-	}
-	t.Logf("ExecProgram_BadIndex: EXEC_PROGRAM(99) returned error code 3 (ERR_BADARG)")
+	t.Logf("ExecProgram_LegacyIndexReturnsBadarg: R1=0 correctly rejected with ERR_BADARG and console.handler did not launch")
 }
 
 func TestIExec_DosLibOnline(t *testing.T) {

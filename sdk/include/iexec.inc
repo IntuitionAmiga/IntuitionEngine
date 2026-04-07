@@ -57,7 +57,7 @@ SYS_MAP_IO        equ 28           ; nucleus  (allowlist is a known impurity —
 ; (slot 32 reserved — was SYS_RECV_MSG_BULK, removed M11.5: never had a handler)
 SYS_DEBUG_PUTCHAR equ 33           ; bootstrap (kernel bring-up / panic only, not for app code)
 SYS_EXIT_TASK     equ 34           ; nucleus
-SYS_EXEC_PROGRAM  equ 35           ; nucleus  (legacy R1<0x600000 index branch — removal deferred to M12)
+SYS_EXEC_PROGRAM  equ 35           ; nucleus  (M11.6: legacy R1<0x600000 index branch removed)
 SYS_OPEN_LIBRARY  equ 36           ; nucleus  (binary-compat redirect to SYS_FIND_PORT — see iexec.s .do_open_library)
 ; (slot 37 reserved — was SYS_READ_INPUT, removed M11.5: terminal MMIO inlined into console.handler via SYS_MAP_IO)
 

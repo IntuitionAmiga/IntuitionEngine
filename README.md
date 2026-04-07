@@ -5976,14 +5976,26 @@ make aros               # Build VM with embedded AROS ROM
 
 IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. Unlike classic Amiga Exec, which ran everything in flat supervisor space with no memory protection, IExec uses the IE64 MMU to enforce hardware-backed user/supervisor privilege separation with per-task page tables and W^X memory policy. The design preserves the Amiga programming model (signals, message ports, priority scheduling) while adding the isolation guarantees of a modern protected-mode OS.
 
-**Milestone 11.5 status** — Exec boundary cleanup (implemented and tested):
+**Milestone 11.6 status** — `SYS_EXEC_PROGRAM` legacy index path removed (implemented and tested):
+
+- **Legacy `R1 < USER_CODE_BASE` index branch deleted from `SYS_EXEC_PROGRAM`.** The dual-mode discriminator (`if R1 >= USER_CODE_BASE → new ABI; else → table-lookup index path`) is gone. The handler now begins with `blt r1, USER_CODE_BASE → ERR_BADARG` and falls directly into the validated image-pointer ABI body. Sub-`USER_CODE_BASE` values hard-fail with `ERR_BADARG`.
+- **Resolves the one item M11.5 deferred.** M11.5 documented the legacy branch as `legacy` and punted removal on the (incorrect) assumption that ~41 tests depended on it. The actual count was 6 test functions; 4 use the new ABI and survived unchanged, 2 tested the legacy helper directly and were deleted.
+- **Guarded by `TestIExec_ExecProgram_LegacyIndexReturnsBadarg`** — calls `SYS_EXEC_PROGRAM` with `R1 = 0` (formerly the valid index for `prog_console`) and asserts `ERR_BADARG` plus the absence of `console.handler ONLINE` in the output.
+- **Kernel binary shrinks ~624 bytes** (45620 → 44996). `program_table` itself remains because the kernel boot path still uses it directly to load console.handler / dos.library / Shell into task slots at init; that's separate from the syscall path.
+- Standalone milestone, lands before M12 opens so the M12 (intuition.library) branch carries no test churn unrelated to windowing.
+
+Full kernel contract reference: [sdk/docs/IntuitionOS/IExec.md](sdk/docs/IntuitionOS/IExec.md)
+
+<details>
+<summary>Milestone 11.5 status (complete) — Exec boundary cleanup</summary>
+
 
 - **Exec boundary frozen.** Syscall admission rule documented; surviving syscalls categorized as `nucleus` / `bootstrap` / `legacy` in `sdk/include/iexec.inc` and the IExec contract reference. New syscalls only land if they require kernel-privileged state AND cannot be expressed as a message to a user-space service.
 - **16 dead or redundant syscall slots removed.** 15 reserved-but-unimplemented constants (`SYS_ALLOC_SHARED`, `SYS_DELETE_TASK`, `SYS_FIND_TASK`, `SYS_SET_TASK_PRI`, `SYS_SET_TP`, `SYS_GET_TASK_INFO`, `SYS_PEEK_PORT`, `SYS_ADD_TIMER`, `SYS_REM_TIMER`, `SYS_CLOSE_HANDLE`, `SYS_DUP_HANDLE`, `SYS_MAP_VRAM`, `SYS_DEBUG`, `SYS_SEND_MSG_BULK`, `SYS_RECV_MSG_BULK`) are deleted from the header; the slot numbers remain unallocated holes that fall through to `ERR_BADARG`. `SYS_READ_INPUT` (slot 37) is also removed — see below.
 - **`SYS_OPEN_LIBRARY` collapsed to `SYS_FIND_PORT`.** `SYS_OPEN_LIBRARY` is now a source-level alias (`equ SYS_FIND_PORT`) in `iexec.inc`. Slot 36 in the kernel dispatcher is retained as a one-instruction binary-compat redirect to `.do_find_port`, so any IE64 binary hardcoded to syscall number 36 still works. New code uses `SYS_FIND_PORT` directly. Guarded by `TestIExec_OpenLibrary_DispatcherCollapse`.
 - **Console.handler now owns terminal MMIO directly.** Previously the kernel exposed `SYS_READ_INPUT` (slot 37), which read `TERM_LINE_STATUS` / `TERM_STATUS` / `TERM_IN` from page `0xF0` on behalf of console.handler. M11.5 deletes the kernel handler. Console.handler now calls `SYS_MAP_IO(0xF0, 1)` at init time, caches the returned VA, and inlines the MMIO read loop into its `CON_MSG_READLINE` path. No client-visible change — the readline message protocol is unchanged. Slot 37 falls through to `ERR_BADARG`, guarded by `TestIExec_ReadInput_RemovedReturnsBadarg`.
 - **`SYS_MAP_IO` allowlist documented as a known impurity.** `SYS_MAP_IO` is a legitimate nucleus primitive, but its allowlist hardcodes IEVideoChip-specific knowledge (page `0xF0`, VRAM range `[0x100..0x5FF]`) inside Exec — that is policy leaking into the nucleus. The pure-microkernel solution is a future `hardware.resource` user-space service that arbitrates physical regions; its bootstrap-ordering problem keeps it out of M11.5. The wart is documented and constrains future device additions to extend the existing allowlist rather than invent new MMIO syscalls.
-- **`SYS_EXEC_PROGRAM` legacy index path is documented as `legacy` and scheduled for removal in M12.** 41 tests touch `ExecProgram` and the discriminator (`R1 < 0x600000` → table lookup) is load-bearing for any test that loads programs by index. M12 will rewrite the boot-path for `intuition.library` anyway; the legacy-path removal lands in that test churn instead of M11.5.
+- **`SYS_EXEC_PROGRAM` legacy index path documented as `legacy` and deferred** *(as of M11.5 — subsequently removed in M11.6; see the current status block above)*. M11.5 punted on removal because ~41 tests appeared to touch `ExecProgram` and the discriminator (`R1 < 0x600000` → table lookup) was assumed to be load-bearing for tests that loaded programs by index. M11.6 reaudited and found 6 actual test functions, deleted the 2 that depended on the legacy helper, and removed the branch standalone before M12 began.
 - **`Startup-Sequence` extended.** The seeded `S:Startup-Sequence` adds one trailing `ECHO All visible services are running in user space` line — the milestone's user-visible artifact at the prompt.
 - **No new syscalls. No protocol changes. No renumbering of any surviving syscall.** IE64 binaries are compiled against numbers, not names, so the surviving syscall numbers remain stable forever.
 - **Demo boot output (no user input)**:
@@ -6001,7 +6013,7 @@ IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. 
   1>
   ```
 
-Full kernel contract reference: [sdk/docs/IntuitionOS/IExec.md](sdk/docs/IntuitionOS/IExec.md)
+</details>
 
 <details>
 <summary>Milestone 11 status (complete) — input.device + graphics.library + fullscreen demo</summary>

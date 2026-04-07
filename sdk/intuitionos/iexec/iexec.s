@@ -2596,151 +2596,24 @@ trap_handler:
     eret
 
 ; ============================================================================
-; SYS_EXEC_PROGRAM (M10) — Dual-mode: legacy index OR new image pointer
+; SYS_EXEC_PROGRAM (M10 / M11.6) — Launch a program from a user image pointer
 ; ============================================================================
-; Legacy ABI: R1 = program table index (< USER_CODE_BASE)
-;   R2 = args_ptr, R3 = args_len
-; New ABI:    R1 = image_ptr (>= USER_CODE_BASE), R2 = image_size
-;   R3 = args_ptr, R4 = args_len
+; ABI: R1 = image_ptr (must be user VA, >= USER_CODE_BASE)
+;      R2 = image_size, R3 = args_ptr, R4 = args_len
 ; Returns: R1 = new task_id, R2 = error
+;
+; Runs entirely under the caller's PT (no PT switching).
+; Caller's PT has: user-accessible mappings for caller's own pages (incl.
+; AllocMem'd storage), and supervisor-only mappings for all task slot pages.
+;
+; M11.6: the legacy `R1 < USER_CODE_BASE` built-in-program-table index branch
+; was removed. Sub-USER_CODE_BASE values now hard-fail with ERR_BADARG so the
+; only path through this handler is the validated image-pointer ABI.
 .do_exec_program:
-    ; Dual-mode dispatch: if R1 >= USER_CODE_BASE, use new ABI
+    ; M11.6: reject any R1 below USER_CODE_BASE — the legacy index path is gone.
     move.l  r11, #USER_CODE_BASE
-    bge     r1, r11, .ep_new_abi
+    blt     r1, r11, .ep_badarg_norestore
 
-    ; === Legacy path: R1 = prog_table_index ===
-    move.q  r24, r1                     ; r24 = requested index
-    move.q  r25, r2                     ; r25 = args_ptr (user VA)
-    move.q  r26, r3                     ; r26 = args_len
-
-    ; Validate args_len <= DATA_ARGS_MAX
-    move.l  r11, #DATA_ARGS_MAX
-    bgt     r26, r11, .ep_badarg_norestore
-
-    ; Save caller's PTBR (needed for validate + later for args copy)
-    mfcr    r28, cr0                    ; r28 = caller PTBR
-
-    ; Validate args range with full P+U page check (M10 fix: legacy path was unsafe)
-    beqz    r25, .ep_args_ok            ; null args_ptr is OK if args_len handled below
-    beqz    r26, .ep_args_ok            ; zero args_len is OK
-    ; Overflow check: args_ptr + args_len must not wrap
-    add     r11, r25, r26
-    blt     r11, r25, .ep_badarg_norestore
-    ; Walk caller PT and check P+U for every page in [args_ptr, args_ptr+args_len)
-    move.q  r1, r25
-    move.q  r2, r26
-    move.q  r3, r28
-    jsr     validate_user_range
-    bnez    r1, .ep_badarg_norestore
-.ep_args_ok:
-
-    ; Walk program table to find the entry at index r24
-    la      r30, program_table
-    move.l  r20, #0
-.ep_scan:
-    load.q  r7, PROGTAB_OFF_PTR(r30)
-    beqz    r7, .ep_badarg_norestore    ; hit sentinel before index
-    beq     r20, r24, .ep_found
-    add     r30, r30, #PROGTAB_ENTRY_SIZE
-    add     r20, r20, #1
-    bra     .ep_scan
-.ep_found:
-    ; r7 = image_ptr, load size
-    load.q  r8, PROGTAB_OFF_SIZE(r30)
-
-    ; Switch to kernel PT for load_program
-    move.l  r11, #KERN_PAGE_TABLE
-    mtcr    cr0, r11
-    tlbflush
-
-    ; Save args info on stack before load_program (it clobbers everything)
-    push    r25                         ; args_ptr
-    push    r26                         ; args_len
-    push    r28                         ; caller PTBR
-
-    jsr     load_program                ; R1 = task_id, R2 = err
-
-    pop     r28                         ; caller PTBR
-    pop     r26                         ; args_len
-    pop     r25                         ; args_ptr
-
-    ; Check if load_program failed
-    bnez    r2, .ep_fail
-
-    ; R1 = new task_id. Copy args if present.
-    move.q  r22, r1                     ; r22 = new task_id (save)
-    beqz    r26, .ep_no_args            ; no args to copy
-    beqz    r25, .ep_no_args            ; null ptr
-
-    ; Compute destination: new task's data page + DATA_ARGS_OFFSET
-    move.l  r11, #USER_SLOT_STRIDE
-    mulu    r11, r22, r11
-    move.l  r14, #USER_DATA_BASE
-    add     r14, r14, r11
-    add     r14, r14, #DATA_ARGS_OFFSET ; r14 = dest addr (phys, kernel-mapped)
-
-    ; Phase 1: Read args from caller's space into kernel stack buffer
-    mtcr    cr0, r28                    ; caller's PT
-    tlbflush
-    sub     r15, r31, #256              ; r15 = temp buffer base on kernel stack
-    move.l  r4, #0
-.ep_read_args:
-    bge     r4, r26, .ep_read_done
-    add     r5, r25, r4
-    load.b  r6, (r5)                    ; read from caller's VA
-    add     r5, r15, r4
-    store.b r6, (r5)                    ; write to kernel stack buffer
-    add     r4, r4, #1
-    bra     .ep_read_args
-.ep_read_done:
-
-    ; Phase 2: Write from kernel stack to new task's data page (kernel PT)
-    move.l  r11, #KERN_PAGE_TABLE
-    mtcr    cr0, r11
-    tlbflush
-    move.l  r4, #0
-.ep_write_args:
-    bge     r4, r26, .ep_args_term
-    add     r5, r15, r4
-    load.b  r6, (r5)                    ; read from kernel stack buffer
-    add     r5, r14, r4
-    store.b r6, (r5)                    ; write to dest
-    add     r4, r4, #1
-    bra     .ep_write_args
-.ep_args_term:
-    ; Null-terminate
-    add     r5, r14, r26
-    store.b r0, (r5)                    ; null terminator
-
-.ep_no_args:
-    ; Restore caller's PTBR
-    mtcr    cr0, r28
-    tlbflush
-    move.q  r1, r22                     ; R1 = new task_id
-    move.q  r2, #ERR_OK
-    eret
-
-.ep_fail:
-    ; load_program failed, R2 already has error
-    mtcr    cr0, r28
-    tlbflush
-    move.q  r1, #0
-    eret
-
-.ep_badarg:
-    ; Need to restore PTBR if we saved it
-    mtcr    cr0, r28
-    tlbflush
-.ep_badarg_norestore:
-    move.q  r1, #0
-    move.q  r2, #ERR_BADARG
-    eret
-
-    ; === M10 new ABI: R1=image_ptr, R2=image_size, R3=args_ptr, R4=args_len ===
-    ; Runs entirely under the caller's PT (no PT switching).
-    ; Caller's PT has: user-accessible mappings for caller's own pages (incl.
-    ; AllocMem'd storage), and supervisor-only mappings for all task slot pages.
-.ep_new_abi:
     move.q  r24, r1                     ; r24 = image_ptr (user VA)
     move.q  r25, r2                     ; r25 = image_size
     move.q  r26, r3                     ; r26 = args_ptr
@@ -2833,6 +2706,11 @@ trap_handler:
 
 .ep_new_fail:
     move.q  r1, #0
+    eret
+
+.ep_badarg_norestore:
+    move.q  r1, #0
+    move.q  r2, #ERR_BADARG
     eret
 
 ; ============================================================================

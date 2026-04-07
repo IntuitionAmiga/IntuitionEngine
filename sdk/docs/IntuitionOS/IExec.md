@@ -26,7 +26,7 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
 - Kernel renamed to exec.library; GURU MEDITATION fault messages
 - AmigaOS-style `OpenLibrary` for library discovery — **M11.5**: source-level alias for `SYS_FIND_PORT`; the kernel ABI is one slot smaller. Slot 36 is retained as a one-instruction binary-compat redirect to `.do_find_port` so any pre-M11.5 IE64 binary still links. New code uses `SYS_FIND_PORT` directly. See § 5.11 "Exec Boundary".
 - I/O page mapping via MapIO syscall (REGION_IO type)
-- **`SYS_EXEC_PROGRAM` takes a user-space image pointer** (M10): kernel creates tasks from user-provided IE64PROG images. Runs entirely under the caller's PT (no PT switching). `validate_user_range` checks both P and U bits on every page in the requested range. Legacy index path retained for M9 compatibility (documented as `legacy` in M11.5; removal deferred to M12).
+- **`SYS_EXEC_PROGRAM` takes a user-space image pointer** (M10): kernel creates tasks from user-provided IE64PROG images. Runs entirely under the caller's PT (no PT switching). `validate_user_range` checks both P and U bits on every page in the requested range. **M11.6**: the legacy `R1 < USER_CODE_BASE` built-in-program-table index branch is removed — sub-`USER_CODE_BASE` values now hard-fail with `ERR_BADARG` and the validated image-pointer ABI is the only path through the handler.
 - **Multi-page code and data in `load_program`** (M10): up to 2 code pages (8 KB) and 4 data pages (16 KB) per task. dos.library is itself a 2-code-page program, with 3 data pages containing embedded command images.
 - console.handler: CON: handler with GetMsg polling and CON_READLINE protocol — **M11.5**: console.handler now owns terminal MMIO directly via its own `SYS_MAP_IO(0xF0, 1)` mapping and inlines the readline MMIO loop. The former kernel-side `SYS_READ_INPUT` (slot 37) is removed; slot 37 is an unallocated hole that returns `ERR_BADARG`.
 - **dos.library**: AmigaOS dos.library equivalent with RAM: filesystem (16 files, 4 KB each, case-insensitive, 32-byte filenames). M10 adds: assign table (RAM:, C:, S:), name-based command resolution (`resolve_command_name` defaults to C:, `resolve_file_name` defaults to bare), embedded command images, init-time seeding into the RAM file store, and boot-race-free port creation (CreatePort deferred until after seeding).
@@ -291,13 +291,13 @@ The CPU traps to supervisor mode. The kernel's trap handler reads the syscall nu
 
 | # | Name | Signature | Status |
 |---|------|-----------|--------|
-| 35 | `ExecProgram` | R1=image_ptr, R2=image_size, R3=args_ptr, R4=args_len -> R1=task_id, R2=err | **Implemented (M9, redesigned M10)** (`nucleus`; legacy `R1 < 0x600000` index path is `legacy`, removal deferred to M12) |
+| 35 | `ExecProgram` | R1=image_ptr, R2=image_size, R3=args_ptr, R4=args_len -> R1=task_id, R2=err | **Implemented (M9, redesigned M10, legacy index path removed M11.6)** (`nucleus`) |
 | 36 | `OpenLibrary` | R1=name_ptr -> R1=port_id, R2=err | **Binary-compat redirect to `SYS_FIND_PORT` (M11.5)**. Source-level alias (`SYS_OPEN_LIBRARY equ SYS_FIND_PORT`); kernel slot 36 dispatches to `.do_find_port` via a one-instruction redirect so older IE64 binaries still link. New code uses `SYS_FIND_PORT` directly. |
 | 37 | -- | -- | Removed M11.5 (was `ReadInput`; terminal MMIO inlined into `console.handler` via `SYS_MAP_IO(0xF0, 1)`. Slot returns `ERR_BADARG`; guarded by `TestIExec_ReadInput_RemovedReturnsBadarg`.) |
 
 **ExecProgram (35)** -- M10 ABI: Creates a new task from a user-provided IE64PROG image. R1=image_ptr (user VA pointing to a complete IE64PROG image, e.g. an entry in dos.library's RAM file store; must be ≥ `0x600000`), R2=image_size (total bytes including 32-byte header, code, and data; valid range 32..24608, matching `load_program`'s max of header + 8 KiB code + 16 KiB data), R3=args_ptr (user VA pointing to null-terminated argument string in the caller's address space, or 0 for no args), R4=args_len (byte count of arguments, max 256, or 0 for no args). The handler runs entirely under the **caller's** page table (no PT switching): every page in `[image_ptr, image_ptr+image_size)` and `[args_ptr, args_ptr+args_len)` is validated via `validate_user_range` (checks both **P** and **U** PTE bits), then `load_program` is called directly to copy the image into a free task slot. Arguments are copied to the new task's data page at `DATA_ARGS_OFFSET` (like AmigaOS `pr_Arguments`). Returns R1=new task_id, R2=err. Returns `ERR_BADARG` for unmapped/kernel-only ranges, oversize images, args_len > 256, or pointer arithmetic overflow.
 
-**Legacy index path** (M9 compatibility): If R1 < `0x600000`, the handler treats R1 as a program table index and uses the M9 ABI (R2=args_ptr, R3=args_len, R4 ignored). The program table walk + PT-switching path is preserved for this case, but **M10 hardens it** with the same `validate_user_range` check on the args range that the new ABI uses (the M9 path only checked the lower bound and would fault the kernel on unmapped or supervisor-only pages above `0x600000`). With M10 the program table only contains the 3 boot services (console.handler, dos.library, Shell), so legacy index access is effectively limited to those slots; production code uses the new pointer ABI exclusively. The legacy path will be removed in a future milestone.
+**Legacy index path — REMOVED in M11.6**: Historically (M9), if R1 < `0x600000` the handler treated R1 as a `program_table` index and used the M9 ABI (R2=args_ptr, R3=args_len). M10 redesigned the primary ABI around a user-VA `image_ptr` but kept the legacy index branch behind a discriminator for M9 boot-services compatibility (and hardened its args validation with `validate_user_range`). **M11.6 removes the discriminator and the entire legacy code path**: the handler now begins with `blt r1, USER_CODE_BASE → ERR_BADARG`, so any caller passing R1 < `0x600000` hard-fails. The validated image-pointer ABI above is the only path through the handler. `program_table` itself is preserved because the kernel boot path still loads console.handler / dos.library / Shell from it directly into task slots at init, but it is no longer reachable from user mode via `SYS_EXEC_PROGRAM`. Guarded by `TestIExec_ExecProgram_LegacyIndexReturnsBadarg`.
 
 **`validate_user_range` subroutine**: Walks the caller's page table once per page in the requested byte range. For each VPN, loads the PTE and checks `(pte & 0x11) == 0x11` (P bit + U bit set). Rejects unmapped pages, kernel-only pages, and pointer-arithmetic overflows. Returns R1=0 on success or 1 (ERR_BADARG) on any failure.
 
@@ -366,7 +366,7 @@ If either condition fails, the feature belongs in a library, device, handler, or
 | 28 | `MapIO` | `nucleus` | Page-table install with MMIO allowlist (see 5.11.4) |
 | 33 | `DebugPutChar` | `bootstrap` | Single-character debug output to terminal MMIO. Used by the kernel boot banner and panic path **before** `console.handler` is alive. Not part of the normal app programming model — apps use `console.handler` via `CON_MSG_CHAR`. Scheduled to remain forever as the panic-time fallback. |
 | 34 | `ExitTask` | `nucleus` | Frees TCB, ports, signals, regions |
-| 35 | `ExecProgram` | `nucleus` (M10 ABI) / `legacy` (M9 index branch, removal deferred to M12) | M10 takes a user-VA `image_ptr`; the legacy `R1 < 0x600000` index path is preserved for boot-services lookup but documented as `legacy` in M11.5 to forbid new uses. M12 will rewrite the boot path for `intuition.library` and remove the index branch in that test churn. |
+| 35 | `ExecProgram` | `nucleus` | M10 takes a user-VA `image_ptr`. The legacy `R1 < 0x600000` index path was removed in M11.6 — sub-`USER_CODE_BASE` values now hard-fail with `ERR_BADARG`, leaving the validated image-pointer ABI as the only path through the handler. |
 | 36 | `OpenLibrary` | `nucleus` (binary-compat redirect to slot 16) | Source-level alias for `SYS_FIND_PORT`; slot 36 dispatches to `.do_find_port` via a one-instruction redirect so any IE64 binary hardcoded to call number 36 still works. New code uses `SYS_FIND_PORT` directly. The Amiga-shaped programming model (`OpenLibrary("dos.library")`) is preserved at the assembler level; the kernel ABI is one slot smaller. |
 
 Slots 3, 6–10, 21–25, 29–32, and 37 are unallocated holes (former syscalls removed in M11.5). The dispatcher's existing fall-through path returns `ERR_BADARG` for any call to a hole. The hole numbers are never reused, so any IE64 binary that called these numbers continues to fail in the same predictable way.
@@ -679,7 +679,7 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 - **Strict boot**: the first PROGTAB_BOOT_COUNT (3) programs (console.handler, dos.library, Shell) must load successfully or the kernel panics.
 - **New syscalls** (as shipped in M9; later evolved — see M10/M11/M11.5 sections):
   - `SYS_MAP_IO` (28): maps I/O pages into user task address space with new REGION_IO (3) region type. Extended in M11 to take a page count.
-  - `SYS_EXEC_PROGRAM` (35): originally loaded a bundled program by table index (R1=index, R2=args_ptr, R3=args_len). Arguments are copied to the child task's data page at DATA_ARGS_OFFSET (like AmigaOS `pr_Arguments`). **Note**: ABI redesigned in M10 to take a user-space image pointer instead of an index. The legacy `R1 < 0x600000` index branch is retained for M9 boot-services compatibility but is documented as `legacy` in M11.5; removal is deferred to M12.
+  - `SYS_EXEC_PROGRAM` (35): originally loaded a bundled program by table index (R1=index, R2=args_ptr, R3=args_len). Arguments are copied to the child task's data page at DATA_ARGS_OFFSET (like AmigaOS `pr_Arguments`). **M10**: ABI redesigned to take a user-space image pointer instead of an index. **M11.6**: the legacy `R1 < 0x600000` index branch is removed — the validated image-pointer ABI is the only path through the handler, and sub-`USER_CODE_BASE` values now hard-fail with `ERR_BADARG`.
   - `SYS_OPEN_LIBRARY` (36): added in M9 as a distinct AmigaOS-style `OpenLibrary` syscall. **M11.5 collapsed it**: it is now a source-level alias for `SYS_FIND_PORT` (`SYS_OPEN_LIBRARY equ SYS_FIND_PORT` in `iexec.inc`). Slot 36 in the kernel dispatcher is retained as a one-instruction binary-compat redirect to `.do_find_port` so any IE64 binary that hardcoded the number 36 still works. New code uses `SYS_FIND_PORT` directly. See § 5.11 "Exec Boundary" for the rationale.
   - `SYS_READ_INPUT` (37): added in M9 as a kernel-mode terminal read on behalf of `console.handler`. **Removed in M11.5**: terminal MMIO is now mapped directly by `console.handler` via `SYS_MAP_IO(0xF0, 1)`, and the readline MMIO loop is inlined into `console.handler`'s `CON_MSG_READLINE` path. The kernel handler is gone; slot 37 is an unallocated hole that returns `ERR_BADARG`. The `CON_MSG_READLINE` request/reply protocol is unchanged, so existing readline clients (the shell, all M9/M10/M11 readline tests) keep working without modification.
 - **console.handler**: CON: handler task (Task 0). Creates public port, services output via GetMsg polling, supports CON_READLINE protocol for interactive line input.
@@ -695,7 +695,7 @@ M10 transitions the system from kernel-dispatched command indices to user-space 
 
 **Kernel changes (gets simpler):**
 
-- **`SYS_EXEC_PROGRAM` ABI redesigned**: now takes a user-space image pointer instead of a program table index. New signature: `R1=image_ptr (user VA, ≥0x600000), R2=image_size, R3=args_ptr, R4=args_len → R1=task_id, R2=err`. Runs entirely under the caller's PT (no PT switching). Legacy index-based path retained for `R1<0x600000` (M9 compat, used only by tests; production code uses the new ABI). The kernel no longer walks the program table for on-demand loads.
+- **`SYS_EXEC_PROGRAM` ABI redesigned**: now takes a user-space image pointer instead of a program table index. New signature: `R1=image_ptr (user VA, ≥0x600000), R2=image_size, R3=args_ptr, R4=args_len → R1=task_id, R2=err`. Runs entirely under the caller's PT (no PT switching). Legacy index-based path retained for `R1<0x600000` (M9 compat, used only by tests; production code uses the new ABI). The kernel no longer walks the program table for on-demand loads. **M11.6 update**: the legacy `R1<0x600000` branch has since been removed; `SYS_EXEC_PROGRAM` now hard-rejects sub-`USER_CODE_BASE` values with `ERR_BADARG`.
 - **`validate_user_range` subroutine**: walks the caller's page table and checks both **P (present) AND U (user-accessible)** bits for every page in `[ptr, ptr+size)`. Rejects unmapped pages, kernel-only pages, and overflow ranges with `ERR_BADARG`. Used by `SYS_EXEC_PROGRAM` to validate the image and args byte ranges before passing them to `load_program`.
 - **Multi-page code and data in `load_program`**: code_size cap raised from 4096 to 8192 (up to 2 code pages); data_size cap raised from 4096 to 16384 (up to 4 data pages). `load_program` computes `code_pages` and `data_pages` from the image header, zeros and copies the right number of bytes, and passes both counts to `build_user_pt`. dos.library exercises both: it has 2 code pages (5744 bytes) and 3 data pages (9428 bytes including embedded command images).
 - **`build_user_pt` parameterized**: takes `R9=code_pages` and `R11=data_pages`, loops to map `code_pages` PTEs at VPN+0..VPN+(code_pages-1) as P|X|U, then a stack PTE at VPN+code_pages, then `data_pages` PTEs at VPN+code_pages+1..VPN+code_pages+data_pages as P|R|W|U.
@@ -906,12 +906,33 @@ All visible services are running in user space
 
 **What M11.5 explicitly does NOT do:**
 
-- No removal of the `SYS_EXEC_PROGRAM` legacy `R1 < 0x600000` index branch — deferred to M12 where the boot path will be rewritten for `intuition.library` and the test churn is already happening. Documented as `legacy` in M11.5 to forbid new uses.
+- ~~No removal of the `SYS_EXEC_PROGRAM` legacy `R1 < 0x600000` index branch — deferred to M12.~~ **Resolved in M11.6**: the legacy index branch was removed in a standalone milestone before M12 began. `SYS_EXEC_PROGRAM` now hard-fails any sub-`USER_CODE_BASE` value with `ERR_BADARG`; see the Milestone 11.6 section below.
 - No removal of `SYS_DEBUG_PUTCHAR` — kept as `bootstrap` category, still required for kernel boot banner and panic output before `console.handler` is alive.
 - No `hardware.resource` refactor of `SYS_MAP_IO`'s allowlist — documented as a known wart in 5.11.4, deferred indefinitely.
 - No new syscalls. By definition.
 - No changes to message protocols, port format, AllocMem semantics, or any user-space service API.
 - No renumbering of any surviving syscall — IE64 binaries are compiled against numbers, not names.
+
+### Milestone 11.6: SYS_EXEC_PROGRAM legacy index removal (Complete)
+
+A small follow-on to M11.5 that resolves the one item M11.5 explicitly deferred. Lands as a standalone milestone before M12 opens so the M12 branch carries no test churn unrelated to windowing.
+
+**What changed:**
+
+- The dual-mode discriminator at the top of `.do_exec_program` (`if R1 >= USER_CODE_BASE → new ABI; else → table-lookup index path`) is gone. The handler now begins with `blt r1, USER_CODE_BASE → ERR_BADARG`, then falls directly into the validated image-pointer ABI body.
+- The entire legacy code path — `program_table` walk, two-phase PT-switching args copy, dedicated `.ep_old_abi` body — is deleted from `iexec.s`.
+- `program_table` itself remains because the kernel boot path still loads the first three programs (console.handler, dos.library, Shell) directly into task slots from it during init. That use is unrelated to the syscall path and is preserved.
+- `iexec.inc`'s trailing comment for `SYS_EXEC_PROGRAM` is updated from `legacy R1<0x600000 index branch — removal deferred to M12` to `M11.6: legacy R1<0x600000 index branch removed`.
+- The kernel binary shrinks by ~624 bytes (45620 → 44996).
+
+**Test changes:**
+
+- `TestIExec_ExecProgram_LegacyIndexReturnsBadarg` (new): negative test that calls `SYS_EXEC_PROGRAM` with `R1=0` (formerly the valid index for prog_console) and asserts `ERR_BADARG` plus the absence of `console.handler ONLINE` in the output. This was the failing test written first per the M11.5 TDD discipline; it goes green after the legacy block deletion.
+- `TestIExec_ExecProgram_LegacyBadArgs` (deleted): tested the legacy path's args validation. The legacy path is gone, so the test is testing-the-helper-not-the-feature.
+- `TestIExec_ExecProgram_BadIndex` (deleted): tested the legacy path's "index out of range" handling via `R1=99`. Same fate.
+- The four `TestIExec_ExecProgram_NewABI*` tests survive unchanged and continue to pass — they exercise the validated image-pointer ABI which is the only remaining path.
+
+**Why it ships separately from M12:** M11.5 deferred this on the grounds that ~41 raw `ExecProgram` test references would create churn that interfered with the freeze. The actual count was 6 test functions (the rest were doc/comment hits), of which 4 use the new ABI and survived unchanged, 2 were testing the legacy helper directly and were deleted. The cleanup turned out to be small enough to land standalone, which lets M12's intuition.library branch start from a clean syscall surface.
 
 ### Milestone 12: intuition.library + Compositor + Windowing (Planned)
 
