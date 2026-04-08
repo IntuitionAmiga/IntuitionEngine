@@ -5976,15 +5976,98 @@ make aros               # Build VM with embedded AROS ROM
 
 IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. Unlike classic Amiga Exec, which ran everything in flat supervisor space with no memory protection, IExec uses the IE64 MMU to enforce hardware-backed user/supervisor privilege separation with per-task page tables and W^X memory policy. The design preserves the Amiga programming model (signals, message ports, priority scheduling) while adding the isolation guarantees of a modern protected-mode OS.
 
-**Milestone 11.6 status** — `SYS_EXEC_PROGRAM` legacy index path removed (implemented and tested):
+**Milestone 12.5 status** — `hardware.resource` + minimal trust model + first cap removal (implemented and tested):
+
+- **`hardware.resource` ships as a user-space MMIO arbiter.** A new public message port (`"hardware.resource"`) hosts the first IntuitionOS broker. Owns the policy mapping from 4-byte region tags (`'CHIP'`, `'VRAM'`) to physical PPN ranges. Clients send `HWRES_MSG_REQUEST` naming a tag; the broker uses the **kernel-trusted sender task ID** (R7 from `SYS_WAIT_PORT`/`SYS_GET_MSG`, populated from `KD_MSG_SRC`) — never anything client-supplied — and calls `SYS_HWRES_OP`/`HWRES_CREATE` to write a kernel grant row covering the right PPN range. Reply is `HWRES_MSG_GRANTED` whose data0 carries `(ppn_base<<32) | page_count`.
+- **`SYS_MAP_IO` is de-publicized.** The hardcoded allowlist (`(0xF0, 1)` + `[0x100..0x5FF]` VRAM range) is gone. The handler now consults a kernel grant chain — only callers holding a covering grant entry succeed; everyone else gets `ERR_PERM`. `SYS_MAP_IO` is reclassified from `nucleus` to `bootstrap, trusted-internal — gated by KD_GRANT_TABLE`. Net public ABI shrinks: one nucleus syscall leaves the public set, one `trusted-internal` slot enters.
+- **Minimal trust model with full lifecycle cleanup.** A single kernel byte `KD_HWRES_TASK` (initially `0xFF`/sentinel) holds the broker task ID. The first task to call `SYS_HWRES_OP`/`HWRES_BECOME` claims broker identity; subsequent claims return `ERR_EXISTS`. `HWRES_CREATE` is gated by `current_task == KD_HWRES_TASK`. **`kill_task_cleanup` clears the broker identity if the exiting task is the broker, walks the kernel grant chain to release all rows belonging to the exiting task, and the broker itself runs a stale-owner scrub on every request via `HWRES_TASK_ALIVE`** so a recycled task slot can never inherit broker privilege, granted MMIO, or per-tag owner state. There are no groups, ACLs, users, or capability masks beyond this single distinction. M12.5 deliberately stops at one privileged identity because no second consumer exists yet — full multiuser/login waits for persistent storage.
+- **One new syscall slot, fresh number, four verbs.** `SYS_HWRES_OP` lives at slot 38, multiplexed by an R6 verb selector: `HWRES_BECOME` (claim broker identity) / `HWRES_CREATE` (write a grant row, broker-only) / `HWRES_REVOKE` (reserved for M13) / `HWRES_TASK_ALIVE` (broker queries kernel TCB state to reclaim stale per-tag owner slots, broker-only). **Slot 37 stays a reserved hole forever** per the M11.5 contract — `TestIExec_HWRes_Slot37StillReserved` makes the contract executable so a future patch cannot quietly recycle it.
+- **`SYS_GET_MSG` / `SYS_WAIT_PORT` return R7 = sender task ID.** The kernel populates R7 from `KD_MSG_SRC` (which `PutMsg` filled in with the actual sender — unforgeable from user space). The broker uses R7 as its trusted sender identity instead of trusting any client-supplied data1 field. This is an extension of existing return-register usage, not a new syscall slot — net public ABI is still +1 net (one out, one in).
+- **Bootstrap grant table.** A small immutable list keyed by program-table boot index (NOT task ID, because task IDs do not exist at `kern_init`). The boot-load loop resolves each row to a live grant row immediately after `load_program` returns the assigned task ID. M12.5 ships with exactly one bootstrap row: `(console.handler, 'CHIP', PPN 0xF0)` — this is what lets `console.handler` map its serial-port MMIO before `hardware.resource` is alive, breaking the chicken-and-egg of `hardware.resource` depending on `console.handler` for output.
+- **Migrated callers.** `input.device` and `graphics.library` no longer call `SYS_MAP_IO` ambiently. Each spins on `FindPort("hardware.resource")` until the broker is up, sends one `HWRES_MSG_REQUEST` per region needed (input.device wants `'CHIP'`; graphics.library wants `'CHIP'` *and* `'VRAM'`), waits for the reply, and only then calls `SYS_MAP_IO`. `console.handler` is the only kernel-bootstrap-granted task.
+- **`KD_REGION_MAX` cap removed.** The first M12.5 cap removal — exactly one pre-existing fixed cap, locked in (not deferred). The per-task region table grows from a fixed 8-row block to inline-rows-plus-overflow-chain: rows 0..7 still live inline at `KD_REGION_TABLE` for the fast path, rows 9+ live in allocator-backed chain pages reached through a per-task overflow header at `KD_REGION_OVERFLOW_HEAD`. All six region walkers (`AllocMem`, `FreeMem`, `MapShared`, `SYS_MAP_IO`, `find_free_va`, `kill_task_cleanup`) iterate inline first, then walk the overflow chain. Only failure mode is real `ERR_NOMEM` from the page allocator. `TestIExec_NoCap_RegionMaxRemoved` proves a 9th allocation succeeds; `TestIExec_HWRes_GrantTableChainGrows` exercises the same chain-allocator pattern against the grant table.
+- **Named hard-cap policy** lands as IExec.md §5.13:
+  > IntuitionOS does not use arbitrary fixed product limits for core OS objects where dynamic allocation is practical. Remaining limits must be justified by architecture, ABI width, hardware constraints, or explicitly configured resource policy.
+  Every existing cap is classified into A (architectural — keep), B (temporary — replace later), or C (arbitrary — remove now). M12.5 removes one C-bucket cap (`KD_REGION_MAX`); M12.6 will sweep the rest of the C bucket (`MAX_TASKS`, `KD_PORT_MAX`, `KD_SHMEM_MAX`, DOS file/object caps).
+- **Boot integration.** `S/Startup-Sequence` extended with `RESOURCES:hardware.resource` as the FIRST line (before `DEVS:input.device`) so it has its public port registered before any client calls `FindPort`. The version string is now `IntuitionOS 0.13 (exec.library M11.6 / intuition.library M12 / hardware.resource M12.5)`.
+- **Demo boot output:**
+  ```
+  exec.library M11 boot
+  console.handler ONLINE [Task 0]
+  dos.library ONLINE [Task 1]
+  Shell ONLINE [Task 2]
+  IntuitionOS M11
+  hardware.resource ONLINE [Task 3]         <- new in M12.5
+  input.device ONLINE [Task 4]              <- now grants its CHIP MMIO via hardware.resource
+  graphics.library ONLINE [Task 5]          <- now grants its CHIP+VRAM MMIO via hardware.resource
+  intuition.library ONLINE [Task 6]
+  IntuitionOS 0.13 (exec.library M11.6 / intuition.library M12 / hardware.resource M12.5)
+  IntuitionOS M12.5 ready
+  All visible services are running in user space
+  1>
+  ```
+  M12 GUI demo runs unchanged from a user perspective — same About app, same close-gadget interaction. Only the boot banner and the architecture underneath have changed.
+
+Full kernel contract reference: [sdk/docs/IntuitionOS/IExec.md](sdk/docs/IntuitionOS/IExec.md) (see §5.12 for `hardware.resource` design + §5.13 for the cap-removal policy and audit table)
+
+<details>
+<summary>Milestone 12 status (complete) — intuition.library + single-window compositor + structural cap cleanup</summary>
+
+
+- **`intuition.library` ships as a user-space service.** A new public message port (`"intuition.library"`) hosts the first IntuitionOS windowing layer. Lazy display ownership: text mode persists until the first `INTUITION_OPEN_WINDOW`, at which point intuition.library opens graphics.library at 800×600 RGBA32, allocates its own 1920000-byte screen surface, registers as the SOLE graphics.library client, subscribes to input.device, and `MapShared`s the client's window backing buffer. Closing the (single) window tears down the entire graphics-mode subsystem (`SYS_FREE_MEM` of the screen + the client mapping, `INPUT_CLOSE` only if intui actually owns the subscription, `GFX_UNREGISTER_SURFACE`, `GFX_CLOSE_DISPLAY`) and returns to text mode. Single-window only — second `INTUITION_OPEN_WINDOW` returns `INTUI_ERR_BUSY`. M12.x will add z-order.
+- **Window protocol: `INTUITION_OPEN_WINDOW` / `INTUITION_CLOSE_WINDOW` / `INTUITION_DAMAGE`.** intuition.library composites the (mapped) client buffer into its 800×600 screen surface and paints **Magic Workbench-style window decoration** on top:
+  - 1-pixel **3D bevel** — WHITE highlight on top + left edges, BLACK shadow on bottom + right edges (raised look)
+  - 16-pixel **title bar pinstripes** alternating two shades of Amiga blue (light steel blue `0xFFB89878` + medium steel blue `0xFF905030`)
+  - **Close gadget** at top-left: light grey fill `0xFFCCCCCC`, black 1px outline, recessed black 4×4 centre square
+  - **Depth gadget** at top-right: light grey fill, black outline, two overlapping rectangle outlines (the classic AmigaOS front/back depth icon)
+
+  All decoration is drawn via a small `.intui_fillrect` `jsr`/`rts` helper. After painting, intuition.library calls `GFX_PRESENT` (full-frame — graphics.library protocol unchanged). No new syscalls. No graphics.library protocol changes. The full M11.5 admission rule held.
+- **IDCMP-style event delivery: `IDCMP_RAWKEY` / `IDCMP_MOUSEMOVE` / `IDCMP_MOUSEBUTTONS` / `IDCMP_CLOSEWINDOW`.** intuition.library subscribes to input.device's existing raw event stream and routes events to each window's IDCMP port with screen→window-local coordinate translation. Both Esc and a mouse-button-down inside the close-gadget rect are intercepted into `IDCMP_CLOSEWINDOW`.
+- **`prog_about` demo client.** A user-space program seeded as `C/About` in the RAM: filesystem that demonstrates the full open→damage→close cycle and renders text via an embedded bitmap font. Allocates a 256000-byte (320×200 RGBA32) backing buffer, fills it with a dark teal backdrop, then renders five lines of white text into the content area using the embedded **Topaz 8×16 bitmap font** (the AmigaOS Topaz Plus font lives at `sdk/include/topaz.raw` and is embedded into the About app's data section via `incbin "topaz.raw"` — full 256-glyph × 16-byte = 4096 bytes). Glyph rendering is done by tiny `draw_char` / `draw_string` subroutines in the About program itself. Lines rendered:
+  ```
+  About IntuitionOS
+  Microkernel + intuition.library
+  M12 demonstration window
+  Press Esc to close
+  (C) 2024-2026 Zayn Otley
+  ```
+  About sends `INTUITION_OPEN_WINDOW` with the buffer's share handle (window centered on the 800×600 screen at `(240, 200)`, size `320×200`), sends DAMAGE, services IDCMP, exits cleanly on `IDCMP_CLOSEWINDOW`. Reachable from the shell as `C:About` — not auto-launched at boot, so the existing M11 GfxDemo task budget is preserved.
+- **Structural caps cleaned up.** M11 inherited several arbitrary 8-of-everything caps from M5/M7 that had become tight as services accumulated. M12 quadrupled the port cap, doubled the task and shared-object caps, doubled port name length, and bumped the dos.library file slot size:
+  - **`MAX_TASKS`: 8 → 16.** Unblocked by removing the per-task `USER_DYN_STRIDE` window — the dynamic VA range (`USER_DYN_BASE..USER_DYN_END`) is now GLOBAL, with each task's own page table providing isolation. The M11 design pre-allocated each task a 3 MiB slice of the 32 MiB VA space and saturated at exactly 8 tasks; the global VA design has no such limit. Slot region shifted from 0x600000..0x67FFFF to 0x600000..0x6FFFFF, user-PT region from 0x680000 to 0x700000, `ALLOC_POOL_BASE` from PPN 0x700 to 0x800.
+  - **`KD_PORT_MAX`: 8 → 32.** 4× bump. M11 hit the 8-port wall as soon as services started creating their own anonymous reply ports.
+  - **`KD_SHMEM_MAX`: 8 → 16.** Doubled.
+  - **`PORT_NAME_LEN`: 16 → 32.** Doubled. M11's 16-byte cap was just barely big enough for `"graphics.library"` (exactly 16 chars, no null terminator) and outright too small for `"intuition.library"` (17 chars). Service names can now use the full Amiga-style `name.library`/`name.device`/`name.handler` form.
+  - **`DOS_FILE_SIZE`: 4096 → 8192.** Doubled so the intuition.library service image fits in a single RAM: slot. The fixed-stride slot table is still arbitrary in principle — replacing it with a packed-heap allocator was attempted in M12, hit a runtime bug, and was reverted to the simpler bump pending a focused follow-up.
+- **Boot integration.** `S:Startup-Sequence` extended with `LIBS:intuition.library`. The version string is now `IntuitionOS 0.12 (exec.library M11.6 / intuition.library M12)`.
+- **Demo boot output (no user input):**
+  ```
+  exec.library M11 boot
+  console.handler ONLINE [Task 0]
+  dos.library ONLINE [Task 1]
+  Shell ONLINE [Task 2]
+  IntuitionOS M11
+  input.device ONLINE [Task 3]              <- launched by S:Startup-Sequence
+  graphics.library ONLINE [Task 4]          <- launched by S:Startup-Sequence
+  intuition.library ONLINE [Task 5]         <- launched by S:Startup-Sequence (M12, lazy display)
+  IntuitionOS 0.12 (exec.library M11.6 / intuition.library M12)
+  IntuitionOS M12 ready
+  All visible services are running in user space
+  1>
+  ```
+  Then `1> C:About` opens a window, blits the backdrop, waits for IDCMP. `Esc` (or a click on the close gadget) sends `IDCMP_CLOSEWINDOW`, About sends `INTUITION_CLOSE_WINDOW`, intuition.library tears down the display, the system returns to text mode at the prompt.
+
+</details>
+
+<details>
+<summary>Milestone 11.6 status (complete) — `SYS_EXEC_PROGRAM` legacy index path removed</summary>
 
 - **Legacy `R1 < USER_CODE_BASE` index branch deleted from `SYS_EXEC_PROGRAM`.** The dual-mode discriminator (`if R1 >= USER_CODE_BASE → new ABI; else → table-lookup index path`) is gone. The handler now begins with `blt r1, USER_CODE_BASE → ERR_BADARG` and falls directly into the validated image-pointer ABI body. Sub-`USER_CODE_BASE` values hard-fail with `ERR_BADARG`.
 - **Resolves the one item M11.5 deferred.** M11.5 documented the legacy branch as `legacy` and punted removal on the (incorrect) assumption that ~41 tests depended on it. The actual count was 6 test functions; 4 use the new ABI and survived unchanged, 2 tested the legacy helper directly and were deleted.
 - **Guarded by `TestIExec_ExecProgram_LegacyIndexReturnsBadarg`** — calls `SYS_EXEC_PROGRAM` with `R1 = 0` (formerly the valid index for `prog_console`) and asserts `ERR_BADARG` plus the absence of `console.handler ONLINE` in the output.
 - **Kernel binary shrinks ~624 bytes** (45620 → 44996). `program_table` itself remains because the kernel boot path still uses it directly to load console.handler / dos.library / Shell into task slots at init; that's separate from the syscall path.
-- Standalone milestone, lands before M12 opens so the M12 (intuition.library) branch carries no test churn unrelated to windowing.
+- Standalone milestone, landed before M12 opened so the M12 (intuition.library) branch carries no test churn unrelated to windowing.
 
-Full kernel contract reference: [sdk/docs/IntuitionOS/IExec.md](sdk/docs/IntuitionOS/IExec.md)
+</details>
 
 <details>
 <summary>Milestone 11.5 status (complete) — Exec boundary cleanup</summary>

@@ -39,12 +39,30 @@ type VideoTerminal struct {
 	rows        int
 	pixelWidth  int
 	pixelHeight int
-	cursorOn    bool
-	fgColor     uint32
-	bgColor     uint32
-	glyphs      [256][16]byte
-	escState    int
-	escParam    byte
+	// initialMode is the chip mode that was active when this terminal
+	// was constructed (typically DEFAULT_VIDEO_MODE = MODE_800x600).
+	// All renderer geometry (pixelWidth/pixelHeight, cols, rows) was
+	// derived from this mode. If the chip later switches to a different
+	// mode (e.g. graphics.library's GFX_OPEN_DISPLAY → MODE_640x480 for
+	// intuition.library), the chip reallocates its frontBuffer to the
+	// smaller size and our cached pixelWidth/Height no longer match.
+	// Pre-M12 this caused panics in renderCellLocked when the cursor
+	// reached a row whose byte offset exceeded the new (smaller)
+	// frontBuffer length. M12 added a fast-path guard at processChar
+	// entry plus defensive bounds checks inside every render callback.
+	initialMode uint32
+	// inGraphicsMode tracks whether the chip was in non-default mode the
+	// last time we noticed. The cursorTick goroutine watches this so it
+	// can repaint the viewport from scrollback when the chip returns to
+	// text mode (e.g. on GFX_CLOSE_DISPLAY) — the new frontBuffer is
+	// freshly allocated and contains no glyphs.
+	inGraphicsMode bool
+	cursorOn       bool
+	fgColor        uint32
+	bgColor        uint32
+	glyphs         [256][16]byte
+	escState       int
+	escParam       byte
 
 	inputEscState  int
 	inputEscParam  byte
@@ -91,6 +109,7 @@ func NewVideoTerminal(video *VideoChip, term *TerminalMMIO) *VideoTerminal {
 		rows:        rows,
 		pixelWidth:  mode.width,
 		pixelHeight: mode.height,
+		initialMode: video.currentMode,
 		cursorOn:    true,
 		fgColor:     0xFFFFFFFF,
 		bgColor:     0xFFAA5500,
@@ -126,9 +145,47 @@ func (vt *VideoTerminal) Stop() {
 	})
 }
 
+// modeChanged returns true if the chip has switched to a video mode
+// other than the one this terminal was initialized with. When this is
+// the case, all framebuffer rendering must be skipped — the chip's
+// frontBuffer has been reallocated to a different size and our cached
+// (pixelWidth, pixelHeight) no longer fit. The screen scrollback is
+// still updated so the text history survives the mode transition.
+//
+// Reads chip.currentMode without a lock. The field is written under
+// chip.mu but for an early-exit guard a stale read is harmless — the
+// defensive bounds checks inside the per-render-call closures (which
+// run while holding chip.mu) catch any race that slips through.
+func (vt *VideoTerminal) modeChanged() bool {
+	return vt.video.currentMode != vt.initialMode
+}
+
 func (vt *VideoTerminal) processChar(ch byte) {
 	vt.mu.Lock()
 	defer vt.mu.Unlock()
+
+	// M12 fix: when the chip is in graphics mode (e.g. intuition.library
+	// has opened a display via graphics.library), the frontBuffer is
+	// smaller than our text-mode dimensions and any pixel render would
+	// OOB. Update the screen scrollback so the text history is
+	// preserved, but skip every rendering side effect.
+	if vt.modeChanged() {
+		switch ch {
+		case '\b':
+			vt.screen.PutChar('\b')
+			cx, cy := vt.screen.CursorPos()
+			vt.screen.SetCell(cx, cy, 0)
+		case '\f':
+			vt.screen.Clear()
+		default:
+			vt.screen.PutChar(ch)
+		}
+		cx, cy := vt.screen.CursorPos()
+		vt.inputStartCol = cx
+		vt.inputStartRow = cy
+		vt.inputActive = true
+		return
+	}
 
 	if vt.cursorOn {
 		vt.renderCursorCellLocked(false)
@@ -185,6 +242,9 @@ func (vt *VideoTerminal) clearScreen() {
 }
 
 func (vt *VideoTerminal) clearScreenLocked() {
+	if vt.modeChanged() {
+		return
+	}
 	vt.video.RenderToFrontBuffer(func(fb []byte, _ int) {
 		for i := 0; i < len(fb); i += 4 {
 			writeColorLE(fb, i, vt.bgColor)
@@ -210,6 +270,13 @@ func (vt *VideoTerminal) renderCellLocked(col, row int, ch byte) {
 	baseY := row * terminalGlyphHeight
 	glyph := vt.glyphs[ch]
 	vt.video.RenderToFrontBuffer(func(fb []byte, stride int) {
+		// Defensive bounds check: if the chip switched modes (graphics
+		// mode active) the frontBuffer may be smaller than vt expects.
+		// Skip rendering rather than indexing past the buffer.
+		needBytes := (baseY+terminalGlyphHeight)*stride + (baseX+terminalGlyphWidth)*4
+		if needBytes > len(fb) {
+			return
+		}
 		for gy := range terminalGlyphHeight {
 			rowBits := glyph[gy]
 			dst := (baseY+gy)*stride + baseX*4
@@ -242,6 +309,11 @@ func (vt *VideoTerminal) renderCursorCellLocked(visible bool) {
 	baseX := cursorX * terminalGlyphWidth
 	baseY := cursorY * terminalGlyphHeight
 	vt.video.RenderToFrontBuffer(func(fb []byte, stride int) {
+		// Defensive bounds check (see renderCellLocked).
+		needBytes := (baseY+terminalGlyphHeight)*stride + (baseX+terminalGlyphWidth)*4
+		if needBytes > len(fb) {
+			return
+		}
 		for gy := range terminalGlyphHeight {
 			dst := (baseY+gy)*stride + baseX*4
 			for gx := range terminalGlyphWidth {
@@ -255,6 +327,27 @@ func (vt *VideoTerminal) renderCursorCellLocked(visible bool) {
 func (vt *VideoTerminal) cursorTick() {
 	vt.mu.Lock()
 	defer vt.mu.Unlock()
+
+	// M12: skip cursor blinking entirely while the chip is in graphics
+	// mode — the renderCursorCellLocked path would otherwise try to
+	// poke pixels into a frontBuffer sized for a different resolution.
+	if vt.modeChanged() {
+		vt.inGraphicsMode = true
+		vt.cursorOn = false
+		return
+	}
+
+	// Just transitioned from graphics mode back to text mode (e.g. the
+	// last intuition.library window closed and GFX_CLOSE_DISPLAY reset
+	// the chip). The new text-mode frontBuffer is freshly allocated and
+	// contains nothing — repaint the entire viewport from the screen
+	// scrollback so any text that was deferred during the graphics-mode
+	// detour reappears.
+	if vt.inGraphicsMode {
+		vt.inGraphicsMode = false
+		vt.clearScreenLocked()
+		vt.renderViewportLocked()
+	}
 
 	if !vt.shouldShowCursorLocked() {
 		if vt.cursorOn {

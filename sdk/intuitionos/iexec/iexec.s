@@ -128,7 +128,7 @@ iexec_start:
 .init_free_done:
 
     ; ---------------------------------------------------------------
-    ; 6b. Initialize port slots (all invalid, M7: 8 ports x 160 bytes)
+    ; 6b. Initialize port slots (all invalid, M12: 8 ports x 168 bytes)
     ; ---------------------------------------------------------------
     move.l  r2, #KERN_DATA_BASE
     add     r2, r2, #KD_PORT_BASE       ; R2 = &port[0]
@@ -136,9 +136,13 @@ iexec_start:
 .port_init_loop:
     store.b r0, KD_PORT_VALID(r2)       ; valid = 0
     store.b r0, KD_PORT_FLAGS(r2)       ; flags = 0
-    ; Zero name field (16 bytes = 2 quad-words)
+    ; Zero name field (PORT_NAME_LEN = 32 bytes = 4 quad-words)
     store.q r0, KD_PORT_NAME(r2)
     add     r6, r2, #KD_PORT_NAME
+    add     r6, r6, #8
+    store.q r0, (r6)
+    add     r6, r6, #8
+    store.q r0, (r6)
     add     r6, r6, #8
     store.q r0, (r6)
     add     r2, r2, #KD_PORT_STRIDE
@@ -161,10 +165,13 @@ iexec_start:
     add     r4, r4, #1
     blt     r4, r3, .zero_bitmap
 
-    ; Zero region table (1024 bytes at KD_REGION_TABLE)
+    ; Zero region table (MAX_TASKS * KD_REGION_TASK_SZ bytes at
+    ; KD_REGION_TABLE — 16 tasks * 128 bytes = 2048 bytes after M12).
+    ; Loop count is derived from the structural caps so future bumps
+    ; cannot drift relative to the actual table size.
     move.l  r2, #KERN_DATA_BASE
     add     r2, r2, #KD_REGION_TABLE
-    move.l  r3, #128                    ; 1024/8 = 128 quad-words
+    move.l  r3, #(MAX_TASKS * KD_REGION_TASK_SZ / 8)   ; quad-words
     move.l  r4, #0
 .zero_regions:
     store.q r0, (r2)
@@ -172,16 +179,43 @@ iexec_start:
     add     r4, r4, #1
     blt     r4, r3, .zero_regions
 
-    ; Zero shared object table (128 bytes at KD_SHMEM_TABLE)
+    ; Zero shared object table (KD_SHMEM_MAX * KD_SHMEM_STRIDE bytes
+    ; at KD_SHMEM_TABLE — 16 entries * 16 bytes = 256 bytes after M12).
     move.l  r2, #KERN_DATA_BASE
     add     r2, r2, #KD_SHMEM_TABLE
-    move.l  r3, #16                     ; 128/8 = 16 quad-words
+    move.l  r3, #(KD_SHMEM_MAX * KD_SHMEM_STRIDE / 8) ; quad-words
     move.l  r4, #0
 .zero_shmem:
     store.q r0, (r2)
     add     r2, r2, #8
     add     r4, r4, #1
     blt     r4, r3, .zero_shmem
+
+    ; ---------------------------------------------------------------
+    ; M12.5: Initialize hardware.resource state — broker identity
+    ; sentinel and grant-table chain header. Both live in the kernel
+    ; data page so they are accessible without PT switching. The first
+    ; chain page is allocated lazily during the boot-load loop when
+    ; the first bootstrap grant is inserted (task IDs do not exist
+    ; yet at kern_init).
+    ; ---------------------------------------------------------------
+    move.l  r2, #KERN_DATA_BASE
+    move.l  r4, #0xFF
+    store.b r4, KD_HWRES_TASK(r2)       ; broker = unclaimed sentinel
+    move.l  r2, #KERN_DATA_BASE
+    add     r2, r2, #KD_GRANT_TABLE_HDR
+    store.q r0, (r2)                    ; zero the 8-byte header
+
+    ; Zero the per-task region overflow chain headers (16 tasks * 8 bytes)
+    move.l  r2, #KERN_DATA_BASE
+    add     r2, r2, #KD_REGION_OVERFLOW_HEAD
+    move.l  r3, #(MAX_TASKS * KD_REGION_OFLOW_STRIDE / 8)
+    move.l  r4, #0
+.zero_oflow:
+    store.q r0, (r2)
+    add     r2, r2, #8
+    add     r4, r4, #1
+    blt     r4, r3, .zero_oflow
 
     ; ---------------------------------------------------------------
     ; 6d. Extend kernel PT: map allocation pool pages (0x700-0x1FFF)
@@ -232,6 +266,24 @@ iexec_start:
     pop     r29                         ; restore counter
     pop     r30                         ; restore cursor
     bnez    r2, .boot_load_fail         ; strict: any failure → panic
+
+    ; --- M12.5: insert bootstrap grants for this boot entry ---
+    ; r1 already holds the assigned task ID from load_program. Pass
+    ; (boot_idx=r29, task_id=r1) to kern_bootstrap_grant_for_program,
+    ; which scans bootstrap_grant_table for matching rows and writes
+    ; live grant entries via kern_grant_create_row. Failure to insert
+    ; a bootstrap grant is a hard boot failure (panic) — without the
+    ; grant, the affected task's first SYS_MAP_IO call would return
+    ; ERR_PERM and the boot path could not come up.
+    push    r30
+    push    r29
+    move.q  r2, r1                      ; r2 = task_id
+    move.q  r1, r29                     ; r1 = boot entry index
+    jsr     kern_bootstrap_grant_for_program ; R2 = err
+    pop     r29
+    pop     r30
+    bnez    r2, .boot_load_fail
+
     add     r30, r30, #PROGTAB_ENTRY_SIZE
     add     r29, r29, #1
     bra     .boot_load_loop
@@ -524,10 +576,13 @@ load_program:
     and     r14, r20, #7                ; check 8-byte alignment
     bnez    r14, .lp_badarg
 
-    ; 4. Load data_size, validate <= 20480 (M11: bumped from 16384 to allow
-    ;    dos.library to grow to 5 data pages for embedded service images)
+    ; 4. Load data_size, validate <= 49152 (M12 redesign: bumped to 12 data
+    ;    pages so dos.library can host the M12 embedded service images
+    ;    including intuition.library + About + the embedded Topaz fonts —
+    ;    intuition.library now also embeds a copy of topaz.raw for title-bar
+    ;    text rendering, pushing the embedded image set past 32 KiB)
     load.l  r21, IMG_OFF_DATA_SIZE(r7)  ; r21 = data_size
-    move.l  r11, #20480
+    move.l  r11, #49152
     bgt     r21, r11, .lp_badarg
 
     ; 5. Check image_size >= 32 + code_size + data_size
@@ -810,37 +865,553 @@ free_pages:
 .fp_done:
     rts
 
-; count_free_pages: count the number of free (0) bits in the page bitmap.
+; count_free_pages: count the number of free (0) bits in the page bitmap,
+; counting only the first ALLOC_POOL_PAGES bits (the bitmap is sized to a
+; round 800 bytes = 6400 bits, but ALLOC_POOL_PAGES may be < 6400 so the
+; trailing bits are unused and must NOT be counted as free).
 ; Output: R1 = number of free pages
-; Clobbers: R2-R6
+; Clobbers: R2-R7
 count_free_pages:
     move.l  r2, #KERN_DATA_BASE
     add     r2, r2, #KD_PAGE_BITMAP    ; r2 = bitmap base
-    move.l  r3, #KD_PAGE_BITMAP_SZ     ; r3 = 800 bytes
+    move.l  r3, #ALLOC_POOL_PAGES      ; r3 = total bits to scan (M12: not bitmap byte size)
     move.q  r1, #0                     ; r1 = free count
-    move.l  r4, #0                     ; r4 = byte index
-.cfp_byte:
+    move.l  r4, #0                     ; r4 = bit index
+.cfp_bit_loop:
     bge     r4, r3, .cfp_done
-    add     r5, r2, r4
+    ; Read bit r4: byte = bitmap[r4/8], bit = r4 % 8
+    lsr     r5, r4, #3                 ; r5 = byte index
+    add     r5, r5, r2                 ; r5 = &bitmap[byte]
     load.b  r5, (r5)                   ; r5 = bitmap byte
-    ; Count zero bits = 8 - popcount(byte)
-    move.l  r6, #0                     ; bit counter
-.cfp_bit:
-    move.l  r7, #8
-    bge     r6, r7, .cfp_next_byte
-    move.l  r7, #1
-    lsl     r7, r7, r6
-    and     r7, r7, r5
-    bnez    r7, .cfp_bit_set
-    add     r1, r1, #1                 ; free bit found
-.cfp_bit_set:
-    add     r6, r6, #1
-    bra     .cfp_bit
-.cfp_next_byte:
+    and     r6, r4, #7                 ; r6 = bit position
+    lsr     r5, r5, r6                 ; shift target bit to position 0
+    and     r5, r5, #1
+    bnez    r5, .cfp_skip
+    add     r1, r1, #1                 ; free bit
+.cfp_skip:
     add     r4, r4, #1
-    bra     .cfp_byte
+    bra     .cfp_bit_loop
 .cfp_done:
-    ; Adjust: last 0 bits past ALLOC_POOL_PAGES (6400 bits = 800 bytes exact, no adjustment needed)
+    rts
+
+; ============================================================================
+; M12.5: hardware.resource grant-table helpers
+; ============================================================================
+; The grant table is a chain-linked list of allocator-backed pages. Each page
+; holds 255 grant rows (16 bytes each) plus a 16-byte header whose first two
+; bytes are the next-page PPN. Existing pages NEVER move when the chain
+; grows — only the tail's next-pointer is updated. This is what makes the
+; design safe even though the broker walks the chain through these helpers
+; (it never holds a stale row pointer).
+;
+; Header sits in the kernel data page at KD_GRANT_TABLE_HDR and is always
+; accessible without PT switching (kernel data is in the kernel-mapped range
+; that every user PT inherits as supervisor mappings). Chain pages live in
+; the allocator pool (PPN >= ALLOC_POOL_BASE = 0x800), so accessing them
+; requires the kernel PT to be active (kern_pool_map at boot installs them
+; as supervisor R/W in KERN_PAGE_TABLE only). The helpers below handle the
+; PT switch internally so callers from any context just call them directly.
+
+; ----------------------------------------------------------------------------
+; kern_grant_chain_alloc_page: allocate one fresh chain page, link to tail.
+; ----------------------------------------------------------------------------
+; Inputs:  none
+; Outputs: R1 = new chain page PPN (absolute), R2 = ERR_OK or ERR_NOMEM
+; Clobbers: R3..R16, R28
+;
+; Steps:
+;   1. Switch to kernel PT (saved in R28).
+;   2. alloc_pages(1) -> R1=PPN, R2=err. Bail out on err.
+;   3. Zero the entire 4 KiB page.
+;   4. Set every row's KD_GRANT_TASK_ID byte to GRANT_TASK_FREE (0xFF).
+;   5. Walk the existing chain header. If empty, set FIRST_PPN to new page.
+;      Otherwise walk to the tail page and store the new PPN into its
+;      KD_GRANT_PAGE_NEXT field.
+;   6. Bump KD_GRANT_HDR_PAGES.
+;   7. Restore PTBR. Return R1=new PPN, R2=ERR_OK.
+kern_grant_chain_alloc_page:
+    mfcr    r28, cr0                    ; save current PTBR
+    move.l  r3, #KERN_PAGE_TABLE
+    mtcr    cr0, r3
+    tlbflush
+
+    move.l  r1, #1                      ; allocate 1 page
+    jsr     alloc_pages                 ; R1 = PPN, R2 = err
+    bnez    r2, .gcap_fail
+
+    move.q  r29, r1                     ; r29 = new chain page PPN (preserve)
+
+    ; Zero the entire page (4096 bytes = 512 quadwords)
+    lsl     r3, r1, #12                 ; r3 = byte addr of page
+    move.q  r4, r3
+    move.l  r5, #4096
+    add     r5, r5, r3                  ; r5 = end addr
+.gcap_zero:
+    bge     r4, r5, .gcap_zero_done
+    store.q r0, (r4)
+    add     r4, r4, #8
+    bra     .gcap_zero
+.gcap_zero_done:
+
+    ; Mark all 255 rows as free (KD_GRANT_TASK_ID = 0xFF at each row offset).
+    ; Row 0 is at page+KD_GRANT_PAGE_HDR_SZ, row stride = KD_GRANT_ROW_SIZE.
+    move.l  r4, #KD_GRANT_PAGE_HDR_SZ
+    add     r4, r4, r3                  ; r4 = &row[0]
+    move.l  r5, #0                      ; row index
+    move.l  r6, #0xFF
+.gcap_mark:
+    move.l  r7, #KD_GRANT_ROWS_PER_PG
+    bge     r5, r7, .gcap_mark_done
+    store.b r6, KD_GRANT_TASK_ID(r4)
+    add     r4, r4, #KD_GRANT_ROW_SIZE
+    add     r5, r5, #1
+    bra     .gcap_mark
+.gcap_mark_done:
+
+    ; Link onto the chain. Header is in kernel data page, always accessible.
+    move.l  r3, #KERN_DATA_BASE
+    add     r3, r3, #KD_GRANT_TABLE_HDR ; r3 = &header
+    load.w  r4, KD_GRANT_HDR_FIRST_PPN(r3)
+    bnez    r4, .gcap_walk_tail
+
+    ; Empty chain — set FIRST_PPN
+    store.w r29, KD_GRANT_HDR_FIRST_PPN(r3)
+    bra     .gcap_link_done
+
+.gcap_walk_tail:
+    ; r4 = current PPN. Walk pages until next == 0.
+.gcap_walk_loop:
+    lsl     r5, r4, #12                 ; r5 = byte addr of current page
+    load.w  r6, KD_GRANT_PAGE_NEXT(r5)  ; r6 = next page PPN
+    beqz    r6, .gcap_at_tail
+    move.q  r4, r6
+    bra     .gcap_walk_loop
+.gcap_at_tail:
+    ; r5 = byte addr of tail page; store new PPN into its NEXT field
+    store.w r29, KD_GRANT_PAGE_NEXT(r5)
+
+.gcap_link_done:
+    ; Bump KD_GRANT_HDR_PAGES
+    load.w  r4, KD_GRANT_HDR_PAGES(r3)
+    add     r4, r4, #1
+    store.w r4, KD_GRANT_HDR_PAGES(r3)
+
+    ; Restore PTBR and return new PPN.
+    mtcr    cr0, r28
+    tlbflush
+    move.q  r1, r29
+    move.q  r2, #ERR_OK
+    rts
+
+.gcap_fail:
+    ; alloc_pages already loaded R1=0 R2=ERR_NOMEM. Restore PTBR and return.
+    mtcr    cr0, r28
+    tlbflush
+    rts
+
+; ----------------------------------------------------------------------------
+; kern_grant_create_row: write a grant row, allocating a new chain page if
+; the existing chain is empty or every row in every page is occupied.
+; ----------------------------------------------------------------------------
+; Inputs:  R1 = target task ID (low byte used)
+;          R2 = region tag (low 32 bits used)
+;          R3 = PPN low (inclusive, low 16 bits used)
+;          R4 = PPN high (inclusive, low 16 bits used)
+; Outputs: R1 = unused, R2 = ERR_OK or ERR_NOMEM
+; Clobbers: R3..R19, R28, R29
+;
+; Walks every chain page; for each, scans rows 0..254 looking for one whose
+; KD_GRANT_TASK_ID == 0xFF. Writes the row in place. If no chain page has a
+; free row (or chain is empty), allocates a new page via
+; kern_grant_chain_alloc_page and writes row 0 of the new page.
+kern_grant_create_row:
+    ; Save inputs across helper calls.
+    push    r1                          ; saved task_id
+    push    r2                          ; saved tag
+    push    r3                          ; saved ppn_lo
+    push    r4                          ; saved ppn_hi
+
+    ; Switch to kernel PT to walk chain pages. Save the previous PTBR on
+    ; the STACK (not r28) because kern_grant_chain_alloc_page may also
+    ; clobber r28 with its own PT save/restore — keeping the saved PT in
+    ; r28 across that nested call would corrupt it. The stack copy is the
+    ; canonical reference for the restore at the bottom of this routine.
+    mfcr    r28, cr0
+    push    r28
+    move.l  r3, #KERN_PAGE_TABLE
+    mtcr    cr0, r3
+    tlbflush
+
+    ; Load chain header.
+    move.l  r3, #KERN_DATA_BASE
+    add     r3, r3, #KD_GRANT_TABLE_HDR ; r3 = &header
+    load.w  r4, KD_GRANT_HDR_FIRST_PPN(r3)
+    beqz    r4, .gcr_alloc_first
+
+.gcr_walk_pages:
+    ; r4 = current chain page PPN, r3 = &header
+    lsl     r5, r4, #12                 ; r5 = byte addr of page
+    move.q  r6, r5
+    add     r6, r6, #KD_GRANT_PAGE_HDR_SZ ; r6 = &row[0]
+    move.l  r7, #0                      ; row index
+.gcr_scan_rows:
+    move.l  r8, #KD_GRANT_ROWS_PER_PG
+    bge     r7, r8, .gcr_next_page
+    load.b  r8, KD_GRANT_TASK_ID(r6)
+    move.l  r9, #0xFF
+    beq     r8, r9, .gcr_found_row
+    add     r6, r6, #KD_GRANT_ROW_SIZE
+    add     r7, r7, #1
+    bra     .gcr_scan_rows
+
+.gcr_next_page:
+    ; r5 = byte addr of current page; load its NEXT field.
+    load.w  r4, KD_GRANT_PAGE_NEXT(r5)
+    beqz    r4, .gcr_alloc_more
+    bra     .gcr_walk_pages
+
+.gcr_alloc_first:
+.gcr_alloc_more:
+    ; Need a new chain page. (gcr_alloc_first and gcr_alloc_more share code.)
+    jsr     kern_grant_chain_alloc_page ; R1 = new PPN, R2 = err
+    bnez    r2, .gcr_nomem
+
+    ; New page: row 0 is at PPN<<12 + KD_GRANT_PAGE_HDR_SZ
+    lsl     r5, r1, #12
+    move.q  r6, r5
+    add     r6, r6, #KD_GRANT_PAGE_HDR_SZ
+    ; r6 = &row[0] of new chain page; fall through to .gcr_found_row
+
+.gcr_found_row:
+    ; r6 = address of free row. Pop saved values from the stack.
+    ; Stack layout (top first): saved-PT (r28), ppn_hi (r4), ppn_lo (r3),
+    ; tag (r2), task_id (r1). Pop the PT first since it's the topmost,
+    ; then the args in reverse-push order.
+    pop     r28                         ; saved user PT
+    pop     r4                          ; ppn_hi
+    pop     r3                          ; ppn_lo
+    pop     r2                          ; tag
+    pop     r1                          ; task_id
+
+    store.b r1, KD_GRANT_TASK_ID(r6)
+    store.l r2, KD_GRANT_REGION(r6)
+    store.w r3, KD_GRANT_PPN_LO(r6)
+    store.w r4, KD_GRANT_PPN_HI(r6)
+    store.l r0, KD_GRANT_FLAGS(r6)
+
+    ; Bump KD_GRANT_HDR_TOTAL
+    move.l  r5, #KERN_DATA_BASE
+    add     r5, r5, #KD_GRANT_TABLE_HDR
+    load.w  r7, KD_GRANT_HDR_TOTAL(r5)
+    add     r7, r7, #1
+    store.w r7, KD_GRANT_HDR_TOTAL(r5)
+
+    ; Restore PTBR.
+    mtcr    cr0, r28
+    tlbflush
+    move.q  r2, #ERR_OK
+    rts
+
+.gcr_nomem:
+    ; kern_grant_chain_alloc_page already restored PTBR on its failure path,
+    ; but we did our own switch above and need to pop the saved PT and
+    ; restore. Pop in stack order: saved-PT first, then the four args.
+    pop     r28                         ; saved user PT
+    pop     r4                          ; discard saved inputs
+    pop     r3
+    pop     r2
+    pop     r1
+    mtcr    cr0, r28
+    tlbflush
+    move.q  r2, #ERR_NOMEM
+    rts
+
+; ----------------------------------------------------------------------------
+; kern_grant_check: check whether the calling task has a grant covering a
+; given PPN range. Used by SYS_MAP_IO before installing PTEs.
+; ----------------------------------------------------------------------------
+; Inputs:  R1 = task ID (low byte)
+;          R2 = requested PPN low (inclusive)
+;          R3 = requested page count (>= 1)
+; Outputs: R1 = 1 if a covering grant exists, 0 otherwise; R2 = ERR_OK
+; Clobbers: R3..R19, R28
+kern_grant_check:
+    ; Compute requested PPN high (inclusive) = req_lo + count - 1
+    add     r4, r2, r3
+    sub     r4, r4, #1                  ; r4 = req_hi
+    move.q  r5, r2                      ; r5 = req_lo
+    move.q  r6, r1                      ; r6 = task_id
+
+    ; Switch to kernel PT to walk chain pages.
+    mfcr    r28, cr0
+    move.l  r7, #KERN_PAGE_TABLE
+    mtcr    cr0, r7
+    tlbflush
+
+    move.l  r7, #KERN_DATA_BASE
+    add     r7, r7, #KD_GRANT_TABLE_HDR
+    load.w  r8, KD_GRANT_HDR_FIRST_PPN(r7)
+    beqz    r8, .gck_nope
+
+.gck_page:
+    lsl     r9, r8, #12                 ; r9 = page byte addr
+    move.q  r10, r9
+    add     r10, r10, #KD_GRANT_PAGE_HDR_SZ ; r10 = &row[0]
+    move.l  r11, #0                     ; row idx
+.gck_row:
+    move.l  r12, #KD_GRANT_ROWS_PER_PG
+    bge     r11, r12, .gck_next_pg
+    load.b  r12, KD_GRANT_TASK_ID(r10)
+    bne     r12, r6, .gck_row_next
+    ; Task matches; check PPN range
+    load.w  r13, KD_GRANT_PPN_LO(r10)
+    load.w  r14, KD_GRANT_PPN_HI(r10)
+    blt     r5, r13, .gck_row_next      ; req_lo < grant_lo? skip
+    bgt     r4, r14, .gck_row_next      ; req_hi > grant_hi? skip
+    ; Match!
+    mtcr    cr0, r28
+    tlbflush
+    move.q  r1, #1
+    move.q  r2, #ERR_OK
+    rts
+.gck_row_next:
+    add     r10, r10, #KD_GRANT_ROW_SIZE
+    add     r11, r11, #1
+    bra     .gck_row
+.gck_next_pg:
+    load.w  r8, KD_GRANT_PAGE_NEXT(r9)
+    bnez    r8, .gck_page
+.gck_nope:
+    mtcr    cr0, r28
+    tlbflush
+    move.q  r1, #0
+    move.q  r2, #ERR_OK
+    rts
+
+; ----------------------------------------------------------------------------
+; kern_bootstrap_grant_for_program: walk the bootstrap_grant_table for any
+; rows whose program index matches the just-loaded boot entry, and insert
+; each as a live grant tied to the assigned task ID. Called from the boot-
+; load loop immediately after load_program returns.
+; ----------------------------------------------------------------------------
+; Inputs:  R1 = boot entry index (0..PROGTAB_BOOT_COUNT-1)
+;          R2 = assigned task ID for that program
+; Outputs: R2 = ERR_OK or ERR_NOMEM
+; Clobbers: R3..R19, R20-R22, R28, R29, R30
+;
+; Strategy: copy the inputs into call-preserved registers (R20=boot idx,
+; R21=task_id) and walk the table cursor in R22. Each iteration that
+; matches calls kern_grant_create_row with R1=task_id, R2=tag, R3=ppn_lo,
+; R4=ppn_hi. R20/R21/R22 are pushed/popped around the call because the
+; helper documents clobbering R3..R19 + R28/R29 — R20+ are not in its
+; clobber list but defensive save/restore makes the call site robust.
+kern_bootstrap_grant_for_program:
+    move.q  r20, r1                     ; r20 = boot entry index (preserved)
+    move.q  r21, r2                     ; r21 = task_id (preserved)
+    la      r22, bootstrap_grant_table  ; r22 = table cursor
+.bgfp_loop:
+    load.b  r3, BOOTSTRAP_GRANT_OFF_PROG_IDX(r22)
+    move.l  r4, #0xFF
+    beq     r3, r4, .bgfp_done          ; sentinel = end of table
+    bne     r3, r20, .bgfp_advance      ; row's program idx != ours, skip
+    ; Match — load tag/ppn_lo/ppn_hi from the row and call create_row.
+    load.l  r5, BOOTSTRAP_GRANT_OFF_TAG(r22)
+    load.w  r6, BOOTSTRAP_GRANT_OFF_PPN_LO(r22)
+    load.w  r7, BOOTSTRAP_GRANT_OFF_PPN_HI(r22)
+    push    r20
+    push    r21
+    push    r22
+    move.q  r1, r21                     ; r1 = task_id
+    move.q  r2, r5                      ; r2 = tag
+    move.q  r3, r6                      ; r3 = ppn_lo
+    move.q  r4, r7                      ; r4 = ppn_hi
+    jsr     kern_grant_create_row       ; R2 = err
+    pop     r22
+    pop     r21
+    pop     r20
+    bnez    r2, .bgfp_fail
+.bgfp_advance:
+    add     r22, r22, #BOOTSTRAP_GRANT_ROW_SZ
+    bra     .bgfp_loop
+.bgfp_done:
+    move.q  r2, #ERR_OK
+    rts
+.bgfp_fail:
+    move.q  r2, #ERR_NOMEM
+    rts
+
+; ----------------------------------------------------------------------------
+; kern_grant_release_for_task: walk the entire grant chain and mark every row
+; whose task_id matches the input as free (KD_GRANT_TASK_ID = GRANT_TASK_FREE).
+; Called from kill_task_cleanup so that a recycled task slot cannot inherit
+; the previous occupant's MMIO grants.
+; ----------------------------------------------------------------------------
+; Inputs:  R1 = task_id (low byte)
+; Outputs: none
+; Clobbers: R3..R15
+;
+; Caller must already be on kernel PT (chain pages live in the allocator pool).
+kern_grant_release_for_task:
+    move.q  r6, r1                      ; r6 = task_id to clear
+    move.l  r3, #KERN_DATA_BASE
+    add     r3, r3, #KD_GRANT_TABLE_HDR
+    load.w  r4, KD_GRANT_HDR_FIRST_PPN(r3)
+    beqz    r4, .grft_done
+
+.grft_page:
+    lsl     r5, r4, #12                 ; r5 = page byte addr
+    move.q  r7, r5
+    add     r7, r7, #KD_GRANT_PAGE_HDR_SZ ; r7 = first row
+    move.l  r8, #0                      ; row idx
+.grft_row:
+    move.l  r9, #KD_GRANT_ROWS_PER_PG
+    bge     r8, r9, .grft_next_page
+    load.b  r9, KD_GRANT_TASK_ID(r7)
+    bne     r9, r6, .grft_row_skip
+    ; Match — mark free and bump down the header TOTAL counter.
+    move.l  r10, #0xFF
+    store.b r10, KD_GRANT_TASK_ID(r7)
+    load.w  r11, KD_GRANT_HDR_TOTAL(r3)
+    sub     r11, r11, #1
+    store.w r11, KD_GRANT_HDR_TOTAL(r3)
+.grft_row_skip:
+    add     r7, r7, #KD_GRANT_ROW_SIZE
+    add     r8, r8, #1
+    bra     .grft_row
+.grft_next_page:
+    load.w  r4, KD_GRANT_PAGE_NEXT(r5)
+    bnez    r4, .grft_page
+.grft_done:
+    rts
+
+; ============================================================================
+; M12.5: per-task region OVERFLOW chain helpers
+; ============================================================================
+; M12.5 removes the per-task KD_REGION_MAX = 8 cap by adding an overflow
+; chain. The first 8 rows still live inline at the original KD_REGION_TABLE
+; location (preserving the fast path and layout offsets); rows 9+ live in
+; allocator-backed chain pages reached through a per-task overflow header
+; at KD_REGION_OVERFLOW_HEAD. Walkers iterate inline first, then walk the
+; overflow chain. The "find free row" allocators look at inline first, then
+; in the overflow chain, then allocate a new chain page when both are full.
+;
+; Helpers below assume the caller is already on the kernel PT (chain pages
+; live in the allocator pool which is only mapped in the kernel PT). Each
+; walker site that uses overflow takes care of the PT switching itself.
+
+; ----------------------------------------------------------------------------
+; kern_region_oflow_head: return pointer to a task's overflow chain header.
+; Inputs:  R1 = task_id
+; Outputs: R1 = &header (kernel data offset, always accessible)
+; Clobbers: R3, R4
+kern_region_oflow_head:
+    move.l  r3, #KERN_DATA_BASE
+    add     r3, r3, #KD_REGION_OVERFLOW_HEAD
+    move.l  r4, #KD_REGION_OFLOW_STRIDE
+    mulu    r4, r1, r4
+    add     r1, r3, r4
+    rts
+
+; ----------------------------------------------------------------------------
+; kern_region_oflow_alloc_row: find a free row in the task's overflow chain,
+; allocating a new chain page if every existing row is occupied. Caller must
+; already be on the kernel PT.
+; ----------------------------------------------------------------------------
+; Inputs:  R1 = task_id
+; Outputs: R1 = row addr, R2 = ERR_OK or ERR_NOMEM
+; Clobbers: R3..R19
+kern_region_oflow_alloc_row:
+    push    r1
+    jsr     kern_region_oflow_head      ; R1 = &header
+    move.q  r10, r1
+
+    load.w  r4, KD_REGION_OFLOW_FIRST_PPN(r10)
+    beqz    r4, .roar_alloc_first
+
+.roar_walk:
+    lsl     r5, r4, #12                 ; r5 = page byte addr
+    move.q  r6, r5
+    add     r6, r6, #KD_REGION_PAGE_HDR_SZ
+    move.l  r7, #0
+.roar_scan:
+    move.l  r8, #KD_REGION_ROWS_PER_PG
+    bge     r7, r8, .roar_next_page
+    load.b  r8, KD_REG_TYPE(r6)
+    beqz    r8, .roar_found             ; REGION_FREE
+    add     r6, r6, #KD_REGION_STRIDE
+    add     r7, r7, #1
+    bra     .roar_scan
+.roar_next_page:
+    load.w  r4, KD_REGION_PAGE_NEXT(r5)
+    bnez    r4, .roar_walk
+
+.roar_alloc_first:
+    ; Need a new overflow chain page.
+    move.l  r1, #1
+    jsr     alloc_pages                 ; R1=PPN, R2=err
+    bnez    r2, .roar_nomem
+    move.q  r29, r1                     ; r29 = new page PPN
+
+    ; Zero entire 4 KiB page (REGION_FREE = 0)
+    lsl     r3, r1, #12
+    move.q  r4, r3
+    move.l  r5, #4096
+    add     r5, r5, r3
+.roar_zero:
+    bge     r4, r5, .roar_zdone
+    store.q r0, (r4)
+    add     r4, r4, #8
+    bra     .roar_zero
+.roar_zdone:
+
+    ; Re-derive header pointer (r10 may have been clobbered by alloc_pages).
+    pop     r1                          ; task_id
+    push    r1
+    jsr     kern_region_oflow_head      ; R1 = &header
+    move.q  r10, r1
+
+    ; Link new page onto the chain.
+    load.w  r4, KD_REGION_OFLOW_FIRST_PPN(r10)
+    bnez    r4, .roar_walk_tail
+    store.w r29, KD_REGION_OFLOW_FIRST_PPN(r10)
+    bra     .roar_link_done
+
+.roar_walk_tail:
+    lsl     r5, r4, #12
+    load.w  r6, KD_REGION_PAGE_NEXT(r5)
+    beqz    r6, .roar_at_tail
+    move.q  r4, r6
+    bra     .roar_walk_tail
+.roar_at_tail:
+    store.w r29, KD_REGION_PAGE_NEXT(r5)
+
+.roar_link_done:
+    load.w  r4, KD_REGION_OFLOW_PAGES(r10)
+    add     r4, r4, #1
+    store.w r4, KD_REGION_OFLOW_PAGES(r10)
+
+    ; Use row 0 of the new page.
+    lsl     r5, r29, #12
+    move.q  r6, r5
+    add     r6, r6, #KD_REGION_PAGE_HDR_SZ
+
+.roar_found:
+    ; r6 = row address. Bump TOTAL counter.
+    pop     r1                          ; task_id
+    push    r6
+    jsr     kern_region_oflow_head      ; R1 = &header
+    pop     r6
+    load.w  r7, KD_REGION_OFLOW_TOTAL(r1)
+    add     r7, r7, #1
+    store.w r7, KD_REGION_OFLOW_TOTAL(r1)
+    move.q  r1, r6
+    move.q  r2, #ERR_OK
+    rts
+
+.roar_nomem:
+    pop     r1                          ; discard saved task_id
+    move.q  r1, #0
+    move.q  r2, #ERR_NOMEM
     rts
 
 ; ============================================================================
@@ -903,14 +1474,18 @@ unmap_pages:
 ; Simple approach: try each page-aligned VA in the task's window,
 ; check if it overlaps any existing region.
 find_free_va:
-    ; Compute task's dynamic VA window
-    move.l  r3, #USER_DYN_STRIDE
-    mulu    r3, r1, r3                 ; r3 = task_id * stride
-    move.l  r4, #USER_DYN_BASE
-    add     r4, r4, r3                 ; r4 = window start VA
-    move.l  r5, #USER_DYN_PAGES
-    lsl     r5, r5, #12               ; r5 = window size in bytes
-    add     r5, r5, r4                 ; r5 = window end VA (exclusive)
+    ; M12: dynamic VA is GLOBAL — all tasks share USER_DYN_BASE..USER_DYN_END.
+    ; Each task has its own page table so the same VA in two tasks maps to
+    ; different physical pages with no conflict. The per-task region table
+    ; tracks which VA gaps are used WITHIN this single shared range.
+    ;
+    ; M12.5: walks both the inline 8-row table and the per-task overflow
+    ; chain. CALLER MUST BE ON KERNEL PT (overflow chain pages live in
+    ; the allocator pool, only mapped by the kernel PT). The Phase-4
+    ; outer PT switch in AllocMem/MapShared/SYS_MAP_IO satisfies this.
+    push    r1                         ; save task_id (used by overflow walk)
+    move.l  r4, #USER_DYN_BASE          ; r4 = window start VA (shared)
+    move.l  r5, #USER_DYN_END            ; r5 = window end VA (exclusive, shared)
     ; Compute task's region table base
     move.l  r6, #KERN_DATA_BASE
     move.l  r7, #KD_REGION_TASK_SZ
@@ -925,11 +1500,11 @@ find_free_va:
     ; Would candidate + needed exceed window?
     add     r9, r8, r7                 ; r9 = candidate end
     bgt     r9, r5, .ffv_fail          ; exceeds window
-    ; Check if candidate overlaps any active region
+    ; --- Phase 1: scan inline rows 0..7 ---
     move.l  r10, #0                    ; region index
 .ffv_check_region:
-    move.l  r11, #KD_REGION_MAX
-    bge     r10, r11, .ffv_found       ; no overlap with any region
+    move.l  r11, #KD_REGION_INLINE_MAX
+    bge     r10, r11, .ffv_check_overflow
     ; Compute region entry address
     move.l  r12, #KD_REGION_STRIDE
     mulu    r12, r10, r12
@@ -943,7 +1518,6 @@ find_free_va:
     lsl     r15, r15, #12              ; region size in bytes
     add     r16, r14, r15              ; region end VA
     ; Check overlap: candidate [r8, r9) vs region [r14, r16)
-    ; Overlap if: candidate_start < region_end AND region_start < candidate_end
     bge     r8, r16, .ffv_next_region  ; candidate starts after region ends
     bge     r14, r9, .ffv_next_region  ; region starts after candidate ends
     ; Overlap detected — advance candidate past this region
@@ -952,11 +1526,53 @@ find_free_va:
 .ffv_next_region:
     add     r10, r10, #1
     bra     .ffv_check_region
+
+.ffv_check_overflow:
+    ; --- Phase 2: walk per-task overflow chain ---
+    ; Look up overflow head pointer (kernel data, always accessible).
+    load.q  r17, (sp)                  ; r17 = task_id (was pushed at entry)
+    move.l  r10, #KERN_DATA_BASE
+    add     r10, r10, #KD_REGION_OVERFLOW_HEAD
+    move.l  r11, #KD_REGION_OFLOW_STRIDE
+    mulu    r11, r17, r11
+    add     r10, r10, r11               ; r10 = &task's overflow head
+    load.w  r11, KD_REGION_OFLOW_FIRST_PPN(r10)
+    beqz    r11, .ffv_found            ; no overflow rows for this task
+.ffv_oflow_page:
+    lsl     r12, r11, #12              ; r12 = page byte addr
+    move.q  r13, r12
+    add     r13, r13, #KD_REGION_PAGE_HDR_SZ ; r13 = first row in page
+    move.l  r10, #0                    ; row idx in this page
+.ffv_oflow_row:
+    move.l  r17, #KD_REGION_ROWS_PER_PG
+    bge     r10, r17, .ffv_oflow_next_page
+    load.b  r17, KD_REG_TYPE(r13)
+    beqz    r17, .ffv_oflow_skip       ; FREE, skip
+    load.l  r14, KD_REG_VA(r13)
+    load.w  r15, KD_REG_PAGES(r13)
+    lsl     r15, r15, #12
+    add     r16, r14, r15
+    bge     r8, r16, .ffv_oflow_skip
+    bge     r14, r9, .ffv_oflow_skip
+    ; Overlap — advance candidate past this region
+    move.q  r8, r16
+    bra     .ffv_try
+.ffv_oflow_skip:
+    add     r13, r13, #KD_REGION_STRIDE
+    add     r10, r10, #1
+    bra     .ffv_oflow_row
+.ffv_oflow_next_page:
+    load.w  r11, KD_REGION_PAGE_NEXT(r12)
+    bnez    r11, .ffv_oflow_page
+    bra     .ffv_found
+
 .ffv_found:
+    pop     r2                         ; discard saved task_id
     move.q  r1, r8                     ; R1 = VA
     move.q  r2, #ERR_OK
     rts
 .ffv_fail:
+    pop     r2                         ; discard saved task_id
     move.q  r1, #0
     move.q  r2, #ERR_NOMEM
     rts
@@ -965,8 +1581,8 @@ find_free_va:
 ; M7: Port Name Helpers
 ; ============================================================================
 
-; safe_copy_user_name: validate PTE and copy up to 16 bytes from user VA
-;   to kernel scratch buffer at KERN_DATA_BASE + KD_NAME_SCRATCH.
+; safe_copy_user_name: validate PTE and copy up to PORT_NAME_LEN bytes from
+;   user VA to kernel scratch buffer at KERN_DATA_BASE + KD_NAME_SCRATCH.
 ; Input:  R1 = user VA (name pointer), R13 = current_task (for PTBR lookup)
 ; Output: R23 = 0 on success, ERR_BADARG on failure
 ; Clobbers: R14, R16, R17, R18, R19, R23, R24, R25, R26
@@ -990,18 +1606,18 @@ safe_copy_user_name:
     move.l  r24, #0x13
     bne     r19, r24, .scun_bad
 
-    ; --- Validate PTE for last byte's page (name_ptr + 15) ---
+    ; --- Validate PTE for last byte's page (name_ptr + PORT_NAME_LEN-1) ---
     pop     r1
     push    r1
-    add     r14, r1, #15
-    lsr     r14, r14, #12               ; VPN of name_ptr+15
+    add     r14, r1, #(PORT_NAME_LEN-1)
+    lsr     r14, r14, #12               ; VPN of name_ptr+(NAMELEN-1)
     lsl     r18, r14, #3
     add     r18, r18, r17
     load.q  r18, (r18)
     and     r19, r18, #0x13
     bne     r19, r24, .scun_bad
 
-    ; --- Copy up to 16 bytes to scratch buffer ---
+    ; --- Copy up to PORT_NAME_LEN bytes to scratch buffer ---
     pop     r1                          ; restore user VA
     move.l  r25, #KERN_DATA_BASE
     add     r25, r25, #KD_NAME_SCRATCH  ; R25 = &scratch
@@ -1034,7 +1650,7 @@ safe_copy_user_name:
     move.q  r23, #ERR_BADARG
     rts
 
-; case_insensitive_cmp: compare two 16-byte buffers case-insensitively
+; case_insensitive_cmp: compare two PORT_NAME_LEN-byte buffers case-insensitively
 ; Input:  R24 = ptr_a, R25 = ptr_b
 ; Output: R23 = 0 if match, 1 if mismatch
 ; Clobbers: R14, R16, R17, R18, R23, R26
@@ -1147,7 +1763,14 @@ trap_handler:
     jsr     kern_put_char
     ; Kill the faulting task
     load.q  r13, (r12)
+    ; M12.5: kill_task_cleanup walks overflow chain pages — switch to kernel PT.
+    mfcr    r19, cr0
+    move.l  r11, #KERN_PAGE_TABLE
+    mtcr    cr0, r11
+    tlbflush
     jsr     kill_task_cleanup
+    mtcr    cr0, r19
+    tlbflush
     jsr     find_next_runnable
     store.q r13, (r12)
     bra     restore_task
@@ -1240,10 +1863,16 @@ trap_handler:
     move.l  r11, #SYS_MAP_IO
     beq     r10, r11, .do_map_io
 
+    move.l  r11, #SYS_HWRES_OP
+    beq     r10, r11, .do_hwres_op
+
     ; M11.5: SYS_READ_INPUT (slot 37) removed. Terminal MMIO is now mapped
     ; into console.handler via SYS_MAP_IO and the read loop is inlined in
     ; console.handler's CON_MSG_READLINE handler. Slot 37 falls through to
     ; ERR_BADARG below, same as any other unallocated number.
+    ; M12.5: slot 37 stays a reserved hole; new syscalls use fresh slots
+    ; (SYS_HWRES_OP at slot 38). TestIExec_HWRes_Slot37StillReserved is
+    ; the executable contract.
 
     move.q  r2, #ERR_BADARG
     eret
@@ -1566,17 +2195,28 @@ trap_handler:
     store.b r0, KD_PORT_HEAD(r21)       ; head = 0
     store.b r0, KD_PORT_TAIL(r21)       ; tail = 0
     store.b r8, KD_PORT_FLAGS(r21)      ; flags
-    ; Zero name field
+    ; Zero name field (PORT_NAME_LEN = 32 bytes = 4 quads)
     store.q r0, KD_PORT_NAME(r21)
     add     r23, r21, #KD_PORT_NAME
     add     r23, r23, #8
     store.q r0, (r23)
-    ; If named, copy from scratch buffer to port name
+    add     r23, r23, #8
+    store.q r0, (r23)
+    add     r23, r23, #8
+    store.q r0, (r23)
+    ; If named, copy from scratch buffer to port name (32 bytes = 4 quads)
     beqz    r7, .create_done
     move.l  r14, #KERN_DATA_BASE
     add     r14, r14, #KD_NAME_SCRATCH  ; R14 = &scratch
     add     r16, r21, #KD_PORT_NAME     ; R16 = &port.name
-    ; Copy 16 bytes (2 quad-words)
+    load.q  r17, (r14)
+    store.q r17, (r16)
+    add     r14, r14, #8
+    add     r16, r16, #8
+    load.q  r17, (r14)
+    store.q r17, (r16)
+    add     r14, r14, #8
+    add     r16, r16, #8
     load.q  r17, (r14)
     store.q r17, (r16)
     add     r14, r14, #8
@@ -1755,6 +2395,7 @@ trap_handler:
     load.q  r4, KD_MSG_DATA1(r27)       ; R4 = data1
     load.w  r5, KD_MSG_REPLY_PORT(r27)  ; R5 = reply_port
     load.l  r6, KD_MSG_SHARE_HDL(r27)   ; R6 = share_handle
+    load.l  r7, KD_MSG_SRC(r27)         ; R7 = sender task ID (M12.5)
     ; Advance head (mod 4)
     add     r26, r26, #1
     and     r26, r26, #3
@@ -1829,6 +2470,7 @@ trap_handler:
     load.q  r4, KD_MSG_DATA1(r27)
     load.w  r5, KD_MSG_REPLY_PORT(r27)
     load.l  r6, KD_MSG_SHARE_HDL(r27)
+    load.l  r7, KD_MSG_SRC(r27)         ; R7 = sender task ID (M12.5)
     add     r26, r26, #1
     and     r26, r26, #3
     store.b r26, KD_PORT_HEAD(r21)
@@ -2012,7 +2654,15 @@ trap_handler:
 .do_exit_task:
     move.l  r12, #KERN_DATA_BASE
     load.q  r13, (r12)              ; current_task
+    ; M12.5: kill_task_cleanup walks overflow chain pages so it must run on
+    ; kernel PT. Save user PT, switch, run cleanup, restore.
+    mfcr    r19, cr0
+    move.l  r11, #KERN_PAGE_TABLE
+    mtcr    cr0, r11
+    tlbflush
     jsr     kill_task_cleanup       ; shared cleanup subroutine
+    mtcr    cr0, r19
+    tlbflush
     jsr     find_next_runnable      ; R13 = next (or halts)
     store.q r13, (r12)
     bra     restore_task
@@ -2027,6 +2677,16 @@ trap_handler:
     ; Save user args
     move.q  r24, r1                     ; r24 = size
     move.q  r25, r2                     ; r25 = flags
+
+    ; M12.5: outer PT switch — run the handler on kernel PT throughout so
+    ; overflow chain pages (allocator pool, only mapped in kernel PT) are
+    ; accessible by both find_free_va and the region row writes. r19 holds
+    ; the saved user PT for the entire handler; nothing else clobbers it
+    ; (find_free_va says R3-R16 only, alloc_pages uses R3-R7, etc.).
+    mfcr    r19, cr0
+    move.l  r11, #KERN_PAGE_TABLE
+    mtcr    cr0, r11
+    tlbflush
 
     ; Step 1: Validate size > 0
     beqz    r24, .am_badarg
@@ -2066,7 +2726,11 @@ trap_handler:
     move.q  r27, r15                    ; r27 = slot index (save for handle)
 .am_skip_shmem_check:
 
-    ; Step 5: Find free region slot in caller's region table
+    ; Step 5: Find free region slot in caller's region table.
+    ; M12.5: scan inline rows 0..7 first; if all occupied, fall through
+    ; to the overflow chain via kern_region_oflow_alloc_row. The outer
+    ; PT switch (right at the start of the handler) keeps us on kernel
+    ; PT so overflow chain page accesses work directly.
     move.l  r12, #KERN_DATA_BASE
     load.q  r13, (r12)                  ; r13 = current_task
     move.l  r14, #KERN_DATA_BASE
@@ -2076,8 +2740,8 @@ trap_handler:
     add     r14, r14, r11               ; r14 = &region_table[task][0]
     move.l  r15, #0                     ; region slot index
 .am_find_region:
-    move.l  r11, #KD_REGION_MAX
-    bge     r15, r11, .am_nomem         ; no free slot
+    move.l  r11, #KD_REGION_INLINE_MAX
+    bge     r15, r11, .am_inline_full   ; inline full → try overflow
     move.l  r11, #KD_REGION_STRIDE
     mulu    r11, r15, r11
     add     r16, r14, r11               ; r16 = &region[i]
@@ -2087,6 +2751,16 @@ trap_handler:
 .am_find_region_next:
     add     r15, r15, #1
     bra     .am_find_region
+
+.am_inline_full:
+    ; Inline 8 rows all occupied — allocate a row in the overflow chain.
+    ; We're already on kernel PT (handler-level switch in the entry).
+    move.q  r1, r13                     ; task_id
+    jsr     kern_region_oflow_alloc_row ; R1 = row addr, R2 = err
+    bnez    r2, .am_nomem
+    move.q  r16, r1                     ; r16 = row addr (in chain page)
+    ; Fall through to .am_found_region
+
 .am_found_region:
     ; r15 = free slot index, r16 = &region[slot]
     ; Save region pointer for commit phase
@@ -2196,6 +2870,10 @@ trap_handler:
     ; Step 12: TLB flush
     tlbflush
 
+    ; M12.5: restore user PT before eret
+    mtcr    cr0, r19
+    tlbflush
+
     ; Return VA in R1, ERR_OK in R2, share_handle in R3
     move.q  r1, r23
     move.q  r2, #ERR_OK
@@ -2208,18 +2886,24 @@ trap_handler:
     bra     .am_nomem
 
 .am_badarg:
+    mtcr    cr0, r19
+    tlbflush
     move.q  r1, #0
     move.q  r2, #ERR_BADARG
     move.q  r3, #0
     eret
 
 .am_toolarge:
+    mtcr    cr0, r19
+    tlbflush
     move.q  r1, #0
     move.q  r2, #ERR_TOOLARGE
     move.q  r3, #0
     eret
 
 .am_nomem:
+    mtcr    cr0, r19
+    tlbflush
     move.q  r1, #0
     move.q  r2, #ERR_NOMEM
     move.q  r3, #0
@@ -2235,11 +2919,18 @@ trap_handler:
     move.q  r24, r1                     ; r24 = addr
     move.q  r25, r2                     ; r25 = size
 
+    ; M12.5: outer PT switch (kernel PT for whole handler).
+    mfcr    r29, cr0
+    move.l  r11, #KERN_PAGE_TABLE
+    mtcr    cr0, r11
+    tlbflush
+
     ; Compute expected page count
     add     r20, r25, #0xFFF
     lsr     r20, r20, #12               ; r20 = page count from size
 
-    ; Find matching region in caller's table
+    ; Find matching region in caller's table.
+    ; M12.5: scan inline rows 0..7 first; if not found, walk overflow chain.
     move.l  r12, #KERN_DATA_BASE
     load.q  r13, (r12)                  ; current_task
     move.l  r14, #KERN_DATA_BASE
@@ -2250,8 +2941,8 @@ trap_handler:
 
     move.l  r15, #0                     ; region index
 .fm_find:
-    move.l  r11, #KD_REGION_MAX
-    bge     r15, r11, .fm_badarg        ; not found
+    move.l  r11, #KD_REGION_INLINE_MAX
+    bge     r15, r11, .fm_check_overflow
     move.l  r11, #KD_REGION_STRIDE
     mulu    r11, r15, r11
     add     r16, r14, r11               ; r16 = &region[i]
@@ -2263,6 +2954,36 @@ trap_handler:
 .fm_find_next:
     add     r15, r15, #1
     bra     .fm_find
+
+.fm_check_overflow:
+    ; M12.5: walk per-task overflow chain looking for matching VA.
+    move.l  r11, #KERN_DATA_BASE
+    add     r11, r11, #KD_REGION_OVERFLOW_HEAD
+    move.l  r12, #KD_REGION_OFLOW_STRIDE
+    mulu    r12, r13, r12
+    add     r11, r11, r12               ; r11 = &task's overflow head
+    load.w  r12, KD_REGION_OFLOW_FIRST_PPN(r11)
+    beqz    r12, .fm_badarg
+.fm_oflow_page:
+    lsl     r14, r12, #12               ; r14 = page byte addr
+    move.q  r16, r14
+    add     r16, r16, #KD_REGION_PAGE_HDR_SZ ; r16 = first row in page
+    move.l  r15, #0                     ; row idx
+.fm_oflow_row:
+    move.l  r11, #KD_REGION_ROWS_PER_PG
+    bge     r15, r11, .fm_oflow_next_page
+    load.b  r11, KD_REG_TYPE(r16)
+    beqz    r11, .fm_oflow_skip
+    load.l  r17, KD_REG_VA(r16)
+    beq     r17, r24, .fm_found         ; r16 is the matching row
+.fm_oflow_skip:
+    add     r16, r16, #KD_REGION_STRIDE
+    add     r15, r15, #1
+    bra     .fm_oflow_row
+.fm_oflow_next_page:
+    load.w  r12, KD_REGION_PAGE_NEXT(r14)
+    bnez    r12, .fm_oflow_page
+    bra     .fm_badarg                  ; not found anywhere
 
 .fm_found:
     ; Validate size matches
@@ -2314,10 +3035,14 @@ trap_handler:
     ; Mark region as FREE
     store.b r0, KD_REG_TYPE(r16)
     tlbflush
+    mtcr    cr0, r29
+    tlbflush
     move.q  r2, #ERR_OK
     eret
 
 .fm_badarg:
+    mtcr    cr0, r29
+    tlbflush
     move.q  r2, #ERR_BADARG
     eret
 
@@ -2334,6 +3059,12 @@ trap_handler:
 
 .do_map_shared:
     move.q  r24, r1                     ; r24 = handle
+
+    ; M12.5: outer PT switch (kernel PT for entire handler).
+    mfcr    r19, cr0
+    move.l  r11, #KERN_PAGE_TABLE
+    mtcr    cr0, r11
+    tlbflush
 
     ; Decode handle: slot = handle & 0xFF, nonce = (handle >> 8) & 0xFFFFFF
     and     r20, r24, #0xFF             ; r20 = slot
@@ -2369,8 +3100,8 @@ trap_handler:
     add     r15, r15, r11               ; r15 = &region_table[task][0]
     move.l  r16, #0
 .ms_find_region:
-    move.l  r11, #KD_REGION_MAX
-    bge     r16, r11, .ms_nomem
+    move.l  r11, #KD_REGION_INLINE_MAX
+    bge     r16, r11, .ms_inline_full
     move.l  r11, #KD_REGION_STRIDE
     mulu    r11, r16, r11
     add     r17, r15, r11
@@ -2378,6 +3109,15 @@ trap_handler:
     beqz    r11, .ms_found_region
     add     r16, r16, #1
     bra     .ms_find_region
+
+.ms_inline_full:
+    ; M12.5: fall through to overflow chain.
+    move.q  r1, r13                     ; task_id
+    jsr     kern_region_oflow_alloc_row ; R1 = row addr, R2 = err
+    bnez    r2, .ms_nomem
+    move.q  r17, r1                     ; r17 = row addr (overflow chain)
+    ; Fall through
+
 .ms_found_region:
     ; r17 = &region[free_slot]
     move.q  r22, r17                    ; save for commit
@@ -2429,18 +3169,24 @@ trap_handler:
     store.b r11, KD_REG_FLAGS(r22)
 
     tlbflush
+    mtcr    cr0, r19
+    tlbflush
     move.q  r1, r25                     ; R1 = VA
     move.q  r2, #ERR_OK                 ; R2 = err
     move.q  r3, r23                     ; R3 = page count (saved at line ~2385)
     eret
 
 .ms_badhandle:
+    mtcr    cr0, r19
+    tlbflush
     move.q  r1, #0
     move.q  r2, #ERR_BADHANDLE
     move.q  r3, #0
     eret
 
 .ms_nomem:
+    mtcr    cr0, r19
+    tlbflush
     move.q  r1, #0
     move.q  r2, #ERR_NOMEM
     move.q  r3, #0
@@ -2474,23 +3220,41 @@ trap_handler:
     bra     .do_find_port               ; binary-compat redirect, version in R2 ignored
 
 ; ============================================================================
-; SYS_MAP_IO (M9, extended in M11) — Map I/O pages into user space
+; SYS_MAP_IO (M9, extended in M11, gated by grant table in M12.5)
 ; ============================================================================
 ; R1 = base physical page number
 ; R2 = page count (0 is treated as 1 for M9/M10 backwards compatibility)
 ; Returns: R1 = mapped VA (base), R2 = error
 ;
-; Allowlist (any other (PPN, count) combination → ERR_BADARG):
-;   (0xF0, 1)                         — chip register page (terminal/input/video MMIO)
-;   PPN in [0x100, 0x5FF],            — any contiguous slice of the 5 MB VRAM range
-;   count in [1, 0x600 - PPN]         (ends at most at PPN 0x5FF inclusive)
+; M12.5 authorization model: the calling task must hold a grant entry in
+; the kernel grant chain whose PPN range covers [R1 .. R1+R2-1] inclusive.
+; The only producers of grants are:
+;   1. hardware.resource via SYS_HWRES_OP / HWRES_CREATE (the runtime path)
+;   2. the immutable bootstrap_grant_table copied in during the boot-load
+;      loop (the bootstrap path, breaks the chicken-and-egg for
+;      console.handler at boot)
+; Without a covering grant the call returns ERR_PERM. The legacy hardcoded
+; allowlist (PPN 0xF0 + [0x100..0x5FF] VRAM range) was removed in M12.5;
+; the same PPN ranges are now expressed as grant rows whose region tags
+; ('CHIP', 'VRAM') hardware.resource resolves to those PPNs. This makes
+; SYS_MAP_IO trusted-internal (gated by KD_GRANT_TABLE) rather than
+; nucleus, and reclassifies it accordingly in IExec.md §5.11.
 ;
-; The mapping consumes ONE region-table entry covering all `count` pages, so
-; large mappings (e.g. 300 pages for a 640x480x4 framebuffer) do not exhaust
-; the per-task 8-slot region table.
+; Bookkeeping (region table walk, find_free_va, map_pages, region row
+; install) is unchanged from M11 — the PT install path still goes through
+; map_pages and the per-task region table still records the mapping.
+; The KD_REGION_MAX cap removal (per-task region chain) lands in Phase 4
+; of M12.5; this handler still uses the indexed walker for now.
 .do_map_io:
     move.q  r24, r1                     ; r24 = requested base PPN
     move.q  r25, r2                     ; r25 = requested page count
+
+    ; M12.5: outer PT switch (kernel PT for whole handler so the region
+    ; overflow chain is accessible).
+    mfcr    r19, cr0
+    move.l  r11, #KERN_PAGE_TABLE
+    mtcr    cr0, r11
+    tlbflush
 
     ; Reject high-bit-set PPN or count up front. The bounds checks below
     ; use signed bgt/bge/blt; without these guards, a caller passing
@@ -2504,29 +3268,21 @@ trap_handler:
     move.l  r25, #1
 .mio_count_set:
 
-    ; Cap page count to 0x500 (1280 = full 5 MB VRAM range). With this
-    ; cap and PPN ≤ 0x5FF (enforced below), the sum (PPN+count) is
-    ; provably ≤ 0xAFF, well within positive int64.
+    ; Cap page count to 0x500 (1280 pages = 5 MB) as a sanity bound on
+    ; the request size. The grant check below is the actual authorization
+    ; — this cap just keeps signed PPN+count arithmetic within positive
+    ; int64 territory regardless of what the broker has put in the chain.
     move.l  r11, #0x500
     bgt     r25, r11, .mio_badarg
 
-    ; Validate against allowlist.
-    ; Fast path: (0xF0, 1) — preserves the M9/M10 single-page chip-register call.
-    move.l  r11, #TERM_IO_PAGE          ; 0xF0
-    bne     r24, r11, .mio_check_vram
-    move.l  r11, #1
-    bne     r25, r11, .mio_badarg       ; (0xF0, count) only allows count=1
-    bra     .mio_validated
-
-.mio_check_vram:
-    ; VRAM range: PPN in [0x100, 0x5FF], PPN+count <= 0x600
-    move.l  r11, #0x100
-    blt     r24, r11, .mio_badarg
-    move.l  r11, #0x600
-    bge     r24, r11, .mio_badarg
-    add     r11, r24, r25
-    move.l  r12, #0x600
-    bgt     r11, r12, .mio_badarg
+    ; M12.5: grant-table check.
+    ; r1 = current task ID, r2 = req PPN low, r3 = req page count
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r1, (r12)                   ; r1 = current_task
+    move.q  r2, r24                     ; r2 = req PPN low
+    move.q  r3, r25                     ; r3 = req page count
+    jsr     kern_grant_check            ; R1 = match (0/1), R2 = ERR_OK
+    beqz    r1, .mio_perm               ; no covering grant → ERR_PERM
 
 .mio_validated:
     ; Get current task
@@ -2541,8 +3297,8 @@ trap_handler:
     add     r14, r14, r11               ; r14 = &region_table[task][0]
     move.l  r15, #0
 .mio_find_region:
-    move.l  r11, #KD_REGION_MAX
-    bge     r15, r11, .mio_nomem
+    move.l  r11, #KD_REGION_INLINE_MAX
+    bge     r15, r11, .mio_inline_full
     move.l  r11, #KD_REGION_STRIDE
     mulu    r11, r15, r11
     add     r16, r14, r11
@@ -2550,6 +3306,15 @@ trap_handler:
     beqz    r11, .mio_found_region
     add     r15, r15, #1
     bra     .mio_find_region
+
+.mio_inline_full:
+    ; M12.5: fall through to overflow chain.
+    move.q  r1, r13                     ; task_id
+    jsr     kern_region_oflow_alloc_row ; R1 = row addr, R2 = err
+    bnez    r2, .mio_nomem
+    move.q  r16, r1
+    ; Fall through
+
 .mio_found_region:
     move.q  r21, r16                    ; r21 = &region[slot]
 
@@ -2582,17 +3347,168 @@ trap_handler:
     store.b r11, KD_REG_TYPE(r21)
 
     tlbflush
+    mtcr    cr0, r19
+    tlbflush
     move.q  r1, r23                     ; return base VA
     move.q  r2, #ERR_OK
     eret
 
 .mio_badarg:
+    mtcr    cr0, r19
+    tlbflush
     move.q  r1, #0
     move.q  r2, #ERR_BADARG
     eret
 .mio_nomem:
+    mtcr    cr0, r19
+    tlbflush
     move.q  r1, #0
     move.q  r2, #ERR_NOMEM
+    eret
+.mio_perm:
+    mtcr    cr0, r19
+    tlbflush
+    move.q  r1, #0
+    move.q  r2, #ERR_PERM
+    eret
+
+; ============================================================================
+; SYS_HWRES_OP (M12.5) — hardware.resource broker primitive
+; ============================================================================
+; Verb-multiplexed trusted-internal syscall. R0 selects the operation.
+; The kernel exposes exactly one slot at the ABI level (slot 38), pays
+; +1 raw slot, and lets SYS_MAP_IO leave the public nucleus set in the
+; same milestone. Net public ABI shrinks by one.
+;
+; Verbs:
+;   HWRES_BECOME (0):
+;     Inputs:  none
+;     Effect:  if KD_HWRES_TASK == 0xFF, set it to current_task and return
+;              ERR_OK. Otherwise return ERR_EXISTS.
+;     Outputs: R1 = unused, R2 = err
+;
+;   HWRES_CREATE (1):
+;     Inputs:  R1 = target task ID
+;              R2 = 4-byte region tag (low 32 bits)
+;              R3 = PPN low (inclusive)
+;              R4 = PPN high (inclusive)
+;     Guard:   current_task must equal KD_HWRES_TASK (else ERR_PERM).
+;     Effect:  walks the grant chain for a free row and writes the new
+;              grant entry. Allocates a new chain page if no free row
+;              exists in any current chain page.
+;     Outputs: R1 = unused, R2 = err
+;
+;   HWRES_REVOKE (2):
+;     Reserved for M13. Returns ERR_BADARG in M12.5 so the slot is
+;     documented and M13 can fill it without re-bikeshedding the layout.
+;
+;   HWRES_TASK_ALIVE (3):
+;     Inputs:  R1 = target task ID
+;     Guard:   current_task must equal KD_HWRES_TASK (broker-only)
+;     Effect:  reads KD_TASK_STATE for the target task and reports
+;              whether the slot is in use. Used by the broker to lazily
+;              reclaim stale per-tag owner slots when a grantee has
+;              exited (the kernel grant chain and KD_HWRES_TASK are
+;              cleaned up automatically by kill_task_cleanup, but the
+;              broker's private owner-list state is not — this verb
+;              gives the broker enough kernel state to reconcile).
+;     Outputs: R1 = 1 if alive (state != TASK_FREE), 0 if free; R2 = ERR_OK
+.do_hwres_op:
+    ; R0 was zeroed by the trap entry path (it's the syscall instruction's
+    ; rd field, not a user-controlled register). The verb selector is
+    ; encoded in the *low* bits of an arg register — by convention we
+    ; place it in R6 so R1..R4 stay available for the per-verb args. The
+    ; user-mode wrapper does: move r6, #verb; syscall #SYS_HWRES_OP.
+    ; (We avoid R0 because the IE64 SYSCALL instruction does not pass R0
+    ; through to the trap frame in a usable way.)
+    move.q  r10, r6                     ; r10 = verb
+
+    move.l  r11, #HWRES_BECOME
+    beq     r10, r11, .hwres_become
+    move.l  r11, #HWRES_CREATE
+    beq     r10, r11, .hwres_create
+    move.l  r11, #HWRES_REVOKE
+    beq     r10, r11, .hwres_revoke
+    move.l  r11, #HWRES_TASK_ALIVE
+    beq     r10, r11, .hwres_task_alive
+    bra     .hwres_badarg
+
+.hwres_become:
+    ; If KD_HWRES_TASK is still the unclaimed sentinel (0xFF), set it to
+    ; the current task and return OK. Otherwise return EXISTS.
+    move.l  r12, #KERN_DATA_BASE
+    load.b  r13, KD_HWRES_TASK(r12)
+    move.l  r14, #0xFF
+    bne     r13, r14, .hwres_exists
+    load.q  r15, (r12)                  ; r15 = current_task
+    store.b r15, KD_HWRES_TASK(r12)
+    move.q  r1, #0
+    move.q  r2, #ERR_OK
+    eret
+
+.hwres_create:
+    ; Guard: current_task == KD_HWRES_TASK
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r13, (r12)                  ; current_task
+    load.b  r14, KD_HWRES_TASK(r12)
+    bne     r13, r14, .hwres_perm
+    ; Sanity-check inputs lightly:
+    ;   target task id must be < MAX_TASKS
+    ;   ppn_lo, ppn_hi must satisfy ppn_lo <= ppn_hi
+    move.l  r15, #MAX_TASKS
+    bge     r1, r15, .hwres_badarg
+    bltz    r1, .hwres_badarg
+    bgt     r3, r4, .hwres_badarg
+    bltz    r3, .hwres_badarg
+    bltz    r4, .hwres_badarg
+    ; r1=task_id, r2=tag, r3=ppn_lo, r4=ppn_hi already in the right
+    ; registers for kern_grant_create_row.
+    jsr     kern_grant_create_row       ; R2 = err
+    move.q  r1, #0
+    eret
+
+.hwres_revoke:
+    ; M12.5 stub — slot reserved for M13.
+    move.q  r1, #0
+    move.q  r2, #ERR_BADARG
+    eret
+
+.hwres_task_alive:
+    ; Guard: only the broker may query task liveness.
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r13, (r12)                  ; current_task
+    load.b  r14, KD_HWRES_TASK(r12)
+    bne     r13, r14, .hwres_perm
+    ; Sanity-check target task ID
+    move.l  r15, #MAX_TASKS
+    bge     r1, r15, .hwres_badarg
+    bltz    r1, .hwres_badarg
+    ; Read TCB state byte: KD_TASK_BASE + task * KD_TASK_STRIDE + KD_TASK_STATE
+    lsl     r15, r1, #5                 ; r15 = task * 32
+    add     r15, r15, #KD_TASK_BASE
+    add     r15, r15, r12               ; r15 = &TCB[task]
+    load.b  r16, KD_TASK_STATE(r15)
+    move.l  r17, #TASK_FREE
+    beq     r16, r17, .hwres_alive_no
+    move.q  r1, #1                      ; alive
+    move.q  r2, #ERR_OK
+    eret
+.hwres_alive_no:
+    move.q  r1, #0                      ; FREE = dead
+    move.q  r2, #ERR_OK
+    eret
+
+.hwres_perm:
+    move.q  r1, #0
+    move.q  r2, #ERR_PERM
+    eret
+.hwres_exists:
+    move.q  r1, #0
+    move.q  r2, #ERR_EXISTS
+    eret
+.hwres_badarg:
+    move.q  r1, #0
+    move.q  r2, #ERR_BADARG
     eret
 
 ; ============================================================================
@@ -2776,16 +3692,24 @@ kill_task_cleanup:
     store.b r0, KD_PORT_VALID(r20)
     store.b r0, KD_PORT_COUNT(r20)
     store.b r0, KD_PORT_FLAGS(r20)       ; M7: clear flags (removes from FindPort)
-    store.q r0, KD_PORT_NAME(r20)        ; M7: clear name (bytes 0-7)
+    store.q r0, KD_PORT_NAME(r20)        ; clear name bytes 0-7
     add     r22, r20, #KD_PORT_NAME
     add     r22, r22, #8
-    store.q r0, (r22)                    ; M7: clear name (bytes 8-15)
+    store.q r0, (r22)                    ; clear name bytes 8-15
+    add     r22, r22, #8
+    store.q r0, (r22)                    ; clear name bytes 16-23 (M12)
+    add     r22, r22, #8
+    store.q r0, (r22)                    ; clear name bytes 24-31 (M12)
 .ktc_port_next:
     add     r20, r20, #KD_PORT_STRIDE
     add     r21, r21, #1
     bra     .ktc_port_scan
 .ktc_done:
-    ; M6: Clean up memory regions for this task
+    ; M6: Clean up memory regions for this task. M12.5: walks inline rows
+    ; first, then walks the per-task overflow chain (rows 9+), and finally
+    ; frees the overflow chain pages themselves so the page allocator pool
+    ; isn't leaked. Caller is responsible for kernel-PT context (every
+    ; caller switches before invoking).
     move.l  r20, #KERN_DATA_BASE
     add     r20, r20, #KD_REGION_TABLE
     move.l  r21, #KD_REGION_TASK_SZ
@@ -2793,8 +3717,8 @@ kill_task_cleanup:
     add     r20, r20, r21               ; r20 = &region_table[task][0]
     move.l  r21, #0                     ; region index
 .ktc_region_scan:
-    move.l  r22, #KD_REGION_MAX
-    bge     r21, r22, .ktc_mem_done
+    move.l  r22, #KD_REGION_INLINE_MAX
+    bge     r21, r22, .ktc_inline_done
     move.l  r22, #KD_REGION_STRIDE
     mulu    r22, r21, r22
     add     r23, r20, r22               ; r23 = &region[i]
@@ -2864,7 +3788,125 @@ kill_task_cleanup:
     add     r21, r21, #1
     bra     .ktc_region_scan
 
+.ktc_inline_done:
+    ; --- M12.5: walk overflow chain rows for the same task ---
+    move.l  r20, #KERN_DATA_BASE
+    add     r20, r20, #KD_REGION_OVERFLOW_HEAD
+    move.l  r22, #KD_REGION_OFLOW_STRIDE
+    mulu    r22, r13, r22
+    add     r20, r20, r22               ; r20 = &task's overflow head
+    load.w  r25, KD_REGION_OFLOW_FIRST_PPN(r20)
+    beqz    r25, .ktc_mem_done
+
+.ktc_oflow_page:
+    lsl     r26, r25, #12               ; r26 = page byte addr
+    move.q  r23, r26
+    add     r23, r23, #KD_REGION_PAGE_HDR_SZ ; r23 = first row
+    move.l  r21, #0                     ; row idx
+.ktc_oflow_row:
+    move.l  r22, #KD_REGION_ROWS_PER_PG
+    bge     r21, r22, .ktc_oflow_next_page
+    load.b  r22, KD_REG_TYPE(r23)
+    beqz    r22, .ktc_oflow_skip
+    ; Unmap, free pages, decrement shmem refcount — same logic as inline path.
+    lsl     r1, r13, #3
+    add     r1, r1, #KD_PTBR_BASE
+    add     r1, r1, r12
+    load.q  r1, (r1)
+    load.l  r2, KD_REG_VA(r23)
+    load.w  r3, KD_REG_PAGES(r23)
+    jsr     unmap_pages
+    load.b  r22, KD_REG_TYPE(r23)
+    move.l  r24, #REGION_IO
+    beq     r22, r24, .ktc_oflow_clear
+    move.l  r24, #REGION_PRIVATE
+    bne     r22, r24, .ktc_oflow_shared
+    load.w  r1, KD_REG_PPN(r23)
+    load.w  r2, KD_REG_PAGES(r23)
+    jsr     free_pages
+    bra     .ktc_oflow_clear
+.ktc_oflow_shared:
+    load.b  r24, KD_REG_SHMID(r23)
+    move.l  r22, #KD_SHMEM_STRIDE
+    mulu    r22, r24, r22
+    move.l  r1, #KERN_DATA_BASE
+    add     r1, r1, #KD_SHMEM_TABLE
+    add     r1, r1, r22
+    load.b  r22, KD_SHM_REFCOUNT(r1)
+    sub     r22, r22, #1
+    store.b r22, KD_SHM_REFCOUNT(r1)
+    bnez    r22, .ktc_oflow_clear
+    move.l  r22, #KD_SHMEM_STRIDE
+    mulu    r22, r24, r22
+    move.l  r1, #KERN_DATA_BASE
+    add     r1, r1, #KD_SHMEM_TABLE
+    add     r1, r1, r22
+    load.w  r2, KD_SHM_PAGES(r1)
+    move.q  r3, r2
+    load.w  r2, KD_SHM_PPN(r1)
+    move.q  r4, r1
+    move.q  r1, r2
+    move.q  r2, r3
+    jsr     free_pages
+    store.b r0, KD_SHM_VALID(r4)
+.ktc_oflow_clear:
+    store.b r0, KD_REG_TYPE(r23)
+.ktc_oflow_skip:
+    add     r23, r23, #KD_REGION_STRIDE
+    add     r21, r21, #1
+    bra     .ktc_oflow_row
+.ktc_oflow_next_page:
+    load.w  r25, KD_REGION_PAGE_NEXT(r26)
+    bnez    r25, .ktc_oflow_page
+
+    ; --- All overflow rows processed; now free the chain pages themselves ---
+    ; Re-derive overflow head pointer.
+    move.l  r20, #KERN_DATA_BASE
+    add     r20, r20, #KD_REGION_OVERFLOW_HEAD
+    move.l  r22, #KD_REGION_OFLOW_STRIDE
+    mulu    r22, r13, r22
+    add     r20, r20, r22               ; r20 = &head
+    load.w  r25, KD_REGION_OFLOW_FIRST_PPN(r20)
+.ktc_oflow_free_chain:
+    beqz    r25, .ktc_oflow_reset_head
+    lsl     r26, r25, #12               ; r26 = page byte addr
+    load.w  r24, KD_REGION_PAGE_NEXT(r26) ; save next BEFORE freeing
+    move.q  r1, r25                     ; PPN to free
+    move.l  r2, #1                      ; one page
+    jsr     free_pages
+    move.q  r25, r24
+    bra     .ktc_oflow_free_chain
+
+.ktc_oflow_reset_head:
+    ; Re-derive head and reset its 8 bytes.
+    move.l  r20, #KERN_DATA_BASE
+    add     r20, r20, #KD_REGION_OVERFLOW_HEAD
+    move.l  r22, #KD_REGION_OFLOW_STRIDE
+    mulu    r22, r13, r22
+    add     r20, r20, r22
+    store.q r0, (r20)
+
 .ktc_mem_done:
+    ; ----------------------------------------------------------------
+    ; M12.5 hardening: clear hardware.resource state for the exiting
+    ; task so a recycled slot cannot inherit MMIO privilege.
+    ; ----------------------------------------------------------------
+    ;
+    ; (a) Walk the grant chain and free every row whose task_id == r13
+    ;     (so the new occupant of this slot can't reuse the old grants).
+    move.q  r1, r13
+    jsr     kern_grant_release_for_task
+    ;
+    ; (b) If the exiting task IS the broker (KD_HWRES_TASK == r13),
+    ;     clear the broker identity. After this, a fresh task can claim
+    ;     broker identity via SYS_HWRES_OP/HWRES_BECOME without inheriting
+    ;     the dead broker's privilege.
+    move.l  r12, #KERN_DATA_BASE
+    load.b  r14, KD_HWRES_TASK(r12)
+    bne     r14, r13, .ktc_hwres_done
+    move.l  r14, #0xFF
+    store.b r14, KD_HWRES_TASK(r12)
+.ktc_hwres_done:
     rts
 
 ; ============================================================================
@@ -3000,6 +4042,7 @@ restore_task:
     load.q  r4, KD_MSG_DATA1(r27)
     load.w  r5, KD_MSG_REPLY_PORT(r27)
     load.l  r6, KD_MSG_SHARE_HDL(r27)
+    load.l  r7, KD_MSG_SRC(r27)         ; R7 = sender task ID (M12.5)
     add     r26, r26, #1
     and     r26, r26, #3
     store.b r26, KD_PORT_HEAD(r21)
@@ -3155,6 +4198,41 @@ intr_handler:
     load.q  r14, 104(r14)          ; restore R14 last (clobbers our frame pointer)
     ; CR12 (USP) stays at original value — no adjustment needed
     eret
+
+; ============================================================================
+; Bootstrap Grant Table (M12.5)
+; ============================================================================
+; Immutable list of (program_index, region_tag, ppn_lo, ppn_hi) rows that
+; the boot-load loop translates into live grant entries after each
+; load_program returns its assigned task ID. This is the only non-broker
+; producer of grants and exists solely to break the chicken-and-egg of
+; console.handler needing serial-port MMIO before hardware.resource is
+; alive (hardware.resource is started by Startup-Sequence, which Shell
+; executes, which depends on dos.library, which depends on console.handler).
+;
+; M12.5 ships exactly one bootstrap row: console.handler (boot index 0)
+; gets a 'CHIP' grant for PPN 0xF0 (the chip register page that holds
+; TERM_*, SCAN_*, MOUSE_*, video MMIO). Adding more rows is a code change.
+;
+; Row layout (16 bytes each, BOOTSTRAP_GRANT_ROW_SZ):
+;   +0:  program index (1 byte) + 3 bytes padding
+;   +4:  region tag (4 bytes, little-endian uint32)
+;   +8:  ppn_lo (2 bytes, inclusive)
+;   +10: ppn_hi (2 bytes, inclusive)
+;   +12: reserved (4 bytes)
+;
+; Sentinel row: program index = 0xFF (= GRANT_TASK_FREE).
+
+bootstrap_grant_table:
+    ; Row 0: console.handler (boot index 0) — CHIP grant for PPN 0xF0
+    dc.b    0, 0, 0, 0                  ; prog_idx=0 + 3 bytes padding
+    dc.l    HWRES_TAG_CHIP              ; 'CHIP' (little-endian uint32)
+    dc.w    0xF0                        ; ppn_lo
+    dc.w    0xF0                        ; ppn_hi
+    dc.l    0                           ; reserved
+    ; Sentinel
+    dc.b    0xFF
+    ds.b    15
 
 ; ============================================================================
 ; Program Table (M8: static list of bundled program images)
@@ -3642,10 +4720,10 @@ prog_doslib_code:
 .dos_banner_done:
 
     ; =====================================================================
-    ; AllocMem(0x10000, MEMF_CLEAR) — 64KB for file storage (16 × 4KB)
-    ; (CreatePort deferred until after seeding — boot race prevention)
+    ; AllocMem(16 * DOS_FILE_SIZE, MEMF_CLEAR) — file storage (M12: 16 × 8 KiB)
+    ; CreatePort deferred until after seeding — boot race prevention
     ; =====================================================================
-    move.l  r1, #0x10000               ; 64KB
+    move.l  r1, #(16*DOS_FILE_SIZE)    ; 128 KiB
     move.l  r2, #MEMF_CLEAR
     syscall #SYS_ALLOC_MEM             ; R1 = VA, R2 = err, R3 = share_handle
     load.q  r29, (sp)
@@ -3685,9 +4763,9 @@ prog_doslib_code:
     ; Set file_table[0].size = 28 (length of welcome message)
     move.l  r14, #28
     store.l r14, 228(r29)              ; data[192+36] = size = 28
-    ; Set file_table[0].capacity = 4096
-    move.l  r14, #4096
-    store.l r14, 232(r29)              ; data[192+40] = capacity = 4096
+    ; Set file_table[0].capacity = DOS_FILE_SIZE
+    move.l  r14, #DOS_FILE_SIZE
+    store.l r14, 232(r29)              ; data[192+40] = capacity
 
     ; Copy welcome message from data[656] to storage_va+0
     add     r20, r29, #912             ; src = welcome message
@@ -3741,13 +4819,27 @@ prog_doslib_code:
     load.q  r29, (sp)
     add     r20, r29, #1032
     jsr     .dos_seed_one
-    ; Seed LIBS/graphics.library (slot 8) — M11
+    ; Seed RESOURCES/hardware.resource (slot 8) — M12.5
+    ; (must come BEFORE graphics.library to match the embedded image order
+    ; in this data section: prog_input_device, prog_hwres, prog_graphics_library)
+    load.q  r29, (sp)
+    add     r20, r29, #1113
+    jsr     .dos_seed_one
+    ; Seed LIBS/graphics.library (slot 9) — M11
     load.q  r29, (sp)
     add     r20, r29, #1050
     jsr     .dos_seed_one
-    ; Seed C/GfxDemo (slot 9) — M11
+    ; Seed C/GfxDemo (slot 10) — M11
     load.q  r29, (sp)
     add     r20, r29, #1072
+    jsr     .dos_seed_one
+    ; Seed LIBS/intuition.library (slot 11) — M12
+    load.q  r29, (sp)
+    add     r20, r29, #1082
+    jsr     .dos_seed_one
+    ; Seed C/About (slot 12) — M12
+    load.q  r29, (sp)
+    add     r20, r29, #1105
     jsr     .dos_seed_one
     bra     .dos_seed_done
 
@@ -3806,19 +4898,19 @@ prog_doslib_code:
 
 .dso_set_entry:
     ; 4. Set file table entry fields
-    ; offset = slot * 4096
-    move.l  r15, #4096
+    ; offset = slot * DOS_FILE_SIZE
+    move.l  r15, #DOS_FILE_SIZE
     mulu    r15, r22, r15
     store.l r15, 32(r14)               ; entry.offset
     store.l r23, 36(r14)               ; entry.size
-    move.l  r15, #4096
+    move.l  r15, #DOS_FILE_SIZE
     store.l r15, 40(r14)               ; entry.capacity
 
     ; 5. Copy image bytes from data pages to storage
     load.q  r21, 152(r29)              ; storage_va
-    move.l  r15, #4096
+    move.l  r15, #DOS_FILE_SIZE
     mulu    r15, r22, r15
-    add     r21, r21, r15              ; dst = storage_va + slot * 4096
+    add     r21, r21, r15              ; dst = storage_va + slot * DOS_FILE_SIZE
     move.q  r16, r24                   ; src = image ptr in data pages
     move.l  r18, #0
 .dso_copy:
@@ -3878,12 +4970,11 @@ prog_doslib_code:
     move.q  r24, r3                    ; preserve R3 across r29 reload
     load.q  r29, (sp)
     beqz    r1, .dos_reply_err         ; MapShared failed
-    ; Reject shares smaller than DOS_FILE_SIZE. Defense-in-depth: today
-    ; AllocMem rounds up to ≥1 page (4096B = DOS_FILE_SIZE) so this never
-    ; triggers, but if a future change to DOS_FILE_SIZE or AllocMem
-    ; breaks that invariant, DOS_READ/WRITE could otherwise read/write
-    ; past the mapped share and fault dos.library.
-    move.l  r11, #1                    ; min pages = DOS_FILE_SIZE / PAGE_SIZE
+    ; Reject shares smaller than 1 page. Defense-in-depth: AllocMem rounds
+    ; up to ≥1 page (4096B), so this never triggers in normal use. The
+    ; DOS_READ/WRITE share-size clamps below also bound the copy by
+    ; share_pages*4096 for additional safety.
+    move.l  r11, #1                    ; min pages = 1
     blt     r24, r11, .dos_reply_badarg
     store.q r1, 168(r29)               ; update cached VA
     store.q r24, 184(r29)              ; cache share_pages
@@ -4097,7 +5188,7 @@ prog_doslib_code:
 
 .dos_create_slot:
     ; r14 = entry base, r22 = slot index
-    ; Copy filename from shared buffer to entry name[16]
+    ; Copy filename from shared buffer to entry name[32]
     move.q  r16, r23                    ; src = request name
     move.q  r17, r14                    ; dst = entry name
     move.l  r18, #0
@@ -4112,15 +5203,15 @@ prog_doslib_code:
     blt     r18, r28, .dos_cpy_fname
     store.b r0, (r17)                   ; force null at position 31
 .dos_cpy_fname_done:
-    ; Set offset = slot * 4096
-    move.l  r15, #4096
+    ; Set offset = slot * DOS_FILE_SIZE
+    move.l  r15, #DOS_FILE_SIZE
     mulu    r15, r22, r15
-    store.l r15, 32(r14)               ; entry.offset = slot * 4096
+    store.l r15, 32(r14)               ; entry.offset = slot * DOS_FILE_SIZE
     ; Set size = 0 (new file)
     store.l r0, 36(r14)                ; entry.size = 0
-    ; Set capacity = 4096
-    move.l  r15, #4096
-    store.l r15, 40(r14)               ; entry.capacity = 4096
+    ; Set capacity = DOS_FILE_SIZE
+    move.l  r15, #DOS_FILE_SIZE
+    store.l r15, 40(r14)               ; entry.capacity
 
 .dos_open_found:
     ; r22 = file table index of found/created entry
@@ -4808,7 +5899,7 @@ prog_doslib_data:
     ds.b    8
     ; --- Offset 176: open_handles[8] ---
     ds.b    8
-    ; --- Offset 184: reserved (8) ---
+    ; --- Offset 184: cached share_pages (8) ---
     ds.b    8
     ; --- Offset 192: file table (16 entries × 44 bytes = 704 bytes, ends at 896) ---
     ds.b    704
@@ -4832,9 +5923,14 @@ prog_doslib_data:
     dc.b    "DEVS/input.device", 0      ; 1032 (18 bytes) → 1050
     dc.b    "LIBS/graphics.library", 0  ; 1050 (22 bytes) → 1072
     dc.b    "C/GfxDemo", 0              ; 1072 (10 bytes) → 1082
+    ; --- M12 seed names ---
+    dc.b    "LIBS/intuition.library", 0 ; 1082 (23 bytes) → 1105
+    dc.b    "C/About", 0                ; 1105 (8 bytes) → 1113
+    ; --- M12.5 seed names ---
+    dc.b    "RESOURCES/hardware.resource", 0  ; 1113 (28 bytes) → 1141
     ; --- Pad to 4096 (page boundary) ---
-    ; 1082 → 4096: 3014 bytes padding
-    ds.b    3014
+    ; 1141 → 4096: 2955 bytes padding
+    ds.b    2955
 
 ; ---------------------------------------------------------------------------
 ; Embedded command images (VERSION, AVAIL, DIR, TYPE, ECHO)
@@ -4943,7 +6039,7 @@ prog_version_data:
     ; --- Offset 24: padding to 32 ---
     ds.b    8
     ; --- Offset 32: version string ---
-    dc.b    "IntuitionOS 0.11 (exec.library M11.5)", 0x0D, 0x0A, 0
+    dc.b    "IntuitionOS 0.13 (exec.library M11.6 / intuition.library M12 / hardware.resource M12.5)", 0x0D, 0x0A, 0
 prog_version_data_end:
     align   8
 prog_version_end:
@@ -5796,10 +6892,12 @@ prog_echo_cmd_data_end:
 prog_echo_cmd_end:
 
 seed_startup:
+    dc.b    "RESOURCES:hardware.resource", 0x0A
     dc.b    "DEVS:input.device", 0x0A
     dc.b    "LIBS:graphics.library", 0x0A
+    dc.b    "LIBS:intuition.library", 0x0A
     dc.b    "VERSION", 0x0A
-    dc.b    "ECHO IntuitionOS M11 ready", 0x0A
+    dc.b    "ECHO IntuitionOS M12.5 ready", 0x0A
     dc.b    "ECHO All visible services are running in user space", 0x0A, 0
 seed_startup_end:
     align   8
@@ -5862,8 +6960,53 @@ prog_input_device_code:
     load.q  r1, 8(sp)
     store.q r1, 128(r29)               ; data[128] = task_id
 
+    ; ===== M12.5: Request CHIP grant from hardware.resource =====
+    ; SYS_MAP_IO is now gated by the kernel grant table; we must hold a
+    ; grant for PPN 0xF0 before calling it. The broker is the only producer
+    ; of grants for a non-bootstrap task. Spin on FindPort until the broker
+    ; is up (boot launch order in S/Startup-Sequence puts hardware.resource
+    ; first, but we still poll to be safe across launch-order edits).
+.idev_find_hwres:
+    add     r1, r29, #192              ; r1 = "hardware.resource" string
+    syscall #SYS_FIND_PORT             ; R1=port_id, R2=err
+    bnez    r2, .idev_hwres_retry
+    bra     .idev_have_hwres
+.idev_hwres_retry:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .idev_find_hwres
+.idev_have_hwres:
+    store.q r1, 224(r29)               ; data[224] = hwres_port
+
+    ; Create anonymous reply port
+    move.q  r1, r0
+    move.q  r2, r0
+    syscall #SYS_CREATE_PORT
+    load.q  r29, (sp)
+    bnez    r2, .idev_halt
+    store.q r1, 232(r29)               ; data[232] = reply_port
+
+    ; PutMsg(hwres_port, HWRES_MSG_REQUEST, tag=CHIP, data1=task_id, reply=reply_port)
+    load.q  r1, 224(r29)               ; hwres_port
+    move.l  r2, #HWRES_MSG_REQUEST
+    move.l  r3, #HWRES_TAG_CHIP        ; data0 = tag
+    load.q  r4, 128(r29)               ; data1 = my task_id
+    load.q  r5, 232(r29)               ; reply_port
+    move.q  r6, r0
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    bnez    r2, .idev_halt
+
+    ; Wait for reply (WaitPort returns message data directly)
+    load.q  r1, 232(r29)
+    syscall #SYS_WAIT_PORT             ; R1=type, R2=data0, R3=err
+    load.q  r29, (sp)
+    bnez    r3, .idev_halt
+    move.l  r28, #HWRES_MSG_GRANTED
+    bne     r1, r28, .idev_halt        ; broker denied → halt
+
     ; ===== SYS_MAP_IO(R1=0xF0, R2=1) =====
-    ; Maps the chip register page (terminal/input/video MMIO).
+    ; Now we hold a CHIP grant; the kernel grant check will succeed.
     move.l  r1, #TERM_IO_PAGE
     move.l  r2, #1
     syscall #SYS_MAP_IO
@@ -6118,19 +7261,321 @@ prog_input_device_data:
     ds.b    4                           ; 176: last_mouse_buttons
     ds.b    4                           ; 180: event_seq
     ds.b    8                           ; 184: pad
+    ; --- M12.5 additions ---
+    dc.b    "hardware.resource", 0      ; 192: broker port name
+    ds.b    14                          ; pad to offset 224 (192+32)
+    ds.b    8                           ; 224: hwres_port
+    ds.b    8                           ; 232: reply_port
 prog_input_device_data_end:
     align   8
 prog_input_device_end:
 
 ; ---------------------------------------------------------------------------
-; graphics.library — fullscreen RGBA32 display service (M11)
+; hardware.resource — user-space MMIO arbiter (M12.5)
 ; ---------------------------------------------------------------------------
-; Maps the chip register page (0xF0) and the 640x480x4 VRAM range
-; (PPNs 0x100..0x22B = 300 pages = 1228800 bytes), creates the
+; The first user-space service to claim broker identity via SYS_HWRES_OP /
+; HWRES_BECOME. Owns the policy mapping from 4-byte region tags ('CHIP',
+; 'VRAM') to physical PPN ranges. Clients send HWRES_MSG_REQUEST naming a
+; tag and their own task ID; the broker resolves the tag, calls
+; SYS_HWRES_OP / HWRES_CREATE to write a grant row covering the right PPN
+; range for the requesting task, and replies with HWRES_MSG_GRANTED whose
+; data0 carries (ppn_base<<32) | page_count so the client can call
+; SYS_MAP_IO with values it learned from the broker (no PPN literals
+; baked into clients).
+;
+; Data layout (offsets relative to data page):
+;   0..31:  port name "hardware.resource\0..." (32 bytes; PORT_NAME_LEN=32)
+;   32..95: banner "hardware.resource ONLINE [Task " (variable, padded)
+;   96..127: pad
+;   128:    task_id (8 bytes)
+;   136:    hwres_port (8 bytes)
+;   144:    pad
+
+prog_hwres:
+    dc.l    IMG_MAGIC_LO, IMG_MAGIC_HI
+    dc.l    prog_hwres_code_end - prog_hwres_code
+    dc.l    prog_hwres_data_end - prog_hwres_data
+    dc.l    0
+    ds.b    12
+prog_hwres_code:
+
+    ; ===== Preamble: compute data page base (preempt-safe) =====
+    sub     sp, sp, #16
+.hwres_preamble:
+    move.l  r1, #SYSINFO_CURRENT_TASK
+    syscall #SYS_GET_SYS_INFO
+    store.q r1, 8(sp)
+    move.l  r1, #SYSINFO_CURRENT_TASK
+    syscall #SYS_GET_SYS_INFO
+    load.q  r28, 8(sp)
+    bne     r1, r28, .hwres_preamble
+    move.l  r28, #USER_SLOT_STRIDE
+    mulu    r28, r1, r28
+    move.l  r29, #USER_DATA_BASE
+    add     r29, r29, r28
+    store.q r29, (sp)
+    load.q  r1, 8(sp)
+    move.l  r28, #USER_SLOT_STRIDE
+    mulu    r28, r1, r28
+    move.l  r29, #USER_DATA_BASE
+    add     r29, r29, r28
+    load.q  r28, (sp)
+    bne     r29, r28, .hwres_preamble
+    store.q r29, (sp)
+    load.q  r1, 8(sp)
+    store.q r1, 128(r29)               ; data[128] = task_id
+
+    ; ===== SYS_HWRES_OP / HWRES_BECOME =====
+    move.l  r6, #HWRES_BECOME
+    syscall #SYS_HWRES_OP              ; R2 = err
+    load.q  r29, (sp)
+    bnez    r2, .hwres_halt            ; can't claim broker → give up
+
+    ; ===== CreatePort("hardware.resource", PF_PUBLIC) =====
+    move.q  r1, r29                    ; r1 = &data[0] = port name
+    move.l  r2, #PF_PUBLIC
+    syscall #SYS_CREATE_PORT
+    load.q  r29, (sp)
+    bnez    r2, .hwres_halt
+    store.q r1, 136(r29)               ; data[136] = hwres_port
+
+    ; ===== Print banner =====
+    add     r20, r29, #32              ; r20 = &data[32] = banner
+.hwres_ban_loop:
+    load.b  r1, (r20)
+    beqz    r1, .hwres_ban_id
+    store.q r20, 8(sp)
+    syscall #SYS_DEBUG_PUTCHAR
+    load.q  r29, (sp)
+    load.q  r20, 8(sp)
+    add     r20, r20, #1
+    bra     .hwres_ban_loop
+.hwres_ban_id:
+    load.q  r29, (sp)
+    load.q  r1, 128(r29)
+    add     r1, r1, #0x30              ; '0' + task_id
+    syscall #SYS_DEBUG_PUTCHAR
+    move.l  r1, #0x5D                  ; ']'
+    syscall #SYS_DEBUG_PUTCHAR
+    move.l  r1, #0x0D
+    syscall #SYS_DEBUG_PUTCHAR
+    move.l  r1, #0x0A
+    syscall #SYS_DEBUG_PUTCHAR
+
+    ; ===== Main loop: WaitPort + dispatch =====
+    ; SYS_WAIT_PORT atomically blocks AND fetches the message — it returns
+    ; (R1=type, R2=data0, R3=err, R4=data1, R5=reply_port, R6=share_handle,
+    ; R7=sender_task_id). M12.5 enriches the return with R7 so the broker
+    ; can validate the sender against its trust list without trusting
+    ; client-supplied identifiers.
+.hwres_main:
+    load.q  r29, (sp)
+    load.q  r1, 136(r29)               ; hwres_port
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+    bnez    r3, .hwres_main            ; spurious wake — go back to wait
+
+    ; r1 = msg type, r2 = tag, r5 = reply_port, r7 = sender (kernel-trusted)
+    move.q  r24, r2                    ; r24 = tag
+    move.q  r25, r7                    ; r25 = sender task ID (TRUSTED)
+    move.q  r26, r5                    ; r26 = reply_port
+
+    move.l  r28, #HWRES_MSG_REQUEST
+    bne     r1, r28, .hwres_main       ; ignore unknown message types
+
+    ; ===== Sanity-check sender task ID =====
+    move.l  r28, #MAX_TASKS
+    bge     r25, r28, .hwres_deny
+    bltz    r25, .hwres_deny
+
+    ; ===== M12.5 v2 hardening: scrub stale owner slots =====
+    ; Walk the broker's per-tag owner lists and clear any slot whose task
+    ; has exited (kernel reports state == TASK_FREE). Without this scrub a
+    ; recycled task slot would be silently regranted (because the slot ID
+    ; matches the dead owner) or a different task would be blocked forever
+    ; (because the dead owner still occupies the slot). The kernel grant
+    ; chain and KD_HWRES_TASK are cleaned up by kill_task_cleanup, but
+    ; the broker's private owner state isn't visible to the kernel.
+    ;
+    ; CHIP slots: data[144..147] (4 entries)
+    ; VRAM slot:  data[148]      (1 entry)
+    add     r17, r29, #144              ; r17 = scan cursor
+    move.l  r18, #5                     ; total slots to scrub (4 CHIP + 1 VRAM)
+.hwres_scrub:
+    beqz    r18, .hwres_scrub_done
+    load.b  r14, (r17)
+    move.l  r15, #0xFF
+    beq     r14, r15, .hwres_scrub_next
+    ; Slot is occupied — query liveness via HWRES_TASK_ALIVE.
+    move.q  r1, r14                     ; task_id to query
+    move.l  r6, #HWRES_TASK_ALIVE
+    push    r17
+    push    r18
+    push    r24
+    push    r25
+    push    r26
+    push    r29
+    syscall #SYS_HWRES_OP               ; R1 = 1 (alive) or 0 (dead), R2 = err
+    pop     r29
+    pop     r26
+    pop     r25
+    pop     r24
+    pop     r18
+    pop     r17
+    bnez    r1, .hwres_scrub_next       ; alive — leave as-is
+    move.l  r14, #0xFF
+    store.b r14, (r17)                  ; dead — reclaim slot
+.hwres_scrub_next:
+    add     r17, r17, #1
+    sub     r18, r18, #1
+    bra     .hwres_scrub
+.hwres_scrub_done:
+
+    ; ===== Resolve tag in policy table =====
+    ; M12.5 trust gating: each tag has a per-tag owner list. Sender either
+    ; finds itself already in the list (idempotent re-grant) or claims a
+    ; FREE slot. List full → DENY. Stale slots have already been reclaimed
+    ; by the scrub pass above so dead owners do not block live requesters.
+    ;
+    ; CHIP owners: data[144..147] (4 slots; chip MMIO is shared)
+    ; VRAM owner:  data[148]      (1 slot; framebuffer is monopolized)
+    move.l  r28, #HWRES_TAG_CHIP
+    beq     r24, r28, .hwres_grant_chip
+    move.l  r28, #HWRES_TAG_VRAM
+    beq     r24, r28, .hwres_grant_vram
+    bra     .hwres_deny
+
+.hwres_grant_chip:
+    ; CHIP is a SHARED resource — chip MMIO holds terminal/input/video
+    ; registers all in the same physical page, so multiple services
+    ; legitimately need access (input.device + graphics.library both
+    ; want it). The broker keeps a small fixed-size owner list at
+    ; data[144..147] (4 slots, 0xFF = unclaimed). A request is granted
+    ; if the sender is already in the list (idempotent re-grant) OR
+    ; if there is a free slot to record them. Otherwise DENY.
+    add     r28, r29, #144              ; r28 = &owner_list[0]
+    move.l  r27, #4                     ; list size
+    move.q  r17, r28                    ; r17 = scan cursor
+    move.q  r16, r0                     ; r16 = first free slot ptr (0 = none)
+.hwres_chip_scan:
+    beqz    r27, .hwres_chip_check_free
+    load.b  r15, (r17)
+    move.l  r14, #0xFF
+    beq     r15, r14, .hwres_chip_remember_free
+    beq     r15, r25, .hwres_chip_set_range  ; sender already in list
+    bra     .hwres_chip_scan_next
+.hwres_chip_remember_free:
+    bnez    r16, .hwres_chip_scan_next
+    move.q  r16, r17
+.hwres_chip_scan_next:
+    add     r17, r17, #1
+    sub     r27, r27, #1
+    bra     .hwres_chip_scan
+.hwres_chip_check_free:
+    beqz    r16, .hwres_deny           ; list full → deny
+    store.b r25, (r16)                  ; claim free slot
+.hwres_chip_set_range:
+    move.l  r17, #0xF0                 ; r17 = ppn_lo
+    move.l  r18, #0xF0                 ; r18 = ppn_hi
+    move.l  r19, #1                    ; r19 = count
+    bra     .hwres_do_create
+
+.hwres_grant_vram:
+    ; VRAM is a MONOPOLY resource — only one task may own the framebuffer
+    ; (M12 single-display-client rule). One owner slot at data[148].
+    load.b  r28, 148(r29)              ; r28 = current VRAM owner
+    move.l  r27, #0xFF
+    beq     r28, r27, .hwres_vram_claim
+    bne     r28, r25, .hwres_deny
+    bra     .hwres_vram_set_range
+.hwres_vram_claim:
+    store.b r25, 148(r29)
+.hwres_vram_set_range:
+    move.l  r17, #0x100                ; r17 = ppn_lo
+    move.l  r18, #0x2D5                ; r18 = ppn_hi (0x100 + 470 - 1)
+    move.l  r19, #470                  ; r19 = count
+    bra     .hwres_do_create
+
+.hwres_do_create:
+    ; SYS_HWRES_OP / HWRES_CREATE for the validated sender task with the
+    ; resolved range. r25 is the kernel-supplied sender ID — never the
+    ; client-supplied data1, which is now ignored entirely.
+    move.l  r6, #HWRES_CREATE
+    move.q  r1, r25                    ; r1 = target task_id (trusted)
+    move.q  r2, r24                    ; r2 = tag
+    move.q  r3, r17                    ; r3 = ppn_lo
+    move.q  r4, r18                    ; r4 = ppn_hi
+    syscall #SYS_HWRES_OP              ; R2 = err
+    bnez    r2, .hwres_deny            ; if create failed, deny
+
+    ; Reply HWRES_MSG_GRANTED with payload (ppn_lo<<32) | count.
+    ; The client uses these values for SYS_MAP_IO.
+    move.q  r3, r17
+    lsl     r3, r3, #32
+    or      r3, r3, r19                ; r3 = (ppn_lo<<32) | count
+    move.q  r1, r26                    ; reply_port
+    move.l  r2, #HWRES_MSG_GRANTED
+    move.q  r4, r0                     ; data1 unused
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    syscall #SYS_REPLY_MSG
+    bra     .hwres_main
+
+.hwres_deny:
+    move.q  r1, r26                    ; reply_port
+    move.l  r2, #HWRES_MSG_DENIED
+    move.q  r3, r0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    syscall #SYS_REPLY_MSG
+    bra     .hwres_main
+
+.hwres_halt:
+    syscall #SYS_YIELD
+    bra     .hwres_halt
+prog_hwres_code_end:
+
+prog_hwres_data:
+    dc.b    "hardware.resource", 0     ; 0..17 (port name, padded below)
+    ds.b    14                          ; 18..31 (pad to PORT_NAME_LEN=32)
+    dc.b    "hardware.resource ONLINE [Task ", 0   ; 32..63 (banner)
+    ds.b    32                          ; 64..95 (pad)
+    ds.b    32                          ; 96..127 (pad to data[128])
+    ds.b    8                           ; 128: task_id
+    ds.b    8                           ; 136: hwres_port
+    ; --- M12.5 trust gating: per-tag owner slots ---
+    ; 144..147: CHIP owner list (4 slots, 0xFF = unclaimed). CHIP is shared
+    ;           because chip MMIO holds terminal/input/video registers all
+    ;           in one physical page; multiple services need it.
+    ; 148:      VRAM owner (1 slot, 0xFF = unclaimed). VRAM is a monopoly —
+    ;           only one task may own the framebuffer per the M12
+    ;           single-display-client rule.
+    ; All slots default to 0xFF because 0 is a valid task ID (console.handler)
+    ; and the broker must distinguish "unclaimed" from "owned by task 0".
+    dc.b    0xFF, 0xFF, 0xFF, 0xFF      ; 144..147: CHIP owner list
+    dc.b    0xFF                        ; 148: VRAM owner
+    ds.b    11                          ; 149..159: pad
+prog_hwres_data_end:
+    align   8
+prog_hwres_end:
+
+; ---------------------------------------------------------------------------
+; graphics.library — fullscreen RGBA32 display service (M11, M12: 800x600)
+; ---------------------------------------------------------------------------
+; Maps the chip register page (0xF0) and the 800x600x4 VRAM range
+; (PPNs 0x100..0x2D5 = 470 pages = 1925120 bytes), creates the
 ; "graphics.library" port, then services requests synchronously.
 ;
-; Single surface only for M11 (USER_DYN_PAGES=768 doesn't fit two persistent
-; surface mappings + persistent VRAM). Client double-buffering deferred to M12.
+; M12: bumped from 640x480 to 800x600 to match the chip's DEFAULT_VIDEO_MODE
+; and give clients more screen real estate. The chip is left in mode 1 the
+; whole time (the chip's DEFAULT_VIDEO_MODE = MODE_800x600), so a kernel-side
+; VideoTerminal that started in 800x600 keeps the same framebuffer dimensions.
+; The protocol still allows clients to request other modes — graphics.library
+; just defaults to 800x600 in M12 because no other mode is enumerated yet.
+;
+; Single surface only (USER_DYN_PAGES=768 doesn't fit two persistent surface
+; mappings + persistent VRAM). Client double-buffering remains deferred.
 ;
 ; Protocol: see iexec.inc GFX_* constants.
 prog_graphics_library:
@@ -6167,6 +7612,64 @@ prog_gfxlib_code:
     load.q  r1, 8(sp)
     store.q r1, 128(r29)               ; data[128] = task_id
 
+    ; ===== M12.5: request CHIP and VRAM grants from hardware.resource =====
+    ; Both SYS_MAP_IO calls below are now gated by the kernel grant table.
+    ; Spin on FindPort until hardware.resource is up, then send two
+    ; HWRES_MSG_REQUEST messages, then call SYS_MAP_IO twice.
+.gfx_find_hwres:
+    add     r1, r29, #256              ; r1 = "hardware.resource" string (data offset 256)
+    syscall #SYS_FIND_PORT
+    bnez    r2, .gfx_hwres_retry
+    bra     .gfx_have_hwres
+.gfx_hwres_retry:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .gfx_find_hwres
+.gfx_have_hwres:
+    store.q r1, 288(r29)               ; data[288] = hwres_port
+
+    ; Create anonymous reply port (reused for both requests)
+    move.q  r1, r0
+    move.q  r2, r0
+    syscall #SYS_CREATE_PORT
+    load.q  r29, (sp)
+    bnez    r2, .gfx_halt
+    store.q r1, 296(r29)               ; data[296] = reply_port
+
+    ; --- Request CHIP grant ---
+    load.q  r1, 288(r29)
+    move.l  r2, #HWRES_MSG_REQUEST
+    move.l  r3, #HWRES_TAG_CHIP
+    load.q  r4, 128(r29)
+    load.q  r5, 296(r29)
+    move.q  r6, r0
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    bnez    r2, .gfx_halt
+    load.q  r1, 296(r29)
+    syscall #SYS_WAIT_PORT             ; R1=type, R3=err (returns msg data)
+    load.q  r29, (sp)
+    bnez    r3, .gfx_halt
+    move.l  r28, #HWRES_MSG_GRANTED
+    bne     r1, r28, .gfx_halt
+
+    ; --- Request VRAM grant ---
+    load.q  r1, 288(r29)
+    move.l  r2, #HWRES_MSG_REQUEST
+    move.l  r3, #HWRES_TAG_VRAM
+    load.q  r4, 128(r29)
+    load.q  r5, 296(r29)
+    move.q  r6, r0
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    bnez    r2, .gfx_halt
+    load.q  r1, 296(r29)
+    syscall #SYS_WAIT_PORT             ; R1=type, R3=err
+    load.q  r29, (sp)
+    bnez    r3, .gfx_halt
+    move.l  r28, #HWRES_MSG_GRANTED
+    bne     r1, r28, .gfx_halt
+
     ; ===== SYS_MAP_IO chip register page =====
     move.l  r1, #TERM_IO_PAGE
     move.l  r2, #1
@@ -6175,9 +7678,10 @@ prog_gfxlib_code:
     bnez    r2, .gfx_halt
     store.q r1, 152(r29)               ; data[152] = chip_mmio_va
 
-    ; ===== SYS_MAP_IO VRAM (PPN 0x100, 300 pages = 640x480x4) =====
+    ; ===== SYS_MAP_IO VRAM (PPN 0x100, 470 pages = 800x600x4 = 1920000 bytes
+    ; → 469 pages, rounded up to 470) =====
     move.l  r1, #0x100
-    move.l  r2, #300
+    move.l  r2, #470
     syscall #SYS_MAP_IO
     load.q  r29, (sp)
     bnez    r2, .gfx_halt
@@ -6192,7 +7696,7 @@ prog_gfxlib_code:
     store.q r1, 144(r29)               ; data[144] = port_id
 
     ; ===== Print banner via SYS_DEBUG_PUTCHAR =====
-    add     r20, r29, #32              ; r20 = &data[32] = banner
+    add     r20, r29, #48              ; r20 = &data[48] = banner (M12: shifted from 32 after PORT_NAME_LEN bump)
 .gfx_ban_loop:
     load.b  r1, (r20)
     beqz    r1, .gfx_ban_id
@@ -6276,20 +7780,21 @@ prog_gfxlib_code:
     move.q  r4, r0
     bra     .gfx_reply
 
-    ; ----- GET_MODE_INFO: data0=(640<<16)|480, data1=(1<<32)|2560 -----
+    ; ----- GET_MODE_INFO: data0=(800<<16)|600, data1=(1<<32)|3200 -----
+    ; M12: bumped from 640x480 to 800x600. Stride = 800*4 = 3200 bytes.
 .gfx_h_get_mode:
     load.q  r14, 208(r29)              ; adapter_id
     bnez    r14, .gfx_reply_bad_handle
     load.q  r14, 216(r29)              ; mode_id
     bnez    r14, .gfx_reply_bad_handle
-    ; data0 = (640<<16) | 480
-    move.l  r3, #640
+    ; data0 = (800<<16) | 600
+    move.l  r3, #800
     lsl     r3, r3, #16
-    or      r3, r3, #480
-    ; data1 = (FMT_RGBA32 << 32) | 2560
+    or      r3, r3, #600
+    ; data1 = (FMT_RGBA32 << 32) | 3200
     move.l  r4, #GFX_FMT_RGBA32
     lsl     r4, r4, #32
-    or      r4, r4, #2560
+    or      r4, r4, #3200
     move.l  r2, #GFX_ERR_OK
     bra     .gfx_reply
 
@@ -6301,10 +7806,15 @@ prog_gfxlib_code:
     bnez    r14, .gfx_reply_bad_mode
     load.b  r14, 168(r29)              ; display_open
     bnez    r14, .gfx_reply_busy
-    ; Set VIDEO_MODE = MODE_640x480 (= 0)
+    ; M12: write VIDEO_MODE = 1 (MODE_800x600 = chip's DEFAULT_VIDEO_MODE).
+    ; This is a no-op when the chip is already in 800x600 (the chip skips
+    ; reallocating its frontBuffer when len matches), so VideoTerminal's
+    ; cached pixel dimensions stay valid. The protocol still allows other
+    ; modes — graphics.library just defaults to the chip's native mode.
     load.q  r15, 152(r29)              ; chip_mmio_va
     add     r16, r15, #4               ; VIDEO_MODE
-    store.l r0, (r16)
+    move.l  r17, #1                    ; MODE_800x600
+    store.l r17, (r16)
     ; Set VIDEO_CTRL = 1 to ENABLE the chip. Writing 0 to VIDEO_CTRL
     ; DISABLES the chip per video_chip.go:2653 (the constant name
     ; CTRL_DISABLE_FLAG=0 is misleading — non-zero enables, zero disables).
@@ -6383,10 +7893,29 @@ prog_gfxlib_code:
     bra     .gfx_reply
 
     ; ----- UNREGISTER_SURFACE -----
+    ; M12 fix: also FREE_MEM the mapped client surface, otherwise the
+    ; shared object's refcount stays > 0 forever and the backing pages
+    ; never get released — even after the client side calls FreeMem.
+    ; The original M11 path just cleared in_use and leaked the mapping.
 .gfx_h_unreg_surf:
     load.q  r14, 208(r29)              ; surface_handle
     move.l  r28, #1
     bne     r14, r28, .gfx_reply_bad_handle
+    load.b  r14, 176(r29)              ; surface_in_use
+    beqz    r14, .gfx_unreg_skip_free  ; nothing mapped — defensive
+    ; FreeMem(surface_mapped_va, stride * height)
+    load.l  r14, 252(r29)              ; stride bytes
+    load.l  r15, 244(r29)              ; height
+    mulu    r14, r14, r15
+    load.q  r1, 184(r29)               ; surface_mapped_va
+    move.q  r2, r14
+    syscall #SYS_FREE_MEM
+    load.q  r29, (sp)
+    ; Best-effort: ignore FreeMem errors. Clear cached fields so a future
+    ; REGISTER_SURFACE starts from a clean slate.
+    store.q r0, 184(r29)               ; surface_mapped_va = 0
+    store.l r0, 180(r29)               ; surface_share_handle = 0
+.gfx_unreg_skip_free:
     store.b r0, 176(r29)               ; clear in_use
     move.l  r2, #GFX_ERR_OK
     move.q  r3, r0
@@ -6462,12 +7991,15 @@ prog_gfxlib_code_end:
 prog_gfxlib_data:
     ; offset 0:  "console.handler\0" (16) — unused, kept for convention
     dc.b    "console.handler", 0
-    ; offset 16: port name "graphics.library" (exactly 16, NO trailing null)
-    dc.b    "graphics.library"
-    ; offset 32: banner "graphics.library ONLINE [Task " + null + pad to 64
+    ; offset 16: port name "graphics.library" + null (M12: PORT_NAME_LEN bumped
+    ; from 16 to 32, so the kernel reads up to 32 bytes — the name MUST be
+    ; null-terminated within the first 32 bytes from this address).
+    dc.b    "graphics.library", 0
+    ds.b    15                          ; pad to offset 48
+    ; offset 48: banner "graphics.library ONLINE [Task " + null + pad to 80
     dc.b    "graphics.library ONLINE [Task ", 0
-    ds.b    1                           ; pad to offset 64
-    ds.b    64                          ; pad to offset 128
+    ds.b    1                           ; pad to offset 80
+    ds.b    48                          ; pad to offset 128
     ds.b    8                           ; 128: task_id
     ds.b    8                           ; 136: (unused)
     ds.b    8                           ; 144: port_id
@@ -6487,6 +8019,11 @@ prog_gfxlib_data:
     ds.b    4                           ; 244: surface_height
     ds.b    4                           ; 248: surface_format
     ds.b    4                           ; 252: surface_stride
+    ; --- M12.5 additions ---
+    dc.b    "hardware.resource", 0      ; 256: broker port name
+    ds.b    14                          ; pad to offset 288 (256+32)
+    ds.b    8                           ; 288: hwres_port
+    ds.b    8                           ; 296: reply_port
 prog_gfxlib_data_end:
     align   8
 prog_gfxlib_end:
@@ -6547,9 +8084,9 @@ prog_gfxdemo_code:
     ; ===== OpenLibrary("input.device") with retry =====
 .gd_open_in:
     load.q  r29, (sp)
-    add     r1, r29, #32               ; "input.device"
+    add     r1, r29, #48               ; "input.device" (M12: shifted from 32 after PORT_NAME_LEN bump)
     move.l  r2, #0
-    syscall #SYS_FIND_PORT  
+    syscall #SYS_FIND_PORT
     load.q  r29, (sp)
     beqz    r2, .gd_in_ok
     syscall #SYS_YIELD
@@ -6557,8 +8094,10 @@ prog_gfxdemo_code:
 .gd_in_ok:
     store.q r1, 144(r29)               ; data[144] = input_port
 
-    ; ===== AllocMem(1228800, MEMF_PUBLIC|MEMF_CLEAR) =====
-    move.l  r1, #1228800
+    ; ===== AllocMem(1920000, MEMF_PUBLIC|MEMF_CLEAR) — 800x600 RGBA32 =====
+    ; M12: bumped from 1228800 (640x480) to 1920000 (800x600) to match
+    ; graphics.library's M12 default mode.
+    move.l  r1, #1920000
     move.l  r2, #0x10001               ; MEMF_PUBLIC | MEMF_CLEAR
     syscall #SYS_ALLOC_MEM             ; R1=va R2=err R3=share_handle
     load.q  r29, (sp)
@@ -6601,19 +8140,19 @@ prog_gfxdemo_code:
     store.q r2, 184(r29)               ; data[184] = display_handle
 
     ; ===== Send GFX_REGISTER_SURFACE =====
-    ; data1 = (640<<48) | (480<<32) | (1<<16) | 2560
+    ; data1 = (800<<48) | (600<<32) | (1<<16) | 3200 — M12: 800x600 stride 3200
     load.q  r1, 136(r29)
     move.l  r2, #GFX_REGISTER_SURFACE
     load.q  r3, 184(r29)               ; data0 = display_handle
-    move.q  r4, #640
+    move.q  r4, #800
     lsl     r4, r4, #48
-    move.q  r14, #480
+    move.q  r14, #600
     lsl     r14, r14, #32
     or      r4, r4, r14
     move.q  r14, #1                    ; format
     lsl     r14, r14, #16
     or      r4, r4, r14
-    or      r4, r4, #2560              ; stride bytes
+    or      r4, r4, #3200              ; stride bytes (800 * 4 = 3200)
     load.q  r5, 168(r29)               ; reply_port
     load.l  r6, 160(r29)               ; share_handle
     syscall #SYS_PUT_MSG
@@ -6660,10 +8199,12 @@ prog_gfxdemo_code:
 .gd_frame:
     load.q  r29, (sp)
 
-    ; --- Fill backdrop (dark navy 0xFF202060) ---
+    ; --- Fill backdrop (dark navy) ---
+    ; M12: bumped to 800x600 = 1920000 bytes. Color is 0xFF602020 in RGBA byte
+    ; order (LE bytes 20,20,60,FF → R=0x20 G=0x20 B=0x60 = dark navy).
     load.q  r14, 152(r29)              ; surface_va
-    move.l  r15, #1228800
-    move.l  r16, #0xFF202060
+    move.l  r15, #1920000
+    move.l  r16, #0xFF602020
 .gd_fill_bg:
     beqz    r15, .gd_fill_bg_done
     store.l r16, (r14)
@@ -6678,7 +8219,7 @@ prog_gfxdemo_code:
     load.l  r16, 212(r29)              ; rect_y
     move.l  r17, #0xFFFFFFFF           ; white
     ; pixel addr = surface + y*2560 + x*4
-    move.l  r18, #2560
+    move.l  r18, #3200
     mulu    r19, r16, r18
     lsl     r20, r15, #2
     add     r19, r19, r20
@@ -6695,7 +8236,7 @@ prog_gfxdemo_code:
     sub     r21, r21, #1
     bra     .gd_rect_col
 .gd_rect_row_done:
-    add     r19, r19, #2560            ; next row
+    add     r19, r19, #3200            ; next row
     sub     r20, r20, #1
     bra     .gd_rect_row
 .gd_rect_done:
@@ -6704,23 +8245,23 @@ prog_gfxdemo_code:
     load.q  r14, 152(r29)
     load.l  r15, 224(r29)              ; mouse_x
     load.l  r16, 228(r29)              ; mouse_y
-    ; Clamp mouse to surface bounds [0, 624] / [0, 464]
-    move.l  r28, #624
+    ; Clamp mouse to surface bounds [0, 784] / [0, 584] (M12: 800x600 - 16)
+    move.l  r28, #784
     ble     r15, r28, .gd_mp_x_ok
-    move.l  r15, #624
+    move.l  r15, #784
 .gd_mp_x_ok:
     bgez    r15, .gd_mp_x_pos
     move.l  r15, #0
 .gd_mp_x_pos:
-    move.l  r28, #464
+    move.l  r28, #584
     ble     r16, r28, .gd_mp_y_ok
-    move.l  r16, #464
+    move.l  r16, #584
 .gd_mp_y_ok:
     bgez    r16, .gd_mp_y_pos
     move.l  r16, #0
 .gd_mp_y_pos:
     move.l  r17, #0xFF00FF00           ; green
-    move.l  r18, #2560
+    move.l  r18, #3200
     mulu    r19, r16, r18
     lsl     r20, r15, #2
     add     r19, r19, r20
@@ -6737,7 +8278,7 @@ prog_gfxdemo_code:
     sub     r21, r21, #1
     bra     .gd_mp_col
 .gd_mp_row_done:
-    add     r19, r19, #2560
+    add     r19, r19, #3200
     sub     r20, r20, #1
     bra     .gd_mp_row
 .gd_mp_done:
@@ -6759,14 +8300,13 @@ prog_gfxdemo_code:
     move.l  r14, #1
     store.l r14, 200(r29)
 
-    ; --- Update bouncing rect: x += vx, bounce at [0, 608] ---
+    ; --- Update bouncing rect: x += vx, bounce at [0, 768] (M12: 800-32) ---
     load.l  r14, 208(r29)
     load.l  r15, 216(r29)
     add     r14, r14, r15
-    move.l  r28, #608
+    move.l  r28, #768
     ble     r14, r28, .gd_x_low_check
-    ; rect_x > 608: clamp + flip
-    move.l  r14, #608
+    move.l  r14, #768
     sub     r15, r0, r15
     bra     .gd_x_save
 .gd_x_low_check:
@@ -6780,9 +8320,9 @@ prog_gfxdemo_code:
     load.l  r14, 212(r29)
     load.l  r15, 220(r29)
     add     r14, r14, r15
-    move.l  r28, #448
+    move.l  r28, #568
     ble     r14, r28, .gd_y_low_check
-    move.l  r14, #448
+    move.l  r14, #568
     sub     r15, r0, r15
     bra     .gd_y_save
 .gd_y_low_check:
@@ -6886,10 +8426,16 @@ prog_gfxdemo_code_end:
 
 prog_gfxdemo_data:
     dc.b    "console.handler", 0
-    dc.b    "graphics.library"          ; offset 16, exactly 16 chars, NO trailing null
-    dc.b    "input.device", 0, 0, 0, 0  ; offset 32, padded to 16
-    dc.b    "GfxDemo M11", 0            ; offset 48
-    ds.b    4                           ; pad to 64
+    ; offset 16: "graphics.library" + null + pad to 32 (M12: needs null
+    ; terminator within the first PORT_NAME_LEN=32 bytes for FindPort)
+    dc.b    "graphics.library", 0
+    ds.b    15                          ; pad to offset 48
+    ; offset 48: "input.device" + null + pad to 32
+    dc.b    "input.device", 0
+    ds.b    19                          ; pad to offset 80
+    ; offset 80: "GfxDemo M11"
+    dc.b    "GfxDemo M11", 0            ; offset 80
+    ds.b    36                          ; pad to 128 (was 64)
     ds.b    64                          ; 64-127: padding
     ds.b    8                           ; 128: task_id
     ds.b    8                           ; 136: graphics_port
@@ -6911,6 +8457,1586 @@ prog_gfxdemo_data:
 prog_gfxdemo_data_end:
     align   8
 prog_gfxdemo_end:
+
+; ---------------------------------------------------------------------------
+; intuition.library — single-window compositor + IDCMP delivery (M12)
+; ---------------------------------------------------------------------------
+; intuition.library is the sole graphics.library client. On the FIRST
+; INTUITION_OPEN_WINDOW it lazily opens the display, allocates a fullscreen
+; screen surface, registers it with graphics.library, and subscribes to
+; input.device. From then on it composites the (single) window's backing
+; surface into the screen surface and routes input as IDCMP-* messages to
+; the window's idcmp_port. On CLOSE_WINDOW it tears down all of the above
+; and returns to text mode.
+;
+; Protocol: see iexec.inc INTUITION_* / IDCMP_* constants.
+; M12 ships single-window only — no z-order, no compositor overlap.
+;
+; Data layout:
+;   0:    "console.handler\0"  (16) — convention slot, unused
+;   16:   "intuition.library"  (16, exactly 16, NO null) — port name
+;   32:   "graphics.library"   (16, exactly 16, NO null) — for FindPort
+;   48:   "input.device", 0x00 (16) — for FindPort
+;   64:   "intuition.library ONLINE [Task " + null (32) → ends at 96
+;   96:   pad to 128 (32)
+;   128:  task_id              (8)
+;   136:  intuition_port       (8)  — public port
+;   144:  graphics_port        (8)  — cached after first FindPort
+;   152:  input_port           (8)  — cached after first FindPort
+;   160:  reply_port           (8)  — anonymous, sync replies
+;   168:  my_input_port        (8)  — anonymous, receives input events
+;   176:  display_open         (1)  — 0 = text mode, 1 = graphics mode
+;   177:  input_subscribed     (1)  — 1 if our INPUT_OPEN succeeded; close
+;                                     skips INPUT_CLOSE if 0 so we don't
+;                                     clobber another client's subscription
+;   178..183: pad                  (6)
+;   184:  display_handle       (8)  — graphics.library display handle
+;   192:  surface_handle       (8)  — graphics.library surface handle
+;   200:  screen_va            (8)  — own MEMF_PUBLIC screen buffer VA
+;   208:  screen_share         (8)  — (4) own surface share handle + pad
+;   216:  win_in_use           (8)  — (1) + pad (1=window open)
+;   224:  win_x                (4)  — window origin x (signed)
+;   228:  win_y                (4)  — window origin y (signed)
+;   232:  win_w                (4)  — window width
+;   236:  win_h                (4)  — window height
+;   240:  win_share            (8)  — (4) app buffer share handle + pad
+;   248:  win_mapped_va        (8)  — MapShared'd app buffer VA
+;   256:  idcmp_port           (8)  — owner's IDCMP delivery port
+;   264:  event_seq            (8)  — (4) monotonic seq + pad
+;   272:  msg_type             (8)  — saved message fields (scratch)
+;   280:  msg_data0            (8)
+;   288:  msg_data1            (8)
+;   296:  msg_reply            (8)
+;   304:  msg_share            (8)
+;   312:  pad                  (8)
+prog_intuition_library:
+    dc.l    IMG_MAGIC_LO, IMG_MAGIC_HI
+    dc.l    prog_intui_code_end - prog_intui_code
+    dc.l    prog_intui_data_end - prog_intui_data
+    dc.l    0
+    ds.b    12
+prog_intui_code:
+
+    ; ===== Preamble: compute data page base (preempt-safe) =====
+    ; M12 (Amiga borders / fillrect helper / extended compositor): the
+    ; intuition.library code section grew past 4096 bytes and now needs
+    ; 2 code pages. The loader places data at code_base + (code_pages+1)
+    ; * 4096 = code_base + 0x3000 for 2 code pages, NOT at USER_DATA_BASE
+    ; (which is code_base + 0x2000 — only correct for 1 code page).
+    ; This matches dos.library's 2-code-page preamble pattern.
+    sub     sp, sp, #16
+.intui_preamble:
+    move.l  r1, #SYSINFO_CURRENT_TASK
+    syscall #SYS_GET_SYS_INFO
+    store.q r1, 8(sp)
+    move.l  r1, #SYSINFO_CURRENT_TASK
+    syscall #SYS_GET_SYS_INFO
+    load.q  r28, 8(sp)
+    bne     r1, r28, .intui_preamble
+    move.l  r28, #USER_SLOT_STRIDE
+    mulu    r28, r1, r28
+    move.l  r29, #USER_CODE_BASE
+    add     r29, r29, r28
+    add     r29, r29, #0x3000          ; 2 code pages + 1 stack page = 3 pages
+    store.q r29, (sp)
+    load.q  r1, 8(sp)
+    move.l  r28, #USER_SLOT_STRIDE
+    mulu    r28, r1, r28
+    move.l  r29, #USER_CODE_BASE
+    add     r29, r29, r28
+    add     r29, r29, #0x3000
+    load.q  r28, (sp)
+    bne     r29, r28, .intui_preamble
+    store.q r29, (sp)
+    load.q  r1, 8(sp)
+    store.q r1, 128(r29)               ; data[128] = task_id
+
+    ; ===== CreatePort("intuition.library") =====
+    add     r1, r29, #320
+    move.l  r2, #PF_PUBLIC
+    syscall #SYS_CREATE_PORT
+    load.q  r29, (sp)
+    bnez    r2, .intui_halt
+    store.q r1, 136(r29)               ; data[136] = intuition_port
+
+    ; ===== CreatePort(NULL) → reply_port (anonymous) =====
+    move.q  r1, r0
+    move.l  r2, #0
+    syscall #SYS_CREATE_PORT
+    load.q  r29, (sp)
+    bnez    r2, .intui_halt
+    store.q r1, 160(r29)               ; data[160] = reply_port
+
+    ; ===== CreatePort(NULL) → my_input_port (anonymous) =====
+    move.q  r1, r0
+    move.l  r2, #0
+    syscall #SYS_CREATE_PORT
+    load.q  r29, (sp)
+    bnez    r2, .intui_halt
+    store.q r1, 168(r29)               ; data[168] = my_input_port
+
+    ; ===== Print banner =====
+    add     r20, r29, #416             ; r20 = &data[416] = banner
+.intui_ban_loop:
+    load.b  r1, (r20)
+    beqz    r1, .intui_ban_id
+    store.q r20, 8(sp)
+    syscall #SYS_DEBUG_PUTCHAR
+    load.q  r29, (sp)
+    load.q  r20, 8(sp)
+    add     r20, r20, #1
+    bra     .intui_ban_loop
+.intui_ban_id:
+    load.q  r29, (sp)
+    load.q  r1, 128(r29)
+    add     r1, r1, #0x30
+    syscall #SYS_DEBUG_PUTCHAR
+    move.l  r1, #0x5D                  ; ']'
+    syscall #SYS_DEBUG_PUTCHAR
+    move.l  r1, #0x0D
+    syscall #SYS_DEBUG_PUTCHAR
+    move.l  r1, #0x0A
+    syscall #SYS_DEBUG_PUTCHAR
+
+    ; ===== Main loop =====
+.intui_main:
+    load.q  r29, (sp)
+
+    ; --- Try to dequeue an intuition.library control message ---
+    load.q  r1, 136(r29)               ; intuition_port
+    syscall #SYS_GET_MSG
+    bnez    r3, .intui_poll_input      ; ERR_AGAIN → no msg
+
+    ; Save fields
+    load.q  r29, (sp)
+    store.q r1, 272(r29)               ; type
+    store.q r2, 280(r29)               ; data0
+    store.q r4, 288(r29)               ; data1
+    store.q r5, 296(r29)               ; reply_port
+    store.q r6, 304(r29)               ; share_handle
+
+    move.l  r28, #INTUITION_OPEN_WINDOW
+    beq     r1, r28, .intui_do_open
+    move.l  r28, #INTUITION_DAMAGE
+    beq     r1, r28, .intui_do_damage
+    move.l  r28, #INTUITION_CLOSE_WINDOW
+    beq     r1, r28, .intui_do_close
+    bra     .intui_reply_badarg
+
+    ; ----- OPEN_WINDOW -----
+.intui_do_open:
+    load.b  r14, 216(r29)              ; win_in_use
+    bnez    r14, .intui_reply_busy
+
+    ; Decode geometry from saved data0: (w<<48)|(h<<32)|(x<<16)|y
+    load.q  r14, 280(r29)
+    move.q  r15, r14
+    lsr     r15, r15, #48
+    and     r15, r15, #0xFFFF
+    store.l r15, 232(r29)              ; win_w
+    move.q  r15, r14
+    lsr     r15, r15, #32
+    and     r15, r15, #0xFFFF
+    store.l r15, 236(r29)              ; win_h
+    move.q  r15, r14
+    lsr     r15, r15, #16
+    and     r15, r15, #0xFFFF
+    store.l r15, 224(r29)              ; win_x
+    move.q  r15, r14
+    and     r15, r15, #0xFFFF
+    store.l r15, 228(r29)              ; win_y
+
+    ; ----- Security: bounds-check the rect against the 800x600 screen -----
+    ; The DAMAGE handler blits win_w*win_h*4 bytes from win_mapped_va into
+    ; screen_va + win_y*3200 + win_x*4. Without this check a malicious
+    ; client could supply a rect that walks the destination cursor past
+    ; the end of the 1.92 MB screen surface and clobber whatever sits in
+    ; intuition.library's address space after it. Reject any geometry
+    ; that doesn't lie strictly inside the 800x600 frame, or that has a
+    ; zero dimension. Values are already 16-bit unsigned (masked above).
+    load.l  r14, 232(r29)              ; win_w
+    beqz    r14, .intui_reply_badarg
+    move.l  r28, #800
+    bgt     r14, r28, .intui_reply_badarg
+    load.l  r15, 224(r29)              ; win_x
+    add     r14, r14, r15              ; r14 = win_x + win_w
+    bgt     r14, r28, .intui_reply_badarg
+    load.l  r14, 236(r29)              ; win_h
+    beqz    r14, .intui_reply_badarg
+    move.l  r28, #600
+    bgt     r14, r28, .intui_reply_badarg
+    load.l  r15, 228(r29)              ; win_y
+    add     r14, r14, r15              ; r14 = win_y + win_h
+    bgt     r14, r28, .intui_reply_badarg
+
+    ; idcmp_port = saved data1
+    load.q  r14, 288(r29)
+    store.q r14, 256(r29)
+
+    ; ----- Lazy display open: only on first OPEN_WINDOW -----
+    load.b  r14, 176(r29)              ; display_open
+    bnez    r14, .intui_skip_display_init
+
+    ; FindPort("graphics.library")
+.intui_findgfx:
+    load.q  r29, (sp)
+    add     r1, r29, #352              ; "graphics.library"
+    move.l  r2, #0
+    syscall #SYS_FIND_PORT
+    load.q  r29, (sp)
+    beqz    r2, .intui_findgfx_ok
+    syscall #SYS_YIELD
+    bra     .intui_findgfx
+.intui_findgfx_ok:
+    store.q r1, 144(r29)               ; graphics_port
+
+    ; FindPort("input.device")
+.intui_findin:
+    load.q  r29, (sp)
+    add     r1, r29, #384              ; "input.device"
+    move.l  r2, #0
+    syscall #SYS_FIND_PORT
+    load.q  r29, (sp)
+    beqz    r2, .intui_findin_ok
+    syscall #SYS_YIELD
+    bra     .intui_findin
+.intui_findin_ok:
+    store.q r1, 152(r29)               ; input_port
+
+    ; AllocMem(1920000, MEMF_PUBLIC|MEMF_CLEAR) — 800x600 RGBA32 screen surface
+    ; (M12: bumped from 1228800 / 640x480 to 1920000 / 800x600 to give clients
+    ; more screen real estate. Stride = 800*4 = 3200.)
+    move.l  r1, #1920000
+    move.l  r2, #0x10001
+    syscall #SYS_ALLOC_MEM             ; R1=va R2=err R3=share
+    load.q  r29, (sp)
+    bnez    r2, .intui_reply_nomem
+    store.q r1, 200(r29)               ; screen_va
+    store.l r3, 208(r29)               ; screen_share
+
+    ; M12 redesign: fill the entire 800x600 screen surface with the
+    ; AmigaOS 3.9 / ReAction prefs grey (COL_SCREEN_BG = 0xFFD4D0C8)
+    ; so the desktop reads as a system surface, not a black void.
+    load.q  r14, 200(r29)              ; r14 = screen_va cursor
+    move.l  r15, #1920000              ; r15 = remaining bytes
+    move.l  r16, #0xFFD4D0C8           ; COL_SCREEN_BG (RGBA bytes C8,D0,D4,FF)
+.intui_screen_bg:
+    beqz    r15, .intui_screen_bg_done
+    store.l r16, (r14)
+    add     r14, r14, #4
+    sub     r15, r15, #4
+    bra     .intui_screen_bg
+.intui_screen_bg_done:
+
+    ; GFX_OPEN_DISPLAY(0, 0)
+    load.q  r1, 144(r29)
+    move.l  r2, #GFX_OPEN_DISPLAY
+    move.q  r3, r0
+    move.q  r4, r0
+    load.q  r5, 160(r29)               ; reply_port
+    move.q  r6, r0
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    bnez    r2, .intui_reply_nomem
+    load.q  r1, 160(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+    bnez    r3, .intui_reply_nomem
+    bnez    r1, .intui_reply_nomem     ; r1 = err code from gfx
+    store.q r2, 184(r29)               ; display_handle
+
+    ; GFX_REGISTER_SURFACE — width=800, height=600, format=RGBA32, stride=3200
+    load.q  r1, 144(r29)
+    move.l  r2, #GFX_REGISTER_SURFACE
+    load.q  r3, 184(r29)               ; display_handle
+    move.q  r4, #800
+    lsl     r4, r4, #48
+    move.q  r14, #600
+    lsl     r14, r14, #32
+    or      r4, r4, r14
+    move.q  r14, #1
+    lsl     r14, r14, #16
+    or      r4, r4, r14
+    or      r4, r4, #3200              ; stride bytes (800 * 4 = 3200)
+    load.q  r5, 160(r29)
+    load.l  r6, 208(r29)               ; share = own screen_share
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    bnez    r2, .intui_reply_nomem
+    load.q  r1, 160(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+    bnez    r3, .intui_reply_nomem
+    bnez    r1, .intui_reply_nomem
+    store.q r2, 192(r29)               ; surface_handle
+
+    ; INPUT_OPEN(my_input_port). M12 fix: input.device is single-subscriber,
+    ; so INPUT_OPEN may legitimately return INPUT_ERR_BUSY when another
+    ; client (e.g. a test rig) already owns the subscription. We must track
+    ; whether WE actually acquired it — otherwise the close path would
+    ; unconditionally INPUT_CLOSE and clear the OTHER subscriber's slot.
+    load.q  r1, 152(r29)
+    move.l  r2, #INPUT_OPEN
+    load.q  r3, 168(r29)               ; my_input_port
+    move.q  r4, r0
+    load.q  r5, 160(r29)
+    move.q  r6, r0
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    bnez    r2, .intui_reply_nomem     ; kernel-level PutMsg failure
+    load.q  r1, 160(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+    bnez    r3, .intui_reply_nomem     ; kernel-level WaitPort failure
+    ; r1 = mn_Type from input.device's reply: 0 = INPUT_ERR_OK, non-0 = busy/badarg.
+    ; We default input_subscribed to 0, then set to 1 only on confirmed OK.
+    store.b r0, 177(r29)               ; input_subscribed = 0 (defensive)
+    bnez    r1, .intui_input_done      ; INPUT_ERR_BUSY (or other) — DON'T own it
+    move.b  r14, #1
+    store.b r14, 177(r29)              ; input_subscribed = 1
+.intui_input_done:
+    move.b  r14, #1
+    store.b r14, 176(r29)              ; display_open = 1
+
+.intui_skip_display_init:
+    ; MapShared(client window buffer share)
+    load.l  r14, 304(r29)              ; saved share_handle
+    store.l r14, 240(r29)              ; win_share
+    move.q  r1, r14
+    syscall #SYS_MAP_SHARED            ; R1=va R2=err
+    load.q  r29, (sp)
+    bnez    r2, .intui_reply_badarg
+    store.q r1, 248(r29)               ; win_mapped_va
+
+    move.b  r14, #1
+    store.b r14, 216(r29)              ; win_in_use = 1
+
+    ; Reply OK with window_handle = 1
+    load.q  r1, 296(r29)               ; reply_port
+    move.l  r2, #INTUI_ERR_OK
+    move.l  r3, #1                     ; window_handle
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    bra     .intui_main
+
+    ; ----- DAMAGE -----
+.intui_do_damage:
+    load.b  r14, 216(r29)              ; win_in_use
+    beqz    r14, .intui_reply_badhandle
+    load.q  r14, 280(r29)              ; saved data0 = window_handle
+    move.l  r28, #1
+    bne     r14, r28, .intui_reply_badhandle
+
+    ; Composite the entire window into the screen.
+    ; Source: win_mapped_va (win_w * win_h * 4 bytes, stride = win_w * 4)
+    ; Dest:   screen_va + win_y*3200 + win_x*4
+    ; (M12: ignore the per-call dirty rect; do a full window blit. The rect
+    ; argument is reserved for M12.1 once GFX_PRESENT carries it through.)
+    load.q  r20, 248(r29)              ; src
+    load.q  r21, 200(r29)              ; screen_va base
+    load.l  r22, 224(r29)              ; win_x
+    load.l  r23, 228(r29)              ; win_y
+    load.l  r24, 232(r29)              ; win_w
+    load.l  r25, 236(r29)              ; win_h
+    ; dst = screen_va + win_y*3200 + win_x*4 (M12: 800x600 stride = 3200)
+    move.l  r14, #3200
+    mulu    r14, r23, r14
+    add     r21, r21, r14
+    lsl     r14, r22, #2
+    add     r21, r21, r14
+    ; src_stride = win_w*4, dst_stride = 3200
+.intui_blit_row:
+    beqz    r25, .intui_blit_done
+    move.q  r14, r20                   ; src cursor
+    move.q  r15, r21                   ; dst cursor
+    move.l  r16, r24                   ; cols
+.intui_blit_col:
+    beqz    r16, .intui_blit_row_done
+    load.l  r17, (r14)
+    store.l r17, (r15)
+    add     r14, r14, #4
+    add     r15, r15, #4
+    sub     r16, r16, #1
+    bra     .intui_blit_col
+.intui_blit_row_done:
+    lsl     r14, r24, #2
+    add     r20, r20, r14              ; advance src by win_w*4
+    add     r21, r21, #3200            ; advance dst by screen stride
+    sub     r25, r25, #1
+    bra     .intui_blit_row
+.intui_blit_done:
+
+    ; ============================================================
+    ; AmigaOS 3.9 / ReAction-style window decoration (M12 redesign)
+    ; ------------------------------------------------------------
+    ; Faithful OS 3.9 palette: blue title furniture, grey body. All
+    ; constants are in RGBA byte order (chip is byte[0]=R, so an asm
+    ; literal 0xAARRGGBB stores in memory as BB,GG,RR,AA):
+    ;
+    ;   COL_SCREEN_BG       0xFFD4D0C8  desktop grey (filled at display open)
+    ;   COL_WIN_FACE        0xFFD4D0C8  window face / gadget body
+    ;   COL_PANEL_BG        0xFFDCD8D0  recessed content panel interior
+    ;   COL_HILITE          0xFFFFFFFF  raised highlight (top + left bevel)
+    ;   COL_SHADOW          0xFF808080  raised shadow (bottom + right bevel)
+    ;   COL_DARK            0xFF000000  outer outline + close gadget mark
+    ;   COL_TITLE_BLUE      0xFFCC7A2C  title bar main fill
+    ;   COL_TITLE_BLUE_LIGHT 0xFFE6A25A title bar top highlight (1 px)
+    ;   COL_TITLE_BLUE_DARK  0xFF9A4E16 title bar bottom shadow (1 px)
+    ;
+    ; Layered draw order (the user buffer has already been blitted):
+    ;   1. Raised window bevel at the very window edge (white top+left
+    ;      at (x, y, w, 1) / (x, y, 1, h); grey shadow bottom+right at
+    ;      (x, y+h-1, w, 1) / (x+w-1, y, 1, h))
+    ;   2. Title bar BLUE fill at (x+2, y+2, w-4, 16)
+    ;   3. Title bar top highlight (light blue, 1 px) at (x+2, y+2, w-4, 1)
+    ;   4. Title bar bottom shadow (dark blue, 1 px) at (x+2, y+17, w-4, 1)
+    ;   5. Close gadget (top-left, flush with title bar) — bevel + grey
+    ;      face + black centre mark
+    ;   6. Depth gadget (top-right) — bevel + grey face + back/front icon
+    ;   7. Title text "About IntuitionOS" in black Topaz, left of the
+    ;      close gadget
+    ;   8. Recessed content-panel BORDER (shadow top+left, highlight
+    ;      bottom+right). The interior is NOT filled — that area stays
+    ;      as the user buffer's pixels (the About app fills its buffer
+    ;      with COL_PANEL_BG so the panel interior reads as grey).
+    ;
+    ; The blit loop above destroys r25 (decrements win_h to 0), so
+    ; we reload all four window dimensions from the data page before
+    ; using them as fillrect inputs.
+    ; ============================================================
+    load.l  r22, 224(r29)              ; win_x
+    load.l  r23, 228(r29)              ; win_y
+    load.l  r24, 232(r29)              ; win_w
+    load.l  r25, 236(r29)              ; win_h
+
+    ; --- 1. Raised window bevel at the very window edge ---
+    ; White hilite top + left, grey shadow bottom + right. No outer
+    ; black border — the bevel is the entire frame, OS 3.9 style.
+    move.q  r6, r22                    ; top hilite: (x, y, w, 1)
+    move.q  r7, r23
+    move.q  r8, r24
+    move.l  r9, #1
+    move.l  r17, #0xFFFFFFFF           ; COL_HILITE
+    jsr     .intui_fillrect
+    move.q  r6, r22                    ; left hilite: (x, y, 1, h)
+    move.q  r7, r23
+    move.l  r8, #1
+    move.q  r9, r25
+    move.l  r17, #0xFFFFFFFF
+    jsr     .intui_fillrect
+    move.q  r6, r22                    ; bottom shadow: (x, y+h-1, w, 1)
+    add     r7, r23, r25
+    sub     r7, r7, #1
+    move.q  r8, r24
+    move.l  r9, #1
+    move.l  r17, #0xFF808080           ; COL_SHADOW
+    jsr     .intui_fillrect
+    add     r6, r22, r24               ; right shadow: (x+w-1, y, 1, h)
+    sub     r6, r6, #1
+    move.q  r7, r23
+    move.l  r8, #1
+    move.q  r9, r25
+    move.l  r17, #0xFF808080
+    jsr     .intui_fillrect
+
+    ; --- 3. Title bar BLUE main fill (rows y+2 .. y+17, 16 px tall) ---
+    ; Sits inside the bevel at (x+2, y+2, w-4, 16). The body of the
+    ; window below the title bar is the user buffer's pixels (the
+    ; About app fills its buffer with COL_PANEL_BG so the body reads
+    ; as recessed grey).
+    add     r6, r22, #2
+    add     r7, r23, #2
+    sub     r8, r24, #4
+    move.l  r9, #16                    ; title_h
+    move.l  r17, #0xFFCC7A2C           ; COL_TITLE_BLUE
+    jsr     .intui_fillrect
+
+    ; --- 4. Title bar top highlight (light blue, 1 px) ---
+    add     r6, r22, #2
+    add     r7, r23, #2
+    sub     r8, r24, #4
+    move.l  r9, #1
+    move.l  r17, #0xFFE6A25A           ; COL_TITLE_BLUE_LIGHT
+    jsr     .intui_fillrect
+
+    ; --- 5. Title bar bottom shadow (dark blue, 1 px) ---
+    add     r6, r22, #2
+    add     r7, r23, #17               ; y + 17 = last row of 16-px title bar
+    sub     r8, r24, #4
+    move.l  r9, #1
+    move.l  r17, #0xFF9A4E16           ; COL_TITLE_BLUE_DARK
+    jsr     .intui_fillrect
+
+    ; --- 6. Close gadget (top-left, flush with title bar) ---
+    ; Sits inside the inner bevel at (gx=x+2, gy=y+2), 18x16. Bevel
+    ; outline (white top+left, grey shadow bottom+right), grey face,
+    ; centred black mark. No outer black border — the inner bevel IS
+    ; the gadget frame, and it sits ON the blue title bar.
+    add     r6, r22, #2                ; gx = x+2
+    add     r7, r23, #2                ; gy = y+2
+    move.l  r8, #18
+    move.l  r9, #1
+    move.l  r17, #0xFFFFFFFF           ; bevel top hilite (gx, gy, 18, 1)
+    jsr     .intui_fillrect
+    add     r6, r22, #2
+    add     r7, r23, #2
+    move.l  r8, #1
+    move.l  r9, #16
+    move.l  r17, #0xFFFFFFFF           ; bevel left hilite (gx, gy, 1, 16)
+    jsr     .intui_fillrect
+    add     r6, r22, #2                ; bevel bottom shadow (gx, gy+15, 18, 1)
+    add     r7, r23, #17
+    move.l  r8, #18
+    move.l  r9, #1
+    move.l  r17, #0xFF808080
+    jsr     .intui_fillrect
+    add     r6, r22, #19               ; bevel right shadow (gx+17, gy, 1, 16)
+    add     r7, r23, #2
+    move.l  r8, #1
+    move.l  r9, #16
+    move.l  r17, #0xFF808080
+    jsr     .intui_fillrect
+    add     r6, r22, #3                ; face fill (gx+1, gy+1, 16, 14)
+    add     r7, r23, #3
+    move.l  r8, #16
+    move.l  r9, #14
+    move.l  r17, #0xFFD4D0C8           ; COL_WIN_FACE
+    jsr     .intui_fillrect
+    ; Centre mark: 4x4 black square. Sized so that the gadget detail
+    ; sample at screen (248, 208) — window-rel (8, 8), gadget-rel
+    ; (6, 6) — lands inside the mark.
+    add     r6, r22, #6                ; mark (gx+4, gy+5, 6, 6)
+    add     r7, r23, #7
+    move.l  r8, #6
+    move.l  r9, #6
+    move.l  r17, #0xFF000000
+    jsr     .intui_fillrect
+
+    ; --- 7. Depth gadget (top-right, flush with title bar) ---
+    ; gx = win_x + win_w - 20, gy = win_y + 2, 18x16. Same bevel
+    ; treatment as the close gadget, with the AmigaOS depth icon
+    ; (two overlapping rectangles) drawn in the centre.
+    add     r6, r22, r24
+    sub     r6, r6, #20                ; gx = x + w - 20
+    add     r7, r23, #2                ; gy = y + 2
+    move.l  r8, #18
+    move.l  r9, #1
+    move.l  r17, #0xFFFFFFFF           ; bevel top hilite
+    jsr     .intui_fillrect
+    add     r6, r22, r24
+    sub     r6, r6, #20
+    add     r7, r23, #2
+    move.l  r8, #1
+    move.l  r9, #16
+    move.l  r17, #0xFFFFFFFF           ; bevel left hilite
+    jsr     .intui_fillrect
+    add     r6, r22, r24
+    sub     r6, r6, #20
+    add     r7, r23, #17
+    move.l  r8, #18
+    move.l  r9, #1
+    move.l  r17, #0xFF808080           ; bevel bottom shadow
+    jsr     .intui_fillrect
+    add     r6, r22, r24
+    sub     r6, r6, #3                 ; gx+17 = x + w - 3
+    add     r7, r23, #2
+    move.l  r8, #1
+    move.l  r9, #16
+    move.l  r17, #0xFF808080           ; bevel right shadow
+    jsr     .intui_fillrect
+    add     r6, r22, r24
+    sub     r6, r6, #19                ; gx+1
+    add     r7, r23, #3                ; gy+1
+    move.l  r8, #16
+    move.l  r9, #14
+    move.l  r17, #0xFFD4D0C8           ; COL_WIN_FACE
+    jsr     .intui_fillrect
+    ; Depth icon: "back" rectangle outline (gx+4, gy+5, 7, 5)
+    add     r6, r22, r24
+    sub     r6, r6, #16                ; gx+4
+    add     r7, r23, #7                ; gy+5
+    move.l  r8, #7
+    move.l  r9, #1
+    move.l  r17, #0xFF000000           ; top
+    jsr     .intui_fillrect
+    add     r6, r22, r24
+    sub     r6, r6, #16
+    add     r7, r23, #11               ; gy+9
+    move.l  r8, #7
+    move.l  r9, #1
+    move.l  r17, #0xFF000000           ; bottom
+    jsr     .intui_fillrect
+    add     r6, r22, r24
+    sub     r6, r6, #16
+    add     r7, r23, #7
+    move.l  r8, #1
+    move.l  r9, #5
+    move.l  r17, #0xFF000000           ; left
+    jsr     .intui_fillrect
+    add     r6, r22, r24
+    sub     r6, r6, #10                ; gx+10
+    add     r7, r23, #7
+    move.l  r8, #1
+    move.l  r9, #5
+    move.l  r17, #0xFF000000           ; right
+    jsr     .intui_fillrect
+    ; Depth icon: "front" rectangle outline (gx+7, gy+3, 7, 5)
+    add     r6, r22, r24
+    sub     r6, r6, #13                ; gx+7
+    add     r7, r23, #5                ; gy+3
+    move.l  r8, #7
+    move.l  r9, #1
+    move.l  r17, #0xFF000000           ; top
+    jsr     .intui_fillrect
+    add     r6, r22, r24
+    sub     r6, r6, #13
+    add     r7, r23, #9                ; gy+7
+    move.l  r8, #7
+    move.l  r9, #1
+    move.l  r17, #0xFF000000           ; bottom
+    jsr     .intui_fillrect
+    add     r6, r22, r24
+    sub     r6, r6, #13
+    add     r7, r23, #5
+    move.l  r8, #1
+    move.l  r9, #5
+    move.l  r17, #0xFF000000           ; left
+    jsr     .intui_fillrect
+    add     r6, r22, r24
+    sub     r6, r6, #7                 ; gx+13
+    add     r7, r23, #5
+    move.l  r8, #1
+    move.l  r9, #5
+    move.l  r17, #0xFF000000           ; right
+    jsr     .intui_fillrect
+
+    ; --- 8. Title text "About IntuitionOS" in black Topaz ---
+    ; tx = win_x + 24 (after close gadget at x+2..x+19, with 4px gap).
+    ; The title string is 17 chars × 8 px = 136 px wide, so it spans
+    ; columns x+24 .. x+159. With win_x = 240 that ends at col 399,
+    ; leaving the title-bar drag/sample column 400 free of glyph
+    ; pixels for the (400, 210) / (400, 217) test samples.
+    ; ty = win_y + 4 (top of title bar interior, 2px below highlight)
+    add     r10, r22, #24              ; r10 = x  (input to .intui_draw_string)
+    add     r11, r23, #4               ; r11 = y
+    add     r12, r29, #460             ; r12 = string ptr (data offset 460)
+    jsr     .intui_draw_string
+
+    ; --- 9. Recessed content panel border ---
+    ; px = x+8, py = y+24, pw = w-16, ph = h-32
+    ; Top shadow line: (px, py, pw, 1)
+    add     r6, r22, #8
+    add     r7, r23, #24
+    sub     r8, r24, #16
+    move.l  r9, #1
+    move.l  r17, #0xFF808080           ; COL_SHADOW
+    jsr     .intui_fillrect
+    ; Left shadow line: (px, py, 1, ph)
+    add     r6, r22, #8
+    add     r7, r23, #24
+    move.l  r8, #1
+    sub     r9, r25, #32
+    move.l  r17, #0xFF808080
+    jsr     .intui_fillrect
+    ; Bottom highlight line: (px, py+ph-1, pw, 1)
+    add     r6, r22, #8
+    add     r7, r23, r25
+    sub     r7, r7, #9                 ; y + h - 9
+    sub     r8, r24, #16
+    move.l  r9, #1
+    move.l  r17, #0xFFFFFFFF           ; COL_HILITE
+    jsr     .intui_fillrect
+    ; Right highlight line: (px+pw-1, py, 1, ph)
+    add     r6, r22, r24
+    sub     r6, r6, #9                 ; x + w - 9
+    add     r7, r23, #24
+    move.l  r8, #1
+    sub     r9, r25, #32
+    move.l  r17, #0xFFFFFFFF
+    jsr     .intui_fillrect
+.intui_cg_done:
+
+    ; GFX_PRESENT(surface_handle)
+    load.q  r1, 144(r29)
+    move.l  r2, #GFX_PRESENT
+    load.q  r3, 192(r29)
+    move.q  r4, r0
+    load.q  r5, 160(r29)
+    move.q  r6, r0
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    load.q  r1, 160(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+
+    ; Reply OK
+    load.q  r1, 296(r29)
+    move.l  r2, #INTUI_ERR_OK
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    bra     .intui_main
+
+    ; ----- CLOSE_WINDOW -----
+    ;
+    ; M12 fix: this path was leaking pages and shared-memory refs across
+    ; repeated open/close cycles. The original M12 close only cleared the
+    ; display_open flag and dropped INPUT_CLOSE/GFX_UNREGISTER/GFX_CLOSE,
+    ; never touching SYS_FREE_MEM on either the AllocMem'd screen surface
+    ; or the SYS_MAP_SHARED'd client window buffer. Both are now released.
+    ;
+    ; Order matters:
+    ;   1. Free the mapped CLIENT window buffer (decrements that share's
+    ;      refcount; the client task still holds its own private mapping).
+    ;   2. Send INPUT_CLOSE (only if WE own the subscription — see the
+    ;      input_subscribed flag set in the open path).
+    ;   3. Send GFX_UNREGISTER_SURFACE so graphics.library stops using
+    ;      our screen surface as the scanout source.
+    ;   4. Send GFX_CLOSE_DISPLAY so graphics.library returns the chip to
+    ;      text mode.
+    ;   5. Free our OWN screen surface (final share refcount decrement).
+.intui_do_close:
+    load.b  r14, 216(r29)
+    beqz    r14, .intui_reply_badhandle
+    load.q  r14, 280(r29)              ; window_handle
+    move.l  r28, #1
+    bne     r14, r28, .intui_reply_badhandle
+
+    store.b r0, 216(r29)               ; win_in_use = 0
+    store.q r0, 256(r29)               ; idcmp_port = 0
+
+    ; --- 1. FreeMem the mapped client window buffer ---
+    ; Size = win_w * win_h * 4 bytes (RGBA32). do_free_mem rounds up to a
+    ; page count and matches against the region table. The client allocated
+    ; the buffer with AllocMem(MEMF_PUBLIC), so this is a SHARED region —
+    ; FreeMem decrements the shared object's refcount; the client side's
+    ; mapping survives.
+    load.l  r14, 232(r29)              ; win_w
+    load.l  r15, 236(r29)              ; win_h
+    mulu    r14, r14, r15
+    lsl     r14, r14, #2               ; * 4 bytes per pixel
+    load.q  r1, 248(r29)               ; win_mapped_va
+    move.q  r2, r14
+    syscall #SYS_FREE_MEM
+    load.q  r29, (sp)
+    ; Best-effort: even if FreeMem failed (size mismatch), proceed with
+    ; teardown. Clear the cached fields so a re-open computes fresh.
+    store.q r0, 248(r29)               ; clear win_mapped_va
+    store.q r0, 240(r29)               ; clear win_share
+
+    ; --- 2. INPUT_CLOSE (only if we own the subscription) ---
+    load.b  r14, 177(r29)              ; input_subscribed
+    beqz    r14, .intui_close_skip_input
+    load.q  r1, 152(r29)
+    move.l  r2, #INPUT_CLOSE
+    move.q  r3, r0
+    move.q  r4, r0
+    load.q  r5, 160(r29)
+    move.q  r6, r0
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    load.q  r1, 160(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+    store.b r0, 177(r29)               ; input_subscribed = 0
+.intui_close_skip_input:
+
+    ; --- 3. GFX_UNREGISTER_SURFACE ---
+    load.q  r1, 144(r29)
+    move.l  r2, #GFX_UNREGISTER_SURFACE
+    load.q  r3, 192(r29)
+    move.q  r4, r0
+    load.q  r5, 160(r29)
+    move.q  r6, r0
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    load.q  r1, 160(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+
+    ; --- 4. GFX_CLOSE_DISPLAY ---
+    load.q  r1, 144(r29)
+    move.l  r2, #GFX_CLOSE_DISPLAY
+    load.q  r3, 184(r29)
+    move.q  r4, r0
+    load.q  r5, 160(r29)
+    move.q  r6, r0
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    load.q  r1, 160(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+
+    ; --- 5. FreeMem our own screen surface ---
+    ; The screen surface was AllocMem(1920000, MEMF_PUBLIC|MEMF_CLEAR) so
+    ; it lives in the SHARED region table. FreeMem decrements the shared
+    ; object refcount; if graphics.library has already released its
+    ; mapping (M12: it does in the gfx_h_unreg_surf companion fix below),
+    ; the backing pages are released here.
+    load.q  r1, 200(r29)               ; screen_va
+    move.l  r2, #1920000               ; 800 * 600 * 4 bytes (M12: was 1228800)
+    syscall #SYS_FREE_MEM
+    load.q  r29, (sp)
+
+    ; Clear all display state so a future OPEN_WINDOW lazily re-acquires
+    ; from a clean slate.
+    store.q r0, 200(r29)               ; screen_va = 0
+    store.q r0, 208(r29)               ; screen_share = 0
+    store.q r0, 184(r29)               ; display_handle = 0
+    store.q r0, 192(r29)               ; surface_handle = 0
+    store.b r0, 176(r29)               ; display_open = 0
+
+    ; Reply OK
+    load.q  r1, 296(r29)
+    move.l  r2, #INTUI_ERR_OK
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    bra     .intui_main
+
+    ; ----- Common error replies -----
+.intui_reply_busy:
+    load.q  r1, 296(r29)
+    move.l  r2, #INTUI_ERR_BUSY
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    bra     .intui_main
+.intui_reply_badarg:
+    load.q  r1, 296(r29)
+    move.l  r2, #INTUI_ERR_BADARG
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    bra     .intui_main
+.intui_reply_badhandle:
+    load.q  r1, 296(r29)
+    move.l  r2, #INTUI_ERR_BADHANDLE
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    bra     .intui_main
+.intui_reply_nomem:
+    load.q  r1, 296(r29)
+    move.l  r2, #INTUI_ERR_NOMEM
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    bra     .intui_main
+
+    ; --- Poll input.device for raw events; route as IDCMP-* to idcmp_port ---
+.intui_poll_input:
+    load.q  r29, (sp)
+    load.b  r14, 216(r29)              ; win_in_use
+    beqz    r14, .intui_yield
+    load.q  r24, 256(r29)              ; idcmp_port
+    beqz    r24, .intui_yield
+
+    load.q  r1, 168(r29)               ; my_input_port
+    syscall #SYS_GET_MSG
+    bnez    r3, .intui_yield           ; ERR_AGAIN → nothing
+
+    move.l  r28, #INPUT_EVENT
+    bne     r1, r28, .intui_yield      ; unknown opcode → drop
+
+    ; r2 = data0 = (event_type<<24)|(scancode<<16)|(modifiers<<8)
+    ;            for IE_MOUSE_BTN: also (buttons<<16)
+    ; r4 = data1 = (mx<<48)|(my<<32)|seq32
+    move.q  r14, r2
+    lsr     r14, r14, #24
+    and     r14, r14, #0xFF            ; event type
+
+    move.l  r28, #IE_KEY_DOWN
+    beq     r14, r28, .intui_ev_key
+    move.l  r28, #IE_MOUSE_MOVE
+    beq     r14, r28, .intui_ev_move
+    move.l  r28, #IE_MOUSE_BTN
+    beq     r14, r28, .intui_ev_btn
+    bra     .intui_yield
+
+.intui_ev_key:
+    ; scancode = (data0 >> 16) & 0xFF
+    move.q  r14, r2
+    lsr     r14, r14, #16
+    and     r14, r14, #0xFF
+    ; If scancode == 0x01 (Esc): IDCMP_CLOSEWINDOW
+    move.l  r28, #1
+    beq     r14, r28, .intui_ev_close
+
+    ; Else IDCMP_RAWKEY: data0 = (scancode<<8)|mods, data1 = seq32
+    move.q  r15, r2
+    lsr     r15, r15, #8
+    and     r15, r15, #0xFF            ; mods
+    lsl     r14, r14, #8
+    or      r14, r14, r15
+    load.q  r29, (sp)
+    load.q  r1, 256(r29)
+    move.l  r2, #IDCMP_RAWKEY
+    move.q  r3, r14
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    syscall #SYS_PUT_MSG
+    bra     .intui_yield
+
+.intui_ev_close:
+    load.q  r29, (sp)
+    load.q  r1, 256(r29)
+    move.l  r2, #IDCMP_CLOSEWINDOW
+    move.l  r3, #1                     ; window_handle
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    syscall #SYS_PUT_MSG
+    bra     .intui_yield
+
+.intui_ev_move:
+    ; data1 contains (mx<<48)|(my<<32)|seq
+    move.q  r14, r4
+    lsr     r14, r14, #48
+    and     r14, r14, #0xFFFF          ; mx
+    move.q  r15, r4
+    lsr     r15, r15, #32
+    and     r15, r15, #0xFFFF          ; my
+    ; Translate to window-local coords (signed: 32-bit)
+    load.q  r29, (sp)
+    load.l  r16, 224(r29)              ; win_x
+    load.l  r17, 228(r29)              ; win_y
+    sub     r14, r14, r16              ; lx
+    sub     r15, r15, r17              ; ly
+    ; data0 = (lx<<32) | (ly & 0xFFFFFFFF)
+    lsl     r14, r14, #32
+    and     r15, r15, #0xFFFFFFFF
+    or      r14, r14, r15
+    load.q  r1, 256(r29)
+    move.l  r2, #IDCMP_MOUSEMOVE
+    move.q  r3, r14
+    move.q  r4, r4                     ; data1 untouched (seq high bits)
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    syscall #SYS_PUT_MSG
+    bra     .intui_yield
+
+.intui_ev_btn:
+    ; data0 = (IE_MOUSE_BTN<<24)|(buttons<<16)
+    move.q  r14, r2
+    lsr     r14, r14, #16
+    and     r14, r14, #0xFF            ; buttons
+    move.q  r15, r4                    ; mx in high 16 bits
+    lsr     r15, r15, #48
+    and     r15, r15, #0xFFFF
+    move.q  r16, r4
+    lsr     r16, r16, #32
+    and     r16, r16, #0xFFFF
+    ; Window-local coords (need win_x/y)
+    load.q  r29, (sp)
+    load.l  r17, 224(r29)
+    load.l  r18, 228(r29)
+    sub     r15, r15, r17              ; lx
+    sub     r16, r16, r18              ; ly
+
+    ; If button-down (bit 0 set) AND inside close gadget rect, send CLOSEWINDOW
+    ; Close gadget = [0..16) × [0..16)
+    and     r19, r14, #1
+    beqz    r19, .intui_ev_btn_send
+    bgez    r15, .intui_ev_btn_lx_ok
+    bra     .intui_ev_btn_send
+.intui_ev_btn_lx_ok:
+    move.l  r28, #INTUI_CLOSE_GADGET_W
+    bge     r15, r28, .intui_ev_btn_send
+    bgez    r16, .intui_ev_btn_ly_ok
+    bra     .intui_ev_btn_send
+.intui_ev_btn_ly_ok:
+    move.l  r28, #INTUI_WIN_TITLE_H
+    bge     r16, r28, .intui_ev_btn_send
+    ; Inside close gadget
+    load.q  r1, 256(r29)
+    move.l  r2, #IDCMP_CLOSEWINDOW
+    move.l  r3, #1
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    syscall #SYS_PUT_MSG
+    bra     .intui_yield
+
+.intui_ev_btn_send:
+    ; data0 = (buttons<<32)|(state) — keep simple: state = buttons (no edge tracking)
+    lsl     r14, r14, #32
+    or      r14, r14, r14
+    ; data1 = (lx<<32)|(ly)
+    lsl     r15, r15, #32
+    and     r16, r16, #0xFFFFFFFF
+    or      r15, r15, r16
+    load.q  r1, 256(r29)
+    move.l  r2, #IDCMP_MOUSEBUTTONS
+    move.q  r3, r14
+    move.q  r4, r15
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    syscall #SYS_PUT_MSG
+    bra     .intui_yield
+
+.intui_yield:
+    syscall #SYS_YIELD
+    bra     .intui_main
+
+.intui_halt:
+    syscall #SYS_YIELD
+    bra     .intui_halt
+
+; ----------------------------------------------------------------
+; .intui_fillrect — fill a screen-space rectangle with a color
+; ----------------------------------------------------------------
+; Inputs:
+;   r6  = rect_x   (column, in pixels, on the 800-wide screen)
+;   r7  = rect_y   (row)
+;   r8  = rect_w   (width in pixels)
+;   r9  = rect_h   (height in pixels — rows)
+;   r17 = color    (RGBA32, byte[0]=R per chip ordering)
+;   r29 = data base (intuition.library data page)
+; Output: nothing
+; Clobbers: r5, r11, r12, r13, r14, r15, r16
+; Preserves: r6..r9, r17, r29 (caller's loop variables stay live)
+;
+; Stride is hardcoded to 3200 (800 pixels × 4 bytes/pixel) which matches
+; the M12 intuition.library screen surface dimensions. Bounds-checks the
+; rect against the 800x600 frame and silently clips zero-or-negative
+; sizes so the caller can pass arbitrary expressions.
+; ----------------------------------------------------------------
+.intui_fillrect:
+    ; Reject empty rects
+    blez    r8, .intui_fr_ret
+    blez    r9, .intui_fr_ret
+    ; Compute base address: screen_va + r7*3200 + r6*4
+    load.q  r5, 200(r29)               ; screen_va
+    move.l  r12, #3200
+    mulu    r12, r7, r12
+    add     r5, r5, r12
+    lsl     r12, r6, #2
+    add     r5, r5, r12                ; r5 = top-left pixel of rect
+    move.q  r13, r9                    ; r13 = remaining rows
+.intui_fr_row:
+    beqz    r13, .intui_fr_ret
+    move.q  r14, r5                    ; col cursor
+    move.q  r15, r8                    ; remaining cols
+.intui_fr_col:
+    beqz    r15, .intui_fr_row_done
+    store.l r17, (r14)
+    add     r14, r14, #4
+    sub     r15, r15, #1
+    bra     .intui_fr_col
+.intui_fr_row_done:
+    add     r5, r5, #3200              ; next row
+    sub     r13, r13, #1
+    bra     .intui_fr_row
+.intui_fr_ret:
+    rts
+
+; ----------------------------------------------------------------
+; .intui_draw_char — render one Topaz 8x16 glyph into the screen surface
+; ----------------------------------------------------------------
+; Inputs:
+;   r10 = x  (screen column, must be a valid position on the 800-wide screen)
+;   r11 = y  (screen row)
+;   r3  = character byte (ASCII; lookup is `font[ch * 16 + row]`)
+;   r29 = data base (font lives at offset 768)
+; Output: nothing
+; Clobbers: r4..r9, r14..r19
+; Preserves: r10, r11, r29
+; Glyph pixels are written in COL_TEXT (0xFF000000 — black on grey).
+; ----------------------------------------------------------------
+.intui_draw_char:
+    load.q  r4, 200(r29)               ; r4 = screen_va
+    move.l  r14, #3200                 ; screen stride
+    mulu    r14, r11, r14
+    add     r4, r4, r14
+    lsl     r14, r10, #2
+    add     r4, r4, r14                ; r4 = top-left pixel of glyph cell
+    add     r5, r29, #768              ; r5 = font_base
+    lsl     r6, r3, #4                 ; ch * 16
+    add     r5, r5, r6                 ; r5 = &font[ch][0]
+    move.l  r6, #0                     ; row index 0..15
+.intui_dc_row:
+    move.l  r14, #16
+    bge     r6, r14, .intui_dc_done
+    load.b  r7, (r5)
+    add     r5, r5, #1
+    move.q  r8, r4                     ; pixel cursor for this row
+    move.l  r9, #0                     ; col index 0..7
+.intui_dc_col:
+    move.l  r14, #8
+    bge     r9, r14, .intui_dc_col_done
+    move.l  r14, #7
+    sub     r14, r14, r9
+    lsr     r15, r7, r14
+    and     r15, r15, #1
+    beqz    r15, .intui_dc_skip
+    move.l  r16, #0xFF000000           ; COL_TEXT (black)
+    store.l r16, (r8)
+.intui_dc_skip:
+    add     r8, r8, #4
+    add     r9, r9, #1
+    bra     .intui_dc_col
+.intui_dc_col_done:
+    add     r4, r4, #3200              ; next row
+    add     r6, r6, #1
+    bra     .intui_dc_row
+.intui_dc_done:
+    rts
+
+; ----------------------------------------------------------------
+; .intui_draw_string — render a null-terminated string at (x, y)
+; ----------------------------------------------------------------
+; Inputs:
+;   r10 = x (initial screen column)
+;   r11 = y (screen row)
+;   r12 = string pointer (in caller's data section)
+;   r29 = data base
+; Clobbers: r3..r9, r14..r19
+; ----------------------------------------------------------------
+.intui_draw_string:
+    sub     sp, sp, #24
+    store.q r10, (sp)                  ; save x
+    store.q r11, 8(sp)                 ; save y
+    store.q r12, 16(sp)                ; save str ptr
+.intui_ds_loop:
+    load.q  r12, 16(sp)
+    load.b  r3, (r12)
+    beqz    r3, .intui_ds_done
+    load.q  r10, (sp)
+    load.q  r11, 8(sp)
+    jsr     .intui_draw_char
+    load.q  r10, (sp)
+    add     r10, r10, #8               ; advance x by glyph width
+    store.q r10, (sp)
+    load.q  r12, 16(sp)
+    add     r12, r12, #1
+    store.q r12, 16(sp)
+    bra     .intui_ds_loop
+.intui_ds_done:
+    add     sp, sp, #24
+    rts
+prog_intui_code_end:
+
+prog_intui_data:
+    ; offsets 0..127: convention/scratch, unused. Strings live at 320+ so the
+    ; field block at 128..319 keeps the same shape as the other services.
+    ds.b    128                         ; pad 0..128
+    ds.b    8                           ; 128: task_id
+    ds.b    8                           ; 136: intuition_port
+    ds.b    8                           ; 144: graphics_port
+    ds.b    8                           ; 152: input_port
+    ds.b    8                           ; 160: reply_port
+    ds.b    8                           ; 168: my_input_port
+    ds.b    8                           ; 176: display_open (1) + pad
+    ds.b    8                           ; 184: display_handle
+    ds.b    8                           ; 192: surface_handle
+    ds.b    8                           ; 200: screen_va
+    ds.b    8                           ; 208: screen_share (4) + pad
+    ds.b    8                           ; 216: win_in_use (1) + pad
+    ds.b    4                           ; 224: win_x
+    ds.b    4                           ; 228: win_y
+    ds.b    4                           ; 232: win_w
+    ds.b    4                           ; 236: win_h
+    ds.b    8                           ; 240: win_share (4) + pad
+    ds.b    8                           ; 248: win_mapped_va
+    ds.b    8                           ; 256: idcmp_port
+    ds.b    8                           ; 264: event_seq (4) + pad
+    ds.b    8                           ; 272: msg_type
+    ds.b    8                           ; 280: msg_data0
+    ds.b    8                           ; 288: msg_data1
+    ds.b    8                           ; 296: msg_reply
+    ds.b    8                           ; 304: msg_share
+    ds.b    8                           ; 312: pad
+    ; Strings (32-byte slots, PORT_NAME_LEN-aligned)
+    ; offset 320: "intuition.library" + pad to 32 — own port name
+    dc.b    "intuition.library", 0
+    ds.b    14
+    ; offset 352: "graphics.library" + pad to 32 — for FindPort
+    dc.b    "graphics.library", 0
+    ds.b    15
+    ; offset 384: "input.device" + pad to 32 — for FindPort
+    dc.b    "input.device", 0
+    ds.b    19
+    ; offset 416: banner string "intuition.library ONLINE [Task" + null + pad
+    dc.b    "intuition.library ONLINE [Task", 0
+    ds.b    13                          ; pad to offset 460
+    ; offset 460: window title text rendered by .intui_draw_string in the
+    ; title bar block of the M12 decoration
+    dc.b    "About IntuitionOS", 0
+    ds.b    290                         ; pad to offset 768
+    ; offset 768: embedded Topaz 8x16 bitmap font (256 glyphs x 16 bytes
+    ; = 4096 bytes) — used by .intui_draw_char to render title text
+    incbin  "topaz.raw"
+prog_intui_data_end:
+    align   8
+prog_intui_end:
+
+; ---------------------------------------------------------------------------
+; About — intuition.library client with text rendering (M12)
+; ---------------------------------------------------------------------------
+; Allocates a 320x200 RGBA32 backing surface, opens an intuition.library
+; window centered on the 800x600 screen, fills the content area with a
+; teal backdrop, draws several lines of "About IntuitionOS" text using
+; the embedded Topaz 8x16 bitmap font, sends DAMAGE, then waits on its
+; IDCMP port. On IDCMP_CLOSEWINDOW (Esc key OR click on close gadget)
+; it sends INTUITION_CLOSE_WINDOW and exits.
+;
+; Data layout:
+;   0..127:  pad
+;   128:  task_id              (8)
+;   136:  intuition_port       (8)
+;   144:  reply_port           (8)
+;   152:  idcmp_port           (8)
+;   160:  surface_va           (8)
+;   168:  surface_share        (8) — (4) + pad
+;   176:  window_handle        (8)
+;   184:  pad
+;   192:  "intuition.library"  (32, port name for FindPort)
+;   224:  "About M12 ready"    (test marker)
+;   256:  about text strings (each null-terminated)
+;   ...
+;   1024: topaz font (4096 bytes, full 256 chars × 16 bytes)
+prog_about:
+    dc.l    IMG_MAGIC_LO, IMG_MAGIC_HI
+    dc.l    prog_about_code_end - prog_about_code
+    dc.l    prog_about_data_end - prog_about_data
+    dc.l    0
+    ds.b    12
+prog_about_code:
+    sub     sp, sp, #16
+.ab_preamble:
+    move.l  r1, #SYSINFO_CURRENT_TASK
+    syscall #SYS_GET_SYS_INFO
+    store.q r1, 8(sp)
+    move.l  r1, #SYSINFO_CURRENT_TASK
+    syscall #SYS_GET_SYS_INFO
+    load.q  r28, 8(sp)
+    bne     r1, r28, .ab_preamble
+    move.l  r28, #USER_SLOT_STRIDE
+    mulu    r28, r1, r28
+    move.l  r29, #USER_DATA_BASE
+    add     r29, r29, r28
+    store.q r29, (sp)
+    load.q  r1, 8(sp)
+    move.l  r28, #USER_SLOT_STRIDE
+    mulu    r28, r1, r28
+    move.l  r29, #USER_DATA_BASE
+    add     r29, r29, r28
+    load.q  r28, (sp)
+    bne     r29, r28, .ab_preamble
+    store.q r29, (sp)
+    load.q  r1, 8(sp)
+    store.q r1, 128(r29)
+
+    ; FindPort("intuition.library") with retry
+.ab_findi:
+    load.q  r29, (sp)
+    add     r1, r29, #192
+    move.l  r2, #0
+    syscall #SYS_FIND_PORT
+    load.q  r29, (sp)
+    beqz    r2, .ab_findi_ok
+    syscall #SYS_YIELD
+    bra     .ab_findi
+.ab_findi_ok:
+    store.q r1, 136(r29)               ; intuition_port
+
+    ; CreatePort(NULL) → reply_port
+    move.q  r1, r0
+    move.l  r2, #0
+    syscall #SYS_CREATE_PORT
+    load.q  r29, (sp)
+    bnez    r2, .ab_halt
+    store.q r1, 144(r29)               ; reply_port
+
+    ; CreatePort(NULL) → idcmp_port
+    move.q  r1, r0
+    move.l  r2, #0
+    syscall #SYS_CREATE_PORT
+    load.q  r29, (sp)
+    bnez    r2, .ab_halt
+    store.q r1, 152(r29)               ; idcmp_port
+
+    ; AllocMem(320*200*4 = 256000, MEMF_PUBLIC|MEMF_CLEAR)
+    ; M12: window is 320x200 to fit nicely under the 16-pixel title bar
+    ; with room for several lines of about text in the content area.
+    move.l  r1, #256000
+    move.l  r2, #0x10001
+    syscall #SYS_ALLOC_MEM             ; R1=va R2=err R3=share
+    load.q  r29, (sp)
+    bnez    r2, .ab_halt
+    store.q r1, 160(r29)               ; surface_va
+    store.l r3, 168(r29)               ; surface_share
+
+    ; Fill window backing buffer with the recessed-panel grey colour
+    ; COL_PANEL_BG = 0xFFDCD8D0 (AmigaOS 3.9 / ReAction recessed panel).
+    ; intuition.library overpaints the outer frame, blue title bar, and
+    ; recessed-panel border on top, but the interior of the panel keeps
+    ; these pixels — so the user sees a uniform recessed grey body with
+    ; black Topaz text on top.
+    load.q  r14, 160(r29)
+    move.l  r15, #256000               ; bytes
+    move.l  r16, #0xFFDCD8D0           ; COL_PANEL_BG
+.ab_fill:
+    beqz    r15, .ab_fill_done
+    store.l r16, (r14)
+    add     r14, r14, #4
+    sub     r15, r15, #4
+    bra     .ab_fill
+.ab_fill_done:
+
+    ; ===== Render about text into the window =====
+    ; The window's content area starts below intuition.library's 16-pixel
+    ; title bar plus the 1-pixel outer + 1-pixel inner frame, so visible
+    ; window. The recessed content panel painted by intuition.library
+    ; starts at window-local (8, 24) and extends to (312, 168). All text
+    ; lives inside that panel area, indented 8 px (so x = 16) and spaced
+    ; 18 px apart (16-px glyph height + 2 px leading).
+    ;
+    ; Text color = black (0xFF000000) on COL_PANEL_BG (0xFFDCD8D0).
+
+    ; Line 1 (y=32): "About IntuitionOS"
+    move.l  r10, #16                   ; x
+    move.l  r11, #32                   ; y
+    add     r12, r29, #256             ; r12 = string ptr (data offset 256)
+    jsr     .ab_draw_string
+    ; Line 2 (y=56): "Protected Exec-inspired kernel"
+    move.l  r10, #16
+    move.l  r11, #56
+    add     r12, r29, #288             ; data offset 288
+    jsr     .ab_draw_string
+    ; Line 3 (y=80): "intuition.library demonstration"
+    move.l  r10, #16
+    move.l  r11, #80
+    add     r12, r29, #320             ; data offset 320
+    jsr     .ab_draw_string
+    ; Line 4 (y=104): "All services run in user space"
+    move.l  r10, #16
+    move.l  r11, #104
+    add     r12, r29, #352             ; data offset 352
+    jsr     .ab_draw_string
+    ; Line 5 (y=152): "Press Esc to close"
+    move.l  r10, #16
+    move.l  r11, #152
+    add     r12, r29, #384             ; data offset 384
+    jsr     .ab_draw_string
+
+    ; Send INTUITION_OPEN_WINDOW
+    ; data0 = (320<<48)|(200<<32)|(240<<16)|200  (w/h/x/y)
+    ; M12: window centered on 800x600 screen at (240, 200), size 320x200.
+    load.q  r1, 136(r29)               ; intuition_port
+    move.l  r2, #INTUITION_OPEN_WINDOW
+    move.q  r3, #320
+    lsl     r3, r3, #48
+    move.q  r14, #200
+    lsl     r14, r14, #32
+    or      r3, r3, r14
+    move.q  r14, #240
+    lsl     r14, r14, #16
+    or      r3, r3, r14
+    or      r3, r3, #200
+    load.q  r4, 152(r29)               ; data1 = idcmp_port
+    load.q  r5, 144(r29)               ; reply_port
+    load.l  r6, 168(r29)               ; share = surface_share
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    bnez    r2, .ab_halt
+    load.q  r1, 144(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+    bnez    r3, .ab_halt
+    bnez    r1, .ab_halt               ; r1 = INTUI_ERR_*
+    store.q r2, 176(r29)               ; window_handle
+
+    ; Send INTUITION_DAMAGE (full window)
+    load.q  r1, 136(r29)
+    move.l  r2, #INTUITION_DAMAGE
+    load.q  r3, 176(r29)
+    move.q  r4, r0
+    load.q  r5, 144(r29)
+    move.q  r6, r0
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    load.q  r1, 144(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+
+    ; ----- IDCMP wait loop -----
+.ab_idcmp:
+    load.q  r29, (sp)
+    load.q  r1, 152(r29)               ; idcmp_port
+    syscall #SYS_WAIT_PORT             ; R1=type R2=data0 R3=err
+    load.q  r29, (sp)
+    bnez    r3, .ab_idcmp
+    move.l  r28, #IDCMP_CLOSEWINDOW
+    beq     r1, r28, .ab_close
+    bra     .ab_idcmp                  ; ignore other classes for M12 demo
+
+.ab_close:
+    ; Send INTUITION_CLOSE_WINDOW
+    load.q  r1, 136(r29)
+    move.l  r2, #INTUITION_CLOSE_WINDOW
+    load.q  r3, 176(r29)
+    move.q  r4, r0
+    load.q  r5, 144(r29)
+    move.q  r6, r0
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    load.q  r1, 144(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+
+    move.q  r1, r0
+    syscall #SYS_EXIT_TASK
+
+.ab_halt:
+    syscall #SYS_YIELD
+    bra     .ab_halt
+
+; ----------------------------------------------------------------
+; .ab_draw_char — render a single 8x16 topaz glyph into the surface
+; ----------------------------------------------------------------
+; Inputs:
+;   r10 = x (column in pixels, must be >= 0 and <= 312)
+;   r11 = y (row in pixels, must be >= 0 and <= 184)
+;   r3  = character byte (ASCII; lookup is `font[ch * 16 + row]`)
+;   r29 = data base (so r29+1024 is font[0])
+; Output: nothing
+; Clobbers: r4..r9, r14..r19
+; Preserves: r10, r11, r29
+; ----------------------------------------------------------------
+.ab_draw_char:
+    ; Load surface_va, compute pixel base for this glyph cell:
+    ;   base = surface_va + y*1280 + x*4    (320-stride = 320*4 = 1280)
+    load.q  r4, 160(r29)               ; surface_va
+    move.l  r14, #1280
+    mulu    r14, r11, r14
+    add     r4, r4, r14
+    lsl     r14, r10, #2
+    add     r4, r4, r14                ; r4 = top-left pixel of cell
+    ; Compute glyph pointer: r5 = font_base + ch * 16
+    add     r5, r29, #1024             ; font_base
+    lsl     r6, r3, #4                 ; ch * 16
+    add     r5, r5, r6                 ; r5 = &font[ch][0]
+    ; Loop 16 rows
+    move.l  r6, #0                     ; row index 0..15
+.ab_dc_row:
+    move.l  r14, #16
+    bge     r6, r14, .ab_dc_done
+    load.b  r7, (r5)                   ; r7 = glyph row bits
+    add     r5, r5, #1
+    ; Render 8 pixels left-to-right
+    move.q  r8, r4                     ; pixel cursor
+    move.l  r9, #0                     ; col index 0..7
+.ab_dc_col:
+    move.l  r14, #8
+    bge     r9, r14, .ab_dc_col_done
+    ; bit = (r7 >> (7 - col)) & 1
+    move.l  r14, #7
+    sub     r14, r14, r9
+    lsr     r15, r7, r14
+    and     r15, r15, #1
+    beqz    r15, .ab_dc_skip
+    ; M12 redesign: black text on grey panel (was white text on teal).
+    ; COL_TEXT = 0xFF000000 (RGBA bytes 00,00,00,FF).
+    move.l  r16, #0xFF000000
+    store.l r16, (r8)
+.ab_dc_skip:
+    add     r8, r8, #4
+    add     r9, r9, #1
+    bra     .ab_dc_col
+.ab_dc_col_done:
+    add     r4, r4, #1280              ; next surface row
+    add     r6, r6, #1
+    bra     .ab_dc_row
+.ab_dc_done:
+    rts
+
+; ----------------------------------------------------------------
+; .ab_draw_string — render a null-terminated string at (x, y)
+; ----------------------------------------------------------------
+; Inputs:
+;   r10 = x (initial column)
+;   r11 = y (row)
+;   r12 = string pointer
+;   r29 = data base
+; Output: r10 advanced past the last drawn glyph
+; Clobbers: r3..r9, r14..r19
+; ----------------------------------------------------------------
+.ab_draw_string:
+    sub     sp, sp, #24
+    store.q r10, (sp)                  ; save x
+    store.q r11, 8(sp)                 ; save y
+    store.q r12, 16(sp)                ; save str ptr
+.ab_ds_loop:
+    load.q  r12, 16(sp)
+    load.b  r3, (r12)
+    beqz    r3, .ab_ds_done
+    ; Draw the char
+    load.q  r10, (sp)
+    load.q  r11, 8(sp)
+    jsr     .ab_draw_char
+    ; Advance x by glyph width (8) and string ptr
+    load.q  r10, (sp)
+    add     r10, r10, #8
+    store.q r10, (sp)
+    load.q  r12, 16(sp)
+    add     r12, r12, #1
+    store.q r12, 16(sp)
+    bra     .ab_ds_loop
+.ab_ds_done:
+    add     sp, sp, #24
+    rts
+prog_about_code_end:
+
+prog_about_data:
+    ; offsets 0..127: convention/scratch, unused. Strings live at 192+ to keep
+    ; field offsets stable.
+    ds.b    128                          ; pad 0..128
+    ds.b    8                            ; 128: task_id
+    ds.b    8                            ; 136: intuition_port
+    ds.b    8                            ; 144: reply_port
+    ds.b    8                            ; 152: idcmp_port
+    ds.b    8                            ; 160: surface_va
+    ds.b    8                            ; 168: surface_share
+    ds.b    8                            ; 176: window_handle
+    ds.b    8                            ; 184: pad
+    ; offset 192: "intuition.library" + pad to 32 (port name for FindPort)
+    dc.b    "intuition.library", 0
+    ds.b    14
+    ; offset 224: "About M12 ready" + pad to 32 (test marker)
+    dc.b    "About M12 ready", 0
+    ds.b    16
+    ; offset 256: line 1 — "About IntuitionOS" + pad to 32
+    dc.b    "About IntuitionOS", 0
+    ds.b    14
+    ; offset 288: line 2 — "Protected Exec-inspired kernel" + pad to 32
+    dc.b    "Protected Exec-inspired kernel", 0
+    ds.b    1
+    ; offset 320: line 3 — "intuition.library demonstration" + pad to 32
+    dc.b    "intuition.library demonstration", 0
+    ; offset 352: line 4 — "All visible services run in user space" — too long
+    ; for a 32-byte slot; truncate to fit. Use a 64-byte slot here.
+    dc.b    "All services run in user space", 0
+    ds.b    1
+    ; offset 384: line 5 — "Press Esc to close" + pad to 32
+    dc.b    "Press Esc to close", 0
+    ds.b    13
+    ; offset 416: pad to 1024 (font lives at 1024 for round offsets)
+    ds.b    608
+    ; offset 1024: embedded Topaz 8x16 font (256 glyphs × 16 bytes = 4096 bytes)
+    incbin  "topaz.raw"
+prog_about_data_end:
+    align   8
+prog_about_end:
 
 prog_doslib_data_end:
     align   8
