@@ -602,30 +602,33 @@ load_program:
     move.l  r15, #IMG_MAGIC_HI
     bne     r14, r15, .lp_badarg
 
-    ; 3. Load code_size, validate > 0, <= 8192, 8-byte aligned
+    ; 3. Load code_size, validate > 0 and 8-byte aligned.
+    ;    M12.8 prerequisite: the prior arbitrary `code_size <= 8192` cap
+    ;    was a bucket-C product limit, not an architectural bound. It has
+    ;    been removed; the actual constraint is the per-task slot fit
+    ;    check at step 5d below.
     load.l  r20, IMG_OFF_CODE_SIZE(r7)  ; r20 = code_size
     beqz    r20, .lp_badarg
-    move.l  r11, #8192
-    bgt     r20, r11, .lp_badarg
     and     r14, r20, #7                ; check 8-byte alignment
     bnez    r14, .lp_badarg
 
-    ; 4. Load data_size, validate <= 49152 (M12 redesign: bumped to 12 data
-    ;    pages so dos.library can host the M12 embedded service images
-    ;    including intuition.library + About + the embedded Topaz fonts —
-    ;    intuition.library now also embeds a copy of topaz.raw for title-bar
-    ;    text rendering, pushing the embedded image set past 32 KiB)
+    ; 4. Load data_size. M12.8 prerequisite: the prior arbitrary
+    ;    `data_size <= 49152` cap (bumped from M5 → M12 to make room for
+    ;    embedded service images) was the same kind of bucket-C product
+    ;    limit. It has been removed; the slot fit check at step 5d is
+    ;    the real constraint.
     load.l  r21, IMG_OFF_DATA_SIZE(r7)  ; r21 = data_size
-    move.l  r11, #49152
-    bgt     r21, r11, .lp_badarg
 
-    ; 5. Check image_size >= 32 + code_size + data_size
+    ; 5. Check image_size >= 32 + code_size + data_size (truncated image).
+    ;    Performed in 64-bit; load.l zero-extends so r20/r21 are in [0,2^32).
     move.l  r14, #IMG_HEADER_SIZE
     add     r14, r14, r20
     add     r14, r14, r21               ; r14 = required size
     bgt     r14, r8, .lp_badarg         ; truncated image
 
-    ; 5b. Compute code_pages = ceil(code_size / 4096)
+    ; 5b. Compute code_pages = ceil(code_size / 4096).
+    ;     Safe vs hostile inputs: r20 ∈ [0,2^32), so r26 ≤ 2^20, well
+    ;     under any signed-bgt overflow boundary used at step 5d.
     move.q  r26, r20
     add     r26, r26, #0xFFF
     lsr     r26, r26, #12               ; r26 = code_pages
@@ -637,6 +640,20 @@ load_program:
     add     r27, r27, #0xFFF
     lsr     r27, r27, #12               ; r27 = data_pages
 .lp_skip_data_pages:
+
+    ; 5d. Architectural slot-fit check (M12.8 prerequisite).
+    ;     Each task slot is USER_VPN_STRIDE pages wide and is laid out as
+    ;       code_pages | 1 stack page | data_pages
+    ;     so the only real ceiling on an image is
+    ;       code_pages + 1 + data_pages <= USER_VPN_STRIDE.
+    ;     This single bound replaces the two prior arbitrary caps and is
+    ;     the *honest* architectural limit — the layout itself enforces
+    ;     it. A hostile image declaring code_size = 0xFFFFFFFF computes
+    ;     code_pages ≈ 2^20 here and is correctly rejected by this bound.
+    add     r14, r26, r27
+    add     r14, r14, #1                ; +1 for the stack page
+    move.l  r11, #USER_VPN_STRIDE
+    bgt     r14, r11, .lp_badarg
 
     ; 6. Find free TCB slot
     move.l  r22, #0                     ; r22 = candidate slot
@@ -5101,7 +5118,16 @@ prog_doslib:
 prog_doslib_code:
 
     ; =====================================================================
-    ; Preamble: compute data page base (preemption-safe double-check)
+    ; Preamble: compute data page base (preemption-safe double-check).
+    ;
+    ; M12.8 prerequisite: the previous version added a hard-coded
+    ; `#0x3000` offset to USER_CODE_BASE + task_id*stride. That offset
+    ; assumed dos.library has exactly 2 code pages — wrong as soon as
+    ; the code section grows past 8 KiB. The robust derivation: the
+    ; kernel sets initial USP = data_base (see load_program at
+    ; iexec.s ~line 747). After the entry-point `sub sp, sp, #16`,
+    ; sp == data_base - 16, so `add r29, sp, #16` recovers data_base
+    ; for ANY code_pages count. No magic offsets, no SYSINFO query.
     ; =====================================================================
     sub     sp, sp, #16
 .dos_preamble:
@@ -5112,20 +5138,12 @@ prog_doslib_code:
     syscall #SYS_GET_SYS_INFO          ; R1 = task_id (verify)
     load.q  r28, 8(sp)
     bne     r1, r28, .dos_preamble
-    move.l  r28, #USER_SLOT_STRIDE
-    mulu    r28, r1, r28
-    move.l  r29, #USER_CODE_BASE
-    add     r29, r29, r28
-    add     r29, r29, #0x3000
+    add     r29, sp, #16               ; r29 = data_base (= initial USP)
     store.q r29, (sp)
     load.q  r1, 8(sp)
-    move.l  r28, #USER_SLOT_STRIDE
-    mulu    r28, r1, r28
-    move.l  r29, #USER_CODE_BASE
-    add     r29, r29, r28
-    add     r29, r29, #0x3000
-    load.q  r28, (sp)
-    bne     r29, r28, .dos_preamble
+    add     r28, sp, #16               ; recompute for double-check
+    load.q  r29, (sp)
+    bne     r28, r29, .dos_preamble
     store.q r29, (sp)
     load.q  r1, 8(sp)
     store.q r1, 128(r29)               ; data[128] = task_id
@@ -5276,13 +5294,14 @@ prog_doslib_code:
     ; The first chain page is empty so the "find free slot" walker would
     ; trivially return slot 0; we just inline the same operations here
     ; for the boot path to keep boot init simple and dependency-free.
+    ; M12.8 Phase 2: file body is now an extent chain, not a fixed
+    ; AllocMem(DOS_FILE_SIZE) page.
     ; =====================================================================
-    ; AllocMem one DOS_FILE_SIZE page for the readme body
-    move.l  r1, #DOS_FILE_SIZE
-    move.l  r2, #MEMF_CLEAR
-    syscall #SYS_ALLOC_MEM             ; R1 = VA, R2 = err
-    load.q  r29, (sp)
-    move.q  r24, r1                    ; r24 = readme_body_va
+    ; Allocate the readme body via the extent allocator (28 bytes).
+    move.l  r1, #28
+    jsr     .dos_extent_alloc           ; r1 = first extent VA, r2 = err
+    bnez    r2, .dos_init_done          ; alloc failed → leave entry unset
+    move.q  r24, r1                     ; r24 = readme_body_first_va
 
     ; Get the metadata chain head and address slot 0
     load.q  r25, 152(r29)              ; r25 = meta page VA
@@ -5302,22 +5321,18 @@ prog_doslib_code:
     move.l  r28, #31
     blt     r14, r28, .dos_cpname
 .dos_cpname_done:
-    ; entry.file_va = r24 (readme_body_va)
+    ; entry.file_va = r24 (readme_body_first_va, head of extent chain)
     store.q r24, DOS_META_OFF_VA(r25)
     ; entry.size = 28 (length of welcome message)
     move.l  r14, #28
     store.l r14, DOS_META_OFF_SIZE(r25)
 
-    ; Copy welcome message from data[912] to readme_body_va
-    add     r20, r29, #912             ; src = welcome message
-    move.q  r21, r24                   ; dst = readme_body_va
-.dos_cpwelcome:
-    load.b  r15, (r20)
-    store.b r15, (r21)
-    beqz    r15, .dos_init_done
-    add     r20, r20, #1
-    add     r21, r21, #1
-    bra     .dos_cpwelcome
+    ; Copy welcome message from data[912] into the extent chain payload.
+    move.q  r1, r24                    ; r1 = first extent VA
+    add     r2, r29, #912              ; r2 = src (welcome message)
+    move.l  r3, #28                    ; r3 = byte_count
+    jsr     .dos_extent_write
+    load.q  r29, (sp)
 .dos_init_done:
 
     ; =====================================================================
@@ -5384,8 +5399,12 @@ prog_doslib_code:
     bra     .dos_seed_done
 
     ; -----------------------------------------------------------------
-    ; .dos_seed_one (M12.6 Phase A): seed one file from embedded data
-    ; into the metadata chain + a freshly AllocMem'd file body.
+    ; .dos_seed_one (M12.6 Phase A; M12.8 Phase 2 storage migration):
+    ; seed one file from embedded data into the metadata chain. The
+    ; file body is now an extent chain, not a fixed AllocMem(DOS_FILE_SIZE)
+    ; page. Image size is computed from the IE64PROG header (or NUL scan
+    ; for plain text), an extent chain is allocated to hold it, and the
+    ; image bytes are copied via .dos_extent_write.
     ; Input:  r20 = name_ptr, r24 = image_ptr, r29 = data_base
     ; Output: r24 advanced past image (aligned to 8)
     ; Saves intermediate state in data[192..223] (former file_table region,
@@ -5405,16 +5424,7 @@ prog_doslib_code:
     bnez    r2, .dso_done
     store.q r1, 208(r29)                ; saved entry VA
 
-    ; --- 2. AllocMem(DOS_FILE_SIZE) for the file body ---
-    push    r29
-    move.l  r1, #DOS_FILE_SIZE
-    move.l  r2, #MEMF_CLEAR
-    syscall #SYS_ALLOC_MEM              ; r1 = VA, r2 = err
-    pop     r29
-    bnez    r2, .dso_done
-    store.q r1, 216(r29)                ; saved body VA
-
-    ; --- 3. Compute image size from saved image ptr ---
+    ; --- 2. Compute image size from saved image ptr ---
     load.q  r24, 200(r29)
     load.l  r15, (r24)
     move.l  r18, #IMG_MAGIC_LO
@@ -5424,20 +5434,32 @@ prog_doslib_code:
     load.l  r15, 12(r24)
     add     r23, r23, r15
     add     r23, r23, #IMG_HEADER_SIZE
-    bra     .dso_set_entry
+    bra     .dso_have_size
 .dso_text_size:
-    ; Plain text: scan for NUL byte
+    ; Plain text: scan for NUL byte.
+    ;
+    ; M12.8 follow-up: this path seeds trusted embedded text assets
+    ; (currently S:Startup-Sequence), so a hard-coded 4 KiB scan cap
+    ; would be a lingering artificial per-file ceiling after the
+    ; DOS_FILE_SIZE removal. The embedded data is kernel-controlled, not
+    ; user input, so the correct behavior here is to scan to its real
+    ; terminating NUL rather than imposing another product limit.
     move.q  r16, r24
     move.l  r23, #0
 .dso_tscan:
     load.b  r15, (r16)
-    beqz    r15, .dso_set_entry
+    beqz    r15, .dso_have_size
     add     r16, r16, #1
     add     r23, r23, #1
-    move.l  r18, #4096
-    blt     r23, r18, .dso_tscan
-.dso_set_entry:
-    ; r23 = image size
+    bra     .dso_tscan
+.dso_have_size:
+    store.q r23, 216(r29)               ; saved image size
+
+    ; --- 3. Allocate extent chain large enough for the image ---
+    move.q  r1, r23                     ; r1 = byte_count
+    jsr     .dos_extent_alloc           ; r1 = first extent VA, r2 = err
+    bnez    r2, .dso_done
+    store.q r1, 224(r29)                ; saved chain head VA
 
     ; --- 4. Copy name from saved name ptr to entry.name ---
     load.q  r20, 192(r29)
@@ -5457,28 +5479,22 @@ prog_doslib_code:
     store.b r0, (r17)
 .dso_cpname_done:
 
-    ; --- 5. entry.file_va = body VA, entry.size = image size ---
+    ; --- 5. entry.file_va = chain head, entry.size = image size ---
     load.q  r25, 208(r29)
-    load.q  r1, 216(r29)
+    load.q  r1, 224(r29)
     store.q r1, DOS_META_OFF_VA(r25)
+    load.q  r23, 216(r29)
     store.l r23, DOS_META_OFF_SIZE(r25)
 
-    ; --- 6. Copy image bytes from image ptr to body ---
-    load.q  r21, 216(r29)               ; dst = body VA
-    load.q  r16, 200(r29)               ; src = image ptr
-    move.l  r18, #0
-.dso_copy:
-    bge     r18, r23, .dso_copy_done
-    load.b  r15, (r16)
-    store.b r15, (r21)
-    add     r16, r16, #1
-    add     r21, r21, #1
-    add     r18, r18, #1
-    bra     .dso_copy
-.dso_copy_done:
+    ; --- 6. Copy image bytes into the extent chain ---
+    load.q  r1, 224(r29)                ; r1 = first extent VA
+    load.q  r2, 200(r29)                ; r2 = src = image ptr
+    load.q  r3, 216(r29)                ; r3 = byte_count
+    jsr     .dos_extent_write
 
     ; --- 7. Advance r24 past image (aligned to 8) ---
     load.q  r24, 200(r29)
+    load.q  r23, 216(r29)
     add     r24, r24, r23
     add     r24, r24, #7
     and     r24, r24, #0xFFFFFFF8
@@ -5558,12 +5574,12 @@ prog_doslib_code:
 .dos_do_dir:
     load.q  r20, 168(r29)              ; r20 = dest (caller's shared buffer)
     move.q  r21, r0                     ; r21 = total bytes written
-    ; Compute share_bytes - 50 reserve into r24 (max ~50 bytes per entry:
-    ; 32 name pad + 4 size digits + 2 CRLF + 12 slack/NUL). Defense-in-depth
+    ; Compute share_bytes - 56 reserve into r24 (max ~56 bytes per entry:
+    ; 32 name pad + up to 10 size digits + 2 CRLF + 12 slack/NUL). Defense-in-depth
     ; against a small share that can't fit the full directory listing.
     load.q  r24, 184(r29)              ; cached share_pages
     lsl     r24, r24, #12              ; r24 = share_bytes
-    sub     r24, r24, #50              ; r24 = safe write ceiling
+    sub     r24, r24, #56              ; r24 = safe write ceiling
     ; Walk the metadata chain. r25 = current chain page VA.
     load.q  r25, 152(r29)              ; meta chain head
 .dos_dir_page_loop:
@@ -5603,18 +5619,124 @@ prog_doslib_code:
     add     r17, r17, #1
     bra     .dos_dir_pad
 .dos_dir_size:
-    ; Read file size from entry+DOS_META_OFF_SIZE, write decimal digits
-    load.l  r15, DOS_META_OFF_SIZE(r14)
-    ; Simple decimal: divide by powers of 10 (max 4096, so 4 digits)
-    ; Write thousands digit
+    ; Read file size from entry+DOS_META_OFF_SIZE and write it in decimal.
+    ; Keep the historical minimum width of 4 digits for small files, but
+    ; expand cleanly past 9999 now that M12.8 removed the old per-file cap.
+    load.l  r15, DOS_META_OFF_SIZE(r14) ; r15 = remaining size
+    move.l  r18, #0                     ; r18 = started flag
+
+    ; 1,000,000,000
+    move.l  r28, #1000000000
+    divu    r16, r15, r28
+    mulu    r17, r16, r28
+    sub     r15, r15, r17
+    beqz    r18, .dds_skip_1g_chk
+    bra     .dds_emit_1g
+.dds_skip_1g_chk:
+    beqz    r16, .dds_skip_1g
+.dds_emit_1g:
+    add     r16, r16, #0x30
+    store.b r16, (r20)
+    add     r20, r20, #1
+    add     r21, r21, #1
+    move.l  r18, #1
+.dds_skip_1g:
+
+    ; 100,000,000
+    move.l  r28, #100000000
+    divu    r16, r15, r28
+    mulu    r17, r16, r28
+    sub     r15, r15, r17
+    beqz    r18, .dds_skip_100m_chk
+    bra     .dds_emit_100m
+.dds_skip_100m_chk:
+    beqz    r16, .dds_skip_100m
+.dds_emit_100m:
+    add     r16, r16, #0x30
+    store.b r16, (r20)
+    add     r20, r20, #1
+    add     r21, r21, #1
+    move.l  r18, #1
+.dds_skip_100m:
+
+    ; 10,000,000
+    move.l  r28, #10000000
+    divu    r16, r15, r28
+    mulu    r17, r16, r28
+    sub     r15, r15, r17
+    beqz    r18, .dds_skip_10m_chk
+    bra     .dds_emit_10m
+.dds_skip_10m_chk:
+    beqz    r16, .dds_skip_10m
+.dds_emit_10m:
+    add     r16, r16, #0x30
+    store.b r16, (r20)
+    add     r20, r20, #1
+    add     r21, r21, #1
+    move.l  r18, #1
+.dds_skip_10m:
+
+    ; 1,000,000
+    move.l  r28, #1000000
+    divu    r16, r15, r28
+    mulu    r17, r16, r28
+    sub     r15, r15, r17
+    beqz    r18, .dds_skip_1m_chk
+    bra     .dds_emit_1m
+.dds_skip_1m_chk:
+    beqz    r16, .dds_skip_1m
+.dds_emit_1m:
+    add     r16, r16, #0x30
+    store.b r16, (r20)
+    add     r20, r20, #1
+    add     r21, r21, #1
+    move.l  r18, #1
+.dds_skip_1m:
+
+    ; 100,000
+    move.l  r28, #100000
+    divu    r16, r15, r28
+    mulu    r17, r16, r28
+    sub     r15, r15, r17
+    beqz    r18, .dds_skip_100k_chk
+    bra     .dds_emit_100k
+.dds_skip_100k_chk:
+    beqz    r16, .dds_skip_100k
+.dds_emit_100k:
+    add     r16, r16, #0x30
+    store.b r16, (r20)
+    add     r20, r20, #1
+    add     r21, r21, #1
+    move.l  r18, #1
+.dds_skip_100k:
+
+    ; 10,000
+    move.l  r28, #10000
+    divu    r16, r15, r28
+    mulu    r17, r16, r28
+    sub     r15, r15, r17
+    beqz    r18, .dds_skip_10k_chk
+    bra     .dds_emit_10k
+.dds_skip_10k_chk:
+    beqz    r16, .dds_skip_10k
+.dds_emit_10k:
+    add     r16, r16, #0x30
+    store.b r16, (r20)
+    add     r20, r20, #1
+    add     r21, r21, #1
+    move.l  r18, #1
+.dds_skip_10k:
+
+    ; 1,000 (always emit from here down for 4-digit minimum width)
     move.l  r28, #1000
-    divu    r16, r15, r28               ; r16 = thousands
+    divu    r16, r15, r28
     mulu    r17, r16, r28
     sub     r15, r15, r17
     add     r16, r16, #0x30
     store.b r16, (r20)
     add     r20, r20, #1
     add     r21, r21, #1
+
     ; Hundreds
     move.l  r28, #100
     divu    r16, r15, r28
@@ -5624,6 +5746,7 @@ prog_doslib_code:
     store.b r16, (r20)
     add     r20, r20, #1
     add     r21, r21, #1
+
     ; Tens
     move.l  r28, #10
     divu    r16, r15, r28
@@ -5633,6 +5756,7 @@ prog_doslib_code:
     store.b r16, (r20)
     add     r20, r20, #1
     add     r21, r21, #1
+
     ; Ones
     add     r15, r15, #0x30
     store.b r15, (r20)
@@ -5690,27 +5814,15 @@ prog_doslib_code:
     bra     .dos_reply_err              ; READ → error
 
 .dos_open_create:
-    ; Allocate a fresh metadata entry
+    ; M12.8 Phase 2: write-mode create no longer pre-allocates a body.
+    ; entry.file_va starts as 0 (empty file). The first DOS_WRITE will
+    ; allocate an extent chain via .dos_extent_alloc and link it in.
+    ; Allocate a fresh metadata entry.
     jsr     .dos_meta_alloc_entry       ; r1 = entry VA, r2 = err
     bnez    r2, .dos_reply_full
-    move.q  r25, r1                     ; r25 = entry VA (preserved)
-
-    ; Allocate file body via AllocMem(DOS_FILE_SIZE)
-    push    r25
-    push    r29
-    move.l  r1, #DOS_FILE_SIZE
-    move.l  r2, #MEMF_CLEAR
-    syscall #SYS_ALLOC_MEM              ; r1 = body VA, r2 = err
-    pop     r29
-    pop     r25
-    bnez    r2, .dos_create_no_body
-    ; entry.file_va = body
-    store.q r1, DOS_META_OFF_VA(r25)
-    bra     .dos_create_init_meta
-.dos_create_no_body:
-    ; Body alloc failed; clear entry.file_va so future opens see no body.
+    move.q  r25, r1                     ; r25 = entry VA
+    ; entry.file_va = 0 (empty body)
     store.q r0, DOS_META_OFF_VA(r25)
-.dos_create_init_meta:
     ; Copy filename from request buffer to entry.name (max 31 + NUL)
     move.q  r16, r23                    ; src = request name
     move.q  r17, r25                    ; dst = entry.name
@@ -5749,9 +5861,10 @@ prog_doslib_code:
     bra     .dos_main_loop
 
     ; =================================================================
-    ; DOS_READ (type=2): read file data into caller's shared buffer
-    ; M12.6 Phase A: handle lookup walks the handle chain; file body
-    ; is the AllocMem'd entry.file_va, no longer offset into storage_va.
+    ; DOS_READ (type=2): read file data into caller's shared buffer.
+    ; M12.8 Phase 2: file body is now an extent chain. The body VA at
+    ; DOS_META_OFF_VA is the first_extent_va of the chain (or 0 for an
+    ; empty file). The clamped max_bytes is read via .dos_extent_walk.
     ; =================================================================
     ; data0 = handle, data1 = max_bytes
 .dos_do_read:
@@ -5761,7 +5874,7 @@ prog_doslib_code:
     beqz    r1, .dos_read_badh
     move.q  r14, r1                     ; r14 = entry VA
     load.q  r29, (sp)
-    load.q  r20, DOS_META_OFF_VA(r14)  ; r20 = file body VA
+    load.q  r20, DOS_META_OFF_VA(r14)  ; r20 = first extent VA (or 0)
     load.l  r16, DOS_META_OFF_SIZE(r14)
     ; Clamp max_bytes to file size
     blt     r19, r16, .dos_read_clamp
@@ -5773,17 +5886,17 @@ prog_doslib_code:
     blt     r19, r24, .dos_read_share_ok
     move.q  r19, r24
 .dos_read_share_ok:
-    ; Copy from body VA to caller's shared buffer
-    load.q  r21, 168(r29)              ; dst = caller's mapped buffer
+    ; Empty body shortcut: file_va == 0 → read 0 bytes (skip the walk).
     move.q  r17, r0                     ; bytes copied = 0
-.dos_read_copy:
-    bge     r17, r19, .dos_read_reply
-    load.b  r15, (r20)
-    store.b r15, (r21)
-    add     r20, r20, #1
-    add     r21, r21, #1
-    add     r17, r17, #1
-    bra     .dos_read_copy
+    beqz    r20, .dos_read_reply
+    beqz    r19, .dos_read_reply
+    ; Walk the extent chain into the caller's shared buffer.
+    move.q  r1, r20                     ; r1 = first extent VA
+    load.q  r2, 168(r29)                ; r2 = dst = caller's mapped buffer
+    move.q  r3, r19                     ; r3 = byte_count
+    jsr     .dos_extent_walk            ; r1 = bytes copied
+    move.q  r17, r1
+    load.q  r29, (sp)
 .dos_read_reply:
     load.q  r1, 944(r29)
     move.l  r2, #DOS_OK
@@ -5799,53 +5912,89 @@ prog_doslib_code:
 
     ; =================================================================
     ; DOS_WRITE (type=3): write data from caller's buffer to file.
-    ; M12.6 Phase A: handle lookup walks the handle chain; writes go
-    ; to the AllocMem'd entry.file_va. Per-file capacity is still
-    ; DOS_FILE_SIZE (M12.8 will remove that).
+    ; M12.8 Phase 2: file body is now an extent chain. The per-file
+    ; DOS_FILE_SIZE cap has been removed; the only cap is share size.
+    ;
+    ; Atomic-swap-on-rewrite rule: allocate a NEW extent chain for the
+    ; new content; on alloc failure, leave the OLD chain intact and
+    ; reply DOS_ERR_FULL. Only after the new chain is fully allocated
+    ; AND the new bytes are copied in do we (a) point entry.file_va at
+    ; the new chain and (b) free the old chain. A failed write therefore
+    ; never corrupts the previous file content.
+    ;
+    ; Handler scratch slots in dos.library data page:
+    ;   256: entry_va        (8 bytes — survives helper JSRs)
+    ;   264: old_first_va    (8 bytes — for atomic swap)
+    ;   272: clamped_count   (8 bytes — clamped byte_count)
     ; =================================================================
     ; data0 = handle, data1 = byte_count
 .dos_do_write:
     load.q  r1, 960(r29)               ; r1 = handle_id
-    load.q  r19, 968(r29)              ; r19 = byte_count
+    load.q  r19, 968(r29)              ; r19 = byte_count (raw)
     jsr     .dos_hnd_lookup             ; r1 = entry VA (or 0)
     beqz    r1, .dos_write_badh
-    move.q  r14, r1                     ; r14 = entry VA (preserved)
     load.q  r29, (sp)
-    load.q  r21, DOS_META_OFF_VA(r14)  ; r21 = body VA (dst)
-    beqz    r21, .dos_write_badh        ; entry has no body (alloc failed)
-    ; Clamp byte_count to per-file capacity (still DOS_FILE_SIZE in Phase A)
-    move.l  r16, #DOS_FILE_SIZE
-    blt     r19, r16, .dos_write_clamp
-    move.q  r19, r16
-.dos_write_clamp:
-    ; Clamp byte_count to share size in bytes
+    store.q r1, 256(r29)                ; saved entry VA
+    move.q  r14, r1                     ; r14 = entry VA
+    load.q  r4, DOS_META_OFF_VA(r14)
+    store.q r4, 264(r29)                ; saved old_first_va
+
+    ; Clamp byte_count to share size in bytes (share_pages << 12).
+    ; The previous DOS_FILE_SIZE cap is removed; the only remaining
+    ; bound is the size of the caller's mapped share.
     load.q  r24, 184(r29)              ; cached share_pages
-    lsl     r24, r24, #12
+    lsl     r24, r24, #12              ; r24 = share_bytes
     blt     r19, r24, .dos_write_share_ok
     move.q  r19, r24
 .dos_write_share_ok:
-    ; Copy from caller's shared buffer to body
-    load.q  r20, 168(r29)              ; src = caller's mapped buffer
-    move.q  r17, r0                     ; bytes copied = 0
-.dos_write_copy:
-    bge     r17, r19, .dos_write_done
-    load.b  r15, (r20)
-    store.b r15, (r21)
-    add     r20, r20, #1
-    add     r21, r21, #1
-    add     r17, r17, #1
-    bra     .dos_write_copy
-.dos_write_done:
-    store.l r19, DOS_META_OFF_SIZE(r14)
-    ; Reply
+    store.q r19, 272(r29)               ; saved clamped byte_count
+
+    ; ---- Allocate the new extent chain (size = clamped byte_count) ----
+    ; .dos_extent_alloc returns r1=0 if byte_count==0 (legitimate empty
+    ; write) and r2=ERR_OK in that case — handled below at .dwr_no_alloc.
+    move.q  r1, r19
+    jsr     .dos_extent_alloc           ; r1 = new_first_va, r2 = err
+    bnez    r2, .dos_write_full
+    load.q  r29, (sp)
+    move.q  r25, r1                     ; r25 = new_first_va (may be 0)
+
+    ; ---- Copy bytes from caller's share into the new chain ----
+    beqz    r25, .dwr_no_alloc          ; empty write → skip extent_write
+    move.q  r1, r25                     ; r1 = new_first_va
+    load.q  r2, 168(r29)                ; r2 = src = caller's mapped buffer
+    load.q  r3, 272(r29)                ; r3 = clamped byte_count
+    jsr     .dos_extent_write
+    load.q  r29, (sp)
+.dwr_no_alloc:
+    ; ---- Atomic swap: link new chain into entry, then free old ----
+    load.q  r14, 256(r29)               ; reload entry VA
+    store.q r25, DOS_META_OFF_VA(r14)   ; entry.file_va = new_first_va
+    load.q  r19, 272(r29)               ; clamped byte_count
+    store.l r19, DOS_META_OFF_SIZE(r14) ; entry.size = byte_count
+
+    ; Free the old chain (no-op if old_first_va == 0)
+    load.q  r1, 264(r29)
+    beqz    r1, .dwr_done
+    jsr     .dos_extent_free
+    load.q  r29, (sp)
+.dwr_done:
+    ; Reply DOS_OK with bytes_written = clamped byte_count
+    load.q  r19, 272(r29)
     load.q  r1, 944(r29)
     move.l  r2, #DOS_OK
-    move.q  r3, r17                     ; data0 = bytes written
+    move.q  r3, r19                     ; data0 = bytes written
     move.q  r4, r0
     move.q  r5, r0
     syscall #SYS_REPLY_MSG
     load.q  r29, (sp)
     bra     .dos_main_loop
+
+.dos_write_full:
+    ; Allocation failed; .dos_extent_alloc has already freed any
+    ; partially-allocated chain via its internal cleanup. The entry
+    ; is untouched, so the previous file content is intact.
+    load.q  r29, (sp)
+    bra     .dos_reply_full
 .dos_write_badh:
     load.q  r29, (sp)
     bra     .dos_reply_badh
@@ -6221,10 +6370,48 @@ prog_doslib_code:
     bra     .dos_main_loop
 
 .dos_run_found:
-    ; r14 = entry VA
-    ; 4. image_ptr = entry.file_va, image_size = entry.size
-    load.q  r21, DOS_META_OFF_VA(r14)
-    load.l  r23, DOS_META_OFF_SIZE(r14)
+    ; r14 = entry VA. M12.8 Phase 2: file body is an extent chain.
+    ; SYS_EXEC_PROGRAM needs a contiguous image_ptr, so we:
+    ;   1. AllocMem a temp contiguous buffer (image_size bytes)
+    ;   2. Walk the extent chain into the temp buffer
+    ;   3. Pass the temp buffer to SYS_EXEC_PROGRAM
+    ;   4. FreeMem the temp after SYS_EXEC_PROGRAM returns (the kernel
+    ;      has already copied the image into the new task's slot at
+    ;      that point — see load_program in iexec.s ~line 700).
+    ;
+    ; Handler scratch slots in dos.library data page (DOS_RUN-specific,
+    ; non-overlapping with DOS_WRITE's 256..279):
+    ;   280: first_extent_va (8 bytes — for the walker call)
+    ;   288: image_size      (8 bytes — for walker count + later FreeMem)
+    ;   296: temp_buf_va     (8 bytes — for FreeMem after exec)
+    load.q  r21, DOS_META_OFF_VA(r14)   ; r21 = first extent VA (or 0)
+    load.l  r23, DOS_META_OFF_SIZE(r14) ; r23 = image size
+
+    ; A zero-size or empty-body file cannot be a valid program.
+    beqz    r21, .dos_run_notfound
+    beqz    r23, .dos_run_notfound
+
+    ; Save state to scratch slots BEFORE any syscall (syscalls clobber regs)
+    store.q r21, 280(r29)               ; first_extent_va
+    store.q r23, 288(r29)               ; image_size
+
+    ; ---- AllocMem a temp contiguous buffer of size = image_size ----
+    push    r29
+    move.q  r1, r23                     ; r1 = image size
+    move.l  r2, #MEMF_CLEAR
+    syscall #SYS_ALLOC_MEM              ; r1 = temp buf VA, r2 = err
+    pop     r29
+    bnez    r2, .dos_run_notfound       ; AllocMem failure → treat as notfound
+    store.q r1, 296(r29)                ; saved temp buf VA
+
+    ; ---- Walk the extent chain into the temp buffer ----
+    load.q  r1, 280(r29)                ; r1 = first_extent_va
+    load.q  r2, 296(r29)                ; r2 = dst = temp buf VA
+    load.q  r3, 288(r29)                ; r3 = byte_count = image size
+    jsr     .dos_extent_walk
+    load.q  r29, (sp)
+    load.q  r21, 296(r29)               ; r21 = temp buf VA (image_ptr for exec)
+    load.q  r23, 288(r29)               ; r23 = image size
 
     ; 5. Find args: scan past command name null in shared buffer.
     ; Bounded scan — without a length cap, a malicious caller could
@@ -6260,18 +6447,29 @@ prog_doslib_code:
 
 .dos_run_launch:
     ; 6. SYS_EXEC_PROGRAM (new ABI): R1=image_ptr, R2=size, R3=args_ptr, R4=args_len
-    move.q  r1, r21                    ; image_ptr (in storage, user-accessible)
+    move.q  r1, r21                    ; image_ptr (temp buf populated by extent walker)
     move.q  r2, r23                    ; image_size
     move.q  r3, r16                    ; args_ptr (in shared buffer)
     move.q  r4, r18                    ; args_len
     syscall #SYS_EXEC_PROGRAM
     load.q  r29, (sp)
-    move.q  r14, r1                    ; save task_id
-    move.q  r15, r2                    ; save err
+    ; Save task_id + err to scratch BEFORE FreeMem (FreeMem clobbers regs).
+    store.q r1, 304(r29)               ; saved task_id
+    store.q r2, 312(r29)               ; saved err
+
+    ; M12.8 Phase 2: free the temp contiguous buffer. The kernel has
+    ; already copied the image into the new task's slot during
+    ; SYS_EXEC_PROGRAM, so the temp buffer is no longer needed.
+    push    r29
+    load.q  r1, 296(r29)               ; r1 = temp buf VA
+    load.q  r2, 288(r29)               ; r2 = image size (matches AllocMem)
+    syscall #SYS_FREE_MEM
+    pop     r29
+
     ; Reply: type=err, data0=task_id
     load.q  r1, 944(r29)
-    move.q  r2, r15                    ; type = err
-    move.q  r3, r14                    ; data0 = task_id
+    load.q  r2, 312(r29)               ; type = err
+    load.q  r3, 304(r29)               ; data0 = task_id
     move.q  r4, r0
     move.q  r5, r0
     syscall #SYS_REPLY_MSG
@@ -6583,6 +6781,213 @@ prog_doslib_code:
     move.q  r2, r0
     rts
 
+    ; ==================================================================
+    ; M12.8 Phase 1 — file body extent allocator (DEAD CODE in Phase 1).
+    ;
+    ; These helpers allocate, free, and walk a chain of 4 KiB extents
+    ; that will replace the fixed-size DOS_FILE_SIZE per-file body in
+    ; Phase 2. They are wired into NO existing code path in Phase 1;
+    ; they only need to assemble cleanly and not break any existing
+    ; test. Phase 2 will switch DOS_OPEN/READ/WRITE over and remove
+    ; the DOS_FILE_SIZE cap.
+    ;
+    ; Extent layout (one AllocMem'd 4 KiB page):
+    ;   [0..7]    next_va (0 = end of chain)
+    ;   [8..15]   reserved
+    ;   [16..4095] payload (DOS_EXT_PAYLOAD = 4080 bytes)
+    ; ==================================================================
+
+    ; ------------------------------------------------------------------
+    ; .dos_extent_alloc: allocate a chain of 4 KiB extents large enough
+    ; to hold byte_count payload bytes.
+    ; In:  r1  = byte_count (>=0; 0 means "no body, return first_va=0")
+    ;      r29 = data base
+    ; Out: r1  = first_extent_va (or 0 if byte_count==0 or alloc failed)
+    ;      r2  = ERR_OK on success, AllocMem err code on failure
+    ; Clobbers: r3, r17, r18, r19
+    ; ------------------------------------------------------------------
+.dos_extent_alloc:
+    beqz    r1, .dea_zero_size
+    ; n_extents = ceil(byte_count / DOS_EXT_PAYLOAD)
+    add     r17, r1, #(DOS_EXT_PAYLOAD - 1)
+    move.l  r3, #DOS_EXT_PAYLOAD
+    divu    r17, r17, r3                ; r17 = remaining extents to allocate
+    ; Allocate the first extent.
+    push    r29
+    push    r17
+    move.l  r1, #4096
+    move.l  r2, #MEMF_CLEAR
+    syscall #SYS_ALLOC_MEM
+    pop     r17
+    pop     r29
+    bnez    r2, .dea_fail_first
+    move.q  r19, r1                     ; r19 = first_va (preserved)
+    move.q  r18, r1                     ; r18 = tail_va (advances each loop)
+    sub     r17, r17, #1
+.dea_loop:
+    beqz    r17, .dea_done
+    push    r29
+    push    r19
+    push    r18
+    push    r17
+    move.l  r1, #4096
+    move.l  r2, #MEMF_CLEAR
+    syscall #SYS_ALLOC_MEM
+    pop     r17
+    pop     r18
+    pop     r19
+    pop     r29
+    bnez    r2, .dea_fail_partial
+    store.q r1, DOS_EXT_OFF_NEXT(r18)   ; tail.next_va = new extent
+    move.q  r18, r1                     ; advance tail
+    sub     r17, r17, #1
+    bra     .dea_loop
+.dea_done:
+    move.q  r1, r19
+    move.q  r2, r0                      ; ERR_OK
+    rts
+.dea_zero_size:
+    move.q  r1, r0
+    move.q  r2, r0
+    rts
+.dea_fail_first:
+    move.q  r1, r0
+    ; r2 already holds the AllocMem err code
+    rts
+.dea_fail_partial:
+    ; r2 holds the AllocMem err code; preserve it across the free call.
+    push    r2
+    move.q  r1, r19                     ; head of partially-allocated chain
+    jsr     .dos_extent_free            ; preserves r29 internally
+    pop     r2
+    move.q  r1, r0
+    rts
+
+    ; ------------------------------------------------------------------
+    ; .dos_extent_free: walk an extent chain and FreeMem each page.
+    ; Safe to call with r1 == 0 (no-op).
+    ; In:  r1  = first_extent_va (or 0)
+    ;      r29 = data base
+    ; Out: r2  = ERR_OK
+    ; Clobbers: r1, r18, r19
+    ; ------------------------------------------------------------------
+.dos_extent_free:
+    move.q  r19, r1                     ; r19 = current extent
+.def_loop:
+    beqz    r19, .def_done
+    load.q  r18, DOS_EXT_OFF_NEXT(r19)  ; r18 = next extent
+    push    r29
+    push    r18
+    move.q  r1, r19
+    move.l  r2, #4096
+    syscall #SYS_FREE_MEM
+    pop     r18
+    pop     r29
+    move.q  r19, r18
+    bra     .def_loop
+.def_done:
+    move.q  r2, r0                      ; ERR_OK
+    rts
+
+    ; ------------------------------------------------------------------
+    ; .dos_extent_walk: copy up to byte_count bytes from the start of an
+    ; extent chain into a destination buffer. Returns the number of
+    ; bytes actually copied — equals byte_count if the chain is long
+    ; enough, otherwise the chain length in bytes.
+    ; In:  r1  = first_extent_va (or 0)
+    ;      r2  = dst VA
+    ;      r3  = byte_count to copy
+    ;      r29 = data base
+    ; Out: r1  = bytes copied
+    ; Clobbers: r4, r5, r6, r7, r8, r16, r17, r18, r19
+    ; ------------------------------------------------------------------
+.dos_extent_walk:
+    move.q  r19, r1                     ; r19 = current extent VA
+    move.q  r18, r2                     ; r18 = dst
+    move.q  r17, r3                     ; r17 = remaining bytes to copy
+    move.q  r16, r0                     ; r16 = total copied
+.dew_extent_loop:
+    beqz    r19, .dew_done
+    beqz    r17, .dew_done
+    ; n = min(r17, DOS_EXT_PAYLOAD)
+    move.q  r4, r17
+    move.l  r5, #DOS_EXT_PAYLOAD
+    blt     r4, r5, .dew_have_n
+    move.q  r4, r5
+.dew_have_n:
+    ; r4 = bytes to copy this extent
+    add     r5, r19, #DOS_EXT_HDR_SZ    ; src = extent + header
+    move.q  r6, r18                     ; dst
+    move.q  r7, r0                      ; counter
+.dew_byte_copy:
+    bge     r7, r4, .dew_extent_done
+    load.b  r8, (r5)
+    store.b r8, (r6)
+    add     r5, r5, #1
+    add     r6, r6, #1
+    add     r7, r7, #1
+    bra     .dew_byte_copy
+.dew_extent_done:
+    add     r16, r16, r4                ; total += n
+    add     r18, r18, r4                ; dst += n
+    sub     r17, r17, r4                ; remaining -= n
+    load.q  r19, DOS_EXT_OFF_NEXT(r19)  ; advance to next extent
+    bra     .dew_extent_loop
+.dew_done:
+    move.q  r1, r16
+    rts
+
+    ; ------------------------------------------------------------------
+    ; .dos_extent_write: copy up to byte_count bytes from a source
+    ; buffer into the start of an extent chain. Symmetric counterpart
+    ; to .dos_extent_walk. The extent chain MUST already have been
+    ; allocated (via .dos_extent_alloc) with enough capacity; this
+    ; helper does NOT grow the chain. Returns bytes actually written
+    ; (= byte_count when the chain has enough capacity, otherwise the
+    ; chain capacity in bytes).
+    ; In:  r1  = first_extent_va (or 0)
+    ;      r2  = src VA
+    ;      r3  = byte_count to copy
+    ;      r29 = data base
+    ; Out: r1  = bytes written
+    ; Clobbers: r4, r5, r6, r7, r8, r16, r17, r18, r19
+    ; ------------------------------------------------------------------
+.dos_extent_write:
+    move.q  r19, r1                     ; r19 = current extent VA
+    move.q  r18, r2                     ; r18 = src
+    move.q  r17, r3                     ; r17 = remaining bytes to copy
+    move.q  r16, r0                     ; r16 = total written
+.dexw_extent_loop:
+    beqz    r19, .dexw_done
+    beqz    r17, .dexw_done
+    ; n = min(r17, DOS_EXT_PAYLOAD)
+    move.q  r4, r17
+    move.l  r5, #DOS_EXT_PAYLOAD
+    blt     r4, r5, .dexw_have_n
+    move.q  r4, r5
+.dexw_have_n:
+    ; r4 = bytes to copy this extent
+    add     r5, r19, #DOS_EXT_HDR_SZ    ; dst = extent + header
+    move.q  r6, r18                     ; src = caller buffer
+    move.q  r7, r0                      ; counter
+.dexw_byte_copy:
+    bge     r7, r4, .dexw_extent_done
+    load.b  r8, (r6)
+    store.b r8, (r5)
+    add     r5, r5, #1
+    add     r6, r6, #1
+    add     r7, r7, #1
+    bra     .dexw_byte_copy
+.dexw_extent_done:
+    add     r16, r16, r4                ; total += n
+    add     r18, r18, r4                ; src += n
+    sub     r17, r17, r4                ; remaining -= n
+    load.q  r19, DOS_EXT_OFF_NEXT(r19)  ; advance to next extent
+    bra     .dexw_extent_loop
+.dexw_done:
+    move.q  r1, r16
+    rts
+
 prog_doslib_code_end:
 
 prog_doslib_data:
@@ -6750,15 +7155,18 @@ prog_version_data:
     ; --- Offset 24: padding to 32 ---
     ds.b    8
     ; --- Offset 32: version string ---
-    dc.b    "IntuitionOS 0.14 (exec.library M11.6 / intuition.library M12 / hardware.resource M12.5 / cap sweep M12.6)", 0x0D, 0x0A, 0
+    dc.b    "IntuitionOS 0.15 (exec.library M11.6 / intuition.library M12 / hardware.resource M12.5 / cap sweep M12.6 / dos storage M12.8)", 0x0D, 0x0A, 0
 prog_version_data_end:
     align   8
 prog_version_end:
 
 ; ---------------------------------------------------------------------------
-; AVAIL — display memory availability
+; AVAIL — display physical vs allocatable memory
 ; ---------------------------------------------------------------------------
-; Opens console.handler, queries total/free pages, prints KB values.
+; Opens console.handler and prints:
+;   Phys  = total machine RAM (MMU_NUM_PAGES)
+;   Alloc = Exec allocator-pool pages (SYSINFO_TOTAL_PAGES)
+;   Free  = currently free allocator-pool pages (SYSINFO_FREE_PAGES)
 
 prog_avail:
     ; Header
@@ -6807,22 +7215,32 @@ prog_avail_code:
 .av_open_ok:
     store.q r1, 64(r29)                ; data[64] = console_port
 
-    ; === Send "Total: " ===
+    ; === Send "Phys: " ===
     add     r20, r29, #16
     jsr     .av_send_string
 
-    ; === GetSysInfo(TOTAL_PAGES) → multiply by 4 for KB ===
+    ; === Physical RAM = MMU_NUM_PAGES → multiply by 4 for KB ===
+    move.l  r1, #MMU_NUM_PAGES
+    lsl     r1, r1, #2                 ; pages * 4 = KB (4KB pages)
+    store.q r1, 8(sp)                  ; save value
+    jsr     .av_print_number
+
+    ; === Send " KB  Alloc: " ===
+    load.q  r29, (sp)
+    add     r20, r29, #24
+    jsr     .av_send_string
+
+    ; === GetSysInfo(TOTAL_PAGES = allocator pool) → multiply by 4 for KB ===
     move.l  r1, #SYSINFO_TOTAL_PAGES
     syscall #SYS_GET_SYS_INFO
     load.q  r29, (sp)
     lsl     r1, r1, #2                 ; pages * 4 = KB (4KB pages)
-    ; Format and send decimal number
     store.q r1, 8(sp)                  ; save value
     jsr     .av_print_number
 
     ; === Send " KB  Free: " ===
     load.q  r29, (sp)
-    add     r20, r29, #24
+    add     r20, r29, #40
     jsr     .av_send_string
 
     ; === GetSysInfo(FREE_PAGES) → multiply by 4 for KB ===
@@ -6835,7 +7253,7 @@ prog_avail_code:
 
     ; === Send " KB\r\n" ===
     load.q  r29, (sp)
-    add     r20, r29, #36
+    add     r20, r29, #52
     jsr     .av_send_string
 
     ; === ExitTask ===
@@ -6923,13 +7341,15 @@ prog_avail_code_end:
 prog_avail_data:
     ; --- Offset 0: "console.handler\0" (16 bytes) ---
     dc.b    "console.handler", 0
-    ; --- Offset 16: "Total: \0" (8 bytes) ---
-    dc.b    "Total: ", 0
-    ; --- Offset 24: " KB  Free: \0" (12 bytes) ---
+    ; --- Offset 16: "Phys: \0" (8 bytes) ---
+    dc.b    "Phys: ", 0, 0
+    ; --- Offset 24: " KB  Alloc: \0" (16 bytes) ---
+    dc.b    " KB  Alloc: ", 0, 0, 0, 0
+    ; --- Offset 40: " KB  Free: \0" (12 bytes) ---
     dc.b    " KB  Free: ", 0
-    ; --- Offset 36: " KB\r\n\0" + pad to 64 ---
+    ; --- Offset 52: " KB\r\n\0" + pad to 64 ---
     dc.b    " KB", 0x0D, 0x0A, 0
-    ds.b    21                          ; pad to offset 64
+    ds.b    5                           ; pad to offset 64
     ; --- Offset 64: console_port (8 bytes) ---
     ds.b    8
     ; --- Offset 72: padding to 80 ---
@@ -7609,7 +8029,8 @@ seed_startup:
     dc.b    "LIBS:intuition.library", 0x0A
     dc.b    "VERSION", 0x0A
     dc.b    "ECHO Core OS objects: fixed product limits removed where practical", 0x0A
-    dc.b    "ECHO IntuitionOS M12.6 ready", 0x0A
+    dc.b    "ECHO dos.library file storage: variable-size, no per-file cap", 0x0A
+    dc.b    "ECHO IntuitionOS M12.8 ready", 0x0A
     dc.b    "ECHO All visible services are running in user space", 0x0A, 0
 seed_startup_end:
     align   8
@@ -10950,12 +11371,10 @@ prog_shell_code:
     bra     .sh_ban_lf_retry
 .sh_ban_done:
 
-    ; =====================================================================
-    ; Send "IntuitionOS M11\r\n" to console
-    ; =====================================================================
-    load.q  r29, (sp)
-    add     r20, r29, #56              ; "IntuitionOS M11\r\n" at offset 56
-    jsr     .sh_send_string
+    ; (Stale "IntuitionOS M11" banner removed: incorrect milestone label
+    ;  and redundant — exec.library already prints the canonical version
+    ;  banner. The data slot at offset 56 is preserved as padding to keep
+    ;  the offsets of subsequent strings stable.)
 
     ; =====================================================================
     ; M10: Try to open and read S:Startup-Sequence
@@ -11028,11 +11447,14 @@ prog_shell_code:
     move.q  r17, r2                     ; r17 = file handle (save)
     store.q r17, 8(sp)                 ; save handle to scratch
 
-    ; Send DOS_READ(handle, max=256)
+    ; Send DOS_READ(handle, max=512). The script buffer at data[368] is
+    ; 512 bytes (M12.8: bumped from 256 to absorb the new boot ECHO line
+    ; without truncating earlier startup commands). The shell's share is
+    ; 4 KiB so the share clamp doesn't kick in.
     load.q  r29, (sp)
     move.l  r2, #DOS_READ              ; type
     load.q  r3, 8(sp)                  ; data0 = handle
-    move.l  r4, #256                   ; data1 = max bytes
+    move.l  r4, #512                   ; data1 = max bytes
     load.q  r5, 152(r29)
     load.l  r6, 168(r29)
     load.q  r1, 144(r29)
@@ -11384,9 +11806,10 @@ prog_shell_data:
     ; --- Offset 32: "Shell ONLINE [Task \0" (20 bytes, ends at 52) ---
     dc.b    "Shell ONLINE [Task ", 0
     ds.b    4                           ; pad to offset 56
-    ; --- Offset 56: "IntuitionOS M11\r\n\0" (18 bytes, ends at 74) ---
-    dc.b    "IntuitionOS M11", 0x0D, 0x0A, 0
-    ds.b    6                           ; pad to offset 80
+    ; --- Offset 56: dead 24-byte slot (formerly "IntuitionOS M11\r\n\0",
+    ;     printed by a stale shell banner removed in M12.8 Phase 1).
+    ;     Kept as padding to preserve the offsets of the strings below. ---
+    ds.b    24                          ; pad to offset 80
     ; --- Offset 80: "1> \0" (4 bytes) + pad to 88 ---
     dc.b    "1> ", 0
     ds.b    4                           ; pad to offset 88
@@ -11413,8 +11836,9 @@ prog_shell_data:
     ds.b    48                          ; pad to offset 240
     ; --- Offset 240: line buffer (128 bytes) ---
     ds.b    128
-    ; --- Offset 368: script buffer (256 bytes for Startup-Sequence) ---
-    ds.b    256
+    ; --- Offset 368: script buffer (512 bytes for Startup-Sequence —
+    ;     M12.8: bumped from 256 to absorb new boot ECHO line) ---
+    ds.b    512
 prog_shell_data_end:
     align   8
 prog_shell_end:

@@ -606,23 +606,18 @@ DOS_ERR_NOMEM     equ 6
 
 ; DOS filesystem limits
 ;
-; M12 note: the per-file slot size was bumped from 4 KiB to 16 KiB so both
-; the intuition.library service (which now embeds the Topaz 8x16 bitmap
-; font for title-bar text rendering, ~9 KiB total) and the About app
-; (which embeds the same font, ~6 KiB total) fit comfortably in a single
-; slot. The arbitrary cap remains a known wart — a future milestone
-; (M12.8) replaces the fixed-stride slot table with a packed-heap or
-; slab/extent allocator inside dos.library. M12.6 Phase A keeps the
-; fixed per-file slot size but removes the per-instance count caps.
+; M12.6 Phase A: DOS_MAX_FILES and DOS_MAX_HANDLES were removed. The
+; dos.library file table and handle table are now linked lists of
+; AllocMem'd 4 KiB chain pages — see DOS_META_*/DOS_HND_* constants
+; below and the .dos_meta_*/.dos_hnd_* helpers in iexec.s.
 ;
-; M12.6 Phase A: DOS_MAX_FILES and DOS_MAX_HANDLES were removed.
-; The dos.library file table and handle table are now linked lists of
-; AllocMem'd 4 KiB chain pages — see DOS_META_*/DOS_HND_* constants below
-; and the .dos_meta_*/.dos_hnd_* helpers in iexec.s. Per-file storage is
-; one AllocMem(DOS_FILE_SIZE) per file, no longer packed into a single
-; storage_va region.
+; M12.8 Phase 2: per-file storage is now a chain of 4 KiB extents
+; (DOS_EXT_*) walked via .dos_extent_alloc/_free/_walk/_write. The
+; previous DOS_FILE_SIZE bucket-C per-file cap (4096 → 8192 → 16384)
+; has been removed entirely; file size is bounded only by the
+; allocator pool. The atomic-swap-on-rewrite rule in DOS_WRITE
+; preserves the previous file content on allocation failure.
 DOS_NAME_LEN      equ 32          ; Max filename length (supports "S/Startup-Sequence" etc.)
-DOS_FILE_SIZE     equ 16384       ; Bytes per file (M12: 4096 → 8192 → 16384). M12.8 will remove this.
 
 ; dos.library metadata chain (M12.6 Phase A) — 4 KiB chain pages, 85 entries each.
 ; Page layout:  [0..7] next_va  [8..15] reserved  [16..4095] entries (85 × 48 bytes)
@@ -630,7 +625,7 @@ DOS_META_HDR_SZ   equ 16          ; chain page header bytes
 DOS_META_ENTRY_SZ equ 48          ; per-file metadata entry size
 DOS_META_PER_PAGE equ 85          ; entries per chain page (16 + 85*48 = 4096)
 DOS_META_OFF_NAME equ 0           ; entry: name[32] (NUL-term, 0x00 = unused)
-DOS_META_OFF_VA   equ 32          ; entry: file_va (8 bytes — VA of AllocMem'd file body)
+DOS_META_OFF_VA   equ 32          ; entry: file_va (8 bytes — VA of file body chain head)
 DOS_META_OFF_SIZE equ 40          ; entry: size (4 bytes)
 DOS_META_OFF_RESV equ 44          ; entry: reserved (4 bytes)
 
@@ -641,6 +636,19 @@ DOS_META_OFF_RESV equ 44          ; entry: reserved (4 bytes)
 DOS_HND_HDR_SZ    equ 16          ; chain page header bytes
 DOS_HND_ENTRY_SZ  equ 8           ; per-handle entry size (metadata entry VA)
 DOS_HND_PER_PAGE  equ 510         ; handles per chain page (16 + 510*8 = 4096)
+
+; dos.library file body extents (M12.8) — variable-size file storage.
+; Each extent is one AllocMem'd 4 KiB page. The file's body is a
+; NUL-terminated chain of extents linked through next_va at offset 0.
+;
+; Layout:  [0..7] next_va (0 = end of chain)  [8..15] reserved  [16..4095] payload
+;
+; The .dos_extent_alloc/_free/_walk/_write helpers in iexec.s are the
+; only paths that touch this layout; the DOS_OPEN/READ/WRITE/RUN
+; handlers call them through entry.file_va = chain head.
+DOS_EXT_HDR_SZ    equ 16          ; extent header bytes (matches metadata chain)
+DOS_EXT_PAYLOAD   equ 4080        ; payload bytes per extent (4096 - 16)
+DOS_EXT_OFF_NEXT  equ 0           ; offset of next-extent VA inside an extent
 
 ; ===========================================================================
 ; M11: input.device protocol

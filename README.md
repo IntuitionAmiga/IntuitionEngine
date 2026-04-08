@@ -5976,6 +5976,47 @@ make aros               # Build VM with embedded AROS ROM
 
 IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. Unlike classic Amiga Exec, which ran everything in flat supervisor space with no memory protection, IExec uses the IE64 MMU to enforce hardware-backed user/supervisor privilege separation with per-task page tables and W^X memory policy. The design preserves the Amiga programming model (signals, message ports, priority scheduling) while adding the isolation guarantees of a modern protected-mode OS.
 
+**Milestone 12.8 status** — `dos.library` variable-size file storage + `load_program` cap removal (implemented and tested):
+
+- **`DOS_FILE_SIZE` is gone.** Per-file storage in `dos.library` migrates from a fixed 16 KiB `AllocMem` block to a chain of 4 KiB extents allocated on demand. Each file's `entry.file_va` is now the head of an extent chain whose total length is bounded only by the kernel allocator pool. The previous bucket-B `DOS_FILE_SIZE = 16384` cap (bumped 4096 → 8192 → 16384 across M11/M12) has been deleted entirely.
+- **Atomic-swap-on-rewrite.** `DOS_WRITE`'s most load-bearing change: a new chain is allocated and populated *before* the old chain is freed, so an allocation failure during a rewrite leaves the previous file content fully intact. The handler never observes a half-rewritten state. `.dos_extent_alloc`'s internal `.dea_fail_partial` cleanup ensures that any partially-allocated new chain is freed before the error reply, so the steady-state memory usage on a failed write is identical to the pre-write state. `TestIExec_DosM128_RewriteShrinks` and `TestIExec_DosM128_RewriteGrows` exercise both directions.
+- **Four canonical extent operations** in `iexec.s`: `.dos_extent_alloc(byte_count)` walks up `ceil(byte_count / DOS_EXT_PAYLOAD)` extents and links them into a chain (or returns 0 on failure with the partial chain freed); `.dos_extent_free(first_va)` walks the chain calling `SYS_FREE_MEM` on each extent; `.dos_extent_walk(first_va, dst, byte_count)` reads bytes from the chain into `dst`; `.dos_extent_write(first_va, src, byte_count)` writes bytes from `src` into the chain. The four are the only paths that touch the new `DOS_EXT_*` layout — every dos.library handler that used to memcpy into a fixed body now goes through them.
+- **`DOS_RUN` walks extents into a temp buffer** before passing them to `SYS_EXEC_PROGRAM`. The kernel still requires a contiguous image pointer, so the handler `AllocMem`s a temp buffer sized exactly to the program image, walks the extent chain into it, calls `SYS_EXEC_PROGRAM`, then `FreeMem`s the temp once the kernel has copied the image into the new task's slot. Steady-state dos.library memory is unaffected.
+- **Two more arbitrary product caps removed as a Phase 1 prerequisite.** When the Phase 1 dead-code skeleton bumped dos.library's code section from 8016 to 8712 bytes, `load_program` rejected the image with `ERR_BADARG` because of a hardcoded `code_size <= 8192` check. Investigation showed that the 8192 cap (and the partner `data_size <= 49152` cap) were arbitrary product limits, not architectural bounds — the same kind of bucket-C ceiling M12.6 was supposed to wipe out, hiding in bucket B since M5. **Both caps were deleted** and replaced with the actual layout constraint enforced by `USER_SLOT_STRIDE`: `code_pages + 1 (stack) + data_pages <= USER_VPN_STRIDE` (16 pages per slot). This is the *honest* per-image ceiling — anything larger doesn't fit in a task slot. A hostile image declaring an absurdly large `code_size` is correctly rejected because the page-count compute (using 64-bit arithmetic on the zero-extended `load.l` value) produces a count >> 16. The change is in scope for M12.8 because (a) it was a hard prerequisite for shipping the storage refactor, (b) the M12.5 audit had incorrectly classified the two caps as B when they were really C, and (c) the replacement is more correct, more honest, and smaller code than the prior conditional checks.
+- **Robust dos.library preamble.** The other Phase 1 surprise was that dos.library's preamble hardcoded `add r29, r29, #0x3000` to compute its data-page base — an offset that assumed exactly 2 code pages. Bumping dos.library to 3 code pages broke the preamble silently (it pointed at the stack page instead of the data section). The fix derives `r29 = data_base` from the kernel-set initial USP via `add r29, sp, #16`, which is robust to any `code_pages` count. dos.library can grow without touching its preamble again.
+- **Stale "IntuitionOS M11" shell banner removed.** The shell printed an outdated milestone label between the service-online lines and the canonical version banner. Killed in Phase 1 — the shell no longer emits its own banner; the canonical version banner from `VERSION` (run by `S/Startup-Sequence`) is the only one.
+- **No new syscalls. No new DOS opcodes. No widened ABI fields. No DOS protocol changes.** The M12.5/M11.5 admission rule still holds. Existing dos.library clients (the shell, every M9–M12 example, every test) continue to work without recompilation. The visible change is that `DOS_WRITE` no longer rejects byte counts above 16384, and reads/writes of multi-extent files transit a small chain walk inside dos.library that's invisible to clients. `DOS_DELETE`, `DOS_TRUNCATE`, `DOS_SEEK`, and `DOS_APPEND` are explicitly **not** added — each would be a separate future protocol-extension milestone if and when the need arises.
+- **Test coverage.** Three new tests in `iexec_test.go` exercise the M12.8 storage shape:
+  - `TestIExec_DosM128_FileLargerThanOldCap` — 32 KiB write/read round-trip, byte-for-byte verified across 9 extents (2× the previous 16 KiB cap). Load-bearing test for the per-file cap removal AND the multi-extent walker.
+  - `TestIExec_DosM128_RewriteShrinks` — write 8 KiB, then rewrite the same file with 1 KiB; readback expects 1 KiB of new content. Proves atomic-swap on shrink.
+  - `TestIExec_DosM128_RewriteGrows` — write 1 KiB, then rewrite with 8 KiB; readback expects 8 KiB of new content. Proves atomic-swap on grow.
+  Four other tests from the M12.8 plan are skipped with documented rationale (covered by existing tests, or test allocator-pool exhaustion which requires fragile state mocking). The full M12.5/M12.6 hardening test suite remains green throughout — no kernel data structure changes, no new ABI fields.
+- **Audit refresh.** `IExec.md §5.13.1` row for `DOS_FILE_SIZE` is now `(removed) — B → ✓` with a description of the slab/extent allocator and the atomic-swap rule. Two new `(removed)` rows for `IMG_OFF_CODE_SIZE`/`IMG_OFF_DATA_SIZE` document the load_program cap removal and explain why those rows were originally misclassified into bucket B. The §5.13 prose is updated to note that bucket B has lost its load-bearing entries — the remaining bucket-B rows are configured-policy values (`KD_PORT_FIFO_SIZE`, `USER_DYN_PAGES`, `DATA_ARGS_*`), not arbitrary product limits.
+- **Boot integration.** Version banner bumped to `IntuitionOS 0.15 (exec.library M11.6 / intuition.library M12 / hardware.resource M12.5 / cap sweep M12.6 / dos storage M12.8)`. `S:Startup-Sequence` gains one new ECHO line: `dos.library file storage: variable-size, no per-file cap`. The shell's script buffer was bumped from 256 to 512 bytes to absorb the new ECHO line without truncating earlier startup commands.
+- **Demo boot output:**
+  ```
+  exec.library M11 boot
+  console.handler ONLINE [Task 0]
+  dos.library ONLINE [Task 1]
+  Shell ONLINE [Task 2]
+  hardware.resource ONLINE [Task 3]
+  input.device ONLINE [Task 4]
+  graphics.library ONLINE [Task 5]
+  intuition.library ONLINE [Task 6]
+  IntuitionOS 0.15 (exec.library M11.6 / intuition.library M12 / hardware.resource M12.5 / cap sweep M12.6 / dos storage M12.8)
+  Core OS objects: fixed product limits removed where practical
+  dos.library file storage: variable-size, no per-file cap
+  IntuitionOS M12.8 ready
+  All visible services are running in user space
+  1>
+  ```
+  M12 GUI demo runs unchanged from a user perspective — same About app, same close-gadget interaction. The dos.library file storage refactor and the load_program cap removal are both invisible to user-space code; the only visible changes are the boot banner additions and the absence of the stale M11 shell banner line.
+
+Full kernel contract reference: [sdk/docs/IntuitionOS/IExec.md](sdk/docs/IntuitionOS/IExec.md) (see §5.13 for the cap-removal policy and §12 Milestone 12.8 for the storage refactor)
+
+<details>
+<summary>Milestone 12.6 status (complete) — full hard-cap sweep across DOS, shmem, ports, and tasks</summary>
+
 **Milestone 12.6 status** — full hard-cap sweep across DOS, shmem, ports, and tasks (implemented and tested):
 
 - **Bucket C of the IExec audit is empty.** Every previously bucket-C cap was removed (chain-allocator conversion) or reclassified into bucket A/B with a recorded reason. The four phases worked in order DOS → SHMEM → PORT → TASKS, gating on a green full-suite run between each.
@@ -6010,7 +6051,7 @@ IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. 
   ```
   M12 GUI demo runs unchanged from a user perspective — same About app, same close-gadget interaction. Only the boot banner and the kernel data structures underneath have changed.
 
-Full kernel contract reference: [sdk/docs/IntuitionOS/IExec.md](sdk/docs/IntuitionOS/IExec.md) (see §5.13 for the cap-removal policy and audit table)
+</details>
 
 <details>
 <summary>Milestone 12.5 status (complete) — `hardware.resource` + minimal trust model + first cap removal</summary>

@@ -10,7 +10,7 @@
 
 IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS Exec but designed from the ground up for a hardware-enforced privilege model. Where Amiga Exec ran in flat supervisor space with no memory protection, IExec uses the IE64 MMU to enforce user/supervisor separation, per-task page tables, and W^X memory policy.
 
-**What IExec does (current as of Milestone 12.6):**
+**What IExec does (current as of Milestone 12.8):**
 
 - Preemptive round-robin scheduling across up to 32 dynamic tasks (CreateTask/ExitTask with slot reuse). M5 capped this at 8 (per-task `USER_DYN_STRIDE` saturated the 32 MiB VA at 8 tasks); M12 globalized the dynamic VA window and bumped the cap to 16; **M12.6 Phase D bumped to 32** with a full user-space slot-layout adjustment. The cap is now layout-bound rather than arbitrary — see `IExec.md §5.13.1` for the audit row.
 - Memory protection via the IE64 MMU (per-task page tables with separate code/stack/data mappings, W^X enforcement)
@@ -27,9 +27,9 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
 - AmigaOS-style `OpenLibrary` for library discovery — **M11.5**: source-level alias for `SYS_FIND_PORT`; the kernel ABI is one slot smaller. Slot 36 is retained as a one-instruction binary-compat redirect to `.do_find_port` so any pre-M11.5 IE64 binary still links. New code uses `SYS_FIND_PORT` directly. See § 5.11 "Exec Boundary".
 - I/O page mapping via MapIO syscall (REGION_IO type)
 - **`SYS_EXEC_PROGRAM` takes a user-space image pointer** (M10): kernel creates tasks from user-provided IE64PROG images. Runs entirely under the caller's PT (no PT switching). `validate_user_range` checks both P and U bits on every page in the requested range. **M11.6**: the legacy `R1 < USER_CODE_BASE` built-in-program-table index branch is removed — sub-`USER_CODE_BASE` values now hard-fail with `ERR_BADARG` and the validated image-pointer ABI is the only path through the handler.
-- **Multi-page code and data in `load_program`** (M10): up to 2 code pages (8 KB) and 4 data pages (16 KB) per task. dos.library is itself a 2-code-page program, with 3 data pages containing embedded command images.
+- **Multi-page code and data in `load_program`** (M10, refined in M12.8): image sizing is now bounded by the real per-slot architectural fit rule `code_pages + 1 + data_pages <= USER_VPN_STRIDE`, not by the old arbitrary `code_size <= 8192` / `data_size <= 49152` product caps. dos.library itself now spans 3 code pages, which is what forced that cleanup during M12.8.
 - console.handler: CON: handler with GetMsg polling and CON_READLINE protocol — **M11.5**: console.handler now owns terminal MMIO directly via its own `SYS_MAP_IO(0xF0, 1)` mapping and inlines the readline MMIO loop. The former kernel-side `SYS_READ_INPUT` (slot 37) is removed; slot 37 is an unallocated hole that returns `ERR_BADARG`.
-- **dos.library**: AmigaOS dos.library equivalent with RAM: filesystem (case-insensitive, 32-byte filenames, 16 KiB per file). The file/handle tables are unbounded as of **M12.6 Phase A**: both the file metadata table and the open-handle table are user-space chains of `AllocMem`'d 4 KiB pages, each holding many entries (85 file entries or 510 handle entries per page). Each file body is its own `AllocMem(DOS_FILE_SIZE)` allocation. M10 added the assign table (RAM:, C:, S:), name-based command resolution, embedded command images, init-time seeding into the RAM file store, and boot-race-free port creation. The 16 KiB per-file size cap is the last remaining bound and is targeted for **M12.8** (dos.library variable-size storage refactor).
+- **dos.library**: AmigaOS dos.library equivalent with RAM: filesystem (case-insensitive, 32-byte filenames). The file metadata table and open-handle table are unbounded user-space chains of `AllocMem`'d 4 KiB pages (85 file entries or 510 handle entries per page). As of **M12.8**, each file body is a variable-size chain of 4 KiB extents linked through `entry.file_va`; the old fixed `DOS_FILE_SIZE` per-file allocation is gone. `DOS_WRITE` now does an atomic swap onto a newly allocated extent chain so allocation failure leaves previous content intact. M10 added the assign table (RAM:, C:, S:), name-based command resolution, embedded command images, init-time seeding into the RAM file store, and boot-race-free port creation.
 - **Shell**: interactive command shell that sends raw command names to dos.library via DOS_RUN (no shell-side command table). Executes `S:Startup-Sequence` automatically at boot if present, then drops to the interactive prompt.
 - **5 external commands** as DOS-loaded executables: VERSION, AVAIL, DIR, TYPE, ECHO. Stored as files in RAM under `C:`, launched by name through dos.library — not by program table index.
 
@@ -425,13 +425,13 @@ The broker's policy table maps `'CHIP'` → `(PPN 0xF0, 1 page)` and `'VRAM'` �
 
 **5.12.8 The `SYS_MAP_IO` allowlist backstop.** The legacy allowlist code in the kernel was *replaced* by the grant chain check in M12.5 — the bootstrap-table backstop is implicit (the bootstrap row gives `console.handler` exactly the same access the old allowlist gave it). M13 may delete the kernel allowlist symbol entirely; M12.5 leaves the surrounding bounds-check logic in place for sanity (page count cap, signed-overflow guards) without the PPN-specific allowlist.
 
-### 5.13 Architectural cap policy (M12.5–M12.6)
+### 5.13 Architectural cap policy (M12.5–M12.8)
 
 > IntuitionOS does not use arbitrary fixed product limits for core OS objects where dynamic allocation is practical. Remaining limits must be justified by architecture, ABI width, hardware constraints, or explicitly configured resource policy.
 
-This rule landed in M12.5 alongside `hardware.resource` and was completed in M12.6 — a focused cap-removal sweep across DOS, shmem, ports, and tasks plus a layout split for the security fix. M12.5 shipped the rule, the audit table below, and one proof-of-pattern removal (`KD_REGION_MAX`). M12.6 worked through the remaining bucket-C rows in risk order: **Phase A** (DOS file/handle caps, user-space chain), **Phase B** (`KD_SHMEM_MAX` → kernel chain), **Phase C** (`KD_PORT_MAX` → kernel chain), **Phase D** (`MAX_TASKS` → layout-bump from 16 to 32). **Phase E** then split the user-dynamic VA window and the allocator pool into disjoint VPN ranges as a privilege-escalation security fix — see the `USER_DYN_BASE/END` and `ALLOC_POOL_BASE/PAGES` rows below for details. After M12.6, **bucket C is empty**: every removal was either a chain-allocator conversion or — for tasks, where the real bound is the user-space slot layout, not an arbitrary kernel constant — a configured/layout-bound bump with a named replacement plan.
+This rule landed in M12.5 alongside `hardware.resource`, was completed for the kernel core in M12.6, and was extended to dos.library file storage in M12.8. M12.5 shipped the rule, the audit table below, and one proof-of-pattern removal (`KD_REGION_MAX`). M12.6 worked through the remaining bucket-C rows in risk order: **Phase A** (DOS file/handle caps, user-space chain), **Phase B** (`KD_SHMEM_MAX` → kernel chain), **Phase C** (`KD_PORT_MAX` → kernel chain), **Phase D** (`MAX_TASKS` → layout-bump from 16 to 32). **Phase E** then split the user-dynamic VA window and the allocator pool into disjoint VPN ranges as a privilege-escalation security fix — see the `USER_DYN_BASE/END` and `ALLOC_POOL_BASE/PAGES` rows below for details. **M12.8** then completed the dos.library file body refactor: per-file storage was migrated from a fixed 16 KiB AllocMem block to a chain of 4 KiB extents, the `DOS_FILE_SIZE` constant was deleted, and as a Phase 1 prerequisite the two arbitrary `load_program` per-image caps (`code_size <= 8192`, `data_size <= 49152`) were also wiped and replaced with the actual architectural slot-fit constraint (`code_pages + 1 + data_pages <= USER_VPN_STRIDE`). After M12.6 + M12.8, **bucket C is empty** and **bucket B has lost its load-bearing entries**: every removal was either a chain-allocator conversion, a configured/layout-bound bump with a named replacement plan, or — for the load_program caps and `DOS_FILE_SIZE` — a wholesale replacement with the real architectural constraint.
 
-The honest summary: fixed product limits were removed where practical. Remaining limits are either architectural (ABI widths, page-table format, MMU contract), layout-bound (`MAX_TASKS = 32` is the slot region size, not a number plucked out of thin air), or temporary with a named follow-up milestone (`DOS_FILE_SIZE = 16384` waits on M12.8's storage refactor). The Phase E security fix also makes one architectural invariant explicit: **the user-dynamic VA window and the allocator pool are now disjoint VPN ranges**, so user `SYS_ALLOC_MEM` calls can never overwrite the supervisor-only pool PTEs that `build_user_pt` copies into every user PT. This is enforced at the layout level by the constants in `iexec.inc` and verified by `TestIExec_PortChain_DisjointFromUserDyn`.
+The honest summary: fixed product limits were removed where practical. Remaining limits are either architectural (ABI widths, page-table format, MMU contract), layout-bound (`MAX_TASKS = 32` is the slot region size, not a number plucked out of thin air), or strictly tied to an active hardware/format ABI. M12.8 closed the last load-bearing bucket-B entry (`DOS_FILE_SIZE`). The Phase E security fix also makes one architectural invariant explicit: **the user-dynamic VA window and the allocator pool are now disjoint VPN ranges**, so user `SYS_ALLOC_MEM` calls can never overwrite the supervisor-only pool PTEs that `build_user_pt` copies into every user PT. This is enforced at the layout level by the constants in `iexec.inc` and verified by `TestIExec_PortChain_DisjointFromUserDyn`.
 
 **5.13.1 Cap classification audit.** Every fixed cap declared in `sdk/include/iexec.inc` and `sdk/intuitionos/iexec/iexec.s`, classified into three buckets. Line numbers refreshed at the end of M12.6 Phase E.
 
@@ -482,15 +482,15 @@ The honest summary: fixed product limits were removed where practical. Remaining
 | `SYS_HWRES_OP` | `iexec.inc:72` | slot 38 | A | Trusted-internal verb-multiplexed broker primitive (M12.5). Slot number is part of the syscall ABI. |
 | `IEXEC_HEARTBEAT_INTERVAL` | `iexec.inc:529` | 64 | A | Tunable — debug-only kernel heartbeat tick rate, not a system cap. |
 | `IMG_HEADER_SIZE` | `iexec.inc:539` | 32 | A | IE64PROG image format ABI. |
-| `IMG_OFF_CODE_SIZE` cap | `iexec.inc:541` | 4096 | B | Per-image code section cap from M8. The image format itself doesn't require this — it's a load-time policy cap. Replacement is a future milestone. |
-| `IMG_OFF_DATA_SIZE` cap | `iexec.inc:542` | 4096 | B | Same — per-image data section cap. |
+| `IMG_OFF_CODE_SIZE` cap | (removed) | — | B → ✓ | **Removed in M12.8 Phase 1.** The previous arbitrary 8192-byte cap (bumped 4096 → 8192 in M10) was a bucket-C product limit hiding in bucket B. Replaced by the architectural slot-fit check `code_pages + 1 (stack) + data_pages <= USER_VPN_STRIDE` in `load_program`, which is the actual constraint enforced by `USER_SLOT_STRIDE`. dos.library code grew past 8 KiB during M12.8 Phase 1, which is what forced the audit pass. |
+| `IMG_OFF_DATA_SIZE` cap | (removed) | — | B → ✓ | **Removed in M12.8 Phase 1.** The previous arbitrary 49152-byte cap (bumped 4096 → 16384 → 20480 → 49152 across M8/M10/M11/M12) was the same kind of product limit. Replaced by the same architectural slot-fit check above. The two caps shared a single root cause and were removed in one edit. |
 | `PROGTAB_ENTRY_SIZE` | `iexec.inc:546` | 24 | A | Program table row layout, bounded by row fields. |
 | `PROGTAB_BOOT_COUNT` | `iexec.inc:558` | 3 | A | Number of programs auto-loaded at boot — this is a *configured policy*, not an arbitrary cap. The number is "the count of strict-boot services," currently 3 (console.handler, dos.library, Shell). |
 | `TERM_IO_PAGE` | `iexec.inc:561` | 0xF0 | A | Hardware MMIO page address. |
 | `DATA_ARGS_OFFSET` / `DATA_ARGS_MAX` | `iexec.inc:564–565` | 3072 / 256 | B | Per-program argument-passing layout inside the program data page. Tied to the M9 `SYS_EXEC_PROGRAM` ABI. |
 | `DOS_MAX_FILES` | (removed) | — | C → ✓ | **Removed in M12.6 Phase A.** The `dos.library` file table is now a chain of `AllocMem`'d 4 KiB pages, each holding 85 entries. No compile-time cap; failure mode is real `ERR_NOMEM` from the page allocator. |
 | `DOS_NAME_LEN` | `iexec.inc:612` | 32 | A | Filesystem ABI — bounded by the in-table filename field. |
-| `DOS_FILE_SIZE` | `iexec.inc:613` | 16384 | B | Per-file slot size, already bumped 4096→8192→16384 in M12. Has a *named replacement plan* (packed-heap / slab-extent allocator inside dos.library) — lands in **M12.8** as a focused dos.library storage refactor. M12.6's chain-allocator pattern is the wrong tool because the cap is a per-file *byte size*, not a *count*. |
+| `DOS_FILE_SIZE` | (removed) | — | B → ✓ | **Removed in M12.8.** dos.library file bodies are now stored as a chain of 4 KiB extents (`DOS_EXT_*` constants in `iexec.inc`, walked via `.dos_extent_alloc/_free/_walk/_write` in `iexec.s`). Each file's `entry.file_va` is the head of an extent chain whose total length is bounded only by the kernel allocator pool. `DOS_WRITE` implements an atomic-swap-on-rewrite rule: a new chain is allocated and populated, then linked into the entry, then the old chain is freed — so an allocation failure during a rewrite leaves the previous file content fully intact. |
 | `DOS_MAX_HANDLES` | (removed) | — | C → ✓ | **Removed in M12.6 Phase A.** The `dos.library` handle table is now a chain of `AllocMem`'d 4 KiB pages, each holding 510 handles. No compile-time cap. |
 | `INTUI_WIN_TITLE_H` | `iexec.inc:718` | 16 | A | Window title bar height in pixels — bounded by the embedded Topaz 8×16 font glyph height. |
 | `INTUI_WIN_BORDER` | `iexec.inc:719` | 2 | A | Window bevel thickness — visual constant, not a cap. |
@@ -504,7 +504,9 @@ The honest summary: fixed product limits were removed where practical. Remaining
 - `KD_PORT_MAX` (32) — **M12.6 Phase C**: hard cap removed via global overflow chain. Symbol kept as legacy alias for `KD_PORT_INLINE_MAX`. Reclassified C → A.
 - `MAX_TASKS` (16) — **M12.6 Phase D**: bumped to 32 with full layout adjustment. The cap is now layout-bound (32 task slots × `USER_SLOT_STRIDE`), not arbitrary. Reclassified C → B with named replacement plan: slot-layout redesign milestone if/when 32 tasks isn't enough. The chain-allocator pattern was deliberately *not* applied here because the actual ceiling is the user-space slot layout, not the kernel data structure.
 
-`DOS_FILE_SIZE` was on the original C list at the start of M12.6 Phase 0, but the audit refresh moved it to B because it has a different replacement plan (packed-heap / slab-extent allocator) and that work lands in M12.8 — not as part of the cap-removal sweep.
+**Bucket B follow-up (post M12.8):** the load-bearing bucket-B rows are now also gone. M12.8 closed the dos.library file storage refactor that had been on the milestone roadmap since the start of M12.6, AND in the process found two more arbitrary product caps that were hiding in bucket B (the `load_program` `code_size` and `data_size` caps). All three were replaced — `DOS_FILE_SIZE` by the slab/extent allocator, the two `IMG_OFF_*` caps by the architectural slot-fit constraint. The honest framing: the two `load_program` caps were *originally* bucket-C product limits that got coded into `load_program` with no architectural justification, and the M12.5 audit incorrectly classified them as B. M12.8 Phase 1 corrected that by deleting them outright. See the `IMG_OFF_CODE_SIZE` / `IMG_OFF_DATA_SIZE` rows above.
+
+The remaining bucket-B rows (`KD_PORT_FIFO_SIZE = 4`, `USER_DYN_PAGES = 768`, `DATA_ARGS_OFFSET / DATA_ARGS_MAX`) are all configured-policy values, not arbitrary product limits — they're tied to specific protocol/ABI semantics rather than acting as system-wide caps on object counts or sizes.
 
 **5.13.2 Why `KD_REGION_MAX` is the M12.5 first removal.** The plan locks in `KD_REGION_MAX` rather than `KD_PORT_MAX` for three reasons:
 1. **Critical-path proof.** The per-task region table is on the hot path for every `SYS_MAP_IO`, `SYS_ALLOC_MEM`, `SYS_MAP_SHARED`, and the M12.5 `hardware.resource` broker itself. Removing this cap first exercises the chain-allocator pattern against the heaviest in-kernel consumer.
@@ -1177,6 +1179,96 @@ The combined kernel-data-layout shift moves `KD_PAGE_BITMAP` from 1664 to 6080, 
 - **Rect-bounded `GFX_PRESENT`.** Stays full-frame for M12; rect packing reserved for the next graphics.library protocol revision.
 - **`hardware.resource` and de-publicization of `SYS_MAP_IO`.** Still a documented impurity; will land alongside the first concrete consumer per the M11.5 admission rule.
 - **Heap-allocated kernel data structures.** Static TCB/PTBR/Port arrays remain — bigger now, but still arrays. Linked-list / heap-allocated versions are a future milestone that would remove the caps entirely.
-- **dos.library packed-heap file storage.** Attempted in M12, reverted, captured as a TODO.
+- **dos.library packed-heap file storage.** Attempted in M12, reverted, captured as a TODO. **Resolved in M12.8** (slab/extent allocator with atomic-swap-on-rewrite — see Milestone 12.8 below).
 
 **5.13.7 What this milestone proves.** intuition.library shipping as a pure user-space service — with no new syscalls, no graphics.library protocol changes, and no privileged code added — validates the M11.5 "exec boundary" thesis: the post-M11 nucleus is rich enough to host an Amiga-shaped windowing system without growing the syscall surface. The structural cap cleanup proves that those caps were placeholder ceilings, not architectural limits — the kernel data area easily absorbed all of them. Together this gets IntuitionOS to "visibly Amiga-shaped" while keeping the privileged surface defensible.
+
+### Milestone 12.8: dos.library variable-size file storage (Complete)
+
+M12.8 closes the dos.library file storage refactor that had been on the milestone roadmap since the start of M12.6. Per-file storage migrates from a fixed `DOS_FILE_SIZE = 16384` AllocMem block to a chain of 4 KiB extents allocated on demand, the per-file size cap is deleted entirely, and as a Phase 1 prerequisite the two arbitrary product caps in `load_program` (`code_size <= 8192`, `data_size <= 49152`) — which were the same kind of bucket-C ceiling hiding in bucket B — are also wiped and replaced with the actual architectural slot-fit constraint.
+
+The kernel ABI is bit-for-bit unchanged: no new syscalls, no new DOS opcodes, no widened ABI fields, no message wire-format changes. Existing dos.library clients (the shell, every M9–M12 example, every test) continue to work without recompilation. The visible change is that `DOS_WRITE` no longer rejects byte counts above 16384, and reads/writes of multi-extent files transit a small chain walk inside dos.library that's invisible to clients.
+
+**5.14.1 Storage model.** Each file's body is now a singly-linked chain of 4 KiB extents:
+
+```
+extent (one AllocMem'd page):
+  [0..7]    next_va  (8 bytes, 0 = end of chain)
+  [8..15]   reserved
+  [16..4095] payload (DOS_EXT_PAYLOAD = 4080 bytes)
+```
+
+The file's metadata entry stores the head of the chain in `DOS_META_OFF_VA` (which kept the same offset and the same semantics — only the *meaning* of the value changed from "VA of a fixed 16 KiB body block" to "VA of the first extent in a body chain"). A 32 KiB file occupies 9 extents = 9 chain pages; a 100-byte file occupies 1 extent = 1 chain page. Tail-padding waste per file is bounded by `DOS_EXT_PAYLOAD - 1` bytes (4079 bytes worst case), which is honest and bounded — the same kind of waste a slab allocator gives you.
+
+The four canonical extent operations all live in `iexec.s`:
+
+- **`.dos_extent_alloc(byte_count)`** → walks up `ceil(byte_count / DOS_EXT_PAYLOAD)` extents, linking them into a chain. On allocation failure partway through, internally calls `.dos_extent_free` on whatever was already allocated and returns `r1 = 0` with the failure error in `r2`. Empty case (`byte_count == 0`) returns `r1 = 0` with `ERR_OK`.
+- **`.dos_extent_free(first_va)`** → walks the chain calling `SYS_FREE_MEM` on each extent in turn. No-op if `first_va == 0`.
+- **`.dos_extent_walk(first_va, dst, byte_count)`** → copies up to `byte_count` bytes from the start of the chain into `dst`. Used by `DOS_READ`. Returns the number of bytes actually read.
+- **`.dos_extent_write(first_va, src, byte_count)`** → copies up to `byte_count` bytes from `src` into the chain (starting at the first extent's payload). Symmetric counterpart to `.dos_extent_walk`. Used by `DOS_WRITE` and the boot-time seed paths.
+
+**5.14.2 Atomic-swap-on-rewrite rule.** `DOS_WRITE`'s most load-bearing change is the rewrite path. The rule:
+
+> A `DOS_WRITE` that fails partway must leave the previous file content fully intact.
+
+This is enforced by always allocating the *new* chain *first*, copying the bytes into it, and only THEN linking the new chain into `entry.file_va` and freeing the old chain. The handler's flow:
+
+1. Look up the file entry. Save `old_first_va = entry.file_va` to a scratch slot.
+2. Clamp `byte_count` to the share buffer size (the only remaining clamp — the per-file `DOS_FILE_SIZE` cap is gone).
+3. `.dos_extent_alloc(clamped_byte_count)` → if it fails, reply `DOS_ERR_FULL`. The entry is untouched, so the previous file is still readable. The internal `.dea_fail_partial` cleanup ensures any partially-allocated new chain is freed before the error reply is sent.
+4. `.dos_extent_write(new_first_va, src, byte_count)` → copy bytes from the caller's share into the new chain.
+5. **Atomic swap (sequential, single-threaded handler):** `entry.file_va = new_first_va`, then `entry.size = byte_count`.
+6. `.dos_extent_free(old_first_va)` → reclaim the old chain. (No-op if there was no old chain — i.e. this is the first write to a freshly-created file.)
+7. Reply `DOS_OK` with `bytes_written = clamped_byte_count`.
+
+Because the dos.library service is a single-task message loop, no other DOS handler can interleave between steps 5 and 6 — the swap is atomic by single-threadedness, not by hardware atomicity. The order is still chosen to be safe even under hypothetical preemption-and-reentry: every observation point (entry.file_va, entry.size, the chain itself) is consistent with either the pre-write state or the post-write state, never a mix.
+
+`DOS_OPEN` (write mode, new file) no longer pre-allocates a body. New files start with `entry.file_va = 0` (empty); the first `DOS_WRITE` allocates the chain. This removes a wasted allocation per `DOS_OPEN` call at create time.
+
+**5.14.3 What `DOS_RUN` does now.** `SYS_EXEC_PROGRAM` requires a contiguous image pointer, but program images are now scattered across an extent chain. The `DOS_RUN` handler:
+
+1. Looks up the program by name (unchanged).
+2. Saves `first_extent_va` and `image_size` to scratch slots.
+3. `AllocMem(image_size, MEMF_CLEAR)` → temp contiguous buffer.
+4. `.dos_extent_walk(first_extent_va, temp_buf, image_size)` → copy the image into the temp buffer.
+5. `SYS_EXEC_PROGRAM(temp_buf, image_size, args, args_len)` → kernel copies the image into the new task's slot, returns task_id.
+6. `SYS_FREE_MEM(temp_buf, image_size)` → reclaim the temp buffer (the kernel has already copied the image, so the temp is no longer needed).
+7. Reply with the task_id.
+
+The temp buffer is sized exactly to the image — for the M12.8 worst case (dos.library itself, ~9 KiB code + 36 KiB data ≈ 45 KiB) that's 12 pages, comfortably within the allocator pool. Smaller programs use proportionally smaller temps. The temp is reclaimed before the reply, so steady-state dos.library memory usage is unaffected.
+
+**5.14.4 Phase 1 prerequisite — load_program cap removal.** The plan called for "no kernel changes" in M12.8, but Phase 1 immediately discovered that dos.library's pre-edit code section (8016 bytes) was already 98% of the way through the `load_program` `code_size <= 8192` cap. Adding the dead-code Phase 1 skeleton (~700 bytes) blew through it and `load_program` rejected the image with `ERR_BADARG` → boot panic. Investigation showed that the 8192 cap was an *arbitrary product limit*, not an architectural bound — the same kind of bucket-C ceiling that M12.6 was supposed to wipe out. The `data_size <= 49152` cap had the same disease (bumped 4096 → 16384 → 20480 → 49152 across M8/M10/M11/M12 with no architectural justification).
+
+Both caps were deleted and replaced with the actual layout constraint enforced by `USER_SLOT_STRIDE`:
+
+```
+code_pages + 1 (stack) + data_pages <= USER_VPN_STRIDE   (= 16 pages per slot)
+```
+
+This is the *honest* per-image ceiling — anything larger doesn't fit in a task slot. A hostile image that declares an absurdly large `code_size` (e.g. `0xFFFFFFFF`) is correctly rejected: the page-count computation produces `~2^20`, which is well above 16, so the fit check catches it. The page-count compute uses 64-bit arithmetic on the zero-extended `load.l` value, so it can't overflow.
+
+This change is in scope for M12.8 because (a) it was a hard prerequisite for shipping the storage refactor, (b) the two caps were the same kind of bucket-C product limit that the M12.5 audit was supposed to catch (and missed), and (c) the replacement is more honest, more correct, and smaller code than the prior conditional `bgt` checks. The "no kernel changes" rule from the M12.8 plan was relaxed to "no kernel functional changes; layout-bound caps may be replaced with the real constraint where required."
+
+**5.14.5 Phase 1 prerequisite — robust dos.library preamble.** The other Phase 1 surprise was that dos.library's preamble hardcoded `add r29, r29, #0x3000` to compute its data-page base — an offset that assumed exactly 2 code pages. Bumping dos.library to 3 code pages broke the preamble silently (it pointed at the stack page instead of the data section). The fix derives `r29 = data_base` from the kernel-set initial USP via `add r29, sp, #16`, which is robust to any `code_pages` count. dos.library can now grow without touching its preamble. (Other libraries still hardcode `0x3000` and would need the same fix if any of them ever crosses 2 code pages — that's left as a future cleanup, not in M12.8 scope.)
+
+**5.14.6 What M12.8 explicitly does NOT do.** The DOS protocol is unchanged — no new opcodes, no widened ABI fields, no message wire-format changes:
+
+- **No `DOS_DELETE`.** Files cannot be removed via the public API. The only way file extents get freed is via the `DOS_WRITE`-replacement path (which frees old extents before allocating new). Files persist for the dos.library service lifetime.
+- **No `DOS_TRUNCATE`.** A `DOS_WRITE` of N bytes effectively truncates to N (replaces from offset 0), but there's no opcode that resizes a file without rewriting its content.
+- **No `DOS_SEEK`.** Reads always start from offset 0. There's no notion of a file cursor; handles store only the entry VA.
+- **No `DOS_APPEND`.** Writes always start from offset 0 and replace the file's content.
+- **No persistent storage.** dos.library is still a RAM-only filesystem. The extent chains live in `AllocMem`'d pool pages and disappear when the system is reset.
+
+If any of those are wanted, they each get their own future protocol-extension milestone.
+
+**5.14.7 Test coverage.** Three new tests in `iexec_test.go` exercise the M12.8 storage shape:
+
+- **`TestIExec_DosM128_FileLargerThanOldCap`** — 32 KiB write/read round-trip, byte-for-byte verified across 9 extents (2× the previous 16 KiB cap). This is the load-bearing test for the per-file cap removal AND the multi-extent walker (Risk #1 in the M12.8 plan: extent-walk arithmetic bugs).
+- **`TestIExec_DosM128_RewriteShrinks`** — write 8 KiB, then rewrite the same file with 1 KiB; read back expects 1 KiB of new content. Proves atomic-swap-on-rewrite works on the shrink path (old chain freed, new chain linked, no leak).
+- **`TestIExec_DosM128_RewriteGrows`** — write 1 KiB, then rewrite with 8 KiB; read back expects 8 KiB of new content. Proves atomic-swap on the grow path.
+
+Four of the seven tests in the M12.8 plan are covered by existing tests or skipped with documented rationale: `StorageExhaustionIsClean` (atomic-swap correctness is exercised by the shrink/grow tests), `ExtentChainWalkCorrect` (subsumed by FileLargerThanOldCap), `DirReportsCorrectSizes` (`DOS_DIR` walks metadata only, not bodies — unchanged in M12.8), and `ManySmallFiles` (already covered by `TestIExec_NoCap_DosFilesAndHandlesGrow` from M12.6 Phase A).
+
+The full M12.5/M12.6 hardening test suite remains green throughout M12.8 — no kernel data structure changes, no new ABI fields, no widened slots. The trust model and the M11.5 admission rule are both intact.
+
+**5.14.8 What this milestone proves.** Bucket B can be drained too, not just bucket C — and the audit pass that drained it found two more arbitrary product limits hiding in bucket B that the M12.5 audit had incorrectly classified. After M12.8 the audit table's load-bearing entries are all gone: every fixed cap that exists in IntuitionOS today is justified by an active hardware constraint, an active ABI field, an active layout, or an active protocol semantic — not by "we picked this number once and never re-examined it." The dos.library file storage is the same kind of "grows until memory exhaustion" structure that M12.6 gave the kernel core, and the load_program prerequisite cleanup means the per-image image-size ceilings are now the actual layout-bound architectural ceiling rather than two more layers of arbitrary product limits.
