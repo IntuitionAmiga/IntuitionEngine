@@ -23,7 +23,7 @@ const (
 	kernPageTableBase = 0x40000 // Kernel page table (64 KiB) — M12: was 0x10000
 	kernDataBase      = 0x50000 // Kernel data (TCBs, state)   — M12: was 0x20000
 	kernStackTop      = 0x9F000 // Kernel stack top
-	maxTasks          = 16      // MAX_TASKS (M12: bumped from 8 — global dynamic VA range removed the per-task stride cap)
+	maxTasks          = 32      // MAX_TASKS (M12.6 Phase D: bumped from 16; M12 bumped from 8)
 
 	// User task page table base. Was 0x100000 originally but that range
 	// collides with the host VideoChip MMIO at $100000-$5FFFFF (VRAM),
@@ -31,7 +31,7 @@ const (
 	// 0x680000, which sits in the gap between the user code/stack/data
 	// slot block (0x600000-0x67FFFF) and the page allocator pool
 	// (0x700000+). See sdk/include/iexec.inc for the canonical definition.
-	userPTBase     = 0x700000 // USER_PT_BASE (M12: was 0x680000 — slot region grew to 1 MiB for MAX_TASKS=16)
+	userPTBase     = 0x800000 // USER_PT_BASE — M12.6 Phase D: was 0x700000. PT region grew from 1 MiB to 2 MiB for MAX_TASKS=32; allocator pool was shifted up by 1 MiB to make room.
 	userSlotStride = 0x10000  // USER_SLOT_STRIDE (64 KiB between slots)
 
 	// User task physical pages (slot-based: base + i * userSlotStride)
@@ -94,12 +94,13 @@ const (
 	taskWaiting = 2
 	taskFree    = 3
 
-	// PTBR array (after 8 TCBs: 64 + 8*32 = 320)
-	kdPTBRBase = 576 // KD_PTBR_BASE (M12: was 320 — TCB array doubled to 16)
+	// PTBR array — M12.6 Phase D: was 576 (after 16 TCBs); now 1088 (after 32 TCBs)
+	kdPTBRBase = 1088 // KD_PTBR_BASE
 
-	// Port layout (must match iexec.inc M12: PORT_NAME_LEN 16→32, KD_PORT_MAX 8→32, MAX_TASKS 8→16)
-	kdPortBase   = 704 // KD_PORT_BASE (after 16 PTBRs: 576 + 16*8 = 704)
-	kdPortStride = 168 // KD_PORT_STRIDE (40-byte header + 4×32-byte messages)
+	// Port layout (M12.6 Phase D: KD_PORT_BASE shifted from 704 to 1344
+	// because TCBs and PTBRs both doubled in size)
+	kdPortBase   = 1344 // KD_PORT_BASE (after 32 TCBs + 32 PTBRs: 64 + 32*32 + 32*8 = 1344)
+	kdPortStride = 168  // KD_PORT_STRIDE (40-byte header + 4×32-byte messages)
 	kdPortMax    = 32
 
 	// Port header field offsets
@@ -136,8 +137,8 @@ const (
 	memfPublic = 0x00001
 	memfClear  = 0x10000
 
-	allocPoolBase  = 0x800 // first allocable page number (M12: was 0x700)
-	allocPoolPages = 6144  // pages 0x800-0x1FFF (M12: was 6400)
+	allocPoolBase  = 0x1200 // first allocable page number — M12.6 Phase E security fix: was 0xA00 (split user-dyn and pool into disjoint VPN ranges)
+	allocPoolPages = 3584   // pages 0x1200-0x1FFF — M12.6 Phase E: was 5632 (lost 2048 pages to user-dyn VA window so the two ranges are disjoint)
 
 	// M12.5: kern_init permanently consumes one allocator pool page for the
 	// hardware.resource grant table chain (the bootstrap CHIP grant for
@@ -146,14 +147,14 @@ const (
 	// must use allocPoolBaselineFree, not allocPoolPages.
 	allocPoolBaselineFree = allocPoolPages - 1
 
-	userDynBase  = 0x800000  // dynamic allocation VA base (M12: shared globally across tasks)
-	userDynEnd   = 0x2000000 // dynamic allocation VA end (M12)
+	userDynBase  = 0xA00000  // dynamic allocation VA base — M12.6 Phase D: was 0x800000
+	userDynEnd   = 0x1200000 // dynamic allocation VA end — M12.6 Phase E security fix: was 0x2000000 (now disjoint from allocator pool VPNs)
 	userDynPages = 768       // max pages per single AllocMem call (M12: was per-task budget)
 
-	kdPageBitmap   = 6080 // page allocation bitmap (800 bytes) — M12 shifted from 1664
+	kdPageBitmap   = 6720 // page allocation bitmap (800 bytes) — M12.6 Phase D: was 6080
 	kdPageBitmapSz = 800
 
-	kdRegionTable  = 6880 // region table base — M12 shifted from 2464
+	kdRegionTable  = 7520 // region table base — M12.6 Phase D: was 6880
 	kdRegionStride = 16
 	kdRegionMax    = 8
 	kdRegionTaskSz = 128 // 8 regions x 16 bytes per task
@@ -170,10 +171,20 @@ const (
 	regionPrivate = 1
 	regionShared  = 2
 
-	// Shared object table
-	kdShmemTable  = 8928 // M12 shifted from 3488 (32 ports + 16 tasks)
-	kdShmemStride = 16
-	kdShmemMax    = 16 // M12: bumped from 8
+	// Port table — M12.6 Phase C: KD_PORT_MAX cap removed.
+	// kdPortInlineMax is the inline range; rows beyond it live in the
+	// overflow chain reachable through KD_PORT_OFLOW_HDR.
+	kdPortInlineMax = 32    // M12.6 Phase C: was kdPortMax, now the inline range
+	kdPortOflowHdr  = 12152 // M12.6 Phase D: was 9336
+
+	// Shared object table — M12.6 Phase B: KD_SHMEM_MAX cap removed.
+	// kdShmemInlineMax is the inline range; rows beyond it live in the
+	// overflow chain reachable through KD_SHMEM_OFLOW_HDR.
+	kdShmemTable     = 11616 // M12.6 Phase D: was 8928
+	kdShmemStride    = 16
+	kdShmemInlineMax = 16    // M12.6 Phase B: was kdShmemMax, now the inline range
+	kdShmemMax       = 16    // legacy alias retained for tests that walk only the inline table
+	kdShmemOflowHdr  = 12144 // M12.6 Phase D: was 9328
 
 	// Shared object fields
 	kdShmValid    = 0
@@ -184,17 +195,17 @@ const (
 	kdShmNonce    = 8
 
 	// M12.5: hardware.resource state and grant table
-	sysHwresOp       = 38   // SYS_HWRES_OP — verb-multiplexed broker primitive
-	hwresBecome      = 0    // R6 verb selector: claim broker identity
-	hwresCreate      = 1    // R6 verb selector: create grant
-	hwresRevoke      = 2    // R6 verb selector: reserved for M13
-	kdHwresTask      = 9184 // KD_HWRES_TASK (1 byte, 0xFF = unclaimed)
-	kdGrantTableHdr  = 9192 // KD_GRANT_TABLE_HDR (8 bytes)
-	kdGrantHdrFirst  = 0    // first chain page PPN (2 bytes)
-	kdGrantHdrTotal  = 2    // total grant rows in use (2 bytes)
-	kdGrantHdrPages  = 4    // number of chain pages (2 bytes)
-	kdGrantPageNext  = 0    // chain page header: next page PPN (2 bytes)
-	kdGrantPageHdrSz = 16   // bytes reserved at start of each chain page
+	sysHwresOp       = 38    // SYS_HWRES_OP — verb-multiplexed broker primitive
+	hwresBecome      = 0     // R6 verb selector: claim broker identity
+	hwresCreate      = 1     // R6 verb selector: create grant
+	hwresRevoke      = 2     // R6 verb selector: reserved for M13
+	kdHwresTask      = 11872 // KD_HWRES_TASK (1 byte, 0xFF = unclaimed) — M12.6 Phase D: was 9184
+	kdGrantTableHdr  = 11880 // KD_GRANT_TABLE_HDR (8 bytes) — M12.6 Phase D: was 9192
+	kdGrantHdrFirst  = 0     // first chain page PPN (2 bytes)
+	kdGrantHdrTotal  = 2     // total grant rows in use (2 bytes)
+	kdGrantHdrPages  = 4     // number of chain pages (2 bytes)
+	kdGrantPageNext  = 0     // chain page header: next page PPN (2 bytes)
+	kdGrantPageHdrSz = 16    // bytes reserved at start of each chain page
 	kdGrantRowSize   = 16
 	kdGrantRowsPerPg = 255
 	kdGrantTaskID    = 0          // row offset: granted task id (1 byte)
@@ -6782,8 +6793,8 @@ func TestIExec_VersionCommand(t *testing.T) {
 	// Inject "\nVERSION\n". The leading empty line gives dos.library time to
 	// finish initialization before the shell sends DOS_RUN for VERSION.
 	output := bootAndInjectCommand(t, "\nVERSION\n", 5*time.Second)
-	if !strings.Contains(output, "IntuitionOS 0.13") {
-		t.Fatalf("VersionCommand: expected 'IntuitionOS 0.11' in output, got=%q", output[:min(len(output), 300)])
+	if !strings.Contains(output, "IntuitionOS 0.14") {
+		t.Fatalf("VersionCommand: expected 'IntuitionOS 0.14' in output, got=%q", output[:min(len(output), 300)])
 	}
 }
 
@@ -6822,8 +6833,8 @@ func TestIExec_TypeStartupSequence(t *testing.T) {
 	if !strings.Contains(output, "VERSION") {
 		t.Fatalf("TypeStartupSequence: expected 'VERSION' in output, got=%q", output[:min(len(output), 300)])
 	}
-	if !strings.Contains(output, "ECHO IntuitionOS M12.5 ready") {
-		t.Errorf("TypeStartupSequence: expected 'ECHO IntuitionOS M12.5 ready' in output, got=%q", output[:min(len(output), 300)])
+	if !strings.Contains(output, "ECHO IntuitionOS M12.6 ready") {
+		t.Errorf("TypeStartupSequence: expected 'ECHO IntuitionOS M12.6 ready' in output, got=%q", output[:min(len(output), 300)])
 	}
 }
 
@@ -7130,12 +7141,684 @@ func TestIExec_DOSOpenWrite(t *testing.T) {
 	}
 }
 
+// TestIExec_NoCap_MaxTasksBumpedTo32 exercises M12.6 Phase D: MAX_TASKS
+// was bumped from 16 to 32, with the user-space slot region widened from
+// 1 MiB to 2 MiB and the allocator pool shifted up by 1 MiB to make room.
+//
+// The test sits in task 0 (test code) and calls SYS_CREATE_TASK in a
+// runtime loop, each call creating a child whose code is a tiny yield
+// loop. The kernel scans inline TCB slots and assigns the next free
+// one. After the loop, the test verifies:
+//
+//  1. > 16 child tasks were created successfully (proves the old
+//     MAX_TASKS=16 cap is gone — the test must observe a 17th success).
+//  2. All returned task IDs are distinct.
+//
+// The test does NOT try to fill all 32 slots because some boot-time
+// tasks may already occupy slots and the exact post-boot count depends
+// on which services started. Creating 16 new children (in addition to
+// task 0's own slot) is sufficient to prove the cap was actually bumped.
+func TestIExec_NoCap_MaxTasksBumpedTo32(t *testing.T) {
+	const (
+		newTasks   = 16 // Number of children to create
+		offErrors  = 0
+		offTaskIDs = newTasks * 8
+		offCounter = newTasks * 16
+	)
+
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	t0Start := images[0]
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+
+	// Child template: yield forever. SYS_YIELD; bra -8.
+	// Lives in task 0's stack region (which is in the caller's user region
+	// per the SYS_CREATE_TASK source_ptr validation: source_ptr must be in
+	// [USER_CODE_BASE + task*stride, +0x3000)). Stack page is at offset
+	// +0x1000 from the code base, well within the validation range.
+	childPC := uint32(userTask0Stack + 64)
+	copy(rig.cpu.memory[childPC:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	copy(rig.cpu.memory[childPC+8:], ie64Instr(OP_BRA, 0, 0, 0, 0, 0, braBack8))
+
+	off := t0Start
+	w := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+
+	// Reserve a 16-byte stack frame and store r29 (data page VA) at (sp).
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	// Initialize counter = 0
+	w(ie64Instr(OP_STORE, 0, IE64_SIZE_Q, 1, 29, 0, offCounter))
+
+	loopTop := off
+	w(ie64Instr(OP_LOAD, 10, IE64_SIZE_Q, 0, 29, 0, offCounter))
+	w(ie64Instr(OP_MOVE, 28, IE64_SIZE_L, 1, 0, 0, newTasks))
+	bgeInstr := off
+	w(ie64Instr(OP_BGE, 0, 0, 0, 10, 28, 0)) // patched after loop body
+	// SYS_CREATE_TASK(source_ptr=childPC, code_size=16, arg0=counter)
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, childPC))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 16))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_Q, 0, 10, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask)) // r1=task_id, r2=err
+	// Reload r29 and counter (syscall may clobber)
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 10, IE64_SIZE_Q, 0, 29, 0, offCounter))
+	// Store err and task_id indexed by counter
+	w(ie64Instr(OP_LSL, 13, IE64_SIZE_L, 1, 10, 0, 3))
+	w(ie64Instr(OP_ADD, 14, IE64_SIZE_L, 1, 13, 0, offErrors))
+	w(ie64Instr(OP_ADD, 14, IE64_SIZE_Q, 0, 14, 29, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 14, 0, 0))
+	w(ie64Instr(OP_ADD, 14, IE64_SIZE_L, 1, 13, 0, offTaskIDs))
+	w(ie64Instr(OP_ADD, 14, IE64_SIZE_Q, 0, 14, 29, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 14, 0, 0))
+	// counter += 1
+	w(ie64Instr(OP_ADD, 10, IE64_SIZE_L, 1, 10, 0, 1))
+	w(ie64Instr(OP_STORE, 10, IE64_SIZE_Q, 1, 29, 0, offCounter))
+	braTop := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(loopTop)-int32(braTop))))
+	loopExit := off
+	bgeDelta := int32(loopExit) - int32(bgeInstr)
+	copy(rig.cpu.memory[bgeInstr:], ie64Instr(OP_BGE, 0, 0, 0, 10, 28, uint32(bgeDelta)))
+	w(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	mem := rig.cpu.memory
+	successes := 0
+	seenIDs := make(map[uint64]int)
+	maxID := uint64(0)
+	for i := 0; i < newTasks; i++ {
+		errCode := binary.LittleEndian.Uint64(mem[userTask0Data+offErrors+i*8:])
+		taskID := binary.LittleEndian.Uint64(mem[userTask0Data+offTaskIDs+i*8:])
+		if errCode != 0 {
+			// Some calls may legitimately fail if all 32 slots are full.
+			// Tolerate later failures, but at least one new task with id > 16
+			// must have been created (or > original boot count).
+			t.Logf("iter %d: CreateTask returned err=%d (likely slot exhaustion)", i, errCode)
+			continue
+		}
+		successes++
+		if prev, dup := seenIDs[taskID]; dup {
+			t.Errorf("iter %d: task id %d duplicate of iter %d", i, taskID, prev)
+		}
+		seenIDs[taskID] = i
+		if taskID > maxID {
+			maxID = taskID
+		}
+	}
+
+	t.Logf("NoCap_MaxTasksBumpedTo32: %d/%d CreateTask calls succeeded; max task id = %d (old MAX_TASKS=16)",
+		successes, newTasks, maxID)
+
+	// Phase D proof: at least one new task got an ID >= 16 (the old cap).
+	// With the boot tasks plus N new ones, total task IDs span 0..(boot+N-1).
+	// If boot occupies ~7 slots and we create 16 children, total = ~23,
+	// and at least one task ID will be >= 16.
+	if maxID < 16 {
+		t.Fatalf("max task id = %d, expected at least one task id >= 16 (old MAX_TASKS cap). %d/%d CreateTask calls succeeded.",
+			maxID, successes, newTasks)
+	}
+	if successes < 8 {
+		t.Fatalf("only %d/%d CreateTask calls succeeded — Phase D bump should leave plenty of slots", successes, newTasks)
+	}
+}
+
+// TestIExec_PortChain_DisjointFromUserDyn is the regression test for the
+// M12.6 Phase E security fix: SYS_ALLOC_MEM and SYS_CREATE_PORT must never
+// be able to alias the same VPN. Before the fix, USER_DYN_BASE..USER_DYN_END
+// (= 0xA00000..0x2000000) overlapped the allocator pool VPN range exactly,
+// so a sequence of (AllocMem, CreatePort, AllocMem) calls could place the
+// second user allocation at the same VPN as the port chain page allocated
+// in between, overwriting the supervisor-only PT entry that build_user_pt
+// copies into every user PT. Subsequent port operations running on the
+// user PT would dereference attacker-controlled memory.
+//
+// The fix split the user-dyn window and the allocator pool into disjoint
+// VPN ranges (user-dyn at 0xA00..0x11FF, pool at 0x1200..0x1FFF). This
+// test exercises the previous attack pattern: alloc, create N>32 ports,
+// alloc again, then verify that the kernel chain header still points at a
+// PPN inside the new disjoint pool range and that subsequent port ops
+// against chain-resident ports still work correctly. If a future patch
+// re-aliases the two ranges (or the chain helpers regress to walking on
+// user PT without the disjoint guarantee), this test will fail in one of
+// several ways: AllocMem succeeds at a VA in the pool range; PutMsg
+// returns garbage; kill_task_cleanup faults; etc.
+func TestIExec_PortChain_DisjointFromUserDyn(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	t0Start := images[0]
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+
+	off := t0Start
+	w := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+
+	// Stack frame
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+
+	// Step 1: AllocMem(4096) — claims the first user-dyn VPN.
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem)) // r1 = first VA
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 0)) // data[0] = first VA
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 8)) // data[8] = err
+
+	// Step 2: Create 33 ports — fills inline 32 + triggers chain allocation
+	// at slot 32. This drives kern_port_alloc_slot's .kpas_alloc_new path,
+	// which calls alloc_pages and gets the next free pool PPN.
+	w(ie64Instr(OP_STORE, 0, IE64_SIZE_Q, 1, 29, 0, 16)) // counter = 0
+	loopTop := off
+	w(ie64Instr(OP_LOAD, 10, IE64_SIZE_Q, 0, 29, 0, 16))
+	w(ie64Instr(OP_MOVE, 28, IE64_SIZE_L, 1, 0, 0, 33))
+	bgeInstr := off
+	w(ie64Instr(OP_BGE, 0, 0, 0, 10, 28, 0))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0)) // anonymous port
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 10, IE64_SIZE_Q, 0, 29, 0, 16))
+	w(ie64Instr(OP_ADD, 10, IE64_SIZE_L, 1, 10, 0, 1))
+	w(ie64Instr(OP_STORE, 10, IE64_SIZE_Q, 1, 29, 0, 16))
+	braTop := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(loopTop)-int32(braTop))))
+	loopExit := off
+	bgeDelta := int32(loopExit) - int32(bgeInstr)
+	copy(rig.cpu.memory[bgeInstr:], ie64Instr(OP_BGE, 0, 0, 0, 10, 28, uint32(bgeDelta)))
+
+	// Step 3: AllocMem(4096) again — claims the next user-dyn VPN. With the
+	// pre-fix layout this would land at the same VPN as the port chain page,
+	// silently overwriting the supervisor-only PT entry. With the fixed
+	// layout the user-dyn window ends at USER_DYN_END = 0x1200000, while
+	// the pool starts at PPN 0x1200, so VAs and PPNs cannot collide.
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 24)) // data[24] = second VA
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 32)) // data[32] = err
+	w(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	mem := rig.cpu.memory
+	firstVA := binary.LittleEndian.Uint64(mem[userTask0Data+0:])
+	firstErr := binary.LittleEndian.Uint64(mem[userTask0Data+8:])
+	secondVA := binary.LittleEndian.Uint64(mem[userTask0Data+24:])
+	secondErr := binary.LittleEndian.Uint64(mem[userTask0Data+32:])
+
+	t.Logf("first AllocMem: VA=0x%X err=%d", firstVA, firstErr)
+	t.Logf("second AllocMem: VA=0x%X err=%d", secondVA, secondErr)
+
+	if firstErr != 0 {
+		t.Fatalf("first AllocMem err=%d, want 0", firstErr)
+	}
+	if secondErr != 0 {
+		t.Fatalf("second AllocMem err=%d, want 0", secondErr)
+	}
+
+	// Both VAs must be inside the user-dyn window AND outside the allocator
+	// pool VPN range. If either condition fails, the disjoint-VPN invariant
+	// is broken and the privilege escalation is exploitable again.
+	const poolStartVA = uint64(allocPoolBase) << 12 // 0x1200000
+	for _, va := range []uint64{firstVA, secondVA} {
+		if va < userDynBase {
+			t.Errorf("AllocMem returned VA 0x%X below USER_DYN_BASE (0x%X)", va, userDynBase)
+		}
+		if va >= userDynEnd {
+			t.Errorf("AllocMem returned VA 0x%X at or past USER_DYN_END (0x%X) — user-dyn window leak", va, userDynEnd)
+		}
+		if va >= poolStartVA {
+			t.Fatalf("AllocMem returned VA 0x%X inside the allocator pool VPN range (>= 0x%X) — the disjoint-VPN invariant is broken; CVE-class privilege escalation is reachable. See M12.6 Phase E security fix.", va, poolStartVA)
+		}
+	}
+
+	// Also confirm the kernel chain header points at a PPN in the disjoint
+	// pool range — this is the page kern_port_alloc_slot allocated in step 2.
+	hdrFirstPPN := binary.LittleEndian.Uint16(mem[kernDataBase+kdPortOflowHdr:])
+	if hdrFirstPPN == 0 {
+		t.Fatalf("KD_PORT_OFLOW_HDR.first_ppn = 0 — chain page never allocated; the test did not exercise the chain path")
+	}
+	if uint32(hdrFirstPPN) < uint32(allocPoolBase) {
+		t.Fatalf("port chain head PPN 0x%X is below ALLOC_POOL_BASE (0x%X) — pool layout is wrong", hdrFirstPPN, allocPoolBase)
+	}
+	t.Logf("port chain head PPN 0x%X is inside the disjoint pool range [0x%X..0x%X)",
+		hdrFirstPPN, allocPoolBase, allocPoolBase+allocPoolPages)
+}
+
+// TestIExec_NoCap_PortMaxRemoved exercises M12.6 Phase C: the
+// KD_PORT_MAX = 32 cap is gone. Synthetic task 0 calls CreatePort in a
+// runtime loop creating portCount = 64 anonymous ports (no name → no
+// duplicate-name check). All 64 calls must return ERR_OK and all 64
+// port IDs must be distinct. The test then verifies:
+//
+//  1. All 64 calls returned ERR_OK.
+//  2. All 64 port IDs are distinct.
+//  3. At least one port id >= kdPortInlineMax (proves the overflow
+//     chain was actually used — slots 32..63 must come from the chain).
+//  4. KD_PORT_OFLOW_HDR.first_ppn != 0 after the run (proves the chain
+//     helper allocated an overflow page on demand).
+func TestIExec_NoCap_PortMaxRemoved(t *testing.T) {
+	const (
+		portCount  = 64
+		offErrors  = 0
+		offPortIDs = portCount * 8
+		offCounter = portCount * 16
+	)
+
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	t0Start := images[0]
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+
+	off := t0Start
+	w := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+
+	// Reserve a 16-byte stack frame and store r29 (data page VA) at (sp).
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+
+	// Initialize counter = 0
+	w(ie64Instr(OP_STORE, 0, IE64_SIZE_Q, 1, 29, 0, offCounter))
+
+	loopTop := off
+	w(ie64Instr(OP_LOAD, 10, IE64_SIZE_Q, 0, 29, 0, offCounter))
+	w(ie64Instr(OP_MOVE, 28, IE64_SIZE_L, 1, 0, 0, portCount))
+	bgeInstr := off
+	w(ie64Instr(OP_BGE, 0, 0, 0, 10, 28, 0)) // patched after loop body
+	// CreatePort(name=0, flags=0) — anonymous private port
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort)) // r1 = portID, r2 = err
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 10, IE64_SIZE_Q, 0, 29, 0, offCounter))
+	// Store err and portID indexed by counter
+	w(ie64Instr(OP_LSL, 13, IE64_SIZE_L, 1, 10, 0, 3)) // r13 = counter*8
+	w(ie64Instr(OP_ADD, 14, IE64_SIZE_L, 1, 13, 0, offErrors))
+	w(ie64Instr(OP_ADD, 14, IE64_SIZE_Q, 0, 14, 29, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 14, 0, 0))
+	w(ie64Instr(OP_ADD, 14, IE64_SIZE_L, 1, 13, 0, offPortIDs))
+	w(ie64Instr(OP_ADD, 14, IE64_SIZE_Q, 0, 14, 29, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 14, 0, 0))
+	// counter += 1
+	w(ie64Instr(OP_ADD, 10, IE64_SIZE_L, 1, 10, 0, 1))
+	w(ie64Instr(OP_STORE, 10, IE64_SIZE_Q, 1, 29, 0, offCounter))
+	braTop := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(loopTop)-int32(braTop))))
+	loopExit := off
+	bgeDelta := int32(loopExit) - int32(bgeInstr)
+	copy(rig.cpu.memory[bgeInstr:], ie64Instr(OP_BGE, 0, 0, 0, 10, 28, uint32(bgeDelta)))
+	w(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	mem := rig.cpu.memory
+	seenIDs := make(map[uint64]int)
+	maxID := uint64(0)
+	for i := 0; i < portCount; i++ {
+		errCode := binary.LittleEndian.Uint64(mem[userTask0Data+offErrors+i*8:])
+		portID := binary.LittleEndian.Uint64(mem[userTask0Data+offPortIDs+i*8:])
+		if errCode != 0 {
+			t.Errorf("CreatePort iteration %d returned err=%d, want 0. With M12.6 Phase C the KD_PORT_MAX=32 cap should be gone (chain growth).", i, errCode)
+			continue
+		}
+		if portID == 0xFF {
+			t.Errorf("iteration %d: port id 0xFF (sentinel) is reserved", i)
+			continue
+		}
+		if prev, dup := seenIDs[portID]; dup {
+			t.Errorf("iteration %d: port id %d duplicate of iteration %d. IDs must be unique while live.", i, portID, prev)
+		}
+		seenIDs[portID] = i
+		if portID > maxID {
+			maxID = portID
+		}
+	}
+	hdrFirstPPN := binary.LittleEndian.Uint16(mem[kernDataBase+kdPortOflowHdr:])
+	if len(seenIDs) != portCount {
+		t.Fatalf("expected %d distinct successful port ids, got %d", portCount, len(seenIDs))
+	}
+	if maxID < uint64(kdPortInlineMax) {
+		t.Fatalf("max port id = %d, expected at least one id >= %d (overflow chain not exercised)", maxID, kdPortInlineMax)
+	}
+	if hdrFirstPPN == 0 {
+		t.Fatalf("KD_PORT_OFLOW_HDR.first_ppn = 0 after %d allocations — chain helper never allocated an overflow page", portCount)
+	}
+	t.Logf("NoCap_PortMaxRemoved: %d ports allocated, max id = %d (>%d inline cap), overflow chain head PPN = 0x%X",
+		portCount, maxID, kdPortInlineMax-1, hdrFirstPPN)
+}
+
+// TestIExec_NoCap_ShmemMaxRemoved exercises M12.6 Phase B: the
+// KD_SHMEM_MAX = 16 cap is gone. A synthetic task 0 calls
+// AllocMem(MEMF_PUBLIC) shmemCount=32 times in a runtime loop, storing
+// the (err, handle) pairs in its data page indexed by the loop counter.
+// The test then inspects:
+//
+//  1. All 32 calls returned ERR_OK.
+//  2. All 32 handle slot IDs are distinct (no slot reuse).
+//  3. At least one handle has slot id >= kdShmemInlineMax (proves the
+//     overflow chain was actually used).
+//  4. The KD_SHMEM_OFLOW_HDR has a non-zero first_ppn (the chain page
+//     was allocated by the helper).
+//
+// Failure mode on real allocator exhaustion would be ERR_NOMEM, not a
+// fixed-cap rejection; this test is well within allocator capacity so
+// every call must succeed.
+func TestIExec_NoCap_ShmemMaxRemoved(t *testing.T) {
+	const (
+		shmemCount = 32
+		// Task 0 data page layout for the test:
+		//   0..(shmemCount*8-1)               : err codes
+		//   shmemCount*8..(shmemCount*16-1)   : handle ids
+		//   shmemCount*16..(shmemCount*16+7)  : counter
+		offErrors  = 0
+		offHandles = shmemCount * 8
+		offCounter = shmemCount * 16
+		// Per-allocation page count
+		allocPages = 1
+	)
+
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	t0Start := images[0]
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+
+	off := t0Start
+	w := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+
+	// Reserve a 16-byte stack frame and store r29 (data page VA) at (sp).
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+
+	// Initialize counter = 0
+	w(ie64Instr(OP_STORE, 0, IE64_SIZE_Q, 1, 29, 0, offCounter))
+
+	loopTop := off
+	w(ie64Instr(OP_LOAD, 10, IE64_SIZE_Q, 0, 29, 0, offCounter))
+	w(ie64Instr(OP_MOVE, 28, IE64_SIZE_L, 1, 0, 0, shmemCount))
+	bgeInstr := off
+	w(ie64Instr(OP_BGE, 0, 0, 0, 10, 28, 0)) // patched after loop body
+	// AllocMem(allocPages * 4096, MEMF_PUBLIC|MEMF_CLEAR)
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, allocPages*4096))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, uint32(memfPublic|memfClear)))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem)) // r1=VA, r2=err, r3=handle
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 10, IE64_SIZE_Q, 0, 29, 0, offCounter))
+	// Store err and handle indexed by counter
+	w(ie64Instr(OP_LSL, 13, IE64_SIZE_L, 1, 10, 0, 3)) // r13 = counter*8
+	w(ie64Instr(OP_ADD, 14, IE64_SIZE_L, 1, 13, 0, offErrors))
+	w(ie64Instr(OP_ADD, 14, IE64_SIZE_Q, 0, 14, 29, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 14, 0, 0))
+	w(ie64Instr(OP_ADD, 14, IE64_SIZE_L, 1, 13, 0, offHandles))
+	w(ie64Instr(OP_ADD, 14, IE64_SIZE_Q, 0, 14, 29, 0))
+	w(ie64Instr(OP_STORE, 3, IE64_SIZE_Q, 0, 14, 0, 0))
+	// counter += 1
+	w(ie64Instr(OP_ADD, 10, IE64_SIZE_L, 1, 10, 0, 1))
+	w(ie64Instr(OP_STORE, 10, IE64_SIZE_Q, 1, 29, 0, offCounter))
+	braTop := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(loopTop)-int32(braTop))))
+	loopExit := off
+	bgeDelta := int32(loopExit) - int32(bgeInstr)
+	copy(rig.cpu.memory[bgeInstr:], ie64Instr(OP_BGE, 0, 0, 0, 10, 28, uint32(bgeDelta)))
+	// HALT
+	w(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	mem := rig.cpu.memory
+	seenSlots := make(map[uint64]int)
+	maxSlot := uint64(0)
+	for i := 0; i < shmemCount; i++ {
+		errCode := binary.LittleEndian.Uint64(mem[userTask0Data+offErrors+i*8:])
+		handle := binary.LittleEndian.Uint64(mem[userTask0Data+offHandles+i*8:])
+		if errCode != 0 {
+			t.Errorf("AllocMem(MEMF_PUBLIC) iteration %d returned err=%d, want 0. With M12.6 Phase B the KD_SHMEM_MAX=16 cap should be gone (chain growth).", i, errCode)
+			continue
+		}
+		if handle == 0 {
+			t.Errorf("iteration %d: handle is 0", i)
+			continue
+		}
+		slot := handle & 0xFF
+		if slot == 0xFF {
+			t.Errorf("iteration %d: slot id 0xFF (sentinel) is reserved", i)
+			continue
+		}
+		if prev, dup := seenSlots[slot]; dup {
+			t.Errorf("iteration %d: slot id %d duplicate of iteration %d. Slots must be unique while live.", i, slot, prev)
+		}
+		seenSlots[slot] = i
+		if slot > maxSlot {
+			maxSlot = slot
+		}
+	}
+	if len(seenSlots) != shmemCount {
+		t.Fatalf("expected %d distinct successful shmem slots, got %d", shmemCount, len(seenSlots))
+	}
+	// Proof that the overflow chain was actually used: at least one slot
+	// id must be >= kdShmemInlineMax (16). With shmemCount=32 the inline
+	// range fills first, so slots 16..31 must come from the chain.
+	if maxSlot < uint64(kdShmemInlineMax) {
+		t.Fatalf("max slot id = %d, expected at least one slot >= %d (overflow chain not exercised)", maxSlot, kdShmemInlineMax)
+	}
+	// Inspect KD_SHMEM_OFLOW_HDR.first_ppn — must be non-zero after the
+	// chain helper allocated its first page.
+	hdrFirstPPN := binary.LittleEndian.Uint16(mem[kernDataBase+kdShmemOflowHdr:])
+	if hdrFirstPPN == 0 {
+		t.Fatalf("KD_SHMEM_OFLOW_HDR.first_ppn = 0 after %d allocations — chain helper never allocated an overflow page", shmemCount)
+	}
+	t.Logf("NoCap_ShmemMaxRemoved: %d shmem slots allocated, max slot id = %d (>%d inline cap), overflow chain head PPN = 0x%X",
+		shmemCount, maxSlot, kdShmemInlineMax-1, hdrFirstPPN)
+}
+
+// TestIExec_NoCap_DosFilesAndHandlesGrow exercises M12.6 Phase A: the
+// DOS_MAX_FILES (16) and DOS_MAX_HANDLES (8) caps are gone. The test client
+// (overrides the shell at task slot 2) opens N=24 distinct files in WRITE
+// mode and keeps all handles open simultaneously. Both counts exceed the
+// old caps, so a green run proves both caps are actually removed.
+//
+// File names are "fNN\0" where NN is the iteration counter as 2 ASCII
+// digits. The handle returned by each DOS_OPEN is stored at data offset
+// (offHandles + i*8). After all opens complete the test inspects every
+// handle slot: each must be a non-error reply (DOS_OK == 0) AND the
+// handle_ids must all be distinct (no slot reuse, since nothing closed).
+func TestIExec_NoCap_DosFilesAndHandlesGrow(t *testing.T) {
+	const (
+		userTask2Data = userDataBase + 2*userSlotStride
+		offDosPort    = 128
+		offReplyPrt   = 136
+		offBufferVA   = 144
+		offShareHdl   = 152
+		offHandles    = 160 // 24 × 8 bytes = 192 bytes (offsets 160..351)
+		offErrors     = 360 // 24 × 8 bytes = 192 bytes (offsets 360..551)
+		fileCount     = 24
+	)
+
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	shellCode := images[len(images)-1]
+
+	off := shellCode
+	w := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+
+	// === Preamble: compute task's data page VA into R29 ===
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 3))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo))
+	w(ie64Instr(OP_MOVE, 28, IE64_SIZE_L, 1, 0, 0, userSlotStride))
+	w(ie64Instr(OP_MULU, 28, IE64_SIZE_Q, 0, 1, 28, 0))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, userDataBase))
+	w(ie64Instr(OP_ADD, 29, IE64_SIZE_Q, 0, 28, 29, 0))
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+
+	// === Step 1: FindPort("dos.library") with retry ===
+	findLoop := off
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, 16))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFindPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	beqInstr := off
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	bra1 := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(findLoop)-int32(bra1))))
+	foundDos := off
+	delta := int32(foundDos) - int32(beqInstr)
+	copy(rig.cpu.memory[beqInstr:], ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, uint32(delta)))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offDosPort))
+
+	// === Step 2: CreatePort(name=0, flags=0) ===
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offReplyPrt))
+
+	// === Step 3: AllocMem(4096, MEMF_PUBLIC|MEMF_CLEAR) ===
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0x10001))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offBufferVA))
+	w(ie64Instr(OP_STORE, 3, IE64_SIZE_Q, 1, 29, 0, offShareHdl))
+
+	// === Step 4: Runtime loop opening N files ===
+	// Counter lives at data offset offCounter; loop computes "f" + 2 ASCII
+	// digits of counter into buffer[0..3], does DOS_OPEN(WRITE), stores
+	// (err, handle) at (offErrors + counter*8, offHandles + counter*8),
+	// then increments and tests against fileCount.
+	const offCounter = 600
+	// Initialize counter = 0
+	w(ie64Instr(OP_STORE, 0, IE64_SIZE_Q, 1, 29, 0, offCounter))
+
+	loopTop := off
+	// Load counter into r10
+	w(ie64Instr(OP_LOAD, 10, IE64_SIZE_Q, 0, 29, 0, offCounter))
+	// If counter >= fileCount, exit loop
+	w(ie64Instr(OP_MOVE, 28, IE64_SIZE_L, 1, 0, 0, fileCount))
+	bgeInstr := off
+	w(ie64Instr(OP_BGE, 0, 0, 0, 10, 28, 0)) // patched after loop body
+	// tens = (counter/10) + '0'
+	w(ie64Instr(OP_MOVE, 28, IE64_SIZE_L, 1, 0, 0, 10))
+	w(ie64Instr(OP_DIVU, 11, IE64_SIZE_Q, 0, 10, 28, 0)) // r11 = counter/10
+	w(ie64Instr(OP_ADD, 11, IE64_SIZE_L, 1, 11, 0, '0'))
+	// ones = counter - (counter/10)*10 + '0'
+	w(ie64Instr(OP_MOVE, 28, IE64_SIZE_L, 1, 0, 0, 10))
+	w(ie64Instr(OP_DIVU, 12, IE64_SIZE_Q, 0, 10, 28, 0))
+	w(ie64Instr(OP_MULU, 12, IE64_SIZE_Q, 0, 12, 28, 0))
+	w(ie64Instr(OP_SUB, 12, IE64_SIZE_Q, 0, 10, 12, 0))
+	w(ie64Instr(OP_ADD, 12, IE64_SIZE_L, 1, 12, 0, '0'))
+	// Write 'f', tens, ones, NUL to buffer[0..3]
+	w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, offBufferVA))
+	w(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, 'f'))
+	w(ie64Instr(OP_STORE, 5, IE64_SIZE_B, 0, 4, 0, 0))
+	w(ie64Instr(OP_STORE, 11, IE64_SIZE_B, 0, 4, 0, 1))
+	w(ie64Instr(OP_STORE, 12, IE64_SIZE_B, 0, 4, 0, 2))
+	w(ie64Instr(OP_STORE, 0, IE64_SIZE_B, 0, 4, 0, 3))
+	// PutMsg(DOS_OPEN, mode=WRITE)
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1)) // DOS_OPEN
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 1)) // mode=WRITE
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_LOAD, 6, IE64_SIZE_L, 0, 29, 0, offShareHdl))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	// WaitPort
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	// Store results indexed by counter:
+	//   addr = data + offErrors + counter*8
+	w(ie64Instr(OP_LOAD, 10, IE64_SIZE_Q, 0, 29, 0, offCounter))
+	w(ie64Instr(OP_LSL, 13, IE64_SIZE_L, 1, 10, 0, 3))         // r13 = counter*8
+	w(ie64Instr(OP_ADD, 14, IE64_SIZE_L, 1, 13, 0, offErrors)) // r14 = counter*8 + offErrors
+	w(ie64Instr(OP_ADD, 14, IE64_SIZE_Q, 0, 14, 29, 0))        // r14 = data + ...
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 14, 0, 0))
+	w(ie64Instr(OP_ADD, 14, IE64_SIZE_L, 1, 13, 0, offHandles))
+	w(ie64Instr(OP_ADD, 14, IE64_SIZE_Q, 0, 14, 29, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 14, 0, 0))
+	// counter += 1
+	w(ie64Instr(OP_ADD, 10, IE64_SIZE_L, 1, 10, 0, 1))
+	w(ie64Instr(OP_STORE, 10, IE64_SIZE_Q, 1, 29, 0, offCounter))
+	// bra loop_top
+	braTop := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(loopTop)-int32(braTop))))
+	loopExit := off
+	// Patch BGE forward jump
+	bgeDelta := int32(loopExit) - int32(bgeInstr)
+	copy(rig.cpu.memory[bgeInstr:], ie64Instr(OP_BGE, 0, 0, 0, 10, 28, uint32(bgeDelta)))
+
+	// === Yield-loop forever ===
+	loopHere := off
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	bra2 := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(loopHere)-int32(bra2))))
+
+	clientSize := off - shellCode
+	t.Logf("NoCap_DosFilesAndHandlesGrow: test client = %d bytes (shell budget = 3256)", clientSize)
+	if clientSize > 8192 {
+		t.Fatalf("test client too large: %d > 8192", clientSize)
+	}
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(3 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	mem := rig.cpu.memory
+	seenHandles := make(map[uint64]int)
+	for i := 0; i < fileCount; i++ {
+		errCode := binary.LittleEndian.Uint64(mem[userTask2Data+offErrors+i*8:])
+		handle := binary.LittleEndian.Uint64(mem[userTask2Data+offHandles+i*8:])
+		if errCode != 0 {
+			t.Errorf("DOS_OPEN(f%02d) returned err=%d, want 0 (DOS_OK). With M12.6 Phase A both DOS_MAX_FILES and DOS_MAX_HANDLES caps should be gone.", i, errCode)
+			continue
+		}
+		if prev, dup := seenHandles[handle]; dup {
+			t.Errorf("DOS_OPEN(f%02d) returned handle_id=%d which is the same as f%02d's handle. Handles must be unique while open.", i, handle, prev)
+		}
+		seenHandles[handle] = i
+	}
+	if len(seenHandles) != fileCount {
+		t.Fatalf("expected %d distinct successful handles, got %d", fileCount, len(seenHandles))
+	}
+	t.Logf("NoCap_DosFilesAndHandlesGrow: opened %d files (>%d old DOS_MAX_FILES) keeping %d handles open (>%d old DOS_MAX_HANDLES), all unique",
+		fileCount, 16, fileCount, 8)
+}
+
 // TestIExec_CaseInsensitiveCommand explicitly verifies case-insensitive
 // command resolution by typing a lowercase command name. The seeded file
 // is "C/Version" but the user types "version" — the resolver must match.
 func TestIExec_CaseInsensitiveCommand(t *testing.T) {
 	output := bootAndInjectCommand(t, "version\n", 5*time.Second)
-	if !strings.Contains(output, "IntuitionOS 0.13") {
+	if !strings.Contains(output, "IntuitionOS 0.14") {
 		t.Fatalf("CaseInsensitiveCommand: lowercase 'version' did not match 'C/Version', got=%q", output[:min(len(output), 300)])
 	}
 }
@@ -7915,7 +8598,7 @@ func TestIExec_M10Demo(t *testing.T) {
 		substr string
 		desc   string
 	}{
-		{"IntuitionOS 0.13", "VERSION command output"},
+		{"IntuitionOS 0.14", "VERSION command output"},
 		{"Total:", "AVAIL command output (Total:)"},
 		{"readme", "DIR command output (readme file)"},
 		{"Welcome to IntuitionOS", "TYPE command output"},

@@ -135,27 +135,38 @@ KERN_STACK_TOP    equ 0x09F000    ; Kernel stack top
 ; ---------------------------------------------------------------------------
 ; Kernel Data Offsets (at KERN_DATA_BASE)
 ; ---------------------------------------------------------------------------
-; Layout (M12: MAX_TASKS=16, KD_PORT_MAX=32, KD_SHMEM_MAX=16, PORT_NAME_LEN=32):
-;   +0:    current_task (8)
-;   +8:    tick_count (8)
-;   +16:   num_tasks (8)
-;   +24:   nonce_counter (8)
-;   +32:   name_scratch (32 bytes — KD_NAME_SCRATCH)        → ends at 64
-;   +64:   TCB[0..15] (16 x 32 = 512 bytes)                 → ends at 576
-;   +576:  PTBR[0..15] (16 x 8 = 128 bytes)                 → ends at 704
-;   +704:  Port[0..31] (32 x 168 = 5376 bytes)              → ends at 6080
-;   +6080: Page bitmap (800 bytes)                          → ends at 6880
-;   +6880: Region table (16 tasks x 8 x 16 = 2048 bytes)    → ends at 8928
-;   +8928: Shared object table (16 x 16 = 256 bytes)        → ends at 9184
+; Layout (M12.6 Phase D: MAX_TASKS=32, KD_PORT_MAX=32, KD_SHMEM_MAX=16, PORT_NAME_LEN=32):
+;   +0:     current_task (8)
+;   +8:     tick_count (8)
+;   +16:    num_tasks (8)
+;   +24:    nonce_counter (8)
+;   +32:    name_scratch (32 bytes — KD_NAME_SCRATCH)        → ends at 64
+;   +64:    TCB[0..31] (32 x 32 = 1024 bytes)                → ends at 1088
+;   +1088:  PTBR[0..31] (32 x 8 = 256 bytes)                 → ends at 1344
+;   +1344:  Port[0..31] (32 x 168 = 5376 bytes)              → ends at 6720
+;   +6720:  Page bitmap (800 bytes)                          → ends at 7520
+;   +7520:  Region table (32 tasks x 8 x 16 = 4096 bytes)    → ends at 11616
+;   +11616: Shared object table (16 x 16 = 256 bytes)        → ends at 11872
+;   +11872: KD_HWRES_TASK (1 byte)                           → ends at 11873
+;   +11880: KD_GRANT_TABLE_HDR (8 bytes)                     → ends at 11888
+;   +11888: KD_REGION_OVERFLOW_HEAD (32 x 8 = 256 bytes)     → ends at 12144
+;   +12144: KD_SHMEM_OFLOW_HDR (8 bytes)                     → ends at 12152
+;   +12152: KD_PORT_OFLOW_HDR (8 bytes)                      → ends at 12160
 ;
-; M12 quadrupled the port cap (KD_PORT_MAX 8→32), doubled the task cap
-; (MAX_TASKS 8→16) and shared object cap (KD_SHMEM_MAX 8→16), and bumped
-; PORT_NAME_LEN 16→32. The kernel data area (~512 KiB available between
-; KERN_DATA_BASE and KERN_STACK_TOP) easily absorbs the ~9 KiB layout.
-; MAX_TASKS bump was unblocked by the global dynamic-VA range change
-; (USER_DYN_BASE/USER_DYN_END no longer per-task). Replacing the static
-; slot tables with heap-allocated linked lists is a future-milestone TODO
-; that would remove all of these caps entirely.
+; M12.6 Phase D doubled MAX_TASKS from 16 to 32 (with matching layout
+; bumps). Per-task structures (TCB, PTBR, region table, region overflow
+; header array) all doubled in size, pushing every kernel data field
+; after them down the page. The kernel data area (~512 KiB available
+; between KERN_DATA_BASE and KERN_STACK_TOP) easily absorbs the new
+; ~12 KiB layout. The user-space slot region (USER_CODE_BASE..USER_PT_BASE)
+; was widened from 1 MiB to 2 MiB to fit 32 task code/stack/data slots,
+; and USER_PT_BASE/USER_PT_PAGE_BASE/END/USER_DYN_BASE all shifted up by
+; 1 MiB (PT region) + 1 MiB (extra code region) = 2 MiB.
+;
+; A future milestone may bump MAX_TASKS further by widening the slot
+; region again (or by switching to a non-slot user-space layout). The
+; current cap is bound by the slot layout, not by an arbitrary kernel
+; constant — see IExec.md §5.13.1 for the audit row.
 
 KD_CURRENT_TASK   equ 0           ; uint64: current task index
 KD_TICK_COUNT     equ 8           ; uint64: tick counter
@@ -168,17 +179,21 @@ KD_NAME_SCRATCH   equ 32          ; 32-byte scratch buffer for port name operati
 ; ---------------------------------------------------------------------------
 ; Address: KERN_DATA_BASE + KD_TASK_BASE + (task_id * KD_TASK_STRIDE)
 
-; MAX_TASKS is bounded only by the kernel data structure sizes and the user
-; page-table region. The M11 design capped this at 8 because the dynamic-VA
-; layout used a per-task USER_DYN_STRIDE that saturated the 32 MiB VA space
-; at 8 tasks; M12 removed that cap by making the dynamic VA range global
-; and per-task-PT-isolated (see USER_DYN_BASE/USER_DYN_END below). The new
-; cap is set by the slot region size (MAX_TASKS * USER_SLOT_STRIDE) and
-; the user-PT region size, both at 1 MiB each for MAX_TASKS=16.
+; MAX_TASKS is bounded by the user-space slot region size, NOT by an
+; arbitrary kernel constant. Each task gets one 64 KiB slot in the
+; USER_CODE_BASE..USER_PT_BASE region (= 2 MiB after M12.6 Phase D, fits
+; 32 slots) and one 64 KiB slot in the USER_PT_BASE..USER_DYN_BASE region
+; (= 2 MiB after M12.6 Phase D, fits 32 PT slots). To raise the cap above
+; 32 in a future milestone, both regions need to grow (which would shift
+; USER_DYN_BASE further into the 32 MiB user address space).
 ;
-; A future milestone may replace the static TCB/PTBR arrays with a heap-
-; allocated linked list, removing the cap entirely.
-MAX_TASKS         equ 16          ; maximum concurrent tasks (M12: was 8)
+; History: M11 capped this at 8 because the dynamic-VA layout used a per-
+; task USER_DYN_STRIDE that saturated the 32 MiB VA space at 8 tasks; M12
+; removed the per-task DYN cap by making the dynamic range global and
+; per-task-PT-isolated (see USER_DYN_BASE/USER_DYN_END below) and bumped
+; MAX_TASKS to 16. M12.6 Phase D bumps to 32 by widening the slot region
+; from 1 MiB to 2 MiB.
+MAX_TASKS         equ 32          ; M12.6 Phase D: bumped from 16 (M12 bumped from 8)
 
 KD_TASK_BASE      equ 64          ; offset of task state array
 KD_TASK_STRIDE    equ 32          ; bytes per task entry
@@ -212,7 +227,7 @@ SIG_SYSTEM_MASK   equ 0xFFFF
 ; ---------------------------------------------------------------------------
 ; Address: KERN_DATA_BASE + KD_PTBR_BASE + (task_id * 8)
 
-KD_PTBR_BASE      equ 576         ; offset of PTBR array (after 16 TCBs) — M12: was 320
+KD_PTBR_BASE      equ 1088        ; offset of PTBR array (after 32 TCBs) — M12.6 Phase D: was 576
 
 ; ===========================================================================
 ; Message Port Layout (M7, M12: PORT_NAME_LEN 16→32, KD_PORT_MAX 8→16)
@@ -235,10 +250,41 @@ KD_PTBR_BASE      equ 576         ; offset of PTBR array (after 16 TCBs) — M12
 ; layout. KD_PAGE_BITMAP moves from 1664 to 3072, KD_REGION_TABLE from
 ; 2464 to 3872, KD_SHMEM_TABLE from 3488 to 4896.
 
-KD_PORT_BASE      equ 704         ; start of port array (after PTBR array) — M12: was 384
-KD_PORT_STRIDE    equ 168         ; bytes per port (40 header + 4×32 messages)
-KD_PORT_MAX       equ 32          ; max number of ports (M12: was 8)
-KD_PORT_FIFO_SIZE equ 4           ; messages per port FIFO
+; M12.6 Phase C: KD_PORT_MAX is no longer a hard cap.
+; The first KD_PORT_INLINE_MAX rows still live inline at KD_PORT_BASE
+; (preserving the existing fast path and the row layout). Rows 32+
+; live in allocator-backed chain pages reached through a single global
+; overflow header at KD_PORT_OFLOW_HDR. Walkers iterate inline first,
+; then walk the overflow chain. The "find free slot" allocator falls
+; through to a new chain page when every existing row is occupied.
+;
+; Port IDs are stored as 1 byte in KD_PORT_OWNER and KD_TASK_WAITPORT
+; (with WAITPORT_NONE = 0xFF as the sentinel), so the M12.6 ABI ceiling
+; for total ports is 255 (0xFF reserved). 255 - 32 inline = 223 overflow
+; slots, fitting in ceil(223/24) = 10 chain pages of 24 ports each.
+KD_PORT_BASE          equ 1344    ; start of inline port array (M12.6 Phase D: was 704)
+KD_PORT_STRIDE        equ 168     ; bytes per port (40 header + 4×32 messages)
+KD_PORT_INLINE_MAX    equ 32      ; rows stored inline (M12.6: was the cap KD_PORT_MAX)
+; Legacy alias for any assembly code that still references the old name.
+; Walkers no longer treat it as a hard cap.
+KD_PORT_MAX           equ 32
+KD_PORT_FIFO_SIZE     equ 4       ; messages per port FIFO
+
+; M12.6 Phase C: port overflow chain — single global header (not per-task).
+KD_PORT_OFLOW_HDR        equ 12152 ; chain header (8 bytes) — M12.6 Phase D: was 9336
+KD_PORT_OFLOW_FIRST_PPN  equ 0     ; field offset within header (2 bytes)
+KD_PORT_OFLOW_TOTAL      equ 2     ; total overflow rows allocated so far (2 bytes)
+KD_PORT_OFLOW_PAGES      equ 4     ; chain page count (2 bytes)
+KD_PORT_OFLOW_RESV       equ 6     ; reserved (2 bytes)
+
+; Port chain page layout (4 KiB allocator-backed page).
+; Same chain-page format as M12.5 region overflow / M12.6 shmem overflow:
+;   [0..1]   = next chain page PPN (0 = end of chain)
+;   [2..15]  = reserved
+;   [16..]   = 24 ports × 168 bytes = 4032 bytes; 48 bytes trailing slack
+KD_PORT_PAGE_HDR_SZ   equ 16
+KD_PORT_PAGE_NEXT     equ 0
+KD_PORT_ROWS_PER_PG   equ 24      ; (4096 - 16) / 168 = 24
 
 ; Port header field offsets (relative to port base, 40-byte header)
 KD_PORT_VALID     equ 0           ; 1=active, 0=unused (1 byte)
@@ -286,7 +332,13 @@ REPLY_PORT_NONE   equ 0xFFFF      ; no reply port
 ;
 ; M12: USER_PT_BASE shifted from 0x680000 to 0x700000 because MAX_TASKS
 ; doubled from 8 to 16 (slot region grew from 0x80000 to 0x100000).
-USER_PT_BASE      equ 0x700000    ; Task page tables (each 64 KiB) — M12: was 0x680000
+USER_PT_BASE      equ 0x800000    ; Task page tables (each 64 KiB) — M12.6 Phase D: was 0x700000.
+                                  ; Moved up by 1 MiB (one slot region width) to make
+                                  ; room for the doubled USER_CODE_BASE region. The PT
+                                  ; region now occupies pages 0x800..0xA00 (32 slots ×
+                                  ; 16 pages). The allocator pool was shifted from
+                                  ; page 0x800 to page 0xA00 to make room — see
+                                  ; ALLOC_POOL_BASE / ALLOC_POOL_PAGES below.
 USER_CODE_BASE    equ 0x600000    ; Task code pages (physical)
 USER_STACK_BASE   equ 0x601000    ; Task stack pages
 USER_DATA_BASE    equ 0x602000    ; Task data pages
@@ -300,8 +352,8 @@ USER_VPN_STRIDE     equ 0x10     ; 0x10000 >> 12
 ; Page-number bounds for the user-PT region. Kept in sync with USER_PT_BASE
 ; and MAX_TASKS * USER_SLOT_STRIDE so the kernel boot can extend the kernel
 ; PT to cover this region (see iexec.s phase 3b' kern_userpt_map).
-USER_PT_PAGE_BASE   equ 0x700    ; USER_PT_BASE >> MMU_PAGE_SHIFT — M12: was 0x680
-USER_PT_PAGE_END    equ 0x800    ; (USER_PT_BASE + MAX_TASKS * USER_SLOT_STRIDE) >> MMU_PAGE_SHIFT
+USER_PT_PAGE_BASE   equ 0x800    ; USER_PT_BASE >> MMU_PAGE_SHIFT — M12.6 Phase D: was 0x700
+USER_PT_PAGE_END    equ 0xA00    ; (USER_PT_BASE + MAX_TASKS * USER_SLOT_STRIDE) >> MMU_PAGE_SHIFT — M12.6 Phase D: was 0x800
 
 ; ===========================================================================
 ; PTE Flags
@@ -334,8 +386,20 @@ MEMF_PUBLIC       equ 0x00001     ; bit 0: shareable (classic Amiga)
 MEMF_CLEAR        equ 0x10000     ; bit 16: zero-fill (classic Amiga)
 
 ; Physical page allocator
-ALLOC_POOL_BASE   equ 0x800       ; first allocable page number (M12: was 0x700)
-ALLOC_POOL_PAGES  equ 6144        ; pages 0x800-0x1FFF (M12: was 6400)
+; M12.6 Phase E security fix: the allocator pool VPN range MUST be disjoint
+; from the user-dynamic VA range (USER_DYN_BASE..USER_DYN_END below).
+; Previously they overlapped (both 0xA00..0x1FFF), which let an unprivileged
+; task overwrite the supervisor-only pool PTEs that build_user_pt copies into
+; every user PT — by SYS_ALLOC_MEM picking a user-dyn VA whose VPN aliased a
+; pool PPN. After overwriting, kernel chain walkers running on the user PT
+; would dereference attacker-controlled memory, yielding arbitrary kernel
+; read/write. The fix is to give the user-dyn window the BOTTOM half of the
+; old combined window (VPN 0xA00..0x11FF, 8 MiB) and move the allocator pool
+; UP to the TOP half (VPN 0x1200..0x1FFF, 14 MiB). User AllocMem calls now
+; map fresh pool PPNs at user-dyn VPNs that are NOT in the pool VPN range,
+; so the supervisor copies are never overwritten.
+ALLOC_POOL_BASE   equ 0x1200      ; first allocable page number — M12.6 Phase E security fix: was 0xA00 (split user-dyn and pool into disjoint VPN ranges)
+ALLOC_POOL_PAGES  equ 3584        ; pages 0x1200-0x1FFF — M12.6 Phase E: was 5632 (lost 2048 pages = 8 MiB to the user-dyn VA window so the two ranges are disjoint)
 
 ; Dynamic VA layout (M12: GLOBAL shared range, no per-task windowing).
 ;
@@ -352,8 +416,8 @@ ALLOC_POOL_PAGES  equ 6144        ; pages 0x800-0x1FFF (M12: was 6400)
 ; USER_DYN_PAGES is now a per-allocation cap (max pages per AllocMem call),
 ; not a per-task budget — a single task can hold many regions summing to
 ; far more pages than USER_DYN_PAGES.
-USER_DYN_BASE     equ 0x800000    ; dynamic allocation VA base (shared)
-USER_DYN_END      equ 0x2000000   ; dynamic allocation VA end (exclusive, shared)
+USER_DYN_BASE     equ 0xA00000    ; dynamic allocation VA base (shared) — M12.6 Phase D: was 0x800000
+USER_DYN_END      equ 0x1200000   ; dynamic allocation VA end (exclusive, shared) — M12.6 Phase E security fix: was 0x2000000. The user-dyn window is now [0xA00000..0x1200000) = 8 MiB, disjoint from the allocator pool VPN range [0x1200..0x1FFF].
 USER_DYN_PAGES    equ 768         ; max pages per single AllocMem call
 
 ; ---------------------------------------------------------------------------
@@ -361,7 +425,7 @@ USER_DYN_PAGES    equ 768         ; max pages per single AllocMem call
 ; ---------------------------------------------------------------------------
 ; Bit N = 1 means page (ALLOC_POOL_BASE + N) is in use.
 
-KD_PAGE_BITMAP    equ 6080        ; page allocation bitmap (M12: was 1664)
+KD_PAGE_BITMAP    equ 6720        ; page allocation bitmap (M12.6 Phase D: was 6080)
 KD_PAGE_BITMAP_SZ equ 800         ; 6400 bits = 800 bytes
 
 ; ---------------------------------------------------------------------------
@@ -379,7 +443,7 @@ KD_PAGE_BITMAP_SZ equ 800         ; 6400 bits = 800 bytes
 ; chain, and finally allocate a new chain page if every existing row is
 ; occupied. This is a true cap removal: the only failure mode is real
 ; ERR_NOMEM from the page allocator, not a fixed-row-count limit.
-KD_REGION_TABLE       equ 6880    ; inline region table base (16 tasks × 128 bytes)
+KD_REGION_TABLE       equ 7520    ; inline region table base (32 tasks × 128 bytes — M12.6 Phase D)
 KD_REGION_STRIDE      equ 16      ; bytes per region row
 KD_REGION_INLINE_MAX  equ 8       ; rows stored inline per task (unchanged from M12)
 KD_REGION_TASK_SZ     equ 128     ; bytes per task slot inline (8 × 16)
@@ -389,7 +453,7 @@ KD_REGION_MAX         equ 8
 
 ; Overflow chain (M12.5)
 ; Per-task overflow chain header (8 bytes), array of 16. New kernel data field.
-KD_REGION_OVERFLOW_HEAD equ 9200  ; per-task overflow chain header array base
+KD_REGION_OVERFLOW_HEAD equ 11888 ; per-task overflow chain header array base (M12.6 Phase D: was 9200)
 KD_REGION_OFLOW_STRIDE  equ 8     ; bytes per task overflow header
 KD_REGION_OFLOW_FIRST_PPN equ 0   ; first chain page PPN (2 bytes, 0=empty)
 KD_REGION_OFLOW_TOTAL   equ 2     ; total rows in overflow across the chain (2 bytes)
@@ -419,13 +483,48 @@ REGION_SHARED     equ 2
 REGION_IO         equ 3            ; I/O mapping (M9): unmap on cleanup, don't free pages
 
 ; ---------------------------------------------------------------------------
-; Shared Object Table — 8 entries x 16 bytes = 128 bytes
+; Shared Object Table — M12.6 Phase B: inline + overflow chain (no cap)
 ; ---------------------------------------------------------------------------
-; Address: KERN_DATA_BASE + KD_SHMEM_TABLE + (slot * KD_SHMEM_STRIDE)
+; Address (inline rows 0..KD_SHMEM_INLINE_MAX-1):
+;   KERN_DATA_BASE + KD_SHMEM_TABLE + (slot * KD_SHMEM_STRIDE)
+;
+; M12.6 Phase B removes the per-system 16-slot cap (was KD_SHMEM_MAX).
+; The first KD_SHMEM_INLINE_MAX rows still live inline at the original
+; KD_SHMEM_TABLE offset (preserving the existing fast path and the row
+; layout). Rows 16+ live in allocator-backed chain pages reached through
+; a single global overflow header at KD_SHMEM_OFLOW_HDR. Walkers iterate
+; inline first, then walk the overflow chain. The "find free slot"
+; allocator calls the inline scan first, then the overflow scan, and
+; finally allocates a new chain page if every existing row is occupied.
+; Failure mode is real ERR_NOMEM, not a fixed-row-count cap.
+;
+; The shmem slot ID is 1 byte (KD_REG_SHMID is 1 byte; the public share
+; handle low byte is the same value), so the M12.6 ABI ceiling for total
+; shmem slots is 255 (0xFF reserved as sentinel). 255 - INLINE_MAX = 239
+; overflow slots, well within one chain page.
 
-KD_SHMEM_TABLE    equ 8928        ; shared object table base (M12: was 3488)
-KD_SHMEM_STRIDE   equ 16          ; bytes per shared object entry
-KD_SHMEM_MAX      equ 16          ; max shared objects system-wide (M12: was 8)
+KD_SHMEM_TABLE        equ 11616   ; inline shmem table base (M12.6 Phase D: was 8928)
+KD_SHMEM_STRIDE       equ 16      ; bytes per shared object entry
+KD_SHMEM_INLINE_MAX   equ 16      ; rows stored inline (M12.6: was the cap KD_SHMEM_MAX)
+; Legacy alias for any assembly code that still references the old name.
+; Walkers no longer treat it as a hard cap.
+KD_SHMEM_MAX          equ 16
+
+; M12.6 Phase B: shmem overflow chain — single global header (not per-task).
+KD_SHMEM_OFLOW_HDR        equ 12144 ; chain header (8 bytes) — M12.6 Phase D: was 9328
+KD_SHMEM_OFLOW_FIRST_PPN  equ 0     ; field offset within header (2 bytes)
+KD_SHMEM_OFLOW_TOTAL      equ 2     ; total overflow rows allocated so far (2 bytes)
+KD_SHMEM_OFLOW_PAGES      equ 4     ; chain page count (2 bytes)
+KD_SHMEM_OFLOW_RESV       equ 6     ; reserved (2 bytes)
+
+; Shmem chain page layout (4 KiB allocator-backed page, identical format
+; to the M12.5 region overflow chain):
+;   [0..1]   = next chain page PPN (0 = end of chain)
+;   [2..15]  = reserved
+;   [16..]   = 255 shmem rows × 16 bytes
+KD_SHMEM_PAGE_HDR_SZ  equ 16
+KD_SHMEM_PAGE_NEXT    equ 0       ; chain page header: next page PPN (2 bytes)
+KD_SHMEM_ROWS_PER_PG  equ 255     ; (4096 - 16) / 16
 
 ; Shared object entry fields (relative to entry base)
 KD_SHM_VALID      equ 0           ; 1=active, 0=unused (1 byte)
@@ -512,12 +611,36 @@ DOS_ERR_NOMEM     equ 6
 ; font for title-bar text rendering, ~9 KiB total) and the About app
 ; (which embeds the same font, ~6 KiB total) fit comfortably in a single
 ; slot. The arbitrary cap remains a known wart — a future milestone
-; should replace the fixed-stride slot table with a packed-heap allocator
-; (see the dos_seed_one comment in iexec.s for the design TODO).
-DOS_MAX_FILES     equ 16          ; Max files in RAM: (file table entries)
+; (M12.8) replaces the fixed-stride slot table with a packed-heap or
+; slab/extent allocator inside dos.library. M12.6 Phase A keeps the
+; fixed per-file slot size but removes the per-instance count caps.
+;
+; M12.6 Phase A: DOS_MAX_FILES and DOS_MAX_HANDLES were removed.
+; The dos.library file table and handle table are now linked lists of
+; AllocMem'd 4 KiB chain pages — see DOS_META_*/DOS_HND_* constants below
+; and the .dos_meta_*/.dos_hnd_* helpers in iexec.s. Per-file storage is
+; one AllocMem(DOS_FILE_SIZE) per file, no longer packed into a single
+; storage_va region.
 DOS_NAME_LEN      equ 32          ; Max filename length (supports "S/Startup-Sequence" etc.)
-DOS_FILE_SIZE     equ 16384       ; Bytes per file slot (M12: 4096 → 8192 → 16384)
-DOS_MAX_HANDLES   equ 8           ; Max simultaneous open handles
+DOS_FILE_SIZE     equ 16384       ; Bytes per file (M12: 4096 → 8192 → 16384). M12.8 will remove this.
+
+; dos.library metadata chain (M12.6 Phase A) — 4 KiB chain pages, 85 entries each.
+; Page layout:  [0..7] next_va  [8..15] reserved  [16..4095] entries (85 × 48 bytes)
+DOS_META_HDR_SZ   equ 16          ; chain page header bytes
+DOS_META_ENTRY_SZ equ 48          ; per-file metadata entry size
+DOS_META_PER_PAGE equ 85          ; entries per chain page (16 + 85*48 = 4096)
+DOS_META_OFF_NAME equ 0           ; entry: name[32] (NUL-term, 0x00 = unused)
+DOS_META_OFF_VA   equ 32          ; entry: file_va (8 bytes — VA of AllocMem'd file body)
+DOS_META_OFF_SIZE equ 40          ; entry: size (4 bytes)
+DOS_META_OFF_RESV equ 44          ; entry: reserved (4 bytes)
+
+; dos.library handle chain (M12.6 Phase A) — 4 KiB chain pages, 510 entries each.
+; Page layout:  [0..7] next_va  [8..15] reserved  [16..4095] entries (510 × 8 bytes)
+; Each handle entry stores the VA of the metadata entry it references; 0 = unused.
+; handle_id returned to clients = page_index * DOS_HND_PER_PAGE + slot_in_page.
+DOS_HND_HDR_SZ    equ 16          ; chain page header bytes
+DOS_HND_ENTRY_SZ  equ 8           ; per-handle entry size (metadata entry VA)
+DOS_HND_PER_PAGE  equ 510         ; handles per chain page (16 + 510*8 = 4096)
 
 ; ===========================================================================
 ; M11: input.device protocol
@@ -621,10 +744,10 @@ INTUI_CLOSE_GADGET_W  equ 16          ; close gadget is the leftmost 16x16 of th
 ; New kernel data fields (added at the end of the kernel data area, after
 ; KD_SHMEM_TABLE which ends at 9184). These fields are kernel-private and
 ; never exposed to user space.
-KD_HWRES_TASK         equ 9184       ; broker task ID (1 byte, 0xFF = unclaimed)
+KD_HWRES_TASK         equ 11872      ; broker task ID (1 byte, 0xFF = unclaimed) — M12.6 Phase D: was 9184
                                      ; Set exactly once by SYS_HWRES_OP/HWRES_BECOME.
                                      ; Subsequent BECOME calls return ERR_EXISTS.
-KD_GRANT_TABLE_HDR    equ 9192       ; chain header for the grant table (8 bytes)
+KD_GRANT_TABLE_HDR    equ 11880      ; chain header for the grant table (8 bytes) — M12.6 Phase D: was 9192
                                      ; Field offsets relative to KD_GRANT_TABLE_HDR:
 KD_GRANT_HDR_FIRST_PPN equ 0         ;   first chain page PPN (2 bytes, 0=unallocated)
 KD_GRANT_HDR_TOTAL    equ 2          ;   total grant rows in use across the chain (2 bytes)

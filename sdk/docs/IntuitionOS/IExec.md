@@ -10,16 +10,16 @@
 
 IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS Exec but designed from the ground up for a hardware-enforced privilege model. Where Amiga Exec ran in flat supervisor space with no memory protection, IExec uses the IE64 MMU to enforce user/supervisor separation, per-task page tables, and W^X memory policy.
 
-**What IExec does (current as of Milestone 12.5):**
+**What IExec does (current as of Milestone 12.6):**
 
-- Preemptive round-robin scheduling across up to 16 dynamic tasks (CreateTask/ExitTask with slot reuse). The 8-task cap from M5 was removed in M12 by globalizing the dynamic VA window so per-task VA stride no longer constrains the task count.
+- Preemptive round-robin scheduling across up to 32 dynamic tasks (CreateTask/ExitTask with slot reuse). M5 capped this at 8 (per-task `USER_DYN_STRIDE` saturated the 32 MiB VA at 8 tasks); M12 globalized the dynamic VA window and bumped the cap to 16; **M12.6 Phase D bumped to 32** with a full user-space slot-layout adjustment. The cap is now layout-bound rather than arbitrary — see `IExec.md §5.13.1` for the audit row.
 - Memory protection via the IE64 MMU (per-task page tables with separate code/stack/data mappings, W^X enforcement)
-- Dynamic memory allocation: AllocMem/FreeMem with Amiga-style MEMF_ flags (MEMF_PUBLIC, MEMF_CLEAR), page-granular physical page pool (6144 pages = 24 MiB at PPN 0x800..0x1FFF), shared global VA range. The per-task region table is unbounded as of M12.5: the first 8 rows live inline; rows 9+ live in an allocator-backed overflow chain. Failure mode is real `ERR_NOMEM` from the page allocator, not a fixed-cap collision.
+- Dynamic memory allocation: AllocMem/FreeMem with Amiga-style MEMF_ flags (MEMF_PUBLIC, MEMF_CLEAR), page-granular physical page pool (3584 pages = 14 MiB at PPN 0x1200..0x1FFF after M12.6 Phase E split the user-dynamic VA window and the allocator pool into disjoint VPN ranges as a security fix — see §5.13.1). User dynamic VAs occupy the bottom half of the old combined window (`USER_DYN_BASE..USER_DYN_END = 0xA00000..0x1200000`, 8 MiB) and the allocator pool occupies the top half (PPN `0x1200..0x1FFF`, 14 MiB), so user `SYS_ALLOC_MEM` calls cannot ever overwrite the supervisor-only pool PTEs that `build_user_pt` copies into every user PT. The per-task region table is unbounded as of M12.5 (inline 8 rows + overflow chain), the system shmem table is unbounded as of M12.6 Phase B, and the global port table is unbounded as of M12.6 Phase C. Failure mode is real `ERR_NOMEM` from the page allocator, not a fixed-cap collision.
 - Shared memory via MEMF_PUBLIC with opaque capability handles (MapShared), reference-counted cleanup on task exit
 - Trap and interrupt dispatch (syscall entry, fault handling with privilege split, timer preemption)
 - Context switching (save/restore PC, USP, PTBR, and full GPR set per task)
 - Inter-task signalling: per-task 32-bit signal mask with AllocSignal/FreeSignal/Signal/Wait, deadlock detection
-- Named public MsgPorts with CreatePort(name, PF_PUBLIC) and FindPort discovery (case-insensitive, up to 32 ports, 32-byte port names). The M11 8-port cap was bumped to 32 in M12; further bumps may follow as the M12.6 cap-removal sweep hits the port table.
+- Named public MsgPorts with CreatePort(name, PF_PUBLIC) and FindPort discovery (case-insensitive, 32-byte port names). The port table is unbounded as of M12.6 Phase C (inline 32 rows + overflow chain reachable through `KD_PORT_OFLOW_HDR`); the 1-byte port ID ABI ceiling is 255 (with `WAITPORT_NONE = 0xFF` reserved as sentinel).
 - Request/reply messaging: 32-byte messages with data0, data1, reply_port, and share_handle fields
 - ReplyMsg for Exec-style service pattern; PutMsg/GetMsg/WaitPort with full message ABI
 - Safe user pointer validation (PTE check before kernel reads from user memory)
@@ -29,7 +29,7 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
 - **`SYS_EXEC_PROGRAM` takes a user-space image pointer** (M10): kernel creates tasks from user-provided IE64PROG images. Runs entirely under the caller's PT (no PT switching). `validate_user_range` checks both P and U bits on every page in the requested range. **M11.6**: the legacy `R1 < USER_CODE_BASE` built-in-program-table index branch is removed — sub-`USER_CODE_BASE` values now hard-fail with `ERR_BADARG` and the validated image-pointer ABI is the only path through the handler.
 - **Multi-page code and data in `load_program`** (M10): up to 2 code pages (8 KB) and 4 data pages (16 KB) per task. dos.library is itself a 2-code-page program, with 3 data pages containing embedded command images.
 - console.handler: CON: handler with GetMsg polling and CON_READLINE protocol — **M11.5**: console.handler now owns terminal MMIO directly via its own `SYS_MAP_IO(0xF0, 1)` mapping and inlines the readline MMIO loop. The former kernel-side `SYS_READ_INPUT` (slot 37) is removed; slot 37 is an unallocated hole that returns `ERR_BADARG`.
-- **dos.library**: AmigaOS dos.library equivalent with RAM: filesystem (16 files, 4 KB each, case-insensitive, 32-byte filenames). M10 adds: assign table (RAM:, C:, S:), name-based command resolution (`resolve_command_name` defaults to C:, `resolve_file_name` defaults to bare), embedded command images, init-time seeding into the RAM file store, and boot-race-free port creation (CreatePort deferred until after seeding).
+- **dos.library**: AmigaOS dos.library equivalent with RAM: filesystem (case-insensitive, 32-byte filenames, 16 KiB per file). The file/handle tables are unbounded as of **M12.6 Phase A**: both the file metadata table and the open-handle table are user-space chains of `AllocMem`'d 4 KiB pages, each holding many entries (85 file entries or 510 handle entries per page). Each file body is its own `AllocMem(DOS_FILE_SIZE)` allocation. M10 added the assign table (RAM:, C:, S:), name-based command resolution, embedded command images, init-time seeding into the RAM file store, and boot-race-free port creation. The 16 KiB per-file size cap is the last remaining bound and is targeted for **M12.8** (dos.library variable-size storage refactor).
 - **Shell**: interactive command shell that sends raw command names to dos.library via DOS_RUN (no shell-side command table). Executes `S:Startup-Sequence` automatically at boot if present, then drops to the interactive prompt.
 - **5 external commands** as DOS-loaded executables: VERSION, AVAIL, DIR, TYPE, ECHO. Stored as files in RAM under `C:`, launched by name through dos.library — not by program table index.
 
@@ -134,7 +134,7 @@ PTBR per task is stored in a separate array (KD_PTBR_BASE).
 
 ### 3.4 Priority Scheduling
 
-The scheduler uses round-robin across all task slots (MAX_TASKS = 8). It scans from the current task's slot forward, skipping WAITING and FREE slots, and selects the next READY or RUNNING task. Priority-based scheduling is planned for a future milestone.
+The scheduler uses round-robin across all task slots (`MAX_TASKS = 32` after M12.6 Phase D — was 8 in M5, 16 in M12). It scans from the current task's slot forward, skipping WAITING and FREE slots, and selects the next READY or RUNNING task. Priority-based scheduling is planned for a future milestone.
 
 ### 3.5 Context Switch Sequence
 
@@ -425,65 +425,86 @@ The broker's policy table maps `'CHIP'` → `(PPN 0xF0, 1 page)` and `'VRAM'` �
 
 **5.12.8 The `SYS_MAP_IO` allowlist backstop.** The legacy allowlist code in the kernel was *replaced* by the grant chain check in M12.5 — the bootstrap-table backstop is implicit (the bootstrap row gives `console.handler` exactly the same access the old allowlist gave it). M13 may delete the kernel allowlist symbol entirely; M12.5 leaves the surrounding bounds-check logic in place for sanity (page count cap, signed-overflow guards) without the PPN-specific allowlist.
 
-### 5.13 Architectural cap policy (M12.5)
+### 5.13 Architectural cap policy (M12.5–M12.6)
 
 > IntuitionOS does not use arbitrary fixed product limits for core OS objects where dynamic allocation is practical. Remaining limits must be justified by architecture, ABI width, hardware constraints, or explicitly configured resource policy.
 
-This rule lands in M12.5 alongside `hardware.resource`, with a working demonstration: every new table introduced by `hardware.resource` itself is allocator-backed and growable from day one (no compile-time row cap), and exactly one pre-existing arbitrary cap — `KD_REGION_MAX` — is removed in the same milestone using the same chain-allocator pattern. The remaining bucket-C caps from the audit below are removed in a follow-up sweep milestone (M12.6) using the pattern proven in M12.5. M12.5 is "rule + first proof"; M12.6 is "removal pass."
+This rule landed in M12.5 alongside `hardware.resource` and was completed in M12.6 — a focused cap-removal sweep across DOS, shmem, ports, and tasks plus a layout split for the security fix. M12.5 shipped the rule, the audit table below, and one proof-of-pattern removal (`KD_REGION_MAX`). M12.6 worked through the remaining bucket-C rows in risk order: **Phase A** (DOS file/handle caps, user-space chain), **Phase B** (`KD_SHMEM_MAX` → kernel chain), **Phase C** (`KD_PORT_MAX` → kernel chain), **Phase D** (`MAX_TASKS` → layout-bump from 16 to 32). **Phase E** then split the user-dynamic VA window and the allocator pool into disjoint VPN ranges as a privilege-escalation security fix — see the `USER_DYN_BASE/END` and `ALLOC_POOL_BASE/PAGES` rows below for details. After M12.6, **bucket C is empty**: every removal was either a chain-allocator conversion or — for tasks, where the real bound is the user-space slot layout, not an arbitrary kernel constant — a configured/layout-bound bump with a named replacement plan.
 
-**5.13.1 Cap classification audit.** Every fixed cap declared in `sdk/include/iexec.inc` and `sdk/intuitionos/iexec/iexec.s`, classified into three buckets:
+The honest summary: fixed product limits were removed where practical. Remaining limits are either architectural (ABI widths, page-table format, MMU contract), layout-bound (`MAX_TASKS = 32` is the slot region size, not a number plucked out of thin air), or temporary with a named follow-up milestone (`DOS_FILE_SIZE = 16384` waits on M12.8's storage refactor). The Phase E security fix also makes one architectural invariant explicit: **the user-dynamic VA window and the allocator pool are now disjoint VPN ranges**, so user `SYS_ALLOC_MEM` calls can never overwrite the supervisor-only pool PTEs that `build_user_pt` copies into every user PT. This is enforced at the layout level by the constants in `iexec.inc` and verified by `TestIExec_PortChain_DisjointFromUserDyn`.
+
+**5.13.1 Cap classification audit.** Every fixed cap declared in `sdk/include/iexec.inc` and `sdk/intuitionos/iexec/iexec.s`, classified into three buckets. Line numbers refreshed at the end of M12.6 Phase E.
 
 - **A — architectural / ABI / hardware-bound.** Keep. These are bounded by the IE64 instruction format, the MMU contract, the on-disk message ABI, or the physical machine.
-- **B — temporary implementation bound.** Keep for now, document a replacement plan.
-- **C — arbitrary toy-era cap.** Remove. M12.5 removes one (`KD_REGION_MAX`); M12.6 sweeps the rest.
+- **B — temporary implementation bound or configured policy.** Keep for now, document a replacement plan.
+- **C — arbitrary toy-era cap.** Empty after M12.6.
 
 | Symbol | File:Line | Value | Bucket | Notes |
 |---|---|---|---|---|
-| `MMU_PAGE_SIZE` | `iexec.inc:308` | 4096 | A | MMU page size — part of the page-table format. |
-| `MMU_PAGE_SHIFT` | `iexec.inc:309` | 12 | A | log2 of `MMU_PAGE_SIZE`. |
-| `MMU_NUM_PAGES` | `iexec.inc:310` | 8192 | A | Total physical RAM pages on the IntuitionEngine target. Hardware-bound. |
-| `KERN_PAGES` | `iexec.inc:311` | 384 | A | Kernel reserved page range. Bounded by the layout of `KERN_PAGE_TABLE` / `KERN_DATA_BASE` / kernel binary / kernel stack. |
-| `KERN_PAGE_TABLE` | `iexec.inc:117` | 0x040000 | A | Fixed kernel page-table location, inside the kernel reserved range. |
-| `KERN_DATA_BASE` | `iexec.inc:118` | 0x050000 | A | Fixed kernel data-page location. |
-| `KERN_STACK_TOP` | `iexec.inc:119` | 0x09F000 | A | Top of the kernel stack inside the kernel reserved range. |
-| `MAX_TASKS` | `iexec.inc:167` | 16 | C | Arbitrary, already bumped 8→16 in M12. Bounded only by `MAX_TASKS * USER_SLOT_STRIDE = 1 MiB` of slot region and the kernel data-page TCB array. **M12.6 sweep candidate.** Replacing the static TCB/PTBR arrays with a heap-allocated linked list removes it. |
-| `KD_TASK_STRIDE` | `iexec.inc:170` | 32 | A | TCB layout — bounded by the on-data-page field offsets, not arbitrary. |
-| `KD_PORT_STRIDE` | `iexec.inc:225` | 168 | A | Port size = 40-byte header + 4×32-byte messages. Bounded by `KD_PORT_FIFO_SIZE` × `KD_MSG_SIZE` + header. |
-| `KD_PORT_MAX` | `iexec.inc:226` | 32 | C | Arbitrary, already bumped 8→32 in M12 because intuition.library's anonymous reply ports pushed past the M11 cap. **M12.6 sweep candidate.** Wider blast radius than `KD_REGION_MAX` because every service touches port allocation. Left for the focused M12.6 sweep so M12.5 can land cleanly. |
-| `KD_PORT_FIFO_SIZE` | `iexec.inc:227` | 4 | B | Per-port message queue depth, not a global system cap. Tied to message-port flow control semantics; replaceable later but not load-bearing. |
-| `PORT_NAME_LEN` | `iexec.inc:241` | 32 | A | ABI — every port-name field across the kernel + protocol uses this width. Bumping it later would be a flag-day change to message-port headers. |
-| `KD_MSG_SIZE` | `iexec.inc:250` | 32 | A | ABI — message size is part of the cross-task IPC contract. |
-| `REPLY_PORT_NONE` | `iexec.inc:253` | 0xFFFF | A | Sentinel value, not a cap. |
-| `WAITPORT_NONE` | `iexec.inc:191` | 0xFF | A | Sentinel value, not a cap. |
-| `USER_PT_BASE` | `iexec.inc:275` | 0x700000 | A | Fixed slot of the user page-table region, sized to `MAX_TASKS * USER_SLOT_STRIDE`. |
-| `USER_SLOT_STRIDE` | `iexec.inc:279` | 0x10000 | A | Per-task slot stride — bounded by the layout of code/stack/data pages inside one slot. |
-| `USER_DYN_BASE` / `USER_DYN_END` | `iexec.inc:341–342` | 0x800000 / 0x2000000 | A | Dynamic VA range — bounded by the IE64 user address space layout. |
-| `USER_DYN_PAGES` | `iexec.inc:343` | 768 | B | Per-allocation cap for `AllocMem`, not per-task. Documents the largest single chunk a task can ask for. Replaceable; leaving for M12.6 audit. |
-| `ALLOC_POOL_BASE` | `iexec.inc:323` | 0x800 | A | First allocable physical page — bounded by where the kernel binary, kernel data, kernel stack, and user-PT region end. |
-| `ALLOC_POOL_PAGES` | `iexec.inc:324` | 6144 | A | Bounded by `MMU_NUM_PAGES − ALLOC_POOL_BASE`. |
-| `KD_PAGE_BITMAP` / `KD_PAGE_BITMAP_SZ` | `iexec.inc:350–351` | 6080 / 800 bytes | A | Bitmap size derived from `ALLOC_POOL_PAGES` rounded to whole bytes. Layout-derived, not arbitrary. |
-| `KD_REGION_MAX` | `iexec.inc:360` | 8 | C | **REMOVED IN M12.5.** Arbitrary per-task region count. On the critical path for MMIO/shared-mapping-heavy services (`graphics.library`, `hardware.resource`, intuition.library), so removing it first proves the chain-allocator pattern *where it matters*. Replaced with a per-task region chain using `kern_chain_alloc_page` / `kern_chain_find_free_row`. |
-| `KD_REGION_TASK_SZ` | `iexec.inc:361` | 128 | C | **REMOVED IN M12.5** alongside `KD_REGION_MAX` — the per-task fixed-stride block becomes a chain header. |
-| `KD_REGION_STRIDE` | `iexec.inc:359` | 16 | A | Region row size, bounded by the row field layout. |
-| `KD_SHMEM_MAX` | `iexec.inc:384` | 16 | C | Arbitrary system-wide shared-object cap, already bumped 8→16 in M12. **M12.6 sweep candidate.** |
-| `KD_SHMEM_STRIDE` | `iexec.inc:383` | 16 | A | Shared-object row size, bounded by row layout. |
-| `IEXEC_HEARTBEAT_INTERVAL` | `iexec.inc:398` | 64 | A | Tunable — debug-only kernel heartbeat tick rate, not a system cap. |
-| `IMG_HEADER_SIZE` | `iexec.inc:408` | 32 | A | IE64PROG image format ABI. |
-| `IMG_OFF_CODE_SIZE` cap | `iexec.inc:410` | 4096 | B | Per-image code section cap from M8. The image format itself doesn't require this — it's a load-time policy cap. M12.6 or later. |
-| `IMG_OFF_DATA_SIZE` cap | `iexec.inc:411` | 4096 | B | Same — per-image data section cap. M12.6 or later. |
-| `PROGTAB_ENTRY_SIZE` | `iexec.inc:415` | 24 | A | Program table row layout, bounded by row fields. |
-| `PROGTAB_BOOT_COUNT` | `iexec.inc:427` | 3 | A | Number of programs auto-loaded at boot — this is a *configured policy*, not an arbitrary cap. The number is "the count of strict-boot services," currently 3 (console.handler, dos.library, Shell). |
-| `TERM_IO_PAGE` | `iexec.inc:430` | 0xF0 | A | Hardware MMIO page address. |
-| `DATA_ARGS_OFFSET` / `DATA_ARGS_MAX` | `iexec.inc:433–434` | 3072 / 256 | B | Per-program argument-passing layout inside the program data page. Tied to the M9 `SYS_EXEC_PROGRAM` ABI. M12.6 or later. |
-| `DOS_MAX_FILES` | `iexec.inc:473` | 16 | C | Arbitrary RAM filesystem file count. **M12.6 sweep candidate.** |
-| `DOS_NAME_LEN` | `iexec.inc:474` | 32 | A | Filesystem ABI — bounded by the in-table filename field. |
-| `DOS_FILE_SIZE` | `iexec.inc:475` | 16384 | C | Arbitrary per-file slot size, already bumped 4096→8192→16384 in M12. **M12.6 sweep candidate.** The proper fix is a packed-heap allocator (attempted in M12, reverted; documented TODO). |
-| `DOS_MAX_HANDLES` | `iexec.inc:476` | 8 | C | Arbitrary maximum simultaneous open file handles. **M12.6 sweep candidate.** |
-| `INTUI_WIN_TITLE_H` | `iexec.inc:563` | 16 | A | Window title bar height in pixels — bounded by the embedded Topaz 8×16 font glyph height. |
-| `INTUI_WIN_BORDER` | `iexec.inc:564` | 2 | A | Window bevel thickness — visual constant, not a cap. |
-| `SIG_SYSTEM_MASK` | `iexec.inc:194` | 0xFFFF | A | Bit-field mask, ABI — system signals are bits 0-15, user signals 16-31, bounded by the 32-bit signal-word width. |
+| `MMU_PAGE_SIZE` | `iexec.inc:374` | 4096 | A | MMU page size — part of the page-table format. |
+| `MMU_PAGE_SHIFT` | `iexec.inc:375` | 12 | A | log2 of `MMU_PAGE_SIZE`. |
+| `MMU_NUM_PAGES` | `iexec.inc:376` | 8192 | A | Total physical RAM pages on the IntuitionEngine target. Hardware-bound. |
+| `KERN_PAGES` | `iexec.inc:377` | 384 | A | Kernel reserved page range. Bounded by the layout of `KERN_PAGE_TABLE` / `KERN_DATA_BASE` / kernel binary / kernel stack. |
+| `KERN_PAGE_TABLE` | `iexec.inc:131` | 0x040000 | A | Fixed kernel page-table location, inside the kernel reserved range. |
+| `KERN_DATA_BASE` | `iexec.inc:132` | 0x050000 | A | Fixed kernel data-page location. |
+| `KERN_STACK_TOP` | `iexec.inc:133` | 0x09F000 | A | Top of the kernel stack inside the kernel reserved range. |
+| `MAX_TASKS` | `iexec.inc:196` | 32 | C → **B** | **M12.6 Phase D: bumped from 16 to 32 with full layout adjustment** (`USER_PT_BASE` 0x700000 → 0x800000, allocator pool shifted up by 1 MiB). The cap is now layout-bound, not arbitrary: 32 task slots × `USER_SLOT_STRIDE` (64 KiB) = 2 MiB of code region + 2 MiB of PT region. To raise above 32, the user-space slot layout has to be redesigned (move `USER_PT_BASE` again, or shrink `USER_SLOT_STRIDE` per task). Bucket B with named replacement plan: **slot-layout redesign milestone** if/when 32 tasks isn't enough. The chain-allocator pattern was deliberately *not* applied here because the actual ceiling is the layout, not the kernel data structure. |
+| `KD_TASK_STRIDE` | `iexec.inc:199` | 32 | A | TCB layout — bounded by the on-data-page field offsets, not arbitrary. |
+| `KD_PTBR_BASE` | `iexec.inc:230` | 1088 | A | PTBR array offset (after 32 TCBs). Layout-derived from `KD_TASK_BASE + MAX_TASKS * KD_TASK_STRIDE`. |
+| `KD_PORT_STRIDE` | `iexec.inc:266` | 168 | A | Port size = 40-byte header + 4×32-byte messages. Bounded by `KD_PORT_FIFO_SIZE` × `KD_MSG_SIZE` + header. |
+| `KD_PORT_INLINE_MAX` | `iexec.inc:267` | 32 | A | Number of port rows kept inline for fast-path access (M12.6 Phase C). The actual cap on ports is the allocator pool, reached via the overflow chain. |
+| `KD_PORT_MAX` | `iexec.inc:270` | 32 | C → A | **Cap removed in M12.6 Phase C; symbol retained as legacy alias for `KD_PORT_INLINE_MAX`.** The original 32-row hard cap is gone — rows beyond 32 live in an overflow chain reached through `KD_PORT_OFLOW_HDR`. The 1-byte port ID ABI ceiling is 255 (0xFF reserved as `WAITPORT_NONE` sentinel). |
+| `KD_PORT_FIFO_SIZE` | `iexec.inc:271` | 4 | B | Per-port message queue depth, not a global system cap. Tied to message-port flow control semantics; replaceable later but not load-bearing. |
+| `KD_PORT_OFLOW_HDR` | `iexec.inc:274` | 12152 | A | Single global chain header for the port overflow chain (M12.6 Phase C). |
+| `PORT_NAME_LEN` | `iexec.inc:301` | 32 | A | ABI — every port-name field across the kernel + protocol uses this width. Bumping it later would be a flag-day change to message-port headers. |
+| `KD_MSG_SIZE` | `iexec.inc:310` | 32 | A | ABI — message size is part of the cross-task IPC contract. |
+| `REPLY_PORT_NONE` | `iexec.inc:313` | 0xFFFF | A | Sentinel value, not a cap. |
+| `WAITPORT_NONE` | `iexec.inc:220` | 0xFF | A | Sentinel value, not a cap. |
+| `USER_PT_BASE` | `iexec.inc:335` | 0x800000 | A | Fixed slot of the user page-table region (M12.6 Phase D: was 0x700000), sized to `MAX_TASKS * USER_SLOT_STRIDE = 2 MiB`. |
+| `USER_SLOT_STRIDE` | `iexec.inc:345` | 0x10000 | A | Per-task slot stride — bounded by the layout of code/stack/data pages inside one slot. |
+| `USER_DYN_BASE` / `USER_DYN_END` | `iexec.inc:419–420` | 0xA00000 / 0x1200000 | A | Dynamic VA range — **M12.6 Phase E security fix**: split from the allocator pool into a disjoint VPN range. Previously the user-dyn window aliased the entire allocator pool (`0xA00000..0x2000000`), which let unprivileged tasks overwrite the supervisor-only pool PTEs that `build_user_pt` copies into every user PT and pivot the kernel chain walkers (running on the user PT) into attacker-controlled memory. The fix gives user-dyn the bottom half (`0xA00000..0x1200000`, 8 MiB, VPN `0xA00..0x11FF`) and the allocator pool the top half (PPN `0x1200..0x1FFF`, 14 MiB). The two ranges are now disjoint at the layout level — see `TestIExec_PortChain_DisjointFromUserDyn`. |
+| `USER_DYN_PAGES` | `iexec.inc:421` | 768 | B | Per-allocation cap for `AllocMem`, not per-task. Documents the largest single chunk a task can ask for. Replaceable. |
+| `ALLOC_POOL_BASE` | `iexec.inc:401` | 0x1200 | A | First allocable physical page — **M12.6 Phase E security fix**: was 0xA00 (split user-dyn and pool into disjoint VPN ranges so user `SYS_ALLOC_MEM` calls cannot ever overwrite the supervisor-only pool PTEs in user PTs). Pool now starts at PPN 0x1200, immediately above the user-dyn VA window which ends at `USER_DYN_END = 0x1200000`. M12.6 Phase D had earlier bumped this from 0x800 to 0xA00 to make room for the doubled `USER_PT_BASE` region. |
+| `ALLOC_POOL_PAGES` | `iexec.inc:402` | 3584 | A | **M12.6 Phase E security fix**: was 5632 (lost 2048 pages = 8 MiB to the user-dyn VA window so user-dyn and the allocator pool are now disjoint at the layout level). Pool spans pages `0x1200..0x1FFF` = 14 MiB. Bounded by `MMU_NUM_PAGES − ALLOC_POOL_BASE`. M12.6 Phase D had earlier shrunk this from 6144 to 5632 for the user PT region. |
+| `KD_PAGE_BITMAP` / `KD_PAGE_BITMAP_SZ` | `iexec.inc:416–417` | 6720 / 800 bytes | A | Bitmap size derived from `ALLOC_POOL_PAGES` rounded to whole bytes. Layout-derived, not arbitrary. |
+| `KD_REGION_INLINE_MAX` | `iexec.inc:436` | 8 | A | Number of region rows kept inline per task for fast-path access (M12.5). The actual cap on regions per task is the allocator pool, reached via the overflow chain. |
+| `KD_REGION_TASK_SZ` | `iexec.inc:437` | 128 | A | Inline byte stride per task (8 × 16). With M12.5's overflow chain this is now the inline range size, not a cap on regions per task. |
+| `KD_REGION_MAX` | `iexec.inc:440` | 8 | C → A | **Cap removed in M12.5; symbol retained as legacy alias for `KD_REGION_INLINE_MAX`.** Rows beyond 8 live in a per-task overflow chain reached through `KD_REGION_OVERFLOW_HEAD`. |
+| `KD_REGION_OVERFLOW_HEAD` | `iexec.inc:444` | 11888 | A | Per-task overflow chain header array base (M12.5). M12.6 Phase D shifted this from 9200 → 11888 because all kernel data structures after the TCB and region table grew. |
+| `KD_REGION_OFLOW_STRIDE` | `iexec.inc:445` | 8 | A | Per-task overflow header stride. Layout-derived. |
+| `KD_REGION_STRIDE` | `iexec.inc:435` | 16 | A | Region row size, bounded by the row field layout. |
+| `KD_SHMEM_INLINE_MAX` | `iexec.inc:496` | 16 | A | Number of shmem rows kept inline for fast-path access (M12.6 Phase B). |
+| `KD_SHMEM_MAX` | `iexec.inc:499` | 16 | C → A | **Cap removed in M12.6 Phase B; symbol retained as legacy alias for `KD_SHMEM_INLINE_MAX`.** Rows beyond 16 live in an overflow chain reached through `KD_SHMEM_OFLOW_HDR`. The 1-byte shmem id ABI ceiling is 255. |
+| `KD_SHMEM_STRIDE` | `iexec.inc:495` | 16 | A | Shared-object row size, bounded by row layout. |
+| `KD_SHMEM_OFLOW_HDR` | `iexec.inc:502` | 12144 | A | Single global chain header for the shmem overflow chain (M12.6 Phase B). |
+| `KD_HWRES_TASK` | `iexec.inc:735` | 1 byte | A | Broker task ID slot in the kernel data page (M12.5). 0xFF = unclaimed. M12.6 Phase D shifted this from 9184 → 11872. |
+| `KD_GRANT_TABLE_HDR` | `iexec.inc:738` | 8 bytes | A | Chain header for the grant table (M12.5). The grant chain itself has no fixed-row cap. |
+| `SYS_HWRES_OP` | `iexec.inc:72` | slot 38 | A | Trusted-internal verb-multiplexed broker primitive (M12.5). Slot number is part of the syscall ABI. |
+| `IEXEC_HEARTBEAT_INTERVAL` | `iexec.inc:529` | 64 | A | Tunable — debug-only kernel heartbeat tick rate, not a system cap. |
+| `IMG_HEADER_SIZE` | `iexec.inc:539` | 32 | A | IE64PROG image format ABI. |
+| `IMG_OFF_CODE_SIZE` cap | `iexec.inc:541` | 4096 | B | Per-image code section cap from M8. The image format itself doesn't require this — it's a load-time policy cap. Replacement is a future milestone. |
+| `IMG_OFF_DATA_SIZE` cap | `iexec.inc:542` | 4096 | B | Same — per-image data section cap. |
+| `PROGTAB_ENTRY_SIZE` | `iexec.inc:546` | 24 | A | Program table row layout, bounded by row fields. |
+| `PROGTAB_BOOT_COUNT` | `iexec.inc:558` | 3 | A | Number of programs auto-loaded at boot — this is a *configured policy*, not an arbitrary cap. The number is "the count of strict-boot services," currently 3 (console.handler, dos.library, Shell). |
+| `TERM_IO_PAGE` | `iexec.inc:561` | 0xF0 | A | Hardware MMIO page address. |
+| `DATA_ARGS_OFFSET` / `DATA_ARGS_MAX` | `iexec.inc:564–565` | 3072 / 256 | B | Per-program argument-passing layout inside the program data page. Tied to the M9 `SYS_EXEC_PROGRAM` ABI. |
+| `DOS_MAX_FILES` | (removed) | — | C → ✓ | **Removed in M12.6 Phase A.** The `dos.library` file table is now a chain of `AllocMem`'d 4 KiB pages, each holding 85 entries. No compile-time cap; failure mode is real `ERR_NOMEM` from the page allocator. |
+| `DOS_NAME_LEN` | `iexec.inc:612` | 32 | A | Filesystem ABI — bounded by the in-table filename field. |
+| `DOS_FILE_SIZE` | `iexec.inc:613` | 16384 | B | Per-file slot size, already bumped 4096→8192→16384 in M12. Has a *named replacement plan* (packed-heap / slab-extent allocator inside dos.library) — lands in **M12.8** as a focused dos.library storage refactor. M12.6's chain-allocator pattern is the wrong tool because the cap is a per-file *byte size*, not a *count*. |
+| `DOS_MAX_HANDLES` | (removed) | — | C → ✓ | **Removed in M12.6 Phase A.** The `dos.library` handle table is now a chain of `AllocMem`'d 4 KiB pages, each holding 510 handles. No compile-time cap. |
+| `INTUI_WIN_TITLE_H` | `iexec.inc:718` | 16 | A | Window title bar height in pixels — bounded by the embedded Topaz 8×16 font glyph height. |
+| `INTUI_WIN_BORDER` | `iexec.inc:719` | 2 | A | Window bevel thickness — visual constant, not a cap. |
+| `SIG_SYSTEM_MASK` | `iexec.inc:223` | 0xFFFF | A | Bit-field mask, ABI — system signals are bits 0-15, user signals 16-31, bounded by the 32-bit signal-word width. |
 
-**Bucket C summary:** `MAX_TASKS`, `KD_PORT_MAX`, `KD_REGION_MAX` (+ `KD_REGION_TASK_SZ`), `KD_SHMEM_MAX`, `DOS_MAX_FILES`, `DOS_FILE_SIZE`, `DOS_MAX_HANDLES`. M12.5 removes exactly one (`KD_REGION_MAX` + `KD_REGION_TASK_SZ`); M12.6 removes the rest using the same chain-allocator pattern.
+**Bucket C summary (post M12.6 — empty):** every previously bucket-C row was either removed (chain-allocator conversion in Phases A/B/C, or layout-bump in Phase D) or reclassified into bucket A or B with a recorded reason. The five rows that started this milestone in bucket C went out as follows:
+
+- `KD_REGION_MAX` (8) — **M12.5**: hard cap removed via per-task overflow chain. Symbol kept as legacy alias for `KD_REGION_INLINE_MAX`. Reclassified C → A.
+- `DOS_MAX_FILES` (16), `DOS_MAX_HANDLES` (8) — **M12.6 Phase A**: removed entirely. `dos.library` file/handle tables are now user-space chains of `AllocMem`'d pages.
+- `KD_SHMEM_MAX` (16) — **M12.6 Phase B**: hard cap removed via global overflow chain. Symbol kept as legacy alias for `KD_SHMEM_INLINE_MAX`. Reclassified C → A.
+- `KD_PORT_MAX` (32) — **M12.6 Phase C**: hard cap removed via global overflow chain. Symbol kept as legacy alias for `KD_PORT_INLINE_MAX`. Reclassified C → A.
+- `MAX_TASKS` (16) — **M12.6 Phase D**: bumped to 32 with full layout adjustment. The cap is now layout-bound (32 task slots × `USER_SLOT_STRIDE`), not arbitrary. Reclassified C → B with named replacement plan: slot-layout redesign milestone if/when 32 tasks isn't enough. The chain-allocator pattern was deliberately *not* applied here because the actual ceiling is the user-space slot layout, not the kernel data structure.
+
+`DOS_FILE_SIZE` was on the original C list at the start of M12.6 Phase 0, but the audit refresh moved it to B because it has a different replacement plan (packed-heap / slab-extent allocator) and that work lands in M12.8 — not as part of the cap-removal sweep.
 
 **5.13.2 Why `KD_REGION_MAX` is the M12.5 first removal.** The plan locks in `KD_REGION_MAX` rather than `KD_PORT_MAX` for three reasons:
 1. **Critical-path proof.** The per-task region table is on the hot path for every `SYS_MAP_IO`, `SYS_ALLOC_MEM`, `SYS_MAP_SHARED`, and the M12.5 `hardware.resource` broker itself. Removing this cap first exercises the chain-allocator pattern against the heaviest in-kernel consumer.
@@ -882,7 +903,7 @@ M11 takes the next step toward an Amiga-shaped graphical OS: interactive input a
 - **`SYS_MAP_IO` extended to take a page count.** New ABI: `R1 = base_ppn, R2 = page_count → R1 = mapped_va, R2 = err`. The legacy single-page form (`R2 = 0`) is preserved for M9/M10 callers — `R2 = 0` is treated as `R2 = 1`.
 - **Range-aware allowlist**: only two PPN windows are accepted: `(0xF0, 1)` for the chip register page (terminal/input/video MMIO) and `[0x100, 0x5FF]` for any contiguous slice of the 5 MB VRAM range. Anything else returns `ERR_BADARG`.
 - **One region slot for the whole mapping**: a 300-page VRAM mapping consumes exactly one entry in the per-task region table (8 slots), not 300. Required because graphics.library maps the full 640x480x4 framebuffer in a single call.
-- **`USER_DYN_PAGES` bumped from 256 to 768** (`USER_DYN_STRIDE` 1 MB → 3 MB). Required for graphics.library to simultaneously map 1 chip + 300 VRAM + 300 surface pages = 601 pages. The 8x3MB layout uses VA `0x800000-0x2000000` — the top of the 32 MB VA space. Double-buffering (2 client surfaces) does not fit in 768 pages and is deferred to M12.
+- **`USER_DYN_PAGES` bumped from 256 to 768** (`USER_DYN_STRIDE` 1 MB → 3 MB). Required for graphics.library to simultaneously map 1 chip + 300 VRAM + 300 surface pages = 601 pages. The 8×3MB layout uses VA `0x800000-0x2000000` — the top of the 32 MB VA space. Double-buffering (2 client surfaces) does not fit in 768 pages and is deferred to M12. *(Historical M11 layout snapshot. The current post-M12.6 layout is different: `USER_DYN_BASE..USER_DYN_END = 0xA00000..0x1200000` (8 MiB), and the allocator pool was split off into a disjoint VPN range at PPN `0x1200..0x1FFF` by the M12.6 Phase E security fix. See §1 and `§5.13.1` for the current values.)*
 - **`load_program` data-size cap raised from 16384 to 20480** (5 data pages). Required for dos.library to grow to 5 data pages embedding the new `LIBS/graphics.library`, `DEVS/input.device`, and `C/GfxDemo` images.
 - No new syscalls. No new region types. No new TCB fields. No VA layout overhaul beyond the dynamic window stride bump.
 

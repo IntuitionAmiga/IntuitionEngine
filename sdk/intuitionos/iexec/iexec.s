@@ -217,6 +217,20 @@ iexec_start:
     add     r4, r4, #1
     blt     r4, r3, .zero_oflow
 
+    ; M12.6 Phase B: zero the shmem overflow chain header (8 bytes).
+    ; Lazy allocation — first chain page is allocated on demand by
+    ; kern_shmem_alloc_slot when the inline 16 rows are exhausted.
+    move.l  r2, #KERN_DATA_BASE
+    add     r2, r2, #KD_SHMEM_OFLOW_HDR
+    store.q r0, (r2)
+
+    ; M12.6 Phase C: zero the port overflow chain header (8 bytes).
+    ; Lazy allocation — first chain page is allocated on demand by
+    ; kern_port_alloc_slot when the inline 32 ports are exhausted.
+    move.l  r2, #KERN_DATA_BASE
+    add     r2, r2, #KD_PORT_OFLOW_HDR
+    store.q r0, (r2)
+
     ; ---------------------------------------------------------------
     ; 6d. Extend kernel PT: map allocation pool pages (0x700-0x1FFF)
     ;     as supervisor P|R|W for MEMF_CLEAR zeroing
@@ -448,7 +462,7 @@ build_user_pt:
     move.l  r4, #0
 .bup_copy_kern:
     move.l  r6, #KERN_PAGES
-    bge     r4, r6, .bup_copy_user
+    bge     r4, r6, .bup_copy_pool
     lsl     r5, r4, #3
     add     r8, r5, r2
     load.q  r3, (r8)
@@ -456,6 +470,26 @@ build_user_pt:
     store.q r3, (r9)
     add     r4, r4, #1
     bra     .bup_copy_kern
+
+    ; M12.6 Phase C: copy allocator pool entries (supervisor-only) so the
+    ; kernel can access chain pages from a user PT without switching to the
+    ; kernel PT for every chain walker invocation. The pool entries were
+    ; written to the kernel PT at boot by kern_init's kern_pool_map loop;
+    ; here we copy them across into this task's PT so the supervisor-only
+    ; flag is preserved (user code still cannot read them).
+.bup_copy_pool:
+    move.l  r4, #ALLOC_POOL_BASE
+    move.l  r6, #ALLOC_POOL_PAGES
+    add     r6, r6, r4                  ; r6 = pool end VPN (exclusive)
+.bup_copy_pool_loop:
+    bge     r4, r6, .bup_copy_user
+    lsl     r5, r4, #3
+    add     r8, r5, r2
+    load.q  r3, (r8)
+    add     r9, r5, r7
+    store.q r3, (r9)
+    add     r4, r4, #1
+    bra     .bup_copy_pool_loop
 
 .bup_copy_user:
     ; Copy supervisor-only user page entries (VPN 0x600..0x600+MAX_TASKS*0x10)
@@ -1415,6 +1449,502 @@ kern_region_oflow_alloc_row:
     rts
 
 ; ============================================================================
+; M12.6 Phase B: shmem overflow chain helpers
+; ============================================================================
+; Same chain pattern as the M12.5 region overflow chain, but with a single
+; global header (KD_SHMEM_OFLOW_HDR) instead of a per-task array. The shmem
+; table is system-wide (one shared object pool for all tasks).
+;
+; Both helpers assume the caller is already on the kernel PT — chain pages
+; live in the allocator pool which is only mapped in the kernel PT. Every
+; existing shmem walker call site is inside a syscall handler that has done
+; an outer PT switch (.do_alloc_mem at iexec.s:2686, .do_free_mem at
+; iexec.s:2923, .do_map_shared at iexec.s:3064) or inside kill_task_cleanup
+; which is called only after switching to kernel PT.
+;
+; Slot ID encoding:
+;   id 0..KD_SHMEM_INLINE_MAX-1 → inline row at KD_SHMEM_TABLE + id*16
+;   id KD_SHMEM_INLINE_MAX..    → overflow chain row
+;     overflow_index = id - KD_SHMEM_INLINE_MAX
+;     page_index     = overflow_index / KD_SHMEM_ROWS_PER_PG
+;     slot_in_page   = overflow_index % KD_SHMEM_ROWS_PER_PG
+
+; ----------------------------------------------------------------------------
+; kern_shmem_alloc_slot: walk inline + overflow chain looking for a free
+; slot (KD_SHM_VALID == 0). Allocate a new chain page if none found.
+; ----------------------------------------------------------------------------
+; In:  none (caller must already be on the kernel PT)
+; Out: R1 = slot addr (kernel data VA, or chain page VA; 0 on ERR_NOMEM)
+;      R2 = slot id
+; Clobbers: R4..R19, R28
+;
+; Note: r3 is intentionally NOT touched. Callers in syscall handlers may have
+; user-visible state in r3 (e.g. .do_alloc_mem returns r3 = share_handle, but
+; some callers like .do_create_port leave r3 holding a user pointer that the
+; user-space test relies on surviving the syscall). Use `beqz r1` to detect
+; NOMEM rather than checking an err code in r3.
+kern_shmem_alloc_slot:
+    ; --- Scan inline rows 0..KD_SHMEM_INLINE_MAX-1 ---
+    move.l  r4, #KERN_DATA_BASE
+    add     r4, r4, #KD_SHMEM_TABLE     ; r4 = inline base
+    move.l  r5, #0                       ; r5 = inline slot id
+.ksas_inline_scan:
+    move.l  r6, #KD_SHMEM_INLINE_MAX
+    bge     r5, r6, .ksas_oflow
+    move.l  r6, #KD_SHMEM_STRIDE
+    mulu    r6, r5, r6
+    add     r7, r4, r6                   ; r7 = &inline[slot]
+    load.b  r8, KD_SHM_VALID(r7)
+    beqz    r8, .ksas_inline_found
+    add     r5, r5, #1
+    bra     .ksas_inline_scan
+.ksas_inline_found:
+    move.q  r1, r7
+    move.q  r2, r5
+    rts
+
+.ksas_oflow:
+    ; --- Walk overflow chain ---
+    ; r6 will track the slot id as we walk (starts at INLINE_MAX).
+    move.l  r4, #KERN_DATA_BASE
+    add     r4, r4, #KD_SHMEM_OFLOW_HDR  ; r4 = &header
+    load.w  r5, KD_SHMEM_OFLOW_FIRST_PPN(r4)
+    move.l  r6, #KD_SHMEM_INLINE_MAX     ; r6 = current slot id
+    beqz    r5, .ksas_alloc_new
+
+.ksas_walk_page:
+    lsl     r7, r5, #12                  ; r7 = page byte addr
+    move.q  r8, r7
+    add     r8, r8, #KD_SHMEM_PAGE_HDR_SZ ; r8 = first row in page
+    move.l  r9, #0                        ; r9 = row idx in this page
+.ksas_walk_row:
+    move.l  r10, #KD_SHMEM_ROWS_PER_PG
+    bge     r9, r10, .ksas_walk_next_page
+    load.b  r11, KD_SHM_VALID(r8)
+    beqz    r11, .ksas_oflow_found
+    add     r8, r8, #KD_SHMEM_STRIDE
+    add     r9, r9, #1
+    add     r6, r6, #1
+    bra     .ksas_walk_row
+.ksas_walk_next_page:
+    load.w  r5, KD_SHMEM_PAGE_NEXT(r7)
+    bnez    r5, .ksas_walk_page
+    bra     .ksas_alloc_new
+.ksas_oflow_found:
+    ; M12.6 Phase E: enforce the 1-byte shmem ID ABI ceiling. The shmem
+    ; handle encodes the slot in the low 8 bits and the share-handle
+    ; decoder rejects 0xFF (which collides with the sentinel reserved
+    ; by the inline shmem ID bytes). Reject any allocation at id >= 0xFF
+    ; before returning so we never hand out an unrepresentable ID.
+    move.l  r10, #0xFF
+    bge     r6, r10, .ksas_nomem
+    move.q  r1, r8
+    move.q  r2, r6
+    rts
+
+.ksas_alloc_new:
+    ; All existing rows occupied (or chain empty). r6 holds the slot id
+    ; we would assign. M12.6 Phase E: reject before allocating a new chain
+    ; page if that id is at or past the 1-byte shmem ID ABI ceiling — no
+    ; point burning an allocator pool page on a slot we cannot represent.
+    move.l  r10, #0xFF
+    bge     r6, r10, .ksas_nomem
+    ; Allocate a new chain page and use slot 0 of it. Note: alloc_pages
+    ; clobbers a lot of regs; r6 must be preserved across the call.
+    push    r6
+    move.l  r1, #1
+    jsr     alloc_pages                  ; r1 = PPN, r2 = err
+    pop     r6
+    bnez    r2, .ksas_nomem
+    move.q  r12, r1                      ; r12 = new page PPN
+
+    ; Zero entire 4 KiB page (so all KD_SHM_VALID start at 0)
+    lsl     r7, r1, #12
+    move.q  r8, r7
+    move.l  r9, #4096
+    add     r9, r9, r7
+.ksas_zero:
+    bge     r8, r9, .ksas_zdone
+    store.q r0, (r8)
+    add     r8, r8, #8
+    bra     .ksas_zero
+.ksas_zdone:
+
+    ; Link the new page onto the chain.
+    move.l  r4, #KERN_DATA_BASE
+    add     r4, r4, #KD_SHMEM_OFLOW_HDR
+    load.w  r5, KD_SHMEM_OFLOW_FIRST_PPN(r4)
+    bnez    r5, .ksas_walk_tail
+    store.w r12, KD_SHMEM_OFLOW_FIRST_PPN(r4)
+    bra     .ksas_link_done
+.ksas_walk_tail:
+    lsl     r7, r5, #12
+    load.w  r8, KD_SHMEM_PAGE_NEXT(r7)
+    beqz    r8, .ksas_at_tail
+    move.q  r5, r8
+    bra     .ksas_walk_tail
+.ksas_at_tail:
+    store.w r12, KD_SHMEM_PAGE_NEXT(r7)
+.ksas_link_done:
+    ; Bump page count.
+    load.w  r8, KD_SHMEM_OFLOW_PAGES(r4)
+    add     r8, r8, #1
+    store.w r8, KD_SHMEM_OFLOW_PAGES(r4)
+
+    ; Use slot 0 of the new page; r6 = slot id (preserved across alloc)
+    lsl     r7, r12, #12
+    add     r1, r7, #KD_SHMEM_PAGE_HDR_SZ
+    move.q  r2, r6
+    rts
+
+.ksas_nomem:
+    move.q  r1, r0
+    move.q  r2, r0
+    rts
+
+; ----------------------------------------------------------------------------
+; kern_shmem_addr_for_id: convert a 1-byte slot id back to a slot address.
+; ----------------------------------------------------------------------------
+; In:  R1 = slot id (low byte significant; 0..254)
+; Out: R1 = slot addr (kernel VA), or 0 if id is past end of allocated chain
+; Clobbers: R3..R9
+;
+; Caller must already be on the kernel PT (overflow chain pages live in
+; the allocator pool).
+kern_shmem_addr_for_id:
+    move.l  r3, #KD_SHMEM_INLINE_MAX
+    bge     r1, r3, .ksai_oflow
+    ; Inline path: addr = TABLE + id * STRIDE
+    move.l  r3, #KD_SHMEM_STRIDE
+    mulu    r3, r1, r3
+    move.l  r4, #KERN_DATA_BASE
+    add     r4, r4, #KD_SHMEM_TABLE
+    add     r1, r4, r3
+    rts
+.ksai_oflow:
+    ; Convert id → (page_index, slot_in_page)
+    sub     r1, r1, #KD_SHMEM_INLINE_MAX  ; overflow index
+    move.l  r3, #KD_SHMEM_ROWS_PER_PG
+    divu    r4, r1, r3                    ; r4 = page index
+    mulu    r5, r4, r3
+    sub     r5, r1, r5                    ; r5 = slot in page
+    ; Walk chain `r4` pages forward.
+    move.l  r6, #KERN_DATA_BASE
+    add     r6, r6, #KD_SHMEM_OFLOW_HDR
+    load.w  r7, KD_SHMEM_OFLOW_FIRST_PPN(r6)
+.ksai_walk:
+    beqz    r7, .ksai_notfound
+    beqz    r4, .ksai_at_page
+    lsl     r8, r7, #12
+    load.w  r7, KD_SHMEM_PAGE_NEXT(r8)
+    sub     r4, r4, #1
+    bra     .ksai_walk
+.ksai_at_page:
+    lsl     r8, r7, #12                  ; r8 = page byte addr
+    move.l  r9, #KD_SHMEM_STRIDE
+    mulu    r9, r5, r9
+    add     r1, r8, #KD_SHMEM_PAGE_HDR_SZ
+    add     r1, r1, r9
+    rts
+.ksai_notfound:
+    move.q  r1, r0
+    rts
+
+; ============================================================================
+; M12.6 Phase C: port overflow chain helpers
+; ============================================================================
+; Same chain pattern as the M12.5 region overflow chain and M12.6 Phase B
+; shmem overflow chain, but with port-sized rows (KD_PORT_STRIDE = 168, so
+; 24 rows per chain page).
+;
+; Port table is system-wide (single global header). Port IDs map to slots:
+;   id 0..KD_PORT_INLINE_MAX-1   → inline at KD_PORT_BASE + id*KD_PORT_STRIDE
+;   id KD_PORT_INLINE_MAX..      → overflow chain
+;     overflow_index = id - KD_PORT_INLINE_MAX
+;     page_index     = overflow_index / KD_PORT_ROWS_PER_PG
+;     slot_in_page   = overflow_index % KD_PORT_ROWS_PER_PG
+;
+; All helpers assume the caller is on the kernel PT. Every port handler
+; (.do_create_port, .do_find_port, .do_put_msg, .do_get_msg, .do_wait_port,
+; .do_reply_msg) runs from the trap dispatcher, which is already on kernel
+; PT throughout (no syscall handler ever leaves kernel PT for a port op).
+; kill_task_cleanup is also called from kernel PT (the timer/exit paths
+; switch first; see iexec.s:1767, 2657).
+
+; ----------------------------------------------------------------------------
+; kern_port_alloc_slot: walk inline + overflow chain looking for a free
+; port (KD_PORT_VALID == 0). Allocate a new chain page if none found.
+; ----------------------------------------------------------------------------
+; In:  none
+; Out: R1 = port addr (0 on ERR_NOMEM), R2 = port id
+; Clobbers: R4..R19, R28
+;
+; Note: r3 is intentionally NOT touched. Callers like .do_create_port leave
+; r3 holding a user-space data pointer that the caller's user-space code
+; relies on surviving the syscall. Use `beqz r1` to detect NOMEM rather than
+; checking an err code in r3.
+kern_port_alloc_slot:
+    ; --- Scan inline ports 0..KD_PORT_INLINE_MAX-1 ---
+    move.l  r4, #KERN_DATA_BASE
+    add     r4, r4, #KD_PORT_BASE       ; r4 = inline base
+    move.l  r5, #0                       ; r5 = inline port id
+.kpas_inline_scan:
+    move.l  r6, #KD_PORT_INLINE_MAX
+    bge     r5, r6, .kpas_oflow
+    move.l  r6, #KD_PORT_STRIDE
+    mulu    r6, r5, r6
+    add     r7, r4, r6                   ; r7 = &port[id]
+    load.b  r8, KD_PORT_VALID(r7)
+    beqz    r8, .kpas_inline_found
+    add     r5, r5, #1
+    bra     .kpas_inline_scan
+.kpas_inline_found:
+    move.q  r1, r7
+    move.q  r2, r5
+    rts
+
+.kpas_oflow:
+    ; --- Walk overflow chain ---
+    move.l  r4, #KERN_DATA_BASE
+    add     r4, r4, #KD_PORT_OFLOW_HDR
+    load.w  r5, KD_PORT_OFLOW_FIRST_PPN(r4)
+    move.l  r6, #KD_PORT_INLINE_MAX      ; r6 = current port id
+    beqz    r5, .kpas_alloc_new
+
+.kpas_walk_page:
+    lsl     r7, r5, #12                  ; r7 = page byte addr
+    move.q  r8, r7
+    add     r8, r8, #KD_PORT_PAGE_HDR_SZ ; r8 = first row
+    move.l  r9, #0                        ; r9 = row idx in this page
+.kpas_walk_row:
+    move.l  r10, #KD_PORT_ROWS_PER_PG
+    bge     r9, r10, .kpas_walk_next_page
+    load.b  r11, KD_PORT_VALID(r8)
+    beqz    r11, .kpas_oflow_found
+    add     r8, r8, #KD_PORT_STRIDE
+    add     r9, r9, #1
+    add     r6, r6, #1
+    bra     .kpas_walk_row
+.kpas_walk_next_page:
+    load.w  r5, KD_PORT_PAGE_NEXT(r7)
+    bnez    r5, .kpas_walk_page
+    bra     .kpas_alloc_new
+.kpas_oflow_found:
+    ; M12.6 Phase E: enforce the 1-byte port ID ABI ceiling. WAITPORT_NONE
+    ; (0xFF) is the sentinel reserved by KD_TASK_WAITPORT and the port
+    ; lookup helper rejects ids >= 0xFF. Reject any allocation at id >= 0xFF
+    ; before returning so we never hand out an unrepresentable ID.
+    ; Note: r3 is intentionally NOT touched (helper clobber contract — see
+    ; the .do_create_port r3 user-space scratch reliance). Use r10 instead.
+    move.l  r10, #0xFF
+    bge     r6, r10, .kpas_nomem
+    move.q  r1, r8
+    move.q  r2, r6
+    rts
+
+.kpas_alloc_new:
+    ; All existing rows occupied (or chain empty). r6 holds the port id we
+    ; would assign. M12.6 Phase E: reject before allocating a new chain page
+    ; if that id is at or past the 1-byte port ID ABI ceiling — no point
+    ; burning an allocator pool page on a slot we cannot represent.
+    move.l  r10, #0xFF
+    bge     r6, r10, .kpas_nomem
+    push    r6
+    move.l  r1, #1
+    jsr     alloc_pages                  ; r1 = PPN, r2 = err
+    pop     r6
+    bnez    r2, .kpas_nomem
+    move.q  r12, r1                      ; r12 = new page PPN
+
+    ; Zero entire 4 KiB page
+    lsl     r7, r1, #12
+    move.q  r8, r7
+    move.l  r9, #4096
+    add     r9, r9, r7
+.kpas_zero:
+    bge     r8, r9, .kpas_zdone
+    store.q r0, (r8)
+    add     r8, r8, #8
+    bra     .kpas_zero
+.kpas_zdone:
+
+    ; Link new page onto chain.
+    move.l  r4, #KERN_DATA_BASE
+    add     r4, r4, #KD_PORT_OFLOW_HDR
+    load.w  r5, KD_PORT_OFLOW_FIRST_PPN(r4)
+    bnez    r5, .kpas_walk_tail
+    store.w r12, KD_PORT_OFLOW_FIRST_PPN(r4)
+    bra     .kpas_link_done
+.kpas_walk_tail:
+    lsl     r7, r5, #12
+    load.w  r8, KD_PORT_PAGE_NEXT(r7)
+    beqz    r8, .kpas_at_tail
+    move.q  r5, r8
+    bra     .kpas_walk_tail
+.kpas_at_tail:
+    store.w r12, KD_PORT_PAGE_NEXT(r7)
+.kpas_link_done:
+    load.w  r8, KD_PORT_OFLOW_PAGES(r4)
+    add     r8, r8, #1
+    store.w r8, KD_PORT_OFLOW_PAGES(r4)
+
+    ; Use slot 0 of new page.
+    lsl     r7, r12, #12
+    add     r1, r7, #KD_PORT_PAGE_HDR_SZ
+    move.q  r2, r6
+    rts
+
+.kpas_nomem:
+    move.q  r1, r0
+    move.q  r2, r0
+    rts
+
+; ----------------------------------------------------------------------------
+; kern_port_addr_for_id: convert a port id to its slot address.
+; ----------------------------------------------------------------------------
+; In:  R1 = port id (0..254; 0xFF reserved as WAITPORT_NONE)
+; Out: R1 = port addr (kernel VA), or 0 if id is past end of chain / 0xFF
+; Clobbers: R3..R9
+kern_port_addr_for_id:
+    ; Reject the WAITPORT_NONE sentinel and any value above it.
+    move.l  r3, #0xFF
+    bge     r1, r3, .kpai_notfound
+    move.l  r3, #KD_PORT_INLINE_MAX
+    bge     r1, r3, .kpai_oflow
+    ; Inline path
+    move.l  r3, #KD_PORT_STRIDE
+    mulu    r3, r1, r3
+    move.l  r4, #KERN_DATA_BASE
+    add     r4, r4, #KD_PORT_BASE
+    add     r1, r4, r3
+    rts
+.kpai_oflow:
+    sub     r1, r1, #KD_PORT_INLINE_MAX  ; overflow index
+    move.l  r3, #KD_PORT_ROWS_PER_PG
+    divu    r4, r1, r3                    ; r4 = page index
+    mulu    r5, r4, r3
+    sub     r5, r1, r5                    ; r5 = slot in page
+    move.l  r6, #KERN_DATA_BASE
+    add     r6, r6, #KD_PORT_OFLOW_HDR
+    load.w  r7, KD_PORT_OFLOW_FIRST_PPN(r6)
+.kpai_walk:
+    beqz    r7, .kpai_notfound
+    beqz    r4, .kpai_at_page
+    lsl     r8, r7, #12
+    load.w  r7, KD_PORT_PAGE_NEXT(r8)
+    sub     r4, r4, #1
+    bra     .kpai_walk
+.kpai_at_page:
+    lsl     r8, r7, #12
+    move.l  r9, #KD_PORT_STRIDE
+    mulu    r9, r5, r9
+    add     r1, r8, #KD_PORT_PAGE_HDR_SZ
+    add     r1, r1, r9
+    rts
+.kpai_notfound:
+    move.q  r1, r0
+    rts
+
+; ----------------------------------------------------------------------------
+; kern_port_find_public: walk inline + overflow chain looking for a valid
+; PUBLIC port whose name matches the scratch buffer at KD_NAME_SCRATCH.
+; ----------------------------------------------------------------------------
+; In:  none (caller must have populated KD_NAME_SCRATCH via safe_copy_user_name)
+; Out: R1 = port addr (or 0 if not found)
+;      R2 = port id  (or 0 if not found)
+; Clobbers: R3..R19
+kern_port_find_public:
+    ; --- Scan inline ---
+    move.l  r4, #KERN_DATA_BASE
+    add     r4, r4, #KD_PORT_BASE
+    move.l  r5, #0                       ; r5 = port id
+.kpfp_inline_scan:
+    move.l  r6, #KD_PORT_INLINE_MAX
+    bge     r5, r6, .kpfp_oflow
+    move.l  r6, #KD_PORT_STRIDE
+    mulu    r6, r5, r6
+    add     r7, r4, r6                   ; r7 = &port[id]
+    load.b  r8, KD_PORT_VALID(r7)
+    beqz    r8, .kpfp_inline_next
+    load.b  r8, KD_PORT_FLAGS(r7)
+    and     r8, r8, #PF_PUBLIC
+    beqz    r8, .kpfp_inline_next
+    ; Compare port name vs scratch
+    move.q  r24, r7
+    add     r24, r24, #KD_PORT_NAME       ; r24 = port name ptr
+    move.l  r25, #KERN_DATA_BASE
+    add     r25, r25, #KD_NAME_SCRATCH    ; r25 = scratch ptr
+    push    r4
+    push    r5
+    push    r7
+    jsr     case_insensitive_cmp          ; R23 = 0 if match
+    pop     r7
+    pop     r5
+    pop     r4
+    beqz    r23, .kpfp_inline_match
+.kpfp_inline_next:
+    add     r5, r5, #1
+    bra     .kpfp_inline_scan
+.kpfp_inline_match:
+    move.q  r1, r7
+    move.q  r2, r5
+    rts
+
+.kpfp_oflow:
+    ; --- Walk overflow chain ---
+    move.l  r4, #KERN_DATA_BASE
+    add     r4, r4, #KD_PORT_OFLOW_HDR
+    load.w  r10, KD_PORT_OFLOW_FIRST_PPN(r4)
+    beqz    r10, .kpfp_notfound
+    move.l  r11, #KD_PORT_INLINE_MAX     ; r11 = current port id
+.kpfp_walk_page:
+    lsl     r12, r10, #12                 ; r12 = page byte addr
+    move.q  r7, r12
+    add     r7, r7, #KD_PORT_PAGE_HDR_SZ
+    move.l  r9, #0                        ; row idx
+.kpfp_walk_row:
+    move.l  r6, #KD_PORT_ROWS_PER_PG
+    bge     r9, r6, .kpfp_walk_next_page
+    load.b  r8, KD_PORT_VALID(r7)
+    beqz    r8, .kpfp_walk_skip
+    load.b  r8, KD_PORT_FLAGS(r7)
+    and     r8, r8, #PF_PUBLIC
+    beqz    r8, .kpfp_walk_skip
+    move.q  r24, r7
+    add     r24, r24, #KD_PORT_NAME
+    move.l  r25, #KERN_DATA_BASE
+    add     r25, r25, #KD_NAME_SCRATCH
+    push    r7
+    push    r9
+    push    r10
+    push    r11
+    push    r12
+    jsr     case_insensitive_cmp
+    pop     r12
+    pop     r11
+    pop     r10
+    pop     r9
+    pop     r7
+    beqz    r23, .kpfp_oflow_match
+.kpfp_walk_skip:
+    add     r7, r7, #KD_PORT_STRIDE
+    add     r9, r9, #1
+    add     r11, r11, #1
+    bra     .kpfp_walk_row
+.kpfp_walk_next_page:
+    load.w  r10, KD_PORT_PAGE_NEXT(r12)
+    bnez    r10, .kpfp_walk_page
+    bra     .kpfp_notfound
+.kpfp_oflow_match:
+    move.q  r1, r7
+    move.q  r2, r11
+    rts
+.kpfp_notfound:
+    move.q  r1, r0
+    move.q  r2, r0
+    rts
+
+; ============================================================================
 ; Memory Mapping Helpers (M6)
 ; ============================================================================
 
@@ -1686,38 +2216,27 @@ case_insensitive_cmp:
     move.q  r23, #1
     rts
 
-; check_name_unique: scan ports for a duplicate public name
+; check_name_unique: scan ports for a duplicate public name.
+; M12.6 Phase C: thin wrapper around kern_port_find_public — that helper
+; walks both inline and overflow chain, so name uniqueness now spans the
+; full system port table, not just the inline 32 rows.
 ; Input:  scratch buffer at KERN_DATA_BASE + KD_NAME_SCRATCH already filled
 ; Output: R23 = 0 if unique, 1 if duplicate found
-; Clobbers: R14, R16, R17, R18, R19, R20, R23, R24, R25, R26
+; Clobbers: R14, R16, R17, R18, R19, R23, R24, R25, R26
+;            (matches the M12 contract: callers like .do_create_port keep
+;             relying on r7 = name_ptr and r13 = current_task surviving.)
 check_name_unique:
-    move.l  r19, #0                     ; port index
-    move.l  r20, #KERN_DATA_BASE
-    add     r20, r20, #KD_PORT_BASE     ; R20 = &port[0]
-.cnu_loop:
-    move.l  r18, #KD_PORT_MAX
-    bge     r19, r18, .cnu_unique
-    load.b  r14, KD_PORT_VALID(r20)
-    beqz    r14, .cnu_next
-    load.b  r14, KD_PORT_FLAGS(r20)
-    and     r14, r14, #PF_PUBLIC
-    beqz    r14, .cnu_next
-    ; Compare: port name at R20+KD_PORT_NAME vs scratch buffer
-    move.q  r24, r20
-    add     r24, r24, #KD_PORT_NAME     ; ptr_a = port name
-    move.l  r25, #KERN_DATA_BASE
-    add     r25, r25, #KD_NAME_SCRATCH  ; ptr_b = scratch
-    push    r19
-    push    r20
-    jsr     case_insensitive_cmp        ; R23 = 0 if match
-    pop     r20
-    pop     r19
-    beqz    r23, .cnu_dup               ; match found → duplicate
-.cnu_next:
-    add     r20, r20, #KD_PORT_STRIDE
-    add     r19, r19, #1
-    bra     .cnu_loop
-.cnu_unique:
+    ; kern_port_find_public clobbers r3..r19 (uses r7 internally for the
+    ; row pointer and r13 indirectly via case_insensitive_cmp). Save the
+    ; registers .do_create_port still needs after the call.
+    push    r7
+    push    r12
+    push    r13
+    jsr     kern_port_find_public       ; R1 = port addr (0 if none), R2 = id
+    pop     r13
+    pop     r12
+    pop     r7
+    bnez    r1, .cnu_dup
     move.q  r23, #0
     rts
 .cnu_dup:
@@ -2140,18 +2659,23 @@ trap_handler:
     move.q  r8, r2                  ; R8 = flags
 
     ; --- Validation phase (no side effects) ---
-    ; 1. Find free port slot
-    move.l  r20, #0                 ; port index
-    move.l  r21, #KERN_DATA_BASE
-    add     r21, r21, #KD_PORT_BASE ; R21 = &port[0]
-.create_scan:
-    move.l  r22, #KD_PORT_MAX
-    bge     r20, r22, .create_full
-    load.b  r23, KD_PORT_VALID(r21)
-    beqz    r23, .create_slot_found
-    add     r21, r21, #KD_PORT_STRIDE
-    add     r20, r20, #1
-    bra     .create_scan
+    ; M12.6 Phase C: chain-aware slot allocator. Helper preserves r3..r6
+    ; (which user-space CreatePort callers may use as scratch — see the
+    ; r3 comment on kern_port_alloc_slot). r7 (name ptr), r8 (flags), and
+    ; r13 (current task) are saved on the stack since the helper clobbers
+    ; r4..r19 internally. Allocator pool pages (where the chain lives) are
+    ; mapped supervisor-only in user PTs by build_user_pt, so the helper
+    ; can read/write them on the user PT — no PT switch required.
+    push    r13
+    push    r7
+    push    r8
+    jsr     kern_port_alloc_slot    ; R1 = port addr (0 on NOMEM), R2 = port id
+    pop     r8
+    pop     r7
+    pop     r13
+    beqz    r1, .create_full
+    move.q  r21, r1                 ; r21 = &port[id]
+    move.q  r20, r2                 ; r20 = port id
 .create_slot_found:
     ; R20 = slot index, R21 = &port[slot]. Do NOT write valid=1 yet.
     ; 2. If name_ptr == 0, force-clear PF_PUBLIC and skip name validation
@@ -2174,13 +2698,17 @@ trap_handler:
     pop     r20
     bnez    r23, .create_badarg
 
-    ; 4. If PF_PUBLIC, check name uniqueness
+    ; 4. If PF_PUBLIC, check name uniqueness.
     and     r23, r8, #PF_PUBLIC
     beqz    r23, .create_commit
     push    r20
     push    r21
     push    r8
+    push    r13
+    push    r7
     jsr     check_name_unique       ; R23 = 0 if unique, 1 if dup
+    pop     r7
+    pop     r13
     pop     r8
     pop     r21
     pop     r20
@@ -2247,35 +2775,9 @@ trap_handler:
     jsr     safe_copy_user_name     ; R23 = 0 on success
     pop     r1
     bnez    r23, .findport_badarg
-    ; Scan all ports for public name match
-    move.l  r19, #0                 ; port index
-    move.l  r20, #KERN_DATA_BASE
-    add     r20, r20, #KD_PORT_BASE
-.findport_loop:
-    move.l  r18, #KD_PORT_MAX
-    bge     r19, r18, .findport_notfound
-    load.b  r14, KD_PORT_VALID(r20)
-    beqz    r14, .findport_next
-    load.b  r14, KD_PORT_FLAGS(r20)
-    and     r14, r14, #PF_PUBLIC
-    beqz    r14, .findport_next
-    ; Compare port name against scratch
-    move.q  r24, r20
-    add     r24, r24, #KD_PORT_NAME
-    move.l  r25, #KERN_DATA_BASE
-    add     r25, r25, #KD_NAME_SCRATCH
-    push    r19
-    push    r20
-    jsr     case_insensitive_cmp    ; R23 = 0 if match
-    pop     r20
-    pop     r19
-    beqz    r23, .findport_found
-.findport_next:
-    add     r20, r20, #KD_PORT_STRIDE
-    add     r19, r19, #1
-    bra     .findport_loop
-.findport_found:
-    move.q  r1, r19                 ; R1 = portID
+    jsr     kern_port_find_public   ; R1 = port addr, R2 = port id (0/0 if not found)
+    beqz    r1, .findport_notfound
+    move.q  r1, r2                  ; R1 = port ID
     move.q  r2, #ERR_OK
     eret
 .findport_notfound:
@@ -2296,17 +2798,23 @@ trap_handler:
 ; --- PutMsg ---
 ; R1=portID, R2=msg_type, R3=data0, R4=data1, R5=reply_port, R6=share_handle → R2=err
 .do_put_msg:
-    ; Validate portID
-    move.l  r22, #KD_PORT_MAX
-    bge     r1, r22, .putmsg_badarg
-    ; Compute port address: R21 = KERN_DATA_BASE + KD_PORT_BASE + portID * KD_PORT_STRIDE
+    ; M12.6 Phase C: chain-aware port lookup. Preserve r2..r6 (message
+    ; fields) across the helper call; the helper clobbers r3..r9.
+    push    r2
+    push    r3
+    push    r4
+    push    r5
+    push    r6
+    jsr     kern_port_addr_for_id       ; R1 = port addr (or 0)
+    pop     r6
+    pop     r5
+    pop     r4
+    pop     r3
+    pop     r2
+    beqz    r1, .putmsg_badarg
+    move.q  r21, r1                     ; R21 = &port[portID]
     move.l  r12, #KERN_DATA_BASE
     load.q  r13, (r12)                  ; current_task (for src_task)
-    move.l  r21, #KERN_DATA_BASE
-    add     r21, r21, #KD_PORT_BASE
-    move.l  r20, #KD_PORT_STRIDE
-    mulu    r20, r1, r20
-    add     r21, r21, r20               ; R21 = &port[portID]
     ; Check valid
     load.b  r23, KD_PORT_VALID(r21)
     beqz    r23, .putmsg_badarg
@@ -2365,16 +2873,12 @@ trap_handler:
 ; --- GetMsg ---
 ; R1=portID → R1=msg_type, R2=data0, R3=err, R4=data1, R5=reply_port, R6=share_handle
 .do_get_msg:
-    move.l  r22, #KD_PORT_MAX
-    bge     r1, r22, .getmsg_badarg
+    ; M12.6 Phase C: chain-aware port lookup.
+    jsr     kern_port_addr_for_id       ; R1 = port addr (or 0)
+    beqz    r1, .getmsg_badarg
+    move.q  r21, r1                     ; R21 = &port[portID]
     move.l  r12, #KERN_DATA_BASE
     load.q  r13, (r12)
-    ; Compute port address
-    move.l  r21, #KERN_DATA_BASE
-    add     r21, r21, #KD_PORT_BASE
-    move.l  r20, #KD_PORT_STRIDE
-    mulu    r20, r1, r20
-    add     r21, r21, r20
     ; Check valid
     load.b  r23, KD_PORT_VALID(r21)
     beqz    r23, .getmsg_badarg
@@ -2422,16 +2926,13 @@ trap_handler:
     ; Save portID in R5 (not clobbered by Wait internals)
     move.q  r5, r1
 .waitport_loop:
-    ; Compute port address
-    move.l  r22, #KD_PORT_MAX
-    bge     r5, r22, .waitport_badarg
+    ; M12.6 Phase C: chain-aware port lookup.
+    move.q  r1, r5
+    jsr     kern_port_addr_for_id       ; R1 = port addr (or 0)
+    beqz    r1, .waitport_badarg
+    move.q  r21, r1
     move.l  r12, #KERN_DATA_BASE
     load.q  r13, (r12)
-    move.l  r21, #KERN_DATA_BASE
-    add     r21, r21, #KD_PORT_BASE
-    move.l  r20, #KD_PORT_STRIDE
-    mulu    r20, r5, r20
-    add     r21, r21, r20
     ; Check valid + ownership
     load.b  r23, KD_PORT_VALID(r21)
     beqz    r23, .waitport_badarg
@@ -2704,26 +3205,15 @@ trap_handler:
     move.l  r11, #USER_DYN_PAGES
     bgt     r20, r11, .am_toolarge
 
-    ; Step 4: If MEMF_PUBLIC, find free shared object slot (check only)
-    move.q  r26, #0                     ; r26 = shmem slot (-1 = not public)
+    ; Step 4: If MEMF_PUBLIC, find free shared object slot via the chain
+    ; allocator (M12.6 Phase B). Inline rows 0..15 first, then overflow.
+    move.q  r26, #0                     ; r26 = shmem slot addr (0 = not public)
     and     r11, r25, #MEMF_PUBLIC
     beqz    r11, .am_skip_shmem_check
-    move.l  r14, #KERN_DATA_BASE
-    add     r14, r14, #KD_SHMEM_TABLE
-    move.l  r15, #0
-.am_find_shmem:
-    move.l  r11, #KD_SHMEM_MAX
-    bge     r15, r11, .am_nomem         ; no free shmem slot
-    move.l  r11, #KD_SHMEM_STRIDE
-    mulu    r11, r15, r11
-    add     r16, r14, r11
-    load.b  r11, KD_SHM_VALID(r16)
-    beqz    r11, .am_found_shmem
-    add     r15, r15, #1
-    bra     .am_find_shmem
-.am_found_shmem:
-    move.q  r26, r16                    ; r26 = &shmem[slot]
-    move.q  r27, r15                    ; r27 = slot index (save for handle)
+    jsr     kern_shmem_alloc_slot       ; R1 = addr (0 on NOMEM), R2 = id
+    beqz    r1, .am_nomem
+    move.q  r26, r1                     ; r26 = slot addr
+    move.q  r27, r2                     ; r27 = slot id (used in handle)
 .am_skip_shmem_check:
 
     ; Step 5: Find free region slot in caller's region table.
@@ -3012,13 +3502,14 @@ trap_handler:
     bra     .fm_cleanup_region
 
 .fm_shared:
-    ; SHARED: decrement refcount, maybe free backing pages
-    load.b  r19, KD_REG_SHMID(r16)     ; slot index
-    move.l  r11, #KD_SHMEM_STRIDE
-    mulu    r11, r19, r11
-    move.l  r17, #KERN_DATA_BASE
-    add     r17, r17, #KD_SHMEM_TABLE
-    add     r17, r17, r11               ; r17 = &shmem[slot]
+    ; SHARED: decrement refcount, maybe free backing pages.
+    ; M12.6 Phase B: shmem slot may live in inline range OR overflow chain.
+    load.b  r1, KD_REG_SHMID(r16)       ; slot id
+    push    r16                         ; save region row addr (helper clobbers r3..r9)
+    jsr     kern_shmem_addr_for_id      ; r1 = slot addr
+    pop     r16
+    move.q  r17, r1                     ; r17 = &shmem[id]
+    beqz    r17, .fm_cleanup_region     ; defensive: bad id, just clear region
 
     load.b  r11, KD_SHM_REFCOUNT(r17)
     sub     r11, r11, #1
@@ -3028,7 +3519,9 @@ trap_handler:
     ; Refcount reached 0: free backing pages and invalidate object
     load.w  r1, KD_SHM_PPN(r17)
     load.w  r2, KD_SHM_PAGES(r17)
+    push    r17
     jsr     free_pages
+    pop     r17
     store.b r0, KD_SHM_VALID(r17)       ; invalidate
 
 .fm_cleanup_region:
@@ -3067,19 +3560,19 @@ trap_handler:
     tlbflush
 
     ; Decode handle: slot = handle & 0xFF, nonce = (handle >> 8) & 0xFFFFFF
-    and     r20, r24, #0xFF             ; r20 = slot
+    and     r20, r24, #0xFF             ; r20 = slot id
     lsr     r21, r24, #8               ; r21 = nonce (upper 24 bits)
 
-    ; Validate slot < KD_SHMEM_MAX
-    move.l  r11, #KD_SHMEM_MAX
-    bge     r20, r11, .ms_badhandle
+    ; M12.6 Phase B: 0xFF is the reserved sentinel; reject early.
+    move.l  r11, #0xFF
+    beq     r20, r11, .ms_badhandle
 
-    ; Look up shared object
-    move.l  r14, #KERN_DATA_BASE
-    add     r14, r14, #KD_SHMEM_TABLE
-    move.l  r11, #KD_SHMEM_STRIDE
-    mulu    r11, r20, r11
-    add     r14, r14, r11               ; r14 = &shmem[slot]
+    ; Look up shared object via the chain-aware helper. Returns 0 if the
+    ; id is past the end of any allocated overflow chain page.
+    move.q  r1, r20
+    jsr     kern_shmem_addr_for_id
+    move.q  r14, r1                     ; r14 = &shmem[id]
+    beqz    r14, .ms_badhandle
 
     ; Check valid
     load.b  r11, KD_SHM_VALID(r14)
@@ -3678,32 +4171,77 @@ kill_task_cleanup:
     store.l r0, KD_TASK_SIG_RECV(r15)
     move.b  r16, #WAITPORT_NONE
     store.b r16, KD_TASK_WAITPORT(r15)
-    ; Invalidate ports owned by this task
+    ; Invalidate ports owned by this task.
+    ; M12.6 Phase C: walk inline first, then walk every overflow chain
+    ; page. The chain may have zero or many pages — we visit them all.
+    ; r13 (current task being killed) MUST be preserved across the walk.
+
+    ; --- Walk inline ports 0..KD_PORT_INLINE_MAX-1 ---
     move.l  r20, #KERN_DATA_BASE
     add     r20, r20, #KD_PORT_BASE
     move.l  r21, #0
 .ktc_port_scan:
-    move.l  r22, #KD_PORT_MAX
-    bge     r21, r22, .ktc_done
+    move.l  r22, #KD_PORT_INLINE_MAX
+    bge     r21, r22, .ktc_port_inline_done
     load.b  r23, KD_PORT_VALID(r20)
     beqz    r23, .ktc_port_next
     load.b  r24, KD_PORT_OWNER(r20)
     bne     r13, r24, .ktc_port_next
-    store.b r0, KD_PORT_VALID(r20)
-    store.b r0, KD_PORT_COUNT(r20)
-    store.b r0, KD_PORT_FLAGS(r20)       ; M7: clear flags (removes from FindPort)
-    store.q r0, KD_PORT_NAME(r20)        ; clear name bytes 0-7
-    add     r22, r20, #KD_PORT_NAME
-    add     r22, r22, #8
-    store.q r0, (r22)                    ; clear name bytes 8-15
-    add     r22, r22, #8
-    store.q r0, (r22)                    ; clear name bytes 16-23 (M12)
-    add     r22, r22, #8
-    store.q r0, (r22)                    ; clear name bytes 24-31 (M12)
+    jsr     .ktc_port_clear            ; clear port at r20
 .ktc_port_next:
     add     r20, r20, #KD_PORT_STRIDE
     add     r21, r21, #1
     bra     .ktc_port_scan
+
+.ktc_port_inline_done:
+    ; --- Walk overflow chain pages ---
+    move.l  r22, #KERN_DATA_BASE
+    add     r22, r22, #KD_PORT_OFLOW_HDR
+    load.w  r25, KD_PORT_OFLOW_FIRST_PPN(r22)
+    beqz    r25, .ktc_done
+.ktc_port_oflow_page:
+    lsl     r26, r25, #12               ; r26 = page byte addr
+    move.q  r20, r26
+    add     r20, r20, #KD_PORT_PAGE_HDR_SZ ; r20 = first row in page
+    move.l  r21, #0                     ; row idx
+.ktc_port_oflow_row:
+    move.l  r22, #KD_PORT_ROWS_PER_PG
+    bge     r21, r22, .ktc_port_oflow_next_page
+    load.b  r23, KD_PORT_VALID(r20)
+    beqz    r23, .ktc_port_oflow_skip
+    load.b  r24, KD_PORT_OWNER(r20)
+    bne     r13, r24, .ktc_port_oflow_skip
+    push    r25
+    push    r26
+    jsr     .ktc_port_clear
+    pop     r26
+    pop     r25
+.ktc_port_oflow_skip:
+    add     r20, r20, #KD_PORT_STRIDE
+    add     r21, r21, #1
+    bra     .ktc_port_oflow_row
+.ktc_port_oflow_next_page:
+    load.w  r25, KD_PORT_PAGE_NEXT(r26)
+    bnez    r25, .ktc_port_oflow_page
+    bra     .ktc_done
+
+; .ktc_port_clear: clear the port at R20 (set valid/count/flags = 0,
+; zero the 32-byte name field). Preserves R13, R20, R21, R25, R26.
+; Clobbers R22.
+.ktc_port_clear:
+    store.b r0, KD_PORT_VALID(r20)
+    store.b r0, KD_PORT_COUNT(r20)
+    store.b r0, KD_PORT_FLAGS(r20)
+    store.q r0, KD_PORT_NAME(r20)        ; clear name bytes 0-7
+    add     r22, r20, #KD_PORT_NAME
+    add     r22, r22, #8
+    store.q r0, (r22)                    ; bytes 8-15
+    add     r22, r22, #8
+    store.q r0, (r22)                    ; bytes 16-23
+    add     r22, r22, #8
+    store.q r0, (r22)                    ; bytes 24-31
+    rts
+
 .ktc_done:
     ; M6: Clean up memory regions for this task. M12.5: walks inline rows
     ; first, then walks the per-task overflow chain (rows 9+), and finally
@@ -3749,36 +4287,27 @@ kill_task_cleanup:
     bra     .ktc_region_clear
 
 .ktc_region_shared:
-    ; SHARED: decrement refcount
-    load.b  r24, KD_REG_SHMID(r23)
-    move.l  r22, #KD_SHMEM_STRIDE
-    mulu    r22, r24, r22
-    move.l  r1, #KERN_DATA_BASE
-    add     r1, r1, #KD_SHMEM_TABLE
-    add     r1, r1, r22                 ; r1 = &shmem[slot]
-    load.b  r22, KD_SHM_REFCOUNT(r1)
+    ; SHARED: decrement refcount.
+    ; M12.6 Phase B: shmem slot may live in inline range OR overflow chain.
+    load.b  r1, KD_REG_SHMID(r23)
+    push    r23                         ; save region row addr (helper clobbers r3..r9)
+    jsr     kern_shmem_addr_for_id      ; r1 = &shmem[id], or 0
+    pop     r23
+    move.q  r4, r1                      ; r4 = shmem ptr (preserved across free_pages)
+    beqz    r4, .ktc_region_clear       ; defensive: bad id, just clear region
+    load.b  r22, KD_SHM_REFCOUNT(r4)
     sub     r22, r22, #1
-    store.b r22, KD_SHM_REFCOUNT(r1)
+    store.b r22, KD_SHM_REFCOUNT(r4)
     bnez    r22, .ktc_region_clear      ; refcount > 0
 
-    ; Last reference: free backing pages and invalidate
-    load.w  r2, KD_SHM_PAGES(r1)
-    load.w  r1, KD_SHM_PPN(r1)         ; NOTE: clobbers r1, but we saved shmem addr... need to re-derive
-    ; Actually r1 was the shmem addr, load PPN first
-    ; Let me fix: save shmem ptr
-    ; Re-derive: r24 = slot, compute shmem addr again
-    move.l  r22, #KD_SHMEM_STRIDE
-    mulu    r22, r24, r22
-    move.l  r1, #KERN_DATA_BASE
-    add     r1, r1, #KD_SHMEM_TABLE
-    add     r1, r1, r22                 ; r1 = &shmem[slot] again
-    load.w  r2, KD_SHM_PAGES(r1)       ; page count (save first)
-    move.q  r3, r2                      ; r3 = pages
-    load.w  r2, KD_SHM_PPN(r1)         ; PPN
-    move.q  r4, r1                      ; r4 = shmem ptr (save)
-    move.q  r1, r2                      ; R1 = PPN
-    move.q  r2, r3                      ; R2 = pages
+    ; Last reference: free backing pages and invalidate.
+    load.w  r1, KD_SHM_PPN(r4)
+    load.w  r2, KD_SHM_PAGES(r4)
+    push    r4
+    push    r23
     jsr     free_pages
+    pop     r23
+    pop     r4
     store.b r0, KD_SHM_VALID(r4)        ; invalidate
 
 .ktc_region_clear:
@@ -3826,28 +4355,32 @@ kill_task_cleanup:
     jsr     free_pages
     bra     .ktc_oflow_clear
 .ktc_oflow_shared:
-    load.b  r24, KD_REG_SHMID(r23)
-    move.l  r22, #KD_SHMEM_STRIDE
-    mulu    r22, r24, r22
-    move.l  r1, #KERN_DATA_BASE
-    add     r1, r1, #KD_SHMEM_TABLE
-    add     r1, r1, r22
-    load.b  r22, KD_SHM_REFCOUNT(r1)
-    sub     r22, r22, #1
-    store.b r22, KD_SHM_REFCOUNT(r1)
-    bnez    r22, .ktc_oflow_clear
-    move.l  r22, #KD_SHMEM_STRIDE
-    mulu    r22, r24, r22
-    move.l  r1, #KERN_DATA_BASE
-    add     r1, r1, #KD_SHMEM_TABLE
-    add     r1, r1, r22
-    load.w  r2, KD_SHM_PAGES(r1)
-    move.q  r3, r2
-    load.w  r2, KD_SHM_PPN(r1)
+    ; M12.6 Phase B: chain-aware shmem slot lookup.
+    load.b  r1, KD_REG_SHMID(r23)
+    push    r23                         ; save current overflow row addr
+    push    r25                         ; r25 = overflow chain head PPN (preserve)
+    push    r26                         ; r26 = current overflow page byte addr (preserve)
+    jsr     kern_shmem_addr_for_id      ; r1 = &shmem[id], or 0
+    pop     r26
+    pop     r25
+    pop     r23
     move.q  r4, r1
-    move.q  r1, r2
-    move.q  r2, r3
+    beqz    r4, .ktc_oflow_clear
+    load.b  r22, KD_SHM_REFCOUNT(r4)
+    sub     r22, r22, #1
+    store.b r22, KD_SHM_REFCOUNT(r4)
+    bnez    r22, .ktc_oflow_clear
+    load.w  r1, KD_SHM_PPN(r4)
+    load.w  r2, KD_SHM_PAGES(r4)
+    push    r4
+    push    r23
+    push    r25
+    push    r26
     jsr     free_pages
+    pop     r26
+    pop     r25
+    pop     r23
+    pop     r4
     store.b r0, KD_SHM_VALID(r4)
 .ktc_oflow_clear:
     store.b r0, KD_REG_TYPE(r23)
@@ -4020,12 +4553,12 @@ restore_task:
 
 ; --- WaitPort resume: dequeue message from port r23 ---
 .restore_waitport:
-    ; Compute port address
-    move.l  r21, #KERN_DATA_BASE
-    add     r21, r21, #KD_PORT_BASE
-    move.l  r20, #KD_PORT_STRIDE
-    mulu    r20, r23, r20
-    add     r21, r21, r20               ; R21 = &port[waitport_id]
+    ; M12.6 Phase C: chain-aware lookup. r23 holds the saved waitport id.
+    ; The helper clobbers r3..r9; r23 is preserved (high register).
+    move.q  r1, r23
+    jsr     kern_port_addr_for_id
+    move.q  r21, r1                     ; R21 = &port[waitport_id]
+    beqz    r21, .restore_waitport_spurious
 
     ; Check count > 0 (spurious wake if another port got SIGF_PORT)
     load.b  r25, KD_PORT_COUNT(r21)
@@ -4535,7 +5068,7 @@ prog_console_end:
 ; OpenLibrary. Handles DOS_OPEN, DOS_READ, DOS_WRITE, DOS_CLOSE, DOS_DIR,
 ; DOS_RUN requests from any task via shared-memory message passing.
 ;
-; Data page layout:
+; Data page layout (M12.6 Phase A):
 ;   0:   "console.handler\0"       (16 bytes, for OpenLibrary)
 ;   16:  "dos.library\0"           (16 bytes, port name for CreatePort)
 ;   32:  "dos.library ONLINE [Task\0" (22 bytes + 10 pad = 32 bytes, banner)
@@ -4543,13 +5076,12 @@ prog_console_end:
 ;   128: task_id (8)
 ;   136: console_port (8)
 ;   144: dos_port (8)
-;   152: storage_va (8)    — 64KB AllocMem for file data (16 × 4KB slots)
-;   160: caller_share_handle (8, cached)
+;   152: meta_chain_head_va (8) — VA of first metadata chain page (M12.6 Phase A)
+;   160: hnd_chain_head_va  (8) — VA of first handle chain page   (M12.6 Phase A)
 ;   168: caller_mapped_va (8, cached MapShared result)
-;   176: open_handles[8] (1 byte each: file_index, 0xFF=unused)
-;   184: reserved (8)
-;   192: File table: 16 entries × 44 bytes = 704 bytes (ends at 896)
-;         Each entry: name[32], offset(4), size(4), capacity(4)
+;   176: reserved (8) — was open_handles[8]; gone in M12.6 Phase A
+;   184: cached share_pages (8)
+;   192..895: dead space (was: file_table 16 × 44). Reused freely later.
 ;   896: "readme\0" + pad (16 bytes, scratch for pre-create)
 ;   912: "Welcome to IntuitionOS M9\r\n\0" (29 bytes, pre-create content)
 ;   944: scratch: saved reply_port (8)
@@ -4557,6 +5089,7 @@ prog_console_end:
 ;   960: scratch: saved data0 (8)
 ;   968: scratch: saved data1 (8)
 ;   976: scratch: saved share_handle (8)
+;   984: scratch: cached share_handle (4)
 
 prog_doslib:
     ; Header
@@ -4720,34 +5253,44 @@ prog_doslib_code:
 .dos_banner_done:
 
     ; =====================================================================
-    ; AllocMem(16 * DOS_FILE_SIZE, MEMF_CLEAR) — file storage (M12: 16 × 8 KiB)
-    ; CreatePort deferred until after seeding — boot race prevention
+    ; M12.6 Phase A: initialize the metadata + handle chain heads.
+    ; Each chain starts with one AllocMem'd 4 KiB page; further pages are
+    ; allocated on demand by .dos_meta_alloc_page / .dos_hnd_alloc_page.
+    ; CreatePort is still deferred until after seeding — boot race prevention.
     ; =====================================================================
-    move.l  r1, #(16*DOS_FILE_SIZE)    ; 128 KiB
+    ; Allocate first metadata chain page
+    move.l  r1, #4096
     move.l  r2, #MEMF_CLEAR
-    syscall #SYS_ALLOC_MEM             ; R1 = VA, R2 = err, R3 = share_handle
+    syscall #SYS_ALLOC_MEM             ; R1 = VA, R2 = err
     load.q  r29, (sp)
-    store.q r1, 152(r29)               ; data[152] = storage_va
+    store.q r1, 152(r29)               ; data[152] = meta_chain_head_va
+    ; Allocate first handle chain page
+    move.l  r1, #4096
+    move.l  r2, #MEMF_CLEAR
+    syscall #SYS_ALLOC_MEM             ; R1 = VA, R2 = err
+    load.q  r29, (sp)
+    store.q r1, 160(r29)               ; data[160] = hnd_chain_head_va
 
     ; =====================================================================
-    ; Initialize open_handles[0..7] = 0xFF (all unused)
+    ; Pre-create "readme" file at metadata chain page slot 0.
+    ; The first chain page is empty so the "find free slot" walker would
+    ; trivially return slot 0; we just inline the same operations here
+    ; for the boot path to keep boot init simple and dependency-free.
     ; =====================================================================
-    move.l  r14, #0xFF
-    store.b r14, 176(r29)
-    store.b r14, 177(r29)
-    store.b r14, 178(r29)
-    store.b r14, 179(r29)
-    store.b r14, 180(r29)
-    store.b r14, 181(r29)
-    store.b r14, 182(r29)
-    store.b r14, 183(r29)
+    ; AllocMem one DOS_FILE_SIZE page for the readme body
+    move.l  r1, #DOS_FILE_SIZE
+    move.l  r2, #MEMF_CLEAR
+    syscall #SYS_ALLOC_MEM             ; R1 = VA, R2 = err
+    load.q  r29, (sp)
+    move.q  r24, r1                    ; r24 = readme_body_va
 
-    ; =====================================================================
-    ; Pre-create "readme" file at file table entry 0
-    ; =====================================================================
-    ; Copy filename from data[640] to file_table[0].name (data[192])
-    add     r20, r29, #896             ; src = &data[896] = "readme"
-    add     r21, r29, #192             ; dst = &file_table[0].name
+    ; Get the metadata chain head and address slot 0
+    load.q  r25, 152(r29)              ; r25 = meta page VA
+    add     r25, r25, #DOS_META_HDR_SZ ; r25 = &entries[0]
+
+    ; Copy filename from data[896] = "readme" to entry.name (max 31 + NUL)
+    add     r20, r29, #896             ; src = "readme"
+    move.q  r21, r25                   ; dst = &entry.name
     move.l  r14, #0
 .dos_cpname:
     load.b  r15, (r20)
@@ -4759,17 +5302,15 @@ prog_doslib_code:
     move.l  r28, #31
     blt     r14, r28, .dos_cpname
 .dos_cpname_done:
-    ; Set file_table[0].offset = 0 (already zero from init)
-    ; Set file_table[0].size = 28 (length of welcome message)
+    ; entry.file_va = r24 (readme_body_va)
+    store.q r24, DOS_META_OFF_VA(r25)
+    ; entry.size = 28 (length of welcome message)
     move.l  r14, #28
-    store.l r14, 228(r29)              ; data[192+36] = size = 28
-    ; Set file_table[0].capacity = DOS_FILE_SIZE
-    move.l  r14, #DOS_FILE_SIZE
-    store.l r14, 232(r29)              ; data[192+40] = capacity
+    store.l r14, DOS_META_OFF_SIZE(r25)
 
-    ; Copy welcome message from data[656] to storage_va+0
+    ; Copy welcome message from data[912] to readme_body_va
     add     r20, r29, #912             ; src = welcome message
-    load.q  r21, 152(r29)              ; dst = storage_va
+    move.q  r21, r24                   ; dst = readme_body_va
 .dos_cpwelcome:
     load.b  r15, (r20)
     store.b r15, (r21)
@@ -4787,7 +5328,6 @@ prog_doslib_code:
     ; R22 = slot index (1..6), R24 = current image ptr (auto-advanced).
     ; The .dos_seed_one subroutine handles one file.
     load.q  r29, (sp)
-    move.l  r22, #1                     ; start at slot 1 (slot 0 = readme)
     add     r24, r29, #4096             ; r24 = first embedded image (data page 1)
 
     ; Seed names at data offsets: C/Version(942), C/Avail(952), C/Dir(960),
@@ -4844,22 +5384,66 @@ prog_doslib_code:
     bra     .dos_seed_done
 
     ; -----------------------------------------------------------------
-    ; .dos_seed_one: seed one file from embedded data into file table + storage
-    ; Input: r20=name_ptr, r22=slot, r24=image_ptr, r29=data_base
-    ; Output: r22 incremented, r24 advanced past image
-    ; Clobbers: r14-r18, r20, r21, r23
+    ; .dos_seed_one (M12.6 Phase A): seed one file from embedded data
+    ; into the metadata chain + a freshly AllocMem'd file body.
+    ; Input:  r20 = name_ptr, r24 = image_ptr, r29 = data_base
+    ; Output: r24 advanced past image (aligned to 8)
+    ; Saves intermediate state in data[192..223] (former file_table region,
+    ; now dead-space scratch reserved exclusively for boot init).
+    ; Clobbers: r1-r18, r20, r21, r23, r25, r26
     ; -----------------------------------------------------------------
 .dos_seed_one:
-    ; r29 is already set by caller (loaded before jsr)
-    ; 1. Compute file table entry address: data[192 + slot * 44]
-    move.l  r14, #44
-    mulu    r14, r22, r14
-    add     r14, r14, #192
-    add     r14, r29, r14               ; r14 = &file_table[slot]
+    ; NOTE: seed_one is itself called via JSR, so (sp) holds the return PC of
+    ; seed_one — NOT a saved-r29 slot. r29 must be kept live in the register.
+    ; Helpers preserve r29 internally; inline syscalls use push/pop.
+    ; Stash name + image ptrs into data scratch (data[192..223], dead space).
+    store.q r20, 192(r29)               ; saved name ptr
+    store.q r24, 200(r29)               ; saved image ptr
 
-    ; 2. Copy name from r20 to entry.name (max 31 chars)
-    move.q  r16, r20                    ; src
-    move.q  r17, r14                    ; dst
+    ; --- 1. Find/alloc free metadata entry (helper preserves r29) ---
+    jsr     .dos_meta_alloc_entry       ; r1 = entry VA, r2 = err
+    bnez    r2, .dso_done
+    store.q r1, 208(r29)                ; saved entry VA
+
+    ; --- 2. AllocMem(DOS_FILE_SIZE) for the file body ---
+    push    r29
+    move.l  r1, #DOS_FILE_SIZE
+    move.l  r2, #MEMF_CLEAR
+    syscall #SYS_ALLOC_MEM              ; r1 = VA, r2 = err
+    pop     r29
+    bnez    r2, .dso_done
+    store.q r1, 216(r29)                ; saved body VA
+
+    ; --- 3. Compute image size from saved image ptr ---
+    load.q  r24, 200(r29)
+    load.l  r15, (r24)
+    move.l  r18, #IMG_MAGIC_LO
+    bne     r15, r18, .dso_text_size
+    ; IE64PROG: size = 32 + code_size + data_size
+    load.l  r23, 8(r24)
+    load.l  r15, 12(r24)
+    add     r23, r23, r15
+    add     r23, r23, #IMG_HEADER_SIZE
+    bra     .dso_set_entry
+.dso_text_size:
+    ; Plain text: scan for NUL byte
+    move.q  r16, r24
+    move.l  r23, #0
+.dso_tscan:
+    load.b  r15, (r16)
+    beqz    r15, .dso_set_entry
+    add     r16, r16, #1
+    add     r23, r23, #1
+    move.l  r18, #4096
+    blt     r23, r18, .dso_tscan
+.dso_set_entry:
+    ; r23 = image size
+
+    ; --- 4. Copy name from saved name ptr to entry.name ---
+    load.q  r20, 192(r29)
+    load.q  r25, 208(r29)
+    move.q  r16, r20
+    move.q  r17, r25                    ; entry.name = entry+0
     move.l  r18, #0
 .dso_cpname:
     load.b  r15, (r16)
@@ -4868,50 +5452,20 @@ prog_doslib_code:
     add     r16, r16, #1
     add     r17, r17, #1
     add     r18, r18, #1
-    move.l  r23, #31
-    blt     r18, r23, .dso_cpname
+    move.l  r28, #31
+    blt     r18, r28, .dso_cpname
     store.b r0, (r17)
 .dso_cpname_done:
 
-    ; 3. Compute image size: read IE64PROG header if magic matches, else scan for null
-    load.l  r15, (r24)                  ; first 4 bytes
-    move.l  r18, #IMG_MAGIC_LO
-    bne     r15, r18, .dso_text_size    ; not IE64PROG → plain text
-    ; IE64PROG: size = 32 + code_size + data_size
-    load.l  r23, 8(r24)                ; code_size
-    load.l  r15, 12(r24)               ; data_size
-    add     r23, r23, r15
-    add     r23, r23, #IMG_HEADER_SIZE  ; total image size
-    bra     .dso_set_entry
+    ; --- 5. entry.file_va = body VA, entry.size = image size ---
+    load.q  r25, 208(r29)
+    load.q  r1, 216(r29)
+    store.q r1, DOS_META_OFF_VA(r25)
+    store.l r23, DOS_META_OFF_SIZE(r25)
 
-.dso_text_size:
-    ; Plain text: scan for null byte to determine size
-    move.q  r16, r24
-    move.l  r23, #0
-.dso_tscan:
-    load.b  r15, (r16)
-    beqz    r15, .dso_set_entry
-    add     r16, r16, #1
-    add     r23, r23, #1
-    move.l  r18, #4096                  ; safety cap
-    blt     r23, r18, .dso_tscan
-
-.dso_set_entry:
-    ; 4. Set file table entry fields
-    ; offset = slot * DOS_FILE_SIZE
-    move.l  r15, #DOS_FILE_SIZE
-    mulu    r15, r22, r15
-    store.l r15, 32(r14)               ; entry.offset
-    store.l r23, 36(r14)               ; entry.size
-    move.l  r15, #DOS_FILE_SIZE
-    store.l r15, 40(r14)               ; entry.capacity
-
-    ; 5. Copy image bytes from data pages to storage
-    load.q  r21, 152(r29)              ; storage_va
-    move.l  r15, #DOS_FILE_SIZE
-    mulu    r15, r22, r15
-    add     r21, r21, r15              ; dst = storage_va + slot * DOS_FILE_SIZE
-    move.q  r16, r24                   ; src = image ptr in data pages
+    ; --- 6. Copy image bytes from image ptr to body ---
+    load.q  r21, 216(r29)               ; dst = body VA
+    load.q  r16, 200(r29)               ; src = image ptr
     move.l  r18, #0
 .dso_copy:
     bge     r18, r23, .dso_copy_done
@@ -4923,12 +5477,12 @@ prog_doslib_code:
     bra     .dso_copy
 .dso_copy_done:
 
-    ; 6. Advance r24 past this image (align to 8)
+    ; --- 7. Advance r24 past image (aligned to 8) ---
+    load.q  r24, 200(r29)
     add     r24, r24, r23
     add     r24, r24, #7
-    and     r24, r24, #0xFFFFFFF8      ; align to 8-byte boundary
-    ; 7. Increment slot
-    add     r22, r22, #1
+    and     r24, r24, #0xFFFFFFF8
+.dso_done:
     rts
 
 .dos_seed_done:
@@ -4999,28 +5553,30 @@ prog_doslib_code:
 
     ; =================================================================
     ; DOS_DIR (type=5): format directory listing into caller's buffer
+    ; M12.6 Phase A: walks the metadata chain instead of a fixed file table.
     ; =================================================================
 .dos_do_dir:
     load.q  r20, 168(r29)              ; r20 = dest (caller's shared buffer)
     move.q  r21, r0                     ; r21 = total bytes written
-    move.l  r22, #0                     ; r22 = file table index
     ; Compute share_bytes - 50 reserve into r24 (max ~50 bytes per entry:
     ; 32 name pad + 4 size digits + 2 CRLF + 12 slack/NUL). Defense-in-depth
-    ; against a small share that can't fit the full directory listing —
-    ; without this, dos.library would walk past the mapped region and fault.
+    ; against a small share that can't fit the full directory listing.
     load.q  r24, 184(r29)              ; cached share_pages
     lsl     r24, r24, #12              ; r24 = share_bytes
     sub     r24, r24, #50              ; r24 = safe write ceiling
+    ; Walk the metadata chain. r25 = current chain page VA.
+    load.q  r25, 152(r29)              ; meta chain head
+.dos_dir_page_loop:
+    beqz    r25, .dos_dir_done
+    move.q  r22, r25
+    add     r22, r22, #DOS_META_HDR_SZ ; r22 = &entries[0]
+    move.l  r23, #0                    ; entry index in this page
 .dos_dir_entry:
-    ; Stop if we don't have room for another entry
+    ; Stop if buffer is nearly full
     bge     r21, r24, .dos_dir_done
-    move.l  r28, #DOS_MAX_FILES
-    bge     r22, r28, .dos_dir_done
-    ; Compute entry base: data[192] + index * 44
-    move.l  r14, #44
-    mulu    r14, r22, r14
-    add     r14, r14, #192
-    add     r14, r29, r14               ; r14 = &file_table[index]
+    move.l  r28, #DOS_META_PER_PAGE
+    bge     r23, r28, .dos_dir_next_page
+    move.q  r14, r22                    ; r14 = entry VA
     load.b  r15, (r14)                  ; first byte of name
     beqz    r15, .dos_dir_next          ; empty entry → skip
     ; Copy name chars until null (max 16)
@@ -5047,8 +5603,8 @@ prog_doslib_code:
     add     r17, r17, #1
     bra     .dos_dir_pad
 .dos_dir_size:
-    ; Read file size from entry+36, write decimal digits
-    load.l  r15, 36(r14)               ; r15 = file size
+    ; Read file size from entry+DOS_META_OFF_SIZE, write decimal digits
+    load.l  r15, DOS_META_OFF_SIZE(r14)
     ; Simple decimal: divide by powers of 10 (max 4096, so 4 digits)
     ; Write thousands digit
     move.l  r28, #1000
@@ -5092,8 +5648,12 @@ prog_doslib_code:
     add     r20, r20, #1
     add     r21, r21, #1
 .dos_dir_next:
-    add     r22, r22, #1
+    add     r22, r22, #DOS_META_ENTRY_SZ
+    add     r23, r23, #1
     bra     .dos_dir_entry
+.dos_dir_next_page:
+    load.q  r25, (r25)
+    bra     .dos_dir_page_loop
 .dos_dir_done:
     ; Null-terminate
     store.b r0, (r20)
@@ -5109,88 +5669,51 @@ prog_doslib_code:
 
     ; =================================================================
     ; DOS_OPEN (type=1): open file by name from shared buffer
+    ; M12.6 Phase A: walks the metadata chain via .dos_meta_find_by_name;
+    ; allocates a new entry via .dos_meta_alloc_entry on write-mode miss;
+    ; allocates a handle slot via .dos_hnd_alloc.
     ; =================================================================
     ; data0 = mode (READ=0, WRITE=1), filename in caller's shared buffer
 .dos_do_open:
-    load.q  r20, 960(r29)              ; r20 = mode
+    load.q  r20, 960(r29)              ; r20 = mode (0=READ, 1=WRITE)
     load.q  r23, 168(r29)              ; r23 = mapped VA (filename pointer)
 
     ; Resolve filename (strip RAM:, C:, S: prefixes)
     jsr     .dos_resolve_file
 
-    ; --- Search file table for matching name (case-insensitive) ---
-    move.l  r22, #0                     ; r22 = file table index
-.dos_open_search:
-    move.l  r28, #DOS_MAX_FILES
-    bge     r22, r28, .dos_open_notfound
-    ; Compute entry base
-    move.l  r14, #44
-    mulu    r14, r22, r14
-    add     r14, r14, #192
-    add     r14, r29, r14               ; r14 = &file_table[index]
-    load.b  r15, (r14)
-    beqz    r15, .dos_open_snext        ; empty entry → skip
-    ; Case-insensitive compare: r14=table name, r23=request name
-    move.q  r16, r14                    ; r16 = table name ptr
-    move.q  r17, r23                    ; r17 = request name ptr
-    move.l  r18, #0                     ; char index
-.dos_open_cmp:
-    load.b  r24, (r16)
-    load.b  r25, (r17)
-    ; Lowercase both if A-Z
-    move.l  r28, #0x41
-    blt     r24, r28, .dos_ocmp_skip1
-    move.l  r28, #0x5A
-    bgt     r24, r28, .dos_ocmp_skip1
-    or      r24, r24, #0x20
-.dos_ocmp_skip1:
-    move.l  r28, #0x41
-    blt     r25, r28, .dos_ocmp_skip2
-    move.l  r28, #0x5A
-    bgt     r25, r28, .dos_ocmp_skip2
-    or      r25, r25, #0x20
-.dos_ocmp_skip2:
-    bne     r24, r25, .dos_open_snext   ; mismatch → try next
-    beqz    r24, .dos_open_found        ; both null → match
-    add     r16, r16, #1
-    add     r17, r17, #1
-    add     r18, r18, #1
-    move.l  r28, #32
-    blt     r18, r28, .dos_open_cmp
-    ; Reached 16 chars without null → treat as match
-    bra     .dos_open_found
-.dos_open_snext:
-    add     r22, r22, #1
-    bra     .dos_open_search
-
-.dos_open_notfound:
-    ; If mode == WRITE, create new file entry
-    bnez    r20, .dos_open_create
-    ; Mode READ, file not found → error
-    bra     .dos_reply_err
+    ; --- Search metadata chain for matching name ---
+    move.q  r1, r23                     ; r1 = request name ptr
+    jsr     .dos_meta_find_by_name      ; r1 = entry VA (or 0)
+    bnez    r1, .dos_open_have_entry
+    ; Not found
+    bnez    r20, .dos_open_create       ; WRITE → create new
+    bra     .dos_reply_err              ; READ → error
 
 .dos_open_create:
-    ; Find first empty file table slot
-    move.l  r22, #0
-.dos_create_scan:
-    move.l  r28, #DOS_MAX_FILES
-    bge     r22, r28, .dos_open_full
-    move.l  r14, #44
-    mulu    r14, r22, r14
-    add     r14, r14, #192
-    add     r14, r29, r14
-    load.b  r15, (r14)
-    beqz    r15, .dos_create_slot       ; found empty slot
-    add     r22, r22, #1
-    bra     .dos_create_scan
-.dos_open_full:
-    bra     .dos_reply_full
+    ; Allocate a fresh metadata entry
+    jsr     .dos_meta_alloc_entry       ; r1 = entry VA, r2 = err
+    bnez    r2, .dos_reply_full
+    move.q  r25, r1                     ; r25 = entry VA (preserved)
 
-.dos_create_slot:
-    ; r14 = entry base, r22 = slot index
-    ; Copy filename from shared buffer to entry name[32]
+    ; Allocate file body via AllocMem(DOS_FILE_SIZE)
+    push    r25
+    push    r29
+    move.l  r1, #DOS_FILE_SIZE
+    move.l  r2, #MEMF_CLEAR
+    syscall #SYS_ALLOC_MEM              ; r1 = body VA, r2 = err
+    pop     r29
+    pop     r25
+    bnez    r2, .dos_create_no_body
+    ; entry.file_va = body
+    store.q r1, DOS_META_OFF_VA(r25)
+    bra     .dos_create_init_meta
+.dos_create_no_body:
+    ; Body alloc failed; clear entry.file_va so future opens see no body.
+    store.q r0, DOS_META_OFF_VA(r25)
+.dos_create_init_meta:
+    ; Copy filename from request buffer to entry.name (max 31 + NUL)
     move.q  r16, r23                    ; src = request name
-    move.q  r17, r14                    ; dst = entry name
+    move.q  r17, r25                    ; dst = entry.name
     move.l  r18, #0
 .dos_cpy_fname:
     load.b  r15, (r16)
@@ -5201,45 +5724,24 @@ prog_doslib_code:
     add     r18, r18, #1
     move.l  r28, #31
     blt     r18, r28, .dos_cpy_fname
-    store.b r0, (r17)                   ; force null at position 31
+    store.b r0, (r17)
 .dos_cpy_fname_done:
-    ; Set offset = slot * DOS_FILE_SIZE
-    move.l  r15, #DOS_FILE_SIZE
-    mulu    r15, r22, r15
-    store.l r15, 32(r14)               ; entry.offset = slot * DOS_FILE_SIZE
-    ; Set size = 0 (new file)
-    store.l r0, 36(r14)                ; entry.size = 0
-    ; Set capacity = DOS_FILE_SIZE
-    move.l  r15, #DOS_FILE_SIZE
-    store.l r15, 40(r14)               ; entry.capacity
+    ; entry.size = 0
+    store.l r0, DOS_META_OFF_SIZE(r25)
+    move.q  r1, r25                     ; r1 = entry VA for handle alloc
+    bra     .dos_open_have_entry
 
-.dos_open_found:
-    ; r22 = file table index of found/created entry
-    ; Find free handle slot
-    move.l  r18, #0
-.dos_find_handle:
-    move.l  r28, #DOS_MAX_HANDLES
-    bge     r18, r28, .dos_open_full_h
-    add     r14, r29, #176
-    add     r14, r14, r18
-    load.b  r15, (r14)
-    move.l  r28, #0xFF
-    beq     r15, r28, .dos_got_handle
-    add     r18, r18, #1
-    bra     .dos_find_handle
-.dos_open_full_h:
-    bra     .dos_reply_full
+.dos_open_have_entry:
+    ; r1 = entry VA. Allocate a handle slot referencing this entry.
+    jsr     .dos_hnd_alloc              ; r1 = handle_id, r2 = err
+    bnez    r2, .dos_reply_full
+    move.q  r18, r1                     ; r18 = handle_id
 
-.dos_got_handle:
-    ; r18 = handle index, r22 = file index
-    ; Store file_index in handles[handle]
-    add     r14, r29, #176
-    add     r14, r14, r18
-    store.b r22, (r14)
-    ; Reply: type=DOS_OK, data0=handle
+    ; Reply: type=DOS_OK, data0=handle_id
+    load.q  r29, (sp)
     load.q  r1, 944(r29)
     move.l  r2, #DOS_OK
-    move.q  r3, r18                     ; data0 = handle
+    move.q  r3, r18                     ; data0 = handle_id
     move.q  r4, r0
     move.q  r5, r0
     syscall #SYS_REPLY_MSG
@@ -5248,43 +5750,30 @@ prog_doslib_code:
 
     ; =================================================================
     ; DOS_READ (type=2): read file data into caller's shared buffer
+    ; M12.6 Phase A: handle lookup walks the handle chain; file body
+    ; is the AllocMem'd entry.file_va, no longer offset into storage_va.
     ; =================================================================
     ; data0 = handle, data1 = max_bytes
 .dos_do_read:
-    load.q  r18, 960(r29)              ; r18 = handle
+    load.q  r1, 960(r29)               ; r1 = handle_id
     load.q  r19, 968(r29)              ; r19 = max_bytes
-    ; Validate handle
-    move.l  r28, #DOS_MAX_HANDLES
-    bge     r18, r28, .dos_read_badh
-    add     r14, r29, #176
-    add     r14, r14, r18
-    load.b  r22, (r14)                  ; r22 = file_index
-    move.l  r28, #0xFF
-    beq     r22, r28, .dos_read_badh
-    ; Get file entry
-    move.l  r14, #44
-    mulu    r14, r22, r14
-    add     r14, r14, #192
-    add     r14, r29, r14               ; r14 = &file_table[file_index]
-    load.l  r15, 32(r14)               ; r15 = offset within storage
-    load.l  r16, 36(r14)               ; r16 = file size
+    jsr     .dos_hnd_lookup             ; r1 = entry VA (or 0)
+    beqz    r1, .dos_read_badh
+    move.q  r14, r1                     ; r14 = entry VA
+    load.q  r29, (sp)
+    load.q  r20, DOS_META_OFF_VA(r14)  ; r20 = file body VA
+    load.l  r16, DOS_META_OFF_SIZE(r14)
     ; Clamp max_bytes to file size
     blt     r19, r16, .dos_read_clamp
     move.q  r19, r16
 .dos_read_clamp:
     ; Clamp max_bytes to share size in bytes (share_pages << 12).
-    ; Defense-in-depth against the DOS_READ "small share, big read"
-    ; pattern where dos.library would otherwise write past the mapped
-    ; region and fault. The cached share_pages at data[184] is set by
-    ; the main loop after MapShared returns R3.
     load.q  r24, 184(r29)              ; cached share_pages
     lsl     r24, r24, #12              ; r24 = share_bytes
     blt     r19, r24, .dos_read_share_ok
     move.q  r19, r24
 .dos_read_share_ok:
-    ; Copy from storage_va + offset to caller's shared buffer
-    load.q  r20, 152(r29)              ; storage_va
-    add     r20, r20, r15               ; src = storage_va + file_offset
+    ; Copy from body VA to caller's shared buffer
     load.q  r21, 168(r29)              ; dst = caller's mapped buffer
     move.q  r17, r0                     ; bytes copied = 0
 .dos_read_copy:
@@ -5305,48 +5794,38 @@ prog_doslib_code:
     load.q  r29, (sp)
     bra     .dos_main_loop
 .dos_read_badh:
+    load.q  r29, (sp)
     bra     .dos_reply_badh
 
     ; =================================================================
-    ; DOS_WRITE (type=3): write data from caller's buffer to file
+    ; DOS_WRITE (type=3): write data from caller's buffer to file.
+    ; M12.6 Phase A: handle lookup walks the handle chain; writes go
+    ; to the AllocMem'd entry.file_va. Per-file capacity is still
+    ; DOS_FILE_SIZE (M12.8 will remove that).
     ; =================================================================
     ; data0 = handle, data1 = byte_count
 .dos_do_write:
-    load.q  r18, 960(r29)              ; r18 = handle
+    load.q  r1, 960(r29)               ; r1 = handle_id
     load.q  r19, 968(r29)              ; r19 = byte_count
-    ; Validate handle
-    move.l  r28, #DOS_MAX_HANDLES
-    bge     r18, r28, .dos_write_badh
-    add     r14, r29, #176
-    add     r14, r14, r18
-    load.b  r22, (r14)                  ; r22 = file_index
-    move.l  r28, #0xFF
-    beq     r22, r28, .dos_write_badh
-    ; Get file entry
-    move.l  r14, #44
-    mulu    r14, r22, r14
-    add     r14, r14, #192
-    add     r14, r29, r14               ; r14 = &file_table[file_index]
-    load.l  r15, 32(r14)               ; r15 = offset within storage
-    load.l  r16, 40(r14)               ; r16 = capacity
-    ; Clamp byte_count to capacity
+    jsr     .dos_hnd_lookup             ; r1 = entry VA (or 0)
+    beqz    r1, .dos_write_badh
+    move.q  r14, r1                     ; r14 = entry VA (preserved)
+    load.q  r29, (sp)
+    load.q  r21, DOS_META_OFF_VA(r14)  ; r21 = body VA (dst)
+    beqz    r21, .dos_write_badh        ; entry has no body (alloc failed)
+    ; Clamp byte_count to per-file capacity (still DOS_FILE_SIZE in Phase A)
+    move.l  r16, #DOS_FILE_SIZE
     blt     r19, r16, .dos_write_clamp
     move.q  r19, r16
 .dos_write_clamp:
-    ; Clamp byte_count to share size in bytes (share_pages << 12).
-    ; Defense-in-depth: a small share + large byte_count claim would
-    ; otherwise make the copy loop read past the mapped region and
-    ; fault dos.library. The cached share_pages at data[184] is set
-    ; by the main loop after MapShared returns R3.
+    ; Clamp byte_count to share size in bytes
     load.q  r24, 184(r29)              ; cached share_pages
-    lsl     r24, r24, #12              ; r24 = share_bytes
+    lsl     r24, r24, #12
     blt     r19, r24, .dos_write_share_ok
     move.q  r19, r24
 .dos_write_share_ok:
-    ; Copy from caller's shared buffer to storage_va + offset
+    ; Copy from caller's shared buffer to body
     load.q  r20, 168(r29)              ; src = caller's mapped buffer
-    load.q  r21, 152(r29)              ; storage_va
-    add     r21, r21, r15               ; dst = storage_va + file_offset
     move.q  r17, r0                     ; bytes copied = 0
 .dos_write_copy:
     bge     r17, r19, .dos_write_done
@@ -5357,12 +5836,7 @@ prog_doslib_code:
     add     r17, r17, #1
     bra     .dos_write_copy
 .dos_write_done:
-    ; Update file size
-    move.l  r14, #44
-    mulu    r14, r22, r14
-    add     r14, r14, #192
-    add     r14, r29, r14
-    store.l r19, 36(r14)               ; entry.size = byte_count
+    store.l r19, DOS_META_OFF_SIZE(r14)
     ; Reply
     load.q  r1, 944(r29)
     move.l  r2, #DOS_OK
@@ -5373,34 +5847,33 @@ prog_doslib_code:
     load.q  r29, (sp)
     bra     .dos_main_loop
 .dos_write_badh:
+    load.q  r29, (sp)
     bra     .dos_reply_badh
 
     ; =================================================================
-    ; DOS_CLOSE (type=4): close a file handle
+    ; DOS_CLOSE (type=4): close a file handle.
+    ; M12.6 Phase A: walks the handle chain via .dos_hnd_lookup; clears
+    ; the slot in place. The file body and metadata entry persist.
     ; =================================================================
-    ; data0 = handle
+    ; data0 = handle_id
 .dos_do_close:
-    load.q  r18, 960(r29)              ; r18 = handle
-    move.l  r28, #DOS_MAX_HANDLES
-    bge     r18, r28, .dos_close_badh
-    add     r14, r29, #176
-    add     r14, r14, r18
-    load.b  r15, (r14)
-    move.l  r28, #0xFF
-    beq     r15, r28, .dos_close_badh
-    ; Mark handle as unused
-    move.l  r15, #0xFF
-    store.b r15, (r14)
+    load.q  r1, 960(r29)               ; r1 = handle_id
+    jsr     .dos_hnd_lookup             ; r1 = entry VA (or 0), r2 = slot VA
+    beqz    r1, .dos_close_badh
+    ; Clear the slot
+    store.q r0, (r2)
+    load.q  r29, (sp)
     ; Reply success
     load.q  r1, 944(r29)
     move.l  r2, #DOS_OK
-    move.q  r3, r0                      ; data0 = 0
+    move.q  r3, r0
     move.q  r4, r0
     move.q  r5, r0
     syscall #SYS_REPLY_MSG
     load.q  r29, (sp)
     bra     .dos_main_loop
 .dos_close_badh:
+    load.q  r29, (sp)
     bra     .dos_reply_badh
 
     ; =================================================================
@@ -5727,41 +6200,16 @@ prog_doslib_code:
     jsr     .dos_resolve_cmd            ; r23 = resolved name (e.g. "C/Version")
     load.q  r29, (sp)
 
-    ; 3. Search file table for resolved name (case-insensitive)
-    move.l  r22, #0
-.dos_run_search:
-    move.l  r28, #DOS_MAX_FILES
-    bge     r22, r28, .dos_run_notfound
-    move.l  r14, #44
-    mulu    r14, r22, r14
-    add     r14, r14, #192
-    add     r14, r29, r14               ; r14 = &file_table[index]
-    load.b  r15, (r14)
-    beqz    r15, .dos_run_snext         ; empty entry
-    ; Case-insensitive compare
-    move.q  r16, r14                    ; table name
-    move.q  r17, r23                    ; request name
-    move.l  r18, #0
-.dos_run_cmp:
-    load.b  r24, (r16)
-    load.b  r25, (r17)
-    or      r24, r24, #0x20            ; lowercase both
-    or      r25, r25, #0x20
-    bne     r24, r25, .dos_run_snext
-    ; If original was null (before OR), check
-    load.b  r24, (r16)
-    beqz    r24, .dos_run_found         ; both null → match
-    add     r16, r16, #1
-    add     r17, r17, #1
-    add     r18, r18, #1
-    move.l  r28, #32
-    blt     r18, r28, .dos_run_cmp
-    bra     .dos_run_found              ; 32 chars matched
-.dos_run_snext:
-    add     r22, r22, #1
-    bra     .dos_run_search
+    ; 3. M12.6 Phase A: walk metadata chain by name
+    move.q  r1, r23
+    jsr     .dos_meta_find_by_name      ; r1 = entry VA (or 0)
+    beqz    r1, .dos_run_notfound
+    move.q  r14, r1                     ; r14 = entry VA
+    load.q  r29, (sp)
+    bra     .dos_run_found
 
 .dos_run_notfound:
+    load.q  r29, (sp)
     ; Reply with DOS_ERR_NOTFOUND
     load.q  r1, 944(r29)
     move.l  r2, #DOS_ERR_NOTFOUND
@@ -5773,13 +6221,10 @@ prog_doslib_code:
     bra     .dos_main_loop
 
 .dos_run_found:
-    ; r14 = &file_table[slot], r22 = slot index
-    ; 4. Compute image_ptr = storage_va + entry.offset
-    load.l  r18, 32(r14)               ; entry.offset
-    load.q  r21, 152(r29)              ; storage_va
-    add     r21, r21, r18              ; r21 = image_ptr
-    ; image_size = entry.size
-    load.l  r23, 36(r14)               ; r23 = image_size
+    ; r14 = entry VA
+    ; 4. image_ptr = entry.file_va, image_size = entry.size
+    load.q  r21, DOS_META_OFF_VA(r14)
+    load.l  r23, DOS_META_OFF_SIZE(r14)
 
     ; 5. Find args: scan past command name null in shared buffer.
     ; Bounded scan — without a length cap, a malicious caller could
@@ -5873,6 +6318,271 @@ prog_doslib_code:
     load.q  r29, (sp)
     bra     .dos_main_loop
 
+    ; ==================================================================
+    ; M12.6 Phase A: dos.library chain-allocator helpers
+    ; ==================================================================
+    ; The file metadata table and the open-handle table are no longer
+    ; fixed-size inline arrays. Each is a singly-linked list of 4 KiB
+    ; AllocMem'd "chain pages":
+    ;
+    ;   chain page (4 KiB):
+    ;     [0..7]    next_va (8 bytes, 0 = end of chain)
+    ;     [8..15]   reserved
+    ;     [16..]    entries (per-table stride)
+    ;
+    ; Metadata entries are 48 bytes (DOS_META_PER_PAGE = 85 per page).
+    ; Handle entries are 8 bytes (DOS_HND_PER_PAGE = 510 per page).
+    ;
+    ; Both helpers preserve r29 (data base) implicitly via the stack
+    ; convention used by every other dos.library subroutine.
+
+    ; ------------------------------------------------------------------
+    ; .dos_meta_alloc_entry: walk the metadata chain looking for an
+    ; entry whose name[0] == 0 (free). If none, allocate a new chain
+    ; page and use entry 0 of the new page.
+    ; In:  r29 = dos.library data base
+    ; Out: r1  = entry VA (always non-zero on success)
+    ;      r2  = ERR_OK or err code
+    ; Clobbers: r3..r19, r25, r26
+    ; ------------------------------------------------------------------
+.dos_meta_alloc_entry:
+    load.q  r25, 152(r29)              ; r25 = current chain page VA
+.dmae_walk_pages:
+    beqz    r25, .dmae_alloc_new       ; chain head not allocated yet
+    move.q  r26, r25
+    add     r26, r26, #DOS_META_HDR_SZ ; r26 = &entries[0]
+    move.l  r3, #0                     ; entry index
+.dmae_scan_rows:
+    move.l  r4, #DOS_META_PER_PAGE
+    bge     r3, r4, .dmae_next_page
+    load.b  r5, DOS_META_OFF_NAME(r26) ; first byte of name
+    beqz    r5, .dmae_found            ; free entry
+    add     r26, r26, #DOS_META_ENTRY_SZ
+    add     r3, r3, #1
+    bra     .dmae_scan_rows
+.dmae_next_page:
+    load.q  r25, (r25)                 ; next page VA
+    bra     .dmae_walk_pages
+.dmae_found:
+    move.q  r1, r26
+    move.q  r2, r0                     ; ERR_OK = 0
+    rts
+.dmae_alloc_new:
+    ; Save r29 across the syscall (AllocMem clobbers user regs).
+    push    r29
+    move.l  r1, #4096
+    move.l  r2, #MEMF_CLEAR
+    syscall #SYS_ALLOC_MEM             ; r1 = VA, r2 = err
+    pop     r29
+    bnez    r2, .dmae_fail
+    move.q  r25, r1                    ; r25 = new page VA
+    ; Walk to the tail of the existing chain and link the new page.
+    load.q  r3, 152(r29)               ; head
+    beqz    r3, .dmae_set_head
+.dmae_link_walk:
+    load.q  r4, (r3)
+    beqz    r4, .dmae_at_tail
+    move.q  r3, r4
+    bra     .dmae_link_walk
+.dmae_at_tail:
+    store.q r25, (r3)                  ; tail.next_va = new page
+    bra     .dmae_link_done
+.dmae_set_head:
+    store.q r25, 152(r29)              ; head = new page
+.dmae_link_done:
+    ; Use entry 0 of the new page (already zero from MEMF_CLEAR).
+    add     r1, r25, #DOS_META_HDR_SZ
+    move.q  r2, r0                     ; ERR_OK
+    rts
+.dmae_fail:
+    move.q  r1, r0
+    ; r2 already has the err code from AllocMem
+    rts
+
+    ; ------------------------------------------------------------------
+    ; .dos_meta_find_by_name: walk the metadata chain comparing each
+    ; entry's name to the request name (case-insensitive, max 32 chars).
+    ; Returns the entry VA on match, or 0 if not found.
+    ; In:  r1  = request name VA (NUL-terminated, in dos.library AS)
+    ;      r29 = data base
+    ; Out: r1  = entry VA (or 0 if not found)
+    ; Clobbers: r3..r12, r25, r26, r27
+    ; ------------------------------------------------------------------
+.dos_meta_find_by_name:
+    move.q  r27, r1                    ; r27 = request name (preserved)
+    load.q  r25, 152(r29)              ; chain head
+.dmfn_walk_pages:
+    beqz    r25, .dmfn_not_found
+    move.q  r26, r25
+    add     r26, r26, #DOS_META_HDR_SZ
+    move.l  r3, #0                     ; entry index in page
+.dmfn_scan_rows:
+    move.l  r4, #DOS_META_PER_PAGE
+    bge     r3, r4, .dmfn_next_page
+    load.b  r5, DOS_META_OFF_NAME(r26)
+    beqz    r5, .dmfn_skip             ; empty entry → skip
+    ; Case-insensitive name compare (max 32 bytes).
+    move.q  r6, r26                    ; r6 = entry name ptr
+    move.q  r7, r27                    ; r7 = request name ptr
+    move.l  r8, #0                     ; char index
+.dmfn_cmp:
+    load.b  r9, (r6)
+    load.b  r10, (r7)
+    move.l  r11, #0x41                 ; 'A'
+    blt     r9, r11, .dmfn_skip1
+    move.l  r11, #0x5A                 ; 'Z'
+    bgt     r9, r11, .dmfn_skip1
+    or      r9, r9, #0x20
+.dmfn_skip1:
+    move.l  r11, #0x41
+    blt     r10, r11, .dmfn_skip2
+    move.l  r11, #0x5A
+    bgt     r10, r11, .dmfn_skip2
+    or      r10, r10, #0x20
+.dmfn_skip2:
+    bne     r9, r10, .dmfn_skip
+    beqz    r9, .dmfn_match            ; both null → match
+    add     r6, r6, #1
+    add     r7, r7, #1
+    add     r8, r8, #1
+    move.l  r11, #32
+    blt     r8, r11, .dmfn_cmp
+    bra     .dmfn_match                ; reached 32 chars → treat as match
+.dmfn_skip:
+    add     r26, r26, #DOS_META_ENTRY_SZ
+    add     r3, r3, #1
+    bra     .dmfn_scan_rows
+.dmfn_next_page:
+    load.q  r25, (r25)
+    bra     .dmfn_walk_pages
+.dmfn_match:
+    move.q  r1, r26
+    rts
+.dmfn_not_found:
+    move.q  r1, r0
+    rts
+
+    ; ------------------------------------------------------------------
+    ; .dos_hnd_alloc: walk the handle chain looking for an unused slot
+    ; (entry == 0). If none, allocate a new chain page and use entry 0.
+    ; Stores the supplied metadata entry VA in the slot and returns the
+    ; integer handle_id (page_index * DOS_HND_PER_PAGE + slot_in_page).
+    ; In:  r1  = metadata entry VA to store in the slot (must be non-zero)
+    ;      r29 = data base
+    ; Out: r1  = handle_id (>= 0 on success)
+    ;      r2  = ERR_OK or err code
+    ; Clobbers: r3..r19, r25, r26
+    ; ------------------------------------------------------------------
+.dos_hnd_alloc:
+    move.q  r19, r1                    ; r19 = entry VA (preserved)
+    load.q  r25, 160(r29)              ; r25 = current handle page VA
+    move.l  r12, #0                    ; r12 = page index
+.dha_walk_pages:
+    beqz    r25, .dha_alloc_new
+    move.q  r26, r25
+    add     r26, r26, #DOS_HND_HDR_SZ  ; r26 = &slots[0]
+    move.l  r3, #0                     ; slot index
+.dha_scan_rows:
+    move.l  r4, #DOS_HND_PER_PAGE
+    bge     r3, r4, .dha_next_page
+    load.q  r5, (r26)
+    beqz    r5, .dha_found
+    add     r26, r26, #DOS_HND_ENTRY_SZ
+    add     r3, r3, #1
+    bra     .dha_scan_rows
+.dha_next_page:
+    load.q  r25, (r25)
+    add     r12, r12, #1
+    bra     .dha_walk_pages
+.dha_found:
+    store.q r19, (r26)                 ; slot = entry VA
+    ; handle_id = page_index * DOS_HND_PER_PAGE + slot_index
+    move.l  r4, #DOS_HND_PER_PAGE
+    mulu    r4, r12, r4
+    add     r1, r4, r3
+    move.q  r2, r0                     ; ERR_OK
+    rts
+.dha_alloc_new:
+    push    r29
+    push    r19
+    push    r12
+    move.l  r1, #4096
+    move.l  r2, #MEMF_CLEAR
+    syscall #SYS_ALLOC_MEM
+    pop     r12
+    pop     r19
+    pop     r29
+    bnez    r2, .dha_fail
+    move.q  r25, r1                    ; new page VA
+    ; Link onto chain.
+    load.q  r3, 160(r29)               ; head
+    beqz    r3, .dha_set_head
+.dha_link_walk:
+    load.q  r4, (r3)
+    beqz    r4, .dha_at_tail
+    move.q  r3, r4
+    bra     .dha_link_walk
+.dha_at_tail:
+    store.q r25, (r3)
+    bra     .dha_link_done
+.dha_set_head:
+    store.q r25, 160(r29)              ; head = new page
+.dha_link_done:
+    ; Use slot 0 of the new page.
+    add     r26, r25, #DOS_HND_HDR_SZ
+    store.q r19, (r26)
+    move.l  r4, #DOS_HND_PER_PAGE
+    mulu    r4, r12, r4
+    move.q  r1, r4                     ; slot index = 0
+    move.q  r2, r0                     ; ERR_OK
+    rts
+.dha_fail:
+    move.q  r1, r0
+    ; r2 has err code from AllocMem
+    rts
+
+    ; ------------------------------------------------------------------
+    ; .dos_hnd_lookup: walk handle chain to slot at handle_id, return
+    ; the metadata entry VA stored there. Returns 0 if handle_id is
+    ; out of range or the slot is empty.
+    ; In:  r1  = handle_id
+    ;      r29 = data base
+    ; Out: r1  = metadata entry VA (or 0)
+    ;      r2  = slot VA inside the chain page (for callers that need
+    ;            to clear the slot, e.g. DOS_CLOSE; 0 if not found)
+    ; Clobbers: r3..r10, r25
+    ; ------------------------------------------------------------------
+.dos_hnd_lookup:
+    bltz    r1, .dhl_not_found
+    move.l  r3, #DOS_HND_PER_PAGE
+    divu    r4, r1, r3                 ; r4 = page index
+    mulu    r5, r4, r3
+    sub     r5, r1, r5                 ; r5 = slot in page
+    load.q  r25, 160(r29)              ; chain head
+.dhl_walk:
+    beqz    r25, .dhl_not_found
+    beqz    r4, .dhl_at_page
+    load.q  r25, (r25)
+    sub     r4, r4, #1
+    bra     .dhl_walk
+.dhl_at_page:
+    move.l  r6, #DOS_HND_ENTRY_SZ
+    mulu    r6, r5, r6
+    add     r6, r6, #DOS_HND_HDR_SZ
+    add     r6, r25, r6                ; r6 = slot VA
+    load.q  r1, (r6)
+    beqz    r1, .dhl_empty
+    move.q  r2, r6
+    rts
+.dhl_empty:
+    move.q  r1, r0
+    move.q  r2, r0
+    rts
+.dhl_not_found:
+    move.q  r1, r0
+    move.q  r2, r0
+    rts
+
 prog_doslib_code_end:
 
 prog_doslib_data:
@@ -5891,17 +6601,18 @@ prog_doslib_data:
     ds.b    8
     ; --- Offset 144: dos_port (8) ---
     ds.b    8
-    ; --- Offset 152: storage_va (8) ---
+    ; --- Offset 152: meta_chain_head_va (8) — M12.6 Phase A ---
     ds.b    8
-    ; --- Offset 160: caller_share_handle (8) ---
+    ; --- Offset 160: hnd_chain_head_va  (8) — M12.6 Phase A ---
     ds.b    8
     ; --- Offset 168: caller_mapped_va (8) ---
     ds.b    8
-    ; --- Offset 176: open_handles[8] ---
+    ; --- Offset 176: reserved (was open_handles[8] before M12.6 Phase A) ---
     ds.b    8
     ; --- Offset 184: cached share_pages (8) ---
     ds.b    8
-    ; --- Offset 192: file table (16 entries × 44 bytes = 704 bytes, ends at 896) ---
+    ; --- Offset 192..895: dead-space scratch (was: file_table 16×44 before M12.6 Phase A) ---
+    ; .dos_seed_one uses 192..223 as save slots during boot.
     ds.b    704
     ; --- Offset 896: pre-create filename "readme\0" + pad to 16 ---
     dc.b    "readme", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
@@ -6039,7 +6750,7 @@ prog_version_data:
     ; --- Offset 24: padding to 32 ---
     ds.b    8
     ; --- Offset 32: version string ---
-    dc.b    "IntuitionOS 0.13 (exec.library M11.6 / intuition.library M12 / hardware.resource M12.5)", 0x0D, 0x0A, 0
+    dc.b    "IntuitionOS 0.14 (exec.library M11.6 / intuition.library M12 / hardware.resource M12.5 / cap sweep M12.6)", 0x0D, 0x0A, 0
 prog_version_data_end:
     align   8
 prog_version_end:
@@ -6897,7 +7608,8 @@ seed_startup:
     dc.b    "LIBS:graphics.library", 0x0A
     dc.b    "LIBS:intuition.library", 0x0A
     dc.b    "VERSION", 0x0A
-    dc.b    "ECHO IntuitionOS M12.5 ready", 0x0A
+    dc.b    "ECHO Core OS objects: fixed product limits removed where practical", 0x0A
+    dc.b    "ECHO IntuitionOS M12.6 ready", 0x0A
     dc.b    "ECHO All visible services are running in user space", 0x0A, 0
 seed_startup_end:
     align   8
