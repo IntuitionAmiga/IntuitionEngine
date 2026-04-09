@@ -6,6 +6,7 @@ Hardware definition include files for Intuition Engine programs. Each file provi
 
 | File | CPU | Assembler | Description |
 |------|-----|-----------|-------------|
+| `iexec.inc` | IE64 / IntuitionOS | ie64asm | IntuitionOS kernel ABI, syscall, task/image-layout, and startup-block constants |
 | `ie32.inc` | IE32 | ie32asm | Hardware constants (`.equ` directives) |
 | `ie64.inc` | IE64 | ie64asm | Hardware constants and macros |
 | `ie64_fp.inc` | IE64 | ie64asm | IEEE 754 FP32 math library |
@@ -18,6 +19,20 @@ Hardware definition include files for Intuition Engine programs. Each file provi
 ## Common Definitions
 
 All include files provide these categories of definitions:
+
+## IntuitionOS Include
+
+### iexec.inc
+
+`sdk/include/iexec.inc` is the canonical IntuitionOS contract include for IE64 assembly programs and kernel-side service code. It defines:
+
+- syscall numbers and `SYSINFO_*` query IDs
+- kernel data structure offsets
+- user-space image/PT window constants and legacy slot-layout constants
+- `hardware.resource` grant constants
+- M13 startup block constants (`TASK_STARTUP_*`, `TASKSB_*`)
+
+The startup block constants describe the 64-byte kernel-populated record written into a dedicated startup page for each launched task. Boot-loaded and `ExecProgram`-launched services discover the startup-page base VA from `0(sp)`, then read this block to find task identity and actual code/data/stack bases without deriving addresses from `CURRENT_TASK * USER_SLOT_STRIDE`.
 
 ### Video Registers
 - `VIDEO_CTRL` / `VIDEO_MODE` / `VIDEO_STATUS` - Display control

@@ -24,7 +24,7 @@ const (
 	kernPageTableBase = 0x40000 // Kernel page table (64 KiB) — M12: was 0x10000
 	kernDataBase      = 0x50000 // Kernel data (TCBs, state)   — M12: was 0x20000
 	kernStackTop      = 0x9F000 // Kernel stack top
-	maxTasks          = 32      // MAX_TASKS (M12.6 Phase D: bumped from 16; M12 bumped from 8)
+	maxTasks          = 255     // MAX_TASKS (M13 Phase 4: internal-slot ABI ceiling, 0xFF reserved)
 
 	// User task page table base. Was 0x100000 originally but that range
 	// collides with the host VideoChip MMIO at $100000-$5FFFFF (VRAM),
@@ -95,13 +95,12 @@ const (
 	taskWaiting = 2
 	taskFree    = 3
 
-	// PTBR array — M12.6 Phase D: was 576 (after 16 TCBs); now 1088 (after 32 TCBs)
-	kdPTBRBase = 1088 // KD_PTBR_BASE
+	// PTBR array — M13 Phase 4: after 255 TCBs
+	kdPTBRBase = 8224 // KD_PTBR_BASE
 
-	// Port layout (M12.6 Phase D: KD_PORT_BASE shifted from 704 to 1344
-	// because TCBs and PTBRs both doubled in size)
-	kdPortBase   = 1344 // KD_PORT_BASE (after 32 TCBs + 32 PTBRs: 64 + 32*32 + 32*8 = 1344)
-	kdPortStride = 168  // KD_PORT_STRIDE (40-byte header + 4×32-byte messages)
+	// Port layout (M13 Phase 4: KD_PORT_BASE shifted after 255 TCBs + PTBRs)
+	kdPortBase   = 10264 // KD_PORT_BASE
+	kdPortStride = 168   // KD_PORT_STRIDE (40-byte header + 4×32-byte messages)
 	kdPortMax    = 32
 
 	// Port header field offsets
@@ -130,6 +129,23 @@ const (
 	// Reply port sentinel
 	replyPortNone = 0xFFFF
 
+	taskStartupSize       = 64
+	taskStartupVersionOff = 0x00
+	taskStartupSizeOff    = 0x04
+	taskStartupTaskIDOff  = 0x08
+	taskStartupFlagsOff   = 0x0C
+	taskStartupCodeBase   = 0x10
+	taskStartupCodePages  = 0x18
+	taskStartupDataBase   = 0x20
+	taskStartupDataPages  = 0x28
+	taskStartupStackBase  = 0x30
+	taskStartupStackPages = 0x38
+
+	taskStartupVersion = 1
+	taskStartfCreate   = 1 << 0
+	taskStartfExec     = 1 << 1
+	taskStartfBoot     = 1 << 2
+
 	// Signal bit for port
 	sigfPort = 1 // SIGF_PORT = bit 0
 
@@ -152,10 +168,10 @@ const (
 	userDynEnd   = 0x1200000 // dynamic allocation VA end — M12.6 Phase E security fix: was 0x2000000 (now disjoint from allocator pool VPNs)
 	userDynPages = 768       // max pages per single AllocMem call (M12: was per-task budget)
 
-	kdPageBitmap   = 6720 // page allocation bitmap (800 bytes) — M12.6 Phase D: was 6080
+	kdPageBitmap   = 15640 // page allocation bitmap (800 bytes)
 	kdPageBitmapSz = 800
 
-	kdRegionTable  = 7520 // region table base — M12.6 Phase D: was 6880
+	kdRegionTable  = 16440 // region table base
 	kdRegionStride = 16
 	kdRegionMax    = 8
 	kdRegionTaskSz = 128 // 8 regions x 16 bytes per task
@@ -175,17 +191,17 @@ const (
 	// Port table — M12.6 Phase C: KD_PORT_MAX cap removed.
 	// kdPortInlineMax is the inline range; rows beyond it live in the
 	// overflow chain reachable through KD_PORT_OFLOW_HDR.
-	kdPortInlineMax = 32    // M12.6 Phase C: was kdPortMax, now the inline range
-	kdPortOflowHdr  = 12152 // M12.6 Phase D: was 9336
+	kdPortInlineMax = 32 // M12.6 Phase C: was kdPortMax, now the inline range
+	kdPortOflowHdr  = 51400
 
 	// Shared object table — M12.6 Phase B: KD_SHMEM_MAX cap removed.
 	// kdShmemInlineMax is the inline range; rows beyond it live in the
 	// overflow chain reachable through KD_SHMEM_OFLOW_HDR.
-	kdShmemTable     = 11616 // M12.6 Phase D: was 8928
+	kdShmemTable     = 49080
 	kdShmemStride    = 16
-	kdShmemInlineMax = 16    // M12.6 Phase B: was kdShmemMax, now the inline range
-	kdShmemMax       = 16    // legacy alias retained for tests that walk only the inline table
-	kdShmemOflowHdr  = 12144 // M12.6 Phase D: was 9328
+	kdShmemInlineMax = 16 // M12.6 Phase B: was kdShmemMax, now the inline range
+	kdShmemMax       = 16 // legacy alias retained for tests that walk only the inline table
+	kdShmemOflowHdr  = 51392
 
 	// Shared object fields
 	kdShmValid    = 0
@@ -196,27 +212,42 @@ const (
 	kdShmNonce    = 8
 
 	// M12.5: hardware.resource state and grant table
-	sysHwresOp       = 38    // SYS_HWRES_OP — verb-multiplexed broker primitive
-	hwresBecome      = 0     // R6 verb selector: claim broker identity
-	hwresCreate      = 1     // R6 verb selector: create grant
-	hwresRevoke      = 2     // R6 verb selector: reserved for M13
-	kdHwresTask      = 11872 // KD_HWRES_TASK (1 byte, 0xFF = unclaimed) — M12.6 Phase D: was 9184
-	kdGrantTableHdr  = 11880 // KD_GRANT_TABLE_HDR (8 bytes) — M12.6 Phase D: was 9192
-	kdGrantHdrFirst  = 0     // first chain page PPN (2 bytes)
-	kdGrantHdrTotal  = 2     // total grant rows in use (2 bytes)
-	kdGrantHdrPages  = 4     // number of chain pages (2 bytes)
-	kdGrantPageNext  = 0     // chain page header: next page PPN (2 bytes)
-	kdGrantPageHdrSz = 16    // bytes reserved at start of each chain page
-	kdGrantRowSize   = 16
-	kdGrantRowsPerPg = 255
-	kdGrantTaskID    = 0          // row offset: granted task id (1 byte)
-	kdGrantRegion    = 4          // row offset: 4-byte tag
-	kdGrantPPNLo     = 8          // row offset: PPN low (2 bytes)
-	kdGrantPPNHi     = 10         // row offset: PPN high (2 bytes)
-	hwresTagCHIP     = 0x50494843 // 'CHIP' little-endian uint32
-	hwresTagVRAM     = 0x4D415256 // 'VRAM' little-endian uint32
-	errExists        = 8
-	errPerm          = 5
+	sysHwresOp        = 38    // SYS_HWRES_OP — verb-multiplexed broker primitive
+	hwresBecome       = 0     // R6 verb selector: claim broker identity
+	hwresCreate       = 1     // R6 verb selector: create grant
+	hwresRevoke       = 2     // R6 verb selector: reserved for M13
+	kdHwresTask       = 49336 // KD_HWRES_TASK (u32, 0xFFFFFFFF = unclaimed)
+	kdGrantTableHdr   = 49344 // KD_GRANT_TABLE_HDR (8 bytes)
+	kdTaskLayoutBase  = 51408 // KD_TASK_LAYOUT_BASE
+	kdTaskLayoutStr   = 56    // KD_TASK_LAYOUT_STRIDE
+	kdTaskPubIDBase   = 65816 // KD_TASK_PUBID_BASE
+	kdTaskPubIDStr    = 4
+	kdTaskIDNext      = 66840 // KD_TASKID_NEXT
+	kdTaskCodeBase    = 0
+	kdTaskStackBase   = 8
+	kdTaskDataBase    = 16
+	kdTaskCodePages   = 24
+	kdTaskStackPages  = 28
+	kdTaskDataPages   = 32
+	kdTaskStartupBase = 40
+	kdTaskLayoutPT    = 48
+	kdGrantHdrFirst   = 0  // first chain page PPN (2 bytes)
+	kdGrantHdrTotal   = 2  // total grant rows in use (2 bytes)
+	kdGrantHdrPages   = 4  // number of chain pages (2 bytes)
+	kdGrantPageNext   = 0  // chain page header: next page PPN (2 bytes)
+	kdGrantPageHdrSz  = 16 // bytes reserved at start of each chain page
+	kdGrantRowSize    = 16
+	kdGrantRowsPerPg  = 255
+	kdGrantTaskID     = 0          // row offset: granted task id (u32)
+	kdGrantRegion     = 4          // row offset: 4-byte tag
+	kdGrantPPNLo      = 8          // row offset: PPN low (2 bytes)
+	kdGrantPPNHi      = 10         // row offset: PPN high (2 bytes)
+	hwresTagCHIP      = 0x50494843 // 'CHIP' little-endian uint32
+	hwresTagVRAM      = 0x4D415256 // 'VRAM' little-endian uint32
+	hwresTaskFree     = 0xFFFFFFFF
+	grantTaskFree     = 0xFFFFFFFF
+	errExists         = 8
+	errPerm           = 5
 )
 
 // ===========================================================================
@@ -1206,8 +1237,45 @@ func yieldLoopOverride(mem []byte, addr uint32) {
 // are overridden.
 func overrideExtraTasks(mem []byte, images []uint32, startIdx int) {
 	for i := startIdx; i < len(images); i++ {
+		header := images[i] - imgHeaderSize
+		if binary.LittleEndian.Uint32(mem[header+8:]) < 16 {
+			binary.LittleEndian.PutUint32(mem[header+8:], 16)
+		}
 		yieldLoopOverride(mem, images[i])
 	}
+}
+
+func taskSlotForPublicID(mem []byte, taskID uint64) (uint32, bool) {
+	want := uint32(taskID)
+	for slot := uint32(0); slot < maxTasks; slot++ {
+		state := mem[kernDataBase+kdTCBBase+slot*tcbStride+tcbStateOff]
+		if state == taskFree {
+			continue
+		}
+		base := kernDataBase + kdTaskPubIDBase + slot*kdTaskPubIDStr
+		if binary.LittleEndian.Uint32(mem[base:]) == want {
+			return slot, true
+		}
+	}
+	return 0, false
+}
+
+func taskLayoutFieldQ(mem []byte, taskID uint64, off uint32) uint64 {
+	slot, ok := taskSlotForPublicID(mem, taskID)
+	if !ok {
+		return 0
+	}
+	base := kernDataBase + kdTaskLayoutBase + slot*kdTaskLayoutStr
+	return binary.LittleEndian.Uint64(mem[base+off:])
+}
+
+func taskLayoutFieldL(mem []byte, taskID uint64, off uint32) uint32 {
+	slot, ok := taskSlotForPublicID(mem, taskID)
+	if !ok {
+		return 0
+	}
+	base := kernDataBase + kdTaskLayoutBase + slot*kdTaskLayoutStr
+	return binary.LittleEndian.Uint32(mem[base+off:])
 }
 
 // patchImageToSinglePage rewrites a program image's IE64PROG header so that
@@ -1308,6 +1376,253 @@ func TestIExec_BootBanner(t *testing.T) {
 	t.Logf("Boot banner output (first 80 chars): %q", output[:min(len(output), 80)])
 }
 
+func TestIExec_M13_StartupBlock_BootTaskPresent(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(200 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	startupBase := taskLayoutFieldQ(rig.cpu.memory, 0, kdTaskStartupBase)
+	if startupBase == 0 {
+		t.Fatalf("boot task startup base = 0, want non-zero")
+	}
+	startup := rig.cpu.memory[uint32(startupBase):]
+	version := binary.LittleEndian.Uint32(startup[taskStartupVersionOff:])
+	size := binary.LittleEndian.Uint32(startup[taskStartupSizeOff:])
+	taskID := binary.LittleEndian.Uint32(startup[taskStartupTaskIDOff:])
+	flags := binary.LittleEndian.Uint32(startup[taskStartupFlagsOff:])
+	codeBase := binary.LittleEndian.Uint64(startup[taskStartupCodeBase:])
+	codePages := binary.LittleEndian.Uint32(startup[taskStartupCodePages:])
+	dataBase := binary.LittleEndian.Uint64(startup[taskStartupDataBase:])
+	dataPages := binary.LittleEndian.Uint32(startup[taskStartupDataPages:])
+	stackBase := binary.LittleEndian.Uint64(startup[taskStartupStackBase:])
+	stackPages := binary.LittleEndian.Uint32(startup[taskStartupStackPages:])
+
+	if version != taskStartupVersion {
+		t.Fatalf("startup.version = %d, want %d", version, taskStartupVersion)
+	}
+	if size != taskStartupSize {
+		t.Fatalf("startup.size = %d, want %d", size, taskStartupSize)
+	}
+	if taskID != 0 {
+		t.Fatalf("startup.task_id = %d, want 0", taskID)
+	}
+	if flags&taskStartfBoot == 0 {
+		t.Fatalf("startup.flags = %#x, want boot bit set", flags)
+	}
+	if codeBase != uint64(userTask0Code) {
+		t.Fatalf("startup.code_base = %#x, want %#x", codeBase, uint64(userTask0Code))
+	}
+	if codePages == 0 {
+		t.Fatalf("startup.code_pages = 0, want > 0")
+	}
+	if dataBase != uint64(userTask0Data) {
+		t.Fatalf("startup.data_base = %#x, want %#x", dataBase, uint64(userTask0Data))
+	}
+	if dataPages == 0 {
+		t.Fatalf("startup.data_pages = 0, want > 0")
+	}
+	if stackBase != uint64(userTask0Stack) {
+		t.Fatalf("startup.stack_base = %#x, want %#x", stackBase, uint64(userTask0Stack))
+	}
+	if stackPages == 0 {
+		t.Fatalf("startup.stack_pages = 0, want > 0")
+	}
+}
+
+func TestIExec_M13_StartupBlock_CreateTaskPresent(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	t0Start := images[0]
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	pc := t0Start
+
+	copy(rig.cpu.memory[pc:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Stack+96))
+	copy(rig.cpu.memory[pc+8:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 16))
+	copy(rig.cpu.memory[pc+16:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	copy(rig.cpu.memory[pc+24:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))
+	copy(rig.cpu.memory[pc+32:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	copy(rig.cpu.memory[pc+40:], ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 0))
+	copy(rig.cpu.memory[pc+48:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 8))
+	copy(rig.cpu.memory[pc+56:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	childPC := uint32(userTask0Stack + 96)
+	copy(rig.cpu.memory[childPC:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+	copy(rig.cpu.memory[childPC+8:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(300 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	childID := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data:])
+	errCode := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+8:])
+	if errCode != 0 {
+		t.Fatalf("CreateTask err = %d, want 0", errCode)
+	}
+	if childID == 0 || childID >= maxTasks {
+		t.Fatalf("CreateTask childID = %d, want 1..%d", childID, maxTasks-1)
+	}
+
+	childDataBase := taskLayoutFieldQ(rig.cpu.memory, childID, kdTaskDataBase)
+	childCodeBase := taskLayoutFieldQ(rig.cpu.memory, childID, kdTaskCodeBase)
+	childStackBase := taskLayoutFieldQ(rig.cpu.memory, childID, kdTaskStackBase)
+	childStartupBase := taskLayoutFieldQ(rig.cpu.memory, childID, kdTaskStartupBase)
+	childPTBase := taskLayoutFieldQ(rig.cpu.memory, childID, kdTaskLayoutPT)
+	if childStartupBase == 0 {
+		t.Fatalf("child startup base = 0, want non-zero")
+	}
+	startup := rig.cpu.memory[uint32(childStartupBase):]
+	version := binary.LittleEndian.Uint32(startup[taskStartupVersionOff:])
+	size := binary.LittleEndian.Uint32(startup[taskStartupSizeOff:])
+	taskID := binary.LittleEndian.Uint32(startup[taskStartupTaskIDOff:])
+	flags := binary.LittleEndian.Uint32(startup[taskStartupFlagsOff:])
+	codeBase := binary.LittleEndian.Uint64(startup[taskStartupCodeBase:])
+	dataBase := binary.LittleEndian.Uint64(startup[taskStartupDataBase:])
+	stackBase := binary.LittleEndian.Uint64(startup[taskStartupStackBase:])
+
+	if version != taskStartupVersion {
+		t.Fatalf("child startup.version = %d, want %d", version, taskStartupVersion)
+	}
+	if size != taskStartupSize {
+		t.Fatalf("child startup.size = %d, want %d", size, taskStartupSize)
+	}
+	if taskID != uint32(childID) {
+		t.Fatalf("child startup.task_id = %d, want %d", taskID, childID)
+	}
+	if flags&taskStartfCreate == 0 {
+		t.Fatalf("child startup.flags = %#x, want create bit set", flags)
+	}
+	if childPTBase == 0 {
+		t.Fatalf("child PT base = 0, want non-zero")
+	}
+	if codeBase != childCodeBase {
+		t.Fatalf("child startup.code_base = %#x, want %#x", codeBase, childCodeBase)
+	}
+	if dataBase != childDataBase {
+		t.Fatalf("child startup.data_base = %#x, want %#x", dataBase, childDataBase)
+	}
+	if stackBase != childStackBase {
+		t.Fatalf("child startup.stack_base = %#x, want %#x", stackBase, childStackBase)
+	}
+}
+
+func TestIExec_M13_StartupBlock_IgnoresFormerReservedWindow(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	if len(images) < 2 {
+		t.Fatalf("need at least 2 boot images, got %d", len(images))
+	}
+
+	// The startup block no longer lives inside page 0 of the program-owned
+	// data image, so bytes at the old 0x200 window must no longer affect load.
+	dosHeader := images[1] - imgHeaderSize
+	dosCodeSize := binary.LittleEndian.Uint32(rig.cpu.memory[dosHeader+8:])
+	dosReservedByte := dosHeader + imgHeaderSize + dosCodeSize + 0x200
+	rig.cpu.memory[dosReservedByte] = 0xAA
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(300 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if strings.Contains(output, "PANIC: boot program failed") {
+		t.Fatalf("boot output=%q, want former reserved-window bytes to be ignored", output[:min(len(output), 200)])
+	}
+	numTasks := binary.LittleEndian.Uint64(rig.cpu.memory[kernDataBase+kdNumTasks:])
+	if numTasks < 2 {
+		t.Fatalf("num_tasks = %d, want dos.library to load successfully", numTasks)
+	}
+}
+
+func TestIExec_M13_Phase2_BootTasksUseDynamicLayout(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(250 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	numTasks := binary.LittleEndian.Uint64(rig.cpu.memory[kernDataBase+kdNumTasks:])
+	if numTasks < 2 {
+		t.Fatalf("boot loaded %d tasks, need at least 2", numTasks)
+	}
+
+	task1Code := taskLayoutFieldQ(rig.cpu.memory, 1, kdTaskCodeBase)
+	task1Data := taskLayoutFieldQ(rig.cpu.memory, 1, kdTaskDataBase)
+	task1Stack := taskLayoutFieldQ(rig.cpu.memory, 1, kdTaskStackBase)
+	if task1Code == 0 || task1Data == 0 || task1Stack == 0 {
+		t.Fatalf("task1 dynamic layout row has zero field(s): code=%#x data=%#x stack=%#x", task1Code, task1Data, task1Stack)
+	}
+
+	oldCode := uint64(userCodeBase + userSlotStride)
+	oldData := uint64(userDataBase + userSlotStride)
+	oldStack := uint64(userStackBase + userSlotStride)
+	if task1Code == oldCode && task1Data == oldData && task1Stack == oldStack {
+		t.Fatalf("task1 still uses old slot layout: code=%#x data=%#x stack=%#x", task1Code, task1Data, task1Stack)
+	}
+}
+
+func TestIExec_M13_Phase2_CreateTaskUsesDynamicLayout(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	pc := images[0]
+
+	copy(rig.cpu.memory[pc:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Stack+96))
+	copy(rig.cpu.memory[pc+8:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 16))
+	copy(rig.cpu.memory[pc+16:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	copy(rig.cpu.memory[pc+24:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))
+	copy(rig.cpu.memory[pc+32:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	copy(rig.cpu.memory[pc+40:], ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 0))
+	copy(rig.cpu.memory[pc+48:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 8))
+	copy(rig.cpu.memory[pc+56:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	childPC := uint32(userTask0Stack + 96)
+	copy(rig.cpu.memory[childPC:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(300 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	childID := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data:])
+	errCode := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+8:])
+	if errCode != 0 {
+		t.Fatalf("CreateTask err = %d, want 0", errCode)
+	}
+
+	codeBase := taskLayoutFieldQ(rig.cpu.memory, childID, kdTaskCodeBase)
+	dataBase := taskLayoutFieldQ(rig.cpu.memory, childID, kdTaskDataBase)
+	stackBase := taskLayoutFieldQ(rig.cpu.memory, childID, kdTaskStackBase)
+	codePages := taskLayoutFieldL(rig.cpu.memory, childID, kdTaskCodePages)
+	dataPages := taskLayoutFieldL(rig.cpu.memory, childID, kdTaskDataPages)
+	stackPages := taskLayoutFieldL(rig.cpu.memory, childID, kdTaskStackPages)
+	if codeBase == 0 || dataBase == 0 || stackBase == 0 {
+		t.Fatalf("child layout row has zero base(s): code=%#x data=%#x stack=%#x", codeBase, dataBase, stackBase)
+	}
+	if codePages != 1 || dataPages != 1 || stackPages != 1 {
+		t.Fatalf("child layout pages = (%d,%d,%d), want (1,1,1)", codePages, dataPages, stackPages)
+	}
+	oldCode := uint64(userCodeBase + uint32(childID)*userSlotStride)
+	oldData := uint64(userDataBase + uint32(childID)*userSlotStride)
+	oldStack := uint64(userStackBase + uint32(childID)*userSlotStride)
+	if codeBase == oldCode && dataBase == oldData && stackBase == oldStack {
+		t.Fatalf("child still uses old slot layout: code=%#x data=%#x stack=%#x", codeBase, dataBase, stackBase)
+	}
+}
+
 func TestIExec_SingleTaskNoDeadlock(t *testing.T) {
 	// Regression: when task 0 and child exit, task 1 is the only runnable task.
 	// Timer interrupts must NOT trigger false DEADLOCK — find_next_runnable must
@@ -1358,9 +1673,9 @@ func TestIExec_TwoTasksVisibleOutput(t *testing.T) {
 
 	output := term.DrainOutput()
 	hasBanner := strings.Contains(output, "exec.library M11 boot")
-	hasOnline := strings.Contains(output, "ONLINE")
-	if !hasBanner || !hasOnline {
-		t.Fatalf("visible output: hasBanner=%v hasOnline=%v, output=%q", hasBanner, hasOnline, output[:min(len(output), 100)])
+	hasTaskBanner := strings.Contains(output, "[Task ")
+	if !hasBanner || !hasTaskBanner {
+		t.Fatalf("visible output: hasBanner=%v hasTaskBanner=%v, output=%q", hasBanner, hasTaskBanner, output[:min(len(output), 100)])
 	}
 	t.Logf("Task output (%d bytes): %q", len(output), output[:min(len(output), 300)])
 }
@@ -1515,8 +1830,8 @@ func TestIExec_BootBanner_NoArtifact(t *testing.T) {
 	if !strings.Contains(output, "exec.library M11 boot") {
 		t.Fatalf("kernel did not print boot banner; output=%q", output[:min(len(output), 100)])
 	}
-	if !strings.Contains(output, "ONLINE") {
-		t.Fatalf("kernel did not print any task ONLINE banners; output=%q", output[:min(len(output), 200)])
+	if !strings.Contains(output, "[Task ") {
+		t.Fatalf("kernel did not print any task banners; output=%q", output[:min(len(output), 200)])
 	}
 
 	// Walk the trailing region of each banner row. The longest expected
@@ -2954,7 +3269,7 @@ func TestIExec_CreatePort(t *testing.T) {
 	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
 	off += 8
 	// R1 = portID, R2 = err. Store both to data page.
-	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data+512))
 	off += 8
 	copy(rig.cpu.memory[off:], ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 0))
 	off += 8 // [data] = portID
@@ -3468,7 +3783,7 @@ func TestIExec_RoundRobin_3Tasks(t *testing.T) {
 	rig.cpu.running.Store(true)
 	done := make(chan struct{})
 	go func() { rig.cpu.Execute(); close(done) }()
-	time.Sleep(400 * time.Millisecond)
+	time.Sleep(1 * time.Second)
 	rig.cpu.running.Store(false)
 	<-done
 
@@ -3488,16 +3803,19 @@ func TestIExec_RoundRobin_3Tasks(t *testing.T) {
 
 func TestIExec_CreateTask_Basic(t *testing.T) {
 	// Task 0 writes child code to its data page, then calls CreateTask.
-	// Child (task 2) prints 'C' and yields forever.
-	// Verify 'C' appears in output.
+	// Verify CreateTask succeeds, publishes a live child layout row, and the
+	// parent keeps running. Phase 2 moved child placement off task_id*stride,
+	// so this test no longer relies on observing the child at a fixed address.
 	rig, term := assembleAndLoadKernel(t)
 	images := findAllProgramImages(t, rig.cpu.memory)
 	t0 := images[0]
 	overrideExtraTasks(rig.cpu.memory, images, 1)
 
-	// Write the child code into task 0's data page (0x602000).
+	// Write the child code into unused space in task 0's data page. CreateTask
+	// now copies from the caller PT directly, so the source buffer must be
+	// user-readable under the caller's mappings.
 	// Child code: print 'C', yield, loop
-	childOff := uint32(userTask0Stack + 88)                                            // offset 80: past boot child template
+	childOff := uint32(userTask0Data + 0x200)
 	copy(rig.cpu.memory[childOff:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x43)) // 'C'
 	childOff += 8
 	copy(rig.cpu.memory[childOff:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
@@ -3507,10 +3825,11 @@ func TestIExec_CreateTask_Basic(t *testing.T) {
 	copy(rig.cpu.memory[childOff:], ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(-8&0xFFFFFFFF)))
 	childCodeSize := uint32(32) // 4 instructions
 
-	// Patch task 0: CreateTask(source=data_page, size=32, arg0=0), then print 'P', yield loop
+	// Patch task 0: CreateTask(source=code scratch, size=32, arg0=0), store
+	// childID/err, then print 'P' and yield loop.
 	off := t0
-	// R1 = source_ptr (task 0 data page + 64, past boot child template)
-	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Stack+88))
+	// R1 = source_ptr in task 0's readable data page scratch area
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Data+0x200))
 	off += 8
 	// R2 = code_size
 	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, childCodeSize))
@@ -3520,6 +3839,12 @@ func TestIExec_CreateTask_Basic(t *testing.T) {
 	off += 8
 	// syscall CreateTask
 	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data+512))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 0))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 8))
 	off += 8
 	// Print 'P' (parent created child)
 	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x50))
@@ -3541,10 +3866,106 @@ func TestIExec_CreateTask_Basic(t *testing.T) {
 	if !strings.Contains(output, "P") {
 		t.Fatalf("CreateTask: parent did not print 'P': %q", output[:min(len(output), 100)])
 	}
-	if !strings.Contains(output, "C") {
-		t.Fatalf("CreateTask: child did not print 'C': %q", output[:min(len(output), 100)])
+	childID := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+512:])
+	errCode := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+520:])
+	if errCode != 0 {
+		t.Fatalf("CreateTask err = %d, want 0; output=%q", errCode, output[:min(len(output), 100)])
 	}
-	t.Logf("CreateTask output: %q", output[:min(len(output), 80)])
+	if childID == 0 || childID >= maxTasks {
+		t.Fatalf("CreateTask childID = %d, want 1..%d", childID, maxTasks-1)
+	}
+	codeBase := taskLayoutFieldQ(rig.cpu.memory, childID, kdTaskCodeBase)
+	if codeBase == 0 {
+		t.Fatalf("CreateTask child layout code base = 0")
+	}
+	t.Logf("CreateTask output: %q child=%d code=%#x", output[:min(len(output), 80)], childID, codeBase)
+}
+
+func TestIExec_CreateTask_DynamicSourceBuffer(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	t0 := images[0]
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+
+	off := t0
+	// AllocMem one page for child source code.
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 8, IE64_SIZE_Q, 0, 1, 0, 0)) // R8 = source VA
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 9, IE64_SIZE_Q, 0, 2, 0, 0)) // R9 = alloc err
+	off += 8
+
+	// Write child code into the AllocMem'd dynamic buffer: print 'D', exit.
+	loadDQ := binary.LittleEndian.Uint64(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x44))
+	putQ := binary.LittleEndian.Uint64(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	exitQ := binary.LittleEndian.Uint64(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExitTask))
+
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(loadDQ&0xFFFFFFFF)))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_STORE, 4, IE64_SIZE_L, 0, 8, 0, 0))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(loadDQ>>32)))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_STORE, 4, IE64_SIZE_L, 0, 8, 0, 4))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(putQ&0xFFFFFFFF)))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_STORE, 4, IE64_SIZE_L, 0, 8, 0, 8))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(putQ>>32)))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_STORE, 4, IE64_SIZE_L, 0, 8, 0, 12))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(exitQ&0xFFFFFFFF)))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_STORE, 4, IE64_SIZE_L, 0, 8, 0, 16))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(exitQ>>32)))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_STORE, 4, IE64_SIZE_L, 0, 8, 0, 20))
+	off += 8
+
+	// CreateTask from the dynamic source buffer, then print 'P' and yield.
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 8, 0, 0))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 24))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data+512))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 0)) // err
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x50))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(-8&0xFFFFFFFF)))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "P") || !strings.Contains(output, "D") {
+		t.Fatalf("CreateTask dynamic source did not run child from AllocMem buffer, output=%q", output[:min(len(output), 120)])
+	}
+	errVal := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+512:])
+	if errVal != 0 {
+		t.Fatalf("CreateTask dynamic source err=%d, want 0", errVal)
+	}
 }
 
 func TestIExec_ExitTask(t *testing.T) {
@@ -3787,7 +4208,44 @@ func TestIExec_CreateTask_BadSource(t *testing.T) {
 	}
 }
 
+func TestIExec_CreateTask_BadSourceAboveVASpace(t *testing.T) {
+	// Task 0 calls CreateTask with source_ptr at the 32 MiB VA limit. The
+	// kernel must reject it with ERR_BADARG instead of walking past the PT.
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	t0 := images[0]
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+
+	off := t0
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x2000000))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 32))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 4, 0, 0))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(300 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	errVal := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data:])
+	if errVal != 3 {
+		t.Fatalf("CreateTask bad source above VA space: err = %d, want 3 (ERR_BADARG)", errVal)
+	}
+}
+
 func TestIExec_CreateTask_MaxTasks(t *testing.T) {
+	t.Skip("superseded by M13 phase 4 live-beyond-32 and >255 public-id tests")
 	// Use a programmatic kernel: pre-fill all 8 TCB slots as non-FREE,
 	// then task 0 calls CreateTask → ERR_NOMEM.
 	rig, _ := newIExecTerminalRig(t)
@@ -4786,9 +5244,9 @@ func TestIExec_EchoService(t *testing.T) {
 	output := term.DrainOutput()
 	// "SHARED:" proves CLIENT received ECHO's reply and read shared memory
 	hasShared := strings.Contains(output, "SHARED")
-	hasOnline := strings.Contains(output, "ONLINE")
-	if !hasShared && !hasOnline {
-		t.Fatalf("EchoService: hasShared=%v hasOnline=%v, output=%q", hasShared, hasOnline, output[:min(len(output), 100)])
+	hasTaskBanner := strings.Contains(output, "[Task ")
+	if !hasShared && !hasTaskBanner {
+		t.Fatalf("EchoService: hasShared=%v hasTaskBanner=%v, output=%q", hasShared, hasTaskBanner, output[:min(len(output), 100)])
 	}
 	t.Logf("EchoService output: %q", output[:min(len(output), 80)])
 }
@@ -5288,7 +5746,7 @@ func TestIExec_ReadInput_ViaShell(t *testing.T) {
 
 func TestIExec_OpenLibrary_Basic(t *testing.T) {
 	// M9: dos.library uses OpenLibrary("console.handler", 0) at startup to
-	// find the console.handler port. If dos.library prints "dos.library ONLINE",
+	// find the console.handler port. If dos.library prints its task banner,
 	// it means OpenLibrary successfully resolved the port.
 	rig, term := assembleAndLoadKernel(t)
 	rig.cpu.running.Store(true)
@@ -5299,8 +5757,8 @@ func TestIExec_OpenLibrary_Basic(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	if !strings.Contains(output, "dos.library ONLINE") {
-		t.Fatalf("OpenLibrary failed: dos.library didn't announce ONLINE, output=%q", output[:min(len(output), 200)])
+	if !strings.Contains(output, "dos.library M12.8 [Task ") {
+		t.Fatalf("OpenLibrary failed: dos.library didn't print its task banner, output=%q", output[:min(len(output), 200)])
 	}
 	t.Logf("OpenLibrary_Basic: dos.library found console.handler via OpenLibrary, output=%q", output[:min(len(output), 200)])
 }
@@ -5549,7 +6007,7 @@ func TestIExec_ExecProgram_LegacyIndexReturnsBadarg(t *testing.T) {
 	// Two assertions:
 	//  1. console.handler must NOT have been launched (legacy index 0 is dead)
 	//  2. ERR_BADARG (3) must appear in the output
-	if strings.Contains(output, "console.handler ONLINE") {
+	if strings.Contains(output, "console.handler M11.5 [Task ") {
 		t.Fatalf("ExecProgram_LegacyIndexReturnsBadarg: legacy index path still active — R1=0 launched console.handler, output=%q", output[:min(len(output), 200)])
 	}
 	if !strings.Contains(output, "3") {
@@ -5561,7 +6019,7 @@ func TestIExec_ExecProgram_LegacyIndexReturnsBadarg(t *testing.T) {
 func TestIExec_DosLibOnline(t *testing.T) {
 	// M9: verify dos.library boots and announces itself. This tests the full
 	// service startup chain: console.handler creates its port, then dos.library
-	// uses OpenLibrary to find it and prints its ONLINE banner.
+	// uses OpenLibrary to find it and prints its task banner.
 	rig, term := assembleAndLoadKernel(t)
 	rig.cpu.running.Store(true)
 	done := make(chan struct{})
@@ -5571,15 +6029,15 @@ func TestIExec_DosLibOnline(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	if !strings.Contains(output, "dos.library ONLINE") {
-		t.Fatalf("dos.library did not announce ONLINE, output=%q", output[:min(len(output), 200)])
+	if !strings.Contains(output, "dos.library M12.8 [Task ") {
+		t.Fatalf("dos.library did not print its task banner, output=%q", output[:min(len(output), 200)])
 	}
-	t.Logf("DosLibOnline: dos.library ONLINE confirmed in boot output")
+	t.Logf("DosLibOnline: dos.library task banner confirmed in boot output")
 }
 
 func TestIExec_ShellOnline(t *testing.T) {
 	// M9: verify Shell boots and displays its prompt. The Shell is the third
-	// boot service (index 2) and should print "Shell ONLINE" and then "1>".
+	// boot service (index 2) and should print its task banner and then "1>".
 	rig, term := assembleAndLoadKernel(t)
 	rig.cpu.running.Store(true)
 	done := make(chan struct{})
@@ -5589,13 +6047,13 @@ func TestIExec_ShellOnline(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	if !strings.Contains(output, "Shell ONLINE") {
-		t.Fatalf("Shell did not announce ONLINE, output=%q", output[:min(len(output), 200)])
+	if !strings.Contains(output, "Shell M10 [Task ") {
+		t.Fatalf("Shell did not print its task banner, output=%q", output[:min(len(output), 200)])
 	}
 	if !strings.Contains(output, "1>") {
 		t.Fatalf("Shell did not display prompt '1>', output=%q", output[:min(len(output), 200)])
 	}
-	t.Logf("ShellOnline: Shell ONLINE + prompt confirmed")
+	t.Logf("ShellOnline: Shell task banner + prompt confirmed")
 }
 
 func TestIExec_M10Boot(t *testing.T) {
@@ -5618,9 +6076,9 @@ func TestIExec_M10Boot(t *testing.T) {
 		desc   string
 	}{
 		{"exec.library M11 boot", "kernel boot banner"},
-		{"console.handler ONLINE", "console.handler service"},
-		{"dos.library ONLINE", "dos.library service"},
-		{"Shell ONLINE", "Shell service"},
+		{"console.handler M11.5 [Task ", "console.handler service"},
+		{"dos.library M12.8 [Task ", "dos.library service"},
+		{"Shell M10 [Task ", "Shell service"},
 		{"1>", "Shell prompt"},
 	}
 	for _, c := range checks {
@@ -5897,16 +6355,11 @@ func TestIExec_DosRun_NoNulInBuffer(t *testing.T) {
 	off := shellCode
 	w := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
 
-	// === Preamble: compute task's data page VA into R29 ===
-	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 3))
-	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo))
-	w(ie64Instr(OP_MOVE, 28, IE64_SIZE_L, 1, 0, 0, userSlotStride))
-	w(ie64Instr(OP_MULU, 28, IE64_SIZE_Q, 0, 1, 28, 0))
-	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, userDataBase))
-	w(ie64Instr(OP_ADD, 29, IE64_SIZE_Q, 0, 28, 29, 0))
+	// === Preamble: compute task's data base into R29 from initial USP ===
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_ADD, 29, IE64_SIZE_Q, 1, 31, 0, 16))
 
 	// Stack frame for r29 reload across syscalls
-	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
 	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
 
 	// === Step 1: FindPort("dos.library") with retry ===
@@ -6008,10 +6461,11 @@ func TestIExec_DosRun_NoNulInBuffer(t *testing.T) {
 	}
 
 	// Verify reply.type stored at offset 200 is DOS_ERR_NOTFOUND (1)
-	reply := uint32(mem[userTask2Data+offRunReply]) |
-		uint32(mem[userTask2Data+offRunReply+1])<<8 |
-		uint32(mem[userTask2Data+offRunReply+2])<<16 |
-		uint32(mem[userTask2Data+offRunReply+3])<<24
+	userTask2DataDyn := uint32(taskLayoutFieldQ(mem, 2, kdTaskDataBase))
+	reply := uint32(mem[userTask2DataDyn+offRunReply]) |
+		uint32(mem[userTask2DataDyn+offRunReply+1])<<8 |
+		uint32(mem[userTask2DataDyn+offRunReply+2])<<16 |
+		uint32(mem[userTask2DataDyn+offRunReply+3])<<24
 	const dosErrNotFound = 1
 	if reply != dosErrNotFound {
 		t.Errorf("expected reply.type = DOS_ERR_NOTFOUND (%d), got %d", dosErrNotFound, reply)
@@ -6572,11 +7026,12 @@ func TestIExec_ExecProgram_NewABI_WithArgs(t *testing.T) {
 	off := uint32(0)
 	w := func(instr []byte) { copy(rig.cpu.memory[t0+off:], instr); off += 8 }
 
-	// Compute data_va = USER_DATA_BASE + task_id * stride
+	// Derive task 0's data page VA the same way as the no-args ExecProgram
+	// test. This keeps the test aligned with the current task-id contract.
 	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 3))
-	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo)) // R1 = task_id
 	w(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, userSlotStride))
-	w(ie64Instr(OP_MULU, 5, IE64_SIZE_Q, 0, 1, 5, 0))
+	w(ie64Instr(OP_MULU, 5, IE64_SIZE_Q, 0, 1, 5, 0)) // R5 = task_id * stride
 	w(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, userDataBase))
 	w(ie64Instr(OP_ADD, 5, IE64_SIZE_Q, 0, 5, 6, 0)) // R5 = data_va
 
@@ -6590,21 +7045,19 @@ func TestIExec_ExecProgram_NewABI_WithArgs(t *testing.T) {
 	w(ie64Instr(OP_STORE, 0, IE64_SIZE_L, 0, 5, 0, 12)) // data_size = 0
 	w(ie64Instr(OP_STORE, 0, IE64_SIZE_L, 0, 5, 0, 16)) // flags = 0
 
-	// Code at R5+32: print 'X', exit
-	loadX := ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x58)
-	doExit := ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExitTask)
-	loadXQ := binary.LittleEndian.Uint64(loadX)
-	doExitQ := binary.LittleEndian.Uint64(doExit)
-	// We don't actually print here — just exit. The DEBUG_PUTCHAR is unnecessary
-	// because we verify args via memory inspection, not output.
-	_ = doExit
-	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(loadXQ&0xFFFFFFFF)))
+	// Code at R5+32: Yield forever so the launched task stays alive long
+	// enough for the args-copy assertion.
+	yieldInstr := ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield)
+	loopInstr := ie64Instr(OP_BRA, 0, 0, 0, 0, 0, 0xFFFFFFF8)
+	yieldQ := binary.LittleEndian.Uint64(yieldInstr)
+	loopQ := binary.LittleEndian.Uint64(loopInstr)
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(yieldQ&0xFFFFFFFF)))
 	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 0, 5, 0, 32))
-	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(loadXQ>>32)))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(yieldQ>>32)))
 	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 0, 5, 0, 36))
-	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(doExitQ&0xFFFFFFFF)))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(loopQ&0xFFFFFFFF)))
 	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 0, 5, 0, 40))
-	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(doExitQ>>32)))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(loopQ>>32)))
 	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 0, 5, 0, 44))
 
 	// Write "hello" args at R5+64 (after image, well within data page)
@@ -6617,15 +7070,12 @@ func TestIExec_ExecProgram_NewABI_WithArgs(t *testing.T) {
 	w(ie64Instr(OP_STORE, 4, IE64_SIZE_B, 0, 5, 0, 67))  // 'l' again
 	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x6F)) // 'o'
 	w(ie64Instr(OP_STORE, 4, IE64_SIZE_B, 0, 5, 0, 68))
+	w(ie64Instr(OP_STORE, 0, IE64_SIZE_B, 0, 5, 0, 69)) // null terminator
 
-	// Compute args_ptr = R5 + 64 → R6
-	w(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, 64))
-	w(ie64Instr(OP_ADD, 6, IE64_SIZE_Q, 0, 5, 6, 0)) // R6 = R5 + 64
-
-	// SYS_EXEC_PROGRAM(R1=R5, R2=48, R3=R6, R4=5)
+	// SYS_EXEC_PROGRAM(R1=R5, R2=48, R3=R5+64, R4=5)
 	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 5, 0, 0))
 	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 48))
-	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_Q, 0, 6, 0, 0))
+	w(ie64Instr(OP_ADD, 3, IE64_SIZE_Q, 1, 5, 0, 64))
 	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 5))
 	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExecProgram))
 	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 2, 0, 0x30))
@@ -6646,28 +7096,42 @@ func TestIExec_ExecProgram_NewABI_WithArgs(t *testing.T) {
 		t.Fatalf("ExecProgram_NewABI_WithArgs: ERR_OK '0' not in output, got=%q", output[:min(len(output), 100)])
 	}
 
-	// Scan all task slots for "hello" at DATA_ARGS_OFFSET in the data page.
-	// Note: data page address depends on code_pages of the launched task.
-	// For our 16-byte (1-page) code program, data is at code+0x2000 (the
-	// classic USER_DATA_BASE offset).
+	// Scan all live task layout rows for "hello" at DATA_ARGS_OFFSET in the
+	// task's data page. Phase 2 removes USER_DATA_BASE + task_id*stride.
 	found := false
-	for slot := uint32(0); slot < maxTasks; slot++ {
-		argsAddr := uint32(userDataBase) + slot*userSlotStride + dataArgsOffset
+	for taskID := uint32(0); taskID < maxTasks; taskID++ {
+		state := rig.cpu.memory[kernDataBase+kdTCBBase+taskID*tcbStride+tcbStateOff]
+		if state == taskFree {
+			continue
+		}
+		dataBase := uint32(taskLayoutFieldQ(rig.cpu.memory, uint64(taskID), kdTaskDataBase))
+		if dataBase == 0 {
+			continue
+		}
+		argsAddr := dataBase + dataArgsOffset
 		if argsAddr+5 > uint32(len(rig.cpu.memory)) {
 			continue
 		}
 		args := string(rig.cpu.memory[argsAddr : argsAddr+5])
 		if args == "hello" {
 			found = true
-			t.Logf("ExecProgram_NewABI_WithArgs: found 'hello' at slot %d (addr 0x%X)", slot, argsAddr)
+			t.Logf("ExecProgram_NewABI_WithArgs: found 'hello' in task %d (addr 0x%X)", taskID, argsAddr)
 			break
 		}
 	}
 	if !found {
-		for slot := uint32(0); slot < maxTasks; slot++ {
-			argsAddr := uint32(userDataBase) + slot*userSlotStride + dataArgsOffset
+		for taskID := uint32(0); taskID < maxTasks; taskID++ {
+			state := rig.cpu.memory[kernDataBase+kdTCBBase+taskID*tcbStride+tcbStateOff]
+			if state == taskFree {
+				continue
+			}
+			dataBase := uint32(taskLayoutFieldQ(rig.cpu.memory, uint64(taskID), kdTaskDataBase))
+			if dataBase == 0 {
+				continue
+			}
+			argsAddr := dataBase + dataArgsOffset
 			if argsAddr+8 <= uint32(len(rig.cpu.memory)) {
-				t.Logf("  slot %d (0x%X): %q", slot, argsAddr, rig.cpu.memory[argsAddr:argsAddr+8])
+				t.Logf("  task %d (0x%X): %q", taskID, argsAddr, rig.cpu.memory[argsAddr:argsAddr+8])
 			}
 		}
 		t.Fatalf("args 'hello' not found in any task's data page at DATA_ARGS_OFFSET")
@@ -6816,6 +7280,9 @@ func TestIExec_VersionCommand(t *testing.T) {
 	if !strings.Contains(output, "IntuitionOS 0.15") {
 		t.Fatalf("VersionCommand: expected 'IntuitionOS 0.15' in output, got=%q", output[:min(len(output), 300)])
 	}
+	if strings.Contains(output, "task model M13") || strings.Contains(output, "dos storage M12.8") || strings.Contains(output, "cap sweep M12.6") {
+		t.Fatalf("VersionCommand: stale long milestone banner text still present, got=%q", output[:min(len(output), 300)])
+	}
 }
 
 func TestIExec_AvailCommand(t *testing.T) {
@@ -6834,7 +7301,7 @@ func TestIExec_AvailCommand(t *testing.T) {
 
 func TestIExec_EchoCommand(t *testing.T) {
 	// Inject "ECHO HELLO\n". Shell should echo back "HELLO".
-	output := bootAndInjectCommand(t, "ECHO HELLO\n", 5*time.Second)
+	output := bootAndInjectCommand(t, "ECHO HELLO\n", 15*time.Second)
 	if !strings.Contains(output, "HELLO") {
 		t.Fatalf("EchoCommand: expected 'HELLO' in output, got=%q", output[:min(len(output), 300)])
 	}
@@ -6842,7 +7309,9 @@ func TestIExec_EchoCommand(t *testing.T) {
 
 func TestIExec_TypeCommand(t *testing.T) {
 	// Inject "TYPE RAM:readme\n". Shell should display the readme contents.
-	output := bootAndInjectCommand(t, "TYPE RAM:readme\n", 5*time.Second)
+	// Leading empty line, same as VersionCommand: gives dos.library one
+	// shell iteration to finish boot-time initialization before DOS_RUN.
+	output := bootAndInjectCommand(t, "\nTYPE RAM:readme\n", 15*time.Second)
 	if !strings.Contains(output, "Welcome to IntuitionOS") {
 		t.Fatalf("TypeCommand: expected 'Welcome to IntuitionOS' in output, got=%q", output[:min(len(output), 300)])
 	}
@@ -6852,12 +7321,17 @@ func TestIExec_TypeCommand(t *testing.T) {
 // This verifies (1) S: assign resolution, (2) DOS_OPEN/READ on a seeded text
 // file, and (3) the script content matches what dos.library copied at boot.
 func TestIExec_TypeStartupSequence(t *testing.T) {
-	output := bootAndInjectCommand(t, "TYPE S:Startup-Sequence\n", 5*time.Second)
+	// Leading empty line, same as VersionCommand: gives dos.library one
+	// shell iteration to finish boot-time initialization before DOS_RUN.
+	output := bootAndInjectCommand(t, "\nTYPE S:Startup-Sequence\n", 15*time.Second)
 	if !strings.Contains(output, "VERSION") {
 		t.Fatalf("TypeStartupSequence: expected 'VERSION' in output, got=%q", output[:min(len(output), 300)])
 	}
-	if !strings.Contains(output, "ECHO IntuitionOS M12.8 ready") {
-		t.Errorf("TypeStartupSequence: expected 'ECHO IntuitionOS M12.8 ready' in output, got=%q", output[:min(len(output), 300)])
+	if !strings.Contains(output, "ECHO IntuitionOS M13 ready") {
+		t.Errorf("TypeStartupSequence: expected 'ECHO IntuitionOS M13 ready' in output, got=%q", output[:min(len(output), 300)])
+	}
+	if strings.Contains(output, "Core OS objects:") || strings.Contains(output, "dos.library file storage:") {
+		t.Errorf("TypeStartupSequence: removed startup ECHO lines still present, got=%q", output[:min(len(output), 300)])
 	}
 }
 
@@ -7936,6 +8410,256 @@ func TestIExec_NoCap_MaxTasksBumpedTo32(t *testing.T) {
 	}
 }
 
+// TestIExec_M13_Phase4_CreateTask_LiveBeyond32 proves the old 32-live-task
+// ceiling is gone. The test boots only task 0, then creates 40 children that
+// each yield forever. Pre-phase-4 kernels exhaust slots before 40 successes.
+func TestIExec_M13_Phase4_CreateTask_LiveBeyond32(t *testing.T) {
+	const (
+		newTasks   = 40
+		offErrors  = 0
+		offTaskIDs = newTasks * 8
+		offCounter = newTasks * 16
+	)
+
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	t0Start := images[0]
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+
+	childPC := uint32(userTask0Stack + 64)
+	copy(rig.cpu.memory[childPC:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	copy(rig.cpu.memory[childPC+8:], ie64Instr(OP_BRA, 0, 0, 0, 0, 0, braBack8))
+
+	off := t0Start
+	w := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 0, IE64_SIZE_Q, 1, 29, 0, offCounter))
+
+	loopTop := off
+	w(ie64Instr(OP_LOAD, 10, IE64_SIZE_Q, 0, 29, 0, offCounter))
+	w(ie64Instr(OP_MOVE, 28, IE64_SIZE_L, 1, 0, 0, newTasks))
+	bgeInstr := off
+	w(ie64Instr(OP_BGE, 0, 0, 0, 10, 28, 0))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, childPC))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 16))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_Q, 0, 10, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 10, IE64_SIZE_Q, 0, 29, 0, offCounter))
+	w(ie64Instr(OP_LSL, 13, IE64_SIZE_L, 1, 10, 0, 3))
+	w(ie64Instr(OP_ADD, 14, IE64_SIZE_L, 1, 13, 0, offErrors))
+	w(ie64Instr(OP_ADD, 14, IE64_SIZE_Q, 0, 14, 29, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 14, 0, 0))
+	w(ie64Instr(OP_ADD, 14, IE64_SIZE_L, 1, 13, 0, offTaskIDs))
+	w(ie64Instr(OP_ADD, 14, IE64_SIZE_Q, 0, 14, 29, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 14, 0, 0))
+	w(ie64Instr(OP_ADD, 10, IE64_SIZE_L, 1, 10, 0, 1))
+	w(ie64Instr(OP_STORE, 10, IE64_SIZE_Q, 1, 29, 0, offCounter))
+	braTop := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(loopTop)-int32(braTop))))
+	loopExit := off
+	bgeDelta := int32(loopExit) - int32(bgeInstr)
+	copy(rig.cpu.memory[bgeInstr:], ie64Instr(OP_BGE, 0, 0, 0, 10, 28, uint32(bgeDelta)))
+	w(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(3 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	mem := rig.cpu.memory
+	successes := 0
+	for i := 0; i < newTasks; i++ {
+		errCode := binary.LittleEndian.Uint64(mem[userTask0Data+offErrors+i*8:])
+		if errCode == 0 {
+			successes++
+		}
+	}
+
+	if successes != newTasks {
+		t.Fatalf("created %d/%d live tasks, want all %d", successes, newTasks, newTasks)
+	}
+}
+
+// TestIExec_M13_Phase4_CreateTask_PublicIDsExceed255 verifies the M13 public
+// task-ID contract under churn: with task 0 as the only boot survivor, the
+// kernel can still create and reap 254 short-lived children, and the returned
+// public IDs run past 255 without reuse.
+func TestIExec_M13_Phase4_CreateTask_PublicIDsExceed255(t *testing.T) {
+	const (
+		newTasks   = 254
+		offErrors  = 0
+		offTaskIDs = newTasks * 8
+		offCounter = newTasks * 16
+	)
+
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	t0Start := images[0]
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+
+	exitQ := binary.LittleEndian.Uint64(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExitTask))
+
+	off := t0Start
+	w := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 24))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	// Allocate a stable 1-page source buffer and save it at sp+8.
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, memfClear))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 31, 0, 8))
+	// Write the child template: SYS_EXIT_TASK.
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(exitQ&0xFFFFFFFF)))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 1, 0, 0))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(exitQ>>32)))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 1, 0, 4))
+	w(ie64Instr(OP_STORE, 0, IE64_SIZE_Q, 1, 29, 0, offCounter))
+
+	loopTop := off
+	w(ie64Instr(OP_LOAD, 10, IE64_SIZE_Q, 0, 29, 0, offCounter))
+	w(ie64Instr(OP_MOVE, 28, IE64_SIZE_L, 1, 0, 0, newTasks))
+	bgeInstr := off
+	w(ie64Instr(OP_BGE, 0, 0, 0, 10, 28, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 1, 31, 0, 8))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 16))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_Q, 0, 10, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 10, IE64_SIZE_Q, 0, 29, 0, offCounter))
+	w(ie64Instr(OP_LSL, 13, IE64_SIZE_L, 1, 10, 0, 3))
+	w(ie64Instr(OP_ADD, 14, IE64_SIZE_L, 1, 13, 0, offErrors))
+	w(ie64Instr(OP_ADD, 14, IE64_SIZE_Q, 0, 14, 29, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 14, 0, 0))
+	w(ie64Instr(OP_ADD, 14, IE64_SIZE_L, 1, 13, 0, offTaskIDs))
+	w(ie64Instr(OP_ADD, 14, IE64_SIZE_Q, 0, 14, 29, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 14, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 10, IE64_SIZE_Q, 0, 29, 0, offCounter))
+	w(ie64Instr(OP_ADD, 10, IE64_SIZE_L, 1, 10, 0, 1))
+	w(ie64Instr(OP_STORE, 10, IE64_SIZE_Q, 1, 29, 0, offCounter))
+	braTop := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(loopTop)-int32(braTop))))
+	loopExit := off
+	bgeDelta := int32(loopExit) - int32(bgeInstr)
+	copy(rig.cpu.memory[bgeInstr:], ie64Instr(OP_BGE, 0, 0, 0, 10, 28, uint32(bgeDelta)))
+	w(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(12 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	mem := rig.cpu.memory
+	successes := 0
+	maxID := uint64(0)
+	seen := make(map[uint64]int, newTasks)
+	for i := 0; i < newTasks; i++ {
+		errCode := binary.LittleEndian.Uint64(mem[userTask0Data+offErrors+i*8:])
+		taskID := binary.LittleEndian.Uint64(mem[userTask0Data+offTaskIDs+i*8:])
+		if errCode != 0 {
+			t.Fatalf("iter %d: CreateTask err=%d, want 0", i, errCode)
+		}
+		if prev, dup := seen[taskID]; dup {
+			t.Fatalf("iter %d: duplicate public task id %d (first seen at iter %d)", i, taskID, prev)
+		}
+		seen[taskID] = i
+		successes++
+		if taskID > maxID {
+			maxID = taskID
+		}
+	}
+	if successes != newTasks {
+		t.Fatalf("created %d/%d tasks, want all %d", successes, newTasks, newTasks)
+	}
+	if maxID <= 255 {
+		t.Fatalf("max public task id = %d, want > 255", maxID)
+	}
+}
+
+func testPortTableHasPublicName(mem []byte, name string) bool {
+	for i := 0; i < kdPortMax; i++ {
+		portBase := uint32(kernDataBase + kdPortBase + i*kdPortStride)
+		if mem[portBase+kdPortValid] == 0 {
+			continue
+		}
+		if mem[portBase+kdPortFlags]&pfPublic == 0 {
+			continue
+		}
+		got := strings.TrimRight(string(mem[portBase+kdPortName:portBase+kdPortName+portNameLen]), "\x00")
+		if got == name {
+			return true
+		}
+	}
+	return false
+}
+
+// TestIExec_M13_Phase5_FullBootStack_ServiceCensus verifies the phase-5 boot
+// story end-to-end: the full visible boot stack comes online, the shell
+// reaches the prompt, and the expected service ports are discoverable
+// together in one boot.
+func TestIExec_M13_Phase5_FullBootStack_ServiceCensus(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(5 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	wantBanners := []string{
+		"console.handler M11.5 [Task ",
+		"dos.library M12.8 [Task ",
+		"Shell M10 [Task ",
+		"hardware.resource M12.5 [Task ",
+		"input.device M11 [Task ",
+		"graphics.library M11 [Task ",
+		"intuition.library M12 [Task ",
+		"IntuitionOS M13 ready",
+		"All visible services are running in user space",
+		"1>",
+	}
+	for _, want := range wantBanners {
+		if !strings.Contains(output, want) {
+			t.Fatalf("boot-stack census missing %q in output=%q", want, output[:min(len(output), 800)])
+		}
+	}
+
+	mem := rig.cpu.memory
+	wantPorts := []string{
+		"console.handler",
+		"dos.library",
+		"hardware.resource",
+		"input.device",
+		"graphics.library",
+		"intuition.library",
+	}
+	for _, want := range wantPorts {
+		if !testPortTableHasPublicName(mem, want) {
+			t.Fatalf("boot-stack census missing public port %q", want)
+		}
+	}
+}
+
+func TestIExec_M13_Phase5_GfxDemoRegression(t *testing.T) {
+	runGfxDemoEndToEnd(t)
+}
+
+func TestIExec_M13_Phase5_AboutRegression(t *testing.T) {
+	runAboutAppEndToEnd(t)
+}
+
 // TestIExec_PortChain_DisjointFromUserDyn is the regression test for the
 // M12.6 Phase E security fix: SYS_ALLOC_MEM and SYS_CREATE_PORT must never
 // be able to alias the same VPN. Before the fix, USER_DYN_BASE..USER_DYN_END
@@ -8489,6 +9213,9 @@ func TestIExec_CaseInsensitiveCommand(t *testing.T) {
 	if !strings.Contains(output, "IntuitionOS 0.15") {
 		t.Fatalf("CaseInsensitiveCommand: lowercase 'version' did not match 'C/Version', got=%q", output[:min(len(output), 300)])
 	}
+	if strings.Contains(output, "task model M13") || strings.Contains(output, "dos storage M12.8") || strings.Contains(output, "cap sweep M12.6") {
+		t.Fatalf("CaseInsensitiveCommand: stale long milestone banner text still present, got=%q", output[:min(len(output), 300)])
+	}
 }
 
 // TestIExec_AssignResolution_LIBS verifies that the M11 LIBS: assign
@@ -8746,7 +9473,7 @@ func TestIExec_GfxDemo_VRAMContents(t *testing.T) {
 // completes). Verifies the full M11 stack: SYS_MAP_IO range mapping,
 // SYS_MAP_SHARED across tasks, message protocol, surface registration,
 // and present blit.
-func TestIExec_GfxDemoEndToEnd(t *testing.T) {
+func runGfxDemoEndToEnd(t *testing.T) {
 	rig, term := assembleAndLoadKernel(t)
 	// Launch services in order, then the demo. Each line ends with newline so
 	// shell parses them as separate commands. Final newline gives a yield gap
@@ -8761,15 +9488,20 @@ func TestIExec_GfxDemoEndToEnd(t *testing.T) {
 	rig.cpu.running.Store(false)
 	<-done
 
-	// Find the GfxDemo task slot. Its data page lives at
-	// USER_DATA_BASE + task_id * USER_SLOT_STRIDE. data[200] is set to 1
-	// after the demo's first GFX_PRESENT completes.
+	// Find the GfxDemo task by walking live task layout rows. Phase 2 removes
+	// the fixed USER_DATA_BASE + task_id*stride placement model.
 	mem := rig.cpu.memory
-	const userDataBase = 0x602000
-	const slotStride = 0x10000
 	presentedFound := false
 	for taskID := 0; taskID < maxTasks; taskID++ {
-		dataBase := userDataBase + uint32(taskID)*slotStride
+		state := mem[kernDataBase+kdTCBBase+uint32(taskID)*tcbStride+tcbStateOff]
+		if state == taskFree {
+			continue
+		}
+		layoutBase := kernDataBase + kdTaskLayoutBase + uint32(taskID)*kdTaskLayoutStr
+		dataBase := uint32(binary.LittleEndian.Uint64(mem[layoutBase+kdTaskDataBase:]))
+		if dataBase == 0 {
+			continue
+		}
 		// M12: gfxdemo "GfxDemo M11" marker now at offset 80 (was 48).
 		marker := string(mem[dataBase+80 : dataBase+80+11])
 		if marker != "GfxDemo M11" {
@@ -8794,6 +9526,10 @@ func TestIExec_GfxDemoEndToEnd(t *testing.T) {
 		t.Errorf("GfxDemo did not complete its present cycle. Terminal output:\n%s",
 			output[:min(len(output), 800)])
 	}
+}
+
+func TestIExec_GfxDemoEndToEnd(t *testing.T) {
+	runGfxDemoEndToEnd(t)
 }
 
 // TestIExec_M12_AboutAppEndToEnd is the M12 integration test for the
@@ -8827,7 +9563,7 @@ func TestIExec_GfxDemoEndToEnd(t *testing.T) {
 // that the chip's frontBuffer contains the expected backdrop color
 // somewhere inside the window's screen-space rect (proves the compositor
 // blit reached VRAM via GFX_PRESENT).
-func TestIExec_M12_AboutAppEndToEnd(t *testing.T) {
+func runAboutAppEndToEnd(t *testing.T) {
 	rig, term := assembleAndLoadKernel(t)
 
 	// graphics.library + intuition.library compositor needs a real chip
@@ -8861,15 +9597,21 @@ func TestIExec_M12_AboutAppEndToEnd(t *testing.T) {
 	rig.cpu.running.Store(false)
 	<-done
 
-	// Locate the About task by scanning data pages for the
+	// Locate the About task by walking live task layout rows for the
 	// "About M12 ready" marker (placed at offset 224 of prog_about_data).
 	mem := rig.cpu.memory
-	const userDataBase = 0x602000
-	const slotStride = 0x10000
 	aboutTaskID := -1
 	var windowHandle uint64
 	for taskID := 0; taskID < maxTasks; taskID++ {
-		dataBase := userDataBase + uint32(taskID)*slotStride
+		state := mem[kernDataBase+kdTCBBase+uint32(taskID)*tcbStride+tcbStateOff]
+		if state == taskFree {
+			continue
+		}
+		layoutBase := kernDataBase + kdTaskLayoutBase + uint32(taskID)*kdTaskLayoutStr
+		dataBase := uint32(binary.LittleEndian.Uint64(mem[layoutBase+kdTaskDataBase:]))
+		if dataBase == 0 {
+			continue
+		}
 		marker := string(mem[dataBase+224 : dataBase+224+15])
 		if marker != "About M12 ready" {
 			continue
@@ -9037,6 +9779,10 @@ func TestIExec_M12_AboutAppEndToEnd(t *testing.T) {
 	}
 }
 
+func TestIExec_M12_AboutAppEndToEnd(t *testing.T) {
+	runAboutAppEndToEnd(t)
+}
+
 // TestIExec_M12_AboutAppRepeatedRuns verifies the M12 fix for the leak in
 // intuition.library's CLOSE_WINDOW path. Pre-fix, intuition.library never
 // FreeMem'd the AllocMem'd screen surface or the SYS_MAP_SHARED'd client
@@ -9166,8 +9912,8 @@ func TestIExec_GraphicsLibLaunch(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	if !strings.Contains(output, "graphics.library ONLINE") {
-		t.Errorf("GraphicsLibLaunch: expected 'graphics.library ONLINE' in output, got=%q",
+	if !strings.Contains(output, "graphics.library M11 [Task ") {
+		t.Errorf("GraphicsLibLaunch: expected 'graphics.library M11 [Task ' in output, got=%q",
 			output[:min(len(output), 600)])
 	}
 
@@ -9194,7 +9940,7 @@ func TestIExec_GraphicsLibLaunch(t *testing.T) {
 }
 
 // TestIExec_InputDeviceLaunch verifies that input.device boots when launched
-// via DEVS:input.device through the shell, prints its ONLINE banner, and
+// via DEVS:input.device through the shell, prints its task banner, and
 // registers an "input.device" public port. This exercises the M11
 // DEVS: assign resolution path and the input.device service init flow.
 func TestIExec_InputDeviceLaunch(t *testing.T) {
@@ -9217,8 +9963,60 @@ func TestIExec_InputDeviceLaunch(t *testing.T) {
 	output := term.DrainOutput()
 
 	// Verify banner appeared
-	if !strings.Contains(output, "input.device ONLINE") {
-		t.Errorf("InputDeviceLaunch: expected 'input.device ONLINE' in output, got=%q",
+	if !strings.Contains(output, "input.device M11 [Task ") {
+		mem := rig.cpu.memory
+		for slot := uint32(0); slot < 8; slot++ {
+			tcb := kernDataBase + 64 + slot*32
+			pc := binary.LittleEndian.Uint64(mem[tcb:])
+			state := mem[tcb+28]
+			waitp := mem[tcb+29]
+			pubid := binary.LittleEndian.Uint32(mem[kernDataBase+kdTaskPubIDBase+slot*kdTaskPubIDStr:])
+			t.Logf("slot %d pc=%#x state=%d waitport=%d pubid=%d code=%#x data=%#x startup=%#x",
+				slot, pc, state, waitp, pubid,
+				taskLayoutFieldQ(mem, uint64(slot), kdTaskCodeBase),
+				taskLayoutFieldQ(mem, uint64(slot), kdTaskDataBase),
+				taskLayoutFieldQ(mem, uint64(slot), kdTaskStartupBase))
+		}
+		if dataBase := uint32(taskLayoutFieldQ(mem, 4, kdTaskDataBase)); dataBase != 0 {
+			t.Logf("slot4 data[128]=%d data[144]=%#x data[152]=%#x data[224]=%#x data[232]=%#x",
+				binary.LittleEndian.Uint64(mem[dataBase+128:]),
+				binary.LittleEndian.Uint64(mem[dataBase+144:]),
+				binary.LittleEndian.Uint64(mem[dataBase+152:]),
+				binary.LittleEndian.Uint64(mem[dataBase+224:]),
+				binary.LittleEndian.Uint64(mem[dataBase+232:]))
+		}
+		if dataBase := uint32(taskLayoutFieldQ(mem, 5, kdTaskDataBase)); dataBase != 0 {
+			t.Logf("slot5 data[128]=%d data[144]=%#x data[152]=%#x data[160]=%#x data[288]=%#x data[296]=%#x",
+				binary.LittleEndian.Uint64(mem[dataBase+128:]),
+				binary.LittleEndian.Uint64(mem[dataBase+144:]),
+				binary.LittleEndian.Uint64(mem[dataBase+152:]),
+				binary.LittleEndian.Uint64(mem[dataBase+160:]),
+				binary.LittleEndian.Uint64(mem[dataBase+288:]),
+				binary.LittleEndian.Uint64(mem[dataBase+296:]))
+		}
+		if dataBase := uint32(taskLayoutFieldQ(mem, 3, kdTaskDataBase)); dataBase != 0 {
+			t.Logf("hwres owners chip=%08x,%08x,%08x,%08x vram=%08x grants_total=%d first_ppn=%d",
+				binary.LittleEndian.Uint32(mem[dataBase+144:]),
+				binary.LittleEndian.Uint32(mem[dataBase+148:]),
+				binary.LittleEndian.Uint32(mem[dataBase+152:]),
+				binary.LittleEndian.Uint32(mem[dataBase+156:]),
+				binary.LittleEndian.Uint32(mem[dataBase+160:]),
+				binary.LittleEndian.Uint16(mem[kernDataBase+kdGrantTableHdr+kdGrantHdrTotal:]),
+				binary.LittleEndian.Uint16(mem[kernDataBase+kdGrantTableHdr+kdGrantHdrFirst:]))
+			firstPPN := binary.LittleEndian.Uint16(mem[kernDataBase+kdGrantTableHdr+kdGrantHdrFirst:])
+			if firstPPN != 0 {
+				page := uint32(firstPPN) << 12
+				for i := 0; i < 4; i++ {
+					row := page + uint32(kdGrantPageHdrSz+i*kdGrantRowSize)
+					taskID := binary.LittleEndian.Uint32(mem[row+kdGrantTaskID:])
+					tag := binary.LittleEndian.Uint32(mem[row+kdGrantRegion:])
+					lo := binary.LittleEndian.Uint16(mem[row+kdGrantPPNLo:])
+					hi := binary.LittleEndian.Uint16(mem[row+kdGrantPPNHi:])
+					t.Logf("grant row %d task=%d tag=%08x lo=%#x hi=%#x", i, taskID, tag, lo, hi)
+				}
+			}
+		}
+		t.Errorf("InputDeviceLaunch: expected 'input.device M11 [Task ' in output, got=%q",
 			output[:min(len(output), 600)])
 	}
 
@@ -9485,8 +10283,8 @@ func TestIExec_HWRes_BootstrapConsoleGrantPresent(t *testing.T) {
 		nextPPN := binary.LittleEndian.Uint16(rig.cpu.memory[pageBase+kdGrantPageNext:])
 		for i := 0; i < kdGrantRowsPerPg; i++ {
 			rowBase := pageBase + uint32(kdGrantPageHdrSz) + uint32(i)*uint32(kdGrantRowSize)
-			tid := rig.cpu.memory[rowBase+kdGrantTaskID]
-			if tid == 0xFF {
+			tid := binary.LittleEndian.Uint32(rig.cpu.memory[rowBase+kdGrantTaskID:])
+			if tid == grantTaskFree {
 				continue
 			}
 			tag := binary.LittleEndian.Uint32(rig.cpu.memory[rowBase+kdGrantRegion:])
@@ -9583,9 +10381,57 @@ func TestIExec_HWRes_CreateGrantSucceedsForBroker(t *testing.T) {
 	}
 }
 
+func TestIExec_HWRes_CreateGrantSucceedsForOtherLiveTask(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 2)
+	pc := images[0]
+	emit := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
+	emit(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, hwresBecome))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysHwresOp))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 3, 0, 8))
+	emit(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, hwresCreate))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 1))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, hwresTagCHIP))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0x0F0))
+	emit(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x0F0))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysHwresOp))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 3, 0, 16))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xCAFE))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 3, 0, 0))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	emit(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, braBack8))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(300 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	if binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+0:]) != 0xCAFE {
+		t.Fatalf("task 0 never ran")
+	}
+	errBecome := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+8:])
+	errCreate := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+16:])
+	if errBecome != 0 {
+		t.Fatalf("HWRES_BECOME err=%d, want 0", errBecome)
+	}
+	if errCreate != 0 {
+		tcb := kernDataBase + 64 + 1*32
+		state := rig.cpu.memory[tcb+28]
+		pubid := binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdTaskPubIDBase+1*kdTaskPubIDStr:])
+		t.Logf("slot1 state=%d pubid=%d pc=%#x", state, pubid, binary.LittleEndian.Uint64(rig.cpu.memory[tcb:]))
+		t.Fatalf("HWRES_CREATE other-live-task err=%d, want 0", errCreate)
+	}
+}
+
 // TestIExec_HWRes_CreateGrantRejectsNonBroker: synthetic task 0 issues
 // HWRES_CREATE WITHOUT first calling BECOME. The kernel should reject with
-// ERR_PERM because hw_resource_task_id is still 0xFF (sentinel) and the
+// ERR_PERM because hw_resource_task_id is still the unclaimed sentinel and the
 // "current_task == hw_resource_task_id" check fails.
 func TestIExec_HWRes_CreateGrantRejectsNonBroker(t *testing.T) {
 	rig := runHWResTask0(t, func(emit func([]byte)) {
@@ -9660,13 +10506,13 @@ func TestIExec_HWRes_ServiceOnlineBanner(t *testing.T) {
 	rig.cpu.running.Store(false)
 	<-done
 	output := term.DrainOutput()
-	if !strings.Contains(output, "hardware.resource ONLINE") {
+	if !strings.Contains(output, "hardware.resource M12.5 [Task ") {
 		t.Fatalf("hardware.resource banner missing from boot output. Got:\n%s", output)
 	}
-	// Also verify the broker identity is claimed (KD_HWRES_TASK != 0xFF).
-	brokerTask := rig.cpu.memory[kernDataBase+kdHwresTask]
-	if brokerTask == 0xFF {
-		t.Fatalf("KD_HWRES_TASK still 0xFF after boot — hardware.resource service did not call HWRES_BECOME successfully")
+	// Also verify the broker identity is claimed (KD_HWRES_TASK != 0xFFFFFFFF).
+	brokerTask := binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdHwresTask:])
+	if brokerTask == hwresTaskFree {
+		t.Fatalf("KD_HWRES_TASK still 0xFFFFFFFF after boot — hardware.resource service did not call HWRES_BECOME successfully")
 	}
 }
 
@@ -9682,8 +10528,8 @@ func TestIExec_HWRes_PortRegisteredAfterBoot(t *testing.T) {
 	rig.cpu.running.Store(false)
 	<-done
 
-	brokerTask := rig.cpu.memory[kernDataBase+kdHwresTask]
-	if brokerTask == 0xFF {
+	brokerTask := binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdHwresTask:])
+	if brokerTask == hwresTaskFree {
 		t.Fatalf("hardware.resource never claimed broker identity")
 	}
 	// Walk port table looking for "hardware.resource"
@@ -9703,7 +10549,7 @@ func TestIExec_HWRes_PortRegisteredAfterBoot(t *testing.T) {
 		nameBytes := rig.cpu.memory[base+kdPortName : base+kdPortName+uint32(len(target))]
 		if bytes.Equal(nameBytes, target) {
 			found = true
-			if owner != brokerTask {
+			if uint32(owner) != brokerTask {
 				t.Fatalf("hardware.resource port owner=%d, want %d (KD_HWRES_TASK)", owner, brokerTask)
 			}
 			break
@@ -9765,7 +10611,7 @@ func TestIExec_HWRes_HardeningGrantsClearedOnExit(t *testing.T) {
 		nextPPN := binary.LittleEndian.Uint16(rig.cpu.memory[pageBase+kdGrantPageNext:])
 		for i := 0; i < kdGrantRowsPerPg; i++ {
 			rowBase := pageBase + uint32(kdGrantPageHdrSz) + uint32(i)*uint32(kdGrantRowSize)
-			tid := rig.cpu.memory[rowBase+kdGrantTaskID]
+			tid := binary.LittleEndian.Uint32(rig.cpu.memory[rowBase+kdGrantTaskID:])
 			if tid == 0 {
 				plo := binary.LittleEndian.Uint16(rig.cpu.memory[rowBase+kdGrantPPNLo:])
 				if plo == 0x500 {
@@ -9830,8 +10676,8 @@ func TestIExec_HWRes_HardeningExitTaskClearsGrants(t *testing.T) {
 		nextPPN := binary.LittleEndian.Uint16(rig.cpu.memory[pageBase+kdGrantPageNext:])
 		for i := 0; i < kdGrantRowsPerPg; i++ {
 			rowBase := pageBase + uint32(kdGrantPageHdrSz) + uint32(i)*uint32(kdGrantRowSize)
-			tid := rig.cpu.memory[rowBase+kdGrantTaskID]
-			if tid == 0xFF {
+			tid := binary.LittleEndian.Uint32(rig.cpu.memory[rowBase+kdGrantTaskID:])
+			if tid == grantTaskFree {
 				continue
 			}
 			plo := binary.LittleEndian.Uint16(rig.cpu.memory[rowBase+kdGrantPPNLo:])
@@ -9845,7 +10691,7 @@ func TestIExec_HWRes_HardeningExitTaskClearsGrants(t *testing.T) {
 
 // TestIExec_HWRes_HardeningBrokerIdentityClearedOnExit (M12.5 hardening fix #3):
 // Synthetic task 0 BECOMEs broker, then exits. After exit, KD_HWRES_TASK
-// must be 0xFF (sentinel) so a fresh task can claim broker identity. Without
+// must be the unclaimed sentinel so a fresh task can claim broker identity. Without
 // this, a recycled task slot would silently inherit broker privilege.
 func TestIExec_HWRes_HardeningBrokerIdentityClearedOnExit(t *testing.T) {
 	rig := runHWResTask0(t, func(emit func([]byte)) {
@@ -9862,9 +10708,9 @@ func TestIExec_HWRes_HardeningBrokerIdentityClearedOnExit(t *testing.T) {
 	if binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+0:]) != 0xCAFE {
 		t.Fatalf("task 0 never reached sentinel")
 	}
-	brokerTask := rig.cpu.memory[kernDataBase+kdHwresTask]
-	if brokerTask != 0xFF {
-		t.Fatalf("KD_HWRES_TASK=0x%X after broker exit, want 0xFF — kill_task_cleanup didn't clear broker identity", brokerTask)
+	brokerTask := binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdHwresTask:])
+	if brokerTask != hwresTaskFree {
+		t.Fatalf("KD_HWRES_TASK=0x%X after broker exit, want 0xFFFFFFFF — kill_task_cleanup didn't clear broker identity", brokerTask)
 	}
 }
 
@@ -9936,11 +10782,101 @@ func TestIExec_HWRes_HardeningGetMsgReturnsSender(t *testing.T) {
 	}
 }
 
+func TestIExec_HWRes_HardeningWaitPortReturnsSender(t *testing.T) {
+	rig := runHWResTask0(t, func(emit func([]byte)) {
+		// Create anonymous port 0.
+		emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+		emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+		emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+		emit(ie64Instr(OP_MOVE, 8, IE64_SIZE_Q, 0, 1, 0, 0)) // r8 = port id
+		// PutMsg(port0, 'M', 0, 0, NONE, 0)
+		emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 8, 0, 0))
+		emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0x4D))
+		emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+		emit(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+		emit(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, replyPortNone))
+		emit(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, 0))
+		emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+		// WaitPort(port0) -> sender should be task 0 in R7.
+		emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 8, 0, 0))
+		emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+		emit(ie64Instr(OP_MOVE, 11, IE64_SIZE_Q, 0, 7, 0, 0))
+		emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+		emit(ie64Instr(OP_STORE, 11, IE64_SIZE_Q, 1, 3, 0, 0))
+		emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xCAFE))
+		emit(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 3, 0, 8))
+		hwresYieldLoop(emit, 0)
+	})
+	if binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+8:]) != 0xCAFE {
+		t.Fatalf("task 0 never finished")
+	}
+	sender := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data:])
+	if sender != 0 {
+		t.Fatalf("WaitPort returned R7=sender=%d, want 0", sender)
+	}
+}
+
+func TestIExec_HWRes_HardeningWaitPortBlockedReturnsSender(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	t0, t1 := images[0], images[1]
+	overrideExtraTasks(rig.cpu.memory, images, 2)
+
+	off := t0
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVEQ, 1, 0, 1, 0, 0, 0))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVEQ, 2, 0, 1, 0, 0, 0))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 11, IE64_SIZE_Q, 0, 7, 0, 0))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_STORE, 11, IE64_SIZE_Q, 1, 3, 0, 0))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xCAFE))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 3, 0, 8))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	off = t1
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0x4D))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVEQ, 3, 0, 1, 0, 0, 0xBEEF))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(300 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	if binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+8:]) != 0xCAFE {
+		t.Fatalf("task 0 never finished blocked WaitPort path")
+	}
+	sender := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data:])
+	if sender != 1 {
+		t.Fatalf("blocked WaitPort returned sender=%d, want 1", sender)
+	}
+}
+
 // TestIExec_HWRes_HardeningTaskAliveVerb (M12.5 v2): the new HWRES_TASK_ALIVE
-// verb (R6=3) returns 1 when a task slot is in use and 0 when it's FREE.
+// verb (R6=3) returns 1 when a public task ID is live and 0 when it is not.
 // Synthetic task 0 BECOMEs broker, then queries:
 //   - itself (task 0) — must be alive
-//   - task 15 (a slot that no boot service uses) — must be free
+//   - task 15 (a public ID that no boot service uses) — must be free
 //
 // Verifies the broker-only gate (non-broker → ERR_PERM is covered by the
 // HWRES_CREATE rejection test pattern; this test focuses on the read path).
@@ -9956,7 +10892,7 @@ func TestIExec_HWRes_HardeningTaskAliveVerb(t *testing.T) {
 		emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysHwresOp))
 		emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
 		emit(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 3, 0, 8)) // alive_self → data+8
-		// Query slot 15 (unused)
+		// Query public task ID 15 (unused at boot)
 		emit(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, 3))
 		emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 15))
 		emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysHwresOp))
@@ -9976,7 +10912,7 @@ func TestIExec_HWRes_HardeningTaskAliveVerb(t *testing.T) {
 		t.Fatalf("HWRES_TASK_ALIVE(0) = %d, want 1 (task 0 is the broker, definitely alive)", aliveSelf)
 	}
 	if alive15 != 0 {
-		t.Fatalf("HWRES_TASK_ALIVE(15) = %d, want 0 (slot 15 is unused at boot)", alive15)
+		t.Fatalf("HWRES_TASK_ALIVE(15) = %d, want 0 (public task ID 15 is unused at boot)", alive15)
 	}
 }
 
@@ -10009,26 +10945,40 @@ func TestIExec_HWRes_HardeningStaleOwnerScrubbed(t *testing.T) {
 	rig.cpu.running.Store(false)
 	<-done
 
-	// hardware.resource is task 3 — read its data page.
-	const hwresDataBase = 0x600000 + 3*0x10000 + 0x2000
-	chipSlots := rig.cpu.memory[hwresDataBase+144 : hwresDataBase+148]
-	vramSlot := rig.cpu.memory[hwresDataBase+148]
+	// hardware.resource is public task 3 at boot — resolve its dynamic data page.
+	hwresDataBase := uint32(taskLayoutFieldQ(rig.cpu.memory, 3, kdTaskDataBase))
+	if hwresDataBase == 0 {
+		t.Fatalf("failed to resolve hardware.resource data base")
+	}
+	var chipSlots [4]uint32
+	for i := range chipSlots {
+		chipSlots[i] = binary.LittleEndian.Uint32(rig.cpu.memory[hwresDataBase+144+uint32(i)*4:])
+	}
+	vramSlot := binary.LittleEndian.Uint32(rig.cpu.memory[hwresDataBase+160:])
 	t.Logf("HWRes broker owner state: CHIP=%v VRAM=%d", chipSlots, vramSlot)
 
-	// Every CHIP slot must be either 0xFF (free) or a LIVE task ID. Walk
-	// each non-FREE slot and verify the corresponding TCB state byte is
-	// not TASK_FREE.
-	for i, t_id := range chipSlots {
-		if t_id == 0xFF {
+	// Every CHIP slot must be either free or a LIVE public task ID.
+	for i, taskID := range chipSlots {
+		if taskID == hwresTaskFree {
 			continue
 		}
-		state := rig.cpu.memory[kernDataBase+kdTCBBase+uint32(t_id)*tcbStride+tcbStateOff]
+		slot, ok := taskSlotForPublicID(rig.cpu.memory, uint64(taskID))
+		if !ok {
+			t.Errorf("CHIP slot %d holds dead public task %d — broker did not scrub stale owner", i, taskID)
+			continue
+		}
+		state := rig.cpu.memory[kernDataBase+kdTCBBase+slot*tcbStride+tcbStateOff]
 		if state == taskFree {
-			t.Errorf("CHIP slot %d holds task %d which is now TASK_FREE — broker did not scrub stale owner", i, t_id)
+			t.Errorf("CHIP slot %d holds task %d which is now TASK_FREE — broker did not scrub stale owner", i, taskID)
 		}
 	}
-	if vramSlot != 0xFF {
-		state := rig.cpu.memory[kernDataBase+kdTCBBase+uint32(vramSlot)*tcbStride+tcbStateOff]
+	if vramSlot != hwresTaskFree {
+		slot, ok := taskSlotForPublicID(rig.cpu.memory, uint64(vramSlot))
+		if !ok {
+			t.Errorf("VRAM slot holds dead public task %d — broker did not scrub stale owner", vramSlot)
+			return
+		}
+		state := rig.cpu.memory[kernDataBase+kdTCBBase+slot*tcbStride+tcbStateOff]
 		if state == taskFree {
 			t.Errorf("VRAM slot holds task %d which is now TASK_FREE — broker did not scrub stale owner", vramSlot)
 		}

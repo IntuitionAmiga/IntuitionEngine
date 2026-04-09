@@ -48,30 +48,19 @@ iexec_start:
     move.l  r6, #KERN_PAGES
     blt     r4, r6, .kern_pt_loop
 
-    ; 3b. Add supervisor-only mappings for all user pages (8 tasks × USER_VPN_STRIDE pages)
-    ; This lets the kernel access any task's code/stack/data for CreateTask etc.
-    move.l  r4, #0                      ; task counter
+    ; 3b. Add supervisor-only mappings for the entire dynamic task-image
+    ; window (USER_IMAGE_BASE..USER_PT_BASE). M13 phase 2 no longer derives
+    ; code/stack/data placement from task_id * USER_SLOT_STRIDE, so the
+    ; kernel maps the whole image window once instead of per-slot ranges.
+    move.l  r4, #USER_CODE_VPN_BASE
+    move.l  r6, #USER_PT_PAGE_BASE
 .kern_user_map:
-    move.l  r6, #MAX_TASKS
     bge     r4, r6, .kern_user_map_done
-    ; Compute base VPN for task i: USER_CODE_VPN_BASE + i * USER_VPN_STRIDE
-    move.l  r7, #USER_VPN_STRIDE
-    mulu    r7, r4, r7
-    add     r7, r7, #USER_CODE_VPN_BASE ; r7 = base VPN for this task
-    ; Map all USER_VPN_STRIDE pages per task
-    move.l  r9, #0
-.kern_slot_map:
-    move.l  r11, #USER_VPN_STRIDE
-    bge     r9, r11, .kern_slot_done
-    add     r8, r7, r9
-    lsl     r3, r8, #13
+    lsl     r3, r4, #13
     or      r3, r3, #0x07
-    lsl     r5, r8, #3
+    lsl     r5, r4, #3
     add     r5, r5, r2
     store.q r3, (r5)
-    add     r9, r9, #1
-    bra     .kern_slot_map
-.kern_slot_done:
     add     r4, r4, #1
     bra     .kern_user_map
 .kern_user_map_done:
@@ -104,7 +93,7 @@ iexec_start:
     store.q r0, KD_NUM_TASKS(r12)       ; 0 tasks (loader increments)
     store.q r0, KD_NONCE_COUNTER(r12)   ; nonce counter = 0
 
-    ; --- Init all 8 task slots as FREE ---
+    ; --- Init all task slots as FREE ---
     move.l  r4, #0
 .init_free_tasks:
     move.l  r6, #MAX_TASKS
@@ -200,8 +189,8 @@ iexec_start:
     ; yet at kern_init).
     ; ---------------------------------------------------------------
     move.l  r2, #KERN_DATA_BASE
-    move.l  r4, #0xFF
-    store.b r4, KD_HWRES_TASK(r2)       ; broker = unclaimed sentinel
+    move.l  r4, #HWRES_TASK_FREE
+    store.l r4, KD_HWRES_TASK(r2)       ; broker = unclaimed sentinel
     move.l  r2, #KERN_DATA_BASE
     add     r2, r2, #KD_GRANT_TABLE_HDR
     store.q r0, (r2)                    ; zero the 8-byte header
@@ -230,6 +219,56 @@ iexec_start:
     move.l  r2, #KERN_DATA_BASE
     add     r2, r2, #KD_PORT_OFLOW_HDR
     store.q r0, (r2)
+
+    ; M13 phase 2: zero per-task dynamic layout rows and the image/PT
+    ; allocation bitmaps. Task placement is now allocator-backed within the
+    ; reserved image/PT regions, not derived from task_id * USER_SLOT_STRIDE.
+    move.l  r2, #KERN_DATA_BASE
+    add     r2, r2, #KD_TASK_LAYOUT_BASE
+    move.l  r3, #(MAX_TASKS * KD_TASK_LAYOUT_STRIDE / 8)
+    move.l  r4, #0
+.zero_task_layout:
+    store.q r0, (r2)
+    add     r2, r2, #8
+    add     r4, r4, #1
+    blt     r4, r3, .zero_task_layout
+
+    move.l  r2, #KERN_DATA_BASE
+    add     r2, r2, #KD_TASK_IMG_BITMAP
+    move.l  r3, #(KD_TASK_IMG_BITMAP_SZ / 8)
+    move.l  r4, #0
+.zero_taskimg_bitmap:
+    store.q r0, (r2)
+    add     r2, r2, #8
+    add     r4, r4, #1
+    blt     r4, r3, .zero_taskimg_bitmap
+
+    move.l  r2, #KERN_DATA_BASE
+    add     r2, r2, #KD_TASK_PT_BITMAP
+    move.l  r3, #(KD_TASK_PT_BITMAP_SZ / 8)
+    move.l  r4, #0
+.zero_taskpt_bitmap:
+    store.q r0, (r2)
+    add     r2, r2, #8
+    add     r4, r4, #1
+    blt     r4, r3, .zero_taskpt_bitmap
+
+    ; M13 phase 3: initialize slot->public-task-id array to the free
+    ; sentinel and reset the monotonic public task-id counter.
+    move.l  r2, #KERN_DATA_BASE
+    add     r2, r2, #KD_TASK_PUBID_BASE
+    move.l  r3, #MAX_TASKS
+    move.l  r4, #0
+    move.l  r5, #0xFFFFFFFF
+.zero_task_pubids:
+    bge     r4, r3, .zero_taskid_next
+    store.l r5, (r2)
+    add     r2, r2, #KD_TASK_PUBID_STRIDE
+    add     r4, r4, #1
+    bra     .zero_task_pubids
+.zero_taskid_next:
+    move.l  r2, #KERN_DATA_BASE
+    store.q r0, KD_TASKID_NEXT(r2)
 
     ; ---------------------------------------------------------------
     ; 6d. Extend kernel PT: map allocation pool pages (0x700-0x1FFF)
@@ -274,6 +313,7 @@ iexec_start:
     load.q  r7, PROGTAB_OFF_PTR(r30)   ; r7 = image_ptr
     beqz    r7, .boot_load_fail         ; sentinel before boot count → fail
     load.q  r8, PROGTAB_OFF_SIZE(r30)   ; r8 = image_size
+    move.l  r6, #TASK_STARTUP_FLAG_BOOT
     push    r30                         ; save table cursor (load_program clobbers R14-R27)
     push    r29                         ; save counter
     jsr     load_program                ; → R1=task_id, R2=err
@@ -573,18 +613,487 @@ build_user_pt:
 .bup_data_done:
     rts
 
+; write_startup_block: populate the M13 startup block in its dedicated page.
+; Input:
+;   R1 = startup_base
+;   R2 = task_id
+;   R3 = flags
+;   R4 = code_base
+;   R5 = code_pages
+;   R6 = stack_base
+;   R7 = stack_pages
+;   R8 = data_base
+;   R9 = data_pages
+; Clobbers: R10-R12
+write_startup_block:
+    store.q r0, (r1)
+    store.q r0, 8(r1)
+    store.q r0, 16(r1)
+    store.q r0, 24(r1)
+    store.q r0, 32(r1)
+    store.q r0, 40(r1)
+    store.q r0, 48(r1)
+    store.q r0, 56(r1)
+    move.l  r10, #TASK_STARTUP_VERSION
+    store.l r10, TASKSB_VERSION(r1)
+    move.l  r10, #TASK_STARTUP_SIZE
+    store.l r10, TASKSB_SIZE(r1)
+    store.l r2, TASKSB_TASK_ID(r1)
+    store.l r3, TASKSB_FLAGS(r1)
+    store.q r4, TASKSB_CODE_BASE(r1)
+    store.l r5, TASKSB_CODE_PAGES(r1)
+    store.q r8, TASKSB_DATA_BASE(r1)
+    store.l r9, TASKSB_DATA_PAGES(r1)
+    store.q r6, TASKSB_STACK_BASE(r1)
+    store.l r7, TASKSB_STACK_PAGES(r1)
+    rts
+
+; kern_task_layout_addr: return pointer to a task's dynamic layout row.
+; Input:  R1 = task_id
+; Output: R1 = &layout[task_id]
+kern_task_layout_addr:
+    move.l  r3, #KERN_DATA_BASE
+    add     r3, r3, #KD_TASK_LAYOUT_BASE
+    move.l  r4, #KD_TASK_LAYOUT_STRIDE
+    mulu    r4, r1, r4
+    add     r1, r3, r4
+    rts
+
+; kern_task_pubid_addr: return pointer to a slot's public-task-id word.
+; Input:  R1 = task slot
+; Output: R1 = &pubid[slot]
+kern_task_pubid_addr:
+    move.l  r3, #KERN_DATA_BASE
+    add     r3, r3, #KD_TASK_PUBID_BASE
+    move.l  r4, #KD_TASK_PUBID_STRIDE
+    mulu    r4, r1, r4
+    add     r1, r3, r4
+    rts
+
+; kern_current_public_task_id: return the current task's public ID.
+; Output: R1 = public task ID
+kern_current_public_task_id:
+    move.l  r3, #KERN_DATA_BASE
+    load.q  r1, KD_CURRENT_TASK(r3)     ; current slot
+    jsr     kern_task_pubid_addr
+    load.l  r1, (r1)
+    rts
+
+; kern_find_slot_for_public_id: resolve a public task ID to a live slot.
+; Input:  R1 = public task ID
+; Output: R1 = slot index if found, 0 otherwise
+;         R2 = 1 if found, 0 if not found
+; Clobbers: R3-R8
+kern_find_slot_for_public_id:
+    move.q  r6, r1                      ; target public id
+    move.l  r3, #0
+.kfspid_scan:
+    move.l  r4, #MAX_TASKS
+    bge     r3, r4, .kfspid_notfound
+    move.l  r4, #KERN_DATA_BASE
+    lsl     r5, r3, #5
+    add     r5, r5, #KD_TASK_BASE
+    add     r5, r5, r4
+    load.b  r7, KD_TASK_STATE(r5)
+    move.l  r8, #TASK_FREE
+    beq     r7, r8, .kfspid_next
+    push    r3
+    move.q  r1, r3
+    jsr     kern_task_pubid_addr
+    load.l  r7, (r1)
+    pop     r3
+    beq     r7, r6, .kfspid_found
+.kfspid_next:
+    add     r3, r3, #1
+    bra     .kfspid_scan
+.kfspid_found:
+    move.q  r1, r3
+    move.q  r2, #1
+    rts
+.kfspid_notfound:
+    move.q  r1, #0
+    move.q  r2, #0
+    rts
+
+; alloc_task_image_pages: allocate N contiguous pages from USER_IMAGE_BASE..USER_IMAGE_END.
+; Input:  R1 = pages requested
+; Output: R1 = base VA, R2 = ERR_OK / ERR_NOMEM
+alloc_task_image_pages:
+    move.l  r3, #KERN_DATA_BASE
+    add     r3, r3, #KD_TASK_IMG_BITMAP
+    move.l  r4, #0
+    move.l  r5, #USER_IMAGE_PAGES
+.atip_scan:
+    bge     r4, r5, .atip_fail
+    move.q  r6, r4
+    move.q  r7, r4
+    add     r8, r4, r1
+    bgt     r8, r5, .atip_fail
+.atip_check_bit:
+    bge     r7, r8, .atip_found
+    lsr     r9, r7, #3
+    add     r9, r9, r3
+    load.b  r9, (r9)
+    and     r10, r7, #7
+    lsr     r9, r9, r10
+    and     r9, r9, #1
+    bnez    r9, .atip_next
+    add     r7, r7, #1
+    bra     .atip_check_bit
+.atip_next:
+    add     r4, r7, #1
+    bra     .atip_scan
+.atip_found:
+    move.q  r7, r6
+.atip_mark:
+    bge     r7, r8, .atip_ret
+    lsr     r9, r7, #3
+    add     r9, r9, r3
+    load.b  r10, (r9)
+    and     r11, r7, #7
+    move.q  r12, #1
+    lsl     r12, r12, r11
+    or      r10, r10, r12
+    store.b r10, (r9)
+    add     r7, r7, #1
+    bra     .atip_mark
+.atip_ret:
+    lsl     r1, r6, #12
+    add     r1, r1, #USER_IMAGE_BASE
+    move.q  r13, r1
+    sub     r15, r8, r6
+    lsl     r15, r15, #12
+    add     r15, r15, r13
+.atip_zero:
+    bge     r13, r15, .atip_ok
+    store.q r0, (r13)
+    add     r13, r13, #8
+    bra     .atip_zero
+.atip_ok:
+    move.q  r2, #ERR_OK
+    rts
+.atip_fail:
+    ; M13 phase 4: once the legacy fixed image window is exhausted, spill
+    ; task image pages into allocator-pool pages. The pool is identity-mapped
+    ; in the kernel PT, so callers can still zero/copy them directly before
+    ; build_user_pt_dynamic installs user-visible mappings for the chosen VAs.
+    move.q  r14, r1
+    jsr     alloc_pages                 ; R1 = base PPN, R2 = ERR_*
+    bnez    r2, .atip_fail_nomem
+    lsl     r1, r1, #12
+    move.q  r13, r1
+    move.q  r15, r1
+    lsl     r14, r14, #12
+    add     r15, r15, r14
+.atip_zero_pool:
+    bge     r13, r15, .atip_ok
+    store.q r0, (r13)
+    add     r13, r13, #8
+    bra     .atip_zero_pool
+.atip_fail_nomem:
+    move.q  r1, r0
+    move.q  r2, #ERR_NOMEM
+    rts
+
+; free_task_image_pages: release pages back to the USER_IMAGE bitmap.
+; Input: R1 = base VA, R2 = pages
+free_task_image_pages:
+    beqz    r1, .ftip_done
+    beqz    r2, .ftip_done
+    move.l  r3, #USER_IMAGE_BASE
+    blt     r1, r3, .ftip_pool
+    move.l  r3, #USER_IMAGE_END
+    blt     r1, r3, .ftip_fixed
+.ftip_pool:
+    lsr     r1, r1, #12
+    jsr     free_pages
+    bra     .ftip_done
+.ftip_fixed:
+    sub     r3, r1, #USER_IMAGE_BASE
+    lsr     r3, r3, #12
+    move.l  r4, #KERN_DATA_BASE
+    add     r4, r4, #KD_TASK_IMG_BITMAP
+    move.l  r5, #0
+.ftip_loop:
+    bge     r5, r2, .ftip_done
+    add     r6, r3, r5
+    lsr     r7, r6, #3
+    add     r7, r7, r4
+    load.b  r8, (r7)
+    and     r9, r6, #7
+    move.q  r10, #1
+    lsl     r10, r10, r9
+    not     r10, r10
+    and     r8, r8, r10
+    store.b r8, (r7)
+    add     r5, r5, #1
+    bra     .ftip_loop
+.ftip_done:
+    rts
+
+; alloc_task_pt_block: allocate one 64 KiB PT block.
+; Fast path: fixed USER_PT_BASE window (32 blocks).
+; Overflow path: allocator-pool pages (16 contiguous pages), supervisor-only.
+; Output: R1 = pt_base, R2 = ERR_OK / ERR_NOMEM
+alloc_task_pt_block:
+    move.l  r1, #USER_PT_SLOT_PAGES
+    move.l  r3, #KERN_DATA_BASE
+    add     r3, r3, #KD_TASK_PT_BITMAP
+    move.l  r4, #0
+    move.l  r5, #USER_PT_REGION_PAGES
+.atpt_scan:
+    bge     r4, r5, .atpt_fail
+    move.q  r6, r4
+    move.q  r7, r4
+    add     r8, r4, r1
+    bgt     r8, r5, .atpt_fail
+.atpt_check_bit:
+    bge     r7, r8, .atpt_found
+    lsr     r9, r7, #3
+    add     r9, r9, r3
+    load.b  r9, (r9)
+    and     r10, r7, #7
+    lsr     r9, r9, r10
+    and     r9, r9, #1
+    bnez    r9, .atpt_next
+    add     r7, r7, #1
+    bra     .atpt_check_bit
+.atpt_next:
+    add     r4, r7, #1
+    bra     .atpt_scan
+.atpt_found:
+    move.q  r7, r6
+.atpt_mark:
+    bge     r7, r8, .atpt_zero
+    lsr     r9, r7, #3
+    add     r9, r9, r3
+    load.b  r10, (r9)
+    and     r11, r7, #7
+    move.q  r12, #1
+    lsl     r12, r12, r11
+    or      r10, r10, r12
+    store.b r10, (r9)
+    add     r7, r7, #1
+    bra     .atpt_mark
+.atpt_zero:
+    lsl     r1, r6, #12
+    add     r1, r1, #USER_PT_BASE
+    move.q  r13, r1
+    move.l  r14, #(USER_PT_SLOT_PAGES * MMU_PAGE_SIZE)
+    add     r14, r14, r13
+.atpt_zero_loop:
+    bge     r13, r14, .atpt_ok
+    store.q r0, (r13)
+    add     r13, r13, #8
+    bra     .atpt_zero_loop
+.atpt_ok:
+    move.q  r2, #ERR_OK
+    rts
+.atpt_fail:
+    ; M13 phase 4: once the original 32 fixed PT blocks are exhausted,
+    ; spill over into allocator-backed 64 KiB PT blocks so live tasks can
+    ; grow beyond the old ceiling without shifting the whole VA layout.
+    move.l  r1, #USER_PT_SLOT_PAGES
+    jsr     alloc_pages                 ; R1 = base PPN, R2 = ERR_*
+    bnez    r2, .atpt_fail_nomem
+    lsl     r1, r1, #12                 ; pt_base byte address = PPN << 12
+    move.q  r13, r1
+    move.l  r14, #(USER_PT_SLOT_PAGES * MMU_PAGE_SIZE)
+    add     r14, r14, r13
+.atpt_zero_pool_loop:
+    bge     r13, r14, .atpt_ok
+    store.q r0, (r13)
+    add     r13, r13, #8
+    bra     .atpt_zero_pool_loop
+.atpt_fail_nomem:
+    move.q  r1, r0
+    move.q  r2, #ERR_NOMEM
+    rts
+
+; free_task_pt_block: release one 64 KiB PT block.
+; Input: R1 = pt_base
+free_task_pt_block:
+    beqz    r1, .ftpt_done
+    move.l  r2, #USER_PT_BASE
+    blt     r1, r2, .ftpt_pool
+    move.l  r2, #USER_DYN_BASE
+    blt     r1, r2, .ftpt_fixed
+.ftpt_pool:
+    lsr     r1, r1, #12
+    move.l  r2, #USER_PT_SLOT_PAGES
+    jsr     free_pages
+    bra     .ftpt_done
+.ftpt_fixed:
+    sub     r3, r1, #USER_PT_BASE
+    lsr     r3, r3, #12
+    move.l  r4, #KERN_DATA_BASE
+    add     r4, r4, #KD_TASK_PT_BITMAP
+    move.l  r5, #0
+.ftpt_loop:
+    move.l  r6, #USER_PT_SLOT_PAGES
+    bge     r5, r6, .ftpt_done
+    add     r6, r3, r5
+    lsr     r7, r6, #3
+    add     r7, r7, r4
+    load.b  r8, (r7)
+    and     r9, r6, #7
+    move.q  r10, #1
+    lsl     r10, r10, r9
+    not     r10, r10
+    and     r8, r8, r10
+    store.b r8, (r7)
+    add     r5, r5, #1
+    bra     .ftpt_loop
+.ftpt_done:
+    rts
+
+; build_user_pt_dynamic: Build a user PT for dynamically placed task regions.
+; Input:
+;   R1 = PT base
+;   R2 = code_base
+;   R3 = code_pages
+;   R4 = stack_base
+;   R5 = stack_pages
+;   R6 = data_base
+;   R7 = data_pages
+;   R8 = startup_base
+build_user_pt_dynamic:
+    push    r1
+    push    r2
+    push    r3
+    push    r4
+    push    r5
+    push    r6
+    push    r7
+    push    r8
+    move.q  r20, r1
+
+    move.l  r2, #KERN_PAGE_TABLE
+    move.l  r4, #0
+.bupd_copy_kern:
+    move.l  r6, #KERN_PAGES
+    bge     r4, r6, .bupd_copy_pool
+    lsl     r5, r4, #3
+    add     r8, r5, r2
+    load.q  r3, (r8)
+    add     r9, r5, r20
+    store.q r3, (r9)
+    add     r4, r4, #1
+    bra     .bupd_copy_kern
+.bupd_copy_pool:
+    move.l  r4, #ALLOC_POOL_BASE
+    move.l  r6, #ALLOC_POOL_PAGES
+    add     r6, r6, r4
+.bupd_copy_pool_loop:
+    bge     r4, r6, .bupd_copy_user
+    lsl     r5, r4, #3
+    add     r8, r5, r2
+    load.q  r3, (r8)
+    add     r9, r5, r20
+    store.q r3, (r9)
+    add     r4, r4, #1
+    bra     .bupd_copy_pool_loop
+.bupd_copy_user:
+    move.l  r4, #USER_CODE_VPN_BASE
+    move.l  r6, #USER_PT_PAGE_BASE
+.bupd_copy_user_loop:
+    bge     r4, r6, .bupd_copy_userpt
+    lsl     r5, r4, #3
+    add     r8, r5, r2
+    load.q  r3, (r8)
+    add     r9, r5, r20
+    store.q r3, (r9)
+    add     r4, r4, #1
+    bra     .bupd_copy_user_loop
+.bupd_copy_userpt:
+    move.l  r4, #USER_PT_PAGE_BASE
+    move.l  r6, #USER_PT_PAGE_END
+.bupd_copy_userpt_loop:
+    bge     r4, r6, .bupd_add_pages
+    lsl     r5, r4, #3
+    add     r8, r5, r2
+    load.q  r3, (r8)
+    add     r9, r5, r20
+    store.q r3, (r9)
+    add     r4, r4, #1
+    bra     .bupd_copy_userpt_loop
+.bupd_add_pages:
+    pop     r8
+    pop     r7
+    pop     r6
+    pop     r5
+    pop     r4
+    pop     r3
+    pop     r2
+    pop     r1
+    move.q  r12, r8                     ; preserve startup_base
+
+    ; Code: P|X|U
+    move.l  r8, #0
+.bupd_code_loop:
+    bge     r8, r3, .bupd_code_done
+    lsr     r9, r2, #12
+    add     r9, r9, r8
+    lsl     r10, r9, #13
+    or      r10, r10, #0x19
+    lsl     r11, r9, #3
+    add     r11, r11, r1
+    store.q r10, (r11)
+    add     r8, r8, #1
+    bra     .bupd_code_loop
+.bupd_code_done:
+    ; Stack: P|R|W|U
+    move.l  r8, #0
+.bupd_stack_loop:
+    bge     r8, r5, .bupd_stack_done
+    lsr     r9, r4, #12
+    add     r9, r9, r8
+    lsl     r10, r9, #13
+    or      r10, r10, #0x17
+    lsl     r11, r9, #3
+    add     r11, r11, r1
+    store.q r10, (r11)
+    add     r8, r8, #1
+    bra     .bupd_stack_loop
+.bupd_stack_done:
+    ; Data: P|R|W|U
+    move.l  r8, #0
+.bupd_data_loop:
+    bge     r8, r7, .bupd_data_done
+    lsr     r9, r6, #12
+    add     r9, r9, r8
+    lsl     r10, r9, #13
+    or      r10, r10, #0x17
+    lsl     r11, r9, #3
+    add     r11, r11, r1
+    store.q r10, (r11)
+    add     r8, r8, #1
+    bra     .bupd_data_loop
+.bupd_data_done:
+    ; Startup block page: P|R|U
+    lsr     r9, r12, #12
+    lsl     r10, r9, #13
+    or      r10, r10, #0x13
+    lsl     r11, r9, #3
+    add     r11, r11, r1
+    store.q r10, (r11)
+.bupd_done:
+    rts
+
 ; ============================================================================
 ; Program Loader (M8: boot-time only, not a syscall)
 ; ============================================================================
 ; load_program: Load a bundled IE64 program image into a free task slot.
 ; Input:  R7 = image_ptr (address of image in kernel memory)
 ;         R8 = image_size (total bytes: header + code + data)
-; Output: R1 = task_id, R2 = ERR_OK
+;         R6 = startup flags (TASK_STARTUP_FLAG_*)
+; Output: R1 = public task_id, R2 = ERR_OK, R3 = internal task slot
 ;         On failure: R1 = 0, R2 = ERR_BADARG or ERR_NOMEM
 ; Clobbers: R1-R9, R14-R27
 ; Must be called with kernel PT active (boot context).
 
 load_program:
+    move.q  r19, r6
     push    r7
     push    r8
 
@@ -641,20 +1150,6 @@ load_program:
     lsr     r27, r27, #12               ; r27 = data_pages
 .lp_skip_data_pages:
 
-    ; 5d. Architectural slot-fit check (M12.8 prerequisite).
-    ;     Each task slot is USER_VPN_STRIDE pages wide and is laid out as
-    ;       code_pages | 1 stack page | data_pages
-    ;     so the only real ceiling on an image is
-    ;       code_pages + 1 + data_pages <= USER_VPN_STRIDE.
-    ;     This single bound replaces the two prior arbitrary caps and is
-    ;     the *honest* architectural limit — the layout itself enforces
-    ;     it. A hostile image declaring code_size = 0xFFFFFFFF computes
-    ;     code_pages ≈ 2^20 here and is correctly rejected by this bound.
-    add     r14, r26, r27
-    add     r14, r14, #1                ; +1 for the stack page
-    move.l  r11, #USER_VPN_STRIDE
-    bgt     r14, r11, .lp_badarg
-
     ; 6. Find free TCB slot
     move.l  r22, #0                     ; r22 = candidate slot
     move.l  r12, #KERN_DATA_BASE
@@ -671,16 +1166,35 @@ load_program:
     bra     .lp_scan
 .lp_slot_found:
     ; r22 = task_id, r15 = &TCB[task_id], r20 = code_size, r21 = data_size
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r18, KD_TASKID_NEXT(r12)    ; r18 = public task id
+    move.q  r14, r18
+    add     r14, r14, #1
+    store.q r14, KD_TASKID_NEXT(r12)
 
-    ; --- Commit (no failures past this point) ---
-
-    ; 7. Already on kernel PT (boot context), no switch needed.
+    ; --- Commit (M13 phase 2: allocate dynamic image/PT placement) ---
+    move.q  r1, r26
+    jsr     alloc_task_image_pages
+    bnez    r2, .lp_nomem
+    move.q  r23, r1                     ; code_base
+    move.l  r25, #1
+    move.q  r1, r25
+    jsr     alloc_task_image_pages
+    bnez    r2, .lp_fail_free_code
+    move.q  r25, r1                     ; stack_base
+    move.q  r1, r27
+    jsr     alloc_task_image_pages
+    bnez    r2, .lp_fail_free_stack
+    move.q  r24, r1                     ; data_base
+    move.l  r1, #1
+    jsr     alloc_task_image_pages
+    bnez    r2, .lp_fail_free_data
+    move.q  r28, r1                     ; startup_base
+    jsr     alloc_task_pt_block
+    bnez    r2, .lp_fail_free_startup
+    move.q  r30, r1                     ; pt_base
 
     ; 8. Zero child's code pages (code_pages * 4096 bytes)
-    move.l  r11, #USER_SLOT_STRIDE
-    mulu    r11, r22, r11               ; r11 = task_id * stride
-    move.l  r23, #USER_CODE_BASE
-    add     r23, r23, r11               ; r23 = child code page addr
     move.l  r4, #0
     lsl     r6, r26, #12                ; r6 = code_pages * 4096
 .lp_zero_code:
@@ -712,10 +1226,6 @@ load_program:
     beqz    r21, .lp_skip_data
 
     ; Zero data pages (data_pages * 4096 bytes)
-    ; Data base address = code_base + (code_pages + 1) * 4096
-    add     r11, r26, #1               ; code_pages + 1 (skip stack page)
-    lsl     r11, r11, #12
-    add     r24, r23, r11               ; r24 = child data base
     move.l  r4, #0
     lsl     r6, r27, #12               ; r6 = data_pages * 4096
 .lp_zero_data:
@@ -743,10 +1253,36 @@ load_program:
 
 .lp_skip_data:
     ; 11. Build child's page table
-    move.q  r10, r22                    ; r10 = task_id
-    move.q  r9, r26                     ; r9 = code_pages
-    move.q  r11, r27                    ; r11 = data_pages
-    jsr     build_user_pt
+    move.q  r1, r30
+    move.q  r2, r23
+    move.q  r3, r26
+    move.q  r4, r25
+    move.l  r5, #1
+    move.q  r6, r24
+    move.q  r7, r27
+    move.q  r8, r28
+    jsr     build_user_pt_dynamic
+
+    ; 11b. Populate startup block in its dedicated page.
+    move.q  r1, r28                     ; startup base
+    move.q  r2, r18                     ; public task id
+    move.q  r3, r19                     ; flags
+    move.q  r4, r23                     ; code base
+    move.q  r5, r26                     ; code pages
+    move.q  r6, r25                     ; stack base
+    move.l  r7, #1                      ; stack pages
+    move.q  r8, r24                     ; data base
+    move.q  r9, r27                     ; data pages
+    jsr     write_startup_block
+
+    ; Seed the top of the stack page with startup_base and data_base so
+    ; programs can recover both without assuming stack/data adjacency.
+    move.q  r14, r25
+    add     r14, r14, #MMU_PAGE_SIZE
+    sub     r14, r14, #16
+    store.q r28, (r14)
+    add     r14, r14, #8
+    store.q r24, (r14)
 
     ; 12. Initialize TCB
     move.l  r12, #KERN_DATA_BASE
@@ -754,19 +1290,12 @@ load_program:
     add     r15, r15, #KD_TASK_BASE
     add     r15, r15, r12               ; r15 = &TCB[task_id]
 
-    ; PC = USER_CODE_BASE + task_id * stride
-    move.l  r11, #USER_SLOT_STRIDE
-    mulu    r11, r22, r11
-    move.l  r14, #USER_CODE_BASE
-    add     r14, r14, r11
-    store.q r14, KD_TASK_PC(r15)
+    ; PC = code_base
+    store.q r23, KD_TASK_PC(r15)
 
-    ; USP = USER_CODE_BASE + task_id * stride + (code_pages+1)*4096 + PAGE_SIZE
-    add     r9, r26, #1
-    lsl     r9, r9, #12
-    move.l  r14, #USER_CODE_BASE
-    add     r14, r14, r11
-    add     r14, r14, r9
+    ; USP = stack_base + PAGE_SIZE
+    move.q  r14, r25
+    add     r14, r14, #MMU_PAGE_SIZE
     store.q r14, KD_TASK_USP(r15)
 
     ; Signals
@@ -784,14 +1313,28 @@ load_program:
     store.b r0, KD_TASK_GPR_SAVED(r15)  ; no GPRs saved initially
 
     ; 13. Set PTBR[task_id]
-    move.l  r11, #USER_SLOT_STRIDE
-    mulu    r11, r22, r11
-    move.l  r14, #USER_PT_BASE
-    add     r14, r14, r11               ; r14 = task PT base
     lsl     r16, r22, #3
     add     r16, r16, #KD_PTBR_BASE
     add     r16, r16, r12
-    store.q r14, (r16)
+    store.q r30, (r16)
+
+    ; 13b. Record dynamic layout.
+    move.q  r1, r22
+    jsr     kern_task_layout_addr
+    store.q r23, KD_TASK_CODE_BASE(r1)
+    store.q r25, KD_TASK_STACK_BASE(r1)
+    store.q r24, KD_TASK_DATA_BASE(r1)
+    store.l r26, KD_TASK_CODE_PAGES(r1)
+    move.l  r14, #1
+    store.l r14, KD_TASK_STACK_PAGES(r1)
+    store.l r27, KD_TASK_DATA_PAGES(r1)
+    store.l r0, KD_TASK_LAYOUT_FLAGS(r1)
+    store.q r28, KD_TASK_LAYOUT_STARTUP(r1)
+    store.q r30, KD_TASK_LAYOUT_PT_BASE(r1)
+
+    move.q  r1, r22
+    jsr     kern_task_pubid_addr
+    store.l r18, (r1)
 
     ; 14. Increment num_tasks
     load.q  r14, KD_NUM_TASKS(r12)
@@ -801,7 +1344,8 @@ load_program:
     ; 15. Return success
     pop     r8
     pop     r7
-    move.q  r1, r22                     ; R1 = task_id
+    move.q  r1, r18                     ; R1 = public task id
+    move.q  r3, r22                     ; R3 = internal task slot
     move.l  r2, #ERR_OK
     rts
 
@@ -809,6 +1353,7 @@ load_program:
     pop     r8
     pop     r7
     move.q  r1, r0
+    move.q  r3, r0
     move.l  r2, #ERR_BADARG
     rts
 
@@ -816,6 +1361,30 @@ load_program:
     pop     r8
     pop     r7
     move.q  r1, r0
+    move.q  r3, r0
+    move.l  r2, #ERR_NOMEM
+    rts
+
+.lp_fail_free_startup:
+    move.q  r1, r28
+    move.l  r2, #1
+    jsr     free_task_image_pages
+.lp_fail_free_data:
+    move.q  r1, r24
+    move.q  r2, r27
+    jsr     free_task_image_pages
+.lp_fail_free_stack:
+    move.q  r1, r25
+    move.l  r2, #1
+    jsr     free_task_image_pages
+.lp_fail_free_code:
+    move.q  r1, r23
+    move.q  r2, r26
+    jsr     free_task_image_pages
+    pop     r8
+    pop     r7
+    move.q  r1, r0
+    move.q  r3, r0
     move.l  r2, #ERR_NOMEM
     rts
 
@@ -974,7 +1543,7 @@ count_free_pages:
 ;   1. Switch to kernel PT (saved in R28).
 ;   2. alloc_pages(1) -> R1=PPN, R2=err. Bail out on err.
 ;   3. Zero the entire 4 KiB page.
-;   4. Set every row's KD_GRANT_TASK_ID byte to GRANT_TASK_FREE (0xFF).
+;   4. Set every row's KD_GRANT_TASK_ID field to GRANT_TASK_FREE.
 ;   5. Walk the existing chain header. If empty, set FIRST_PPN to new page.
 ;      Otherwise walk to the tail page and store the new PPN into its
 ;      KD_GRANT_PAGE_NEXT field.
@@ -1004,16 +1573,16 @@ kern_grant_chain_alloc_page:
     bra     .gcap_zero
 .gcap_zero_done:
 
-    ; Mark all 255 rows as free (KD_GRANT_TASK_ID = 0xFF at each row offset).
+    ; Mark all 255 rows as free (KD_GRANT_TASK_ID = GRANT_TASK_FREE).
     ; Row 0 is at page+KD_GRANT_PAGE_HDR_SZ, row stride = KD_GRANT_ROW_SIZE.
     move.l  r4, #KD_GRANT_PAGE_HDR_SZ
     add     r4, r4, r3                  ; r4 = &row[0]
     move.l  r5, #0                      ; row index
-    move.l  r6, #0xFF
+    move.l  r6, #GRANT_TASK_FREE
 .gcap_mark:
     move.l  r7, #KD_GRANT_ROWS_PER_PG
     bge     r5, r7, .gcap_mark_done
-    store.b r6, KD_GRANT_TASK_ID(r4)
+    store.l r6, KD_GRANT_TASK_ID(r4)
     add     r4, r4, #KD_GRANT_ROW_SIZE
     add     r5, r5, #1
     bra     .gcap_mark
@@ -1064,7 +1633,7 @@ kern_grant_chain_alloc_page:
 ; kern_grant_create_row: write a grant row, allocating a new chain page if
 ; the existing chain is empty or every row in every page is occupied.
 ; ----------------------------------------------------------------------------
-; Inputs:  R1 = target task ID (low byte used)
+; Inputs:  R1 = target public task ID (u32)
 ;          R2 = region tag (low 32 bits used)
 ;          R3 = PPN low (inclusive, low 16 bits used)
 ;          R4 = PPN high (inclusive, low 16 bits used)
@@ -1072,7 +1641,7 @@ kern_grant_chain_alloc_page:
 ; Clobbers: R3..R19, R28, R29
 ;
 ; Walks every chain page; for each, scans rows 0..254 looking for one whose
-; KD_GRANT_TASK_ID == 0xFF. Writes the row in place. If no chain page has a
+; KD_GRANT_TASK_ID == GRANT_TASK_FREE. Writes the row in place. If no chain page has a
 ; free row (or chain is empty), allocates a new page via
 ; kern_grant_chain_alloc_page and writes row 0 of the new page.
 kern_grant_create_row:
@@ -1108,8 +1677,8 @@ kern_grant_create_row:
 .gcr_scan_rows:
     move.l  r8, #KD_GRANT_ROWS_PER_PG
     bge     r7, r8, .gcr_next_page
-    load.b  r8, KD_GRANT_TASK_ID(r6)
-    move.l  r9, #0xFF
+    load.l  r8, KD_GRANT_TASK_ID(r6)
+    move.l  r9, #GRANT_TASK_FREE
     beq     r8, r9, .gcr_found_row
     add     r6, r6, #KD_GRANT_ROW_SIZE
     add     r7, r7, #1
@@ -1144,7 +1713,7 @@ kern_grant_create_row:
     pop     r2                          ; tag
     pop     r1                          ; task_id
 
-    store.b r1, KD_GRANT_TASK_ID(r6)
+    store.l r1, KD_GRANT_TASK_ID(r6)
     store.l r2, KD_GRANT_REGION(r6)
     store.w r3, KD_GRANT_PPN_LO(r6)
     store.w r4, KD_GRANT_PPN_HI(r6)
@@ -1181,7 +1750,7 @@ kern_grant_create_row:
 ; kern_grant_check: check whether the calling task has a grant covering a
 ; given PPN range. Used by SYS_MAP_IO before installing PTEs.
 ; ----------------------------------------------------------------------------
-; Inputs:  R1 = task ID (low byte)
+; Inputs:  R1 = public task ID (u32)
 ;          R2 = requested PPN low (inclusive)
 ;          R3 = requested page count (>= 1)
 ; Outputs: R1 = 1 if a covering grant exists, 0 otherwise; R2 = ERR_OK
@@ -1212,7 +1781,7 @@ kern_grant_check:
 .gck_row:
     move.l  r12, #KD_GRANT_ROWS_PER_PG
     bge     r11, r12, .gck_next_pg
-    load.b  r12, KD_GRANT_TASK_ID(r10)
+    load.l  r12, KD_GRANT_TASK_ID(r10)
     bne     r12, r6, .gck_row_next
     ; Task matches; check PPN range
     load.w  r13, KD_GRANT_PPN_LO(r10)
@@ -1297,7 +1866,7 @@ kern_bootstrap_grant_for_program:
 ; Called from kill_task_cleanup so that a recycled task slot cannot inherit
 ; the previous occupant's MMIO grants.
 ; ----------------------------------------------------------------------------
-; Inputs:  R1 = task_id (low byte)
+; Inputs:  R1 = public task_id (u32)
 ; Outputs: none
 ; Clobbers: R3..R15
 ;
@@ -1317,11 +1886,11 @@ kern_grant_release_for_task:
 .grft_row:
     move.l  r9, #KD_GRANT_ROWS_PER_PG
     bge     r8, r9, .grft_next_page
-    load.b  r9, KD_GRANT_TASK_ID(r7)
+    load.l  r9, KD_GRANT_TASK_ID(r7)
     bne     r9, r6, .grft_row_skip
     ; Match — mark free and bump down the header TOTAL counter.
-    move.l  r10, #0xFF
-    store.b r10, KD_GRANT_TASK_ID(r7)
+    move.l  r10, #GRANT_TASK_FREE
+    store.l r10, KD_GRANT_TASK_ID(r7)
     load.w  r11, KD_GRANT_HDR_TOTAL(r3)
     sub     r11, r11, #1
     store.w r11, KD_GRANT_HDR_TOTAL(r3)
@@ -2472,8 +3041,7 @@ trap_handler:
     move.q  r2, #ERR_OK
     eret
 .info_current_task:
-    move.l  r11, #KERN_DATA_BASE
-    load.q  r1, (r11)                  ; current_task
+    jsr     kern_current_public_task_id
     move.q  r2, #ERR_OK
     eret
 .info_ticks:
@@ -2579,20 +3147,15 @@ trap_handler:
 ; --- Signal ---
 ; R1 = target taskID, R2 = signal mask, returns R2 = err
 .do_signal:
-    ; Validate taskID (must be 0..MAX_TASKS-1 and not FREE)
-    move.l  r22, #MAX_TASKS
-    bge     r1, r22, .signal_badarg
+    ; Resolve the public task ID to a live slot.
+    jsr     kern_find_slot_for_public_id ; R1 = slot, R2 = found?
+    beqz    r2, .signal_badarg
 
     ; Get target TCB
     move.l  r12, #KERN_DATA_BASE
     lsl     r15, r1, #5
     add     r15, r15, #KD_TASK_BASE
     add     r15, r15, r12           ; R15 = &TCB[target]
-
-    ; Reject if target is FREE
-    load.b  r22, KD_TASK_STATE(r15)
-    move.l  r23, #TASK_FREE
-    beq     r22, r23, .signal_badarg
 
     ; Set bits in target's signal_recv
     load.l  r20, KD_TASK_SIG_RECV(r15)
@@ -2831,7 +3394,7 @@ trap_handler:
     beqz    r1, .putmsg_badarg
     move.q  r21, r1                     ; R21 = &port[portID]
     move.l  r12, #KERN_DATA_BASE
-    load.q  r13, (r12)                  ; current_task (for src_task)
+    load.q  r13, (r12)                  ; current_task slot
     ; Check valid
     load.b  r23, KD_PORT_VALID(r21)
     beqz    r23, .putmsg_badarg
@@ -2848,7 +3411,24 @@ trap_handler:
     add     r26, r26, #KD_PORT_MSGS     ; R26 = &msg_slot
     ; Write message fields (32 bytes)
     store.l r2, KD_MSG_TYPE(r26)        ; mn_Type = R2
-    store.l r13, KD_MSG_SRC(r26)        ; mn_SrcTask = current_task
+    push    r2
+    push    r3
+    push    r4
+    push    r5
+    push    r6
+    push    r21
+    push    r24
+    push    r25
+    jsr     kern_current_public_task_id
+    pop     r25
+    pop     r24
+    pop     r21
+    pop     r6
+    pop     r5
+    pop     r4
+    pop     r3
+    pop     r2
+    store.l r1, KD_MSG_SRC(r26)         ; mn_SrcTask = public task ID
     store.q r3, KD_MSG_DATA0(r26)       ; mn_Data0 = R3
     store.q r4, KD_MSG_DATA1(r26)       ; mn_Data1 = R4
     store.w r5, KD_MSG_REPLY_PORT(r26)  ; mn_ReplyPort = R5
@@ -3026,19 +3606,21 @@ trap_handler:
     add     r25, r25, #7
     and     r25, r25, #0xFFFFFFF8       ; r25 = aligned code_size
 
-    ; Validate source_ptr range: must be within caller's user region (3 pages)
+    ; Reject source pointers outside the 32 MiB virtual address space before
+    ; validate_user_range walks the caller PT.
+    move.l  r11, #0x2000000
+    bge     r24, r11, .ct_badarg
+
+    ; Validate source_ptr range against the caller's current PT directly.
+    mfcr    r28, cr0
+    move.q  r1, r24
+    move.q  r2, r25
+    move.q  r3, r28
+    jsr     validate_user_range
+    bnez    r1, .ct_badarg
+
     move.l  r12, #KERN_DATA_BASE
     load.q  r13, (r12)                  ; current_task
-    move.l  r11, #USER_SLOT_STRIDE
-    mulu    r11, r13, r11
-    move.l  r14, #USER_CODE_BASE
-    add     r14, r14, r11               ; r14 = caller's user region base
-    blt     r24, r14, .ct_badarg        ; source_ptr < base
-    add     r16, r24, r25
-    sub     r16, r16, #1                ; source_ptr + code_size - 1
-    move.l  r17, #0x3000                ; 3 pages
-    add     r17, r14, r17               ; base + 0x3000
-    bge     r16, r17, .ct_badarg        ; end >= base + 3 pages
 
     ; Find free TCB slot
     move.l  r20, #0                     ; candidate child_id
@@ -3055,20 +3637,36 @@ trap_handler:
     bra     .ct_scan
 .ct_found:
     ; r20 = child_id
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r18, KD_TASKID_NEXT(r12)    ; r18 = public task id
+    move.q  r14, r18
+    add     r14, r14, #1
+    store.q r14, KD_TASKID_NEXT(r12)
 
-    ; Save caller's PTBR from CR0
-    mfcr    r27, cr0                    ; r27 = saved caller PTBR
-
-    ; Switch to kernel page table for cross-task memory access
-    move.l  r11, #KERN_PAGE_TABLE
-    mtcr    cr0, r11
-    tlbflush
-
-    ; Compute child's code page address
-    move.l  r11, #USER_SLOT_STRIDE
-    mulu    r11, r20, r11
-    move.l  r21, #USER_CODE_BASE
-    add     r21, r21, r11               ; r21 = child code addr
+    ; Allocate the child's dynamic image/PT placement while staying on the
+    ; caller's PT. The caller PT already carries supervisor-only mappings for
+    ; the global image/PT windows, so the kernel can safely read a source_ptr
+    ; from user-dynamic/shared mappings and write the child image/PT without
+    ; losing visibility of caller-owned pages.
+    move.l  r1, #1
+    jsr     alloc_task_image_pages
+    bnez    r2, .ct_nomem
+    move.q  r21, r1                     ; child code base
+    move.l  r1, #1
+    jsr     alloc_task_image_pages
+    bnez    r2, .ct_fail_free_code
+    move.q  r23, r1                     ; child stack base
+    move.l  r1, #1
+    jsr     alloc_task_image_pages
+    bnez    r2, .ct_fail_free_stack
+    move.q  r22, r1                     ; child data base
+    move.l  r1, #1
+    jsr     alloc_task_image_pages
+    bnez    r2, .ct_fail_free_data
+    move.q  r27, r1                     ; child startup base
+    jsr     alloc_task_pt_block
+    bnez    r2, .ct_fail_free_startup
+    move.q  r29, r1                     ; child PT base
 
     ; Zero child's code page (512 iterations of 8 bytes = 4096)
     move.l  r4, #0
@@ -3095,21 +3693,41 @@ trap_handler:
 .ct_copy_done:
 
     ; Write arg0 to child's data page at offset 0
-    move.l  r11, #USER_SLOT_STRIDE
-    mulu    r11, r20, r11
-    move.l  r22, #USER_DATA_BASE
-    add     r22, r22, r11               ; r22 = child data addr
     store.q r26, (r22)                  ; data[0] = arg0
 
-    ; Build child's page table (r10 = child_id)
-    move.q  r10, r20
-    move.l  r9, #1                      ; code_pages = 1
-    move.l  r11, #1                     ; data_pages = 1
-    jsr     build_user_pt
+    ; Build child's page table
+    move.q  r1, r29
+    move.q  r2, r21
+    move.l  r3, #1
+    move.q  r4, r23
+    move.l  r5, #1
+    move.q  r6, r22
+    move.l  r7, #1
+    move.q  r8, r27
+    push    r20
+    jsr     build_user_pt_dynamic
+    pop     r20
 
-    ; Restore caller's PTBR
-    mtcr    cr0, r27
-    tlbflush
+    ; Populate startup block in the child's dedicated startup page.
+    move.q  r1, r27                     ; startup base
+    move.q  r2, r18                     ; public task id
+    move.l  r3, #TASK_STARTUP_FLAG_CREATE
+    move.q  r4, r21                     ; code base
+    move.l  r5, #1                      ; code pages
+    move.q  r6, r23                     ; stack base
+    move.l  r7, #1                      ; stack pages
+    move.q  r8, r22                     ; data base
+    move.l  r9, #1                      ; data pages
+    jsr     write_startup_block
+
+    ; Seed the top of the stack page with startup_base and data_base so user
+    ; preambles can recover both without assuming stack/data adjacency.
+    move.q  r14, r23
+    add     r14, r14, #MMU_PAGE_SIZE
+    sub     r14, r14, #16
+    store.q r27, (r14)
+    add     r14, r14, #8
+    store.q r22, (r14)
 
     ; Init child TCB
     move.l  r12, #KERN_DATA_BASE
@@ -3117,16 +3735,11 @@ trap_handler:
     add     r15, r15, #KD_TASK_BASE
     add     r15, r15, r12               ; r15 = &TCB[child]
 
-    ; PC = USER_CODE_BASE + child_id * USER_SLOT_STRIDE
-    move.l  r11, #USER_SLOT_STRIDE
-    mulu    r11, r20, r11
-    move.l  r14, #USER_CODE_BASE
-    add     r14, r14, r11
-    store.q r14, KD_TASK_PC(r15)
+    ; PC = code base
+    store.q r21, KD_TASK_PC(r15)
 
-    ; USP = USER_STACK_BASE + child_id * USER_SLOT_STRIDE + MMU_PAGE_SIZE
-    move.l  r14, #USER_STACK_BASE
-    add     r14, r14, r11
+    ; USP = stack base + page size
+    move.q  r14, r23
     add     r14, r14, #MMU_PAGE_SIZE
     store.q r14, KD_TASK_USP(r15)
 
@@ -3143,18 +3756,32 @@ trap_handler:
     move.b  r14, #WAITPORT_NONE
     store.b r14, KD_TASK_WAITPORT(r15)
 
-    ; Set PTBR[child_id] = USER_PT_BASE + child_id * USER_SLOT_STRIDE
-    move.l  r11, #USER_SLOT_STRIDE
-    mulu    r11, r20, r11
-    move.l  r14, #USER_PT_BASE
-    add     r14, r14, r11
+    ; Set PTBR[child_id]
     lsl     r16, r20, #3
     add     r16, r16, #KD_PTBR_BASE
     add     r16, r16, r12
-    store.q r14, (r16)
+    store.q r29, (r16)
 
-    ; Return child_id in R1, ERR_OK in R2
+    ; Record dynamic layout.
     move.q  r1, r20
+    jsr     kern_task_layout_addr
+    store.q r21, KD_TASK_CODE_BASE(r1)
+    store.q r23, KD_TASK_STACK_BASE(r1)
+    store.q r22, KD_TASK_DATA_BASE(r1)
+    move.l  r14, #1
+    store.l r14, KD_TASK_CODE_PAGES(r1)
+    store.l r14, KD_TASK_STACK_PAGES(r1)
+    store.l r14, KD_TASK_DATA_PAGES(r1)
+    store.l r0, KD_TASK_LAYOUT_FLAGS(r1)
+    store.q r27, KD_TASK_LAYOUT_STARTUP(r1)
+    store.q r29, KD_TASK_LAYOUT_PT_BASE(r1)
+
+    move.q  r1, r20
+    jsr     kern_task_pubid_addr
+    store.l r18, (r1)
+
+    ; Return public task id in R1, ERR_OK in R2
+    move.q  r1, r18
     move.q  r2, #ERR_OK
     eret
 
@@ -3162,6 +3789,24 @@ trap_handler:
     move.q  r2, #ERR_BADARG
     eret
 .ct_nomem:
+    move.q  r2, #ERR_NOMEM
+    eret
+.ct_fail_free_startup:
+    move.q  r1, r27
+    move.l  r2, #1
+    jsr     free_task_image_pages
+.ct_fail_free_data:
+    move.q  r1, r22
+    move.l  r2, #1
+    jsr     free_task_image_pages
+.ct_fail_free_stack:
+    move.q  r1, r23
+    move.l  r2, #1
+    jsr     free_task_image_pages
+.ct_fail_free_code:
+    move.q  r1, r21
+    move.l  r2, #1
+    jsr     free_task_image_pages
     move.q  r2, #ERR_NOMEM
     eret
 
@@ -3786,9 +4431,9 @@ trap_handler:
     bgt     r25, r11, .mio_badarg
 
     ; M12.5: grant-table check.
-    ; r1 = current task ID, r2 = req PPN low, r3 = req page count
+    ; r1 = current public task ID, r2 = req PPN low, r3 = req page count
     move.l  r12, #KERN_DATA_BASE
-    load.q  r1, (r12)                   ; r1 = current_task
+    jsr     kern_current_public_task_id ; R1 = current public task ID
     move.q  r2, r24                     ; r2 = req PPN low
     move.q  r3, r25                     ; r3 = req page count
     jsr     kern_grant_check            ; R1 = match (0/1), R2 = ERR_OK
@@ -3893,12 +4538,12 @@ trap_handler:
 ; Verbs:
 ;   HWRES_BECOME (0):
 ;     Inputs:  none
-;     Effect:  if KD_HWRES_TASK == 0xFF, set it to current_task and return
-;              ERR_OK. Otherwise return ERR_EXISTS.
+;     Effect:  if KD_HWRES_TASK == HWRES_TASK_FREE, set it to the current
+;              public task ID and return ERR_OK. Otherwise return ERR_EXISTS.
 ;     Outputs: R1 = unused, R2 = err
 ;
 ;   HWRES_CREATE (1):
-;     Inputs:  R1 = target task ID
+;     Inputs:  R1 = target public task ID
 ;              R2 = 4-byte region tag (low 32 bits)
 ;              R3 = PPN low (inclusive)
 ;              R4 = PPN high (inclusive)
@@ -3913,7 +4558,7 @@ trap_handler:
 ;     documented and M13 can fill it without re-bikeshedding the layout.
 ;
 ;   HWRES_TASK_ALIVE (3):
-;     Inputs:  R1 = target task ID
+;     Inputs:  R1 = target public task ID
 ;     Guard:   current_task must equal KD_HWRES_TASK (broker-only)
 ;     Effect:  reads KD_TASK_STATE for the target task and reports
 ;              whether the slot is in use. Used by the broker to lazily
@@ -3944,35 +4589,44 @@ trap_handler:
     bra     .hwres_badarg
 
 .hwres_become:
-    ; If KD_HWRES_TASK is still the unclaimed sentinel (0xFF), set it to
-    ; the current task and return OK. Otherwise return EXISTS.
+    ; If KD_HWRES_TASK is still the unclaimed sentinel, set it to the
+    ; current public task ID and return OK. Otherwise return EXISTS.
     move.l  r12, #KERN_DATA_BASE
-    load.b  r13, KD_HWRES_TASK(r12)
-    move.l  r14, #0xFF
+    load.l  r13, KD_HWRES_TASK(r12)
+    move.l  r14, #HWRES_TASK_FREE
     bne     r13, r14, .hwres_exists
-    load.q  r15, (r12)                  ; r15 = current_task
-    store.b r15, KD_HWRES_TASK(r12)
+    jsr     kern_current_public_task_id ; R1 = current public task ID
+    store.l r1, KD_HWRES_TASK(r12)
     move.q  r1, #0
     move.q  r2, #ERR_OK
     eret
 
 .hwres_create:
-    ; Guard: current_task == KD_HWRES_TASK
+    ; Guard: current_public_task == KD_HWRES_TASK
+    move.q  r20, r1                     ; preserve target public task ID
+    move.q  r21, r2                     ; preserve tag
+    move.q  r22, r3                     ; preserve ppn_lo
+    move.q  r23, r4                     ; preserve ppn_hi
     move.l  r12, #KERN_DATA_BASE
-    load.q  r13, (r12)                  ; current_task
-    load.b  r14, KD_HWRES_TASK(r12)
+    jsr     kern_current_public_task_id ; R1 = current public task ID
+    move.q  r13, r1
+    load.l  r14, KD_HWRES_TASK(r12)
     bne     r13, r14, .hwres_perm
     ; Sanity-check inputs lightly:
-    ;   target task id must be < MAX_TASKS
+    ;   target public task id must resolve to a live slot
     ;   ppn_lo, ppn_hi must satisfy ppn_lo <= ppn_hi
-    move.l  r15, #MAX_TASKS
-    bge     r1, r15, .hwres_badarg
-    bltz    r1, .hwres_badarg
-    bgt     r3, r4, .hwres_badarg
-    bltz    r3, .hwres_badarg
-    bltz    r4, .hwres_badarg
+    move.q  r1, r20
+    jsr     kern_find_slot_for_public_id ; R1=slot, R2=1 if found
+    beqz    r2, .hwres_badarg
+    bgt     r22, r23, .hwres_badarg
+    bltz    r22, .hwres_badarg
+    bltz    r23, .hwres_badarg
     ; r1=task_id, r2=tag, r3=ppn_lo, r4=ppn_hi already in the right
     ; registers for kern_grant_create_row.
+    move.q  r1, r20
+    move.q  r2, r21
+    move.q  r3, r22
+    move.q  r4, r23
     jsr     kern_grant_create_row       ; R2 = err
     move.q  r1, #0
     eret
@@ -3985,21 +4639,15 @@ trap_handler:
 
 .hwres_task_alive:
     ; Guard: only the broker may query task liveness.
+    move.q  r20, r1                     ; preserve target public task ID
     move.l  r12, #KERN_DATA_BASE
-    load.q  r13, (r12)                  ; current_task
-    load.b  r14, KD_HWRES_TASK(r12)
+    jsr     kern_current_public_task_id ; R1 = current public task ID
+    move.q  r13, r1
+    load.l  r14, KD_HWRES_TASK(r12)
     bne     r13, r14, .hwres_perm
-    ; Sanity-check target task ID
-    move.l  r15, #MAX_TASKS
-    bge     r1, r15, .hwres_badarg
-    bltz    r1, .hwres_badarg
-    ; Read TCB state byte: KD_TASK_BASE + task * KD_TASK_STRIDE + KD_TASK_STATE
-    lsl     r15, r1, #5                 ; r15 = task * 32
-    add     r15, r15, #KD_TASK_BASE
-    add     r15, r15, r12               ; r15 = &TCB[task]
-    load.b  r16, KD_TASK_STATE(r15)
-    move.l  r17, #TASK_FREE
-    beq     r16, r17, .hwres_alive_no
+    move.q  r1, r20
+    jsr     kern_find_slot_for_public_id
+    beqz    r2, .hwres_alive_no
     move.q  r1, #1                      ; alive
     move.q  r2, #ERR_OK
     eret
@@ -4045,12 +4693,10 @@ trap_handler:
     move.q  r26, r3                     ; r26 = args_ptr
     move.q  r27, r4                     ; r27 = args_len
 
-    ; 1. Validate image_size range: 32 (header) .. 24608 (header + 8KB code + 16KB data)
-    ;    Matches load_program's max (2 code pages + 4 data pages + 32-byte header).
+    ; 1. Validate image_size minimum. load_program does the detailed image
+    ;    validation and dynamic-placement fit checks.
     move.l  r11, #IMG_HEADER_SIZE
     blt     r25, r11, .ep_badarg_norestore
-    move.l  r11, #24608
-    bgt     r25, r11, .ep_badarg_norestore
 
     ; 2. Validate args_len
     move.l  r11, #DATA_ARGS_MAX
@@ -4081,6 +4727,7 @@ trap_handler:
 .ep_args_valid:
 
     ; 6. Call load_program UNDER CALLER'S PT (no switching!)
+    move.l  r6, #TASK_STARTUP_FLAG_EXEC
     move.q  r7, r24                     ; image_ptr
     move.q  r8, r25                     ; image_size
     push    r24                         ; save image_ptr
@@ -4093,23 +4740,16 @@ trap_handler:
     bnez    r2, .ep_new_fail
 
     ; 7. Copy args directly (no PT switching needed)
-    move.q  r22, r1                     ; r22 = new task_id
+    move.q  r22, r1                     ; r22 = new public task_id
+    move.q  r23, r3                     ; r23 = new internal task slot
     beqz    r27, .ep_new_no_args
     beqz    r26, .ep_new_no_args
 
-    ; Compute destination: new task data page + DATA_ARGS_OFFSET
-    ; Re-read code_size from image to compute data offset
-    load.l  r14, IMG_OFF_CODE_SIZE(r24)
-    add     r14, r14, #0xFFF
-    lsr     r14, r14, #12              ; code_pages
-    add     r14, r14, #1               ; +1 for stack
-    lsl     r14, r14, #12              ; (code_pages+1)*4096
-    move.l  r11, #USER_SLOT_STRIDE
-    mulu    r11, r22, r11
-    move.l  r15, #USER_CODE_BASE
-    add     r15, r15, r11
-    add     r15, r15, r14
-    add     r15, r15, #DATA_ARGS_OFFSET ; r15 = dest (supervisor-only mapped)
+    ; Compute destination from the child slot returned by load_program.
+    move.q  r1, r23
+    jsr     kern_task_layout_addr
+    load.q  r15, KD_TASK_DATA_BASE(r1)
+    add     r15, r15, #DATA_ARGS_OFFSET
 
     ; Direct copy: read from caller VA, write to new task pages
     move.l  r4, #0
@@ -4148,6 +4788,10 @@ trap_handler:
 ; ============================================================================
 validate_user_range:
     beqz    r2, .vur_ok
+    move.l  r6, #0x2000000
+    bge     r1, r6, .vur_fail
+    sub     r6, r6, r2
+    bgt     r1, r6, .vur_fail
     lsr     r4, r1, #12                 ; start VPN
     add     r5, r1, r2
     sub     r5, r5, #1
@@ -4442,21 +5086,63 @@ kill_task_cleanup:
     ; task so a recycled slot cannot inherit MMIO privilege.
     ; ----------------------------------------------------------------
     ;
-    ; (a) Walk the grant chain and free every row whose task_id == r13
-    ;     (so the new occupant of this slot can't reuse the old grants).
+    ; (a) Walk the grant chain and free every row whose public task_id
+    ;     matches the exiting task.
     move.q  r1, r13
+    jsr     kern_task_pubid_addr
+    load.l  r15, (r1)                   ; r15 = exiting public task ID
+    move.q  r1, r15
     jsr     kern_grant_release_for_task
     ;
-    ; (b) If the exiting task IS the broker (KD_HWRES_TASK == r13),
+    ; (b) If the exiting task IS the broker (KD_HWRES_TASK == public_id),
     ;     clear the broker identity. After this, a fresh task can claim
     ;     broker identity via SYS_HWRES_OP/HWRES_BECOME without inheriting
     ;     the dead broker's privilege.
     move.l  r12, #KERN_DATA_BASE
-    load.b  r14, KD_HWRES_TASK(r12)
-    bne     r14, r13, .ktc_hwres_done
-    move.l  r14, #0xFF
-    store.b r14, KD_HWRES_TASK(r12)
+    load.l  r14, KD_HWRES_TASK(r12)
+    bne     r14, r15, .ktc_hwres_clear_pubid
+    move.l  r14, #HWRES_TASK_FREE
+    store.l r14, KD_HWRES_TASK(r12)
+.ktc_hwres_clear_pubid:
+    move.q  r1, r13
+    jsr     kern_task_pubid_addr
+    move.l  r14, #TASK_PUBID_FREE
+    store.l r14, (r1)
 .ktc_hwres_done:
+    ; ----------------------------------------------------------------
+    ; M13 phase 2: free the task's dynamic code/stack/data pages and PT
+    ; block, then clear the layout row and PTBR slot.
+    ; ----------------------------------------------------------------
+    move.q  r1, r13
+    jsr     kern_task_layout_addr
+    move.q  r20, r1
+    load.q  r1, KD_TASK_CODE_BASE(r20)
+    load.l  r2, KD_TASK_CODE_PAGES(r20)
+    jsr     free_task_image_pages
+    load.q  r1, KD_TASK_STACK_BASE(r20)
+    load.l  r2, KD_TASK_STACK_PAGES(r20)
+    jsr     free_task_image_pages
+    load.q  r1, KD_TASK_DATA_BASE(r20)
+    load.l  r2, KD_TASK_DATA_PAGES(r20)
+    jsr     free_task_image_pages
+    load.q  r1, KD_TASK_LAYOUT_STARTUP(r20)
+    move.l  r2, #1
+    jsr     free_task_image_pages
+    load.q  r1, KD_TASK_LAYOUT_PT_BASE(r20)
+    jsr     free_task_pt_block
+    store.q r0, KD_TASK_CODE_BASE(r20)
+    store.q r0, KD_TASK_STACK_BASE(r20)
+    store.q r0, KD_TASK_DATA_BASE(r20)
+    store.l r0, KD_TASK_CODE_PAGES(r20)
+    store.l r0, KD_TASK_STACK_PAGES(r20)
+    store.l r0, KD_TASK_DATA_PAGES(r20)
+    store.l r0, KD_TASK_LAYOUT_FLAGS(r20)
+    store.q r0, KD_TASK_LAYOUT_STARTUP(r20)
+    store.q r0, KD_TASK_LAYOUT_PT_BASE(r20)
+    lsl     r21, r13, #3
+    add     r21, r21, #KD_PTBR_BASE
+    add     r21, r21, r12
+    store.q r0, (r21)
     rts
 
 ; ============================================================================
@@ -4846,27 +5532,10 @@ prog_console_code:
     ; === Preamble: compute data page base (preemption-safe) ===
     sub     sp, sp, #16                 ; reserve [sp]=R29, [sp+8]=scratch
 .con_preamble:
-    move.l  r1, #SYSINFO_CURRENT_TASK
-    syscall #SYS_GET_SYS_INFO           ; R1 = task_id
-    store.q r1, 8(sp)                   ; save task_id
-    move.l  r1, #SYSINFO_CURRENT_TASK
-    syscall #SYS_GET_SYS_INFO           ; R1 = task_id (verify)
-    load.q  r28, 8(sp)
-    bne     r1, r28, .con_preamble      ; mismatch → retry
-    move.l  r28, #USER_SLOT_STRIDE
-    mulu    r28, r1, r28
-    move.l  r29, #USER_DATA_BASE
-    add     r29, r29, r28
-    store.q r29, (sp)                   ; save R29 first computation
-    load.q  r1, 8(sp)
-    move.l  r28, #USER_SLOT_STRIDE
-    mulu    r28, r1, r28
-    move.l  r29, #USER_DATA_BASE
-    add     r29, r29, r28
-    load.q  r28, (sp)
-    bne     r29, r28, .con_preamble     ; mismatch → retry
-    store.q r29, (sp)                   ; confirmed correct
-    load.q  r1, 8(sp)
+    load.q  r30, (sp)                  ; r30 = startup_base
+    load.q  r29, 8(sp)                 ; r29 = data_base
+    store.q r29, (sp)
+    load.l  r1, TASKSB_TASK_ID(r30)
     store.q r1, 128(r29)                ; data[128] = task_id
 
     ; === Map terminal MMIO page (M11.5: console.handler now owns terminal I/O) ===
@@ -5071,7 +5740,7 @@ prog_console_code_end:
 
 prog_console_data:
     dc.b    "console.handler", 0       ; offset 0: port name (16 bytes exactly)
-    dc.b    "console.handler ONLINE [Task ", 0  ; offset 16: banner string (29 bytes)
+    dc.b    "console.handler M11.5 [Task ", 0  ; offset 16: banner string
     ; offset 128+ is scratch (task_id, port_id, etc.) — zeroed by loader
 prog_console_data_end:
     align   8
@@ -5124,28 +5793,17 @@ prog_doslib_code:
     ; `#0x3000` offset to USER_CODE_BASE + task_id*stride. That offset
     ; assumed dos.library has exactly 2 code pages — wrong as soon as
     ; the code section grows past 8 KiB. The robust derivation: the
-    ; kernel sets initial USP = data_base (see load_program at
-    ; iexec.s ~line 747). After the entry-point `sub sp, sp, #16`,
-    ; sp == data_base - 16, so `add r29, sp, #16` recovers data_base
-    ; for ANY code_pages count. No magic offsets, no SYSINFO query.
+    ; The kernel seeds the top of the initial stack page with data_base.
+    ; After the entry-point `sub sp, sp, #16`, that seeded qword sits at
+    ; 8(sp), so the preamble can recover data_base without assuming the
+    ; stack page is adjacent to the data page.
     ; =====================================================================
     sub     sp, sp, #16
 .dos_preamble:
-    move.l  r1, #SYSINFO_CURRENT_TASK
-    syscall #SYS_GET_SYS_INFO          ; R1 = task_id
-    store.q r1, 8(sp)
-    move.l  r1, #SYSINFO_CURRENT_TASK
-    syscall #SYS_GET_SYS_INFO          ; R1 = task_id (verify)
-    load.q  r28, 8(sp)
-    bne     r1, r28, .dos_preamble
-    add     r29, sp, #16               ; r29 = data_base (= initial USP)
+    load.q  r30, (sp)                  ; r30 = startup_base
+    load.q  r29, 8(sp)                 ; r29 = data_base
     store.q r29, (sp)
-    load.q  r1, 8(sp)
-    add     r28, sp, #16               ; recompute for double-check
-    load.q  r29, (sp)
-    bne     r28, r29, .dos_preamble
-    store.q r29, (sp)
-    load.q  r1, 8(sp)
+    load.l  r1, TASKSB_TASK_ID(r30)
     store.q r1, 128(r29)               ; data[128] = task_id
 
     ; =====================================================================
@@ -6995,9 +7653,9 @@ prog_doslib_data:
     dc.b    "console.handler", 0
     ; --- Offset 16: "dos.library\0" + pad to 16 bytes ---
     dc.b    "dos.library", 0, 0, 0, 0, 0
-    ; --- Offset 32: banner "dos.library ONLINE [Task \0" (26 bytes, ends at 58) ---
-    dc.b    "dos.library ONLINE [Task ", 0
-    ds.b    6                           ; pad to offset 64
+    ; --- Offset 32: banner "dos.library M12.8 [Task \0" ---
+    dc.b    "dos.library M12.8 [Task ", 0
+    ds.b    7                           ; pad to offset 64
     ; --- Offset 64: padding to 128 ---
     ds.b    64
     ; --- Offset 128: task_id (8) ---
@@ -7069,25 +7727,7 @@ prog_version_code:
     ; === Preamble ===
     sub     sp, sp, #16
 .ver_preamble:
-    move.l  r1, #SYSINFO_CURRENT_TASK
-    syscall #SYS_GET_SYS_INFO
-    store.q r1, 8(sp)
-    move.l  r1, #SYSINFO_CURRENT_TASK
-    syscall #SYS_GET_SYS_INFO
-    load.q  r28, 8(sp)
-    bne     r1, r28, .ver_preamble
-    move.l  r28, #USER_SLOT_STRIDE
-    mulu    r28, r1, r28
-    move.l  r29, #USER_DATA_BASE
-    add     r29, r29, r28
-    store.q r29, (sp)
-    load.q  r1, 8(sp)
-    move.l  r28, #USER_SLOT_STRIDE
-    mulu    r28, r1, r28
-    move.l  r29, #USER_DATA_BASE
-    add     r29, r29, r28
-    load.q  r28, (sp)
-    bne     r29, r28, .ver_preamble
+    load.q  r29, 8(sp)
     store.q r29, (sp)
 
     ; === OpenLibrary("console.handler", 0) ===
@@ -7155,7 +7795,7 @@ prog_version_data:
     ; --- Offset 24: padding to 32 ---
     ds.b    8
     ; --- Offset 32: version string ---
-    dc.b    "IntuitionOS 0.15 (exec.library M11.6 / intuition.library M12 / hardware.resource M12.5 / cap sweep M12.6 / dos storage M12.8)", 0x0D, 0x0A, 0
+    dc.b    "IntuitionOS 0.15", 0x0D, 0x0A, 0
 prog_version_data_end:
     align   8
 prog_version_end:
@@ -7180,25 +7820,7 @@ prog_avail_code:
     ; === Preamble ===
     sub     sp, sp, #16
 .av_preamble:
-    move.l  r1, #SYSINFO_CURRENT_TASK
-    syscall #SYS_GET_SYS_INFO
-    store.q r1, 8(sp)
-    move.l  r1, #SYSINFO_CURRENT_TASK
-    syscall #SYS_GET_SYS_INFO
-    load.q  r28, 8(sp)
-    bne     r1, r28, .av_preamble
-    move.l  r28, #USER_SLOT_STRIDE
-    mulu    r28, r1, r28
-    move.l  r29, #USER_DATA_BASE
-    add     r29, r29, r28
-    store.q r29, (sp)
-    load.q  r1, 8(sp)
-    move.l  r28, #USER_SLOT_STRIDE
-    mulu    r28, r1, r28
-    move.l  r29, #USER_DATA_BASE
-    add     r29, r29, r28
-    load.q  r28, (sp)
-    bne     r29, r28, .av_preamble
+    load.q  r29, 8(sp)
     store.q r29, (sp)
 
     ; === OpenLibrary("console.handler", 0) ===
@@ -7377,25 +7999,7 @@ prog_dir_code:
     ; === Preamble ===
     sub     sp, sp, #16
 .dir_preamble:
-    move.l  r1, #SYSINFO_CURRENT_TASK
-    syscall #SYS_GET_SYS_INFO
-    store.q r1, 8(sp)
-    move.l  r1, #SYSINFO_CURRENT_TASK
-    syscall #SYS_GET_SYS_INFO
-    load.q  r28, 8(sp)
-    bne     r1, r28, .dir_preamble
-    move.l  r28, #USER_SLOT_STRIDE
-    mulu    r28, r1, r28
-    move.l  r29, #USER_DATA_BASE
-    add     r29, r29, r28
-    store.q r29, (sp)
-    load.q  r1, 8(sp)
-    move.l  r28, #USER_SLOT_STRIDE
-    mulu    r28, r1, r28
-    move.l  r29, #USER_DATA_BASE
-    add     r29, r29, r28
-    load.q  r28, (sp)
-    bne     r29, r28, .dir_preamble
+    load.q  r29, 8(sp)
     store.q r29, (sp)
 
     ; === OpenLibrary("console.handler", 0) ===
@@ -7586,25 +8190,7 @@ prog_type_code:
     ; === Preamble ===
     sub     sp, sp, #16
 .typ_preamble:
-    move.l  r1, #SYSINFO_CURRENT_TASK
-    syscall #SYS_GET_SYS_INFO
-    store.q r1, 8(sp)
-    move.l  r1, #SYSINFO_CURRENT_TASK
-    syscall #SYS_GET_SYS_INFO
-    load.q  r28, 8(sp)
-    bne     r1, r28, .typ_preamble
-    move.l  r28, #USER_SLOT_STRIDE
-    mulu    r28, r1, r28
-    move.l  r29, #USER_DATA_BASE
-    add     r29, r29, r28
-    store.q r29, (sp)
-    load.q  r1, 8(sp)
-    move.l  r28, #USER_SLOT_STRIDE
-    mulu    r28, r1, r28
-    move.l  r29, #USER_DATA_BASE
-    add     r29, r29, r28
-    load.q  r28, (sp)
-    bne     r29, r28, .typ_preamble
+    load.q  r29, 8(sp)
     store.q r29, (sp)
 
     ; === Read args from data[DATA_ARGS_OFFSET] ===
@@ -7897,25 +8483,7 @@ prog_echo_cmd_code:
     ; === Preamble ===
     sub     sp, sp, #16
 .echo_preamble:
-    move.l  r1, #SYSINFO_CURRENT_TASK
-    syscall #SYS_GET_SYS_INFO
-    store.q r1, 8(sp)
-    move.l  r1, #SYSINFO_CURRENT_TASK
-    syscall #SYS_GET_SYS_INFO
-    load.q  r28, 8(sp)
-    bne     r1, r28, .echo_preamble
-    move.l  r28, #USER_SLOT_STRIDE
-    mulu    r28, r1, r28
-    move.l  r29, #USER_DATA_BASE
-    add     r29, r29, r28
-    store.q r29, (sp)
-    load.q  r1, 8(sp)
-    move.l  r28, #USER_SLOT_STRIDE
-    mulu    r28, r1, r28
-    move.l  r29, #USER_DATA_BASE
-    add     r29, r29, r28
-    load.q  r28, (sp)
-    bne     r29, r28, .echo_preamble
+    load.q  r29, 8(sp)
     store.q r29, (sp)
 
     ; === OpenLibrary("console.handler", 0) ===
@@ -8028,9 +8596,7 @@ seed_startup:
     dc.b    "LIBS:graphics.library", 0x0A
     dc.b    "LIBS:intuition.library", 0x0A
     dc.b    "VERSION", 0x0A
-    dc.b    "ECHO Core OS objects: fixed product limits removed where practical", 0x0A
-    dc.b    "ECHO dos.library file storage: variable-size, no per-file cap", 0x0A
-    dc.b    "ECHO IntuitionOS M12.8 ready", 0x0A
+    dc.b    "ECHO IntuitionOS M13 ready", 0x0A
     dc.b    "ECHO All visible services are running in user space", 0x0A, 0
 seed_startup_end:
     align   8
@@ -8070,27 +8636,10 @@ prog_input_device_code:
     ; ===== Preamble: compute data page base (preempt-safe) =====
     sub     sp, sp, #16
 .idev_preamble:
-    move.l  r1, #SYSINFO_CURRENT_TASK
-    syscall #SYS_GET_SYS_INFO
-    store.q r1, 8(sp)
-    move.l  r1, #SYSINFO_CURRENT_TASK
-    syscall #SYS_GET_SYS_INFO
-    load.q  r28, 8(sp)
-    bne     r1, r28, .idev_preamble
-    move.l  r28, #USER_SLOT_STRIDE
-    mulu    r28, r1, r28
-    move.l  r29, #USER_DATA_BASE
-    add     r29, r29, r28
+    load.q  r30, (sp)
+    load.q  r29, 8(sp)
     store.q r29, (sp)
-    load.q  r1, 8(sp)
-    move.l  r28, #USER_SLOT_STRIDE
-    mulu    r28, r1, r28
-    move.l  r29, #USER_DATA_BASE
-    add     r29, r29, r28
-    load.q  r28, (sp)
-    bne     r29, r28, .idev_preamble
-    store.q r29, (sp)
-    load.q  r1, 8(sp)
+    load.l  r1, TASKSB_TASK_ID(r30)
     store.q r1, 128(r29)               ; data[128] = task_id
 
     ; ===== M12.5: Request CHIP grant from hardware.resource =====
@@ -8381,8 +8930,8 @@ prog_input_device_code_end:
 prog_input_device_data:
     dc.b    "console.handler", 0
     dc.b    "input.device", 0, 0, 0, 0
-    dc.b    "input.device ONLINE [Task ", 0
-    ds.b    5                           ; pad to offset 64
+    dc.b    "input.device M11 [Task ", 0
+    ds.b    8                           ; pad to offset 64
     ds.b    64                          ; pad to offset 128
     ds.b    8                           ; 128: task_id
     ds.b    8                           ; 136: (unused)
@@ -8409,7 +8958,7 @@ prog_input_device_end:
 ; The first user-space service to claim broker identity via SYS_HWRES_OP /
 ; HWRES_BECOME. Owns the policy mapping from 4-byte region tags ('CHIP',
 ; 'VRAM') to physical PPN ranges. Clients send HWRES_MSG_REQUEST naming a
-; tag and their own task ID; the broker resolves the tag, calls
+; tag; the broker resolves the tag, calls
 ; SYS_HWRES_OP / HWRES_CREATE to write a grant row covering the right PPN
 ; range for the requesting task, and replies with HWRES_MSG_GRANTED whose
 ; data0 carries (ppn_base<<32) | page_count so the client can call
@@ -8435,27 +8984,10 @@ prog_hwres_code:
     ; ===== Preamble: compute data page base (preempt-safe) =====
     sub     sp, sp, #16
 .hwres_preamble:
-    move.l  r1, #SYSINFO_CURRENT_TASK
-    syscall #SYS_GET_SYS_INFO
-    store.q r1, 8(sp)
-    move.l  r1, #SYSINFO_CURRENT_TASK
-    syscall #SYS_GET_SYS_INFO
-    load.q  r28, 8(sp)
-    bne     r1, r28, .hwres_preamble
-    move.l  r28, #USER_SLOT_STRIDE
-    mulu    r28, r1, r28
-    move.l  r29, #USER_DATA_BASE
-    add     r29, r29, r28
+    load.q  r30, (sp)
+    load.q  r29, 8(sp)
     store.q r29, (sp)
-    load.q  r1, 8(sp)
-    move.l  r28, #USER_SLOT_STRIDE
-    mulu    r28, r1, r28
-    move.l  r29, #USER_DATA_BASE
-    add     r29, r29, r28
-    load.q  r28, (sp)
-    bne     r29, r28, .hwres_preamble
-    store.q r29, (sp)
-    load.q  r1, 8(sp)
+    load.l  r1, TASKSB_TASK_ID(r30)
     store.q r1, 128(r29)               ; data[128] = task_id
 
     ; ===== SYS_HWRES_OP / HWRES_BECOME =====
@@ -8508,18 +9040,13 @@ prog_hwres_code:
     load.q  r29, (sp)
     bnez    r3, .hwres_main            ; spurious wake — go back to wait
 
-    ; r1 = msg type, r2 = tag, r5 = reply_port, r7 = sender (kernel-trusted)
+    ; r1 = msg type, r2 = tag, r5 = reply_port, r7 = sender public task ID
     move.q  r24, r2                    ; r24 = tag
-    move.q  r25, r7                    ; r25 = sender task ID (TRUSTED)
+    move.q  r25, r7                    ; r25 = sender public task ID (TRUSTED)
     move.q  r26, r5                    ; r26 = reply_port
 
     move.l  r28, #HWRES_MSG_REQUEST
     bne     r1, r28, .hwres_main       ; ignore unknown message types
-
-    ; ===== Sanity-check sender task ID =====
-    move.l  r28, #MAX_TASKS
-    bge     r25, r28, .hwres_deny
-    bltz    r25, .hwres_deny
 
     ; ===== M12.5 v2 hardening: scrub stale owner slots =====
     ; Walk the broker's per-tag owner lists and clear any slot whose task
@@ -8530,14 +9057,14 @@ prog_hwres_code:
     ; chain and KD_HWRES_TASK are cleaned up by kill_task_cleanup, but
     ; the broker's private owner state isn't visible to the kernel.
     ;
-    ; CHIP slots: data[144..147] (4 entries)
-    ; VRAM slot:  data[148]      (1 entry)
+    ; CHIP slots: data[144..159] (4 x u32)
+    ; VRAM slot:  data[160..163] (1 x u32)
     add     r17, r29, #144              ; r17 = scan cursor
     move.l  r18, #5                     ; total slots to scrub (4 CHIP + 1 VRAM)
 .hwres_scrub:
     beqz    r18, .hwres_scrub_done
-    load.b  r14, (r17)
-    move.l  r15, #0xFF
+    load.l  r14, (r17)
+    move.l  r15, #HWRES_TASK_FREE
     beq     r14, r15, .hwres_scrub_next
     ; Slot is occupied — query liveness via HWRES_TASK_ALIVE.
     move.q  r1, r14                     ; task_id to query
@@ -8556,10 +9083,10 @@ prog_hwres_code:
     pop     r18
     pop     r17
     bnez    r1, .hwres_scrub_next       ; alive — leave as-is
-    move.l  r14, #0xFF
-    store.b r14, (r17)                  ; dead — reclaim slot
+    move.l  r14, #HWRES_TASK_FREE
+    store.l r14, (r17)                  ; dead — reclaim slot
 .hwres_scrub_next:
-    add     r17, r17, #1
+    add     r17, r17, #4
     sub     r18, r18, #1
     bra     .hwres_scrub
 .hwres_scrub_done:
@@ -8570,8 +9097,8 @@ prog_hwres_code:
     ; FREE slot. List full → DENY. Stale slots have already been reclaimed
     ; by the scrub pass above so dead owners do not block live requesters.
     ;
-    ; CHIP owners: data[144..147] (4 slots; chip MMIO is shared)
-    ; VRAM owner:  data[148]      (1 slot; framebuffer is monopolized)
+    ; CHIP owners: data[144..159] (4 x u32; chip MMIO is shared)
+    ; VRAM owner:  data[160..163] (1 x u32; framebuffer is monopolized)
     move.l  r28, #HWRES_TAG_CHIP
     beq     r24, r28, .hwres_grant_chip
     move.l  r28, #HWRES_TAG_VRAM
@@ -8583,7 +9110,7 @@ prog_hwres_code:
     ; registers all in the same physical page, so multiple services
     ; legitimately need access (input.device + graphics.library both
     ; want it). The broker keeps a small fixed-size owner list at
-    ; data[144..147] (4 slots, 0xFF = unclaimed). A request is granted
+    ; data[144..159] (4 x u32, 0xFFFFFFFF = unclaimed). A request is granted
     ; if the sender is already in the list (idempotent re-grant) OR
     ; if there is a free slot to record them. Otherwise DENY.
     add     r28, r29, #144              ; r28 = &owner_list[0]
@@ -8592,8 +9119,8 @@ prog_hwres_code:
     move.q  r16, r0                     ; r16 = first free slot ptr (0 = none)
 .hwres_chip_scan:
     beqz    r27, .hwres_chip_check_free
-    load.b  r15, (r17)
-    move.l  r14, #0xFF
+    load.l  r15, (r17)
+    move.l  r14, #HWRES_TASK_FREE
     beq     r15, r14, .hwres_chip_remember_free
     beq     r15, r25, .hwres_chip_set_range  ; sender already in list
     bra     .hwres_chip_scan_next
@@ -8601,12 +9128,12 @@ prog_hwres_code:
     bnez    r16, .hwres_chip_scan_next
     move.q  r16, r17
 .hwres_chip_scan_next:
-    add     r17, r17, #1
+    add     r17, r17, #4
     sub     r27, r27, #1
     bra     .hwres_chip_scan
 .hwres_chip_check_free:
     beqz    r16, .hwres_deny           ; list full → deny
-    store.b r25, (r16)                  ; claim free slot
+    store.l r25, (r16)                  ; claim free slot
 .hwres_chip_set_range:
     move.l  r17, #0xF0                 ; r17 = ppn_lo
     move.l  r18, #0xF0                 ; r18 = ppn_hi
@@ -8615,14 +9142,14 @@ prog_hwres_code:
 
 .hwres_grant_vram:
     ; VRAM is a MONOPOLY resource — only one task may own the framebuffer
-    ; (M12 single-display-client rule). One owner slot at data[148].
-    load.b  r28, 148(r29)              ; r28 = current VRAM owner
-    move.l  r27, #0xFF
+    ; (M12 single-display-client rule). One owner slot at data[160].
+    load.l  r28, 160(r29)              ; r28 = current VRAM owner
+    move.l  r27, #HWRES_TASK_FREE
     beq     r28, r27, .hwres_vram_claim
     bne     r28, r25, .hwres_deny
     bra     .hwres_vram_set_range
 .hwres_vram_claim:
-    store.b r25, 148(r29)
+    store.l r25, 160(r29)
 .hwres_vram_set_range:
     move.l  r17, #0x100                ; r17 = ppn_lo
     move.l  r18, #0x2D5                ; r18 = ppn_hi (0x100 + 470 - 1)
@@ -8672,23 +9199,25 @@ prog_hwres_code_end:
 prog_hwres_data:
     dc.b    "hardware.resource", 0     ; 0..17 (port name, padded below)
     ds.b    14                          ; 18..31 (pad to PORT_NAME_LEN=32)
-    dc.b    "hardware.resource ONLINE [Task ", 0   ; 32..63 (banner)
+    dc.b    "hardware.resource M12.5 [Task ", 0   ; 32..63 (banner)
+    ds.b    1                           ; pad to offset 64
     ds.b    32                          ; 64..95 (pad)
     ds.b    32                          ; 96..127 (pad to data[128])
     ds.b    8                           ; 128: task_id
     ds.b    8                           ; 136: hwres_port
     ; --- M12.5 trust gating: per-tag owner slots ---
-    ; 144..147: CHIP owner list (4 slots, 0xFF = unclaimed). CHIP is shared
+    ; 144..159: CHIP owner list (4 x u32, 0xFFFFFFFF = unclaimed). CHIP is shared
     ;           because chip MMIO holds terminal/input/video registers all
     ;           in one physical page; multiple services need it.
-    ; 148:      VRAM owner (1 slot, 0xFF = unclaimed). VRAM is a monopoly —
+    ; 160..163: VRAM owner (1 x u32, 0xFFFFFFFF = unclaimed). VRAM is a monopoly —
     ;           only one task may own the framebuffer per the M12
     ;           single-display-client rule.
-    ; All slots default to 0xFF because 0 is a valid task ID (console.handler)
+    ; All slots default to 0xFFFFFFFF because 0 is a valid task ID (console.handler)
     ; and the broker must distinguish "unclaimed" from "owned by task 0".
-    dc.b    0xFF, 0xFF, 0xFF, 0xFF      ; 144..147: CHIP owner list
-    dc.b    0xFF                        ; 148: VRAM owner
-    ds.b    11                          ; 149..159: pad
+    dc.l    0xFFFFFFFF, 0xFFFFFFFF      ; 144..151: CHIP owner list[0..1]
+    dc.l    0xFFFFFFFF, 0xFFFFFFFF      ; 152..159: CHIP owner list[2..3]
+    dc.l    0xFFFFFFFF                  ; 160..163: VRAM owner
+    ds.b    4                           ; 164..167: pad
 prog_hwres_data_end:
     align   8
 prog_hwres_end:
@@ -8722,27 +9251,10 @@ prog_gfxlib_code:
     ; ===== Preamble =====
     sub     sp, sp, #16
 .gfx_preamble:
-    move.l  r1, #SYSINFO_CURRENT_TASK
-    syscall #SYS_GET_SYS_INFO
-    store.q r1, 8(sp)
-    move.l  r1, #SYSINFO_CURRENT_TASK
-    syscall #SYS_GET_SYS_INFO
-    load.q  r28, 8(sp)
-    bne     r1, r28, .gfx_preamble
-    move.l  r28, #USER_SLOT_STRIDE
-    mulu    r28, r1, r28
-    move.l  r29, #USER_DATA_BASE
-    add     r29, r29, r28
+    load.q  r30, (sp)
+    load.q  r29, 8(sp)
     store.q r29, (sp)
-    load.q  r1, 8(sp)
-    move.l  r28, #USER_SLOT_STRIDE
-    mulu    r28, r1, r28
-    move.l  r29, #USER_DATA_BASE
-    add     r29, r29, r28
-    load.q  r28, (sp)
-    bne     r29, r28, .gfx_preamble
-    store.q r29, (sp)
-    load.q  r1, 8(sp)
+    load.l  r1, TASKSB_TASK_ID(r30)
     store.q r1, 128(r29)               ; data[128] = task_id
 
     ; ===== M12.5: request CHIP and VRAM grants from hardware.resource =====
@@ -9129,9 +9641,9 @@ prog_gfxlib_data:
     ; null-terminated within the first 32 bytes from this address).
     dc.b    "graphics.library", 0
     ds.b    15                          ; pad to offset 48
-    ; offset 48: banner "graphics.library ONLINE [Task " + null + pad to 80
-    dc.b    "graphics.library ONLINE [Task ", 0
-    ds.b    1                           ; pad to offset 80
+    ; offset 48: banner "graphics.library M11 [Task " + null + pad to 80
+    dc.b    "graphics.library M11 [Task ", 0
+    ds.b    4                           ; pad to offset 80
     ds.b    48                          ; pad to offset 128
     ds.b    8                           ; 128: task_id
     ds.b    8                           ; 136: (unused)
@@ -9178,27 +9690,10 @@ prog_gfxdemo_code:
     ; ===== Preamble =====
     sub     sp, sp, #16
 .gd_preamble:
-    move.l  r1, #SYSINFO_CURRENT_TASK
-    syscall #SYS_GET_SYS_INFO
-    store.q r1, 8(sp)
-    move.l  r1, #SYSINFO_CURRENT_TASK
-    syscall #SYS_GET_SYS_INFO
-    load.q  r28, 8(sp)
-    bne     r1, r28, .gd_preamble
-    move.l  r28, #USER_SLOT_STRIDE
-    mulu    r28, r1, r28
-    move.l  r29, #USER_DATA_BASE
-    add     r29, r29, r28
+    load.q  r30, (sp)
+    load.q  r29, 8(sp)
     store.q r29, (sp)
-    load.q  r1, 8(sp)
-    move.l  r28, #USER_SLOT_STRIDE
-    mulu    r28, r1, r28
-    move.l  r29, #USER_DATA_BASE
-    add     r29, r29, r28
-    load.q  r28, (sp)
-    bne     r29, r28, .gd_preamble
-    store.q r29, (sp)
-    load.q  r1, 8(sp)
+    load.l  r1, TASKSB_TASK_ID(r30)
     store.q r1, 128(r29)               ; data[128] = task_id
 
     ; ===== OpenLibrary("graphics.library") with retry =====
@@ -9659,29 +10154,10 @@ prog_intui_code:
     ; This matches dos.library's 2-code-page preamble pattern.
     sub     sp, sp, #16
 .intui_preamble:
-    move.l  r1, #SYSINFO_CURRENT_TASK
-    syscall #SYS_GET_SYS_INFO
-    store.q r1, 8(sp)
-    move.l  r1, #SYSINFO_CURRENT_TASK
-    syscall #SYS_GET_SYS_INFO
-    load.q  r28, 8(sp)
-    bne     r1, r28, .intui_preamble
-    move.l  r28, #USER_SLOT_STRIDE
-    mulu    r28, r1, r28
-    move.l  r29, #USER_CODE_BASE
-    add     r29, r29, r28
-    add     r29, r29, #0x3000          ; 2 code pages + 1 stack page = 3 pages
+    load.q  r30, (sp)
+    load.q  r29, 8(sp)
     store.q r29, (sp)
-    load.q  r1, 8(sp)
-    move.l  r28, #USER_SLOT_STRIDE
-    mulu    r28, r1, r28
-    move.l  r29, #USER_CODE_BASE
-    add     r29, r29, r28
-    add     r29, r29, #0x3000
-    load.q  r28, (sp)
-    bne     r29, r28, .intui_preamble
-    store.q r29, (sp)
-    load.q  r1, 8(sp)
+    load.l  r1, TASKSB_TASK_ID(r30)
     store.q r1, 128(r29)               ; data[128] = task_id
 
     ; ===== CreatePort("intuition.library") =====
@@ -10798,9 +11274,9 @@ prog_intui_data:
     ; offset 384: "input.device" + pad to 32 — for FindPort
     dc.b    "input.device", 0
     ds.b    19
-    ; offset 416: banner string "intuition.library ONLINE [Task" + null + pad
-    dc.b    "intuition.library ONLINE [Task", 0
-    ds.b    13                          ; pad to offset 460
+    ; offset 416: banner string "intuition.library M12 [Task " + null + pad
+    dc.b    "intuition.library M12 [Task ", 0
+    ds.b    15                          ; pad to offset 460
     ; offset 460: window title text rendered by .intui_draw_string in the
     ; title bar block of the M12 decoration
     dc.b    "About IntuitionOS", 0
@@ -10846,27 +11322,10 @@ prog_about:
 prog_about_code:
     sub     sp, sp, #16
 .ab_preamble:
-    move.l  r1, #SYSINFO_CURRENT_TASK
-    syscall #SYS_GET_SYS_INFO
-    store.q r1, 8(sp)
-    move.l  r1, #SYSINFO_CURRENT_TASK
-    syscall #SYS_GET_SYS_INFO
-    load.q  r28, 8(sp)
-    bne     r1, r28, .ab_preamble
-    move.l  r28, #USER_SLOT_STRIDE
-    mulu    r28, r1, r28
-    move.l  r29, #USER_DATA_BASE
-    add     r29, r29, r28
+    load.q  r30, (sp)
+    load.q  r29, 8(sp)
     store.q r29, (sp)
-    load.q  r1, 8(sp)
-    move.l  r28, #USER_SLOT_STRIDE
-    mulu    r28, r1, r28
-    move.l  r29, #USER_DATA_BASE
-    add     r29, r29, r28
-    load.q  r28, (sp)
-    bne     r29, r28, .ab_preamble
-    store.q r29, (sp)
-    load.q  r1, 8(sp)
+    load.l  r1, TASKSB_TASK_ID(r30)
     store.q r1, 128(r29)
 
     ; FindPort("intuition.library") with retry
@@ -11213,27 +11672,10 @@ prog_shell_code:
     ; =====================================================================
     sub     sp, sp, #16
 .sh_preamble:
-    move.l  r1, #SYSINFO_CURRENT_TASK
-    syscall #SYS_GET_SYS_INFO
-    store.q r1, 8(sp)
-    move.l  r1, #SYSINFO_CURRENT_TASK
-    syscall #SYS_GET_SYS_INFO
-    load.q  r28, 8(sp)
-    bne     r1, r28, .sh_preamble
-    move.l  r28, #USER_SLOT_STRIDE
-    mulu    r28, r1, r28
-    move.l  r29, #USER_DATA_BASE
-    add     r29, r29, r28
+    load.q  r30, (sp)
+    load.q  r29, 8(sp)
     store.q r29, (sp)
-    load.q  r1, 8(sp)
-    move.l  r28, #USER_SLOT_STRIDE
-    mulu    r28, r1, r28
-    move.l  r29, #USER_DATA_BASE
-    add     r29, r29, r28
-    load.q  r28, (sp)
-    bne     r29, r28, .sh_preamble
-    store.q r29, (sp)
-    load.q  r1, 8(sp)
+    load.l  r1, TASKSB_TASK_ID(r30)
     store.q r1, 128(r29)               ; data[128] = task_id
 
     ; =====================================================================
@@ -11803,9 +12245,9 @@ prog_shell_data:
     dc.b    "console.handler", 0
     ; --- Offset 16: "dos.library\0" + pad to 32 ---
     dc.b    "dos.library", 0, 0, 0, 0, 0
-    ; --- Offset 32: "Shell ONLINE [Task \0" (20 bytes, ends at 52) ---
-    dc.b    "Shell ONLINE [Task ", 0
-    ds.b    4                           ; pad to offset 56
+    ; --- Offset 32: "Shell [Task \0" ---
+    dc.b    "Shell M10 [Task ", 0
+    ds.b    7                           ; pad to offset 56
     ; --- Offset 56: dead 24-byte slot (formerly "IntuitionOS M11\r\n\0",
     ;     printed by a stale shell banner removed in M12.8 Phase 1).
     ;     Kept as padding to preserve the offsets of the strings below. ---
