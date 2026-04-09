@@ -34,6 +34,8 @@ All include files provide these categories of definitions:
 
 The startup block constants describe the 64-byte kernel-populated record written into a dedicated startup page for each launched task. Boot-loaded and `ExecProgram`-launched services discover the startup-page base VA from `0(sp)`, then read this block to find task identity and actual code/data/stack bases without deriving addresses from `CURRENT_TASK * USER_SLOT_STRIDE`.
 
+The M14 native executable contract is documented separately in `sdk/docs/IntuitionOS/ELF.md`. As of M14 phase 5, `iexec.inc` also ships the DOS loader/launch protocol constants for `DOS_LOADSEG`, `DOS_UNLOADSEG`, `DOS_RUNSEG`, the DOS-owned seglist layout (`DOS_SEGLIST_*`, `DOS_SEG_*`), and the dual-mode `ExecProgram` launch-descriptor constants (`M14_LDESC_*`, `M14_LDSEG_*`). The old flat-image `ExecProgram` contract remains valid, but DOS and the shell can now route strict native ELF commands through the descriptor path, and the shipped seeded `C:` command/demo path uses that native loader.
+
 ### Video Registers
 - `VIDEO_CTRL` / `VIDEO_MODE` / `VIDEO_STATUS` - Display control
 - `BLT_OP` / `BLT_SRC` / `BLT_DST` / `BLT_WIDTH` / `BLT_HEIGHT` - Blitter

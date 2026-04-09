@@ -10,7 +10,7 @@
 
 IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS Exec but designed from the ground up for a hardware-enforced privilege model. Where Amiga Exec ran in flat supervisor space with no memory protection, IExec uses the IE64 MMU to enforce user/supervisor separation, per-task page tables, and W^X memory policy.
 
-**What IExec does (current as of Milestone 13 phase 5):**
+**What IExec does (current as of Milestone 14 phase 5 / M13 phase 5 runtime):**
 
 - Preemptive round-robin scheduling across up to 255 live tasks (CreateTask/ExitTask with slot reuse). M5 capped this at 8 (per-task `USER_DYN_STRIDE` saturated the 32 MiB VA at 8 tasks); M12 globalized the dynamic VA window and bumped the cap to 16; M12.6 Phase D bumped it to 32; **M13 phase 4 expands the remaining fixed task-state tables to the current 8-bit internal-slot ABI ceiling (255, with `0xFF` reserved as a sentinel in a few kernel fields)**. Public task IDs are independent monotonic `u32`s.
 - Memory protection via the IE64 MMU (per-task page tables with separate code/stack/data mappings, W^X enforcement)
@@ -30,9 +30,10 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
 - **Dynamic task-image placement in `load_program`** (M10, refined in M12.8, redesigned in M13 phases 2 and 4): the old arbitrary `code_size <= 8192` / `data_size <= 49152` product caps are gone, and task images are no longer forced into `task_id * USER_SLOT_STRIDE` slots. `load_program` now allocates code, stack, data, and startup pages dynamically: it uses the legacy fixed image window first, then spills additional image pages into allocator-pool pages as needed. PT backing likewise uses the legacy fixed 32-block PT window first, then spills additional 64 KiB PT blocks into allocator-pool pages. Failure mode is real `ERR_NOMEM` when the allocator pool is exhausted.
 - **M13 startup block ABI**: boot-loaded and `ExecProgram`-launched tasks no longer self-locate from `GetSysInfo(CURRENT_TASK) + USER_SLOT_STRIDE`. The kernel allocates a dedicated startup page for each launched task, writes the 64-byte startup block there, and seeds the startup-page base VA at `0(sp)` before entering user code. Services discover task identity and actual code/data/stack bases by first loading the startup-page VA from `0(sp)` and then reading the startup block from that page.
 - **Phase 5 regression gate**: the full visible boot stack and both retained GUI demos are now covered by explicit M13 tests (`TestIExec_M13_Phase5_FullBootStack_ServiceCensus`, `..._GfxDemoRegression`, `..._AboutRegression`), so the milestone does not rely on older M11/M12 test names as an implicit proxy for final compatibility.
+- **M14 phase 5 ships the visible native DOS loader path end-to-end**: DOS-loaded commands and applications use a strict `ELF64` subset (`EM_IE64 = 0x4945`, `ET_EXEC`, `PT_LOAD` only, no dynamic linker) when loaded through `DOS_LOADSEG`. `dos.library` parses that subset, builds DOS-owned seglists, frees them with `DOS_UNLOADSEG`, launches them through `DOS_RUNSEG` via the dual-mode `ExecProgram` launch-descriptor bridge, and `DOS_RUN` now prefers that seglist path for strict M14 ELF commands while falling back to the legacy flat-image launch path for older seeded `IE64PROG` commands. In the shipped M14 phase-5 tree, the seeded `C:` command/demo path is native ELF, while bundled startup-sequence services remain on the legacy path. The old flat-image `ExecProgram(image_ptr, image_size, args_ptr, args_len)` ABI still exists for source compatibility.
 - console.handler: CON: handler with GetMsg polling and CON_READLINE protocol — **M11.5**: console.handler now owns terminal MMIO directly via its own `SYS_MAP_IO(0xF0, 1)` mapping and inlines the readline MMIO loop. The former kernel-side `SYS_READ_INPUT` (slot 37) is removed; slot 37 is an unallocated hole that returns `ERR_BADARG`.
-- **dos.library**: AmigaOS dos.library equivalent with RAM: filesystem (case-insensitive, 32-byte filenames). The file metadata table and open-handle table are unbounded user-space chains of `AllocMem`'d 4 KiB pages (85 file entries or 510 handle entries per page). As of **M12.8**, each file body is a variable-size chain of 4 KiB extents linked through `entry.file_va`; the old fixed `DOS_FILE_SIZE` per-file allocation is gone. `DOS_WRITE` now does an atomic swap onto a newly allocated extent chain so allocation failure leaves previous content intact. M10 added the assign table (RAM:, C:, S:), name-based command resolution, embedded command images, init-time seeding into the RAM file store, and boot-race-free port creation.
-- **Shell**: interactive command shell that sends raw command names to dos.library via DOS_RUN (no shell-side command table). Executes `S:Startup-Sequence` automatically at boot if present, then drops to the interactive prompt.
+- **dos.library**: AmigaOS dos.library equivalent with RAM: filesystem (case-insensitive, 32-byte filenames). The file metadata table and open-handle table are unbounded user-space chains of `AllocMem`'d 4 KiB pages (85 file entries or 510 handle entries per page). As of **M12.8**, each file body is a variable-size chain of 4 KiB extents linked through `entry.file_va`; the old fixed `DOS_FILE_SIZE` per-file allocation is gone. `DOS_WRITE` now does an atomic swap onto a newly allocated extent chain so allocation failure leaves previous content intact. **M14 phases 2-3 add `DOS_LOADSEG` / `DOS_UNLOADSEG` / `DOS_RUNSEG`**: dos.library now validates the strict native ELF subset, builds DOS-owned seglists with preserved target VA / `R/W/X` / entry-point metadata, frees them on demand, and launches them through the dual-mode `ExecProgram` descriptor handoff. M10 added the assign table (RAM:, C:, S:), name-based command resolution, embedded command images, init-time seeding into the RAM file store, and boot-race-free port creation.
+- **Shell**: interactive command shell that sends raw command names to dos.library via DOS_RUN (no shell-side command table). As of M14 phase 5, that visible command-dispatch path now goes through the DOS loader path for the seeded native-ELF `C:` command/demo set and falls back transparently for legacy seeded flat images. Executes `S:Startup-Sequence` automatically at boot if present, then drops to the interactive prompt.
 - **5 external commands** as DOS-loaded executables: VERSION, AVAIL, DIR, TYPE, ECHO. Stored as files in RAM under `C:`, launched by name through dos.library — not by program table index.
 
 **What IExec does not do:**
@@ -40,7 +41,7 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
 - Filesystem access beyond RAM: (handled by DOS.library or host-side intercepts for persistent storage)
 - Device drivers (hardware chips are memory-mapped; drivers live in user space)
 - Graphics or audio (handled by respective chip subsystems)
-- Dynamic loading (executables are loaded before boot; future: user-space loader)
+- Boot services still use the legacy bundled `IE64PROG` path; M14's shipped ELF flow currently applies to DOS-loaded commands and applications, not bundled boot services
 
 IExec runs on the IE64 CPU core only. It requires the IE64 MMU (4 KiB paged virtual memory, software TLB, control registers) and the hardware timer for preemption.
 
@@ -1282,3 +1283,68 @@ Four of the seven tests in the M12.8 plan are covered by existing tests or skipp
 The full M12.5/M12.6 hardening test suite remains green throughout M12.8 — no kernel data structure changes, no new ABI fields, no widened slots. The trust model and the M11.5 admission rule are both intact.
 
 **5.14.8 What this milestone proves.** Bucket B can be drained too, not just bucket C — and the audit pass that drained it found two more arbitrary product limits hiding in bucket B that the M12.5 audit had incorrectly classified. After M12.8 the audit table's load-bearing entries are all gone: every fixed cap that exists in IntuitionOS today is justified by an active hardware constraint, an active ABI field, an active layout, or an active protocol semantic — not by "we picked this number once and never re-examined it." The dos.library file storage is the same kind of "grows until memory exhaustion" structure that M12.6 gave the kernel core, and the load_program prerequisite cleanup means the per-image image-size ceilings are now the actual layout-bound architectural ceiling rather than two more layers of arbitrary product limits.
+
+**5.14.9 M14 phases 2-5 — native ELF seglists, descriptor launch, shell integration, and end-to-end demo path.** M14 phases 2-5 add the first shipped native-ELF DOS loading and launch path, route the visible shell command path through it, and then prove the retained GUI demo path on top of the same DOS loader.
+
+New DOS protocol opcodes:
+
+- **`DOS_LOADSEG` (7)** — shared buffer contains the command/program name. dos.library resolves the name through the command resolver, finds the file in the RAM store, walks the file's extent chain into a temporary contiguous image, validates the strict M14 ELF subset, allocates a DOS-owned seglist object, then allocates one DOS-owned segment buffer per `PT_LOAD` header. Reply: `type = DOS_OK|DOS_ERR_*`, `data0 = seglist_va`.
+- **`DOS_UNLOADSEG` (8)** — `data0 = seglist_va`. dos.library unlinks the seglist from its private list and frees every DOS-owned segment buffer plus the seglist header page. Reply: `type = DOS_OK|DOS_ERR_BADHANDLE`.
+- **`DOS_RUNSEG` (9)** — `data0 = seglist_va`, optional shared buffer contains args. dos.library validates the seglist handle, builds a DOS-owned launch descriptor from the seglist's preserved target VA / `R/W/X` / entry-point metadata, and launches the child through the dual-mode `ExecProgram` descriptor ABI. Reply: `type = DOS_OK|DOS_ERR_*`, `data0 = child_task_id`.
+
+Seglist layout (all DOS-owned):
+
+- header page:
+  - `next_va`
+  - magic `'SEGL'`
+  - segment count
+  - preserved ELF `e_entry`
+- per-segment entry:
+  - DOS-owned segment memory VA
+  - final target VA from the ELF file
+  - file size
+  - memory size
+  - page count
+  - `R/W/X` flags
+
+Phase-3 launch behavior:
+
+- `LoadSeg` / `RunSeg` are the native DOS-facing path for strict M14 ELF commands
+- launch copies each seglist segment into private child mappings at the descriptor's target virtual addresses
+- the descriptor preserves the original ELF `e_entry`; launch is not forced to the base of the first RX segment
+- successful launch does not consume the seglist; the caller may still `UnLoadSeg`
+- failed launch does not consume the seglist either
+- the old flat-image `ExecProgram(image_ptr, image_size, args_ptr, args_len)` ABI remains supported alongside the new descriptor path
+
+Phase-4 shell integration:
+
+- `DOS_RUN` now prefers the native seglist path for strict M14 ELF commands
+- legacy seeded flat-image commands still work through the same `DOS_RUN` API via fallback
+- shell command names, args, case-insensitive lookup, and unknown-command UX are unchanged from the user's perspective
+
+Phase-5 shipped boundary:
+
+- seeded files under `C:` are now emitted as strict M14 native ELF where possible, so the visible command/demo path (`VERSION`, `AVAIL`, `DIR`, `TYPE`, `ECHO`, `About`, `GfxDemo`) really exercises `LoadSeg` / `RunSeg` / descriptor launch
+- bundled startup-sequence services under `LIBS:`, `DEVS:`, and `RESOURCES:` remain legacy flat `IE64PROG` in M14, so the boot chain stays stable while the visible user/demo path moves to native ELF
+- `C:GfxDemo` and `C:About` remain regular DOS-loaded applications and now serve as the retained end-to-end M14 demo path
+
+Test coverage:
+
+- `TestIExec_M14_Phase2_LoadSeg_Basic`
+- `TestIExec_M14_Phase2_LoadSeg_InvalidExecutableRejected`
+- `TestIExec_M14_Phase2_LoadSeg_UnLoadSeg_NoLeak`
+- `TestIExec_M14_Phase2_DosSeededCommandsPresent`
+- `TestIExec_M14_Phase2_ElfFixturePassesHostValidator`
+- `TestIExec_M14_Phase3_ExecProgram_DescriptorBasic`
+- `TestIExec_M14_Phase3_RunSeg_Basic`
+- `TestIExec_M14_Phase3_RunSeg_PreservesELFEntry`
+- `TestIExec_M14_Phase3_RunSeg_HonorsTargetVAs`
+- `TestIExec_M14_Phase3_RunSeg_StartupPagePresent`
+- `TestIExec_M14_Phase3_RunSeg_WithArgs`
+- `TestIExec_M14_Phase3_RunSeg_UnLoadAfterLaunch_ChildLives`
+- `TestIExec_M14_Phase3_RunSeg_FailedLaunchDoesNotConsumeSeglist`
+- `TestIExec_M14_Phase4_ShellRunsELFCommand`
+- `TestIExec_M14_Phase4_ShellRunsELFCommandWithArgs`
+- `TestIExec_M14_Phase5_FullBootStack_ServiceCensus`
+- `TestIExec_M14_Phase5_GfxDemoRegression`
+- `TestIExec_M14_Phase5_AboutRegression`

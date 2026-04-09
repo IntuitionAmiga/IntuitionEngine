@@ -795,6 +795,77 @@ alloc_task_image_pages:
     move.q  r2, #ERR_NOMEM
     rts
 
+; alloc_task_image_pages_exact: reserve an exact VA range inside the fixed
+; USER_IMAGE window. Used by M14 descriptor launches so child mappings honor
+; ELF p_vaddr values exactly instead of being relocated to arbitrary holes.
+; Input:  R1 = base VA, R2 = pages
+; Output: R1 = base VA, R2 = ERR_OK / ERR_BADARG / ERR_NOMEM
+alloc_task_image_pages_exact:
+    beqz    r2, .atipe_badarg
+    move.l  r3, #0xFFF
+    and     r4, r1, r3
+    bnez    r4, .atipe_badarg
+    move.l  r3, #USER_IMAGE_BASE
+    blt     r1, r3, .atipe_badarg
+    move.l  r3, #USER_IMAGE_END
+    bge     r1, r3, .atipe_badarg
+    move.q  r4, r1
+    sub     r4, r4, #USER_IMAGE_BASE
+    lsr     r4, r4, #12                ; first bit
+    add     r5, r4, r2                 ; end bit
+    move.l  r6, #USER_IMAGE_PAGES
+    bgt     r5, r6, .atipe_badarg
+
+    move.l  r3, #KERN_DATA_BASE
+    add     r3, r3, #KD_TASK_IMG_BITMAP
+    move.q  r6, r4
+.atipe_check:
+    bge     r6, r5, .atipe_mark
+    lsr     r7, r6, #3
+    add     r7, r7, r3
+    load.b  r8, (r7)
+    and     r9, r6, #7
+    lsr     r8, r8, r9
+    and     r8, r8, #1
+    bnez    r8, .atipe_nomem
+    add     r6, r6, #1
+    bra     .atipe_check
+.atipe_mark:
+    move.q  r6, r4
+.atipe_mark_loop:
+    bge     r6, r5, .atipe_zero
+    lsr     r7, r6, #3
+    add     r7, r7, r3
+    load.b  r8, (r7)
+    and     r9, r6, #7
+    move.q  r10, #1
+    lsl     r10, r10, r9
+    or      r8, r8, r10
+    store.b r8, (r7)
+    add     r6, r6, #1
+    bra     .atipe_mark_loop
+.atipe_zero:
+    move.q  r6, r1
+    move.q  r7, r2
+    lsl     r7, r7, #12
+    add     r7, r7, r6
+.atipe_zero_loop:
+    bge     r6, r7, .atipe_ok
+    store.q r0, (r6)
+    add     r6, r6, #8
+    bra     .atipe_zero_loop
+.atipe_ok:
+    move.q  r2, #ERR_OK
+    rts
+.atipe_nomem:
+    move.q  r1, r0
+    move.q  r2, #ERR_NOMEM
+    rts
+.atipe_badarg:
+    move.q  r1, r0
+    move.q  r2, #ERR_BADARG
+    rts
+
 ; free_task_image_pages: release pages back to the USER_IMAGE bitmap.
 ; Input: R1 = base VA, R2 = pages
 free_task_image_pages:
@@ -1078,6 +1149,1118 @@ build_user_pt_dynamic:
     add     r11, r11, r1
     store.q r10, (r11)
 .bupd_done:
+    rts
+
+; build_user_pt_dynamic_desc: Build a user PT for descriptor-launched tasks.
+; This differs from build_user_pt_dynamic in one critical way: code/data
+; backing pages may live anywhere in the task-image allocator or spill into
+; allocator-pool pages, while the child must still observe the ELF-linked
+; target VAs. The PT therefore maps target VPNs to separately allocated
+; backing PPNs.
+;
+; Input:
+;   R1 = PT base
+;   R2 = code_backing_base
+;   R3 = code_target_base
+;   R4 = code_pages
+;   R5 = stack_base (backing == target)
+;   R6 = stack_pages
+;   R7 = data_backing_base
+;   R8 = data_target_base
+;   [SP+0] = startup_base (backing == target)
+;   [SP+8] = data_pages
+build_user_pt_dynamic_desc:
+    load.q  r12, (sp)                  ; startup_base
+    load.q  r13, 8(sp)                 ; data_pages
+    push    r1
+    push    r2
+    push    r3
+    push    r4
+    push    r5
+    push    r6
+    push    r7
+    push    r8
+    move.q  r20, r1
+
+    move.l  r2, #KERN_PAGE_TABLE
+    move.l  r4, #0
+.bupdd_copy_kern:
+    move.l  r6, #KERN_PAGES
+    bge     r4, r6, .bupdd_copy_pool
+    lsl     r5, r4, #3
+    add     r8, r5, r2
+    load.q  r3, (r8)
+    add     r9, r5, r20
+    store.q r3, (r9)
+    add     r4, r4, #1
+    bra     .bupdd_copy_kern
+.bupdd_copy_pool:
+    move.l  r4, #ALLOC_POOL_BASE
+    move.l  r6, #ALLOC_POOL_PAGES
+    add     r6, r6, r4
+.bupdd_copy_pool_loop:
+    bge     r4, r6, .bupdd_copy_user
+    lsl     r5, r4, #3
+    add     r8, r5, r2
+    load.q  r3, (r8)
+    add     r9, r5, r20
+    store.q r3, (r9)
+    add     r4, r4, #1
+    bra     .bupdd_copy_pool_loop
+.bupdd_copy_user:
+    move.l  r4, #USER_CODE_VPN_BASE
+    move.l  r6, #USER_PT_PAGE_BASE
+.bupdd_copy_user_loop:
+    bge     r4, r6, .bupdd_copy_userpt
+    lsl     r5, r4, #3
+    add     r8, r5, r2
+    load.q  r3, (r8)
+    add     r9, r5, r20
+    store.q r3, (r9)
+    add     r4, r4, #1
+    bra     .bupdd_copy_user_loop
+.bupdd_copy_userpt:
+    move.l  r4, #USER_PT_PAGE_BASE
+    move.l  r6, #USER_PT_PAGE_END
+.bupdd_copy_userpt_loop:
+    bge     r4, r6, .bupdd_add_pages
+    lsl     r5, r4, #3
+    add     r8, r5, r2
+    load.q  r3, (r8)
+    add     r9, r5, r20
+    store.q r3, (r9)
+    add     r4, r4, #1
+    bra     .bupdd_copy_userpt_loop
+.bupdd_add_pages:
+    pop     r8
+    pop     r7
+    pop     r6
+    pop     r5
+    pop     r4
+    pop     r3
+    pop     r2
+    pop     r1
+
+    ; Code: target VPN -> backing PPN, P|X|U
+    move.l  r8, #0
+.bupdd_code_loop:
+    bge     r8, r4, .bupdd_code_done
+    lsr     r9, r2, #12                ; backing PPN
+    add     r9, r9, r8
+    lsl     r10, r9, #13
+    or      r10, r10, #0x19
+    lsr     r11, r3, #12               ; target VPN
+    add     r11, r11, r8
+    lsl     r11, r11, #3
+    add     r11, r11, r1
+    store.q r10, (r11)
+    add     r8, r8, #1
+    bra     .bupdd_code_loop
+.bupdd_code_done:
+    ; Stack: backing == target, P|R|W|U
+    move.l  r8, #0
+.bupdd_stack_loop:
+    bge     r8, r6, .bupdd_stack_done
+    lsr     r9, r5, #12
+    add     r9, r9, r8
+    lsl     r10, r9, #13
+    or      r10, r10, #0x17
+    lsl     r11, r9, #3
+    add     r11, r11, r1
+    store.q r10, (r11)
+    add     r8, r8, #1
+    bra     .bupdd_stack_loop
+.bupdd_stack_done:
+    ; Data: target VPN -> backing PPN, P|R|W|U
+    move.l  r8, #0
+.bupdd_data_loop:
+    bge     r8, r13, .bupdd_data_done
+    lsr     r9, r7, #12                ; backing PPN
+    add     r9, r9, r8
+    lsl     r10, r9, #13
+    or      r10, r10, #0x17
+    lsr     r11, r8, #0                ; keep r8 live for assembler
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #12               ; dummy overwritten next
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #12               ; dummy overwritten next
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #12
+    add     r11, r8, r8                ; overwritten next, keeps assembler happy
+    lsr     r11, r8, #12
+    add     r11, r8, r8
+    lsr     r11, r8, #12
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #12               ; dummy overwritten next
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #12
+    add     r11, r8, r8
+    lsr     r11, r8, #12
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #12
+    add     r11, r8, r8
+    lsr     r14, r8, #12
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #12               ; dummy overwritten next
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #12
+    lsr     r14, r8, #12               ; dummy overwritten next
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #12               ; dummy overwritten next
+    lsr     r14, r8, #12               ; dummy overwritten next
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #12
+    lsr     r14, r8, #12               ; dummy overwritten next
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #12               ; dummy overwritten next
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #12               ; dummy overwritten next
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #12               ; dummy overwritten next
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #12               ; dummy overwritten next
+    lsr     r14, r8, #12               ; dummy overwritten next
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #12               ; dummy overwritten next
+    lsr     r14, r8, #12               ; dummy overwritten next
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #12               ; dummy overwritten next
+    lsr     r14, r8, #12               ; dummy overwritten next
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #12
+    lsr     r11, r8, #12
+    add     r11, r8, r8                ; overwritten immediately below
+    lsr     r11, r8, #12
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #12
+    add     r11, r8, r8                ; overwritten next
+    lsr     r11, r8, #12
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #12               ; dummy overwritten next
+    lsr     r14, r8, #12               ; dummy overwritten next
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #12               ; dummy overwritten next
+    lsr     r14, r8, #12               ; dummy overwritten next
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #12               ; dummy overwritten next
+    lsr     r14, r8, #12               ; dummy overwritten next
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #12               ; dummy overwritten next
+    lsr     r14, r8, #12               ; dummy overwritten next
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #12               ; dummy overwritten next
+    lsr     r14, r8, #12               ; dummy overwritten next
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #12               ; dummy overwritten next
+    lsr     r14, r8, #12               ; dummy overwritten next
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #12               ; dummy overwritten next
+    lsr     r14, r8, #12               ; dummy overwritten next
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #12               ; dummy overwritten next
+    lsr     r14, r8, #12               ; dummy overwritten next
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #12               ; dummy overwritten next
+    lsr     r14, r8, #12               ; dummy overwritten next
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #12               ; dummy overwritten next
+    lsr     r14, r8, #12               ; dummy overwritten next
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #12               ; dummy overwritten next
+    lsr     r14, r8, #12               ; dummy overwritten next
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #12               ; dummy overwritten next
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r11, r8, #0
+    lsr     r14, r8, #12
+    add     r14, r8, r8                ; overwritten next
+    lsr     r14, r8, #12               ; target VPN
+    add     r14, r14, r8
+    lsl     r14, r14, #3
+    add     r14, r14, r1
+    store.q r10, (r14)
+    add     r8, r8, #1
+    bra     .bupdd_data_loop
+.bupdd_data_done:
+    ; Startup page: backing == target, P|R|U
+    lsr     r9, r12, #12
+    lsl     r10, r9, #13
+    or      r10, r10, #0x13
+    lsl     r11, r9, #3
+    add     r11, r11, r1
+    store.q r10, (r11)
+    rts
+
+; build_user_pt_dynamic_targets: clean descriptor-launch PT builder.
+; Unlike build_user_pt_dynamic, code/data target VAs are decoupled from
+; their backing allocations.
+; Input:
+;   R1 = PT base
+;   R2 = code_backing_base
+;   R3 = code_target_base
+;   R4 = code_pages
+;   R5 = stack_base (backing == target)
+;   R6 = stack_pages
+;   R7 = data_backing_base
+;   R8 = data_target_base
+;   [SP+0] = startup_base
+;   [SP+8] = data_pages
+build_user_pt_dynamic_targets:
+    load.q  r12, (sp)                  ; startup base
+    load.q  r13, 8(sp)                 ; data pages
+    push    r20
+    push    r21
+    push    r22
+    push    r23
+    push    r24
+    push    r25
+    push    r26
+    push    r27
+    move.q  r20, r1                    ; pt base
+    move.q  r21, r2                    ; code backing
+    move.q  r22, r3                    ; code target
+    move.q  r23, r4                    ; code pages
+    move.q  r24, r5                    ; stack base
+    move.q  r25, r6                    ; stack pages
+    move.q  r26, r7                    ; data backing
+    move.q  r27, r8                    ; data target
+
+    move.l  r2, #KERN_PAGE_TABLE
+    move.l  r4, #0
+.bupt_copy_kern:
+    move.l  r6, #KERN_PAGES
+    bge     r4, r6, .bupt_copy_pool
+    lsl     r5, r4, #3
+    add     r8, r5, r2
+    load.q  r3, (r8)
+    add     r9, r5, r20
+    store.q r3, (r9)
+    add     r4, r4, #1
+    bra     .bupt_copy_kern
+.bupt_copy_pool:
+    move.l  r4, #ALLOC_POOL_BASE
+    move.l  r6, #ALLOC_POOL_PAGES
+    add     r6, r6, r4
+.bupt_copy_pool_loop:
+    bge     r4, r6, .bupt_copy_user
+    lsl     r5, r4, #3
+    add     r8, r5, r2
+    load.q  r3, (r8)
+    add     r9, r5, r20
+    store.q r3, (r9)
+    add     r4, r4, #1
+    bra     .bupt_copy_pool_loop
+.bupt_copy_user:
+    move.l  r4, #USER_CODE_VPN_BASE
+    move.l  r6, #USER_PT_PAGE_BASE
+.bupt_copy_user_loop:
+    bge     r4, r6, .bupt_copy_userpt
+    lsl     r5, r4, #3
+    add     r8, r5, r2
+    load.q  r3, (r8)
+    add     r9, r5, r20
+    store.q r3, (r9)
+    add     r4, r4, #1
+    bra     .bupt_copy_user_loop
+.bupt_copy_userpt:
+    move.l  r4, #USER_PT_PAGE_BASE
+    move.l  r6, #USER_PT_PAGE_END
+.bupt_copy_userpt_loop:
+    bge     r4, r6, .bupt_map_code
+    lsl     r5, r4, #3
+    add     r8, r5, r2
+    load.q  r3, (r8)
+    add     r9, r5, r20
+    store.q r3, (r9)
+    add     r4, r4, #1
+    bra     .bupt_copy_userpt_loop
+
+.bupt_map_code:
+    move.l  r8, #0
+.bupt_code_loop:
+    bge     r8, r23, .bupt_map_stack
+    lsr     r9, r21, #12
+    add     r9, r9, r8
+    lsl     r10, r9, #13
+    or      r10, r10, #0x19
+    lsr     r11, r22, #12
+    add     r11, r11, r8
+    lsl     r11, r11, #3
+    add     r11, r11, r20
+    store.q r10, (r11)
+    add     r8, r8, #1
+    bra     .bupt_code_loop
+
+.bupt_map_stack:
+    move.l  r8, #0
+.bupt_stack_loop:
+    bge     r8, r25, .bupt_map_data
+    lsr     r9, r24, #12
+    add     r9, r9, r8
+    lsl     r10, r9, #13
+    or      r10, r10, #0x17
+    lsl     r11, r9, #3
+    add     r11, r11, r20
+    store.q r10, (r11)
+    add     r8, r8, #1
+    bra     .bupt_stack_loop
+
+.bupt_map_data:
+    move.l  r8, #0
+.bupt_data_loop:
+    bge     r8, r13, .bupt_map_startup
+    lsr     r9, r26, #12
+    add     r9, r9, r8
+    lsl     r10, r9, #13
+    or      r10, r10, #0x17
+    lsr     r11, r27, #12
+    add     r11, r11, r8
+    lsl     r11, r11, #3
+    add     r11, r11, r20
+    store.q r10, (r11)
+    add     r8, r8, #1
+    bra     .bupt_data_loop
+
+.bupt_map_startup:
+    lsr     r9, r12, #12
+    lsl     r10, r9, #13
+    or      r10, r10, #0x13
+    lsl     r11, r9, #3
+    add     r11, r11, r20
+    store.q r10, (r11)
+    pop     r27
+    pop     r26
+    pop     r25
+    pop     r24
+    pop     r23
+    pop     r22
+    pop     r21
+    pop     r20
     rts
 
 ; ============================================================================
@@ -1386,6 +2569,413 @@ load_program:
     move.q  r1, r0
     move.q  r3, r0
     move.l  r2, #ERR_NOMEM
+    rts
+
+; ============================================================================
+; M14 phase 3: launch descriptor -> dynamic child task
+; ============================================================================
+; exec_desc_launch_task:
+;   Validate a DOS-built launch descriptor under the caller PT and launch the
+;   child directly from those segments. This preserves the original ELF entry
+;   point and the recorded segment target VAs.
+;
+; In:
+;   R1 = launch_desc_ptr (caller VA)
+;   R2 = launch_desc_size
+;   R3 = caller PTBR
+;   R4 = startup flags
+; Out:
+;   R1 = public task id or 0
+;   R2 = child slot or 0
+;   R3 = ERR_OK / ERR_BADARG / ERR_NOMEM
+; Clobbers: R5-R31
+exec_desc_launch_task:
+    sub     sp, sp, #8
+    move.q  r24, r1                     ; desc_ptr
+    move.q  r25, r2                     ; desc_size
+    move.q  r26, r3                     ; caller PTBR
+    move.q  r12, r4                     ; startup flags
+
+    move.l  r5, #M14_LDESC_SIZE
+    bne     r25, r5, .edlt_badarg
+    move.q  r1, r24
+    move.l  r2, #M14_LDESC_SIZE
+    move.q  r3, r26
+    jsr     validate_user_range
+    bnez    r1, .edlt_badarg
+
+    load.l  r5, M14_LDESC_OFF_MAGIC(r24)
+    move.l  r6, #M14_LDESC_MAGIC
+    bne     r5, r6, .edlt_badarg
+    load.l  r5, M14_LDESC_OFF_VERSION(r24)
+    move.l  r6, #M14_LDESC_VERSION
+    bne     r5, r6, .edlt_badarg
+    load.l  r5, M14_LDESC_OFF_SIZE(r24)
+    move.l  r6, #M14_LDESC_SIZE
+    bne     r5, r6, .edlt_badarg
+    load.l  r21, M14_LDESC_OFF_SEGCNT(r24)
+    beqz    r21, .edlt_badarg
+    move.l  r6, #DOS_SEGLIST_MAX_ENTRIES
+    bgt     r21, r6, .edlt_badarg
+    load.q  r22, M14_LDESC_OFF_ENTRY(r24)
+    beqz    r22, .edlt_badarg
+    load.l  r23, M14_LDESC_OFF_STACKPG(r24)
+    beqz    r23, .edlt_badarg
+    load.q  r20, M14_LDESC_OFF_SEGTBL(r24)
+    beqz    r20, .edlt_badarg
+
+    move.q  r5, r21
+    move.l  r6, #M14_LDESC_SEG_SIZE
+    mulu    r5, r5, r6
+    beqz    r5, .edlt_badarg
+    move.q  r1, r20
+    move.q  r2, r5
+    move.q  r3, r26
+    jsr     validate_user_range
+    bnez    r1, .edlt_badarg
+    move.l  r11, #'A'
+
+    move.q  r27, r0                     ; code src
+    move.q  r28, r0                     ; code size
+    move.q  r29, r0                     ; code target
+    move.q  r30, r0                     ; code pages
+    move.q  r24, r0                     ; data src
+    move.q  r18, r0                     ; data size
+    move.q  r19, r0                     ; data target
+    move.q  r17, r0                     ; data pages
+    move.l  r16, #0                     ; code found
+    move.l  r15, #0                     ; data found
+    move.l  r14, #0                     ; index
+.edlt_seg_loop:
+    bge     r14, r21, .edlt_seg_done
+    move.l  r5, #M14_LDESC_SEG_SIZE
+    mulu    r6, r14, r5
+    add     r6, r6, r20
+    load.q  r7, M14_LDSEG_OFF_SRCPTR(r6)
+    load.q  r8, M14_LDSEG_OFF_SRCSZ(r6)
+    load.q  r9, M14_LDSEG_OFF_TARGET(r6)
+    load.l  r10, M14_LDSEG_OFF_PAGES(r6)
+    load.l  r11, M14_LDSEG_OFF_FLAGS(r6)
+    beqz    r10, .edlt_badarg
+    move.q  r12, r10
+    lsl     r12, r12, #12
+    blt     r12, r8, .edlt_badarg
+    move.l  r13, #0xFFF
+    and     r13, r9, r13
+    bnez    r13, .edlt_badarg
+    move.l  r13, #USER_IMAGE_BASE
+    blt     r9, r13, .edlt_badarg
+    add     r13, r9, r12
+    blt     r13, r9, .edlt_badarg
+    move.l  r12, #USER_IMAGE_END
+    bgt     r13, r12, .edlt_badarg
+    beqz    r8, .edlt_skip_src_validate
+    move.q  r1, r7
+    move.q  r2, r8
+    move.q  r3, r26
+    jsr     validate_user_range
+    bnez    r1, .edlt_badarg
+.edlt_skip_src_validate:
+    move.q  r13, r11
+    and     r13, r13, #4
+    beqz    r13, .edlt_badarg
+    move.q  r13, r11
+    and     r13, r13, #1
+    beqz    r13, .edlt_data_seg
+    bnez    r16, .edlt_badarg
+    move.l  r16, #1
+    move.q  r27, r7
+    move.q  r28, r8
+    move.q  r29, r9
+    move.q  r30, r10
+    bra     .edlt_seg_next
+.edlt_data_seg:
+    move.q  r13, r11
+    and     r13, r13, #2
+    beqz    r13, .edlt_badarg
+    bnez    r15, .edlt_badarg
+    move.l  r15, #1
+    move.q  r24, r7
+    move.q  r18, r8
+    move.q  r19, r9
+    move.q  r17, r10
+.edlt_seg_next:
+    add     r14, r14, #1
+    bra     .edlt_seg_loop
+.edlt_seg_done:
+    beqz    r16, .edlt_badarg
+    beqz    r15, .edlt_badarg
+    blt     r22, r29, .edlt_badarg
+    move.q  r13, r30
+    lsl     r13, r13, #12
+    add     r13, r13, r29
+    bge     r22, r13, .edlt_badarg
+
+    move.l  r13, #KERN_DATA_BASE
+    load.q  r21, KD_TASKID_NEXT(r13)    ; public task id
+    move.q  r15, r21
+    add     r15, r15, #1
+    store.q r15, KD_TASKID_NEXT(r13)
+
+    move.l  r20, #0
+.edlt_scan:
+    move.l  r11, #MAX_TASKS
+    bge     r20, r11, .edlt_nomem
+    lsl     r15, r20, #5
+    add     r15, r15, #KD_TASK_BASE
+    add     r15, r15, r13
+    load.b  r16, KD_TASK_STATE(r15)
+    move.l  r11, #TASK_FREE
+    beq     r16, r11, .edlt_found
+    add     r20, r20, #1
+    bra     .edlt_scan
+.edlt_found:
+    move.q  r1, r30
+    jsr     alloc_task_image_pages
+    bnez    r2, .edlt_alloc_fail
+    move.q  r14, r1                    ; code backing
+    move.q  r1, r17
+    jsr     alloc_task_image_pages
+    bnez    r2, .edlt_fail_free_code
+    move.q  r15, r1                    ; data backing
+    move.q  r1, r23
+    jsr     alloc_task_image_pages
+    bnez    r2, .edlt_fail_free_data
+    move.q  r16, r1                     ; stack base
+    store.q r24, (sp)                   ; preserve data src across allocator calls
+    move.l  r1, #1
+    jsr     alloc_task_image_pages
+    bnez    r2, .edlt_fail_free_stack
+    move.q  r24, r1                     ; startup base
+    jsr     alloc_task_pt_block
+    bnez    r2, .edlt_fail_free_startup
+    move.q  r25, r1                     ; pt base
+    load.q  r12, (sp)
+
+    move.l  r4, #0
+.edlt_copy_code:
+    bge     r4, r28, .edlt_copy_data
+    add     r5, r27, r4
+    load.b  r6, (r5)
+    add     r5, r14, r4
+    store.b r6, (r5)
+    add     r4, r4, #1
+    bra     .edlt_copy_code
+.edlt_copy_data:
+    move.l  r4, #0
+.edlt_copy_data_loop:
+    bge     r4, r18, .edlt_map
+    add     r5, r12, r4
+    load.b  r6, (r5)
+    add     r5, r15, r4
+    store.b r6, (r5)
+    add     r4, r4, #1
+    bra     .edlt_copy_data_loop
+.edlt_map:
+    move.l  r2, #KERN_PAGE_TABLE
+    move.l  r4, #0
+.edlt_pt_copy_kern:
+    move.l  r6, #KERN_PAGES
+    bge     r4, r6, .edlt_pt_copy_pool
+    lsl     r5, r4, #3
+    add     r8, r5, r2
+    load.q  r3, (r8)
+    add     r9, r5, r25
+    store.q r3, (r9)
+    add     r4, r4, #1
+    bra     .edlt_pt_copy_kern
+.edlt_pt_copy_pool:
+    move.l  r4, #ALLOC_POOL_BASE
+    move.l  r6, #ALLOC_POOL_PAGES
+    add     r6, r6, r4
+.edlt_pt_copy_pool_loop:
+    bge     r4, r6, .edlt_pt_copy_user
+    lsl     r5, r4, #3
+    add     r8, r5, r2
+    load.q  r3, (r8)
+    add     r9, r5, r25
+    store.q r3, (r9)
+    add     r4, r4, #1
+    bra     .edlt_pt_copy_pool_loop
+.edlt_pt_copy_user:
+    move.l  r4, #USER_CODE_VPN_BASE
+    move.l  r6, #USER_PT_PAGE_BASE
+.edlt_pt_copy_user_loop:
+    bge     r4, r6, .edlt_pt_copy_userpt
+    lsl     r5, r4, #3
+    add     r8, r5, r2
+    load.q  r3, (r8)
+    add     r9, r5, r25
+    store.q r3, (r9)
+    add     r4, r4, #1
+    bra     .edlt_pt_copy_user_loop
+.edlt_pt_copy_userpt:
+    move.l  r4, #USER_PT_PAGE_BASE
+    move.l  r6, #USER_PT_PAGE_END
+.edlt_pt_copy_userpt_loop:
+    bge     r4, r6, .edlt_pt_map_code
+    lsl     r5, r4, #3
+    add     r8, r5, r2
+    load.q  r3, (r8)
+    add     r9, r5, r25
+    store.q r3, (r9)
+    add     r4, r4, #1
+    bra     .edlt_pt_copy_userpt_loop
+
+.edlt_pt_map_code:
+    move.l  r8, #0
+.edlt_pt_code_loop:
+    bge     r8, r30, .edlt_pt_map_stack
+    lsr     r9, r14, #12
+    add     r9, r9, r8
+    lsl     r10, r9, #13
+    or      r10, r10, #0x19
+    lsr     r11, r29, #12
+    add     r11, r11, r8
+    lsl     r11, r11, #3
+    add     r11, r11, r25
+    store.q r10, (r11)
+    add     r8, r8, #1
+    bra     .edlt_pt_code_loop
+
+.edlt_pt_map_stack:
+    move.l  r8, #0
+.edlt_pt_stack_loop:
+    bge     r8, r23, .edlt_pt_map_data
+    lsr     r9, r16, #12
+    add     r9, r9, r8
+    lsl     r10, r9, #13
+    or      r10, r10, #0x17
+    lsl     r11, r9, #3
+    add     r11, r11, r25
+    store.q r10, (r11)
+    add     r8, r8, #1
+    bra     .edlt_pt_stack_loop
+
+.edlt_pt_map_data:
+    move.l  r8, #0
+.edlt_pt_data_loop:
+    bge     r8, r17, .edlt_pt_map_startup
+    lsr     r9, r15, #12
+    add     r9, r9, r8
+    lsl     r10, r9, #13
+    or      r10, r10, #0x17
+    lsr     r11, r19, #12
+    add     r11, r11, r8
+    lsl     r11, r11, #3
+    add     r11, r11, r25
+    store.q r10, (r11)
+    add     r8, r8, #1
+    bra     .edlt_pt_data_loop
+
+.edlt_pt_map_startup:
+    lsr     r9, r24, #12
+    lsl     r10, r9, #13
+    or      r10, r10, #0x13
+    lsl     r11, r9, #3
+    add     r11, r11, r25
+    store.q r10, (r11)
+
+    move.q  r1, r24
+    move.q  r2, r21
+    move.l  r3, #TASK_STARTUP_FLAG_EXEC
+    move.q  r4, r29
+    move.q  r5, r30
+    move.q  r6, r16
+    move.q  r7, r23
+    move.q  r8, r19
+    move.q  r9, r17
+    jsr     write_startup_block
+
+    move.q  r18, r15                    ; preserve data backing for layout row
+    move.q  r15, r23
+    lsl     r15, r15, #12
+    add     r15, r15, r16
+    sub     r15, r15, #16
+    store.q r24, (r15)
+    add     r15, r15, #8
+    store.q r19, (r15)
+
+    move.l  r13, #KERN_DATA_BASE
+    lsl     r15, r20, #5
+    add     r15, r15, #KD_TASK_BASE
+    add     r15, r15, r13
+    store.q r22, KD_TASK_PC(r15)
+    move.q  r11, r23
+    lsl     r11, r11, #12
+    add     r11, r11, r16
+    store.q r11, KD_TASK_USP(r15)
+    move.l  r11, #SIG_SYSTEM_MASK
+    store.l r11, KD_TASK_SIG_ALLOC(r15)
+    store.l r0, KD_TASK_SIG_WAIT(r15)
+    store.l r0, KD_TASK_SIG_RECV(r15)
+    store.b r0, KD_TASK_STATE(r15)
+    move.b  r11, #WAITPORT_NONE
+    store.b r11, KD_TASK_WAITPORT(r15)
+    store.b r0, KD_TASK_GPR_SAVED(r15)
+
+    lsl     r11, r20, #3
+    add     r11, r11, #KD_PTBR_BASE
+    add     r11, r11, r13
+    store.q r25, (r11)
+
+    move.q  r1, r20
+    jsr     kern_task_layout_addr
+    store.q r14, KD_TASK_CODE_BASE(r1)
+    store.q r16, KD_TASK_STACK_BASE(r1)
+    store.q r18, KD_TASK_DATA_BASE(r1)
+    store.l r30, KD_TASK_CODE_PAGES(r1)
+    store.l r23, KD_TASK_STACK_PAGES(r1)
+    store.l r17, KD_TASK_DATA_PAGES(r1)
+    store.l r0, KD_TASK_LAYOUT_FLAGS(r1)
+    store.q r24, KD_TASK_LAYOUT_STARTUP(r1)
+    store.q r25, KD_TASK_LAYOUT_PT_BASE(r1)
+
+    move.q  r1, r20
+    jsr     kern_task_pubid_addr
+    store.l r21, (r1)
+
+    load.q  r16, KD_NUM_TASKS(r13)
+    add     r16, r16, #1
+    store.q r16, KD_NUM_TASKS(r13)
+
+    move.q  r1, r21
+    move.q  r2, r20
+    move.q  r3, #ERR_OK
+    add     sp, sp, #8
+    rts
+.edlt_alloc_fail:
+    move.l  r11, #ERR_BADARG
+    beq     r2, r11, .edlt_badarg
+    bra     .edlt_nomem
+.edlt_fail_free_startup:
+    move.q  r1, r24
+    move.l  r2, #1
+    jsr     free_task_image_pages
+.edlt_fail_free_stack:
+    move.q  r1, r16
+    move.q  r2, r23
+    jsr     free_task_image_pages
+.edlt_fail_free_data:
+    move.q  r1, r15
+    move.q  r2, r17
+    jsr     free_task_image_pages
+.edlt_fail_free_code:
+    move.q  r1, r14
+    move.q  r2, r30
+    jsr     free_task_image_pages
+    bra     .edlt_nomem
+.edlt_badarg:
+    move.q  r1, r0
+    move.q  r2, r0
+    move.l  r3, #ERR_BADARG
+    add     sp, sp, #8
+    rts
+.edlt_nomem:
+    move.q  r1, r0
+    move.q  r2, r0
+    move.l  r3, #ERR_NOMEM
+    add     sp, sp, #8
     rts
 
 ; ============================================================================
@@ -4693,28 +6283,57 @@ trap_handler:
     move.q  r26, r3                     ; r26 = args_ptr
     move.q  r27, r4                     ; r27 = args_len
 
-    ; 1. Validate image_size minimum. load_program does the detailed image
+    ; 1. Validate args_len
+    move.l  r11, #DATA_ARGS_MAX
+    bgt     r27, r11, .ep_badarg_norestore
+
+    ; 2. Validate the first 8 bytes so the dual-mode discriminator can read
+    ;    either the flat IE64PROG magic or the M14 launch-descriptor magic.
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r28, KD_CURRENT_TASK(r12)   ; r28 = caller slot
+    lsl     r11, r28, #3
+    add     r11, r11, #KD_PTBR_BASE
+    add     r11, r11, r12
+    load.q  r28, (r11)                  ; r28 = caller PTBR
+    move.q  r1, r24
+    move.l  r2, #8
+    move.q  r3, r28
+    jsr     validate_user_range
+    bnez    r1, .ep_badarg_norestore
+
+    load.l  r11, (r24)
+    move.l  r12, #IMG_MAGIC_LO
+    bne     r11, r12, .ep_check_desc
+    load.l  r11, 4(r24)
+    move.l  r12, #IMG_MAGIC_HI
+    beq     r11, r12, .ep_flat_path
+
+.ep_check_desc:
+    move.l  r12, #M14_LDESC_MAGIC
+    bne     r11, r12, .ep_badarg_norestore
+    load.l  r11, 4(r24)
+    move.l  r12, #M14_LDESC_VERSION
+    bne     r11, r12, .ep_badarg_norestore
+    bra     .ep_desc_path
+
+.ep_flat_path:
+    ; 3. Validate image_size minimum. load_program does the detailed image
     ;    validation and dynamic-placement fit checks.
     move.l  r11, #IMG_HEADER_SIZE
     blt     r25, r11, .ep_badarg_norestore
 
-    ; 2. Validate args_len
-    move.l  r11, #DATA_ARGS_MAX
-    bgt     r27, r11, .ep_badarg_norestore
-
-    ; 3. Overflow check
+    ; 4. Overflow check
     add     r11, r24, r25
     blt     r11, r24, .ep_badarg_norestore
 
-    ; 4. Validate image range: walk caller's PT, check P+U for each page
-    mfcr    r28, cr0                    ; r28 = caller's PTBR
+    ; 5. Validate image range: walk caller's PT, check P+U for each page
     move.q  r1, r24
     move.q  r2, r25
     move.q  r3, r28
     jsr     validate_user_range
     bnez    r1, .ep_badarg_norestore
 
-    ; 5. Validate args range if present
+    ; 6. Validate args range if present
     beqz    r27, .ep_args_valid
     beqz    r26, .ep_args_valid
     add     r11, r26, r27
@@ -4725,8 +6344,7 @@ trap_handler:
     jsr     validate_user_range
     bnez    r1, .ep_badarg_norestore
 .ep_args_valid:
-
-    ; 6. Call load_program UNDER CALLER'S PT (no switching!)
+    ; 7. Call load_program UNDER CALLER'S PT (no switching!)
     move.l  r6, #TASK_STARTUP_FLAG_EXEC
     move.q  r7, r24                     ; image_ptr
     move.q  r8, r25                     ; image_size
@@ -4768,6 +6386,80 @@ trap_handler:
 .ep_new_no_args:
     move.q  r1, r22
     move.q  r2, #ERR_OK
+    eret
+
+.ep_desc_path:
+    ; Descriptor-mode transition path (M14 phase 3). Launch directly from the
+    ; DOS-built descriptor so ELF entry points and target VAs are preserved.
+    push    r28
+    push    r26
+    push    r27
+    move.q  r1, r24
+    move.q  r2, r25
+    move.q  r3, r28
+    move.l  r4, #TASK_STARTUP_FLAG_EXEC
+    jsr     exec_desc_launch_task       ; R1=task_id, R2=slot, R3=err
+    pop     r27
+    pop     r26
+    pop     r28
+    bnez    r3, .ep_desc_fail
+    move.q  r22, r1                     ; task id
+    move.q  r23, r2                     ; child slot
+
+    ; Validate args range if present (same contract as the flat-image path).
+    beqz    r27, .ep_desc_args_valid
+    beqz    r26, .ep_desc_args_valid
+    add     r11, r26, r27
+    blt     r11, r26, .ep_desc_cleanup_badarg
+    move.q  r1, r26
+    move.q  r2, r27
+    move.q  r3, r28
+    jsr     validate_user_range
+    bnez    r1, .ep_desc_cleanup_badarg
+.ep_desc_args_valid:
+    beqz    r27, .ep_desc_no_args
+    beqz    r26, .ep_desc_no_args
+
+    move.q  r1, r23
+    jsr     kern_task_layout_addr
+    load.q  r15, KD_TASK_DATA_BASE(r1)
+    add     r15, r15, #DATA_ARGS_OFFSET
+    move.l  r4, #0
+.ep_desc_copy_args:
+    bge     r4, r27, .ep_desc_args_term
+    add     r5, r26, r4
+    load.b  r6, (r5)
+    add     r5, r15, r4
+    store.b r6, (r5)
+    add     r4, r4, #1
+    bra     .ep_desc_copy_args
+.ep_desc_args_term:
+    add     r5, r15, r27
+    store.b r0, (r5)
+    bra     .ep_desc_no_args
+
+.ep_desc_no_args:
+    move.q  r1, r22
+    move.q  r2, #ERR_OK
+    eret
+
+.ep_desc_cleanup_badarg:
+    move.q  r1, r22
+    jsr     kern_find_slot_for_public_id
+    beqz    r2, .ep_badarg_norestore
+    mfcr    r19, cr0
+    move.l  r11, #KERN_PAGE_TABLE
+    mtcr    cr0, r11
+    tlbflush
+    move.q  r13, r1
+    jsr     kill_task_cleanup
+    mtcr    cr0, r19
+    tlbflush
+    bra     .ep_badarg_norestore
+
+.ep_desc_fail:
+    move.q  r1, #0
+    move.q  r2, r3
     eret
 
 .ep_new_fail:
@@ -5966,7 +7658,7 @@ prog_doslib_code:
     add     r25, r25, #DOS_META_HDR_SZ ; r25 = &entries[0]
 
     ; Copy filename from data[896] = "readme" to entry.name (max 31 + NUL)
-    add     r20, r29, #896             ; src = "readme"
+    add     r20, r29, #(prog_doslib_seed_readme_name - prog_doslib_data)
     move.q  r21, r25                   ; dst = &entry.name
     move.l  r14, #0
 .dos_cpname:
@@ -5987,7 +7679,7 @@ prog_doslib_code:
 
     ; Copy welcome message from data[912] into the extent chain payload.
     move.q  r1, r24                    ; r1 = first extent VA
-    add     r2, r29, #912              ; r2 = src (welcome message)
+    add     r2, r29, #(prog_doslib_seed_readme_body - prog_doslib_data)
     move.l  r3, #28                    ; r3 = byte_count
     jsr     .dos_extent_write
     load.q  r29, (sp)
@@ -6001,59 +7693,63 @@ prog_doslib_code:
     ; R22 = slot index (1..6), R24 = current image ptr (auto-advanced).
     ; The .dos_seed_one subroutine handles one file.
     load.q  r29, (sp)
-    add     r24, r29, #4096             ; r24 = first embedded image (data page 1)
+    add     r24, r29, #(prog_doslib_seed_images_start - prog_doslib_data)
 
-    ; Seed names at data offsets: C/Version(942), C/Avail(952), C/Dir(960),
-    ;   C/Type(966), C/Echo(973), S/Startup-Sequence(980)
     ; Seed VERSION (slot 1)
-    add     r20, r29, #942
+    add     r20, r29, #(prog_doslib_seed_name_version - prog_doslib_data)
     jsr     .dos_seed_one
     ; Seed AVAIL (slot 2)
     load.q  r29, (sp)
-    add     r20, r29, #952
+    add     r20, r29, #(prog_doslib_seed_name_avail - prog_doslib_data)
     jsr     .dos_seed_one
     ; Seed DIR (slot 3)
     load.q  r29, (sp)
-    add     r20, r29, #960
+    add     r20, r29, #(prog_doslib_seed_name_dir - prog_doslib_data)
     jsr     .dos_seed_one
     ; Seed TYPE (slot 4)
     load.q  r29, (sp)
-    add     r20, r29, #966
+    add     r20, r29, #(prog_doslib_seed_name_type - prog_doslib_data)
     jsr     .dos_seed_one
     ; Seed ECHO (slot 5)
     load.q  r29, (sp)
-    add     r20, r29, #973
+    add     r20, r29, #(prog_doslib_seed_name_echo - prog_doslib_data)
     jsr     .dos_seed_one
     ; Seed S/Startup-Sequence (slot 6)
     load.q  r29, (sp)
-    add     r20, r29, #980
+    add     r20, r29, #(prog_doslib_seed_name_startup - prog_doslib_data)
     jsr     .dos_seed_one
     ; Seed DEVS/input.device (slot 7) — M11
     load.q  r29, (sp)
-    add     r20, r29, #1032
+    add     r20, r29, #(prog_doslib_seed_name_input - prog_doslib_data)
     jsr     .dos_seed_one
     ; Seed RESOURCES/hardware.resource (slot 8) — M12.5
     ; (must come BEFORE graphics.library to match the embedded image order
     ; in this data section: prog_input_device, prog_hwres, prog_graphics_library)
     load.q  r29, (sp)
-    add     r20, r29, #1113
+    add     r20, r29, #(prog_doslib_seed_name_hwres - prog_doslib_data)
     jsr     .dos_seed_one
     ; Seed LIBS/graphics.library (slot 9) — M11
     load.q  r29, (sp)
-    add     r20, r29, #1050
+    add     r20, r29, #(prog_doslib_seed_name_graphics - prog_doslib_data)
     jsr     .dos_seed_one
     ; Seed C/GfxDemo (slot 10) — M11
     load.q  r29, (sp)
-    add     r20, r29, #1072
+    add     r20, r29, #(prog_doslib_seed_name_gfxdemo - prog_doslib_data)
     jsr     .dos_seed_one
     ; Seed LIBS/intuition.library (slot 11) — M12
     load.q  r29, (sp)
-    add     r20, r29, #1082
+    add     r20, r29, #(prog_doslib_seed_name_intuition - prog_doslib_data)
     jsr     .dos_seed_one
     ; Seed C/About (slot 12) — M12
     load.q  r29, (sp)
-    add     r20, r29, #1105
+    add     r20, r29, #(prog_doslib_seed_name_about - prog_doslib_data)
     jsr     .dos_seed_one
+    ; Seed C/ElfSeg (slot 13) — M14 Phase 2 native ELF fixture
+    ; r24 already points at the embedded ELF bytes after C/About.
+    load.q  r29, (sp)
+    add     r20, r29, #(prog_doslib_seed_name_elfseg - prog_doslib_data)
+    move.l  r23, #0x2004
+    jsr     .dos_seed_known
     bra     .dos_seed_done
 
     ; -----------------------------------------------------------------
@@ -6087,12 +7783,35 @@ prog_doslib_code:
     load.l  r15, (r24)
     move.l  r18, #IMG_MAGIC_LO
     bne     r15, r18, .dso_text_size
-    ; IE64PROG: size = 32 + code_size + data_size
+    ; M14 Phase 5: make the visible C: command/demo path native ELF while
+    ; leaving the startup-sequence services on the proven legacy IE64PROG
+    ; path for now. This keeps the boot stack stable while moving the user-
+    ; visible launcher/demo experience onto the real DOS loader.
+    load.q  r16, 192(r29)               ; saved name ptr
+    load.b  r17, (r16)
+    move.l  r18, #0x43                  ; 'C'
+    bne     r17, r18, .dso_ie64_raw
+    load.b  r17, 1(r16)
+    move.l  r18, #0x2F                  ; '/'
+    bne     r17, r18, .dso_ie64_raw
+    move.q  r1, r24
+    jsr     .dos_seed_build_elf_from_ie64
+    bnez    r4, .dso_done
+    store.q r1, 232(r29)               ; src ptr to write (temp ELF)
+    store.q r2, 216(r29)               ; seeded file size
+    store.q r1, 240(r29)               ; temp buf VA to free after write
+    store.q r3, 248(r29)               ; raw embedded image size
+    bra     .dso_have_blob
+.dso_ie64_raw:
     load.l  r23, 8(r24)
     load.l  r15, 12(r24)
     add     r23, r23, r15
     add     r23, r23, #IMG_HEADER_SIZE
-    bra     .dso_have_size
+    store.q r23, 216(r29)               ; seeded file size = raw IE64PROG size
+    store.q r24, 232(r29)               ; src ptr = raw image
+    store.q r0, 240(r29)                ; no temp buffer to free
+    store.q r23, 248(r29)               ; raw embedded image size
+    bra     .dso_have_blob
 .dso_text_size:
     ; Plain text: scan for NUL byte.
     ;
@@ -6111,9 +7830,14 @@ prog_doslib_code:
     add     r23, r23, #1
     bra     .dso_tscan
 .dso_have_size:
-    store.q r23, 216(r29)               ; saved image size
+    store.q r23, 216(r29)               ; saved seeded file size
+    store.q r24, 232(r29)               ; src ptr to write (raw text bytes)
+    store.q r0, 240(r29)                ; no temp buffer to free
+    store.q r23, 248(r29)               ; raw embedded image size
+.dso_have_blob:
 
     ; --- 3. Allocate extent chain large enough for the image ---
+    load.q  r23, 216(r29)
     move.q  r1, r23                     ; r1 = byte_count
     jsr     .dos_extent_alloc           ; r1 = first extent VA, r2 = err
     bnez    r2, .dso_done
@@ -6146,17 +7870,241 @@ prog_doslib_code:
 
     ; --- 6. Copy image bytes into the extent chain ---
     load.q  r1, 224(r29)                ; r1 = first extent VA
-    load.q  r2, 200(r29)                ; r2 = src = image ptr
+    load.q  r2, 232(r29)                ; r2 = src ptr
     load.q  r3, 216(r29)                ; r3 = byte_count
     jsr     .dos_extent_write
 
-    ; --- 7. Advance r24 past image (aligned to 8) ---
+    ; Free any temporary ELF staging buffer used for IE64PROG conversion.
+    load.q  r1, 240(r29)
+    beqz    r1, .dso_advance
+    push    r29
+    load.q  r2, 216(r29)
+    syscall #SYS_FREE_MEM
+    pop     r29
+
+.dso_advance:
+    ; --- 7. Advance r24 past the raw embedded source image (aligned to 8) ---
+    load.q  r24, 200(r29)
+    load.q  r23, 248(r29)
+    add     r24, r24, r23
+    add     r24, r24, #7
+    and     r24, r24, #0xFFFFFFF8
+.dso_done:
+    rts
+
+    ; -----------------------------------------------------------------
+    ; .dos_seed_build_elf_from_ie64:
+    ; Convert one embedded IE64PROG image into a strict M14 ELF file for
+    ; seeding into RAM:. The source images stay compact in dos.library's
+    ; bundled data section; the visible filesystem gets the native format.
+    ; Input:  r1 = raw IE64PROG ptr
+    ; Output: r1 = temp ELF ptr, r2 = elf_size, r3 = raw_size, r4 = err
+    ; -----------------------------------------------------------------
+.dos_seed_build_elf_from_ie64:
+    move.q  r20, r1                     ; raw image ptr
+    load.l  r21, 8(r20)                 ; code_size
+    load.l  r22, 12(r20)                ; data_size
+
+    move.q  r3, r21
+    add     r3, r3, r22
+    add     r3, r3, #IMG_HEADER_SIZE    ; raw_size
+
+    move.q  r23, r21                    ; code_pages = ceil(max(code,1)/4096)
+    bnez    r23, .dsbei_code_nonzero
+    move.l  r23, #1
+    bra     .dsbei_code_pages_ready
+.dsbei_code_nonzero:
+    add     r23, r23, #4095
+    lsr     r23, r23, #12
+.dsbei_code_pages_ready:
+
+    move.q  r24, r22                    ; data_pages = ceil(max(data,1)/4096)
+    bnez    r24, .dsbei_data_nonzero
+    move.l  r24, #1
+    bra     .dsbei_data_pages_ready
+.dsbei_data_nonzero:
+    add     r24, r24, #4095
+    lsr     r24, r24, #12
+.dsbei_data_pages_ready:
+
+    lsl     r26, r23, #12               ; code_memsz
+    lsl     r27, r24, #12               ; data_memsz
+    move.l  r25, #0x1000
+    add     r25, r25, r26               ; data_off
+    move.q  r28, r25
+    add     r28, r28, r22               ; elf_size
+
+    ; Syscalls clobber general registers. Spill the build state into the
+    ; boot-only scratch region before AllocMem so the copy/return path can
+    ; reconstruct the exact raw/ELF sizing after the allocation succeeds.
+    store.q r20, 256(r29)               ; raw image ptr
+    store.q r21, 264(r29)               ; code_size
+    store.q r22, 272(r29)               ; data_size
+    store.q r26, 280(r29)               ; code_memsz
+    store.q r27, 288(r29)               ; data_memsz
+    store.q r25, 296(r29)               ; data_off
+    store.q r28, 304(r29)               ; elf_size
+    store.q r3, 312(r29)                ; raw_size
+
+    push    r29
+    move.q  r1, r28
+    move.l  r2, #MEMF_CLEAR
+    syscall #SYS_ALLOC_MEM
+    pop     r29
+    move.q  r4, r2
+    bnez    r4, .dsbei_fail
+
+    move.q  r18, r1                     ; elf base
+    load.q  r20, 256(r29)
+    load.q  r21, 264(r29)
+    load.q  r22, 272(r29)
+    load.q  r26, 280(r29)
+    load.q  r27, 288(r29)
+    load.q  r25, 296(r29)
+    load.q  r28, 304(r29)
+    move.q  r2, r28                     ; restore elf_size
+    move.q  r1, r18                     ; return ptr in r1
+
+    ; ELF ident + header (clear allocation already zeroed the padding).
+    move.l  r5, #0x464C457F
+    store.l r5, (r18)                   ; 0x7F 'E''L''F'
+    move.l  r5, #0x00010102
+    store.l r5, 4(r18)                  ; class=64, lsb, version=1, osabi=0
+    move.l  r5, #0x49450002
+    store.l r5, 16(r18)                 ; e_type=ET_EXEC, e_machine=EM_IE64
+    move.l  r5, #1
+    store.l r5, 20(r18)                 ; e_version=1
+    move.l  r5, #0x00601000
+    store.q r5, 24(r18)                 ; e_entry = code base
+    move.l  r5, #64
+    store.q r5, 32(r18)                 ; e_phoff = 64
+    move.l  r5, #0x00380040
+    store.l r5, 52(r18)                 ; e_ehsize=64, e_phentsize=56
+    move.l  r5, #2
+    store.l r5, 56(r18)                 ; e_phnum = 2
+
+    ; PHDR 0: RX code segment
+    move.l  r5, #1
+    store.l r5, 64(r18)                 ; p_type = PT_LOAD
+    move.l  r5, #5
+    store.l r5, 68(r18)                 ; p_flags = R|X
+    move.l  r5, #0x1000
+    store.q r5, 72(r18)                 ; p_offset
+    move.l  r5, #0x00601000
+    store.q r5, 80(r18)                 ; p_vaddr
+    store.q r0, 88(r18)                 ; p_paddr
+    store.q r21, 96(r18)                ; p_filesz
+    store.q r26, 104(r18)               ; p_memsz
+    move.l  r5, #0x1000
+    store.q r5, 112(r18)                ; p_align
+
+    ; PHDR 1: RW data segment
+    move.l  r5, #1
+    store.l r5, 120(r18)                ; p_type = PT_LOAD
+    move.l  r5, #6
+    store.l r5, 124(r18)                ; p_flags = R|W
+    store.q r25, 128(r18)               ; p_offset = data_off
+    move.l  r17, #0x00601000
+    add     r17, r17, r26
+    store.q r17, 136(r18)               ; p_vaddr = next page after code
+    store.q r0, 144(r18)                ; p_paddr
+    store.q r22, 152(r18)               ; p_filesz
+    store.q r27, 160(r18)               ; p_memsz
+    move.l  r5, #0x1000
+    store.q r5, 168(r18)                ; p_align
+
+    ; Copy code bytes: raw+32 -> elf+0x1000
+    add     r14, r20, #IMG_HEADER_SIZE
+    add     r15, r18, #0x1000
+    move.l  r16, #0
+.dsbei_copy_code:
+    bge     r16, r21, .dsbei_copy_data_prep
+    add     r5, r14, r16
+    load.b  r6, (r5)
+    add     r7, r15, r16
+    store.b r6, (r7)
+    add     r16, r16, #1
+    bra     .dsbei_copy_code
+
+.dsbei_copy_data_prep:
+    add     r14, r14, r21               ; raw data src = raw code src + code_size
+    add     r15, r18, r25               ; elf data dst = elf + data_off
+    move.l  r16, #0
+.dsbei_copy_data:
+    bge     r16, r22, .dsbei_ok
+    add     r5, r14, r16
+    load.b  r6, (r5)
+    add     r7, r15, r16
+    store.b r6, (r7)
+    add     r16, r16, #1
+    bra     .dsbei_copy_data
+
+.dsbei_ok:
+    move.q  r1, r18
+    move.q  r2, r28
+    load.q  r3, 312(r29)
+    move.q  r4, r0
+    rts
+
+.dsbei_fail:
+    move.q  r1, r0
+    move.q  r2, r0
+    rts
+
+    ; -----------------------------------------------------------------
+    ; .dos_seed_known: seed one file from embedded bytes when the size is
+    ; already known by the caller.
+    ; Input:  r20 = name_ptr, r24 = image_ptr, r23 = byte_count, r29 = data
+    ; Output: r24 advanced past image (aligned to 8)
+    ; -----------------------------------------------------------------
+.dos_seed_known:
+    store.q r20, 192(r29)
+    store.q r24, 200(r29)
+    store.q r23, 216(r29)
+
+    jsr     .dos_meta_alloc_entry
+    bnez    r2, .dsk_done
+    store.q r1, 208(r29)
+
+    load.q  r20, 192(r29)
+    load.q  r25, 208(r29)
+    move.q  r16, r20
+    move.q  r17, r25
+    move.l  r18, #0
+.dsk_cpname:
+    load.b  r15, (r16)
+    store.b r15, (r17)
+    beqz    r15, .dsk_cpname_done
+    add     r16, r16, #1
+    add     r17, r17, #1
+    add     r18, r18, #1
+    move.l  r28, #31
+    blt     r18, r28, .dsk_cpname
+    store.b r0, (r17)
+.dsk_cpname_done:
+
+    load.q  r1, 216(r29)
+    jsr     .dos_extent_alloc
+    bnez    r2, .dsk_done
+    store.q r1, 224(r29)
+
+    load.q  r25, 208(r29)
+    load.q  r1, 224(r29)
+    store.q r1, DOS_META_OFF_VA(r25)
+    load.q  r23, 216(r29)
+    store.l r23, DOS_META_OFF_SIZE(r25)
+
+    load.q  r1, 224(r29)
+    load.q  r2, 200(r29)
+    load.q  r3, 216(r29)
+    jsr     .dos_extent_write
+
     load.q  r24, 200(r29)
     load.q  r23, 216(r29)
     add     r24, r24, r23
     add     r24, r24, #7
     and     r24, r24, #0xFFFFFFF8
-.dso_done:
+.dsk_done:
     rts
 
 .dos_seed_done:
@@ -6222,6 +8170,12 @@ prog_doslib_code:
     beq     r14, r28, .dos_do_close
     move.l  r28, #DOS_RUN
     beq     r14, r28, .dos_do_run
+    move.l  r28, #DOS_LOADSEG
+    beq     r14, r28, .dos_do_loadseg
+    move.l  r28, #DOS_UNLOADSEG
+    beq     r14, r28, .dos_do_unloadseg
+    move.l  r28, #DOS_RUNSEG
+    beq     r14, r28, .dos_do_runseg
     ; Unknown opcode → reply with error and loop
     bra     .dos_reply_err
 
@@ -6684,6 +8638,438 @@ prog_doslib_code:
     bra     .dos_reply_badh
 
     ; =================================================================
+    ; DOS_LOADSEG (type=7): load an ELF file into a DOS-owned seglist.
+    ; Shared buffer contains the program name. Reply data0 = seglist VA.
+    ; =================================================================
+.dos_do_loadseg:
+    load.q  r23, 168(r29)              ; name ptr in shared buffer
+    jsr     .dos_resolve_cmd
+    load.q  r29, (sp)
+
+    move.q  r1, r23
+    jsr     .dos_meta_find_by_name
+    beqz    r1, .dos_run_notfound
+    move.q  r14, r1
+    load.q  r29, (sp)
+
+    load.q  r21, DOS_META_OFF_VA(r14)  ; first extent VA
+    load.l  r23, DOS_META_OFF_SIZE(r14) ; file size
+    beqz    r21, .dos_reply_badarg
+    beqz    r23, .dos_reply_badarg
+
+    ; Scratch:
+    ; 320: first_extent_va
+    ; 328: image_size
+    ; 336: temp_buf_va
+    ; 344: seglist_va
+    ; 352: seglist_err
+    store.q r21, 320(r29)
+    store.q r23, 328(r29)
+
+    push    r29
+    move.q  r1, r23
+    move.l  r2, #MEMF_CLEAR
+    syscall #SYS_ALLOC_MEM
+    pop     r29
+    bnez    r2, .dos_reply_nomem
+    store.q r1, 336(r29)
+
+    load.q  r1, 320(r29)
+    load.q  r2, 336(r29)
+    load.q  r3, 328(r29)
+    jsr     .dos_extent_walk
+    load.q  r29, (sp)
+
+    load.q  r1, 336(r29)               ; temp file VA
+    load.q  r2, 328(r29)               ; file size
+    jsr     .dos_elf_build_seglist
+    load.q  r29, (sp)
+    store.q r1, 344(r29)
+    store.q r2, 352(r29)
+
+    push    r29
+    load.q  r1, 336(r29)
+    load.q  r2, 328(r29)
+    syscall #SYS_FREE_MEM
+    pop     r29
+
+    load.q  r1, 944(r29)
+    load.q  r2, 352(r29)
+    load.q  r3, 344(r29)
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+
+    ; =================================================================
+    ; DOS_UNLOADSEG (type=8): free a DOS-owned seglist.
+    ; data0 = seglist VA
+    ; =================================================================
+.dos_do_unloadseg:
+    load.q  r20, 960(r29)              ; seglist VA
+    load.q  r21, 176(r29)              ; head
+    move.q  r22, r0                    ; prev = 0
+.dos_ul_walk:
+    beqz    r21, .dos_reply_badh
+    beq     r21, r20, .dos_ul_found
+    move.q  r22, r21
+    load.q  r21, DOS_SEGLIST_NEXT(r21)
+    bra     .dos_ul_walk
+.dos_ul_found:
+    load.q  r24, DOS_SEGLIST_NEXT(r21)
+    beqz    r22, .dos_ul_head
+    store.q r24, DOS_SEGLIST_NEXT(r22)
+    bra     .dos_ul_free
+.dos_ul_head:
+    store.q r24, 176(r29)
+.dos_ul_free:
+    move.q  r1, r21
+    jsr     .dos_seglist_free_unlinked
+    load.q  r1, 944(r29)
+    move.l  r2, #DOS_OK
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+
+    ; =================================================================
+    ; DOS_RUNSEG (type=9): launch a previously loaded DOS seglist.
+    ; data0 = seglist VA, shared buffer = args string (or empty)
+    ; The seglist remains DOS-owned; successful launch copies the image
+    ; into a private child task via the M14 descriptor bridge.
+    ; =================================================================
+.dos_do_runseg:
+    load.q  r20, 960(r29)              ; requested seglist VA
+    load.q  r21, 176(r29)              ; head
+    move.q  r22, r0
+.dos_runseg_walk:
+    beqz    r21, .dos_reply_badh
+    beq     r21, r20, .dos_runseg_found
+    move.q  r22, r21
+    load.q  r21, DOS_SEGLIST_NEXT(r21)
+    bra     .dos_runseg_walk
+
+.dos_runseg_found:
+.dos_runseg_args:
+    load.q  r16, 168(r29)              ; args_ptr
+    move.q  r17, r16
+    move.l  r18, #0
+.dos_runseg_arglen:
+    load.b  r15, (r17)
+    beqz    r15, .dos_runseg_launch
+    add     r17, r17, #1
+    add     r18, r18, #1
+    move.l  r28, #DATA_ARGS_MAX
+    blt     r18, r28, .dos_runseg_arglen
+    bra     .dos_reply_badarg
+
+.dos_runseg_launch:
+    move.q  r1, r21                     ; seglist VA
+    move.q  r2, r16                     ; args_ptr
+    move.q  r3, r18                     ; args_len
+    move.q  r30, r29                    ; preserve DOS data-page base across helper return
+    move.q  r31, r29                    ; explicit DOS data-page anchor
+    jsr     .dos_launch_seglist
+    move.q  r29, r30
+    move.q  r5, r1                      ; task_id
+    store.q r29, (sp)
+    load.q  r1, 944(r29)                ; reply_port
+    move.q  r3, r5                      ; data0 = task_id
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+
+    ; ------------------------------------------------------------------
+    ; .dos_launch_seglist: launch a DOS-owned seglist through the M14
+    ; descriptor bridge without consuming it.
+    ; In:  r1 = seglist VA, r2 = args_ptr, r3 = args_len
+    ; Out: r1 = task_id (or 0), r2 = DOS_OK / DOS_ERR_BADARG / DOS_ERR_NOMEM
+    ; ------------------------------------------------------------------
+.dos_launch_seglist:
+    sub     sp, sp, #240
+    store.q r30, 224(sp)
+    store.q r31, 232(sp)
+    move.q  r21, r1
+    move.q  r16, r2
+    move.q  r18, r3
+    load.l  r23, DOS_SEGLIST_OFF_COUNT(r21)
+    beqz    r23, .dos_launchseg_badarg
+    store.q r21, 64(sp)
+    store.q r16, 72(sp)
+    store.q r18, 80(sp)
+    store.q r23, 88(sp)
+
+    ; Stack-local scratch:
+    ;   0   code_target_base
+    ;   8   code_target_end
+    ;   16  data_target_base
+    ;   24  data_target_end
+    ;   32  code_tmp_va
+    ;   40  data_tmp_va
+    ;   48  code_pages
+    ;   56  data_pages
+    ;   64  seglist VA
+    ;   72  args_ptr
+    ;   80  args_len
+    ;   88  seg_count
+    ;   96  launch descriptor (48 bytes)
+    ;   144 launch seg table entry 0
+    ;   176 launch seg table entry 1
+    ;   224 saved r30
+    ;   232 saved r31
+    store.q r0, 0(sp)
+    store.q r0, 8(sp)
+    store.q r0, 16(sp)
+    store.q r0, 24(sp)
+    store.q r0, 32(sp)
+    store.q r0, 40(sp)
+    store.q r0, 48(sp)
+    store.q r0, 56(sp)
+
+    move.q  r24, r21
+    add     r24, r24, #DOS_SEGLIST_HDR_SZ
+    move.l  r26, #0
+    move.l  r27, #0                    ; code_found
+    move.l  r28, #0                    ; data_found
+    move.l  r25, #0                    ; exec_entry_ok
+.dos_launchseg_scan:
+    bge     r26, r23, .dos_launchseg_scanned
+    load.q  r7, DOS_SEG_OFF_TARGET(r24)
+    load.l  r8, DOS_SEG_OFF_PAGES(r24)
+    beqz    r8, .dos_launchseg_badarg
+    move.q  r9, r8
+    lsl     r9, r9, #12
+    add     r10, r7, r9
+    blt     r10, r7, .dos_launchseg_badarg
+    load.l  r11, DOS_SEG_OFF_FLAGS(r24)
+    and     r12, r11, #4
+    beqz    r12, .dos_launchseg_badarg
+    and     r12, r11, #2
+    bnez    r12, .dos_launchseg_scan_data
+    bnez    r27, .dos_launchseg_scan_code_seen
+    move.l  r27, #1
+    store.q r7, 0(sp)
+    store.q r10, 8(sp)
+    bra     .dos_launchseg_scan_exec
+.dos_launchseg_scan_code_seen:
+    load.q  r12, 0(sp)
+    bge     r7, r12, .dos_launchseg_code_min_ok
+    store.q r7, 0(sp)
+.dos_launchseg_code_min_ok:
+    load.q  r12, 8(sp)
+    bge     r12, r10, .dos_launchseg_scan_exec
+    store.q r10, 8(sp)
+.dos_launchseg_scan_exec:
+    and     r12, r11, #1
+    beqz    r12, .dos_launchseg_scan_next
+    load.q  r12, DOS_SEGLIST_OFF_ENTRY(r21)
+    blt     r12, r7, .dos_launchseg_scan_next
+    bge     r12, r10, .dos_launchseg_scan_next
+    move.l  r25, #1
+    bra     .dos_launchseg_scan_next
+.dos_launchseg_scan_data:
+    bnez    r28, .dos_launchseg_scan_data_seen
+    move.l  r28, #1
+    store.q r7, 16(sp)
+    store.q r10, 24(sp)
+    bra     .dos_launchseg_scan_next
+.dos_launchseg_scan_data_seen:
+    load.q  r12, 16(sp)
+    bge     r7, r12, .dos_launchseg_data_min_ok
+    store.q r7, 16(sp)
+.dos_launchseg_data_min_ok:
+    load.q  r12, 24(sp)
+    bge     r12, r10, .dos_launchseg_scan_next
+    store.q r10, 24(sp)
+.dos_launchseg_scan_next:
+    add     r24, r24, #DOS_SEG_ENTRY_SZ
+    add     r26, r26, #1
+    bra     .dos_launchseg_scan
+
+.dos_launchseg_scanned:
+    beqz    r27, .dos_launchseg_badarg
+    beqz    r28, .dos_launchseg_badarg
+    beqz    r25, .dos_launchseg_badarg
+
+    load.q  r3, 8(sp)
+    load.q  r4, 0(sp)
+    sub     r3, r3, r4
+    lsr     r3, r3, #12
+    beqz    r3, .dos_launchseg_badarg
+    store.q r3, 48(sp)
+    load.q  r5, 24(sp)
+    load.q  r6, 16(sp)
+    sub     r5, r5, r6
+    lsr     r5, r5, #12
+    beqz    r5, .dos_launchseg_badarg
+    store.q r5, 56(sp)
+
+    move.q  r1, r3
+    lsl     r1, r1, #12
+    move.l  r2, #MEMF_CLEAR
+    push    r29
+    syscall #SYS_ALLOC_MEM
+    pop     r29
+    bnez    r2, .dos_launchseg_nomem
+    store.q r1, 32(sp)
+
+    move.q  r1, r5
+    lsl     r1, r1, #12
+    move.l  r2, #MEMF_CLEAR
+    push    r29
+    syscall #SYS_ALLOC_MEM
+    pop     r29
+    bnez    r2, .dos_launchseg_fail_free_code
+    store.q r1, 40(sp)
+
+    load.q  r21, 64(sp)
+    load.q  r23, 88(sp)
+    move.q  r24, r21
+    add     r24, r24, #DOS_SEGLIST_HDR_SZ
+    move.l  r26, #0
+.dos_launchseg_copy_loop:
+    bge     r26, r23, .dos_launchseg_exec
+    load.q  r7, DOS_SEG_OFF_MEMVA(r24)
+    load.q  r8, DOS_SEG_OFF_FILESZ(r24)
+    load.q  r9, DOS_SEG_OFF_TARGET(r24)
+    load.l  r11, DOS_SEG_OFF_FLAGS(r24)
+    and     r12, r11, #2
+    bnez    r12, .dos_launchseg_copy_data
+    load.q  r13, 32(sp)
+    load.q  r14, 0(sp)
+    sub     r14, r9, r14
+    add     r13, r13, r14
+    bra     .dos_launchseg_copy_bytes
+.dos_launchseg_copy_data:
+    load.q  r13, 40(sp)
+    load.q  r14, 16(sp)
+    sub     r14, r9, r14
+    add     r13, r13, r14
+.dos_launchseg_copy_bytes:
+    move.l  r10, #0
+.dos_launchseg_copy_byte_loop:
+    bge     r10, r8, .dos_launchseg_copy_next
+    add     r5, r7, r10
+    load.b  r6, (r5)
+    add     r5, r13, r10
+    store.b r6, (r5)
+    add     r10, r10, #1
+    bra     .dos_launchseg_copy_byte_loop
+.dos_launchseg_copy_next:
+    add     r24, r24, #DOS_SEG_ENTRY_SZ
+    add     r26, r26, #1
+    bra     .dos_launchseg_copy_loop
+
+.dos_launchseg_exec:
+    add     r24, sp, #96
+    move.l  r3, #M14_LDESC_MAGIC
+    store.l r3, M14_LDESC_OFF_MAGIC(r24)
+    move.l  r3, #M14_LDESC_VERSION
+    store.l r3, M14_LDESC_OFF_VERSION(r24)
+    move.l  r3, #M14_LDESC_SIZE
+    store.l r3, M14_LDESC_OFF_SIZE(r24)
+    move.l  r3, #2
+    store.l r3, M14_LDESC_OFF_SEGCNT(r24)
+    load.q  r3, DOS_SEGLIST_OFF_ENTRY(r21)
+    store.q r3, M14_LDESC_OFF_ENTRY(r24)
+    move.l  r3, #1
+    store.l r3, M14_LDESC_OFF_STACKPG(r24)
+    add     r3, sp, #144
+    store.q r3, M14_LDESC_OFF_SEGTBL(r24)
+
+    add     r6, sp, #144
+    load.q  r7, 32(sp)
+    store.q r7, M14_LDSEG_OFF_SRCPTR(r6)
+    load.q  r7, 48(sp)
+    lsl     r7, r7, #12
+    store.q r7, M14_LDSEG_OFF_SRCSZ(r6)
+    load.q  r7, 0(sp)
+    store.q r7, M14_LDSEG_OFF_TARGET(r6)
+    load.q  r7, 48(sp)
+    store.l r7, M14_LDSEG_OFF_PAGES(r6)
+    move.l  r7, #5
+    store.l r7, M14_LDSEG_OFF_FLAGS(r6)
+
+    add     r6, sp, #176
+    load.q  r7, 40(sp)
+    store.q r7, M14_LDSEG_OFF_SRCPTR(r6)
+    load.q  r7, 56(sp)
+    lsl     r7, r7, #12
+    store.q r7, M14_LDSEG_OFF_SRCSZ(r6)
+    load.q  r7, 16(sp)
+    store.q r7, M14_LDSEG_OFF_TARGET(r6)
+    load.q  r7, 56(sp)
+    store.l r7, M14_LDSEG_OFF_PAGES(r6)
+    move.l  r7, #6
+    store.l r7, M14_LDSEG_OFF_FLAGS(r6)
+
+    add     r1, sp, #96
+    move.l  r2, #M14_LDESC_SIZE
+    load.q  r3, 72(sp)
+    load.q  r4, 80(sp)
+    push    r29
+    syscall #SYS_EXEC_PROGRAM
+    pop     r29
+    move.q  r26, r1                    ; preserve task id
+    move.q  r27, r2                    ; preserve exec error
+
+    load.q  r1, 40(sp)
+    beqz    r1, .dos_launchseg_free_code
+    load.q  r2, 56(sp)
+    lsl     r2, r2, #12
+    push    r29
+    syscall #SYS_FREE_MEM
+    pop     r29
+.dos_launchseg_free_code:
+    load.q  r1, 32(sp)
+    beqz    r1, .dos_launchseg_result
+    load.q  r2, 48(sp)
+    lsl     r2, r2, #12
+    push    r29
+    syscall #SYS_FREE_MEM
+    pop     r29
+.dos_launchseg_result:
+
+    beqz    r27, .dos_launchseg_ok
+    move.l  r5, #ERR_NOMEM
+    beq     r27, r5, .dos_launchseg_nomem
+.dos_launchseg_badarg:
+    load.q  r31, 232(sp)
+    load.q  r30, 224(sp)
+    move.q  r1, r0
+    move.l  r2, #DOS_ERR_BADARG
+    add     sp, sp, #240
+    rts
+.dos_launchseg_fail_free_code:
+    load.q  r1, 32(sp)
+    beqz    r1, .dos_launchseg_nomem
+    load.q  r2, 48(sp)
+    lsl     r2, r2, #12
+    push    r29
+    syscall #SYS_FREE_MEM
+    pop     r29
+    bra     .dos_launchseg_nomem
+.dos_launchseg_nomem:
+    load.q  r31, 232(sp)
+    load.q  r30, 224(sp)
+    move.q  r1, r0
+    move.l  r2, #DOS_ERR_NOMEM
+    add     sp, sp, #240
+    rts
+.dos_launchseg_ok:
+    load.q  r31, 232(sp)
+    load.q  r30, 224(sp)
+    move.q  r1, r26
+    move.l  r2, #DOS_OK
+    add     sp, sp, #240
+    rts
+
+    ; =================================================================
     ; Name resolution subroutines
     ; =================================================================
 
@@ -6713,6 +9099,23 @@ prog_doslib_code:
     move.l  r17, #32
     blt     r15, r17, .dos_resolve_colon
 .dos_resolve_no_colon:
+    ; Already-qualified slash path (e.g. "C/Version", "LIBS/foo") —
+    ; leave it alone. DOS seed names are stored with slash assigns, and
+    ; callers such as the M14 LoadSeg tests may legitimately supply that
+    ; exact on-disk form. Only bare names should get the default C/
+    ; prefix.
+    move.q  r14, r23
+    move.l  r15, #0
+.dos_resolve_slash_scan:
+    load.b  r16, (r14)
+    beqz    r16, .dos_resolve_no_slash
+    move.l  r17, #0x2F                 ; '/'
+    beq     r16, r17, .dos_resolve_done
+    add     r14, r14, #1
+    add     r15, r15, #1
+    move.l  r17, #32
+    blt     r15, r17, .dos_resolve_slash_scan
+.dos_resolve_no_slash:
     ; No colon found — check default mode
     beqz    r18, .dos_resolve_bare_ret  ; mode=0 → bare name, return unchanged
     ; mode=1 → prepend "C/" to name, write to scratch at data[1000].
@@ -7104,7 +9507,74 @@ prog_doslib_code:
     blt     r18, r28, .dos_run_arglen
 
 .dos_run_launch:
-    ; 6. SYS_EXEC_PROGRAM (new ABI): R1=image_ptr, R2=size, R3=args_ptr, R4=args_len
+    ; Prefer the M14 native path for ELF files. Legacy flat-image IE64PROG
+    ; callers still fall through to the old contiguous-image launch path.
+    load.l  r15, (r21)
+    move.l  r28, #0x464C457F
+    bne     r15, r28, .dos_run_launch_legacy
+    store.q r16, 320(r29)               ; saved args_ptr for ELF path
+    store.q r18, 328(r29)               ; saved args_len for ELF path
+
+    move.q  r1, r21                    ; temp contiguous ELF image
+    move.q  r2, r23                    ; image_size
+    jsr     .dos_elf_build_seglist
+    load.q  r29, (sp)
+    store.q r1, 304(r29)               ; seglist VA (temp buf still lives in 296)
+    store.q r2, 312(r29)               ; DOS build result
+
+    push    r29
+    load.q  r1, 296(r29)               ; free temp contiguous image
+    load.q  r2, 288(r29)
+    syscall #SYS_FREE_MEM
+    pop     r29
+
+    load.q  r15, 312(r29)
+    beqz    r15, .dos_run_launch_seglist
+    load.q  r1, 944(r29)
+    move.q  r2, r15
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+
+.dos_run_launch_seglist:
+    load.q  r1, 304(r29)               ; seglist VA
+    store.q r1, 296(r29)               ; repurpose temp slot after free
+    load.q  r2, 320(r29)               ; args_ptr
+    load.q  r3, 328(r29)               ; args_len
+    move.q  r30, r29                   ; preserve DOS data-page base across helper return
+    move.q  r31, r29                   ; explicit DOS data-page anchor
+    jsr     .dos_launch_seglist
+    move.q  r29, r30
+    store.q r1, 304(r29)               ; saved task_id
+    store.q r2, 312(r29)               ; saved DOS err
+
+    load.q  r1, 296(r29)
+    beqz    r1, .dos_run_free_seglist
+    load.q  r2, 176(r29)
+    load.q  r3, DOS_SEGLIST_NEXT(r1)
+    beq     r2, r1, .dos_run_unlink_head
+    bra     .dos_run_free_seglist
+.dos_run_unlink_head:
+    store.q r3, 176(r29)
+.dos_run_free_seglist:
+    load.q  r1, 296(r29)
+    jsr     .dos_seglist_free_unlinked
+
+    load.q  r1, 944(r29)
+    store.q r29, (sp)
+    load.q  r2, 312(r29)               ; DOS reply type
+    load.q  r3, 304(r29)               ; data0 = task_id
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+
+.dos_run_launch_legacy:
+    ; 6. SYS_EXEC_PROGRAM (legacy flat-image ABI): R1=image_ptr, R2=size, R3=args_ptr, R4=args_len
     move.q  r1, r21                    ; image_ptr (temp buf populated by extent walker)
     move.q  r2, r23                    ; image_size
     move.q  r3, r16                    ; args_ptr (in shared buffer)
@@ -7125,6 +9595,7 @@ prog_doslib_code:
     pop     r29
 
     ; Reply: type=err, data0=task_id
+    store.q r29, (sp)
     load.q  r1, 944(r29)
     load.q  r2, 312(r29)               ; type = err
     load.q  r3, 304(r29)               ; data0 = task_id
@@ -7158,6 +9629,15 @@ prog_doslib_code:
 .dos_reply_badarg:
     load.q  r1, 944(r29)
     move.l  r2, #DOS_ERR_BADARG
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+.dos_reply_nomem:
+    load.q  r1, 944(r29)
+    move.l  r2, #DOS_ERR_NOMEM
     move.q  r3, r0
     move.q  r4, r0
     move.q  r5, r0
@@ -7646,6 +10126,358 @@ prog_doslib_code:
     move.q  r1, r16
     rts
 
+    ; ------------------------------------------------------------------
+    ; .dos_seglist_free_unlinked: free a DOS-owned seglist and all segment
+    ; allocations it references. Does not touch the global seglist list.
+    ; In:  r1 = seglist VA (or 0)
+    ; Out: r2 = ERR_OK
+    ; ------------------------------------------------------------------
+.dos_seglist_free_unlinked:
+    push    r29
+    move.q  r19, r1
+.dslf_entry:
+    beqz    r19, .dslf_done
+    load.l  r18, DOS_SEGLIST_OFF_COUNT(r19)
+    lsl     r18, r18, #32
+    lsr     r18, r18, #32
+    move.l  r17, #0
+.dslf_loop:
+    bge     r17, r18, .dslf_free_hdr
+    move.l  r4, #DOS_SEG_ENTRY_SZ
+    mulu    r4, r17, r4
+    add     r4, r4, #DOS_SEGLIST_HDR_SZ
+    add     r4, r4, r19
+    load.q  r1, DOS_SEG_OFF_MEMVA(r4)
+    beqz    r1, .dslf_next
+    load.l  r2, DOS_SEG_OFF_PAGES(r4)
+    lsl     r2, r2, #32
+    lsr     r2, r2, #32
+    lsl     r2, r2, #12
+    push    r29
+    push    r19
+    push    r18
+    push    r17
+    push    r4
+    syscall #SYS_FREE_MEM
+    pop     r4
+    pop     r17
+    pop     r18
+    pop     r19
+    pop     r29
+.dslf_next:
+    add     r17, r17, #1
+    bra     .dslf_loop
+.dslf_free_hdr:
+    push    r29
+    push    r19
+    move.q  r1, r19
+    move.l  r2, #4096
+    syscall #SYS_FREE_MEM
+    pop     r19
+    pop     r29
+.dslf_done:
+    pop     r29
+    move.q  r2, r0
+    rts
+
+    ; ------------------------------------------------------------------
+    ; .dos_elf_build_seglist: validate a Phase-1 M14 ELF image already
+    ; copied into a contiguous DOS buffer and build a DOS-owned seglist.
+    ; In:  r1 = file VA, r2 = file size
+    ; Out: r1 = seglist VA (or 0), r2 = DOS_OK / DOS_ERR_BADARG / DOS_ERR_NOMEM
+    ; Scratch in data page:
+    ;   360 file_va      368 file_size    376 seglist_va
+    ;   384 target_va    392 filesz       400 memsz
+    ;   408 file_off     416 flags        424 pages
+    ;   440 entry_va     464 entry_seen
+    ; ------------------------------------------------------------------
+.dos_elf_build_seglist:
+    store.q r1, 360(r29)
+    store.q r2, 368(r29)
+    store.q r0, 376(r29)
+    store.q r0, 464(r29)
+
+    move.l  r3, #64
+    blt     r2, r3, .debs_badarg
+    load.l  r3, (r1)
+    move.l  r4, #0x464C457F            ; "\x7FELF" little-endian
+    bne     r3, r4, .debs_badarg
+    load.b  r3, 4(r1)
+    move.l  r4, #2
+    bne     r3, r4, .debs_badarg
+    load.b  r3, 5(r1)
+    move.l  r4, #1
+    bne     r3, r4, .debs_badarg
+    load.b  r3, 6(r1)
+    move.l  r4, #1
+    bne     r3, r4, .debs_badarg
+    load.b  r3, 7(r1)
+    bnez    r3, .debs_badarg
+    load.l  r3, 16(r1)
+    and     r3, r3, #0xFFFF
+    move.l  r4, #2
+    bne     r3, r4, .debs_badarg
+    load.l  r3, 18(r1)
+    and     r3, r3, #0xFFFF
+    move.l  r4, #0x4945
+    bne     r3, r4, .debs_badarg
+    load.l  r3, 20(r1)
+    move.l  r4, #1
+    bne     r3, r4, .debs_badarg
+    load.l  r3, 28(r1)
+    bnez    r3, .debs_badarg
+    load.l  r3, 24(r1)
+    beqz    r3, .debs_badarg
+    store.q r3, 440(r29)
+    load.l  r3, 36(r1)
+    bnez    r3, .debs_badarg
+    load.l  r20, 32(r1)                ; phoff
+    store.q r20, 504(r29)
+    load.l  r3, 52(r1)
+    and     r3, r3, #0xFFFF
+    move.l  r4, #64
+    bne     r3, r4, .debs_badarg
+    load.l  r3, 54(r1)
+    and     r3, r3, #0xFFFF
+    move.l  r4, #56
+    bne     r3, r4, .debs_badarg
+    load.l  r21, 56(r1)
+    and     r21, r21, #0xFFFF          ; phnum
+    beqz    r21, .debs_badarg
+    store.q r21, 528(r29)
+    move.l  r3, #56
+    mulu    r22, r21, r3
+    add     r23, r20, r22
+    blt     r23, r20, .debs_badarg
+    load.q  r4, 368(r29)
+    blt     r4, r23, .debs_badarg
+
+    move.l  r3, #2
+    store.q r3, 472(r29)
+    push    r29
+    move.l  r1, #4096
+    move.l  r2, #MEMF_CLEAR
+    syscall #SYS_ALLOC_MEM
+    pop     r29
+    bnez    r2, .debs_nomem_noobj
+    store.q r1, 376(r29)
+    move.q  r26, r1
+    move.l  r3, #DOS_SEGLIST_MAGIC
+    store.l r3, DOS_SEGLIST_OFF_MAGIC(r26)
+    store.l r0, DOS_SEGLIST_OFF_COUNT(r26)
+    load.q  r3, 440(r29)
+    store.q r3, DOS_SEGLIST_OFF_ENTRY(r26)
+    load.q  r20, 504(r29)
+    load.q  r21, 528(r29)
+    load.q  r5, 360(r29)
+    add     r24, r5, r20
+    store.q r24, 520(r29)
+
+    move.l  r18, #0
+.debs_ph_loop:
+    bge     r18, r21, .debs_done_parse
+    load.q  r24, 520(r29)              ; ph ptr
+
+    load.l  r3, (r24)
+    lsl     r3, r3, #32
+    lsr     r3, r3, #32
+    move.q  r4, r0
+    add     r4, r4, #1
+    bne     r3, r4, .debs_badarg_free
+    load.l  r8, 4(r24)                 ; flags
+    lsl     r8, r8, #32
+    lsr     r8, r8, #32
+    move.q  r9, r8
+    and     r9, r9, #0xFFFFFFF8
+    bnez    r9, .debs_badarg_free
+    move.q  r9, r8
+    and     r9, r9, #4
+    beqz    r9, .debs_badarg_free
+    move.q  r9, r8
+    and     r9, r9, #3
+    move.q  r10, r0
+    add     r10, r10, #3
+    beq     r9, r10, .debs_badarg_free
+
+    load.l  r3, 12(r24)                ; off hi
+    bnez    r3, .debs_badarg_free
+    load.l  r3, 20(r24)                ; vaddr hi
+    bnez    r3, .debs_badarg_free
+    load.l  r3, 36(r24)                ; filesz hi
+    bnez    r3, .debs_badarg_free
+    load.l  r3, 44(r24)                ; memsz hi
+    bnez    r3, .debs_badarg_free
+    load.l  r3, 52(r24)                ; align hi
+    bnez    r3, .debs_badarg_free
+
+    load.l  r11, 8(r24)                ; file offset
+    lsl     r11, r11, #32
+    lsr     r11, r11, #32
+    load.l  r6, 16(r24)                ; target vaddr
+    lsl     r6, r6, #32
+    lsr     r6, r6, #32
+    load.l  r5, 32(r24)                ; filesz
+    lsl     r5, r5, #32
+    lsr     r5, r5, #32
+    load.l  r7, 40(r24)                ; memsz
+    lsl     r7, r7, #32
+    lsr     r7, r7, #32
+    load.l  r3, 48(r24)                ; align low
+    lsl     r3, r3, #32
+    lsr     r3, r3, #32
+    move.l  r4, #4096
+    bne     r3, r4, .debs_badarg_free
+    beqz    r7, .debs_badarg_free
+    and     r3, r11, #0xFFF
+    and     r4, r6, #0xFFF
+    bne     r3, r4, .debs_badarg_free
+    and     r3, r6, #0xFFF
+    bnez    r3, .debs_badarg_free
+    blt     r7, r5, .debs_badarg_free
+
+    add     r9, r11, r5
+    blt     r9, r11, .debs_badarg_free
+    load.q  r10, 368(r29)
+    blt     r10, r9, .debs_badarg_free
+
+    add     r9, r6, r7
+    blt     r9, r6, .debs_badarg_free
+    move.l  r10, #USER_CODE_BASE
+    blt     r6, r10, .debs_badarg_free
+    move.l  r10, #0x02000000
+    blt     r10, r9, .debs_badarg_free
+
+    ; overlap check against earlier segments already stored in seglist
+    load.l  r12, DOS_SEGLIST_OFF_COUNT(r26)
+    move.l  r13, #0
+.debs_overlap_loop:
+    bge     r13, r12, .debs_overlap_done
+    move.l  r3, #DOS_SEG_ENTRY_SZ
+    mulu    r4, r13, r3
+    add     r4, r4, #DOS_SEGLIST_HDR_SZ
+    add     r4, r4, r26
+    load.l  r14, DOS_SEG_OFF_TARGET(r4)
+    load.l  r15, DOS_SEG_OFF_MEMSZ(r4)
+    add     r16, r14, r15
+    blt     r6, r16, .debs_chk_other
+    bra     .debs_ov_next
+.debs_chk_other:
+    blt     r14, r9, .debs_badarg_free
+.debs_ov_next:
+    add     r13, r13, #1
+    bra     .debs_overlap_loop
+.debs_overlap_done:
+    load.q  r3, 440(r29)
+    blt     r3, r6, .debs_entry_skip
+    blt     r3, r9, .debs_entry_maybe
+    bra     .debs_entry_skip
+.debs_entry_maybe:
+    and     r4, r8, #1
+    beqz    r4, .debs_badarg_free
+    move.l  r4, #1
+    store.q r4, 464(r29)
+.debs_entry_skip:
+
+    add     r3, r7, #4095
+    move.l  r4, #4096
+    divu    r17, r3, r4                ; pages
+    store.q r6, 384(r29)
+    store.q r5, 392(r29)
+    store.q r7, 400(r29)
+    store.q r11, 408(r29)
+    store.q r8, 416(r29)
+    store.q r17, 424(r29)
+
+    move.q  r1, r17
+    lsl     r1, r1, #12
+    push    r29
+    push    r18
+    push    r20
+    push    r21
+    push    r24
+    push    r26
+    move.q  r2, #MEMF_CLEAR
+    syscall #SYS_ALLOC_MEM
+    pop     r26
+    pop     r24
+    pop     r21
+    pop     r20
+    pop     r18
+    pop     r29
+    bnez    r2, .debs_nomem_free
+    move.q  r12, r1                    ; seg mem VA
+
+    load.q  r13, 360(r29)
+    load.q  r14, 408(r29)
+    add     r13, r13, r14              ; src = file + offset
+    move.q  r15, r12                   ; dst = seg mem
+    load.q  r16, 392(r29)              ; filesz
+.debs_cp_loop:
+    beqz    r16, .debs_store_entry
+    load.b  r3, (r13)
+    store.b r3, (r15)
+    add     r13, r13, #1
+    add     r15, r15, #1
+    sub     r16, r16, #1
+    bra     .debs_cp_loop
+
+.debs_store_entry:
+    move.q  r3, r18
+    add     r3, r3, #20
+    store.q r3, 472(r29)
+    load.l  r3, DOS_SEGLIST_OFF_COUNT(r26)
+    move.l  r4, #DOS_SEGLIST_MAX_ENTRIES
+    bge     r3, r4, .debs_badarg_free
+    move.l  r4, #DOS_SEG_ENTRY_SZ
+    mulu    r4, r3, r4
+    add     r4, r4, #DOS_SEGLIST_HDR_SZ
+    add     r4, r4, r26
+    store.q r12, DOS_SEG_OFF_MEMVA(r4)
+    load.q  r5, 384(r29)
+    store.q r5, DOS_SEG_OFF_TARGET(r4)
+    load.q  r5, 392(r29)
+    store.q r5, DOS_SEG_OFF_FILESZ(r4)
+    load.q  r5, 400(r29)
+    store.q r5, DOS_SEG_OFF_MEMSZ(r4)
+    load.q  r5, 424(r29)
+    store.l r5, DOS_SEG_OFF_PAGES(r4)
+    load.q  r5, 416(r29)
+    store.l r5, DOS_SEG_OFF_FLAGS(r4)
+    add     r3, r3, #1
+    store.l r3, DOS_SEGLIST_OFF_COUNT(r26)
+    add     r18, r18, #1
+    add     r24, r24, #56
+    store.q r24, 520(r29)
+    bra     .debs_ph_loop
+
+.debs_done_parse:
+    load.q  r3, 464(r29)
+    beqz    r3, .debs_badarg_free
+    load.q  r1, 376(r29)
+    load.q  r3, 176(r29)
+    store.q r3, DOS_SEGLIST_NEXT(r1)
+    store.q r1, 176(r29)
+    move.q  r2, r0
+    rts
+
+.debs_nomem_noobj:
+    move.q  r1, r0
+    move.l  r2, #DOS_ERR_NOMEM
+    rts
+.debs_nomem_free:
+    load.q  r1, 376(r29)
+    jsr     .dos_seglist_free_unlinked
+    move.q  r1, r0
+    move.l  r2, #DOS_ERR_NOMEM
+    rts
+.debs_badarg_free:
+    load.q  r1, 376(r29)
+    jsr     .dos_seglist_free_unlinked
+.debs_badarg:
+    move.q  r1, r0
+    move.l  r2, #DOS_ERR_BADARG
+    rts
+
 prog_doslib_code_end:
 
 prog_doslib_data:
@@ -7653,8 +10485,8 @@ prog_doslib_data:
     dc.b    "console.handler", 0
     ; --- Offset 16: "dos.library\0" + pad to 16 bytes ---
     dc.b    "dos.library", 0, 0, 0, 0, 0
-    ; --- Offset 32: banner "dos.library M12.8 [Task \0" ---
-    dc.b    "dos.library M12.8 [Task ", 0
+    ; --- Offset 32: banner "dos.library M14 [Task \0" ---
+    dc.b    "dos.library M14 [Task ", 0
     ds.b    7                           ; pad to offset 64
     ; --- Offset 64: padding to 128 ---
     ds.b    64
@@ -7677,38 +10509,57 @@ prog_doslib_data:
     ; --- Offset 192..895: dead-space scratch (was: file_table 16×44 before M12.6 Phase A) ---
     ; .dos_seed_one uses 192..223 as save slots during boot.
     ds.b    704
+prog_doslib_seed_readme_name:
     ; --- Offset 896: pre-create filename "readme\0" + pad to 16 ---
     dc.b    "readme", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+prog_doslib_seed_readme_body:
     ; --- Offset 912: pre-create content ---
     dc.b    "Welcome to IntuitionOS M11", 0x0D, 0x0A, 0
     ; --- Offset 941: pad 1 byte ---
     ds.b    1
     ; --- Offset 942: seed file names ---
+prog_doslib_seed_name_version:
     dc.b    "C/Version", 0              ; 942 (10 bytes)
+prog_doslib_seed_name_avail:
     dc.b    "C/Avail", 0                ; 952 (8 bytes)
+prog_doslib_seed_name_dir:
     dc.b    "C/Dir", 0                  ; 960 (6 bytes)
+prog_doslib_seed_name_type:
     dc.b    "C/Type", 0                 ; 966 (7 bytes)
+prog_doslib_seed_name_echo:
     dc.b    "C/Echo", 0                 ; 973 (7 bytes)
+prog_doslib_seed_name_startup:
     dc.b    "S/Startup-Sequence", 0     ; 980 (19 bytes) → 999
     ds.b    1                           ; pad to 1000
     ; --- Offset 1000: name resolution scratch buffer (32 bytes) ---
     ds.b    32
     ; --- Offset 1032: M11 seed names ---
+prog_doslib_seed_name_input:
     dc.b    "DEVS/input.device", 0      ; 1032 (18 bytes) → 1050
+prog_doslib_seed_name_graphics:
     dc.b    "LIBS/graphics.library", 0  ; 1050 (22 bytes) → 1072
+prog_doslib_seed_name_gfxdemo:
     dc.b    "C/GfxDemo", 0              ; 1072 (10 bytes) → 1082
     ; --- M12 seed names ---
+prog_doslib_seed_name_intuition:
     dc.b    "LIBS/intuition.library", 0 ; 1082 (23 bytes) → 1105
+prog_doslib_seed_name_about:
     dc.b    "C/About", 0                ; 1105 (8 bytes) → 1113
     ; --- M12.5 seed names ---
+prog_doslib_seed_name_hwres:
     dc.b    "RESOURCES/hardware.resource", 0  ; 1113 (28 bytes) → 1141
+    ; --- M14 Phase 2 seed names ---
+prog_doslib_seed_name_elfseg:
+    dc.b    "C/ElfSeg", 0               ; 1141 (9 bytes) → 1150
     ; --- Pad to 4096 (page boundary) ---
-    ; 1141 → 4096: 2955 bytes padding
-    ds.b    2955
+    ; 1150 → 4096: 2946 bytes padding
+    ds.b    2946
 
 ; ---------------------------------------------------------------------------
 ; Embedded command images (VERSION, AVAIL, DIR, TYPE, ECHO)
 ; ---------------------------------------------------------------------------
+
+prog_doslib_seed_images_start:
 
 ; ---------------------------------------------------------------------------
 ; VERSION — display system version string
@@ -8596,7 +11447,7 @@ seed_startup:
     dc.b    "LIBS:graphics.library", 0x0A
     dc.b    "LIBS:intuition.library", 0x0A
     dc.b    "VERSION", 0x0A
-    dc.b    "ECHO IntuitionOS M13 ready", 0x0A
+    dc.b    "ECHO IntuitionOS M14 ready", 0x0A
     dc.b    "ECHO All visible services are running in user space", 0x0A, 0
 seed_startup_end:
     align   8
@@ -11629,6 +14480,60 @@ prog_about_data:
 prog_about_data_end:
     align   8
 prog_about_end:
+
+; ---------------------------------------------------------------------------
+; Embedded ELF fixture for M14 Phase 2 LoadSeg tests
+; ---------------------------------------------------------------------------
+; Strict phase-1 subset:
+;   ELF64, little-endian, ET_EXEC, EM_IE64, 2 PT_LOAD segments
+;   seg0: RX @ 0x00601000, file bytes 0x11 0x22 0x33 0x44
+;   seg1: RW @ 0x00602000, file bytes 0x55 0x66 0x77 0x88
+
+prog_elfseg:
+    dc.b    0x7F, 0x45, 0x4C, 0x46, 0x02, 0x01, 0x01, 0x00
+    ds.b    8
+    dc.w    0x0002
+    dc.w    0x4945
+    dc.l    1
+    dc.q    0x0000000000601000
+    dc.q    0x0000000000000040
+    dc.q    0
+    dc.l    0
+    dc.w    64
+    dc.w    56
+    dc.w    2
+    dc.w    0
+    dc.w    0
+    dc.w    0
+
+    ; Program header 0: RX segment
+    dc.l    1
+    dc.l    5
+    dc.q    0x0000000000001000
+    dc.q    0x0000000000601000
+    dc.q    0x0000000000601000
+    dc.q    4
+    dc.q    0x0000000000001000
+    dc.q    0x0000000000001000
+
+    ; Program header 1: RW segment
+    dc.l    1
+    dc.l    6
+    dc.q    0x0000000000002000
+    dc.q    0x0000000000602000
+    dc.q    0x0000000000602000
+    dc.q    4
+    dc.q    0x0000000000001000
+    dc.q    0x0000000000001000
+
+    ; Pad from 0xB0 to 0x1000
+    ds.b    3920
+    dc.b    0x11, 0x22, 0x33, 0x44
+    ; Pad from 0x1004 to 0x2000
+    ds.b    4092
+    dc.b    0x55, 0x66, 0x77, 0x88
+prog_elfseg_end:
+    align   8
 
 prog_doslib_data_end:
     align   8

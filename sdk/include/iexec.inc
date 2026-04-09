@@ -645,6 +645,9 @@ DOS_RUN           equ 6           ; Run program (share="cmd\0args\0")
                                   ; (resolved through the C: assign) followed
                                   ; by a null-terminated argument string. The
                                   ; legacy data0=index form was retired in M10.
+DOS_LOADSEG       equ 7           ; Load executable into DOS-owned seglist (share=name)
+DOS_UNLOADSEG     equ 8           ; Free DOS-owned seglist (data0=seglist VA)
+DOS_RUNSEG        equ 9           ; Run a loaded seglist (data0=seglist VA, share=args)
 
 ; DOS open modes
 DOS_MODE_READ     equ 0
@@ -657,6 +660,46 @@ DOS_ERR_BADARG    equ 2
 DOS_ERR_FULL      equ 3
 DOS_ERR_BADHANDLE equ 4
 DOS_ERR_NOMEM     equ 6
+
+; dos.library seglists (M14 Phase 2)
+; DOS-owned 4 KiB object page linked from data[176]. Layout:
+;   [0..7]   next seglist VA
+;   [8..11]  magic 'SEGL'
+;   [12..15] segment count
+;   [16..]   segment entries (40 bytes each)
+DOS_SEGLIST_MAGIC      equ 0x4C474553  ; "SEGL" little-endian
+DOS_SEGLIST_NEXT       equ 0
+DOS_SEGLIST_OFF_MAGIC  equ 8
+DOS_SEGLIST_OFF_COUNT  equ 12
+DOS_SEGLIST_OFF_ENTRY  equ 16          ; u64 preserved ELF e_entry
+DOS_SEGLIST_HDR_SZ     equ 24
+DOS_SEG_ENTRY_SZ     equ 40
+DOS_SEGLIST_MAX_ENTRIES equ 101
+DOS_SEG_OFF_MEMVA    equ 0
+DOS_SEG_OFF_TARGET   equ 8
+DOS_SEG_OFF_FILESZ   equ 16
+DOS_SEG_OFF_MEMSZ    equ 24
+DOS_SEG_OFF_PAGES    equ 32
+DOS_SEG_OFF_FLAGS    equ 36
+
+; M14 phase 3 launch descriptor (DOS -> ExecProgram dual-mode handoff)
+M14_LDESC_MAGIC       equ 0x5345444C  ; "LDES" little-endian
+M14_LDESC_VERSION     equ 1
+M14_LDESC_SIZE        equ 48
+M14_LDESC_SEG_SIZE    equ 32
+M14_LDESC_OFF_MAGIC   equ 0
+M14_LDESC_OFF_VERSION equ 4
+M14_LDESC_OFF_SIZE    equ 8
+M14_LDESC_OFF_SEGCNT  equ 12
+M14_LDESC_OFF_ENTRY   equ 16          ; u64 entry VA
+M14_LDESC_OFF_STACKPG equ 24          ; u32 stack pages
+M14_LDESC_OFF_SEGTBL  equ 32          ; u64 seg table VA
+
+M14_LDSEG_OFF_SRCPTR  equ 0           ; u64 source buffer VA
+M14_LDSEG_OFF_SRCSZ   equ 8           ; u64 source byte size
+M14_LDSEG_OFF_TARGET  equ 16          ; u64 target VA
+M14_LDSEG_OFF_PAGES   equ 24          ; u32 target page count
+M14_LDSEG_OFF_FLAGS   equ 28          ; u32 R/W/X flags
 
 ; DOS filesystem limits
 ;

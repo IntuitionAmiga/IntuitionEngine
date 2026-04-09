@@ -5976,6 +5976,16 @@ make aros               # Build VM with embedded AROS ROM
 
 IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. Unlike classic Amiga Exec, which ran everything in flat supervisor space with no memory protection, IExec uses the IE64 MMU to enforce hardware-backed user/supervisor privilege separation with per-task page tables and W^X memory policy. The design preserves the Amiga programming model (signals, message ports, priority scheduling) while adding the isolation guarantees of a modern protected-mode OS.
 
+**M14 phase 5 status** — native ELF contract frozen, `dos.library` seglist loading/shipped launch landed, shell command dispatch uses the real DOS loader path, and the retained GUI demos run through that same shipped path:
+
+- **`ELF` is now both documented and live through DOS.** M14 phase 1 froze the native subset (`ELF64`, little-endian, `ET_EXEC`, `EM_IE64 = 0x4945`, `PT_LOAD` only, page-aligned segments, no dynamic linker, no `HUNK`); phase 2 added `DOS_LOADSEG` / `DOS_UNLOADSEG`; phase 3 added descriptor-based execution on top of those seglists; phase 4 routed shell command dispatch through that same DOS loader path; **phase 5 seeds the visible `C:` command/demo path as native ELF and proves the end-to-end demo flow on it.**
+- **`dos.library` now owns native executable parsing and DOS-side launch.** `LoadSeg` resolves the name through DOS naming, walks the file's extent chain into a temporary contiguous image, validates the strict M14 ELF subset, allocates a DOS-owned seglist object, and copies each `PT_LOAD` segment into DOS-owned memory with the file's final target VA, size, page count, `R/W/X` flags, and preserved ELF entry point recorded in the seglist. `DOS_RUNSEG` turns that seglist into a launch descriptor and starts the child through the dual-mode `ExecProgram` bridge.
+- **The shell now goes through the DOS loader path.** `DOS_RUN` prefers the native ELF seglist path for strict M14 ELF commands and falls back to the legacy flat-image launch path for older seeded `IE64PROG` commands. In the shipped phase-5 tree, the visible `C:` command/demo path is seeded as native ELF, while startup-sequence services in `LIBS:`, `DEVS:`, and `RESOURCES:` still remain legacy. From the user's perspective, command names, lookup rules, args, and unknown-command behavior stay the same.
+- **Seglist lifetime is explicit and test-covered.** `LoadSeg` returns a DOS-owned seglist object; `UnLoadSeg` frees it. Successful launch copies the image into private child mappings, so `UnLoadSeg` after launch does not break the running task. Failed launch leaves the seglist intact.
+- **Boot and command execution stay source-compatible.** Boot services still use the legacy kernel `IE64PROG`/`program_table` path, and the old flat-image `ExecProgram` ABI still works, but the visible shell path and retained seeded GUI demos now exercise the real M14 DOS loader.
+- **The contract is executable, not just prose.** Focused host-side ELF validator tests remain, and phases 2-5 add red-first runtime tests for `LoadSeg`, `UnLoadSeg`, descriptor launch, preserved ELF entry, target-VA-sensitive execution, startup-page seeding, args passing, seglist lifetime across launch, shell command dispatch through the new loader, full visible boot-stack stability, and `C:GfxDemo` / `C:About` regression coverage.
+- **Reference docs.** The native subset and current loader status live in [`sdk/docs/IntuitionOS/ELF.md`](sdk/docs/IntuitionOS/ELF.md); the broader kernel/runtime contract remains in [`sdk/docs/IntuitionOS/IExec.md`](sdk/docs/IntuitionOS/IExec.md).
+
 **M13 phase 5 status** — startup block ABI + dynamic task-image placement + live-task ceiling removal to the current ABI bound, with full boot-stack and GUI regressions green (implemented and tested):
 
 - **Booted services no longer self-locate from `CURRENT_TASK * USER_SLOT_STRIDE`.** The kernel now allocates a dedicated startup page for each launched task, writes the 64-byte startup block there, and seeds the startup-page base VA at `0(sp)`, so the booted M12 stack reads task identity/layout from that page instead of recomputing addresses from the task ID.
@@ -6001,7 +6011,7 @@ IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. 
   - `TestIExec_DosM128_RewriteGrows` — write 1 KiB, then rewrite with 8 KiB; readback expects 8 KiB of new content. Proves atomic-swap on grow.
   Four other tests from the M12.8 plan are skipped with documented rationale (covered by existing tests, or test allocator-pool exhaustion which requires fragile state mocking). The full M12.5/M12.6 hardening test suite remains green throughout — no kernel data structure changes, no new ABI fields.
 - **Audit refresh.** `IExec.md §5.13.1` row for `DOS_FILE_SIZE` is now `(removed) — B → ✓` with a description of the slab/extent allocator and the atomic-swap rule. Two new `(removed)` rows for `IMG_OFF_CODE_SIZE`/`IMG_OFF_DATA_SIZE` document the load_program cap removal and explain why those rows were originally misclassified into bucket B. The §5.13 prose is updated to note that bucket B has lost its load-bearing entries — the remaining bucket-B rows are configured-policy values (`KD_PORT_FIFO_SIZE`, `USER_DYN_PAGES`, `DATA_ARGS_*`), not arbitrary product limits.
-- **Boot integration.** The long milestone summary line is gone. Boot now shows compact per-service version tags in each task banner, and `VERSION` prints the plain OS version string `IntuitionOS 0.15`. `S:Startup-Sequence` prints only the short `IntuitionOS M13 ready` line plus the existing “All visible services are running in user space”.
+- **Boot integration.** The long milestone summary line is gone. Boot now shows compact per-service version tags in each task banner, and `VERSION` prints the plain OS version string `IntuitionOS 0.15`. `S:Startup-Sequence` prints only the short `IntuitionOS M14 ready` line plus the existing “All visible services are running in user space”.
 - **Demo boot output:**
   ```
   exec.library M11 boot
@@ -6013,7 +6023,7 @@ IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. 
   graphics.library M11 [Task 5]
   intuition.library M12 [Task 6]
   IntuitionOS 0.15
-  IntuitionOS M13 ready
+  IntuitionOS M14 ready
   All visible services are running in user space
   1>
   ```

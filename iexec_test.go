@@ -74,6 +74,15 @@ const (
 	sysReadInput    = 37 // M11.5: removed; slot now returns ERR_BADARG via dispatcher fall-through
 	sysMapIO        = 28
 
+	dosLoadSeg   = 7
+	dosUnLoadSeg = 8
+	dosRunSeg    = 9
+	dosOK        = 0
+	dosErrNotFnd = 1
+	dosErrBadArg = 2
+	dosErrFull   = 3
+	dosErrBadHdl = 4
+
 	// Kernel data offsets (must match iexec.inc)
 	kdCurrentTask = 0  // uint64: index of current task
 	kdTickCount   = 8  // uint64: tick counter
@@ -248,6 +257,19 @@ const (
 	grantTaskFree     = 0xFFFFFFFF
 	errExists         = 8
 	errPerm           = 5
+
+	dosSegMagic      = 0x4C474553 // "SEGL" little-endian
+	dosSegMagicOff   = 8
+	dosSegCountOff   = 12
+	dosSegEntryVAOff = 16
+	dosSegEntryBase  = 24
+	dosSegEntryStr   = 40
+	dosSegMemVAOff   = 0
+	dosSegTargetOff  = 8
+	dosSegFileSzOff  = 16
+	dosSegMemSzOff   = 24
+	dosSegPagesOff   = 32
+	dosSegFlagsOff   = 36
 )
 
 // ===========================================================================
@@ -1276,6 +1298,558 @@ func taskLayoutFieldL(mem []byte, taskID uint64, off uint32) uint32 {
 	}
 	base := kernDataBase + kdTaskLayoutBase + slot*kdTaskLayoutStr
 	return binary.LittleEndian.Uint32(mem[base+off:])
+}
+
+func findTaskByDataMarker(mem []byte, marker byte) (uint64, bool) {
+	for slot := uint32(0); slot < maxTasks; slot++ {
+		state := mem[kernDataBase+kdTCBBase+slot*tcbStride+tcbStateOff]
+		if state == taskFree {
+			continue
+		}
+		base := kernDataBase + kdTaskLayoutBase + slot*kdTaskLayoutStr
+		dataBase := binary.LittleEndian.Uint64(mem[base+kdTaskDataBase:])
+		if dataBase == 0 {
+			continue
+		}
+		if mem[uint32(dataBase)+64] != marker {
+			continue
+		}
+		pubid := binary.LittleEndian.Uint32(mem[kernDataBase+kdTaskPubIDBase+slot*kdTaskPubIDStr:])
+		return uint64(pubid), true
+	}
+	return 0, false
+}
+
+func taskVAToPhys(mem []byte, taskID uint64, va uint64) (uint32, bool) {
+	slot, ok := taskSlotForPublicID(mem, taskID)
+	if !ok {
+		return 0, false
+	}
+	ptBase := binary.LittleEndian.Uint64(mem[kernDataBase+kdTaskLayoutBase+slot*kdTaskLayoutStr+kdTaskLayoutPT:])
+	if ptBase == 0 {
+		return 0, false
+	}
+	vpn := uint32(va >> MMU_PAGE_SHIFT)
+	pteOff := uint32(ptBase) + vpn*8
+	if pteOff+8 > uint32(len(mem)) {
+		return 0, false
+	}
+	pte := binary.LittleEndian.Uint64(mem[pteOff:])
+	ppn, flags := parsePTE(pte)
+	if flags&PTE_P == 0 {
+		return 0, false
+	}
+	return uint32(ppn)<<MMU_PAGE_SHIFT | uint32(va&(MMU_PAGE_SIZE-1)), true
+}
+
+func allocPoolFreePagesFromBitmap(mem []byte) uint32 {
+	var used uint32
+	base := kernDataBase + kdPageBitmap
+	for i := uint32(0); i < allocPoolPages; i++ {
+		b := mem[uint32(base)+i/8]
+		if b&(1<<(i%8)) != 0 {
+			used++
+		}
+	}
+	return allocPoolPages - used
+}
+
+func runM14LoadSegClient(t *testing.T, filename string, loops int, doUnload bool) (*ie64TestRig, uint32) {
+	t.Helper()
+	rig, _ := assembleAndLoadKernel(t)
+	return runM14LoadSegClientOnRig(t, rig, filename, loops, doUnload)
+}
+
+func runM14LoadSegClientOnRig(t *testing.T, rig *ie64TestRig, filename string, loops int, doUnload bool) (*ie64TestRig, uint32) {
+	t.Helper()
+	const (
+		offDosPort    = 128
+		offReplyPrt   = 136
+		offBufferVA   = 144
+		offShareHdl   = 152
+		offLoadType   = 200
+		offSeglistVA  = 208
+		offUnloadType = 216
+		offCounter    = 224
+	)
+
+	images := findAllProgramImages(t, rig.cpu.memory)
+	shellCode := images[len(images)-1]
+
+	off := shellCode
+	w := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+
+	findLoop := off
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, 16))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFindPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	beqInstr := off
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	braFind := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(findLoop)-int32(braFind))))
+	foundDos := off
+	copy(rig.cpu.memory[beqInstr:], ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, uint32(int32(foundDos)-int32(beqInstr))))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offDosPort))
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offReplyPrt))
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0x10001))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offBufferVA))
+	w(ie64Instr(OP_STORE, 3, IE64_SIZE_Q, 1, 29, 0, offShareHdl))
+	w(ie64Instr(OP_STORE, 0, IE64_SIZE_Q, 1, 29, 0, offCounter))
+
+	loopTop := off
+	w(ie64Instr(OP_LOAD, 10, IE64_SIZE_Q, 0, 29, 0, offCounter))
+	w(ie64Instr(OP_MOVE, 28, IE64_SIZE_L, 1, 0, 0, uint32(loops)))
+	bgeDone := off
+	w(ie64Instr(OP_BGE, 0, 0, 0, 10, 28, 0))
+
+	w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, offBufferVA))
+	for i := 0; i < len(filename); i++ {
+		w(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, uint32(filename[i])))
+		w(ie64Instr(OP_STORE, 5, IE64_SIZE_B, 0, 4, 0, uint32(i)))
+	}
+	w(ie64Instr(OP_STORE, 0, IE64_SIZE_B, 0, 4, 0, uint32(len(filename))))
+
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, dosLoadSeg))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_LOAD, 6, IE64_SIZE_L, 0, 29, 0, offShareHdl))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offLoadType))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offSeglistVA))
+
+	if doUnload {
+		w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+		w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, dosUnLoadSeg))
+		w(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, offSeglistVA))
+		w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+		w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+		w(ie64Instr(OP_LOAD, 6, IE64_SIZE_L, 0, 29, 0, offShareHdl))
+		w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+		w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+		w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+		w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+		w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+		w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offUnloadType))
+	}
+
+	w(ie64Instr(OP_LOAD, 10, IE64_SIZE_Q, 0, 29, 0, offCounter))
+	w(ie64Instr(OP_ADD, 10, IE64_SIZE_L, 1, 10, 0, 1))
+	w(ie64Instr(OP_STORE, 10, IE64_SIZE_Q, 1, 29, 0, offCounter))
+	braTop := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(loopTop)-int32(braTop))))
+	loopDone := off
+	copy(rig.cpu.memory[bgeDone:], ie64Instr(OP_BGE, 0, 0, 0, 10, 28, uint32(int32(loopDone)-int32(bgeDone))))
+
+	yieldLoop := off
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	braYield := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldLoop)-int32(braYield))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(3 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	dataBase := uint32(taskLayoutFieldQ(rig.cpu.memory, 2, kdTaskDataBase))
+	return rig, dataBase
+}
+
+func m14SeededElfFixtureBytes(t *testing.T) []byte {
+	t.Helper()
+	return makeM14ELFFixture(t, 0x00601000, []m14ELFSegmentSpec{
+		{
+			Vaddr:  0x00601000,
+			Flags:  m14ELFSegFlagR | m14ELFSegFlagX,
+			Data:   []byte{0x11, 0x22, 0x33, 0x44},
+			Memsz:  0x1000,
+			Offset: 0x1000,
+		},
+		{
+			Vaddr:  0x00602000,
+			Flags:  m14ELFSegFlagR | m14ELFSegFlagW,
+			Data:   []byte{0x55, 0x66, 0x77, 0x88},
+			Memsz:  0x1000,
+			Offset: 0x2000,
+		},
+	})
+}
+
+func makeM14RunnableELFFixture(t *testing.T, marker byte, delayYields int) []byte {
+	t.Helper()
+	code := make([]byte, 0, 16*8)
+	w := func(instr []byte) { code = append(code, instr...) }
+
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	if delayYields > 0 {
+		w(ie64Instr(OP_MOVE, 20, IE64_SIZE_L, 1, 0, 0, uint32(delayYields)))
+		w(ie64Instr(OP_MOVE, 21, IE64_SIZE_L, 1, 0, 0, 0))
+		delayTop := len(code)
+		w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+		w(ie64Instr(OP_SUB, 20, IE64_SIZE_L, 1, 20, 0, 1))
+		bgtOff := len(code)
+		w(ie64Instr(OP_BGT, 0, 0, 0, 20, 21, 0))
+		copy(code[bgtOff:], ie64Instr(OP_BGT, 0, 0, 0, 20, 21, uint32(int32(delayTop)-int32(bgtOff))))
+	}
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(marker)))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 0, 29, 0, 64))
+	yieldTop := len(code)
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	yieldBra := len(code)
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldTop)-int32(yieldBra))))
+
+	return makeM14ELFFixture(t, 0x00601000, []m14ELFSegmentSpec{
+		{
+			Vaddr:  0x00601000,
+			Flags:  m14ELFSegFlagR | m14ELFSegFlagX,
+			Data:   code,
+			Memsz:  0x1000,
+			Offset: 0x1000,
+		},
+		{
+			Vaddr:  0x00602000,
+			Flags:  m14ELFSegFlagR | m14ELFSegFlagW,
+			Data:   []byte{0, 0, 0, 0},
+			Memsz:  0x1000,
+			Offset: 0x2000,
+		},
+	})
+}
+
+func makeM14EntryOffsetELFFixture(t *testing.T, marker byte) []byte {
+	t.Helper()
+	code := make([]byte, 0, 16*8)
+	w := func(instr []byte) { code = append(code, instr...) }
+
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, 0xFFFFFFF8)) // wrong entry loops forever
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(marker)))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 0, 29, 0, 64))
+	yieldTop := len(code)
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	yieldBra := len(code)
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldTop)-int32(yieldBra))))
+
+	return makeM14ELFFixture(t, 0x00601008, []m14ELFSegmentSpec{
+		{
+			Vaddr:  0x00601000,
+			Flags:  m14ELFSegFlagR | m14ELFSegFlagX,
+			Data:   code,
+			Memsz:  0x1000,
+			Offset: 0x1000,
+		},
+		{
+			Vaddr:  0x00602000,
+			Flags:  m14ELFSegFlagR | m14ELFSegFlagW,
+			Data:   []byte{0, 0, 0, 0},
+			Memsz:  0x1000,
+			Offset: 0x2000,
+		},
+	})
+}
+
+func makeM14AbsoluteDataELFFixture(t *testing.T, marker byte) []byte {
+	t.Helper()
+	code := make([]byte, 0, 20*8)
+	w := func(instr []byte) { code = append(code, instr...) }
+
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, 0x00602000))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(marker)))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 0, 29, 0, 64))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 0, 5, 0, 0))
+	yieldTop := len(code)
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	yieldBra := len(code)
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldTop)-int32(yieldBra))))
+
+	return makeM14ELFFixture(t, 0x00601000, []m14ELFSegmentSpec{
+		{
+			Vaddr:  0x00601000,
+			Flags:  m14ELFSegFlagR | m14ELFSegFlagX,
+			Data:   code,
+			Memsz:  0x1000,
+			Offset: 0x1000,
+		},
+		{
+			Vaddr:  0x00602000,
+			Flags:  m14ELFSegFlagR | m14ELFSegFlagW,
+			Data:   []byte{0, 0, 0, 0},
+			Memsz:  0x1000,
+			Offset: 0x2000,
+		},
+	})
+}
+
+func makeM14InitializedDataELFFixture(t *testing.T, marker byte) []byte {
+	t.Helper()
+	code := make([]byte, 0, 12*8)
+	w := func(instr []byte) { code = append(code, instr...) }
+
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(marker)))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 0, 29, 0, 64))
+	yieldTop := len(code)
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	yieldBra := len(code)
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldTop)-int32(yieldBra))))
+
+	return makeM14ELFFixture(t, 0x00601000, []m14ELFSegmentSpec{
+		{
+			Vaddr:  0x00601000,
+			Flags:  m14ELFSegFlagR | m14ELFSegFlagX,
+			Data:   code,
+			Memsz:  0x1000,
+			Offset: 0x1000,
+		},
+		{
+			Vaddr:  0x00602000,
+			Flags:  m14ELFSegFlagR | m14ELFSegFlagW,
+			Data:   []byte{marker, 0x44, 0x33, 0x22},
+			Memsz:  0x1000,
+			Offset: 0x2000,
+		},
+	})
+}
+
+func makeM14ThreeSegmentELFFixture(t *testing.T, marker byte) []byte {
+	t.Helper()
+	code := make([]byte, 0, 16*8)
+	w := func(instr []byte) { code = append(code, instr...) }
+
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, 0x00603000))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(marker)))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 0, 29, 0, 64))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 0, 6, 0, 0))
+	yieldTop := len(code)
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	yieldBra := len(code)
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldTop)-int32(yieldBra))))
+
+	return makeM14ELFFixture(t, 0x00601000, []m14ELFSegmentSpec{
+		{
+			Vaddr:  0x00601000,
+			Flags:  m14ELFSegFlagR | m14ELFSegFlagX,
+			Data:   code,
+			Memsz:  0x1000,
+			Offset: 0x1000,
+		},
+		{
+			Vaddr:  0x00602000,
+			Flags:  m14ELFSegFlagR,
+			Data:   nil,
+			Memsz:  0x1000,
+			Offset: 0x2000,
+		},
+		{
+			Vaddr:  0x00603000,
+			Flags:  m14ELFSegFlagR | m14ELFSegFlagW,
+			Data:   []byte{0, 0, 0, 0},
+			Memsz:  0x1000,
+			Offset: 0x2000,
+		},
+	})
+}
+
+func makeM14RunInvalidNoDataELFFixture(t *testing.T) []byte {
+	t.Helper()
+	return makeM14ELFFixture(t, 0x00601000, []m14ELFSegmentSpec{
+		{
+			Vaddr:  0x00601000,
+			Flags:  m14ELFSegFlagR | m14ELFSegFlagX,
+			Data:   []byte{0x11, 0x22, 0x33, 0x44},
+			Memsz:  0x1000,
+			Offset: 0x1000,
+		},
+	})
+}
+
+func patchM14SeededElfFixture(t *testing.T, mem []byte, replacement []byte) {
+	t.Helper()
+	orig := m14SeededElfFixtureBytes(t)
+	off := bytes.Index(mem, orig)
+	if off < 0 {
+		t.Fatal("could not locate embedded C/ElfSeg fixture in kernel image")
+	}
+	if len(replacement) > len(orig) {
+		t.Fatalf("replacement ELF too large for embedded fixture: %d > %d", len(replacement), len(orig))
+	}
+	clear(mem[off : off+len(orig)])
+	copy(mem[off:], replacement)
+}
+
+func runM14LoadSegClientWithPatchedFixture(t *testing.T, replacement []byte) (*ie64TestRig, uint32) {
+	t.Helper()
+	rig, _ := assembleAndLoadKernel(t)
+	patchM14SeededElfFixture(t, rig.cpu.memory, replacement)
+	return runM14LoadSegClientOnRig(t, rig, "C/ElfSeg", 1, false)
+}
+
+func runM14RunSegClientWithPatchedFixtureAndTerm(t *testing.T, replacement []byte, args string, doUnload bool) (*ie64TestRig, *TerminalMMIO, uint32) {
+	t.Helper()
+	rig, term := assembleAndLoadKernel(t)
+	patchM14SeededElfFixture(t, rig.cpu.memory, replacement)
+
+	const (
+		offDosPort    = 128
+		offReplyPrt   = 136
+		offBufferVA   = 144
+		offShareHdl   = 152
+		offLoadType   = 200
+		offSeglistVA  = 208
+		offRunType    = 216
+		offTaskID     = 224
+		offUnloadType = 232
+	)
+
+	images := findAllProgramImages(t, rig.cpu.memory)
+	shellCode := images[len(images)-1]
+	off := shellCode
+	w := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+
+	findLoop := off
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, 16))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFindPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	beqInstr := off
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	braFind := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(findLoop)-int32(braFind))))
+	foundDos := off
+	copy(rig.cpu.memory[beqInstr:], ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, uint32(int32(foundDos)-int32(beqInstr))))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offDosPort))
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offReplyPrt))
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0x10001))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offBufferVA))
+	w(ie64Instr(OP_STORE, 3, IE64_SIZE_Q, 1, 29, 0, offShareHdl))
+
+	w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, offBufferVA))
+	for i := 0; i < len("C/ElfSeg"); i++ {
+		w(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, uint32("C/ElfSeg"[i])))
+		w(ie64Instr(OP_STORE, 5, IE64_SIZE_B, 0, 4, 0, uint32(i)))
+	}
+	w(ie64Instr(OP_STORE, 0, IE64_SIZE_B, 0, 4, 0, uint32(len("C/ElfSeg"))))
+
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, dosLoadSeg))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_LOAD, 6, IE64_SIZE_L, 0, 29, 0, offShareHdl))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offLoadType))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offSeglistVA))
+
+	w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, offBufferVA))
+	for i := 0; i < len(args); i++ {
+		w(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, uint32(args[i])))
+		w(ie64Instr(OP_STORE, 5, IE64_SIZE_B, 0, 4, 0, uint32(i)))
+	}
+	w(ie64Instr(OP_STORE, 0, IE64_SIZE_B, 0, 4, 0, uint32(len(args))))
+
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, dosRunSeg))
+	w(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, offSeglistVA))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_LOAD, 6, IE64_SIZE_L, 0, 29, 0, offShareHdl))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offRunType))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offTaskID))
+
+	if doUnload {
+		w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+		w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, dosUnLoadSeg))
+		w(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, offSeglistVA))
+		w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+		w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+		w(ie64Instr(OP_LOAD, 6, IE64_SIZE_L, 0, 29, 0, offShareHdl))
+		w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+		w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+		w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+		w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+		w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+		w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offUnloadType))
+	}
+
+	yieldLoop := off
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	braYield := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldLoop)-int32(braYield))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(3 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	dataBase := uint32(taskLayoutFieldQ(rig.cpu.memory, 2, kdTaskDataBase))
+	return rig, term, dataBase
+}
+
+func runM14RunSegClientWithPatchedFixture(t *testing.T, replacement []byte, args string, doUnload bool) (*ie64TestRig, uint32) {
+	t.Helper()
+	rig, _, dataBase := runM14RunSegClientWithPatchedFixtureAndTerm(t, replacement, args, doUnload)
+	return rig, dataBase
 }
 
 // patchImageToSinglePage rewrites a program image's IE64PROG header so that
@@ -7138,6 +7712,117 @@ func TestIExec_ExecProgram_NewABI_WithArgs(t *testing.T) {
 	}
 }
 
+func TestIExec_M14_Phase3_ExecProgram_DescriptorBasic(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	t0 := images[0]
+
+	const (
+		codeOff = 0x100
+		dataOff = 0x200
+		descOff = 0x300
+		segOff  = descOff + 48
+	)
+
+	off := uint32(0)
+	w := func(instr []byte) { copy(rig.cpu.memory[t0+off:], instr); off += 8 }
+
+	// Derive task 0's current data page VA.
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 3))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo))
+	w(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, userSlotStride))
+	w(ie64Instr(OP_MULU, 5, IE64_SIZE_Q, 0, 1, 5, 0))
+	w(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, userDataBase))
+	w(ie64Instr(OP_ADD, 5, IE64_SIZE_Q, 0, 5, 6, 0)) // R5 = data VA
+
+	// Build runnable code at data+codeOff.
+	codeWords := [][]byte{
+		ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16),
+		ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8),
+		ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0),
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32('D')),
+		ie64Instr(OP_STORE, 1, IE64_SIZE_B, 0, 29, 0, 64),
+		ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield),
+		ie64Instr(OP_BRA, 0, 0, 0, 0, 0, 0xFFFFFFF8),
+	}
+	for i, word := range codeWords {
+		q := binary.LittleEndian.Uint64(word)
+		w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(q&0xFFFFFFFF)))
+		w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 5, 0, codeOff+uint32(i)*8))
+		w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(q>>32)))
+		w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 5, 0, codeOff+uint32(i)*8+4))
+	}
+	// Zero first 4 data bytes at data+dataOff.
+	w(ie64Instr(OP_STORE, 0, IE64_SIZE_L, 1, 5, 0, dataOff))
+
+	// Build descriptor header at data+descOff.
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x5345444C))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 5, 0, descOff+0x00))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 5, 0, descOff+0x04))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 48))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 5, 0, descOff+0x08))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 2))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 5, 0, descOff+0x0C))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x00601000))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 5, 0, descOff+0x10))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 5, 0, descOff+0x18))
+	w(ie64Instr(OP_ADD, 4, IE64_SIZE_Q, 1, 5, 0, segOff))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 5, 0, descOff+0x20))
+
+	// seg[0] RX
+	w(ie64Instr(OP_ADD, 4, IE64_SIZE_Q, 1, 5, 0, codeOff))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 5, 0, segOff+0x00))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(len(codeWords)*8)))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 5, 0, segOff+0x08))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x00601000))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 5, 0, segOff+0x10))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 5, 0, segOff+0x18))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, m14ELFSegFlagR|m14ELFSegFlagX))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 5, 0, segOff+0x1C))
+
+	// seg[1] RW
+	w(ie64Instr(OP_ADD, 4, IE64_SIZE_Q, 1, 5, 0, dataOff))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 5, 0, segOff+0x20))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 4))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 5, 0, segOff+0x28))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x00602000))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 5, 0, segOff+0x30))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 5, 0, segOff+0x38))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, m14ELFSegFlagR|m14ELFSegFlagW))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 5, 0, segOff+0x3C))
+
+	// ExecProgram(descriptor, 48, 0, 0)
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_Q, 1, 5, 0, descOff))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 48))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExecProgram))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 2, 0, 0x30))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, 0xFFFFFFF8))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(1 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "0") {
+		t.Fatalf("ExecProgram_DescriptorBasic: ERR_OK '0' not in output, got=%q", output[:min(len(output), 120)])
+	}
+	if _, ok := findTaskByDataMarker(rig.cpu.memory, 'D'); !ok {
+		t.Fatalf("ExecProgram_DescriptorBasic: child marker not found, output=%q", output[:min(len(output), 120)])
+	}
+}
+
 func TestIExec_DosLibPort(t *testing.T) {
 	// Boot the full kernel. Verify that a port named "dos.library" exists
 	// by scanning the 8 port slots for a valid, public port with that name.
@@ -7248,6 +7933,27 @@ func bootAndInjectCommands(t *testing.T, commands []string, totalWait time.Durat
 	return term.DrainOutput()
 }
 
+func bootPatchedFixtureAndInjectCommand(t *testing.T, replacement []byte, command string, postCmdWait time.Duration) (*ie64TestRig, string) {
+	t.Helper()
+	rig, term := assembleAndLoadKernel(t)
+	patchM14SeededElfFixture(t, rig.cpu.memory, replacement)
+
+	for _, ch := range command {
+		term.EnqueueByte(byte(ch))
+	}
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+
+	time.Sleep(postCmdWait)
+
+	rig.cpu.running.Store(false)
+	<-done
+
+	return rig, term.DrainOutput()
+}
+
 func TestIExec_ConsoleReadLine(t *testing.T) {
 	// Boot kernel (3 services). Wait for "1> " prompt (shell sends CON_READLINE
 	// to console.handler). Inject "hello\n" via EnqueueByte. Since "hello" isn't
@@ -7267,9 +7973,35 @@ func TestIExec_ConsoleReadLineBusy(t *testing.T) {
 
 func TestIExec_ShellUnknown(t *testing.T) {
 	// Inject an invalid command. Shell should respond with "Unknown command".
-	output := bootAndInjectCommand(t, "FOOBAR\n", 5*time.Second)
+	_, output := bootPatchedFixtureAndInjectCommand(t, m14SeededElfFixtureBytes(t), "FOOBAR\n", 5*time.Second)
 	if !strings.Contains(output, "Unknown command") {
 		t.Fatalf("ShellUnknown: expected 'Unknown command' in output, got=%q", output[:min(len(output), 300)])
+	}
+}
+
+func TestIExec_M14_Phase4_ShellRunsELFCommand(t *testing.T) {
+	rig, output := bootPatchedFixtureAndInjectCommand(t, makeM14RunnableELFFixture(t, 'Q', 0), "\nELFSEG\n", 5*time.Second)
+	if strings.Contains(output, "Unknown command") {
+		t.Fatalf("ShellRunsELFCommand: shell reported unknown command, output=%q", output[:min(len(output), 400)])
+	}
+	if _, ok := findTaskByDataMarker(rig.cpu.memory, 'Q'); !ok {
+		t.Fatalf("ShellRunsELFCommand: could not find launched ELF child by marker, output=%q", output[:min(len(output), 400)])
+	}
+}
+
+func TestIExec_M14_Phase4_ShellRunsELFCommandWithArgs(t *testing.T) {
+	rig, output := bootPatchedFixtureAndInjectCommand(t, makeM14RunnableELFFixture(t, 'W', 0), "\nELFSEG hello\n", 5*time.Second)
+	if strings.Contains(output, "Unknown command") {
+		t.Fatalf("ShellRunsELFCommandWithArgs: shell reported unknown command, output=%q", output[:min(len(output), 400)])
+	}
+	taskID, ok := findTaskByDataMarker(rig.cpu.memory, 'W')
+	if !ok {
+		t.Fatalf("ShellRunsELFCommandWithArgs: could not find launched ELF child by marker, output=%q", output[:min(len(output), 400)])
+	}
+	childData := uint32(taskLayoutFieldQ(rig.cpu.memory, taskID, kdTaskDataBase))
+	got := string(rig.cpu.memory[childData+3072 : childData+3072+5])
+	if got != "hello" {
+		t.Fatalf("ShellRunsELFCommandWithArgs: args at DATA_ARGS_OFFSET=%q, want %q", got, "hello")
 	}
 }
 
@@ -7327,8 +8059,8 @@ func TestIExec_TypeStartupSequence(t *testing.T) {
 	if !strings.Contains(output, "VERSION") {
 		t.Fatalf("TypeStartupSequence: expected 'VERSION' in output, got=%q", output[:min(len(output), 300)])
 	}
-	if !strings.Contains(output, "ECHO IntuitionOS M13 ready") {
-		t.Errorf("TypeStartupSequence: expected 'ECHO IntuitionOS M13 ready' in output, got=%q", output[:min(len(output), 300)])
+	if !strings.Contains(output, "ECHO IntuitionOS M14 ready") {
+		t.Errorf("TypeStartupSequence: expected 'ECHO IntuitionOS M14 ready' in output, got=%q", output[:min(len(output), 300)])
 	}
 	if strings.Contains(output, "Core OS objects:") || strings.Contains(output, "dos.library file storage:") {
 		t.Errorf("TypeStartupSequence: removed startup ECHO lines still present, got=%q", output[:min(len(output), 300)])
@@ -7344,6 +8076,9 @@ func TestIExec_DirCommand(t *testing.T) {
 	}
 	if !strings.Contains(output, "C/Version") {
 		t.Errorf("DirCommand: expected 'C/Version' (M10 seeded command), got=%q", output[:min(len(output), 300)])
+	}
+	if !strings.Contains(output, "C/ElfSeg") {
+		t.Errorf("DirCommand: expected 'C/ElfSeg' (M14 seeded ELF fixture), got=%q", output[:min(len(output), 500)])
 	}
 	if !strings.Contains(output, "S/Startup-Sequence") {
 		t.Errorf("DirCommand: expected 'S/Startup-Sequence' (M10 seeded script), got=%q", output[:min(len(output), 300)])
@@ -8620,13 +9355,13 @@ func TestIExec_M13_Phase5_FullBootStack_ServiceCensus(t *testing.T) {
 	output := term.DrainOutput()
 	wantBanners := []string{
 		"console.handler M11.5 [Task ",
-		"dos.library M12.8 [Task ",
+		"dos.library M14 [Task ",
 		"Shell M10 [Task ",
 		"hardware.resource M12.5 [Task ",
 		"input.device M11 [Task ",
 		"graphics.library M11 [Task ",
 		"intuition.library M12 [Task ",
-		"IntuitionOS M13 ready",
+		"IntuitionOS M14 ready",
 		"All visible services are running in user space",
 		"1>",
 	}
@@ -9205,6 +9940,599 @@ func TestIExec_NoCap_DosFilesAndHandlesGrow(t *testing.T) {
 		fileCount, 16, fileCount, 8)
 }
 
+func TestIExec_M14_Phase2_LoadSeg_Basic(t *testing.T) {
+	rig, dataBase := runM14LoadSegClient(t, "C/ElfSeg", 1, false)
+	mem := rig.cpu.memory
+
+	loadType := binary.LittleEndian.Uint64(mem[dataBase+200:])
+	if loadType != dosOK {
+		t.Fatalf("LoadSeg_Basic: reply.type=%d, want DOS_OK (0)", loadType)
+	}
+	seglistVA := binary.LittleEndian.Uint64(mem[dataBase+208:])
+	if seglistVA == 0 {
+		t.Fatal("LoadSeg_Basic: seglist VA is 0")
+	}
+
+	seglistPhys, ok := taskVAToPhys(mem, 1, seglistVA)
+	if !ok {
+		t.Fatalf("LoadSeg_Basic: could not translate dos seglist VA 0x%X", seglistVA)
+	}
+	if got := binary.LittleEndian.Uint32(mem[seglistPhys+dosSegMagicOff:]); got != dosSegMagic {
+		t.Fatalf("LoadSeg_Basic: seglist magic=0x%X, want 0x%X", got, dosSegMagic)
+	}
+	segCount := binary.LittleEndian.Uint32(mem[seglistPhys+dosSegCountOff:])
+	if segCount != 2 {
+		t.Fatalf("LoadSeg_Basic: seg_count=%d, want 2", segCount)
+	}
+	if got := binary.LittleEndian.Uint64(mem[seglistPhys+dosSegEntryVAOff:]); got != 0x00601000 {
+		t.Fatalf("LoadSeg_Basic: seglist entry VA=0x%X, want 0x%X", got, uint64(0x00601000))
+	}
+
+	entry0 := seglistPhys + dosSegEntryBase
+	entry1 := entry0 + dosSegEntryStr
+	flags0 := binary.LittleEndian.Uint32(mem[entry0+dosSegFlagsOff:])
+	flags1 := binary.LittleEndian.Uint32(mem[entry1+dosSegFlagsOff:])
+	if flags0 != (m14ELFSegFlagR | m14ELFSegFlagX) {
+		t.Fatalf("LoadSeg_Basic: seg0 flags=0x%X, want RX=0x%X", flags0, m14ELFSegFlagR|m14ELFSegFlagX)
+	}
+	if flags1 != (m14ELFSegFlagR | m14ELFSegFlagW) {
+		t.Fatalf("LoadSeg_Basic: seg1 flags=0x%X, want RW=0x%X", flags1, m14ELFSegFlagR|m14ELFSegFlagW)
+	}
+	if binary.LittleEndian.Uint64(mem[entry0+dosSegTargetOff:]) != 0x00601000 {
+		t.Fatalf("LoadSeg_Basic: seg0 target VA mismatch")
+	}
+	if binary.LittleEndian.Uint64(mem[entry1+dosSegTargetOff:]) != 0x00602000 {
+		t.Fatalf("LoadSeg_Basic: seg1 target VA mismatch")
+	}
+}
+
+func TestIExec_M14_Phase2_LoadSeg_InvalidExecutableRejected(t *testing.T) {
+	rig, dataBase := runM14LoadSegClientWithPatchedFixture(t, []byte("not an elf"))
+	mem := rig.cpu.memory
+	loadType := binary.LittleEndian.Uint64(mem[dataBase+200:])
+	if loadType != dosErrBadArg {
+		t.Fatalf("LoadSeg_InvalidExecutableRejected: reply.type=%d, want DOS_ERR_BADARG (%d)", loadType, dosErrBadArg)
+	}
+}
+
+func TestIExec_M14_Phase2_LoadSeg_BadOffsetAlignmentRejected(t *testing.T) {
+	image := makeM14ELFFixture(t, 0x00601000, []m14ELFSegmentSpec{
+		{
+			Vaddr:  0x00601000,
+			Flags:  m14ELFSegFlagR | m14ELFSegFlagX,
+			Data:   []byte{0x11, 0x22, 0x33, 0x44},
+			Memsz:  0x1000,
+			Offset: 0x1001,
+		},
+		{
+			Vaddr:  0x00602000,
+			Flags:  m14ELFSegFlagR | m14ELFSegFlagW,
+			Data:   []byte{0x55, 0x66, 0x77, 0x88},
+			Memsz:  0x1000,
+			Offset: 0x2000,
+		},
+	})
+	rig, dataBase := runM14LoadSegClientWithPatchedFixture(t, image)
+	mem := rig.cpu.memory
+	loadType := binary.LittleEndian.Uint64(mem[dataBase+200:])
+	if loadType != dosErrBadArg {
+		t.Fatalf("LoadSeg_BadOffsetAlignmentRejected: reply.type=%d, want DOS_ERR_BADARG (%d)", loadType, dosErrBadArg)
+	}
+}
+
+func TestIExec_M14_Phase2_LoadSeg_TooManyPTLoadsRejected(t *testing.T) {
+	segs := make([]m14ELFSegmentSpec, 103)
+	for i := range segs {
+		segs[i] = m14ELFSegmentSpec{
+			Vaddr:  0x00601000 + uint64(i)*0x1000,
+			Flags:  m14ELFSegFlagR,
+			Memsz:  0x1000,
+			Offset: 0x1000,
+		}
+	}
+	segs[0].Flags = m14ELFSegFlagR | m14ELFSegFlagX
+	segs[0].Data = []byte{0x11, 0x22, 0x33, 0x44}
+	image := makeM14ELFFixture(t, 0x00601000, segs)
+	rig, dataBase := runM14LoadSegClientWithPatchedFixture(t, image)
+	mem := rig.cpu.memory
+	loadType := binary.LittleEndian.Uint64(mem[dataBase+200:])
+	if loadType != dosErrBadArg {
+		t.Fatalf("LoadSeg_TooManyPTLoadsRejected: reply.type=%d, want DOS_ERR_BADARG (%d)", loadType, dosErrBadArg)
+	}
+}
+
+func TestIExec_M14_Phase2_LoadSeg_UnLoadSeg_NoLeak(t *testing.T) {
+	baselineRig, _ := runM14LoadSegClient(t, "C/ElfSeg", 0, false)
+	baselineFreePages := allocPoolFreePagesFromBitmap(baselineRig.cpu.memory)
+
+	rig, dataBase := runM14LoadSegClient(t, "C/ElfSeg", 3, true)
+	mem := rig.cpu.memory
+
+	loadType := binary.LittleEndian.Uint64(mem[dataBase+200:])
+	if loadType != dosOK {
+		t.Fatalf("LoadSeg_UnLoadSeg_NoLeak: load reply.type=%d, want 0", loadType)
+	}
+	unloadType := binary.LittleEndian.Uint64(mem[dataBase+216:])
+	if unloadType != dosOK {
+		t.Fatalf("LoadSeg_UnLoadSeg_NoLeak: unload reply.type=%d, want 0", unloadType)
+	}
+	dosData := uint32(taskLayoutFieldQ(mem, 1, kdTaskDataBase))
+	if head := binary.LittleEndian.Uint64(mem[dosData+176:]); head != 0 {
+		t.Fatalf("LoadSeg_UnLoadSeg_NoLeak: dos seglist head still nonzero after unload: 0x%X", head)
+	}
+	freePages := allocPoolFreePagesFromBitmap(mem)
+	if freePages != baselineFreePages {
+		t.Fatalf("LoadSeg_UnLoadSeg_NoLeak: free pages=%d, want %d", freePages, baselineFreePages)
+	}
+}
+
+func TestIExec_M14_Phase3_RunSeg_Basic(t *testing.T) {
+	rig, term, dataBase := runM14RunSegClientWithPatchedFixtureAndTerm(t, makeM14RunnableELFFixture(t, 'R', 0), "", false)
+	mem := rig.cpu.memory
+	loadType := binary.LittleEndian.Uint64(mem[dataBase+200:])
+	runType := binary.LittleEndian.Uint64(mem[dataBase+216:])
+	if loadType != dosOK {
+		t.Fatalf("RunSeg_Basic: load reply.type=%d, want DOS_OK", loadType)
+	}
+	if runType != dosOK {
+		t.Fatalf("RunSeg_Basic: run reply.type=%d, want DOS_OK, term=%q", runType, term.DrainOutput())
+	}
+	taskID, ok := findTaskByDataMarker(mem, 'R')
+	if !ok {
+		t.Fatalf("RunSeg_Basic: could not find launched child by data marker, term=%q", term.DrainOutput())
+	}
+	childData := uint32(taskLayoutFieldQ(mem, taskID, kdTaskDataBase))
+	if got := mem[childData+64]; got != 'R' {
+		t.Fatalf("RunSeg_Basic: child data marker=%q, want %q", got, byte('R'))
+	}
+}
+
+func TestIExec_M14_Phase3_RunSeg_PreservesELFEntry(t *testing.T) {
+	rig, dataBase := runM14RunSegClientWithPatchedFixture(t, makeM14EntryOffsetELFFixture(t, 'E'), "", false)
+	mem := rig.cpu.memory
+	if runType := binary.LittleEndian.Uint64(mem[dataBase+216:]); runType != dosOK {
+		t.Fatalf("RunSeg_PreservesELFEntry: run reply.type=%d, want DOS_OK", runType)
+	}
+	taskID, ok := findTaskByDataMarker(mem, 'E')
+	if !ok {
+		t.Fatal("RunSeg_PreservesELFEntry: could not find launched child by data marker")
+	}
+	childData := uint32(taskLayoutFieldQ(mem, taskID, kdTaskDataBase))
+	if got := mem[childData+64]; got != 'E' {
+		t.Fatalf("RunSeg_PreservesELFEntry: child marker=%q, want %q", got, byte('E'))
+	}
+}
+
+func TestIExec_M14_Phase3_RunSeg_HonorsTargetVAs(t *testing.T) {
+	rig, dataBase := runM14RunSegClientWithPatchedFixture(t, makeM14AbsoluteDataELFFixture(t, 'V'), "", false)
+	mem := rig.cpu.memory
+	if runType := binary.LittleEndian.Uint64(mem[dataBase+216:]); runType != dosOK {
+		t.Fatalf("RunSeg_HonorsTargetVAs: run reply.type=%d, want DOS_OK", runType)
+	}
+	taskID, ok := findTaskByDataMarker(mem, 'V')
+	if !ok {
+		t.Fatal("RunSeg_HonorsTargetVAs: could not find launched child by data marker")
+	}
+	targetPhys, ok := taskVAToPhys(mem, taskID, 0x00602000)
+	if !ok {
+		t.Fatal("RunSeg_HonorsTargetVAs: could not translate child target VA 0x00602000")
+	}
+	if got := mem[targetPhys]; got != 'V' {
+		t.Fatalf("RunSeg_HonorsTargetVAs: child target[0]=%q, want %q", got, byte('V'))
+	}
+}
+
+func TestIExec_M14_Phase3_RunSeg_PreservesInitializedData(t *testing.T) {
+	rig, dataBase := runM14RunSegClientWithPatchedFixture(t, makeM14InitializedDataELFFixture(t, 'D'), "", false)
+	mem := rig.cpu.memory
+	if runType := binary.LittleEndian.Uint64(mem[dataBase+216:]); runType != dosOK {
+		t.Fatalf("RunSeg_PreservesInitializedData: run reply.type=%d, want DOS_OK", runType)
+	}
+	taskID, ok := findTaskByDataMarker(mem, 'D')
+	if !ok {
+		t.Fatal("RunSeg_PreservesInitializedData: could not find launched child by data marker")
+	}
+	targetPhys, ok := taskVAToPhys(mem, taskID, 0x00602000)
+	if !ok {
+		t.Fatal("RunSeg_PreservesInitializedData: could not translate child target VA 0x00602000")
+	}
+	got := mem[targetPhys : targetPhys+4]
+	want := []byte{'D', 0x44, 0x33, 0x22}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("RunSeg_PreservesInitializedData: child target[:4]=%v, want %v", got, want)
+	}
+}
+
+func TestIExec_M14_Phase3_RunSeg_PreservesAllPTLoadSegments(t *testing.T) {
+	rig, dataBase := runM14RunSegClientWithPatchedFixture(t, makeM14ThreeSegmentELFFixture(t, 'T'), "", false)
+	mem := rig.cpu.memory
+	if runType := binary.LittleEndian.Uint64(mem[dataBase+216:]); runType != dosOK {
+		t.Fatalf("RunSeg_PreservesAllPTLoadSegments: run reply.type=%d, want DOS_OK", runType)
+	}
+	taskID, ok := findTaskByDataMarker(mem, 'T')
+	if !ok {
+		t.Fatal("RunSeg_PreservesAllPTLoadSegments: could not find launched child by data marker")
+	}
+	targetPhys, ok := taskVAToPhys(mem, taskID, 0x00603000)
+	if !ok {
+		t.Fatal("RunSeg_PreservesAllPTLoadSegments: could not translate child target VA 0x00603000")
+	}
+	if got := mem[targetPhys]; got != 'T' {
+		t.Fatalf("RunSeg_PreservesAllPTLoadSegments: child target[0]=%q, want %q", got, byte('T'))
+	}
+}
+
+func TestIExec_M14_Phase3_RunSeg_StartupPagePresent(t *testing.T) {
+	rig, dataBase := runM14RunSegClientWithPatchedFixture(t, makeM14RunnableELFFixture(t, 'S', 0), "", false)
+	mem := rig.cpu.memory
+	if runType := binary.LittleEndian.Uint64(mem[dataBase+216:]); runType != dosOK {
+		t.Fatalf("RunSeg_StartupPagePresent: run reply.type=%d, want DOS_OK", runType)
+	}
+	taskID, ok := findTaskByDataMarker(mem, 'S')
+	if !ok {
+		t.Fatal("RunSeg_StartupPagePresent: could not find launched child by data marker")
+	}
+	startupBase := taskLayoutFieldQ(mem, taskID, kdTaskStartupBase)
+	if startupBase == 0 {
+		t.Fatal("RunSeg_StartupPagePresent: startup base = 0")
+	}
+	startup := mem[uint32(startupBase):]
+	if got := binary.LittleEndian.Uint32(startup[taskStartupVersionOff:]); got != taskStartupVersion {
+		t.Fatalf("RunSeg_StartupPagePresent: startup.version=%d, want %d", got, taskStartupVersion)
+	}
+	if got := binary.LittleEndian.Uint32(startup[taskStartupFlagsOff:]); got&taskStartfExec == 0 {
+		t.Fatalf("RunSeg_StartupPagePresent: startup.flags=%#x, want exec bit set", got)
+	}
+	if got := binary.LittleEndian.Uint32(startup[taskStartupTaskIDOff:]); uint64(got) != taskID {
+		t.Fatalf("RunSeg_StartupPagePresent: startup.task_id=%d, want %d", got, taskID)
+	}
+}
+
+func TestIExec_M14_Phase3_RunSeg_WithArgs(t *testing.T) {
+	rig, dataBase := runM14RunSegClientWithPatchedFixture(t, makeM14RunnableELFFixture(t, 'A', 0), "hello", false)
+	mem := rig.cpu.memory
+	if runType := binary.LittleEndian.Uint64(mem[dataBase+216:]); runType != dosOK {
+		t.Fatalf("RunSeg_WithArgs: run reply.type=%d, want DOS_OK", runType)
+	}
+	taskID, ok := findTaskByDataMarker(mem, 'A')
+	if !ok {
+		t.Fatal("RunSeg_WithArgs: could not find launched child by data marker")
+	}
+	childData := uint32(taskLayoutFieldQ(mem, taskID, kdTaskDataBase))
+	got := string(mem[childData+3072 : childData+3072+5])
+	if got != "hello" {
+		t.Fatalf("RunSeg_WithArgs: args at DATA_ARGS_OFFSET=%q, want %q", got, "hello")
+	}
+}
+
+func TestIExec_M14_Phase3_RunSeg_UnLoadAfterLaunch_ChildLives(t *testing.T) {
+	rig, dataBase := runM14RunSegClientWithPatchedFixture(t, makeM14RunnableELFFixture(t, 'U', 0), "", true)
+	mem := rig.cpu.memory
+	if runType := binary.LittleEndian.Uint64(mem[dataBase+216:]); runType != dosOK {
+		t.Fatalf("RunSeg_UnLoadAfterLaunch_ChildLives: run reply.type=%d, want DOS_OK", runType)
+	}
+	if unloadType := binary.LittleEndian.Uint64(mem[dataBase+232:]); unloadType != dosOK {
+		t.Fatalf("RunSeg_UnLoadAfterLaunch_ChildLives: unload reply.type=%d, want DOS_OK", unloadType)
+	}
+	taskID, ok := findTaskByDataMarker(mem, 'U')
+	if !ok {
+		t.Fatal("RunSeg_UnLoadAfterLaunch_ChildLives: could not find launched child by data marker")
+	}
+	childData := uint32(taskLayoutFieldQ(mem, taskID, kdTaskDataBase))
+	if got := mem[childData+64]; got != 'U' {
+		t.Fatalf("RunSeg_UnLoadAfterLaunch_ChildLives: child marker=%q, want %q", got, byte('U'))
+	}
+}
+
+func TestIExec_M14_Phase3_RunSeg_FailedLaunchDoesNotConsumeSeglist(t *testing.T) {
+	rig, term, dataBase := runM14RunSegClientWithPatchedFixtureAndTerm(t, makeM14RunInvalidNoDataELFFixture(t), "", true)
+	mem := rig.cpu.memory
+	if loadType := binary.LittleEndian.Uint64(mem[dataBase+200:]); loadType != dosOK {
+		t.Fatalf("RunSeg_FailedLaunchDoesNotConsumeSeglist: load reply.type=%d, want DOS_OK", loadType)
+	}
+	if runType := binary.LittleEndian.Uint64(mem[dataBase+216:]); runType != dosErrBadArg {
+		t.Fatalf("RunSeg_FailedLaunchDoesNotConsumeSeglist: run reply.type=%d, want DOS_ERR_BADARG (%d), task_id=%d, num_tasks=%d, unload=%d, term=%q", runType, dosErrBadArg, binary.LittleEndian.Uint64(mem[dataBase+224:]), binary.LittleEndian.Uint64(mem[kernDataBase+kdNumTasks:]), binary.LittleEndian.Uint64(mem[dataBase+232:]), term.DrainOutput())
+	}
+	if unloadType := binary.LittleEndian.Uint64(mem[dataBase+232:]); unloadType != dosOK {
+		t.Fatalf("RunSeg_FailedLaunchDoesNotConsumeSeglist: unload reply.type=%d, want DOS_OK", unloadType)
+	}
+	if taskID := binary.LittleEndian.Uint64(mem[dataBase+224:]); taskID != 0 {
+		t.Fatalf("RunSeg_FailedLaunchDoesNotConsumeSeglist: task_id=%d, want 0", taskID)
+	}
+}
+
+func TestIExec_M14_Phase2_DosSeededCommandsPresent(t *testing.T) {
+	const (
+		metaHdrSz    = 16
+		metaEntrySz  = 48
+		metaPerPage  = 85
+		nameMaxBytes = 32
+	)
+	rig, _ := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(3 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	mem := rig.cpu.memory
+	dosData := uint32(taskLayoutFieldQ(mem, 1, kdTaskDataBase))
+	if dosData == 0 {
+		t.Fatal("DosSeededCommandsPresent: dos.library data base is 0")
+	}
+	metaHead := binary.LittleEndian.Uint64(mem[dosData+152:])
+	if metaHead == 0 {
+		t.Fatal("DosSeededCommandsPresent: meta chain head is 0")
+	}
+
+	var names []string
+	for page := metaHead; page != 0 && len(names) < 32; {
+		pagePhys, ok := taskVAToPhys(mem, 1, page)
+		if !ok {
+			t.Fatalf("DosSeededCommandsPresent: could not translate meta page VA 0x%X", page)
+		}
+		next := binary.LittleEndian.Uint64(mem[pagePhys:])
+		for i := uint32(0); i < metaPerPage && len(names) < 32; i++ {
+			entry := pagePhys + metaHdrSz + i*metaEntrySz
+			if mem[entry] == 0 {
+				continue
+			}
+			end := entry
+			for end < entry+nameMaxBytes && mem[end] != 0 {
+				end++
+			}
+			names = append(names, string(mem[entry:end]))
+		}
+		page = next
+	}
+	hasName := func(want string) bool {
+		for _, got := range names {
+			if got == want {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasName("C/Version") {
+		t.Fatalf("DosSeededCommandsPresent: C/Version missing from metadata chain, names=%v", names)
+	}
+	if !hasName("C/ElfSeg") {
+		t.Fatalf("DosSeededCommandsPresent: C/ElfSeg missing from metadata chain, names=%v", names)
+	}
+}
+
+func TestIExec_M14_Phase2_ElfFixturePassesHostValidator(t *testing.T) {
+	const (
+		metaHdrSz   = 16
+		metaEntrySz = 48
+		metaPerPage = 85
+	)
+	rig, _ := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(3 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	mem := rig.cpu.memory
+	dosData := uint32(taskLayoutFieldQ(mem, 1, kdTaskDataBase))
+	metaHead := binary.LittleEndian.Uint64(mem[dosData+152:])
+	if metaHead == 0 {
+		t.Fatal("ElfFixturePassesHostValidator: meta chain head is 0")
+	}
+
+	var fileVA uint64
+	var fileSize uint32
+	for page := metaHead; page != 0 && fileVA == 0; {
+		pagePhys, ok := taskVAToPhys(mem, 1, page)
+		if !ok {
+			t.Fatalf("ElfFixturePassesHostValidator: could not translate meta page VA 0x%X", page)
+		}
+		next := binary.LittleEndian.Uint64(mem[pagePhys:])
+		for i := uint32(0); i < metaPerPage; i++ {
+			entry := pagePhys + metaHdrSz + i*metaEntrySz
+			if mem[entry] == 0 {
+				continue
+			}
+			end := entry
+			for end < entry+32 && mem[end] != 0 {
+				end++
+			}
+			if string(mem[entry:end]) == "C/ElfSeg" {
+				fileVA = binary.LittleEndian.Uint64(mem[entry+32:])
+				fileSize = binary.LittleEndian.Uint32(mem[entry+40:])
+				break
+			}
+		}
+		page = next
+	}
+	if fileVA == 0 || fileSize == 0 {
+		t.Fatal("ElfFixturePassesHostValidator: could not find C/ElfSeg metadata")
+	}
+
+	image := make([]byte, fileSize)
+	dst := 0
+	for extent := fileVA; extent != 0 && dst < len(image); {
+		extentPhys, ok := taskVAToPhys(mem, 1, extent)
+		if !ok {
+			t.Fatalf("ElfFixturePassesHostValidator: could not translate extent VA 0x%X", extent)
+		}
+		next := binary.LittleEndian.Uint64(mem[extentPhys:])
+		n := min(len(image)-dst, 4080)
+		copy(image[dst:dst+n], mem[extentPhys+16:extentPhys+16+uint32(n)])
+		dst += n
+		extent = next
+	}
+	if dst != len(image) {
+		t.Fatalf("ElfFixturePassesHostValidator: copied %d bytes, want %d", dst, len(image))
+	}
+	if err := validateM14ELFContract(image); err != nil {
+		t.Fatalf("ElfFixturePassesHostValidator: seeded C/ElfSeg failed phase-1 validator: %v", err)
+	}
+}
+
+func findDosSeededFileMeta(t *testing.T, mem []byte, name string) (uint64, uint32) {
+	t.Helper()
+	const (
+		metaHdrSz   = 16
+		metaEntrySz = 48
+		metaPerPage = 85
+	)
+	dosData := uint32(taskLayoutFieldQ(mem, 1, kdTaskDataBase))
+	metaHead := binary.LittleEndian.Uint64(mem[dosData+152:])
+	if metaHead == 0 {
+		t.Fatal("findDosSeededFileMeta: meta chain head is 0")
+	}
+	for page := metaHead; page != 0; {
+		pagePhys, ok := taskVAToPhys(mem, 1, page)
+		if !ok {
+			t.Fatalf("findDosSeededFileMeta: could not translate meta page VA 0x%X", page)
+		}
+		next := binary.LittleEndian.Uint64(mem[pagePhys:])
+		for i := uint32(0); i < metaPerPage; i++ {
+			entry := pagePhys + metaHdrSz + i*metaEntrySz
+			if mem[entry] == 0 {
+				continue
+			}
+			end := entry
+			for end < entry+32 && mem[end] != 0 {
+				end++
+			}
+			if string(mem[entry:end]) != name {
+				continue
+			}
+			fileVA := binary.LittleEndian.Uint64(mem[entry+32:])
+			fileSize := binary.LittleEndian.Uint32(mem[entry+40:])
+			return fileVA, fileSize
+		}
+		page = next
+	}
+	t.Fatalf("findDosSeededFileMeta: could not find %q", name)
+	return 0, 0
+}
+
+func readDosSeededFileBytes(t *testing.T, mem []byte, name string) []byte {
+	t.Helper()
+	fileVA, fileSize := findDosSeededFileMeta(t, mem, name)
+	image := make([]byte, fileSize)
+	dst := 0
+	for extent := fileVA; extent != 0 && dst < len(image); {
+		extentPhys, ok := taskVAToPhys(mem, 1, extent)
+		if !ok {
+			t.Fatalf("readDosSeededFileBytes: could not translate extent VA 0x%X for %q", extent, name)
+		}
+		next := binary.LittleEndian.Uint64(mem[extentPhys:])
+		n := min(len(image)-dst, 4080)
+		copy(image[dst:dst+n], mem[extentPhys+16:extentPhys+16+uint32(n)])
+		dst += n
+		extent = next
+	}
+	if dst != len(image) {
+		t.Fatalf("readDosSeededFileBytes: copied %d bytes for %q, want %d", dst, name, len(image))
+	}
+	return image
+}
+
+func assertDosSeededFileIsELF(t *testing.T, mem []byte, name string) {
+	t.Helper()
+	image := readDosSeededFileBytes(t, mem, name)
+	if err := validateM14ELFContract(image); err != nil {
+		t.Fatalf("%s is not a valid M14 ELF: %v", name, err)
+	}
+}
+
+func TestIExec_M14_Phase5_FullBootStack_ServiceCensus(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(5 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	wantBanners := []string{
+		"console.handler M11.5 [Task ",
+		"dos.library M14 [Task ",
+		"Shell M10 [Task ",
+		"hardware.resource M12.5 [Task ",
+		"input.device M11 [Task ",
+		"graphics.library M11 [Task ",
+		"intuition.library M12 [Task ",
+		"IntuitionOS M14 ready",
+		"All visible services are running in user space",
+		"1>",
+	}
+	for _, want := range wantBanners {
+		if !strings.Contains(output, want) {
+			t.Fatalf("Phase5_FullBootStack_ServiceCensus: missing %q in output=%q", want, output[:min(len(output), 800)])
+		}
+	}
+
+	mem := rig.cpu.memory
+	wantPorts := []string{
+		"console.handler",
+		"dos.library",
+		"hardware.resource",
+		"input.device",
+		"graphics.library",
+		"intuition.library",
+	}
+	for _, want := range wantPorts {
+		if !testPortTableHasPublicName(mem, want) {
+			t.Fatalf("Phase5_FullBootStack_ServiceCensus: missing public port %q", want)
+		}
+	}
+
+	for _, name := range []string{
+		"C/Version",
+		"C/Avail",
+		"C/Dir",
+		"C/Type",
+		"C/Echo",
+		"C/GfxDemo",
+		"C/About",
+	} {
+		assertDosSeededFileIsELF(t, mem, name)
+	}
+}
+
+func TestIExec_M14_Phase5_GfxDemoRegression(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(3 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+	mem := rig.cpu.memory
+	for _, name := range []string{
+		"C/GfxDemo",
+	} {
+		assertDosSeededFileIsELF(t, mem, name)
+	}
+	runGfxDemoEndToEnd(t)
+}
+
+func TestIExec_M14_Phase5_AboutRegression(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(3 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+	mem := rig.cpu.memory
+	for _, name := range []string{
+		"C/About",
+	} {
+		assertDosSeededFileIsELF(t, mem, name)
+	}
+	runAboutAppEndToEnd(t)
+}
+
 // TestIExec_CaseInsensitiveCommand explicitly verifies case-insensitive
 // command resolution by typing a lowercase command name. The seeded file
 // is "C/Version" but the user types "version" — the resolver must match.
@@ -9228,10 +10556,7 @@ func TestIExec_AssignResolution_LIBS(t *testing.T) {
 		t.Errorf("AssignResolution_LIBS: TYPE LIBS:graphics.library reported error, output=%q",
 			output[:min(len(output), 400)])
 	}
-	// The file is a binary IE64PROG, so the printable output is mostly junk.
-	// The signal we want is the absence of an error message, which we already
-	// checked above. The IE64PROG magic ("IE64PROG" as 8 bytes) is also visible
-	// at the start of the file content.
+	// LIBS: service binaries are still on the legacy seeded path in M14 phase 5.
 	if !strings.Contains(output, "IE64PROG") {
 		t.Logf("AssignResolution_LIBS: warning: did not see 'IE64PROG' magic in output (file may have been truncated by terminal); error-free output is sufficient")
 	}
