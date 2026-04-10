@@ -70,6 +70,7 @@ SYS_OPEN_LIBRARY  equ 36           ; nucleus  (binary-compat redirect to SYS_FIN
 ; current ABI ceiling. TestIExec_HWRes_Slot37StillReserved is the executable
 ; contract.
 SYS_HWRES_OP      equ 38           ; trusted-internal — verb-multiplexed hardware.resource broker primitive (M12.5)
+SYS_BOOT_MANIFEST equ 39           ; trusted-internal — dos.library launches embedded boot-manifest entries (M14.1)
                                    ; R0 selects: HWRES_BECOME / HWRES_CREATE / HWRES_REVOKE
                                    ; Net public ABI shrinks: SYS_MAP_IO leaves the public nucleus set
                                    ; in M12.5, one trusted-internal slot enters. Apps see one fewer
@@ -148,6 +149,7 @@ KERN_STACK_TOP    equ 0x09F000    ; Kernel stack top
 ;   +16440: Region table (255 tasks x 8 x 16 = 32640 bytes) → ends at 49080
 ;   +49080: Shared object table (16 x 16 = 256 bytes)       → ends at 49336
 ;   +49336: KD_HWRES_TASK (u32)                              → ends at 49340
+;   +49340: KD_DOSLIB_PUBID (u32)                            → ends at 49344
 ;   +49344: KD_GRANT_TABLE_HDR (8 bytes)                     → ends at 49352
 ;   +49352: KD_REGION_OVERFLOW_HEAD (255 x 8 = 2040 bytes)   → ends at 51392
 ;   +51392: KD_SHMEM_OFLOW_HDR (8 bytes)                     → ends at 51400
@@ -288,6 +290,40 @@ KD_TASK_PUBID_BASE       equ 65816 ; 255 x u32 public task IDs (slot -> public i
 KD_TASK_PUBID_STRIDE     equ 4
 KD_TASKID_NEXT           equ 66840 ; u64 monotonic next public task ID
 TASK_PUBID_FREE          equ 0xFFFFFFFF
+
+; M14.1: runtime boot manifest rows for the internal embedded-ELF service
+; path. Phase 2 boots the first two rows (console.handler, dos.library);
+; phase 3 lets dos.library launch the remaining rows after DOS is online.
+KD_DOSLIB_PUBID          equ 49340 ; u32 public task ID of launched dos.library
+KD_BOOT_MANIFEST_BASE       equ 66848
+KD_BOOT_MANIFEST_STRIDE     equ 40
+KD_BOOT_MANIFEST_COUNT      equ 7
+KD_BOOT_MANIFEST_BOOT_COUNT equ 2
+KD_BOOT_MANIFEST_ID         equ 0      ; u32 stable internal manifest entry ID
+KD_BOOT_MANIFEST_FLAGS      equ 4      ; u32 internal boot flags / strict policy
+KD_BOOT_MANIFEST_PTR        equ 8      ; u64 staged ELF image ptr
+KD_BOOT_MANIFEST_SIZE       equ 16     ; u64 staged ELF image size
+KD_BOOT_MANIFEST_NAME       equ 24     ; u64 internal path/name ptr
+KD_BOOT_MANIFEST_GTAG       equ 32     ; u32 bootstrap-grant region tag
+KD_BOOT_MANIFEST_PPN_LO     equ 36     ; u16 bootstrap-grant ppn_lo
+KD_BOOT_MANIFEST_PPN_HI     equ 38     ; u16 bootstrap-grant ppn_hi
+
+BOOT_MANIFEST_ID_CONSOLE    equ 10
+BOOT_MANIFEST_ID_DOSLIB     equ 11
+BOOT_MANIFEST_ID_SHELL      equ 12
+BOOT_MANIFEST_ID_HWRES      equ 13
+BOOT_MANIFEST_ID_INPUT      equ 14
+BOOT_MANIFEST_ID_GRAPHICS   equ 15
+BOOT_MANIFEST_ID_INTUITION  equ 16
+
+; M14.1 phase 3: dos.library receives a private exported copy of the
+; post-DOS staged service ELFs during bootstrap. These rows live in
+; dos.library's own data image and are internal-only.
+DOS_BOOT_EXPORT_COUNT       equ 5
+DOS_BOOT_EXPORT_ROW_SZ      equ 24
+DOS_BOOT_EXPORT_ID          equ 0      ; u32 manifest entry ID
+DOS_BOOT_EXPORT_PTR         equ 8      ; u64 user-accessible ELF VA
+DOS_BOOT_EXPORT_SIZE        equ 16     ; u64 ELF size
 
 ; Port chain page layout (4 KiB allocator-backed page).
 ; Same chain-page format as M12.5 region overflow / M12.6 shmem overflow:
@@ -906,12 +942,12 @@ HWRES_MSG_GRANTED     equ 0x401      ; reply: data0 = (ppn_base<<32)|page_count
 HWRES_MSG_DENIED      equ 0x402      ; reply: data0 = error code
 
 ; Bootstrap grant table — populated at boot-load time, NOT at kern_init time
-; (task IDs do not exist at kern_init). Each row is keyed by program_table
-; index, not task ID; the boot-load loop resolves to a real task ID after
-; load_program returns. The bootstrap table is part of the kernel image, not
-; the kernel data page.
+; (task IDs do not exist at kern_init). M14.1 phase 2+: each row is keyed by
+; internal boot-manifest entry ID, not task ID; the boot-load loop resolves
+; that manifest ID to a real task ID after the bootstrap ELF launch returns.
+; The bootstrap table is part of the kernel image, not the kernel data page.
 BOOTSTRAP_GRANT_ROW_SZ equ 16        ; bytes per bootstrap row (laid out in iexec.s)
-BOOTSTRAP_GRANT_OFF_PROG_IDX equ 0   ; 1 byte: program_table boot index
+BOOTSTRAP_GRANT_OFF_PROG_IDX equ 0   ; 1 byte: internal boot-manifest entry ID
 BOOTSTRAP_GRANT_OFF_TAG      equ 4   ; 4 bytes: region tag
 BOOTSTRAP_GRANT_OFF_PPN_LO   equ 8   ; 2 bytes: PPN low
 BOOTSTRAP_GRANT_OFF_PPN_HI   equ 10  ; 2 bytes: PPN high (inclusive)

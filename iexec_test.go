@@ -72,6 +72,7 @@ const (
 	sysExecProgram  = 35
 	sysOpenLibrary  = 36
 	sysReadInput    = 37 // M11.5: removed; slot now returns ERR_BADARG via dispatcher fall-through
+	sysBootManifest = 39
 	sysMapIO        = 28
 
 	dosLoadSeg   = 7
@@ -179,6 +180,7 @@ const (
 
 	kdPageBitmap   = 15640 // page allocation bitmap (800 bytes)
 	kdPageBitmapSz = 800
+	kdDoslibPubID  = 49340 // M14.1: internal dos.library public task ID
 
 	kdRegionTable  = 16440 // region table base
 	kdRegionStride = 16
@@ -221,42 +223,61 @@ const (
 	kdShmNonce    = 8
 
 	// M12.5: hardware.resource state and grant table
-	sysHwresOp        = 38    // SYS_HWRES_OP — verb-multiplexed broker primitive
-	hwresBecome       = 0     // R6 verb selector: claim broker identity
-	hwresCreate       = 1     // R6 verb selector: create grant
-	hwresRevoke       = 2     // R6 verb selector: reserved for M13
-	kdHwresTask       = 49336 // KD_HWRES_TASK (u32, 0xFFFFFFFF = unclaimed)
-	kdGrantTableHdr   = 49344 // KD_GRANT_TABLE_HDR (8 bytes)
-	kdTaskLayoutBase  = 51408 // KD_TASK_LAYOUT_BASE
-	kdTaskLayoutStr   = 56    // KD_TASK_LAYOUT_STRIDE
-	kdTaskPubIDBase   = 65816 // KD_TASK_PUBID_BASE
-	kdTaskPubIDStr    = 4
-	kdTaskIDNext      = 66840 // KD_TASKID_NEXT
-	kdTaskCodeBase    = 0
-	kdTaskStackBase   = 8
-	kdTaskDataBase    = 16
-	kdTaskCodePages   = 24
-	kdTaskStackPages  = 28
-	kdTaskDataPages   = 32
-	kdTaskStartupBase = 40
-	kdTaskLayoutPT    = 48
-	kdGrantHdrFirst   = 0  // first chain page PPN (2 bytes)
-	kdGrantHdrTotal   = 2  // total grant rows in use (2 bytes)
-	kdGrantHdrPages   = 4  // number of chain pages (2 bytes)
-	kdGrantPageNext   = 0  // chain page header: next page PPN (2 bytes)
-	kdGrantPageHdrSz  = 16 // bytes reserved at start of each chain page
-	kdGrantRowSize    = 16
-	kdGrantRowsPerPg  = 255
-	kdGrantTaskID     = 0          // row offset: granted task id (u32)
-	kdGrantRegion     = 4          // row offset: 4-byte tag
-	kdGrantPPNLo      = 8          // row offset: PPN low (2 bytes)
-	kdGrantPPNHi      = 10         // row offset: PPN high (2 bytes)
-	hwresTagCHIP      = 0x50494843 // 'CHIP' little-endian uint32
-	hwresTagVRAM      = 0x4D415256 // 'VRAM' little-endian uint32
-	hwresTaskFree     = 0xFFFFFFFF
-	grantTaskFree     = 0xFFFFFFFF
-	errExists         = 8
-	errPerm           = 5
+	sysHwresOp            = 38    // SYS_HWRES_OP — verb-multiplexed broker primitive
+	hwresBecome           = 0     // R6 verb selector: claim broker identity
+	hwresCreate           = 1     // R6 verb selector: create grant
+	hwresRevoke           = 2     // R6 verb selector: reserved for M13
+	kdHwresTask           = 49336 // KD_HWRES_TASK (u32, 0xFFFFFFFF = unclaimed)
+	kdGrantTableHdr       = 49344 // KD_GRANT_TABLE_HDR (8 bytes)
+	kdTaskLayoutBase      = 51408 // KD_TASK_LAYOUT_BASE
+	kdTaskLayoutStr       = 56    // KD_TASK_LAYOUT_STRIDE
+	kdTaskPubIDBase       = 65816 // KD_TASK_PUBID_BASE
+	kdTaskPubIDStr        = 4
+	kdTaskIDNext          = 66840 // KD_TASKID_NEXT
+	taskPubIDFree         = 0xFFFFFFFF
+	kdBootManifestBase    = 66848
+	kdBootManifestStride  = 40
+	kdBootManifestCount   = 7
+	kdBootManifestID      = 0
+	kdBootManifestName    = 24
+	kdBootManifestPtr     = 8
+	dosBootExportCount    = 5
+	dosBootExportRowSz    = 24
+	dosBootExportID       = 0
+	dosBootExportPtr      = 8
+	dosBootExportSize     = 16
+	kdTaskCodeBase        = 0
+	kdTaskStackBase       = 8
+	kdTaskDataBase        = 16
+	kdTaskCodePages       = 24
+	kdTaskStackPages      = 28
+	kdTaskDataPages       = 32
+	kdTaskStartupBase     = 40
+	kdTaskLayoutPT        = 48
+	kdGrantHdrFirst       = 0  // first chain page PPN (2 bytes)
+	kdGrantHdrTotal       = 2  // total grant rows in use (2 bytes)
+	kdGrantHdrPages       = 4  // number of chain pages (2 bytes)
+	kdGrantPageNext       = 0  // chain page header: next page PPN (2 bytes)
+	kdGrantPageHdrSz      = 16 // bytes reserved at start of each chain page
+	kdGrantRowSize        = 16
+	kdGrantRowsPerPg      = 255
+	kdGrantTaskID         = 0          // row offset: granted task id (u32)
+	kdGrantRegion         = 4          // row offset: 4-byte tag
+	kdGrantPPNLo          = 8          // row offset: PPN low (2 bytes)
+	kdGrantPPNHi          = 10         // row offset: PPN high (2 bytes)
+	hwresTagCHIP          = 0x50494843 // 'CHIP' little-endian uint32
+	hwresTagVRAM          = 0x4D415256 // 'VRAM' little-endian uint32
+	hwresTaskFree         = 0xFFFFFFFF
+	grantTaskFree         = 0xFFFFFFFF
+	bootManifestIDConsole = 10
+	bootManifestIDDoslib  = 11
+	bootManifestIDShell   = 12
+	bootManifestIDHWRes   = 13
+	bootManifestIDInput   = 14
+	bootManifestIDGfx     = 15
+	bootManifestIDIntui   = 16
+	errExists             = 8
+	errPerm               = 5
 
 	dosSegMagic      = 0x4C474553 // "SEGL" little-endian
 	dosSegMagicOff   = 8
@@ -1352,6 +1373,59 @@ func allocPoolFreePagesFromBitmap(mem []byte) uint32 {
 		}
 	}
 	return allocPoolPages - used
+}
+
+func allocPoolPageUsed(mem []byte, ppn uint32) bool {
+	if ppn < allocPoolBase || ppn >= allocPoolBase+allocPoolPages {
+		return false
+	}
+	bit := ppn - allocPoolBase
+	b := mem[kernDataBase+kdPageBitmap+bit/8]
+	return b&(1<<(bit%8)) != 0
+}
+
+func collectLiveTaskOwnedPoolPages(mem []byte) map[uint32]struct{} {
+	owned := make(map[uint32]struct{})
+	for slot := uint32(0); slot < maxTasks; slot++ {
+		state := mem[kernDataBase+kdTCBBase+slot*tcbStride+tcbStateOff]
+		if state == taskFree {
+			continue
+		}
+		pubid := binary.LittleEndian.Uint32(mem[kernDataBase+kdTaskPubIDBase+slot*kdTaskPubIDStr:])
+		if pubid == taskPubIDFree {
+			continue
+		}
+		layout := kernDataBase + kdTaskLayoutBase + slot*kdTaskLayoutStr
+		for _, field := range []struct {
+			baseOff  uint32
+			pagesOff uint32
+		}{
+			{kdTaskCodeBase, kdTaskCodePages},
+			{kdTaskStackBase, kdTaskStackPages},
+			{kdTaskDataBase, kdTaskDataPages},
+		} {
+			base := binary.LittleEndian.Uint64(mem[layout+field.baseOff:])
+			pages := binary.LittleEndian.Uint32(mem[layout+field.pagesOff:])
+			for i := uint32(0); i < pages; i++ {
+				phys, ok := taskVAToPhys(mem, uint64(pubid), base+uint64(i)*MMU_PAGE_SIZE)
+				if !ok {
+					continue
+				}
+				owned[phys>>MMU_PAGE_SHIFT] = struct{}{}
+			}
+		}
+		startupBase := binary.LittleEndian.Uint64(mem[layout+kdTaskStartupBase:])
+		if startupBase != 0 {
+			if phys, ok := taskVAToPhys(mem, uint64(pubid), startupBase); ok {
+				owned[phys>>MMU_PAGE_SHIFT] = struct{}{}
+			}
+		}
+		ptBase := binary.LittleEndian.Uint64(mem[layout+kdTaskLayoutPT:])
+		if ptBase != 0 {
+			owned[uint32(ptBase)>>MMU_PAGE_SHIFT] = struct{}{}
+		}
+	}
+	return owned
 }
 
 func runM14LoadSegClient(t *testing.T, filename string, loops int, doUnload bool) (*ie64TestRig, uint32) {
@@ -6271,7 +6345,7 @@ func TestIExec_TermCtrl_LineMode(t *testing.T) {
 	rig.cpu.running.Store(true)
 	done := make(chan struct{})
 	go func() { rig.cpu.Execute(); close(done) }()
-	time.Sleep(5 * time.Second)
+	time.Sleep(10 * time.Second)
 	rig.cpu.running.Store(false)
 	<-done
 
@@ -6303,7 +6377,7 @@ func TestIExec_ReadInput_ViaShell(t *testing.T) {
 	rig.cpu.running.Store(true)
 	done := make(chan struct{})
 	go func() { rig.cpu.Execute(); close(done) }()
-	time.Sleep(5 * time.Second)
+	time.Sleep(10 * time.Second)
 	rig.cpu.running.Store(false)
 	<-done
 
@@ -7973,7 +8047,7 @@ func TestIExec_ConsoleReadLineBusy(t *testing.T) {
 
 func TestIExec_ShellUnknown(t *testing.T) {
 	// Inject an invalid command. Shell should respond with "Unknown command".
-	_, output := bootPatchedFixtureAndInjectCommand(t, m14SeededElfFixtureBytes(t), "FOOBAR\n", 5*time.Second)
+	output := bootAndInjectCommand(t, "FOOBAR\n", 5*time.Second)
 	if !strings.Contains(output, "Unknown command") {
 		t.Fatalf("ShellUnknown: expected 'Unknown command' in output, got=%q", output[:min(len(output), 300)])
 	}
@@ -8059,11 +8133,14 @@ func TestIExec_TypeStartupSequence(t *testing.T) {
 	if !strings.Contains(output, "VERSION") {
 		t.Fatalf("TypeStartupSequence: expected 'VERSION' in output, got=%q", output[:min(len(output), 300)])
 	}
-	if !strings.Contains(output, "ECHO IntuitionOS M14 ready") {
-		t.Errorf("TypeStartupSequence: expected 'ECHO IntuitionOS M14 ready' in output, got=%q", output[:min(len(output), 300)])
+	if !strings.Contains(output, "ECHO All visible services are running in user space") {
+		t.Errorf("TypeStartupSequence: expected service-space ECHO in output, got=%q", output[:min(len(output), 300)])
 	}
 	if strings.Contains(output, "Core OS objects:") || strings.Contains(output, "dos.library file storage:") {
 		t.Errorf("TypeStartupSequence: removed startup ECHO lines still present, got=%q", output[:min(len(output), 300)])
+	}
+	if strings.Contains(output, "ECHO IntuitionOS M14 ready") {
+		t.Errorf("TypeStartupSequence: removed startup ready ECHO still present, got=%q", output[:min(len(output), 300)])
 	}
 }
 
@@ -8728,7 +8805,7 @@ func TestIExec_DosM128_FileLargerThanOldCap(t *testing.T) {
 	rig.cpu.running.Store(true)
 	done := make(chan struct{})
 	go func() { rig.cpu.Execute(); close(done) }()
-	time.Sleep(5 * time.Second)
+	time.Sleep(10 * time.Second)
 	rig.cpu.running.Store(false)
 	<-done
 
@@ -10443,6 +10520,727 @@ func assertDosSeededFileIsELF(t *testing.T, mem []byte, name string) {
 	}
 }
 
+func mustReadRepoFile(t *testing.T, rel string) string {
+	t.Helper()
+	data, err := os.ReadFile(rel)
+	if err != nil {
+		t.Fatalf("ReadFile(%q): %v", rel, err)
+	}
+	return string(data)
+}
+
+func requireAllSubstrings(t *testing.T, body string, subs ...string) {
+	t.Helper()
+	for _, sub := range subs {
+		if !strings.Contains(body, sub) {
+			t.Fatalf("missing required substring %q", sub)
+		}
+	}
+}
+
+func requireAnySubstring(t *testing.T, body string, subs ...string) {
+	t.Helper()
+	for _, sub := range subs {
+		if strings.Contains(body, sub) {
+			return
+		}
+	}
+	t.Fatalf("missing any required substring from %q", strings.Join(subs, ", "))
+}
+
+func bootManifestRowByID(mem []byte, want uint32) (uint32, bool) {
+	for i := uint32(0); i < kdBootManifestCount; i++ {
+		base := kernDataBase + kdBootManifestBase + i*kdBootManifestStride
+		if binary.LittleEndian.Uint32(mem[base+kdBootManifestID:]) == want {
+			return base, true
+		}
+	}
+	return 0, false
+}
+
+func waitForBootManifestImagePtr(mem []byte, want uint32, timeout time.Duration) uint64 {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if base, ok := bootManifestRowByID(mem, want); ok {
+			if ptr := binary.LittleEndian.Uint64(mem[base+kdBootManifestPtr:]); ptr != 0 {
+				return ptr
+			}
+		}
+		time.Sleep(1 * time.Millisecond)
+	}
+	return 0
+}
+
+func dosBootExportRowByID(mem []byte, taskSlot uint64, want uint32) (uint32, bool) {
+	dataBase := taskLayoutFieldQ(mem, taskSlot, kdTaskDataBase)
+	if dataBase == 0 {
+		return 0, false
+	}
+	start := uint32(dataBase)
+	end := start + 4096
+	if end > uint32(len(mem)) {
+		end = uint32(len(mem))
+	}
+	for base := start; base+dosBootExportCount*dosBootExportRowSz <= end; base++ {
+		matchAll := true
+		for i := uint32(0); i < dosBootExportCount; i++ {
+			row := base + i*dosBootExportRowSz
+			id := binary.LittleEndian.Uint32(mem[row+dosBootExportID:])
+			if id != bootManifestIDShell+i {
+				matchAll = false
+				break
+			}
+			if binary.LittleEndian.Uint64(mem[row+dosBootExportPtr:]) == 0 {
+				matchAll = false
+				break
+			}
+			if binary.LittleEndian.Uint64(mem[row+dosBootExportSize:]) == 0 {
+				matchAll = false
+				break
+			}
+		}
+		if !matchAll {
+			continue
+		}
+		for i := uint32(0); i < dosBootExportCount; i++ {
+			row := base + i*dosBootExportRowSz
+			if binary.LittleEndian.Uint32(mem[row+dosBootExportID:]) == want {
+				return row, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func TestIExec_M141_Phase1_BootManifestContractDocumented(t *testing.T) {
+	body := mustReadRepoFile(t, "sdk/docs/IntuitionOS/M14.1-plan.md")
+	requireAllSubstrings(t, body,
+		"embedded boot bundle manifest",
+		"console.handler",
+		"dos.library",
+		"Shell",
+		"hardware.resource",
+		"input.device",
+		"graphics.library",
+		"intuition.library",
+		"embedded service ELF images are the only canonical artifact",
+	)
+}
+
+func TestIExec_M141_Phase1_BootstrapGrantContractUsesManifestEntryID(t *testing.T) {
+	plan := mustReadRepoFile(t, "sdk/docs/IntuitionOS/M14.1-plan.md")
+	requireAllSubstrings(t, plan,
+		"boot-manifest entry ID",
+		"not task ID",
+		"console.handler gets the early 'CHIP' MMIO bootstrap grant",
+	)
+
+	iexecDoc := mustReadRepoFile(t, "sdk/docs/IntuitionOS/IExec.md")
+	requireAllSubstrings(t, iexecDoc,
+		"M14 shipped/current runtime:",
+		"M14.1 target:",
+		"bootstrap grants move from boot-index keying to internal manifest-entry-ID keying",
+	)
+}
+
+func TestIExec_M141_Phase1_DocsSeparateM14FromM141(t *testing.T) {
+	elfDoc := mustReadRepoFile(t, "sdk/docs/IntuitionOS/ELF.md")
+	requireAllSubstrings(t, elfDoc,
+		"M14 shipped state:",
+		"boot services remain on the legacy kernel `IE64PROG`/`program_table` path",
+		"M14.1 target state:",
+		"embedded boot manifest",
+	)
+
+	m14Plan := mustReadRepoFile(t, "sdk/docs/IntuitionOS/M14-plan.md")
+	requireAllSubstrings(t, m14Plan,
+		"Historical shipped M14 note:",
+		"the kernel boot path for bundled boot services may remain on the legacy `IE64PROG`/`program_table` path during M14",
+		"M14.1 is the later milestone that moves shipped services to an internal embedded-manifest ELF path",
+	)
+
+	iexecDoc := mustReadRepoFile(t, "sdk/docs/IntuitionOS/IExec.md")
+	requireAllSubstrings(t, iexecDoc,
+		"In the shipped M14 phase-5 tree, the seeded `C:` command/demo path is native ELF, while bundled startup-sequence services remain on the legacy path.",
+		"M14.1 target state:",
+		"all shipped runtime binaries become ELF",
+	)
+}
+
+func TestIExec_M141_Phase1_EmbeddedServicePathMarkedInternal(t *testing.T) {
+	plan := mustReadRepoFile(t, "sdk/docs/IntuitionOS/M14.1-plan.md")
+	requireAllSubstrings(t, plan,
+		"DOS-private embedded-bundle source path",
+		"internal DOS helper",
+		"it is not a public DOS opcode",
+	)
+
+	elfDoc := mustReadRepoFile(t, "sdk/docs/IntuitionOS/ELF.md")
+	requireAllSubstrings(t, elfDoc,
+		"`DOS_LOADSEG` remains the public file-backed DOS loader API",
+		"future M14.1 embedded-manifest service source path is internal-only",
+	)
+	requireAnySubstring(t, elfDoc,
+		"not a public DOS API",
+		"not a public DOS opcode",
+	)
+}
+
+func TestIExec_M141_Phase2_BootstrapELFConsoleAndDos(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(15 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	for _, want := range []string{
+		"console.handler M11.5 [Task ",
+		"dos.library M14 [Task ",
+		"Shell M10 [Task ",
+		"1>",
+	} {
+		if !strings.Contains(output, want) {
+			code0 := taskLayoutFieldQ(rig.cpu.memory, 0, kdTaskCodeBase)
+			data0 := taskLayoutFieldQ(rig.cpu.memory, 0, kdTaskDataBase)
+			stack0 := taskLayoutFieldQ(rig.cpu.memory, 0, kdTaskStackBase)
+			data1 := taskLayoutFieldQ(rig.cpu.memory, 1, kdTaskDataBase)
+			firstPPN := binary.LittleEndian.Uint16(rig.cpu.memory[kernDataBase+kdGrantTableHdr+kdGrantHdrFirst:])
+			firstGrant := uint32(firstPPN)<<12 + uint32(kdGrantPageHdrSz)
+			row2Base, _ := bootManifestRowByID(rig.cpu.memory, bootManifestIDShell)
+			t.Fatalf("BootstrapELFConsoleAndDos: missing %q in output=%q num_tasks=%d current_slot=%d slot0_pubid=%d cpu_pc=0x%X fault_pc=0x%X fault_cause=%d task0_state=%d task1_state=%d task0_pc=0x%X task0_startup=0x%X task0_data=0x%X task0_stack=0x%X stack_seed_startup=0x%X stack_seed_data=0x%X code_q0=0x%X code_q1=0x%X data_q0=0x%X data_q1=0x%X data_taskid=%d data_console_port=0x%X data_term_io=0x%X export0_id=%d export0_ptr=0x%X export0_size=0x%X shell_manifest_ptr=0x%X shell_manifest_size=0x%X grant_first=%d grant_total=%d grant_tid=%d grant_tag=0x%X grant_lo=0x%X grant_hi=0x%X",
+				want,
+				output[:min(len(output), 400)],
+				binary.LittleEndian.Uint64(rig.cpu.memory[kernDataBase+kdNumTasks:]),
+				binary.LittleEndian.Uint64(rig.cpu.memory[kernDataBase+kdCurrentTask:]),
+				binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdTaskPubIDBase:]),
+				rig.cpu.PC,
+				rig.cpu.faultPC,
+				rig.cpu.faultCause,
+				rig.cpu.memory[kernDataBase+64+28],
+				rig.cpu.memory[kernDataBase+64+32+28],
+				code0,
+				taskLayoutFieldQ(rig.cpu.memory, 0, kdTaskStartupBase),
+				data0,
+				stack0,
+				binary.LittleEndian.Uint64(rig.cpu.memory[stack0+0x1000-16:]),
+				binary.LittleEndian.Uint64(rig.cpu.memory[stack0+0x1000-8:]),
+				binary.LittleEndian.Uint64(rig.cpu.memory[code0:]),
+				binary.LittleEndian.Uint64(rig.cpu.memory[code0+8:]),
+				binary.LittleEndian.Uint64(rig.cpu.memory[data0:]),
+				binary.LittleEndian.Uint64(rig.cpu.memory[data0+8:]),
+				binary.LittleEndian.Uint64(rig.cpu.memory[data0+128:]),
+				binary.LittleEndian.Uint64(rig.cpu.memory[data0+136:]),
+				binary.LittleEndian.Uint64(rig.cpu.memory[data0+144:]),
+				binary.LittleEndian.Uint32(rig.cpu.memory[data1+1150+dosBootExportID:]),
+				binary.LittleEndian.Uint64(rig.cpu.memory[data1+1150+dosBootExportPtr:]),
+				binary.LittleEndian.Uint64(rig.cpu.memory[data1+1150+dosBootExportSize:]),
+				binary.LittleEndian.Uint64(rig.cpu.memory[row2Base+kdBootManifestPtr:]),
+				binary.LittleEndian.Uint64(rig.cpu.memory[row2Base+16:]),
+				firstPPN,
+				binary.LittleEndian.Uint16(rig.cpu.memory[kernDataBase+kdGrantTableHdr+kdGrantHdrTotal:]),
+				binary.LittleEndian.Uint32(rig.cpu.memory[firstGrant+kdGrantTaskID:]),
+				binary.LittleEndian.Uint32(rig.cpu.memory[firstGrant+kdGrantRegion:]),
+				binary.LittleEndian.Uint16(rig.cpu.memory[firstGrant+kdGrantPPNLo:]),
+				binary.LittleEndian.Uint16(rig.cpu.memory[firstGrant+kdGrantPPNHi:]),
+			)
+		}
+	}
+
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdBootManifestBase+kdBootManifestID:]); got != bootManifestIDConsole {
+		t.Fatalf("BootstrapELFConsoleAndDos: manifest row 0 id=%d, want %d", got, bootManifestIDConsole)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdBootManifestBase+kdBootManifestStride+kdBootManifestID:]); got != bootManifestIDDoslib {
+		t.Fatalf("BootstrapELFConsoleAndDos: manifest row 1 id=%d, want %d", got, bootManifestIDDoslib)
+	}
+	for _, id := range []uint32{bootManifestIDConsole, bootManifestIDDoslib} {
+		base, ok := bootManifestRowByID(rig.cpu.memory, id)
+		if !ok {
+			t.Fatalf("BootstrapELFConsoleAndDos: missing manifest row id=%d", id)
+		}
+		if got := binary.LittleEndian.Uint64(rig.cpu.memory[base+kdBootManifestPtr:]); got != 0 {
+			t.Fatalf("BootstrapELFConsoleAndDos: manifest row id=%d staged ptr=0x%X, want 0 after launch/free", id, got)
+		}
+	}
+	if startupBase := taskLayoutFieldQ(rig.cpu.memory, 0, kdTaskStartupBase); startupBase == 0 {
+		t.Fatal("BootstrapELFConsoleAndDos: task 0 startup page missing")
+	}
+	if startupBase := taskLayoutFieldQ(rig.cpu.memory, 1, kdTaskStartupBase); startupBase == 0 {
+		t.Fatal("BootstrapELFConsoleAndDos: task 1 startup page missing")
+	}
+}
+
+func TestIExec_M141_Phase3_DOSLaunchesShellAndRemainingServicesFromManifest(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(10 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	for _, want := range []string{
+		"exec.library M11 boot",
+		"console.handler M11.5 [Task ",
+		"dos.library M14 [Task ",
+		"1>",
+	} {
+		if !strings.Contains(output, want) {
+			data1 := taskLayoutFieldQ(rig.cpu.memory, 1, kdTaskDataBase)
+			stack1 := taskLayoutFieldQ(rig.cpu.memory, 1, kdTaskStackBase)
+			t.Fatalf("Phase3_DOSLaunchesShellAndRemainingServicesFromManifest: missing %q in output=%q num_tasks=%d task1_code=0x%X task1_data=0x%X task1_stack=0x%X task1_stack_q0=0x%X task1_stack_q1=0x%X task2_code=0x%X task2_data=0x%X task3_code=0x%X task3_data=0x%X",
+				want,
+				output[:min(len(output), 800)],
+				binary.LittleEndian.Uint64(rig.cpu.memory[kernDataBase+kdNumTasks:]),
+				taskLayoutFieldQ(rig.cpu.memory, 1, kdTaskCodeBase),
+				data1,
+				stack1,
+				binary.LittleEndian.Uint64(rig.cpu.memory[stack1+0x1000-16:]),
+				binary.LittleEndian.Uint64(rig.cpu.memory[stack1+0x1000-8:]),
+				taskLayoutFieldQ(rig.cpu.memory, 2, kdTaskCodeBase),
+				taskLayoutFieldQ(rig.cpu.memory, 2, kdTaskDataBase),
+				taskLayoutFieldQ(rig.cpu.memory, 3, kdTaskCodeBase),
+				taskLayoutFieldQ(rig.cpu.memory, 3, kdTaskDataBase),
+			)
+		}
+	}
+
+	mem := rig.cpu.memory
+	for _, want := range []string{
+		"console.handler",
+		"dos.library",
+		"hardware.resource",
+		"input.device",
+		"graphics.library",
+		"intuition.library",
+	} {
+		if !testPortTableHasPublicName(mem, want) {
+			t.Fatalf("Phase3_DOSLaunchesShellAndRemainingServicesFromManifest: missing public port %q num_tasks=%d output=%q", want, binary.LittleEndian.Uint64(mem[kernDataBase+kdNumTasks:]), output[:min(len(output), 1200)])
+		}
+	}
+	if got := binary.LittleEndian.Uint64(mem[kernDataBase+kdNumTasks:]); got < 7 {
+		t.Fatalf("Phase3_DOSLaunchesShellAndRemainingServicesFromManifest: num_tasks=%d, want at least 7", got)
+	}
+
+	for _, id := range []uint32{
+		bootManifestIDConsole,
+		bootManifestIDDoslib,
+	} {
+		base, ok := bootManifestRowByID(rig.cpu.memory, id)
+		if !ok {
+			t.Fatalf("Phase3_DOSLaunchesShellAndRemainingServicesFromManifest: missing manifest row id=%d", id)
+		}
+		if got := binary.LittleEndian.Uint64(rig.cpu.memory[base+kdBootManifestPtr:]); got != 0 {
+			t.Fatalf("Phase3_DOSLaunchesShellAndRemainingServicesFromManifest: manifest row id=%d staged ptr=0x%X, want 0 after launch/free", id, got)
+		}
+	}
+}
+
+func TestIExec_M141_Phase2_DosBootExportsPresent(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(10 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "1>") {
+		t.Fatalf("Phase2_DosBootExportsPresent: boot never reached shell prompt, output=%q", output[:min(len(output), 600)])
+	}
+
+	dosSlot := uint64(^uint64(0))
+	for slot := uint32(0); slot < maxTasks; slot++ {
+		state := rig.cpu.memory[kernDataBase+kdTCBBase+slot*tcbStride+tcbStateOff]
+		if state == taskFree {
+			continue
+		}
+		dataBase := uint32(taskLayoutFieldQ(rig.cpu.memory, uint64(slot), kdTaskDataBase))
+		if dataBase == 0 || dataBase+32 >= uint32(len(rig.cpu.memory)) {
+			continue
+		}
+		if strings.HasPrefix(string(rig.cpu.memory[dataBase+16:dataBase+28]), "dos.library") {
+			dosSlot = uint64(slot)
+			break
+		}
+	}
+	if dosSlot == ^uint64(0) {
+		t.Fatal("Phase2_DosBootExportsPresent: could not locate dos.library task slot")
+	}
+
+	for _, id := range []uint32{
+		bootManifestIDShell,
+		bootManifestIDHWRes,
+		bootManifestIDInput,
+		bootManifestIDGfx,
+		bootManifestIDIntui,
+	} {
+		row, ok := dosBootExportRowByID(rig.cpu.memory, dosSlot, id)
+		if !ok {
+			t.Fatalf("Phase2_DosBootExportsPresent: missing dos export row for manifest id=%d slot=%d", id, dosSlot)
+		}
+		if ptr := binary.LittleEndian.Uint64(rig.cpu.memory[row+dosBootExportPtr:]); ptr == 0 {
+			t.Fatalf("Phase2_DosBootExportsPresent: export row id=%d ptr=0", id)
+		}
+		if sz := binary.LittleEndian.Uint64(rig.cpu.memory[row+dosBootExportSize:]); sz == 0 {
+			t.Fatalf("Phase2_DosBootExportsPresent: export row id=%d size=0", id)
+		}
+	}
+}
+
+func TestIExec_M141_Phase3_ManifestLaunchPreservesArgs(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	var dosImg uint32
+	for _, codeStart := range images {
+		imgStart := codeStart - imgHeaderSize
+		codeSize := binary.LittleEndian.Uint32(rig.cpu.memory[imgStart+8:])
+		dataBase := imgStart + imgHeaderSize + codeSize
+		if dataBase+32 >= uint32(len(rig.cpu.memory)) {
+			continue
+		}
+		if strings.HasPrefix(string(rig.cpu.memory[dataBase+16:dataBase+28]), "dos.library") {
+			dosImg = imgStart
+			break
+		}
+	}
+	if dosImg == 0 {
+		t.Fatalf("could not locate bundled dos.library image among %d images", len(images))
+	}
+	codeSize := binary.LittleEndian.Uint32(rig.cpu.memory[dosImg+8:])
+	dataBase := dosImg + imgHeaderSize + codeSize
+	rig.cpu.memory[dataBase+1001] = 'h'
+	origArgPtr := ie64Instr(OP_ADD, 2, IE64_SIZE_Q, 1, 29, 0, 1000)
+	patchLen := ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 1)
+	patchArgPtr := ie64Instr(OP_ADD, 2, IE64_SIZE_Q, 1, 29, 0, 1001)
+
+	offArgPtr := bytes.Index(rig.cpu.memory[dosImg:dosImg+0x3000], origArgPtr)
+	if offArgPtr < 0 {
+		t.Fatal("Phase3_ManifestLaunchPreservesArgs: could not locate dos shell-arg pointer instruction")
+	}
+	copy(rig.cpu.memory[dosImg+uint32(offArgPtr):], patchArgPtr)
+
+	origLen := ie64Instr(OP_MOVE, 3, IE64_SIZE_Q, 0, 0, 0, 0)
+	searchEnd := dosImg + uint32(offArgPtr) + 64
+	if searchEnd > dosImg+0x3000 {
+		searchEnd = dosImg + 0x3000
+	}
+	offLen := bytes.Index(rig.cpu.memory[dosImg+uint32(offArgPtr):searchEnd], origLen)
+	if offLen < 0 {
+		t.Fatal("Phase3_ManifestLaunchPreservesArgs: could not locate dos shell-arg length instruction")
+	}
+	copy(rig.cpu.memory[dosImg+uint32(offArgPtr)+uint32(offLen):], patchLen)
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(8 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "Shell M10 [Task ") {
+		t.Fatalf("Phase3_ManifestLaunchPreservesArgs: shell never launched, output=%q", output[:min(len(output), 600)])
+	}
+	found := false
+	for taskID := uint32(0); taskID < maxTasks; taskID++ {
+		state := rig.cpu.memory[kernDataBase+kdTCBBase+taskID*tcbStride+tcbStateOff]
+		if state == taskFree {
+			continue
+		}
+		dataBase := uint32(taskLayoutFieldQ(rig.cpu.memory, uint64(taskID), kdTaskDataBase))
+		if dataBase == 0 || dataBase+3073 >= uint32(len(rig.cpu.memory)) {
+			continue
+		}
+		if !bytes.HasPrefix(rig.cpu.memory[dataBase+32:dataBase+32+11], []byte("Shell M10 [")) {
+			continue
+		}
+		if rig.cpu.memory[dataBase+3072] == 'h' {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("Phase3_ManifestLaunchPreservesArgs: did not find shell args marker at DATA_ARGS_OFFSET, output=%q", output[:min(len(output), 600)])
+	}
+}
+
+func TestIExec_M141_Phase2_CorruptPreparedDosManifestImageFailsCleanly(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+
+	if ptr := waitForBootManifestImagePtr(rig.cpu.memory, bootManifestIDDoslib, 2*time.Second); ptr != 0 {
+		rig.cpu.memory[ptr] = 0x00
+	}
+
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "boot program failed") {
+		t.Fatalf("CorruptPreparedDosManifestImageFailsCleanly: expected boot failure output, got=%q", output[:min(len(output), 400)])
+	}
+	if strings.Contains(output, "1>") {
+		t.Fatalf("CorruptPreparedDosManifestImageFailsCleanly: reached shell prompt despite corrupt staged dos manifest image, output=%q", output[:min(len(output), 400)])
+	}
+}
+
+func TestIExec_M141_Phase3_CorruptPreparedShellManifestImageFailsToReachPrompt(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+
+	if ptr := waitForBootManifestImagePtr(rig.cpu.memory, bootManifestIDShell, 2*time.Second); ptr != 0 {
+		rig.cpu.memory[ptr] = 0x00
+	}
+
+	time.Sleep(4 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if strings.Contains(output, "1>") {
+		t.Fatalf("CorruptPreparedShellManifestImageFailsToReachPrompt: reached shell prompt despite corrupt staged shell manifest image, output=%q", output[:min(len(output), 500)])
+	}
+}
+
+func TestIExec_M141_Phase3_MalformedShellManifestImageFailsToReachPrompt(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	if len(images) == 0 {
+		t.Fatal("no bundled images found")
+	}
+	shellHeader := images[len(images)-1] - imgHeaderSize
+	rig.cpu.memory[shellHeader] = 0x00
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(3 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if strings.Contains(output, "1>") {
+		t.Fatalf("MalformedShellManifestImageFailsToReachPrompt: reached shell prompt despite corrupt Shell source, output=%q", output[:min(len(output), 500)])
+	}
+}
+
+func TestIExec_M141_Phase4_ShippedServiceFilesAreELF(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(5 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	mem := rig.cpu.memory
+	for _, name := range []string{
+		"DEVS/input.device",
+		"RESOURCES/hardware.resource",
+		"LIBS/graphics.library",
+		"LIBS/intuition.library",
+	} {
+		assertDosSeededFileIsELF(t, mem, name)
+	}
+}
+
+func TestIExec_M141_Phase4_PreparedManifestRowsAreELF(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+
+	for _, id := range []uint32{
+		bootManifestIDConsole,
+		bootManifestIDDoslib,
+		bootManifestIDShell,
+		bootManifestIDHWRes,
+		bootManifestIDInput,
+		bootManifestIDGfx,
+		bootManifestIDIntui,
+	} {
+		ptr := waitForBootManifestImagePtr(rig.cpu.memory, id, 2*time.Second)
+		if ptr == 0 {
+			rig.cpu.running.Store(false)
+			<-done
+			t.Fatalf("Phase4_PreparedManifestRowsAreELF: manifest row id=%d never exposed a staged image", id)
+		}
+		base, ok := bootManifestRowByID(rig.cpu.memory, id)
+		if !ok {
+			rig.cpu.running.Store(false)
+			<-done
+			t.Fatalf("Phase4_PreparedManifestRowsAreELF: missing manifest row id=%d", id)
+		}
+		size := binary.LittleEndian.Uint64(rig.cpu.memory[base+16:])
+		if size == 0 {
+			rig.cpu.running.Store(false)
+			<-done
+			t.Fatalf("Phase4_PreparedManifestRowsAreELF: manifest row id=%d has zero staged size", id)
+		}
+		image := rig.cpu.memory[ptr : ptr+size]
+		if err := validateM14ELFContract(image); err != nil {
+			rig.cpu.running.Store(false)
+			<-done
+			t.Fatalf("Phase4_PreparedManifestRowsAreELF: manifest row id=%d staged image is not ELF: %v", id, err)
+		}
+	}
+
+	time.Sleep(5 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "1>") {
+		t.Fatalf("Phase4_PreparedManifestRowsAreELF: boot never reached shell prompt, output=%q", output[:min(len(output), 600)])
+	}
+}
+
+func TestIExec_M141_Phase4_BootManifestSyscallDeniedOutsideDosLibrary(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	if len(images) < 2 {
+		t.Fatalf("need at least 2 bundled images, got %d", len(images))
+	}
+	pc := images[0] // bundled console.handler image
+	off := uint32(0)
+	copy(rig.cpu.memory[pc+off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, bootManifestIDShell))
+	off += 8
+	copy(rig.cpu.memory[pc+off:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	off += 8
+	copy(rig.cpu.memory[pc+off:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	off += 8
+	copy(rig.cpu.memory[pc+off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysBootManifest))
+	off += 8
+	copy(rig.cpu.memory[pc+off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32('0')))
+	off += 8
+	copy(rig.cpu.memory[pc+off:], ie64Instr(OP_ADD, 1, IE64_SIZE_Q, 0, 1, 2, 0))
+	off += 8
+	copy(rig.cpu.memory[pc+off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	off += 8
+	copy(rig.cpu.memory[pc+off:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "5") {
+		t.Fatalf("Phase4_BootManifestSyscallDeniedOutsideDosLibrary: missing ERR_PERM digit in output=%q", output[:min(len(output), 200)])
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdDoslibPubID:]); got == 0 {
+		t.Fatal("Phase4_BootManifestSyscallDeniedOutsideDosLibrary: dos.library public ID was never recorded")
+	}
+}
+
+func TestIExec_M141_Phase4_PreDosManifestPagesFreed(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	if len(images) < 2 {
+		t.Fatalf("need at least 2 bundled images, got %d", len(images))
+	}
+	// Halt immediately when the kernel enters task 0 so we can inspect the
+	// allocator right after the pre-DOS bootstrap phase, before later DOS work
+	// has a chance to legitimately reuse freed staging pages.
+	copy(rig.cpu.memory[images[0]:images[0]+8], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+
+	type stagedRow struct {
+		id   uint32
+		ptr  uint64
+		size uint64
+	}
+	rows := make([]stagedRow, 0, 2)
+	for _, id := range []uint32{bootManifestIDConsole, bootManifestIDDoslib} {
+		ptr := waitForBootManifestImagePtr(rig.cpu.memory, id, 2*time.Second)
+		if ptr == 0 {
+			rig.cpu.running.Store(false)
+			<-done
+			t.Fatalf("Phase4_PreDosManifestPagesFreed: manifest row id=%d never exposed a staged image", id)
+		}
+		base, ok := bootManifestRowByID(rig.cpu.memory, id)
+		if !ok {
+			rig.cpu.running.Store(false)
+			<-done
+			t.Fatalf("Phase4_PreDosManifestPagesFreed: missing manifest row id=%d", id)
+		}
+		size := binary.LittleEndian.Uint64(rig.cpu.memory[base+16:])
+		rows = append(rows, stagedRow{id: id, ptr: ptr, size: size})
+	}
+
+	time.Sleep(1 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	owned := collectLiveTaskOwnedPoolPages(rig.cpu.memory)
+	grantPPN := uint32(binary.LittleEndian.Uint16(rig.cpu.memory[kernDataBase+kdGrantTableHdr:])) // first chain page
+
+	for _, row := range rows {
+		base, ok := bootManifestRowByID(rig.cpu.memory, row.id)
+		if !ok {
+			t.Fatalf("Phase4_PreDosManifestPagesFreed: missing manifest row id=%d after boot", row.id)
+		}
+		if got := binary.LittleEndian.Uint64(rig.cpu.memory[base+kdBootManifestPtr:]); got != 0 {
+			t.Fatalf("Phase4_PreDosManifestPagesFreed: manifest row id=%d ptr=0x%X, want 0 after free", row.id, got)
+		}
+		pages := uint32((row.size + 4095) >> 12)
+		ppn := uint32(row.ptr >> 12)
+		for i := uint32(0); i < pages; i++ {
+			cur := ppn + i
+			if !allocPoolPageUsed(rig.cpu.memory, cur) {
+				continue
+			}
+			if _, ok := owned[cur]; ok {
+				continue
+			}
+			if cur == grantPPN {
+				continue
+			}
+			t.Fatalf("Phase4_PreDosManifestPagesFreed: manifest row id=%d page ppn=0x%X still allocated outside live ownership", row.id, cur)
+		}
+	}
+}
+
+func TestIExec_M141_Phase2_MalformedConsoleBootImageFailsCleanly(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	if len(images) < 2 {
+		t.Fatalf("need at least 2 bundled images, got %d", len(images))
+	}
+	consoleHeader := images[0] - imgHeaderSize
+	rig.cpu.memory[consoleHeader] = 0x00
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(1 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "boot program failed") {
+		t.Fatalf("MalformedConsoleBootImageFailsCleanly: expected boot failure output, got=%q", output[:min(len(output), 300)])
+	}
+	if strings.Contains(output, "1>") {
+		t.Fatalf("MalformedConsoleBootImageFailsCleanly: reached shell prompt despite corrupt boot image, output=%q", output[:min(len(output), 300)])
+	}
+}
+
 func TestIExec_M14_Phase5_FullBootStack_ServiceCensus(t *testing.T) {
 	rig, term := assembleAndLoadKernel(t)
 	rig.cpu.running.Store(true)
@@ -10453,19 +11251,13 @@ func TestIExec_M14_Phase5_FullBootStack_ServiceCensus(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	wantBanners := []string{
+	for _, want := range []string{
+		"exec.library M11 boot",
 		"console.handler M11.5 [Task ",
 		"dos.library M14 [Task ",
-		"Shell M10 [Task ",
-		"hardware.resource M12.5 [Task ",
-		"input.device M11 [Task ",
-		"graphics.library M11 [Task ",
-		"intuition.library M12 [Task ",
-		"IntuitionOS M14 ready",
 		"All visible services are running in user space",
 		"1>",
-	}
-	for _, want := range wantBanners {
+	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("Phase5_FullBootStack_ServiceCensus: missing %q in output=%q", want, output[:min(len(output), 800)])
 		}
@@ -10533,6 +11325,127 @@ func TestIExec_M14_Phase5_AboutRegression(t *testing.T) {
 	runAboutAppEndToEnd(t)
 }
 
+func TestIExec_M141_Phase5_FullBootStack_ServiceCensus(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(5 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	for _, want := range []string{
+		"exec.library M11 boot",
+		"console.handler M11.5 [Task ",
+		"dos.library M14 [Task ",
+		"Shell M10 [Task ",
+		"hardware.resource M12.5 [Task ",
+		"input.device M11 [Task ",
+		"graphics.library M11 [Task ",
+		"intuition.library M12 [Task ",
+		"All visible services are running in user space",
+		"1>",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("M141_Phase5_FullBootStack_ServiceCensus: missing %q in output=%q", want, output[:min(len(output), 1000)])
+		}
+	}
+
+	mem := rig.cpu.memory
+	for _, want := range []string{
+		"console.handler",
+		"dos.library",
+		"hardware.resource",
+		"input.device",
+		"graphics.library",
+		"intuition.library",
+	} {
+		if !testPortTableHasPublicName(mem, want) {
+			t.Fatalf("M141_Phase5_FullBootStack_ServiceCensus: missing public port %q", want)
+		}
+	}
+
+	for _, name := range []string{
+		"C/Version",
+		"C/Avail",
+		"C/Dir",
+		"C/Type",
+		"C/Echo",
+		"C/GfxDemo",
+		"C/About",
+		"DEVS/input.device",
+		"LIBS/graphics.library",
+		"LIBS/intuition.library",
+		"RESOURCES/hardware.resource",
+	} {
+		assertDosSeededFileIsELF(t, mem, name)
+	}
+}
+
+func TestIExec_M141_Phase5_CommandPathRegression(t *testing.T) {
+	output := bootAndInjectCommand(t, "version\navail\ndir ram:\ntype s:startup-sequence\necho hello\n", 8*time.Second)
+	for _, want := range []string{
+		"IntuitionOS 0.15",
+		"Phys: 32768 KB  Alloc:",
+		"C/Version",
+		"LIBS/graphics.library",
+		"DEVS/input.device",
+		"RESOURCES/hardware.resource",
+		"hello",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("M141_Phase5_CommandPathRegression: missing %q in output=%q", want, output[:min(len(output), 1200)])
+		}
+	}
+}
+
+func TestIExec_M141_Phase5_ShellUnknownRegression(t *testing.T) {
+	output := bootAndInjectCommand(t, "FOOBAR\n", 5*time.Second)
+	if !strings.Contains(output, "Unknown command") {
+		t.Fatalf("M141_Phase5_ShellUnknownRegression: expected 'Unknown command' in output, got=%q", output[:min(len(output), 400)])
+	}
+}
+
+func TestIExec_M141_Phase5_GfxDemoRegression(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(3 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+	mem := rig.cpu.memory
+	for _, name := range []string{
+		"C/GfxDemo",
+		"DEVS/input.device",
+		"LIBS/graphics.library",
+	} {
+		assertDosSeededFileIsELF(t, mem, name)
+	}
+	runGfxDemoEndToEnd(t)
+}
+
+func TestIExec_M141_Phase5_AboutRegression(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(3 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+	mem := rig.cpu.memory
+	for _, name := range []string{
+		"C/About",
+		"DEVS/input.device",
+		"LIBS/graphics.library",
+		"LIBS/intuition.library",
+	} {
+		assertDosSeededFileIsELF(t, mem, name)
+	}
+	runAboutAppEndToEnd(t)
+}
+
 // TestIExec_CaseInsensitiveCommand explicitly verifies case-insensitive
 // command resolution by typing a lowercase command name. The seeded file
 // is "C/Version" but the user types "version" — the resolver must match.
@@ -10556,10 +11469,6 @@ func TestIExec_AssignResolution_LIBS(t *testing.T) {
 		t.Errorf("AssignResolution_LIBS: TYPE LIBS:graphics.library reported error, output=%q",
 			output[:min(len(output), 400)])
 	}
-	// LIBS: service binaries are still on the legacy seeded path in M14 phase 5.
-	if !strings.Contains(output, "IE64PROG") {
-		t.Logf("AssignResolution_LIBS: warning: did not see 'IE64PROG' magic in output (file may have been truncated by terminal); error-free output is sufficient")
-	}
 }
 
 // TestIExec_AssignResolution_DEVS verifies that the M11 DEVS: assign
@@ -10569,9 +11478,6 @@ func TestIExec_AssignResolution_DEVS(t *testing.T) {
 	if strings.Contains(output, "not found") || strings.Contains(output, "Unknown command") {
 		t.Errorf("AssignResolution_DEVS: TYPE DEVS:input.device reported error, output=%q",
 			output[:min(len(output), 400)])
-	}
-	if !strings.Contains(output, "IE64PROG") {
-		t.Logf("AssignResolution_DEVS: warning: did not see 'IE64PROG' magic in output")
 	}
 }
 

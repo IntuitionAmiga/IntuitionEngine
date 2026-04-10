@@ -188,6 +188,8 @@ iexec_start:
     ; the first bootstrap grant is inserted (task IDs do not exist
     ; yet at kern_init).
     ; ---------------------------------------------------------------
+    move.l  r1, #TASK_PUBID_FREE
+    store.l r1, KD_DOSLIB_PUBID(r12)
     move.l  r2, #KERN_DATA_BASE
     move.l  r4, #HWRES_TASK_FREE
     store.l r4, KD_HWRES_TASK(r2)       ; broker = unclaimed sentinel
@@ -303,44 +305,85 @@ iexec_start:
     jsr     kern_puts
 
     ; ---------------------------------------------------------------
-    ; 9. Load boot programs from program_table (M9: strict for first N)
+    ; 9. M14.1: prepare and launch the bootstrap manifest.
+    ;    The kernel boots only the minimum pre-DOS chain here
+    ;    (console.handler + dos.library). dos.library takes over the
+    ;    remaining service launches after DOS is online.
     ; ---------------------------------------------------------------
-    la      r30, program_table          ; r30 = table cursor
-    move.l  r29, #0                     ; boot entry counter
-.boot_load_loop:
-    move.l  r11, #PROGTAB_BOOT_COUNT
-    bge     r29, r11, .boot_load_done   ; loaded all required boot programs
-    load.q  r7, PROGTAB_OFF_PTR(r30)   ; r7 = image_ptr
-    beqz    r7, .boot_load_fail         ; sentinel before boot count → fail
-    load.q  r8, PROGTAB_OFF_SIZE(r30)   ; r8 = image_size
-    move.l  r6, #TASK_STARTUP_FLAG_BOOT
-    push    r30                         ; save table cursor (load_program clobbers R14-R27)
-    push    r29                         ; save counter
-    jsr     load_program                ; → R1=task_id, R2=err
-    pop     r29                         ; restore counter
-    pop     r30                         ; restore cursor
-    bnez    r2, .boot_load_fail         ; strict: any failure → panic
-
-    ; --- M12.5: insert bootstrap grants for this boot entry ---
-    ; r1 already holds the assigned task ID from load_program. Pass
-    ; (boot_idx=r29, task_id=r1) to kern_bootstrap_grant_for_program,
-    ; which scans bootstrap_grant_table for matching rows and writes
-    ; live grant entries via kern_grant_create_row. Failure to insert
-    ; a bootstrap grant is a hard boot failure (panic) — without the
-    ; grant, the affected task's first SYS_MAP_IO call would return
-    ; ERR_PERM and the boot path could not come up.
-    push    r30
-    push    r29
-    move.q  r2, r1                      ; r2 = task_id
-    move.q  r1, r29                     ; r1 = boot entry index
-    jsr     kern_bootstrap_grant_for_program ; R2 = err
-    pop     r29
-    pop     r30
+    jsr     kern_boot_manifest_prepare  ; R2 = err
     bnez    r2, .boot_load_fail
 
-    add     r30, r30, #PROGTAB_ENTRY_SIZE
+    move.l  r29, #0
+.boot_manifest_loop:
+    move.l  r11, #KD_BOOT_MANIFEST_BOOT_COUNT
+    bge     r29, r11, .boot_manifest_done
+    move.l  r30, #KERN_DATA_BASE
+    add     r30, r30, #KD_BOOT_MANIFEST_BASE
+    move.l  r11, #KD_BOOT_MANIFEST_STRIDE
+    mulu    r11, r29, r11
+    add     r30, r30, r11              ; r30 = manifest row
+    load.l  r11, KD_BOOT_MANIFEST_ID(r30)
+    move.l  r12, #0xFFFFFFFF
+    beq     r11, r12, .boot_manifest_done
+    load.q  r1, KD_BOOT_MANIFEST_PTR(r30)
+    beqz    r1, .boot_load_fail        ; staged ELF must exist after prepare
+    load.q  r2, KD_BOOT_MANIFEST_SIZE(r30)
+    beqz    r2, .boot_load_fail
+    move.l  r3, #TASK_STARTUP_FLAG_BOOT
+    push    r29
+    push    r30
+    jsr     boot_load_elf_image        ; R1=task_id R2=err R3=slot
+    pop     r30
+    pop     r29
+    bnez    r2, .boot_load_fail
+    move.q  r18, r3                    ; preserve child slot across grant/export helpers
+    load.l  r11, KD_BOOT_MANIFEST_ID(r30)
+    move.l  r12, #BOOT_MANIFEST_ID_DOSLIB
+    bne     r11, r12, .boot_manifest_after_launch
+    move.l  r12, #KERN_DATA_BASE
+    store.l r1, KD_DOSLIB_PUBID(r12)
+    push    r29
+    push    r30
+    move.q  r1, r18                    ; dos.library child slot
+    jsr     kern_export_boot_manifest_to_dos
+    pop     r30
+    pop     r29
+    bnez    r2, .boot_load_fail
+.boot_manifest_after_launch:
+    push    r29
+    push    r30
+    move.q  r2, r1                     ; task_id
+    load.l  r1, KD_BOOT_MANIFEST_ID(r30)
+    jsr     kern_bootstrap_grant_for_program ; manifest-keyed in M14.1 phase 2
+    pop     r30
+    pop     r29
+    bnez    r2, .boot_load_fail
+    load.l  r11, KD_BOOT_MANIFEST_ID(r30)
+    move.l  r12, #BOOT_MANIFEST_ID_DOSLIB
+    bne     r11, r12, .boot_manifest_free_check
+.boot_manifest_free_check:
+    load.q  r1, KD_BOOT_MANIFEST_PTR(r30)
+    beqz    r1, .boot_manifest_next
+    load.l  r11, KD_BOOT_MANIFEST_ID(r30)
+    move.l  r12, #KD_BOOT_MANIFEST_BOOT_COUNT
+    bge     r29, r12, .boot_manifest_next
+    load.q  r2, KD_BOOT_MANIFEST_SIZE(r30)
+    add     r2, r2, #4095
+    lsr     r2, r2, #12
+    lsr     r1, r1, #12
+    push    r29
+    push    r30
+    jsr     free_pages
+    pop     r30
+    pop     r29
+    store.q r0, KD_BOOT_MANIFEST_PTR(r30)
+    store.q r0, KD_BOOT_MANIFEST_SIZE(r30)
+
+.boot_manifest_next:
     add     r29, r29, #1
-    bra     .boot_load_loop
+    bra     .boot_manifest_loop
+.boot_manifest_done:
+    bra     .boot_load_done
 .boot_load_fail:
     la      r8, boot_fail_msg
     jsr     kern_puts
@@ -2266,6 +2309,598 @@ build_user_pt_dynamic_targets:
 ; ============================================================================
 ; Program Loader (M8: boot-time only, not a syscall)
 ; ============================================================================
+; M14.1 phase 2: bootstrap manifest + internal ELF boot loader
+; ============================================================================
+
+; kern_boot_manifest_prepare:
+;   Convert the bundled shipped-service IE64PROG images into temporary
+;   strict-M14 ELF images and publish them in the runtime boot manifest rows
+;   in kernel data. The kernel boots only the first two rows directly; later
+;   rows are consumed by dos.library in M14.1 phase 3.
+; Inputs: none
+; Outputs: R2 = ERR_OK / ERR_NOMEM / ERR_BADARG
+; Clobbers: R1-R15, R20-R24
+kern_boot_manifest_prepare:
+    la      r20, boot_manifest_seed_table
+    move.l  r21, #0
+.kbmp_loop:
+    move.l  r22, #KD_BOOT_MANIFEST_COUNT
+    bge     r21, r22, .kbmp_done
+    move.l  r23, #KERN_DATA_BASE
+    add     r23, r23, #KD_BOOT_MANIFEST_BASE
+    move.l  r24, #KD_BOOT_MANIFEST_STRIDE
+    mulu    r24, r21, r24
+    add     r23, r23, r24              ; r23 = runtime row
+
+    load.l  r1, KD_BOOT_MANIFEST_ID(r20)
+    store.l r1, KD_BOOT_MANIFEST_ID(r23)
+    load.l  r1, KD_BOOT_MANIFEST_FLAGS(r20)
+    store.l r1, KD_BOOT_MANIFEST_FLAGS(r23)
+    load.q  r1, KD_BOOT_MANIFEST_NAME(r20)
+    store.q r1, KD_BOOT_MANIFEST_NAME(r23)
+    load.l  r1, KD_BOOT_MANIFEST_GTAG(r20)
+    store.l r1, KD_BOOT_MANIFEST_GTAG(r23)
+    load.w  r1, KD_BOOT_MANIFEST_PPN_LO(r20)
+    store.w r1, KD_BOOT_MANIFEST_PPN_LO(r23)
+    load.w  r1, KD_BOOT_MANIFEST_PPN_HI(r20)
+    store.w r1, KD_BOOT_MANIFEST_PPN_HI(r23)
+
+    load.q  r1, KD_BOOT_MANIFEST_PTR(r20) ; seed source ptr
+    load.q  r2, KD_BOOT_MANIFEST_SIZE(r20) ; seed source size
+    push    r20
+    push    r21
+    push    r23
+    jsr     kern_build_elf_from_ie64    ; R1=ELF ptr R2=ELF size R3=pages R4=err
+.kbmp_prepared:
+    pop     r23
+    pop     r21
+    pop     r20
+    bnez    r4, .kbmp_fail
+    store.q r1, KD_BOOT_MANIFEST_PTR(r23)
+    store.q r2, KD_BOOT_MANIFEST_SIZE(r23)
+
+    add     r20, r20, #KD_BOOT_MANIFEST_STRIDE
+    add     r21, r21, #1
+    bra     .kbmp_loop
+.kbmp_done:
+    move.q  r2, #ERR_OK
+    rts
+.kbmp_fail:
+    move.q  r2, r4
+    rts
+
+; kern_build_elf_from_ie64:
+;   Build a strict M14 ELF staging image from one bundled IE64PROG image.
+; Inputs:  R1 = raw IE64PROG ptr, R2 = raw image size
+; Outputs: R1 = ELF ptr, R2 = ELF size, R3 = allocated pages, R4 = ERR_*
+; Clobbers: R5-R31
+kern_build_elf_from_ie64:
+    move.q  r20, r1
+    move.q  r19, r2
+    move.l  r5, #IMG_HEADER_SIZE
+    blt     r19, r5, .kbe_badarg
+    load.l  r5, (r20)
+    move.l  r6, #IMG_MAGIC_LO
+    bne     r5, r6, .kbe_badarg
+    load.l  r5, 4(r20)
+    move.l  r6, #IMG_MAGIC_HI
+    bne     r5, r6, .kbe_badarg
+    load.l  r21, IMG_OFF_CODE_SIZE(r20)
+    beqz    r21, .kbe_badarg
+    and     r5, r21, #7
+    bnez    r5, .kbe_badarg
+    load.l  r22, IMG_OFF_DATA_SIZE(r20)
+    move.l  r5, #IMG_HEADER_SIZE
+    add     r5, r5, r21
+    add     r5, r5, r22
+    bgt     r5, r19, .kbe_badarg
+
+    move.q  r23, r21
+    add     r23, r23, #4095
+    lsr     r23, r23, #12              ; code_pages
+    move.l  r24, #1
+    beqz    r22, .kbe_data_pages_ready
+    move.q  r24, r22
+    add     r24, r24, #4095
+    lsr     r24, r24, #12              ; data_pages
+.kbe_data_pages_ready:
+    move.q  r25, r23
+    lsl     r25, r25, #12              ; code_memsz
+    move.q  r26, r24
+    lsl     r26, r26, #12              ; data_memsz
+    move.l  r27, #0x1000
+    add     r27, r27, r25              ; data_off
+    move.q  r28, r27
+    add     r28, r28, r22              ; elf_size
+    move.q  r29, r28
+    add     r29, r29, #4095
+    lsr     r29, r29, #12              ; staging pages
+
+    move.q  r1, r29
+    jsr     alloc_pages
+    bnez    r2, .kbe_nomem
+    move.q  r30, r1                     ; base PPN
+    lsl     r18, r30, #12               ; ELF ptr
+
+    move.q  r5, r18
+    move.q  r6, r29
+    lsl     r6, r6, #12
+    add     r6, r6, r5
+.kbe_zero:
+    bge     r5, r6, .kbe_header
+    store.q r0, (r5)
+    add     r5, r5, #8
+    bra     .kbe_zero
+
+.kbe_header:
+    move.l  r5, #0x464C457F
+    store.l r5, (r18)
+    move.l  r5, #0x00010102
+    store.l r5, 4(r18)
+    move.l  r5, #0x49450002
+    store.l r5, 16(r18)
+    move.l  r5, #1
+    store.l r5, 20(r18)
+    move.l  r5, #0x00601000
+    store.q r5, 24(r18)
+    move.l  r5, #64
+    store.q r5, 32(r18)
+    move.l  r5, #0x00380040
+    store.l r5, 52(r18)
+    move.l  r5, #2
+    store.l r5, 56(r18)
+
+    move.l  r5, #1
+    store.l r5, 64(r18)
+    move.l  r5, #5
+    store.l r5, 68(r18)
+    move.l  r5, #0x1000
+    store.q r5, 72(r18)
+    move.l  r5, #0x00601000
+    store.q r5, 80(r18)
+    store.q r0, 88(r18)
+    store.q r21, 96(r18)
+    store.q r25, 104(r18)
+    move.l  r5, #0x1000
+    store.q r5, 112(r18)
+
+    move.l  r5, #1
+    store.l r5, 120(r18)
+    move.l  r5, #6
+    store.l r5, 124(r18)
+    store.q r27, 128(r18)
+    move.l  r17, #0x00601000
+    add     r17, r17, r25
+    store.q r17, 136(r18)
+    store.q r0, 144(r18)
+    store.q r22, 152(r18)
+    store.q r26, 160(r18)
+    move.l  r5, #0x1000
+    store.q r5, 168(r18)
+
+    add     r14, r20, #IMG_HEADER_SIZE
+    add     r15, r18, #0x1000
+    move.l  r16, #0
+.kbe_copy_code:
+    bge     r16, r21, .kbe_copy_data_prep
+    add     r5, r14, r16
+    load.b  r6, (r5)
+    add     r7, r15, r16
+    store.b r6, (r7)
+    add     r16, r16, #1
+    bra     .kbe_copy_code
+.kbe_copy_data_prep:
+    add     r14, r14, r21
+    add     r15, r18, r27
+    move.l  r16, #0
+.kbe_copy_data:
+    bge     r16, r22, .kbe_ok
+    add     r5, r14, r16
+    load.b  r6, (r5)
+    add     r7, r15, r16
+    store.b r6, (r7)
+    add     r16, r16, #1
+    bra     .kbe_copy_data
+
+.kbe_ok:
+    move.q  r1, r18
+    move.q  r2, r28
+    move.q  r3, r29
+    move.q  r4, #ERR_OK
+    rts
+.kbe_badarg:
+    move.q  r1, r0
+    move.q  r2, r0
+    move.q  r3, r0
+    move.q  r4, #ERR_BADARG
+    rts
+.kbe_nomem:
+    move.q  r1, r0
+    move.q  r2, r0
+    move.q  r3, r0
+    move.q  r4, #ERR_NOMEM
+    rts
+
+; boot_load_elf_image:
+;   Launch one staged strict-M14 ELF image in kernel context. Phase 2 keeps
+;   this internal bootstrap path intentionally narrow: validate the staged ELF,
+;   rebuild the equivalent temporary flat image, then enter the stable
+;   load_program boot path. This keeps the bootstrap chain honest about using
+;   ELF as the source format without coupling first-service bring-up to the
+;   more complex DOS descriptor launcher.
+; Inputs:  R1 = ELF ptr (kernel-mapped), R2 = ELF size, R3 = startup flags
+; Outputs: R1 = public task id, R2 = ERR_*, R3 = child slot
+; Clobbers: R4-R31
+boot_load_elf_image:
+    sub     sp, sp, #176
+    store.q r1, 0(sp)                  ; ELF ptr
+    store.q r2, 8(sp)                  ; ELF size
+    store.q r3, 16(sp)                 ; startup flags
+
+    move.l  r4, #64
+    blt     r2, r4, .blei_badarg
+    load.l  r4, (r1)
+    move.l  r5, #0x464C457F
+    bne     r4, r5, .blei_badarg
+    load.b  r4, 4(r1)
+    move.l  r5, #2
+    bne     r4, r5, .blei_badarg
+    load.b  r4, 5(r1)
+    move.l  r5, #1
+    bne     r4, r5, .blei_badarg
+    load.b  r4, 6(r1)
+    move.l  r5, #1
+    bne     r4, r5, .blei_badarg
+    load.b  r4, 7(r1)
+    bnez    r4, .blei_badarg
+    load.l  r4, 16(r1)
+    and     r4, r4, #0xFFFF
+    move.l  r5, #2
+    bne     r4, r5, .blei_badarg
+    load.l  r4, 18(r1)
+    and     r4, r4, #0xFFFF
+    move.l  r5, #0x4945
+    bne     r4, r5, .blei_badarg
+    load.l  r4, 20(r1)
+    move.l  r5, #1
+    bne     r4, r5, .blei_badarg
+    load.l  r4, 28(r1)
+    bnez    r4, .blei_badarg
+    load.l  r22, 24(r1)                ; e_entry
+    beqz    r22, .blei_badarg
+    load.l  r20, 32(r1)                ; e_phoff
+    load.l  r4, 36(r1)
+    bnez    r4, .blei_badarg
+    load.l  r4, 52(r1)
+    and     r4, r4, #0xFFFF
+    move.l  r5, #64
+    bne     r4, r5, .blei_badarg
+    load.l  r4, 54(r1)
+    and     r4, r4, #0xFFFF
+    move.l  r5, #56
+    bne     r4, r5, .blei_badarg
+    load.l  r21, 56(r1)
+    and     r21, r21, #0xFFFF
+    move.l  r5, #2
+    bne     r21, r5, .blei_badarg
+    move.l  r5, #112
+    add     r6, r20, r5
+    blt     r6, r20, .blei_badarg
+    load.q  r7, 8(sp)
+    blt     r7, r6, .blei_badarg
+
+    store.q r0, 24(sp)                 ; code ph ptr
+    store.q r0, 32(sp)                 ; data ph ptr
+    store.q r0, 40(sp)                 ; entry covered
+    move.q  r23, r1
+    add     r23, r23, r20              ; ph0 ptr
+    move.l  r24, #0
+.blei_ph_loop:
+    bge     r24, r21, .blei_ph_done
+    load.l  r4, (r23)
+    move.l  r5, #1
+    bne     r4, r5, .blei_badarg
+    load.l  r4, 4(r23)                 ; flags
+    move.q  r5, r4
+    and     r5, r5, #0xFFFFFFF8
+    bnez    r5, .blei_badarg
+    move.q  r5, r4
+    and     r5, r5, #4
+    beqz    r5, .blei_badarg
+    move.q  r5, r4
+    and     r5, r5, #3
+    move.l  r6, #3
+    beq     r5, r6, .blei_badarg
+    load.l  r5, 12(r23)
+    bnez    r5, .blei_badarg
+    load.l  r5, 20(r23)
+    bnez    r5, .blei_badarg
+    load.l  r5, 36(r23)
+    bnez    r5, .blei_badarg
+    load.l  r5, 44(r23)
+    bnez    r5, .blei_badarg
+    load.l  r5, 52(r23)
+    bnez    r5, .blei_badarg
+
+    load.l  r11, 8(r23)                ; off
+    load.l  r6, 16(r23)                ; vaddr
+    load.l  r7, 32(r23)                ; filesz
+    load.l  r8, 40(r23)                ; memsz
+    load.l  r9, 48(r23)                ; align
+    move.l  r10, #4096
+    bne     r9, r10, .blei_badarg
+    beqz    r8, .blei_badarg
+    and     r9, r11, #0xFFF
+    and     r10, r6, #0xFFF
+    bne     r9, r10, .blei_badarg
+    and     r9, r6, #0xFFF
+    bnez    r9, .blei_badarg
+    blt     r8, r7, .blei_badarg
+    add     r9, r11, r7
+    blt     r9, r11, .blei_badarg
+    load.q  r10, 8(sp)
+    blt     r10, r9, .blei_badarg
+    add     r9, r6, r8
+    blt     r9, r6, .blei_badarg
+    move.l  r10, #USER_IMAGE_BASE
+    blt     r6, r10, .blei_badarg
+    move.l  r10, #USER_IMAGE_END
+    bgt     r9, r10, .blei_badarg
+
+    and     r10, r4, #1
+    beqz    r10, .blei_data_seg
+    load.q  r10, 24(sp)
+    bnez    r10, .blei_badarg
+    store.q r23, 24(sp)
+    blt     r22, r6, .blei_next
+    bge     r22, r9, .blei_next
+    move.l  r10, #1
+    store.q r10, 40(sp)
+    bra     .blei_next
+.blei_data_seg:
+    and     r10, r4, #2
+    beqz    r10, .blei_badarg
+    load.q  r10, 32(sp)
+    bnez    r10, .blei_badarg
+    store.q r23, 32(sp)
+.blei_next:
+    add     r23, r23, #56
+    add     r24, r24, #1
+    bra     .blei_ph_loop
+
+.blei_ph_done:
+    load.q  r23, 24(sp)
+    beqz    r23, .blei_badarg
+    load.q  r24, 32(sp)
+    beqz    r24, .blei_badarg
+    load.q  r4, 40(sp)
+    beqz    r4, .blei_badarg
+    load.l  r25, 32(r23)               ; code filesz
+    load.l  r26, 32(r24)               ; data filesz
+    move.l  r27, #IMG_HEADER_SIZE
+    add     r27, r27, r25
+    add     r27, r27, r26              ; flat image size
+    move.q  r28, r27
+    add     r28, r28, #4095
+    lsr     r28, r28, #12              ; flat image pages
+    store.q r28, 72(sp)
+
+    move.q  r1, r28
+    jsr     alloc_pages
+    bnez    r2, .blei_nomem
+    move.q  r29, r1                    ; staging base PPN
+    store.q r29, 80(sp)
+    lsl     r30, r29, #12              ; flat image ptr
+
+    ; Zero the entire temporary image allocation.
+    move.q  r4, r30
+    move.q  r5, r28
+    lsl     r5, r5, #12
+    add     r5, r5, r4
+.blei_zero_flat:
+    bge     r4, r5, .blei_build_flat
+    store.q r0, (r4)
+    add     r4, r4, #8
+    bra     .blei_zero_flat
+
+.blei_build_flat:
+    move.l  r4, #IMG_MAGIC_LO
+    store.l r4, (r30)
+    move.l  r4, #IMG_MAGIC_HI
+    store.l r4, 4(r30)
+    store.l r25, IMG_OFF_CODE_SIZE(r30)
+    store.l r26, IMG_OFF_DATA_SIZE(r30)
+    store.l r0, IMG_OFF_FLAGS(r30)
+
+    ; Copy code bytes from RX PT_LOAD.
+    load.l  r4, 8(r23)                 ; code p_offset
+    load.q  r5, 0(sp)                  ; ELF ptr
+    add     r5, r5, r4                 ; code src
+    move.q  r6, r30
+    add     r6, r6, #IMG_HEADER_SIZE   ; code dst
+    move.l  r7, #0
+.blei_copy_flat_code:
+    bge     r7, r25, .blei_copy_flat_data_prep
+    add     r8, r5, r7
+    load.b  r9, (r8)
+    add     r8, r6, r7
+    store.b r9, (r8)
+    add     r7, r7, #1
+    bra     .blei_copy_flat_code
+
+.blei_copy_flat_data_prep:
+    load.l  r4, 8(r24)                 ; data p_offset
+    load.q  r5, 0(sp)
+    add     r5, r5, r4                 ; data src
+    move.q  r6, r30
+    add     r6, r6, #IMG_HEADER_SIZE
+    add     r6, r6, r25                ; data dst
+    move.l  r7, #0
+.blei_copy_flat_data:
+    bge     r7, r26, .blei_launch_flat
+    add     r8, r5, r7
+    load.b  r9, (r8)
+    add     r8, r6, r7
+    store.b r9, (r8)
+    add     r7, r7, #1
+    bra     .blei_copy_flat_data
+
+.blei_launch_flat:
+    move.q  r7, r30
+    move.q  r8, r27
+    load.q  r6, 16(sp)
+    jsr     load_program               ; R1=task_id R2=err R3=slot
+    store.q r1, 48(sp)
+    store.q r2, 56(sp)
+    store.q r3, 64(sp)
+    load.q  r1, 80(sp)                 ; staging base PPN
+    load.q  r2, 72(sp)                 ; staging page count
+    jsr     free_pages
+    load.q  r1, 48(sp)
+    load.q  r2, 56(sp)
+    load.q  r3, 64(sp)
+    add     sp, sp, #176
+    rts
+
+.blei_badarg:
+    move.q  r1, r0
+    move.q  r2, #ERR_BADARG
+    move.q  r3, r0
+    add     sp, sp, #176
+    rts
+.blei_nomem:
+    move.q  r1, r0
+    move.q  r2, #ERR_NOMEM
+    move.q  r3, r0
+    add     sp, sp, #176
+    rts
+
+; kern_export_boot_manifest_to_dos:
+;   Map the post-DOS staged manifest ELFs into dos.library's own address
+;   space so DOS can build seglists from manifest-sourced bytes instead of
+;   consulting the bundled legacy blobs. The staged manifest pages remain the
+;   single source of truth; DOS receives read-only user mappings of them.
+; Inputs:  R1 = dos.library internal task slot
+; Outputs: R2 = ERR_OK / ERR_NOMEM / ERR_BADARG
+; Clobbers: R1-R31
+kern_export_boot_manifest_to_dos:
+    sub     sp, sp, #64
+    move.q  r20, r1                    ; target task slot
+
+    move.q  r1, r20
+    jsr     kern_task_layout_addr
+    load.q  r30, KD_TASK_DATA_BASE(r1) ; dos.library data backing
+    beqz    r30, .kebmtd_badarg
+    load.q  r19, KD_TASK_LAYOUT_PT_BASE(r1)
+    beqz    r19, .kebmtd_badarg
+
+    add     r29, r30, #(prog_doslib_boot_export_rows - prog_doslib_data)
+    move.l  r21, #0
+.kebmtd_zero_rows:
+    move.l  r22, #(DOS_BOOT_EXPORT_COUNT * DOS_BOOT_EXPORT_ROW_SZ / 8)
+    bge     r21, r22, .kebmtd_loop_prep
+    store.q r0, (r29)
+    add     r29, r29, #8
+    add     r21, r21, #1
+    bra     .kebmtd_zero_rows
+
+.kebmtd_loop_prep:
+    add     r29, r30, #(prog_doslib_boot_export_rows - prog_doslib_data)
+    move.l  r17, #(USER_DYN_END - 0x100000) ; next dos-private export VA
+    move.l  r21, #KD_BOOT_MANIFEST_BOOT_COUNT
+.kebmtd_loop:
+    move.l  r22, #KD_BOOT_MANIFEST_COUNT
+    bge     r21, r22, .kebmtd_ok
+
+    move.l  r23, #KERN_DATA_BASE
+    add     r23, r23, #KD_BOOT_MANIFEST_BASE
+    move.l  r24, #KD_BOOT_MANIFEST_STRIDE
+    mulu    r24, r21, r24
+    add     r23, r23, r24              ; r23 = runtime manifest row
+
+    load.l  r24, KD_BOOT_MANIFEST_ID(r23)
+    load.q  r25, KD_BOOT_MANIFEST_PTR(r23)
+    load.q  r26, KD_BOOT_MANIFEST_SIZE(r23)
+    beqz    r25, .kebmtd_badarg
+    beqz    r26, .kebmtd_badarg
+
+    move.q  r27, r26
+    add     r27, r27, #4095
+    lsr     r27, r27, #12              ; pages
+    beqz    r27, .kebmtd_badarg
+    lsr     r18, r25, #12              ; staged base PPN
+
+    move.l  r14, #KERN_DATA_BASE
+    add     r14, r14, #KD_REGION_TABLE
+    move.l  r11, #KD_REGION_TASK_SZ
+    mulu    r11, r20, r11
+    add     r14, r14, r11
+    move.l  r15, #0
+.kebmtd_find_region:
+    move.l  r11, #KD_REGION_INLINE_MAX
+    bge     r15, r11, .kebmtd_region_overflow
+    move.l  r11, #KD_REGION_STRIDE
+    mulu    r11, r15, r11
+    add     r16, r14, r11
+    load.b  r11, KD_REG_TYPE(r16)
+    beqz    r11, .kebmtd_found_region
+    add     r15, r15, #1
+    bra     .kebmtd_find_region
+.kebmtd_region_overflow:
+    move.q  r1, r20
+    jsr     kern_region_oflow_alloc_row
+    bnez    r2, .kebmtd_nomem
+    move.q  r16, r1
+.kebmtd_found_region:
+    move.q  r28, r16                   ; region row
+
+    move.q  r1, r17
+    move.q  r2, r27
+    lsl     r2, r2, #12
+    add     r2, r2, r1
+    blt     r2, r1, .kebmtd_nomem
+    move.l  r3, #USER_DYN_END
+    bgt     r2, r3, .kebmtd_nomem
+
+    move.q  r1, r19
+    move.q  r2, r17
+    move.q  r3, r18
+    move.q  r4, r27
+    move.l  r5, #0x15                  ; P|R|U (read-only user view of staged ELF)
+    jsr     map_pages
+    store.l r17, KD_REG_VA(r28)
+    store.w r18, KD_REG_PPN(r28)
+    store.w r27, KD_REG_PAGES(r28)
+    move.b  r11, #REGION_PRIVATE
+    store.b r11, KD_REG_TYPE(r28)
+    store.b r0, KD_REG_FLAGS(r28)
+    store.b r0, KD_REG_SHMID(r28)
+
+    store.l r24, DOS_BOOT_EXPORT_ID(r29)
+    store.q r17, DOS_BOOT_EXPORT_PTR(r29)
+    store.q r26, DOS_BOOT_EXPORT_SIZE(r29)
+
+    move.q  r1, r27
+    lsl     r1, r1, #12
+    add     r17, r17, r1
+    add     r29, r29, #DOS_BOOT_EXPORT_ROW_SZ
+    add     r21, r21, #1
+    bra     .kebmtd_loop
+.kebmtd_badarg:
+    move.q  r2, #ERR_BADARG
+    add     sp, sp, #64
+    rts
+.kebmtd_nomem:
+    move.q  r2, #ERR_NOMEM
+    add     sp, sp, #64
+    rts
+.kebmtd_ok:
+    tlbflush
+    move.q  r2, #ERR_OK
+    add     sp, sp, #64
+    rts
+
+; ============================================================================
 ; load_program: Load a bundled IE64 program image into a free task slot.
 ; Input:  R7 = image_ptr (address of image in kernel memory)
 ;         R8 = image_size (total bytes: header + code + data)
@@ -2590,7 +3225,7 @@ load_program:
 ;   R3 = ERR_OK / ERR_BADARG / ERR_NOMEM
 ; Clobbers: R5-R31
 exec_desc_launch_task:
-    sub     sp, sp, #8
+    sub     sp, sp, #96
     move.q  r24, r1                     ; desc_ptr
     move.q  r25, r2                     ; desc_size
     move.q  r26, r3                     ; caller PTBR
@@ -2738,11 +3373,24 @@ exec_desc_launch_task:
     jsr     alloc_task_image_pages
     bnez    r2, .edlt_fail_free_code
     move.q  r15, r1                    ; data backing
+    move.q  r1, r20
+    jsr     kern_task_layout_addr
+    store.q r14, KD_TASK_CODE_BASE(r1)
+    store.q r15, KD_TASK_DATA_BASE(r1)
+    store.l r30, KD_TASK_CODE_PAGES(r1)
+    store.l r17, KD_TASK_DATA_PAGES(r1)
     move.q  r1, r23
     jsr     alloc_task_image_pages
     bnez    r2, .edlt_fail_free_data
     move.q  r16, r1                     ; stack base
-    store.q r24, (sp)                   ; preserve data src across allocator calls
+    move.q  r1, r20
+    jsr     kern_task_layout_addr
+    store.q r16, KD_TASK_STACK_BASE(r1)
+    store.l r23, KD_TASK_STACK_PAGES(r1)
+    store.q r24, 64(sp)                 ; preserve data src across allocator calls
+    store.q r14, 72(sp)                 ; alloc_task_pt_block clobbers r14
+    store.q r15, 80(sp)
+    store.q r16, 88(sp)
     move.l  r1, #1
     jsr     alloc_task_image_pages
     bnez    r2, .edlt_fail_free_stack
@@ -2750,7 +3398,18 @@ exec_desc_launch_task:
     jsr     alloc_task_pt_block
     bnez    r2, .edlt_fail_free_startup
     move.q  r25, r1                     ; pt base
-    load.q  r12, (sp)
+    move.q  r1, r20
+    jsr     kern_task_layout_addr
+    store.q r24, KD_TASK_LAYOUT_STARTUP(r1)
+    store.q r25, KD_TASK_LAYOUT_PT_BASE(r1)
+    load.q  r12, 64(sp)
+    move.q  r1, r20
+    jsr     kern_task_layout_addr
+    load.q  r14, KD_TASK_CODE_BASE(r1)
+    load.q  r13, KD_TASK_DATA_BASE(r1)
+    load.q  r16, KD_TASK_STACK_BASE(r1)
+    load.q  r24, KD_TASK_LAYOUT_STARTUP(r1)
+    load.q  r25, KD_TASK_LAYOUT_PT_BASE(r1)
 
     move.l  r4, #0
 .edlt_copy_code:
@@ -2767,7 +3426,7 @@ exec_desc_launch_task:
     bge     r4, r18, .edlt_map
     add     r5, r12, r4
     load.b  r6, (r5)
-    add     r5, r15, r4
+    add     r5, r13, r4
     store.b r6, (r5)
     add     r4, r4, #1
     bra     .edlt_copy_data_loop
@@ -2856,7 +3515,7 @@ exec_desc_launch_task:
     move.l  r8, #0
 .edlt_pt_data_loop:
     bge     r8, r17, .edlt_pt_map_startup
-    lsr     r9, r15, #12
+    lsr     r9, r13, #12
     add     r9, r9, r8
     lsl     r10, r9, #13
     or      r10, r10, #0x17
@@ -2887,7 +3546,7 @@ exec_desc_launch_task:
     move.q  r9, r17
     jsr     write_startup_block
 
-    move.q  r18, r15                    ; preserve data backing for layout row
+    move.q  r18, r13                    ; preserve data backing for layout row
     move.q  r15, r23
     lsl     r15, r15, #12
     add     r15, r15, r16
@@ -2942,7 +3601,7 @@ exec_desc_launch_task:
     move.q  r1, r21
     move.q  r2, r20
     move.q  r3, #ERR_OK
-    add     sp, sp, #8
+    add     sp, sp, #96
     rts
 .edlt_alloc_fail:
     move.l  r11, #ERR_BADARG
@@ -2969,13 +3628,13 @@ exec_desc_launch_task:
     move.q  r1, r0
     move.q  r2, r0
     move.l  r3, #ERR_BADARG
-    add     sp, sp, #8
+    add     sp, sp, #96
     rts
 .edlt_nomem:
     move.q  r1, r0
     move.q  r2, r0
     move.l  r3, #ERR_NOMEM
-    add     sp, sp, #8
+    add     sp, sp, #96
     rts
 
 ; ============================================================================
@@ -3400,30 +4059,31 @@ kern_grant_check:
 
 ; ----------------------------------------------------------------------------
 ; kern_bootstrap_grant_for_program: walk the bootstrap_grant_table for any
-; rows whose program index matches the just-loaded boot entry, and insert
-; each as a live grant tied to the assigned task ID. Called from the boot-
-; load loop immediately after load_program returns.
+; rows whose manifest entry ID matches the just-launched bootstrap entry, and
+; insert each as a live grant tied to the assigned task ID. Called from the
+; bootstrap launch path immediately after the task returns.
 ; ----------------------------------------------------------------------------
-; Inputs:  R1 = boot entry index (0..PROGTAB_BOOT_COUNT-1)
+; Inputs:  R1 = manifest entry ID
 ;          R2 = assigned task ID for that program
 ; Outputs: R2 = ERR_OK or ERR_NOMEM
 ; Clobbers: R3..R19, R20-R22, R28, R29, R30
 ;
-; Strategy: copy the inputs into call-preserved registers (R20=boot idx,
+; Strategy: copy the inputs into call-preserved registers (R20=manifest id,
 ; R21=task_id) and walk the table cursor in R22. Each iteration that
 ; matches calls kern_grant_create_row with R1=task_id, R2=tag, R3=ppn_lo,
 ; R4=ppn_hi. R20/R21/R22 are pushed/popped around the call because the
 ; helper documents clobbering R3..R19 + R28/R29 — R20+ are not in its
 ; clobber list but defensive save/restore makes the call site robust.
 kern_bootstrap_grant_for_program:
-    move.q  r20, r1                     ; r20 = boot entry index (preserved)
+    move.q  r20, r1                     ; r20 = manifest entry ID (preserved)
     move.q  r21, r2                     ; r21 = task_id (preserved)
     la      r22, bootstrap_grant_table  ; r22 = table cursor
 .bgfp_loop:
     load.b  r3, BOOTSTRAP_GRANT_OFF_PROG_IDX(r22)
+    and     r3, r3, #0xFF
     move.l  r4, #0xFF
     beq     r3, r4, .bgfp_done          ; sentinel = end of table
-    bne     r3, r20, .bgfp_advance      ; row's program idx != ours, skip
+    bne     r3, r20, .bgfp_advance      ; row's manifest id != ours, skip
     ; Match — load tag/ppn_lo/ppn_hi from the row and call create_row.
     load.l  r5, BOOTSTRAP_GRANT_OFF_TAG(r22)
     load.w  r6, BOOTSTRAP_GRANT_OFF_PPN_LO(r22)
@@ -4560,6 +5220,9 @@ trap_handler:
 
     move.l  r11, #SYS_HWRES_OP
     beq     r10, r11, .do_hwres_op
+
+    move.l  r11, #SYS_BOOT_MANIFEST
+    beq     r10, r11, .do_boot_manifest_launch
 
     ; M11.5: SYS_READ_INPUT (slot 37) removed. Terminal MMIO is now mapped
     ; into console.handler via SYS_MAP_IO and the read loop is inlined in
@@ -6259,6 +6922,119 @@ trap_handler:
     move.q  r2, #ERR_BADARG
     eret
 
+; --- Boot manifest launch (M14.1 internal) ---
+; R1 = manifest entry ID, R2 = args_ptr, R3 = args_len
+.do_boot_manifest_launch:
+    move.q  r20, r1                    ; preserve requested manifest ID
+    sub     sp, sp, #32
+    store.q r2, (sp)                   ; saved args_ptr
+    store.q r3, 8(sp)                  ; saved args_len
+    move.q  r26, r2                    ; preserve args_ptr
+    move.q  r27, r3                    ; preserve args_len
+    move.l  r11, #DATA_ARGS_MAX
+    bgt     r27, r11, .dbml_badarg_noswitch
+    beqz    r27, .dbml_args_valid
+    beqz    r26, .dbml_args_valid
+    add     r11, r26, r27
+    blt     r11, r26, .dbml_badarg_noswitch
+    mfcr    r28, cr0                   ; caller PTBR
+    move.q  r1, r26
+    move.q  r2, r27
+    move.q  r3, r28
+    jsr     validate_user_range
+    bnez    r1, .dbml_badarg_noswitch
+.dbml_args_valid:
+    jsr     kern_current_public_task_id ; R1 = current public task ID
+    move.l  r12, #KERN_DATA_BASE
+    load.l  r11, KD_DOSLIB_PUBID(r12)
+    bne     r1, r11, .dbml_perm
+    move.q  r1, r20
+    mfcr    r19, cr0
+    store.q r19, 16(sp)
+    move.l  r11, #KERN_PAGE_TABLE
+    mtcr    cr0, r11
+    tlbflush
+    move.q  r20, r1
+    move.l  r21, #0
+.dbml_find:
+    move.l  r22, #KD_BOOT_MANIFEST_COUNT
+    bge     r21, r22, .dbml_badarg
+    move.l  r23, #KERN_DATA_BASE
+    add     r23, r23, #KD_BOOT_MANIFEST_BASE
+    move.l  r24, #KD_BOOT_MANIFEST_STRIDE
+    mulu    r24, r21, r24
+    add     r23, r23, r24
+    load.l  r24, KD_BOOT_MANIFEST_ID(r23)
+    bne     r24, r20, .dbml_next
+    load.q  r7, KD_BOOT_MANIFEST_PTR(r23)
+    load.q  r8, KD_BOOT_MANIFEST_SIZE(r23)
+    beqz    r7, .dbml_badarg
+    beqz    r8, .dbml_badarg
+    load.l  r11, (r7)
+    move.l  r12, #IMG_MAGIC_LO
+    bne     r11, r12, .dbml_try_elf
+    load.l  r11, 4(r7)
+    move.l  r12, #IMG_MAGIC_HI
+    bne     r11, r12, .dbml_try_elf
+    move.l  r6, #TASK_STARTUP_FLAG_BOOT
+    jsr     load_program
+    bra     .dbml_done
+.dbml_try_elf:
+    move.q  r1, r7
+    move.q  r2, r8
+    move.l  r3, #TASK_STARTUP_FLAG_BOOT
+    jsr     boot_load_elf_image        ; R1=task_id R2=err R3=slot
+    bra     .dbml_done
+.dbml_next:
+    add     r21, r21, #1
+    bra     .dbml_find
+.dbml_badarg:
+    move.q  r1, #0
+    move.q  r2, #ERR_BADARG
+.dbml_done:
+    move.q  r22, r1                    ; preserve task_id
+    move.q  r24, r2                    ; preserve err
+    move.q  r23, r3                    ; preserve child slot
+    load.q  r26, (sp)
+    load.q  r27, 8(sp)
+    load.q  r19, 16(sp)
+    add     sp, sp, #32
+    mtcr    cr0, r19
+    tlbflush
+    bnez    r24, .dbml_ret
+    beqz    r27, .dbml_ret
+    beqz    r26, .dbml_ret
+    move.q  r1, r23
+    jsr     kern_task_layout_addr
+    load.q  r15, KD_TASK_DATA_BASE(r1)
+    add     r15, r15, #DATA_ARGS_OFFSET
+    move.l  r4, #0
+.dbml_copy_args:
+    bge     r4, r27, .dbml_args_term
+    add     r5, r26, r4
+    load.b  r6, (r5)
+    add     r5, r15, r4
+    store.b r6, (r5)
+    add     r4, r4, #1
+    bra     .dbml_copy_args
+.dbml_args_term:
+    add     r5, r15, r27
+    store.b r0, (r5)
+.dbml_ret:
+    move.q  r1, r22
+    move.q  r2, r24
+    eret
+.dbml_perm:
+    move.q  r1, #0
+    move.q  r2, #ERR_PERM
+    add     sp, sp, #32
+    eret
+.dbml_badarg_noswitch:
+    move.q  r1, #0
+    move.q  r2, #ERR_BADARG
+    add     sp, sp, #32
+    eret
+
 ; ============================================================================
 ; SYS_EXEC_PROGRAM (M10 / M11.6) — Launch a program from a user image pointer
 ; ============================================================================
@@ -6484,6 +7260,8 @@ validate_user_range:
     bge     r1, r6, .vur_fail
     sub     r6, r6, r2
     bgt     r1, r6, .vur_fail
+    move.l  r6, #KERN_PAGE_TABLE
+    beq     r3, r6, .vur_check_kernel
     lsr     r4, r1, #12                 ; start VPN
     add     r5, r1, r2
     sub     r5, r5, #1
@@ -6498,6 +7276,21 @@ validate_user_range:
     bne     r6, r1, .vur_fail
     add     r4, r4, #1
     bra     .vur_check
+.vur_check_kernel:
+    lsr     r4, r1, #12                 ; start VPN
+    add     r5, r1, r2
+    sub     r5, r5, #1
+    lsr     r5, r5, #12                 ; end VPN (inclusive)
+.vur_check_kernel_loop:
+    bgt     r4, r5, .vur_ok
+    lsl     r6, r4, #3
+    add     r6, r6, r3
+    load.q  r6, (r6)                    ; PTE
+    and     r6, r6, #0x01              ; kernel bootstrap path needs only P
+    move.l  r1, #0x01
+    bne     r6, r1, .vur_fail
+    add     r4, r4, #1
+    bra     .vur_check_kernel_loop
 .vur_ok:
     move.q  r1, #0
     rts
@@ -6796,6 +7589,11 @@ kill_task_cleanup:
     move.l  r14, #HWRES_TASK_FREE
     store.l r14, KD_HWRES_TASK(r12)
 .ktc_hwres_clear_pubid:
+    load.l  r14, KD_DOSLIB_PUBID(r12)
+    bne     r14, r15, .ktc_doslib_clear_pubid
+    move.l  r14, #TASK_PUBID_FREE
+    store.l r14, KD_DOSLIB_PUBID(r12)
+.ktc_doslib_clear_pubid:
     move.q  r1, r13
     jsr     kern_task_pubid_addr
     move.l  r14, #TASK_PUBID_FREE
@@ -7130,30 +7928,31 @@ intr_handler:
 ; ============================================================================
 ; Bootstrap Grant Table (M12.5)
 ; ============================================================================
-; Immutable list of (program_index, region_tag, ppn_lo, ppn_hi) rows that
-; the boot-load loop translates into live grant entries after each
-; load_program returns its assigned task ID. This is the only non-broker
-; producer of grants and exists solely to break the chicken-and-egg of
-; console.handler needing serial-port MMIO before hardware.resource is
-; alive (hardware.resource is started by Startup-Sequence, which Shell
-; executes, which depends on dos.library, which depends on console.handler).
+; Immutable list of (manifest_id, region_tag, ppn_lo, ppn_hi) rows that the
+; boot-load path translates into live grant entries after each bootstrap
+; launch returns its assigned task ID. This is the only non-broker producer
+; of grants and exists solely to break the chicken-and-egg of console.handler
+; needing serial-port MMIO before hardware.resource is alive (hardware.resource
+; is started by Startup-Sequence, which Shell executes, which depends on
+; dos.library, which depends on console.handler).
 ;
-; M12.5 ships exactly one bootstrap row: console.handler (boot index 0)
-; gets a 'CHIP' grant for PPN 0xF0 (the chip register page that holds
-; TERM_*, SCAN_*, MOUSE_*, video MMIO). Adding more rows is a code change.
+; M14.1 ships exactly one bootstrap-grant row: console.handler (manifest ID
+; 10) gets a 'CHIP' grant for PPN 0xF0 (the chip register page that holds
+; TERM_*, SCAN_*, MOUSE_*, video MMIO). Later services still obtain grants
+; through hardware.resource after it is online.
 ;
 ; Row layout (16 bytes each, BOOTSTRAP_GRANT_ROW_SZ):
-;   +0:  program index (1 byte) + 3 bytes padding
+;   +0:  manifest entry ID (1 byte) + 3 bytes padding
 ;   +4:  region tag (4 bytes, little-endian uint32)
 ;   +8:  ppn_lo (2 bytes, inclusive)
 ;   +10: ppn_hi (2 bytes, inclusive)
 ;   +12: reserved (4 bytes)
 ;
-; Sentinel row: program index = 0xFF (= GRANT_TASK_FREE).
+; Sentinel row: manifest entry ID = 0xFF.
 
 bootstrap_grant_table:
-    ; Row 0: console.handler (boot index 0) — CHIP grant for PPN 0xF0
-    dc.b    0, 0, 0, 0                  ; prog_idx=0 + 3 bytes padding
+    ; Row 0: console.handler (manifest ID 10) — CHIP grant for PPN 0xF0
+    dc.b    BOOT_MANIFEST_ID_CONSOLE, 0, 0, 0
     dc.l    HWRES_TAG_CHIP              ; 'CHIP' (little-endian uint32)
     dc.w    0xF0                        ; ppn_lo
     dc.w    0xF0                        ; ppn_hi
@@ -7161,6 +7960,100 @@ bootstrap_grant_table:
     ; Sentinel
     dc.b    0xFF
     ds.b    15
+
+; ============================================================================
+; M14.1: bootstrap manifest seed table
+; ============================================================================
+; Seed rows use the same 40-byte shape as the runtime manifest rows in kernel
+; data. PTR/SIZE reference the bundled IE64PROG service sources;
+; kern_boot_manifest_prepare converts them into temporary strict-M14 ELF
+; staging images before launch. NAME points at the internal path/name used by
+; dos.library when matching a shipped service against the embedded manifest.
+boot_manifest_name_console:
+    dc.b    "console.handler", 0
+    align   8
+boot_manifest_name_doslib:
+    dc.b    "dos.library", 0
+    align   8
+boot_manifest_name_shell:
+    dc.b    "Shell", 0
+    align   8
+boot_manifest_name_hwres:
+    dc.b    "RESOURCES/hardware.resource", 0
+    align   8
+boot_manifest_name_input:
+    dc.b    "DEVS/input.device", 0
+    align   8
+boot_manifest_name_graphics:
+    dc.b    "LIBS/graphics.library", 0
+    align   8
+boot_manifest_name_intuition:
+    dc.b    "LIBS/intuition.library", 0
+    align   8
+
+boot_manifest_seed_table:
+    dc.l    BOOT_MANIFEST_ID_CONSOLE
+    dc.l    1                           ; strict/fatal boot
+    dc.q    prog_console
+    dc.q    prog_console_end - prog_console
+    dc.q    boot_manifest_name_console
+    dc.l    HWRES_TAG_CHIP
+    dc.w    0xF0
+    dc.w    0xF0
+
+    dc.l    BOOT_MANIFEST_ID_DOSLIB
+    dc.l    1                           ; strict/fatal boot
+    dc.q    prog_doslib
+    dc.q    prog_doslib_end - prog_doslib
+    dc.q    boot_manifest_name_doslib
+    dc.l    0
+    dc.w    0
+    dc.w    0
+
+    dc.l    BOOT_MANIFEST_ID_SHELL
+    dc.l    1                           ; strict/fatal boot
+    dc.q    prog_shell
+    dc.q    prog_shell_end - prog_shell
+    dc.q    boot_manifest_name_shell
+    dc.l    0
+    dc.w    0
+    dc.w    0
+
+    dc.l    BOOT_MANIFEST_ID_HWRES
+    dc.l    1                           ; strict/fatal boot
+    dc.q    prog_hwres
+    dc.q    prog_hwres_end - prog_hwres
+    dc.q    boot_manifest_name_hwres
+    dc.l    0
+    dc.w    0
+    dc.w    0
+
+    dc.l    BOOT_MANIFEST_ID_INPUT
+    dc.l    1                           ; strict/fatal boot
+    dc.q    prog_input_device
+    dc.q    prog_input_device_end - prog_input_device
+    dc.q    boot_manifest_name_input
+    dc.l    0
+    dc.w    0
+    dc.w    0
+
+    dc.l    BOOT_MANIFEST_ID_GRAPHICS
+    dc.l    1                           ; strict/fatal boot
+    dc.q    prog_graphics_library
+    dc.q    prog_gfxlib_end - prog_graphics_library
+    dc.q    boot_manifest_name_graphics
+    dc.l    0
+    dc.w    0
+    dc.w    0
+
+    dc.l    BOOT_MANIFEST_ID_INTUITION
+    dc.l    1                           ; strict/fatal boot
+    dc.q    prog_intuition_library
+    dc.q    prog_intui_end - prog_intuition_library
+    dc.q    boot_manifest_name_intuition
+    dc.l    0
+    dc.w    0
+    dc.w    0
 
 ; ============================================================================
 ; Program Table (M8: static list of bundled program images)
@@ -7783,17 +8676,9 @@ prog_doslib_code:
     load.l  r15, (r24)
     move.l  r18, #IMG_MAGIC_LO
     bne     r15, r18, .dso_text_size
-    ; M14 Phase 5: make the visible C: command/demo path native ELF while
-    ; leaving the startup-sequence services on the proven legacy IE64PROG
-    ; path for now. This keeps the boot stack stable while moving the user-
-    ; visible launcher/demo experience onto the real DOS loader.
-    load.q  r16, 192(r29)               ; saved name ptr
-    load.b  r17, (r16)
-    move.l  r18, #0x43                  ; 'C'
-    bne     r17, r18, .dso_ie64_raw
-    load.b  r17, 1(r16)
-    move.l  r18, #0x2F                  ; '/'
-    bne     r17, r18, .dso_ie64_raw
+    ; M14.1 Phase 4: all shipped runtime binaries are now seeded as native
+    ; ELF, not just C: commands and demos. Plain-text assets still fall
+    ; through to the NUL-scan path below.
     move.q  r1, r24
     jsr     .dos_seed_build_elf_from_ie64
     bnez    r4, .dso_done
@@ -7801,16 +8686,6 @@ prog_doslib_code:
     store.q r2, 216(r29)               ; seeded file size
     store.q r1, 240(r29)               ; temp buf VA to free after write
     store.q r3, 248(r29)               ; raw embedded image size
-    bra     .dso_have_blob
-.dso_ie64_raw:
-    load.l  r23, 8(r24)
-    load.l  r15, 12(r24)
-    add     r23, r23, r15
-    add     r23, r23, #IMG_HEADER_SIZE
-    store.q r23, 216(r29)               ; seeded file size = raw IE64PROG size
-    store.q r24, 232(r29)               ; src ptr = raw image
-    store.q r0, 240(r29)                ; no temp buffer to free
-    store.q r23, 248(r29)               ; raw embedded image size
     bra     .dso_have_blob
 .dso_text_size:
     ; Plain text: scan for NUL byte.
@@ -8118,6 +8993,22 @@ prog_doslib_code:
     syscall #SYS_CREATE_PORT           ; R1 = port_id
     load.q  r29, (sp)
     store.q r1, 144(r29)               ; data[144] = dos_port
+
+    ; =====================================================================
+    ; M14.1 phase 3: DOS now owns the remaining service boot chain.
+    ; Launch Shell from the embedded manifest before entering the public
+    ; request loop. Shell then drives Startup-Sequence, whose service-name
+    ; lines are resolved through the internal embedded-manifest path.
+    ; =====================================================================
+    store.b r0, 1000(r29)              ; empty args string for manifest boot
+    move.l  r1, #BOOT_MANIFEST_ID_SHELL
+    add     r2, r29, #1000
+    move.q  r3, r0
+    jsr     .dos_manifest_launch_by_id
+    load.q  r29, (sp)
+    bnez    r2, .dos_boot_fail
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
 
     ; =====================================================================
     ; Main loop: WaitPort(dos_port) → dispatch on message type
@@ -8771,7 +9662,7 @@ prog_doslib_code:
     move.q  r2, r16                     ; args_ptr
     move.q  r3, r18                     ; args_len
     move.q  r30, r29                    ; preserve DOS data-page base across helper return
-    move.q  r31, r29                    ; explicit DOS data-page anchor
+    move.q  r19, r29                    ; explicit DOS data-page anchor
     jsr     .dos_launch_seglist
     move.q  r29, r30
     move.q  r5, r1                      ; task_id
@@ -8784,6 +9675,14 @@ prog_doslib_code:
     load.q  r29, (sp)
     bra     .dos_main_loop
 
+.dos_boot_fail:
+    move.q  r3, r2
+    add     r1, r1, #0x30
+    syscall #SYS_DEBUG_PUTCHAR
+    add     r1, r3, #0x30
+    syscall #SYS_DEBUG_PUTCHAR
+    syscall #SYS_EXIT_TASK
+
     ; ------------------------------------------------------------------
     ; .dos_launch_seglist: launch a DOS-owned seglist through the M14
     ; descriptor bridge without consuming it.
@@ -8793,7 +9692,7 @@ prog_doslib_code:
 .dos_launch_seglist:
     sub     sp, sp, #240
     store.q r30, 224(sp)
-    store.q r31, 232(sp)
+    store.q r19, 232(sp)
     move.q  r21, r1
     move.q  r16, r2
     move.q  r18, r3
@@ -8821,7 +9720,7 @@ prog_doslib_code:
     ;   144 launch seg table entry 0
     ;   176 launch seg table entry 1
     ;   224 saved r30
-    ;   232 saved r31
+    ;   232 saved r19
     store.q r0, 0(sp)
     store.q r0, 8(sp)
     store.q r0, 16(sp)
@@ -9039,7 +9938,7 @@ prog_doslib_code:
     move.l  r5, #ERR_NOMEM
     beq     r27, r5, .dos_launchseg_nomem
 .dos_launchseg_badarg:
-    load.q  r31, 232(sp)
+    load.q  r19, 232(sp)
     load.q  r30, 224(sp)
     move.q  r1, r0
     move.l  r2, #DOS_ERR_BADARG
@@ -9055,18 +9954,268 @@ prog_doslib_code:
     pop     r29
     bra     .dos_launchseg_nomem
 .dos_launchseg_nomem:
-    load.q  r31, 232(sp)
+    load.q  r19, 232(sp)
     load.q  r30, 224(sp)
     move.q  r1, r0
     move.l  r2, #DOS_ERR_NOMEM
     add     sp, sp, #240
     rts
 .dos_launchseg_ok:
-    load.q  r31, 232(sp)
+    load.q  r19, 232(sp)
     load.q  r30, 224(sp)
     move.q  r1, r26
     move.l  r2, #DOS_OK
     add     sp, sp, #240
+    rts
+
+    ; ------------------------------------------------------------------
+    ; M14.1 phase 3: embedded-manifest helpers
+    ; ------------------------------------------------------------------
+
+    ; .dos_manifest_launch_by_id
+    ; In:  r1 = manifest entry ID, r2 = args_ptr, r3 = args_len
+    ; Out: r1 = task_id (or 0), r2 = DOS_OK / DOS_ERR_*
+.dos_manifest_launch_by_id:
+    syscall #SYS_BOOT_MANIFEST
+    beqz    r2, .dmli_ok
+    move.l  r4, #ERR_NOMEM
+    beq     r2, r4, .dmli_nomem
+    move.q  r1, r0
+    move.l  r2, #DOS_ERR_BADARG
+    rts
+.dmli_nomem:
+    move.q  r1, r0
+    move.l  r2, #DOS_ERR_NOMEM
+    rts
+.dmli_ok:
+    move.l  r2, #DOS_OK
+    rts
+
+    ; .dos_name_eq_ci32
+    ; In:  r1 = ptr_a, r2 = ptr_b
+    ; Out: r23 = 0 if equal, 1 if mismatch
+.dos_name_eq_ci32:
+    move.l  r20, #0
+.dne_loop:
+    move.l  r21, #32
+    bge     r20, r21, .dne_match
+    add     r22, r1, r20
+    load.b  r22, (r22)
+    add     r24, r2, r20
+    load.b  r24, (r24)
+    move.l  r25, #0x61
+    blt     r22, r25, .dne_a_done
+    move.l  r25, #0x7B
+    bge     r22, r25, .dne_a_done
+    sub     r22, r22, #0x20
+.dne_a_done:
+    move.l  r25, #0x61
+    blt     r24, r25, .dne_b_done
+    move.l  r25, #0x7B
+    bge     r24, r25, .dne_b_done
+    sub     r24, r24, #0x20
+.dne_b_done:
+    bne     r22, r24, .dne_mismatch
+    add     r20, r20, #1
+    bra     .dne_loop
+.dne_match:
+    move.q  r23, r0
+    rts
+.dne_mismatch:
+    move.l  r23, #1
+    rts
+
+    ; .dos_manifest_find_row_by_name
+    ; In:  r1 = resolved DOS name ptr
+    ; Out: r1 = manifest entry ID (or 0), r2 = 1 if found, 0 if not found
+.dos_manifest_find_row_by_name:
+    move.q  r20, r1
+    add     r2, r29, #(prog_doslib_seed_name_hwres - prog_doslib_data)
+    jsr     .dos_name_eq_ci32
+    beqz    r23, .dmfrn_hwres
+    move.q  r1, r20
+    add     r2, r29, #(prog_doslib_seed_name_input - prog_doslib_data)
+    jsr     .dos_name_eq_ci32
+    beqz    r23, .dmfrn_input
+    move.q  r1, r20
+    add     r2, r29, #(prog_doslib_seed_name_graphics - prog_doslib_data)
+    jsr     .dos_name_eq_ci32
+    beqz    r23, .dmfrn_graphics
+    move.q  r1, r20
+    add     r2, r29, #(prog_doslib_seed_name_intuition - prog_doslib_data)
+    jsr     .dos_name_eq_ci32
+    beqz    r23, .dmfrn_intuition
+.dmfrn_notfound:
+    move.q  r1, r0
+    move.q  r2, r0
+    rts
+.dmfrn_hwres:
+    move.l  r20, #BOOT_MANIFEST_ID_HWRES
+    bra     .dmfrn_found
+.dmfrn_input:
+    move.l  r20, #BOOT_MANIFEST_ID_INPUT
+    bra     .dmfrn_found
+.dmfrn_graphics:
+    move.l  r20, #BOOT_MANIFEST_ID_GRAPHICS
+    bra     .dmfrn_found
+.dmfrn_intuition:
+    move.l  r20, #BOOT_MANIFEST_ID_INTUITION
+    bra     .dmfrn_found
+.dmfrn_found:
+    move.q  r1, r20
+    move.l  r2, #1
+    rts
+
+    ; .dos_build_elf_from_ie64
+    ; In:  r1 = raw IE64PROG ptr, r2 = raw size
+    ; Out: r1 = temporary ELF ptr, r2 = ELF size, r3 = ERR_*
+.dos_build_elf_from_ie64:
+    move.q  r20, r1
+    move.q  r19, r2
+    move.l  r5, #IMG_HEADER_SIZE
+    blt     r19, r5, .dbe_badarg
+    load.l  r5, (r20)
+    move.l  r6, #IMG_MAGIC_LO
+    bne     r5, r6, .dbe_badarg
+    load.l  r5, 4(r20)
+    move.l  r6, #IMG_MAGIC_HI
+    bne     r5, r6, .dbe_badarg
+    load.l  r21, IMG_OFF_CODE_SIZE(r20)
+    beqz    r21, .dbe_badarg
+    and     r5, r21, #7
+    bnez    r5, .dbe_badarg
+    load.l  r22, IMG_OFF_DATA_SIZE(r20)
+    move.l  r5, #IMG_HEADER_SIZE
+    add     r5, r5, r21
+    add     r5, r5, r22
+    bgt     r5, r19, .dbe_badarg
+
+    move.q  r23, r21
+    add     r23, r23, #4095
+    lsr     r23, r23, #12
+    move.l  r24, #1
+    beqz    r22, .dbe_data_pages_ready
+    move.q  r24, r22
+    add     r24, r24, #4095
+    lsr     r24, r24, #12
+.dbe_data_pages_ready:
+    move.q  r25, r23
+    lsl     r25, r25, #12
+    move.q  r26, r24
+    lsl     r26, r26, #12
+    move.l  r27, #0x1000
+    add     r27, r27, r25
+    move.q  r28, r27
+    add     r28, r28, r22
+
+    move.q  r1, r28
+    move.l  r2, #MEMF_CLEAR
+    push    r29
+    syscall #SYS_ALLOC_MEM
+    pop     r29
+    bnez    r2, .dbe_nomem
+    move.q  r18, r1
+
+    move.l  r5, #0x464C457F
+    store.l r5, (r18)
+    move.l  r5, #0x00010102
+    store.l r5, 4(r18)
+    move.l  r5, #0x49450002
+    store.l r5, 16(r18)
+    move.l  r5, #1
+    store.l r5, 20(r18)
+    move.l  r5, #USER_IMAGE_BASE
+    store.q r5, 24(r18)
+    move.l  r5, #64
+    store.q r5, 32(r18)
+    move.l  r5, #0x00380040
+    store.l r5, 52(r18)
+    move.l  r5, #2
+    store.l r5, 56(r18)
+
+    move.l  r5, #1
+    store.l r5, 64(r18)
+    move.l  r5, #5
+    store.l r5, 68(r18)
+    move.l  r5, #0x1000
+    store.q r5, 72(r18)
+    move.l  r5, #USER_IMAGE_BASE
+    store.q r5, 80(r18)
+    store.q r0, 88(r18)
+    store.q r21, 96(r18)
+    store.q r25, 104(r18)
+    move.l  r5, #0x1000
+    store.q r5, 112(r18)
+
+    move.l  r5, #1
+    store.l r5, 120(r18)
+    move.l  r5, #6
+    store.l r5, 124(r18)
+    store.q r27, 128(r18)
+    move.l  r17, #0x00700000
+    store.q r17, 136(r18)
+    store.q r0, 144(r18)
+    store.q r22, 152(r18)
+    store.q r26, 160(r18)
+    move.l  r5, #0x1000
+    store.q r5, 168(r18)
+
+    add     r14, r20, #IMG_HEADER_SIZE
+    add     r15, r18, #0x1000
+    move.l  r16, #0
+.dbe_copy_code:
+    bge     r16, r21, .dbe_copy_data_prep
+    add     r5, r14, r16
+    load.b  r6, (r5)
+    add     r7, r15, r16
+    store.b r6, (r7)
+    add     r16, r16, #1
+    bra     .dbe_copy_code
+.dbe_copy_data_prep:
+    add     r14, r14, r21
+    add     r15, r18, r27
+    move.l  r16, #0
+.dbe_copy_data:
+    bge     r16, r22, .dbe_ok
+    add     r5, r14, r16
+    load.b  r6, (r5)
+    add     r7, r15, r16
+    store.b r6, (r7)
+    add     r16, r16, #1
+    bra     .dbe_copy_data
+.dbe_ok:
+    move.q  r1, r18
+    move.q  r2, r28
+    move.q  r3, #ERR_OK
+    rts
+.dbe_badarg:
+    move.q  r1, r0
+    move.q  r2, r0
+    move.q  r3, #ERR_BADARG
+    rts
+.dbe_nomem:
+    move.q  r1, r0
+    move.q  r2, r0
+    move.q  r3, #ERR_NOMEM
+    rts
+
+    ; .dos_manifest_launch_raw
+    ; In:  r1 = raw IE64PROG ptr, r2 = raw size, r3 = args_ptr, r4 = args_len
+    ; Out: r1 = task_id (or 0), r2 = DOS_OK / DOS_ERR_*
+.dos_manifest_launch_raw:
+    syscall #SYS_EXEC_PROGRAM
+    beqz    r2, .dmrl_ok
+    move.l  r5, #ERR_NOMEM
+    beq     r2, r5, .dmrl_nomem
+    move.q  r1, r0
+    move.l  r2, #DOS_ERR_BADARG
+    rts
+.dmrl_nomem:
+    move.q  r1, r0
+    move.l  r2, #DOS_ERR_NOMEM
+    rts
+.dmrl_ok:
+    move.l  r2, #DOS_OK
     rts
 
     ; =================================================================
@@ -9410,7 +10559,14 @@ prog_doslib_code:
     jsr     .dos_resolve_cmd            ; r23 = resolved name (e.g. "C/Version")
     load.q  r29, (sp)
 
+.dos_run_file_lookup:
     ; 3. M12.6 Phase A: walk metadata chain by name
+    ; Preserve the resolved command-name pointer before helper calls:
+    ; .dos_meta_find_by_name clobbers high registers, and the M14.1
+    ; manifest-name fallback still needs the original resolved name on a
+    ; miss. Without this, unknown commands can pass a null/stale pointer
+    ; into .dos_manifest_find_row_by_name and fault dos.library.
+    store.q r23, 336(r29)
     move.q  r1, r23
     jsr     .dos_meta_find_by_name      ; r1 = entry VA (or 0)
     beqz    r1, .dos_run_notfound
@@ -9419,6 +10575,65 @@ prog_doslib_code:
     bra     .dos_run_found
 
 .dos_run_notfound:
+    load.q  r29, (sp)
+    load.q  r1, 336(r29)
+    load.b  r11, (r1)
+    move.l  r12, #0x44                 ; 'D'
+    beq     r11, r12, .dos_run_manifest_maybe
+    move.l  r12, #0x4C                 ; 'L'
+    beq     r11, r12, .dos_run_manifest_maybe
+    move.l  r12, #0x52                 ; 'R'
+    bne     r11, r12, .dos_run_reply_notfound
+.dos_run_manifest_maybe:
+    jsr     .dos_manifest_find_row_by_name ; r1 = manifest entry ID (or 0), r2 = 1 if found
+    load.q  r29, (sp)
+    beqz    r1, .dos_run_reply_notfound
+    beqz    r2, .dos_run_reply_notfound
+    move.q  r21, r1                     ; manifest entry ID
+
+    ; Shared buffer still holds "command\0args\0". Reuse the normal
+    ; bounded args scan and launch through the manifest-backed path.
+    load.q  r20, 168(r29)              ; original shared buffer
+    move.q  r16, r20
+    move.l  r24, #0
+.dos_run_manifest_skip_cmd:
+    load.b  r15, (r16)
+    beqz    r15, .dos_run_manifest_args_start
+    add     r16, r16, #1
+    add     r24, r24, #1
+    move.l  r28, #DATA_ARGS_MAX
+    blt     r24, r28, .dos_run_manifest_skip_cmd
+    bra     .dos_run_reply_notfound
+.dos_run_manifest_args_start:
+    add     r16, r16, #1
+    move.q  r17, r16
+    move.l  r18, #0
+.dos_run_manifest_arglen:
+    load.b  r15, (r17)
+    beqz    r15, .dos_run_launch_manifest_raw
+    add     r17, r17, #1
+    add     r18, r18, #1
+    move.l  r28, #DATA_ARGS_MAX
+    blt     r18, r28, .dos_run_manifest_arglen
+    bra     .dos_run_reply_notfound
+
+.dos_run_launch_manifest_raw:
+    move.q  r1, r21                    ; manifest entry ID
+    move.q  r2, r16                    ; args_ptr
+    move.q  r3, r18                    ; args_len
+    jsr     .dos_manifest_launch_by_id
+    store.q r1, 304(r29)               ; task_id
+    store.q r2, 312(r29)               ; DOS err
+    load.q  r1, 944(r29)
+    load.q  r2, 312(r29)
+    load.q  r3, 304(r29)
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+
+.dos_run_reply_notfound:
     load.q  r29, (sp)
     ; Reply with DOS_ERR_NOTFOUND
     load.q  r1, 944(r29)
@@ -9545,7 +10760,7 @@ prog_doslib_code:
     load.q  r2, 320(r29)               ; args_ptr
     load.q  r3, 328(r29)               ; args_len
     move.q  r30, r29                   ; preserve DOS data-page base across helper return
-    move.q  r31, r29                   ; explicit DOS data-page anchor
+    move.q  r19, r29                   ; explicit DOS data-page anchor
     jsr     .dos_launch_seglist
     move.q  r29, r30
     store.q r1, 304(r29)               ; saved task_id
@@ -10551,9 +11766,12 @@ prog_doslib_seed_name_hwres:
     ; --- M14 Phase 2 seed names ---
 prog_doslib_seed_name_elfseg:
     dc.b    "C/ElfSeg", 0               ; 1141 (9 bytes) → 1150
+prog_doslib_boot_export_rows:
+    ; M14.1 phase 3: dos-private exported staged-service ELF sources.
+    ; Filled by kern_export_boot_manifest_to_dos after dos.library boots.
+    ds.b    (DOS_BOOT_EXPORT_COUNT * DOS_BOOT_EXPORT_ROW_SZ)
     ; --- Pad to 4096 (page boundary) ---
-    ; 1150 → 4096: 2946 bytes padding
-    ds.b    2946
+    ds.b    (2946 - (DOS_BOOT_EXPORT_COUNT * DOS_BOOT_EXPORT_ROW_SZ))
 
 ; ---------------------------------------------------------------------------
 ; Embedded command images (VERSION, AVAIL, DIR, TYPE, ECHO)
@@ -11442,12 +12660,11 @@ prog_echo_cmd_data_end:
 prog_echo_cmd_end:
 
 seed_startup:
-    dc.b    "RESOURCES:hardware.resource", 0x0A
-    dc.b    "DEVS:input.device", 0x0A
-    dc.b    "LIBS:graphics.library", 0x0A
-    dc.b    "LIBS:intuition.library", 0x0A
+    dc.b    "RESOURCES/hardware.resource", 0x0A
+    dc.b    "DEVS/input.device", 0x0A
+    dc.b    "LIBS/graphics.library", 0x0A
+    dc.b    "LIBS/intuition.library", 0x0A
     dc.b    "VERSION", 0x0A
-    dc.b    "ECHO IntuitionOS M14 ready", 0x0A
     dc.b    "ECHO All visible services are running in user space", 0x0A, 0
 seed_startup_end:
     align   8
@@ -14535,10 +15752,6 @@ prog_elfseg:
 prog_elfseg_end:
     align   8
 
-prog_doslib_data_end:
-    align   8
-prog_doslib_end:
-
 ; ---------------------------------------------------------------------------
 ; SHELL — interactive command shell (M10)
 ; ---------------------------------------------------------------------------
@@ -15189,6 +16402,10 @@ prog_shell_data:
 prog_shell_data_end:
     align   8
 prog_shell_end:
+
+prog_doslib_data_end:
+    align   8
+prog_doslib_end:
 
 ; ============================================================================
 ; Data: Strings

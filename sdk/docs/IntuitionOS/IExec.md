@@ -30,10 +30,26 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
 - **Dynamic task-image placement in `load_program`** (M10, refined in M12.8, redesigned in M13 phases 2 and 4): the old arbitrary `code_size <= 8192` / `data_size <= 49152` product caps are gone, and task images are no longer forced into `task_id * USER_SLOT_STRIDE` slots. `load_program` now allocates code, stack, data, and startup pages dynamically: it uses the legacy fixed image window first, then spills additional image pages into allocator-pool pages as needed. PT backing likewise uses the legacy fixed 32-block PT window first, then spills additional 64 KiB PT blocks into allocator-pool pages. Failure mode is real `ERR_NOMEM` when the allocator pool is exhausted.
 - **M13 startup block ABI**: boot-loaded and `ExecProgram`-launched tasks no longer self-locate from `GetSysInfo(CURRENT_TASK) + USER_SLOT_STRIDE`. The kernel allocates a dedicated startup page for each launched task, writes the 64-byte startup block there, and seeds the startup-page base VA at `0(sp)` before entering user code. Services discover task identity and actual code/data/stack bases by first loading the startup-page VA from `0(sp)` and then reading the startup block from that page.
 - **Phase 5 regression gate**: the full visible boot stack and both retained GUI demos are now covered by explicit M13 tests (`TestIExec_M13_Phase5_FullBootStack_ServiceCensus`, `..._GfxDemoRegression`, `..._AboutRegression`), so the milestone does not rely on older M11/M12 test names as an implicit proxy for final compatibility.
-- **M14 phase 5 ships the visible native DOS loader path end-to-end**: DOS-loaded commands and applications use a strict `ELF64` subset (`EM_IE64 = 0x4945`, `ET_EXEC`, `PT_LOAD` only, no dynamic linker) when loaded through `DOS_LOADSEG`. `dos.library` parses that subset, builds DOS-owned seglists, frees them with `DOS_UNLOADSEG`, launches them through `DOS_RUNSEG` via the dual-mode `ExecProgram` launch-descriptor bridge, and `DOS_RUN` now prefers that seglist path for strict M14 ELF commands while falling back to the legacy flat-image launch path for older seeded `IE64PROG` commands. In the shipped M14 phase-5 tree, the seeded `C:` command/demo path is native ELF, while bundled startup-sequence services remain on the legacy path. The old flat-image `ExecProgram(image_ptr, image_size, args_ptr, args_len)` ABI still exists for source compatibility.
+- **M14 phase 5 ships the visible native DOS loader path end-to-end**: DOS-loaded commands and applications use a strict `ELF64` subset (`EM_IE64 = 0x4945`, `ET_EXEC`, `PT_LOAD` only, no dynamic linker) when loaded through `DOS_LOADSEG`. `dos.library` parses that subset, builds DOS-owned seglists, frees them with `DOS_UNLOADSEG`, launches them through `DOS_RUNSEG` via the dual-mode `ExecProgram` launch-descriptor bridge, and `DOS_RUN` now prefers that seglist path for strict M14 ELF commands while falling back to the legacy flat-image launch path only for compatibility inputs. M14 shipped with the seeded `C:` command/demo path as native ELF. The old flat-image `ExecProgram(image_ptr, image_size, args_ptr, args_len)` ABI still exists for source compatibility.
+- M14 shipped/current runtime:
+  - the public ELF loader API is the file-backed DOS path: `DOS_LOADSEG` / `DOS_UNLOADSEG` / `DOS_RUNSEG`
+  - boot services still come up from the legacy kernel `program_table` path
+  - bootstrap grants are still keyed by boot index at runtime
+  - In the shipped M14 phase-5 tree, the seeded `C:` command/demo path is native ELF, while bundled startup-sequence services remain on the legacy path.
+- M14.1 target state:
+  - all shipped runtime binaries become ELF
+  - boot/services move to an internal embedded boot manifest, not a new public DOS API
+  - bootstrap grants move from boot-index keying to internal manifest-entry-ID keying
+- M14.1 phase 5 shipped state:
+  - the kernel now prepares staged strict-M14 ELF rows for the internal embedded boot manifest and keeps bootstrap grants keyed by internal manifest entry ID
+  - `console.handler` and `dos.library` boot from that staged manifest source as the minimum pre-DOS bootstrap chain
+  - once DOS is online, `dos.library` launches `Shell` from the internal embedded manifest, and `Shell` then drives `S:Startup-Sequence`
+  - DOS resolves the service-name lines in `S:Startup-Sequence` through its internal embedded-manifest path to launch `hardware.resource`, `input.device`, `graphics.library`, and `intuition.library`
+  - shipped service binaries under `LIBS:`, `DEVS:`, and `RESOURCES:` are now seeded as strict M14 ELF too
+  - the public DOS loader API is unchanged; the embedded-manifest service source remains internal-only
 - console.handler: CON: handler with GetMsg polling and CON_READLINE protocol — **M11.5**: console.handler now owns terminal MMIO directly via its own `SYS_MAP_IO(0xF0, 1)` mapping and inlines the readline MMIO loop. The former kernel-side `SYS_READ_INPUT` (slot 37) is removed; slot 37 is an unallocated hole that returns `ERR_BADARG`.
 - **dos.library**: AmigaOS dos.library equivalent with RAM: filesystem (case-insensitive, 32-byte filenames). The file metadata table and open-handle table are unbounded user-space chains of `AllocMem`'d 4 KiB pages (85 file entries or 510 handle entries per page). As of **M12.8**, each file body is a variable-size chain of 4 KiB extents linked through `entry.file_va`; the old fixed `DOS_FILE_SIZE` per-file allocation is gone. `DOS_WRITE` now does an atomic swap onto a newly allocated extent chain so allocation failure leaves previous content intact. **M14 phases 2-3 add `DOS_LOADSEG` / `DOS_UNLOADSEG` / `DOS_RUNSEG`**: dos.library now validates the strict native ELF subset, builds DOS-owned seglists with preserved target VA / `R/W/X` / entry-point metadata, frees them on demand, and launches them through the dual-mode `ExecProgram` descriptor handoff. M10 added the assign table (RAM:, C:, S:), name-based command resolution, embedded command images, init-time seeding into the RAM file store, and boot-race-free port creation.
-- **Shell**: interactive command shell that sends raw command names to dos.library via DOS_RUN (no shell-side command table). As of M14 phase 5, that visible command-dispatch path now goes through the DOS loader path for the seeded native-ELF `C:` command/demo set and falls back transparently for legacy seeded flat images. Executes `S:Startup-Sequence` automatically at boot if present, then drops to the interactive prompt.
+- **Shell**: interactive command shell that sends raw command names to dos.library via DOS_RUN (no shell-side command table). As of M14 phase 5, that visible command-dispatch path now goes through the DOS loader path for the seeded native-ELF `C:` command/demo set and falls back transparently only for compatibility flat images. Executes `S:Startup-Sequence` automatically at boot if present, then drops to the interactive prompt.
 - **5 external commands** as DOS-loaded executables: VERSION, AVAIL, DIR, TYPE, ECHO. Stored as files in RAM under `C:`, launched by name through dos.library — not by program table index.
 
 **What IExec does not do:**
@@ -41,7 +57,7 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
 - Filesystem access beyond RAM: (handled by DOS.library or host-side intercepts for persistent storage)
 - Device drivers (hardware chips are memory-mapped; drivers live in user space)
 - Graphics or audio (handled by respective chip subsystems)
-- Boot services still use the legacy bundled `IE64PROG` path; M14's shipped ELF flow currently applies to DOS-loaded commands and applications, not bundled boot services
+- Boot/services use the internal embedded-manifest ELF path for shipped runtime binaries; the remaining flat-image path is compatibility-only
 
 IExec runs on the IE64 CPU core only. It requires the IE64 MMU (4 KiB paged virtual memory, software TLB, control registers) and the hardware timer for preemption.
 
@@ -410,6 +426,16 @@ The verb selector arrives in R6 because R0 is the IE64 zero register and not pas
 **5.12.4 SYS_MAP_IO authorization.** The handler walks the grant chain looking for a row whose `task_id == current_task` and whose `[ppn_lo, ppn_hi]` covers the requested PPN range. No covering grant → `ERR_PERM`. The legacy hardcoded allowlist (`(0xF0, 1)` + `[0x100..0x5FF]` VRAM range) is gone — the same PPN ranges are now expressed as grant rows whose region tags `'CHIP'` / `'VRAM'` `hardware.resource` resolves at runtime. This reclassifies `SYS_MAP_IO` from `nucleus` to `bootstrap, trusted-internal — gated by KD_GRANT_TABLE`.
 
 **5.12.5 Bootstrap grant table.** A small immutable list keyed by program-table boot index (NOT task ID, because task IDs do not exist at `kern_init`). The boot-load loop at `iexec.s:228` resolves each row to a live grant entry via `kern_bootstrap_grant_insert` immediately after `load_program` returns the assigned task ID. M12.5 ships with exactly one bootstrap row: `(program_index_of_console_handler, 'CHIP', PPN 0xF0..0xF0)`. This is what lets `console.handler` map its serial-port MMIO at boot before `hardware.resource` is alive — without it, the bring-up would deadlock on the chicken-and-egg of `hardware.resource` depending on `console.handler` for output, which depends on chip MMIO, which depends on a grant. Adding more bootstrap rows is a code change, not a runtime decision. `TestIExec_HWRes_BootstrapConsoleGrantPresent` verifies the row is in place after boot.
+
+M14 shipped/current runtime:
+- bootstrap grants are keyed by `program_table` boot index and resolved to task IDs only after launch
+
+M14.1 target:
+- bootstrap grants move from boot-index keying to internal manifest-entry-ID keying
+- manifest entry ID is not task ID and not a public ABI
+- M14.1 phase 2 current runtime:
+- the kernel data page now carries a small internal boot-manifest table for `console.handler` and `dos.library`
+- those rows are the source of bootstrap-grant identity, but first-service launch still uses the stable bundled boot loader after the staged ELF validation step
 
 **5.12.6 hardware.resource user-space service.** Bundled program `prog_hwres` seeded into the RAM filesystem as `RESOURCES:hardware.resource`. `S/Startup-Sequence` launches it BEFORE `input.device` and `graphics.library` so it has its public port `hardware.resource` registered before any client calls `FindPort`. Service body:
 
@@ -1327,6 +1353,14 @@ Phase-5 shipped boundary:
 - seeded files under `C:` are now emitted as strict M14 native ELF where possible, so the visible command/demo path (`VERSION`, `AVAIL`, `DIR`, `TYPE`, `ECHO`, `About`, `GfxDemo`) really exercises `LoadSeg` / `RunSeg` / descriptor launch
 - bundled startup-sequence services under `LIBS:`, `DEVS:`, and `RESOURCES:` remain legacy flat `IE64PROG` in M14, so the boot chain stays stable while the visible user/demo path moves to native ELF
 - `C:GfxDemo` and `C:About` remain regular DOS-loaded applications and now serve as the retained end-to-end M14 demo path
+- M14.1 target state: all shipped runtime binaries become ELF, but the new service source path is internal embedded-manifest loading rather than an extension of the public file-backed DOS API
+
+M14.1 phase 5 boundary:
+
+- shipped service launches now consume staged strict-M14 ELF rows from the internal embedded boot manifest rather than bundled flat `IE64PROG` images
+- seeded service files under `LIBS:`, `DEVS:`, and `RESOURCES:` are now emitted as strict M14 native ELF too
+- the public DOS file-backed API is unchanged; the embedded-manifest service source remains internal-only
+- the full-ELF shipped runtime is now locked by explicit end-to-end regressions for clean boot, command dispatch, unknown-command handling, and the retained GUI demos
 
 Test coverage:
 
@@ -1348,3 +1382,8 @@ Test coverage:
 - `TestIExec_M14_Phase5_FullBootStack_ServiceCensus`
 - `TestIExec_M14_Phase5_GfxDemoRegression`
 - `TestIExec_M14_Phase5_AboutRegression`
+- `TestIExec_M141_Phase5_FullBootStack_ServiceCensus`
+- `TestIExec_M141_Phase5_CommandPathRegression`
+- `TestIExec_M141_Phase5_ShellUnknownRegression`
+- `TestIExec_M141_Phase5_GfxDemoRegression`
+- `TestIExec_M141_Phase5_AboutRegression`
