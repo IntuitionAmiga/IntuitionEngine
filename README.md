@@ -5989,6 +5989,12 @@ IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. 
 - **The contract is executable, not just prose.** Focused host-side ELF validator tests remain, and phases 2-5 add red-first runtime tests for `LoadSeg`, `UnLoadSeg`, descriptor launch, preserved ELF entry, target-VA-sensitive execution, startup-page seeding, args passing, seglist lifetime across launch, shell command dispatch through the new loader, full visible boot-stack stability, and `C:GfxDemo` / `C:About` regression coverage.
 - **Reference docs.** The native subset and current loader status live in [`sdk/docs/IntuitionOS/ELF.md`](sdk/docs/IntuitionOS/ELF.md); the broader kernel/runtime contract remains in [`sdk/docs/IntuitionOS/IExec.md`](sdk/docs/IntuitionOS/IExec.md).
 
+**M14.2 phase 1 status** — execution is now ELF-only at the public runtime boundary:
+
+- **`ExecProgram` is descriptor-only.** The old flat-image `ExecProgram(image_ptr, image_size, args_ptr, args_len)` ABI is removed; the surviving launch contract is the M14 descriptor path used by DOS `RunSeg`.
+- **`DOS_RUN` no longer falls back to legacy flat-image command files.** Name-based command dispatch still uses the same DOS UX, but non-ELF executable content is rejected instead of being reflatted and launched.
+- **`DOS_LOADSEG` remains the strict native loader.** The public DOS loader surface is unchanged: `LoadSeg` / `UnLoadSeg` / `RunSeg` stay Amiga-shaped and ELF-backed.
+
 **M13 phase 5 status** — startup block ABI + dynamic task-image placement + live-task ceiling removal to the current ABI bound, with full boot-stack and GUI regressions green (implemented and tested):
 
 - **Booted services no longer self-locate from `CURRENT_TASK * USER_SLOT_STRIDE`.** The kernel now allocates a dedicated startup page for each launched task, writes the 64-byte startup block there, and seeds the startup-page base VA at `0(sp)`, so the booted M12 stack reads task identity/layout from that page instead of recomputing addresses from the task ID.

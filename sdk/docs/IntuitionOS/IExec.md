@@ -26,16 +26,16 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
 - Kernel renamed to exec.library; GURU MEDITATION fault messages
 - AmigaOS-style `OpenLibrary` for library discovery — **M11.5**: source-level alias for `SYS_FIND_PORT`; the kernel ABI is one slot smaller. Slot 36 is retained as a one-instruction binary-compat redirect to `.do_find_port` so any pre-M11.5 IE64 binary still links. New code uses `SYS_FIND_PORT` directly. See § 5.11 "Exec Boundary".
 - I/O page mapping via MapIO syscall (REGION_IO type)
-- **`SYS_EXEC_PROGRAM` takes a user-space image pointer** (M10): kernel creates tasks from user-provided IE64PROG images. Runs entirely under the caller's PT (no PT switching). `validate_user_range` checks both P and U bits on every page in the requested range. **M11.6**: the legacy `R1 < USER_CODE_BASE` built-in-program-table index branch is removed — sub-`USER_CODE_BASE` values now hard-fail with `ERR_BADARG` and the validated image-pointer ABI is the only path through the handler.
+- **`SYS_EXEC_PROGRAM` is now descriptor-only** (M14.2 phase 1): kernel task launch no longer accepts user-provided flat `IE64PROG` images. The surviving public contract is the M14 launch descriptor used by DOS `RunSeg`; malformed descriptors, unmapped pointers, and sub-`USER_CODE_BASE` values still fail with `ERR_BADARG`.
 - **Dynamic task-image placement in `load_program`** (M10, refined in M12.8, redesigned in M13 phases 2 and 4): the old arbitrary `code_size <= 8192` / `data_size <= 49152` product caps are gone, and task images are no longer forced into `task_id * USER_SLOT_STRIDE` slots. `load_program` now allocates code, stack, data, and startup pages dynamically: it uses the legacy fixed image window first, then spills additional image pages into allocator-pool pages as needed. PT backing likewise uses the legacy fixed 32-block PT window first, then spills additional 64 KiB PT blocks into allocator-pool pages. Failure mode is real `ERR_NOMEM` when the allocator pool is exhausted.
 - **M13 startup block ABI**: boot-loaded and `ExecProgram`-launched tasks no longer self-locate from `GetSysInfo(CURRENT_TASK) + USER_SLOT_STRIDE`. The kernel allocates a dedicated startup page for each launched task, writes the 64-byte startup block there, and seeds the startup-page base VA at `0(sp)` before entering user code. Services discover task identity and actual code/data/stack bases by first loading the startup-page VA from `0(sp)` and then reading the startup block from that page.
 - **Phase 5 regression gate**: the full visible boot stack and both retained GUI demos are now covered by explicit M13 tests (`TestIExec_M13_Phase5_FullBootStack_ServiceCensus`, `..._GfxDemoRegression`, `..._AboutRegression`), so the milestone does not rely on older M11/M12 test names as an implicit proxy for final compatibility.
-- **M14 phase 5 ships the visible native DOS loader path end-to-end**: DOS-loaded commands and applications use a strict `ELF64` subset (`EM_IE64 = 0x4945`, `ET_EXEC`, `PT_LOAD` only, no dynamic linker) when loaded through `DOS_LOADSEG`. `dos.library` parses that subset, builds DOS-owned seglists, frees them with `DOS_UNLOADSEG`, launches them through `DOS_RUNSEG` via the dual-mode `ExecProgram` launch-descriptor bridge, and `DOS_RUN` now prefers that seglist path for strict M14 ELF commands while falling back to the legacy flat-image launch path only for compatibility inputs. M14 shipped with the seeded `C:` command/demo path as native ELF. The old flat-image `ExecProgram(image_ptr, image_size, args_ptr, args_len)` ABI still exists for source compatibility.
+- **M14 phase 5 ships the visible native DOS loader path end-to-end, and M14.2 phase 1 removes the remaining flat-image escape hatches**: DOS-loaded commands and applications use a strict `ELF64` subset (`EM_IE64 = 0x4945`, `ET_EXEC`, `PT_LOAD` only, no dynamic linker) when loaded through `DOS_LOADSEG`. `dos.library` parses that subset, builds DOS-owned seglists, frees them with `DOS_UNLOADSEG`, launches them through `DOS_RUNSEG` via the `ExecProgram` launch-descriptor bridge, and `DOS_RUN` now rejects non-ELF executable content instead of falling back to legacy flat-image launch. M14 shipped with the seeded `C:` command/demo path as native ELF; M14.2 phase 1 makes that ELF-only execution contract explicit.
 - M14 shipped/current runtime:
   - the public ELF loader API is the file-backed DOS path: `DOS_LOADSEG` / `DOS_UNLOADSEG` / `DOS_RUNSEG`
-  - boot services still come up from the legacy kernel `program_table` path
-  - bootstrap grants are still keyed by boot index at runtime
-  - In the shipped M14 phase-5 tree, the seeded `C:` command/demo path is native ELF, while bundled startup-sequence services remain on the legacy path.
+  - base M14 originally still brought boot services up from the legacy kernel `program_table` path
+  - bootstrap grants were still keyed by boot index at runtime
+  - the shipped M14 phase-5 tree had a native-ELF `C:` command/demo path while bundled startup-sequence services still used the legacy path
 - M14.1 target state:
   - all shipped runtime binaries become ELF
   - boot/services move to an internal embedded boot manifest, not a new public DOS API
@@ -50,14 +50,14 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
 - console.handler: CON: handler with GetMsg polling and CON_READLINE protocol — **M11.5**: console.handler now owns terminal MMIO directly via its own `SYS_MAP_IO(0xF0, 1)` mapping and inlines the readline MMIO loop. The former kernel-side `SYS_READ_INPUT` (slot 37) is removed; slot 37 is an unallocated hole that returns `ERR_BADARG`.
 - **dos.library**: AmigaOS dos.library equivalent with RAM: filesystem (case-insensitive, 32-byte filenames). The file metadata table and open-handle table are unbounded user-space chains of `AllocMem`'d 4 KiB pages (85 file entries or 510 handle entries per page). As of **M12.8**, each file body is a variable-size chain of 4 KiB extents linked through `entry.file_va`; the old fixed `DOS_FILE_SIZE` per-file allocation is gone. `DOS_WRITE` now does an atomic swap onto a newly allocated extent chain so allocation failure leaves previous content intact. **M14 phases 2-3 add `DOS_LOADSEG` / `DOS_UNLOADSEG` / `DOS_RUNSEG`**: dos.library now validates the strict native ELF subset, builds DOS-owned seglists with preserved target VA / `R/W/X` / entry-point metadata, frees them on demand, and launches them through the dual-mode `ExecProgram` descriptor handoff. M10 added the assign table (RAM:, C:, S:), name-based command resolution, embedded command images, init-time seeding into the RAM file store, and boot-race-free port creation.
 - **Shell**: interactive command shell that sends raw command names to dos.library via DOS_RUN (no shell-side command table). As of M14 phase 5, that visible command-dispatch path now goes through the DOS loader path for the seeded native-ELF `C:` command/demo set and falls back transparently only for compatibility flat images. Executes `S:Startup-Sequence` automatically at boot if present, then drops to the interactive prompt.
-- **5 external commands** as DOS-loaded executables: VERSION, AVAIL, DIR, TYPE, ECHO. Stored as files in RAM under `C:`, launched by name through dos.library — not by program table index.
+- **5 external commands** as DOS-loaded executables: VERSION, AVAIL, DIR, TYPE, ECHO. Stored as files in RAM under `C:`, launched by name through dos.library.
 
 **What IExec does not do:**
 
 - Filesystem access beyond RAM: (handled by DOS.library or host-side intercepts for persistent storage)
 - Device drivers (hardware chips are memory-mapped; drivers live in user space)
 - Graphics or audio (handled by respective chip subsystems)
-- Boot/services use the internal embedded-manifest ELF path for shipped runtime binaries; the remaining flat-image path is compatibility-only
+- Boot/services use the internal embedded-manifest ELF path for shipped runtime binaries; the remaining flat-image path is removed in M14.2
 
 IExec runs on the IE64 CPU core only. It requires the IE64 MMU (4 KiB paged virtual memory, software TLB, control registers) and the hardware timer for preemption.
 
@@ -310,11 +310,11 @@ The CPU traps to supervisor mode. The kernel's trap handler reads the syscall nu
 
 | # | Name | Signature | Status |
 |---|------|-----------|--------|
-| 35 | `ExecProgram` | R1=image_ptr, R2=image_size, R3=args_ptr, R4=args_len -> R1=task_id, R2=err | **Implemented (M9, redesigned M10, legacy index path removed M11.6)** (`nucleus`) |
+| 35 | `ExecProgram` | R1=launch_desc_ptr, R2=launch_desc_size, R3=args_ptr, R4=args_len -> R1=task_id, R2=err | **Implemented (descriptor-only as of M14.2 phase 1)** (`nucleus`) |
 | 36 | `OpenLibrary` | R1=name_ptr -> R1=port_id, R2=err | **Binary-compat redirect to `SYS_FIND_PORT` (M11.5)**. Source-level alias (`SYS_OPEN_LIBRARY equ SYS_FIND_PORT`); kernel slot 36 dispatches to `.do_find_port` via a one-instruction redirect so older IE64 binaries still link. New code uses `SYS_FIND_PORT` directly. |
 | 37 | -- | -- | Removed M11.5 (was `ReadInput`; terminal MMIO inlined into `console.handler` via `SYS_MAP_IO(0xF0, 1)`. Slot returns `ERR_BADARG`; guarded by `TestIExec_ReadInput_RemovedReturnsBadarg`.) |
 
-**ExecProgram (35)** -- M10 ABI, placement updated in M13 phase 2: Creates a new task from a user-provided IE64PROG image. R1=image_ptr (user VA pointing to a complete IE64PROG image, e.g. an entry in dos.library's RAM file store; must be ≥ `0x600000`), R2=image_size (total bytes including 32-byte header, code, and data; must be ≥ 32 and fully mapped in the caller), R3=args_ptr (user VA pointing to null-terminated argument string in the caller's address space, or 0 for no args), R4=args_len (byte count of arguments, max 256, or 0 for no args). The handler runs entirely under the **caller's** page table (no PT switching): every page in `[image_ptr, image_ptr+image_size)` and `[args_ptr, args_ptr+args_len)` is validated via `validate_user_range` (checks both **P** and **U** PTE bits), then `load_program` is called directly to copy the image into a new dynamically placed task image. Arguments are copied to the new task's data page at `DATA_ARGS_OFFSET` (like AmigaOS `pr_Arguments`). Returns R1=new task_id, R2=err. Returns `ERR_BADARG` for unmapped/kernel-only ranges, malformed images, args_len > 256, or pointer arithmetic overflow; returns `ERR_NOMEM` when the dynamic image/PT windows or page allocator are exhausted.
+**ExecProgram (35)** -- current M14.2 ABI: Launches a new task from a caller-mapped M14 launch descriptor. R1=launch_desc_ptr (user VA, must be ≥ `0x600000`), R2=launch_desc_size, R3=args_ptr, R4=args_len. The handler runs under the **caller’s** page table while validating the descriptor header and any supplied args range with `validate_user_range` (checks both **P** and **U** PTE bits), then launches through the descriptor path that preserves ELF target VAs, protections, and entry point. Returns R1=new task_id, R2=err. Returns `ERR_BADARG` for unmapped/kernel-only ranges, malformed descriptors, flat-image callers, args_len > 256, or pointer arithmetic overflow; returns `ERR_NOMEM` when the dynamic image/PT windows or page allocator are exhausted.
 
 **Legacy index path — REMOVED in M11.6**: Historically (M9), if R1 < `0x600000` the handler treated R1 as a `program_table` index and used the M9 ABI (R2=args_ptr, R3=args_len). M10 redesigned the primary ABI around a user-VA `image_ptr` but kept the legacy index branch behind a discriminator for M9 boot-services compatibility (and hardened its args validation with `validate_user_range`). **M11.6 removes the discriminator and the entire legacy code path**: the handler now begins with `blt r1, USER_CODE_BASE → ERR_BADARG`, so any caller passing R1 < `0x600000` hard-fails. The validated image-pointer ABI above is the only path through the handler. `program_table` itself is preserved because the kernel boot path still loads console.handler / dos.library / Shell from it directly into task slots at init, but it is no longer reachable from user mode via `SYS_EXEC_PROGRAM`. Guarded by `TestIExec_ExecProgram_LegacyIndexReturnsBadarg`.
 
@@ -386,7 +386,7 @@ If either condition fails, the feature belongs in a library, device, handler, or
 | 38 | `HWRES_OP` | `trusted-internal` | M12.5: verb-multiplexed `hardware.resource` broker primitive. R6 selects: `HWRES_BECOME` (claim broker identity) / `HWRES_CREATE` (write a grant row, broker-only) / `HWRES_REVOKE` (reserved for M13, returns `ERR_BADARG`) / `HWRES_TASK_ALIVE` (query task liveness, broker-only). Slot 38 is fresh — slot 37 stays a reserved hole forever per the M11.5 contract. See §5.12. |
 | 33 | `DebugPutChar` | `bootstrap` | Single-character debug output to terminal MMIO. Used by the kernel boot banner and panic path **before** `console.handler` is alive. Not part of the normal app programming model — apps use `console.handler` via `CON_MSG_CHAR`. Scheduled to remain forever as the panic-time fallback. |
 | 34 | `ExitTask` | `nucleus` | Frees TCB, ports, signals, regions |
-| 35 | `ExecProgram` | `nucleus` | M10 takes a user-VA `image_ptr`. The legacy `R1 < 0x600000` index path was removed in M11.6 — sub-`USER_CODE_BASE` values now hard-fail with `ERR_BADARG`, leaving the validated image-pointer ABI as the only path through the handler. |
+| 35 | `ExecProgram` | `nucleus` | M14 introduced the launch descriptor path and M14.2 phase 1 removes the remaining flat-image ABI. Sub-`USER_CODE_BASE` values and flat-image callers hard-fail with `ERR_BADARG`; the descriptor contract is now the only path through the handler. |
 | 36 | `OpenLibrary` | `nucleus` (binary-compat redirect to slot 16) | Source-level alias for `SYS_FIND_PORT`; slot 36 dispatches to `.do_find_port` via a one-instruction redirect so any IE64 binary hardcoded to call number 36 still works. New code uses `SYS_FIND_PORT` directly. The Amiga-shaped programming model (`OpenLibrary("dos.library")`) is preserved at the assembler level; the kernel ABI is one slot smaller. |
 
 Slots 3, 6–10, 21–25, 29–32, and 37 are unallocated holes (former syscalls removed in M11.5). The dispatcher's existing fall-through path returns `ERR_BADARG` for any call to a hole. The hole numbers are never reused, so any IE64 binary that called these numbers continues to fail in the same predictable way. M12.5 makes this contract executable via `TestIExec_HWRes_Slot37StillReserved`, which guards specifically against a future patch quietly recycling slot 37. New syscalls always use fresh slots above the current ABI ceiling — `SYS_HWRES_OP` lives at slot 38, not slot 37.
@@ -1340,12 +1340,12 @@ Phase-3 launch behavior:
 - the descriptor preserves the original ELF `e_entry`; launch is not forced to the base of the first RX segment
 - successful launch does not consume the seglist; the caller may still `UnLoadSeg`
 - failed launch does not consume the seglist either
-- the old flat-image `ExecProgram(image_ptr, image_size, args_ptr, args_len)` ABI remains supported alongside the new descriptor path
+- M14 introduced the descriptor path that later became the only supported `ExecProgram` ABI in M14.2
 
 Phase-4 shell integration:
 
 - `DOS_RUN` now prefers the native seglist path for strict M14 ELF commands
-- legacy seeded flat-image commands still work through the same `DOS_RUN` API via fallback
+- M14.2 removes the legacy seeded flat-image execution fallback from that same `DOS_RUN` API
 - shell command names, args, case-insensitive lookup, and unknown-command UX are unchanged from the user's perspective
 
 Phase-5 shipped boundary:
@@ -1361,6 +1361,13 @@ M14.1 phase 5 boundary:
 - seeded service files under `LIBS:`, `DEVS:`, and `RESOURCES:` are now emitted as strict M14 native ELF too
 - the public DOS file-backed API is unchanged; the embedded-manifest service source remains internal-only
 - the full-ELF shipped runtime is now locked by explicit end-to-end regressions for clean boot, command dispatch, unknown-command handling, and the retained GUI demos
+
+M14.2 current runtime:
+
+- `SYS_EXEC_PROGRAM` is now descriptor-only
+- `DOS_LOADSEG` remains strict-ELF-only
+- `DOS_RUN` rejects non-ELF executable content
+- the remaining flat-image path is removed in M14.2
 
 Test coverage:
 

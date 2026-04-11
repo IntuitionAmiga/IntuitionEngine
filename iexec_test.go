@@ -75,6 +75,7 @@ const (
 	sysBootManifest = 39
 	sysMapIO        = 28
 
+	dosRun       = 6
 	dosLoadSeg   = 7
 	dosUnLoadSeg = 8
 	dosRunSeg    = 9
@@ -198,6 +199,14 @@ const (
 	regionFree    = 0
 	regionPrivate = 1
 	regionShared  = 2
+	regionIO      = 3
+
+	kdRegionOflowHead   = 49352
+	kdRegionOflowStride = 8
+	kdRegionOflowFirst  = 0
+	kdRegionPageNext    = 0
+	kdRegionPageHdrSz   = 16
+	kdRegionRowsPerPg   = 255
 
 	// Port table — M12.6 Phase C: KD_PORT_MAX cap removed.
 	// kdPortInlineMax is the inline range; rows beyond it live in the
@@ -242,6 +251,7 @@ const (
 	kdBootManifestName    = 24
 	kdBootManifestPtr     = 8
 	dosBootExportCount    = 5
+	dosBootExportRowsOff  = 1152
 	dosBootExportRowSz    = 24
 	dosBootExportID       = 0
 	dosBootExportPtr      = 8
@@ -1201,6 +1211,24 @@ func assembleAndLoadKernel(t *testing.T) (*ie64TestRig, *TerminalMMIO) {
 	copyFileForTest(t, filepath.Join(root, "sdk", "include", "ie64.inc"), filepath.Join(tmpDir, "ie64.inc"))
 	// M12: About app uses `incbin "topaz.raw"` for its bitmap font.
 	copyFileForTest(t, filepath.Join(root, "sdk", "include", "topaz.raw"), filepath.Join(tmpDir, "topaz.raw"))
+	for _, name := range []string{
+		"boot_console_handler.elf",
+		"boot_dos_library.elf",
+		"boot_shell.elf",
+		"boot_hardware_resource.elf",
+		"boot_input_device.elf",
+		"boot_graphics_library.elf",
+		"boot_intuition_library.elf",
+		"seed_version.elf",
+		"seed_avail.elf",
+		"seed_dir.elf",
+		"seed_type.elf",
+		"seed_echo.elf",
+		"seed_gfxdemo.elf",
+		"seed_about.elf",
+	} {
+		copyFileForTest(t, filepath.Join(root, "sdk", "intuitionos", "iexec", name), filepath.Join(tmpDir, name))
+	}
 
 	cmd := exec.Command(asmBin, "-I", tmpDir, filepath.Join(tmpDir, "iexec.s"))
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -1219,43 +1247,170 @@ func assembleAndLoadKernel(t *testing.T) (*ie64TestRig, *TerminalMMIO) {
 	return rig, term
 }
 
-// imgMagicBytes returns the 8-byte magic pattern that dc.l IMG_MAGIC_LO, IMG_MAGIC_HI
-// produces in memory (little-endian uint32 storage).
-func imgMagicBytes() [8]byte {
-	var magic [8]byte
-	binary.LittleEndian.PutUint32(magic[0:4], 0x34364549) // IMG_MAGIC_LO
-	binary.LittleEndian.PutUint32(magic[4:8], 0x474F5250) // IMG_MAGIC_HI
-	return magic
+var embeddedRuntimeELFPaths = []string{
+	"sdk/intuitionos/iexec/boot_console_handler.elf",
+	"sdk/intuitionos/iexec/boot_dos_library.elf",
+	"sdk/intuitionos/iexec/seed_version.elf",
+	"sdk/intuitionos/iexec/seed_avail.elf",
+	"sdk/intuitionos/iexec/seed_dir.elf",
+	"sdk/intuitionos/iexec/seed_type.elf",
+	"sdk/intuitionos/iexec/seed_echo.elf",
+	"sdk/intuitionos/iexec/boot_hardware_resource.elf",
+	"sdk/intuitionos/iexec/boot_input_device.elf",
+	"sdk/intuitionos/iexec/boot_graphics_library.elf",
+	"sdk/intuitionos/iexec/boot_intuition_library.elf",
+	"sdk/intuitionos/iexec/seed_gfxdemo.elf",
+	"sdk/intuitionos/iexec/seed_about.elf",
+	"sdk/intuitionos/iexec/boot_shell.elf",
 }
 
-// findAllProgramImages searches for all bundled program images in the kernel
-// binary by looking for the IMG_MAGIC pattern. Returns the code-start offset
-// (image_start + IMG_HEADER_SIZE) for each image found, in order.
-func findAllProgramImages(t *testing.T, mem []byte) []uint32 {
+var embeddedRuntimeELFPathsPhysical = []string{
+	"sdk/intuitionos/iexec/boot_console_handler.elf",
+	"sdk/intuitionos/iexec/boot_dos_library.elf",
+	"sdk/intuitionos/iexec/boot_shell.elf",
+	"sdk/intuitionos/iexec/boot_hardware_resource.elf",
+	"sdk/intuitionos/iexec/boot_input_device.elf",
+	"sdk/intuitionos/iexec/boot_graphics_library.elf",
+	"sdk/intuitionos/iexec/boot_intuition_library.elf",
+	"sdk/intuitionos/iexec/seed_version.elf",
+	"sdk/intuitionos/iexec/seed_avail.elf",
+	"sdk/intuitionos/iexec/seed_dir.elf",
+	"sdk/intuitionos/iexec/seed_type.elf",
+	"sdk/intuitionos/iexec/seed_echo.elf",
+	"sdk/intuitionos/iexec/seed_gfxdemo.elf",
+	"sdk/intuitionos/iexec/seed_about.elf",
+}
+
+func elfExecCodeOffset(t *testing.T, image []byte) uint32 {
 	t.Helper()
-	magic := imgMagicBytes()
-	var codeStarts []uint32
-	for i := 0; i+8 <= len(mem)-int(PROG_START); i += 8 {
-		match := true
-		for j := 0; j < 8; j++ {
-			if mem[PROG_START+uint32(i)+uint32(j)] != magic[j] {
-				match = false
-				break
-			}
+	if len(image) < 64 || binary.LittleEndian.Uint32(image[:4]) != 0x464C457F {
+		t.Fatal("elfExecCodeOffset: image is not an ELF file")
+	}
+	phoff := binary.LittleEndian.Uint64(image[32:40])
+	phentsize := binary.LittleEndian.Uint16(image[54:56])
+	phnum := binary.LittleEndian.Uint16(image[56:58])
+	for i := uint16(0); i < phnum; i++ {
+		base := phoff + uint64(i)*uint64(phentsize)
+		if base+56 > uint64(len(image)) {
+			t.Fatal("elfExecCodeOffset: program header out of range")
 		}
-		if match {
-			// Image header starts at PROG_START + i; code starts at +32 (IMG_HEADER_SIZE)
-			codeStarts = append(codeStarts, PROG_START+uint32(i)+32)
+		if binary.LittleEndian.Uint32(image[base:]) != 1 {
+			continue
+		}
+		flags := binary.LittleEndian.Uint32(image[base+4:])
+		if flags&m14ELFSegFlagX == 0 {
+			continue
+		}
+		return uint32(binary.LittleEndian.Uint64(image[base+8:]))
+	}
+	t.Fatal("elfExecCodeOffset: executable PT_LOAD segment not found")
+	return 0
+}
+
+func imageHeaderStartForCodeStart(t *testing.T, mem []byte, imageCodeStart uint32) (uint32, bool) {
+	t.Helper()
+	if imageCodeStart >= 0x1000 && binary.LittleEndian.Uint32(mem[imageCodeStart-0x1000:]) == 0x464C457F {
+		return imageCodeStart - 0x1000, true
+	}
+	if imageCodeStart >= 32 {
+		var magic [8]byte
+		binary.LittleEndian.PutUint32(magic[0:4], 0x34364549)
+		binary.LittleEndian.PutUint32(magic[4:8], 0x474F5250)
+		header := imageCodeStart - 32
+		if bytes.Equal(mem[header:header+8], magic[:]) {
+			return header, false
 		}
 	}
-	if len(codeStarts) == 0 {
-		t.Fatal("could not find any program images (IMG_MAGIC pattern not found)")
+	t.Fatalf("imageHeaderStartForCodeStart: could not identify image format at code start 0x%X", imageCodeStart)
+	return 0, false
+}
+
+func imageCodeSizeForCodeStart(t *testing.T, mem []byte, imageCodeStart uint32) uint32 {
+	t.Helper()
+	header, isELF := imageHeaderStartForCodeStart(t, mem, imageCodeStart)
+	if !isELF {
+		return binary.LittleEndian.Uint32(mem[header+8:])
+	}
+	phoff := binary.LittleEndian.Uint64(mem[header+32:])
+	phentsize := binary.LittleEndian.Uint16(mem[header+54:])
+	phnum := binary.LittleEndian.Uint16(mem[header+56:])
+	for i := uint16(0); i < phnum; i++ {
+		base := header + uint32(phoff) + uint32(i)*uint32(phentsize)
+		if binary.LittleEndian.Uint32(mem[base:]) != 1 {
+			continue
+		}
+		flags := binary.LittleEndian.Uint32(mem[base+4:])
+		if flags&m14ELFSegFlagX == 0 {
+			continue
+		}
+		return uint32(binary.LittleEndian.Uint64(mem[base+32:]))
+	}
+	t.Fatalf("imageCodeSizeForCodeStart: executable PT_LOAD not found at 0x%X", imageCodeStart)
+	return 0
+}
+
+func imageDataFileOffsetForCodeStart(t *testing.T, mem []byte, imageCodeStart uint32) uint32 {
+	t.Helper()
+	header, isELF := imageHeaderStartForCodeStart(t, mem, imageCodeStart)
+	if !isELF {
+		return imgHeaderSize + imageCodeSizeForCodeStart(t, mem, imageCodeStart)
+	}
+	phoff := binary.LittleEndian.Uint64(mem[header+32:])
+	phentsize := binary.LittleEndian.Uint16(mem[header+54:])
+	phnum := binary.LittleEndian.Uint16(mem[header+56:])
+	for i := uint16(0); i < phnum; i++ {
+		base := header + uint32(phoff) + uint32(i)*uint32(phentsize)
+		if binary.LittleEndian.Uint32(mem[base:]) != 1 {
+			continue
+		}
+		flags := binary.LittleEndian.Uint32(mem[base+4:])
+		if flags&m14ELFSegFlagW == 0 {
+			continue
+		}
+		return uint32(binary.LittleEndian.Uint64(mem[base+8:]))
+	}
+	t.Fatalf("imageDataFileOffsetForCodeStart: writable PT_LOAD not found at 0x%X", imageCodeStart)
+	return 0
+}
+
+// findAllProgramImages returns the code-start offsets for the embedded shipped
+// ELF artifacts in the legacy test order: console first, dos second, shell
+// last. Older shell-injection helpers still patch images[len(images)-1].
+func findAllProgramImages(t *testing.T, mem []byte) []uint32 {
+	t.Helper()
+	search := mem[PROG_START:]
+	searchBase := uint32(PROG_START)
+	byPath := make(map[string]uint32, len(embeddedRuntimeELFPathsPhysical))
+	for _, rel := range embeddedRuntimeELFPathsPhysical {
+		image, err := os.ReadFile(rel)
+		if err != nil {
+			t.Fatalf("findAllProgramImages: ReadFile(%q): %v", rel, err)
+		}
+		idx := bytes.Index(search, image)
+		if idx < 0 {
+			t.Fatalf("findAllProgramImages: could not locate %q in assembled kernel image", rel)
+		}
+		codeOff := elfExecCodeOffset(t, image)
+		abs := searchBase + uint32(idx)
+		byPath[rel] = abs + codeOff
+		next := idx + len(image)
+		searchBase += uint32(next)
+		search = search[next:]
+	}
+
+	var codeStarts []uint32
+	for _, rel := range embeddedRuntimeELFPaths {
+		codeStart, ok := byPath[rel]
+		if !ok {
+			t.Fatalf("findAllProgramImages: missing resolved code start for %q", rel)
+		}
+		codeStarts = append(codeStarts, codeStart)
 	}
 	return codeStarts
 }
 
 // findTaskTemplates finds the code-start offsets of the first two bundled
-// program images (CONSOLE=T0, ECHO=T1) in the assembled kernel binary.
+// runtime ELF artifacts in the assembled kernel binary.
 // Returns absolute memory addresses.
 func findTaskTemplates(t *testing.T, mem []byte) (t0Start, t1Start uint32) {
 	t.Helper()
@@ -1264,6 +1419,87 @@ func findTaskTemplates(t *testing.T, mem []byte) (t0Start, t1Start uint32) {
 		t.Fatalf("findTaskTemplates: found %d images, need at least 2", len(images))
 	}
 	return images[0], images[1]
+}
+
+func findTaskRegionRowByVA(t *testing.T, mem []byte, taskID uint64, va uint64) uint32 {
+	t.Helper()
+
+	inlineBase := uint32(kernDataBase + kdRegionTable + uint32(taskID)*kdRegionTaskSz)
+	for i := uint32(0); i < kdRegionMax; i++ {
+		row := inlineBase + i*kdRegionStride
+		if mem[row+kdRegType] == regionFree {
+			continue
+		}
+		if uint64(binary.LittleEndian.Uint32(mem[row+kdRegVA:])) == va {
+			return row
+		}
+	}
+
+	oflowHdr := uint32(kernDataBase + kdRegionOflowHead + uint32(taskID)*kdRegionOflowStride)
+	ppn := binary.LittleEndian.Uint16(mem[oflowHdr+kdRegionOflowFirst:])
+	for ppn != 0 {
+		page := uint32(ppn) << 12
+		row := page + kdRegionPageHdrSz
+		for i := uint32(0); i < kdRegionRowsPerPg; i++ {
+			if mem[row+kdRegType] != regionFree && uint64(binary.LittleEndian.Uint32(mem[row+kdRegVA:])) == va {
+				return row
+			}
+			row += kdRegionStride
+		}
+		ppn = binary.LittleEndian.Uint16(mem[page+kdRegionPageNext:])
+	}
+
+	t.Fatalf("findTaskRegionRowByVA: no region row for task=%d va=0x%X", taskID, va)
+	return 0
+}
+
+func findEmbeddedELFCodeStartLast(t *testing.T, mem []byte, rel string) uint32 {
+	t.Helper()
+	image, err := os.ReadFile(rel)
+	if err != nil {
+		t.Fatalf("findEmbeddedELFCodeStartLast: ReadFile(%q): %v", rel, err)
+	}
+	idx := bytes.LastIndex(mem[PROG_START:], image)
+	if idx < 0 {
+		t.Fatalf("findEmbeddedELFCodeStartLast: could not locate %q in assembled kernel image", rel)
+	}
+	return PROG_START + uint32(idx) + elfExecCodeOffset(t, image)
+}
+
+func findBootManifestSeededELFCodeStart(t *testing.T, mem []byte, id uint32, rel string) uint32 {
+	t.Helper()
+	image, err := os.ReadFile(rel)
+	if err != nil {
+		t.Fatalf("findBootManifestSeededELFCodeStart: ReadFile(%q): %v", rel, err)
+	}
+	codeOff := elfExecCodeOffset(t, image)
+	size := uint64(len(image))
+	for base := uint32(PROG_START); base+40 <= uint32(len(mem)); base += 8 {
+		if binary.LittleEndian.Uint32(mem[base:]) != id {
+			continue
+		}
+		if binary.LittleEndian.Uint32(mem[base+4:]) != 1 {
+			continue
+		}
+		ptr := binary.LittleEndian.Uint64(mem[base+8:])
+		if ptr == 0 || ptr+size > uint64(len(mem)) {
+			continue
+		}
+		if binary.LittleEndian.Uint64(mem[base+16:]) != size {
+			continue
+		}
+		if !bytes.Equal(mem[uint32(ptr):uint32(ptr)+uint32(size)], image) {
+			continue
+		}
+		return uint32(ptr) + codeOff
+	}
+	t.Fatalf("findBootManifestSeededELFCodeStart: could not resolve id=%d rel=%q from boot manifest seed table", id, rel)
+	return 0
+}
+
+func findShellClientCodeStart(t *testing.T, mem []byte) uint32 {
+	t.Helper()
+	return findBootManifestSeededELFCodeStart(t, mem, bootManifestIDShell, "sdk/intuitionos/iexec/boot_shell.elf")
 }
 
 // yieldLoopOverride writes a YIELD + BRA -8 loop at the given address,
@@ -1280,9 +1516,23 @@ func yieldLoopOverride(mem []byte, addr uint32) {
 // are overridden.
 func overrideExtraTasks(mem []byte, images []uint32, startIdx int) {
 	for i := startIdx; i < len(images); i++ {
-		header := images[i] - imgHeaderSize
-		if binary.LittleEndian.Uint32(mem[header+8:]) < 16 {
-			binary.LittleEndian.PutUint32(mem[header+8:], 16)
+		if images[i] >= 0x1000 && binary.LittleEndian.Uint32(mem[images[i]-0x1000:]) == 0x464C457F {
+			header := images[i] - 0x1000
+			phoff := binary.LittleEndian.Uint64(mem[header+32:])
+			entry := header + uint32(phoff)
+			filesz := binary.LittleEndian.Uint64(mem[entry+32:])
+			if filesz < 16 {
+				binary.LittleEndian.PutUint64(mem[entry+32:], 16)
+			}
+			memsz := binary.LittleEndian.Uint64(mem[entry+40:])
+			if memsz < 0x1000 {
+				binary.LittleEndian.PutUint64(mem[entry+40:], 0x1000)
+			}
+		} else {
+			header := images[i] - imgHeaderSize
+			if binary.LittleEndian.Uint32(mem[header+8:]) < 16 {
+				binary.LittleEndian.PutUint32(mem[header+8:], 16)
+			}
 		}
 		yieldLoopOverride(mem, images[i])
 	}
@@ -1319,6 +1569,33 @@ func taskLayoutFieldL(mem []byte, taskID uint64, off uint32) uint32 {
 	}
 	base := kernDataBase + kdTaskLayoutBase + slot*kdTaskLayoutStr
 	return binary.LittleEndian.Uint32(mem[base+off:])
+}
+
+func tryFindShellTaskDataBase(mem []byte) (uint32, bool) {
+	for slot := uint32(0); slot < maxTasks; slot++ {
+		state := mem[kernDataBase+kdTCBBase+slot*tcbStride+tcbStateOff]
+		if state == taskFree {
+			continue
+		}
+		pubid := binary.LittleEndian.Uint32(mem[kernDataBase+kdTaskPubIDBase+slot*kdTaskPubIDStr:])
+		dataBase := uint32(taskLayoutFieldQ(mem, uint64(pubid), kdTaskDataBase))
+		if dataBase == 0 || dataBase+43 >= uint32(len(mem)) {
+			continue
+		}
+		if bytes.HasPrefix(mem[dataBase+32:dataBase+43], []byte("Shell M10 [")) {
+			return dataBase, true
+		}
+	}
+	return 0, false
+}
+
+func findShellTaskDataBase(t *testing.T, mem []byte) uint32 {
+	t.Helper()
+	dataBase, ok := tryFindShellTaskDataBase(mem)
+	if !ok {
+		t.Fatal("findShellTaskDataBase: could not locate live shell task")
+	}
+	return dataBase
 }
 
 func findTaskByDataMarker(mem []byte, marker byte) (uint64, bool) {
@@ -1447,10 +1724,7 @@ func runM14LoadSegClientOnRig(t *testing.T, rig *ie64TestRig, filename string, l
 		offCounter    = 224
 	)
 
-	images := findAllProgramImages(t, rig.cpu.memory)
-	shellCode := images[len(images)-1]
-
-	off := shellCode
+	off := findShellClientCodeStart(t, rig.cpu.memory)
 	w := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
 
 	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
@@ -1544,11 +1818,19 @@ func runM14LoadSegClientOnRig(t *testing.T, rig *ie64TestRig, filename string, l
 	rig.cpu.running.Store(true)
 	done := make(chan struct{})
 	go func() { rig.cpu.Execute(); close(done) }()
-	time.Sleep(3 * time.Second)
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		if dataBase, ok := tryFindShellTaskDataBase(rig.cpu.memory); ok {
+			if binary.LittleEndian.Uint64(rig.cpu.memory[dataBase+offCounter:]) >= uint64(loops) {
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	rig.cpu.running.Store(false)
 	<-done
 
-	dataBase := uint32(taskLayoutFieldQ(rig.cpu.memory, 2, kdTaskDataBase))
+	dataBase := findShellTaskDataBase(t, rig.cpu.memory)
 	return rig, dataBase
 }
 
@@ -1772,6 +2054,26 @@ func makeM14RunInvalidNoDataELFFixture(t *testing.T) []byte {
 	})
 }
 
+// makeNegativeFlatIE64PROGFixture builds a legacy flat executable only for
+// explicit M14.2 rejection coverage. Positive runtime tests must not use it.
+func makeNegativeFlatIE64PROGFixture(t *testing.T, marker byte) []byte {
+	t.Helper()
+	code := make([]byte, 0, 3*8)
+	w := func(instr []byte) { code = append(code, instr...) }
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(marker)))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExitTask))
+
+	image := make([]byte, 32+len(code))
+	binary.LittleEndian.PutUint32(image[0:4], 0x34364549)
+	binary.LittleEndian.PutUint32(image[4:8], 0x474F5250)
+	binary.LittleEndian.PutUint32(image[8:12], uint32(len(code)))
+	binary.LittleEndian.PutUint32(image[12:16], 0)
+	binary.LittleEndian.PutUint32(image[16:20], 0)
+	copy(image[32:], code)
+	return image
+}
+
 func patchM14SeededElfFixture(t *testing.T, mem []byte, replacement []byte) {
 	t.Helper()
 	orig := m14SeededElfFixtureBytes(t)
@@ -1810,9 +2112,17 @@ func runM14RunSegClientWithPatchedFixtureAndTerm(t *testing.T, replacement []byt
 		offUnloadType = 232
 	)
 
-	images := findAllProgramImages(t, rig.cpu.memory)
-	shellCode := images[len(images)-1]
-	off := shellCode
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+
+	shellPtr := waitForBootManifestImagePtr(rig.cpu.memory, bootManifestIDShell, 2*time.Second)
+	if shellPtr == 0 {
+		rig.cpu.running.Store(false)
+		<-done
+		t.Fatal("runM14RunSegClientWithPatchedFixtureAndTerm: shell manifest row never published")
+	}
+	off := uint32(shellPtr) + 0x1000
 	w := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
 
 	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
@@ -1909,9 +2219,6 @@ func runM14RunSegClientWithPatchedFixtureAndTerm(t *testing.T, replacement []byt
 	braYield := off
 	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldLoop)-int32(braYield))))
 
-	rig.cpu.running.Store(true)
-	done := make(chan struct{})
-	go func() { rig.cpu.Execute(); close(done) }()
 	time.Sleep(3 * time.Second)
 	rig.cpu.running.Store(false)
 	<-done
@@ -1926,11 +2233,107 @@ func runM14RunSegClientWithPatchedFixture(t *testing.T, replacement []byte, args
 	return rig, dataBase
 }
 
-// patchImageToSinglePage rewrites a program image's IE64PROG header so that
-// load_program treats it as a single-page code, single-page data program.
-// imageCodeStart is the address returned by findAllProgramImages (start of
-// the code section, which is header_start + 32). Sets code_size = newCodeSize
-// and data_size = 0.
+func runM14DosRunClientWithPatchedFixture(t *testing.T, replacement []byte, command string, args string) (*ie64TestRig, *TerminalMMIO, uint32) {
+	t.Helper()
+	rig, term := assembleAndLoadKernel(t)
+	patchM14SeededElfFixture(t, rig.cpu.memory, replacement)
+
+	const (
+		offDosPort  = 128
+		offReplyPrt = 136
+		offBufferVA = 144
+		offShareHdl = 152
+		offRunType  = 200
+		offTaskID   = 208
+	)
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+
+	shellPtr := waitForBootManifestImagePtr(rig.cpu.memory, bootManifestIDShell, 2*time.Second)
+	if shellPtr == 0 {
+		rig.cpu.running.Store(false)
+		<-done
+		t.Fatal("runM14DosRunClientWithPatchedFixture: shell manifest row never published")
+	}
+	off := uint32(shellPtr) + 0x1000
+	w := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+
+	findLoop := off
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, 16))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFindPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	beqInstr := off
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	braFind := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(findLoop)-int32(braFind))))
+	foundDos := off
+	copy(rig.cpu.memory[beqInstr:], ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, uint32(int32(foundDos)-int32(beqInstr))))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offDosPort))
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offReplyPrt))
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0x10001))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offBufferVA))
+	w(ie64Instr(OP_STORE, 3, IE64_SIZE_Q, 1, 29, 0, offShareHdl))
+
+	w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, offBufferVA))
+	for i := 0; i < len(command); i++ {
+		w(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, uint32(command[i])))
+		w(ie64Instr(OP_STORE, 5, IE64_SIZE_B, 0, 4, 0, uint32(i)))
+	}
+	w(ie64Instr(OP_STORE, 0, IE64_SIZE_B, 0, 4, 0, uint32(len(command))))
+	for i := 0; i < len(args); i++ {
+		w(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, uint32(args[i])))
+		w(ie64Instr(OP_STORE, 5, IE64_SIZE_B, 0, 4, 0, uint32(len(command)+1+i)))
+	}
+	w(ie64Instr(OP_STORE, 0, IE64_SIZE_B, 0, 4, 0, uint32(len(command)+1+len(args))))
+
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, dosRun))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_LOAD, 6, IE64_SIZE_L, 0, 29, 0, offShareHdl))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offRunType))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offTaskID))
+
+	yieldLoop := off
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	braYield := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldLoop)-int32(braYield))))
+
+	time.Sleep(3 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	dataBase := uint32(taskLayoutFieldQ(rig.cpu.memory, 2, kdTaskDataBase))
+	return rig, term, dataBase
+}
+
+// patchImageToSinglePage rewrites a shipped runtime image so the loader sees
+// one small executable segment and no writable payload. imageCodeStart is the
+// address returned by findAllProgramImages.
 //
 // M10 NOTE: dos.library has 2 code pages (5744 bytes) which shifts task 1's
 // stack/data VAs. M9-era tests that use task 1 with the M9 layout (stack at
@@ -1942,6 +2345,21 @@ func patchImageToSinglePage(mem []byte, imageCodeStart uint32, newCodeSize uint3
 	}
 	if newCodeSize == 0 || newCodeSize > 4096 {
 		panic("patchImageToSinglePage: newCodeSize must be in (0, 4096]")
+	}
+	if imageCodeStart >= 0x1000 && binary.LittleEndian.Uint32(mem[imageCodeStart-0x1000:]) == 0x464C457F {
+		headerStart := imageCodeStart - 0x1000
+		phoff := binary.LittleEndian.Uint64(mem[headerStart+32:])
+		phentsize := binary.LittleEndian.Uint16(mem[headerStart+54:])
+		if phentsize == 0 {
+			panic("patchImageToSinglePage: zero phentsize")
+		}
+		codeEntry := headerStart + uint32(phoff)
+		binary.LittleEndian.PutUint64(mem[codeEntry+32:], uint64(newCodeSize))
+		binary.LittleEndian.PutUint64(mem[codeEntry+40:], 0x1000)
+		dataEntry := codeEntry + uint32(phentsize)
+		binary.LittleEndian.PutUint64(mem[dataEntry+32:], 0)
+		binary.LittleEndian.PutUint64(mem[dataEntry+40:], 0x1000)
+		return
 	}
 	headerStart := imageCodeStart - 32
 	binary.LittleEndian.PutUint32(mem[headerStart+8:], newCodeSize)
@@ -2169,9 +2587,9 @@ func TestIExec_M13_StartupBlock_IgnoresFormerReservedWindow(t *testing.T) {
 
 	// The startup block no longer lives inside page 0 of the program-owned
 	// data image, so bytes at the old 0x200 window must no longer affect load.
-	dosHeader := images[1] - imgHeaderSize
-	dosCodeSize := binary.LittleEndian.Uint32(rig.cpu.memory[dosHeader+8:])
-	dosReservedByte := dosHeader + imgHeaderSize + dosCodeSize + 0x200
+	dosHeader, _ := imageHeaderStartForCodeStart(t, rig.cpu.memory, images[1])
+	dosDataOff := imageDataFileOffsetForCodeStart(t, rig.cpu.memory, images[1])
+	dosReservedByte := dosHeader + dosDataOff + 0x200
 	rig.cpu.memory[dosReservedByte] = 0xAA
 
 	rig.cpu.running.Store(true)
@@ -6016,24 +6434,50 @@ func TestIExec_CreatePort_PublicAnonymous(t *testing.T) {
 const imgHeaderSize = 32
 
 func TestIExec_ImageHeaderValidation(t *testing.T) {
-	// Verify that corrupting a non-boot image header (index >= PROGTAB_BOOT_COUNT)
-	// does not affect the boot sequence. M9 strict boot panics if any of the first
-	// 3 images fail, so we corrupt image[3] (on-demand only) and verify 3 boot tasks.
+	// Verify that corrupting a non-boot image header does not affect the boot
+	// sequence. In M14.2 the kernel boots only the first two manifest rows
+	// directly (console.handler + dos.library), leaving Shell and the remaining
+	// services to DOS startup.
 	subtests := []struct {
 		name    string
-		corrupt func(img []byte)
+		corrupt func(img []byte, isELF bool)
 	}{
-		{"bad_magic", func(img []byte) { img[0] = 0xFF }},
-		{"zero_code_size", func(img []byte) {
+		{"bad_magic", func(img []byte, _ bool) { img[0] = 0xFF }},
+		{"zero_code_size", func(img []byte, isELF bool) {
+			if isELF {
+				phoff := binary.LittleEndian.Uint64(img[32:40])
+				binary.LittleEndian.PutUint64(img[phoff+32:], 0)
+				binary.LittleEndian.PutUint64(img[phoff+40:], 0)
+				return
+			}
 			binary.LittleEndian.PutUint32(img[8:], 0)
 		}},
-		{"oversized_code", func(img []byte) {
+		{"oversized_code", func(img []byte, isELF bool) {
+			if isELF {
+				phoff := binary.LittleEndian.Uint64(img[32:40])
+				binary.LittleEndian.PutUint64(img[phoff+32:], 0x100000)
+				binary.LittleEndian.PutUint64(img[phoff+40:], 0x100000)
+				return
+			}
 			binary.LittleEndian.PutUint32(img[8:], 8192) // > 4096
 		}},
-		{"unaligned_code_size", func(img []byte) {
+		{"unaligned_code_size", func(img []byte, isELF bool) {
+			if isELF {
+				phoff := binary.LittleEndian.Uint64(img[32:40])
+				binary.LittleEndian.PutUint64(img[phoff+8:], 0x1001)
+				return
+			}
 			binary.LittleEndian.PutUint32(img[8:], 13) // not 8-byte aligned
 		}},
-		{"oversized_data", func(img []byte) {
+		{"oversized_data", func(img []byte, isELF bool) {
+			if isELF {
+				phoff := binary.LittleEndian.Uint64(img[32:40])
+				phentsize := binary.LittleEndian.Uint16(img[54:56])
+				dataPH := phoff + uint64(phentsize)
+				binary.LittleEndian.PutUint64(img[dataPH+32:], 0x100000)
+				binary.LittleEndian.PutUint64(img[dataPH+40:], 0x100000)
+				return
+			}
 			binary.LittleEndian.PutUint32(img[12:], 8192)
 		}},
 	}
@@ -6045,12 +6489,12 @@ func TestIExec_ImageHeaderValidation(t *testing.T) {
 			if len(images) < 4 {
 				t.Fatal("need at least 4 images")
 			}
-			// Corrupt image[3] (outside PROGTAB_BOOT_COUNT=3, on-demand only)
-			headerAddr := images[3] - imgHeaderSize
-			tc.corrupt(rig.cpu.memory[headerAddr:])
+			// Corrupt image[3] (outside the two-row direct boot set, DOS-launched only).
+			headerAddr, isELF := imageHeaderStartForCodeStart(t, rig.cpu.memory, images[3])
+			tc.corrupt(rig.cpu.memory[headerAddr:], isELF)
 
-			// Override all boot images with yield loops so they don't interact
-			for _, img := range images[:3] {
+			// Override the direct-boot images with yield loops so they don't interact.
+			for _, img := range images[:2] {
 				yieldLoopOverride(rig.cpu.memory, img)
 			}
 
@@ -6069,10 +6513,10 @@ func TestIExec_ImageHeaderValidation(t *testing.T) {
 			if strings.Contains(output, "PANIC") {
 				t.Fatalf("kernel panicked but corrupt image was outside boot count")
 			}
-			// All 3 boot programs should have loaded (corrupt one is on-demand, not loaded at boot)
+			// Only the two direct-boot rows should have loaded.
 			numTasks := binary.LittleEndian.Uint64(rig.cpu.memory[kernDataBase+kdNumTasks:])
-			if numTasks != 3 {
-				t.Fatalf("num_tasks = %d, want 3 (3 boot images loaded, corrupt image[3] not in boot set)", numTasks)
+			if numTasks != 2 {
+				t.Fatalf("num_tasks = %d, want 2 (two manifest boot rows loaded, corrupt image[3] not in direct boot set)", numTasks)
 			}
 		})
 	}
@@ -6113,7 +6557,7 @@ func TestIExec_LoadBundledProgram(t *testing.T) {
 }
 
 func TestIExec_BootLaunchesThree(t *testing.T) {
-	// M9: boot loop loads only PROGTAB_BOOT_COUNT=3 entries from the program table.
+	// M14.2: the kernel directly boots only console.handler and dos.library.
 	rig, _ := assembleAndLoadKernel(t)
 	// Override all images with yield loops to avoid any port interactions
 	images := findAllProgramImages(t, rig.cpu.memory)
@@ -6129,26 +6573,26 @@ func TestIExec_BootLaunchesThree(t *testing.T) {
 	<-done
 
 	numTasks := binary.LittleEndian.Uint64(rig.cpu.memory[kernDataBase+kdNumTasks:])
-	if numTasks != 3 {
-		t.Fatalf("num_tasks = %d, want 3 (PROGTAB_BOOT_COUNT)", numTasks)
+	if numTasks != 2 {
+		t.Fatalf("num_tasks = %d, want 2 (direct manifest boot count)", numTasks)
 	}
-	// Verify each of the 3 boot task slots is not FREE
-	for i := 0; i < 3; i++ {
+	// Verify each direct-boot task slot is not FREE.
+	for i := 0; i < 2; i++ {
 		tcbAddr := kernDataBase + kdTCBBase + uint32(i)*tcbStride
 		state := rig.cpu.memory[tcbAddr+tcbStateOff]
 		if state == taskFree {
 			t.Fatalf("task %d state = TASK_FREE, should have been loaded", i)
 		}
 	}
-	// Tasks 3-7 should be FREE
-	for i := 3; i < 8; i++ {
+	// Tasks 2-7 should still be FREE at this point.
+	for i := 2; i < 8; i++ {
 		tcbAddr := kernDataBase + kdTCBBase + uint32(i)*tcbStride
 		state := rig.cpu.memory[tcbAddr+tcbStateOff]
 		if state != taskFree {
 			t.Fatalf("task %d state = %d, want TASK_FREE", i, state)
 		}
 	}
-	t.Logf("BootLaunchesThree: num_tasks=%d, slots 0-2 active, 3-7 free", numTasks)
+	t.Logf("BootLaunchesThree: num_tasks=%d, slots 0-1 active, 2-7 free", numTasks)
 }
 
 func TestIExec_ProgramIsolation(t *testing.T) {
@@ -6186,9 +6630,8 @@ func TestIExec_ProgramIsolation(t *testing.T) {
 }
 
 func TestIExec_LoaderRejectsInvalid(t *testing.T) {
-	// M9: boot is strict for PROGTAB_BOOT_COUNT=3 entries. Corrupting a boot image
-	// causes panic. Instead, corrupt image[3] (on-demand) and verify boot succeeds
-	// with 3 tasks. The corrupt on-demand image is never loaded at boot.
+	// M14.2 boots only the first two manifest rows directly. Corrupt a later
+	// DOS-launched image and verify the direct boot still succeeds.
 	rig, term := assembleAndLoadKernel(t)
 	images := findAllProgramImages(t, rig.cpu.memory)
 	if len(images) < 4 {
@@ -6196,11 +6639,11 @@ func TestIExec_LoaderRejectsInvalid(t *testing.T) {
 	}
 
 	// Corrupt image[3] (CLIENT, on-demand) magic
-	clientHeader := images[3] - imgHeaderSize
+	clientHeader, _ := imageHeaderStartForCodeStart(t, rig.cpu.memory, images[3])
 	rig.cpu.memory[clientHeader] = 0x00 // break magic
 
-	// Override boot images with yield loops
-	for _, img := range images[:3] {
+	// Override the direct-boot images with yield loops.
+	for _, img := range images[:2] {
 		yieldLoopOverride(rig.cpu.memory, img)
 	}
 
@@ -6218,17 +6661,17 @@ func TestIExec_LoaderRejectsInvalid(t *testing.T) {
 	if strings.Contains(output, "PANIC") {
 		t.Fatalf("kernel panicked but corrupt image was outside boot count")
 	}
-	// 3 boot programs should have loaded; corrupt image[3] is on-demand, not loaded at boot
+	// Only the two direct-boot rows should have loaded.
 	numTasks := binary.LittleEndian.Uint64(rig.cpu.memory[kernDataBase+kdNumTasks:])
-	if numTasks != 3 {
-		t.Fatalf("num_tasks = %d, want 3 (3 boot images loaded, corrupt on-demand image not loaded)", numTasks)
+	if numTasks != 2 {
+		t.Fatalf("num_tasks = %d, want 2 (two manifest boot rows loaded, corrupt on-demand image not loaded)", numTasks)
 	}
 	t.Logf("LoaderRejectsInvalid: num_tasks=%d, kernel stable with corrupt on-demand image", numTasks)
 }
 
 func TestIExec_LoaderFullSlots(t *testing.T) {
-	// M9: boot loop loads PROGTAB_BOOT_COUNT=3 entries. Verify that only 3 tasks
-	// are created at boot, and remaining slots (3-7) are FREE.
+	// M14.2 directly creates only two tasks at boot; later services are launched
+	// by DOS after startup.
 	rig, _ := assembleAndLoadKernel(t)
 	images := findAllProgramImages(t, rig.cpu.memory)
 	for _, img := range images {
@@ -6243,24 +6686,22 @@ func TestIExec_LoaderFullSlots(t *testing.T) {
 	<-done
 
 	numTasks := binary.LittleEndian.Uint64(rig.cpu.memory[kernDataBase+kdNumTasks:])
-	if numTasks != 3 {
-		t.Fatalf("num_tasks = %d, want 3 (PROGTAB_BOOT_COUNT)", numTasks)
+	if numTasks != 2 {
+		t.Fatalf("num_tasks = %d, want 2 (direct manifest boot count)", numTasks)
 	}
 
-	// Slots 3-7 should be FREE (only 3 boot tasks loaded)
-	for i := 3; i < 8; i++ {
+	// Slots 2-7 should be FREE (only 2 direct-boot tasks loaded).
+	for i := 2; i < 8; i++ {
 		tcbAddr := kernDataBase + kdTCBBase + uint32(i)*tcbStride
 		if rig.cpu.memory[tcbAddr+tcbStateOff] != taskFree {
 			t.Fatalf("task %d should be FREE but state=%d", i, rig.cpu.memory[tcbAddr+tcbStateOff])
 		}
 	}
-	t.Logf("LoaderFullSlots: 3 boot programs loaded, 5 slots remain free")
+	t.Logf("LoaderFullSlots: 2 direct-boot programs loaded, 6 slots remain free")
 }
 
 func TestIExec_LoaderSkipsFailure(t *testing.T) {
-	// M9: boot is strict for PROGTAB_BOOT_COUNT=3. Corrupting a boot image panics.
-	// Test that corrupting the on-demand image (index 3) does not affect boot.
-	// All 3 boot tasks should load normally.
+	// Corrupting an on-demand image must not affect the two-row direct boot.
 	rig, term := assembleAndLoadKernel(t)
 	images := findAllProgramImages(t, rig.cpu.memory)
 	if len(images) < 4 {
@@ -6268,11 +6709,11 @@ func TestIExec_LoaderSkipsFailure(t *testing.T) {
 	}
 
 	// Corrupt CLIENT header (index 3, on-demand)
-	clientHeader := images[3] - imgHeaderSize
+	clientHeader, _ := imageHeaderStartForCodeStart(t, rig.cpu.memory, images[3])
 	rig.cpu.memory[clientHeader+2] = 0xFF // break magic byte 2
 
-	// Override boot images with yield loops
-	for _, img := range images[:3] {
+	// Override the direct-boot images with yield loops.
+	for _, img := range images[:2] {
 		yieldLoopOverride(rig.cpu.memory, img)
 	}
 
@@ -6292,25 +6733,25 @@ func TestIExec_LoaderSkipsFailure(t *testing.T) {
 	}
 
 	numTasks := binary.LittleEndian.Uint64(rig.cpu.memory[kernDataBase+kdNumTasks:])
-	// 3 boot tasks loaded; corrupt image[3] is on-demand, not loaded at boot
-	if numTasks != 3 {
-		t.Fatalf("num_tasks = %d, want 3 (3 boot tasks, corrupt on-demand image not loaded)", numTasks)
+	// 2 direct-boot tasks loaded; corrupt image[3] is on-demand, not loaded at boot.
+	if numTasks != 2 {
+		t.Fatalf("num_tasks = %d, want 2 (two direct-boot tasks, corrupt on-demand image not loaded)", numTasks)
 	}
 
-	// Verify slots: 0-2 loaded, 3-7 FREE
-	for i := 0; i < 3; i++ {
+	// Verify slots: 0-1 loaded, 2-7 FREE.
+	for i := 0; i < 2; i++ {
 		state := rig.cpu.memory[kernDataBase+kdTCBBase+uint32(i)*tcbStride+tcbStateOff]
 		if state == taskFree {
 			t.Fatalf("task %d should be loaded but is FREE", i)
 		}
 	}
-	for i := 3; i < 8; i++ {
+	for i := 2; i < 8; i++ {
 		state := rig.cpu.memory[kernDataBase+kdTCBBase+uint32(i)*tcbStride+tcbStateOff]
 		if state != taskFree {
 			t.Fatalf("task %d should be FREE but state=%d", i, state)
 		}
 	}
-	t.Logf("LoaderSkipsFailure: 3 boot tasks loaded, corrupt on-demand image[3] not loaded (num_tasks=%d)", numTasks)
+	t.Logf("LoaderSkipsFailure: 2 direct-boot tasks loaded, corrupt on-demand image[3] not loaded (num_tasks=%d)", numTasks)
 }
 
 // M11.5: TestIExec_ReadInput_Direct removed.
@@ -6986,28 +7427,24 @@ func TestIExec_MapIO_M11_OverCap(t *testing.T) {
 // table after the malicious request, proving the service didn't crash.
 func TestIExec_DosRun_NoNulInBuffer(t *testing.T) {
 	const (
-		userTask2Data = userDataBase + 2*userSlotStride
-		offDosPort    = 128
-		offReplyPrt   = 136
-		offBufferVA   = 144
-		offShareHdl   = 152
-		offRunReply   = 200 // reply.type stored here
+		offDosPort  = 128
+		offReplyPrt = 136
+		offBufferVA = 144
+		offShareHdl = 152
+		offRunReply = 200 // reply.type stored here
 	)
 
 	rig, _ := assembleAndLoadKernel(t)
-	images := findAllProgramImages(t, rig.cpu.memory)
-	// Override the SHELL slot with our test client. console.handler (task 0)
+	// Override the top-level shipped shell image. console.handler (task 0)
 	// and dos.library (task 1) run normally.
-	shellCode := images[len(images)-1]
+	shellCode := findShellClientCodeStart(t, rig.cpu.memory)
 
 	off := shellCode
 	w := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
 
-	// === Preamble: compute task's data base into R29 from initial USP ===
+	// === Preamble: load task data base from the startup ABI ===
 	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
-	w(ie64Instr(OP_ADD, 29, IE64_SIZE_Q, 1, 31, 0, 16))
-
-	// Stack frame for r29 reload across syscalls
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
 	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
 
 	// === Step 1: FindPort("dos.library") with retry ===
@@ -7109,11 +7546,11 @@ func TestIExec_DosRun_NoNulInBuffer(t *testing.T) {
 	}
 
 	// Verify reply.type stored at offset 200 is DOS_ERR_NOTFOUND (1)
-	userTask2DataDyn := uint32(taskLayoutFieldQ(mem, 2, kdTaskDataBase))
-	reply := uint32(mem[userTask2DataDyn+offRunReply]) |
-		uint32(mem[userTask2DataDyn+offRunReply+1])<<8 |
-		uint32(mem[userTask2DataDyn+offRunReply+2])<<16 |
-		uint32(mem[userTask2DataDyn+offRunReply+3])<<24
+	dataBase := findShellTaskDataBase(t, mem)
+	reply := uint32(mem[dataBase+offRunReply]) |
+		uint32(mem[dataBase+offRunReply+1])<<8 |
+		uint32(mem[dataBase+offRunReply+2])<<16 |
+		uint32(mem[dataBase+offRunReply+3])<<24
 	const dosErrNotFound = 1
 	if reply != dosErrNotFound {
 		t.Errorf("expected reply.type = DOS_ERR_NOTFOUND (%d), got %d", dosErrNotFound, reply)
@@ -7178,8 +7615,7 @@ func runDOSShareClampTest(t *testing.T, openFilename []byte, openMode uint32, po
 	)
 
 	rig, _ := assembleAndLoadKernel(t)
-	images := findAllProgramImages(t, rig.cpu.memory)
-	shellCode := images[len(images)-1]
+	shellCode := findShellClientCodeStart(t, rig.cpu.memory)
 
 	off := shellCode
 	w := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
@@ -7481,20 +7917,25 @@ func TestIExec_MapIO_Cleanup(t *testing.T) {
 	t.Logf("MapIO_Cleanup output (first 80 chars): %q", output[:min(len(output), 80)])
 }
 
-// TestIExec_ExecProgram_NewABI verifies the M10 SYS_EXEC_PROGRAM pointer-based ABI:
-// task 0 builds a tiny IE64PROG image in its own data page (a user-accessible VA
-// >= 0x600000), then calls SYS_EXEC_PROGRAM with R1=image_ptr, R2=image_size.
-// The launched task prints 'Z' via DEBUG_PUTCHAR and exits. We verify both that
-// the syscall returned ERR_OK ('0' digit from task 0) AND that the launched task
-// actually ran ('Z' in the output).
-func TestIExec_ExecProgram_NewABI(t *testing.T) {
+// TestIExec_M142_Phase1_ExecProgram_FlatImageRejected locks the M14.2
+// compatibility break: a well-formed flat IE64PROG image passed directly to
+// SYS_EXEC_PROGRAM must now fail with ERR_BADARG instead of launching.
+func assertM142ExecProgramFlatImageRejected(t *testing.T) {
+	t.Helper()
 	rig, term := assembleAndLoadKernel(t)
-	images := findAllProgramImages(t, rig.cpu.memory)
-	overrideExtraTasks(rig.cpu.memory, images, 1)
-	t0 := images[0]
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
 
+	shellPtr := waitForBootManifestImagePtr(rig.cpu.memory, bootManifestIDShell, 2*time.Second)
+	if shellPtr == 0 {
+		rig.cpu.running.Store(false)
+		<-done
+		t.Fatal("ExecProgram_FlatImageRejected: shell manifest row never published")
+	}
+	codeBase := uint32(shellPtr) + 0x1000
 	off := uint32(0)
-	w := func(instr []byte) { copy(rig.cpu.memory[t0+off:], instr); off += 8 }
+	w := func(instr []byte) { copy(rig.cpu.memory[codeBase+off:], instr); off += 8 }
 
 	// === Phase A: compute task 0's data page VA ===
 	// task_id via SYSINFO_CURRENT_TASK = 3, then data_va = USER_DATA_BASE + tid*stride
@@ -7552,7 +7993,7 @@ func TestIExec_ExecProgram_NewABI(t *testing.T) {
 	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
 	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExecProgram)) // R1=task_id, R2=err
 
-	// Print err digit ('0' on success)
+	// Print err digit ('3' on rejection)
 	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 2, 0, 0x30))
 	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
 
@@ -7561,21 +8002,22 @@ func TestIExec_ExecProgram_NewABI(t *testing.T) {
 	brOff := int32(-8)
 	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(brOff)))
 
-	rig.cpu.running.Store(true)
-	done := make(chan struct{})
-	go func() { rig.cpu.Execute(); close(done) }()
 	time.Sleep(1 * time.Second)
 	rig.cpu.running.Store(false)
 	<-done
 
 	output := term.DrainOutput()
-	if !strings.Contains(output, "0") {
-		t.Fatalf("ExecProgram_NewABI: ERR_OK '0' digit not in output, got=%q", output[:min(len(output), 100)])
+	if !strings.Contains(output, "3") {
+		t.Fatalf("ExecProgram_FlatImageRejected: expected ERR_BADARG '3' in output, got=%q", output[:min(len(output), 100)])
 	}
-	if !strings.Contains(output, "Z") {
-		t.Fatalf("ExecProgram_NewABI: launched task did not print 'Z', got=%q", output[:min(len(output), 100)])
+	if strings.Contains(output, "Z") {
+		t.Fatalf("ExecProgram_FlatImageRejected: flat-image child still launched, output=%q", output[:min(len(output), 100)])
 	}
-	t.Logf("ExecProgram_NewABI: output=%q", output[:min(len(output), 80)])
+	t.Logf("ExecProgram_FlatImageRejected: output=%q", output[:min(len(output), 80)])
+}
+
+func TestIExec_M142_Phase1_ExecProgram_FlatImageRejected(t *testing.T) {
+	assertM142ExecProgramFlatImageRejected(t)
 }
 
 // TestIExec_ExecProgram_NewABI_BadPtr verifies that the new ABI rejects an
@@ -7585,12 +8027,19 @@ func TestIExec_ExecProgram_NewABI(t *testing.T) {
 // validate_user_range must walk the PT, find no entry for 0x700, and reject.
 func TestIExec_ExecProgram_NewABI_BadPtr(t *testing.T) {
 	rig, term := assembleAndLoadKernel(t)
-	images := findAllProgramImages(t, rig.cpu.memory)
-	overrideExtraTasks(rig.cpu.memory, images, 1)
-	t0 := images[0]
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
 
+	shellPtr := waitForBootManifestImagePtr(rig.cpu.memory, bootManifestIDShell, 2*time.Second)
+	if shellPtr == 0 {
+		rig.cpu.running.Store(false)
+		<-done
+		t.Fatal("ExecProgram_NewABI_BadPtr: shell manifest row never published")
+	}
+	codeBase := uint32(shellPtr) + 0x1000
 	off := uint32(0)
-	w := func(instr []byte) { copy(rig.cpu.memory[t0+off:], instr); off += 8 }
+	w := func(instr []byte) { copy(rig.cpu.memory[codeBase+off:], instr); off += 8 }
 
 	// SYS_EXEC_PROGRAM(R1=0x700000, R2=64, R3=0, R4=0) — image_ptr is unmapped
 	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x700000))
@@ -7605,9 +8054,6 @@ func TestIExec_ExecProgram_NewABI_BadPtr(t *testing.T) {
 	brOff := int32(-8)
 	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(brOff)))
 
-	rig.cpu.running.Store(true)
-	done := make(chan struct{})
-	go func() { rig.cpu.Execute(); close(done) }()
 	time.Sleep(500 * time.Millisecond)
 	rig.cpu.running.Store(false)
 	<-done
@@ -7624,12 +8070,19 @@ func TestIExec_ExecProgram_NewABI_BadPtr(t *testing.T) {
 // 16KB data). We pass 32768 which exceeds it.
 func TestIExec_ExecProgram_NewABI_BadSize(t *testing.T) {
 	rig, term := assembleAndLoadKernel(t)
-	images := findAllProgramImages(t, rig.cpu.memory)
-	overrideExtraTasks(rig.cpu.memory, images, 1)
-	t0 := images[0]
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
 
+	shellPtr := waitForBootManifestImagePtr(rig.cpu.memory, bootManifestIDShell, 2*time.Second)
+	if shellPtr == 0 {
+		rig.cpu.running.Store(false)
+		<-done
+		t.Fatal("ExecProgram_NewABI_BadSize: shell manifest row never published")
+	}
+	codeBase := uint32(shellPtr) + 0x1000
 	off := uint32(0)
-	w := func(instr []byte) { copy(rig.cpu.memory[t0+off:], instr); off += 8 }
+	w := func(instr []byte) { copy(rig.cpu.memory[codeBase+off:], instr); off += 8 }
 
 	// SYS_EXEC_PROGRAM(R1=0x602000, R2=32768, R3=0, R4=0) — oversize
 	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x602000))
@@ -7643,9 +8096,6 @@ func TestIExec_ExecProgram_NewABI_BadSize(t *testing.T) {
 	brOff := int32(-8)
 	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(brOff)))
 
-	rig.cpu.running.Store(true)
-	done := make(chan struct{})
-	go func() { rig.cpu.Execute(); close(done) }()
 	time.Sleep(500 * time.Millisecond)
 	rig.cpu.running.Store(false)
 	<-done
@@ -7657,22 +8107,25 @@ func TestIExec_ExecProgram_NewABI_BadSize(t *testing.T) {
 	t.Logf("ExecProgram_NewABI_BadSize: output=%q", output[:min(len(output), 80)])
 }
 
-// TestIExec_ExecProgram_NewABI_WithArgs verifies that args passed through
-// the new pointer-based ABI land in the launched task's data page at
-// DATA_ARGS_OFFSET. Task 0 builds an image AND a 5-byte "hello" args buffer
-// in its data page, then calls SYS_EXEC_PROGRAM with both pointers in user
-// space (>= 0x600000). After yielding, we scan all task slots' data pages
-// at DATA_ARGS_OFFSET for the "hello" string.
-func TestIExec_ExecProgram_NewABI_WithArgs(t *testing.T) {
+// TestIExec_M142_Phase1_ExecProgram_FlatImageRejected_WithArgs locks the same
+// rejection when the caller also supplies an args buffer.
+func TestIExec_M142_Phase1_ExecProgram_FlatImageRejected_WithArgs(t *testing.T) {
 	const dataArgsOffset = 3072
 
 	rig, term := assembleAndLoadKernel(t)
-	images := findAllProgramImages(t, rig.cpu.memory)
-	overrideExtraTasks(rig.cpu.memory, images, 1)
-	t0 := images[0]
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
 
+	shellPtr := waitForBootManifestImagePtr(rig.cpu.memory, bootManifestIDShell, 2*time.Second)
+	if shellPtr == 0 {
+		rig.cpu.running.Store(false)
+		<-done
+		t.Fatal("ExecProgram_FlatImageRejected_WithArgs: shell manifest row never published")
+	}
+	codeBase := uint32(shellPtr) + 0x1000
 	off := uint32(0)
-	w := func(instr []byte) { copy(rig.cpu.memory[t0+off:], instr); off += 8 }
+	w := func(instr []byte) { copy(rig.cpu.memory[codeBase+off:], instr); off += 8 }
 
 	// Derive task 0's data page VA the same way as the no-args ExecProgram
 	// test. This keeps the test aligned with the current task-id contract.
@@ -7732,21 +8185,15 @@ func TestIExec_ExecProgram_NewABI_WithArgs(t *testing.T) {
 	brOff := int32(-8)
 	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(brOff)))
 
-	rig.cpu.running.Store(true)
-	done := make(chan struct{})
-	go func() { rig.cpu.Execute(); close(done) }()
 	time.Sleep(1 * time.Second)
 	rig.cpu.running.Store(false)
 	<-done
 
 	output := term.DrainOutput()
-	if !strings.Contains(output, "0") {
-		t.Fatalf("ExecProgram_NewABI_WithArgs: ERR_OK '0' not in output, got=%q", output[:min(len(output), 100)])
+	if !strings.Contains(output, "3") {
+		t.Fatalf("ExecProgram_FlatImageRejected_WithArgs: expected ERR_BADARG '3' in output, got=%q", output[:min(len(output), 100)])
 	}
 
-	// Scan all live task layout rows for "hello" at DATA_ARGS_OFFSET in the
-	// task's data page. Phase 2 removes USER_DATA_BASE + task_id*stride.
-	found := false
 	for taskID := uint32(0); taskID < maxTasks; taskID++ {
 		state := rig.cpu.memory[kernDataBase+kdTCBBase+taskID*tcbStride+tcbStateOff]
 		if state == taskFree {
@@ -7762,35 +8209,13 @@ func TestIExec_ExecProgram_NewABI_WithArgs(t *testing.T) {
 		}
 		args := string(rig.cpu.memory[argsAddr : argsAddr+5])
 		if args == "hello" {
-			found = true
-			t.Logf("ExecProgram_NewABI_WithArgs: found 'hello' in task %d (addr 0x%X)", taskID, argsAddr)
-			break
+			t.Fatalf("ExecProgram_FlatImageRejected_WithArgs: flat-image child still received args in task %d", taskID)
 		}
-	}
-	if !found {
-		for taskID := uint32(0); taskID < maxTasks; taskID++ {
-			state := rig.cpu.memory[kernDataBase+kdTCBBase+taskID*tcbStride+tcbStateOff]
-			if state == taskFree {
-				continue
-			}
-			dataBase := uint32(taskLayoutFieldQ(rig.cpu.memory, uint64(taskID), kdTaskDataBase))
-			if dataBase == 0 {
-				continue
-			}
-			argsAddr := dataBase + dataArgsOffset
-			if argsAddr+8 <= uint32(len(rig.cpu.memory)) {
-				t.Logf("  task %d (0x%X): %q", taskID, argsAddr, rig.cpu.memory[argsAddr:argsAddr+8])
-			}
-		}
-		t.Fatalf("args 'hello' not found in any task's data page at DATA_ARGS_OFFSET")
 	}
 }
 
 func TestIExec_M14_Phase3_ExecProgram_DescriptorBasic(t *testing.T) {
 	rig, term := assembleAndLoadKernel(t)
-	images := findAllProgramImages(t, rig.cpu.memory)
-	overrideExtraTasks(rig.cpu.memory, images, 1)
-	t0 := images[0]
 
 	const (
 		codeOff = 0x100
@@ -7799,18 +8224,25 @@ func TestIExec_M14_Phase3_ExecProgram_DescriptorBasic(t *testing.T) {
 		segOff  = descOff + 48
 	)
 
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+
+	shellPtr := waitForBootManifestImagePtr(rig.cpu.memory, bootManifestIDShell, 2*time.Second)
+	if shellPtr == 0 {
+		rig.cpu.running.Store(false)
+		<-done
+		t.Fatal("ExecProgram_DescriptorBasic: shell manifest row never published")
+	}
+	codeBase := uint32(shellPtr) + 0x1000
 	off := uint32(0)
-	w := func(instr []byte) { copy(rig.cpu.memory[t0+off:], instr); off += 8 }
+	w := func(instr []byte) { copy(rig.cpu.memory[codeBase+off:], instr); off += 8 }
 
-	// Derive task 0's current data page VA.
-	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 3))
-	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo))
-	w(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, userSlotStride))
-	w(ie64Instr(OP_MULU, 5, IE64_SIZE_Q, 0, 1, 5, 0))
-	w(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, userDataBase))
-	w(ie64Instr(OP_ADD, 5, IE64_SIZE_Q, 0, 5, 6, 0)) // R5 = data VA
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_LOAD, 30, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
 
-	// Build runnable code at data+codeOff.
 	codeWords := [][]byte{
 		ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16),
 		ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8),
@@ -7823,55 +8255,50 @@ func TestIExec_M14_Phase3_ExecProgram_DescriptorBasic(t *testing.T) {
 	for i, word := range codeWords {
 		q := binary.LittleEndian.Uint64(word)
 		w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(q&0xFFFFFFFF)))
-		w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 5, 0, codeOff+uint32(i)*8))
+		w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 29, 0, codeOff+uint32(i)*8))
 		w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(q>>32)))
-		w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 5, 0, codeOff+uint32(i)*8+4))
+		w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 29, 0, codeOff+uint32(i)*8+4))
 	}
-	// Zero first 4 data bytes at data+dataOff.
-	w(ie64Instr(OP_STORE, 0, IE64_SIZE_L, 1, 5, 0, dataOff))
+	w(ie64Instr(OP_STORE, 0, IE64_SIZE_L, 1, 29, 0, dataOff))
 
-	// Build descriptor header at data+descOff.
 	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x5345444C))
-	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 5, 0, descOff+0x00))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 29, 0, descOff+0x00))
 	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 1))
-	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 5, 0, descOff+0x04))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 29, 0, descOff+0x04))
 	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 48))
-	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 5, 0, descOff+0x08))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 29, 0, descOff+0x08))
 	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 2))
-	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 5, 0, descOff+0x0C))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 29, 0, descOff+0x0C))
 	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x00601000))
-	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 5, 0, descOff+0x10))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 29, 0, descOff+0x10))
 	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 1))
-	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 5, 0, descOff+0x18))
-	w(ie64Instr(OP_ADD, 4, IE64_SIZE_Q, 1, 5, 0, segOff))
-	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 5, 0, descOff+0x20))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 29, 0, descOff+0x18))
+	w(ie64Instr(OP_ADD, 4, IE64_SIZE_Q, 1, 29, 0, segOff))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 29, 0, descOff+0x20))
 
-	// seg[0] RX
-	w(ie64Instr(OP_ADD, 4, IE64_SIZE_Q, 1, 5, 0, codeOff))
-	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 5, 0, segOff+0x00))
+	w(ie64Instr(OP_ADD, 4, IE64_SIZE_Q, 1, 29, 0, codeOff))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 29, 0, segOff+0x00))
 	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(len(codeWords)*8)))
-	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 5, 0, segOff+0x08))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 29, 0, segOff+0x08))
 	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x00601000))
-	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 5, 0, segOff+0x10))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 29, 0, segOff+0x10))
 	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 1))
-	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 5, 0, segOff+0x18))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 29, 0, segOff+0x18))
 	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, m14ELFSegFlagR|m14ELFSegFlagX))
-	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 5, 0, segOff+0x1C))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 29, 0, segOff+0x1C))
 
-	// seg[1] RW
-	w(ie64Instr(OP_ADD, 4, IE64_SIZE_Q, 1, 5, 0, dataOff))
-	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 5, 0, segOff+0x20))
+	w(ie64Instr(OP_ADD, 4, IE64_SIZE_Q, 1, 29, 0, dataOff))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 29, 0, segOff+0x20))
 	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 4))
-	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 5, 0, segOff+0x28))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 29, 0, segOff+0x28))
 	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x00602000))
-	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 5, 0, segOff+0x30))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 29, 0, segOff+0x30))
 	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 1))
-	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 5, 0, segOff+0x38))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 29, 0, segOff+0x38))
 	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, m14ELFSegFlagR|m14ELFSegFlagW))
-	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 5, 0, segOff+0x3C))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 29, 0, segOff+0x3C))
 
-	// ExecProgram(descriptor, 48, 0, 0)
-	w(ie64Instr(OP_ADD, 1, IE64_SIZE_Q, 1, 5, 0, descOff))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_Q, 1, 29, 0, descOff))
 	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 48))
 	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
 	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
@@ -7881,9 +8308,6 @@ func TestIExec_M14_Phase3_ExecProgram_DescriptorBasic(t *testing.T) {
 	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
 	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, 0xFFFFFFF8))
 
-	rig.cpu.running.Store(true)
-	done := make(chan struct{})
-	go func() { rig.cpu.Execute(); close(done) }()
 	time.Sleep(1 * time.Second)
 	rig.cpu.running.Store(false)
 	<-done
@@ -7894,6 +8318,89 @@ func TestIExec_M14_Phase3_ExecProgram_DescriptorBasic(t *testing.T) {
 	}
 	if _, ok := findTaskByDataMarker(rig.cpu.memory, 'D'); !ok {
 		t.Fatalf("ExecProgram_DescriptorBasic: child marker not found, output=%q", output[:min(len(output), 120)])
+	}
+}
+
+func TestIExec_M142_Phase2_ExecProgram_DescriptorRejectsStackPastImageEnd(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+
+	shellPtr := waitForBootManifestImagePtr(rig.cpu.memory, bootManifestIDShell, 2*time.Second)
+	if shellPtr == 0 {
+		rig.cpu.running.Store(false)
+		<-done
+		t.Fatal("ExecProgram_DescriptorRejectsStackPastImageEnd: shell manifest row never published")
+	}
+	codeBase := uint32(shellPtr) + 0x1000
+	off := uint32(0)
+	w := func(instr []byte) { copy(rig.cpu.memory[codeBase+off:], instr); off += 8 }
+
+	const (
+		descOff = 0x300
+		segOff  = descOff + 48
+	)
+
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x5345444C))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 29, 0, descOff+0x00))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 29, 0, descOff+0x04))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 48))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 29, 0, descOff+0x08))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 2))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 29, 0, descOff+0x0C))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x007FF000))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 29, 0, descOff+0x10))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 2))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 29, 0, descOff+0x18))
+	w(ie64Instr(OP_ADD, 4, IE64_SIZE_Q, 1, 29, 0, segOff))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 29, 0, descOff+0x20))
+
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_Q, 0, 29, 0, 0))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 29, 0, segOff+0x00))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 29, 0, segOff+0x08))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x007FF000))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 29, 0, segOff+0x10))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 29, 0, segOff+0x18))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, m14ELFSegFlagR|m14ELFSegFlagX))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 29, 0, segOff+0x1C))
+
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_Q, 0, 29, 0, 0))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 29, 0, segOff+0x20))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 29, 0, segOff+0x28))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x007FF000))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 29, 0, segOff+0x30))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 29, 0, segOff+0x38))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, m14ELFSegFlagR|m14ELFSegFlagW))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_L, 1, 29, 0, segOff+0x3C))
+
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_Q, 1, 29, 0, descOff))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 48))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExecProgram))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 2, 0, 0x30))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, 0xFFFFFFF8))
+
+	time.Sleep(1 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "3") {
+		t.Fatalf("ExecProgram_DescriptorRejectsStackPastImageEnd: expected ERR_BADARG '3', got=%q", output[:min(len(output), 120)])
 	}
 }
 
@@ -8214,7 +8721,6 @@ func TestIExec_DirCommand(t *testing.T) {
 // for diagnostic purposes if the test fails.
 func TestIExec_DOSOpenWrite(t *testing.T) {
 	const (
-		userTask2Data = userDataBase + 2*userSlotStride // 0x622000
 		// Data page offsets used by the test client:
 		offDosPort  = 128 // dos_port_id (8 bytes)
 		offReplyPrt = 136 // reply_port_id (8 bytes)
@@ -8229,25 +8735,17 @@ func TestIExec_DOSOpenWrite(t *testing.T) {
 	)
 
 	rig, _ := assembleAndLoadKernel(t)
-	images := findAllProgramImages(t, rig.cpu.memory)
 	// Don't override anything else — console.handler (task 0) and
-	// dos.library (task 1) must run normally. We override only the SHELL
-	// (last image) with our test client.
-	shellCode := images[len(images)-1]
+	// dos.library (task 1) must run normally. We override only the shipped
+	// shell image with our test client.
+	shellCode := findShellClientCodeStart(t, rig.cpu.memory)
 
 	off := shellCode
 	w := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
 
-	// === Preamble: compute task's data page VA into R29 ===
-	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 3))
-	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo)) // R1 = task_id
-	w(ie64Instr(OP_MOVE, 28, IE64_SIZE_L, 1, 0, 0, userSlotStride))
-	w(ie64Instr(OP_MULU, 28, IE64_SIZE_Q, 0, 1, 28, 0)) // R28 = task * stride
-	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, userDataBase))
-	w(ie64Instr(OP_ADD, 29, IE64_SIZE_Q, 0, 28, 29, 0)) // R29 = data_va
-
-	// Establish a 16-byte stack frame and store r29 at (sp) for reload after syscalls
+	// === Preamble: load task data base from the startup ABI ===
 	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
 	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
 
 	// === Step 1: FindPort("dos.library") with retry ===
@@ -8430,12 +8928,13 @@ func TestIExec_DOSOpenWrite(t *testing.T) {
 	<-done
 
 	mem := rig.cpu.memory
-	openErr := binary.LittleEndian.Uint64(mem[userTask2Data+offOpenErr:])
-	handle1 := binary.LittleEndian.Uint64(mem[userTask2Data+offHandle1:])
-	writeErr := binary.LittleEndian.Uint64(mem[userTask2Data+offWriteErr:])
-	bytesWr := binary.LittleEndian.Uint64(mem[userTask2Data+offBytesWr:])
-	readErr := binary.LittleEndian.Uint64(mem[userTask2Data+offReadErr:])
-	readback := mem[userTask2Data+offReadback : userTask2Data+offReadback+8]
+	dataBase := findShellTaskDataBase(t, mem)
+	openErr := binary.LittleEndian.Uint64(mem[dataBase+offOpenErr:])
+	handle1 := binary.LittleEndian.Uint64(mem[dataBase+offHandle1:])
+	writeErr := binary.LittleEndian.Uint64(mem[dataBase+offWriteErr:])
+	bytesWr := binary.LittleEndian.Uint64(mem[dataBase+offBytesWr:])
+	readErr := binary.LittleEndian.Uint64(mem[dataBase+offReadErr:])
+	readback := mem[dataBase+offReadback : dataBase+offReadback+8]
 
 	t.Logf("DOSOpenWrite: openErr=%d handle1=%d writeErr=%d bytesWr=%d readErr=%d readback=%q",
 		openErr, handle1, writeErr, bytesWr, readErr, string(readback))
@@ -8547,14 +9046,9 @@ func dosM128BuildTestClient(
 	off := shellCode
 	w := func(instr []byte) { copy(mem[off:], instr); off += 8 }
 
-	// === Preamble: compute task's data page VA into R29 ===
-	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 3))
-	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo))
-	w(ie64Instr(OP_MOVE, 28, IE64_SIZE_L, 1, 0, 0, userSlotStride))
-	w(ie64Instr(OP_MULU, 28, IE64_SIZE_Q, 0, 1, 28, 0))
-	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, userDataBase))
-	w(ie64Instr(OP_ADD, 29, IE64_SIZE_Q, 0, 28, 29, 0))
+	// === Preamble: load task data base from the startup ABI ===
 	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
 	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
 
 	// Initialize result = ^uint64(0) (sentinel meaning "no mismatch yet")
@@ -8728,15 +9222,13 @@ func dosM128PatchBGE(mem []byte, bgeAddr uint32, target uint32, ra, rb byte) {
 //     extent-walk arithmetic bugs).
 func TestIExec_DosM128_FileLargerThanOldCap(t *testing.T) {
 	const (
-		fileSize      = 32768
-		shareBytes    = fileSize
-		userTask2Data = userDataBase + 2*userSlotStride
-		offResult     = 200
+		fileSize   = 32768
+		shareBytes = fileSize
+		offResult  = 200
 	)
 
 	rig, _ := assembleAndLoadKernel(t)
-	images := findAllProgramImages(t, rig.cpu.memory)
-	shellCode := images[len(images)-1]
+	shellCode := findShellClientCodeStart(t, rig.cpu.memory)
 
 	// Track the BGE patch sites so the test (which has memory access) can
 	// finalize the forward branches after the helper builds the client.
@@ -8810,7 +9302,8 @@ func TestIExec_DosM128_FileLargerThanOldCap(t *testing.T) {
 	<-done
 
 	mem := rig.cpu.memory
-	result := binary.LittleEndian.Uint64(mem[userTask2Data+offResult:])
+	dataBase := findShellTaskDataBase(t, mem)
+	result := binary.LittleEndian.Uint64(mem[dataBase+offResult:])
 	// In-client init wrote 0xFFFFFFFF (zero-extended via OP_MOVE/SIZE_L) as
 	// the "no mismatch yet" sentinel. The verify loop only overwrites this
 	// if it finds a real mismatch (with the failing index, which is always
@@ -8833,13 +9326,12 @@ func TestIExec_DosM128_FileLargerThanOldCap(t *testing.T) {
 // 1 KiB rewrite uses only the first 1 KiB of the buffer.
 func TestIExec_DosM128_RewriteShrinks(t *testing.T) {
 	const (
-		shareBytes    = 16384
-		bigSize       = 8192
-		smallSize     = 1024
-		userTask2Data = userDataBase + 2*userSlotStride
-		offResult     = 200
+		shareBytes = 16384
+		bigSize    = 8192
+		smallSize  = 1024
+		offResult  = 200
 	)
-	dosM128RunRewriteTest(t, shareBytes, bigSize, smallSize, smallSize, "RewriteShrinks", userTask2Data, offResult)
+	dosM128RunRewriteTest(t, shareBytes, bigSize, smallSize, smallSize, "RewriteShrinks", offResult)
 }
 
 // TestIExec_DosM128_RewriteGrows is the symmetric counterpart to
@@ -8847,13 +9339,12 @@ func TestIExec_DosM128_RewriteShrinks(t *testing.T) {
 // After the rewrite the file content must be the new 8 KiB pattern.
 func TestIExec_DosM128_RewriteGrows(t *testing.T) {
 	const (
-		shareBytes    = 16384
-		smallSize     = 1024
-		bigSize       = 8192
-		userTask2Data = userDataBase + 2*userSlotStride
-		offResult     = 200
+		shareBytes = 16384
+		smallSize  = 1024
+		bigSize    = 8192
+		offResult  = 200
 	)
-	dosM128RunRewriteTest(t, shareBytes, smallSize, bigSize, bigSize, "RewriteGrows", userTask2Data, offResult)
+	dosM128RunRewriteTest(t, shareBytes, smallSize, bigSize, bigSize, "RewriteGrows", offResult)
 }
 
 // dosM128RunRewriteTest builds a test client that performs:
@@ -8868,7 +9359,7 @@ func TestIExec_DosM128_RewriteGrows(t *testing.T) {
 // drives both shrink and grow scenarios. expectedSize is the size that
 // should be observable after the rewrite (= secondSize since DOS_WRITE
 // replaces from offset 0).
-func dosM128RunRewriteTest(t *testing.T, shareBytes, firstSize, secondSize, expectedSize uint32, name string, userTask2Data, offResult uint32) {
+func dosM128RunRewriteTest(t *testing.T, shareBytes, firstSize, secondSize, expectedSize uint32, name string, offResult uint32) {
 	t.Helper()
 	const (
 		offDosPort  = 128
@@ -8879,20 +9370,14 @@ func dosM128RunRewriteTest(t *testing.T, shareBytes, firstSize, secondSize, expe
 	)
 
 	rig, _ := assembleAndLoadKernel(t)
-	images := findAllProgramImages(t, rig.cpu.memory)
-	shellCode := images[len(images)-1]
+	shellCode := findShellClientCodeStart(t, rig.cpu.memory)
 
 	off := shellCode
 	w := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
 
 	// === Preamble ===
-	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 3))
-	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo))
-	w(ie64Instr(OP_MOVE, 28, IE64_SIZE_L, 1, 0, 0, userSlotStride))
-	w(ie64Instr(OP_MULU, 28, IE64_SIZE_Q, 0, 1, 28, 0))
-	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, userDataBase))
-	w(ie64Instr(OP_ADD, 29, IE64_SIZE_Q, 0, 28, 29, 0))
 	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
 	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
 
 	// Initialize result = ^uint64(0) (no mismatch sentinel)
@@ -9087,7 +9572,8 @@ func dosM128RunRewriteTest(t *testing.T, shareBytes, firstSize, secondSize, expe
 	<-done
 
 	mem := rig.cpu.memory
-	result := binary.LittleEndian.Uint64(mem[userTask2Data+offResult:])
+	dataBase := findShellTaskDataBase(t, mem)
+	result := binary.LittleEndian.Uint64(mem[dataBase+offResult:])
 	const noMismatch = uint64(0xFFFFFFFF)
 	if result != noMismatch {
 		t.Fatalf("%s: rewrite mismatch at byte index %d", name, result)
@@ -9862,8 +10348,7 @@ func TestIExec_NoCap_DosFilesAndHandlesGrow(t *testing.T) {
 	)
 
 	rig, _ := assembleAndLoadKernel(t)
-	images := findAllProgramImages(t, rig.cpu.memory)
-	shellCode := images[len(images)-1]
+	shellCode := findShellClientCodeStart(t, rig.cpu.memory)
 
 	off := shellCode
 	w := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
@@ -10023,11 +10508,22 @@ func TestIExec_M14_Phase2_LoadSeg_Basic(t *testing.T) {
 
 	loadType := binary.LittleEndian.Uint64(mem[dataBase+200:])
 	if loadType != dosOK {
-		t.Fatalf("LoadSeg_Basic: reply.type=%d, want DOS_OK (0)", loadType)
+		t.Fatalf("LoadSeg_Basic: reply.type=%d, want DOS_OK (0), counter=%d fault_pc=0x%X fault_cause=%d num_tasks=%d",
+			loadType,
+			binary.LittleEndian.Uint64(mem[dataBase+224:]),
+			rig.cpu.faultPC,
+			rig.cpu.faultCause,
+			binary.LittleEndian.Uint64(mem[kernDataBase+kdNumTasks:]),
+		)
 	}
 	seglistVA := binary.LittleEndian.Uint64(mem[dataBase+208:])
 	if seglistVA == 0 {
-		t.Fatal("LoadSeg_Basic: seglist VA is 0")
+		t.Fatalf("LoadSeg_Basic: seglist VA is 0, counter=%d fault_pc=0x%X fault_cause=%d num_tasks=%d",
+			binary.LittleEndian.Uint64(mem[dataBase+224:]),
+			rig.cpu.faultPC,
+			rig.cpu.faultCause,
+			binary.LittleEndian.Uint64(mem[kernDataBase+kdNumTasks:]),
+		)
 	}
 
 	seglistPhys, ok := taskVAToPhys(mem, 1, seglistVA)
@@ -10068,7 +10564,14 @@ func TestIExec_M14_Phase2_LoadSeg_InvalidExecutableRejected(t *testing.T) {
 	mem := rig.cpu.memory
 	loadType := binary.LittleEndian.Uint64(mem[dataBase+200:])
 	if loadType != dosErrBadArg {
-		t.Fatalf("LoadSeg_InvalidExecutableRejected: reply.type=%d, want DOS_ERR_BADARG (%d)", loadType, dosErrBadArg)
+		t.Fatalf("LoadSeg_InvalidExecutableRejected: reply.type=%d, want DOS_ERR_BADARG (%d), counter=%d fault_pc=0x%X fault_cause=%d num_tasks=%d",
+			loadType,
+			dosErrBadArg,
+			binary.LittleEndian.Uint64(mem[dataBase+224:]),
+			rig.cpu.faultPC,
+			rig.cpu.faultCause,
+			binary.LittleEndian.Uint64(mem[kernDataBase+kdNumTasks:]),
+		)
 	}
 }
 
@@ -10452,6 +10955,14 @@ func TestIExec_M14_Phase2_ElfFixturePassesHostValidator(t *testing.T) {
 
 func findDosSeededFileMeta(t *testing.T, mem []byte, name string) (uint64, uint32) {
 	t.Helper()
+	fileVA, fileSize, ok := tryFindDosSeededFileMeta(mem, name)
+	if !ok {
+		t.Fatalf("findDosSeededFileMeta: could not find %q", name)
+	}
+	return fileVA, fileSize
+}
+
+func tryFindDosSeededFileMeta(mem []byte, name string) (uint64, uint32, bool) {
 	const (
 		metaHdrSz   = 16
 		metaEntrySz = 48
@@ -10460,12 +10971,12 @@ func findDosSeededFileMeta(t *testing.T, mem []byte, name string) (uint64, uint3
 	dosData := uint32(taskLayoutFieldQ(mem, 1, kdTaskDataBase))
 	metaHead := binary.LittleEndian.Uint64(mem[dosData+152:])
 	if metaHead == 0 {
-		t.Fatal("findDosSeededFileMeta: meta chain head is 0")
+		return 0, 0, false
 	}
 	for page := metaHead; page != 0; {
 		pagePhys, ok := taskVAToPhys(mem, 1, page)
 		if !ok {
-			t.Fatalf("findDosSeededFileMeta: could not translate meta page VA 0x%X", page)
+			return 0, 0, false
 		}
 		next := binary.LittleEndian.Uint64(mem[pagePhys:])
 		for i := uint32(0); i < metaPerPage; i++ {
@@ -10482,12 +10993,22 @@ func findDosSeededFileMeta(t *testing.T, mem []byte, name string) (uint64, uint3
 			}
 			fileVA := binary.LittleEndian.Uint64(mem[entry+32:])
 			fileSize := binary.LittleEndian.Uint32(mem[entry+40:])
-			return fileVA, fileSize
+			return fileVA, fileSize, true
 		}
 		page = next
 	}
-	t.Fatalf("findDosSeededFileMeta: could not find %q", name)
-	return 0, 0
+	return 0, 0, false
+}
+
+func waitForDosSeededFileMeta(mem []byte, name string, timeout time.Duration) (uint64, uint32, bool) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if fileVA, fileSize, ok := tryFindDosSeededFileMeta(mem, name); ok {
+			return fileVA, fileSize, true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return 0, 0, false
 }
 
 func readDosSeededFileBytes(t *testing.T, mem []byte, name string) []byte {
@@ -10529,6 +11050,15 @@ func mustReadRepoFile(t *testing.T, rel string) string {
 	return string(data)
 }
 
+func mustReadRepoBytes(t *testing.T, rel string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(rel)
+	if err != nil {
+		t.Fatalf("ReadFile(%q): %v", rel, err)
+	}
+	return data
+}
+
 func requireAllSubstrings(t *testing.T, body string, subs ...string) {
 	t.Helper()
 	for _, sub := range subs {
@@ -10546,6 +11076,15 @@ func requireAnySubstring(t *testing.T, body string, subs ...string) {
 		}
 	}
 	t.Fatalf("missing any required substring from %q", strings.Join(subs, ", "))
+}
+
+func requireNoSubstrings(t *testing.T, body string, subs ...string) {
+	t.Helper()
+	for _, sub := range subs {
+		if strings.Contains(body, sub) {
+			t.Fatalf("unexpected substring %q", sub)
+		}
+	}
 }
 
 func bootManifestRowByID(mem []byte, want uint32) (uint32, bool) {
@@ -10569,6 +11108,12 @@ func waitForBootManifestImagePtr(mem []byte, want uint32, timeout time.Duration)
 		time.Sleep(1 * time.Millisecond)
 	}
 	return 0
+}
+
+func ptrInAllocPool(ptr uint64) bool {
+	start := uint64(allocPoolBase) << 12
+	end := uint64(allocPoolBase+allocPoolPages) << 12
+	return ptr >= start && ptr < end
 }
 
 func dosBootExportRowByID(mem []byte, taskSlot uint64, want uint32) (uint32, bool) {
@@ -10686,6 +11231,49 @@ func TestIExec_M141_Phase1_EmbeddedServicePathMarkedInternal(t *testing.T) {
 	)
 }
 
+func TestIExec_M142_Phase1_DocsDeclareELFOnlyExecution(t *testing.T) {
+	plan := mustReadRepoFile(t, "sdk/docs/IntuitionOS/M14.2-plan.md")
+	requireAllSubstrings(t, plan,
+		"ELF is the only executable format",
+		"`SYS_EXEC_PROGRAM` flat-image calls return `ERR_BADARG`",
+		"`DOS_RUN` rejects flat-image executable content",
+		"`ExecProgram` is descriptor-only",
+	)
+
+	elfDoc := mustReadRepoFile(t, "sdk/docs/IntuitionOS/ELF.md")
+	requireAllSubstrings(t, elfDoc,
+		"M14.2 phase 1 current contract:",
+		"`DOS_RUN` rejects flat-image executable content",
+		"`ExecProgram` is descriptor-only",
+		"`DOS_LOADSEG` remains strict-ELF-only",
+	)
+
+	iexecDoc := mustReadRepoFile(t, "sdk/docs/IntuitionOS/IExec.md")
+	requireAllSubstrings(t, iexecDoc,
+		"M14.2 current runtime:",
+		"`SYS_EXEC_PROGRAM` is now descriptor-only",
+		"`DOS_RUN` rejects non-ELF executable content",
+		"the remaining flat-image path is removed in M14.2",
+	)
+
+	readme := mustReadRepoFile(t, "README.md")
+	requireAllSubstrings(t, readme,
+		"M14.2 phase 1 status",
+		"`DOS_RUN` no longer falls back to legacy flat-image command files",
+		"`ExecProgram` is descriptor-only",
+	)
+
+	m14Plan := mustReadRepoFile(t, "sdk/docs/IntuitionOS/M14-plan.md")
+	requireAllSubstrings(t, m14Plan,
+		"M14.2 is the later milestone that explicitly removes the flat-image `ExecProgram` ABI and DOS `DOS_RUN` fallback",
+	)
+
+	m141Plan := mustReadRepoFile(t, "sdk/docs/IntuitionOS/M14.1-plan.md")
+	requireAllSubstrings(t, m141Plan,
+		"M14.2 later removes that legacy flat-image compatibility entirely",
+	)
+}
+
 func TestIExec_M141_Phase2_BootstrapELFConsoleAndDos(t *testing.T) {
 	rig, term := assembleAndLoadKernel(t)
 	rig.cpu.running.Store(true)
@@ -10706,11 +11294,28 @@ func TestIExec_M141_Phase2_BootstrapELFConsoleAndDos(t *testing.T) {
 			code0 := taskLayoutFieldQ(rig.cpu.memory, 0, kdTaskCodeBase)
 			data0 := taskLayoutFieldQ(rig.cpu.memory, 0, kdTaskDataBase)
 			stack0 := taskLayoutFieldQ(rig.cpu.memory, 0, kdTaskStackBase)
+			startup0 := taskLayoutFieldQ(rig.cpu.memory, 0, kdTaskStartupBase)
+			code1 := taskLayoutFieldQ(rig.cpu.memory, 1, kdTaskCodeBase)
 			data1 := taskLayoutFieldQ(rig.cpu.memory, 1, kdTaskDataBase)
+			stack1 := taskLayoutFieldQ(rig.cpu.memory, 1, kdTaskStackBase)
+			startup1 := taskLayoutFieldQ(rig.cpu.memory, 1, kdTaskStartupBase)
 			firstPPN := binary.LittleEndian.Uint16(rig.cpu.memory[kernDataBase+kdGrantTableHdr+kdGrantHdrFirst:])
 			firstGrant := uint32(firstPPN)<<12 + uint32(kdGrantPageHdrSz)
+			row0Base, _ := bootManifestRowByID(rig.cpu.memory, bootManifestIDConsole)
 			row2Base, _ := bootManifestRowByID(rig.cpu.memory, bootManifestIDShell)
-			t.Fatalf("BootstrapELFConsoleAndDos: missing %q in output=%q num_tasks=%d current_slot=%d slot0_pubid=%d cpu_pc=0x%X fault_pc=0x%X fault_cause=%d task0_state=%d task1_state=%d task0_pc=0x%X task0_startup=0x%X task0_data=0x%X task0_stack=0x%X stack_seed_startup=0x%X stack_seed_data=0x%X code_q0=0x%X code_q1=0x%X data_q0=0x%X data_q1=0x%X data_taskid=%d data_console_port=0x%X data_term_io=0x%X export0_id=%d export0_ptr=0x%X export0_size=0x%X shell_manifest_ptr=0x%X shell_manifest_size=0x%X grant_first=%d grant_total=%d grant_tid=%d grant_tag=0x%X grant_lo=0x%X grant_hi=0x%X",
+			manifest0ID := binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdBootManifestBase+0:])
+			manifest0Flags := binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdBootManifestBase+4:])
+			manifest0Ptr := binary.LittleEndian.Uint64(rig.cpu.memory[kernDataBase+kdBootManifestBase+8:])
+			manifest0Size := binary.LittleEndian.Uint64(rig.cpu.memory[kernDataBase+kdBootManifestBase+16:])
+			row0Ptr := binary.LittleEndian.Uint64(rig.cpu.memory[row0Base+kdBootManifestPtr:])
+			row0Size := binary.LittleEndian.Uint64(rig.cpu.memory[row0Base+16:])
+			row0D0 := uint64(0)
+			row0D1 := uint64(0)
+			if row0Ptr != 0 && row0Ptr+16 <= uint64(len(rig.cpu.memory)) {
+				row0D0 = binary.LittleEndian.Uint64(rig.cpu.memory[row0Ptr:])
+				row0D1 = binary.LittleEndian.Uint64(rig.cpu.memory[row0Ptr+8:])
+			}
+			t.Fatalf("BootstrapELFConsoleAndDos: missing %q in output=%q num_tasks=%d current_slot=%d slot0_pubid=%d cpu_pc=0x%X fault_pc=0x%X fault_cause=%d task0_state=%d task1_state=%d task0_pc=0x%X task0_startup=0x%X task0_data=0x%X task0_stack=0x%X stack_seed_startup=0x%X stack_seed_data=0x%X code_q0=0x%X code_q1=0x%X data_q0=0x%X data_q1=0x%X data_taskid=%d data_console_port=0x%X data_term_io=0x%X task1_code=0x%X task1_startup=0x%X task1_data=0x%X task1_stack=0x%X task1_stack_seed_startup=0x%X task1_stack_seed_data=0x%X task1_saved_name_ptr=0x%X manifest0_id=%d manifest0_flags=%d manifest0_ptr=0x%X manifest0_size=0x%X console_manifest_ptr=0x%X console_manifest_size=0x%X console_hdr_q0=0x%X console_hdr_q1=0x%X export0_id=%d export0_ptr=0x%X export0_size=0x%X shell_manifest_ptr=0x%X shell_manifest_size=0x%X grant_first=%d grant_total=%d grant_tid=%d grant_tag=0x%X grant_lo=0x%X grant_hi=0x%X",
 				want,
 				output[:min(len(output), 400)],
 				binary.LittleEndian.Uint64(rig.cpu.memory[kernDataBase+kdNumTasks:]),
@@ -10722,7 +11327,7 @@ func TestIExec_M141_Phase2_BootstrapELFConsoleAndDos(t *testing.T) {
 				rig.cpu.memory[kernDataBase+64+28],
 				rig.cpu.memory[kernDataBase+64+32+28],
 				code0,
-				taskLayoutFieldQ(rig.cpu.memory, 0, kdTaskStartupBase),
+				startup0,
 				data0,
 				stack0,
 				binary.LittleEndian.Uint64(rig.cpu.memory[stack0+0x1000-16:]),
@@ -10734,9 +11339,24 @@ func TestIExec_M141_Phase2_BootstrapELFConsoleAndDos(t *testing.T) {
 				binary.LittleEndian.Uint64(rig.cpu.memory[data0+128:]),
 				binary.LittleEndian.Uint64(rig.cpu.memory[data0+136:]),
 				binary.LittleEndian.Uint64(rig.cpu.memory[data0+144:]),
-				binary.LittleEndian.Uint32(rig.cpu.memory[data1+1150+dosBootExportID:]),
-				binary.LittleEndian.Uint64(rig.cpu.memory[data1+1150+dosBootExportPtr:]),
-				binary.LittleEndian.Uint64(rig.cpu.memory[data1+1150+dosBootExportSize:]),
+				code1,
+				startup1,
+				data1,
+				stack1,
+				binary.LittleEndian.Uint64(rig.cpu.memory[stack1+0x1000-16:]),
+				binary.LittleEndian.Uint64(rig.cpu.memory[stack1+0x1000-8:]),
+				binary.LittleEndian.Uint64(rig.cpu.memory[data1+336:]),
+				manifest0ID,
+				manifest0Flags,
+				manifest0Ptr,
+				manifest0Size,
+				row0Ptr,
+				row0Size,
+				row0D0,
+				row0D1,
+				binary.LittleEndian.Uint32(rig.cpu.memory[data1+dosBootExportRowsOff+dosBootExportID:]),
+				binary.LittleEndian.Uint64(rig.cpu.memory[data1+dosBootExportRowsOff+dosBootExportPtr:]),
+				binary.LittleEndian.Uint64(rig.cpu.memory[data1+dosBootExportRowsOff+dosBootExportSize:]),
 				binary.LittleEndian.Uint64(rig.cpu.memory[row2Base+kdBootManifestPtr:]),
 				binary.LittleEndian.Uint64(rig.cpu.memory[row2Base+16:]),
 				firstPPN,
@@ -10755,20 +11375,111 @@ func TestIExec_M141_Phase2_BootstrapELFConsoleAndDos(t *testing.T) {
 	if got := binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdBootManifestBase+kdBootManifestStride+kdBootManifestID:]); got != bootManifestIDDoslib {
 		t.Fatalf("BootstrapELFConsoleAndDos: manifest row 1 id=%d, want %d", got, bootManifestIDDoslib)
 	}
-	for _, id := range []uint32{bootManifestIDConsole, bootManifestIDDoslib} {
-		base, ok := bootManifestRowByID(rig.cpu.memory, id)
-		if !ok {
-			t.Fatalf("BootstrapELFConsoleAndDos: missing manifest row id=%d", id)
-		}
-		if got := binary.LittleEndian.Uint64(rig.cpu.memory[base+kdBootManifestPtr:]); got != 0 {
-			t.Fatalf("BootstrapELFConsoleAndDos: manifest row id=%d staged ptr=0x%X, want 0 after launch/free", id, got)
-		}
-	}
 	if startupBase := taskLayoutFieldQ(rig.cpu.memory, 0, kdTaskStartupBase); startupBase == 0 {
 		t.Fatal("BootstrapELFConsoleAndDos: task 0 startup page missing")
 	}
 	if startupBase := taskLayoutFieldQ(rig.cpu.memory, 1, kdTaskStartupBase); startupBase == 0 {
 		t.Fatal("BootstrapELFConsoleAndDos: task 1 startup page missing")
+	}
+}
+
+func assertM142DOSRunFlatImageRejected(t *testing.T) {
+	t.Helper()
+	rig, output := bootPatchedFixtureAndInjectCommand(t, makeNegativeFlatIE64PROGFixture(t, 'F'), "\nELFSEG\n", 5*time.Second)
+	if strings.Contains(output, "Unknown command") {
+		t.Fatalf("DOSRun_FlatImageRejected: command resolution failed, output=%q", output)
+	}
+	if _, ok := findTaskByDataMarker(rig.cpu.memory, 'F'); ok {
+		t.Fatalf("DOSRun_FlatImageRejected: flat-image command still launched, output=%q", output)
+	}
+}
+
+func TestIExec_M142_Phase1_DOSRun_FlatImageRejected(t *testing.T) {
+	assertM142DOSRunFlatImageRejected(t)
+}
+
+func TestIExec_M142_Phase2_BootManifestRowsPublishEmbeddedELF(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+
+	for _, id := range []uint32{
+		bootManifestIDConsole,
+		bootManifestIDDoslib,
+	} {
+		ptr := waitForBootManifestImagePtr(rig.cpu.memory, id, 2*time.Second)
+		if ptr == 0 {
+			rig.cpu.running.Store(false)
+			<-done
+			t.Fatalf("Phase2_BootManifestRowsPublishEmbeddedELF: manifest row id=%d never published", id)
+		}
+		base, ok := bootManifestRowByID(rig.cpu.memory, id)
+		if !ok {
+			rig.cpu.running.Store(false)
+			<-done
+			t.Fatalf("Phase2_BootManifestRowsPublishEmbeddedELF: missing manifest row id=%d", id)
+		}
+		size := binary.LittleEndian.Uint64(rig.cpu.memory[base+16:])
+		if size == 0 {
+			rig.cpu.running.Store(false)
+			<-done
+			t.Fatalf("Phase2_BootManifestRowsPublishEmbeddedELF: manifest row id=%d size is 0", id)
+		}
+		if ptrInAllocPool(ptr) {
+			rig.cpu.running.Store(false)
+			<-done
+			t.Fatalf("Phase2_BootManifestRowsPublishEmbeddedELF: manifest row id=%d still points at allocator staging ptr=0x%X", id, ptr)
+		}
+		if err := validateM14ELFContract(rig.cpu.memory[ptr : ptr+size]); err != nil {
+			rig.cpu.running.Store(false)
+			<-done
+			t.Fatalf("Phase2_BootManifestRowsPublishEmbeddedELF: manifest row id=%d invalid ELF: %v", id, err)
+		}
+	}
+
+	time.Sleep(4 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "1>") {
+		t.Fatalf("Phase2_BootManifestRowsPublishEmbeddedELF: boot never reached shell prompt, output=%q", output[:min(len(output), 600)])
+	}
+}
+
+func TestIExec_M142_Phase2_BootManifestLaunchRejectsFlatImageRow(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	flat := makeNegativeFlatIE64PROGFixture(t, 'F')
+	flatAddr := uint32(PROG_START + 0x1E000)
+	copy(rig.cpu.memory[flatAddr:flatAddr+uint32(len(flat))], flat)
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+
+	ptr := waitForBootManifestImagePtr(rig.cpu.memory, bootManifestIDShell, 2*time.Second)
+	if ptr == 0 {
+		rig.cpu.running.Store(false)
+		<-done
+		t.Fatal("Phase2_BootManifestLaunchRejectsFlatImageRow: shell manifest row never published")
+	}
+	base, ok := bootManifestRowByID(rig.cpu.memory, bootManifestIDShell)
+	if !ok {
+		rig.cpu.running.Store(false)
+		<-done
+		t.Fatal("Phase2_BootManifestLaunchRejectsFlatImageRow: missing shell manifest row")
+	}
+	binary.LittleEndian.PutUint64(rig.cpu.memory[base+kdBootManifestPtr:], uint64(flatAddr))
+	binary.LittleEndian.PutUint64(rig.cpu.memory[base+16:], uint64(len(flat)))
+
+	time.Sleep(4 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if strings.Contains(output, "1>") || strings.Contains(output, "Shell ") || strings.Contains(output, "F") {
+		t.Fatalf("Phase2_BootManifestLaunchRejectsFlatImageRow: flat manifest row still launched, output=%q", output[:min(len(output), 400)])
 	}
 }
 
@@ -10825,18 +11536,6 @@ func TestIExec_M141_Phase3_DOSLaunchesShellAndRemainingServicesFromManifest(t *t
 		t.Fatalf("Phase3_DOSLaunchesShellAndRemainingServicesFromManifest: num_tasks=%d, want at least 7", got)
 	}
 
-	for _, id := range []uint32{
-		bootManifestIDConsole,
-		bootManifestIDDoslib,
-	} {
-		base, ok := bootManifestRowByID(rig.cpu.memory, id)
-		if !ok {
-			t.Fatalf("Phase3_DOSLaunchesShellAndRemainingServicesFromManifest: missing manifest row id=%d", id)
-		}
-		if got := binary.LittleEndian.Uint64(rig.cpu.memory[base+kdBootManifestPtr:]); got != 0 {
-			t.Fatalf("Phase3_DOSLaunchesShellAndRemainingServicesFromManifest: manifest row id=%d staged ptr=0x%X, want 0 after launch/free", id, got)
-		}
-	}
 }
 
 func TestIExec_M141_Phase2_DosBootExportsPresent(t *testing.T) {
@@ -10885,6 +11584,22 @@ func TestIExec_M141_Phase2_DosBootExportsPresent(t *testing.T) {
 		}
 		if ptr := binary.LittleEndian.Uint64(rig.cpu.memory[row+dosBootExportPtr:]); ptr == 0 {
 			t.Fatalf("Phase2_DosBootExportsPresent: export row id=%d ptr=0", id)
+		} else {
+			phys, ok := taskVAToPhys(rig.cpu.memory, dosSlot, ptr)
+			if !ok {
+				t.Fatalf("Phase2_DosBootExportsPresent: export row id=%d ptr=0x%X not mapped in dos task", id, ptr)
+			}
+			sz := binary.LittleEndian.Uint64(rig.cpu.memory[row+dosBootExportSize:])
+			if sz == 0 {
+				t.Fatalf("Phase2_DosBootExportsPresent: export row id=%d size=0", id)
+			}
+			if err := validateM14ELFContract(rig.cpu.memory[phys : phys+uint32(sz)]); err != nil {
+				t.Fatalf("Phase2_DosBootExportsPresent: export row id=%d malformed ELF at ptr=0x%X: %v", id, ptr, err)
+			}
+			regRow := findTaskRegionRowByVA(t, rig.cpu.memory, dosSlot, ptr)
+			if got := rig.cpu.memory[regRow+kdRegType]; got != regionIO {
+				t.Fatalf("Phase2_DosBootExportsPresent: export row id=%d region type=%d, want REGION_IO (%d)", id, got, regionIO)
+			}
 		}
 		if sz := binary.LittleEndian.Uint64(rig.cpu.memory[row+dosBootExportSize:]); sz == 0 {
 			t.Fatalf("Phase2_DosBootExportsPresent: export row id=%d size=0", id)
@@ -10894,50 +11609,47 @@ func TestIExec_M141_Phase2_DosBootExportsPresent(t *testing.T) {
 
 func TestIExec_M141_Phase3_ManifestLaunchPreservesArgs(t *testing.T) {
 	rig, term := assembleAndLoadKernel(t)
-	images := findAllProgramImages(t, rig.cpu.memory)
-	var dosImg uint32
-	for _, codeStart := range images {
-		imgStart := codeStart - imgHeaderSize
-		codeSize := binary.LittleEndian.Uint32(rig.cpu.memory[imgStart+8:])
-		dataBase := imgStart + imgHeaderSize + codeSize
-		if dataBase+32 >= uint32(len(rig.cpu.memory)) {
-			continue
-		}
-		if strings.HasPrefix(string(rig.cpu.memory[dataBase+16:dataBase+28]), "dos.library") {
-			dosImg = imgStart
-			break
-		}
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+
+	ptr := waitForBootManifestImagePtr(rig.cpu.memory, bootManifestIDDoslib, 2*time.Second)
+	if ptr == 0 {
+		rig.cpu.running.Store(false)
+		<-done
+		t.Fatal("Phase3_ManifestLaunchPreservesArgs: dos manifest row never published")
 	}
-	if dosImg == 0 {
-		t.Fatalf("could not locate bundled dos.library image among %d images", len(images))
-	}
-	codeSize := binary.LittleEndian.Uint32(rig.cpu.memory[dosImg+8:])
-	dataBase := dosImg + imgHeaderSize + codeSize
+	codeOff := binary.LittleEndian.Uint64(rig.cpu.memory[ptr+72:])
+	codeSize := binary.LittleEndian.Uint64(rig.cpu.memory[ptr+96:])
+	dataOff := binary.LittleEndian.Uint64(rig.cpu.memory[ptr+128:])
+	dataBase := uint32(ptr + dataOff)
 	rig.cpu.memory[dataBase+1001] = 'h'
+	codeBase := uint32(ptr + codeOff)
+	codeEnd := codeBase + uint32(codeSize)
 	origArgPtr := ie64Instr(OP_ADD, 2, IE64_SIZE_Q, 1, 29, 0, 1000)
 	patchLen := ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 1)
 	patchArgPtr := ie64Instr(OP_ADD, 2, IE64_SIZE_Q, 1, 29, 0, 1001)
 
-	offArgPtr := bytes.Index(rig.cpu.memory[dosImg:dosImg+0x3000], origArgPtr)
+	offArgPtr := bytes.Index(rig.cpu.memory[codeBase:codeEnd], origArgPtr)
 	if offArgPtr < 0 {
+		rig.cpu.running.Store(false)
+		<-done
 		t.Fatal("Phase3_ManifestLaunchPreservesArgs: could not locate dos shell-arg pointer instruction")
 	}
-	copy(rig.cpu.memory[dosImg+uint32(offArgPtr):], patchArgPtr)
+	copy(rig.cpu.memory[codeBase+uint32(offArgPtr):], patchArgPtr)
 
 	origLen := ie64Instr(OP_MOVE, 3, IE64_SIZE_Q, 0, 0, 0, 0)
-	searchEnd := dosImg + uint32(offArgPtr) + 64
-	if searchEnd > dosImg+0x3000 {
-		searchEnd = dosImg + 0x3000
+	searchEnd := codeBase + uint32(offArgPtr) + 64
+	if searchEnd > codeEnd {
+		searchEnd = codeEnd
 	}
-	offLen := bytes.Index(rig.cpu.memory[dosImg+uint32(offArgPtr):searchEnd], origLen)
+	offLen := bytes.Index(rig.cpu.memory[codeBase+uint32(offArgPtr):searchEnd], origLen)
 	if offLen < 0 {
+		rig.cpu.running.Store(false)
+		<-done
 		t.Fatal("Phase3_ManifestLaunchPreservesArgs: could not locate dos shell-arg length instruction")
 	}
-	copy(rig.cpu.memory[dosImg+uint32(offArgPtr)+uint32(offLen):], patchLen)
-
-	rig.cpu.running.Store(true)
-	done := make(chan struct{})
-	go func() { rig.cpu.Execute(); close(done) }()
+	copy(rig.cpu.memory[codeBase+uint32(offArgPtr)+uint32(offLen):], patchLen)
 	time.Sleep(8 * time.Second)
 	rig.cpu.running.Store(false)
 	<-done
@@ -10967,6 +11679,162 @@ func TestIExec_M141_Phase3_ManifestLaunchPreservesArgs(t *testing.T) {
 	if !found {
 		t.Fatalf("Phase3_ManifestLaunchPreservesArgs: did not find shell args marker at DATA_ARGS_OFFSET, output=%q", output[:min(len(output), 600)])
 	}
+}
+
+func TestIExec_M142_Phase3_SeededExecutablesMatchCanonicalELFSources(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(5 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "1>") {
+		t.Fatalf("Phase3_SeededExecutablesMatchCanonicalELFSources: boot never reached shell prompt, output=%q", output[:min(len(output), 600)])
+	}
+
+	mem := rig.cpu.memory
+	for _, tc := range []struct {
+		name string
+		path string
+	}{
+		{"C/Version", "sdk/intuitionos/iexec/seed_version.elf"},
+		{"C/Avail", "sdk/intuitionos/iexec/seed_avail.elf"},
+		{"C/Dir", "sdk/intuitionos/iexec/seed_dir.elf"},
+		{"C/Type", "sdk/intuitionos/iexec/seed_type.elf"},
+		{"C/Echo", "sdk/intuitionos/iexec/seed_echo.elf"},
+		{"C/GfxDemo", "sdk/intuitionos/iexec/seed_gfxdemo.elf"},
+		{"C/About", "sdk/intuitionos/iexec/seed_about.elf"},
+	} {
+		got := readDosSeededFileBytes(t, mem, tc.name)
+		want := mustReadRepoBytes(t, tc.path)
+		if !bytes.Equal(got, want) {
+			t.Fatalf("Phase3_SeededExecutablesMatchCanonicalELFSources: %s bytes do not match %s", tc.name, tc.path)
+		}
+		if err := validateM14ELFContract(got); err != nil {
+			t.Fatalf("Phase3_SeededExecutablesMatchCanonicalELFSources: %s is not valid ELF: %v", tc.name, err)
+		}
+	}
+
+	for _, name := range []string{
+		"DEVS/input.device",
+		"RESOURCES/hardware.resource",
+		"LIBS/graphics.library",
+		"LIBS/intuition.library",
+	} {
+		assertDosSeededFileIsELF(t, mem, name)
+	}
+}
+
+func TestIExec_M142_Phase3_LoadSeg_SeededServiceELFAccepted(t *testing.T) {
+	rig, dataBase := runM14LoadSegClient(t, "LIBS/graphics.library", 1, false)
+	loadType := binary.LittleEndian.Uint64(rig.cpu.memory[dataBase+200:])
+	if loadType != dosOK {
+		t.Fatalf("Phase3_LoadSeg_SeededServiceELFAccepted: reply.type=%d, want DOS_OK (0), counter=%d fault_pc=0x%X fault_cause=%d num_tasks=%d",
+			loadType,
+			binary.LittleEndian.Uint64(rig.cpu.memory[dataBase+224:]),
+			rig.cpu.faultPC,
+			rig.cpu.faultCause,
+			binary.LittleEndian.Uint64(rig.cpu.memory[kernDataBase+kdNumTasks:]),
+		)
+	}
+	if seglistVA := binary.LittleEndian.Uint64(rig.cpu.memory[dataBase+208:]); seglistVA == 0 {
+		t.Fatalf("Phase3_LoadSeg_SeededServiceELFAccepted: seglist VA is 0, counter=%d fault_pc=0x%X fault_cause=%d num_tasks=%d",
+			binary.LittleEndian.Uint64(rig.cpu.memory[dataBase+224:]),
+			rig.cpu.faultPC,
+			rig.cpu.faultCause,
+			binary.LittleEndian.Uint64(rig.cpu.memory[kernDataBase+kdNumTasks:]),
+		)
+	}
+}
+
+func TestIExec_M142_Phase4_NoShippedEmbeddedBinaryContainsIE64PROGMagic(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	magic := []byte{0x49, 0x45, 0x36, 0x34, 0x50, 0x52, 0x4F, 0x47}
+	if idx := bytes.Index(rig.cpu.memory[PROG_START:], magic); idx >= 0 {
+		t.Fatalf("Phase4_NoShippedEmbeddedBinaryContainsIE64PROGMagic: found IE64PROG magic at 0x%X", PROG_START+uint32(idx))
+	}
+}
+
+func TestIExec_M142_Phase4_NoProgramTableOrLegacyBootDocsRemain(t *testing.T) {
+	asm := mustReadRepoFile(t, "sdk/intuitionos/iexec/iexec.s")
+	requireNoSubstrings(t, asm, "program_table:")
+
+	elfDoc := mustReadRepoFile(t, "sdk/docs/IntuitionOS/ELF.md")
+	requireAllSubstrings(t, elfDoc,
+		"boot/services: internal embedded-manifest ELF path for shipped runtime binaries",
+	)
+	requireNoSubstrings(t, elfDoc,
+		"boot services remain on the legacy kernel `IE64PROG`/`program_table` path",
+		"bundled boot services still loaded by the kernel from `IE64PROG`",
+	)
+
+	iexecDoc := mustReadRepoFile(t, "sdk/docs/IntuitionOS/IExec.md")
+	requireAllSubstrings(t, iexecDoc,
+		"Boot/services use the internal embedded-manifest ELF path for shipped runtime binaries",
+		"the remaining flat-image path is removed in M14.2",
+	)
+	requireNoSubstrings(t, iexecDoc,
+		"boot services still come up from the legacy kernel `program_table` path",
+	)
+}
+
+func TestIExec_M142_Phase4_EmbeddedRuntimeArtifactsAreELFOnly(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	if len(images) != len(embeddedRuntimeELFPaths) {
+		t.Fatalf("Phase4_EmbeddedRuntimeArtifactsAreELFOnly: found %d images, want %d", len(images), len(embeddedRuntimeELFPaths))
+	}
+	for i, codeStart := range images {
+		header, isELF := imageHeaderStartForCodeStart(t, rig.cpu.memory, codeStart)
+		if !isELF {
+			t.Fatalf("Phase4_EmbeddedRuntimeArtifactsAreELFOnly: image %d at 0x%X is not ELF", i, codeStart)
+		}
+		if err := validateM14ELFContract(rig.cpu.memory[header : header+uint32(len(mustReadRepoBytes(t, embeddedRuntimeELFPaths[i])))]); err != nil {
+			t.Fatalf("Phase4_EmbeddedRuntimeArtifactsAreELFOnly: %s invalid ELF in kernel image: %v", embeddedRuntimeELFPaths[i], err)
+		}
+	}
+}
+
+func TestIExec_M142_Phase5_NoPositiveFlatImageCompatibilityTestsRemain(t *testing.T) {
+	src := mustReadRepoFile(t, "iexec_test.go")
+
+	re := regexp.MustCompile(`func (TestIExec_[A-Za-z0-9_]*FlatImage[A-Za-z0-9_]*)\(`)
+	matches := re.FindAllStringSubmatch(src, -1)
+	var unexpected []string
+	for _, match := range matches {
+		name := match[1]
+		if strings.Contains(name, "Rejected") || strings.Contains(name, "Rejects") || strings.Contains(name, "Phase5_") {
+			continue
+		}
+		unexpected = append(unexpected, name)
+	}
+	if len(unexpected) != 0 {
+		t.Fatalf("Phase5_NoPositiveFlatImageCompatibilityTestsRemain: unexpected flat-image-positive tests still present: %v", unexpected)
+	}
+}
+
+func TestIExec_M142_Phase5_FlatImageHelpersAreNegativeOnly(t *testing.T) {
+	testSrc := mustReadRepoFile(t, "iexec_test.go")
+	asmSrc := mustReadRepoFile(t, "sdk/intuitionos/iexec/iexec.s")
+
+	if got := len(regexp.MustCompile(`func makeNegativeFlatIE64PROGFixture\(`).FindAllStringIndex(testSrc, -1)); got != 1 {
+		t.Fatalf("Phase5_FlatImageHelpersAreNegativeOnly: helper definition count=%d, want 1", got)
+	}
+	callSiteRe := regexp.MustCompile(`makeNegativeFlatIE64PROGFixture\(t,`)
+	if got := len(callSiteRe.FindAllStringIndex(testSrc, -1)); got != 2 {
+		t.Fatalf("Phase5_FlatImageHelpersAreNegativeOnly: negative flat-fixture helper call count=%d, want 2", got)
+	}
+	requireAllSubstrings(t, testSrc,
+		"TestIExec_M142_Phase1_DOSRun_FlatImageRejected",
+		"TestIExec_M142_Phase2_BootManifestLaunchRejectsFlatImageRow",
+		"Positive runtime tests must not use it.",
+	)
+	requireNoSubstrings(t, asmSrc,
+		"; In:  r1 = raw IE64PROG ptr, r2 = raw size, r3 = args_ptr, r4 = args_len",
+	)
 }
 
 func TestIExec_M141_Phase2_CorruptPreparedDosManifestImageFailsCleanly(t *testing.T) {
@@ -11014,16 +11882,14 @@ func TestIExec_M141_Phase3_CorruptPreparedShellManifestImageFailsToReachPrompt(t
 
 func TestIExec_M141_Phase3_MalformedShellManifestImageFailsToReachPrompt(t *testing.T) {
 	rig, term := assembleAndLoadKernel(t)
-	images := findAllProgramImages(t, rig.cpu.memory)
-	if len(images) == 0 {
-		t.Fatal("no bundled images found")
-	}
-	shellHeader := images[len(images)-1] - imgHeaderSize
-	rig.cpu.memory[shellHeader] = 0x00
-
 	rig.cpu.running.Store(true)
 	done := make(chan struct{})
 	go func() { rig.cpu.Execute(); close(done) }()
+
+	if ptr := waitForBootManifestImagePtr(rig.cpu.memory, bootManifestIDShell, 2*time.Second); ptr != 0 {
+		rig.cpu.memory[ptr] = 0x00
+	}
+
 	time.Sleep(3 * time.Second)
 	rig.cpu.running.Store(false)
 	<-done
@@ -11147,31 +12013,32 @@ func TestIExec_M141_Phase4_BootManifestSyscallDeniedOutsideDosLibrary(t *testing
 
 func TestIExec_M141_Phase4_PreDosManifestPagesFreed(t *testing.T) {
 	rig, _ := assembleAndLoadKernel(t)
+	// Halt immediately when the kernel enters task 0 so we can inspect the
+	// manifest state right after the pre-DOS bootstrap phase, before later DOS
+	// work mutates anything. In Phase 2 these rows should already point at the
+	// canonical embedded ELF blobs directly, with no allocator staging pages.
 	images := findAllProgramImages(t, rig.cpu.memory)
 	if len(images) < 2 {
 		t.Fatalf("need at least 2 bundled images, got %d", len(images))
 	}
-	// Halt immediately when the kernel enters task 0 so we can inspect the
-	// allocator right after the pre-DOS bootstrap phase, before later DOS work
-	// has a chance to legitimately reuse freed staging pages.
 	copy(rig.cpu.memory[images[0]:images[0]+8], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
 
 	rig.cpu.running.Store(true)
 	done := make(chan struct{})
 	go func() { rig.cpu.Execute(); close(done) }()
 
-	type stagedRow struct {
+	type manifestRow struct {
 		id   uint32
 		ptr  uint64
 		size uint64
 	}
-	rows := make([]stagedRow, 0, 2)
+	rows := make([]manifestRow, 0, 2)
 	for _, id := range []uint32{bootManifestIDConsole, bootManifestIDDoslib} {
 		ptr := waitForBootManifestImagePtr(rig.cpu.memory, id, 2*time.Second)
 		if ptr == 0 {
 			rig.cpu.running.Store(false)
 			<-done
-			t.Fatalf("Phase4_PreDosManifestPagesFreed: manifest row id=%d never exposed a staged image", id)
+			t.Fatalf("Phase4_PreDosManifestPagesFreed: manifest row id=%d never exposed an embedded ELF", id)
 		}
 		base, ok := bootManifestRowByID(rig.cpu.memory, id)
 		if !ok {
@@ -11180,38 +12047,19 @@ func TestIExec_M141_Phase4_PreDosManifestPagesFreed(t *testing.T) {
 			t.Fatalf("Phase4_PreDosManifestPagesFreed: missing manifest row id=%d", id)
 		}
 		size := binary.LittleEndian.Uint64(rig.cpu.memory[base+16:])
-		rows = append(rows, stagedRow{id: id, ptr: ptr, size: size})
+		rows = append(rows, manifestRow{id: id, ptr: ptr, size: size})
 	}
 
 	time.Sleep(1 * time.Second)
 	rig.cpu.running.Store(false)
 	<-done
 
-	owned := collectLiveTaskOwnedPoolPages(rig.cpu.memory)
-	grantPPN := uint32(binary.LittleEndian.Uint16(rig.cpu.memory[kernDataBase+kdGrantTableHdr:])) // first chain page
-
 	for _, row := range rows {
-		base, ok := bootManifestRowByID(rig.cpu.memory, row.id)
-		if !ok {
-			t.Fatalf("Phase4_PreDosManifestPagesFreed: missing manifest row id=%d after boot", row.id)
+		if ptrInAllocPool(row.ptr) {
+			t.Fatalf("Phase4_PreDosManifestPagesFreed: manifest row id=%d still points into allocator pool ptr=0x%X size=0x%X", row.id, row.ptr, row.size)
 		}
-		if got := binary.LittleEndian.Uint64(rig.cpu.memory[base+kdBootManifestPtr:]); got != 0 {
-			t.Fatalf("Phase4_PreDosManifestPagesFreed: manifest row id=%d ptr=0x%X, want 0 after free", row.id, got)
-		}
-		pages := uint32((row.size + 4095) >> 12)
-		ppn := uint32(row.ptr >> 12)
-		for i := uint32(0); i < pages; i++ {
-			cur := ppn + i
-			if !allocPoolPageUsed(rig.cpu.memory, cur) {
-				continue
-			}
-			if _, ok := owned[cur]; ok {
-				continue
-			}
-			if cur == grantPPN {
-				continue
-			}
-			t.Fatalf("Phase4_PreDosManifestPagesFreed: manifest row id=%d page ppn=0x%X still allocated outside live ownership", row.id, cur)
+		if err := validateM14ELFContract(rig.cpu.memory[row.ptr : row.ptr+row.size]); err != nil {
+			t.Fatalf("Phase4_PreDosManifestPagesFreed: manifest row id=%d invalid embedded ELF: %v", row.id, err)
 		}
 	}
 }
@@ -11219,15 +12067,14 @@ func TestIExec_M141_Phase4_PreDosManifestPagesFreed(t *testing.T) {
 func TestIExec_M141_Phase2_MalformedConsoleBootImageFailsCleanly(t *testing.T) {
 	rig, term := assembleAndLoadKernel(t)
 	images := findAllProgramImages(t, rig.cpu.memory)
-	if len(images) < 2 {
-		t.Fatalf("need at least 2 bundled images, got %d", len(images))
+	if len(images) < 1 {
+		t.Fatal("MalformedConsoleBootImageFailsCleanly: no embedded runtime images found")
 	}
-	consoleHeader := images[0] - imgHeaderSize
-	rig.cpu.memory[consoleHeader] = 0x00
-
+	rig.cpu.memory[images[0]-0x1000] = 0x00
 	rig.cpu.running.Store(true)
 	done := make(chan struct{})
 	go func() { rig.cpu.Execute(); close(done) }()
+
 	time.Sleep(1 * time.Second)
 	rig.cpu.running.Store(false)
 	<-done
@@ -11241,7 +12088,8 @@ func TestIExec_M141_Phase2_MalformedConsoleBootImageFailsCleanly(t *testing.T) {
 	}
 }
 
-func TestIExec_M14_Phase5_FullBootStack_ServiceCensus(t *testing.T) {
+func assertFullBootStackServiceCensus(t *testing.T) {
+	t.Helper()
 	rig, term := assembleAndLoadKernel(t)
 	rig.cpu.running.Store(true)
 	done := make(chan struct{})
@@ -11252,9 +12100,14 @@ func TestIExec_M14_Phase5_FullBootStack_ServiceCensus(t *testing.T) {
 
 	output := term.DrainOutput()
 	for _, want := range []string{
-		"exec.library M11 boot",
 		"console.handler M11.5 [Task ",
 		"dos.library M14 [Task ",
+		"Shell M10 [Task ",
+		"hardware.resource M12.5 [Task ",
+		"input.device M11 [Task ",
+		"graphics.library M11 [Task ",
+		"intuition.library M12 [Task ",
+		"IntuitionOS 0.15",
 		"All visible services are running in user space",
 		"1>",
 	} {
@@ -11289,6 +12142,10 @@ func TestIExec_M14_Phase5_FullBootStack_ServiceCensus(t *testing.T) {
 	} {
 		assertDosSeededFileIsELF(t, mem, name)
 	}
+}
+
+func TestIExec_M14_Phase5_FullBootStack_ServiceCensus(t *testing.T) {
+	assertFullBootStackServiceCensus(t)
 }
 
 func TestIExec_M14_Phase5_GfxDemoRegression(t *testing.T) {
@@ -11326,61 +12183,7 @@ func TestIExec_M14_Phase5_AboutRegression(t *testing.T) {
 }
 
 func TestIExec_M141_Phase5_FullBootStack_ServiceCensus(t *testing.T) {
-	rig, term := assembleAndLoadKernel(t)
-	rig.cpu.running.Store(true)
-	done := make(chan struct{})
-	go func() { rig.cpu.Execute(); close(done) }()
-	time.Sleep(5 * time.Second)
-	rig.cpu.running.Store(false)
-	<-done
-
-	output := term.DrainOutput()
-	for _, want := range []string{
-		"exec.library M11 boot",
-		"console.handler M11.5 [Task ",
-		"dos.library M14 [Task ",
-		"Shell M10 [Task ",
-		"hardware.resource M12.5 [Task ",
-		"input.device M11 [Task ",
-		"graphics.library M11 [Task ",
-		"intuition.library M12 [Task ",
-		"All visible services are running in user space",
-		"1>",
-	} {
-		if !strings.Contains(output, want) {
-			t.Fatalf("M141_Phase5_FullBootStack_ServiceCensus: missing %q in output=%q", want, output[:min(len(output), 1000)])
-		}
-	}
-
-	mem := rig.cpu.memory
-	for _, want := range []string{
-		"console.handler",
-		"dos.library",
-		"hardware.resource",
-		"input.device",
-		"graphics.library",
-		"intuition.library",
-	} {
-		if !testPortTableHasPublicName(mem, want) {
-			t.Fatalf("M141_Phase5_FullBootStack_ServiceCensus: missing public port %q", want)
-		}
-	}
-
-	for _, name := range []string{
-		"C/Version",
-		"C/Avail",
-		"C/Dir",
-		"C/Type",
-		"C/Echo",
-		"C/GfxDemo",
-		"C/About",
-		"DEVS/input.device",
-		"LIBS/graphics.library",
-		"LIBS/intuition.library",
-		"RESOURCES/hardware.resource",
-	} {
-		assertDosSeededFileIsELF(t, mem, name)
-	}
+	assertFullBootStackServiceCensus(t)
 }
 
 func TestIExec_M141_Phase5_CommandPathRegression(t *testing.T) {
@@ -11444,6 +12247,81 @@ func TestIExec_M141_Phase5_AboutRegression(t *testing.T) {
 		assertDosSeededFileIsELF(t, mem, name)
 	}
 	runAboutAppEndToEnd(t)
+}
+
+func TestIExec_M142_Phase6_FullBootStack_ServiceCensus(t *testing.T) {
+	assertFullBootStackServiceCensus(t)
+}
+
+func TestIExec_M142_Phase6_CommandRegression(t *testing.T) {
+	output := bootAndInjectCommand(t, "version\navail\ndir ram:\ntype s:startup-sequence\necho hello\n", 8*time.Second)
+	for _, want := range []string{
+		"IntuitionOS 0.15",
+		"Phys: 32768 KB  Alloc:",
+		"C/Version",
+		"LIBS/graphics.library",
+		"DEVS/input.device",
+		"RESOURCES/hardware.resource",
+		"hello",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("M142_Phase6_CommandRegression: missing %q in output=%q", want, output[:min(len(output), 1200)])
+		}
+	}
+}
+
+func TestIExec_M142_Phase6_ShellUnknownRegression(t *testing.T) {
+	output := bootAndInjectCommand(t, "FOOBAR\n", 5*time.Second)
+	if !strings.Contains(output, "Unknown command") {
+		t.Fatalf("M142_Phase6_ShellUnknownRegression: expected 'Unknown command' in output, got=%q", output[:min(len(output), 400)])
+	}
+}
+
+func TestIExec_M142_Phase6_GfxDemoRegression(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(3 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+	mem := rig.cpu.memory
+	for _, name := range []string{
+		"C/GfxDemo",
+		"DEVS/input.device",
+		"LIBS/graphics.library",
+	} {
+		assertDosSeededFileIsELF(t, mem, name)
+	}
+	runGfxDemoEndToEnd(t)
+}
+
+func TestIExec_M142_Phase6_AboutRegression(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(3 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+	mem := rig.cpu.memory
+	for _, name := range []string{
+		"C/About",
+		"DEVS/input.device",
+		"LIBS/graphics.library",
+		"LIBS/intuition.library",
+	} {
+		assertDosSeededFileIsELF(t, mem, name)
+	}
+	runAboutAppEndToEnd(t)
+}
+
+func TestIExec_M142_Phase6_ExecProgramFlatImageRejected(t *testing.T) {
+	assertM142ExecProgramFlatImageRejected(t)
+}
+
+func TestIExec_M142_Phase6_DOSRunFlatImageRejected(t *testing.T) {
+	assertM142DOSRunFlatImageRejected(t)
 }
 
 // TestIExec_CaseInsensitiveCommand explicitly verifies case-insensitive
