@@ -105,6 +105,7 @@ func (cpu *CPU_6502) initDirectPageBitmap() {
 			cpu.directPageBitmap[page] = 1
 		}
 	}
+	cpu.directPageReady = true
 }
 
 func newJIT6502Context(cpu *CPU_6502) *JIT6502Context {

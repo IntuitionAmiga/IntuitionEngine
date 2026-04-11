@@ -28,6 +28,9 @@
 package main
 
 import (
+	"math"
+	"runtime"
+	"runtime/debug"
 	"testing"
 )
 
@@ -37,6 +40,57 @@ const benchHalt = 0x02
 // ===========================================================================
 // Benchmark Helpers
 // ===========================================================================
+
+// bench6502GCQuiesce minimises GC interference with a 6502 benchmark run.
+// Call this as the first statement in every Benchmark6502_* function so that
+// the measured loop is not distorted by the Go runtime reclaiming
+// setup-time allocations or triggering a mid-benchmark sweep.
+//
+// The tuning mirrors IntuitionSubtractor's real-time audio strategy:
+//
+//  1. Raise GOGC to 2000% — the heap must grow 20x before the GC triggers
+//     an automatic collection. Mirrors main.go in IntuitionSubtractor
+//     (debug.SetGCPercent(2000)).
+//  2. Raise the soft memory limit to math.MaxInt64 so the GC will not fire
+//     on the memory ceiling. Also matches IntuitionSubtractor's
+//     debug.SetMemoryLimit invocation (there a 3.5 GiB cap; here we drop
+//     the cap entirely because the 6502 benchmarks allocate essentially
+//     nothing in their hot loop).
+//  3. Sweep existing garbage with two back-to-back runtime.GC() calls so
+//     the benchmark starts from a clean heap. The double-GC pattern
+//     matches IntuitionSubtractor's dsp_memory_layout_scalar.go "Double GC
+//     for thorough cleanup".
+//  4. Register a cleanup that restores the previous knobs and does a final
+//     sweep, so benchmarks that run back-to-back don't accumulate
+//     distortion across the suite.
+//
+// Each benchmark drives the CPU via a `for b.Loop() { ... }` loop. The
+// Loop method (Go 1.24+, inlining fix landed in Go 1.26) auto-starts the
+// benchmark timer on first call, so no explicit b.ResetTimer() is needed
+// — the quiesce and all other setup above the loop is excluded from the
+// measured window automatically.
+func bench6502GCQuiesce(b *testing.B) {
+	b.Helper()
+
+	// Defer every automatic collection until the heap has grown 20x.
+	oldGCPercent := debug.SetGCPercent(2000)
+	// Disable the soft memory ceiling for the duration of the benchmark.
+	oldMemLimit := debug.SetMemoryLimit(math.MaxInt64)
+
+	// Drain setup-time garbage before the measured window starts. Two
+	// passes flush objects that only become unreachable after the first
+	// sweep's finalizers run.
+	runtime.GC()
+	runtime.GC()
+
+	b.Cleanup(func() {
+		debug.SetGCPercent(oldGCPercent)
+		debug.SetMemoryLimit(oldMemLimit)
+		// Final sweep so accumulated benchmark-time garbage doesn't bleed
+		// into the next benchmark's measured window.
+		runtime.GC()
+	})
+}
 
 func setup6502BenchInterp(program []byte, startPC uint16) (*CPU_6502, *MachineBus) {
 	bus := NewMachineBus()
@@ -50,6 +104,14 @@ func setup6502BenchInterp(program []byte, startPC uint16) (*CPU_6502, *MachineBu
 
 func setup6502BenchJIT(b *testing.B, program []byte, startPC uint16, resetState func(*CPU_6502)) *CPU_6502 {
 	b.Helper()
+	// The 6502 JIT trampoline dispatches through runtime.asmcgocall (see
+	// jit_call.go). asmcgocall is the raw stack-switch primitive and works
+	// in both CGO_ENABLED=1 and CGO_ENABLED=0 builds, so the only remaining
+	// gating condition is the platform build tag (amd64/arm64 + linux) via
+	// jit6502Available.
+	if !jit6502Available {
+		b.Skip("6502 JIT is not available on this platform")
+	}
 	bus := NewMachineBus()
 	cpu := NewCPU_6502(bus)
 	cpu.SetRDYLine(true)
@@ -111,10 +173,10 @@ var bench6502ALUProgram = []byte{
 const bench6502ALUInstrs = 2 + 256*9
 
 func Benchmark6502_ALU_Interpreter(b *testing.B) {
+	bench6502GCQuiesce(b)
 	cpu, _ := setup6502BenchInterp(bench6502ALUProgram, 0x0600)
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		cpu.PC = 0x0600
 		cpu.A = 0
 		cpu.X = 0
@@ -130,6 +192,7 @@ func Benchmark6502_ALU_JIT(b *testing.B) {
 	if !jit6502Available {
 		b.Skip("6502 JIT not available on this platform")
 	}
+	bench6502GCQuiesce(b)
 	resetState := func(cpu *CPU_6502) {
 		cpu.PC = 0x0600
 		cpu.A = 0
@@ -140,8 +203,7 @@ func Benchmark6502_ALU_JIT(b *testing.B) {
 	}
 	cpu := setup6502BenchJIT(b, bench6502ALUProgram, 0x0600, resetState)
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		resetState(cpu)
 		cpu.ExecuteJIT6502()
 	}
@@ -182,10 +244,10 @@ var bench6502MemProgram = []byte{
 const bench6502MemInstrs = 1 + 256*4
 
 func Benchmark6502_Memory_Interpreter(b *testing.B) {
+	bench6502GCQuiesce(b)
 	cpu, _ := setup6502BenchInterp(bench6502MemProgram, 0x0600)
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		cpu.PC = 0x0600
 		cpu.X = 0
 		cpu.Cycles = 0
@@ -199,6 +261,7 @@ func Benchmark6502_Memory_JIT(b *testing.B) {
 	if !jit6502Available {
 		b.Skip("6502 JIT not available on this platform")
 	}
+	bench6502GCQuiesce(b)
 	resetState := func(cpu *CPU_6502) {
 		cpu.PC = 0x0600
 		cpu.X = 0
@@ -207,8 +270,7 @@ func Benchmark6502_Memory_JIT(b *testing.B) {
 	}
 	cpu := setup6502BenchJIT(b, bench6502MemProgram, 0x0600, resetState)
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		resetState(cpu)
 		cpu.ExecuteJIT6502()
 	}
@@ -255,10 +317,10 @@ func init() {
 const bench6502CallInstrs = 1 + 256*5
 
 func Benchmark6502_Call_Interpreter(b *testing.B) {
+	bench6502GCQuiesce(b)
 	cpu, _ := setup6502BenchInterp(bench6502CallProgram, 0x0600)
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		cpu.PC = 0x0600
 		cpu.X = 0
 		cpu.Y = 0
@@ -274,6 +336,7 @@ func Benchmark6502_Call_JIT(b *testing.B) {
 	if !jit6502Available {
 		b.Skip("6502 JIT not available on this platform")
 	}
+	bench6502GCQuiesce(b)
 	resetState := func(cpu *CPU_6502) {
 		cpu.PC = 0x0600
 		cpu.X = 0
@@ -284,8 +347,7 @@ func Benchmark6502_Call_JIT(b *testing.B) {
 	}
 	cpu := setup6502BenchJIT(b, bench6502CallProgram, 0x0600, resetState)
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		resetState(cpu)
 		cpu.ExecuteJIT6502()
 	}
@@ -339,10 +401,10 @@ var bench6502BranchProgram = []byte{
 const bench6502BranchInstrs = 1 + 256*6
 
 func Benchmark6502_Branch_Interpreter(b *testing.B) {
+	bench6502GCQuiesce(b)
 	cpu, _ := setup6502BenchInterp(bench6502BranchProgram, 0x0600)
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		cpu.PC = 0x0600
 		cpu.X = 0
 		cpu.Y = 0
@@ -358,6 +420,7 @@ func Benchmark6502_Branch_JIT(b *testing.B) {
 	if !jit6502Available {
 		b.Skip("6502 JIT not available on this platform")
 	}
+	bench6502GCQuiesce(b)
 	resetState := func(cpu *CPU_6502) {
 		cpu.PC = 0x0600
 		cpu.X = 0
@@ -368,8 +431,7 @@ func Benchmark6502_Branch_JIT(b *testing.B) {
 	}
 	cpu := setup6502BenchJIT(b, bench6502BranchProgram, 0x0600, resetState)
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		resetState(cpu)
 		cpu.ExecuteJIT6502()
 	}
@@ -423,10 +485,10 @@ var bench6502MixedProgram = []byte{
 const bench6502MixedInstrs = 2 + 256*8
 
 func Benchmark6502_Mixed_Interpreter(b *testing.B) {
+	bench6502GCQuiesce(b)
 	cpu, _ := setup6502BenchInterp(bench6502MixedProgram, 0x0600)
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		cpu.PC = 0x0600
 		cpu.A = 0
 		cpu.X = 0
@@ -443,6 +505,7 @@ func Benchmark6502_Mixed_JIT(b *testing.B) {
 	if !jit6502Available {
 		b.Skip("6502 JIT not available on this platform")
 	}
+	bench6502GCQuiesce(b)
 	resetState := func(cpu *CPU_6502) {
 		cpu.PC = 0x0600
 		cpu.A = 0
@@ -454,8 +517,7 @@ func Benchmark6502_Mixed_JIT(b *testing.B) {
 	}
 	cpu := setup6502BenchJIT(b, bench6502MixedProgram, 0x0600, resetState)
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		resetState(cpu)
 		cpu.ExecuteJIT6502()
 	}

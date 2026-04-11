@@ -258,6 +258,7 @@ type CPU_6502 struct {
 	jitCtx           *JIT6502Context
 	codePageBitmap   [256]byte // self-mod detection: one byte per 6502 page
 	directPageBitmap [256]byte // JIT fast-path: 0=memDirect ok, 1=bail to interpreter
+	directPageReady  bool      // set true once initDirectPageBitmap has been called for this run
 }
 
 // Running returns the execution state (thread-safe)
@@ -1529,8 +1530,19 @@ func (cpu_6502 *CPU_6502) Reset() {
 }
 
 func (cpu_6502 *CPU_6502) Execute() {
+	// Route non-debug runs with a standard Bus6502Adapter through the
+	// Phase-1 fast interpreter. Any other configuration falls through to
+	// executeLegacy() which preserves the original generic interpreter.
+	if cpu_6502.fastAdapter != nil && !cpu_6502.Debug {
+		cpu_6502.ExecuteFast()
+		return
+	}
+	cpu_6502.executeLegacy()
+}
+
+func (cpu_6502 *CPU_6502) executeLegacy() {
 	/*
-	   Execute runs the main CPU instruction cycle.
+	   executeLegacy runs the original generic CPU instruction cycle.
 
 	   Execution Flow:
 	   1. While CPU is running:
@@ -1650,6 +1662,9 @@ func (cpu_6502 *CPU_6502) Execute() {
 // Step executes a single instruction and returns the number of cycles consumed.
 // This is useful for embedding the CPU in other systems that need precise control.
 func (cpu_6502 *CPU_6502) Step() int {
+	if cpu_6502.fastAdapter != nil && !cpu_6502.Debug {
+		return cpu_6502.stepFast()
+	}
 	cpu_6502.ensureOpcodeTableReady()
 	if adapter, ok := cpu_6502.memory.(*Bus6502Adapter); ok {
 		if mb, ok := adapter.bus.(*MachineBus); ok {

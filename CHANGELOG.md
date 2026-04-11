@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `sdk/docs/M68K_JIT.md` — M68020 JIT technical reference (block chaining, lazy CCR, RTS cache)
 - M68K JIT benchmark suite (`m68k_jit_benchmark_test.go`): ALU, MemCopy, Call workloads comparing interpreter vs JIT
 - JIT section in DEVELOPERS.md with testing guide
+- 6502 fast interpreter path (`cpu_six5go2_fast.go`): `ExecuteFast()` shadows hot CPU state in loop-local variables, uses a direct-page bitmap for translation-safe memory access, and inlines the full validation subset (every addressing mode, every ALU/shift/rotate/RMW class across all their forms, all loads/stores, all branches, flag ops, transfers, stack ops, JMP/JSR/RTS, BRK, RTI, BIT, unofficial NOPs with operands). ~1.8-2.3x speedup over the legacy generic interpreter on the comparison benchmark suite.
+- 6502 `Execute()` now routes non-debug `fastAdapter` runs through `ExecuteFast()`; the original generic interpreter is preserved as `executeLegacy()` for debug mode and non-standard buses. `Step()` routes to a matching `stepFast()` that shares the direct-page bitmap fast opcode fetch.
+- Pure ALU/flag helper functions (`adc6502Binary`, `sbc6502Binary`, `cmp6502`, `asl6502`, `lsr6502`, `rol6502`, `ror6502`, `inc6502`, `dec6502`, `bit6502`) sized to stay inside Go's inliner budget so the fast switch folds them into the dispatch body.
+- 6502 benchmark infrastructure: `build_6502_benchmarks.sh` produces a fully static `6502_bench.test` (CGO_ENABLED=0, `-tags 'osusergo netgo headless novulkan'`, `-trimpath`, stripped link flags). `run_6502_bench_report.sh` is a self-contained bash+awk runner that executes the binary and prints a fixed-width Interpreter-vs-JIT comparison table. Both scripts ship together in a tarball so the binary can be handed to another machine with the same OS/architecture — no Go toolchain, libc, or source tree required on the target.
+- `bench6502GCQuiesce(b *testing.B)` in `jit_6502_benchmark_test.go` — mirrors IntuitionSubtractor's real-time audio GC strategy: raises GOGC to 2000, sets `SetMemoryLimit(math.MaxInt64)`, runs two back-to-back `runtime.GC()` sweeps before the measured loop, and registers a `b.Cleanup` that restores the previous knobs plus a final sweep. Called from every `Benchmark6502_*` function.
+- `cpu_six5go2_fast_test.go` regression suite: `TestExecuteFast_{ZeroPage,ZeroPageIndexed,Absolute}RMWSpuriousWrite` — 18 subtests covering `INC`/`DEC`/`ASL`/`LSR`/`ROL`/`ROR` across `zp`/`zp,X`/`abs` addressing modes. Each test maps a byte-level I/O region over the RMW target, runs a single instruction through `cpu.Execute()`, and asserts that the adapter observed exactly two writes — the spurious write of the original value followed by the modified value — for parity with the legacy `rmw()` helper on MMIO-backed pages.
+- `bench/README.md` + `bench/interp_baseline.pprof` + `bench/interp_final.pprof` — CPU profiles captured via `go test -cpuprofile` for the legacy path (with `Execute()` forced to `executeLegacy()`) and the fast path, alongside documentation of the exact capture commands and a `go tool pprof -top -cum` summary table.
 
 ### Changed
 - M68K CPU: corrected 68EC020 references to 68020 (32-bit address bus)
@@ -26,6 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AROS` command at the BASIC prompt to boot AROS (mirrors existing `EMUTOS` command)
 - `EXEC_OP_AROS` (3) ProgramExecutor opcode and `EXEC_TYPE_AROS` (9) type constant
 - `cpu.load("AROS")` support in IE Script Engine
+- 6502 JIT trampoline (`jit_call.go`) now dispatches through `runtime.asmcgocall` instead of `runtime.cgocall`. `asmcgocall` is the raw g0 stack-switch primitive without `cgocall`'s `iscgo` guard, so the 6502 JIT works in both `CGO_ENABLED=1` and fully-static `CGO_ENABLED=0` builds. The portable `6502_bench.test` produced by `build_6502_benchmarks.sh` runs both Interpreter and JIT benchmarks on any same-arch Linux box without needing a Go toolchain or libc.
+- `initDirectPageBitmap()` in `jit_6502_common.go` now sets a `directPageReady` flag on the CPU so that the fast interpreter and `stepFast()` can check-and-seal once instead of re-running the bitmap derivation on every invocation.
+- 6502 benchmarks converted from the classic `for i := 0; i < b.N; i++` idiom to the modern `for b.Loop()` idiom (Go 1.24+, inlining fix landed in Go 1.26). Explicit `b.ResetTimer()` calls are no longer needed — `B.Loop()` auto-starts the timer on the first call. See the note in `jit_6502_benchmark_test.go` about the Go 1.26 `B.Loop` inlining fix.
 
 ## [1.0.0] - 2026-02-15
 

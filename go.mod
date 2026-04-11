@@ -7,8 +7,8 @@ require (
 	github.com/goki/vulkan v1.0.8
 	github.com/hajimehoshi/ebiten/v2 v2.9.9
 	golang.design/x/clipboard v0.7.1
-	golang.org/x/image v0.38.0
-	golang.org/x/term v0.41.0
+	golang.org/x/image v0.39.0
+	golang.org/x/term v0.42.0
 )
 
 require (
@@ -17,8 +17,8 @@ require (
 	github.com/ebitengine/purego v0.10.0 // indirect
 	github.com/jezek/xgb v1.3.0 // indirect
 	github.com/yuin/gopher-lua v1.1.2
-	golang.org/x/exp/shiny v0.0.0-20260312153236-7ab1446f8b90 // indirect
-	golang.org/x/mobile v0.0.0-20260312152759-81488f6aeb60 // indirect
+	golang.org/x/exp/shiny v0.0.0-20260410095643-746e56fc9e2f // indirect
+	golang.org/x/mobile v0.0.0-20260410095206-2cfb76559b7b // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
+	golang.org/x/sys v0.43.0 // indirect
 )

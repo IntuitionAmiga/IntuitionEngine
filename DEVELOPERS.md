@@ -436,6 +436,77 @@ Reference results on Intel Core i5-8365U @ 1.60 GHz (x86-64 JIT, `benchtime 3s`)
 
 The Call benchmark is intentionally JIT-hostile (JSR/RTS exit the native block on every call). See [sdk/docs/IE64_JIT.md](sdk/docs/IE64_JIT.md) for full analysis.
 
+### 6502 Benchmarks
+
+The 6502 benchmark suite measures CPU throughput through both the fast interpreter (`ExecuteFast()` in `cpu_six5go2_fast.go`) and the 6502 JIT compiler across five workload categories: register ALU, zero-page memory, subroutine call/return, taken-branch loops, and a mixed workload interleaving all four.
+
+```bash
+# Run all 6502 benchmarks (skip normal tests with -run='^$')
+go test -tags headless -run='^$' -bench Benchmark6502_ -benchtime 3s -count 3 ./...
+
+# Compare JIT vs fast interpreter
+go test -tags headless -run='^$' -bench 'Benchmark6502_(ALU|Memory|Call|Branch|Mixed)' -benchtime 3s ./...
+
+# Run only JIT benchmarks
+go test -tags headless -run='^$' -bench 'Benchmark6502_.*_JIT' -benchtime 3s ./...
+
+# Run only fast-interpreter benchmarks
+go test -tags headless -run='^$' -bench 'Benchmark6502_.*_Interpreter' -benchtime 3s ./...
+```
+
+Each benchmark calls `bench6502GCQuiesce(b)` as its first statement to raise `GOGC` to 2000, disable the memory ceiling via `debug.SetMemoryLimit(math.MaxInt64)`, and drain setup-time garbage with a double `runtime.GC()` sweep before the measured window starts. This mirrors the GC tuning used in IntuitionSubtractor's real-time audio path and keeps run-to-run variance low.
+
+Reference results on Intel Core i5-8365U @ 1.60 GHz (fast interpreter + x86-64 JIT, `benchtime 3s`):
+
+| Workload | Fast Interpreter | JIT | Speedup |
+|---|---|---|---|
+| ALU | 178 MIPS | 1,496 MIPS | 8.4x |
+| Memory | 192 MIPS | 1,224 MIPS | 6.4x |
+| Call | 181 MIPS | 411 MIPS | 2.3x |
+| Branch | 187 MIPS | 1,008 MIPS | 5.4x |
+| Mixed | 186 MIPS | 1,508 MIPS | 8.1x |
+
+The fast interpreter itself is roughly 1.8-2.3x faster than the legacy generic interpreter that preceded it — see `bench/README.md` for the pprof-driven before/after comparison and `bench/interp_{baseline,final}.pprof` for captured CPU profiles. The Call benchmark has the lowest JIT speedup because JSR/RTS trigger a block exit on every call; see [sdk/docs/6502_JIT.md](sdk/docs/6502_JIT.md) for details.
+
+#### Portable benchmark binary
+
+For running the benchmarks on another machine without a Go toolchain, use the two bundled shell scripts:
+
+```bash
+# Build a fully static test binary (CGO_ENABLED=0 + osusergo + netgo +
+# headless + novulkan, -trimpath, stripped link flags). Both Interpreter
+# AND JIT benchmarks run in the static binary because the JIT trampoline
+# (jit_call.go) dispatches through runtime.asmcgocall instead of
+# runtime.cgocall — asmcgocall has no iscgo guard and is available in
+# CGO_ENABLED=0 builds.
+./build_6502_benchmarks.sh              # produces ./6502_bench.test (~13 MiB)
+
+# Run the binary locally and print a fixed-width comparison table
+./run_6502_bench_report.sh              # default BENCH_TIME=3s
+BENCH_TIME=5s ./run_6502_bench_report.sh
+
+# Ship to another machine with the same OS/architecture
+tar czf 6502_bench.tar.gz 6502_bench.test run_6502_bench_report.sh
+# On the target:
+tar xzf 6502_bench.tar.gz && ./run_6502_bench_report.sh
+```
+
+`run_6502_bench_report.sh` is bash + awk only — no Python, no Go, no codebase dependency. The friend unpacks the tarball and runs one script to see both Interpreter and JIT columns side by side plus a JIT/Interpreter speedup row.
+
+#### Profile-Guided Optimization (evaluated, not adopted)
+
+Go's PGO (`default.pgo` at the repo root, auto-detected by `go build`) was evaluated on Go 1.26.1 against the five comparison workloads. Profile was captured with `./6502_bench.test -test.cpuprofile=default.pgo -test.benchtime=10s`, then both a PGO-enabled and a non-PGO build were measured with `-test.count 3 -test.benchtime 5s`:
+
+| Workload | Interpreter Δ | JIT Δ |
+|---|---:|---:|
+| ALU | -1.94% | +0.42% |
+| Memory | +1.08% | +0.18% |
+| Call | -2.12% | +1.30% |
+| Branch | -3.65% | +0.38% |
+| Mixed | -4.69% | +0.20% |
+
+PGO consistently regressed the fast interpreter by 2-5% and moved the JIT by noise-level amounts. The likely cause is that `ExecuteFast()` is already hand-inlined to the edge of Go's inliner budget; PGO's additional inlining bloats the dispatch loop in ways that hurt instruction-cache behaviour for our specific access pattern. The build scripts therefore do **not** commit or enable `default.pgo`. If you want to re-try PGO after significant `cpu_six5go2_fast.go` changes, capture and drop in a fresh profile, rebuild via `./build_6502_benchmarks.sh`, and compare with `-test.count 3 -test.benchtime 5s` before committing.
+
 ---
 
 # 10. Debugging

@@ -170,7 +170,7 @@ The Intuition Engine is a virtual machine that emulates a complete retro-style c
 | **IE32** | 32-bit RISC | 16 general-purpose (A-H, S-W, X-Z) | Fixed 8-byte instructions, simple and fast |
 | **M68K** | 32-bit CISC | 8 data (D0-D7), 8 address (A0-A7) | 95%+ instruction coverage, FPU support |
 | **Z80** | 8-bit | AF, BC, DE, HL + alternates, IX, IY | Full instruction set, interrupt modes, x86-64 JIT with block chaining |
-| **6502** | 8-bit | A, X, Y | NMOS instruction set, zero page optimisation |
+| **6502** | 8-bit | A, X, Y | NMOS instruction set, fast inline interpreter with direct-page-bitmap memory fast path, x86-64 JIT with 7-9x speedup on compute-bound workloads |
 | **x86** | 32-bit | EAX-EDX, ESI, EDI, EBP, ESP | 8086 instructions + 32-bit registers, flat memory model |
 | **IE64** | 64-bit RISC | 32 general-purpose (R0=zero, R31=SP) | ARM64/x86-64 JIT compiler, native FP32 FPU, compare-and-branch, no flags register, MMU with paged virtual memory and user/supervisor privilege levels, atomic memory operations (CAS/XCHG/FAA), TLS register |
 
