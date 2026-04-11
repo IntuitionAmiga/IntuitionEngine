@@ -5995,6 +5995,15 @@ IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. 
 - **`DOS_RUN` no longer falls back to legacy flat-image command files.** Name-based command dispatch still uses the same DOS UX, but non-ELF executable content is rejected instead of being reflatted and launched.
 - **`DOS_LOADSEG` remains the strict native loader.** The public DOS loader surface is unchanged: `LoadSeg` / `UnLoadSeg` / `RunSeg` stay Amiga-shaped and ELF-backed.
 
+**M15 status** — DOS expansion + system layout are now live on top of the preserved M14.2 ELF-only runtime boundary:
+
+- **`dos.library` now owns the canonical M15 layout.** The built-in assign table exposes `RAM:`, `C:`, `L:`, `LIBS:`, `DEVS:`, `T:`, `S:`, and `RESOURCES:`. `RAM:` remains the root/no-prefix compatibility view; fully qualified names resolve through the assign table; bare command search stays `C:`-only.
+- **`DOS_ASSIGN` is part of the live DOS surface.** DOS now supports assign list/query/set for the mutable user assign rows while keeping the built-in layout stable. `RAM:` remains listed and queryable for compatibility but is not remappable through `DOS_ASSIGN`.
+- **`L:` is a qualified helper namespace, not part of bare command fallback.** Bare command names do not probe `L:`. Direct qualified helper access stays available through `L:`.
+- **The visible text-mode OS is richer without changing the loader contract.** The shipped command/demo path now includes `Version`, `Avail`, `Dir`, `Type`, `Echo`, `Assign`, `List`, `Which`, `Help`, `GfxDemo`, and `About`, all still launched through the DOS naming model and the M14/M14.2 ELF-backed loader path.
+- **`T:` is the writable temporary namespace.** Temporary files round-trip through the same RAM-backed DOS store and existing open/write/read/close operations; M15 does not add hierarchical directories or persistent storage.
+- **Boot and command execution remain ELF-only at the public boundary.** The M14.2 guarantees above still hold: `ExecProgram` is descriptor-only, `DOS_RUN` does not accept legacy flat images, and `DOS_LOADSEG` / `DOS_RUNSEG` remain the public executable path.
+
 **M13 phase 5 status** — startup block ABI + dynamic task-image placement + live-task ceiling removal to the current ABI bound, with full boot-stack and GUI regressions green (implemented and tested):
 
 - **Booted services no longer self-locate from `CURRENT_TASK * USER_SLOT_STRIDE`.** The kernel now allocates a dedicated startup page for each launched task, writes the 64-byte startup block there, and seeds the startup-page base VA at `0(sp)`, so the booted M12 stack reads task identity/layout from that page instead of recomputing addresses from the task ID.
@@ -6020,19 +6029,19 @@ IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. 
   - `TestIExec_DosM128_RewriteGrows` — write 1 KiB, then rewrite with 8 KiB; readback expects 8 KiB of new content. Proves atomic-swap on grow.
   Four other tests from the M12.8 plan are skipped with documented rationale (covered by existing tests, or test allocator-pool exhaustion which requires fragile state mocking). The full M12.5/M12.6 hardening test suite remains green throughout — no kernel data structure changes, no new ABI fields.
 - **Audit refresh.** `IExec.md §5.13.1` row for `DOS_FILE_SIZE` is now `(removed) — B → ✓` with a description of the slab/extent allocator and the atomic-swap rule. Two new `(removed)` rows for `IMG_OFF_CODE_SIZE`/`IMG_OFF_DATA_SIZE` document the load_program cap removal and explain why those rows were originally misclassified into bucket B. The §5.13 prose is updated to note that bucket B has lost its load-bearing entries — the remaining bucket-B rows are configured-policy values (`KD_PORT_FIFO_SIZE`, `USER_DYN_PAGES`, `DATA_ARGS_*`), not arbitrary product limits.
-- **Boot integration.** The long milestone summary line is gone. Boot now shows compact per-service version tags in each task banner, and `VERSION` prints the plain OS version string `IntuitionOS 0.15`. `S:Startup-Sequence` now prints only “All visible services are running in user space”.
+- **Boot integration.** The long milestone summary line is gone. Boot now shows compact per-service version tags in each task banner, `VERSION` prints the plain OS version string `IntuitionOS 0.16`, and `S:Startup-Sequence` prints `Type HELP for commands and ASSIGN for layout`.
 - **Demo boot output:**
   ```
   exec.library M11 boot
   console.handler M11.5 [Task 0]
-  dos.library M12.8 [Task 1]
+  dos.library M14 [Task 1]
   Shell M10 [Task 2]
   hardware.resource M12.5 [Task 3]
   input.device M11 [Task 4]
   graphics.library M11 [Task 5]
   intuition.library M12 [Task 6]
-  IntuitionOS 0.15
-  All visible services are running in user space
+  IntuitionOS 0.16
+  Type HELP for commands and ASSIGN for layout
   1>
   ```
   M12 GUI demo runs unchanged from a user perspective — same About app, same close-gadget interaction. The task-model work remains mostly invisible to user-space code; the visible change is that the boot text now reflects M13 directly without replaying older milestone-summary ECHO lines.

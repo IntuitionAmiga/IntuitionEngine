@@ -13,6 +13,50 @@
 # Directory structure
 BIN_DIR := ./bin
 SDK_BIN_DIR := ./sdk/bin
+IEXEC_DIR := ./sdk/intuitionos/iexec
+IEXEC_SRC := $(IEXEC_DIR)/iexec.s
+IEXEC_IMG := $(IEXEC_DIR)/iexec.ie64
+IEXEC_LST := $(IEXEC_DIR)/iexec.lst
+IEXEC_ELF_REBUILDER := ./tools/rebuild_boot_dos_elf.go
+IEXEC_BOOTSTRAP_DIR := $(IEXEC_DIR)/.bootstrap
+IEXEC_BOOTSTRAP_ELFS := \
+	boot_console_handler.elf \
+	boot_dos_library.elf \
+	boot_shell.elf \
+	boot_hardware_resource.elf \
+	boot_input_device.elf \
+	boot_graphics_library.elf \
+	boot_intuition_library.elf \
+	seed_version.elf \
+	seed_avail.elf \
+	seed_dir.elf \
+	seed_type.elf \
+	seed_echo.elf \
+	seed_assign.elf \
+	seed_list.elf \
+	seed_which.elf \
+	seed_help.elf \
+	seed_gfxdemo.elf \
+	seed_about.elf
+IEXEC_RUNTIME_ELF_TARGETS := \
+	boot_dos_library.elf:prog_doslib \
+	boot_console_handler.elf:prog_console \
+	boot_shell.elf:prog_shell \
+	boot_hardware_resource.elf:prog_hwres \
+	boot_input_device.elf:prog_input_device \
+	boot_graphics_library.elf:prog_graphics_library \
+	boot_intuition_library.elf:prog_intuition_library \
+	seed_version.elf:prog_version \
+	seed_avail.elf:prog_avail \
+	seed_dir.elf:prog_dir \
+	seed_type.elf:prog_type \
+	seed_echo.elf:prog_echo_cmd \
+	seed_assign.elf:prog_assign_cmd \
+	seed_list.elf:prog_list_cmd \
+	seed_which.elf:prog_which_cmd \
+	seed_help.elf:prog_help_app \
+	seed_gfxdemo.elf:prog_gfxdemo \
+	seed_about.elf:prog_about
 EMUTOS_SRC_DIR ?= ../EmuTOS
 EMUTOS_ROM ?= ./sdk/examples/prebuilt/etos256us.img
 EMUTOS_GIT_URL ?= https://github.com/IntuitionAmiga/EmuTOS.git
@@ -215,11 +259,35 @@ ie32to64: setup
 	@echo "IE32-to-IE64 converter build complete"
 
 # Assemble the IExec microkernel
-.PHONY: intuitionos
+.PHONY: intuitionos intuitionos-clean
 intuitionos: ie64asm
-	@echo "Assembling IExec kernel..."
-	@$(SDK_BIN_DIR)/ie64asm -I sdk/include sdk/intuitionos/iexec/iexec.s
-	@echo "IExec kernel assembled: sdk/intuitionos/iexec/iexec.ie64"
+	@echo "Assembling IExec kernel and runtime images..."
+	@rm -rf $(IEXEC_BOOTSTRAP_DIR)
+	@mkdir -p $(IEXEC_BOOTSTRAP_DIR)
+	@for f in $(IEXEC_BOOTSTRAP_ELFS); do \
+		: > $(IEXEC_BOOTSTRAP_DIR)/$$f; \
+	done
+	@$(MAKE) PRESERVE_IEXEC_BOOTSTRAP=1 intuitionos-clean
+	@$(SDK_BIN_DIR)/ie64asm -list -I sdk/include -I $(IEXEC_BOOTSTRAP_DIR) $(IEXEC_SRC) > $(IEXEC_LST)
+	@for spec in $(IEXEC_RUNTIME_ELF_TARGETS); do \
+		out=$${spec%%:*}; \
+		label=$${spec##*:}; \
+		$(GO) run $(IEXEC_ELF_REBUILDER) -listing $(IEXEC_LST) -image $(IEXEC_IMG) -out $(IEXEC_DIR)/$$out -label $$label; \
+	done
+	@$(SDK_BIN_DIR)/ie64asm -list -I sdk/include $(IEXEC_SRC) > $(IEXEC_LST)
+	@for spec in $(IEXEC_RUNTIME_ELF_TARGETS); do \
+		out=$${spec%%:*}; \
+		label=$${spec##*:}; \
+		$(GO) run $(IEXEC_ELF_REBUILDER) -listing $(IEXEC_LST) -image $(IEXEC_IMG) -out $(IEXEC_DIR)/$$out -label $$label; \
+	done
+	@$(SDK_BIN_DIR)/ie64asm -list -I sdk/include $(IEXEC_SRC) > $(IEXEC_LST)
+	@rm -rf $(IEXEC_BOOTSTRAP_DIR)
+	@echo "IExec kernel and runtime images assembled under $(IEXEC_DIR)"
+
+intuitionos-clean:
+	@echo "Cleaning IExec kernel and runtime images..."
+	@if [ "$(PRESERVE_IEXEC_BOOTSTRAP)" != "1" ]; then rm -rf $(IEXEC_BOOTSTRAP_DIR); fi
+	@rm -f $(IEXEC_DIR)/*.elf $(IEXEC_IMG)
 
 # Build with embedded EhBASIC BASIC interpreter
 .PHONY: basic

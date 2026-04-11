@@ -9,6 +9,7 @@ testdata/*
 untracked/
 assembler/untracked/
 .go*
+.tmp*
 
 # Release artifacts
 *.AppImage

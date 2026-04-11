@@ -3085,11 +3085,11 @@ load_program:
 ;   R3 = ERR_OK / ERR_BADARG / ERR_NOMEM
 ; Clobbers: R5-R31
 exec_desc_launch_task:
-    sub     sp, sp, #96
+    sub     sp, sp, #144
     move.q  r24, r1                     ; desc_ptr
     move.q  r25, r2                     ; desc_size
     move.q  r26, r3                     ; caller PTBR
-    store.q r4, 56(sp)                  ; startup flags
+    store.q r4, 72(sp)                  ; startup flags
 
     move.l  r5, #M14_LDESC_SIZE
     bne     r25, r5, .edlt_badarg
@@ -3116,6 +3116,7 @@ exec_desc_launch_task:
     beqz    r22, .edlt_badarg
     load.l  r23, M14_LDESC_OFF_STACKPG(r24)
     beqz    r23, .edlt_badarg
+    store.q r23, 64(sp)                 ; stack pages
     load.q  r20, M14_LDESC_OFF_SEGTBL(r24)
     beqz    r20, .edlt_badarg
 
@@ -3128,7 +3129,6 @@ exec_desc_launch_task:
     move.q  r3, r26
     jsr     validate_user_range
     bnez    r1, .edlt_badarg
-    move.l  r11, #'A'
 
     move.q  r27, r0                     ; code src
     move.q  r28, r0                     ; code size
@@ -3200,6 +3200,14 @@ exec_desc_launch_task:
 .edlt_seg_done:
     beqz    r16, .edlt_badarg
     beqz    r15, .edlt_badarg
+    store.q r27, 0(sp)                 ; code src
+    store.q r28, 8(sp)                 ; code size
+    store.q r29, 16(sp)                ; code target
+    store.q r30, 24(sp)                ; code pages
+    store.q r24, 32(sp)                ; data src
+    store.q r18, 40(sp)                ; data size
+    store.q r19, 48(sp)                ; data target
+    store.q r17, 56(sp)                ; data pages
     blt     r22, r29, .edlt_badarg
     move.q  r13, r30
     lsl     r13, r13, #12
@@ -3214,16 +3222,17 @@ exec_desc_launch_task:
     bge     r13, r11, .edlt_stack_target_ready
     move.q  r13, r11
 .edlt_stack_target_ready:
-    move.q  r11, r23
+    load.q  r11, 64(sp)                ; stack pages
     lsl     r11, r11, #12              ; stack bytes
     add     r12, r13, r11              ; stack end
     blt     r12, r13, .edlt_badarg
     move.l  r11, #USER_IMAGE_END
     bgt     r12, r11, .edlt_badarg
-    store.q r13, 48(sp)                ; stack target base
+    store.q r13, 80(sp)                ; stack target base
 
     move.l  r13, #KERN_DATA_BASE
     load.q  r21, KD_TASKID_NEXT(r13)    ; public task id
+    store.q r21, 128(sp)
     move.q  r15, r21
     add     r15, r15, #1
     store.q r15, KD_TASKID_NEXT(r13)
@@ -3241,51 +3250,48 @@ exec_desc_launch_task:
     add     r20, r20, #1
     bra     .edlt_scan
 .edlt_found:
-    move.q  r1, r30
+    store.q r20, 136(sp)
+
+    load.q  r1, 24(sp)                 ; code pages
     jsr     alloc_task_image_pages
     bnez    r2, .edlt_alloc_fail
-    move.q  r14, r1                    ; code backing
-    move.q  r1, r17
+    store.q r1, 88(sp)                 ; code backing
+
+    load.q  r1, 56(sp)                 ; data pages
     jsr     alloc_task_image_pages
     bnez    r2, .edlt_fail_free_code
-    move.q  r15, r1                    ; data backing
-    move.q  r1, r20
-    jsr     kern_task_layout_addr
-    store.q r14, KD_TASK_CODE_BASE(r1)
-    store.q r15, KD_TASK_DATA_BASE(r1)
-    store.l r30, KD_TASK_CODE_PAGES(r1)
-    store.l r17, KD_TASK_DATA_PAGES(r1)
-    move.q  r1, r23
+    store.q r1, 96(sp)                 ; data backing
+
+    load.q  r1, 64(sp)                 ; stack pages
     jsr     alloc_task_image_pages
     bnez    r2, .edlt_fail_free_data
-    move.q  r16, r1                     ; stack base
-    move.q  r1, r20
-    jsr     kern_task_layout_addr
-    store.q r16, KD_TASK_STACK_BASE(r1)
-    store.l r23, KD_TASK_STACK_PAGES(r1)
-    store.q r24, 64(sp)                 ; preserve data src across allocator calls
-    store.q r14, 72(sp)                 ; alloc_task_pt_block clobbers r14
-    store.q r15, 80(sp)
-    store.q r16, 88(sp)
+    store.q r1, 104(sp)                ; stack backing
+
     move.l  r1, #1
     jsr     alloc_task_image_pages
     bnez    r2, .edlt_fail_free_stack
-    move.q  r24, r1                     ; startup base
+    store.q r1, 112(sp)                ; startup base
+
     jsr     alloc_task_pt_block
     bnez    r2, .edlt_fail_free_startup
-    move.q  r25, r1                     ; pt base
-    move.q  r1, r20
-    jsr     kern_task_layout_addr
-    store.q r24, KD_TASK_LAYOUT_STARTUP(r1)
-    store.q r25, KD_TASK_LAYOUT_PT_BASE(r1)
-    load.q  r12, 64(sp)
-    move.q  r1, r20
-    jsr     kern_task_layout_addr
-    load.q  r14, KD_TASK_CODE_BASE(r1)
-    load.q  r13, KD_TASK_DATA_BASE(r1)
-    load.q  r16, KD_TASK_STACK_BASE(r1)
-    load.q  r24, KD_TASK_LAYOUT_STARTUP(r1)
-    load.q  r25, KD_TASK_LAYOUT_PT_BASE(r1)
+    store.q r1, 120(sp)                ; pt base
+
+    load.q  r27, 0(sp)
+    load.q  r28, 8(sp)
+    load.q  r29, 16(sp)
+    load.q  r30, 24(sp)
+    load.q  r12, 32(sp)
+    load.q  r18, 40(sp)
+    load.q  r19, 48(sp)
+    load.q  r17, 56(sp)
+    load.q  r23, 64(sp)
+    load.q  r14, 88(sp)
+    load.q  r13, 96(sp)
+    load.q  r16, 104(sp)
+    load.q  r24, 112(sp)
+    load.q  r25, 120(sp)
+    load.q  r21, 128(sp)
+    load.q  r20, 136(sp)
 
     move.l  r4, #0
 .edlt_copy_code:
@@ -3381,7 +3387,7 @@ exec_desc_launch_task:
     add     r9, r9, r8
     lsl     r10, r9, #13
     or      r10, r10, #0x17
-    load.q  r12, 48(sp)
+    load.q  r12, 80(sp)
     lsr     r11, r12, #12
     add     r11, r11, r8
     lsl     r11, r11, #3
@@ -3416,10 +3422,10 @@ exec_desc_launch_task:
 
     move.q  r1, r24
     move.q  r2, r21
-    load.q  r3, 56(sp)
+    load.q  r3, 72(sp)
     move.q  r4, r29
     move.q  r5, r30
-    load.q  r6, 48(sp)
+    load.q  r6, 80(sp)
     move.q  r7, r23
     move.q  r8, r19
     move.q  r9, r17
@@ -3439,7 +3445,7 @@ exec_desc_launch_task:
     add     r15, r15, #KD_TASK_BASE
     add     r15, r15, r13
     store.q r22, KD_TASK_PC(r15)
-    load.q  r11, 48(sp)
+    load.q  r11, 80(sp)
     move.q  r12, r23
     lsl     r12, r12, #12
     add     r11, r11, r12
@@ -3481,40 +3487,40 @@ exec_desc_launch_task:
     move.q  r1, r21
     move.q  r2, r20
     move.q  r3, #ERR_OK
-    add     sp, sp, #96
+    add     sp, sp, #144
     rts
 .edlt_alloc_fail:
     move.l  r11, #ERR_BADARG
     beq     r2, r11, .edlt_badarg
     bra     .edlt_nomem
 .edlt_fail_free_startup:
-    move.q  r1, r24
+    load.q  r1, 112(sp)
     move.l  r2, #1
     jsr     free_task_image_pages
 .edlt_fail_free_stack:
-    move.q  r1, r16
-    move.q  r2, r23
+    load.q  r1, 104(sp)
+    load.q  r2, 64(sp)
     jsr     free_task_image_pages
 .edlt_fail_free_data:
-    move.q  r1, r15
-    move.q  r2, r17
+    load.q  r1, 96(sp)
+    load.q  r2, 56(sp)
     jsr     free_task_image_pages
 .edlt_fail_free_code:
-    move.q  r1, r14
-    move.q  r2, r30
+    load.q  r1, 88(sp)
+    load.q  r2, 24(sp)
     jsr     free_task_image_pages
     bra     .edlt_nomem
 .edlt_badarg:
     move.q  r1, r0
     move.q  r2, r0
     move.l  r3, #ERR_BADARG
-    add     sp, sp, #96
+    add     sp, sp, #144
     rts
 .edlt_nomem:
     move.q  r1, r0
     move.q  r2, r0
     move.l  r3, #ERR_NOMEM
-    add     sp, sp, #96
+    add     sp, sp, #144
     rts
 
 ; ============================================================================
@@ -8144,7 +8150,8 @@ prog_console_end:
 ; Amiga-style dos.library: in-memory filesystem with Open/Read/Write/Close/Dir.
 ; Registers as "dos.library" public port. Discovers console.handler via
 ; OpenLibrary. Handles DOS_OPEN, DOS_READ, DOS_WRITE, DOS_CLOSE, DOS_DIR,
-; DOS_RUN requests from any task via shared-memory message passing.
+; DOS_RUN, and DOS_ASSIGN requests from any task via shared-memory message
+; passing.
 ;
 ; Data page layout (M12.6 Phase A):
 ;   0:   "console.handler\0"       (16 bytes, for OpenLibrary)
@@ -8422,9 +8429,45 @@ prog_doslib_code:
     jsr     .dos_seed_known
 
     load.q  r29, (sp)
+    add     r20, r29, #(prog_doslib_seed_name_assign - prog_doslib_data)
+    add     r24, r29, #(seed_elf_assign - prog_doslib_data)
+    move.l  r23, #(seed_elf_assign_end - seed_elf_assign)
+    jsr     .dos_seed_known
+
+    load.q  r29, (sp)
+    add     r20, r29, #(prog_doslib_seed_name_list - prog_doslib_data)
+    add     r24, r29, #(seed_elf_list - prog_doslib_data)
+    move.l  r23, #(seed_elf_list_end - seed_elf_list)
+    jsr     .dos_seed_known
+
+    load.q  r29, (sp)
+    add     r20, r29, #(prog_doslib_seed_name_which - prog_doslib_data)
+    add     r24, r29, #(seed_elf_which - prog_doslib_data)
+    move.l  r23, #(seed_elf_which_end - seed_elf_which)
+    jsr     .dos_seed_known
+
+    load.q  r29, (sp)
+    add     r20, r29, #(prog_doslib_seed_name_help_cmd - prog_doslib_data)
+    add     r24, r29, #(seed_elf_help - prog_doslib_data)
+    move.l  r23, #(seed_elf_help_end - seed_elf_help)
+    jsr     .dos_seed_known
+
+    load.q  r29, (sp)
     add     r20, r29, #(prog_doslib_seed_name_startup - prog_doslib_data)
     add     r24, r29, #(seed_startup - prog_doslib_data)
     move.l  r23, #(seed_startup_end - seed_startup - 1)
+    jsr     .dos_seed_known
+
+    load.q  r29, (sp)
+    add     r20, r29, #(prog_doslib_seed_name_help_text - prog_doslib_data)
+    add     r24, r29, #(seed_help_text - prog_doslib_data)
+    move.l  r23, #(seed_help_text_end - seed_help_text - 1)
+    jsr     .dos_seed_known
+
+    load.q  r29, (sp)
+    add     r20, r29, #(prog_doslib_seed_name_loader_info - prog_doslib_data)
+    add     r24, r29, #(seed_loader_info - prog_doslib_data)
+    move.l  r23, #(seed_loader_info_end - seed_loader_info - 1)
     jsr     .dos_seed_known
 
     load.q  r29, (sp)
@@ -8613,11 +8656,9 @@ prog_doslib_code:
     store.q r4, 968(r29)               ; saved data1
     store.q r6, 976(r29)               ; saved share_handle
 
-    ; --- Map caller's shared buffer (re-map if share_handle changed) ---
-    load.l  r14, 984(r29)              ; cached share_handle
+    ; --- Map caller's shared buffer when a share is supplied ---
     load.l  r15, 976(r29)              ; incoming share_handle
-    beq     r14, r15, .dos_have_buf    ; same handle → use cached VA
-    ; Different handle or first time: do MapShared
+    beqz    r15, .dos_have_buf         ; messages like DOS_CLOSE don't need a buffer
     store.l r15, 984(r29)              ; update cached handle
     move.q  r1, r15                    ; R1 = new share_handle
     syscall #SYS_MAP_SHARED            ; R1=VA R2=err R3=share_pages
@@ -8646,6 +8687,8 @@ prog_doslib_code:
     beq     r14, r28, .dos_do_write
     move.l  r28, #DOS_CLOSE
     beq     r14, r28, .dos_do_close
+    move.l  r28, #DOS_ASSIGN
+    beq     r14, r28, .dos_do_assign
     move.l  r28, #DOS_RUN
     beq     r14, r28, .dos_do_run
     move.l  r28, #DOS_LOADSEG
@@ -8892,12 +8935,18 @@ prog_doslib_code:
     load.q  r20, 960(r29)              ; r20 = mode (0=READ, 1=WRITE)
     load.q  r23, 168(r29)              ; r23 = mapped VA (filename pointer)
 
-    ; Resolve filename (strip RAM:, C:, S: prefixes)
+    ; Resolve filename through the DOS assign table.
     jsr     .dos_resolve_file
+    load.q  r29, (sp)
+    beqz    r22, .dos_reply_err
+    load.q  r20, 960(r29)              ; resolver clobbers caller-save regs
+    store.q r23, 336(r29)              ; preserve resolved name across helper JSRs
 
     ; --- Search metadata chain for matching name ---
     move.q  r1, r23                     ; r1 = request name ptr
     jsr     .dos_meta_find_by_name      ; r1 = entry VA (or 0)
+    load.q  r29, (sp)
+    load.q  r23, 336(r29)
     bnez    r1, .dos_open_have_entry
     ; Not found
     bnez    r20, .dos_open_create       ; WRITE → create new
@@ -9116,6 +9165,156 @@ prog_doslib_code:
     bra     .dos_reply_badh
 
     ; =================================================================
+    ; DOS_ASSIGN (type=10): list/query/set DOS assigns
+    ; share buffer uses rows of [name[16], target[16]]
+    ; data0 selects sub-op: LIST / QUERY / SET
+    ; =================================================================
+.dos_do_assign:
+    load.l  r21, 976(r29)              ; incoming share_handle required
+    beqz    r21, .dos_reply_badarg
+    load.q  r20, 960(r29)              ; sub-op
+    move.l  r28, #DOS_ASSIGN_LIST
+    beq     r20, r28, .dos_assign_list
+    move.l  r28, #DOS_ASSIGN_QUERY
+    beq     r20, r28, .dos_assign_query
+    move.l  r28, #DOS_ASSIGN_SET
+    beq     r20, r28, .dos_assign_set
+    bra     .dos_reply_badarg
+
+.dos_assign_list:
+    load.q  r20, 168(r29)              ; dest ptr
+    load.q  r24, 184(r29)              ; share_pages
+    lsl     r24, r24, #12              ; share_bytes
+    add     r21, r29, #(prog_doslib_assign_table - prog_doslib_data)
+    move.l  r22, #0                    ; row index
+    move.l  r23, #0                    ; rows written
+.dos_assign_list_loop:
+    move.l  r28, #DOS_ASSIGN_TABLE_COUNT
+    bge     r22, r28, .dos_assign_list_done
+    load.b  r25, (r21)
+    beqz    r25, .dos_assign_list_next
+    add     r25, r23, #1
+    lsl     r25, r25, #5
+    bgt     r25, r24, .dos_reply_full
+    move.l  r26, #0
+.dos_assign_list_copy:
+    move.l  r28, #DOS_ASSIGN_ENTRY_SZ
+    bge     r26, r28, .dos_assign_list_copied
+    add     r27, r21, r26
+    load.b  r28, (r27)
+    add     r27, r20, r26
+    store.b r28, (r27)
+    add     r26, r26, #1
+    bra     .dos_assign_list_copy
+.dos_assign_list_copied:
+    add     r20, r20, #DOS_ASSIGN_ENTRY_SZ
+    add     r23, r23, #1
+.dos_assign_list_next:
+    add     r21, r21, #DOS_ASSIGN_ENTRY_SZ
+    add     r22, r22, #1
+    bra     .dos_assign_list_loop
+.dos_assign_list_done:
+    load.q  r1, 944(r29)
+    move.l  r2, #DOS_OK
+    move.q  r3, r23
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+
+.dos_assign_query:
+    load.q  r1, 168(r29)
+    add     r3, r29, #192
+    jsr     .dos_assign_read_name
+    beqz    r3, .dos_reply_badarg
+    jsr     .dos_assign_find_entry
+    beqz    r3, .dos_reply_err
+    load.q  r21, 168(r29)
+    load.q  r22, (r1)
+    store.q r22, (r21)
+    load.q  r22, 8(r1)
+    store.q r22, 8(r21)
+    load.q  r22, 16(r1)
+    store.q r22, 16(r21)
+    load.q  r22, 24(r1)
+    store.q r22, 24(r21)
+.dos_assign_query_done:
+    load.q  r1, 944(r29)
+    move.l  r2, #DOS_OK
+    move.l  r3, #1
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+
+.dos_assign_set:
+    load.q  r1, 168(r29)
+    add     r3, r29, #192
+    jsr     .dos_assign_read_name
+    beqz    r3, .dos_reply_badarg
+    store.q r2, 240(r29)               ; normalized name len
+    load.q  r1, 168(r29)
+    add     r1, r1, #DOS_ASSIGN_TARGET_OFF
+    jsr     .dos_assign_validate_target
+    beqz    r3, .dos_reply_badarg
+    store.q r1, 224(r29)               ; canonical target ptr
+    store.q r2, 232(r29)               ; canonical target len
+
+    add     r1, r29, #192
+    load.q  r2, 240(r29)
+    jsr     .dos_assign_find_entry
+    beqz    r3, .dos_assign_set_new
+    move.l  r24, #DOS_ASSIGN_DEFAULT_COUNT
+    blt     r2, r24, .dos_reply_badarg
+    move.q  r25, r1
+    bra     .dos_assign_set_slot_ready
+.dos_assign_set_new:
+    jsr     .dos_assign_find_free_entry
+    beqz    r3, .dos_reply_full
+    move.q  r25, r1
+
+.dos_assign_set_slot_ready:
+    store.q r0, (r25)
+    store.q r0, 8(r25)
+    store.q r0, 16(r25)
+    store.q r0, 24(r25)
+    add     r26, r29, #192
+    load.q  r27, 240(r29)
+    move.l  r20, #0
+.dos_assign_set_name_copy:
+    bge     r20, r27, .dos_assign_set_target_copy_setup
+    add     r21, r26, r20
+    load.b  r22, (r21)
+    add     r21, r25, r20
+    store.b r22, (r21)
+    add     r20, r20, #1
+    bra     .dos_assign_set_name_copy
+.dos_assign_set_target_copy_setup:
+    load.q  r21, 224(r29)
+    load.q  r22, 232(r29)
+    move.l  r20, #0
+.dos_assign_set_target_copy:
+    bge     r20, r22, .dos_assign_set_done
+    add     r24, r21, r20
+    load.b  r28, (r24)
+    add     r24, r25, #DOS_ASSIGN_TARGET_OFF
+    add     r24, r24, r20
+    store.b r28, (r24)
+    add     r20, r20, #1
+    bra     .dos_assign_set_target_copy
+.dos_assign_set_done:
+    load.q  r1, 944(r29)
+    move.l  r2, #DOS_OK
+    move.l  r3, #1
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+
+    ; =================================================================
     ; DOS_LOADSEG (type=7): load an ELF file into a DOS-owned seglist.
     ; Shared buffer contains the program name. Reply data0 = seglist VA.
     ; =================================================================
@@ -9123,6 +9322,7 @@ prog_doslib_code:
     load.q  r23, 168(r29)              ; name ptr in shared buffer
     jsr     .dos_resolve_cmd
     load.q  r29, (sp)
+    beqz    r22, .dos_run_notfound
 
     move.q  r1, r23
     jsr     .dos_meta_find_by_name
@@ -9578,6 +9778,13 @@ prog_doslib_code:
     move.l  r2, #DOS_OK
     rts
 
+DOS_ASSIGN_NAME_MAX   equ 16
+DOS_ASSIGN_TARGET_OFF equ 16
+DOS_ASSIGN_TARGET_MAX equ 16
+DOS_ASSIGN_ENTRY_SZ   equ 32
+DOS_ASSIGN_DEFAULT_COUNT equ 8
+DOS_ASSIGN_TABLE_COUNT equ 16
+
     ; .dos_name_eq_ci32
     ; In:  r1 = ptr_a, r2 = ptr_b
     ; Out: r23 = 0 if equal, 1 if mismatch
@@ -9590,6 +9797,13 @@ prog_doslib_code:
     load.b  r22, (r22)
     add     r24, r2, r20
     load.b  r24, (r24)
+    beqz    r22, .dne_a_zero
+    beqz    r24, .dne_mismatch
+    bra     .dne_fold_case
+.dne_a_zero:
+    beqz    r24, .dne_match
+    bra     .dne_mismatch
+.dne_fold_case:
     move.l  r25, #0x61
     blt     r22, r25, .dne_a_done
     move.l  r25, #0x7B
@@ -9678,19 +9892,302 @@ prog_doslib_code:
     ; Name resolution subroutines
     ; =================================================================
 
+    ; .dos_assign_name_eq_ci
+    ; In:  r1 = input name ptr, r2 = input name len, r3 = entry name ptr
+    ; Out: r23 = 0 if equal, 1 if mismatch
+.dos_assign_name_eq_ci:
+    move.l  r20, #0
+.dane_loop:
+    bge     r20, r2, .dane_input_done
+    add     r21, r1, r20
+    load.b  r21, (r21)
+    add     r24, r3, r20
+    load.b  r24, (r24)
+    beqz    r24, .dane_mismatch
+    move.l  r25, #0x61
+    blt     r21, r25, .dane_a_done
+    move.l  r25, #0x7B
+    bge     r21, r25, .dane_a_done
+    sub     r21, r21, #0x20
+.dane_a_done:
+    move.l  r25, #0x61
+    blt     r24, r25, .dane_b_done
+    move.l  r25, #0x7B
+    bge     r24, r25, .dane_b_done
+    sub     r24, r24, #0x20
+.dane_b_done:
+    bne     r21, r24, .dane_mismatch
+    add     r20, r20, #1
+    bra     .dane_loop
+.dane_input_done:
+    add     r24, r3, r2
+    load.b  r24, (r24)
+    beqz    r24, .dane_match
+.dane_mismatch:
+    move.l  r23, #1
+    rts
+.dane_match:
+    move.q  r23, r0
+    rts
+
+    ; .dos_assign_target_len
+    ; In:  r1 = target ptr
+    ; Out: r2 = target len
+.dos_assign_target_len:
+    move.l  r2, #0
+.datl_loop:
+    add     r24, r1, r2
+    load.b  r25, (r24)
+    beqz    r25, .datl_done
+    add     r2, r2, #1
+    move.l  r24, #DOS_ASSIGN_TARGET_MAX
+    blt     r2, r24, .datl_loop
+.datl_done:
+    rts
+
+    ; .dos_assign_find_entry
+    ; In:  r1 = input name ptr, r2 = input name len, r29 = data base
+    ; Out: r1 = entry ptr, r2 = index, r3 = 1 if found, 0 otherwise
+.dos_assign_find_entry:
+    add     r21, r29, #(prog_doslib_assign_table - prog_doslib_data)
+    move.l  r20, #0
+.dafe_loop:
+    move.l  r24, #DOS_ASSIGN_TABLE_COUNT
+    bge     r20, r24, .dafe_notfound
+    load.b  r24, (r21)
+    beqz    r24, .dafe_next_empty
+    move.q  r26, r21
+    move.q  r3, r26
+    jsr     .dos_assign_name_eq_ci
+    beqz    r23, .dafe_found
+.dafe_next:
+    add     r21, r26, #DOS_ASSIGN_ENTRY_SZ
+    add     r20, r20, #1
+    bra     .dafe_loop
+.dafe_next_empty:
+    add     r21, r21, #DOS_ASSIGN_ENTRY_SZ
+    add     r20, r20, #1
+    bra     .dafe_loop
+.dafe_found:
+    move.q  r1, r26
+    move.q  r2, r20
+    move.l  r3, #1
+    rts
+.dafe_notfound:
+    move.q  r1, r0
+    move.q  r2, r0
+    move.q  r3, r0
+    rts
+
+    ; .dos_assign_find_free_entry
+    ; Out: r1 = entry ptr, r2 = index, r3 = 1 if found, 0 otherwise
+.dos_assign_find_free_entry:
+    add     r21, r29, #(prog_doslib_assign_table - prog_doslib_data)
+    move.l  r20, #DOS_ASSIGN_DEFAULT_COUNT
+    move.l  r24, #DOS_ASSIGN_DEFAULT_COUNT
+    lsl     r24, r24, #5
+    add     r21, r21, r24
+.daffe_loop:
+    move.l  r24, #DOS_ASSIGN_TABLE_COUNT
+    bge     r20, r24, .daffe_notfound
+    load.b  r24, (r21)
+    beqz    r24, .daffe_found
+    add     r21, r21, #DOS_ASSIGN_ENTRY_SZ
+    add     r20, r20, #1
+    bra     .daffe_loop
+.daffe_found:
+    move.q  r1, r21
+    move.q  r2, r20
+    move.l  r3, #1
+    rts
+.daffe_notfound:
+    move.q  r1, r0
+    move.q  r2, r0
+    move.q  r3, r0
+    rts
+
+    ; .dos_assign_lookup
+    ; In:  r1 = input volume ptr, r2 = input volume len, r29 = data base
+    ; Out: r1 = target ptr, r2 = target len, r3 = 1 if found, 0 otherwise
+.dos_assign_lookup:
+    jsr     .dos_assign_find_entry
+    beqz    r3, .dal_notfound
+    add     r1, r1, #DOS_ASSIGN_TARGET_OFF
+    jsr     .dos_assign_target_len
+    move.l  r3, #1
+    rts
+.dal_notfound:
+    move.q  r1, r0
+    move.q  r2, r0
+    move.q  r3, r0
+    rts
+
+    ; .dos_assign_read_name
+    ; In:  r1 = source ptr, r3 = dest ptr
+    ; Out: r1 = dest ptr, r2 = name len, r3 = 1 if valid, 0 otherwise
+.dos_assign_read_name:
+    move.q  r22, r3
+    move.l  r20, #0
+.darn_loop:
+    move.l  r24, #DOS_ASSIGN_NAME_MAX
+    sub     r24, r24, #1
+    bge     r20, r24, .darn_limit
+    add     r21, r1, r20
+    load.b  r24, (r21)
+    beqz    r24, .darn_done
+    move.l  r25, #0x3A
+    beq     r24, r25, .darn_bad
+    move.l  r25, #0x61
+    blt     r24, r25, .darn_upper_chk
+    move.l  r25, #0x7B
+    bge     r24, r25, .darn_upper_chk
+    sub     r24, r24, #0x20
+.darn_upper_chk:
+    move.l  r25, #0x41
+    blt     r24, r25, .darn_bad
+    move.l  r25, #0x5B
+    bge     r24, r25, .darn_bad
+    add     r21, r22, r20
+    store.b r24, (r21)
+    add     r20, r20, #1
+    bra     .darn_loop
+.darn_limit:
+    add     r21, r1, r20
+    load.b  r24, (r21)
+    beqz    r24, .darn_done
+.darn_done:
+    beqz    r20, .darn_bad
+    add     r21, r22, r20
+    store.b r0, (r21)
+    move.q  r1, r22
+    move.q  r2, r20
+    move.l  r3, #1
+    rts
+.darn_bad:
+.davt_bad:
+    move.q  r1, r0
+    move.q  r2, r0
+    move.q  r3, r0
+    rts
+
+    ; .dos_assign_validate_target
+    ; In:  r1 = source ptr
+    ; Out: r1 = canonical target ptr, r2 = target len, r3 = 1 if valid, 0 otherwise
+.dos_assign_validate_target:
+    move.q  r27, r1
+    move.l  r20, #0
+.davt_len:
+    move.l  r24, #DOS_ASSIGN_TARGET_MAX
+    sub     r24, r24, #1
+    bge     r20, r24, .davt_limit
+    add     r21, r27, r20
+    load.b  r24, (r21)
+    beqz    r24, .davt_len_done
+    add     r20, r20, #1
+    bra     .davt_len
+.davt_limit:
+    add     r21, r27, r20
+    load.b  r24, (r21)
+    bnez    r24, .davt_bad
+.davt_len_done:
+    move.l  r24, #2
+    blt     r20, r24, .davt_bad
+    add     r21, r27, r20
+    sub     r21, r21, #1
+    load.b  r24, (r21)
+    move.l  r25, #0x2F
+    bne     r24, r25, .davt_bad
+
+    add     r22, r29, #208
+    move.l  r26, #0
+.davt_copy_name:
+    sub     r24, r20, #1
+    bge     r26, r24, .davt_lookup
+    add     r21, r27, r26
+    load.b  r24, (r21)
+    move.l  r25, #0x61
+    blt     r24, r25, .davt_upper_chk
+    move.l  r25, #0x7B
+    bge     r24, r25, .davt_upper_chk
+    sub     r24, r24, #0x20
+.davt_upper_chk:
+    move.l  r25, #0x41
+    blt     r24, r25, .davt_bad
+    move.l  r25, #0x5B
+    bge     r24, r25, .davt_bad
+    add     r21, r22, r26
+    store.b r24, (r21)
+    add     r26, r26, #1
+    bra     .davt_copy_name
+.davt_lookup:
+    add     r21, r22, r26
+    store.b r0, (r21)
+    move.q  r1, r22
+    move.q  r2, r26
+    jsr     .dos_assign_find_entry
+    beqz    r3, .davt_bad
+    move.q  r27, r2
+    move.l  r24, #DOS_ASSIGN_DEFAULT_COUNT
+    bge     r27, r24, .davt_bad
+    add     r1, r1, #DOS_ASSIGN_TARGET_OFF
+    jsr     .dos_assign_target_len
+    move.l  r3, #1
+    rts
+
+.darn_bad:
+    store.b r0, (r22)
+    move.q  r1, r22
+    move.q  r2, r0
+    move.q  r3, r0
+    rts
+
+    ; .dos_resolve_apply_target
+    ; In:  r1 = target ptr, r2 = target len, r14 = source ptr, r29 = data base
+    ; Out: r23 = resolved scratch ptr, r22 = 1
+.dos_resolve_apply_target:
+    add     r17, r29, #1000
+    move.q  r20, r1
+    move.q  r21, r2
+.drat_copy_target:
+    beqz    r21, .drat_copy_rest_setup
+    load.b  r16, (r20)
+    store.b r16, (r17)
+    add     r20, r20, #1
+    add     r17, r17, #1
+    sub     r21, r21, #1
+    bra     .drat_copy_target
+.drat_copy_rest_setup:
+    move.l  r19, #31
+    sub     r19, r19, r2
+.drat_copy_rest:
+    load.b  r16, (r14)
+    beqz    r16, .drat_term
+    beqz    r19, .drat_term
+    store.b r16, (r17)
+    add     r14, r14, #1
+    add     r17, r17, #1
+    sub     r19, r19, #1
+    bra     .drat_copy_rest
+.drat_term:
+    store.b r0, (r17)
+    add     r23, r29, #1000
+    move.l  r22, #1
+    rts
+
     ; .dos_resolve_cmd: resolve command name (default prefix C:)
     ; Input: r23 = name pointer in shared buffer, r29 = data base
-    ; Output: r23 = resolved name pointer (may be unchanged)
-    ; Clobbers: r14, r15, r16, r17, r18
+    ; Output: r23 = resolved name pointer (may be unchanged), r22 = 1 if valid
+    ; Clobbers: r14-r25
 .dos_resolve_cmd:
     move.l  r18, #1                     ; default = C: volume
     bra     .dos_resolve_scan
     ; .dos_resolve_file: resolve filename (bare default)
     ; Input: r23 = name pointer in shared buffer, r29 = data base
-    ; Output: r23 = resolved name pointer (may be unchanged)
+    ; Output: r23 = resolved name pointer (may be unchanged), r22 = 1 if valid
 .dos_resolve_file:
     move.l  r18, #0                     ; default = bare (no prefix)
 .dos_resolve_scan:
+    move.l  r22, #1
     ; Scan for ':' in name
     move.q  r14, r23
     move.l  r15, #0                     ; char index
@@ -9715,7 +10212,7 @@ prog_doslib_code:
     load.b  r16, (r14)
     beqz    r16, .dos_resolve_no_slash
     move.l  r17, #0x2F                 ; '/'
-    beq     r16, r17, .dos_resolve_done
+    beq     r16, r17, .dos_resolve_bare_ret
     add     r14, r14, #1
     add     r15, r15, #1
     move.l  r17, #32
@@ -9723,282 +10220,45 @@ prog_doslib_code:
 .dos_resolve_no_slash:
     ; No colon found — check default mode
     beqz    r18, .dos_resolve_bare_ret  ; mode=0 → bare name, return unchanged
-    ; mode=1 → prepend "C/" to name, write to scratch at data[1000].
-    ; Reuses the bounded shared copy loop instead of an inline unbounded
-    ; loop (the original was vulnerable to a long unprefixed name).
-    add     r17, r29, #1000
-    move.l  r16, #0x43                  ; 'C'
-    store.b r16, (r17)
-    add     r17, r17, #1
-    move.l  r16, #0x2F                  ; '/'
-    store.b r16, (r17)
-    add     r17, r17, #1
-    move.q  r14, r23                    ; src = original name
-    move.l  r19, #29                    ; cap: 32 - 2 (prefix) - 1 (NUL)
-    bra     .dos_resolve_copy_rest
+    move.q  r27, r23
+    add     r1, r29, #(prog_doslib_assign_default_c - prog_doslib_data)
+    move.l  r2, #1
+    jsr     .dos_assign_lookup
+    beqz    r3, .dos_resolve_notfound
+    move.q  r14, r27
+    jsr     .dos_resolve_apply_target
 .dos_resolve_bare_ret:
+    move.l  r22, #1
     rts
 .dos_resolve_has_colon:
-    ; Found colon at position r15. Check volume prefix.
-    ; Check for "RAM:" (4 chars before colon = 3 chars + colon)
-    move.l  r17, #3
-    bne     r15, r17, .dos_resolve_check_c
-    ; Check 'R'/'A'/'M' (case insensitive)
-    load.b  r16, (r23)
-    or      r16, r16, #0x20            ; lowercase
-    move.l  r17, #0x72                  ; 'r'
-    bne     r16, r17, .dos_resolve_check_c
-    add     r14, r23, #1
-    load.b  r16, (r14)
-    or      r16, r16, #0x20
-    move.l  r17, #0x61                  ; 'a'
-    bne     r16, r17, .dos_resolve_check_c
-    add     r14, r23, #2
-    load.b  r16, (r14)
-    or      r16, r16, #0x20
-    move.l  r17, #0x6D                  ; 'm'
-    bne     r16, r17, .dos_resolve_check_c
-    ; RAM: prefix — strip it, return pointer past ':'
-    add     r23, r23, #4               ; skip "RAM:"
+    move.q  r27, r23
+    move.q  r1, r23
+    move.q  r2, r15
+    jsr     .dos_assign_name_supported
+    beqz    r3, .dos_resolve_notfound
+    move.q  r1, r27
+    move.q  r2, r15
+    jsr     .dos_assign_lookup
+    beqz    r3, .dos_resolve_notfound
+    add     r14, r27, r15
+    add     r14, r14, #1                ; src = past ':'
+    beqz    r2, .dos_resolve_ram
+    jsr     .dos_resolve_apply_target
     rts
-.dos_resolve_check_c:
-    ; Check for "C:" (1 char before colon)
-    move.l  r17, #1
-    bne     r15, r17, .dos_resolve_check_4ch     ; M11: chain to LIBS/DEVS
-    load.b  r16, (r23)
-    or      r16, r16, #0x20
-    move.l  r17, #0x63                  ; 'c'
-    beq     r16, r17, .dos_resolve_pfx_c
-    move.l  r17, #0x73                  ; 's'
-    beq     r16, r17, .dos_resolve_pfx_s
-    bra     .dos_resolve_done           ; unknown 1-char volume
-
-.dos_resolve_pfx_c:
-    ; Write "C/" + (name after ':') to scratch buffer at data[1000]
-    add     r17, r29, #1000
-    move.l  r16, #0x43                  ; 'C'
-    store.b r16, (r17)
-    add     r17, r17, #1
-    move.l  r16, #0x2F                  ; '/'
-    store.b r16, (r17)
-    add     r17, r17, #1
-    add     r14, r23, #2                ; src = past "C:"
-    move.l  r19, #29                    ; cap: 32 - 2 (prefix) - 1 (NUL)
-    bra     .dos_resolve_copy_rest
-
-.dos_resolve_pfx_s:
-    ; Write "S/" + (name after ':') to scratch buffer
-    add     r17, r29, #1000
-    move.l  r16, #0x53                  ; 'S'
-    store.b r16, (r17)
-    add     r17, r17, #1
-    move.l  r16, #0x2F                  ; '/'
-    store.b r16, (r17)
-    add     r17, r17, #1
-    add     r14, r23, #2                ; src = past "S:"
-    move.l  r19, #29                    ; cap: 32 - 2 (prefix) - 1 (NUL)
-    ; Shared bounded copy loop. r14 = src, r17 = dst (in scratch),
-    ; r19 = max remaining payload bytes (set by each prefix branch
-    ; to (31 - prefix_len) so the buffer always has room for the
-    ; trailing NUL terminator). On src NUL OR exhausted r19, write
-    ; a NUL at r17 and return. The 32-byte scratch at data[1000]
-    ; is the M10 resolver scratch; without this cap a long
-    ; user-supplied name (e.g. "C:" + 200 'A' chars) would walk
-    ; past the scratch into the M11 seed-name strings and beyond.
-.dos_resolve_copy_rest:
-    load.b  r16, (r14)
-    beqz    r16, .dos_resolve_copy_term  ; src NUL → terminate
-    beqz    r19, .dos_resolve_copy_term  ; out of room → truncate + terminate
-    store.b r16, (r17)
-    add     r14, r14, #1
-    add     r17, r17, #1
-    sub     r19, r19, #1
-    bra     .dos_resolve_copy_rest
-.dos_resolve_copy_term:
-    store.b r0, (r17)                    ; write NUL terminator (r0 = hardwired 0)
-.dos_resolve_copy_done:
-    add     r23, r29, #1000              ; return scratch as resolved name
+.dos_resolve_ram:
+    move.q  r23, r14
+    move.l  r22, #1
+    rts
+.dos_resolve_notfound:
+    move.q  r22, r0
+    move.q  r23, r0
     rts
 
-    ; ----------------------------------------------------------------
-    ; M11: 4-char prefix check — handles LIBS: and DEVS:
-    ; ----------------------------------------------------------------
-.dos_resolve_check_4ch:
-    move.l  r17, #4
-    bne     r15, r17, .dos_resolve_check_9ch
-    load.b  r16, (r23)
-    or      r16, r16, #0x20
-    move.l  r17, #0x6C                  ; 'l'
-    beq     r16, r17, .dos_check_libs
-    move.l  r17, #0x64                  ; 'd'
-    beq     r16, r17, .dos_check_devs
-    bra     .dos_resolve_check_9ch
-
-.dos_check_libs:
-    ; Verify "ibs"
-    add     r14, r23, #1
-    load.b  r16, (r14)
-    or      r16, r16, #0x20
-    move.l  r17, #0x69                  ; 'i'
-    bne     r16, r17, .dos_resolve_check_9ch
-    add     r14, r23, #2
-    load.b  r16, (r14)
-    or      r16, r16, #0x20
-    move.l  r17, #0x62                  ; 'b'
-    bne     r16, r17, .dos_resolve_check_9ch
-    add     r14, r23, #3
-    load.b  r16, (r14)
-    or      r16, r16, #0x20
-    move.l  r17, #0x73                  ; 's'
-    bne     r16, r17, .dos_resolve_check_9ch
-    ; Match: emit "LIBS/" + remainder
-    add     r17, r29, #1000
-    move.l  r16, #0x4C                  ; 'L'
-    store.b r16, (r17)
-    add     r17, r17, #1
-    move.l  r16, #0x49                  ; 'I'
-    store.b r16, (r17)
-    add     r17, r17, #1
-    move.l  r16, #0x42                  ; 'B'
-    store.b r16, (r17)
-    add     r17, r17, #1
-    move.l  r16, #0x53                  ; 'S'
-    store.b r16, (r17)
-    add     r17, r17, #1
-    move.l  r16, #0x2F                  ; '/'
-    store.b r16, (r17)
-    add     r17, r17, #1
-    add     r14, r23, #5                ; src = past "LIBS:"
-    move.l  r19, #26                    ; cap: 32 - 5 (prefix) - 1 (NUL)
-    bra     .dos_resolve_copy_rest
-
-.dos_check_devs:
-    ; Verify "evs"
-    add     r14, r23, #1
-    load.b  r16, (r14)
-    or      r16, r16, #0x20
-    move.l  r17, #0x65                  ; 'e'
-    bne     r16, r17, .dos_resolve_check_9ch
-    add     r14, r23, #2
-    load.b  r16, (r14)
-    or      r16, r16, #0x20
-    move.l  r17, #0x76                  ; 'v'
-    bne     r16, r17, .dos_resolve_check_9ch
-    add     r14, r23, #3
-    load.b  r16, (r14)
-    or      r16, r16, #0x20
-    move.l  r17, #0x73                  ; 's'
-    bne     r16, r17, .dos_resolve_check_9ch
-    ; Match: emit "DEVS/" + remainder
-    add     r17, r29, #1000
-    move.l  r16, #0x44                  ; 'D'
-    store.b r16, (r17)
-    add     r17, r17, #1
-    move.l  r16, #0x45                  ; 'E'
-    store.b r16, (r17)
-    add     r17, r17, #1
-    move.l  r16, #0x56                  ; 'V'
-    store.b r16, (r17)
-    add     r17, r17, #1
-    move.l  r16, #0x53                  ; 'S'
-    store.b r16, (r17)
-    add     r17, r17, #1
-    move.l  r16, #0x2F                  ; '/'
-    store.b r16, (r17)
-    add     r17, r17, #1
-    add     r14, r23, #5                ; src = past "DEVS:"
-    move.l  r19, #26                    ; cap: 32 - 5 (prefix) - 1 (NUL)
-    bra     .dos_resolve_copy_rest
-
-    ; ----------------------------------------------------------------
-    ; M11: 9-char prefix check — handles RESOURCES:
-    ; ----------------------------------------------------------------
-.dos_resolve_check_9ch:
-    move.l  r17, #9
-    bne     r15, r17, .dos_resolve_done
-    ; Verify "esources" at offsets 1..8 (offset 0 = 'r' check first)
-    load.b  r16, (r23)
-    or      r16, r16, #0x20
-    move.l  r17, #0x72                  ; 'r'
-    bne     r16, r17, .dos_resolve_done
-    add     r14, r23, #1
-    load.b  r16, (r14)
-    or      r16, r16, #0x20
-    move.l  r17, #0x65                  ; 'e'
-    bne     r16, r17, .dos_resolve_done
-    add     r14, r23, #2
-    load.b  r16, (r14)
-    or      r16, r16, #0x20
-    move.l  r17, #0x73                  ; 's'
-    bne     r16, r17, .dos_resolve_done
-    add     r14, r23, #3
-    load.b  r16, (r14)
-    or      r16, r16, #0x20
-    move.l  r17, #0x6F                  ; 'o'
-    bne     r16, r17, .dos_resolve_done
-    add     r14, r23, #4
-    load.b  r16, (r14)
-    or      r16, r16, #0x20
-    move.l  r17, #0x75                  ; 'u'
-    bne     r16, r17, .dos_resolve_done
-    add     r14, r23, #5
-    load.b  r16, (r14)
-    or      r16, r16, #0x20
-    move.l  r17, #0x72                  ; 'r'
-    bne     r16, r17, .dos_resolve_done
-    add     r14, r23, #6
-    load.b  r16, (r14)
-    or      r16, r16, #0x20
-    move.l  r17, #0x63                  ; 'c'
-    bne     r16, r17, .dos_resolve_done
-    add     r14, r23, #7
-    load.b  r16, (r14)
-    or      r16, r16, #0x20
-    move.l  r17, #0x65                  ; 'e'
-    bne     r16, r17, .dos_resolve_done
-    add     r14, r23, #8
-    load.b  r16, (r14)
-    or      r16, r16, #0x20
-    move.l  r17, #0x73                  ; 's'
-    bne     r16, r17, .dos_resolve_done
-    ; Match: emit "RESOURCES/" + remainder
-    add     r17, r29, #1000
-    move.l  r16, #0x52                  ; 'R'
-    store.b r16, (r17)
-    add     r17, r17, #1
-    move.l  r16, #0x45                  ; 'E'
-    store.b r16, (r17)
-    add     r17, r17, #1
-    move.l  r16, #0x53                  ; 'S'
-    store.b r16, (r17)
-    add     r17, r17, #1
-    move.l  r16, #0x4F                  ; 'O'
-    store.b r16, (r17)
-    add     r17, r17, #1
-    move.l  r16, #0x55                  ; 'U'
-    store.b r16, (r17)
-    add     r17, r17, #1
-    move.l  r16, #0x52                  ; 'R'
-    store.b r16, (r17)
-    add     r17, r17, #1
-    move.l  r16, #0x43                  ; 'C'
-    store.b r16, (r17)
-    add     r17, r17, #1
-    move.l  r16, #0x45                  ; 'E'
-    store.b r16, (r17)
-    add     r17, r17, #1
-    move.l  r16, #0x53                  ; 'S'
-    store.b r16, (r17)
-    add     r17, r17, #1
-    move.l  r16, #0x2F                  ; '/'
-    store.b r16, (r17)
-    add     r17, r17, #1
-    add     r14, r23, #10               ; src = past "RESOURCES:"
-    move.l  r19, #21                    ; cap: 32 - 10 (prefix) - 1 (NUL)
-    bra     .dos_resolve_copy_rest
-
-.dos_resolve_done:
-    ; Unknown volume — return unchanged
+    ; .dos_assign_name_supported
+    ; In:  r1 = input volume ptr, r2 = input volume len
+    ; Out: r3 = 1 if the name exists in the active assign table, 0 otherwise
+.dos_assign_name_supported:
+    jsr     .dos_assign_find_entry
     rts
 
     ; =================================================================
@@ -10014,6 +10274,7 @@ prog_doslib_code:
     ; 2. Resolve through C: assign (r23 in/out)
     jsr     .dos_resolve_cmd            ; r23 = resolved name (e.g. "C/Version")
     load.q  r29, (sp)
+    beqz    r22, .dos_run_reply_notfound
 
 .dos_run_file_lookup:
     ; 3. M12.6 Phase A: walk metadata chain by name
@@ -11195,29 +11456,80 @@ prog_doslib_seed_name_startup:
     ds.b    1                           ; pad to 1000
     ; --- Offset 1000: name resolution scratch buffer (32 bytes) ---
     ds.b    32
-    ; --- Offset 1032: M11 seed names ---
+    ; --- Offset 1032+: seed names ---
+prog_doslib_seed_name_assign:
+    dc.b    "C/Assign", 0
+prog_doslib_seed_name_list:
+    dc.b    "C/List", 0
+prog_doslib_seed_name_which:
+    dc.b    "C/Which", 0
+prog_doslib_seed_name_help_cmd:
+    dc.b    "C/Help", 0
+prog_doslib_seed_name_help_text:
+    dc.b    "S/Help", 0
+prog_doslib_seed_name_loader_info:
+    dc.b    "L/Loader-Info", 0
 prog_doslib_seed_name_input:
-    dc.b    "DEVS/input.device", 0      ; 1032 (18 bytes) → 1050
+    dc.b    "DEVS/input.device", 0
 prog_doslib_seed_name_graphics:
-    dc.b    "LIBS/graphics.library", 0  ; 1050 (22 bytes) → 1072
+    dc.b    "LIBS/graphics.library", 0
 prog_doslib_seed_name_gfxdemo:
-    dc.b    "C/GfxDemo", 0              ; 1072 (10 bytes) → 1082
+    dc.b    "C/GfxDemo", 0
     ; --- M12 seed names ---
 prog_doslib_seed_name_intuition:
-    dc.b    "LIBS/intuition.library", 0 ; 1082 (23 bytes) → 1105
+    dc.b    "LIBS/intuition.library", 0
 prog_doslib_seed_name_about:
-    dc.b    "C/About", 0                ; 1105 (8 bytes) → 1113
+    dc.b    "C/About", 0
     ; --- M12.5 seed names ---
 prog_doslib_seed_name_hwres:
-    dc.b    "RESOURCES/hardware.resource", 0  ; 1113 (28 bytes) → 1141
+    dc.b    "RESOURCES/hardware.resource", 0
     ; --- M14 Phase 2 seed names ---
 prog_doslib_seed_name_elfseg:
-    dc.b    "C/ElfSeg", 0               ; 1141 (9 bytes) → 1150
+    dc.b    "C/ElfSeg", 0
     align   8
 prog_doslib_boot_export_rows:
     ; M14.1 phase 3: dos-private exported staged-service ELF sources.
     ; Filled by kern_export_boot_manifest_to_dos after dos.library boots.
     ds.b    (DOS_BOOT_EXPORT_COUNT * DOS_BOOT_EXPORT_ROW_SZ)
+    ; Static assign table for M15 phase 2 resolver. Entry layout:
+    ;   [0..15]  assign name (NUL-terminated, uppercase canonical)
+    ;   [16..31] target prefix (NUL-terminated, empty for RAM:)
+prog_doslib_assign_default_c:
+    dc.b    "C", 0
+prog_doslib_assign_table:
+    dc.b    "RAM", 0
+    ds.b    12
+    dc.b    0
+    ds.b    15
+    dc.b    "C", 0
+    ds.b    14
+    dc.b    "C/", 0
+    ds.b    13
+    dc.b    "L", 0
+    ds.b    14
+    dc.b    "L/", 0
+    ds.b    13
+    dc.b    "LIBS", 0
+    ds.b    11
+    dc.b    "LIBS/", 0
+    ds.b    10
+    dc.b    "DEVS", 0
+    ds.b    11
+    dc.b    "DEVS/", 0
+    ds.b    10
+    dc.b    "T", 0
+    ds.b    14
+    dc.b    "T/", 0
+    ds.b    13
+    dc.b    "S", 0
+    ds.b    14
+    dc.b    "S/", 0
+    ds.b    13
+    dc.b    "RESOURCES", 0
+    ds.b    6
+    dc.b    "RESOURCES/", 0
+    ds.b    5
+    ds.b    (DOS_ASSIGN_ENTRY_SZ * (DOS_ASSIGN_TABLE_COUNT - DOS_ASSIGN_DEFAULT_COUNT))
     align   4096
 
 ; ---------------------------------------------------------------------------
@@ -11249,6 +11561,26 @@ seed_elf_type_end:
 seed_elf_echo:
     incbin  "seed_echo.elf"
 seed_elf_echo_end:
+
+    align   8
+seed_elf_assign:
+    incbin  "seed_assign.elf"
+seed_elf_assign_end:
+
+    align   8
+seed_elf_list:
+    incbin  "seed_list.elf"
+seed_elf_list_end:
+
+    align   8
+seed_elf_which:
+    incbin  "seed_which.elf"
+seed_elf_which_end:
+
+    align   8
+seed_elf_help:
+    incbin  "seed_help.elf"
+seed_elf_help_end:
 
     align   8
 seed_elf_gfxdemo:
@@ -11345,7 +11677,7 @@ prog_version_data:
     ; --- Offset 24: padding to 32 ---
     ds.b    8
     ; --- Offset 32: version string ---
-    dc.b    "IntuitionOS 0.15", 0x0D, 0x0A, 0
+    dc.b    "IntuitionOS 0.16", 0x0D, 0x0A, 0
 prog_version_data_end:
     align   8
 prog_version_end:
@@ -11595,6 +11927,97 @@ prog_dir_code:
     store.q r1, 88(r29)                ; data[88] = shared_buf_va
     store.l r3, 96(r29)                ; data[96] = share_handle
 
+    ; Optional assign/volume filter state:
+    ; data[104] = filter_active
+    ; data[112] = target_len
+    ; data[120..135] = canonical target prefix
+    ; data[136] = printed_any
+    store.q r0, 104(r29)
+    store.q r0, 112(r29)
+    store.q r0, 136(r29)
+
+    ; === Parse optional "X:" arg and canonicalize it through DOS_ASSIGN_QUERY ===
+    load.q  r14, 88(r29)
+    store.b r0, (r14)
+    add     r14, r29, #DATA_ARGS_OFFSET
+.dir_skip_ws:
+    load.b  r15, (r14)
+    beqz    r15, .dir_args_done
+    move.l  r16, #0x20
+    bne     r15, r16, .dir_have_arg
+    add     r14, r14, #1
+    bra     .dir_skip_ws
+.dir_have_arg:
+    move.q  r17, r14
+    move.l  r18, #0
+.dir_arg_len:
+    add     r19, r17, r18
+    load.b  r20, (r19)
+    beqz    r20, .dir_arg_len_done
+    move.l  r21, #0x20
+    beq     r20, r21, .dir_arg_len_done
+    add     r18, r18, #1
+    move.l  r21, #16
+    blt     r18, r21, .dir_arg_len
+.dir_arg_len_done:
+    move.l  r21, #2
+    blt     r18, r21, .dir_args_done
+    sub     r19, r18, #1
+    add     r19, r17, r19
+    load.b  r20, (r19)
+    move.l  r21, #0x3A
+    bne     r20, r21, .dir_args_done
+
+    sub     r18, r18, #1               ; strip trailing ':'
+    load.q  r14, 88(r29)
+    move.l  r20, #0
+.dir_copy_query_name:
+    bge     r20, r18, .dir_copy_query_done
+    add     r21, r17, r20
+    load.b  r22, (r21)
+    add     r21, r14, r20
+    store.b r22, (r21)
+    add     r20, r20, #1
+    bra     .dir_copy_query_name
+.dir_copy_query_done:
+    add     r21, r14, r20
+    store.b r0, (r21)
+
+    move.l  r2, #DOS_ASSIGN
+    move.l  r3, #DOS_ASSIGN_QUERY
+    move.q  r4, r0
+    load.q  r5, 80(r29)
+    load.l  r6, 96(r29)
+    load.q  r1, 72(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    load.q  r1, 80(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+    bnez    r1, .dir_args_done
+
+    load.q  r14, 88(r29)
+    add     r14, r14, #DOS_ASSIGN_TARGET_OFF
+    add     r15, r29, #120
+    move.l  r20, #0
+.dir_copy_target:
+    move.l  r21, #16
+    bge     r20, r21, .dir_copy_target_done
+    add     r22, r14, r20
+    load.b  r23, (r22)
+    add     r22, r15, r20
+    store.b r23, (r22)
+    beqz    r23, .dir_copy_target_done
+    add     r20, r20, #1
+    bra     .dir_copy_target
+.dir_copy_target_done:
+    store.q r20, 112(r29)
+    move.l  r21, #1
+    store.q r21, 104(r29)
+.dir_args_done:
+    load.q  r14, 88(r29)
+    store.b r0, (r14)
+
     ; === Send DOS_DIR to dos.library ===
     move.l  r2, #DOS_DIR                ; type = DOS_DIR
     move.q  r3, r0                      ; data0 = 0
@@ -11613,8 +12036,11 @@ prog_dir_code:
     store.q r2, 8(sp)                  ; save bytes_written
 
     beqz    r2, .dir_empty
+    load.q  r14, 104(r29)
+    bnez    r14, .dir_filter_listing
 
     ; === Send bytes_written chars from shared_buf_va ===
+.dir_print_ready:
     load.q  r14, 88(r29)              ; r14 = shared_buf_va
     load.q  r15, 8(sp)                ; r15 = bytes_written
     move.l  r16, #0
@@ -11654,6 +12080,76 @@ prog_dir_code:
     syscall #SYS_YIELD
     load.q  r29, (sp)
     bra     .dir_char_retry
+
+.dir_filter_listing:
+    load.q  r14, 88(r29)              ; listing buffer base
+    load.q  r15, 8(sp)                ; bytes_written
+    move.l  r16, #0                   ; read index
+    move.l  r24, #0                   ; write index
+.dir_filter_loop:
+    bge     r16, r15, .dir_filter_done
+    add     r17, r14, r16             ; line start
+    move.q  r18, r17                  ; scan ptr
+    move.q  r19, r16                  ; scan index
+.dir_find_lf:
+    bge     r19, r15, .dir_have_line
+    load.b  r20, (r18)
+    move.l  r21, #0x0A
+    beq     r20, r21, .dir_have_line
+    add     r18, r18, #1
+    add     r19, r19, #1
+    bra     .dir_find_lf
+.dir_have_line:
+    load.q  r20, 112(r29)             ; target_len
+    beqz    r20, .dir_match_root
+    add     r21, r29, #120            ; target ptr
+    move.l  r22, #0
+.dir_match_prefix:
+    bge     r22, r20, .dir_copy_prefixed
+    add     r23, r17, r22
+    load.b  r25, (r23)
+    add     r26, r21, r22
+    load.b  r27, (r26)
+    bne     r25, r27, .dir_skip_line
+    add     r22, r22, #1
+    bra     .dir_match_prefix
+.dir_copy_prefixed:
+    add     r23, r17, r20             ; src = after prefix
+    bra     .dir_copy_line
+.dir_match_root:
+    move.q  r23, r17
+.dir_root_scan:
+    load.b  r25, (r23)
+    move.l  r26, #0x20
+    beq     r25, r26, .dir_copy_root
+    move.l  r26, #0x0D
+    beq     r25, r26, .dir_copy_root
+    move.l  r26, #0x2F
+    beq     r25, r26, .dir_skip_line
+    add     r23, r23, #1
+    bra     .dir_root_scan
+.dir_copy_root:
+    move.q  r23, r17
+.dir_copy_line:
+    add     r26, r14, r24             ; dst = base + write index
+.dir_copy_line_loop:
+    load.b  r27, (r23)
+    store.b r27, (r26)
+    add     r23, r23, #1
+    add     r26, r26, #1
+    add     r24, r24, #1
+    move.l  r28, #0x0A
+    bne     r27, r28, .dir_copy_line_loop
+.dir_skip_line:
+    move.q  r16, r19
+    add     r16, r16, #1
+    bra     .dir_filter_loop
+.dir_filter_done:
+    beqz    r24, .dir_empty
+    add     r25, r14, r24
+    store.b r0, (r25)
+    store.q r24, 8(sp)
+    bra     .dir_print_ready
 
 .dir_empty:
     ; Send "RAM: is empty\r\n"
@@ -11719,6 +12215,14 @@ prog_dir_data:
     ds.b    8
     ; --- Offset 96: share_handle (4 bytes) + pad ---
     ds.b    8
+    ds.b    8                           ; 104: filter_active
+    ds.b    8                           ; 112: filter_len
+    ds.b    16                          ; 120: canonical target prefix
+    ds.b    8                           ; 136: printed_any
+    ds.b    8                           ; 144: filtered emit ptr scratch
+    ds.b    8                           ; 152: filtered line-end index scratch
+    ds.b    8                           ; 160: filtered listing base scratch
+    ds.b    8                           ; 168: filtered listing size scratch
 prog_dir_data_end:
     align   8
 prog_dir_end:
@@ -12140,14 +12644,699 @@ prog_echo_cmd_data_end:
     align   8
 prog_echo_cmd_end:
 
+; ---------------------------------------------------------------------------
+; HELP — print the built-in help text
+; ---------------------------------------------------------------------------
+
+prog_help_app:
+    dc.l    0, 0
+    dc.l    prog_help_app_code_end - prog_help_app_code
+    dc.l    prog_help_app_data_end - prog_help_app_data
+    dc.l    0
+    ds.b    12
+prog_help_app_code:
+
+    sub     sp, sp, #16
+.help_preamble:
+    load.q  r29, 8(sp)
+    store.q r29, (sp)
+
+.help_open_retry:
+    load.q  r29, (sp)
+    move.q  r1, r29
+    move.l  r2, #0
+    syscall #SYS_FIND_PORT
+    load.q  r29, (sp)
+    beqz    r2, .help_open_ok
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .help_open_retry
+.help_open_ok:
+    store.q r1, 16(r29)
+
+    load.q  r29, (sp)
+    add     r20, r29, #32
+    jsr     .help_send_string
+
+    move.q  r1, r0
+    syscall #SYS_EXIT_TASK
+
+.help_send_string:
+    sub     sp, sp, #16
+    load.q  r29, 24(sp)
+    store.q r29, (sp)
+.help_ss_loop:
+    load.b  r1, (r20)
+    beqz    r1, .help_ss_done
+    store.q r20, 8(sp)
+.help_ss_retry:
+    load.q  r20, 8(sp)
+    load.b  r3, (r20)
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r29, (sp)
+    load.q  r1, 16(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .help_ss_full
+    load.q  r20, 8(sp)
+    add     r20, r20, #1
+    bra     .help_ss_loop
+.help_ss_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .help_ss_retry
+.help_ss_done:
+    add     sp, sp, #16
+    rts
+
+prog_help_app_code_end:
+
+prog_help_app_data:
+    dc.b    "console.handler", 0
+    ds.b    8
+    ds.b    8
+    dc.b    "M15 help surface:", 0x0D, 0x0A
+    dc.b    "Commands: VERSION AVAIL DIR TYPE ECHO ASSIGN LIST WHICH HELP", 0x0D, 0x0A
+    dc.b    "Assigns: RAM: C: L: LIBS: DEVS: T: S: RESOURCES:", 0x0D, 0x0A, 0
+prog_help_app_data_end:
+    align   8
+prog_help_app_end:
+
+; ---------------------------------------------------------------------------
+; LIST — directory listing command (M15)
+; ---------------------------------------------------------------------------
+; Phase 4 scope keeps LIST as a command-oriented alias of DIR's root DOS
+; census. Optional path arguments are deferred until DOS grows a path-aware
+; directory opcode.
+
+prog_list_cmd:
+    dc.l    0, 0
+    dc.l    prog_list_cmd_code_end - prog_list_cmd_code
+    dc.l    prog_list_cmd_data_end - prog_list_cmd_data
+    dc.l    0
+    ds.b    12
+prog_list_cmd_code:
+
+    sub     sp, sp, #16
+.list_preamble:
+    load.q  r29, 8(sp)
+    store.q r29, (sp)
+
+.list_open_dos_retry:
+    load.q  r29, (sp)
+    add     r1, r29, #16
+    move.l  r2, #0
+    syscall #SYS_FIND_PORT
+    load.q  r29, (sp)
+    beqz    r2, .list_open_dos_ok
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .list_open_dos_retry
+.list_open_dos_ok:
+    store.q r1, 72(r29)
+
+    move.q  r1, r0
+    move.q  r2, r0
+    syscall #SYS_CREATE_PORT
+    load.q  r29, (sp)
+    store.q r1, 80(r29)
+
+    move.l  r1, #0x1000
+    move.l  r2, #0x10001
+    syscall #SYS_ALLOC_MEM
+    load.q  r29, (sp)
+    store.q r1, 88(r29)
+    store.l r3, 96(r29)
+
+    load.q  r14, 88(r29)
+    move.l  r16, #0x44                  ; 'D'
+    store.b r16, (r14)
+    add     r14, r14, #1
+    move.l  r16, #0x49                  ; 'I'
+    store.b r16, (r14)
+    add     r14, r14, #1
+    move.l  r16, #0x52                  ; 'R'
+    store.b r16, (r14)
+    add     r14, r14, #1
+    store.b r0, (r14)                   ; command terminator
+    add     r14, r14, #1
+    add     r15, r29, #DATA_ARGS_OFFSET
+.list_copy_args:
+    load.b  r16, (r15)
+    store.b r16, (r14)
+    beqz    r16, .list_args_done
+    add     r15, r15, #1
+    add     r14, r14, #1
+    bra     .list_copy_args
+.list_args_done:
+
+    move.l  r2, #DOS_RUN
+    move.q  r3, r0
+    move.q  r4, r0
+    load.q  r5, 80(r29)
+    load.l  r6, 96(r29)
+    load.q  r1, 72(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+
+    load.q  r1, 80(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+
+.list_done:
+    move.q  r1, r0
+    syscall #SYS_EXIT_TASK
+
+prog_list_cmd_code_end:
+
+prog_list_cmd_data:
+    dc.b    "console.handler", 0
+    dc.b    "dos.library", 0, 0, 0, 0, 0
+    dc.b    "RAM: is empty", 0x0D, 0x0A, 0
+    ds.b    16
+    ds.b    8
+    ds.b    8
+    ds.b    8
+    ds.b    8
+    ds.b    8
+prog_list_cmd_data_end:
+    align   8
+prog_list_cmd_end:
+
+; ---------------------------------------------------------------------------
+; WHICH — resolve a command through DOS bare-command search
+; ---------------------------------------------------------------------------
+
+prog_which_cmd:
+    dc.l    0, 0
+    dc.l    prog_which_cmd_code_end - prog_which_cmd_code
+    dc.l    prog_which_cmd_data_end - prog_which_cmd_data
+    dc.l    0
+    ds.b    12
+prog_which_cmd_code:
+
+    sub     sp, sp, #16
+.which_preamble:
+    load.q  r29, 8(sp)
+    store.q r29, (sp)
+
+    add     r14, r29, #DATA_ARGS_OFFSET
+.which_skip_ws:
+    load.b  r15, (r14)
+    beqz    r15, .which_exit
+    move.l  r16, #0x20
+    bne     r15, r16, .which_have_arg
+    add     r14, r14, #1
+    bra     .which_skip_ws
+.which_have_arg:
+    store.q r14, 104(r29)
+
+.which_open_con_retry:
+    load.q  r29, (sp)
+    move.q  r1, r29
+    move.l  r2, #0
+    syscall #SYS_FIND_PORT
+    load.q  r29, (sp)
+    beqz    r2, .which_open_con_ok
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .which_open_con_retry
+.which_open_con_ok:
+    store.q r1, 64(r29)
+
+.which_open_dos_retry:
+    load.q  r29, (sp)
+    add     r1, r29, #16
+    move.l  r2, #0
+    syscall #SYS_FIND_PORT
+    load.q  r29, (sp)
+    beqz    r2, .which_open_dos_ok
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .which_open_dos_retry
+.which_open_dos_ok:
+    store.q r1, 72(r29)
+
+    move.q  r1, r0
+    move.q  r2, r0
+    syscall #SYS_CREATE_PORT
+    load.q  r29, (sp)
+    store.q r1, 80(r29)
+
+    move.l  r1, #0x1000
+    move.l  r2, #0x10001
+    syscall #SYS_ALLOC_MEM
+    load.q  r29, (sp)
+    store.q r1, 88(r29)
+    store.l r3, 96(r29)
+
+    load.q  r14, 104(r29)
+    load.q  r15, 88(r29)
+    move.l  r16, #0x43
+    store.b r16, (r15)
+    add     r17, r15, #1
+    move.l  r16, #0x3A
+    store.b r16, (r17)
+    move.l  r18, #2
+.which_copy_arg:
+    add     r17, r14, r18
+    sub     r17, r17, #2
+    load.b  r19, (r17)
+    beqz    r19, .which_copy_done
+    move.l  r20, #0x20
+    beq     r19, r20, .which_copy_done
+    add     r21, r15, r18
+    store.b r19, (r21)
+    add     r18, r18, #1
+    move.l  r20, #63
+    blt     r18, r20, .which_copy_arg
+.which_copy_done:
+    add     r21, r15, r18
+    store.b r0, (r21)
+
+    move.l  r2, #DOS_OPEN
+    move.l  r3, #DOS_MODE_READ
+    move.q  r4, r0
+    load.q  r5, 80(r29)
+    load.l  r6, 96(r29)
+    load.q  r1, 72(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+
+    load.q  r1, 80(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+    bnez    r1, .which_not_found
+    store.q r2, 104(r29)
+
+    move.l  r2, #DOS_CLOSE
+    load.q  r3, 104(r29)
+    move.q  r4, r0
+    load.q  r5, 80(r29)
+    move.q  r6, r0
+    load.q  r1, 72(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+
+    load.q  r1, 80(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+
+    load.q  r20, 88(r29)
+    jsr     .which_send_string
+    load.q  r29, (sp)
+    add     r20, r29, #32
+    jsr     .which_send_string
+    bra     .which_exit
+
+.which_not_found:
+    load.q  r29, (sp)
+    add     r20, r29, #48
+    jsr     .which_send_string
+
+.which_exit:
+    move.q  r1, r0
+    syscall #SYS_EXIT_TASK
+
+.which_send_string:
+    sub     sp, sp, #16
+    load.q  r29, 24(sp)
+    store.q r29, (sp)
+.which_ss_loop:
+    load.b  r1, (r20)
+    beqz    r1, .which_ss_done
+    store.q r20, 8(sp)
+.which_ss_retry:
+    load.q  r20, 8(sp)
+    load.b  r3, (r20)
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r29, (sp)
+    load.q  r1, 64(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .which_ss_full
+    load.q  r20, 8(sp)
+    add     r20, r20, #1
+    bra     .which_ss_loop
+.which_ss_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .which_ss_retry
+.which_ss_done:
+    add     sp, sp, #16
+    rts
+
+prog_which_cmd_code_end:
+
+prog_which_cmd_data:
+    dc.b    "console.handler", 0
+    dc.b    "dos.library", 0, 0, 0, 0, 0
+    dc.b    0x0D, 0x0A, 0
+    ds.b    13
+    dc.b    "not found", 0x0D, 0x0A, 0
+    ds.b    4
+    ds.b    8
+    ds.b    8
+    ds.b    8
+    ds.b    8
+    ds.b    8
+    ds.b    8
+prog_which_cmd_data_end:
+    align   8
+prog_which_cmd_end:
+
+; ---------------------------------------------------------------------------
+; ASSIGN — list or set DOS assigns through DOS_ASSIGN
+; ---------------------------------------------------------------------------
+
+prog_assign_cmd:
+    dc.l    0, 0
+    dc.l    prog_assign_cmd_code_end - prog_assign_cmd_code
+    dc.l    prog_assign_cmd_data_end - prog_assign_cmd_data
+    dc.l    0
+    ds.b    12
+prog_assign_cmd_code:
+
+    sub     sp, sp, #16
+.asn_preamble:
+    load.q  r29, 8(sp)
+    store.q r29, (sp)
+
+.asn_open_con_retry:
+    load.q  r29, (sp)
+    move.q  r1, r29
+    move.l  r2, #0
+    syscall #SYS_FIND_PORT
+    load.q  r29, (sp)
+    beqz    r2, .asn_open_con_ok
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .asn_open_con_retry
+.asn_open_con_ok:
+    store.q r1, 48(r29)
+
+.asn_open_dos_retry:
+    load.q  r29, (sp)
+    add     r1, r29, #16
+    move.l  r2, #0
+    syscall #SYS_FIND_PORT
+    load.q  r29, (sp)
+    beqz    r2, .asn_open_dos_ok
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .asn_open_dos_retry
+.asn_open_dos_ok:
+    store.q r1, 56(r29)
+
+    move.q  r1, r0
+    move.q  r2, r0
+    syscall #SYS_CREATE_PORT
+    load.q  r29, (sp)
+    store.q r1, 64(r29)
+
+    move.l  r1, #0x1000
+    move.l  r2, #0x10001
+    syscall #SYS_ALLOC_MEM
+    load.q  r29, (sp)
+    store.q r1, 72(r29)
+    store.l r3, 80(r29)
+
+    add     r14, r29, #DATA_ARGS_OFFSET
+.asn_skip_ws:
+    load.b  r15, (r14)
+    beqz    r15, .asn_do_list
+    move.l  r16, #0x20
+    bne     r15, r16, .asn_have_args
+    add     r14, r14, #1
+    bra     .asn_skip_ws
+.asn_have_args:
+    store.q r14, 88(r29)
+    move.l  r17, #0
+.asn_name_len:
+    add     r18, r14, r17
+    load.b  r19, (r18)
+    beqz    r19, .asn_bad_args
+    move.l  r20, #0x20
+    beq     r19, r20, .asn_name_done
+    add     r17, r17, #1
+    move.l  r20, #16
+    blt     r17, r20, .asn_name_len
+    bra     .asn_bad_args
+.asn_name_done:
+    load.b  r19, (r18)
+    beqz    r17, .asn_bad_args
+    add     r14, r18, #1
+.asn_skip_ws2:
+    load.b  r15, (r14)
+    beqz    r15, .asn_bad_args
+    move.l  r16, #0x20
+    bne     r15, r16, .asn_have_target
+    add     r14, r14, #1
+    bra     .asn_skip_ws2
+.asn_have_target:
+    store.q r14, 104(r29)
+    move.l  r21, #0
+.asn_target_len:
+    add     r18, r14, r21
+    load.b  r19, (r18)
+    beqz    r19, .asn_target_done
+    move.l  r20, #0x20
+    beq     r19, r20, .asn_target_done
+    add     r21, r21, #1
+    move.l  r20, #16
+    blt     r21, r20, .asn_target_len
+    bra     .asn_bad_args
+.asn_target_done:
+    beqz    r21, .asn_bad_args
+
+    load.q  r15, 72(r29)
+    move.l  r16, #0
+.asn_zero_row:
+    move.l  r20, #32
+    bge     r16, r20, .asn_strip_name_colon
+    add     r18, r15, r16
+    store.b r0, (r18)
+    add     r16, r16, #1
+    bra     .asn_zero_row
+
+.asn_strip_name_colon:
+    load.q  r14, 88(r29)
+    move.q  r16, r17
+    sub     r18, r16, #1
+    add     r18, r14, r18
+    load.b  r19, (r18)
+    move.l  r20, #0x3A
+    bne     r19, r20, .asn_name_copy
+    sub     r16, r16, #1
+    beqz    r16, .asn_bad_args
+.asn_name_copy:
+    move.l  r18, #0
+.asn_name_copy_loop:
+    bge     r18, r16, .asn_strip_target_colon
+    add     r19, r14, r18
+    load.b  r20, (r19)
+    add     r19, r15, r18
+    store.b r20, (r19)
+    add     r18, r18, #1
+    bra     .asn_name_copy_loop
+
+.asn_strip_target_colon:
+    load.q  r14, 104(r29)
+    move.q  r16, r21
+    sub     r18, r16, #1
+    add     r18, r14, r18
+    load.b  r19, (r18)
+.asn_target_copy:
+    move.l  r18, #0
+.asn_target_copy_loop:
+    bge     r18, r16, .asn_send_set
+    add     r19, r14, r18
+    load.b  r20, (r19)
+    move.l  r21, #0x3A
+    bne     r20, r21, .asn_target_store
+    move.l  r20, #0x2F
+.asn_target_store:
+    add     r19, r15, r18
+    add     r19, r19, #DOS_ASSIGN_TARGET_OFF
+    store.b r20, (r19)
+    add     r18, r18, #1
+    bra     .asn_target_copy_loop
+
+.asn_send_set:
+    move.l  r2, #DOS_ASSIGN
+    move.l  r3, #DOS_ASSIGN_SET
+    move.q  r4, r0
+    load.q  r5, 64(r29)
+    load.l  r6, 80(r29)
+    load.q  r1, 56(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+
+    load.q  r1, 64(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+    bnez    r1, .asn_bad_args
+    bra     .asn_exit
+
+.asn_do_list:
+    move.l  r2, #DOS_ASSIGN
+    move.l  r3, #DOS_ASSIGN_LIST
+    move.q  r4, r0
+    load.q  r5, 64(r29)
+    load.l  r6, 80(r29)
+    load.q  r1, 56(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+
+    load.q  r1, 64(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+    bnez    r1, .asn_exit
+    store.q r2, 120(r29)
+    load.q  r14, 72(r29)
+    move.l  r15, #0
+.asn_row_loop:
+    load.q  r16, 120(r29)
+    bge     r15, r16, .asn_exit
+    store.q r14, 8(sp)
+    move.q  r20, r14
+    jsr     .asn_send_string
+    load.q  r14, 8(sp)
+    move.l  r3, #0x3A
+    jsr     .asn_putc
+    load.q  r14, 8(sp)
+    add     r18, r14, #DOS_ASSIGN_TARGET_OFF
+    load.b  r19, (r18)
+    beqz    r19, .asn_row_crlf
+    move.l  r3, #0x20
+    jsr     .asn_putc
+    load.q  r14, 8(sp)
+    add     r18, r14, #DOS_ASSIGN_TARGET_OFF
+    move.q  r20, r18
+    jsr     .asn_send_string
+.asn_row_crlf:
+    move.l  r3, #0x0D
+    jsr     .asn_putc
+    move.l  r3, #0x0A
+    jsr     .asn_putc
+    load.q  r14, 8(sp)
+    add     r14, r14, #32
+    add     r15, r15, #1
+    bra     .asn_row_loop
+
+.asn_bad_args:
+    load.q  r29, (sp)
+    add     r20, r29, #32
+    jsr     .asn_send_string
+
+.asn_exit:
+    move.q  r1, r0
+    syscall #SYS_EXIT_TASK
+
+.asn_putc:
+    sub     sp, sp, #16
+    load.q  r29, 24(sp)
+    store.q r29, (sp)
+    store.q r3, 8(sp)
+.asn_putc_retry:
+    load.q  r3, 8(sp)
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r29, (sp)
+    load.q  r1, 48(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .asn_putc_full
+    add     sp, sp, #16
+    rts
+.asn_putc_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .asn_putc_retry
+
+.asn_send_string:
+    sub     sp, sp, #16
+    load.q  r29, 24(sp)
+    store.q r29, (sp)
+.asn_ss_loop:
+    load.b  r1, (r20)
+    beqz    r1, .asn_ss_done
+    store.q r20, 8(sp)
+.asn_ss_retry:
+    load.q  r20, 8(sp)
+    load.b  r3, (r20)
+    move.l  r2, #0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    load.q  r29, (sp)
+    load.q  r1, 48(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    move.l  r28, #ERR_FULL
+    beq     r2, r28, .asn_ss_full
+    load.q  r20, 8(sp)
+    add     r20, r20, #1
+    bra     .asn_ss_loop
+.asn_ss_full:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .asn_ss_retry
+.asn_ss_done:
+    add     sp, sp, #16
+    rts
+
+prog_assign_cmd_code_end:
+
+prog_assign_cmd_data:
+    dc.b    "console.handler", 0
+    dc.b    "dos.library", 0, 0, 0, 0, 0
+    dc.b    "Bad arguments", 0x0D, 0x0A, 0
+    ds.b    8
+    ds.b    8
+    ds.b    8
+    ds.b    8
+    ds.b    8
+    ds.b    8
+    ds.b    8
+    ds.b    8
+    ds.b    8
+    ds.b    8
+prog_assign_cmd_data_end:
+    align   8
+prog_assign_cmd_end:
+
 seed_startup:
     dc.b    "RESOURCES/hardware.resource", 0x0A
     dc.b    "DEVS/input.device", 0x0A
     dc.b    "LIBS/graphics.library", 0x0A
     dc.b    "LIBS/intuition.library", 0x0A
     dc.b    "VERSION", 0x0A
-    dc.b    "ECHO All visible services are running in user space", 0x0A, 0
+    dc.b    "ECHO Type HELP for commands and ASSIGN for layout", 0x0A, 0
 seed_startup_end:
+    align   8
+
+seed_help_text:
+    dc.b    "M15 help surface:", 0x0D, 0x0A
+    dc.b    "Commands: VERSION AVAIL DIR TYPE ECHO ASSIGN LIST WHICH HELP", 0x0D, 0x0A
+    dc.b    "Assigns: RAM: C: L: LIBS: DEVS: T: S: RESOURCES:", 0x0D, 0x0A, 0
+seed_help_text_end:
+    align   8
+
+seed_loader_info:
+    dc.b    "L: contains DOS helper assets and is not part of bare command search.", 0x0D, 0x0A, 0
+seed_loader_info_end:
     align   8
 
 ; ---------------------------------------------------------------------------
@@ -12185,8 +13374,8 @@ prog_input_device_code:
     ; ===== Preamble: compute data page base (preempt-safe) =====
     sub     sp, sp, #16
 .idev_preamble:
-    load.q  r30, (sp)
-    load.q  r29, 8(sp)
+    load.q  r30, (sp)                  ; r30 = startup_base
+    load.q  r29, 8(sp)                 ; r29 = data_base
     store.q r29, (sp)
     load.l  r1, TASKSB_TASK_ID(r30)
     store.q r1, 128(r29)               ; data[128] = task_id
@@ -12201,6 +13390,7 @@ prog_input_device_code:
     add     r1, r29, #192              ; r1 = "hardware.resource" string
     syscall #SYS_FIND_PORT             ; R1=port_id, R2=err
     bnez    r2, .idev_hwres_retry
+    load.q  r29, (sp)
     bra     .idev_have_hwres
 .idev_hwres_retry:
     syscall #SYS_YIELD
@@ -12800,8 +13990,8 @@ prog_gfxlib_code:
     ; ===== Preamble =====
     sub     sp, sp, #16
 .gfx_preamble:
-    load.q  r30, (sp)
-    load.q  r29, 8(sp)
+    load.q  r30, (sp)                  ; r30 = startup_base
+    load.q  r29, 8(sp)                 ; r29 = data_base
     store.q r29, (sp)
     load.l  r1, TASKSB_TASK_ID(r30)
     store.q r1, 128(r29)               ; data[128] = task_id
@@ -12814,6 +14004,7 @@ prog_gfxlib_code:
     add     r1, r29, #256              ; r1 = "hardware.resource" string (data offset 256)
     syscall #SYS_FIND_PORT
     bnez    r2, .gfx_hwres_retry
+    load.q  r29, (sp)
     bra     .gfx_have_hwres
 .gfx_hwres_retry:
     syscall #SYS_YIELD
@@ -15709,6 +16900,9 @@ prog_shell_code:
 .sh_word_end:
     ; r15 = start of word, r16 = end of word (points to space or null)
     sub     r17, r16, r15              ; r17 = word length
+    beqz    r17, .sh_main_loop
+
+.sh_dispatch_command:
 
     ; =====================================================================
     ; M10: Name-based command dispatch via DOS_RUN
@@ -15734,12 +16928,14 @@ prog_shell_code:
     store.b r0, (r19)                  ; null-terminate command name
     add     r19, r19, #1               ; advance past null
 
-    ; 2. Copy args (everything after first word + space) after null
+    ; 2. Copy args (everything after first word + space) after null.
+    ; If the shell has a selected current volume and DIR/LIST are invoked
+    ; without explicit args, inject that volume token as the command arg.
     ; r16 = end of word (space or null)
     load.b  r21, (r16)
     beqz    r21, .sh_no_args
     add     r16, r16, #1               ; skip space
-.sh_no_args:
+.sh_copy_explicit_args:
     move.l  r20, #0
 .sh_cp_args:
     load.b  r21, (r16)
@@ -15752,6 +16948,91 @@ prog_shell_code:
     blt     r20, r22, .sh_cp_args
     store.b r0, (r19)
 .sh_args_done:
+    bra     .sh_send_run
+
+.sh_no_args:
+    ; Bare "X:" token with no args updates the shell's current listing
+    ; context and returns to the prompt.
+    move.l  r21, #2
+    blt     r17, r21, .sh_no_args_maybe_command
+    sub     r18, r19, #2
+    load.b  r20, (r18)
+    move.l  r21, #0x3A                  ; ':'
+    bne     r20, r21, .sh_no_args_maybe_command
+    move.q  r18, r14
+    add     r21, r29, #192
+.sh_set_current_volume:
+    load.b  r20, (r18)
+    store.b r20, (r21)
+    beqz    r20, .sh_main_loop
+    add     r18, r18, #1
+    add     r21, r21, #1
+    bra     .sh_set_current_volume
+
+.sh_no_args_maybe_command:
+    move.q  r18, r14
+    load.b  r20, (r18)
+    move.l  r21, #0x44                  ; 'D'
+    beq     r20, r21, .sh_maybe_inject_dir
+    move.l  r21, #0x64                  ; 'd'
+    beq     r20, r21, .sh_maybe_inject_dir
+    move.l  r21, #0x4C                  ; 'L'
+    beq     r20, r21, .sh_maybe_inject_list
+    move.l  r21, #0x6C                  ; 'l'
+    beq     r20, r21, .sh_maybe_inject_list
+    store.b r0, (r19)
+    bra     .sh_args_done
+
+.sh_maybe_inject_dir:
+    move.l  r21, #3
+    bne     r17, r21, .sh_no_args_plain
+    add     r18, r18, #1
+    load.b  r20, (r18)
+    move.l  r21, #0x49                  ; 'I'
+    beq     r20, r21, .sh_inject_current_volume
+    move.l  r21, #0x69                  ; 'i'
+    beq     r20, r21, .sh_inject_current_volume
+    bra     .sh_no_args_plain
+
+.sh_maybe_inject_list:
+    move.l  r21, #4
+    bne     r17, r21, .sh_no_args_plain
+    add     r18, r18, #1
+    load.b  r20, (r18)
+    move.l  r21, #0x49                  ; 'I'
+    bne     r20, r21, .sh_maybe_inject_list_lower
+    add     r18, r18, #1
+    load.b  r20, (r18)
+    move.l  r21, #0x53                  ; 'S'
+    beq     r20, r21, .sh_inject_current_volume
+.sh_maybe_inject_list_lower:
+    sub     r18, r18, #1
+    add     r18, r18, #1
+    load.b  r20, (r18)
+    move.l  r21, #0x69                  ; 'i'
+    bne     r20, r21, .sh_no_args_plain
+    add     r18, r18, #1
+    load.b  r20, (r18)
+    move.l  r21, #0x73                  ; 's'
+    beq     r20, r21, .sh_inject_current_volume
+
+.sh_no_args_plain:
+    store.b r0, (r19)
+    bra     .sh_args_done
+
+.sh_inject_current_volume:
+    add     r18, r29, #192
+    load.b  r20, (r18)
+    beqz    r20, .sh_no_args_plain
+.sh_cp_current_volume:
+    load.b  r20, (r18)
+    store.b r20, (r19)
+    beqz    r20, .sh_args_done
+    add     r18, r18, #1
+    add     r19, r19, #1
+    bra     .sh_cp_current_volume
+
+.sh_send_run:
 
     ; 3. Send DOS_RUN to dos.library
     load.q  r29, (sp)
@@ -15773,6 +17054,7 @@ prog_shell_code:
     move.l  r14, #DOS_ERR_NOTFOUND
     bne     r1, r14, .sh_cmd_ok
 
+.sh_unknown_cmd:
     ; Unknown command
     load.q  r29, (sp)
     add     r20, r29, #88             ; "Unknown command\r\n"

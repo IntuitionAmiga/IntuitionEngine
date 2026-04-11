@@ -10,7 +10,7 @@
 
 IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS Exec but designed from the ground up for a hardware-enforced privilege model. Where Amiga Exec ran in flat supervisor space with no memory protection, IExec uses the IE64 MMU to enforce user/supervisor separation, per-task page tables, and W^X memory policy.
 
-**What IExec does (current as of Milestone 14 phase 5 / M13 phase 5 runtime):**
+**What IExec does (current as of M15 on top of the M14.2 runtime boundary):**
 
 - Preemptive round-robin scheduling across up to 255 live tasks (CreateTask/ExitTask with slot reuse). M5 capped this at 8 (per-task `USER_DYN_STRIDE` saturated the 32 MiB VA at 8 tasks); M12 globalized the dynamic VA window and bumped the cap to 16; M12.6 Phase D bumped it to 32; **M13 phase 4 expands the remaining fixed task-state tables to the current 8-bit internal-slot ABI ceiling (255, with `0xFF` reserved as a sentinel in a few kernel fields)**. Public task IDs are independent monotonic `u32`s.
 - Memory protection via the IE64 MMU (per-task page tables with separate code/stack/data mappings, W^X enforcement)
@@ -48,9 +48,9 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
   - shipped service binaries under `LIBS:`, `DEVS:`, and `RESOURCES:` are now seeded as strict M14 ELF too
   - the public DOS loader API is unchanged; the embedded-manifest service source remains internal-only
 - console.handler: CON: handler with GetMsg polling and CON_READLINE protocol — **M11.5**: console.handler now owns terminal MMIO directly via its own `SYS_MAP_IO(0xF0, 1)` mapping and inlines the readline MMIO loop. The former kernel-side `SYS_READ_INPUT` (slot 37) is removed; slot 37 is an unallocated hole that returns `ERR_BADARG`.
-- **dos.library**: AmigaOS dos.library equivalent with RAM: filesystem (case-insensitive, 32-byte filenames). The file metadata table and open-handle table are unbounded user-space chains of `AllocMem`'d 4 KiB pages (85 file entries or 510 handle entries per page). As of **M12.8**, each file body is a variable-size chain of 4 KiB extents linked through `entry.file_va`; the old fixed `DOS_FILE_SIZE` per-file allocation is gone. `DOS_WRITE` now does an atomic swap onto a newly allocated extent chain so allocation failure leaves previous content intact. **M14 phases 2-3 add `DOS_LOADSEG` / `DOS_UNLOADSEG` / `DOS_RUNSEG`**: dos.library now validates the strict native ELF subset, builds DOS-owned seglists with preserved target VA / `R/W/X` / entry-point metadata, frees them on demand, and launches them through the dual-mode `ExecProgram` descriptor handoff. M10 added the assign table (RAM:, C:, S:), name-based command resolution, embedded command images, init-time seeding into the RAM file store, and boot-race-free port creation.
-- **Shell**: interactive command shell that sends raw command names to dos.library via DOS_RUN (no shell-side command table). As of M14 phase 5, that visible command-dispatch path now goes through the DOS loader path for the seeded native-ELF `C:` command/demo set and falls back transparently only for compatibility flat images. Executes `S:Startup-Sequence` automatically at boot if present, then drops to the interactive prompt.
-- **5 external commands** as DOS-loaded executables: VERSION, AVAIL, DIR, TYPE, ECHO. Stored as files in RAM under `C:`, launched by name through dos.library.
+- **dos.library**: AmigaOS dos.library equivalent with a RAM-backed, case-insensitive filesystem and Amiga-shaped assign model. The file metadata table and open-handle table are unbounded user-space chains of `AllocMem`'d 4 KiB pages (85 file entries or 510 handle entries per page). As of **M12.8**, each file body is a variable-size chain of 4 KiB extents linked through `entry.file_va`; the old fixed `DOS_FILE_SIZE` per-file allocation is gone. `DOS_WRITE` now does an atomic swap onto a newly allocated extent chain so allocation failure leaves previous content intact. **M14 phases 2-3 add `DOS_LOADSEG` / `DOS_UNLOADSEG` / `DOS_RUNSEG`**: dos.library validates the strict native ELF subset, builds DOS-owned seglists with preserved target VA / `R/W/X` / entry-point metadata, frees them on demand, and launches them through the dual-mode `ExecProgram` descriptor handoff. **M15 expands the DOS namespace and layout model**: the built-in assign table now covers `RAM:`, `C:`, `L:`, `LIBS:`, `DEVS:`, `T:`, `S:`, and `RESOURCES:`; bare command search remains `C:`-only; `L:` is direct-access only in M15; `RAM:` remains a first-class compatibility root view; and `DOS_ASSIGN` adds DOS-side list/query/set of assign rows while keeping `RAM:` non-mutable.
+- **Shell**: interactive command shell that sends raw command names to dos.library via DOS_RUN (no shell-side command table). The visible command-dispatch path goes through the DOS loader path for the seeded native-ELF `C:` command/demo set; `DOS_RUN` rejects non-ELF executable content instead of falling back to legacy flat-image launch. Executes `S:Startup-Sequence` automatically at boot if present, then drops to the interactive prompt.
+- **Visible DOS commands** as DOS-loaded executables: `VERSION`, `AVAIL`, `DIR`, `TYPE`, `ECHO`, `ASSIGN`, `LIST`, `WHICH`, `HELP`, plus the retained `GfxDemo` and `About` programs. Stored as files in RAM under `C:`, launched by name through dos.library.
 
 **What IExec does not do:**
 
@@ -58,6 +58,27 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
 - Device drivers (hardware chips are memory-mapped; drivers live in user space)
 - Graphics or audio (handled by respective chip subsystems)
 - Boot/services use the internal embedded-manifest ELF path for shipped runtime binaries; the remaining flat-image path is removed in M14.2
+
+**M15 current runtime:**
+
+- `dos.library` owns a first-class DOS layout and assign table for `RAM:`, `C:`, `L:`, `LIBS:`, `DEVS:`, `T:`, `S:`, and `RESOURCES:`
+- `DOS_ASSIGN` supports list/query/set for assign rows; `RAM:` is listed and queryable but not mutable
+- fully qualified names resolve directly through the assign table, while bare command search remains `C:`-only
+- `L:` is a qualified helper namespace; bare command fallback does not probe `L:`
+- `T:` is a writable temporary namespace backed by the same in-RAM DOS store
+- `DOS_RUN` remains ELF-only, `DOS_LOADSEG` / `DOS_RUNSEG` remain the public executable path, and the remaining flat-image path is removed in M14.2
+- the current boot/demo path reaches a richer text-mode system:
+  - `exec.library M11 boot`
+  - `console.handler M11.5 [Task 0]`
+  - `dos.library M14 [Task 1]`
+  - `Shell M10 [Task 2]`
+  - `hardware.resource M12.5 [Task 3]`
+  - `input.device M11 [Task 4]`
+  - `graphics.library M11 [Task 5]`
+  - `intuition.library M12 [Task 6]`
+  - `IntuitionOS 0.16`
+  - `Type HELP for commands and ASSIGN for layout`
+  - `1>`
 
 IExec runs on the IE64 CPU core only. It requires the IE64 MMU (4 KiB paged virtual memory, software TLB, control registers) and the hardware timer for preemption.
 

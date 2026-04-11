@@ -126,11 +126,15 @@ SYSINFO_CURRENT_TASK equ 3
 ; About app + M12 embedded Topaz fonts), the binary grew past 60 KiB
 ; and silently overwrote the page table during phase 3 PTE init,
 ; corrupting kernel mappings before the boot banner could even print.
-; The page table now lives at 0x040000, giving the kernel binary a
-; ~252 KiB code/data window — comfortable headroom for future
-; embedded services and fonts.
-KERN_PAGE_TABLE   equ 0x040000    ; Kernel page table (64 KiB) — M12: was 0x010000
-KERN_DATA_BASE    equ 0x050000    ; Kernel data structures      — M12: was 0x020000
+; M15 expands the embedded boot/runtime payloads further, so the old
+; 0x040000 / 0x050000 PT+data window is no longer safe either: the
+; input.device and later service ELFs can reach 0x040000 and get
+; destroyed by the PT bootstrap itself. The kernel PT/data window now
+; starts at 0x074000 / 0x084000, which keeps it below the fixed I/O
+; region at 0x0A0000 while restoring clear headroom for the full
+; assembled kernel image, including the late string table.
+KERN_PAGE_TABLE   equ 0x074000    ; Kernel page table (64 KiB) — M15: was 0x040000
+KERN_DATA_BASE    equ 0x084000    ; Kernel data structures      — M15: was 0x050000
 KERN_STACK_TOP    equ 0x09F000    ; Kernel stack top
 
 ; ---------------------------------------------------------------------------
@@ -684,6 +688,12 @@ DOS_RUN           equ 6           ; Run program (share="cmd\0args\0")
 DOS_LOADSEG       equ 7           ; Load executable into DOS-owned seglist (share=name)
 DOS_UNLOADSEG     equ 8           ; Free DOS-owned seglist (data0=seglist VA)
 DOS_RUNSEG        equ 9           ; Run a loaded seglist (data0=seglist VA, share=args)
+DOS_ASSIGN        equ 10          ; Assign list/query/set (share=assign row buffer)
+
+; DOS_ASSIGN sub-ops (data0)
+DOS_ASSIGN_LIST   equ 0           ; reply.data0 = row count, share = rows[name[16],target[16]]
+DOS_ASSIGN_QUERY  equ 1           ; share in = name, share out = row[name,target]
+DOS_ASSIGN_SET    equ 2           ; share in = row[name,target]
 
 ; DOS open modes
 DOS_MODE_READ     equ 0

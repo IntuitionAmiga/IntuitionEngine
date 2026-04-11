@@ -21,8 +21,8 @@ import (
 
 const (
 	// Kernel memory layout (all in identity-mapped supervisor space)
-	kernPageTableBase = 0x40000 // Kernel page table (64 KiB) — M12: was 0x10000
-	kernDataBase      = 0x50000 // Kernel data (TCBs, state)   — M12: was 0x20000
+	kernPageTableBase = 0x74000 // Kernel page table (64 KiB) — M15: was 0x40000
+	kernDataBase      = 0x84000 // Kernel data (TCBs, state)   — M15: was 0x50000
 	kernStackTop      = 0x9F000 // Kernel stack top
 	maxTasks          = 255     // MAX_TASKS (M13 Phase 4: internal-slot ABI ceiling, 0xFF reserved)
 
@@ -79,11 +79,20 @@ const (
 	dosLoadSeg   = 7
 	dosUnLoadSeg = 8
 	dosRunSeg    = 9
+	dosAssign    = 10
 	dosOK        = 0
 	dosErrNotFnd = 1
 	dosErrBadArg = 2
 	dosErrFull   = 3
 	dosErrBadHdl = 4
+	dosErrNoMem  = 6
+
+	dosAssignOpList  = 0
+	dosAssignOpQuery = 1
+	dosAssignOpSet   = 2
+	dosAssignNameMax = 16
+	dosAssignRowSz   = 32
+	dosAssignTgtOff  = 16
 
 	// Kernel data offsets (must match iexec.inc)
 	kdCurrentTask = 0  // uint64: index of current task
@@ -1224,6 +1233,10 @@ func assembleAndLoadKernel(t *testing.T) (*ie64TestRig, *TerminalMMIO) {
 		"seed_dir.elf",
 		"seed_type.elf",
 		"seed_echo.elf",
+		"seed_assign.elf",
+		"seed_list.elf",
+		"seed_which.elf",
+		"seed_help.elf",
 		"seed_gfxdemo.elf",
 		"seed_about.elf",
 	} {
@@ -1255,6 +1268,10 @@ var embeddedRuntimeELFPaths = []string{
 	"sdk/intuitionos/iexec/seed_dir.elf",
 	"sdk/intuitionos/iexec/seed_type.elf",
 	"sdk/intuitionos/iexec/seed_echo.elf",
+	"sdk/intuitionos/iexec/seed_assign.elf",
+	"sdk/intuitionos/iexec/seed_list.elf",
+	"sdk/intuitionos/iexec/seed_which.elf",
+	"sdk/intuitionos/iexec/seed_help.elf",
 	"sdk/intuitionos/iexec/boot_hardware_resource.elf",
 	"sdk/intuitionos/iexec/boot_input_device.elf",
 	"sdk/intuitionos/iexec/boot_graphics_library.elf",
@@ -1277,6 +1294,10 @@ var embeddedRuntimeELFPathsPhysical = []string{
 	"sdk/intuitionos/iexec/seed_dir.elf",
 	"sdk/intuitionos/iexec/seed_type.elf",
 	"sdk/intuitionos/iexec/seed_echo.elf",
+	"sdk/intuitionos/iexec/seed_assign.elf",
+	"sdk/intuitionos/iexec/seed_list.elf",
+	"sdk/intuitionos/iexec/seed_which.elf",
+	"sdk/intuitionos/iexec/seed_help.elf",
 	"sdk/intuitionos/iexec/seed_gfxdemo.elf",
 	"sdk/intuitionos/iexec/seed_about.elf",
 }
@@ -1464,6 +1485,19 @@ func findEmbeddedELFCodeStartLast(t *testing.T, mem []byte, rel string) uint32 {
 		t.Fatalf("findEmbeddedELFCodeStartLast: could not locate %q in assembled kernel image", rel)
 	}
 	return PROG_START + uint32(idx) + elfExecCodeOffset(t, image)
+}
+
+func findEmbeddedBlobStartLast(t *testing.T, mem []byte, rel string) (uint32, uint32) {
+	t.Helper()
+	image, err := os.ReadFile(rel)
+	if err != nil {
+		t.Fatalf("findEmbeddedBlobStartLast: ReadFile(%q): %v", rel, err)
+	}
+	idx := bytes.LastIndex(mem[PROG_START:], image)
+	if idx < 0 {
+		t.Fatalf("findEmbeddedBlobStartLast: could not locate %q in assembled kernel image", rel)
+	}
+	return PROG_START + uint32(idx), uint32(len(image))
 }
 
 func findBootManifestSeededELFCodeStart(t *testing.T, mem []byte, id uint32, rel string) uint32 {
@@ -7862,11 +7896,12 @@ func TestIExec_DOSRead_ShareClamp(t *testing.T) {
 // DOS_ERR_NOTFOUND, which TYPE prints as "File not found".
 func TestIExec_DosResolve_LongName(t *testing.T) {
 	longName := strings.Repeat("A", 200)
-	cmd := "TYPE C:" + longName + "\n"
-	output := bootAndInjectCommand(t, cmd, 5*time.Second)
-	// Must not crash (kernel still alive, prompt eventually returned)
-	if !strings.Contains(output, "exec.library M11 boot") {
-		t.Fatalf("kernel didn't boot, output=%q", output[:min(len(output), 200)])
+	cmd := "\nTYPE C:" + longName + "\nVERSION\n"
+	output := bootAndInjectCommand(t, cmd, 8*time.Second)
+	// Must not crash: the shell should survive the oversized qualified name
+	// and still execute the following VERSION command.
+	if !strings.Contains(output, "IntuitionOS 0.16") {
+		t.Fatalf("shell did not survive long qualified name, output=%q", output[:min(len(output), 800)])
 	}
 	// Must reach a NOT_FOUND-class error path, not a memory corruption
 	// crash. TYPE prints "File not found" on DOS_ERR_NOTFOUND.
@@ -8590,8 +8625,8 @@ func TestIExec_VersionCommand(t *testing.T) {
 	// Inject "\nVERSION\n". The leading empty line gives dos.library time to
 	// finish initialization before the shell sends DOS_RUN for VERSION.
 	output := bootAndInjectCommand(t, "\nVERSION\n", 5*time.Second)
-	if !strings.Contains(output, "IntuitionOS 0.15") {
-		t.Fatalf("VersionCommand: expected 'IntuitionOS 0.15' in output, got=%q", output[:min(len(output), 300)])
+	if !strings.Contains(output, "IntuitionOS 0.16") {
+		t.Fatalf("VersionCommand: expected 'IntuitionOS 0.16' in output, got=%q", output[:min(len(output), 300)])
 	}
 	if strings.Contains(output, "task model M13") || strings.Contains(output, "dos storage M12.8") || strings.Contains(output, "cap sweep M12.6") {
 		t.Fatalf("VersionCommand: stale long milestone banner text still present, got=%q", output[:min(len(output), 300)])
@@ -8640,14 +8675,17 @@ func TestIExec_TypeStartupSequence(t *testing.T) {
 	if !strings.Contains(output, "VERSION") {
 		t.Fatalf("TypeStartupSequence: expected 'VERSION' in output, got=%q", output[:min(len(output), 300)])
 	}
-	if !strings.Contains(output, "ECHO All visible services are running in user space") {
-		t.Errorf("TypeStartupSequence: expected service-space ECHO in output, got=%q", output[:min(len(output), 300)])
+	if !strings.Contains(output, "ECHO Type HELP for commands and ASSIGN for layout") {
+		t.Errorf("TypeStartupSequence: expected richer M15 startup hint in output, got=%q", output[:min(len(output), 300)])
 	}
 	if strings.Contains(output, "Core OS objects:") || strings.Contains(output, "dos.library file storage:") {
 		t.Errorf("TypeStartupSequence: removed startup ECHO lines still present, got=%q", output[:min(len(output), 300)])
 	}
 	if strings.Contains(output, "ECHO IntuitionOS M14 ready") {
 		t.Errorf("TypeStartupSequence: removed startup ready ECHO still present, got=%q", output[:min(len(output), 300)])
+	}
+	if strings.Contains(output, "ECHO All visible services are running in user space") {
+		t.Errorf("TypeStartupSequence: stale startup service-space ECHO still present, got=%q", output[:min(len(output), 300)])
 	}
 }
 
@@ -9921,11 +9959,8 @@ func TestIExec_M13_Phase5_FullBootStack_ServiceCensus(t *testing.T) {
 		"dos.library M14 [Task ",
 		"Shell M10 [Task ",
 		"hardware.resource M12.5 [Task ",
-		"input.device M11 [Task ",
-		"graphics.library M11 [Task ",
-		"intuition.library M12 [Task ",
-		"IntuitionOS M14 ready",
-		"All visible services are running in user space",
+		"IntuitionOS 0.16",
+		"Type HELP for commands and ASSIGN for layout",
 		"1>",
 	}
 	for _, want := range wantBanners {
@@ -11011,6 +11046,705 @@ func waitForDosSeededFileMeta(mem []byte, name string, timeout time.Duration) (u
 	return 0, 0, false
 }
 
+func listDosSeededFileNames(t *testing.T, mem []byte) []string {
+	t.Helper()
+	const (
+		metaHdrSz   = 16
+		metaEntrySz = 48
+		metaPerPage = 85
+	)
+	dosData := uint32(taskLayoutFieldQ(mem, 1, kdTaskDataBase))
+	metaHead := binary.LittleEndian.Uint64(mem[dosData+152:])
+	if metaHead == 0 {
+		t.Fatal("listDosSeededFileNames: meta chain head is 0")
+	}
+
+	var names []string
+	for page := metaHead; page != 0; {
+		pagePhys, ok := taskVAToPhys(mem, 1, page)
+		if !ok {
+			t.Fatalf("listDosSeededFileNames: could not translate meta page VA 0x%X", page)
+		}
+		next := binary.LittleEndian.Uint64(mem[pagePhys:])
+		for i := uint32(0); i < metaPerPage; i++ {
+			entry := pagePhys + metaHdrSz + i*metaEntrySz
+			if mem[entry] == 0 {
+				continue
+			}
+			end := entry
+			for end < entry+32 && mem[end] != 0 {
+				end++
+			}
+			names = append(names, string(mem[entry:end]))
+		}
+		page = next
+	}
+	return names
+}
+
+func addDosSeededFileAlias(t *testing.T, mem []byte, alias string, target string) {
+	t.Helper()
+	const (
+		metaHdrSz   = 16
+		metaEntrySz = 48
+		metaPerPage = 85
+	)
+	if len(alias) == 0 || len(alias) > 31 {
+		t.Fatalf("addDosSeededFileAlias: alias %q length invalid", alias)
+	}
+	fileVA, fileSize := findDosSeededFileMeta(t, mem, target)
+	dosData := uint32(taskLayoutFieldQ(mem, 1, kdTaskDataBase))
+	metaHead := binary.LittleEndian.Uint64(mem[dosData+152:])
+	if metaHead == 0 {
+		t.Fatal("addDosSeededFileAlias: meta chain head is 0")
+	}
+	for page := metaHead; page != 0; {
+		pagePhys, ok := taskVAToPhys(mem, 1, page)
+		if !ok {
+			t.Fatalf("addDosSeededFileAlias: could not translate meta page VA 0x%X", page)
+		}
+		next := binary.LittleEndian.Uint64(mem[pagePhys:])
+		for i := uint32(0); i < metaPerPage; i++ {
+			entry := pagePhys + metaHdrSz + i*metaEntrySz
+			if mem[entry] != 0 {
+				continue
+			}
+			copy(mem[entry:entry+32], make([]byte, 32))
+			copy(mem[entry:], []byte(alias))
+			binary.LittleEndian.PutUint64(mem[entry+32:], fileVA)
+			binary.LittleEndian.PutUint32(mem[entry+40:], fileSize)
+			return
+		}
+		page = next
+	}
+	t.Fatalf("addDosSeededFileAlias: no free metadata slot for %q", alias)
+}
+
+func runDOSPathRoundTripClient(t *testing.T, path string, payload string) (*ie64TestRig, uint32) {
+	t.Helper()
+	if len(path) == 0 || len(path) > 63 {
+		t.Fatalf("runDOSPathRoundTripClient: path length %d out of range", len(path))
+	}
+	if len(payload) == 0 || len(payload) > 64 {
+		t.Fatalf("runDOSPathRoundTripClient: payload length %d out of range", len(payload))
+	}
+	const (
+		offDosPort   = 128
+		offReplyPrt  = 136
+		offBufferVA  = 144
+		offShareHdl  = 152
+		offOpenErr   = 160
+		offHandle1   = 168
+		offWriteErr  = 176
+		offBytesWr   = 184
+		offReadErr   = 192
+		offReadBytes = 200
+		offReadback  = 208
+	)
+
+	rig, _ := assembleAndLoadKernel(t)
+	shellCode := findShellClientCodeStart(t, rig.cpu.memory)
+
+	off := shellCode
+	w := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+	writeBytesAtBuffer := func(data []byte) {
+		w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, offBufferVA))
+		for i, b := range data {
+			w(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, uint32(b)))
+			w(ie64Instr(OP_STORE, 5, IE64_SIZE_B, 0, 4, 0, uint32(i)))
+		}
+	}
+
+	// Preamble: recover the task data pointer from the startup ABI.
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+
+	// FindPort("dos.library") with retry.
+	findLoop := off
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, 16))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFindPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	beqInstr := off
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	braFind := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(findLoop)-int32(braFind))))
+	foundDos := off
+	copy(rig.cpu.memory[beqInstr:], ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, uint32(int32(foundDos)-int32(beqInstr))))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offDosPort))
+
+	// Create anonymous reply port.
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offReplyPrt))
+
+	// Allocate shared caller buffer.
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0x10001))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offBufferVA))
+	w(ie64Instr(OP_STORE, 3, IE64_SIZE_Q, 1, 29, 0, offShareHdl))
+
+	// Write the DOS path and open for write.
+	writeBytesAtBuffer(append([]byte(path), 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_LOAD, 6, IE64_SIZE_L, 0, 29, 0, offShareHdl))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offOpenErr))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offHandle1))
+
+	// Write payload and persist it.
+	writeBytesAtBuffer([]byte(payload))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 3))
+	w(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, offHandle1))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(len(payload))))
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_LOAD, 6, IE64_SIZE_L, 0, 29, 0, offShareHdl))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offWriteErr))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offBytesWr))
+
+	// Close write handle.
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 4))
+	w(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, offHandle1))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+
+	// Reopen for read.
+	writeBytesAtBuffer(append([]byte(path), 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_LOAD, 6, IE64_SIZE_L, 0, 29, 0, offShareHdl))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offHandle1))
+
+	// Clear the read buffer and read the payload back.
+	w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, offBufferVA))
+	for i := 0; i < len(payload); i += 8 {
+		w(ie64Instr(OP_STORE, 0, IE64_SIZE_Q, 0, 4, 0, uint32(i)))
+	}
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 2))
+	w(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, offHandle1))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(len(payload))))
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_LOAD, 6, IE64_SIZE_L, 0, 29, 0, offShareHdl))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offReadErr))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offReadBytes))
+
+	w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, offBufferVA))
+	for i := 0; i < len(payload); i++ {
+		w(ie64Instr(OP_LOAD, 5, IE64_SIZE_B, 0, 4, 0, uint32(i)))
+		w(ie64Instr(OP_STORE, 5, IE64_SIZE_B, 1, 29, 0, offReadback+uint32(i)))
+	}
+
+	// Close the read handle and idle.
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 4))
+	w(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, offHandle1))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+
+	loopHere := off
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	braLoop := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(loopHere)-int32(braLoop))))
+
+	clientSize := off - shellCode
+	if clientSize > 3256 {
+		t.Fatalf("runDOSPathRoundTripClient: test client too large: %d > 3256", clientSize)
+	}
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	return rig, findShellTaskDataBase(t, rig.cpu.memory)
+}
+
+func encodeDOSAssignRow(t *testing.T, name string, target string) []byte {
+	t.Helper()
+	if len(name) == 0 || len(name) >= dosAssignNameMax {
+		t.Fatalf("encodeDOSAssignRow: name %q length invalid", name)
+	}
+	if len(target) >= dosAssignNameMax {
+		t.Fatalf("encodeDOSAssignRow: target %q length invalid", target)
+	}
+	row := make([]byte, dosAssignRowSz)
+	copy(row[:dosAssignNameMax], []byte(name))
+	copy(row[dosAssignTgtOff:], []byte(target))
+	return row
+}
+
+func decodeDOSAssignRow(row []byte) (string, string) {
+	nameEnd := bytes.IndexByte(row[:dosAssignNameMax], 0)
+	if nameEnd < 0 {
+		nameEnd = dosAssignNameMax
+	}
+	targetEnd := bytes.IndexByte(row[dosAssignTgtOff:dosAssignRowSz], 0)
+	if targetEnd < 0 {
+		targetEnd = dosAssignNameMax
+	}
+	return string(row[:nameEnd]), string(row[dosAssignTgtOff : dosAssignTgtOff+targetEnd])
+}
+
+func parseDOSAssignRows(t *testing.T, mem []byte, base uint32, count uint64) map[string]string {
+	t.Helper()
+	rows := make(map[string]string)
+	for i := uint64(0); i < count; i++ {
+		rowStart := base + uint32(i*dosAssignRowSz)
+		row := mem[rowStart : rowStart+dosAssignRowSz]
+		name, target := decodeDOSAssignRow(row)
+		if name == "" {
+			continue
+		}
+		rows[name] = target
+	}
+	return rows
+}
+
+func shellTaskSharedBuffer(t *testing.T, mem []byte, dataBase uint32, size uint32) []byte {
+	t.Helper()
+	bufVA := binary.LittleEndian.Uint64(mem[dataBase+144:])
+	if bufVA == 0 {
+		t.Fatal("shellTaskSharedBuffer: shared buffer VA is 0")
+	}
+	bufPhys, ok := taskVAToPhys(mem, 2, bufVA)
+	if !ok {
+		t.Fatalf("shellTaskSharedBuffer: could not translate buffer VA 0x%X", bufVA)
+	}
+	return mem[bufPhys : bufPhys+size]
+}
+
+func runDOSAssignClient(t *testing.T, op uint32, input []byte) (*ie64TestRig, uint32) {
+	t.Helper()
+	if len(input) > 512 {
+		t.Fatalf("runDOSAssignClient: input length %d too large", len(input))
+	}
+	const (
+		offDosPort    = 128
+		offReplyPrt   = 136
+		offBufferVA   = 144
+		offShareHdl   = 152
+		offReplyType  = 160
+		offReplyData0 = 168
+	)
+
+	rig, _ := assembleAndLoadKernel(t)
+	shellCode := findShellClientCodeStart(t, rig.cpu.memory)
+
+	off := shellCode
+	w := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+	writeBytesAtBuffer := func(data []byte) {
+		w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, offBufferVA))
+		for i, b := range data {
+			w(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, uint32(b)))
+			w(ie64Instr(OP_STORE, 5, IE64_SIZE_B, 0, 4, 0, uint32(i)))
+		}
+	}
+
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+
+	findLoop := off
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, 16))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFindPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	beqInstr := off
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	braFind := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(findLoop)-int32(braFind))))
+	foundDos := off
+	copy(rig.cpu.memory[beqInstr:], ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, uint32(int32(foundDos)-int32(beqInstr))))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offDosPort))
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offReplyPrt))
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0x10001))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offBufferVA))
+	w(ie64Instr(OP_STORE, 3, IE64_SIZE_Q, 1, 29, 0, offShareHdl))
+
+	if len(input) > 0 {
+		writeBytesAtBuffer(input)
+	}
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, dosAssign))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, op))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_LOAD, 6, IE64_SIZE_L, 0, 29, 0, offShareHdl))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offReplyType))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offReplyData0))
+
+	loopHere := off
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	braLoop := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(loopHere)-int32(braLoop))))
+
+	clientSize := off - shellCode
+	if clientSize > 3256 {
+		t.Fatalf("runDOSAssignClient: test client too large: %d > 3256", clientSize)
+	}
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	return rig, findShellTaskDataBase(t, rig.cpu.memory)
+}
+
+func runDOSAssignSetThenPathRoundTripClient(t *testing.T, name string, target string, path string, payload string) (*ie64TestRig, uint32) {
+	t.Helper()
+	if len(path) == 0 || len(path) > 63 {
+		t.Fatalf("runDOSAssignSetThenPathRoundTripClient: path length %d out of range", len(path))
+	}
+	if len(payload) == 0 || len(payload) > 64 {
+		t.Fatalf("runDOSAssignSetThenPathRoundTripClient: payload length %d out of range", len(payload))
+	}
+	assignRow := encodeDOSAssignRow(t, name, target)
+	const (
+		offDosPort   = 128
+		offReplyPrt  = 136
+		offBufferVA  = 144
+		offShareHdl  = 152
+		offAssignErr = 160
+		offOpenErr   = 168
+		offHandle1   = 176
+		offWriteErr  = 184
+		offBytesWr   = 192
+		offReadErr   = 200
+		offReadBytes = 208
+	)
+
+	rig, _ := assembleAndLoadKernel(t)
+	shellCode := findShellClientCodeStart(t, rig.cpu.memory)
+
+	off := shellCode
+	w := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+	writeBytesAtBuffer := func(data []byte) {
+		w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, offBufferVA))
+		for i, b := range data {
+			w(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, uint32(b)))
+			w(ie64Instr(OP_STORE, 5, IE64_SIZE_B, 0, 4, 0, uint32(i)))
+		}
+	}
+
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+
+	findLoop := off
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, 16))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFindPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	beqInstr := off
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	braFind := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(findLoop)-int32(braFind))))
+	foundDos := off
+	copy(rig.cpu.memory[beqInstr:], ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, uint32(int32(foundDos)-int32(beqInstr))))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offDosPort))
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offReplyPrt))
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0x10001))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offBufferVA))
+	w(ie64Instr(OP_STORE, 3, IE64_SIZE_Q, 1, 29, 0, offShareHdl))
+
+	writeBytesAtBuffer(assignRow)
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, dosAssign))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, dosAssignOpSet))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_LOAD, 6, IE64_SIZE_L, 0, 29, 0, offShareHdl))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offAssignErr))
+
+	writeBytesAtBuffer(append([]byte(path), 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_LOAD, 6, IE64_SIZE_L, 0, 29, 0, offShareHdl))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offOpenErr))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offHandle1))
+
+	writeBytesAtBuffer([]byte(payload))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 3))
+	w(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, offHandle1))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(len(payload))))
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_LOAD, 6, IE64_SIZE_L, 0, 29, 0, offShareHdl))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offWriteErr))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offBytesWr))
+
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 4))
+	w(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, offHandle1))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+
+	writeBytesAtBuffer(append([]byte(path), 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_LOAD, 6, IE64_SIZE_L, 0, 29, 0, offShareHdl))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offHandle1))
+
+	w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, offBufferVA))
+	for i := 0; i < len(payload); i += 8 {
+		w(ie64Instr(OP_STORE, 0, IE64_SIZE_Q, 0, 4, 0, uint32(i)))
+	}
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 2))
+	w(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, offHandle1))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(len(payload))))
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_LOAD, 6, IE64_SIZE_L, 0, 29, 0, offShareHdl))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offReadErr))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offReadBytes))
+
+	loopHere := off
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	braLoop := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(loopHere)-int32(braLoop))))
+
+	clientSize := off - shellCode
+	if clientSize > 3256 {
+		t.Fatalf("runDOSAssignSetThenPathRoundTripClient: test client too large: %d > 3256", clientSize)
+	}
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	return rig, findShellTaskDataBase(t, rig.cpu.memory)
+}
+
+func runDOSAssignWithoutShareAfterMappedRequestClient(t *testing.T, op uint32, input []byte) (*ie64TestRig, uint32) {
+	t.Helper()
+	if len(input) > 128 {
+		t.Fatalf("runDOSAssignWithoutShareAfterMappedRequestClient: input length %d too large", len(input))
+	}
+	const (
+		offDosPort     = 128
+		offReplyPrt    = 136
+		offBufferVA    = 144
+		offShareHdl    = 152
+		offOpenReply   = 160
+		offAssignReply = 168
+		offAssignData0 = 176
+	)
+
+	rig, _ := assembleAndLoadKernel(t)
+	shellCode := findShellClientCodeStart(t, rig.cpu.memory)
+
+	off := shellCode
+	w := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+	writeBytesAtBuffer := func(data []byte) {
+		w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, offBufferVA))
+		for i, b := range data {
+			w(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, uint32(b)))
+			w(ie64Instr(OP_STORE, 5, IE64_SIZE_B, 0, 4, 0, uint32(i)))
+		}
+	}
+
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+
+	findLoop := off
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, 16))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFindPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	beqInstr := off
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	braFind := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(findLoop)-int32(braFind))))
+	foundDos := off
+	copy(rig.cpu.memory[beqInstr:], ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, uint32(int32(foundDos)-int32(beqInstr))))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offDosPort))
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offReplyPrt))
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0x10001))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offBufferVA))
+	w(ie64Instr(OP_STORE, 3, IE64_SIZE_Q, 1, 29, 0, offShareHdl))
+
+	writeBytesAtBuffer([]byte("readme\x00"))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_LOAD, 6, IE64_SIZE_L, 0, 29, 0, offShareHdl))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offOpenReply))
+
+	if len(input) > 0 {
+		writeBytesAtBuffer(input)
+	}
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, dosAssign))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, op))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offAssignReply))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offAssignData0))
+
+	loopHere := off
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	braLoop := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(loopHere)-int32(braLoop))))
+
+	clientSize := off - shellCode
+	if clientSize > 3256 {
+		t.Fatalf("runDOSAssignWithoutShareAfterMappedRequestClient: test client too large: %d > 3256", clientSize)
+	}
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	return rig, findShellTaskDataBase(t, rig.cpu.memory)
+}
+
 func readDosSeededFileBytes(t *testing.T, mem []byte, name string) []byte {
 	t.Helper()
 	fileVA, fileSize := findDosSeededFileMeta(t, mem, name)
@@ -11271,6 +12005,27 @@ func TestIExec_M142_Phase1_DocsDeclareELFOnlyExecution(t *testing.T) {
 	m141Plan := mustReadRepoFile(t, "sdk/docs/IntuitionOS/M14.1-plan.md")
 	requireAllSubstrings(t, m141Plan,
 		"M14.2 later removes that legacy flat-image compatibility entirely",
+	)
+}
+
+func TestIExec_M15_Phase1_DocsLockLayoutContract(t *testing.T) {
+	plan := mustReadRepoFile(t, "sdk/docs/IntuitionOS/M15-plan.md")
+	requireAllSubstrings(t, plan,
+		"`RAM:` as the root/no-prefix filesystem view for backwards compatibility",
+		"`L:` is direct-access only in M15",
+		"`DOS_RUN` remains ELF-only",
+		"`DOS_ASSIGN`",
+		"`C:` -> `C/`",
+		"`L:` -> `L/`",
+		"`T:` -> `T/`",
+	)
+
+	roadmap := mustReadRepoFile(t, "IntuitionOS_Roadmap.md")
+	requireAllSubstrings(t, roadmap,
+		"`RAM:` compatibility preserved",
+		"`L:` as a qualified helper namespace",
+		"`T:` as a writable temporary namespace",
+		"no change to the M14.2 ELF-only execution boundary",
 	)
 }
 
@@ -11705,6 +12460,10 @@ func TestIExec_M142_Phase3_SeededExecutablesMatchCanonicalELFSources(t *testing.
 		{"C/Dir", "sdk/intuitionos/iexec/seed_dir.elf"},
 		{"C/Type", "sdk/intuitionos/iexec/seed_type.elf"},
 		{"C/Echo", "sdk/intuitionos/iexec/seed_echo.elf"},
+		{"C/Assign", "sdk/intuitionos/iexec/seed_assign.elf"},
+		{"C/List", "sdk/intuitionos/iexec/seed_list.elf"},
+		{"C/Which", "sdk/intuitionos/iexec/seed_which.elf"},
+		{"C/Help", "sdk/intuitionos/iexec/seed_help.elf"},
 		{"C/GfxDemo", "sdk/intuitionos/iexec/seed_gfxdemo.elf"},
 		{"C/About", "sdk/intuitionos/iexec/seed_about.elf"},
 	} {
@@ -11724,7 +12483,28 @@ func TestIExec_M142_Phase3_SeededExecutablesMatchCanonicalELFSources(t *testing.
 		"LIBS/graphics.library",
 		"LIBS/intuition.library",
 	} {
-		assertDosSeededFileIsELF(t, mem, name)
+		image := readDosSeededFileBytes(t, mem, name)
+		if err := validateM14ELFContract(image); err != nil {
+			t.Fatalf("Phase3_SeededExecutablesMatchCanonicalELFSources: %s is not a valid M14 ELF: %v", name, err)
+		}
+	}
+}
+
+func TestIExec_KernelImageFitsBelowKernelPageTable(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	root := repoRootDir(t)
+	image, err := os.ReadFile(filepath.Join(root, "sdk", "intuitionos", "iexec", "iexec.ie64"))
+	if err != nil {
+		t.Fatalf("KernelImageFitsBelowKernelPageTable: read iexec.ie64: %v", err)
+	}
+	if end := uint32(PROG_START + len(image)); end > kernPageTableBase {
+		t.Fatalf("KernelImageFitsBelowKernelPageTable: assembled kernel image ends at 0x%X and overlaps KERN_PAGE_TABLE at 0x%X", end, kernPageTableBase)
+	}
+	for _, rel := range embeddedRuntimeELFPaths {
+		start, size := findEmbeddedBlobStartLast(t, rig.cpu.memory, rel)
+		if end := start + size; end > kernPageTableBase {
+			t.Fatalf("KernelImageFitsBelowKernelPageTable: %s ends at 0x%X and overlaps KERN_PAGE_TABLE at 0x%X", rel, end, kernPageTableBase)
+		}
 	}
 }
 
@@ -12104,11 +12884,8 @@ func assertFullBootStackServiceCensus(t *testing.T) {
 		"dos.library M14 [Task ",
 		"Shell M10 [Task ",
 		"hardware.resource M12.5 [Task ",
-		"input.device M11 [Task ",
-		"graphics.library M11 [Task ",
-		"intuition.library M12 [Task ",
-		"IntuitionOS 0.15",
-		"All visible services are running in user space",
+		"IntuitionOS 0.16",
+		"Type HELP for commands and ASSIGN for layout",
 		"1>",
 	} {
 		if !strings.Contains(output, want) {
@@ -12189,7 +12966,7 @@ func TestIExec_M141_Phase5_FullBootStack_ServiceCensus(t *testing.T) {
 func TestIExec_M141_Phase5_CommandPathRegression(t *testing.T) {
 	output := bootAndInjectCommand(t, "version\navail\ndir ram:\ntype s:startup-sequence\necho hello\n", 8*time.Second)
 	for _, want := range []string{
-		"IntuitionOS 0.15",
+		"IntuitionOS 0.16",
 		"Phys: 32768 KB  Alloc:",
 		"C/Version",
 		"LIBS/graphics.library",
@@ -12256,7 +13033,7 @@ func TestIExec_M142_Phase6_FullBootStack_ServiceCensus(t *testing.T) {
 func TestIExec_M142_Phase6_CommandRegression(t *testing.T) {
 	output := bootAndInjectCommand(t, "version\navail\ndir ram:\ntype s:startup-sequence\necho hello\n", 8*time.Second)
 	for _, want := range []string{
-		"IntuitionOS 0.15",
+		"IntuitionOS 0.16",
 		"Phys: 32768 KB  Alloc:",
 		"C/Version",
 		"LIBS/graphics.library",
@@ -12324,12 +13101,738 @@ func TestIExec_M142_Phase6_DOSRunFlatImageRejected(t *testing.T) {
 	assertM142DOSRunFlatImageRejected(t)
 }
 
+func TestIExec_M15_Phase1_AssignSurfaceCensus(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(5 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	names := listDosSeededFileNames(t, rig.cpu.memory)
+	for _, want := range []string{
+		"C/Assign",
+		"C/List",
+		"C/Which",
+		"C/Help",
+		"S/Help",
+		"L/Loader-Info",
+	} {
+		found := false
+		for _, got := range names {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("M15_Phase1_AssignSurfaceCensus: missing %q in seeded DOS namespace; names=%v", want, names)
+		}
+	}
+}
+
+func TestIExec_M15_Phase1_HelperCommandsBootAndRespond(t *testing.T) {
+	output := bootAndInjectCommand(t, "\nASSIGN\nLIST\nWHICH foo\nHELP\n", 8*time.Second)
+	for _, want := range []string{
+		"RAM:",
+		"readme",
+		"not found",
+		"M15 help surface:",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("M15_Phase1_HelperCommandsBootAndRespond: missing %q output=%q", want, output[:min(len(output), 1200)])
+		}
+	}
+	if strings.Contains(output, "Unknown command") {
+		t.Fatalf("M15_Phase1_HelperCommandsBootAndRespond: helper command still unresolved, output=%q", output[:min(len(output), 1200)])
+	}
+}
+
+func TestIExec_M15_Phase1_QualifiedResolution_RewritesLAndTCanonically(t *testing.T) {
+	for _, tc := range []struct {
+		path    string
+		payload string
+		canon   string
+	}{
+		{path: "L:HelperTag", payload: "loader-tag", canon: "L/HelperTag"},
+		{path: "T:Scratch", payload: "tempdata", canon: "T/Scratch"},
+	} {
+		t.Run(strings.ReplaceAll(tc.path, ":", "_"), func(t *testing.T) {
+			rig, dataBase := runDOSPathRoundTripClient(t, tc.path, tc.payload)
+			mem := rig.cpu.memory
+
+			if openErr := binary.LittleEndian.Uint64(mem[dataBase+160:]); openErr != 0 {
+				t.Fatalf("M15_Phase1_QualifiedResolution: DOS_OPEN(%q) err=%d, want 0", tc.path, openErr)
+			}
+			if writeErr := binary.LittleEndian.Uint64(mem[dataBase+176:]); writeErr != 0 {
+				t.Fatalf("M15_Phase1_QualifiedResolution: DOS_WRITE(%q) err=%d, want 0", tc.path, writeErr)
+			}
+			if bytesWr := binary.LittleEndian.Uint64(mem[dataBase+184:]); bytesWr != uint64(len(tc.payload)) {
+				t.Fatalf("M15_Phase1_QualifiedResolution: DOS_WRITE(%q) wrote %d bytes, want %d", tc.path, bytesWr, len(tc.payload))
+			}
+			if readErr := binary.LittleEndian.Uint64(mem[dataBase+192:]); readErr != 0 {
+				t.Fatalf("M15_Phase1_QualifiedResolution: DOS_READ(%q) err=%d, want 0", tc.path, readErr)
+			}
+			if readBytes := binary.LittleEndian.Uint64(mem[dataBase+200:]); readBytes != uint64(len(tc.payload)) {
+				t.Fatalf("M15_Phase1_QualifiedResolution: DOS_READ(%q) bytes=%d, want %d", tc.path, readBytes, len(tc.payload))
+			}
+			readback := string(mem[dataBase+208 : dataBase+208+uint32(len(tc.payload))])
+			if readback != tc.payload {
+				t.Fatalf("M15_Phase1_QualifiedResolution: readback for %q = %q, want %q", tc.path, readback, tc.payload)
+			}
+			if _, _, ok := tryFindDosSeededFileMeta(mem, tc.canon); !ok {
+				t.Fatalf("M15_Phase1_QualifiedResolution: canonical metadata %q missing after opening %q", tc.canon, tc.path)
+			}
+			if _, _, ok := tryFindDosSeededFileMeta(mem, tc.path); ok {
+				t.Fatalf("M15_Phase1_QualifiedResolution: non-canonical metadata %q should not exist once %q resolves", tc.path, tc.path)
+			}
+		})
+	}
+}
+
+func TestIExec_M15_Phase1_CommandSearchStillPrefersC(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(5 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	addDosSeededFileAlias(t, rig.cpu.memory, "L/Version", "C/Avail")
+
+	for _, ch := range "version\n" {
+		term.EnqueueByte(byte(ch))
+	}
+	rig.cpu.running.Store(true)
+	done = make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(3 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "IntuitionOS 0.16") {
+		t.Fatalf("M15_Phase1_CommandSearchStillPrefersC: missing VERSION output, got=%q", output[:min(len(output), 400)])
+	}
+	if strings.Contains(output, "Phys: 32768 KB") {
+		t.Fatalf("M15_Phase1_CommandSearchStillPrefersC: bare VERSION resolved to L:/Avail-style output, got=%q", output[:min(len(output), 400)])
+	}
+}
+
+func TestIExec_M15_Phase1_BareCommandsDoNotProbeL(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(5 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	addDosSeededFileAlias(t, rig.cpu.memory, "L/Helper", "C/Version")
+
+	for _, ch := range "helper\n" {
+		term.EnqueueByte(byte(ch))
+	}
+	rig.cpu.running.Store(true)
+	done = make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(3 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "Unknown command") {
+		t.Fatalf("M15_Phase1_BareCommandsDoNotProbeL: bare helper unexpectedly resolved through L:, output=%q", output[:min(len(output), 400)])
+	}
+}
+
+func TestIExec_M15_Phase1_DOSRunRemainsELFOnly(t *testing.T) {
+	assertM142ExecProgramFlatImageRejected(t)
+	assertM142DOSRunFlatImageRejected(t)
+}
+
+func TestIExec_M15_Phase2_AssignResolution_AllCanonicalVolumes(t *testing.T) {
+	output := bootAndInjectCommand(t, "\nVERSION\nTYPE S:Help\nTYPE L:Loader-Info\nTYPE LIBS:graphics.library\nTYPE DEVS:input.device\nTYPE RESOURCES:hardware.resource\n", 10*time.Second)
+	for _, want := range []string{
+		"IntuitionOS 0.16",
+		"M15 help surface:",
+		"L: contains DOS helper assets",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("M15_Phase2_AssignResolution_AllCanonicalVolumes: missing %q in output=%q", want, output[:min(len(output), 1200)])
+		}
+	}
+	if strings.Contains(output, "not found") || strings.Contains(output, "Unknown command") {
+		t.Fatalf("M15_Phase2_AssignResolution_AllCanonicalVolumes: canonical assign resolution failed, output=%q", output[:min(len(output), 1200)])
+	}
+}
+
+func TestIExec_M15_Phase2_RAMRootCompatibility(t *testing.T) {
+	output := bootAndInjectCommand(t, "\nTYPE RAM:readme\nTYPE readme\n", 8*time.Second)
+	if count := strings.Count(output, "Welcome to IntuitionOS"); count < 2 {
+		t.Fatalf("M15_Phase2_RAMRootCompatibility: expected RAM: and bare-name reads to succeed twice, count=%d output=%q", count, output[:min(len(output), 600)])
+	}
+}
+
+func TestIExec_M15_Phase2_AssignMatchingIsCaseInsensitive(t *testing.T) {
+	output := bootAndInjectCommand(t, "\nTYPE s:help\nTYPE l:loader-info\nTYPE libs:graphics.library\nTYPE devs:input.device\nTYPE resources:hardware.resource\n", 10*time.Second)
+	for _, want := range []string{
+		"M15 help surface:",
+		"L: contains DOS helper assets",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("M15_Phase2_AssignMatchingIsCaseInsensitive: missing %q in output=%q", want, output[:min(len(output), 1200)])
+		}
+	}
+	if strings.Contains(output, "not found") || strings.Contains(output, "Unknown command") {
+		t.Fatalf("M15_Phase2_AssignMatchingIsCaseInsensitive: lowercase assign lookup failed, output=%q", output[:min(len(output), 1200)])
+	}
+}
+
+func TestIExec_M15_Phase2_UnknownVolumeFailsCleanly(t *testing.T) {
+	output := bootAndInjectCommand(t, "\nTYPE NOPE:ghost\nVERSION\n", 8*time.Second)
+	if !strings.Contains(output, "not found") {
+		t.Fatalf("M15_Phase2_UnknownVolumeFailsCleanly: expected unknown-volume failure, output=%q", output[:min(len(output), 600)])
+	}
+	if !strings.Contains(output, "IntuitionOS 0.16") {
+		t.Fatalf("M15_Phase2_UnknownVolumeFailsCleanly: shell did not recover after unknown-volume lookup, output=%q", output[:min(len(output), 600)])
+	}
+}
+
+func TestIExec_M15_Phase2_BoundedLongNameHandlingStaysSafe(t *testing.T) {
+	longName := "TYPE T:" + strings.Repeat("A", 80) + "\nVERSION\n"
+	output := bootAndInjectCommand(t, "\n"+longName, 8*time.Second)
+	if !strings.Contains(output, "IntuitionOS 0.16") {
+		t.Fatalf("M15_Phase2_BoundedLongNameHandlingStaysSafe: shell did not survive long qualified name, output=%q", output[:min(len(output), 800)])
+	}
+}
+
+func TestIExec_M15_Phase2_QualifiedTRoundTrip(t *testing.T) {
+	rig, dataBase := runDOSPathRoundTripClient(t, "t:ScratchPhase2", "phase2-temp")
+	mem := rig.cpu.memory
+	if openErr := binary.LittleEndian.Uint64(mem[dataBase+160:]); openErr != 0 {
+		t.Fatalf("M15_Phase2_QualifiedTRoundTrip: DOS_OPEN err=%d, want 0", openErr)
+	}
+	if readback := string(mem[dataBase+208 : dataBase+208+11]); readback != "phase2-temp" {
+		t.Fatalf("M15_Phase2_QualifiedTRoundTrip: readback=%q, want %q", readback, "phase2-temp")
+	}
+	if _, _, ok := tryFindDosSeededFileMeta(mem, "T/ScratchPhase2"); !ok {
+		t.Fatal("M15_Phase2_QualifiedTRoundTrip: canonical T/ metadata missing after round trip")
+	}
+}
+
+func TestIExec_M15_Phase3_DOSAssignListReturnsCanonicalDefaults(t *testing.T) {
+	rig, dataBase := runDOSAssignClient(t, dosAssignOpList, nil)
+	mem := rig.cpu.memory
+	if got := binary.LittleEndian.Uint64(mem[dataBase+160:]); got != dosOK {
+		t.Fatalf("M15_Phase3_DOSAssignListReturnsCanonicalDefaults: reply.type=%d, want %d", got, dosOK)
+	}
+	count := binary.LittleEndian.Uint64(mem[dataBase+168:])
+	if count < 8 {
+		t.Fatalf("M15_Phase3_DOSAssignListReturnsCanonicalDefaults: row count=%d, want at least 8", count)
+	}
+	buf := shellTaskSharedBuffer(t, mem, dataBase, uint32(count*dosAssignRowSz))
+	rows := make(map[string]string)
+	for i := uint64(0); i < count; i++ {
+		name, target := decodeDOSAssignRow(buf[i*dosAssignRowSz : (i+1)*dosAssignRowSz])
+		if name != "" {
+			rows[name] = target
+		}
+	}
+	for name, want := range map[string]string{
+		"RAM":       "",
+		"C":         "C/",
+		"L":         "L/",
+		"LIBS":      "LIBS/",
+		"DEVS":      "DEVS/",
+		"T":         "T/",
+		"S":         "S/",
+		"RESOURCES": "RESOURCES/",
+	} {
+		if got, ok := rows[name]; !ok || got != want {
+			t.Fatalf("M15_Phase3_DOSAssignListReturnsCanonicalDefaults: %s target=%q ok=%v, want %q rows=%v", name, got, ok, want, rows)
+		}
+	}
+}
+
+func TestIExec_M15_Phase3_DOSAssignQueryReturnsCanonicalBuiltins(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		wantN string
+		wantT string
+	}{
+		{name: "ram", wantN: "RAM", wantT: ""},
+		{name: "libs", wantN: "LIBS", wantT: "LIBS/"},
+		{name: "resources", wantN: "RESOURCES", wantT: "RESOURCES/"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig, dataBase := runDOSAssignClient(t, dosAssignOpQuery, append([]byte(tc.name), 0))
+			mem := rig.cpu.memory
+			if got := binary.LittleEndian.Uint64(mem[dataBase+160:]); got != dosOK {
+				t.Fatalf("M15_Phase3_DOSAssignQueryReturnsCanonicalBuiltins: reply.type=%d, want %d", got, dosOK)
+			}
+			row := shellTaskSharedBuffer(t, mem, dataBase, dosAssignRowSz)
+			name, target := decodeDOSAssignRow(row)
+			if name != tc.wantN || target != tc.wantT {
+				t.Fatalf("M15_Phase3_DOSAssignQueryReturnsCanonicalBuiltins: row=(%q,%q), want=(%q,%q)", name, target, tc.wantN, tc.wantT)
+			}
+		})
+	}
+}
+
+func TestIExec_M15_Phase3_DOSAssignSetAffectsSubsequentResolutionImmediately(t *testing.T) {
+	rig, dataBase := runDOSAssignSetThenPathRoundTripClient(t, "TMP", "T/", "TMP:Phase3", "phase3-temp")
+	mem := rig.cpu.memory
+	if got := binary.LittleEndian.Uint64(mem[dataBase+160:]); got != dosOK {
+		t.Fatalf("M15_Phase3_DOSAssignSetAffectsSubsequentResolutionImmediately: set reply.type=%d, want %d", got, dosOK)
+	}
+	if got := binary.LittleEndian.Uint64(mem[dataBase+168:]); got != dosOK {
+		t.Fatalf("M15_Phase3_DOSAssignSetAffectsSubsequentResolutionImmediately: open err=%d, want %d", got, dosOK)
+	}
+	if got := binary.LittleEndian.Uint64(mem[dataBase+184:]); got != dosOK {
+		t.Fatalf("M15_Phase3_DOSAssignSetAffectsSubsequentResolutionImmediately: write err=%d, want %d", got, dosOK)
+	}
+	if got := binary.LittleEndian.Uint64(mem[dataBase+192:]); got != uint64(len("phase3-temp")) {
+		t.Fatalf("M15_Phase3_DOSAssignSetAffectsSubsequentResolutionImmediately: bytes written=%d", got)
+	}
+	if got := binary.LittleEndian.Uint64(mem[dataBase+200:]); got != dosOK {
+		t.Fatalf("M15_Phase3_DOSAssignSetAffectsSubsequentResolutionImmediately: read err=%d, want %d", got, dosOK)
+	}
+	if got := string(shellTaskSharedBuffer(t, mem, dataBase, 11)); got != "phase3-temp" {
+		t.Fatalf("M15_Phase3_DOSAssignSetAffectsSubsequentResolutionImmediately: readback=%q", got)
+	}
+	if _, _, ok := tryFindDosSeededFileMeta(mem, "T/Phase3"); !ok {
+		t.Fatal("M15_Phase3_DOSAssignSetAffectsSubsequentResolutionImmediately: canonical T/ metadata missing after TMP: round trip")
+	}
+}
+
+func TestIExec_M15_Phase3_DOSAssignRejectsInvalidNamesAndTargets(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		target string
+	}{
+		{name: "BAD:", target: "T/"},
+		{name: "BAD/NAME", target: "T/"},
+		{name: "TMP", target: "BAD"},
+		{name: "TMP", target: "TOOLS:"},
+		{name: "TMP", target: "RAM/"},
+	} {
+		t.Run(tc.name+"_"+tc.target, func(t *testing.T) {
+			rig, dataBase := runDOSAssignClient(t, dosAssignOpSet, encodeDOSAssignRow(t, tc.name, tc.target))
+			if got := binary.LittleEndian.Uint64(rig.cpu.memory[dataBase+160:]); got != dosErrBadArg {
+				t.Fatalf("M15_Phase3_DOSAssignRejectsInvalidNamesAndTargets: reply.type=%d, want %d", got, dosErrBadArg)
+			}
+		})
+	}
+}
+
+func TestIExec_M15_Phase3_DOSAssignRejectsAssignTargetsSelfReferenceAndRAMMutation(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		target string
+	}{
+		{name: "TMP", target: "TMP/"},
+		{name: "TMP", target: "ALT/"},
+		{name: "RAM", target: "T/"},
+	} {
+		t.Run(tc.name+"_"+tc.target, func(t *testing.T) {
+			rig, dataBase := runDOSAssignClient(t, dosAssignOpSet, encodeDOSAssignRow(t, tc.name, tc.target))
+			if got := binary.LittleEndian.Uint64(rig.cpu.memory[dataBase+160:]); got != dosErrBadArg {
+				t.Fatalf("M15_Phase3_DOSAssignRejectsAssignTargetsSelfReferenceAndRAMMutation: reply.type=%d, want %d", got, dosErrBadArg)
+			}
+		})
+	}
+}
+
+func TestIExec_M15_Phase3_DOSAssignRuntimeChangesDoNotBreakBuiltins(t *testing.T) {
+	rig, dataBase := runDOSAssignClient(t, dosAssignOpSet, encodeDOSAssignRow(t, "TMP", "T/"))
+	mem := rig.cpu.memory
+	if got := binary.LittleEndian.Uint64(mem[dataBase+160:]); got != dosOK {
+		t.Fatalf("M15_Phase3_DOSAssignRuntimeChangesDoNotBreakBuiltins: set reply.type=%d, want %d", got, dosOK)
+	}
+	for _, tc := range []struct {
+		query string
+		want  string
+	}{
+		{query: "C", want: "C/"},
+		{query: "S", want: "S/"},
+		{query: "LIBS", want: "LIBS/"},
+		{query: "DEVS", want: "DEVS/"},
+		{query: "RESOURCES", want: "RESOURCES/"},
+	} {
+		rigQ, dataBaseQ := runDOSAssignClient(t, dosAssignOpQuery, append([]byte(tc.query), 0))
+		if got := binary.LittleEndian.Uint64(rigQ.cpu.memory[dataBaseQ+160:]); got != dosOK {
+			t.Fatalf("M15_Phase3_DOSAssignRuntimeChangesDoNotBreakBuiltins: query %s reply.type=%d, want %d", tc.query, got, dosOK)
+		}
+		_, target := decodeDOSAssignRow(shellTaskSharedBuffer(t, rigQ.cpu.memory, dataBaseQ, dosAssignRowSz))
+		if target != tc.want {
+			t.Fatalf("M15_Phase3_DOSAssignRuntimeChangesDoNotBreakBuiltins: query %s target=%q, want %q", tc.query, target, tc.want)
+		}
+	}
+}
+
+func TestIExec_M15_Phase3_DOSAssignAcceptsBoundaryLengthName(t *testing.T) {
+	const name = "ABCDEFGHIJKLMNO"
+	rig, dataBase := runDOSAssignSetThenPathRoundTripClient(t, name, "T/", name+":Edge", "edge-data")
+	mem := rig.cpu.memory
+	if got := binary.LittleEndian.Uint64(mem[dataBase+160:]); got != dosOK {
+		t.Fatalf("M15_Phase3_DOSAssignAcceptsBoundaryLengthName: set reply.type=%d, want %d", got, dosOK)
+	}
+	if got := binary.LittleEndian.Uint64(mem[dataBase+168:]); got != dosOK {
+		t.Fatalf("M15_Phase3_DOSAssignAcceptsBoundaryLengthName: open err=%d, want %d", got, dosOK)
+	}
+	if got := string(shellTaskSharedBuffer(t, mem, dataBase, uint32(len("edge-data")))); got != "edge-data" {
+		t.Fatalf("M15_Phase3_DOSAssignAcceptsBoundaryLengthName: readback=%q, want %q", got, "edge-data")
+	}
+	if _, _, ok := tryFindDosSeededFileMeta(mem, "T/Edge"); !ok {
+		t.Fatal("M15_Phase3_DOSAssignAcceptsBoundaryLengthName: canonical T/ metadata missing after boundary-name round trip")
+	}
+}
+
+func TestIExec_M15_Phase3_DOSAssignAllowsRAMTargetAlias(t *testing.T) {
+	rig, dataBase := runDOSAssignSetThenPathRoundTripClient(t, "TMP", "RAM/", "TMP:RamAlias", "ram-alias")
+	mem := rig.cpu.memory
+	if got := binary.LittleEndian.Uint64(mem[dataBase+160:]); got != dosOK {
+		t.Fatalf("M15_Phase3_DOSAssignAllowsRAMTargetAlias: set reply.type=%d, want %d", got, dosOK)
+	}
+	if got := string(shellTaskSharedBuffer(t, mem, dataBase, uint32(len("ram-alias")))); got != "ram-alias" {
+		t.Fatalf("M15_Phase3_DOSAssignAllowsRAMTargetAlias: readback=%q, want %q", got, "ram-alias")
+	}
+	if _, _, ok := tryFindDosSeededFileMeta(mem, "RamAlias"); !ok {
+		t.Fatal("M15_Phase3_DOSAssignAllowsRAMTargetAlias: root metadata missing after RAM alias round trip")
+	}
+}
+
+func TestIExec_M15_Phase3_DOSAssignRejectsMissingSharedBuffer(t *testing.T) {
+	rig, dataBase := runDOSAssignWithoutShareAfterMappedRequestClient(t, dosAssignOpList, nil)
+	mem := rig.cpu.memory
+	if got := binary.LittleEndian.Uint64(mem[dataBase+160:]); got != dosOK {
+		t.Fatalf("M15_Phase3_DOSAssignRejectsMissingSharedBuffer: warm-up open reply=%d, want %d", got, dosOK)
+	}
+	if got := binary.LittleEndian.Uint64(mem[dataBase+168:]); got != dosErrBadArg {
+		t.Fatalf("M15_Phase3_DOSAssignRejectsMissingSharedBuffer: assign reply.type=%d, want %d", got, dosErrBadArg)
+	}
+	if got := binary.LittleEndian.Uint64(mem[dataBase+176:]); got != 0 {
+		t.Fatalf("M15_Phase3_DOSAssignRejectsMissingSharedBuffer: assign reply.data0=%d, want 0", got)
+	}
+}
+
+func TestIExec_M15_Phase4_SeededFilesExistAtExpectedCanonicalNames(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(5 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	names := listDosSeededFileNames(t, rig.cpu.memory)
+	for _, want := range []string{
+		"readme",
+		"C/Assign",
+		"C/List",
+		"C/Which",
+		"C/Help",
+		"S/Startup-Sequence",
+		"S/Help",
+		"L/Loader-Info",
+	} {
+		found := false
+		for _, got := range names {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("M15_Phase4_SeededFilesExistAtExpectedCanonicalNames: missing %q names=%v", want, names)
+		}
+	}
+}
+
+func TestIExec_M15_Phase4_NewCommandsProduceStableOutput(t *testing.T) {
+	output := bootAndInjectCommand(t, "\nASSIGN\nLIST\nWHICH version\nHELP\n", 10*time.Second)
+	for _, want := range []string{
+		"RAM:",
+		"C/Assign",
+		"C:version",
+		"M15 help surface:",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("M15_Phase4_NewCommandsProduceStableOutput: missing %q output=%q", want, output[:min(len(output), 1600)])
+		}
+	}
+	if strings.Contains(output, "Unknown command") || strings.Contains(output, "GURU MEDITATION") {
+		t.Fatalf("M15_Phase4_NewCommandsProduceStableOutput: helper command regression output=%q", output[:min(len(output), 1600)])
+	}
+}
+
+func TestIExec_M15_Phase4_DirAndListShowFullerSystemLayout(t *testing.T) {
+	output := bootAndInjectCommand(t, "\nDIR RAM:\nLIST\n", 10*time.Second)
+	for _, want := range []string{
+		"C/Assign",
+		"C/List",
+		"C/Which",
+		"C/Help",
+		"S/Help",
+		"L/Loader-Info",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("M15_Phase4_DirAndListShowFullerSystemLayout: missing %q output=%q", want, output[:min(len(output), 1600)])
+		}
+	}
+}
+
+func TestIExec_M15_Phase4_BareVolumeSelectsCurrentListingContext(t *testing.T) {
+	output := bootAndInjectCommand(t, "\nRESOURCES:\nDIR\nLIST\n", 10*time.Second)
+	if !strings.Contains(output, "hardware.resource") {
+		t.Fatalf("M15_Phase4_BareVolumeSelectsCurrentListingContext: missing RESOURCES-relative listing output=%q", output[:min(len(output), 1600)])
+	}
+	if strings.Contains(output, "Unknown command") || strings.Contains(output, "GURU MEDITATION") {
+		t.Fatalf("M15_Phase4_BareVolumeSelectsCurrentListingContext: shell did not treat bare volume token safely output=%q", output[:min(len(output), 1600)])
+	}
+	if strings.Contains(output, "C/Version") {
+		t.Fatalf("M15_Phase4_BareVolumeSelectsCurrentListingContext: LIST did not filter to selected volume output=%q", output[:min(len(output), 1600)])
+	}
+	if strings.Contains(output, "RESOURCES/hardware.resource") {
+		t.Fatalf("M15_Phase4_BareVolumeSelectsCurrentListingContext: expected relative names after bare volume selection output=%q", output[:min(len(output), 1600)])
+	}
+}
+
+func TestIExec_M15_Phase4_DirSupportsResourcesVolumeArgument(t *testing.T) {
+	output := bootAndInjectCommand(t, "\nDIR RESOURCES:\n", 10*time.Second)
+	if !strings.Contains(output, "hardware.resource") {
+		t.Fatalf("M15_Phase4_DirSupportsResourcesVolumeArgument: missing RESOURCES-relative listing output=%q", output[:min(len(output), 1600)])
+	}
+	if strings.Contains(output, "Unknown command") || strings.Contains(output, "GURU MEDITATION") {
+		t.Fatalf("M15_Phase4_DirSupportsResourcesVolumeArgument: DIR RESOURCES: failed unsafely output=%q", output[:min(len(output), 1600)])
+	}
+	if strings.Contains(output, "RESOURCES/hardware.resource") {
+		t.Fatalf("M15_Phase4_DirSupportsResourcesVolumeArgument: expected relative names output=%q", output[:min(len(output), 1600)])
+	}
+}
+
+func TestIExec_M15_Phase4_BareVolumeThenDirUsesCurrentContext(t *testing.T) {
+	output := bootAndInjectCommand(t, "\nRESOURCES:\nDIR\n", 10*time.Second)
+	if !strings.Contains(output, "hardware.resource") {
+		t.Fatalf("M15_Phase4_BareVolumeThenDirUsesCurrentContext: missing RESOURCES-relative listing output=%q", output[:min(len(output), 1600)])
+	}
+	if strings.Contains(output, "Unknown command") || strings.Contains(output, "GURU MEDITATION") {
+		t.Fatalf("M15_Phase4_BareVolumeThenDirUsesCurrentContext: bare volume + DIR failed unsafely output=%q", output[:min(len(output), 1600)])
+	}
+	if strings.Contains(output, "RESOURCES/hardware.resource") {
+		t.Fatalf("M15_Phase4_BareVolumeThenDirUsesCurrentContext: expected relative names output=%q", output[:min(len(output), 1600)])
+	}
+}
+
+func TestIExec_M15_Phase4_RuntimeAssignBrowsingUsesDIRAndBareVolume(t *testing.T) {
+	output := bootAndInjectCommand(t, "\nASSIGN TMP: C:\nDIR TMP:\nTMP:\nDIR\nLIST\n", 12*time.Second)
+	if strings.Contains(output, "Unknown command") || strings.Contains(output, "GURU MEDITATION") {
+		t.Fatalf("M15_Phase4_RuntimeAssignBrowsingUsesDIRAndBareVolume: runtime assign browsing failed unsafely output=%q", output[:min(len(output), 2000)])
+	}
+	for _, want := range []string{"Version", "Assign", "List", "Which", "Help"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("M15_Phase4_RuntimeAssignBrowsingUsesDIRAndBareVolume: missing %q output=%q", want, output[:min(len(output), 2000)])
+		}
+	}
+	for _, unwanted := range []string{"C/Version", "C/Assign", "C/List", "C/Which", "C/Help"} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("M15_Phase4_RuntimeAssignBrowsingUsesDIRAndBareVolume: expected relative names, saw %q output=%q", unwanted, output[:min(len(output), 2000)])
+		}
+	}
+}
+
+func TestIExec_M15_Phase4_WhichUsesDOSSearchAndNotShellHardcoding(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(5 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	addDosSeededFileAlias(t, rig.cpu.memory, "C/Customver", "C/Version")
+	addDosSeededFileAlias(t, rig.cpu.memory, "L/Customver", "C/Avail")
+
+	for _, ch := range "\nWHICH customver\n" {
+		term.EnqueueByte(byte(ch))
+	}
+	rig.cpu.running.Store(true)
+	done = make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(3 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "C:customver") {
+		t.Fatalf("M15_Phase4_WhichUsesDOSSearchAndNotShellHardcoding: expected C:customver output=%q", output[:min(len(output), 600)])
+	}
+	if strings.Contains(output, "Phys: 32768 KB") {
+		t.Fatalf("M15_Phase4_WhichUsesDOSSearchAndNotShellHardcoding: which resolved through wrong payload output=%q", output[:min(len(output), 600)])
+	}
+}
+
+func TestIExec_M15_Phase4_WhichDoesNotResolveBareCommandsFromL(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(5 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	addDosSeededFileAlias(t, rig.cpu.memory, "L/Onlyhelper", "C/Version")
+
+	for _, ch := range "\nWHICH onlyhelper\n" {
+		term.EnqueueByte(byte(ch))
+	}
+	rig.cpu.running.Store(true)
+	done = make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(3 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "not found") {
+		t.Fatalf("M15_Phase4_WhichDoesNotResolveBareCommandsFromL: expected not found output=%q", output[:min(len(output), 600)])
+	}
+	if strings.Contains(output, "C:onlyhelper") || strings.Contains(output, "L:onlyhelper") {
+		t.Fatalf("M15_Phase4_WhichDoesNotResolveBareCommandsFromL: unexpected resolution output=%q", output[:min(len(output), 600)])
+	}
+}
+
+func TestIExec_M15_Phase4_StartupSequencePresentsRicherDOSEnvironment(t *testing.T) {
+	output := bootAndInjectCommand(t, "\nTYPE S:Startup-Sequence\n", 10*time.Second)
+	for _, want := range []string{
+		"VERSION",
+		"ECHO Type HELP for commands and ASSIGN for layout",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("M15_Phase4_StartupSequencePresentsRicherDOSEnvironment: missing %q output=%q", want, output[:min(len(output), 800)])
+		}
+	}
+	if strings.Contains(output, "All visible services are running in user space") {
+		t.Fatalf("M15_Phase4_StartupSequencePresentsRicherDOSEnvironment: stale startup copy still present output=%q", output[:min(len(output), 800)])
+	}
+}
+
+func TestIExec_M15_Phase4_AssignCommandAcceptsColonTargetsIncludingRAM(t *testing.T) {
+	output := bootAndInjectCommand(t, "\nASSIGN TMP: T:\nASSIGN TMPRAM: RAM:\nWHICH version\nTYPE TMPRAM:readme\n", 12*time.Second)
+	for _, want := range []string{
+		"C:version",
+		"Welcome to IntuitionOS",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("M15_Phase4_AssignCommandAcceptsColonTargetsIncludingRAM: missing %q output=%q", want, output[:min(len(output), 1600)])
+		}
+	}
+	if strings.Contains(output, "Bad arguments") {
+		t.Fatalf("M15_Phase4_AssignCommandAcceptsColonTargetsIncludingRAM: colon-form assign target rejected output=%q", output[:min(len(output), 1600)])
+	}
+}
+
+func TestIExec_M15_Phase5_CleanBootToPrompt(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(5 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	for _, want := range []string{
+		"exec.library M11 boot",
+		"console.handler M11.5 [Task ",
+		"dos.library M14 [Task ",
+		"Shell M10 [Task ",
+		"IntuitionOS 0.16",
+		"Type HELP for commands and ASSIGN for layout",
+		"1>",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("M15_Phase5_CleanBootToPrompt: missing %q output=%q", want, output[:min(len(output), 800)])
+		}
+	}
+}
+
+func TestIExec_M15_Phase5_CommandDemoBootPath(t *testing.T) {
+	output := bootAndInjectCommand(t, "\nVERSION\nAVAIL\nDIR RAM:\nTYPE S:Startup-Sequence\nASSIGN\nLIST\nWHICH version\nHELP\n", 15*time.Second)
+	for _, want := range []string{
+		"IntuitionOS 0.16",
+		"Phys: 32768 KB  Alloc:",
+		"C/Version",
+		"ECHO Type HELP for commands and ASSIGN for layout",
+		"RAM:",
+		"C:version",
+		"M15 help surface:",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("M15_Phase5_CommandDemoBootPath: missing %q output=%q", want, output[:min(len(output), 2000)])
+		}
+	}
+	if strings.Contains(output, "Unknown command") || strings.Contains(output, "GURU MEDITATION") {
+		t.Fatalf("M15_Phase5_CommandDemoBootPath: runtime regression output=%q", output[:min(len(output), 2000)])
+	}
+}
+
+func TestIExec_M15_Phase5_QualifiedAndCompatibilityPathCoverage(t *testing.T) {
+	output := bootAndInjectCommand(t, "\nC:Version\nTYPE S:Help\nTYPE L:Loader-Info\nTYPE RAM:readme\nTYPE readme\n", 15*time.Second)
+	for _, want := range []string{
+		"IntuitionOS 0.16",
+		"M15 help surface:",
+		"L: contains DOS helper assets",
+		"Welcome to IntuitionOS",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("M15_Phase5_QualifiedAndCompatibilityPathCoverage: missing %q output=%q", want, output[:min(len(output), 2000)])
+		}
+	}
+	if count := strings.Count(output, "Welcome to IntuitionOS"); count < 2 {
+		t.Fatalf("M15_Phase5_QualifiedAndCompatibilityPathCoverage: expected RAM: and bare-name readme access twice, count=%d output=%q", count, output[:min(len(output), 2000)])
+	}
+	if strings.Contains(output, "not found") || strings.Contains(output, "Unknown command") {
+		t.Fatalf("M15_Phase5_QualifiedAndCompatibilityPathCoverage: qualified path regression output=%q", output[:min(len(output), 2000)])
+	}
+}
+
+func TestIExec_M15_Phase5_QualifiedServiceAssetPathsRemainReachable(t *testing.T) {
+	output := bootAndInjectCommand(t, "\nTYPE LIBS:graphics.library\nTYPE DEVS:input.device\nTYPE RESOURCES:hardware.resource\n", 15*time.Second)
+	if strings.Contains(output, "File not found") || strings.Contains(output, "Unknown command") {
+		t.Fatalf("M15_Phase5_QualifiedServiceAssetPathsRemainReachable: qualified service asset lookup failed output=%q", output[:min(len(output), 1200)])
+	}
+}
+
+func TestIExec_M15_Phase5_TemporaryFileFlowUnderT(t *testing.T) {
+	rig, dataBase := runDOSPathRoundTripClient(t, "T:Phase5Temp", "phase5-temp")
+	mem := rig.cpu.memory
+	if got := binary.LittleEndian.Uint64(mem[dataBase+160:]); got != dosOK {
+		t.Fatalf("M15_Phase5_TemporaryFileFlowUnderT: open err=%d, want %d", got, dosOK)
+	}
+	if got := binary.LittleEndian.Uint64(mem[dataBase+176:]); got != dosOK {
+		t.Fatalf("M15_Phase5_TemporaryFileFlowUnderT: write err=%d, want %d", got, dosOK)
+	}
+	if got := binary.LittleEndian.Uint64(mem[dataBase+192:]); got != dosOK {
+		t.Fatalf("M15_Phase5_TemporaryFileFlowUnderT: read err=%d, want %d", got, dosOK)
+	}
+	if got := string(mem[dataBase+208 : dataBase+208+11]); got != "phase5-temp" {
+		t.Fatalf("M15_Phase5_TemporaryFileFlowUnderT: readback=%q, want %q", got, "phase5-temp")
+	}
+	if _, _, ok := tryFindDosSeededFileMeta(mem, "T/Phase5Temp"); !ok {
+		t.Fatal("M15_Phase5_TemporaryFileFlowUnderT: canonical T/ metadata missing after round trip")
+	}
+}
+
 // TestIExec_CaseInsensitiveCommand explicitly verifies case-insensitive
 // command resolution by typing a lowercase command name. The seeded file
 // is "C/Version" but the user types "version" — the resolver must match.
 func TestIExec_CaseInsensitiveCommand(t *testing.T) {
 	output := bootAndInjectCommand(t, "version\n", 5*time.Second)
-	if !strings.Contains(output, "IntuitionOS 0.15") {
+	if !strings.Contains(output, "IntuitionOS 0.16") {
 		t.Fatalf("CaseInsensitiveCommand: lowercase 'version' did not match 'C/Version', got=%q", output[:min(len(output), 300)])
 	}
 	if strings.Contains(output, "task model M13") || strings.Contains(output, "dos storage M12.8") || strings.Contains(output, "cap sweep M12.6") {
@@ -13073,58 +14576,6 @@ func TestIExec_InputDeviceLaunch(t *testing.T) {
 
 	// Verify banner appeared
 	if !strings.Contains(output, "input.device M11 [Task ") {
-		mem := rig.cpu.memory
-		for slot := uint32(0); slot < 8; slot++ {
-			tcb := kernDataBase + 64 + slot*32
-			pc := binary.LittleEndian.Uint64(mem[tcb:])
-			state := mem[tcb+28]
-			waitp := mem[tcb+29]
-			pubid := binary.LittleEndian.Uint32(mem[kernDataBase+kdTaskPubIDBase+slot*kdTaskPubIDStr:])
-			t.Logf("slot %d pc=%#x state=%d waitport=%d pubid=%d code=%#x data=%#x startup=%#x",
-				slot, pc, state, waitp, pubid,
-				taskLayoutFieldQ(mem, uint64(slot), kdTaskCodeBase),
-				taskLayoutFieldQ(mem, uint64(slot), kdTaskDataBase),
-				taskLayoutFieldQ(mem, uint64(slot), kdTaskStartupBase))
-		}
-		if dataBase := uint32(taskLayoutFieldQ(mem, 4, kdTaskDataBase)); dataBase != 0 {
-			t.Logf("slot4 data[128]=%d data[144]=%#x data[152]=%#x data[224]=%#x data[232]=%#x",
-				binary.LittleEndian.Uint64(mem[dataBase+128:]),
-				binary.LittleEndian.Uint64(mem[dataBase+144:]),
-				binary.LittleEndian.Uint64(mem[dataBase+152:]),
-				binary.LittleEndian.Uint64(mem[dataBase+224:]),
-				binary.LittleEndian.Uint64(mem[dataBase+232:]))
-		}
-		if dataBase := uint32(taskLayoutFieldQ(mem, 5, kdTaskDataBase)); dataBase != 0 {
-			t.Logf("slot5 data[128]=%d data[144]=%#x data[152]=%#x data[160]=%#x data[288]=%#x data[296]=%#x",
-				binary.LittleEndian.Uint64(mem[dataBase+128:]),
-				binary.LittleEndian.Uint64(mem[dataBase+144:]),
-				binary.LittleEndian.Uint64(mem[dataBase+152:]),
-				binary.LittleEndian.Uint64(mem[dataBase+160:]),
-				binary.LittleEndian.Uint64(mem[dataBase+288:]),
-				binary.LittleEndian.Uint64(mem[dataBase+296:]))
-		}
-		if dataBase := uint32(taskLayoutFieldQ(mem, 3, kdTaskDataBase)); dataBase != 0 {
-			t.Logf("hwres owners chip=%08x,%08x,%08x,%08x vram=%08x grants_total=%d first_ppn=%d",
-				binary.LittleEndian.Uint32(mem[dataBase+144:]),
-				binary.LittleEndian.Uint32(mem[dataBase+148:]),
-				binary.LittleEndian.Uint32(mem[dataBase+152:]),
-				binary.LittleEndian.Uint32(mem[dataBase+156:]),
-				binary.LittleEndian.Uint32(mem[dataBase+160:]),
-				binary.LittleEndian.Uint16(mem[kernDataBase+kdGrantTableHdr+kdGrantHdrTotal:]),
-				binary.LittleEndian.Uint16(mem[kernDataBase+kdGrantTableHdr+kdGrantHdrFirst:]))
-			firstPPN := binary.LittleEndian.Uint16(mem[kernDataBase+kdGrantTableHdr+kdGrantHdrFirst:])
-			if firstPPN != 0 {
-				page := uint32(firstPPN) << 12
-				for i := 0; i < 4; i++ {
-					row := page + uint32(kdGrantPageHdrSz+i*kdGrantRowSize)
-					taskID := binary.LittleEndian.Uint32(mem[row+kdGrantTaskID:])
-					tag := binary.LittleEndian.Uint32(mem[row+kdGrantRegion:])
-					lo := binary.LittleEndian.Uint16(mem[row+kdGrantPPNLo:])
-					hi := binary.LittleEndian.Uint16(mem[row+kdGrantPPNHi:])
-					t.Logf("grant row %d task=%d tag=%08x lo=%#x hi=%#x", i, taskID, tag, lo, hi)
-				}
-			}
-		}
 		t.Errorf("InputDeviceLaunch: expected 'input.device M11 [Task ' in output, got=%q",
 			output[:min(len(output), 600)])
 	}
@@ -13173,7 +14624,7 @@ func TestIExec_M10Demo(t *testing.T) {
 		substr string
 		desc   string
 	}{
-		{"IntuitionOS 0.15", "VERSION command output"},
+		{"IntuitionOS 0.16", "VERSION command output"},
 		{"Phys:", "AVAIL command output (Phys:)"},
 		{"Alloc:", "AVAIL command output (Alloc:)"},
 		{"readme", "DIR command output (readme file)"},
