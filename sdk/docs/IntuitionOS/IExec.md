@@ -80,6 +80,25 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
   - `Type HELP for commands and ASSIGN for layout`
   - `1>`
 
+**M15.1 source layout:**
+
+- `sdk/intuitionos/iexec/iexec.s` remains the top-level image/layout file and the only assembly entrypoint passed to `ie64asm`.
+- `iexec.s` remains the top-level image/layout file and the only assembly entrypoint passed to `ie64asm`.
+- Phase 1 of M15.1 moves the seeded command sources out of the monolithic root into `sdk/intuitionos/iexec/cmd/` while preserving the existing `prog_*` labels and ROM ordering through explicit `include` statements in `iexec.s`.
+- seeded command sources now live under `sdk/intuitionos/iexec/cmd/`
+- Phase 2 of M15.1 moves the non-DOS boot services into `handler/`, `dev/`, `resource/`, and `lib/` source files while preserving their existing embedded-program labels and boot ordering.
+- `console.handler`, `input.device`, `hardware.resource`, `graphics.library`, and `intuition.library` are now split out of the root image source.
+- Phase 3 of M15.1 moves the interactive shell into `sdk/intuitionos/iexec/handler/shell.s`.
+- `prog_shell` is split out of the root image source without changing the M15 shell behavior.
+- Phase 4 of M15.1 moves `prog_doslib` into `sdk/intuitionos/iexec/lib/dos_library.s`.
+- the full DOS-owned layout block moves together: `prog_doslib_code`, `prog_doslib_data`, the seed ELF region, DOS-seeded text/assets, and the nested includes that already assembled inside that ownership boundary
+- Phase 5 of M15.1 splits the remaining DOS-owned subordinate programs and assets.
+- `prog_gfxdemo`, `prog_about`, and the DOS-seeded text/fixture blobs now live in subordinate `cmd/` and `assets/` files that are still included from `sdk/intuitionos/iexec/lib/dos_library.s`
+- Phase 6 of M15.1 moves the remaining boot/image wiring out of the root file.
+- `sdk/intuitionos/iexec/boot/manifest_seed.s` and `sdk/intuitionos/iexec/boot/strings.s` now hold the boot manifest and root boot strings while `iexec.s` stays the top-level assembly entrypoint
+- The generated runtime ELFs are still rebuilt from labeled embedded programs after assembly; M15.1 does not change the ROM-embedded build model.
+- IntuitionOS still lives under `sdk/` for repository-history reasons in M15.1. The refactor is about component ownership and maintainability, not yet about repo relocation.
+
 IExec runs on the IE64 CPU core only. It requires the IE64 MMU (4 KiB paged virtual memory, software TLB, control registers) and the hardware timer for preemption.
 
 ---

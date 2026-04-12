@@ -6004,6 +6004,19 @@ IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. 
 - **`T:` is the writable temporary namespace.** Temporary files round-trip through the same RAM-backed DOS store and existing open/write/read/close operations; M15 does not add hierarchical directories or persistent storage.
 - **Boot and command execution remain ELF-only at the public boundary.** The M14.2 guarantees above still hold: `ExecProgram` is descriptor-only, `DOS_RUN` does not accept legacy flat images, and `DOS_LOADSEG` / `DOS_RUNSEG` remain the public executable path.
 
+**M15.1 source layout status** — the ROM build model is unchanged, but the IntuitionOS sources are no longer forced to live in one monolithic assembly body:
+
+- `sdk/intuitionos/iexec/iexec.s` remains the single assembly entrypoint and the top-level ROM/image layout file.
+- Seeded command sources now live under `sdk/intuitionos/iexec/cmd/`, and after Phase 4 they are assembled back through `sdk/intuitionos/iexec/lib/dos_library.s` so the existing labels and ELF extraction contracts stay stable.
+- `console.handler`, `input.device`, `hardware.resource`, `graphics.library`, and `intuition.library` now live in per-component sources under `sdk/intuitionos/iexec/handler/`, `sdk/intuitionos/iexec/dev/`, `sdk/intuitionos/iexec/resource/`, and `sdk/intuitionos/iexec/lib/`.
+- `sdk/intuitionos/iexec/handler/shell.s` now owns `prog_shell`, and `prog_shell` now lives in a dedicated handler source file instead of the monolithic root.
+- `sdk/intuitionos/iexec/lib/dos_library.s` now owns `prog_doslib`, and `prog_doslib` now lives in its own library source file while preserving the full DOS layout block that already contained the seed ELF region, DOS-seeded text/assets, the retained demos, and nested component includes.
+- `prog_doslib` now owns the full DOS layout block under that library source instead of the monolithic root.
+- Phase 5 then splits the remaining DOS-owned subordinate programs and assets into `sdk/intuitionos/iexec/cmd/gfxdemo.s`, `sdk/intuitionos/iexec/cmd/about.s`, `sdk/intuitionos/iexec/assets/dos_seed_text.s`, and `sdk/intuitionos/iexec/assets/elfseg_fixture.s` while keeping them assembled inside `prog_doslib`.
+- Phase 6 moves the remaining boot/image wiring into `sdk/intuitionos/iexec/boot/manifest_seed.s` and `sdk/intuitionos/iexec/boot/strings.s`, so `iexec.s` now keeps the root boot/image wiring in `boot/` includes instead of inline manifest/boot-string blocks.
+- `make intuitionos` still builds the ROM image from source; the generated runtime ELFs are still rebuilt from labeled embedded programs.
+- IntuitionOS still lives under `sdk/` in M15.1 for repository-history reasons; this refactor changes source ownership, not repo packaging.
+
 **M13 phase 5 status** — startup block ABI + dynamic task-image placement + live-task ceiling removal to the current ABI bound, with full boot-stack and GUI regressions green (implemented and tested):
 
 - **Booted services no longer self-locate from `CURRENT_TASK * USER_SLOT_STRIDE`.** The kernel now allocates a dedicated startup page for each launched task, writes the 64-byte startup block there, and seeds the startup-page base VA at `0(sp)`, so the booted M12 stack reads task identity/layout from that page instead of recomputing addresses from the task ID.

@@ -1243,7 +1243,8 @@ func assembleAndLoadKernel(t *testing.T) (*ie64TestRig, *TerminalMMIO) {
 		copyFileForTest(t, filepath.Join(root, "sdk", "intuitionos", "iexec", name), filepath.Join(tmpDir, name))
 	}
 
-	cmd := exec.Command(asmBin, "-I", tmpDir, filepath.Join(tmpDir, "iexec.s"))
+	iexecSrcDir := filepath.Join(root, "sdk", "intuitionos", "iexec")
+	cmd := exec.Command(asmBin, "-I", tmpDir, "-I", iexecSrcDir, filepath.Join(tmpDir, "iexec.s"))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("assembly failed: %v\n%s", err, out)
 	}
@@ -12026,6 +12027,346 @@ func TestIExec_M15_Phase1_DocsLockLayoutContract(t *testing.T) {
 		"`L:` as a qualified helper namespace",
 		"`T:` as a writable temporary namespace",
 		"no change to the M14.2 ELF-only execution boundary",
+	)
+}
+
+func TestIExec_M151_Phase1_CommandSourcesSplitFromIExecRoot(t *testing.T) {
+	root := mustReadRepoFile(t, "sdk/intuitionos/iexec/iexec.s")
+	doslib := mustReadRepoFile(t, "sdk/intuitionos/iexec/lib/dos_library.s")
+	for _, tc := range []struct {
+		include string
+		label   string
+		path    string
+	}{
+		{`include "../cmd/version.s"`, "prog_version:", "sdk/intuitionos/iexec/cmd/version.s"},
+		{`include "../cmd/avail.s"`, "prog_avail:", "sdk/intuitionos/iexec/cmd/avail.s"},
+		{`include "../cmd/dir.s"`, "prog_dir:", "sdk/intuitionos/iexec/cmd/dir.s"},
+		{`include "../cmd/type.s"`, "prog_type:", "sdk/intuitionos/iexec/cmd/type.s"},
+		{`include "../cmd/echo.s"`, "prog_echo_cmd:", "sdk/intuitionos/iexec/cmd/echo.s"},
+		{`include "../cmd/help.s"`, "prog_help_app:", "sdk/intuitionos/iexec/cmd/help.s"},
+		{`include "../cmd/list.s"`, "prog_list_cmd:", "sdk/intuitionos/iexec/cmd/list.s"},
+		{`include "../cmd/which.s"`, "prog_which_cmd:", "sdk/intuitionos/iexec/cmd/which.s"},
+		{`include "../cmd/assign.s"`, "prog_assign_cmd:", "sdk/intuitionos/iexec/cmd/assign.s"},
+	} {
+		if !strings.Contains(doslib, tc.include) {
+			t.Fatalf("M151_Phase1_CommandSourcesSplitFromIExecRoot: missing %q in lib/dos_library.s", tc.include)
+		}
+		if strings.Contains(root, tc.label) {
+			t.Fatalf("M151_Phase1_CommandSourcesSplitFromIExecRoot: %q still defined directly in iexec.s", tc.label)
+		}
+		body := mustReadRepoFile(t, tc.path)
+		if !strings.Contains(body, tc.label) {
+			t.Fatalf("M151_Phase1_CommandSourcesSplitFromIExecRoot: missing %q in %s", tc.label, tc.path)
+		}
+	}
+}
+
+func TestIExec_M151_Phase1_DocsDescribeSourceSplit(t *testing.T) {
+	readme := mustReadRepoFile(t, "README.md")
+	requireAllSubstrings(t, readme,
+		"M15.1 source layout status",
+		"`sdk/intuitionos/iexec/iexec.s` remains the single assembly entrypoint",
+		"`sdk/intuitionos/iexec/cmd/`",
+		"`make intuitionos` still builds the ROM image from source",
+	)
+
+	iexecDoc := mustReadRepoFile(t, "sdk/docs/IntuitionOS/IExec.md")
+	requireAllSubstrings(t, iexecDoc,
+		"M15.1 source layout",
+		"`iexec.s` remains the top-level image/layout file",
+		"seeded command sources now live under `sdk/intuitionos/iexec/cmd/`",
+		"IntuitionOS still lives under `sdk/` for repository-history reasons in M15.1",
+	)
+
+	roadmap := mustReadRepoFile(t, "IntuitionOS_Roadmap.md")
+	requireAllSubstrings(t, roadmap,
+		"## M15.1: Source Split Before Disk Loading",
+		"split the monolithic `sdk/intuitionos/iexec/iexec.s` into per-component sources",
+		"keep the ROM-embedded build model",
+	)
+}
+
+func TestIExec_M151_Phase2_ServiceSourcesSplitFromIExecRoot(t *testing.T) {
+	root := mustReadRepoFile(t, "sdk/intuitionos/iexec/iexec.s")
+	doslib := mustReadRepoFile(t, "sdk/intuitionos/iexec/lib/dos_library.s")
+	for _, tc := range []struct {
+		owner   string
+		include string
+		label   string
+		path    string
+	}{
+		{"root", `include "handler/console_handler.s"`, "prog_console:", "sdk/intuitionos/iexec/handler/console_handler.s"},
+		{"doslib", `include "../dev/input_device.s"`, "prog_input_device:", "sdk/intuitionos/iexec/dev/input_device.s"},
+		{"doslib", `include "../resource/hardware_resource.s"`, "prog_hwres:", "sdk/intuitionos/iexec/resource/hardware_resource.s"},
+		{"doslib", `include "graphics_library.s"`, "prog_graphics_library:", "sdk/intuitionos/iexec/lib/graphics_library.s"},
+		{"doslib", `include "intuition_library.s"`, "prog_intuition_library:", "sdk/intuitionos/iexec/lib/intuition_library.s"},
+	} {
+		ownerBody := root
+		ownerName := "iexec.s"
+		if tc.owner == "doslib" {
+			ownerBody = doslib
+			ownerName = "lib/dos_library.s"
+		}
+		if !strings.Contains(ownerBody, tc.include) {
+			t.Fatalf("M151_Phase2_ServiceSourcesSplitFromIExecRoot: missing %q in %s", tc.include, ownerName)
+		}
+		if strings.Contains(root, tc.label) {
+			t.Fatalf("M151_Phase2_ServiceSourcesSplitFromIExecRoot: %q still defined directly in iexec.s", tc.label)
+		}
+		body := mustReadRepoFile(t, tc.path)
+		if !strings.Contains(body, tc.label) {
+			t.Fatalf("M151_Phase2_ServiceSourcesSplitFromIExecRoot: missing %q in %s", tc.label, tc.path)
+		}
+	}
+}
+
+func TestIExec_M151_Phase2_DocsDescribeServiceSplit(t *testing.T) {
+	readme := mustReadRepoFile(t, "README.md")
+	requireAllSubstrings(t, readme,
+		"`sdk/intuitionos/iexec/handler/`",
+		"`sdk/intuitionos/iexec/dev/`",
+		"`sdk/intuitionos/iexec/resource/`",
+		"`sdk/intuitionos/iexec/lib/`",
+		"`console.handler`, `input.device`, `hardware.resource`, `graphics.library`, and `intuition.library` now live in per-component sources",
+	)
+
+	iexecDoc := mustReadRepoFile(t, "sdk/docs/IntuitionOS/IExec.md")
+	requireAllSubstrings(t, iexecDoc,
+		"Phase 2 of M15.1 moves the non-DOS boot services into `handler/`, `dev/`, `resource/`, and `lib/` source files",
+		"`console.handler`, `input.device`, `hardware.resource`, `graphics.library`, and `intuition.library` are now split out of the root image source",
+	)
+
+	includeDoc := mustReadRepoFile(t, "sdk/docs/include-files.md")
+	requireAllSubstrings(t, includeDoc,
+		"`sdk/intuitionos/iexec/handler/`",
+		"`sdk/intuitionos/iexec/dev/`",
+		"`sdk/intuitionos/iexec/resource/`",
+		"`sdk/intuitionos/iexec/lib/`",
+	)
+
+	roadmap := mustReadRepoFile(t, "IntuitionOS_Roadmap.md")
+	requireAllSubstrings(t, roadmap,
+		"Phase 2 splits the booted non-DOS services out of the monolithic root",
+		"`console.handler`, `input.device`, `hardware.resource`, `graphics.library`, and `intuition.library`",
+	)
+}
+
+func TestIExec_M151_Phase3_ShellSourceSplitFromIExecRoot(t *testing.T) {
+	root := mustReadRepoFile(t, "sdk/intuitionos/iexec/iexec.s")
+	doslib := mustReadRepoFile(t, "sdk/intuitionos/iexec/lib/dos_library.s")
+	if strings.Contains(root, "prog_shell:") {
+		t.Fatalf("M151_Phase3_ShellSourceSplitFromIExecRoot: %q still defined directly in iexec.s", "prog_shell:")
+	}
+	if !strings.Contains(doslib, `include "../handler/shell.s"`) {
+		t.Fatalf("M151_Phase3_ShellSourceSplitFromIExecRoot: missing %q in lib/dos_library.s", `include "../handler/shell.s"`)
+	}
+	body := mustReadRepoFile(t, "sdk/intuitionos/iexec/handler/shell.s")
+	if !strings.Contains(body, "prog_shell:") {
+		t.Fatalf("M151_Phase3_ShellSourceSplitFromIExecRoot: missing %q in %s", "prog_shell:", "sdk/intuitionos/iexec/handler/shell.s")
+	}
+}
+
+func TestIExec_M151_Phase3_DocsDescribeShellSplit(t *testing.T) {
+	readme := mustReadRepoFile(t, "README.md")
+	requireAllSubstrings(t, readme,
+		"`sdk/intuitionos/iexec/handler/shell.s`",
+		"`prog_shell` now lives in a dedicated handler source file",
+	)
+
+	iexecDoc := mustReadRepoFile(t, "sdk/docs/IntuitionOS/IExec.md")
+	requireAllSubstrings(t, iexecDoc,
+		"Phase 3 of M15.1 moves the interactive shell into `sdk/intuitionos/iexec/handler/shell.s`",
+		"`prog_shell` is split out of the root image source without changing the M15 shell behavior",
+	)
+
+	includeDoc := mustReadRepoFile(t, "sdk/docs/include-files.md")
+	requireAllSubstrings(t, includeDoc,
+		"`sdk/intuitionos/iexec/handler/shell.s`",
+	)
+
+	roadmap := mustReadRepoFile(t, "IntuitionOS_Roadmap.md")
+	requireAllSubstrings(t, roadmap,
+		"Phase 3 extracts `prog_shell` into `sdk/intuitionos/iexec/handler/shell.s`",
+	)
+}
+
+func TestIExec_M151_Phase4_DosLibrarySourceSplitFromIExecRoot(t *testing.T) {
+	root := mustReadRepoFile(t, "sdk/intuitionos/iexec/iexec.s")
+	if !strings.Contains(root, `include "lib/dos_library.s"`) {
+		t.Fatalf("M151_Phase4_DosLibrarySourceSplitFromIExecRoot: missing %q in iexec.s", `include "lib/dos_library.s"`)
+	}
+	for _, label := range []string{
+		"prog_doslib:",
+		"prog_doslib_code:",
+		"prog_doslib_data:",
+		"prog_doslib_data_end:",
+		"prog_doslib_end:",
+	} {
+		if strings.Contains(root, label) {
+			t.Fatalf("M151_Phase4_DosLibrarySourceSplitFromIExecRoot: %q still defined directly in iexec.s", label)
+		}
+	}
+	doslib := mustReadRepoFile(t, "sdk/intuitionos/iexec/lib/dos_library.s")
+	requireAllSubstrings(t, doslib,
+		"prog_doslib:",
+		"prog_doslib_code:",
+		"prog_doslib_data:",
+		"prog_doslib_data_end:",
+		"prog_doslib_end:",
+		"include \"../cmd/version.s\"",
+		"include \"../handler/shell.s\"",
+	)
+}
+
+func TestIExec_M151_Phase4_DocsDescribeDosLibrarySplit(t *testing.T) {
+	readme := mustReadRepoFile(t, "README.md")
+	requireAllSubstrings(t, readme,
+		"`sdk/intuitionos/iexec/lib/dos_library.s`",
+		"`prog_doslib` now lives in its own library source file",
+		"owns the full DOS layout block",
+	)
+
+	iexecDoc := mustReadRepoFile(t, "sdk/docs/IntuitionOS/IExec.md")
+	requireAllSubstrings(t, iexecDoc,
+		"Phase 4 of M15.1 moves `prog_doslib` into `sdk/intuitionos/iexec/lib/dos_library.s`",
+		"the full DOS-owned layout block moves together",
+	)
+
+	includeDoc := mustReadRepoFile(t, "sdk/docs/include-files.md")
+	requireAllSubstrings(t, includeDoc,
+		"`sdk/intuitionos/iexec/lib/dos_library.s`",
+		"the DOS-owned block now lives under that file rather than the root image source",
+	)
+
+	roadmap := mustReadRepoFile(t, "IntuitionOS_Roadmap.md")
+	requireAllSubstrings(t, roadmap,
+		"Phase 4 extracts `prog_doslib` into `sdk/intuitionos/iexec/lib/dos_library.s`",
+		"preserves the full DOS-owned layout block",
+	)
+}
+
+func TestIExec_M151_Phase5_DosOwnedSubcomponentsSplitFromDosLibraryBody(t *testing.T) {
+	doslib := mustReadRepoFile(t, "sdk/intuitionos/iexec/lib/dos_library.s")
+	for _, tc := range []struct {
+		include string
+		label   string
+		path    string
+	}{
+		{`include "../assets/dos_seed_text.s"`, "seed_startup:", "sdk/intuitionos/iexec/assets/dos_seed_text.s"},
+		{`include "../cmd/gfxdemo.s"`, "prog_gfxdemo:", "sdk/intuitionos/iexec/cmd/gfxdemo.s"},
+		{`include "../cmd/about.s"`, "prog_about:", "sdk/intuitionos/iexec/cmd/about.s"},
+		{`include "../assets/elfseg_fixture.s"`, "prog_elfseg:", "sdk/intuitionos/iexec/assets/elfseg_fixture.s"},
+	} {
+		if !strings.Contains(doslib, tc.include) {
+			t.Fatalf("M151_Phase5_DosOwnedSubcomponentsSplitFromDosLibraryBody: missing %q in lib/dos_library.s", tc.include)
+		}
+		if strings.Contains(doslib, tc.label) {
+			t.Fatalf("M151_Phase5_DosOwnedSubcomponentsSplitFromDosLibraryBody: %q still defined directly in lib/dos_library.s", tc.label)
+		}
+		body := mustReadRepoFile(t, tc.path)
+		if !strings.Contains(body, tc.label) {
+			t.Fatalf("M151_Phase5_DosOwnedSubcomponentsSplitFromDosLibraryBody: missing %q in %s", tc.label, tc.path)
+		}
+	}
+
+	seedBody := mustReadRepoFile(t, "sdk/intuitionos/iexec/assets/dos_seed_text.s")
+	requireAllSubstrings(t, seedBody,
+		"seed_startup:",
+		"seed_help_text:",
+		"seed_loader_info:",
+	)
+}
+
+func TestIExec_M151_Phase5_DocsDescribeDosOwnedSubcomponentSplit(t *testing.T) {
+	readme := mustReadRepoFile(t, "README.md")
+	requireAllSubstrings(t, readme,
+		"`sdk/intuitionos/iexec/cmd/gfxdemo.s`",
+		"`sdk/intuitionos/iexec/cmd/about.s`",
+		"`sdk/intuitionos/iexec/assets/dos_seed_text.s`",
+		"`sdk/intuitionos/iexec/assets/elfseg_fixture.s`",
+	)
+
+	iexecDoc := mustReadRepoFile(t, "sdk/docs/IntuitionOS/IExec.md")
+	requireAllSubstrings(t, iexecDoc,
+		"Phase 5 of M15.1 splits the remaining DOS-owned subordinate programs and assets",
+		"`prog_gfxdemo`, `prog_about`, and the DOS-seeded text/fixture blobs now live in subordinate `cmd/` and `assets/` files",
+	)
+
+	includeDoc := mustReadRepoFile(t, "sdk/docs/include-files.md")
+	requireAllSubstrings(t, includeDoc,
+		"`sdk/intuitionos/iexec/assets/dos_seed_text.s`",
+		"`sdk/intuitionos/iexec/assets/elfseg_fixture.s`",
+		"`sdk/intuitionos/iexec/cmd/gfxdemo.s`",
+		"`sdk/intuitionos/iexec/cmd/about.s`",
+	)
+
+	roadmap := mustReadRepoFile(t, "IntuitionOS_Roadmap.md")
+	requireAllSubstrings(t, roadmap,
+		"Phase 5 splits the remaining DOS-owned subordinate programs and assets",
+		"`prog_gfxdemo`, `prog_about`, and the DOS-seeded text/fixture blobs",
+	)
+}
+
+func TestIExec_M151_Phase6_BootWiringSplitFromIExecRoot(t *testing.T) {
+	root := mustReadRepoFile(t, "sdk/intuitionos/iexec/iexec.s")
+	requireAllSubstrings(t, root,
+		`include "boot/manifest_seed.s"`,
+		`include "boot/strings.s"`,
+	)
+	for _, label := range []string{
+		"bootstrap_grant_table:",
+		"boot_manifest_name_console:",
+		"boot_elf_console:",
+		"boot_manifest_seed_table:",
+		"boot_banner:",
+		"fault_msg_prefix:",
+		"boot_fail_msg:",
+	} {
+		if strings.Contains(root, label) {
+			t.Fatalf("M151_Phase6_BootWiringSplitFromIExecRoot: %q still defined directly in iexec.s", label)
+		}
+	}
+
+	manifest := mustReadRepoFile(t, "sdk/intuitionos/iexec/boot/manifest_seed.s")
+	requireAllSubstrings(t, manifest,
+		"bootstrap_grant_table:",
+		"boot_manifest_name_console:",
+		"boot_elf_console:",
+		"boot_manifest_seed_table:",
+	)
+
+	stringsFile := mustReadRepoFile(t, "sdk/intuitionos/iexec/boot/strings.s")
+	requireAllSubstrings(t, stringsFile,
+		"boot_banner:",
+		"fault_msg_prefix:",
+		"boot_fail_msg:",
+	)
+}
+
+func TestIExec_M151_Phase6_DocsDescribeBootWiringSplit(t *testing.T) {
+	readme := mustReadRepoFile(t, "README.md")
+	requireAllSubstrings(t, readme,
+		"`sdk/intuitionos/iexec/boot/manifest_seed.s`",
+		"`sdk/intuitionos/iexec/boot/strings.s`",
+		"`iexec.s` now keeps the root boot/image wiring in `boot/` includes",
+	)
+
+	iexecDoc := mustReadRepoFile(t, "sdk/docs/IntuitionOS/IExec.md")
+	requireAllSubstrings(t, iexecDoc,
+		"Phase 6 of M15.1 moves the remaining boot/image wiring out of the root file",
+		"`sdk/intuitionos/iexec/boot/manifest_seed.s` and `sdk/intuitionos/iexec/boot/strings.s` now hold the boot manifest and root boot strings",
+	)
+
+	includeDoc := mustReadRepoFile(t, "sdk/docs/include-files.md")
+	requireAllSubstrings(t, includeDoc,
+		"`sdk/intuitionos/iexec/boot/manifest_seed.s`",
+		"`sdk/intuitionos/iexec/boot/strings.s`",
+	)
+
+	roadmap := mustReadRepoFile(t, "IntuitionOS_Roadmap.md")
+	requireAllSubstrings(t, roadmap,
+		"Phase 6 moves the remaining boot/image wiring into `sdk/intuitionos/iexec/boot/`",
+		"boot manifest seed table and root boot strings",
 	)
 }
 
