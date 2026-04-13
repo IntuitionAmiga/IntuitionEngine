@@ -45,11 +45,6 @@ boot_elf_console:
 boot_elf_console_end:
 
     align   4096
-boot_elf_doslib:
-    incbin  "boot_dos_library.elf"
-boot_elf_doslib_end:
-
-    align   4096
 boot_elf_shell:
     incbin  "boot_shell.elf"
 boot_elf_shell_end:
@@ -86,8 +81,8 @@ boot_manifest_seed_table:
 
     dc.l    BOOT_MANIFEST_ID_DOSLIB
     dc.l    1                           ; strict/fatal boot
-    dc.q    boot_elf_doslib
-    dc.q    boot_elf_doslib_end - boot_elf_doslib
+    dc.q    0
+    dc.q    0
     dc.q    boot_manifest_name_doslib
     dc.l    0
     dc.w    0

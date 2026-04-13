@@ -33,3 +33,9 @@ no_tasks_msg:
     align   4
 
 boot_fail_msg:
+    dc.b    "BOOT FAIL", 0x0D, 0x0A, 0
+    align   4
+
+boot_host_relpath_doslib:
+    dc.b    "IOSSYS/LIBS/dos.library", 0
+    align   4

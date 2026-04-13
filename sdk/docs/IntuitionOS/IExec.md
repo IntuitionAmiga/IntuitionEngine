@@ -49,6 +49,7 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
   - the public DOS loader API is unchanged; the embedded-manifest service source remains internal-only
 - console.handler: CON: handler with GetMsg polling and CON_READLINE protocol — **M11.5**: console.handler now owns terminal MMIO directly via its own `SYS_MAP_IO(0xF0, 1)` mapping and inlines the readline MMIO loop. The former kernel-side `SYS_READ_INPUT` (slot 37) is removed; slot 37 is an unallocated hole that returns `ERR_BADARG`.
 - **dos.library**: AmigaOS dos.library equivalent with a RAM-backed, case-insensitive filesystem and Amiga-shaped assign model. The file metadata table and open-handle table are unbounded user-space chains of `AllocMem`'d 4 KiB pages (85 file entries or 510 handle entries per page). As of **M12.8**, each file body is a variable-size chain of 4 KiB extents linked through `entry.file_va`; the old fixed `DOS_FILE_SIZE` per-file allocation is gone. `DOS_WRITE` now does an atomic swap onto a newly allocated extent chain so allocation failure leaves previous content intact. **M14 phases 2-3 add `DOS_LOADSEG` / `DOS_UNLOADSEG` / `DOS_RUNSEG`**: dos.library validates the strict native ELF subset, builds DOS-owned seglists with preserved target VA / `R/W/X` / entry-point metadata, frees them on demand, and launches them through the dual-mode `ExecProgram` descriptor handoff. **M15 expands the DOS namespace and layout model**: the built-in assign table now covers `RAM:`, `C:`, `L:`, `LIBS:`, `DEVS:`, `T:`, `S:`, and `RESOURCES:`; bare command search remains `C:`-only; `L:` is direct-access only in M15; `RAM:` remains a first-class compatibility root view; and `DOS_ASSIGN` adds DOS-side list/query/set of assign rows while keeping `RAM:` non-mutable.
+- **M15.2 host-backed boot current runtime**: `SYS:` is now the mounted host-backed boot volume and `IOSSYS:` is the built-in system assign rooted at `SYS:IOSSYS`. `DOS_ASSIGN` remains a compatibility projection: public list/query rows stay `name[16], target[16]`, `SYS:` host root and `IOSSYS:` built-in system assign are resolver-owned rather than mutable rows, canonical functional assigns keep their short public targets, `dos.library` boots from `IOSSYS:LIBS/dos.library`, and `Shell` boots from `IOSSYS:Tools/Shell`.
 - **Shell**: interactive command shell that sends raw command names to dos.library via DOS_RUN (no shell-side command table). The visible command-dispatch path goes through the DOS loader path for the seeded native-ELF `C:` command/demo set; `DOS_RUN` rejects non-ELF executable content instead of falling back to legacy flat-image launch. Executes `S:Startup-Sequence` automatically at boot if present, then drops to the interactive prompt.
 - **Visible DOS commands** as DOS-loaded executables: `VERSION`, `AVAIL`, `DIR`, `TYPE`, `ECHO`, `ASSIGN`, `LIST`, `WHICH`, `HELP`, plus the retained `GfxDemo` and `About` programs. Stored as files in RAM under `C:`, launched by name through dos.library.
 
@@ -76,7 +77,7 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
   - `input.device M11 [Task 4]`
   - `graphics.library M11 [Task 5]`
   - `intuition.library M12 [Task 6]`
-  - `IntuitionOS 0.16`
+  - `IntuitionOS 0.17`
   - `Type HELP for commands and ASSIGN for layout`
   - `1>`
 
@@ -98,6 +99,19 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
 - `sdk/intuitionos/iexec/boot/manifest_seed.s` and `sdk/intuitionos/iexec/boot/strings.s` now hold the boot manifest and root boot strings while `iexec.s` stays the top-level assembly entrypoint
 - The generated runtime ELFs are still rebuilt from labeled embedded programs after assembly; M15.1 does not change the ROM-embedded build model.
 - IntuitionOS still lives under `sdk/` for repository-history reasons in M15.1. The refactor is about component ownership and maintainability, not yet about repo relocation.
+
+**M15.2 host-backed boot current runtime:**
+
+- `SYS:` is the mounted host-backed boot volume.
+- `IOSSYS:` built-in system assign means `SYS:IOSSYS` internally, while public `DOS_ASSIGN` list/query remains the short compatibility projection.
+- canonical functional assigns continue to look M15-shaped in public output even when internal resolution is rooted under `SYS:IOSSYS`.
+- `DOS_ASSIGN` compatibility projection remains `name[16], target[16]`; `SYS:` and `IOSSYS:` are built-in roots, not mutable long chained rows.
+- `exec.library` is the only remaining ROM-resident runtime component.
+- `dos.library` boots from `IOSSYS:LIBS/dos.library`.
+- `Shell` boots from `IOSSYS:Tools/Shell`.
+- the generated host system tree lives under `sdk/intuitionos/system/SYS/IOSSYS`.
+- `RAM:` and `T:` remain writable provider-backed in-memory namespaces.
+- bootstrap hostfs stays read-only in M15.2.
 
 IExec runs on the IE64 CPU core only. It requires the IE64 MMU (4 KiB paged virtual memory, software TLB, control registers) and the hardware timer for preemption.
 
@@ -943,7 +957,7 @@ User can then type interactively:
 1> VERSION
 IntuitionOS 0.10 (exec.library M10)
 1> DIR RAM:
-readme                          0028
+readme                          0014
 C/Version                       0590
 C/Avail                         0991
 C/Dir                           1168

@@ -71,6 +71,8 @@ SYS_OPEN_LIBRARY  equ 36           ; nucleus  (binary-compat redirect to SYS_FIN
 ; contract.
 SYS_HWRES_OP      equ 38           ; trusted-internal — verb-multiplexed hardware.resource broker primitive (M12.5)
 SYS_BOOT_MANIFEST equ 39           ; trusted-internal — dos.library launches embedded boot-manifest entries (M14.1)
+SYS_BOOT_HOSTFS   equ 40           ; trusted-internal — read-only bootstrap hostfs bridge (M15.2 phase 2)
+SYS_BOOT_ELF_EXEC equ 41           ; trusted-internal — dos.library launches a validated caller-supplied ELF image
                                    ; R0 selects: HWRES_BECOME / HWRES_CREATE / HWRES_REVOKE
                                    ; Net public ABI shrinks: SYS_MAP_IO leaves the public nucleus set
                                    ; in M12.5, one trusted-internal slot enters. Apps see one fewer
@@ -129,13 +131,16 @@ SYSINFO_CURRENT_TASK equ 3
 ; M15 expands the embedded boot/runtime payloads further, so the old
 ; 0x040000 / 0x050000 PT+data window is no longer safe either: the
 ; input.device and later service ELFs can reach 0x040000 and get
-; destroyed by the PT bootstrap itself. The kernel PT/data window now
-; starts at 0x074000 / 0x084000, which keeps it below the fixed I/O
-; region at 0x0A0000 while restoring clear headroom for the full
-; assembled kernel image, including the late string table.
-KERN_PAGE_TABLE   equ 0x074000    ; Kernel page table (64 KiB) — M15: was 0x040000
-KERN_DATA_BASE    equ 0x084000    ; Kernel data structures      — M15: was 0x050000
-KERN_STACK_TOP    equ 0x09F000    ; Kernel stack top
+; destroyed by the PT bootstrap itself. The later M15.2 host-backed
+; tree export grew the assembled image again, far enough that the
+; string table now reaches into the previous 0x074000 page-table base.
+; Once the MMU starts setting A/D bits for higher VPNs, those PTE writes
+; land inside the image and corrupt late strings like boot_banner.
+; Move the supervisor PT/data/stack window upward while still staying
+; entirely below the fixed I/O region at 0x0A0000.
+KERN_PAGE_TABLE   equ 0x07F000    ; Kernel page table (64 KiB) — M15.2: was 0x074000
+KERN_DATA_BASE    equ 0x08F000    ; Kernel data structures      — M15.2: was 0x084000
+KERN_STACK_TOP    equ 0x0A0000    ; Kernel stack top (grows downward below I/O base)
 
 ; ---------------------------------------------------------------------------
 ; Kernel Data Offsets (at KERN_DATA_BASE)
@@ -961,3 +966,34 @@ BOOTSTRAP_GRANT_OFF_PROG_IDX equ 0   ; 1 byte: internal boot-manifest entry ID
 BOOTSTRAP_GRANT_OFF_TAG      equ 4   ; 4 bytes: region tag
 BOOTSTRAP_GRANT_OFF_PPN_LO   equ 8   ; 2 bytes: PPN low
 BOOTSTRAP_GRANT_OFF_PPN_HI   equ 10  ; 2 bytes: PPN high (inclusive)
+; M15.2 phase 2 bootstrap hostfs bridge
+BOOT_HOSTFS_BASE     equ 0xF23E0
+BOOT_HOSTFS_CMD      equ BOOT_HOSTFS_BASE + 0
+BOOT_HOSTFS_ARG1     equ BOOT_HOSTFS_BASE + 4
+BOOT_HOSTFS_ARG2     equ BOOT_HOSTFS_BASE + 8
+BOOT_HOSTFS_ARG3     equ BOOT_HOSTFS_BASE + 12
+BOOT_HOSTFS_ARG4     equ BOOT_HOSTFS_BASE + 16
+BOOT_HOSTFS_RES1     equ BOOT_HOSTFS_BASE + 20
+BOOT_HOSTFS_RES2     equ BOOT_HOSTFS_BASE + 24
+BOOT_HOSTFS_ERR      equ BOOT_HOSTFS_BASE + 28
+BOOT_HOSTFS_END      equ BOOT_HOSTFS_BASE + 31
+
+BOOT_HOSTFS_DISCOVER equ 0
+BOOT_HOSTFS_OPEN     equ 1
+BOOT_HOSTFS_READ     equ 2
+BOOT_HOSTFS_CLOSE    equ 3
+BOOT_HOSTFS_STAT     equ 4
+BOOT_HOSTFS_READDIR  equ 5
+
+BOOT_HOSTFS_KIND_NONE equ 0
+BOOT_HOSTFS_KIND_FILE equ 1
+BOOT_HOSTFS_KIND_DIR  equ 2
+
+BOOT_HOSTFS_STAT_SIZE_OFF equ 0
+BOOT_HOSTFS_STAT_KIND_OFF equ 8
+BOOT_HOSTFS_STAT_SIZE     equ 16
+
+BOOT_HOSTFS_DIRENT_KIND_OFF equ 0
+BOOT_HOSTFS_DIRENT_NAME_OFF equ 8
+BOOT_HOSTFS_DIRENT_NAME_MAX equ 64
+BOOT_HOSTFS_DIRENT_SIZE     equ 72

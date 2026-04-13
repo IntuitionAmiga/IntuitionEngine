@@ -156,6 +156,7 @@ prog_assign_cmd_code:
     bra     .asn_target_copy_loop
 
 .asn_send_set:
+    load.q  r29, (sp)
     move.l  r2, #DOS_ASSIGN
     move.l  r3, #DOS_ASSIGN_SET
     move.q  r4, r0

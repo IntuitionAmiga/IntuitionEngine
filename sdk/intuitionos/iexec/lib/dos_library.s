@@ -157,7 +157,7 @@ prog_doslib_code:
     ; =====================================================================
     ; Allocate first metadata chain page
     move.l  r1, #4096
-    move.l  r2, #MEMF_CLEAR
+    move.l  r2, #(MEMF_PUBLIC | MEMF_CLEAR)
     syscall #SYS_ALLOC_MEM             ; R1 = VA, R2 = err
     load.q  r29, (sp)
     store.q r1, 152(r29)               ; data[152] = meta_chain_head_va
@@ -176,8 +176,8 @@ prog_doslib_code:
     ; M12.8 Phase 2: file body is now an extent chain, not a fixed
     ; AllocMem(DOS_FILE_SIZE) page.
     ; =====================================================================
-    ; Allocate the readme body via the extent allocator (28 bytes).
-    move.l  r1, #28
+    ; Allocate the readme body via the extent allocator (14 bytes).
+    move.l  r1, #14
     jsr     .dos_extent_alloc           ; r1 = first extent VA, r2 = err
     bnez    r2, .dos_init_done          ; alloc failed → leave entry unset
     move.q  r24, r1                     ; r24 = readme_body_first_va
@@ -202,14 +202,14 @@ prog_doslib_code:
 .dos_cpname_done:
     ; entry.file_va = r24 (readme_body_first_va, head of extent chain)
     store.q r24, DOS_META_OFF_VA(r25)
-    ; entry.size = 28 (length of welcome message)
-    move.l  r14, #28
+    ; entry.size = 14 (length of welcome message)
+    move.l  r14, #14
     store.l r14, DOS_META_OFF_SIZE(r25)
 
     ; Copy welcome message from data[912] into the extent chain payload.
     move.q  r1, r24                    ; r1 = first extent VA
     add     r2, r29, #(prog_doslib_seed_readme_body - prog_doslib_data)
-    move.l  r3, #28                    ; r3 = byte_count
+    move.l  r3, #14                    ; r3 = byte_count
     jsr     .dos_extent_write
     load.q  r29, (sp)
 .dos_init_done:
@@ -447,20 +447,41 @@ prog_doslib_code:
     store.q r1, 144(r29)               ; data[144] = dos_port
 
     ; =====================================================================
-    ; M14.1 phase 3: DOS now owns the remaining service boot chain.
-    ; Launch Shell from the embedded manifest before entering the public
-    ; request loop. Shell then drives Startup-Sequence, whose service-name
-    ; lines are resolved through the internal embedded-manifest path.
+    ; M15.2 phase 5: launch the boot shell directly. Prefer the host-backed
+    ; exported IOSSYS tree when present, but preserve the embedded-shell boot
+    ; path when hostfs is unavailable (for test rigs with no mounted host root).
     ; =====================================================================
-    store.b r0, 1000(r29)              ; empty args string for manifest boot
-    move.l  r1, #BOOT_MANIFEST_ID_SHELL
-    add     r2, r29, #1000
+    push    r29
+    move.l  r1, #BOOT_HOSTFS_DISCOVER
+    move.q  r2, r0
     move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_BOOT_HOSTFS
+    pop     r29
+    bnez    r2, .dos_boot_launch_manifest
+    beqz    r1, .dos_boot_launch_manifest
+    add     r23, r29, #(prog_doslib_boot_shell_relpath - prog_doslib_data)
+    add     r16, r29, #(prog_doslib_empty_args - prog_doslib_data)
+    move.q  r18, r0
+    move.q  r30, r29
+    jsr     .dos_launch_hostfs_relpath_name
+    move.q  r29, r30
+    bnez    r1, .dos_main_loop
+    move.q  r28, r2
+    and     r28, r28, #0xFFFFFFFF
+    move.q  r15, r0
+    add     r15, r15, #DOS_ERR_NOTFOUND
+    bne     r28, r15, .dos_boot_fail
+
+.dos_boot_launch_manifest:
+    move.l  r1, #BOOT_MANIFEST_ID_SHELL
+    add     r2, r29, #(prog_doslib_empty_args - prog_doslib_data)
+    move.q  r3, r0
+    move.q  r30, r29
     jsr     .dos_manifest_launch_by_id
-    load.q  r29, (sp)
+    move.q  r29, r30
     bnez    r2, .dos_boot_fail
-    syscall #SYS_YIELD
-    load.q  r29, (sp)
 
     ; =====================================================================
     ; Main loop: WaitPort(dos_port) → dispatch on message type
@@ -527,6 +548,10 @@ prog_doslib_code:
     ; M12.6 Phase A: walks the metadata chain instead of a fixed file table.
     ; =================================================================
 .dos_do_dir:
+    load.q  r23, 168(r29)              ; input path in caller's shared buffer
+    load.b  r14, (r23)
+    bnez    r14, .dos_dir_explicit
+.dos_dir_root:
     load.q  r20, 168(r29)              ; r20 = dest (caller's shared buffer)
     move.q  r21, r0                     ; r21 = total bytes written
     ; Compute share_bytes - 56 reserve into r24 (max ~56 bytes per entry:
@@ -538,7 +563,7 @@ prog_doslib_code:
     ; Walk the metadata chain. r25 = current chain page VA.
     load.q  r25, 152(r29)              ; meta chain head
 .dos_dir_page_loop:
-    beqz    r25, .dos_dir_done
+    beqz    r25, .dos_dir_meta_done
     move.q  r22, r25
     add     r22, r22, #DOS_META_HDR_SZ ; r22 = &entries[0]
     move.l  r23, #0                    ; entry index in this page
@@ -733,9 +758,156 @@ prog_doslib_code:
 .dos_dir_next_page:
     load.q  r25, (r25)
     bra     .dos_dir_page_loop
+.dos_dir_explicit:
+    jsr     .dos_resolve_file
+    load.q  r29, (sp)
+    beqz    r22, .dos_dir_explicit_empty
+    sub     sp, sp, #96
+    load.q  r20, 168(r29)
+    move.q  r21, r0
+    load.q  r24, 184(r29)
+    lsl     r24, r24, #12
+    sub     r24, r24, #56
+    store.q r20, 0(sp)                 ; dest ptr
+    store.q r21, 8(sp)                 ; bytes written
+    store.q r24, 16(sp)                ; safe ceiling
+    move.q  r1, r23
+    add     r2, sp, #32                ; original resolved path scratch
+    jsr     .dos_copy_zstr
+.dos_dir_explicit_try_hostfs:
+    add     r1, sp, #32
+    jsr     .dos_hostfs_relpath_for_resolved_name
+    beqz    r3, .dos_dir_explicit_prepare_meta
+    store.q r1, 24(sp)                 ; preserve relpath across helper JSRs
+    jsr     .dos_bootfs_stat
+    bnez    r3, .dos_dir_explicit_prepare_meta
+    move.q  r28, r2
+    and     r28, r28, #0xFFFFFFFF
+    move.q  r15, r0
+    add     r15, r15, #BOOT_HOSTFS_KIND_DIR
+    bne     r28, r15, .dos_dir_explicit_prepare_meta
+    load.q  r26, 24(sp)
+    move.q  r27, r26
+    move.l  r28, #0
+.dos_dir_explicit_hostfs_len:
+    add     r14, r27, r28
+    load.b  r15, (r14)
+    beqz    r15, .dos_dir_explicit_hostfs_len_done
+    add     r28, r28, #1
+    move.l  r16, #47
+    blt     r28, r16, .dos_dir_explicit_hostfs_len
+.dos_dir_explicit_hostfs_len_done:
+    beqz    r28, .dos_dir_explicit_hostfs_ready
+    add     r14, r27, r28
+    sub     r14, r14, #1
+    load.b  r15, (r14)
+    move.l  r16, #0x2F
+    beq     r15, r16, .dos_dir_explicit_hostfs_ready
+    add     r14, r27, r28
+    store.b r16, (r14)
+    add     r14, r14, #1
+    store.b r0, (r14)
+.dos_dir_explicit_hostfs_ready:
+    load.q  r20, 0(sp)
+    load.q  r21, 8(sp)
+    load.q  r24, 16(sp)
+    load.q  r1, 24(sp)
+    jsr     .dos_dir_append_hostfs_explicit_names
+    bnez    r21, .dos_dir_explicit_done
+    bra     .dos_dir_explicit_prepare_meta
+.dos_dir_explicit_prepare_meta:
+    add     r1, sp, #32
+    add     r2, sp, #64                ; normalized prefix scratch
+    jsr     .dos_copy_zstr
+    move.q  r26, r1
+    add     r27, sp, #64
+    load.b  r14, (r27)
+    move.l  r15, #0x53                 ; 'S'
+    bne     r14, r15, .dos_dir_explicit_prefix_base_done
+    load.b  r14, 1(r27)
+    move.l  r15, #0x59                 ; 'Y'
+    bne     r14, r15, .dos_dir_explicit_prefix_base_done
+    load.b  r14, 2(r27)
+    move.l  r15, #0x53                 ; 'S'
+    bne     r14, r15, .dos_dir_explicit_prefix_base_done
+    load.b  r14, 3(r27)
+    move.l  r15, #0x2F                 ; '/'
+    bne     r14, r15, .dos_dir_explicit_prefix_base_done
+    load.b  r14, 4(r27)
+    move.l  r15, #0x49                 ; 'I'
+    bne     r14, r15, .dos_dir_explicit_prefix_base_done
+    load.b  r14, 5(r27)
+    move.l  r15, #0x4F                 ; 'O'
+    bne     r14, r15, .dos_dir_explicit_prefix_base_done
+    load.b  r14, 6(r27)
+    move.l  r15, #0x53                 ; 'S'
+    bne     r14, r15, .dos_dir_explicit_prefix_base_done
+    load.b  r14, 7(r27)
+    move.l  r15, #0x53                 ; 'S'
+    bne     r14, r15, .dos_dir_explicit_prefix_base_done
+    load.b  r14, 8(r27)
+    move.l  r15, #0x59                 ; 'Y'
+    bne     r14, r15, .dos_dir_explicit_prefix_base_done
+    load.b  r14, 9(r27)
+    move.l  r15, #0x53                 ; 'S'
+    bne     r14, r15, .dos_dir_explicit_prefix_base_done
+    load.b  r14, 10(r27)
+    move.l  r15, #0x2F                 ; '/'
+    bne     r14, r15, .dos_dir_explicit_prefix_base_done
+    add     r27, r27, #11
+.dos_dir_explicit_prefix_base_done:
+    sub     r30, r26, r27
+    beqz    r30, .dos_dir_explicit_meta
+    sub     r14, r26, #1
+    load.b  r15, (r14)
+    move.l  r16, #0x2F
+    beq     r15, r16, .dos_dir_explicit_prefix_done
+    store.b r16, (r26)
+    add     r26, r26, #1
+    store.b r0, (r26)
+    add     r30, r30, #1
+.dos_dir_explicit_prefix_done:
+.dos_dir_explicit_meta:
+    load.q  r20, 0(sp)
+    load.q  r21, 8(sp)
+    load.q  r24, 16(sp)
+    move.q  r1, r27
+    move.q  r2, r30
+    jsr     .dos_dir_append_meta_explicit_prefix
+.dos_dir_explicit_meta_done:
+    bnez    r21, .dos_dir_explicit_done
+.dos_dir_explicit_done:
+    store.b r0, (r20)
+    add     sp, sp, #96
+    bra     .dos_dir_reply_ok
+.dos_dir_explicit_empty:
+    load.q  r20, 168(r29)
+    move.q  r21, r0
+    store.b r0, (r20)
+    bra     .dos_dir_reply_ok
+.dos_dir_meta_done:
+    add     r1, r29, #(prog_doslib_hostfs_public_c - prog_doslib_data)
+    add     r2, r29, #(prog_doslib_hostfs_rel_c - prog_doslib_data)
+    jsr     .dos_dir_append_hostfs_dir
+    add     r1, r29, #(prog_doslib_hostfs_public_s - prog_doslib_data)
+    add     r2, r29, #(prog_doslib_hostfs_rel_s - prog_doslib_data)
+    jsr     .dos_dir_append_hostfs_dir
+    add     r1, r29, #(prog_doslib_hostfs_public_l - prog_doslib_data)
+    add     r2, r29, #(prog_doslib_hostfs_rel_l - prog_doslib_data)
+    jsr     .dos_dir_append_hostfs_dir
+    add     r1, r29, #(prog_doslib_hostfs_public_libs - prog_doslib_data)
+    add     r2, r29, #(prog_doslib_hostfs_rel_libs - prog_doslib_data)
+    jsr     .dos_dir_append_hostfs_dir
+    add     r1, r29, #(prog_doslib_hostfs_public_devs - prog_doslib_data)
+    add     r2, r29, #(prog_doslib_hostfs_rel_devs - prog_doslib_data)
+    jsr     .dos_dir_append_hostfs_dir
+    add     r1, r29, #(prog_doslib_hostfs_public_resources - prog_doslib_data)
+    add     r2, r29, #(prog_doslib_hostfs_rel_resources - prog_doslib_data)
+    jsr     .dos_dir_append_hostfs_dir
 .dos_dir_done:
     ; Null-terminate
     store.b r0, (r20)
+.dos_dir_reply_ok:
     ; Reply with data0 = bytes written
     load.q  r1, 944(r29)               ; reply_port
     move.l  r2, #DOS_OK                 ; type = success
@@ -745,6 +917,514 @@ prog_doslib_code:
     syscall #SYS_REPLY_MSG
     load.q  r29, (sp)
     bra     .dos_main_loop
+
+    ; .dos_dir_append_hostfs_dir
+    ; In/out: r20 = dest ptr, r21 = bytes written, r24 = safe ceiling
+    ; In: r1 = public DOS prefix ptr, r2 = hostfs-relative dir path ptr
+.dos_dir_append_hostfs_dir:
+    push    r1
+    push    r2
+    move.l  r16, #0
+.ddahd_entry:
+    add     r17, r21, #38
+    bgt     r17, r24, .ddahd_done
+    push    r20
+    push    r21
+    push    r24
+    load.q  r1, 24(sp)
+    move.q  r2, r16
+    jsr     .dos_bootfs_readdir
+    pop     r24
+    pop     r21
+    pop     r20
+    bnez    r3, .ddahd_done
+    push    r1
+    push    r20
+    push    r21
+    push    r24
+    move.q  r2, r1
+    load.q  r1, 40(sp)
+    jsr     .dos_dir_hostfs_name_is_seeded
+    pop     r24
+    pop     r21
+    pop     r20
+    pop     r1
+    bnez    r3, .ddahd_skip
+    move.q  r17, r20
+    move.q  r18, r21
+    move.l  r19, #0
+    load.q  r14, 8(sp)
+.ddahd_prefix:
+    load.b  r22, (r14)
+    beqz    r22, .ddahd_name
+    move.l  r23, #32
+    bge     r19, r23, .ddahd_name
+    store.b r22, (r17)
+    add     r14, r14, #1
+    add     r17, r17, #1
+    add     r18, r18, #1
+    add     r19, r19, #1
+    bra     .ddahd_prefix
+.ddahd_name:
+    add     r22, r1, #BOOT_HOSTFS_DIRENT_NAME_OFF
+.ddahd_name_loop:
+    load.b  r23, (r22)
+    beqz    r23, .ddahd_pad
+    move.l  r25, #32
+    bge     r19, r25, .ddahd_pad
+    store.b r23, (r17)
+    add     r22, r22, #1
+    add     r17, r17, #1
+    add     r18, r18, #1
+    add     r19, r19, #1
+    bra     .ddahd_name_loop
+.ddahd_pad:
+    move.l  r25, #32
+    bge     r19, r25, .ddahd_size
+    move.l  r23, #0x20
+    store.b r23, (r17)
+    add     r17, r17, #1
+    add     r18, r18, #1
+    add     r19, r19, #1
+    bra     .ddahd_pad
+.ddahd_size:
+    move.l  r23, #0x30
+    store.b r23, (r17)
+    add     r17, r17, #1
+    add     r18, r18, #1
+    store.b r23, (r17)
+    add     r17, r17, #1
+    add     r18, r18, #1
+    store.b r23, (r17)
+    add     r17, r17, #1
+    add     r18, r18, #1
+    store.b r23, (r17)
+    add     r17, r17, #1
+    add     r18, r18, #1
+    move.l  r23, #0x0D
+    store.b r23, (r17)
+    add     r17, r17, #1
+    add     r18, r18, #1
+    move.l  r23, #0x0A
+    store.b r23, (r17)
+    add     r17, r17, #1
+    add     r18, r18, #1
+    move.q  r20, r17
+    move.q  r21, r18
+.ddahd_skip:
+    add     r16, r16, #1
+    bra     .ddahd_entry
+.ddahd_done:
+    pop     r2
+    pop     r1
+    rts
+
+    ; .dos_dir_append_hostfs_explicit_names
+    ; In/out: r20 = dest ptr, r21 = bytes written, r24 = safe ceiling
+    ; In: r1 = hostfs-relative dir path ptr
+.dos_dir_append_hostfs_explicit_names:
+    push    r1
+    move.l  r16, #0
+.ddahe_entry:
+    add     r17, r21, #38
+    bgt     r17, r24, .ddahe_done
+    push    r20
+    push    r21
+    push    r24
+    load.q  r1, 24(sp)
+    move.q  r2, r16
+    jsr     .dos_bootfs_readdir
+    pop     r24
+    pop     r21
+    pop     r20
+    bnez    r3, .ddahe_done
+    move.q  r17, r20
+    move.q  r18, r21
+    move.l  r19, #0
+    add     r22, r1, #BOOT_HOSTFS_DIRENT_NAME_OFF
+.ddahe_name_loop:
+    load.b  r23, (r22)
+    beqz    r23, .ddahe_pad
+    move.l  r25, #32
+    bge     r19, r25, .ddahe_pad
+    store.b r23, (r17)
+    add     r22, r22, #1
+    add     r17, r17, #1
+    add     r18, r18, #1
+    add     r19, r19, #1
+    bra     .ddahe_name_loop
+.ddahe_pad:
+    move.l  r25, #32
+    bge     r19, r25, .ddahe_size
+    move.l  r23, #0x20
+    store.b r23, (r17)
+    add     r17, r17, #1
+    add     r18, r18, #1
+    add     r19, r19, #1
+    bra     .ddahe_pad
+.ddahe_size:
+    move.l  r23, #0x30
+    store.b r23, (r17)
+    add     r17, r17, #1
+    add     r18, r18, #1
+    store.b r23, (r17)
+    add     r17, r17, #1
+    add     r18, r18, #1
+    store.b r23, (r17)
+    add     r17, r17, #1
+    add     r18, r18, #1
+    store.b r23, (r17)
+    add     r17, r17, #1
+    add     r18, r18, #1
+    move.l  r23, #0x0D
+    store.b r23, (r17)
+    add     r17, r17, #1
+    add     r18, r18, #1
+    move.l  r23, #0x0A
+    store.b r23, (r17)
+    add     r17, r17, #1
+    add     r18, r18, #1
+    move.q  r20, r17
+    move.q  r21, r18
+    add     r16, r16, #1
+    bra     .ddahe_entry
+.ddahe_done:
+    pop     r1
+    rts
+
+    ; .dos_dir_append_meta_explicit_prefix
+    ; In/out: r20 = dest ptr, r21 = bytes written, r24 = safe ceiling
+    ; In: r1 = metadata prefix ptr ending with '/', r2 = prefix len
+.dos_dir_append_meta_explicit_prefix:
+    push    r1
+    push    r2
+    load.q  r25, 152(r29)
+.ddame_page_loop:
+    beqz    r25, .ddame_done
+    move.q  r22, r25
+    add     r22, r22, #DOS_META_HDR_SZ
+    move.l  r19, #0
+.ddame_entry:
+    bge     r21, r24, .ddame_done
+    move.l  r28, #DOS_META_PER_PAGE
+    bge     r19, r28, .ddame_next_page
+    move.q  r14, r22
+    load.b  r15, (r14)
+    beqz    r15, .ddame_next
+    move.q  r26, r19
+    push    r20
+    push    r21
+    push    r22
+    push    r24
+    push    r25
+    move.q  r1, r14
+    load.q  r2, 48(sp)
+    jsr     .dos_prefix_eq_ci
+    pop     r25
+    pop     r24
+    pop     r22
+    pop     r21
+    pop     r20
+    move.q  r28, r23
+    move.q  r19, r26
+    bnez    r28, .ddame_next
+    load.q  r28, (sp)
+    add     r16, r14, r28
+    load.b  r15, (r16)
+    beqz    r15, .ddame_next
+    move.l  r17, #0
+.ddame_cpname:
+    load.b  r15, (r16)
+    beqz    r15, .ddame_pad
+    store.b r15, (r20)
+    add     r20, r20, #1
+    add     r21, r21, #1
+    add     r16, r16, #1
+    add     r17, r17, #1
+    move.l  r28, #32
+    blt     r17, r28, .ddame_cpname
+.ddame_pad:
+    move.l  r28, #32
+    bge     r17, r28, .ddame_size
+    move.l  r15, #0x20
+    store.b r15, (r20)
+    add     r20, r20, #1
+    add     r21, r21, #1
+    add     r17, r17, #1
+    bra     .ddame_pad
+.ddame_size:
+    load.l  r15, DOS_META_OFF_SIZE(r14)
+    move.l  r18, #0
+    move.l  r28, #1000000000
+    divu    r16, r15, r28
+    mulu    r17, r16, r28
+    sub     r15, r15, r17
+    beqz    r18, .ddames_skip_1g_chk
+    bra     .ddames_emit_1g
+.ddames_skip_1g_chk:
+    beqz    r16, .ddames_skip_1g
+.ddames_emit_1g:
+    add     r16, r16, #0x30
+    store.b r16, (r20)
+    add     r20, r20, #1
+    add     r21, r21, #1
+    move.l  r18, #1
+.ddames_skip_1g:
+    move.l  r28, #100000000
+    divu    r16, r15, r28
+    mulu    r17, r16, r28
+    sub     r15, r15, r17
+    beqz    r18, .ddames_skip_100m_chk
+    bra     .ddames_emit_100m
+.ddames_skip_100m_chk:
+    beqz    r16, .ddames_skip_100m
+.ddames_emit_100m:
+    add     r16, r16, #0x30
+    store.b r16, (r20)
+    add     r20, r20, #1
+    add     r21, r21, #1
+    move.l  r18, #1
+.ddames_skip_100m:
+    move.l  r28, #10000000
+    divu    r16, r15, r28
+    mulu    r17, r16, r28
+    sub     r15, r15, r17
+    beqz    r18, .ddames_skip_10m_chk
+    bra     .ddames_emit_10m
+.ddames_skip_10m_chk:
+    beqz    r16, .ddames_skip_10m
+.ddames_emit_10m:
+    add     r16, r16, #0x30
+    store.b r16, (r20)
+    add     r20, r20, #1
+    add     r21, r21, #1
+    move.l  r18, #1
+.ddames_skip_10m:
+    move.l  r28, #1000000
+    divu    r16, r15, r28
+    mulu    r17, r16, r28
+    sub     r15, r15, r17
+    beqz    r18, .ddames_skip_1m_chk
+    bra     .ddames_emit_1m
+.ddames_skip_1m_chk:
+    beqz    r16, .ddames_skip_1m
+.ddames_emit_1m:
+    add     r16, r16, #0x30
+    store.b r16, (r20)
+    add     r20, r20, #1
+    add     r21, r21, #1
+    move.l  r18, #1
+.ddames_skip_1m:
+    move.l  r28, #100000
+    divu    r16, r15, r28
+    mulu    r17, r16, r28
+    sub     r15, r15, r17
+    beqz    r18, .ddames_skip_100k_chk
+    bra     .ddames_emit_100k
+.ddames_skip_100k_chk:
+    beqz    r16, .ddames_skip_100k
+.ddames_emit_100k:
+    add     r16, r16, #0x30
+    store.b r16, (r20)
+    add     r20, r20, #1
+    add     r21, r21, #1
+    move.l  r18, #1
+.ddames_skip_100k:
+    move.l  r28, #10000
+    divu    r16, r15, r28
+    mulu    r17, r16, r28
+    sub     r15, r15, r17
+    beqz    r18, .ddames_skip_10k_chk
+    bra     .ddames_emit_10k
+.ddames_skip_10k_chk:
+    beqz    r16, .ddames_skip_10k
+.ddames_emit_10k:
+    add     r16, r16, #0x30
+    store.b r16, (r20)
+    add     r20, r20, #1
+    add     r21, r21, #1
+    move.l  r18, #1
+.ddames_skip_10k:
+    move.l  r28, #1000
+    divu    r16, r15, r28
+    mulu    r17, r16, r28
+    sub     r15, r15, r17
+    add     r16, r16, #0x30
+    store.b r16, (r20)
+    add     r20, r20, #1
+    add     r21, r21, #1
+    move.l  r28, #100
+    divu    r16, r15, r28
+    mulu    r17, r16, r28
+    sub     r15, r15, r17
+    add     r16, r16, #0x30
+    store.b r16, (r20)
+    add     r20, r20, #1
+    add     r21, r21, #1
+    move.l  r28, #10
+    divu    r16, r15, r28
+    mulu    r17, r16, r28
+    sub     r15, r15, r17
+    add     r16, r16, #0x30
+    store.b r16, (r20)
+    add     r20, r20, #1
+    add     r21, r21, #1
+    add     r15, r15, #0x30
+    store.b r15, (r20)
+    add     r20, r20, #1
+    add     r21, r21, #1
+    move.l  r15, #0x0D
+    store.b r15, (r20)
+    add     r20, r20, #1
+    add     r21, r21, #1
+    move.l  r15, #0x0A
+    store.b r15, (r20)
+    add     r20, r20, #1
+    add     r21, r21, #1
+.ddame_next:
+    add     r22, r22, #DOS_META_ENTRY_SZ
+    add     r19, r19, #1
+    bra     .ddame_entry
+.ddame_next_page:
+    load.q  r25, (r25)
+    bra     .ddame_page_loop
+.ddame_done:
+    pop     r2
+    pop     r1
+    rts
+
+    ; .dos_dir_append_hostfs_explicit_dir
+    ; In/out: r20 = dest ptr, r21 = bytes written, r24 = safe ceiling
+    ; In: r1 = resolved metadata prefix ptr ending with '/', r2 = hostfs-relative dir path ptr
+.dos_dir_append_hostfs_explicit_dir:
+    push    r1
+    push    r2
+    move.l  r16, #0
+.ddahed_entry:
+    add     r17, r21, #38
+    bgt     r17, r24, .ddahed_done
+    push    r20
+    push    r21
+    push    r24
+    load.q  r1, 24(sp)
+    move.q  r2, r16
+    jsr     .dos_bootfs_readdir
+    pop     r24
+    pop     r21
+    pop     r20
+    bnez    r3, .ddahed_done
+    push    r1
+    add     r22, r29, #1000
+    load.q  r14, 8(sp)
+.ddahed_full_prefix:
+    load.b  r23, (r14)
+    store.b r23, (r22)
+    beqz    r23, .ddahed_fix_name
+    add     r14, r14, #1
+    add     r22, r22, #1
+    bra     .ddahed_full_prefix
+.ddahed_fix_name:
+    add     r24, r1, #BOOT_HOSTFS_DIRENT_NAME_OFF
+.ddahed_full_name:
+    load.b  r23, (r24)
+    store.b r23, (r22)
+    beqz    r23, .ddahed_lookup
+    add     r24, r24, #1
+    add     r22, r22, #1
+    bra     .ddahed_full_name
+.ddahed_lookup:
+    add     r1, r29, #1000
+    jsr     .dos_meta_find_by_name
+    pop     r24
+    bnez    r1, .ddahed_skip
+    move.q  r17, r20
+    move.q  r18, r21
+    move.l  r19, #0
+    add     r22, r24, #BOOT_HOSTFS_DIRENT_NAME_OFF
+.ddahed_name_loop:
+    load.b  r23, (r22)
+    beqz    r23, .ddahed_pad
+    move.l  r25, #32
+    bge     r19, r25, .ddahed_pad
+    store.b r23, (r17)
+    add     r22, r22, #1
+    add     r17, r17, #1
+    add     r18, r18, #1
+    add     r19, r19, #1
+    bra     .ddahed_name_loop
+.ddahed_pad:
+    move.l  r25, #32
+    bge     r19, r25, .ddahed_size
+    move.l  r23, #0x20
+    store.b r23, (r17)
+    add     r17, r17, #1
+    add     r18, r18, #1
+    add     r19, r19, #1
+    bra     .ddahed_pad
+.ddahed_size:
+    move.l  r23, #0x30
+    store.b r23, (r17)
+    add     r17, r17, #1
+    add     r18, r18, #1
+    store.b r23, (r17)
+    add     r17, r17, #1
+    add     r18, r18, #1
+    store.b r23, (r17)
+    add     r17, r17, #1
+    add     r18, r18, #1
+    store.b r23, (r17)
+    add     r17, r17, #1
+    add     r18, r18, #1
+    move.l  r23, #0x0D
+    store.b r23, (r17)
+    add     r17, r17, #1
+    add     r18, r18, #1
+    move.l  r23, #0x0A
+    store.b r23, (r17)
+    add     r17, r17, #1
+    add     r18, r18, #1
+    move.q  r20, r17
+    move.q  r21, r18
+.ddahed_skip:
+    add     r16, r16, #1
+    bra     .ddahed_entry
+.ddahed_done:
+    pop     r2
+    pop     r1
+    rts
+
+    ; .dos_dir_hostfs_name_is_seeded
+    ; In:  r1 = public DOS prefix ptr (e.g. "C/")
+    ;      r2 = hostfs dirent scratch ptr
+    ; Out: r3 = 1 if that name already exists in seeded metadata, else 0
+.dos_dir_hostfs_name_is_seeded:
+    move.q  r20, r1
+    move.q  r21, r2
+    add     r22, r29, #1000
+.ddhnis_prefix:
+    load.b  r23, (r20)
+    store.b r23, (r22)
+    beqz    r23, .ddhnis_fix
+    add     r20, r20, #1
+    add     r22, r22, #1
+    bra     .ddhnis_prefix
+.ddhnis_fix:
+    add     r21, r21, #BOOT_HOSTFS_DIRENT_NAME_OFF
+.ddhnis_name:
+    load.b  r23, (r21)
+    store.b r23, (r22)
+    beqz    r23, .ddhnis_lookup
+    add     r21, r21, #1
+    add     r22, r22, #1
+    bra     .ddhnis_name
+.ddhnis_lookup:
+    add     r1, r29, #1000
+    jsr     .dos_meta_find_by_name
+    move.l  r3, #1
+    bnez    r1, .ddhnis_done
+    move.l  r3, #0
+.ddhnis_done:
+    rts
 
     ; =================================================================
     ; DOS_OPEN (type=1): open file by name from shared buffer
@@ -764,11 +1444,128 @@ prog_doslib_code:
     load.q  r20, 960(r29)              ; resolver clobbers caller-save regs
     store.q r23, 336(r29)              ; preserve resolved name across helper JSRs
 
+    ; Host-backed read-only path: if the resolved name maps into the mounted
+    ; host system tree and the file exists there, prefer that over the seeded
+    ; RAM metadata view.
+    move.q  r1, r23
+    jsr     .dos_hostfs_relpath_for_resolved_name
+    beqz    r3, .dos_open_meta_lookup
+    load.q  r20, 960(r29)              ; helper clobbers caller-save regs
+    move.q  r24, r1
+    beqz    r20, .dos_open_hostfs_try
+    bra     .dos_open_meta_lookup
+.dos_open_hostfs_try:
+    store.q r24, 608(r29)
+    move.q  r1, r24
+    jsr     .dos_bootfs_stat
+    beqz    r3, .dos_open_hostfs_stat_ok
+    move.l  r28, #ERR_NOTFOUND
+    beq     r3, r28, .dos_open_meta_lookup
+    bra     .dos_reply_err
+.dos_open_hostfs_stat_ok:
+    move.q  r28, r2
+    and     r28, r28, #0xFFFFFFFF
+    move.q  r15, r0
+    add     r15, r15, #BOOT_HOSTFS_KIND_FILE
+    bne     r28, r15, .dos_reply_err
+    move.q  r25, r1
+    store.q r25, 632(r29)
+    load.q  r24, 608(r29)
+    move.q  r1, r24
+    jsr     .dos_bootfs_open
+    bnez    r2, .dos_reply_err
+    move.q  r24, r1
+    store.q r24, 616(r29)
+    load.q  r25, 632(r29)
+    beqz    r25, .dos_open_hostfs_buf_ready
+    push    r29
+    move.q  r1, r25
+    move.l  r2, #MEMF_CLEAR
+    syscall #SYS_ALLOC_MEM
+    pop     r29
+    bnez    r2, .dos_open_hostfs_nomem_close
+    store.q r1, 624(r29)
+    load.q  r24, 616(r29)
+    move.q  r1, r24
+    load.q  r2, 624(r29)
+    move.q  r3, r25
+    jsr     .dos_bootfs_read_all
+    move.q  r26, r2
+    load.q  r24, 616(r29)
+    move.q  r1, r24
+    jsr     .dos_bootfs_close
+    bnez    r26, .dos_open_hostfs_free_tmp_err
+    load.q  r25, 632(r29)
+    bra     .dos_open_hostfs_buf_have
+.dos_open_hostfs_buf_ready:
+    move.q  r1, r24
+    jsr     .dos_bootfs_close
+    store.q r0, 624(r29)
+.dos_open_hostfs_buf_have:
+    load.q  r25, 632(r29)
+    move.q  r1, r25
+    load.q  r2, 624(r29)
+    jsr     .dos_hostrec_alloc
+    beqz    r2, .dos_open_hostfs_hnd
+    load.q  r24, 624(r29)
+    beqz    r24, .dos_reply_full
+    push    r29
+    move.q  r1, r24
+    move.q  r2, r25
+    syscall #SYS_FREE_MEM
+    pop     r29
+    bra     .dos_reply_full
+.dos_open_hostfs_nomem_close:
+    load.q  r24, 616(r29)
+    move.q  r1, r24
+    jsr     .dos_bootfs_close
+    bra     .dos_reply_full
+.dos_open_hostfs_free_tmp:
+    load.q  r24, 624(r29)
+    beqz    r24, .dos_open_meta_lookup
+    push    r29
+    move.q  r1, r24
+    load.q  r2, 632(r29)
+    syscall #SYS_FREE_MEM
+    pop     r29
+    bra     .dos_open_meta_lookup
+.dos_open_hostfs_free_tmp_err:
+    load.q  r24, 624(r29)
+    beqz    r24, .dos_reply_err
+    push    r29
+    move.q  r1, r24
+    load.q  r2, 632(r29)
+    syscall #SYS_FREE_MEM
+    pop     r29
+    bra     .dos_reply_err
+.dos_open_hostfs_hnd:
+    move.q  r25, r1
+    jsr     .dos_hnd_alloc
+    beqz    r2, .dos_open_hostfs_reply
+    move.q  r1, r25
+    jsr     .dos_hostrec_free
+    bra     .dos_reply_full
+.dos_open_hostfs_reply:
+    move.q  r18, r1
+    load.q  r29, (sp)
+    load.q  r1, 944(r29)
+    move.l  r2, #DOS_OK
+    move.q  r3, r18
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+
+ .dos_open_meta_lookup:
     ; --- Search metadata chain for matching name ---
+    load.q  r23, 336(r29)
+    load.q  r20, 960(r29)
     move.q  r1, r23                     ; r1 = request name ptr
     jsr     .dos_meta_find_by_name      ; r1 = entry VA (or 0)
     load.q  r29, (sp)
     load.q  r23, 336(r29)
+    load.q  r20, 960(r29)
     bnez    r1, .dos_open_have_entry
     ; Not found
     bnez    r20, .dos_open_create       ; WRITE → create new
@@ -781,6 +1578,7 @@ prog_doslib_code:
     ; Allocate a fresh metadata entry.
     jsr     .dos_meta_alloc_entry       ; r1 = entry VA, r2 = err
     bnez    r2, .dos_reply_full
+    load.q  r23, 336(r29)
     move.q  r25, r1                     ; r25 = entry VA
     ; entry.file_va = 0 (empty body)
     store.q r0, DOS_META_OFF_VA(r25)
@@ -833,6 +1631,9 @@ prog_doslib_code:
     load.q  r19, 968(r29)              ; r19 = max_bytes
     jsr     .dos_hnd_lookup             ; r1 = entry VA (or 0)
     beqz    r1, .dos_read_badh
+    move.q  r18, r2                     ; r18 = slot VA
+    and     r24, r1, #1
+    bnez    r24, .dos_read_hostrec
     move.q  r14, r1                     ; r14 = entry VA
     load.q  r29, (sp)
     load.q  r20, DOS_META_OFF_VA(r14)  ; r20 = first extent VA (or 0)
@@ -867,6 +1668,46 @@ prog_doslib_code:
     syscall #SYS_REPLY_MSG
     load.q  r29, (sp)
     bra     .dos_main_loop
+.dos_read_hostrec:
+    sub     r1, r1, #1
+    move.q  r14, r1
+    load.q  r29, (sp)
+    load.q  r16, 8(r14)                ; host file size
+    blt     r19, r16, .dos_read_host_clamp
+    move.q  r19, r16
+.dos_read_host_clamp:
+    load.q  r24, 184(r29)
+    lsl     r24, r24, #12
+    blt     r19, r24, .dos_read_host_share_ok
+    move.q  r19, r24
+.dos_read_host_share_ok:
+    beqz    r19, .dos_read_host_reply
+    load.q  r20, 16(r14)
+    beqz    r20, .dos_reply_err
+    load.q  r21, 168(r29)
+    move.l  r22, #0
+.dos_read_host_copy:
+    bge     r22, r19, .dos_read_host_copy_done
+    add     r23, r20, r22
+    load.b  r24, (r23)
+    add     r23, r21, r22
+    store.b r24, (r23)
+    add     r22, r22, #1
+    bra     .dos_read_host_copy
+.dos_read_host_copy_done:
+    move.q  r17, r19
+    bra     .dos_read_host_reply_set
+.dos_read_host_reply:
+    move.q  r17, r0
+.dos_read_host_reply_set:
+    load.q  r1, 944(r29)
+    move.l  r2, #DOS_OK
+    move.q  r3, r17
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
 .dos_read_badh:
     load.q  r29, (sp)
     bra     .dos_reply_badh
@@ -894,6 +1735,8 @@ prog_doslib_code:
     load.q  r19, 968(r29)              ; r19 = byte_count (raw)
     jsr     .dos_hnd_lookup             ; r1 = entry VA (or 0)
     beqz    r1, .dos_write_badh
+    and     r24, r1, #1
+    bnez    r24, .dos_write_badh
     load.q  r29, (sp)
     store.q r1, 256(r29)                ; saved entry VA
     move.q  r14, r1                     ; r14 = entry VA
@@ -970,6 +1813,12 @@ prog_doslib_code:
     load.q  r1, 960(r29)               ; r1 = handle_id
     jsr     .dos_hnd_lookup             ; r1 = entry VA (or 0), r2 = slot VA
     beqz    r1, .dos_close_badh
+    and     r24, r1, #1
+    beqz    r24, .dos_close_clear
+    push    r2
+    jsr     .dos_hostrec_free
+    pop     r2
+.dos_close_clear:
     ; Clear the slot
     store.q r0, (r2)
     load.q  r29, (sp)
@@ -1050,8 +1899,14 @@ prog_doslib_code:
     add     r3, r29, #192
     jsr     .dos_assign_read_name
     beqz    r3, .dos_reply_badarg
+    store.q r2, 240(r29)
+    jsr     .dos_assign_builtin_root_query_row
+    bnez    r3, .dos_assign_query_copy
+    add     r1, r29, #192
+    load.q  r2, 240(r29)
     jsr     .dos_assign_find_entry
     beqz    r3, .dos_reply_err
+.dos_assign_query_copy:
     load.q  r21, 168(r29)
     load.q  r22, (r1)
     store.q r22, (r21)
@@ -1077,6 +1932,13 @@ prog_doslib_code:
     jsr     .dos_assign_read_name
     beqz    r3, .dos_reply_badarg
     store.q r2, 240(r29)               ; normalized name len
+    jsr     .dos_assign_builtin_root_row
+    bnez    r3, .dos_reply_badarg
+    add     r1, r29, #192
+    load.q  r2, 240(r29)
+    add     r3, r29, #(prog_doslib_assign_table - prog_doslib_data)
+    jsr     .dos_assign_name_eq_ci
+    beqz    r23, .dos_reply_badarg
     load.q  r1, 168(r29)
     add     r1, r1, #DOS_ASSIGN_TARGET_OFF
     jsr     .dos_assign_validate_target
@@ -1088,8 +1950,7 @@ prog_doslib_code:
     load.q  r2, 240(r29)
     jsr     .dos_assign_find_entry
     beqz    r3, .dos_assign_set_new
-    move.l  r24, #DOS_ASSIGN_DEFAULT_COUNT
-    blt     r2, r24, .dos_reply_badarg
+    beqz    r2, .dos_reply_badarg
     move.q  r25, r1
     bra     .dos_assign_set_slot_ready
 .dos_assign_set_new:
@@ -1145,7 +2006,97 @@ prog_doslib_code:
     jsr     .dos_resolve_cmd
     load.q  r29, (sp)
     beqz    r22, .dos_run_notfound
+    store.q r23, 320(r29)
 
+    move.q  r1, r23
+    jsr     .dos_hostfs_relpath_for_resolved_name
+    beqz    r3, .dos_loadseg_meta_lookup
+    move.q  r24, r1
+    store.q r24, 608(r29)
+    move.q  r1, r24
+    jsr     .dos_bootfs_stat
+    beqz    r3, .dos_loadseg_host_stat_ok
+    move.l  r28, #ERR_NOTFOUND
+    beq     r3, r28, .dos_loadseg_meta_lookup
+    bra     .dos_reply_err
+.dos_loadseg_host_stat_ok:
+    move.q  r28, r2
+    and     r28, r28, #0xFFFFFFFF
+    move.q  r15, r0
+    add     r15, r15, #BOOT_HOSTFS_KIND_FILE
+    bne     r28, r15, .dos_reply_err
+    move.q  r23, r1
+    beqz    r23, .dos_reply_badarg
+    store.q r23, 328(r29)
+
+    push    r29
+    move.q  r1, r23
+    move.l  r2, #MEMF_CLEAR
+    syscall #SYS_ALLOC_MEM
+    pop     r29
+    bnez    r2, .dos_reply_nomem
+    store.q r1, 336(r29)
+
+    load.q  r24, 608(r29)
+    move.q  r1, r24
+    jsr     .dos_bootfs_open
+    bnez    r2, .dos_loadseg_host_free_tmp_err
+    move.q  r20, r1
+
+    move.q  r1, r20
+    load.q  r2, 336(r29)
+    load.q  r3, 328(r29)
+    jsr     .dos_bootfs_read_all
+    move.q  r24, r1
+    move.q  r25, r2
+    move.q  r1, r20
+    jsr     .dos_bootfs_close
+    bnez    r25, .dos_loadseg_host_free_tmp_err
+
+    load.q  r1, 336(r29)
+    move.q  r2, r24
+    move.q  r30, r29
+    jsr     .dos_elf_build_seglist
+    move.q  r29, r30
+    store.q r1, 344(r29)
+    store.q r2, 352(r29)
+
+    push    r29
+    load.q  r1, 336(r29)
+    load.q  r2, 328(r29)
+    syscall #SYS_FREE_MEM
+    pop     r29
+
+    load.q  r1, 944(r29)
+    load.q  r2, 352(r29)
+    load.q  r3, 344(r29)
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+
+.dos_loadseg_host_free_tmp:
+    push    r29
+    load.q  r1, 336(r29)
+    beqz    r1, .dos_loadseg_host_free_done
+    load.q  r2, 328(r29)
+    syscall #SYS_FREE_MEM
+.dos_loadseg_host_free_done:
+    pop     r29
+    bra     .dos_loadseg_meta_lookup
+.dos_loadseg_host_free_tmp_err:
+    push    r29
+    load.q  r1, 336(r29)
+    beqz    r1, .dos_loadseg_host_free_done_err
+    load.q  r2, 328(r29)
+    syscall #SYS_FREE_MEM
+.dos_loadseg_host_free_done_err:
+    pop     r29
+    bra     .dos_reply_err
+
+.dos_loadseg_meta_lookup:
+    load.q  r23, 320(r29)
     move.q  r1, r23
     jsr     .dos_meta_find_by_name
     beqz    r1, .dos_run_notfound
@@ -1182,8 +2133,9 @@ prog_doslib_code:
 
     load.q  r1, 336(r29)               ; temp file VA
     load.q  r2, 328(r29)               ; file size
+    move.q  r30, r29
     jsr     .dos_elf_build_seglist
-    load.q  r29, (sp)
+    move.q  r29, r30
     store.q r1, 344(r29)
     store.q r2, 352(r29)
 
@@ -1325,9 +2277,8 @@ prog_doslib_code:
     ;   72  args_ptr
     ;   80  args_len
     ;   88  seg_count
-    ;   96  launch descriptor (48 bytes)
-    ;   144 launch seg table entry 0
-    ;   176 launch seg table entry 1
+    ;   96  launch desc ptr
+    ;   104 reserved
     ;   224 saved r30
     ;   232 saved r19
     store.q r0, 0(sp)
@@ -1338,6 +2289,8 @@ prog_doslib_code:
     store.q r0, 40(sp)
     store.q r0, 48(sp)
     store.q r0, 56(sp)
+    store.q r0, 96(sp)
+    store.q r0, 104(sp)
 
     move.q  r24, r21
     add     r24, r24, #DOS_SEGLIST_HDR_SZ
@@ -1401,7 +2354,6 @@ prog_doslib_code:
 
 .dos_launchseg_scanned:
     beqz    r27, .dos_launchseg_badarg
-    beqz    r28, .dos_launchseg_badarg
     beqz    r25, .dos_launchseg_badarg
 
     load.q  r3, 8(sp)
@@ -1410,13 +2362,18 @@ prog_doslib_code:
     lsr     r3, r3, #12
     beqz    r3, .dos_launchseg_badarg
     store.q r3, 48(sp)
+    beqz    r28, .dos_launchseg_no_data
     load.q  r5, 24(sp)
     load.q  r6, 16(sp)
     sub     r5, r5, r6
     lsr     r5, r5, #12
     beqz    r5, .dos_launchseg_badarg
     store.q r5, 56(sp)
+    bra     .dos_launchseg_alloc_code
+.dos_launchseg_no_data:
+    store.q r0, 56(sp)
 
+.dos_launchseg_alloc_code:
     move.q  r1, r3
     lsl     r1, r1, #12
     move.l  r2, #MEMF_CLEAR
@@ -1426,13 +2383,22 @@ prog_doslib_code:
     bnez    r2, .dos_launchseg_nomem
     store.q r1, 32(sp)
 
+    move.l  r1, #4096
+    move.l  r2, #MEMF_CLEAR
+    push    r29
+    syscall #SYS_ALLOC_MEM
+    pop     r29
+    bnez    r2, .dos_launchseg_fail_free_code
+    store.q r1, 96(sp)
+
+    beqz    r28, .dos_launchseg_copy_loop
     move.q  r1, r5
     lsl     r1, r1, #12
     move.l  r2, #MEMF_CLEAR
     push    r29
     syscall #SYS_ALLOC_MEM
     pop     r29
-    bnez    r2, .dos_launchseg_fail_free_code
+    bnez    r2, .dos_launchseg_fail_free_desc
     store.q r1, 40(sp)
 
     load.q  r21, 64(sp)
@@ -1474,23 +2440,30 @@ prog_doslib_code:
     bra     .dos_launchseg_copy_loop
 
 .dos_launchseg_exec:
-    add     r24, sp, #96
+    load.q  r24, 96(sp)
     move.l  r3, #M14_LDESC_MAGIC
     store.l r3, M14_LDESC_OFF_MAGIC(r24)
     move.l  r3, #M14_LDESC_VERSION
     store.l r3, M14_LDESC_OFF_VERSION(r24)
     move.l  r3, #M14_LDESC_SIZE
     store.l r3, M14_LDESC_OFF_SIZE(r24)
+    move.l  r3, #1
+    bnez    r28, .dos_launchseg_two_segments
+    bra     .dos_launchseg_store_segcnt
+.dos_launchseg_two_segments:
     move.l  r3, #2
+.dos_launchseg_store_segcnt:
     store.l r3, M14_LDESC_OFF_SEGCNT(r24)
     load.q  r3, DOS_SEGLIST_OFF_ENTRY(r21)
     store.q r3, M14_LDESC_OFF_ENTRY(r24)
     move.l  r3, #1
     store.l r3, M14_LDESC_OFF_STACKPG(r24)
-    add     r3, sp, #144
+    move.q  r3, r24
+    add     r3, r3, #48
     store.q r3, M14_LDESC_OFF_SEGTBL(r24)
 
-    add     r6, sp, #144
+    move.q  r6, r24
+    add     r6, r6, #48
     load.q  r7, 32(sp)
     store.q r7, M14_LDSEG_OFF_SRCPTR(r6)
     load.q  r7, 48(sp)
@@ -1503,7 +2476,9 @@ prog_doslib_code:
     move.l  r7, #5
     store.l r7, M14_LDSEG_OFF_FLAGS(r6)
 
-    add     r6, sp, #176
+    beqz    r28, .dos_launchseg_exec_call
+    move.q  r6, r24
+    add     r6, r6, #80
     load.q  r7, 40(sp)
     store.q r7, M14_LDSEG_OFF_SRCPTR(r6)
     load.q  r7, 56(sp)
@@ -1516,7 +2491,8 @@ prog_doslib_code:
     move.l  r7, #6
     store.l r7, M14_LDSEG_OFF_FLAGS(r6)
 
-    add     r1, sp, #96
+.dos_launchseg_exec_call:
+    move.q  r1, r24
     move.l  r2, #M14_LDESC_SIZE
     load.q  r3, 72(sp)
     load.q  r4, 80(sp)
@@ -1526,6 +2502,13 @@ prog_doslib_code:
     move.q  r26, r1                    ; preserve task id
     move.q  r27, r2                    ; preserve exec error
 
+    load.q  r1, 96(sp)
+    beqz    r1, .dos_launchseg_free_data
+    move.l  r2, #4096
+    push    r29
+    syscall #SYS_FREE_MEM
+    pop     r29
+.dos_launchseg_free_data:
     load.q  r1, 40(sp)
     beqz    r1, .dos_launchseg_free_code
     load.q  r2, 56(sp)
@@ -1544,9 +2527,16 @@ prog_doslib_code:
 .dos_launchseg_result:
 
     beqz    r27, .dos_launchseg_ok
+    move.l  r1, #0x58
+    syscall #SYS_DEBUG_PUTCHAR
+    move.q  r1, r27
+    add     r1, r1, #0x30
+    syscall #SYS_DEBUG_PUTCHAR
     move.l  r5, #ERR_NOMEM
     beq     r27, r5, .dos_launchseg_nomem
 .dos_launchseg_badarg:
+    move.l  r1, #0x50
+    syscall #SYS_DEBUG_PUTCHAR
     load.q  r19, 232(sp)
     load.q  r30, 224(sp)
     move.q  r1, r0
@@ -1554,6 +2544,13 @@ prog_doslib_code:
     add     sp, sp, #240
     rts
 .dos_launchseg_fail_free_code:
+    load.q  r1, 96(sp)
+    beqz    r1, .dos_launchseg_fail_free_code_only
+    move.l  r2, #4096
+    push    r29
+    syscall #SYS_FREE_MEM
+    pop     r29
+.dos_launchseg_fail_free_code_only:
     load.q  r1, 32(sp)
     beqz    r1, .dos_launchseg_nomem
     load.q  r2, 48(sp)
@@ -1562,6 +2559,15 @@ prog_doslib_code:
     syscall #SYS_FREE_MEM
     pop     r29
     bra     .dos_launchseg_nomem
+.dos_launchseg_fail_free_desc:
+    load.q  r1, 40(sp)
+    beqz    r1, .dos_launchseg_fail_free_code
+    load.q  r2, 56(sp)
+    lsl     r2, r2, #12
+    push    r29
+    syscall #SYS_FREE_MEM
+    pop     r29
+    bra     .dos_launchseg_fail_free_code
 .dos_launchseg_nomem:
     load.q  r19, 232(sp)
     load.q  r30, 224(sp)
@@ -1710,6 +2716,150 @@ DOS_ASSIGN_TABLE_COUNT equ 16
     move.l  r2, #DOS_OK
     rts
 
+    ; .dos_launch_hostfs_resolved_name
+    ; In:  r23 = resolved DOS name ptr
+    ;      r16 = args_ptr
+    ;      r18 = args_len
+    ; Out: r1 = task_id (or 0), r2 = DOS_ERR_*
+.dos_launch_hostfs_resolved_name:
+    store.q r23, 336(r29)
+    move.q  r1, r23
+    jsr     .dos_hostfs_relpath_for_resolved_name
+    beqz    r3, .dlhrn_notfound
+    move.q  r24, r1
+    move.q  r27, r24
+    bra     .dlhrn_have_relpath
+.dos_launch_hostfs_relpath_name:
+    move.q  r24, r23
+    move.q  r27, r24
+.dlhrn_have_relpath:
+    move.q  r1, r24
+    jsr     .dos_bootfs_stat
+    bnez    r3, .dlhrn_hosterr
+    move.q  r25, r1
+    beqz    r25, .dlhrn_badarg
+    store.q r25, 624(r29)              ; preserve hostfs alloc size across syscalls
+
+    move.q  r1, r27
+    jsr     .dos_bootfs_open
+    bnez    r2, .dlhrn_hosterr_r2
+    move.q  r20, r1
+    store.q r20, 616(r29)
+
+    load.q  r25, 624(r29)
+    push    r29
+    move.q  r1, r25
+    move.l  r2, #MEMF_CLEAR
+    syscall #SYS_ALLOC_MEM
+    pop     r29
+    bnez    r2, .dlhrn_nomem_close
+    store.q r1, 296(r29)
+
+    load.q  r20, 616(r29)
+    move.q  r1, r20
+    load.q  r2, 296(r29)
+    move.q  r3, r25
+    jsr     .dos_bootfs_read_all
+    store.q r1, 608(r29)
+    move.q  r26, r2
+    load.q  r20, 616(r29)
+    move.q  r1, r20
+    jsr     .dos_bootfs_close
+    bnez    r26, .dlhrn_free_tmp_readerr
+
+    load.q  r21, 296(r29)
+    load.q  r23, 608(r29)
+    load.l  r15, (r21)
+    move.l  r28, #0x464C457F
+    bne     r15, r28, .dlhrn_free_tmp_nonelf
+
+    push    r29
+    move.q  r1, r21
+    move.q  r2, r23
+    move.q  r3, r16
+    move.q  r4, r18
+    syscall #SYS_BOOT_ELF_EXEC
+    pop     r29
+    store.q r1, 304(r29)
+    store.q r2, 312(r29)
+
+    push    r29
+    load.q  r1, 296(r29)
+    load.q  r2, 624(r29)
+    syscall #SYS_FREE_MEM
+    pop     r29
+
+    load.q  r1, 304(r29)
+    load.q  r2, 312(r29)
+    rts
+
+.dlhrn_nomem_close:
+    load.q  r20, 616(r29)
+    move.q  r1, r20
+    jsr     .dos_bootfs_close
+    move.q  r1, r0
+    move.l  r2, #DOS_ERR_NOMEM
+    rts
+.dlhrn_free_tmp_badarg:
+    push    r29
+    load.q  r1, 296(r29)
+    load.q  r2, 624(r29)
+    syscall #SYS_FREE_MEM
+    pop     r29
+    move.q  r1, r0
+    move.l  r2, #DOS_ERR_BADARG
+    rts
+.dlhrn_free_tmp_readerr:
+    push    r29
+    load.q  r1, 296(r29)
+    load.q  r2, 624(r29)
+    syscall #SYS_FREE_MEM
+    pop     r29
+    move.q  r1, r0
+    move.q  r2, r26
+    rts
+.dlhrn_free_tmp_nonelf:
+    push    r29
+    load.q  r1, 296(r29)
+    load.q  r2, 624(r29)
+    syscall #SYS_FREE_MEM
+    pop     r29
+    move.q  r1, r0
+    move.l  r2, #DOS_ERR_BADARG
+    rts
+.dlhrn_badarg:
+    move.q  r1, r0
+    move.l  r2, #DOS_ERR_BADARG
+    rts
+.dlhrn_nonfile:
+    move.q  r1, r0
+    move.l  r2, #DOS_ERR_BADARG
+    rts
+.dlhrn_hosterr:
+    move.q  r1, r0
+    move.q  r20, r3
+    bra     .dlhrn_map_err
+.dlhrn_hosterr_r2:
+    move.q  r1, r0
+    move.q  r20, r2
+.dlhrn_map_err:
+    move.l  r21, #ERR_NOTFOUND
+    bne     r20, r21, .dlhrn_map_nomem
+    move.l  r2, #DOS_ERR_NOTFOUND
+    rts
+.dlhrn_map_nomem:
+    move.l  r21, #ERR_NOMEM
+    bne     r20, r21, .dlhrn_map_badarg
+    move.l  r2, #DOS_ERR_NOMEM
+    rts
+.dlhrn_map_badarg:
+    move.l  r2, #DOS_ERR_BADARG
+    rts
+.dlhrn_notfound:
+    move.q  r1, r0
+    move.l  r2, #DOS_ERR_NOTFOUND
+    rts
+
     ; =================================================================
     ; Name resolution subroutines
     ; =================================================================
@@ -1828,12 +2978,83 @@ DOS_ASSIGN_TABLE_COUNT equ 16
     move.q  r3, r0
     rts
 
+    ; .dos_assign_builtin_root_row
+    ; In:  r1 = input name ptr, r2 = input name len, r29 = data base
+    ; Out: r1 = synthetic row ptr, r3 = 1 if SYS/IOSSYS, 0 otherwise
+.dos_assign_builtin_root_row:
+    move.q  r26, r1
+    move.q  r27, r2
+    move.l  r24, #3
+    bne     r27, r24, .dabr_try_iossys
+    move.q  r1, r26
+    move.q  r2, r27
+    add     r3, r29, #(prog_doslib_assign_builtin_sys_row - prog_doslib_data)
+    jsr     .dos_assign_name_eq_ci
+    beqz    r23, .dabr_sys
+.dabr_try_iossys:
+    move.l  r24, #6
+    bne     r27, r24, .dabr_notfound
+    move.q  r1, r26
+    move.q  r2, r27
+    add     r3, r29, #(prog_doslib_assign_builtin_iossys_row - prog_doslib_data)
+    jsr     .dos_assign_name_eq_ci
+    beqz    r23, .dabr_iossys
+.dabr_notfound:
+    move.q  r1, r0
+    move.q  r3, r0
+    rts
+.dabr_sys:
+    add     r1, r29, #(prog_doslib_assign_builtin_sys_row - prog_doslib_data)
+    move.l  r3, #1
+    rts
+.dabr_iossys:
+    add     r1, r29, #(prog_doslib_assign_builtin_iossys_row - prog_doslib_data)
+    move.l  r3, #1
+    rts
+
+    ; .dos_assign_builtin_root_query_row
+    ; In:  r1 = input name ptr, r2 = input name len, r29 = data base
+    ; Out: r1 = synthetic public-query row ptr, r3 = 1 if SYS/IOSSYS, 0 otherwise
+.dos_assign_builtin_root_query_row:
+    move.q  r26, r1
+    move.q  r27, r2
+    move.l  r24, #3
+    bne     r27, r24, .dabrq_try_iossys
+    move.q  r1, r26
+    move.q  r2, r27
+    add     r3, r29, #(prog_doslib_assign_builtin_sys_row - prog_doslib_data)
+    jsr     .dos_assign_name_eq_ci
+    beqz    r23, .dabrq_sys
+.dabrq_try_iossys:
+    move.l  r24, #6
+    bne     r27, r24, .dabrq_notfound
+    move.q  r1, r26
+    move.q  r2, r27
+    add     r3, r29, #(prog_doslib_assign_builtin_iossys_query_row - prog_doslib_data)
+    jsr     .dos_assign_name_eq_ci
+    beqz    r23, .dabrq_iossys
+.dabrq_notfound:
+    move.q  r1, r0
+    move.q  r3, r0
+    rts
+.dabrq_sys:
+    add     r1, r29, #(prog_doslib_assign_builtin_sys_row - prog_doslib_data)
+    move.l  r3, #1
+    rts
+.dabrq_iossys:
+    add     r1, r29, #(prog_doslib_assign_builtin_iossys_query_row - prog_doslib_data)
+    move.l  r3, #1
+    rts
+
     ; .dos_assign_lookup
     ; In:  r1 = input volume ptr, r2 = input volume len, r29 = data base
     ; Out: r1 = target ptr, r2 = target len, r3 = 1 if found, 0 otherwise
 .dos_assign_lookup:
     jsr     .dos_assign_find_entry
+    bnez    r3, .dal_found
+    jsr     .dos_assign_builtin_root_row
     beqz    r3, .dal_notfound
+.dal_found:
     add     r1, r1, #DOS_ASSIGN_TARGET_OFF
     jsr     .dos_assign_target_len
     move.l  r3, #1
@@ -1920,39 +3141,94 @@ DOS_ASSIGN_TABLE_COUNT equ 16
     move.l  r25, #0x2F
     bne     r24, r25, .davt_bad
 
+    ; Canonicalize the path into scratch, uppercasing letters and validating
+    ; that every component only contains [A-Z]. The first component must
+    ; resolve through the existing assign table / built-in rows. If there are
+    ; nested components, append them to that canonical base target.
     add     r22, r29, #208
     move.l  r26, #0
-.davt_copy_name:
-    sub     r24, r20, #1
-    bge     r26, r24, .davt_lookup
+    move.q  r28, r0                     ; first component len
+    move.q  r30, r0                     ; saw first slash
+.davt_copy_path:
+    bge     r26, r20, .davt_path_done
     add     r21, r27, r26
     load.b  r24, (r21)
+    move.l  r25, #0x2F
+    beq     r24, r25, .davt_store_slash
     move.l  r25, #0x61
-    blt     r24, r25, .davt_upper_chk
+    blt     r24, r25, .davt_path_upper_chk
     move.l  r25, #0x7B
-    bge     r24, r25, .davt_upper_chk
+    bge     r24, r25, .davt_path_upper_chk
     sub     r24, r24, #0x20
-.davt_upper_chk:
+.davt_path_upper_chk:
     move.l  r25, #0x41
     blt     r24, r25, .davt_bad
     move.l  r25, #0x5B
     bge     r24, r25, .davt_bad
+    bnez    r30, .davt_store_char
+    add     r28, r28, #1
+.davt_store_char:
     add     r21, r22, r26
     store.b r24, (r21)
     add     r26, r26, #1
-    bra     .davt_copy_name
-.davt_lookup:
+    bra     .davt_copy_path
+.davt_store_slash:
+    beqz    r26, .davt_bad
+    beqz    r28, .davt_bad
+    move.l  r30, #1
+    add     r21, r22, r26
+    store.b r24, (r21)
+    add     r26, r26, #1
+    bra     .davt_copy_path
+.davt_path_done:
     add     r21, r22, r26
     store.b r0, (r21)
+    move.l  r24, #3
+    bne     r28, r24, .davt_check_ram
+    load.b  r24, (r22)
+    move.l  r25, #0x53                 ; 'S'
+    bne     r24, r25, .davt_check_ram
+    load.b  r24, 1(r22)
+    move.l  r25, #0x59                 ; 'Y'
+    bne     r24, r25, .davt_check_ram
+    load.b  r24, 2(r22)
+    move.l  r25, #0x53                 ; 'S'
+    bne     r24, r25, .davt_check_ram
+    load.b  r24, 3(r22)
+    move.l  r25, #0x2F                 ; '/'
+    bne     r24, r25, .davt_check_ram
     move.q  r1, r22
-    move.q  r2, r26
-    jsr     .dos_assign_find_entry
+    move.q  r2, r20
+    move.l  r3, #1
+    rts
+.davt_check_ram:
+    move.l  r24, #3
+    bne     r28, r24, .davt_lookup_prefix
+    load.b  r24, (r22)
+    move.l  r25, #0x52                 ; 'R'
+    bne     r24, r25, .davt_lookup_prefix
+    load.b  r24, 1(r22)
+    move.l  r25, #0x41                 ; 'A'
+    bne     r24, r25, .davt_lookup_prefix
+    load.b  r24, 2(r22)
+    move.l  r25, #0x4D                 ; 'M'
+    beq     r24, r25, .davt_bad
+.davt_lookup_prefix:
+    move.q  r1, r22
+    move.q  r2, r28
+    jsr     .dos_assign_lookup
     beqz    r3, .davt_bad
-    move.q  r27, r2
-    move.l  r24, #DOS_ASSIGN_DEFAULT_COUNT
-    bge     r27, r24, .davt_bad
-    add     r1, r1, #DOS_ASSIGN_TARGET_OFF
-    jsr     .dos_assign_target_len
+    move.q  r24, r1                     ; canonical base target ptr
+    move.q  r25, r2                     ; canonical base target len
+    blt     r28, r20, .davt_nested_ok   ; nested path already canonicalized
+.davt_lookup_done:
+    move.q  r1, r24
+    move.q  r2, r25
+    move.l  r3, #1
+    rts
+.davt_nested_ok:
+    move.q  r1, r22
+    move.q  r2, r20
     move.l  r3, #1
     rts
 
@@ -2081,6 +3357,475 @@ DOS_ASSIGN_TABLE_COUNT equ 16
     ; Out: r3 = 1 if the name exists in the active assign table, 0 otherwise
 .dos_assign_name_supported:
     jsr     .dos_assign_find_entry
+    bnez    r3, .dans_done
+    jsr     .dos_assign_builtin_root_row
+.dans_done:
+    rts
+
+    ; .dos_prefix_eq_ci
+    ; In:  r1 = candidate ptr, r2 = prefix ptr
+    ; Out: r23 = 0 if candidate starts with prefix (case-insensitive), 1 otherwise
+.dos_prefix_eq_ci:
+    move.l  r20, #0
+.dpec_loop:
+    add     r21, r2, r20
+    load.b  r22, (r21)
+    beqz    r22, .dpec_match
+    add     r21, r1, r20
+    load.b  r24, (r21)
+    beqz    r24, .dpec_mismatch
+    move.l  r25, #0x61
+    blt     r22, r25, .dpec_pref_done
+    move.l  r25, #0x7B
+    bge     r22, r25, .dpec_pref_done
+    sub     r22, r22, #0x20
+.dpec_pref_done:
+    move.l  r25, #0x61
+    blt     r24, r25, .dpec_cand_done
+    move.l  r25, #0x7B
+    bge     r24, r25, .dpec_cand_done
+    sub     r24, r24, #0x20
+.dpec_cand_done:
+    bne     r22, r24, .dpec_mismatch
+    add     r20, r20, #1
+    bra     .dpec_loop
+.dpec_match:
+    move.q  r23, r0
+    rts
+.dpec_mismatch:
+    move.l  r23, #1
+    rts
+
+    ; .dos_copy_zstr
+    ; In: r1 = src ptr, r2 = dst ptr
+    ; Out: r1 = dst end ptr (points at terminating NUL)
+.dos_copy_zstr:
+    move.q  r20, r1
+    move.q  r21, r2
+.dcz_loop:
+    load.b  r22, (r20)
+    store.b r22, (r21)
+    beqz    r22, .dcz_done
+    add     r20, r20, #1
+    add     r21, r21, #1
+    bra     .dcz_loop
+.dcz_done:
+    move.q  r1, r21
+    rts
+
+    ; .dos_hostfs_make_relpath
+    ; In: r1 = rel-prefix ptr, r2 = suffix ptr, r3 = dest ptr
+    ; Out: r1 = dest ptr, r3 = 1 on success, 0 on overflow
+.dos_hostfs_make_relpath:
+    move.q  r24, r3
+    move.q  r25, r2
+    move.q  r2, r3
+    jsr     .dos_copy_zstr
+    move.q  r26, r1
+    move.l  r20, #0
+.dhmr_suffix:
+    move.l  r21, #47
+    bge     r20, r21, .dhmr_overflow
+    add     r22, r25, r20
+    load.b  r23, (r22)
+    beqz    r23, .dhmr_done
+    add     r22, r26, r20
+    store.b r23, (r22)
+    add     r20, r20, #1
+    bra     .dhmr_suffix
+.dhmr_done:
+    add     r22, r26, r20
+    store.b r0, (r22)
+    move.q  r1, r24
+    move.l  r3, #1
+    rts
+.dhmr_overflow:
+    add     r22, r26, #47
+    store.b r0, (r22)
+    move.q  r1, r24
+    move.q  r3, r0
+    rts
+
+; .dos_hostfs_relpath_for_resolved_name
+; In:  r1 = resolved DOS name ptr
+; Out: r1 = hostfs-relative path ptr, r3 = 1 if hostfs-backed path, 0 otherwise
+.dos_hostfs_relpath_for_resolved_name:
+    move.q  r20, r1
+    add     r27, r29, #544
+
+    load.b  r21, (r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x53
+    bne     r21, r22, .dhrfrn_check_c
+    load.b  r21, 1(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x59
+    bne     r21, r22, .dhrfrn_check_c
+    load.b  r21, 2(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x53
+    bne     r21, r22, .dhrfrn_check_c
+    load.b  r21, 3(r20)
+    move.l  r22, #0x2F
+    beq     r21, r22, .dhrfrn_sys
+
+.dhrfrn_check_c:
+    load.b  r21, (r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x43
+    bne     r21, r22, .dhrfrn_check_s
+    load.b  r21, 1(r20)
+    move.l  r22, #0x2F
+    beq     r21, r22, .dhrfrn_c
+
+.dhrfrn_check_s:
+    load.b  r21, (r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x53
+    bne     r21, r22, .dhrfrn_check_l
+    load.b  r21, 1(r20)
+    move.l  r22, #0x2F
+    beq     r21, r22, .dhrfrn_s
+
+.dhrfrn_check_l:
+    load.b  r21, (r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x4C
+    bne     r21, r22, .dhrfrn_check_libs
+    load.b  r21, 1(r20)
+    move.l  r22, #0x2F
+    beq     r21, r22, .dhrfrn_l
+
+.dhrfrn_check_libs:
+    load.b  r21, (r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x4C
+    bne     r21, r22, .dhrfrn_check_devs
+    load.b  r21, 1(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x49
+    bne     r21, r22, .dhrfrn_check_devs
+    load.b  r21, 2(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x42
+    bne     r21, r22, .dhrfrn_check_devs
+    load.b  r21, 3(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x53
+    bne     r21, r22, .dhrfrn_check_devs
+    load.b  r21, 4(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x53
+    bne     r21, r22, .dhrfrn_check_devs
+    load.b  r21, 5(r20)
+    move.l  r22, #0x2F
+    beq     r21, r22, .dhrfrn_libs
+
+.dhrfrn_check_devs:
+    load.b  r21, (r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x44
+    bne     r21, r22, .dhrfrn_check_resources
+    load.b  r21, 1(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x45
+    bne     r21, r22, .dhrfrn_check_resources
+    load.b  r21, 2(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x56
+    bne     r21, r22, .dhrfrn_check_resources
+    load.b  r21, 3(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x53
+    bne     r21, r22, .dhrfrn_check_resources
+    load.b  r21, 4(r20)
+    move.l  r22, #0x2F
+    beq     r21, r22, .dhrfrn_devs
+
+.dhrfrn_check_resources:
+    load.b  r21, (r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x52
+    bne     r21, r22, .dhrfrn_none
+    load.b  r21, 1(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x45
+    bne     r21, r22, .dhrfrn_none
+    load.b  r21, 2(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x53
+    bne     r21, r22, .dhrfrn_none
+    load.b  r21, 3(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x4F
+    bne     r21, r22, .dhrfrn_none
+    load.b  r21, 4(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x55
+    bne     r21, r22, .dhrfrn_none
+    load.b  r21, 5(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x52
+    bne     r21, r22, .dhrfrn_none
+    load.b  r21, 6(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x43
+    bne     r21, r22, .dhrfrn_none
+    load.b  r21, 7(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x45
+    bne     r21, r22, .dhrfrn_none
+    load.b  r21, 8(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x53
+    bne     r21, r22, .dhrfrn_none
+    load.b  r21, 9(r20)
+    move.l  r22, #0x2F
+    bne     r21, r22, .dhrfrn_none
+
+.dhrfrn_resources:
+    add     r1, r29, #(prog_doslib_hostfs_rel_resources - prog_doslib_data)
+    add     r2, r20, #10
+    move.q  r3, r27
+    jsr     .dos_hostfs_make_relpath
+    rts
+.dhrfrn_none:
+    move.q  r1, r0
+    move.q  r3, r0
+    rts
+.dhrfrn_sys:
+    add     r1, r20, #4
+    move.q  r2, r27
+    jsr     .dos_copy_zstr
+    move.q  r1, r27
+    move.l  r3, #1
+    rts
+.dhrfrn_c:
+    add     r1, r29, #(prog_doslib_hostfs_rel_c - prog_doslib_data)
+    add     r2, r20, #2
+    move.q  r3, r27
+    jsr     .dos_hostfs_make_relpath
+    rts
+.dhrfrn_s:
+    add     r1, r29, #(prog_doslib_hostfs_rel_s - prog_doslib_data)
+    add     r2, r20, #2
+    move.q  r3, r27
+    jsr     .dos_hostfs_make_relpath
+    rts
+.dhrfrn_l:
+    add     r1, r29, #(prog_doslib_hostfs_rel_l - prog_doslib_data)
+    add     r2, r20, #2
+    move.q  r3, r27
+    jsr     .dos_hostfs_make_relpath
+    rts
+.dhrfrn_libs:
+    add     r1, r29, #(prog_doslib_hostfs_rel_libs - prog_doslib_data)
+    add     r2, r20, #5
+    move.q  r3, r27
+    jsr     .dos_hostfs_make_relpath
+    rts
+.dhrfrn_devs:
+    add     r1, r29, #(prog_doslib_hostfs_rel_devs - prog_doslib_data)
+    add     r2, r20, #5
+    move.q  r3, r27
+    jsr     .dos_hostfs_make_relpath
+    rts
+
+    ; .dos_bootfs_stat
+    ; In:  r1 = hostfs-relative path ptr
+    ; Out: r1 = size, r2 = kind, r3 = err
+.dos_bootfs_stat:
+    move.q  r20, r1
+    push    r29
+    move.q  r2, r20
+    move.l  r1, #BOOT_HOSTFS_STAT
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_BOOT_HOSTFS
+    pop     r29
+    move.q  r24, r2
+    bnez    r24, .dbfs_err
+    move.q  r25, r3
+    move.q  r2, r25
+    move.q  r3, r24
+    rts
+.dbfs_err:
+    move.q  r1, r0
+    move.q  r2, r0
+    move.q  r3, r24
+    rts
+
+    ; .dos_bootfs_open
+    ; In:  r1 = hostfs-relative path ptr
+    ; Out: r1 = host handle, r2 = err
+.dos_bootfs_open:
+    move.q  r20, r1
+    push    r29
+    move.q  r2, r20
+    move.l  r1, #BOOT_HOSTFS_OPEN
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_BOOT_HOSTFS
+    pop     r29
+    rts
+
+    ; .dos_bootfs_read
+    ; In:  r1 = host handle, r2 = dst ptr, r3 = byte_count
+    ; Out: r1 = bytes read, r2 = err
+.dos_bootfs_read:
+    move.q  r20, r1
+    move.q  r21, r2
+    move.q  r22, r3
+    push    r29
+    move.q  r2, r20
+    move.q  r3, r21
+    move.q  r4, r22
+    move.l  r1, #BOOT_HOSTFS_READ
+    move.q  r5, r0
+    syscall #SYS_BOOT_HOSTFS
+    pop     r29
+    rts
+
+    ; .dos_bootfs_read_all
+    ; In:  r1 = host handle, r2 = dst ptr, r3 = byte_count
+    ; Out: r1 = total bytes read, r2 = err
+.dos_bootfs_read_all:
+    sub     sp, sp, #32
+    store.q r1, 0(sp)                  ; handle
+    store.q r2, 8(sp)                  ; dst
+    store.q r3, 16(sp)                 ; remaining
+    store.q r0, 24(sp)                 ; total
+.dbfra_loop:
+    load.q  r22, 16(sp)
+    beqz    r22, .dbfra_done
+    load.q  r1, 0(sp)
+    load.q  r2, 8(sp)
+    move.q  r3, r22
+    jsr     .dos_bootfs_read
+    bnez    r2, .dbfra_err
+    beqz    r1, .dbfra_short
+    load.q  r22, 16(sp)
+    load.q  r23, 24(sp)
+    add     r23, r23, r1
+    load.q  r21, 8(sp)
+    add     r21, r21, r1
+    sub     r22, r22, r1
+    store.q r23, 24(sp)
+    store.q r21, 8(sp)
+    store.q r22, 16(sp)
+    bra     .dbfra_loop
+.dbfra_short:
+    load.q  r1, 24(sp)
+    move.q  r2, r0
+    add     sp, sp, #32
+    rts
+.dbfra_done:
+    load.q  r1, 24(sp)
+    move.q  r2, r0
+    add     sp, sp, #32
+    rts
+.dbfra_err:
+    move.q  r24, r2
+    load.q  r1, 24(sp)
+    move.q  r2, r24
+    add     sp, sp, #32
+    rts
+
+    ; .dos_bootfs_close
+    ; In:  r1 = host handle
+    ; Out: r2 = err
+.dos_bootfs_close:
+    move.q  r20, r1
+    push    r29
+    move.q  r2, r20
+    move.l  r1, #BOOT_HOSTFS_CLOSE
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_BOOT_HOSTFS
+    pop     r29
+    rts
+
+    ; .dos_bootfs_readdir
+    ; In:  r1 = hostfs-relative dir path ptr, r2 = index
+    ; Out: r1 = dirent scratch ptr, r2 = kind, r3 = err
+.dos_bootfs_readdir:
+    move.q  r20, r1
+    move.q  r21, r2
+    push    r29
+    move.q  r2, r20
+    move.q  r3, r21
+    add     r4, r29, #704
+    move.l  r1, #BOOT_HOSTFS_READDIR
+    move.q  r5, r0
+    syscall #SYS_BOOT_HOSTFS
+    pop     r29
+    move.q  r24, r2
+    bnez    r24, .dbfrd_err
+    add     r1, r29, #704
+    move.q  r2, r3
+    move.q  r3, r24
+    rts
+.dbfrd_err:
+    move.q  r1, r0
+    move.q  r2, r0
+    move.q  r3, r24
+    rts
+
+    ; .dos_hostrec_alloc
+    ; In:  r1 = file size, r2 = host handle
+    ; Out: r1 = tagged record ptr, r2 = err
+.dos_hostrec_alloc:
+    move.q  r20, r1
+    move.q  r21, r2
+    push    r29
+    push    r20
+    push    r21
+    move.l  r1, #32
+    move.l  r2, #MEMF_CLEAR
+    syscall #SYS_ALLOC_MEM
+    pop     r21
+    pop     r20
+    pop     r29
+    bnez    r2, .dhra_fail
+    move.q  r24, r1
+    move.l  r25, #0x54534F48          ; "HOST"
+    store.l r25, (r24)
+    store.q r20, 8(r24)
+    store.q r21, 16(r24)
+    add     r1, r24, #1
+    move.q  r2, r0
+    rts
+.dhra_fail:
+    move.q  r1, r0
+    rts
+
+    ; .dos_hostrec_free
+    ; In: r1 = tagged record ptr
+.dos_hostrec_free:
+    beqz    r1, .dhrf_done
+    sub     r1, r1, #1
+    load.q  r20, 16(r1)
+    beqz    r20, .dhrf_skip_buf
+    push    r1
+    push    r29
+    load.q  r21, 8(r1)
+    move.q  r2, r21
+    move.q  r1, r20
+    syscall #SYS_FREE_MEM
+    pop     r29
+    pop     r1
+.dhrf_skip_buf:
+    store.l r0, (r1)
+    store.q r0, 8(r1)
+    store.q r0, 16(r1)
+    push    r29
+    move.q  r2, #32
+    syscall #SYS_FREE_MEM
+    pop     r29
+.dhrf_done:
     rts
 
     ; =================================================================
@@ -2091,12 +3836,89 @@ DOS_ASSIGN_TABLE_COUNT equ 16
     ; launches via SYS_EXEC_PROGRAM (new ABI: image_ptr, image_size).
 .dos_do_run:
     ; 1. Read command name from mapped shared buffer
+    store.q r0, 632(r29)              ; host-backed direct-exec flag
     load.q  r23, 168(r29)              ; r23 = caller's mapped buffer (name ptr)
 
     ; 2. Resolve through C: assign (r23 in/out)
     jsr     .dos_resolve_cmd            ; r23 = resolved name (e.g. "C/Version")
     load.q  r29, (sp)
     beqz    r22, .dos_run_reply_notfound
+    store.q r23, 336(r29)
+
+    ; Prefer a host-backed file when the resolved DOS name maps into the
+    ; mounted system tree. Only ERR_NOTFOUND falls through to the seeded
+    ; metadata/manifest compatibility path.
+    move.q  r1, r23
+    jsr     .dos_hostfs_relpath_for_resolved_name
+    beqz    r3, .dos_run_file_lookup
+    move.q  r24, r1
+    move.q  r27, r24
+    store.q r24, 608(r29)
+    move.q  r1, r24
+    push    r29
+    jsr     .dos_bootfs_stat
+    pop     r29
+    beqz    r3, .dos_run_hostfs_stat_ok
+    move.l  r28, #ERR_NOTFOUND
+    beq     r3, r28, .dos_run_file_lookup
+    bra     .dos_run_reply_notfound
+.dos_run_hostfs_stat_ok:
+    move.q  r25, r1                    ; image size
+    beqz    r25, .dos_run_reply_notfound
+    store.q r25, 624(r29)              ; preserve hostfs alloc size across syscalls
+    load.q  r24, 608(r29)
+    beqz    r24, .dos_run_reply_notfound
+    move.q  r1, r24
+    push    r29
+    jsr     .dos_bootfs_open
+    pop     r29
+    bnez    r2, .dos_run_reply_notfound
+    move.q  r20, r1                    ; host handle
+    store.q r20, 320(r29)
+
+    load.q  r25, 624(r29)
+    push    r29
+    move.q  r1, r25
+    move.l  r2, #MEMF_CLEAR
+    syscall #SYS_ALLOC_MEM
+    pop     r29
+    bnez    r2, .dos_run_hostfs_nomem_close
+    store.q r1, 296(r29)               ; temp contiguous image
+
+    load.q  r20, 320(r29)
+    move.q  r1, r20
+    load.q  r2, 296(r29)
+    move.q  r3, r25
+    push    r29
+    jsr     .dos_bootfs_read_all
+    pop     r29
+    store.q r1, 640(r29)               ; preserve actual bytes read separately from alloc size
+    move.q  r26, r2
+    load.q  r20, 320(r29)
+    move.q  r1, r20
+    push    r29
+    jsr     .dos_bootfs_close
+    pop     r29
+    bnez    r26, .dos_run_hostfs_free_tmp_err
+    load.q  r21, 296(r29)
+    load.q  r23, 640(r29)
+    move.l  r15, #1
+    store.q r15, 632(r29)
+    bra     .dos_run_parse_args
+
+.dos_run_hostfs_nomem_close:
+    load.q  r20, 320(r29)
+    move.q  r1, r20
+    jsr     .dos_bootfs_close
+    bra     .dos_run_reply_notfound
+
+.dos_run_hostfs_free_tmp_err:
+    push    r29
+    load.q  r1, 296(r29)
+    load.q  r2, 624(r29)
+    syscall #SYS_FREE_MEM
+    pop     r29
+    bra     .dos_run_reply_notfound
 
 .dos_run_file_lookup:
     ; 3. M12.6 Phase A: walk metadata chain by name
@@ -2105,7 +3927,7 @@ DOS_ASSIGN_TABLE_COUNT equ 16
     ; manifest-name fallback still needs the original resolved name on a
     ; miss. Without this, unknown commands can pass a null/stale pointer
     ; into .dos_manifest_find_row_by_name and fault dos.library.
-    store.q r23, 336(r29)
+    load.q  r23, 336(r29)
     move.q  r1, r23
     jsr     .dos_meta_find_by_name      ; r1 = entry VA (or 0)
     beqz    r1, .dos_run_notfound
@@ -2228,6 +4050,7 @@ DOS_ASSIGN_TABLE_COUNT equ 16
     load.q  r21, 296(r29)               ; r21 = temp buf VA (image_ptr for exec)
     load.q  r23, 288(r29)               ; r23 = image size
 
+.dos_run_parse_args:
     ; 5. Find args: scan past command name null in shared buffer.
     ; Bounded scan — without a length cap, a malicious caller could
     ; send a shared buffer with no terminator and walk dos.library
@@ -2261,6 +4084,8 @@ DOS_ASSIGN_TABLE_COUNT equ 16
     blt     r18, r28, .dos_run_arglen
 
 .dos_run_launch:
+    load.q  r15, 632(r29)
+    bnez    r15, .dos_run_launch_hostfs_elf
     ; Prefer the M14 native path for ELF files. M14.2 phase 1 rejects legacy
     ; flat-image IE64PROG executables instead of falling back to SYS_EXEC_PROGRAM.
     load.l  r15, (r21)
@@ -2271,8 +4096,9 @@ DOS_ASSIGN_TABLE_COUNT equ 16
 
     move.q  r1, r21                    ; temp contiguous ELF image
     move.q  r2, r23                    ; image_size
+    move.q  r30, r29
     jsr     .dos_elf_build_seglist
-    load.q  r29, (sp)
+    move.q  r29, r30
     store.q r1, 304(r29)               ; seglist VA (temp buf still lives in 296)
     store.q r2, 312(r29)               ; DOS build result
 
@@ -2287,6 +4113,33 @@ DOS_ASSIGN_TABLE_COUNT equ 16
     load.q  r1, 944(r29)
     move.q  r2, r15
     move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+
+.dos_run_launch_hostfs_elf:
+    load.l  r15, (r21)
+    move.l  r28, #0x464C457F
+    bne     r15, r28, .dos_run_reject_flat
+    push    r29
+    move.q  r1, r21
+    move.q  r2, r23
+    move.q  r3, r16
+    move.q  r4, r18
+    syscall #SYS_BOOT_ELF_EXEC
+    pop     r29
+    store.q r1, 304(r29)
+    store.q r2, 312(r29)
+    push    r29
+    load.q  r1, 296(r29)
+    load.q  r2, 624(r29)
+    syscall #SYS_FREE_MEM
+    pop     r29
+    load.q  r1, 944(r29)
+    load.q  r2, 312(r29)
+    load.q  r3, 304(r29)
     move.q  r4, r0
     move.q  r5, r0
     syscall #SYS_REPLY_MSG
@@ -3259,7 +5112,7 @@ prog_doslib_seed_readme_name:
     dc.b    "readme", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 prog_doslib_seed_readme_body:
     ; --- Offset 912: pre-create content ---
-    dc.b    "Welcome to IntuitionOS M11", 0x0D, 0x0A, 0
+    dc.b    "Intuition OS", 0x0D, 0x0A, 0
     ; --- Offset 941: pad 1 byte ---
     ds.b    1
     ; --- Offset 942: seed file names ---
@@ -3308,16 +5161,65 @@ prog_doslib_seed_name_hwres:
     ; --- M14 Phase 2 seed names ---
 prog_doslib_seed_name_elfseg:
     dc.b    "C/ElfSeg", 0
+prog_doslib_boot_shell_path:
+    dc.b    "IOSSYS:Tools/Shell", 0
+prog_doslib_boot_shell_resolved:
+    dc.b    "SYS/IOSSYS/Tools/Shell", 0
+prog_doslib_boot_shell_relpath:
+    dc.b    "IOSSYS/Tools/Shell", 0
+prog_doslib_empty_args:
+    dc.b    0
     align   8
 prog_doslib_boot_export_rows:
     ; M14.1 phase 3: dos-private exported staged-service ELF sources.
     ; Filled by kern_export_boot_manifest_to_dos after dos.library boots.
     ds.b    (DOS_BOOT_EXPORT_COUNT * DOS_BOOT_EXPORT_ROW_SZ)
-    ; Static assign table for M15 phase 2 resolver. Entry layout:
+    ; Static assign table for M15.2 phase-1 resolver. Entry layout:
     ;   [0..15]  assign name (NUL-terminated, uppercase canonical)
     ;   [16..31] target prefix (NUL-terminated, empty for RAM:)
 prog_doslib_assign_default_c:
     dc.b    "C", 0
+prog_doslib_assign_builtin_sys_row:
+    dc.b    "SYS", 0
+    ds.b    12
+    dc.b    "SYS/", 0
+    ds.b    11
+prog_doslib_assign_builtin_iossys_query_row:
+    dc.b    "IOSSYS", 0
+    ds.b    9
+    dc.b    "SYS:IOSSYS/", 0
+    ds.b    4
+prog_doslib_assign_builtin_iossys_row:
+    dc.b    "IOSSYS", 0
+    ds.b    9
+    dc.b    "SYS/IOSSYS/", 0
+    ds.b    4
+prog_doslib_hostfs_public_sys:
+    dc.b    "SYS/", 0
+prog_doslib_hostfs_public_c:
+    dc.b    "C/", 0
+prog_doslib_hostfs_public_s:
+    dc.b    "S/", 0
+prog_doslib_hostfs_public_l:
+    dc.b    "L/", 0
+prog_doslib_hostfs_public_libs:
+    dc.b    "LIBS/", 0
+prog_doslib_hostfs_public_devs:
+    dc.b    "DEVS/", 0
+prog_doslib_hostfs_public_resources:
+    dc.b    "RESOURCES/", 0
+prog_doslib_hostfs_rel_c:
+    dc.b    "IOSSYS/C/", 0
+prog_doslib_hostfs_rel_s:
+    dc.b    "IOSSYS/S/", 0
+prog_doslib_hostfs_rel_l:
+    dc.b    "IOSSYS/L/", 0
+prog_doslib_hostfs_rel_libs:
+    dc.b    "IOSSYS/LIBS/", 0
+prog_doslib_hostfs_rel_devs:
+    dc.b    "IOSSYS/DEVS/", 0
+prog_doslib_hostfs_rel_resources:
+    dc.b    "IOSSYS/RESOURCES/", 0
 prog_doslib_assign_table:
     dc.b    "RAM", 0
     ds.b    12

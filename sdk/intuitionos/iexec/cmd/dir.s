@@ -87,7 +87,7 @@ prog_dir_code:
     add     r19, r17, r19
     load.b  r20, (r19)
     move.l  r21, #0x3A
-    bne     r20, r21, .dir_args_done
+    bne     r20, r21, .dir_copy_explicit_path
 
     sub     r18, r18, #1
     load.q  r14, 88(r29)
@@ -117,28 +117,182 @@ prog_dir_code:
     load.q  r29, (sp)
     bnez    r1, .dir_args_done
 
+    ; Bare volume arguments like TMP: or IOSSYS: should list the resolved
+    ; target directory directly, not feed through the assign:path suffix
+    ; builder below.
     load.q  r14, 88(r29)
-    add     r14, r14, #DOS_ASSIGN_TARGET_OFF
-    add     r15, r29, #120
+    add     r15, r14, #DOS_ASSIGN_TARGET_OFF
+    add     r16, r29, #192
     move.l  r20, #0
-.dir_copy_target:
-    move.l  r21, #16
-    bge     r20, r21, .dir_copy_target_done
-    add     r22, r14, r20
-    load.b  r23, (r22)
+.dir_copy_query_target_only:
+    move.l  r21, #31
+    bge     r20, r21, .dir_copy_query_target_only_done
     add     r22, r15, r20
+    load.b  r23, (r22)
+    beqz    r23, .dir_copy_query_target_only_done
+    move.l  r21, #0x3A
+    bne     r23, r21, .dir_copy_query_target_only_store
+    move.l  r23, #0x2F
+.dir_copy_query_target_only_store:
+    add     r22, r16, r20
     store.b r23, (r22)
-    beqz    r23, .dir_copy_target_done
     add     r20, r20, #1
-    bra     .dir_copy_target
-.dir_copy_target_done:
-    store.q r20, 112(r29)
+    bra     .dir_copy_query_target_only
+.dir_copy_query_target_only_done:
+    add     r22, r16, r20
+    store.b r0, (r22)
+    move.q  r1, r16
+    move.q  r2, r14
+    jsr     .dir_copy_zstr
+    store.q r0, 104(r29)
+    store.q r0, 112(r29)
     move.l  r21, #1
-    store.q r21, 104(r29)
+    store.q r21, 136(r29)
+    bra     .dir_args_done
+
+.dir_copy_explicit_path:
+    ; Canonicalize assign:subdir arguments into a slash-form path that
+    ; dos.library can traverse directly, e.g. IOSSYS:C -> SYS/IOSSYS/C/
+    ; and TMP:LIBS -> SYS/IOSSYS/LIBS/. Build in scratch first so the
+    ; DOS_ASSIGN_QUERY reply row in the shared buffer is not clobbered.
+    move.l  r24, #0
+.dir_explicit_find_colon:
+    bge     r24, r18, .dir_copy_explicit_path_plain
+    add     r25, r17, r24
+    load.b  r26, (r25)
+    move.l  r27, #0x3A
+    beq     r26, r27, .dir_explicit_have_colon
+    add     r24, r24, #1
+    bra     .dir_explicit_find_colon
+.dir_explicit_have_colon:
+    move.q  r1, r17
+    add     r2, r29, #160
+    jsr     .dir_copy_zstr
+    store.q r24, 152(r29)
+
+    load.q  r14, 88(r29)
+    move.l  r20, #0
+.dir_explicit_copy_query_name:
+    bge     r20, r24, .dir_explicit_copy_query_done
+    add     r21, r17, r20
+    load.b  r22, (r21)
+    add     r21, r14, r20
+    store.b r22, (r21)
+    add     r20, r20, #1
+    bra     .dir_explicit_copy_query_name
+.dir_explicit_copy_query_done:
+    add     r21, r14, r20
+    store.b r0, (r21)
+
+    move.l  r2, #DOS_ASSIGN
+    move.l  r3, #DOS_ASSIGN_QUERY
+    move.q  r4, r0
+    load.q  r5, 80(r29)
+    load.l  r6, 96(r29)
+    load.q  r1, 72(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    load.q  r1, 80(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+    bnez    r1, .dir_copy_explicit_path_plain
+
+    add     r17, r29, #160
+    load.q  r24, 152(r29)
+.dir_explicit_build_from_query:
+    load.q  r14, 88(r29)
+    add     r15, r14, #DOS_ASSIGN_TARGET_OFF
+    add     r16, r29, #192
+    move.l  r20, #0
+.dir_explicit_copy_target:
+    move.l  r21, #31
+    bge     r20, r21, .dir_explicit_copy_suffix
+    add     r22, r15, r20
+    load.b  r23, (r22)
+    beqz    r23, .dir_explicit_copy_suffix
+    move.l  r21, #0x3A
+    bne     r23, r21, .dir_explicit_target_store
+    move.l  r23, #0x2F
+.dir_explicit_target_store:
+    add     r22, r16, r20
+    store.b r23, (r22)
+    add     r20, r20, #1
+    bra     .dir_explicit_copy_target
+
+.dir_explicit_copy_suffix:
+    add     r21, r17, r24
+    add     r21, r21, #1
+    move.l  r22, #0
+.dir_explicit_suffix_loop:
+    move.l  r23, #31
+    bge     r20, r23, .dir_explicit_maybe_term
+    add     r23, r21, r22
+    load.b  r25, (r23)
+    beqz    r25, .dir_explicit_maybe_term
+    add     r23, r16, r20
+    store.b r25, (r23)
+    add     r20, r20, #1
+    add     r22, r22, #1
+    bra     .dir_explicit_suffix_loop
+
+.dir_explicit_maybe_term:
+    beqz    r22, .dir_explicit_copyback
+    beqz    r20, .dir_explicit_copyback
+    add     r23, r16, r20
+    sub     r23, r23, #1
+    load.b  r25, (r23)
+    move.l  r24, #0x2F
+    beq     r25, r24, .dir_explicit_copyback
+    move.l  r24, #0x3A
+    beq     r25, r24, .dir_explicit_copyback
+    move.l  r23, #31
+    bge     r20, r23, .dir_explicit_copyback
+    add     r23, r16, r20
+    move.l  r24, #0x2F
+    store.b r24, (r23)
+    add     r20, r20, #1
+
+.dir_explicit_copyback:
+    add     r23, r16, r20
+    store.b r0, (r23)
+    move.q  r1, r16
+    move.q  r2, r14
+    jsr     .dir_copy_zstr
+    store.q r0, 104(r29)
+    store.q r0, 112(r29)
+    move.l  r21, #1
+    store.q r21, 136(r29)
+    bra     .dir_args_done
+
+.dir_copy_explicit_path_plain:
+    load.q  r14, 88(r29)
+    move.l  r20, #0
+.dir_copy_explicit_path_loop:
+    bge     r20, r18, .dir_copy_explicit_path_done
+    add     r21, r17, r20
+    load.b  r22, (r21)
+    add     r21, r14, r20
+    store.b r22, (r21)
+    add     r20, r20, #1
+    bra     .dir_copy_explicit_path_loop
+.dir_copy_explicit_path_done:
+    add     r21, r14, r20
+    store.b r0, (r21)
+    store.q r0, 104(r29)
+    store.q r0, 112(r29)
+    move.l  r21, #1
+    store.q r21, 136(r29)
 .dir_args_done:
     load.q  r14, 88(r29)
+    load.q  r15, 136(r29)
+    bnez    r15, .dir_args_preserved
     store.b r0, (r14)
-
+.dir_args_preserved:
+    move.q  r1, r0
+    move.q  r2, r0
+    syscall #SYS_CREATE_PORT
+    load.q  r29, (sp)
+    store.q r1, 80(r29)
     move.l  r2, #DOS_DIR
     move.q  r3, r0
     move.q  r4, r0
@@ -151,11 +305,10 @@ prog_dir_code:
     load.q  r1, 80(r29)
     syscall #SYS_WAIT_PORT
     load.q  r29, (sp)
+    bnez    r1, .dir_empty
     store.q r2, 8(sp)
 
     beqz    r2, .dir_empty
-    load.q  r14, 104(r29)
-    bnez    r14, .dir_filter_listing
 
 .dir_print_ready:
     load.q  r14, 88(r29)
@@ -165,6 +318,7 @@ prog_dir_code:
     bge     r16, r15, .dir_done
     add     r17, r14, r16
     load.b  r18, (r17)
+    beqz    r18, .dir_done
     store.q r16, 8(sp)
 .dir_char_retry:
     load.q  r29, (sp)
@@ -304,6 +458,20 @@ prog_dir_code:
     add     sp, sp, #16
     rts
 
+.dir_copy_zstr:
+    move.q  r20, r1
+    move.q  r21, r2
+.dir_copy_zstr_loop:
+    load.b  r22, (r20)
+    store.b r22, (r21)
+    beqz    r22, .dir_copy_zstr_done
+    add     r20, r20, #1
+    add     r21, r21, #1
+    bra     .dir_copy_zstr_loop
+.dir_copy_zstr_done:
+    move.q  r1, r21
+    rts
+
 prog_dir_code_end:
 
 prog_dir_data:
@@ -322,6 +490,7 @@ prog_dir_data:
     ds.b    8
     ds.b    8
     ds.b    8
+    ds.b    256
 prog_dir_data_end:
     align   8
 prog_dir_end:

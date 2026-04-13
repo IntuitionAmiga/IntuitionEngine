@@ -18,7 +18,9 @@ IEXEC_SRC := $(IEXEC_DIR)/iexec.s
 IEXEC_IMG := $(IEXEC_DIR)/iexec.ie64
 IEXEC_LST := $(IEXEC_DIR)/iexec.lst
 IEXEC_ELF_REBUILDER := ./tools/rebuild_boot_dos_elf.go
+IEXEC_SYSTEM_EXPORTER := ./tools/export_intuitionos_system.go
 IEXEC_BOOTSTRAP_DIR := $(IEXEC_DIR)/.bootstrap
+IEXEC_SYSTEM_DIR := ./sdk/intuitionos/system/SYS/IOSSYS
 IEXEC_BOOTSTRAP_ELFS := \
 	boot_console_handler.elf \
 	boot_dos_library.elf \
@@ -56,7 +58,8 @@ IEXEC_RUNTIME_ELF_TARGETS := \
 	seed_which.elf:prog_which_cmd \
 	seed_help.elf:prog_help_app \
 	seed_gfxdemo.elf:prog_gfxdemo \
-	seed_about.elf:prog_about
+	seed_about.elf:prog_about \
+	seed_elfseg.elf:prog_elfseg
 EMUTOS_SRC_DIR ?= ../EmuTOS
 EMUTOS_ROM ?= ./sdk/examples/prebuilt/etos256us.img
 EMUTOS_GIT_URL ?= https://github.com/IntuitionAmiga/EmuTOS.git
@@ -280,6 +283,7 @@ intuitionos: ie64asm
 		label=$${spec##*:}; \
 		$(GO) run $(IEXEC_ELF_REBUILDER) -listing $(IEXEC_LST) -image $(IEXEC_IMG) -out $(IEXEC_DIR)/$$out -label $$label; \
 	done
+	@$(GO) run $(IEXEC_SYSTEM_EXPORTER) -repo-root . -iexec-dir $(IEXEC_DIR) -out-root $(IEXEC_SYSTEM_DIR)
 	@$(SDK_BIN_DIR)/ie64asm -list -I sdk/include $(IEXEC_SRC) > $(IEXEC_LST)
 	@rm -rf $(IEXEC_BOOTSTRAP_DIR)
 	@echo "IExec kernel and runtime images assembled under $(IEXEC_DIR)"

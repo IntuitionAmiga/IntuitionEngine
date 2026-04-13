@@ -268,7 +268,6 @@ prog_shell_code:
     ; Set script_mode = 1
     move.l  r14, #1
     store.b r14, 176(r29)
-
 .sh_close_script:
     ; Send DOS_CLOSE(handle)
     load.q  r29, (sp)
@@ -320,7 +319,8 @@ prog_shell_code:
 .sh_sl_eol:
     store.b r0, (r17)                  ; null-terminate line
     store.l r14, 184(r29)              ; save updated script_pos
-    bra     .sh_line_ready
+    move.q  r17, r18                   ; sanitizer expects line length, not dst ptr
+    bra     .sh_line_sanitize
 
 .sh_script_done:
     ; End of script: clear script_mode, fall through to interactive
@@ -387,6 +387,7 @@ prog_shell_code:
     add     r19, r15, r17
     store.b r0, (r19)
 
+.sh_line_sanitize:
     ; Strip trailing CR/LF from line buffer
     add     r15, r29, #240             ; r15 = &data[240]
 .sh_strip_trail:
@@ -502,14 +503,44 @@ prog_shell_code:
 
 .sh_no_args:
     ; Bare "X:" token with no args updates the shell's current listing
-    ; context and returns to the prompt.
+    ; context if dos.library recognizes it as an assign/root. Validate
+    ; through DOS_ASSIGN_QUERY so runtime assigns work and typos do not.
     move.l  r21, #2
     blt     r17, r21, .sh_no_args_maybe_command
     sub     r18, r19, #2
     load.b  r20, (r18)
     move.l  r21, #0x3A                  ; ':'
     bne     r20, r21, .sh_no_args_maybe_command
-    move.q  r18, r14
+    load.q  r14, 160(r29)
+    move.l  r20, #0
+.sh_cv_copy_query_name:
+    sub     r21, r17, #1
+    bge     r20, r21, .sh_cv_query_name_done
+    add     r22, r15, r20
+    load.b  r23, (r22)
+    add     r22, r14, r20
+    store.b r23, (r22)
+    add     r20, r20, #1
+    bra     .sh_cv_copy_query_name
+.sh_cv_query_name_done:
+    add     r22, r14, r20
+    store.b r0, (r22)
+    store.q r15, 8(sp)
+    move.l  r2, #DOS_ASSIGN
+    move.l  r3, #DOS_ASSIGN_QUERY
+    move.q  r4, r0
+    load.q  r5, 152(r29)
+    load.l  r6, 168(r29)
+    load.q  r1, 144(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    load.q  r1, 152(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+    bnez    r1, .sh_unknown_cmd
+
+.sh_current_volume_ok:
+    load.q  r18, 8(sp)
     add     r21, r29, #192
 .sh_set_current_volume:
     load.b  r20, (r18)
@@ -612,8 +643,47 @@ prog_shell_code:
     bra     .sh_main_loop
 
 .sh_cmd_ok:
-    ; Command launched — yield 200 times to let it finish
+    ; Command launched. DIR/LIST need a longer settle window because they
+    ; stream line-oriented output through child tasks without a completion
+    ; reply back to the shell.
     move.l  r20, #200
+    load.q  r18, 160(r29)
+    load.b  r21, (r18)
+    move.l  r22, #0x44                  ; 'D'
+    beq     r21, r22, .sh_cmd_settle_dir
+    move.l  r22, #0x64                  ; 'd'
+    beq     r21, r22, .sh_cmd_settle_dir
+    move.l  r22, #0x4C                  ; 'L'
+    beq     r21, r22, .sh_cmd_settle_list
+    move.l  r22, #0x6C                  ; 'l'
+    beq     r21, r22, .sh_cmd_settle_list
+    bra     .sh_cmd_settle_ready
+.sh_cmd_settle_dir:
+    add     r18, r18, #1
+    load.b  r21, (r18)
+    move.l  r22, #0x49                  ; 'I'
+    beq     r21, r22, .sh_cmd_settle_long
+    move.l  r22, #0x69                  ; 'i'
+    beq     r21, r22, .sh_cmd_settle_long
+    bra     .sh_cmd_settle_ready
+.sh_cmd_settle_list:
+    add     r18, r18, #1
+    load.b  r21, (r18)
+    move.l  r22, #0x49                  ; 'I'
+    beq     r21, r22, .sh_cmd_settle_list_2
+    move.l  r22, #0x69                  ; 'i'
+    bne     r21, r22, .sh_cmd_settle_ready
+.sh_cmd_settle_list_2:
+    add     r18, r18, #1
+    load.b  r21, (r18)
+    move.l  r22, #0x53                  ; 'S'
+    beq     r21, r22, .sh_cmd_settle_long
+    move.l  r22, #0x73                  ; 's'
+    beq     r21, r22, .sh_cmd_settle_long
+    bra     .sh_cmd_settle_ready
+.sh_cmd_settle_long:
+    move.l  r20, #2048
+.sh_cmd_settle_ready:
     store.q r20, 8(sp)
 .sh_delay:
     load.q  r20, 8(sp)

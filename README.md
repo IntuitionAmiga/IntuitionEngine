@@ -442,6 +442,7 @@ All hardware is accessed through memory-mapped registers in the `$F0000-$FFFFF` 
 | AROS DOS | `$F2220-$F225F` | AROS DOS handler bridge (AROS mode only) |
 | AROS Audio | `$F2260-$F22AF` | Paula-compatible 4-channel DMA audio (AROS mode only) |
 | Media Loader | `$F2300-$F231F` | Media file auto-detection and loading |
+| Bootstrap HostFS | `$F23E0-$F23FF` | Read-only host-backed boot bridge for IntuitionOS bootstrap |
 | Coprocessor | `$F2340-$F238F` | Worker CPU lifecycle, async RPC, IRQ control |
 | Coprocessor Ext | `$F23B0-$F23BF` | Monitor registers (ring depth, uptime, busy%, reset) |
 
@@ -6004,6 +6005,16 @@ IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. 
 - **`T:` is the writable temporary namespace.** Temporary files round-trip through the same RAM-backed DOS store and existing open/write/read/close operations; M15 does not add hierarchical directories or persistent storage.
 - **Boot and command execution remain ELF-only at the public boundary.** The M14.2 guarantees above still hold: `ExecProgram` is descriptor-only, `DOS_RUN` does not accept legacy flat images, and `DOS_LOADSEG` / `DOS_RUNSEG` remain the public executable path.
 
+**M15.2 host-backed boot status** — the shipped runtime now boots from the generated host-backed system tree:
+
+- **`SYS:` is the mounted host-backed boot volume.** `SYS:` is now the live bootstrap root for the shipped IntuitionOS runtime rather than a future direction.
+- **`IOSSYS:` is the built-in system assign rooted at `SYS:IOSSYS`.** `IOSSYS:` as the built-in system assign rooted at `SYS:IOSSYS` is the canonical system tree name, while the functional assigns (`C:`, `S:`, `L:`, `LIBS:`, `DEVS:`, `RESOURCES:`) keep their short M15-style public `DOS_ASSIGN` view.
+- **`DOS_ASSIGN` stays compatibility-shaped.** Public list/query rows remain `name[16], target[16]`; `SYS:` and `IOSSYS:` are built-in resolver roots rather than mutable long chained rows; canonical functional assigns still expose short targets like `C/` and `LIBS/`.
+- **`exec.library` remains the only ROM-resident runtime component.** The bootstrap mounts hostfs as `SYS:` and `dos.library` now boots from `IOSSYS:LIBS/dos.library`.
+- **`Shell` now boots from `IOSSYS:Tools/Shell`.** Commands, libraries, devices, resources, and `S:Startup-Sequence` now come from the generated `sdk/intuitionos/system/SYS/IOSSYS` tree.
+- **`RAM:` and `T:` remain the writable in-memory namespaces.** Their reads and writes stay on the provider-backed DOS path while hostfs remains read-only in M15.2.
+- **`ASSIGN ADD` is still deferred.** M15.2 keeps bare command search `C:`-only and does not add ordered-search assign semantics yet.
+
 **M15.1 source layout status** — the ROM build model is unchanged, but the IntuitionOS sources are no longer forced to live in one monolithic assembly body:
 
 - `sdk/intuitionos/iexec/iexec.s` remains the single assembly entrypoint and the top-level ROM/image layout file.
@@ -6042,7 +6053,7 @@ IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. 
   - `TestIExec_DosM128_RewriteGrows` — write 1 KiB, then rewrite with 8 KiB; readback expects 8 KiB of new content. Proves atomic-swap on grow.
   Four other tests from the M12.8 plan are skipped with documented rationale (covered by existing tests, or test allocator-pool exhaustion which requires fragile state mocking). The full M12.5/M12.6 hardening test suite remains green throughout — no kernel data structure changes, no new ABI fields.
 - **Audit refresh.** `IExec.md §5.13.1` row for `DOS_FILE_SIZE` is now `(removed) — B → ✓` with a description of the slab/extent allocator and the atomic-swap rule. Two new `(removed)` rows for `IMG_OFF_CODE_SIZE`/`IMG_OFF_DATA_SIZE` document the load_program cap removal and explain why those rows were originally misclassified into bucket B. The §5.13 prose is updated to note that bucket B has lost its load-bearing entries — the remaining bucket-B rows are configured-policy values (`KD_PORT_FIFO_SIZE`, `USER_DYN_PAGES`, `DATA_ARGS_*`), not arbitrary product limits.
-- **Boot integration.** The long milestone summary line is gone. Boot now shows compact per-service version tags in each task banner, `VERSION` prints the plain OS version string `IntuitionOS 0.16`, and `S:Startup-Sequence` prints `Type HELP for commands and ASSIGN for layout`.
+- **Boot integration.** The long milestone summary line is gone. Boot now shows compact per-service version tags in each task banner, `VERSION` prints the plain OS version string `IntuitionOS 0.17`, and `S:Startup-Sequence` prints `Type HELP for commands and ASSIGN for layout`.
 - **Demo boot output:**
   ```
   exec.library M11 boot
@@ -6053,7 +6064,7 @@ IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. 
   input.device M11 [Task 4]
   graphics.library M11 [Task 5]
   intuition.library M12 [Task 6]
-  IntuitionOS 0.16
+  IntuitionOS 0.17
   Type HELP for commands and ASSIGN for layout
   1>
   ```

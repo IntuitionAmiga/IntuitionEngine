@@ -643,6 +643,7 @@ SID, SAP, and AHX players support subsong selection for multi-tune files. Each p
 | `0xF2340-0xF238F` | 80B | Coprocessor Manager |
 | `0xF2390-0xF23AF` | 32B | Clipboard Bridge |
 | `0xF23B0-0xF23BF` | 16B | Coprocessor Extended (monitor registers) |
+| `0xF23E0-0xF23FF` | 32B | Bootstrap HostFS |
 | `0xF4000-0xF43FF` | 1KB | Voodoo 3D Registers |
 | `0xF4140-0xF423F` | 256B | Voodoo Fog Table (64 entries × 4B) |
 | `0xF5000-0x104FFF` | 64KB | Voodoo Texture Memory |

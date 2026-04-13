@@ -55,6 +55,7 @@ Address Range       Size    Device              Constants File
 0xF2390-0xF23AF     32B     Clipboard Bridge    clipboard_bridge_constants.go
 0xF23B0-0xF23BF     16B     Coprocessor Monitor coprocessor_constants.go
 0xF23C0-0xF23DF     32B     IRQ Diagnostics     registers.go
+0xF23E0-0xF23FF     32B     Bootstrap HostFS    bootstrap_hostfs_constants.go
 0xF4000-0xF43FF     1KB     Voodoo 3D Graphics  voodoo_constants.go
 
 0x100000-0x5FFFFF   5MB     Video RAM           video_chip.go (VRAM_START)
