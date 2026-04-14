@@ -487,6 +487,35 @@ prog_shell_code:
     beqz    r21, .sh_no_args
     add     r16, r16, #1               ; skip space
 .sh_copy_explicit_args:
+    ; M15.3: if this is a path-taking command (DIR/LIST/TYPE/WHICH) and
+    ; the shell has a current volume AND the args don't already carry a
+    ; volume qualifier, prepend the current volume into the dest buffer
+    ; so `IOSSYS:` then `DIR Tools` becomes a DOS_RUN of DIR with args
+    ; "IOSSYS:Tools". The command name itself stays on C: (DOS_RUN's
+    ; command lookup is cwd-insensitive).
+    jsr     .sh_is_path_cmd
+    beqz    r3, .sh_cp_args_init
+    add     r18, r29, #192
+    load.b  r20, (r18)
+    beqz    r20, .sh_cp_args_init
+    move.q  r23, r16
+.sh_scan_args_colon:
+    load.b  r20, (r23)
+    beqz    r20, .sh_prepend_cwd_init
+    move.l  r21, #0x3A
+    beq     r20, r21, .sh_cp_args_init
+    add     r23, r23, #1
+    bra     .sh_scan_args_colon
+.sh_prepend_cwd_init:
+    add     r18, r29, #192
+.sh_prepend_cwd:
+    load.b  r20, (r18)
+    beqz    r20, .sh_cp_args_init
+    store.b r20, (r19)
+    add     r18, r18, #1
+    add     r19, r19, #1
+    bra     .sh_prepend_cwd
+.sh_cp_args_init:
     move.l  r20, #0
 .sh_cp_args:
     load.b  r21, (r16)
@@ -500,6 +529,80 @@ prog_shell_code:
     store.b r0, (r19)
 .sh_args_done:
     bra     .sh_send_run
+
+    ; .sh_is_path_cmd — is the command name at (r15, r17 chars) one of
+    ; DIR, LIST, TYPE (case-insensitive)? Out: r3 = 1 if yes.
+    ; Clobbers r20, r21, r22.
+    ;
+    ; WHICH is intentionally NOT in this allowlist: it accepts a bare
+    ; command name and prepends C: internally for command lookup. If the
+    ; shell prefixed `WHICH Shell` with the current volume to
+    ; `WHICH IOSSYS:Shell`, which.s would build C:IOSSYS:Shell and miss
+    ; every existing command whenever a current volume is set.
+.sh_is_path_cmd:
+    move.l  r20, #3
+    beq     r17, r20, .sipc_maybe_dir
+    move.l  r20, #4
+    beq     r17, r20, .sipc_maybe_list_or_type
+    move.q  r3, r0
+    rts
+.sipc_maybe_dir:
+    load.b  r21, (r15)
+    or      r21, r21, #0x20
+    move.l  r22, #0x64
+    bne     r21, r22, .sipc_no
+    load.b  r21, 1(r15)
+    or      r21, r21, #0x20
+    move.l  r22, #0x69
+    bne     r21, r22, .sipc_no
+    load.b  r21, 2(r15)
+    or      r21, r21, #0x20
+    move.l  r22, #0x72
+    bne     r21, r22, .sipc_no
+    move.l  r3, #1
+    rts
+.sipc_maybe_list_or_type:
+    load.b  r21, (r15)
+    or      r21, r21, #0x20
+    move.l  r22, #0x6C
+    beq     r21, r22, .sipc_check_list
+    move.l  r22, #0x74
+    beq     r21, r22, .sipc_check_type
+    move.q  r3, r0
+    rts
+.sipc_check_list:
+    load.b  r21, 1(r15)
+    or      r21, r21, #0x20
+    move.l  r22, #0x69
+    bne     r21, r22, .sipc_no
+    load.b  r21, 2(r15)
+    or      r21, r21, #0x20
+    move.l  r22, #0x73
+    bne     r21, r22, .sipc_no
+    load.b  r21, 3(r15)
+    or      r21, r21, #0x20
+    move.l  r22, #0x74
+    bne     r21, r22, .sipc_no
+    move.l  r3, #1
+    rts
+.sipc_check_type:
+    load.b  r21, 1(r15)
+    or      r21, r21, #0x20
+    move.l  r22, #0x79
+    bne     r21, r22, .sipc_no
+    load.b  r21, 2(r15)
+    or      r21, r21, #0x20
+    move.l  r22, #0x70
+    bne     r21, r22, .sipc_no
+    load.b  r21, 3(r15)
+    or      r21, r21, #0x20
+    move.l  r22, #0x65
+    bne     r21, r22, .sipc_no
+    move.l  r3, #1
+    rts
+.sipc_no:
+    move.q  r3, r0
+    rts
 
 .sh_no_args:
     ; Bare "X:" token with no args updates the shell's current listing

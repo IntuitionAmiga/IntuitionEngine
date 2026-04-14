@@ -886,6 +886,31 @@ prog_doslib_code:
     store.b r0, (r20)
     bra     .dos_dir_reply_ok
 .dos_dir_meta_done:
+    ; M15.3: merge writable SYS: overlay entries first (first-effective),
+    ; then the read-only IOSSYS entries. Writable scans use the public
+    ; path string as BOTH the display prefix and the hostfs-relative dir
+    ; (e.g. "C/" → hostRoot/C). Duplicate names across the two passes
+    ; are collapsed at the emission site by .dos_dir_name_already_emitted
+    ; so a file that exists in both hostRoot/C/ and hostRoot/IOSSYS/C/
+    ; appears exactly once (first-effective wins, writable layer first).
+    add     r1, r29, #(prog_doslib_hostfs_public_c - prog_doslib_data)
+    add     r2, r29, #(prog_doslib_hostfs_public_c - prog_doslib_data)
+    jsr     .dos_dir_append_hostfs_dir
+    add     r1, r29, #(prog_doslib_hostfs_public_s - prog_doslib_data)
+    add     r2, r29, #(prog_doslib_hostfs_public_s - prog_doslib_data)
+    jsr     .dos_dir_append_hostfs_dir
+    add     r1, r29, #(prog_doslib_hostfs_public_l - prog_doslib_data)
+    add     r2, r29, #(prog_doslib_hostfs_public_l - prog_doslib_data)
+    jsr     .dos_dir_append_hostfs_dir
+    add     r1, r29, #(prog_doslib_hostfs_public_libs - prog_doslib_data)
+    add     r2, r29, #(prog_doslib_hostfs_public_libs - prog_doslib_data)
+    jsr     .dos_dir_append_hostfs_dir
+    add     r1, r29, #(prog_doslib_hostfs_public_devs - prog_doslib_data)
+    add     r2, r29, #(prog_doslib_hostfs_public_devs - prog_doslib_data)
+    jsr     .dos_dir_append_hostfs_dir
+    add     r1, r29, #(prog_doslib_hostfs_public_resources - prog_doslib_data)
+    add     r2, r29, #(prog_doslib_hostfs_public_resources - prog_doslib_data)
+    jsr     .dos_dir_append_hostfs_dir
     add     r1, r29, #(prog_doslib_hostfs_public_c - prog_doslib_data)
     add     r2, r29, #(prog_doslib_hostfs_rel_c - prog_doslib_data)
     jsr     .dos_dir_append_hostfs_dir
@@ -945,6 +970,22 @@ prog_doslib_code:
     move.q  r2, r1
     load.q  r1, 40(sp)
     jsr     .dos_dir_hostfs_name_is_seeded
+    pop     r24
+    pop     r21
+    pop     r20
+    pop     r1
+    bnez    r3, .ddahd_skip
+    ; M15.3 Gap 1: dedup guard. Scan already-emitted output for an entry
+    ; whose prefix+name matches the current candidate so writable-overlay
+    ; and IOSSYS passes don't list the same file twice.
+    push    r1                            ; preserve dirent ptr
+    push    r20
+    push    r21
+    push    r24
+    load.q  r1, 32(sp)                    ; prefix ptr (sp+32 = original push r1)
+    load.q  r14, 24(sp)                   ; dirent ptr just saved
+    add     r2, r14, #BOOT_HOSTFS_DIRENT_NAME_OFF
+    jsr     .dos_dir_name_already_emitted
     pop     r24
     pop     r21
     pop     r20
@@ -1017,6 +1058,83 @@ prog_doslib_code:
 .ddahd_done:
     pop     r2
     pop     r1
+    rts
+
+    ; M15.3 .dos_dir_name_already_emitted
+    ; In:  r1 = prefix ptr (NUL-terminated, e.g. "C/")
+    ;      r2 = name ptr (NUL-terminated, from dirent NAME_OFF)
+    ;      Buffer base at 168(r29), current bytes written in r21.
+    ; Out: r3 = 1 if the candidate prefix+name matches an entry already
+    ;      in the output buffer (case-insensitive with the trailing
+    ;      space-padding delimiter), 0 otherwise.
+    ; Clobbers: r4-r19, r22-r26.
+.dos_dir_name_already_emitted:
+    load.q  r4, 168(r29)                  ; buffer base
+    move.q  r5, r4                        ; stride cursor
+    move.q  r6, r4
+    add     r6, r6, r21                   ; buffer end (current cursor)
+.ddname_stride_loop:
+    move.l  r7, #38
+    add     r8, r5, r7
+    bgt     r8, r6, .ddname_no_match
+    ; Compare prefix chars (ci) against stride[0..]
+    move.q  r9, r1
+    move.q  r10, r5
+.ddname_cmp_prefix:
+    load.b  r12, (r9)
+    beqz    r12, .ddname_cmp_name_init
+    load.b  r13, (r10)
+    move.l  r14, #0x61
+    blt     r12, r14, .ddname_p_ok
+    move.l  r14, #0x7B
+    bge     r12, r14, .ddname_p_ok
+    sub     r12, r12, #0x20
+.ddname_p_ok:
+    move.l  r14, #0x61
+    blt     r13, r14, .ddname_s_ok
+    move.l  r14, #0x7B
+    bge     r13, r14, .ddname_s_ok
+    sub     r13, r13, #0x20
+.ddname_s_ok:
+    bne     r12, r13, .ddname_next_stride
+    add     r9, r9, #1
+    add     r10, r10, #1
+    bra     .ddname_cmp_prefix
+.ddname_cmp_name_init:
+    move.q  r9, r2
+.ddname_cmp_name:
+    load.b  r12, (r9)
+    beqz    r12, .ddname_cmp_terminator
+    load.b  r13, (r10)
+    move.l  r14, #0x61
+    blt     r12, r14, .ddname_pn_ok
+    move.l  r14, #0x7B
+    bge     r12, r14, .ddname_pn_ok
+    sub     r12, r12, #0x20
+.ddname_pn_ok:
+    move.l  r14, #0x61
+    blt     r13, r14, .ddname_sn_ok
+    move.l  r14, #0x7B
+    bge     r13, r14, .ddname_sn_ok
+    sub     r13, r13, #0x20
+.ddname_sn_ok:
+    bne     r12, r13, .ddname_next_stride
+    add     r9, r9, #1
+    add     r10, r10, #1
+    bra     .ddname_cmp_name
+.ddname_cmp_terminator:
+    ; Candidate ended; stride must have a space (or any non-name char)
+    ; here to avoid "C/Foo" matching "C/FooBar".
+    load.b  r13, (r10)
+    move.l  r14, #0x20
+    bne     r13, r14, .ddname_next_stride
+    move.l  r3, #1
+    rts
+.ddname_next_stride:
+    add     r5, r5, #38
+    bra     .ddname_stride_loop
+.ddname_no_match:
+    move.q  r3, r0
     rts
 
     ; .dos_dir_append_hostfs_explicit_names
@@ -1434,8 +1552,21 @@ prog_doslib_code:
     ; =================================================================
     ; data0 = mode (READ=0, WRITE=1), filename in caller's shared buffer
 .dos_do_open:
+    ; M15.3 multi-entry fallthrough: 648(r29) = attempt index (reserved in
+    ; the unused 648..744 dead-space slab to avoid collisions with scratch
+    ; reused by the ELF loader, metadata walker, and hostfs helpers). Each
+    ; miss in READ mode increments and re-enters resolution so DOS_OPEN
+    ; walks the full effective list (overlay[0..N-1] then base/table) in
+    ; order. Resolution returns not-found once attempt > overlay_count,
+    ; which terminates the loop.
+    store.q r0, 648(r29)
+.dos_do_open_retry:
     load.q  r20, 960(r29)              ; r20 = mode (0=READ, 1=WRITE)
     load.q  r23, 168(r29)              ; r23 = mapped VA (filename pointer)
+    ; Propagate attempt index into lookup's scratch input.
+    store.q r0, 856(r29)               ; skip_overlay = 0 (iterate instead)
+    load.q  r28, 648(r29)
+    store.q r28, 880(r29)
 
     ; Resolve filename through the DOS assign table.
     jsr     .dos_resolve_file
@@ -1444,16 +1575,42 @@ prog_doslib_code:
     load.q  r20, 960(r29)              ; resolver clobbers caller-save regs
     store.q r23, 336(r29)              ; preserve resolved name across helper JSRs
 
-    ; Host-backed read-only path: if the resolved name maps into the mounted
-    ; host system tree and the file exists there, prefer that over the seeded
-    ; RAM metadata view.
+    ; M15.3 Gap 2: on WRITE mode, skip read-only candidates so the
+    ; effective-list scan walks forward to the first writable target.
+    ; The only read-only shape that can appear here is a resolved name
+    ; under "IOSSYS/" or "SYS/IOSSYS/" (validate_target rejects ':' in
+    ; overlay values, so overlays can't introduce any other read-only
+    ; target). Bumping the attempt index and re-entering resolve moves
+    ; to the next effective target; when the list is exhausted the
+    ; beqz above replies NOTFOUND cleanly — no RAM synthesis.
+    beqz    r20, .dos_do_open_post_write_filter
+    load.q  r1, 336(r29)
+    jsr     .dos_resolved_is_iossys
+    beqz    r3, .dos_do_open_post_write_filter
+    load.q  r28, 648(r29)
+    add     r28, r28, #1
+    store.q r28, 648(r29)
+    bra     .dos_do_open_retry
+
+.dos_do_open_post_write_filter:
+    load.q  r23, 336(r29)
+
+    ; M15.3: pick the layered hostfs path. For READ mode this prefers the
+    ; writable SYS: overlay (e.g. hostRoot/C/Foo) when present and falls
+    ; back to the read-only IOSSYS path (hostRoot/IOSSYS/C/Foo). For
+    ; WRITE mode the helper returns the writable path; we then try a
+    ; hostfs CREATE_WRITE on it to land the file in the writable SYS
+    ; overlay. Gap 2: a CREATE_WRITE failure is now a hard abort (no
+    ; silent RAM synthesis) so `writes target the first writable
+    ; effective target` means what the plan says.
     move.q  r1, r23
-    jsr     .dos_hostfs_relpath_for_resolved_name
+    load.q  r2, 960(r29)
+    jsr     .dos_hostfs_layered_relpath_for_resolved_name
     beqz    r3, .dos_open_meta_lookup
     load.q  r20, 960(r29)              ; helper clobbers caller-save regs
     move.q  r24, r1
     beqz    r20, .dos_open_hostfs_try
-    bra     .dos_open_meta_lookup
+    bra     .dos_open_hostfs_write_try
 .dos_open_hostfs_try:
     store.q r24, 608(r29)
     move.q  r1, r24
@@ -1557,6 +1714,53 @@ prog_doslib_code:
     load.q  r29, (sp)
     bra     .dos_main_loop
 
+    ; M15.3: write-mode hostfs entry. r24 = writable SYS-overlay relpath
+    ; from .dos_hostfs_layered_relpath_for_resolved_name. We attempt
+    ; BOOT_HOSTFS_CREATE_WRITE on it; on success a hostrec-write handle is
+    ; returned. Gap 2: a failure here is a HARD ABORT — the plan's
+    ; "writes target the first writable effective target" and "fails
+    ; cleanly when no writable target exists" require the write to
+    ; stop at the chosen writable candidate. Silently diverting the
+    ; bytes into a RAM-metadata create with a hostfs-looking name was
+    ; the old M15.2 behaviour and is what the reviewer flagged as the
+    ; last semantic gap; we now reply the first hard error instead.
+    ; RAM-backed targets (T:/RAM:/user-custom) still reach this path
+    ; via .dos_open_meta_lookup since layered_relpath returns r3=0 for
+    ; them, so the RAM create path below is only reached when the
+    ; current attempt's candidate is genuinely RAM-backed.
+.dos_open_hostfs_write_try:
+    store.q r24, 608(r29)
+    move.q  r1, r24
+    jsr     .dos_bootfs_create_write
+    bnez    r2, .dos_reply_err
+    move.q  r24, r1                    ; r24 = host write handle
+    store.q r24, 616(r29)
+    move.q  r1, r24
+    jsr     .dos_hostrec_write_alloc
+    bnez    r2, .dos_open_hostfs_write_no_rec
+    move.q  r25, r1                    ; r25 = tagged hostrec ptr
+    jsr     .dos_hnd_alloc
+    bnez    r2, .dos_open_hostfs_write_no_hnd
+    move.q  r18, r1
+    load.q  r29, (sp)
+    load.q  r1, 944(r29)
+    move.l  r2, #DOS_OK
+    move.q  r3, r18
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+.dos_open_hostfs_write_no_hnd:
+    move.q  r1, r25
+    jsr     .dos_hostrec_write_free
+    bra     .dos_reply_full
+.dos_open_hostfs_write_no_rec:
+    load.q  r24, 616(r29)
+    move.q  r1, r24
+    jsr     .dos_bootfs_close
+    bra     .dos_reply_full
+
  .dos_open_meta_lookup:
     ; --- Search metadata chain for matching name ---
     load.q  r23, 336(r29)
@@ -1569,7 +1773,16 @@ prog_doslib_code:
     bnez    r1, .dos_open_have_entry
     ; Not found
     bnez    r20, .dos_open_create       ; WRITE → create new
-    bra     .dos_reply_err              ; READ → error
+    ; M15.3: READ-mode miss — bump the attempt index and re-enter
+    ; resolution so the next overlay entry (or the base/table target)
+    ; gets tried. Resolution will return not-found (r22=0) once the
+    ; effective list is exhausted, which falls out to .dos_reply_err at
+    ; the top of .dos_do_open. Stack shape matches entry (inner jsrs are
+    ; balanced), so we re-enter without pushing.
+    load.q  r28, 648(r29)
+    add     r28, r28, #1
+    store.q r28, 648(r29)
+    bra     .dos_do_open_retry
 
 .dos_open_create:
     ; M12.8 Phase 2: write-mode create no longer pre-allocates a body.
@@ -1736,7 +1949,58 @@ prog_doslib_code:
     jsr     .dos_hnd_lookup             ; r1 = entry VA (or 0)
     beqz    r1, .dos_write_badh
     and     r24, r1, #1
-    bnez    r24, .dos_write_badh
+    beqz    r24, .dos_write_meta_path
+    ; M15.3: tagged hostrec. If it's a hostrec-write (HSTW), stream bytes
+    ; through BOOT_HOSTFS_WRITE. Hostrec-read handles still reject writes.
+    push    r19
+    push    r1
+    jsr     .dos_hostrec_is_write
+    pop     r1
+    pop     r19
+    beqz    r3, .dos_write_badh
+    ; r1 is still the tagged hostrec ptr.
+    sub     r24, r1, #1                 ; r24 = hostrec base
+    load.q  r25, 8(r24)                 ; host handle
+    load.q  r29, (sp)
+    ; Clamp byte_count to share-bytes (mirror RAM-extent path bound).
+    load.q  r26, 184(r29)
+    lsl     r26, r26, #12
+    blt     r19, r26, .dwh_share_ok
+    move.q  r19, r26
+.dwh_share_ok:
+    store.q r25, 256(r29)              ; preserve host handle
+    store.q r19, 272(r29)              ; clamped byte_count
+    store.q r24, 264(r29)              ; preserve hostrec base
+    beqz    r19, .dwh_done
+    load.q  r2, 168(r29)               ; src = caller's mapped buffer
+    move.q  r3, r19
+    move.q  r1, r25
+    jsr     .dos_bootfs_write
+    bnez    r2, .dos_write_full
+    ; M15.3 correctness: BOOT_HOSTFS_WRITE returns the actual byte count
+    ; in r1. Trust that over the clamped request in r19 — if the host
+    ; fs layer reports a short write (e.g. partial write accepted by a
+    ; non-regular backend) we must NOT advance hostrec.bytes_written or
+    ; reply.data0 past what actually reached disk, or the guest will
+    ; silently corrupt its logical file contents.
+    load.q  r29, (sp)
+    store.q r1, 272(r29)               ; replace clamped count with actual
+    load.q  r24, 264(r29)
+    load.q  r19, 272(r29)
+    load.q  r25, 16(r24)
+    add     r25, r25, r19
+    store.q r25, 16(r24)               ; bytes_written += actual
+.dwh_done:
+    load.q  r19, 272(r29)
+    load.q  r1, 944(r29)
+    move.l  r2, #DOS_OK
+    move.q  r3, r19                    ; reply.data0 = actual byte count
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+.dos_write_meta_path:
     load.q  r29, (sp)
     store.q r1, 256(r29)                ; saved entry VA
     move.q  r14, r1                     ; r14 = entry VA
@@ -1815,6 +2079,18 @@ prog_doslib_code:
     beqz    r1, .dos_close_badh
     and     r24, r1, #1
     beqz    r24, .dos_close_clear
+    ; M15.3: dispatch read vs write hostrec on close.
+    push    r2
+    push    r1
+    jsr     .dos_hostrec_is_write
+    pop     r1
+    pop     r2
+    beqz    r3, .dos_close_hostrec_read
+    push    r2
+    jsr     .dos_hostrec_write_free
+    pop     r2
+    bra     .dos_close_clear
+.dos_close_hostrec_read:
     push    r2
     jsr     .dos_hostrec_free
     pop     r2
@@ -1850,6 +2126,12 @@ prog_doslib_code:
     beq     r20, r28, .dos_assign_query
     move.l  r28, #DOS_ASSIGN_SET
     beq     r20, r28, .dos_assign_set
+    move.l  r28, #DOS_ASSIGN_LAYERED_QUERY
+    beq     r20, r28, .dos_assign_layered_query
+    move.l  r28, #DOS_ASSIGN_ADD
+    beq     r20, r28, .dos_assign_add
+    move.l  r28, #DOS_ASSIGN_REMOVE
+    beq     r20, r28, .dos_assign_remove
     bra     .dos_reply_badarg
 
 .dos_assign_list:
@@ -1878,6 +2160,45 @@ prog_doslib_code:
     add     r26, r26, #1
     bra     .dos_assign_list_copy
 .dos_assign_list_copied:
+    ; M15.3: if this slot has a non-empty overlay, overwrite the target
+    ; portion of the just-emitted row with the first overlay target so the
+    ; old LIST projection reflects the layered model (first effective only).
+    store.q r20, 304(r29)
+    store.q r21, 312(r29)
+    store.q r22, 320(r29)
+    store.q r23, 328(r29)
+    move.q  r1, r22
+    jsr     .dos_assign_overlay_first_target_for_slot
+    load.q  r20, 304(r29)
+    load.q  r21, 312(r29)
+    load.q  r22, 320(r29)
+    load.q  r23, 328(r29)
+    load.q  r24, 184(r29)
+    lsl     r24, r24, #12
+    beqz    r3, .dos_assign_list_no_overlay
+    move.q  r26, r1                    ; overlay target ptr
+    add     r25, r20, #DOS_ASSIGN_TARGET_OFF
+    move.l  r27, #0
+.dosal_zero_tgt:
+    move.l  r28, #DOS_ASSIGN_TARGET_MAX
+    bge     r27, r28, .dosal_copy_ovl
+    add     r28, r25, r27
+    store.b r0, (r28)
+    add     r27, r27, #1
+    bra     .dosal_zero_tgt
+.dosal_copy_ovl:
+    move.l  r27, #0
+.dosal_copy_loop:
+    move.l  r28, #DOS_ASSIGN_OVERLAY_TGT_SZ
+    bge     r27, r28, .dos_assign_list_no_overlay
+    add     r28, r26, r27
+    load.b  r3, (r28)
+    beqz    r3, .dos_assign_list_no_overlay
+    add     r28, r25, r27
+    store.b r3, (r28)
+    add     r27, r27, #1
+    bra     .dosal_copy_loop
+.dos_assign_list_no_overlay:
     add     r20, r20, #DOS_ASSIGN_ENTRY_SZ
     add     r23, r23, #1
 .dos_assign_list_next:
@@ -1906,6 +2227,44 @@ prog_doslib_code:
     load.q  r2, 240(r29)
     jsr     .dos_assign_find_entry
     beqz    r3, .dos_reply_err
+    store.q r1, 304(r29)               ; preserve table entry ptr (M15.3 scratch)
+    store.q r2, 312(r29)               ; preserve slot index
+    move.q  r1, r2
+    jsr     .dos_assign_overlay_first_target_for_slot
+    beqz    r3, .dos_assign_query_use_table
+    ; M15.3: overlay non-empty — emit synthetic row with table name + overlay tgt.
+    move.q  r24, r1                    ; r24 = overlay target ptr
+    load.q  r25, 168(r29)              ; share buffer
+    load.q  r26, 304(r29)              ; table entry ptr
+    ; Copy 16-byte name from table.
+    load.q  r27, (r26)
+    store.q r27, (r25)
+    load.q  r27, 8(r26)
+    store.q r27, 8(r25)
+    ; Copy 16-byte overlay target into share[16..31] (zero-pad first).
+    move.q  r20, r0
+    add     r21, r25, #DOS_ASSIGN_TARGET_OFF
+.daq_zero_ovl:
+    move.l  r22, #DOS_ASSIGN_TARGET_MAX
+    bge     r20, r22, .daq_copy_ovl
+    add     r23, r21, r20
+    store.b r0, (r23)
+    add     r20, r20, #1
+    bra     .daq_zero_ovl
+.daq_copy_ovl:
+    move.q  r20, r0
+.daq_copy_ovl_loop:
+    move.l  r22, #DOS_ASSIGN_OVERLAY_TGT_SZ
+    bge     r20, r22, .dos_assign_query_done
+    add     r23, r24, r20
+    load.b  r3, (r23)
+    beqz    r3, .dos_assign_query_done
+    add     r23, r21, r20
+    store.b r3, (r23)
+    add     r20, r20, #1
+    bra     .daq_copy_ovl_loop
+.dos_assign_query_use_table:
+    load.q  r1, 304(r29)
 .dos_assign_query_copy:
     load.q  r21, 168(r29)
     load.q  r22, (r1)
@@ -1951,7 +2310,7 @@ prog_doslib_code:
     jsr     .dos_assign_find_entry
     beqz    r3, .dos_assign_set_new
     beqz    r2, .dos_reply_badarg
-    move.q  r25, r1
+    move.q  r25, r1                    ; r25 = table entry ptr
     bra     .dos_assign_set_slot_ready
 .dos_assign_set_new:
     jsr     .dos_assign_find_free_entry
@@ -1979,7 +2338,7 @@ prog_doslib_code:
     load.q  r22, 232(r29)
     move.l  r20, #0
 .dos_assign_set_target_copy:
-    bge     r20, r22, .dos_assign_set_done
+    bge     r20, r22, .dos_assign_set_target_copied
     add     r24, r21, r20
     load.b  r28, (r24)
     add     r24, r25, #DOS_ASSIGN_TARGET_OFF
@@ -1987,7 +2346,456 @@ prog_doslib_code:
     store.b r28, (r24)
     add     r20, r20, #1
     bra     .dos_assign_set_target_copy
+
+    ; M15.3: after writing the table entry, also replace the overlay list of
+    ; canonical layered assigns with [TARGET]. The overlay drives LAYERED_QUERY
+    ; and the first-effective projection used by the old QUERY/LIST ops, while
+    ; the table entry keeps path resolution (dos_assign_lookup → first hit)
+    ; pointed at the user's new target. Non-layered slots are left alone.
+.dos_assign_set_target_copied:
+    add     r1, r29, #192
+    load.q  r2, 240(r29)
+    jsr     .dos_assign_find_entry
+    beqz    r3, .dos_assign_set_done
+    store.q r2, 316(r29)               ; preserve slot index (M15.3 scratch)
+    move.q  r1, r2
+    jsr     .dos_assign_slot_layered_p
+    beqz    r3, .dos_assign_set_done
+    load.q  r1, 316(r29)
+    jsr     .dos_assign_overlay_for_slot
+    move.q  r27, r1                    ; overlay block
+    ; Zero block: 1 count byte + 7 pad + 4 × 16 targets.
+    move.q  r20, r0
+.das_ovl_clear:
+    move.l  r21, #DOS_ASSIGN_OVERLAY_ENTRY_SZ
+    bge     r20, r21, .das_ovl_fill
+    add     r22, r27, r20
+    store.b r0, (r22)
+    add     r20, r20, #1
+    bra     .das_ovl_clear
+.das_ovl_fill:
+    ; Copy canonical target into overlay slot 0 (block+8).
+    load.q  r24, 224(r29)              ; canonical target ptr
+    load.q  r25, 232(r29)              ; canonical target len
+    add     r26, r27, #8
+    move.q  r20, r0
+.das_ovl_copy:
+    bge     r20, r25, .das_ovl_copy_done
+    add     r21, r24, r20
+    load.b  r22, (r21)
+    add     r21, r26, r20
+    store.b r22, (r21)
+    add     r20, r20, #1
+    bra     .das_ovl_copy
+.das_ovl_copy_done:
+    move.l  r28, #1
+    store.b r28, (r27)
+
 .dos_assign_set_done:
+    load.q  r1, 944(r29)
+    move.l  r2, #DOS_OK
+    move.l  r3, #1
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+
+    ; =================================================================
+    ; M15.3 DOS_ASSIGN_LAYERED_QUERY (sub-op 3)
+    ; Returns the FULL effective ordered target list for one assign:
+    ;   overlay entries (up to OVERLAY_MAX) followed by the canonical
+    ;   built-in base list (writable SYS path, read-only IOSSYS path).
+    ; Non-layered assigns and built-in roots project into a single-entry
+    ; list (the table or synthetic-row target).
+    ; share buffer in:  name (NUL-terminated)
+    ; share buffer out: count × DOS_ASSIGN_LAYERED_TGT_SZ-byte target slots
+    ; reply.data0 = count of effective targets
+    ; =================================================================
+.dos_assign_layered_query:
+    load.q  r1, 168(r29)
+    add     r3, r29, #192
+    jsr     .dos_assign_read_name
+    beqz    r3, .dos_reply_badarg
+    store.q r2, 240(r29)               ; normalized name len
+
+    ; Built-in roots (SYS, IOSSYS) project as single-entry effective lists
+    ; using the QUERY synthetic row's target.
+    add     r1, r29, #192
+    load.q  r2, 240(r29)
+    jsr     .dos_assign_builtin_root_query_row
+    beqz    r3, .dalq_user_lookup
+    ; r1 = synthetic row pointer; emit one 32-byte target slot containing
+    ; the synthetic row's target string.
+    add     r24, r1, #DOS_ASSIGN_TARGET_OFF
+    load.q  r25, 168(r29)              ; dest = share buffer base
+    move.q  r1, r24
+    move.q  r2, r25
+    jsr     .dos_assign_layered_emit_target_slot
+    move.l  r3, #1                     ; count = 1
+    bra     .dalq_reply_count
+
+.dalq_user_lookup:
+    add     r1, r29, #192
+    load.q  r2, 240(r29)
+    jsr     .dos_assign_find_entry
+    beqz    r3, .dos_reply_err
+    move.q  r24, r2                    ; r24 = slot index
+    store.q r24, 248(r29)              ; preserve slot
+
+    load.q  r25, 168(r29)              ; dest cursor (share buffer base)
+    store.q r25, 256(r29)
+    move.q  r26, r0                    ; emitted count
+    store.q r26, 264(r29)
+
+    ; Emit overlay entries first. Dedup: if a slot-equal target is
+    ; already in the buffer (e.g. user did `ASSIGN ADD C: C:` so overlay
+    ; and base both hold "C/"), skip the duplicate. This keeps reply.data0
+    ; == the number of distinct targets the caller sees in the buffer.
+    move.q  r1, r24
+    jsr     .dos_assign_overlay_for_slot
+    move.q  r27, r1                    ; overlay block
+    load.b  r28, (r27)                 ; overlay count
+    move.q  r20, r0                    ; loop index
+.dalq_overlay_loop:
+    bge     r20, r28, .dalq_overlay_done
+    move.l  r21, #DOS_ASSIGN_OVERLAY_TGT_SZ
+    mulu.q  r22, r20, r21
+    add     r22, r22, #8
+    add     r22, r27, r22              ; overlay entry ptr
+    move.q  r1, r22
+    load.q  r2, 168(r29)               ; share buffer base
+    load.q  r3, 256(r29)               ; cursor
+    jsr     .dos_assign_layered_target_already_emitted
+    bnez    r3, .dalq_overlay_skip
+    load.q  r25, 256(r29)
+    move.q  r1, r22
+    move.q  r2, r25
+    jsr     .dos_assign_layered_emit_target_slot
+    load.q  r25, 256(r29)
+    add     r25, r25, #DOS_ASSIGN_LAYERED_TGT_SZ
+    store.q r25, 256(r29)
+    load.q  r26, 264(r29)
+    add     r26, r26, #1
+    store.q r26, 264(r29)
+.dalq_overlay_skip:
+    add     r20, r20, #1
+    bra     .dalq_overlay_loop
+.dalq_overlay_done:
+
+    ; Emit base list entries if this slot is canonical layered. Otherwise
+    ; emit the table entry's target as a single-entry list (when no overlay
+    ; was emitted).
+    load.q  r24, 248(r29)
+    move.q  r1, r24
+    jsr     .dos_assign_slot_layered_p
+    beqz    r3, .dalq_emit_table_entry
+
+    ; Layered: emit two base targets from prog_doslib_assign_base_table,
+    ; with the same dedup guard as the overlay loop.
+    load.q  r24, 248(r29)
+    move.q  r20, r24
+    lsl     r20, r20, #4               ; slot * 16
+    add     r20, r20, #(prog_doslib_assign_base_table - prog_doslib_data)
+    add     r20, r29, r20              ; base entry pair pointer
+    ; first base: writable SYS overlay path
+    load.q  r21, (r20)
+    add     r21, r29, r21              ; absolute path string ptr
+    move.q  r1, r21
+    load.q  r2, 168(r29)
+    load.q  r3, 256(r29)
+    jsr     .dos_assign_layered_target_already_emitted
+    bnez    r3, .dalq_skip_base_writable
+    load.q  r24, 248(r29)
+    move.q  r20, r24
+    lsl     r20, r20, #4
+    add     r20, r20, #(prog_doslib_assign_base_table - prog_doslib_data)
+    add     r20, r29, r20
+    load.q  r21, (r20)
+    add     r21, r29, r21
+    load.q  r25, 256(r29)
+    move.q  r1, r21
+    move.q  r2, r25
+    jsr     .dos_assign_layered_emit_target_slot
+    load.q  r25, 256(r29)
+    add     r25, r25, #DOS_ASSIGN_LAYERED_TGT_SZ
+    store.q r25, 256(r29)
+    load.q  r26, 264(r29)
+    add     r26, r26, #1
+    store.q r26, 264(r29)
+.dalq_skip_base_writable:
+    ; second base: read-only IOSSYS path
+    load.q  r24, 248(r29)
+    move.q  r20, r24
+    lsl     r20, r20, #4
+    add     r20, r20, #(prog_doslib_assign_base_table - prog_doslib_data)
+    add     r20, r29, r20
+    add     r20, r20, #8
+    load.q  r21, (r20)
+    add     r21, r29, r21
+    move.q  r1, r21
+    load.q  r2, 168(r29)
+    load.q  r3, 256(r29)
+    jsr     .dos_assign_layered_target_already_emitted
+    bnez    r3, .dalq_skip_base_readonly
+    load.q  r24, 248(r29)
+    move.q  r20, r24
+    lsl     r20, r20, #4
+    add     r20, r20, #(prog_doslib_assign_base_table - prog_doslib_data)
+    add     r20, r29, r20
+    add     r20, r20, #8
+    load.q  r21, (r20)
+    add     r21, r29, r21
+    load.q  r25, 256(r29)
+    move.q  r1, r21
+    move.q  r2, r25
+    jsr     .dos_assign_layered_emit_target_slot
+    load.q  r25, 256(r29)
+    add     r25, r25, #DOS_ASSIGN_LAYERED_TGT_SZ
+    store.q r25, 256(r29)
+    load.q  r26, 264(r29)
+    add     r26, r26, #1
+    store.q r26, 264(r29)
+.dalq_skip_base_readonly:
+    bra     .dalq_done
+
+.dalq_emit_table_entry:
+    ; Non-layered: if no overlay was emitted, emit the table entry's target.
+    load.q  r26, 264(r29)
+    bnez    r26, .dalq_done
+    load.q  r24, 248(r29)
+    move.l  r20, #DOS_ASSIGN_ENTRY_SZ
+    mulu.q  r21, r24, r20              ; slot * 32
+    add     r21, r21, #(prog_doslib_assign_table - prog_doslib_data)
+    add     r21, r29, r21              ; table entry ptr
+    add     r21, r21, #DOS_ASSIGN_TARGET_OFF
+    load.q  r25, 256(r29)
+    move.q  r1, r21
+    move.q  r2, r25
+    jsr     .dos_assign_layered_emit_target_slot
+    load.q  r26, 264(r29)
+    add     r26, r26, #1
+    store.q r26, 264(r29)
+
+.dalq_done:
+    load.q  r3, 264(r29)
+.dalq_reply_count:
+    load.q  r1, 944(r29)
+    move.l  r2, #DOS_OK
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+
+    ; =================================================================
+    ; M15.3 DOS_ASSIGN_ADD (sub-op 4)
+    ; Append TARGET to the mutable overlay list of a canonical layered
+    ; assign. Duplicate-target add is a no-op (returns DOS_OK). Rejects:
+    ;   - SYS / IOSSYS / RAM (built-in immutable)
+    ;   - T (single-target writable)
+    ;   - non-layered user assigns (slots not in DOS_ASSIGN_LAYERED_MASK)
+    ;   - invalid TARGET (per .dos_assign_validate_target)
+    ;   - overlay full (DOS_ERR_FULL)
+    ; share buffer: row[name[16], target[16]]
+    ; =================================================================
+.dos_assign_add:
+    load.q  r1, 168(r29)
+    add     r3, r29, #192
+    jsr     .dos_assign_read_name
+    beqz    r3, .dos_reply_badarg
+    store.q r2, 240(r29)
+    ; Reject SYS / IOSSYS root names.
+    add     r1, r29, #192
+    load.q  r2, 240(r29)
+    jsr     .dos_assign_builtin_root_row
+    bnez    r3, .dos_reply_badarg
+    ; Find slot in table.
+    add     r1, r29, #192
+    load.q  r2, 240(r29)
+    jsr     .dos_assign_find_entry
+    beqz    r3, .dos_reply_badarg
+    move.q  r24, r2                    ; slot index
+    store.q r24, 248(r29)
+    ; Reject if not canonical layered.
+    move.q  r1, r24
+    jsr     .dos_assign_slot_layered_p
+    beqz    r3, .dos_reply_badarg
+    ; Validate target (canonicalize into scratch at offset 208).
+    load.q  r1, 168(r29)
+    add     r1, r1, #DOS_ASSIGN_TARGET_OFF
+    jsr     .dos_assign_validate_target
+    beqz    r3, .dos_reply_badarg
+    store.q r1, 224(r29)               ; canonical target ptr
+    store.q r2, 232(r29)               ; canonical target len
+    ; Get overlay block.
+    load.q  r24, 248(r29)
+    move.q  r1, r24
+    jsr     .dos_assign_overlay_for_slot
+    move.q  r27, r1                    ; overlay block ptr
+    load.b  r28, (r27)                 ; current overlay count
+    ; Duplicate check.
+    move.q  r20, r0
+.daa_dup_loop:
+    bge     r20, r28, .daa_dup_done
+    move.l  r21, #DOS_ASSIGN_OVERLAY_TGT_SZ
+    mulu.q  r22, r20, r21
+    add     r22, r22, #8
+    add     r22, r27, r22              ; existing overlay entry
+    move.q  r1, r22
+    load.q  r2, 232(r29)
+    load.q  r3, 224(r29)
+    jsr     .dos_assign_name_eq_ci
+    beqz    r23, .daa_dup_noop
+    add     r20, r20, #1
+    bra     .daa_dup_loop
+.daa_dup_done:
+    ; Capacity check.
+    move.l  r21, #DOS_ASSIGN_OVERLAY_MAX
+    bge     r28, r21, .dos_reply_full
+    ; Append.
+    move.l  r21, #DOS_ASSIGN_OVERLAY_TGT_SZ
+    mulu.q  r22, r28, r21
+    add     r22, r22, #8
+    add     r22, r27, r22              ; new entry slot
+    ; Zero the slot first.
+    move.q  r20, r0
+.daa_zero:
+    move.l  r21, #DOS_ASSIGN_OVERLAY_TGT_SZ
+    bge     r20, r21, .daa_copy
+    add     r24, r22, r20
+    store.b r0, (r24)
+    add     r20, r20, #1
+    bra     .daa_zero
+.daa_copy:
+    load.q  r25, 224(r29)              ; canonical target src
+    load.q  r24, 232(r29)              ; canonical target len
+    move.q  r20, r0
+.daa_copy_loop:
+    bge     r20, r24, .daa_copy_done
+    add     r21, r25, r20
+    load.b  r26, (r21)
+    add     r21, r22, r20
+    store.b r26, (r21)
+    add     r20, r20, #1
+    bra     .daa_copy_loop
+.daa_copy_done:
+    add     r28, r28, #1
+    store.b r28, (r27)                 ; bump overlay count
+.daa_dup_noop:
+    ; Note: `ASSIGN ADD` intentionally does NOT mirror overlay[0] into the
+    ; single-target table entry because doing so would shadow the canonical
+    ; default (e.g. C/) and break command-search fallback when the added
+    ; overlay target doesn't itself contain the command. The full
+    ; multi-entry overlay fallthrough during path resolution is the proper
+    ; fix (see plan's "first hit wins / missing earlier targets fall
+    ; through"); it's deferred to a follow-up milestone.
+    load.q  r1, 944(r29)
+    move.l  r2, #DOS_OK
+    move.l  r3, #1
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+
+    ; =================================================================
+    ; M15.3 DOS_ASSIGN_REMOVE (sub-op 5)
+    ; Remove TARGET from the mutable overlay list of a canonical layered
+    ; assign. Built-in base entries cannot be removed and are not searched.
+    ; If TARGET is not in the overlay, returns DOS_ERR_BADARG.
+    ; share buffer: row[name[16], target[16]]
+    ; =================================================================
+.dos_assign_remove:
+    load.q  r1, 168(r29)
+    add     r3, r29, #192
+    jsr     .dos_assign_read_name
+    beqz    r3, .dos_reply_badarg
+    store.q r2, 240(r29)
+    add     r1, r29, #192
+    load.q  r2, 240(r29)
+    jsr     .dos_assign_builtin_root_row
+    bnez    r3, .dos_reply_badarg
+    add     r1, r29, #192
+    load.q  r2, 240(r29)
+    jsr     .dos_assign_find_entry
+    beqz    r3, .dos_reply_badarg
+    move.q  r24, r2
+    store.q r24, 248(r29)
+    move.q  r1, r24
+    jsr     .dos_assign_slot_layered_p
+    beqz    r3, .dos_reply_badarg
+    load.q  r1, 168(r29)
+    add     r1, r1, #DOS_ASSIGN_TARGET_OFF
+    jsr     .dos_assign_validate_target
+    beqz    r3, .dos_reply_badarg
+    store.q r1, 224(r29)
+    store.q r2, 232(r29)
+    load.q  r24, 248(r29)
+    move.q  r1, r24
+    jsr     .dos_assign_overlay_for_slot
+    move.q  r27, r1
+    load.b  r28, (r27)
+    ; Find target in overlay.
+    move.q  r20, r0
+.dar_find:
+    bge     r20, r28, .dos_reply_badarg
+    move.l  r21, #DOS_ASSIGN_OVERLAY_TGT_SZ
+    mulu.q  r22, r20, r21
+    add     r22, r22, #8
+    add     r22, r27, r22
+    move.q  r1, r22
+    load.q  r2, 232(r29)
+    load.q  r3, 224(r29)
+    jsr     .dos_assign_name_eq_ci
+    beqz    r23, .dar_found
+    add     r20, r20, #1
+    bra     .dar_find
+.dar_found:
+    ; Shift remaining entries down.
+.dar_shift_loop:
+    add     r21, r20, #1
+    bge     r21, r28, .dar_shift_done
+    move.l  r22, #DOS_ASSIGN_OVERLAY_TGT_SZ
+    mulu.q  r23, r20, r22
+    add     r23, r23, #8
+    add     r23, r27, r23              ; dst slot
+    mulu.q  r24, r21, r22
+    add     r24, r24, #8
+    add     r24, r27, r24              ; src slot
+    move.q  r25, r0
+.dar_shift_byte:
+    move.l  r26, #DOS_ASSIGN_OVERLAY_TGT_SZ
+    bge     r25, r26, .dar_shift_next
+    add     r26, r24, r25
+    load.b  r3, (r26)
+    add     r26, r23, r25
+    store.b r3, (r26)
+    add     r25, r25, #1
+    bra     .dar_shift_byte
+.dar_shift_next:
+    add     r20, r20, #1
+    bra     .dar_shift_loop
+.dar_shift_done:
+    ; Zero the now-vacated last slot.
+    sub     r28, r28, #1
+    move.l  r22, #DOS_ASSIGN_OVERLAY_TGT_SZ
+    mulu.q  r23, r28, r22
+    add     r23, r23, #8
+    add     r23, r27, r23
+    move.q  r25, r0
+.dar_clear:
+    move.l  r26, #DOS_ASSIGN_OVERLAY_TGT_SZ
+    bge     r25, r26, .dar_done
+    add     r26, r23, r25
+    store.b r0, (r26)
+    add     r25, r25, #1
+    bra     .dar_clear
+.dar_done:
+    store.b r28, (r27)                 ; new overlay count
+    ; Note: see `.daa_dup_noop` — `ASSIGN REMOVE` likewise does not touch
+    ; the table entry. The table entry tracks SET (which is deliberately
+    ; destructive replace); ADD/REMOVE affect only the overlay list.
     load.q  r1, 944(r29)
     move.l  r2, #DOS_OK
     move.l  r3, #1
@@ -2002,14 +2810,29 @@ prog_doslib_code:
     ; Shared buffer contains the program name. Reply data0 = seglist VA.
     ; =================================================================
 .dos_do_loadseg:
+    ; M15.3 multi-entry fallthrough: 664(r29) = attempt index (reserved
+    ; in the unused 648..744 dead-space slab). 360(r29) is off-limits
+    ; because .dos_elf_build_seglist uses it for file_va. The opcode at
+    ; 952(r29) disambiguates which retry label to re-enter inside
+    ; .dos_run_reply_notfound.
+    store.q r0, 664(r29)
+.dos_do_loadseg_retry:
     load.q  r23, 168(r29)              ; name ptr in shared buffer
+    store.q r0, 856(r29)               ; skip_overlay = 0
+    load.q  r28, 664(r29)
+    store.q r28, 880(r29)              ; attempt index
     jsr     .dos_resolve_cmd
     load.q  r29, (sp)
-    beqz    r22, .dos_run_notfound
+    beqz    r22, .dos_run_reply_notfound_final
     store.q r23, 320(r29)
 
+    ; M15.3: prefer the writable SYS overlay on LOADSEG just like
+    ; DOS_OPEN and DOS_RUN. Mode=0 routes the resolved name through
+    ; layered_relpath so a command or library shadowed in SYS/<X>/
+    ; loads before falling back to IOSSYS/<X>/.
     move.q  r1, r23
-    jsr     .dos_hostfs_relpath_for_resolved_name
+    move.l  r2, #0
+    jsr     .dos_hostfs_layered_relpath_for_resolved_name
     beqz    r3, .dos_loadseg_meta_lookup
     move.q  r24, r1
     store.q r24, 608(r29)
@@ -2613,6 +3436,27 @@ DOS_ASSIGN_ENTRY_SZ   equ 32
 DOS_ASSIGN_DEFAULT_COUNT equ 8
 DOS_ASSIGN_TABLE_COUNT equ 16
 
+; M15.3 layered assign overlay parameters. DOS_ASSIGN_OVERLAY_MAX and
+; DOS_ASSIGN_LAYERED_TGT_SZ are inherited from iexec.inc; per-slot storage
+; sizes below are private to dos.library.
+DOS_ASSIGN_OVERLAY_TGT_SZ  equ 16   ; bytes per overlay target (matches table target slot)
+DOS_ASSIGN_OVERLAY_ENTRY_SZ equ 72  ; per-slot block: 1 count byte + 7 pad + 4 × 16 targets
+
+; M15.3 layered-slot bitmask: 1 bit per assign-table slot, set if the slot is
+; a canonical layered assign (C, L, LIBS, DEVS, S, RESOURCES). Slot 0 = RAM
+; (special, non-mutable) and slot 5 = T (single-target, writable, not layered)
+; remain unmasked.
+;   bit 0: RAM       — 0
+;   bit 1: C         — 1
+;   bit 2: L         — 1
+;   bit 3: LIBS      — 1
+;   bit 4: DEVS      — 1
+;   bit 5: T         — 0
+;   bit 6: S         — 1
+;   bit 7: RESOURCES — 1
+; mask = 0b11011110 = 0xDE
+DOS_ASSIGN_LAYERED_MASK    equ 0xDE
+
     ; .dos_name_eq_ci32
     ; In:  r1 = ptr_a, r2 = ptr_b
     ; Out: r23 = 0 if equal, 1 if mismatch
@@ -2920,6 +3764,12 @@ DOS_ASSIGN_TABLE_COUNT equ 16
     ; .dos_assign_find_entry
     ; In:  r1 = input name ptr, r2 = input name len, r29 = data base
     ; Out: r1 = entry ptr, r2 = index, r3 = 1 if found, 0 otherwise
+    ; M15.3 fix: previously the loop counter r20 was shared with
+    ; .dos_assign_name_eq_ci (which clobbers r20), silently producing the
+    ; wrong slot index for any assign past slot 1 (only "C" worked by
+    ; coincidence). The counter is now preserved across the JSR via the
+    ; stack so external callers that rely on r27/r28 being preserved
+    ; (e.g. .dos_resolve_no_slash, .dos_resolve_has_colon) keep working.
 .dos_assign_find_entry:
     add     r21, r29, #(prog_doslib_assign_table - prog_doslib_data)
     move.l  r20, #0
@@ -2930,7 +3780,11 @@ DOS_ASSIGN_TABLE_COUNT equ 16
     beqz    r24, .dafe_next_empty
     move.q  r26, r21
     move.q  r3, r26
+    push    r20
+    push    r21
     jsr     .dos_assign_name_eq_ci
+    pop     r21
+    pop     r20
     beqz    r23, .dafe_found
 .dafe_next:
     add     r21, r26, #DOS_ASSIGN_ENTRY_SZ
@@ -3049,17 +3903,97 @@ DOS_ASSIGN_TABLE_COUNT equ 16
     ; .dos_assign_lookup
     ; In:  r1 = input volume ptr, r2 = input volume len, r29 = data base
     ; Out: r1 = target ptr, r2 = target len, r3 = 1 if found, 0 otherwise
+    ;
+    ; M15.3: project the layered model into the single-target shape used by
+    ; the rest of dos.library. If the resolved slot is canonical layered
+    ; AND has a non-empty mutable overlay, return the first overlay target
+    ; instead of the table entry's target. Otherwise behaviour matches the
+    ; M15.2 contract (table entry target, or built-in root synthetic row).
+    ;
+    ; r20 is preserved for callers (e.g. .dos_assign_validate_target uses
+    ; r20 across the lookup call as the "full path length" for its
+    ; nested_ok branch — clobbering it here causes garbage canonical
+    ; lengths). Uses dos.library scratch at offsets 800 (entry ptr) and
+    ; 808 (caller's r20).
+    ; Scratch inputs (both cleared before each return so stale values never
+    ; leak to the next caller):
+    ;   856(r29) non-zero = force base/table target (used by
+    ;       .dos_assign_validate_target, which must canonicalize against
+    ;       the static base list regardless of overlay state).
+    ;   880(r29) = attempt index for layered multi-entry iteration:
+    ;       0..overlay_count-1 → overlay[attempt] target
+    ;       overlay_count       → base/table target (layered_relpath then
+    ;                             handles the SYS:/IOSSYS: base fallback
+    ;                             internally at the host layer)
+    ;       > overlay_count     → not-found (iteration exhausted)
+    ;   For non-layered slots and built-in root rows, attempt must be 0;
+    ;   any higher attempt returns not-found so DOS_OPEN/RUN/LOADSEG loops
+    ;   stop after a single pass.
 .dos_assign_lookup:
+    store.q r20, 808(r29)              ; preserve caller's r20 (M15.3)
+    store.q r27, 776(r29)              ; preserve caller's r27 (M15.3 — see below)
+    ; Save input name ptr+len so builtin_root_row can see them after a
+    ; find_entry miss (find_entry zeroes r1/r2 on miss). Pre-existing bug
+    ; that broke every SYS:/IOSSYS: lookup through .dos_resolve_has_colon.
+    store.q r1, 448(r29)
+    store.q r2, 456(r29)
     jsr     .dos_assign_find_entry
-    bnez    r3, .dal_found
+    bnez    r3, .dal_found_table
+    load.q  r1, 448(r29)
+    load.q  r2, 456(r29)
     jsr     .dos_assign_builtin_root_row
     beqz    r3, .dal_notfound
+    ; Built-in root row: single-target, iteration stops past attempt 0.
+    load.q  r26, 880(r29)
+    bnez    r26, .dal_notfound
+    bra     .dal_found
+.dal_found_table:
+    ; r1 = table entry ptr, r2 = slot index.
+    store.q r1, 864(r29)               ; preserve entry ptr
+    store.q r2, 872(r29)               ; preserve slot index
+    load.q  r25, 856(r29)
+    bnez    r25, .dal_reload_entry     ; skip_overlay → base/table target
+    move.q  r1, r2
+    jsr     .dos_assign_slot_layered_p
+    beqz    r3, .dal_not_layered
+    ; Canonical layered: interpret attempt against overlay_count.
+    load.q  r1, 872(r29)
+    jsr     .dos_assign_overlay_for_slot
+    move.q  r20, r1                    ; overlay block ptr
+    load.b  r21, (r20)                 ; overlay_count
+    load.q  r26, 880(r29)              ; attempt
+    bge     r26, r21, .dal_layered_past_overlay
+    ; overlay hit: r1 = block + 8 + attempt * OVERLAY_TGT_SZ
+    move.l  r27, #DOS_ASSIGN_OVERLAY_TGT_SZ
+    mulu.q  r28, r26, r27
+    add     r28, r28, #8
+    add     r1, r20, r28
+    jsr     .dos_assign_target_len
+    bra     .dal_return_ok
+.dal_layered_past_overlay:
+    beq     r26, r21, .dal_reload_entry ; attempt == count: base/table
+    bra     .dal_notfound               ; attempt > count: exhausted
+.dal_not_layered:
+    ; Non-layered user slot: attempt > 0 → not-found.
+    load.q  r26, 880(r29)
+    bnez    r26, .dal_notfound
+.dal_reload_entry:
+    load.q  r1, 864(r29)
 .dal_found:
     add     r1, r1, #DOS_ASSIGN_TARGET_OFF
     jsr     .dos_assign_target_len
+.dal_return_ok:
+    store.q r0, 856(r29)               ; clear skip-overlay scratch
+    store.q r0, 880(r29)               ; clear attempt-index scratch
+    load.q  r20, 808(r29)
+    load.q  r27, 776(r29)
     move.l  r3, #1
     rts
 .dal_notfound:
+    store.q r0, 856(r29)               ; clear skip-overlay scratch
+    store.q r0, 880(r29)               ; clear attempt-index scratch
+    load.q  r20, 808(r29)
+    load.q  r27, 776(r29)
     move.q  r1, r0
     move.q  r2, r0
     move.q  r3, r0
@@ -3214,6 +4148,11 @@ DOS_ASSIGN_TABLE_COUNT equ 16
     move.l  r25, #0x4D                 ; 'M'
     beq     r24, r25, .davt_bad
 .davt_lookup_prefix:
+    ; M15.3: validate_target must resolve against the static base table,
+    ; not the overlay, so `ASSIGN ADD C: SYS:C/` stores the canonical
+    ; "SYS:C/" target even if C has an overlay redirecting elsewhere.
+    move.l  r24, #1
+    store.q r24, 856(r29)
     move.q  r1, r22
     move.q  r2, r28
     jsr     .dos_assign_lookup
@@ -3236,6 +4175,69 @@ DOS_ASSIGN_TABLE_COUNT equ 16
     store.b r0, (r22)
     move.q  r1, r22
     move.q  r2, r0
+    move.q  r3, r0
+    rts
+
+    ; M15.3 .dos_resolved_is_iossys
+    ; In:  r1 = resolved DOS name ptr
+    ; Out: r3 = 1 if the resolved name points under the read-only IOSSYS
+    ;      namespace (either bare "IOSSYS/" or "SYS/IOSSYS/"), else 0.
+    ; Clobbers: r14, r15, r17.
+    ;
+    ; Used by the DOS_OPEN write loop to pre-filter read-only candidates
+    ; so the write-forward scan skips IOSSYS-pointing effective targets
+    ; instead of falling into BOOT_HOSTFS_CREATE_WRITE (which is gated)
+    ; or synthesizing a misleading IOSSYS-named RAM entry.
+.dos_resolved_is_iossys:
+    move.q  r14, r1
+    ; Strip optional "SYS/" prefix so "SYS/IOSSYS/..." reads as IOSSYS.
+    load.b  r15, (r14)
+    and     r15, r15, #0xDF
+    move.l  r17, #0x53                 ; 'S'
+    bne     r15, r17, .dri_check
+    load.b  r15, 1(r14)
+    and     r15, r15, #0xDF
+    move.l  r17, #0x59                 ; 'Y'
+    bne     r15, r17, .dri_check
+    load.b  r15, 2(r14)
+    and     r15, r15, #0xDF
+    move.l  r17, #0x53
+    bne     r15, r17, .dri_check
+    load.b  r15, 3(r14)
+    move.l  r17, #0x2F                 ; '/'
+    bne     r15, r17, .dri_check
+    add     r14, r14, #4
+.dri_check:
+    load.b  r15, (r14)
+    and     r15, r15, #0xDF
+    move.l  r17, #0x49                 ; 'I'
+    bne     r15, r17, .dri_no
+    load.b  r15, 1(r14)
+    and     r15, r15, #0xDF
+    move.l  r17, #0x4F                 ; 'O'
+    bne     r15, r17, .dri_no
+    load.b  r15, 2(r14)
+    and     r15, r15, #0xDF
+    move.l  r17, #0x53
+    bne     r15, r17, .dri_no
+    load.b  r15, 3(r14)
+    and     r15, r15, #0xDF
+    move.l  r17, #0x53
+    bne     r15, r17, .dri_no
+    load.b  r15, 4(r14)
+    and     r15, r15, #0xDF
+    move.l  r17, #0x59                 ; 'Y'
+    bne     r15, r17, .dri_no
+    load.b  r15, 5(r14)
+    and     r15, r15, #0xDF
+    move.l  r17, #0x53
+    bne     r15, r17, .dri_no
+    load.b  r15, 6(r14)
+    move.l  r17, #0x2F                 ; '/'
+    bne     r15, r17, .dri_no
+    move.l  r3, #1
+    rts
+.dri_no:
     move.q  r3, r0
     rts
 
@@ -3329,15 +4331,21 @@ DOS_ASSIGN_TABLE_COUNT equ 16
     move.l  r22, #1
     rts
 .dos_resolve_has_colon:
-    move.q  r27, r23
+    ; M15.3: parked in scratch rather than r27 — builtin_root_row (via
+    ; name_supported / lookup) clobbered r27 for SYS:/IOSSYS: roots,
+    ; which silently broke apply_target's src-past-colon computation.
+    store.q r23, 760(r29)
+    store.q r15, 752(r29)
     move.q  r1, r23
     move.q  r2, r15
     jsr     .dos_assign_name_supported
     beqz    r3, .dos_resolve_notfound
-    move.q  r1, r27
-    move.q  r2, r15
+    load.q  r1, 760(r29)
+    load.q  r2, 752(r29)
     jsr     .dos_assign_lookup
     beqz    r3, .dos_resolve_notfound
+    load.q  r27, 760(r29)
+    load.q  r15, 752(r29)
     add     r14, r27, r15
     add     r14, r14, #1                ; src = past ':'
     beqz    r2, .dos_resolve_ram
@@ -3355,11 +4363,217 @@ DOS_ASSIGN_TABLE_COUNT equ 16
     ; .dos_assign_name_supported
     ; In:  r1 = input volume ptr, r2 = input volume len
     ; Out: r3 = 1 if the name exists in the active assign table, 0 otherwise
+    ;
+    ; M15.3: preserve r27 for callers (.dos_resolve_has_colon parks the
+    ; original resolved-name ptr in r27 around this call). The internal
+    ; .dos_assign_builtin_root_row helper uses r27 as scratch for SYS:/
+    ; IOSSYS: roots, so we save/restore via dos.library scratch at 768.
 .dos_assign_name_supported:
+    store.q r27, 768(r29)
+    ; Save input for builtin_root_row fallback after find_entry miss
+    ; (find_entry zeroes r1/r2 on miss).
+    store.q r1, 464(r29)
+    store.q r2, 472(r29)
     jsr     .dos_assign_find_entry
     bnez    r3, .dans_done
+    load.q  r1, 464(r29)
+    load.q  r2, 472(r29)
     jsr     .dos_assign_builtin_root_row
 .dans_done:
+    load.q  r27, 768(r29)
+    rts
+
+    ; =================================================================
+    ; M15.3 layered-assign helpers
+    ; =================================================================
+
+    ; .dos_assign_slot_layered_p
+    ; In:  r1 = slot index (0..7), r29 = data base
+    ; Out: r3 = 1 if canonical layered slot, 0 otherwise
+    ; Uses prog_doslib_assign_base_table (zero entry → not layered).
+.dos_assign_slot_layered_p:
+    move.q  r20, r1
+    lsl     r20, r20, #4               ; slot * 16
+    add     r20, r20, #(prog_doslib_assign_base_table - prog_doslib_data)
+    add     r20, r29, r20
+    load.q  r20, (r20)
+    beqz    r20, .daslp_no
+    move.l  r3, #1
+    rts
+.daslp_no:
+    move.q  r3, r0
+    rts
+
+    ; .dos_assign_overlay_for_slot
+    ; In:  r1 = slot index, r29 = data base
+    ; Out: r1 = pointer to overlay block (count + 4 × 16 targets)
+.dos_assign_overlay_for_slot:
+    move.q  r20, r1
+    move.l  r21, #DOS_ASSIGN_OVERLAY_ENTRY_SZ
+    mulu.q  r22, r20, r21
+    add     r22, r22, #(prog_doslib_assign_overlay - prog_doslib_data)
+    add     r1, r29, r22
+    rts
+
+    ; M15.3 .dos_assign_layered_target_already_emitted
+    ; In:  r1 = candidate src ptr (NUL-terminated),
+    ;      r2 = share buffer base ptr,
+    ;      r3 = current cursor ptr (= base + N*DOS_ASSIGN_LAYERED_TGT_SZ)
+    ; Out: r3 = 1 if the candidate already appears in [base..cursor),
+    ;      0 otherwise
+    ; Clobbers: r20-r28
+    ; Used by .dos_assign_layered_query to honour the plan's "duplicate
+    ; targets are collapsed so the same target is not visited twice" rule
+    ; — e.g. when the user runs `ASSIGN ADD C: C:`, the overlay copy of
+    ; "C/" must not appear alongside the base list's own "C/".
+.dos_assign_layered_target_already_emitted:
+    sub     r4, r3, r2                 ; total bytes already written
+    move.q  r20, r0                    ; slot offset = 0
+.daltae_slot_loop:
+    bge     r20, r4, .daltae_not_dup
+    add     r21, r2, r20               ; existing slot ptr
+    move.q  r22, r0
+.daltae_byte_loop:
+    move.l  r23, #DOS_ASSIGN_LAYERED_TGT_SZ
+    bge     r22, r23, .daltae_match
+    add     r24, r1, r22
+    load.b  r25, (r24)
+    add     r24, r21, r22
+    load.b  r26, (r24)
+    bne     r25, r26, .daltae_next_slot
+    beqz    r25, .daltae_match
+    add     r22, r22, #1
+    bra     .daltae_byte_loop
+.daltae_match:
+    move.l  r3, #1
+    rts
+.daltae_next_slot:
+    add     r20, r20, #DOS_ASSIGN_LAYERED_TGT_SZ
+    bra     .daltae_slot_loop
+.daltae_not_dup:
+    move.q  r3, r0
+    rts
+
+    ; .dos_assign_layered_emit_target_slot
+    ; Copy a NUL-terminated string into a 32-byte dest slot, padded with
+    ; zeroes. Used when emitting effective-list entries for LAYERED_QUERY.
+    ; In:  r1 = src ptr, r2 = dst ptr (32-byte slot)
+.dos_assign_layered_emit_target_slot:
+    move.q  r20, r1
+    move.q  r21, r2
+    move.q  r22, r0
+.daleds_zero:
+    move.l  r23, #DOS_ASSIGN_LAYERED_TGT_SZ
+    bge     r22, r23, .daleds_copy_init
+    add     r24, r21, r22
+    store.b r0, (r24)
+    add     r22, r22, #1
+    bra     .daleds_zero
+.daleds_copy_init:
+    move.q  r22, r0
+.daleds_copy:
+    move.l  r23, #DOS_ASSIGN_LAYERED_TGT_SZ
+    sub     r23, r23, #1
+    bge     r22, r23, .daleds_done
+    add     r24, r20, r22
+    load.b  r25, (r24)
+    beqz    r25, .daleds_done
+    add     r24, r21, r22
+    store.b r25, (r24)
+    add     r22, r22, #1
+    bra     .daleds_copy
+.daleds_done:
+    rts
+
+    ; .dos_assign_overlay_first_target_for_slot
+    ; In:  r1 = slot index, r29 = data base
+    ; Out: r1 = ptr to first overlay target (16 bytes), r3 = 1 if exists, 0 otherwise
+.dos_assign_overlay_first_target_for_slot:
+    jsr     .dos_assign_overlay_for_slot
+    move.q  r20, r1
+    load.b  r21, (r20)
+    beqz    r21, .daofts_none
+    add     r1, r20, #8
+    move.l  r3, #1
+    rts
+.daofts_none:
+    move.q  r1, r0
+    move.q  r3, r0
+    rts
+
+    ; M15.3 .dos_assign_sync_table_entry_to_overlay
+    ; In: r1 = slot index (must be canonical layered), r29 = data base
+    ; Overwrites table[slot].target with:
+    ;   - overlay[0] target if overlay_count > 0
+    ;   - canonical default "<name>/" if overlay is empty
+    ; This keeps the M15.2 first-effective projection (`dos_assign_lookup`)
+    ; consistent after ADD/REMOVE so that DOS_OPEN path resolution sees
+    ; the intended target without a separate layered-iteration pass.
+.dos_assign_sync_table_entry_to_overlay:
+    move.q  r24, r1
+    jsr     .dos_assign_slot_layered_p
+    beqz    r3, .dast_done
+    ; Compute table[slot].target ptr → r25. Save table[slot] base at
+    ; 784(r29) so the .dast_use_default branch can reload it after
+    ; .dos_assign_overlay_first_target_for_slot (which clobbers r22).
+    move.q  r20, r24
+    move.l  r21, #DOS_ASSIGN_ENTRY_SZ
+    mulu.q  r22, r20, r21
+    add     r22, r22, #(prog_doslib_assign_table - prog_doslib_data)
+    add     r22, r29, r22                   ; r22 = table[slot] base
+    store.q r22, 784(r29)
+    add     r25, r22, #DOS_ASSIGN_TARGET_OFF
+    store.q r25, 792(r29)
+    ; Zero the target field so short writes don't leak stale trailing bytes.
+    move.q  r20, r0
+.dast_zero:
+    move.l  r21, #DOS_ASSIGN_TARGET_MAX
+    bge     r20, r21, .dast_source
+    add     r26, r25, r20
+    store.b r0, (r26)
+    add     r20, r20, #1
+    bra     .dast_zero
+.dast_source:
+    move.q  r1, r24
+    jsr     .dos_assign_overlay_first_target_for_slot
+    load.q  r22, 784(r29)
+    load.q  r25, 792(r29)
+    beqz    r3, .dast_use_default
+    ; r1 = overlay[0] ptr (16 bytes, NUL-padded). Copy up to first NUL.
+    move.q  r26, r1
+    move.q  r20, r0
+.dast_copy_ovl:
+    move.l  r21, #DOS_ASSIGN_TARGET_MAX
+    bge     r20, r21, .dast_done
+    add     r27, r26, r20
+    load.b  r28, (r27)
+    beqz    r28, .dast_done
+    add     r27, r25, r20
+    store.b r28, (r27)
+    add     r20, r20, #1
+    bra     .dast_copy_ovl
+.dast_use_default:
+    ; Default target = "{name}/" where name is table[slot].name.
+    move.q  r20, r0
+.dast_copy_name:
+    move.l  r21, #DOS_ASSIGN_NAME_MAX
+    sub     r21, r21, #1
+    bge     r20, r21, .dast_append_slash
+    add     r27, r22, r20                    ; table[slot].name[r20]
+    load.b  r28, (r27)
+    beqz    r28, .dast_append_slash
+    add     r27, r25, r20
+    store.b r28, (r27)
+    add     r20, r20, #1
+    bra     .dast_copy_name
+.dast_append_slash:
+    move.l  r21, #DOS_ASSIGN_TARGET_MAX
+    sub     r21, r21, #1
+    bge     r20, r21, .dast_done
+    add     r27, r25, r20
+    move.l  r28, #0x2F
+    store.b r28, (r27)
+.dast_done:
     rts
 
     ; .dos_prefix_eq_ci
@@ -3595,6 +4809,20 @@ DOS_ASSIGN_TABLE_COUNT equ 16
     rts
 .dhrfrn_sys:
     add     r1, r20, #4
+    ; M15.3: when the resolved name is exactly "SYS/" (e.g. the bare
+    ; volume DIR after `SYS:`), the past-prefix tail is empty. Empty
+    ; relpaths are rejected by bootfs.resolveExistingPath (errCode 3),
+    ; so emit "." here — that maps to hostRoot via resolveRelativePath
+    ; and lets DIR enumerate the writable SYS overlay root.
+    load.b  r28, (r1)
+    bnez    r28, .dhrfrn_sys_copy
+    move.l  r28, #0x2E                 ; '.'
+    store.b r28, (r27)
+    store.b r0, 1(r27)
+    move.q  r1, r27
+    move.l  r3, #1
+    rts
+.dhrfrn_sys_copy:
     move.q  r2, r27
     jsr     .dos_copy_zstr
     move.q  r1, r27
@@ -3629,6 +4857,206 @@ DOS_ASSIGN_TABLE_COUNT equ 16
     add     r2, r20, #5
     move.q  r3, r27
     jsr     .dos_hostfs_make_relpath
+    rts
+
+    ; M15.3 .dos_hostfs_writable_relpath_for_resolved_name
+    ; In:  r1 = resolved DOS name ptr
+    ; Out: r1 = hostfs-relative writable path ptr, r3 = 1 if hostfs-backed, 0 otherwise
+    ;
+    ; Returns the writable SYS: overlay path for canonical layered assigns
+    ; (e.g. "C/Version" → "C/Version", no IOSSYS/ prefix), and strips the
+    ; "SYS/" prefix for explicit SYS: paths so that "SYS/Foo" → "Foo" at
+    ; the hostfs root. Returns (0, 0) for paths that cannot be written via
+    ; hostfs (RAM: / T: targets).
+.dos_hostfs_writable_relpath_for_resolved_name:
+    move.q  r20, r1
+    add     r27, r29, #544             ; scratch ptr (shared with read-only mapper)
+
+    ; --- SYS/ prefix → strip and copy the remainder to scratch ---
+    load.b  r21, (r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x53
+    bne     r21, r22, .dhwr_check_c
+    load.b  r21, 1(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x59
+    bne     r21, r22, .dhwr_check_c
+    load.b  r21, 2(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x53
+    bne     r21, r22, .dhwr_check_c
+    load.b  r21, 3(r20)
+    move.l  r22, #0x2F
+    beq     r21, r22, .dhwr_sys
+
+.dhwr_check_c:
+    load.b  r21, (r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x43                 ; 'C'
+    bne     r21, r22, .dhwr_check_s
+    load.b  r21, 1(r20)
+    move.l  r22, #0x2F
+    beq     r21, r22, .dhwr_copy_full
+
+.dhwr_check_s:
+    load.b  r21, (r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x53                 ; 'S'
+    bne     r21, r22, .dhwr_check_l
+    load.b  r21, 1(r20)
+    move.l  r22, #0x2F
+    beq     r21, r22, .dhwr_copy_full
+
+.dhwr_check_l:
+    load.b  r21, (r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x4C                 ; 'L'
+    bne     r21, r22, .dhwr_check_libs
+    load.b  r21, 1(r20)
+    move.l  r22, #0x2F
+    beq     r21, r22, .dhwr_copy_full
+
+.dhwr_check_libs:
+    load.b  r21, (r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x4C                 ; 'L'
+    bne     r21, r22, .dhwr_check_devs
+    load.b  r21, 1(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x49                 ; 'I'
+    bne     r21, r22, .dhwr_check_devs
+    load.b  r21, 2(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x42                 ; 'B'
+    bne     r21, r22, .dhwr_check_devs
+    load.b  r21, 3(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x53                 ; 'S'
+    bne     r21, r22, .dhwr_check_devs
+    load.b  r21, 4(r20)
+    move.l  r22, #0x2F
+    beq     r21, r22, .dhwr_copy_full
+
+.dhwr_check_devs:
+    load.b  r21, (r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x44                 ; 'D'
+    bne     r21, r22, .dhwr_check_resources
+    load.b  r21, 1(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x45                 ; 'E'
+    bne     r21, r22, .dhwr_check_resources
+    load.b  r21, 2(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x56                 ; 'V'
+    bne     r21, r22, .dhwr_check_resources
+    load.b  r21, 3(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x53                 ; 'S'
+    bne     r21, r22, .dhwr_check_resources
+    load.b  r21, 4(r20)
+    move.l  r22, #0x2F
+    beq     r21, r22, .dhwr_copy_full
+
+.dhwr_check_resources:
+    load.b  r21, (r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x52                 ; 'R'
+    bne     r21, r22, .dhwr_none
+    load.b  r21, 1(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x45                 ; 'E'
+    bne     r21, r22, .dhwr_none
+    load.b  r21, 2(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x53                 ; 'S'
+    bne     r21, r22, .dhwr_none
+    load.b  r21, 3(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x4F                 ; 'O'
+    bne     r21, r22, .dhwr_none
+    load.b  r21, 4(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x55                 ; 'U'
+    bne     r21, r22, .dhwr_none
+    load.b  r21, 5(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x52                 ; 'R'
+    bne     r21, r22, .dhwr_none
+    load.b  r21, 6(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x43                 ; 'C'
+    bne     r21, r22, .dhwr_none
+    load.b  r21, 7(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x45                 ; 'E'
+    bne     r21, r22, .dhwr_none
+    load.b  r21, 8(r20)
+    and     r21, r21, #0xDF
+    move.l  r22, #0x53                 ; 'S'
+    bne     r21, r22, .dhwr_none
+    load.b  r21, 9(r20)
+    move.l  r22, #0x2F
+    beq     r21, r22, .dhwr_copy_full
+
+.dhwr_none:
+    move.q  r1, r0
+    move.q  r3, r0
+    rts
+.dhwr_sys:
+    ; Strip "SYS/" (4 bytes) and copy the remainder.
+    add     r1, r20, #4
+    move.q  r2, r27
+    jsr     .dos_copy_zstr
+    move.q  r1, r27
+    move.l  r3, #1
+    rts
+.dhwr_copy_full:
+    ; Copy the full resolved name verbatim as the hostfs-relative path.
+    move.q  r1, r20
+    move.q  r2, r27
+    jsr     .dos_copy_zstr
+    move.q  r1, r27
+    move.l  r3, #1
+    rts
+
+    ; M15.3 .dos_hostfs_layered_relpath_for_resolved_name
+    ; In:  r1 = resolved DOS name ptr, r2 = mode (0=read, 1=write)
+    ; Out: r1 = chosen hostfs-relative path ptr, r3 = 1 if hostfs-backed, 0 otherwise
+    ;
+    ; For canonical layered assigns, the writable SYS: overlay path takes
+    ; precedence when the file already exists there (READ mode) or when
+    ; the caller is writing (WRITE mode). Falls back to the read-only
+    ; IOSSYS path when no writable file is present (READ mode only).
+    ;
+    ; r29 must remain valid across the helper. Uses dos.library scratch
+    ; at offsets 824 (resolved name), 832 (mode), 840 (writable path).
+.dos_hostfs_layered_relpath_for_resolved_name:
+    store.q r1, 824(r29)
+    store.q r2, 832(r29)
+    jsr     .dos_hostfs_writable_relpath_for_resolved_name
+    beqz    r3, .dhlr_no_writable
+    load.q  r4, 832(r29)
+    bnez    r4, .dhlr_use_writable_now
+    ; READ mode: stat writable. If exists as a file, use it.
+    store.q r1, 840(r29)
+    jsr     .dos_bootfs_stat
+    bnez    r3, .dhlr_writable_miss
+    move.q  r28, r2
+    and     r28, r28, #0xFFFFFFFF
+    move.q  r15, r0
+    add     r15, r15, #BOOT_HOSTFS_KIND_FILE
+    bne     r28, r15, .dhlr_writable_miss
+    load.q  r1, 840(r29)
+    move.l  r3, #1
+    rts
+.dhlr_writable_miss:
+.dhlr_no_writable:
+    load.q  r1, 824(r29)
+    jsr     .dos_hostfs_relpath_for_resolved_name
+    rts
+.dhlr_use_writable_now:
+    move.l  r3, #1
     rts
 
     ; .dos_bootfs_stat
@@ -3666,6 +5094,39 @@ DOS_ASSIGN_TABLE_COUNT equ 16
     move.l  r1, #BOOT_HOSTFS_OPEN
     move.q  r3, r0
     move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_BOOT_HOSTFS
+    pop     r29
+    rts
+
+    ; M15.3 .dos_bootfs_create_write
+    ; In:  r1 = hostfs-relative path ptr
+    ; Out: r1 = host handle, r2 = err
+    ; Rejects any path whose first component is IOSSYS (host-side check).
+.dos_bootfs_create_write:
+    move.q  r20, r1
+    push    r29
+    move.q  r2, r20
+    move.l  r1, #BOOT_HOSTFS_CREATE_WRITE
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_BOOT_HOSTFS
+    pop     r29
+    rts
+
+    ; M15.3 .dos_bootfs_write
+    ; In:  r1 = host handle, r2 = src ptr, r3 = byte_count
+    ; Out: r1 = bytes_written, r2 = err
+.dos_bootfs_write:
+    move.q  r20, r1
+    move.q  r21, r2
+    move.q  r22, r3
+    push    r29
+    move.q  r2, r20
+    move.q  r3, r21
+    move.q  r4, r22
+    move.l  r1, #BOOT_HOSTFS_WRITE
     move.q  r5, r0
     syscall #SYS_BOOT_HOSTFS
     pop     r29
@@ -3828,6 +5289,81 @@ DOS_ASSIGN_TABLE_COUNT equ 16
 .dhrf_done:
     rts
 
+    ; M15.3 .dos_hostrec_write_alloc
+    ; In:  r1 = host write handle (from BOOT_HOSTFS_CREATE_WRITE)
+    ; Out: r1 = tagged hostrec-write ptr (low bit set), r2 = err
+    ; Layout (32 bytes):
+    ;   [0..3]   magic = "HSTW"
+    ;   [4..7]   pad (zero)
+    ;   [8..15]  host handle id
+    ;   [16..23] bytes_written running count (initially 0)
+    ;   [24..31] reserved
+.dos_hostrec_write_alloc:
+    move.q  r20, r1
+    push    r29
+    push    r20
+    move.l  r1, #32
+    move.l  r2, #MEMF_CLEAR
+    syscall #SYS_ALLOC_MEM
+    pop     r20
+    pop     r29
+    bnez    r2, .dhrwa_fail
+    move.q  r24, r1
+    move.l  r25, #0x57545348           ; "HSTW" little-endian
+    store.l r25, (r24)
+    store.q r20, 8(r24)                ; host handle
+    store.q r0, 16(r24)                ; bytes written = 0
+    add     r1, r24, #1
+    move.q  r2, r0
+    rts
+.dhrwa_fail:
+    move.q  r1, r0
+    rts
+
+    ; M15.3 .dos_hostrec_write_free
+    ; In: r1 = tagged hostrec-write ptr
+    ; Closes the host handle, then frees the hostrec block.
+.dos_hostrec_write_free:
+    beqz    r1, .dhrwf_done
+    sub     r1, r1, #1
+    load.q  r20, 8(r1)                 ; host handle
+    beqz    r20, .dhrwf_skip_close
+    push    r1
+    push    r29
+    move.q  r2, r20
+    move.l  r1, #BOOT_HOSTFS_CLOSE
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_BOOT_HOSTFS
+    pop     r29
+    pop     r1
+.dhrwf_skip_close:
+    store.l r0, (r1)
+    store.q r0, 8(r1)
+    store.q r0, 16(r1)
+    push    r29
+    move.q  r2, #32
+    syscall #SYS_FREE_MEM
+    pop     r29
+.dhrwf_done:
+    rts
+
+    ; M15.3 .dos_hostrec_is_write
+    ; In:  r1 = tagged hostrec ptr (low bit MUST already be set)
+    ; Out: r3 = 1 if hostrec-write (HSTW magic), 0 otherwise (HOST or other)
+.dos_hostrec_is_write:
+    move.q  r20, r1
+    sub     r20, r20, #1
+    load.l  r21, (r20)
+    move.l  r22, #0x57545348
+    bne     r21, r22, .dhriw_no
+    move.l  r3, #1
+    rts
+.dhriw_no:
+    move.q  r3, r0
+    rts
+
     ; =================================================================
     ; DOS_RUN (type=6): launch program by name (M10)
     ; =================================================================
@@ -3835,21 +5371,38 @@ DOS_ASSIGN_TABLE_COUNT equ 16
     ; Resolves command name through C: assign, finds image in file table,
     ; launches via SYS_EXEC_PROGRAM (new ABI: image_ptr, image_size).
 .dos_do_run:
+    ; M15.3 multi-entry fallthrough: 656(r29) = attempt index (reserved in
+    ; the unused 648..744 dead-space slab). Each miss (meta + manifest
+    ; both empty) increments and re-enters resolution so DOS_RUN walks
+    ; the full effective list — overlay[0..N-1] then the canonical
+    ; base — before replying NOTFOUND. 352(r29) is off-limits because
+    ; .dos_do_loadseg uses it for the build_seglist err stash.
+    store.q r0, 656(r29)
+.dos_do_run_retry:
     ; 1. Read command name from mapped shared buffer
     store.q r0, 632(r29)              ; host-backed direct-exec flag
     load.q  r23, 168(r29)              ; r23 = caller's mapped buffer (name ptr)
+    ; Propagate attempt index into lookup's scratch input.
+    store.q r0, 856(r29)              ; skip_overlay = 0 (iterate instead)
+    load.q  r28, 656(r29)
+    store.q r28, 880(r29)
 
     ; 2. Resolve through C: assign (r23 in/out)
     jsr     .dos_resolve_cmd            ; r23 = resolved name (e.g. "C/Version")
     load.q  r29, (sp)
-    beqz    r22, .dos_run_reply_notfound
+    ; r22=0 here means the effective list is exhausted (or the name was
+    ; never resolvable) — terminate iteration without another retry.
+    beqz    r22, .dos_run_reply_notfound_final
     store.q r23, 336(r29)
 
     ; Prefer a host-backed file when the resolved DOS name maps into the
-    ; mounted system tree. Only ERR_NOTFOUND falls through to the seeded
-    ; metadata/manifest compatibility path.
+    ; mounted system tree. M15.3: route through the layered helper so the
+    ; writable SYS overlay takes priority when a command copy lives there
+    ; (matches the DOS_OPEN behaviour). Mode=0 (READ) so the helper stats
+    ; the writable path first and falls back to IOSSYS/ when absent.
     move.q  r1, r23
-    jsr     .dos_hostfs_relpath_for_resolved_name
+    move.l  r2, #0
+    jsr     .dos_hostfs_layered_relpath_for_resolved_name
     beqz    r3, .dos_run_file_lookup
     move.q  r24, r1
     move.q  r27, r24
@@ -3996,6 +5549,28 @@ DOS_ASSIGN_TABLE_COUNT equ 16
 
 .dos_run_reply_notfound:
     load.q  r29, (sp)
+    ; M15.3: bump the op-specific attempt index and retry. Resolution
+    ; returns not-found once the effective list is exhausted; in that
+    ; case resolve_cmd leaves r22=0 and the per-op retry entry branches
+    ; to .dos_run_reply_notfound_final at the top of the op.
+    load.q  r27, 952(r29)              ; opcode
+    move.l  r26, #DOS_LOADSEG
+    beq     r27, r26, .drn_retry_loadseg
+    ; DOS_RUN / DOS_RUNSEG path — attempt index at 656.
+    load.q  r28, 656(r29)
+    add     r28, r28, #1
+    store.q r28, 656(r29)
+    move.l  r27, #8
+    bge     r28, r27, .dos_run_reply_notfound_final
+    bra     .dos_do_run_retry
+.drn_retry_loadseg:
+    load.q  r28, 664(r29)
+    add     r28, r28, #1
+    store.q r28, 664(r29)
+    move.l  r27, #8
+    bge     r28, r27, .dos_run_reply_notfound_final
+    bra     .dos_do_loadseg_retry
+.dos_run_reply_notfound_final:
     ; Reply with DOS_ERR_NOTFOUND
     load.q  r1, 944(r29)
     move.l  r2, #DOS_ERR_NOTFOUND
@@ -5254,6 +6829,47 @@ prog_doslib_assign_table:
     dc.b    "RESOURCES/", 0
     ds.b    5
     ds.b    (DOS_ASSIGN_ENTRY_SZ * (DOS_ASSIGN_TABLE_COUNT - DOS_ASSIGN_DEFAULT_COUNT))
+
+    ; M15.3 mutable overlay storage. One DOS_ASSIGN_OVERLAY_ENTRY_SZ block per
+    ; assign-table slot (only canonical layered slots are ever touched, but we
+    ; allocate symmetric storage so the slot index can be used as a direct
+    ; multiplier). Per-slot layout:
+    ;   [0]   overlay_count (byte, 0..DOS_ASSIGN_OVERLAY_MAX)
+    ;   [1..7] padding
+    ;   [8..71] DOS_ASSIGN_OVERLAY_MAX × DOS_ASSIGN_OVERLAY_TGT_SZ targets
+prog_doslib_assign_overlay:
+    ds.b    (DOS_ASSIGN_OVERLAY_ENTRY_SZ * DOS_ASSIGN_TABLE_COUNT)
+
+    ; M15.3 base list target pointer table. Per canonical layered slot, two
+    ; pointers (writable SYS overlay path, then read-only IOSSYS path), each a
+    ; relative offset into prog_doslib_data. Non-layered slots have zeros and
+    ; are never read. Indexed by slot * 16 (two 8-byte offsets per slot).
+prog_doslib_assign_base_table:
+    ; slot 0: RAM (not layered)
+    dc.q    0
+    dc.q    0
+    ; slot 1: C
+    dc.q    (prog_doslib_hostfs_public_c - prog_doslib_data)
+    dc.q    (prog_doslib_hostfs_rel_c - prog_doslib_data)
+    ; slot 2: L
+    dc.q    (prog_doslib_hostfs_public_l - prog_doslib_data)
+    dc.q    (prog_doslib_hostfs_rel_l - prog_doslib_data)
+    ; slot 3: LIBS
+    dc.q    (prog_doslib_hostfs_public_libs - prog_doslib_data)
+    dc.q    (prog_doslib_hostfs_rel_libs - prog_doslib_data)
+    ; slot 4: DEVS
+    dc.q    (prog_doslib_hostfs_public_devs - prog_doslib_data)
+    dc.q    (prog_doslib_hostfs_rel_devs - prog_doslib_data)
+    ; slot 5: T (not layered)
+    dc.q    0
+    dc.q    0
+    ; slot 6: S
+    dc.q    (prog_doslib_hostfs_public_s - prog_doslib_data)
+    dc.q    (prog_doslib_hostfs_rel_s - prog_doslib_data)
+    ; slot 7: RESOURCES
+    dc.q    (prog_doslib_hostfs_public_resources - prog_doslib_data)
+    dc.q    (prog_doslib_hostfs_rel_resources - prog_doslib_data)
+
     align   4096
 
 ; ---------------------------------------------------------------------------

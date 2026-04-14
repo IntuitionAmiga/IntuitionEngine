@@ -696,9 +696,33 @@ DOS_RUNSEG        equ 9           ; Run a loaded seglist (data0=seglist VA, shar
 DOS_ASSIGN        equ 10          ; Assign list/query/set (share=assign row buffer)
 
 ; DOS_ASSIGN sub-ops (data0)
-DOS_ASSIGN_LIST   equ 0           ; reply.data0 = row count, share = rows[name[16],target[16]]
-DOS_ASSIGN_QUERY  equ 1           ; share in = name, share out = row[name,target]
-DOS_ASSIGN_SET    equ 2           ; share in = row[name,target]
+DOS_ASSIGN_LIST          equ 0    ; reply.data0 = row count, share = rows[name[16],target[16]]
+                                  ; (M15.3: each row's target is the FIRST effective target;
+                                  ; canonical layered assigns project their overlay-or-base
+                                  ; through this same name[16],target[16] row shape)
+DOS_ASSIGN_QUERY         equ 1    ; share in = name, share out = row[name,target]
+                                  ; (M15.3: returns first effective target only)
+DOS_ASSIGN_SET           equ 2    ; share in = row[name,target]
+                                  ; (M15.3: for canonical layered assigns, replaces the
+                                  ; mutable overlay list with exactly [TARGET]; built-in
+                                  ; base list is preserved. For non-layered user assigns
+                                  ; it overwrites the table entry as in M15/M15.2.)
+DOS_ASSIGN_LAYERED_QUERY equ 3    ; share in = name, share out = N × target[32]
+                                  ; reply.data0 = N (count of effective targets)
+                                  ; (M15.3: returns the FULL effective ordered list:
+                                  ; overlay entries first, then built-in base list,
+                                  ; with duplicate targets collapsed)
+DOS_ASSIGN_ADD           equ 4    ; share in = row[name,target]
+                                  ; (M15.3: appends TARGET to mutable overlay list of a
+                                  ; canonical layered assign; duplicate-add is a no-op)
+DOS_ASSIGN_REMOVE        equ 5    ; share in = row[name,target]
+                                  ; (M15.3: removes TARGET from mutable overlay list of
+                                  ; a canonical layered assign; built-in base entries
+                                  ; cannot be removed and are not affected)
+
+; DOS_ASSIGN layered query payload
+DOS_ASSIGN_LAYERED_TGT_SZ equ 32  ; bytes per target slot in LAYERED_QUERY response
+DOS_ASSIGN_OVERLAY_MAX    equ 4   ; max overlay entries per canonical layered assign
 
 ; DOS open modes
 DOS_MODE_READ     equ 0
@@ -978,12 +1002,18 @@ BOOT_HOSTFS_RES2     equ BOOT_HOSTFS_BASE + 24
 BOOT_HOSTFS_ERR      equ BOOT_HOSTFS_BASE + 28
 BOOT_HOSTFS_END      equ BOOT_HOSTFS_BASE + 31
 
-BOOT_HOSTFS_DISCOVER equ 0
-BOOT_HOSTFS_OPEN     equ 1
-BOOT_HOSTFS_READ     equ 2
-BOOT_HOSTFS_CLOSE    equ 3
-BOOT_HOSTFS_STAT     equ 4
-BOOT_HOSTFS_READDIR  equ 5
+BOOT_HOSTFS_DISCOVER     equ 0
+BOOT_HOSTFS_OPEN         equ 1
+BOOT_HOSTFS_READ         equ 2
+BOOT_HOSTFS_CLOSE        equ 3
+BOOT_HOSTFS_STAT         equ 4
+BOOT_HOSTFS_READDIR      equ 5
+; M15.3 writable SYS: overlay. CREATE_WRITE opens (or creates+truncates)
+; a file for writing. WRITE appends bytes to an open handle. The host
+; device rejects any write whose path resolves under the IOSSYS/ read-only
+; namespace.
+BOOT_HOSTFS_CREATE_WRITE equ 6
+BOOT_HOSTFS_WRITE        equ 7
 
 BOOT_HOSTFS_KIND_NONE equ 0
 BOOT_HOSTFS_KIND_FILE equ 1

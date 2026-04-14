@@ -35,6 +35,11 @@ type BootstrapHostFSDevice struct {
 	res1 uint32
 	res2 uint32
 	err  uint32
+
+	// testShortWriteLimit, when non-zero, caps the effective byte count
+	// of BOOT_HOSTFS_WRITE so tests can verify DOS_WRITE accounting
+	// honours the actual returned count (not the caller's request).
+	testShortWriteLimit uint32
 }
 
 func NewBootstrapHostFSDevice(bus *MachineBus, hostRoot string) *BootstrapHostFSDevice {
@@ -120,9 +125,179 @@ func (d *BootstrapHostFSDevice) dispatch(cmd uint32) {
 		d.stat()
 	case BOOT_HOSTFS_READDIR:
 		d.readDir()
+	case BOOT_HOSTFS_CREATE_WRITE:
+		d.createWrite()
+	case BOOT_HOSTFS_WRITE:
+		d.write()
 	default:
 		d.err = 3
 	}
+}
+
+// createWrite opens (or creates) a file for writing under the host root,
+// truncating it. M15.3 writable SYS: overlay policy: writes are rejected
+// for any path whose first component is "IOSSYS" (case-insensitive) so
+// the embedded read-only system tree cannot be modified by the guest.
+func (d *BootstrapHostFSDevice) createWrite() {
+	if !d.available {
+		d.err = 4
+		return
+	}
+	rel := d.readCString(d.arg1, 255)
+	if rel == "" {
+		d.err = 3
+		return
+	}
+	if relPathIsIOSSYS(rel) {
+		d.err = 3 // read-only namespace
+		return
+	}
+	hostPath, mkErr := d.resolveForCreate(rel)
+	if mkErr != 0 {
+		d.err = mkErr
+		return
+	}
+	f, err := os.OpenFile(hostPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		d.err = mapHostErr(err)
+		return
+	}
+	handle := d.nextHandle
+	d.nextHandle++
+	d.handles[handle] = f
+	d.res1 = handle
+}
+
+// write appends bytes from the guest buffer to an open hostfs handle.
+func (d *BootstrapHostFSDevice) write() {
+	f := d.handles[d.arg1]
+	if f == nil {
+		d.err = 2
+		return
+	}
+	if d.arg2 == 0 {
+		d.err = 3
+		return
+	}
+	effective := d.arg3
+	if d.testShortWriteLimit > 0 && d.testShortWriteLimit < effective {
+		effective = d.testShortWriteLimit
+	}
+	buf := make([]byte, effective)
+	for i := uint32(0); i < effective; i++ {
+		b, ok := d.readGuest8(d.arg2 + i)
+		if !ok {
+			d.err = 5
+			return
+		}
+		buf[i] = b
+	}
+	n, err := f.Write(buf)
+	if err != nil {
+		d.err = mapHostErr(err)
+		return
+	}
+	d.res1 = uint32(n)
+}
+
+// resolveForCreate walks the relative path, creating any missing parent
+// directories (so that writes through `C:Foo` can land in a fresh
+// hostRoot without pre-populated `C/` subdir). Returns the final host path.
+//
+// Security: any "." / ".." segment is rejected outright. Without this
+// guard a guest path like "../outside/file" would cause the parent-dir
+// auto-create loop to leave `fullPath` as the parent of `hostRoot` and
+// then let `os.OpenFile(O_CREATE|O_TRUNC)` truncate or create files
+// outside the sandbox. After this check the final host path is verified
+// to sit under `hostRoot` via `pathWithinRoot` as a belt-and-suspenders
+// defence against symlinks pointing outside the root.
+func (d *BootstrapHostFSDevice) resolveForCreate(rel string) (string, uint32) {
+	rel = filepath.Clean(filepath.FromSlash(rel))
+	if rel == "." || rel == string(filepath.Separator) || rel == "" {
+		return "", 3
+	}
+	if filepath.IsAbs(rel) {
+		return "", 5
+	}
+	segs := strings.Split(rel, string(filepath.Separator))
+	if len(segs) == 0 {
+		return "", 3
+	}
+	// Reject ".." (and stray ".") anywhere in the relative path — these
+	// are the only way `filepath.Clean` leaves path-traversal tokens in
+	// the result, and the parent-dir auto-create loop would otherwise
+	// walk out of the sandboxed hostRoot.
+	for _, seg := range segs {
+		if seg == ".." || seg == "." {
+			return "", 5
+		}
+	}
+	fullPath := d.hostRoot
+	// Create (or resolve) parent directories case-insensitively.
+	for i := 0; i < len(segs)-1; i++ {
+		seg := segs[i]
+		if seg == "" {
+			continue
+		}
+		next, errCode := d.resolvePathSegmentCI(fullPath, seg)
+		if errCode == 4 {
+			candidate := filepath.Join(fullPath, seg)
+			if err := os.MkdirAll(candidate, 0o755); err != nil {
+				return "", mapHostErr(err)
+			}
+			next = candidate
+		} else if errCode != 0 {
+			return "", errCode
+		}
+		fullPath = next
+	}
+	leaf := segs[len(segs)-1]
+	if leaf == "" {
+		return "", 3
+	}
+	// For the leaf, look for an existing case-insensitive match first so
+	// that "c:Version" and "C:Version" target the same file.
+	// Only errCode 4 (genuinely not-found) is safe to fall through to a
+	// lexical join. Any other error — including errCode 5, which covers
+	// a leaf that EXISTS but is a symlink whose target is outside
+	// hostRoot — must propagate so the caller can't escape the sandbox
+	// via a pre-planted symlink in the writable SYS overlay.
+	var finalPath string
+	match, errCode := d.resolvePathSegmentCI(fullPath, leaf)
+	switch errCode {
+	case 0:
+		finalPath = match
+	case 4:
+		finalPath = filepath.Join(fullPath, leaf)
+	default:
+		return "", errCode
+	}
+	// Belt-and-suspenders: confirm the final host path is actually under
+	// hostRoot. Rejects symlinked paths that evaluate outside the sandbox.
+	absFinal, err := filepath.Abs(finalPath)
+	if err != nil {
+		return "", 3
+	}
+	ok, err := pathWithinRoot(d.hostRoot, absFinal)
+	if err != nil || !ok {
+		return "", 5
+	}
+	return finalPath, 0
+}
+
+// relPathIsIOSSYS reports whether the first path component of a
+// forward-slash relative path is "IOSSYS" (case-insensitive).
+func relPathIsIOSSYS(rel string) bool {
+	clean := filepath.ToSlash(filepath.Clean(rel))
+	clean = strings.TrimPrefix(clean, "./")
+	if clean == "" || clean == "/" {
+		return false
+	}
+	first := clean
+	if slash := strings.IndexByte(first, '/'); slash >= 0 {
+		first = first[:slash]
+	}
+	return strings.EqualFold(first, "IOSSYS")
 }
 
 func (d *BootstrapHostFSDevice) open() {

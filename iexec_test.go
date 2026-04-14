@@ -88,12 +88,21 @@ const (
 	dosErrBadHdl = 4
 	dosErrNoMem  = 6
 
-	dosAssignOpList  = 0
-	dosAssignOpQuery = 1
-	dosAssignOpSet   = 2
-	dosAssignNameMax = 16
-	dosAssignRowSz   = 32
-	dosAssignTgtOff  = 16
+	dosAssignOpList         = 0
+	dosAssignOpQuery        = 1
+	dosAssignOpSet          = 2
+	dosAssignOpLayeredQuery = 3
+	dosAssignOpAdd          = 4
+	dosAssignOpRemove       = 5
+	// Test-only pseudo-op: routes the step through DOS_LOADSEG instead of
+	// DOS_ASSIGN so a single client can chain ASSIGN_ADD → DOS_LOADSEG and
+	// exercise the M15.3 LOADSEG multi-entry overlay-retry path.
+	dosAssignOpSendLoadSeg = 0x10001
+	dosAssignNameMax       = 16
+	dosAssignRowSz         = 32
+	dosAssignTgtOff        = 16
+	dosAssignLayeredTgtSz  = 32
+	dosAssignOverlayMax    = 4
 
 	bootHostFSDiscover = 0
 	bootHostFSOpen     = 1
@@ -13273,13 +13282,18 @@ func TestIExec_M152_Phase1_DOSAssignQueryReturnsOverrideForCanonicalFunctionalAs
 }
 
 func TestIExec_M152_Phase1_AssignCommandStillRejectsAddSyntax(t *testing.T) {
+	// M15.3 supersedes the M15.2 "ADD is rejected" contract: ASSIGN ADD now
+	// targets the canonical layered overlay. The shell must not interpret
+	// ADD as a user assign name (which would have created an "ADD:" entry
+	// in the LIST output) AND must keep recovering after the layered ADD
+	// runs. VERSION still prints the banner once the shell drains.
 	hostRoot := makeM152Phase5GeneratedHostRoot(t)
 	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot, "\nASSIGN ADD C: T:\nASSIGN\nVERSION\n", 10*time.Second)
-	if strings.Contains(output, "ADD:") {
-		t.Fatalf("M152_Phase1_AssignCommandStillRejectsAddSyntax: unsupported ADD syntax created a visible assign output=%q", output[:min(len(output), 1200)])
+	if strings.Contains(output, "ADD: ") {
+		t.Fatalf("M152_Phase1_AssignCommandStillRejectsAddSyntax: ADD must not become a visible user assign output=%q", output[:min(len(output), 1200)])
 	}
 	if !strings.Contains(output, "IntuitionOS 0.17") {
-		t.Fatalf("M152_Phase1_AssignCommandStillRejectsAddSyntax: shell did not recover after unsupported ADD syntax output=%q", output[:min(len(output), 1200)])
+		t.Fatalf("M152_Phase1_AssignCommandStillRejectsAddSyntax: shell did not recover after layered ADD output=%q", output[:min(len(output), 1200)])
 	}
 }
 
@@ -18450,5 +18464,1532 @@ func TestIExec_HWRes_GrantTableChainGrows(t *testing.T) {
 	}
 	if !bootstrapFound {
 		t.Fatalf("bootstrap CHIP grant for PPN 0xF0 lost after chain growth — existing pages must NOT move on grow")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// M15.3: Layered assigns + ASSIGN ADD/REMOVE + writable SYS: overlay tests
+// ---------------------------------------------------------------------------
+
+// dosAssignStep describes one DOS_ASSIGN message in a multi-step client.
+type dosAssignStep struct {
+	op    uint32 // dosAssignOp* selector
+	input []byte // bytes to write into shared buffer before sending
+}
+
+// patchHostShellELFWithDOSAssignSequenceClient generates a client ELF that
+// performs N sequential DOS_ASSIGN operations and stores reply.type and
+// reply.data0 for each step at fixed offsets in the task data page. The
+// shared buffer is reused; only the last step's payload survives at the end
+// for callers that need to inspect a returned row/list.
+//
+// Layout in task data page (relative to shellTask data base):
+//
+//	128 dos_port (q)
+//	136 reply_port (q)
+//	144 buffer_va  (q)
+//	152 share_handle (l)
+//	160 + 16*i  reply.type for step i  (q)
+//	168 + 16*i  reply.data0 for step i (q)
+//
+// Per-step reply slot stride is 16 bytes so callers can index N steps.
+func patchHostShellELFWithDOSAssignSequenceClient(t *testing.T, image []byte, steps []dosAssignStep) {
+	t.Helper()
+	if len(steps) == 0 || len(steps) > 8 {
+		t.Fatalf("patchHostShellELFWithDOSAssignSequenceClient: step count %d out of range", len(steps))
+	}
+	for i, s := range steps {
+		if len(s.input) > 256 {
+			t.Fatalf("patchHostShellELFWithDOSAssignSequenceClient: step %d input too large (%d)", i, len(s.input))
+		}
+	}
+	const (
+		offDosPort  = 128
+		offReplyPrt = 136
+		offBufferVA = 144
+		offShareHdl = 152
+		offReplies  = 160 // step i: type at +16*i, data0 at +8+16*i
+	)
+
+	shellCode := elfExecCodeOffset(t, image)
+	off := shellCode
+	w := func(instr []byte) { copy(image[off:], instr); off += 8 }
+	writeBytesAtBuffer := func(data []byte) {
+		w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, offBufferVA))
+		for i, b := range data {
+			w(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, uint32(b)))
+			w(ie64Instr(OP_STORE, 5, IE64_SIZE_B, 0, 4, 0, uint32(i)))
+		}
+	}
+
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+
+	findLoop := off
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, 16))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFindPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	beqInstr := off
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	braFind := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(findLoop)-int32(braFind))))
+	foundDos := off
+	copy(image[beqInstr:], ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, uint32(int32(foundDos)-int32(beqInstr))))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offDosPort))
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offReplyPrt))
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0x10001))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offBufferVA))
+	w(ie64Instr(OP_STORE, 3, IE64_SIZE_Q, 1, 29, 0, offShareHdl))
+
+	for i, step := range steps {
+		// Zero-fill the first 64 bytes of the share buffer between steps so
+		// stale rows from a prior op don't pollute the next op's input.
+		w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, offBufferVA))
+		for k := 0; k < 64; k++ {
+			w(ie64Instr(OP_STORE, 0, IE64_SIZE_B, 0, 4, 0, uint32(k)))
+		}
+		if len(step.input) > 0 {
+			writeBytesAtBuffer(step.input)
+		}
+		// M15.3: sentinel op selectors route to non-ASSIGN DOS opcodes so
+		// integration tests can chain ASSIGN_ADD → DOS_LOADSEG in the same
+		// client (verifies the LOADSEG overlay-retry path end-to-end).
+		msgType := uint32(dosAssign)
+		data0 := step.op
+		if step.op == dosAssignOpSendLoadSeg {
+			msgType = dosLoadSeg
+			data0 = 0
+		}
+		w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+		w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, msgType))
+		w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, data0))
+		w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+		w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+		w(ie64Instr(OP_LOAD, 6, IE64_SIZE_L, 0, 29, 0, offShareHdl))
+		w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+		w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+		w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+		w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+		w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+		w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, uint32(offReplies+16*i)))
+		w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, uint32(offReplies+16*i+8)))
+	}
+
+	loopHere := off
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	braLoop := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(loopHere)-int32(braLoop))))
+
+	clientSize := off - shellCode
+	if clientSize > 16384 {
+		t.Fatalf("patchHostShellELFWithDOSAssignSequenceClient: client too large: %d > 16384", clientSize)
+	}
+}
+
+func runDOSAssignSequenceClient(t *testing.T, steps []dosAssignStep) (*ie64TestRig, uint32) {
+	t.Helper()
+	rig, _ := bootRigWithPatchedHostShellELF(t, func(image []byte) {
+		patchHostShellELFWithDOSAssignSequenceClient(t, image, steps)
+	})
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+	return rig, findShellTaskDataBase(t, rig.cpu.memory)
+}
+
+// stepReply returns reply.type and reply.data0 for sequence step i.
+func stepReply(mem []byte, dataBase uint32, i int) (uint64, uint64) {
+	rt := binary.LittleEndian.Uint64(mem[dataBase+160+uint32(16*i):])
+	rd := binary.LittleEndian.Uint64(mem[dataBase+168+uint32(16*i):])
+	return rt, rd
+}
+
+// decodeLayeredQueryTargets parses count NUL-terminated targets from a buffer
+// of (count*dosAssignLayeredTgtSz) bytes.
+func decodeLayeredQueryTargets(buf []byte, count int) []string {
+	out := make([]string, count)
+	for i := 0; i < count; i++ {
+		slot := buf[i*int(dosAssignLayeredTgtSz) : (i+1)*int(dosAssignLayeredTgtSz)]
+		end := bytes.IndexByte(slot, 0)
+		if end < 0 {
+			end = len(slot)
+		}
+		out[i] = string(slot[:end])
+	}
+	return out
+}
+
+func TestIExec_M153_Phase1_LayeredAssignDefaultBaseLists(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		assign   string
+		wantTgts []string
+	}{
+		{name: "C", assign: "C", wantTgts: []string{"C/", "IOSSYS/C/"}},
+		{name: "S", assign: "S", wantTgts: []string{"S/", "IOSSYS/S/"}},
+		{name: "L", assign: "L", wantTgts: []string{"L/", "IOSSYS/L/"}},
+		{name: "LIBS", assign: "LIBS", wantTgts: []string{"LIBS/", "IOSSYS/LIBS/"}},
+		{name: "DEVS", assign: "DEVS", wantTgts: []string{"DEVS/", "IOSSYS/DEVS/"}},
+		{name: "RESOURCES", assign: "RESOURCES", wantTgts: []string{"RESOURCES/", "IOSSYS/RESOURCES/"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig, dataBase := runDOSAssignSequenceClient(t, []dosAssignStep{
+				{op: dosAssignOpLayeredQuery, input: append([]byte(tc.assign), 0)},
+			})
+			mem := rig.cpu.memory
+			rt, rd := stepReply(mem, dataBase, 0)
+			if rt != dosOK {
+				t.Fatalf("M153_Phase1_LayeredAssignDefaultBaseLists: %s reply.type=%d, want %d", tc.assign, rt, dosOK)
+			}
+			if rd != uint64(len(tc.wantTgts)) {
+				t.Fatalf("M153_Phase1_LayeredAssignDefaultBaseLists: %s count=%d, want %d", tc.assign, rd, len(tc.wantTgts))
+			}
+			buf := shellTaskSharedBuffer(t, mem, dataBase, uint32(rd)*dosAssignLayeredTgtSz)
+			got := decodeLayeredQueryTargets(buf, int(rd))
+			for i, want := range tc.wantTgts {
+				if got[i] != want {
+					t.Fatalf("M153_Phase1_LayeredAssignDefaultBaseLists: %s effective[%d]=%q, want %q (full=%v)", tc.assign, i, got[i], want, got)
+				}
+			}
+		})
+	}
+}
+
+func TestIExec_M153_Phase1_LayeredAssignAddPrependsOverlay(t *testing.T) {
+	rig, dataBase := runDOSAssignSequenceClient(t, []dosAssignStep{
+		{op: dosAssignOpAdd, input: encodeDOSAssignRow(t, "C", "T/")},
+		{op: dosAssignOpLayeredQuery, input: append([]byte("C"), 0)},
+	})
+	mem := rig.cpu.memory
+	if rt, _ := stepReply(mem, dataBase, 0); rt != dosOK {
+		t.Fatalf("M153_Phase1_LayeredAssignAddPrependsOverlay: ADD reply=%d, want %d", rt, dosOK)
+	}
+	rt, rd := stepReply(mem, dataBase, 1)
+	if rt != dosOK {
+		t.Fatalf("M153_Phase1_LayeredAssignAddPrependsOverlay: LAYERED_QUERY reply=%d, want %d", rt, dosOK)
+	}
+	if rd != 3 {
+		t.Fatalf("M153_Phase1_LayeredAssignAddPrependsOverlay: count=%d, want 3", rd)
+	}
+	buf := shellTaskSharedBuffer(t, mem, dataBase, uint32(rd)*dosAssignLayeredTgtSz)
+	got := decodeLayeredQueryTargets(buf, int(rd))
+	want := []string{"T/", "C/", "IOSSYS/C/"}
+	for i, w := range want {
+		if got[i] != w {
+			t.Fatalf("M153_Phase1_LayeredAssignAddPrependsOverlay: effective[%d]=%q, want %q full=%v", i, got[i], w, got)
+		}
+	}
+}
+
+func TestIExec_M153_Phase1_LayeredAssignRemoveRestoresBaseList(t *testing.T) {
+	rig, dataBase := runDOSAssignSequenceClient(t, []dosAssignStep{
+		{op: dosAssignOpAdd, input: encodeDOSAssignRow(t, "C", "T/")},
+		{op: dosAssignOpRemove, input: encodeDOSAssignRow(t, "C", "T/")},
+		{op: dosAssignOpLayeredQuery, input: append([]byte("C"), 0)},
+	})
+	mem := rig.cpu.memory
+	for i := 0; i < 2; i++ {
+		if rt, _ := stepReply(mem, dataBase, i); rt != dosOK {
+			t.Fatalf("M153_Phase1_LayeredAssignRemoveRestoresBaseList: step[%d] reply=%d, want %d", i, rt, dosOK)
+		}
+	}
+	rt, rd := stepReply(mem, dataBase, 2)
+	if rt != dosOK {
+		t.Fatalf("M153_Phase1_LayeredAssignRemoveRestoresBaseList: LAYERED_QUERY reply=%d, want %d", rt, dosOK)
+	}
+	if rd != 2 {
+		t.Fatalf("M153_Phase1_LayeredAssignRemoveRestoresBaseList: count=%d, want 2 (base list only)", rd)
+	}
+	buf := shellTaskSharedBuffer(t, mem, dataBase, uint32(rd)*dosAssignLayeredTgtSz)
+	got := decodeLayeredQueryTargets(buf, int(rd))
+	want := []string{"C/", "IOSSYS/C/"}
+	for i, w := range want {
+		if got[i] != w {
+			t.Fatalf("M153_Phase1_LayeredAssignRemoveRestoresBaseList: effective[%d]=%q, want %q", i, got[i], w)
+		}
+	}
+}
+
+func TestIExec_M153_Phase1_LayeredAssignAddRejectsNonLayered(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+	}{
+		{name: "T"}, {name: "RAM"}, {name: "SYS"}, {name: "IOSSYS"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig, dataBase := runDOSAssignSequenceClient(t, []dosAssignStep{
+				{op: dosAssignOpAdd, input: encodeDOSAssignRow(t, tc.name, "T/")},
+			})
+			rt, _ := stepReply(rig.cpu.memory, dataBase, 0)
+			if rt != dosErrBadArg {
+				t.Fatalf("M153_Phase1_LayeredAssignAddRejectsNonLayered: %s reply=%d, want %d", tc.name, rt, dosErrBadArg)
+			}
+		})
+	}
+}
+
+func TestIExec_M153_Phase1_LayeredAssignRemoveRejectsNonLayered(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+	}{
+		{name: "T"}, {name: "RAM"}, {name: "SYS"}, {name: "IOSSYS"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig, dataBase := runDOSAssignSequenceClient(t, []dosAssignStep{
+				{op: dosAssignOpRemove, input: encodeDOSAssignRow(t, tc.name, "T/")},
+			})
+			rt, _ := stepReply(rig.cpu.memory, dataBase, 0)
+			if rt != dosErrBadArg {
+				t.Fatalf("M153_Phase1_LayeredAssignRemoveRejectsNonLayered: %s reply=%d, want %d", tc.name, rt, dosErrBadArg)
+			}
+		})
+	}
+}
+
+func TestIExec_M153_Phase1_OldQueryProjectsFirstEffectiveTargetAfterAdd(t *testing.T) {
+	// After ADD C: T/, the old QUERY for C: should return "T/" (first effective).
+	rig, dataBase := runDOSAssignSequenceClient(t, []dosAssignStep{
+		{op: dosAssignOpAdd, input: encodeDOSAssignRow(t, "C", "T/")},
+		{op: dosAssignOpQuery, input: append([]byte("C"), 0)},
+	})
+	mem := rig.cpu.memory
+	if rt, _ := stepReply(mem, dataBase, 1); rt != dosOK {
+		t.Fatalf("M153_Phase1_OldQueryProjectsFirstEffectiveTargetAfterAdd: reply=%d", rt)
+	}
+	_, target := decodeDOSAssignRow(shellTaskSharedBuffer(t, mem, dataBase, dosAssignRowSz))
+	if target != "T/" {
+		t.Fatalf("M153_Phase1_OldQueryProjectsFirstEffectiveTargetAfterAdd: target=%q, want T/", target)
+	}
+}
+
+func TestIExec_M153_Phase1_OldQueryFallsBackToBaseAfterRemove(t *testing.T) {
+	// After ADD C: T/ then REMOVE C: T/, the old QUERY for C: should return
+	// "C/" (the base list first entry, projected through the public table view).
+	rig, dataBase := runDOSAssignSequenceClient(t, []dosAssignStep{
+		{op: dosAssignOpAdd, input: encodeDOSAssignRow(t, "C", "T/")},
+		{op: dosAssignOpRemove, input: encodeDOSAssignRow(t, "C", "T/")},
+		{op: dosAssignOpQuery, input: append([]byte("C"), 0)},
+	})
+	mem := rig.cpu.memory
+	if rt, _ := stepReply(mem, dataBase, 2); rt != dosOK {
+		t.Fatalf("M153_Phase1_OldQueryFallsBackToBaseAfterRemove: reply=%d", rt)
+	}
+	_, target := decodeDOSAssignRow(shellTaskSharedBuffer(t, mem, dataBase, dosAssignRowSz))
+	if target != "C/" {
+		t.Fatalf("M153_Phase1_OldQueryFallsBackToBaseAfterRemove: target=%q, want C/ (base list projection)", target)
+	}
+}
+
+func TestIExec_M153_Phase1_OldListProjectsFirstEffectiveTarget(t *testing.T) {
+	// After ADD C: T/, the old LIST for C: should show "C" → "T/" while all
+	// other defaults remain at their canonical first-effective targets.
+	rig, dataBase := runDOSAssignSequenceClient(t, []dosAssignStep{
+		{op: dosAssignOpAdd, input: encodeDOSAssignRow(t, "C", "T/")},
+		{op: dosAssignOpList},
+	})
+	mem := rig.cpu.memory
+	rt, rd := stepReply(mem, dataBase, 1)
+	if rt != dosOK {
+		t.Fatalf("M153_Phase1_OldListProjectsFirstEffectiveTarget: LIST reply=%d", rt)
+	}
+	if rd != 8 {
+		t.Fatalf("M153_Phase1_OldListProjectsFirstEffectiveTarget: row count=%d, want 8", rd)
+	}
+	rows := parseDOSAssignRows(t, shellTaskSharedBuffer(t, mem, dataBase, uint32(rd)*dosAssignRowSz), 0, rd)
+	if rows["C"] != "T/" {
+		t.Fatalf("M153_Phase1_OldListProjectsFirstEffectiveTarget: rows[C]=%q, want T/ rows=%v", rows["C"], rows)
+	}
+	for _, want := range map[string]string{
+		"L":         "L/",
+		"LIBS":      "LIBS/",
+		"DEVS":      "DEVS/",
+		"S":         "S/",
+		"RESOURCES": "RESOURCES/",
+		"T":         "T/",
+		"RAM":       "",
+	} {
+		_ = want
+	}
+	for n, w := range map[string]string{
+		"L": "L/", "LIBS": "LIBS/", "DEVS": "DEVS/",
+		"S": "S/", "RESOURCES": "RESOURCES/", "T": "T/", "RAM": "",
+	} {
+		if rows[n] != w {
+			t.Fatalf("M153_Phase1_OldListProjectsFirstEffectiveTarget: rows[%s]=%q, want %q rows=%v", n, rows[n], w, rows)
+		}
+	}
+}
+
+// TestIExec_M153_Phase1_LayeredQueryDedupsOverlayVsBase verifies that when
+// an overlay target collides with a canonical base target (e.g. the user
+// `ASSIGN ADD C: C:` which normalises to "C/"), the LAYERED_QUERY reply
+// does not count or emit the duplicate twice.
+func TestIExec_M153_Phase1_LayeredQueryDedupsOverlayVsBase(t *testing.T) {
+	rig, dataBase := runDOSAssignSequenceClient(t, []dosAssignStep{
+		{op: dosAssignOpAdd, input: encodeDOSAssignRow(t, "C", "C/")},
+		{op: dosAssignOpLayeredQuery, input: append([]byte("C"), 0)},
+	})
+	mem := rig.cpu.memory
+	if rt, _ := stepReply(mem, dataBase, 0); rt != dosOK {
+		t.Fatalf("M153_Phase1_LayeredQueryDedupsOverlayVsBase: ADD reply=%d, want %d", rt, dosOK)
+	}
+	rt, rd := stepReply(mem, dataBase, 1)
+	if rt != dosOK {
+		t.Fatalf("M153_Phase1_LayeredQueryDedupsOverlayVsBase: LAYERED_QUERY reply=%d, want %d", rt, dosOK)
+	}
+	if rd != 2 {
+		t.Fatalf("M153_Phase1_LayeredQueryDedupsOverlayVsBase: count=%d, want 2 (overlay C/ must dedup against base[0] C/)", rd)
+	}
+	buf := shellTaskSharedBuffer(t, mem, dataBase, uint32(rd)*dosAssignLayeredTgtSz)
+	got := decodeLayeredQueryTargets(buf, int(rd))
+	want := []string{"C/", "IOSSYS/C/"}
+	for i, w := range want {
+		if got[i] != w {
+			t.Fatalf("M153_Phase1_LayeredQueryDedupsOverlayVsBase: target[%d]=%q, want %q (full=%v)", i, got[i], w, got)
+		}
+	}
+}
+
+func TestIExec_M153_Phase1_DuplicateAddIsNoOp(t *testing.T) {
+	rig, dataBase := runDOSAssignSequenceClient(t, []dosAssignStep{
+		{op: dosAssignOpAdd, input: encodeDOSAssignRow(t, "C", "T/")},
+		{op: dosAssignOpAdd, input: encodeDOSAssignRow(t, "C", "T/")},
+		{op: dosAssignOpLayeredQuery, input: append([]byte("C"), 0)},
+	})
+	mem := rig.cpu.memory
+	for i := 0; i < 2; i++ {
+		if rt, _ := stepReply(mem, dataBase, i); rt != dosOK {
+			t.Fatalf("M153_Phase1_DuplicateAddIsNoOp: ADD step[%d] reply=%d, want %d (duplicate must succeed as no-op)", i, rt, dosOK)
+		}
+	}
+	rt, rd := stepReply(mem, dataBase, 2)
+	if rt != dosOK || rd != 3 {
+		t.Fatalf("M153_Phase1_DuplicateAddIsNoOp: LAYERED_QUERY reply=%d count=%d, want type=0 count=3", rt, rd)
+	}
+}
+
+func TestIExec_M153_Phase1_LayeredQueryRejectsNonLayered(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+	}{
+		{name: "T"}, {name: "RAM"}, {name: "SYS"}, {name: "IOSSYS"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Single-target / built-in roots are allowed for LAYERED_QUERY but
+			// produce a single-entry effective list using the existing flat
+			// projection. Verify count=1.
+			rig, dataBase := runDOSAssignSequenceClient(t, []dosAssignStep{
+				{op: dosAssignOpLayeredQuery, input: append([]byte(tc.name), 0)},
+			})
+			rt, rd := stepReply(rig.cpu.memory, dataBase, 0)
+			if rt != dosOK {
+				t.Fatalf("M153_Phase1_LayeredQueryRejectsNonLayered: %s reply=%d, want %d", tc.name, rt, dosOK)
+			}
+			if rd != 1 {
+				t.Fatalf("M153_Phase1_LayeredQueryRejectsNonLayered: %s count=%d, want 1 (single-target projection)", tc.name, rd)
+			}
+		})
+	}
+}
+
+func TestIExec_M153_Phase1_SetOnCanonicalReplacesOverlay(t *testing.T) {
+	// SET semantics on canonical layered assigns: overwrite the overlay list
+	// with [TARGET], keep base list intact.
+	rig, dataBase := runDOSAssignSequenceClient(t, []dosAssignStep{
+		{op: dosAssignOpAdd, input: encodeDOSAssignRow(t, "C", "T/")},
+		{op: dosAssignOpSet, input: encodeDOSAssignRow(t, "C", "L/")},
+		{op: dosAssignOpLayeredQuery, input: append([]byte("C"), 0)},
+	})
+	mem := rig.cpu.memory
+	for i := 0; i < 2; i++ {
+		if rt, _ := stepReply(mem, dataBase, i); rt != dosOK {
+			t.Fatalf("M153_Phase1_SetOnCanonicalReplacesOverlay: step[%d] reply=%d", i, rt)
+		}
+	}
+	rt, rd := stepReply(mem, dataBase, 2)
+	if rt != dosOK {
+		t.Fatalf("M153_Phase1_SetOnCanonicalReplacesOverlay: LAYERED_QUERY reply=%d", rt)
+	}
+	if rd != 3 {
+		t.Fatalf("M153_Phase1_SetOnCanonicalReplacesOverlay: count=%d, want 3", rd)
+	}
+	buf := shellTaskSharedBuffer(t, mem, dataBase, uint32(rd)*dosAssignLayeredTgtSz)
+	got := decodeLayeredQueryTargets(buf, int(rd))
+	want := []string{"L/", "C/", "IOSSYS/C/"}
+	for i, w := range want {
+		if got[i] != w {
+			t.Fatalf("M153_Phase1_SetOnCanonicalReplacesOverlay: effective[%d]=%q want %q full=%v", i, got[i], w, got)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// M15.3 Phase 4 / 5 / Shell: layered read fallthrough, ASSIGN ADD/REMOVE
+// command syntax, writable SYS: overlay write policy.
+// ---------------------------------------------------------------------------
+
+// TestIExec_M153_Phase4_ShellBareCommandRunsAcrossLayeredC locks the
+// plan's "shell bare-volume selection continues to work over the merged
+// effective view" rule. A bare command name (`VERSION`) must still be
+// found through the layered `C:` (writable SYS overlay → read-only
+// IOSSYS) even when the writable overlay directory exists but is empty.
+func TestIExec_M153_Phase4_ShellBareCommandRunsAcrossLayeredC(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot, "\nVERSION\n", 8*time.Second)
+	if !strings.Contains(output, "IntuitionOS 0.17") {
+		t.Fatalf("M153_Phase4_ShellBareCommandRunsAcrossLayeredC: VERSION did not run output=%q", output[:min(len(output), 600)])
+	}
+}
+
+// TestIExec_M153_Phase4_WhichResolvesAcrossLayeredC verifies that the
+// WHICH command (which internally issues DOS_OPEN(read) against the
+// supplied name) resolves successfully through the layered `C:` list.
+// VERSION only lives in the read-only IOSSYS overlay, so WHICH must
+// transparently follow the SYS→IOSSYS fallthrough to report success.
+func TestIExec_M153_Phase4_WhichResolvesAcrossLayeredC(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot, "\nWHICH VERSION\n", 8*time.Second)
+	if strings.Contains(output, "not found") {
+		t.Fatalf("M153_Phase4_WhichResolvesAcrossLayeredC: WHICH failed to resolve VERSION through layered C: output=%q", output[:min(len(output), 600)])
+	}
+	if !strings.Contains(output, "C:VERSION") {
+		t.Fatalf("M153_Phase4_WhichResolvesAcrossLayeredC: WHICH did not emit C:VERSION header output=%q", output[:min(len(output), 600)])
+	}
+}
+
+// TestIExec_M153_Phase4_DirMergesWritableAndReadOnlyLayers verifies that
+// DOS_DIR visits the writable SYS: overlay directories as well as the
+// IOSSYS: read-only ones. After seeding hostRoot/C/Phase4OverlayBin, the
+// no-arg DIR listing must show that file alongside the embedded IOSSYS
+// entries.
+func TestIExec_M153_Phase4_DirMergesWritableAndReadOnlyLayers(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	if err := os.WriteFile(filepath.Join(hostRoot, "C", "Phase4OverlayBin"), []byte{0x7F, 'E', 'L', 'F'}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot, "\nDIR\n", 8*time.Second)
+	if !strings.Contains(output, "Phase4OverlayBin") {
+		t.Fatalf("M153_Phase4_DirMergesWritableAndReadOnlyLayers: writable overlay entry missing from DIR output=%q", output[:min(len(output), 1200)])
+	}
+}
+
+// TestIExec_M153_Phase4_LayeredReadFallsBackFromSYSToIOSSYS exercises the
+// `dos_hostfs_layered_relpath_for_resolved_name` path: when no file exists
+// in the writable SYS: overlay (hostRoot/C/...), DOS_OPEN must transparently
+// pick up the read-only IOSSYS:C/... copy.
+func TestIExec_M153_Phase4_LayeredReadFallsBackFromSYSToIOSSYS(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	// VERSION lives only in IOSSYS/C/Version (default tree). With the M15.3
+	// layered relpath helper the resolver should still find it via the
+	// read-only fallback after probing hostRoot/C/Version.
+	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot, "\nVERSION\n", 8*time.Second)
+	if !strings.Contains(output, "IntuitionOS 0.17") {
+		t.Fatalf("M153_Phase4_LayeredReadFallsBackFromSYSToIOSSYS: VERSION did not run via IOSSYS fallback output=%q", output[:min(len(output), 600)])
+	}
+}
+
+// TestIExec_M153_Phase4_LayeredReadPrefersWritableSYSOverlay verifies the
+// other half of the fallthrough: when a file exists in BOTH the writable
+// SYS:C overlay and the read-only IOSSYS:C path, reads take the writable
+// copy. We seed a custom Version stub at hostRoot/C/Version and confirm
+// its banner shows up instead of the default IOSSYS one.
+func TestIExec_M153_Phase4_LayeredReadPrefersWritableSYSOverlay(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	// Place a stub ELF (just the existing seed, easiest valid ELF) at
+	// hostRoot/C/Version. The DOS resolver must still load + execute it.
+	stubBytes := mustReadRepoBytes(t, "sdk/intuitionos/iexec/seed_version.elf")
+	if err := os.MkdirAll(filepath.Join(hostRoot, "C"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hostRoot, "C", "Version"), stubBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot, "\nVERSION\n", 8*time.Second)
+	if !strings.Contains(output, "IntuitionOS 0.17") {
+		t.Fatalf("M153_Phase4_LayeredReadPrefersWritableSYSOverlay: VERSION via writable overlay produced no banner output=%q", output[:min(len(output), 600)])
+	}
+}
+
+// TestIExec_M153_Phase5_RelPathIsIOSSYSGate exercises the host-side path
+// gate that backs the "writes fail when only read-only IOSSYS: is
+// available" rule. The CREATE_WRITE host op rejects any path whose first
+// component is "IOSSYS" (case-insensitive), independent of host fs ACLs.
+func TestIExec_M153_Phase5_RelPathIsIOSSYSGate(t *testing.T) {
+	for _, rel := range []string{
+		"IOSSYS",
+		"IOSSYS/foo",
+		"iossys/foo/bar",
+		"IoSsYs/Whatever",
+		"./IOSSYS/Foo",
+	} {
+		if !relPathIsIOSSYS(rel) {
+			t.Fatalf("M153_Phase5_RelPathIsIOSSYSGate: expected IOSSYS gate to fire for %q", rel)
+		}
+	}
+	for _, rel := range []string{
+		"C/foo",
+		"S/foo",
+		"foo",
+		"IOSSYSPLUS/foo", // partial-prefix shouldn't gate
+		"foo/IOSSYS/bar", // IOSSYS deeper in the path is fine
+	} {
+		if relPathIsIOSSYS(rel) {
+			t.Fatalf("M153_Phase5_RelPathIsIOSSYSGate: writable path %q must not match IOSSYS gate", rel)
+		}
+	}
+}
+
+// TestIExec_M153_Phase5_HostfsCreateWriteRoundTrip exercises the new
+// CREATE_WRITE/WRITE host ops on a writable, non-IOSSYS path through the
+// device's MMIO interface so we know the bytes actually round-trip through
+// the host filesystem.
+func TestIExec_M153_Phase5_HostfsCreateWriteRoundTrip(t *testing.T) {
+	hostRoot := t.TempDir()
+	bus := NewMachineBus()
+	dev := NewBootstrapHostFSDevice(bus, hostRoot)
+	bus.MapIO(BOOT_HOSTFS_BASE, BOOT_HOSTFS_END, dev.HandleRead, dev.HandleWrite)
+	mem := bus.GetMemory()
+	const pathPtr = uint32(0x20000)
+	copy(mem[pathPtr:], []byte("C/Phase5RoundTrip\x00"))
+	bus.Write32(BOOT_HOSTFS_ARG1, pathPtr)
+	bus.Write32(BOOT_HOSTFS_CMD, BOOT_HOSTFS_CREATE_WRITE)
+	if dev.err != 0 {
+		t.Fatalf("M153_Phase5_HostfsCreateWriteRoundTrip: CREATE_WRITE err=%d", dev.err)
+	}
+	handle := dev.res1
+	if handle == 0 {
+		t.Fatalf("M153_Phase5_HostfsCreateWriteRoundTrip: CREATE_WRITE returned handle=0")
+	}
+	const dataPtr = uint32(0x21000)
+	const payload = "phase5-host-bytes"
+	copy(mem[dataPtr:], []byte(payload))
+	bus.Write32(BOOT_HOSTFS_ARG1, handle)
+	bus.Write32(BOOT_HOSTFS_ARG2, dataPtr)
+	bus.Write32(BOOT_HOSTFS_ARG3, uint32(len(payload)))
+	bus.Write32(BOOT_HOSTFS_CMD, BOOT_HOSTFS_WRITE)
+	if dev.err != 0 {
+		t.Fatalf("M153_Phase5_HostfsCreateWriteRoundTrip: WRITE err=%d", dev.err)
+	}
+	if dev.res1 != uint32(len(payload)) {
+		t.Fatalf("M153_Phase5_HostfsCreateWriteRoundTrip: WRITE wrote %d, want %d", dev.res1, len(payload))
+	}
+	bus.Write32(BOOT_HOSTFS_ARG1, handle)
+	bus.Write32(BOOT_HOSTFS_CMD, BOOT_HOSTFS_CLOSE)
+	if dev.err != 0 {
+		t.Fatalf("M153_Phase5_HostfsCreateWriteRoundTrip: CLOSE err=%d", dev.err)
+	}
+	got, err := os.ReadFile(filepath.Join(hostRoot, "C", "Phase5RoundTrip"))
+	if err != nil {
+		t.Fatalf("M153_Phase5_HostfsCreateWriteRoundTrip: read back: %v", err)
+	}
+	if string(got) != payload {
+		t.Fatalf("M153_Phase5_HostfsCreateWriteRoundTrip: file=%q, want %q", string(got), payload)
+	}
+}
+
+// TestIExec_M153_Phase5_HostfsCreateWriteSingleComponent isolates the
+// single-segment leaf path through the host device. No slashes at all —
+// CREATE_WRITE should still land the file at hostRoot/Name.
+func TestIExec_M153_Phase5_HostfsCreateWriteSingleComponent(t *testing.T) {
+	hostRoot := t.TempDir()
+	bus := NewMachineBus()
+	dev := NewBootstrapHostFSDevice(bus, hostRoot)
+	bus.MapIO(BOOT_HOSTFS_BASE, BOOT_HOSTFS_END, dev.HandleRead, dev.HandleWrite)
+	mem := bus.GetMemory()
+	const pathPtr = uint32(0x20000)
+	copy(mem[pathPtr:], []byte("Phase5SingleLeaf\x00"))
+	bus.Write32(BOOT_HOSTFS_ARG1, pathPtr)
+	bus.Write32(BOOT_HOSTFS_CMD, BOOT_HOSTFS_CREATE_WRITE)
+	if dev.err != 0 {
+		t.Fatalf("M153_Phase5_HostfsCreateWriteSingleComponent: CREATE_WRITE err=%d", dev.err)
+	}
+	handle := dev.res1
+	if handle == 0 {
+		t.Fatalf("M153_Phase5_HostfsCreateWriteSingleComponent: handle=0")
+	}
+	const dataPtr = uint32(0x21000)
+	const payload = "phase5-single-leaf"
+	copy(mem[dataPtr:], []byte(payload))
+	bus.Write32(BOOT_HOSTFS_ARG1, handle)
+	bus.Write32(BOOT_HOSTFS_ARG2, dataPtr)
+	bus.Write32(BOOT_HOSTFS_ARG3, uint32(len(payload)))
+	bus.Write32(BOOT_HOSTFS_CMD, BOOT_HOSTFS_WRITE)
+	if dev.err != 0 {
+		t.Fatalf("M153_Phase5_HostfsCreateWriteSingleComponent: WRITE err=%d", dev.err)
+	}
+	bus.Write32(BOOT_HOSTFS_ARG1, handle)
+	bus.Write32(BOOT_HOSTFS_CMD, BOOT_HOSTFS_CLOSE)
+	got, err := os.ReadFile(filepath.Join(hostRoot, "Phase5SingleLeaf"))
+	if err != nil {
+		t.Fatalf("M153_Phase5_HostfsCreateWriteSingleComponent: read back: %v", err)
+	}
+	if string(got) != payload {
+		t.Fatalf("M153_Phase5_HostfsCreateWriteSingleComponent: file=%q, want %q", string(got), payload)
+	}
+}
+
+// TestIExec_M153_Phase5_HostfsCreateWriteRejectsDotDotEscape locks the
+// path-escape security fix: the writable hostfs path must reject any
+// relative path containing ".." segments, even if it would otherwise be
+// a valid (non-IOSSYS) location. Without this guard a guest could walk
+// out of the sandboxed hostRoot via the parent-dir auto-create loop.
+func TestIExec_M153_Phase5_HostfsCreateWriteRejectsDotDotEscape(t *testing.T) {
+	for _, rel := range []string{
+		"../escape",
+		"C/../../escape",
+		"a/b/../../../escape",
+		"./../escape",
+		"..",
+	} {
+		t.Run(rel, func(t *testing.T) {
+			hostRoot := t.TempDir()
+			bus := NewMachineBus()
+			dev := NewBootstrapHostFSDevice(bus, hostRoot)
+			bus.MapIO(BOOT_HOSTFS_BASE, BOOT_HOSTFS_END, dev.HandleRead, dev.HandleWrite)
+			mem := bus.GetMemory()
+			const pathPtr = uint32(0x20000)
+			copy(mem[pathPtr:], append([]byte(rel), 0))
+			bus.Write32(BOOT_HOSTFS_ARG1, pathPtr)
+			bus.Write32(BOOT_HOSTFS_CMD, BOOT_HOSTFS_CREATE_WRITE)
+			if dev.err == 0 {
+				t.Fatalf("M153_Phase5_HostfsCreateWriteRejectsDotDotEscape: path-escape %q unexpectedly accepted (handle=%d)", rel, dev.res1)
+			}
+			// Verify nothing landed on the host.
+			parent := filepath.Dir(hostRoot)
+			if _, statErr := os.Stat(filepath.Join(parent, "escape")); statErr == nil {
+				t.Fatalf("M153_Phase5_HostfsCreateWriteRejectsDotDotEscape: file created outside hostRoot via %q", rel)
+			}
+		})
+	}
+}
+
+// TestIExec_M153_Phase5_HostfsCreateWriteRejectsLeafSymlinkEscape locks
+// down the leaf-symlink sandbox escape: if a pre-existing symlink in the
+// writable SYS overlay (plantable by any host-side tool that touches the
+// shipped tree) targets a path outside hostRoot, BOOT_HOSTFS_CREATE_WRITE
+// must reject the write rather than follow the symlink with
+// O_CREATE|O_TRUNC and overwrite arbitrary host files. Regression for the
+// `resolvePathSegmentCI` errCode 5 vs 4 conflation.
+func TestIExec_M153_Phase5_HostfsCreateWriteRejectsLeafSymlinkEscape(t *testing.T) {
+	hostRoot := t.TempDir()
+	outsideDir := t.TempDir()
+	outsideFile := filepath.Join(outsideDir, "captured")
+	if err := os.WriteFile(outsideFile, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Plant a symlink inside hostRoot that targets outside.
+	if err := os.Symlink(outsideFile, filepath.Join(hostRoot, "Sneaky")); err != nil {
+		t.Fatal(err)
+	}
+
+	bus := NewMachineBus()
+	dev := NewBootstrapHostFSDevice(bus, hostRoot)
+	bus.MapIO(BOOT_HOSTFS_BASE, BOOT_HOSTFS_END, dev.HandleRead, dev.HandleWrite)
+	mem := bus.GetMemory()
+	const pathPtr = uint32(0x20000)
+	copy(mem[pathPtr:], []byte("Sneaky\x00"))
+	bus.Write32(BOOT_HOSTFS_ARG1, pathPtr)
+	bus.Write32(BOOT_HOSTFS_CMD, BOOT_HOSTFS_CREATE_WRITE)
+	if dev.err == 0 {
+		t.Fatalf("M153_Phase5_HostfsCreateWriteRejectsLeafSymlinkEscape: write through leaf-symlink unexpectedly accepted (handle=%d)", dev.res1)
+	}
+	got, err := os.ReadFile(outsideFile)
+	if err != nil {
+		t.Fatalf("M153_Phase5_HostfsCreateWriteRejectsLeafSymlinkEscape: outside file gone: %v", err)
+	}
+	if string(got) != "original" {
+		t.Fatalf("M153_Phase5_HostfsCreateWriteRejectsLeafSymlinkEscape: outside file mutated through symlink: got=%q", string(got))
+	}
+}
+
+// TestIExec_M153_Phase5_HostfsCreateWriteRejectsIOSSYS verifies the host
+// device rejects CREATE_WRITE for paths that resolve under IOSSYS/, so the
+// embedded read-only system tree cannot be tampered with from the guest.
+func TestIExec_M153_Phase5_HostfsCreateWriteRejectsIOSSYS(t *testing.T) {
+	hostRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(hostRoot, "IOSSYS"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bus := NewMachineBus()
+	dev := NewBootstrapHostFSDevice(bus, hostRoot)
+	bus.MapIO(BOOT_HOSTFS_BASE, BOOT_HOSTFS_END, dev.HandleRead, dev.HandleWrite)
+	mem := bus.GetMemory()
+	const pathPtr = uint32(0x20000)
+	copy(mem[pathPtr:], []byte("IOSSYS/Forbidden\x00"))
+	bus.Write32(BOOT_HOSTFS_ARG1, pathPtr)
+	bus.Write32(BOOT_HOSTFS_CMD, BOOT_HOSTFS_CREATE_WRITE)
+	if dev.err == 0 {
+		t.Fatalf("M153_Phase5_HostfsCreateWriteRejectsIOSSYS: CREATE_WRITE under IOSSYS unexpectedly succeeded (handle=%d)", dev.res1)
+	}
+	if _, statErr := os.Stat(filepath.Join(hostRoot, "IOSSYS", "Forbidden")); statErr == nil {
+		t.Fatalf("M153_Phase5_HostfsCreateWriteRejectsIOSSYS: rejection still created the file")
+	}
+}
+
+// TestIExec_M153_Shell_AssignAddListsLayeredOverlay exercises the rewritten
+// ASSIGN command's `ASSIGN ADD NAME: TARGET:` syntax end-to-end through the
+// shell. After the ADD, the no-arg `ASSIGN` LIST projection must show the
+// canonical assign's first effective target as the freshly added overlay
+// target (per the M15.3 first-effective projection rule).
+func TestIExec_M153_Shell_AssignAddListsLayeredOverlay(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot, "\nASSIGN ADD C: T:\nASSIGN C:\nVERSION\n", 10*time.Second)
+	if !strings.Contains(output, "C:") {
+		t.Fatalf("M153_Shell_AssignAddListsLayeredOverlay: ASSIGN C: did not print overlay header output=%q", output[:min(len(output), 1200)])
+	}
+	if !strings.Contains(output, "T/") {
+		t.Fatalf("M153_Shell_AssignAddListsLayeredOverlay: overlay target T/ missing from layered output output=%q", output[:min(len(output), 1200)])
+	}
+	if !strings.Contains(output, "IntuitionOS 0.17") {
+		t.Fatalf("M153_Shell_AssignAddListsLayeredOverlay: shell did not recover output=%q", output[:min(len(output), 1200)])
+	}
+}
+
+// TestIExec_M153_Phase1_LoadSegFallsThroughOverlayToBase verifies that
+// DOS_LOADSEG participates in the multi-entry overlay-retry loop: after
+// `ASSIGN ADD C: T:` makes overlay[C][0]="T/", a LOADSEG on the bare name
+// "ElfSeg" must first resolve to "T/ElfSeg" (miss — T/ is empty), then
+// iterate to the canonical base "C/ElfSeg" which the boot-time seeder
+// registered in the metadata chain. Without LOADSEG-side retry the first
+// overlay miss returns NOTFOUND.
+func TestIExec_M153_Phase1_LoadSegFallsThroughOverlayToBase(t *testing.T) {
+	rig, dataBase := runDOSAssignSequenceClient(t, []dosAssignStep{
+		{op: dosAssignOpAdd, input: encodeDOSAssignRow(t, "C", "T/")},
+		{op: dosAssignOpSendLoadSeg, input: append([]byte("ElfSeg"), 0)},
+	})
+	mem := rig.cpu.memory
+	if rt, _ := stepReply(mem, dataBase, 0); rt != dosOK {
+		t.Fatalf("M153_Phase1_LoadSegFallsThroughOverlayToBase: ADD reply=%d, want %d", rt, dosOK)
+	}
+	rt, _ := stepReply(mem, dataBase, 1)
+	if rt != dosOK {
+		t.Fatalf("M153_Phase1_LoadSegFallsThroughOverlayToBase: LOADSEG reply=%d, want %d (overlay[0]=T/ must fall through to base C/ElfSeg)",
+			rt, dosOK)
+	}
+}
+
+// TestIExec_M153_Shell_BareNameAfterVolumeChangeResolvesThroughCwd locks
+// down the screenshot regression where `IOSSYS:` followed by `DIR Tools`
+// fell back to `RAM:` because bare operands never consulted the shell's
+// current volume. After the fix, the shell mirrors its current volume
+// into dos.library via DOS_ASSIGN_SET_CWD and `.dos_resolve_no_slash`
+// prepends that cwd before re-entering the resolver, so `DIR Tools`
+// after `IOSSYS:` lists the `Shell` entry under `IOSSYS:Tools/`.
+func TestIExec_M153_Shell_BareNameAfterVolumeChangeResolvesThroughCwd(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot,
+		"\nIOSSYS:\nDIR Tools\n", 10*time.Second)
+	if strings.Contains(output, "RAM: is empty") {
+		t.Fatalf("M153_Shell_BareNameAfterVolumeChangeResolvesThroughCwd: DIR Tools fell back to RAM after IOSSYS: — cwd not consulted. output=%q",
+			output[:min(len(output), 1400)])
+	}
+	if !strings.Contains(output, "Shell") {
+		t.Fatalf("M153_Shell_BareNameAfterVolumeChangeResolvesThroughCwd: expected `Shell` entry under IOSSYS:Tools/ in output=%q",
+			output[:min(len(output), 1400)])
+	}
+}
+
+// TestIExec_M153_Shell_TypeAfterIOSSYSExpandsMultiComponentOperand
+// exercises cwd expansion on an operand that contains `/` but no `:` —
+// `TYPE Tools/Shell` after `IOSSYS:` must become a TYPE of
+// `IOSSYS:Tools/Shell`, not a stale RAM: resolution.
+func TestIExec_M153_Shell_TypeAfterIOSSYSExpandsMultiComponentOperand(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot,
+		"\nIOSSYS:\nTYPE Tools/Shell\n", 10*time.Second)
+	if strings.Contains(output, "RAM: is empty") {
+		t.Fatalf("M153_Shell_TypeAfterIOSSYSExpandsMultiComponentOperand: TYPE fell back to RAM after IOSSYS: — cwd expansion skipped operand with '/'. output=%q",
+			output[:min(len(output), 1400)])
+	}
+	if strings.Contains(output, "File not found") {
+		t.Fatalf("M153_Shell_TypeAfterIOSSYSExpandsMultiComponentOperand: TYPE reported not-found — cwd not applied. output=%q",
+			output[:min(len(output), 1400)])
+	}
+}
+
+// TestIExec_M153_Shell_VersionAfterSYSStillDispatchesThroughC proves that
+// the shell's cwd rewrite only affects path-taking commands. `VERSION`
+// after `SYS:` must still resolve through `C:` (the command-dispatch
+// contract) and print the version banner rather than attempting to launch
+// `SYS:VERSION`.
+func TestIExec_M153_Shell_VersionAfterSYSStillDispatchesThroughC(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot,
+		"\nSYS:\nVERSION\n", 10*time.Second)
+	if strings.Contains(output, "Unknown command") {
+		t.Fatalf("M153_Shell_VersionAfterSYSStillDispatchesThroughC: VERSION rejected after SYS: — cwd rewrite leaked into command dispatch. output=%q",
+			output[:min(len(output), 1400)])
+	}
+	if !strings.Contains(output, "IntuitionOS") {
+		t.Fatalf("M153_Shell_VersionAfterSYSStillDispatchesThroughC: VERSION did not print banner. output=%q",
+			output[:min(len(output), 1400)])
+	}
+}
+
+// TestIExec_M153_Shell_DOSRunPrefersWritableSYSOverlayOverIOSSYS proves
+// that DOS_RUN (command launch) now routes through the layered hostfs
+// helper and prefers a writable SYS:<slot>/ overlay copy over the
+// read-only IOSSYS:<slot>/ baseline — matching the DOS_OPEN semantics so
+// command shadowing via the writable overlay actually takes effect.
+func TestIExec_M153_Shell_DOSRunPrefersWritableSYSOverlayOverIOSSYS(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	// Shadow the IOSSYS/C/Avail command with a writable SYS/C/Avail copy
+	// of the Version ELF. If DOS_RUN resolves through the writable
+	// overlay first, typing `AVAIL` will execute the Version binary and
+	// print the version banner rather than AVAIL's memory report.
+	copyRepoFileToHostRoot(t, hostRoot, "C/Avail", "sdk/intuitionos/iexec/seed_version.elf")
+	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot,
+		"\nAVAIL\n", 10*time.Second)
+	if !strings.Contains(output, "IntuitionOS") {
+		t.Fatalf("M153_Shell_DOSRunPrefersWritableSYSOverlayOverIOSSYS: AVAIL did not run the shadowing writable SYS:C/Avail copy — DOS_RUN still pinned to IOSSYS. output=%q",
+			output[:min(len(output), 1400)])
+	}
+}
+
+// TestIExec_M153_Exporter_WipesEntireSYSTreeBeforeReexport verifies the
+// reproducibility fix for the writable SYS overlay: M15.3 lets the guest
+// write anywhere under SYS: (e.g. SYS:Phase5Single → SYS/Phase5Single,
+// SYS:Tools/Foo → SYS/Tools/Foo). The exporter must wipe the entire
+// SYS/ tree before re-export so that:
+//
+//   - stale files at the SYS/ root (left over from prior boots) don't
+//     shadow freshly exported IOSSYS content;
+//   - stale subtrees outside the canonical layered overlay set
+//     (SYS/Tools/, SYS/Custom/, …) don't survive a rebuild;
+//   - the canonical empty overlay subdirs (C/, S/, L/, LIBS/, DEVS/,
+//     RESOURCES/) are still present after re-export so the writable
+//     scaffolding stays in place;
+//   - the IOSSYS subtree is freshly populated.
+func TestIExec_M153_Exporter_WipesEntireSYSTreeBeforeReexport(t *testing.T) {
+	repoRoot := repoRootDir(t)
+	exporterSrc := filepath.Join(repoRoot, "tools", "export_intuitionos_system.go")
+	tempRoot := t.TempDir()
+	sysRoot := filepath.Join(tempRoot, "SYS")
+	iossysRoot := filepath.Join(sysRoot, "IOSSYS")
+
+	// Plant stale files in three categories the bug report flagged:
+	// loose file at SYS/ root, stale file under a non-canonical subtree
+	// (SYS/Tools/), and stale file under a canonical overlay subdir
+	// (SYS/C/) that the previous narrow exporter left in place.
+	mustWriteFile := func(relPath, payload string) {
+		full := filepath.Join(sysRoot, relPath)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(payload), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustWriteFile("StaleAtRoot", "stale-1")
+	mustWriteFile("Tools/StaleCustomCmd", "stale-2")
+	mustWriteFile("C/StaleVersionShadow", "stale-3")
+	mustWriteFile("CustomSubtree/Misc", "stale-4")
+
+	cmd := exec.Command("go", "run", exporterSrc,
+		"-repo-root="+repoRoot,
+		"-out-root="+iossysRoot)
+	cmd.Dir = repoRoot
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("M153_Exporter_WipesEntireSYSTreeBeforeReexport: exporter failed: %v\n%s", err, out)
+	}
+
+	// Stale entries must be gone.
+	for _, stale := range []string{
+		"StaleAtRoot",
+		"Tools",
+		"C/StaleVersionShadow",
+		"CustomSubtree",
+	} {
+		if _, err := os.Stat(filepath.Join(sysRoot, stale)); err == nil {
+			t.Fatalf("M153_Exporter_WipesEntireSYSTreeBeforeReexport: stale path %q survived re-export", stale)
+		}
+	}
+
+	// Canonical writable overlay subdirs must still exist (empty).
+	for _, d := range []string{"C", "S", "L", "LIBS", "DEVS", "RESOURCES"} {
+		info, err := os.Stat(filepath.Join(sysRoot, d))
+		if err != nil {
+			t.Fatalf("M153_Exporter_WipesEntireSYSTreeBeforeReexport: missing overlay scaffold %q: %v", d, err)
+		}
+		if !info.IsDir() {
+			t.Fatalf("M153_Exporter_WipesEntireSYSTreeBeforeReexport: %q is not a directory", d)
+		}
+	}
+
+	// IOSSYS canonical exports must be populated.
+	for _, expected := range []string{
+		"Tools/Shell",
+		"LIBS/dos.library",
+		"C/Version",
+		"S/Startup-Sequence",
+	} {
+		info, err := os.Stat(filepath.Join(iossysRoot, expected))
+		if err != nil {
+			t.Fatalf("M153_Exporter_WipesEntireSYSTreeBeforeReexport: missing IOSSYS export %q: %v", expected, err)
+		}
+		if info.Size() == 0 {
+			t.Fatalf("M153_Exporter_WipesEntireSYSTreeBeforeReexport: IOSSYS export %q is empty", expected)
+		}
+	}
+}
+
+// TestIExec_M153_Shell_BareDirAfterSYSVolumeListsSYSRoot locks down the
+// no-argument DIR-after-volume-switch case from the screenshot regression:
+// after `SYS:`, plain `DIR` (no operand) must enumerate hostRoot/SYS/'s
+// full contents (C, DEVS, IOSSYS, L, LIBS, RESOURCES, S) — not fall back
+// to the empty `RAM:` listing and not silently drop any of the seven
+// shipped writable-overlay subdirs.
+func TestIExec_M153_Shell_BareDirAfterSYSVolumeListsSYSRoot(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot,
+		"\nSYS:\nDIR\n", 10*time.Second)
+	if strings.Contains(output, "RAM: is empty") {
+		t.Fatalf("M153_Shell_BareDirAfterSYSVolumeListsSYSRoot: bare DIR after SYS: fell back to RAM. output=%q",
+			output[:min(len(output), 1400)])
+	}
+	// The exporter ships every canonical layered slot's writable overlay
+	// dir plus the IOSSYS read-only subtree; require the entire set so
+	// any future hostfs/dirent filter that drops one is caught.
+	for _, want := range []string{"C", "DEVS", "IOSSYS", "L", "LIBS", "RESOURCES", "S"} {
+		if !regexp.MustCompile(regexp.QuoteMeta(want) + `\s+0000`).MatchString(output) {
+			t.Fatalf("M153_Shell_BareDirAfterSYSVolumeListsSYSRoot: missing %q row in DIR listing of SYS root. output=%q",
+				want, output[:min(len(output), 1400)])
+		}
+	}
+}
+
+// TestIExec_M153_Shell_BareDirAfterIOSSYSVolumeListsIOSSYSRoot is the
+// IOSSYS counterpart — after `IOSSYS:`, bare DIR must list the full
+// read-only subtree (C, DEVS, L, LIBS, RESOURCES, S, Tools), not RAM,
+// with no entry silently dropped.
+func TestIExec_M153_Shell_BareDirAfterIOSSYSVolumeListsIOSSYSRoot(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot,
+		"\nIOSSYS:\nDIR\n", 10*time.Second)
+	if strings.Contains(output, "RAM: is empty") {
+		t.Fatalf("M153_Shell_BareDirAfterIOSSYSVolumeListsIOSSYSRoot: bare DIR after IOSSYS: fell back to RAM. output=%q",
+			output[:min(len(output), 1400)])
+	}
+	for _, want := range []string{"C", "DEVS", "L", "LIBS", "RESOURCES", "S", "Tools"} {
+		if !regexp.MustCompile(regexp.QuoteMeta(want) + `\s+0000`).MatchString(output) {
+			t.Fatalf("M153_Shell_BareDirAfterIOSSYSVolumeListsIOSSYSRoot: missing %q row in DIR listing of IOSSYS root. output=%q",
+				want, output[:min(len(output), 1400)])
+		}
+	}
+}
+
+// TestIExec_M153_Shell_WhichAfterVolumeChangeStillResolvesThroughC locks
+// the WHICH-vs-cwd regression: after `IOSSYS:`, `WHICH Version` must
+// still resolve through C: (the canonical command search path) and not
+// be poisoned by shell cwd prepending the current volume into the
+// operand. WHICH internally builds C:<arg>, so a cwd-prefixed
+// `IOSSYS:Version` would become `C:IOSSYS:Version` and miss every
+// shipped command. WHICH is therefore intentionally NOT in the shell's
+// path-taking-command allowlist.
+func TestIExec_M153_Shell_WhichAfterVolumeChangeStillResolvesThroughC(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot,
+		"\nIOSSYS:\nWHICH Version\n", 10*time.Second)
+	if !strings.Contains(output, "Version") || !strings.Contains(output, "C") {
+		t.Fatalf("M153_Shell_WhichAfterVolumeChangeStillResolvesThroughC: WHICH Version did not resolve through C: after IOSSYS:. output=%q",
+			output[:min(len(output), 1400)])
+	}
+	if strings.Contains(output, "C:IOSSYS:") || strings.Contains(output, "Not found") {
+		t.Fatalf("M153_Shell_WhichAfterVolumeChangeStillResolvesThroughC: cwd leaked into WHICH operand. output=%q",
+			output[:min(len(output), 1400)])
+	}
+}
+
+// TestIExec_M153_Shell_BareNameAfterSYSVolumeResolvesUnderSYSRoot is the
+// SYS: counterpart to the IOSSYS: test. After `SYS:`, `DIR C` must list
+// files under hostRoot/C (the writable overlay), not fall back to RAM:.
+func TestIExec_M153_Shell_BareNameAfterSYSVolumeResolvesUnderSYSRoot(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot,
+		"\nSYS:\nDIR IOSSYS\n", 10*time.Second)
+	if strings.Contains(output, "RAM: is empty") {
+		t.Fatalf("M153_Shell_BareNameAfterSYSVolumeResolvesUnderSYSRoot: DIR IOSSYS fell back to RAM after SYS: — cwd not consulted. output=%q",
+			output[:min(len(output), 1400)])
+	}
+	// After `SYS:`, `DIR IOSSYS` walks hostRoot/SYS/IOSSYS/ → lists C,S,L,...
+	for _, want := range []string{"C", "S", "L", "LIBS"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("M153_Shell_BareNameAfterSYSVolumeResolvesUnderSYSRoot: expected %q in DIR IOSSYS listing output=%q",
+				want, output[:min(len(output), 1400)])
+		}
+	}
+}
+
+// TestIExec_M153_Shell_AssignAddTwoOverlaysFallthroughToBase verifies the
+// plan's "effective list" semantics: when two overlay entries have been
+// prepended (`ASSIGN ADD C: T:`, `ASSIGN ADD C: L:`) and neither target
+// contains the command, DOS_RUN must iterate through overlay[0] (T/),
+// overlay[1] (L/), and then the canonical base (C/, IOSSYS/C/) before
+// giving up. Without multi-entry iteration the shell's VERSION command
+// would return "Unknown command" after the first overlay miss.
+func TestIExec_M153_Shell_AssignAddTwoOverlaysFallthroughToBase(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot,
+		"\nASSIGN ADD C: T:\nASSIGN ADD C: L:\nVERSION\n", 12*time.Second)
+	if strings.Contains(output, "Unknown command") {
+		t.Fatalf("M153_Shell_AssignAddTwoOverlaysFallthroughToBase: VERSION rejected after two overlay ADDs — multi-entry iteration missed the base target output=%q",
+			output[:min(len(output), 1400)])
+	}
+	if !strings.Contains(output, "IntuitionOS 0.17") {
+		t.Fatalf("M153_Shell_AssignAddTwoOverlaysFallthroughToBase: VERSION did not print version output=%q",
+			output[:min(len(output), 1400)])
+	}
+}
+
+// TestIExec_M153_Shell_AssignRemoveRestoresBaseList verifies that
+// `ASSIGN REMOVE NAME: TARGET:` from the shell strips the overlay entry
+// so that the next layered show falls back to the built-in base list.
+func TestIExec_M153_Shell_AssignRemoveRestoresBaseList(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot, "\nASSIGN ADD C: T:\nASSIGN REMOVE C: T:\nASSIGN C:\nVERSION\n", 12*time.Second)
+	if strings.Contains(output, "T/") {
+		// After REMOVE the overlay should be empty; the layered list of C:
+		// must contain the writable + read-only base entries (C/ and
+		// IOSSYS/C/) but not the previously-added T/ overlay target.
+		idx := strings.Index(output, "T/")
+		t.Fatalf("M153_Shell_AssignRemoveRestoresBaseList: T/ still in layered output near %d output=%q", idx, output[:min(len(output), 1200)])
+	}
+	if !strings.Contains(output, "IntuitionOS 0.17") {
+		t.Fatalf("M153_Shell_AssignRemoveRestoresBaseList: shell did not recover output=%q", output[:min(len(output), 1200)])
+	}
+}
+
+// bootRigWithPatchedHostShellELFOnHostRoot is bootRigWithPatchedHostShellELF
+// with a caller-supplied host root, so M15.3 write-through tests can inspect
+// the host filesystem after the guest tears down.
+func bootRigWithPatchedHostShellELFOnHostRoot(t *testing.T, hostRoot string, patch func(image []byte)) (*ie64TestRig, *TerminalMMIO) {
+	t.Helper()
+	image := mustReadRepoBytes(t, "sdk/intuitionos/iexec/boot_shell.elf")
+	patch(image)
+	writeHostRootFileBytes(t, hostRoot, "Tools/Shell", image)
+	return assembleAndLoadKernelWithBootstrapHostRoot(t, hostRoot)
+}
+
+// patchHostShellELFWithDOSWriteHostfsClient generates a shell ELF that
+// performs a single OPEN(write) → WRITE → CLOSE round trip against the
+// supplied DOS path with the supplied payload bytes. The harness yields
+// forever once the round trip completes so the Go test side has time to
+// stop the rig and inspect host state.
+func patchHostShellELFWithDOSWriteHostfsClient(t *testing.T, image []byte, dosPath string, payload string) {
+	t.Helper()
+	if len(dosPath) == 0 || len(dosPath) > 63 {
+		t.Fatalf("patchHostShellELFWithDOSWriteHostfsClient: dosPath length %d out of range", len(dosPath))
+	}
+	if len(payload) == 0 || len(payload) > 64 {
+		t.Fatalf("patchHostShellELFWithDOSWriteHostfsClient: payload length %d out of range", len(payload))
+	}
+	const (
+		offDosPort  = 128
+		offReplyPrt = 136
+		offBufferVA = 144
+		offShareHdl = 152
+		offOpenErr  = 160
+		offHandle1  = 168
+		offWriteErr = 176
+		offBytesWr  = 184
+		offCloseErr = 192
+	)
+
+	shellCode := elfExecCodeOffset(t, image)
+	off := shellCode
+	w := func(instr []byte) { copy(image[off:], instr); off += 8 }
+	writeBytesAtBuffer := func(data []byte) {
+		w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, offBufferVA))
+		for i, b := range data {
+			w(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, uint32(b)))
+			w(ie64Instr(OP_STORE, 5, IE64_SIZE_B, 0, 4, 0, uint32(i)))
+		}
+	}
+
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	findLoop := off
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, 16))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFindPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	beqInstr := off
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	braFind := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(findLoop)-int32(braFind))))
+	foundDos := off
+	copy(image[beqInstr:], ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, uint32(int32(foundDos)-int32(beqInstr))))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offDosPort))
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offReplyPrt))
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0x10001))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offBufferVA))
+	w(ie64Instr(OP_STORE, 3, IE64_SIZE_Q, 1, 29, 0, offShareHdl))
+
+	// OPEN(write): write path string into share buffer, send DOS_OPEN with mode=1.
+	writeBytesAtBuffer(append([]byte(dosPath), 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1)) // DOS_OPEN
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 1)) // DOS_MODE_WRITE
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_LOAD, 6, IE64_SIZE_L, 0, 29, 0, offShareHdl))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offOpenErr))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offHandle1))
+
+	// WRITE: write payload bytes into share buffer, send DOS_WRITE.
+	writeBytesAtBuffer([]byte(payload))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 3)) // DOS_WRITE
+	w(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, offHandle1))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, uint32(len(payload))))
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_LOAD, 6, IE64_SIZE_L, 0, 29, 0, offShareHdl))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offWriteErr))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offBytesWr))
+
+	// CLOSE: send DOS_CLOSE with the handle. dos.library will close the
+	// hostfs handle (HSTW path) or clear the metadata slot (RAM path).
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 4)) // DOS_CLOSE
+	w(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, offHandle1))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offCloseErr))
+
+	loopHere := off
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	braLoop := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(loopHere)-int32(braLoop))))
+}
+
+// TestIExec_M153_Phase5_WriteThroughCLandsInWritableSYSCOverlay verifies
+// the full M15.3 contract: a DOS_OPEN(write) on `C:NAME` lands the bytes
+// at hostRoot/C/NAME (the writable SYS:C overlay). DOS_WRITE streams to
+// the host through BOOT_HOSTFS_WRITE; DOS_CLOSE flushes and closes.
+func TestIExec_M153_Phase5_WriteThroughCLandsInWritableSYSCOverlay(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	rig, _ := bootRigWithPatchedHostShellELFOnHostRoot(t, hostRoot, func(image []byte) {
+		patchHostShellELFWithDOSWriteHostfsClient(t, image, "C:Phase5HostFile", "phase5-c-overlay")
+	})
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+	got, err := os.ReadFile(filepath.Join(hostRoot, "C", "Phase5HostFile"))
+	if err != nil {
+		t.Fatalf("M153_Phase5_WriteThroughCLandsInWritableSYSCOverlay: read back: %v", err)
+	}
+	if string(got) != "phase5-c-overlay" {
+		t.Fatalf("M153_Phase5_WriteThroughCLandsInWritableSYSCOverlay: file=%q, want %q", string(got), "phase5-c-overlay")
+	}
+}
+
+// TestIExec_M153_Phase5_WriteThroughSLandsInWritableSYSSOverlay confirms
+// the write-through-canonical-layered route works for S: as well, locking
+// the general "writes through C: land in SYS:C, writes through S: land in
+// SYS:S, ..." rule in the plan (not just C: by itself).
+func TestIExec_M153_Phase5_WriteThroughSLandsInWritableSYSSOverlay(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	rig, _ := bootRigWithPatchedHostShellELFOnHostRoot(t, hostRoot, func(image []byte) {
+		patchHostShellELFWithDOSWriteHostfsClient(t, image, "S:Phase5HostStart", "phase5-s-startup")
+	})
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+	got, err := os.ReadFile(filepath.Join(hostRoot, "S", "Phase5HostStart"))
+	if err != nil {
+		t.Fatalf("M153_Phase5_WriteThroughSLandsInWritableSYSSOverlay: read back: %v", err)
+	}
+	if string(got) != "phase5-s-startup" {
+		t.Fatalf("M153_Phase5_WriteThroughSLandsInWritableSYSSOverlay: file=%q, want %q", string(got), "phase5-s-startup")
+	}
+}
+
+// TestIExec_M153_Phase5_WriteThroughExplicitSYSSingleComponent locks the
+// single-component `SYS:Name` write path: resolved name "SYS/Name" must
+// strip to bare "Name" and land at hostRoot/Name. This test flushes out
+// the pre-existing `.dos_resolve_has_colon` r27-clobber latent bug for
+// SYS:/IOSSYS: roots where `builtin_root_row` trashed the saved r23 ptr.
+// TestIExec_M153_Phase5_WriteThroughExplicitSYSSubdirComponent is the
+// two-component control for the single-component regression. If this
+// passes but `...SingleComponent` fails, the bug is isolated to the
+// single-component resolver path.
+func TestIExec_M153_Phase5_WriteThroughExplicitSYSSubdirComponent(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	rig, _ := bootRigWithPatchedHostShellELFOnHostRoot(t, hostRoot, func(image []byte) {
+		patchHostShellELFWithDOSWriteHostfsClient(t, image, "SYS:C/Phase5Subdir", "phase5-sys-subdir")
+	})
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+	dataBase := findShellTaskDataBase(t, rig.cpu.memory)
+	openErr := binary.LittleEndian.Uint64(rig.cpu.memory[dataBase+160:])
+	writeErr := binary.LittleEndian.Uint64(rig.cpu.memory[dataBase+176:])
+	got, err := os.ReadFile(filepath.Join(hostRoot, "C", "Phase5Subdir"))
+	if err != nil {
+		t.Fatalf("M153_Phase5_WriteThroughExplicitSYSSubdirComponent: openErr=%d writeErr=%d read back: %v",
+			openErr, writeErr, err)
+	}
+	if string(got) != "phase5-sys-subdir" {
+		t.Fatalf("M153_Phase5_WriteThroughExplicitSYSSubdirComponent: file=%q, want %q", string(got), "phase5-sys-subdir")
+	}
+}
+
+func TestIExec_M153_Phase5_WriteThroughExplicitSYSSingleComponent(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	rig, _ := bootRigWithPatchedHostShellELFOnHostRoot(t, hostRoot, func(image []byte) {
+		patchHostShellELFWithDOSWriteHostfsClient(t, image, "SYS:Phase5Single", "phase5-sys-single")
+	})
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+	dataBase := findShellTaskDataBase(t, rig.cpu.memory)
+	openErr := binary.LittleEndian.Uint64(rig.cpu.memory[dataBase+160:])
+	writeErr := binary.LittleEndian.Uint64(rig.cpu.memory[dataBase+176:])
+	got, err := os.ReadFile(filepath.Join(hostRoot, "Phase5Single"))
+	if err != nil {
+		t.Fatalf("M153_Phase5_WriteThroughExplicitSYSSingleComponent: openErr=%d writeErr=%d read back: %v",
+			openErr, writeErr, err)
+	}
+	if string(got) != "phase5-sys-single" {
+		t.Fatalf("M153_Phase5_WriteThroughExplicitSYSSingleComponent: file=%q, want %q", string(got), "phase5-sys-single")
+	}
+}
+
+// TestIExec_M153_Phase5_WriteThroughExplicitIOSSYSPathFailsCleanly
+// verifies the plan's write semantics: an explicit `IOSSYS:Foo` write
+// must fail cleanly (DOS_ERR_NOTFOUND) — no host file, and no silent
+// RAM-metadata synthesis that the old M15.2 path used to do. Gap 2 fix:
+// `.dos_open_hostfs_write_try` now hard-aborts on CREATE_WRITE failure
+// instead of falling through to the RAM-create path, and the DOS_OPEN
+// WRITE pre-filter skips IOSSYS-backed attempts before CREATE_WRITE is
+// even issued, so a single-target builtin IOSSYS root exhausts the
+// effective list on the second resolve attempt.
+func TestIExec_M153_Phase5_WriteThroughExplicitIOSSYSPathFailsCleanly(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	rig, _ := bootRigWithPatchedHostShellELFOnHostRoot(t, hostRoot, func(image []byte) {
+		patchHostShellELFWithDOSWriteHostfsClient(t, image, "IOSSYS:Phase5Forbidden", "phase5-iossys-write")
+	})
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+	if _, err := os.Stat(filepath.Join(hostRoot, "IOSSYS", "Phase5Forbidden")); err == nil {
+		t.Fatalf("M153_Phase5_WriteThroughExplicitIOSSYSPathFailsCleanly: write under IOSSYS unexpectedly created host file")
+	}
+	dataBase := findShellTaskDataBase(t, rig.cpu.memory)
+	openErr := binary.LittleEndian.Uint64(rig.cpu.memory[dataBase+160:])
+	if openErr == 0 {
+		t.Fatalf("M153_Phase5_WriteThroughExplicitIOSSYSPathFailsCleanly: DOS_OPEN returned OK (%d) on IOSSYS write — Gap 2 fallback not applied", openErr)
+	}
+}
+
+// TestIExec_M153_Phase5_WriteThroughRAMTargetLandsInRAMMeta verifies a
+// legitimate RAM-backed write: `RAM:Foo` (non-hostfs-mapped resolved
+// name) must create a RAM metadata entry — the Gap 2 fix must not over-
+// reach and block actual RAM creates.
+func TestIExec_M153_Phase5_WriteThroughRAMTargetLandsInRAMMeta(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	rig, _ := bootRigWithPatchedHostShellELFOnHostRoot(t, hostRoot, func(image []byte) {
+		patchHostShellELFWithDOSWriteHostfsClient(t, image, "RAM:Phase5RAMFile", "phase5-ram-file")
+	})
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+	dataBase := findShellTaskDataBase(t, rig.cpu.memory)
+	openErr := binary.LittleEndian.Uint64(rig.cpu.memory[dataBase+160:])
+	if openErr != 0 {
+		t.Fatalf("M153_Phase5_WriteThroughRAMTargetLandsInRAMMeta: DOS_OPEN for RAM:Foo returned err=%d — Gap 2 over-reached and blocked legitimate RAM create", openErr)
+	}
+	writeErr := binary.LittleEndian.Uint64(rig.cpu.memory[dataBase+176:])
+	if writeErr != 0 {
+		t.Fatalf("M153_Phase5_WriteThroughRAMTargetLandsInRAMMeta: DOS_WRITE returned err=%d", writeErr)
+	}
+	if _, err := os.Stat(filepath.Join(hostRoot, "RAM", "Phase5RAMFile")); err == nil {
+		t.Fatalf("M153_Phase5_WriteThroughRAMTargetLandsInRAMMeta: RAM write unexpectedly landed on the host")
+	}
+}
+
+// TestIExec_M153_Phase5_WriteThroughHostfsHonorsShortWriteCount locks
+// down the DOS_WRITE accounting fix: if BOOT_HOSTFS_WRITE accepts fewer
+// bytes than requested, DOS_WRITE must NOT reply with the requested
+// count. Previously the hostrec write path ignored the actual returned
+// count and replied with r19 (the clamped request), which caused the
+// guest to advance its logical file position past what actually hit the
+// disk — silent corruption for any host backend that short-writes.
+// Uses a test-only `testShortWriteLimit` on BootstrapHostFSDevice to
+// engineer a short write (Go's native `os.File.Write` contract always
+// returns the full count on success, so we have to inject the cap).
+func TestIExec_M153_Phase5_WriteThroughHostfsHonorsShortWriteCount(t *testing.T) {
+	const payload = "abcdefghijklmnopqrst" // 20 bytes
+	const shortLimit = 5
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	image := mustReadRepoBytes(t, "sdk/intuitionos/iexec/boot_shell.elf")
+	patchHostShellELFWithDOSWriteHostfsClient(t, image, "C:ShortWriteTest", payload)
+	writeHostRootFileBytes(t, hostRoot, "Tools/Shell", image)
+
+	rig, _ := newIExecTerminalRig(t)
+	device := NewBootstrapHostFSDevice(rig.bus, hostRoot)
+	device.testShortWriteLimit = shortLimit
+	rig.bus.MapIO(BOOT_HOSTFS_BASE, BOOT_HOSTFS_END, device.HandleRead, device.HandleWrite)
+	asmBin := buildAssembler(t)
+	tmpDir := t.TempDir()
+	root := repoRootDir(t)
+	copyFileForTest(t, filepath.Join(root, "sdk", "intuitionos", "iexec", "iexec.s"), filepath.Join(tmpDir, "iexec.s"))
+	copyFileForTest(t, filepath.Join(root, "sdk", "include", "iexec.inc"), filepath.Join(tmpDir, "iexec.inc"))
+	copyFileForTest(t, filepath.Join(root, "sdk", "include", "ie64.inc"), filepath.Join(tmpDir, "ie64.inc"))
+	copyFileForTest(t, filepath.Join(root, "sdk", "include", "topaz.raw"), filepath.Join(tmpDir, "topaz.raw"))
+	for _, name := range []string{
+		"boot_console_handler.elf", "boot_dos_library.elf", "boot_shell.elf",
+		"boot_hardware_resource.elf", "boot_input_device.elf",
+		"boot_graphics_library.elf", "boot_intuition_library.elf",
+		"seed_version.elf", "seed_avail.elf", "seed_dir.elf", "seed_type.elf",
+		"seed_echo.elf", "seed_assign.elf", "seed_list.elf", "seed_which.elf",
+		"seed_help.elf", "seed_gfxdemo.elf", "seed_about.elf",
+	} {
+		copyFileForTest(t, filepath.Join(root, "sdk", "intuitionos", "iexec", name), filepath.Join(tmpDir, name))
+	}
+	iexecSrcDir := filepath.Join(root, "sdk", "intuitionos", "iexec")
+	cmd := exec.Command(asmBin, "-I", tmpDir, "-I", iexecSrcDir, filepath.Join(tmpDir, "iexec.s"))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("assembly failed: %v\n%s", err, out)
+	}
+	data, err := os.ReadFile(filepath.Join(tmpDir, "iexec.ie64"))
+	if err != nil {
+		t.Fatalf("read assembled binary: %v", err)
+	}
+	copy(rig.cpu.memory[PROG_START:], data)
+	rig.cpu.PC = PROG_START
+	rig.cpu.CoprocMode = true
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	dataBase := findShellTaskDataBase(t, rig.cpu.memory)
+	openErr := binary.LittleEndian.Uint64(rig.cpu.memory[dataBase+160:])
+	writeErr := binary.LittleEndian.Uint64(rig.cpu.memory[dataBase+176:])
+	bytesWr := binary.LittleEndian.Uint64(rig.cpu.memory[dataBase+184:])
+	if openErr != 0 {
+		t.Fatalf("M153_Phase5_WriteThroughHostfsHonorsShortWriteCount: DOS_OPEN err=%d", openErr)
+	}
+	if writeErr != 0 {
+		t.Fatalf("M153_Phase5_WriteThroughHostfsHonorsShortWriteCount: DOS_WRITE err=%d", writeErr)
+	}
+	if bytesWr != shortLimit {
+		t.Fatalf("M153_Phase5_WriteThroughHostfsHonorsShortWriteCount: reply.data0=%d, want %d (host accepted only %d of %d requested — the DOS accounting must honour the actual returned count)",
+			bytesWr, shortLimit, shortLimit, len(payload))
+	}
+	got, err := os.ReadFile(filepath.Join(hostRoot, "C", "ShortWriteTest"))
+	if err != nil {
+		t.Fatalf("M153_Phase5_WriteThroughHostfsHonorsShortWriteCount: read back: %v", err)
+	}
+	if len(got) != shortLimit {
+		t.Fatalf("M153_Phase5_WriteThroughHostfsHonorsShortWriteCount: file size=%d, want %d", len(got), shortLimit)
+	}
+	if string(got) != payload[:shortLimit] {
+		t.Fatalf("M153_Phase5_WriteThroughHostfsHonorsShortWriteCount: file=%q, want %q", string(got), payload[:shortLimit])
+	}
+}
+
+// TestIExec_M153_Phase5_WriteAbortsOnLeafSymlinkEscapeNoRAMFallback
+// locks the "security/integrity failures abort, no fallback" rule: a
+// writable SYS overlay path whose leaf is a symlink pointing outside
+// hostRoot must return the hostfs error from CREATE_WRITE — not silently
+// divert to RAM synthesis — and the outside-target file must remain
+// untouched. Regression for Gap 2 + P1 #1 interaction.
+func TestIExec_M153_Phase5_WriteAbortsOnLeafSymlinkEscapeNoRAMFallback(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	outsideDir := t.TempDir()
+	outsideFile := filepath.Join(outsideDir, "captured")
+	if err := os.WriteFile(outsideFile, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideFile, filepath.Join(hostRoot, "C", "Sneaky")); err != nil {
+		t.Fatal(err)
+	}
+	rig, _ := bootRigWithPatchedHostShellELFOnHostRoot(t, hostRoot, func(image []byte) {
+		patchHostShellELFWithDOSWriteHostfsClient(t, image, "C:Sneaky", "pwned")
+	})
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+	dataBase := findShellTaskDataBase(t, rig.cpu.memory)
+	openErr := binary.LittleEndian.Uint64(rig.cpu.memory[dataBase+160:])
+	if openErr == 0 {
+		t.Fatalf("M153_Phase5_WriteAbortsOnLeafSymlinkEscapeNoRAMFallback: DOS_OPEN returned OK — security rejection was masked by RAM synthesis")
+	}
+	got, err := os.ReadFile(outsideFile)
+	if err != nil {
+		t.Fatalf("M153_Phase5_WriteAbortsOnLeafSymlinkEscapeNoRAMFallback: outside file gone: %v", err)
+	}
+	if string(got) != "original" {
+		t.Fatalf("M153_Phase5_WriteAbortsOnLeafSymlinkEscapeNoRAMFallback: outside file mutated — sandbox escape: got=%q", string(got))
 	}
 }

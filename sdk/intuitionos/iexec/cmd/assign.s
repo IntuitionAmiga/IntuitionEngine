@@ -1,5 +1,16 @@
 ; ---------------------------------------------------------------------------
-; ASSIGN — list or set DOS assigns through DOS_ASSIGN
+; ASSIGN — list/show/set/add/remove DOS assigns through DOS_ASSIGN
+;
+; Syntax (M15.3):
+;   ASSIGN                          → list every visible assign + first effective target
+;   ASSIGN NAME:                    → show NAME's full effective ordered list
+;                                     (overlay entries first, then built-in base list)
+;   ASSIGN NAME: TARGET:            → replace NAME's mutable overlay with [TARGET]
+;   ASSIGN ADD NAME: TARGET:        → append TARGET to NAME's mutable overlay
+;   ASSIGN REMOVE NAME: TARGET:     → remove TARGET from NAME's mutable overlay
+;
+; Trailing colons on NAME and TARGET are stripped/converted to slashes
+; before being handed off to dos.library, matching the DOS_ASSIGN ABI.
 ; ---------------------------------------------------------------------------
 
 prog_assign_cmd:
@@ -54,27 +65,131 @@ prog_assign_cmd_code:
     store.q r1, 72(r29)
     store.l r3, 80(r29)
 
+    ; M15.3: default op = DOS_ASSIGN_SET. ASSIGN ADD / REMOVE rewrite this
+    ; field after the keyword is recognised.
+    move.l  r1, #DOS_ASSIGN_SET
+    store.l r1, 132(r29)
+
     add     r14, r29, #DATA_ARGS_OFFSET
 .asn_skip_ws:
     load.b  r15, (r14)
     beqz    r15, .asn_do_list
     move.l  r16, #0x20
-    bne     r15, r16, .asn_have_args
+    bne     r15, r16, .asn_check_keyword
     add     r14, r14, #1
     bra     .asn_skip_ws
+
+    ; --- M15.3 keyword detection: ADD or REMOVE prefixes the row args ---
+.asn_check_keyword:
+    ; ADD: 3 chars then space
+    load.b  r15, (r14)
+    move.l  r16, #0x41
+    beq     r15, r16, .asn_check_add
+    move.l  r16, #0x61
+    beq     r15, r16, .asn_check_add
+    move.l  r16, #0x52
+    beq     r15, r16, .asn_check_remove
+    move.l  r16, #0x72
+    beq     r15, r16, .asn_check_remove
+    bra     .asn_have_args
+
+.asn_check_add:
+    ; second char 'D' / 'd'?
+    load.b  r15, 1(r14)
+    move.l  r16, #0x44
+    beq     r15, r16, .asn_check_add_d
+    move.l  r16, #0x64
+    beq     r15, r16, .asn_check_add_d
+    bra     .asn_have_args
+.asn_check_add_d:
+    load.b  r15, 2(r14)
+    move.l  r16, #0x44
+    beq     r15, r16, .asn_check_add_dd
+    move.l  r16, #0x64
+    beq     r15, r16, .asn_check_add_dd
+    bra     .asn_have_args
+.asn_check_add_dd:
+    load.b  r15, 3(r14)
+    move.l  r16, #0x20
+    bne     r15, r16, .asn_have_args
+    move.l  r1, #DOS_ASSIGN_ADD
+    store.l r1, 132(r29)
+    add     r14, r14, #4
+    bra     .asn_skip_ws_after_kw
+
+.asn_check_remove:
+    load.b  r15, 1(r14)
+    move.l  r16, #0x45
+    beq     r15, r16, .asn_check_rem_e
+    move.l  r16, #0x65
+    beq     r15, r16, .asn_check_rem_e
+    bra     .asn_have_args
+.asn_check_rem_e:
+    load.b  r15, 2(r14)
+    move.l  r16, #0x4D
+    beq     r15, r16, .asn_check_rem_m
+    move.l  r16, #0x6D
+    beq     r15, r16, .asn_check_rem_m
+    bra     .asn_have_args
+.asn_check_rem_m:
+    load.b  r15, 3(r14)
+    move.l  r16, #0x4F
+    beq     r15, r16, .asn_check_rem_o
+    move.l  r16, #0x6F
+    beq     r15, r16, .asn_check_rem_o
+    bra     .asn_have_args
+.asn_check_rem_o:
+    load.b  r15, 4(r14)
+    move.l  r16, #0x56
+    beq     r15, r16, .asn_check_rem_v
+    move.l  r16, #0x76
+    beq     r15, r16, .asn_check_rem_v
+    bra     .asn_have_args
+.asn_check_rem_v:
+    load.b  r15, 5(r14)
+    move.l  r16, #0x45
+    beq     r15, r16, .asn_check_rem_e2
+    move.l  r16, #0x65
+    beq     r15, r16, .asn_check_rem_e2
+    bra     .asn_have_args
+.asn_check_rem_e2:
+    load.b  r15, 6(r14)
+    move.l  r16, #0x20
+    bne     r15, r16, .asn_have_args
+    move.l  r1, #DOS_ASSIGN_REMOVE
+    store.l r1, 132(r29)
+    add     r14, r14, #7
+    bra     .asn_skip_ws_after_kw
+
+.asn_skip_ws_after_kw:
+    load.b  r15, (r14)
+    beqz    r15, .asn_bad_args
+    move.l  r16, #0x20
+    bne     r15, r16, .asn_have_args
+    add     r14, r14, #1
+    bra     .asn_skip_ws_after_kw
+
 .asn_have_args:
     store.q r14, 88(r29)
     move.l  r17, #0
 .asn_name_len:
     add     r18, r14, r17
     load.b  r19, (r18)
-    beqz    r19, .asn_bad_args
+    beqz    r19, .asn_name_done_eos
     move.l  r20, #0x20
     beq     r19, r20, .asn_name_done
     add     r17, r17, #1
     move.l  r20, #16
     blt     r17, r20, .asn_name_len
     bra     .asn_bad_args
+.asn_name_done_eos:
+    ; End of args after just NAME. For SET op (no keyword) and a NAME-only
+    ; invocation we treat this as `ASSIGN NAME:` → show layered list.
+    beqz    r17, .asn_bad_args
+    load.l  r3, 132(r29)
+    move.l  r1, #DOS_ASSIGN_SET
+    bne     r3, r1, .asn_bad_args              ; ADD/REMOVE require TARGET too
+    bra     .asn_send_show_one
 .asn_name_done:
     load.b  r19, (r18)
     beqz    r17, .asn_bad_args
@@ -142,7 +257,7 @@ prog_assign_cmd_code:
 .asn_target_copy:
     move.l  r18, #0
 .asn_target_copy_loop:
-    bge     r18, r16, .asn_send_set
+    bge     r18, r16, .asn_send_op
     add     r19, r14, r18
     load.b  r20, (r19)
     move.l  r21, #0x3A
@@ -155,10 +270,11 @@ prog_assign_cmd_code:
     add     r18, r18, #1
     bra     .asn_target_copy_loop
 
-.asn_send_set:
+    ; --- Send DOS_ASSIGN_{SET|ADD|REMOVE} with the prepared row ---
+.asn_send_op:
     load.q  r29, (sp)
     move.l  r2, #DOS_ASSIGN
-    move.l  r3, #DOS_ASSIGN_SET
+    load.l  r3, 132(r29)
     move.q  r4, r0
     load.q  r5, 64(r29)
     load.l  r6, 80(r29)
@@ -172,6 +288,79 @@ prog_assign_cmd_code:
     bnez    r1, .asn_bad_args
     bra     .asn_exit
 
+    ; --- ASSIGN NAME: → DOS_ASSIGN_LAYERED_QUERY: print N targets ---
+.asn_send_show_one:
+    ; Stash NAME at the start of share buffer, NUL-terminated.
+    load.q  r15, 72(r29)
+    load.q  r14, 88(r29)
+    move.q  r16, r17
+    sub     r18, r16, #1
+    add     r18, r14, r18
+    load.b  r19, (r18)
+    move.l  r20, #0x3A
+    bne     r19, r20, .asn_show_name_copy
+    sub     r16, r16, #1
+    beqz    r16, .asn_bad_args
+.asn_show_name_copy:
+    move.l  r18, #0
+.asn_show_name_copy_loop:
+    bge     r18, r16, .asn_show_name_copied
+    add     r19, r14, r18
+    load.b  r20, (r19)
+    add     r19, r15, r18
+    store.b r20, (r19)
+    add     r18, r18, #1
+    bra     .asn_show_name_copy_loop
+.asn_show_name_copied:
+    add     r19, r15, r18
+    store.b r0, (r19)
+
+    load.q  r29, (sp)
+    move.l  r2, #DOS_ASSIGN
+    move.l  r3, #DOS_ASSIGN_LAYERED_QUERY
+    move.q  r4, r0
+    load.q  r5, 64(r29)
+    load.l  r6, 80(r29)
+    load.q  r1, 56(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+
+    load.q  r1, 64(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+    bnez    r1, .asn_bad_args
+    store.q r2, 120(r29)               ; layered count
+    load.q  r14, 88(r29)               ; reuse name ptr for header
+    move.q  r20, r14
+    jsr     .asn_send_string
+    move.l  r3, #0x3A
+    jsr     .asn_putc
+    move.l  r3, #0x0D
+    jsr     .asn_putc
+    move.l  r3, #0x0A
+    jsr     .asn_putc
+    load.q  r14, 72(r29)               ; share buffer (32-byte target slots)
+    move.l  r15, #0
+.asn_show_one_loop:
+    load.q  r16, 120(r29)
+    bge     r15, r16, .asn_exit
+    move.l  r3, #0x20
+    jsr     .asn_putc
+    move.l  r3, #0x20
+    jsr     .asn_putc
+    load.q  r14, 72(r29)
+    move.l  r3, #DOS_ASSIGN_LAYERED_TGT_SZ
+    mulu.q  r4, r15, r3
+    add     r20, r14, r4
+    jsr     .asn_send_string
+    move.l  r3, #0x0D
+    jsr     .asn_putc
+    move.l  r3, #0x0A
+    jsr     .asn_putc
+    add     r15, r15, #1
+    bra     .asn_show_one_loop
+
+    ; --- ASSIGN (no args) → LIST ---
 .asn_do_list:
     move.l  r2, #DOS_ASSIGN
     move.l  r3, #DOS_ASSIGN_LIST
@@ -289,6 +478,8 @@ prog_assign_cmd_data:
     dc.b    "console.handler", 0
     dc.b    "dos.library", 0, 0, 0, 0, 0
     dc.b    "Bad arguments", 0x0D, 0x0A, 0
+    ds.b    8
+    ds.b    8
     ds.b    8
     ds.b    8
     ds.b    8

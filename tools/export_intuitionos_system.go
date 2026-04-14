@@ -48,12 +48,40 @@ func main() {
 		fmt.Fprintf(os.Stderr, "resolve repo root: %v\n", err)
 		os.Exit(1)
 	}
-	absIExecDir := filepath.Join(absRepoRoot, *iexecDir)
-	absOutRoot := filepath.Join(absRepoRoot, *outRoot)
+	resolveAgainstRepo := func(p string) string {
+		if filepath.IsAbs(p) {
+			return p
+		}
+		return filepath.Join(absRepoRoot, p)
+	}
+	absIExecDir := resolveAgainstRepo(*iexecDir)
+	absOutRoot := resolveAgainstRepo(*outRoot)
 
-	if err := os.RemoveAll(filepath.Dir(filepath.Dir(absOutRoot))); err != nil {
-		fmt.Fprintf(os.Stderr, "remove existing system tree: %v\n", err)
+	// M15.3: wipe the ENTIRE SYS/ tree before re-exporting. Layered lookup
+	// prefers the writable layer over IOSSYS/, and M15.3 allows writes
+	// anywhere under SYS: (e.g. SYS:Phase5Single landing at SYS/, or
+	// SYS:Tools/Custom landing at SYS/Tools/), so a previous boot or test
+	// can deposit files at any path under SYS/ that would shadow freshly
+	// exported IOSSYS content on the next run. Removing only IOSSYS/ plus
+	// the canonical layered overlay subdirs (C/, S/, L/, LIBS/, DEVS/,
+	// RESOURCES/) leaves arbitrary other subtrees stale. The empty
+	// canonical-layered overlay subdirs are recreated so the writable
+	// scaffolding stays in place; everything else under SYS/ is fresh.
+	sysRoot := filepath.Dir(absOutRoot)
+	if err := os.RemoveAll(sysRoot); err != nil {
+		fmt.Fprintf(os.Stderr, "remove existing SYS tree: %v\n", err)
 		os.Exit(1)
+	}
+	if err := os.MkdirAll(sysRoot, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "recreate SYS root: %v\n", err)
+		os.Exit(1)
+	}
+	overlayDirs := []string{"C", "S", "L", "LIBS", "DEVS", "RESOURCES"}
+	for _, d := range overlayDirs {
+		if err := os.MkdirAll(filepath.Join(sysRoot, d), 0o755); err != nil {
+			fmt.Fprintf(os.Stderr, "prepare SYS overlay dir %s: %v\n", d, err)
+			os.Exit(1)
+		}
 	}
 	for _, spec := range systemExports {
 		src := filepath.Join(absIExecDir, spec.src)

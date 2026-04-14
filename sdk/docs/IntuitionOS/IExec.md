@@ -113,6 +113,18 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
 - `RAM:` and `T:` remain writable provider-backed in-memory namespaces.
 - bootstrap hostfs stays read-only in M15.2.
 
+**M15.3 layered assigns + writable `SYS:` overlay current runtime:**
+
+- canonical assigns (`C:`, `S:`, `L:`, `LIBS:`, `DEVS:`, `RESOURCES:`) are layered: each resolves through a built-in base list `[SYS:X, IOSSYS:X]` plus a per-slot mutable overlay list (max 4 entries).
+- new `DOS_ASSIGN` sub-ops: `DOS_ASSIGN_LAYERED_QUERY` (3) returns `count × target[32]`, `DOS_ASSIGN_ADD` (4) appends to the mutable overlay (no-op on duplicate), `DOS_ASSIGN_REMOVE` (5) removes from the mutable overlay (built-in base entries cannot be removed).
+- compatibility projection: old `DOS_ASSIGN_LIST` / `DOS_ASSIGN_QUERY` keep returning the **first effective public target only** through the M15.2 `name[16], target[16]` row shape.
+- `DOS_ASSIGN_SET` on a canonical layered slot replaces the mutable overlay with `[TARGET]` and mirrors that target into the table entry, so `dos_assign_lookup` and the hostfs path resolver keep returning the user's chosen target.
+- bootstrap hostfs gains writable ops: `BOOT_HOSTFS_CREATE_WRITE` (6) opens/truncates a host file for writing, `BOOT_HOSTFS_WRITE` (7) appends bytes to an open handle. Any path whose first component resolves to `IOSSYS` is rejected at the device — `IOSSYS:` is always read-only.
+- DOS_OPEN reads now fall through `SYS:` overlay → `IOSSYS:` read-only via the `dos_hostfs_layered_relpath_for_resolved_name` helper.
+- `RAM:`, `T:`, `SYS:`, and `IOSSYS:` stay non-layered. `RAM:` is non-mutable. `T:` is single-target writable. `SYS:` and `IOSSYS:` are built-in roots and reject `ADD`/`REMOVE`.
+- `ASSIGN` shell command grows the layered syntax: `ASSIGN NAME:` shows the full effective ordered list, `ASSIGN ADD NAME: TARGET:` appends to the overlay, `ASSIGN REMOVE NAME: TARGET:` removes one entry, and `ASSIGN NAME: TARGET:` keeps the M15.2 replace semantics.
+- M15.3 makes no changes to `ExecProgram`, ELF/seglist contracts, or the M14.2 ELF-only command boundary.
+
 IExec runs on the IE64 CPU core only. It requires the IE64 MMU (4 KiB paged virtual memory, software TLB, control registers) and the hardware timer for preemption.
 
 ---

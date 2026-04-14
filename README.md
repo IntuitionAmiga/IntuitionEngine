@@ -6015,6 +6015,18 @@ IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. 
 - **`RAM:` and `T:` remain the writable in-memory namespaces.** Their reads and writes stay on the provider-backed DOS path while hostfs remains read-only in M15.2.
 - **`ASSIGN ADD` is still deferred.** M15.2 keeps bare command search `C:`-only and does not add ordered-search assign semantics yet.
 
+**M15.3 layered assigns + writable `SYS:` overlay** — M15.3 lifts the M15.2 ASSIGN-ADD restriction and lights up a layered model on top of the host-backed boot:
+
+- **Canonical assigns are now layered.** Each of `C:`, `S:`, `L:`, `LIBS:`, `DEVS:`, and `RESOURCES:` resolves through a built-in base list `[SYS:X, IOSSYS:X]` plus a per-slot mutable overlay list.
+- **`DOS_ASSIGN` grows three new sub-ops.** `DOS_ASSIGN_LAYERED_QUERY` (3) returns the FULL effective ordered list as `count × target[32]`. `DOS_ASSIGN_ADD` (4) appends to the mutable overlay (duplicate-add is a no-op). `DOS_ASSIGN_REMOVE` (5) removes from the overlay only — built-in base entries cannot be removed.
+- **Old ABI keeps working unchanged.** `DOS_ASSIGN_LIST` / `DOS_ASSIGN_QUERY` keep the M15.2 `name[16], target[16]` row shape and project the **first effective public target** so existing callers keep seeing whatever the user just SET.
+- **`DOS_ASSIGN_SET` mirrors into both layers.** A SET on a canonical layered slot replaces the mutable overlay with `[TARGET]` and writes the same target into the table entry, so `dos_assign_lookup` (and therefore the hostfs path resolver) keeps returning the user's chosen target without breaking M15.2 backward compat.
+- **Hostfs now supports a writable `SYS:` overlay.** New device commands `BOOT_HOSTFS_CREATE_WRITE` (6) and `BOOT_HOSTFS_WRITE` (7) let dos.library create/write under the host-backed root. Any path whose first component resolves to `IOSSYS` is rejected by the device — `IOSSYS:` is always read-only.
+- **DOS_OPEN reads now fall through `SYS:` → `IOSSYS:`.** A new `dos_hostfs_layered_relpath_for_resolved_name` helper prefers the writable SYS overlay (e.g. `hostRoot/C/Foo`) when the file is present and falls back to the embedded read-only IOSSYS path otherwise.
+- **`ASSIGN` shell command grows `ADD` / `REMOVE` / show.** `ASSIGN NAME:` displays the assign's full effective ordered list. `ASSIGN ADD NAME: TARGET:` appends to the overlay. `ASSIGN REMOVE NAME: TARGET:` removes one overlay entry. `ASSIGN NAME: TARGET:` keeps its M15.2 replace semantics.
+- **Non-layered assigns stay non-layered.** `RAM:` is non-mutable. `T:` is single-target writable. `SYS:` and `IOSSYS:` are built-in roots and reject `ADD`/`REMOVE` outright.
+- **Unchanged execution boundary.** M15.3 makes no changes to `ExecProgram`, ELF/seglist contracts, or the M14.2 ELF-only command boundary.
+
 **M15.1 source layout status** — the ROM build model is unchanged, but the IntuitionOS sources are no longer forced to live in one monolithic assembly body:
 
 - `sdk/intuitionos/iexec/iexec.s` remains the single assembly entrypoint and the top-level ROM/image layout file.

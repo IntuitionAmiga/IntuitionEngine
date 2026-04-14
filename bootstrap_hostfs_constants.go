@@ -23,6 +23,19 @@ const (
 	BOOT_HOSTFS_CLOSE    = 3
 	BOOT_HOSTFS_STAT     = 4
 	BOOT_HOSTFS_READDIR  = 5
+	// M15.3: writable SYS: overlay support. The hostfs rejects writes
+	// below any IOSSYS/ prefix so the embedded read-only system tree
+	// remains tamper-proof.
+	BOOT_HOSTFS_CREATE_WRITE = 6 // open/create a file for writing; arg1 = path ptr, res1 = handle
+	BOOT_HOSTFS_WRITE        = 7 // write bytes to open handle; arg1 = handle, arg2 = src ptr, arg3 = byte_count, res1 = bytes_written
+)
+
+// BOOT_HOSTFS_OPEN_MODE_* values passed in arg4 to OPEN. Default (0) stays
+// read-only to preserve M15.2 boot semantics; CREATE_WRITE uses a separate
+// command for clarity.
+const (
+	BOOT_HOSTFS_MODE_READ  = 0
+	BOOT_HOSTFS_MODE_WRITE = 1
 )
 
 const (

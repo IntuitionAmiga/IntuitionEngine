@@ -36,6 +36,21 @@ The startup block constants describe the 64-byte kernel-populated record written
 
 The M14 native executable contract is documented separately in `sdk/docs/IntuitionOS/ELF.md`. As of M14/M14.2, `iexec.inc` also ships the DOS loader/launch protocol constants for `DOS_LOADSEG`, `DOS_UNLOADSEG`, `DOS_RUNSEG`, the DOS-owned seglist layout (`DOS_SEGLIST_*`, `DOS_SEG_*`), and the descriptor-only `ExecProgram` launch constants (`M14_LDESC_*`, `M14_LDSEG_*`). The old flat-image `ExecProgram` ABI is removed at the public runtime boundary: strict native ELF commands and apps go through the DOS descriptor path, and shipped boot/services use the internal embedded-manifest ELF path. As of M15, `iexec.inc` also exports the DOS assign protocol constants for `DOS_ASSIGN` and its `LIST` / `QUERY` / `SET` operations together with the canonical DOS-layout constants used by the built-in assign table.
 
+As of **M15.3**, `iexec.inc` adds three more `DOS_ASSIGN` sub-ops and their payload sizing constants:
+
+- `DOS_ASSIGN_LAYERED_QUERY` (3) — share-in: name, share-out: `count × target[DOS_ASSIGN_LAYERED_TGT_SZ]` (32-byte slots, NUL-padded). `reply.data0` = effective count. Returns the FULL ordered list: overlay entries first, then the built-in base list, with duplicate targets collapsed.
+- `DOS_ASSIGN_ADD` (4) — share-in: `row[name[16], target[16]]`. Appends `target` to the canonical layered overlay; duplicate-add is a no-op. Rejects `RAM:`, `T:`, `SYS:`, `IOSSYS:`, and any non-canonical user assign with `DOS_ERR_BADARG`.
+- `DOS_ASSIGN_REMOVE` (5) — share-in: `row[name[16], target[16]]`. Removes one target from the mutable overlay. Built-in base entries cannot be removed (they remain visible through `DOS_ASSIGN_LAYERED_QUERY`).
+- `DOS_ASSIGN_LAYERED_TGT_SZ` (32) — bytes per target slot in the LAYERED_QUERY response.
+- `DOS_ASSIGN_OVERLAY_MAX` (4) — max overlay entries per canonical layered assign.
+
+The compatibility ops (`DOS_ASSIGN_LIST`, `DOS_ASSIGN_QUERY`, `DOS_ASSIGN_SET`) keep their M15.2 semantics through a first-effective-target projection.
+
+`iexec.inc` also adds two `BOOT_HOSTFS_*` commands that back the writable `SYS:` overlay:
+
+- `BOOT_HOSTFS_CREATE_WRITE` (6) — `arg1 = path ptr`. Opens (or creates+truncates) the file for writing; returns a host handle in `res1`. The host device rejects any path whose first component is `IOSSYS` (case-insensitive), enforcing the read-only IOSSYS namespace.
+- `BOOT_HOSTFS_WRITE` (7) — `arg1 = handle, arg2 = src ptr, arg3 = byte_count`. Writes bytes to an open hostfs handle; returns the byte count actually written in `res1`.
+
 As of M15.1, `sdk/intuitionos/iexec/iexec.s` remains the top-level image/layout source, but seeded command bodies are split into per-component assembly files under `sdk/intuitionos/iexec/cmd/`, the non-DOS boot services now live under `sdk/intuitionos/iexec/handler/`, `sdk/intuitionos/iexec/dev/`, `sdk/intuitionos/iexec/resource/`, and `sdk/intuitionos/iexec/lib/`, the interactive shell itself now lives in `sdk/intuitionos/iexec/handler/shell.s`, and the DOS-owned block now lives under `sdk/intuitionos/iexec/lib/dos_library.s`. the DOS-owned block now lives under that file rather than the root image source. The remaining DOS-owned subordinate files now include `sdk/intuitionos/iexec/assets/dos_seed_text.s`, `sdk/intuitionos/iexec/assets/elfseg_fixture.s`, `sdk/intuitionos/iexec/cmd/gfxdemo.s`, and `sdk/intuitionos/iexec/cmd/about.s`. The last root boot/image wiring blocks now live in `sdk/intuitionos/iexec/boot/manifest_seed.s` and `sdk/intuitionos/iexec/boot/strings.s`. This does not change the role of `iexec.inc`: it remains the shared contract include for both the root image source and the split IntuitionOS component files.
 
 ### Video Registers
