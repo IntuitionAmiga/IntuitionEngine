@@ -133,6 +133,7 @@ end
 -- Load and run a demo binary, wait N seconds
 local function run_demo(path, secs)
     media.stop(); audio.reset()
+    cpu.reset()
     cpu.load(path)
     apply_showreel_audio(path)
     sys.wait_ms(600); sys.wait_frames(30)
@@ -571,6 +572,7 @@ sys.emutos_drive("/tmp/ie_demo_drive")
 -- Type "EMUTOS" into BASIC REPL for visual effect, then boot via cpu.load
 slow_type("EMUTOS", 55)
 sys.wait_ms(200)
+cpu.reset()
 cpu.load("EMUTOS")
 
 -- Wait for GEM desktop (green background at center - unique to GEM, not BASIC)

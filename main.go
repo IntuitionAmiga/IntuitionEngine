@@ -1744,6 +1744,24 @@ func main() {
 			scriptEngine.Cancel()
 		}
 
+		// Quiesce all live video producers before hot-reloading a new program.
+		// Manual demo runs start from a fresh process; showreel/scripted loads do not.
+		// Stopping the compositor and standalone render loops here prevents stale
+		// frames from being composed while devices are being reset in-place.
+		compositor.Stop()
+		if vgaEngine != nil {
+			vgaEngine.StopRenderLoop()
+		}
+		if ulaEngine != nil {
+			ulaEngine.StopRenderLoop()
+		}
+		if tedVideoEngine != nil {
+			tedVideoEngine.StopRenderLoop()
+		}
+		if anticEngine != nil {
+			anticEngine.StopRenderLoop()
+		}
+
 		var bytes []byte
 		var mode string
 		forceBasicBoot := false
