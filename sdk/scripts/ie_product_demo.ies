@@ -344,20 +344,12 @@ monitor_tour({
 })
 
 -- ============================================================================
--- Section 6: Voodoo 3D Demos (65s)
+-- Section 6: Voodoo 3D Demo (24s)
 -- ============================================================================
 
 local voodoo_demos = {
     {P.."voodoo_mega_demo.iex",           "Voodoo Mega Demo",       18,
         "CPU: IE32", "Video: 3DFX Voodoo (640x480 textured) + Audio: SID"},
-    {P.."voodoo_cube_68k.ie68",           "Spinning Cube",          12,
-        "CPU: Motorola 68020", "Video: 3DFX Voodoo (Gouraud shaded)"},
-    {P.."voodoo_3dfx_logo_68k.ie68",      "3DFX Logo Flyby",        12,
-        "CPU: Motorola 68020", "Video: 3DFX Voodoo (textured + fog)"},
-    {P.."voodoo_triangle_68k.ie68",       "Filled Triangle",        10,
-        "CPU: Motorola 68020", "Video: 3DFX Voodoo (flat shaded)"},
-    {P.."voodoo_tunnel_z80.ie80",         "Textured Tunnel",        10,
-        "CPU: Zilog Z80 (8-bit)", "Video: 3DFX Voodoo (texture mapped)"},
 }
 
 for i, v in ipairs(voodoo_demos) do
@@ -371,8 +363,7 @@ for i, v in ipairs(voodoo_demos) do
         {"d",         2000},
         {"io voodoo", 1800},
     }
-    -- Only the mega demo uses SID for music
-    if i == 1 then tour[#tour+1] = {"io sid", 1800} end
+    tour[#tour+1] = {"io sid", 1800}
     monitor_tour(tour)
 end
 
@@ -432,20 +423,12 @@ monitor_tour({
 })
 
 -- ============================================================================
--- Section 8: VGA Tour (40s)
+-- Section 8: VGA Demo (19s)
 -- ============================================================================
 
-title_card({"VGA Video Modes", "IBM PC Compatible Graphics"}, 2)
+title_card({"VGA Demo", "IBM PC Compatible Graphics + POKEY Audio"}, 2)
 
 local vga_demos = {
-    {P.."vga_mode13h_fire.iex",    "Mode 13h Fire",       10,
-        "CPU: IE32", "Video: VGA Mode 13h (320x200, 256 colors, linear)", nil},
-    {P.."vga_modex_circles.iex",   "Mode X Circles",       8,
-        "CPU: IE32", "Video: VGA Mode X (320x240, 256 colors, planar)", nil},
-    {P.."vga_mode12h_bars.iex",    "Mode 12h Bars",        8,
-        "CPU: IE32", "Video: VGA Mode 12h (640x480, 16 colors, 4-plane)", nil},
-    {P.."vga_text_hello.iex",     "Text Mode Hello",       6,
-        "CPU: IE32", "Video: VGA Text Mode (80x25, 16 colors)", nil},
     {P.."vga_text_sap_demo.ie80", "Text Mode + SAP Music", 10,
         "CPU: Zilog Z80", "Video: VGA Text Mode + Audio: POKEY (Atari SAP)", "io pokey"},
 }
