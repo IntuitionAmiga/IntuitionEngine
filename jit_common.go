@@ -192,7 +192,7 @@ func needsFallback(instrs []JITInstr) bool {
 	op := instrs[0].opcode
 	// Transcendentals as sole instruction need interpreter (no native ARM64 equivalent)
 	switch op {
-	case OP_FMOD, OP_FSIN, OP_FCOS, OP_FTAN, OP_FATAN, OP_FLOG, OP_FEXP, OP_FPOW:
+	case OP_FMOD, OP_FSIN, OP_FCOS, OP_FTAN, OP_FATAN, OP_FLOG, OP_FEXP, OP_FPOW, OP_DMOD:
 		return true
 	}
 	// HALT and WAIT need interpreter (they block/sleep)
@@ -257,16 +257,16 @@ func analyzeBlockRegs(instrs []JITInstr) blockRegs {
 				read |= 1 << ji.rt
 			}
 			written |= 1 << ji.rd
-		case OP_MULU, OP_MULS, OP_DIVU, OP_DIVS, OP_MOD64:
+		case OP_MULU, OP_MULS, OP_DIVU, OP_DIVS, OP_MOD64, OP_MODS, OP_MULHU, OP_MULHS:
 			read |= 1 << ji.rs
 			if ji.xbit == 0 {
 				read |= 1 << ji.rt
 			}
 			written |= 1 << ji.rd
-		case OP_NEG, OP_NOT64, OP_CLZ:
+		case OP_NEG, OP_NOT64, OP_CLZ, OP_SEXT, OP_CTZ, OP_POPCNT, OP_BSWAP:
 			read |= 1 << ji.rs
 			written |= 1 << ji.rd
-		case OP_LSL, OP_LSR, OP_ASR:
+		case OP_LSL, OP_LSR, OP_ASR, OP_ROL, OP_ROR:
 			read |= 1 << ji.rs
 			if ji.xbit == 0 {
 				read |= 1 << ji.rt
@@ -334,6 +334,18 @@ func analyzeBlockRegs(instrs []JITInstr) blockRegs {
 			OP_FADD, OP_FSUB, OP_FMUL, OP_FDIV, OP_FSQRT, OP_FINT,
 			OP_FMOD, OP_FSIN, OP_FCOS, OP_FTAN, OP_FATAN, OP_FLOG, OP_FEXP, OP_FPOW:
 			hasFPU = true
+		case OP_DCVTIF:
+			hasFPU = true
+			read |= 1 << ji.rs
+		case OP_DCMP, OP_DCVTFI:
+			hasFPU = true
+			written |= 1 << ji.rd
+		case OP_DLOAD, OP_DSTORE:
+			hasFPU = true
+			read |= 1 << ji.rs
+		case OP_DMOV, OP_DABS, OP_DNEG, OP_DSQRT, OP_DINT, OP_FCVTSD, OP_FCVTDS,
+			OP_DADD, OP_DSUB, OP_DMUL, OP_DDIV, OP_DMOD:
+			hasFPU = true
 
 		// RTI pops return address from stack (reads & writes R31/SP)
 		case OP_RTI64:
@@ -355,9 +367,9 @@ func instrWrittenRegs(ji *JITInstr) uint32 {
 	case OP_MOVE, OP_MOVT, OP_MOVEQ, OP_LEA, OP_LOAD:
 		w = 1 << ji.rd
 	case OP_ADD, OP_SUB, OP_AND64, OP_OR64, OP_EOR,
-		OP_MULU, OP_MULS, OP_DIVU, OP_DIVS, OP_MOD64,
-		OP_NEG, OP_NOT64, OP_CLZ,
-		OP_LSL, OP_LSR, OP_ASR:
+		OP_MULU, OP_MULS, OP_DIVU, OP_DIVS, OP_MOD64, OP_MODS, OP_MULHU, OP_MULHS,
+		OP_NEG, OP_NOT64, OP_CLZ, OP_SEXT, OP_CTZ, OP_POPCNT, OP_BSWAP,
+		OP_LSL, OP_LSR, OP_ASR, OP_ROL, OP_ROR:
 		w = 1 << ji.rd
 	case OP_JSR64, OP_RTS64, OP_JSR_IND:
 		w = 1 << 31
@@ -366,7 +378,7 @@ func instrWrittenRegs(ji *JITInstr) uint32 {
 	case OP_POP64:
 		w = (1 << ji.rd) | (1 << 31)
 	// FPU opcodes that write integer registers
-	case OP_FMOVO, OP_FCMP, OP_FCVTFI, OP_FMOVSR, OP_FMOVCR:
+	case OP_FMOVO, OP_FCMP, OP_FCVTFI, OP_FMOVSR, OP_FMOVCR, OP_DCMP, OP_DCVTFI:
 		w = 1 << ji.rd
 	// RTI writes R31 (SP += 8)
 	case OP_RTI64:

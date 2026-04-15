@@ -441,6 +441,42 @@ func TestIE64_MOD(t *testing.T) {
 	}
 }
 
+func TestIE64_MODS(t *testing.T) {
+	neg10 := uint64(^uint64(9))
+	neg3 := uint64(^uint64(2))
+	tests := []struct {
+		name string
+		size byte
+		rs   uint64
+		op3  uint64
+		want int64
+		xbit byte
+	}{
+		{name: "q basic", size: IE64_SIZE_Q, rs: 10, op3: 3, want: 1},
+		{name: "q neg dividend", size: IE64_SIZE_Q, rs: neg10, op3: 3, want: -1},
+		{name: "q neg divisor", size: IE64_SIZE_Q, rs: 10, op3: neg3, want: 1},
+		{name: "q both neg", size: IE64_SIZE_Q, rs: neg10, op3: neg3, want: -1},
+		{name: "b narrow neg", size: IE64_SIZE_B, rs: 0xFF, op3: 3, want: -1},
+		{name: "w narrow neg", size: IE64_SIZE_W, rs: 0x8001, op3: 3, want: -1},
+		{name: "l narrow neg", size: IE64_SIZE_L, rs: 0x80000001, op3: 3, want: -1},
+		{name: "immediate", size: IE64_SIZE_Q, rs: 10, op3: 3, want: 1, xbit: 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newIE64TestRig()
+			r.cpu.regs[2] = tc.rs
+			if tc.xbit == 0 {
+				r.cpu.regs[3] = tc.op3
+			}
+			instr := ie64Instr(OP_MODS, 1, tc.size, tc.xbit, 2, 3, uint32(tc.op3))
+			r.executeOne(instr)
+			if got := signExtendToInt64(r.cpu.regs[1], tc.size); got != tc.want {
+				t.Fatalf("result = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestIE64_NEG(t *testing.T) {
 	r := newIE64TestRig()
 	r.cpu.regs[2] = 42
@@ -449,6 +485,58 @@ func TestIE64_NEG(t *testing.T) {
 	r.executeOne(instr)
 	if int64(r.cpu.regs[1]) != -42 {
 		t.Fatalf("R1 = %d (signed), want -42", int64(r.cpu.regs[1]))
+	}
+}
+
+func TestIE64_MULH(t *testing.T) {
+	r := newIE64TestRig()
+	r.cpu.regs[2] = 0xFFFFFFFFFFFFFFFF
+	r.cpu.regs[3] = 0xFFFFFFFFFFFFFFFF
+	r.executeOne(ie64Instr(OP_MULHU, 1, IE64_SIZE_Q, 0, 2, 3, 0))
+	if r.cpu.regs[1] != 0xFFFFFFFFFFFFFFFE {
+		t.Fatalf("MULHU = 0x%X, want 0xFFFFFFFFFFFFFFFE", r.cpu.regs[1])
+	}
+
+	r = newIE64TestRig()
+	r.cpu.regs[2] = ^uint64(1)
+	r.cpu.regs[3] = uint64(int64(3))
+	r.executeOne(ie64Instr(OP_MULHS, 1, IE64_SIZE_Q, 0, 2, 3, 0))
+	if got := int64(r.cpu.regs[1]); got != -1 {
+		t.Fatalf("MULHS = %d, want -1", got)
+	}
+}
+
+func TestIE64_SEXT(t *testing.T) {
+	neg5 := uint64(^uint64(4))
+	tests := []struct {
+		name string
+		size byte
+		val  uint64
+		want int64
+	}{
+		{name: "byte negative", size: IE64_SIZE_B, val: 0xFF, want: -1},
+		{name: "byte positive", size: IE64_SIZE_B, val: 0x7F, want: 127},
+		{name: "word negative", size: IE64_SIZE_W, val: 0x8000, want: -32768},
+		{name: "long negative", size: IE64_SIZE_L, val: 0x80000000, want: -2147483648},
+		{name: "quad passthrough", size: IE64_SIZE_Q, val: neg5, want: -5},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newIE64TestRig()
+			r.cpu.regs[2] = tc.val
+			instr := ie64Instr(OP_SEXT, 1, tc.size, 0, 2, 0, 0)
+			r.executeOne(instr)
+			if got := int64(r.cpu.regs[1]); got != tc.want {
+				t.Fatalf("R1 = %d, want %d", got, tc.want)
+			}
+		})
+	}
+
+	r := newIE64TestRig()
+	r.cpu.regs[2] = 0xFF
+	r.executeOne(ie64Instr(OP_SEXT, 0, IE64_SIZE_B, 0, 2, 0, 0))
+	if r.cpu.regs[0] != 0 {
+		t.Fatalf("R0 = %d, want 0", r.cpu.regs[0])
 	}
 }
 
@@ -543,6 +631,59 @@ func TestIE64_LSL(t *testing.T) {
 	r.executeOne(instr)
 	if r.cpu.regs[1] != 16 {
 		t.Fatalf("R1 = %d, want 16", r.cpu.regs[1])
+	}
+}
+
+func TestIE64_Rotate(t *testing.T) {
+	tests := []struct {
+		name   string
+		opcode byte
+		size   byte
+		value  uint64
+		shift  uint64
+		want   uint64
+	}{
+		{name: "rol.b", opcode: OP_ROL, size: IE64_SIZE_B, value: 0x81, shift: 1, want: 0x03},
+		{name: "ror.b", opcode: OP_ROR, size: IE64_SIZE_B, value: 0x81, shift: 1, want: 0xC0},
+		{name: "rol.w", opcode: OP_ROL, size: IE64_SIZE_W, value: 0x8001, shift: 1, want: 0x0003},
+		{name: "ror.w", opcode: OP_ROR, size: IE64_SIZE_W, value: 0x8001, shift: 1, want: 0xC000},
+		{name: "rol.l", opcode: OP_ROL, size: IE64_SIZE_L, value: 0x80000001, shift: 1, want: 0x00000003},
+		{name: "ror.l", opcode: OP_ROR, size: IE64_SIZE_L, value: 0x80000001, shift: 1, want: 0xC0000000},
+		{name: "rol.q", opcode: OP_ROL, size: IE64_SIZE_Q, value: 0x8000000000000001, shift: 1, want: 0x0000000000000003},
+		{name: "ror.q", opcode: OP_ROR, size: IE64_SIZE_Q, value: 0x8000000000000001, shift: 1, want: 0xC000000000000000},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newIE64TestRig()
+			r.cpu.regs[2] = tc.value
+			r.cpu.regs[3] = tc.shift
+			r.executeOne(ie64Instr(tc.opcode, 1, tc.size, 0, 2, 3, 0))
+			if r.cpu.regs[1] != tc.want {
+				t.Fatalf("R1 = 0x%X, want 0x%X", r.cpu.regs[1], tc.want)
+			}
+		})
+	}
+}
+
+func TestIE64_BitManipulationUnary32(t *testing.T) {
+	r := newIE64TestRig()
+
+	r.cpu.regs[2] = 0
+	r.executeOne(ie64Instr(OP_CTZ, 1, IE64_SIZE_L, 0, 2, 0, 0))
+	if r.cpu.regs[1] != 32 {
+		t.Fatalf("CTZ zero = %d, want 32", r.cpu.regs[1])
+	}
+
+	r.cpu.regs[2] = 0xF0F0F00F
+	r.executeOne(ie64Instr(OP_POPCNT, 1, IE64_SIZE_L, 0, 2, 0, 0))
+	if r.cpu.regs[1] != 16 {
+		t.Fatalf("POPCNT = %d, want 16", r.cpu.regs[1])
+	}
+
+	r.cpu.regs[2] = 0x12345678
+	r.executeOne(ie64Instr(OP_BSWAP, 1, IE64_SIZE_L, 0, 2, 0, 0))
+	if r.cpu.regs[1] != 0x78563412 {
+		t.Fatalf("BSWAP = 0x%X, want 0x78563412", r.cpu.regs[1])
 	}
 }
 
@@ -1274,6 +1415,45 @@ func TestIE64_InvalidOpcode_Immediate(t *testing.T) {
 	}
 	if r.cpu.running.Load() {
 		t.Fatal("running should be false after invalid opcode")
+	}
+}
+
+func TestIE64_FP64_MissingFPU_HaltsImmediately(t *testing.T) {
+	r := newIE64TestRig()
+	r.cpu.FPU = nil
+
+	dadd := ie64Instr(OP_DADD, 0, IE64_SIZE_L, 0, 2, 4, 0)
+	mov := ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 0xDEAD)
+	r.loadInstructions(dadd, mov)
+	r.cpu.running.Store(true)
+	r.cpu.Execute()
+
+	if r.cpu.running.Load() {
+		t.Fatal("running should be false after FP64 op without FPU")
+	}
+	if r.cpu.regs[1] != 0 {
+		t.Fatalf("R1 = 0x%X, want 0 (instruction after missing-FPU fault must not execute)", r.cpu.regs[1])
+	}
+}
+
+func TestIE64_FP64_InvalidRegisterEncoding_HaltsImmediately(t *testing.T) {
+	r := newIE64TestRig()
+	r.cpu.FPU.setDPair(14, math.Pi)
+
+	invalidDMOV := ie64Instr(OP_DMOV, 31, IE64_SIZE_L, 0, 31, 0, 0)
+	mov := ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 0xBEEF)
+	r.loadInstructions(invalidDMOV, mov)
+	r.cpu.running.Store(true)
+	r.cpu.Execute()
+
+	if r.cpu.running.Load() {
+		t.Fatal("running should be false after invalid FP64 register encoding")
+	}
+	if r.cpu.regs[1] != 0 {
+		t.Fatalf("R1 = 0x%X, want 0 (instruction after invalid FP64 register must not execute)", r.cpu.regs[1])
+	}
+	if got := r.cpu.FPU.getDPair(14); got != math.Pi {
+		t.Fatalf("D7 pair changed to %v, want %v", got, math.Pi)
 	}
 }
 

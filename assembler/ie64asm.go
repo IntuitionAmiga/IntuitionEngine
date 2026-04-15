@@ -118,6 +118,9 @@ const (
 	OP64_DIVS    = 0x25
 	OP64_MOD     = 0x26
 	OP64_NEG     = 0x27
+	OP64_MODS    = 0x28
+	OP64_MULHU   = 0x29
+	OP64_MULHS   = 0x2A
 	OP64_AND     = 0x30
 	OP64_OR      = 0x31
 	OP64_EOR     = 0x32
@@ -126,6 +129,12 @@ const (
 	OP64_LSR     = 0x35
 	OP64_ASR     = 0x36
 	OP64_CLZ     = 0x37
+	OP64_SEXT    = 0x38
+	OP64_ROL     = 0x39
+	OP64_ROR     = 0x3A
+	OP64_CTZ     = 0x3B
+	OP64_POPCNT  = 0x3C
+	OP64_BSWAP   = 0x3D
 	OP64_BRA     = 0x40
 	OP64_BEQ     = 0x41
 	OP64_BNE     = 0x42
@@ -170,6 +179,23 @@ const (
 	OP64_FMOVCR  = 0x7A
 	OP64_FMOVSC  = 0x7B
 	OP64_FMOVCC  = 0x7C
+	OP64_DMOV    = 0x80
+	OP64_DLOAD   = 0x81
+	OP64_DSTORE  = 0x82
+	OP64_DADD    = 0x83
+	OP64_DSUB    = 0x84
+	OP64_DMUL    = 0x85
+	OP64_DDIV    = 0x86
+	OP64_DMOD    = 0x87
+	OP64_DABS    = 0x88
+	OP64_DNEG    = 0x89
+	OP64_DSQRT   = 0x8A
+	OP64_DINT    = 0x8B
+	OP64_DCMP    = 0x8C
+	OP64_DCVTIF  = 0x8D
+	OP64_DCVTFI  = 0x8E
+	OP64_FCVTSD  = 0x8F
+	OP64_FCVTDS  = 0x90
 	OP64_NOP     = 0xE0
 
 	OP64_HALT     = 0xE1
@@ -2072,6 +2098,10 @@ func (a *IE64Assembler) assembleInstruction(trimmed string, program []byte) erro
 			"fmovi": true, "fmovo": true, "fsin": true, "fcos": true, "ftan": true,
 			"fatan": true, "flog": true, "fexp": true, "fpow": true, "fmovecr": true,
 			"fmovsr": true, "fmovcr": true, "fmovsc": true, "fmovcc": true,
+			"dmov": true, "dload": true, "dstore": true, "dadd": true, "dsub": true,
+			"dmul": true, "ddiv": true, "dmod": true, "dabs": true, "dneg": true,
+			"dsqrt": true, "dint": true, "dcmp": true, "dcvtif": true, "dcvtfi": true,
+			"fcvtsd": true, "fcvtds": true,
 		}
 		if fpMnemonics[base] && strings.Contains(mnemonicRaw, ".") {
 			return fmt.Errorf("size suffixes not allowed on FP instruction: %s", mnemonicRaw)
@@ -2125,10 +2155,18 @@ func (a *IE64Assembler) assembleInstruction(trimmed string, program []byte) erro
 		instr, err = a.asmALU3(OP64_DIVS, size, operands)
 	case "mod":
 		instr, err = a.asmALU3(OP64_MOD, size, operands)
+	case "mods":
+		instr, err = a.asmALU3(OP64_MODS, size, operands)
+	case "mulhu":
+		instr, err = a.asmQOnlyALU3(OP64_MULHU, mnemonicRaw, size, operands)
+	case "mulhs":
+		instr, err = a.asmQOnlyALU3(OP64_MULHS, mnemonicRaw, size, operands)
 
 	// 2-operand arithmetic
 	case "neg":
 		instr, err = a.asmALU2(OP64_NEG, size, operands)
+	case "sext":
+		instr, err = a.asmALU2(OP64_SEXT, size, operands)
 
 	// 3-operand logical
 	case "and":
@@ -2150,7 +2188,17 @@ func (a *IE64Assembler) assembleInstruction(trimmed string, program []byte) erro
 	case "asr":
 		instr, err = a.asmALU3(OP64_ASR, size, operands)
 	case "clz":
-		instr, err = a.asmALU2(OP64_CLZ, size, operands)
+		instr, err = a.asmLOnlyALU2(OP64_CLZ, mnemonicRaw, size, operands)
+	case "rol":
+		instr, err = a.asmALU3(OP64_ROL, size, operands)
+	case "ror":
+		instr, err = a.asmALU3(OP64_ROR, size, operands)
+	case "ctz":
+		instr, err = a.asmLOnlyALU2(OP64_CTZ, mnemonicRaw, size, operands)
+	case "popcnt":
+		instr, err = a.asmLOnlyALU2(OP64_POPCNT, mnemonicRaw, size, operands)
+	case "bswap":
+		instr, err = a.asmLOnlyALU2(OP64_BSWAP, mnemonicRaw, size, operands)
 
 	// Branches
 	case "bra":
@@ -2249,6 +2297,40 @@ func (a *IE64Assembler) assembleInstruction(trimmed string, program []byte) erro
 		instr, err = a.asmFP_Status(OP64_FMOVSC, operands, true)
 	case "fmovcc":
 		instr, err = a.asmFP_Status(OP64_FMOVCC, operands, true)
+	case "dmov":
+		instr, err = a.asmFP2Even(OP64_DMOV, operands, true, true)
+	case "dload":
+		instr, err = a.asmFPMemEven(OP64_DLOAD, operands)
+	case "dstore":
+		instr, err = a.asmFPMemEven(OP64_DSTORE, operands)
+	case "dadd":
+		instr, err = a.asmFP3Even(OP64_DADD, operands)
+	case "dsub":
+		instr, err = a.asmFP3Even(OP64_DSUB, operands)
+	case "dmul":
+		instr, err = a.asmFP3Even(OP64_DMUL, operands)
+	case "ddiv":
+		instr, err = a.asmFP3Even(OP64_DDIV, operands)
+	case "dmod":
+		instr, err = a.asmFP3Even(OP64_DMOD, operands)
+	case "dabs":
+		instr, err = a.asmFP2Even(OP64_DABS, operands, true, true)
+	case "dneg":
+		instr, err = a.asmFP2Even(OP64_DNEG, operands, true, true)
+	case "dsqrt":
+		instr, err = a.asmFP2Even(OP64_DSQRT, operands, true, true)
+	case "dint":
+		instr, err = a.asmFP2Even(OP64_DINT, operands, true, true)
+	case "dcmp":
+		instr, err = a.asmFP3EvenInt(OP64_DCMP, operands)
+	case "dcvtif":
+		instr, err = a.asmFP2Even(OP64_DCVTIF, operands, false, true)
+	case "dcvtfi":
+		instr, err = a.asmFP2Even(OP64_DCVTFI, operands, true, false)
+	case "fcvtsd":
+		instr, err = a.asmFCVTSD(operands)
+	case "fcvtds":
+		instr, err = a.asmFCVTDS(operands)
 
 	// System
 	case "nop":
@@ -2307,6 +2389,27 @@ func (a *IE64Assembler) assembleInstruction(trimmed string, program []byte) erro
 		a.addListing(a.baseAddr+startOffset, instr, trimmed)
 	}
 	a.codeOffset += instrSize
+	return nil
+}
+
+func (a *IE64Assembler) asmLOnlyALU2(opcode byte, mnemonic string, size byte, operands []string) ([]byte, error) {
+	if size != SIZE_L {
+		return nil, fmt.Errorf("%s requires .l size suffix", mnemonic)
+	}
+	return a.asmALU2(opcode, size, operands)
+}
+
+func (a *IE64Assembler) asmQOnlyALU3(opcode byte, mnemonic string, size byte, operands []string) ([]byte, error) {
+	if size != SIZE_Q {
+		return nil, fmt.Errorf("%s is .q-only and does not accept size suffixes", mnemonic)
+	}
+	return a.asmALU3(opcode, size, operands)
+}
+
+func requireEvenFP(reg byte, operand string) error {
+	if reg&1 != 0 {
+		return fmt.Errorf("%s must use an even-numbered FP register", operand)
+	}
 	return nil
 }
 
@@ -2890,6 +2993,108 @@ func (a *IE64Assembler) asmFP_Status(opcode byte, operands []string, isWrite boo
 		return encodeInstruction(opcode, 0, SIZE_L, 0, reg, 0, 0), nil
 	}
 	return encodeInstruction(opcode, reg, SIZE_L, 0, 0, 0, 0), nil
+}
+
+func (a *IE64Assembler) asmFP2Even(opcode byte, operands []string, isSrcFP, isDstFP bool) ([]byte, error) {
+	instr, err := a.asmFP2(opcode, operands, isSrcFP, isDstFP)
+	if err != nil {
+		return nil, err
+	}
+	if isDstFP {
+		reg, _ := parseFPRegister(operands[0])
+		if err := requireEvenFP(reg, "destination"); err != nil {
+			return nil, err
+		}
+	}
+	if isSrcFP {
+		reg, _ := parseFPRegister(operands[1])
+		if err := requireEvenFP(reg, "source"); err != nil {
+			return nil, err
+		}
+	}
+	return instr, nil
+}
+
+func (a *IE64Assembler) asmFP3Even(opcode byte, operands []string) ([]byte, error) {
+	instr, err := a.asmFP3(opcode, operands)
+	if err != nil {
+		return nil, err
+	}
+	for i, operand := range operands {
+		reg, _ := parseFPRegister(operand)
+		label := "source"
+		if i == 0 {
+			label = "destination"
+		}
+		if err := requireEvenFP(reg, label); err != nil {
+			return nil, err
+		}
+	}
+	return instr, nil
+}
+
+func (a *IE64Assembler) asmFP3EvenInt(opcode byte, operands []string) ([]byte, error) {
+	instr, err := a.asmFP3_Int(opcode, operands)
+	if err != nil {
+		return nil, err
+	}
+	rs, _ := parseFPRegister(operands[1])
+	rt, _ := parseFPRegister(operands[2])
+	if err := requireEvenFP(rs, "source"); err != nil {
+		return nil, err
+	}
+	if err := requireEvenFP(rt, "source"); err != nil {
+		return nil, err
+	}
+	return instr, nil
+}
+
+func (a *IE64Assembler) asmFPMemEven(opcode byte, operands []string) ([]byte, error) {
+	instr, err := a.asmFP_Mem(opcode, operands, opcode == OP64_DLOAD)
+	if err != nil {
+		return nil, err
+	}
+	reg, _ := parseFPRegister(operands[0])
+	if err := requireEvenFP(reg, "FP operand"); err != nil {
+		return nil, err
+	}
+	return instr, nil
+}
+
+func (a *IE64Assembler) asmFCVTSD(operands []string) ([]byte, error) {
+	if len(operands) != 2 {
+		return nil, fmt.Errorf("FPU instruction requires 2 operands")
+	}
+	rd, ok := parseFPRegister(operands[0])
+	if !ok {
+		return nil, fmt.Errorf("invalid destination register: %s", operands[0])
+	}
+	if err := requireEvenFP(rd, "destination"); err != nil {
+		return nil, err
+	}
+	rs, ok := parseFPRegister(operands[1])
+	if !ok {
+		return nil, fmt.Errorf("invalid source register: %s", operands[1])
+	}
+	return encodeInstruction(OP64_FCVTSD, rd, SIZE_L, 0, rs, 0, 0), nil
+}
+
+func (a *IE64Assembler) asmFCVTDS(operands []string) ([]byte, error) {
+	if len(operands) != 2 {
+		return nil, fmt.Errorf("FPU instruction requires 2 operands")
+	}
+	rd, ok := parseFPRegister(operands[0])
+	if !ok {
+		return nil, fmt.Errorf("invalid destination register: %s", operands[0])
+	}
+	rs, ok := parseFPRegister(operands[1])
+	if !ok {
+		return nil, fmt.Errorf("invalid source register: %s", operands[1])
+	}
+	if err := requireEvenFP(rs, "source"); err != nil {
+		return nil, err
+	}
+	return encodeInstruction(OP64_FCVTDS, rd, SIZE_L, 0, rs, 0, 0), nil
 }
 
 // ===========================================================================

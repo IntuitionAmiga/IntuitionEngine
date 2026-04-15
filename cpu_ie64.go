@@ -54,6 +54,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"math/bits"
 	"os"
 	"sync"
@@ -175,16 +176,25 @@ const (
 	OP_DIVS  = 0x25 // Divide signed
 	OP_MOD64 = 0x26 // Modulo
 	OP_NEG   = 0x27 // Negate
+	OP_MODS  = 0x28 // Signed modulo
+	OP_MULHU = 0x29 // Unsigned high multiply
+	OP_MULHS = 0x2A // Signed high multiply
 
 	// Logic
-	OP_AND64 = 0x30 // Bitwise AND
-	OP_OR64  = 0x31 // Bitwise OR
-	OP_EOR   = 0x32 // Bitwise XOR
-	OP_NOT64 = 0x33 // Bitwise NOT
-	OP_LSL   = 0x34 // Logical shift left
-	OP_LSR   = 0x35 // Logical shift right
-	OP_ASR   = 0x36 // Arithmetic shift right
-	OP_CLZ   = 0x37 // Count leading zeros
+	OP_AND64  = 0x30 // Bitwise AND
+	OP_OR64   = 0x31 // Bitwise OR
+	OP_EOR    = 0x32 // Bitwise XOR
+	OP_NOT64  = 0x33 // Bitwise NOT
+	OP_LSL    = 0x34 // Logical shift left
+	OP_LSR    = 0x35 // Logical shift right
+	OP_ASR    = 0x36 // Arithmetic shift right
+	OP_CLZ    = 0x37 // Count leading zeros
+	OP_SEXT   = 0x38 // Sign extend
+	OP_ROL    = 0x39 // Rotate left
+	OP_ROR    = 0x3A // Rotate right
+	OP_CTZ    = 0x3B // Count trailing zeros
+	OP_POPCNT = 0x3C // Population count
+	OP_BSWAP  = 0x3D // Byte swap (32-bit)
 
 	// Branches (compare-and-branch, PC-relative)
 	OP_BRA = 0x40 // Branch always
@@ -235,6 +245,23 @@ const (
 	OP_FMOVCR  = 0x7A // Read FPCR
 	OP_FMOVSC  = 0x7B // Write FPSR
 	OP_FMOVCC  = 0x7C // Write FPCR
+	OP_DMOV    = 0x80 // FP64 reg-pair copy
+	OP_DLOAD   = 0x81 // Memory -> FP64 reg pair
+	OP_DSTORE  = 0x82 // FP64 reg pair -> memory
+	OP_DADD    = 0x83 // FP64 add
+	OP_DSUB    = 0x84 // FP64 subtract
+	OP_DMUL    = 0x85 // FP64 multiply
+	OP_DDIV    = 0x86 // FP64 divide
+	OP_DMOD    = 0x87 // FP64 modulo
+	OP_DABS    = 0x88 // FP64 abs
+	OP_DNEG    = 0x89 // FP64 negate
+	OP_DSQRT   = 0x8A // FP64 sqrt
+	OP_DINT    = 0x8B // FP64 round to integer
+	OP_DCMP    = 0x8C // FP64 compare
+	OP_DCVTIF  = 0x8D // int64 -> float64
+	OP_DCVTFI  = 0x8E // float64 -> int64
+	OP_FCVTSD  = 0x8F // float32 -> float64
+	OP_FCVTDS  = 0x90 // float64 -> float32
 
 	// System
 	OP_NOP64 = 0xE0 // No operation
@@ -498,6 +525,70 @@ var ie64SizeMask = [4]uint64{0xFF, 0xFFFF, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF}
 
 func maskToSize(val uint64, size byte) uint64 {
 	return val & ie64SizeMask[size]
+}
+
+func signExtendToInt64(val uint64, size byte) int64 {
+	switch size {
+	case IE64_SIZE_B:
+		return int64(int8(val))
+	case IE64_SIZE_W:
+		return int64(int16(val))
+	case IE64_SIZE_L:
+		return int64(int32(val))
+	default:
+		return int64(val)
+	}
+}
+
+func rotateLeftToSize(val uint64, shift uint64, size byte) uint64 {
+	switch size {
+	case IE64_SIZE_B:
+		return uint64(bits.RotateLeft8(uint8(val), int(shift&7)))
+	case IE64_SIZE_W:
+		return uint64(bits.RotateLeft16(uint16(val), int(shift&15)))
+	case IE64_SIZE_L:
+		return uint64(bits.RotateLeft32(uint32(val), int(shift&31)))
+	default:
+		return bits.RotateLeft64(val, int(shift&63))
+	}
+}
+
+func rotateRightToSize(val uint64, shift uint64, size byte) uint64 {
+	switch size {
+	case IE64_SIZE_B:
+		return uint64(bits.RotateLeft8(uint8(val), -int(shift&7)))
+	case IE64_SIZE_W:
+		return uint64(bits.RotateLeft16(uint16(val), -int(shift&15)))
+	case IE64_SIZE_L:
+		return uint64(bits.RotateLeft32(uint32(val), -int(shift&31)))
+	default:
+		return bits.RotateLeft64(val, -int(shift&63))
+	}
+}
+
+func mulHighSigned(a, b int64) uint64 {
+	neg := (a < 0) != (b < 0)
+	ua := uint64(a)
+	if a < 0 {
+		ua = uint64(-a)
+	}
+	ub := uint64(b)
+	if b < 0 {
+		ub = uint64(-b)
+	}
+	hi, lo := bits.Mul64(ua, ub)
+	if neg {
+		hi = ^hi
+		lo = ^lo + 1
+		if lo == 0 {
+			hi++
+		}
+	}
+	return hi
+}
+
+func isValidDPairReg(idx byte) bool {
+	return idx <= 15 && (idx&1) == 0
 }
 
 // ------------------------------------------------------------------------------
@@ -961,6 +1052,28 @@ func (cpu *CPU64) Execute() {
 				cpu.regs[rd] = maskToSize(uint64(-int64(cpu.regs[rs])), size)
 			}
 
+		case OP_MODS:
+			if rd != 0 {
+				a := signExtendToInt64(cpu.regs[rs], size)
+				b := signExtendToInt64(operand3, size)
+				if b == 0 {
+					cpu.regs[rd] = 0
+				} else {
+					cpu.regs[rd] = maskToSize(uint64(a%b), size)
+				}
+			}
+
+		case OP_MULHU:
+			if rd != 0 {
+				hi, _ := bits.Mul64(cpu.regs[rs], operand3)
+				cpu.regs[rd] = hi
+			}
+
+		case OP_MULHS:
+			if rd != 0 {
+				cpu.regs[rd] = mulHighSigned(int64(cpu.regs[rs]), int64(operand3))
+			}
+
 		case OP_AND64:
 			if rd != 0 {
 				cpu.regs[rd] = maskToSize(cpu.regs[rs]&operand3, size)
@@ -1011,6 +1124,41 @@ func (cpu *CPU64) Execute() {
 		case OP_CLZ:
 			if rd != 0 {
 				cpu.regs[rd] = uint64(bits.LeadingZeros32(uint32(cpu.regs[rs])))
+			}
+
+		case OP_SEXT:
+			if rd != 0 {
+				switch size {
+				case IE64_SIZE_B, IE64_SIZE_W, IE64_SIZE_L:
+					cpu.regs[rd] = uint64(signExtendToInt64(cpu.regs[rs], size))
+				case IE64_SIZE_Q:
+					cpu.regs[rd] = cpu.regs[rs]
+				}
+			}
+
+		case OP_ROL:
+			if rd != 0 {
+				cpu.regs[rd] = maskToSize(rotateLeftToSize(maskToSize(cpu.regs[rs], size), operand3, size), size)
+			}
+
+		case OP_ROR:
+			if rd != 0 {
+				cpu.regs[rd] = maskToSize(rotateRightToSize(maskToSize(cpu.regs[rs], size), operand3, size), size)
+			}
+
+		case OP_CTZ:
+			if rd != 0 {
+				cpu.regs[rd] = uint64(bits.TrailingZeros32(uint32(cpu.regs[rs])))
+			}
+
+		case OP_POPCNT:
+			if rd != 0 {
+				cpu.regs[rd] = uint64(bits.OnesCount32(uint32(cpu.regs[rs])))
+			}
+
+		case OP_BSWAP:
+			if rd != 0 {
+				cpu.regs[rd] = uint64(bits.ReverseBytes32(uint32(cpu.regs[rs])))
 			}
 
 		case OP_BRA:
@@ -1450,6 +1598,162 @@ func (cpu *CPU64) Execute() {
 			}
 			cpu.FPU.FMOVCC(uint32(cpu.regs[rs]))
 
+		case OP_DMOV:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if !isValidDPairReg(rd) || !isValidDPairReg(rs) {
+				goto invalid_freg
+			}
+			cpu.FPU.setDPair(rd, cpu.FPU.getDPair(rs))
+
+		case OP_DLOAD:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if !isValidDPairReg(rd) {
+				goto invalid_freg
+			}
+			addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
+			val := cpu.loadMem(addr, IE64_SIZE_Q)
+			if cpu.trapped {
+				cpu.trapped = false
+				continue
+			}
+			cpu.FPU.setDPair(rd, math.Float64frombits(val))
+			cpu.FPU.setConditionCodesBits64(val)
+
+		case OP_DSTORE:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if !isValidDPairReg(rd) {
+				goto invalid_freg
+			}
+			addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
+			cpu.storeMem(addr, math.Float64bits(cpu.FPU.getDPair(rd)), IE64_SIZE_Q)
+			if cpu.trapped {
+				cpu.trapped = false
+				continue
+			}
+
+		case OP_DADD:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if !isValidDPairReg(rd) || !isValidDPairReg(rs) || !isValidDPairReg(rt) {
+				goto invalid_freg
+			}
+			cpu.FPU.DADD(rd, rs, rt)
+		case OP_DSUB:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if !isValidDPairReg(rd) || !isValidDPairReg(rs) || !isValidDPairReg(rt) {
+				goto invalid_freg
+			}
+			cpu.FPU.DSUB(rd, rs, rt)
+		case OP_DMUL:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if !isValidDPairReg(rd) || !isValidDPairReg(rs) || !isValidDPairReg(rt) {
+				goto invalid_freg
+			}
+			cpu.FPU.DMUL(rd, rs, rt)
+		case OP_DDIV:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if !isValidDPairReg(rd) || !isValidDPairReg(rs) || !isValidDPairReg(rt) {
+				goto invalid_freg
+			}
+			cpu.FPU.DDIV(rd, rs, rt)
+		case OP_DMOD:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if !isValidDPairReg(rd) || !isValidDPairReg(rs) || !isValidDPairReg(rt) {
+				goto invalid_freg
+			}
+			cpu.FPU.DMOD(rd, rs, rt)
+		case OP_DABS:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if !isValidDPairReg(rd) || !isValidDPairReg(rs) {
+				goto invalid_freg
+			}
+			cpu.FPU.DABS(rd, rs)
+		case OP_DNEG:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if !isValidDPairReg(rd) || !isValidDPairReg(rs) {
+				goto invalid_freg
+			}
+			cpu.FPU.DNEG(rd, rs)
+		case OP_DSQRT:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if !isValidDPairReg(rd) || !isValidDPairReg(rs) {
+				goto invalid_freg
+			}
+			cpu.FPU.DSQRT(rd, rs)
+		case OP_DINT:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if !isValidDPairReg(rd) || !isValidDPairReg(rs) {
+				goto invalid_freg
+			}
+			cpu.FPU.DINT(rd, rs)
+		case OP_DCMP:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if !isValidDPairReg(rs) || !isValidDPairReg(rt) {
+				goto invalid_freg
+			}
+			if rd != 0 {
+				cpu.regs[rd] = uint64(cpu.FPU.DCMP(rs, rt))
+			}
+		case OP_DCVTIF:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if !isValidDPairReg(rd) {
+				goto invalid_freg
+			}
+			cpu.FPU.DCVTIF(rd, cpu.regs[rs])
+		case OP_DCVTFI:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if !isValidDPairReg(rs) {
+				goto invalid_freg
+			}
+			if rd != 0 {
+				cpu.regs[rd] = uint64(cpu.FPU.DCVTFI(rs))
+			}
+		case OP_FCVTSD:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if !isValidDPairReg(rd) || rs > 15 {
+				goto invalid_freg
+			}
+			cpu.FPU.FCVTSD(rd, rs)
+		case OP_FCVTDS:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if rd > 15 || !isValidDPairReg(rs) {
+				goto invalid_freg
+			}
+			cpu.FPU.FCVTDS(rd, rs)
+
 		case OP_NOP64:
 			// default PC advance
 
@@ -1833,6 +2137,25 @@ func (cpu *CPU64) StepOne() int {
 		if rd != 0 {
 			cpu.regs[rd] = maskToSize(uint64(-int64(cpu.regs[rs])), size)
 		}
+	case OP_MODS:
+		if rd != 0 {
+			a := signExtendToInt64(cpu.regs[rs], size)
+			b := signExtendToInt64(operand3, size)
+			if b == 0 {
+				cpu.regs[rd] = 0
+			} else {
+				cpu.regs[rd] = maskToSize(uint64(a%b), size)
+			}
+		}
+	case OP_MULHU:
+		if rd != 0 {
+			hi, _ := bits.Mul64(cpu.regs[rs], operand3)
+			cpu.regs[rd] = hi
+		}
+	case OP_MULHS:
+		if rd != 0 {
+			cpu.regs[rd] = mulHighSigned(int64(cpu.regs[rs]), int64(operand3))
+		}
 	case OP_AND64:
 		if rd != 0 {
 			cpu.regs[rd] = maskToSize(cpu.regs[rs]&operand3, size)
@@ -1876,6 +2199,35 @@ func (cpu *CPU64) StepOne() int {
 	case OP_CLZ:
 		if rd != 0 {
 			cpu.regs[rd] = uint64(bits.LeadingZeros32(uint32(cpu.regs[rs])))
+		}
+	case OP_SEXT:
+		if rd != 0 {
+			switch size {
+			case IE64_SIZE_B, IE64_SIZE_W, IE64_SIZE_L:
+				cpu.regs[rd] = uint64(signExtendToInt64(cpu.regs[rs], size))
+			case IE64_SIZE_Q:
+				cpu.regs[rd] = cpu.regs[rs]
+			}
+		}
+	case OP_ROL:
+		if rd != 0 {
+			cpu.regs[rd] = maskToSize(rotateLeftToSize(maskToSize(cpu.regs[rs], size), operand3, size), size)
+		}
+	case OP_ROR:
+		if rd != 0 {
+			cpu.regs[rd] = maskToSize(rotateRightToSize(maskToSize(cpu.regs[rs], size), operand3, size), size)
+		}
+	case OP_CTZ:
+		if rd != 0 {
+			cpu.regs[rd] = uint64(bits.TrailingZeros32(uint32(cpu.regs[rs])))
+		}
+	case OP_POPCNT:
+		if rd != 0 {
+			cpu.regs[rd] = uint64(bits.OnesCount32(uint32(cpu.regs[rs])))
+		}
+	case OP_BSWAP:
+		if rd != 0 {
+			cpu.regs[rd] = uint64(bits.ReverseBytes32(uint32(cpu.regs[rs])))
 		}
 	case OP_BRA:
 		cpu.PC = uint64(int64(cpu.PC) + int64(int32(imm32)))
@@ -2140,6 +2492,87 @@ func (cpu *CPU64) StepOne() int {
 	case OP_FMOVCC:
 		if cpu.FPU != nil {
 			cpu.FPU.FMOVCC(uint32(cpu.regs[rs]))
+		}
+	case OP_DMOV:
+		if cpu.FPU != nil && isValidDPairReg(rd) && isValidDPairReg(rs) {
+			cpu.FPU.setDPair(rd, cpu.FPU.getDPair(rs))
+		}
+	case OP_DLOAD:
+		if cpu.FPU != nil && isValidDPairReg(rd) {
+			addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
+			val := cpu.loadMem(addr, IE64_SIZE_Q)
+			if cpu.trapped {
+				cpu.trapped = false
+				pcAdvanced = true
+			} else {
+				cpu.FPU.setDPair(rd, math.Float64frombits(val))
+				cpu.FPU.setConditionCodesBits64(val)
+			}
+		}
+	case OP_DSTORE:
+		if cpu.FPU != nil && isValidDPairReg(rd) {
+			addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
+			cpu.storeMem(addr, math.Float64bits(cpu.FPU.getDPair(rd)), IE64_SIZE_Q)
+			if cpu.trapped {
+				cpu.trapped = false
+				pcAdvanced = true
+			}
+		}
+	case OP_DADD:
+		if cpu.FPU != nil && isValidDPairReg(rd) && isValidDPairReg(rs) && isValidDPairReg(rt) {
+			cpu.FPU.DADD(rd, rs, rt)
+		}
+	case OP_DSUB:
+		if cpu.FPU != nil && isValidDPairReg(rd) && isValidDPairReg(rs) && isValidDPairReg(rt) {
+			cpu.FPU.DSUB(rd, rs, rt)
+		}
+	case OP_DMUL:
+		if cpu.FPU != nil && isValidDPairReg(rd) && isValidDPairReg(rs) && isValidDPairReg(rt) {
+			cpu.FPU.DMUL(rd, rs, rt)
+		}
+	case OP_DDIV:
+		if cpu.FPU != nil && isValidDPairReg(rd) && isValidDPairReg(rs) && isValidDPairReg(rt) {
+			cpu.FPU.DDIV(rd, rs, rt)
+		}
+	case OP_DMOD:
+		if cpu.FPU != nil && isValidDPairReg(rd) && isValidDPairReg(rs) && isValidDPairReg(rt) {
+			cpu.FPU.DMOD(rd, rs, rt)
+		}
+	case OP_DABS:
+		if cpu.FPU != nil && isValidDPairReg(rd) && isValidDPairReg(rs) {
+			cpu.FPU.DABS(rd, rs)
+		}
+	case OP_DNEG:
+		if cpu.FPU != nil && isValidDPairReg(rd) && isValidDPairReg(rs) {
+			cpu.FPU.DNEG(rd, rs)
+		}
+	case OP_DSQRT:
+		if cpu.FPU != nil && isValidDPairReg(rd) && isValidDPairReg(rs) {
+			cpu.FPU.DSQRT(rd, rs)
+		}
+	case OP_DINT:
+		if cpu.FPU != nil && isValidDPairReg(rd) && isValidDPairReg(rs) {
+			cpu.FPU.DINT(rd, rs)
+		}
+	case OP_DCMP:
+		if cpu.FPU != nil && isValidDPairReg(rs) && isValidDPairReg(rt) && rd != 0 {
+			cpu.regs[rd] = uint64(cpu.FPU.DCMP(rs, rt))
+		}
+	case OP_DCVTIF:
+		if cpu.FPU != nil && isValidDPairReg(rd) {
+			cpu.FPU.DCVTIF(rd, cpu.regs[rs])
+		}
+	case OP_DCVTFI:
+		if cpu.FPU != nil && isValidDPairReg(rs) && rd != 0 {
+			cpu.regs[rd] = uint64(cpu.FPU.DCVTFI(rs))
+		}
+	case OP_FCVTSD:
+		if cpu.FPU != nil && isValidDPairReg(rd) && rs <= 15 {
+			cpu.FPU.FCVTSD(rd, rs)
+		}
+	case OP_FCVTDS:
+		if cpu.FPU != nil && rd <= 15 && isValidDPairReg(rs) {
+			cpu.FPU.FCVTDS(rd, rs)
 		}
 	case OP_NOP64:
 		// advance PC

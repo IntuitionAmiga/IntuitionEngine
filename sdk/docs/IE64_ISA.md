@@ -244,6 +244,9 @@ When X=1, the third operand is the immediate, zero-extended to 64 bits: `operand
 | MOD      | `0x26` | `mod.s Rd, Rs, Rt` | `Rd = maskToSize(Rs % Rt, s)` (unsigned) | N | B/W/L/Q |
 | MOD      | `0x26` | `mod.s Rd, Rs, #imm` | `Rd = maskToSize(Rs % imm32, s)` (unsigned) | N | B/W/L/Q |
 | NEG      | `0x27` | `neg.s Rd, Rs` | `Rd = maskToSize(-int64(Rs), s)` | N | B/W/L/Q |
+| MODS     | `0x28` | `mods.s Rd, Rs, Rt/#imm` | Signed modulo with truncation-toward-zero semantics | N | B/W/L/Q |
+| MULHU    | `0x29` | `mulhu Rd, Rs, Rt` | Upper 64 bits of unsigned `Rs * Rt` | N | Q |
+| MULHS    | `0x2A` | `mulhs Rd, Rs, Rt` | Upper 64 bits of signed `Rs * Rt` | N | Q |
 
 **Division by zero**: If the divisor (Rt or imm32) is zero, the result is 0 (no exception raised). This applies to DIVU, DIVS, and MOD.
 
@@ -291,6 +294,12 @@ When X=1, the third operand is the immediate, zero-extended to 64 bits: `operand
 | ASR      | `0x36` | `asr.s Rd, Rs, Rt` | `Rd = maskToSize(signedRs >> (Rt & 63), s)` | N | B/W/L/Q |
 | ASR      | `0x36` | `asr.s Rd, Rs, #imm` | `Rd = maskToSize(signedRs >> (imm32 & 63), s)` | N | B/W/L/Q |
 | CLZ      | `0x37` | `clz.l Rd, Rs` | `Rd = LeadingZeros32(uint32(Rs))` | N | L |
+| SEXT     | `0x38` | `sext.s Rd, Rs` | Sign-extend byte/word/long source to 64 bits | N | B/W/L/Q |
+| ROL      | `0x39` | `rol.s Rd, Rs, Rt/#imm` | Rotate left within the selected width | N | B/W/L/Q |
+| ROR      | `0x3A` | `ror.s Rd, Rs, Rt/#imm` | Rotate right within the selected width | N | B/W/L/Q |
+| CTZ      | `0x3B` | `ctz.l Rd, Rs` | `Rd = TrailingZeros32(uint32(Rs))` | N | L |
+| POPCNT   | `0x3C` | `popcnt.l Rd, Rs` | `Rd = OnesCount32(uint32(Rs))` | N | L |
+| BSWAP    | `0x3D` | `bswap.l Rd, Rs` | `Rd = ReverseBytes32(uint32(Rs))` | N | L |
 
 **Shift amount masking**: The shift count is always masked to 6 bits (`& 63`), limiting the effective shift range to 0-63.
 
@@ -315,7 +324,21 @@ The result is then masked to the specified size after the shift.
 
 ### 4.6 Floating Point (FPU)
 
-The IE64 FPU is a dedicated single-precision (32-bit) IEEE-754 coprocessor.
+The IE64 FPU provides native single-precision (`f*`) and double-precision
+(`d*`) IEEE-754 operations. Single-precision values use the 16 scalar registers
+`f0`-`f15`. Double-precision values use even-odd register pairs:
+
+- `d0` = `f0:f1`
+- `d1` = `f2:f3`
+- `d2` = `f4:f5`
+- `d3` = `f6:f7`
+- `d4` = `f8:f9`
+- `d5` = `f10:f11`
+- `d6` = `f12:f13`
+- `d7` = `f14:f15`
+
+All `d*` mnemonics require even-numbered FP operands in assembly. Writing a
+double clobbers both halves of the pair.
 
 #### 4.6.1 FPU Data Movement
 
@@ -401,6 +424,34 @@ The IE64 FPU is a dedicated single-precision (32-bit) IEEE-754 coprocessor.
   - 01: Toward Zero (truncate)
   - 10: Toward -Inf (floor)
   - 11: Toward +Inf (ceil)
+
+#### 4.6.6 Double-Precision (Register Pairs)
+
+| Mnemonic | Opcode | Syntax | Operation |
+|----------|--------|--------|-----------|
+| DMOV     | `0x80` | `dmov fd, fs` | `fd = fs` |
+| DLOAD    | `0x81` | `dload fd, disp(rs)` | `fd = mem64[rs + disp]` |
+| DSTORE   | `0x82` | `dstore fs, disp(rs)` | `mem64[rs + disp] = fs` |
+| DADD     | `0x83` | `dadd fd, fs, ft` | `fd = fs + ft` |
+| DSUB     | `0x84` | `dsub fd, fs, ft` | `fd = fs - ft` |
+| DMUL     | `0x85` | `dmul fd, fs, ft` | `fd = fs * ft` |
+| DDIV     | `0x86` | `ddiv fd, fs, ft` | `fd = fs / ft` |
+| DMOD     | `0x87` | `dmod fd, fs, ft` | `fd = fmod(fs, ft)` |
+| DABS     | `0x88` | `dabs fd, fs` | `fd = \|fs\|` |
+| DNEG     | `0x89` | `dneg fd, fs` | `fd = -fs` |
+| DSQRT    | `0x8A` | `dsqrt fd, fs` | `fd = sqrt(fs)` |
+| DINT     | `0x8B` | `dint fd, fs` | `fd = round(fs)` |
+| DCMP     | `0x8C` | `dcmp rd, fs, ft` | `rd = -1/0/1` |
+| DCVTIF   | `0x8D` | `dcvtif fd, rs` | `fd = float64(int64(rs))` |
+| DCVTFI   | `0x8E` | `dcvtfi rd, fs` | `rd = int64(fs)` (saturating) |
+| FCVTSD   | `0x8F` | `fcvtsd fd, fs` | `fd = float64(float32(fs))` |
+| FCVTDS   | `0x90` | `fcvtds fd, fs` | `fd = float32(float64(fs))` |
+
+Notes:
+- `dload`/`dstore` always transfer 8 bytes.
+- `dcvtfi` saturates to `INT64_MAX`/`INT64_MIN` on overflow and sets IO.
+- `fcvtsd` requires an even destination. `fcvtds` requires an even source.
+- Double-precision opcodes are unsized; size suffixes are not used.
 
 ---
 
@@ -1396,6 +1447,9 @@ When the displacement is zero, the assembler accepts `(Rs)` syntax: `cas Rd, (Rs
 | 0x25   | `$25`  | DIVS     | Arithmetic | Rd, Rs, Rt/#imm |
 | 0x26   | `$26`  | MOD      | Arithmetic | Rd, Rs, Rt/#imm |
 | 0x27   | `$27`  | NEG      | Arithmetic | Rd, Rs |
+| 0x28   | `$28`  | MODS     | Arithmetic | Rd, Rs, Rt/#imm |
+| 0x29   | `$29`  | MULHU    | Arithmetic | Rd, Rs, Rt |
+| 0x2A   | `$2A`  | MULHS    | Arithmetic | Rd, Rs, Rt |
 | 0x30   | `$30`  | AND      | Logical | Rd, Rs, Rt/#imm |
 | 0x31   | `$31`  | OR       | Logical | Rd, Rs, Rt/#imm |
 | 0x32   | `$32`  | EOR      | Logical | Rd, Rs, Rt/#imm |
@@ -1404,6 +1458,12 @@ When the displacement is zero, the assembler accepts `(Rs)` syntax: `cas Rd, (Rs
 | 0x35   | `$35`  | LSR      | Shift | Rd, Rs, Rt/#imm |
 | 0x36   | `$36`  | ASR      | Shift | Rd, Rs, Rt/#imm |
 | 0x37   | `$37`  | CLZ      | Shift | Rd, Rs |
+| 0x38   | `$38`  | SEXT     | Shift | Rd, Rs |
+| 0x39   | `$39`  | ROL      | Shift | Rd, Rs, Rt/#imm |
+| 0x3A   | `$3A`  | ROR      | Shift | Rd, Rs, Rt/#imm |
+| 0x3B   | `$3B`  | CTZ      | Shift | Rd, Rs |
+| 0x3C   | `$3C`  | POPCNT   | Shift | Rd, Rs |
+| 0x3D   | `$3D`  | BSWAP    | Shift | Rd, Rs |
 | 0x40   | `$40`  | BRA      | Branch | label |
 | 0x41   | `$41`  | BEQ      | Branch | Rs, Rt, label |
 | 0x42   | `$42`  | BNE      | Branch | Rs, Rt, label |
@@ -1448,6 +1508,23 @@ When the displacement is zero, the assembler accepts `(Rs)` syntax: `cas Rd, (Rs
 | 0x7A   | `$7A`  | FMOVCR   | FPU | rd |
 | 0x7B   | `$7B`  | FMOVSC   | FPU | rs |
 | 0x7C   | `$7C`  | FMOVCC   | FPU | rs |
+| 0x80   | `$80`  | DMOV     | FPU64 | fd, fs |
+| 0x81   | `$81`  | DLOAD    | FPU64 | fd, disp(rs) |
+| 0x82   | `$82`  | DSTORE   | FPU64 | fd, disp(rs) |
+| 0x83   | `$83`  | DADD     | FPU64 | fd, fs, ft |
+| 0x84   | `$84`  | DSUB     | FPU64 | fd, fs, ft |
+| 0x85   | `$85`  | DMUL     | FPU64 | fd, fs, ft |
+| 0x86   | `$86`  | DDIV     | FPU64 | fd, fs, ft |
+| 0x87   | `$87`  | DMOD     | FPU64 | fd, fs, ft |
+| 0x88   | `$88`  | DABS     | FPU64 | fd, fs |
+| 0x89   | `$89`  | DNEG     | FPU64 | fd, fs |
+| 0x8A   | `$8A`  | DSQRT    | FPU64 | fd, fs |
+| 0x8B   | `$8B`  | DINT     | FPU64 | fd, fs |
+| 0x8C   | `$8C`  | DCMP     | FPU64 | rd, fs, ft |
+| 0x8D   | `$8D`  | DCVTIF   | FPU64 | fd, rs |
+| 0x8E   | `$8E`  | DCVTFI   | FPU64 | rd, fs |
+| 0x8F   | `$8F`  | FCVTSD   | FPU64 | fd, fs |
+| 0x90   | `$90`  | FCVTDS   | FPU64 | fd, fs |
 | 0xE0   | `$E0`  | NOP      | System | (none) |
 | 0xE1   | `$E1`  | HALT     | System | (none) |
 | 0xE2   | `$E2`  | SEI      | System | (none) |

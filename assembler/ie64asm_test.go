@@ -94,22 +94,32 @@ const (
 	opLOAD  = 0x10
 	opSTORE = 0x11
 
-	opADD  = 0x20
-	opSUB  = 0x21
-	opMULU = 0x22
-	opMULS = 0x23
-	opDIVU = 0x24
-	opDIVS = 0x25
-	opMOD  = 0x26
-	opNEG  = 0x27
+	opADD   = 0x20
+	opSUB   = 0x21
+	opMULU  = 0x22
+	opMULS  = 0x23
+	opDIVU  = 0x24
+	opDIVS  = 0x25
+	opMOD   = 0x26
+	opNEG   = 0x27
+	opMODS  = 0x28
+	opMULHU = 0x29
+	opMULHS = 0x2A
 
-	opAND = 0x30
-	opOR  = 0x31
-	opEOR = 0x32
-	opNOT = 0x33
-	opLSL = 0x34
-	opLSR = 0x35
-	opASR = 0x36
+	opAND    = 0x30
+	opOR     = 0x31
+	opEOR    = 0x32
+	opNOT    = 0x33
+	opLSL    = 0x34
+	opLSR    = 0x35
+	opASR    = 0x36
+	opCLZ    = 0x37
+	opSEXT   = 0x38
+	opROL    = 0x39
+	opROR    = 0x3A
+	opCTZ    = 0x3B
+	opPOPCNT = 0x3C
+	opBSWAP  = 0x3D
 
 	opBRA = 0x40
 	opBEQ = 0x41
@@ -157,6 +167,23 @@ const (
 	opFMOVCR  = 0x7A
 	opFMOVSC  = 0x7B
 	opFMOVCC  = 0x7C
+	opDMOV    = 0x80
+	opDLOAD   = 0x81
+	opDSTORE  = 0x82
+	opDADD    = 0x83
+	opDSUB    = 0x84
+	opDMUL    = 0x85
+	opDDIV    = 0x86
+	opDMOD    = 0x87
+	opDABS    = 0x88
+	opDNEG    = 0x89
+	opDSQRT   = 0x8A
+	opDINT    = 0x8B
+	opDCMP    = 0x8C
+	opDCVTIF  = 0x8D
+	opDCVTFI  = 0x8E
+	opFCVTSD  = 0x8F
+	opFCVTDS  = 0x90
 
 	opNOP      = 0xE0
 	opHALT     = 0xE1
@@ -1696,6 +1723,87 @@ func TestIE64Asm_SMODE(t *testing.T) {
 	assertLen(t, bin, 8, "smode")
 	want := encodeInstr(opSMODE, 1, 0, 0, 0, 0, 0)
 	assertBytes(t, bin, 0, want, "smode r1")
+}
+
+func TestIE64Asm_IntegerExtensions(t *testing.T) {
+	tests := []struct {
+		src  string
+		want []byte
+	}{
+		{"sext.b r1, r2", encodeInstr(opSEXT, 1, szB, 0, 2, 0, 0)},
+		{"mods.w r1, r2, r3", encodeInstr(opMODS, 1, szW, 0, 2, 3, 0)},
+		{"mods.q r1, r2, #3", encodeInstr(opMODS, 1, szQ, 1, 2, 0, 3)},
+		{"rol.l r1, r2, r3", encodeInstr(opROL, 1, szL, 0, 2, 3, 0)},
+		{"ror.q r1, r2, #4", encodeInstr(opROR, 1, szQ, 1, 2, 0, 4)},
+		{"ctz.l r1, r2", encodeInstr(opCTZ, 1, szL, 0, 2, 0, 0)},
+		{"popcnt.l r1, r2", encodeInstr(opPOPCNT, 1, szL, 0, 2, 0, 0)},
+		{"bswap.l r1, r2", encodeInstr(opBSWAP, 1, szL, 0, 2, 0, 0)},
+	}
+	for _, tc := range tests {
+		bin := assembleString(t, tc.src)
+		assertLen(t, bin, 8, tc.src)
+		assertBytes(t, bin, 0, tc.want, tc.src)
+	}
+}
+
+func TestIE64Asm_LOnlyUnaryBitOpsRejectWrongSuffix(t *testing.T) {
+	tests := []string{
+		"clz r1, r2",
+		"ctz r1, r2",
+		"popcnt.q r1, r2",
+		"bswap.b r1, r2",
+	}
+	for _, src := range tests {
+		if err := assembleExpectError(t, src); err == nil {
+			t.Fatalf("%s: expected error", src)
+		}
+	}
+}
+
+func TestIE64Asm_QOnlyHighMultiplyRejectsSuffix(t *testing.T) {
+	if err := assembleExpectError(t, "mulhu.l r1, r2, r3"); err == nil {
+		t.Fatal("mulhu.l should fail")
+	}
+	if err := assembleExpectError(t, "mulhs.b r1, r2, r3"); err == nil {
+		t.Fatal("mulhs.b should fail")
+	}
+}
+
+func TestIE64Asm_FP64Encodings(t *testing.T) {
+	tests := []struct {
+		src  string
+		want []byte
+	}{
+		{"dmov f0, f2", encodeInstr(opDMOV, 0, szL, 0, 2, 0, 0)},
+		{"dload f0, 8(r1)", encodeInstr(opDLOAD, 0, szL, 1, 1, 0, 8)},
+		{"dadd f0, f2, f4", encodeInstr(opDADD, 0, szL, 0, 2, 4, 0)},
+		{"dcmp r1, f2, f4", encodeInstr(opDCMP, 1, szL, 0, 2, 4, 0)},
+		{"dcvtif f0, r2", encodeInstr(opDCVTIF, 0, szL, 0, 2, 0, 0)},
+		{"dcvtfi r1, f2", encodeInstr(opDCVTFI, 1, szL, 0, 2, 0, 0)},
+		{"fcvtsd f0, f3", encodeInstr(opFCVTSD, 0, szL, 0, 3, 0, 0)},
+		{"fcvtds f5, f2", encodeInstr(opFCVTDS, 5, szL, 0, 2, 0, 0)},
+	}
+	for _, tc := range tests {
+		bin := assembleString(t, tc.src)
+		assertLen(t, bin, 8, tc.src)
+		assertBytes(t, bin, 0, tc.want, tc.src)
+	}
+}
+
+func TestIE64Asm_FP64EvenValidation(t *testing.T) {
+	tests := []string{
+		"dmov f1, f2",
+		"dadd f0, f1, f2",
+		"dcmp r1, f2, f3",
+		"dload f3, (r1)",
+		"fcvtsd f1, f2",
+		"fcvtds f1, f3",
+	}
+	for _, src := range tests {
+		if err := assembleExpectError(t, src); err == nil {
+			t.Fatalf("%s: expected error", src)
+		}
+	}
 }
 
 func TestIE64Asm_CRNames(t *testing.T) {

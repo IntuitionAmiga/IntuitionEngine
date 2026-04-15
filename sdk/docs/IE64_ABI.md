@@ -61,6 +61,27 @@ assume direct access to control registers except:
 
 All other control registers require supervisor mode.
 
+### 3.3 Floating-Point Registers
+
+Scalar FP32 values use `f0`-`f15`.
+
+Double-precision values use register pairs:
+- `d0` = `f0:f1`
+- `d1` = `f2:f3`
+- `d2` = `f4:f5`
+- `d3` = `f6:f7`
+- `d4` = `f8:f9`
+- `d5` = `f10:f11`
+- `d6` = `f12:f13`
+- `d7` = `f14:f15`
+
+ABI convention:
+- `d0`-`d3` are caller-saved.
+- `d4`-`d7` are callee-saved.
+
+Writing a scalar `f*` register destroys the corresponding half of any live
+double in the enclosing pair. Writing a `d*` register destroys both halves.
+
 ## 4. Function Calling Convention
 
 ### 4.1 Argument Passing

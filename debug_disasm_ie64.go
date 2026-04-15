@@ -25,8 +25,11 @@ var ie64OpcodeNames = map[byte]string{
 	OP_LOAD: "load", OP_STORE: "store",
 	OP_ADD: "add", OP_SUB: "sub", OP_MULU: "mulu", OP_MULS: "muls",
 	OP_DIVU: "divu", OP_DIVS: "divs", OP_MOD64: "mod", OP_NEG: "neg",
+	OP_MODS: "mods", OP_MULHU: "mulhu", OP_MULHS: "mulhs",
 	OP_AND64: "and", OP_OR64: "or", OP_EOR: "eor", OP_NOT64: "not",
 	OP_LSL: "lsl", OP_LSR: "lsr", OP_ASR: "asr", OP_CLZ: "clz",
+	OP_SEXT: "sext", OP_ROL: "rol", OP_ROR: "ror", OP_CTZ: "ctz",
+	OP_POPCNT: "popcnt", OP_BSWAP: "bswap",
 	OP_BRA: "bra", OP_BEQ: "beq", OP_BNE: "bne", OP_BLT: "blt",
 	OP_BGE: "bge", OP_BGT: "bgt", OP_BLE: "ble", OP_BHI: "bhi",
 	OP_BLS: "bls", OP_JMP: "jmp",
@@ -41,6 +44,11 @@ var ie64OpcodeNames = map[byte]string{
 	OP_FLOG: "flog", OP_FEXP: "fexp", OP_FPOW: "fpow",
 	OP_FMOVECR: "fmovecr", OP_FMOVSR: "fmovsr", OP_FMOVCR: "fmovcr",
 	OP_FMOVSC: "fmovsc", OP_FMOVCC: "fmovcc",
+	OP_DMOV: "dmov", OP_DLOAD: "dload", OP_DSTORE: "dstore",
+	OP_DADD: "dadd", OP_DSUB: "dsub", OP_DMUL: "dmul", OP_DDIV: "ddiv",
+	OP_DMOD: "dmod", OP_DABS: "dabs", OP_DNEG: "dneg", OP_DSQRT: "dsqrt",
+	OP_DINT: "dint", OP_DCMP: "dcmp", OP_DCVTIF: "dcvtif", OP_DCVTFI: "dcvtfi",
+	OP_FCVTSD: "fcvtsd", OP_FCVTDS: "fcvtds",
 	OP_NOP64: "nop", OP_HALT64: "halt", OP_SEI64: "sei", OP_CLI64: "cli",
 	OP_RTI64: "rti", OP_WAIT64: "wait",
 	OP_MTCR: "mtcr", OP_MFCR: "mfcr", OP_ERET: "eret",
@@ -73,6 +81,7 @@ func ie64IsSized(op byte) bool {
 		OP_BRA, OP_BEQ, OP_BNE, OP_BLT, OP_BGE, OP_BGT,
 		OP_BLE, OP_BHI, OP_BLS, OP_JMP, OP_JSR64, OP_RTS64,
 		OP_MOVT, OP_MOVEQ, OP_LEA, OP_PUSH64, OP_POP64, OP_JSR_IND,
+		OP_MULHU, OP_MULHS,
 		OP_MTCR, OP_MFCR, OP_ERET, OP_TLBFLUSH, OP_TLBINVAL, OP_SYSCALL, OP_SMODE,
 		OP_CAS, OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR:
 		return false
@@ -81,22 +90,29 @@ func ie64IsSized(op byte) bool {
 	if op >= OP_FMOV && op <= OP_FMOVCC {
 		return false
 	}
+	if op >= OP_DMOV && op <= OP_FCVTDS {
+		return false
+	}
 	return true
 }
 
 func ie64IsALU3(op byte) bool {
 	switch op {
 	case OP_ADD, OP_SUB, OP_MULU, OP_MULS,
-		OP_DIVU, OP_DIVS, OP_MOD64,
+		OP_DIVU, OP_DIVS, OP_MOD64, OP_MODS, OP_MULHU, OP_MULHS,
 		OP_AND64, OP_OR64, OP_EOR,
-		OP_LSL, OP_LSR, OP_ASR:
+		OP_LSL, OP_LSR, OP_ASR, OP_ROL, OP_ROR:
 		return true
 	}
 	return false
 }
 
 func ie64IsUnaryALU(op byte) bool {
-	return op == OP_NEG || op == OP_NOT64 || op == OP_CLZ
+	switch op {
+	case OP_NEG, OP_NOT64, OP_CLZ, OP_SEXT, OP_CTZ, OP_POPCNT, OP_BSWAP:
+		return true
+	}
+	return false
 }
 
 type ie64Decoded struct {
@@ -283,6 +299,8 @@ func ie64FormatInstruction(d ie64Decoded) (string, string) {
 
 	case d.Opcode >= OP_FMOV && d.Opcode <= OP_FMOVCC:
 		return hexBytes, ie64FormatFPU(d, mnemonic)
+	case d.Opcode >= OP_DMOV && d.Opcode <= OP_FCVTDS:
+		return hexBytes, ie64FormatFPU(d, mnemonic)
 
 	default:
 		return hexBytes, fmt.Sprintf("%s ???", mnemonic)
@@ -327,6 +345,34 @@ func ie64FormatFPU(d ie64Decoded, mnemonic string) string {
 		return fmt.Sprintf("%s %s", mnemonic, ie64RegName(d.Rd))
 	case OP_FMOVSC, OP_FMOVCC:
 		return fmt.Sprintf("%s %s", mnemonic, ie64RegName(d.Rs))
+	case OP_DMOV:
+		return fmt.Sprintf("%s %s, %s", mnemonic, fr(d.Rd), fr(d.Rs))
+	case OP_DLOAD:
+		disp := int32(d.Imm32)
+		if disp == 0 {
+			return fmt.Sprintf("%s %s, (%s)", mnemonic, fr(d.Rd), ie64RegName(d.Rs))
+		}
+		return fmt.Sprintf("%s %s, %d(%s)", mnemonic, fr(d.Rd), disp, ie64RegName(d.Rs))
+	case OP_DSTORE:
+		disp := int32(d.Imm32)
+		if disp == 0 {
+			return fmt.Sprintf("%s %s, (%s)", mnemonic, fr(d.Rd), ie64RegName(d.Rs))
+		}
+		return fmt.Sprintf("%s %s, %d(%s)", mnemonic, fr(d.Rd), disp, ie64RegName(d.Rs))
+	case OP_DADD, OP_DSUB, OP_DMUL, OP_DDIV, OP_DMOD:
+		return fmt.Sprintf("%s %s, %s, %s", mnemonic, fr(d.Rd), fr(d.Rs), fr(d.Rt))
+	case OP_DABS, OP_DNEG, OP_DSQRT, OP_DINT:
+		return fmt.Sprintf("%s %s, %s", mnemonic, fr(d.Rd), fr(d.Rs))
+	case OP_DCMP:
+		return fmt.Sprintf("%s %s, %s, %s", mnemonic, ie64RegName(d.Rd), fr(d.Rs), fr(d.Rt))
+	case OP_DCVTIF:
+		return fmt.Sprintf("%s %s, %s", mnemonic, fr(d.Rd), ie64RegName(d.Rs))
+	case OP_DCVTFI:
+		return fmt.Sprintf("%s %s, %s", mnemonic, ie64RegName(d.Rd), fr(d.Rs))
+	case OP_FCVTSD:
+		return fmt.Sprintf("%s %s, %s", mnemonic, fr(d.Rd), fr(d.Rs))
+	case OP_FCVTDS:
+		return fmt.Sprintf("%s %s, %s", mnemonic, fr(d.Rd), fr(d.Rs))
 	default:
 		return mnemonic
 	}

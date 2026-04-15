@@ -47,6 +47,9 @@ const (
 	dis64_DIVS     = 0x25
 	dis64_MOD      = 0x26
 	dis64_NEG      = 0x27
+	dis64_MODS     = 0x28
+	dis64_MULHU    = 0x29
+	dis64_MULHS    = 0x2A
 	dis64_AND      = 0x30
 	dis64_OR       = 0x31
 	dis64_EOR      = 0x32
@@ -54,6 +57,13 @@ const (
 	dis64_LSL      = 0x34
 	dis64_LSR      = 0x35
 	dis64_ASR      = 0x36
+	dis64_CLZ      = 0x37
+	dis64_SEXT     = 0x38
+	dis64_ROL      = 0x39
+	dis64_ROR      = 0x3A
+	dis64_CTZ      = 0x3B
+	dis64_POPCNT   = 0x3C
+	dis64_BSWAP    = 0x3D
 	dis64_BRA      = 0x40
 	dis64_BEQ      = 0x41
 	dis64_BNE      = 0x42
@@ -69,6 +79,23 @@ const (
 	dis64_PUSH     = 0x52
 	dis64_POP      = 0x53
 	dis64_JSRI     = 0x54
+	dis64_DMOV     = 0x80
+	dis64_DLOAD    = 0x81
+	dis64_DSTORE   = 0x82
+	dis64_DADD     = 0x83
+	dis64_DSUB     = 0x84
+	dis64_DMUL     = 0x85
+	dis64_DDIV     = 0x86
+	dis64_DMOD     = 0x87
+	dis64_DABS     = 0x88
+	dis64_DNEG     = 0x89
+	dis64_DSQRT    = 0x8A
+	dis64_DINT     = 0x8B
+	dis64_DCMP     = 0x8C
+	dis64_DCVTIF   = 0x8D
+	dis64_DCVTFI   = 0x8E
+	dis64_FCVTSD   = 0x8F
+	dis64_FCVTDS   = 0x90
 	dis64_NOP      = 0xE0
 	dis64_HALT     = 0xE1
 	dis64_SEI      = 0xE2
@@ -112,6 +139,9 @@ var opcodeNames = map[byte]string{
 	dis64_DIVS:     "divs",
 	dis64_MOD:      "mod",
 	dis64_NEG:      "neg",
+	dis64_MODS:     "mods",
+	dis64_MULHU:    "mulhu",
+	dis64_MULHS:    "mulhs",
 	dis64_AND:      "and",
 	dis64_OR:       "or",
 	dis64_EOR:      "eor",
@@ -119,6 +149,13 @@ var opcodeNames = map[byte]string{
 	dis64_LSL:      "lsl",
 	dis64_LSR:      "lsr",
 	dis64_ASR:      "asr",
+	dis64_CLZ:      "clz",
+	dis64_SEXT:     "sext",
+	dis64_ROL:      "rol",
+	dis64_ROR:      "ror",
+	dis64_CTZ:      "ctz",
+	dis64_POPCNT:   "popcnt",
+	dis64_BSWAP:    "bswap",
 	dis64_BRA:      "bra",
 	dis64_BEQ:      "beq",
 	dis64_BNE:      "bne",
@@ -134,6 +171,23 @@ var opcodeNames = map[byte]string{
 	dis64_PUSH:     "push",
 	dis64_POP:      "pop",
 	dis64_JSRI:     "jsr",
+	dis64_DMOV:     "dmov",
+	dis64_DLOAD:    "dload",
+	dis64_DSTORE:   "dstore",
+	dis64_DADD:     "dadd",
+	dis64_DSUB:     "dsub",
+	dis64_DMUL:     "dmul",
+	dis64_DDIV:     "ddiv",
+	dis64_DMOD:     "dmod",
+	dis64_DABS:     "dabs",
+	dis64_DNEG:     "dneg",
+	dis64_DSQRT:    "dsqrt",
+	dis64_DINT:     "dint",
+	dis64_DCMP:     "dcmp",
+	dis64_DCVTIF:   "dcvtif",
+	dis64_DCVTFI:   "dcvtfi",
+	dis64_FCVTSD:   "fcvtsd",
+	dis64_FCVTDS:   "fcvtds",
 	dis64_NOP:      "nop",
 	dis64_HALT:     "halt",
 	dis64_SEI:      "sei",
@@ -258,9 +312,13 @@ func isSized(op byte) bool {
 		dis64_BRA, dis64_BEQ, dis64_BNE, dis64_BLT, dis64_BGE, dis64_BGT,
 		dis64_BLE, dis64_BHI, dis64_BLS, dis64_JMP, dis64_JSR, dis64_RTS,
 		dis64_MOVT, dis64_MOVEQ, dis64_LEA, dis64_PUSH, dis64_POP, dis64_JSRI,
+		dis64_MULHU, dis64_MULHS,
 		dis64_MTCR, dis64_MFCR, dis64_ERET, dis64_TLBFLUSH, dis64_TLBINVAL,
 		dis64_SYSCALL, dis64_SMODE,
 		dis64_CAS, dis64_XCHG, dis64_FAA, dis64_FAND, dis64_FOR, dis64_FXOR:
+		return false
+	}
+	if op >= dis64_DMOV && op <= dis64_FCVTDS {
 		return false
 	}
 	return true
@@ -270,9 +328,9 @@ func isSized(op byte) bool {
 func isALU3(op byte) bool {
 	switch op {
 	case dis64_ADD, dis64_SUB, dis64_MULU, dis64_MULS,
-		dis64_DIVU, dis64_DIVS, dis64_MOD,
+		dis64_DIVU, dis64_DIVS, dis64_MOD, dis64_MODS, dis64_MULHU, dis64_MULHS,
 		dis64_AND, dis64_OR, dis64_EOR,
-		dis64_LSL, dis64_LSR, dis64_ASR:
+		dis64_LSL, dis64_LSR, dis64_ASR, dis64_ROL, dis64_ROR:
 		return true
 	}
 	return false
@@ -280,7 +338,11 @@ func isALU3(op byte) bool {
 
 // isUnaryALU returns true for two-operand ALU ops (Rd, Rs).
 func isUnaryALU(op byte) bool {
-	return op == dis64_NEG || op == dis64_NOT
+	switch op {
+	case dis64_NEG, dis64_NOT, dis64_CLZ, dis64_SEXT, dis64_CTZ, dis64_POPCNT, dis64_BSWAP:
+		return true
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------
@@ -474,6 +536,32 @@ func FormatInstruction(d DecodedInstruction) (string, string) {
 	// POP: Rd
 	case d.Opcode == dis64_POP:
 		return hexBytes, fmt.Sprintf("%s %s", mnemonic, regName(d.Rd))
+
+	case d.Opcode >= dis64_DMOV && d.Opcode <= dis64_FCVTDS:
+		fr := func(r byte) string { return fmt.Sprintf("f%d", r) }
+		switch d.Opcode {
+		case dis64_DMOV:
+			return hexBytes, fmt.Sprintf("%s %s, %s", mnemonic, fr(d.Rd), fr(d.Rs))
+		case dis64_DLOAD, dis64_DSTORE:
+			disp := int32(d.Imm32)
+			if disp == 0 {
+				return hexBytes, fmt.Sprintf("%s %s, (%s)", mnemonic, fr(d.Rd), regName(d.Rs))
+			}
+			return hexBytes, fmt.Sprintf("%s %s, %d(%s)", mnemonic, fr(d.Rd), disp, regName(d.Rs))
+		case dis64_DADD, dis64_DSUB, dis64_DMUL, dis64_DDIV, dis64_DMOD:
+			return hexBytes, fmt.Sprintf("%s %s, %s, %s", mnemonic, fr(d.Rd), fr(d.Rs), fr(d.Rt))
+		case dis64_DABS, dis64_DNEG, dis64_DSQRT, dis64_DINT:
+			return hexBytes, fmt.Sprintf("%s %s, %s", mnemonic, fr(d.Rd), fr(d.Rs))
+		case dis64_DCMP:
+			return hexBytes, fmt.Sprintf("%s %s, %s, %s", mnemonic, regName(d.Rd), fr(d.Rs), fr(d.Rt))
+		case dis64_DCVTIF:
+			return hexBytes, fmt.Sprintf("%s %s, %s", mnemonic, fr(d.Rd), regName(d.Rs))
+		case dis64_DCVTFI:
+			return hexBytes, fmt.Sprintf("%s %s, %s", mnemonic, regName(d.Rd), fr(d.Rs))
+		case dis64_FCVTSD, dis64_FCVTDS:
+			return hexBytes, fmt.Sprintf("%s %s, %s", mnemonic, fr(d.Rd), fr(d.Rs))
+		}
+		return hexBytes, fmt.Sprintf("%s ???", mnemonic)
 
 	default:
 		return hexBytes, fmt.Sprintf("%s ???", mnemonic)

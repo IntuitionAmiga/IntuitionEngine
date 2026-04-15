@@ -57,7 +57,7 @@ func (cpu *CPU64) freeJIT() {
 func compileBlockMMU(instrs []JITInstr, startPC uint32, execMem *ExecMem) (*JITBlock, error) {
 	for i := range instrs {
 		switch instrs[i].opcode {
-		case OP_LOAD, OP_STORE, OP_FLOAD, OP_FSTORE,
+		case OP_LOAD, OP_STORE, OP_FLOAD, OP_FSTORE, OP_DLOAD, OP_DSTORE,
 			OP_JSR64, OP_RTS64, OP_PUSH64, OP_POP64, OP_JSR_IND,
 			OP_CAS, OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR:
 			instrs[i].mmuBail = true

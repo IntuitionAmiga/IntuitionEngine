@@ -182,6 +182,71 @@ func TestIE64Dis_BasicDecode(t *testing.T) {
 			contains: "asr.l r3, r4, r5",
 		},
 		{
+			name:     "CLZ",
+			instr:    encodeInstr(dis64_CLZ, 1, 2, 0, 2, 0, 0),
+			contains: "clz.l r1, r2",
+		},
+		{
+			name:     "SEXT",
+			instr:    encodeInstr(dis64_SEXT, 1, 1, 0, 2, 0, 0),
+			contains: "sext.w r1, r2",
+		},
+		{
+			name:     "MODS",
+			instr:    encodeInstr(dis64_MODS, 1, 2, 0, 2, 3, 0),
+			contains: "mods.l r1, r2, r3",
+		},
+		{
+			name:     "ROL",
+			instr:    encodeInstr(dis64_ROL, 1, 3, 1, 2, 0, 4),
+			contains: "rol.q r1, r2, #$4",
+		},
+		{
+			name:     "ROR",
+			instr:    encodeInstr(dis64_ROR, 1, 0, 0, 2, 3, 0),
+			contains: "ror.b r1, r2, r3",
+		},
+		{
+			name:     "CTZ",
+			instr:    encodeInstr(dis64_CTZ, 1, 2, 0, 2, 0, 0),
+			contains: "ctz.l r1, r2",
+		},
+		{
+			name:     "POPCNT",
+			instr:    encodeInstr(dis64_POPCNT, 1, 2, 0, 2, 0, 0),
+			contains: "popcnt.l r1, r2",
+		},
+		{
+			name:     "BSWAP",
+			instr:    encodeInstr(dis64_BSWAP, 1, 2, 0, 2, 0, 0),
+			contains: "bswap.l r1, r2",
+		},
+		{
+			name:     "DMOV",
+			instr:    encodeInstr(dis64_DMOV, 0, 2, 0, 2, 0, 0),
+			contains: "dmov f0, f2",
+		},
+		{
+			name:     "DADD",
+			instr:    encodeInstr(dis64_DADD, 0, 2, 0, 2, 4, 0),
+			contains: "dadd f0, f2, f4",
+		},
+		{
+			name:     "DCMP",
+			instr:    encodeInstr(dis64_DCMP, 1, 2, 0, 2, 4, 0),
+			contains: "dcmp r1, f2, f4",
+		},
+		{
+			name:     "FCVTSD",
+			instr:    encodeInstr(dis64_FCVTSD, 0, 2, 0, 3, 0, 0),
+			contains: "fcvtsd f0, f3",
+		},
+		{
+			name:     "FCVTDS",
+			instr:    encodeInstr(dis64_FCVTDS, 5, 2, 0, 2, 0, 0),
+			contains: "fcvtds f5, f2",
+		},
+		{
 			name:     "BRA",
 			instr:    encodeInstr(dis64_BRA, 0, 0, 0, 0, 0, 0x10),
 			contains: "bra $001010",
@@ -839,5 +904,14 @@ func TestIE64Dis_MFCR_CR6(t *testing.T) {
 	_, asm := FormatInstruction(d)
 	if !strings.Contains(asm, "mfcr r1, cr6") {
 		t.Errorf("MFCR CR6: expected 'mfcr r1, cr6', got %q", asm)
+	}
+}
+
+func TestIE64Dis_HighMultiplyUnsized(t *testing.T) {
+	instr := encodeInstr(dis64_MULHU, 1, 0, 0, 2, 3, 0)
+	d := Decode(instr, 0x1000)
+	_, asm := FormatInstruction(d)
+	if !strings.Contains(asm, "mulhu r1, r2, r3") {
+		t.Fatalf("unexpected disassembly: %q", asm)
 	}
 }

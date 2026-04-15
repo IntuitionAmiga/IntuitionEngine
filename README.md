@@ -172,7 +172,7 @@ The Intuition Engine is a virtual machine that emulates a complete retro-style c
 | **Z80** | 8-bit | AF, BC, DE, HL + alternates, IX, IY | Full instruction set, interrupt modes, x86-64 JIT with block chaining |
 | **6502** | 8-bit | A, X, Y | NMOS instruction set, fast inline interpreter with direct-page-bitmap memory fast path, x86-64 JIT with 7-9x speedup on compute-bound workloads |
 | **x86** | 32-bit | EAX-EDX, ESI, EDI, EBP, ESP | 8086 instructions + 32-bit registers, flat memory model |
-| **IE64** | 64-bit RISC | 32 general-purpose (R0=zero, R31=SP) | ARM64/x86-64 JIT compiler, native FP32 FPU, compare-and-branch, no flags register, MMU with paged virtual memory and user/supervisor privilege levels, atomic memory operations (CAS/XCHG/FAA), TLS register |
+| **IE64** | 64-bit RISC | 32 general-purpose (R0=zero, R31=SP) | ARM64/x86-64 JIT compiler, native FP32/FP64 FPU, compare-and-branch, no flags register, MMU with paged virtual memory and user/supervisor privilege levels, atomic memory operations (CAS/XCHG/FAA), TLS register |
 
 Default core: **IE64**. Additional cores: **IE32, M68K, x86, Z80, 6502**.
 
@@ -3458,21 +3458,27 @@ my_func:
 
 ## 9.5 FPU Logic
 
-The IE64 includes a dedicated hardware Floating-Point Unit (FPU) for IEEE-754 single-precision arithmetic.
+The IE64 includes a dedicated Floating-Point Unit (FPU) for IEEE-754 single-
+precision and register-pair double-precision arithmetic.
 
 ### FPU Register File
 - **F0–F15**: 16 dedicated 32-bit registers for floating-point bit patterns.
+- **D0–D7**: FP64 register pairs mapped as `D0=F0:F1`, `D1=F2:F3`, ... `D7=F14:F15`.
 - **FPSR**: Status register containing overwritten condition codes (N, Z, I, NaN) and sticky exception flags (IO, DZ, OE, UE).
 - **FPCR**: Control register for setting the rounding mode (Nearest, Zero, Floor, Ceil).
 
-### Native FPU Instructions (30)
+### Native FPU Instructions
 - **Arithmetic**: FADD, FSUB, FMUL, FDIV, FMOD, FABS, FNEG, FSQRT, FINT
 - **Compare**: FCMP (three-way compare: returns -1, 0, or +1 in integer register Rd)
 - **Transcendentals**: FSIN, FCOS, FTAN, FATAN, FLOG, FEXP, FPOW
 - **Movement/Conversion**: FMOV, FLOAD, FSTORE, FCVTIF (int→float), FCVTFI (float→int), FMOVI, FMOVO (bitwise reinterpret)
 - **Status/Constants**: FMOVSR, FMOVCR, FMOVSC, FMOVCC, FMOVECR (load ROM Pi, e, etc.)
+- **FP64 Arithmetic**: DADD, DSUB, DMUL, DDIV, DMOD, DABS, DNEG, DSQRT, DINT
+- **FP64 Movement/Conversion**: DMOV, DLOAD, DSTORE, DCMP, DCVTIF, DCVTFI, FCVTSD, FCVTDS
 
-FPU instructions are strictly 32-bit; the assembler rejects size suffixes on these mnemonics.
+FPU instructions are unsized; the assembler rejects size suffixes on both the
+`f*` and `d*` families. FP64 uses even-numbered operands because each double
+occupies an even-odd register pair.
 
 ## 9.6 Memory and I/O Integration
 

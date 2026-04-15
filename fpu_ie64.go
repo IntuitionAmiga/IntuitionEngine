@@ -37,6 +37,8 @@ const IE64_FPU_FPSR_MASK uint32 = 0x0F00000F // CC bits (27:24) | Exception bits
 // Pre-computed constants for saturation
 var fp32MaxInt32 = float32(math.MaxInt32)
 var fp32MinInt32 = float32(math.MinInt32)
+var fp64MaxInt64 = float64(math.MaxInt64)
+var fp64MinInt64 = float64(math.MinInt64)
 
 // =============================================================================
 // IEEE-754 Bit Helpers
@@ -45,6 +47,11 @@ var fp32MinInt32 = float32(math.MinInt32)
 func isNaN32(bits uint32) bool  { return (bits&0x7F800000 == 0x7F800000) && (bits&0x007FFFFF != 0) }
 func isInf32(bits uint32) bool  { return (bits & 0x7FFFFFFF) == 0x7F800000 }
 func isZero32(bits uint32) bool { return (bits & 0x7FFFFFFF) == 0 }
+func isNaN64(bits uint64) bool {
+	return (bits&0x7FF0000000000000 == 0x7FF0000000000000) && (bits&0x000FFFFFFFFFFFFF != 0)
+}
+func isInf64(bits uint64) bool  { return (bits & 0x7FFFFFFFFFFFFFFF) == 0x7FF0000000000000 }
+func isZero64(bits uint64) bool { return (bits & 0x7FFFFFFFFFFFFFFF) == 0 }
 
 // =============================================================================
 // IE64FPU - FPU State and Registers
@@ -104,6 +111,27 @@ func (fpu *IE64FPU) setConditionCodesBits(bits uint32) {
 	fpu.FPSR = (fpu.FPSR & ^uint32(0x0F000000)) | cc
 }
 
+func (fpu *IE64FPU) setConditionCodesBits64(bits uint64) {
+	cc := uint32(0)
+	exp := bits & 0x7FF0000000000000
+	frac := bits & 0x000FFFFFFFFFFFFF
+	if exp == 0x7FF0000000000000 {
+		if frac != 0 {
+			cc = IE64_FPU_CC_NAN
+		} else {
+			cc = IE64_FPU_CC_I
+			if bits>>63 != 0 {
+				cc |= IE64_FPU_CC_N
+			}
+		}
+	} else if exp|frac == 0 {
+		cc = IE64_FPU_CC_Z
+	} else if bits>>63 != 0 {
+		cc = IE64_FPU_CC_N
+	}
+	fpu.FPSR = (fpu.FPSR & ^uint32(0x0F000000)) | cc
+}
+
 // setExceptionFlag sets a sticky exception flag in FPSR.
 func (fpu *IE64FPU) setExceptionFlag(flag uint32) {
 	fpu.FPSR |= flag
@@ -119,6 +147,20 @@ func (fpu *IE64FPU) getFReg(idx byte) float32 {
 
 func (fpu *IE64FPU) setFReg(idx byte, val float32) {
 	fpu.FPRegs[idx&0x0F] = math.Float32bits(val)
+}
+
+func (fpu *IE64FPU) getDPair(idx byte) float64 {
+	base := idx & 0x0E
+	lo := fpu.FPRegs[base]
+	hi := fpu.FPRegs[base|1]
+	return math.Float64frombits(uint64(lo) | uint64(hi)<<32)
+}
+
+func (fpu *IE64FPU) setDPair(idx byte, val float64) {
+	bits := math.Float64bits(val)
+	base := idx & 0x0E
+	fpu.FPRegs[base] = uint32(bits)
+	fpu.FPRegs[base|1] = uint32(bits >> 32)
 }
 
 // ------------------------------------------------------------------------------
@@ -355,6 +397,128 @@ func (fpu *IE64FPU) FPOW(fd, fs, ft byte) {
 	fpu.setConditionCodesBits(resBits)
 }
 
+func (fpu *IE64FPU) DADD(fd, fs, ft byte) {
+	sBits := math.Float64bits(fpu.getDPair(fs))
+	tBits := math.Float64bits(fpu.getDPair(ft))
+	res := fpu.getDPair(fs) + fpu.getDPair(ft)
+	resBits := math.Float64bits(res)
+	if isInf64(resBits) && !isInf64(sBits) && !isInf64(tBits) {
+		fpu.setExceptionFlag(IE64_FPU_EX_OE)
+	}
+	if isNaN64(resBits) && !isNaN64(sBits) && !isNaN64(tBits) {
+		fpu.setExceptionFlag(IE64_FPU_EX_IO)
+	}
+	fpu.setDPair(fd, res)
+	fpu.setConditionCodesBits64(resBits)
+}
+
+func (fpu *IE64FPU) DSUB(fd, fs, ft byte) {
+	sBits := math.Float64bits(fpu.getDPair(fs))
+	tBits := math.Float64bits(fpu.getDPair(ft))
+	res := fpu.getDPair(fs) - fpu.getDPair(ft)
+	resBits := math.Float64bits(res)
+	if isInf64(resBits) && !isInf64(sBits) && !isInf64(tBits) {
+		fpu.setExceptionFlag(IE64_FPU_EX_OE)
+	}
+	if isNaN64(resBits) && !isNaN64(sBits) && !isNaN64(tBits) {
+		fpu.setExceptionFlag(IE64_FPU_EX_IO)
+	}
+	fpu.setDPair(fd, res)
+	fpu.setConditionCodesBits64(resBits)
+}
+
+func (fpu *IE64FPU) DMUL(fd, fs, ft byte) {
+	sBits := math.Float64bits(fpu.getDPair(fs))
+	tBits := math.Float64bits(fpu.getDPair(ft))
+	res := fpu.getDPair(fs) * fpu.getDPair(ft)
+	resBits := math.Float64bits(res)
+	if isInf64(resBits) && !isInf64(sBits) && !isInf64(tBits) {
+		fpu.setExceptionFlag(IE64_FPU_EX_OE)
+	}
+	if isNaN64(resBits) && !isNaN64(sBits) && !isNaN64(tBits) {
+		fpu.setExceptionFlag(IE64_FPU_EX_IO)
+	}
+	if isZero64(resBits) && !isZero64(sBits) && !isZero64(tBits) {
+		fpu.setExceptionFlag(IE64_FPU_EX_UE)
+	}
+	fpu.setDPair(fd, res)
+	fpu.setConditionCodesBits64(resBits)
+}
+
+func (fpu *IE64FPU) DDIV(fd, fs, ft byte) {
+	sBits := math.Float64bits(fpu.getDPair(fs))
+	tBits := math.Float64bits(fpu.getDPair(ft))
+	if isZero64(tBits) && !isZero64(sBits) && !isNaN64(sBits) {
+		fpu.setExceptionFlag(IE64_FPU_EX_DZ)
+	}
+	res := fpu.getDPair(fs) / fpu.getDPair(ft)
+	resBits := math.Float64bits(res)
+	if isInf64(resBits) && !isInf64(sBits) && !isZero64(tBits) {
+		fpu.setExceptionFlag(IE64_FPU_EX_OE)
+	}
+	if isNaN64(resBits) && !isNaN64(sBits) && !isNaN64(tBits) {
+		fpu.setExceptionFlag(IE64_FPU_EX_IO)
+	}
+	if isZero64(resBits) && !isZero64(sBits) && !isZero64(tBits) && !isInf64(tBits) {
+		fpu.setExceptionFlag(IE64_FPU_EX_UE)
+	}
+	fpu.setDPair(fd, res)
+	fpu.setConditionCodesBits64(resBits)
+}
+
+func (fpu *IE64FPU) DMOD(fd, fs, ft byte) {
+	sBits := math.Float64bits(fpu.getDPair(fs))
+	tBits := math.Float64bits(fpu.getDPair(ft))
+	res := math.Mod(fpu.getDPair(fs), fpu.getDPair(ft))
+	resBits := math.Float64bits(res)
+	if isNaN64(resBits) && !isNaN64(sBits) && !isNaN64(tBits) {
+		fpu.setExceptionFlag(IE64_FPU_EX_IO)
+	}
+	fpu.setDPair(fd, res)
+	fpu.setConditionCodesBits64(resBits)
+}
+
+func (fpu *IE64FPU) DABS(fd, fs byte) {
+	bits := math.Float64bits(fpu.getDPair(fs)) &^ (uint64(1) << 63)
+	fpu.setDPair(fd, math.Float64frombits(bits))
+	fpu.setConditionCodesBits64(bits)
+}
+
+func (fpu *IE64FPU) DNEG(fd, fs byte) {
+	bits := math.Float64bits(fpu.getDPair(fs)) ^ (uint64(1) << 63)
+	fpu.setDPair(fd, math.Float64frombits(bits))
+	fpu.setConditionCodesBits64(bits)
+}
+
+func (fpu *IE64FPU) DSQRT(fd, fs byte) {
+	sBits := math.Float64bits(fpu.getDPair(fs))
+	if (sBits&(uint64(1)<<63)) != 0 && !isZero64(sBits) && !isNaN64(sBits) {
+		fpu.setExceptionFlag(IE64_FPU_EX_IO)
+	}
+	res := math.Sqrt(fpu.getDPair(fs))
+	resBits := math.Float64bits(res)
+	fpu.setDPair(fd, res)
+	fpu.setConditionCodesBits64(resBits)
+}
+
+func (fpu *IE64FPU) DINT(fd, fs byte) {
+	s := fpu.getDPair(fs)
+	var res float64
+	switch fpu.GetRoundingMode() {
+	case IE64_FPU_RND_ZERO:
+		res = math.Trunc(s)
+	case IE64_FPU_RND_FLOOR:
+		res = math.Floor(s)
+	case IE64_FPU_RND_CEIL:
+		res = math.Ceil(s)
+	default:
+		res = math.RoundToEven(s)
+	}
+	resBits := math.Float64bits(res)
+	fpu.setDPair(fd, res)
+	fpu.setConditionCodesBits64(resBits)
+}
+
 // ------------------------------------------------------------------------------
 // Comparison and Conversion
 // ------------------------------------------------------------------------------
@@ -425,6 +589,74 @@ func (fpu *IE64FPU) FCVTFI(fs byte) int32 {
 	}
 
 	return int32(s)
+}
+
+func (fpu *IE64FPU) DCMP(fs, ft byte) int64 {
+	sBits := math.Float64bits(fpu.getDPair(fs))
+	tBits := math.Float64bits(fpu.getDPair(ft))
+	s := math.Float64frombits(sBits)
+	t := math.Float64frombits(tBits)
+
+	fpu.FPSR &= ^(IE64_FPU_CC_N | IE64_FPU_CC_Z | IE64_FPU_CC_I | IE64_FPU_CC_NAN)
+	if isNaN64(sBits) || isNaN64(tBits) {
+		fpu.FPSR |= IE64_FPU_CC_NAN
+		fpu.setExceptionFlag(IE64_FPU_EX_IO)
+		return 0
+	}
+	if s < t {
+		fpu.FPSR |= IE64_FPU_CC_N
+		return -1
+	}
+	if s > t {
+		if isInf64(sBits) && (sBits>>63) == 0 {
+			fpu.FPSR |= IE64_FPU_CC_I
+		}
+		return 1
+	}
+	fpu.FPSR |= IE64_FPU_CC_Z
+	if isInf64(sBits) {
+		fpu.FPSR |= IE64_FPU_CC_I
+		if (sBits >> 63) != 0 {
+			fpu.FPSR |= IE64_FPU_CC_N
+		}
+	}
+	return 0
+}
+
+func (fpu *IE64FPU) DCVTIF(fd byte, rs uint64) {
+	res := float64(int64(rs))
+	fpu.setDPair(fd, res)
+	fpu.setConditionCodesBits64(math.Float64bits(res))
+}
+
+func (fpu *IE64FPU) DCVTFI(fs byte) int64 {
+	sBits := math.Float64bits(fpu.getDPair(fs))
+	s := math.Float64frombits(sBits)
+	if isNaN64(sBits) {
+		fpu.setExceptionFlag(IE64_FPU_EX_IO)
+		return 0
+	}
+	if s > fp64MaxInt64 {
+		fpu.setExceptionFlag(IE64_FPU_EX_IO)
+		return math.MaxInt64
+	}
+	if s < fp64MinInt64 {
+		fpu.setExceptionFlag(IE64_FPU_EX_IO)
+		return math.MinInt64
+	}
+	return int64(s)
+}
+
+func (fpu *IE64FPU) FCVTSD(fd, fs byte) {
+	res := float64(fpu.getFReg(fs))
+	fpu.setDPair(fd, res)
+	fpu.setConditionCodesBits64(math.Float64bits(res))
+}
+
+func (fpu *IE64FPU) FCVTDS(fd, fs byte) {
+	res := float32(fpu.getDPair(fs))
+	fpu.setFReg(fd, res)
+	fpu.setConditionCodesBits(math.Float32bits(res))
 }
 
 // FMOVI: bitwise int reg -> FP reg

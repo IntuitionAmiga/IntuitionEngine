@@ -1185,6 +1185,29 @@ Notes:
 - `fmovecr` provides high-precision constants like Pi and e from internal ROM.
 - Exception flags in FPSR are sticky; use `fmovsc` to clear them. `fmovsc` automatically masks reserved bits.
 
+### Double-Precision Register Pairs
+
+Double-precision uses even-odd register pairs. `f0:f1` is `d0`, `f2:f3` is
+`d1`, and so on through `f14:f15`.
+
+```asm
+; Compute c = sqrt(a*a + b*b) using double precision.
+; a in d2 (f4:f5), b in d3 (f6:f7), result in d0 (f0:f1)
+
+                dmul    f8, f4, f4
+                dmul    f10, f6, f6
+                dadd    f0, f8, f10
+                dsqrt   f0, f0
+```
+
+```asm
+; int64 <-> float64, then back to float32
+                dcvtif  f0, r1
+                dint    f0, f0
+                dcvtfi  r2, f0
+                fcvtds  f5, f0
+```
+
 ---
 
 ## MMU Programming

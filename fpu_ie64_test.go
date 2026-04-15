@@ -304,6 +304,68 @@ func TestIE64FPU_Conversions(t *testing.T) {
 	})
 }
 
+func TestIE64FPU_DoubleRegisterPairs(t *testing.T) {
+	fpu := NewIE64FPU()
+	fpu.setDPair(2, math.Pi)
+	if got := fpu.getDPair(2); got != math.Pi {
+		t.Fatalf("getDPair = %v, want %v", got, math.Pi)
+	}
+	if got := fpu.getDPair(3); got != math.Pi {
+		t.Fatalf("odd register should alias even pair, got %v", got)
+	}
+}
+
+func TestIE64FPU_DoubleArithmeticAndConversions(t *testing.T) {
+	fpu := NewIE64FPU()
+
+	t.Run("DADD", func(t *testing.T) {
+		fpu.setDPair(2, 1.5)
+		fpu.setDPair(4, 2.25)
+		fpu.DADD(0, 2, 4)
+		if got := fpu.getDPair(0); got != 3.75 {
+			t.Fatalf("DADD = %v, want 3.75", got)
+		}
+	})
+
+	t.Run("DCMP", func(t *testing.T) {
+		fpu.setDPair(2, 10.0)
+		fpu.setDPair(4, 3.0)
+		if got := fpu.DCMP(2, 4); got != 1 {
+			t.Fatalf("DCMP = %d, want 1", got)
+		}
+	})
+
+	t.Run("DCVTIF", func(t *testing.T) {
+		fpu.DCVTIF(0, ^uint64(41))
+		if got := fpu.getDPair(0); got != -42.0 {
+			t.Fatalf("DCVTIF = %v, want -42", got)
+		}
+	})
+
+	t.Run("DCVTFI Saturates", func(t *testing.T) {
+		fpu.FPSR = 0
+		fpu.setDPair(2, 1e300)
+		if got := fpu.DCVTFI(2); got != math.MaxInt64 {
+			t.Fatalf("DCVTFI = %d, want MaxInt64", got)
+		}
+		if (fpu.FPSR & IE64_FPU_EX_IO) == 0 {
+			t.Fatal("IO flag not set")
+		}
+	})
+
+	t.Run("FCVTSD and FCVTDS", func(t *testing.T) {
+		fpu.setFReg(3, 1.25)
+		fpu.FCVTSD(0, 3)
+		if got := fpu.getDPair(0); got != 1.25 {
+			t.Fatalf("FCVTSD = %v, want 1.25", got)
+		}
+		fpu.FCVTDS(5, 0)
+		if got := fpu.getFReg(5); got != 1.25 {
+			t.Fatalf("FCVTDS = %v, want 1.25", got)
+		}
+	})
+}
+
 func TestIE64FPU_ROM(t *testing.T) {
 	fpu := NewIE64FPU()
 

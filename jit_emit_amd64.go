@@ -772,6 +772,8 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint32, isLast b
 		emitALU_AMD64(cb, ji, 0x29, 5) // SUB opcode=0x29, aluOp=5
 	case OP_NEG:
 		emitNEG_AMD64(cb, ji)
+	case OP_MODS, OP_MULHU, OP_MULHS:
+		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
 
 	// ======================================================================
 	// Logic
@@ -810,6 +812,8 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint32, isLast b
 		emitASR_AMD64(cb, ji)
 	case OP_CLZ:
 		emitCLZ_AMD64(cb, ji)
+	case OP_SEXT, OP_ROL, OP_ROR, OP_CTZ, OP_POPCNT, OP_BSWAP:
+		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
 
 	// ======================================================================
 	// Memory Access
@@ -967,6 +971,9 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint32, isLast b
 	// FPU — Category C (transcendentals, bail to interpreter)
 	// ======================================================================
 	case OP_FMOD, OP_FSIN, OP_FCOS, OP_FTAN, OP_FATAN, OP_FLOG, OP_FEXP, OP_FPOW:
+		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+	case OP_DMOV, OP_DLOAD, OP_DSTORE, OP_DADD, OP_DSUB, OP_DMUL, OP_DDIV, OP_DMOD,
+		OP_DABS, OP_DNEG, OP_DSQRT, OP_DINT, OP_DCMP, OP_DCVTIF, OP_DCVTFI, OP_FCVTSD, OP_FCVTDS:
 		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
 
 	// MMU/privilege opcodes: always bail to interpreter
