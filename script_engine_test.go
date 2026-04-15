@@ -222,6 +222,34 @@ func TestScriptEngine_AudioMetadataTables(t *testing.T) {
 	}
 }
 
+func TestScriptEngine_CPUResetDoesNotCancelScript(t *testing.T) {
+	bus := NewMachineBus()
+	term := NewTerminalMMIO()
+	comp := NewVideoCompositor(nil)
+	se := NewScriptEngine(bus, comp, term)
+
+	resetCalls := 0
+	se.SetHardReset(func() error {
+		resetCalls++
+		return nil
+	})
+
+	script := `
+		cpu.reset()
+		sys.print("after reset")
+	`
+	if err := se.RunString(script, "cpu_reset_continues"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+	if resetCalls != 1 {
+		t.Fatalf("resetCalls=%d, want 1", resetCalls)
+	}
+}
+
 func TestScriptEngine_AudioMasterNormalizerControls(t *testing.T) {
 	bus := NewMachineBus()
 	term := NewTerminalMMIO()

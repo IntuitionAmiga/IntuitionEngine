@@ -936,9 +936,13 @@ func (se *ScriptEngine) luaCPUReset() lua.LGFunction {
 			L.RaiseError("hard reset not configured")
 			return 0
 		}
+		se.loadingProgram.Store(true)
 		if err := reset(); err != nil {
+			se.loadingProgram.Store(false)
 			L.RaiseError("%v", err)
+			return 0
 		}
+		se.loadingProgram.Store(false)
 		return 0
 	}
 }

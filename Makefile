@@ -170,6 +170,7 @@ SHOWREEL_PREBUILT_DIR := ./sdk/examples/prebuilt
 SHOWREEL_MUSIC_DIR := ./sdk/examples/assets/music
 SHOWREEL_BASIC_SOURCE := ./sdk/examples/basic/rotozoomer_basic.bas
 ROTOZOOM_VARIANT_TEXTURES := \
+	./sdk/examples/assets/rotozoomtexture_ehbasic.raw \
 	./sdk/examples/assets/rotozoomtexture_ie32.raw \
 	./sdk/examples/assets/rotozoomtexture_ie64.raw \
 	./sdk/examples/assets/rotozoomtexture_m68k.raw \

@@ -83,7 +83,7 @@
 305 REM  (256 pixels * 4 bytes = 1024). Both TB and ST are used by
 306 REM  the Mode7 blit on line 1030.
 330 TB=&H600000: ST=1024
-340 BLOAD "sdk/examples/assets/rotozoomtexture.raw", TB
+340 BLOAD "sdk/examples/assets/rotozoomtexture_ehbasic.raw", TB
 
 400 REM ================================================================
 401 REM  CONSTANTS AND ANIMATION STATE

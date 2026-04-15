@@ -23,6 +23,7 @@ type rotoVariant struct {
 }
 
 var rotoVariants = []rotoVariant{
+	{label: "BASIC", base: "rotozoomtexture", rawPath: "sdk/examples/assets/rotozoomtexture_ehbasic.raw", pngPath: "sdk/examples/assets/rotozoomtexture_ehbasic.png"},
 	{label: "IE32", base: "rotozoomtexture", rawPath: "sdk/examples/assets/rotozoomtexture_ie32.raw", pngPath: "sdk/examples/assets/rotozoomtexture_ie32.png"},
 	{label: "IE64", base: "rotozoomtexture", rawPath: "sdk/examples/assets/rotozoomtexture_ie64.raw", pngPath: "sdk/examples/assets/rotozoomtexture_ie64.png"},
 	{label: "M68K", base: "rotozoomtexture", rawPath: "sdk/examples/assets/rotozoomtexture_m68k.raw", pngPath: "sdk/examples/assets/rotozoomtexture_m68k.png"},
@@ -95,6 +96,33 @@ var glyphs = map[rune][]string{
 		"#   #",
 		" ### ",
 	},
+	'B': {
+		"#### ",
+		"#   #",
+		"#   #",
+		"#### ",
+		"#   #",
+		"#   #",
+		"#### ",
+	},
+	'A': {
+		" ### ",
+		"#   #",
+		"#   #",
+		"#####",
+		"#   #",
+		"#   #",
+		"#   #",
+	},
+	'C': {
+		" ####",
+		"#    ",
+		"#    ",
+		"#    ",
+		"#    ",
+		"#    ",
+		" ####",
+	},
 	'E': {
 		"#####",
 		"#    ",
@@ -130,6 +158,15 @@ var glyphs = map[rune][]string{
 		"#   #",
 		"#   #",
 		"#   #",
+	},
+	'S': {
+		" ####",
+		"#    ",
+		"#    ",
+		" ### ",
+		"    #",
+		"    #",
+		"#### ",
 	},
 	'X': {
 		"#   #",
