@@ -75,6 +75,7 @@ func createCPURunner(mode string, sysBus *MachineBus, videoChip *VideoChip,
 	case "x86":
 		videoChip.SetBigEndianMode(false)
 		return NewCPUX86Runner(sysBus, &CPUX86Config{
+			JITEnabled:   x86JitAvailable,
 			VGAEngine:    vgaEngine,
 			VoodooEngine: voodooEngine,
 		}), nil

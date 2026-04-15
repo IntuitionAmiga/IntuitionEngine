@@ -124,7 +124,7 @@ local function get_song_info(meta_type)
     if meta and meta.title and meta.title ~= "" then
         local info = meta.title
         if meta.author and meta.author ~= "" then
-            info = info .. " — " .. meta.author
+            info = info .. " - " .. meta.author
         end
         return info
     end
@@ -231,10 +231,10 @@ title_card({"Music Tour: 20 Formats", "All major retro music formats"}, 2)
 
 -- Group A: Classic synthesised chips (8s each)
 local music_groups_a = {
-    {M.."demo_sid.sid",     "SID (6581/8580) — Commodore 64",      8000, "sid"},
-    {M.."demo_pokey.sap",   "POKEY — Atari 8-bit",                 8000, nil},
-    {M.."demo_ted.ted",     "TED — Commodore Plus/4",              8000, nil},
-    {M.."demo_sndh.sndh",   "YM2149 — Atari ST (also .snd)",      8000, "psg"},
+    {M.."demo_sid.sid",     "SID (6581/8580) - Commodore 64",      8000, "sid"},
+    {M.."demo_pokey.sap",   "POKEY - Atari 8-bit",                 8000, nil},
+    {M.."demo_ted.ted",     "TED - Commodore Plus/4",              8000, nil},
+    {M.."demo_sndh.sndh",   "YM2149 - Atari ST (also .snd)",      8000, "psg"},
 }
 
 local song_num = 0
@@ -245,8 +245,8 @@ end
 
 -- Group B: VGM multi-chip logs (8s each)
 local music_groups_b = {
-    {M.."demo_sn76489.vgm",  "SN76489 — Sega Master System (VGM)", 8000, "psg"},
-    {M.."demo_sn76489.vgz",  "AY-3-8910 — MSX (VGZ)",             8000, "psg"},
+    {M.."demo_sn76489.vgm",  "SN76489 - Sega Master System (VGM)", 8000, "psg"},
+    {M.."demo_sn76489.vgz",  "AY-3-8910 - MSX (VGZ)",             8000, "psg"},
 }
 
 for _, e in ipairs(music_groups_b) do
@@ -256,10 +256,10 @@ end
 
 -- Group C: AY/YM frame-dump formats (8s each)
 local music_groups_c = {
-    {M.."demo_ay_spectrum.ay",  "3D Pool by Ashnar",               8000, "psg"},
-    {M.."demo_ay_cpc.ay",      "AY-3-8910 — Amstrad CPC",         8000, "psg"},
+    {M.."demo_ay_spectrum.ay",  "AY-3-8910 - ZX Spectrum: 3D Pool by Ashnar", 8000, "psg"},
+    {M.."demo_ay_cpc.ay",      "AY-3-8910 - Amstrad CPC",         8000, "psg"},
     {M.."demo_ym.ym",          "YM5/YM6 LHA-compressed",           8000, "psg"},
-    {M.."demo_vtx.vtx",        "Alien Loader",                     8000, "psg"},
+    {M.."demo_vtx.vtx",        "VTX AY-3-8910 frame dump: Alien Loader", 8000, "psg"},
 }
 
 for _, e in ipairs(music_groups_c) do
@@ -302,12 +302,12 @@ end
 -- ============================================================================
 
 local rotoZoomers = {
-    {P.."rotozoomer.iex",        "IE32 — 32-bit RISC",    "CPU: IE32 (Intuition Engine native)", "Video: VideoChip 640x480 32-bit RGBA"},
-    {P.."rotozoomer_ie64.ie64",  "IE64 — 64-bit RISC",    "CPU: IE64 with ARM64 JIT compiler",   "Video: VideoChip 640x480 32-bit RGBA"},
-    {P.."rotozoomer_68k.ie68",   "M68K — Motorola 68020",  "CPU: Motorola 68020 (32-bit CISC)",   "Video: VideoChip 640x480 32-bit RGBA"},
-    {P.."rotozoomer_65.ie65",    "6502 — MOS Technology",  "CPU: MOS 6502 (8-bit, 64KB address)", "Video: VideoChip 640x480 32-bit RGBA"},
-    {P.."rotozoomer_z80.ie80",   "Z80 — Zilog",            "CPU: Zilog Z80 (8-bit, 64KB address)","Video: VideoChip 640x480 32-bit RGBA"},
-    {P.."rotozoomer_x86.ie86",   "x86 — Intel 386",        "CPU: Intel 386 flat model (32-bit)",  "Video: VideoChip 640x480 32-bit RGBA"},
+    {P.."rotozoomer.iex",        "IE32 - 32-bit RISC",    "CPU: IE32 (Intuition Engine native)", "Video: VideoChip 640x480 32-bit RGBA"},
+    {P.."rotozoomer_ie64.ie64",  "IE64 - 64-bit RISC",    "CPU: IE64 with ARM64 JIT compiler",   "Video: VideoChip 640x480 32-bit RGBA"},
+    {P.."rotozoomer_68k.ie68",   "M68K - Motorola 68020",  "CPU: Motorola 68020 (32-bit CISC)",   "Video: VideoChip 640x480 32-bit RGBA"},
+    {P.."rotozoomer_65.ie65",    "6502 - MOS Technology",  "CPU: MOS 6502 (8-bit, 64KB address)", "Video: VideoChip 640x480 32-bit RGBA"},
+    {P.."rotozoomer_z80.ie80",   "Z80 - Zilog",            "CPU: Zilog Z80 (8-bit, 64KB address)","Video: VideoChip 640x480 32-bit RGBA"},
+    {P.."rotozoomer_x86.ie86",   "x86 - Intel 386",        "CPU: Intel 386 flat model (32-bit)",  "Video: VideoChip 640x480 32-bit RGBA"},
 }
 
 for i, rz in ipairs(rotoZoomers) do
@@ -362,7 +362,7 @@ local voodoo_demos = {
 
 for i, v in ipairs(voodoo_demos) do
     title_card({
-        string.format("Voodoo 3D [%d/%d] — %s", i, #voodoo_demos, v[2]),
+        string.format("Voodoo 3D [%d/%d] - %s", i, #voodoo_demos, v[2]),
         v[4], v[5],
     }, 3)
     run_demo(v[1], v[3])
@@ -452,7 +452,7 @@ local vga_demos = {
 
 for i, v in ipairs(vga_demos) do
     title_card({
-        string.format("VGA [%d/%d] — %s", i, #vga_demos, v[2]),
+        string.format("VGA [%d/%d] - %s", i, #vga_demos, v[2]),
         v[4], v[5],
     }, 3)
     run_demo(v[1], v[3])
@@ -472,13 +472,13 @@ end
 title_card({"Robocop Intro", "Copper rasterbars + blitter sprite across 4 CPUs"}, 2)
 
 local robocop_demos = {
-    {P.."robocop_intro.iex",       "IE32 — 32-bit RISC",
+    {P.."robocop_intro.iex",       "IE32 - 32-bit RISC",
         "CPU: IE32", "Video: VideoChip + Copper rasterbars + DMA blitter"},
-    {P.."robocop_intro_68k.ie68",  "M68K — Motorola 68020",
+    {P.."robocop_intro_68k.ie68",  "M68K - Motorola 68020",
         "CPU: Motorola 68020", "Video: VideoChip + Copper rasterbars + DMA blitter"},
-    {P.."robocop_intro_65.ie65",   "6502 — MOS Technology",
+    {P.."robocop_intro_65.ie65",   "6502 - MOS Technology",
         "CPU: MOS 6502 (8-bit)", "Video: VideoChip + Copper rasterbars + DMA blitter"},
-    {P.."robocop_intro_z80.ie80",  "Z80 — Zilog",
+    {P.."robocop_intro_z80.ie80",  "Z80 - Zilog",
         "CPU: Zilog Z80 (8-bit)", "Video: VideoChip + Copper rasterbars + DMA blitter"},
 }
 
@@ -526,7 +526,7 @@ monitor_tour({
 -- ============================================================================
 
 title_card({
-    "EmuTOS — Atari ST Operating System",
+    "EmuTOS - Atari ST Operating System",
     "GEM Desktop + Windowed Rotozoomer (.PRG)",
     "CPU: Motorola 68020 | Video: IEVideoChip",
 }, 3)
@@ -541,7 +541,7 @@ slow_type("EMUTOS", 55)
 sys.wait_ms(200)
 cpu.load("EMUTOS")
 
--- Wait for GEM desktop (green background at center — unique to GEM, not BASIC)
+-- Wait for GEM desktop (green background at center - unique to GEM, not BASIC)
 local gem_deadline = sys.time_ms() + 20000
 while sys.time_ms() < gem_deadline do
     local r, g, b = video.get_pixel(400, 300)
@@ -586,7 +586,7 @@ term.mouse_release()
 -- ============================================================================
 
 title_card({
-    "Intuition Engine — Feature Summary:",
+    "Intuition Engine - Feature Summary:",
     "  6 CPUs:   IE32, IE64, M68K, 6502, Z80, x86",
     "  6 Video:  VideoChip, VGA, ULA, TED, ANTIC, Voodoo 3D",
     "  20 Audio: SID, SAP, AHX, TED, AY, YM, VGM, MOD, WAV + ZX trackers",

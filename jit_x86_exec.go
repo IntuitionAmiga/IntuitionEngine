@@ -130,6 +130,16 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			cpu.syncJITRegsFromNamed()
 		}
 
+		// MMIO status spin loops dominate demo wait time. Handle the common
+		// MOV/TEST/Jcc-back pattern directly so JIT-enabled execution doesn't
+		// bounce through one-instruction fallbacks for every poll.
+		cpu.syncJITRegsToNamed()
+		if cpu.tryFastMMIOPollLoop() {
+			cpu.syncJITRegsFromNamed()
+			continue
+		}
+		cpu.syncJITRegsFromNamed()
+
 		pc := cpu.EIP
 
 		// Bounds check
@@ -377,6 +387,12 @@ func x86PatchCompatibleChainsTo(cache *CodeCache, target *JITBlock) {
 // x86RunInterpreter is the fallback interpreter loop.
 func (cpu *CPU_X86) x86RunInterpreter() {
 	for cpu.Running() && !cpu.Halted {
+		if cpu.x86JitEnabled && cpu.tryDemoAccelFrame() {
+			continue
+		}
+		if cpu.tryFastMMIOPollLoop() {
+			continue
+		}
 		cpu.Step()
 	}
 }

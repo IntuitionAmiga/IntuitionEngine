@@ -710,6 +710,51 @@ func TestX86JIT_MOV_Ev_Iv(t *testing.T) {
 	}
 }
 
+func TestX86JIT_MOV_EAX_moffs32(t *testing.T) {
+	r := newX86JITTestRig(t)
+	addr := uint32(0x3000)
+	r.bus.Write32(addr, 0x11223344)
+
+	// A1 id: MOV EAX, moffs32
+	r.compileAndRun(t, 0x1000,
+		0xA1, byte(addr), byte(addr>>8), byte(addr>>16), byte(addr>>24),
+	)
+
+	if r.cpu.EAX != 0x11223344 {
+		t.Errorf("EAX = 0x%08X, want 0x11223344", r.cpu.EAX)
+	}
+}
+
+func TestX86JIT_MOV_moffs32_EAX(t *testing.T) {
+	r := newX86JITTestRig(t)
+	addr := uint32(0x3000)
+	r.cpu.EAX = 0x55667788
+
+	// A3 id: MOV moffs32, EAX
+	r.compileAndRun(t, 0x1000,
+		0xA3, byte(addr), byte(addr>>8), byte(addr>>16), byte(addr>>24),
+	)
+
+	if got := r.bus.Read32(addr); got != 0x55667788 {
+		t.Errorf("[0x%X] = 0x%08X, want 0x55667788", addr, got)
+	}
+}
+
+func TestX86JIT_MOV_memabs_imm32(t *testing.T) {
+	r := newX86JITTestRig(t)
+	addr := uint32(0x3000)
+
+	// C7 /0 with modrm 00 000 101 + disp32: MOV dword [disp32], imm32
+	r.compileAndRun(t, 0x1000,
+		0xC7, 0x05, byte(addr), byte(addr>>8), byte(addr>>16), byte(addr>>24),
+		0x78, 0x56, 0x34, 0x12,
+	)
+
+	if got := r.bus.Read32(addr); got != 0x12345678 {
+		t.Errorf("[0x%X] = 0x%08X, want 0x12345678", addr, got)
+	}
+}
+
 // ===========================================================================
 // Phase 5: LEAVE Test
 // ===========================================================================

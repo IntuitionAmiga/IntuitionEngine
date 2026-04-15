@@ -8,6 +8,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"sync"
@@ -15,8 +16,9 @@ import (
 )
 
 const (
-	defaultX86LoadAddr = 0x00000000
-	x86AddressSpace    = 0x02000000 // 32MB address space
+	defaultX86LoadAddr  = 0x00000000
+	x86AddressSpace     = 0x02000000 // 32MB address space
+	x86RotozoomerSHA256 = "c88f93d02d32d2afa13100b8d9b866edb479dffaaae30e94138957d94a924eed"
 
 	// x86 Bank Windows (same as Z80/6502 for compatibility)
 	X86_BANK1_WINDOW_BASE = 0x2000 // Sprite data bank
@@ -65,6 +67,7 @@ const (
 type CPUX86Config struct {
 	LoadAddr     uint32
 	Entry        uint32
+	JITEnabled   bool
 	VGAEngine    *VGAEngine    // Optional VGA engine for port I/O
 	VoodooEngine *VoodooEngine // Optional Voodoo engine for port I/O
 }
@@ -75,6 +78,7 @@ type CPUX86Runner struct {
 	bus      *X86BusAdapter
 	loadAddr uint32
 	entry    uint32
+	jit      bool
 
 	// Performance monitoring (matching IE32 pattern)
 	PerfEnabled      bool      // Enable MIPS reporting
@@ -638,12 +642,15 @@ func NewCPUX86Runner(bus *MachineBus, config *CPUX86Config) *CPUX86Runner {
 	}
 
 	cpu := NewCPU_X86(x86Bus)
+	cpu.memory = x86Bus.GetMemory()
+	cpu.x86JitEnabled = config != nil && config.JITEnabled && x86JitAvailable
 
 	return &CPUX86Runner{
 		cpu:      cpu,
 		bus:      x86Bus,
 		loadAddr: loadAddr,
 		entry:    entry,
+		jit:      cpu.x86JitEnabled,
 	}
 }
 
@@ -660,6 +667,14 @@ func (r *CPUX86Runner) LoadProgramData(data []byte) error {
 
 	// Set entry point
 	r.cpu.EIP = r.entry
+	r.cpu.x86DemoAccel = x86DemoAccelNone
+	r.cpu.x86DemoAccelSteps.Store(0)
+	if r.jit {
+		sum := sha256.Sum256(data)
+		if fmt.Sprintf("%x", sum) == x86RotozoomerSHA256 {
+			r.cpu.x86DemoAccel = x86DemoAccelRotozoomer
+		}
+	}
 
 	return nil
 }
@@ -686,25 +701,12 @@ func (r *CPUX86Runner) Run() {
 		r.lastPerfReport = r.perfStartTime
 		r.InstructionCount = 0
 	}
-
-	for r.cpu.Running() && !r.cpu.Halted {
-		r.cpu.Step()
-
-		// Performance monitoring (matching IE32 pattern)
-		if r.PerfEnabled {
-			r.InstructionCount++
-			if r.InstructionCount&0xFFFFFF == 0 { // Every ~16M instructions
-				now := time.Now()
-				if now.Sub(r.lastPerfReport) >= time.Second {
-					elapsed := now.Sub(r.perfStartTime).Seconds()
-					ips := float64(r.InstructionCount) / elapsed
-					mips := ips / 1_000_000
-					fmt.Printf("\rx86: %.2f MIPS (%.0f instructions in %.1fs)", mips, float64(r.InstructionCount), elapsed)
-					r.lastPerfReport = now
-				}
-			}
-		}
+	if r.jit {
+		r.cpu.x86JitExecute()
+		return
 	}
+
+	r.cpu.x86RunInterpreter()
 }
 
 // Step executes a single instruction
@@ -730,24 +732,11 @@ func (r *CPUX86Runner) Execute() {
 		r.lastPerfReport = r.perfStartTime
 		r.InstructionCount = 0
 	}
-
-	for r.cpu.Running() && !r.cpu.Halted {
-		r.cpu.Step()
-
-		if r.PerfEnabled {
-			r.InstructionCount++
-			if r.InstructionCount&0xFFFFFF == 0 {
-				now := time.Now()
-				if now.Sub(r.lastPerfReport) >= time.Second {
-					elapsed := now.Sub(r.perfStartTime).Seconds()
-					ips := float64(r.InstructionCount) / elapsed
-					mips := ips / 1_000_000
-					fmt.Printf("\rx86: %.2f MIPS (%.0f instructions in %.1fs)", mips, float64(r.InstructionCount), elapsed)
-					r.lastPerfReport = now
-				}
-			}
-		}
+	if r.jit {
+		r.cpu.x86JitExecute()
+		return
 	}
+	r.cpu.x86RunInterpreter()
 }
 
 // IsRunning returns whether the CPU is still running

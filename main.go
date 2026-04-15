@@ -1172,6 +1172,7 @@ func main() {
 			runner := NewCPUX86Runner(sysBus, &CPUX86Config{
 				LoadAddr:     x86LoadAddr,
 				Entry:        x86Entry,
+				JITEnabled:   !noJIT,
 				VGAEngine:    vgaEngine,
 				VoodooEngine: voodooEngine,
 			})
@@ -1626,6 +1627,7 @@ func main() {
 		x86Config := &CPUX86Config{
 			LoadAddr:     0,
 			Entry:        0,
+			JITEnabled:   !noJIT,
 			VGAEngine:    vgaEngine,
 			VoodooEngine: voodooEngine,
 		}
