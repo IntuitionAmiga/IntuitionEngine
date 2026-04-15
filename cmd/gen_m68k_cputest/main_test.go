@@ -65,7 +65,7 @@ func TestRenderShardContainsCases(t *testing.T) {
 	if !strings.Contains(out, "case_") {
 		t.Fatal("shard output should contain case labels")
 	}
-	if !strings.Contains(out, "ct_fail_") || !strings.Contains(out, "ct_pass_count") {
+	if !strings.Contains(out, "ct_fail_") || !strings.Contains(out, "ct_log_pass") {
 		t.Fatal("shard output should call failure/pass helpers")
 	}
 }

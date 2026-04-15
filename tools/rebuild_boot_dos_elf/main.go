@@ -119,28 +119,39 @@ func buildELF(code []byte, data []byte) []byte {
 	binary.LittleEndian.PutUint32(out[20:24], 1)
 	binary.LittleEndian.PutUint64(out[24:32], baseVA)
 	binary.LittleEndian.PutUint64(out[32:40], 64)
+	binary.LittleEndian.PutUint64(out[40:48], 0)
+	binary.LittleEndian.PutUint32(out[48:52], 0)
 	binary.LittleEndian.PutUint16(out[52:54], 64)
 	binary.LittleEndian.PutUint16(out[54:56], 56)
 	binary.LittleEndian.PutUint16(out[56:58], 2)
+	binary.LittleEndian.PutUint16(out[58:60], 0)
+	binary.LittleEndian.PutUint16(out[60:62], 0)
+	binary.LittleEndian.PutUint16(out[62:64], 0)
 
-	putProgramHeader(out[64:120], codeFileOff, baseVA, codeFileSize, codeMemSize, 5)
-	putProgramHeader(out[120:176], dataFileOff, dataVA, dataFileSize, dataMemSize, 6)
+	ph0 := 64
+	binary.LittleEndian.PutUint32(out[ph0+0:ph0+4], 1)
+	binary.LittleEndian.PutUint32(out[ph0+4:ph0+8], 5)
+	binary.LittleEndian.PutUint64(out[ph0+8:ph0+16], codeFileOff)
+	binary.LittleEndian.PutUint64(out[ph0+16:ph0+24], baseVA)
+	binary.LittleEndian.PutUint64(out[ph0+24:ph0+32], baseVA)
+	binary.LittleEndian.PutUint64(out[ph0+32:ph0+40], codeFileSize)
+	binary.LittleEndian.PutUint64(out[ph0+40:ph0+48], codeMemSize)
+	binary.LittleEndian.PutUint64(out[ph0+48:ph0+56], pageSize)
+
+	ph1 := ph0 + 56
+	binary.LittleEndian.PutUint32(out[ph1+0:ph1+4], 1)
+	binary.LittleEndian.PutUint32(out[ph1+4:ph1+8], 6)
+	binary.LittleEndian.PutUint64(out[ph1+8:ph1+16], dataFileOff)
+	binary.LittleEndian.PutUint64(out[ph1+16:ph1+24], dataVA)
+	binary.LittleEndian.PutUint64(out[ph1+24:ph1+32], dataVA)
+	binary.LittleEndian.PutUint64(out[ph1+32:ph1+40], dataFileSize)
+	binary.LittleEndian.PutUint64(out[ph1+40:ph1+48], dataMemSize)
+	binary.LittleEndian.PutUint64(out[ph1+48:ph1+56], pageSize)
 
 	return out
 }
 
-func putProgramHeader(dst []byte, off uint64, vaddr uint64, filesz uint64, memsz uint64, flags uint32) {
-	binary.LittleEndian.PutUint32(dst[0:4], 1)
-	binary.LittleEndian.PutUint32(dst[4:8], flags)
-	binary.LittleEndian.PutUint64(dst[8:16], off)
-	binary.LittleEndian.PutUint64(dst[16:24], vaddr)
-	binary.LittleEndian.PutUint64(dst[24:32], 0)
-	binary.LittleEndian.PutUint64(dst[32:40], filesz)
-	binary.LittleEndian.PutUint64(dst[40:48], memsz)
-	binary.LittleEndian.PutUint64(dst[48:56], pageSize)
-}
-
-func roundUp(v uint64, align uint64) uint64 {
+func roundUp(v, align uint64) uint64 {
 	if v == 0 {
 		return 0
 	}

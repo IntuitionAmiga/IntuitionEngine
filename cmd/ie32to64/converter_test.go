@@ -937,7 +937,7 @@ func TestConvertFile_Rotozoomer(t *testing.T) {
 		"move.l r1, #1",      // LDA #1
 		"la r17, VIDEO_CTRL", // STA @VIDEO_CTRL
 		"store.l r1, (r17)",
-		"jsr generate_texture",         // JSR
+		"jsr load_texture",             // JSR
 		"bra main_loop",                // JMP → bra
 		"and.l r1, r1, #STATUS_VBLANK", // AND A, #STATUS_VBLANK
 		"bnez r1, wait_end",
@@ -951,6 +951,7 @@ func TestConvertFile_Rotozoomer(t *testing.T) {
 		"pop r6",                    // POP C
 		"eor.l r1, r1, #0xFFFFFFFF", // XOR A, #0xFFFFFFFF → eor.l
 		"mulu.l r1, r1, r5",         // MUL A, B → mulu.l r1, r1, r5
+		"incbin \"../assets/rotozoomtexture.raw\"",
 		"dc.l 0,6,13,19,25,31,38,44,50,56,62,68,74,80,86,92", // .word → dc.l
 	}
 	for _, check := range checks {

@@ -19378,7 +19378,7 @@ func TestIExec_M153_Shell_DOSRunPrefersWritableSYSOverlayOverIOSSYS(t *testing.T
 //   - the IOSSYS subtree is freshly populated.
 func TestIExec_M153_Exporter_WipesEntireSYSTreeBeforeReexport(t *testing.T) {
 	repoRoot := repoRootDir(t)
-	exporterSrc := filepath.Join(repoRoot, "tools", "export_intuitionos_system.go")
+	exporterSrc := filepath.Join(repoRoot, "tools", "export_intuitionos_system")
 	tempRoot := t.TempDir()
 	sysRoot := filepath.Join(tempRoot, "SYS")
 	iossysRoot := filepath.Join(sysRoot, "IOSSYS")
