@@ -242,7 +242,12 @@ func (vc *VideoChip) Reset() {
 	vc.enabled.Store(false)
 	vc.hasContent.Store(false)
 	vc.inVBlank.Store(false)
+	vc.directMode.Store(false)
+	vc.fullScreenDirty.Store(false)
 	vc.copperEnabled = false
+	vc.copperManagedByCompositor = false
+	vc.bigEndianMode = false
+	vc.directVRAM = nil
 
 	mode := VideoModes[vc.currentMode]
 	if len(vc.frontBuffer) != mode.totalSize {
