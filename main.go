@@ -1061,6 +1061,7 @@ func main() {
 	// Initialize File I/O
 	fileIO := NewFileIODevice(sysBus, ".") // Current directory as base
 	sysBus.MapIO(FILE_IO_BASE, FILE_IO_END, fileIO.HandleRead, fileIO.HandleWrite)
+	sysBus.MapIOByte(FILE_IO_BASE, FILE_IO_END, fileIO.HandleWrite8)
 	bootHostFS := NewBootstrapHostFSDevice(sysBus, defaultBootstrapHostFSRoot())
 	sysBus.MapIO(BOOT_HOSTFS_BASE, BOOT_HOSTFS_END, bootHostFS.HandleRead, bootHostFS.HandleWrite)
 

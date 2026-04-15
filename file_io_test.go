@@ -237,6 +237,56 @@ func TestFileIODevice_HandleWrite8(t *testing.T) {
 	}
 }
 
+func TestFileIO_MachineBusByteWritesUseHandleWrite8(t *testing.T) {
+	bus := NewMachineBus()
+	tmpDir, err := os.MkdirTemp("", "fileio_bus_byte_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	content := []byte("banked byte writes")
+	if err := os.WriteFile(filepath.Join(tmpDir, "bytebus.txt"), content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	fio := NewFileIODevice(bus, tmpDir)
+	bus.MapIO(FILE_IO_BASE, FILE_IO_END, fio.HandleRead, fio.HandleWrite)
+	bus.MapIOByte(FILE_IO_BASE, FILE_IO_END, fio.HandleWrite8)
+
+	fileNameAddr := uint32(0x1000)
+	dataBufAddr := uint32(0x600000)
+	for i, b := range []byte("bytebus.txt\x00") {
+		bus.Write8(fileNameAddr+uint32(i), b)
+	}
+
+	for i := uint32(0); i < 4; i++ {
+		bus.Write8(FILE_NAME_PTR+i, uint8(fileNameAddr>>(i*8)))
+		bus.Write8(FILE_DATA_PTR+i, uint8(dataBufAddr>>(i*8)))
+	}
+	bus.Write8(FILE_CTRL, FILE_OP_READ)
+
+	if got := fio.HandleRead(FILE_NAME_PTR); got != fileNameAddr {
+		t.Fatalf("FILE_NAME_PTR: got 0x%08X, want 0x%08X", got, fileNameAddr)
+	}
+	if got := fio.HandleRead(FILE_DATA_PTR); got != dataBufAddr {
+		t.Fatalf("FILE_DATA_PTR: got 0x%08X, want 0x%08X", got, dataBufAddr)
+	}
+	if got := fio.HandleRead(FILE_STATUS); got != 0 {
+		t.Fatalf("status: got %d, want 0 (error code %d)", got, fio.HandleRead(FILE_ERROR_CODE))
+	}
+	if got := fio.HandleRead(FILE_RESULT_LEN); got != uint32(len(content)) {
+		t.Fatalf("result len: got %d, want %d", got, len(content))
+	}
+	got := make([]byte, len(content))
+	for i := range got {
+		got[i] = bus.Read8(dataBufAddr + uint32(i))
+	}
+	if !bytes.Equal(got, content) {
+		t.Fatalf("content mismatch: got %q want %q", got, content)
+	}
+}
+
 func TestFileIO_ReadEmptyFile(t *testing.T) {
 	bus := NewMachineBus()
 	tmpDir, err := os.MkdirTemp("", "fileio_test")

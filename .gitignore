@@ -31,4 +31,3 @@ sysroot/
 
 # SDK build artifacts
 sdk/bin/
-sdk/examples/prebuilt/

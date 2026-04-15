@@ -5596,6 +5596,7 @@ func execStmtTestWithFileIO(t *testing.T, asmBin string, tmpDir string, program 
 	// Attach FileIODevice
 	fio := NewFileIODevice(h.bus, tmpDir)
 	h.bus.MapIO(FILE_IO_BASE, FILE_IO_END, fio.HandleRead, fio.HandleWrite)
+	h.bus.MapIOByte(FILE_IO_BASE, FILE_IO_END, fio.HandleWrite8)
 
 	h.loadBytes(binary)
 	h.runCycles(10_000_000)
@@ -5662,6 +5663,7 @@ test_done:
 	h := newEhbasicHarness(t)
 	fio := NewFileIODevice(h.bus, tmpDir)
 	h.bus.MapIO(FILE_IO_BASE, FILE_IO_END, fio.HandleRead, fio.HandleWrite)
+	h.bus.MapIOByte(FILE_IO_BASE, FILE_IO_END, fio.HandleWrite8)
 
 	h.loadBytes(binary)
 	out = h.runUntilPrompt()
@@ -5809,6 +5811,7 @@ func TestHW_Load_Simple(t *testing.T) {
 	h := newEhbasicHarness(t)
 	fio := NewFileIODevice(h.bus, tmpDir)
 	h.bus.MapIO(FILE_IO_BASE, FILE_IO_END, fio.HandleRead, fio.HandleWrite)
+	h.bus.MapIOByte(FILE_IO_BASE, FILE_IO_END, fio.HandleWrite8)
 
 	h.loadBytes(binary)
 	h.runCycles(5_000_000)
@@ -5927,6 +5930,7 @@ func TestHW_LoadThenRun(t *testing.T) {
 	h := newEhbasicHarness(t)
 	fio := NewFileIODevice(h.bus, tmpDir)
 	h.bus.MapIO(FILE_IO_BASE, FILE_IO_END, fio.HandleRead, fio.HandleWrite)
+	h.bus.MapIOByte(FILE_IO_BASE, FILE_IO_END, fio.HandleWrite8)
 
 	h.loadBytes(binary)
 	h.runCycles(100_000_000)
@@ -5988,6 +5992,7 @@ func TestHW_LoadThenRun_REPL(t *testing.T) {
 	h := newEhbasicHarness(t)
 	fio := NewFileIODevice(h.bus, tmpDir)
 	h.bus.MapIO(FILE_IO_BASE, FILE_IO_END, fio.HandleRead, fio.HandleWrite)
+	h.bus.MapIOByte(FILE_IO_BASE, FILE_IO_END, fio.HandleWrite8)
 
 	// Enable JIT to match the real binary's execution path
 	h.cpu.jitEnabled = true
@@ -6056,6 +6061,7 @@ func TestHW_JIT_LoadThenRun(t *testing.T) {
 	h := newEhbasicHarness(t)
 	fio := NewFileIODevice(h.bus, tmpDir)
 	h.bus.MapIO(FILE_IO_BASE, FILE_IO_END, fio.HandleRead, fio.HandleWrite)
+	h.bus.MapIOByte(FILE_IO_BASE, FILE_IO_END, fio.HandleWrite8)
 	h.cpu.jitEnabled = true
 	h.loadBytes(bin)
 

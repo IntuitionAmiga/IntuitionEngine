@@ -256,10 +256,10 @@ end
 
 -- Group C: AY/YM frame-dump formats (8s each)
 local music_groups_c = {
-    {M.."demo_ay_spectrum.ay",  "AY-3-8910 — ZX Spectrum",         8000, "psg"},
+    {M.."demo_ay_spectrum.ay",  "3D Pool by Ashnar",               8000, "psg"},
     {M.."demo_ay_cpc.ay",      "AY-3-8910 — Amstrad CPC",         8000, "psg"},
     {M.."demo_ym.ym",          "YM5/YM6 LHA-compressed",           8000, "psg"},
-    {M.."demo_vtx.vtx",        "VTX AY-3-8910 frame dump",         8000, "psg"},
+    {M.."demo_vtx.vtx",        "Alien Loader",                     8000, "psg"},
 }
 
 for _, e in ipairs(music_groups_c) do
