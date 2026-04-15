@@ -196,6 +196,7 @@ func (chip *SoundChip) Reset() {
 	// Clear sample ticker and tap so stale playback engines don't survive reset
 	chip.sampleTicker.Store(&sampleTickerHolder{})
 	chip.sampleTap.Store(&sampleTapHolder{})
+	chip.resetMasterNormalizerLocked()
 
 	chip.enabled.Store(false)
 	chip.audioFrozen.Store(false)

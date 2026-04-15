@@ -451,34 +451,42 @@ func (se *ScriptEngine) registerModules(L *lua.LState, ctx context.Context) {
 	L.SetGlobal("term", term)
 
 	audio := L.SetFuncs(L.NewTable(), map[string]lua.LGFunction{
-		"start":            se.luaAudioStart(),
-		"stop":             se.luaAudioStop(),
-		"reset":            se.luaAudioReset(),
-		"freeze":           se.luaAudioFreeze(),
-		"resume":           se.luaAudioResume(),
-		"write_reg":        se.luaAudioWriteReg(),
-		"psg_load":         se.luaAudioPSGLoad(),
-		"psg_play":         se.luaAudioPSGPlay(),
-		"psg_stop":         se.luaAudioPSGStop(),
-		"psg_is_playing":   se.luaAudioPSGIsPlaying(),
-		"psg_metadata":     se.luaAudioPSGMetadata(),
-		"sid_load":         se.luaAudioSIDLoad(),
-		"sid_play":         se.luaAudioSIDPlay(),
-		"sid_stop":         se.luaAudioSIDStop(),
-		"sid_is_playing":   se.luaAudioSIDIsPlaying(),
-		"sid_metadata":     se.luaAudioSIDMetadata(),
-		"ted_load":         se.luaAudioTEDLoad(),
-		"ted_play":         se.luaAudioTEDPlay(),
-		"ted_stop":         se.luaAudioTEDStop(),
-		"ted_is_playing":   se.luaAudioTEDIsPlaying(),
-		"pokey_load":       se.luaAudioPOKEYLoad(),
-		"pokey_play":       se.luaAudioPOKEYPlay(),
-		"pokey_stop":       se.luaAudioPOKEYStop(),
-		"pokey_is_playing": se.luaAudioPOKEYIsPlaying(),
-		"ahx_load":         se.luaAudioAHXLoad(),
-		"ahx_play":         se.luaAudioAHXPlay(),
-		"ahx_stop":         se.luaAudioAHXStop(),
-		"ahx_is_playing":   se.luaAudioAHXIsPlaying(),
+		"start":                          se.luaAudioStart(),
+		"stop":                           se.luaAudioStop(),
+		"reset":                          se.luaAudioReset(),
+		"freeze":                         se.luaAudioFreeze(),
+		"resume":                         se.luaAudioResume(),
+		"write_reg":                      se.luaAudioWriteReg(),
+		"set_master_gain_db":             se.luaAudioSetMasterGainDB(),
+		"get_master_gain_db":             se.luaAudioGetMasterGainDB(),
+		"set_master_auto_level_enabled":  se.luaAudioSetMasterAutoLevelEnabled(),
+		"configure_master_auto_level":    se.luaAudioConfigureMasterAutoLevel(),
+		"set_master_compressor_enabled":  se.luaAudioSetMasterCompressorEnabled(),
+		"configure_master_compressor":    se.luaAudioConfigureMasterCompressor(),
+		"use_showreel_normalizer_preset": se.luaAudioUseShowreelNormalizerPreset(),
+		"reset_master_dynamics":          se.luaAudioResetMasterDynamics(),
+		"psg_load":                       se.luaAudioPSGLoad(),
+		"psg_play":                       se.luaAudioPSGPlay(),
+		"psg_stop":                       se.luaAudioPSGStop(),
+		"psg_is_playing":                 se.luaAudioPSGIsPlaying(),
+		"psg_metadata":                   se.luaAudioPSGMetadata(),
+		"sid_load":                       se.luaAudioSIDLoad(),
+		"sid_play":                       se.luaAudioSIDPlay(),
+		"sid_stop":                       se.luaAudioSIDStop(),
+		"sid_is_playing":                 se.luaAudioSIDIsPlaying(),
+		"sid_metadata":                   se.luaAudioSIDMetadata(),
+		"ted_load":                       se.luaAudioTEDLoad(),
+		"ted_play":                       se.luaAudioTEDPlay(),
+		"ted_stop":                       se.luaAudioTEDStop(),
+		"ted_is_playing":                 se.luaAudioTEDIsPlaying(),
+		"pokey_load":                     se.luaAudioPOKEYLoad(),
+		"pokey_play":                     se.luaAudioPOKEYPlay(),
+		"pokey_stop":                     se.luaAudioPOKEYStop(),
+		"pokey_is_playing":               se.luaAudioPOKEYIsPlaying(),
+		"ahx_load":                       se.luaAudioAHXLoad(),
+		"ahx_play":                       se.luaAudioAHXPlay(),
+		"ahx_stop":                       se.luaAudioAHXStop(),
+		"ahx_is_playing":                 se.luaAudioAHXIsPlaying(),
 	})
 	L.SetGlobal("audio", audio)
 
@@ -1593,6 +1601,94 @@ func (se *ScriptEngine) luaAudioWriteReg() lua.LGFunction {
 		addr := uint32(L.CheckInt64(1))
 		val := uint32(L.CheckInt64(2))
 		se.bus.Write32(addr, val)
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaAudioSetMasterGainDB() lua.LGFunction {
+	return func(L *lua.LState) int {
+		if s := runtimeStatus.snapshot().sound; s != nil {
+			s.SetMasterGainDB(float32(L.CheckNumber(1)))
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaAudioGetMasterGainDB() lua.LGFunction {
+	return func(L *lua.LState) int {
+		gainDB := float32(0)
+		if s := runtimeStatus.snapshot().sound; s != nil {
+			gainDB = s.MasterGainDB()
+		}
+		L.Push(lua.LNumber(gainDB))
+		return 1
+	}
+}
+
+func (se *ScriptEngine) luaAudioSetMasterAutoLevelEnabled() lua.LGFunction {
+	return func(L *lua.LState) int {
+		if s := runtimeStatus.snapshot().sound; s != nil {
+			s.SetMasterAutoLevelEnabled(L.CheckBool(1))
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaAudioConfigureMasterAutoLevel() lua.LGFunction {
+	return func(L *lua.LState) int {
+		if s := runtimeStatus.snapshot().sound; s != nil {
+			s.ConfigureMasterAutoLevel(
+				float32(L.CheckNumber(1)),
+				float32(L.CheckNumber(2)),
+				float32(L.CheckNumber(3)),
+				float32(L.CheckNumber(4)),
+				float32(L.CheckNumber(5)),
+			)
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaAudioSetMasterCompressorEnabled() lua.LGFunction {
+	return func(L *lua.LState) int {
+		if s := runtimeStatus.snapshot().sound; s != nil {
+			s.SetMasterCompressorEnabled(L.CheckBool(1))
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaAudioConfigureMasterCompressor() lua.LGFunction {
+	return func(L *lua.LState) int {
+		if s := runtimeStatus.snapshot().sound; s != nil {
+			s.ConfigureMasterCompressor(
+				float32(L.CheckNumber(1)),
+				float32(L.CheckNumber(2)),
+				float32(L.CheckNumber(3)),
+				float32(L.CheckNumber(4)),
+				float32(L.CheckNumber(5)),
+				float32(L.CheckNumber(6)),
+				float32(L.CheckNumber(7)),
+			)
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaAudioUseShowreelNormalizerPreset() lua.LGFunction {
+	return func(L *lua.LState) int {
+		if s := runtimeStatus.snapshot().sound; s != nil {
+			s.UseShowreelNormalizerPreset()
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaAudioResetMasterDynamics() lua.LGFunction {
+	return func(L *lua.LState) int {
+		if s := runtimeStatus.snapshot().sound; s != nil {
+			s.ResetMasterDynamics()
+		}
 		return 0
 	}
 }

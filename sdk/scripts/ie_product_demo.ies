@@ -11,6 +11,44 @@ local BASIC        = "sdk/examples/prebuilt/ehbasic_ie64.ie64"
 local P            = "sdk/examples/prebuilt/"
 local M            = "sdk/examples/assets/music/"
 
+-- Checked-in showreel gain trims in dB. These are the primary normalization
+-- layer; the master compressor only catches remaining peaks.
+local SHOWREEL_GAIN_DB = {
+    ["basic_rotozoomer"]            = -3.5,
+    [M.."demo_sid.sid"]             = -5.0,
+    [M.."demo_pokey.sap"]           = -1.5,
+    [M.."demo_ted.ted"]             =  1.5,
+    [M.."demo_sndh.sndh"]           = -2.0,
+    [M.."demo_sn76489.vgm"]         = -1.5,
+    [M.."demo_sn76489.vgz"]         = -1.0,
+    [M.."demo_ay_spectrum.ay"]      = -1.0,
+    [M.."demo_ay_cpc.ay"]           = -1.0,
+    [M.."demo_ym.ym"]               = -2.5,
+    [M.."demo_vtx.vtx"]             = -1.0,
+    [M.."demo_pt3.pt3"]             =  0.0,
+    [M.."demo_pt2.pt2"]             =  0.5,
+    [M.."demo_pt1.pt1"]             =  0.0,
+    [M.."demo_stc.stc"]             =  0.5,
+    [M.."demo_sqt.sqt"]             =  0.5,
+    [M.."demo_asc.asc"]             = -0.5,
+    [M.."demo_ftc.ftc"]             =  0.0,
+    [M.."demo_ahx.ahx"]             = -3.0,
+    [M.."demo_mod.mod"]             = -2.5,
+    [M.."demo_wav.wav"]             = -5.5,
+    [P.."rotozoomer.iex"]           = -2.5,
+    [P.."rotozoomer_ie64.ie64"]     = -2.5,
+    [P.."rotozoomer_68k.ie68"]      = -2.5,
+    [P.."rotozoomer_65.ie65"]       = -2.5,
+    [P.."rotozoomer_z80.ie80"]      = -2.5,
+    [P.."rotozoomer_x86.ie86"]      = -2.5,
+    [P.."voodoo_mega_demo.iex"]     = -4.0,
+    [P.."vga_text_sap_demo.ie80"]   = -1.5,
+    [P.."robocop_intro.iex"]        = -2.0,
+    [P.."robocop_intro_68k.ie68"]   = -2.0,
+    [P.."robocop_intro_65.ie65"]    = -2.0,
+    [P.."robocop_intro_z80.ie80"]   = -2.0,
+}
+
 -- ============================================================================
 -- Preflight Check: Verify all music files exist
 -- ============================================================================
@@ -54,11 +92,18 @@ local function wait_ready(ms)
         "BASIC not ready within " .. tostring(ms or 5000) .. "ms")
 end
 
+local function apply_showreel_audio(key)
+    audio.use_showreel_normalizer_preset()
+    audio.reset_master_dynamics()
+    audio.set_master_gain_db(SHOWREEL_GAIN_DB[key] or 0.0)
+end
+
 -- Switch back to EhBASIC and wait for prompt
 local function reset_to_basic()
     media.stop()
     term.read() -- drain stale output before reload
     cpu.load(BASIC)
+    apply_showreel_audio(nil)
     sys.wait_ms(1500)
     wait_ready(8000)
     sys.wait_ms(300)
@@ -89,6 +134,7 @@ end
 local function run_demo(path, secs)
     media.stop(); audio.reset()
     cpu.load(path)
+    apply_showreel_audio(path)
     sys.wait_ms(600); sys.wait_frames(30)
     if secs and secs > 0 then sys.wait_ms(secs * 1000) end
 end
@@ -106,6 +152,7 @@ end
 local function play_music(path, hold_ms)
     hold_ms = hold_ms or 8000
     term.read() -- drain stale output
+    apply_showreel_audio(path)
     slow_type('SOUND PLAY "'..path..'"', 55)
     term.type("\n"); sys.wait_ms(hold_ms)
     term.read() -- drain before waiting for Ready
@@ -136,6 +183,7 @@ local function play_music_with_info(path, chip_label, hold_ms, meta_type, num, t
     hold_ms = hold_ms or 8000
     total = total or 20
     term.read()
+    apply_showreel_audio(path)
     slow_type('SOUND PLAY "'..path..'"', 55)
     term.type("\n"); sys.wait_ms(1500)
     -- Query metadata after song has loaded and is audible
@@ -218,6 +266,7 @@ end
 slow_type('LOAD "sdk/examples/basic/rotozoomer_basic.bas"', 45)
 term.type("\n"); wait_ready(5000)
 sys.wait_ms(500)
+apply_showreel_audio("basic_rotozoomer")
 slow_type("RUN", 45)
 term.type("\n")
 sys.wait_ms(15000) -- watch the rotozoomer with SID music
@@ -302,8 +351,8 @@ end
 -- ============================================================================
 
 local rotoZoomers = {
-    {P.."rotozoomer.iex",        "IE32 - 32-bit RISC",    "CPU: IE32 (Intuition Engine native)", "Video: VideoChip 640x480 32-bit RGBA"},
-    {P.."rotozoomer_ie64.ie64",  "IE64 - 64-bit RISC",    "CPU: IE64 with ARM64 JIT compiler",   "Video: VideoChip 640x480 32-bit RGBA"},
+    {P.."rotozoomer.iex",        "IE32 - 32-bit RISC",    "CPU: IE32 RISC (Intuition Engine native)", "Video: VideoChip 640x480 32-bit RGBA"},
+    {P.."rotozoomer_ie64.ie64",  "IE64 - 64-bit RISC",    "CPU: IE64 RISC (Intuition Engine native)",   "Video: VideoChip 640x480 32-bit RGBA"},
     {P.."rotozoomer_68k.ie68",   "M68K - Motorola 68020",  "CPU: Motorola 68020 (32-bit CISC)",   "Video: VideoChip 640x480 32-bit RGBA"},
     {P.."rotozoomer_65.ie65",    "6502 - MOS Technology",  "CPU: MOS 6502 (8-bit, 64KB address)", "Video: VideoChip 640x480 32-bit RGBA"},
     {P.."rotozoomer_z80.ie80",   "Z80 - Zilog",            "CPU: Zilog Z80 (8-bit, 64KB address)","Video: VideoChip 640x480 32-bit RGBA"},
@@ -332,7 +381,7 @@ end
 
 title_card({
     "Mandelbrot Fractal",
-    "CPU: IE64 with ARM64 JIT compiler",
+    "CPU: IE64 with x64 & ARM64 JIT compilers",
     "Video: VideoChip 640x480 32-bit RGBA",
     "Fixed-point arithmetic, real-time render",
 }, 3)

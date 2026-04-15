@@ -222,6 +222,53 @@ func TestScriptEngine_AudioMetadataTables(t *testing.T) {
 	}
 }
 
+func TestScriptEngine_AudioMasterNormalizerControls(t *testing.T) {
+	bus := NewMachineBus()
+	term := NewTerminalMMIO()
+	comp := NewVideoCompositor(nil)
+	se := NewScriptEngine(bus, comp, term)
+
+	sound, err := NewSoundChip(AUDIO_BACKEND_OTO)
+	if err != nil {
+		t.Fatalf("NewSoundChip failed: %v", err)
+	}
+	t.Cleanup(sound.Stop)
+
+	runtimeStatus.setChips(nil, nil, nil, nil, nil, nil, sound, nil, nil, nil, nil, nil, nil, nil)
+	t.Cleanup(func() {
+		runtimeStatus.setChips(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	})
+
+	script := `
+		audio.set_master_gain_db(-4.5)
+		audio.configure_master_auto_level(-18.0, -10.0, 12.0, 250.0, 2500.0)
+		audio.set_master_auto_level_enabled(true)
+		audio.configure_master_compressor(-10.0, 3.0, 5.0, 120.0, 4.0, 0.0, 1.0)
+		audio.set_master_compressor_enabled(true)
+		audio.reset_master_dynamics()
+		audio.use_showreel_normalizer_preset()
+		local gain = audio.get_master_gain_db()
+		if math.abs(gain + 4.5) > 0.001 then error("gain") end
+	`
+	if err := se.RunString(script, "audio_master_normalizer"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+
+	if !sound.MasterCompressorEnabled() {
+		t.Fatal("master compressor should be enabled")
+	}
+	if !sound.MasterAutoLevelEnabled() {
+		t.Fatal("master auto level should be enabled")
+	}
+	if sound.masterCompThresholdDB != showreelCompThresholdDB {
+		t.Fatalf("threshold=%f, want showreel preset %f", sound.masterCompThresholdDB, showreelCompThresholdDB)
+	}
+}
+
 type scriptTestSource struct {
 	frame   []byte
 	w, h    int

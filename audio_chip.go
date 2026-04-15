@@ -929,6 +929,36 @@ type SoundChip struct {
 	flexShadow [4 * FLEX_CH_STRIDE]byte
 
 	busMemory []byte // mirror register writes for Machine Monitor visibility
+
+	// Master post-mix showreel normalization
+	masterGainDB           float32
+	masterGainLinear       float32
+	masterAutoLevelEnabled bool
+	masterAutoTargetDB     float32
+	masterAutoMinGainDB    float32
+	masterAutoMaxGainDB    float32
+	masterAutoAttackMS     float32
+	masterAutoReleaseMS    float32
+	masterAutoAttackCoef   float32
+	masterAutoReleaseCoef  float32
+	masterAutoLevel        float32
+	masterAutoGain         float32
+	masterCompEnabled      bool
+	masterCompThresholdDB  float32
+	masterCompRatio        float32
+	masterCompAttackMS     float32
+	masterCompReleaseMS    float32
+	masterCompKneeDB       float32
+	masterCompMakeupDB     float32
+	masterCompMakeupLinear float32
+	masterCompLookaheadMS  float32
+	masterCompAttackCoef   float32
+	masterCompReleaseCoef  float32
+	masterCompLookaheadLen int
+	masterCompEnvelope     float32
+	masterCompLookaheadBuf [MASTER_COMPRESSOR_LOOKAHEAD_MAX]float32
+	masterCompWritePos     int
+	masterCompReadPos      int
 }
 
 func NewSoundChip(backend int) (*SoundChip, error) {
@@ -941,11 +971,12 @@ func NewSoundChip(backend int) (*SoundChip, error) {
 
 	// Initialise sound chip with default settings
 	chip := &SoundChip{
-		filterLP:        DEFAULT_FILTER_LP,
-		filterBP:        DEFAULT_FILTER_BP,
-		filterHP:        DEFAULT_FILTER_HP,
-		preDelayBuf:     make([]float32, PRE_DELAY_MS*MS_TO_SAMPLES),
-		sampleRateRecip: 1.0 / float32(SAMPLE_RATE),
+		filterLP:         DEFAULT_FILTER_LP,
+		filterBP:         DEFAULT_FILTER_BP,
+		filterHP:         DEFAULT_FILTER_HP,
+		preDelayBuf:      make([]float32, PRE_DELAY_MS*MS_TO_SAMPLES),
+		sampleRateRecip:  1.0 / float32(SAMPLE_RATE),
+		masterGainLinear: 1.0,
 	}
 	chip.sampleTicker.Store(&sampleTickerHolder{})
 	chip.sampleTap.Store(&sampleTapHolder{})
@@ -2573,6 +2604,9 @@ func (chip *SoundChip) GenerateSample() float32 {
 	// Apply reverb effect and final mix
 	wet := chip.applyReverb(sample)
 	sample = sample*(1-reverbMix) + wet*reverbMix
+
+	// Apply showreel master gain and transparent safety compression last.
+	sample = chip.applyMasterNormalizer(sample)
 
 	// Clamp final output
 	return clampF32(sample, MIN_SAMPLE, MAX_SAMPLE)
