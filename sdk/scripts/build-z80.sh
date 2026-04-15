@@ -7,9 +7,11 @@
 set -euo pipefail
 
 SDK_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 ASM_DIR="$SDK_DIR/examples/asm"
 INCLUDE_DIR="$SDK_DIR/include"
 VASM="${VASM_Z80:-vasmz80_std}"
+GO_BIN="${GO:-go}"
 
 if ! command -v "$VASM" &>/dev/null; then
     echo "Error: vasmz80_std not found in PATH."
@@ -17,6 +19,9 @@ if ! command -v "$VASM" &>/dev/null; then
     echo "Or set VASM_Z80 to the path to the assembler."
     exit 1
 fi
+
+echo "Generating per-CPU rotozoomer textures..."
+(cd "$REPO_ROOT" && "$GO_BIN" run ./tools/gen_roto_textures.go)
 
 build_one() {
     local src="$1"

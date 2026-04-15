@@ -805,7 +805,7 @@ recip_table:
 ; ============================================================================
                 even
 texture_data:
-                incbin  "../assets/rotozoomtexture.raw"
+                incbin  "../assets/rotozoomtexture_m68k.raw"
 
                 even
 ted_data:

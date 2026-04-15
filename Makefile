@@ -169,6 +169,13 @@ SHOWREEL_SCRIPT := ./sdk/scripts/ie_product_demo.ies
 SHOWREEL_PREBUILT_DIR := ./sdk/examples/prebuilt
 SHOWREEL_MUSIC_DIR := ./sdk/examples/assets/music
 SHOWREEL_BASIC_SOURCE := ./sdk/examples/basic/rotozoomer_basic.bas
+ROTOZOOM_VARIANT_TEXTURES := \
+	./sdk/examples/assets/rotozoomtexture_ie32.raw \
+	./sdk/examples/assets/rotozoomtexture_ie64.raw \
+	./sdk/examples/assets/rotozoomtexture_m68k.raw \
+	./sdk/examples/assets/rotozoomtexture_6502.raw \
+	./sdk/examples/assets/rotozoomtexture_z80.raw \
+	./sdk/examples/assets/rotozoomtexture_x86.raw
 SHOWREEL_ROBOCOP_PNG := ./sdk/examples/assets/robocop.png
 SHOWREEL_FONT_RGBA := ./sdk/examples/assets/font_rgba.bin
 SHOWREEL_BOING_TEXTURE := ./sdk/examples/assets/boing_checker_64.bin
@@ -810,7 +817,7 @@ showreel-emutos:
 		exit 1; \
 	fi
 
-showreel-ie32: ie32asm robocop-32
+showreel-ie32: ie32asm robocop-32 rotozoom-textures
 	@echo "Building showreel IE32 artifacts..."
 	@$(MKDIR) -p $(SHOWREEL_PREBUILT_DIR)
 	@set -e; \
@@ -822,7 +829,7 @@ showreel-ie32: ie32asm robocop-32
 		mv sdk/examples/asm/$$out $(SHOWREEL_PREBUILT_DIR)/; \
 	done
 
-showreel-ie64: ie64asm
+showreel-ie64: ie64asm rotozoom-textures
 	@echo "Building showreel IE64 artifacts..."
 	@$(MKDIR) -p $(SHOWREEL_PREBUILT_DIR)
 	@set -e; \
@@ -835,7 +842,7 @@ showreel-ie64: ie64asm
 	echo "  [IE64] mandelbrot_ie64.asm"; \
 	$(SDK_BIN_DIR)/ie64asm -I sdk/include sdk/examples/asm/mandelbrot_ie64.asm
 
-showreel-m68k: robocop-68k gem-rotozoomer
+showreel-m68k: robocop-68k gem-rotozoomer rotozoom-textures
 	@echo "Building showreel M68K artifacts..."
 	@$(MKDIR) -p $(SHOWREEL_PREBUILT_DIR)
 	@set -e; \
@@ -845,7 +852,7 @@ showreel-m68k: robocop-68k gem-rotozoomer
 		vasmm68k_mot -Fbin -m68020 -devpac -I sdk/include -o $(SHOWREEL_PREBUILT_DIR)/$$out sdk/examples/asm/$$src; \
 	done
 
-showreel-z80: robocop-z80 $(SHOWREEL_BOING_TEXTURE)
+showreel-z80: robocop-z80 $(SHOWREEL_BOING_TEXTURE) rotozoom-textures
 	@echo "Building showreel Z80 artifacts..."
 	@$(MKDIR) -p $(SHOWREEL_PREBUILT_DIR)
 	@set -e; \
@@ -855,7 +862,7 @@ showreel-z80: robocop-z80 $(SHOWREEL_BOING_TEXTURE)
 		vasmz80_std -Fbin -I sdk/include -o $(SHOWREEL_PREBUILT_DIR)/$$out sdk/examples/asm/$$src; \
 	done
 
-showreel-6502: rotozoomer-65 robocop-65
+showreel-6502: rotozoomer-65 robocop-65 rotozoom-textures
 	@echo "Building showreel 6502 artifacts..."
 	@$(MKDIR) -p $(SHOWREEL_PREBUILT_DIR)
 	@set -e; \
@@ -865,7 +872,7 @@ showreel-6502: rotozoomer-65 robocop-65
 		ld65 -C ../../include/ie65.cfg -o ../prebuilt/ula_rotating_cube_65.ie65 ula_rotating_cube_65.o && \
 		rm -f ula_rotating_cube_65.o)
 
-showreel-x86:
+showreel-x86: rotozoom-textures
 	@echo "Building showreel x86 artifacts..."
 	@$(MKDIR) -p $(SHOWREEL_PREBUILT_DIR)
 	@set -e; \
@@ -1048,7 +1055,7 @@ robocop-65: $(SHOWREEL_FONT_RGBA)
 
 # Build the rotozoomer IE65 (6502) demo (requires ca65/ld65 from cc65 suite)
 .PHONY: rotozoomer-65
-rotozoomer-65:
+rotozoomer-65: rotozoom-textures
 	@echo "Building rotozoomer 6502 demo..."
 	@if ! command -v ca65 >/dev/null 2>&1; then \
 		echo "Error: ca65 not found. Please install the cc65 toolchain."; \
@@ -1062,6 +1069,13 @@ rotozoomer-65:
 	@rm -f sdk/examples/asm/rotozoomer_65.o
 	@echo "Output: sdk/examples/prebuilt/rotozoomer_65.ie65"
 	@ls -lh sdk/examples/prebuilt/rotozoomer_65.ie65
+
+.PHONY: rotozoom-textures
+rotozoom-textures: $(ROTOZOOM_VARIANT_TEXTURES)
+
+$(ROTOZOOM_VARIANT_TEXTURES): ./sdk/examples/assets/rotozoomtexture.raw ./tools/gen_roto_textures.go
+	@echo "Generating per-CPU rotozoomer textures..."
+	@go run ./tools/gen_roto_textures.go
 
 # Build the Robocop IE32 demo (requires ImageMagick for asset conversion)
 .PHONY: robocop-32

@@ -6,10 +6,12 @@
 set -euo pipefail
 
 SDK_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 ASM_DIR="$SDK_DIR/examples/asm"
 INCLUDE_DIR="$SDK_DIR/include"
 BIN_DIR="${IE_BIN_DIR:-./sdk/bin}"
 IE64ASM="${BIN_DIR}/ie64asm"
+GO_BIN="${GO:-go}"
 
 if [ ! -f "$IE64ASM" ]; then
     echo "Error: ie64asm not found at $IE64ASM"
@@ -17,6 +19,9 @@ if [ ! -f "$IE64ASM" ]; then
     echo "Or set IE_BIN_DIR to the directory containing ie64asm."
     exit 1
 fi
+
+echo "Generating per-CPU rotozoomer textures..."
+(cd "$REPO_ROOT" && "$GO_BIN" run ./tools/gen_roto_textures.go)
 
 build_one() {
     local src="$1"

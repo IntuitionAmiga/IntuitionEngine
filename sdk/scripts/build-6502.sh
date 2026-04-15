@@ -7,17 +7,22 @@
 set -euo pipefail
 
 SDK_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 ASM_DIR="$SDK_DIR/examples/asm"
 INCLUDE_DIR="$SDK_DIR/include"
 CFG="$INCLUDE_DIR/ie65.cfg"
 CA65="${CA65:-ca65}"
 LD65="${LD65:-ld65}"
+GO_BIN="${GO:-go}"
 
 if ! command -v "$CA65" &>/dev/null; then
     echo "Error: ca65 not found in PATH."
     echo "Install cc65 from: https://cc65.github.io/"
     exit 1
 fi
+
+echo "Generating per-CPU rotozoomer textures..."
+(cd "$REPO_ROOT" && "$GO_BIN" run ./tools/gen_roto_textures.go)
 
 build_one() {
     local src="$1"

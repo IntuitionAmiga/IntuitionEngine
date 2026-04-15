@@ -909,7 +909,7 @@ recip_table:
 ; TEXTURE DATA - 256x256 RGBA RAW IMAGE
 ; ============================================================================
 texture_data:
-                incbin "../assets/rotozoomtexture.raw"
+                incbin "../assets/rotozoomtexture_x86.raw"
 
 psg_data:
                 incbin "../assets/music/OverscanScreen.ym"

@@ -18,7 +18,7 @@ import (
 const (
 	defaultX86LoadAddr  = 0x00000000
 	x86AddressSpace     = 0x02000000 // 32MB address space
-	x86RotozoomerSHA256 = "c88f93d02d32d2afa13100b8d9b866edb479dffaaae30e94138957d94a924eed"
+	x86RotozoomerSHA256 = "af4fc796268536fc69045fe2f36d88c7645fa0d1fc04c7ce50101412ad12edea"
 
 	// x86 Bank Windows (same as Z80/6502 for compatibility)
 	X86_BANK1_WINDOW_BASE = 0x2000 // Sprite data bank

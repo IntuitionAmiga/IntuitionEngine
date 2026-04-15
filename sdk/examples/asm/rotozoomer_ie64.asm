@@ -989,7 +989,7 @@ recip_table:
 ; At startup, load_texture copies this to TEXTURE_BASE via BLIT COPY.
 ; =============================================================================
 texture_data:
-    incbin  "../assets/rotozoomtexture.raw"
+    incbin  "../assets/rotozoomtexture_ie64.raw"
 
 ; =============================================================================
 ; MUSIC DATA - SAP FORMAT (ATARI 8-BIT POKEY)

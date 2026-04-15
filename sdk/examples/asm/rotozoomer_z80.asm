@@ -1397,7 +1397,7 @@ recip_table:
 ; This string is read by the File I/O device via bus.Read8() to locate the
 ; texture file on disk. The path is relative to the engine's working directory.
 texture_filename:
-    .byte "sdk/examples/assets/rotozoomtexture.raw",0
+    .byte "sdk/examples/assets/rotozoomtexture_z80.raw",0
 
 ; ============================================================================
 ; SID MUSIC DATA - Embedded .sid File
