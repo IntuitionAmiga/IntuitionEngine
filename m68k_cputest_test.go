@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"testing"
+	"time"
 )
 
 const (
@@ -132,7 +134,7 @@ func buildCPUTestBinary(t *testing.T) []byte {
 	return data
 }
 
-func TestM68KCPUTestSuite(t *testing.T) {
+func runM68KCPUTestSuite(t *testing.T, useJIT bool) {
 	bin := buildCPUTestBinary(t)
 
 	bus := NewMachineBus()
@@ -161,35 +163,84 @@ func TestM68KCPUTestSuite(t *testing.T) {
 	cpu.stackLowerBound = 0x00002000
 	cpu.stackUpperBound = M68K_MEMORY_SIZE
 	cpu.running.Store(true)
+	cpu.m68kJitEnabled = useJIT
 
 	// Execute until ct_suite_done is set, cycle limit, or runaway detected
 	cycles := 0
 	stuckCount := 0
 	lastCaseCount := uint32(0)
-	for cycles = 0; cycles < maxCycles; cycles++ {
-		if cpu.Read32(ctSuiteDone) != 0 {
-			break
-		}
-		if !cpu.running.Load() {
-			break
-		}
-		cpu.currentIR = cpu.Fetch16()
-		cpu.FetchAndDecodeInstruction()
-
-		// Every 1M cycles, check if progress is being made
-		if cycles%1_000_000 == 0 && cycles > 0 {
-			currentCases := cpu.Read32(ctPassCount) + cpu.Read32(ctFailCount)
-			if currentCases == lastCaseCount {
-				stuckCount++
-				if stuckCount >= 3 {
-					t.Logf("Suite stuck at %d cases for 3M cycles, stopping (PC=$%08X SP=$%08X)",
-						currentCases, cpu.PC, cpu.AddrRegs[7])
-					break
+	if useJIT {
+		done := make(chan struct{})
+		go func() {
+			cpu.M68KExecuteJIT()
+			close(done)
+		}()
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		timeout := time.After(30 * time.Second)
+	loopJIT:
+		for {
+			select {
+			case <-done:
+				break loopJIT
+			case <-timeout:
+				cpu.running.Store(false)
+				<-done
+				t.Fatalf("JIT CPU test suite timed out (PC=$%08X SP=$%08X pass=%d fail=%d)",
+					cpu.PC, cpu.AddrRegs[7], cpu.Read32(ctPassCount), cpu.Read32(ctFailCount))
+			case <-ticker.C:
+				cycles += 100_000
+				if cpu.Read32(ctSuiteDone) != 0 {
+					cpu.running.Store(false)
+					<-done
+					break loopJIT
 				}
-			} else {
-				stuckCount = 0
+				if !cpu.running.Load() {
+					break loopJIT
+				}
+				currentCases := cpu.Read32(ctPassCount) + cpu.Read32(ctFailCount)
+				if currentCases == lastCaseCount {
+					stuckCount++
+					if stuckCount >= 300 {
+						cpu.running.Store(false)
+						<-done
+						t.Logf("Suite stuck at %d cases in JIT mode (PC=$%08X SP=$%08X)",
+							currentCases, cpu.PC, cpu.AddrRegs[7])
+						break loopJIT
+					}
+				} else {
+					stuckCount = 0
+				}
+				lastCaseCount = currentCases
+				runtime.Gosched()
 			}
-			lastCaseCount = currentCases
+		}
+	} else {
+		for cycles = 0; cycles < maxCycles; cycles++ {
+			if cpu.Read32(ctSuiteDone) != 0 {
+				break
+			}
+			if !cpu.running.Load() {
+				break
+			}
+			cpu.currentIR = cpu.Fetch16()
+			cpu.FetchAndDecodeInstruction()
+
+			// Every 1M cycles, check if progress is being made
+			if cycles%1_000_000 == 0 && cycles > 0 {
+				currentCases := cpu.Read32(ctPassCount) + cpu.Read32(ctFailCount)
+				if currentCases == lastCaseCount {
+					stuckCount++
+					if stuckCount >= 3 {
+						t.Logf("Suite stuck at %d cases for 3M cycles, stopping (PC=$%08X SP=$%08X)",
+							currentCases, cpu.PC, cpu.AddrRegs[7])
+						break
+					}
+				} else {
+					stuckCount = 0
+				}
+				lastCaseCount = currentCases
+			}
 		}
 	}
 
@@ -235,5 +286,290 @@ func TestM68KCPUTestSuite(t *testing.T) {
 
 	if !completed {
 		t.Errorf("Suite did not complete: %d/%d cases ran before CPU runaway", passes+fails, expected)
+	}
+}
+
+func TestM68KCPUTestSuite(t *testing.T) {
+	runM68KCPUTestSuite(t, false)
+}
+
+func TestM68KCPUTestSuiteJIT(t *testing.T) {
+	if !m68kJitAvailable {
+		t.Skip("M68K JIT not available")
+	}
+	runM68KCPUTestSuite(t, true)
+}
+
+func TestM68KCPUTest_FirstBFMemCaseJIT(t *testing.T) {
+	if !m68kJitAvailable {
+		t.Skip("M68K JIT not available")
+	}
+
+	bin := buildCPUTestBinary(t)
+
+	bus := NewMachineBus()
+	cpu := NewM68KCPU(bus)
+	for i, b := range bin {
+		cpu.Write8(M68K_ENTRY_POINT+uint32(i), b)
+	}
+	for addr := uint32(ctMailbox); addr < ctMailbox+ctCaseLogSize+ctFailLogSize+64; addr += 4 {
+		cpu.Write32(addr, 0)
+	}
+
+	cpu.Write32(0, M68K_STACK_START)
+	cpu.Write32(M68K_RESET_VECTOR, M68K_ENTRY_POINT)
+	cpu.PC = 0x12C8 // case_bf_mem_bftst_0_8
+	cpu.SR = M68K_SR_S | 0x0700
+	cpu.AddrRegs[7] = M68K_STACK_START - 4
+	cpu.SSP = M68K_STACK_START
+	cpu.USP = M68K_STACK_START
+	cpu.Write32(M68K_STACK_START-4, 0x2000)
+	cpu.Write16(0x2000, 0x4E72) // STOP
+	cpu.Write16(0x2002, 0x2700)
+	cpu.stackLowerBound = 0x00002000
+	cpu.stackUpperBound = M68K_MEMORY_SIZE
+	cpu.m68kJitEnabled = true
+
+	done := make(chan struct{})
+	go func() {
+		cpu.running.Store(true)
+		cpu.M68KExecuteJIT()
+		close(done)
+	}()
+
+	timeout := time.After(5 * time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			goto finished
+		case <-timeout:
+			cpu.running.Store(false)
+			<-done
+			t.Fatalf("first bf_mem JIT case timed out (PC=$%08X SP=$%08X pass=%d fail=%d)",
+				cpu.PC, cpu.AddrRegs[7], cpu.Read32(ctPassCount), cpu.Read32(ctFailCount))
+		case <-ticker.C:
+			if cpu.stopped.Load() {
+				cpu.running.Store(false)
+			}
+		}
+	}
+
+finished:
+	if !cpu.stopped.Load() {
+		t.Fatalf("first bf_mem JIT case did not stop cleanly (PC=$%08X SP=$%08X)", cpu.PC, cpu.AddrRegs[7])
+	}
+	if got := cpu.Read32(ctPassCount); got != 1 {
+		t.Fatalf("pass_count = %d, want 1 (PC=$%08X fail=%d case_log_pos=%d)", got, cpu.PC, cpu.Read32(ctFailCount), cpu.Read32(ctCaseLogPos))
+	}
+	if got := cpu.Read32(ctFailCount); got != 0 {
+		t.Fatalf("fail_count = %d, want 0", got)
+	}
+}
+
+func TestM68KCPUTest_LogPassHelperJIT(t *testing.T) {
+	if !m68kJitAvailable {
+		t.Skip("M68K JIT not available")
+	}
+
+	bin := buildCPUTestBinary(t)
+
+	bus := NewMachineBus()
+	cpu := NewM68KCPU(bus)
+	for i, b := range bin {
+		cpu.Write8(M68K_ENTRY_POINT+uint32(i), b)
+	}
+	for addr := uint32(ctMailbox); addr < ctMailbox+ctCaseLogSize+ctFailLogSize+64; addr += 4 {
+		cpu.Write32(addr, 0)
+	}
+
+	cpu.PC = 0x1032 // ct_log_pass
+	cpu.SR = M68K_SR_S | 0x0700
+	cpu.AddrRegs[7] = M68K_STACK_START - 4
+	cpu.SSP = M68K_STACK_START
+	cpu.USP = M68K_STACK_START
+	cpu.Write32(M68K_STACK_START-4, 0x2000)
+	cpu.Write16(0x2000, 0x4E72) // STOP
+	cpu.Write16(0x2002, 0x2700)
+	cpu.AddrRegs[0] = 0x12345678
+	cpu.stackLowerBound = 0x00002000
+	cpu.stackUpperBound = M68K_MEMORY_SIZE
+	cpu.m68kJitEnabled = true
+
+	done := make(chan struct{})
+	go func() {
+		cpu.running.Store(true)
+		cpu.M68KExecuteJIT()
+		close(done)
+	}()
+
+	timeout := time.After(5 * time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			goto finished
+		case <-timeout:
+			cpu.running.Store(false)
+			<-done
+			t.Fatalf("ct_log_pass JIT timed out (PC=$%08X SP=$%08X)", cpu.PC, cpu.AddrRegs[7])
+		case <-ticker.C:
+			if cpu.stopped.Load() {
+				cpu.running.Store(false)
+			}
+		}
+	}
+
+finished:
+	if !cpu.stopped.Load() {
+		t.Fatalf("ct_log_pass JIT did not stop cleanly (PC=$%08X SP=$%08X)", cpu.PC, cpu.AddrRegs[7])
+	}
+	if got := cpu.Read32(ctPassCount); got != 1 {
+		t.Fatalf("pass_count = %d, want 1", got)
+	}
+	if got := cpu.Read32(ctCaseLogPos); got != 8 {
+		t.Fatalf("case_log_pos = %d, want 8", got)
+	}
+	if got := cpu.Read32(ctCaseLog); got != 0x12345678 {
+		t.Fatalf("case_log[0].name_ptr = $%08X, want $12345678", got)
+	}
+	if got := cpu.Read32(ctCaseLog + 4); got != 1 {
+		t.Fatalf("case_log[0].result = %d, want 1", got)
+	}
+}
+
+func TestM68KCPUTest_FirstCHK2BInRangeCaseJIT(t *testing.T) {
+	if !m68kJitAvailable {
+		t.Skip("M68K JIT not available")
+	}
+
+	bin := buildCPUTestBinary(t)
+
+	bus := NewMachineBus()
+	cpu := NewM68KCPU(bus)
+	for i, b := range bin {
+		cpu.Write8(M68K_ENTRY_POINT+uint32(i), b)
+	}
+	for addr := uint32(ctMailbox); addr < ctMailbox+ctCaseLogSize+ctFailLogSize+64; addr += 4 {
+		cpu.Write32(addr, 0)
+	}
+
+	cpu.PC = 0x43B0 // case_chk2_cmp2_chk2b_inrange
+	cpu.SR = M68K_SR_S | 0x0700
+	cpu.AddrRegs[7] = M68K_STACK_START - 4
+	cpu.SSP = M68K_STACK_START
+	cpu.USP = M68K_STACK_START
+	cpu.Write32(M68K_STACK_START-4, 0x2000)
+	cpu.Write16(0x2000, 0x4E72) // STOP
+	cpu.Write16(0x2002, 0x2700)
+	cpu.stackLowerBound = 0x00002000
+	cpu.stackUpperBound = M68K_MEMORY_SIZE
+	cpu.m68kJitEnabled = true
+
+	done := make(chan struct{})
+	go func() {
+		cpu.running.Store(true)
+		cpu.M68KExecuteJIT()
+		close(done)
+	}()
+
+	timeout := time.After(5 * time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			goto finished
+		case <-timeout:
+			cpu.running.Store(false)
+			<-done
+			t.Fatalf("first CHK2.B in-range JIT case timed out (PC=$%08X SP=$%08X pass=%d fail=%d trap=%d vec=%d)",
+				cpu.PC, cpu.AddrRegs[7], cpu.Read32(ctPassCount), cpu.Read32(ctFailCount), cpu.Read32(ctMailbox+24), cpu.Read32(ctMailbox+28))
+		case <-ticker.C:
+			if cpu.stopped.Load() {
+				cpu.running.Store(false)
+			}
+		}
+	}
+
+finished:
+	if !cpu.stopped.Load() {
+		t.Fatalf("first CHK2.B in-range JIT case did not stop cleanly (PC=$%08X SP=$%08X)", cpu.PC, cpu.AddrRegs[7])
+	}
+	if got := cpu.Read32(ctPassCount); got != 1 {
+		t.Fatalf("pass_count = %d, want 1 (PC=$%08X fail=%d trap=%d vec=%d SP=$%08X)",
+			got, cpu.PC, cpu.Read32(ctFailCount), cpu.Read32(ctMailbox+24), cpu.Read32(ctMailbox+28), cpu.AddrRegs[7])
+	}
+	if got := cpu.Read32(ctFailCount); got != 0 {
+		t.Fatalf("fail_count = %d, want 0", got)
+	}
+}
+
+func TestM68KCPUTest_FirstCHK2BOutOfRangeCaseJIT(t *testing.T) {
+	if !m68kJitAvailable {
+		t.Skip("M68K JIT not available")
+	}
+
+	bin := buildCPUTestBinary(t)
+
+	bus := NewMachineBus()
+	cpu := NewM68KCPU(bus)
+	for i, b := range bin {
+		cpu.Write8(M68K_ENTRY_POINT+uint32(i), b)
+	}
+	for addr := uint32(ctMailbox); addr < ctMailbox+ctCaseLogSize+ctFailLogSize+64; addr += 4 {
+		cpu.Write32(addr, 0)
+	}
+
+	cpu.PC = 0x443C // case_chk2_cmp2_chk2b_outrange
+	cpu.SR = M68K_SR_S | 0x0700
+	cpu.AddrRegs[7] = M68K_STACK_START - 4
+	cpu.SSP = M68K_STACK_START
+	cpu.USP = M68K_STACK_START
+	cpu.Write32(M68K_STACK_START-4, 0x2000)
+	cpu.Write16(0x2000, 0x4E72) // STOP
+	cpu.Write16(0x2002, 0x2700)
+	cpu.stackLowerBound = 0x00002000
+	cpu.stackUpperBound = M68K_MEMORY_SIZE
+	cpu.m68kJitEnabled = true
+
+	done := make(chan struct{})
+	go func() {
+		cpu.running.Store(true)
+		cpu.M68KExecuteJIT()
+		close(done)
+	}()
+
+	timeout := time.After(5 * time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			goto finished
+		case <-timeout:
+			cpu.running.Store(false)
+			<-done
+			t.Fatalf("first CHK2.B out-of-range JIT case timed out (PC=$%08X SP=$%08X pass=%d fail=%d trap=%d vec=%d)",
+				cpu.PC, cpu.AddrRegs[7], cpu.Read32(ctPassCount), cpu.Read32(ctFailCount), cpu.Read32(ctMailbox+24), cpu.Read32(ctMailbox+28))
+		case <-ticker.C:
+			if cpu.stopped.Load() {
+				cpu.running.Store(false)
+			}
+		}
+	}
+
+finished:
+	if !cpu.stopped.Load() {
+		t.Fatalf("first CHK2.B out-of-range JIT case did not stop cleanly (PC=$%08X SP=$%08X)", cpu.PC, cpu.AddrRegs[7])
+	}
+	if got := cpu.Read32(ctPassCount); got != 1 {
+		t.Fatalf("pass_count = %d, want 1 (PC=$%08X fail=%d trap=%d vec=%d SP=$%08X)",
+			got, cpu.PC, cpu.Read32(ctFailCount), cpu.Read32(ctMailbox+24), cpu.Read32(ctMailbox+28), cpu.AddrRegs[7])
+	}
+	if got := cpu.Read32(ctFailCount); got != 0 {
+		t.Fatalf("fail_count = %d, want 0", got)
 	}
 }

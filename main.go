@@ -1844,10 +1844,62 @@ func main() {
 			anticEngine.StopRenderLoop()
 		}
 
+		// Preserve explicit JIT choices when reloading the same active CPU family.
+		snap := runtimeStatus.snapshot()
+		var preserveM68KJIT bool
+		var haveM68KJIT bool
+		var preserveZ80JIT bool
+		var haveZ80JIT bool
+		var preserve6502JIT bool
+		var have6502JIT bool
+		var preserveIE64JIT bool
+		var haveIE64JIT bool
+		switch snap.selectedCPU {
+		case runtimeCPUM68K:
+			if snap.m68k != nil && snap.m68k.cpu != nil {
+				preserveM68KJIT = snap.m68k.cpu.m68kJitEnabled
+				haveM68KJIT = true
+			}
+		case runtimeCPUZ80:
+			if snap.z80 != nil && snap.z80.cpu != nil {
+				preserveZ80JIT = snap.z80.cpu.jitEnabled
+				haveZ80JIT = true
+			}
+		case runtimeCPU6502:
+			if snap.cpu65 != nil && snap.cpu65.cpu != nil {
+				preserve6502JIT = snap.cpu65.JITEnabled
+				have6502JIT = true
+			}
+		case runtimeCPUIE64:
+			if snap.ie64 != nil {
+				preserveIE64JIT = snap.ie64.jitEnabled
+				haveIE64JIT = true
+			}
+		}
+
 		// 4. Recreate CPU runner for a true cold boot, then update runtime status/progExec.
 		newRunner, err := createRunnerForMode(mode)
 		if err != nil {
 			return err
+		}
+		switch mode {
+		case "ie64":
+			if haveIE64JIT {
+				newRunner.(*CPU64).jitEnabled = preserveIE64JIT
+			}
+		case "m68k", "emutos", "aros":
+			if haveM68KJIT {
+				newRunner.(*M68KRunner).cpu.m68kJitEnabled = preserveM68KJIT
+			}
+		case "z80":
+			if haveZ80JIT {
+				newRunner.(*CPUZ80Runner).cpu.jitEnabled = preserveZ80JIT
+			}
+		case "6502":
+			if have6502JIT {
+				newRunner.(*CPU6502Runner).JITEnabled = preserve6502JIT
+				newRunner.(*CPU6502Runner).cpu.jitEnabled = preserve6502JIT
+			}
 		}
 		cpuRunner = newRunner
 		activeCPU = newRunner

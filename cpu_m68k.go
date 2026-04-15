@@ -10409,7 +10409,6 @@ func (cpu *M68KCPU) ExecBRA(opcode uint16) {
 	} else {
 		// Byte displacement: no extra fetch, PC is already at instruction_addr + 2
 		effectiveDisplacement = int32(displacement)
-		pcAdjust = 0
 	}
 
 	// For BSR, push return address AFTER fetching displacement

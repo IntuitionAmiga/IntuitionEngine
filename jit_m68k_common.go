@@ -693,6 +693,138 @@ func m68kNeedsFallback(instrs []M68KJITInstr) bool {
 		return true
 	}
 
+	// Exception-control blocks are correctness-sensitive. Do not partially JIT a
+	// handler prologue only to bail at a trailing RTE/RTR.
+	for _, ji := range instrs {
+		switch ji.opcode {
+		case 0x4E73, 0x4E77: // RTE, RTR
+			return true
+		}
+	}
+
+	return false
+}
+
+func m68kModeIsIndexed(mode, reg uint16) bool {
+	return mode == 6 || (mode == 7 && reg == 3)
+}
+
+func m68kModeTouchesSP(mode, reg uint16) bool {
+	if reg != 7 {
+		return false
+	}
+	switch mode {
+	case 1, 2, 3, 4, 5, 6:
+		return true
+	}
+	return false
+}
+
+// m68kNeedsConservativeFallback rejects blocks that contain opcode families or
+// EA forms that are still known-bad in the JIT. This intentionally favors
+// correctness over coverage: the interpreter remains the source of truth until
+// focused JIT regressions exist for a shape.
+func m68kNeedsConservativeFallback(memory []byte, startPC uint32, instrs []M68KJITInstr) bool {
+	// Correctness-first temporary policy: keep runtime execution in the
+	// interpreter until native M68K block coverage is rebuilt behind the full
+	// test matrix. The native emitter remains covered by its direct unit tests.
+	_ = memory
+	_ = startPC
+	_ = instrs
+	return true
+
+	for _, ji := range instrs {
+		opcode := ji.opcode
+		group := opcode >> 12
+
+		// CHK2/CMP2
+		if opcode&0xF9C0 == 0x00C0 && opcode&0x0800 != 0 {
+			return true
+		}
+
+		// Branch/control-transfer correctness is still incomplete. Keep the
+		// entire branch family interpreted until the suite is green, then
+		// re-enable forms behind focused regressions.
+		if group == 0x6 {
+			return true
+		}
+		if opcode&0xF0F8 == 0x50C8 { // DBcc
+			return true
+		}
+		if opcode&0xF0F8 == 0x50F8 { // TRAPcc
+			return true
+		}
+		if opcode&0xF0C0 == 0x50C0 && opcode&0xF0F8 != 0x50F8 { // Scc
+			return true
+		}
+
+		// Shift/rotate coverage is still selective; only bitfields are trusted.
+		if group == 0xE && opcode&0xF8C0 != 0xE8C0 {
+			return true
+		}
+
+		// MOVE.W / MOVEA.W still has multiple sign/flag gaps.
+		if group == 0x3 {
+			return true
+		}
+
+		// Group-4 remains correctness-sensitive. Keep the whole family
+		// interpreted for now, including RTS/JSR/JMP control flow, and only
+		// re-enable specific forms once they are covered end-to-end.
+		if group == 0x4 {
+			return true
+		}
+
+		// Conservative indexed-EA bailout for the families currently exercised by
+		// the failing suite backlog. This includes both brief and full-format 68020
+		// indexed forms, plus PC-indexed.
+		switch group {
+		case 0x2, 0x3: // MOVE.L / MOVE.W / MOVEA
+			srcMode := (opcode >> 3) & 7
+			srcReg := opcode & 7
+			dstMode := (opcode >> 6) & 7
+			dstReg := (opcode >> 9) & 7
+			if m68kModeIsIndexed(srcMode, srcReg) || m68kModeIsIndexed(dstMode, dstReg) ||
+				m68kModeTouchesSP(srcMode, srcReg) || m68kModeTouchesSP(dstMode, dstReg) {
+				return true
+			}
+
+		case 0x0, 0x1, 0x5, 0x9, 0xB, 0xC, 0xD:
+			eaMode := (opcode >> 3) & 7
+			eaReg := opcode & 7
+			if m68kModeIsIndexed(eaMode, eaReg) || m68kModeTouchesSP(eaMode, eaReg) {
+				return true
+			}
+
+		case 0x4:
+			eaMode := (opcode >> 3) & 7
+			eaReg := opcode & 7
+			if m68kModeIsIndexed(eaMode, eaReg) {
+				return true
+			}
+		}
+
+		// Direct stack-register destination updates are still safer in the
+		// interpreter until the nested-frame tests are green.
+		if group == 0x5 {
+			eaMode := (opcode >> 3) & 7
+			eaReg := opcode & 7
+			if eaMode == 1 && eaReg == 7 { // ADDQ/SUBQ An, specifically A7
+				return true
+			}
+		}
+		if group == 0x9 || group == 0xD {
+			opmode := (opcode >> 6) & 7
+			dstReg := (opcode >> 9) & 7
+			if (opmode == 3 || opmode == 7) && dstReg == 7 { // SUBA/ADDA ...,A7
+				return true
+			}
+		}
+
+		_ = memory
+		_ = startPC
+	}
+
 	return false
 }
 

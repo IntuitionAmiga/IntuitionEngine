@@ -255,6 +255,7 @@ RELEASE_DIR := ./release
 .PHONY: all clean list install uninstall novulkan headless headless-novulkan
 .PHONY: sdk clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-all players
 .PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba boing-checker
+.PHONY: testdata-opl
 
 # Default target builds everything
 all: setup intuition-engine ie32asm ie64asm ie32to64 ie64dis
@@ -1416,6 +1417,7 @@ uninstall:
 TESTDATA_DIR := testdata
 HARTE_TEST_DIR := $(TESTDATA_DIR)/68000/v1
 HARTE_REPO_URL := https://github.com/SingleStepTests/680x0
+OPL_TEST_DIR := $(TESTDATA_DIR)/external/opl
 
 # Download Tom Harte 68000 test files
 .PHONY: testdata-harte
@@ -1435,6 +1437,12 @@ testdata-harte:
 	fi
 	@echo "Test files downloaded to $(HARTE_TEST_DIR)/"
 	@ls -1 $(HARTE_TEST_DIR)/*.json.gz 2>/dev/null | wc -l | xargs echo "Total test files:"
+
+# Download pinned OPL test fixtures
+testdata-opl:
+	@echo "Fetching pinned OPL test fixtures..."
+	@./scripts/fetch_opl_testdata.sh
+	@echo "OPL fixtures ready in $(OPL_TEST_DIR)/"
 
 # Clean test data
 .PHONY: clean-testdata

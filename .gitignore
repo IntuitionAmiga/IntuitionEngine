@@ -6,6 +6,12 @@
 .idea/
 testdata/*
 !testdata/audio/
+!testdata/external/
+testdata/external/*
+!testdata/external/.gitkeep
+!testdata/external/opl/
+testdata/external/opl/*
+!testdata/external/opl/.gitkeep
 untracked/
 assembler/untracked/
 .go*

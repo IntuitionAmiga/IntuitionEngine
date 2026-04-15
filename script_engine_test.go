@@ -64,6 +64,35 @@ func TestScriptEngine_WaitFramesAndMemoryAccess(t *testing.T) {
 	}
 }
 
+func TestScriptEngine_ShowreelDiagnosisScriptsParse(t *testing.T) {
+	bus := NewMachineBus()
+	term := NewTerminalMMIO()
+	comp := NewVideoCompositor(nil)
+	se := NewScriptEngine(bus, comp, term)
+
+	paths := []string{
+		filepath.Join("sdk", "scripts", "showreel_diag.lua"),
+		filepath.Join("sdk", "scripts", "diag_rotozoomer_68k.ies"),
+		filepath.Join("sdk", "scripts", "diag_robocop_intro_68k.ies"),
+		filepath.Join("sdk", "scripts", "diag_ted_121_colors_68k.ies"),
+		filepath.Join("sdk", "scripts", "diag_rotating_cube_copper_68k.ies"),
+		filepath.Join("sdk", "scripts", "diag_voodoo_triangle_68k.ies"),
+		filepath.Join("sdk", "scripts", "diag_voodoo_cube_68k.ies"),
+		filepath.Join("sdk", "scripts", "diag_voodoo_3dfx_logo_68k.ies"),
+		filepath.Join("sdk", "scripts", "diag_emutos_rotozoomer_gem.ies"),
+	}
+
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile(%s) failed: %v", path, err)
+		}
+		if err := se.validateScript(string(data), path); err != nil {
+			t.Fatalf("validateScript(%s) failed: %v", path, err)
+		}
+	}
+}
+
 func TestScriptEngine_MemoryRequiresFreezeForRawRAM(t *testing.T) {
 	bus := NewMachineBus()
 	term := NewTerminalMMIO()
@@ -487,6 +516,34 @@ func TestScriptEngine_SysPrintAndLog(t *testing.T) {
 	}
 }
 
+func TestScriptEngine_SysCaptureOutput(t *testing.T) {
+	bus := NewMachineBus()
+	term := NewTerminalMMIO()
+	comp := NewVideoCompositor(nil)
+	se := NewScriptEngine(bus, comp, term)
+
+	outPath := filepath.Join(t.TempDir(), "captured.log")
+	script := `
+		sys.capture_output("` + outPath + `")
+		sys.print("captured", 123)
+		sys.capture_output_off()
+	`
+	if err := se.RunString(script, "sys_capture_output"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	if !strings.Contains(string(data), "captured 123") {
+		t.Fatalf("capture file missing output: %q", string(data))
+	}
+}
+
 func TestScriptEngine_SysTimeFrameCountAndFPS(t *testing.T) {
 	bus := NewMachineBus()
 	term := NewTerminalMMIO()
@@ -506,6 +563,70 @@ func TestScriptEngine_SysTimeFrameCountAndFPS(t *testing.T) {
 	driveFramesUntilStopped(t, se)
 	if err := se.LastError(); err != nil {
 		t.Fatalf("script error: %v", err)
+	}
+}
+
+func TestScriptEngine_CPUJITControls_M68K(t *testing.T) {
+	bus := NewMachineBus()
+	term := NewTerminalMMIO()
+	comp := NewVideoCompositor(nil)
+	se := NewScriptEngine(bus, comp, term)
+
+	runner := NewM68KRunner(NewM68KCPU(bus))
+	runner.cpu.SetRunning(false)
+	runtimeStatus.setCPUs(runtimeCPUM68K, nil, nil, runner, nil, nil, nil)
+	t.Cleanup(func() {
+		runtimeStatus.setCPUs(runtimeCPUNone, nil, nil, nil, nil, nil, nil)
+	})
+
+	wantJIT := m68kJitAvailable
+	script := `
+		local before = cpu.jit_enabled()
+		local initial_mode = cpu.execution_mode()
+		cpu.set_jit_enabled(false)
+		if cpu.jit_enabled() then error("expected jit disabled") end
+		if cpu.execution_mode() ~= "interpreter" then error("expected interpreter mode") end
+	`
+	if wantJIT {
+		script = script + `
+			cpu.set_jit_enabled(true)
+			if not cpu.jit_enabled() then error("expected jit enabled") end
+			if cpu.execution_mode() ~= "jit" then error("expected jit mode") end
+		`
+	}
+
+	if err := se.RunString(script, "cpu_jit_controls_m68k"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+	if runner.cpu.m68kJitEnabled != wantJIT {
+		t.Fatalf("final m68k jit enabled=%v, want %v", runner.cpu.m68kJitEnabled, wantJIT)
+	}
+}
+
+func TestScriptEngine_CPUSetJITEnabledWhileRunningFails(t *testing.T) {
+	bus := NewMachineBus()
+	term := NewTerminalMMIO()
+	comp := NewVideoCompositor(nil)
+	se := NewScriptEngine(bus, comp, term)
+
+	runner := NewM68KRunner(NewM68KCPU(bus))
+	runner.cpu.SetRunning(true)
+	runtimeStatus.setCPUs(runtimeCPUM68K, nil, nil, runner, nil, nil, nil)
+	t.Cleanup(func() {
+		runner.cpu.SetRunning(false)
+		runtimeStatus.setCPUs(runtimeCPUNone, nil, nil, nil, nil, nil, nil)
+	})
+
+	if err := se.RunString(`cpu.set_jit_enabled(false)`, "cpu_set_jit_enabled_running"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err == nil {
+		t.Fatalf("expected script error when toggling JIT on a running CPU")
 	}
 }
 

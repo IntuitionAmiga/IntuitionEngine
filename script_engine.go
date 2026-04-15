@@ -54,6 +54,10 @@ type ScriptEngine struct {
 
 	coprocMu      sync.Mutex
 	coprocTickets map[uint32]coprocTicketBuf
+
+	outputCapture *os.File
+	stdoutOrig    *os.File
+	stderrOrig    *os.File
 }
 
 type coprocTicketBuf struct {
@@ -238,6 +242,7 @@ func (se *ScriptEngine) validateScript(script string, name string) error {
 
 func (se *ScriptEngine) run(ctx context.Context, done chan struct{}, script string, scriptName string) {
 	defer func() {
+		_ = se.stopOutputCapture()
 		se.running.Store(false)
 		// Release mouse override so the backend resumes hardware mouse updates.
 		if se.terminal != nil {
@@ -385,29 +390,34 @@ func (se *ScriptEngine) onFrameComplete() {
 
 func (se *ScriptEngine) registerModules(L *lua.LState, ctx context.Context) {
 	sys := L.SetFuncs(L.NewTable(), map[string]lua.LGFunction{
-		"wait_frames":  se.luaSysWaitFrames(ctx),
-		"wait_ms":      se.luaSysWaitMS(ctx),
-		"print":        se.luaSysPrint(),
-		"log":          se.luaSysLog(),
-		"time_ms":      se.luaSysTimeMS(),
-		"frame_count":  se.luaSysFrameCount(),
-		"frame_time":   se.luaSysFrameTime(),
-		"fps":          se.luaSysFPS(),
-		"quit":         se.luaSysQuit(),
-		"exit":         se.luaSysExit(),
-		"emutos_drive": se.luaSysEmutosDrive(),
+		"wait_frames":        se.luaSysWaitFrames(ctx),
+		"wait_ms":            se.luaSysWaitMS(ctx),
+		"print":              se.luaSysPrint(),
+		"log":                se.luaSysLog(),
+		"time_ms":            se.luaSysTimeMS(),
+		"frame_count":        se.luaSysFrameCount(),
+		"frame_time":         se.luaSysFrameTime(),
+		"fps":                se.luaSysFPS(),
+		"quit":               se.luaSysQuit(),
+		"exit":               se.luaSysExit(),
+		"emutos_drive":       se.luaSysEmutosDrive(),
+		"capture_output":     se.luaSysCaptureOutput(),
+		"capture_output_off": se.luaSysCaptureOutputOff(),
 	})
 	L.SetGlobal("sys", sys)
 
 	cpu := L.SetFuncs(L.NewTable(), map[string]lua.LGFunction{
-		"load":       se.luaCPULoad(),
-		"reset":      se.luaCPUReset(),
-		"freeze":     se.luaCPUFreeze(),
-		"resume":     se.luaCPUResume(),
-		"start":      se.luaCPUStart(),
-		"stop":       se.luaCPUStop(),
-		"is_running": se.luaCPUIsRunning(),
-		"mode":       se.luaCPUMode(),
+		"load":            se.luaCPULoad(),
+		"reset":           se.luaCPUReset(),
+		"freeze":          se.luaCPUFreeze(),
+		"resume":          se.luaCPUResume(),
+		"start":           se.luaCPUStart(),
+		"stop":            se.luaCPUStop(),
+		"is_running":      se.luaCPUIsRunning(),
+		"mode":            se.luaCPUMode(),
+		"jit_enabled":     se.luaCPUJITEnabled(),
+		"set_jit_enabled": se.luaCPUSetJITEnabled(),
+		"execution_mode":  se.luaCPUExecutionMode(),
 	})
 	L.SetGlobal("cpu", cpu)
 
@@ -828,6 +838,60 @@ func (se *ScriptEngine) luaSysEmutosDrive() lua.LGFunction {
 	}
 }
 
+var scriptOutputCaptureMu sync.Mutex
+
+func (se *ScriptEngine) startOutputCapture(path string) error {
+	scriptOutputCaptureMu.Lock()
+	defer scriptOutputCaptureMu.Unlock()
+	if se.outputCapture != nil {
+		return fmt.Errorf("output capture already active")
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	se.stdoutOrig = os.Stdout
+	se.stderrOrig = os.Stderr
+	se.outputCapture = f
+	os.Stdout = f
+	os.Stderr = f
+	return nil
+}
+
+func (se *ScriptEngine) stopOutputCapture() error {
+	scriptOutputCaptureMu.Lock()
+	defer scriptOutputCaptureMu.Unlock()
+	if se.outputCapture == nil {
+		return nil
+	}
+	os.Stdout = se.stdoutOrig
+	os.Stderr = se.stderrOrig
+	err := se.outputCapture.Close()
+	se.outputCapture = nil
+	se.stdoutOrig = nil
+	se.stderrOrig = nil
+	return err
+}
+
+func (se *ScriptEngine) luaSysCaptureOutput() lua.LGFunction {
+	return func(L *lua.LState) int {
+		path := L.CheckString(1)
+		if err := se.startOutputCapture(path); err != nil {
+			L.RaiseError("%v", err)
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaSysCaptureOutputOff() lua.LGFunction {
+	return func(L *lua.LState) int {
+		if err := se.stopOutputCapture(); err != nil {
+			L.RaiseError("%v", err)
+		}
+		return 0
+	}
+}
+
 func (se *ScriptEngine) luaCPULoad() lua.LGFunction {
 	return func(L *lua.LState) int {
 		path := L.CheckString(1)
@@ -994,6 +1058,124 @@ func (se *ScriptEngine) luaCPUMode() lua.LGFunction {
 			mode = "x86"
 		case runtimeCPU6502:
 			mode = "6502"
+		}
+		L.Push(lua.LString(mode))
+		return 1
+	}
+}
+
+func (se *ScriptEngine) luaCPUJITEnabled() lua.LGFunction {
+	return func(L *lua.LState) int {
+		snap := runtimeStatus.snapshot()
+		enabled := false
+		switch snap.selectedCPU {
+		case runtimeCPUM68K:
+			enabled = snap.m68k != nil && snap.m68k.cpu != nil && snap.m68k.cpu.m68kJitEnabled
+		case runtimeCPUZ80:
+			enabled = snap.z80 != nil && snap.z80.cpu != nil && snap.z80.cpu.jitEnabled
+		case runtimeCPU6502:
+			enabled = snap.cpu65 != nil && snap.cpu65.JITEnabled
+		case runtimeCPUIE64:
+			enabled = snap.ie64 != nil && snap.ie64.jitEnabled
+		}
+		L.Push(lua.LBool(enabled))
+		return 1
+	}
+}
+
+func (se *ScriptEngine) luaCPUSetJITEnabled() lua.LGFunction {
+	return func(L *lua.LState) int {
+		enabled := L.CheckBool(1)
+		snap := runtimeStatus.snapshot()
+		switch snap.selectedCPU {
+		case runtimeCPUM68K:
+			if snap.m68k == nil || snap.m68k.cpu == nil {
+				L.RaiseError("m68k cpu unavailable")
+				return 0
+			}
+			if snap.m68k.IsRunning() {
+				L.RaiseError("cannot change m68k JIT while CPU is running")
+				return 0
+			}
+			if enabled && !m68kJitAvailable {
+				L.RaiseError("m68k JIT unavailable on this platform")
+				return 0
+			}
+			snap.m68k.cpu.m68kJitEnabled = enabled
+			return 0
+		case runtimeCPUZ80:
+			if snap.z80 == nil || snap.z80.cpu == nil {
+				L.RaiseError("z80 cpu unavailable")
+				return 0
+			}
+			if snap.z80.IsRunning() {
+				L.RaiseError("cannot change z80 JIT while CPU is running")
+				return 0
+			}
+			snap.z80.cpu.jitEnabled = enabled && z80JitAvailable
+			if enabled && !z80JitAvailable {
+				L.RaiseError("z80 JIT unavailable on this platform")
+				return 0
+			}
+			return 0
+		case runtimeCPU6502:
+			if snap.cpu65 == nil || snap.cpu65.cpu == nil {
+				L.RaiseError("6502 cpu unavailable")
+				return 0
+			}
+			if snap.cpu65.IsRunning() {
+				L.RaiseError("cannot change 6502 JIT while CPU is running")
+				return 0
+			}
+			snap.cpu65.JITEnabled = enabled && jitAvailable
+			if enabled && !jitAvailable {
+				L.RaiseError("6502 JIT unavailable on this platform")
+				return 0
+			}
+			return 0
+		case runtimeCPUIE64:
+			if snap.ie64 == nil {
+				L.RaiseError("ie64 cpu unavailable")
+				return 0
+			}
+			if snap.ie64.IsRunning() {
+				L.RaiseError("cannot change ie64 JIT while CPU is running")
+				return 0
+			}
+			snap.ie64.jitEnabled = enabled && jitAvailable
+			if enabled && !jitAvailable {
+				L.RaiseError("ie64 JIT unavailable on this platform")
+				return 0
+			}
+			return 0
+		default:
+			L.RaiseError("selected cpu does not support script-controlled JIT")
+			return 0
+		}
+	}
+}
+
+func (se *ScriptEngine) luaCPUExecutionMode() lua.LGFunction {
+	return func(L *lua.LState) int {
+		snap := runtimeStatus.snapshot()
+		mode := "interpreter"
+		switch snap.selectedCPU {
+		case runtimeCPUM68K:
+			if snap.m68k != nil && snap.m68k.cpu != nil && snap.m68k.cpu.m68kJitEnabled {
+				mode = "jit"
+			}
+		case runtimeCPUZ80:
+			if snap.z80 != nil && snap.z80.cpu != nil && snap.z80.cpu.jitEnabled {
+				mode = "jit"
+			}
+		case runtimeCPU6502:
+			if snap.cpu65 != nil && snap.cpu65.JITEnabled {
+				mode = "jit"
+			}
+		case runtimeCPUIE64:
+			if snap.ie64 != nil && snap.ie64.jitEnabled {
+				mode = "jit"
+			}
 		}
 		L.Push(lua.LString(mode))
 		return 1

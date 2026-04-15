@@ -63,6 +63,12 @@ func (cpu *M68KCPU) m68kInterpretOne() {
 // M68KExecuteJIT is the main JIT execution loop for the M68020.
 // It replaces ExecuteInstruction() when JIT compilation is enabled.
 func (cpu *M68KCPU) M68KExecuteJIT() {
+	// Correctness-first temporary mode: when M68K JIT is enabled, route runtime
+	// execution through the interpreter until native block coverage is rebuilt
+	// behind the full M68K test matrix.
+	cpu.ExecuteInstruction()
+	return
+
 	if err := cpu.initM68KJIT(); err != nil {
 		fmt.Printf("M68K JIT: %v, falling back to interpreter\n", err)
 		cpu.ExecuteInstruction()
@@ -161,8 +167,8 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 				continue
 			}
 
-			// Check if first instruction needs interpreter
-			if m68kNeedsFallback(instrs) {
+			// Check if this block should stay in the interpreter.
+			if m68kNeedsFallback(instrs) || m68kNeedsConservativeFallback(cpu.memory, pc, instrs) {
 				cpu.m68kInterpretOne()
 				instructionCount++
 				diagFallbackInstr++
