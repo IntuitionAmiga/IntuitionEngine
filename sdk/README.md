@@ -68,6 +68,18 @@ sdk/
 
 IEScript is the Lua 5.1 automation layer for Intuition Engine. Scripts use the `.ies` extension and provide programmatic control of the emulator via 11 API modules: `sys`, `cpu`, `mem`, `term`, `audio`, `video`, `repl`, `rec`, `dbg`, `coproc`, and `media`. Use cases include automated demo recording, test harnesses, and scripted debugging workflows. A comprehensive product demo script is included at `scripts/ie_product_demo.ies`. See [IEScript Lua Automation](docs/iescript.md) for the full reference.
 
+Prepare the product demo assets with:
+
+```bash
+make build-showreel-deps
+```
+
+Or build and launch it directly with:
+
+```bash
+make run-showreel
+```
+
 ```bash
 ./bin/IntuitionEngine -ie64 program.ie64 -script demo.ies
 ```

@@ -12,11 +12,20 @@ import (
 	"image/draw"
 	"image/png"
 	"os"
+	"path/filepath"
+	"runtime"
 )
 
 func main() {
-	// Read the PNG font from cubeintro
-	fontPath := "/home/zayn/GolandProjects/cubeintro/font.go"
+	_, selfPath, _, ok := runtime.Caller(0)
+	if !ok {
+		fmt.Println("Error: unable to resolve font2rgba source path")
+		os.Exit(1)
+	}
+	baseDir := filepath.Dir(selfPath)
+
+	// Read the checked-in cubeintro font source from this repo.
+	fontPath := filepath.Join(baseDir, "font.go")
 
 	// We need to extract the byte array from font.go
 	// For simplicity, decode the PNG directly from the cubeintro package
@@ -59,7 +68,7 @@ func main() {
 	}
 
 	// Write raw RGBA to file
-	outPath := "/home/zayn/GolandProjects/IntuitionEngine/sdk/examples/assets/font_rgba.bin"
+	outPath := filepath.Join(baseDir, "..", "..", "sdk", "examples", "assets", "font_rgba.bin")
 	err = os.WriteFile(outPath, rgba.Pix, 0644)
 	if err != nil {
 		fmt.Printf("Error writing output: %v\n", err)

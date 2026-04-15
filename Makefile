@@ -165,6 +165,83 @@ INSTALL_BIN_DIR := $(PREFIX)/bin
 APP_NAME := IntuitionEngine
 APP_VERSION := 1.0.0
 
+SHOWREEL_SCRIPT := ./sdk/scripts/ie_product_demo.ies
+SHOWREEL_PREBUILT_DIR := ./sdk/examples/prebuilt
+SHOWREEL_MUSIC_DIR := ./sdk/examples/assets/music
+SHOWREEL_BASIC_SOURCE := ./sdk/examples/basic/rotozoomer_basic.bas
+SHOWREEL_ROBOCOP_PNG := ./sdk/examples/assets/robocop.png
+SHOWREEL_FONT_RGBA := ./sdk/examples/assets/font_rgba.bin
+SHOWREEL_BOING_TEXTURE := ./sdk/examples/assets/boing_checker_64.bin
+SHOWREEL_FONT_SOURCES := ./tools/font2rgba/main.go ./tools/font2rgba/font.go
+SHOWREEL_BOING_SOURCES := ./tools/gen_boing_checker/main.go
+SHOWREEL_STATIC_ASSETS := $(SHOWREEL_ROBOCOP_PNG)
+SHOWREEL_MUSIC_FILES := \
+	$(SHOWREEL_MUSIC_DIR)/demo_sid.sid \
+	$(SHOWREEL_MUSIC_DIR)/demo_pokey.sap \
+	$(SHOWREEL_MUSIC_DIR)/demo_ted.ted \
+	$(SHOWREEL_MUSIC_DIR)/demo_sndh.sndh \
+	$(SHOWREEL_MUSIC_DIR)/demo_sn76489.vgm \
+	$(SHOWREEL_MUSIC_DIR)/demo_sn76489.vgz \
+	$(SHOWREEL_MUSIC_DIR)/demo_ay_spectrum.ay \
+	$(SHOWREEL_MUSIC_DIR)/demo_ay_cpc.ay \
+	$(SHOWREEL_MUSIC_DIR)/demo_ym.ym \
+	$(SHOWREEL_MUSIC_DIR)/demo_vtx.vtx \
+	$(SHOWREEL_MUSIC_DIR)/demo_pt3.pt3 \
+	$(SHOWREEL_MUSIC_DIR)/demo_pt2.pt2 \
+	$(SHOWREEL_MUSIC_DIR)/demo_pt1.pt1 \
+	$(SHOWREEL_MUSIC_DIR)/demo_stc.stc \
+	$(SHOWREEL_MUSIC_DIR)/demo_sqt.sqt \
+	$(SHOWREEL_MUSIC_DIR)/demo_asc.asc \
+	$(SHOWREEL_MUSIC_DIR)/demo_ftc.ftc \
+	$(SHOWREEL_MUSIC_DIR)/demo_ahx.ahx \
+	$(SHOWREEL_MUSIC_DIR)/demo_mod.mod \
+	$(SHOWREEL_MUSIC_DIR)/demo_wav.wav
+SHOWREEL_RUNTIME_INPUTS := $(SHOWREEL_BASIC_SOURCE) $(SHOWREEL_STATIC_ASSETS) $(SHOWREEL_MUSIC_FILES)
+SHOWREEL_CORE_ARTIFACTS := \
+	$(BIN_DIR)/IntuitionEngine \
+	$(SHOWREEL_PREBUILT_DIR)/ehbasic_ie64.ie64 \
+	$(EMUTOS_ROM)
+SHOWREEL_IE32_ARTIFACTS := \
+	$(SHOWREEL_PREBUILT_DIR)/rotozoomer.iex \
+	$(SHOWREEL_PREBUILT_DIR)/voodoo_mega_demo.iex \
+	$(SHOWREEL_PREBUILT_DIR)/vga_mode13h_fire.iex \
+	$(SHOWREEL_PREBUILT_DIR)/vga_modex_circles.iex \
+	$(SHOWREEL_PREBUILT_DIR)/vga_mode12h_bars.iex \
+	$(SHOWREEL_PREBUILT_DIR)/vga_text_hello.iex \
+	$(SHOWREEL_PREBUILT_DIR)/robocop_intro.iex
+SHOWREEL_IE64_ARTIFACTS := \
+	$(SHOWREEL_PREBUILT_DIR)/rotozoomer_ie64.ie64 \
+	./sdk/examples/asm/mandelbrot_ie64.ie64
+SHOWREEL_M68K_ARTIFACTS := \
+	$(SHOWREEL_PREBUILT_DIR)/rotozoomer_68k.ie68 \
+	$(SHOWREEL_PREBUILT_DIR)/ted_121_colors_68k.ie68 \
+	$(SHOWREEL_PREBUILT_DIR)/rotating_cube_copper_68k.ie68 \
+	$(SHOWREEL_PREBUILT_DIR)/voodoo_cube_68k.ie68 \
+	$(SHOWREEL_PREBUILT_DIR)/voodoo_3dfx_logo_68k.ie68 \
+	$(SHOWREEL_PREBUILT_DIR)/voodoo_triangle_68k.ie68 \
+	$(SHOWREEL_PREBUILT_DIR)/robocop_intro_68k.ie68 \
+	$(SHOWREEL_PREBUILT_DIR)/rotozoomer_gem.prg
+SHOWREEL_Z80_ARTIFACTS := \
+	$(SHOWREEL_PREBUILT_DIR)/rotozoomer_z80.ie80 \
+	$(SHOWREEL_PREBUILT_DIR)/voodoo_tunnel_z80.ie80 \
+	$(SHOWREEL_PREBUILT_DIR)/vga_text_sap_demo.ie80 \
+	$(SHOWREEL_PREBUILT_DIR)/robocop_intro_z80.ie80
+SHOWREEL_6502_ARTIFACTS := \
+	$(SHOWREEL_PREBUILT_DIR)/rotozoomer_65.ie65 \
+	$(SHOWREEL_PREBUILT_DIR)/ula_rotating_cube_65.ie65 \
+	$(SHOWREEL_PREBUILT_DIR)/robocop_intro_65.ie65
+SHOWREEL_X86_ARTIFACTS := \
+	$(SHOWREEL_PREBUILT_DIR)/rotozoomer_x86.ie86 \
+	$(SHOWREEL_PREBUILT_DIR)/antic_plasma_x86.ie86
+SHOWREEL_ALL_ARTIFACTS := \
+	$(SHOWREEL_CORE_ARTIFACTS) \
+	$(SHOWREEL_IE32_ARTIFACTS) \
+	$(SHOWREEL_IE64_ARTIFACTS) \
+	$(SHOWREEL_M68K_ARTIFACTS) \
+	$(SHOWREEL_Z80_ARTIFACTS) \
+	$(SHOWREEL_6502_ARTIFACTS) \
+	$(SHOWREEL_X86_ARTIFACTS)
+
 # Build profiles:
 #   make                      Full build (Vulkan + Ebiten + OTO)
 #   make novulkan             Software Voodoo only (no Vulkan SDK needed)
@@ -177,6 +254,7 @@ RELEASE_DIR := ./release
 # Main targets
 .PHONY: all clean list install uninstall novulkan headless headless-novulkan
 .PHONY: sdk clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-all players
+.PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba boing-checker
 
 # Default target builds everything
 all: setup intuition-engine ie32asm ie64asm ie32to64 ie64dis
@@ -634,6 +712,187 @@ emutos-probe: emutos
 	@echo "Running EmuTOS boot probe script..."
 	@$(BIN_DIR)/IntuitionEngine -emutos -script ./sdk/scripts/emutos_boot_probe.ies
 
+$(SHOWREEL_FONT_RGBA): $(SHOWREEL_FONT_SOURCES)
+	@echo "Generating Robocop font atlas..."
+	@$(GO) run ./tools/font2rgba
+
+font-rgba: $(SHOWREEL_FONT_RGBA)
+
+$(SHOWREEL_BOING_TEXTURE): $(SHOWREEL_BOING_SOURCES)
+	@echo "Generating Boing checker texture..."
+	@$(GO) run ./tools/gen_boing_checker
+
+boing-checker: $(SHOWREEL_BOING_TEXTURE)
+
+check-showreel-prereqs:
+	@echo "Checking showreel prerequisites..."
+	@missing_tools=""; \
+	missing_inputs=""; \
+	host_build_err=""; \
+	if ! command -v $(GO) >/dev/null 2>&1; then \
+		missing_tools="$$missing_tools\n  - Go toolchain ($(GO))"; \
+	fi; \
+	if ! command -v $(UPX) >/dev/null 2>&1; then \
+		missing_tools="$$missing_tools\n  - $(UPX)"; \
+	fi; \
+	if [ "$(SSTRIP)" != "true" ] && ! command -v $(SSTRIP) >/dev/null 2>&1; then \
+		missing_tools="$$missing_tools\n  - $(SSTRIP)"; \
+	fi; \
+	for tool in vasmm68k_mot vasmz80_std ca65 ld65 nasm convert identify; do \
+		if ! command -v $$tool >/dev/null 2>&1; then \
+			missing_tools="$$missing_tools\n  - $$tool"; \
+		fi; \
+	done; \
+	for path in $(SHOWREEL_FONT_SOURCES); do \
+		if [ ! -f "$$path" ]; then \
+			missing_inputs="$$missing_inputs\n  - $$path"; \
+		fi; \
+	done; \
+	for path in $(SHOWREEL_BOING_SOURCES); do \
+		if [ ! -f "$$path" ]; then \
+			missing_inputs="$$missing_inputs\n  - $$path"; \
+		fi; \
+	done; \
+	for path in $(SHOWREEL_RUNTIME_INPUTS); do \
+		if [ ! -f "$$path" ]; then \
+			missing_inputs="$$missing_inputs\n  - $$path"; \
+		fi; \
+	done; \
+	if command -v $(GO) >/dev/null 2>&1; then \
+		HOSTCHECK_BIN="$(BIN_DIR)/.showreel-hostcheck"; \
+		$(MKDIR) -p $(BIN_DIR); \
+		rm -f "$$HOSTCHECK_BIN"; \
+		if ! CGO_JOBS=$(NCORES) $(GO) build $(GO_FLAGS) -o "$$HOSTCHECK_BIN" . >/dev/null 2>&1; then \
+			host_build_err="  - host build prerequisites for intuition-engine (Go/CGO/Vulkan/audio/video toolchain)"; \
+		fi; \
+		rm -f "$$HOSTCHECK_BIN"; \
+	fi; \
+	if [ ! -f "$(EMUTOS_ROM)" ]; then \
+		if ! command -v $(MAKE) >/dev/null 2>&1; then \
+			missing_tools="$$missing_tools\n  - $(MAKE)"; \
+		fi; \
+		if [ ! -d "$(EMUTOS_SRC_DIR)" ]; then \
+			missing_inputs="$$missing_inputs\n  - local EmuTOS source tree at $(EMUTOS_SRC_DIR) or prebuilt ROM at $(EMUTOS_ROM)"; \
+		elif ! command -v m68k-atari-mint-gcc >/dev/null 2>&1 && \
+		     ! command -v m68k-elf-gcc >/dev/null 2>&1 && \
+		     ! command -v $(EMUTOS_LINUX_GCC) >/dev/null 2>&1 && \
+		     ! command -v m68k-linux-gnu-gcc >/dev/null 2>&1 && \
+		     ! command -v m68k-linux-gnu-gcc-13 >/dev/null 2>&1 && \
+		     ! command -v m68k-suse-linux-gcc >/dev/null 2>&1; then \
+			missing_tools="$$missing_tools\n  - supported EmuTOS M68K cross-compiler"; \
+		fi; \
+	fi; \
+	if [ -n "$$missing_tools$$missing_inputs$$host_build_err" ]; then \
+		echo "Error: showreel prerequisites are incomplete."; \
+		if [ -n "$$missing_tools" ]; then \
+			printf '%b\n' "Missing tools:$$missing_tools"; \
+		fi; \
+		if [ -n "$$missing_inputs" ]; then \
+			printf '%b\n' "Missing inputs:$$missing_inputs"; \
+		fi; \
+		if [ -n "$$host_build_err" ]; then \
+			printf '%s\n' "$$host_build_err"; \
+			echo "Run 'make intuition-engine' for the full host build failure output."; \
+		fi; \
+		exit 1; \
+	fi; \
+	echo "Showreel prerequisites look complete."
+
+showreel-emutos:
+	@if [ -f "$(EMUTOS_ROM)" ]; then \
+		echo "Using existing EmuTOS ROM: $(EMUTOS_ROM)"; \
+	elif [ -d "$(EMUTOS_SRC_DIR)" ]; then \
+		$(MAKE) emutos-rom; \
+	else \
+		echo "Error: missing EmuTOS ROM ($(EMUTOS_ROM)) and local source tree ($(EMUTOS_SRC_DIR))."; \
+		echo "Provide one of them, then re-run 'make build-showreel-deps'."; \
+		exit 1; \
+	fi
+
+showreel-ie32: ie32asm robocop-32
+	@echo "Building showreel IE32 artifacts..."
+	@$(MKDIR) -p $(SHOWREEL_PREBUILT_DIR)
+	@set -e; \
+	for src in rotozoomer.asm voodoo_mega_demo.asm vga_mode13h_fire.asm vga_modex_circles.asm vga_mode12h_bars.asm vga_text_hello.asm; do \
+		echo "  [IE32] $$src"; \
+		(cd sdk/examples/asm && ../../../$(SDK_BIN_DIR)/ie32asm -I ../../include $$src); \
+	done; \
+	for out in rotozoomer.iex voodoo_mega_demo.iex vga_mode13h_fire.iex vga_modex_circles.iex vga_mode12h_bars.iex vga_text_hello.iex; do \
+		mv sdk/examples/asm/$$out $(SHOWREEL_PREBUILT_DIR)/; \
+	done
+
+showreel-ie64: ie64asm
+	@echo "Building showreel IE64 artifacts..."
+	@$(MKDIR) -p $(SHOWREEL_PREBUILT_DIR)
+	@set -e; \
+	echo "  [IE64] ehbasic_ie64.asm"; \
+	$(SDK_BIN_DIR)/ie64asm -I sdk/include sdk/examples/asm/ehbasic_ie64.asm; \
+	mv sdk/examples/asm/ehbasic_ie64.ie64 $(SHOWREEL_PREBUILT_DIR)/; \
+	echo "  [IE64] rotozoomer_ie64.asm"; \
+	$(SDK_BIN_DIR)/ie64asm -I sdk/include sdk/examples/asm/rotozoomer_ie64.asm; \
+	mv sdk/examples/asm/rotozoomer_ie64.ie64 $(SHOWREEL_PREBUILT_DIR)/; \
+	echo "  [IE64] mandelbrot_ie64.asm"; \
+	$(SDK_BIN_DIR)/ie64asm -I sdk/include sdk/examples/asm/mandelbrot_ie64.asm
+
+showreel-m68k: robocop-68k gem-rotozoomer
+	@echo "Building showreel M68K artifacts..."
+	@$(MKDIR) -p $(SHOWREEL_PREBUILT_DIR)
+	@set -e; \
+	for src in rotozoomer_68k.asm ted_121_colors_68k.asm rotating_cube_copper_68k.asm voodoo_cube_68k.asm voodoo_3dfx_logo_68k.asm voodoo_triangle_68k.asm; do \
+		out=$${src%.asm}.ie68; \
+		echo "  [M68K] $$src"; \
+		vasmm68k_mot -Fbin -m68020 -devpac -I sdk/include -o $(SHOWREEL_PREBUILT_DIR)/$$out sdk/examples/asm/$$src; \
+	done
+
+showreel-z80: robocop-z80 $(SHOWREEL_BOING_TEXTURE)
+	@echo "Building showreel Z80 artifacts..."
+	@$(MKDIR) -p $(SHOWREEL_PREBUILT_DIR)
+	@set -e; \
+	for src in rotozoomer_z80.asm voodoo_tunnel_z80.asm vga_text_sap_demo.asm; do \
+		out=$${src%.asm}.ie80; \
+		echo "  [Z80] $$src"; \
+		vasmz80_std -Fbin -I sdk/include -o $(SHOWREEL_PREBUILT_DIR)/$$out sdk/examples/asm/$$src; \
+	done
+
+showreel-6502: rotozoomer-65 robocop-65
+	@echo "Building showreel 6502 artifacts..."
+	@$(MKDIR) -p $(SHOWREEL_PREBUILT_DIR)
+	@set -e; \
+	echo "  [6502] ula_rotating_cube_65.asm"; \
+	(cd sdk/examples/asm && \
+		ca65 -I ../../include -o ula_rotating_cube_65.o ula_rotating_cube_65.asm && \
+		ld65 -C ../../include/ie65.cfg -o ../prebuilt/ula_rotating_cube_65.ie65 ula_rotating_cube_65.o && \
+		rm -f ula_rotating_cube_65.o)
+
+showreel-x86:
+	@echo "Building showreel x86 artifacts..."
+	@$(MKDIR) -p $(SHOWREEL_PREBUILT_DIR)
+	@set -e; \
+	for src in rotozoomer_x86.asm antic_plasma_x86.asm; do \
+		out=$${src%.asm}.ie86; \
+		echo "  [x86] $$src"; \
+		(cd sdk/examples/asm && nasm -f bin -I ../../include/ -o ../prebuilt/$$out $$src); \
+	done
+
+build-showreel-deps: check-showreel-prereqs intuition-engine showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86
+	@echo "Verifying showreel outputs..."
+	@missing=""; \
+	for path in $(SHOWREEL_ALL_ARTIFACTS) $(SHOWREEL_RUNTIME_INPUTS); do \
+		if [ ! -f "$$path" ]; then \
+			missing="$$missing\n  - $$path"; \
+		fi; \
+	done; \
+	if [ -n "$$missing" ]; then \
+		echo "Error: build-showreel-deps completed with missing files."; \
+		printf '%b\n' "$$missing"; \
+		exit 1; \
+	fi; \
+	echo "Showreel dependencies are ready for $(SHOWREEL_SCRIPT)."
+
+run-showreel: build-showreel-deps
+	@echo "Running showreel: $(SHOWREEL_SCRIPT)"
+	@$(BIN_DIR)/IntuitionEngine -script $(SHOWREEL_SCRIPT)
+
 .PHONY: gem-rotozoomer
 gem-rotozoomer:
 	@echo "Building GEM rotozoomer .PRG..."
@@ -771,7 +1030,7 @@ ie65asm:
 
 # Build the Robocop IE65 (6502) demo (requires ca65/ld65 from cc65 suite)
 .PHONY: robocop-65
-robocop-65:
+robocop-65: $(SHOWREEL_FONT_RGBA)
 	@echo "Building Robocop 6502 demo..."
 	@if ! command -v ca65 >/dev/null 2>&1; then \
 		echo "Error: ca65 not found. Please install the cc65 toolchain."; \
@@ -805,7 +1064,7 @@ rotozoomer-65:
 
 # Build the Robocop IE32 demo (requires ImageMagick for asset conversion)
 .PHONY: robocop-32
-robocop-32:
+robocop-32: ie32asm $(SHOWREEL_FONT_RGBA)
 	@echo "Building Robocop IE32 demo..."
 	@if [ ! -f "sdk/examples/assets/robocop.png" ]; then \
 		echo "Error: sdk/examples/assets/robocop.png not found"; \
@@ -825,7 +1084,7 @@ robocop-32:
 
 # Build the Robocop M68K demo (requires vasmm68k_mot from VASM)
 .PHONY: robocop-68k
-robocop-68k:
+robocop-68k: $(SHOWREEL_FONT_RGBA)
 	@echo "Building Robocop M68K demo..."
 	@if ! command -v vasmm68k_mot >/dev/null 2>&1; then \
 		echo "Error: vasmm68k_mot not found. Please install VASM."; \
@@ -843,7 +1102,7 @@ robocop-68k:
 
 # Build the Robocop Z80 demo (requires vasmz80 from VASM)
 .PHONY: robocop-z80
-robocop-z80:
+robocop-z80: $(SHOWREEL_FONT_RGBA)
 	@echo "Building Robocop Z80 demo..."
 	@if ! command -v vasmz80_std >/dev/null 2>&1; then \
 		echo "Error: vasmz80_std not found. Please install VASM."; \
@@ -1236,6 +1495,9 @@ help:
 	@echo ""
 	@echo "SDK & Release targets:"
 	@echo "  sdk              - Sync includes and pre-assemble SDK demos"
+	@echo "  build-showreel-deps - Build the exact artifacts needed by sdk/scripts/ie_product_demo.ies"
+	@echo "  run-showreel     - Build showreel dependencies, then launch sdk/scripts/ie_product_demo.ies"
+	@echo "  check-showreel-prereqs - Validate showreel toolchains, runtime inputs, and EmuTOS availability"
 	@echo "  release-src      - Create source archive from git"
 	@echo "  release-sdk      - Create standalone SDK archive"
 	@echo "  release-linux       - Build Linux release archives (amd64 + arm64)"
@@ -1250,6 +1512,15 @@ help:
 	@echo "  robocop-68k    - Build the Robocop M68K demo (requires vasm)"
 	@echo "  robocop-z80    - Build the Robocop Z80 demo (requires vasm)"
 	@echo "  gem-rotozoomer - Build the GEM rotozoomer .PRG (requires vasm)"
+	@echo "  showreel-ie32  - Build the IE32 binaries used by the product demo"
+	@echo "  showreel-ie64  - Build the IE64 binaries used by the product demo"
+	@echo "  showreel-m68k  - Build the M68K binaries used by the product demo"
+	@echo "  showreel-z80   - Build the Z80 binaries used by the product demo"
+	@echo "  showreel-6502  - Build the 6502 binaries used by the product demo"
+	@echo "  showreel-x86   - Build the x86 binaries used by the product demo"
+	@echo ""
+	@echo "IEScript:"
+	@echo "  sdk/scripts/ie_product_demo.ies expects these assets; use 'make build-showreel-deps' first"
 	@echo ""
 	@echo "IE65 (6502) targets:"
 	@echo "  gen-65-data    - Build the IE65 data generator tool"
