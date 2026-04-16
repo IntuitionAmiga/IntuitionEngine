@@ -1,4 +1,14 @@
-// jit_mmap.go - Executable memory allocation via syscall.Mmap
+// jit_mmap.go - Dual-mapped executable memory (W^X) for JIT code cache.
+//
+// The JIT host memory backend satisfies the M15.6 G1 W^X invariant: the
+// same physical pages are mapped twice, once writable (RW, not
+// executable) for emit and patch paths, once executable (RX, not
+// writable) for dispatch. No single mapping ever has both PROT_WRITE
+// and PROT_EXEC.
+//
+// Backing: memfd_create(2) anonymous file, MAP_SHARED for both views.
+// Aliasing: writes to the writable view are visible through the exec
+// view, because both map the same kernel-side object.
 
 //go:build (amd64 || arm64) && linux
 
@@ -6,50 +16,115 @@ package main
 
 import (
 	"fmt"
-	"syscall"
+	"sync"
 	"unsafe"
+
+	"golang.org/x/sys/unix"
 )
 
-// ExecMem manages an mmap'd RWX region for JIT-compiled code.
+// ExecMem manages a pair of aliased mappings for JIT code: a writable
+// view used by emit/patch paths and an executable view used by
+// dispatch. Callers hold execution-view addresses (returned by Write
+// and stored in chain slots); writes through these addresses go
+// through the writable view via PatchRel32At's lookup.
 type ExecMem struct {
-	buf  []byte // mmap'd region
-	used int    // bump allocator offset
+	writable []byte // RW view; emit and PatchRel32At write here
+	exec     []byte // RX view; dispatch jumps here
+	used     int    // bump allocator offset (shared for both views)
+	fd       int    // memfd backing both mappings
 }
 
 const execMemAlign = 16 // 16-byte alignment for all code blocks
 
-// AllocExecMem allocates an RWX memory region of the given size.
+// execMems is a package-level registry of every live ExecMem, used by
+// PatchRel32At to translate an execution-view address (which is what
+// callers store in chain slots) to the corresponding writable-view
+// address for the actual byte write.
+var (
+	execMemsMu sync.RWMutex
+	execMems   []*ExecMem
+)
+
+// AllocExecMem allocates a dual-mapped code region of at least the
+// given size. The returned ExecMem exposes a writable view and an
+// executable view over the same physical memory.
 func AllocExecMem(size int) (*ExecMem, error) {
-	// Round up to page size
-	pageSize := syscall.Getpagesize()
+	pageSize := unix.Getpagesize()
 	size = (size + pageSize - 1) &^ (pageSize - 1)
 
-	buf, err := syscall.Mmap(-1, 0, size,
-		syscall.PROT_READ|syscall.PROT_WRITE|syscall.PROT_EXEC,
-		syscall.MAP_PRIVATE|syscall.MAP_ANONYMOUS)
-	if err != nil {
-		return nil, fmt.Errorf("mmap RWX failed: %w", err)
+	// Request an executable memfd. On hardened kernels with
+	// vm.memfd_noexec >= 1 the default is non-executable, which would
+	// cause the later PROT_EXEC mmap to fail; MFD_EXEC overrides that
+	// for this specific fd. On older kernels (< Linux 6.3) MFD_EXEC is
+	// an unknown flag and memfd_create returns EINVAL — fall back to
+	// the legacy flag set, which still succeeds in the unhardened
+	// default policy.
+	fd, err := unix.MemfdCreate("intuition-jit", unix.MFD_CLOEXEC|unix.MFD_EXEC)
+	if err == unix.EINVAL {
+		fd, err = unix.MemfdCreate("intuition-jit", unix.MFD_CLOEXEC)
 	}
-	return &ExecMem{buf: buf}, nil
+	if err != nil {
+		return nil, fmt.Errorf("memfd_create failed: %w", err)
+	}
+	if err := unix.Ftruncate(fd, int64(size)); err != nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("ftruncate memfd failed: %w", err)
+	}
+
+	writable, err := unix.Mmap(fd, 0, size,
+		unix.PROT_READ|unix.PROT_WRITE,
+		unix.MAP_SHARED)
+	if err != nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("mmap RW view failed: %w", err)
+	}
+
+	exec, err := unix.Mmap(fd, 0, size,
+		unix.PROT_READ|unix.PROT_EXEC,
+		unix.MAP_SHARED)
+	if err != nil {
+		_ = unix.Munmap(writable)
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("mmap RX view failed: %w", err)
+	}
+
+	em := &ExecMem{
+		writable: writable,
+		exec:     exec,
+		fd:       fd,
+	}
+
+	execMemsMu.Lock()
+	execMems = append(execMems, em)
+	execMemsMu.Unlock()
+
+	return em, nil
 }
 
-// Write copies code into the executable region and returns the execution address.
-// Successive writes are 16-byte aligned.
+// Write copies code into the writable view and returns the
+// execution-view address for the emitted block. Successive writes are
+// 16-byte aligned.
 func (em *ExecMem) Write(code []byte) (uintptr, error) {
-	// Align to 16 bytes
 	aligned := (em.used + execMemAlign - 1) &^ (execMemAlign - 1)
-	if aligned+len(code) > len(em.buf) {
-		return 0, fmt.Errorf("ExecMem exhausted: need %d, have %d", aligned+len(code), len(em.buf))
+	if aligned+len(code) > len(em.writable) {
+		return 0, fmt.Errorf("ExecMem exhausted: need %d, have %d",
+			aligned+len(code), len(em.writable))
 	}
 	em.used = aligned
-	copy(em.buf[em.used:], code)
-	addr := uintptr(unsafe.Pointer(&em.buf[em.used]))
+	copy(em.writable[em.used:], code)
+	writableAddr := uintptr(unsafe.Pointer(&em.writable[em.used]))
+	execAddr := uintptr(unsafe.Pointer(&em.exec[em.used]))
 	em.used += len(code)
 
-	// ARM64: flush instruction cache for the written region
-	flushICache(addr, uintptr(len(code)))
+	// ARM64 cache coherency under dual aliasing: the stores above went
+	// into D-cache lines tagged by writableAddr; the CPU will fetch
+	// instructions through execAddr. DC CVAU must target the writable
+	// VA (where the dirty lines live) and IC IVAU must target the exec
+	// VA (where the fetch will occur). flushICacheDual issues both with
+	// the required DSB ISH / ISB barriers. No-op on amd64.
+	flushICacheDual(writableAddr, execAddr, uintptr(len(code)))
 
-	return addr, nil
+	return execAddr, nil
 }
 
 // Reset resets the bump allocator. Existing code becomes invalid.
@@ -57,11 +132,28 @@ func (em *ExecMem) Reset() {
 	em.used = 0
 }
 
-// Free releases the mmap'd memory.
+// Free releases both mappings and closes the backing memfd.
 func (em *ExecMem) Free() {
-	if em.buf != nil {
-		syscall.Munmap(em.buf)
-		em.buf = nil
+	execMemsMu.Lock()
+	for i, e := range execMems {
+		if e == em {
+			execMems = append(execMems[:i], execMems[i+1:]...)
+			break
+		}
+	}
+	execMemsMu.Unlock()
+
+	if em.exec != nil {
+		_ = unix.Munmap(em.exec)
+		em.exec = nil
+	}
+	if em.writable != nil {
+		_ = unix.Munmap(em.writable)
+		em.writable = nil
+	}
+	if em.fd != 0 {
+		_ = unix.Close(em.fd)
+		em.fd = 0
 	}
 }
 
@@ -70,14 +162,57 @@ func (em *ExecMem) Used() int {
 	return em.used
 }
 
-// PatchRel32At overwrites a 4-byte relative displacement at patchAddr in
-// executable memory so that a JMP/Jcc rel32 at (patchAddr-1) branches to
-// targetAddr. The displacement is: target - (patchAddr + 4).
+// execToWritable translates an execution-view address belonging to em
+// into the corresponding writable-view address. Returns (0, false) if
+// execAddr is outside em's execution view.
+func (em *ExecMem) execToWritable(execAddr uintptr) (uintptr, bool) {
+	if len(em.exec) == 0 {
+		return 0, false
+	}
+	execBase := uintptr(unsafe.Pointer(&em.exec[0]))
+	if execAddr < execBase || execAddr >= execBase+uintptr(len(em.exec)) {
+		return 0, false
+	}
+	offset := execAddr - execBase
+	return uintptr(unsafe.Pointer(&em.writable[offset])), true
+}
+
+// lookupWritable finds the writable-view address for an exec-view
+// patchAddr across all registered ExecMems. Returns 0 if not found.
+func lookupWritable(execAddr uintptr) uintptr {
+	execMemsMu.RLock()
+	defer execMemsMu.RUnlock()
+	for _, em := range execMems {
+		if addr, ok := em.execToWritable(execAddr); ok {
+			return addr
+		}
+	}
+	return 0
+}
+
+// PatchRel32At overwrites the 4-byte relative displacement at
+// patchAddr (an execution-view address) so that a JMP/Jcc rel32 at
+// (patchAddr-1) branches to targetAddr. The displacement is computed
+// against the execution-view address (because the CPU reads the rel32
+// from the execution view) but written through the writable view.
+//
+// If patchAddr is not within any registered ExecMem, the call is a
+// no-op. This guards tests that hold synthetic chain-slot addresses
+// for structure-only assertions and never execute the patched code.
 func PatchRel32At(patchAddr, targetAddr uintptr) {
+	writableAddr := lookupWritable(patchAddr)
+	if writableAddr == 0 {
+		return
+	}
 	disp := int32(targetAddr - (patchAddr + 4))
-	p := (*[4]byte)(unsafe.Pointer(patchAddr))
+	p := (*[4]byte)(unsafe.Pointer(writableAddr))
 	p[0] = byte(disp)
 	p[1] = byte(disp >> 8)
 	p[2] = byte(disp >> 16)
 	p[3] = byte(disp >> 24)
+
+	// Dual-alias icache coherency for ARM64: clean the D-cache line
+	// via the writable VA, then invalidate the I-cache line via the
+	// exec VA. No-op on amd64.
+	flushICacheDual(writableAddr, patchAddr, 4)
 }
