@@ -24,6 +24,86 @@ fault_msg_task:
     dc.b    " task=", 0
     align   4
 
+fault_msg_access:
+    dc.b    " ACCESS=", 0
+    align   4
+
+fault_msg_mode:
+    dc.b    " MODE=", 0
+    align   4
+
+fault_msg_class:
+    dc.b    " CLASS=", 0
+    align   4
+
+fault_msg_pte:
+    dc.b    " PTE=", 0
+    align   4
+
+fault_mode_user:
+    dc.b    "user", 0
+    align   4
+
+fault_mode_supervisor:
+    dc.b    "supervisor", 0
+    align   4
+
+fault_access_unknown:
+    dc.b    "unknown", 0
+    align   4
+
+fault_access_read:
+    dc.b    "read", 0
+    align   4
+
+fault_access_write:
+    dc.b    "write", 0
+    align   4
+
+fault_access_exec:
+    dc.b    "execute", 0
+    align   4
+
+fault_class_unknown:
+    dc.b    "unknown", 0
+    align   4
+
+fault_class_not_present:
+    dc.b    "not-present", 0
+    align   4
+
+fault_class_read:
+    dc.b    "read-denied", 0
+    align   4
+
+fault_class_write:
+    dc.b    "write-denied", 0
+    align   4
+
+fault_class_exec:
+    dc.b    "exec-denied", 0
+    align   4
+
+fault_class_user_super:
+    dc.b    "user-supervisor", 0
+    align   4
+
+fault_class_priv:
+    dc.b    "privileged", 0
+    align   4
+
+fault_class_misaligned:
+    dc.b    "misaligned", 0
+    align   4
+
+fault_class_timer:
+    dc.b    "timer", 0
+    align   4
+
+fault_class_syscall:
+    dc.b    "syscall", 0
+    align   4
+
 panic_msg:
     dc.b    "KERNEL PANIC: ", 0
     align   4
@@ -38,4 +118,8 @@ boot_fail_msg:
 
 boot_host_relpath_doslib:
     dc.b    "IOSSYS/LIBS/dos.library", 0
+    align   4
+
+boot_host_relpath_console:
+    dc.b    "IOSSYS/L/console.handler", 0
     align   4

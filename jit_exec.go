@@ -152,8 +152,14 @@ func (cpu *CPU64) ExecuteJIT() {
 			break
 		}
 
-		// Cache is keyed by virtual PC
-		block := cpu.jitCache.Get(pcVirt)
+		// Under MMU, different address spaces can execute different physical
+		// code at the same virtual PC. Scope cache entries by PTBR to avoid
+		// cross-task aliasing when the OS switches page tables.
+		cacheKey := uint64(pcVirt)
+		if cpu.mmuEnabled {
+			cacheKey = (uint64(cpu.ptbr) << 32) | uint64(pcVirt)
+		}
+		block := cpu.jitCache.GetKey(cacheKey)
 		if block == nil {
 			// Scan from physical memory
 			var instrs []JITInstr
@@ -193,7 +199,7 @@ func (cpu *CPU64) ExecuteJIT() {
 				}
 				continue
 			}
-			cpu.jitCache.Put(block)
+			cpu.jitCache.PutKey(cacheKey, block)
 			diagCacheMisses++
 		} else {
 			diagCacheHits++

@@ -530,21 +530,29 @@ type JITBlock struct {
 }
 
 type CodeCache struct {
-	blocks map[uint32]*JITBlock
+	blocks map[uint64]*JITBlock
 }
 
 func NewCodeCache() *CodeCache {
 	return &CodeCache{
-		blocks: make(map[uint32]*JITBlock),
+		blocks: make(map[uint64]*JITBlock),
 	}
 }
 
 func (cc *CodeCache) Get(pc uint32) *JITBlock {
-	return cc.blocks[pc]
+	return cc.blocks[uint64(pc)]
 }
 
 func (cc *CodeCache) Put(block *JITBlock) {
-	cc.blocks[block.startPC] = block
+	cc.blocks[uint64(block.startPC)] = block
+}
+
+func (cc *CodeCache) GetKey(key uint64) *JITBlock {
+	return cc.blocks[key]
+}
+
+func (cc *CodeCache) PutKey(key uint64, block *JITBlock) {
+	cc.blocks[key] = block
 }
 
 // Invalidate clears the entire code cache.
@@ -554,9 +562,9 @@ func (cc *CodeCache) Invalidate() {
 
 // InvalidateRange removes any blocks whose [startPC, endPC) overlaps [lo, hi).
 func (cc *CodeCache) InvalidateRange(lo, hi uint32) {
-	for pc, block := range cc.blocks {
+	for key, block := range cc.blocks {
 		if block.endPC > lo && block.startPC < hi {
-			delete(cc.blocks, pc)
+			delete(cc.blocks, key)
 		}
 	}
 }

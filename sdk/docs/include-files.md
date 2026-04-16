@@ -46,6 +46,8 @@ As of **M15.3**, `iexec.inc` adds three more `DOS_ASSIGN` sub-ops and their payl
 
 The compatibility ops (`DOS_ASSIGN_LIST`, `DOS_ASSIGN_QUERY`, `DOS_ASSIGN_SET`) keep their M15.2 semantics through a first-effective-target projection.
 
+`sdk/docs/IntuitionOS/Toolchain.md` is the canonical IOS-native codegen contract. `iexec.inc` remains the ABI/include contract, not the full loader/toolchain spec.
+
 `iexec.inc` also adds two `BOOT_HOSTFS_*` commands that back the writable `SYS:` overlay:
 
 - `BOOT_HOSTFS_CREATE_WRITE` (6) — `arg1 = path ptr`. Opens (or creates+truncates) the file for writing; returns a host handle in `res1`. The host device rejects any path whose first component is `IOSSYS` (case-insensitive), enforcing the read-only IOSSYS namespace.

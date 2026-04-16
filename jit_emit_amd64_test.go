@@ -935,6 +935,223 @@ func TestAMD64_JSR_RTS(t *testing.T) {
 	runtime.KeepAlive(r.execMem)
 }
 
+func TestAMD64_JSR_PreservesSpilledRegsWrittenEarlierInBlock(t *testing.T) {
+	r := newJITTestRig(t)
+	r.cpu.regs[31] = STACK_START
+	// Seed POP.Q R29 from the stack so the block mirrors the DOS shell-launch
+	// handoff: restore r29, derive spilled arguments, then JSR into a helper.
+	binary.LittleEndian.PutUint64(r.cpu.memory[STACK_START:], 0x60A000)
+
+	instrs := [][]byte{
+		ie64Instr(OP_POP64, 29, IE64_SIZE_Q, 0, 0, 0, 0),    // R29 = 0x60A000
+		ie64Instr(OP_ADD, 23, IE64_SIZE_Q, 1, 29, 0, 0x4CC), // R23 = R29 + 0x4CC
+		ie64Instr(OP_ADD, 16, IE64_SIZE_Q, 1, 29, 0, 0x4DF), // R16 = R29 + 0x4DF
+		ie64Instr(OP_MOVE, 18, IE64_SIZE_Q, 1, 0, 0, 0),     // R18 = 0
+		ie64Instr(OP_MOVE, 30, IE64_SIZE_Q, 0, 29, 0, 0),    // R30 = R29
+		ie64Instr(OP_JSR64, 0, 0, 0, 0, 0, 16),              // jump to helper
+	}
+
+	r.compileAndRun(t, instrs...)
+
+	if r.cpu.PC != PROG_START+0x38 {
+		t.Fatalf("PC = 0x%X, want 0x%X", r.cpu.PC, uint64(PROG_START+0x38))
+	}
+	if r.cpu.regs[23] != 0x60A4CC {
+		t.Fatalf("R23 = 0x%X, want 0x60A4CC", r.cpu.regs[23])
+	}
+	if r.cpu.regs[29] != 0x60A000 {
+		t.Fatalf("R29 = 0x%X, want 0x60A000", r.cpu.regs[29])
+	}
+	if r.cpu.regs[16] != 0x60A4DF {
+		t.Fatalf("R16 = 0x%X, want 0x60A4DF", r.cpu.regs[16])
+	}
+	if r.cpu.regs[30] != 0x60A000 {
+		t.Fatalf("R30 = 0x%X, want 0x60A000", r.cpu.regs[30])
+	}
+}
+
+func TestAMD64_MMUJsrBail_PreservesSpilledRegsWrittenEarlierInBlock(t *testing.T) {
+	r := newJITTestRig(t)
+	r.cpu.regs[29] = 0x60A000
+
+	offset := uint32(PROG_START)
+	prog := [][]byte{
+		ie64Instr(OP_ADD, 23, IE64_SIZE_Q, 1, 29, 0, 0x4CC), // R23 = R29 + 0x4CC
+		ie64Instr(OP_ADD, 16, IE64_SIZE_Q, 1, 29, 0, 0x4DF), // R16 = R29 + 0x4DF
+		ie64Instr(OP_MOVE, 18, IE64_SIZE_Q, 1, 0, 0, 0),     // R18 = 0
+		ie64Instr(OP_MOVE, 30, IE64_SIZE_Q, 0, 29, 0, 0),    // R30 = R29
+		ie64Instr(OP_JSR64, 0, 0, 0, 0, 0, 16),              // must bail under MMU
+	}
+	for _, instr := range prog {
+		copy(r.cpu.memory[offset:], instr)
+		offset += uint32(len(instr))
+	}
+
+	instrs := scanBlock(r.cpu.memory, PROG_START)
+	if len(instrs) == 0 {
+		t.Fatal("scanBlock returned 0 instructions")
+	}
+
+	r.execMem.Reset()
+	block, err := compileBlockMMU(instrs, PROG_START, r.execMem)
+	if err != nil {
+		t.Fatalf("compileBlockMMU: %v", err)
+	}
+
+	r.ctx.RegsPtr = uintptr(unsafe.Pointer(&r.cpu.regs[0]))
+	r.ctx.MemPtr = uintptr(unsafe.Pointer(&r.cpu.memory[0]))
+	callNative(block.execAddr, uintptr(unsafe.Pointer(r.ctx)))
+
+	combined := r.cpu.regs[0]
+	r.cpu.PC = uint64(uint32(combined))
+	r.cpu.regs[0] = 0
+
+	// Bail target should be the JSR itself so the interpreter can execute it.
+	if r.cpu.PC != PROG_START+32 {
+		t.Fatalf("PC = 0x%X, want 0x%X", r.cpu.PC, uint64(PROG_START+32))
+	}
+	if r.cpu.regs[23] != 0x60A4CC {
+		t.Fatalf("R23 = 0x%X, want 0x60A4CC", r.cpu.regs[23])
+	}
+	if r.cpu.regs[16] != 0x60A4DF {
+		t.Fatalf("R16 = 0x%X, want 0x60A4DF", r.cpu.regs[16])
+	}
+	if r.cpu.regs[18] != 0 {
+		t.Fatalf("R18 = 0x%X, want 0", r.cpu.regs[18])
+	}
+	if r.cpu.regs[30] != 0x60A000 {
+		t.Fatalf("R30 = 0x%X, want 0x60A000", r.cpu.regs[30])
+	}
+}
+
+func TestAMD64_MMUPushBail_PreservesSpilledRegsWrittenEarlierInBlock(t *testing.T) {
+	r := newJITTestRig(t)
+	r.cpu.regs[1] = 0x60A4CC
+	r.cpu.regs[29] = 0x60A000
+	r.cpu.regs[31] = STACK_START
+
+	offset := uint32(PROG_START)
+	prog := [][]byte{
+		ie64Instr(OP_MOVE, 20, IE64_SIZE_Q, 0, 1, 0, 0),   // R20 = R1
+		ie64Instr(OP_PUSH64, 0, IE64_SIZE_Q, 0, 29, 0, 0), // bail under MMU
+	}
+	for _, instr := range prog {
+		copy(r.cpu.memory[offset:], instr)
+		offset += uint32(len(instr))
+	}
+
+	instrs := scanBlock(r.cpu.memory, PROG_START)
+	if len(instrs) == 0 {
+		t.Fatal("scanBlock returned 0 instructions")
+	}
+
+	r.execMem.Reset()
+	block, err := compileBlockMMU(instrs, PROG_START, r.execMem)
+	if err != nil {
+		t.Fatalf("compileBlockMMU: %v", err)
+	}
+
+	r.ctx.RegsPtr = uintptr(unsafe.Pointer(&r.cpu.regs[0]))
+	r.ctx.MemPtr = uintptr(unsafe.Pointer(&r.cpu.memory[0]))
+	callNative(block.execAddr, uintptr(unsafe.Pointer(r.ctx)))
+
+	combined := r.cpu.regs[0]
+	r.cpu.PC = uint64(uint32(combined))
+	r.cpu.regs[0] = 0
+
+	if r.cpu.PC != PROG_START+8 {
+		t.Fatalf("PC = 0x%X, want 0x%X", r.cpu.PC, uint64(PROG_START+8))
+	}
+	if r.cpu.regs[20] != 0x60A4CC {
+		t.Fatalf("R20 = 0x%X, want 0x60A4CC", r.cpu.regs[20])
+	}
+}
+
+func TestAMD64_MMUJsrBail_PreservesMappedArgWrittenFromSpilledSource(t *testing.T) {
+	r := newJITTestRig(t)
+	r.cpu.regs[23] = 0x60A4CC
+
+	offset := uint32(PROG_START)
+	prog := [][]byte{
+		ie64Instr(OP_MOVE, 24, IE64_SIZE_Q, 0, 23, 0, 0), // R24 = R23
+		ie64Instr(OP_MOVE, 27, IE64_SIZE_Q, 0, 24, 0, 0), // R27 = R24
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 24, 0, 0),  // R1 = R24
+		ie64Instr(OP_JSR64, 0, 0, 0, 0, 0, 16),           // bail under MMU
+	}
+	for _, instr := range prog {
+		copy(r.cpu.memory[offset:], instr)
+		offset += uint32(len(instr))
+	}
+
+	instrs := scanBlock(r.cpu.memory, PROG_START)
+	if len(instrs) == 0 {
+		t.Fatal("scanBlock returned 0 instructions")
+	}
+
+	r.execMem.Reset()
+	block, err := compileBlockMMU(instrs, PROG_START, r.execMem)
+	if err != nil {
+		t.Fatalf("compileBlockMMU: %v", err)
+	}
+
+	r.ctx.RegsPtr = uintptr(unsafe.Pointer(&r.cpu.regs[0]))
+	r.ctx.MemPtr = uintptr(unsafe.Pointer(&r.cpu.memory[0]))
+	callNative(block.execAddr, uintptr(unsafe.Pointer(r.ctx)))
+
+	combined := r.cpu.regs[0]
+	r.cpu.PC = uint64(uint32(combined))
+	r.cpu.regs[0] = 0
+
+	if r.cpu.PC != PROG_START+24 {
+		t.Fatalf("PC = 0x%X, want 0x%X", r.cpu.PC, uint64(PROG_START+24))
+	}
+	if r.cpu.regs[1] != 0x60A4CC {
+		t.Fatalf("R1 = 0x%X, want 0x60A4CC", r.cpu.regs[1])
+	}
+}
+
+func TestAMD64_MMUJsrBail_FlushesMappedR1WrittenEarlierInBlock(t *testing.T) {
+	r := newJITTestRig(t)
+	setupIdentityMMU(r.cpu, 160)
+
+	offset := uint32(PROG_START)
+	prog := [][]byte{
+		ie64Instr(OP_MOVE, 24, IE64_SIZE_L, 1, 0, 0, 0x60A4CC),
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 24, 0, 0),
+		ie64Instr(OP_JSR64, 0, 0, 1, 0, 0, uint32(3*IE64_INSTR_SIZE)),
+	}
+	for _, instr := range prog {
+		copy(r.cpu.memory[offset:], instr)
+		offset += uint32(len(instr))
+	}
+
+	instrs := scanBlock(r.cpu.memory, PROG_START)
+	if len(instrs) == 0 {
+		t.Fatal("scanBlock returned 0 instructions")
+	}
+
+	r.execMem.Reset()
+	block, err := compileBlockMMU(instrs, PROG_START, r.execMem)
+	if err != nil {
+		t.Fatalf("compileBlockMMU: %v", err)
+	}
+
+	r.ctx.RegsPtr = uintptr(unsafe.Pointer(&r.cpu.regs[0]))
+	r.ctx.MemPtr = uintptr(unsafe.Pointer(&r.cpu.memory[0]))
+	callNative(block.execAddr, uintptr(unsafe.Pointer(r.ctx)))
+
+	combined := r.cpu.regs[0]
+	r.cpu.PC = uint64(uint32(combined))
+	r.cpu.regs[0] = 0
+
+	if r.cpu.PC != PROG_START+16 {
+		t.Fatalf("PC = 0x%X, want 0x%X", r.cpu.PC, uint64(PROG_START+16))
+	}
+	if r.cpu.regs[1] != 0x60A4CC {
+		t.Fatalf("R1 = 0x%X, want 0x60A4CC after JSR bail epilogue flush", r.cpu.regs[1])
+	}
+}
+
 // ===========================================================================
 // RTI / WAIT Mid-Block Tests
 // ===========================================================================

@@ -14,6 +14,7 @@ type exportSpec struct {
 }
 
 var systemExports = []exportSpec{
+	{src: "boot_console_handler.elf", dst: "L/console.handler"},
 	{src: "boot_shell.elf", dst: "Tools/Shell"},
 	{src: "boot_dos_library.elf", dst: "LIBS/dos.library"},
 	{src: "boot_graphics_library.elf", dst: "LIBS/graphics.library"},

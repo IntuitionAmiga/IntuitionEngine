@@ -205,6 +205,7 @@ KD_TASK_SIG_RECV  equ 24          ; pending received signals (4 bytes)
 KD_TASK_STATE     equ 28          ; task state byte
 KD_TASK_WAITPORT  equ 29          ; WaitPort port ID (0xFF = not in WaitPort)
 KD_TASK_GPR_SAVED equ 30          ; 1 = GPRs saved on user stack by timer (M9)
+KD_TASK_TEARFLAGS equ 31          ; internal teardown flags (M15.5)
 
 ; Task state constants
 TASK_READY        equ 0
@@ -324,6 +325,36 @@ BOOT_MANIFEST_ID_HWRES      equ 13
 BOOT_MANIFEST_ID_INPUT      equ 14
 BOOT_MANIFEST_ID_GRAPHICS   equ 15
 BOOT_MANIFEST_ID_INTUITION  equ 16
+
+; M15.5: internal task-exit hook substrate. Hooks are kernel-private teardown
+; observers, not part of the public syscall ABI. Rows run synchronously in
+; order during kill_task_cleanup and may record diagnostics, but a failing row
+; must not abort teardown.
+KD_TASK_EXIT_HOOK_PPN       equ (KD_PORT_OFLOW_HDR + KD_PORT_OFLOW_RESV) ; u16 allocator-backed supervisor hook page
+KD_TASK_EXIT_HOOK_STRIDE    equ 24
+KD_TASK_EXIT_HOOK_MAX       equ 4
+KD_TASK_EXIT_HOOK_BASE      equ 0      ; offset inside hook page
+KD_TASK_EXIT_HOOK_KIND      equ 0      ; u32
+KD_TASK_EXIT_HOOK_TARGET    equ 4      ; u32 slot filter, 0xFFFFFFFF = any
+KD_TASK_EXIT_HOOK_RECORD    equ 8      ; u64 kernel ptr for recorder payload
+KD_TASK_EXIT_HOOK_STATUS    equ 16     ; u32 last hook status
+KD_TASK_EXIT_HOOK_LASTSEQ   equ 20     ; u32 last global execution sequence
+TASK_EXIT_HOOK_NONE         equ 0
+TASK_EXIT_HOOK_RECORDER     equ 1
+TASK_EXIT_HOOK_TARGET_ANY   equ 0xFFFFFFFF
+
+KD_TASK_EXIT_SEQ            equ 96     ; u32 global hook execution sequence (inside hook page)
+TASK_EXIT_REC_COUNT         equ 0      ; u64 invocation count
+TASK_EXIT_REC_SEQ           equ 8      ; u64 last global execution sequence
+TASK_EXIT_REC_SLOT          equ 16     ; u64 last task slot
+TASK_EXIT_REC_PUBID         equ 24     ; u64 last public task id
+TASK_EXIT_REC_REASON        equ 32     ; u64 last teardown reason
+TASK_EXIT_REC_STATE         equ 40     ; u64 task state observed at teardown entry
+
+TASK_EXIT_REASON_NORMAL     equ 1
+TASK_EXIT_REASON_FAULT      equ 2
+TASK_EXIT_REASON_INTERNAL   equ 3
+TASK_TEARFLAG_HOOKS_RAN     equ 0x01
 
 ; M14.1 phase 3: dos.library receives a private exported copy of the
 ; post-DOS staged service ELFs during bootstrap. These rows live in

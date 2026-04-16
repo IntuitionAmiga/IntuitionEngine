@@ -11,11 +11,9 @@ import (
 )
 
 const (
-	bootHostFSKernDataBase       = 0x8F000
-	bootHostFSKDCurrentTask      = 0
-	bootHostFSKDTaskLayoutBase   = 51408
-	bootHostFSKDTaskLayoutStride = 56
-	bootHostFSKDTaskLayoutPT     = 48
+	bootHostFSKernDataBase  = 0x8F000
+	bootHostFSKDCurrentTask = 0
+	bootHostFSKDPTBRBase    = 8224 // KD_PTBR_BASE: primary PTBR array
 )
 
 // BootstrapHostFSDevice is a narrow read-only hostfs bridge for the ROM bootstrap path.
@@ -27,6 +25,8 @@ type BootstrapHostFSDevice struct {
 
 	nextHandle uint32
 	handles    map[uint32]*os.File
+	memHandles map[uint32]*bootstrapHostFSMemHandle
+	specials   map[string][]byte
 
 	arg1 uint32
 	arg2 uint32
@@ -42,11 +42,18 @@ type BootstrapHostFSDevice struct {
 	testShortWriteLimit uint32
 }
 
+type bootstrapHostFSMemHandle struct {
+	data []byte
+	pos  uint32
+}
+
 func NewBootstrapHostFSDevice(bus *MachineBus, hostRoot string) *BootstrapHostFSDevice {
 	d := &BootstrapHostFSDevice{
 		bus:        bus,
 		nextHandle: 1,
 		handles:    make(map[uint32]*os.File),
+		memHandles: make(map[uint32]*bootstrapHostFSMemHandle),
+		specials:   make(map[string][]byte),
 	}
 	if hostRoot == "" {
 		return d
@@ -66,6 +73,13 @@ func NewBootstrapHostFSDevice(bus *MachineBus, hostRoot string) *BootstrapHostFS
 	d.hostRoot = absPath
 	d.available = true
 	return d
+}
+
+func (d *BootstrapHostFSDevice) SetSpecialFile(rel string, data []byte) {
+	if rel == "" {
+		return
+	}
+	d.specials[strings.ToUpper(filepath.ToSlash(filepath.Clean(rel)))] = data
 }
 
 func (d *BootstrapHostFSDevice) HandleRead(addr uint32) uint32 {
@@ -301,6 +315,14 @@ func relPathIsIOSSYS(rel string) bool {
 }
 
 func (d *BootstrapHostFSDevice) open() {
+	rel := d.readCString(d.arg1, 255)
+	if data, ok := d.specialFile(rel); ok {
+		handle := d.nextHandle
+		d.nextHandle++
+		d.memHandles[handle] = &bootstrapHostFSMemHandle{data: data}
+		d.res1 = handle
+		return
+	}
 	hostPath, errCode := d.resolveExistingPath(d.arg1)
 	if errCode != 0 {
 		d.err = errCode
@@ -327,6 +349,30 @@ func (d *BootstrapHostFSDevice) open() {
 }
 
 func (d *BootstrapHostFSDevice) read() {
+	if mh := d.memHandles[d.arg1]; mh != nil {
+		if d.arg2 == 0 {
+			d.err = 3
+			return
+		}
+		if mh.pos >= uint32(len(mh.data)) {
+			d.res1 = 0
+			return
+		}
+		n := d.arg3
+		remain := uint32(len(mh.data)) - mh.pos
+		if n > remain {
+			n = remain
+		}
+		for i := uint32(0); i < n; i++ {
+			if !d.writeGuest8(d.arg2+i, mh.data[mh.pos+i]) {
+				d.err = 5
+				return
+			}
+		}
+		mh.pos += n
+		d.res1 = n
+		return
+	}
 	f := d.handles[d.arg1]
 	if f == nil {
 		d.err = 2
@@ -352,6 +398,10 @@ func (d *BootstrapHostFSDevice) read() {
 }
 
 func (d *BootstrapHostFSDevice) close() {
+	if _, ok := d.memHandles[d.arg1]; ok {
+		delete(d.memHandles, d.arg1)
+		return
+	}
 	f := d.handles[d.arg1]
 	if f == nil {
 		d.err = 2
@@ -362,6 +412,22 @@ func (d *BootstrapHostFSDevice) close() {
 }
 
 func (d *BootstrapHostFSDevice) stat() {
+	rel := d.readCString(d.arg1, 255)
+	if data, ok := d.specialFile(rel); ok {
+		if d.arg2 != 0 {
+			if !d.writeGuest64(d.arg2+BOOT_HOSTFS_STAT_SIZE_OFF, uint64(len(data))) {
+				d.err = 5
+				return
+			}
+			if !d.writeGuest64(d.arg2+BOOT_HOSTFS_STAT_KIND_OFF, uint64(BOOT_HOSTFS_KIND_FILE)) {
+				d.err = 5
+				return
+			}
+		}
+		d.res1 = uint32(len(data))
+		d.res2 = BOOT_HOSTFS_KIND_FILE
+		return
+	}
 	hostPath, errCode := d.resolveExistingPath(d.arg1)
 	if errCode != 0 {
 		d.err = errCode
@@ -446,6 +512,14 @@ func (d *BootstrapHostFSDevice) resolveExistingPath(pathPtr uint32) (string, uin
 		return "", 3
 	}
 	return d.resolveRelativePath(rel)
+}
+
+func (d *BootstrapHostFSDevice) specialFile(rel string) ([]byte, bool) {
+	if rel == "" {
+		return nil, false
+	}
+	data, ok := d.specials[strings.ToUpper(filepath.ToSlash(filepath.Clean(rel)))]
+	return data, ok
 }
 
 func (d *BootstrapHostFSDevice) resolveRelativePath(rel string) (string, uint32) {
@@ -543,6 +617,9 @@ func (d *BootstrapHostFSDevice) readCString(ptr uint32, limit int) string {
 }
 
 func (d *BootstrapHostFSDevice) currentTaskSlot() uint32 {
+	if d.arg4 != 0 {
+		return d.arg4
+	}
 	if d.bus == nil {
 		return 0
 	}
@@ -557,12 +634,13 @@ func (d *BootstrapHostFSDevice) translateGuestVA(ptr uint32, write bool) (uint32
 	if slot == 0 {
 		return ptr, true
 	}
-	layout := bootHostFSKernDataBase + bootHostFSKDTaskLayoutBase + slot*bootHostFSKDTaskLayoutStride
-	ptBase := uint32(d.bus.Read64(layout + bootHostFSKDTaskLayoutPT))
+	// Read PTBR from the primary KD_PTBR_BASE array (same source as CPU ptbr register)
+	ptbrAddr := bootHostFSKernDataBase + bootHostFSKDPTBRBase + slot*8
+	ptBase := uint32(d.bus.Read64(ptbrAddr))
 	if ptBase == 0 {
 		return 0, false
 	}
-	vpn := ptr >> MMU_PAGE_SHIFT
+	vpn := (ptr >> MMU_PAGE_SHIFT) & PTE_PPN_MASK
 	pteAddr := ptBase + vpn*8
 	if int(pteAddr+8) > len(d.bus.memory) {
 		return 0, false
@@ -570,6 +648,9 @@ func (d *BootstrapHostFSDevice) translateGuestVA(ptr uint32, write bool) (uint32
 	pte := binary.LittleEndian.Uint64(d.bus.memory[pteAddr:])
 	ppn, flags := parsePTE(pte)
 	if flags&PTE_P == 0 {
+		return 0, false
+	}
+	if flags&PTE_U == 0 {
 		return 0, false
 	}
 	if write {

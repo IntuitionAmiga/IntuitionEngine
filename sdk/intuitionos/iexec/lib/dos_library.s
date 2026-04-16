@@ -217,9 +217,10 @@ prog_doslib_code:
     ; =====================================================================
     ; Seed RAM: with canonical ELF files and plain-text assets (M14.2)
     ; =====================================================================
-    ; Command/demo files come from bundled ELF blobs. Service files come from
-    ; the kernel-exported boot-manifest ELF rows already mapped into
-    ; dos.library. Startup-Sequence remains trusted plain text.
+    ; Command/demo files come from bundled ELF blobs. Services now load from
+    ; the host-backed IOSSYS tree at runtime rather than being re-seeded into
+    ; RAM from kernel-exported manifest blobs. Startup-Sequence remains
+    ; trusted plain text.
     load.q  r29, (sp)
     add     r20, r29, #(prog_doslib_seed_name_version - prog_doslib_data)
     add     r24, r29, #(seed_elf_version - prog_doslib_data)
@@ -293,30 +294,10 @@ prog_doslib_code:
     jsr     .dos_seed_known
 
     load.q  r29, (sp)
-    add     r20, r29, #(prog_doslib_seed_name_input - prog_doslib_data)
-    move.l  r21, #BOOT_MANIFEST_ID_INPUT
-    jsr     .dos_seed_boot_export
-
-    load.q  r29, (sp)
-    add     r20, r29, #(prog_doslib_seed_name_hwres - prog_doslib_data)
-    move.l  r21, #BOOT_MANIFEST_ID_HWRES
-    jsr     .dos_seed_boot_export
-
-    load.q  r29, (sp)
-    add     r20, r29, #(prog_doslib_seed_name_graphics - prog_doslib_data)
-    move.l  r21, #BOOT_MANIFEST_ID_GRAPHICS
-    jsr     .dos_seed_boot_export
-
-    load.q  r29, (sp)
     add     r20, r29, #(prog_doslib_seed_name_gfxdemo - prog_doslib_data)
     add     r24, r29, #(seed_elf_gfxdemo - prog_doslib_data)
     move.l  r23, #(seed_elf_gfxdemo_end - seed_elf_gfxdemo)
     jsr     .dos_seed_known
-
-    load.q  r29, (sp)
-    add     r20, r29, #(prog_doslib_seed_name_intuition - prog_doslib_data)
-    move.l  r21, #BOOT_MANIFEST_ID_INTUITION
-    jsr     .dos_seed_boot_export
 
     load.q  r29, (sp)
     add     r20, r29, #(prog_doslib_seed_name_about - prog_doslib_data)
@@ -331,52 +312,6 @@ prog_doslib_code:
     move.l  r23, #0x2004
     jsr     .dos_seed_known
     bra     .dos_seed_done
-
-    ; -----------------------------------------------------------------
-    ; .dos_seed_boot_export:
-    ; Seed one file from the boot-manifest export table populated by the
-    ; kernel for dos.library.
-    ; Input:  r20 = name_ptr, r21 = boot-manifest ID, r29 = data base
-    ; -----------------------------------------------------------------
-.dos_seed_boot_export:
-    store.q r20, 192(r29)
-    move.q  r1, r21
-    jsr     .dos_boot_export_find_row_by_id
-    beqz    r2, .dsbe_done
-    load.q  r24, DOS_BOOT_EXPORT_PTR(r1)
-    load.q  r23, DOS_BOOT_EXPORT_SIZE(r1)
-    beqz    r24, .dsbe_done
-    beqz    r23, .dsbe_done
-    load.q  r20, 192(r29)
-    jsr     .dos_seed_known
-.dsbe_done:
-    rts
-
-    ; -----------------------------------------------------------------
-    ; .dos_boot_export_find_row_by_id
-    ; Input:  r1 = boot-manifest ID, r29 = dos data base
-    ; Output: r1 = export row ptr (or 0), r2 = 1 if found, 0 otherwise
-    ; -----------------------------------------------------------------
-.dos_boot_export_find_row_by_id:
-    move.q  r20, r1
-    add     r21, r29, #(prog_doslib_boot_export_rows - prog_doslib_data)
-    move.l  r22, #0
-.dbefri_loop:
-    move.l  r23, #DOS_BOOT_EXPORT_COUNT
-    bge     r22, r23, .dbefri_notfound
-    load.l  r24, DOS_BOOT_EXPORT_ID(r21)
-    beq     r24, r20, .dbefri_found
-    add     r21, r21, #DOS_BOOT_EXPORT_ROW_SZ
-    add     r22, r22, #1
-    bra     .dbefri_loop
-.dbefri_found:
-    move.q  r1, r21
-    move.l  r2, #1
-    rts
-.dbefri_notfound:
-    move.q  r1, r0
-    move.q  r2, r0
-    rts
 
     ; -----------------------------------------------------------------
     ; .dos_seed_known: seed one file from embedded bytes when the size is
@@ -447,20 +382,10 @@ prog_doslib_code:
     store.q r1, 144(r29)               ; data[144] = dos_port
 
     ; =====================================================================
-    ; M15.2 phase 5: launch the boot shell directly. Prefer the host-backed
-    ; exported IOSSYS tree when present, but preserve the embedded-shell boot
-    ; path when hostfs is unavailable (for test rigs with no mounted host root).
+    ; M15.2 phase 5: launch the boot shell directly from the host-backed
+    ; IOSSYS tree. If it is absent, continue without a shell rather than
+    ; falling back to an embedded manifest copy.
     ; =====================================================================
-    push    r29
-    move.l  r1, #BOOT_HOSTFS_DISCOVER
-    move.q  r2, r0
-    move.q  r3, r0
-    move.q  r4, r0
-    move.q  r5, r0
-    syscall #SYS_BOOT_HOSTFS
-    pop     r29
-    bnez    r2, .dos_boot_launch_manifest
-    beqz    r1, .dos_boot_launch_manifest
     add     r23, r29, #(prog_doslib_boot_shell_relpath - prog_doslib_data)
     add     r16, r29, #(prog_doslib_empty_args - prog_doslib_data)
     move.q  r18, r0
@@ -472,16 +397,8 @@ prog_doslib_code:
     and     r28, r28, #0xFFFFFFFF
     move.q  r15, r0
     add     r15, r15, #DOS_ERR_NOTFOUND
-    bne     r28, r15, .dos_boot_fail
-
-.dos_boot_launch_manifest:
-    move.l  r1, #BOOT_MANIFEST_ID_SHELL
-    add     r2, r29, #(prog_doslib_empty_args - prog_doslib_data)
-    move.q  r3, r0
-    move.q  r30, r29
-    jsr     .dos_manifest_launch_by_id
-    move.q  r29, r30
-    bnez    r2, .dos_boot_fail
+    beq     r28, r15, .dos_main_loop
+    bnez    r28, .dos_boot_fail
 
     ; =====================================================================
     ; Main loop: WaitPort(dos_port) → dispatch on message type
@@ -3576,6 +3493,7 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
 .dos_launch_hostfs_relpath_name:
     move.q  r24, r23
     move.q  r27, r24
+    store.q r23, 888(r29)
 .dlhrn_have_relpath:
     move.q  r1, r24
     jsr     .dos_bootfs_stat
@@ -4728,10 +4646,6 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
     move.l  r22, #0x53
     bne     r21, r22, .dhrfrn_check_devs
     load.b  r21, 4(r20)
-    and     r21, r21, #0xDF
-    move.l  r22, #0x53
-    bne     r21, r22, .dhrfrn_check_devs
-    load.b  r21, 5(r20)
     move.l  r22, #0x2F
     beq     r21, r22, .dhrfrn_libs
 
@@ -5490,63 +5404,6 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
 
 .dos_run_notfound:
     load.q  r29, (sp)
-    load.q  r1, 336(r29)
-    load.b  r11, (r1)
-    move.l  r12, #0x44                 ; 'D'
-    beq     r11, r12, .dos_run_manifest_maybe
-    move.l  r12, #0x4C                 ; 'L'
-    beq     r11, r12, .dos_run_manifest_maybe
-    move.l  r12, #0x52                 ; 'R'
-    bne     r11, r12, .dos_run_reply_notfound
-.dos_run_manifest_maybe:
-    jsr     .dos_manifest_find_row_by_name ; r1 = manifest entry ID (or 0), r2 = 1 if found
-    load.q  r29, (sp)
-    beqz    r1, .dos_run_reply_notfound
-    beqz    r2, .dos_run_reply_notfound
-    move.q  r21, r1                     ; manifest entry ID
-
-    ; Shared buffer still holds "command\0args\0". Reuse the normal
-    ; bounded args scan and launch through the manifest-backed path.
-    load.q  r20, 168(r29)              ; original shared buffer
-    move.q  r16, r20
-    move.l  r24, #0
-.dos_run_manifest_skip_cmd:
-    load.b  r15, (r16)
-    beqz    r15, .dos_run_manifest_args_start
-    add     r16, r16, #1
-    add     r24, r24, #1
-    move.l  r28, #DATA_ARGS_MAX
-    blt     r24, r28, .dos_run_manifest_skip_cmd
-    bra     .dos_run_reply_notfound
-.dos_run_manifest_args_start:
-    add     r16, r16, #1
-    move.q  r17, r16
-    move.l  r18, #0
-.dos_run_manifest_arglen:
-    load.b  r15, (r17)
-    beqz    r15, .dos_run_launch_manifest_raw
-    add     r17, r17, #1
-    add     r18, r18, #1
-    move.l  r28, #DATA_ARGS_MAX
-    blt     r18, r28, .dos_run_manifest_arglen
-    bra     .dos_run_reply_notfound
-
-.dos_run_launch_manifest_raw:
-    move.q  r1, r21                    ; manifest entry ID
-    move.q  r2, r16                    ; args_ptr
-    move.q  r3, r18                    ; args_len
-    jsr     .dos_manifest_launch_by_id
-    store.q r1, 304(r29)               ; task_id
-    store.q r2, 312(r29)               ; DOS err
-    load.q  r1, 944(r29)
-    load.q  r2, 312(r29)
-    load.q  r3, 304(r29)
-    move.q  r4, r0
-    move.q  r5, r0
-    syscall #SYS_REPLY_MSG
-    load.q  r29, (sp)
-    bra     .dos_main_loop
-
 .dos_run_reply_notfound:
     load.q  r29, (sp)
     ; M15.3: bump the op-specific attempt index and retry. Resolution

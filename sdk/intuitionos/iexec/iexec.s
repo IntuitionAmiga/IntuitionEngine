@@ -130,6 +130,7 @@ iexec_start:
     move.b  r1, #WAITPORT_NONE
     store.b r1, KD_TASK_WAITPORT(r5)
     store.b r0, KD_TASK_GPR_SAVED(r5)   ; no GPRs on stack initially
+    store.b r0, KD_TASK_TEARFLAGS(r5)
     add     r4, r4, #1
     bra     .init_free_tasks
 .init_free_done:
@@ -290,6 +291,23 @@ iexec_start:
     move.l  r2, #KERN_DATA_BASE
     store.q r0, KD_TASKID_NEXT(r2)
 
+    ; M15.5: allocate one dedicated supervisor page for the internal task-exit
+    ; hook substrate. Keeping it out of the low kernel stack page avoids
+    ; stack/metadata overlap during deeper boot paths.
+    move.l  r1, #1
+    jsr     alloc_pages
+    move.l  r2, #KERN_DATA_BASE
+    store.w r1, KD_TASK_EXIT_HOOK_PPN(r2)
+    lsl     r1, r1, #12
+    move.q  r2, r1
+    move.l  r3, #(MMU_PAGE_SIZE / 8)
+    move.l  r4, #0
+.zero_task_exit_page:
+    store.q r0, (r2)
+    add     r2, r2, #8
+    add     r4, r4, #1
+    blt     r4, r3, .zero_task_exit_page
+
     ; ---------------------------------------------------------------
     ; 6d. Extend kernel PT: map allocation pool pages (0x700-0x1FFF)
     ;     as supervisor P|R|W for MEMF_CLEAR zeroing
@@ -323,10 +341,10 @@ iexec_start:
     jsr     kern_puts
 
     ; ---------------------------------------------------------------
-    ; 9. M14.1/M15.2: prepare and launch the bootstrap manifest.
-    ;    The kernel boots only the minimum pre-DOS chain here
-    ;    (console.handler + host-backed dos.library). dos.library takes over
-    ;    the remaining service launches after DOS is online.
+    ; 9. M15.2 phase 6: prepare and launch the minimal host-backed bootstrap
+    ;    manifest. The kernel boots only console.handler and dos.library here,
+    ;    both from the host-backed IOSSYS tree. dos.library takes over the
+    ;    remaining service launches after DOS is online.
     ; ---------------------------------------------------------------
     jsr     kern_boot_manifest_prepare  ; R2 = err
     bnez    r2, .boot_load_fail
@@ -343,6 +361,17 @@ iexec_start:
     load.l  r11, KD_BOOT_MANIFEST_ID(r30)
     move.l  r12, #0xFFFFFFFF
     beq     r11, r12, .boot_manifest_done
+    move.l  r12, #BOOT_MANIFEST_ID_CONSOLE
+    bne     r11, r12, .boot_manifest_check_dos
+    move.l  r1, #TASK_STARTUP_FLAG_BOOT
+    push    r29
+    push    r30
+    jsr     kern_boot_load_host_console ; R1=task_id R2=err R3=slot
+    pop     r30
+    pop     r29
+    bnez    r2, .boot_load_fail
+    bra     .boot_manifest_launched
+.boot_manifest_check_dos:
     move.l  r12, #BOOT_MANIFEST_ID_DOSLIB
     bne     r11, r12, .boot_manifest_regular
     move.l  r1, #TASK_STARTUP_FLAG_BOOT
@@ -366,19 +395,12 @@ iexec_start:
     pop     r29
     bnez    r2, .boot_load_fail
 .boot_manifest_launched:
-    move.q  r18, r3                    ; preserve child slot across grant/export helpers
+    move.q  r18, r3                    ; preserve child slot across grant helper
     load.l  r11, KD_BOOT_MANIFEST_ID(r30)
     move.l  r12, #BOOT_MANIFEST_ID_DOSLIB
     bne     r11, r12, .boot_manifest_after_launch
     move.l  r12, #KERN_DATA_BASE
     store.l r1, KD_DOSLIB_PUBID(r12)
-    push    r29
-    push    r30
-    move.q  r1, r18                    ; dos.library child slot
-    jsr     kern_export_boot_manifest_to_dos
-    pop     r30
-    pop     r29
-    bnez    r2, .boot_load_fail
 .boot_manifest_after_launch:
     push    r29
     push    r30
@@ -2334,15 +2356,13 @@ kern_boot_manifest_prepare:
     move.l  r20, #KERN_DATA_BASE
     add     r20, r20, #KD_BOOT_MANIFEST_BASE
 
-    ; Row 0: console.handler
+    ; Row 0: console.handler (host-backed in M15.2 phase 6)
     move.l  r1, #BOOT_MANIFEST_ID_CONSOLE
     store.l r1, KD_BOOT_MANIFEST_ID(r20)
     move.l  r1, #1
     store.l r1, KD_BOOT_MANIFEST_FLAGS(r20)
-    la      r1, boot_elf_console
-    store.q r1, KD_BOOT_MANIFEST_PTR(r20)
-    move.l  r1, #(boot_elf_console_end - boot_elf_console)
-    store.q r1, KD_BOOT_MANIFEST_SIZE(r20)
+    store.q r0, KD_BOOT_MANIFEST_PTR(r20)
+    store.q r0, KD_BOOT_MANIFEST_SIZE(r20)
     la      r1, boot_manifest_name_console
     store.q r1, KD_BOOT_MANIFEST_NAME(r20)
     move.l  r1, #HWRES_TAG_CHIP
@@ -2366,80 +2386,70 @@ kern_boot_manifest_prepare:
     store.w r0, KD_BOOT_MANIFEST_PPN_LO(r20)
     store.w r0, KD_BOOT_MANIFEST_PPN_HI(r20)
 
-    ; Row 2: Shell
+    ; Row 2: Shell (host-backed only in shipped M15.2+ runtime)
     add     r20, r20, #KD_BOOT_MANIFEST_STRIDE
     move.l  r1, #BOOT_MANIFEST_ID_SHELL
     store.l r1, KD_BOOT_MANIFEST_ID(r20)
     move.l  r1, #1
     store.l r1, KD_BOOT_MANIFEST_FLAGS(r20)
-    la      r1, boot_elf_shell
-    store.q r1, KD_BOOT_MANIFEST_PTR(r20)
-    move.l  r1, #(boot_elf_shell_end - boot_elf_shell)
-    store.q r1, KD_BOOT_MANIFEST_SIZE(r20)
+    store.q r0, KD_BOOT_MANIFEST_PTR(r20)
+    store.q r0, KD_BOOT_MANIFEST_SIZE(r20)
     la      r1, boot_manifest_name_shell
     store.q r1, KD_BOOT_MANIFEST_NAME(r20)
     store.l r0, KD_BOOT_MANIFEST_GTAG(r20)
     store.w r0, KD_BOOT_MANIFEST_PPN_LO(r20)
     store.w r0, KD_BOOT_MANIFEST_PPN_HI(r20)
 
-    ; Row 3: hardware.resource
+    ; Row 3: hardware.resource (host-backed only)
     add     r20, r20, #KD_BOOT_MANIFEST_STRIDE
     move.l  r1, #BOOT_MANIFEST_ID_HWRES
     store.l r1, KD_BOOT_MANIFEST_ID(r20)
     move.l  r1, #1
     store.l r1, KD_BOOT_MANIFEST_FLAGS(r20)
-    la      r1, boot_elf_hwres
-    store.q r1, KD_BOOT_MANIFEST_PTR(r20)
-    move.l  r1, #(boot_elf_hwres_end - boot_elf_hwres)
-    store.q r1, KD_BOOT_MANIFEST_SIZE(r20)
+    store.q r0, KD_BOOT_MANIFEST_PTR(r20)
+    store.q r0, KD_BOOT_MANIFEST_SIZE(r20)
     la      r1, boot_manifest_name_hwres
     store.q r1, KD_BOOT_MANIFEST_NAME(r20)
     store.l r0, KD_BOOT_MANIFEST_GTAG(r20)
     store.w r0, KD_BOOT_MANIFEST_PPN_LO(r20)
     store.w r0, KD_BOOT_MANIFEST_PPN_HI(r20)
 
-    ; Row 4: input.device
+    ; Row 4: input.device (host-backed only)
     add     r20, r20, #KD_BOOT_MANIFEST_STRIDE
     move.l  r1, #BOOT_MANIFEST_ID_INPUT
     store.l r1, KD_BOOT_MANIFEST_ID(r20)
     move.l  r1, #1
     store.l r1, KD_BOOT_MANIFEST_FLAGS(r20)
-    la      r1, boot_elf_input
-    store.q r1, KD_BOOT_MANIFEST_PTR(r20)
-    move.l  r1, #(boot_elf_input_end - boot_elf_input)
-    store.q r1, KD_BOOT_MANIFEST_SIZE(r20)
+    store.q r0, KD_BOOT_MANIFEST_PTR(r20)
+    store.q r0, KD_BOOT_MANIFEST_SIZE(r20)
     la      r1, boot_manifest_name_input
     store.q r1, KD_BOOT_MANIFEST_NAME(r20)
     store.l r0, KD_BOOT_MANIFEST_GTAG(r20)
     store.w r0, KD_BOOT_MANIFEST_PPN_LO(r20)
     store.w r0, KD_BOOT_MANIFEST_PPN_HI(r20)
 
-    ; Row 5: graphics.library
+    ; Row 5: graphics.library (host-backed only)
     add     r20, r20, #KD_BOOT_MANIFEST_STRIDE
     move.l  r1, #BOOT_MANIFEST_ID_GRAPHICS
     store.l r1, KD_BOOT_MANIFEST_ID(r20)
     move.l  r1, #1
     store.l r1, KD_BOOT_MANIFEST_FLAGS(r20)
-    la      r1, boot_elf_graphics
-    store.q r1, KD_BOOT_MANIFEST_PTR(r20)
-    move.l  r1, #(boot_elf_graphics_end - boot_elf_graphics)
-    store.q r1, KD_BOOT_MANIFEST_SIZE(r20)
+    store.q r0, KD_BOOT_MANIFEST_PTR(r20)
+    store.q r0, KD_BOOT_MANIFEST_SIZE(r20)
     la      r1, boot_manifest_name_graphics
     store.q r1, KD_BOOT_MANIFEST_NAME(r20)
     store.l r0, KD_BOOT_MANIFEST_GTAG(r20)
     store.w r0, KD_BOOT_MANIFEST_PPN_LO(r20)
     store.w r0, KD_BOOT_MANIFEST_PPN_HI(r20)
 
-    ; Row 6: intuition.library
+    ; Row 6: intuition.library (host-backed only)
     add     r20, r20, #KD_BOOT_MANIFEST_STRIDE
     move.l  r1, #BOOT_MANIFEST_ID_INTUITION
     store.l r1, KD_BOOT_MANIFEST_ID(r20)
     move.l  r1, #1
     store.l r1, KD_BOOT_MANIFEST_FLAGS(r20)
-    la      r1, boot_elf_intuition
-    store.q r1, KD_BOOT_MANIFEST_PTR(r20)
-    move.l  r1, #(boot_elf_intuition_end - boot_elf_intuition)
-    store.q r1, KD_BOOT_MANIFEST_SIZE(r20)
+    store.q r0, KD_BOOT_MANIFEST_PTR(r20)
+    store.q r0, KD_BOOT_MANIFEST_SIZE(r20)
     la      r1, boot_manifest_name_intuition
     store.q r1, KD_BOOT_MANIFEST_NAME(r20)
     store.l r0, KD_BOOT_MANIFEST_GTAG(r20)
@@ -2449,17 +2459,31 @@ kern_boot_manifest_prepare:
     move.q  r2, #ERR_OK
     rts
 
-; kern_boot_load_host_doslib:
-;   Stage and launch the bootstrap dos.library from the configured host-backed
-;   SYS: tree. This is the only strict pre-DOS ELF that no longer lives in ROM.
+; kern_boot_load_host_console / kern_boot_load_host_doslib:
+;   Stage and launch a strict pre-DOS ELF from the configured host-backed
+;   SYS: tree and publish the staged bytes into the matching manifest row.
 ; Inputs:  R1 = startup flags
 ; Outputs: R1 = public task id, R2 = ERR_*, R3 = child slot
 ; Clobbers: R4-R31
-kern_boot_load_host_doslib:
-    sub     sp, sp, #80
-    store.q r1, 0(sp)                  ; startup flags
+kern_boot_load_host_console:
+    move.q  r19, r1
+    la      r20, boot_host_relpath_console
+    move.l  r21, #KERN_DATA_BASE
+    add     r21, r21, #KD_BOOT_MANIFEST_BASE
+    bra     kern_boot_load_host_manifest_elf
 
+kern_boot_load_host_doslib:
+    move.q  r19, r1
     la      r20, boot_host_relpath_doslib
+    move.l  r21, #KERN_DATA_BASE
+    add     r21, r21, #KD_BOOT_MANIFEST_BASE
+    add     r21, r21, #KD_BOOT_MANIFEST_STRIDE ; row 1 = dos.library
+    bra     kern_boot_load_host_manifest_elf
+
+kern_boot_load_host_manifest_elf:
+    sub     sp, sp, #80
+    store.q r19, 0(sp)                 ; startup flags
+    store.q r21, 32(sp)                ; manifest row ptr
     la      r24, BOOT_HOSTFS_BASE
 
     store.l r20, BOOT_HOSTFS_ARG1-BOOT_HOSTFS_BASE(r24)
@@ -2536,9 +2560,7 @@ kern_boot_load_host_doslib:
     move.q  r30, r3                    ; child slot
     bnez    r29, .kbhd_free_pages_return
 
-    move.l  r11, #KERN_DATA_BASE
-    add     r11, r11, #KD_BOOT_MANIFEST_BASE
-    add     r11, r11, #KD_BOOT_MANIFEST_STRIDE ; row 1 = dos.library
+    load.q  r11, 32(sp)
     load.q  r12, 24(sp)
     lsl     r12, r12, #12
     store.q r12, KD_BOOT_MANIFEST_PTR(r11)
@@ -3004,7 +3026,7 @@ load_program:
     move.l  r12, #KERN_DATA_BASE
 .lp_scan:
     move.l  r11, #MAX_TASKS
-    bge     r22, r11, .lp_nomem
+    bge     r22, r11, .lp_nomem_nopub
     lsl     r15, r22, #5
     add     r15, r15, #KD_TASK_BASE
     add     r15, r15, r12
@@ -3020,11 +3042,15 @@ load_program:
     move.q  r14, r18
     add     r14, r14, #1
     store.q r14, KD_TASKID_NEXT(r12)
+    lsl     r16, r22, #2
+    add     r16, r16, #KD_TASK_PUBID_BASE
+    add     r16, r16, r12
+    store.l r18, (r16)
 
     ; --- Commit (M13 phase 2: allocate dynamic image/PT placement) ---
     move.q  r1, r26
     jsr     alloc_task_image_pages
-    bnez    r2, .lp_nomem
+    bnez    r2, .lp_nomem_nopub
     move.q  r23, r1                     ; code_base
     move.l  r25, #1
     move.q  r1, r25
@@ -3114,7 +3140,9 @@ load_program:
 
     ; 11b. Populate startup block in its dedicated page.
     move.q  r1, r28                     ; startup base
-    move.q  r2, r18                     ; public task id
+    move.l  r16, #KERN_DATA_BASE
+    load.q  r2, KD_TASKID_NEXT(r16)
+    sub     r2, r2, #1                  ; public task id
     move.q  r3, r19                     ; flags
     move.q  r4, r23                     ; code base
     move.q  r5, r26                     ; code pages
@@ -3160,6 +3188,7 @@ load_program:
     move.b  r14, #WAITPORT_NONE
     store.b r14, KD_TASK_WAITPORT(r15)
     store.b r0, KD_TASK_GPR_SAVED(r15)  ; no GPRs saved initially
+    store.b r0, KD_TASK_TEARFLAGS(r15)
 
     ; 13. Set PTBR[task_id]
     lsl     r16, r22, #3
@@ -3181,16 +3210,15 @@ load_program:
     store.q r28, KD_TASK_LAYOUT_STARTUP(r1)
     store.q r30, KD_TASK_LAYOUT_PT_BASE(r1)
 
-    move.q  r1, r22
-    jsr     kern_task_pubid_addr
-    store.l r18, (r1)
-
     ; 14. Increment num_tasks
     load.q  r14, KD_NUM_TASKS(r12)
     add     r14, r14, #1
     store.q r14, KD_NUM_TASKS(r12)
 
     ; 15. Return success
+    move.l  r16, #KERN_DATA_BASE
+    load.q  r18, KD_TASKID_NEXT(r16)
+    sub     r18, r18, #1                ; public task id
     pop     r8
     pop     r7
     move.q  r1, r18                     ; R1 = public task id
@@ -3206,7 +3234,7 @@ load_program:
     move.l  r2, #ERR_BADARG
     rts
 
-.lp_nomem:
+.lp_nomem_nopub:
     pop     r8
     pop     r7
     move.q  r1, r0
@@ -3643,6 +3671,7 @@ exec_desc_launch_task:
     move.b  r11, #WAITPORT_NONE
     store.b r11, KD_TASK_WAITPORT(r15)
     store.b r0, KD_TASK_GPR_SAVED(r15)
+    store.b r0, KD_TASK_TEARFLAGS(r15)
 
     lsl     r11, r20, #3
     add     r11, r11, #KD_PTBR_BASE
@@ -5199,6 +5228,174 @@ check_name_unique:
     rts
 
 ; ============================================================================
+; Fault diagnostic helpers (M15.5)
+; ============================================================================
+
+kern_put_fault_mode:
+    beqz    r1, .kpfm_user
+    la      r8, fault_mode_supervisor
+    jsr     kern_puts
+    rts
+.kpfm_user:
+    la      r8, fault_mode_user
+    jsr     kern_puts
+    rts
+
+kern_put_fault_access:
+    move.l  r2, #FAULT_READ_DENIED
+    beq     r1, r2, .kpfa_read
+    move.l  r2, #FAULT_WRITE_DENIED
+    beq     r1, r2, .kpfa_write
+    move.l  r2, #FAULT_EXEC_DENIED
+    beq     r1, r2, .kpfa_exec
+    la      r8, fault_access_unknown
+    jsr     kern_puts
+    rts
+.kpfa_read:
+    la      r8, fault_access_read
+    jsr     kern_puts
+    rts
+.kpfa_write:
+    la      r8, fault_access_write
+    jsr     kern_puts
+    rts
+.kpfa_exec:
+    la      r8, fault_access_exec
+    jsr     kern_puts
+    rts
+
+kern_put_fault_class:
+    move.l  r2, #FAULT_NOT_PRESENT
+    beq     r1, r2, .kpfc_not_present
+    move.l  r2, #FAULT_READ_DENIED
+    beq     r1, r2, .kpfc_read
+    move.l  r2, #FAULT_WRITE_DENIED
+    beq     r1, r2, .kpfc_write
+    move.l  r2, #FAULT_EXEC_DENIED
+    beq     r1, r2, .kpfc_exec
+    move.l  r2, #FAULT_USER_SUPER
+    beq     r1, r2, .kpfc_user_super
+    move.l  r2, #FAULT_PRIV
+    beq     r1, r2, .kpfc_priv
+    move.l  r2, #FAULT_MISALIGNED
+    beq     r1, r2, .kpfc_misaligned
+    move.l  r2, #FAULT_TIMER
+    beq     r1, r2, .kpfc_timer
+    move.l  r2, #FAULT_SYSCALL
+    beq     r1, r2, .kpfc_syscall
+    la      r8, fault_class_unknown
+    jsr     kern_puts
+    rts
+.kpfc_not_present:
+    la      r8, fault_class_not_present
+    jsr     kern_puts
+    rts
+.kpfc_read:
+    la      r8, fault_class_read
+    jsr     kern_puts
+    rts
+.kpfc_write:
+    la      r8, fault_class_write
+    jsr     kern_puts
+    rts
+.kpfc_exec:
+    la      r8, fault_class_exec
+    jsr     kern_puts
+    rts
+.kpfc_user_super:
+    la      r8, fault_class_user_super
+    jsr     kern_puts
+    rts
+.kpfc_priv:
+    la      r8, fault_class_priv
+    jsr     kern_puts
+    rts
+.kpfc_misaligned:
+    la      r8, fault_class_misaligned
+    jsr     kern_puts
+    rts
+.kpfc_timer:
+    la      r8, fault_class_timer
+    jsr     kern_puts
+    rts
+.kpfc_syscall:
+    la      r8, fault_class_syscall
+    jsr     kern_puts
+    rts
+
+kern_put_fault_pte_flags:
+    move.q  r2, #'-'
+    move.l  r3, #PTE_P
+    and     r4, r1, r3
+    beqz    r4, .kpfp_present_done
+    move.q  r2, #'P'
+.kpfp_present_done:
+    move.q  r8, r2
+    jsr     kern_put_char
+
+    move.q  r2, #'-'
+    move.l  r3, #PTE_R
+    and     r4, r1, r3
+    beqz    r4, .kpfp_read_done
+    move.q  r2, #'R'
+.kpfp_read_done:
+    move.q  r8, r2
+    jsr     kern_put_char
+
+    move.q  r2, #'-'
+    move.l  r3, #PTE_W
+    and     r4, r1, r3
+    beqz    r4, .kpfp_write_done
+    move.q  r2, #'W'
+.kpfp_write_done:
+    move.q  r8, r2
+    jsr     kern_put_char
+
+    move.q  r2, #'-'
+    move.l  r3, #PTE_X
+    and     r4, r1, r3
+    beqz    r4, .kpfp_exec_done
+    move.q  r2, #'X'
+.kpfp_exec_done:
+    move.q  r8, r2
+    jsr     kern_put_char
+
+    move.q  r2, #'-'
+    move.l  r3, #PTE_U
+    and     r4, r1, r3
+    beqz    r4, .kpfp_user_done
+    move.q  r2, #'U'
+.kpfp_user_done:
+    move.q  r8, r2
+    jsr     kern_put_char
+
+    move.q  r2, #'-'
+    move.l  r3, #PTE_D
+    and     r4, r1, r3
+    beqz    r4, .kpfp_dirty_done
+    move.q  r2, #'D'
+.kpfp_dirty_done:
+    move.q  r8, r2
+    jsr     kern_put_char
+    rts
+
+kern_put_fault_pte_for_addr:
+    lsr     r2, r1, #12
+    move.l  r3, #MMU_NUM_PAGES
+    bge     r2, r3, .kpfpte_none
+    mfcr    r3, cr0
+    lsl     r2, r2, #3
+    add     r2, r2, r3
+    load.q  r1, (r2)
+    and     r1, r1, #0x7F
+    jsr     kern_put_fault_pte_flags
+    rts
+.kpfpte_none:
+    move.q  r1, #0
+    jsr     kern_put_fault_pte_flags
+    rts
+
+; ============================================================================
 ; Trap Handler
 ; ============================================================================
 
@@ -5210,27 +5407,46 @@ trap_handler:
 
     ; --- Fault reporting ---
     ; Check previous privilege mode via CR13 (PREV_MODE): 1=supervisor, 0=user
-    mfcr    r11, cr13                   ; PREV_MODE
-    bnez    r11, .fault_supervisor      ; supervisor fault → kernel panic
+    move.q  r20, r10                    ; cause
+    mfcr    r21, cr13                   ; PREV_MODE
+    mfcr    r22, cr3                    ; FAULT_PC
+    mfcr    r23, cr1                    ; FAULT_ADDR
+    bnez    r21, .fault_supervisor      ; supervisor fault → kernel panic
 
     ; --- User-mode fault: kill the task and continue ---
     la      r8, fault_msg_prefix
     jsr     kern_puts
-    move.q  r8, r10
+    move.q  r8, r20
     jsr     kern_put_hex
     la      r8, fault_msg_pc
     jsr     kern_puts
-    mfcr    r8, cr3
+    move.q  r8, r22
     jsr     kern_put_hex
     la      r8, fault_msg_addr
     jsr     kern_puts
-    mfcr    r8, cr1
+    move.q  r8, r23
     jsr     kern_put_hex
     la      r8, fault_msg_task
     jsr     kern_puts
     move.l  r12, #KERN_DATA_BASE
     load.q  r8, (r12)
     jsr     kern_put_hex
+    la      r8, fault_msg_access
+    jsr     kern_puts
+    move.q  r1, r20
+    jsr     kern_put_fault_access
+    la      r8, fault_msg_mode
+    jsr     kern_puts
+    move.q  r1, r21
+    jsr     kern_put_fault_mode
+    la      r8, fault_msg_class
+    jsr     kern_puts
+    move.q  r1, r20
+    jsr     kern_put_fault_class
+    la      r8, fault_msg_pte
+    jsr     kern_puts
+    move.q  r1, r23
+    jsr     kern_put_fault_pte_for_addr
     move.q  r8, #0x0D
     jsr     kern_put_char
     move.q  r8, #0x0A
@@ -5242,6 +5458,7 @@ trap_handler:
     move.l  r11, #KERN_PAGE_TABLE
     mtcr    cr0, r11
     tlbflush
+    move.l  r14, #TASK_EXIT_REASON_FAULT
     jsr     kill_task_cleanup
     mtcr    cr0, r19
     tlbflush
@@ -5255,16 +5472,32 @@ trap_handler:
     jsr     kern_puts
     la      r8, fault_msg_prefix
     jsr     kern_puts
-    move.q  r8, r10
+    move.q  r8, r20
     jsr     kern_put_hex
     la      r8, fault_msg_pc
     jsr     kern_puts
-    mfcr    r8, cr3
+    move.q  r8, r22
     jsr     kern_put_hex
     la      r8, fault_msg_addr
     jsr     kern_puts
-    mfcr    r8, cr1
+    move.q  r8, r23
     jsr     kern_put_hex
+    la      r8, fault_msg_access
+    jsr     kern_puts
+    move.q  r1, r20
+    jsr     kern_put_fault_access
+    la      r8, fault_msg_mode
+    jsr     kern_puts
+    move.q  r1, r21
+    jsr     kern_put_fault_mode
+    la      r8, fault_msg_class
+    jsr     kern_puts
+    move.q  r1, r20
+    jsr     kern_put_fault_class
+    la      r8, fault_msg_pte
+    jsr     kern_puts
+    move.q  r1, r23
+    jsr     kern_put_fault_pte_for_addr
     move.q  r8, #0x0D
     jsr     kern_put_char
     move.q  r8, #0x0A
@@ -5525,6 +5758,7 @@ trap_handler:
 ; --- Signal ---
 ; R1 = target taskID, R2 = signal mask, returns R2 = err
 .do_signal:
+    move.q  r25, r2                     ; preserve requested signal mask
     ; Resolve the public task ID to a live slot.
     jsr     kern_find_slot_for_public_id ; R1 = slot, R2 = found?
     beqz    r2, .signal_badarg
@@ -5537,7 +5771,7 @@ trap_handler:
 
     ; Set bits in target's signal_recv
     load.l  r20, KD_TASK_SIG_RECV(r15)
-    or      r20, r20, r2            ; recv |= mask
+    or      r20, r20, r25           ; recv |= requested mask
     store.l r20, KD_TASK_SIG_RECV(r15)
 
     ; If target is WAITING and (recv & wait) != 0, set to READY
@@ -6004,7 +6238,7 @@ trap_handler:
     move.l  r20, #0                     ; candidate child_id
 .ct_scan:
     move.l  r11, #MAX_TASKS
-    bge     r20, r11, .ct_nomem
+    bge     r20, r11, .ct_nomem_nopub
     lsl     r15, r20, #5
     add     r15, r15, #KD_TASK_BASE
     add     r15, r15, r12
@@ -6020,6 +6254,10 @@ trap_handler:
     move.q  r14, r18
     add     r14, r14, #1
     store.q r14, KD_TASKID_NEXT(r12)
+    lsl     r16, r20, #2
+    add     r16, r16, #KD_TASK_PUBID_BASE
+    add     r16, r16, r12
+    store.l r18, (r16)
 
     ; Allocate the child's dynamic image/PT placement while staying on the
     ; caller's PT. The caller PT already carries supervisor-only mappings for
@@ -6028,7 +6266,7 @@ trap_handler:
     ; losing visibility of caller-owned pages.
     move.l  r1, #1
     jsr     alloc_task_image_pages
-    bnez    r2, .ct_nomem
+    bnez    r2, .ct_nomem_nopub
     move.q  r21, r1                     ; child code base
     move.l  r1, #1
     jsr     alloc_task_image_pages
@@ -6088,7 +6326,9 @@ trap_handler:
 
     ; Populate startup block in the child's dedicated startup page.
     move.q  r1, r27                     ; startup base
-    move.q  r2, r18                     ; public task id
+    move.l  r16, #KERN_DATA_BASE
+    load.q  r2, KD_TASKID_NEXT(r16)
+    sub     r2, r2, #1                  ; public task id
     move.l  r3, #TASK_STARTUP_FLAG_CREATE
     move.q  r4, r21                     ; code base
     move.l  r5, #1                      ; code pages
@@ -6133,6 +6373,8 @@ trap_handler:
     ; waitport_id = WAITPORT_NONE
     move.b  r14, #WAITPORT_NONE
     store.b r14, KD_TASK_WAITPORT(r15)
+    store.b r0, KD_TASK_GPR_SAVED(r15)
+    store.b r0, KD_TASK_TEARFLAGS(r15)
 
     ; Set PTBR[child_id]
     lsl     r16, r20, #3
@@ -6156,9 +6398,15 @@ trap_handler:
 
     move.q  r1, r20
     jsr     kern_task_pubid_addr
+    move.l  r16, #KERN_DATA_BASE
+    load.q  r18, KD_TASKID_NEXT(r16)
+    sub     r18, r18, #1                ; public task id
     store.l r18, (r1)
 
     ; Return public task id in R1, ERR_OK in R2
+    move.l  r16, #KERN_DATA_BASE
+    load.q  r18, KD_TASKID_NEXT(r16)
+    sub     r18, r18, #1                ; public task id
     move.q  r1, r18
     move.q  r2, #ERR_OK
     eret
@@ -6166,7 +6414,7 @@ trap_handler:
 .ct_badarg:
     move.q  r2, #ERR_BADARG
     eret
-.ct_nomem:
+.ct_nomem_nopub:
     move.q  r2, #ERR_NOMEM
     eret
 .ct_fail_free_startup:
@@ -6201,6 +6449,7 @@ trap_handler:
     move.l  r11, #KERN_PAGE_TABLE
     mtcr    cr0, r11
     tlbflush
+    move.l  r14, #TASK_EXIT_REASON_NORMAL
     jsr     kill_task_cleanup       ; shared cleanup subroutine
     mtcr    cr0, r19
     tlbflush
@@ -7082,6 +7331,9 @@ trap_handler:
     beq     r11, r14, .dbhf_allowed
     bra     .dbhf_perm
 .dbhf_allowed:
+    beqz    r21, .dbhf_badarg
+
+.dbhf_forward:
     la      r24, BOOT_HOSTFS_BASE
     store.l r21, BOOT_HOSTFS_ARG1-BOOT_HOSTFS_BASE(r24)
     store.l r22, BOOT_HOSTFS_ARG2-BOOT_HOSTFS_BASE(r24)
@@ -7091,6 +7343,11 @@ trap_handler:
     load.l  r1, BOOT_HOSTFS_RES1-BOOT_HOSTFS_BASE(r24)
     load.l  r3, BOOT_HOSTFS_RES2-BOOT_HOSTFS_BASE(r24)
     load.l  r2, BOOT_HOSTFS_ERR-BOOT_HOSTFS_BASE(r24)
+    eret
+.dbhf_badarg:
+    move.q  r1, #0
+    move.q  r2, #ERR_BADARG
+    move.q  r3, #0
     eret
 .dbhf_perm:
     move.q  r1, #0
@@ -7502,6 +7759,7 @@ trap_handler:
     mtcr    cr0, r11
     tlbflush
     move.q  r13, r1
+    move.l  r14, #TASK_EXIT_REASON_INTERNAL
     jsr     kill_task_cleanup
     mtcr    cr0, r19
     tlbflush
@@ -7527,6 +7785,29 @@ trap_handler:
 ; Output: R1 = 0 (OK) or 1 (BADARG)
 ; Clobbers: R1-R6
 ; ============================================================================
+validate_user_cstring:
+    move.q  r14, r1                    ; current byte pointer
+    move.q  r15, r2                    ; remaining max length
+    move.q  r16, r3                    ; caller PTBR
+.vucs_loop:
+    beqz    r15, .vucs_fail            ; no NUL within limit
+    move.q  r1, r14
+    move.l  r2, #1
+    move.q  r3, r16
+    jsr     validate_user_read_range
+    bnez    r1, .vucs_fail
+    load.b  r17, (r14)
+    beqz    r17, .vucs_ok
+    add     r14, r14, #1
+    sub     r15, r15, #1
+    bra     .vucs_loop
+.vucs_ok:
+    move.q  r1, #0
+    rts
+.vucs_fail:
+    move.q  r1, #1
+    rts
+
 validate_user_read_range:
     move.l  r4, #(PTE_P | PTE_R | PTE_U)
     bra     validate_user_range_mask
@@ -7572,12 +7853,84 @@ validate_user_range_mask:
     rts
 
 ; ============================================================================
+; M15.5 internal task-exit hook runner.
+; Input: R12 = KERN_DATA_BASE, R13 = task slot, R14 = TASK_EXIT_REASON_*
+; Clobbers: R1, R15-R28
+; ============================================================================
+kern_task_exit_hooks_run:
+    lsl     r15, r13, #5
+    add     r15, r15, #KD_TASK_BASE
+    add     r15, r15, r12
+    load.b  r16, KD_TASK_TEARFLAGS(r15)
+    move.l  r17, #TASK_TEARFLAG_HOOKS_RAN
+    and     r18, r16, r17
+    bnez    r18, .kteh_done
+    or      r16, r16, r17
+    store.b r16, KD_TASK_TEARFLAGS(r15)
+    load.b  r18, KD_TASK_STATE(r15)     ; pre-teardown state
+
+    move.q  r1, r13
+    jsr     kern_task_pubid_addr
+    load.l  r19, (r1)                   ; public task ID before cleanup clears it
+
+    load.w  r24, KD_TASK_EXIT_HOOK_PPN(r12)
+    lsl     r24, r24, #12
+    move.q  r20, r24
+    move.l  r21, #0
+.kteh_row:
+    move.l  r22, #KD_TASK_EXIT_HOOK_MAX
+    bge     r21, r22, .kteh_done
+    load.l  r22, KD_TASK_EXIT_HOOK_KIND(r20)
+    beqz    r22, .kteh_next
+    load.l  r23, KD_TASK_EXIT_HOOK_TARGET(r20)
+    move.l  r28, #TASK_EXIT_HOOK_TARGET_ANY
+    beq     r23, r28, .kteh_match
+    bne     r23, r13, .kteh_next
+.kteh_match:
+    store.l r0, KD_TASK_EXIT_HOOK_STATUS(r20)
+    store.l r0, KD_TASK_EXIT_HOOK_LASTSEQ(r20)
+    move.l  r28, #TASK_EXIT_HOOK_RECORDER
+    bne     r22, r28, .kteh_badarg
+    load.q  r25, KD_TASK_EXIT_HOOK_RECORD(r20)
+    beqz    r25, .kteh_badarg
+
+    load.l  r26, KD_TASK_EXIT_SEQ(r24)
+    add     r26, r26, #1
+    store.l r26, KD_TASK_EXIT_SEQ(r24)
+    store.l r26, KD_TASK_EXIT_HOOK_LASTSEQ(r20)
+
+    load.q  r27, TASK_EXIT_REC_COUNT(r25)
+    add     r27, r27, #1
+    store.q r27, TASK_EXIT_REC_COUNT(r25)
+    store.q r26, TASK_EXIT_REC_SEQ(r25)
+    store.q r13, TASK_EXIT_REC_SLOT(r25)
+    store.q r19, TASK_EXIT_REC_PUBID(r25)
+    store.q r14, TASK_EXIT_REC_REASON(r25)
+    store.q r18, TASK_EXIT_REC_STATE(r25)
+    bra     .kteh_next
+
+.kteh_badarg:
+    move.q  r27, #ERR_BADARG
+    store.l r27, KD_TASK_EXIT_HOOK_STATUS(r20)
+
+.kteh_next:
+    add     r20, r20, #KD_TASK_EXIT_HOOK_STRIDE
+    add     r21, r21, #1
+    bra     .kteh_row
+
+.kteh_done:
+    rts
+
+; ============================================================================
 ; kill_task_cleanup: clean up task R13, mark FREE.
-; Input: R13 = task to kill, R12 = KERN_DATA_BASE
+; Input: R13 = task to kill, R12 = KERN_DATA_BASE, R14 = TASK_EXIT_REASON_*
 ; Clobbers: R15-R24
 ; ============================================================================
 
 kill_task_cleanup:
+    push    r19
+    jsr     kern_task_exit_hooks_run
+    pop     r19
     lsl     r15, r13, #5
     add     r15, r15, #KD_TASK_BASE
     add     r15, r15, r12
@@ -8161,7 +8514,12 @@ intr_handler:
 
 .intr_stay:
     ; Same task continues — restore ALL GPRs from user stack
-    ; R28 has the adjusted USP (frame base)
+    ; R28 has the adjusted USP (frame base). Because we are not switching
+    ; tasks, the saved interrupt frame is transient: clear the stale
+    ; GPR-saved marker and restore the task's logical USP before returning.
+    add     r16, r28, #248
+    store.q r16, KD_TASK_USP(r15)
+    store.b r0, KD_TASK_GPR_SAVED(r15)
     move.q  r14, r28                ; r14 = GPR frame base
     load.q  r1,   0(r14)
     load.q  r2,   8(r14)

@@ -72,8 +72,8 @@ func boilerPlate() {
 	fmt.Println("\n\033[38;2;255;20;147m ██▓ ███▄    █ ▄▄▄█████▓ █    ██  ██▓▄▄▄█████▓ ██▓ ▒█████   ███▄    █    ▓█████  ███▄    █   ▄████  ██▓ ███▄    █ ▓█████\033[0m\n\033[38;2;255;50;147m▓██▒ ██ ▀█   █ ▓  ██▒ ▓▒ ██  ▓██▒▓██▒▓  ██▒ ▓▒▓██▒▒██▒  ██▒ ██ ▀█   █    ▓█   ▀  ██ ▀█   █  ██▒ ▀█▒▓██▒ ██ ▀█   █ ▓█   ▀\033[0m\n\033[38;2;255;80;147m▒██▒▓██  ▀█ ██▒▒ ▓██░ ▒░▓██  ▒██░▒██▒▒ ▓██░ ▒░▒██▒▒██░  ██▒▓██  ▀█ ██▒   ▒███   ▓██  ▀█ ██▒▒██░▄▄▄░▒██▒▓██  ▀█ ██▒▒███\033[0m\n\033[38;2;255;110;147m░██░▓██▒  ▐▌██▒░ ▓██▓ ░ ▓▓█  ░██░░██░░ ▓██▓ ░ ░██░▒██   ██░▓██▒  ▐▌██▒   ▒▓█  ▄ ▓██▒  ▐▌██▒░▓█  ██▓░██░▓██▒  ▐▌██▒▒▓█  ▄\033[0m\n\033[38;2;255;140;147m░██░▒██░   ▓██░  ▒██▒ ░ ▒▒█████▓ ░██░  ▒██▒ ░ ░██░░ ████▓▒░▒██░   ▓██░   ░▒████▒▒██░   ▓██░░▒▓███▀▒░██░▒██░   ▓██░░▒████▒\033[0m\n\033[38;2;255;170;147m░▓  ░ ▒░   ▒ ▒   ▒ ░░   ░▒▓▒ ▒ ▒ ░▓    ▒ ░░   ░▓  ░ ▒░▒░▒░ ░ ▒░   ▒ ▒    ░░ ▒░ ░░ ▒░   ▒ ▒  ░▒   ▒ ░▓  ░ ▒░   ▒ ▒ ░░ ▒░ ░\033[0m\n\033[38;2;255;200;147m ▒ ░░ ░░   ░ ▒░    ░    ░░▒░ ░ ░  ▒ ░    ░     ▒ ░  ░ ▒ ▒░ ░ ░░   ░ ▒░    ░ ░  ░░ ░░   ░ ▒░  ░   ░  ▒ ░░ ░░   ░ ▒░ ░ ░  ░\033[0m\n\033[38;2;255;230;147m ▒ ░   ░   ░ ░   ░       ░░░ ░ ░  ▒ ░  ░       ▒ ░░ ░ ░ ▒     ░   ░ ░       ░      ░   ░ ░ ░ ░   ░  ▒ ░   ░   ░ ░    ░\033[0m\n\033[38;2;255;255;147m ░           ░             ░      ░            ░      ░ ░           ░       ░  ░         ░       ░  ░           ░    ░  ░\033[0m")
 	fmt.Println("\nA modern 64-bit RISC re-imagining of Commodore/Atari/Sinclair/BBC/Amstrad/IBM 8/16/32-bit home computers.")
 	fmt.Println("Default core: IE64. Also supports IE32, M68K, x86, Z80, and 6502 CPU modes.")
-	fmt.Println("Video: IEVideoChip, VGA, ULA, TED video, ANTIC/GTIA, 3DFX Voodoo.")
-	fmt.Println("Audio: IESoundChip, AY/YM/PSG, SID, POKEY, TED audio, Amiga AHX.")
+	fmt.Println("Video: IEVideoChip, VGA, ZX Spectrum ULA, Commodore TED video, Atari ANTIC/GTIA, 3DFX Voodoo.")
+	fmt.Println("Audio: IESoundChip, AY/YM/PSG, SID, POKEY, TED audio, ProTracker MOD, PCM WAV, Amiga AHX Resynth, TI SN76489, Amiga Paula DMA.")
 	fmt.Println("(c) 2024 - 2026 Zayn Otley")
 	fmt.Println("https://github.com/IntuitionAmiga/IntuitionEngine")
 	fmt.Println("Buy me a coffee: https://ko-fi.com/intuition/tip")
@@ -263,8 +263,9 @@ func main() {
 		flagSet.SetOutput(os.Stdout)
 		fmt.Println("Usage: ./intuition_engine [mode] [options] [filename]")
 		fmt.Println("Default (no mode/filename): start EhBASIC IE64.")
-		fmt.Println("Video: IEVideoChip, VGA, ULA, TED video, ANTIC/GTIA, 3DFX Voodoo.")
-		fmt.Println("Audio: IESoundChip, AY/YM/PSG, SID, POKEY, TED audio, Amiga AHX, ProTracker MOD, PCM WAV.")
+		fmt.Println("Default core: IE64. Also supports IE32, M68K, x86, Z80, and 6502 CPU modes.")
+		fmt.Println("Video: IEVideoChip, VGA, ZX Spectrum ULA, Commodore TED video, Atari ANTIC/GTIA, 3DFX Voodoo.")
+		fmt.Println("Audio: IESoundChip, AY/YM/PSG, SID, POKEY, TED audio, ProTracker MOD, PCM WAV, Amiga AHX Resynth, TI SN76489, Amiga Paula DMA.")
 		flagSet.PrintDefaults()
 	}
 
@@ -2259,7 +2260,7 @@ func main() {
 		}()
 	}
 
-	// Wait for window close (graphical mode), script completion, or CPU halt (EmuTOS headless).
+	// Wait for window close (graphical mode), script completion, or CPU halt.
 	waited := false
 	if waiter, ok := videoChip.GetOutput().(interface{ Done() <-chan struct{} }); ok {
 		<-waiter.Done()
@@ -2281,6 +2282,15 @@ func main() {
 		// Headless AROS: block until the CPU stops running.
 		for arosLoader.cpu.Running() {
 			time.Sleep(100 * time.Millisecond)
+		}
+		waited = true
+	}
+	if !waited {
+		if runner, ok := cpuRunner.(interface{ IsRunning() bool }); ok {
+			for runner.IsRunning() {
+				time.Sleep(100 * time.Millisecond)
+			}
+			waited = true
 		}
 	}
 

@@ -635,22 +635,13 @@ func emitPrologue(cb *CodeBuffer, blockPC uint32, br *blockRegs) {
 		amd64MOV_mem_imm32(cb, amd64RSP, int32(amd64OffLoopCount), 0) // [RSP+16] = 0
 	}
 
-	// Load mapped IE64 registers from register file (only those read by block)
-	if br.read&(1<<1) != 0 {
-		amd64MOV_reg_mem(cb, amd64RegIE64R1, amd64RAX, 1*8) // R1 -> RBX
-	}
-	if br.read&(1<<2) != 0 {
-		amd64MOV_reg_mem(cb, amd64RegIE64R2, amd64RAX, 2*8) // R2 -> RBP
-	}
-	if br.read&(1<<3) != 0 {
-		amd64MOV_reg_mem(cb, amd64RegIE64R3, amd64RAX, 3*8) // R3 -> R12
-	}
-	if br.read&(1<<4) != 0 {
-		amd64MOV_reg_mem(cb, amd64RegIE64R4, amd64RAX, 4*8) // R4 -> R13
-	}
-	if br.read&(1<<31) != 0 {
-		amd64MOV_reg_mem(cb, amd64RegIE64SP, amd64RAX, 31*8) // R31 -> R14
-	}
+	// Conservatively load all mapped IE64 registers for correctness.
+	// This avoids liveness holes across mixed JIT/interpreter handoffs.
+	amd64MOV_reg_mem(cb, amd64RegIE64R1, amd64RAX, 1*8)  // R1 -> RBX
+	amd64MOV_reg_mem(cb, amd64RegIE64R2, amd64RAX, 2*8)  // R2 -> RBP
+	amd64MOV_reg_mem(cb, amd64RegIE64R3, amd64RAX, 3*8)  // R3 -> R12
+	amd64MOV_reg_mem(cb, amd64RegIE64R4, amd64RAX, 4*8)  // R4 -> R13
+	amd64MOV_reg_mem(cb, amd64RegIE64SP, amd64RAX, 31*8) // R31 -> R14
 
 	// Load block start PC into R15
 	emitLoadImm64AMD64(cb, amd64RegIE64PC, uint64(blockPC))
@@ -663,22 +654,12 @@ func emitPrologue(cb *CodeBuffer, blockPC uint32, br *blockRegs) {
 //   - storeRegs: IE64 register bitmask — which registers to store back
 //   - calleeSaved: IE64 register bitmask — which callee-saved pairs to restore (unused on amd64, we always restore all)
 func emitEpilogue(cb *CodeBuffer, storeRegs uint32, _ uint32) {
-	// Store mapped IE64 registers back to register file
-	if storeRegs&(1<<1) != 0 {
-		amd64MOV_mem_reg(cb, amd64RegBase, 1*8, amd64RegIE64R1)
-	}
-	if storeRegs&(1<<2) != 0 {
-		amd64MOV_mem_reg(cb, amd64RegBase, 2*8, amd64RegIE64R2)
-	}
-	if storeRegs&(1<<3) != 0 {
-		amd64MOV_mem_reg(cb, amd64RegBase, 3*8, amd64RegIE64R3)
-	}
-	if storeRegs&(1<<4) != 0 {
-		amd64MOV_mem_reg(cb, amd64RegBase, 4*8, amd64RegIE64R4)
-	}
-	if storeRegs&(1<<31) != 0 {
-		amd64MOV_mem_reg(cb, amd64RegBase, 31*8, amd64RegIE64SP)
-	}
+	// Conservatively store all mapped IE64 registers back to the register file.
+	amd64MOV_mem_reg(cb, amd64RegBase, 1*8, amd64RegIE64R1)
+	amd64MOV_mem_reg(cb, amd64RegBase, 2*8, amd64RegIE64R2)
+	amd64MOV_mem_reg(cb, amd64RegBase, 3*8, amd64RegIE64R3)
+	amd64MOV_mem_reg(cb, amd64RegBase, 4*8, amd64RegIE64R4)
+	amd64MOV_mem_reg(cb, amd64RegBase, 31*8, amd64RegIE64SP)
 
 	// Store spilled registers that were written (R5-R30)
 	// Spilled writes are already stored during instruction emission,

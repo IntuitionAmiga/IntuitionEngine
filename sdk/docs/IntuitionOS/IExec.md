@@ -49,7 +49,7 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
   - the public DOS loader API is unchanged; the embedded-manifest service source remains internal-only
 - console.handler: CON: handler with GetMsg polling and CON_READLINE protocol — **M11.5**: console.handler now owns terminal MMIO directly via its own `SYS_MAP_IO(0xF0, 1)` mapping and inlines the readline MMIO loop. The former kernel-side `SYS_READ_INPUT` (slot 37) is removed; slot 37 is an unallocated hole that returns `ERR_BADARG`.
 - **dos.library**: AmigaOS dos.library equivalent with a RAM-backed, case-insensitive filesystem and Amiga-shaped assign model. The file metadata table and open-handle table are unbounded user-space chains of `AllocMem`'d 4 KiB pages (85 file entries or 510 handle entries per page). As of **M12.8**, each file body is a variable-size chain of 4 KiB extents linked through `entry.file_va`; the old fixed `DOS_FILE_SIZE` per-file allocation is gone. `DOS_WRITE` now does an atomic swap onto a newly allocated extent chain so allocation failure leaves previous content intact. **M14 phases 2-3 add `DOS_LOADSEG` / `DOS_UNLOADSEG` / `DOS_RUNSEG`**: dos.library validates the strict native ELF subset, builds DOS-owned seglists with preserved target VA / `R/W/X` / entry-point metadata, frees them on demand, and launches them through the dual-mode `ExecProgram` descriptor handoff. **M15 expands the DOS namespace and layout model**: the built-in assign table now covers `RAM:`, `C:`, `L:`, `LIBS:`, `DEVS:`, `T:`, `S:`, and `RESOURCES:`; bare command search remains `C:`-only; `L:` is direct-access only in M15; `RAM:` remains a first-class compatibility root view; and `DOS_ASSIGN` adds DOS-side list/query/set of assign rows while keeping `RAM:` non-mutable.
-- **M15.2 host-backed boot current runtime**: `SYS:` is now the mounted host-backed boot volume and `IOSSYS:` is the built-in system assign rooted at `SYS:IOSSYS`. `DOS_ASSIGN` remains a compatibility projection: public list/query rows stay `name[16], target[16]`, `SYS:` host root and `IOSSYS:` built-in system assign are resolver-owned rather than mutable rows, canonical functional assigns keep their short public targets, `dos.library` boots from `IOSSYS:LIBS/dos.library`, and `Shell` boots from `IOSSYS:Tools/Shell`.
+- **M15.2 host-backed boot current runtime**: `SYS:` is now the mounted host-backed boot volume and `IOSSYS:` is the built-in system assign rooted at `SYS:IOSSYS`. `DOS_ASSIGN` remains a compatibility projection: public list/query rows stay `name[16], target[16]`, `SYS:` host root and `IOSSYS:` built-in system assign are resolver-owned rather than mutable rows, canonical functional assigns keep their short public targets, `console.handler` boots from `IOSSYS:L/console.handler`, `dos.library` boots from `IOSSYS:LIBS/dos.library`, and `Shell` boots from `IOSSYS:Tools/Shell`.
 - **Shell**: interactive command shell that sends raw command names to dos.library via DOS_RUN (no shell-side command table). The visible command-dispatch path goes through the DOS loader path for the seeded native-ELF `C:` command/demo set; `DOS_RUN` rejects non-ELF executable content instead of falling back to legacy flat-image launch. Executes `S:Startup-Sequence` automatically at boot if present, then drops to the interactive prompt.
 - **Visible DOS commands** as DOS-loaded executables: `VERSION`, `AVAIL`, `DIR`, `TYPE`, `ECHO`, `ASSIGN`, `LIST`, `WHICH`, `HELP`, plus the retained `GfxDemo` and `About` programs. Stored as files in RAM under `C:`, launched by name through dos.library.
 
@@ -58,7 +58,7 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
 - Filesystem access beyond RAM: (handled by DOS.library or host-side intercepts for persistent storage)
 - Device drivers (hardware chips are memory-mapped; drivers live in user space)
 - Graphics or audio (handled by respective chip subsystems)
-- Boot/services use the internal embedded-manifest ELF path for shipped runtime binaries; the remaining flat-image path is removed in M14.2
+- Boot/services are loaded as strict ELF binaries; the remaining flat-image path is removed in M14.2
 
 **M15 current runtime:**
 
@@ -107,6 +107,7 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
 - canonical functional assigns continue to look M15-shaped in public output even when internal resolution is rooted under `SYS:IOSSYS`.
 - `DOS_ASSIGN` compatibility projection remains `name[16], target[16]`; `SYS:` and `IOSSYS:` are built-in roots, not mutable long chained rows.
 - `exec.library` is the only remaining ROM-resident runtime component.
+- `console.handler` boots from `IOSSYS:L/console.handler`.
 - `dos.library` boots from `IOSSYS:LIBS/dos.library`.
 - `Shell` boots from `IOSSYS:Tools/Shell`.
 - the generated host system tree lives under `sdk/intuitionos/system/SYS/IOSSYS`.
@@ -125,7 +126,7 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
 - `ASSIGN` shell command grows the layered syntax: `ASSIGN NAME:` shows the full effective ordered list, `ASSIGN ADD NAME: TARGET:` appends to the overlay, `ASSIGN REMOVE NAME: TARGET:` removes one entry, and `ASSIGN NAME: TARGET:` keeps the M15.2 replace semantics.
 - M15.3 makes no changes to `ExecProgram`, ELF/seglist contracts, or the M14.2 ELF-only command boundary.
 
-**M15.4 planned hardening milestone:**
+**M15.4 hardening milestone:**
 
 - kernel W^X becomes a real enforced contract instead of relying on broad supervisor `P|R|W|X` mappings
 - syscall user-pointer validation becomes permission-aware (`read`, `write`, and executable-entry checks instead of generic `P|U` validation)
@@ -133,6 +134,14 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
 - the M14.2 `ET_EXEC` loader contract remains unchanged in M15.4; `ET_DYN`, runtime relocation, ASLR, and KASLR stay future work
 - `M15.4` is the gate before `M16` protected modules, not a partial implementation of the module registry/lifecycle work
 - see [M15.4-plan.md](/home/zayn/GolandProjects/IntuitionEngine/sdk/docs/IntuitionOS/M15.4-plan.md) for the hardening milestone spec
+
+**M15.5 substrate/current runtime:**
+
+- task teardown now runs ordered internal exit hooks exactly once per exit path; hook failure is recorded internally but does not abort teardown
+- fault reports now include access type, privilege level, classification, and effective PTE bits so hardening regressions fail loudly in the text-mode environment
+- supervisor MMIO carve-outs remain narrow and documented; user-visible MMIO stays behind the grant/resource model
+- the runtime loader contract remains strict `ET_EXEC`; M15.5 does not add `ET_DYN`, runtime relocation, ASLR, or KASLR
+- the canonical PIE-capable codegen rules now live in [Toolchain.md](/home/zayn/GolandProjects/IntuitionEngine/sdk/docs/IntuitionOS/Toolchain.md)
 
 **M16 planned protected module subsystem:**
 
@@ -161,6 +170,8 @@ The IE64 addresses a 32 MB physical address space. IExec partitions it as follow
 | User space | `$600000-$1FFFFFF` | 26 MB | User (per-task mapped) | Task code, data, stacks, heap, shared memory |
 
 **Kernel page table**: M15.4 hardens the old broad supervisor identity map into explicit permission classes. Pages 0-383 (`$000000-$17FFFF`) remain supervisor-only and identity-mapped, but not all as `P|R|W|X`. The assembled kernel image below `KERN_PAGE_TABLE` is supervisor `P|R|X`; the kernel page table, kernel data, kernel stack, terminal/low-I/O page `0xF0`, and the currently mapped low VRAM/high-I/O slice remain supervisor `P|R|W` and non-executable. Regions above `$17FFFF` are not mapped by the kernel PT. User pages are only mapped in per-task page tables, not the kernel PT.
+
+**M15.5 MMIO carve-out table**: the current supervisor carve-outs are explicit: page `0xF0` (`$0F0000-$0F0FFF`) for terminal/low-I/O bootstrap text MMIO, the low VRAM/high-I/O slice already mapped by the kernel PT inside `$100000-$17FFFF`, the task page-table window `$800000-$9FFFFF`, and the allocator pool `$1200000-$1FFFFFF` as supervisor `P|R|W`. User tasks reach MMIO only through `SYS_MAP_IO` plus the hardware.resource/bootstrap grant path; there is no broad user MMIO mapping.
 
 ### 2.2 Kernel Memory Layout (Detail)
 
@@ -403,6 +414,10 @@ The CPU traps to supervisor mode. The kernel's trap handler reads the syscall nu
 **Legacy index path — REMOVED in M11.6**: Historically (M9), if R1 < `0x600000` the handler treated R1 as a `program_table` index and used the M9 ABI (R2=args_ptr, R3=args_len). M10 redesigned the primary ABI around a user-VA `image_ptr` but kept the legacy index branch behind a discriminator for M9 boot-services compatibility (and hardened its args validation with the pre-M15.4 generic range helper). **M11.6 removes the discriminator and the entire legacy code path**: the handler now begins with `blt r1, USER_CODE_BASE → ERR_BADARG`, so any caller passing R1 < `0x600000` hard-fails. The validated image-pointer ABI above is the only path through the handler. `program_table` itself is preserved because the kernel boot path still loads console.handler / dos.library / Shell from it directly into task slots at init, but it is no longer reachable from user mode via `SYS_EXEC_PROGRAM`. Guarded by `TestIExec_ExecProgram_LegacyIndexReturnsBadarg`.
 
 **M15.4 user-pointer validation helpers**: `validate_user_read_range`, `validate_user_write_range`, and `validate_user_exec_range` walk the caller's page table once per page in the requested byte range and require the matching permission mask (`P|R|U`, `P|R|W|U`, or `P|R|X|U`). This replaces the older generic `P|U`-only validation path for security-sensitive syscall inputs. Unmapped pages, kernel-only pages, permission mismatches, and pointer-arithmetic overflows all fail with `ERR_BADARG`.
+
+**M15.5 fault diagnostics**: hardening faults now print `cause`, `PC`, `ADDR`, `ACCESS`, `MODE`, `CLASS`, and `PTE` fields. `ACCESS` distinguishes `read` / `write` / `execute` when the fault code carries that information; `MODE` distinguishes user from supervisor faults; `CLASS` prints the violated invariant (`not-present`, `write-denied`, `exec-denied`, etc.); `PTE` prints the effective `P/R/W/X/U/D` bits seen at fault time. User faults still tear down only the faulting task; supervisor faults still panic.
+
+**M15.5 internal exit hooks**: `kill_task_cleanup` now begins by running an ordered internal hook chain keyed by kernel-private rows in `KERN_DATA_BASE`. Hooks are synchronous, run at most once per exit path, and see the task slot, public task ID, teardown reason (`normal`, `fault`, or internal cleanup), and pre-teardown task state. Hook failures are recorded per row but do not abort teardown. This is groundwork for later resource/module cleanup, not a new public ABI.
 
 **OpenLibrary (36) — M11.5 binary-compat redirect**: Originally a distinct M9 syscall for AmigaOS-style library discovery. M11.5 collapsed it into `SYS_FIND_PORT`: `SYS_OPEN_LIBRARY equ SYS_FIND_PORT` in `iexec.inc`, so all new assembly compiles to slot 16 directly. The kernel dispatcher slot 36 is retained as a one-instruction redirect (`bra .do_find_port`) so any IE64 binary that hardcoded the number 36 still works. Calling slot 36 produces an identical result to calling slot 16. Guarded by `TestIExec_OpenLibrary_DispatcherCollapse`. See § 5.11 "Exec Boundary".
 

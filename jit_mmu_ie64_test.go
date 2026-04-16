@@ -35,6 +35,7 @@ func TestJIT_MMUEnabled_FullProgram(t *testing.T) {
 	rig := newIE64TestRig()
 	cpu := rig.cpu
 	cpu.jitEnabled = true
+	cpu.CoprocMode = true
 	setupIdentityMMU(cpu, 160)
 
 	rig.loadInstructions(
@@ -121,6 +122,55 @@ func TestJIT_MMUEnabled_FetchFault(t *testing.T) {
 
 	if cpu.faultCause != FAULT_EXEC_DENIED {
 		t.Fatalf("JIT fetch fault: cause = %d, want %d", cpu.faultCause, FAULT_EXEC_DENIED)
+	}
+}
+
+func TestJIT_MMUEnabled_CacheIsScopedByPTBR(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	cpu.jitEnabled = true
+	cpu.jitPersist = true
+	defer func() {
+		cpu.jitPersist = false
+		cpu.freeJIT()
+	}()
+
+	const (
+		pt1       = uint32(0x80000)
+		pt2       = uint32(0x90000)
+		virtPage  = uint16(PROG_START >> MMU_PAGE_SHIFT)
+		physPage1 = uint16(0x40)
+		physPage2 = uint16(0x50)
+	)
+
+	cpu.mmuEnabled = true
+	binary.LittleEndian.PutUint64(cpu.memory[pt1+uint32(virtPage)*8:], makePTE(physPage1, PTE_P|PTE_R|PTE_W|PTE_X|PTE_U))
+	binary.LittleEndian.PutUint64(cpu.memory[pt2+uint32(virtPage)*8:], makePTE(physPage2, PTE_P|PTE_R|PTE_W|PTE_X|PTE_U))
+
+	copy(cpu.memory[uint32(physPage1)<<MMU_PAGE_SHIFT:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x1111))
+	copy(cpu.memory[(uint32(physPage1)<<MMU_PAGE_SHIFT)+IE64_INSTR_SIZE:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+	copy(cpu.memory[uint32(physPage2)<<MMU_PAGE_SHIFT:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x2222))
+	copy(cpu.memory[(uint32(physPage2)<<MMU_PAGE_SHIFT)+IE64_INSTR_SIZE:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	cpu.ptbr = pt1
+	cpu.PC = PROG_START
+	cpu.regs[1] = 0
+	cpu.running.Store(true)
+	cpu.ExecuteJIT()
+
+	if cpu.regs[1] != 0x1111 {
+		t.Fatalf("first address space: R1 = 0x%X, want 0x1111", cpu.regs[1])
+	}
+
+	cpu.ptbr = pt2
+	cpu.tlbFlush()
+	cpu.PC = PROG_START
+	cpu.regs[1] = 0
+	cpu.running.Store(true)
+	cpu.ExecuteJIT()
+
+	if cpu.regs[1] != 0x2222 {
+		t.Fatalf("second address space: R1 = 0x%X, want 0x2222", cpu.regs[1])
 	}
 }
 
@@ -329,6 +379,511 @@ func TestJIT_MMU_SyscallRoundTrip(t *testing.T) {
 
 	if cpu.regs[2] != 0xDD {
 		t.Fatalf("JIT syscall round trip: R2 = 0x%X, want 0xDD", cpu.regs[2])
+	}
+}
+
+func TestJIT_MMU_PushBailThenSyscallPreservesCopiedArgRegs(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	cpu.jitEnabled = true
+	setupIdentityMMU(cpu, 160)
+
+	trapAddr := uint64(0x9000)
+	cpu.trapVector = trapAddr
+	copy(cpu.memory[trapAddr:], ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0))
+
+	cpu.regs[1] = 0x60A4CC
+	cpu.regs[21] = 0x11223344
+	cpu.regs[22] = 0x55667788
+	cpu.regs[29] = 0x60A000
+
+	rig.loadInstructions(
+		ie64Instr(OP_MOVE, 20, IE64_SIZE_Q, 0, 1, 0, 0),
+		ie64Instr(OP_PUSH64, 0, IE64_SIZE_Q, 0, 29, 0, 0),
+		ie64Instr(OP_MOVE, 2, IE64_SIZE_Q, 0, 20, 0, 0),
+		ie64Instr(OP_MOVE, 3, IE64_SIZE_Q, 0, 21, 0, 0),
+		ie64Instr(OP_MOVE, 4, IE64_SIZE_Q, 0, 22, 0, 0),
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, BOOT_HOSTFS_STAT),
+		ie64Instr(OP_MOVE, 5, IE64_SIZE_Q, 0, 0, 0, 0),
+		ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, 40),
+		ie64Instr(OP_MOVE, 6, IE64_SIZE_Q, 0, 2, 0, 0),
+		ie64Instr(OP_MOVE, 7, IE64_SIZE_Q, 0, 3, 0, 0),
+		ie64Instr(OP_MOVE, 8, IE64_SIZE_Q, 0, 4, 0, 0),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+	)
+	cpu.running.Store(true)
+	cpu.jitExecute()
+
+	if cpu.regs[6] != 0x60A4CC {
+		t.Fatalf("R6 = 0x%X, want copied path ptr 0x60A4CC", cpu.regs[6])
+	}
+	if cpu.regs[7] != 0x11223344 {
+		t.Fatalf("R7 = 0x%X, want copied R21 value 0x11223344", cpu.regs[7])
+	}
+	if cpu.regs[8] != 0x55667788 {
+		t.Fatalf("R8 = 0x%X, want copied R22 value 0x55667788", cpu.regs[8])
+	}
+}
+
+func TestJIT_MMU_JsrReturnValueFeedsNextCallerBlock(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	cpu.jitEnabled = true
+	setupIdentityMMU(cpu, 160)
+
+	cpu.regs[31] = STACK_START
+
+	rig.loadInstructions(
+		ie64Instr(OP_JSR64, 0, 0, 1, 0, 0, uint32(6*IE64_INSTR_SIZE)),
+		ie64Instr(OP_BEQ, 0, 0, 0, 3, 0, uint32(4*IE64_INSTR_SIZE)),
+		ie64Instr(OP_MOVE, 24, IE64_SIZE_Q, 0, 1, 0, 0),
+		ie64Instr(OP_MOVE, 27, IE64_SIZE_Q, 0, 24, 0, 0),
+		ie64Instr(OP_MOVE, 2, IE64_SIZE_Q, 0, 24, 0, 0),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x60A4CC),
+		ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 1),
+		ie64Instr(OP_RTS64, 0, 0, 0, 0, 0, 0),
+	)
+	cpu.running.Store(true)
+	cpu.jitExecute()
+
+	if cpu.regs[2] != 0x60A4CC {
+		t.Fatalf("R2 = 0x%X, want 0x60A4CC (R1=0x%X R3=0x%X R24=0x%X R27=0x%X SP=0x%X PC=0x%X)",
+			cpu.regs[2], cpu.regs[1], cpu.regs[3], cpu.regs[24], cpu.regs[27], cpu.regs[31], cpu.PC)
+	}
+	if cpu.regs[24] != 0x60A4CC {
+		t.Fatalf("R24 = 0x%X, want callee return value 0x60A4CC", cpu.regs[24])
+	}
+	if cpu.regs[27] != 0x60A4CC {
+		t.Fatalf("R27 = 0x%X, want chained caller copy 0x60A4CC", cpu.regs[27])
+	}
+}
+
+func TestJIT_MMU_JsrReturnValueWithoutBranch(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	cpu.jitEnabled = true
+	setupIdentityMMU(cpu, 160)
+
+	cpu.regs[31] = STACK_START
+
+	rig.loadInstructions(
+		ie64Instr(OP_JSR64, 0, 0, 1, 0, 0, uint32(4*IE64_INSTR_SIZE)),
+		ie64Instr(OP_MOVE, 24, IE64_SIZE_Q, 0, 1, 0, 0),
+		ie64Instr(OP_MOVE, 2, IE64_SIZE_Q, 0, 24, 0, 0),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x60A4CC),
+		ie64Instr(OP_RTS64, 0, 0, 0, 0, 0, 0),
+	)
+	cpu.running.Store(true)
+	cpu.jitExecute()
+
+	if cpu.regs[2] != 0x60A4CC {
+		t.Fatalf("R2 = 0x%X, want 0x60A4CC after JSR return without branch (R1=0x%X R24=0x%X PC=0x%X)",
+			cpu.regs[2], cpu.regs[1], cpu.regs[24], cpu.PC)
+	}
+}
+
+func TestJIT_MMU_MoveMappedFromSpilled(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	cpu.jitEnabled = true
+	setupIdentityMMU(cpu, 160)
+
+	rig.loadInstructions(
+		ie64Instr(OP_MOVE, 24, IE64_SIZE_L, 1, 0, 0, 0x60A4CC),
+		ie64Instr(OP_MOVE, 2, IE64_SIZE_Q, 0, 24, 0, 0),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+	)
+	cpu.running.Store(true)
+	cpu.jitExecute()
+
+	if cpu.regs[2] != 0x60A4CC {
+		t.Fatalf("R2 = 0x%X, want 0x60A4CC after MOVE mapped<-spilled", cpu.regs[2])
+	}
+}
+
+func TestJIT_MMU_MoveR1FromSpilled(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	cpu.jitEnabled = true
+	setupIdentityMMU(cpu, 160)
+
+	rig.loadInstructions(
+		ie64Instr(OP_MOVE, 24, IE64_SIZE_L, 1, 0, 0, 0x60A4CC),
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 24, 0, 0),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+	)
+	cpu.running.Store(true)
+	cpu.jitExecute()
+
+	if cpu.regs[1] != 0x60A4CC {
+		t.Fatalf("R1 = 0x%X, want 0x60A4CC after MOVE R1<-spilled", cpu.regs[1])
+	}
+}
+
+func TestJIT_MMU_AddSpilledBasePlusImmThenMoveToR1(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	cpu.jitEnabled = true
+	setupIdentityMMU(cpu, 160)
+
+	cpu.regs[29] = 0x60A000
+	rig.loadInstructions(
+		ie64Instr(OP_ADD, 23, IE64_SIZE_Q, 1, 29, 0, 0x4CC),
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 23, 0, 0),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+	)
+	cpu.running.Store(true)
+	cpu.jitExecute()
+
+	if cpu.regs[1] != 0x60A4CC {
+		t.Fatalf("R1 = 0x%X, want 0x60A4CC after ADD spilled pointer then MOVE to R1 (R23=0x%X)", cpu.regs[1], cpu.regs[23])
+	}
+}
+
+func TestJIT_MMU_MoveMappedFromMapped(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	cpu.jitEnabled = true
+	setupIdentityMMU(cpu, 160)
+
+	cpu.regs[1] = 0x60A4CC
+	rig.loadInstructions(
+		ie64Instr(OP_MOVE, 2, IE64_SIZE_Q, 0, 1, 0, 0),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+	)
+	cpu.running.Store(true)
+	cpu.jitExecute()
+
+	if cpu.regs[2] != 0x60A4CC {
+		t.Fatalf("R2 = 0x%X, want 0x60A4CC after MOVE mapped<-mapped", cpu.regs[2])
+	}
+}
+
+func TestJIT_MMU_MoveMappedFromMappedAtNonEntryPC(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	cpu.jitEnabled = true
+	setupIdentityMMU(cpu, 160)
+
+	cpu.regs[1] = 0x60A4CC
+	cpu.PC = PROG_START + 4*IE64_INSTR_SIZE
+	copy(cpu.memory[PROG_START+4*IE64_INSTR_SIZE:], ie64Instr(OP_MOVE, 2, IE64_SIZE_Q, 0, 1, 0, 0))
+	copy(cpu.memory[PROG_START+5*IE64_INSTR_SIZE:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+	cpu.running.Store(true)
+	cpu.jitExecute()
+
+	if cpu.regs[2] != 0x60A4CC {
+		t.Fatalf("R2 = 0x%X, want 0x60A4CC after MOVE mapped<-mapped at helper PC", cpu.regs[2])
+	}
+}
+
+func TestJIT_MMU_BailBlockStoresMappedRegsBeforeRTS(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	cpu.jitEnabled = true
+	setupIdentityMMU(cpu, 160)
+
+	haltPC := uint64(PROG_START + 3*IE64_INSTR_SIZE)
+	binary.LittleEndian.PutUint64(cpu.memory[STACK_START-8:], haltPC)
+	cpu.regs[31] = STACK_START - 8
+	cpu.PC = PROG_START
+
+	copy(cpu.memory[PROG_START:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x60A4CC))
+	copy(cpu.memory[PROG_START+IE64_INSTR_SIZE:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 1))
+	copy(cpu.memory[PROG_START+2*IE64_INSTR_SIZE:], ie64Instr(OP_RTS64, 0, 0, 0, 0, 0, 0))
+	copy(cpu.memory[PROG_START+3*IE64_INSTR_SIZE:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	cpu.running.Store(true)
+	cpu.jitExecute()
+
+	if cpu.regs[1] != 0x60A4CC || cpu.regs[3] != 1 {
+		t.Fatalf("R1=0x%X R3=0x%X, want 0x60A4CC and 1 after bailed RTS helper block", cpu.regs[1], cpu.regs[3])
+	}
+}
+
+func TestJIT_MMU_TwoCallHostfsStyleArgFlow(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	cpu.jitEnabled = true
+	setupIdentityMMU(cpu, 160)
+
+	trapAddr := uint64(0x9000)
+	cpu.trapVector = trapAddr
+	copy(cpu.memory[trapAddr:], ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0))
+
+	cpu.regs[29] = 0x60A000
+	cpu.regs[31] = STACK_START
+
+	rig.loadInstructions(
+		ie64Instr(OP_JSR64, 0, 0, 1, 0, 0, uint32(8*IE64_INSTR_SIZE)),
+		ie64Instr(OP_BEQ, 0, 0, 0, 3, 0, uint32(7*IE64_INSTR_SIZE)),
+		ie64Instr(OP_MOVE, 24, IE64_SIZE_Q, 0, 1, 0, 0),
+		ie64Instr(OP_MOVE, 27, IE64_SIZE_Q, 0, 24, 0, 0),
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 24, 0, 0),
+		ie64Instr(OP_JSR64, 0, 0, 1, 0, 0, uint32(6*IE64_INSTR_SIZE)),
+		ie64Instr(OP_MOVE, 6, IE64_SIZE_Q, 0, 2, 0, 0),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x60A4CC),
+		ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 1),
+		ie64Instr(OP_RTS64, 0, 0, 0, 0, 0, 0),
+
+		ie64Instr(OP_MOVE, 20, IE64_SIZE_Q, 0, 1, 0, 0),
+		ie64Instr(OP_PUSH64, 0, IE64_SIZE_Q, 0, 29, 0, 0),
+		ie64Instr(OP_MOVE, 2, IE64_SIZE_Q, 0, 20, 0, 0),
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, BOOT_HOSTFS_STAT),
+		ie64Instr(OP_MOVE, 5, IE64_SIZE_Q, 0, 0, 0, 0),
+		ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, 40),
+		ie64Instr(OP_POP64, 29, IE64_SIZE_Q, 0, 0, 0, 0),
+		ie64Instr(OP_RTS64, 0, 0, 0, 0, 0, 0),
+	)
+	cpu.running.Store(true)
+	cpu.jitExecute()
+
+	if cpu.regs[6] != 0x60A4CC {
+		t.Fatalf("R6 = 0x%X, want 0x60A4CC (R1=0x%X R2=0x%X R3=0x%X R24=0x%X R27=0x%X SP=0x%X PC=0x%X)",
+			cpu.regs[6], cpu.regs[1], cpu.regs[2], cpu.regs[3], cpu.regs[24], cpu.regs[27], cpu.regs[31], cpu.PC)
+	}
+}
+
+func TestJIT_MMU_JsrIntoHostfsStyleHelperPreservesR1Argument(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	cpu.jitEnabled = true
+	setupIdentityMMU(cpu, 160)
+
+	trapAddr := uint64(0x9000)
+	cpu.trapVector = trapAddr
+	copy(cpu.memory[trapAddr:], ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0))
+
+	cpu.regs[29] = 0x60A000
+	cpu.regs[31] = STACK_START
+
+	rig.loadInstructions(
+		ie64Instr(OP_MOVE, 24, IE64_SIZE_L, 1, 0, 0, 0x60A4CC),
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 24, 0, 0),
+		ie64Instr(OP_JSR64, 0, 0, 1, 0, 0, uint32(3*IE64_INSTR_SIZE)),
+		ie64Instr(OP_MOVE, 6, IE64_SIZE_Q, 0, 2, 0, 0),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+
+		ie64Instr(OP_MOVE, 20, IE64_SIZE_Q, 0, 1, 0, 0),
+		ie64Instr(OP_PUSH64, 0, IE64_SIZE_Q, 0, 29, 0, 0),
+		ie64Instr(OP_MOVE, 2, IE64_SIZE_Q, 0, 20, 0, 0),
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, BOOT_HOSTFS_STAT),
+		ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, 40),
+		ie64Instr(OP_POP64, 29, IE64_SIZE_Q, 0, 0, 0, 0),
+		ie64Instr(OP_RTS64, 0, 0, 0, 0, 0, 0),
+	)
+	cpu.running.Store(true)
+	cpu.jitExecute()
+
+	if cpu.regs[6] != 0x60A4CC {
+		t.Fatalf("R6 = 0x%X, want 0x60A4CC after hostfs-style helper call (R1=0x%X R2=0x%X R20=0x%X)",
+			cpu.regs[6], cpu.regs[1], cpu.regs[2], cpu.regs[20])
+	}
+}
+
+func TestJIT_MMU_JsrBailPreservesMappedR1IntoCallee(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	cpu.jitEnabled = true
+	setupIdentityMMU(cpu, 160)
+
+	rig.loadInstructions(
+		ie64Instr(OP_MOVE, 24, IE64_SIZE_L, 1, 0, 0, 0x60A4CC),
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 24, 0, 0),
+		ie64Instr(OP_JSR64, 0, 0, 1, 0, 0, uint32(2*IE64_INSTR_SIZE)),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+		ie64Instr(OP_MOVE, 2, IE64_SIZE_Q, 0, 1, 0, 0),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+	)
+	cpu.regs[31] = STACK_START
+	cpu.running.Store(true)
+	cpu.jitExecute()
+
+	if cpu.regs[2] != 0x60A4CC {
+		t.Fatalf("R2 = 0x%X, want 0x60A4CC after callee copies R1 post-JSR bail (R1=0x%X R24=0x%X PC=0x%X fault=%d)",
+			cpu.regs[2], cpu.regs[1], cpu.regs[24], cpu.PC, cpu.faultCause)
+	}
+}
+
+func TestJIT_MMU_JsrPreservesSpilledRelpathPointerIntoCallee(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	cpu.jitEnabled = true
+	setupIdentityMMU(cpu, 160)
+
+	cpu.regs[29] = 0x3000
+	cpu.regs[31] = STACK_START
+
+	rig.loadInstructions(
+		ie64Instr(OP_ADD, 23, IE64_SIZE_Q, 1, 29, 0, 0x1CC),
+		ie64Instr(OP_MOVE, 30, IE64_SIZE_Q, 0, 29, 0, 0),
+		ie64Instr(OP_JSR64, 0, 0, 1, 0, 0, uint32(2*IE64_INSTR_SIZE)),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+		ie64Instr(OP_MOVE, 24, IE64_SIZE_Q, 0, 23, 0, 0),
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 24, 0, 0),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+	)
+	cpu.running.Store(true)
+	cpu.jitExecute()
+
+	if cpu.regs[1] != 0x31CC {
+		t.Fatalf("R1 = 0x%X, want 0x31CC after spilled relpath pointer handoff (R23=0x%X R24=0x%X R29=0x%X PC=0x%X)",
+			cpu.regs[1], cpu.regs[23], cpu.regs[24], cpu.regs[29], cpu.PC)
+	}
+}
+
+func TestJIT_MMU_JsrPreservesSpilledRelpathPointerAcrossCalleeStore(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	cpu.jitEnabled = true
+	setupIdentityMMU(cpu, 160)
+
+	cpu.regs[29] = 0x3000
+	cpu.regs[31] = STACK_START
+
+	rig.loadInstructions(
+		ie64Instr(OP_ADD, 23, IE64_SIZE_Q, 1, 29, 0, 0x1CC),
+		ie64Instr(OP_MOVE, 30, IE64_SIZE_Q, 0, 29, 0, 0),
+		ie64Instr(OP_JSR64, 0, 0, 1, 0, 0, uint32(2*IE64_INSTR_SIZE)),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+		ie64Instr(OP_MOVE, 24, IE64_SIZE_Q, 0, 23, 0, 0),
+		ie64Instr(OP_STORE, 23, IE64_SIZE_Q, 1, 29, 0, 888),
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 24, 0, 0),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+	)
+	cpu.running.Store(true)
+	cpu.jitExecute()
+
+	if cpu.regs[1] != 0x31CC {
+		t.Fatalf("R1 = 0x%X, want 0x31CC after spilled relpath pointer survives callee store (R23=0x%X R24=0x%X R29=0x%X PC=0x%X)",
+			cpu.regs[1], cpu.regs[23], cpu.regs[24], cpu.regs[29], cpu.PC)
+	}
+}
+
+func TestJIT_MMU_DosBootfsStatPrepPreservesRelpathPointer(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	cpu.jitEnabled = true
+	setupIdentityMMU(cpu, 160)
+
+	cpu.regs[29] = 0x3000
+	cpu.regs[31] = STACK_START
+
+	rig.loadInstructions(
+		ie64Instr(OP_ADD, 23, IE64_SIZE_Q, 1, 29, 0, 0x4CC),
+		ie64Instr(OP_MOVE, 30, IE64_SIZE_Q, 0, 29, 0, 0),
+		ie64Instr(OP_JSR64, 0, 0, 1, 0, 0, uint32(2*IE64_INSTR_SIZE)),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+		ie64Instr(OP_MOVE, 24, IE64_SIZE_Q, 0, 23, 0, 0),
+		ie64Instr(OP_MOVE, 27, IE64_SIZE_Q, 0, 24, 0, 0),
+		ie64Instr(OP_STORE, 23, IE64_SIZE_Q, 1, 29, 0, 888),
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 24, 0, 0),
+		ie64Instr(OP_JSR64, 0, 0, 1, 0, 0, uint32(2*IE64_INSTR_SIZE)),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+		ie64Instr(OP_MOVE, 20, IE64_SIZE_Q, 0, 1, 0, 0),
+		ie64Instr(OP_PUSH64, 0, IE64_SIZE_Q, 0, 29, 0, 0),
+		ie64Instr(OP_MOVE, 2, IE64_SIZE_Q, 0, 20, 0, 0),
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, BOOT_HOSTFS_STAT),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+	)
+	cpu.running.Store(true)
+	cpu.jitExecute()
+
+	if cpu.regs[2] != 0x34CC {
+		t.Fatalf("R2 = 0x%X, want 0x34CC at BOOT_HOSTFS_STAT prep (R1=0x%X R20=0x%X R23=0x%X R24=0x%X R27=0x%X R29=0x%X PC=0x%X)",
+			cpu.regs[2], cpu.regs[1], cpu.regs[20], cpu.regs[23], cpu.regs[24], cpu.regs[27], cpu.regs[29], cpu.PC)
+	}
+}
+
+func TestJIT_MMU_HighVA_DosBootfsStatPrepPreservesRelpathPointer(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	cpu.jitEnabled = true
+	cpu.CoprocMode = true
+	setupIdentityMMU(cpu, 160)
+
+	codeVirt := uint32(0x600000)
+	codePhys := uint32(0x100000)
+	writePTE(cpu, uint16(codeVirt>>MMU_PAGE_SHIFT), makePTE(uint16(codePhys>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_X|PTE_U))
+
+	dataVirt := uint32(0x60A000)
+	dataPhys := uint32(0x110000)
+	writePTE(cpu, uint16(dataVirt>>MMU_PAGE_SHIFT), makePTE(uint16(dataPhys>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_X|PTE_U))
+
+	cpu.PC = uint64(codeVirt)
+	cpu.regs[29] = uint64(dataVirt)
+	cpu.regs[31] = STACK_START
+
+	emitAt := func(phys uint32, instr []byte) {
+		copy(cpu.memory[phys:], instr)
+	}
+	emitAt(codePhys+0*IE64_INSTR_SIZE, ie64Instr(OP_ADD, 23, IE64_SIZE_Q, 1, 29, 0, 0x4CC))
+	emitAt(codePhys+1*IE64_INSTR_SIZE, ie64Instr(OP_MOVE, 30, IE64_SIZE_Q, 0, 29, 0, 0))
+	emitAt(codePhys+2*IE64_INSTR_SIZE, ie64Instr(OP_JSR64, 0, 0, 1, 0, 0, uint32(2*IE64_INSTR_SIZE)))
+	emitAt(codePhys+3*IE64_INSTR_SIZE, ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+	emitAt(codePhys+4*IE64_INSTR_SIZE, ie64Instr(OP_MOVE, 24, IE64_SIZE_Q, 0, 23, 0, 0))
+	emitAt(codePhys+5*IE64_INSTR_SIZE, ie64Instr(OP_MOVE, 27, IE64_SIZE_Q, 0, 24, 0, 0))
+	emitAt(codePhys+6*IE64_INSTR_SIZE, ie64Instr(OP_STORE, 23, IE64_SIZE_Q, 1, 29, 0, 888))
+	emitAt(codePhys+7*IE64_INSTR_SIZE, ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 24, 0, 0))
+	emitAt(codePhys+8*IE64_INSTR_SIZE, ie64Instr(OP_JSR64, 0, 0, 1, 0, 0, uint32(2*IE64_INSTR_SIZE)))
+	emitAt(codePhys+9*IE64_INSTR_SIZE, ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+	emitAt(codePhys+10*IE64_INSTR_SIZE, ie64Instr(OP_MOVE, 20, IE64_SIZE_Q, 0, 1, 0, 0))
+	emitAt(codePhys+11*IE64_INSTR_SIZE, ie64Instr(OP_PUSH64, 0, IE64_SIZE_Q, 0, 29, 0, 0))
+	emitAt(codePhys+12*IE64_INSTR_SIZE, ie64Instr(OP_MOVE, 2, IE64_SIZE_Q, 0, 20, 0, 0))
+	emitAt(codePhys+13*IE64_INSTR_SIZE, ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, BOOT_HOSTFS_STAT))
+	emitAt(codePhys+14*IE64_INSTR_SIZE, ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	cpu.running.Store(true)
+	cpu.jitExecute()
+
+	if cpu.regs[2] != 0x60A4CC {
+		t.Fatalf("R2 = 0x%X, want 0x60A4CC at high-VA BOOT_HOSTFS_STAT prep (R1=0x%X R20=0x%X R23=0x%X R24=0x%X R27=0x%X R29=0x%X PC=0x%X)",
+			cpu.regs[2], cpu.regs[1], cpu.regs[20], cpu.regs[23], cpu.regs[24], cpu.regs[27], cpu.regs[29], cpu.PC)
+	}
+}
+
+func TestJIT_MMU_HighVA_JsrIntoHostfsStyleHelperPreservesR1Argument(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	cpu.jitEnabled = true
+	cpu.CoprocMode = true
+	setupIdentityMMU(cpu, 160)
+
+	codeVirt := uint32(0x600000)
+	codePhys := uint32(0x120000)
+	writePTE(cpu, uint16(codeVirt>>MMU_PAGE_SHIFT), makePTE(uint16(codePhys>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_X|PTE_U))
+
+	dataVirt := uint32(0x60A000)
+	dataPhys := uint32(0x121000)
+	writePTE(cpu, uint16(dataVirt>>MMU_PAGE_SHIFT), makePTE(uint16(dataPhys>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_X|PTE_U))
+
+	cpu.PC = uint64(codeVirt)
+	cpu.regs[29] = uint64(dataVirt)
+	cpu.regs[31] = STACK_START
+
+	emitAt := func(phys uint32, instr []byte) {
+		copy(cpu.memory[phys:], instr)
+	}
+	emitAt(codePhys+0*IE64_INSTR_SIZE, ie64Instr(OP_MOVE, 24, IE64_SIZE_L, 1, 0, 0, 0x60A4CC))
+	emitAt(codePhys+1*IE64_INSTR_SIZE, ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 24, 0, 0))
+	emitAt(codePhys+2*IE64_INSTR_SIZE, ie64Instr(OP_JSR64, 0, 0, 1, 0, 0, uint32(2*IE64_INSTR_SIZE)))
+	emitAt(codePhys+3*IE64_INSTR_SIZE, ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+	emitAt(codePhys+4*IE64_INSTR_SIZE, ie64Instr(OP_MOVE, 20, IE64_SIZE_Q, 0, 1, 0, 0))
+	emitAt(codePhys+5*IE64_INSTR_SIZE, ie64Instr(OP_PUSH64, 0, IE64_SIZE_Q, 0, 29, 0, 0))
+	emitAt(codePhys+6*IE64_INSTR_SIZE, ie64Instr(OP_MOVE, 2, IE64_SIZE_Q, 0, 20, 0, 0))
+	emitAt(codePhys+7*IE64_INSTR_SIZE, ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, BOOT_HOSTFS_STAT))
+	emitAt(codePhys+8*IE64_INSTR_SIZE, ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	cpu.running.Store(true)
+	cpu.jitExecute()
+
+	if cpu.regs[2] != 0x60A4CC {
+		t.Fatalf("R2 = 0x%X, want 0x60A4CC after high-VA hostfs-style helper call (R1=0x%X R20=0x%X R24=0x%X R29=0x%X PC=0x%X)",
+			cpu.regs[2], cpu.regs[1], cpu.regs[20], cpu.regs[24], cpu.regs[29], cpu.PC)
 	}
 }
 

@@ -159,6 +159,18 @@ M15.4 keeps deterministic `ET_EXEC` placement. The runtime loader contract is
 still the strict M14.2 `ET_EXEC` subset; runtime relocation, randomized
 placement, ASLR, and KASLR remain future work.
 
+## M15.5 PIE-capable codegen contract
+
+M15.5 turns the forward-compatible codegen guidance into an explicit contract.
+
+- strict `ET_EXEC` runtime contract remains in force
+- `ET_DYN`, runtime relocation, ASLR, and KASLR remain future work
+- IOS-native user code should avoid baking task-local absolute addresses into shipped user code when a startup-block, descriptor, imported pointer, or PC-relative pattern can carry the dependency instead
+- writable+executable segments remain invalid; the future PIE story is about codegen discipline first, not a widened loader today
+
+The canonical source-level rules for hand-written IE64 assembly and future
+compiler backends now live in `sdk/docs/IntuitionOS/Toolchain.md`.
+
 ## Relation To M13 Startup ABI
 
 The M13 startup-page ABI remains the task-entry contract.
