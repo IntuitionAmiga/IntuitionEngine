@@ -151,6 +151,14 @@ For every `PT_LOAD` segment:
 - writable+executable load segments
 - classic Amiga `HUNK`
 
+## M15.4 Hardening Note
+
+`ET_DYN` remains unsupported in M15.4.
+
+M15.4 keeps deterministic `ET_EXEC` placement. The runtime loader contract is
+still the strict M14.2 `ET_EXEC` subset; runtime relocation, randomized
+placement, ASLR, and KASLR remain future work.
+
 ## Relation To M13 Startup ABI
 
 The M13 startup-page ABI remains the task-entry contract.

@@ -34,19 +34,37 @@ iexec_start:
     mtcr    cr8, r1
 
     ; ---------------------------------------------------------------
-    ; 3. Build kernel page table (pages 0-383, supervisor only)
+    ; 3. Build kernel page table with explicit permission classes.
+    ;    Start from supervisor R/W for the low kernel-mapped window, then
+    ;    tighten the immutable kernel image pages to supervisor R/X.
     ; ---------------------------------------------------------------
     move.l  r2, #KERN_PAGE_TABLE
     move.l  r4, #0
 .kern_pt_loop:
     lsl     r3, r4, #13
-    or      r3, r3, #0x0F              ; P|R|W|X (supervisor only)
+    or      r3, r3, #(PTE_P | PTE_R | PTE_W)
     lsl     r5, r4, #3
     add     r5, r5, r2
     store.q r3, (r5)
     add     r4, r4, #1
     move.l  r6, #KERN_PAGES
     blt     r4, r6, .kern_pt_loop
+
+    ; Tighten the assembled kernel image below KERN_PAGE_TABLE to supervisor
+    ; R/X. This covers kernel text, rodata, and immutable embedded assets.
+    move.l  r2, #KERN_PAGE_TABLE
+    move.l  r4, #0
+.kern_image_rx_map:
+    move.l  r6, #KERN_IMAGE_PAGE_END
+    bge     r4, r6, .kern_image_rx_done
+    lsl     r3, r4, #13
+    or      r3, r3, #(PTE_P | PTE_R | PTE_X)
+    lsl     r5, r4, #3
+    add     r5, r5, r2
+    store.q r3, (r5)
+    add     r4, r4, #1
+    bra     .kern_image_rx_map
+.kern_image_rx_done:
 
     ; 3b. Add supervisor-only mappings for the entire dynamic task-image
     ; window (USER_IMAGE_BASE..USER_PT_BASE). M13 phase 2 no longer derives
@@ -57,7 +75,7 @@ iexec_start:
 .kern_user_map:
     bge     r4, r6, .kern_user_map_done
     lsl     r3, r4, #13
-    or      r3, r3, #0x07
+    or      r3, r3, #(PTE_P | PTE_R | PTE_W)
     lsl     r5, r4, #3
     add     r5, r5, r2
     store.q r3, (r5)
@@ -77,7 +95,7 @@ iexec_start:
     move.l  r6, #USER_PT_PAGE_END        ; end page exclusive
 .kern_userpt_map:
     lsl     r3, r4, #13                  ; PPN << 13
-    or      r3, r3, #0x07                ; P|R|W (supervisor only)
+    or      r3, r3, #(PTE_P | PTE_R | PTE_W)
     lsl     r5, r4, #3                   ; offset in PT = page * 8
     add     r5, r5, r2
     store.q r3, (r5)
@@ -283,7 +301,7 @@ iexec_start:
     add     r6, r6, r7                  ; end page = 0x700 + 6400 = 0x2000
 .kern_pool_map:
     lsl     r3, r4, #13                 ; PPN << 13
-    or      r3, r3, #0x07              ; P|R|W (supervisor only)
+    or      r3, r3, #(PTE_P | PTE_R | PTE_W)
     lsl     r5, r4, #3                  ; offset in PT = page * 8
     add     r5, r5, r2
     store.q r3, (r5)
@@ -612,27 +630,27 @@ build_user_pt:
     move.l  r8, #USER_VPN_STRIDE
     mulu    r8, r10, r8
     add     r8, r8, #USER_CODE_VPN_BASE ; r8 = base code VPN
-    ; Code pages: P|X|U = 0x19 (loop r9 pages)
+    ; Code pages: P|R|X|U
     move.l  r4, #0
 .bup_code_loop:
     bge     r4, r9, .bup_code_done
     add     r6, r8, r4                  ; VPN = base + i
     lsl     r3, r6, #13
-    or      r3, r3, #0x19
+    or      r3, r3, #(PTE_P | PTE_R | PTE_X | PTE_U)
     lsl     r5, r6, #3
     add     r5, r5, r7
     store.q r3, (r5)
     add     r4, r4, #1
     bra     .bup_code_loop
 .bup_code_done:
-    ; Stack page (VPN = base + code_pages): P|R|W|U = 0x17
+    ; Stack page (VPN = base + code_pages): P|R|W|U
     add     r6, r8, r9                  ; VPN = base + code_pages
     lsl     r3, r6, #13
-    or      r3, r3, #0x17
+    or      r3, r3, #(PTE_P | PTE_R | PTE_W | PTE_U)
     lsl     r5, r6, #3
     add     r5, r5, r7
     store.q r3, (r5)
-    ; Data pages: P|R|W|U = 0x17 (loop r11 pages)
+    ; Data pages: P|R|W|U
     add     r6, r8, r9
     add     r6, r6, #1                  ; VPN = base + code_pages + 1
     move.l  r4, #0
@@ -640,7 +658,7 @@ build_user_pt:
     bge     r4, r11, .bup_data_done
     add     r2, r6, r4                  ; VPN = data_base_vpn + i
     lsl     r3, r2, #13
-    or      r3, r3, #0x17
+    or      r3, r3, #(PTE_P | PTE_R | PTE_W | PTE_U)
     lsl     r5, r2, #3
     add     r5, r5, r7
     store.q r3, (r5)
@@ -1135,14 +1153,14 @@ build_user_pt_dynamic:
     pop     r1
     move.q  r12, r8                     ; preserve startup_base
 
-    ; Code: P|X|U
+    ; Code: P|R|X|U
     move.l  r8, #0
 .bupd_code_loop:
     bge     r8, r3, .bupd_code_done
     lsr     r9, r2, #12
     add     r9, r9, r8
     lsl     r10, r9, #13
-    or      r10, r10, #0x19
+    or      r10, r10, #(PTE_P | PTE_R | PTE_X | PTE_U)
     lsl     r11, r9, #3
     add     r11, r11, r1
     store.q r10, (r11)
@@ -1156,7 +1174,7 @@ build_user_pt_dynamic:
     lsr     r9, r4, #12
     add     r9, r9, r8
     lsl     r10, r9, #13
-    or      r10, r10, #0x17
+    or      r10, r10, #(PTE_P | PTE_R | PTE_W | PTE_U)
     lsl     r11, r9, #3
     add     r11, r11, r1
     store.q r10, (r11)
@@ -1170,7 +1188,7 @@ build_user_pt_dynamic:
     lsr     r9, r6, #12
     add     r9, r9, r8
     lsl     r10, r9, #13
-    or      r10, r10, #0x17
+    or      r10, r10, #(PTE_P | PTE_R | PTE_W | PTE_U)
     lsl     r11, r9, #3
     add     r11, r11, r1
     store.q r10, (r11)
@@ -1180,7 +1198,7 @@ build_user_pt_dynamic:
     ; Startup block page: P|R|U
     lsr     r9, r12, #12
     lsl     r10, r9, #13
-    or      r10, r10, #0x13
+    or      r10, r10, #(PTE_P | PTE_R | PTE_U)
     lsl     r11, r9, #3
     add     r11, r11, r1
     store.q r10, (r11)
@@ -1277,14 +1295,14 @@ build_user_pt_dynamic_desc:
     pop     r2
     pop     r1
 
-    ; Code: target VPN -> backing PPN, P|X|U
+    ; Code: target VPN -> backing PPN, P|R|X|U
     move.l  r8, #0
 .bupdd_code_loop:
     bge     r8, r4, .bupdd_code_done
     lsr     r9, r2, #12                ; backing PPN
     add     r9, r9, r8
     lsl     r10, r9, #13
-    or      r10, r10, #0x19
+    or      r10, r10, #(PTE_P | PTE_R | PTE_X | PTE_U)
     lsr     r11, r3, #12               ; target VPN
     add     r11, r11, r8
     lsl     r11, r11, #3
@@ -1300,7 +1318,7 @@ build_user_pt_dynamic_desc:
     lsr     r9, r5, #12
     add     r9, r9, r8
     lsl     r10, r9, #13
-    or      r10, r10, #0x17
+    or      r10, r10, #(PTE_P | PTE_R | PTE_W | PTE_U)
     lsl     r11, r9, #3
     add     r11, r11, r1
     store.q r10, (r11)
@@ -1314,7 +1332,7 @@ build_user_pt_dynamic_desc:
     lsr     r9, r7, #12                ; backing PPN
     add     r9, r9, r8
     lsl     r10, r9, #13
-    or      r10, r10, #0x17
+    or      r10, r10, #(PTE_P | PTE_R | PTE_W | PTE_U)
     lsr     r11, r8, #0                ; keep r8 live for assembler
     lsr     r11, r8, #0
     lsr     r11, r8, #0
@@ -2146,7 +2164,7 @@ build_user_pt_dynamic_desc:
     ; Startup page: backing == target, P|R|U
     lsr     r9, r12, #12
     lsl     r10, r9, #13
-    or      r10, r10, #0x13
+    or      r10, r10, #(PTE_P | PTE_R | PTE_U)
     lsl     r11, r9, #3
     add     r11, r11, r1
     store.q r10, (r11)
@@ -2243,7 +2261,7 @@ build_user_pt_dynamic_targets:
     lsr     r9, r21, #12
     add     r9, r9, r8
     lsl     r10, r9, #13
-    or      r10, r10, #0x19
+    or      r10, r10, #(PTE_P | PTE_R | PTE_X | PTE_U)
     lsr     r11, r22, #12
     add     r11, r11, r8
     lsl     r11, r11, #3
@@ -2259,7 +2277,7 @@ build_user_pt_dynamic_targets:
     lsr     r9, r24, #12
     add     r9, r9, r8
     lsl     r10, r9, #13
-    or      r10, r10, #0x17
+    or      r10, r10, #(PTE_P | PTE_R | PTE_W | PTE_U)
     lsl     r11, r9, #3
     add     r11, r11, r20
     store.q r10, (r11)
@@ -2273,7 +2291,7 @@ build_user_pt_dynamic_targets:
     lsr     r9, r26, #12
     add     r9, r9, r8
     lsl     r10, r9, #13
-    or      r10, r10, #0x17
+    or      r10, r10, #(PTE_P | PTE_R | PTE_W | PTE_U)
     lsr     r11, r27, #12
     add     r11, r11, r8
     lsl     r11, r11, #3
@@ -2285,7 +2303,7 @@ build_user_pt_dynamic_targets:
 .bupt_map_startup:
     lsr     r9, r12, #12
     lsl     r10, r9, #13
-    or      r10, r10, #0x13
+    or      r10, r10, #(PTE_P | PTE_R | PTE_U)
     lsl     r11, r9, #3
     add     r11, r11, r20
     store.q r10, (r11)
@@ -3251,7 +3269,7 @@ exec_desc_launch_task:
     move.q  r1, r24
     move.l  r2, #M14_LDESC_SIZE
     move.q  r3, r26
-    jsr     validate_user_range
+    jsr     validate_user_read_range
     bnez    r1, .edlt_badarg_descrange
 
     load.l  r5, M14_LDESC_OFF_MAGIC(r24)
@@ -3282,7 +3300,7 @@ exec_desc_launch_task:
     move.q  r1, r20
     move.q  r2, r5
     move.q  r3, r26
-    jsr     validate_user_range
+    jsr     validate_user_read_range
     bnez    r1, .edlt_badarg_segtblrange
     move.l  r5, #0x31
     store.l r5, 140(sp)
@@ -3325,7 +3343,7 @@ exec_desc_launch_task:
     move.q  r1, r7
     move.q  r2, r8
     move.q  r3, r26
-    jsr     validate_user_range
+    jsr     validate_user_read_range
     bnez    r1, .edlt_badarg
 .edlt_skip_src_validate:
     move.q  r13, r11
@@ -3537,7 +3555,7 @@ exec_desc_launch_task:
     lsr     r9, r14, #12
     add     r9, r9, r8
     lsl     r10, r9, #13
-    or      r10, r10, #0x19
+    or      r10, r10, #(PTE_P | PTE_R | PTE_X | PTE_U)
     lsr     r11, r29, #12
     add     r11, r11, r8
     lsl     r11, r11, #3
@@ -3553,7 +3571,7 @@ exec_desc_launch_task:
     lsr     r9, r16, #12
     add     r9, r9, r8
     lsl     r10, r9, #13
-    or      r10, r10, #0x17
+    or      r10, r10, #(PTE_P | PTE_R | PTE_W | PTE_U)
     load.q  r12, 80(sp)
     lsr     r11, r12, #12
     add     r11, r11, r8
@@ -3570,7 +3588,7 @@ exec_desc_launch_task:
     lsr     r9, r13, #12
     add     r9, r9, r8
     lsl     r10, r9, #13
-    or      r10, r10, #0x17
+    or      r10, r10, #(PTE_P | PTE_R | PTE_W | PTE_U)
     lsr     r11, r19, #12
     add     r11, r11, r8
     lsl     r11, r11, #3
@@ -3582,7 +3600,7 @@ exec_desc_launch_task:
 .edlt_pt_map_startup:
     lsr     r9, r24, #12
     lsl     r10, r9, #13
-    or      r10, r10, #0x13
+    or      r10, r10, #(PTE_P | PTE_R | PTE_U)
     lsl     r11, r9, #3
     add     r11, r11, r25
     store.q r10, (r11)
@@ -5967,7 +5985,7 @@ trap_handler:
     and     r25, r25, #0xFFFFFFF8       ; r25 = aligned code_size
 
     ; Reject source pointers outside the 32 MiB virtual address space before
-    ; validate_user_range walks the caller PT.
+    ; validate_user_read_range walks the caller PT.
     move.l  r11, #0x2000000
     bge     r24, r11, .ct_badarg
 
@@ -5976,7 +5994,7 @@ trap_handler:
     move.q  r1, r24
     move.q  r2, r25
     move.q  r3, r28
-    jsr     validate_user_range
+    jsr     validate_user_read_range
     bnez    r1, .ct_badarg
 
     move.l  r12, #KERN_DATA_BASE
@@ -7119,7 +7137,7 @@ trap_handler:
     move.q  r1, r24
     move.q  r2, r25
     move.q  r3, r28
-    jsr     validate_user_range
+    jsr     validate_user_read_range
     bnez    r1, .dbefe_badarg
 
     move.l  r11, #DATA_ARGS_MAX
@@ -7131,7 +7149,7 @@ trap_handler:
     move.q  r1, r26
     move.q  r2, r27
     move.q  r3, r28
-    jsr     validate_user_range
+    jsr     validate_user_read_range
     bnez    r1, .dbefe_badarg
 .dbefe_args_valid:
     add     r11, r25, #0xFFF
@@ -7282,7 +7300,7 @@ trap_handler:
     move.q  r1, r26
     move.q  r2, r27
     move.q  r3, r28
-    jsr     validate_user_range
+    jsr     validate_user_read_range
     bnez    r1, .dbml_badarg_noswitch
 .dbml_args_valid:
     jsr     kern_current_public_task_id ; R1 = current public task ID
@@ -7406,7 +7424,7 @@ trap_handler:
     move.q  r1, r24
     move.l  r2, #8
     move.q  r3, r28
-    jsr     validate_user_range
+    jsr     validate_user_read_range
     bnez    r1, .ep_badarg_norestore
     move.l  r9, #0x63
 
@@ -7446,7 +7464,7 @@ trap_handler:
     move.q  r1, r26
     move.q  r2, r27
     move.q  r3, r28
-    jsr     validate_user_range
+    jsr     validate_user_read_range
     bnez    r1, .ep_desc_cleanup_badarg
 .ep_desc_args_valid:
     beqz    r27, .ep_desc_no_args
@@ -7504,49 +7522,48 @@ trap_handler:
     eret
 
 ; ============================================================================
-; validate_user_range: check every page in [start_va, start_va+byte_count)
-; has both P (present) and U (user-accessible) bits set in the given PT.
+; Permission-aware user-range validators.
 ; Input:  R1 = start_va, R2 = byte_count, R3 = PTBR (page table base)
 ; Output: R1 = 0 (OK) or 1 (BADARG)
 ; Clobbers: R1-R6
 ; ============================================================================
-validate_user_range:
+validate_user_read_range:
+    move.l  r4, #(PTE_P | PTE_R | PTE_U)
+    bra     validate_user_range_mask
+
+validate_user_write_range:
+    move.l  r4, #(PTE_P | PTE_R | PTE_W | PTE_U)
+    bra     validate_user_range_mask
+
+validate_user_exec_range:
+    move.l  r4, #(PTE_P | PTE_R | PTE_X | PTE_U)
+    bra     validate_user_range_mask
+
+validate_user_range_mask:
     beqz    r2, .vur_ok
     move.l  r6, #0x2000000
     bge     r1, r6, .vur_fail
     sub     r6, r6, r2
     bgt     r1, r6, .vur_fail
     move.l  r6, #KERN_PAGE_TABLE
-    beq     r3, r6, .vur_check_kernel
-    lsr     r4, r1, #12                 ; start VPN
-    add     r5, r1, r2
-    sub     r5, r5, #1
-    lsr     r5, r5, #12                 ; end VPN (inclusive)
+    bne     r3, r6, .vur_user_pt
+    move.l  r6, #PTE_U
+    not     r6, r6
+    and     r4, r4, r6                 ; kernel PT bootstrap ranges are supervisor-mapped
+.vur_user_pt:
+    lsr     r5, r1, #12                 ; start VPN
+    add     r6, r1, r2
+    sub     r6, r6, #1
+    lsr     r6, r6, #12                 ; end VPN (inclusive)
 .vur_check:
-    bgt     r4, r5, .vur_ok
-    lsl     r6, r4, #3
-    add     r6, r6, r3
-    load.q  r6, (r6)                    ; PTE
-    and     r6, r6, #0x11              ; check P + U
-    move.l  r1, #0x11
-    bne     r6, r1, .vur_fail
-    add     r4, r4, #1
+    bgt     r5, r6, .vur_ok
+    lsl     r1, r5, #3
+    add     r1, r1, r3
+    load.q  r1, (r1)                    ; PTE
+    and     r1, r1, r4
+    bne     r1, r4, .vur_fail
+    add     r5, r5, #1
     bra     .vur_check
-.vur_check_kernel:
-    lsr     r4, r1, #12                 ; start VPN
-    add     r5, r1, r2
-    sub     r5, r5, #1
-    lsr     r5, r5, #12                 ; end VPN (inclusive)
-.vur_check_kernel_loop:
-    bgt     r4, r5, .vur_ok
-    lsl     r6, r4, #3
-    add     r6, r6, r3
-    load.q  r6, (r6)                    ; PTE
-    and     r6, r6, #0x01              ; kernel bootstrap path needs only P
-    move.l  r1, #0x01
-    bne     r6, r1, .vur_fail
-    add     r4, r4, #1
-    bra     .vur_check_kernel_loop
 .vur_ok:
     move.q  r1, #0
     rts

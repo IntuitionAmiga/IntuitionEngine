@@ -448,6 +448,11 @@ MMU_PAGE_SIZE     equ 0x1000      ; 4 KiB
 MMU_PAGE_SHIFT    equ 12
 MMU_NUM_PAGES     equ 8192
 KERN_PAGES        equ 384         ; Pages 0-383 are kernel-mapped
+KERN_IMAGE_PAGE_END equ (KERN_PAGE_TABLE >> MMU_PAGE_SHIFT)
+KERN_PT_PAGE_BASE equ (KERN_PAGE_TABLE >> MMU_PAGE_SHIFT)
+KERN_PT_PAGE_END  equ (KERN_DATA_BASE >> MMU_PAGE_SHIFT)
+KERN_DATA_PAGE_BASE equ (KERN_DATA_BASE >> MMU_PAGE_SHIFT)
+KERN_STACK_PAGE_END equ (KERN_STACK_TOP >> MMU_PAGE_SHIFT)
 
 ; ===========================================================================
 ; Memory Allocation (M6)

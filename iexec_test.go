@@ -25,6 +25,11 @@ const (
 	kernDataBase      = 0x8F000 // Kernel data (TCBs, state)   — M15.2: was 0x84000
 	kernStackTop      = 0xA0000 // Kernel stack top
 	maxTasks          = 255     // MAX_TASKS (M13 Phase 4: internal-slot ABI ceiling, 0xFF reserved)
+	kernImagePageEnd  = kernPageTableBase >> MMU_PAGE_SHIFT
+	kernPTPageBase    = kernPageTableBase >> MMU_PAGE_SHIFT
+	kernPTPageEnd     = kernDataBase >> MMU_PAGE_SHIFT
+	kernDataPageBase  = kernDataBase >> MMU_PAGE_SHIFT
+	kernStackPageEnd  = kernStackTop >> MMU_PAGE_SHIFT
 
 	// User task page table base. Was 0x100000 originally but that range
 	// collides with the host VideoChip MMIO at $100000-$5FFFFF (VRAM),
@@ -375,10 +380,15 @@ func (k *iexecKernel) padTo(targetOff uint32) {
 // setupPageTable writes identity-mapped kernel PTEs (0-383, supervisor-only)
 // into the CPU memory at the given base address. Also maps specified user pages.
 func setupKernelPTEs(mem []byte, ptBase uint32) {
-	// Identity-map pages 0-383 (up to $180000 = kernel + IO + partial VRAM)
-	// with P|R|W|X, no U (supervisor only)
+	// Identity-map pages 0-383 supervisor-only as R/W by default, then tighten
+	// the immutable kernel image below KERN_PAGE_TABLE to R/X.
 	for page := uint16(0); page < 384; page++ {
-		pte := makePTE(page, PTE_P|PTE_R|PTE_W|PTE_X)
+		pte := makePTE(page, PTE_P|PTE_R|PTE_W)
+		off := ptBase + uint32(page)*8
+		binary.LittleEndian.PutUint64(mem[off:], pte)
+	}
+	for page := uint16(0); page < uint16(kernImagePageEnd); page++ {
+		pte := makePTE(page, PTE_P|PTE_R|PTE_X)
 		off := ptBase + uint32(page)*8
 		binary.LittleEndian.PutUint64(mem[off:], pte)
 	}
@@ -431,7 +441,7 @@ func buildBootOnlyKernel() *iexecKernel {
 
 	loopStart := k.addr()
 	k.emit(ie64Instr(OP_LSL, 3, IE64_SIZE_Q, 1, 4, 0, 13))    // R3 = R4 << 13
-	k.emit(ie64Instr(OP_OR64, 3, IE64_SIZE_Q, 1, 3, 0, 0x0F)) // R3 |= P|R|W|X
+	k.emit(ie64Instr(OP_OR64, 3, IE64_SIZE_Q, 1, 3, 0, 0x07)) // R3 |= P|R|W
 	k.emit(ie64Instr(OP_LSL, 5, IE64_SIZE_Q, 1, 4, 0, 3))     // R5 = R4 * 8
 	k.emit(ie64Instr(OP_ADD, 5, IE64_SIZE_Q, 0, 5, 2, 0))     // R5 += ptBase
 	k.emit(ie64Instr(OP_STORE, 3, IE64_SIZE_Q, 0, 5, 0, 0))   // [R5] = R3
@@ -439,6 +449,18 @@ func buildBootOnlyKernel() *iexecKernel {
 	k.emit(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, 384))
 	branchAddr := k.addr()
 	k.emit(ie64Instr(OP_BLT, 0, 0, 0, 4, 6, uint32(int32(loopStart)-int32(branchAddr))))
+
+	k.emit(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	rxLoopStart := k.addr()
+	k.emit(ie64Instr(OP_LSL, 3, IE64_SIZE_Q, 1, 4, 0, 13))    // R3 = R4 << 13
+	k.emit(ie64Instr(OP_OR64, 3, IE64_SIZE_Q, 1, 3, 0, 0x0B)) // R3 |= P|R|X
+	k.emit(ie64Instr(OP_LSL, 5, IE64_SIZE_Q, 1, 4, 0, 3))     // R5 = R4 * 8
+	k.emit(ie64Instr(OP_ADD, 5, IE64_SIZE_Q, 0, 5, 2, 0))     // R5 += ptBase
+	k.emit(ie64Instr(OP_STORE, 3, IE64_SIZE_Q, 0, 5, 0, 0))   // [R5] = R3
+	k.emit(ie64Instr(OP_ADD, 4, IE64_SIZE_Q, 1, 4, 0, 1))     // R4++
+	k.emit(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, kernImagePageEnd))
+	rxBranchAddr := k.addr()
+	k.emit(ie64Instr(OP_BLT, 0, 0, 0, 4, 6, uint32(int32(rxLoopStart)-int32(rxBranchAddr))))
 
 	// Enable MMU
 	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, kernPageTableBase))
@@ -610,7 +632,7 @@ func TestIExec_KernelPageTable(t *testing.T) {
 	rig := newIE64TestRig()
 	loadAndRunKernel(t, rig, k, 100000)
 
-	// Kernel pages (0-383) should be mapped with P|R|W|X, no U
+	// Kernel pages are supervisor-only, but no longer broadly W|X.
 	for page := uint16(0); page < 384; page++ {
 		pteAddr := uint32(kernPageTableBase) + uint32(page)*8
 		pte := binary.LittleEndian.Uint64(rig.cpu.memory[pteAddr:])
@@ -624,6 +646,21 @@ func TestIExec_KernelPageTable(t *testing.T) {
 		}
 		if flags&PTE_U != 0 {
 			t.Fatalf("page %d: U bit set (should be supervisor-only)", page)
+		}
+		if page < uint16(kernImagePageEnd) {
+			if flags&PTE_X == 0 {
+				t.Fatalf("kernel image page %d: X bit clear, want executable", page)
+			}
+			if flags&PTE_W != 0 {
+				t.Fatalf("kernel image page %d: W bit set, want read-only executable", page)
+			}
+			continue
+		}
+		if flags&PTE_W == 0 {
+			t.Fatalf("kernel supervisor page %d: W bit clear, want writable", page)
+		}
+		if flags&PTE_X != 0 {
+			t.Fatalf("kernel supervisor page %d: X bit set, want non-executable", page)
 		}
 	}
 
@@ -1834,6 +1871,24 @@ func taskVAToPhys(mem []byte, taskID uint64, va uint64) (uint32, bool) {
 		return 0, false
 	}
 	return uint32(ppn)<<MMU_PAGE_SHIFT | uint32(va&(MMU_PAGE_SIZE-1)), true
+}
+
+func taskVAPTEFlags(mem []byte, taskID uint64, va uint64) (byte, bool) {
+	slot, ok := taskSlotForPublicID(mem, taskID)
+	if !ok {
+		return 0, false
+	}
+	ptBase := binary.LittleEndian.Uint64(mem[kernDataBase+kdTaskLayoutBase+slot*kdTaskLayoutStr+kdTaskLayoutPT:])
+	if ptBase == 0 {
+		return 0, false
+	}
+	vpn := uint32(va >> MMU_PAGE_SHIFT)
+	pteOff := uint32(ptBase) + vpn*8
+	if pteOff+8 > uint32(len(mem)) {
+		return 0, false
+	}
+	_, flags := parsePTE(binary.LittleEndian.Uint64(mem[pteOff:]))
+	return flags, true
 }
 
 func allocPoolFreePagesFromBitmap(mem []byte) uint32 {
@@ -19991,5 +20046,113 @@ func TestIExec_M153_Phase5_WriteAbortsOnLeafSymlinkEscapeNoRAMFallback(t *testin
 	}
 	if string(got) != "original" {
 		t.Fatalf("M153_Phase5_WriteAbortsOnLeafSymlinkEscapeNoRAMFallback: outside file mutated — sandbox escape: got=%q", string(got))
+	}
+}
+
+func TestIExec_M154_KernelPTEnforcesSupervisorWXSplit(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(200 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	for page := uint32(0); page < kernImagePageEnd; page++ {
+		pte := binary.LittleEndian.Uint64(rig.cpu.memory[kernPageTableBase+page*8:])
+		_, flags := parsePTE(pte)
+		if flags&PTE_X == 0 {
+			t.Fatalf("M154_KernelPTEnforcesSupervisorWXSplit: kernel image page 0x%X missing X", page)
+		}
+		if flags&PTE_W != 0 {
+			t.Fatalf("M154_KernelPTEnforcesSupervisorWXSplit: kernel image page 0x%X still writable", page)
+		}
+	}
+	for page := uint32(kernPTPageBase); page < kernPTPageEnd; page++ {
+		pte := binary.LittleEndian.Uint64(rig.cpu.memory[kernPageTableBase+page*8:])
+		_, flags := parsePTE(pte)
+		if flags&PTE_W == 0 || flags&PTE_X != 0 {
+			t.Fatalf("M154_KernelPTEnforcesSupervisorWXSplit: kernel PT page 0x%X flags=%#x, want writable non-exec", page, flags)
+		}
+	}
+	for page := uint32(kernDataPageBase); page < kernStackPageEnd; page++ {
+		pte := binary.LittleEndian.Uint64(rig.cpu.memory[kernPageTableBase+page*8:])
+		_, flags := parsePTE(pte)
+		if flags&PTE_W == 0 || flags&PTE_X != 0 {
+			t.Fatalf("M154_KernelPTEnforcesSupervisorWXSplit: kernel data/stack page 0x%X flags=%#x, want writable non-exec", page, flags)
+		}
+	}
+	page := uint32(0xF0)
+	pte := binary.LittleEndian.Uint64(rig.cpu.memory[kernPageTableBase+page*8:])
+	_, flags := parsePTE(pte)
+	if flags&PTE_W == 0 || flags&PTE_X != 0 {
+		t.Fatalf("M154_KernelPTEnforcesSupervisorWXSplit: terminal MMIO page flags=%#x, want writable non-exec carve-out", flags)
+	}
+}
+
+func TestIExec_M154_DynamicAndSharedMappingsStayNonExec(t *testing.T) {
+	asm := mustReadRepoFile(t, "sdk/intuitionos/iexec/iexec.s")
+	requireAllSubstrings(t, asm,
+		".do_alloc_mem:",
+		"move.l  r5, #0x17                   ; R5 = P|R|W|U (no X — W^X)",
+		".do_map_shared:",
+		"move.l  r5, #0x17                   ; R5 = P|R|W|U",
+	)
+}
+
+func TestIExec_M154_DocsLockHardeningContract(t *testing.T) {
+	iexecDoc := mustReadRepoFile(t, "sdk/docs/IntuitionOS/IExec.md")
+	requireAllSubstrings(t, iexecDoc,
+		"permission-aware (`read`, `write`, and executable-entry checks instead of generic `P|U` validation)",
+		"the M14.2 `ET_EXEC` loader contract remains unchanged in M15.4; `ET_DYN`, runtime relocation, ASLR, and KASLR stay future work",
+		"`M15.4` is the gate before `M16` protected modules",
+	)
+
+	elfDoc := mustReadRepoFile(t, "sdk/docs/IntuitionOS/ELF.md")
+	requireAllSubstrings(t, elfDoc,
+		"`ET_DYN` remains unsupported in M15.4",
+		"M15.4 keeps deterministic `ET_EXEC` placement",
+	)
+}
+
+func TestIExec_M154_BootManifestKernelPTReadValidationAllowsSupervisorMappedELF(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+
+	ptr := waitForBootManifestImagePtr(rig.cpu.memory, bootManifestIDDoslib, 2*time.Second)
+	if ptr == 0 {
+		rig.cpu.running.Store(false)
+		<-done
+		t.Fatal("M154_BootManifestKernelPTReadValidationAllowsSupervisorMappedELF: dos.library manifest row never published")
+	}
+
+	vpn := uint32(ptr >> MMU_PAGE_SHIFT)
+	pte := binary.LittleEndian.Uint64(rig.cpu.memory[kernPageTableBase+vpn*8:])
+	_, flags := parsePTE(pte)
+	if flags&PTE_P == 0 || flags&PTE_R == 0 {
+		rig.cpu.running.Store(false)
+		<-done
+		t.Fatalf("M154_BootManifestKernelPTReadValidationAllowsSupervisorMappedELF: manifest ptr=0x%X flags=%#x, want present readable kernel mapping", ptr, flags)
+	}
+	if flags&PTE_U != 0 {
+		rig.cpu.running.Store(false)
+		<-done
+		t.Fatalf("M154_BootManifestKernelPTReadValidationAllowsSupervisorMappedELF: manifest ptr=0x%X flags=%#x unexpectedly user-accessible", ptr, flags)
+	}
+
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if strings.Contains(output, "BOOT FAIL") {
+		t.Fatalf("M154_BootManifestKernelPTReadValidationAllowsSupervisorMappedELF: boot failed while consuming supervisor-mapped staged ELF, output=%q", output[:min(len(output), 300)])
+	}
+	if !strings.Contains(output, "exec.library M11 boot") || !strings.Contains(output, "console.handler M11.5 [Task ") {
+		t.Fatalf("M154_BootManifestKernelPTReadValidationAllowsSupervisorMappedELF: boot did not reach normal banners, output=%q", output[:min(len(output), 300)])
 	}
 }

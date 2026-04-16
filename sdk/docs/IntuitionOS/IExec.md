@@ -125,6 +125,24 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
 - `ASSIGN` shell command grows the layered syntax: `ASSIGN NAME:` shows the full effective ordered list, `ASSIGN ADD NAME: TARGET:` appends to the overlay, `ASSIGN REMOVE NAME: TARGET:` removes one entry, and `ASSIGN NAME: TARGET:` keeps the M15.2 replace semantics.
 - M15.3 makes no changes to `ExecProgram`, ELF/seglist contracts, or the M14.2 ELF-only command boundary.
 
+**M15.4 planned hardening milestone:**
+
+- kernel W^X becomes a real enforced contract instead of relying on broad supervisor `P|R|W|X` mappings
+- syscall user-pointer validation becomes permission-aware (`read`, `write`, and executable-entry checks instead of generic `P|U` validation)
+- dynamic/shared user memory remains non-executable by explicit ABI/security contract
+- the M14.2 `ET_EXEC` loader contract remains unchanged in M15.4; `ET_DYN`, runtime relocation, ASLR, and KASLR stay future work
+- `M15.4` is the gate before `M16` protected modules, not a partial implementation of the module registry/lifecycle work
+- see [M15.4-plan.md](/home/zayn/GolandProjects/IntuitionEngine/sdk/docs/IntuitionOS/M15.4-plan.md) for the hardening milestone spec
+
+**M16 planned protected module subsystem:**
+
+- `OpenLibrary` / `CloseLibrary` become the canonical programmer-facing lifecycle for runtime libraries
+- exec owns the protected module registry and lifecycle; `dos.library` owns normal file/path/loading policy
+- the ABI/data model is module-shaped (`library`, `device`, `handler`, `resource`) while the public v1 implementation remains library-first
+- `FindPort`-based compatibility transport stays valid during migration so existing clients do not break all at once
+- ordinary libraries stop being launched from `S:Startup-Sequence` as fake commands once demand-loading is complete
+- see [M16-plan.md](/home/zayn/GolandProjects/IntuitionEngine/sdk/docs/IntuitionOS/M16-plan.md) for the M16 milestone spec
+
 IExec runs on the IE64 CPU core only. It requires the IE64 MMU (4 KiB paged virtual memory, software TLB, control registers) and the hardware timer for preemption.
 
 ---
@@ -142,7 +160,7 @@ The IE64 addresses a 32 MB physical address space. IExec partitions it as follow
 | VRAM / high I/O | `$100000-$5FFFFF` | 5 MB | Supervisor (partially mapped) | Video memory and higher MMIO space |
 | User space | `$600000-$1FFFFFF` | 26 MB | User (per-task mapped) | Task code, data, stacks, heap, shared memory |
 
-**Kernel page table**: Identity-maps pages 0-383 (`$000000-$17FFFF`) as supervisor-only (P|R|W|X, no U). This covers the kernel region, low hardware I/O (including terminal MMIO at `$F0700` = page `$F0`), and the lower portion of VRAM/high I/O. Regions above `$17FFFF` are not mapped by the kernel PT - user-space drivers will gain access via `MapIO`/`MapVRAM` syscalls in a future milestone. User pages are only mapped in per-task page tables, not the kernel PT.
+**Kernel page table**: M15.4 hardens the old broad supervisor identity map into explicit permission classes. Pages 0-383 (`$000000-$17FFFF`) remain supervisor-only and identity-mapped, but not all as `P|R|W|X`. The assembled kernel image below `KERN_PAGE_TABLE` is supervisor `P|R|X`; the kernel page table, kernel data, kernel stack, terminal/low-I/O page `0xF0`, and the currently mapped low VRAM/high-I/O slice remain supervisor `P|R|W` and non-executable. Regions above `$17FFFF` are not mapped by the kernel PT. User pages are only mapped in per-task page tables, not the kernel PT.
 
 ### 2.2 Kernel Memory Layout (Detail)
 
@@ -380,11 +398,11 @@ The CPU traps to supervisor mode. The kernel's trap handler reads the syscall nu
 | 36 | `OpenLibrary` | R1=name_ptr -> R1=port_id, R2=err | **Binary-compat redirect to `SYS_FIND_PORT` (M11.5)**. Source-level alias (`SYS_OPEN_LIBRARY equ SYS_FIND_PORT`); kernel slot 36 dispatches to `.do_find_port` via a one-instruction redirect so older IE64 binaries still link. New code uses `SYS_FIND_PORT` directly. |
 | 37 | -- | -- | Removed M11.5 (was `ReadInput`; terminal MMIO inlined into `console.handler` via `SYS_MAP_IO(0xF0, 1)`. Slot returns `ERR_BADARG`; guarded by `TestIExec_ReadInput_RemovedReturnsBadarg`.) |
 
-**ExecProgram (35)** -- current M14.2 ABI: Launches a new task from a caller-mapped M14 launch descriptor. R1=launch_desc_ptr (user VA, must be ≥ `0x600000`), R2=launch_desc_size, R3=args_ptr, R4=args_len. The handler runs under the **caller’s** page table while validating the descriptor header and any supplied args range with `validate_user_range` (checks both **P** and **U** PTE bits), then launches through the descriptor path that preserves ELF target VAs, protections, and entry point. Returns R1=new task_id, R2=err. Returns `ERR_BADARG` for unmapped/kernel-only ranges, malformed descriptors, flat-image callers, args_len > 256, or pointer arithmetic overflow; returns `ERR_NOMEM` when the dynamic image/PT windows or page allocator are exhausted.
+**ExecProgram (35)** -- current M14.2 ABI: Launches a new task from a caller-mapped M14 launch descriptor. R1=launch_desc_ptr (user VA, must be ≥ `0x600000`), R2=launch_desc_size, R3=args_ptr, R4=args_len. The handler runs under the **caller’s** page table while validating the descriptor header and any supplied args range with the M15.4 permission-aware read helpers (`validate_user_read_range` rather than the old generic `P|U` check), then launches through the descriptor path that preserves ELF target VAs, protections, and entry point. Returns R1=new task_id, R2=err. Returns `ERR_BADARG` for unmapped/kernel-only ranges, malformed descriptors, flat-image callers, args_len > 256, or pointer arithmetic overflow; returns `ERR_NOMEM` when the dynamic image/PT windows or page allocator are exhausted.
 
-**Legacy index path — REMOVED in M11.6**: Historically (M9), if R1 < `0x600000` the handler treated R1 as a `program_table` index and used the M9 ABI (R2=args_ptr, R3=args_len). M10 redesigned the primary ABI around a user-VA `image_ptr` but kept the legacy index branch behind a discriminator for M9 boot-services compatibility (and hardened its args validation with `validate_user_range`). **M11.6 removes the discriminator and the entire legacy code path**: the handler now begins with `blt r1, USER_CODE_BASE → ERR_BADARG`, so any caller passing R1 < `0x600000` hard-fails. The validated image-pointer ABI above is the only path through the handler. `program_table` itself is preserved because the kernel boot path still loads console.handler / dos.library / Shell from it directly into task slots at init, but it is no longer reachable from user mode via `SYS_EXEC_PROGRAM`. Guarded by `TestIExec_ExecProgram_LegacyIndexReturnsBadarg`.
+**Legacy index path — REMOVED in M11.6**: Historically (M9), if R1 < `0x600000` the handler treated R1 as a `program_table` index and used the M9 ABI (R2=args_ptr, R3=args_len). M10 redesigned the primary ABI around a user-VA `image_ptr` but kept the legacy index branch behind a discriminator for M9 boot-services compatibility (and hardened its args validation with the pre-M15.4 generic range helper). **M11.6 removes the discriminator and the entire legacy code path**: the handler now begins with `blt r1, USER_CODE_BASE → ERR_BADARG`, so any caller passing R1 < `0x600000` hard-fails. The validated image-pointer ABI above is the only path through the handler. `program_table` itself is preserved because the kernel boot path still loads console.handler / dos.library / Shell from it directly into task slots at init, but it is no longer reachable from user mode via `SYS_EXEC_PROGRAM`. Guarded by `TestIExec_ExecProgram_LegacyIndexReturnsBadarg`.
 
-**`validate_user_range` subroutine**: Walks the caller's page table once per page in the requested byte range. For each VPN, loads the PTE and checks `(pte & 0x11) == 0x11` (P bit + U bit set). Rejects unmapped pages, kernel-only pages, and pointer-arithmetic overflows. Returns R1=0 on success or 1 (ERR_BADARG) on any failure.
+**M15.4 user-pointer validation helpers**: `validate_user_read_range`, `validate_user_write_range`, and `validate_user_exec_range` walk the caller's page table once per page in the requested byte range and require the matching permission mask (`P|R|U`, `P|R|W|U`, or `P|R|X|U`). This replaces the older generic `P|U`-only validation path for security-sensitive syscall inputs. Unmapped pages, kernel-only pages, permission mismatches, and pointer-arithmetic overflows all fail with `ERR_BADARG`.
 
 **OpenLibrary (36) — M11.5 binary-compat redirect**: Originally a distinct M9 syscall for AmigaOS-style library discovery. M11.5 collapsed it into `SYS_FIND_PORT`: `SYS_OPEN_LIBRARY equ SYS_FIND_PORT` in `iexec.inc`, so all new assembly compiles to slot 16 directly. The kernel dispatcher slot 36 is retained as a one-instruction redirect (`bra .do_find_port`) so any IE64 binary that hardcoded the number 36 still works. Calling slot 36 produces an identical result to calling slot 16. Guarded by `TestIExec_OpenLibrary_DispatcherCollapse`. See § 5.11 "Exec Boundary".
 
@@ -923,7 +941,7 @@ M10 transitions the system from kernel-dispatched command indices to user-space 
 **Kernel changes (gets simpler):**
 
 - **`SYS_EXEC_PROGRAM` ABI redesigned**: now takes a user-space image pointer instead of a program table index. New signature: `R1=image_ptr (user VA, ≥0x600000), R2=image_size, R3=args_ptr, R4=args_len → R1=task_id, R2=err`. Runs entirely under the caller's PT (no PT switching). Legacy index-based path retained for `R1<0x600000` (M9 compat, used only by tests; production code uses the new ABI). The kernel no longer walks the program table for on-demand loads. **M11.6 update**: the legacy `R1<0x600000` branch has since been removed; `SYS_EXEC_PROGRAM` now hard-rejects sub-`USER_CODE_BASE` values with `ERR_BADARG`.
-- **`validate_user_range` subroutine**: walks the caller's page table and checks both **P (present) AND U (user-accessible)** bits for every page in `[ptr, ptr+size)`. Rejects unmapped pages, kernel-only pages, and overflow ranges with `ERR_BADARG`. Used by `SYS_EXEC_PROGRAM` to validate the image and args byte ranges before passing them to `load_program`.
+- **M15.4 update to user-range validation**: the original generic `validate_user_range` helper has been superseded by permission-aware helpers (`validate_user_read_range`, `validate_user_write_range`, `validate_user_exec_range`). They reject unmapped pages, kernel-only pages, permission mismatches, and overflow ranges with `ERR_BADARG`.
 - **Multi-page code and data in `load_program`**: code_size cap raised from 4096 to 8192 (up to 2 code pages); data_size cap raised from 4096 to 16384 (up to 4 data pages). `load_program` computes `code_pages` and `data_pages` from the image header, zeros and copies the right number of bytes, and passes both counts to `build_user_pt`. dos.library exercises both: it has 2 code pages (5744 bytes) and 3 data pages (9428 bytes including embedded command images).
 - **`build_user_pt` parameterized**: takes `R9=code_pages` and `R11=data_pages`, loops to map `code_pages` PTEs at VPN+0..VPN+(code_pages-1) as P|X|U, then a stack PTE at VPN+code_pages, then `data_pages` PTEs at VPN+code_pages+1..VPN+code_pages+data_pages as P|R|W|U.
 - **Boot-time kernel PT now maps all 16 VPNs per task slot** (was only 3: code/stack/data). The full slot stride is mapped supervisor-only so the kernel can access any task's pages regardless of code_pages/data_pages choice.
