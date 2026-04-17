@@ -3579,12 +3579,14 @@ The IE64 includes a minimal MMU for memory protection and virtual address transl
 - **Per-page permissions**: Present, Read, Write, Execute, User-accessible, Accessed (A), Dirty (D)
 - **A/D bits**: Hardware-maintained Accessed and Dirty bits in each PTE for page reclamation and working-set estimation
 - **W^X support**: Pages with X=0 are non-executable - code pages are X=1,W=0; data/stack pages are W=1,X=0
+- **SMEP/SMAP-equivalent guards (M15.6)**: `SKEF` (fault on supervisor fetch from user page) and `SKAC` (fault on supervisor data access to user page) bits in `MMU_CTRL`, plus an explicit `SUA` latch toggled by privileged `SUAEN`/`SUADIS` opcodes so kernel user-memory touches must bracket an access window
+- **Architectural trap-frame stack (M15.6)**: nested-trap state (`FAULT_PC`, `PREV_MODE`, `SAVED_SUA`, `FAULT_ADDR`, `FAULT_CAUSE`) is preserved by the CPU across trap entry / ERET; handlers no longer need manual MFCR/MTCR save/restore to survive a nested synchronous trap
 - **Software TLB**: 64-entry direct-mapped cache of page table translations
-- **13 control registers**: Page table base (PTBR), fault address/cause/PC, trap vector, MMU control, thread pointer (TP), interrupt vector (INTR_VEC), kernel/user stack pointers (KSP/USP), timer period/count/control
-- **7 MMU instructions**: MTCR, MFCR, ERET, TLBFLUSH, TLBINVAL, SYSCALL, SMODE
+- **15 control registers**: Page table base (PTBR), fault address/cause/PC, trap vector, MMU control, thread pointer (TP), interrupt vector (INTR_VEC), kernel/user stack pointers (KSP/USP), timer period/count/control, previous mode (PREV_MODE), saved SUA (SAVED_SUA)
+- **9 MMU instructions**: MTCR, MFCR, ERET, TLBFLUSH, TLBINVAL, SYSCALL, SMODE, SUAEN, SUADIS
 - **Automatic stack switching**: Kernel/user stack separation via KSP/USP on privilege transitions
 - **Unified timer interrupts**: ERET-based timer delivery when MMU is enabled (legacy RTI model when MMU is off)
-- **JIT compatible**: JIT compiler works with MMU enabled (Stage 1: memory ops bail to interpreter)
+- **JIT compatible**: JIT compiler works with MMU enabled (Stage 1: memory ops bail to interpreter). Host JIT memory itself is W^X as of M15.6 (dual-mapped RW emit view + RX execution view, never simultaneously writable and executable)
 
 Full reference: [IE64_ISA.md §12](sdk/docs/IE64_ISA.md) | Programming examples: [IE64_COOKBOOK.md](sdk/docs/IE64_COOKBOOK.md)
 

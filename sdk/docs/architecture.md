@@ -876,3 +876,56 @@ Audio: OTO hardware callback drives sample generation at 44.1kHz -- no IE-owned 
 | `aros_loader.go` | AROS ROM boot manager |
 | `aros_dos_intercept.go` | AmigaDOS packet handler (MMIO) |
 | `aros_audio_dma.go` | Paula DMA (audio hardware) |
+
+## 9. IntuitionOS Hardening Story
+
+IntuitionOS runs inside the IE64 emulator, so the security model has
+two sides: the **guest** (IE64 MMU + `iexec.library` microkernel) and
+the **host** (the Go emulator process that executes the guest and
+its JIT output). M15.4 closed the major guest-side gaps; M15.6
+extends both sides so nothing the kernel relies on is contradicted
+by the emulator one layer down.
+
+- **Guest W^X** — every page is exclusively writable or executable
+  (see `IE64_ISA.md` §12.10). Code pages map `P|R|X`, data pages
+  map `P|R|W`, `PTE.X` and `PTE.W` are never set together.
+- **Host W^X** — as of M15.6 the JIT memory region is dual-mapped
+  (see `IE64_JIT.md`). The writable view (`PROT_READ|PROT_WRITE`)
+  is where `ExecMem.Write` and `PatchRel32At` emit bytes; the
+  execution view (`PROT_READ|PROT_EXEC`) is the VA the JIT
+  dispatcher jumps to. At no point does any host mapping hold
+  both write and execute permission. Prior releases mapped the
+  region RWX permanently; that contradiction with the guest W^X
+  story is resolved.
+- **SMEP / SMAP equivalent** — the IE64 MMU gained `SKEF` and
+  `SKAC` bits in M15.6. `SKEF` stops supervisor instruction fetch
+  from user-accessible pages (`FAULT_SKEF`). `SKAC` stops
+  supervisor data access to user pages (`FAULT_SKAC`) unless the
+  kernel has explicitly opened a supervisor-user-access window
+  via the `SUAEN` privileged opcode. See `IE64_ISA.md` §12.2.1
+  for the complete model.
+- **User↔kernel copy contract** — kernel touches of user memory
+  are funnelled through named helpers (`copy_from_user`,
+  `copy_to_user`, `copy_cstring_from_user`) that bracket every
+  access in `SUAEN` / `SUADIS`. Any missed call site faults with
+  `FAULT_SKAC` and is loud rather than silent. See
+  `IE64_COOKBOOK.md` for the worked idiom and anti-patterns.
+- **Trap-frame stack** — nested-trap state (`CR_FAULT_PC`,
+  `CR_FAULT_ADDR`, `CR_FAULT_CAUSE`, `CR_PREV_MODE`,
+  `CR_SAVED_SUA`) is preserved by the CPU across trap entry and
+  ERET so kernel handlers survive a nested synchronous trap
+  without a manual MFCR/MTCR save/restore dance. See
+  `IE64_ISA.md` §12.14.
+- **Cross-task confidentiality** — subsequent M15.6 items zero
+  private and shared pages on free before release, and
+  `MapShared` takes an explicit permission bitmask so consumer
+  tasks receive the narrowest mapping that works. These items
+  are in flight; the plan lives in
+  `sdk/docs/IntuitionOS/M15.6-plan.md`.
+
+The hardening story is layered rather than siloed: what the guest
+kernel enforces (W^X, per-task quotas, exit-time sweeps,
+permission-preserving shared mappings) and what the host enforces
+(JIT W^X, bootstrap hostfs confinement) are complementary, and
+each item has a regression test that fails loudly if the invariant
+is dropped.

@@ -535,3 +535,12 @@ When `HasERMS` is true and the page range is proven safe (all pages non-I/O), RE
 - Jcc two-way chain slots (taken + not-taken for inter-block conditional branches)
 - Loop memory-check hoisting for linear base+stride patterns
 - Superblock/trace compilation beyond basic region formation
+
+## Host W^X
+
+The x86 JIT shares the `jit_mmap.go` dual-mapped executable memory
+with every other JIT backend. Emit and patch operations run through
+the writable view (`PROT_READ|PROT_WRITE`); dispatch runs through the
+execution view (`PROT_READ|PROT_EXEC`). At no point does either view
+hold both write and execute permission. See
+[`IE64_JIT.md`](IE64_JIT.md) for the full model and test contract.

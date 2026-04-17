@@ -48,6 +48,19 @@ The compatibility ops (`DOS_ASSIGN_LIST`, `DOS_ASSIGN_QUERY`, `DOS_ASSIGN_SET`) 
 
 `sdk/docs/IntuitionOS/Toolchain.md` is the canonical IOS-native codegen contract. `iexec.inc` remains the ABI/include contract, not the full loader/toolchain spec.
 
+As of **M15.6**, `iexec.inc` adds the CPU-level SMEP/SMAP-equivalent controls and the supervisor-user-access latch opcodes so kernel-side assembly can reference them symbolically:
+
+- `MMU_CTRL_ENABLE` (bit 0) — MMU translation enable (already established).
+- `MMU_CTRL_SUPER` (bit 1) — supervisor mode, read-only.
+- `MMU_CTRL_SKEF` (bit 2) — supervisor-kernel-execute-fault enable. When set, a supervisor instruction fetch from a page with `PTE_U==1` faults with `FAULT_SKEF`.
+- `MMU_CTRL_SKAC` (bit 3) — supervisor-kernel-access-check enable. When set, a supervisor read or write on a page with `PTE_U==1` faults with `FAULT_SKAC` unless the `SUA` latch is also set.
+- `MMU_CTRL_SUA` (bit 4) — supervisor-user-access latch, mutated only by `SUAEN` / `SUADIS` (ignored by `MTCR CR_MMU_CTRL`).
+- `FAULT_SKEF` (9) / `FAULT_SKAC` (10) — new fault cause codes raised by the SKEF / SKAC checks.
+
+Control register 14 holds the `SUA` snapshot taken on trap entry. Kernel assembly accesses it numerically as `cr14` (no mnemonic constant is exported from `iexec.inc`; the semantic name `CR_SAVED_SUA` is used by the CPU and monitor source but the assembly contract is numeric). The CPU's trap-frame stack preserves `cr14` (and `cr3` / `cr13`) across nested traps automatically, so kernel handlers do not need a manual MFCR/MTCR save/restore dance to survive a nested synchronous trap. See `sdk/docs/IE64_ISA.md` §12.14 for the full contract.
+
+The `copy_from_user`, `copy_to_user`, and `copy_cstring_from_user` helpers in `sdk/intuitionos/iexec/iexec.s` wrap their user-memory accesses with `SUAEN` / `SUADIS` and are the only sanctioned way to touch a user pointer from supervisor code. See `sdk/docs/IE64_COOKBOOK.md` and `sdk/docs/IntuitionOS/IExec.md` for the worked calling convention.
+
 `iexec.inc` also adds two `BOOT_HOSTFS_*` commands that back the writable `SYS:` overlay:
 
 - `BOOT_HOSTFS_CREATE_WRITE` (6) — `arg1 = path ptr`. Opens (or creates+truncates) the file for writing; returns a host handle in `res1`. The host device rejects any path whose first component is `IOSSYS` (case-insensitive), enforcing the read-only IOSSYS namespace.

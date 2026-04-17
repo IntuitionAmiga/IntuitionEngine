@@ -327,11 +327,22 @@ iexec_start:
     blt     r4, r6, .kern_pool_map
 
     ; ---------------------------------------------------------------
-    ; 7. Enable MMU
+    ; 7. Enable MMU + M15.6 G2 supervisor guards (SKEF, SKAC).
+    ;    Bit 0: MMU_CTRL_ENABLE — MMU translation active.
+    ;    Bit 2: MMU_CTRL_SKEF   — supervisor instruction fetch from
+    ;                             user pages faults (SMEP-equivalent).
+    ;    Bit 3: MMU_CTRL_SKAC   — supervisor data read/write on user
+    ;                             pages faults outside SUAEN/SUADIS
+    ;                             windows (SMAP-equivalent). Every
+    ;                             kernel user-access site must route
+    ;                             through copy_from_user / copy_to_user
+    ;                             / copy_cstring_from_user, which open
+    ;                             the SUA window for the access and
+    ;                             close it before returning.
     ; ---------------------------------------------------------------
     move.l  r1, #KERN_PAGE_TABLE
     mtcr    cr0, r1
-    move.q  r1, #1
+    move.l  r1, #(MMU_CTRL_ENABLE | MMU_CTRL_SKEF | MMU_CTRL_SKAC)
     mtcr    cr5, r1
 
     ; ---------------------------------------------------------------
@@ -3284,7 +3295,11 @@ load_program:
 ;   R3 = ERR_OK / ERR_BADARG / ERR_NOMEM
 ; Clobbers: R5-R31
 exec_desc_launch_task:
-    sub     sp, sp, #144
+    ; M15.6 G2 Phase 2c-2: frame grown from 144 to 208 bytes; the extra
+    ; 64-byte slot at [144..208) holds a kernel-side copy of the 48-byte
+    ; launch descriptor so the field reads below do not dereference user
+    ; VAs directly (which would FAULT_SKAC once SKAC is flipped on).
+    sub     sp, sp, #208
     move.q  r24, r1                     ; desc_ptr
     move.q  r25, r2                     ; desc_size
     move.q  r26, r3                     ; caller PTBR
@@ -3294,31 +3309,37 @@ exec_desc_launch_task:
 
     move.l  r5, #M14_LDESC_SIZE
     bne     r25, r5, .edlt_badarg_descsz
-    move.q  r1, r24
-    move.l  r2, #M14_LDESC_SIZE
-    move.q  r3, r26
-    jsr     validate_user_read_range
-    bnez    r1, .edlt_badarg_descrange
 
-    load.l  r5, M14_LDESC_OFF_MAGIC(r24)
+    ; Copy the full descriptor into the kernel scratch via the mandatory
+    ; usercopy helper (validates + SUAEN/SUADIS). r7 becomes the kernel
+    ; descriptor base for all field reads below.
+    add     r1, sp, #144
+    move.q  r2, r24
+    move.l  r3, #M14_LDESC_SIZE
+    move.q  r4, r26
+    jsr     copy_from_user
+    bnez    r1, .edlt_badarg_descrange
+    add     r7, sp, #144                ; r7 = kernel desc
+
+    load.l  r5, M14_LDESC_OFF_MAGIC(r7)
     move.l  r6, #M14_LDESC_MAGIC
     bne     r5, r6, .edlt_badarg_magic
-    load.l  r5, M14_LDESC_OFF_VERSION(r24)
+    load.l  r5, M14_LDESC_OFF_VERSION(r7)
     move.l  r6, #M14_LDESC_VERSION
     bne     r5, r6, .edlt_badarg_version
-    load.l  r5, M14_LDESC_OFF_SIZE(r24)
+    load.l  r5, M14_LDESC_OFF_SIZE(r7)
     move.l  r6, #M14_LDESC_SIZE
     bne     r5, r6, .edlt_badarg_size
-    load.l  r21, M14_LDESC_OFF_SEGCNT(r24)
+    load.l  r21, M14_LDESC_OFF_SEGCNT(r7)
     beqz    r21, .edlt_badarg_segcnt0
     move.l  r6, #DOS_SEGLIST_MAX_ENTRIES
     bgt     r21, r6, .edlt_badarg_segcntmax
-    load.q  r22, M14_LDESC_OFF_ENTRY(r24)
+    load.q  r22, M14_LDESC_OFF_ENTRY(r7)
     beqz    r22, .edlt_badarg_entry
-    load.l  r23, M14_LDESC_OFF_STACKPG(r24)
+    load.l  r23, M14_LDESC_OFF_STACKPG(r7)
     beqz    r23, .edlt_badarg_stackpg
     store.q r23, 64(sp)                 ; stack pages
-    load.q  r20, M14_LDESC_OFF_SEGTBL(r24)
+    load.q  r20, M14_LDESC_OFF_SEGTBL(r7)
     beqz    r20, .edlt_badarg_segtbl
 
     move.q  r5, r21
@@ -3348,7 +3369,17 @@ exec_desc_launch_task:
     bge     r14, r21, .edlt_seg_done
     move.l  r5, #M14_LDESC_SEG_SIZE
     mulu    r6, r14, r5
-    add     r6, r6, r20
+    add     r6, r6, r20                 ; r6 = user seg entry ptr
+    ; M15.6 G2 Phase 2c-2: copy this 32-byte seg entry into kernel
+    ; scratch at sp+144 (reusing the descriptor buffer slot —
+    ; the descriptor fields already live in r21/r22/r23/r20/64(sp)/72(sp)).
+    add     r1, sp, #144
+    move.q  r2, r6
+    move.l  r3, #M14_LDESC_SEG_SIZE
+    move.q  r4, r26
+    jsr     copy_from_user
+    bnez    r1, .edlt_badarg
+    add     r6, sp, #144                ; r6 = kernel seg entry
     load.q  r7, M14_LDSEG_OFF_SRCPTR(r6)
     load.q  r8, M14_LDSEG_OFF_SRCSZ(r6)
     load.q  r9, M14_LDSEG_OFF_TARGET(r6)
@@ -3506,25 +3537,32 @@ exec_desc_launch_task:
     load.q  r21, 128(sp)
     load.q  r20, 136(sp)
 
-    move.l  r4, #0
+    ; M15.6 G2 Phase 2c-2: bulk copy code segment from user via the
+    ; mandatory helper. Running on caller PT so cr0 is the caller PTBR.
+    ;   r14 = kern_dst (child code backing), r27 = user_src, r28 = size
+    ; On re-validate race (caller flipped PTE between the earlier
+    ; validate and this copy) the helper returns ERR_BADARG. At this
+    ; point code/data/stack/startup image pages AND the PT block have
+    ; all been allocated, so a plain .edlt_badarg return would leak
+    ; everything. Route through .edlt_copy_fail_free_all instead.
 .edlt_copy_code:
-    bge     r4, r28, .edlt_copy_data
-    add     r5, r27, r4
-    load.b  r6, (r5)
-    add     r5, r14, r4
-    store.b r6, (r5)
-    add     r4, r4, #1
-    bra     .edlt_copy_code
+    beqz    r28, .edlt_copy_data
+    move.q  r1, r14
+    move.q  r2, r27
+    move.q  r3, r28
+    mfcr    r4, cr0
+    jsr     copy_from_user
+    bnez    r1, .edlt_copy_fail_free_all
 .edlt_copy_data:
-    move.l  r4, #0
-.edlt_copy_data_loop:
-    bge     r4, r18, .edlt_map
-    add     r5, r12, r4
-    load.b  r6, (r5)
-    add     r5, r13, r4
-    store.b r6, (r5)
-    add     r4, r4, #1
-    bra     .edlt_copy_data_loop
+    ; Same pattern for the data segment.
+    ;   r13 = kern_dst (child data backing), r12 = user_src, r18 = size
+    beqz    r18, .edlt_map
+    move.q  r1, r13
+    move.q  r2, r12
+    move.q  r3, r18
+    mfcr    r4, cr0
+    jsr     copy_from_user
+    bnez    r1, .edlt_copy_fail_free_all
 .edlt_map:
     move.l  r2, #KERN_PAGE_TABLE
     move.l  r4, #0
@@ -3701,7 +3739,7 @@ exec_desc_launch_task:
     move.q  r1, r21
     move.q  r2, r20
     move.q  r3, #ERR_OK
-    add     sp, sp, #144
+    add     sp, sp, #208
     rts
 .edlt_alloc_fail:
     move.l  r11, #ERR_BADARG
@@ -3728,8 +3766,30 @@ exec_desc_launch_task:
     move.q  r1, r0
     move.q  r2, r0
     move.l  r3, #ERR_BADARG
-    add     sp, sp, #144
+    add     sp, sp, #208
     rts
+; M15.6 G2 Phase 2c-final: full-teardown cleanup taken when a copy
+; helper reports ERR_BADARG AFTER the code/data/stack/startup image
+; pages and the PT block have been allocated. Frees everything in
+; reverse allocation order then joins .edlt_badarg for the ERR_BADARG
+; return. Without this path a raced descriptor launch leaked 4 image
+; pages + 1 PT block until reboot.
+.edlt_copy_fail_free_all:
+    load.q  r1, 120(sp)                ; pt base
+    jsr     free_task_pt_block
+    load.q  r1, 112(sp)                ; startup base
+    move.l  r2, #1
+    jsr     free_task_image_pages
+    load.q  r1, 104(sp)                ; stack backing
+    load.q  r2, 64(sp)                 ; stack pages
+    jsr     free_task_image_pages
+    load.q  r1, 96(sp)                 ; data backing
+    load.q  r2, 56(sp)                 ; data pages
+    jsr     free_task_image_pages
+    load.q  r1, 88(sp)                 ; code backing
+    load.q  r2, 24(sp)                 ; code pages
+    jsr     free_task_image_pages
+    bra     .edlt_badarg
 .edlt_badarg_descsz:
     move.l  r5, #0x44
     store.l r5, 140(sp)
@@ -3782,7 +3842,7 @@ exec_desc_launch_task:
     move.q  r1, r0
     move.q  r2, r0
     move.l  r3, #ERR_NOMEM
-    add     sp, sp, #144
+    add     sp, sp, #208
     rts
 
 ; ============================================================================
@@ -5136,18 +5196,23 @@ safe_copy_user_name:
     move.l  r25, #KERN_DATA_BASE
     add     r25, r25, #KD_NAME_SCRATCH  ; R25 = &scratch
     move.l  r26, #0                     ; byte counter
+    ; M15.6 G2 Phase 2c-2: open the supervisor-user-access window so
+    ; the per-byte reads of the user name pass the SKAC check. The PTE
+    ; check above already validated readability; the closing SUADIS
+    ; runs on every exit path below.
+    suaen
 .scun_copy:
     move.l  r24, #PORT_NAME_LEN
     bge     r26, r24, .scun_ok
     add     r14, r1, r26
     load.b  r14, (r14)                  ; read byte from user memory
     add     r18, r25, r26
-    store.b r14, (r18)                  ; write to scratch
+    store.b r14, (r18)                  ; write to scratch (kernel page)
     beqz    r14, .scun_pad              ; NUL → zero-pad rest
     add     r26, r26, #1
     bra     .scun_copy
 .scun_pad:
-    ; Zero remaining bytes
+    ; Zero remaining bytes (all kernel writes; no user access).
     add     r26, r26, #1
 .scun_pad_loop:
     move.l  r24, #PORT_NAME_LEN
@@ -5157,9 +5222,12 @@ safe_copy_user_name:
     add     r26, r26, #1
     bra     .scun_pad_loop
 .scun_ok:
+    suadis
     move.q  r23, #0                     ; success
     rts
 .scun_bad:
+    ; .scun_bad can only be reached BEFORE suaen (the PTE validate
+    ; runs first), so no SUADIS is needed on this path.
     pop     r1                          ; balance stack
     move.q  r23, #ERR_BADARG
     rts
@@ -6295,18 +6363,16 @@ trap_handler:
     bra     .ct_zero
 .ct_zero_done:
 
-    ; Copy code_size bytes from source_ptr to child code page
-    ; r24 = source_ptr, r25 = code_size, r21 = dest
-    move.l  r4, #0
-.ct_copy:
-    bge     r4, r25, .ct_copy_done
-    add     r5, r24, r4
-    load.q  r6, (r5)
-    add     r5, r21, r4
-    store.q r6, (r5)
-    add     r4, r4, #8
-    bra     .ct_copy
-.ct_copy_done:
+    ; M15.6 G2 Phase 2c-1: use byte helper copy_from_user. Quad helper is
+    ; present but triggers a stress-test regression under investigation
+    ; (task #14). Byte helper is correct and adequate for small task-image
+    ; copies until the quad helper is debugged.
+    move.q  r1, r21
+    move.q  r2, r24
+    move.q  r3, r25
+    mfcr    r4, cr0
+    jsr     copy_from_user
+    bnez    r1, .ct_copy_fail
 
     ; Write arg0 to child's data page at offset 0
     store.q r26, (r22)                  ; data[0] = arg0
@@ -6416,6 +6482,28 @@ trap_handler:
     eret
 .ct_nomem_nopub:
     move.q  r2, #ERR_NOMEM
+    eret
+; M15.6 G2 Phase 2c-1: copy_from_user (byte helper) can fail if the
+; caller racily flips PTE permissions between the earlier
+; validate_user_read_range (line ~6231) and the helper's re-validate.
+; Unwind everything allocated since entry: PT block first, then
+; startup/data/stack/code pages, then return ERR_BADARG.
+.ct_copy_fail:
+    move.q  r1, r29
+    jsr     free_task_pt_block
+    move.q  r1, r27
+    move.l  r2, #1
+    jsr     free_task_image_pages
+    move.q  r1, r22
+    move.l  r2, #1
+    jsr     free_task_image_pages
+    move.q  r1, r23
+    move.l  r2, #1
+    jsr     free_task_image_pages
+    move.q  r1, r21
+    move.l  r2, #1
+    jsr     free_task_image_pages
+    move.q  r2, #ERR_BADARG
     eret
 .ct_fail_free_startup:
     move.q  r1, r27
@@ -7440,17 +7528,19 @@ trap_handler:
     mtcr    cr0, r19
     tlbflush
 
-    move.q  r21, r24                   ; src user ptr
+    ; M15.6 G2 Phase 2c-2: bulk copy the ELF image from the user's
+    ; src_ptr into the temp VA via the mandatory usercopy helper.
+    ; We're on the caller's PT here (mtcr cr0, r19 earlier), so cr0
+    ; reads the caller PTBR for the helper.
+    ;   r24 = user src, 32(sp) = temp VA (kern dst), r25 = bytes
+    beqz    r25, .dbefe_copy_done
     load.q  r22, 32(sp)                ; dst temp VA
-    move.q  r23, r25                   ; bytes remaining
-.dbefe_copy_loop:
-    beqz    r23, .dbefe_copy_done
-    load.b  r11, (r21)
-    store.b r11, (r22)
-    add     r21, r21, #1
-    add     r22, r22, #1
-    sub     r23, r23, #1
-    bra     .dbefe_copy_loop
+    move.q  r1, r22
+    move.q  r2, r24
+    move.q  r3, r25
+    mfcr    r4, cr0
+    jsr     copy_from_user
+    bnez    r1, .dbefe_copy_fail_restore
 .dbefe_copy_done:
     move.l  r11, #KERN_PAGE_TABLE
     mtcr    cr0, r11
@@ -7485,16 +7575,20 @@ trap_handler:
     jsr     kern_task_layout_addr
     load.q  r15, KD_TASK_DATA_BASE(r1)
     add     r15, r15, #DATA_ARGS_OFFSET
-    move.l  r4, #0
-.dbefe_copy_args:
-    bge     r4, r27, .dbefe_term_args
-    add     r5, r26, r4
-    load.b  r6, (r5)
-    add     r5, r15, r4
-    store.b r6, (r5)
-    add     r4, r4, #1
-    bra     .dbefe_copy_args
-.dbefe_term_args:
+    ; M15.6 G2 Phase 2c-2: copy args into child data page via helper.
+    ; Range already validated at line ~7451. cr0 = caller PTBR here.
+    ; The child has ALREADY been created by boot_load_elf_image above
+    ; (r22=task_id, r23=child slot), so a re-validate race here must
+    ; tear the child down before reporting the error — a plain
+    ; .dbefe_badarg return would leave a live task running after the
+    ; syscall reports failure to the caller.
+    ;   r15 = kern_dst, r26 = user_src, r27 = args_len
+    move.q  r1, r15
+    move.q  r2, r26
+    move.q  r3, r27
+    mfcr    r4, cr0
+    jsr     copy_from_user
+    bnez    r1, .dbefe_args_fail_kill
     add     r5, r15, r27
     store.b r0, (r5)
 .dbefe_ok:
@@ -7535,6 +7629,43 @@ trap_handler:
     tlbflush
     move.q  r1, #0
     move.q  r2, r29
+    add     sp, sp, #64
+    eret
+; M15.6 G2 Phase 2c-2: cleanup path for a post-validate copy race inside
+; the usercopy helper. We're on caller PT, the temp pages are mapped in
+; caller PT, and the backing is allocated. Unwind both before ERETing
+; with ERR_BADARG.
+.dbefe_copy_fail_restore:
+    load.q  r1, 0(sp)                  ; caller PTBR
+    load.q  r2, 32(sp)                 ; temp VA
+    load.q  r3, 16(sp)                 ; temp page count
+    jsr     unmap_pages
+    load.q  r1, 24(sp)                 ; temp base PPN
+    load.q  r2, 16(sp)
+    jsr     free_pages
+    move.q  r1, #0
+    move.q  r2, #ERR_BADARG
+    add     sp, sp, #64
+    eret
+; M15.6 G2 Phase 2c-final: args-copy helper failed AFTER
+; boot_load_elf_image already created the child. Kill the child via
+; kern PT (kill_task_cleanup walks chain pages that are only visible
+; in the kernel PT), restore caller PT, and ERET with ERR_BADARG so
+; the caller sees a deterministic failure instead of a live task
+; running behind a failed syscall reply.
+.dbefe_args_fail_kill:
+    move.l  r12, #KERN_DATA_BASE
+    move.q  r13, r23                   ; child slot (still live in r23)
+    move.l  r11, #KERN_PAGE_TABLE
+    mtcr    cr0, r11
+    tlbflush
+    move.l  r14, #TASK_EXIT_REASON_NORMAL
+    jsr     kill_task_cleanup
+    load.q  r11, 0(sp)                 ; caller PTBR from frame slot
+    mtcr    cr0, r11
+    tlbflush
+    move.q  r1, #0
+    move.q  r2, #ERR_BADARG
     add     sp, sp, #64
     eret
 
@@ -7614,16 +7745,21 @@ trap_handler:
     jsr     kern_task_layout_addr
     load.q  r15, KD_TASK_DATA_BASE(r1)
     add     r15, r15, #DATA_ARGS_OFFSET
-    move.l  r4, #0
-.dbml_copy_args:
-    bge     r4, r27, .dbml_args_term
-    add     r5, r26, r4
-    load.b  r6, (r5)
-    add     r5, r15, r4
-    store.b r6, (r5)
-    add     r4, r4, #1
-    bra     .dbml_copy_args
-.dbml_args_term:
+    ; M15.6 G2 Phase 2c-2: copy args into child data page via helper.
+    ; Range validated above (line ~7619). We switched back to caller PT
+    ; at line ~7667, so cr0 is the caller PTBR.
+    ; The manifest child was already launched by this point (r22 is
+    ; its task_id), so a re-validate race here must tear the child
+    ; down and report ERR_BADARG — returning success with silently
+    ; missing args would hand the caller a non-deterministic launch
+    ; state. See .dbml_args_fail_kill below.
+    ;   r15 = kern_dst, r26 = user_src, r27 = args_len
+    move.q  r1, r15
+    move.q  r2, r26
+    move.q  r3, r27
+    mfcr    r4, cr0
+    jsr     copy_from_user
+    bnez    r1, .dbml_args_fail_kill
     add     r5, r15, r27
     store.b r0, (r5)
 .dbml_ret:
@@ -7639,6 +7775,30 @@ trap_handler:
     move.q  r1, #0
     move.q  r2, #ERR_BADARG
     add     sp, sp, #32
+    eret
+; M15.6 G2 Phase 2c-final: args-copy helper failed AFTER the manifest
+; child was launched (r22 holds its task_id). Kill the child via
+; kernel PT (kill_task_cleanup clobbers R15-R24 so we must preserve
+; the caller-PTBR latch in kernel-stack, not r19), restore caller PT,
+; and ERET with ERR_BADARG so a raced caller sees a deterministic
+; failure rather than a successful launch with silently missing args.
+; Note: by this point the .dbml frame has already been released (sp
+; restored at .dbml_done), so no add sp, sp, #N is needed here.
+.dbml_args_fail_kill:
+    mfcr    r19, cr0                   ; r19 = caller PTBR
+    push    r19
+    move.l  r11, #KERN_PAGE_TABLE
+    mtcr    cr0, r11
+    tlbflush
+    move.l  r12, #KERN_DATA_BASE
+    move.q  r13, r23                   ; child slot
+    move.l  r14, #TASK_EXIT_REASON_NORMAL
+    jsr     kill_task_cleanup
+    pop     r19
+    mtcr    cr0, r19
+    tlbflush
+    move.q  r1, #0
+    move.q  r2, #ERR_BADARG
     eret
 
 ; ============================================================================
@@ -7671,29 +7831,39 @@ trap_handler:
     bgt     r27, r11, .ep_badarg_norestore
     move.l  r9, #0x62
 
-    ; 2. Validate the first 8 bytes so the descriptor magic/version can be read.
+    ; 2. Copy the first 8 bytes of the descriptor into a kernel-stack
+    ;    scratch via the mandatory usercopy helper, then read magic and
+    ;    version from the kernel copy. M15.6 G2 Phase 2c-2: direct user
+    ;    loads here would FAULT_SKAC once SKAC is flipped on at boot.
     move.l  r12, #KERN_DATA_BASE
     load.q  r28, KD_CURRENT_TASK(r12)   ; r28 = caller slot
     lsl     r11, r28, #3
     add     r11, r11, #KD_PTBR_BASE
     add     r11, r11, r12
     load.q  r28, (r11)                  ; r28 = caller PTBR
-    move.q  r1, r24
-    move.l  r2, #8
-    move.q  r3, r28
-    jsr     validate_user_read_range
-    bnez    r1, .ep_badarg_norestore
+    sub     sp, sp, #16                 ; 16-aligned kernel scratch
+    move.q  r1, sp                      ; kern_dst
+    move.q  r2, r24                     ; user_src
+    move.l  r3, #8
+    move.q  r4, r28
+    jsr     copy_from_user
+    bnez    r1, .ep_hdr_unstack_badarg
     move.l  r9, #0x63
 
-    load.l  r11, (r24)
+    load.l  r11, (sp)
     move.l  r12, #M14_LDESC_MAGIC
-    bne     r11, r12, .ep_badarg_norestore
+    bne     r11, r12, .ep_hdr_unstack_badarg
     move.l  r9, #0x64
-    load.l  r11, 4(r24)
+    load.l  r11, 4(sp)
     move.l  r12, #M14_LDESC_VERSION
-    bne     r11, r12, .ep_badarg_norestore
+    bne     r11, r12, .ep_hdr_unstack_badarg
     move.l  r9, #0x65
+    add     sp, sp, #16
     bra     .ep_desc_path
+
+.ep_hdr_unstack_badarg:
+    add     sp, sp, #16
+    bra     .ep_badarg_norestore
 
 .ep_desc_path:
     ; Descriptor-mode transition path (M14 phase 3). Launch directly from the
@@ -7731,16 +7901,19 @@ trap_handler:
     jsr     kern_task_layout_addr
     load.q  r15, KD_TASK_DATA_BASE(r1)
     add     r15, r15, #DATA_ARGS_OFFSET
-    move.l  r4, #0
-.ep_desc_copy_args:
-    bge     r4, r27, .ep_desc_args_term
-    add     r5, r26, r4
-    load.b  r6, (r5)
-    add     r5, r15, r4
-    store.b r6, (r5)
-    add     r4, r4, #1
-    bra     .ep_desc_copy_args
-.ep_desc_args_term:
+    ; M15.6 G2 Phase 2c-2: copy args via copy_from_user. Range already
+    ; validated above (line ~7744). Helper brackets user access in
+    ; SUAEN/SUADIS — correct once SKAC is flipped on at boot.
+    ;   r15 = kernel_dst (child data page + args offset)
+    ;   r26 = user_src
+    ;   r27 = args_len
+    move.q  r1, r15
+    move.q  r2, r26
+    move.q  r3, r27
+    move.q  r4, r28                     ; caller PTBR (loaded at 7700)
+    jsr     copy_from_user
+    bnez    r1, .ep_desc_cleanup_badarg
+    ; NUL-terminate at the kernel-side buffer (no SUA needed).
     add     r5, r15, r27
     store.b r0, (r5)
     bra     .ep_desc_no_args
@@ -7850,6 +8023,147 @@ validate_user_range_mask:
     rts
 .vur_fail:
     move.q  r1, #1
+    rts
+
+; ============================================================================
+; M15.6 G2: mandatory supervisor user-memory access helpers.
+;
+; Every kernel read or write that dereferences a user virtual address must
+; go through one of these three helpers. Each helper validates the user
+; range (permission-aware), opens the supervisor-user-access window with
+; SUAEN, performs the copy byte-by-byte, and closes the window with
+; SUADIS. Once M15.6 flips SKAC on at boot, direct load/store to user
+; VAs from the kernel will fault cleanly (FAULT_SKAC); this confinement
+; is the whole point of the helpers.
+;
+; Calling convention (M68K-style, mirrors validate_user_range):
+;   Input:  R1, R2, R3[, R4] — see each helper's header.
+;   Output: R1 = 0 on success, R1 = ERR_BADARG on validation failure.
+;   Clobbers: R1-R10. Callers stash anything they need in R11+.
+;
+; Safety properties:
+;   - Validation happens BEFORE SUAEN. A validation-failure path never
+;     enters the user-access window, so a caller with a bad pointer
+;     sees ERR_BADARG without any supervisor-user access occurring.
+;   - Every success path pairs exactly one SUADIS with its SUAEN.
+;   - An MMU fault during the copy loop still leaves the CPU in a safe
+;     state: trap entry auto-clears the SUA latch. ERET to supervisor
+;     restores it for the resumed helper; ERET to user guarantees the
+;     window is closed.
+; ============================================================================
+
+; copy_from_user(R1=kern_dst, R2=user_src, R3=byte_count, R4=user_PTBR)
+;   Copy byte_count bytes from a user VA into a kernel buffer.
+copy_from_user:
+    beqz    r3, .cfu_ok_zero
+
+    move.q  r7, r1                      ; r7 = kern_dst (preserved across validate)
+    move.q  r8, r2                      ; r8 = user_src
+    move.q  r9, r3                      ; r9 = bytes remaining
+    move.q  r10, r4                     ; r10 = user PTBR
+
+    move.q  r1, r8
+    move.q  r2, r9
+    move.q  r3, r10
+    jsr     validate_user_read_range
+    bnez    r1, .cfu_badarg
+
+    suaen
+.cfu_loop:
+    beqz    r9, .cfu_close
+    load.b  r6, (r8)
+    store.b r6, (r7)
+    add     r7, r7, #1
+    add     r8, r8, #1
+    sub     r9, r9, #1
+    bra     .cfu_loop
+.cfu_close:
+    suadis
+.cfu_ok_zero:
+    move.q  r1, #0
+    rts
+.cfu_badarg:
+    move.l  r1, #ERR_BADARG
+    rts
+
+; copy_to_user(R1=user_dst, R2=kern_src, R3=byte_count, R4=user_PTBR)
+;   Copy byte_count bytes from a kernel buffer into a user VA.
+copy_to_user:
+    beqz    r3, .ctu_ok_zero
+
+    move.q  r7, r1                      ; r7 = user_dst
+    move.q  r8, r2                      ; r8 = kern_src
+    move.q  r9, r3                      ; r9 = bytes remaining
+    move.q  r10, r4                     ; r10 = user PTBR
+
+    move.q  r1, r7
+    move.q  r2, r9
+    move.q  r3, r10
+    jsr     validate_user_write_range
+    bnez    r1, .ctu_badarg
+
+    suaen
+.ctu_loop:
+    beqz    r9, .ctu_close
+    load.b  r6, (r8)
+    store.b r6, (r7)
+    add     r7, r7, #1
+    add     r8, r8, #1
+    sub     r9, r9, #1
+    bra     .ctu_loop
+.ctu_close:
+    suadis
+.ctu_ok_zero:
+    move.q  r1, #0
+    rts
+.ctu_badarg:
+    move.l  r1, #ERR_BADARG
+    rts
+
+; copy_cstring_from_user(R1=kern_dst, R2=user_src, R3=max_len, R4=user_PTBR)
+;   Copy a NUL-terminated C string from user space into a kernel buffer.
+;   Stops at the first NUL byte (inclusive in the copied range) OR when
+;   max_len bytes have been copied without finding a NUL, in which case
+;   no terminator has been written and the caller is expected to treat
+;   the result as truncated (handled here as ERR_BADARG to match the
+;   existing validate_user_cstring contract).
+copy_cstring_from_user:
+    beqz    r3, .ccs_badarg            ; zero max => no room even for a NUL
+
+    move.q  r7, r1                      ; r7 = kern_dst
+    move.q  r8, r2                      ; r8 = user_src
+    move.q  r9, r3                      ; r9 = max_len remaining
+    move.q  r10, r4                     ; r10 = user PTBR
+
+    ; validate_user_cstring dereferences user memory byte-by-byte while
+    ; scanning for NUL. That dereference must happen INSIDE the SUA
+    ; window or it faults with FAULT_SKAC under M15.6 G2. Open the
+    ; window before the validator call; every exit path below closes it.
+    suaen
+
+    move.q  r1, r8
+    move.q  r2, r9
+    move.q  r3, r10
+    jsr     validate_user_cstring
+    bnez    r1, .ccs_close_badarg
+
+.ccs_loop:
+    beqz    r9, .ccs_close_badarg       ; exhausted max_len without NUL
+    load.b  r6, (r8)
+    store.b r6, (r7)
+    add     r7, r7, #1
+    add     r8, r8, #1
+    sub     r9, r9, #1
+    beqz    r6, .ccs_close_ok
+    bra     .ccs_loop
+.ccs_close_ok:
+    suadis
+    move.q  r1, #0
+    rts
+.ccs_close_badarg:
+    suadis
+.ccs_badarg:
+    move.l  r1, #ERR_BADARG
     rts
 
 ; ============================================================================
@@ -8328,6 +8642,9 @@ restore_task:
     ; Restore ALL GPRs from user stack (M9 preemption safety)
     ; USP in cr12 points to GPR frame base (adjusted USP from save)
     mfcr    r14, cr12               ; r14 = GPR frame base
+    ; M15.6 G2 Phase 2c-final: GPR frame is on user stack; open SUA
+    ; window for the 31 loads below. Closed by SUADIS just before eret.
+    suaen
     load.q  r1,   0(r14)
     load.q  r2,   8(r14)
     load.q  r3,  16(r14)
@@ -8365,6 +8682,7 @@ restore_task:
     mtcr    cr12, r14               ; restore original USP
     pop     r14                     ; frame base back in r14
     load.q  r14, 104(r14)          ; restore user R14
+    suadis                          ; close SUA window
     eret
 
 .restore_no_gprs:
@@ -8446,6 +8764,12 @@ intr_handler:
     push    r14                     ; save user R14 on kernel stack
     mfcr    r14, cr12               ; r14 = user SP
     sub     r14, r14, #248          ; frame for R1-R31 (31 × 8)
+    ; M15.6 G2 Phase 2c-final: the 31-slot GPR frame lives on the user
+    ; stack (PTE.U=1). Open the SUA window for the whole save block so
+    ; the supervisor-to-user writes below pass the SKAC check. The
+    ; matching SUADIS runs just before `move.q r28, r14` once every
+    ; slot is written.
+    suaen
     store.q r1,   0(r14)
     store.q r2,   8(r14)
     store.q r3,  16(r14)
@@ -8478,6 +8802,7 @@ intr_handler:
     store.q r29, 224(r14)
     store.q r30, 232(r14)
     store.q r31, 240(r14)
+    suadis                          ; close SUA window after GPR save
     ; r14 = adjusted user SP (with GPR frame). Save for later.
     move.q  r28, r14                ; r28 = adjusted user SP
 
@@ -8521,6 +8846,11 @@ intr_handler:
     store.q r16, KD_TASK_USP(r15)
     store.b r0, KD_TASK_GPR_SAVED(r15)
     move.q  r14, r28                ; r14 = GPR frame base
+    ; M15.6 G2 Phase 2c-final: the GPR frame is on the user stack —
+    ; open the SUA window for the 31 loads below. SUADIS matches before
+    ; the final eret (ERET would auto-clear the latch anyway, but we
+    ; close it explicitly to keep the window strictly scoped).
+    suaen
     load.q  r1,   0(r14)
     load.q  r2,   8(r14)
     load.q  r3,  16(r14)
@@ -8553,9 +8883,9 @@ intr_handler:
     load.q  r30, 232(r14)
     load.q  r31, 240(r14)
     load.q  r14, 104(r14)          ; restore R14 last (clobbers our frame pointer)
+    suadis                          ; close SUA window
     ; CR12 (USP) stays at original value — no adjustment needed
     eret
-
 ; ============================================================================
 ; Bootstrap Grant Table (M12.5)
 ; ============================================================================

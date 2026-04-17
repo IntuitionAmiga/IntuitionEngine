@@ -232,3 +232,12 @@ Intel i5-8365U @ 1.60 GHz, Go 1.26, `go test -tags headless -bench BenchmarkM68K
 | Call (JSR+RTS in loop) | 389 us | 421 us | 0.9x |
 
 Block chaining eliminates Go dispatcher overhead for JSR/RTS/BRA/JMP, bringing Call from 0.09x (pre-chaining) to near-parity. Lazy CCR eliminates ~12 instructions of flag extraction per flag-setter, giving the 18x ALU speedup.
+
+## Host W^X
+
+The M68K JIT shares the `jit_mmap.go` dual-mapped executable memory
+with every other JIT backend. Emit and patch operations run through
+the writable view (`PROT_READ|PROT_WRITE`); dispatch runs through the
+execution view (`PROT_READ|PROT_EXEC`). At no point does either view
+hold both write and execute permission. See
+[`IE64_JIT.md`](IE64_JIT.md) for the full model and test contract.

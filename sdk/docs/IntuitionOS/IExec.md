@@ -212,6 +212,55 @@ IExec enforces a write-XOR-execute policy:
 - **Data/stack pages**: `P|R|W|U` -- readable and writable, not executable
 - A page fault is raised if user code attempts to write to an X page or execute from a W page
 
+As of **M15.6**, the host-side JIT that executes IE64 binaries is
+also W^X: `jit_mmap.go` dual-maps its backing pages as a writable
+view (`PROT_READ|PROT_WRITE`) used for emit/patch and an execution
+view (`PROT_READ|PROT_EXEC`) used for dispatch. At no point does any
+host mapping hold both write and execute permission. Earlier
+releases mapped the host JIT region RWX permanently, which
+contradicted the guest W^X story; that gap is closed. See
+`sdk/docs/IE64_JIT.md`.
+
+### 2.4.1 Supervisor ↔ User Access Contract (M15.6)
+
+The kernel runs with the IE64 `MMU_CTRL.SKAC` bit set at boot (see
+`sdk/docs/IE64_ISA.md` §12.2.1). Any supervisor-mode read or write on
+a page with `PTE_U==1` faults with `FAULT_SKAC` unless the
+`MMU_CTRL.SUA` latch has been explicitly opened by the privileged
+`SUAEN` opcode. The symmetric `SKEF` bit catches accidental
+supervisor instruction fetch from a user-accessible page with
+`FAULT_SKEF`.
+
+Kernel user-memory touches go exclusively through canonical helpers
+defined in `sdk/intuitionos/iexec/iexec.s`:
+
+- `copy_from_user(dst_kernel, src_user, len)` — validates the user
+  source range, opens the `SUA` window, copies `len` bytes into a
+  kernel-owned destination, and closes the window.
+- `copy_to_user(dst_user, src_kernel, len)` — same, reverse
+  direction.
+- `copy_cstring_from_user(dst_kernel, src_user, max_len)` — copies
+  a NUL-terminated string up to `max_len` bytes.
+
+Every `SYS_*` slot that copies user data calls into these helpers
+rather than dereferencing user pointers directly. A missed migration
+surfaces as a clean `FAULT_SKAC` in "GURU MEDITATION" output rather
+than as silent data corruption. See `sdk/docs/IE64_COOKBOOK.md`
+"Supervisor-User Access Helpers" for the worked idiom.
+
+#### Trap-frame stack contract
+
+Nested-trap state preservation is now architectural. The IE64 CPU
+owns a fixed-depth trap-frame stack that captures `FAULT_PC`,
+`FAULT_ADDR`, `FAULT_CAUSE`, `PREV_MODE`, and `SAVED_SUA` on trap
+entry and restores them on `ERET`. Kernel handlers that previously
+had to `MFCR CR_FAULT_PC` / `MFCR CR_SAVED_SUA` into the kernel
+stack and restore them before `ERET` to survive a nested
+synchronous trap no longer need the dance — the CPU does it.
+Existing manual save/restore code is redundant but harmless. See
+`sdk/docs/IE64_ISA.md` §12.14 for the full contract and
+overflow-halts-cleanly behaviour.
+
 ### 2.5 Shared Memory
 
 Shared memory regions are created via `AllocMem(MEMF_PUBLIC)`, which returns a VA and an opaque share handle in R3. Another task maps the region by calling `MapShared(share_handle)`. Both tasks see the same physical pages. The kernel tracks reference counts; `FreeMem` on a shared mapping removes the caller's mapping and decrements the refcount. Physical pages are freed when the last mapping is removed or the last mapping task exits. Share handles encode a 24-bit nonce derived from a monotonic kernel counter, guaranteeing that reusing a slot always produces a different handle. Stale handles are rejected with `ERR_BADHANDLE`.

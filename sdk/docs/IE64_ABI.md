@@ -217,6 +217,47 @@ resumes user execution:
 
 If a fault is fatal, the task is terminated.
 
+### 8.4 Supervisor Kernel-User Access Contract (M15.6)
+
+The kernel runs with the `MMU_CTRL.SKAC` bit set at boot (see
+`IE64_ISA.md` §12.2.1). Any supervisor-mode read or write on a page
+with `PTE_U==1` faults with `FAULT_SKAC` unless the `MMU_CTRL.SUA`
+latch is also set. `SUA` is mutated only by the privileged `SUAEN`
+and `SUADIS` opcodes.
+
+Supervisor code that must touch a user pointer therefore bracket
+every user-memory access with `SUAEN` / `SUADIS`:
+
+```
+    suaen                       ; open the access window
+    load.b  r3, (r1_user_ptr)
+    store.b r3, (r2_kernel_ptr)
+    suadis                      ; close the access window
+```
+
+Equivalently, kernel code calls the canonical usercopy helpers
+`copy_from_user` / `copy_to_user` / `copy_cstring_from_user` in
+`sdk/intuitionos/iexec/iexec.s`, which handle the bracketing and
+all permission/MMU-validation internally. User-mode code is never
+responsible for `SUAEN` / `SUADIS` — the opcodes are privileged.
+
+Nested-trap discipline: on trap entry the `SUA` latch is saved into
+the active trap frame's `cr14` (`CR_SAVED_SUA`) slot and then
+forcibly cleared. A nested kernel handler therefore starts with
+`SUA == 0` and must re-open its own window if it needs user access.
+On `ERET`, the live latch is restored from the frame's saved value
+(supervisor return) or cleared unconditionally (user return). The
+trap-frame stack (see `IE64_ISA.md` §12.14) preserves
+`CR_FAULT_PC` / `CR_FAULT_ADDR` / `CR_FAULT_CAUSE` / `CR_PREV_MODE`
+/ `CR_SAVED_SUA` across nested traps automatically, so handlers
+that were previously required to save and restore these CRs around
+a possibly-faulting region no longer need to. Existing manual
+save/restore code is redundant but harmless.
+
+The `SUA` latch is supervisor-mode state and does not leak to user
+code: user-mode `ERET` forces `SUA = 0` regardless of the
+interrupted supervisor latch value.
+
 ## 9. TLS Convention
 
 - TP (CR6) is reserved for thread/task-local storage.

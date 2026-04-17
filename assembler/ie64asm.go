@@ -216,6 +216,10 @@ const (
 	OP64_FAND     = 0xF0
 	OP64_FOR      = 0xF1
 	OP64_FXOR     = 0xF2
+
+	// M15.6 G2: supervisor-user-access latch controls. No operands.
+	OP64_SUAEN  = 0xF3
+	OP64_SUADIS = 0xF4
 )
 
 // Size codes
@@ -2361,6 +2365,10 @@ func (a *IE64Assembler) assembleInstruction(trimmed string, program []byte) erro
 		instr, err = a.asmSYSCALL(operands)
 	case "smode":
 		instr, err = a.asmSMODE(operands)
+	case "suaen":
+		instr = encodeInstruction(OP64_SUAEN, 0, 0, 0, 0, 0, 0)
+	case "suadis":
+		instr = encodeInstruction(OP64_SUADIS, 0, 0, 0, 0, 0, 0)
 
 	// Atomic memory RMW
 	case "cas":
@@ -3133,6 +3141,8 @@ func parseCR(name string) (byte, bool) {
 		return 12, true
 	case "cr13", "prev_mode":
 		return 13, true
+	case "cr14", "saved_sua":
+		return 14, true
 	}
 	return 0, false
 }

@@ -1032,7 +1032,8 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint32, isLast b
 		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
 
 	// MMU/privilege opcodes: always bail to interpreter
-	case OP_MTCR, OP_MFCR, OP_ERET, OP_TLBFLUSH, OP_TLBINVAL, OP_SYSCALL, OP_SMODE:
+	case OP_MTCR, OP_MFCR, OP_ERET, OP_TLBFLUSH, OP_TLBINVAL, OP_SYSCALL, OP_SMODE,
+		OP_SUAEN, OP_SUADIS:
 		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
 		return
 

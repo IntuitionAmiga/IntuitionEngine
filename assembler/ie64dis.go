@@ -115,6 +115,8 @@ const (
 	dis64_FAND     = 0xF0
 	dis64_FOR      = 0xF1
 	dis64_FXOR     = 0xF2
+	dis64_SUAEN    = 0xF3
+	dis64_SUADIS   = 0xF4
 )
 
 // Instruction size in bytes
@@ -207,6 +209,8 @@ var opcodeNames = map[byte]string{
 	dis64_FAND:     "fand",
 	dis64_FOR:      "for",
 	dis64_FXOR:     "fxor",
+	dis64_SUAEN:    "suaen",
+	dis64_SUADIS:   "suadis",
 }
 
 // ---------------------------------------------------------------------
@@ -314,7 +318,7 @@ func isSized(op byte) bool {
 		dis64_MOVT, dis64_MOVEQ, dis64_LEA, dis64_PUSH, dis64_POP, dis64_JSRI,
 		dis64_MULHU, dis64_MULHS,
 		dis64_MTCR, dis64_MFCR, dis64_ERET, dis64_TLBFLUSH, dis64_TLBINVAL,
-		dis64_SYSCALL, dis64_SMODE,
+		dis64_SYSCALL, dis64_SMODE, dis64_SUAEN, dis64_SUADIS,
 		dis64_CAS, dis64_XCHG, dis64_FAA, dis64_FAND, dis64_FOR, dis64_FXOR:
 		return false
 	}
@@ -373,7 +377,8 @@ func FormatInstruction(d DecodedInstruction) (string, string) {
 	case d.Opcode == dis64_NOP || d.Opcode == dis64_HALT ||
 		d.Opcode == dis64_SEI || d.Opcode == dis64_CLI ||
 		d.Opcode == dis64_RTI ||
-		d.Opcode == dis64_ERET || d.Opcode == dis64_TLBFLUSH:
+		d.Opcode == dis64_ERET || d.Opcode == dis64_TLBFLUSH ||
+		d.Opcode == dis64_SUAEN || d.Opcode == dis64_SUADIS:
 		return hexBytes, mnemonic
 
 	// RTS: no operands

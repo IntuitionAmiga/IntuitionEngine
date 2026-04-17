@@ -54,6 +54,7 @@ var ie64OpcodeNames = map[byte]string{
 	OP_MTCR: "mtcr", OP_MFCR: "mfcr", OP_ERET: "eret",
 	OP_TLBFLUSH: "tlbflush", OP_TLBINVAL: "tlbinval",
 	OP_SYSCALL: "syscall", OP_SMODE: "smode",
+	OP_SUAEN: "suaen", OP_SUADIS: "suadis",
 	OP_CAS: "cas", OP_XCHG: "xchg", OP_FAA: "faa",
 	OP_FAND: "fand", OP_FOR: "for", OP_FXOR: "fxor",
 }
@@ -83,6 +84,7 @@ func ie64IsSized(op byte) bool {
 		OP_MOVT, OP_MOVEQ, OP_LEA, OP_PUSH64, OP_POP64, OP_JSR_IND,
 		OP_MULHU, OP_MULHS,
 		OP_MTCR, OP_MFCR, OP_ERET, OP_TLBFLUSH, OP_TLBINVAL, OP_SYSCALL, OP_SMODE,
+		OP_SUAEN, OP_SUADIS,
 		OP_CAS, OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR:
 		return false
 	}
@@ -162,7 +164,8 @@ func ie64FormatInstruction(d ie64Decoded) (string, string) {
 	case d.Opcode == OP_NOP64 || d.Opcode == OP_HALT64 ||
 		d.Opcode == OP_SEI64 || d.Opcode == OP_CLI64 ||
 		d.Opcode == OP_RTI64 ||
-		d.Opcode == OP_ERET || d.Opcode == OP_TLBFLUSH:
+		d.Opcode == OP_ERET || d.Opcode == OP_TLBFLUSH ||
+		d.Opcode == OP_SUAEN || d.Opcode == OP_SUADIS:
 		return hexBytes, mnemonic
 
 	case d.Opcode == OP_RTS64:

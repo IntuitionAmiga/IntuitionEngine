@@ -110,6 +110,14 @@ func (cpu *CPU64) ExecuteJIT() {
 	checkCounter := uint32(0)
 
 	for running {
+		// M15.6 G2 Phase 2c-trap: trap-frame stack overflow sets
+		// trapHalted in pushTrapFrame. Poll it every iteration so a
+		// runaway nested-fault kernel bug stops the JIT dispatcher on
+		// the same block boundary it failed, not at the next periodic
+		// cpu.running poll.
+		if cpu.trapHalted {
+			break
+		}
 		// Periodic check of external stop signal
 		checkCounter++
 		if checkCounter&0xFFF == 0 && !cpu.running.Load() {
@@ -291,8 +299,14 @@ func (cpu *CPU64) handleTimerJIT() {
 	cpu.timerState.Store(TIMER_EXPIRED)
 	if cpu.interruptEnabled.Load() && !cpu.inInterrupt.Load() {
 		if cpu.mmuEnabled && cpu.intrVector != 0 {
-			// ERET-model interrupt entry
-			cpu.trapEntry()
+			// ERET-model interrupt entry. On trap-frame stack overflow
+			// trapEntry halts the CPU (sets trapHalted + cpu.running=false);
+			// leave PC alone so the dispatcher's trapHalted check breaks
+			// out on the next iteration rather than vectoring into the
+			// interrupt handler on top of a halted CPU.
+			if !cpu.trapEntry() {
+				return
+			}
 			cpu.faultPC = cpu.PC
 			cpu.faultAddr = 0
 			cpu.faultCause = FAULT_TIMER

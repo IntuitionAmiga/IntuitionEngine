@@ -29,7 +29,7 @@ IE64 Machine Code (at PROG_START)
   compileBlock()          jit_emit_{arch}.go   Platform-specific code emission
         |
         v
-  ExecMem.Write()         jit_mmap.go      Copy to RWX region + icache flush
+  ExecMem.Write()         jit_mmap.go      Copy via RW view + icache flush on RX view (W^X)
         |
         v
   CodeCache.Put()         jit_common.go    Cache by startPC for O(1) lookup
@@ -52,7 +52,7 @@ IE64 Machine Code (at PROG_START)
 | `jit_call_amd64.s` | `amd64 && linux` | x86-64 trampoline (RDI = JITContext*) |
 | `jit_emit_arm64.go` | `arm64 && linux` | ARM64 code emitter (~2450 lines) |
 | `jit_emit_amd64.go` | `amd64 && linux` | x86-64 code emitter (~1850 lines) |
-| `jit_mmap.go` | `(amd64\|\|arm64) && linux` | Executable memory (mmap RWX, bump allocator) |
+| `jit_mmap.go` | `(amd64\|\|arm64) && linux` | Dual-mapped executable memory (RW view for emit/patch, RX view for dispatch, single backing page set) |
 | `jit_icache_arm64.go` | `arm64 && linux` | ARM64 icache flush (DC CVAU + IC IVAU) |
 | `jit_icache_arm64.s` | `arm64 && linux` | ARM64 icache flush assembly |
 | `jit_icache_amd64.go` | `amd64 && linux` | x86-64 icache no-op (coherent architecture) |
@@ -104,7 +104,33 @@ Maps `startPC -> *JITBlock` for O(1) lookup. Invalidated on self-modifying code 
 
 ### ExecMem
 
-16MB mmap'd RWX region with bump allocator (16-byte aligned). Reset on cache invalidation.
+16 MB dual-mapped region with bump allocator (16-byte aligned). Reset on cache invalidation.
+
+M15.6 replaced the original single RWX mmap with a W^X-safe dual mapping:
+
+- **Backing pages** are created once via `memfd_create` (with
+  `MFD_EXEC|MFD_CLOEXEC` where available, falling back to plain
+  `MFD_CLOEXEC` on hardened kernels that reject `MFD_EXEC`).
+- **Writable view** (`PROT_READ|PROT_WRITE`, no execute) is used by
+  `ExecMem.Write`, `CodeBuffer.PatchUint32`, and `PatchRel32At`. This
+  is where emit and patch operations target.
+- **Execution view** (`PROT_READ|PROT_EXEC`, no write) is used by
+  `callNative` for dispatch. At no point does any view hold both
+  `PROT_WRITE` and `PROT_EXEC`.
+- **Icache flush** on ARM64 splits `DC CVAU` against the writable
+  VA (where the new bytes were actually deposited) and `IC IVAU`
+  against the execution VA (which is the instruction path the CPU
+  will refetch from). On x86-64 the icache is coherent with stores
+  and no flush is needed.
+- **`PatchRel32At`** takes an address in the writable view.
+  Attempting the same store through the execution-view address
+  faults, which is the invariant tested in `jit_mmap_test.go`.
+
+Code that previously assumed a single RWX region now stays within
+the writable view for all mutation and within the execution view
+for all dispatch. The two views alias the same backing pages, so
+an emit through the writable view is immediately visible to the
+CPU fetch through the execution view after the icache flush.
 
 ---
 

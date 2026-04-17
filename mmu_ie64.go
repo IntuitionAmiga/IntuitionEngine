@@ -125,6 +125,28 @@ func (cpu *CPU64) translateAddr(vaddr uint32, accessType byte) (physAddr uint32,
 		return 0, true, FAULT_USER_SUPER
 	}
 
+	// M15.6 G2: SMEP/SMAP-equivalent supervisor guards on user pages.
+	// Both only fire when the supervisor is touching a PTE_U=1 page;
+	// user-mode accesses are governed by the check above.
+	//
+	//   - SKEF (supervisor-kernel-execute-fault): blocks supervisor
+	//     instruction fetch from any user page. Eliminates the
+	//     "redirect PC into user shellcode" class.
+	//   - SKAC (supervisor-kernel-access-check): blocks supervisor
+	//     read/write on user pages unless the per-CPU SUA latch is set.
+	//     Kernel enters explicit copy regions with SUAEN and leaves
+	//     them with SUADIS, so accidental dereferences of an attacker-
+	//     controlled pointer fault cleanly. Trap entry saves and clears
+	//     SUA; ERET restores it when returning to supervisor mode.
+	if cpu.supervisorMode && flags&PTE_U != 0 {
+		if accessType == ACCESS_EXEC && cpu.skef {
+			return 0, true, FAULT_SKEF
+		}
+		if (accessType == ACCESS_READ || accessType == ACCESS_WRITE) && cpu.skac && !cpu.suaLatch {
+			return 0, true, FAULT_SKAC
+		}
+	}
+
 	// Set A/D bits if not already set (page tables must be in normal RAM)
 	{
 		needA := flags&PTE_A == 0

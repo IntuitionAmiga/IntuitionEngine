@@ -16,6 +16,7 @@ untracked/
 assembler/untracked/
 .go*
 .tmp*
+.cache*
 
 # Release artifacts
 *.AppImage

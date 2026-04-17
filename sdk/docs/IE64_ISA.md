@@ -1136,16 +1136,16 @@ On reset the CPU is in supervisor mode. Transitioning to user mode is done via E
 
 ### 12.2 Control Registers
 
-Fourteen control registers manage the MMU, thread state, timer, stack switching, and trap state. They are accessed via MTCR (write) and MFCR (read).
+Fifteen control registers manage the MMU, thread state, timer, stack switching, and trap state. They are accessed via MTCR (write) and MFCR (read).
 
 | CR | Name | R/W | Description |
 |----|------|-----|-------------|
 | CR0 | PTBR | RW | Page Table Base Register. Physical address of the page table. |
-| CR1 | FAULT_ADDR | RW | Virtual address that caused the most recent fault, or the syscall number (imm32) for SYSCALL. Writable so handlers can communicate information back. |
-| CR2 | FAULT_CAUSE | RW | Cause code of the most recent fault (see 12.7). Writable for handler flexibility. |
-| CR3 | FAULT_PC | RW | PC saved at trap entry. Used by ERET to resume. **Writable**: trap handlers must be able to modify this before ERET (e.g., to skip a faulting instruction or redirect execution). |
+| CR1 | FAULT_ADDR | RW | Virtual address that caused the most recent fault, or the syscall number (imm32) for SYSCALL. Writable so handlers can communicate information back. See 12.14 for the trap-stack semantics. |
+| CR2 | FAULT_CAUSE | RW | Cause code of the most recent fault (see 12.7). Writable for handler flexibility. See 12.14 for the trap-stack semantics. |
+| CR3 | FAULT_PC | RW | PC saved at trap entry. Used by ERET to resume. **Writable**: trap handlers must be able to modify this before ERET (e.g., to skip a faulting instruction or redirect execution). See 12.14 for the trap-stack semantics. |
 | CR4 | TRAP_VEC | RW | Physical address of the trap handler entry point. Jumped to on any fault or SYSCALL. |
-| CR5 | MMU_CTRL | Special | Bit 0: MMU enable (RW). Bit 1: supervisor mode (read-only, managed by hardware). All other bits reserved. |
+| CR5 | MMU_CTRL | Special | Bit 0: MMU enable (RW). Bit 1: supervisor mode (RO). Bit 2: SKEF enable (RW). Bit 3: SKAC enable (RW). Bit 4: SUA latch (RO via MTCR; mutated only by SUAEN/SUADIS). See 12.2.1. |
 | CR6 | TP | RW | Thread Pointer. User-readable via MFCR (exception to the normal supervisor-only rule). Writable only in supervisor mode via MTCR. Intended for thread-local storage (TLS) base address. |
 | CR7 | INTR_VEC | RW | Interrupt vector address. When MMU is enabled and INTR_VEC is nonzero, timer interrupts use the unified ERET-based entry model instead of the legacy push-PC/RTI model. Supervisor-only. |
 | CR8 | KSP | RW | Kernel Stack Pointer. Automatically swapped with R31 on user-to-supervisor transitions. Supervisor-only. |
@@ -1153,13 +1153,48 @@ Fourteen control registers manage the MMU, thread state, timer, stack switching,
 | CR10 | TIMER_COUNT | RW | Current timer countdown value. Supervisor-only. |
 | CR11 | TIMER_CTRL | RW | Bit 0 = timer enable, Bit 1 = interrupt enable. SEI/CLI are aliases for setting/clearing bit 1. Supervisor-only. |
 | CR12 | USP | RW | Saved User Stack Pointer. Readable/writable in supervisor mode for context switch. Set automatically on user-to-supervisor transition. Supervisor-only. |
-| CR13 | PREV_MODE | RO | Previous privilege mode saved by `trapEntry`: 0 = trap came from user mode, 1 = trap came from supervisor mode. Read-only; set automatically on any trap/interrupt entry. Used by fault handlers to distinguish user faults (kill task) from kernel faults (panic). |
+| CR13 | PREV_MODE | RO | Previous privilege mode saved by `trapEntry`: 0 = trap came from user mode, 1 = trap came from supervisor mode. Read-only; set automatically on any trap/interrupt entry. Used by fault handlers to distinguish user faults (kill task) from kernel faults (panic). See 12.14 for the trap-stack semantics. |
+| CR14 | SAVED_SUA | RW | SUA latch snapshot taken on trap entry and consumed on ERET. Readable by kernel handlers that observe the interrupted code path's SUA state; writable so handlers can stage a custom value before ERET. See 12.2.1 and 12.14. Supervisor-only. |
 
 **PTBR** must point to the start of the page table in physical memory. The page table is 64 KiB (8192 entries x 8 bytes) and must be naturally aligned.
 
 **TRAP_VEC** must be set before enabling the MMU, or faults will jump to address 0.
 
-**MMU_CTRL** bit 0 is the master enable. Writing 1 activates translation for all subsequent memory accesses. Bit 1 (supervisor mode) is read-only; it reflects the current privilege level and cannot be written by MTCR.
+**MMU_CTRL** bit 0 is the master enable. Writing 1 activates translation for all subsequent memory accesses. Bit 1 (supervisor mode) is read-only; it reflects the current privilege level and cannot be written by MTCR. Bits 2–4 are the M15.6 SMEP/SMAP-equivalent controls described below.
+
+#### 12.2.1 SKEF / SKAC / SUA (MMU_CTRL bits 2–4)
+
+These bits are the IE64 SMEP/SMAP-equivalent guards introduced by M15.6.
+
+| Bit | Name | MTCR writable? | Description |
+|-----|------|-----------------|-------------|
+| 2 | SKEF | Yes | Supervisor-Kernel-Execute-Fault. When set, a supervisor instruction fetch from a page with `PTE_U==1` raises `FAULT_SKEF` (cause 9). |
+| 3 | SKAC | Yes | Supervisor-Kernel-Access-Check. When set, a supervisor read or write on a page with `PTE_U==1` raises `FAULT_SKAC` (cause 10), **unless** the `SUA` latch is also set. |
+| 4 | SUA  | No (RO via MTCR) | Supervisor-User-Access latch. Mutated only by the privileged `SUAEN` and `SUADIS` opcodes. When set and `SKAC` is enabled, kernel data accesses to user pages succeed; when clear they fault with `FAULT_SKAC`. |
+
+**Trap-entry / ERET discipline.** On trap entry the `SUA` latch is
+snapshotted into `CR_SAVED_SUA` (CR14) and then forcibly cleared so a
+kernel handler cannot inherit an open supervisor-user-access window
+from the interrupted code path. On ERET the saved value is restored
+into the live latch when returning to supervisor mode (nested return);
+user-mode ERET clears the live latch unconditionally. See 12.14 for
+how the trap stack preserves `CR_SAVED_SUA` across nested traps
+automatically.
+
+**Helper idiom.** Kernel user-memory access must bracket every
+supervisor load/store against a user pointer with `SUAEN` and
+`SUADIS`:
+
+```
+    suaen                       ; open the access window
+    load.b  r3, (r1)            ; user load
+    store.b r3, (r2)            ; kernel store
+    suadis                      ; close the access window
+```
+
+The canonical `copy_from_user` / `copy_to_user` /
+`copy_cstring_from_user` helpers enforce this pattern; see
+`IE64_COOKBOOK.md` for the worked example.
 
 ### 12.3 Page Table Format
 
@@ -1223,17 +1258,19 @@ The 25-bit virtual address space covers 32 MB, matching the IE64 physical addres
 
 ### 12.6 MMU Instructions
 
-Seven opcodes in the System range. All except SYSCALL and SMODE are privileged (supervisor-only); executing them in user mode faults with cause code 5 (privilege violation). MFCR has a special exception: reading CR6 (TP) is permitted in user mode.
+Nine opcodes in the System range. All except SYSCALL and SMODE are privileged (supervisor-only); executing them in user mode faults with cause code 5 (privilege violation). MFCR has a special exception: reading CR6 (TP) is permitted in user mode.
 
 | Mnemonic | Opcode | Syntax | Operation | Privilege |
 |----------|--------|--------|-----------|-----------|
 | MTCR | `0xE6` | `mtcr CRn, Rs` | `CR[Rd] = Rs` | Supervisor |
 | MFCR | `0xE7` | `mfcr Rd, CRn` | `Rd = CR[Rs]` | Supervisor (CR6/TP: Any) |
-| ERET | `0xE8` | `eret` | `PC = CR3 (FAULT_PC); supervisor = false` | Supervisor |
+| ERET | `0xE8` | `eret` | Consume and pop active trap frame; `PC = CR3 (FAULT_PC)` | Supervisor |
 | TLBFLUSH | `0xE9` | `tlbflush` | Flush entire TLB + invalidate JIT cache | Supervisor |
 | TLBINVAL | `0xEA` | `tlbinval Rs` | Invalidate TLB entry for VA in Rs + invalidate JIT cache | Supervisor |
 | SYSCALL | `0xEB` | `syscall #imm32` | Trap to supervisor; syscall number from imm32 | Any |
 | SMODE | `0xEC` | `smode Rd` | `Rd = 1` if supervisor, `Rd = 0` if user | Any |
+| SUAEN | `0xF3` | `suaen` | Set the `SUA` latch (MMU_CTRL bit 4) | Supervisor |
+| SUADIS | `0xF4` | `suadis` | Clear the `SUA` latch (MMU_CTRL bit 4) | Supervisor |
 
 **MTCR** (opcode `0xE6`):
 - Writes the value of general-purpose register Rs to control register CRn.
@@ -1247,11 +1284,11 @@ Seven opcodes in the System range. All except SYSCALL and SMODE are privileged (
 - **User-mode exception**: MFCR is normally supervisor-only, but reading CR6 (TP) is permitted in user mode. This allows user-space threads to access thread-local storage without a syscall. All other CR indices fault with cause code 5 (privilege violation) in user mode.
 
 **ERET** (opcode `0xE8`):
-- Returns from a trap handler. Sets PC to the value saved in CR3 (FAULT_PC).
-- If the previous mode (before the trap) was user: saves R31 to KSP (CR8), restores R31 from USP (CR12), and switches to user mode.
-- If the previous mode was supervisor: stays in supervisor mode with no stack swap.
-- Does not pop the stack. The trap entry does not push to the stack.
-- The handler can modify FAULT_PC via MTCR before ERET to redirect execution.
+- Returns from a trap handler. Sets PC to the value saved in CR3 (FAULT_PC) and pops the active trap frame (see 12.14).
+- If the previous mode (before the trap) was user: saves R31 to KSP (CR8), restores R31 from USP (CR12), switches to user mode, and clears the live `SUA` latch.
+- If the previous mode was supervisor: stays in supervisor mode with no stack swap and restores the live `SUA` latch from the active frame's `CR_SAVED_SUA`.
+- Does not pop a software stack. The trap entry does not push to the data stack — the push/pop here refers to the CPU's internal trap-frame stack (12.14).
+- The handler can modify FAULT_PC via MTCR before ERET to redirect execution; this modifies the active frame, not an outer frame.
 - For SYSCALL traps, FAULT_PC = PC+8 (instruction after SYSCALL), so ERET resumes at the next instruction.
 - For fault traps, FAULT_PC = faulting PC, so ERET re-executes the faulting instruction (the handler must fix the cause first).
 
@@ -1276,6 +1313,18 @@ Seven opcodes in the System range. All except SYSCALL and SMODE are privileged (
 - This is a query instruction, not a mode-switching instruction. Mode is changed only by trap entry (sets supervisor) and ERET (clears supervisor).
 - Can be executed in both user and supervisor mode.
 
+**SUAEN** (opcode `0xF3`):
+- Sets the SUA latch (MMU_CTRL bit 4).
+- Single-cycle privileged operation with no operands.
+- Must be paired with a subsequent `SUADIS` closing the same supervisor-user-access window.
+- Attempting to execute in user mode faults with cause code 5 (privilege violation).
+
+**SUADIS** (opcode `0xF4`):
+- Clears the SUA latch (MMU_CTRL bit 4).
+- Single-cycle privileged operation with no operands.
+- Always safe to execute; clearing an already-clear latch is a no-op.
+- Attempting to execute in user mode faults with cause code 5 (privilege violation).
+
 #### Encoding
 
 All seven opcodes use the standard 8-byte IE64 instruction format:
@@ -1288,6 +1337,8 @@ TLBFLUSH: [0xE9] [0] [0] [0] [0 0 0 0]
 TLBINVAL: [0xEA] [0] [Rs<<3] [0] [0 0 0 0]                     ; Rs = register holding VPN
 SYSCALL:  [0xEB] [0 | 0 | 1] [0] [0] [imm32 LE]                ; xbit=1, syscall # in imm32
 SMODE:    [0xEC] [Rd<<3 | 0 | 0] [0] [0] [0 0 0 0]             ; Rd = destination register
+SUAEN:    [0xF3] [0] [0] [0] [0 0 0 0]
+SUADIS:   [0xF4] [0] [0] [0] [0 0 0 0]
 ```
 
 ### 12.7 Trap Model
@@ -1316,10 +1367,12 @@ This distinction means trap handlers do not need to adjust the return address; E
 | 2 | Write Denied | Store to a page with W=0. |
 | 3 | Execute Denied | Instruction fetch from a page with X=0. |
 | 4 | User/Supervisor | User-mode access to a page with U=0. |
-| 5 | Privilege Violation | User-mode execution of a privileged instruction (MTCR, MFCR, ERET, TLBFLUSH, TLBINVAL). |
+| 5 | Privilege Violation | User-mode execution of a privileged instruction (MTCR, MFCR, ERET, TLBFLUSH, TLBINVAL, SUAEN, SUADIS). |
 | 6 | Syscall | SYSCALL instruction executed. |
 | 7 | Misaligned | Atomic memory operation (CAS, XCHG, FAA, FAND, FOR, FXOR) with address not 8-byte aligned. |
 | 8 | Timer Interrupt | Timer interrupt (delivered via INTR_VEC when MMU enabled). |
+| 9 | SKEF | Supervisor instruction fetch from a page with `PTE_U==1` while `MMU_CTRL.SKEF` is set. |
+| 10 | SKAC | Supervisor data read or write on a page with `PTE_U==1` while `MMU_CTRL.SKAC` is set and `MMU_CTRL.SUA` is clear. |
 
 ### 12.9 Translation Lookaside Buffer (TLB)
 
@@ -1424,6 +1477,67 @@ When the displacement is zero, the assembler accepts `(Rs)` syntax: `cas Rd, (Rs
 - **MMU**: When the MMU is enabled, the effective address is translated as an `ACCESS_WRITE` operation through the normal page table translation path. A/D bits are set accordingly.
 - **CAS (Compare-And-Swap)**: Reads the 64-bit value at `[addr]` into a temporary. If the temporary equals the current value of Rd, the value of Rt is written to `[addr]`. Regardless of whether the swap occurred, Rd receives the old value from memory. This allows the caller to detect success by comparing the returned old value against the expected value.
 - **JIT**: Atomic instructions always bail to the interpreter, even when the MMU is disabled. They are infrequent synchronisation operations where correctness outweighs compilation overhead.
+
+### 12.14 Trap-Frame Stack
+
+M15.6 makes nested-trap state preservation architectural rather than
+kernel-managed. The CPU owns a fixed-depth trap-frame stack that
+holds the outer trap's `FAULT_PC`, `PREV_MODE`, `CR_SAVED_SUA`,
+`FAULT_ADDR`, and `FAULT_CAUSE`. The live CR fields remain the
+canonical "top of stack" accessed through `MFCR` / `MTCR`; the
+stack is not directly visible to software.
+
+```
+              top of stack (active frame)
+              ┌────────────────────────┐
+              │ FAULT_PC    (CR3)      │
+              │ FAULT_ADDR  (CR1)      │
+              │ FAULT_CAUSE (CR2)      │
+              │ PREV_MODE   (CR13)     │
+              │ SAVED_SUA   (CR14)     │
+              └────────────────────────┘
+              ↑ readable/writable via MFCR / MTCR
+              │
+              │ outer frames (invisible to software)
+              ▼
+              ┌────────────────────────┐
+              │   frame depth-1        │
+              │   ...                  │
+              │   frame 0              │ ← frame of first trap
+              └────────────────────────┘
+```
+
+**Push.** On trap entry (fault, SYSCALL, timer interrupt) the CPU
+snapshots the active frame (all five fields) onto the stack before
+overwriting them. The snapshot happens first; subsequent trap-entry
+bookkeeping (setting `PREV_MODE`, saving and clearing the `SUA`
+latch into `SAVED_SUA`) then writes the new active-frame values.
+
+**Pop.** On `ERET` the CPU consumes the active frame (uses
+`FAULT_PC` as the new PC, restores the `SUA` latch from
+`SAVED_SUA` or clears it on user return, and swaps stacks on user
+return) and then pops the previous frame off the stack into the
+active fields. When the stack is empty the active fields are
+cleared to zero, matching the fresh-boot state.
+
+**Overflow.** The stack depth is fixed. Exceeding it halts the CPU
+with a diagnostic (`IE64: trap stack overflow ...`): runaway
+nested faults are always a kernel bug and must be visible, not
+silently dropped.
+
+**Implications for kernel handlers.** Handlers do **not** need to
+save and restore `CR_FAULT_PC` or `CR_SAVED_SUA` on the kernel
+stack to survive a nested synchronous trap. The trap stack
+preserves the outer context automatically. Existing kernel code
+that performs a manual `MFCR CR_FAULT_PC` / `MTCR CR_FAULT_PC`
+prologue around a possibly-faulting region still works — such
+save/restore now writes the active frame, so the restore writes
+back the same value already preserved. The older handler pattern
+is thus redundant but harmless; new handlers should omit it.
+
+**Reset.** `Reset()` clears the trap stack to depth 0 and zeroes
+the frame slots so a reused CPU does not inherit a half-built
+frame from a previous run.
 
 ---
 
@@ -1544,6 +1658,8 @@ When the displacement is zero, the assembler accepts `(Rs)` syntax: `cas Rd, (Rs
 | 0xF0   | `$F0`  | FAND     | Atomic | Rd, disp(Rs), Rt |
 | 0xF1   | `$F1`  | FOR      | Atomic | Rd, disp(Rs), Rt |
 | 0xF2   | `$F2`  | FXOR     | Atomic | Rd, disp(Rs), Rt |
+| 0xF3   | `$F3`  | SUAEN    | System | (none) |
+| 0xF4   | `$F4`  | SUADIS   | System | (none) |
 
 ### A.2 Opcode Ranges
 

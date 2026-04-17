@@ -1622,3 +1622,73 @@ Notes:
   A/D values and will not re-read the page table until invalidated.
 - Page tables must reside in normal RAM (below IO_REGION_START). This is an
   architectural constraint for A/D write-back correctness.
+
+## Supervisor-User Access Helpers (M15.6)
+
+Once M15.6 boots the kernel with `MMU_CTRL.SKAC` enabled, every
+supervisor-mode load or store against a user page (`PTE_U==1`) faults
+with `FAULT_SKAC` unless the `MMU_CTRL.SUA` latch is also set. `SUA`
+is mutated only by the privileged `SUAEN` / `SUADIS` opcodes. The only
+sanctioned way to touch a user pointer from supervisor code is one of
+the canonical helpers in `sdk/intuitionos/iexec/iexec.s`:
+
+- `copy_from_user(dst_kernel, src_user, len)` — copy `len` bytes from
+  user memory into kernel memory. Validates the user range and faults
+  cleanly on permission errors.
+- `copy_to_user(dst_user, src_kernel, len)` — copy `len` bytes from
+  kernel memory into user memory. Same validation and fault behaviour.
+- `copy_cstring_from_user(dst_kernel, src_user, max_len)` — copy a
+  NUL-terminated user string up to `max_len` bytes.
+
+Each helper opens its `SUA` window with `SUAEN`, performs validation
+and the access loop, then closes with `SUADIS`. Callers must not
+directly dereference a user pointer from supervisor mode even when
+the data is "small" — the syscall boundary is the only place that
+crosses user→kernel without a helper.
+
+### Worked example: SYS_READ handler excerpt
+
+```
+; r1 = user src, r2 = len, r4 = kernel-owned destination.
+; Validate bounds, then ask copy_from_user to do the transfer.
+                move.q  r5, r2                  ; length
+                move.q  r6, r1                  ; user source
+                move.q  r7, r4                  ; kernel destination
+                jsr     copy_from_user
+                tst.q   r1                      ; r1 = status from helper
+                bne     .read_fault_from_user
+                ...
+```
+
+### Anti-pattern: direct supervisor load/store against a user pointer
+
+The following sequence **faults cleanly** with `FAULT_SKAC` on the
+first `load.b` when SKAC is enabled, which is the whole point — the
+kernel is supposed to fail loudly in this case:
+
+```
+; DO NOT USE. Retained here only as a negative example.
+                load.b  r3, (r1_user_ptr)       ; FAULT_SKAC
+                store.b r3, (r2_kernel_ptr)
+```
+
+The correct version wraps the access in `SUAEN` / `SUADIS` if the
+kernel really needs a single-byte touch (rare; prefer the helpers):
+
+```
+                suaen
+                load.b  r3, (r1_user_ptr)
+                store.b r3, (r2_kernel_ptr)
+                suadis
+```
+
+### Nested traps and the trap-frame stack
+
+`SUAEN` / `SUADIS` pair up lexically, not dynamically — a function
+that calls another function in between may take an interrupt or
+synchronous trap inside the called function. The CPU's trap-frame
+stack (`IE64_ISA.md` §12.14) preserves the outer `SUA` latch across
+trap entry / `ERET` automatically; handlers run with `SUA == 0` and
+do not need to save or restore `cr14` (the `CR_SAVED_SUA` slot) on
+the kernel stack. The legacy pattern of MFCR→stack→MTCR around the
+call is redundant under M15.6 and can be dropped from new code.

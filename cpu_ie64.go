@@ -121,7 +121,7 @@ const (
 	CR_FAULT_CAUSE  = 2  // Fault cause code
 	CR_FAULT_PC     = 3  // PC saved at trap entry
 	CR_TRAP_VEC     = 4  // Trap handler vector address
-	CR_MMU_CTRL     = 5  // Bit 0 = MMU enable (RW), Bit 1 = supervisor mode (RO)
+	CR_MMU_CTRL     = 5  // See MMU_CTRL_* bit constants below
 	CR_TP           = 6  // Thread Pointer (user-readable, supervisor-writable)
 	CR_INTR_VEC     = 7  // Interrupt vector (MMU-mode timer interrupts)
 	CR_KSP          = 8  // Kernel Stack Pointer (auto-swap on user→supervisor)
@@ -130,20 +130,51 @@ const (
 	CR_TIMER_CTRL   = 11 // Bit 0 = timer enable, Bit 1 = interrupt enable
 	CR_USP          = 12 // Saved User Stack Pointer (for context switch)
 	CR_PREV_MODE    = 13 // Previous privilege mode (0=user, 1=supervisor) saved by trapEntry
-	CR_COUNT        = 14 // Number of control registers
+	CR_SAVED_SUA    = 14 // Saved SUA latch (stashed on trap entry; mirrors FAULT_PC for save/restore discipline)
+	CR_COUNT        = 15 // Number of control registers
 )
 
 // Fault cause codes
 const (
-	FAULT_NOT_PRESENT  = 0 // PTE P bit = 0
-	FAULT_READ_DENIED  = 1 // PTE R bit = 0 on read access
-	FAULT_WRITE_DENIED = 2 // PTE W bit = 0 on write access
-	FAULT_EXEC_DENIED  = 3 // PTE X bit = 0 on instruction fetch
-	FAULT_USER_SUPER   = 4 // PTE U bit = 0 in user mode
-	FAULT_PRIV         = 5 // Privileged instruction in user mode
-	FAULT_SYSCALL      = 6 // SYSCALL instruction
-	FAULT_MISALIGNED   = 7 // Misaligned atomic access
-	FAULT_TIMER        = 8 // Timer interrupt (via INTR_VEC)
+	FAULT_NOT_PRESENT  = 0  // PTE P bit = 0
+	FAULT_READ_DENIED  = 1  // PTE R bit = 0 on read access
+	FAULT_WRITE_DENIED = 2  // PTE W bit = 0 on write access
+	FAULT_EXEC_DENIED  = 3  // PTE X bit = 0 on instruction fetch
+	FAULT_USER_SUPER   = 4  // PTE U bit = 0 in user mode
+	FAULT_PRIV         = 5  // Privileged instruction in user mode
+	FAULT_SYSCALL      = 6  // SYSCALL instruction
+	FAULT_MISALIGNED   = 7  // Misaligned atomic access
+	FAULT_TIMER        = 8  // Timer interrupt (via INTR_VEC)
+	FAULT_SKEF         = 9  // Supervisor instruction fetch from user page (SKEF set, PTE_U=1)
+	FAULT_SKAC         = 10 // Supervisor data access to user page outside SUA region (SKAC set, PTE_U=1, SUA=0)
+)
+
+// CR_MMU_CTRL bit constants.
+//
+// Bit 0 (MMU_CTRL_ENABLE) and bit 1 (MMU_CTRL_SUPER) are the legacy bits
+// established by M13. Bits 2–4 (SKEF / SKAC / SUA) are the M15.6 G2
+// SMEP/SMAP-equivalent controls.
+//
+//   - SKEF / SKAC are enable bits: the kernel flips them via MTCR.
+//   - SUA is a latch: it is writable only by the privileged SUAEN /
+//     SUADIS instructions. MTCR to CR_MMU_CTRL ignores attempts to set
+//     or clear SUA. The latch is saved on trap entry into CR_SAVED_SUA
+//     and restored from it on ERET (supervisor return); user-mode ERET
+//     clears SUA unconditionally.
+//
+// Nested-trap discipline (matches FAULT_PC / PREV_MODE): trap entry
+// overwrites CR_SAVED_SUA with the current latch. Kernel handlers that
+// can take a nested synchronous trap must MFCR CR_SAVED_SUA into a GPR
+// on entry, save it to the kernel stack, and MTCR it back before ERET —
+// the same discipline already used for CR_FAULT_PC. A single-slot save
+// is sufficient when this discipline is followed; skipping it loses the
+// outer value on the next nested trap.
+const (
+	MMU_CTRL_ENABLE = 1 << 0 // Bit 0: MMU translation active (RW, supervisor)
+	MMU_CTRL_SUPER  = 1 << 1 // Bit 1: supervisor mode (RO)
+	MMU_CTRL_SKEF   = 1 << 2 // Bit 2: Supervisor-Kernel-Execute-Fault enable (RW, supervisor)
+	MMU_CTRL_SKAC   = 1 << 3 // Bit 3: Supervisor-Kernel-Access-Check enable (RW, supervisor)
+	MMU_CTRL_SUA    = 1 << 4 // Bit 4: Supervisor-User-Access latch (RO via MTCR; set by SUAEN, cleared by SUADIS)
 )
 
 // Memory access types for translateAddr
@@ -288,6 +319,12 @@ const (
 	OP_FAND = 0xF0 // Fetch-and-and: old=[addr]; [addr]=old&rt; rd=old
 	OP_FOR  = 0xF1 // Fetch-and-or:  old=[addr]; [addr]=old|rt; rd=old
 	OP_FXOR = 0xF2 // Fetch-and-xor: old=[addr]; [addr]=old^rt; rd=old
+
+	// M15.6 G2: supervisor-user-access latch controls.
+	// Privileged; SUAEN sets the SUA latch, SUADIS clears it. Single
+	// cycle with no operands.
+	OP_SUAEN  = 0xF3 // Enable supervisor access to user pages (set SUA latch)
+	OP_SUADIS = 0xF4 // Disable supervisor access to user pages (clear SUA latch)
 )
 
 // ------------------------------------------------------------------------------
@@ -368,7 +405,66 @@ type CPU64 struct {
 	threadPointer  uint64       // Thread Pointer (CR_TP)
 	kernelSP       uint64       // Kernel Stack Pointer (CR_KSP)
 	userSP         uint64       // Saved User Stack Pointer (CR_USP)
+
+	// M15.6 G2: SMEP/SMAP-equivalent controls. See MMU_CTRL_* constants.
+	skef     bool // SKEF: supervisor-kernel-execute-fault enabled
+	skac     bool // SKAC: supervisor-kernel-access-check enabled
+	suaLatch bool // SUA latch: explicit supervisor access to user pages (SUAEN/SUADIS)
+	savedSUA bool // SUA saved on trap entry; restored on ERET to supervisor
+
+	// M15.6 G2 Phase 2c-trap: per-CPU trap-frame stack.
+	//
+	// Nested trap state (faultPC, previousMode, savedSUA, faultAddr,
+	// faultCause) used to live in single-slot fields. A nested trap
+	// would therefore overwrite the outer trap's context, forcing every
+	// kernel handler that could take a nested synchronous trap to save
+	// and restore CR_FAULT_PC / CR_SAVED_SUA manually. That discipline
+	// was institutionalized debt: any handler path missing the restore
+	// silently corrupted outer state.
+	//
+	// The trap-frame stack makes nested preservation architectural. On
+	// trapEntry the current active frame is pushed; on ERET the popped
+	// frame is restored. The active fields above (faultPC et al.) remain
+	// the canonical "top of stack" accessed by MFCR/MTCR, so CR semantics
+	// are unchanged and existing kernel save/restore code continues to
+	// work (now redundantly).
+	//
+	// Depth is fixed. Exceeding it is always a kernel bug (runaway
+	// nested faults); the CPU halts with a diagnostic rather than
+	// silently losing a frame.
+	trapStack [TrapStackDepth]trapFrame
+	trapDepth int
+
+	// trapHalted is set by pushTrapFrame on overflow. It is read by the
+	// interpreter's main loop and the JIT dispatcher so they can bail
+	// out on the very same iteration the overflow occurred. Using a
+	// plain bool (single-owner, read/written only from the CPU goroutine)
+	// avoids an atomic Load in the hot instruction fetch path;
+	// cross-goroutine "please stop" signalling still goes through the
+	// existing cpu.running atomic.
+	trapHalted bool
 }
+
+// trapFrame captures everything that a trap entry overwrites. On
+// trapEntry the current active state is snapshotted into a frame and
+// pushed; on ERET the frame on top of the stack is popped back into the
+// active fields. The kernel never sees the stack directly — it observes
+// the active frame through the existing CR_FAULT_PC / CR_FAULT_ADDR /
+// CR_FAULT_CAUSE / CR_PREV_MODE / CR_SAVED_SUA interface.
+type trapFrame struct {
+	faultPC    uint64
+	faultAddr  uint32
+	faultCause uint32
+	prevMode   bool
+	savedSUA   bool
+}
+
+// TrapStackDepth is the fixed nesting limit. Kernel handlers typically
+// reach depth 1 (user→supervisor) or occasionally 2 (nested synchronous
+// trap during a copy helper). Deeper nesting almost always indicates a
+// runaway fault storm; 8 leaves generous headroom without making a
+// broken kernel silently progress.
+const TrapStackDepth = 8
 
 // ------------------------------------------------------------------------------
 // Constructor
@@ -393,9 +489,26 @@ func NewCPU64(bus *MachineBus) *CPU64 {
 // ------------------------------------------------------------------------------
 
 // trapEntry performs the common trap/interrupt entry sequence:
-// saves previous mode, switches stack if coming from user mode, sets supervisor,
-// and disables interrupts. ERET re-enables interrupts when returning to user mode.
-func (cpu *CPU64) trapEntry() {
+// pushes the current active frame onto the trap stack, saves previous
+// mode, switches stack if coming from user mode, sets supervisor, and
+// disables interrupts. ERET re-enables interrupts when returning to
+// user mode.
+//
+// The push happens first so the outer trap's context
+// (faultPC, previousMode, savedSUA, faultAddr, faultCause) is preserved
+// even if a nested handler overwrites the active fields. ERET's pop
+// reverses this; nested preservation is therefore architectural, and
+// kernel handlers do not need to save/restore CR_FAULT_PC or
+// CR_SAVED_SUA on their own.
+//
+// Returns false if the trap-frame stack overflowed — in that case the
+// CPU is halted, none of the trap-entry side effects were applied,
+// and the caller must not redirect PC to the trap handler or otherwise
+// proceed as if the trap had taken effect.
+func (cpu *CPU64) trapEntry() bool {
+	if !cpu.pushTrapFrame() {
+		return false // overflow halted the CPU; abort trap entry cleanly
+	}
 	cpu.previousMode = cpu.supervisorMode
 	if !cpu.supervisorMode {
 		// User → supervisor: swap stacks
@@ -404,12 +517,74 @@ func (cpu *CPU64) trapEntry() {
 	}
 	cpu.supervisorMode = true
 	cpu.interruptEnabled.Store(false) // atomically disable interrupts on entry
+
+	// M15.6 G2: save and clear the SUA latch so a nested kernel handler
+	// cannot inherit an open supervisor-user-access window from the
+	// interrupted code path. ERET restores savedSUA when returning to
+	// supervisor mode so the interrupted copy helper (if any) resumes
+	// safely; user-mode ERET clears SUA unconditionally.
+	cpu.savedSUA = cpu.suaLatch
+	cpu.suaLatch = false
+	return true
+}
+
+// pushTrapFrame snapshots the current active frame onto the trap stack.
+// Returns false if the stack is full; in that case the CPU halts with a
+// diagnostic and sets trapHalted so the interpreter/JIT main loops can
+// bail out on the current iteration rather than continuing to execute
+// guest instructions until the next periodic cpu.running poll. Overflow
+// only happens on runaway nested faults, which is always a kernel bug.
+func (cpu *CPU64) pushTrapFrame() bool {
+	if cpu.trapDepth >= TrapStackDepth {
+		fmt.Printf("IE64: trap stack overflow (depth=%d) — halting; runaway nested faults indicate a kernel bug\n",
+			cpu.trapDepth)
+		cpu.trapHalted = true
+		cpu.running.Store(false)
+		return false
+	}
+	cpu.trapStack[cpu.trapDepth] = trapFrame{
+		faultPC:    cpu.faultPC,
+		faultAddr:  cpu.faultAddr,
+		faultCause: cpu.faultCause,
+		prevMode:   cpu.previousMode,
+		savedSUA:   cpu.savedSUA,
+	}
+	cpu.trapDepth++
+	return true
+}
+
+// popTrapFrame restores the frame on top of the trap stack into the
+// active fields. Called by ERET after it has consumed the current
+// active frame (setting PC and suaLatch). If the stack is empty the
+// active fields are cleared to zero; this matches the fresh-boot
+// state and prevents stale values from leaking across ERET boundaries.
+func (cpu *CPU64) popTrapFrame() {
+	if cpu.trapDepth == 0 {
+		cpu.faultPC = 0
+		cpu.faultAddr = 0
+		cpu.faultCause = 0
+		cpu.previousMode = false
+		cpu.savedSUA = false
+		return
+	}
+	cpu.trapDepth--
+	f := cpu.trapStack[cpu.trapDepth]
+	cpu.faultPC = f.faultPC
+	cpu.faultAddr = f.faultAddr
+	cpu.faultCause = f.faultCause
+	cpu.previousMode = f.prevMode
+	cpu.savedSUA = f.savedSUA
 }
 
 // trapFault handles involuntary traps (page fault, privilege violation).
-// Saves PC of the faulting instruction so ERET re-executes it.
+// Saves PC of the faulting instruction so ERET re-executes it. On
+// trap-frame stack overflow returns early with the CPU halted; the
+// active fields and PC are left untouched so the interpreter/JIT
+// main loops do not jump into a trap handler on top of a halted CPU.
 func (cpu *CPU64) trapFault(cause uint32, addr uint32) {
-	cpu.trapEntry()
+	if !cpu.trapEntry() {
+		return
+	}
 	cpu.faultPC = cpu.PC // re-execute on ERET
 	cpu.faultAddr = addr
 	cpu.faultCause = cause
@@ -419,8 +594,11 @@ func (cpu *CPU64) trapFault(cause uint32, addr uint32) {
 // trapSyscall handles SYSCALL. Saves PC+8 so ERET skips the SYSCALL.
 // The syscall number (imm32) is stored in faultAddr for the handler to read
 // via MFCR CR1. User convention: arguments in R1-R6 before SYSCALL.
+// Overflow handling matches trapFault: the CPU halts and PC is left alone.
 func (cpu *CPU64) trapSyscall(syscallNum uint32) {
-	cpu.trapEntry()
+	if !cpu.trapEntry() {
+		return
+	}
 	cpu.faultPC = cpu.PC + IE64_INSTR_SIZE // skip SYSCALL on ERET
 	cpu.faultAddr = syscallNum             // handler reads via MFCR CR_FAULT_ADDR
 	cpu.faultCause = FAULT_SYSCALL
@@ -778,6 +956,26 @@ func (cpu *CPU64) Reset() {
 	cpu.kernelSP = 0
 	cpu.userSP = 0
 
+	// M15.6 G2: clear the SMEP/SMAP-equivalent latches so a reused CPU
+	// instance doesn't start the next program with a stale SKEF/SKAC
+	// enable or an open SUA window. Must match the fresh-boot contract
+	// where all four bits are zero.
+	cpu.skef = false
+	cpu.skac = false
+	cpu.suaLatch = false
+	cpu.savedSUA = false
+
+	// M15.6 G2 Phase 2c-trap: wipe the trap-frame stack so a reused CPU
+	// does not inherit a half-built frame from an interrupted prior run.
+	// Also clear the overflow-halt flag — without this, a reused CPU
+	// whose previous life ended in trap-stack overflow would refuse to
+	// execute the first instruction of the next run.
+	cpu.trapDepth = 0
+	for i := range cpu.trapStack {
+		cpu.trapStack[i] = trapFrame{}
+	}
+	cpu.trapHalted = false
+
 	// Reset FPU
 	if cpu.FPU != nil {
 		cpu.FPU.FPSR = 0
@@ -839,6 +1037,14 @@ func (cpu *CPU64) Execute() {
 	checkCounter := uint32(0)
 
 	for running {
+		// M15.6 G2 Phase 2c-trap: trap-frame stack overflow sets
+		// trapHalted in pushTrapFrame. Poll it every iteration (cheap
+		// non-atomic read) so a runaway nested-fault kernel bug stops
+		// the interpreter on the same instruction it failed, not up
+		// to 4095 instructions later at the next cpu.running poll.
+		if cpu.trapHalted {
+			break
+		}
 		// Periodic check of external stop signal (every 4096 instructions)
 		checkCounter++
 		if checkCounter&0xFFF == 0 && !cpu.running.Load() {
@@ -917,8 +1123,15 @@ func (cpu *CPU64) Execute() {
 					// Handle timer interrupt
 					if cpu.interruptEnabled.Load() && !cpu.inInterrupt.Load() {
 						if cpu.mmuEnabled && cpu.intrVector != 0 {
-							// ERET-model interrupt entry (unified with trap path)
-							cpu.trapEntry()
+							// ERET-model interrupt entry (unified with trap path).
+							// If trapEntry overflows, the CPU is halted and PC
+							// must not be redirected to the interrupt vector:
+							// the next loop iteration's trapHalted check will
+							// break out.
+							if !cpu.trapEntry() {
+								running = false
+								continue
+							}
 							cpu.faultPC = cpu.PC
 							cpu.faultAddr = 0
 							cpu.faultCause = FAULT_TIMER
@@ -1814,13 +2027,17 @@ func (cpu *CPU64) Execute() {
 			case CR_TRAP_VEC:
 				cpu.trapVector = val
 			case CR_MMU_CTRL:
-				// Bit 0 = mmuEnabled (writable), Bit 1 = supervisor (read-only, ignored)
-				newMMU := val&1 != 0
+				// Bit 0 = mmuEnabled (writable); Bit 1 = supervisor (read-only, ignored);
+				// Bits 2–3 = SKEF / SKAC enable (writable); Bit 4 = SUA latch
+				// (read-only via MTCR — only SUAEN/SUADIS mutate it).
+				newMMU := val&MMU_CTRL_ENABLE != 0
 				if newMMU != cpu.mmuEnabled {
 					cpu.mmuEnabled = newMMU
 					cpu.tlbFlush()
 					cpu.jitNeedInval = true
 				}
+				cpu.skef = val&MMU_CTRL_SKEF != 0
+				cpu.skac = val&MMU_CTRL_SKAC != 0
 			case CR_TP:
 				cpu.threadPointer = val
 			case CR_INTR_VEC:
@@ -1836,6 +2053,11 @@ func (cpu *CPU64) Execute() {
 				cpu.interruptEnabled.Store(val&2 != 0)
 			case CR_USP:
 				cpu.userSP = val
+			case CR_SAVED_SUA:
+				// Writable so a kernel handler can restore the outer
+				// trap's SUA value before ERET. See CR_MMU_CTRL header
+				// for the nested-trap discipline.
+				cpu.savedSUA = val&1 != 0
 			}
 
 		case OP_MFCR:
@@ -1859,10 +2081,19 @@ func (cpu *CPU64) Execute() {
 			case CR_MMU_CTRL:
 				val = 0
 				if cpu.mmuEnabled {
-					val |= 1
+					val |= MMU_CTRL_ENABLE
 				}
 				if cpu.supervisorMode {
-					val |= 2
+					val |= MMU_CTRL_SUPER
+				}
+				if cpu.skef {
+					val |= MMU_CTRL_SKEF
+				}
+				if cpu.skac {
+					val |= MMU_CTRL_SKAC
+				}
+				if cpu.suaLatch {
+					val |= MMU_CTRL_SUA
 				}
 			case CR_TP:
 				val = cpu.threadPointer
@@ -1888,6 +2119,10 @@ func (cpu *CPU64) Execute() {
 				if cpu.previousMode {
 					val = 1
 				}
+			case CR_SAVED_SUA:
+				if cpu.savedSUA {
+					val = 1
+				}
 			}
 			if rd != 0 {
 				cpu.regs[rd] = val
@@ -1897,6 +2132,8 @@ func (cpu *CPU64) Execute() {
 			if !cpu.requireSupervisor() {
 				continue
 			}
+			// Consume the active frame: its faultPC becomes PC, and its
+			// savedSUA (or 0 for user return) becomes the new suaLatch.
 			cpu.PC = cpu.faultPC
 			if !cpu.previousMode {
 				// Returning to user mode: swap stack and atomically re-enable interrupts.
@@ -1906,7 +2143,17 @@ func (cpu *CPU64) Execute() {
 				cpu.regs[31] = cpu.userSP
 				cpu.supervisorMode = false
 				cpu.interruptEnabled.Store(true)
+				// M15.6 G2: user mode must never have SUA set.
+				cpu.suaLatch = false
+			} else {
+				// Returning to supervisor (nested trap). Restore the SUA
+				// latch the interrupted code path held so an in-flight
+				// copy helper resumes inside its own SUAEN/SUADIS region.
+				cpu.suaLatch = cpu.savedSUA
 			}
+			// Pop the outer frame: active fields now reflect the caller
+			// trap (or fresh zeros if we were at the bottom of the stack).
+			cpu.popTrapFrame()
 			// If previousMode was true, stay in supervisor mode (interrupts stay disabled)
 			continue // PC was set explicitly
 
@@ -1937,6 +2184,18 @@ func (cpu *CPU64) Execute() {
 					cpu.regs[rd] = 0
 				}
 			}
+
+		case OP_SUAEN:
+			if !cpu.requireSupervisor() {
+				continue
+			}
+			cpu.suaLatch = true
+
+		case OP_SUADIS:
+			if !cpu.requireSupervisor() {
+				continue
+			}
+			cpu.suaLatch = false
 
 		// ------------------------------------------------------------------
 		// Atomic Memory RMW
@@ -2618,12 +2877,17 @@ func (cpu *CPU64) StepOne() int {
 			case CR_TRAP_VEC:
 				cpu.trapVector = val
 			case CR_MMU_CTRL:
-				newMMU := val&1 != 0
+				// See MMU_CTRL_* bit constants. Bit 1 (supervisor) is
+				// read-only; bit 4 (SUA latch) is writable only by
+				// SUAEN/SUADIS.
+				newMMU := val&MMU_CTRL_ENABLE != 0
 				if newMMU != cpu.mmuEnabled {
 					cpu.mmuEnabled = newMMU
 					cpu.tlbFlush()
 					cpu.jitNeedInval = true
 				}
+				cpu.skef = val&MMU_CTRL_SKEF != 0
+				cpu.skac = val&MMU_CTRL_SKAC != 0
 			case CR_TP:
 				cpu.threadPointer = val
 			case CR_INTR_VEC:
@@ -2639,6 +2903,9 @@ func (cpu *CPU64) StepOne() int {
 				cpu.interruptEnabled.Store(val&2 != 0)
 			case CR_USP:
 				cpu.userSP = val
+			case CR_SAVED_SUA:
+				// Kernel restores outer-trap SUA before ERET.
+				cpu.savedSUA = val&1 != 0
 			}
 		}
 	case OP_MFCR:
@@ -2662,10 +2929,19 @@ func (cpu *CPU64) StepOne() int {
 			case CR_MMU_CTRL:
 				val = 0
 				if cpu.mmuEnabled {
-					val |= 1
+					val |= MMU_CTRL_ENABLE
 				}
 				if cpu.supervisorMode {
-					val |= 2
+					val |= MMU_CTRL_SUPER
+				}
+				if cpu.skef {
+					val |= MMU_CTRL_SKEF
+				}
+				if cpu.skac {
+					val |= MMU_CTRL_SKAC
+				}
+				if cpu.suaLatch {
+					val |= MMU_CTRL_SUA
 				}
 			case CR_TP:
 				val = cpu.threadPointer
@@ -2691,6 +2967,10 @@ func (cpu *CPU64) StepOne() int {
 				if cpu.previousMode {
 					val = 1
 				}
+			case CR_SAVED_SUA:
+				if cpu.savedSUA {
+					val = 1
+				}
 			}
 			if rd != 0 {
 				cpu.regs[rd] = val
@@ -2700,13 +2980,24 @@ func (cpu *CPU64) StepOne() int {
 		if !cpu.requireSupervisor() {
 			pcAdvanced = true
 		} else {
+			// Consume active frame.
 			cpu.PC = cpu.faultPC
 			if !cpu.previousMode {
 				cpu.kernelSP = cpu.regs[31]
 				cpu.regs[31] = cpu.userSP
 				cpu.supervisorMode = false
 				cpu.interruptEnabled.Store(true)
+				// M15.6 G2: user mode must never have SUA set.
+				cpu.suaLatch = false
+			} else {
+				// Nested supervisor return: restore the interrupted
+				// code path's SUA latch so an in-flight copy helper
+				// resumes inside its SUAEN/SUADIS region.
+				cpu.suaLatch = cpu.savedSUA
 			}
+			// Pop the outer frame; active state becomes the caller trap
+			// (or fresh zeros if we were the outermost trap).
+			cpu.popTrapFrame()
 			pcAdvanced = true
 		}
 	case OP_TLBFLUSH:
@@ -2734,6 +3025,18 @@ func (cpu *CPU64) StepOne() int {
 			} else {
 				cpu.regs[rd] = 0
 			}
+		}
+	case OP_SUAEN:
+		if !cpu.requireSupervisor() {
+			pcAdvanced = true
+		} else {
+			cpu.suaLatch = true
+		}
+	case OP_SUADIS:
+		if !cpu.requireSupervisor() {
+			pcAdvanced = true
+		} else {
+			cpu.suaLatch = false
 		}
 
 	// Atomic Memory RMW

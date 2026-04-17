@@ -756,3 +756,42 @@ The monitor uses an 80x30 character grid rendered with the Amiga 1200 Topaz bitm
 - **Green**: Changed register values, modified bytes in hex editor
 - **Magenta**: Backward branch / loop markers
 - **Dim blue**: Inactive/separator text
+
+## GURU MEDITATION Fault Lines (IE64)
+
+When an IE64 fault escapes the kernel, the console prints a
+`GURU MEDITATION` line with the full fault context. M15.6 extends the
+supported fault causes; the monitor decodes them against the table
+in `IE64_ISA.md` §12.8:
+
+| Cause | Label | Trigger |
+|------:|-------|---------|
+| 0     | `page-not-present` | PTE `P==0` |
+| 1     | `read-denied`      | PTE `R==0` on load |
+| 2     | `write-denied`     | PTE `W==0` on store |
+| 3     | `exec-denied`      | PTE `X==0` on instruction fetch |
+| 4     | `user-supervisor`  | User mode access to `PTE_U==0` page |
+| 5     | `priv`             | User-mode execution of a privileged instruction |
+| 6     | `syscall`          | `SYSCALL` instruction |
+| 7     | `misaligned`       | Atomic RMW with misaligned address |
+| 8     | `timer`            | Timer interrupt (via INTR_VEC) |
+| 9     | `skef`             | Supervisor instruction fetch from user page (`MMU_CTRL.SKEF`) |
+| 10    | `skac`             | Supervisor data access to user page with `MMU_CTRL.SKAC` set and `MMU_CTRL.SUA` clear |
+
+The `SKEF` and `SKAC` lines are new in M15.6 and indicate a kernel
+bug: either a stray supervisor fetch into a user page or a missing
+`SUAEN` / `SUADIS` bracket around a kernel user-memory access. See
+`IE64_COOKBOOK.md` "Supervisor-User Access Helpers" and
+`IntuitionOS/IExec.md` for the canonical usercopy helpers that make
+this class of fault impossible when used correctly.
+
+The emitted line format otherwise follows the M15.5 contract:
+`cause`, `PC`, `ADDR`, `task`, `ACCESS`, `MODE`, `CLASS`, and `PTE`
+bits are all present. Nested-trap state (outer `FAULT_PC`,
+`CR_SAVED_SUA`) is preserved architecturally by the CPU's
+trap-frame stack and is not part of the printed line.
+
+Note: the monitor's IE64 disassembler recognises the new `suaen` and
+`suadis` mnemonics so listings of the shipped iexec kernel show the
+helper bracket at its real source locations rather than as raw
+`dc.b $F3` / `dc.b $F4`.

@@ -472,6 +472,30 @@ PTE_A             equ 0x20        ; Accessed
 PTE_D             equ 0x40        ; Dirty
 
 ; ===========================================================================
+; CR_MMU_CTRL bit constants (M15.6 G2)
+;
+; Bit 0 = MMU translation active; bit 1 = supervisor mode (RO).
+; Bits 2-4 are the SMEP/SMAP-equivalent supervisor guards:
+;   SKEF (bit 2): supervisor instruction fetch from a user page faults.
+;   SKAC (bit 3): supervisor read/write on a user page faults unless SUA is set.
+;   SUA  (bit 4): supervisor-user-access latch. RO via MTCR; the privileged
+;                 SUAEN / SUADIS instructions are the only writers. Trap
+;                 entry saves SUA and clears it; ERET to supervisor restores,
+;                 ERET to user clears.
+; ===========================================================================
+
+MMU_CTRL_ENABLE   equ 0x01
+MMU_CTRL_SUPER    equ 0x02
+MMU_CTRL_SKEF     equ 0x04
+MMU_CTRL_SKAC     equ 0x08
+MMU_CTRL_SUA      equ 0x10
+
+; Fault cause codes raised by SKEF / SKAC. Mirrors the Go-side constants
+; FAULT_SKEF and FAULT_SKAC in cpu_ie64.go.
+FAULT_SKEF        equ 9
+FAULT_SKAC        equ 10
+
+; ===========================================================================
 ; MMU Constants
 ; ===========================================================================
 
