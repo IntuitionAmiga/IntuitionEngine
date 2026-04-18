@@ -24074,6 +24074,97 @@ func TestIExec_M156_R8_DocsLockKernelStackCanaryContract(t *testing.T) {
 	)
 }
 
+func TestIExec_M156_R9_AtomicHelpersUseIE64RMWOps(t *testing.T) {
+	src := mustReadRepoFile(t, "sdk/intuitionos/iexec/iexec.s")
+
+	tests := []struct {
+		name  string
+		label string
+		want  []string
+	}{
+		{
+			name:  "row transition CAS",
+			label: "m16_atomic_row_try_transition:",
+			want: []string{
+				"cas",
+				"move.q r1, r4",
+			},
+		},
+		{
+			name:  "list push uses CAS retry loop",
+			label: "m16_atomic_list_push_head:",
+			want: []string{
+				".m16_alph_retry:",
+				"store.q r4, (r3)",
+				"cas r5, (r1), r2",
+				"bne r5, r4, .m16_alph_retry",
+			},
+		},
+		{
+			name:  "list detach uses XCHG",
+			label: "m16_atomic_list_detach_all:",
+			want: []string{
+				"xchg r2, (r1), r3",
+				"move.q r1, r2",
+			},
+		},
+	}
+
+	collapseWS := func(s string) string {
+		return strings.Join(strings.Fields(s), " ")
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			start := strings.Index(src, tc.label)
+			if start < 0 {
+				t.Fatalf("missing helper label %q", tc.label)
+			}
+			body := src[start:]
+			if next := strings.Index(body[len(tc.label):], "\n; ============================================================================"); next >= 0 {
+				body = body[:len(tc.label)+next]
+			}
+			normalized := collapseWS(body)
+			for _, want := range tc.want {
+				if !strings.Contains(normalized, collapseWS(want)) {
+					t.Fatalf("%s missing %q", tc.label, want)
+				}
+			}
+		})
+	}
+}
+
+func TestIExec_M156_R9_DocsLockAtomicPlumbingContract(t *testing.T) {
+	readme := mustReadRepoFile(t, "README.md")
+	requireAllSubstrings(t, readme,
+		"**Scoped atomic RMW groundwork (M15.6 R9)**",
+		"`m16_atomic_row_try_transition`",
+		"`m16_atomic_list_push_head`",
+		"`m16_atomic_list_detach_all`",
+	)
+
+	roadmap := mustReadRepoFile(t, "IntuitionOS_Roadmap.md")
+	requireAllSubstrings(t, roadmap,
+		"scoped atomic RMW plumbing (`m16_atomic_row_try_transition`,",
+		"`m16_atomic_list_push_head`, `m16_atomic_list_detach_all`)",
+	)
+
+	iexecDoc := mustReadRepoFile(t, "sdk/docs/IntuitionOS/IExec.md")
+	requireAllSubstrings(t, iexecDoc,
+		"Scoped atomic RMW groundwork for M16",
+		"`m16_atomic_row_try_transition`",
+		"`waiters_head` / `opens_head`",
+	)
+
+	m16Plan := mustReadRepoFile(t, "sdk/docs/IntuitionOS/M16-plan.md")
+	requireAllSubstrings(t, m16Plan,
+		"These M16 row/list transitions build on the M15.6 R9 helper layer:",
+		"`m16_atomic_row_try_transition`",
+		"`m16_atomic_list_push_head`",
+		"`m16_atomic_list_detach_all`",
+	)
+}
+
 func TestIExec_M154_DocsLockHardeningContract(t *testing.T) {
 	iexecDoc := mustReadRepoFile(t, "sdk/docs/IntuitionOS/IExec.md")
 	requireAllSubstrings(t, iexecDoc,

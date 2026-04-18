@@ -9243,6 +9243,63 @@ quota_zero_row:
     rts
 
 ; ============================================================================
+; M15.6 R9: scoped atomic RMW groundwork for M16.
+;
+; These helpers are intentionally narrow. They are not a blanket "make the
+; kernel lock-free" policy; they freeze the exact helper layer M16 Phase 1 will
+; use for:
+;   - module-registry row state transitions
+;   - waiters_head pushes / detach
+;   - opens_head pushes / detach
+;
+; Contract: callers store 32-bit task/row ids in 8-byte-aligned qword cells
+; with the upper 32 bits kept zero. IE64 atomics are qword-only, so the helper
+; layer fixes the storage rule now instead of open-coding future M16 CAS/XCHG
+; loops in multiple places.
+; ============================================================================
+
+; m16_atomic_row_try_transition:
+;   R1 = &qword state cell
+;   R2 = expected old value
+;   R3 = desired new value
+; Returns:
+;   R1 = observed old value (equal to expected on success)
+; Clobbers: R4
+m16_atomic_row_try_transition:
+    move.q  r4, r2
+    cas     r4, (r1), r3
+    move.q  r1, r4
+    rts
+
+; m16_atomic_list_push_head:
+;   R1 = &qword head cell
+;   R2 = node token/value to publish
+;   R3 = &node.next qword cell
+; Returns:
+;   R1 = inserted node token/value
+; Clobbers: R4, R5
+m16_atomic_list_push_head:
+.m16_alph_retry:
+    load.q  r4, (r1)                    ; snapshot current head
+    store.q r4, (r3)                    ; node.next = snapshot
+    move.q  r5, r4
+    cas     r5, (r1), r2                ; publish only if head unchanged
+    bne     r5, r4, .m16_alph_retry
+    move.q  r1, r2
+    rts
+
+; m16_atomic_list_detach_all:
+;   R1 = &qword head cell
+; Returns:
+;   R1 = old head value; cell is now 0
+; Clobbers: R2, R3
+m16_atomic_list_detach_all:
+    move.q  r3, #0
+    xchg    r2, (r1), r3
+    move.q  r1, r2
+    rts
+
+; ============================================================================
 ; kill_task_cleanup: clean up task R13, mark FREE.
 ; Input: R13 = task to kill, R12 = KERN_DATA_BASE, R14 = TASK_EXIT_REASON_*
 ; Clobbers: R15-R24

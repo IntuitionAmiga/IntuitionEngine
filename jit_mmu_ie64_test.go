@@ -943,6 +943,58 @@ func TestJIT_CAS_WithMMU(t *testing.T) {
 	}
 }
 
+func TestJIT_FAA_NoMMU(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	cpu.jitEnabled = true
+
+	addr := uint32(0x3000)
+	binary.LittleEndian.PutUint64(cpu.memory[addr:], 10)
+
+	rig.loadInstructions(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, addr),
+		ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 5),
+		ie64Instr(OP_FAA, 2, 0, 0, 1, 3, 0),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+	)
+	cpu.running.Store(true)
+	cpu.jitExecute()
+
+	got := binary.LittleEndian.Uint64(cpu.memory[addr:])
+	if got != 15 {
+		t.Fatalf("JIT FAA: mem = %d, want 15", got)
+	}
+	if cpu.regs[2] != 10 {
+		t.Fatalf("JIT FAA old: R2 = %d, want 10", cpu.regs[2])
+	}
+}
+
+func TestJIT_XCHG_NoMMU(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	cpu.jitEnabled = true
+
+	addr := uint32(0x3000)
+	binary.LittleEndian.PutUint64(cpu.memory[addr:], 0xDEAD)
+
+	rig.loadInstructions(
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, addr),
+		ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0xBEEF),
+		ie64Instr(OP_XCHG, 2, 0, 0, 1, 3, 0),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+	)
+	cpu.running.Store(true)
+	cpu.jitExecute()
+
+	got := binary.LittleEndian.Uint64(cpu.memory[addr:])
+	if got != 0xBEEF {
+		t.Fatalf("JIT XCHG: mem = 0x%X, want 0xBEEF", got)
+	}
+	if cpu.regs[2] != 0xDEAD {
+		t.Fatalf("JIT XCHG old: R2 = 0x%X, want 0xDEAD", cpu.regs[2])
+	}
+}
+
 func TestJIT_Atomic_MisalignedFaultJIT(t *testing.T) {
 	rig := newIE64TestRig()
 	cpu := rig.cpu

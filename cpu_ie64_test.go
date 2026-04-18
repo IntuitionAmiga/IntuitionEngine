@@ -5,6 +5,8 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -2646,6 +2648,62 @@ func TestIE64_Atomic_WithDisplacement(t *testing.T) {
 	}
 	if rig.cpu.regs[2] != 50 {
 		t.Fatalf("FAA disp old: R2 = %d, want 50", rig.cpu.regs[2])
+	}
+}
+
+func TestIE64_AtomicFAA_HostAtomicUnderContention(t *testing.T) {
+	var word uint64
+	const goroutines = 8
+	const iters = 5000
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iters; j++ {
+				old := atomicRMW64(&word, 0, 1, OP_FAA)
+				if old >= goroutines*iters {
+					t.Errorf("FAA returned impossible old value %d", old)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	want := uint64(goroutines * iters)
+	if word != want {
+		t.Fatalf("contended FAA final word = %d, want %d", word, want)
+	}
+}
+
+func TestIE64_AtomicCAS_HostAtomicCounterLoop(t *testing.T) {
+	var word uint64
+	const goroutines = 8
+	const iters = 2000
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iters; j++ {
+				for {
+					cur := atomic.LoadUint64(&word)
+					old := atomicRMW64(&word, cur, cur+1, OP_CAS)
+					if old == cur {
+						break
+					}
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	want := uint64(goroutines * iters)
+	if word != want {
+		t.Fatalf("contended CAS loop final word = %d, want %d", word, want)
 	}
 }
 

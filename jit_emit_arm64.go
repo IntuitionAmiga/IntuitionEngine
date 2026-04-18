@@ -1037,7 +1037,8 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint32, isLast b
 		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
 		return
 
-	// Atomic RMW: always bail to interpreter
+	// Atomic RMW: always bail to interpreter so IE64 atomics keep the
+	// centralized sequentially-consistent atomicRMW64 semantics.
 	case OP_CAS, OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR:
 		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
 		return

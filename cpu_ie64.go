@@ -619,6 +619,36 @@ func (cpu *CPU64) requireSupervisor() bool {
 // Atomic Memory RMW Helper
 // ------------------------------------------------------------------------------
 
+// atomicRMW64 applies one IE64 atomic memory operation to ptr and returns the
+// pre-operation value. All operations are sequentially consistent. rdVal is
+// only consulted for OP_CAS; other ops ignore it.
+func atomicRMW64(ptr *uint64, rdVal, rtVal uint64, op byte) uint64 {
+	switch op {
+	case OP_CAS:
+		if atomic.CompareAndSwapUint64(ptr, rdVal, rtVal) {
+			return rdVal
+		}
+		return atomic.LoadUint64(ptr)
+	case OP_XCHG:
+		return atomic.SwapUint64(ptr, rtVal)
+	case OP_FAA:
+		return atomic.AddUint64(ptr, rtVal) - rtVal
+	case OP_FAND:
+		return atomic.AndUint64(ptr, rtVal)
+	case OP_FOR:
+		return atomic.OrUint64(ptr, rtVal)
+	case OP_FXOR:
+		for {
+			old := atomic.LoadUint64(ptr)
+			if atomic.CompareAndSwapUint64(ptr, old, old^rtVal) {
+				return old
+			}
+		}
+	default:
+		panic("unsupported IE64 atomic opcode")
+	}
+}
+
 // execAtomic performs an atomic read-modify-write on a 64-bit aligned address.
 // op selects the operation: OP_CAS, OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR.
 // Sets cpu.trapped on fault (misalignment, MMU, I/O region).
@@ -657,26 +687,8 @@ func (cpu *CPU64) execAtomic(rd, rs, rt byte, imm32 uint32, op byte) {
 		return
 	}
 
-	base := unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr))
-	old := *(*uint64)(base)
-
-	switch op {
-	case OP_CAS:
-		if old == cpu.regs[rd] {
-			*(*uint64)(base) = cpu.regs[rt]
-		}
-	case OP_XCHG:
-		*(*uint64)(base) = cpu.regs[rt]
-	case OP_FAA:
-		*(*uint64)(base) = old + cpu.regs[rt]
-	case OP_FAND:
-		*(*uint64)(base) = old & cpu.regs[rt]
-	case OP_FOR:
-		*(*uint64)(base) = old | cpu.regs[rt]
-	case OP_FXOR:
-		*(*uint64)(base) = old ^ cpu.regs[rt]
-	}
-
+	word := (*uint64)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr)))
+	old := atomicRMW64(word, cpu.regs[rd], cpu.regs[rt], op)
 	cpu.setReg(rd, old)
 }
 

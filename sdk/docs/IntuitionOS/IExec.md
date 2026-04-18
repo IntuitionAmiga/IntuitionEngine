@@ -219,6 +219,13 @@ IExec enforces a write-XOR-execute policy:
   one sentinel word at the bottom of the mapped kernel stack page on trap /
   interrupt entry. This is a narrow corruption tripwire, not a substitute for
   the guard-page hardening above.
+- **Scoped atomic RMW groundwork for M16**: M15.6 freezes a narrow helper
+  layer in `iexec.s` for future module-registry row transitions and
+  `waiters_head` / `opens_head` list publication. The shipped helpers are
+  `m16_atomic_row_try_transition`, `m16_atomic_list_push_head`, and
+  `m16_atomic_list_detach_all`, each built directly on IE64 `CAS` / `XCHG`.
+  This is explicit prerequisite plumbing for M16, not a new "kernel is
+  generally lock-free" contract.
 - A page fault is raised if user code attempts to write to an X page or execute from a W page
 
 As of **M15.6**, the host-side JIT that executes IE64 binaries is

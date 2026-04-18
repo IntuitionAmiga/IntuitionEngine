@@ -210,7 +210,9 @@ func needsFallback(instrs []JITInstr) bool {
 		OP_SUAEN, OP_SUADIS:
 		return true
 	}
-	// Atomic RMW always interpreted (infrequent sync ops)
+	// Atomic RMW always interpreted. The interpreter path owns the
+	// sequentially-consistent atomicRMW64 contract; the JIT must not
+	// silently grow a weaker or partial inline implementation.
 	switch op {
 	case OP_CAS, OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR:
 		return true

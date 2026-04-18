@@ -300,7 +300,7 @@ The JIT falls back to the interpreter in these cases:
 | HALT, WAIT, RTI mid-block | Emitted as bail-to-interpreter (set NeedIOFallback, epilogue) |
 | I/O page memory access | Dual-path: bail to interpreter on I/O bitmap hit |
 | FPU transcendentals | Always bail to interpreter |
-| Atomic RMW (CAS, XCHG, FAA, FAND, FOR, FXOR) | Always bail to interpreter (MMU-on and MMU-off) |
+| Atomic RMW (CAS, XCHG, FAA, FAND, FOR, FXOR) | Always bail to interpreter (MMU-on and MMU-off; centralized SC semantics) |
 | FINT (x86-64 only) | Bail to interpreter (ROUNDSS requires SSE4.1) |
 | FCVTFI (x86-64 only) | Bail to interpreter (saturating + NaN semantics) |
 | ExecMem exhausted | `compileBlock` returns error, dispatcher calls `interpretOne()` |
@@ -413,7 +413,7 @@ Each bailed instruction packs the current PC and retired instruction count into 
 
 Non-memory instructions (ALU, FPU arithmetic, branches, moves) are still compiled to native code and execute at full JIT speed within the block.
 
-**Note on atomics**: The six atomic memory operations (CAS, XCHG, FAA, FAND, FOR, FXOR) always bail to the interpreter regardless of whether the MMU is enabled. They are infrequent synchronisation operations where correctness outweighs compilation overhead. The bail applies in both MMU-on and MMU-off modes.
+**Note on atomics**: The six atomic memory operations (CAS, XCHG, FAA, FAND, FOR, FXOR) always bail to the interpreter regardless of whether the MMU is enabled. They are infrequent synchronisation operations where correctness outweighs compilation overhead, and the interpreter now owns the canonical sequentially-consistent implementation via `atomicRMW64` in `cpu_ie64.go`. Both JIT backends deliberately preserve that single source of truth rather than growing separate host-atomic sequences with subtly different semantics. The bail applies in both MMU-on and MMU-off modes.
 
 ### Block Fetch and Page Boundaries
 
