@@ -421,6 +421,7 @@ prog_doslib_code:
     beqz    r15, .dos_have_buf         ; messages like DOS_CLOSE don't need a buffer
     store.l r15, 984(r29)              ; update cached handle
     move.q  r1, r15                    ; R1 = new share_handle
+    move.l  r2, #(MAPF_READ | MAPF_WRITE)
     syscall #SYS_MAP_SHARED            ; R1=VA R2=err R3=share_pages
     move.q  r24, r3                    ; preserve R3 across r29 reload
     load.q  r29, (sp)

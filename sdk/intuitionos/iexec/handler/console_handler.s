@@ -116,6 +116,7 @@ prog_console_code:
 
     ; First time: MapShared to get VA
     load.l  r1, 160(r29)              ; share_handle
+    move.l  r2, #(MAPF_READ | MAPF_WRITE)
     syscall #SYS_MAP_SHARED            ; R1 = VA, R2 = err
     load.q  r29, (sp)
     beqz    r1, .con_poll_loop         ; MapShared failed, drop request

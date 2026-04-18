@@ -273,6 +273,7 @@ prog_intui_code:
     load.l  r14, 304(r29)              ; saved share_handle
     store.l r14, 240(r29)              ; win_share
     move.q  r1, r14
+    move.l  r2, #MAPF_READ
     syscall #SYS_MAP_SHARED            ; R1=va R2=err
     load.q  r29, (sp)
     bnez    r2, .intui_reply_badarg

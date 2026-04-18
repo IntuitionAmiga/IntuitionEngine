@@ -263,7 +263,7 @@ overflow-halts-cleanly behaviour.
 
 ### 2.5 Shared Memory
 
-Shared memory regions are created via `AllocMem(MEMF_PUBLIC)`, which returns a VA and an opaque share handle in R3. Another task maps the region by calling `MapShared(share_handle)`. Both tasks see the same physical pages. The kernel tracks reference counts; `FreeMem` on a shared mapping removes the caller's mapping and decrements the refcount. Physical pages are scrubbed and freed when the last mapping is removed or the last mapping task exits. Share handles encode a 24-bit nonce derived from a monotonic kernel counter, guaranteeing that reusing a slot always produces a different handle. Stale handles are rejected with `ERR_BADHANDLE`.
+Shared memory regions are created via `AllocMem(MEMF_PUBLIC)`, which returns a VA and an opaque share handle in R3. Another task maps the region by calling `MapShared(share_handle, map_flags)`, where `map_flags` is a required `MAPF_READ` / `MAPF_WRITE` bitmask in R2. Both tasks still see the same physical pages, but M15.6 narrows the consumer-side PTEs to the requested access: `PTE_W` is set only when `MAPF_WRITE` is present, and `PTE_X` is never set. Calls without a permission mask are a hard `ERR_BADARG`; there is no compatibility fallback to the old permissive default. The kernel tracks reference counts; `FreeMem` on a shared mapping removes the caller's mapping and decrements the refcount. Physical pages are scrubbed and freed when the last mapping is removed or the last mapping task exits. Share handles encode a 24-bit nonce derived from a monotonic kernel counter, guaranteeing that reusing a slot always produces a different handle. Stale handles are rejected with `ERR_BADHANDLE`.
 
 ---
 
@@ -370,9 +370,9 @@ The CPU traps to supervisor mode. The kernel's trap handler reads the syscall nu
 | 1 | `AllocMem` | R1=size, R2=flags -> R1=addr, R2=err, R3=share_handle | **Implemented** (`nucleus`) |
 | 2 | `FreeMem` | R1=addr, R2=size -> R2=err | **Implemented** (`nucleus`) |
 | 3 | -- | -- | Removed M11.5 (was `AllocShared`; slot is now an unallocated hole) |
-| 4 | `MapShared` | R1=share_handle -> R1=addr, R2=err, R3=share_pages | **Implemented (M11 extended)** (`nucleus`) |
+| 4 | `MapShared` | R1=share_handle, R2=map_flags -> R1=addr, R2=err, R3=share_pages | **Implemented (M15.6 ABI)** (`nucleus`) |
 
-`AllocMem` flags: MEMF_PUBLIC (bit 0) = shareable across tasks, MEMF_CLEAR (bit 16) = zero-fill. Matches classic Amiga MEMF_ conventions. All allocations are page-granular (4 KiB). `MEMF_CLEAR` only guarantees allocation-time zeroing; independently of that flag, `FreeMem` and shared-memory last-reference teardown now zero the backing pages before releasing them back to the allocator. `FreeMem` size is also page-granular: the kernel rounds size up to pages and compares the page count against the allocation's page count. Any size that rounds to the same number of pages is accepted (e.g., both 5000 and 8192 free a 2-page allocation).
+`AllocMem` flags: MEMF_PUBLIC (bit 0) = shareable across tasks, MEMF_CLEAR (bit 16) = zero-fill. Matches classic Amiga MEMF_ conventions. `MapShared` flags: `MAPF_READ` (bit 0) and `MAPF_WRITE` (bit 1); callers must pass a non-zero subset of those two bits, or the syscall returns `ERR_BADARG`. All allocations are page-granular (4 KiB). `MEMF_CLEAR` only guarantees allocation-time zeroing; independently of that flag, `FreeMem` and shared-memory last-reference teardown now zero the backing pages before releasing them back to the allocator. `FreeMem` size is also page-granular: the kernel rounds size up to pages and compares the page count against the allocation's page count. Any size that rounds to the same number of pages is accepted (e.g., both 5000 and 8192 free a 2-page allocation).
 
 ### 5.2 Task Management
 
@@ -739,7 +739,7 @@ Each port has:
 
 Messages are fixed-size (32 bytes) and kernel-copied. Each message contains: type (4 bytes), sender task ID (4 bytes), data0 (8 bytes), data1 (8 bytes), reply_port (2 bytes, 0xFFFF = none), and share_handle (4 bytes, 0 = none). `PutMsg` writes the message directly into the target port's kernel-managed FIFO (4 slots per port). `GetMsg` dequeues the oldest message and returns all fields in R1-R6. This fixed-size model is simple and assembly-friendly.
 
-For bulk data transfer, use shared memory: the sender includes a share_handle in the message (from `AllocMem(MEMF_PUBLIC)`), and the receiver calls `MapShared` to access the shared region. This is the protected-Amiga equivalent of "I gave you a pointer."
+For bulk data transfer, use shared memory: the sender includes a share_handle in the message (from `AllocMem(MEMF_PUBLIC)`), and the receiver calls `MapShared` with an explicit `MAPF_READ` / `MAPF_WRITE` mask to access the shared region. This is the protected-Amiga equivalent of "I gave you a pointer."
 
 ### 7.3 Reply Protocol
 
@@ -940,7 +940,7 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 
 - `AllocMem` syscall (1): allocate private or shared pages. R1=size, R2=flags (MEMF_PUBLIC, MEMF_CLEAR), returns R1=VA, R2=err, R3=share_handle (if MEMF_PUBLIC). Page-granular (4 KiB minimum). Kernel manages physical page pool and per-task virtual address windows.
 - `FreeMem` syscall (2): free allocated memory. R1=addr, R2=size (must round to the same page count as the original allocation; the allocator is page-granular). Unmaps pages from caller's page table. The backing pages are scrubbed before release. For shared mappings, the syscall decrements the refcount; physical pages are scrubbed and freed when the last reference is removed.
-- `MapShared` syscall (4): map a shared memory region by handle. R1=share_handle (opaque capability from AllocMem MEMF_PUBLIC), returns R1=mapped VA, R2=err, R3=share_pages (page count of the share, returned so user-space services can clamp byte counts to the actual mapped size — added in M11). Validates handle nonce to reject stale/invalid handles.
+- `MapShared` syscall (4): map a shared memory region by handle. R1=share_handle (opaque capability from AllocMem MEMF_PUBLIC), R2=map_flags (`MAPF_READ`, `MAPF_WRITE`, or both), returns R1=mapped VA, R2=err, R3=share_pages (page count of the share, returned so user-space services can clamp byte counts to the actual mapped size — added in M11). Validates handle nonce to reject stale/invalid handles. Missing masks and unknown bits are a hard `ERR_BADARG`. `PTE_W` is set only for `MAPF_WRITE`, and `PTE_X` is never set.
 - Physical page allocator: bitmap-based contiguous allocation from 6400-page pool ($700000-$1FFFFFF).
 - Per-task dynamic VA windows: each task gets 3 MB (768 pages) at $800000+task_id*$300000 (M11 stride).
 - MEMF_ flags: MEMF_PUBLIC (bit 0, classic Amiga), MEMF_CLEAR (bit 16, classic Amiga zero-fill).
@@ -976,7 +976,7 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 - **CONSOLE**: creates public "CONSOLE" port, prints own ONLINE banner directly, loops receiving messages and printing data0 as chars. Text output service - all programs send through CONSOLE.
 - **ECHO**: finds CONSOLE, announces online, creates "ECHO" port, allocates shared memory with greeting string, waits for request, replies with share_handle.
 - **CLOCK**: finds CONSOLE, announces online, polls tick_count via GetSysInfo, sends '.' to CONSOLE every 32 ticks. Polling-based (no timer syscall yet).
-- **CLIENT**: finds CONSOLE and ECHO, announces online, sends request to ECHO, receives share_handle in reply, `MapShared`, then sends "SHARED: " + greeting chars to CONSOLE.
+- **CLIENT**: finds CONSOLE and ECHO, announces online, sends request to ECHO, receives share_handle in reply, `MapShared(..., MAPF_READ)`, then sends "SHARED: " + greeting chars to CONSOLE.
 - **All visible output from user space**: kernel only prints boot banner. Every service announcement, request/reply narration, and periodic tick comes from loaded user programs.
 - **Retired**: hardcoded task templates (user_task0_template, user_task1_template, child_task_template), USER_CODE_SIZE constant. Kernel is now mechanism-only.
 
@@ -1114,7 +1114,7 @@ M11 takes the next step toward an Amiga-shaped graphical OS: interactive input a
   - Adapter: enumerable; M11 has 1 adapter (the `IEVideoChip`).
   - Mode: queryable mode table; M11 has 1 mode (`{mode_id=0, width=640, height=480, format=RGBA32, stride=2560}`).
   - Display: opened by `(adapter_id, mode_id)`; M11 only `(0, 0)` succeeds. Single display owner for M11. `display_handle = 1`.
-  - Surface: client owns the buffer (allocated with `MEMF_PUBLIC`), passes the share_handle in `GFX_REGISTER_SURFACE`. graphics.library does `MapShared` and caches the mapped VA. Single surface for M11 (VA budget — see kernel section). `surface_handle = 1`.
+  - Surface: client owns the buffer (allocated with `MEMF_PUBLIC`), passes the share_handle in `GFX_REGISTER_SURFACE`. graphics.library does `MapShared(..., MAPF_READ)` and caches the mapped VA. Single surface for M11 (VA budget — see kernel section). `surface_handle = 1`.
 - **Present**: full-frame CPU memcpy from the mapped surface VA to the mapped VRAM VA (1228800 bytes). Synchronous reply with `present_seq` (per-surface monotonic counter). Forward-compatible: `mn_Data1` reserves a packed dirty rect for future rect-bounded copies (M11 always sends 0 = full frame).
 - **Mode set**: `GFX_OPEN_DISPLAY` writes `MODE_640x480` (= 0) to `VIDEO_MODE` and enables the chip with `VIDEO_CTRL = 1`. (Note: the constant `CTRL_DISABLE_FLAG = 0` in `video_chip.go` and its accompanying comment are misleading — the actual chip code at `video_chip.go:2653` enables the chip when `value != 0`, so writing `1` enables and writing `0` disables. Existing examples like `mandelbrot_ie64.asm` and `rotozoomer.asm` use the same `VIDEO_CTRL = 1` convention.) `GFX_CLOSE_DISPLAY` resets `VIDEO_MODE` to `MODE_800x600` (the default) and writes `VIDEO_CTRL = 0` to disable scanout, so the next `GFX_OPEN_DISPLAY` re-enables cleanly.
 - **Internal layering**: M11 ships graphics.library as a single monolithic service block — IEVideo-specific MMIO writes are inlined directly into the message-dispatch handlers. The plan called for a generic display/service layer plus a backend vtable (`init`, `set_mode`, `restore_mode`, `present_full`, `present_rect`, `shutdown`) so M12+ adapters could plug in cleanly, but that refactor is **deferred to M12** and will happen naturally when a second adapter driver is introduced.
@@ -1256,7 +1256,7 @@ M12 ships the first user-space windowing layer (`intuition.library`) and quietly
 3. `GFX_OPEN_DISPLAY(0, 0)` → `display_handle`. graphics.library writes `VIDEO_MODE = MODE_800x600 = 1`, which matches the chip's `DEFAULT_VIDEO_MODE` so the chip's frontBuffer is NOT reallocated and any kernel-side `VideoTerminal` rendering keeps its dimensions valid.
 4. `GFX_REGISTER_SURFACE(display_handle, dims, share=screen_share)` → `surface_handle`. The geometry is encoded as `(800<<48)|(600<<32)|(format<<16)|stride`, with `stride = 3200` (= 800 × 4). intuition.library is now the **sole** registered display client.
 5. `INPUT_OPEN(my_input_port)` to receive raw `IE_KEY_DOWN`/`IE_MOUSE_MOVE`/`IE_MOUSE_BTN` events. The reply type is checked: if input.device returns `INPUT_ERR_BUSY` (another client already owns the subscription), intuition.library records `input_subscribed = 0` and the close path will SKIP `INPUT_CLOSE` so it doesn't clobber the other subscriber.
-6. `MapShared(client_window_buffer)` → cached `win_mapped_va`
+6. `MapShared(client_window_buffer, MAPF_READ)` → cached `win_mapped_va`
 
 Until that first OPEN_WINDOW the system stays in text mode (intuition.library has not yet called `GFX_OPEN_DISPLAY` or allocated its screen surface). This matches the M12 plan's "lazy display ownership" rule and lets the boot/test paths stay text-only when no app needs windowing.
 

@@ -7500,12 +7500,14 @@ trap_handler:
 ; MapShared (SYS_MAP_SHARED = 4)
 ; ============================================================================
 ; R1 = share_handle (opaque 32-bit: nonce<<8 | slot)
+; R2 = map_flags (MAPF_READ / MAPF_WRITE, non-zero subset only)
 ; Returns: R1 = VA, R2 = err, R3 = page count of the share
 ;
 ; The page count is returned so user-space services (e.g. dos.library)
 ; can clamp byte_count parameters from clients to the actual mapped
-; size, preventing reads/writes past the mapped region. Backwards
-; compatible: M9/M10 callers that ignored R3 keep working.
+; size, preventing reads/writes past the mapped region. M15.6 G6 makes
+; the permission mask explicit: omitted or unknown bits are a hard
+; ERR_BADARG (no legacy permissive fallback).
 
 .do_map_shared:
     move.q  r24, r1                     ; r24 = handle
@@ -7515,6 +7517,14 @@ trap_handler:
     move.l  r11, #KERN_PAGE_TABLE
     mtcr    cr0, r11
     tlbflush
+    sub     sp, sp, #16
+    store.q r2, 0(sp)                   ; save requested map_flags across helper calls
+
+    ; M15.6 G6: MapShared requires an explicit non-zero permission mask
+    ; containing only MAPF_READ / MAPF_WRITE.
+    and     r11, r2, #(MAPF_READ | MAPF_WRITE)
+    beqz    r11, .ms_badarg
+    bne     r11, r2, .ms_badarg
 
     ; Decode handle: slot = handle & 0xFF, nonce = (handle >> 8) & 0xFFFFFF
     and     r20, r24, #0xFF             ; r20 = slot id
@@ -7555,6 +7565,7 @@ trap_handler:
     beqz    r1, .ms_quota_ok
     mtcr    cr0, r19
     tlbflush
+    add     sp, sp, #16
     move.q  r1, #0
     move.q  r2, #ERR_QUOTA
     move.q  r3, #0
@@ -7620,7 +7631,17 @@ trap_handler:
     move.q  r2, r25                     ; R2 = VA
     load.w  r3, KD_SHM_PPN(r14)        ; R3 = PPN from shared object
     move.q  r4, r23                     ; R4 = page count
-    move.l  r5, #0x17                   ; R5 = P|R|W|U
+    move.l  r5, #(PTE_P | PTE_U)
+    load.q  r11, 0(sp)                  ; requested map_flags
+    and     r11, r11, #MAPF_READ
+    beqz    r11, .ms_map_no_read
+    or      r5, r5, #PTE_R
+.ms_map_no_read:
+    load.q  r11, 0(sp)
+    and     r11, r11, #MAPF_WRITE
+    beqz    r11, .ms_map_no_write
+    or      r5, r5, #PTE_W
+.ms_map_no_write:
     jsr     map_pages
 
     ; Increment refcount
@@ -7642,14 +7663,25 @@ trap_handler:
     tlbflush
     mtcr    cr0, r19
     tlbflush
+    add     sp, sp, #16
     move.q  r1, r25                     ; R1 = VA
     move.q  r2, #ERR_OK                 ; R2 = err
     move.q  r3, r23                     ; R3 = page count (saved at line ~2385)
     eret
 
+.ms_badarg:
+    mtcr    cr0, r19
+    tlbflush
+    add     sp, sp, #16
+    move.q  r1, #0
+    move.q  r2, #ERR_BADARG
+    move.q  r3, #0
+    eret
+
 .ms_badhandle:
     mtcr    cr0, r19
     tlbflush
+    add     sp, sp, #16
     move.q  r1, #0
     move.q  r2, #ERR_BADHANDLE
     move.q  r3, #0
@@ -7667,6 +7699,7 @@ trap_handler:
     jsr     quota_return
     mtcr    cr0, r19
     tlbflush
+    add     sp, sp, #16
     move.q  r1, #0
     move.q  r2, #ERR_NOMEM
     move.q  r3, #0

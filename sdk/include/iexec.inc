@@ -101,6 +101,18 @@ ERR_QUOTA         equ 10         ; M15.6 G3: caller's per-task quota reached its
                                  ; of budget" from "the whole kernel is out of <resource>".
 
 ; ===========================================================================
+; MapShared Permission Bits (M15.6 G6)
+; ===========================================================================
+;
+; SYS_MAP_SHARED now requires an explicit permission bitmask in R2.
+; Missing or unknown bits are a hard ERR_BADARG; there is no legacy
+; "default RW" fallback.
+; ===========================================================================
+
+MAPF_READ         equ 0x01
+MAPF_WRITE        equ 0x02
+
+; ===========================================================================
 ; CR_MMU_CTRL bit constants (M15.6 G2)
 ;
 ; Bit 0 = MMU translation active; bit 1 = supervisor mode (RO).

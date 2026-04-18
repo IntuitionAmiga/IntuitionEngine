@@ -61,6 +61,13 @@ Control register 14 holds the `SUA` snapshot taken on trap entry. Kernel assembl
 
 The `copy_from_user`, `copy_to_user`, and `copy_cstring_from_user` helpers in `sdk/intuitionos/iexec/iexec.s` wrap their user-memory accesses with `SUAEN` / `SUADIS` and are the only sanctioned way to touch a user pointer from supervisor code. See `sdk/docs/IE64_COOKBOOK.md` and `sdk/docs/IntuitionOS/IExec.md` for the worked calling convention.
 
+The same header now exports the M15.6 shared-memory permission bits used by `SYS_MAP_SHARED`:
+
+- `MAPF_READ` (bit 0) — install a readable user mapping.
+- `MAPF_WRITE` (bit 1) — install a writable user mapping.
+
+`SYS_MAP_SHARED` requires a non-zero subset of those bits in `R2`; omitted masks and unknown bits fail with `ERR_BADARG`. The kernel never sets `PTE_X` for shared mappings.
+
 `iexec.inc` also adds two `BOOT_HOSTFS_*` commands that back the writable `SYS:` overlay:
 
 - `BOOT_HOSTFS_CREATE_WRITE` (6) — `arg1 = path ptr`. Opens (or creates+truncates) the file for writing; returns a host handle in `res1`. The host device rejects any path whose first component is `IOSSYS` (case-insensitive), enforcing the read-only IOSSYS namespace.

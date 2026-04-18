@@ -265,6 +265,7 @@ prog_gfxlib_code:
     bnez    r14, .gfx_reply_busy       ; already have one (single surface for M11)
     ; MapShared(share_handle)
     load.l  r1, 232(r29)               ; share_handle
+    move.l  r2, #MAPF_READ
     syscall #SYS_MAP_SHARED            ; R1=mapped_va R2=err
     load.q  r29, (sp)
     bnez    r2, .gfx_reply_bad_format
