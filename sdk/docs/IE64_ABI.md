@@ -258,6 +258,8 @@ The `SUA` latch is supervisor-mode state and does not leak to user
 code: user-mode `ERET` forces `SUA = 0` regardless of the
 interrupted supervisor latch value.
 
+`CR_FAULT_PC` is supervisor-owned state: user code cannot write it directly because user-mode `MTCR CR_FAULT_PC` faults with `FAULT_PRIV`. That does not weaken the trap ABI: kernel trap handlers may rewrite `CR_FAULT_PC` before `ERET` when they intentionally want to skip or redirect a faulting instruction.
+
 ## 9. TLS Convention
 
 - TP (CR6) is reserved for thread/task-local storage.

@@ -2275,6 +2275,46 @@ func TestIE64_MTCR_InUserMode_Traps(t *testing.T) {
 	}
 }
 
+func TestIE64_MTCR_FAULTPC_InUserMode_TrapsAndKernelCanSkip(t *testing.T) {
+	rig := newIE64TestRig()
+	trapAddr := uint64(0x8000)
+	rig.cpu.trapVector = trapAddr
+
+	// Handler advances CR_FAULT_PC past the faulting MTCR so ERET resumes
+	// at the marker instead of re-executing the trap.
+	handler := append([]byte{},
+		ie64Instr(OP_MFCR, 10, 0, 0, CR_FAULT_CAUSE, 0, 0)...,
+	)
+	handler = append(handler, ie64Instr(OP_MFCR, 11, 0, 0, CR_FAULT_PC, 0, 0)...)
+	handler = append(handler, ie64Instr(OP_MOVE, 12, IE64_SIZE_Q, 0, 11, 0, 0)...)
+	handler = append(handler, ie64Instr(OP_ADD, 12, IE64_SIZE_Q, 1, 12, 0, IE64_INSTR_SIZE)...)
+	handler = append(handler, ie64Instr(OP_MTCR, CR_FAULT_PC, 0, 0, 12, 0, 0)...)
+	handler = append(handler, ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0)...)
+	copy(rig.cpu.memory[trapAddr:], handler)
+
+	faultingPC := uint64(PROG_START) + IE64_INSTR_SIZE
+	rig.cpu.faultPC = faultingPC
+	rig.cpu.regs[1] = 0xDEADBEEF // poisoned sentinel: must not leak into CR_FAULT_PC
+	rig.loadInstructions(
+		ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0),
+		ie64Instr(OP_MTCR, CR_FAULT_PC, 0, 0, 1, 0, 0),
+		ie64Instr(OP_MOVEQ, 2, 0, 1, 0, 0, 0xCAFE),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+	)
+	rig.cpu.running.Store(true)
+	rig.cpu.Execute()
+
+	if rig.cpu.regs[10] != FAULT_PRIV {
+		t.Fatalf("trap handler saw faultCause = %d, want %d", rig.cpu.regs[10], FAULT_PRIV)
+	}
+	if rig.cpu.regs[11] != faultingPC {
+		t.Fatalf("trap handler saw faultPC = 0x%X, want 0x%X", rig.cpu.regs[11], faultingPC)
+	}
+	if rig.cpu.regs[2] != 0xCAFE {
+		t.Fatalf("post-trap marker not reached: R2 = 0x%X, want 0xCAFE", rig.cpu.regs[2])
+	}
+}
+
 func TestIE64_PrivViolation_SavesFaultingPC(t *testing.T) {
 	rig := newIE64TestRig()
 	trapAddr := uint64(0x8000)

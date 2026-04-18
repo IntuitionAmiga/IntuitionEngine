@@ -1277,6 +1277,7 @@ Nine opcodes in the System range. All except SYSCALL and SMODE are privileged (s
 - The CR index is encoded in the Rd field (0-12).
 - All CRs are writable except MMU_CTRL bit 1 (supervisor mode), which is silently ignored on write. This means trap handlers can modify FAULT_PC (CR3) before ERET to redirect execution.
 - Writing to PTBR or MMU_CTRL bit 0 invalidates the JIT code cache and flushes the TLB.
+- `CR_FAULT_PC` is not a user-service escape hatch: user-mode `MTCR CR_FAULT_PC` faults with cause 5 (`FAULT_PRIV`) just like any other privileged MTCR. Only supervisor-mode trap handlers may rewrite it.
 
 **MFCR** (opcode `0xE7`):
 - Reads control register CRn into general-purpose register Rd.
@@ -1289,8 +1290,8 @@ Nine opcodes in the System range. All except SYSCALL and SMODE are privileged (s
 - If the previous mode was supervisor: stays in supervisor mode with no stack swap and restores the live `SUA` latch from the active frame's `CR_SAVED_SUA`.
 - Does not pop a software stack. The trap entry does not push to the data stack — the push/pop here refers to the CPU's internal trap-frame stack (12.14).
 - The handler can modify FAULT_PC via MTCR before ERET to redirect execution; this modifies the active frame, not an outer frame.
-- For SYSCALL traps, FAULT_PC = PC+8 (instruction after SYSCALL), so ERET resumes at the next instruction.
-- For fault traps, FAULT_PC = faulting PC, so ERET re-executes the faulting instruction (the handler must fix the cause first).
+- For fault traps, `FAULT_PC = faulting PC`, so `ERET` re-executes the faulting instruction unless the handler rewrites `CR_FAULT_PC` first.
+- For `SYSCALL`, `FAULT_PC = PC+8`, so `ERET` skips the trapping instruction by default.
 
 **TLBFLUSH** (opcode `0xE9`):
 - Invalidates all 64 entries of the software TLB.

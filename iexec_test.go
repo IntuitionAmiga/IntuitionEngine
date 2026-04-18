@@ -23999,6 +23999,27 @@ func TestIExec_M156_R6_DocsLockCarveoutAuditContract(t *testing.T) {
 	)
 }
 
+func TestIExec_M156_R7_DocsLockFaultPCContract(t *testing.T) {
+	isaDoc := mustReadRepoFile(t, "sdk/docs/IE64_ISA.md")
+	requireAllSubstrings(t, isaDoc,
+		"user-mode `MTCR CR_FAULT_PC` faults with cause 5 (`FAULT_PRIV`)",
+		"For fault traps, `FAULT_PC = faulting PC`, so `ERET` re-executes the faulting instruction unless the handler rewrites `CR_FAULT_PC` first",
+		"For `SYSCALL`, `FAULT_PC = PC+8`, so `ERET` skips the trapping instruction by default",
+	)
+
+	abiDoc := mustReadRepoFile(t, "sdk/docs/IE64_ABI.md")
+	requireAllSubstrings(t, abiDoc,
+		"`CR_FAULT_PC` is supervisor-owned state: user code cannot write it directly because user-mode `MTCR CR_FAULT_PC` faults with `FAULT_PRIV`",
+		"kernel trap handlers may rewrite `CR_FAULT_PC` before `ERET` when they intentionally want to skip or redirect a faulting instruction",
+	)
+
+	iexecDoc := mustReadRepoFile(t, "sdk/docs/IntuitionOS/IExec.md")
+	requireAllSubstrings(t, iexecDoc,
+		"Fault traps enter the kernel with `FAULT_PC` still pointing at the faulting instruction; `SYSCALL` is the exception and stores `PC+8` so `ERET` skips it by default",
+		"User code cannot write `CR_FAULT_PC` directly: user-mode `MTCR CR_FAULT_PC` faults with `FAULT_PRIV`",
+	)
+}
+
 func TestIExec_M154_DocsLockHardeningContract(t *testing.T) {
 	iexecDoc := mustReadRepoFile(t, "sdk/docs/IntuitionOS/IExec.md")
 	requireAllSubstrings(t, iexecDoc,

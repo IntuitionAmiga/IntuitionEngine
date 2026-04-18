@@ -265,6 +265,8 @@ Existing manual save/restore code is redundant but harmless. See
 `sdk/docs/IE64_ISA.md` §12.14 for the full contract and
 overflow-halts-cleanly behaviour.
 
+Fault traps enter the kernel with `FAULT_PC` still pointing at the faulting instruction; `SYSCALL` is the exception and stores `PC+8` so `ERET` skips it by default. That is why the kernel keeps write access to the active frame's `CR_FAULT_PC`: a trap handler may advance or redirect it before `ERET`. User code cannot write `CR_FAULT_PC` directly: user-mode `MTCR CR_FAULT_PC` faults with `FAULT_PRIV`.
+
 ### 2.5 Shared Memory
 
 Shared memory regions are created via `AllocMem(MEMF_PUBLIC)`, which returns a VA and an opaque share handle in R3. Another task maps the region by calling `MapShared(share_handle, map_flags)`, where `map_flags` is a required `MAPF_READ` / `MAPF_WRITE` bitmask in R2. Both tasks still see the same physical pages, but M15.6 narrows the consumer-side PTEs to the requested access: `PTE_W` is set only when `MAPF_WRITE` is present, and `PTE_X` is never set. Calls without a permission mask are a hard `ERR_BADARG`; there is no compatibility fallback to the old permissive default. When the producer opted in with `MEMF_GUARD`, each mapping also reserves one non-present page on each side of the mapped body, so consumer underruns/overruns fault cleanly too. The kernel tracks reference counts; `FreeMem` on a shared mapping removes the caller's mapping and decrements the refcount. Physical pages are scrubbed and freed when the last mapping is removed or the last mapping task exits. Share handles encode a 24-bit nonce derived from a monotonic kernel counter, guaranteeing that reusing a slot always produces a different handle. Stale handles are rejected with `ERR_BADHANDLE`.
