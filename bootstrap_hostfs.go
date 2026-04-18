@@ -224,9 +224,11 @@ func (d *BootstrapHostFSDevice) write() {
 // guard a guest path like "../outside/file" would cause the parent-dir
 // auto-create loop to leave `fullPath` as the parent of `hostRoot` and
 // then let `os.OpenFile(O_CREATE|O_TRUNC)` truncate or create files
-// outside the sandbox. After this check the final host path is verified
-// to sit under `hostRoot` via `pathWithinRoot` as a belt-and-suspenders
-// defence against symlinks pointing outside the root.
+// outside the sandbox. Per-component resolution is also NOFOLLOW: any
+// symlink encountered while resolving existing parents or an existing
+// leaf is rejected outright even if it points back inside hostRoot, so
+// a pre-planted symlink in the writable SYS overlay cannot be used to
+// pivot writes onto read-only assets.
 func (d *BootstrapHostFSDevice) resolveForCreate(rel string) (string, uint32) {
 	rel = filepath.Clean(filepath.FromSlash(rel))
 	if rel == "." || rel == string(filepath.Separator) || rel == "" {
@@ -275,9 +277,9 @@ func (d *BootstrapHostFSDevice) resolveForCreate(rel string) (string, uint32) {
 	// that "c:Version" and "C:Version" target the same file.
 	// Only errCode 4 (genuinely not-found) is safe to fall through to a
 	// lexical join. Any other error — including errCode 5, which covers
-	// a leaf that EXISTS but is a symlink whose target is outside
-	// hostRoot — must propagate so the caller can't escape the sandbox
-	// via a pre-planted symlink in the writable SYS overlay.
+	// an existing leaf that is a symlink — must propagate so the caller
+	// can't escape the sandbox via a pre-planted symlink in the writable
+	// SYS overlay.
 	var finalPath string
 	match, errCode := d.resolvePathSegmentCI(fullPath, leaf)
 	switch errCode {
@@ -289,7 +291,7 @@ func (d *BootstrapHostFSDevice) resolveForCreate(rel string) (string, uint32) {
 		return "", errCode
 	}
 	// Belt-and-suspenders: confirm the final host path is actually under
-	// hostRoot. Rejects symlinked paths that evaluate outside the sandbox.
+	// hostRoot.
 	absFinal, err := filepath.Abs(finalPath)
 	if err != nil {
 		return "", 3
@@ -552,26 +554,32 @@ func (d *BootstrapHostFSDevice) resolvePathSegmentCI(base string, want string) (
 		return "", mapHostErr(err)
 	}
 
-	match := ""
+	var matched os.DirEntry
 	for _, entry := range entries {
 		if entry.Name() == want {
-			match = entry.Name()
+			matched = entry
 			break
 		}
 	}
-	if match == "" {
+	if matched == nil {
 		for _, entry := range entries {
 			if strings.EqualFold(entry.Name(), want) {
-				match = entry.Name()
+				matched = entry
 				break
 			}
 		}
 	}
-	if match == "" {
+	if matched == nil {
 		return "", 4
 	}
+	// DirEntry.Type() avoids the extra Lstat syscall when getdents
+	// already carries d_type; it still falls back to Lstat on
+	// filesystems that report DT_UNKNOWN.
+	if matched.Type()&os.ModeSymlink != 0 {
+		return "", 5
+	}
 
-	fullPath := filepath.Join(base, match)
+	fullPath := filepath.Join(base, matched.Name())
 	lexicalRel, err := filepath.Rel(d.hostRoot, fullPath)
 	if err != nil {
 		return "", 3
@@ -579,25 +587,18 @@ func (d *BootstrapHostFSDevice) resolvePathSegmentCI(base string, want string) (
 	if lexicalRel == ".." || strings.HasPrefix(lexicalRel, ".."+string(filepath.Separator)) {
 		return "", 5
 	}
-	resolved, err := filepath.EvalSymlinks(fullPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", 4
-		}
-		return "", mapHostErr(err)
-	}
-	absResolved, err := filepath.Abs(resolved)
+	absPath, err := filepath.Abs(fullPath)
 	if err != nil {
 		return "", 3
 	}
-	ok, err := pathWithinRoot(d.hostRoot, absResolved)
+	ok, err := pathWithinRoot(d.hostRoot, absPath)
 	if err != nil {
 		return "", 3
 	}
 	if !ok {
 		return "", 5
 	}
-	return absResolved, 0
+	return absPath, 0
 }
 
 func (d *BootstrapHostFSDevice) readCString(ptr uint32, limit int) string {

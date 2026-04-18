@@ -39,6 +39,7 @@
 | [sdk/docs/release-process.md](sdk/docs/release-process.md) | Release packaging guide |
 | [sdk/docs/ie_emutos.md](sdk/docs/ie_emutos.md) | EmuTOS integration guide (GEM desktop on IE) |
 | [sdk/docs/IntuitionOS/IExec.md](sdk/docs/IntuitionOS/IExec.md) | IExec microkernel contract reference |
+| [sdk/docs/IntuitionOS/HostFS.md](sdk/docs/IntuitionOS/HostFS.md) | Bootstrap HostFS confinement and path-resolution contract |
 
 # Table of Contents
 
