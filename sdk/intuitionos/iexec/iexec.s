@@ -3958,17 +3958,38 @@ alloc_pages:
     move.q  r2, #ERR_NOMEM
     rts
 
-; free_pages: release N contiguous physical pages back to the pool.
+; free_pages: scrub and release N contiguous physical pages back to the pool.
 ; Input:  R1 = base PPN (absolute page number)
 ;         R2 = number of pages to free
-; Clobbers: R3-R7
+; Clobbers: R3-R9
 free_pages:
+    ; M15.6 G5: zero the backing pages before they return to the allocator
+    ; pool so a later owner cannot observe prior-task contents.
+    move.q  r8, r1                     ; r8 = base PPN
+    move.q  r9, r2                     ; r9 = page count
+    move.l  r3, #0                     ; r3 = page index
+.fp_scrub_page:
+    bge     r3, r9, .fp_scrub_done
+    add     r4, r8, r3                 ; current PPN
+    lsl     r4, r4, #12                ; page byte addr
+    move.q  r5, r4                     ; current byte ptr
+    add     r6, r4, #MMU_PAGE_SIZE     ; page end
+.fp_scrub_qword:
+    bge     r5, r6, .fp_scrub_next_page
+    store.q r0, (r5)
+    add     r5, r5, #8
+    bra     .fp_scrub_qword
+.fp_scrub_next_page:
+    add     r3, r3, #1
+    bra     .fp_scrub_page
+.fp_scrub_done:
+
     move.l  r3, #KERN_DATA_BASE
     add     r3, r3, #KD_PAGE_BITMAP    ; r3 = bitmap base addr
     ; Convert absolute PPN to pool-relative bit index
     move.l  r4, #ALLOC_POOL_BASE
-    sub     r4, r1, r4                 ; r4 = start bit
-    add     r5, r4, r2                 ; r5 = end bit (exclusive)
+    sub     r4, r8, r4                 ; r4 = start bit
+    add     r5, r4, r9                 ; r5 = end bit (exclusive)
 .fp_loop:
     bge     r4, r5, .fp_done
     ; Clear bit r4: bitmap[r4/8] &= ~(1 << (r4 % 8))

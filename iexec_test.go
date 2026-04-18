@@ -6457,6 +6457,91 @@ func TestIExec_FreeMem_Reuse(t *testing.T) {
 	}
 }
 
+func TestIExec_M156_G5_FreeMem_ZeroOnFreeCrossTask(t *testing.T) {
+	// Task 0 writes marker bytes into a private page, frees it, and exits.
+	// Task 1 then allocates its own page and must observe zeros, regardless
+	// of whether the allocator reuses the same backing page.
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	if len(images) < 2 {
+		t.Fatalf("need at least 2 boot images, got %d", len(images))
+	}
+	overrideExtraTasks(rig.cpu.memory, images, 2)
+	t0Start := images[0]
+	t1Start := images[1]
+
+	off := t0Start
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 8, IE64_SIZE_Q, 0, 1, 0, 0)) // R8 = VA
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0xA5))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_STORE, 4, IE64_SIZE_B, 0, 8, 0, 0))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x5A))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_STORE, 4, IE64_SIZE_B, 0, 8, 0, 4095))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 8, 0, 0))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 4096))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFreeMem))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExitTask))
+
+	off = t1Start
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 8, IE64_SIZE_Q, 0, 1, 0, 0)) // R8 = VA
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 9, IE64_SIZE_Q, 0, 2, 0, 0)) // R9 = err
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_LOAD, 10, IE64_SIZE_B, 0, 8, 0, 0))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_LOAD, 11, IE64_SIZE_B, 0, 8, 0, 4095))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask1Data))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_STORE, 9, IE64_SIZE_Q, 0, 3, 0, 0))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_STORE, 10, IE64_SIZE_B, 0, 3, 0, 8))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_STORE, 11, IE64_SIZE_B, 0, 3, 0, 9))
+	off += 8
+	copy(rig.cpu.memory[off:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	allocErr := binary.LittleEndian.Uint64(rig.cpu.memory[userTask1Data:])
+	first := rig.cpu.memory[userTask1Data+8]
+	last := rig.cpu.memory[userTask1Data+9]
+	t.Logf("M156_G5_FreeMem_ZeroOnFreeCrossTask: allocErr=%d first=0x%X last=0x%X", allocErr, first, last)
+
+	if allocErr != 0 {
+		t.Fatalf("task 1 AllocMem err=%d, want 0", allocErr)
+	}
+	if first != 0 || last != 0 {
+		t.Fatalf("task 1 observed stale bytes after cross-task FreeMem: first=0x%X last=0x%X, want 0/0", first, last)
+	}
+}
+
 func TestIExec_FreeMem_BadAddr(t *testing.T) {
 	// FreeMem with address that was never allocated → ERR_BADARG
 	rig, _ := assembleAndLoadKernel(t)
@@ -6534,6 +6619,101 @@ func TestIExec_MapShared_Refcount(t *testing.T) {
 	}
 	if want := uint64(allocPoolFreePagesFromBitmap(rig.cpu.memory)); freePages != want {
 		t.Fatalf("FREE_PAGES after public alloc+free = %d, want bitmap-derived %d", freePages, want)
+	}
+}
+
+func TestIExec_M156_G5_MapSharedLastRef_ZeroOnFree(t *testing.T) {
+	// Parent creates a shared page, writes marker bytes, then creates a child.
+	// The child maps the share, yields so the parent can drop its mapping,
+	// then FreeMem's the mapped VA as the last reference and allocates a fresh
+	// private page. That fresh page must read back as zeroed.
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	t0Start := images[0]
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	pc := t0Start
+
+	childCode := make([]byte, 160)
+	copy(childCode[0:], ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	copy(childCode[8:], ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 31, 0, 8))                   // startup ptr
+	copy(childCode[16:], ie64Instr(OP_LOAD, 6, IE64_SIZE_Q, 0, 5, 0, taskStartupDataBase)) // child data base
+	copy(childCode[24:], ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 5, 0, 0))                   // arg0 = handle
+	copy(childCode[32:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysMapShared))               // R1=VA R2=err
+	copy(childCode[40:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 6, 0, 0))                  // data[0]=mapErr
+	copy(childCode[48:], ie64Instr(OP_MOVE, 8, IE64_SIZE_Q, 0, 1, 0, 0))                   // R8 = mapped VA
+	copy(childCode[56:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))                   // let parent drop original ref
+	copy(childCode[64:], ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 8, 0, 0))
+	copy(childCode[72:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 4096))
+	copy(childCode[80:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFreeMem))
+	copy(childCode[88:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 6, 0, 8)) // data[8]=freeErr
+	copy(childCode[96:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	copy(childCode[104:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	copy(childCode[112:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	copy(childCode[120:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 6, 0, 16)) // data[16]=allocErr
+	copy(childCode[128:], ie64Instr(OP_LOAD, 9, IE64_SIZE_B, 0, 1, 0, 0))
+	copy(childCode[136:], ie64Instr(OP_LOAD, 10, IE64_SIZE_B, 0, 1, 0, 4095))
+	copy(childCode[144:], ie64Instr(OP_STORE, 9, IE64_SIZE_B, 0, 6, 0, 24))
+	copy(childCode[152:], ie64Instr(OP_STORE, 10, IE64_SIZE_B, 0, 6, 0, 25))
+	childVA := writeTask0CodeScratch(t, rig.cpu.memory, t0Start, 0x380, childCode)
+
+	copy(rig.cpu.memory[pc:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	copy(rig.cpu.memory[pc+8:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, uint32(memfPublic)))
+	copy(rig.cpu.memory[pc+16:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem)) // R1=VA R2=err R3=handle
+	copy(rig.cpu.memory[pc+24:], ie64Instr(OP_MOVE, 8, IE64_SIZE_Q, 0, 1, 0, 0))    // R8 = VA
+	copy(rig.cpu.memory[pc+32:], ie64Instr(OP_MOVE, 9, IE64_SIZE_Q, 0, 3, 0, 0))    // R9 = handle
+	copy(rig.cpu.memory[pc+40:], ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x33))
+	copy(rig.cpu.memory[pc+48:], ie64Instr(OP_STORE, 4, IE64_SIZE_B, 0, 8, 0, 0))
+	copy(rig.cpu.memory[pc+56:], ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0xCC))
+	copy(rig.cpu.memory[pc+64:], ie64Instr(OP_STORE, 4, IE64_SIZE_B, 0, 8, 0, 4095))
+	copy(rig.cpu.memory[pc+72:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, childVA))
+	copy(rig.cpu.memory[pc+80:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, uint32(len(childCode))))
+	copy(rig.cpu.memory[pc+88:], ie64Instr(OP_MOVE, 3, IE64_SIZE_Q, 0, 9, 0, 0))      // arg0 = handle
+	copy(rig.cpu.memory[pc+96:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask)) // R1=childID R2=err
+	copy(rig.cpu.memory[pc+104:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	copy(rig.cpu.memory[pc+112:], ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 0)) // data[0]=childID
+	copy(rig.cpu.memory[pc+120:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 8)) // data[8]=createErr
+	copy(rig.cpu.memory[pc+128:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))  // let child map + yield
+	copy(rig.cpu.memory[pc+136:], ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 8, 0, 0))  // R1 = original VA
+	copy(rig.cpu.memory[pc+144:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 4096))
+	copy(rig.cpu.memory[pc+152:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFreeMem))
+	copy(rig.cpu.memory[pc+160:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	copy(rig.cpu.memory[pc+168:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExitTask))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	childID := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data:])
+	createErr := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+8:])
+	if createErr != 0 {
+		t.Fatalf("CreateTask err=%d, want 0", createErr)
+	}
+	if childID == 0 {
+		t.Fatal("CreateTask returned childID=0")
+	}
+	childData := uint32(taskLayoutFieldQ(rig.cpu.memory, childID, kdTaskDataBase))
+	mapErr := binary.LittleEndian.Uint64(rig.cpu.memory[childData:])
+	freeErr := binary.LittleEndian.Uint64(rig.cpu.memory[childData+8:])
+	allocErr := binary.LittleEndian.Uint64(rig.cpu.memory[childData+16:])
+	first := rig.cpu.memory[childData+24]
+	last := rig.cpu.memory[childData+25]
+	t.Logf("M156_G5_MapSharedLastRef_ZeroOnFree: child=%d mapErr=%d freeErr=%d allocErr=%d first=0x%X last=0x%X",
+		childID, mapErr, freeErr, allocErr, first, last)
+
+	if mapErr != 0 {
+		t.Fatalf("child MapShared err=%d, want 0", mapErr)
+	}
+	if freeErr != 0 {
+		t.Fatalf("child FreeMem(last ref) err=%d, want 0", freeErr)
+	}
+	if allocErr != 0 {
+		t.Fatalf("child AllocMem after last-ref free err=%d, want 0", allocErr)
+	}
+	if first != 0 || last != 0 {
+		t.Fatalf("child observed stale bytes after shared last-reference release: first=0x%X last=0x%X, want 0/0", first, last)
 	}
 }
 

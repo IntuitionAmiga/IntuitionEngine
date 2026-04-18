@@ -3581,6 +3581,7 @@ The IE64 includes a minimal MMU for memory protection and virtual address transl
 - **W^X support**: Pages with X=0 are non-executable - code pages are X=1,W=0; data/stack pages are W=1,X=0
 - **SMEP/SMAP-equivalent guards (M15.6)**: `SKEF` (fault on supervisor fetch from user page) and `SKAC` (fault on supervisor data access to user page) bits in `MMU_CTRL`, plus an explicit `SUA` latch toggled by privileged `SUAEN`/`SUADIS` opcodes so kernel user-memory touches must bracket an access window
 - **Architectural trap-frame stack (M15.6)**: nested-trap state (`FAULT_PC`, `PREV_MODE`, `SAVED_SUA`, `FAULT_ADDR`, `FAULT_CAUSE`) is preserved by the CPU across trap entry / ERET; handlers no longer need manual MFCR/MTCR save/restore to survive a nested synchronous trap
+- **Zero-on-free confidentiality (M15.6)**: `FreeMem` and shared-memory last-reference teardown scrub backing pages before they return to the allocator pool, so a later task cannot observe prior-owner bytes
 - **Software TLB**: 64-entry direct-mapped cache of page table translations
 - **15 control registers**: Page table base (PTBR), fault address/cause/PC, trap vector, MMU control, thread pointer (TP), interrupt vector (INTR_VEC), kernel/user stack pointers (KSP/USP), timer period/count/control, previous mode (PREV_MODE), saved SUA (SAVED_SUA)
 - **9 MMU instructions**: MTCR, MFCR, ERET, TLBFLUSH, TLBINVAL, SYSCALL, SMODE, SUAEN, SUADIS

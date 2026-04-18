@@ -916,11 +916,10 @@ by the emulator one layer down.
   ERET so kernel handlers survive a nested synchronous trap
   without a manual MFCR/MTCR save/restore dance. See
   `IE64_ISA.md` §12.14.
-- **Cross-task confidentiality** — subsequent M15.6 items zero
-  private and shared pages on free before release, and
-  `MapShared` takes an explicit permission bitmask so consumer
-  tasks receive the narrowest mapping that works. These items
-  are in flight; the plan lives in
+- **Cross-task confidentiality** — private and shared allocator
+  pages are zeroed on free before release, so a later owner cannot
+  observe prior-task bytes. `MapShared` then narrows consumer-side
+  access further with an explicit permission bitmask. See
   `sdk/docs/IntuitionOS/M15.6-plan.md`.
 
 The hardening story is layered rather than siloed: what the guest
