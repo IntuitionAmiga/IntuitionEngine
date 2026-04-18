@@ -23926,6 +23926,79 @@ func TestIExec_M154_DynamicAndSharedMappingsStayNonExec(t *testing.T) {
 	)
 }
 
+func TestIExec_M156_R6_MMIOCarveoutsStaySupervisorNonExec(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(200 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	type carveoutRange struct {
+		name      string
+		startPage uint32
+		endPage   uint32
+	}
+
+	carveouts := []carveoutRange{
+		{
+			name:      "terminal MMIO bootstrap page",
+			startPage: 0xF0,
+			endPage:   0xF0,
+		},
+		{
+			name:      "low VRAM/high-I/O kernel slice",
+			startPage: 0x100,
+			endPage:   0x17F,
+		},
+		{
+			name:      "task page-table window",
+			startPage: userPTBase >> MMU_PAGE_SHIFT,
+			endPage:   (userPTBase >> MMU_PAGE_SHIFT) + userPTRegionPages - 1,
+		},
+		{
+			name:      "allocator pool",
+			startPage: allocPoolBase,
+			endPage:   allocPoolBase + allocPoolPages - 1,
+		},
+	}
+
+	for _, carveout := range carveouts {
+		t.Run(carveout.name, func(t *testing.T) {
+			for page := carveout.startPage; page <= carveout.endPage; page++ {
+				pte := binary.LittleEndian.Uint64(rig.cpu.memory[kernPageTableBase+page*8:])
+				_, flags := parsePTE(pte)
+				if flags&PTE_P == 0 {
+					t.Fatalf("page 0x%X pte=0x%X: carve-out lost PTE_P", page, pte)
+				}
+				if flags&PTE_U != 0 {
+					t.Fatalf("page 0x%X pte=0x%X flags=%#x: carve-out became user-accessible", page, pte, flags)
+				}
+				if flags&PTE_X != 0 {
+					t.Fatalf("page 0x%X pte=0x%X flags=%#x: carve-out became executable", page, pte, flags)
+				}
+			}
+		})
+	}
+}
+
+func TestIExec_M156_R6_DocsLockCarveoutAuditContract(t *testing.T) {
+	roadmap := mustReadRepoFile(t, "IntuitionOS_Roadmap.md")
+	requireAllSubstrings(t, roadmap,
+		"diagnostic landmarks (MMIO PTE enforcement, `CR_FAULT_PC` contract,",
+		"test-pinned rather than tribal knowledge",
+	)
+
+	iexecDoc := mustReadRepoFile(t, "sdk/docs/IntuitionOS/IExec.md")
+	requireAllSubstrings(t, iexecDoc,
+		"supervisor MMIO carve-outs remain narrow and documented; user-visible MMIO stays behind the grant/resource model",
+		"the current supervisor carve-outs are explicit: page `0xF0`",
+		"the task page-table window `$800000-$9FFFFF`, and the allocator pool `$1200000-$1FFFFFF` as supervisor `P|R|W`",
+	)
+}
+
 func TestIExec_M154_DocsLockHardeningContract(t *testing.T) {
 	iexecDoc := mustReadRepoFile(t, "sdk/docs/IntuitionOS/IExec.md")
 	requireAllSubstrings(t, iexecDoc,
