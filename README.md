@@ -3584,6 +3584,7 @@ The IE64 includes a minimal MMU for memory protection and virtual address transl
 - **Zero-on-free confidentiality (M15.6)**: `FreeMem` and shared-memory last-reference teardown scrub backing pages before they return to the allocator pool, so a later task cannot observe prior-owner bytes
 - **Stack guard pages (M15.6 R1)**: user stacks and the kernel stack each reserve one non-present page below the mapped stack floor, so overflow faults cleanly as `FAULT_NOT_PRESENT`
 - **Heap guard pages (M15.6 R2)**: `AllocMem(MEMF_GUARD)` reserves one non-present page on each side of the mapped body, and `MapShared` preserves that contract for guarded shared allocations, so one-page underruns/overruns fault as `FAULT_NOT_PRESENT`
+- **Size-arithmetic hardening (M15.6 R3)**: allocation/page-count conversions are range-clamped before `size + offset` style arithmetic, so oversized `AllocMem` and trusted-ELF bridge requests fail cleanly instead of wrapping
 - **Software TLB**: 64-entry direct-mapped cache of page table translations
 - **15 control registers**: Page table base (PTBR), fault address/cause/PC, trap vector, MMU control, thread pointer (TP), interrupt vector (INTR_VEC), kernel/user stack pointers (KSP/USP), timer period/count/control, previous mode (PREV_MODE), saved SUA (SAVED_SUA)
 - **9 MMU instructions**: MTCR, MFCR, ERET, TLBFLUSH, TLBINVAL, SYSCALL, SMODE, SUAEN, SUADIS

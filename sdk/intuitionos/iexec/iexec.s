@@ -6446,7 +6446,6 @@ trap_handler:
     and     r8, r8, r23             ; clear PF_PUBLIC from flags
     bra     .create_commit
 .create_named:
-
     ; 3. Validate user pointer and copy name to scratch buffer
     move.q  r1, r7                  ; R1 = name_ptr for safe_copy_user_name
     push    r20
@@ -7144,10 +7143,10 @@ trap_handler:
     beqz    r24, .am_badarg
 
     ; Step 2: Compute page count = (size + 0xFFF) >> 12
-    ; Guard against overflow: if size > 0xFFFFF000, the add wraps and produces
-    ; a small/zero page count. Reject sizes above 1 MiB (USER_DYN_PAGES * PAGE_SIZE).
+    ; Guard against overflow: if size > max single-allocation bytes, the add
+    ; would wrap and produce a small/zero page count.
     move.l  r11, #USER_DYN_PAGES
-    lsl     r11, r11, #12               ; r11 = max bytes (256 * 4096 = 1 MiB)
+    lsl     r11, r11, #12               ; r11 = max bytes (USER_DYN_PAGES * 4096)
     bgt     r24, r11, .am_toolarge      ; reject before add can overflow
     add     r20, r24, #0xFFF
     lsr     r20, r20, #12               ; r20 = page count (safe, no overflow possible)
@@ -8248,6 +8247,10 @@ trap_handler:
     jsr     validate_user_read_range
     bnez    r1, .dbefe_badarg
 .dbefe_args_valid:
+    ; M15.6 R3: clamp before ceil(size/4096) so the page-count conversion never
+    ; relies on a wrapped add.
+    move.l  r11, #0x2000000
+    bgt     r25, r11, .dbefe_badarg
     add     r11, r25, #0xFFF
     lsr     r20, r11, #12
     beqz    r20, .dbefe_badarg
