@@ -4450,6 +4450,251 @@ kern_grant_release_for_task:
 .grft_done:
     rts
 
+; ----------------------------------------------------------------------------
+; kern_revoke_io_range: in the grantee's region table (inline rows AND the
+; per-task overflow chain), tear down every REGION_IO row whose PPN range
+; overlaps [ppn_lo..ppn_hi] of a dying grant — UNLESS some OTHER live grant
+; still authorizes the row's range, in which case the mapping is preserved
+; (a second grantor may still cover it, e.g. a bootstrap grant alongside a
+; broker-issued grant). Called from kern_grant_release_for_grantor when a
+; grant is being revoked because the broker is exiting.
+;
+; The caller must have already freed the dying broker's grant row (marked
+; KD_GRANT_TASK_ID = GRANT_TASK_FREE) BEFORE calling this helper, so the
+; re-authorization check does not find the row being revoked.
+;
+; Inputs:  R1 = grantee task slot
+;          R2 = dying grant's ppn_lo (inclusive)
+;          R3 = dying grant's ppn_hi (inclusive)
+;          R4 = grantee public task id (for kern_grant_check lookup)
+; Outputs: none
+; Clobbers: R3..R12, R28. R13..R19 and R21..R27 are saved and restored so
+;           the caller's cross-call state — in particular R13 (the exiting
+;           task slot in kill_task_cleanup, clobbered by kern_grant_check's
+;           PPN_LO load), R15 (the exiting pubid across both grant-release
+;           calls), and R20 (the grantor pubid across the outer row loop)
+;           — survive. Leaving R13 clobbered would let kill_task_cleanup's
+;           downstream free_task_image_pages / free_task_pt_block / pubid
+;           clear operations target an unrelated task slot: direct kernel
+;           memory corruption.
+; Caller must be on kernel PT.
+kern_revoke_io_range:
+    push    r13                         ; kern_grant_check clobbers r13 via
+                                        ; `load.w r13, KD_GRANT_PPN_LO` — and
+                                        ; kill_task_cleanup holds the exiting
+                                        ; task slot in r13 across the grantor
+                                        ; sweep. Leaving r13 clobbered would
+                                        ; make the downstream pubid/layout
+                                        ; lookups in kill_task_cleanup free
+                                        ; another task's pages.
+    push    r14
+    push    r15
+    push    r16
+    push    r17
+    push    r18
+    push    r19
+    push    r21
+    push    r22
+    push    r23
+    push    r24
+    push    r25
+    push    r26
+    push    r27
+
+    ; State registers — not clobbered by kern_grant_check or unmap_pages:
+    ;   r21 = grantee slot
+    ;   r22 = dying ppn_lo (inclusive)
+    ;   r23 = dying ppn_hi (inclusive)
+    ;   r24 = grantee pubid
+    move.q  r21, r1
+    move.q  r22, r2
+    move.q  r23, r3
+    move.q  r24, r4
+
+    ; ----- Phase 1: inline rows 0..KD_REGION_INLINE_MAX-1 -----
+    ; r25 = &region_table[slot][0]
+    move.l  r14, #KERN_DATA_BASE
+    add     r14, r14, #KD_REGION_TABLE
+    move.l  r15, #KD_REGION_TASK_SZ
+    mulu    r15, r21, r15
+    add     r25, r14, r15
+    move.l  r26, #0                     ; row idx
+.krir_inline_loop:
+    move.l  r14, #KD_REGION_INLINE_MAX
+    bge     r26, r14, .krir_oflow_setup
+    move.l  r14, #KD_REGION_STRIDE
+    mulu    r14, r26, r14
+    add     r27, r25, r14               ; r27 = &row
+    jsr     .krir_process_row
+    add     r26, r26, #1
+    bra     .krir_inline_loop
+
+.krir_oflow_setup:
+    ; r25 = &overflow_head[slot]; r26 = page PPN cursor
+    move.l  r14, #KERN_DATA_BASE
+    add     r14, r14, #KD_REGION_OVERFLOW_HEAD
+    move.l  r15, #KD_REGION_OFLOW_STRIDE
+    mulu    r15, r21, r15
+    add     r25, r14, r15
+    load.w  r26, KD_REGION_OFLOW_FIRST_PPN(r25)
+.krir_oflow_page_loop:
+    beqz    r26, .krir_done
+    lsl     r17, r26, #12               ; r17 = page byte addr (preserved while scanning rows)
+    move.q  r18, r17
+    add     r18, r18, #KD_REGION_PAGE_HDR_SZ ; r18 = &first row in page (cursor)
+    move.l  r19, #0                     ; r19 = row idx in page
+.krir_oflow_row_loop:
+    move.l  r14, #KD_REGION_ROWS_PER_PG
+    bge     r19, r14, .krir_oflow_page_next
+    move.q  r27, r18                    ; r27 = &row
+    jsr     .krir_process_row
+    add     r18, r18, #KD_REGION_STRIDE
+    add     r19, r19, #1
+    bra     .krir_oflow_row_loop
+.krir_oflow_page_next:
+    load.w  r26, KD_REGION_PAGE_NEXT(r17) ; r26 = next page PPN (0 = end)
+    bra     .krir_oflow_page_loop
+
+.krir_done:
+    pop     r27
+    pop     r26
+    pop     r25
+    pop     r24
+    pop     r23
+    pop     r22
+    pop     r21
+    pop     r19
+    pop     r18
+    pop     r17
+    pop     r16
+    pop     r15
+    pop     r14
+    pop     r13
+    rts
+
+; .krir_process_row: inner subroutine — a single row check.
+;   Input:  r27 = &region row
+;   State:  r21 = grantee slot, r22 = dying ppn_lo, r23 = dying ppn_hi,
+;           r24 = grantee pubid
+;   Preserves all state regs; clobbers r3..r13, r14..r16, r28.
+;
+; Not type REGION_IO → return. Does not overlap dying grant → return.
+; Overlaps → ask kern_grant_check whether SOME OTHER live grant still
+; covers [row_lo..row_hi]; if yes, return (another grantor is still
+; authorizing this mapping). Otherwise unmap the grantee's PTEs for the
+; row's VA range and mark the region row FREE.
+.krir_process_row:
+    load.b  r14, KD_REG_TYPE(r27)
+    move.l  r15, #REGION_IO
+    bne     r14, r15, .krir_pr_done
+    load.w  r14, KD_REG_PPN(r27)        ; r14 = row_lo
+    load.w  r15, KD_REG_PAGES(r27)      ; r15 = row_pages
+    add     r16, r14, r15
+    sub     r16, r16, #1                ; r16 = row_hi (inclusive)
+    bgt     r14, r23, .krir_pr_done     ; row_lo > dying_hi: no overlap
+    blt     r16, r22, .krir_pr_done     ; row_hi < dying_lo: no overlap
+    ; Overlap with the dying grant. Ask whether another live grant covers
+    ; [row_lo..row_hi] for this grantee. If yes, leave the mapping intact.
+    move.q  r1, r24                     ; grantee pubid
+    move.q  r2, r14                     ; req_lo = row_lo
+    move.q  r3, r15                     ; req_count = row_pages
+    jsr     kern_grant_check            ; r1 = 1 if still authorized, else 0
+    bnez    r1, .krir_pr_done
+    ; Not authorized — tear down. Re-load row VA/pages (kern_grant_check
+    ; clobbered r14/r15).
+    load.l  r2, KD_REG_VA(r27)          ; R2 = VA
+    load.w  r3, KD_REG_PAGES(r27)       ; R3 = pages
+    lsl     r1, r21, #3
+    move.l  r4, #KD_PTBR_BASE
+    add     r1, r1, r4
+    move.l  r4, #KERN_DATA_BASE
+    add     r1, r1, r4
+    load.q  r1, (r1)                    ; R1 = grantee PT base (physical)
+    jsr     unmap_pages                 ; clobbers R4..R6
+    store.b r0, KD_REG_TYPE(r27)        ; mark region row FREE after PTEs are gone
+.krir_pr_done:
+    rts
+
+; ----------------------------------------------------------------------------
+; kern_grant_release_for_grantor: walk the grant chain and revoke every row
+; whose grantor pubid matches the input. Called from kill_task_cleanup when
+; the grantor itself is exiting. For each revoked row that points at a
+; still-live grantee, also call kern_revoke_io_range to tear down any MapIO
+; PTEs the grantee installed under that grant — otherwise the grantee's
+; hardware access would outlive the grant row itself, defeating the "broker
+; exit revokes capabilities" intent. No quota_return: the grantor's own
+; quota row is about to be wiped wholesale by quota_zero_row.
+;
+; The revoke helper walks both inline and overflow region rows and skips
+; teardown when some OTHER live grant still authorizes the mapping (e.g. a
+; bootstrap grant alongside a broker-issued grant for the same range).
+;
+; Inputs:  R1 = public task_id (u32) — the dying grantor
+; Outputs: none
+; Clobbers: R3..R13 (loop state and helper clobbers); R20..R23 used
+;           internally for cross-call preservation. R14..R19 are saved and
+;           restored by the revoke helper, so kill_task_cleanup's R13/R15
+;           survive this call.
+; Caller must be on kernel PT.
+kern_grant_release_for_grantor:
+    move.q  r20, r1                     ; r20 = grantor pubid to revoke (preserved across helpers)
+    move.l  r3, #KERN_DATA_BASE
+    add     r3, r3, #KD_GRANT_TABLE_HDR
+    load.w  r4, KD_GRANT_HDR_FIRST_PPN(r3)
+    beqz    r4, .grg_done
+
+.grg_page:
+    lsl     r5, r4, #12                 ; r5 = page byte addr
+    move.q  r7, r5
+    add     r7, r7, #KD_GRANT_PAGE_HDR_SZ ; r7 = first row
+    move.l  r8, #0                      ; row idx
+.grg_row:
+    move.l  r9, #KD_GRANT_ROWS_PER_PG
+    bge     r8, r9, .grg_next_page
+    load.l  r9, KD_GRANT_TASK_ID(r7)
+    move.l  r10, #GRANT_TASK_FREE
+    beq     r9, r10, .grg_row_skip      ; already free
+    load.l  r10, KD_GRANT_GRANTOR_PUBID(r7)
+    bne     r10, r20, .grg_row_skip
+    ; Match — capture grantee pubid and PPN range BEFORE freeing the
+    ; row, then mark free and decrement total.
+    move.q  r21, r9                     ; r21 = grantee pubid
+    load.w  r22, KD_GRANT_PPN_LO(r7)
+    load.w  r23, KD_GRANT_PPN_HI(r7)
+    move.l  r10, #GRANT_TASK_FREE
+    store.l r10, KD_GRANT_TASK_ID(r7)
+    load.w  r11, KD_GRANT_HDR_TOTAL(r3)
+    sub     r11, r11, #1
+    store.w r11, KD_GRANT_HDR_TOTAL(r3)
+    push    r3
+    push    r4
+    push    r5
+    push    r7
+    push    r8
+    move.q  r1, r21                     ; grantee pubid
+    jsr     kern_find_slot_for_public_id ; r1 = slot, r2 = 1 if live
+    beqz    r2, .grg_after_unmap        ; grantee already dead → nothing to unmap
+    ; R1 = grantee slot, fill remaining inputs.
+    move.q  r2, r22                     ; ppn_lo
+    move.q  r3, r23                     ; ppn_hi
+    move.q  r4, r21                     ; grantee pubid (for re-authorization check)
+    jsr     kern_revoke_io_range
+.grg_after_unmap:
+    pop     r8
+    pop     r7
+    pop     r5
+    pop     r4
+    pop     r3
+.grg_row_skip:
+    add     r7, r7, #KD_GRANT_ROW_SIZE
+    add     r8, r8, #1
+    bra     .grg_row
+.grg_next_page:
+    load.w  r4, KD_GRANT_PAGE_NEXT(r5)
+    bnez    r4, .grg_page
+.grg_done:
+    rts
+
 ; ============================================================================
 ; M12.5: per-task region OVERFLOW chain helpers
 ; ============================================================================
@@ -9098,11 +9343,16 @@ kill_task_cleanup:
     ; task so a recycled slot cannot inherit MMIO privilege.
     ; ----------------------------------------------------------------
     ;
-    ; (a) Walk the grant chain and free every row whose public task_id
-    ;     matches the exiting task.
+    ; (a) Walk the grant chain twice: first revoke the rows where the
+    ;     exiting task is the grantor (otherwise a grantee keeps using
+    ;     a dead broker's capability), then free the rows where the
+    ;     exiting task is the grantee (refunds the grantor's
+    ;     QUOTA_KIND_GRANTS).
     move.q  r1, r13
     jsr     kern_task_pubid_addr
     load.l  r15, (r1)                   ; r15 = exiting public task ID
+    move.q  r1, r15
+    jsr     kern_grant_release_for_grantor
     move.q  r1, r15
     jsr     kern_grant_release_for_task
     ;
