@@ -3049,14 +3049,26 @@ prog_doslib_code:
     add     r10, r7, r9
     blt     r10, r7, .dos_launchseg_badarg
     load.l  r11, DOS_SEG_OFF_FLAGS(r24)
-    and     r12, r11, #4
-    beqz    r12, .dos_launchseg_badarg
-    and     r12, r11, #2
-    bnez    r12, .dos_launchseg_scan_data
+    move.q  r12, r11
+    and     r12, r12, #0xFFFFFFF8
+    bnez    r12, .dos_launchseg_badarg
+    beqz    r11, .dos_launchseg_badarg
+    move.q  r12, r11
+    move.q  r13, r0
+    add     r13, r13, #2
+    beq     r12, r13, .dos_launchseg_badarg
+    move.q  r12, r11
+    and     r12, r12, #3
+    move.q  r13, r0
+    add     r13, r13, #3
+    beq     r12, r13, .dos_launchseg_badarg
+    and     r12, r11, #1
+    beqz    r12, .dos_launchseg_scan_data
     bnez    r27, .dos_launchseg_scan_code_seen
     move.l  r27, #1
     store.q r7, 0(sp)
     store.q r10, 8(sp)
+    store.q r11, 104(sp)
     bra     .dos_launchseg_scan_exec
 .dos_launchseg_scan_code_seen:
     load.q  r12, 0(sp)
@@ -3079,6 +3091,7 @@ prog_doslib_code:
     move.l  r28, #1
     store.q r7, 16(sp)
     store.q r10, 24(sp)
+    store.q r11, 112(sp)
     bra     .dos_launchseg_scan_next
 .dos_launchseg_scan_data_seen:
     load.q  r12, 16(sp)
@@ -3153,8 +3166,8 @@ prog_doslib_code:
     load.q  r8, DOS_SEG_OFF_FILESZ(r24)
     load.q  r9, DOS_SEG_OFF_TARGET(r24)
     load.l  r11, DOS_SEG_OFF_FLAGS(r24)
-    and     r12, r11, #2
-    bnez    r12, .dos_launchseg_copy_data
+    and     r12, r11, #1
+    beqz    r12, .dos_launchseg_copy_data
     load.q  r13, 32(sp)
     load.q  r14, 0(sp)
     sub     r14, r9, r14
@@ -3214,7 +3227,7 @@ prog_doslib_code:
     store.q r7, M14_LDSEG_OFF_TARGET(r6)
     load.q  r7, 48(sp)
     store.l r7, M14_LDSEG_OFF_PAGES(r6)
-    move.l  r7, #5
+    load.q  r7, 104(sp)
     store.l r7, M14_LDSEG_OFF_FLAGS(r6)
 
     beqz    r28, .dos_launchseg_exec_call
@@ -3229,7 +3242,7 @@ prog_doslib_code:
     store.q r7, M14_LDSEG_OFF_TARGET(r6)
     load.q  r7, 56(sp)
     store.l r7, M14_LDSEG_OFF_PAGES(r6)
-    move.l  r7, #6
+    load.q  r7, 112(sp)
     store.l r7, M14_LDSEG_OFF_FLAGS(r6)
 
 .dos_launchseg_exec_call:
@@ -6321,9 +6334,11 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
     move.q  r9, r8
     and     r9, r9, #0xFFFFFFF8
     bnez    r9, .debs_badarg_free
+    beqz    r8, .debs_badarg_free
     move.q  r9, r8
-    and     r9, r9, #4
-    beqz    r9, .debs_badarg_free
+    move.q  r10, r0
+    add     r10, r10, #2
+    beq     r9, r10, .debs_badarg_free
     move.q  r9, r8
     and     r9, r9, #3
     move.q  r10, r0

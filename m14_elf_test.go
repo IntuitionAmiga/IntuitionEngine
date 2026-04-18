@@ -88,6 +88,16 @@ func TestIExec_M14_Phase1_ELFValidAccepted(t *testing.T) {
 	}
 }
 
+func TestIExec_M156_R4_ELFExecuteOnlyCodeAccepted(t *testing.T) {
+	image := makeM14ELFFixture(t, 0x00601000, []m14ELFSegmentSpec{
+		{Vaddr: 0x00601000, Flags: m14ELFSegFlagX, Data: []byte{1, 2, 3, 4}, Memsz: 0x1000},
+		{Vaddr: 0x00602000, Flags: m14ELFSegFlagR | m14ELFSegFlagW, Data: []byte{5, 6}, Memsz: 0x1000},
+	})
+	if err := validateM14ELFContract(image); err != nil {
+		t.Fatalf("execute-only code ELF rejected: %v", err)
+	}
+}
+
 func TestIExec_M14_Phase1_ELFBadMagicRejected(t *testing.T) {
 	image := makeM14ELFFixture(t, 0x00601000, []m14ELFSegmentSpec{
 		{Vaddr: 0x00601000, Flags: m14ELFSegFlagR | m14ELFSegFlagX, Data: []byte{1}},

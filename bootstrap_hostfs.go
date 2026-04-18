@@ -79,7 +79,9 @@ func (d *BootstrapHostFSDevice) SetSpecialFile(rel string, data []byte) {
 	if rel == "" {
 		return
 	}
-	d.specials[strings.ToUpper(filepath.ToSlash(filepath.Clean(rel)))] = data
+	// copy: callers commonly pass a slice of live VM memory, which the guest
+	// may later overwrite before we serve the special file.
+	d.specials[strings.ToUpper(filepath.ToSlash(filepath.Clean(rel)))] = append([]byte(nil), data...)
 }
 
 func (d *BootstrapHostFSDevice) HandleRead(addr uint32) uint32 {
@@ -617,28 +619,44 @@ func (d *BootstrapHostFSDevice) readCString(ptr uint32, limit int) string {
 }
 
 func (d *BootstrapHostFSDevice) currentTaskSlot() uint32 {
-	if d.arg4 != 0 {
-		return d.arg4
-	}
 	if d.bus == nil {
 		return 0
 	}
 	return uint32(d.bus.Read64(bootHostFSKernDataBase + bootHostFSKDCurrentTask))
 }
 
+func (d *BootstrapHostFSDevice) currentTaskPTBR() (uint32, bool) {
+	if d.bus == nil {
+		return 0, false
+	}
+	// SYS_BOOT_HOSTFS forwards the caller's live PTBR in arg4 so guest
+	// pointers remain translatable even if KD_PTBR_BASE is stale during
+	// launch-time transitions.
+	if d.arg4 >= MMU_PAGE_SIZE && d.arg4&MMU_PAGE_MASK == 0 {
+		return d.arg4, true
+	}
+	slot := d.currentTaskSlot()
+	ptbrAddr := bootHostFSKernDataBase + bootHostFSKDPTBRBase + slot*8
+	ptBase := uint32(d.bus.Read64(ptbrAddr))
+	if ptBase == 0 {
+		if slot == 0 {
+			return 0, true
+		}
+		return 0, false
+	}
+	return ptBase, true
+}
+
 func (d *BootstrapHostFSDevice) translateGuestVA(ptr uint32, write bool) (uint32, bool) {
 	if d.bus == nil {
 		return 0, false
 	}
-	slot := d.currentTaskSlot()
-	if slot == 0 {
-		return ptr, true
-	}
-	// Read PTBR from the primary KD_PTBR_BASE array (same source as CPU ptbr register)
-	ptbrAddr := bootHostFSKernDataBase + bootHostFSKDPTBRBase + slot*8
-	ptBase := uint32(d.bus.Read64(ptbrAddr))
-	if ptBase == 0 {
+	ptBase, ok := d.currentTaskPTBR()
+	if !ok {
 		return 0, false
+	}
+	if ptBase == 0 {
+		return ptr, true
 	}
 	vpn := (ptr >> MMU_PAGE_SHIFT) & PTE_PPN_MASK
 	pteAddr := ptBase + vpn*8

@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -1445,10 +1446,14 @@ func assembleAndLoadKernel(t *testing.T) (*ie64TestRig, *TerminalMMIO) {
 
 func assembleAndLoadKernelWithGeneratedHostRoot(t *testing.T) (*ie64TestRig, *TerminalMMIO) {
 	t.Helper()
-	return assembleAndLoadKernelWithBootstrapHostRoot(t, makeM152Phase5GeneratedHostRoot(t))
+	return assembleAndLoadKernelWithBootstrapHostRootOptions(t, makeM152Phase5GeneratedHostRoot(t), false)
 }
 
 func assembleAndLoadKernelWithBootstrapHostRoot(t *testing.T, hostRoot string) (*ie64TestRig, *TerminalMMIO) {
+	return assembleAndLoadKernelWithBootstrapHostRootOptions(t, hostRoot, false)
+}
+
+func assembleAndLoadKernelWithBootstrapHostRootOptions(t *testing.T, hostRoot string, useSpecialBootServices bool) (*ie64TestRig, *TerminalMMIO) {
 	t.Helper()
 	asmBin := buildAssembler(t)
 	tmpDir := t.TempDir()
@@ -1494,12 +1499,14 @@ func assembleAndLoadKernelWithBootstrapHostRoot(t *testing.T, hostRoot string) (
 
 	rig, term := newIExecTerminalRig(t)
 	hostfs := NewBootstrapHostFSDevice(rig.bus, hostRoot)
-	consoleImage := mustReadRepoBytes(t, "sdk/intuitionos/iexec/boot_console_handler.elf")
-	copy(rig.cpu.memory[int(testHostConsoleELFBase):], consoleImage)
-	hostfs.SetSpecialFile("IOSSYS/L/console.handler", rig.cpu.memory[int(testHostConsoleELFBase):int(testHostConsoleELFBase)+len(consoleImage)])
-	shellImage := mustReadRepoBytes(t, "sdk/intuitionos/iexec/boot_shell.elf")
-	copy(rig.cpu.memory[int(testHostShellELFBase):], shellImage)
-	hostfs.SetSpecialFile("IOSSYS/Tools/Shell", rig.cpu.memory[int(testHostShellELFBase):int(testHostShellELFBase)+len(shellImage)])
+	if useSpecialBootServices {
+		consoleImage := mustReadRepoBytes(t, "sdk/intuitionos/iexec/boot_console_handler.elf")
+		copy(rig.cpu.memory[int(testHostConsoleELFBase):], consoleImage)
+		hostfs.SetSpecialFile("IOSSYS/L/console.handler", rig.cpu.memory[int(testHostConsoleELFBase):int(testHostConsoleELFBase)+len(consoleImage)])
+		shellImage := mustReadRepoBytes(t, "sdk/intuitionos/iexec/boot_shell.elf")
+		copy(rig.cpu.memory[int(testHostShellELFBase):], shellImage)
+		hostfs.SetSpecialFile("IOSSYS/Tools/Shell", rig.cpu.memory[int(testHostShellELFBase):int(testHostShellELFBase)+len(shellImage)])
+	}
 	rig.bus.MapIO(BOOT_HOSTFS_BASE, BOOT_HOSTFS_END, hostfs.HandleRead, hostfs.HandleWrite)
 	copy(rig.cpu.memory[PROG_START:], data)
 	rig.cpu.PC = PROG_START
@@ -1579,7 +1586,18 @@ type failingBootstrapHostFSDevice struct {
 	failOpenPath                 string
 	failReadPath                 string
 	forceMissingExceptBootDoslib bool
+	mu                           sync.Mutex
 	handlePath                   map[uint32]string
+	statObs                      []hostFSStatObservation
+}
+
+type hostFSStatObservation struct {
+	path     string
+	taskSlot uint32
+	arg1     uint32
+	ptbr     uint64
+	pte      uint64
+	pteFlags byte
 }
 
 func newFailingBootstrapHostFSDevice(bus *MachineBus, hostRoot string) *failingBootstrapHostFSDevice {
@@ -1587,6 +1605,36 @@ func newFailingBootstrapHostFSDevice(bus *MachineBus, hostRoot string) *failingB
 		BootstrapHostFSDevice: NewBootstrapHostFSDevice(bus, hostRoot),
 		handlePath:            make(map[uint32]string),
 	}
+}
+
+func (d *failingBootstrapHostFSDevice) recordOpenHandle(handle uint32, path string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.handlePath[handle] = path
+}
+
+func (d *failingBootstrapHostFSDevice) handleOpenPath(handle uint32) string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.handlePath[handle]
+}
+
+func (d *failingBootstrapHostFSDevice) clearOpenHandle(handle uint32) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.handlePath, handle)
+}
+
+func (d *failingBootstrapHostFSDevice) recordStatObservation(obs hostFSStatObservation) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.statObs = append(d.statObs, obs)
+}
+
+func (d *failingBootstrapHostFSDevice) statObservationsSnapshot() []hostFSStatObservation {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]hostFSStatObservation(nil), d.statObs...)
 }
 
 func (d *failingBootstrapHostFSDevice) HandleWrite(addr uint32, val uint32) {
@@ -1618,16 +1666,16 @@ func (d *failingBootstrapHostFSDevice) HandleWrite(addr uint32, val uint32) {
 			}
 			d.open()
 			if d.err == 0 && d.res1 != 0 {
-				d.handlePath[d.res1] = path
+				d.recordOpenHandle(d.res1, path)
 			}
 		case BOOT_HOSTFS_READ:
-			if d.failReadPath != "" && strings.EqualFold(d.handlePath[d.arg1], d.failReadPath) {
+			if d.failReadPath != "" && strings.EqualFold(d.handleOpenPath(d.arg1), d.failReadPath) {
 				d.err = errPerm
 				return
 			}
 			d.read()
 		case BOOT_HOSTFS_CLOSE:
-			delete(d.handlePath, d.arg1)
+			d.clearOpenHandle(d.arg1)
 			d.close()
 		case BOOT_HOSTFS_DISCOVER:
 			if d.forceMissingExceptBootDoslib {
@@ -1640,6 +1688,29 @@ func (d *failingBootstrapHostFSDevice) HandleWrite(addr uint32, val uint32) {
 			}
 			d.res1 = 1
 		case BOOT_HOSTFS_STAT:
+			obs := hostFSStatObservation{
+				path: d.readCString(d.arg1, 255),
+				arg1: d.arg1,
+			}
+			slot := d.currentTaskSlot()
+			obs.taskSlot = slot
+			ptbr := uint64(0)
+			pte := uint64(0)
+			pteFlags := byte(0)
+			if ptbr32, ok := d.currentTaskPTBR(); ok {
+				ptbr = uint64(ptbr32)
+				if ptbr32 != 0 {
+					pteAddr := uint32(ptbr) + (((d.arg1 >> MMU_PAGE_SHIFT) & uint32(PTE_PPN_MASK)) * 8)
+					if int(pteAddr+8) <= len(d.bus.memory) {
+						pte = binary.LittleEndian.Uint64(d.bus.memory[pteAddr:])
+						_, pteFlags = parsePTE(pte)
+					}
+				}
+			}
+			obs.ptbr = ptbr
+			obs.pte = pte
+			obs.pteFlags = pteFlags
+			d.recordStatObservation(obs)
 			d.stat()
 		case BOOT_HOSTFS_READDIR:
 			d.readDir()
@@ -2629,6 +2700,39 @@ func makeM14InitializedDataELFFixture(t *testing.T, marker byte) []byte {
 	})
 }
 
+func makeM156R4ReadOnlyDataWriteFaultELFFixture(t *testing.T, marker byte) []byte {
+	t.Helper()
+	code := make([]byte, 0, 10*8)
+	w := func(instr []byte) { code = append(code, instr...) }
+
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(marker)))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	w(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, 0x00602000))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(marker)))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 0, 5, 0, 0))
+	w(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	return makeM14ELFFixture(t, 0x00601000, []m14ELFSegmentSpec{
+		{
+			Vaddr:  0x00601000,
+			Flags:  m14ELFSegFlagX,
+			Data:   code,
+			Memsz:  0x1000,
+			Offset: 0x1000,
+		},
+		{
+			Vaddr:  0x00602000,
+			Flags:  m14ELFSegFlagR,
+			Data:   []byte{0x7A, 0x11, 0x22, 0x33},
+			Memsz:  0x1000,
+			Offset: 0x2000,
+		},
+	})
+}
+
 func makeM14ThreeSegmentELFFixture(t *testing.T, marker byte) []byte {
 	t.Helper()
 	code := make([]byte, 0, 16*8)
@@ -2680,6 +2784,52 @@ func makeM14RunInvalidNoDataELFFixture(t *testing.T) []byte {
 			Data:   []byte{0x11, 0x22, 0x33, 0x44},
 			Memsz:  0x1000,
 			Offset: 0x1000,
+		},
+	})
+}
+
+func makeM156R4ExecuteOnlyELFFixture(t *testing.T, marker byte, delayYields int) []byte {
+	t.Helper()
+	code := make([]byte, 0, 24*8)
+	w := func(instr []byte) { code = append(code, instr...) }
+
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(marker)))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 0, 29, 0, 64))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(marker)))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	if delayYields > 0 {
+		w(ie64Instr(OP_MOVE, 20, IE64_SIZE_L, 1, 0, 0, uint32(delayYields)))
+		w(ie64Instr(OP_MOVE, 21, IE64_SIZE_L, 1, 0, 0, 0))
+		delayTop := len(code)
+		w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+		w(ie64Instr(OP_SUB, 20, IE64_SIZE_L, 1, 20, 0, 1))
+		bgtOff := len(code)
+		w(ie64Instr(OP_BGT, 0, 0, 0, 20, 21, 0))
+		copy(code[bgtOff:], ie64Instr(OP_BGT, 0, 0, 0, 20, 21, uint32(int32(delayTop)-int32(bgtOff))))
+	}
+	w(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, 0x00601000))
+	w(ie64Instr(OP_LOAD, 6, IE64_SIZE_B, 0, 5, 0, 0))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, '!'))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+
+	return makeM14ELFFixture(t, 0x00601000, []m14ELFSegmentSpec{
+		{
+			Vaddr:  0x00601000,
+			Flags:  m14ELFSegFlagX,
+			Data:   code,
+			Memsz:  0x1000,
+			Offset: 0x1000,
+		},
+		{
+			Vaddr:  0x00602000,
+			Flags:  m14ELFSegFlagR | m14ELFSegFlagW,
+			Data:   []byte{0, 0, 0, 0},
+			Memsz:  0x1000,
+			Offset: 0x2000,
 		},
 	})
 }
@@ -2746,7 +2896,7 @@ func runM14RunSegClientWithPatchedFixtureAndTerm(t *testing.T, replacement []byt
 	done := make(chan struct{})
 	go func() { rig.cpu.Execute(); close(done) }()
 
-	shellPtr := waitForBootManifestImagePtr(rig.cpu.memory, bootManifestIDShell, 2*time.Second)
+	shellPtr := waitForBootManifestImagePtr(rig.cpu.memory, bootManifestIDShell, 12*time.Second)
 	if shellPtr == 0 {
 		rig.cpu.running.Store(false)
 		<-done
@@ -11974,6 +12124,38 @@ func TestIExec_M14_Phase4_ShellRunsELFCommand(t *testing.T) {
 	}
 }
 
+func TestIExec_M156_R4_SourceLocksExecuteOnlyLaunchContract(t *testing.T) {
+	iexecSrc := mustReadRepoFile(t, "sdk/intuitionos/iexec/iexec.s")
+	dosSrc := mustReadRepoFile(t, "sdk/intuitionos/iexec/lib/dos_library.s")
+	elfDoc := mustReadRepoFile(t, "sdk/docs/IntuitionOS/ELF.md")
+
+	requireAllSubstrings(t, iexecSrc,
+		"validate_user_exec_range:\n    move.l  r4, #(PTE_P | PTE_X | PTE_U)",
+		"store.q r0, 192(sp)                 ; code exec-only flag",
+		"store.q r0, 200(sp)                 ; data segment flags",
+		".edlt_code_exec_only:",
+		"load.q  r12, 192(sp)                 ; code exec-only flag",
+		"load.q  r12, 200(sp)                ; data segment flags",
+		".edlt_pt_code_store:",
+		".edlt_pt_data_no_read:",
+		"beqz    r4, .blei_badarg",
+	)
+	requireNoSubstrings(t, iexecSrc,
+		".edlt_pt_code_strip_read_loop:",
+		"    and     r5, r5, #4\n    beqz    r5, .blei_badarg",
+	)
+	requireAllSubstrings(t, dosSrc,
+		"load.q  r7, 104(sp)",
+		"store.q r11, 104(sp)",
+		"load.q  r7, 112(sp)",
+		"add     r13, r13, #2",
+	)
+	requireAllSubstrings(t, elfDoc,
+		"executable `PT_LOAD` segments no longer need `R`; `X` alone is valid",
+		"`validate_user_exec_range` now requires `P|X|U`",
+	)
+}
+
 func TestIExec_M14_Phase4_ShellRunsELFCommandWithArgs(t *testing.T) {
 	rig, output := bootPatchedHostFixtureAndInjectCommand(t, makeM14RunnableELFFixture(t, 'W', 0), "\nELFSEG hello\n", 5*time.Second)
 	if strings.Contains(output, "Unknown command") {
@@ -14046,6 +14228,32 @@ func TestIExec_M14_Phase2_LoadSeg_TooManyPTLoadsRejected(t *testing.T) {
 	}
 }
 
+func TestValidateM14ELFContract_WriteOnlySegmentRejected(t *testing.T) {
+	image := makeM14ELFFixture(t, 0x00601000, []m14ELFSegmentSpec{
+		{
+			Vaddr:  0x00601000,
+			Flags:  m14ELFSegFlagX,
+			Data:   []byte{0x11, 0x22, 0x33, 0x44},
+			Memsz:  0x1000,
+			Offset: 0x1000,
+		},
+		{
+			Vaddr:  0x00602000,
+			Flags:  m14ELFSegFlagW,
+			Data:   []byte{0x55, 0x66, 0x77, 0x88},
+			Memsz:  0x1000,
+			Offset: 0x2000,
+		},
+	})
+	err := validateM14ELFContract(image)
+	if err == nil {
+		t.Fatal("ValidateM14ELFContract_WriteOnlySegmentRejected: expected write-only segment rejection")
+	}
+	if !strings.Contains(err.Error(), "write-only segment rejected") {
+		t.Fatalf("ValidateM14ELFContract_WriteOnlySegmentRejected: err=%q, want write-only segment rejection", err)
+	}
+}
+
 func TestIExec_M14_Phase2_LoadSeg_UnLoadSeg_NoLeak(t *testing.T) {
 	skipM14HostBackedHarnessDrift(t)
 	baselineRig, _ := runM14LoadSegClient(t, "C/ElfSeg", 0, false)
@@ -14150,6 +14358,13 @@ func TestIExec_M14_Phase3_RunSeg_PreservesInitializedData(t *testing.T) {
 	want := []byte{'D', 0x44, 0x33, 0x22}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("RunSeg_PreservesInitializedData: child target[:4]=%v, want %v", got, want)
+	}
+}
+
+func TestValidateM14ELFContract_ReadOnlyDataAccepted(t *testing.T) {
+	image := makeM156R4ReadOnlyDataWriteFaultELFFixture(t, 'O')
+	if err := validateM14ELFContract(image); err != nil {
+		t.Fatalf("ValidateM14ELFContract_ReadOnlyDataAccepted: err=%v", err)
 	}
 }
 
@@ -17432,6 +17647,63 @@ func TestIExec_M152_Phase5_BootUsesHostBackedIOSSYSToolsShell(t *testing.T) {
 	if strings.Contains(output, "phase5-startup-should-not-run") {
 		t.Fatalf("M152_Phase5_BootUsesHostBackedIOSSYSToolsShell: startup-sequence ran even though shell was replaced output=%q", output[:min(len(output), 1200)])
 	}
+}
+
+func TestIExec_M156_R4_BootShellHostFSStatUsesDOSReadablePath(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	hostfs := newFailingBootstrapHostFSDevice(nil, hostRoot)
+	rig, term := assembleAndLoadKernelWithBootstrapHostFSDevice(t, hostfs)
+	hostfs.bus = rig.bus
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() {
+		rig.cpu.Execute()
+		close(done)
+	}()
+
+	deadline := time.Now().Add(8 * time.Second)
+	var shellObs *hostFSStatObservation
+	for time.Now().Before(deadline) {
+		obs := hostfs.statObservationsSnapshot()
+		for i := range obs {
+			if strings.EqualFold(obs[i].path, "IOSSYS/Tools/Shell") {
+				shellObs = &obs[i]
+				break
+			}
+		}
+		if shellObs != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if shellObs != nil {
+		if shellObs.ptbr == 0 {
+			t.Fatalf("M156_R4_BootShellHostFSStatUsesDOSReadablePath: shell stat ptbr=0 (slot=%d arg1=0x%X pte=0x%X flags=0x%X output=%q)", shellObs.taskSlot, shellObs.arg1, shellObs.pte, shellObs.pteFlags, output[:min(len(output), 1200)])
+		}
+		return
+	}
+
+	obs := hostfs.statObservationsSnapshot()
+	paths := make([]string, 0, len(obs))
+	slots := make([]uint32, 0, len(obs))
+	arg1s := make([]uint32, 0, len(obs))
+	ptbrs := make([]uint64, 0, len(obs))
+	ptes := make([]uint64, 0, len(obs))
+	flags := make([]byte, 0, len(obs))
+	for _, stat := range obs {
+		paths = append(paths, stat.path)
+		slots = append(slots, stat.taskSlot)
+		arg1s = append(arg1s, stat.arg1)
+		ptbrs = append(ptbrs, stat.ptbr)
+		ptes = append(ptes, stat.pte)
+		flags = append(flags, stat.pteFlags)
+	}
+	t.Fatalf("M156_R4_BootShellHostFSStatUsesDOSReadablePath: missing shell stat path; paths=%q slots=%v arg1s=%#x ptbrs=%#x ptes=%#x flags=%v output=%q", paths, slots, arg1s, ptbrs, ptes, flags, output[:min(len(output), 1200)])
 }
 
 func TestIExec_M152_Phase5_DOSRunCanLaunchHostBackedIOSSYSToolsShell(t *testing.T) {

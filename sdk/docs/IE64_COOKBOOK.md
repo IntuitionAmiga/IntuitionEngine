@@ -1407,9 +1407,10 @@ PTE_W           equ 4               ; Write
 PTE_NX          equ 8               ; No-Execute
 PTE_U           equ 16              ; User-accessible
 
-; Code page: readable + executable (not writable)
-; Flags = P | R | U = 1 | 2 | 16 = 19 ($13)
-CODE_FLAGS      equ PTE_P | PTE_R | PTE_U
+; Code page: executable, optionally readable, never writable.
+; M15.6 R4 allows execute-only user text, so this example uses X-only.
+; Flags = P | U = 1 | 16 = 17 ($11)
+CODE_FLAGS      equ PTE_P | PTE_U
 
 ; Data/stack page: readable + writable (not executable)
 ; Flags = P | R | W | NX | U = 1 | 2 | 4 | 8 | 16 = 31 ($1F)

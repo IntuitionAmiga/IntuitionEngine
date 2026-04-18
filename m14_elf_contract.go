@@ -154,8 +154,11 @@ func validateM14ELFContract(image []byte) error {
 		if ph.Flags&^uint32(m14ELFSegFlagR|m14ELFSegFlagW|m14ELFSegFlagX) != 0 {
 			return fmt.Errorf("segment flags 0x%X unsupported", ph.Flags)
 		}
-		if ph.Flags&m14ELFSegFlagR == 0 {
-			return fmt.Errorf("segment must be readable")
+		if ph.Flags == 0 {
+			return fmt.Errorf("segment must request at least one permission")
+		}
+		if ph.Flags == m14ELFSegFlagW {
+			return fmt.Errorf("write-only segment rejected")
 		}
 		if ph.Flags&(m14ELFSegFlagW|m14ELFSegFlagX) == (m14ELFSegFlagW | m14ELFSegFlagX) {
 			return fmt.Errorf("writable+executable segment rejected")

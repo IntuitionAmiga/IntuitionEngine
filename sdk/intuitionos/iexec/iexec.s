@@ -32,6 +32,7 @@ iexec_start:
     ; ---------------------------------------------------------------
     move.l  r1, #KERN_STACK_TOP
     mtcr    cr8, r1
+    move.q  r31, r1                    ; seed live SP: CR8<->R31 auto-swap hasn't fired yet
 
     ; ---------------------------------------------------------------
     ; 3. Build kernel page table with explicit permission classes.
@@ -2773,9 +2774,10 @@ boot_load_elf_image:
     move.q  r5, r4
     and     r5, r5, #0xFFFFFFF8
     bnez    r5, .blei_badarg
+    beqz    r4, .blei_badarg
     move.q  r5, r4
-    and     r5, r5, #4
-    beqz    r5, .blei_badarg
+    move.l  r11, #2
+    beq     r5, r11, .blei_badarg
     move.q  r5, r4
     and     r5, r5, #3
     move.l  r6, #3
@@ -2827,8 +2829,6 @@ boot_load_elf_image:
     store.q r10, 40(sp)
     bra     .blei_next
 .blei_data_seg:
-    and     r10, r4, #2
-    beqz    r10, .blei_badarg
     load.q  r10, 32(sp)
     bnez    r10, .blei_badarg
     store.q r23, 32(sp)
@@ -2846,10 +2846,12 @@ boot_load_elf_image:
     beqz    r4, .blei_badarg
     load.l  r25, 32(r23)               ; code filesz
     load.l  r26, 40(r23)               ; code memsz
+    load.l  r19, 4(r23)                ; code flags (preserve X-only intent)
     add     r26, r26, #4095
     lsr     r26, r26, #12              ; code pages
     load.l  r27, 32(r24)               ; data filesz
     load.l  r28, 40(r24)               ; data memsz
+    load.l  r18, 4(r24)                ; data flags
     add     r28, r28, #4095
     lsr     r28, r28, #12              ; data pages
 
@@ -2877,7 +2879,7 @@ boot_load_elf_image:
     load.q  r5, 16(r23)                ; code vaddr
     store.q r5, M14_LDSEG_OFF_TARGET(r30)
     store.l r26, M14_LDSEG_OFF_PAGES(r30)
-    move.l  r5, #5
+    move.q  r5, r19
     store.l r5, M14_LDSEG_OFF_FLAGS(r30)
 
     add     r30, sp, #176
@@ -2889,7 +2891,7 @@ boot_load_elf_image:
     load.q  r5, 16(r24)                ; data vaddr
     store.q r5, M14_LDSEG_OFF_TARGET(r30)
     store.l r28, M14_LDSEG_OFF_PAGES(r30)
-    move.l  r5, #6
+    move.q  r5, r18
     store.l r5, M14_LDSEG_OFF_FLAGS(r30)
 
     add     r1, sp, #96
@@ -3379,6 +3381,8 @@ exec_desc_launch_task:
     store.q r4, 72(sp)                  ; startup flags
     move.l  r5, #0x30
     store.l r5, 140(sp)
+    store.q r0, 192(sp)                 ; code exec-only flag
+    store.q r0, 200(sp)                 ; data segment flags
 
     move.l  r5, #M14_LDESC_SIZE
     bne     r25, r5, .edlt_badarg_descsz
@@ -3479,8 +3483,16 @@ exec_desc_launch_task:
     bnez    r1, .edlt_badarg
 .edlt_skip_src_validate:
     move.q  r13, r11
-    and     r13, r13, #4
-    beqz    r13, .edlt_badarg
+    and     r13, r13, #0xFFFFFFF8
+    bnez    r13, .edlt_badarg
+    beqz    r11, .edlt_badarg
+    move.q  r13, r11
+    move.l  r12, #2
+    beq     r13, r12, .edlt_badarg
+    move.q  r13, r11
+    and     r13, r13, #3
+    move.l  r12, #3
+    beq     r13, r12, .edlt_badarg
     move.q  r13, r11
     and     r13, r13, #1
     beqz    r13, .edlt_data_seg
@@ -3490,17 +3502,21 @@ exec_desc_launch_task:
     move.q  r28, r8
     move.q  r29, r9
     move.q  r30, r10
+    move.q  r13, r11
+    and     r13, r13, #4
+    bnez    r13, .edlt_seg_next
+.edlt_code_exec_only:
+    move.l  r13, #1
+    store.q r13, 192(sp)
     bra     .edlt_seg_next
 .edlt_data_seg:
-    move.q  r13, r11
-    and     r13, r13, #2
-    beqz    r13, .edlt_badarg
     bnez    r15, .edlt_badarg
     move.l  r15, #1
     move.q  r24, r7
     move.q  r18, r8
     move.q  r19, r9
     move.q  r17, r10
+    store.q r11, 200(sp)
 .edlt_seg_next:
     add     r14, r14, #1
     bra     .edlt_seg_loop
@@ -3691,6 +3707,7 @@ exec_desc_launch_task:
     bra     .edlt_pt_copy_userpt_loop
 
 .edlt_pt_map_code:
+    load.q  r12, 192(sp)                 ; code exec-only flag
     move.l  r8, #0
 .edlt_pt_code_loop:
     bge     r8, r30, .edlt_pt_map_stack
@@ -3698,6 +3715,11 @@ exec_desc_launch_task:
     add     r9, r9, r8
     lsl     r10, r9, #13
     or      r10, r10, #(PTE_P | PTE_R | PTE_X | PTE_U)
+    beqz    r12, .edlt_pt_code_store
+    move.l  r6, #PTE_R
+    not     r6, r6
+    and     r10, r10, r6
+.edlt_pt_code_store:
     lsr     r11, r29, #12
     add     r11, r11, r8
     lsl     r11, r11, #3
@@ -3705,7 +3727,6 @@ exec_desc_launch_task:
     store.q r10, (r11)
     add     r8, r8, #1
     bra     .edlt_pt_code_loop
-
 .edlt_pt_map_stack:
     move.l  r8, #0
 .edlt_pt_stack_loop:
@@ -3737,7 +3758,18 @@ exec_desc_launch_task:
     lsr     r9, r13, #12
     add     r9, r9, r8
     lsl     r10, r9, #13
-    or      r10, r10, #(PTE_P | PTE_R | PTE_W | PTE_U)
+    or      r10, r10, #(PTE_P | PTE_U)
+    load.q  r12, 200(sp)                ; data segment flags
+    move.q  r6, r12
+    and     r6, r6, #4
+    beqz    r6, .edlt_pt_data_no_read
+    or      r10, r10, #PTE_R
+.edlt_pt_data_no_read:
+    move.q  r6, r12
+    and     r6, r6, #2
+    beqz    r6, .edlt_pt_data_store
+    or      r10, r10, #PTE_W
+.edlt_pt_data_store:
     lsr     r11, r19, #12
     add     r11, r11, r8
     lsl     r11, r11, #3
@@ -8172,6 +8204,7 @@ trap_handler:
     beqz    r21, .dbhf_badarg
 
 .dbhf_forward:
+    mfcr    r15, cr0                   ; live caller PTBR for guest VA translation
     la      r24, BOOT_HOSTFS_BASE
     store.l r21, BOOT_HOSTFS_ARG1-BOOT_HOSTFS_BASE(r24)
     store.l r22, BOOT_HOSTFS_ARG2-BOOT_HOSTFS_BASE(r24)
@@ -8744,7 +8777,7 @@ validate_user_write_range:
     bra     validate_user_range_mask
 
 validate_user_exec_range:
-    move.l  r4, #(PTE_P | PTE_R | PTE_X | PTE_U)
+    move.l  r4, #(PTE_P | PTE_X | PTE_U)
     bra     validate_user_range_mask
 
 validate_user_range_mask:

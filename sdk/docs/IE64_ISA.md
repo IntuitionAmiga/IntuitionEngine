@@ -1387,7 +1387,7 @@ The MMU maintains a 64-entry direct-mapped software TLB to cache page table look
 
 The IE64 MMU enforces a Write XOR Execute policy at the page level. A page may be writable or executable, but not both simultaneously:
 
-- **Code pages**: P=1, R=1, W=0, X=1 (readable + executable, not writable).
+- **Code pages**: P=1, X=1, W=0, with R optional. M15.6 R4 makes execute-only user text (`P=1, R=0, X=1`) a first-class contract.
 - **Data/stack pages**: P=1, R=1, W=1, X=0 (readable + writable, not executable).
 
 This prevents code injection attacks: an attacker who can write to memory cannot execute that memory, and executable memory cannot be modified. To load new code, supervisor software must map the target pages as writable, write the code, then remap as executable (with appropriate TLB invalidation between steps).

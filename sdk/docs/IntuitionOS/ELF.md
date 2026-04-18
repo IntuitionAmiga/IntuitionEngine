@@ -131,7 +131,8 @@ For every `PT_LOAD` segment:
   - `0x00600000 <= p_vaddr`
   - `p_vaddr + p_memsz <= 0x02000000`
 - segment flags may use only `R`, `W`, `X`
-- every segment must be readable
+- every segment must request at least one permission bit
+- `W`-only segments are currently rejected; the runtime still widens data pages to readable+writable, so write-only ELF data is not a stable contract yet
 - `W|X` together is rejected
 - `PT_LOAD` memory ranges must not overlap
 
@@ -139,6 +140,15 @@ For every `PT_LOAD` segment:
 
 - `e_entry` must be nonzero
 - `e_entry` must lie inside an executable `PT_LOAD` segment
+
+## M15.6 R4 Execute-Only Code Pages
+
+M15.6 R4 makes execute-only user text a real runtime contract.
+
+- executable `PT_LOAD` segments no longer need `R`; `X` alone is valid
+- the loader preserves the ELF segment flags when building child PTEs
+- `validate_user_exec_range` now requires `P|X|U`, not `P|R|X|U`
+- the end-to-end regression is `TestIExec_M156_R4_ShellRunsExecuteOnlyELFAndReadFaults`: the child executes from an `X`-only page and a later user-mode load from that page faults `read-denied`
 
 ## Explicitly Unsupported In M14 Phase 5
 
