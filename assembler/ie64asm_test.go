@@ -25,7 +25,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -65,6 +67,19 @@ func assembleString(t *testing.T, src string) []byte {
 	return result
 }
 
+func assembleStringWithDefines(t *testing.T, src string, defines map[string]uint64) []byte {
+	t.Helper()
+	asm := NewIE64Assembler()
+	for name, val := range defines {
+		asm.Predefine(name, val)
+	}
+	result, err := asm.Assemble(src)
+	if err != nil {
+		t.Fatalf("assembly failed: %v", err)
+	}
+	return result
+}
+
 // assembleExpectError is a test helper that expects assembly to fail.
 func assembleExpectError(t *testing.T, src string) error {
 	t.Helper()
@@ -74,6 +89,26 @@ func assembleExpectError(t *testing.T, src string) error {
 		t.Fatal("expected assembly error, got nil")
 	}
 	return err
+}
+
+func assemblerRepoRoot(t *testing.T) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("failed to resolve repo root")
+	}
+	return filepath.Dir(filepath.Dir(file))
+}
+
+func buildIE64AssemblerBinary(t *testing.T) string {
+	t.Helper()
+	binPath := filepath.Join(t.TempDir(), "ie64asm")
+	cmd := exec.Command("go", "build", "-tags", "ie64", "-o", binPath, filepath.Join(assemblerRepoRoot(t), "assembler", "ie64asm.go"))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to build ie64asm: %v\n%s", err, out)
+	}
+	return binPath
 }
 
 // IE64 size codes
@@ -1123,6 +1158,75 @@ func TestIE64Asm_If_Nested(t *testing.T) {
 	wantSei := encodeInstr(opSEI, 0, 0, 0, 0, 0, 0)
 	assertBytes(t, bin, 0, wantHalt, "inner else -> halt")
 	assertBytes(t, bin, 8, wantSei, "outer if -> sei")
+}
+
+func TestIE64Asm_If_UsesPredefinedEquate(t *testing.T) {
+	src := `
+		if FEATURE
+		halt
+		else
+		nop
+		endif
+`
+	bin := assembleStringWithDefines(t, src, map[string]uint64{"FEATURE": 1})
+	assertLen(t, bin, 8, "if FEATURE with predefine")
+	want := encodeInstr(opHALT, 0, 0, 0, 0, 0, 0)
+	assertBytes(t, bin, 0, want, "predefined FEATURE -> halt")
+}
+
+func TestIE64Asm_ParseCommandLineDefine(t *testing.T) {
+	tests := []struct {
+		raw      string
+		wantName string
+		wantVal  uint64
+		wantErr  bool
+	}{
+		{raw: "FEATURE", wantName: "FEATURE", wantVal: 1},
+		{raw: "FEATURE=7", wantName: "FEATURE", wantVal: 7},
+		{raw: "FEATURE=0x10", wantName: "FEATURE", wantVal: 16},
+		{raw: "", wantErr: true},
+		{raw: "=1", wantErr: true},
+		{raw: "FEATURE=", wantErr: true},
+	}
+
+	for _, tc := range tests {
+		name, val, err := parseCommandLineDefine(tc.raw)
+		if tc.wantErr {
+			if err == nil {
+				t.Fatalf("parseCommandLineDefine(%q) succeeded, want error", tc.raw)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("parseCommandLineDefine(%q) error: %v", tc.raw, err)
+		}
+		if name != tc.wantName || val != tc.wantVal {
+			t.Fatalf("parseCommandLineDefine(%q) = (%q, %d), want (%q, %d)", tc.raw, name, val, tc.wantName, tc.wantVal)
+		}
+	}
+}
+
+func TestIE64Asm_CLI_DDefineOverridesAssembly(t *testing.T) {
+	asmBin := buildIE64AssemblerBinary(t)
+	tmpDir := t.TempDir()
+	srcPath := filepath.Join(tmpDir, "test.asm")
+	if err := os.WriteFile(srcPath, []byte("if FEATURE\nhalt\nelse\nnop\nendif\n"), 0644); err != nil {
+		t.Fatalf("write asm source: %v", err)
+	}
+
+	cmd := exec.Command(asmBin, "-D", "FEATURE=1", srcPath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("ie64asm -D failed: %v\n%s", err, out)
+	}
+
+	bin, err := os.ReadFile(filepath.Join(tmpDir, "test.ie64"))
+	if err != nil {
+		t.Fatalf("read assembled output: %v", err)
+	}
+	assertLen(t, bin, 8, "cli -D output")
+	want := encodeInstr(opHALT, 0, 0, 0, 0, 0, 0)
+	assertBytes(t, bin, 0, want, "cli -D FEATURE=1 -> halt")
 }
 
 func TestIE64Asm_Rept(t *testing.T) {

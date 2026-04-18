@@ -214,6 +214,11 @@ IExec enforces a write-XOR-execute policy:
 - **Stack guard pages**: one non-present page is left below every user stack
   and below the kernel stack floor, so downward overflow becomes
   `FAULT_NOT_PRESENT`
+- **Optional minimal kernel stack canary**: when the
+  `KERNEL_STACK_CANARY_ENABLED` build flag is set, the kernel seeds and checks
+  one sentinel word at the bottom of the mapped kernel stack page on trap /
+  interrupt entry. This is a narrow corruption tripwire, not a substitute for
+  the guard-page hardening above.
 - A page fault is raised if user code attempts to write to an X page or execute from a W page
 
 As of **M15.6**, the host-side JIT that executes IE64 binaries is

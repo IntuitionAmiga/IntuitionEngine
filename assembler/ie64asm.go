@@ -36,6 +36,11 @@ Registers: r0-r31 (sp = r31)
 
 Assembler Syntax (68K-flavored, case-insensitive mnemonics/registers/directives):
 
+  CLI:
+    ie64asm [-v] [-list] [-I dir]... [-D NAME[=VALUE]]... input.asm
+    -D injects a predefined equate before assembly. `-D FEATURE` means
+       FEATURE=1; `-D NAME=0x10` sets an explicit value.
+
   Directives:
     org $addr             - set origin
     NAME equ value        - define constant (case-sensitive name)
@@ -305,6 +310,13 @@ func NewIE64Assembler() *IE64Assembler {
 // SetListingMode enables or disables listing output.
 func (a *IE64Assembler) SetListingMode(enabled bool) {
 	a.listingMode = enabled
+}
+
+// Predefine seeds an equate before assembly. Mirrors what `NAME equ val`
+// would do at the top of the source file; used by the CLI `-D` flag and
+// by tests that need to flip a feature equate without editing the input.
+func (a *IE64Assembler) Predefine(name string, val uint64) {
+	a.equates[name] = val
 }
 
 // GetListing returns the assembly listing lines.
@@ -2778,6 +2790,7 @@ func main() {
 	verbose := false
 	var inputFile string
 	var includePaths []string
+	asm := NewIE64Assembler()
 
 	args := os.Args[1:]
 	for i := 0; i < len(args); i++ {
@@ -2786,6 +2799,25 @@ func main() {
 			listMode = true
 		} else if arg == "-v" {
 			verbose = true
+		} else if arg == "-D" {
+			i++
+			if i >= len(args) {
+				fmt.Fprintf(os.Stderr, "Error: -D requires NAME=VALUE or NAME\n")
+				os.Exit(1)
+			}
+			name, val, err := parseCommandLineDefine(args[i])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: invalid -D value %q: %v\n", args[i], err)
+				os.Exit(1)
+			}
+			asm.Predefine(name, val)
+		} else if strings.HasPrefix(arg, "-D") {
+			name, val, err := parseCommandLineDefine(arg[2:])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: invalid -D value %q: %v\n", arg[2:], err)
+				os.Exit(1)
+			}
+			asm.Predefine(name, val)
 		} else if arg == "-I" {
 			i++
 			if i >= len(args) {
@@ -2797,11 +2829,11 @@ func main() {
 			includePaths = append(includePaths, arg[2:])
 		} else if strings.HasPrefix(arg, "-") {
 			fmt.Fprintf(os.Stderr, "Unknown option: %s\n", arg)
-			fmt.Fprintf(os.Stderr, "Usage: ie64asm [-v] [-list] [-I dir]... input.asm\n")
+			fmt.Fprintf(os.Stderr, "Usage: ie64asm [-v] [-list] [-I dir]... [-D NAME[=VALUE]]... input.asm\n")
 			os.Exit(1)
 		} else if inputFile != "" {
 			fmt.Fprintf(os.Stderr, "Error: multiple input files specified\n")
-			fmt.Fprintf(os.Stderr, "Usage: ie64asm [-v] [-list] [-I dir]... input.asm\n")
+			fmt.Fprintf(os.Stderr, "Usage: ie64asm [-v] [-list] [-I dir]... [-D NAME[=VALUE]]... input.asm\n")
 			os.Exit(1)
 		} else {
 			inputFile = arg
@@ -2809,7 +2841,7 @@ func main() {
 	}
 
 	if inputFile == "" {
-		fmt.Fprintf(os.Stderr, "Usage: ie64asm [-v] [-list] [-I dir]... input.asm\n")
+		fmt.Fprintf(os.Stderr, "Usage: ie64asm [-v] [-list] [-I dir]... [-D NAME[=VALUE]]... input.asm\n")
 		os.Exit(1)
 	}
 
@@ -2819,7 +2851,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	asm := NewIE64Assembler()
 	asm.basePath = filepath.Dir(inputFile)
 	asm.includePaths = includePaths
 	asm.verbose = verbose
@@ -2859,6 +2890,30 @@ func main() {
 			fmt.Println(line)
 		}
 	}
+}
+
+func parseCommandLineDefine(raw string) (string, uint64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", 0, fmt.Errorf("empty define")
+	}
+	parts := strings.SplitN(raw, "=", 2)
+	name := strings.TrimSpace(parts[0])
+	if name == "" {
+		return "", 0, fmt.Errorf("missing name")
+	}
+	if len(parts) == 1 {
+		return name, 1, nil
+	}
+	valText := strings.TrimSpace(parts[1])
+	if valText == "" {
+		return "", 0, fmt.Errorf("missing value")
+	}
+	val, err := strconv.ParseUint(valText, 0, 64)
+	if err != nil {
+		return "", 0, err
+	}
+	return name, val, nil
 }
 
 // ---------------------------------------------------------------------

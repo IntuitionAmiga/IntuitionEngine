@@ -33,6 +33,10 @@ iexec_start:
     move.l  r1, #KERN_STACK_TOP
     mtcr    cr8, r1
     move.q  r31, r1                    ; seed live SP: CR8<->R31 auto-swap hasn't fired yet
+if KERNEL_STACK_CANARY_ENABLED
+    move.l  r11, #KERN_STACK_CANARY_VALUE
+    store.l r11, KERN_STACK_CANARY_ADDR(r0)
+endif
 
     ; ---------------------------------------------------------------
     ; 3. Build kernel page table with explicit permission classes.
@@ -5909,6 +5913,9 @@ kern_put_fault_pte_for_addr:
 ; ============================================================================
 
 trap_handler:
+if KERNEL_STACK_CANARY_ENABLED
+    jsr     kern_stack_canary_check
+endif
     mfcr    r10, cr2
 
     move.l  r11, #FAULT_SYSCALL
@@ -9794,6 +9801,20 @@ restore_task:
     store.q r13, (r12)
     bra     restore_task
 
+if KERNEL_STACK_CANARY_ENABLED
+kern_stack_canary_check:
+    load.l  r10, KERN_STACK_CANARY_ADDR(r0)
+    move.l  r11, #KERN_STACK_CANARY_VALUE
+    beq     r10, r11, .canary_ok
+    la      r8, panic_msg
+    jsr     kern_puts
+    la      r8, panic_stack_canary_msg
+    jsr     kern_puts
+    halt
+.canary_ok:
+    rts
+endif
+
 ; ============================================================================
 ; Interrupt Handler (Timer Preemption)
 ; ============================================================================
@@ -9845,6 +9866,9 @@ intr_handler:
     suadis                          ; close SUA window after GPR save
     ; r14 = adjusted user SP (with GPR frame). Save for later.
     move.q  r28, r14                ; r28 = adjusted user SP
+if KERNEL_STACK_CANARY_ENABLED
+    jsr     kern_stack_canary_check
+endif
 
     ; --- Now proceed with normal interrupt handling ---
     move.l  r12, #KERN_DATA_BASE

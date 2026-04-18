@@ -108,6 +108,10 @@ panic_msg:
     dc.b    "KERNEL PANIC: ", 0
     align   4
 
+panic_stack_canary_msg:
+    dc.b    "kernel stack canary", 0x0D, 0x0A, 0
+    align   4
+
 no_tasks_msg:
     dc.b    "PANIC: no programs loaded", 0x0D, 0x0A, 0
     align   4

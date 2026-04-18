@@ -571,6 +571,13 @@ KERN_DATA_PAGE_BASE equ (KERN_DATA_BASE >> MMU_PAGE_SHIFT)
 KERN_STACK_GUARD_PAGE equ ((KERN_STACK_TOP >> MMU_PAGE_SHIFT) - 2)
 KERN_STACK_PAGE_BASE  equ ((KERN_STACK_TOP >> MMU_PAGE_SHIFT) - 1)
 KERN_STACK_PAGE_END equ (KERN_STACK_TOP >> MMU_PAGE_SHIFT)
+KERN_STACK_CANARY_ADDR equ (KERN_STACK_PAGE_BASE << MMU_PAGE_SHIFT)
+KERN_STACK_CANARY_VALUE equ 0x4B535443
+
+; R8: minimal kernel stack canary. Disabled by default and intended only as a
+; narrow diagnostic tripwire for corruption inside the single mapped kernel
+; stack page; the real hardening win is the non-present guard page below it.
+KERNEL_STACK_CANARY_ENABLED set 0
 
 STACK_GUARD_PAGES  equ 1
 

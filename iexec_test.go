@@ -1454,6 +1454,10 @@ func assembleAndLoadKernelWithBootstrapHostRoot(t *testing.T, hostRoot string) (
 }
 
 func assembleAndLoadKernelWithBootstrapHostRootOptions(t *testing.T, hostRoot string, useSpecialBootServices bool) (*ie64TestRig, *TerminalMMIO) {
+	return assembleAndLoadKernelWithBootstrapHostRootDefines(t, hostRoot, useSpecialBootServices, nil)
+}
+
+func assembleAndLoadKernelWithBootstrapHostRootDefines(t *testing.T, hostRoot string, useSpecialBootServices bool, defines []string) (*ie64TestRig, *TerminalMMIO) {
 	t.Helper()
 	asmBin := buildAssembler(t)
 	tmpDir := t.TempDir()
@@ -1487,7 +1491,12 @@ func assembleAndLoadKernelWithBootstrapHostRootOptions(t *testing.T, hostRoot st
 	}
 
 	iexecSrcDir := filepath.Join(root, "sdk", "intuitionos", "iexec")
-	cmd := exec.Command(asmBin, "-I", tmpDir, "-I", iexecSrcDir, filepath.Join(tmpDir, "iexec.s"))
+	args := []string{"-I", tmpDir, "-I", iexecSrcDir}
+	for _, define := range defines {
+		args = append(args, "-D", define)
+	}
+	args = append(args, filepath.Join(tmpDir, "iexec.s"))
+	cmd := exec.Command(asmBin, args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("assembly failed: %v\n%s", err, out)
 	}
@@ -24017,6 +24026,51 @@ func TestIExec_M156_R7_DocsLockFaultPCContract(t *testing.T) {
 	requireAllSubstrings(t, iexecDoc,
 		"Fault traps enter the kernel with `FAULT_PC` still pointing at the faulting instruction; `SYSCALL` is the exception and stores `PC+8` so `ERET` skips it by default",
 		"User code cannot write `CR_FAULT_PC` directly: user-mode `MTCR CR_FAULT_PC` faults with `FAULT_PRIV`",
+	)
+}
+
+func TestIExec_M156_R8_KernelStackCanaryBuildFlagAssemblesThroughNormalCLI(t *testing.T) {
+	rig, term := assembleAndLoadKernelWithBootstrapHostRootDefines(
+		t,
+		makeM152Phase5GeneratedHostRoot(t),
+		false,
+		[]string{"KERNEL_STACK_CANARY_ENABLED=1"},
+	)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() {
+		rig.cpu.Execute()
+		close(done)
+	}()
+	defer func() {
+		rig.cpu.running.Store(false)
+		<-done
+	}()
+
+	if !waitForNumTasksAtLeast(rig.cpu.memory, 2, 2*time.Second) {
+		t.Fatalf("canary-enabled kernel did not boot through normal CLI define path, output=%q", term.DrainOutput())
+	}
+
+	incSrc := mustReadRepoFile(t, "sdk/include/iexec.inc")
+	requireAllSubstrings(t, incSrc,
+		"KERN_STACK_CANARY_ADDR equ (KERN_STACK_PAGE_BASE << MMU_PAGE_SHIFT)",
+		"KERN_STACK_CANARY_VALUE equ 0x4B535443",
+		"KERNEL_STACK_CANARY_ENABLED set 0",
+	)
+}
+
+func TestIExec_M156_R8_DocsLockKernelStackCanaryContract(t *testing.T) {
+	roadmap := mustReadRepoFile(t, "IntuitionOS_Roadmap.md")
+	requireAllSubstrings(t, roadmap,
+		"minimal kernel stack canary",
+		"test-pinned rather than tribal knowledge",
+	)
+
+	iexecDoc := mustReadRepoFile(t, "sdk/docs/IntuitionOS/IExec.md")
+	requireAllSubstrings(t, iexecDoc,
+		"Optional minimal kernel stack canary",
+		"`KERNEL_STACK_CANARY_ENABLED` build flag",
+		"one sentinel word at the bottom of the mapped kernel stack page",
 	)
 }
 

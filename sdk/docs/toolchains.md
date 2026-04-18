@@ -39,11 +39,13 @@ make ie64asm                              # Build
 sdk/bin/ie64asm program.asm                 # Assemble (produces program.ie64)
 sdk/bin/ie64asm -I sdk/include program.asm  # With include search path
 sdk/bin/ie64asm -list program.asm           # Assemble with listing output
+sdk/bin/ie64asm -D FEATURE=1 program.asm    # Predefine an equate from the CLI
 ./bin/IntuitionEngine -ie64 program.ie64  # Run (or: RUN "program.ie64" from BASIC)
 ```
 
 - Custom assembler built from `assembler/ie64asm.go` (assembler tool source code)
 - Supports `-I dir` include search paths (multiple allowed, searched after source file directory)
+- Supports `-D NAME[=VALUE]` predefined equates. `-D FEATURE` means `FEATURE=1`.
 - Supports `.include`, `equ`, `org`, `dc.b/w/l/q`, labels, macros with positional parameters (`\1`..`\9`)
 - Variable-length instruction encoding (4-12 bytes)
 
