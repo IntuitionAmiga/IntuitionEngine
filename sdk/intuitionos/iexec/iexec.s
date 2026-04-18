@@ -5488,6 +5488,12 @@ find_free_va:
     load.w  r15, KD_REG_PAGES(r12)     ; region page count
     lsl     r15, r15, #12              ; region size in bytes
     add     r16, r14, r15              ; region end VA
+    load.b  r15, KD_REG_FLAGS(r12)
+    and     r15, r15, #MEMF_GUARD
+    beqz    r15, .ffv_inline_span_ready
+    sub     r14, r14, #MMU_PAGE_SIZE    ; include leading guard
+    add     r16, r16, #MMU_PAGE_SIZE    ; include trailing guard
+.ffv_inline_span_ready:
     ; Check overlap: candidate [r8, r9) vs region [r14, r16)
     bge     r8, r16, .ffv_next_region  ; candidate starts after region ends
     bge     r14, r9, .ffv_next_region  ; region starts after candidate ends
@@ -5523,6 +5529,12 @@ find_free_va:
     load.w  r15, KD_REG_PAGES(r13)
     lsl     r15, r15, #12
     add     r16, r14, r15
+    load.b  r15, KD_REG_FLAGS(r13)
+    and     r15, r15, #MEMF_GUARD
+    beqz    r15, .ffv_oflow_span_ready
+    sub     r14, r14, #MMU_PAGE_SIZE
+    add     r16, r16, #MMU_PAGE_SIZE
+.ffv_oflow_span_ready:
     bge     r8, r16, .ffv_oflow_skip
     bge     r14, r9, .ffv_oflow_skip
     ; Overlap — advance candidate past this region
@@ -7110,7 +7122,7 @@ trap_handler:
 ; ============================================================================
 ; AllocMem (SYS_ALLOC_MEM = 1)
 ; ============================================================================
-; R1 = size (bytes), R2 = flags (MEMF_PUBLIC | MEMF_CLEAR, or 0)
+; R1 = size (bytes), R2 = flags (MEMF_PUBLIC | MEMF_GUARD | MEMF_CLEAR, or 0)
 ; Returns: R1 = VA, R2 = err, R3 = share_handle (if MEMF_PUBLIC)
 
 .do_alloc_mem:
@@ -7227,15 +7239,24 @@ trap_handler:
     bnez    r2, .am_nomem               ; alloc failed
     move.q  r22, r1                     ; r22 = base PPN
 
-    ; Step 7: Find free VA gap
+    ; Step 7: Find free VA gap. Guarded allocations reserve an extra
+    ; non-present page on each side but charge quota only for the mapped body.
     ; NOTE: find_free_va clobbers R3-R16, so save R13 (current_task)
     push    r13
     move.q  r1, r13                     ; R1 = task_id
-    move.q  r2, r20                     ; R2 = pages needed
+    move.q  r2, r20                     ; R2 = mapped pages needed
+    and     r11, r25, #MEMF_GUARD
+    beqz    r11, .am_find_va_ready
+    add     r2, r2, #2                  ; reserve leading + trailing guard pages
+.am_find_va_ready:
     jsr     find_free_va                ; R1 = VA, R2 = err
     pop     r13                         ; restore current_task
     bnez    r2, .am_rollback_pages      ; VA search failed → free pages
     move.q  r23, r1                     ; r23 = VA
+    and     r11, r25, #MEMF_GUARD
+    beqz    r11, .am_find_va_done
+    add     r23, r23, #MMU_PAGE_SIZE    ; mapped body starts after the leading guard
+.am_find_va_done:
 
     ; === COMMIT PHASE (no failures past this point) ===
 
@@ -7297,6 +7318,7 @@ trap_handler:
     store.b r9, KD_SHM_VALID(r26)       ; valid = 1
     store.b r9, KD_SHM_REFCOUNT(r26)    ; refcount = 1
     store.b r13, KD_SHM_CREATOR(r26)    ; creator = current_task
+    store.b r25, KD_SHM_FLAGS(r26)      ; low-byte MEMF_* propagation (e.g. MEMF_GUARD)
     store.w r22, KD_SHM_PPN(r26)        ; base PPN
     store.w r20, KD_SHM_PAGES(r26)      ; page count
     store.l r11, KD_SHM_NONCE(r26)      ; nonce
@@ -7656,14 +7678,24 @@ trap_handler:
 
     ; Find free VA gap
     move.q  r1, r13                     ; task_id
-    load.w  r2, KD_SHM_PAGES(r14)      ; pages from shared object
-    move.q  r23, r2                     ; save page count
+    load.w  r23, KD_SHM_PAGES(r14)      ; mapped page count (also quota-charged count)
+    move.q  r2, r23                     ; candidate span starts as mapped pages
+    load.b  r11, KD_SHM_FLAGS(r14)
+    and     r11, r11, #MEMF_GUARD
+    beqz    r11, .ms_find_va_ready
+    add     r2, r2, #2                  ; reserve flanking guard pages in this mapping too
+.ms_find_va_ready:
     jsr     find_free_va
     bnez    r2, .ms_nomem
     move.q  r25, r1                     ; r25 = VA
+    move.q  r14, r28                    ; restore shmem ptr before re-reading flags
+    load.b  r11, KD_SHM_FLAGS(r14)
+    and     r11, r11, #MEMF_GUARD
+    beqz    r11, .ms_find_va_done
+    add     r25, r25, #MMU_PAGE_SIZE
+.ms_find_va_done:
 
     ; Restore saved values
-    move.q  r14, r28                    ; restore shmem ptr
     move.q  r13, r29                    ; restore current_task
 
     ; === COMMIT ===
@@ -7703,7 +7735,7 @@ trap_handler:
     move.b  r11, #REGION_SHARED
     store.b r11, KD_REG_TYPE(r22)
     store.b r20, KD_REG_SHMID(r22)      ; slot index
-    move.b  r11, #MEMF_PUBLIC
+    load.b  r11, KD_SHM_FLAGS(r14)
     store.b r11, KD_REG_FLAGS(r22)
 
     tlbflush

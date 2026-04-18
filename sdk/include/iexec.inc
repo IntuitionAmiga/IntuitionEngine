@@ -581,6 +581,7 @@ STACK_GUARD_PAGES  equ 1
 ; MEMF_ flags (Amiga-style)
 MEMF_ANY          equ 0x00000     ; any memory (private, the default)
 MEMF_PUBLIC       equ 0x00001     ; bit 0: shareable (classic Amiga)
+MEMF_GUARD        equ 0x00002     ; bit 1: reserve one non-present page on each side
 MEMF_CLEAR        equ 0x10000     ; bit 16: zero-fill (classic Amiga)
 
 ; Physical page allocator
@@ -754,6 +755,7 @@ KD_SHMEM_ROWS_PER_PG  equ 255     ; (4096 - 16) / 16
 KD_SHM_VALID      equ 0           ; 1=active, 0=unused (1 byte)
 KD_SHM_REFCOUNT   equ 1           ; active mappings (1 byte)
 KD_SHM_CREATOR    equ 2           ; creating task ID (1 byte)
+KD_SHM_FLAGS      equ 3           ; MEMF_* low byte propagated to MapShared
 KD_SHM_PPN        equ 4           ; base PPN (2 bytes)
 KD_SHM_PAGES      equ 6           ; page count (2 bytes)
 KD_SHM_NONCE      equ 8           ; 24-bit nonce for handle validation (4 bytes)

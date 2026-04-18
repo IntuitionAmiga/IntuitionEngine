@@ -65,6 +65,9 @@ The same header now exports the M15.6 shared-memory permission bits used by `SYS
 
 - `MAPF_READ` (bit 0) — install a readable user mapping.
 - `MAPF_WRITE` (bit 1) — install a writable user mapping.
+- `MEMF_GUARD` (bit 1 in the `AllocMem` flags word) — reserve one non-present
+  page on each side of the mapped allocation. The returned VA still points at
+  the mapped body, not the leading guard.
 
 `SYS_MAP_SHARED` requires a non-zero subset of those bits in `R2`; omitted masks and unknown bits fail with `ERR_BADARG`. The kernel never sets `PTE_X` for shared mappings.
 

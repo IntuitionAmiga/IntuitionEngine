@@ -920,6 +920,10 @@ by the emulator one layer down.
   the kernel stack reserve one unmapped page below the downward-growing
   stack floor. Overflow is therefore a deterministic `FAULT_NOT_PRESENT`
   instead of silent adjacent-page corruption.
+- **Heap guard pages** — as of R2 in M15.6, `AllocMem(MEMF_GUARD)`
+  reserves one unmapped page on each side of the mapped allocation.
+  The per-task VA allocator treats those guard slots as occupied for the
+  life of the region, so a neighboring allocation cannot consume them.
 - **Cross-task confidentiality** — private and shared allocator
   pages are zeroed on free before release, so a later owner cannot
   observe prior-task bytes. `MapShared` then narrows consumer-side

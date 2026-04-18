@@ -246,6 +246,7 @@ const (
 	// M6: Memory allocation constants (must match iexec.inc)
 	memfAny    = 0x00000
 	memfPublic = 0x00001
+	memfGuard  = 0x00002
 	memfClear  = 0x10000
 
 	allocPoolBase  = 0x1200 // first allocable page number — M12.6 Phase E security fix: was 0xA00 (split user-dyn and pool into disjoint VPN ranges)
@@ -6130,6 +6131,207 @@ func TestIExec_AllocMem_Clear(t *testing.T) {
 	}
 	if last != 0 {
 		t.Fatalf("MEMF_CLEAR: last qword = 0x%X, want 0", last)
+	}
+}
+
+func TestIExec_R2_AllocMemGuardReservesFlankingPages(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	t0Start := images[0]
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	pc := t0Start
+
+	copy(rig.cpu.memory[pc:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	copy(rig.cpu.memory[pc+8:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, uint32(memfGuard)))
+	copy(rig.cpu.memory[pc+16:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	copy(rig.cpu.memory[pc+24:], ie64Instr(OP_MOVE, 8, IE64_SIZE_Q, 0, 1, 0, 0))
+	copy(rig.cpu.memory[pc+32:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	copy(rig.cpu.memory[pc+40:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 0))
+	copy(rig.cpu.memory[pc+48:], ie64Instr(OP_STORE, 8, IE64_SIZE_Q, 0, 3, 0, 8))
+	copy(rig.cpu.memory[pc+56:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	copy(rig.cpu.memory[pc+64:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	copy(rig.cpu.memory[pc+72:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	copy(rig.cpu.memory[pc+80:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 16))
+	copy(rig.cpu.memory[pc+88:], ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 24))
+	copy(rig.cpu.memory[pc+96:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	errGuard := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data:])
+	vaGuard := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+8:])
+	errNext := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+16:])
+	vaNext := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+24:])
+	if errGuard != 0 {
+		t.Fatalf("guarded AllocMem err=%d, want 0", errGuard)
+	}
+	if errNext != 0 {
+		t.Fatalf("follow-on AllocMem err=%d, want 0", errNext)
+	}
+	if vaGuard != userDynBase+MMU_PAGE_SIZE {
+		t.Fatalf("guarded AllocMem VA=0x%X, want first mapped page after leading guard at 0x%X", vaGuard, userDynBase+MMU_PAGE_SIZE)
+	}
+	if vaNext != vaGuard+(2*MMU_PAGE_SIZE) {
+		t.Fatalf("next AllocMem VA=0x%X, want trailing guard to force 0x%X", vaNext, vaGuard+(2*MMU_PAGE_SIZE))
+	}
+
+	guardLoVPN := uint32((vaGuard - MMU_PAGE_SIZE) >> MMU_PAGE_SHIFT)
+	bodyVPN := uint32(vaGuard >> MMU_PAGE_SHIFT)
+	guardHiVPN := uint32((vaGuard + MMU_PAGE_SIZE) >> MMU_PAGE_SHIFT)
+	guardLoPTE := binary.LittleEndian.Uint64(rig.cpu.memory[userPT0Base+guardLoVPN*8:])
+	bodyPTE := binary.LittleEndian.Uint64(rig.cpu.memory[userPT0Base+bodyVPN*8:])
+	guardHiPTE := binary.LittleEndian.Uint64(rig.cpu.memory[userPT0Base+guardHiVPN*8:])
+	if guardLoPTE != 0 {
+		t.Fatalf("leading guard PTE=%#x, want 0", guardLoPTE)
+	}
+	if bodyPTE == 0 {
+		t.Fatalf("guarded body PTE=0, want present mapping")
+	}
+	if guardHiPTE != 0 {
+		t.Fatalf("trailing guard PTE=%#x, want 0", guardHiPTE)
+	}
+}
+
+func TestIExec_R2_AllocMemGuardOverrunFaultsNotPresent(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	t0Start := images[0]
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	pc := t0Start
+
+	copy(rig.cpu.memory[pc:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	copy(rig.cpu.memory[pc+8:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, uint32(memfGuard)))
+	copy(rig.cpu.memory[pc+16:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	copy(rig.cpu.memory[pc+24:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	copy(rig.cpu.memory[pc+32:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 0))
+	copy(rig.cpu.memory[pc+40:], ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 8))
+	copy(rig.cpu.memory[pc+48:], ie64Instr(OP_ADD, 4, IE64_SIZE_Q, 1, 1, 0, MMU_PAGE_SIZE))
+	copy(rig.cpu.memory[pc+56:], ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, 0x5A))
+	copy(rig.cpu.memory[pc+64:], ie64Instr(OP_STORE, 5, IE64_SIZE_B, 0, 4, 0, 0))
+	copy(rig.cpu.memory[pc+72:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	errCode := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data:])
+	va := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+8:])
+	if errCode != 0 {
+		t.Fatalf("guarded AllocMem err=%d, want 0", errCode)
+	}
+	if va == 0 {
+		t.Fatal("guarded AllocMem returned VA=0")
+	}
+	if rig.cpu.faultCause != FAULT_NOT_PRESENT {
+		t.Fatalf("guarded overrun fault cause=%d, want FAULT_NOT_PRESENT (%d)", rig.cpu.faultCause, FAULT_NOT_PRESENT)
+	}
+}
+
+func TestIExec_R2_AllocMemGuardUnderrunFaultsNotPresent(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	t0Start := images[0]
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	pc := t0Start
+
+	copy(rig.cpu.memory[pc:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	copy(rig.cpu.memory[pc+8:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, uint32(memfGuard)))
+	copy(rig.cpu.memory[pc+16:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	copy(rig.cpu.memory[pc+24:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	copy(rig.cpu.memory[pc+32:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 0))
+	copy(rig.cpu.memory[pc+40:], ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 8))
+	copy(rig.cpu.memory[pc+48:], ie64Instr(OP_SUB, 4, IE64_SIZE_Q, 1, 1, 0, 1))
+	copy(rig.cpu.memory[pc+56:], ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, 0x5A))
+	copy(rig.cpu.memory[pc+64:], ie64Instr(OP_STORE, 5, IE64_SIZE_B, 0, 4, 0, 0))
+	copy(rig.cpu.memory[pc+72:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	errCode := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data:])
+	va := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+8:])
+	if errCode != 0 {
+		t.Fatalf("guarded AllocMem err=%d, want 0", errCode)
+	}
+	if va == 0 {
+		t.Fatal("guarded AllocMem returned VA=0")
+	}
+	if rig.cpu.faultCause != FAULT_NOT_PRESENT {
+		t.Fatalf("guarded underrun fault cause=%d, want FAULT_NOT_PRESENT (%d)", rig.cpu.faultCause, FAULT_NOT_PRESENT)
+	}
+}
+
+func TestIExec_R2_MapSharedGuardReservesFlankingPages(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	t0Start := images[0]
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	pc := t0Start
+
+	childCode := make([]byte, 72)
+	copy(childCode[0:], ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	copy(childCode[8:], ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 31, 0, 8))
+	copy(childCode[16:], ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 5, 0, 0))
+	copy(childCode[24:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, mapfRead))
+	copy(childCode[32:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysMapShared))
+	copy(childCode[40:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask1Data))
+	copy(childCode[48:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 0))
+	copy(childCode[56:], ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 8))
+	copy(childCode[64:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+	childVA := writeTask0CodeScratch(t, rig.cpu.memory, t0Start, 0x200, childCode)
+
+	copy(rig.cpu.memory[pc:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	copy(rig.cpu.memory[pc+8:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, uint32(memfPublic|memfGuard|memfClear)))
+	copy(rig.cpu.memory[pc+16:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	copy(rig.cpu.memory[pc+24:], ie64Instr(OP_MOVE, 8, IE64_SIZE_Q, 0, 3, 0, 0))
+	copy(rig.cpu.memory[pc+32:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, childVA))
+	copy(rig.cpu.memory[pc+40:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, uint32(len(childCode))))
+	copy(rig.cpu.memory[pc+48:], ie64Instr(OP_MOVE, 3, IE64_SIZE_Q, 0, 8, 0, 0))
+	copy(rig.cpu.memory[pc+56:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))
+	copy(rig.cpu.memory[pc+64:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	copy(rig.cpu.memory[pc+72:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	errCode := binary.LittleEndian.Uint64(rig.cpu.memory[userTask1Data:])
+	va := binary.LittleEndian.Uint64(rig.cpu.memory[userTask1Data+8:])
+	if errCode != 0 {
+		t.Fatalf("guarded MapShared err=%d, want 0", errCode)
+	}
+	if va < userDynBase+MMU_PAGE_SIZE {
+		t.Fatalf("guarded MapShared VA=0x%X, want mapped page after leading guard", va)
+	}
+
+	guardLoVPN := uint32((va - MMU_PAGE_SIZE) >> MMU_PAGE_SHIFT)
+	bodyVPN := uint32(va >> MMU_PAGE_SHIFT)
+	guardHiVPN := uint32((va + MMU_PAGE_SIZE) >> MMU_PAGE_SHIFT)
+	guardLoPTE := binary.LittleEndian.Uint64(rig.cpu.memory[userPT1Base+guardLoVPN*8:])
+	bodyPTE := binary.LittleEndian.Uint64(rig.cpu.memory[userPT1Base+bodyVPN*8:])
+	guardHiPTE := binary.LittleEndian.Uint64(rig.cpu.memory[userPT1Base+guardHiVPN*8:])
+	if guardLoPTE != 0 {
+		t.Fatalf("MapShared leading guard PTE=%#x, want 0", guardLoPTE)
+	}
+	if bodyPTE == 0 {
+		t.Fatalf("MapShared body PTE=0, want present mapping")
+	}
+	if guardHiPTE != 0 {
+		t.Fatalf("MapShared trailing guard PTE=%#x, want 0", guardHiPTE)
 	}
 }
 
