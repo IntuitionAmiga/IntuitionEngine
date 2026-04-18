@@ -916,6 +916,10 @@ by the emulator one layer down.
   ERET so kernel handlers survive a nested synchronous trap
   without a manual MFCR/MTCR save/restore dance. See
   `IE64_ISA.md` §12.14.
+- **Stack guard pages** — as of R1 in M15.6, both user stacks and
+  the kernel stack reserve one unmapped page below the downward-growing
+  stack floor. Overflow is therefore a deterministic `FAULT_NOT_PRESENT`
+  instead of silent adjacent-page corruption.
 - **Cross-task confidentiality** — private and shared allocator
   pages are zeroed on free before release, so a later owner cannot
   observe prior-task bytes. `MapShared` then narrows consumer-side

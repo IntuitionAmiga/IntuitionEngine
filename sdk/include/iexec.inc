@@ -187,8 +187,9 @@ SYSINFO_QUOTA_LIMIT   equ 5        ; M15.6 G3: R1=query, R2=QUOTA_KIND_*. Return
 ; land inside the image and corrupt late strings like boot_banner.
 ; Move the supervisor PT/data/stack window upward while still staying
 ; entirely below the fixed I/O region at 0x0A0000.
-KERN_PAGE_TABLE   equ 0x07F000    ; Kernel page table (64 KiB) — M15.2: was 0x074000
-KERN_DATA_BASE    equ 0x08F000    ; Kernel data structures      — M15.2: was 0x084000
+KERN_PAGE_TABLE   equ 0x07D000    ; Kernel page table (64 KiB) — R1: shifted down 8 KiB so the
+                                  ; kernel stack gets a dedicated guard page below its floor.
+KERN_DATA_BASE    equ 0x08D000    ; Kernel data structures      — R1: shifted with KERN_PAGE_TABLE
 KERN_STACK_TOP    equ 0x0A0000    ; Kernel stack top (grows downward below I/O base)
 
 ; ---------------------------------------------------------------------------
@@ -340,6 +341,9 @@ KD_TASK_DATA_PAGES       equ 32    ; u32
 KD_TASK_LAYOUT_FLAGS     equ 36    ; u32 reserved
 KD_TASK_LAYOUT_STARTUP   equ 40    ; u64 startup-block page base
 KD_TASK_LAYOUT_PT_BASE   equ 48    ; u64
+
+TASK_LAYOUT_FLAG_STACK_GUARD equ 0x00000001 ; stack allocation reserves one extra
+                                            ; non-present page below the mapped stack
 
 KD_TASK_IMG_BITMAP       equ 65688 ; 512 bits = 64 bytes
 KD_TASK_IMG_BITMAP_SZ    equ 64
@@ -564,7 +568,11 @@ KERN_IMAGE_PAGE_END equ (KERN_PAGE_TABLE >> MMU_PAGE_SHIFT)
 KERN_PT_PAGE_BASE equ (KERN_PAGE_TABLE >> MMU_PAGE_SHIFT)
 KERN_PT_PAGE_END  equ (KERN_DATA_BASE >> MMU_PAGE_SHIFT)
 KERN_DATA_PAGE_BASE equ (KERN_DATA_BASE >> MMU_PAGE_SHIFT)
+KERN_STACK_GUARD_PAGE equ ((KERN_STACK_TOP >> MMU_PAGE_SHIFT) - 2)
+KERN_STACK_PAGE_BASE  equ ((KERN_STACK_TOP >> MMU_PAGE_SHIFT) - 1)
 KERN_STACK_PAGE_END equ (KERN_STACK_TOP >> MMU_PAGE_SHIFT)
+
+STACK_GUARD_PAGES  equ 1
 
 ; ===========================================================================
 ; Memory Allocation (M6)

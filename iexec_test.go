@@ -23,14 +23,15 @@ import (
 
 const (
 	// Kernel memory layout (all in identity-mapped supervisor space)
-	kernPageTableBase = 0x7F000 // Kernel page table (64 KiB) — M15.2: was 0x74000
-	kernDataBase      = 0x8F000 // Kernel data (TCBs, state)   — M15.2: was 0x84000
+	kernPageTableBase = 0x7D000 // Kernel page table (64 KiB) — R1: shifted down for kernel stack guard
+	kernDataBase      = 0x8D000 // Kernel data (TCBs, state)   — R1: shifted with kernel PT
 	kernStackTop      = 0xA0000 // Kernel stack top
 	maxTasks          = 255     // MAX_TASKS (M13 Phase 4: internal-slot ABI ceiling, 0xFF reserved)
 	kernImagePageEnd  = kernPageTableBase >> MMU_PAGE_SHIFT
 	kernPTPageBase    = kernPageTableBase >> MMU_PAGE_SHIFT
 	kernPTPageEnd     = kernDataBase >> MMU_PAGE_SHIFT
 	kernDataPageBase  = kernDataBase >> MMU_PAGE_SHIFT
+	kernStackGuardVPN = (kernStackTop >> MMU_PAGE_SHIFT) - 2
 	kernStackPageEnd  = kernStackTop >> MMU_PAGE_SHIFT
 
 	// User task page table base. Was 0x100000 originally but that range
@@ -460,6 +461,9 @@ func setupKernelPTEs(mem []byte, ptBase uint32) {
 		off := ptBase + uint32(page)*8
 		binary.LittleEndian.PutUint64(mem[off:], pte)
 	}
+	// R1: leave one non-present page below the kernel stack floor.
+	guardOff := ptBase + uint32(kernStackGuardVPN)*8
+	binary.LittleEndian.PutUint64(mem[guardOff:], 0)
 }
 
 // mapUserPage adds a user-accessible PTE to a page table
@@ -517,6 +521,14 @@ func buildBootOnlyKernel() *iexecKernel {
 	k.emit(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, kernImagePageEnd))
 	rxBranchAddr := k.addr()
 	k.emit(ie64Instr(OP_BLT, 0, 0, 0, 4, 6, uint32(int32(rxLoopStart)-int32(rxBranchAddr))))
+
+	// R1: clear the kernel stack guard page so downward supervisor overflow
+	// faults as NOT_PRESENT instead of walking into kernel data.
+	k.emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	k.emit(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, kernStackGuardVPN))
+	k.emit(ie64Instr(OP_LSL, 5, IE64_SIZE_Q, 1, 4, 0, 3))
+	k.emit(ie64Instr(OP_ADD, 5, IE64_SIZE_Q, 0, 5, 2, 0))
+	k.emit(ie64Instr(OP_STORE, 3, IE64_SIZE_Q, 0, 5, 0, 0))
 
 	// Enable MMU
 	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, kernPageTableBase))
@@ -787,6 +799,101 @@ func TestIExec_FaultKillsTask(t *testing.T) {
 	cause := binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase:])
 	if cause != FAULT_NOT_PRESENT {
 		t.Fatalf("fault cause = %d, want %d (NOT_PRESENT)", cause, FAULT_NOT_PRESENT)
+	}
+}
+
+func TestIExec_R1_UserStackOverflowHitsGuardPageCleanly(t *testing.T) {
+	rig := newIE64TestRig()
+	k := newIExecKernel()
+
+	const (
+		userCode  = 0x600000
+		userGuard = 0x601000
+		userStack = 0x602000
+		userData  = 0x603000
+	)
+
+	trapAddr := uint32(PROG_START) + 0x3000
+	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, trapAddr))
+	k.emit(ie64Instr(OP_MTCR, CR_TRAP_VEC, 0, 0, 1, 0, 0))
+	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, kernStackTop))
+	k.emit(ie64Instr(OP_MTCR, CR_KSP, 0, 0, 1, 0, 0))
+
+	setupKernelPTEs(rig.cpu.memory, kernPageTableBase)
+	setupKernelPTEs(rig.cpu.memory, userPT0Base)
+	mapUserPage(rig.cpu.memory, userPT0Base, uint16(userCode>>MMU_PAGE_SHIFT), uint16(userCode>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_X|PTE_U)
+	mapUserPage(rig.cpu.memory, userPT0Base, uint16(userStack>>MMU_PAGE_SHIFT), uint16(userStack>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U)
+	mapUserPage(rig.cpu.memory, userPT0Base, uint16(userData>>MMU_PAGE_SHIFT), uint16(userData>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U)
+	if pte := binary.LittleEndian.Uint64(rig.cpu.memory[userPT0Base+uint32(userGuard>>MMU_PAGE_SHIFT)*8:]); pte != 0 {
+		t.Fatalf("guard PTE = %#x, want 0", pte)
+	}
+
+	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, kernPageTableBase))
+	k.emit(ie64Instr(OP_MTCR, CR_PTBR, 0, 0, 1, 0, 0))
+	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 1))
+	k.emit(ie64Instr(OP_MTCR, CR_MMU_CTRL, 0, 0, 1, 0, 0))
+	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userPT0Base))
+	k.emit(ie64Instr(OP_MTCR, CR_PTBR, 0, 0, 1, 0, 0))
+	k.emit(ie64Instr(OP_TLBFLUSH, 0, 0, 0, 0, 0, 0))
+	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userStack+MMU_PAGE_SIZE))
+	k.emit(ie64Instr(OP_MTCR, CR_USP, 0, 0, 1, 0, 0))
+	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userCode))
+	k.emit(ie64Instr(OP_MTCR, CR_FAULT_PC, 0, 0, 1, 0, 0))
+	k.emit(ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0))
+
+	k.padTo(0x3000)
+	k.emit(ie64Instr(OP_MFCR, 1, 0, 0, CR_FAULT_CAUSE, 0, 0))
+	k.emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, kernDataBase))
+	k.emit(ie64Instr(OP_STORE, 1, IE64_SIZE_L, 0, 2, 0, 0))
+	k.emit(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	copy(rig.cpu.memory[userCode:], ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, MMU_PAGE_SIZE))
+	copy(rig.cpu.memory[userCode+8:], ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 8))
+	copy(rig.cpu.memory[userCode+16:], ie64Instr(OP_STORE, 0, IE64_SIZE_Q, 0, 31, 0, 0))
+
+	loadAndRunKernel(t, rig, k, 200000)
+
+	cause := binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase:])
+	if cause != FAULT_NOT_PRESENT {
+		t.Fatalf("user stack overflow cause = %d, want %d (NOT_PRESENT)", cause, FAULT_NOT_PRESENT)
+	}
+}
+
+func TestIExec_R1_KernelStackOverflowHitsGuardPageCleanly(t *testing.T) {
+	rig := newIE64TestRig()
+	k := newIExecKernel()
+
+	trapAddr := uint32(PROG_START) + 0x3000
+	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, trapAddr))
+	k.emit(ie64Instr(OP_MTCR, CR_TRAP_VEC, 0, 0, 1, 0, 0))
+	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, kernStackTop))
+	k.emit(ie64Instr(OP_MTCR, CR_KSP, 0, 0, 1, 0, 0))
+
+	setupKernelPTEs(rig.cpu.memory, kernPageTableBase)
+	if pte := binary.LittleEndian.Uint64(rig.cpu.memory[kernPageTableBase+uint32(kernStackGuardVPN)*8:]); pte != 0 {
+		t.Fatalf("kernel guard PTE = %#x, want 0", pte)
+	}
+
+	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, kernPageTableBase))
+	k.emit(ie64Instr(OP_MTCR, CR_PTBR, 0, 0, 1, 0, 0))
+	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 1))
+	k.emit(ie64Instr(OP_MTCR, CR_MMU_CTRL, 0, 0, 1, 0, 0))
+	k.emit(ie64Instr(OP_MOVE, 31, IE64_SIZE_L, 1, 0, 0, kernStackTop))
+	k.emit(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, MMU_PAGE_SIZE+8))
+	k.emit(ie64Instr(OP_STORE, 0, IE64_SIZE_Q, 0, 31, 0, 0))
+	k.emit(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	k.padTo(0x3000)
+	k.emit(ie64Instr(OP_MFCR, 1, 0, 0, CR_FAULT_CAUSE, 0, 0))
+	k.emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, kernDataBase+4))
+	k.emit(ie64Instr(OP_STORE, 1, IE64_SIZE_L, 0, 2, 0, 0))
+	k.emit(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	loadAndRunKernel(t, rig, k, 200000)
+
+	cause := binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+4:])
+	if cause != FAULT_NOT_PRESENT {
+		t.Fatalf("kernel stack overflow cause = %d, want %d (NOT_PRESENT)", cause, FAULT_NOT_PRESENT)
 	}
 }
 

@@ -65,6 +65,14 @@ iexec_start:
     add     r4, r4, #1
     bra     .kern_image_rx_map
 .kern_image_rx_done:
+    ; R1: leave one non-present supervisor page below the kernel stack so a
+    ; downward overflow faults as FAULT_NOT_PRESENT instead of scribbling into
+    ; kernel data.
+    move.l  r3, #0
+    move.l  r4, #KERN_STACK_GUARD_PAGE
+    lsl     r5, r4, #3
+    add     r5, r5, r2
+    store.q r3, (r5)
 
     ; 3b. Add supervisor-only mappings for the entire dynamic task-image
     ; window (USER_IMAGE_BASE..USER_PT_BASE). M13 phase 2 no longer derives
@@ -1259,6 +1267,12 @@ build_user_pt_dynamic:
     add     r8, r8, #1
     bra     .bupd_stack_loop
 .bupd_stack_done:
+    ; R1: clear the guard page immediately below the user stack floor.
+    lsr     r9, r4, #12
+    sub     r9, r9, #STACK_GUARD_PAGES
+    lsl     r11, r9, #3
+    add     r11, r11, r1
+    store.q r0, (r11)
     ; Data: P|R|W|U
     move.l  r8, #0
 .bupd_data_loop:
@@ -1403,6 +1417,12 @@ build_user_pt_dynamic_desc:
     add     r8, r8, #1
     bra     .bupdd_stack_loop
 .bupdd_stack_done:
+    ; R1: clear the guard page immediately below the user stack floor.
+    lsr     r9, r5, #12
+    sub     r9, r9, #STACK_GUARD_PAGES
+    lsl     r11, r9, #3
+    add     r11, r11, r1
+    store.q r0, (r11)
     ; Data: target VPN -> backing PPN, P|R|W|U
     move.l  r8, #0
 .bupdd_data_loop:
@@ -2363,6 +2383,12 @@ build_user_pt_dynamic_targets:
     bra     .bupt_stack_loop
 
 .bupt_map_data:
+    ; R1: clear the guard page immediately below the user stack floor.
+    lsr     r9, r24, #12
+    sub     r9, r9, #STACK_GUARD_PAGES
+    lsl     r11, r9, #3
+    add     r11, r11, r20
+    store.q r0, (r11)
     move.l  r8, #0
 .bupt_data_loop:
     bge     r8, r13, .bupt_map_startup
@@ -3108,11 +3134,11 @@ load_program:
     jsr     alloc_task_image_pages
     bnez    r2, .lp_nomem_nopub
     move.q  r23, r1                     ; code_base
-    move.l  r25, #1
+    move.l  r25, #(1 + STACK_GUARD_PAGES)
     move.q  r1, r25
     jsr     alloc_task_image_pages
     bnez    r2, .lp_fail_free_code
-    move.q  r25, r1                     ; stack_base
+    add     r25, r1, #MMU_PAGE_SIZE     ; stack_base (guard page sits below)
     move.q  r1, r27
     jsr     alloc_task_image_pages
     bnez    r2, .lp_fail_free_stack
@@ -3262,7 +3288,8 @@ load_program:
     move.l  r14, #1
     store.l r14, KD_TASK_STACK_PAGES(r1)
     store.l r27, KD_TASK_DATA_PAGES(r1)
-    store.l r0, KD_TASK_LAYOUT_FLAGS(r1)
+    move.l  r14, #TASK_LAYOUT_FLAG_STACK_GUARD
+    store.l r14, KD_TASK_LAYOUT_FLAGS(r1)
     store.q r28, KD_TASK_LAYOUT_STARTUP(r1)
     store.q r30, KD_TASK_LAYOUT_PT_BASE(r1)
 
@@ -3308,7 +3335,8 @@ load_program:
     jsr     free_task_image_pages
 .lp_fail_free_stack:
     move.q  r1, r25
-    move.l  r2, #1
+    sub     r1, r1, #MMU_PAGE_SIZE
+    move.l  r2, #(1 + STACK_GUARD_PAGES)
     jsr     free_task_image_pages
 .lp_fail_free_code:
     move.q  r1, r23
@@ -3509,6 +3537,7 @@ exec_desc_launch_task:
 .edlt_stack_target_ready:
     load.q  r11, 64(sp)                ; stack pages
     lsl     r11, r11, #12              ; stack bytes
+    add     r13, r13, #(STACK_GUARD_PAGES * MMU_PAGE_SIZE)
     move.l  r5, #0x35
     store.l r5, 140(sp)
     add     r12, r13, r11              ; stack end
@@ -3552,8 +3581,10 @@ exec_desc_launch_task:
     store.q r1, 96(sp)                 ; data backing
 
     load.q  r1, 64(sp)                 ; stack pages
+    add     r1, r1, #STACK_GUARD_PAGES
     jsr     alloc_task_image_pages
     bnez    r2, .edlt_fail_free_data
+    add     r1, r1, #MMU_PAGE_SIZE
     store.q r1, 104(sp)                ; stack backing
 
     move.l  r1, #1
@@ -3693,6 +3724,13 @@ exec_desc_launch_task:
     bra     .edlt_pt_stack_loop
 
 .edlt_pt_map_data:
+    ; R1: clear the guard page immediately below the user stack floor.
+    load.q  r12, 80(sp)
+    lsr     r11, r12, #12
+    sub     r11, r11, #STACK_GUARD_PAGES
+    lsl     r11, r11, #3
+    add     r11, r11, r25
+    store.q r0, (r11)
     move.l  r8, #0
 .edlt_pt_data_loop:
     bge     r8, r17, .edlt_pt_map_startup
@@ -3769,7 +3807,8 @@ exec_desc_launch_task:
     store.l r30, KD_TASK_CODE_PAGES(r1)
     store.l r23, KD_TASK_STACK_PAGES(r1)
     store.l r17, KD_TASK_DATA_PAGES(r1)
-    store.l r0, KD_TASK_LAYOUT_FLAGS(r1)
+    move.l  r11, #TASK_LAYOUT_FLAG_STACK_GUARD
+    store.l r11, KD_TASK_LAYOUT_FLAGS(r1)
     store.q r24, KD_TASK_LAYOUT_STARTUP(r1)
     store.q r25, KD_TASK_LAYOUT_PT_BASE(r1)
 
@@ -3796,7 +3835,9 @@ exec_desc_launch_task:
     jsr     free_task_image_pages
 .edlt_fail_free_stack:
     load.q  r1, 104(sp)
+    sub     r1, r1, #MMU_PAGE_SIZE
     load.q  r2, 64(sp)
+    add     r2, r2, #STACK_GUARD_PAGES
     jsr     free_task_image_pages
 .edlt_fail_free_data:
     load.q  r1, 96(sp)
@@ -3826,7 +3867,9 @@ exec_desc_launch_task:
     move.l  r2, #1
     jsr     free_task_image_pages
     load.q  r1, 104(sp)                ; stack backing
+    sub     r1, r1, #MMU_PAGE_SIZE
     load.q  r2, 64(sp)                 ; stack pages
+    add     r2, r2, #STACK_GUARD_PAGES
     jsr     free_task_image_pages
     load.q  r1, 96(sp)                 ; data backing
     load.q  r2, 56(sp)                 ; data pages
@@ -6826,10 +6869,10 @@ trap_handler:
     jsr     alloc_task_image_pages
     bnez    r2, .ct_nomem_nopub
     move.q  r21, r1                     ; child code base
-    move.l  r1, #1
+    move.l  r1, #(1 + STACK_GUARD_PAGES)
     jsr     alloc_task_image_pages
     bnez    r2, .ct_fail_free_code
-    move.q  r23, r1                     ; child stack base
+    add     r23, r1, #MMU_PAGE_SIZE     ; child stack base
     move.l  r1, #1
     jsr     alloc_task_image_pages
     bnez    r2, .ct_fail_free_stack
@@ -6962,7 +7005,8 @@ trap_handler:
     store.l r14, KD_TASK_CODE_PAGES(r1)
     store.l r14, KD_TASK_STACK_PAGES(r1)
     store.l r14, KD_TASK_DATA_PAGES(r1)
-    store.l r0, KD_TASK_LAYOUT_FLAGS(r1)
+    move.l  r14, #TASK_LAYOUT_FLAG_STACK_GUARD
+    store.l r14, KD_TASK_LAYOUT_FLAGS(r1)
     store.q r27, KD_TASK_LAYOUT_STARTUP(r1)
     store.q r29, KD_TASK_LAYOUT_PT_BASE(r1)
 
@@ -7004,7 +7048,8 @@ trap_handler:
     move.l  r2, #1
     jsr     free_task_image_pages
     move.q  r1, r23
-    move.l  r2, #1
+    sub     r1, r1, #MMU_PAGE_SIZE
+    move.l  r2, #(1 + STACK_GUARD_PAGES)
     jsr     free_task_image_pages
     move.q  r1, r21
     move.l  r2, #1
@@ -7031,7 +7076,8 @@ trap_handler:
     jsr     free_task_image_pages
 .ct_fail_free_stack:
     move.q  r1, r23
-    move.l  r2, #1
+    sub     r1, r1, #MMU_PAGE_SIZE
+    move.l  r2, #(1 + STACK_GUARD_PAGES)
     jsr     free_task_image_pages
 .ct_fail_free_code:
     move.q  r1, r21
@@ -9440,8 +9486,15 @@ kill_task_cleanup:
     load.q  r1, KD_TASK_CODE_BASE(r20)
     load.l  r2, KD_TASK_CODE_PAGES(r20)
     jsr     free_task_image_pages
+    load.l  r3, KD_TASK_LAYOUT_FLAGS(r20)
     load.q  r1, KD_TASK_STACK_BASE(r20)
     load.l  r2, KD_TASK_STACK_PAGES(r20)
+    move.l  r4, #TASK_LAYOUT_FLAG_STACK_GUARD
+    and     r4, r3, r4
+    beqz    r4, .ktc_free_stack
+    sub     r1, r1, #MMU_PAGE_SIZE
+    add     r2, r2, #STACK_GUARD_PAGES
+.ktc_free_stack:
     jsr     free_task_image_pages
     load.q  r1, KD_TASK_DATA_BASE(r20)
     load.l  r2, KD_TASK_DATA_PAGES(r20)

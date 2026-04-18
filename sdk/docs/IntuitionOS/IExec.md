@@ -181,11 +181,11 @@ Within the supervisor region:
 |------------|---------|------|----------|
 | Vector table | `$000000-$000FFF` | 4 KB | Reserved (IE64 hardware vectors) |
 | Kernel code | `$001000-$00FFFF` | 60 KB | Kernel text (boots at `$1000`) |
-| Kernel page table | `$010000-$01FFFF` | 64 KB | 8192 PTEs x 8 bytes |
-| Kernel data | `$020000-$02FFFF` | 64 KB | Scheduler state, TCB array (8 tasks), PTBR array, ports |
-| (reserved) | `$030000-$09EFFF` | 448 KB | Available for future kernel use |
-| Kernel stack | `$09F000` (top) | 4 KB | Grows downward |
-| Task page tables | `$100000-$17FFFF` | 512 KB | 8 per-task PTs at `$100000 + i*$10000` |
+| Kernel page table | `$07D000-$08CFFF` | 64 KB | 8192 PTEs x 8 bytes |
+| Kernel data | `$08D000-$09DFFF` | 68 KB window | Scheduler state, TCB array, PTBR array, ports, manifests, quota metadata |
+| Kernel stack guard | `$09E000-$09EFFF` | 4 KB | Non-present guard page below the kernel stack floor |
+| Kernel stack | `$09F000-$09FFFF` | 4 KB | Grows downward; top = `$0A0000` |
+| Task page tables | `$800000-$9FFFFF` | 2 MB | Fixed 64 KiB PT window (`USER_PT_BASE`) before allocator spillover |
 
 ### 2.3 Per-Task Page Tables
 
@@ -210,6 +210,9 @@ IExec enforces a write-XOR-execute policy:
 
 - **Code pages**: `P|R|X|U` -- readable and executable, not writable
 - **Data/stack pages**: `P|R|W|U` -- readable and writable, not executable
+- **Stack guard pages**: one non-present page is left below every user stack
+  and below the kernel stack floor, so downward overflow becomes
+  `FAULT_NOT_PRESENT`
 - A page fault is raised if user code attempts to write to an X page or execute from a W page
 
 As of **M15.6**, the host-side JIT that executes IE64 binaries is
@@ -624,9 +627,9 @@ The honest summary: fixed product limits were removed where practical. Remaining
 | `MMU_PAGE_SHIFT` | `iexec.inc:375` | 12 | A | log2 of `MMU_PAGE_SIZE`. |
 | `MMU_NUM_PAGES` | `iexec.inc:376` | 8192 | A | Total physical RAM pages on the IntuitionEngine target. Hardware-bound. |
 | `KERN_PAGES` | `iexec.inc:377` | 384 | A | Kernel reserved page range. Bounded by the layout of `KERN_PAGE_TABLE` / `KERN_DATA_BASE` / kernel binary / kernel stack. |
-| `KERN_PAGE_TABLE` | `iexec.inc:131` | 0x040000 | A | Fixed kernel page-table location, inside the kernel reserved range. |
-| `KERN_DATA_BASE` | `iexec.inc:132` | 0x050000 | A | Fixed kernel data-page location. |
-| `KERN_STACK_TOP` | `iexec.inc:133` | 0x09F000 | A | Top of the kernel stack inside the kernel reserved range. |
+| `KERN_PAGE_TABLE` | `iexec.inc:190` | 0x07D000 | A | Fixed kernel page-table location, shifted down in M15.6 R1 so the kernel stack can have a dedicated guard page. |
+| `KERN_DATA_BASE` | `iexec.inc:192` | 0x08D000 | A | Fixed kernel data-page base. |
+| `KERN_STACK_TOP` | `iexec.inc:193` | 0x0A0000 | A | Top of the kernel stack inside the kernel reserved range. |
 | `MAX_TASKS` | `iexec.inc:187` | 255 | A | **M13 phase 4:** the old layout-bound 32-task cap is gone. The remaining fixed task-state tables now run to the current 8-bit internal-slot ABI ceiling (`255`, with `0xFF` reserved by a few byte-sized kernel fields such as `KD_PORT_OWNER` sentinels). Task image/PT backing now spills into allocator-pool pages once the legacy fixed windows are exhausted, so the practical limit is no longer the old 32-slot VA layout. |
 | `KD_TASK_STRIDE` | `iexec.inc:199` | 32 | A | TCB layout — bounded by the on-data-page field offsets, not arbitrary. |
 | `KD_PTBR_BASE` | `iexec.inc:230` | 1088 | A | PTBR array offset (after 32 TCBs). Layout-derived from `KD_TASK_BASE + MAX_TASKS * KD_TASK_STRIDE`. |
