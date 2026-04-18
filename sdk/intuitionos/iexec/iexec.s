@@ -308,6 +308,51 @@ iexec_start:
     add     r4, r4, #1
     blt     r4, r3, .zero_task_exit_page
 
+    ; M15.6 G3: allocate one dedicated supervisor page for the per-task
+    ; quota counter rows (255 tasks × 16-byte row = 4080 bytes, fits in
+    ; 4 KiB). Row = {u16 pages, u16 ports, u16 waiters, u16 shmem_pages,
+    ; u16 grants, 6 reserved}. Indexed by task slot via
+    ; (task << KD_QUOTA_ROW_SHIFT).
+    ;
+    ; On allocation failure alloc_pages returns r1=0 / r2=ERR_NOMEM.
+    ; Leave KD_QUOTA_PAGE_PPN at its boot-time zero value (kern data is
+    ; zero-initialised) and SKIP THE ZERO LOOP: writing `MMU_PAGE_SIZE`
+    ; bytes starting at physical address 0 would obliterate the reset
+    ; vector and the early kernel image. quota_counter_addr already
+    ; handles PPN=0 gracefully by returning ERR_BADARG, so enforcement
+    ; simply no-ops and the kernel stays bootable on a dry pool.
+    move.l  r1, #1
+    jsr     alloc_pages
+    beqz    r1, .quota_page_skip
+    move.l  r2, #KERN_DATA_BASE
+    store.w r1, KD_QUOTA_PAGE_PPN(r2)
+    lsl     r1, r1, #12
+    move.q  r2, r1
+    move.l  r3, #(MMU_PAGE_SIZE / 8)
+    move.l  r4, #0
+.zero_quota_page:
+    store.q r0, (r2)
+    add     r2, r2, #8
+    add     r4, r4, #1
+    blt     r4, r3, .zero_quota_page
+.quota_page_skip:
+
+    ; M15.6 G3: seed global default quota limits into KD_QUOTA_LIMITS_BASE.
+    ; 5 × u32 indexed by QUOTA_KIND_*. SYS_QUOTA_SET_LIMIT can rewrite
+    ; these at runtime (tests drive boundary behavior via that syscall).
+    move.l  r2, #KERN_DATA_BASE
+    add     r2, r2, #KD_QUOTA_LIMITS_BASE
+    move.l  r3, #QUOTA_DEFAULT_PAGES
+    store.l r3, (r2)
+    move.l  r3, #QUOTA_DEFAULT_PORTS
+    store.l r3, 4(r2)
+    move.l  r3, #QUOTA_DEFAULT_WAITERS
+    store.l r3, 8(r2)
+    move.l  r3, #QUOTA_DEFAULT_SHMEM
+    store.l r3, 12(r2)
+    move.l  r3, #QUOTA_DEFAULT_GRANTS
+    store.l r3, 16(r2)
+
     ; ---------------------------------------------------------------
     ; 6d. Extend kernel PT: map allocation pool pages (0x700-0x1FFF)
     ;     as supervisor P|R|W for MEMF_CLEAR zeroing
@@ -4101,12 +4146,17 @@ kern_grant_chain_alloc_page:
 ; KD_GRANT_TASK_ID == GRANT_TASK_FREE. Writes the row in place. If no chain page has a
 ; free row (or chain is empty), allocates a new page via
 ; kern_grant_chain_alloc_page and writes row 0 of the new page.
+; M15.6 G3: R5 = grantor pubid (GRANT_GRANTOR_NONE = 0xFFFFFFFF for
+; uncharged bootstrap rows, else the public task ID of the task that
+; paid the quota charge). Pubid rather than slot so release refunds
+; the actual grantor even if its slot was since recycled.
 kern_grant_create_row:
     ; Save inputs across helper calls.
     push    r1                          ; saved task_id
     push    r2                          ; saved tag
     push    r3                          ; saved ppn_lo
     push    r4                          ; saved ppn_hi
+    push    r5                          ; saved grantor slot
 
     ; Switch to kernel PT to walk chain pages. Save the previous PTBR on
     ; the STACK (not r28) because kern_grant_chain_alloc_page may also
@@ -4161,10 +4211,11 @@ kern_grant_create_row:
 
 .gcr_found_row:
     ; r6 = address of free row. Pop saved values from the stack.
-    ; Stack layout (top first): saved-PT (r28), ppn_hi (r4), ppn_lo (r3),
-    ; tag (r2), task_id (r1). Pop the PT first since it's the topmost,
-    ; then the args in reverse-push order.
+    ; Stack layout (top first): saved-PT (r28), grantor_slot (r5),
+    ; ppn_hi (r4), ppn_lo (r3), tag (r2), task_id (r1). Pop the PT
+    ; first since it's the topmost, then the args in reverse-push order.
     pop     r28                         ; saved user PT
+    pop     r5                          ; grantor slot
     pop     r4                          ; ppn_hi
     pop     r3                          ; ppn_lo
     pop     r2                          ; tag
@@ -4174,7 +4225,7 @@ kern_grant_create_row:
     store.l r2, KD_GRANT_REGION(r6)
     store.w r3, KD_GRANT_PPN_LO(r6)
     store.w r4, KD_GRANT_PPN_HI(r6)
-    store.l r0, KD_GRANT_FLAGS(r6)
+    store.l r5, KD_GRANT_GRANTOR_PUBID(r6)
 
     ; Bump KD_GRANT_HDR_TOTAL
     move.l  r5, #KERN_DATA_BASE
@@ -4192,9 +4243,10 @@ kern_grant_create_row:
 .gcr_nomem:
     ; kern_grant_chain_alloc_page already restored PTBR on its failure path,
     ; but we did our own switch above and need to pop the saved PT and
-    ; restore. Pop in stack order: saved-PT first, then the four args.
+    ; restore. Pop in stack order: saved-PT first, then the five args.
     pop     r28                         ; saved user PT
-    pop     r4                          ; discard saved inputs
+    pop     r5                          ; discard saved inputs
+    pop     r4
     pop     r3
     pop     r2
     pop     r1
@@ -4299,10 +4351,13 @@ kern_bootstrap_grant_for_program:
     push    r20
     push    r21
     push    r22
-    move.q  r1, r21                     ; r1 = task_id
+    move.q  r1, r21                     ; r1 = task_id (grantee)
     move.q  r2, r5                      ; r2 = tag
     move.q  r3, r6                      ; r3 = ppn_lo
     move.q  r4, r7                      ; r4 = ppn_hi
+    ; Bootstrap rows are uncharged — stamp GRANT_GRANTOR_NONE so the
+    ; release path skips the refund.
+    move.l  r5, #GRANT_GRANTOR_NONE
     jsr     kern_grant_create_row       ; R2 = err
     pop     r22
     pop     r21
@@ -4319,18 +4374,19 @@ kern_bootstrap_grant_for_program:
     rts
 
 ; ----------------------------------------------------------------------------
-; kern_grant_release_for_task: walk the entire grant chain and mark every row
-; whose task_id matches the input as free (KD_GRANT_TASK_ID = GRANT_TASK_FREE).
-; Called from kill_task_cleanup so that a recycled task slot cannot inherit
-; the previous occupant's MMIO grants.
-; ----------------------------------------------------------------------------
-; Inputs:  R1 = public task_id (u32)
+; kern_grant_release_for_task: walk the grant chain, free every row whose
+; grantee task_id matches the input, and refund QUOTA_KIND_GRANTS to the
+; grantor resolved from KD_GRANT_GRANTOR_PUBID. GRANT_GRANTOR_NONE rows
+; are bootstrap grants (skip the refund). If the grantor pubid no longer
+; resolves to a live slot, the grantor has exited — its quota row was
+; wiped on exit, so skipping the refund is correct (nothing to decrement).
+;
+; Inputs:  R1 = public task_id (u32) — the dying grantee
 ; Outputs: none
 ; Clobbers: R3..R15
-;
-; Caller must already be on kernel PT (chain pages live in the allocator pool).
+; Caller must be on kernel PT (chain pages live in the allocator pool).
 kern_grant_release_for_task:
-    move.q  r6, r1                      ; r6 = task_id to clear
+    move.q  r6, r1                      ; r6 = grantee pubid to clear
     move.l  r3, #KERN_DATA_BASE
     add     r3, r3, #KD_GRANT_TABLE_HDR
     load.w  r4, KD_GRANT_HDR_FIRST_PPN(r3)
@@ -4346,12 +4402,44 @@ kern_grant_release_for_task:
     bge     r8, r9, .grft_next_page
     load.l  r9, KD_GRANT_TASK_ID(r7)
     bne     r9, r6, .grft_row_skip
-    ; Match — mark free and bump down the header TOTAL counter.
+    ; Match — read per-row grantor pubid, free the row, decrement
+    ; total, then resolve pubid → slot and refund (skipping if the
+    ; row was uncharged or the grantor has exited).
+    load.l  r14, KD_GRANT_GRANTOR_PUBID(r7)
     move.l  r10, #GRANT_TASK_FREE
     store.l r10, KD_GRANT_TASK_ID(r7)
     load.w  r11, KD_GRANT_HDR_TOTAL(r3)
     sub     r11, r11, #1
     store.w r11, KD_GRANT_HDR_TOTAL(r3)
+    ; Skip refund for uncharged (bootstrap) rows: GRANT_GRANTOR_NONE =
+    ; 0xFFFFFFFF == TASK_PUBID_FREE, so an unassigned-pubid slot also
+    ; lands here correctly.
+    move.l  r12, #GRANT_GRANTOR_NONE
+    beq     r14, r12, .grft_skip_refund
+    ; Save the loop state across kern_find_slot_for_public_id (clobbers
+    ; R3-R8) and quota_return (clobbers R4-R7). Everything the outer
+    ; loop uses — r3 (header), r4 (page PPN), r5 (page byte addr),
+    ; r6 (grantee pubid), r7 (row cursor), r8 (row idx) — is saved.
+    push    r3
+    push    r4
+    push    r5
+    push    r6
+    push    r7
+    push    r8
+    move.q  r1, r14                     ; r1 = grantor pubid
+    jsr     kern_find_slot_for_public_id ; r1 = slot, r2 = 1 if found
+    beqz    r2, .grft_refund_skip_restore
+    move.l  r2, #QUOTA_KIND_GRANTS
+    move.l  r3, #1
+    jsr     quota_return
+.grft_refund_skip_restore:
+    pop     r8
+    pop     r7
+    pop     r6
+    pop     r5
+    pop     r4
+    pop     r3
+.grft_skip_refund:
 .grft_row_skip:
     add     r7, r7, #KD_GRANT_ROW_SIZE
     add     r8, r8, #1
@@ -5650,6 +5738,9 @@ trap_handler:
     move.l  r11, #SYS_BOOT_ELF_EXEC
     beq     r10, r11, .do_boot_elf_exec
 
+    move.l  r11, #SYS_QUOTA_SET_LIMIT
+    beq     r10, r11, .do_quota_set_limit
+
     ; M11.5: SYS_READ_INPUT (slot 37) removed. Terminal MMIO is now mapped
     ; into console.handler via SYS_MAP_IO and the read loop is inlined in
     ; console.handler's CON_MSG_READLINE handler. Slot 37 falls through to
@@ -5708,6 +5799,10 @@ trap_handler:
     beq     r1, r11, .info_ticks
     move.l  r11, #SYSINFO_CURRENT_TASK
     beq     r1, r11, .info_current_task
+    move.l  r11, #SYSINFO_QUOTA_CURRENT
+    beq     r1, r11, .info_quota_current
+    move.l  r11, #SYSINFO_QUOTA_LIMIT
+    beq     r1, r11, .info_quota_limit
     move.q  r1, #0
     move.q  r2, #ERR_OK
     eret
@@ -5727,6 +5822,65 @@ trap_handler:
     move.l  r11, #KERN_DATA_BASE
     load.q  r1, KD_TICK_COUNT(r11)
     move.q  r2, #ERR_OK
+    eret
+; M15.6 G3: quota-inspection sub-queries.
+;   R1 = SYSINFO_QUOTA_CURRENT, R2 = QUOTA_KIND_*, R3 = task slot
+;        (0xFFFFFFFF = current task). Returns counter in R1.
+;   R1 = SYSINFO_QUOTA_LIMIT,  R2 = QUOTA_KIND_*. Returns u32 limit in R1.
+.info_quota_current:
+    ; BHI (unsigned) so a negative i64 in r2 is rejected — signed BGE
+    ; would let such a value slip through into a negative field offset
+    ; inside quota_counter_addr.
+    move.l  r11, #(QUOTA_KIND_COUNT - 1)
+    bhi     r2, r11, .info_quota_bad
+    ; Resolve task slot: 0xFFFFFFFF means "use current".
+    move.l  r11, #0xFFFFFFFF
+    bne     r3, r11, .iqc_got_slot
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r3, (r12)                   ; r3 = current task slot
+.iqc_got_slot:
+    ; BHI (unsigned) against MAX_TASKS-1 for the same reason.
+    move.l  r11, #(MAX_TASKS - 1)
+    bhi     r3, r11, .info_quota_bad
+    move.q  r1, r3
+    jsr     quota_get_current           ; r1 = counter (R2 still holds kind)
+    move.q  r2, #ERR_OK
+    eret
+.info_quota_limit:
+    move.l  r11, #(QUOTA_KIND_COUNT - 1)
+    bhi     r2, r11, .info_quota_bad
+    move.q  r1, r2
+    jsr     quota_get_limit             ; r1 = u32 limit
+    move.q  r2, #ERR_OK
+    eret
+.info_quota_bad:
+    move.q  r1, #0
+    move.q  r2, #ERR_BADARG
+    eret
+
+; --- M15.6 G3: QuotaSetLimit (diagnostic / test-only) ---
+; R1 = QUOTA_KIND_*, R2 = new u32 limit.
+; Returns R2 = ERR_OK / ERR_PERM / ERR_BADARG; R1 = 0.
+;
+; Gated on public task id (monotonic, never reused) rather than slot
+; (recycled on task exit). Only pubid=0 — the original boot task —
+; passes. TASK_PUBID_FREE=0xFFFFFFFF so unassigned slots also reject.
+; Not a stable ABI: exists so tests can drive boundary behavior.
+.do_quota_set_limit:
+    push    r1                          ; preserve kind across pubid lookup
+    push    r2                          ; preserve new-limit
+    jsr     kern_current_public_task_id ; r1 = caller's pubid
+    move.q  r11, r1
+    pop     r2
+    pop     r1
+    bnez    r11, .dqsl_perm             ; pubid != 0 → not the boot task
+    jsr     quota_set_limit             ; r1 = ERR_OK or ERR_BADARG
+    move.q  r2, r1
+    move.q  r1, #0
+    eret
+.dqsl_perm:
+    move.q  r1, #0
+    move.q  r2, #ERR_PERM
     eret
 
 ; --- AllocSignal ---
@@ -5851,7 +6005,9 @@ trap_handler:
     and     r24, r20, r23           ; recv & wait
     beqz    r24, .signal_done
 
-    ; Wake the target: set state to READY
+    ; Wake the target: set state to READY. WAITERS refund happens at
+    ; the real wait-exit (restore_task / .restore_waitport) since the
+    ; task may re-block via .restore_waitport_spurious.
     move.b  r21, #TASK_READY
     store.b r21, KD_TASK_STATE(r15)
 
@@ -5885,6 +6041,23 @@ trap_handler:
     eret
 
 .wait_block:
+    ; M15.6 G3: QUOTA_KIND_WAITERS charge. Pair refund fires in the
+    ; signal-deliver path when the target transitions WAITING → READY.
+    push    r1
+    push    r15
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r1, (r12)
+    move.l  r2, #QUOTA_KIND_WAITERS
+    move.l  r3, #1
+    jsr     quota_check_and_charge
+    pop     r15
+    move.q  r23, r1
+    pop     r1
+    beqz    r23, .wait_charge_ok
+    move.q  r1, #0
+    move.q  r2, #ERR_QUOTA
+    eret
+.wait_charge_ok:
     ; No signals ready — block this task
     store.l r1, KD_TASK_SIG_WAIT(r15)   ; save wait mask
     move.b  r22, #TASK_WAITING
@@ -5917,6 +6090,12 @@ trap_handler:
     ; Save inputs
     move.q  r7, r1                  ; R7 = name_ptr
     move.q  r8, r2                  ; R8 = flags
+
+    ; M15.6 G3: QUOTA_KIND_PORTS charge lives at .create_commit entry
+    ; rather than here. Two effects: (a) a failed charge eret's before
+    ; valid=1 is written, so the slot kern_port_alloc_slot returned
+    ; stays reusable — no leak; (b) no error path mutates the counter,
+    ; so no refund is needed. See .create_commit below.
 
     ; --- Validation phase (no side effects) ---
     ; M12.6 Phase C: chain-aware slot allocator. Helper preserves r3..r6
@@ -5974,8 +6153,30 @@ trap_handler:
     pop     r20
     bnez    r23, .create_exists
 
-    ; --- Commit phase (no failures possible) ---
+    ; --- Commit phase ---
+    ; Only one failure possible past this label: the quota charge below.
+    ; Past .create_do_commit no failure can occur (all stores are to
+    ; kernel-data-mapped pages).
 .create_commit:
+    ; M15.6 G3: QUOTA_KIND_PORTS charge. See comment at top of handler
+    ; for why it lives here and why no error path refunds.
+    push    r7
+    push    r8
+    push    r20
+    push    r21
+    move.q  r1, r13
+    move.l  r2, #QUOTA_KIND_PORTS
+    move.l  r3, #1
+    jsr     quota_check_and_charge
+    pop     r21
+    pop     r20
+    pop     r8
+    pop     r7
+    beqz    r1, .create_do_commit
+    move.q  r1, #0
+    move.q  r2, #ERR_QUOTA
+    eret
+.create_do_commit:
     move.b  r23, #1
     store.b r23, KD_PORT_VALID(r21)     ; valid = 1
     store.b r13, KD_PORT_OWNER(r21)     ; owner = current_task
@@ -6135,6 +6336,8 @@ trap_handler:
     load.l  r20, KD_TASK_SIG_WAIT(r28)
     and     r20, r20, #SIGF_PORT
     beqz    r20, .putmsg_done
+    ; Wake the port owner. WAITERS refund is at .restore_waitport's
+    ; successful-dequeue branch (see .signal_done for the same reason).
     move.b  r30, #TASK_READY
     store.b r30, KD_TASK_STATE(r28)
 .putmsg_done:
@@ -6218,6 +6421,25 @@ trap_handler:
     ; Check count > 0
     load.b  r25, KD_PORT_COUNT(r21)
     bnez    r25, .waitport_dequeue
+    ; M15.6 G3: QUOTA_KIND_WAITERS charge. Refund fires in the PutMsg
+    ; delivery path when the target transitions WAITING → READY.
+    ; quota_check_and_charge clobbers R4-R7, and R5 here holds the
+    ; portID (used below at `store.b r5, KD_TASK_WAITPORT`) — save
+    ; it across the helper. Likewise R7 (future-proofing against any
+    ; caller that relies on R7 in this region).
+    push    r5
+    push    r7
+    move.q  r1, r13
+    move.l  r2, #QUOTA_KIND_WAITERS
+    move.l  r3, #1
+    jsr     quota_check_and_charge
+    pop     r7
+    pop     r5
+    beqz    r1, .waitport_charge_ok
+    move.q  r1, #0
+    move.q  r3, #ERR_QUOTA
+    eret
+.waitport_charge_ok:
     ; Empty — block on SIGF_PORT with WaitPort flag
     lsl     r15, r13, #5
     add     r15, r15, #KD_TASK_BASE
@@ -6317,21 +6539,23 @@ trap_handler:
     bra     .ct_scan
 .ct_found:
     ; r20 = child_id
-    move.l  r12, #KERN_DATA_BASE
-    load.q  r18, KD_TASKID_NEXT(r12)    ; r18 = public task id
-    move.q  r14, r18
-    add     r14, r14, #1
-    store.q r14, KD_TASKID_NEXT(r12)
-    lsl     r16, r20, #2
-    add     r16, r16, #KD_TASK_PUBID_BASE
-    add     r16, r16, r12
-    store.l r18, (r16)
 
     ; Allocate the child's dynamic image/PT placement while staying on the
     ; caller's PT. The caller PT already carries supervisor-only mappings for
     ; the global image/PT windows, so the kernel can safely read a source_ptr
     ; from user-dynamic/shared mappings and write the child image/PT without
     ; losing visibility of caller-owned pages.
+    ;
+    ; KD_TASKID_NEXT is bumped AFTER all page allocations succeed — moved
+    ; here from the old position pre-alloc so that a failed alloc does not
+    ; permanently consume a pubid slot. The previous code pre-incremented
+    ; KD_TASKID_NEXT and wrote KD_TASK_PUBID_BASE[slot] before any alloc;
+    ; failures in alloc_task_image_pages / alloc_task_pt_block then took
+    ; error paths that freed pages but never rolled the counter back, so
+    ; every failed CreateTask permanently shifted pubid assignment and
+    ; left a stale pubid in the slot's pubid table. Moving the counter
+    ; bump past the alloc chain keeps pubid assignment atomic with task
+    ; commitment.
     move.l  r1, #1
     jsr     alloc_task_image_pages
     bnez    r2, .ct_nomem_nopub
@@ -6351,6 +6575,20 @@ trap_handler:
     jsr     alloc_task_pt_block
     bnez    r2, .ct_fail_free_startup
     move.q  r29, r1                     ; child PT base
+
+    ; All allocations succeeded. NOW consume a pubid slot — after this
+    ; point no error path can reach us (copy_from_user is the only later
+    ; fallible op and it has its own rollback at .ct_copy_fail that's
+    ; paired with a corresponding pubid rollback below).
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r18, KD_TASKID_NEXT(r12)    ; r18 = public task id
+    move.q  r14, r18
+    add     r14, r14, #1
+    store.q r14, KD_TASKID_NEXT(r12)
+    lsl     r16, r20, #2
+    add     r16, r16, #KD_TASK_PUBID_BASE
+    add     r16, r16, r12
+    store.l r18, (r16)
 
     ; Zero child's code page (512 iterations of 8 bytes = 4096)
     move.l  r4, #0
@@ -6487,7 +6725,9 @@ trap_handler:
 ; caller racily flips PTE permissions between the earlier
 ; validate_user_read_range (line ~6231) and the helper's re-validate.
 ; Unwind everything allocated since entry: PT block first, then
-; startup/data/stack/code pages, then return ERR_BADARG.
+; startup/data/stack/code pages. This path fires AFTER the pubid bump
+; (unlike .ct_fail_free_* which fires before), so it also rolls back
+; KD_TASKID_NEXT and clears the slot's pubid entry before eret.
 .ct_copy_fail:
     move.q  r1, r29
     jsr     free_task_pt_block
@@ -6503,6 +6743,16 @@ trap_handler:
     move.q  r1, r21
     move.l  r2, #1
     jsr     free_task_image_pages
+    ; Roll back the pubid bump done right before copy_from_user.
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r14, KD_TASKID_NEXT(r12)
+    sub     r14, r14, #1
+    store.q r14, KD_TASKID_NEXT(r12)
+    lsl     r16, r20, #2
+    add     r16, r16, #KD_TASK_PUBID_BASE
+    add     r16, r16, r12
+    move.l  r18, #TASK_PUBID_FREE
+    store.l r18, (r16)
     move.q  r2, #ERR_BADARG
     eret
 .ct_fail_free_startup:
@@ -6581,6 +6831,32 @@ trap_handler:
     ; Step 3: Validate pages <= USER_DYN_PAGES (256) — redundant but defense-in-depth
     move.l  r11, #USER_DYN_PAGES
     bgt     r20, r11, .am_toolarge
+
+    ; Step 3b: M15.6 G3 per-task quota check. kind = (flags & 1) * 3
+    ; selects QUOTA_KIND_SHMEM (3) when MEMF_PUBLIC is set, else
+    ; QUOTA_KIND_PAGES (0). A branch form here (BEQZ/BNEZ on the
+    ; public bit) reproducibly regressed
+    ; TestIExec_M13_Phase4_CreateTask_PublicIDsExceed255 via an
+    ; interpreter/layout interaction that we have not yet root-caused;
+    ; the branch-free mulu form sidesteps it. quota_check_and_charge
+    ; clobbers R4-R7 and preserves R19 (saved user PTBR), R20 (page
+    ; count), R24 (size), R25 (flags).
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r13, (r12)
+    move.q  r1, r13                     ; task slot
+    and     r4, r25, #1                 ; r4 = 1 if MEMF_PUBLIC, else 0
+    mulu    r2, r4, #3                  ; r2 = 0 (PAGES) or 3 (SHMEM)
+    move.q  r3, r20                     ; delta = page count
+    jsr     quota_check_and_charge
+    beqz    r1, .am_quota_ok
+    ; Quota exceeded — no allocation happened, clean eret.
+    mtcr    cr0, r19
+    tlbflush
+    move.q  r1, #0
+    move.q  r2, #ERR_QUOTA
+    move.q  r3, #0
+    eret
+.am_quota_ok:
 
     ; Step 4: If MEMF_PUBLIC, find free shared object slot via the chain
     ; allocator (M12.6 Phase B). Inline rows 0..15 first, then overflow.
@@ -6769,6 +7045,20 @@ trap_handler:
     eret
 
 .am_nomem:
+    ; M15.6 G3 Phase B: every jump to .am_nomem happens after the quota
+    ; charge at .am_quota_ok (shmem slot fail, region slot overflow
+    ; fail, alloc_pages fail, .am_rollback_pages from find_free_va fail).
+    ; Refund the charge before ERR_NOMEM. The kind is recomputed from
+    ; the saved flags in R25 using the same branch-free pattern as the
+    ; charge site: kind = (flags & 1) * 3. Reload current_task fresh
+    ; (r13 may have been clobbered); r20 (page count) and r25 (flags)
+    ; survive untouched.
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r1, (r12)
+    and     r4, r25, #1
+    mulu    r2, r4, #3
+    move.q  r3, r20
+    jsr     quota_return
     mtcr    cr0, r19
     tlbflush
     move.q  r1, #0
@@ -6878,6 +7168,13 @@ trap_handler:
     load.w  r1, KD_REG_PPN(r16)         ; base PPN
     move.q  r2, r18                     ; page count
     jsr     free_pages
+    ; M15.6 G3 Phase B: return the private-pages quota charge. r13 =
+    ; current task, r18 = page count both survive free_pages (clobbers
+    ; R3-R7). quota_return clobbers R4-R7 only.
+    move.q  r1, r13
+    move.l  r2, #QUOTA_KIND_PAGES
+    move.q  r3, r18
+    jsr     quota_return
     bra     .fm_cleanup_region
 
 .fm_shared:
@@ -6889,6 +7186,21 @@ trap_handler:
     pop     r16
     move.q  r17, r1                     ; r17 = &shmem[id]
     beqz    r17, .fm_cleanup_region     ; defensive: bad id, just clear region
+
+    ; M15.6 G3 Phase B: return the shmem-pages quota charge on the
+    ; unmapping task. The mapping goes away regardless of whether the
+    ; backing pages survive — refcount governs BACKING lifetime, not
+    ; the mapper's quota. Save r16, r17 across the helper call since
+    ; .fm_cleanup_region still needs r16 and the REFCOUNT block below
+    ; still needs r17.
+    push    r17
+    push    r16
+    move.q  r1, r13
+    move.l  r2, #QUOTA_KIND_SHMEM
+    move.q  r3, r18
+    jsr     quota_return
+    pop     r16
+    pop     r17
 
     load.b  r11, KD_SHM_REFCOUNT(r17)
     sub     r11, r11, #1
@@ -6961,6 +7273,27 @@ trap_handler:
     load.l  r11, KD_SHM_NONCE(r14)
     and     r11, r11, #0xFFFFFF         ; mask to 24 bits
     bne     r11, r21, .ms_badhandle
+
+    ; M15.6 G3 Phase B: per-task QUOTA_KIND_SHMEM check. Charge BEFORE
+    ; region-slot / VA allocation so the reject path is a clean eret.
+    ; r23 holds the page count across the rest of the handler —
+    ; .ms_nomem reuses it on any later-failure rollback. r14 (shmem
+    ; slot addr) survives quota_check_and_charge (clobbers R4-R7).
+    load.w  r23, KD_SHM_PAGES(r14)
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r13, (r12)                  ; current_task
+    move.q  r1, r13
+    move.l  r2, #QUOTA_KIND_SHMEM
+    move.q  r3, r23
+    jsr     quota_check_and_charge
+    beqz    r1, .ms_quota_ok
+    mtcr    cr0, r19
+    tlbflush
+    move.q  r1, #0
+    move.q  r2, #ERR_QUOTA
+    move.q  r3, #0
+    eret
+.ms_quota_ok:
 
     ; Find free region slot in caller's table
     move.l  r12, #KERN_DATA_BASE
@@ -7057,6 +7390,15 @@ trap_handler:
     eret
 
 .ms_nomem:
+    ; M15.6 G3 Phase B: every reach of .ms_nomem happens after the quota
+    ; charge at .ms_quota_ok, so refund before eret. Reload current_task
+    ; fresh (r13 may be clobbered); r23 holds the page count captured
+    ; before the first allocation.
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r1, (r12)
+    move.l  r2, #QUOTA_KIND_SHMEM
+    move.q  r3, r23
+    jsr     quota_return
     mtcr    cr0, r19
     tlbflush
     move.q  r1, #0
@@ -7338,13 +7680,45 @@ trap_handler:
     bgt     r22, r23, .hwres_badarg
     bltz    r22, .hwres_badarg
     bltz    r23, .hwres_badarg
-    ; r1=task_id, r2=tag, r3=ppn_lo, r4=ppn_hi already in the right
-    ; registers for kern_grant_create_row.
+
+    ; M15.6 G3: QUOTA_KIND_GRANTS charge. Broker is the grantor;
+    ; grantee (r20) does NOT consume GRANTS. r13 holds the grantor's
+    ; pubid (loaded above for the broker-identity check) — stash it in
+    ; r15 for the row stamp and rollback refund. Charge runs against
+    ; the current slot; the row carries the pubid for release-time
+    ; resolution so a recycled slot cannot mis-refund.
+    move.q  r15, r13                    ; r15 = grantor pubid (stable)
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r1, (r12)
+    move.l  r2, #QUOTA_KIND_GRANTS
+    move.l  r3, #1
+    jsr     quota_check_and_charge
+    beqz    r1, .hwres_create_charge_ok
+    move.q  r1, #0
+    move.q  r2, #ERR_QUOTA
+    eret
+.hwres_create_charge_ok:
+    move.q  r5, r15                     ; r5 = grantor pubid for row stamp
     move.q  r1, r20
     move.q  r2, r21
     move.q  r3, r22
     move.q  r4, r23
     jsr     kern_grant_create_row       ; R2 = err
+    bnez    r2, .hwres_create_rollback
+    move.q  r1, #0
+    eret
+.hwres_create_rollback:
+    ; Grant row alloc failed post-charge — refund before returning
+    ; NOMEM. r15 still holds grantor pubid; translate to slot for the
+    ; refund. Since we're still the grantor (same trap context), the
+    ; slot lookup is guaranteed to succeed.
+    push    r2
+    move.q  r1, r15
+    jsr     kern_find_slot_for_public_id ; r1 = slot, r2 = 1 if found
+    move.l  r2, #QUOTA_KIND_GRANTS
+    move.l  r3, #1
+    jsr     quota_return
+    pop     r2
     move.q  r1, #0
     eret
 
@@ -8236,6 +8610,219 @@ kern_task_exit_hooks_run:
     rts
 
 ; ============================================================================
+; M15.6 G3: per-task quota helpers.
+;
+; The quota counters live in a dedicated 4 KiB supervisor page whose PPN
+; is stashed at KD_QUOTA_PAGE_PPN. Row address = (ppn << 12) + (task << 4).
+; Global default limits live at KD_QUOTA_LIMITS_BASE as 5 u32 entries
+; indexed by QUOTA_KIND_*. Limits are writable via SYS_QUOTA_SET_LIMIT so
+; tests can drive boundary behavior without needing to exhaust 32 MB.
+;
+; Counters are u16; QUOTA_KIND_SHMEM counts pages (not bytes), so a u16
+; covers the full 32 MB address space with headroom.
+; ============================================================================
+
+; ============================================================================
+; M15.6 G3 quota helpers.
+;
+; Register discipline: scratch in R4-R7 only; R1-R3 are strictly
+; caller-facing (R1 = primary arg / primary out; R2, R3 = secondary args).
+; The .do_create_port path has an r3-preservation contract with
+; user-space code (kern_port_alloc_slot explicitly declines to touch r3),
+; and the syscall dispatcher relies on similar conventions. An earlier
+; version of these helpers used r2/r3 as internal scratch and
+; silently regressed TestIExec_CreatePort_DuplicateName; keeping R1-R3
+; untouched by the helpers side-steps that whole class of
+; register-convention bug.
+; ============================================================================
+
+; quota_counter_addr: compute the u16 counter address for (task, kind).
+; Combined row-addr + field-offset computation, so callers do not need
+; to chain two jsrs and juggle scratch regs around a clobber set.
+;
+; Input:  R1 = task slot (0..MAX_TASKS-1), R2 = QUOTA_KIND_*
+; Output: R1 = address of the u16 counter, or 0 if kind out-of-range
+;         or the quota page has not been allocated yet.
+; Clobbers: R4, R5
+;
+; Bounds uses UNSIGNED comparison (BHI) so a negative i64 in r2 — trivially
+; produced by `sub r2, r0, #1` in user code — is rejected rather than
+; sign-extended into a huge positive index that would alias the guard.
+; A signed BGE would fail this case.
+quota_counter_addr:
+    move.l  r4, #(QUOTA_KIND_COUNT - 1)
+    bhi     r2, r4, .qca_bad
+    move.l  r4, #KERN_DATA_BASE
+    load.w  r5, KD_QUOTA_PAGE_PPN(r4)
+    beqz    r5, .qca_bad
+    lsl     r4, r5, #12                 ; r4 = quota page physical base
+    lsl     r5, r1, #KD_QUOTA_ROW_SHIFT ; r5 = task * 16 (row offset)
+    add     r4, r4, r5                  ; r4 = row base
+    lsl     r5, r2, #1                  ; r5 = kind * 2 (field offset)
+    add     r1, r4, r5                  ; r1 = counter address
+    rts
+.qca_bad:
+    move.l  r1, #0
+    rts
+
+; quota_row_base: compute the 16-byte row base for a task slot.
+; Convenience wrapper for quota_zero_row; forwards to quota_counter_addr
+; with kind=0 (PAGES) since the field offset at kind=0 is zero, so the
+; counter address equals the row base.
+; Input:  R1 = task slot
+; Output: R1 = row base, or 0 if no quota page
+; Clobbers: R2, R4, R5
+quota_row_base:
+    move.l  r2, #QUOTA_KIND_PAGES       ; kind=0 → field offset 0
+    jsr     quota_counter_addr
+    rts
+
+; quota_get_limit: read the global default limit for a given kind.
+; Input:  R1 = kind
+; Output: R1 = u32 limit (0 if out-of-range kind)
+; Clobbers: R4, R5
+; Bounds: unsigned BHI so negative i64 is rejected (see quota_counter_addr).
+quota_get_limit:
+    move.l  r4, #(QUOTA_KIND_COUNT - 1)
+    bhi     r1, r4, .qgl_bad
+    move.l  r4, #KERN_DATA_BASE
+    add     r4, r4, #KD_QUOTA_LIMITS_BASE
+    lsl     r5, r1, #2                  ; kind * 4
+    add     r4, r4, r5
+    load.l  r1, (r4)
+    rts
+.qgl_bad:
+    move.l  r1, #0
+    rts
+
+; quota_set_limit: overwrite the global default limit for a given kind.
+; Input:  R1 = kind, R2 = new u32 limit
+; Output: R1 = ERR_OK (0) or ERR_BADARG on out-of-range kind
+; Clobbers: R4, R5
+; Bounds: unsigned BHI (see quota_counter_addr). A negative i64 in R1 (e.g.
+; from `sub r1, r0, #1`) would otherwise produce a negative lsl result
+; and land the store BEFORE KD_QUOTA_LIMITS_BASE, corrupting kernel data.
+quota_set_limit:
+    move.l  r4, #(QUOTA_KIND_COUNT - 1)
+    bhi     r1, r4, .qsl_bad
+    move.l  r4, #KERN_DATA_BASE
+    add     r4, r4, #KD_QUOTA_LIMITS_BASE
+    lsl     r5, r1, #2
+    add     r4, r4, r5
+    store.l r2, (r4)
+    move.l  r1, #ERR_OK
+    rts
+.qsl_bad:
+    move.l  r1, #ERR_BADARG
+    rts
+
+; quota_get_current: read a task's current counter for a given kind.
+; Input:  R1 = task slot, R2 = kind
+; Output: R1 = u16 counter (0 on out-of-range kind / no quota page)
+; Clobbers: R4, R5
+quota_get_current:
+    jsr     quota_counter_addr          ; r1 = counter addr or 0
+    beqz    r1, .qgc_zero
+    load.w  r1, (r1)
+    rts
+.qgc_zero:
+    move.l  r1, #0
+    rts
+
+; quota_check_and_charge: add `delta` to a task's counter if the result
+; stays <= the global limit. Preserves the counter on failure.
+;
+; Input:  R1 = task slot, R2 = kind, R3 = delta
+; Output: R1 = ERR_OK / ERR_QUOTA / ERR_BADARG
+; Clobbers: R4, R5, R6, R7
+;
+; Disabled-enforcement contract: if boot could not reserve the quota
+; counter page, KD_QUOTA_PAGE_PPN stays 0 and every charge returns
+; ERR_OK silently. Callers translate any nonzero return into ERR_QUOTA
+; at the eret; surfacing ERR_BADARG for "disabled" would wedge every
+; syscall. The PPN=0 gate lives here (ahead of quota_counter_addr) so
+; "disabled" is distinguishable from "bad kind" (which still returns
+; ERR_BADARG for diagnostic syscalls).
+quota_check_and_charge:
+    move.l  r4, #KERN_DATA_BASE
+    load.w  r4, KD_QUOTA_PAGE_PPN(r4)
+    beqz    r4, .qcc_disabled
+    move.q  r6, r2                      ; r6 = kind (saved across get_limit)
+    move.q  r7, r3                      ; r7 = delta (saved across counter_addr)
+    jsr     quota_counter_addr          ; r1 = counter addr (preserves r2, r3, r6, r7)
+    beqz    r1, .qcc_bad
+    move.q  r7, r1                      ; r7 = counter addr (stable across quota_get_limit's r4/r5 clobber)
+    load.w  r4, (r7)                    ; r4 = current
+    add     r4, r4, r3                  ; r4 = projected (u64 math; r3 still delta)
+    move.q  r6, r4                      ; r6 = projected (get_limit clobbers r4)
+    move.q  r1, r2                      ; r1 = kind
+    jsr     quota_get_limit             ; r1 = limit
+    bgt     r6, r1, .qcc_exceed
+    store.w r6, (r7)                    ; commit projected
+    move.l  r1, #ERR_OK
+    rts
+.qcc_exceed:
+    move.l  r1, #ERR_QUOTA
+    rts
+.qcc_bad:
+    move.l  r1, #ERR_BADARG
+    rts
+.qcc_disabled:
+    move.l  r1, #ERR_OK
+    rts
+
+; quota_return: subtract `delta` from a task's counter. Clamps at 0 so a
+; stray accounting bug cannot make the counter wrap and produce
+; pseudo-infinite headroom.
+;
+; Input:  R1 = task slot, R2 = kind, R3 = delta
+; Output: R1 = ERR_OK (or ERR_BADARG on bad kind)
+; Clobbers: R4, R5, R6, R7
+;
+; Same disabled-enforcement contract as quota_check_and_charge: PPN=0
+; means "no per-task caps are in effect", and a refund of something
+; that was never charged is a silent ERR_OK.
+quota_return:
+    move.l  r4, #KERN_DATA_BASE
+    load.w  r4, KD_QUOTA_PAGE_PPN(r4)
+    beqz    r4, .qr_disabled
+    move.q  r6, r3                      ; r6 = delta (r3 untouched across counter_addr)
+    jsr     quota_counter_addr          ; r1 = counter addr (preserves r6)
+    beqz    r1, .qr_bad
+    move.q  r7, r1                      ; r7 = counter addr
+    load.w  r4, (r7)                    ; r4 = current
+    bge     r6, r4, .qr_clamp           ; delta >= current → clamp to 0
+    sub     r4, r4, r6
+    store.w r4, (r7)
+    move.l  r1, #ERR_OK
+    rts
+.qr_clamp:
+    store.w r0, (r7)
+    move.l  r1, #ERR_OK
+    rts
+.qr_bad:
+    move.l  r1, #ERR_BADARG
+    rts
+.qr_disabled:
+    move.l  r1, #ERR_OK
+    rts
+
+; quota_zero_row: reset all counters for a task slot to zero. Called on
+; task-exit cleanup after every per-quota release path has run, as a
+; belt-and-braces reset so a future owner cannot inherit stale counts.
+;
+; Input:  R1 = task slot
+; Output: (none)
+; Clobbers: R2, R4, R5
+quota_zero_row:
+    jsr     quota_row_base              ; r1 = row base or 0
+    beqz    r1, .qzr_done
+    store.q r0, (r1)                    ; row is 16 bytes = 2 × u64 stores
+    store.q r0, 8(r1)
+.qzr_done:
+    rts
+
+; ============================================================================
 ; kill_task_cleanup: clean up task R13, mark FREE.
 ; Input: R13 = task to kill, R12 = KERN_DATA_BASE, R14 = TASK_EXIT_REASON_*
 ; Clobbers: R15-R24
@@ -8573,6 +9160,11 @@ kill_task_cleanup:
     add     r21, r21, #KD_PTBR_BASE
     add     r21, r21, r12
     store.q r0, (r21)
+
+    ; M15.6 G3: reset exiting task's quota row so a recycled slot cannot
+    ; inherit stale counts. Safe if the quota page was never allocated.
+    move.q  r1, r13
+    jsr     quota_zero_row
     rts
 
 ; ============================================================================
@@ -8626,6 +9218,16 @@ restore_task:
     ; Set state to RUNNING
     move.b  r22, #TASK_RUNNING
     store.b r22, KD_TASK_STATE(r15)
+
+    ; M15.6 G3: WAITERS refund — this is the real wait-exit point for
+    ; the SIG_WAIT path. The earlier .wait_block charged WAITERS; now
+    ; that the wait is actually delivered (not a spurious wake) we
+    ; refund. r13 = task slot; r21 = matched signals (preserved across
+    ; quota_return, which only clobbers R1-R7).
+    move.q  r1, r13
+    move.l  r2, #QUOTA_KIND_WAITERS
+    move.l  r3, #1
+    jsr     quota_return
 
     ; Deliver result in R1
     move.q  r1, r21
@@ -8700,6 +9302,19 @@ restore_task:
     ; Check count > 0 (spurious wake if another port got SIGF_PORT)
     load.b  r25, KD_PORT_COUNT(r21)
     beqz    r25, .restore_waitport_spurious
+
+    ; M15.6 G3: WAITERS refund — this is the real wait-exit for the
+    ; WaitPort path. The message is on the waited-on port and will be
+    ; dequeued below; the task is about to return from SYS_WAIT_PORT.
+    ; The matching charge is in .waitport_charge_ok. Do this BEFORE
+    ; loading the message fields into r1/r2/r4/r5/r6/r7 — quota_return
+    ; clobbers R1-R7. r13 = task slot is preserved from restore_task
+    ; entry; r21 (port addr) and r25 (count) are high regs untouched
+    ; by the helper.
+    move.q  r1, r13
+    move.l  r2, #QUOTA_KIND_WAITERS
+    move.l  r3, #1
+    jsr     quota_return
 
     ; Message available — dequeue (32-byte message)
     load.b  r26, KD_PORT_HEAD(r21)

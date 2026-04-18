@@ -77,6 +77,10 @@ SYS_BOOT_ELF_EXEC equ 41           ; trusted-internal — dos.library launches a
                                    ; Net public ABI shrinks: SYS_MAP_IO leaves the public nucleus set
                                    ; in M12.5, one trusted-internal slot enters. Apps see one fewer
                                    ; public syscall after M12.5, not one more.
+SYS_QUOTA_SET_LIMIT equ 42         ; diagnostic / test-only — overrides a per-task quota limit.
+                                   ; R1 = QUOTA_KIND_*, R2 = new u32 limit. Not a stable ABI;
+                                   ; exists so tests can drive boundary behavior without
+                                   ; having to exhaust 32 MB of real resources.
 
 ; ===========================================================================
 ; Error Codes
@@ -91,7 +95,34 @@ ERR_PERM          equ 5
 ERR_AGAIN         equ 6
 ERR_TOOLARGE      equ 7
 ERR_EXISTS        equ 8
-ERR_FULL          equ 9
+ERR_FULL          equ 9          ; global resource pool exhausted (e.g., no free slots across entire kernel)
+ERR_QUOTA         equ 10         ; M15.6 G3: caller's per-task quota reached its limit. Distinct from
+                                 ; ERR_FULL so tests and diagnostics can distinguish "this task is out
+                                 ; of budget" from "the whole kernel is out of <resource>".
+
+; ===========================================================================
+; CR_MMU_CTRL bit constants (M15.6 G2)
+;
+; Bit 0 = MMU translation active; bit 1 = supervisor mode (RO).
+; Bits 2-4 are the SMEP/SMAP-equivalent supervisor guards:
+;   SKEF (bit 2): supervisor instruction fetch from a user page faults.
+;   SKAC (bit 3): supervisor read/write on a user page faults unless SUA is set.
+;   SUA  (bit 4): supervisor-user-access latch. RO via MTCR; the privileged
+;                 SUAEN / SUADIS instructions are the only writers. Trap
+;                 entry saves SUA and clears it; ERET to supervisor restores,
+;                 ERET to user clears.
+; ===========================================================================
+
+MMU_CTRL_ENABLE   equ 0x01
+MMU_CTRL_SUPER    equ 0x02
+MMU_CTRL_SKEF     equ 0x04
+MMU_CTRL_SKAC     equ 0x08
+MMU_CTRL_SUA      equ 0x10
+
+; Fault cause codes raised by SKEF / SKAC. Mirrors the Go-side constants
+; FAULT_SKEF and FAULT_SKAC in cpu_ie64.go.
+FAULT_SKEF        equ 9
+FAULT_SKAC        equ 10
 
 ; ===========================================================================
 ; Fault Causes
@@ -115,6 +146,12 @@ SYSINFO_TOTAL_PAGES equ 0
 SYSINFO_FREE_PAGES  equ 1
 SYSINFO_TICK_COUNT  equ 2
 SYSINFO_CURRENT_TASK equ 3
+SYSINFO_QUOTA_CURRENT equ 4        ; M15.6 G3: R1=query, R2=QUOTA_KIND_*, R3=task slot (or
+                                   ; 0xFFFFFFFF for current task). Returns task's current
+                                   ; counter in R1, ERR_OK/ERR_BADARG in R2. Diagnostic only.
+SYSINFO_QUOTA_LIMIT   equ 5        ; M15.6 G3: R1=query, R2=QUOTA_KIND_*. Returns global
+                                   ; default limit in R1. Limit is currently global, not
+                                   ; per-task, so R3 is ignored. Diagnostic only.
 
 ; ===========================================================================
 ; Kernel Memory Layout
@@ -326,6 +363,38 @@ BOOT_MANIFEST_ID_INPUT      equ 14
 BOOT_MANIFEST_ID_GRAPHICS   equ 15
 BOOT_MANIFEST_ID_INTUITION  equ 16
 
+; ===========================================================================
+; M15.6 G3: per-task resource quotas
+; ===========================================================================
+QUOTA_KIND_PAGES     equ 0
+QUOTA_KIND_PORTS     equ 1
+QUOTA_KIND_WAITERS   equ 2
+QUOTA_KIND_SHMEM     equ 3
+QUOTA_KIND_GRANTS    equ 4
+QUOTA_KIND_COUNT     equ 5
+
+KD_QUOTA_ROW_STRIDE    equ 16
+KD_QUOTA_ROW_SHIFT     equ 4           ; log2(KD_QUOTA_ROW_STRIDE)
+KD_QUOTA_CUR_PAGES     equ 0           ; u16
+KD_QUOTA_CUR_PORTS     equ 2           ; u16
+KD_QUOTA_CUR_WAITERS   equ 4           ; u16
+KD_QUOTA_CUR_SHMEM     equ 6           ; u16 (pages, not bytes)
+KD_QUOTA_CUR_GRANTS    equ 8           ; u16
+
+KD_QUOTA_PAGE_PPN      equ 67128       ; u16 allocator-backed supervisor quota page
+KD_QUOTA_LIMITS_BASE   equ 67132       ; 5 × u32 global default limits, kind-indexed
+
+QUOTA_DEFAULT_PAGES    equ 1024        ; 4 MiB of private pages per task
+QUOTA_DEFAULT_PORTS    equ 32          ; 32 live ports per task
+QUOTA_DEFAULT_WAITERS  equ 16          ; headroom above current state-based bound
+QUOTA_DEFAULT_SHMEM    equ 2048        ; 8 MiB of shared mappings per task
+QUOTA_DEFAULT_GRANTS   equ 512         ; grantor-side grants per task. 512 accommodates
+                                       ; the boot-time hardware.resource service which
+                                       ; creates a grant row per mapped device range
+                                       ; (VRAM, CHIP, audio, input, video regs) plus
+                                       ; regression tests that stress chain growth at
+                                       ; 255+ rows.
+
 ; M15.5: internal task-exit hook substrate. Hooks are kernel-private teardown
 ; observers, not part of the public syscall ABI. Rows run synchronously in
 ; order during kill_task_cleanup and may record diagnostics, but a failing row
@@ -470,30 +539,6 @@ PTE_X             equ 0x08        ; Execute
 PTE_U             equ 0x10        ; User-accessible
 PTE_A             equ 0x20        ; Accessed
 PTE_D             equ 0x40        ; Dirty
-
-; ===========================================================================
-; CR_MMU_CTRL bit constants (M15.6 G2)
-;
-; Bit 0 = MMU translation active; bit 1 = supervisor mode (RO).
-; Bits 2-4 are the SMEP/SMAP-equivalent supervisor guards:
-;   SKEF (bit 2): supervisor instruction fetch from a user page faults.
-;   SKAC (bit 3): supervisor read/write on a user page faults unless SUA is set.
-;   SUA  (bit 4): supervisor-user-access latch. RO via MTCR; the privileged
-;                 SUAEN / SUADIS instructions are the only writers. Trap
-;                 entry saves SUA and clears it; ERET to supervisor restores,
-;                 ERET to user clears.
-; ===========================================================================
-
-MMU_CTRL_ENABLE   equ 0x01
-MMU_CTRL_SUPER    equ 0x02
-MMU_CTRL_SKEF     equ 0x04
-MMU_CTRL_SKAC     equ 0x08
-MMU_CTRL_SUA      equ 0x10
-
-; Fault cause codes raised by SKEF / SKAC. Mirrors the Go-side constants
-; FAULT_SKEF and FAULT_SKAC in cpu_ie64.go.
-FAULT_SKEF        equ 9
-FAULT_SKAC        equ 10
 
 ; ===========================================================================
 ; MMU Constants
@@ -1012,10 +1057,18 @@ KD_GRANT_TASK_ID      equ 0          ; granted task ID (u32, 0xFFFFFFFF = unused
 KD_GRANT_REGION       equ 4          ; 4-byte region tag (e.g. 'CHIP', 'VRAM')
 KD_GRANT_PPN_LO       equ 8          ; first PPN of granted range (2 bytes)
 KD_GRANT_PPN_HI       equ 10         ; last PPN of granted range, inclusive (2 bytes)
-KD_GRANT_FLAGS        equ 12         ; reserved flags (4 bytes)
+KD_GRANT_GRANTOR_PUBID equ 12        ; M15.6 G3: grantor's public task ID (u32) at
+                                     ; create time. pubid is monotonic and never
+                                     ; reused — storing the internal slot here would
+                                     ; mis-refund if the grantor exited and a
+                                     ; different task reclaimed the slot before the
+                                     ; grantee died. GRANT_GRANTOR_NONE for rows
+                                     ; that were not quota-charged (bootstrap
+                                     ; grants via kern_bootstrap_grant_for_program).
 
-; Grant row sentinel
+; Grant row sentinels
 GRANT_TASK_FREE       equ 0xFFFFFFFF ; row is unused
+GRANT_GRANTOR_NONE    equ 0xFFFFFFFF ; row was not quota-charged at create time
 
 ; SYS_HWRES_OP verbs (R6 selector — R0 is the IE64 zero register)
 HWRES_BECOME          equ 0          ; claim broker identity

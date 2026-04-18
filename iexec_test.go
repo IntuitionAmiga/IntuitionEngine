@@ -59,30 +59,55 @@ const (
 	userTask1Data  = userDataBase + userSlotStride  // 0x612000
 
 	// Syscall numbers (matching IExec contract)
-	sysAllocMem     = 1
-	sysFreeMem      = 2
-	sysMapShared    = 4
-	sysCreateTask   = 5
-	sysAllocSignal  = 11
-	sysFreeSignal   = 12
-	sysSignal       = 13
-	sysWait         = 14
-	sysCreatePort   = 15
-	sysFindPort     = 16
-	sysPutMsg       = 17
-	sysGetMsg       = 18
-	sysWaitPort     = 19
-	sysReplyMsg     = 20
-	sysYield        = 26
-	sysGetSysInfo   = 27
-	sysDebugPutChar = 33
-	sysExitTask     = 34
-	sysExecProgram  = 35
-	sysOpenLibrary  = 36
-	sysReadInput    = 37 // M11.5: removed; slot now returns ERR_BADARG via dispatcher fall-through
-	sysBootManifest = 39
-	sysBootHostFS   = 40
-	sysMapIO        = 28
+	sysAllocMem      = 1
+	sysFreeMem       = 2
+	sysMapShared     = 4
+	sysCreateTask    = 5
+	sysAllocSignal   = 11
+	sysFreeSignal    = 12
+	sysSignal        = 13
+	sysWait          = 14
+	sysCreatePort    = 15
+	sysFindPort      = 16
+	sysPutMsg        = 17
+	sysGetMsg        = 18
+	sysWaitPort      = 19
+	sysReplyMsg      = 20
+	sysYield         = 26
+	sysGetSysInfo    = 27
+	sysDebugPutChar  = 33
+	sysExitTask      = 34
+	sysExecProgram   = 35
+	sysOpenLibrary   = 36
+	sysReadInput     = 37 // M11.5: removed; slot now returns ERR_BADARG via dispatcher fall-through
+	sysBootManifest  = 39
+	sysBootHostFS    = 40
+	sysMapIO         = 28
+	sysQuotaSetLimit = 42 // M15.6 G3: diagnostic-only limit override.
+
+	// M15.6 G3: SYSINFO sub-queries for quota inspection.
+	sysinfoCurrentTask  = 3
+	sysinfoQuotaCurrent = 4
+	sysinfoQuotaLimit   = 5
+	// Quota kinds
+	quotaKindPages    = 0
+	quotaKindPorts    = 1
+	quotaKindWaiters  = 2
+	quotaKindShmem    = 3
+	quotaKindGrants   = 4
+	quotaDefaultPages = 1024
+	quotaDefaultPorts = 32
+	// Quota error code (paired with the existing ERR_* namespace).
+	errQuota = 10
+	// Grant-row grantor-pubid provenance (M15.6 G3): u32 at offset 12
+	// in the row; 0xFFFFFFFF = GRANT_GRANTOR_NONE (uncharged bootstrap
+	// row). Stored as the grantor's public task id so release-time
+	// refunds survive slot recycling.
+	kdGrantGrantorPubid = 12
+	grantGrantorNone    = uint32(0xFFFFFFFF)
+	// Kern-data offsets for the quota page / quota row fields.
+	kdQuotaPagePPN    = 67128 // u16 at KERN_DATA_BASE + this offset
+	kdQuotaCurWaiters = 4     // within a quota row, offset to WAITERS counter
 
 	dosRun       = 6
 	dosLoadSeg   = 7
@@ -3629,6 +3654,1365 @@ func TestIExec_GetSysInfo_FreePages(t *testing.T) {
 	}
 	if errCode != 0 {
 		t.Fatalf("err = %d, want ERR_OK (0)", errCode)
+	}
+}
+
+// ===========================================================================
+// M15.6 G3: Quota Infrastructure Tests (no enforcement yet)
+// ===========================================================================
+//
+// G3 ships the per-task quota storage and diagnostic syscalls in a first
+// pass, with enforcement deferred to a focused follow-up commit. These
+// tests pin the three observable contracts shipped today:
+//
+//  1. SYSINFO_QUOTA_LIMIT returns the compiled-in global defaults.
+//  2. SYSINFO_QUOTA_CURRENT returns 0 on a freshly-booted task because no
+//     per-quota enforcement has charged anything yet. Once enforcement
+//     lands, this test gets a companion that asserts a nonzero count
+//     after an AllocMem / CreatePort / MapShared call succeeds.
+//  3. SYS_QUOTA_SET_LIMIT rewrites the global default so tests can drive
+//     boundary cases without exhausting real resources.
+
+func TestIExec_M156_G3_QuotaInfraDefaults(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	t0 := images[0]
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+
+	// Sequence:
+	// 1. R1=SYSINFO_QUOTA_LIMIT, R2=QUOTA_KIND_PAGES  → limit, err → data+0, +8
+	// 2. R1=SYSINFO_QUOTA_LIMIT, R2=QUOTA_KIND_PORTS  → limit, err → data+16, +24
+	// 3. R1=SYSINFO_QUOTA_CURRENT, R2=QUOTA_KIND_PAGES, R3=0xFFFFFFFF (current)
+	//    → count, err → data+32, +40
+	// 4. HALT
+	off := t0
+	emit := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, sysinfoQuotaLimit))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, quotaKindPages))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 0))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 8))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, sysinfoQuotaLimit))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, quotaKindPorts))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 16))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 24))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, sysinfoQuotaCurrent))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, quotaKindPages))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0xFFFFFFFF)) // "current task"
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data)) // reload data ptr (R3 clobbered)
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 32))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 40))
+	emit(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(300 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	read := func(o uint32) uint64 { return binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+o:]) }
+	pagesLimit, pagesErr := read(0), read(8)
+	portsLimit, portsErr := read(16), read(24)
+	pagesCur, curErr := read(32), read(40)
+
+	if pagesErr != 0 || portsErr != 0 || curErr != 0 {
+		t.Fatalf("syscall errors: pagesErr=%d portsErr=%d curErr=%d", pagesErr, portsErr, curErr)
+	}
+	if pagesLimit != quotaDefaultPages {
+		t.Errorf("QUOTA_KIND_PAGES limit = %d, want %d", pagesLimit, quotaDefaultPages)
+	}
+	if portsLimit != quotaDefaultPorts {
+		t.Errorf("QUOTA_KIND_PORTS limit = %d, want %d", portsLimit, quotaDefaultPorts)
+	}
+	if pagesCur != 0 {
+		t.Errorf("QUOTA_KIND_PAGES current at boot = %d, want 0 (no enforcement yet)", pagesCur)
+	}
+}
+
+// TestIExec_M156_G3_QuotaNegativeKindRejected pins the unsigned
+// bounds check in the quota helpers. A negative i64 in the kind
+// register (trivially produced by `sub r1, r0, #1` from any task)
+// must fault as ERR_BADARG, not slip through a signed BGE and
+// steer kernel-data address arithmetic into out-of-bounds reads or
+// writes. Covers both SYSINFO_QUOTA_LIMIT (read path) and
+// SYS_QUOTA_SET_LIMIT (write path).
+func TestIExec_M156_G3_QuotaNegativeKindRejected(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	t0 := images[0]
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+
+	// Sequence:
+	// 1. R1 = -1 via sub r0,#1 ; SYSINFO_QUOTA_LIMIT(r2=-1) → want ERR_BADARG
+	// 2. R1 = -1, R2 = 999 ; SYS_QUOTA_SET_LIMIT → want ERR_BADARG
+	// 3. R1 = SYSINFO_QUOTA_LIMIT, R2 = QUOTA_KIND_PAGES → read-back limit
+	//    must still be the compiled default (set-with-negative-kind
+	//    must NOT have clobbered kern data).
+	off := t0
+	emit := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+
+	// --- read path with negative kind ---
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, sysinfoQuotaLimit))
+	emit(ie64Instr(OP_SUB, 2, IE64_SIZE_Q, 1, 0, 0, 1)) // r2 = 0 - 1 = -1 (i64)
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 0)) // err1 → data+0
+
+	// --- write path with negative kind ---
+	emit(ie64Instr(OP_SUB, 1, IE64_SIZE_Q, 1, 0, 0, 1)) // r1 = -1
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 999))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysQuotaSetLimit))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data)) // reload (R3 preserved but be explicit)
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 8))            // err2 → data+8
+
+	// --- confirm PAGES default was not clobbered by the rejected write ---
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, sysinfoQuotaLimit))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, quotaKindPages))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 16))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 24))
+	emit(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(300 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	read := func(o uint32) uint64 { return binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+o:]) }
+	err1, err2 := read(0), read(8)
+	limit, limErr := read(16), read(24)
+
+	if err1 != errBadArg {
+		t.Errorf("SYSINFO_QUOTA_LIMIT with negative kind: err=%d, want ERR_BADARG (%d)", err1, errBadArg)
+	}
+	if err2 != errBadArg {
+		t.Errorf("SYS_QUOTA_SET_LIMIT with negative kind: err=%d, want ERR_BADARG (%d)", err2, errBadArg)
+	}
+	if limErr != 0 {
+		t.Errorf("follow-up SYSINFO_QUOTA_LIMIT err=%d, want 0", limErr)
+	}
+	if limit != quotaDefaultPages {
+		t.Errorf("PAGES default after rejected negative-kind SET_LIMIT = %d, want %d (limit was clobbered)",
+			limit, quotaDefaultPages)
+	}
+}
+
+// TestIExec_M156_G3_QuotaSetLimitGatedByPubid pins the kernel-side
+// invariant that SYS_QUOTA_SET_LIMIT gates on the caller's monotonic
+// public task ID — not on its internal slot number, which is recycled
+// on task exit. The gate lives in .do_quota_set_limit and reads the
+// caller's pubid via kern_current_public_task_id, rejecting anything
+// other than 0 (the original boot task's stable pubid).
+//
+// Exercising the negative case cleanly from a test would require
+// spawning a child task and routing its syscall result back to the
+// parent — more plumbing than the check warrants when the gate
+// itself is three instructions. Instead, this test scans the
+// assembled iexec.s source to confirm:
+//
+//	(a) .do_quota_set_limit calls kern_current_public_task_id
+//	    (not a current_slot load)
+//	(b) the jsr is followed by a bnez → .dqsl_perm path
+//
+// and the positive case is covered by
+// TestIExec_M156_G3_QuotaSetLimitRewritesDefault (which proves the
+// gate correctly ALLOWS pubid=0).
+func TestIExec_M156_G3_QuotaSetLimitGatedByPubid(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join(repoRootDir(t), "sdk", "intuitionos", "iexec", "iexec.s"))
+	if err != nil {
+		t.Fatalf("read iexec.s: %v", err)
+	}
+	text := string(src)
+
+	// Find the handler body.
+	startIdx := strings.Index(text, ".do_quota_set_limit:")
+	if startIdx < 0 {
+		t.Fatalf(".do_quota_set_limit handler not found")
+	}
+	endIdx := strings.Index(text[startIdx:], ".dqsl_perm:")
+	if endIdx < 0 {
+		t.Fatalf(".dqsl_perm label not found after handler entry")
+	}
+	body := text[startIdx : startIdx+endIdx]
+
+	if !strings.Contains(body, "kern_current_public_task_id") {
+		t.Error(".do_quota_set_limit must call kern_current_public_task_id to read the caller's monotonic pubid")
+	}
+	// Slot 0 check would look like `load.q r??, (r12)` where r12 is
+	// KERN_DATA_BASE — a recycled-slot gate bug. Reject any direct
+	// read of KD_CURRENT_TASK in this handler.
+	if strings.Contains(body, "load.q  r11, (r12)") || strings.Contains(body, "load.q r11, (r12)") {
+		t.Error(".do_quota_set_limit must not gate on the current_task SLOT (recycled on exit); gate must use pubid via kern_current_public_task_id")
+	}
+	if !strings.Contains(body, "bnez") {
+		t.Error(".do_quota_set_limit must branch to a perm-fail path on nonzero pubid")
+	}
+	if !strings.Contains(body, ".dqsl_perm") {
+		t.Error(".do_quota_set_limit must reach .dqsl_perm on the reject branch")
+	}
+}
+
+// TestIExec_M156_G3_QuotaPagesEnforcement is the end-to-end boundary
+// test for QUOTA_KIND_PAGES on AllocMem / FreeMem:
+//
+//  1. A task with a tight per-task limit (1 private page) can allocate
+//     one page successfully.
+//  2. A second AllocMem at the same size fails with ERR_QUOTA (distinct
+//     from ERR_NOMEM so callers can tell "over my budget" from "the
+//     whole kernel is out of pages").
+//  3. After FreeMem releases the first allocation, the quota counter
+//     drops and a subsequent AllocMem succeeds again.
+func TestIExec_M156_G3_QuotaPagesEnforcement(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	t0 := images[0]
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+
+	// Sequence:
+	//  1. SYS_QUOTA_SET_LIMIT(QUOTA_KIND_PAGES, 1)          → err0 @ data+0
+	//  2. AllocMem(4096, 0)                                 → va1/err1 @ data+8, +16
+	//  3. AllocMem(4096, 0)                                 → err2 @ data+24 (want ERR_QUOTA=10)
+	//  4. FreeMem(va1, 4096)                                → err3 @ data+32
+	//  5. AllocMem(4096, 0)                                 → va2/err4 @ data+40, +48
+	//  6. HALT
+	off := t0
+	emit := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+
+	// SYS_QUOTA_SET_LIMIT(PAGES, 1). Reload r3=data base after each
+	// syscall since the kernel's caller convention only guarantees
+	// R1/R2 (result/err). R3 is scratch and typically clobbered.
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, quotaKindPages))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysQuotaSetLimit))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 0))
+
+	// AllocMem(4096, 0) — under limit, should succeed.
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 8))  // va1 stashed in data+8
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 16)) // err1 (want 0)
+
+	// AllocMem(4096, 0) again — quota now at limit, must fail.
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 24)) // err2 (want 10)
+
+	// FreeMem(va1, 4096) — reload va1 from data+8 since the 2nd
+	// AllocMem call clobbered R1.
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 3, 0, 8))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 4096))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFreeMem))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 32)) // err3 (want 0)
+
+	// AllocMem(4096, 0) — should succeed again now that quota is free.
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 40)) // va2
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 48)) // err4 (want 0)
+	emit(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	read := func(o uint32) uint64 { return binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+o:]) }
+	err0 := read(0)
+	va1, err1 := read(8), read(16)
+	err2 := read(24)
+	err3 := read(32)
+	va2, err4 := read(40), read(48)
+
+	if err0 != 0 {
+		t.Fatalf("SYS_QUOTA_SET_LIMIT err = %d, want 0", err0)
+	}
+	if err1 != 0 {
+		t.Fatalf("first AllocMem err = %d, want 0 (under limit)", err1)
+	}
+	if va1 == 0 {
+		t.Fatalf("first AllocMem VA = 0, want nonzero")
+	}
+	if err2 != errQuota {
+		t.Errorf("second AllocMem err = %d, want ERR_QUOTA (%d); charge not enforced",
+			err2, errQuota)
+	}
+	if err3 != 0 {
+		t.Errorf("FreeMem err = %d, want 0", err3)
+	}
+	if err4 != 0 {
+		t.Errorf("third AllocMem (post-free) err = %d, want 0; release didn't refund quota",
+			err4)
+	}
+	if va2 == 0 {
+		t.Errorf("third AllocMem VA = 0, want nonzero after FreeMem restored quota")
+	}
+}
+
+func TestIExec_M156_G3_QuotaSetLimitRewritesDefault(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	t0 := images[0]
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+
+	// Sequence:
+	// 0. SYSINFO_CURRENT_TASK                       → R1=pubid → data+32 (diag)
+	// 1. SYS_QUOTA_SET_LIMIT(QUOTA_KIND_PORTS, 3)   → R2=err → data+0
+	// 2. SYSINFO_QUOTA_LIMIT(QUOTA_KIND_PORTS)      → R1=limit, R2=err → data+8, +16
+	// 3. HALT
+	off := t0
+	emit := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, sysinfoCurrentTask))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 32))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, quotaKindPorts))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 3))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysQuotaSetLimit))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 0))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, sysinfoQuotaLimit))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, quotaKindPorts))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 8))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 16))
+	emit(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(300 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	setErr := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data:])
+	newLimit := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+8:])
+	qErr := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+16:])
+	callerPubid := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+32:])
+
+	// The gate allows pubid=0 (the original boot task). If this
+	// stops being 0 — e.g., boot ordering changes and the test
+	// program no longer runs as the first-ever task — the positive
+	// test needs to reconstruct the gate-passing identity rather
+	// than silently skip the check by returning ERR_PERM.
+	if callerPubid != 0 {
+		t.Fatalf("caller pubid = %d, want 0 (boot-task identity); boot ordering changed? test no longer covers the positive gate path",
+			callerPubid)
+	}
+
+	if setErr != 0 {
+		t.Fatalf("SYS_QUOTA_SET_LIMIT err = %d, want 0", setErr)
+	}
+	if qErr != 0 {
+		t.Fatalf("SYSINFO_QUOTA_LIMIT err = %d, want 0", qErr)
+	}
+	if newLimit != 3 {
+		t.Errorf("QUOTA_KIND_PORTS limit after SET_LIMIT = %d, want 3", newLimit)
+	}
+}
+
+// TestIExec_M156_G3_QuotaDisabledStillAllowsAlloc pins the "low-memory
+// boot" contract: if the boot-time alloc_pages that reserves the quota
+// counter page fails, the kernel continues with KD_QUOTA_PAGE_PPN == 0.
+// In that state, quota_check_and_charge is specified as a no-op (ERR_OK)
+// — it is not allowed to translate "enforcement disabled" into ERR_QUOTA
+// and starve every subsequent AllocMem / MapShared. The simulated
+// failure is to zero KD_QUOTA_PAGE_PPN post-boot; a real dry pool at
+// boot leaves the same state.
+func TestIExec_M156_G3_QuotaDisabledStillAllowsAlloc(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	t0 := images[0]
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+
+	// Simulate the dry-pool boot outcome: the boot-time alloc_pages
+	// succeeds (pool is not actually dry), but we rewrite the one
+	// instruction that commits the returned PPN into KD_QUOTA_PAGE_PPN
+	// so the PPN stays zero. This matches the real low-memory boot
+	// state (`alloc_pages` returned zero → `beqz` skipped the commit)
+	// without requiring the allocator itself to fail.
+	//
+	// The target is `store.w r1, KD_QUOTA_PAGE_PPN(r2)` in iexec_start's
+	// quota-page init. Same opcode with r1 → r0 writes 0 instead of
+	// the allocated PPN. Byte layout of store.w:
+	//   byte 0: 0x11 (store)
+	//   byte 1: (reg << 3) | size_code
+	// r1 encoding is 0x0B (= (1<<3) | 3); r0 encoding is 0x03.
+	patched := false
+	for off := uint32(0x1000); off < 0x4000; off += 8 {
+		if rig.cpu.memory[off] == 0x11 && rig.cpu.memory[off+1] == 0x0B &&
+			binary.LittleEndian.Uint32(rig.cpu.memory[off+4:]) == kdQuotaPagePPN {
+			rig.cpu.memory[off+1] = 0x03 // r1 → r0 in the reg field
+			patched = true
+			break
+		}
+	}
+	if !patched {
+		t.Fatalf("could not locate the `store.w r1, KD_QUOTA_PAGE_PPN(r2)` boot instruction to patch; iexec_start layout changed")
+	}
+
+	// Task 0: AllocMem(4096, 0) and AllocMem(4096, MEMF_PUBLIC).
+	// With enforcement disabled both must return ERR_OK.
+	off := t0
+	emit := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 0)) // private err → data+0
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 8)) // private VA  → data+8
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1)) // MEMF_PUBLIC
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 16)) // public err → data+16
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 24)) // public VA  → data+24
+	emit(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(300 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	read := func(o uint32) uint64 { return binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+o:]) }
+	errPriv, vaPriv := read(0), read(8)
+	errPub, vaPub := read(16), read(24)
+
+	if errPriv != 0 {
+		t.Errorf("private AllocMem with quota disabled err = %d, want 0 (disabled-enforcement contract)",
+			errPriv)
+	}
+	if vaPriv == 0 {
+		t.Errorf("private AllocMem with quota disabled VA = 0, want nonzero")
+	}
+	if errPub != 0 {
+		t.Errorf("public AllocMem with quota disabled err = %d, want 0 (disabled-enforcement contract)",
+			errPub)
+	}
+	if vaPub == 0 {
+		t.Errorf("public AllocMem with quota disabled VA = 0, want nonzero")
+	}
+	// Diagnostic: confirm the quota page PPN is actually zero at test
+	// end. If boot re-allocated after our pre-Execute zero then the
+	// "disabled" path was never exercised and the pass above proves
+	// nothing.
+	ppn := binary.LittleEndian.Uint16(rig.cpu.memory[kernDataBase+kdQuotaPagePPN:])
+	if ppn != 0 {
+		t.Fatalf("KD_QUOTA_PAGE_PPN = %d after run; boot re-allocated the quota page, so this test did not exercise the disabled-enforcement path", ppn)
+	}
+}
+
+// TestIExec_M156_G3_QuotaPortsEnforcement pins the boundary behavior
+// for QUOTA_KIND_PORTS on CreatePort.
+//
+//  1. With the limit set to 1, a single CreatePort succeeds.
+//  2. A second CreatePort with a different name returns ERR_QUOTA (10),
+//     distinct from ERR_NOMEM. The rejected slot is not leaked —
+//     kern_port_alloc_slot found a free inline row but we eret'd before
+//     valid=1, so the next CreatePort will find the same row.
+//
+// CreatePort does not today expose a public "destroy port" syscall, so
+// the refund-on-release leg of the round trip is not exercised here —
+// the exit-time cleanup test suite in G4 covers the exit path, and
+// quota_zero_row wipes the row wholesale on task death.
+func TestIExec_M156_G3_QuotaPortsEnforcement(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	t0 := images[0]
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+
+	nameA := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x340, []byte("AAAA\x00"))
+	nameB := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x360, []byte("BBBB\x00"))
+
+	off := t0
+	emit := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+	// SYS_QUOTA_SET_LIMIT(PORTS, 1)
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, quotaKindPorts))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysQuotaSetLimit))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 0)) // setErr @ data+0
+
+	// CreatePort("AAAA", PF_PUBLIC) — under limit, success.
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameA))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, pfPublic))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 8))  // id1 @ data+8
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 16)) // err1 @ data+16
+
+	// CreatePort("BBBB", PF_PUBLIC) — at limit, must ERR_QUOTA.
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameB))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, pfPublic))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 24)) // err2 @ data+24
+	emit(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(300 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	read := func(o uint32) uint64 { return binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+o:]) }
+	setErr := read(0)
+	err1 := read(16)
+	err2 := read(24)
+
+	if setErr != 0 {
+		t.Fatalf("SYS_QUOTA_SET_LIMIT err = %d, want 0", setErr)
+	}
+	if err1 != 0 {
+		t.Fatalf("first CreatePort err = %d, want 0 (under PORTS limit)", err1)
+	}
+	if err2 != errQuota {
+		t.Errorf("second CreatePort err = %d, want ERR_QUOTA (%d); charge not enforced", err2, errQuota)
+	}
+}
+
+// TestIExec_M156_G3_QuotaShmemEnforcement pins the full boundary
+// round-trip for QUOTA_KIND_SHMEM: under-limit success, at-limit
+// reject (distinct from ERR_NOMEM), refund on FreeMem, reusable
+// budget after refund.
+//
+//  1. Limit=1 page. AllocMem(MEMF_PUBLIC, 1 page) charges 1 → success.
+//  2. MapShared on the same handle would push counter to 2 → ERR_QUOTA.
+//  3. FreeMem on the original allocation refunds 1 → counter=0.
+//  4. A fresh AllocMem(MEMF_PUBLIC, 1 page) charges 1 → success again.
+//
+// Step 4 is the round-trip proof: if the FreeMem refund path was a
+// no-op, the fresh alloc would itself fail with ERR_QUOTA.
+func TestIExec_M156_G3_QuotaShmemEnforcement(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	t0 := images[0]
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+
+	off := t0
+	emit := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+
+	// SYS_QUOTA_SET_LIMIT(SHMEM, 1)
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, quotaKindShmem))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysQuotaSetLimit))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 0)) // setErr
+
+	// (1) AllocMem(4096, MEMF_PUBLIC) — charges SHMEM by 1.
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1)) // MEMF_PUBLIC
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	emit(ie64Instr(OP_MOVE, 8, IE64_SIZE_Q, 0, 3, 0, 0)) // R8 = share_handle
+	emit(ie64Instr(OP_MOVE, 9, IE64_SIZE_Q, 0, 1, 0, 0)) // R9 = va1 (for FreeMem later)
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 8))  // va1
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 16)) // err_alloc
+	emit(ie64Instr(OP_STORE, 8, IE64_SIZE_Q, 0, 3, 0, 24)) // share_handle
+
+	// (2) MapShared(handle) — counter would hit 2, must ERR_QUOTA.
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 8, 0, 0))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysMapShared))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 32)) // err_map
+
+	// (3) FreeMem(va1, 4096) — releases the backing, refunds SHMEM by 1.
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 9, 0, 0)) // R1 = va1
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 4096))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFreeMem))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 40)) // err_free
+
+	// (4) AllocMem(4096, MEMF_PUBLIC) again — counter back at 0, must succeed.
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 48)) // err_realloc
+	emit(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(400 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	read := func(o uint32) uint64 { return binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+o:]) }
+	setErr := read(0)
+	errAlloc := read(16)
+	handle := read(24)
+	errMap := read(32)
+	errFree := read(40)
+	errRealloc := read(48)
+
+	if setErr != 0 {
+		t.Fatalf("SYS_QUOTA_SET_LIMIT err = %d, want 0", setErr)
+	}
+	if errAlloc != 0 {
+		t.Fatalf("initial AllocMem(MEMF_PUBLIC) err = %d, want 0", errAlloc)
+	}
+	if handle == 0 {
+		t.Fatalf("AllocMem(MEMF_PUBLIC) returned handle=0, want nonzero")
+	}
+	if errMap != errQuota {
+		t.Errorf("MapShared over SHMEM limit err = %d, want ERR_QUOTA (%d); per-task SHMEM cap not enforced", errMap, errQuota)
+	}
+	if errFree != 0 {
+		t.Fatalf("FreeMem err = %d, want 0", errFree)
+	}
+	if errRealloc != 0 {
+		t.Errorf("second AllocMem(MEMF_PUBLIC) after FreeMem err = %d, want 0; refund path failed, SHMEM counter never decremented",
+			errRealloc)
+	}
+}
+
+// TestIExec_M156_G3_QuotaWaitersEnforcement pins QUOTA_KIND_WAITERS on
+// the SIG_WAIT entry path (SYS_WAIT). The current kernel represents
+// waits as TCB state rather than a row queue, so each task can have
+// at most one active wait; the quota is therefore bounded by 1 in
+// practice. The boundary case we can exercise from a single task:
+//
+//  1. Set limit to 0.
+//  2. Call SYS_WAIT. .wait_block's QUOTA_KIND_WAITERS charge must fail
+//     and the syscall must return ERR_QUOTA rather than putting the
+//     task into WAITING.
+//
+// SYS_WAIT has an early-return path when the requested signals are
+// already in SIG_RECV (no block, no charge), so the test uses a
+// sigbit the task never signals to force .wait_block.
+func TestIExec_M156_G3_QuotaWaitersEnforcement(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	t0 := images[0]
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+
+	off := t0
+	emit := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+	// SYS_QUOTA_SET_LIMIT(WAITERS, 0) — no waits allowed.
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, quotaKindWaiters))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysQuotaSetLimit))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 0)) // setErr
+
+	// SYS_WAIT on SIGF_PORT (bit 0) — the task has not been signalled,
+	// so the immediate-return fast-path is skipped and .wait_block runs.
+	// With WAITERS limit=0 the charge must fail and eret with ERR_QUOTA.
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, sigfPort))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWait))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 8)) // waitErr
+	emit(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(300 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	read := func(o uint32) uint64 { return binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+o:]) }
+	setErr := read(0)
+	waitErr := read(8)
+
+	if setErr != 0 {
+		t.Fatalf("SYS_QUOTA_SET_LIMIT err = %d, want 0", setErr)
+	}
+	if waitErr != errQuota {
+		t.Errorf("SYS_WAIT over WAITERS limit err = %d, want ERR_QUOTA (%d); .wait_block charge not enforced",
+			waitErr, errQuota)
+	}
+}
+
+// TestIExec_M156_G3_QuotaWaitersRefundRoundtrip pins the SIG_WAIT
+// charge/refund round-trip for QUOTA_KIND_WAITERS. A single task
+// can't exercise this because SYS_WAIT's fast-return path (signal
+// already in SIG_RECV) skips the charge site altogether — the only
+// way to reach .wait_block is to block on a signal that has not
+// yet arrived. Two tasks cooperate:
+//
+//	Task 0: SET_LIMIT(WAITERS, 1); WAIT(SIGF_A); on wake query the
+//	        counter via SYSINFO_QUOTA_CURRENT(WAITERS) and assert
+//	        it refunded to 0; WAIT(SIGF_B) again — if the refund
+//	        didn't fire, this second wait would ERR_QUOTA.
+//	Task 1: SIGNAL task 0 with SIGF_A; then SIGF_B; halt.
+//
+// SIGF_A = bit 4 (first allocatable non-system bit), SIGF_B = bit 5.
+func TestIExec_M156_G3_QuotaWaitersRefundRoundtrip(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	if len(images) < 2 {
+		t.Skip("need >=2 task images")
+	}
+	t0 := images[0]
+	t1 := images[1]
+	overrideExtraTasks(rig.cpu.memory, images, 2)
+
+	const (
+		sigfA = 1 << 4
+		sigfB = 1 << 5
+	)
+
+	// Task 0 sequence.
+	off := t0
+	emit := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+	// SET_LIMIT(WAITERS, 1)
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, quotaKindWaiters))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysQuotaSetLimit))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 0)) // setErr
+	// WAIT(SIGF_A) — blocks, charges 1.
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, sigfA))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWait))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 8)) // wait1Err
+	// Query WAITERS counter — should be 0 after refund.
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, sysinfoQuotaCurrent))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, quotaKindWaiters))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0xFFFFFFFF)) // current task
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 16)) // counterAfterWake
+	// WAIT(SIGF_B) — blocks, charges 1 again (would ERR_QUOTA if refund didn't happen).
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, sigfB))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWait))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 24)) // wait2Err
+	emit(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	// Task 1 sequence: signal task 0 twice then halt. Task 1's slot
+	// index is 1 (overrideExtraTasks from startIdx=2 leaves images[0]
+	// and images[1] as test tasks).
+	off = t1
+	emit = func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0)) // target slot = task 0
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, sigfA))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysSignal))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, sigfB))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysSignal))
+	emit(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	read := func(o uint32) uint64 { return binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+o:]) }
+	setErr := read(0)
+	wait1Err := read(8)
+	counterAfter := read(16)
+	wait2Err := read(24)
+
+	if setErr != 0 {
+		t.Fatalf("SYS_QUOTA_SET_LIMIT err = %d, want 0", setErr)
+	}
+	if wait1Err != 0 {
+		t.Fatalf("first WAIT err = %d, want 0 (signal delivered via task 1)", wait1Err)
+	}
+	if counterAfter != 0 {
+		t.Errorf("WAITERS counter after wake = %d, want 0; refund at signal-deliver did not fire",
+			counterAfter)
+	}
+	if wait2Err != 0 {
+		t.Errorf("second WAIT err = %d, want 0; refund never happened so the re-charge hit the cap",
+			wait2Err)
+	}
+}
+
+// TestIExec_M156_G3_QuotaWaitersSpuriousWakeRetainsCharge pins that
+// WAITERS refunds fire ONLY at the real wait-exit (successful dequeue
+// / signal delivery), not on every state transition to READY.
+// Otherwise a synthetic SIGF_PORT to a WaitPort-blocked task — or a
+// PutMsg on an unrelated port the task owns — would drain the waiter
+// charge while .restore_waitport_spurious re-blocks the task, leaving
+// the kernel with a waiting task whose WAITERS counter is 0. That
+// makes the cap trivially bypassable.
+//
+// Flow:
+//
+//	Task 0: CreatePort("A"), SET_LIMIT(WAITERS, 1), WaitPort(A).
+//	Task 1: yield (let task 0 block), SIGNAL(task0, SIGF_PORT),
+//	        yield, query task 0's WAITERS counter via SYSINFO.
+//
+// The synthetic SIGF_PORT wakes task 0 via signal_done; on resume
+// .restore_waitport finds port A still empty and re-blocks the task.
+// Task 0's WAITERS counter must remain 1 — the spurious wake did not
+// complete the wait.
+func TestIExec_M156_G3_QuotaWaitersSpuriousWakeRetainsCharge(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	if len(images) < 2 {
+		t.Skip("need >=2 task images")
+	}
+	t0 := images[0]
+	t1 := images[1]
+	overrideExtraTasks(rig.cpu.memory, images, 2)
+
+	const sigfPortBit = 1 << 0 // SIGF_PORT
+
+	nameA := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x340, []byte("A\x00"))
+
+	// Task 0: create port, set limit, then WaitPort (blocks).
+	off := t0
+	emit := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameA))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, pfPublic))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	emit(ie64Instr(OP_MOVE, 8, IE64_SIZE_Q, 0, 1, 0, 0)) // R8 = portID
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 0)) // createErr
+	emit(ie64Instr(OP_STORE, 8, IE64_SIZE_Q, 0, 3, 0, 8)) // portID
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, quotaKindWaiters))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysQuotaSetLimit))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 8, 0, 0))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	emit(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	// Task 1: loop yielding and signaling SIGF_PORT to task 0. This
+	// keeps throwing synthetic wakes at task 0, which must keep
+	// re-blocking via .restore_waitport_spurious without the waiter
+	// charge draining. The test-side assertion reads task 0's
+	// WAITERS counter directly from the quota page after the run —
+	// no user-level query timing to manage.
+	off = t1
+	emit = func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+	loopPC := uint32(off - t1) // offset from t1 of next instruction
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, sigfPortBit))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysSignal))
+	// BRA back to loopPC.
+	endPC := uint32(off - t1)
+	delta := int32(loopPC) - int32(endPC)
+	emit(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(delta)))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	// Check final state directly. Task 0 must still be WAITING (re-blocked
+	// after each spurious wake) with WAITERS=1 in its quota row (the
+	// charge was never refunded by the signal path). Read the quota
+	// counter from the supervisor quota page: PPN stashed at
+	// KD_QUOTA_PAGE_PPN in kern data, row offset = slot<<4, WAITERS
+	// field at offset 4 within the row.
+	t0State := rig.cpu.memory[kernDataBase+kdTCBBase+tcbStateOff] // TCB[0].state
+	quotaPPN := uint32(binary.LittleEndian.Uint16(rig.cpu.memory[kernDataBase+kdQuotaPagePPN:]))
+	if quotaPPN == 0 {
+		t.Skip("quota page not allocated — test cannot inspect counter")
+	}
+	slot0Row := quotaPPN << 12
+	waitersCounter := binary.LittleEndian.Uint16(rig.cpu.memory[slot0Row+kdQuotaCurWaiters:])
+	if t0State != 2 { // 2 = TASK_WAITING
+		t.Fatalf("task 0 state = %d, want TASK_WAITING(2); test premise failed — task 0 didn't reach or stay at the WaitPort block",
+			t0State)
+	}
+	if waitersCounter != 1 {
+		t.Errorf("task 0 WAITERS counter after spurious SIGF_PORT wakes = %d, want 1; a signal wake must not refund the waiter charge when the task re-blocks via .restore_waitport_spurious",
+			waitersCounter)
+	}
+}
+
+// TestIExec_M156_G3_QuotaGrantsEnforcement pins QUOTA_KIND_GRANTS on
+// the grantor side of HWRES_CREATE. The broker (hardware.resource)
+// is the grantor; grantee handles do NOT consume GRANTS. With the
+// broker's GRANTS limit set to 0, a HWRES_CREATE attempt must fail
+// with ERR_QUOTA before any grant-row mutation.
+//
+// SYS_HWRES_OP + HWRES_CREATE is broker-gated (current_public_task
+// must equal KD_HWRES_TASK). A task can install itself as the broker
+// via HWRES_BECOME. The boot-task identity (pubid=0) is used so the
+// test can also call SYS_QUOTA_SET_LIMIT, which has the same gate.
+func TestIExec_M156_G3_QuotaGrantsEnforcement(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	t0 := images[0]
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+
+	off := t0
+	emit := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+
+	// HWRES_BECOME: claim broker identity (task 0 is first boot, pubid=0).
+	emit(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, hwresBecome))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysHwresOp))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 0)) // becomeErr
+
+	// SYS_QUOTA_SET_LIMIT(GRANTS, 0) — no grants allowed on broker.
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, quotaKindGrants))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysQuotaSetLimit))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 8)) // setErr
+
+	// HWRES_CREATE with grantee=pubid_0, tag=0x42, ppn_lo=0x100,
+	// ppn_hi=0x100. Broker==self, so the perm gate passes; the
+	// GRANTS quota at 0 must reject with ERR_QUOTA before any row
+	// mutation.
+	emit(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, hwresCreate))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))     // grantee pubid (broker itself)
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0x42))  // tag
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0x100)) // ppn_lo
+	emit(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x100)) // ppn_hi
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysHwresOp))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 16)) // createErr
+
+	// Raise limit so the next HWRES_CREATE can succeed and bump the
+	// counter, proving the charge is actually observable through
+	// SYSINFO_QUOTA_CURRENT (and therefore that a future revoke /
+	// exit-sweep would be able to decrement the same field).
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, quotaKindGrants))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 4))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysQuotaSetLimit))
+	emit(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, hwresCreate))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0x43))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0x200))
+	emit(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x200))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysHwresOp))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 24)) // create2Err
+	// Query the broker's GRANTS counter (should be 1 after one
+	// successful create). This is the refund-counterpart anchor:
+	// the counter a future HWRES_REVOKE (stubbed until M13) will
+	// decrement.
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, sysinfoQuotaCurrent))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, quotaKindGrants))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0xFFFFFFFF))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 32)) // grantsCounter
+	emit(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(300 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	read := func(o uint32) uint64 { return binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+o:]) }
+	becomeErr := read(0)
+	setErr := read(8)
+	createErr := read(16)
+	create2Err := read(24)
+	grantsCounter := read(32)
+
+	if becomeErr != 0 {
+		t.Fatalf("HWRES_BECOME err = %d, want 0 (task 0 should not have a prior broker)", becomeErr)
+	}
+	if setErr != 0 {
+		t.Fatalf("SYS_QUOTA_SET_LIMIT(GRANTS, 0) err = %d, want 0", setErr)
+	}
+	if createErr != errQuota {
+		t.Errorf("HWRES_CREATE over GRANTS limit err = %d, want ERR_QUOTA (%d); .hwres_create charge not enforced",
+			createErr, errQuota)
+	}
+	if create2Err != 0 {
+		t.Fatalf("HWRES_CREATE after limit raise err = %d, want 0", create2Err)
+	}
+	if grantsCounter < 1 {
+		t.Errorf("GRANTS counter after one successful HWRES_CREATE = %d, want >=1; charge not observable via SYSINFO",
+			grantsCounter)
+	}
+}
+
+// TestIExec_M156_G3_QuotaGrantsRefundOnGranteeExit pins the fix for the
+// "grantor-quota leak on grantee death" bug. Without the refund in
+// kern_grant_release_for_task, every short-lived grantee permanently
+// consumes a slot of the broker's GRANTS counter even though the row
+// is freed — eventually the broker gets ERR_QUOTA on HWRES_CREATE even
+// though the live grant-row count is low.
+//
+// The test drives exactly that scenario:
+//  1. Task 0 becomes broker.
+//  2. Task 0 creates a short-lived grantee task (task 1) via SYS_CREATE_TASK.
+//  3. Task 0 creates a grant to task 1 (charges 1 against broker).
+//  4. Task 1 exits (SYS_EXIT_TASK → kill_task_cleanup →
+//     kern_grant_release_for_task).
+//  5. Task 0 queries GRANTS counter. With refund it is 0; without
+//     refund it stays at 1.
+func TestIExec_M156_G3_QuotaGrantsRefundOnGranteeExit(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	t0 := images[0]
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+
+	// Child code: immediately SYS_EXIT_TASK. Lives in task 0's code
+	// page scratch area at offset 0x400 so it is valid user code when
+	// CreateTask copies it. Only 8 bytes needed (one SYSCALL instr),
+	// but SYS_CREATE_TASK requires code_size > 0 and <= page size.
+	childCode := make([]byte, 16)
+	copy(childCode[0:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExitTask))
+	copy(childCode[8:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)) // fallback
+	childVA := writeTask0CodeScratch(t, rig.cpu.memory, t0, 0x400, childCode)
+
+	off := t0
+	emit := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+
+	// HWRES_BECOME
+	emit(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, hwresBecome))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysHwresOp))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 0)) // becomeErr
+
+	// SYS_CREATE_TASK: R1 = source code ptr, R2 = code_size, R3 = arg0.
+	// Returns R1 = child pubid, R2 = err.
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, childVA))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 16))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))
+	emit(ie64Instr(OP_MOVE, 8, IE64_SIZE_Q, 0, 1, 0, 0)) // R8 = child pubid
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 8, IE64_SIZE_Q, 0, 3, 0, 8))  // childPubid
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 16)) // ctErr
+
+	// HWRES_CREATE grantee=child pubid, tag=0x42, ppn_lo=ppn_hi=0x100.
+	// Charges 1 on broker.
+	emit(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, hwresCreate))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 8, 0, 0)) // R1 = child pubid
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0x42))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0x100))
+	emit(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x100))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysHwresOp))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 24)) // createErr
+
+	// Query counter BEFORE child exit — should be ≥1 if charge fired.
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, sysinfoQuotaCurrent))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, quotaKindGrants))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0xFFFFFFFF))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 40)) // counterBeforeExit
+
+	// Yield so the child runs its SYS_EXIT_TASK. A couple of yields
+	// give the scheduler room to context-switch and run the cleanup.
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+
+	// Query broker's GRANTS counter — should be 0 after child's
+	// kill_task_cleanup refunded the row.
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, sysinfoQuotaCurrent))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, quotaKindGrants))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0xFFFFFFFF))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 32)) // counterAfterExit
+	emit(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	read := func(o uint32) uint64 { return binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+o:]) }
+	becomeErr := read(0)
+	childPubid := read(8)
+	ctErr := read(16)
+	createErr := read(24)
+	counterAfterExit := read(32)
+
+	if becomeErr != 0 {
+		t.Fatalf("HWRES_BECOME err = %d, want 0", becomeErr)
+	}
+	if ctErr != 0 {
+		t.Fatalf("SYS_CREATE_TASK err = %d, want 0", ctErr)
+	}
+	if childPubid == 0 {
+		t.Fatalf("SYS_CREATE_TASK returned childPubid=0, want nonzero")
+	}
+	if createErr != 0 {
+		t.Fatalf("HWRES_CREATE err = %d, want 0", createErr)
+	}
+	counterBeforeExit := read(40)
+	if counterBeforeExit < 1 {
+		t.Fatalf("GRANTS counter before grantee exit = %d, want >=1; the HWRES_CREATE charge did not fire so this test can't exercise the refund path",
+			counterBeforeExit)
+	}
+	if counterAfterExit != 0 {
+		t.Errorf("GRANTS counter after grantee exit = %d, want 0; broker-side refund leaked — kern_grant_release_for_task did not call quota_return on the grantor",
+			counterAfterExit)
+	}
+}
+
+// TestIExec_M156_G3_QuotaBootstrapRowGrantorSentinel pins the row-level
+// provenance invariant: bootstrap-grant rows created by
+// kern_bootstrap_grant_for_program (which does NOT charge any quota)
+// are stamped with GRANT_GRANTOR_NONE so the release path skips them.
+// This prevents the over-refund pattern where releasing a bootstrap
+// row would decrement whoever currently owns KD_HWRES_TASK.
+//
+// The canonical bootstrap row in this kernel is the console.handler
+// 'CHIP' grant at manifest id 10 — grantee = console.handler (public
+// task id 0 at boot, since console is the first loaded task). The
+// test walks the grant chain, finds the row whose tag is 'CHIP' and
+// whose grantee is a low pubid (0..2, the boot-core tasks), and
+// asserts KD_GRANT_GRANTOR_PUBID == 0xFFFFFFFF. Rows created at runtime by
+// hardware.resource after it claims broker identity have grantor_slot
+// = the broker's task slot (nonzero), which is correct — those rows
+// DO pay quota and their release DOES refund.
+func TestIExec_M156_G3_QuotaBootstrapRowGrantorSentinel(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	hdr := uint32(kernDataBase + kdGrantTableHdr)
+	nextPPN := uint32(binary.LittleEndian.Uint16(rig.cpu.memory[hdr+kdGrantHdrFirst:]))
+	if nextPPN == 0 {
+		t.Skip("no grant chain pages present — can't inspect bootstrap row")
+	}
+	// Scan all live rows. At least one row must have grantor_slot ==
+	// GRANT_GRANTOR_NONE (the console.handler bootstrap 'CHIP' row
+	// created by kern_bootstrap_grant_for_program before any broker
+	// existed). Additional rows with grantor_slot = broker-slot are
+	// legitimate runtime HWRES_CREATE rows and are not asserted here.
+	var sawGrantorNone bool
+	var liveRows int
+	for nextPPN != 0 {
+		pageBase := nextPPN << 12
+		for i := uint32(0); i < kdGrantRowsPerPg; i++ {
+			rowBase := pageBase + kdGrantPageHdrSz + i*kdGrantRowSize
+			tid := binary.LittleEndian.Uint32(rig.cpu.memory[rowBase+kdGrantTaskID:])
+			if tid == grantTaskFree {
+				continue
+			}
+			liveRows++
+			grantor := binary.LittleEndian.Uint32(rig.cpu.memory[rowBase+kdGrantGrantorPubid:])
+			if grantor == grantGrantorNone {
+				sawGrantorNone = true
+			}
+		}
+		nextPPN = uint32(binary.LittleEndian.Uint16(rig.cpu.memory[pageBase+kdGrantPageNext:]))
+	}
+	if liveRows == 0 {
+		t.Skip("no live grant rows present — can't validate provenance stamps")
+	}
+	if !sawGrantorNone {
+		t.Errorf("found %d live grant rows, none stamped GRANT_GRANTOR_NONE (0xFFFFFFFF); kern_bootstrap_grant_for_program must stamp uncharged rows so the release path skips their refund",
+			liveRows)
+	}
+}
+
+// TestIExec_M156_G3_QuotaGrantorStampIsPubidNotSlot pins that the
+// grantor-provenance byte is the non-recycled public task id, NOT the
+// recyclable internal slot. Stamping the slot would mis-refund when a
+// broker exits and its slot is reclaimed by an unrelated task before
+// the grantee dies: kern_grant_release_for_task would then debit the
+// new slot occupant for a grant it never created.
+//
+// Task 0 becomes broker, calls HWRES_CREATE, then records its own
+// pubid via SYSINFO. The test walks the grant chain, finds the newly
+// created row (not tagged GRANT_GRANTOR_NONE), and asserts the 4-byte
+// grantor field matches task 0's pubid exactly — if the field were
+// still a 1-byte slot with 3 reserved bytes, the upper 3 bytes would
+// be read as zero and the full u32 would not necessarily match pubid.
+func TestIExec_M156_G3_QuotaGrantorStampIsPubidNotSlot(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	t0 := images[0]
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+
+	childCode := make([]byte, 16)
+	copy(childCode[0:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	copy(childCode[8:], ie64Instr(OP_BRA, 0, 0, 0, 0, 0, braBack8))
+	childVA := writeTask0CodeScratch(t, rig.cpu.memory, t0, 0x400, childCode)
+
+	off := t0
+	emit := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+	emit(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, hwresBecome))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysHwresOp))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, childVA))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 16))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))
+	emit(ie64Instr(OP_MOVE, 8, IE64_SIZE_Q, 0, 1, 0, 0)) // R8 = child pubid
+	emit(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, hwresCreate))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 8, 0, 0))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0xDEAD))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0x300))
+	emit(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0x300))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysHwresOp))
+	// Record task 0's pubid via SYSINFO_CURRENT_TASK → data+0.
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, sysinfoCurrentTask))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysGetSysInfo))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 0))
+	emit(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(400 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	task0Pubid := uint32(binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data:]))
+	// Walk the chain and find the row tagged with the 0xDEAD region tag.
+	const chipTag = uint32(0xDEAD)
+	hdr := uint32(kernDataBase + kdGrantTableHdr)
+	nextPPN := uint32(binary.LittleEndian.Uint16(rig.cpu.memory[hdr+kdGrantHdrFirst:]))
+	var stamp uint32
+	found := false
+	for nextPPN != 0 && !found {
+		pageBase := nextPPN << 12
+		for i := uint32(0); i < kdGrantRowsPerPg; i++ {
+			rowBase := pageBase + kdGrantPageHdrSz + i*kdGrantRowSize
+			tid := binary.LittleEndian.Uint32(rig.cpu.memory[rowBase+kdGrantTaskID:])
+			if tid == grantTaskFree {
+				continue
+			}
+			tag := binary.LittleEndian.Uint32(rig.cpu.memory[rowBase+kdGrantRegion:])
+			if tag != chipTag {
+				continue
+			}
+			stamp = binary.LittleEndian.Uint32(rig.cpu.memory[rowBase+kdGrantGrantorPubid:])
+			found = true
+			break
+		}
+		if !found {
+			nextPPN = uint32(binary.LittleEndian.Uint16(rig.cpu.memory[pageBase+kdGrantPageNext:]))
+		}
+	}
+	if !found {
+		t.Fatalf("could not locate the test's HWRES_CREATE row (tag=0x%x)", chipTag)
+	}
+	if stamp != task0Pubid {
+		t.Errorf("grantor stamp = 0x%x, want task 0 pubid 0x%x; stamp is not the stable pubid — a recycled slot would mis-refund",
+			stamp, task0Pubid)
+	}
+}
+
+// TestIExec_M156_G3_QuotaStarvationIsolation pins the "one task cannot
+// starve another" contract. Two tasks share a tight global PAGES limit
+// (=1) but have independent per-task counters. Task 0 consumes its
+// budget (one AllocMem succeeds, a second returns ERR_QUOTA). Task 1
+// is then woken and must be able to allocate its own page without
+// interference from task 0's exhausted budget.
+//
+// The mechanism under test is quota_counter_addr's row indexing:
+// `row_offset = task_slot << KD_QUOTA_ROW_SHIFT` places each task's
+// counters at a distinct 16-byte row. Regression here would surface
+// as task 1's alloc unexpectedly failing with ERR_QUOTA.
+func TestIExec_M156_G3_QuotaStarvationIsolation(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	t0 := images[0]
+	if len(images) < 2 {
+		t.Skip("need >=2 task images for starvation-isolation test")
+	}
+	t1 := images[1]
+	overrideExtraTasks(rig.cpu.memory, images, 2) // tasks 0..N except 0 and 1
+
+	// Task 0 sequence:
+	//   SET_LIMIT(PAGES, 1) → err @ data+0
+	//   AllocMem(4096, 0) → err @ data+8 (want 0)
+	//   AllocMem(4096, 0) → err @ data+16 (want ERR_QUOTA)
+	//   yield forever so task 1 gets the CPU
+	off := t0
+	emit := func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, quotaKindPages))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysQuotaSetLimit))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 0)) // setErr
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 8)) // alloc1Err
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 16)) // alloc2Err (want ERR_QUOTA)
+	// Spin-yield so task 1 can run.
+	yieldPC := off
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	emit(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC)-int32(off))))
+
+	// Task 1 sequence:
+	//   AllocMem(4096, 0) → err @ data+0 (want 0 — task 1's counter is
+	//   independent of task 0's exhausted one)
+	//   halt
+	off = t1
+	emit = func(instr []byte) { copy(rig.cpu.memory[off:], instr); off += 8 }
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	emit(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask1Data))
+	emit(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 0)) // t1Err
+	emit(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	t0read := func(o uint32) uint64 { return binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+o:]) }
+	t1read := func(o uint32) uint64 { return binary.LittleEndian.Uint64(rig.cpu.memory[userTask1Data+o:]) }
+	setErr := t0read(0)
+	t0alloc1 := t0read(8)
+	t0alloc2 := t0read(16)
+	t1alloc := t1read(0)
+
+	if setErr != 0 {
+		t.Fatalf("task 0 SYS_QUOTA_SET_LIMIT err = %d, want 0", setErr)
+	}
+	if t0alloc1 != 0 {
+		t.Fatalf("task 0 first AllocMem err = %d, want 0", t0alloc1)
+	}
+	if t0alloc2 != errQuota {
+		t.Errorf("task 0 second AllocMem err = %d, want ERR_QUOTA (%d); task 0 quota not enforced",
+			t0alloc2, errQuota)
+	}
+	if t1alloc != 0 {
+		t.Errorf("task 1 AllocMem err = %d, want 0; task 0's exhausted budget leaked into task 1's per-task counter",
+			t1alloc)
 	}
 }
 
