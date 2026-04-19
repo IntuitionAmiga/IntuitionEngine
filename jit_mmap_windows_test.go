@@ -1,8 +1,9 @@
-//go:build amd64 && windows
+//go:build windows && (amd64 || arm64)
 
 package main
 
 import (
+	"runtime"
 	"testing"
 	"unsafe"
 )
@@ -14,10 +15,23 @@ func TestExecMemWindows_AllocAndCall(t *testing.T) {
 	}
 	defer em.Free()
 
-	addr, err := em.Write([]byte{
-		0xB8, 0x2A, 0x00, 0x00, 0x00,
-		0xC3,
-	})
+	var code []byte
+	switch runtime.GOARCH {
+	case "amd64":
+		code = []byte{
+			0xB8, 0x2A, 0x00, 0x00, 0x00,
+			0xC3,
+		}
+	case "arm64":
+		code = []byte{
+			0x40, 0x05, 0x80, 0xD2,
+			0xC0, 0x03, 0x5F, 0xD6,
+		}
+	default:
+		t.Fatalf("unsupported GOARCH %s", runtime.GOARCH)
+	}
+
+	addr, err := em.Write(code)
 	if err != nil {
 		t.Fatalf("Write failed: %v", err)
 	}
@@ -28,6 +42,10 @@ func TestExecMemWindows_AllocAndCall(t *testing.T) {
 }
 
 func TestExecMemWindows_DualViewsAndPatchRel32(t *testing.T) {
+	if runtime.GOARCH != "amd64" {
+		t.Skip("rel32 patching test is specific to amd64 code layout")
+	}
+
 	em, err := AllocExecMem(4096)
 	if err != nil {
 		t.Fatalf("AllocExecMem failed: %v", err)

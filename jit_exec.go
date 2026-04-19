@@ -1,6 +1,6 @@
 // jit_exec.go - JIT dispatcher loop and CPU64 integration
 
-//go:build (amd64 && (linux || windows)) || (arm64 && linux)
+//go:build (amd64 && (linux || windows)) || (arm64 && (linux || windows))
 
 package main
 

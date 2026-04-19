@@ -10,6 +10,7 @@ permissions:
 env:
   APP_NAME: IntuitionEngine
   GO_VERSION_FILE: go.mod
+  AROS_RUNTIME_DIR: ../AROS/bin/ie-m68k/bin/ie-m68k/AROS
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -34,6 +35,9 @@ jobs:
         id: version
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
+      - name: Build AROS runtime tree
+        run: make aros-rom
+
       - name: Build
         env:
           GOOS: linux
@@ -43,7 +47,7 @@ jobs:
           COMMIT=$(git rev-parse --short HEAD)
           BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           VERSION="${{ steps.version.outputs.version }}"
-          go build -ldflags "-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" .
+          go build -ldflags "-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" -tags "embed_basic embed_emutos embed_aros" .
 
       - name: Build SDK tools
         env:
@@ -71,6 +75,9 @@ jobs:
           cp IntuitionEngine "${DIR}/"
           cp README.md CHANGELOG.md DEVELOPERS.md "${DIR}/" 2>/dev/null || true
           cp -r sdk/ "${DIR}/sdk/" 2>/dev/null || true
+          if [ -d "${AROS_RUNTIME_DIR}" ]; then
+            cp -r "${AROS_RUNTIME_DIR}" "${DIR}/AROS"
+          fi
           tar -cJf "${DIR}.tar.xz" "${DIR}"
 
       - name: Upload artifacts
@@ -105,15 +112,19 @@ jobs:
         id: version
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
+      - name: Build AROS runtime tree
+        run: make aros-rom
+
       - name: Build
         env:
           GOOS: windows
           GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
         run: |
           COMMIT=$(git rev-parse --short HEAD)
           BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           VERSION="${{ steps.version.outputs.version }}"
-          go build -ldflags "-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" -tags novulkan .
+          go build -ldflags "-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" -tags "novulkan embed_basic embed_emutos embed_aros" .
           go build -ldflags "-s -w" -o ie32asm.exe assembler/ie32asm.go
           go build -ldflags "-s -w" -tags ie64 -o ie64asm.exe assembler/ie64asm.go
           go build -ldflags "-s -w" -o ie32to64.exe ./cmd/ie32to64/
@@ -135,6 +146,9 @@ jobs:
           cp IntuitionEngine.exe "${DIR}/"
           cp README.md CHANGELOG.md DEVELOPERS.md "${DIR}/" 2>/dev/null || true
           cp -r sdk/ "${DIR}/sdk/" 2>/dev/null || true
+          if [ -d "${AROS_RUNTIME_DIR}" ]; then
+            cp -r "${AROS_RUNTIME_DIR}" "${DIR}/AROS"
+          fi
           zip -r "${DIR}.zip" "${DIR}"
 
       - name: Upload artifacts
@@ -144,19 +158,67 @@ jobs:
           path: ${{ env.APP_NAME }}-*-windows-${{ matrix.arch }}.zip
 
   # ---------------------------------------------------------------------------
-  # Commented out: macOS requires CGO for ebiten/oto. Re-enable when upstream goes purego.
+  # macOS arm64 - novulkan, cross-compiled pure Go
   # ---------------------------------------------------------------------------
-  # macos:
-  #   name: macOS ${{ matrix.arch }}
-  #   runs-on: ubuntu-latest
-  #   ...
+  macos:
+    name: macOS arm64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+
+      - name: Extract version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build AROS runtime tree
+        run: make aros-rom
+
+      - name: Build
+        env:
+          GOOS: darwin
+          GOARCH: arm64
+          CGO_ENABLED: "0"
+        run: |
+          COMMIT=$(git rev-parse --short HEAD)
+          BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          VERSION="${{ steps.version.outputs.version }}"
+          go build -ldflags "-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" -tags "novulkan embed_basic embed_emutos embed_aros" .
+          go build -ldflags "-s -w" -o ie32asm assembler/ie32asm.go
+          go build -ldflags "-s -w" -tags ie64 -o ie64asm assembler/ie64asm.go
+          go build -ldflags "-s -w" -o ie32to64 ./cmd/ie32to64/
+          go build -ldflags "-s -w" -tags ie64dis -o ie64dis assembler/ie64dis.go
+          mkdir -p sdk/bin
+          mv ie32asm ie64asm ie32to64 ie64dis sdk/bin/
+
+      - name: Create tar.xz archive
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          DIR="${APP_NAME}-${VERSION}-darwin-arm64"
+          mkdir -p "${DIR}"
+          cp IntuitionEngine "${DIR}/"
+          cp README.md CHANGELOG.md DEVELOPERS.md "${DIR}/" 2>/dev/null || true
+          cp -r sdk/ "${DIR}/sdk/" 2>/dev/null || true
+          if [ -d "${AROS_RUNTIME_DIR}" ]; then
+            cp -r "${AROS_RUNTIME_DIR}" "${DIR}/AROS"
+          fi
+          tar -cJf "${DIR}.tar.xz" "${DIR}"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: ${{ env.APP_NAME }}-*-darwin-arm64.tar.xz
 
   # ---------------------------------------------------------------------------
   # Publish GitHub Release with checksums
   # ---------------------------------------------------------------------------
   release:
     name: Publish release
-    needs: [linux, windows]
+    needs: [linux, windows, macos]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -202,6 +264,7 @@ jobs:
           | Linux amd64 | Official | Full feature set |
           | Windows amd64 | Experimental | novulkan (software Voodoo) |
           | Windows arm64 | Experimental | novulkan (software Voodoo) |
+          | macOS arm64 | Experimental | novulkan (software Voodoo), Apple Silicon only |
 
           ### Checksums
           See `SHA256SUMS` for file integrity verification:

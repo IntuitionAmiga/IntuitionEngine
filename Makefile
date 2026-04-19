@@ -1308,11 +1308,11 @@ release-windows: setup sdk emutos-rom aros-rom
 		RELEASE_NAME=$(APP_NAME)-$(APP_VERSION)-windows-$$goarch; \
 		echo ""; \
 		echo "--- $$RELEASE_NAME ---"; \
-		GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags "novulkan embed_basic embed_emutos embed_aros" -o IntuitionEngine.exe .; \
-		GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o ie32asm.exe assembler/ie32asm.go; \
-		GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm.exe assembler/ie64asm.go; \
-		GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o ie32to64.exe ./cmd/ie32to64/; \
-		GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags ie64dis -o ie64dis.exe assembler/ie64dis.go; \
+		CGO_ENABLED=0 GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags "novulkan embed_basic embed_emutos embed_aros" -o IntuitionEngine.exe .; \
+		CGO_ENABLED=0 GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o ie32asm.exe assembler/ie32asm.go; \
+		CGO_ENABLED=0 GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm.exe assembler/ie64asm.go; \
+		CGO_ENABLED=0 GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o ie32to64.exe ./cmd/ie32to64/; \
+		CGO_ENABLED=0 GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags ie64dis -o ie64dis.exe assembler/ie64dis.go; \
 		STAGING=$(RELEASE_DIR)/$$RELEASE_NAME; \
 		rm -rf $$STAGING; \
 		$(MKDIR) -p $$STAGING; \
@@ -1333,8 +1333,39 @@ release-windows: setup sdk emutos-rom aros-rom
 		echo "Created: $(RELEASE_DIR)/$$RELEASE_NAME.zip"; \
 	done
 
-# Commented out: ebiten/oto require CGO on macOS/BSD. Re-enable when upstream goes purego.
-# release-macos: ...
+.PHONY: release-macos release-macos-arm64
+
+# Build release archive for macOS arm64 only (pure Go, no Vulkan)
+release-macos: release-macos-arm64
+
+release-macos-arm64: setup sdk emutos-rom aros-rom
+	@echo "=== Building macOS release (arm64) ==="
+	@$(MKDIR) -p $(RELEASE_DIR)
+	@RELEASE_NAME=$(APP_NAME)-$(APP_VERSION)-darwin-arm64 && \
+		CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build $(GO_FLAGS) -tags "novulkan embed_basic embed_emutos embed_aros" -o IntuitionEngine . && \
+		CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build $(GO_FLAGS) -o ie32asm assembler/ie32asm.go && \
+		CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm assembler/ie64asm.go && \
+		CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build $(GO_FLAGS) -o ie32to64 ./cmd/ie32to64/ && \
+		CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build $(GO_FLAGS) -tags ie64dis -o ie64dis assembler/ie64dis.go && \
+		STAGING=$(RELEASE_DIR)/$$RELEASE_NAME && \
+		rm -rf $$STAGING && \
+		$(MKDIR) -p $$STAGING && \
+		mv IntuitionEngine $$STAGING/ && \
+		cp README.md CHANGELOG.md DEVELOPERS.md $$STAGING/ && \
+		cp -r sdk $$STAGING/sdk && \
+		rm -rf $$STAGING/sdk/.git && \
+		rm -rf $$STAGING/sdk/bin && \
+		$(MKDIR) -p $$STAGING/sdk/bin && \
+		mv ie32asm ie64asm ie32to64 ie64dis $$STAGING/sdk/bin/ && \
+		AROS_WB="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
+		if [ -d "$$AROS_WB" ]; then \
+			cp -r "$$AROS_WB" $$STAGING/AROS; \
+		fi && \
+		echo "Creating $$RELEASE_NAME.tar.xz..." && \
+		tar -C $(RELEASE_DIR) -cJf $(RELEASE_DIR)/$$RELEASE_NAME.tar.xz $$RELEASE_NAME && \
+		rm -rf $$STAGING && \
+		echo "Created: $(RELEASE_DIR)/$$RELEASE_NAME.tar.xz"
+
 # release-freebsd: ...
 # release-netbsd: ...
 # release-openbsd: ...
@@ -1359,7 +1390,7 @@ release-sdk: sdk
 	@echo "SDK archive: $(RELEASE_DIR)/IntuitionEngine-SDK-$(APP_VERSION).zip"
 
 # Build all release archives and generate checksums
-release-all: release-src release-sdk release-linux release-windows
+release-all: release-src release-sdk release-linux release-windows release-macos
 	@echo ""
 	@echo "=== Generating SHA256 checksums ==="
 	@cd $(RELEASE_DIR) && sha256sum *.tar.xz *.zip 2>/dev/null > SHA256SUMS

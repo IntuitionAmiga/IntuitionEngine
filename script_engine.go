@@ -1139,8 +1139,8 @@ func (se *ScriptEngine) luaCPUSetJITEnabled() lua.LGFunction {
 				L.RaiseError("cannot change 6502 JIT while CPU is running")
 				return 0
 			}
-			snap.cpu65.JITEnabled = enabled && jitAvailable
-			if enabled && !jitAvailable {
+			snap.cpu65.JITEnabled = enabled && jit6502Available
+			if enabled && !jit6502Available {
 				L.RaiseError("6502 JIT unavailable on this platform")
 				return 0
 			}
