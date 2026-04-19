@@ -4,6 +4,12 @@
 
 package main
 
+var z80JitAvailable bool
+
+func init() {
+	z80JitAvailable = false
+}
+
 // z80JitExecute falls back to the interpreter on platforms without JIT support.
 func (cpu *CPU_Z80) z80JitExecute() {
 	cpu.Execute()
