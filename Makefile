@@ -243,7 +243,7 @@ SHOWREEL_ALL_ARTIFACTS := \
 RELEASE_DIR := ./release
 
 # Main targets
-.PHONY: all clean list install uninstall novulkan headless headless-novulkan
+.PHONY: all clean list install uninstall novulkan headless headless-novulkan test-cross
 .PHONY: sdk clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-all players
 .PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba boing-checker
 .PHONY: testdata-opl
@@ -298,6 +298,9 @@ headless-novulkan: setup
 	@CGO_ENABLED=0 $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags "novulkan headless" .
 	@mv IntuitionEngine $(BIN_DIR)/
 	@echo "Intuition Engine VM (headless-novulkan) build complete"
+
+test-cross:
+	@bash ./scripts/test-cross-compile.sh
 
 # Build the IE32 assembler
 ie32asm: setup
@@ -465,6 +468,13 @@ aros-rom:
 	@echo "Building complete AROS workbench (all libs, classes, tools, prefs, devices)..."
 	@$(MAKE) -C "$(AROS_BUILD_DIR)" -j$(NCORES) workbench-complete 2>&1 || \
 		echo "  Warning: workbench-complete had some failures (non-fatal)"
+	@echo "Building required runtime libraries..."
+	@$(MAKE) -C "$(AROS_BUILD_DIR)" -j$(NCORES) \
+		workbench-libs-iffparse \
+		workbench-libs-kms \
+		workbench-libs-locale
+	@echo "Building required fonts tree..."
+	@$(MAKE) -C "$(AROS_BUILD_DIR)" -j$(NCORES) workbench-fonts
 	@echo "Ensuring Zune classes are built (may have been skipped by Mesa failure)..."
 	@$(MAKE) -C "$(AROS_BUILD_DIR)" -j$(NCORES) workbench-classes-zune 2>&1 || \
 		echo "  Warning: workbench-classes-zune had some failures (non-fatal)"
