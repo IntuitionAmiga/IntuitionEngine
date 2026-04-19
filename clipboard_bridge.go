@@ -5,7 +5,7 @@ package main
 import (
 	"sync"
 
-	"golang.design/x/clipboard"
+	"github.com/intuitionamiga/IntuitionEngine/internal/clipboard"
 )
 
 // ClipboardBridge provides MMIO-based clipboard exchange between host and guest.
@@ -78,7 +78,7 @@ func (cb *ClipboardBridge) doRead() {
 		return
 	}
 
-	data := clipboard.Read(clipboard.FmtText)
+	data, _ := clipboard.ReadText()
 	if len(data) == 0 {
 		cb.status = CLIP_STATUS_EMPTY
 		return
@@ -128,7 +128,7 @@ func (cb *ClipboardBridge) doWrite() {
 	data := make([]byte, dataLen)
 	copy(data, cb.bus.memory[ptr:ptr+dataLen])
 
-	clipboard.Write(clipboard.FmtText, data)
+	_ = clipboard.WriteText(data)
 
 	cb.resultLen = dataLen
 	cb.status = CLIP_STATUS_READY
