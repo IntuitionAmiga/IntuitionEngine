@@ -1,6 +1,6 @@
 // jit_m68k_dispatch_stub.go - M68K JIT stub for non-JIT platforms
 
-//go:build !amd64 || !linux
+//go:build !(amd64 && (linux || windows))
 
 package main
 

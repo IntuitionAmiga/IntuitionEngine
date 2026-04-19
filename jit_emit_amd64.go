@@ -1,6 +1,6 @@
 // jit_emit_amd64.go - x86-64 native code emitter for IE64 JIT compiler
 
-//go:build amd64 && linux
+//go:build amd64 && (linux || windows)
 
 package main
 

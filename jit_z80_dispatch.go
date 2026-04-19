@@ -1,6 +1,6 @@
 // jit_z80_dispatch.go - Z80 JIT platform dispatch (JIT-capable platforms)
 
-//go:build (amd64 || arm64) && linux
+//go:build (amd64 && (linux || windows)) || (arm64 && linux)
 
 package main
 

@@ -1,4 +1,4 @@
-//go:build !((amd64 || arm64) && linux)
+//go:build !((amd64 || arm64) && linux) && !(amd64 && windows)
 
 package main
 

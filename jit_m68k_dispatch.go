@@ -1,6 +1,6 @@
 // jit_m68k_dispatch.go - M68K JIT execution dispatch (JIT-capable platforms)
 
-//go:build amd64 && linux
+//go:build amd64 && (linux || windows)
 
 package main
 

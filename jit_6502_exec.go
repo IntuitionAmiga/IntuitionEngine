@@ -1,6 +1,6 @@
 // jit_6502_exec.go - 6502 JIT dispatcher loop and CPU integration
 
-//go:build (amd64 || arm64) && linux
+//go:build (amd64 && (linux || windows)) || (arm64 && linux)
 
 package main
 

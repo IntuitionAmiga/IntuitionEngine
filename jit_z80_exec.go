@@ -1,6 +1,6 @@
 // jit_z80_exec.go - Z80 JIT dispatcher loop and CPU integration
 
-//go:build (amd64 || arm64) && linux
+//go:build (amd64 && (linux || windows)) || (arm64 && linux)
 
 package main
 

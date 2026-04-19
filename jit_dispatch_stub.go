@@ -1,6 +1,6 @@
 // jit_dispatch_stub.go - JIT stub for non-JIT platforms
 
-//go:build !(amd64 || arm64) || !linux
+//go:build !((amd64 && (linux || windows)) || (arm64 && linux))
 
 package main
 

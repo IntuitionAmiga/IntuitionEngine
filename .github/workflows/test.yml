@@ -72,6 +72,23 @@ jobs:
       - name: Run tests
         run: go test -tags headless -timeout 10m -count=1 ./...
 
+  windows-jit-test:
+    name: Windows JIT tests
+    runs-on: windows-latest
+    env:
+      CGO_ENABLED: "0"
+      IE_REQUIRE_JIT: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run Windows JIT tests
+        shell: bash
+        run: go test -v -tags headless -run 'TestJIT_|TestAMD64_|TestExecMemWindows_' -count=1 ./...
+
   sdk-smoke:
     name: SDK example smoke test
     runs-on: ubuntu-latest
