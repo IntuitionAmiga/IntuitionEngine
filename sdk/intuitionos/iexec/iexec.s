@@ -32,7 +32,7 @@ iexec_start:
     ; ---------------------------------------------------------------
     move.l  r1, #KERN_STACK_TOP
     mtcr    cr8, r1
-    move.q  r31, r1                    ; seed live SP: CR8<->R31 auto-swap hasn't fired yet
+    move.q  r31, r1                    ; set live SP: CR8<->R31 auto-swap hasn't fired yet
 if KERNEL_STACK_CANARY_ENABLED
     move.l  r11, #KERN_STACK_CANARY_VALUE
     store.l r11, KERN_STACK_CANARY_ADDR(r0)
@@ -350,9 +350,9 @@ endif
     blt     r4, r3, .zero_quota_page
 .quota_page_skip:
 
-    ; M15.6 G3: seed global default quota limits into KD_QUOTA_LIMITS_BASE.
+    ; Install global default quota limits into KD_QUOTA_LIMITS_BASE.
     ; 5 × u32 indexed by QUOTA_KIND_*. SYS_QUOTA_SET_LIMIT can rewrite
-    ; these at runtime (tests drive boundary behavior via that syscall).
+    ; these at runtime.
     move.l  r2, #KERN_DATA_BASE
     add     r2, r2, #KD_QUOTA_LIMITS_BASE
     move.l  r3, #QUOTA_DEFAULT_PAGES
@@ -2916,131 +2916,6 @@ boot_load_elf_image:
     add     sp, sp, #256
     rts
 
-; kern_export_boot_manifest_to_dos:
-;   Map the post-DOS staged manifest ELFs into dos.library's own address
-;   space so DOS can build seglists from manifest-sourced bytes instead of
-;   consulting the bundled legacy blobs. The staged manifest pages remain the
-;   single source of truth; DOS receives read-only user mappings of them.
-; Inputs:  R1 = dos.library internal task slot
-; Outputs: R2 = ERR_OK / ERR_NOMEM / ERR_BADARG
-; Clobbers: R1-R31
-kern_export_boot_manifest_to_dos:
-    sub     sp, sp, #64
-    move.q  r20, r1                    ; target task slot
-
-    move.q  r1, r20
-    jsr     kern_task_layout_addr
-    load.q  r30, KD_TASK_DATA_BASE(r1) ; dos.library data backing
-    beqz    r30, .kebmtd_badarg
-    load.q  r19, KD_TASK_LAYOUT_PT_BASE(r1)
-    beqz    r19, .kebmtd_badarg
-
-    add     r29, r30, #(prog_doslib_boot_export_rows - prog_doslib_data)
-    move.l  r21, #0
-.kebmtd_zero_rows:
-    move.l  r22, #(DOS_BOOT_EXPORT_COUNT * DOS_BOOT_EXPORT_ROW_SZ / 8)
-    bge     r21, r22, .kebmtd_loop_prep
-    store.q r0, (r29)
-    add     r29, r29, #8
-    add     r21, r21, #1
-    bra     .kebmtd_zero_rows
-
-.kebmtd_loop_prep:
-    add     r29, r30, #(prog_doslib_boot_export_rows - prog_doslib_data)
-    move.l  r17, #(USER_DYN_END - 0x100000) ; next dos-private export VA
-    move.l  r21, #KD_BOOT_MANIFEST_BOOT_COUNT
-.kebmtd_loop:
-    move.l  r22, #KD_BOOT_MANIFEST_COUNT
-    bge     r21, r22, .kebmtd_ok
-
-    move.l  r23, #KERN_DATA_BASE
-    add     r23, r23, #KD_BOOT_MANIFEST_BASE
-    move.l  r24, #KD_BOOT_MANIFEST_STRIDE
-    mulu    r24, r21, r24
-    add     r23, r23, r24              ; r23 = runtime manifest row
-
-    load.l  r24, KD_BOOT_MANIFEST_ID(r23)
-    load.q  r25, KD_BOOT_MANIFEST_PTR(r23)
-    load.q  r26, KD_BOOT_MANIFEST_SIZE(r23)
-    beqz    r25, .kebmtd_badarg
-    beqz    r26, .kebmtd_badarg
-
-    move.q  r27, r26
-    add     r27, r27, #4095
-    lsr     r27, r27, #12              ; pages
-    beqz    r27, .kebmtd_badarg
-    lsr     r18, r25, #12              ; staged base PPN
-
-    move.l  r14, #KERN_DATA_BASE
-    add     r14, r14, #KD_REGION_TABLE
-    move.l  r11, #KD_REGION_TASK_SZ
-    mulu    r11, r20, r11
-    add     r14, r14, r11
-    move.l  r15, #0
-.kebmtd_find_region:
-    move.l  r11, #KD_REGION_INLINE_MAX
-    bge     r15, r11, .kebmtd_region_overflow
-    move.l  r11, #KD_REGION_STRIDE
-    mulu    r11, r15, r11
-    add     r16, r14, r11
-    load.b  r11, KD_REG_TYPE(r16)
-    beqz    r11, .kebmtd_found_region
-    add     r15, r15, #1
-    bra     .kebmtd_find_region
-.kebmtd_region_overflow:
-    move.q  r1, r20
-    jsr     kern_region_oflow_alloc_row
-    bnez    r2, .kebmtd_nomem
-    move.q  r16, r1
-.kebmtd_found_region:
-    move.q  r28, r16                   ; region row
-
-    move.q  r1, r17
-    move.q  r2, r27
-    lsl     r2, r2, #12
-    add     r2, r2, r1
-    blt     r2, r1, .kebmtd_nomem
-    move.l  r3, #USER_DYN_END
-    bgt     r2, r3, .kebmtd_nomem
-
-    move.q  r1, r19
-    move.q  r2, r17
-    move.q  r3, r18
-    move.q  r4, r27
-    move.l  r5, #0x13                  ; P|R|U (read-only user view of staged ELF)
-    jsr     map_pages
-    store.l r17, KD_REG_VA(r28)
-    store.w r18, KD_REG_PPN(r28)
-    store.w r27, KD_REG_PAGES(r28)
-    move.b  r11, #REGION_IO
-    store.b r11, KD_REG_TYPE(r28)
-    store.b r0, KD_REG_FLAGS(r28)
-    store.b r0, KD_REG_SHMID(r28)
-
-    store.l r24, DOS_BOOT_EXPORT_ID(r29)
-    store.q r17, DOS_BOOT_EXPORT_PTR(r29)
-    store.q r26, DOS_BOOT_EXPORT_SIZE(r29)
-
-    move.q  r1, r27
-    lsl     r1, r1, #12
-    add     r17, r17, r1
-    add     r29, r29, #DOS_BOOT_EXPORT_ROW_SZ
-    add     r21, r21, #1
-    bra     .kebmtd_loop
-.kebmtd_badarg:
-    move.q  r2, #ERR_BADARG
-    add     sp, sp, #64
-    rts
-.kebmtd_nomem:
-    move.q  r2, #ERR_NOMEM
-    add     sp, sp, #64
-    rts
-.kebmtd_ok:
-    tlbflush
-    move.q  r2, #ERR_OK
-    add     sp, sp, #64
-    rts
-
 ; ============================================================================
 ; load_program: Load a bundled IE64 program image into a free task slot.
 ; Input:  R7 = image_ptr (address of image in kernel memory)
@@ -3240,8 +3115,8 @@ load_program:
     move.q  r9, r27                     ; data pages
     jsr     write_startup_block
 
-    ; Seed the top of the stack page with startup_base and data_base so
-    ; programs can recover both without assuming stack/data adjacency.
+    ; Preload the top of the stack page with startup_base and data_base
+    ; so programs can recover both without assuming stack/data adjacency.
     move.q  r14, r25
     add     r14, r14, #MMU_PAGE_SIZE
     sub     r14, r14, #16
@@ -7001,8 +6876,8 @@ endif
     move.l  r9, #1                      ; data pages
     jsr     write_startup_block
 
-    ; Seed the top of the stack page with startup_base and data_base so user
-    ; preambles can recover both without assuming stack/data adjacency.
+    ; Preload the top of the stack page with startup_base and data_base so
+    ; user preambles can recover both without assuming stack/data adjacency.
     move.q  r14, r23
     add     r14, r14, #MMU_PAGE_SIZE
     sub     r14, r14, #16
@@ -10031,75 +9906,7 @@ endif
 ;   +12: reserved (4 bytes)
 ;
 ; Sentinel row: manifest entry ID = 0xFF.
-include "boot/manifest_seed.s"
-
-; ============================================================================
-; Legacy Inline Program Sources
-; ============================================================================
-; These inline images are no longer executable runtime artifacts in M14.2.
-; Boot and DOS seeding use the canonical embedded ELF blobs above. The old
-; source bodies remain only as dormant byte templates for low-level tests and
-; source archaeology, with inert headers so the shipped kernel image no longer
-; carries valid bundled IE64PROG binaries.
-;
-; Data section layout per program (copied to data page offset 0 by loader):
-;   +0:   port name strings and other initial data
-;   +128: scratch area (saved registers, port IDs, etc.)
-
-; ---------------------------------------------------------------------------
-; console.handler — CON: handler (M9)
-; ---------------------------------------------------------------------------
-; AmigaOS-style CON: handler. Owns keyboard input AND screen output.
-; Registers as "console.handler" port. Maps terminal I/O via SYS_MAP_IO.
-; Polling loop: GetMsg (non-blocking) for output + readline requests,
-; polls keyboard when a readline is pending.
-;
-; Data page layout:
-;   0:   "console.handler\0" (16 bytes, port name)
-;   16:  "console.handler ONLINE [Task\0" (banner)
-;   128: task_id (8 bytes)
-;   136: console_port (8 bytes)
-;   144: term_io_va (8 bytes, from MAP_IO)
-;   152: readline_reply_port (8 bytes)
-;   160: readline_share_handle (4 bytes + padding)
-;   168: readline_mapped_va (8 bytes, cached MapShared)
-;   176: readline_pending (1 byte)
-
-include "handler/console_handler.s"
-
-; ---------------------------------------------------------------------------
-; dos.library — RAM: filesystem service (M9)
-; ---------------------------------------------------------------------------
-; Amiga-style dos.library: in-memory filesystem with Open/Read/Write/Close/Dir.
-; Registers as "dos.library" public port. Discovers console.handler via
-; OpenLibrary. Handles DOS_OPEN, DOS_READ, DOS_WRITE, DOS_CLOSE, DOS_DIR,
-; DOS_RUN, and DOS_ASSIGN requests from any task via shared-memory message
-; passing.
-;
-; Data page layout (M12.6 Phase A):
-;   0:   "console.handler\0"       (16 bytes, for OpenLibrary)
-;   16:  "dos.library\0"           (16 bytes, port name for CreatePort)
-;   32:  "dos.library ONLINE [Task\0" (22 bytes + 10 pad = 32 bytes, banner)
-;   64:  padding (64 bytes)
-;   128: task_id (8)
-;   136: console_port (8)
-;   144: dos_port (8)
-;   152: meta_chain_head_va (8) — VA of first metadata chain page (M12.6 Phase A)
-;   160: hnd_chain_head_va  (8) — VA of first handle chain page   (M12.6 Phase A)
-;   168: caller_mapped_va (8, cached MapShared result)
-;   176: reserved (8) — was open_handles[8]; gone in M12.6 Phase A
-;   184: cached share_pages (8)
-;   192..895: dead space (was: file_table 16 × 44). Reused freely later.
-;   896: "readme\0" + pad (16 bytes, scratch for pre-create)
-;   912: "Welcome to IntuitionOS M9\r\n\0" (29 bytes, pre-create content)
-;   944: scratch: saved reply_port (8)
-;   952: scratch: saved msg_type (8)
-;   960: scratch: saved data0 (8)
-;   968: scratch: saved data1 (8)
-;   976: scratch: saved share_handle (8)
-;   984: scratch: cached share_handle (4)
-
-include "lib/dos_library.s"
+include "boot/bootstrap.s"
 
 ; ============================================================================
 ; Data: Strings

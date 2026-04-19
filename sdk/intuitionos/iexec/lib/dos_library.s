@@ -215,164 +215,7 @@ prog_doslib_code:
 .dos_init_done:
 
     ; =====================================================================
-    ; Seed RAM: with canonical ELF files and plain-text assets (M14.2)
-    ; =====================================================================
-    ; Command/demo files come from bundled ELF blobs. Services now load from
-    ; the host-backed IOSSYS tree at runtime rather than being re-seeded into
-    ; RAM from kernel-exported manifest blobs. Startup-Sequence remains
-    ; trusted plain text.
-    load.q  r29, (sp)
-    add     r20, r29, #(prog_doslib_seed_name_version - prog_doslib_data)
-    add     r24, r29, #(seed_elf_version - prog_doslib_data)
-    move.l  r23, #(seed_elf_version_end - seed_elf_version)
-    jsr     .dos_seed_known
-
-    load.q  r29, (sp)
-    add     r20, r29, #(prog_doslib_seed_name_avail - prog_doslib_data)
-    add     r24, r29, #(seed_elf_avail - prog_doslib_data)
-    move.l  r23, #(seed_elf_avail_end - seed_elf_avail)
-    jsr     .dos_seed_known
-
-    load.q  r29, (sp)
-    add     r20, r29, #(prog_doslib_seed_name_dir - prog_doslib_data)
-    add     r24, r29, #(seed_elf_dir - prog_doslib_data)
-    move.l  r23, #(seed_elf_dir_end - seed_elf_dir)
-    jsr     .dos_seed_known
-
-    load.q  r29, (sp)
-    add     r20, r29, #(prog_doslib_seed_name_type - prog_doslib_data)
-    add     r24, r29, #(seed_elf_type - prog_doslib_data)
-    move.l  r23, #(seed_elf_type_end - seed_elf_type)
-    jsr     .dos_seed_known
-
-    load.q  r29, (sp)
-    add     r20, r29, #(prog_doslib_seed_name_echo - prog_doslib_data)
-    add     r24, r29, #(seed_elf_echo - prog_doslib_data)
-    move.l  r23, #(seed_elf_echo_end - seed_elf_echo)
-    jsr     .dos_seed_known
-
-    load.q  r29, (sp)
-    add     r20, r29, #(prog_doslib_seed_name_assign - prog_doslib_data)
-    add     r24, r29, #(seed_elf_assign - prog_doslib_data)
-    move.l  r23, #(seed_elf_assign_end - seed_elf_assign)
-    jsr     .dos_seed_known
-
-    load.q  r29, (sp)
-    add     r20, r29, #(prog_doslib_seed_name_list - prog_doslib_data)
-    add     r24, r29, #(seed_elf_list - prog_doslib_data)
-    move.l  r23, #(seed_elf_list_end - seed_elf_list)
-    jsr     .dos_seed_known
-
-    load.q  r29, (sp)
-    add     r20, r29, #(prog_doslib_seed_name_which - prog_doslib_data)
-    add     r24, r29, #(seed_elf_which - prog_doslib_data)
-    move.l  r23, #(seed_elf_which_end - seed_elf_which)
-    jsr     .dos_seed_known
-
-    load.q  r29, (sp)
-    add     r20, r29, #(prog_doslib_seed_name_help_cmd - prog_doslib_data)
-    add     r24, r29, #(seed_elf_help - prog_doslib_data)
-    move.l  r23, #(seed_elf_help_end - seed_elf_help)
-    jsr     .dos_seed_known
-
-    load.q  r29, (sp)
-    add     r20, r29, #(prog_doslib_seed_name_startup - prog_doslib_data)
-    add     r24, r29, #(seed_startup - prog_doslib_data)
-    move.l  r23, #(seed_startup_end - seed_startup - 1)
-    jsr     .dos_seed_known
-
-    load.q  r29, (sp)
-    add     r20, r29, #(prog_doslib_seed_name_help_text - prog_doslib_data)
-    add     r24, r29, #(seed_help_text - prog_doslib_data)
-    move.l  r23, #(seed_help_text_end - seed_help_text - 1)
-    jsr     .dos_seed_known
-
-    load.q  r29, (sp)
-    add     r20, r29, #(prog_doslib_seed_name_loader_info - prog_doslib_data)
-    add     r24, r29, #(seed_loader_info - prog_doslib_data)
-    move.l  r23, #(seed_loader_info_end - seed_loader_info - 1)
-    jsr     .dos_seed_known
-
-    load.q  r29, (sp)
-    add     r20, r29, #(prog_doslib_seed_name_gfxdemo - prog_doslib_data)
-    add     r24, r29, #(seed_elf_gfxdemo - prog_doslib_data)
-    move.l  r23, #(seed_elf_gfxdemo_end - seed_elf_gfxdemo)
-    jsr     .dos_seed_known
-
-    load.q  r29, (sp)
-    add     r20, r29, #(prog_doslib_seed_name_about - prog_doslib_data)
-    add     r24, r29, #(seed_elf_about - prog_doslib_data)
-    move.l  r23, #(seed_elf_about_end - seed_elf_about)
-    jsr     .dos_seed_known
-
-    ; Seed C/ElfSeg (slot 13) — native ELF fixture
-    load.q  r29, (sp)
-    add     r20, r29, #(prog_doslib_seed_name_elfseg - prog_doslib_data)
-    add     r24, r29, #(prog_elfseg - prog_doslib_data)
-    move.l  r23, #0x2004
-    jsr     .dos_seed_known
-    bra     .dos_seed_done
-
-    ; -----------------------------------------------------------------
-    ; .dos_seed_known: seed one file from embedded bytes when the size is
-    ; already known by the caller.
-    ; Input:  r20 = name_ptr, r24 = image_ptr, r23 = byte_count, r29 = data
-    ; Output: r24 advanced past image (aligned to 8)
-    ; -----------------------------------------------------------------
-.dos_seed_known:
-    store.q r20, 192(r29)
-    store.q r24, 200(r29)
-    store.q r23, 216(r29)
-
-    jsr     .dos_meta_alloc_entry
-    bnez    r2, .dsk_done
-    store.q r1, 208(r29)
-
-    load.q  r20, 192(r29)
-    load.q  r25, 208(r29)
-    move.q  r16, r20
-    move.q  r17, r25
-    move.l  r18, #0
-.dsk_cpname:
-    load.b  r15, (r16)
-    store.b r15, (r17)
-    beqz    r15, .dsk_cpname_done
-    add     r16, r16, #1
-    add     r17, r17, #1
-    add     r18, r18, #1
-    move.l  r28, #31
-    blt     r18, r28, .dsk_cpname
-    store.b r0, (r17)
-.dsk_cpname_done:
-
-    load.q  r1, 216(r29)
-    jsr     .dos_extent_alloc
-    bnez    r2, .dsk_done
-    store.q r1, 224(r29)
-
-    load.q  r25, 208(r29)
-    load.q  r1, 224(r29)
-    store.q r1, DOS_META_OFF_VA(r25)
-    load.q  r23, 216(r29)
-    store.l r23, DOS_META_OFF_SIZE(r25)
-
-    load.q  r1, 224(r29)
-    load.q  r2, 200(r29)
-    load.q  r3, 216(r29)
-    jsr     .dos_extent_write
-
-    load.q  r24, 200(r29)
-    load.q  r23, 216(r29)
-    add     r24, r24, r23
-    add     r24, r24, #7
-    and     r24, r24, #0xFFFFFFF8
-.dsk_done:
-    rts
-
-.dos_seed_done:
-
-    ; =====================================================================
-    ; NOW create the DOS port (after seeding = readiness signal)
+    ; Create the DOS port (after initialization = readiness signal)
     ; =====================================================================
     load.q  r29, (sp)
     add     r1, r29, #16               ; R1 = &data[16] = "dos.library"
@@ -6618,10 +6461,6 @@ prog_doslib_boot_shell_relpath:
 prog_doslib_empty_args:
     dc.b    0
     align   8
-prog_doslib_boot_export_rows:
-    ; M14.1 phase 3: dos-private exported staged-service ELF sources.
-    ; Filled by kern_export_boot_manifest_to_dos after dos.library boots.
-    ds.b    (DOS_BOOT_EXPORT_COUNT * DOS_BOOT_EXPORT_ROW_SZ)
     ; Static assign table for M15.2 phase-1 resolver. Entry layout:
     ;   [0..15]  assign name (NUL-terminated, uppercase canonical)
     ;   [16..31] target prefix (NUL-terminated, empty for RAM:)
@@ -6746,68 +6585,7 @@ prog_doslib_assign_base_table:
     align   4096
 
 ; ---------------------------------------------------------------------------
-; Embedded command images (VERSION, AVAIL, DIR, TYPE, ECHO)
-; ---------------------------------------------------------------------------
-
-prog_doslib_seed_images_start:
-    align   8
-seed_elf_version:
-    incbin  "seed_version.elf"
-seed_elf_version_end:
-
-    align   8
-seed_elf_avail:
-    incbin  "seed_avail.elf"
-seed_elf_avail_end:
-
-    align   8
-seed_elf_dir:
-    incbin  "seed_dir.elf"
-seed_elf_dir_end:
-
-    align   8
-seed_elf_type:
-    incbin  "seed_type.elf"
-seed_elf_type_end:
-
-    align   8
-seed_elf_echo:
-    incbin  "seed_echo.elf"
-seed_elf_echo_end:
-
-    align   8
-seed_elf_assign:
-    incbin  "seed_assign.elf"
-seed_elf_assign_end:
-
-    align   8
-seed_elf_list:
-    incbin  "seed_list.elf"
-seed_elf_list_end:
-
-    align   8
-seed_elf_which:
-    incbin  "seed_which.elf"
-seed_elf_which_end:
-
-    align   8
-seed_elf_help:
-    incbin  "seed_help.elf"
-seed_elf_help_end:
-
-    align   8
-seed_elf_gfxdemo:
-    incbin  "seed_gfxdemo.elf"
-seed_elf_gfxdemo_end:
-
-    align   8
-seed_elf_about:
-    incbin  "seed_about.elf"
-seed_elf_about_end:
-
-; ---------------------------------------------------------------------------
-; Phase 1 of M15.1: split the seeded command sources out of the monolithic
-; iexec root while keeping the program labels and ROM layout order unchanged.
+; Per-command source files under `../cmd/`.
 ; ---------------------------------------------------------------------------
 
 include "../cmd/version.s"
@@ -6820,7 +6598,6 @@ include "../cmd/list.s"
 include "../cmd/which.s"
 include "../cmd/assign.s"
 
-include "../assets/dos_seed_text.s"
     align   8
 
 ; ---------------------------------------------------------------------------

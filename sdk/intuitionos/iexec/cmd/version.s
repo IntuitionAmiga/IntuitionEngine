@@ -78,7 +78,7 @@ prog_version_data:
     dc.b    "console.handler", 0
     ds.b    8
     ds.b    8
-    dc.b    "IntuitionOS 0.17", 0x0D, 0x0A, 0
+    dc.b    "IntuitionOS 0.18", 0x0D, 0x0A, 0
 prog_version_data_end:
     align   8
 prog_version_end:

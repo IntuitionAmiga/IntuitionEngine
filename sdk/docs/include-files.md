@@ -68,6 +68,11 @@ The same header now exports the M15.6 shared-memory permission bits used by `SYS
 - `MEMF_GUARD` (bit 1 in the `AllocMem` flags word) — reserve one non-present
   page on each side of the mapped allocation. The returned VA still points at
   the mapped body, not the leading guard.
+- `QUOTA_PAGES` / `QUOTA_PORTS` / `QUOTA_WAITERS` / `QUOTA_SHMEM` /
+  `QUOTA_GRANTS` — quota-kind constants used by the M15.6 quota inspection and
+  limit-setting paths. These name the five kernel-tracked resource classes:
+  page allocations, public ports, blocked waiters, shared mappings, and
+  grant rows.
 
 `SYS_MAP_SHARED` requires a non-zero subset of those bits in `R2`; omitted masks and unknown bits fail with `ERR_BADARG`. The kernel never sets `PTE_X` for shared mappings.
 
@@ -76,7 +81,7 @@ The same header now exports the M15.6 shared-memory permission bits used by `SYS
 - `BOOT_HOSTFS_CREATE_WRITE` (6) — `arg1 = path ptr`. Opens (or creates+truncates) the file for writing; returns a host handle in `res1`. The host device rejects any path whose first component is `IOSSYS` (case-insensitive), enforcing the read-only IOSSYS namespace.
 - `BOOT_HOSTFS_WRITE` (7) — `arg1 = handle, arg2 = src ptr, arg3 = byte_count`. Writes bytes to an open hostfs handle; returns the byte count actually written in `res1`.
 
-As of M15.1, `sdk/intuitionos/iexec/iexec.s` remains the top-level image/layout source, but seeded command bodies are split into per-component assembly files under `sdk/intuitionos/iexec/cmd/`, the non-DOS boot services now live under `sdk/intuitionos/iexec/handler/`, `sdk/intuitionos/iexec/dev/`, `sdk/intuitionos/iexec/resource/`, and `sdk/intuitionos/iexec/lib/`, the interactive shell itself now lives in `sdk/intuitionos/iexec/handler/shell.s`, and the DOS-owned block now lives under `sdk/intuitionos/iexec/lib/dos_library.s`. the DOS-owned block now lives under that file rather than the root image source. The remaining DOS-owned subordinate files now include `sdk/intuitionos/iexec/assets/dos_seed_text.s`, `sdk/intuitionos/iexec/assets/elfseg_fixture.s`, `sdk/intuitionos/iexec/cmd/gfxdemo.s`, and `sdk/intuitionos/iexec/cmd/about.s`. The last root boot/image wiring blocks now live in `sdk/intuitionos/iexec/boot/manifest_seed.s` and `sdk/intuitionos/iexec/boot/strings.s`. This does not change the role of `iexec.inc`: it remains the shared contract include for both the root image source and the split IntuitionOS component files.
+As of M15.1, `sdk/intuitionos/iexec/iexec.s` remains the top-level kernel image/layout source, while `sdk/intuitionos/iexec/runtime_builder.s` assembles the standalone hostfs runtime artifacts. Command bodies live under `sdk/intuitionos/iexec/cmd/`, the non-DOS boot services now live under `sdk/intuitionos/iexec/handler/`, `sdk/intuitionos/iexec/dev/`, `sdk/intuitionos/iexec/resource/`, and `sdk/intuitionos/iexec/lib/`, the interactive shell itself lives in `sdk/intuitionos/iexec/handler/shell.s`, and the DOS-owned block lives under `sdk/intuitionos/iexec/lib/dos_library.s`. The remaining subordinate runtime files now include `sdk/intuitionos/iexec/assets/elfseg_fixture.s`, `sdk/intuitionos/iexec/cmd/gfxdemo.s`, and `sdk/intuitionos/iexec/cmd/about.s`. The last root boot/image wiring blocks now live in `sdk/intuitionos/iexec/boot/bootstrap.s` and `sdk/intuitionos/iexec/boot/strings.s`. This does not change the role of `iexec.inc`: it remains the shared contract include for both the kernel image source and the split IntuitionOS component files.
 
 ### Video Registers
 - `VIDEO_CTRL` / `VIDEO_MODE` / `VIDEO_STATUS` - Display control

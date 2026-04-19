@@ -15,31 +15,14 @@ BIN_DIR := ./bin
 SDK_BIN_DIR := ./sdk/bin
 IEXEC_DIR := ./sdk/intuitionos/iexec
 IEXEC_SRC := $(IEXEC_DIR)/iexec.s
+IEXEC_RUNTIME_SRC := $(IEXEC_DIR)/runtime_builder.s
 IEXEC_IMG := $(IEXEC_DIR)/iexec.ie64
 IEXEC_LST := $(IEXEC_DIR)/iexec.lst
+IEXEC_RUNTIME_IMG := $(IEXEC_DIR)/runtime_builder.ie64
+IEXEC_RUNTIME_LST := $(IEXEC_DIR)/runtime_builder.lst
 IEXEC_ELF_REBUILDER := ./tools/rebuild_boot_dos_elf
 IEXEC_SYSTEM_EXPORTER := ./tools/export_intuitionos_system
-IEXEC_BOOTSTRAP_DIR := $(IEXEC_DIR)/.bootstrap
 IEXEC_SYSTEM_DIR := ./sdk/intuitionos/system/SYS/IOSSYS
-IEXEC_BOOTSTRAP_ELFS := \
-	boot_console_handler.elf \
-	boot_dos_library.elf \
-	boot_shell.elf \
-	boot_hardware_resource.elf \
-	boot_input_device.elf \
-	boot_graphics_library.elf \
-	boot_intuition_library.elf \
-	seed_version.elf \
-	seed_avail.elf \
-	seed_dir.elf \
-	seed_type.elf \
-	seed_echo.elf \
-	seed_assign.elf \
-	seed_list.elf \
-	seed_which.elf \
-	seed_help.elf \
-	seed_gfxdemo.elf \
-	seed_about.elf
 IEXEC_RUNTIME_ELF_TARGETS := \
 	boot_dos_library.elf:prog_doslib \
 	boot_console_handler.elf:prog_console \
@@ -48,18 +31,18 @@ IEXEC_RUNTIME_ELF_TARGETS := \
 	boot_input_device.elf:prog_input_device \
 	boot_graphics_library.elf:prog_graphics_library \
 	boot_intuition_library.elf:prog_intuition_library \
-	seed_version.elf:prog_version \
-	seed_avail.elf:prog_avail \
-	seed_dir.elf:prog_dir \
-	seed_type.elf:prog_type \
-	seed_echo.elf:prog_echo_cmd \
-	seed_assign.elf:prog_assign_cmd \
-	seed_list.elf:prog_list_cmd \
-	seed_which.elf:prog_which_cmd \
-	seed_help.elf:prog_help_app \
-	seed_gfxdemo.elf:prog_gfxdemo \
-	seed_about.elf:prog_about \
-	seed_elfseg.elf:prog_elfseg
+	cmd_version.elf:prog_version \
+	cmd_avail.elf:prog_avail \
+	cmd_dir.elf:prog_dir \
+	cmd_type.elf:prog_type \
+	cmd_echo.elf:prog_echo_cmd \
+	cmd_assign.elf:prog_assign_cmd \
+	cmd_list.elf:prog_list_cmd \
+	cmd_which.elf:prog_which_cmd \
+	cmd_help.elf:prog_help_app \
+	cmd_gfxdemo.elf:prog_gfxdemo \
+	cmd_about.elf:prog_about \
+	elfseg_fixture.elf:prog_elfseg
 EMUTOS_SRC_DIR ?= ../EmuTOS
 EMUTOS_ROM ?= ./sdk/examples/prebuilt/etos256us.img
 EMUTOS_GIT_URL ?= https://github.com/IntuitionAmiga/EmuTOS.git
@@ -352,33 +335,23 @@ ie32to64: setup
 .PHONY: intuitionos intuitionos-clean
 intuitionos: ie64asm
 	@echo "Assembling IExec kernel and runtime images..."
-	@rm -rf $(IEXEC_BOOTSTRAP_DIR)
-	@mkdir -p $(IEXEC_BOOTSTRAP_DIR)
-	@for f in $(IEXEC_BOOTSTRAP_ELFS); do \
-		: > $(IEXEC_BOOTSTRAP_DIR)/$$f; \
-	done
-	@$(MAKE) PRESERVE_IEXEC_BOOTSTRAP=1 intuitionos-clean
-	@$(SDK_BIN_DIR)/ie64asm -list -I sdk/include -I $(IEXEC_BOOTSTRAP_DIR) $(IEXEC_SRC) > $(IEXEC_LST)
+	@rm -f $(IEXEC_DIR)/*.elf $(IEXEC_IMG) $(IEXEC_LST) $(IEXEC_RUNTIME_IMG) $(IEXEC_RUNTIME_LST)
+	@$(SDK_BIN_DIR)/ie64asm -list -I sdk/include -I $(IEXEC_DIR) $(IEXEC_RUNTIME_SRC) > $(IEXEC_RUNTIME_LST)
+	@$(MKDIR) -p $(SDK_BIN_DIR)
+	@$(GO) build $(GO_FLAGS) -o $(SDK_BIN_DIR)/iexec-elf-rebuilder $(IEXEC_ELF_REBUILDER)
+	@$(GO) build $(GO_FLAGS) -o $(SDK_BIN_DIR)/iexec-system-exporter $(IEXEC_SYSTEM_EXPORTER)
 	@for spec in $(IEXEC_RUNTIME_ELF_TARGETS); do \
 		out=$${spec%%:*}; \
 		label=$${spec##*:}; \
-		$(GO) run $(IEXEC_ELF_REBUILDER) -listing $(IEXEC_LST) -image $(IEXEC_IMG) -out $(IEXEC_DIR)/$$out -label $$label; \
+		$(SDK_BIN_DIR)/iexec-elf-rebuilder -listing $(IEXEC_RUNTIME_LST) -image $(IEXEC_RUNTIME_IMG) -out $(IEXEC_DIR)/$$out -label $$label; \
 	done
-	@$(SDK_BIN_DIR)/ie64asm -list -I sdk/include $(IEXEC_SRC) > $(IEXEC_LST)
-	@for spec in $(IEXEC_RUNTIME_ELF_TARGETS); do \
-		out=$${spec%%:*}; \
-		label=$${spec##*:}; \
-		$(GO) run $(IEXEC_ELF_REBUILDER) -listing $(IEXEC_LST) -image $(IEXEC_IMG) -out $(IEXEC_DIR)/$$out -label $$label; \
-	done
-	@$(GO) run $(IEXEC_SYSTEM_EXPORTER) -repo-root . -iexec-dir $(IEXEC_DIR) -out-root $(IEXEC_SYSTEM_DIR)
-	@$(SDK_BIN_DIR)/ie64asm -list -I sdk/include $(IEXEC_SRC) > $(IEXEC_LST)
-	@rm -rf $(IEXEC_BOOTSTRAP_DIR)
+	@$(SDK_BIN_DIR)/ie64asm -list -I sdk/include -I $(IEXEC_DIR) $(IEXEC_SRC) > $(IEXEC_LST)
+	@$(SDK_BIN_DIR)/iexec-system-exporter -repo-root . -iexec-dir $(IEXEC_DIR) -out-root $(IEXEC_SYSTEM_DIR)
 	@echo "IExec kernel and runtime images assembled under $(IEXEC_DIR)"
 
 intuitionos-clean:
 	@echo "Cleaning IExec kernel and runtime images..."
-	@if [ "$(PRESERVE_IEXEC_BOOTSTRAP)" != "1" ]; then rm -rf $(IEXEC_BOOTSTRAP_DIR); fi
-	@rm -f $(IEXEC_DIR)/*.elf $(IEXEC_IMG)
+	@rm -f $(IEXEC_DIR)/*.elf $(IEXEC_IMG) $(IEXEC_LST) $(IEXEC_RUNTIME_IMG) $(IEXEC_RUNTIME_LST)
 
 # Build with embedded EhBASIC BASIC interpreter
 .PHONY: basic

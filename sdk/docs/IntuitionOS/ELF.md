@@ -29,7 +29,7 @@ What M14 phase 4 adds:
 
 What M14 phase 5 adds:
 
-- the shipped seeded `C:` command/demo path now uses native ELF by default
+- the shipped `C:` command/demo path now uses native ELF by default
 - the retained GUI demos (`C:GfxDemo`, `C:About`) are covered as end-to-end regressions on that native path
 
 M14.2 phase 1 current contract:
@@ -43,7 +43,7 @@ M14.2 phase 1 current contract:
 So the current runtime is:
 
 - boot/services: internal embedded-manifest ELF path for shipped runtime binaries
-- shell / `DOS_RUN`: native seglist launch for the seeded `C:` ELF command/demo set, with flat-image executable content rejected
+- shell / `DOS_RUN`: native seglist launch for the `C:` ELF command/demo set, with flat-image executable content rejected
 - explicit DOS loading: `LoadSeg` / `UnLoadSeg` for strict native `ELF`
 - explicit DOS launch: `RunSeg` for strict native `ELF`
 
@@ -185,7 +185,7 @@ compiler backends now live in `sdk/docs/IntuitionOS/Toolchain.md`.
 
 The M13 startup-page ABI remains the task-entry contract.
 
-M14 Phase 1 does **not** change that. Later M14 phases must still seed:
+M14 Phase 1 does **not** change that. Later M14 phases must still install:
 
 - startup page base VA at `0(sp)`
 - the 64-byte startup block inside that page
@@ -225,7 +225,7 @@ M14 phases 3-5 introduced the launch-descriptor contract for `ExecProgram`. M14.
 
 What is native today:
 
-- seeded `C:` commands and demo applications that now ship as strict M14 ELF
+- `C:` commands and demo applications that now ship as strict M14 ELF
 - explicit `LoadSeg` / `RunSeg` use on strict M14 ELF files in the DOS file store
 
 What is removed in M14.2 phase 1:

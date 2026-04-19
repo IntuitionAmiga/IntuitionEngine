@@ -441,15 +441,6 @@ TASK_EXIT_REASON_FAULT      equ 2
 TASK_EXIT_REASON_INTERNAL   equ 3
 TASK_TEARFLAG_HOOKS_RAN     equ 0x01
 
-; M14.1 phase 3: dos.library receives a private exported copy of the
-; post-DOS staged service ELFs during bootstrap. These rows live in
-; dos.library's own data image and are internal-only.
-DOS_BOOT_EXPORT_COUNT       equ 5
-DOS_BOOT_EXPORT_ROW_SZ      equ 24
-DOS_BOOT_EXPORT_ID          equ 0      ; u32 manifest entry ID
-DOS_BOOT_EXPORT_PTR         equ 8      ; u64 user-accessible ELF VA
-DOS_BOOT_EXPORT_SIZE        equ 16     ; u64 ELF size
-
 ; Port chain page layout (4 KiB allocator-backed page).
 ; Same chain-page format as M12.5 region overflow / M12.6 shmem overflow:
 ;   [0..1]   = next chain page PPN (0 = end of chain)
@@ -630,7 +621,7 @@ USER_DYN_PAGES    equ 768         ; max pages per single AllocMem call
 ; M13 Phase 1 Startup Block ABI
 ; ===========================================================================
 ; Every task gets a small kernel-populated startup block in its own dedicated
-; user-mapped page. The kernel seeds the initial stack so that after the
+; user-mapped page. The kernel preloads the initial stack so that after the
 ; standard `sub sp, sp, #16` preamble:
 ;   0(sp) = startup_block_base
 ;   8(sp) = data_base

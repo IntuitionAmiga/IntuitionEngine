@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type exportSpec struct {
@@ -21,18 +22,18 @@ var systemExports = []exportSpec{
 	{src: "boot_intuition_library.elf", dst: "LIBS/intuition.library"},
 	{src: "boot_input_device.elf", dst: "DEVS/input.device"},
 	{src: "boot_hardware_resource.elf", dst: "RESOURCES/hardware.resource"},
-	{src: "seed_version.elf", dst: "C/Version"},
-	{src: "seed_avail.elf", dst: "C/Avail"},
-	{src: "seed_dir.elf", dst: "C/Dir"},
-	{src: "seed_type.elf", dst: "C/Type"},
-	{src: "seed_echo.elf", dst: "C/Echo"},
-	{src: "seed_assign.elf", dst: "C/Assign"},
-	{src: "seed_list.elf", dst: "C/List"},
-	{src: "seed_which.elf", dst: "C/Which"},
-	{src: "seed_help.elf", dst: "C/Help"},
-	{src: "seed_gfxdemo.elf", dst: "C/GfxDemo"},
-	{src: "seed_about.elf", dst: "C/About"},
-	{src: "seed_elfseg.elf", dst: "C/ElfSeg"},
+	{src: "cmd_version.elf", dst: "C/Version"},
+	{src: "cmd_avail.elf", dst: "C/Avail"},
+	{src: "cmd_dir.elf", dst: "C/Dir"},
+	{src: "cmd_type.elf", dst: "C/Type"},
+	{src: "cmd_echo.elf", dst: "C/Echo"},
+	{src: "cmd_assign.elf", dst: "C/Assign"},
+	{src: "cmd_list.elf", dst: "C/List"},
+	{src: "cmd_which.elf", dst: "C/Which"},
+	{src: "cmd_help.elf", dst: "C/Help"},
+	{src: "cmd_gfxdemo.elf", dst: "C/GfxDemo"},
+	{src: "cmd_about.elf", dst: "C/About"},
+	{src: "elfseg_fixture.elf", dst: "C/ElfSeg"},
 	{src: "sdk/intuitionos/iexec/assets/system/S/Startup-Sequence", dst: "S/Startup-Sequence"},
 	{src: "sdk/intuitionos/iexec/assets/system/S/Help", dst: "S/Help"},
 	{src: "sdk/intuitionos/iexec/assets/system/L/Loader-Info", dst: "L/Loader-Info"},
@@ -89,7 +90,7 @@ func main() {
 		if filepath.IsAbs(spec.src) {
 			src = spec.src
 		}
-		if filepath.Clean(spec.src) == spec.src && len(spec.src) >= 4 && spec.src[:4] == "sdk/" {
+		if filepath.Clean(spec.src) == spec.src && strings.HasPrefix(spec.src, "sdk/") {
 			src = filepath.Join(absRepoRoot, spec.src)
 		}
 		dst := filepath.Join(absOutRoot, spec.dst)

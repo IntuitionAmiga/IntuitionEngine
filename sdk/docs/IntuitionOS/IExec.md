@@ -28,9 +28,9 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
 - I/O page mapping via MapIO syscall (REGION_IO type)
 - **`SYS_EXEC_PROGRAM` is now descriptor-only** (M14.2 phase 1): kernel task launch no longer accepts user-provided flat `IE64PROG` images. The surviving public contract is the M14 launch descriptor used by DOS `RunSeg`; malformed descriptors, unmapped pointers, and sub-`USER_CODE_BASE` values still fail with `ERR_BADARG`.
 - **Dynamic task-image placement in `load_program`** (M10, refined in M12.8, redesigned in M13 phases 2 and 4): the old arbitrary `code_size <= 8192` / `data_size <= 49152` product caps are gone, and task images are no longer forced into `task_id * USER_SLOT_STRIDE` slots. `load_program` now allocates code, stack, data, and startup pages dynamically: it uses the legacy fixed image window first, then spills additional image pages into allocator-pool pages as needed. PT backing likewise uses the legacy fixed 32-block PT window first, then spills additional 64 KiB PT blocks into allocator-pool pages. Failure mode is real `ERR_NOMEM` when the allocator pool is exhausted.
-- **M13 startup block ABI**: boot-loaded and `ExecProgram`-launched tasks no longer self-locate from `GetSysInfo(CURRENT_TASK) + USER_SLOT_STRIDE`. The kernel allocates a dedicated startup page for each launched task, writes the 64-byte startup block there, and seeds the startup-page base VA at `0(sp)` before entering user code. Services discover task identity and actual code/data/stack bases by first loading the startup-page VA from `0(sp)` and then reading the startup block from that page.
+- **M13 startup block ABI**: boot-loaded and `ExecProgram`-launched tasks no longer self-locate from `GetSysInfo(CURRENT_TASK) + USER_SLOT_STRIDE`. The kernel allocates a dedicated startup page for each launched task, writes the 64-byte startup block there, and places the startup-page base VA at `0(sp)` before entering user code. Services discover task identity and actual code/data/stack bases by first loading the startup-page VA from `0(sp)` and then reading the startup block from that page.
 - **Phase 5 regression gate**: the full visible boot stack and both retained GUI demos are now covered by explicit M13 tests (`TestIExec_M13_Phase5_FullBootStack_ServiceCensus`, `..._GfxDemoRegression`, `..._AboutRegression`), so the milestone does not rely on older M11/M12 test names as an implicit proxy for final compatibility.
-- **M14 phase 5 ships the visible native DOS loader path end-to-end, and M14.2 phase 1 removes the remaining flat-image escape hatches**: DOS-loaded commands and applications use a strict `ELF64` subset (`EM_IE64 = 0x4945`, `ET_EXEC`, `PT_LOAD` only, no dynamic linker) when loaded through `DOS_LOADSEG`. `dos.library` parses that subset, builds DOS-owned seglists, frees them with `DOS_UNLOADSEG`, launches them through `DOS_RUNSEG` via the `ExecProgram` launch-descriptor bridge, and `DOS_RUN` now rejects non-ELF executable content instead of falling back to legacy flat-image launch. M14 shipped with the seeded `C:` command/demo path as native ELF; M14.2 phase 1 makes that ELF-only execution contract explicit.
+- **M14 phase 5 ships the visible native DOS loader path end-to-end, and M14.2 phase 1 removes the remaining flat-image escape hatches**: DOS-loaded commands and applications use a strict `ELF64` subset (`EM_IE64 = 0x4945`, `ET_EXEC`, `PT_LOAD` only, no dynamic linker) when loaded through `DOS_LOADSEG`. `dos.library` parses that subset, builds DOS-owned seglists, frees them with `DOS_UNLOADSEG`, launches them through `DOS_RUNSEG` via the `ExecProgram` launch-descriptor bridge, and `DOS_RUN` now rejects non-ELF executable content instead of falling back to legacy flat-image launch. M14 shipped with the `C:` command/demo path as native ELF; M14.2 phase 1 makes that ELF-only execution contract explicit.
 - M14 shipped/current runtime:
   - the public ELF loader API is the file-backed DOS path: `DOS_LOADSEG` / `DOS_UNLOADSEG` / `DOS_RUNSEG`
   - base M14 originally still brought boot services up from the legacy kernel `program_table` path
@@ -45,13 +45,13 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
   - `console.handler` and `dos.library` boot from that staged manifest source as the minimum pre-DOS bootstrap chain
   - once DOS is online, `dos.library` launches `Shell` from the internal embedded manifest, and `Shell` then drives `S:Startup-Sequence`
   - DOS resolves the service-name lines in `S:Startup-Sequence` through its internal embedded-manifest path to launch `hardware.resource`, `input.device`, `graphics.library`, and `intuition.library`
-  - shipped service binaries under `LIBS:`, `DEVS:`, and `RESOURCES:` are now seeded as strict M14 ELF too
+  - shipped service binaries under `LIBS:`, `DEVS:`, and `RESOURCES:` are now shipped as strict M14 ELF too
   - the public DOS loader API is unchanged; the embedded-manifest service source remains internal-only
 - console.handler: CON: handler with GetMsg polling and CON_READLINE protocol — **M11.5**: console.handler now owns terminal MMIO directly via its own `SYS_MAP_IO(0xF0, 1)` mapping and inlines the readline MMIO loop. The former kernel-side `SYS_READ_INPUT` (slot 37) is removed; slot 37 is an unallocated hole that returns `ERR_BADARG`.
 - **dos.library**: AmigaOS dos.library equivalent with a RAM-backed, case-insensitive filesystem and Amiga-shaped assign model. The file metadata table and open-handle table are unbounded user-space chains of `AllocMem`'d 4 KiB pages (85 file entries or 510 handle entries per page). As of **M12.8**, each file body is a variable-size chain of 4 KiB extents linked through `entry.file_va`; the old fixed `DOS_FILE_SIZE` per-file allocation is gone. `DOS_WRITE` now does an atomic swap onto a newly allocated extent chain so allocation failure leaves previous content intact. **M14 phases 2-3 add `DOS_LOADSEG` / `DOS_UNLOADSEG` / `DOS_RUNSEG`**: dos.library validates the strict native ELF subset, builds DOS-owned seglists with preserved target VA / `R/W/X` / entry-point metadata, frees them on demand, and launches them through the dual-mode `ExecProgram` descriptor handoff. **M15 expands the DOS namespace and layout model**: the built-in assign table now covers `RAM:`, `C:`, `L:`, `LIBS:`, `DEVS:`, `T:`, `S:`, and `RESOURCES:`; bare command search remains `C:`-only; `L:` is direct-access only in M15; `RAM:` remains a first-class compatibility root view; and `DOS_ASSIGN` adds DOS-side list/query/set of assign rows while keeping `RAM:` non-mutable.
 - **M15.2 host-backed boot current runtime**: `SYS:` is now the mounted host-backed boot volume and `IOSSYS:` is the built-in system assign rooted at `SYS:IOSSYS`. `DOS_ASSIGN` remains a compatibility projection: public list/query rows stay `name[16], target[16]`, `SYS:` host root and `IOSSYS:` built-in system assign are resolver-owned rather than mutable rows, canonical functional assigns keep their short public targets, `console.handler` boots from `IOSSYS:L/console.handler`, `dos.library` boots from `IOSSYS:LIBS/dos.library`, and `Shell` boots from `IOSSYS:Tools/Shell`.
 - **M15.6 HostFS hardening**: bootstrap HostFS resolution is per-component `NOFOLLOW` and case-normalized. Any symlink component in a bootstrap path is rejected instead of traversed, and case variants collapse to one canonical host path. See [HostFS.md](HostFS.md).
-- **Shell**: interactive command shell that sends raw command names to dos.library via DOS_RUN (no shell-side command table). The visible command-dispatch path goes through the DOS loader path for the seeded native-ELF `C:` command/demo set; `DOS_RUN` rejects non-ELF executable content instead of falling back to legacy flat-image launch. Executes `S:Startup-Sequence` automatically at boot if present, then drops to the interactive prompt.
+- **Shell**: interactive command shell that sends raw command names to dos.library via DOS_RUN (no shell-side command table). The visible command-dispatch path goes through the DOS loader path for the native-ELF `C:` command/demo set; `DOS_RUN` rejects non-ELF executable content instead of falling back to legacy flat-image launch. Executes `S:Startup-Sequence` automatically at boot if present, then drops to the interactive prompt.
 - **Visible DOS commands** as DOS-loaded executables: `VERSION`, `AVAIL`, `DIR`, `TYPE`, `ECHO`, `ASSIGN`, `LIST`, `WHICH`, `HELP`, plus the retained `GfxDemo` and `About` programs. Stored as files in RAM under `C:`, launched by name through dos.library.
 
 **What IExec does not do:**
@@ -78,27 +78,21 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
   - `input.device M11 [Task 4]`
   - `graphics.library M11 [Task 5]`
   - `intuition.library M12 [Task 6]`
-  - `IntuitionOS 0.17`
+  - `IntuitionOS 0.18`
   - `Type HELP for commands and ASSIGN for layout`
   - `1>`
 
 **M15.1 source layout:**
 
-- `sdk/intuitionos/iexec/iexec.s` remains the top-level image/layout file and the only assembly entrypoint passed to `ie64asm`.
-- `iexec.s` remains the top-level image/layout file and the only assembly entrypoint passed to `ie64asm`.
-- Phase 1 of M15.1 moves the seeded command sources out of the monolithic root into `sdk/intuitionos/iexec/cmd/` while preserving the existing `prog_*` labels and ROM ordering through explicit `include` statements in `iexec.s`.
-- seeded command sources now live under `sdk/intuitionos/iexec/cmd/`
-- Phase 2 of M15.1 moves the non-DOS boot services into `handler/`, `dev/`, `resource/`, and `lib/` source files while preserving their existing embedded-program labels and boot ordering.
-- `console.handler`, `input.device`, `hardware.resource`, `graphics.library`, and `intuition.library` are now split out of the root image source.
-- Phase 3 of M15.1 moves the interactive shell into `sdk/intuitionos/iexec/handler/shell.s`.
-- `prog_shell` is split out of the root image source without changing the M15 shell behavior.
-- Phase 4 of M15.1 moves `prog_doslib` into `sdk/intuitionos/iexec/lib/dos_library.s`.
-- the full DOS-owned layout block moves together: `prog_doslib_code`, `prog_doslib_data`, the seed ELF region, DOS-seeded text/assets, and the nested includes that already assembled inside that ownership boundary
-- Phase 5 of M15.1 splits the remaining DOS-owned subordinate programs and assets.
-- `prog_gfxdemo`, `prog_about`, and the DOS-seeded text/fixture blobs now live in subordinate `cmd/` and `assets/` files that are still included from `sdk/intuitionos/iexec/lib/dos_library.s`
-- Phase 6 of M15.1 moves the remaining boot/image wiring out of the root file.
-- `sdk/intuitionos/iexec/boot/manifest_seed.s` and `sdk/intuitionos/iexec/boot/strings.s` now hold the boot manifest and root boot strings while `iexec.s` stays the top-level assembly entrypoint
-- The generated runtime ELFs are still rebuilt from labeled embedded programs after assembly; M15.1 does not change the ROM-embedded build model.
+- `sdk/intuitionos/iexec/iexec.s` remains the kernel image/layout file and the only assembly entrypoint for `exec.library`. `iexec.s` remains the kernel image/layout file at the new per-component boundary.
+- `sdk/intuitionos/iexec/runtime_builder.s` assembles the standalone hostfs runtime artifacts that are exported into `sdk/intuitionos/system/SYS/IOSSYS`.
+- Phase 1 of M15.1 moves command sources into `sdk/intuitionos/iexec/cmd/`; command sources now live under `sdk/intuitionos/iexec/cmd/`.
+- Phase 2 of M15.1 moves the non-DOS boot services into `handler/`, `dev/`, `resource/`, and `lib/` source files. `console.handler`, `input.device`, `hardware.resource`, `graphics.library`, and `intuition.library` are now split out of the kernel image source.
+- Phase 3 of M15.1 moves the interactive shell into `sdk/intuitionos/iexec/handler/shell.s`. `prog_shell` is split out of the kernel image source without changing the M15 shell behavior.
+- Phase 4 of M15.1 moves `prog_doslib` into `sdk/intuitionos/iexec/lib/dos_library.s`; the DOS runtime body moves into a dedicated library source.
+- Phase 5 of M15.1 splits the remaining DOS-owned subordinate programs and assets: `prog_gfxdemo`, `prog_about`, and the ELF fixture now live in subordinate `cmd/` and `assets/` files (`sdk/intuitionos/iexec/cmd/gfxdemo.s`, `sdk/intuitionos/iexec/cmd/about.s`, and the ELF fixture).
+- Phase 6 of M15.1 moves the remaining boot/image wiring out of the root file. `sdk/intuitionos/iexec/boot/bootstrap.s` and `sdk/intuitionos/iexec/boot/strings.s` now hold the bootstrap tables and root boot strings.
+- The generated runtime ELFs are rebuilt from `runtime_builder.s`; only `exec.library` remains ROM-resident at runtime.
 - IntuitionOS still lives under `sdk/` for repository-history reasons in M15.1. The refactor is about component ownership and maintainability, not yet about repo relocation.
 
 **M15.2 host-backed boot current runtime:**
@@ -215,7 +209,7 @@ IExec enforces a write-XOR-execute policy:
   and below the kernel stack floor, so downward overflow becomes
   `FAULT_NOT_PRESENT`
 - **Optional minimal kernel stack canary**: when the
-  `KERNEL_STACK_CANARY_ENABLED` build flag is set, the kernel seeds and checks
+  `KERNEL_STACK_CANARY_ENABLED` build flag is set, the kernel writes and checks
   one sentinel word at the bottom of the mapped kernel stack page on trap /
   interrupt entry. This is a narrow corruption tripwire, not a substitute for
   the guard-page hardening above.
@@ -605,7 +599,7 @@ M14.1 target:
 - the kernel data page now carries a small internal boot-manifest table for `console.handler` and `dos.library`
 - those rows are the source of bootstrap-grant identity, but first-service launch still uses the stable bundled boot loader after the staged ELF validation step
 
-**5.12.6 hardware.resource user-space service.** Bundled program `prog_hwres` seeded into the RAM filesystem as `RESOURCES:hardware.resource`. `S/Startup-Sequence` launches it BEFORE `input.device` and `graphics.library` so it has its public port `hardware.resource` registered before any client calls `FindPort`. Service body:
+**5.12.6 hardware.resource user-space service.** Bundled program `prog_hwres` shipped in the RAM filesystem as `RESOURCES:hardware.resource`. `S/Startup-Sequence` launches it BEFORE `input.device` and `graphics.library` so it has its public port `hardware.resource` registered before any client calls `FindPort`. Service body:
 
 1. `SYS_HWRES_OP`/`HWRES_BECOME` — claim broker identity.
 2. `CreatePort("hardware.resource", PF_PUBLIC)` — register the public port.
@@ -988,8 +982,8 @@ How IExec maps to (and diverges from) classic Amiga Exec:
 
 - **IE64 program image format**: 32-byte fixed header (magic "IE64PROG", code_size, data_size, flags) followed by code and data sections. No ELF, no relocations, no entry offset - entry is always code offset 0. Max one page (4 KiB) each for code and data.
 - **Static program table**: kernel-embedded array of (image_ptr, image_size) entries, sentinel-terminated. Boot code iterates the table and calls `load_program` for each entry.
-- **Boot-time loader** (`load_program`): validates image header (magic, sizes, alignment, truncation check), finds a free task ID / TCB row, allocates dynamic code/stack/data/startup/PT placement inside the reserved image/PT windows, copies code and data into the allocated pages, builds the page table, initializes the TCB, writes the startup block into the dedicated startup page, and seeds that startup-page VA at `0(sp)` before first entry. Validate-then-commit pattern. Not a syscall - kernel-internal only.
-- **Current startup ABI**: programs discover their own layout from the startup page whose base VA is seeded at `0(sp)`, not from `GetSysInfo(CURRENT_TASK) + slot arithmetic`. The startup block lives in that dedicated startup page, not inside the task data image.
+- **Boot-time loader** (`load_program`): validates image header (magic, sizes, alignment, truncation check), finds a free task ID / TCB row, allocates dynamic code/stack/data/startup/PT placement inside the reserved image/PT windows, copies code and data into the allocated pages, builds the page table, initializes the TCB, writes the startup block into the dedicated startup page, and places that startup-page VA at `0(sp)` before first entry. Validate-then-commit pattern. Not a syscall - kernel-internal only.
+- **Current startup ABI**: programs discover their own layout from the startup page whose base VA is written at `0(sp)`, not from `GetSysInfo(CURRENT_TASK) + slot arithmetic`. The startup block lives in that dedicated startup page, not inside the task data image.
 - **4 bundled user-space services**:
 - **CONSOLE**: creates public "CONSOLE" port, prints own ONLINE banner directly, loops receiving messages and printing data0 as chars. Text output service - all programs send through CONSOLE.
 - **ECHO**: finds CONSOLE, announces online, creates "ECHO" port, allocates shared memory with greeting string, waits for request, replies with share_handle.
@@ -1043,8 +1037,8 @@ M10 transitions the system from kernel-dispatched command indices to user-space 
   - Both share an assign-resolution core that strips the volume part and rewrites with the mapped prefix into a 32-byte scratch buffer in dos.library's data page.
 - **`DOS_NAME_LEN` increased from 16 to 32**: file table entry grows from 28 to 44 bytes (16 entries × 44 = 704 bytes). Required to hold names like `S/Startup-Sequence` (18 chars).
 - **DOS_RUN redesigned**: takes a command name in the shared buffer (format: `"command_name\0args_string\0"`) instead of a program table index. Resolves the name through the C: assign, looks it up in the file table, computes `image_ptr = storage_va + entry.offset`, and calls `SYS_EXEC_PROGRAM` with the new ABI. Replies with `DOS_ERR_NOTFOUND` if the name does not resolve to a stored file.
-- **Embedded command images + seeding**: dos.library's multi-page data section contains the raw IE64PROG bytes for VERSION, AVAIL, DIR, TYPE, ECHO, plus the `S/Startup-Sequence` script text. At init, `dos_seed_one` walks each embedded image, allocates a file table slot, copies the name from the seed strings area, and copies the image bytes from the data pages to the AllocMem'd 64 KB storage region. The kernel never sees this — it's entirely user-space DOS internals.
-- **Boot race prevention**: dos.library defers `CreatePort("dos.library")` until **after** seeding is complete. The port becoming visible IS the readiness signal. Shell's `OpenLibrary("dos.library")` retry loop blocks until the port exists, which guarantees all files (`C/Version`, `S/Startup-Sequence`, etc.) are already in RAM when the shell first talks to dos.library. This is the same pattern AmigaOS uses: a library is not discoverable until it is fully initialized.
+- **Embedded command images + file-table install**: dos.library's multi-page data section contains the raw IE64PROG bytes for VERSION, AVAIL, DIR, TYPE, ECHO, plus the `S/Startup-Sequence` script text. At init, a DOS-internal loader walks each embedded image, allocates a file table slot, copies the name from the DOS string table, and copies the image bytes from the data pages to the AllocMem'd 64 KB storage region. The kernel never sees this — it's entirely user-space DOS internals.
+- **Boot race prevention**: dos.library defers `CreatePort("dos.library")` until **after** init is complete. The port becoming visible IS the readiness signal. Shell's `OpenLibrary("dos.library")` retry loop blocks until the port exists, which guarantees all files (`C/Version`, `S/Startup-Sequence`, etc.) are already in RAM when the shell first talks to dos.library. This is the same pattern AmigaOS uses: a library is not discoverable until it is fully initialized.
 
 **Shell changes (gets simpler):**
 
@@ -1107,12 +1101,12 @@ M11 takes the next step toward an Amiga-shaped graphical OS: interactive input a
 - **`load_program` data-size cap raised from 16384 to 20480** (5 data pages). Required for dos.library to grow to 5 data pages embedding the new `LIBS/graphics.library`, `DEVS/input.device`, and `C/GfxDemo` images.
 - No new syscalls. No new region types. No new TCB fields. No VA layout overhaul beyond the dynamic window stride bump.
 
-**dos.library changes (additional namespaces, additional seeds):**
+**dos.library changes (additional namespaces, additional bundled files):**
 
 - **Three new assign entries**: `LIBS:` → `LIBS/`, `DEVS:` → `DEVS/`, `RESOURCES:` → `RESOURCES/`. Resolved by extending the existing `.dos_resolve_has_colon` chain with a 4-char check (LIBS/DEVS) and a 9-char check (RESOURCES). All three follow the same "uppercase prefix + slash + remainder" pattern.
-- **Three new embedded service images**: `LIBS/graphics.library`, `DEVS/input.device`, `C/GfxDemo`. Embedded in dos.library's data section after the existing M10 command images and seeded into the RAM file table at init time via `dos_seed_one`. dos.library now has 5 data pages (was 3).
+- **Three new embedded service images**: `LIBS/graphics.library`, `DEVS/input.device`, `C/GfxDemo`. Embedded in dos.library's data section after the existing M10 command images and installed into the RAM file table at init time. dos.library now has 5 data pages (was 3).
 - **`S:Startup-Sequence` updated**: now launches `DEVS:input.device` and `LIBS:graphics.library` before printing the version banner and the M11 ready message. The shell's existing fire-and-forget DOS_RUN-with-delay is sufficient to start long-running service tasks; banner ordering is naturally serialized through `SYS_DEBUG_PUTCHAR`.
-- The strict-boot kernel program table is **unchanged at 3 entries** (console.handler, dos.library, shell). M11 services live in dos.library's seeded RAM filesystem, not in the kernel image. Single source of truth.
+- The strict-boot kernel program table is **unchanged at 3 entries** (console.handler, dos.library, shell). M11 services live in dos.library's RAM filesystem, not in the kernel image. Single source of truth.
 
 **input.device — keyboard/mouse event service (new in M11):**
 
@@ -1211,7 +1205,7 @@ Every behavior-changing phase landed test-first.
 
 **Startup-Sequence change (user-visible artifact):**
 
-The seeded `S:Startup-Sequence` adds one trailing line:
+The shipped `S:Startup-Sequence` adds one trailing line:
 
 ```
 ECHO All visible services are running in user space
@@ -1302,7 +1296,7 @@ Until that first OPEN_WINDOW the system stays in text mode (intuition.library ha
 
 **Screen-buffer ownership rule.** intuition.library is the SOLE registered display client. App-side window backing surfaces are separate `MEMF_PUBLIC` buffers owned by each app and `MapShared`-d into intuition.library on `INTUITION_OPEN_WINDOW`. graphics.library never sees the app — only intuition.library's screen surface ever touches `GFX_REGISTER_SURFACE`/`GFX_PRESENT`. graphics.library is unchanged.
 
-**5.13.2 About app.** A user-space client (`prog_about`, seeded as `C/About` in the RAM: filesystem) that demonstrates the full open→damage→close cycle and renders text via an embedded bitmap font:
+**5.13.2 About app.** A user-space client (`prog_about`, shipped as `C/About` in the RAM: filesystem) that demonstrates the full open→damage→close cycle and renders text via an embedded bitmap font:
 
 1. `FindPort("intuition.library")`
 2. `AllocMem(256000, MEMF_PUBLIC|MEMF_CLEAR)` — its own 320×200 RGBA32 backing surface
@@ -1321,7 +1315,7 @@ Until that first OPEN_WINDOW the system stays in text mode (intuition.library ha
 7. `WaitPort(idcmp_port)` loop, exits on `IDCMP_CLOSEWINDOW`
 8. `INTUITION_CLOSE_WINDOW`, then `SYS_EXIT_TASK`
 
-The About app is reachable via the shell as `C:About` (a regular DOS_RUN of a seeded RAM: file) — not auto-launched at boot, so the test budget stays free for the existing M11 GfxDemo tests.
+The About app is reachable via the shell as `C:About` (a regular DOS_RUN of a shipped RAM: file) — not auto-launched at boot, so the test budget stays free for the existing M11 GfxDemo tests.
 
 **Window decoration painted by intuition.library on top of the app buffer:**
 
@@ -1351,7 +1345,7 @@ ECHO IntuitionOS M12 ready
 ECHO All visible services are running in user space
 ```
 
-intuition.library is auto-started right after graphics.library at boot. Its main loop just waits for messages — text mode persists until an app sends OPEN_WINDOW. The version string in the seeded `C:Version` is `IntuitionOS 0.12 (exec.library M11.6 / intuition.library M12)`.
+intuition.library is auto-started right after graphics.library at boot. Its main loop just waits for messages — text mode persists until an app sends OPEN_WINDOW. The version string in the shipped `C:Version` is `IntuitionOS 0.12 (exec.library M11.6 / intuition.library M12)`.
 
 **5.13.4 No new syscalls.** The full M11.5 admission rule held: every M12 capability is built from existing nucleus primitives (`SYS_FIND_PORT`, `SYS_CREATE_PORT`, `SYS_PUT_MSG`, `SYS_WAIT_PORT`, `SYS_GET_MSG`, `SYS_REPLY_MSG`, `SYS_ALLOC_MEM`, `SYS_MAP_SHARED`) and existing graphics.library/input.device protocols (`GFX_OPEN_DISPLAY`, `GFX_REGISTER_SURFACE`, `GFX_PRESENT`, `INPUT_OPEN`, `INPUT_EVENT`). intuition.library is a pure user-space service. There are no graphics.library protocol changes either — `GFX_PRESENT` stays full-frame, and the dirty-rect tracking inside intuition.library is local (it bounds the compositor's blit work, but the call to graphics.library doesn't carry the rect through). Rect-bounded `GFX_PRESENT` is reserved for M12.x.
 
@@ -1403,7 +1397,7 @@ The four canonical extent operations all live in `iexec.s`:
 - **`.dos_extent_alloc(byte_count)`** → walks up `ceil(byte_count / DOS_EXT_PAYLOAD)` extents, linking them into a chain. On allocation failure partway through, internally calls `.dos_extent_free` on whatever was already allocated and returns `r1 = 0` with the failure error in `r2`. Empty case (`byte_count == 0`) returns `r1 = 0` with `ERR_OK`.
 - **`.dos_extent_free(first_va)`** → walks the chain calling `SYS_FREE_MEM` on each extent in turn. No-op if `first_va == 0`.
 - **`.dos_extent_walk(first_va, dst, byte_count)`** → copies up to `byte_count` bytes from the start of the chain into `dst`. Used by `DOS_READ`. Returns the number of bytes actually read.
-- **`.dos_extent_write(first_va, src, byte_count)`** → copies up to `byte_count` bytes from `src` into the chain (starting at the first extent's payload). Symmetric counterpart to `.dos_extent_walk`. Used by `DOS_WRITE` and the boot-time seed paths.
+- **`.dos_extent_write(first_va, src, byte_count)`** → copies up to `byte_count` bytes from `src` into the chain (starting at the first extent's payload). Symmetric counterpart to `.dos_extent_walk`. Used by `DOS_WRITE` and the boot-time init paths.
 
 **5.14.2 Atomic-swap-on-rewrite rule.** `DOS_WRITE`'s most load-bearing change is the rewrite path. The rule:
 
@@ -1454,7 +1448,7 @@ A hostile image that declares an absurdly large `code_size` (e.g. `0xFFFFFFFF`) 
 
 This change is in scope for M12.8 because (a) it was a hard prerequisite for shipping the storage refactor, (b) the two caps were the same kind of bucket-C product limit that the M12.5 audit was supposed to catch (and missed), and (c) the replacement is more honest, more correct, and smaller code than the prior conditional `bgt` checks. The "no kernel changes" rule from the M12.8 plan was relaxed to "no kernel functional changes; layout-bound caps may be replaced with the real constraint where required."
 
-**5.14.5 Phase 1 prerequisite — robust dos.library preamble.** The other Phase 1 surprise was that dos.library's preamble hardcoded `add r29, r29, #0x3000` to compute its data-page base — an offset that assumed exactly 2 code pages. Bumping dos.library to 3 code pages broke the preamble silently (it pointed at the stack page instead of the data section). Phase 1 fixed that by removing the hardcoded offset; the current M13 shape seeds `data_base` at the top of the initial stack page, so after `sub sp, sp, #16` the preamble recovers it with `load.q r29, 8(sp)` without assuming stack/data adjacency. dos.library can now grow without touching its preamble. (Other libraries were migrated to the same pattern during M13 phase 2.)
+**5.14.5 Phase 1 prerequisite — robust dos.library preamble.** The other Phase 1 surprise was that dos.library's preamble hardcoded `add r29, r29, #0x3000` to compute its data-page base — an offset that assumed exactly 2 code pages. Bumping dos.library to 3 code pages broke the preamble silently (it pointed at the stack page instead of the data section). Phase 1 fixed that by removing the hardcoded offset; the current M13 shape writes `data_base` at the top of the initial stack page, so after `sub sp, sp, #16` the preamble recovers it with `load.q r29, 8(sp)` without assuming stack/data adjacency. dos.library can now grow without touching its preamble. (Other libraries were migrated to the same pattern during M13 phase 2.)
 
 **5.14.6 What M12.8 explicitly does NOT do.** The DOS protocol is unchanged — no new opcodes, no widened ABI fields, no message wire-format changes:
 
@@ -1513,12 +1507,12 @@ Phase-3 launch behavior:
 Phase-4 shell integration:
 
 - `DOS_RUN` now prefers the native seglist path for strict M14 ELF commands
-- M14.2 removes the legacy seeded flat-image execution fallback from that same `DOS_RUN` API
+- M14.2 removes the legacy flat-image execution fallback from that same `DOS_RUN` API
 - shell command names, args, case-insensitive lookup, and unknown-command UX are unchanged from the user's perspective
 
 Phase-5 shipped boundary:
 
-- seeded files under `C:` are now emitted as strict M14 native ELF where possible, so the visible command/demo path (`VERSION`, `AVAIL`, `DIR`, `TYPE`, `ECHO`, `About`, `GfxDemo`) really exercises `LoadSeg` / `RunSeg` / descriptor launch
+- files under `C:` are now emitted as strict M14 native ELF where possible, so the visible command/demo path (`VERSION`, `AVAIL`, `DIR`, `TYPE`, `ECHO`, `About`, `GfxDemo`) really exercises `LoadSeg` / `RunSeg` / descriptor launch
 - bundled startup-sequence services under `LIBS:`, `DEVS:`, and `RESOURCES:` remain legacy flat `IE64PROG` in M14, so the boot chain stays stable while the visible user/demo path moves to native ELF
 - `C:GfxDemo` and `C:About` remain regular DOS-loaded applications and now serve as the retained end-to-end M14 demo path
 - M14.1 target state: all shipped runtime binaries become ELF, but the new service source path is internal embedded-manifest loading rather than an extension of the public file-backed DOS API
@@ -1526,7 +1520,7 @@ Phase-5 shipped boundary:
 M14.1 phase 5 boundary:
 
 - shipped service launches now consume staged strict-M14 ELF rows from the internal embedded boot manifest rather than bundled flat `IE64PROG` images
-- seeded service files under `LIBS:`, `DEVS:`, and `RESOURCES:` are now emitted as strict M14 native ELF too
+- service files under `LIBS:`, `DEVS:`, and `RESOURCES:` are now emitted as strict M14 native ELF too
 - the public DOS file-backed API is unchanged; the embedded-manifest service source remains internal-only
 - the full-ELF shipped runtime is now locked by explicit end-to-end regressions for clean boot, command dispatch, unknown-command handling, and the retained GUI demos
 
@@ -1542,7 +1536,6 @@ Test coverage:
 - `TestIExec_M14_Phase2_LoadSeg_Basic`
 - `TestIExec_M14_Phase2_LoadSeg_InvalidExecutableRejected`
 - `TestIExec_M14_Phase2_LoadSeg_UnLoadSeg_NoLeak`
-- `TestIExec_M14_Phase2_DosSeededCommandsPresent`
 - `TestIExec_M14_Phase2_ElfFixturePassesHostValidator`
 - `TestIExec_M14_Phase3_ExecProgram_DescriptorBasic`
 - `TestIExec_M14_Phase3_RunSeg_Basic`

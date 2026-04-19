@@ -11,9 +11,8 @@ import (
 )
 
 const (
-	bootHostFSKernDataBase  = 0x8F000
-	bootHostFSKDCurrentTask = 0
-	bootHostFSKDPTBRBase    = 8224 // KD_PTBR_BASE: primary PTBR array
+	bootHostFSKernDataBase  = 0x08D000 // KERN_DATA_BASE (sdk/include/iexec.inc)
+	bootHostFSKDCurrentTask = 0        // KD_CURRENT_TASK
 )
 
 // BootstrapHostFSDevice is a narrow read-only hostfs bridge for the ROM bootstrap path.
@@ -75,13 +74,36 @@ func NewBootstrapHostFSDevice(bus *MachineBus, hostRoot string) *BootstrapHostFS
 	return d
 }
 
+// SetSpecialFile registers a special file with an independent copy of data.
+// Callers commonly pass a slice of live VM memory that the guest may later
+// overwrite; the copy insulates subsequent reads from those mutations.
 func (d *BootstrapHostFSDevice) SetSpecialFile(rel string, data []byte) {
 	if rel == "" {
 		return
 	}
-	// copy: callers commonly pass a slice of live VM memory, which the guest
-	// may later overwrite before we serve the special file.
-	d.specials[strings.ToUpper(filepath.ToSlash(filepath.Clean(rel)))] = append([]byte(nil), data...)
+	d.specials[specialFileKey(rel)] = append([]byte(nil), data...)
+}
+
+// SetSpecialFileLive registers a special file aliased to the provided slice
+// without copying. Subsequent reads observe whatever the caller has written
+// into the slice's backing array. A later SetSpecialFile for the same rel
+// replaces the alias with an independent copy.
+func (d *BootstrapHostFSDevice) SetSpecialFileLive(rel string, data []byte) {
+	if rel == "" {
+		return
+	}
+	d.specials[specialFileKey(rel)] = data
+}
+
+func (d *BootstrapHostFSDevice) DeleteSpecialFile(rel string) {
+	if rel == "" {
+		return
+	}
+	delete(d.specials, specialFileKey(rel))
+}
+
+func specialFileKey(rel string) string {
+	return strings.ToUpper(filepath.ToSlash(filepath.Clean(rel)))
 }
 
 func (d *BootstrapHostFSDevice) HandleRead(addr uint32) uint32 {
@@ -522,7 +544,7 @@ func (d *BootstrapHostFSDevice) specialFile(rel string) ([]byte, bool) {
 	if rel == "" {
 		return nil, false
 	}
-	data, ok := d.specials[strings.ToUpper(filepath.ToSlash(filepath.Clean(rel)))]
+	data, ok := d.specials[specialFileKey(rel)]
 	return data, ok
 }
 
@@ -630,22 +652,13 @@ func (d *BootstrapHostFSDevice) currentTaskPTBR() (uint32, bool) {
 	if d.bus == nil {
 		return 0, false
 	}
-	// SYS_BOOT_HOSTFS forwards the caller's live PTBR in arg4 so guest
-	// pointers remain translatable even if KD_PTBR_BASE is stale during
-	// launch-time transitions.
+	// SYS_BOOT_HOSTFS forwards the caller's live PTBR in arg4. Kernel-direct
+	// callers leave arg4 == 0 and pass physical addresses, so (0, true)
+	// tells translateGuestVA to treat guest pointers as already-physical.
 	if d.arg4 >= MMU_PAGE_SIZE && d.arg4&MMU_PAGE_MASK == 0 {
 		return d.arg4, true
 	}
-	slot := d.currentTaskSlot()
-	ptbrAddr := bootHostFSKernDataBase + bootHostFSKDPTBRBase + slot*8
-	ptBase := uint32(d.bus.Read64(ptbrAddr))
-	if ptBase == 0 {
-		if slot == 0 {
-			return 0, true
-		}
-		return 0, false
-	}
-	return ptBase, true
+	return 0, true
 }
 
 func (d *BootstrapHostFSDevice) translateGuestVA(ptr uint32, write bool) (uint32, bool) {

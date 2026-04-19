@@ -1,4 +1,3 @@
-
 bootstrap_grant_table:
     ; Row 0: console.handler (manifest ID 10) — CHIP grant for PPN 0xF0
     dc.b    BOOT_MANIFEST_ID_CONSOLE, 0, 0, 0
@@ -11,12 +10,11 @@ bootstrap_grant_table:
     ds.b    15
 
 ; ============================================================================
-; M14.1: bootstrap manifest seed table
+; Bootstrap launch table
 ; ============================================================================
-; Seed rows use the same 40-byte shape as the runtime manifest rows in kernel
-; data. PTR/SIZE reference canonical embedded strict-M14 ELF service blobs.
-; NAME points at the internal path/name used by dos.library when matching a
-; shipped service against the embedded manifest.
+; Rows use the same 40-byte shape as the runtime manifest rows in kernel data.
+; PTR/SIZE are populated from hostfs at boot. NAME points at the canonical
+; IntuitionOS runtime path used for diagnostics and internal matching.
 boot_manifest_name_console:
     dc.b    "L/console.handler", 0
     align   8
@@ -39,7 +37,7 @@ boot_manifest_name_intuition:
     dc.b    "LIBS/intuition.library", 0
     align   8
 
-boot_manifest_seed_table:
+boot_manifest_table:
     dc.l    BOOT_MANIFEST_ID_CONSOLE
     dc.l    1                           ; strict/fatal boot
     dc.q    0
