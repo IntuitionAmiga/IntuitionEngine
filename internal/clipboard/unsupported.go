@@ -2,10 +2,6 @@
 
 package clipboard
 
-import "errors"
-
-var errUnsupported = errors.New("clipboard unsupported on this platform")
-
 func Init() error {
 	return errUnsupported
 }
