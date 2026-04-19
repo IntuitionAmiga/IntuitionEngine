@@ -6,14 +6,13 @@ Supported platforms, build profiles, and known limitations for Intuition Engine 
 
 | Platform | Architecture | Status | Build Profile | Notes |
 |----------|-------------|--------|---------------|-------|
-| Linux | x86_64 | **Official** | `full` | Primary development platform |
-| Linux | aarch64 | **Official** | `full` | |
-| Windows | x86_64 | Experimental | `novulkan` | No Vulkan support |
-| Windows | ARM64 | Experimental | `novulkan` | No Vulkan support |
+| Linux | x86_64 | **Official** | `full`, `novulkan`, `headless`, `headless-novulkan` | Primary development platform |
+| Linux | aarch64 | **Official** | `full`, `novulkan`, `headless`, `headless-novulkan` | IE64 native JIT |
+| Windows | x86_64 | **Official** | `novulkan` | Pure-Go release build, full guest JIT parity with Linux amd64 |
+| Windows | ARM64 | **Official** | `novulkan` | Pure-Go release build, IE64 native JIT |
+| macOS | ARM64 | **Official** | `novulkan` | Pure-Go release build, IE64 native JIT via `MAP_JIT` |
 
-**Official** platforms are fully tested and supported. **Experimental** platforms compile and run but may have untested edge cases.
-
-macOS and BSD variants (FreeBSD, NetBSD, OpenBSD) are not currently supported for release builds because ebiten and oto require CGO on those platforms, preventing cross-compilation. They may compile from source on native hardware with the `novulkan` profile.
+**Official** platforms are built in CI and have maintained release packaging targets. BSD variants remain out of scope.
 
 ## Build Profile Requirements
 
@@ -23,8 +22,8 @@ The complete build with all features enabled.
 
 **Requirements:**
 - Go 1.26+
-- CGO enabled
-- C compiler (gcc or clang)
+- CGO enabled on Linux
+- C compiler (gcc or clang) for Linux native builds
 - Vulkan SDK and drivers (for Voodoo GPU path)
 - `sstrip` and `upx` (for binary optimisation, optional)
 
@@ -36,12 +35,13 @@ Software-only Voodoo rasteriser. Removes the Vulkan SDK dependency.
 
 **Requirements:**
 - Go 1.26+
-- CGO enabled (Linux) / auto-disabled (Windows cross-compile)
-- C compiler (Linux native builds)
+- CGO enabled on Linux native builds
+- C compiler for Linux native builds
+- No CGO toolchain required for Windows or macOS arm64 cross-builds
 
 **Features:** Ebiten display, Oto audio, software Voodoo rasteriser.
 
-**Use this for:** Windows and Linux systems without Vulkan.
+**Use this for:** Windows releases, macOS arm64 releases, and Linux systems without Vulkan.
 
 ### headless
 
@@ -49,8 +49,8 @@ No display, no audio. For CI/testing and batch processing.
 
 **Requirements:**
 - Go 1.26+
-- CGO enabled
-- C compiler
+- CGO enabled on Linux
+- C compiler for Linux native runs
 
 **Features:** Stub display/audio backends, software Voodoo rasteriser.
 
@@ -73,7 +73,7 @@ CGO_ENABLED=0 go build -tags "novulkan headless" .
 
 | Backend | Platforms | Rendering | Notes |
 |---------|-----------|-----------|-------|
-| Ebiten | Linux, Windows | OpenGL / DirectX | Default, hardware-accelerated |
+| Ebiten | Linux, Windows, macOS | OpenGL / DirectX / Metal | Default, hardware-accelerated |
 | Headless | All | None | Stub for testing |
 
 Ebiten provides:
@@ -86,19 +86,24 @@ Ebiten provides:
 
 | Backend | Platforms | Output | Notes |
 |---------|-----------|--------|-------|
-| Oto | Linux, Windows | 44.1kHz stereo | Default, low-latency (~20ms) |
+| Oto | Linux, Windows, macOS | 44.1kHz stereo | Default, low-latency (~20ms) |
 | Headless | All | None | Stub for testing |
 
 ## Known Limitations
 
-### Windows (Experimental)
+### Windows
 - Vulkan Voodoo path not available (use `novulkan`)
 - Desktop integration (`.desktop` files, MIME types) is Linux-only
 
+### macOS arm64
+- `novulkan` profile only
+- Release artifacts are ad-hoc binaries; testers may need `xattr -dr com.apple.quarantine .` after download
+- IE64 uses the native arm64 JIT backend; other guest cores remain interpreter-only on arm64
+
 ### Cross-Compilation
-- Linux release builds are native-arch only (ebiten/oto require CGO for GLFW/X11/ALSA)
-- Windows cross-compilation works from Linux (ebiten/oto are pure Go on Windows)
-- Use `make release-linux`, `make release-windows`, or `make release-all` for automated builds
+- Linux release builds remain native-arch or Linux-cross-toolchain builds because the full profile still uses CGO
+- Windows amd64, Windows arm64, and macOS arm64 cross-compilation work from Linux with `CGO_ENABLED=0` under `novulkan`
+- Use `make release-linux`, `make release-windows`, `make release-macos`, or `make release-all` for automated builds
 
 ## Runtime Feature Detection
 

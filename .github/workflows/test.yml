@@ -175,3 +175,6 @@ jobs:
               exit 1
             fi
           done
+
+      - name: Check documentation consistency
+        run: make check-docs

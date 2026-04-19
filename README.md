@@ -5808,12 +5808,13 @@ For detailed build instructions, all build profiles/tags, toolchain setup, testi
 
 | Platform | Architecture | Status | Notes |
 |----------|-------------|--------|-------|
-| Linux | x86_64, aarch64 | **Official** | All build profiles |
-| Windows | x86_64, ARM64 | Experimental | `novulkan` profile |
+| Linux | x86_64, aarch64 | **Official** | `full`, `novulkan`, `headless`, `headless-novulkan` |
+| Windows | x86_64, ARM64 | **Official** | Pure-Go `novulkan` release builds |
+| macOS | arm64 | **Official** | Pure-Go `novulkan` release builds, IE64 native JIT |
 
-Release builds embed the EhBASIC interpreter and include the SDK with pre-assembled demos. Build with `make release-linux` (native arch), `make release-windows` (amd64 + arm64), or `make release-all` for all platforms.
+Release builds embed EhBASIC, EmuTOS, and the AROS ROM via `embed_basic embed_emutos embed_aros`, and package the full `sdk/` tree plus the staged `AROS/` system tree beside the binary. Build with `make release-linux`, `make release-windows`, `make release-macos`, or `make release-all`.
 
-Graphics: Ebiten (OpenGL/Metal/DirectX). Audio: Oto (44.1kHz stereo). Both have headless stubs for CI.
+Graphics: Ebiten (OpenGL on Linux, DirectX on Windows, Metal on macOS). Audio: Oto (44.1kHz stereo). Both have headless stubs for CI.
 
 See [docs/platform-compatibility.md](sdk/docs/platform-compatibility.md) for build profile requirements and known limitations.
 

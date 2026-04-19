@@ -102,6 +102,7 @@ Version metadata (version, git commit, build date) is automatically injected via
 | `novulkan` | Disable Vulkan backend, use software Voodoo rasteriser |
 | `embed_basic` | Embed pre-assembled EhBASIC binary for `-basic` flag |
 | `embed_emutos` | Embed EmuTOS ROM image for `-emutos` flag and BASIC `EMUTOS` command |
+| `embed_aros` | Embed AROS ROM image for `-aros` flag and BASIC `AROS` command |
 | `ie64` | IE64 assembler build tag |
 | `ie64dis` | IE64 disassembler build tag |
 | `m68k` | Enable M68K-specific tests |
@@ -116,8 +117,18 @@ Version metadata (version, git commit, build date) is automatically injected via
 | Oto audio | Yes | Yes | Stub | Stub |
 | Vulkan Voodoo | Yes | No | No | No |
 | Software Voodoo | Yes | Yes | Yes | Yes |
-| CGO required | Yes | Yes | Yes | No |
-| Cross-compile | No | No | No | Yes |
+| CGO required | Linux native only | Linux native only | Linux native only | No |
+| Cross-compile | Linux only | Windows/macOS safe, Linux needs toolchain | Linux only | Yes |
+
+## Host Platform Matrix
+
+| Host OS | GOARCH | GUI build | Release target | JIT-enabled guest cores |
+|---------|--------|-----------|----------------|-------------------------|
+| Linux | amd64 | Yes | Yes | IE64, 6502, M68K, Z80, x86 |
+| Linux | arm64 | Yes | Yes | IE64 |
+| Windows | amd64 | Yes (`novulkan`) | Yes | IE64, 6502, M68K, Z80, x86 |
+| Windows | arm64 | Yes (`novulkan`) | Yes | IE64 |
+| macOS | arm64 | Yes (`novulkan`) | Yes | IE64 |
 
 ## Direct go build
 
@@ -552,9 +563,10 @@ Write to the debug output register (`0xF0700`) to print values during execution:
 | Platform | Status | Graphics | Audio | Notes |
 |----------|--------|----------|-------|-------|
 | **Linux x86_64** | Official | Ebiten | Oto | Primary development platform |
-| **Linux aarch64** | Official | Ebiten | Oto | |
-| **Windows x86_64** | Experimental | Ebiten | Oto | Use `novulkan` profile |
-| **Windows ARM64** | Experimental | Ebiten | Oto | Use `novulkan` profile |
+| **Linux aarch64** | Official | Ebiten | Oto | IE64 native JIT |
+| **Windows x86_64** | Official | Ebiten | Oto | Pure-Go `novulkan` build, full guest JIT parity with Linux amd64 |
+| **Windows ARM64** | Official | Ebiten | Oto | Pure-Go `novulkan` build, IE64 native JIT |
+| **macOS ARM64** | Official | Ebiten | Oto | Pure-Go `novulkan` build, IE64 native JIT |
 
 ### Graphics Backend
 
@@ -584,9 +596,9 @@ make set-default-handler
 
 ### Release Artifacts
 
-Build release archives with `make release-all` (or individual targets like `make release-linux`). Each target builds with embedded EhBASIC and EmuTOS ROM, plus pre-assembled SDK demos. The `EMUTOS` command is available at the BASIC prompt in release builds.
+Build release archives with `make release-all` (or individual targets like `make release-linux`). Each target builds with embedded EhBASIC, EmuTOS, and AROS ROMs, plus the staged `sdk/` and `AROS/` runtime trees. The `EMUTOS` and `AROS` commands are available at the BASIC prompt in release builds.
 
-Each archive contains: `IntuitionEngine` at the root, `sdk/bin/` with `ie32asm`, `ie64asm`, `ie32to64`, `ie64dis`, plus `README.md`, `CHANGELOG.md`, `DEVELOPERS.md`, and the full `sdk/` directory with pre-assembled demos and documentation.
+Each archive contains: `IntuitionEngine` at the root, `sdk/bin/` with `ie32asm`, `ie64asm`, `ie32to64`, `ie64dis`, plus `README.md`, `CHANGELOG.md`, `DEVELOPERS.md`, the full `sdk/` directory, and a sibling `AROS/` directory.
 
 Additional release targets:
 
@@ -597,8 +609,9 @@ Additional release targets:
 
 | Platform | Format | Profile |
 |----------|--------|---------|
-| Linux (native arch) | `.tar.xz` | full |
+| Linux amd64, arm64 | `.tar.xz` | full |
 | Windows amd64, arm64 | `.zip` | novulkan |
+| macOS arm64 | `.tar.xz` | novulkan |
 
 `make release-all` builds all of the above plus the source and SDK archives, and produces `SHA256SUMS` covering all artifacts.
 
@@ -776,12 +789,12 @@ go test -v -run TestJIT_ -tags headless ./...
 | `jit_emit_arm64.go` | ARM64 code emitter (15 mapped registers) |
 | `jit_emit_amd64.go` | x86-64 code emitter (5 mapped registers) |
 | `jit_exec.go` | Dispatcher loop, timer handling |
-| `jit_call.go` | Native code invocation via `runtime.cgocall` |
-| `jit_mmap.go` | Executable memory allocation (mmap RWX) |
+| `jit_call.go` | Native code invocation via `runtime.asmcgocall` |
+| `jit_mmap.go` / `jit_mmap_windows.go` / `jit_mmap_darwin_arm64.go` | Platform-specific executable memory allocation |
 
 ## M68020 JIT
 
-The M68020 CPU core includes a JIT compiler (amd64/linux only; ARM64 planned). It handles variable-length instructions, big-endian memory with byte-swap, 12+ addressing modes, and a 5-bit condition code register (XNZVC). JIT is enabled by default on supported platforms and disabled with `-nojit`.
+The M68020 CPU core includes a JIT compiler on Linux amd64 and Windows amd64. It handles variable-length instructions, big-endian memory with byte-swap, 12+ addressing modes, and a 5-bit condition code register (XNZVC). JIT is enabled by default on supported platforms and disabled with `-nojit`.
 
 Key optimisations:
 - **Block chaining**: Direct JMP rel32 between compiled blocks (BRA/JMP/JSR/BSR/RTS/Bcc/DBcc), avoiding Go dispatcher overhead. Budget counter (64 blocks) for interrupt safety.

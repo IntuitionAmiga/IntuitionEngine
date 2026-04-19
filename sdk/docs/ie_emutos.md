@@ -30,6 +30,8 @@ make emutos
 ./bin/IntuitionEngine -emutos
 ```
 
+Release builds include the `embed_emutos` tag, so packaged binaries can boot EmuTOS directly with `-emutos` without shipping a separate `.img` beside the executable.
+
 `make emutos` build order:
 1. If `sdk/emutos/etos256us.img` exists, use it.
 2. Else, clone EmuTOS into `sdk/emutos-src/` (default URL/ref) and build it.

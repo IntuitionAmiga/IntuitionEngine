@@ -8,7 +8,7 @@ Technical reference for the IE64 Just-In-Time compiler. Covers the shared infras
 
 The IE64 JIT compiler translates blocks of IE64 machine code into native ARM64 or x86-64 instructions at runtime, executing them directly on the host CPU. This bypasses the Go interpreter loop and yields significant performance improvements for compute-heavy workloads.
 
-**Supported platforms:** ARM64/Linux, x86-64/Linux
+**Supported platforms:** ARM64/Linux, ARM64/macOS, ARM64/Windows, x86-64/Linux, x86-64/Windows
 
 **Activation:** JIT is enabled by default on supported platforms. Disable with the `-nojit` flag.
 
@@ -35,7 +35,7 @@ IE64 Machine Code (at PROG_START)
   CodeCache.Put()         jit_common.go    Cache by startPC for O(1) lookup
         |
         v
-  callNative()            jit_call.go      Execute via runtime.cgocall
+  callNative()            jit_call.go      Execute via runtime.asmcgocall
         |
         v
   Dispatcher unpack       jit_exec.go      Extract PC + instruction count from regs[0]
@@ -46,18 +46,23 @@ IE64 Machine Code (at PROG_START)
 | File | Build Tag | Purpose |
 |------|-----------|---------|
 | `jit_common.go` | (none) | JITContext, CodeBuffer, block scanner, register analysis, code cache |
-| `jit_exec.go` | `(amd64\|\|arm64) && linux` | Dispatcher loop (`ExecuteJIT`), timer handling |
-| `jit_call.go` | `(amd64\|\|arm64) && linux` | `callNative` via `runtime.cgocall` |
-| `jit_call_arm64.s` | `arm64 && linux` | ARM64 trampoline (X0 = JITContext*) |
+| `jit_exec.go` | `(amd64 && (linux \|\| windows)) \|\| (arm64 && (linux \|\| windows \|\| darwin))` | Dispatcher loop (`ExecuteJIT`), timer handling |
+| `jit_call.go` | `(amd64 && (linux \|\| windows)) \|\| (arm64 && (linux \|\| windows \|\| darwin))` | `callNative` via `runtime.asmcgocall` plus darwin exec/write protection hooks |
+| `jit_call_arm64.s` | `arm64 && (linux \|\| windows \|\| darwin)` | ARM64 trampoline (X0 = JITContext*) |
 | `jit_call_amd64.s` | `amd64 && linux` | x86-64 trampoline (RDI = JITContext*) |
-| `jit_emit_arm64.go` | `arm64 && linux` | ARM64 code emitter (~2450 lines) |
-| `jit_emit_amd64.go` | `amd64 && linux` | x86-64 code emitter (~1850 lines) |
-| `jit_mmap.go` | `(amd64\|\|arm64) && linux` | Dual-mapped executable memory (RW view for emit/patch, RX view for dispatch, single backing page set) |
+| `jit_call_amd64_windows.s` | `amd64 && windows` | Windows x86-64 trampoline |
+| `jit_emit_arm64.go` | `arm64 && (linux \|\| windows \|\| darwin)` | ARM64 code emitter (~2450 lines) |
+| `jit_emit_amd64.go` | `amd64 && (linux \|\| windows)` | x86-64 code emitter (~1850 lines) |
+| `jit_mmap.go` | `(amd64 \|\| arm64) && linux` | Linux dual-mapped executable memory (RW view + RX view) |
+| `jit_mmap_windows.go` | `(amd64 \|\| arm64) && windows` | Windows executable memory backend |
+| `jit_mmap_darwin_arm64.go` | `darwin && arm64` | macOS `MAP_JIT` executable memory backend |
 | `jit_icache_arm64.go` | `arm64 && linux` | ARM64 icache flush (DC CVAU + IC IVAU) |
+| `jit_icache_arm64_darwin.go` | `arm64 && darwin` | macOS arm64 icache invalidation via libSystem |
 | `jit_icache_arm64.s` | `arm64 && linux` | ARM64 icache flush assembly |
 | `jit_icache_amd64.go` | `amd64 && linux` | x86-64 icache no-op (coherent architecture) |
-| `jit_dispatch.go` | `(amd64\|\|arm64) && linux` | Routes to `ExecuteJIT()` when enabled |
-| `jit_dispatch_stub.go` | `!(amd64\|\|arm64) \|\| !linux` | Fallback: always uses interpreter |
+| `jit_icache_amd64_windows.go` | `amd64 && windows` | Windows x86-64 icache no-op |
+| `jit_dispatch.go` | `(amd64 && (linux \|\| windows)) \|\| (arm64 && (linux \|\| windows \|\| darwin))` | Routes to `ExecuteJIT()` when enabled |
+| `jit_dispatch_stub.go` | all other platforms | Fallback: always uses interpreter |
 
 ---
 
@@ -108,7 +113,7 @@ Maps `startPC -> *JITBlock` for O(1) lookup. Invalidated on self-modifying code 
 
 M15.6 replaced the original single RWX mmap with a W^X-safe dual mapping:
 
-- **Backing pages** are created once via `memfd_create` (with
+- **Linux backing pages** are created once via `memfd_create` (with
   `MFD_EXEC|MFD_CLOEXEC` where available, falling back to plain
   `MFD_CLOEXEC` on hardened kernels that reject `MFD_EXEC`).
 - **Writable view** (`PROT_READ|PROT_WRITE`, no execute) is used by
@@ -131,6 +136,8 @@ the writable view for all mutation and within the execution view
 for all dispatch. The two views alias the same backing pages, so
 an emit through the writable view is immediately visible to the
 CPU fetch through the execution view after the icache flush.
+
+On macOS arm64, the allocator uses a single `MAP_JIT` mapping instead of Linux-style dual views. Writes are bracketed by `pthread_jit_write_protect_np(false/true)` on a locked OS thread, and instruction cache invalidation is handled through `sys_icache_invalidate`.
 
 ---
 

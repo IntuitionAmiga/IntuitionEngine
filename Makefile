@@ -243,7 +243,7 @@ SHOWREEL_ALL_ARTIFACTS := \
 RELEASE_DIR := ./release
 
 # Main targets
-.PHONY: all clean list install uninstall novulkan headless headless-novulkan test-cross
+.PHONY: all clean list install uninstall novulkan headless headless-novulkan test-cross check-docs
 .PHONY: sdk clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-all players
 .PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba boing-checker
 .PHONY: testdata-opl
@@ -301,6 +301,9 @@ headless-novulkan: setup
 
 test-cross:
 	@bash ./scripts/test-cross-compile.sh
+
+check-docs:
+	@bash ./scripts/check-doc-consistency.sh
 
 # Build the IE32 assembler
 ie32asm: setup

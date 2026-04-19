@@ -49,11 +49,12 @@ The version is defined in `Makefile` as `APP_VERSION` and injected at build time
 
 ### Using Makefile Targets (Recommended)
 
-Each release target builds both amd64 and arm64 archives, assembles the EhBASIC ROM, and embeds it in the binary:
+Each release target builds the platform archives, embeds the ROM images, and stages the runtime data tree:
 
 ```bash
-make release-linux      # Linux native arch (.tar.xz)
+make release-linux      # Linux amd64 + arm64 (.tar.xz)
 make release-windows    # Windows amd64 + arm64 (.zip)
+make release-macos      # macOS arm64 (.tar.xz)
 
 make release-src        # Source archive via git archive (.tar.xz)
 make release-sdk        # Standalone SDK archive (.zip)
@@ -61,26 +62,38 @@ make release-sdk        # Standalone SDK archive (.zip)
 make release-all        # All of the above + SHA256SUMS
 ```
 
-Each platform archive contains: `IntuitionEngine` at the root, `sdk/bin/` with `ie32asm`, `ie64asm`, `ie32to64`, `ie64dis`, plus `README.md`, `CHANGELOG.md`, `DEVELOPERS.md`, and the full `sdk/` directory with pre-assembled demos and documentation.
+Each platform archive contains:
+- `IntuitionEngine` or `IntuitionEngine.exe` at the archive root
+- `README.md`, `CHANGELOG.md`, `DEVELOPERS.md`
+- the full `sdk/` tree, including `sdk/intuitionos/system/SYS`
+- `sdk/bin/` with `ie32asm`, `ie64asm`, `ie32to64`, `ie64dis`
+- an `AROS/` directory copied from the staged AROS build tree
+
+All release binaries are built with `-tags "novulkan embed_basic embed_emutos embed_aros"` on Windows and macOS, and `embed_basic embed_emutos embed_aros` on Linux.
 
 ### Build Details
 
-**Linux (Official)**
+**Linux**
 
-Native architecture only (ebiten/oto require CGO for GLFW/X11/ALSA). Full CGO build with sstrip/upx compression.
+Builds `amd64` and `arm64` `.tar.xz` archives. Linux keeps the full CGO desktop stack and can use Vulkan in non-`novulkan` builds.
 
-**Windows (Experimental)**
+**Windows**
 
-Cross-compiled with the `novulkan` profile. Ebiten and oto are pure Go on Windows.
+Builds `amd64` and `arm64` `.zip` archives with `CGO_ENABLED=0` and the `novulkan` profile. Windows `amd64` has full guest JIT parity with Linux `amd64`; Windows `arm64` ships the IE64 arm64 JIT.
 
-All release builds include the `embed_basic` tag, embedding the EhBASIC interpreter so the VM starts a BASIC prompt by default.
+**macOS arm64**
+
+Builds a `.tar.xz` archive with `CGO_ENABLED=0` and the `novulkan` profile. The binary uses Ebiten's Metal backend and the native IE64 arm64 JIT.
 
 ## Release Artifacts
 
 | Platform | Architecture | Format | Profile |
 |----------|-------------|--------|---------|
-| Linux | native arch | `.tar.xz` | full |
-| Windows | amd64, arm64 | `.zip` | novulkan |
+| Linux | amd64 | `.tar.xz` | full |
+| Linux | arm64 | `.tar.xz` | full |
+| Windows | amd64 | `.zip` | novulkan |
+| Windows | arm64 | `.zip` | novulkan |
+| macOS | arm64 | `.tar.xz` | novulkan |
 
 ## Checksums
 
@@ -108,4 +121,5 @@ Test builds run on every push. See `.github/workflows/test.yml` for the CI pipel
 
 1. Create GitHub release with tag, attach artifacts and `SHA256SUMS`
 2. Update `sdk/include/` if hardware register maps changed (or run `make sdk`)
-3. Announce on project channels
+3. For macOS testers, document the quarantine workaround: `xattr -dr com.apple.quarantine .`
+4. Announce on project channels
