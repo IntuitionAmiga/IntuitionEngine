@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"sync"
 
-	"github.com/intuitionamiga/IntuitionEngine/internal/clipboard"
+	"golang.design/x/clipboard"
 )
 
 var (
@@ -31,7 +31,7 @@ func initTerminalClipboard(vt *VideoTerminal) {
 		func(data []byte) {
 			termClipOnce.Do(func() { termClipOK = clipboard.Init() == nil })
 			if termClipOK {
-				_ = clipboard.WriteText(data)
+				clipboard.Write(clipboard.FmtText, data)
 			}
 		},
 		func() []byte {
@@ -44,8 +44,7 @@ func initTerminalClipboard(vt *VideoTerminal) {
 			if !termClipOK {
 				return nil
 			}
-			data, _ := clipboard.ReadText()
-			return data
+			return clipboard.Read(clipboard.FmtText)
 		},
 	)
 }

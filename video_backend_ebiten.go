@@ -31,7 +31,7 @@ import (
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
 	"github.com/hajimehoshi/ebiten/v2/text"
-	"github.com/intuitionamiga/IntuitionEngine/internal/clipboard"
+	"golang.design/x/clipboard"
 	"golang.org/x/image/font/basicfont"
 )
 
@@ -989,7 +989,7 @@ func (eo *EbitenOutput) handleClipboardPaste() {
 	if !eo.clipboardOK {
 		return
 	}
-	data, _ := clipboard.ReadText()
+	data := clipboard.Read(clipboard.FmtText)
 	if len(data) == 0 {
 		return
 	}

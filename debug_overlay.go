@@ -28,7 +28,7 @@ import (
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
-	"github.com/intuitionamiga/IntuitionEngine/internal/clipboard"
+	"golang.design/x/clipboard"
 )
 
 const (
@@ -602,7 +602,7 @@ func (o *MonitorOverlay) handleMonitorPaste(m *MachineMonitor) {
 	if !monClipboardOK {
 		return
 	}
-	data, _ := clipboard.ReadText()
+	data := clipboard.Read(clipboard.FmtText)
 	if len(data) == 0 {
 		return
 	}
@@ -779,7 +779,7 @@ func (o *MonitorOverlay) autoClipboardCopy(m *MachineMonitor) {
 	o.selText = o.monitorExtractText(m)
 	monClipboardOnce.Do(func() { monClipboardOK = clipboard.Init() == nil })
 	if monClipboardOK && o.selText != "" {
-		_ = clipboard.WriteText([]byte(o.selText))
+		clipboard.Write(clipboard.FmtText, []byte(o.selText))
 	}
 }
 
@@ -790,7 +790,7 @@ func (o *MonitorOverlay) handleMonitorCopy(m *MachineMonitor) {
 	o.selText = o.monitorExtractText(m)
 	monClipboardOnce.Do(func() { monClipboardOK = clipboard.Init() == nil })
 	if monClipboardOK && o.selText != "" {
-		_ = clipboard.WriteText([]byte(o.selText))
+		clipboard.Write(clipboard.FmtText, []byte(o.selText))
 	}
 }
 
