@@ -42,6 +42,7 @@ BENCH_BIN="${BENCH_BIN:-./6502_bench.test}"
 BENCH_TIME="${BENCH_TIME:-3s}"
 BENCH_COUNT="${BENCH_COUNT:-1}"
 BENCH_PATTERN='Benchmark6502_(ALU|Memory|Call|Branch|Mixed)_'
+IE6502_ASM_INTERP="${IE6502_ASM_INTERP:-1}"
 
 if [ ! -e "${BENCH_BIN}" ]; then
     echo "error: benchmark binary not found at ${BENCH_BIN}" >&2
@@ -60,11 +61,12 @@ echo "Running ${BENCH_BIN}" >&2
 echo "  pattern:    ${BENCH_PATTERN}" >&2
 echo "  benchtime:  ${BENCH_TIME}" >&2
 echo "  count:      ${BENCH_COUNT}" >&2
+echo "  asm interp: ${IE6502_ASM_INTERP}" >&2
 echo >&2
 
 # Capture benchmark output. go test's -test.bench uses the same Go benchmark
 # format regardless of how the test binary was built, so parsing is stable.
-if ! OUTPUT=$("${BENCH_BIN}" \
+if ! OUTPUT=$(IE6502_ASM_INTERP="${IE6502_ASM_INTERP}" "${BENCH_BIN}" \
         -test.run '^$' \
         -test.bench "${BENCH_PATTERN}" \
         -test.benchtime "${BENCH_TIME}" \

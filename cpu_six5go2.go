@@ -256,6 +256,8 @@ type CPU_6502 struct {
 	jitCache         *CodeCache
 	jitExecMem       any // *ExecMem
 	jitCtx           *JIT6502Context
+	interpTraceCache *interp6502TraceCache
+	interpDecodeGen  [256]uint32
 	codePageBitmap   [256]byte // self-mod detection: one byte per 6502 page
 	directPageBitmap [256]byte // JIT fast-path: 0=memDirect ok, 1=bail to interpreter
 	directPageReady  bool      // set true once initDirectPageBitmap has been called for this run
@@ -308,6 +310,7 @@ type Bus6502Adapter struct {
 	vramBank    uint32
 	vramEnabled bool
 	vgaEngine   *VGAEngine // VGA engine for memory-mapped I/O access
+	ownerCPU    *CPU_6502
 
 	// Extended bank windows for IE65 support
 	bank1       uint32 // Bank number for $2000-$3FFF window
@@ -355,6 +358,7 @@ func NewCPU_6502(bus Bus32) *CPU_6502 {
 		breakpoints:   make(map[uint16]bool),
 		breakpointHit: make(chan uint16, 1),
 	}
+	adapter.ownerCPU = cpu
 	cpu.InitOpcodeTable()
 	cpu.rdyLine.Store(true)
 	cpu.running.Store(true)
@@ -653,6 +657,7 @@ func (a *Bus6502Adapter) ReadFast(addr uint16) byte {
 }
 
 func (a *Bus6502Adapter) WriteFast(addr uint16, val byte) {
+	a.noteInterpTraceWrite(addr)
 	if a.ioPageBitmap != nil && addr < 0x2000 && !a.ioPageBitmap[addr>>8] {
 		a.memDirect[addr] = val
 		return
@@ -669,6 +674,7 @@ func (a *Bus6502Adapter) ReadZP(addr byte) byte {
 }
 
 func (a *Bus6502Adapter) WriteZP(addr byte, val byte) {
+	a.noteInterpTraceWrite(uint16(addr))
 	if a.ioPageBitmap != nil && !a.ioPageBitmap[0] {
 		a.memDirect[addr] = val
 		return
@@ -685,11 +691,19 @@ func (a *Bus6502Adapter) ReadStack(sp byte) byte {
 }
 
 func (a *Bus6502Adapter) WriteStack(sp byte, val byte) {
+	a.noteInterpTraceWrite(0x0100 | uint16(sp))
 	if a.ioPageBitmap != nil && !a.ioPageBitmap[1] {
 		a.memDirect[0x0100|uint16(sp)] = val
 		return
 	}
 	a.Write(0x0100|uint16(sp), val)
+}
+
+func (a *Bus6502Adapter) noteInterpTraceWrite(addr uint16) {
+	if a.ownerCPU == nil {
+		return
+	}
+	a.ownerCPU.noteInterpTraceWrite(addr)
 }
 
 func (cpu_6502 *CPU_6502) rmw(addr uint16, operation func(byte) byte) {
@@ -1534,7 +1548,7 @@ func (cpu_6502 *CPU_6502) Execute() {
 	// Phase-1 fast interpreter. Any other configuration falls through to
 	// executeLegacy() which preserves the original generic interpreter.
 	if cpu_6502.fastAdapter != nil && !cpu_6502.Debug {
-		cpu_6502.ExecuteFast()
+		cpu_6502.executeOptimizedInterpreter()
 		return
 	}
 	cpu_6502.executeLegacy()
@@ -3144,6 +3158,8 @@ func (adapter *Bus6502Adapter) Write(addr uint16, value byte) {
 	   2. Check for banked memory access
 	   3. Fall back to direct memory access
 	*/
+
+	adapter.noteInterpTraceWrite(addr)
 
 	if h := adapter.ioTable[addr>>8]; h.write != nil {
 		h.write(adapter, addr, value)

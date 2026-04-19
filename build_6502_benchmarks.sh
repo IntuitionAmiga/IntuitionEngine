@@ -45,6 +45,16 @@
 #                     not needed for the JIT path since asmcgocall works
 #                     in both modes, but provided as an escape hatch if
 #                     you ever need cgo packages in a future benchmark).
+#     PGO           - 1 (default) two-pass profile-guided build:
+#                       pass 1: build an unoptimized profiling binary
+#                       pass 2: rebuild with -pgo=<profile>
+#                     0 disables PGO entirely (single-pass, old behavior).
+#     PGO_PROFILE   - path for the collected CPU profile
+#                     (default: ./default.pgo — Go's auto-detected name,
+#                     so plain `go build` from the repo also picks it up).
+#     PGO_TIME      - -test.benchtime for the profile-collection run
+#                     (default: 1s — long enough for stable samples,
+#                     short enough to keep two-pass build time reasonable).
 #
 # Exits non-zero if the Go test binary fails to build.
 
@@ -52,6 +62,10 @@ set -eu
 
 BENCH_BIN="${BENCH_BIN:-./6502_bench.test}"
 BENCH_TAGS="${BENCH_TAGS:-osusergo netgo headless novulkan}"
+PGO="${PGO:-1}"
+PGO_PROFILE="${PGO_PROFILE:-./default.pgo}"
+PGO_TIME="${PGO_TIME:-1s}"
+PGO_PATTERN='Benchmark6502_(ALU|Memory|Call|Branch|Mixed)_'
 # Default to CGO disabled so the resulting binary is fully static and
 # portable. The JIT benchmarks still run because jit_call.go routes
 # through runtime.asmcgocall rather than runtime.cgocall.
@@ -66,21 +80,80 @@ else
     cgo_desc="enabled (dynamic libc linkage)"
 fi
 
+if [ "${PGO}" = "0" ]; then
+    pgo_desc="disabled (single-pass build)"
+else
+    pgo_desc="enabled (two-pass: profile with ${PGO_TIME}, rebuild with -pgo=${PGO_PROFILE})"
+fi
+
 echo "Building 6502 benchmark binary:" >&2
 echo "  target:   ${BENCH_BIN}" >&2
 echo "  tags:     ${BENCH_TAGS}" >&2
 echo "  CGO:      ${cgo_desc}" >&2
+echo "  PGO:      ${pgo_desc}" >&2
 echo "  link:     -s -w -buildid=" >&2
 echo "  path:     -trimpath" >&2
 echo >&2
 
-go test \
-    -c \
-    -tags "${BENCH_TAGS}" \
-    -trimpath \
-    -ldflags='-s -w -buildid=' \
-    -o "${BENCH_BIN}" \
-    .
+if [ "${PGO}" = "0" ]; then
+    # Single-pass build: straight compile, no profile collection.
+    go test \
+        -c \
+        -tags "${BENCH_TAGS}" \
+        -trimpath \
+        -ldflags='-s -w -buildid=' \
+        -o "${BENCH_BIN}" \
+        .
+else
+    # Pass 1: build an unstripped profiling binary. No -ldflags strip
+    # here because symbol tables help pprof attribute samples to funcs,
+    # and this binary is throwaway — the final -pgo= build strips.
+    echo "[pgo 1/3] building profiling binary" >&2
+    go test \
+        -c \
+        -tags "${BENCH_TAGS}" \
+        -trimpath \
+        -o "${BENCH_BIN}" \
+        .
+
+    if [ ! -x "${BENCH_BIN}" ]; then
+        echo "error: profiling build reported success but ${BENCH_BIN} is missing" >&2
+        exit 1
+    fi
+
+    # Pass 2: collect a representative CPU profile. We run all five
+    # workloads — the profile is one merged sample set that covers the
+    # whole fusion dispatcher, not per-bench profiles. go test accepts
+    # PGO pprof output directly via -test.cpuprofile.
+    echo "[pgo 2/3] collecting profile from ${PGO_PATTERN} (benchtime=${PGO_TIME})" >&2
+    "${BENCH_BIN}" \
+        -test.run='^$' \
+        -test.bench="${PGO_PATTERN}" \
+        -test.benchtime="${PGO_TIME}" \
+        -test.cpuprofile="${PGO_PROFILE}" \
+        >/dev/null
+
+    if [ ! -s "${PGO_PROFILE}" ]; then
+        echo "error: ${PGO_PROFILE} is missing or empty after profile run" >&2
+        echo "set PGO=0 to skip PGO and produce a non-optimized binary" >&2
+        exit 1
+    fi
+    profile_size=$(wc -c < "${PGO_PROFILE}")
+    echo "[pgo 2/3] collected ${PGO_PROFILE} (${profile_size} bytes)" >&2
+
+    # Pass 3: rebuild with the profile. -pgo= triggers the go toolchain's
+    # inliner/devirt heuristics to bias toward the hot paths in the
+    # profile. On this workload we expect 2–7% on compute-bound benches.
+    echo "[pgo 3/3] rebuilding with -pgo=${PGO_PROFILE}" >&2
+    go test \
+        -c \
+        -tags "${BENCH_TAGS}" \
+        -trimpath \
+        -ldflags='-s -w -buildid=' \
+        -pgo="${PGO_PROFILE}" \
+        -o "${BENCH_BIN}" \
+        .
+fi
 
 if [ ! -x "${BENCH_BIN}" ]; then
     echo "error: build reported success but ${BENCH_BIN} is missing or not executable" >&2
