@@ -1,6 +1,6 @@
 // jit_emit_arm64_test.go - ARM64 emitter tests
 
-//go:build arm64 && (linux || windows)
+//go:build arm64 && (linux || windows || darwin)
 
 package main
 

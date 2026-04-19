@@ -1,6 +1,6 @@
 // jit_exec_test.go - JIT dispatcher integration tests
 
-//go:build (amd64 && (linux || windows)) || (arm64 && (linux || windows))
+//go:build (amd64 && (linux || windows)) || (arm64 && (linux || windows || darwin))
 
 package main
 

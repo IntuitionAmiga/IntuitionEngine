@@ -1,6 +1,6 @@
 // jit_emit_arm64.go - ARM64 native code emitter for IE64 JIT compiler
 
-//go:build arm64 && (linux || windows)
+//go:build arm64 && (linux || windows || darwin)
 
 package main
 

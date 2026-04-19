@@ -89,6 +89,19 @@ jobs:
         shell: bash
         run: go test -v -tags headless -run 'TestJIT_|TestAMD64_|TestExecMemWindows_' -count=1 ./...
 
+  cross-compile:
+    name: Cross-compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run cross-compile checks
+        run: make test-cross
+
   sdk-smoke:
     name: SDK example smoke test
     runs-on: ubuntu-latest
