@@ -19,7 +19,7 @@
 // g0 stack by asmcgocall") — this file just routes through asmcgocall
 // directly instead of hopping through cgocall first.
 
-//go:build (amd64 && (linux || windows)) || (arm64 && (linux || windows || darwin))
+//go:build (amd64 && (linux || windows || darwin)) || (arm64 && (linux || windows || darwin))
 
 package main
 

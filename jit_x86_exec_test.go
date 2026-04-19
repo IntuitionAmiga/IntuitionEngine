@@ -2,7 +2,7 @@
 //
 // (c) 2024-2026 Zayn Otley - GPLv3 or later
 
-//go:build amd64 && (linux || windows)
+//go:build amd64 && (linux || windows || darwin)
 
 package main
 

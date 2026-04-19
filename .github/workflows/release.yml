@@ -158,11 +158,18 @@ jobs:
           path: ${{ env.APP_NAME }}-*-windows-${{ matrix.arch }}.zip
 
   # ---------------------------------------------------------------------------
-  # macOS arm64 - novulkan, cross-compiled pure Go
+  # macOS amd64 + arm64 - novulkan, cross-compiled pure Go
   # ---------------------------------------------------------------------------
   macos:
-    name: macOS arm64
+    name: macOS ${{ matrix.arch }}
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            goarch: amd64
+          - arch: arm64
+            goarch: arm64
     steps:
       - uses: actions/checkout@v4
 
@@ -180,7 +187,7 @@ jobs:
       - name: Build
         env:
           GOOS: darwin
-          GOARCH: arm64
+          GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
         run: |
           COMMIT=$(git rev-parse --short HEAD)
@@ -197,7 +204,7 @@ jobs:
       - name: Create tar.xz archive
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          DIR="${APP_NAME}-${VERSION}-darwin-arm64"
+          DIR="${APP_NAME}-${VERSION}-darwin-${{ matrix.arch }}"
           mkdir -p "${DIR}"
           cp IntuitionEngine "${DIR}/"
           cp README.md CHANGELOG.md DEVELOPERS.md "${DIR}/" 2>/dev/null || true
@@ -210,8 +217,8 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: macos-arm64
-          path: ${{ env.APP_NAME }}-*-darwin-arm64.tar.xz
+          name: macos-${{ matrix.arch }}
+          path: ${{ env.APP_NAME }}-*-darwin-${{ matrix.arch }}.tar.xz
 
   # ---------------------------------------------------------------------------
   # Publish GitHub Release with checksums
@@ -264,7 +271,8 @@ jobs:
           | Linux amd64 | Official | Full feature set |
           | Windows amd64 | Experimental | novulkan (software Voodoo) |
           | Windows arm64 | Experimental | novulkan (software Voodoo) |
-          | macOS arm64 | Experimental | novulkan (software Voodoo), Apple Silicon only |
+          | macOS amd64 | Official | novulkan (software Voodoo), Intel Macs |
+          | macOS arm64 | Official | novulkan (software Voodoo), Apple Silicon |
 
           ### Checksums
           See `SHA256SUMS` for file integrity verification:

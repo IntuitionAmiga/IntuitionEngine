@@ -8,13 +8,14 @@ The SDK assemblers remain normal Go binaries, but the VM itself now has a split 
 
 - Linux `full` and `novulkan` builds still use CGO for the native desktop/audio stack.
 - Windows `amd64` and `arm64` release builds are pure Go under `-tags novulkan`.
-- macOS `arm64` release builds are pure Go under `-tags novulkan`.
+- macOS `amd64` and `arm64` release builds are pure Go under `-tags novulkan`.
 
 Typical cross-build commands from Linux:
 
 ```bash
 CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -tags novulkan .
 CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -tags novulkan .
+CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -tags novulkan .
 CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -tags novulkan .
 ```
 

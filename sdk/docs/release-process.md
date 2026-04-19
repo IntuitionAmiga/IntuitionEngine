@@ -54,7 +54,7 @@ Each release target builds the platform archives, embeds the ROM images, and sta
 ```bash
 make release-linux      # Linux amd64 + arm64 (.tar.xz)
 make release-windows    # Windows amd64 + arm64 (.zip)
-make release-macos      # macOS arm64 (.tar.xz)
+make release-macos      # macOS amd64 + arm64 (.tar.xz)
 
 make release-src        # Source archive via git archive (.tar.xz)
 make release-sdk        # Standalone SDK archive (.zip)
@@ -81,9 +81,9 @@ Builds `amd64` and `arm64` `.tar.xz` archives. Linux keeps the full CGO desktop 
 
 Builds `amd64` and `arm64` `.zip` archives with `CGO_ENABLED=0` and the `novulkan` profile. Windows `amd64` has full guest JIT parity with Linux `amd64`; Windows `arm64` ships the IE64 arm64 JIT.
 
-**macOS arm64**
+**macOS**
 
-Builds a `.tar.xz` archive with `CGO_ENABLED=0` and the `novulkan` profile. The binary uses Ebiten's Metal backend and the native IE64 arm64 JIT.
+Builds `amd64` and `arm64` `.tar.xz` archives with `CGO_ENABLED=0` and the `novulkan` profile. The `amd64` archive ships the shared x86-64 guest JIT backends; the `arm64` archive uses the native IE64 arm64 JIT.
 
 ## Release Artifacts
 
@@ -93,6 +93,7 @@ Builds a `.tar.xz` archive with `CGO_ENABLED=0` and the `novulkan` profile. The 
 | Linux | arm64 | `.tar.xz` | full |
 | Windows | amd64 | `.zip` | novulkan |
 | Windows | arm64 | `.zip` | novulkan |
+| macOS | amd64 | `.tar.xz` | novulkan |
 | macOS | arm64 | `.tar.xz` | novulkan |
 
 ## Checksums

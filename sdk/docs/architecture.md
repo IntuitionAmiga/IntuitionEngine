@@ -14,9 +14,10 @@ The host-side JIT support is intentionally asymmetric:
 | Linux arm64 | IE64 |
 | Windows amd64 | IE64, 6502, M68K, Z80, x86 |
 | Windows arm64 | IE64 |
+| macOS amd64 | IE64, 6502, M68K, Z80, x86 |
 | macOS arm64 | IE64 |
 
-On macOS arm64, executable memory uses the native `MAP_JIT` model with thread-pinned write protection toggles. Non-IE64 guest cores remain interpreter-only on arm64 hosts.
+On macOS amd64, the JIT reuses the shared x86-64 host backends. On macOS arm64, executable memory uses the native `MAP_JIT` model with thread-pinned write protection toggles, and non-IE64 guest cores remain interpreter-only on arm64 hosts.
 
 ## 1. System Overview
 

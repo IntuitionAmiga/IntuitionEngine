@@ -244,7 +244,7 @@ RELEASE_DIR := ./release
 
 # Main targets
 .PHONY: all clean list install uninstall novulkan headless headless-novulkan test-cross check-docs
-.PHONY: sdk clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-all players
+.PHONY: sdk clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-macos release-macos-amd64 release-macos-arm64 release-all players
 .PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba boing-checker
 .PHONY: testdata-opl
 
@@ -1336,10 +1336,38 @@ release-windows: setup sdk emutos-rom aros-rom
 		echo "Created: $(RELEASE_DIR)/$$RELEASE_NAME.zip"; \
 	done
 
-.PHONY: release-macos release-macos-arm64
+.PHONY: release-macos release-macos-amd64 release-macos-arm64
 
-# Build release archive for macOS arm64 only (pure Go, no Vulkan)
-release-macos: release-macos-arm64
+# Build release archives for macOS amd64 + arm64 (pure Go, no Vulkan)
+release-macos: release-macos-amd64 release-macos-arm64
+
+release-macos-amd64: setup sdk emutos-rom aros-rom
+	@echo "=== Building macOS release (amd64) ==="
+	@$(MKDIR) -p $(RELEASE_DIR)
+	@RELEASE_NAME=$(APP_NAME)-$(APP_VERSION)-darwin-amd64 && \
+		CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build $(GO_FLAGS) -tags "novulkan embed_basic embed_emutos embed_aros" -o IntuitionEngine . && \
+		CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build $(GO_FLAGS) -o ie32asm assembler/ie32asm.go && \
+		CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm assembler/ie64asm.go && \
+		CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build $(GO_FLAGS) -o ie32to64 ./cmd/ie32to64/ && \
+		CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build $(GO_FLAGS) -tags ie64dis -o ie64dis assembler/ie64dis.go && \
+		STAGING=$(RELEASE_DIR)/$$RELEASE_NAME && \
+		rm -rf $$STAGING && \
+		$(MKDIR) -p $$STAGING && \
+		mv IntuitionEngine $$STAGING/ && \
+		cp README.md CHANGELOG.md DEVELOPERS.md $$STAGING/ && \
+		cp -r sdk $$STAGING/sdk && \
+		rm -rf $$STAGING/sdk/.git && \
+		rm -rf $$STAGING/sdk/bin && \
+		$(MKDIR) -p $$STAGING/sdk/bin && \
+		mv ie32asm ie64asm ie32to64 ie64dis $$STAGING/sdk/bin/ && \
+		AROS_WB="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
+		if [ -d "$$AROS_WB" ]; then \
+			cp -r "$$AROS_WB" $$STAGING/AROS; \
+		fi && \
+		echo "Creating $$RELEASE_NAME.tar.xz..." && \
+		tar -C $(RELEASE_DIR) -cJf $(RELEASE_DIR)/$$RELEASE_NAME.tar.xz $$RELEASE_NAME && \
+		rm -rf $$STAGING && \
+		echo "Created: $(RELEASE_DIR)/$$RELEASE_NAME.tar.xz"
 
 release-macos-arm64: setup sdk emutos-rom aros-rom
 	@echo "=== Building macOS release (arm64) ==="
@@ -1543,7 +1571,10 @@ help:
 	@echo "  release-linux       - Build Linux release archives (amd64 + arm64)"
 	@echo "  release-linux-amd64 - Build Linux release archive (amd64 only)"
 	@echo "  release-linux-arm64 - Build Linux release archive (arm64 only)"
-	@echo "  release-windows  - Build Windows release archives (amd64 + arm64)"
+	@echo "  release-windows    - Build Windows release archives (amd64 + arm64)"
+	@echo "  release-macos      - Build macOS release archives (amd64 + arm64)"
+	@echo "  release-macos-amd64 - Build macOS release archive (amd64 only)"
+	@echo "  release-macos-arm64 - Build macOS release archive (arm64 only)"
 	@echo "  release-all      - Build all release archives + SHA256SUMS"
 	@echo ""
 	@echo "Demo targets:"

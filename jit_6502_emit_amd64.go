@@ -1,6 +1,6 @@
 // jit_6502_emit_amd64.go - x86-64 native code emitter for 6502 JIT compiler
 
-//go:build amd64 && (linux || windows)
+//go:build amd64 && (linux || windows || darwin)
 
 package main
 

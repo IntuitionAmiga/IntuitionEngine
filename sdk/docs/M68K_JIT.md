@@ -4,7 +4,7 @@
 
 The M68020 JIT compiler translates basic blocks of 68020 machine code into native x86-64 instructions at runtime. It follows the same architecture as the IE64 JIT: scan a block of instructions, compile to native code, cache the result, and dispatch via `callNative()`.
 
-**Platform support:** amd64/linux and amd64/windows. ARM64 backend is planned but not yet implemented.
+**Platform support:** amd64/linux, amd64/darwin, and amd64/windows. ARM64 backend is planned but not yet implemented.
 
 **Activation:** M68K JIT is enabled by default on supported platforms when a CPU is created via `NewM68KRunner()`. Disable with the `-nojit` CLI flag, which also disables the IE64 JIT.
 
@@ -113,21 +113,21 @@ This eliminates ~12 instructions of SETcc/SHL/OR extraction per flag-setting ins
 | File | Build tag | Purpose |
 |------|-----------|---------|
 | `jit_m68k_common.go` | (none) | M68KJITContext, block scanner, instruction length calculator, liveness analysis |
-| `jit_m68k_emit_amd64.go` | `amd64 && (linux \|\| windows)` | x86-64 native code emitter: instructions, chain entry/exit, lazy CCR |
-| `jit_m68k_exec.go` | `amd64 && (linux \|\| windows)` | JIT dispatcher: chain patching, budget management, RTS cache, STOP/interrupt handling |
-| `jit_m68k_dispatch.go` | `amd64 && (linux \|\| windows)` | Routes `m68kJitExecute()` through JIT or interpreter |
+| `jit_m68k_emit_amd64.go` | `amd64 && (linux \|\| windows \|\| darwin)` | x86-64 native code emitter: instructions, chain entry/exit, lazy CCR |
+| `jit_m68k_exec.go` | `amd64 && (linux \|\| windows \|\| darwin)` | JIT dispatcher: chain patching, budget management, RTS cache, STOP/interrupt handling |
+| `jit_m68k_dispatch.go` | `amd64 && (linux \|\| windows \|\| darwin)` | Routes `m68kJitExecute()` through JIT or interpreter |
 | `jit_m68k_dispatch_stub.go` | all other platforms | Interpreter fallback for non-JIT platforms |
 | `jit_common.go` | (none) | Shared: CodeBuffer, CodeCache, JITBlock, chainSlot (reused from IE64) |
 | `jit_call.go` | shared IE64 JIT trampoline | `callNative()` via `runtime.asmcgocall` (reused from IE64) |
-| `jit_mmap.go` / `jit_mmap_windows.go` | Linux / Windows | Executable memory allocator + `PatchRel32At` (reused from IE64) |
+| `jit_mmap.go` / `jit_mmap_darwin_amd64.go` / `jit_mmap_windows.go` | Linux / macOS amd64 / Windows | Executable memory allocator + `PatchRel32At` (reused from IE64) |
 
 ### Tests
 
 | File | Build tag | Purpose |
 |------|-----------|---------|
-| `jit_m68k_common_test.go` | `amd64 && (linux \|\| windows)` | Instruction length, block scanner, liveness, terminators, chain infrastructure |
-| `jit_m68k_emit_amd64_test.go` | `amd64 && (linux \|\| windows)` | x86-64 emitter unit tests (individual instruction verification) |
-| `jit_m68k_exec_test.go` | `amd64 && (linux \|\| windows)` | Integration tests through full JIT dispatcher |
+| `jit_m68k_common_test.go` | `amd64 && (linux \|\| windows \|\| darwin)` | Instruction length, block scanner, liveness, terminators, chain infrastructure |
+| `jit_m68k_emit_amd64_test.go` | `amd64 && (linux \|\| windows \|\| darwin)` | x86-64 emitter unit tests (individual instruction verification) |
+| `jit_m68k_exec_test.go` | `amd64 && (linux \|\| windows \|\| darwin)` | Integration tests through full JIT dispatcher |
 | `m68k_jit_benchmark_test.go` | `amd64 && linux` | JIT vs interpreter comparative benchmarks (ALU, MemCopy, Call) |
 
 ## M68KJITContext Layout

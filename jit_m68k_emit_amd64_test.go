@@ -1,6 +1,6 @@
 // jit_m68k_emit_amd64_test.go - Tests for M68020 x86-64 JIT emitter
 
-//go:build amd64 && linux
+//go:build amd64 && (linux || windows || darwin)
 
 package main
 

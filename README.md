@@ -5810,9 +5810,9 @@ For detailed build instructions, all build profiles/tags, toolchain setup, testi
 |----------|-------------|--------|-------|
 | Linux | x86_64, aarch64 | **Official** | `full`, `novulkan`, `headless`, `headless-novulkan` |
 | Windows | x86_64, ARM64 | **Official** | Pure-Go `novulkan` release builds |
-| macOS | arm64 | **Official** | Pure-Go `novulkan` release builds, IE64 native JIT |
+| macOS | x86_64, arm64 | **Official** | Pure-Go `novulkan` release builds, amd64 guest JIT parity on Intel Macs, IE64 native JIT on Apple Silicon |
 
-Release builds embed EhBASIC, EmuTOS, and the AROS ROM via `embed_basic embed_emutos embed_aros`, and package the full `sdk/` tree plus the staged `AROS/` system tree beside the binary. Build with `make release-linux`, `make release-windows`, `make release-macos`, or `make release-all`.
+Release builds embed EhBASIC, EmuTOS, and the AROS ROM via `embed_basic embed_emutos embed_aros`, and package the full `sdk/` tree plus the staged `AROS/` system tree beside the binary. `make release-macos` builds both `darwin-amd64` and `darwin-arm64` archives.
 
 Graphics: Ebiten (OpenGL on Linux, DirectX on Windows, Metal on macOS). Audio: Oto (44.1kHz stereo). Both have headless stubs for CI.
 

@@ -10,6 +10,7 @@ Supported platforms, build profiles, and known limitations for Intuition Engine 
 | Linux | aarch64 | **Official** | `full`, `novulkan`, `headless`, `headless-novulkan` | IE64 native JIT |
 | Windows | x86_64 | **Official** | `novulkan` | Pure-Go release build, full guest JIT parity with Linux amd64 |
 | Windows | ARM64 | **Official** | `novulkan` | Pure-Go release build, IE64 native JIT |
+| macOS | x86_64 | **Official** | `novulkan` | Pure-Go release build, full guest JIT parity with Linux/Windows amd64 |
 | macOS | ARM64 | **Official** | `novulkan` | Pure-Go release build, IE64 native JIT via `MAP_JIT` |
 
 **Official** platforms are built in CI and have maintained release packaging targets. BSD variants remain out of scope.
@@ -37,11 +38,11 @@ Software-only Voodoo rasteriser. Removes the Vulkan SDK dependency.
 - Go 1.26+
 - CGO enabled on Linux native builds
 - C compiler for Linux native builds
-- No CGO toolchain required for Windows or macOS arm64 cross-builds
+- No CGO toolchain required for Windows or macOS cross-builds
 
 **Features:** Ebiten display, Oto audio, software Voodoo rasteriser.
 
-**Use this for:** Windows releases, macOS arm64 releases, and Linux systems without Vulkan.
+**Use this for:** Windows releases, macOS releases, and Linux systems without Vulkan.
 
 ### headless
 
@@ -95,14 +96,15 @@ Ebiten provides:
 - Vulkan Voodoo path not available (use `novulkan`)
 - Desktop integration (`.desktop` files, MIME types) is Linux-only
 
-### macOS arm64
+### macOS
 - `novulkan` profile only
 - Release artifacts are ad-hoc binaries; testers may need `xattr -dr com.apple.quarantine .` after download
-- IE64 uses the native arm64 JIT backend; other guest cores remain interpreter-only on arm64
+- amd64 builds have full guest JIT parity with Linux/Windows amd64
+- arm64 builds use the native IE64 arm64 JIT backend; other guest cores remain interpreter-only on arm64
 
 ### Cross-Compilation
 - Linux release builds remain native-arch or Linux-cross-toolchain builds because the full profile still uses CGO
-- Windows amd64, Windows arm64, and macOS arm64 cross-compilation work from Linux with `CGO_ENABLED=0` under `novulkan`
+- Windows amd64, Windows arm64, macOS amd64, and macOS arm64 cross-compilation work from Linux with `CGO_ENABLED=0` under `novulkan`
 - Use `make release-linux`, `make release-windows`, `make release-macos`, or `make release-all` for automated builds
 
 ## Runtime Feature Detection

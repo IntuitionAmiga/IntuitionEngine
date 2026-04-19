@@ -1,6 +1,6 @@
 // jit_z80_emit_amd64_test.go - x86-64 emitter unit tests for Z80 JIT
 
-//go:build amd64 && linux
+//go:build amd64 && (linux || windows || darwin)
 
 package main
 

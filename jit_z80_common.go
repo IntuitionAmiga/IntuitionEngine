@@ -1,6 +1,6 @@
 // jit_z80_common.go - Z80 JIT compiler infrastructure: context, scanner, lookup tables
 
-//go:build (amd64 && (linux || windows)) || (arm64 && linux)
+//go:build (amd64 && (linux || windows || darwin)) || (arm64 && linux)
 
 package main
 

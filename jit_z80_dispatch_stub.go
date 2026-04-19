@@ -1,6 +1,6 @@
 // jit_z80_dispatch_stub.go - Z80 JIT fallback for non-JIT platforms
 
-//go:build !((amd64 && (linux || windows)) || (arm64 && linux))
+//go:build !((amd64 && (linux || windows || darwin)) || (arm64 && linux))
 
 package main
 

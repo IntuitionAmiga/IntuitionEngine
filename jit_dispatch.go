@@ -1,6 +1,6 @@
 // jit_dispatch.go - JIT execution dispatch (JIT-capable platforms)
 
-//go:build (amd64 && (linux || windows)) || (arm64 && (linux || windows || darwin))
+//go:build (amd64 && (linux || windows || darwin)) || (arm64 && (linux || windows || darwin))
 
 package main
 
