@@ -64,6 +64,7 @@ EMUTOS_BUILD_CMD ?= auto
 AROS_SRC_DIR ?= ../AROS
 AROS_BUILD_DIR ?= $(AROS_SRC_DIR)/bin/ie-m68k
 AROS_ROM ?= ./sdk/examples/prebuilt/aros-ie.rom
+AROS_RELEASE_DIR ?= $(AROS_BUILD_DIR)/bin/ie-m68k/AROS
 AROS_GIT_URL ?= https://github.com/IntuitionAmiga/AROS.git
 AROS_GIT_REF ?= master
 AROS_GCC_VER ?= 15.2.0
@@ -463,19 +464,59 @@ aros-rom:
 		"$(AROS_SRC_DIR)/workbench/c/R/mmakefile.src" 2>/dev/null || true
 	@sed -i 's/^#MM- workbench-c : workbench-c-loadresource$$/#disabled: workbench-c-loadresource (broken catalog build)/' \
 		"$(AROS_SRC_DIR)/workbench/c/LoadResource/mmakefile.src" 2>/dev/null || true
+	@# Re-enable Wanderer for the IE target. This repo had locally disabled it in favor
+	@# of Workbook, but the packaged AROS desktop should launch Wanderer.
+	@sed -i 's/^##MM- workbench-system : workbench-system-wanderer$$/#MM- workbench-system : workbench-system-wanderer/' \
+		"$(AROS_SRC_DIR)/workbench/system/Wanderer/mmakefile.src" 2>/dev/null || true
+	@# IE should not drag in the common i386 include set when building its own SDK/runtime.
+	@sed -i 's/^#MM- includes-ie-m68k : includes-common-i386 includes-copy-ie-m68k includes-copy$$/#MM- includes-ie-m68k : includes-copy-ie-m68k includes-copy/' \
+		"$(AROS_SRC_DIR)/arch/m68k-ie/mmakefile.src" 2>/dev/null || true
+	@# For the IE build, avoid universal SDK/include generation pulling in unrelated
+	@# PCI, Efika bestcomm, and hosted unixio headers/resources.
+	@sed -i '/kernel-hidd-pci-includes/d; /kernel-bestcomm-chrp-ppc-efika-includes/d; /kernel-pc-acpi-includes/d; /kernel-rtas-chrp-ppc-includes/d' \
+		"$(AROS_SRC_DIR)/rom/mmakefile.src" 2>/dev/null || true
+	@sed -i '/^#MM-[[:space:]]*includes-generate:[[:space:]]*kernel-unixio-includes$$/d' \
+		"$(AROS_SRC_DIR)/arch/all-unix/hidd/unixio/mmakefile.src" 2>/dev/null || true
+	@sed -i '/^#MM[[:space:]]*includes-copy[[:space:]]*:[[:space:]]*acpica-fetch$$/d' \
+		"$(AROS_SRC_DIR)/arch/all-native/acpica/mmakefile.src" 2>/dev/null || true
+	@# IE only needs the AHI core plus paula and the IE-specific ie-audio driver.
+	@sed -i '/SUBDIRS[[:space:]]*+= ac97/d; /SUBDIRS[[:space:]]*+= HDAudio/d; /SUBDIRS[[:space:]]*+= SB128/d; /SUBDIRS[[:space:]]*+= VIA-AC97/d; /SUBDIRS[[:space:]]*+= CMI8738/d; /SUBDIRS[[:space:]]*+= EMU10kx/d; /SUBDIRS[[:space:]]*+= Envy24HT/d; /SUBDIRS[[:space:]]*+= Envy24/d' \
+		"$(AROS_SRC_DIR)/workbench/devs/AHI/Drivers/Makefile.in"
 	@# Regenerate mmakefiles after patching sources
 	@rm -f "$(AROS_BUILD_DIR)/workbench/c/mmakefile" \
 		"$(AROS_BUILD_DIR)/arch/m68k-amiga/c/mmakefile" \
+		"$(AROS_BUILD_DIR)/rom/mmakefile" \
+		"$(AROS_BUILD_DIR)/arch/all-native/acpica/mmakefile" \
+		"$(AROS_BUILD_DIR)/arch/all-unix/hidd/unixio/mmakefile" \
+		"$(AROS_BUILD_DIR)/arch/m68k-ie/mmakefile" \
+		"$(AROS_BUILD_DIR)/workbench/devs/AHI/mmakefile" \
 		"$(AROS_BUILD_DIR)/workbench/c/R/mmakefile" \
-		"$(AROS_BUILD_DIR)/workbench/c/LoadResource/mmakefile" 2>/dev/null || true
-	@echo "Building complete AROS workbench (all libs, classes, tools, prefs, devices)..."
-	@$(MAKE) -C "$(AROS_BUILD_DIR)" -j$(NCORES) workbench-complete 2>&1 || \
-		echo "  Warning: workbench-complete had some failures (non-fatal)"
-	@echo "Building required runtime libraries..."
-	@$(MAKE) -C "$(AROS_BUILD_DIR)" -j$(NCORES) \
+		"$(AROS_BUILD_DIR)/workbench/c/LoadResource/mmakefile" \
+		"$(AROS_BUILD_DIR)/workbench/system/Wanderer/mmakefile" \
+		"$(AROS_BUILD_DIR)/workbench/system/Wanderer/Icons/mmakefile" \
+		"$(AROS_BUILD_DIR)/workbench/system/Wanderer/Classes/mmakefile" \
+		"$(AROS_BUILD_DIR)/workbench/system/Wanderer/Tools/Info/mmakefile" \
+		"$(AROS_BUILD_DIR)/workbench/system/Wanderer/Tools/ExecuteStartup/mmakefile" \
+		"$(AROS_BUILD_DIR)/workbench/system/Wanderer/Tools/ExecuteCommand/mmakefile" \
+		"$(AROS_BUILD_DIR)/workbench/system/Wanderer/Tools/WBNewDrawer/mmakefile" \
+		"$(AROS_BUILD_DIR)/workbench/system/Wanderer/Tools/WBRename/mmakefile" \
+		"$(AROS_BUILD_DIR)/workbench/system/Wanderer/Tools/DiskInfo/mmakefile" \
+		"$(AROS_BUILD_DIR)/workbench/system/Wanderer/Tools/DiskInfo/Icons/mmakefile" 2>/dev/null || true
+	@echo "Skipping broad upstream IE meta-targets; building only the explicit IE/m68k runtime set..."
+	@echo "Building required runtime bootstrap targets..."
+	@# Keep this step serial. Some of these targets trigger mmakefile regeneration,
+	@# and parallel genmf runs can race on shared generated files.
+	@for target in \
+		workbench-directories \
+		workbench-s \
 		workbench-libs-iffparse \
 		workbench-libs-kms \
-		workbench-libs-locale
+		workbench-libs-locale \
+		workbench-libs-popupmenu \
+		workbench-libs-z \
+		workbench-libs-zstd; do \
+		$(MAKE) -C "$(AROS_BUILD_DIR)" "$$target" || exit $$?; \
+	done
 	@echo "Building required fonts tree..."
 	@$(MAKE) -C "$(AROS_BUILD_DIR)" -j$(NCORES) workbench-fonts
 	@echo "Ensuring Zune classes are built (may have been skipped by Mesa failure)..."
@@ -485,11 +526,118 @@ aros-rom:
 	@$(MAKE) -C "$(AROS_BUILD_DIR)" -j$(NCORES) \
 		compiler-stdcio \
 		workbench-images-themes \
+		workbench-devs-AHI-subsystem \
 		kernel-ie-m68k-ahidrv 2>&1 || \
 		echo "  Warning: additional targets had failures (non-fatal)"
+	@echo "Rebuilding broad AROS demo runtime targets (excluding Mesa-dependent libs)..."
+	@$(MAKE) -C "$(AROS_BUILD_DIR)" -j$(NCORES) \
+		workbench-directories \
+		workbench-c \
+		workbench-classes-complete \
+		workbench-gadgets-complete \
+		workbench-classes-zune \
+		workbench-datatypes-complete \
+		workbench-datatypes-heic \
+		workbench-datatypes-jpeg \
+		workbench-datatypes-png \
+		workbench-datatypes-tiff \
+		workbench-datatypes-webp \
+		workbench-devs \
+		workbench-devs-fdsk \
+		workbench-devs-ramdrive \
+		workbench-devs-monitors \
+		workbench-expansion \
+		workbench-fs-complete \
+		workbench-locale \
+		workbench-printers \
+		workbench-rexxc \
+		workbench-s \
+		workbench-storage \
+		workbench-system \
+		workbench-system-wanderer \
+		workbench-tools \
+		workbench-utilities \
+		workbench-prefs \
+		workbench-libs-amigaguide \
+		workbench-libs-asyncio \
+		workbench-libs-camd \
+		workbench-libs-cgfx \
+		workbench-libs-codesets \
+		workbench-libs-commodities \
+		workbench-libs-coolimages \
+		workbench-libs-datatypes \
+		workbench-libs-diskfont \
+		workbench-libs-expat \
+		workbench-libs-gadtools \
+		workbench-libs-identify \
+		workbench-libs-icon \
+		workbench-libs-jpeg \
+		workbench-libs-asl \
+		workbench-libs-lowlevel \
+		workbench-libs-lzma \
+		workbench-libs-mathffp \
+		workbench-libs-mathieeedoubbas \
+		workbench-libs-mathieeedoubtrans \
+		workbench-libs-mathieeesingbas \
+		workbench-libs-mathieeesingtrans \
+		workbench-libs-mathtrans \
+		workbench-libs-muimaster \
+		workbench-libs-muiscreen \
+		workbench-libs-png \
+		workbench-libs-popupmenu \
+		workbench-libs-reqtools \
+		workbench-libs-realtime \
+		workbench-libs-rexxsupport \
+		workbench-libs-tiff \
+		workbench-libs-utf8proc \
+		workbench-libs-version \
+		workbench-libs-z \
+		workbench-libs-zstd \
+		workbench-libs-workbench 2>&1 || \
+		echo "  Warning: broad demo runtime targets had failures (non-fatal)"
+	@echo "Finalising muimaster.library with a dedicated pass..."
+	@$(MAKE) -C "$(AROS_BUILD_DIR)" workbench-libs-muimaster 2>&1 || \
+		echo "  Warning: workbench-libs-muimaster had some failures (non-fatal)"
+	@echo "Finalising required runtime devices, libraries, and monitor configs..."
+	@for target in \
+		workbench-devs-fdsk \
+		workbench-devs-ramdrive \
+		workbench-devs-monitors \
+		workbench-libs-amigaguide \
+		workbench-libs-asyncio \
+		workbench-libs-camd \
+		workbench-libs-cgfx \
+		workbench-libs-expat \
+		workbench-libs-gadtools \
+		workbench-libs-identify \
+		workbench-libs-jpeg \
+		workbench-libs-lowlevel \
+		workbench-libs-lzma \
+		workbench-libs-mathffp \
+		workbench-libs-mathieeedoubbas \
+		workbench-libs-mathieeedoubtrans \
+		workbench-libs-mathieeesingbas \
+		workbench-libs-mathieeesingtrans \
+		workbench-libs-mathtrans \
+		workbench-libs-muiscreen \
+		workbench-libs-png \
+		workbench-libs-realtime \
+		workbench-libs-rexxsupport \
+		workbench-libs-tiff \
+		workbench-libs-utf8proc \
+		workbench-libs-version \
+		workbench-libs-z; do \
+		$(MAKE) -C "$(AROS_BUILD_DIR)" "$$target" 2>&1 || \
+			echo "  Warning: $$target had some failures (non-fatal)"; \
+	done
 	@echo "Installing stock AROS Startup-Sequence..."
 	@mkdir -p "$(AROS_BUILD_DIR)/bin/ie-m68k/AROS/S"
 	@cp -f "$(AROS_SRC_DIR)/workbench/s/Startup-Sequence" \
+		"$(AROS_BUILD_DIR)/bin/ie-m68k/AROS/S/Startup-Sequence"
+	@echo "Switching packaged Startup-Sequence to Wanderer..."
+	@sed -i 's|^; Assign "WANDERER:" "SYS:System/Wanderer" DEFER$$|Assign "WANDERER:" "SYS:System/Wanderer" DEFER|' \
+		"$(AROS_BUILD_DIR)/bin/ie-m68k/AROS/S/Startup-Sequence"
+	@perl -0pi -e 's|If EXISTS "SYS:System/Workbook"\n    SYS:System/Workbook\n\n    If NOT ERROR\n        EndCLI\n    EndIf\nEndIf|If EXISTS "WANDERER:Wanderer"\n    WANDERER:Wanderer\n\n    If NOT ERROR\n        EndCLI\n    EndIf\nEndIf|s' \
 		"$(AROS_BUILD_DIR)/bin/ie-m68k/AROS/S/Startup-Sequence"
 	@echo "Creating AROS directory structure..."
 	@AROSDIR="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
@@ -501,6 +649,21 @@ aros-rom:
 		Devs/Monitors Devs/AHI Devs/DataTypes Devs/Keymaps Devs/DOSDrivers Devs/Printers; do \
 		$(MKDIR) -p "$$AROSDIR/$$dir"; \
 	done
+	@echo "Ensuring DOSDrivers and Mountlist are packaged..."
+	@AROSDIR="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
+	if [ -f "$(AROS_SRC_DIR)/workbench/devs/Mountlist" ]; then \
+		cp -f "$(AROS_SRC_DIR)/workbench/devs/Mountlist" "$$AROSDIR/Devs/Mountlist"; \
+	fi; \
+	if [ -d "$(AROS_SRC_DIR)/workbench/devs/DOSDrivers" ]; then \
+		cp -f "$(AROS_SRC_DIR)/workbench/devs/DOSDrivers/"* "$$AROSDIR/Devs/DOSDrivers/" 2>/dev/null || true; \
+	fi
+	@echo "Ensuring Wanderer backdrop prefs are packaged..."
+	@AROSDIR="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
+	$(MKDIR) -p "$$AROSDIR/Prefs/Env-Archive/SYS/Wanderer"; \
+	if [ -f "$(AROS_SRC_DIR)/workbench/system/Wanderer/Env/default/backdrop.prefs" ]; then \
+		cp -f "$(AROS_SRC_DIR)/workbench/system/Wanderer/Env/default/backdrop.prefs" \
+			"$$AROSDIR/Prefs/Env-Archive/SYS/Wanderer/backdrop.prefs"; \
+	fi
 	@echo "Building AROS icons..."
 	@ILBMTOICON="$(AROS_BUILD_DIR)/bin/$$(uname -s | tr A-Z a-z)-$$(uname -m)/tools/ilbmtoicon"; \
 	AROSDIR="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
@@ -596,7 +759,7 @@ aros-rom:
 				$$ILBMTOICON --png "$$src" "$$png" "$$AROSDIR/System/$${name}.info"; \
 			fi; \
 		done; \
-		for name in About CLI Find FTManager Snoopy SysMon VMM Workbook; do \
+		for name in About CLI Find FTManager Snoopy SysMon VMM Wanderer Workbook; do \
 			src="$$MASON_EA/def_Tool.info.src"; \
 			png="$$MASON_EA/def_Tool.png"; \
 			if [ -f "$$src" ] && [ -f "$$png" ] && [ -f "$$AROSDIR/System/$${name}" ]; then \
@@ -620,12 +783,10 @@ aros-rom:
 	else \
 		echo "  Warning: ilbmtoicon not found, skipping icon build"; \
 	fi
-	@echo "Cleaning up Wanderer artifacts (using Workbook desktop)..."
-	@AROSDIR="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
-	rm -rf "$$AROSDIR/Prefs/Env-Archive/SYS/Wanderer" "$$AROSDIR/System/Wanderer" "$$AROSDIR/System/Wanderer.info"
 	@echo "Merging DataTypes into lowercase datatypes dir..."
 	@AROSDIR="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
-	if [ -d "$$AROSDIR/Classes/DataTypes" ] && [ -d "$$AROSDIR/Classes/datatypes" ]; then \
+	$(MKDIR) -p "$$AROSDIR/Classes/datatypes"; \
+	if [ -d "$$AROSDIR/Classes/DataTypes" ]; then \
 		cp -f "$$AROSDIR/Classes/DataTypes/"* "$$AROSDIR/Classes/datatypes/" 2>/dev/null; \
 		echo "  Merged $$(ls "$$AROSDIR/Classes/datatypes/" 2>/dev/null | wc -l) datatypes"; \
 	fi
@@ -669,12 +830,107 @@ aros-rom:
 	if [ -f "$$AROSDIR/Libs/ie-audio.library" ]; then \
 		cp "$$AROSDIR/Libs/ie-audio.library" "$$AROSDIR/Devs/AHI/ie-audio.audio"; \
 		echo "  Installed ie-audio.audio"; \
-	fi
+	fi; \
+	find "$$AROSDIR/Devs/AHI" -maxdepth 1 -type f ! -name 'ie-audio.audio' -delete 2>/dev/null || true; \
+	rm -f "$$AROSDIR/Devs/AudioModes/"* "$$AROSDIR/Storage/AudioModes/"* "$$AROSDIR/Storage/AHI/"* 2>/dev/null || true; \
+	rm -f "$$AROSDIR/Devs/parallel.device" "$$AROSDIR/Devs/printer.device" "$$AROSDIR/Devs/serial.device" 2>/dev/null || true; \
+	rm -f "$$AROSDIR/Devs/DOSDrivers/PAR" "$$AROSDIR/Devs/DOSDrivers/PAR.info" \
+		"$$AROSDIR/Devs/DOSDrivers/PRT" "$$AROSDIR/Devs/DOSDrivers/PRT.info" \
+		"$$AROSDIR/Devs/DOSDrivers/SER" "$$AROSDIR/Devs/DOSDrivers/SER.info" \
+		"$$AROSDIR/Devs/DOSDrivers/SER0" "$$AROSDIR/Devs/DOSDrivers/SER0.info" \
+		"$$AROSDIR/Devs/DOSDrivers/SER1" "$$AROSDIR/Devs/DOSDrivers/SER1.info" 2>/dev/null || true; \
+	find "$$AROSDIR/Devs/Drivers" -maxdepth 1 -type f \( -name 'i2c.hidd' \) -delete 2>/dev/null || true
+	
 	@echo "Checking AHI artifacts..."
 	@AROSDIR="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
 	for f in "$$AROSDIR/Devs/ahi.device" "$$AROSDIR/Devs/AHI/ie-audio.audio"; do \
 		if [ ! -f "$$f" ]; then echo "Warning: AHI artifact missing: $$f (AHI may not be functional)"; fi; \
 	done
+	@echo "Verifying essential AROS desktop artifacts..."
+	@AROSDIR="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
+	missing=""; \
+	for f in \
+		"S/Startup-Sequence" \
+		"C/IPrefs" \
+		"System/FixFonts" \
+		"Devs/Mountlist" \
+		"Devs/DOSDrivers/DEBUG" \
+		"Devs/DOSDrivers/PIPE" \
+		"Devs/ahi.device" \
+		"Devs/fdsk.device" \
+		"Devs/Printers/PostScript" \
+		"Devs/ramdrive.device" \
+		"Rexxc/RX" \
+		"Rexxc/RXLIB" \
+		"Classes/datatypes/jpeg.datatype" \
+		"Libs/amigaguide.library" \
+		"Libs/asyncio.library" \
+		"Libs/camd.library" \
+		"Libs/codesets.library" \
+		"Libs/commodities.library" \
+		"Libs/coolimages.library" \
+		"Prefs/Env-Archive/SYS/Wanderer/backdrop.prefs" \
+		"System/Wanderer/Wanderer" \
+		"Libs/asl.library" \
+		"Libs/cybergraphics.library" \
+		"Libs/datatypes.library" \
+		"Libs/diskfont.library" \
+		"Libs/expat.library" \
+		"Libs/gadtools.library" \
+		"Libs/identify.library" \
+		"Libs/icon.library" \
+		"Libs/jfif.library" \
+		"Libs/lowlevel.library" \
+		"Libs/lzma.library" \
+		"Libs/mathffp.library" \
+		"Libs/mathieeedoubbas.library" \
+		"Libs/mathieeedoubtrans.library" \
+		"Libs/mathieeesingbas.library" \
+		"Libs/mathieeesingtrans.library" \
+		"Libs/mathtrans.library" \
+		"Libs/muimaster.library" \
+		"Libs/muiscreen.library" \
+		"Libs/popupmenu.library" \
+		"Libs/png.library" \
+		"Libs/reqtools.library" \
+		"Libs/realtime.library" \
+		"Libs/rexxsupport.library" \
+		"Libs/tiff.library" \
+		"Libs/utf8proc.library" \
+		"Libs/version.library" \
+		"Libs/z1.library" \
+		"Libs/zstd.library" \
+		"Libs/workbench.library"; do \
+		if [ ! -f "$$AROSDIR/$$f" ]; then \
+			missing="$$missing\n  - $$f"; \
+		fi; \
+	done; \
+	for d in \
+		"Devs/Monitors" \
+		"Classes/datatypes" \
+		"Classes/Gadgets" \
+		"Classes/Zune" \
+		"Libs/Zune" \
+		"L"; do \
+		if [ ! -d "$$AROSDIR/$$d" ] || [ -z "$$(find "$$AROSDIR/$$d" -mindepth 1 -maxdepth 1 2>/dev/null)" ]; then \
+			missing="$$missing\n  - $$d (empty or missing)"; \
+		fi; \
+	done; \
+	if [ -n "$$missing" ]; then \
+		echo "Error: AROS desktop image is incomplete."; \
+		printf '%b\n' "$$missing"; \
+		echo "Hint: inspect the first failing workbench target above; workbench-complete is not sufficient when partial failures are tolerated."; \
+		exit 1; \
+	fi
+
+.PHONY: aros-release-assets
+aros-release-assets:
+	@if [ -f "$(AROS_ROM)" ] && [ -d "$(AROS_RELEASE_DIR)" ] && [ -n "$$(find "$(AROS_RELEASE_DIR)" -mindepth 1 -maxdepth 1 2>/dev/null)" ]; then \
+		echo "Using existing AROS release assets: $(AROS_ROM), $(AROS_RELEASE_DIR)"; \
+	else \
+		echo "AROS release assets missing or incomplete; building them..."; \
+		$(MAKE) aros-rom; \
+	fi
 
 .PHONY: clean-aros
 clean-aros:
@@ -801,6 +1057,19 @@ showreel-emutos:
 	else \
 		echo "Error: missing EmuTOS ROM ($(EMUTOS_ROM)) and local source tree ($(EMUTOS_SRC_DIR))."; \
 		echo "Provide one of them, then re-run 'make build-showreel-deps'."; \
+		exit 1; \
+	fi
+
+.PHONY: emutos-release-rom
+emutos-release-rom:
+	@if [ -f "$(EMUTOS_ROM)" ]; then \
+		echo "Using existing EmuTOS ROM: $(EMUTOS_ROM)"; \
+	elif [ -d "$(EMUTOS_SRC_DIR)" ]; then \
+		echo "EmuTOS ROM missing; building it..."; \
+		$(MAKE) emutos-rom; \
+	else \
+		echo "Error: missing EmuTOS ROM ($(EMUTOS_ROM)) and local source tree ($(EMUTOS_SRC_DIR))."; \
+		echo "Provide one of them, then re-run this release target."; \
 		exit 1; \
 	fi
 
@@ -1277,14 +1546,14 @@ ifneq ($(CROSS_PKG_CONFIG_SYSROOT_DIR),)
 endif
 
 # Build Linux release archives for both architectures (native + cross).
-release-linux: setup sdk emutos-rom aros-rom
+release-linux: setup emutos-release-rom aros-release-assets
 	@echo "=== Building Linux releases (amd64 + arm64) ==="
 	@$(MKDIR) -p $(RELEASE_DIR)
 	$(call build-linux-release,$(NATIVE_GOARCH),$(CC),$(CXX),)
 	$(call build-linux-release,$(CROSS_GOARCH),$(CROSS_CC),$(CROSS_CXX),$(CROSS_ENV))
 
 # Build Linux release archive for amd64 only.
-release-linux-amd64: setup sdk emutos-rom aros-rom
+release-linux-amd64: setup emutos-release-rom aros-release-assets
 	@echo "=== Building Linux release (amd64) ==="
 	@$(MKDIR) -p $(RELEASE_DIR)
 ifeq ($(NATIVE_GOARCH),amd64)
@@ -1294,7 +1563,7 @@ else
 endif
 
 # Build Linux release archive for arm64 only.
-release-linux-arm64: setup sdk emutos-rom aros-rom
+release-linux-arm64: setup emutos-release-rom aros-release-assets
 	@echo "=== Building Linux release (arm64) ==="
 	@$(MKDIR) -p $(RELEASE_DIR)
 ifeq ($(NATIVE_GOARCH),arm64)
@@ -1304,7 +1573,7 @@ else
 endif
 
 # Build release archives for Windows (amd64 + arm64, cross-compiled, no Vulkan)
-release-windows: setup sdk emutos-rom aros-rom
+release-windows: setup emutos-release-rom aros-release-assets
 	@echo "=== Building Windows releases (amd64 + arm64) ==="
 	@$(MKDIR) -p $(RELEASE_DIR)
 	@for goarch in amd64 arm64; do \
@@ -1341,7 +1610,7 @@ release-windows: setup sdk emutos-rom aros-rom
 # Build release archives for macOS amd64 + arm64 (pure Go, no Vulkan)
 release-macos: release-macos-amd64 release-macos-arm64
 
-release-macos-amd64: setup sdk emutos-rom aros-rom
+release-macos-amd64: setup emutos-release-rom aros-release-assets
 	@echo "=== Building macOS release (amd64) ==="
 	@$(MKDIR) -p $(RELEASE_DIR)
 	@RELEASE_NAME=$(APP_NAME)-$(APP_VERSION)-darwin-amd64 && \
@@ -1369,7 +1638,7 @@ release-macos-amd64: setup sdk emutos-rom aros-rom
 		rm -rf $$STAGING && \
 		echo "Created: $(RELEASE_DIR)/$$RELEASE_NAME.tar.xz"
 
-release-macos-arm64: setup sdk emutos-rom aros-rom
+release-macos-arm64: setup emutos-release-rom aros-release-assets
 	@echo "=== Building macOS release (arm64) ==="
 	@$(MKDIR) -p $(RELEASE_DIR)
 	@RELEASE_NAME=$(APP_NAME)-$(APP_VERSION)-darwin-arm64 && \
