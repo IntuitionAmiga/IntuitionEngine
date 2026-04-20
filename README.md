@@ -5808,12 +5808,13 @@ For detailed build instructions, all build profiles/tags, toolchain setup, testi
 
 | Platform | Architecture | Status | Notes |
 |----------|-------------|--------|-------|
-| Linux | x86_64, aarch64 | **Official** | All build profiles |
-| Windows | x86_64, ARM64 | Experimental | `novulkan` profile |
+| Linux | x86_64, aarch64 | **Official** | `full`, `novulkan`, `headless`, `headless-novulkan` |
+| Windows | x86_64, ARM64 | **Official** | Pure-Go `novulkan` release builds |
+| macOS | x86_64, arm64 | **Official** | Pure-Go `novulkan` release builds, amd64 guest JIT parity on Intel Macs, IE64 native JIT on Apple Silicon |
 
-Release builds embed the EhBASIC interpreter and include the SDK with pre-assembled demos. Build with `make release-linux` (native arch), `make release-windows` (amd64 + arm64), or `make release-all` for all platforms.
+Release builds embed EhBASIC, EmuTOS, and the AROS ROM via `embed_basic embed_emutos embed_aros`, and package the full `sdk/` tree plus the staged `AROS/` system tree beside the binary. `make release-macos` builds both `darwin-amd64` and `darwin-arm64` archives.
 
-Graphics: Ebiten (OpenGL/Metal/DirectX). Audio: Oto (44.1kHz stereo). Both have headless stubs for CI.
+Graphics: Ebiten (OpenGL on Linux, DirectX on Windows, Metal on macOS). Audio: Oto (44.1kHz stereo). Both have headless stubs for CI.
 
 See [docs/platform-compatibility.md](sdk/docs/platform-compatibility.md) for build profile requirements and known limitations.
 
@@ -5928,14 +5929,39 @@ See [sdk/docs/ie_emutos.md](sdk/docs/ie_emutos.md) for the full hardware map, bu
 Intuition Engine runs [AROS](https://aros.sourceforge.io/) (Amiga Research Operating System) on the IE M68K core, providing a full Amiga Workbench desktop with Shell, file management, and host filesystem access.
 
 ```bash
-# Boot AROS (embedded ROM, or auto-discovers aros-ie.rom locally)
+# Boot AROS (embedded ROM, or auto-discovers sdk/roms/aros-ie-m68k.rom)
 ./bin/IntuitionEngine -aros
 
+# Interpreter-only validation path used for M68K AROS bring-up
+./bin/IntuitionEngine -aros -nojit
+
 # Boot from external ROM image
-./bin/IntuitionEngine -aros-image aros.img
+./bin/IntuitionEngine -aros-image sdk/roms/aros-ie-m68k.rom
 
 # Map a host directory as the IE: volume
 ./bin/IntuitionEngine -aros -aros-drive /path/to/files
+```
+
+### Interpreter Validation Workflow
+
+For M68K AROS interpreter work, the stable bring-up path is `-aros -nojit`.
+The bounded clean-boot contract is:
+
+- the machine reaches the AROS ready probe without timing out
+- no structured M68K fault record is emitted first
+- no interpreter-originated illegal/Line-A/Line-F/bus/address exception is seen on the way there
+
+The repo now exposes that workflow in two layers:
+
+- Go test helpers: `ProbeAROSReadyState`, `AROSBootHarness`, and `M68KFaultManifest`
+- IEScript diagnostics: [scripts/m68k_aros_ready_probe.ies](scripts/m68k_aros_ready_probe.ies) and [scripts/m68k_aros_fault_capture.ies](scripts/m68k_aros_fault_capture.ies)
+
+Typical triage commands:
+
+```bash
+go test -tags headless -run 'Test(M68KFaultManifest|ProbeAROSReadyState|AROSBootHarness_)' ./...
+./bin/IntuitionEngine -aros -nojit -script scripts/m68k_aros_ready_probe.ies
+./bin/IntuitionEngine -aros -nojit -script scripts/m68k_aros_fault_capture.ies
 ```
 
 ### AROS Memory Layout

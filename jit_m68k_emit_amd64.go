@@ -1,6 +1,6 @@
 // jit_m68k_emit_amd64.go - x86-64 native code emitter for M68020 JIT compiler
 
-//go:build amd64 && linux
+//go:build amd64 && (linux || windows || darwin)
 
 package main
 

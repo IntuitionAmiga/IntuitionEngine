@@ -12,7 +12,7 @@ import (
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
-	"golang.design/x/clipboard"
+	"github.com/intuitionamiga/IntuitionEngine/internal/clipboard"
 )
 
 // LuaOverlay provides an in-window Lua REPL (F8).
@@ -281,7 +281,7 @@ func (o *LuaOverlay) pasteClipboard() {
 	if !luaClipboardOK {
 		return
 	}
-	data := clipboard.Read(clipboard.FmtText)
+	data, _ := clipboard.ReadText()
 	for _, b := range data {
 		if b < 0x20 || b > 0x7E {
 			continue

@@ -4,6 +4,21 @@
 
 Intuition Engine is a multi-CPU retro hardware emulator with 6 heterogeneous CPU cores, 6 video chips, 6 audio engines, a copper coprocessor, DMA blitter, and extensive I/O peripherals — all connected through a unified 32MB memory bus. This document describes the system architecture with diagrams showing all chips, buses, internal functional units, and data flow paths.
 
+## Platform JIT Matrix
+
+The host-side JIT support is intentionally asymmetric:
+
+| Host platform | JIT-enabled guest cores |
+|---------------|-------------------------|
+| Linux amd64 | IE64, 6502, M68K, Z80, x86 |
+| Linux arm64 | IE64 |
+| Windows amd64 | IE64, 6502, M68K, Z80, x86 |
+| Windows arm64 | IE64 |
+| macOS amd64 | IE64, 6502, M68K, Z80, x86 |
+| macOS arm64 | IE64 |
+
+On macOS amd64, the JIT reuses the shared x86-64 host backends. On macOS arm64, executable memory uses the native `MAP_JIT` model with thread-pinned write protection toggles, and non-IE64 guest cores remain interpreter-only on arm64 hosts.
+
 ## 1. System Overview
 
 ```mermaid

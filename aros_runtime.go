@@ -1,0 +1,68 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+)
+
+const (
+	arosDirectVRAMBase = 0x1E00000
+	arosDirectVRAMSize = 0x200000
+)
+
+func resolveAROSDrivePath(explicit, exePath string) string {
+	if explicit != "" {
+		return explicit
+	}
+
+	for _, candidate := range arosDriveCandidates(exePath) {
+		if isAROSDrivePath(candidate) {
+			return candidate
+		}
+	}
+
+	if home, err := os.UserHomeDir(); err == nil {
+		return home
+	}
+
+	return ""
+}
+
+func arosDriveCandidates(exePath string) []string {
+	candidates := []string{
+		"AROS/bin/ie-m68k/bin/ie-m68k/AROS",
+		"../AROS/bin/ie-m68k/bin/ie-m68k/AROS",
+		"AROS",
+	}
+	if exePath == "" {
+		return candidates
+	}
+
+	exeDir := filepath.Dir(exePath)
+	candidates = append(candidates,
+		filepath.Join(exeDir, "AROS"),
+		filepath.Join(exeDir, "AROS", "bin", "ie-m68k", "bin", "ie-m68k", "AROS"),
+		filepath.Join(exeDir, "..", "AROS", "bin", "ie-m68k", "bin", "ie-m68k", "AROS"),
+	)
+	return candidates
+}
+
+func isAROSDrivePath(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+
+	startup := filepath.Join(path, "S", "Startup-Sequence")
+	startupInfo, err := os.Stat(startup)
+	return err == nil && !startupInfo.IsDir()
+}
+
+func configureArosVRAM(sysBus *MachineBus, videoChip *VideoChip) []byte {
+	sysBus.UnmapIO(VRAM_START, VRAM_START+VRAM_SIZE-1)
+	videoChip.SetBusMemory(sysBus.memory)
+	videoChip.SetBigEndianMode(true)
+	directVRAM := sysBus.memory[arosDirectVRAMBase : arosDirectVRAMBase+arosDirectVRAMSize]
+	videoChip.SetDirectVRAM(directVRAM)
+	return directVRAM
+}

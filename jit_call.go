@@ -19,7 +19,7 @@
 // g0 stack by asmcgocall") — this file just routes through asmcgocall
 // directly instead of hopping through cgocall first.
 
-//go:build (amd64 || arm64) && linux
+//go:build (amd64 && (linux || windows || darwin)) || (arm64 && (linux || windows || darwin))
 
 package main
 
@@ -46,6 +46,8 @@ var jitCallABI0 uintptr
 // with GC preemption disabled.
 func callNative(fn uintptr, arg uintptr) {
 	args := jitCallArgs{fn: fn, arg: arg}
+	jitPrepareForExec()
+	defer jitFinishExec()
 	runtime_asmcgocall(unsafe.Pointer(jitCallABI0), unsafe.Pointer(&args))
 }
 
@@ -54,6 +56,8 @@ func callNative(fn uintptr, arg uintptr) {
 // X0 on ARM64). Runs on the g0 stack with GC preemption disabled.
 func callNativeRet(fn uintptr) uintptr {
 	args := jitCallArgs{fn: fn}
+	jitPrepareForExec()
+	defer jitFinishExec()
 	runtime_asmcgocall(unsafe.Pointer(jitCallABI0), unsafe.Pointer(&args))
 	return args.ret
 }

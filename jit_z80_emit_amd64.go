@@ -1,6 +1,6 @@
 // jit_z80_emit_amd64.go - Z80 JIT compiler: x86-64 native code emitter
 
-//go:build amd64 && linux
+//go:build amd64 && (linux || windows || darwin)
 
 package main
 

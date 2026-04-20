@@ -2,6 +2,30 @@
 
 Assembler toolchains for each Intuition Engine CPU core.
 
+## Cross-Compiling The VM
+
+The SDK assemblers remain normal Go binaries, but the VM itself now has a split platform story:
+
+- Linux `full` and `novulkan` builds still use CGO for the native desktop/audio stack.
+- Windows `amd64` and `arm64` release builds are pure Go under `-tags novulkan`.
+- macOS `amd64` and `arm64` release builds are pure Go under `-tags novulkan`.
+
+Typical cross-build commands from Linux:
+
+```bash
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -tags novulkan .
+CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -tags novulkan .
+CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -tags novulkan .
+CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -tags novulkan .
+```
+
+For release packaging, prefer the Makefile targets because they also embed the ROM images and stage `sdk/` plus `AROS/`:
+
+```bash
+make release-windows
+make release-macos
+```
+
 ## Running Assembled Programs
 
 Programs can be run from the command line or from the EhBASIC interpreter:

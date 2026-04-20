@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Pure-Go release packaging for Windows (`amd64`, `arm64`) and macOS (`arm64`) with embedded EhBASIC, EmuTOS, and AROS ROMs plus bundled `sdk/` and `AROS/` trees
+- Windows `amd64` JIT parity with Linux `amd64` for IE64, 6502, M68K, Z80, and x86 guests
+- Windows `arm64` IE64 native JIT support
+- macOS `arm64` IE64 native JIT support using `MAP_JIT`, `pthread_jit_write_protect_np`, and `sys_icache_invalidate`
+- Documentation consistency lint script (`scripts/check-doc-consistency.sh`) and archive layout validation that now checks bundled `README.md` parity
 - x86-64 JIT compiler backend for IE64 (amd64/linux), matching ARM64 backend feature parity
 - x86-64 JIT compiler backend for M68020 (amd64/linux): translates 68020 basic blocks to native x86-64 with big-endian memory handling, CCR in dedicated register, code page bitmap for self-mod detection, within-block backward branch optimisation with budget
 - M68K JIT block chaining: direct block-to-block jumps via patchable JMP rel32, eliminating Go dispatcher overhead for BRA/JMP/JSR/BSR/RTS/Bcc/DBcc with known targets
@@ -139,7 +144,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Platform Support
 - **Linux** (x86_64, aarch64): Official platform with Ebiten graphics and Oto audio.
-- **Windows** (x86_64, ARM64): Experimental with `novulkan` profile.
+- **Windows** (x86_64, ARM64): Supported with `novulkan` profile.
 - Single-instance mode with IPC-based file handoff.
 - F10 hard reset with full runtime state rebuild.
 - Ebiten runtime status bar with live CPU/chip state (F12 toggle).

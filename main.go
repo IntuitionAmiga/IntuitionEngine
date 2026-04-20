@@ -328,37 +328,8 @@ func main() {
 	}
 
 	// Resolve AROS drive config (host filesystem mapping).
-	// When -aros-drive is not set, search for the AROS build output tree
-	// (same auto-discovery pattern as ROM resolution).
-	arosHostRoot := arosDrive
-	if arosHostRoot == "" {
-		arosDriveCandidates := []string{
-			"AROS/bin/ie-m68k/bin/ie-m68k/AROS",
-			"../AROS/bin/ie-m68k/bin/ie-m68k/AROS",
-			"AROS",
-		}
-		for _, p := range arosDriveCandidates {
-			if info, err := os.Stat(p); err == nil && info.IsDir() {
-				arosHostRoot = p
-				break
-			}
-		}
-		// Exe-relative lookup (for release archives where CWD != exe dir)
-		if arosHostRoot == "" {
-			if exe, err := os.Executable(); err == nil {
-				exeDir := filepath.Dir(exe)
-				p := filepath.Join(exeDir, "AROS")
-				if info, err := os.Stat(p); err == nil && info.IsDir() {
-					arosHostRoot = p
-				}
-			}
-		}
-		if arosHostRoot == "" {
-			if home, err := os.UserHomeDir(); err == nil {
-				arosHostRoot = home
-			}
-		}
-	}
+	exePath, _ := os.Executable()
+	arosHostRoot := resolveAROSDrivePath(arosDrive, exePath)
 
 	// Resolve GEMDOS drive config for EmuTOS (always, since EmuTOS can be
 	// launched dynamically from BASIC or the program executor)
@@ -1489,16 +1460,8 @@ func main() {
 			os.Exit(1)
 		}
 
-		// AROS uses addresses 0x100000-0x5FFFFF as normal RAM.
-		// Remove the VRAM I/O mapping so writes go to bus memory, not VideoChip.
-		sysBus.UnmapIO(VRAM_START, VRAM_START+VRAM_SIZE-1)
-		videoChip.SetBusMemory(sysBus.memory)
-		videoChip.SetBigEndianMode(true)
-		// AROS VRAM is at the top of the 32MB bus (0x1E00000-0x1FFFFFF).
-		// SetDirectVRAM enables direct-VRAM mode (CLUT8 reads via busMemory).
-		const arosVRAMBase = 0x1E00000
-		const arosVRAMSize = 0x200000
-		videoChip.SetDirectVRAM(sysBus.memory[arosVRAMBase : arosVRAMBase+arosVRAMSize])
+		// AROS uses bus-backed VRAM at the top of the 32MB address space.
+		configureArosVRAM(sysBus, videoChip)
 		m68kCPU := NewM68KCPU(sysBus)
 		m68kRunner := NewM68KRunner(m68kCPU)
 		m68kRunner.PerfEnabled = perfMode
@@ -1993,15 +1956,17 @@ func main() {
 		// 7b. VRAM I/O mapping — must happen after sysBus.Reset().
 		if mode == "emutos" || mode == "aros" {
 			// M68K ROM mode: unmap VRAM so M68K writes go to bus memory directly.
-			sysBus.UnmapIO(VRAM_START, VRAM_START+VRAM_SIZE-1)
-			videoChip.SetBusMemory(sysBus.memory)
-			videoChip.SetBigEndianMode(true)
-			videoChip.SetDirectVRAM(sysBus.memory[VRAM_START : VRAM_START+VRAM_SIZE])
 			if mode == "aros" {
+				configureArosVRAM(sysBus, videoChip)
 				// AROS draws its own Intuition cursor — disable Go-side software cursor
 				if disabler, ok := videoChip.GetOutput().(SoftwareCursorDisabler); ok {
 					disabler.DisableSoftwareCursor()
 				}
+			} else {
+				sysBus.UnmapIO(VRAM_START, VRAM_START+VRAM_SIZE-1)
+				videoChip.SetBusMemory(sysBus.memory)
+				videoChip.SetBigEndianMode(true)
+				videoChip.SetDirectVRAM(sysBus.memory[VRAM_START : VRAM_START+VRAM_SIZE])
 			}
 			if hider, ok := videoChip.GetOutput().(SystemCursorHider); ok {
 				hider.HideSystemCursor()
@@ -2373,9 +2338,7 @@ func resolveDefaultBasicImagePath() string {
 
 func resolveDefaultAROSImagePath() string {
 	candidates := []string{
-		"sdk/examples/prebuilt/aros-ie.rom",
-		"aros-ie.rom",
-		"bin/aros-ie.rom",
+		"sdk/roms/aros-ie-m68k.rom",
 	}
 	for _, p := range candidates {
 		if st, err := os.Stat(p); err == nil && !st.IsDir() {

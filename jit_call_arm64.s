@@ -4,7 +4,7 @@
 // stacks and prevents GC preemption during native code execution. The
 // trampoline receives a pointer to jitCallArgs in R0.
 
-//go:build arm64 && linux
+//go:build arm64 && (linux || windows || darwin)
 
 #include "textflag.h"
 

@@ -8,5 +8,5 @@ func init() {
 	compiledFeatures = append(compiledFeatures, "aros:embedded")
 }
 
-//go:embed sdk/examples/prebuilt/aros-ie.rom
+//go:embed sdk/roms/aros-ie-m68k.rom
 var embeddedAROSImage []byte

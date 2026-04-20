@@ -4,7 +4,7 @@
 
 The x86 JIT compiler translates basic blocks of x86 machine code (8086 base + 386 32-bit extensions) into native x86-64 instructions at runtime. It follows the same architecture as the IE64 and M68K JITs: scan a block of instructions, compile to native code, cache the result, and dispatch via `callNative()`. Includes x87 FPU support via SSE2, self-loop native compilation, and multi-block region compilation.
 
-**Platform support:** amd64/linux. ARM64 backend deferred.
+**Platform support:** amd64/linux, amd64/darwin, and amd64/windows. ARM64 backend deferred.
 
 **Activation:** Set `cpu.x86JitEnabled = true` and call `cpu.X86ExecuteJIT()` or `cpu.x86JitExecute()`. The dispatch function `x86JitExecute()` routes to the JIT when enabled, otherwise to the interpreter.
 
@@ -68,15 +68,15 @@ The x86 JIT compiler translates basic blocks of x86 machine code (8086 base + 38
 |------|-----------|---------|
 | `jit_x86_common.go` | none | X86JITContext, X86JITInstr, block scanner, instruction length calculator, fallback tables, I/O bitmap builder, peephole optimizer, Tier 2 register allocator, multi-block region formation |
 | `jit_x86_common_test.go` | none | Scanner, length calculator, context offset, bitmap, peephole, Tier 2 allocator, host feature detection tests |
-| `jit_x86_cpuid.go` | `amd64 && linux` | Runtime CPUID host feature detection (BMI1, BMI2, AVX2, LZCNT, ERMS, FSRM) |
+| `jit_x86_cpuid.go` | `amd64 && (linux \|\| windows \|\| darwin)` | Runtime CPUID host feature detection (BMI1, BMI2, AVX2, LZCNT, ERMS, FSRM) |
 | `jit_x86_cpuid_amd64.s` | `amd64` | Assembly CPUID instruction wrapper |
-| `jit_x86_cpuid_stub.go` | `!amd64 || !linux` | CPUID stub for non-amd64 platforms (all features false) |
-| `jit_x86_emit_amd64.go` | `amd64 && linux` | x86-64 host emitters: prologue/epilogue, per-instruction emitters, EFLAGS passthrough, 8-bit register helpers, block chaining, deferred bail stubs, self-loop compilation, region compilation, REP range-safety, VEX/BMI2 encoding, x87 FPU emitters |
-| `jit_x86_emit_amd64_test.go` | `amd64 && linux` | Per-instruction emitter tests, memory operand tests, FPU tests, REP tests, BMI2/LZCNT/ERMS tests |
-| `jit_x86_exec.go` | `(amd64 || arm64) && linux` | X86ExecuteJIT main loop, init/free lifecycle, hot-block detection, chain patching, RTS cache management, profile counters |
-| `jit_x86_exec_test.go` | `(amd64 || arm64) && linux` | Integration tests: HLT, multi-instruction, JIT-vs-interpreter equivalence, chaining, self-mod detection, dispatch, CMP/TEST+Jcc fusion, multi-block region |
-| `jit_x86_dispatch.go` | `(amd64 || arm64) && linux` | Sets `x86JitAvailable = true`, routing function |
-| `jit_x86_dispatch_stub.go` | `!(amd64 || arm64) || !linux` | Fallback stubs for unsupported platforms |
+| `jit_x86_cpuid_stub.go` | `!amd64 || (!linux && !windows && !darwin)` | CPUID stub for non-amd64 platforms (all features false) |
+| `jit_x86_emit_amd64.go` | `amd64 && (linux \|\| windows \|\| darwin)` | x86-64 host emitters: prologue/epilogue, per-instruction emitters, EFLAGS passthrough, 8-bit register helpers, block chaining, deferred bail stubs, self-loop compilation, region compilation, REP range-safety, VEX/BMI2 encoding, x87 FPU emitters |
+| `jit_x86_emit_amd64_test.go` | `amd64 && (linux \|\| windows)` | Per-instruction emitter tests, memory operand tests, FPU tests, REP tests, BMI2/LZCNT/ERMS tests |
+| `jit_x86_exec.go` | `amd64 && (linux \|\| windows \|\| darwin)` | X86ExecuteJIT main loop, init/free lifecycle, hot-block detection, chain patching, RTS cache management, profile counters |
+| `jit_x86_exec_test.go` | `amd64 && (linux \|\| windows \|\| darwin)` | Integration tests: HLT, multi-instruction, JIT-vs-interpreter equivalence, chaining, self-mod detection, dispatch, CMP/TEST+Jcc fusion, multi-block region |
+| `jit_x86_dispatch.go` | `amd64 && (linux \|\| windows \|\| darwin)` | Sets `x86JitAvailable = true`, routing function |
+| `jit_x86_dispatch_stub.go` | all other platforms | Fallback stubs for unsupported platforms |
 | `x86_jit_benchmark_test.go` | `amd64 && linux` | ALU/Memory/Mixed/String benchmark suite with Interpreter/JIT variants |
 
 ---
@@ -189,7 +189,7 @@ Stack frame slots:
 
 ## Self-Loop Native Compilation
 
-When a block's backward Jcc targets its own start PC (self-loop), the JIT compiles it with a **native backward branch** instead of returning to Go on every iteration. This eliminates the `runtime.cgocall` round-trip overhead that otherwise dominates tight loops.
+When a block's backward Jcc targets its own start PC (self-loop), the JIT compiles it with a native backward branch instead of returning to Go on every iteration. This eliminates the `runtime.asmcgocall` round-trip overhead that otherwise dominates tight loops.
 
 **Implementation:**
 1. Block scanner detects backward Jcc targeting `startPC`

@@ -62,6 +62,8 @@ The `make basic` target:
 1. Assembles `sdk/examples/asm/ehbasic_ie64.asm` into `sdk/examples/asm/ehbasic_ie64.ie64`
 2. Builds the Intuition Engine binary with the `embed_basic` build tag, which embeds the BASIC binary via Go's `//go:embed` directive
 
+Release builds always include `embed_basic`, so packaged Linux, Windows, and macOS archives can boot directly into the embedded BASIC prompt without an extra ROM file.
+
 ### Running
 
 ```bash
@@ -659,7 +661,7 @@ AROS
 The ROM is resolved in this order:
 1. `-aros-image <path>` command-line flag
 2. Embedded ROM (if built with `make aros`)
-3. Local `aros-ie.rom` file in the working directory
+3. Local `sdk/roms/aros-ie-m68k.rom`
 
 If no ROM is available, prints `?AROS NOT AVAILABLE`.
 

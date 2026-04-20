@@ -1,5 +1,7 @@
 // jit_x86_common_test.go - Tests for x86 JIT infrastructure: context, scanner, length calculator
 
+//go:build amd64 && (linux || windows || darwin)
+
 package main
 
 import (

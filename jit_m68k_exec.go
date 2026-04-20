@@ -1,6 +1,6 @@
 // jit_m68k_exec.go - M68020 JIT execution loop
 
-//go:build amd64 && linux
+//go:build amd64 && (linux || windows || darwin)
 
 package main
 

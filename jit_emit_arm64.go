@@ -1,6 +1,6 @@
 // jit_emit_arm64.go - ARM64 native code emitter for IE64 JIT compiler
 
-//go:build arm64 && linux
+//go:build arm64 && (linux || windows || darwin)
 
 package main
 
@@ -2499,4 +2499,8 @@ func emitFPUBail(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, wr
 	bailCount := uint32(ji.pcOffset / IE64_INSTR_SIZE)
 	emitPackedPCAndCount(cb, uint64(instrPC), bailCount, br)
 	emitEpilogue(cb, writtenSoFar, br.used)
+}
+
+func emitBailToInterpreter(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, writtenSoFar uint32) {
+	emitFPUBail(cb, ji, instrPC, br, writtenSoFar)
 }
