@@ -5929,14 +5929,39 @@ See [sdk/docs/ie_emutos.md](sdk/docs/ie_emutos.md) for the full hardware map, bu
 Intuition Engine runs [AROS](https://aros.sourceforge.io/) (Amiga Research Operating System) on the IE M68K core, providing a full Amiga Workbench desktop with Shell, file management, and host filesystem access.
 
 ```bash
-# Boot AROS (embedded ROM, or auto-discovers aros-ie.rom locally)
+# Boot AROS (embedded ROM, or auto-discovers sdk/roms/aros-ie-m68k.rom)
 ./bin/IntuitionEngine -aros
 
+# Interpreter-only validation path used for M68K AROS bring-up
+./bin/IntuitionEngine -aros -nojit
+
 # Boot from external ROM image
-./bin/IntuitionEngine -aros-image aros.img
+./bin/IntuitionEngine -aros-image sdk/roms/aros-ie-m68k.rom
 
 # Map a host directory as the IE: volume
 ./bin/IntuitionEngine -aros -aros-drive /path/to/files
+```
+
+### Interpreter Validation Workflow
+
+For M68K AROS interpreter work, the stable bring-up path is `-aros -nojit`.
+The bounded clean-boot contract is:
+
+- the machine reaches the AROS ready probe without timing out
+- no structured M68K fault record is emitted first
+- no interpreter-originated illegal/Line-A/Line-F/bus/address exception is seen on the way there
+
+The repo now exposes that workflow in two layers:
+
+- Go test helpers: `ProbeAROSReadyState`, `AROSBootHarness`, and `M68KFaultManifest`
+- IEScript diagnostics: [scripts/m68k_aros_ready_probe.ies](scripts/m68k_aros_ready_probe.ies) and [scripts/m68k_aros_fault_capture.ies](scripts/m68k_aros_fault_capture.ies)
+
+Typical triage commands:
+
+```bash
+go test -tags headless -run 'Test(M68KFaultManifest|ProbeAROSReadyState|AROSBootHarness_)' ./...
+./bin/IntuitionEngine -aros -nojit -script scripts/m68k_aros_ready_probe.ies
+./bin/IntuitionEngine -aros -nojit -script scripts/m68k_aros_fault_capture.ies
 ```
 
 ### AROS Memory Layout

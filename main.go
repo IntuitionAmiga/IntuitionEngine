@@ -2338,9 +2338,7 @@ func resolveDefaultBasicImagePath() string {
 
 func resolveDefaultAROSImagePath() string {
 	candidates := []string{
-		"sdk/examples/prebuilt/aros-ie.rom",
-		"aros-ie.rom",
-		"bin/aros-ie.rom",
+		"sdk/roms/aros-ie-m68k.rom",
 	}
 	for _, p := range candidates {
 		if st, err := os.Stat(p); err == nil && !st.IsDir() {

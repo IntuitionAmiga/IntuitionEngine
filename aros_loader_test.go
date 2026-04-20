@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"os"
 	"testing"
 	"time"
 )
@@ -44,6 +45,66 @@ func TestAROSLoader_LoadROM(t *testing.T) {
 	}
 	if cpu.AddrRegs[7] != arosBootSP {
 		t.Errorf("A7: got 0x%08X, want 0x%08X", cpu.AddrRegs[7], arosBootSP)
+	}
+}
+
+func TestAROSLoader_LoadROM_PreservesWordOffsets(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewM68KCPU(bus)
+	loader := NewAROSLoader(bus, cpu, nil)
+
+	rom := buildAROSTestROM(0x40, 0x00020000, arosROMBase+0x100)
+	words := map[int]uint16{
+		0x08: 0x6606,
+		0x0A: 0x4CDF,
+		0x0C: 0x0C04,
+		0x0E: 0x4E75,
+		0x10: 0x226B,
+		0x12: 0x000E,
+		0x14: 0x246B,
+		0x16: 0x0012,
+		0x18: 0x487A,
+	}
+	for off, word := range words {
+		binary.BigEndian.PutUint16(rom[off:off+2], word)
+	}
+
+	if err := loader.LoadROM(rom); err != nil {
+		t.Fatalf("LoadROM failed: %v", err)
+	}
+
+	base := uint32(arosROMBase)
+	for off, want := range words {
+		addr := base + uint32(off)
+		if got := cpu.Read16(addr); got != want {
+			t.Fatalf("cpu.Read16(0x%08X) = 0x%04X, want 0x%04X", addr, got, want)
+		}
+	}
+}
+
+func TestAROSLoader_LoadROM_RealROMProbe(t *testing.T) {
+	rom, err := os.ReadFile("sdk/roms/aros-ie-m68k.rom")
+	if err != nil {
+		t.Skipf("AROS ROM not available: %v", err)
+	}
+
+	bus := NewMachineBus()
+	cpu := NewM68KCPU(bus)
+	loader := NewAROSLoader(bus, cpu, nil)
+	if err := loader.LoadROM(rom); err != nil {
+		t.Fatalf("LoadROM failed: %v", err)
+	}
+
+	checks := map[uint32]uint16{
+		0x0062490C: 0x0C04,
+		0x00624910: 0x226B,
+		0x00624914: 0x246B,
+		0x00624918: 0x487A,
+	}
+	for addr, want := range checks {
+		if got := cpu.Read16(addr); got != want {
+			t.Fatalf("cpu.Read16(0x%08X) = 0x%04X, want 0x%04X", addr, got, want)
+		}
 	}
 }
 

@@ -661,7 +661,7 @@ AROS
 The ROM is resolved in this order:
 1. `-aros-image <path>` command-line flag
 2. Embedded ROM (if built with `make aros`)
-3. Local `aros-ie.rom` file in the working directory
+3. Local `sdk/roms/aros-ie-m68k.rom`
 
 If no ROM is available, prints `?AROS NOT AVAILABLE`.
 

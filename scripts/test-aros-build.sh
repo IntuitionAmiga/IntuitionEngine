@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 AROS_SRC_DIR="${AROS_SRC_DIR:-../AROS}"
 AROS_BUILD_DIR="${AROS_BUILD_DIR:-$AROS_SRC_DIR/bin/ie-m68k}"
 AROS_TREE="$AROS_BUILD_DIR/bin/ie-m68k/AROS"
-AROS_ROM="${AROS_ROM:-./sdk/examples/prebuilt/aros-ie.rom}"
+AROS_ROM="${AROS_ROM:-./sdk/roms/aros-ie-m68k.rom}"
 
 test -s "$AROS_TREE/S/Startup-Sequence"
 test -s "$AROS_TREE/Libs/iffparse.library"

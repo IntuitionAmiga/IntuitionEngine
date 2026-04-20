@@ -63,7 +63,7 @@ EMUTOS_BUILD_CMD ?= auto
 # AROS build configuration
 AROS_SRC_DIR ?= ../AROS
 AROS_BUILD_DIR ?= $(AROS_SRC_DIR)/bin/ie-m68k
-AROS_ROM ?= ./sdk/examples/prebuilt/aros-ie.rom
+AROS_ROM ?= ./sdk/roms/aros-ie-m68k.rom
 AROS_RELEASE_DIR ?= $(AROS_BUILD_DIR)/bin/ie-m68k/AROS
 AROS_GIT_URL ?= https://github.com/IntuitionAmiga/AROS.git
 AROS_GIT_REF ?= master

@@ -154,7 +154,7 @@ const (
 	M68K_ENTRY_POINT  = 0x00001000 // Avoids collision with exception vector table
 	M68K_IO_BASE      = 0x00F00000 // Memory-mapped I/O begins here
 	M68K_IO_LIMIT     = 0x00FFFFFF // Last accessible I/O address
-	M68K_ADDRESS_MASK = 0xFFFFFFFF // 68020 has 32-bit address bus
+	M68K_ADDRESS_MASK = 0xFFFFFFFF // 68020 uses full 32-bit addresses; out-of-range access should fault, not wrap
 )
 
 // ------------------------------------------------------------------------------
@@ -695,6 +695,9 @@ type M68KCPU struct {
 
 	// Debug write watchpoint (set from tests, nil = disabled)
 	DebugWatchFn func(addr, value, pc uint32, size int)
+
+	// Structured fault hook used by boot harnesses and targeted regressions.
+	FaultHook func(record M68KFaultRecord)
 
 	// Debug instruction trace ring buffer (set from tests)
 	DebugTraceEnabled bool
@@ -2622,6 +2625,8 @@ func (cpu *M68KCPU) isCoprocSharedAddr(addr uint32) bool {
 }
 
 func (cpu *M68KCPU) Read8(addr uint32) uint8 {
+	addr &= M68K_ADDRESS_MASK
+
 	// Lock-free fast path for non-I/O addresses using unsafe pointer
 	// EXCLUDE VGA windows (0xA0000-0xBFFFF) which need bus routing
 	if addr < 0xA0000 {
@@ -2647,6 +2652,8 @@ func (cpu *M68KCPU) Read8(addr uint32) uint8 {
 	return cpu.bus.Read8(addr)
 }
 func (cpu *M68KCPU) Read16(addr uint32) uint16 {
+	addr &= M68K_ADDRESS_MASK
+
 	if (addr & M68K_BYTE_SIZE) != 0 {
 		hi := uint16(cpu.Read8(addr))
 		lo := uint16(cpu.Read8(addr + 1))
@@ -2701,6 +2708,8 @@ func (cpu *M68KCPU) Read16(addr uint32) uint16 {
 	return bits.ReverseBytes16(leValue)
 }
 func (cpu *M68KCPU) Read32(addr uint32) uint32 {
+	addr &= M68K_ADDRESS_MASK
+
 	if (addr & M68K_BYTE_SIZE) != 0 {
 		b0 := uint32(cpu.Read8(addr))
 		b1 := uint32(cpu.Read8(addr + 1))
@@ -2755,6 +2764,8 @@ func (cpu *M68KCPU) Read32(addr uint32) uint32 {
 	return bits.ReverseBytes32(leValue)
 }
 func (cpu *M68KCPU) Write8(addr uint32, value uint8) {
+	addr &= M68K_ADDRESS_MASK
+
 	// Terminal device has no buffer to avoid latency
 	if addr == TERM_OUT || addr == TERM_OUT_SIGNEXT {
 		fmt.Printf("%c", value)
@@ -2785,6 +2796,8 @@ func (cpu *M68KCPU) Write8(addr uint32, value uint8) {
 	cpu.bus.Write8(addr, value)
 }
 func (cpu *M68KCPU) Write16(addr uint32, value uint16) {
+	addr &= M68K_ADDRESS_MASK
+
 	if (addr & M68K_BYTE_SIZE) != 0 {
 		cpu.Write8(addr, uint8(value>>8))
 		cpu.Write8(addr+1, uint8(value))
@@ -2858,6 +2871,8 @@ func (cpu *M68KCPU) Write16(addr uint32, value uint16) {
 	cpu.bus.Write16(addr, busValue)
 }
 func (cpu *M68KCPU) Write32(addr uint32, value uint32) {
+	addr &= M68K_ADDRESS_MASK
+
 	if (addr & M68K_BYTE_SIZE) != 0 {
 		cpu.Write8(addr, uint8(value>>24))
 		cpu.Write8(addr+1, uint8(value>>16))
@@ -3000,6 +3015,8 @@ func (cpu *M68KCPU) Pop32() uint32 {
 
 // Instruction fetching
 func (cpu *M68KCPU) Fetch16() uint16 {
+	cpu.PC &= M68K_ADDRESS_MASK
+
 	// Guard hot fetch so invalid PCs raise emulated faults, not host crashes.
 	if (cpu.PC & M68K_BYTE_SIZE) != 0 {
 		cpu.ProcessException(M68K_VEC_ADDRESS_ERROR)
@@ -3021,6 +3038,8 @@ func (cpu *M68KCPU) Fetch16() uint16 {
 	return value
 }
 func (cpu *M68KCPU) Fetch32() uint32 {
+	cpu.PC &= M68K_ADDRESS_MASK
+
 	if (cpu.PC & M68K_BYTE_SIZE) != 0 {
 		cpu.ProcessException(M68K_VEC_ADDRESS_ERROR)
 		return 0
@@ -3589,7 +3608,32 @@ func (cpu *M68KCPU) swapStacksForMode(newSupervisor bool) {
 
 func (cpu *M68KCPU) ProcessException(vector uint8) {
 	// Enhanced logging for illegal instruction and bus fault (first 8 occurrences)
-	if vector == M68K_VEC_ILLEGAL_INSTR || vector == M68K_VEC_BUS_ERROR || vector == M68K_VEC_ADDRESS_ERROR {
+	if vector == M68K_VEC_LINE_F {
+		count := cpu.exceptionLogCount.Add(1)
+		if count <= 8 {
+			opPC := cpu.lastExecPC
+			opcode := cpu.lastExecOpcode
+			next0 := uint16(0)
+			next1 := uint16(0)
+			if opPC+2 < M68K_MEMORY_SIZE {
+				next0 = cpu.Read16(opPC + 2)
+			}
+			if opPC+4 < M68K_MEMORY_SIZE {
+				next1 = cpu.Read16(opPC + 4)
+			}
+			fmt.Printf("M68K: LINE F (#%d) at PC=%08X opcode=%04X next=%04X %04X SR=%04X SP=%08X\n",
+				count, opPC, opcode, next0, next1, cpu.SR, cpu.AddrRegs[7])
+			fmt.Printf("  D0=%08X D1=%08X D2=%08X D3=%08X D4=%08X D5=%08X D6=%08X D7=%08X\n",
+				cpu.DataRegs[0], cpu.DataRegs[1], cpu.DataRegs[2], cpu.DataRegs[3],
+				cpu.DataRegs[4], cpu.DataRegs[5], cpu.DataRegs[6], cpu.DataRegs[7])
+			fmt.Printf("  A0=%08X A1=%08X A2=%08X A3=%08X A4=%08X A5=%08X A6=%08X A7=%08X\n",
+				cpu.AddrRegs[0], cpu.AddrRegs[1], cpu.AddrRegs[2], cpu.AddrRegs[3],
+				cpu.AddrRegs[4], cpu.AddrRegs[5], cpu.AddrRegs[6], cpu.AddrRegs[7])
+			if cpu.DebugTraceEnabled && count <= 2 {
+				cpu.DumpDebugTrace(256)
+			}
+		}
+	} else if vector == M68K_VEC_ILLEGAL_INSTR || vector == M68K_VEC_BUS_ERROR || vector == M68K_VEC_ADDRESS_ERROR {
 		count := cpu.exceptionLogCount.Add(1)
 		if count <= 8 {
 			vecName := "EXCEPTION"
@@ -3609,8 +3653,18 @@ func (cpu *M68KCPU) ProcessException(vector uint8) {
 			fmt.Printf("  A0=%08X A1=%08X A2=%08X A3=%08X A4=%08X A5=%08X A6=%08X A7=%08X\n",
 				cpu.AddrRegs[0], cpu.AddrRegs[1], cpu.AddrRegs[2], cpu.AddrRegs[3],
 				cpu.AddrRegs[4], cpu.AddrRegs[5], cpu.AddrRegs[6], cpu.AddrRegs[7])
+			if cpu.PC >= 8 && cpu.PC+8 < M68K_MEMORY_SIZE {
+				fmt.Printf("  around PC: %04X %04X %04X %04X %04X\n",
+					cpu.Read16(cpu.PC-8), cpu.Read16(cpu.PC-4), cpu.Read16(cpu.PC),
+					cpu.Read16(cpu.PC+4), cpu.Read16(cpu.PC+8))
+			}
+			if cpu.AddrRegs[7]+12 < M68K_MEMORY_SIZE {
+				fmt.Printf("  stack top: %08X %08X %08X %08X\n",
+					cpu.Read32(cpu.AddrRegs[7]), cpu.Read32(cpu.AddrRegs[7]+4),
+					cpu.Read32(cpu.AddrRegs[7]+8), cpu.Read32(cpu.AddrRegs[7]+12))
+			}
 			if cpu.DebugTraceEnabled && (vector == M68K_VEC_ADDRESS_ERROR || vector == M68K_VEC_BUS_ERROR) && count <= 2 {
-				cpu.DumpDebugTrace(64)
+				cpu.DumpDebugTrace(256)
 			}
 		}
 	}
@@ -3639,6 +3693,7 @@ func (cpu *M68KCPU) ProcessException(vector uint8) {
 	case M68K_VEC_ILLEGAL_INSTR, M68K_VEC_PRIVILEGE, M68K_VEC_LINE_A, M68K_VEC_LINE_F:
 		oldPC = cpu.lastExecPC
 	}
+	cpu.emitStructuredFault(vector, oldPC)
 
 	// RESET doesn't push state because stack may be corrupted
 	if vector == M68K_VEC_RESET {
@@ -7109,6 +7164,28 @@ func (cpu *M68KCPU) ExecCmp(reg, opmode, mode, xreg uint16) {
 	} else if mode == 7 {
 		// Extended addressing modes
 		switch xreg {
+		case 2: // PC with Displacement
+			disp := int16(cpu.Fetch16())
+			addr := cpu.PC - M68K_WORD_SIZE + uint32(disp)
+			if size == M68K_SIZE_BYTE {
+				source = uint32(cpu.Read8(addr))
+			} else if size == M68K_SIZE_WORD {
+				source = uint32(cpu.Read16(addr))
+			} else {
+				source = cpu.Read32(addr)
+			}
+			cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_EA_PCDI
+		case 3: // PC with Index
+			extWord := cpu.Fetch16()
+			addr := cpu.GetIndexWithExtWords(extWord, cpu.PC-M68K_WORD_SIZE, false)
+			if size == M68K_SIZE_BYTE {
+				source = uint32(cpu.Read8(addr))
+			} else if size == M68K_SIZE_WORD {
+				source = uint32(cpu.Read16(addr))
+			} else {
+				source = cpu.Read32(addr)
+			}
+			cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_EA_PCIX
 		case 4: // Immediate
 			if size == M68K_SIZE_BYTE {
 				source = uint32(cpu.Fetch16() & 0xFF)
